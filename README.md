@@ -7,7 +7,8 @@
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
 - **图形管道**：RDPGFX（RemoteFX / 渐进式），EGL/GLES 纹理上传 + GPU 等比缩放
-- **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触摸
+- **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发）
+- **触控板**：双指滚动映射为滚轮（含横向）、双指捏合映射为 Ctrl+滚轮 缩放，步长/灵敏度可配置
 - **音频**：rdpsnd（OpenSLES 后端）
 - **剪贴板**：cliprdr 通道已接入
 - **凭证安全存储**：密码经 HarmonyOS Asset Store Kit 密文存储（不落明文、不进日志），

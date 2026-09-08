@@ -74,7 +74,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    拼接，否则控制字符（如 `\u0001`）会让 preferences 文件损坏成 `.broken`、数据无法落盘。
 7. **XComponent 输入**：surface 走 `surfaceId` +
    `OH_NativeWindow_CreateNativeWindowFromSurfaceId`（不带 `libraryname`），因此输入走 ArkUI 的
-   `onMouse/onTouch/onKeyEvent/onAxisEvent`。
+   `onMouse/onTouch/onKeyEvent/onAxisEvent`（触屏经 `onTouch` 转 RDPEI 原生触屏，见第 10 条）。
 8. **窗口尺寸**：默认尺寸由 `SettingsStore.defaults()` 按屏幕宽高 × 45%（主窗口）/ 67%（会话窗口）
    计算；屏幕查询失败时**不改窗口**，而不是回退到编造的分辨率。设置项是**默认尺寸**，只在
    **窗口创建时**生效（主窗口下次启动、会话窗口下次连接）；设置页改动**不**即时 resize / 移动
@@ -85,6 +85,20 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    静态传递（同一进程共享 ArkTS VM），密码不放进 Want。`PendingConnection.origin` 区分入口：
    仅编辑页发起（`Editor`）且连接成功时保存密码、并经 `onConnected` 回调让编辑页回退到列表；
    列表发起（`List`）成功/失败都不做额外操作。
+10. **输入分流 / 触屏 / 触控板**：鼠标走 `onMouse` → RDP 鼠标；真触屏走 `onTouch` → RDPEI
+    原生触屏（`Session::SendTouch` → `freerdp_client_handle_touch`，连接时打开
+    `FreeRDP_MultiTouchInput`）；滚轮 / 触控板走 `onAxisEvent`。用
+    `event.source === SourceType.TouchScreen` 区分真触屏与系统把鼠标左键/轴事件转成的触摸，
+    否则鼠标点击会同时被 `handleTouch` 当成触屏（或反过来模拟鼠标）导致点击变拖动。
+    - FreeRDP 的 `freerdp_client_handle_touch` 用 `id == 0` 表示"空槽位"，因此 ArkUI 的
+      0 基手指 id 要 `+1` 再传给原生；`handleTouch` 还需维护接触点状态（Down→Move*→Up 合法、
+      未知接触点丢弃、`Cancel` 抬起），否则事件会被 RDPEI 丢弃、表现为断断续续。
+    - 触控板双指滚动的轴值单位是**位移像素**、方向与鼠标滚轮**相反**（自然滚动），需累积到阈值
+      再发一格；横向滚动映射为 `HWHEEL`。鼠标滚轮仍是"向前/上 = `axisVertical` 负"。
+    - RDP 没有"捏合"输入 PDU：双指捏合映射为 **Ctrl + 滚轮**，整个手势期间按住 Ctrl 不松开
+      （中途逐格开关会把缩放混成滚动）；灵敏度在设置里调。
+    - 不要尝试用 `easy_go.json` 的 `mouse2TouchEventMode` 关闭鼠标转触摸：本机 SDK（API 26）的
+      easy_go schema 不含该字段，hvigor 校验会直接失败；用上面的 source 分流替代。
 
 ## ArkTS 规范
 
@@ -104,12 +118,12 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸创建窗口、加载会话页 |
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
-| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、输入、浮层、自动隐藏工具栏 |
+| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、自动隐藏工具栏 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏触发/隐藏延迟、窗口默认尺寸） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动/捏合、窗口默认尺寸） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
-| `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储（含按屏幕比例推导的窗口默认尺寸） |
+| `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储（工具栏延迟、触控板滚动/捏合、按屏幕比例推导的窗口默认尺寸） |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
