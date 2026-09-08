@@ -67,6 +67,9 @@ struct SessionPage {
   private toolbarHeight: number = 48;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
+  // Active touch contacts, keyed by the ArkUI touch id. The value is the last
+  // remote point sent for that contact (used to drop no-op moves).
+  private touchPoints: Map<number, number[]> = new Map<number, number[]>();
 
   aboutToAppear(): void {
     const settings: AppSettings = SettingsStore.load();
@@ -105,6 +108,7 @@ struct SessionPage {
       clearTimeout(this.hideTimer);
       this.hideTimer = -1;
     }
+    this.releaseAllTouches();
     this.native.stopSession();
     this.native.clearListener();
     PendingConnection.current.options.password = '';
@@ -276,25 +280,58 @@ struct SessionPage {
   }
 
   private handleTouch(event: TouchEvent): void {
-    // Only forward real finger input; system-converted mouse touches are
+    // Only forward real touchscreen input; system-converted mouse touches are
     // handled by handleMouse so mouse stays mouse and touch stays touch.
-    if (event.sourceTool !== SourceTool.Finger) {
+    if (event.source !== SourceType.TouchScreen) {
       return;
     }
-    if (event.changedTouches.length === 0) {
-      return;
-    }
-    for (let i = 0; i < event.changedTouches.length; i++) {
-      const touch: TouchObject = event.changedTouches[i];
+    const changed: TouchObject[] = event.changedTouches;
+    for (let i = 0; i < changed.length; i++) {
+      const touch: TouchObject = changed[i];
+      // FreeRDP reserves contact id 0 for "empty slot", so shift ArkUI's
+      // 0-based finger ids into a non-zero range.
+      const rdpId: number = touch.id + 1;
       const point: number[] = this.mapPointer(touch.x, touch.y);
-      if (event.type === TouchType.Down) {
-        this.native.touch(RdpTouchFlags.DOWN, touch.id, 0, point[0], point[1]);
-      } else if (event.type === TouchType.Move) {
-        this.native.touch(RdpTouchFlags.MOTION, touch.id, 0, point[0], point[1]);
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.native.touch(RdpTouchFlags.UP, touch.id, 0, point[0], point[1]);
+      const type: TouchType = touch.type;
+      if (type === TouchType.Down) {
+        // A down for an already-active contact means the previous sequence was
+        // lost; close it first so RDPEI stays well formed.
+        if (this.touchPoints.has(touch.id)) {
+          this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
+        }
+        this.touchPoints.set(touch.id, point);
+        this.native.touch(RdpTouchFlags.DOWN, rdpId, 0, point[0], point[1]);
+      } else if (type === TouchType.Move) {
+        const last: number[] | undefined = this.touchPoints.get(touch.id);
+        // Drop moves for unknown contacts and moves that did not change the
+        // remote pixel; RDPEI would drop the former and the latter only adds
+        // redundant frames.
+        if (last === undefined) {
+          continue;
+        }
+        if (last[0] === point[0] && last[1] === point[1]) {
+          continue;
+        }
+        this.touchPoints.set(touch.id, point);
+        this.native.touch(RdpTouchFlags.MOTION, rdpId, 0, point[0], point[1]);
+      } else if (type === TouchType.Up || type === TouchType.Cancel) {
+        if (!this.touchPoints.has(touch.id)) {
+          continue;
+        }
+        this.touchPoints.delete(touch.id);
+        this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
       }
     }
+    if (event.type === TouchType.Cancel && event.touches.length === 0) {
+      this.releaseAllTouches();
+    }
+  }
+
+  private releaseAllTouches(): void {
+    this.touchPoints.forEach((point: number[], id: number) => {
+      this.native.touch(RdpTouchFlags.UP, id + 1, 0, point[0], point[1]);
+    });
+    this.touchPoints.clear();
   }
 
   private handleAxis(event: AxisEvent): void {
