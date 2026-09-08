@@ -209,6 +209,7 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.domain = GetStringProperty(env, args[1], "domain");
   options.width = GetIntProperty(env, args[1], "width", 1920);
   options.height = GetIntProperty(env, args[1], "height", 1080);
+  options.scalePercent = GetIntProperty(env, args[1], "scalePercent", 0);
   options.colorDepth = GetIntProperty(env, args[1], "colorDepth", 32);
   options.ignoreCertificate = GetBoolProperty(env, args[1], "ignoreCertificate", true);
   options.enableClipboard = GetBoolProperty(env, args[1], "enableClipboard", true);

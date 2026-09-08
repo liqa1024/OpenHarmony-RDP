@@ -3,6 +3,21 @@
  */
 import { RdpOptions } from 'libhmrdp.so';
 
+/**
+ * Effective display settings for a session: the remote desktop resolution plus
+ * the DPI scale factor (percentage) requested from the server.
+ */
+export class DisplayProfile {
+  width: number = 0;
+  height: number = 0;
+  scalePercent: number = 100;
+  detected: boolean = false;
+
+  valid(): boolean {
+    return this.width > 0 && this.height > 0;
+  }
+}
+
 export enum RdpEvent {
   Connected = 0,
   Disconnected = 1,
@@ -21,6 +36,7 @@ export class RdpConnectOptions implements RdpOptions {
   domain: string = '';
   width: number = 1920;
   height: number = 1080;
+  scalePercent: number = 0;
   colorDepth: number = 32;
   ignoreCertificate: boolean = true;
   enableClipboard: boolean = true;
@@ -90,6 +106,9 @@ export class RdpTouchFlags {
 export class SavedConnection extends RdpConnectOptions {
   id: string = '';
   updatedAt: number = 0;
+  // When true the connection follows the global display settings and ignores
+  // width / height / scalePercent; when false the stored values are used.
+  useGlobalDisplay: boolean = true;
 
   label(): string {
     return `${this.host}:${this.port}`;
@@ -104,6 +123,7 @@ export class SavedConnection extends RdpConnectOptions {
     conn.domain = options.domain;
     conn.width = options.width;
     conn.height = options.height;
+    conn.scalePercent = options.scalePercent;
     conn.colorDepth = options.colorDepth;
     conn.ignoreCertificate = options.ignoreCertificate;
     conn.enableClipboard = options.enableClipboard;
@@ -124,6 +144,7 @@ export class SavedConnection extends RdpConnectOptions {
       RdpConnectOptions.of(this.host, this.port, this.username, '', this.domain);
     options.width = this.width;
     options.height = this.height;
+    options.scalePercent = this.scalePercent;
     options.colorDepth = this.colorDepth;
     options.ignoreCertificate = this.ignoreCertificate;
     options.enableClipboard = this.enableClipboard;

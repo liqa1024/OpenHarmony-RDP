@@ -35,6 +35,9 @@ struct RdpOptions {
   std::string domain;
   int width = 1920;
   int height = 1080;
+  // Remote desktop DPI scale factor as a percentage (100 = 100%). Zero leaves
+  // the FreeRDP default untouched.
+  int scalePercent = 0;
   int colorDepth = 32;
   bool ignoreCertificate = true;
   bool enableClipboard = true;

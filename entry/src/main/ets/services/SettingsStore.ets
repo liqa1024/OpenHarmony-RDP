@@ -4,6 +4,7 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
+import { DisplayProfile, SavedConnection } from '../model/RdpModels';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 350;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
@@ -11,6 +12,12 @@ const DEFAULT_TOUCHPAD_SCROLL_UNIT: number = 40;
 const DEFAULT_PINCH_ZOOM_STEP_PERCENT: number = 5;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;
+const FALLBACK_WIDTH: number = 1920;
+const FALLBACK_HEIGHT: number = 1080;
+
+// Windows only applies a fixed set of DPI scaling presets; other values can
+// cause rendering problems, so the scale is always snapped to one of these.
+export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 
 export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
@@ -23,6 +30,13 @@ export class AppSettings {
   sessionWindowSizeEnabled: boolean = false;
   sessionWindowWidth: number = 0;
   sessionWindowHeight: number = 0;
+  // Global display defaults: automatic resolution / scaling by default, with an
+  // optional manual override shared by every connection.
+  resolutionAuto: boolean = true;
+  manualWidth: number = 0;
+  manualHeight: number = 0;
+  scaleAuto: boolean = true;
+  manualScalePercent: number = 100;
 }
 
 export class SettingsStore {
@@ -82,6 +96,16 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'sessionWindowWidth', settings.sessionWindowWidth);
       settings.sessionWindowHeight =
         SettingsStore.readNumber(store, 'sessionWindowHeight', settings.sessionWindowHeight);
+      settings.resolutionAuto =
+        SettingsStore.readBoolean(store, 'resolutionAuto', settings.resolutionAuto);
+      settings.manualWidth =
+        SettingsStore.readNumber(store, 'manualWidth', settings.manualWidth);
+      settings.manualHeight =
+        SettingsStore.readNumber(store, 'manualHeight', settings.manualHeight);
+      settings.scaleAuto =
+        SettingsStore.readBoolean(store, 'scaleAuto', settings.scaleAuto);
+      settings.manualScalePercent =
+        SettingsStore.readNumber(store, 'manualScalePercent', settings.manualScalePercent);
     }
     return settings;
   }
@@ -99,8 +123,109 @@ export class SettingsStore {
       store.putSync('sessionWindowSizeEnabled', settings.sessionWindowSizeEnabled);
       store.putSync('sessionWindowWidth', settings.sessionWindowWidth);
       store.putSync('sessionWindowHeight', settings.sessionWindowHeight);
+      store.putSync('resolutionAuto', settings.resolutionAuto);
+      store.putSync('manualWidth', settings.manualWidth);
+      store.putSync('manualHeight', settings.manualHeight);
+      store.putSync('scaleAuto', settings.scaleAuto);
+      store.putSync('manualScalePercent', settings.manualScalePercent);
       store.flush();
     }
+  }
+
+  /**
+   * Current monitor resolution, used as the automatic session size. Returns an
+   * invalid profile when the display cannot be queried so callers can decide.
+   */
+  static detectedDisplay(): DisplayProfile {
+    const profile: DisplayProfile = new DisplayProfile();
+    const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
+    if (disp !== undefined && disp.width > 0 && disp.height > 0) {
+      profile.width = disp.width;
+      profile.height = disp.height;
+      profile.detected = true;
+    }
+    return profile;
+  }
+
+  /**
+   * Recommended RDP scale factor derived from the display density: HarmonyOS
+   * uses 160 DPI as 100%, so densityPixels maps directly to a percentage.
+   */
+  static recommendedScalePercent(): number {
+    const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
+    if (disp === undefined || disp.densityPixels <= 0) {
+      return SCALE_PRESETS[0];
+    }
+    return SettingsStore.nearestScalePreset(Math.round(disp.densityPixels * 100));
+  }
+
+  /** Snaps an arbitrary percentage to the nearest supported Windows preset. */
+  static nearestScalePreset(percent: number): number {
+    let best: number = SCALE_PRESETS[0];
+    let bestDiff: number = Math.abs(percent - best);
+    for (const preset of SCALE_PRESETS) {
+      const diff: number = Math.abs(percent - preset);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = preset;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Global display profile (auto detected resolution / recommended scale, or the
+   * manual values when the user has overridden them).
+   */
+  static globalDisplayProfile(): DisplayProfile {
+    return SettingsStore.profileFor(SettingsStore.load());
+  }
+
+  /**
+   * Effective display profile for a connection: global settings unless the
+   * connection opted into a per-connection override.
+   */
+  static resolveDisplay(conn: SavedConnection): DisplayProfile {
+    const global: DisplayProfile = SettingsStore.profileFor(SettingsStore.load());
+    if (conn.useGlobalDisplay) {
+      return global;
+    }
+    const profile: DisplayProfile = new DisplayProfile();
+    if (conn.width > 0 && conn.height > 0) {
+      profile.width = conn.width;
+      profile.height = conn.height;
+    } else {
+      profile.width = global.width;
+      profile.height = global.height;
+      profile.detected = global.detected;
+    }
+    profile.scalePercent = conn.scalePercent > 0
+      ? SettingsStore.nearestScalePreset(conn.scalePercent) : global.scalePercent;
+    return profile;
+  }
+
+  private static profileFor(settings: AppSettings): DisplayProfile {
+    const profile: DisplayProfile = new DisplayProfile();
+    if (!settings.resolutionAuto && settings.manualWidth > 0 && settings.manualHeight > 0) {
+      profile.width = settings.manualWidth;
+      profile.height = settings.manualHeight;
+    } else {
+      const detected: DisplayProfile = SettingsStore.detectedDisplay();
+      if (detected.valid()) {
+        profile.width = detected.width;
+        profile.height = detected.height;
+        profile.detected = true;
+      } else {
+        profile.width = FALLBACK_WIDTH;
+        profile.height = FALLBACK_HEIGHT;
+      }
+    }
+    if (!settings.scaleAuto && settings.manualScalePercent > 0) {
+      profile.scalePercent = SettingsStore.nearestScalePreset(settings.manualScalePercent);
+    } else {
+      profile.scalePercent = SettingsStore.recommendedScalePercent();
+    }
+    return profile;
   }
 
   private static displayOrUndefined(): display.Display | undefined {

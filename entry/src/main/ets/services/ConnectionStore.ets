@@ -13,7 +13,9 @@ const STORE_NAME: string = 'hmrdp_connections';
 const IDS_KEY: string = 'ids';
 const ENTRY_PREFIX: string = 'conn_';
 const FIELD_SEPARATOR: string = '|';
-const FIELD_COUNT: number = 19;
+// Records written before the per-connection display override existed only had
+// 19 fields; they are still accepted and default to the global display.
+const LEGACY_FIELD_COUNT: number = 19;
 
 export class ConnectionStore {
   private static store: preferences.Preferences | undefined = undefined;
@@ -125,12 +127,14 @@ export class ConnectionStore {
     parts.push(ConnectionStore.encode(conn.gatewayUsername));
     parts.push(ConnectionStore.encode(conn.gatewayDomain));
     parts.push(conn.updatedAt.toString());
+    parts.push(conn.useGlobalDisplay ? '1' : '0');
+    parts.push(conn.scalePercent.toString());
     return parts.join(FIELD_SEPARATOR);
   }
 
   private static deserialize(id: string, text: string): SavedConnection | undefined {
     const parts: string[] = text.split(FIELD_SEPARATOR);
-    if (parts.length < FIELD_COUNT) {
+    if (parts.length < LEGACY_FIELD_COUNT) {
       return undefined;
     }
     const conn: SavedConnection = new SavedConnection();
@@ -154,6 +158,8 @@ export class ConnectionStore {
     conn.gatewayUsername = ConnectionStore.decode(parts[16]);
     conn.gatewayDomain = ConnectionStore.decode(parts[17]);
     conn.updatedAt = ConnectionStore.parseNumber(parts[18], 0);
+    conn.useGlobalDisplay = parts.length > 19 ? parts[19] === '1' : true;
+    conn.scalePercent = parts.length > 20 ? ConnectionStore.parseNumber(parts[20], 0) : 0;
     return conn;
   }
 

@@ -5,10 +5,11 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { EditConnectionParams, PendingConnection, RdpConnectOptions,
+import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
   RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD001;
@@ -24,6 +25,9 @@ struct EditConnectionPage {
   @State domain: string = '';
   @State desktopWidthText: string = '1920';
   @State desktopHeightText: string = '1080';
+  @State scalePercent: number = 100;
+  @State useGlobalDisplay: boolean = true;
+  @State advancedExpanded: boolean = false;
   @State enableClipboard: boolean = true;
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
@@ -31,11 +35,21 @@ struct EditConnectionPage {
   @State ignoreCertificate: boolean = true;
   @State errorMessage: string = '';
   @State editing: boolean = false;
+  @State detectedText: string = '';
+  @State recommendedScale: number = 100;
   private connectionId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
 
   aboutToAppear(): void {
+    const detected: DisplayProfile = SettingsStore.detectedDisplay();
+    this.detectedText = detected.valid()
+      ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
+    this.recommendedScale = SettingsStore.recommendedScalePercent();
+    this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
+    this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
+    this.scalePercent = this.recommendedScale;
+
     const params: EditConnectionParams =
       this.getUIContext().getRouter().getParams() as EditConnectionParams;
     const id: string = params?.id ?? '';
@@ -50,8 +64,14 @@ struct EditConnectionPage {
       this.port = conn.port.toString();
       this.username = conn.username;
       this.domain = conn.domain;
-      this.desktopWidthText = conn.width.toString();
-      this.desktopHeightText = conn.height.toString();
+      this.useGlobalDisplay = conn.useGlobalDisplay;
+      if (conn.width > 0 && conn.height > 0) {
+        this.desktopWidthText = conn.width.toString();
+        this.desktopHeightText = conn.height.toString();
+      }
+      if (conn.scalePercent > 0) {
+        this.scalePercent = SettingsStore.nearestScalePreset(conn.scalePercent);
+      }
       this.enableClipboard = conn.enableClipboard;
       this.enableAudio = conn.enableAudio;
       this.enableGfx = conn.enableGfx;
@@ -89,11 +109,15 @@ struct EditConnectionPage {
       return undefined;
     }
     this.errorMessage = '';
+    const global: DisplayProfile = SettingsStore.globalDisplayProfile();
     const options: RdpConnectOptions =
       RdpConnectOptions.of(target, this.parsePort(), this.username.trim(), this.password,
         this.domain.trim());
-    options.width = this.parseSize(this.desktopWidthText, 1920);
-    options.height = this.parseSize(this.desktopHeightText, 1080);
+    options.width = this.useGlobalDisplay
+      ? global.width : this.parseSize(this.desktopWidthText, global.width);
+    options.height = this.useGlobalDisplay
+      ? global.height : this.parseSize(this.desktopHeightText, global.height);
+    options.scalePercent = this.useGlobalDisplay ? global.scalePercent : this.scalePercent;
     options.enableClipboard = this.enableClipboard;
     options.enableAudio = this.enableAudio;
     options.enableGfx = this.enableGfx;
@@ -110,6 +134,7 @@ struct EditConnectionPage {
     const id: string = this.connectionId.length > 0
       ? this.connectionId : util.generateRandomUUID(true);
     const conn: SavedConnection = SavedConnection.fromOptions(id, options);
+    conn.useGlobalDisplay = this.useGlobalDisplay;
     conn.updatedAt = Date.now();
     try {
       ConnectionStore.save(conn);
@@ -184,6 +209,21 @@ struct EditConnectionPage {
       .fontSize(12)
       .fontColor($r('app.color.text_secondary'))
       .margin({ bottom: 6 })
+  }
+
+  @Builder
+  scaleChip(preset: number) {
+    Text(preset.toString() + '%')
+      .fontSize(13)
+      .fontColor(this.scalePercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.scalePercent === preset
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .onClick(() => {
+        this.scalePercent = preset;
+      })
   }
 
   @Builder
@@ -325,60 +365,152 @@ struct EditConnectionPage {
             .width('100%')
             .margin({ bottom: 16 })
 
-            Row() {
-              Column() {
-                this.fieldLabel('分辨率宽度')
-                TextInput({ placeholder: '1920', text: this.desktopWidthText })
-                  .width('100%')
-                  .height(46)
-                  .borderRadius(10)
-                  .backgroundColor($r('app.color.input_bg'))
-                  .type(InputType.Number)
-                  .onChange((value: string) => {
-                    this.desktopWidthText = value;
-                  })
-              }
-              .layoutWeight(1)
-              .alignItems(HorizontalAlign.Start)
-
-              Column() {
-                this.fieldLabel('分辨率高度')
-                TextInput({ placeholder: '1080', text: this.desktopHeightText })
-                  .width('100%')
-                  .height(46)
-                  .borderRadius(10)
-                  .backgroundColor($r('app.color.input_bg'))
-                  .type(InputType.Number)
-                  .onChange((value: string) => {
-                    this.desktopHeightText = value;
-                  })
-              }
-              .layoutWeight(1)
-              .margin({ left: 16 })
-              .alignItems(HorizontalAlign.Start)
-            }
-            .width('100%')
-
             Divider()
               .color($r('app.color.divider'))
               .margin({ top: 20, bottom: 8 })
 
-            this.optionRow('剪贴板重定向', '', this.enableClipboard, (v: boolean) => {
-              this.enableClipboard = v;
+            Row() {
+              Column() {
+                Text('高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text('显示、剪贴板、音频等连接独立选项')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Row() {
+                if (!this.useGlobalDisplay) {
+                  Text('已自定义')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .margin({ right: 8 })
+                }
+                Text(this.advancedExpanded ? '收起' : '展开')
+                  .fontSize(13)
+                  .fontColor($r('app.color.accent'))
+              }
+              .alignItems(VerticalAlign.Center)
+            }
+            .width('100%')
+            .padding({ top: 8, bottom: 8 })
+            .onClick(() => {
+              this.advancedExpanded = !this.advancedExpanded;
             })
-            this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
-              this.enableAudio = v;
-            })
-            this.optionRow('GFX 图形管道', '更流畅的画面传输', this.enableGfx, (v: boolean) => {
-              this.enableGfx = v;
-            })
-            this.optionRow('H.264 / AVC 解码', '需服务端支持', this.enableH264, (v: boolean) => {
-              this.enableH264 = v;
-            })
-            this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,
-              (v: boolean) => {
-                this.ignoreCertificate = v;
-              })
+
+            if (this.advancedExpanded) {
+              Column() {
+                Row() {
+                  Column() {
+                    Text('使用全局显示设置').fontSize(14).fontColor($r('app.color.text_primary'))
+                    Text('分辨率与缩放跟随全局设置')
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .margin({ top: 2 })
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1)
+
+                  Toggle({ type: ToggleType.Switch, isOn: this.useGlobalDisplay })
+                    .selectedColor($r('app.color.accent'))
+                    .onChange((isOn: boolean) => {
+                      this.useGlobalDisplay = isOn;
+                    })
+                }
+                .width('100%')
+                .height(58)
+
+                if (this.useGlobalDisplay) {
+                  Text('自动检测：' + this.detectedText + ' · 推荐缩放 '
+                    + this.recommendedScale + '%')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .width('100%')
+                } else {
+                  Row() {
+                    Column() {
+                      this.fieldLabel('分辨率宽度')
+                      TextInput({ placeholder: '1920', text: this.desktopWidthText })
+                        .width('100%')
+                        .height(46)
+                        .borderRadius(10)
+                        .backgroundColor($r('app.color.input_bg'))
+                        .type(InputType.Number)
+                        .onChange((value: string) => {
+                          this.desktopWidthText = value;
+                        })
+                    }
+                    .layoutWeight(1)
+                    .alignItems(HorizontalAlign.Start)
+
+                    Column() {
+                      this.fieldLabel('分辨率高度')
+                      TextInput({ placeholder: '1080', text: this.desktopHeightText })
+                        .width('100%')
+                        .height(46)
+                        .borderRadius(10)
+                        .backgroundColor($r('app.color.input_bg'))
+                        .type(InputType.Number)
+                        .onChange((value: string) => {
+                          this.desktopHeightText = value;
+                        })
+                    }
+                    .layoutWeight(1)
+                    .margin({ left: 16 })
+                    .alignItems(HorizontalAlign.Start)
+                  }
+                  .width('100%')
+                  .margin({ top: 12 })
+
+                  Text('自动检测：' + this.detectedText)
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .width('100%')
+                    .margin({ top: 6 })
+
+                  Column() {
+                    this.fieldLabel('缩放比例')
+                    Flex({ wrap: FlexWrap.Wrap }) {
+                      ForEach(SCALE_PRESETS, (preset: number) => {
+                        this.scaleChip(preset)
+                      }, (preset: number) => preset.toString())
+                    }
+                    .width('100%')
+                    .margin({ top: 6 })
+                    Text('推荐 ' + this.recommendedScale + '%，仅支持 Windows 固定缩放档位')
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                  }
+                  .width('100%')
+                  .margin({ top: 16 })
+                  .alignItems(HorizontalAlign.Start)
+                }
+
+                Divider()
+                  .color($r('app.color.divider'))
+                  .margin({ top: 8, bottom: 4 })
+
+                this.optionRow('剪贴板重定向', '', this.enableClipboard, (v: boolean) => {
+                  this.enableClipboard = v;
+                })
+                this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
+                  this.enableAudio = v;
+                })
+                this.optionRow('GFX 图形管道', '更流畅的画面传输', this.enableGfx, (v: boolean) => {
+                  this.enableGfx = v;
+                })
+                this.optionRow('H.264 / AVC 解码', '需服务端支持', this.enableH264, (v: boolean) => {
+                  this.enableH264 = v;
+                })
+                this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,
+                  (v: boolean) => {
+                    this.ignoreCertificate = v;
+                  })
+              }
+              .width('100%')
+              .alignItems(HorizontalAlign.Start)
+            }
 
             if (this.errorMessage.length > 0) {
               Text(this.errorMessage)

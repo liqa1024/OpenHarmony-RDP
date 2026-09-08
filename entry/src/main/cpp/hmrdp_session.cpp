@@ -319,6 +319,12 @@ bool Session::Connect(const RdpOptions& options) {
   // Enables the RDPEI (touch/pen input) channel so ArkUI touch events can be
   // forwarded as native remote touch instead of mouse emulation.
   freerdp_settings_set_bool(settings, FreeRDP_MultiTouchInput, TRUE);
+  // Remote desktop DPI scaling. The UI only offers the fixed Windows presets
+  // (100/125/150/175/200/225), so the value is passed through as-is.
+  if (options.scalePercent > 0) {
+    freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor,
+                                static_cast<UINT32>(options.scalePercent));
+  }
 
   if (freerdp_client_start(context) != 0) {
     SetError("freerdp_client_start failed");

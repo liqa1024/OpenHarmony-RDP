@@ -4,10 +4,11 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { EditConnectionParams, PendingConnection, RdpConnectOptions,
+import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
   RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD001;
@@ -40,6 +41,10 @@ struct Index {
 
   private async startConnection(conn: SavedConnection): Promise<void> {
     const options: RdpConnectOptions = conn.toOptions();
+    const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
+    options.width = profile.width;
+    options.height = profile.height;
+    options.scalePercent = profile.scalePercent;
     const password: string = await CredentialStore.loadPassword(conn.id);
     options.password = password;
     PendingConnection.current.options = options;

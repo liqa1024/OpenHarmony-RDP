@@ -2,7 +2,12 @@
  * HmRdp - global settings.
  */
 import { display } from '@kit.ArkUI';
-import { AppSettings, SettingsStore } from '../services/SettingsStore';
+import { DisplayProfile } from '../model/RdpModels';
+import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
+
+// Remote desktop sizes are not limited to the local screen, so manual
+// resolution is capped only to a sane upper bound.
+const MAX_DESKTOP_SIZE: number = 16384;
 
 @Entry
 @Component
@@ -11,6 +16,13 @@ struct SettingsPage {
   @State hideDelay: number = 250;
   @State touchpadScrollUnit: number = 40;
   @State pinchZoomStep: number = 5;
+  @State resolutionAuto: boolean = true;
+  @State manualWidthText: string = '';
+  @State manualHeightText: string = '';
+  @State scaleAuto: boolean = true;
+  @State manualScalePercent: number = 100;
+  @State detectedText: string = '';
+  @State recommendedScale: number = 100;
   @State mainSizeEnabled: boolean = false;
   @State sessionSizeEnabled: boolean = false;
   @State mainWidthText: string = '';
@@ -21,6 +33,8 @@ struct SettingsPage {
   private defaultMainHeight: number = 0;
   private defaultSessionWidth: number = 0;
   private defaultSessionHeight: number = 0;
+  private detectedWidth: number = 0;
+  private detectedHeight: number = 0;
 
   aboutToAppear(): void {
     const defaults: AppSettings = SettingsStore.defaults();
@@ -28,11 +42,23 @@ struct SettingsPage {
     this.defaultMainHeight = defaults.mainWindowHeight;
     this.defaultSessionWidth = defaults.sessionWindowWidth;
     this.defaultSessionHeight = defaults.sessionWindowHeight;
+    const detected: DisplayProfile = SettingsStore.detectedDisplay();
+    this.detectedText = detected.valid()
+      ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
+    this.detectedWidth = detected.width;
+    this.detectedHeight = detected.height;
+    this.recommendedScale = SettingsStore.recommendedScalePercent();
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStep = settings.pinchZoomStepPercent;
+    this.resolutionAuto = settings.resolutionAuto;
+    this.manualWidthText = this.sizeText(settings.manualWidth);
+    this.manualHeightText = this.sizeText(settings.manualHeight);
+    this.scaleAuto = settings.scaleAuto;
+    this.manualScalePercent = settings.manualScalePercent > 0
+      ? SettingsStore.nearestScalePreset(settings.manualScalePercent) : this.recommendedScale;
     this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
@@ -70,6 +96,13 @@ struct SettingsPage {
     settings.toolbarHideDelay = this.hideDelay;
     settings.touchpadScrollUnit = this.touchpadScrollUnit;
     settings.pinchZoomStepPercent = this.pinchZoomStep;
+    settings.resolutionAuto = this.resolutionAuto;
+    settings.manualWidth =
+      this.parseSize(this.manualWidthText, this.detectedWidth, MAX_DESKTOP_SIZE);
+    settings.manualHeight =
+      this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
+    settings.scaleAuto = this.scaleAuto;
+    settings.manualScalePercent = this.manualScalePercent;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -89,6 +122,11 @@ struct SettingsPage {
     this.hideDelay = defaults.toolbarHideDelay;
     this.touchpadScrollUnit = defaults.touchpadScrollUnit;
     this.pinchZoomStep = defaults.pinchZoomStepPercent;
+    this.resolutionAuto = true;
+    this.manualWidthText = this.sizeText(this.detectedWidth);
+    this.manualHeightText = this.sizeText(this.detectedHeight);
+    this.scaleAuto = true;
+    this.manualScalePercent = this.recommendedScale;
     this.mainSizeEnabled = defaults.mainWindowSizeEnabled;
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
@@ -96,6 +134,36 @@ struct SettingsPage {
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(defaults.sessionWindowHeight);
     this.persist();
+  }
+
+  @Builder
+  modeChip(label: string, active: boolean, leftMargin: number, onSelect: () => void) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(active ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(active ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .onClick(() => {
+        onSelect();
+      })
+  }
+
+  @Builder
+  scaleChip(preset: number) {
+    Text(preset.toString() + '%')
+      .fontSize(13)
+      .fontColor(this.manualScalePercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.manualScalePercent === preset
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .onClick(() => {
+        this.manualScalePercent = preset;
+        this.persist();
+      })
   }
 
   @Builder
@@ -201,6 +269,115 @@ struct SettingsPage {
                 this.pinchZoomStep = v;
                 this.persist();
               })
+
+            Divider().color($r('app.color.divider'))
+
+            Text('显示')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            Column() {
+              Row() {
+                Column() {
+                  Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+                  Text('自动使用当前显示器的分辨率')
+                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Row() {
+                  this.modeChip('自动', this.resolutionAuto, 0, () => {
+                    this.resolutionAuto = true;
+                    this.persist();
+                  })
+                  this.modeChip('手动', !this.resolutionAuto, 8, () => {
+                    this.resolutionAuto = false;
+                    this.persist();
+                  })
+                }
+              }
+              .width('100%')
+
+              if (this.resolutionAuto) {
+                Text('自动检测：' + this.detectedText)
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 10 })
+              } else {
+                Row() {
+                  TextInput({ placeholder: '1920', text: this.manualWidthText })
+                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+                    .onChange((value: string) => {
+                      this.manualWidthText = value;
+                      this.persist();
+                    })
+
+                  Text('×')
+                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
+                    .margin({ left: 10, right: 10 })
+
+                  TextInput({ placeholder: '1080', text: this.manualHeightText })
+                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+                    .onChange((value: string) => {
+                      this.manualHeightText = value;
+                      this.persist();
+                    })
+                }
+                .width('100%').margin({ top: 10 })
+
+                Text('自动检测：' + this.detectedText + '，可参考输入')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 6 })
+              }
+            }
+            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+
+            Divider().color($r('app.color.divider'))
+
+            Column() {
+              Row() {
+                Column() {
+                  Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
+                  Text('按屏幕密度自动选择推荐缩放比例')
+                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Row() {
+                  this.modeChip('自动', this.scaleAuto, 0, () => {
+                    this.scaleAuto = true;
+                    this.persist();
+                  })
+                  this.modeChip('手动', !this.scaleAuto, 8, () => {
+                    this.scaleAuto = false;
+                    this.persist();
+                  })
+                }
+              }
+              .width('100%')
+
+              if (this.scaleAuto) {
+                Text('推荐：' + this.recommendedScale + '%')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 10 })
+              } else {
+                Flex({ wrap: FlexWrap.Wrap }) {
+                  ForEach(SCALE_PRESETS, (preset: number) => {
+                    this.scaleChip(preset)
+                  }, (preset: number) => preset.toString())
+                }
+                .width('100%').margin({ top: 10 })
+
+                Text('仅支持 Windows 固定缩放档位')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%')
+              }
+            }
+            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
             Divider().color($r('app.color.divider'))
 

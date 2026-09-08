@@ -6,6 +6,7 @@ export interface RdpOptions {
   domain: string;
   width: number;
   height: number;
+  scalePercent: number;
   colorDepth: number;
   ignoreCertificate: boolean;
   enableClipboard: boolean;

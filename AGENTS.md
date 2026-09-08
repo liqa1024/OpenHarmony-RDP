@@ -99,6 +99,15 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       （中途逐格开关会把缩放混成滚动）；灵敏度在设置里调。
     - 不要尝试用 `easy_go.json` 的 `mouse2TouchEventMode` 关闭鼠标转触摸：本机 SDK（API 26）的
       easy_go schema 不含该字段，hvigor 校验会直接失败；用上面的 source 分流替代。
+11. **分辨率与缩放**：默认（全局自动）会话分辨率取当前显示器 `display.width/height`，缩放比例
+    取 `densityPixels × 100`（HarmonyOS 以 160 DPI = 100%），经 `RdpOptions.scalePercent` 传给原生，
+    原生只写 `FreeRDP_DesktopScaleFactor`（不碰 device scale factor）。
+    缩放比例只取 Windows 固定档位 **100/125/150/175/200/225**（`SettingsStore.SCALE_PRESETS`，
+    自动推荐值也按最近档位吸附），不要暴露任意数值。全局设置页可改为手动分辨率 / 手动缩放；
+    每个连接的高级设置里可开关「使用全局显示设置」，关闭后该连接用自己保存的
+    `width/height/scalePercent`（`SavedConnection.useGlobalDisplay`）。
+    连接记录序列化新增 `useGlobalDisplay`、`scalePercent` 两个尾字段，旧记录（19 字段）仍可读、
+    默认套用全局。连接前用 `SettingsStore.resolveDisplay(conn)` 得到最终 `DisplayProfile`。
 
 ## ArkTS 规范
 
