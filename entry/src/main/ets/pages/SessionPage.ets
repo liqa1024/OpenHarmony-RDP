@@ -5,7 +5,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectOrigin, RdpConnectionState,
-  RdpEvent, RdpPointerFlags } from '../model/RdpModels';
+  RdpEvent, RdpPointerFlags, RdpTouchFlags } from '../model/RdpModels';
 import { CredentialStore } from '../services/CredentialStore';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
@@ -276,21 +276,24 @@ struct SessionPage {
   }
 
   private handleTouch(event: TouchEvent): void {
+    // Only forward real finger input; system-converted mouse touches are
+    // handled by handleMouse so mouse stays mouse and touch stays touch.
+    if (event.sourceTool !== SourceTool.Finger) {
+      return;
+    }
     if (event.changedTouches.length === 0) {
       return;
     }
-    const touch: TouchObject = event.changedTouches[0];
-    this.updateToolbar(touch.y);
-    const point: number[] = this.mapPointer(touch.x, touch.y);
-    const remoteX: number = point[0];
-    const remoteY: number = point[1];
-    if (event.type === TouchType.Down) {
-      this.native.mouse(RdpPointerFlags.MOVE, remoteX, remoteY);
-      this.native.mouse(RdpPointerFlags.BUTTON1 | RdpPointerFlags.DOWN, remoteX, remoteY);
-    } else if (event.type === TouchType.Move) {
-      this.native.mouse(RdpPointerFlags.MOVE, remoteX, remoteY);
-    } else if (event.type === TouchType.Up) {
-      this.native.mouse(RdpPointerFlags.BUTTON1, remoteX, remoteY);
+    for (let i = 0; i < event.changedTouches.length; i++) {
+      const touch: TouchObject = event.changedTouches[i];
+      const point: number[] = this.mapPointer(touch.x, touch.y);
+      if (event.type === TouchType.Down) {
+        this.native.touch(RdpTouchFlags.DOWN, touch.id, 0, point[0], point[1]);
+      } else if (event.type === TouchType.Move) {
+        this.native.touch(RdpTouchFlags.MOTION, touch.id, 0, point[0], point[1]);
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.native.touch(RdpTouchFlags.UP, touch.id, 0, point[0], point[1]);
+      }
     }
   }
 
@@ -303,11 +306,11 @@ struct SessionPage {
       return;
     }
     const point: number[] = this.mapPointer(event.x, event.y);
-    let flags: number = RdpPointerFlags.WHEEL | RdpPointerFlags.MOVE;
-    if (vertical > 0) {
+    let flags: number = RdpPointerFlags.WHEEL;
+    if (vertical < 0) {
       flags = flags | 0x78;
     } else {
-      flags = flags | RdpPointerFlags.WHEEL_NEGATIVE | 0x78;
+      flags = flags | RdpPointerFlags.WHEEL_NEGATIVE | 0x88;
     }
     this.native.mouse(flags, point[0], point[1]);
   }

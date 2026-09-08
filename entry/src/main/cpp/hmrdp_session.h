@@ -71,6 +71,7 @@ class Session {
 
   bool SendMouse(uint16_t flags, uint16_t x, uint16_t y);
   bool SendExtendedMouse(uint16_t flags, uint16_t x, uint16_t y);
+  bool SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x, int32_t y);
   bool SendKey(uint8_t scancode, bool down, bool extended);
   bool SendUnicode(uint16_t codepoint, bool down);
   bool SendSynchronize();

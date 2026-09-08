@@ -81,6 +81,12 @@ export class RdpPointerFlags {
   static readonly HWHEEL: number = 0x0400;
 }
 
+export class RdpTouchFlags {
+  static readonly DOWN: number = 0x01;
+  static readonly UP: number = 0x02;
+  static readonly MOTION: number = 0x04;
+}
+
 export class SavedConnection extends RdpConnectOptions {
   id: string = '';
   updatedAt: number = 0;

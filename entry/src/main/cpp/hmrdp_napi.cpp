@@ -397,6 +397,36 @@ napi_value SendMouse(napi_env env, napi_callback_info info) {
                     session->SendMouse(static_cast<uint16_t>(flags), ux, uy));
 }
 
+napi_value SendTouch(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t flags = 0;
+  int32_t finger = 0;
+  int32_t pressure = 0;
+  int32_t x = 0;
+  int32_t y = 0;
+  if (argc < 6 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &flags) != napi_ok ||
+      napi_get_value_int32(env, args[2], &finger) != napi_ok ||
+      napi_get_value_int32(env, args[3], &pressure) != napi_ok ||
+      napi_get_value_int32(env, args[4], &x) != napi_ok ||
+      napi_get_value_int32(env, args[5], &y) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, session->SendTouch(static_cast<uint32_t>(flags), finger,
+                                            static_cast<uint32_t>(pressure), x, y));
+}
+
 napi_value SendKey(napi_env env, napi_callback_info info) {
   size_t argc = 4;
   napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -532,6 +562,7 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"detachSurface", nullptr, DetachSurface, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"sendMouse", nullptr, SendMouse, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"sendTouch", nullptr, SendTouch, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendKey", nullptr, SendKey, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,
        nullptr},

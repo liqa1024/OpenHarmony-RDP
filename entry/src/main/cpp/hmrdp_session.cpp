@@ -316,6 +316,9 @@ bool Session::Connect(const RdpOptions& options) {
   }
   freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
   freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
+  // Enables the RDPEI (touch/pen input) channel so ArkUI touch events can be
+  // forwarded as native remote touch instead of mouse emulation.
+  freerdp_settings_set_bool(settings, FreeRDP_MultiTouchInput, TRUE);
 
   if (freerdp_client_start(context) != 0) {
     SetError("freerdp_client_start failed");
@@ -494,6 +497,15 @@ bool Session::SendExtendedMouse(uint16_t flags, uint16_t x, uint16_t y) {
     return false;
   }
   return freerdp_input_send_extended_mouse_event(instance_->context->input, flags, x, y);
+}
+
+bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x,
+                        int32_t y) {
+  if (instance_ == nullptr || instance_->context == nullptr) {
+    return false;
+  }
+  rdpClientContext* client = reinterpret_cast<rdpClientContext*>(instance_->context);
+  return freerdp_client_handle_touch(client, flags, finger, pressure, x, y) ? true : false;
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {

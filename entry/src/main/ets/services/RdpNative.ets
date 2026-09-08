@@ -3,7 +3,7 @@
  */
 import { attachSurface, clearSurface, connect, createSession, destroySession,
   detachSurface, disconnect, getVersion, isConnected, onEvent, requestResize,
-  sendKey, sendMouse, sendUnicode, setSurface, updateSurface, RdpEventCallback }
+  sendKey, sendMouse, sendTouch, sendUnicode, setSurface, updateSurface, RdpEventCallback }
   from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -89,6 +89,12 @@ export class RdpNative {
   mouse(flags: number, x: number, y: number): void {
     if (this.handle >= 0) {
       sendMouse(this.handle, flags, x, y);
+    }
+  }
+
+  touch(flags: number, finger: number, pressure: number, x: number, y: number): void {
+    if (this.handle >= 0) {
+      sendTouch(this.handle, flags, finger, pressure, x, y);
     }
   }
 

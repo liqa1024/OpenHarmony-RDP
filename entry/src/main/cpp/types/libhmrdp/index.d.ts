@@ -33,6 +33,8 @@ export const clearSurface: () => void;
 export const attachSurface: (handle: number) => void;
 export const detachSurface: (handle: number) => void;
 export const sendMouse: (handle: number, flags: number, x: number, y: number) => boolean;
+export const sendTouch: (handle: number, flags: number, finger: number, pressure: number,
+  x: number, y: number) => boolean;
 export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
 export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
 export const isConnected: (handle: number) => boolean;
