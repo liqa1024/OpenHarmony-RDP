@@ -1,0 +1,563 @@
+/*
+ * HmRdp - HarmonyOS RDP client
+ * Node-API bridge between ArkTS and the FreeRDP session wrapper.
+ *
+ * Rendering surfaces are bound through the ArkUI XComponent surface id:
+ * ArkTS forwards onSurfaceCreated/Changed/Destroyed to this module, which
+ * turns the surface id into an OHNativeWindow consumed by the EGL renderer.
+ */
+#include <native_window/external_window.h>
+#include <napi/native_api.h>
+
+#include <cstdint>
+#include <cstdlib>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+
+#include "hmrdp_log.h"
+#include "hmrdp_session.h"
+
+namespace {
+
+using hmrdp::RdpOptions;
+using hmrdp::Session;
+using hmrdp::SessionEvent;
+
+std::mutex g_mutex;
+std::map<int64_t, std::unique_ptr<Session>> g_sessions;
+int64_t g_nextId = 1;
+Session* g_activeSession = nullptr;
+
+OHNativeWindow* g_nativeWindow = nullptr;
+bool g_hasPendingSurface = false;
+int g_pendingWidth = 0;
+int g_pendingHeight = 0;
+
+napi_env g_env = nullptr;
+napi_threadsafe_function g_eventTsfn = nullptr;
+
+struct EventPayload {
+  int event;
+  std::string data;
+};
+
+void CallJsEvent(napi_env env, napi_value jsCallback, void* context, void* data) {
+  std::unique_ptr<EventPayload> payload(static_cast<EventPayload*>(data));
+  if (env == nullptr || jsCallback == nullptr || payload == nullptr) {
+    return;
+  }
+  napi_value eventValue = nullptr;
+  napi_value dataValue = nullptr;
+  napi_create_int32(env, payload->event, &eventValue);
+  napi_create_string_utf8(env, payload->data.c_str(), NAPI_AUTO_LENGTH, &dataValue);
+  napi_value argv[2] = {eventValue, dataValue};
+  napi_value global = nullptr;
+  napi_get_global(env, &global);
+  napi_call_function(env, global, jsCallback, 2, argv, nullptr);
+}
+
+void OnSessionEvent(SessionEvent event, const std::string& data) {
+  if (g_eventTsfn == nullptr) {
+    return;
+  }
+  EventPayload* payload = new EventPayload{static_cast<int>(event), data};
+  const napi_status status =
+      napi_call_threadsafe_function(g_eventTsfn, payload, napi_tsfn_nonblocking);
+  if (status != napi_ok) {
+    delete payload;
+  }
+}
+
+Session* FindSession(int64_t handle) {
+  auto it = g_sessions.find(handle);
+  return it == g_sessions.end() ? nullptr : it->second.get();
+}
+
+// Best-effort scrub of a transient credential buffer.
+void SecureErase(std::string& value) {
+  if (!value.empty()) {
+    volatile char* data = &value[0];
+    for (size_t i = 0; i < value.size(); ++i) {
+      data[i] = '\0';
+    }
+  }
+  value.clear();
+}
+
+void ApplyPendingSurfaceLocked(Session* session) {
+  if (session == nullptr || !g_hasPendingSurface) {
+    return;
+  }
+  session->renderer()->SetSurface(g_nativeWindow, g_pendingWidth, g_pendingHeight);
+  session->renderer()->Prepare();
+}
+
+std::string GetStringProperty(napi_env env, napi_value object, const char* name) {
+  napi_value value = nullptr;
+  if (napi_get_named_property(env, object, name, &value) != napi_ok || value == nullptr) {
+    return std::string();
+  }
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, value, &type) != napi_ok || type != napi_string) {
+    return std::string();
+  }
+  size_t length = 0;
+  napi_get_value_string_utf8(env, value, nullptr, 0, &length);
+  std::string result(length, '\0');
+  napi_get_value_string_utf8(env, value, result.data(), length + 1, &length);
+  result.resize(length);
+  return result;
+}
+
+int32_t GetIntProperty(napi_env env, napi_value object, const char* name, int32_t fallback) {
+  napi_value value = nullptr;
+  if (napi_get_named_property(env, object, name, &value) != napi_ok || value == nullptr) {
+    return fallback;
+  }
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, value, &type) != napi_ok || type != napi_number) {
+    return fallback;
+  }
+  int32_t result = fallback;
+  napi_get_value_int32(env, value, &result);
+  return result;
+}
+
+bool GetBoolProperty(napi_env env, napi_value object, const char* name, bool fallback) {
+  napi_value value = nullptr;
+  if (napi_get_named_property(env, object, name, &value) != napi_ok || value == nullptr) {
+    return fallback;
+  }
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, value, &type) != napi_ok || type != napi_boolean) {
+    return fallback;
+  }
+  bool result = fallback;
+  napi_get_value_bool(env, value, &result);
+  return result;
+}
+
+napi_value CreateInt(napi_env env, int64_t value) {
+  napi_value result = nullptr;
+  napi_create_int64(env, value, &result);
+  return result;
+}
+
+napi_value CreateBool(napi_env env, bool value) {
+  napi_value result = nullptr;
+  napi_get_boolean(env, value, &result);
+  return result;
+}
+
+napi_value CreateUndefined(napi_env env) {
+  napi_value result = nullptr;
+  napi_get_undefined(env, &result);
+  return result;
+}
+
+// --- NAPI methods ---------------------------------------------------------
+
+napi_value CreateSession(napi_env env, napi_callback_info info) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const int64_t id = g_nextId++;
+  auto session = std::make_unique<Session>(id);
+  session->SetEventFn(OnSessionEvent);
+  g_sessions[id] = std::move(session);
+  return CreateInt(env, id);
+}
+
+napi_value DestroySession(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  std::unique_ptr<Session> session;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_sessions.find(handle);
+    if (it == g_sessions.end()) {
+      return CreateUndefined(env);
+    }
+    if (g_activeSession == it->second.get()) {
+      g_activeSession = nullptr;
+    }
+    session = std::move(it->second);
+    g_sessions.erase(it);
+  }
+  session.reset();
+  return CreateUndefined(env);
+}
+
+napi_value Connect(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  RdpOptions options;
+  options.host = GetStringProperty(env, args[1], "host");
+  options.port = GetIntProperty(env, args[1], "port", 3389);
+  options.username = GetStringProperty(env, args[1], "username");
+  options.password = GetStringProperty(env, args[1], "password");
+  options.domain = GetStringProperty(env, args[1], "domain");
+  options.width = GetIntProperty(env, args[1], "width", 1920);
+  options.height = GetIntProperty(env, args[1], "height", 1080);
+  options.colorDepth = GetIntProperty(env, args[1], "colorDepth", 32);
+  options.ignoreCertificate = GetBoolProperty(env, args[1], "ignoreCertificate", true);
+  options.enableClipboard = GetBoolProperty(env, args[1], "enableClipboard", true);
+  options.enableAudio = GetBoolProperty(env, args[1], "enableAudio", true);
+  options.enableGfx = GetBoolProperty(env, args[1], "enableGfx", true);
+  options.enableH264 = GetBoolProperty(env, args[1], "enableH264", true);
+  options.enableRemoteFx = GetBoolProperty(env, args[1], "enableRemoteFx", true);
+  options.performanceFlags = GetIntProperty(env, args[1], "performanceFlags", 0);
+  options.gatewayHost = GetStringProperty(env, args[1], "gatewayHost");
+  options.gatewayPort = GetIntProperty(env, args[1], "gatewayPort", 443);
+  options.gatewayUsername = GetStringProperty(env, args[1], "gatewayUsername");
+  options.gatewayPassword = GetStringProperty(env, args[1], "gatewayPassword");
+  options.gatewayDomain = GetStringProperty(env, args[1], "gatewayDomain");
+
+  if (options.host.empty()) {
+    return CreateBool(env, false);
+  }
+
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    SecureErase(options.password);
+    SecureErase(options.gatewayPassword);
+    return CreateBool(env, false);
+  }
+  const bool started = session->Connect(options);
+  SecureErase(options.password);
+  SecureErase(options.gatewayPassword);
+  return CreateBool(env, started);
+}
+
+napi_value Disconnect(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session != nullptr) {
+    session->Disconnect();
+  }
+  return CreateUndefined(env);
+}
+
+napi_value SetSurface(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 3) {
+    return CreateUndefined(env);
+  }
+  size_t length = 0;
+  napi_get_value_string_utf8(env, args[0], nullptr, 0, &length);
+  std::string surfaceId(length, '\0');
+  napi_get_value_string_utf8(env, args[0], surfaceId.data(), length + 1, &length);
+  surfaceId.resize(length);
+  int32_t width = 0;
+  int32_t height = 0;
+  napi_get_value_int32(env, args[1], &width);
+  napi_get_value_int32(env, args[2], &height);
+
+  const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
+  OHNativeWindow* window = nullptr;
+  const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
+  if (err != 0 || window == nullptr) {
+    HMRDP_LOGE("CreateNativeWindowFromSurfaceId failed: %{public}d", err);
+    return CreateUndefined(env);
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_nativeWindow != nullptr && g_nativeWindow != window) {
+    OH_NativeWindow_DestroyNativeWindow(g_nativeWindow);
+  }
+  g_nativeWindow = window;
+  g_hasPendingSurface = true;
+  g_pendingWidth = width;
+  g_pendingHeight = height;
+  if (g_activeSession != nullptr) {
+    g_activeSession->renderer()->SetSurface(window, width, height);
+    g_activeSession->renderer()->Prepare();
+  }
+  HMRDP_LOGI("surface bound %{public}dx%{public}d", width, height);
+  return CreateUndefined(env);
+}
+
+napi_value UpdateSurface(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc >= 2) {
+    napi_get_value_int32(env, args[0], &width);
+    napi_get_value_int32(env, args[1], &height);
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_pendingWidth = width;
+  g_pendingHeight = height;
+  if (g_activeSession != nullptr) {
+    g_activeSession->renderer()->ResizeSurface(width, height);
+  }
+  return CreateUndefined(env);
+}
+
+napi_value ClearSurface(napi_env env, napi_callback_info info) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_hasPendingSurface = false;
+  if (g_activeSession != nullptr) {
+    g_activeSession->renderer()->DestroySurface();
+  }
+  if (g_nativeWindow != nullptr) {
+    OH_NativeWindow_DestroyNativeWindow(g_nativeWindow);
+    g_nativeWindow = nullptr;
+  }
+  return CreateUndefined(env);
+}
+
+napi_value AttachSurface(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  Session* session = FindSession(handle);
+  if (session == nullptr) {
+    return CreateUndefined(env);
+  }
+  g_activeSession = session;
+  ApplyPendingSurfaceLocked(session);
+  return CreateUndefined(env);
+}
+
+napi_value DetachSurface(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  Session* session = FindSession(handle);
+  if (session != nullptr && g_activeSession == session) {
+    session->renderer()->DestroySurface();
+    g_activeSession = nullptr;
+  }
+  return CreateUndefined(env);
+}
+
+napi_value SendMouse(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t flags = 0;
+  int32_t x = 0;
+  int32_t y = 0;
+  if (argc < 4 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &flags) != napi_ok ||
+      napi_get_value_int32(env, args[2], &x) != napi_ok ||
+      napi_get_value_int32(env, args[3], &y) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  const uint16_t ux = static_cast<uint16_t>(x < 0 ? 0 : x);
+  const uint16_t uy = static_cast<uint16_t>(y < 0 ? 0 : y);
+  return CreateBool(env,
+                    session->SendMouse(static_cast<uint16_t>(flags), ux, uy));
+}
+
+napi_value SendKey(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t scancode = 0;
+  bool down = false;
+  bool extended = false;
+  if (argc < 4 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &scancode) != napi_ok ||
+      napi_get_value_bool(env, args[2], &down) != napi_ok ||
+      napi_get_value_bool(env, args[3], &extended) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, session->SendKey(static_cast<uint8_t>(scancode), down, extended));
+}
+
+napi_value SendUnicode(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t codepoint = 0;
+  bool down = false;
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &codepoint) != napi_ok ||
+      napi_get_value_bool(env, args[2], &down) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env,
+                    session->SendUnicode(static_cast<uint16_t>(codepoint), down));
+}
+
+napi_value IsConnected(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  Session* session = FindSession(handle);
+  return CreateBool(env, session != nullptr && session->IsConnected());
+}
+
+napi_value RequestResize(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &width) != napi_ok ||
+      napi_get_value_int32(env, args[2], &height) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session != nullptr) {
+    session->RequestResize(width, height);
+  }
+  return CreateUndefined(env);
+}
+
+napi_value OnEvent(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 1) {
+    return CreateUndefined(env);
+  }
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
+    return CreateUndefined(env);
+  }
+  if (g_eventTsfn != nullptr) {
+    napi_release_threadsafe_function(g_eventTsfn, napi_tsfn_release);
+    g_eventTsfn = nullptr;
+  }
+  napi_value resourceName = nullptr;
+  napi_create_string_utf8(env, "HmRdpEvent", NAPI_AUTO_LENGTH, &resourceName);
+  napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr,
+                                  nullptr, nullptr, CallJsEvent, &g_eventTsfn);
+  return CreateUndefined(env);
+}
+
+napi_value GetVersion(napi_env env, napi_callback_info info) {
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, "HmRdp/0.1 (FreeRDP 3.10.3)", NAPI_AUTO_LENGTH, &result);
+  return result;
+}
+
+}  // namespace
+
+EXTERN_C_START
+static napi_value Init(napi_env env, napi_value exports) {
+  g_env = env;
+  napi_property_descriptor desc[] = {
+      {"createSession", nullptr, CreateSession, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"destroySession", nullptr, DestroySession, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"disconnect", nullptr, Disconnect, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"setSurface", nullptr, SetSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"updateSurface", nullptr, UpdateSurface, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"clearSurface", nullptr, ClearSurface, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"attachSurface", nullptr, AttachSurface, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"detachSurface", nullptr, DetachSurface, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"sendMouse", nullptr, SendMouse, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"sendKey", nullptr, SendKey, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"isConnected", nullptr, IsConnected, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"getVersion", nullptr, GetVersion, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+  };
+  napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
+  return exports;
+}
+EXTERN_C_END
+
+static napi_module g_hmrdpModule = {
+    .nm_version = 1,
+    .nm_flags = 0,
+    .nm_filename = nullptr,
+    .nm_register_func = Init,
+    .nm_modname = "hmrdp",
+    .nm_priv = nullptr,
+    .reserved = {0},
+};
+
+extern "C" __attribute__((constructor)) void RegisterHmRdpModule() {
+  napi_module_register(&g_hmrdpModule);
+}

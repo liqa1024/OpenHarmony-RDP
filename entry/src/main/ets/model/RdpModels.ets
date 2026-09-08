@@ -1,0 +1,129 @@
+/*
+ * HmRdp - shared ArkTS data model.
+ */
+import { RdpOptions } from 'libhmrdp.so';
+
+export enum RdpEvent {
+  Connected = 0,
+  Disconnected = 1,
+  Error = 2,
+  FirstFrame = 3,
+  ClipboardText = 4,
+  Resize = 5,
+  Certificate = 6
+}
+
+export class RdpConnectOptions implements RdpOptions {
+  host: string = '';
+  port: number = 3389;
+  username: string = '';
+  password: string = '';
+  domain: string = '';
+  width: number = 1920;
+  height: number = 1080;
+  colorDepth: number = 32;
+  ignoreCertificate: boolean = true;
+  enableClipboard: boolean = true;
+  enableAudio: boolean = true;
+  enableGfx: boolean = true;
+  enableH264: boolean = true;
+  enableRemoteFx: boolean = true;
+  performanceFlags: number = 0;
+  gatewayHost: string = '';
+  gatewayPort: number = 443;
+  gatewayUsername: string = '';
+  gatewayPassword: string = '';
+  gatewayDomain: string = '';
+
+  static of(host: string, port: number, username: string, password: string,
+    domain: string): RdpConnectOptions {
+    const options: RdpConnectOptions = new RdpConnectOptions();
+    options.host = host;
+    options.port = port;
+    options.username = username;
+    options.password = password;
+    options.domain = domain;
+    return options;
+  }
+}
+
+export class PendingConnection {
+  options: RdpConnectOptions = new RdpConnectOptions();
+  remember: boolean = false;
+  static current: PendingConnection = new PendingConnection();
+}
+
+export enum RdpConnectionState {
+  Idle = 0,
+  Connecting = 1,
+  Connected = 2,
+  Failed = 3,
+  Closed = 4
+}
+
+export class RdpPointerFlags {
+  static readonly MOVE: number = 0x0800;
+  static readonly DOWN: number = 0x8000;
+  static readonly BUTTON1: number = 0x1000;
+  static readonly BUTTON2: number = 0x2000;
+  static readonly BUTTON3: number = 0x4000;
+  static readonly WHEEL: number = 0x0200;
+  static readonly WHEEL_NEGATIVE: number = 0x0100;
+  static readonly HWHEEL: number = 0x0400;
+}
+
+export class SavedConnection extends RdpConnectOptions {
+  alias: string = '';
+
+  static fromOptions(alias: string, options: RdpConnectOptions): SavedConnection {
+    const conn: SavedConnection = new SavedConnection();
+    conn.alias = alias;
+    conn.host = options.host;
+    conn.port = options.port;
+    conn.username = options.username;
+    conn.password = options.password;
+    conn.domain = options.domain;
+    conn.width = options.width;
+    conn.height = options.height;
+    conn.colorDepth = options.colorDepth;
+    conn.ignoreCertificate = options.ignoreCertificate;
+    conn.enableClipboard = options.enableClipboard;
+    conn.enableAudio = options.enableAudio;
+    conn.enableGfx = options.enableGfx;
+    conn.enableH264 = options.enableH264;
+    conn.enableRemoteFx = options.enableRemoteFx;
+    conn.performanceFlags = options.performanceFlags;
+    conn.gatewayHost = options.gatewayHost;
+    conn.gatewayPort = options.gatewayPort;
+    conn.gatewayUsername = options.gatewayUsername;
+    conn.gatewayPassword = options.gatewayPassword;
+    conn.gatewayDomain = options.gatewayDomain;
+    return conn;
+  }
+
+  toOptions(): RdpConnectOptions {
+    const options: RdpConnectOptions =
+      RdpConnectOptions.of(this.host, this.port, this.username, this.password, this.domain);
+    options.width = this.width;
+    options.height = this.height;
+    options.colorDepth = this.colorDepth;
+    options.ignoreCertificate = this.ignoreCertificate;
+    options.enableClipboard = this.enableClipboard;
+    options.enableAudio = this.enableAudio;
+    options.enableGfx = this.enableGfx;
+    options.enableH264 = this.enableH264;
+    options.enableRemoteFx = this.enableRemoteFx;
+    options.performanceFlags = this.performanceFlags;
+    options.gatewayHost = this.gatewayHost;
+    options.gatewayPort = this.gatewayPort;
+    options.gatewayUsername = this.gatewayUsername;
+    options.gatewayPassword = this.gatewayPassword;
+    options.gatewayDomain = this.gatewayDomain;
+    return options;
+  }
+}
+
+export interface EditConnectionParams {
+  alias: string;
+}
+

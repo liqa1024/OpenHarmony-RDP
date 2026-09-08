@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "RDP 远程桌面客户端"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "RDP 远程桌面客户端"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "RDP 远程桌面"
+    },
+    {
+      "name": "permission_internet_reason",
+      "value": "连接远程桌面服务器"
+    },
+    {
+      "name": "permission_network_info_reason",
+      "value": "监测网络状态以维持会话连接"
+    }
+  ]
+}

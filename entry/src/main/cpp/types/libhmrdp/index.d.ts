@@ -1,0 +1,41 @@
+export interface RdpOptions {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  domain: string;
+  width: number;
+  height: number;
+  colorDepth: number;
+  ignoreCertificate: boolean;
+  enableClipboard: boolean;
+  enableAudio: boolean;
+  enableGfx: boolean;
+  enableH264: boolean;
+  enableRemoteFx: boolean;
+  performanceFlags: number;
+  gatewayHost: string;
+  gatewayPort: number;
+  gatewayUsername: string;
+  gatewayPassword: string;
+  gatewayDomain: string;
+}
+
+export type RdpEventCallback = (event: number, data: string) => void;
+
+export const createSession: () => number;
+export const destroySession: (handle: number) => void;
+export const connect: (handle: number, options: RdpOptions) => boolean;
+export const disconnect: (handle: number) => void;
+export const setSurface: (surfaceId: string, width: number, height: number) => void;
+export const updateSurface: (width: number, height: number) => void;
+export const clearSurface: () => void;
+export const attachSurface: (handle: number) => void;
+export const detachSurface: (handle: number) => void;
+export const sendMouse: (handle: number, flags: number, x: number, y: number) => boolean;
+export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
+export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
+export const isConnected: (handle: number) => boolean;
+export const requestResize: (handle: number, width: number, height: number) => void;
+export const onEvent: (callback: RdpEventCallback) => void;
+export const getVersion: () => string;
