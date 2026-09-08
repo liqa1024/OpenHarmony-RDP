@@ -14,6 +14,10 @@
 - **连接管理**：书签式列表、右键菜单（连接/编辑/删除）、一键直连
 - **深浅色主题**：跟随系统
 - **会话工具栏**：鼠标停留屏幕顶部后自动滑出，延迟可配置
+- **多窗口会话**：连接后在独立的 `SessionAbility` 主窗口中打开远程桌面，具备完整标题栏，
+  可最小化/最大化/关闭并自由拖动缩放
+- **窗口尺寸可配置**：主窗口 / 会话窗口的默认尺寸按屏幕分辨率比例推导（45% / 67%），
+  可在设置中开关并调整，仅在窗口创建时生效
 
 ## 架构
 
@@ -21,7 +25,9 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  ArkTS / ArkUI  (entry/src/main/ets)                        │
 │  Index · SessionPage · EditConnectionPage · SettingsPage    │
+│  EntryAbility · SessionAbility（独立会话窗口）              │
 │  CredentialStore(ASSET) · SettingsStore(preferences)        │
+│  WindowController（窗口尺寸 / 会话窗口拉起）                │
 ├─────────────────────────────────────────────────────────────┤
 │  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
 ├─────────────────────────────────────────────────────────────┤
@@ -40,6 +46,10 @@ AppScope/                     应用级配置与图标
 entry/
   libs/<abi>/                 FreeRDP 预编译动态库（arm64-v8a / x86_64）
   src/main/ets/               ArkTS 界面与业务
+    entryability/             EntryAbility（主窗口）
+    sessionability/           SessionAbility（独立会话窗口）
+    pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
+    services/                 CredentialStore · SettingsStore · RdpNative · WindowController
   src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）

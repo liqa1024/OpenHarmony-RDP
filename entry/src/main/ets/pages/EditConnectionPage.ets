@@ -1,11 +1,13 @@
 /*
  * HmRdp - add / edit a saved connection.
  */
+import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EditConnectionParams, PendingConnection, RdpConnectOptions,
   SavedConnection } from '../model/RdpModels';
 import { CredentialStore } from '../services/CredentialStore';
+import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
@@ -107,11 +109,12 @@ struct EditConnectionPage {
     if (connect) {
       PendingConnection.current.options = conn.toOptions();
       PendingConnection.current.remember = true;
-      this.getUIContext().getRouter().pushUrl({ url: 'pages/SessionPage' })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, TAG, 'pushUrl failed: %{public}s', JSON.stringify(error));
-          this.errorMessage = '无法打开会话页面';
-        });
+      const context = this.getUIContext().getHostContext();
+      if (context !== undefined) {
+        WindowController.openSessionWindow(context as common.UIAbilityContext);
+      } else {
+        this.errorMessage = '无法打开会话窗口';
+      }
     } else {
       this.getUIContext().getRouter().back();
     }

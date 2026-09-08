@@ -1,10 +1,12 @@
 /*
  * HmRdp - saved connections list (home page).
  */
+import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EditConnectionParams, PendingConnection, SavedConnection } from '../model/RdpModels';
 import { CredentialStore } from '../services/CredentialStore';
+import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -39,10 +41,10 @@ struct Index {
   private connect(conn: SavedConnection): void {
     PendingConnection.current.options = conn.toOptions();
     PendingConnection.current.remember = true;
-    this.getUIContext().getRouter().pushUrl({ url: 'pages/SessionPage' })
-      .catch((error: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'pushUrl failed: %{public}s', JSON.stringify(error));
-      });
+    const context = this.getUIContext().getHostContext();
+    if (context !== undefined) {
+      WindowController.openSessionWindow(context as common.UIAbilityContext);
+    }
   }
 
   private openEditor(alias: string): void {

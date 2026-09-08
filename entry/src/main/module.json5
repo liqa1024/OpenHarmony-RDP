@@ -53,6 +53,17 @@
             ]
           }
         ]
+      },
+      {
+        "name": "SessionAbility",
+        "srcEntry": "./ets/sessionability/SessionAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "launchType": "specified",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": false
       }
     ],
     "extensionAbilities": [

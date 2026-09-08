@@ -1,11 +1,17 @@
 /*
  * HmRdp - remote session page: XComponent surface + input forwarding.
  */
+import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState, RdpEvent,
   RdpPointerFlags } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
+
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpSession';
 
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -294,7 +300,13 @@ struct SessionPage {
 
   private disconnect(): void {
     this.native.stopSession();
-    this.getUIContext().getRouter().back();
+    const context = this.getUIContext().getHostContext();
+    if (context !== undefined) {
+      const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
+      abilityContext.terminateSelf().catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'terminate session failed: %{public}s', JSON.stringify(error));
+      });
+    }
   }
 
   @Builder
