@@ -70,11 +70,26 @@ struct SessionPage {
   // Active touch contacts, keyed by the ArkUI touch id. The value is the last
   // remote point sent for that contact (used to drop no-op moves).
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
+  // Touchpad scroll accumulators: axis values are displacement, not notches.
+  private touchpadScrollX: number = 0;
+  private touchpadScrollY: number = 0;
+  // Touchpad pinch state: axisPinch is a cumulative scale ratio (starts at 1).
+  private pinchScale: number = 0;
+  private pinchAccum: number = 0;
+  private pinchActive: boolean = false;
+  private pinchCtrlDown: boolean = false;
+  private pinchTimer: number = -1;
+  private touchpadScrollUnit: number = 40;
+  private pinchZoomStepPercent: number = 5;
+  private readonly pinchSensitivity: number = 2;
+  private readonly ctrlScancode: number = 0x1D;
 
   aboutToAppear(): void {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
+    this.touchpadScrollUnit = settings.touchpadScrollUnit;
+    this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
     this.desktopWidth = this.options.width;
     this.desktopHeight = this.options.height;
     this.native.setListener((event: RdpEvent, data: string) => {
@@ -109,6 +124,7 @@ struct SessionPage {
       this.hideTimer = -1;
     }
     this.releaseAllTouches();
+    this.endPinch();
     this.native.stopSession();
     this.native.clearListener();
     PendingConnection.current.options.password = '';
@@ -335,21 +351,156 @@ struct SessionPage {
   }
 
   private handleAxis(event: AxisEvent): void {
+    const isPinch: boolean = this.isPinchEvent(event);
+    if (isPinch || this.pinchActive) {
+      // Ctrl is held for the whole gesture and never toggled between notches.
+      if (event.action === AxisAction.END) {
+        this.endPinch();
+        return;
+      }
+      if (isPinch) {
+        this.updatePinch(event);
+      }
+      // Scroll axes produced by the same two fingers are suppressed while the
+      // pinch is active, so zoom never mixes with scroll.
+      this.armPinchEnd();
+      return;
+    }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
       return;
     }
+    if (event.action === AxisAction.BEGIN) {
+      this.touchpadScrollX = 0;
+      this.touchpadScrollY = 0;
+    }
     const vertical: number = event.axisVertical ?? 0;
-    if (vertical === 0) {
+    const horizontal: number = event.axisHorizontal ?? 0;
+    if (vertical === 0 && horizontal === 0) {
       return;
     }
     const point: number[] = this.mapPointer(event.x, event.y);
-    let flags: number = RdpPointerFlags.WHEEL;
-    if (vertical < 0) {
-      flags = flags | 0x78;
-    } else {
-      flags = flags | RdpPointerFlags.WHEEL_NEGATIVE | 0x88;
+    if (event.sourceTool === SourceTool.TOUCHPAD) {
+      this.handleTouchpadScroll(vertical, horizontal, point);
+    } else if (vertical !== 0) {
+      // Mouse wheel: forward/up is negative on the vertical axis.
+      this.sendWheel(vertical < 0, point);
     }
-    this.native.mouse(flags, point[0], point[1]);
+  }
+
+  private isPinchEvent(event: AxisEvent): boolean {
+    if ((event.axisPinch ?? 0) > 0) {
+      return true;
+    }
+    try {
+      return event.hasAxis(AxisType.PINCH_AXIS);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private pinchScaleValue(event: AxisEvent): number {
+    const direct: number = event.axisPinch ?? 0;
+    if (direct > 0) {
+      return direct;
+    }
+    try {
+      return event.getPinchAxisScaleValue();
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  private updatePinch(event: AxisEvent): void {
+    const scale: number = this.pinchScaleValue(event);
+    if (!this.pinchActive) {
+      this.pinchActive = true;
+      this.pinchScale = scale > 0 ? scale : 1.0;
+      this.pinchAccum = 0;
+      this.setPinchCtrl(true);
+      return;
+    }
+    if (scale <= 0) {
+      return;
+    }
+    this.pinchAccum += Math.log(scale / this.pinchScale);
+    this.pinchScale = scale;
+    // Sensitivity multiplier makes a pinch trigger sooner without changing the
+    // configured scale-to-notch ratio.
+    const step: number =
+      Math.log(1 + this.pinchZoomStepPercent / 100) / this.pinchSensitivity;
+    const point: number[] = this.mapPointer(event.x, event.y);
+    while (this.pinchAccum >= step) {
+      this.pinchAccum -= step;
+      this.sendWheel(true, point);
+    }
+    while (this.pinchAccum <= -step) {
+      this.pinchAccum += step;
+      this.sendWheel(false, point);
+    }
+  }
+
+  private setPinchCtrl(down: boolean): void {
+    if (this.pinchCtrlDown === down) {
+      return;
+    }
+    this.pinchCtrlDown = down;
+    this.native.key(this.ctrlScancode, down, false);
+  }
+
+  private endPinch(): void {
+    if (this.pinchTimer !== -1) {
+      clearTimeout(this.pinchTimer);
+      this.pinchTimer = -1;
+    }
+    this.pinchActive = false;
+    this.pinchScale = 0;
+    this.pinchAccum = 0;
+    // Release unconditionally: the final event may not carry the pinch axis, so
+    // pinchActive can already be false while Ctrl is still logically held.
+    this.setPinchCtrl(false);
+  }
+
+  private armPinchEnd(): void {
+    if (this.pinchTimer !== -1) {
+      clearTimeout(this.pinchTimer);
+    }
+    // Safety net only; the normal end is AxisAction.END. Long enough that a
+    // brief pause while reversing zoom direction does not release Ctrl.
+    this.pinchTimer = setTimeout(() => {
+      this.pinchTimer = -1;
+      this.endPinch();
+    }, 1000);
+  }
+
+  private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
+    // Natural scrolling: swipe up scrolls the remote content up (WHEEL negative).
+    this.touchpadScrollY -= vertical;
+    while (Math.abs(this.touchpadScrollY) >= this.touchpadScrollUnit) {
+      const up: boolean = this.touchpadScrollY > 0;
+      this.touchpadScrollY += up ? -this.touchpadScrollUnit : this.touchpadScrollUnit;
+      this.sendWheel(up, point);
+    }
+    // Natural scrolling: swipe left scrolls the remote content right (HWHEEL positive).
+    this.touchpadScrollX -= horizontal;
+    while (Math.abs(this.touchpadScrollX) >= this.touchpadScrollUnit) {
+      const right: boolean = this.touchpadScrollX < 0;
+      this.touchpadScrollX += right ? this.touchpadScrollUnit : -this.touchpadScrollUnit;
+      this.sendHorizontalWheel(right, point);
+    }
+  }
+
+  private sendWheel(up: boolean, point: number[]): void {
+    this.native.mouse(up
+      ? RdpPointerFlags.WHEEL | 0x78
+      : RdpPointerFlags.WHEEL | RdpPointerFlags.WHEEL_NEGATIVE | 0x88,
+      point[0], point[1]);
+  }
+
+  private sendHorizontalWheel(right: boolean, point: number[]): void {
+    this.native.mouse(right
+      ? RdpPointerFlags.HWHEEL | 0x78
+      : RdpPointerFlags.HWHEEL | RdpPointerFlags.WHEEL_NEGATIVE | 0x88,
+      point[0], point[1]);
   }
 
   private handleKey(event: KeyEvent): void {

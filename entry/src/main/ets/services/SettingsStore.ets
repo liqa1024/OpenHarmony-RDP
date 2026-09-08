@@ -7,12 +7,16 @@ import { display } from '@kit.ArkUI';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 350;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
+const DEFAULT_TOUCHPAD_SCROLL_UNIT: number = 40;
+const DEFAULT_PINCH_ZOOM_STEP_PERCENT: number = 5;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;
 
 export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
+  touchpadScrollUnit: number = DEFAULT_TOUCHPAD_SCROLL_UNIT;
+  pinchZoomStepPercent: number = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
   mainWindowSizeEnabled: boolean = false;
   mainWindowWidth: number = 0;
   mainWindowHeight: number = 0;
@@ -39,6 +43,8 @@ export class SettingsStore {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = DEFAULT_TOOLBAR_HOVER_DELAY;
     settings.toolbarHideDelay = DEFAULT_TOOLBAR_HIDE_DELAY;
+    settings.touchpadScrollUnit = DEFAULT_TOUCHPAD_SCROLL_UNIT;
+    settings.pinchZoomStepPercent = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
     const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
     if (disp !== undefined) {
       settings.mainWindowSizeEnabled = true;
@@ -59,6 +65,10 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'toolbarHoverDelay', settings.toolbarHoverDelay);
       settings.toolbarHideDelay =
         SettingsStore.readNumber(store, 'toolbarHideDelay', settings.toolbarHideDelay);
+      settings.touchpadScrollUnit =
+        SettingsStore.readNumber(store, 'touchpadScrollUnit', settings.touchpadScrollUnit);
+      settings.pinchZoomStepPercent =
+        SettingsStore.readNumber(store, 'pinchZoomStepPercent', settings.pinchZoomStepPercent);
       settings.mainWindowSizeEnabled =
         SettingsStore.readBoolean(store, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       settings.mainWindowWidth =
@@ -81,6 +91,8 @@ export class SettingsStore {
     if (store !== undefined) {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
+      store.putSync('touchpadScrollUnit', settings.touchpadScrollUnit);
+      store.putSync('pinchZoomStepPercent', settings.pinchZoomStepPercent);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       store.putSync('mainWindowWidth', settings.mainWindowWidth);
       store.putSync('mainWindowHeight', settings.mainWindowHeight);

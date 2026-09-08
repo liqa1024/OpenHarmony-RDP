@@ -9,6 +9,8 @@ import { AppSettings, SettingsStore } from '../services/SettingsStore';
 struct SettingsPage {
   @State hoverDelay: number = 350;
   @State hideDelay: number = 250;
+  @State touchpadScrollUnit: number = 40;
+  @State pinchZoomStep: number = 5;
   @State mainSizeEnabled: boolean = false;
   @State sessionSizeEnabled: boolean = false;
   @State mainWidthText: string = '';
@@ -29,6 +31,8 @@ struct SettingsPage {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
+    this.touchpadScrollUnit = settings.touchpadScrollUnit;
+    this.pinchZoomStep = settings.pinchZoomStepPercent;
     this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
@@ -64,6 +68,8 @@ struct SettingsPage {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
+    settings.touchpadScrollUnit = this.touchpadScrollUnit;
+    settings.pinchZoomStepPercent = this.pinchZoomStep;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -81,6 +87,8 @@ struct SettingsPage {
     const defaults: AppSettings = SettingsStore.defaults();
     this.hoverDelay = defaults.toolbarHoverDelay;
     this.hideDelay = defaults.toolbarHideDelay;
+    this.touchpadScrollUnit = defaults.touchpadScrollUnit;
+    this.pinchZoomStep = defaults.pinchZoomStepPercent;
     this.mainSizeEnabled = defaults.mainWindowSizeEnabled;
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
@@ -170,6 +178,27 @@ struct SettingsPage {
             this.sliderItem('工具栏隐藏延迟', '鼠标移开后多久收起工具栏',
               this.hideDelay, 100, 1000, 50, ' ms', (v: number) => {
                 this.hideDelay = v;
+                this.persist();
+              })
+
+            Divider().color($r('app.color.divider'))
+
+            Text('触控板')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            this.sliderItem('滚动步长', '触控板双指滑动多少位移换算为一格滚轮',
+              this.touchpadScrollUnit, 10, 120, 5, ' vp', (v: number) => {
+                this.touchpadScrollUnit = v;
+                this.persist();
+              })
+
+            Divider().color($r('app.color.divider'))
+
+            this.sliderItem('捏合缩放步进', '捏合比例每变化多少发一格 Ctrl+滚轮 缩放',
+              this.pinchZoomStep, 2, 30, 1, ' %', (v: number) => {
+                this.pinchZoomStep = v;
                 this.persist();
               })
 
