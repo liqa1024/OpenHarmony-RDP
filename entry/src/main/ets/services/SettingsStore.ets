@@ -22,6 +22,9 @@ export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
+  // The session toolbar is always available in fullscreen; in windowed mode it
+  // is opt-in so the system title bar remains the primary window control.
+  toolbarInWindowed: boolean = false;
   touchpadScrollUnit: number = DEFAULT_TOUCHPAD_SCROLL_UNIT;
   pinchZoomStepPercent: number = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
   mainWindowSizeEnabled: boolean = false;
@@ -30,6 +33,7 @@ export class AppSettings {
   sessionWindowSizeEnabled: boolean = false;
   sessionWindowWidth: number = 0;
   sessionWindowHeight: number = 0;
+  sessionFullscreen: boolean = false;
   // Global display defaults: automatic resolution / scaling by default, with an
   // optional manual override shared by every connection.
   resolutionAuto: boolean = true;
@@ -79,6 +83,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'toolbarHoverDelay', settings.toolbarHoverDelay);
       settings.toolbarHideDelay =
         SettingsStore.readNumber(store, 'toolbarHideDelay', settings.toolbarHideDelay);
+      settings.toolbarInWindowed =
+        SettingsStore.readBoolean(store, 'toolbarInWindowed', settings.toolbarInWindowed);
       settings.touchpadScrollUnit =
         SettingsStore.readNumber(store, 'touchpadScrollUnit', settings.touchpadScrollUnit);
       settings.pinchZoomStepPercent =
@@ -96,6 +102,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'sessionWindowWidth', settings.sessionWindowWidth);
       settings.sessionWindowHeight =
         SettingsStore.readNumber(store, 'sessionWindowHeight', settings.sessionWindowHeight);
+      settings.sessionFullscreen =
+        SettingsStore.readBoolean(store, 'sessionFullscreen', settings.sessionFullscreen);
       settings.resolutionAuto =
         SettingsStore.readBoolean(store, 'resolutionAuto', settings.resolutionAuto);
       settings.manualWidth =
@@ -115,6 +123,7 @@ export class SettingsStore {
     if (store !== undefined) {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
+      store.putSync('toolbarInWindowed', settings.toolbarInWindowed);
       store.putSync('touchpadScrollUnit', settings.touchpadScrollUnit);
       store.putSync('pinchZoomStepPercent', settings.pinchZoomStepPercent);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
@@ -123,6 +132,7 @@ export class SettingsStore {
       store.putSync('sessionWindowSizeEnabled', settings.sessionWindowSizeEnabled);
       store.putSync('sessionWindowWidth', settings.sessionWindowWidth);
       store.putSync('sessionWindowHeight', settings.sessionWindowHeight);
+      store.putSync('sessionFullscreen', settings.sessionFullscreen);
       store.putSync('resolutionAuto', settings.resolutionAuto);
       store.putSync('manualWidth', settings.manualWidth);
       store.putSync('manualHeight', settings.manualHeight);
@@ -199,8 +209,7 @@ export class SettingsStore {
       profile.height = global.height;
       profile.detected = global.detected;
     }
-    profile.scalePercent = conn.scalePercent > 0
-      ? SettingsStore.nearestScalePreset(conn.scalePercent) : global.scalePercent;
+    profile.scalePercent = conn.scalePercent > 0 ? conn.scalePercent : global.scalePercent;
     return profile;
   }
 
@@ -221,7 +230,7 @@ export class SettingsStore {
       }
     }
     if (!settings.scaleAuto && settings.manualScalePercent > 0) {
-      profile.scalePercent = SettingsStore.nearestScalePreset(settings.manualScalePercent);
+      profile.scalePercent = settings.manualScalePercent;
     } else {
       profile.scalePercent = SettingsStore.recommendedScalePercent();
     }

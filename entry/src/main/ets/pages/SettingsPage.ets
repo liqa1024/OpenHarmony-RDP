@@ -14,17 +14,19 @@ const MAX_DESKTOP_SIZE: number = 16384;
 struct SettingsPage {
   @State hoverDelay: number = 350;
   @State hideDelay: number = 250;
+  @State toolbarInWindowed: boolean = false;
   @State touchpadScrollUnit: number = 40;
   @State pinchZoomStep: number = 5;
   @State resolutionAuto: boolean = true;
   @State manualWidthText: string = '';
   @State manualHeightText: string = '';
   @State scaleAuto: boolean = true;
-  @State manualScalePercent: number = 100;
+  @State manualScaleText: string = '100';
   @State detectedText: string = '';
   @State recommendedScale: number = 100;
   @State mainSizeEnabled: boolean = false;
   @State sessionSizeEnabled: boolean = false;
+  @State sessionFullscreen: boolean = false;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -51,16 +53,18 @@ struct SettingsPage {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
+    this.toolbarInWindowed = settings.toolbarInWindowed;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStep = settings.pinchZoomStepPercent;
     this.resolutionAuto = settings.resolutionAuto;
     this.manualWidthText = this.sizeText(settings.manualWidth);
     this.manualHeightText = this.sizeText(settings.manualHeight);
     this.scaleAuto = settings.scaleAuto;
-    this.manualScalePercent = settings.manualScalePercent > 0
-      ? SettingsStore.nearestScalePreset(settings.manualScalePercent) : this.recommendedScale;
+    this.manualScaleText = settings.manualScalePercent > 0
+      ? settings.manualScalePercent.toString() : this.recommendedScale.toString();
     this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
+    this.sessionFullscreen = settings.sessionFullscreen;
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
@@ -79,6 +83,23 @@ struct SettingsPage {
     return Math.min(value, max);
   }
 
+  private parseScale(text: string, fallback: number): number {
+    const value: number = Number.parseInt(text, 10);
+    if (Number.isNaN(value) || value < 100) {
+      return fallback;
+    }
+    return Math.min(value, 500);
+  }
+
+  private parsedManualScale(): number {
+    const value: number = Number.parseInt(this.manualScaleText, 10);
+    return Number.isNaN(value) ? 0 : value;
+  }
+
+  private isPresetScale(value: number): boolean {
+    return SCALE_PRESETS.indexOf(value) >= 0;
+  }
+
   private displayOrUndefined(): display.Display | undefined {
     try {
       return display.getDefaultDisplaySync();
@@ -94,6 +115,7 @@ struct SettingsPage {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
+    settings.toolbarInWindowed = this.toolbarInWindowed;
     settings.touchpadScrollUnit = this.touchpadScrollUnit;
     settings.pinchZoomStepPercent = this.pinchZoomStep;
     settings.resolutionAuto = this.resolutionAuto;
@@ -102,7 +124,8 @@ struct SettingsPage {
     settings.manualHeight =
       this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
     settings.scaleAuto = this.scaleAuto;
-    settings.manualScalePercent = this.manualScalePercent;
+    settings.manualScalePercent = this.parseScale(this.manualScaleText, this.recommendedScale);
+    settings.sessionFullscreen = this.sessionFullscreen;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -120,15 +143,17 @@ struct SettingsPage {
     const defaults: AppSettings = SettingsStore.defaults();
     this.hoverDelay = defaults.toolbarHoverDelay;
     this.hideDelay = defaults.toolbarHideDelay;
+    this.toolbarInWindowed = defaults.toolbarInWindowed;
     this.touchpadScrollUnit = defaults.touchpadScrollUnit;
     this.pinchZoomStep = defaults.pinchZoomStepPercent;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
     this.manualHeightText = this.sizeText(this.detectedHeight);
     this.scaleAuto = true;
-    this.manualScalePercent = this.recommendedScale;
+    this.manualScaleText = this.recommendedScale.toString();
     this.mainSizeEnabled = defaults.mainWindowSizeEnabled;
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
+    this.sessionFullscreen = defaults.sessionFullscreen;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -137,16 +162,34 @@ struct SettingsPage {
   }
 
   @Builder
-  modeChip(label: string, active: boolean, leftMargin: number, onSelect: () => void) {
+  resolutionModeChip(label: string, auto: boolean, leftMargin: number) {
     Text(label)
       .fontSize(13)
-      .fontColor(active ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(active ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .fontColor(this.resolutionAuto === auto ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.resolutionAuto === auto
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
       .onClick(() => {
-        onSelect();
+        this.resolutionAuto = auto;
+        this.persist();
+      })
+  }
+
+  @Builder
+  scaleModeChip(label: string, auto: boolean, leftMargin: number) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.scaleAuto === auto ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.scaleAuto === auto
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .onClick(() => {
+        this.scaleAuto = auto;
+        this.persist();
       })
   }
 
@@ -154,14 +197,14 @@ struct SettingsPage {
   scaleChip(preset: number) {
     Text(preset.toString() + '%')
       .fontSize(13)
-      .fontColor(this.manualScalePercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.manualScalePercent === preset
+      .fontColor(this.parsedManualScale() === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.parsedManualScale() === preset
         ? $r('app.color.accent') : $r('app.color.input_bg'))
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ right: 8, bottom: 8 })
       .onClick(() => {
-        this.manualScalePercent = preset;
+        this.manualScaleText = preset.toString();
         this.persist();
       })
   }
@@ -235,6 +278,29 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
+            Row() {
+              Column() {
+                Text('窗口模式下显示工具栏').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text('全屏模式下始终显示工具栏')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Toggle({ type: ToggleType.Switch, isOn: this.toolbarInWindowed })
+                .selectedColor($r('app.color.accent'))
+                .onChange((isOn: boolean) => {
+                  this.toolbarInWindowed = isOn;
+                  this.persist();
+                })
+            }
+            .width('100%')
+            .height(58)
+
+            Divider().color($r('app.color.divider'))
+
             this.sliderItem('工具栏触发停留时间', '鼠标停留在屏幕顶部多久后弹出工具栏',
               this.hoverDelay, 100, 1200, 50, ' ms', (v: number) => {
                 this.hoverDelay = v;
@@ -288,14 +354,8 @@ struct SettingsPage {
                 .layoutWeight(1)
 
                 Row() {
-                  this.modeChip('自动', this.resolutionAuto, 0, () => {
-                    this.resolutionAuto = true;
-                    this.persist();
-                  })
-                  this.modeChip('手动', !this.resolutionAuto, 8, () => {
-                    this.resolutionAuto = false;
-                    this.persist();
-                  })
+                  this.resolutionModeChip('自动', true, 0)
+                  this.resolutionModeChip('手动', false, 8)
                 }
               }
               .width('100%')
@@ -348,14 +408,8 @@ struct SettingsPage {
                 .layoutWeight(1)
 
                 Row() {
-                  this.modeChip('自动', this.scaleAuto, 0, () => {
-                    this.scaleAuto = true;
-                    this.persist();
-                  })
-                  this.modeChip('手动', !this.scaleAuto, 8, () => {
-                    this.scaleAuto = false;
-                    this.persist();
-                  })
+                  this.scaleModeChip('自动', true, 0)
+                  this.scaleModeChip('手动', false, 8)
                 }
               }
               .width('100%')
@@ -372,9 +426,26 @@ struct SettingsPage {
                 }
                 .width('100%').margin({ top: 10 })
 
-                Text('仅支持 Windows 固定缩放档位')
-                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  .width('100%')
+                Row() {
+                  TextInput({ placeholder: '100', text: this.manualScaleText })
+                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+                    .onChange((value: string) => {
+                      this.manualScaleText = value;
+                      this.persist();
+                    })
+
+                  Text('%')
+                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
+                    .margin({ left: 10 })
+                }
+                .width('100%')
+
+                if (this.parsedManualScale() > 0 && !this.isPresetScale(this.parsedManualScale())) {
+                  Text('自定义缩放比例可能导致部分应用显示模糊，建议使用上方固定档位')
+                    .fontSize(11).fontColor($r('app.color.danger'))
+                    .width('100%').margin({ top: 6 })
+                }
               }
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
@@ -479,8 +550,8 @@ struct SettingsPage {
                   .layoutWeight(1)
                   .backgroundColor($r('app.color.input_bg'))
                   .borderRadius(10)
-                  .enabled(this.sessionSizeEnabled)
-                  .opacity(this.sessionSizeEnabled ? 1.0 : 0.4)
+                  .enabled(this.sessionSizeEnabled && !this.sessionFullscreen)
+                  .opacity(this.sessionSizeEnabled && !this.sessionFullscreen ? 1.0 : 0.4)
                   .onChange((value: string) => {
                     this.sessionWidthText = value;
                     this.persist();
@@ -498,8 +569,8 @@ struct SettingsPage {
                   .layoutWeight(1)
                   .backgroundColor($r('app.color.input_bg'))
                   .borderRadius(10)
-                  .enabled(this.sessionSizeEnabled)
-                  .opacity(this.sessionSizeEnabled ? 1.0 : 0.4)
+                  .enabled(this.sessionSizeEnabled && !this.sessionFullscreen)
+                  .opacity(this.sessionSizeEnabled && !this.sessionFullscreen ? 1.0 : 0.4)
                   .onChange((value: string) => {
                     this.sessionHeightText = value;
                     this.persist();
@@ -507,6 +578,28 @@ struct SettingsPage {
               }
               .width('100%')
               .margin({ top: 10 })
+
+              Row() {
+                Column() {
+                  Text('默认最大化（全屏）').fontSize(14).fontColor($r('app.color.text_primary'))
+                  Text('会话窗口打开时直接最大化到全屏，忽略上面的尺寸')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Toggle({ type: ToggleType.Switch, isOn: this.sessionFullscreen })
+                  .selectedColor($r('app.color.accent'))
+                  .onChange((isOn: boolean) => {
+                    this.sessionFullscreen = isOn;
+                    this.persist();
+                  })
+              }
+              .width('100%')
+              .height(58)
+              .margin({ top: 4 })
             }
             .width('100%')
             .padding({ top: 14, bottom: 14 })

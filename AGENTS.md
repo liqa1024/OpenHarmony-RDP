@@ -7,7 +7,8 @@
 面向 **鸿蒙 PC（2in1）** 的 RDP 客户端。RDP 引擎为 FreeRDP 3.10.3，从源码交叉编译到
 `aarch64-linux-ohos` / `x86_64-linux-ohos`。界面为 ArkTS/ArkUI；画面通过 XComponent 上的
 EGL/GLES 原生渲染；输入经 Node-API 桥接转发。会话在独立的 `SessionAbility` 主窗口中打开；
-主窗口 / 会话窗口的默认尺寸按屏幕比例推导，可在全局设置中调整。
+主窗口 / 会话窗口的默认尺寸按屏幕比例推导，会话分辨率/缩放默认自适应当前显示器，均可在
+全局设置中调整，单个连接也可在「高级设置」里覆盖。
 
 - 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 目标：HarmonyOS 6.1.0（API 23）
 
@@ -79,6 +80,15 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    计算；屏幕查询失败时**不改窗口**，而不是回退到编造的分辨率。设置项是**默认尺寸**，只在
    **窗口创建时**生效（主窗口下次启动、会话窗口下次连接）；设置页改动**不**即时 resize / 移动
    当前窗口。`window.resize()` / `moveWindowTo()` 在 2in1 上的单位是 **px**（不是 vp）。
+   全局设置里可勾选「默认最大化（全屏）」（`AppSettings.sessionFullscreen`）：为真时 `SessionAbility` 经
+   `startAbility` 的 `StartOptions.windowMode = WINDOW_MODE_FULLSCREEN` 直接全屏打开、忽略会话窗口尺寸。
+   会话窗口的**系统最大化按钮一律转成沉浸式全屏**（`WindowController.setupSessionWindow` 监听
+   `windowStatusChange`，MAXIMIZE → `maximize(ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)`；
+   FULL_SCREEN → `setTitleAndDockHoverShown(false, false)`），这样系统顶部标题栏/底部 dock 悬停不弹出、
+   不会挡住应用自己的顶部工具栏。全屏下由 `SessionPage` 工具栏的「全屏/退出全屏」「最小化」「断开」按钮
+   代替系统标题栏（`win.maximize(ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)` / `win.minimize()` /
+   `win.recover()`）。工具栏在**窗口模式下默认不显示**（`AppSettings.toolbarInWindowed` 控制），
+   全屏模式下**始终显示**。
 9. **会话窗口**：用独立 `SessionAbility`（`launchType: "specified"`，`startAbility` 带唯一
    `instanceKey`）打开，才有完整的最小化 / 最大化 / 关闭标题栏；`createSubWindow` 的子窗没有
    最小化按钮，`setWindowTitleButtonVisible` 对子窗报 1300004。连接参数经 `PendingConnection`
@@ -102,10 +112,11 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 11. **分辨率与缩放**：默认（全局自动）会话分辨率取当前显示器 `display.width/height`，缩放比例
     取 `densityPixels × 100`（HarmonyOS 以 160 DPI = 100%），经 `RdpOptions.scalePercent` 传给原生，
     原生只写 `FreeRDP_DesktopScaleFactor`（不碰 device scale factor）。
-    缩放比例只取 Windows 固定档位 **100/125/150/175/200/225**（`SettingsStore.SCALE_PRESETS`，
-    自动推荐值也按最近档位吸附），不要暴露任意数值。全局设置页可改为手动分辨率 / 手动缩放；
-    每个连接的高级设置里可开关「使用全局显示设置」，关闭后该连接用自己保存的
-    `width/height/scalePercent`（`SavedConnection.useGlobalDisplay`）。
+    自动缩放只取 Windows 固定档位 **100/125/150/175/200/225**（`SettingsStore.SCALE_PRESETS`，
+    推荐值按最近档位吸附）；手动模式允许自定义任意 100–500 的值，但非档位值会在 UI 给出
+    「可能导致应用模糊」的警告。全局设置页可改为手动分辨率 / 手动缩放；每个连接的高级设置里
+    可开关「使用全局显示设置」，关闭后该连接用自己保存的 `width/height/scalePercent`
+    （`SavedConnection.useGlobalDisplay`）。
     连接记录序列化新增 `useGlobalDisplay`、`scalePercent` 两个尾字段，旧记录（19 字段）仍可读、
     默认套用全局。连接前用 `SettingsStore.resolveDisplay(conn)` 得到最终 `DisplayProfile`。
 
@@ -125,15 +136,15 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | 路径 | 作用 |
 |---|---|
 | `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
-| `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸创建窗口、加载会话页 |
+| `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页 |
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
-| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、自动隐藏工具栏 |
-| `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动/捏合、窗口默认尺寸） |
-| `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt） |
+| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（全屏/最小化/断开）、全屏状态跟踪 |
+| `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、全局分辨率/缩放、窗口默认尺寸与默认最大化） |
+| `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
-| `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储（工具栏延迟、触控板滚动/捏合、按屏幕比例推导的窗口默认尺寸） |
-| `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口 |
+| `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
+| `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |

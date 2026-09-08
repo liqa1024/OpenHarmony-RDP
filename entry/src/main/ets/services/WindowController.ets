@@ -2,9 +2,10 @@
  * HmRdp - window sizing and session window launch.
  */
 import { display, window } from '@kit.ArkUI';
-import { common, Want } from '@kit.AbilityKit';
+import { AbilityConstant, common, StartOptions, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { AppSettings, SettingsStore } from './SettingsStore';
 
 const DOMAIN: number = 0xD002;
 const TAG: string = 'HmRdpWindow';
@@ -58,8 +59,65 @@ export class WindowController {
         instanceKey: 'rdp_' + Date.now().toString()
       }
     };
+    const settings: AppSettings = SettingsStore.load();
+    if (settings.sessionFullscreen) {
+      const options: StartOptions = {
+        windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN
+      };
+      context.startAbility(want, options).catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'start session ability failed: %{public}s',
+          JSON.stringify(error));
+      });
+      return;
+    }
     context.startAbility(want).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'start session ability failed: %{public}s',
+        JSON.stringify(error));
+    });
+  }
+
+  /**
+   * Session windows always maximize to immersive fullscreen; the system title
+   * bar and dock hover are disabled there so they do not cover the app's own
+   * auto-hide toolbar (which carries the minimize / restore buttons instead).
+   */
+  static setupSessionWindow(stage: window.WindowStage, fullscreenDefault: boolean): void {
+    let win: window.Window | undefined = undefined;
+    try {
+      win = stage.getMainWindowSync();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'get main window failed: %{public}s', JSON.stringify(error));
+      return;
+    }
+    if (win === undefined) {
+      return;
+    }
+    const mainWindow: window.Window = win;
+    mainWindow.on('windowStatusChange', (status: window.WindowStatusType) => {
+      if (status === window.WindowStatusType.MAXIMIZE) {
+        // The system maximize button only maximizes; promote it to immersive
+        // fullscreen so the session always fills the whole screen.
+        mainWindow.maximize(
+          window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
+          .catch((error: BusinessError) => {
+            hilog.error(DOMAIN, TAG, 'enter immersive failed: %{public}s',
+              JSON.stringify(error));
+          });
+      } else if (status === window.WindowStatusType.FULL_SCREEN) {
+        WindowController.hideSystemTitleAndDock(mainWindow);
+      }
+    });
+    if (fullscreenDefault) {
+      WindowController.hideSystemTitleAndDock(mainWindow);
+    }
+  }
+
+  private static hideSystemTitleAndDock(win: window.Window | undefined): void {
+    if (win === undefined) {
+      return;
+    }
+    win.setTitleAndDockHoverShown(false, false).catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'hide title/dock hover failed: %{public}s',
         JSON.stringify(error));
     });
   }

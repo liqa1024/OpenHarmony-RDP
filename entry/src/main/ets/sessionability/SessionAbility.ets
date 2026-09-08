@@ -26,15 +26,18 @@ export default class SessionAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onWindowStageCreate');
     const settings: AppSettings = SettingsStore.load();
-    WindowController.applyWindowStageSize(windowStage,
-      settings.sessionWindowWidth, settings.sessionWindowHeight,
-      settings.sessionWindowSizeEnabled);
+    if (!settings.sessionFullscreen) {
+      WindowController.applyWindowStageSize(windowStage,
+        settings.sessionWindowWidth, settings.sessionWindowHeight,
+        settings.sessionWindowSizeEnabled);
+    }
     windowStage.loadContent('pages/SessionPage', (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, 'Failed to load the content. Cause: %{public}s',
           JSON.stringify(err));
         return;
       }
+      WindowController.setupSessionWindow(windowStage, settings.sessionFullscreen);
       hilog.info(DOMAIN, TAG, '%{public}s', 'Succeeded in loading the content.');
     });
   }

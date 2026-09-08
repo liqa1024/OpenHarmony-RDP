@@ -2,6 +2,7 @@
  * HmRdp - remote session page: XComponent surface + input forwarding.
  */
 import { common } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectOrigin, RdpConnectionState,
@@ -50,6 +51,7 @@ struct SessionPage {
   @State statusText: string = '正在连接...';
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
+  @State isFullscreen: boolean = false;
 
   private native: RdpNative = RdpNative.get();
   private options: RdpConnectOptions = PendingConnection.current.options;
@@ -83,13 +85,17 @@ struct SessionPage {
   private pinchZoomStepPercent: number = 5;
   private readonly pinchSensitivity: number = 2;
   private readonly ctrlScancode: number = 0x1D;
+  private sessionWindow: window.Window | undefined = undefined;
+  private toolbarInWindowed: boolean = false;
 
   aboutToAppear(): void {
+    this.loadSessionWindow();
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
+    this.toolbarInWindowed = settings.toolbarInWindowed;
     this.desktopWidth = this.options.width;
     this.desktopHeight = this.options.height;
     this.native.setListener((event: RdpEvent, data: string) => {
@@ -519,6 +525,49 @@ struct SessionPage {
     }
   }
 
+  private loadSessionWindow(): void {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
+    }
+    window.getLastWindow(context).then((win: window.Window) => {
+      this.sessionWindow = win;
+      this.isFullscreen = win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
+      win.on('windowStatusChange', (status: window.WindowStatusType) => {
+        this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
+      });
+    }).catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
+    });
+  }
+
+  private minimizeWindow(): void {
+    const win: window.Window | undefined = this.sessionWindow;
+    if (win === undefined) {
+      return;
+    }
+    win.minimize().catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'minimize failed: %{public}s', JSON.stringify(error));
+    });
+  }
+
+  private toggleFullscreen(): void {
+    const win: window.Window | undefined = this.sessionWindow;
+    if (win === undefined) {
+      return;
+    }
+    if (this.isFullscreen) {
+      win.recover().catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'recover failed: %{public}s', JSON.stringify(error));
+      });
+      return;
+    }
+    win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
+      .catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'maximize failed: %{public}s', JSON.stringify(error));
+      });
+  }
+
   private disconnect(): void {
     this.native.stopSession();
     const context = this.getUIContext().getHostContext();
@@ -612,7 +661,8 @@ struct SessionPage {
           this.componentHeight = this.lengthToNumber(newArea.height);
         })
 
-      if (this.showToolbar && !this.showOverlay) {
+      if (this.showToolbar && !this.showOverlay
+        && (this.isFullscreen || this.toolbarInWindowed)) {
         Row() {
           Text(this.options.host)
             .fontSize(14)
@@ -621,11 +671,31 @@ struct SessionPage {
             .fontSize(12)
             .fontColor('#B8BCC4')
           Blank()
-          Text('断开')
+          Text(this.isFullscreen ? '退出全屏' : '全屏')
             .fontSize(13)
             .fontColor('#FFFFFF')
             .padding({ left: 16, right: 16, top: 7, bottom: 7 })
             .backgroundColor('#33FFFFFF')
+            .borderRadius(8)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.toggleFullscreen();
+            })
+          Text('最小化')
+            .fontSize(13)
+            .fontColor('#FFFFFF')
+            .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+            .backgroundColor('#33FFFFFF')
+            .borderRadius(8)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.minimizeWindow();
+            })
+          Text('断开')
+            .fontSize(13)
+            .fontColor('#FFFFFF')
+            .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+            .backgroundColor($r('app.color.danger'))
             .borderRadius(8)
             .onClick(() => {
               this.disconnect();

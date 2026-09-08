@@ -25,7 +25,7 @@ struct EditConnectionPage {
   @State domain: string = '';
   @State desktopWidthText: string = '1920';
   @State desktopHeightText: string = '1080';
-  @State scalePercent: number = 100;
+  @State scaleText: string = '100';
   @State useGlobalDisplay: boolean = true;
   @State advancedExpanded: boolean = false;
   @State enableClipboard: boolean = true;
@@ -48,7 +48,7 @@ struct EditConnectionPage {
     this.recommendedScale = SettingsStore.recommendedScalePercent();
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
-    this.scalePercent = this.recommendedScale;
+    this.scaleText = this.recommendedScale.toString();
 
     const params: EditConnectionParams =
       this.getUIContext().getRouter().getParams() as EditConnectionParams;
@@ -70,7 +70,7 @@ struct EditConnectionPage {
         this.desktopHeightText = conn.height.toString();
       }
       if (conn.scalePercent > 0) {
-        this.scalePercent = SettingsStore.nearestScalePreset(conn.scalePercent);
+        this.scaleText = conn.scalePercent.toString();
       }
       this.enableClipboard = conn.enableClipboard;
       this.enableAudio = conn.enableAudio;
@@ -102,6 +102,23 @@ struct EditConnectionPage {
     return Number.isNaN(value) || value <= 0 ? fallback : value;
   }
 
+  private parseScale(text: string, fallback: number): number {
+    const value: number = Number.parseInt(text, 10);
+    if (Number.isNaN(value) || value < 100) {
+      return fallback;
+    }
+    return Math.min(value, 500);
+  }
+
+  private parsedScale(): number {
+    const value: number = Number.parseInt(this.scaleText, 10);
+    return Number.isNaN(value) ? 0 : value;
+  }
+
+  private isPresetScale(value: number): boolean {
+    return SCALE_PRESETS.indexOf(value) >= 0;
+  }
+
   private buildOptions(): RdpConnectOptions | undefined {
     const target: string = this.host.trim();
     if (target.length === 0) {
@@ -117,7 +134,8 @@ struct EditConnectionPage {
       ? global.width : this.parseSize(this.desktopWidthText, global.width);
     options.height = this.useGlobalDisplay
       ? global.height : this.parseSize(this.desktopHeightText, global.height);
-    options.scalePercent = this.useGlobalDisplay ? global.scalePercent : this.scalePercent;
+    options.scalePercent = this.useGlobalDisplay
+      ? global.scalePercent : this.parseScale(this.scaleText, global.scalePercent);
     options.enableClipboard = this.enableClipboard;
     options.enableAudio = this.enableAudio;
     options.enableGfx = this.enableGfx;
@@ -215,14 +233,14 @@ struct EditConnectionPage {
   scaleChip(preset: number) {
     Text(preset.toString() + '%')
       .fontSize(13)
-      .fontColor(this.scalePercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.scalePercent === preset
+      .fontColor(this.parsedScale() === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.parsedScale() === preset
         ? $r('app.color.accent') : $r('app.color.input_bg'))
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ right: 8, bottom: 8 })
       .onClick(() => {
-        this.scalePercent = preset;
+        this.scaleText = preset.toString();
       })
   }
 
@@ -365,6 +383,53 @@ struct EditConnectionPage {
             .width('100%')
             .margin({ bottom: 16 })
 
+            if (this.errorMessage.length > 0) {
+              Text(this.errorMessage)
+                .fontSize(13)
+                .fontColor($r('app.color.danger'))
+                .width('100%')
+                .margin({ top: 12 })
+            }
+
+            Row() {
+              if (this.editing) {
+                Button('删除')
+                  .layoutWeight(1)
+                  .height(48)
+                  .fontSize(16)
+                  .fontColor($r('app.color.danger'))
+                  .backgroundColor($r('app.color.input_bg'))
+                  .borderRadius(12)
+                  .onClick(() => {
+                    this.deleteCurrent();
+                  })
+                Button('连接')
+                  .layoutWeight(2)
+                  .height(48)
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Medium)
+                  .backgroundColor($r('app.color.accent'))
+                  .borderRadius(12)
+                  .margin({ left: 12 })
+                  .onClick(() => {
+                    this.submit(true);
+                  })
+              } else {
+                Button('连接')
+                  .width('100%')
+                  .height(48)
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Medium)
+                  .backgroundColor($r('app.color.accent'))
+                  .borderRadius(12)
+                  .onClick(() => {
+                    this.submit(true);
+                  })
+              }
+            }
+            .width('100%')
+            .margin({ top: 20 })
+
             Divider()
               .color($r('app.color.divider'))
               .margin({ top: 20, bottom: 8 })
@@ -478,9 +543,28 @@ struct EditConnectionPage {
                     }
                     .width('100%')
                     .margin({ top: 6 })
-                    Text('推荐 ' + this.recommendedScale + '%，仅支持 Windows 固定缩放档位')
-                      .fontSize(11)
-                      .fontColor($r('app.color.text_tertiary'))
+
+                    TextInput({ placeholder: '100', text: this.scaleText })
+                      .width('100%')
+                      .height(46)
+                      .borderRadius(10)
+                      .backgroundColor($r('app.color.input_bg'))
+                      .type(InputType.Number)
+                      .onChange((value: string) => {
+                        this.scaleText = value;
+                      })
+
+                    if (this.parsedScale() > 0 && !this.isPresetScale(this.parsedScale())) {
+                      Text('自定义缩放比例可能导致部分应用显示模糊，建议使用上方固定档位')
+                        .fontSize(11)
+                        .fontColor($r('app.color.danger'))
+                        .margin({ top: 6 })
+                    } else {
+                      Text('推荐 ' + this.recommendedScale + '%')
+                        .fontSize(11)
+                        .fontColor($r('app.color.text_tertiary'))
+                        .margin({ top: 4 })
+                    }
                   }
                   .width('100%')
                   .margin({ top: 16 })
@@ -511,53 +595,6 @@ struct EditConnectionPage {
               .width('100%')
               .alignItems(HorizontalAlign.Start)
             }
-
-            if (this.errorMessage.length > 0) {
-              Text(this.errorMessage)
-                .fontSize(13)
-                .fontColor($r('app.color.danger'))
-                .width('100%')
-                .margin({ top: 12 })
-            }
-
-            Row() {
-              if (this.editing) {
-                Button('删除')
-                  .layoutWeight(1)
-                  .height(48)
-                  .fontSize(16)
-                  .fontColor($r('app.color.danger'))
-                  .backgroundColor($r('app.color.input_bg'))
-                  .borderRadius(12)
-                  .onClick(() => {
-                    this.deleteCurrent();
-                  })
-                Button('连接')
-                  .layoutWeight(2)
-                  .height(48)
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .backgroundColor($r('app.color.accent'))
-                  .borderRadius(12)
-                  .margin({ left: 12 })
-                  .onClick(() => {
-                    this.submit(true);
-                  })
-              } else {
-                Button('连接')
-                  .width('100%')
-                  .height(48)
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .backgroundColor($r('app.color.accent'))
-                  .borderRadius(12)
-                  .onClick(() => {
-                    this.submit(true);
-                  })
-              }
-            }
-            .width('100%')
-            .margin({ top: 20 })
           }
           .width('100%')
           .constraintSize({ maxWidth: 720 })
