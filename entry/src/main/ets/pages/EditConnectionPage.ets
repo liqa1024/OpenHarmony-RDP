@@ -4,8 +4,10 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { util } from '@kit.ArkTS';
 import { EditConnectionParams, PendingConnection, RdpConnectOptions,
-  SavedConnection } from '../model/RdpModels';
+  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { WindowController } from '../services/WindowController';
 
@@ -29,36 +31,45 @@ struct EditConnectionPage {
   @State ignoreCertificate: boolean = true;
   @State errorMessage: string = '';
   @State editing: boolean = false;
-  private alias: string = '';
+  private connectionId: string = '';
+  private storedPassword: string = '';
+  private returned: boolean = false;
 
   aboutToAppear(): void {
     const params: EditConnectionParams =
       this.getUIContext().getRouter().getParams() as EditConnectionParams;
-    const alias: string = params?.alias ?? '';
-    this.alias = alias;
-    this.editing = alias.length > 0;
-    if (this.editing) {
-      CredentialStore.loadConnection(alias)
-        .then((conn: SavedConnection | undefined) => {
-          if (conn !== undefined) {
-            this.host = conn.host;
-            this.port = conn.port.toString();
-            this.username = conn.username;
-            this.password = conn.password;
-            this.domain = conn.domain;
-            this.desktopWidthText = conn.width.toString();
-            this.desktopHeightText = conn.height.toString();
-            this.enableClipboard = conn.enableClipboard;
-            this.enableAudio = conn.enableAudio;
-            this.enableGfx = conn.enableGfx;
-            this.enableH264 = conn.enableH264;
-            this.ignoreCertificate = conn.ignoreCertificate;
-          }
-        })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, TAG, 'load failed: %{public}s', JSON.stringify(error));
-        });
+    const id: string = params?.id ?? '';
+    this.connectionId = id;
+    this.editing = id.length > 0;
+    if (!this.editing) {
+      return;
     }
+    const conn: SavedConnection | undefined = ConnectionStore.get(id);
+    if (conn !== undefined) {
+      this.host = conn.host;
+      this.port = conn.port.toString();
+      this.username = conn.username;
+      this.domain = conn.domain;
+      this.desktopWidthText = conn.width.toString();
+      this.desktopHeightText = conn.height.toString();
+      this.enableClipboard = conn.enableClipboard;
+      this.enableAudio = conn.enableAudio;
+      this.enableGfx = conn.enableGfx;
+      this.enableH264 = conn.enableH264;
+      this.ignoreCertificate = conn.ignoreCertificate;
+    }
+    CredentialStore.loadPassword(id)
+      .then((password: string) => {
+        this.storedPassword = password;
+        this.password = password;
+      })
+      .catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'load password failed: %{public}s', JSON.stringify(error));
+      });
+  }
+
+  aboutToDisappear(): void {
+    PendingConnection.current.onConnected = undefined;
   }
 
   private parsePort(): number {
@@ -91,24 +102,30 @@ struct EditConnectionPage {
     return options;
   }
 
-  private async submit(connect: boolean): Promise<void> {
+  private submit(connect: boolean): void {
     const options: RdpConnectOptions | undefined = this.buildOptions();
     if (options === undefined) {
       return;
     }
-    const newAlias: string = CredentialStore.aliasOf(options.host, options.port);
-    if (this.editing && this.alias.length > 0 && this.alias !== newAlias) {
-      await CredentialStore.remove(this.alias);
-    }
-    const conn: SavedConnection = SavedConnection.fromOptions(newAlias, options);
+    const id: string = this.connectionId.length > 0
+      ? this.connectionId : util.generateRandomUUID(true);
+    const conn: SavedConnection = SavedConnection.fromOptions(id, options);
+    conn.updatedAt = Date.now();
     try {
-      await CredentialStore.saveConnection(conn);
+      ConnectionStore.save(conn);
     } catch (error) {
+      this.errorMessage = '保存失败，请重试';
       hilog.error(DOMAIN, TAG, 'save failed: %{public}s', JSON.stringify(error));
+      return;
     }
     if (connect) {
-      PendingConnection.current.options = conn.toOptions();
-      PendingConnection.current.remember = true;
+      options.password = this.password;
+      PendingConnection.current.options = options;
+      PendingConnection.current.connectionId = id;
+      PendingConnection.current.origin = RdpConnectOrigin.Editor;
+      PendingConnection.current.onConnected = () => {
+        this.returnToList();
+      };
       const context = this.getUIContext().getHostContext();
       if (context !== undefined) {
         WindowController.openSessionWindow(context as common.UIAbilityContext);
@@ -116,15 +133,49 @@ struct EditConnectionPage {
         this.errorMessage = '无法打开会话窗口';
       }
     } else {
-      this.getUIContext().getRouter().back();
+      this.returnToList();
     }
   }
 
-  private async deleteCurrent(): Promise<void> {
-    if (this.alias.length > 0) {
-      await CredentialStore.remove(this.alias);
+  private handleSave(): void {
+    if (this.password.length > 0 && this.password !== this.storedPassword) {
+      this.getUIContext().showAlertDialog({
+        title: '密码不会被保存',
+        message: '连接验证正确性后会自动保存密码。',
+        primaryButton: {
+          value: '取消',
+          action: () => {
+          }
+        },
+        secondaryButton: {
+          value: '继续保存',
+          fontColor: $r('app.color.accent'),
+          action: () => {
+            this.submit(false);
+          }
+        }
+      });
+      return;
     }
+    this.submit(false);
+  }
+
+  private returnToList(): void {
+    if (this.returned) {
+      return;
+    }
+    this.returned = true;
     this.getUIContext().getRouter().back();
+  }
+
+  private deleteCurrent(): void {
+    if (this.connectionId.length > 0) {
+      ConnectionStore.remove(this.connectionId);
+      CredentialStore.removePassword(this.connectionId).catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'remove password failed: %{public}s', JSON.stringify(error));
+      });
+    }
+    this.returnToList();
   }
 
   @Builder
@@ -182,7 +233,7 @@ struct EditConnectionPage {
                 .fontColor($r('app.color.accent'))
                 .padding({ top: 8, bottom: 8 })
                 .onClick(() => {
-                  this.submit(false);
+                  this.handleSave();
                 })
             }
             .width('100%')
@@ -262,6 +313,10 @@ struct EditConnectionPage {
                   .onChange((value: string) => {
                     this.password = value;
                   })
+                Text('连接成功后自动保存')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 4 })
               }
               .layoutWeight(1)
               .margin({ left: 16 })

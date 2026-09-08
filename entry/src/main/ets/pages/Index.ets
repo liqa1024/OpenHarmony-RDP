@@ -4,7 +4,9 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { EditConnectionParams, PendingConnection, SavedConnection } from '../model/RdpModels';
+import { EditConnectionParams, PendingConnection, RdpConnectOptions,
+  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { WindowController } from '../services/WindowController';
 
@@ -29,26 +31,29 @@ struct Index {
   }
 
   private refresh(): void {
-    CredentialStore.listConnections()
-      .then((conns: SavedConnection[]) => {
-        this.connections = conns;
-      })
-      .catch((error: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'list failed: %{public}s', JSON.stringify(error));
-      });
+    this.connections = ConnectionStore.list();
   }
 
   private connect(conn: SavedConnection): void {
-    PendingConnection.current.options = conn.toOptions();
-    PendingConnection.current.remember = true;
+    this.startConnection(conn);
+  }
+
+  private async startConnection(conn: SavedConnection): Promise<void> {
+    const options: RdpConnectOptions = conn.toOptions();
+    const password: string = await CredentialStore.loadPassword(conn.id);
+    options.password = password;
+    PendingConnection.current.options = options;
+    PendingConnection.current.connectionId = conn.id;
+    PendingConnection.current.origin = RdpConnectOrigin.List;
+    PendingConnection.current.onConnected = undefined;
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
       WindowController.openSessionWindow(context as common.UIAbilityContext);
     }
   }
 
-  private openEditor(alias: string): void {
-    const params: EditConnectionParams = { alias: alias };
+  private openEditor(id: string): void {
+    const params: EditConnectionParams = { id: id };
     this.getUIContext().getRouter()
       .pushUrl({ url: 'pages/EditConnectionPage', params: params })
       .catch((error: BusinessError) => {
@@ -64,19 +69,21 @@ struct Index {
   }
 
   private remove(conn: SavedConnection): void {
-    CredentialStore.remove(conn.alias)
+    ConnectionStore.remove(conn.id);
+    CredentialStore.removePassword(conn.id)
       .then(() => {
         this.refresh();
       })
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'remove failed: %{public}s', JSON.stringify(error));
+        this.refresh();
       });
   }
 
   private confirmDelete(conn: SavedConnection): void {
     this.getUIContext().showAlertDialog({
       title: '删除连接',
-      message: `确定要删除「${conn.alias}」吗？该操作无法撤销。`,
+      message: `确定要删除「${conn.label()}」？该操作无法撤销。`,
       primaryButton: {
         value: '取消',
         action: () => {
@@ -101,7 +108,7 @@ struct Index {
         })
       MenuItem({ content: '编辑' })
         .onClick(() => {
-          this.openEditor(conn.alias);
+          this.openEditor(conn.id);
         })
       MenuItem({ content: '删除' })
         .contentFontColor($r('app.color.danger'))
@@ -120,7 +127,7 @@ struct Index {
           .height(44)
           .borderRadius(12)
         Column() {
-          Text(conn.alias)
+          Text(conn.label())
             .fontSize(15)
             .fontColor($r('app.color.text_primary'))
           Text(conn.username.length > 0 ? conn.username : '未设置用户名')
@@ -134,7 +141,7 @@ struct Index {
       }
       .layoutWeight(1)
       .onClick(() => {
-        this.openEditor(conn.alias);
+        this.openEditor(conn.id);
       })
 
       Row() {
@@ -259,7 +266,7 @@ struct Index {
             ListItem() {
               this.connectionRow(conn)
             }
-          }, (conn: SavedConnection) => conn.alias)
+          }, (conn: SavedConnection) => `${conn.id}#${conn.updatedAt}`)
         }
         .layoutWeight(1)
         .width('100%')

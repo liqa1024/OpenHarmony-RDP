@@ -66,8 +66,12 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    除非有正确实现（PBO/EGL image），否则不要改回脏区上传。
 5. **原生库命名**：FreeRDP 库的 SONAME 是 `libX.so.3`；`entry/libs/<abi>/` 下必须同时有
    `libX.so`（链接期）与 `libX.so.3`（运行期）。
-6. **凭证**：经 `@kit.AssetStoreKit` 存储。要列出全部，先用 `ReturnType.ATTRIBUTES` 查别名，
-   再逐条 `loadConnection(alias)`；直接查 `ReturnType.ALL` 会返回空。
+6. **连接与密码存储**：连接配置（host/port/用户名/选项）存 `ConnectionStore`（preferences，
+   稳定 UUID 作 `id`，`updatedAt` 供列表刷新）；密码单独存 `CredentialStore`（ASSET，按 `id` 索引）。
+   密码**只在连接成功后**写入（`RdpEvent.Connected` 且 `PendingConnection.origin === Editor`）；
+   从列表连接、或连接失败/取消都不写密码。清空密码只删 ASSET 密码、不删连接。
+   注意 preferences 的值必须是 XML 合法字符：任意字符串字段先 `encodeURIComponent` 再用 `|`
+   拼接，否则控制字符（如 `\u0001`）会让 preferences 文件损坏成 `.broken`、数据无法落盘。
 7. **XComponent 输入**：surface 走 `surfaceId` +
    `OH_NativeWindow_CreateNativeWindowFromSurfaceId`（不带 `libraryname`），因此输入走 ArkUI 的
    `onMouse/onTouch/onKeyEvent/onAxisEvent`。
@@ -78,7 +82,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 9. **会话窗口**：用独立 `SessionAbility`（`launchType: "specified"`，`startAbility` 带唯一
    `instanceKey`）打开，才有完整的最小化 / 最大化 / 关闭标题栏；`createSubWindow` 的子窗没有
    最小化按钮，`setWindowTitleButtonVisible` 对子窗报 1300004。连接参数经 `PendingConnection`
-   静态传递（同一进程共享 ArkTS VM），密码不放进 Want。
+   静态传递（同一进程共享 ArkTS VM），密码不放进 Want。`PendingConnection.origin` 区分入口：
+   仅编辑页发起（`Editor`）且连接成功时保存密码、并经 `onConnected` 回调让编辑页回退到列表；
+   列表发起（`List`）成功/失败都不做额外操作。
 
 ## ArkTS 规范
 
@@ -88,18 +94,21 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
   需要深色变体的 SVG 图标放 `resources/dark/media/`。
 - 路由参数必须是具名接口（`EditConnectionParams`），通过
   `this.getUIContext().getRouter()` 传递。
+- ArkUI `ForEach` 的 key 必须随内容变化，否则列表项会被复用、`onClick` 闭包仍持有旧对象，
+  导致 UI 与连接动作使用过期数据。本项目用 `${conn.id}#${conn.updatedAt}` 作 key。
 
 ## 目录结构
 
 | 路径 | 作用 |
 |---|---|
-| `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置、按默认尺寸创建主窗口、加载连接列表 |
+| `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸创建窗口、加载会话页 |
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、输入、浮层、自动隐藏工具栏 |
-| `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接 |
+| `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存） |
 | `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏触发/隐藏延迟、窗口默认尺寸） |
-| `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的凭证存储 |
+| `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt） |
+| `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储（含按屏幕比例推导的窗口默认尺寸） |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |

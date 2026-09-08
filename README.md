@@ -10,8 +10,10 @@
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触摸
 - **音频**：rdpsnd（OpenSLES 后端）
 - **剪贴板**：cliprdr 通道已接入
-- **凭证安全存储**：HarmonyOS Asset Store Kit（密文存储，不落明文、不进日志）
-- **连接管理**：书签式列表、右键菜单（连接/编辑/删除）、一键直连
+- **凭证安全存储**：密码经 HarmonyOS Asset Store Kit 密文存储（不落明文、不进日志），
+  且**仅在连接验证成功后**才写入；连接配置与密码分离存储
+- **连接管理**：书签式列表、右键菜单（连接/编辑/删除）、一键直连；连接配置随时可存，
+  无密码也能保存
 - **深浅色主题**：跟随系统
 - **会话工具栏**：鼠标停留屏幕顶部后自动滑出，延迟可配置
 - **多窗口会话**：连接后在独立的 `SessionAbility` 主窗口中打开远程桌面，具备完整标题栏，
@@ -26,7 +28,8 @@
 │  ArkTS / ArkUI  (entry/src/main/ets)                        │
 │  Index · SessionPage · EditConnectionPage · SettingsPage    │
 │  EntryAbility · SessionAbility（独立会话窗口）              │
-│  CredentialStore(ASSET) · SettingsStore(preferences)        │
+│  ConnectionStore(preferences) · CredentialStore(ASSET)      │
+│  SettingsStore(preferences)                                 │
 │  WindowController（窗口尺寸 / 会话窗口拉起）                │
 ├─────────────────────────────────────────────────────────────┤
 │  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
@@ -49,7 +52,7 @@ entry/
     entryability/             EntryAbility（主窗口）
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
-    services/                 CredentialStore · SettingsStore · RdpNative · WindowController
+    services/                 ConnectionStore · CredentialStore · SettingsStore · RdpNative · WindowController
   src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）

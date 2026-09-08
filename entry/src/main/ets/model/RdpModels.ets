@@ -47,9 +47,18 @@ export class RdpConnectOptions implements RdpOptions {
   }
 }
 
+export enum RdpConnectOrigin {
+  List = 0,
+  Editor = 1
+}
+
 export class PendingConnection {
   options: RdpConnectOptions = new RdpConnectOptions();
-  remember: boolean = false;
+  connectionId: string = '';
+  origin: RdpConnectOrigin = RdpConnectOrigin.List;
+  // Invoked once when a session launched from the editor connects successfully.
+  // Cleared afterwards so it never fires twice or leaks across launches.
+  onConnected: (() => void) | undefined = undefined;
   static current: PendingConnection = new PendingConnection();
 }
 
@@ -73,15 +82,19 @@ export class RdpPointerFlags {
 }
 
 export class SavedConnection extends RdpConnectOptions {
-  alias: string = '';
+  id: string = '';
+  updatedAt: number = 0;
 
-  static fromOptions(alias: string, options: RdpConnectOptions): SavedConnection {
+  label(): string {
+    return `${this.host}:${this.port}`;
+  }
+
+  static fromOptions(id: string, options: RdpConnectOptions): SavedConnection {
     const conn: SavedConnection = new SavedConnection();
-    conn.alias = alias;
+    conn.id = id;
     conn.host = options.host;
     conn.port = options.port;
     conn.username = options.username;
-    conn.password = options.password;
     conn.domain = options.domain;
     conn.width = options.width;
     conn.height = options.height;
@@ -96,14 +109,13 @@ export class SavedConnection extends RdpConnectOptions {
     conn.gatewayHost = options.gatewayHost;
     conn.gatewayPort = options.gatewayPort;
     conn.gatewayUsername = options.gatewayUsername;
-    conn.gatewayPassword = options.gatewayPassword;
     conn.gatewayDomain = options.gatewayDomain;
     return conn;
   }
 
   toOptions(): RdpConnectOptions {
     const options: RdpConnectOptions =
-      RdpConnectOptions.of(this.host, this.port, this.username, this.password, this.domain);
+      RdpConnectOptions.of(this.host, this.port, this.username, '', this.domain);
     options.width = this.width;
     options.height = this.height;
     options.colorDepth = this.colorDepth;
@@ -124,6 +136,6 @@ export class SavedConnection extends RdpConnectOptions {
 }
 
 export interface EditConnectionParams {
-  alias: string;
+  id: string;
 }
 

@@ -4,8 +4,9 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { PendingConnection, RdpConnectOptions, RdpConnectionState, RdpEvent,
-  RdpPointerFlags } from '../model/RdpModels';
+import { PendingConnection, RdpConnectOptions, RdpConnectOrigin, RdpConnectionState,
+  RdpEvent, RdpPointerFlags } from '../model/RdpModels';
+import { CredentialStore } from '../services/CredentialStore';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
@@ -135,6 +136,7 @@ struct SessionPage {
       this.state = RdpConnectionState.Connected;
       this.statusText = '已连接';
       this.showToolbar = false;
+      this.handleConnected();
     } else if (event === RdpEvent.FirstFrame) {
       this.showOverlay = false;
       this.showToolbar = false;
@@ -159,6 +161,34 @@ struct SessionPage {
         }
       }
     }
+  }
+
+  /**
+   * Post-connect handling only applies to sessions launched from the editor:
+   * the verified password is persisted and the editor returns to the list.
+   * Sessions launched from the home list must not trigger any extra action.
+   */
+  private handleConnected(): void {
+    if (PendingConnection.current.origin !== RdpConnectOrigin.Editor) {
+      return;
+    }
+    this.persistPassword();
+    const callback: (() => void) | undefined = PendingConnection.current.onConnected;
+    PendingConnection.current.onConnected = undefined;
+    if (callback !== undefined) {
+      callback();
+    }
+  }
+
+  private persistPassword(): void {
+    const connectionId: string = PendingConnection.current.connectionId;
+    const password: string = this.options.password;
+    if (connectionId.length === 0 || password.length === 0) {
+      return;
+    }
+    CredentialStore.savePassword(connectionId, password).catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'save password failed: %{public}s', JSON.stringify(error));
+    });
   }
 
   private updateToolbar(y: number): void {
