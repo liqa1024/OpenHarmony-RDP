@@ -8,7 +8,8 @@
 `aarch64-linux-ohos` / `x86_64-linux-ohos`。界面为 ArkTS/ArkUI；画面通过 XComponent 上的
 EGL/GLES 原生渲染；输入经 Node-API 桥接转发。会话在独立的 `SessionAbility` 主窗口中打开；
 主窗口 / 会话窗口的默认尺寸按屏幕比例推导，会话分辨率/缩放默认自适应当前显示器，均可在
-全局设置中调整，单个连接也可在「高级设置」里覆盖。
+全局设置中调整，单个连接也可在「高级设置」里覆盖。全局设置还可开启「自动隐藏主窗口」
+（单窗口模式，仅单会话：会话窗口打开时销毁主窗口，关闭后恢复，见第 12 条）。
 
 - 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 目标：HarmonyOS 6.1.0（API 23）
 
@@ -56,92 +57,46 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 
 ## 关键实现要点（改动前必读）
 
-1. **GFX 管线**：`HmrdpPreConnect` 必须订阅 `ChannelConnected` / `ChannelDisconnected`
-   到 `freerdp_client_OnChannelConnectedEventHandler`。否则 `gdi_graphics_pipeline_init`
-   不会执行，画面永远黑屏。这是最初黑屏问题的根因。
-2. **鼠标按键**：`PTR_FLAGS_MOVE` 与按键事件要**分开发送**。把 `MOVE|BUTTON1|DOWN` 合并成
-   一个事件会导致远端忽略点击。按键事件不能带 MOVE 标志（与 FreeRDP 的 X11 客户端一致）。
-3. **密码处理**：绝不通过命令行传密码。用 `freerdp_settings_set_string` 设置
-   `FreeRDP_Password` / `FreeRDP_GatewayPassword`，避免解析器失败日志与 argv 明文副本。
-4. **帧上传**：渲染器每次都上传**整帧**（`glTexSubImage2D`）。按脏区部分上传会出现可见花屏。
-   除非有正确实现（PBO/EGL image），否则不要改回脏区上传。
-5. **原生库命名**：FreeRDP 库的 SONAME 是 `libX.so.3`；`entry/libs/<abi>/` 下必须同时有
-   `libX.so`（链接期）与 `libX.so.3`（运行期）。
-6. **连接与密码存储**：连接配置（host/port/用户名/选项）存 `ConnectionStore`（preferences，
-   稳定 UUID 作 `id`，`updatedAt` 供列表刷新）；密码单独存 `CredentialStore`（ASSET，按 `id` 索引）。
-   密码**只在连接成功后**写入（`RdpEvent.Connected` 且会话请求 `origin === Editor`）；
-   从列表连接、或连接失败/取消都不写密码。清空密码只删 ASSET 密码、不删连接。
-   注意 preferences 的值必须是 XML 合法字符：任意字符串字段先 `encodeURIComponent` 再用 `|`
-   拼接，否则控制字符（如 `\u0001`）会让 preferences 文件损坏成 `.broken`、数据无法落盘。
-7. **XComponent 输入**：surface 走 `surfaceId` +
-   `OH_NativeWindow_CreateNativeWindowFromSurfaceId`（不带 `libraryname`），因此输入走 ArkUI 的
-   `onMouse/onTouch/onKeyEvent/onAxisEvent`（触屏经 `onTouch` 转 RDPEI 原生触屏，见第 10 条）。
-8. **窗口尺寸**：默认尺寸由 `SettingsStore.defaults()` 按屏幕宽高 × 45%（主窗口）/ 67%（会话窗口）
-   计算；屏幕查询失败时**不改窗口**，而不是回退到编造的分辨率。设置项是**默认尺寸**，只在
-   **窗口创建时**生效（主窗口下次启动、会话窗口下次连接）；设置页改动**不**即时 resize / 移动
-   当前窗口。`window.resize()` / `moveWindowTo()` 在 2in1 上的单位是 **px**（不是 vp）。
-   全局设置里可勾选「默认最大化（全屏）」（`AppSettings.sessionFullscreen`）：为真时 `SessionAbility` 经
-   `startAbility` 的 `StartOptions.windowMode = WINDOW_MODE_FULLSCREEN` 直接全屏打开、忽略会话窗口尺寸。
-   会话窗口的**系统最大化按钮一律转成沉浸式全屏**（`WindowController.setupSessionWindow` 监听
-   `windowStatusChange`，MAXIMIZE → `maximize(ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)`；
-   FULL_SCREEN → `setTitleAndDockHoverShown(false, false)`），这样系统顶部标题栏/底部 dock 悬停不弹出、
-   不会挡住应用自己的顶部工具栏。全屏下由 `SessionPage` 工具栏的「全屏/退出全屏」「最小化」「断开」按钮
-   代替系统标题栏（`win.maximize(ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)` / `win.minimize()` /
-   `win.recover()`）。工具栏在**窗口模式下默认不显示**（`AppSettings.toolbarInWindowed` 控制），
-   全屏模式下**始终显示**。
-9. **会话窗口（支持多会话并存）**：用独立 `SessionAbility`（`launchType: "specified"`，
-   `startAbility` 带唯一 `instanceKey`）打开，才有完整的最小化 / 最大化 / 关闭标题栏；
-   `createSubWindow` 的子窗没有最小化按钮，`setWindowTitleButtonVisible` 对子窗报 1300004。
-   - 每次连接生成唯一 `sessionKey`：启动页把 `PendingConnection`（含密码）放进
-     `SessionRequests` 注册表，Want 只带 `sessionKey`/`instanceKey`（密码不进 Want）；
-     `SessionAbility` 用 `LocalStorage` 把 key 注入页面，页面按 key 取回请求。
-   - 每个会话窗口独占一个 `RdpNative` 实例 / 原生 handle：原生事件携带 handle，ArkTS 侧
-     按 handle 路由到对应实例；surface 绑定/销毁、鼠标键盘输入都按 handle 下发。
-   - **连接在主窗口后台完成，成功后才开窗**：`SessionManager` 发起连接（此时不建窗口），主列表
-     对应行按钮显示转圈；成功后 `openSessionWindow` 并把已连接的 `RdpNative` 实例按 `sessionKey`
-     交给会话页（`SessionPage` 检测到 `SessionManager.isConnected` 则只绑定 surface、不重复连接）。
-     失败时主列表弹出分类后的错误、不打开任何窗口。
-   - **错误分类**：原生 `kError`/`kDisconnected` 的数据格式为 `<FreeRDP错误码>|<消息>`（码为 0 时
-     只发消息），`SessionManager.describeError` 把 `ERRCONNECT_*` 映射为「用户名或密码错误 /
-     无法连接到服务器 / 网络连接中断」等中文提示。原生 `freerdp_get_last_error` 返回
-     `(CLASS<<16)|TYPE`，`TYPE` 即 `ERRCONNECT_*`。
-   - **主界面控制连接**：列表「已连接」行显示绿色徽标、按钮变红色断开图标（`ic_disconnect`）；
-     点击断开或关闭窗口都经 `SessionManager` 停连并刷新列表。连接成功/断开的状态经
-     `SessionManager.subscribe` 回调驱动 `Index` 的 `@State statuses` 重新渲染。
-   - **窗口关闭即断连**：`SessionAbility.onWindowStageDestroy()` / `onDestroy()` 调用
-     `SessionManager.release(sessionKey)` + `SessionRequests.discard`，只停自己这条会话（等价于
-     工具栏「断开」）。注意 `SessionPage.aboutToDisappear()` 在窗口关闭时**不会触发**，不要
-     依赖它做断连。
-   - `origin` 区分入口：编辑页发起（`Editor`）时**连接成功后才保存配置与密码**（失败不落库），
-     点「连接」后留在编辑页、按钮显示转圈且可点「取消」中断；失败时原页内联显示错误、保留已输入
-     的密码以便继续修改，成功后经 `onConnected` 保存配置并回列表。列表发起（`List`）则在列表行
-     展示转圈/已连接、失败弹对话框。`Index` 只在 `origin === List` 时弹失败对话框。
-   - **连接超时兜底**：`SessionManager` 对每次连接设 30s 定时器（`CONNECT_TIMEOUT_MS`），超时按
-     失败处理（「连接超时」）；否则不可达地址会在 OS 级 TCP 超时前一直转圈。
-10. **输入分流 / 触屏 / 触控板**：鼠标走 `onMouse` → RDP 鼠标；真触屏走 `onTouch` → RDPEI
-    原生触屏（`Session::SendTouch` → `freerdp_client_handle_touch`，连接时打开
-    `FreeRDP_MultiTouchInput`）；滚轮 / 触控板走 `onAxisEvent`。用
-    `event.source === SourceType.TouchScreen` 区分真触屏与系统把鼠标左键/轴事件转成的触摸，
-    否则鼠标点击会同时被 `handleTouch` 当成触屏（或反过来模拟鼠标）导致点击变拖动。
-    - FreeRDP 的 `freerdp_client_handle_touch` 用 `id == 0` 表示"空槽位"，因此 ArkUI 的
-      0 基手指 id 要 `+1` 再传给原生；`handleTouch` 还需维护接触点状态（Down→Move*→Up 合法、
-      未知接触点丢弃、`Cancel` 抬起），否则事件会被 RDPEI 丢弃、表现为断断续续。
-    - 触控板双指滚动的轴值单位是**位移像素**、方向与鼠标滚轮**相反**（自然滚动），需累积到阈值
-      再发一格；横向滚动映射为 `HWHEEL`。鼠标滚轮仍是"向前/上 = `axisVertical` 负"。
-    - RDP 没有"捏合"输入 PDU：双指捏合映射为 **Ctrl + 滚轮**，整个手势期间按住 Ctrl 不松开
-      （中途逐格开关会把缩放混成滚动）；灵敏度在设置里调。
-    - 不要尝试用 `easy_go.json` 的 `mouse2TouchEventMode` 关闭鼠标转触摸：本机 SDK（API 26）的
-      easy_go schema 不含该字段，hvigor 校验会直接失败；用上面的 source 分流替代。
-11. **分辨率与缩放**：默认（全局自动）会话分辨率取当前显示器 `display.width/height`，缩放比例
-    取 `densityPixels × 100`（HarmonyOS 以 160 DPI = 100%），经 `RdpOptions.scalePercent` 传给原生，
-    原生只写 `FreeRDP_DesktopScaleFactor`（不碰 device scale factor）。
-    自动缩放只取 Windows 固定档位 **100/125/150/175/200/225**（`SettingsStore.SCALE_PRESETS`，
-    推荐值按最近档位吸附）；手动模式允许自定义任意 100–500 的值，但非档位值会在 UI 给出
-    「可能导致应用模糊」的警告。全局设置页可改为手动分辨率 / 手动缩放；每个连接的高级设置里
-    可开关「使用全局显示设置」，关闭后该连接用自己保存的 `width/height/scalePercent`
-    （`SavedConnection.useGlobalDisplay`）。
-    连接记录序列化新增 `useGlobalDisplay`、`scalePercent` 两个尾字段，旧记录（19 字段）仍可读、
-    默认套用全局。连接前用 `SettingsStore.resolveDisplay(conn)` 得到最终 `DisplayProfile`。
+1. **GFX 管线**：`HmrdpPreConnect` 必须把 `ChannelConnected`/`ChannelDisconnected` 订阅到
+   `freerdp_client_OnChannelConnectedEventHandler`，否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
+2. **鼠标按键**：`PTR_FLAGS_MOVE` 与按键事件分开送，按键事件不带 MOVE 标志，否则远端忽略点击。
+3. **密码**：绝不经命令行传密码，用 `freerdp_settings_set_string` 设 `FreeRDP_Password` /
+   `FreeRDP_GatewayPassword`。
+4. **帧上传**：每次上传整帧（`glTexSubImage2D`）；按脏区部分上传会花屏，除非改用 PBO/EGL image。
+5. **原生库命名**：`entry/libs/<abi>/` 下同时放 `libX.so`（链接期）与 `libX.so.3`（运行期）。
+6. **连接与密码存储**：配置存 `ConnectionStore`（preferences，稳定 UUID 作 id、`updatedAt` 供刷新），
+   密码单独存 `CredentialStore`（ASSET，按 id），**只在连接成功后**写入。preferences 字符串字段先
+   `encodeURIComponent` 再拼接，否则控制字符会损坏文件。
+7. **XComponent 输入**：surface 用 `surfaceId` + `OH_NativeWindow_CreateNativeWindowFromSurfaceId`
+   （不带 `libraryname`），输入走 ArkUI `onMouse/onTouch/onKeyEvent/onAxisEvent`。
+8. **窗口尺寸**：默认按屏幕 × 45%（主窗）/ 67%（会话窗），屏幕查询失败则不改窗口；尺寸设置只在
+   **窗口创建时**生效，`resize`/`moveWindowTo` 单位是 **px**（非 vp）。`sessionFullscreen` 经
+   `StartOptions.windowMode = WINDOW_MODE_FULLSCREEN` 直接全屏；会话窗的**系统最大化**在
+   `WindowController.setupSessionWindow` 里转成沉浸式全屏（隐藏标题栏/dock 悬停）。
+9. **会话窗口**：用独立 `SessionAbility`（`launchType: specified` + 唯一 `instanceKey`）才有完整标题栏
+   （子窗没有最小化按钮）。每次连接生成 `sessionKey`，`PendingConnection` 放 `SessionRequests`、Want
+   只带 key（密码不进 Want）；**主窗口后台连接，成功后才开窗**，失败只报错不开窗。每个会话独占一个
+   `RdpNative` 实例，原生事件带 handle、按 handle 路由。关闭窗口即断连：
+   `SessionAbility.onWindowStageDestroy/onDestroy` → `SessionManager.release` + `SessionRequests.discard`
+   （`SessionPage.aboutToDisappear` 在窗口关闭时**不触发**，别依赖它断连）。连接有 30s 超时兜底，
+   错误经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
+10. **输入分流**：鼠标→`onMouse`、真触屏→`onTouch`（RDPEI 触屏）、滚轮/触控板→`onAxisEvent`；用
+    `event.source === SourceType.TouchScreen` 区分真触屏与鼠标转成的触摸，避免点击变拖动。触屏手指
+    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触控板双指滚动单位是像素、方向与滚轮相反，横向映射
+    `HWHEEL`；捏合映射为 Ctrl+滚轮（全程按住 Ctrl）。别用 `easy_go.json` 的 `mouse2TouchEventMode`
+    关鼠标转触摸（本机 SDK schema 不含该字段，hvigor 校验失败）。
+11. **分辨率与缩放**：自动分辨率取显示器宽高，缩放取 `densityPixels × 100` 并吸附到
+    100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
+    `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
+    `width/height/scalePercent`；连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
+12. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
+    `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
+    Dock）；按单会话设计，故 `WindowController` 只用 `mainHidden` 布尔量，不跟踪 session 集合。
+    - **进程内最后一个 UIAbility 被销毁 → 进程退出**：必须等会话窗加载完成（`onSessionWindowReady`）
+      后才 `terminateSelf()` 主窗口，否则 `Terminate last` 会杀掉整个应用。
+    - 关闭会话时先 `startAbility(EntryAbility)` 拉起主窗口，`onMainWindowReady` 后再终止会话；用
+      `windowStage.on('windowStageClose')` + `UIAbility.onPrepareToTerminate()` 拦截关闭（本机模拟器
+      后者不触发），`closeSession` 去重 + 3s 超时兜底。关闭该选项则行为不变（多窗口可并存）。
 
 ## ArkTS 规范
 
@@ -161,17 +116,17 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | 路径 | 作用 |
 |---|---|
 | `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
-| `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页 |
+| `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、全局分辨率/缩放、窗口默认尺寸与默认最大化） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、全局分辨率/缩放、窗口默认尺寸与默认最大化、自动隐藏主窗口） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
 | `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey`/`stopByKey` 按会话 key 复用与断连 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
-| `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制 |
+| `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
