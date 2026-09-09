@@ -15,6 +15,8 @@
   且**仅在连接验证成功后**才写入；连接配置与密码分离存储
 - **连接管理**：书签式列表、右键菜单（连接/编辑/删除）、一键直连；连接配置随时可存，
   无密码也能保存；每个连接可选「高级设置」（独立分辨率/缩放、剪贴板、音频、GFX、H.264 等）
+- **配置备份**：可将全局设置与全部连接导出为 JSON 文件，或从文件导入覆盖；
+  密码保存在系统安全存储中，导出时跳过并提示，导入后需重新输入
 - **显示自适应**：默认自动取当前显示器分辨率并推荐 Windows 缩放档位
   （100/125/150/175/200/225）；可在全局设置中改为手动分辨率/缩放，也可在单个连接中覆盖
 - **深浅色主题**：跟随系统
@@ -36,6 +38,7 @@
 │  EntryAbility · SessionAbility（独立会话窗口）              │
 │  ConnectionStore(preferences) · CredentialStore(ASSET)      │
 │  SettingsStore（设置 + 分辨率/缩放解析）                     │
+│  ConfigTransfer（配置导入/导出，密码不导出）                 │
 │  WindowController（窗口尺寸 / 拉起 / 全屏控制）              │
 ├─────────────────────────────────────────────────────────────┤
 │  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
@@ -58,7 +61,7 @@ entry/
     entryability/             EntryAbility（主窗口）
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
-    services/                 ConnectionStore · CredentialStore · SettingsStore · RdpNative · WindowController
+    services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · SessionManager · WindowController
   src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）

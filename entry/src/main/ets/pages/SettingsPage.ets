@@ -1,8 +1,10 @@
 /*
  * HmRdp - global settings.
  */
+import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { DisplayProfile } from '../model/RdpModels';
+import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 
 // Remote desktop sizes are not limited to the local screen, so manual
@@ -45,6 +47,8 @@ struct SettingsPage {
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
   @State sessionHeightText: string = '';
+  @State transferBusy: boolean = false;
+  @State transferMessage: string = '';
   private defaultMainWidth: number = 0;
   private defaultMainHeight: number = 0;
   private defaultSessionWidth: number = 0;
@@ -64,6 +68,11 @@ struct SettingsPage {
     this.detectedWidth = detected.width;
     this.detectedHeight = detected.height;
     this.recommendedScale = SettingsStore.recommendedScalePercent();
+    this.syncFromStore();
+  }
+
+  /** Pulls the persisted settings back into the page state (also after import). */
+  private syncFromStore(): void {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
@@ -176,6 +185,81 @@ struct SettingsPage {
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(defaults.sessionWindowHeight);
     this.persist();
+  }
+
+  private confirmExport(): void {
+    this.getUIContext().showAlertDialog({
+      title: '导出配置',
+      message: '将导出全局设置和全部连接。密码保存在系统安全存储中，出于安全考虑不会导出。',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '导出',
+        fontColor: $r('app.color.accent'),
+        action: () => {
+          this.handleExport();
+        }
+      }
+    });
+  }
+
+  private async handleExport(): Promise<void> {
+    if (this.transferBusy) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      this.transferMessage = '无法获取应用上下文';
+      return;
+    }
+    this.transferBusy = true;
+    this.transferMessage = '';
+    const result: ConfigTransferResult =
+      await ConfigTransfer.exportToFile(context as common.UIAbilityContext);
+    this.transferBusy = false;
+    this.transferMessage = result.message;
+  }
+
+  private confirmImport(): void {
+    this.getUIContext().showAlertDialog({
+      title: '导入配置',
+      message: '导入会应用全局设置，并按连接 ID 覆盖或新增连接。密码不会被导入，需重新输入。是否继续？',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '导入',
+        fontColor: $r('app.color.accent'),
+        action: () => {
+          this.handleImport();
+        }
+      }
+    });
+  }
+
+  private async handleImport(): Promise<void> {
+    if (this.transferBusy) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      this.transferMessage = '无法获取应用上下文';
+      return;
+    }
+    this.transferBusy = true;
+    this.transferMessage = '';
+    const result: ConfigTransferResult =
+      await ConfigTransfer.importFromFile(context as common.UIAbilityContext);
+    this.transferBusy = false;
+    this.transferMessage = result.message;
+    if (result.success) {
+      this.syncFromStore();
+    }
   }
 
   @Builder
@@ -676,6 +760,65 @@ struct SettingsPage {
             .width('100%')
             .padding({ top: 14, bottom: 14 })
             .alignItems(HorizontalAlign.Start)
+
+            Divider().color($r('app.color.divider'))
+
+            Text('配置备份')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ top: 4, bottom: 4 })
+
+            Text('将全局设置和全部连接导出为一个文件，或从文件导入并覆盖。密码保存在系统安全存储中，不会被导出，导入后需重新输入。')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ bottom: 12 })
+
+            Row() {
+              Button('导出配置')
+                .layoutWeight(1)
+                .height(44)
+                .fontSize(15)
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(12)
+                .enabled(!this.transferBusy)
+                .onClick(() => {
+                  this.confirmExport();
+                })
+
+              Button('导入配置')
+                .layoutWeight(1)
+                .height(44)
+                .fontSize(15)
+                .fontColor('#FFFFFF')
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(12)
+                .margin({ left: 12 })
+                .enabled(!this.transferBusy)
+                .onClick(() => {
+                  this.confirmImport();
+                })
+            }
+            .width('100%')
+
+            if (this.transferBusy || this.transferMessage.length > 0) {
+              Row() {
+                if (this.transferBusy) {
+                  LoadingProgress()
+                    .width(16)
+                    .height(16)
+                    .color($r('app.color.accent'))
+                }
+                Text(this.transferBusy ? '处理中…' : this.transferMessage)
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+                  .layoutWeight(1)
+                  .margin({ left: this.transferBusy ? 8 : 0 })
+              }
+              .width('100%')
+              .margin({ top: 10 })
+            }
           }
           .width('100%')
           .constraintSize({ maxWidth: 720 })
