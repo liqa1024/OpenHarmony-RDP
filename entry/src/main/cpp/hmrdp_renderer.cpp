@@ -27,6 +27,26 @@ const char* kFragmentShader =
     "  gl_FragColor = vec4(c.bgr, 1.0);\n"
     "}\n";
 
+// EGL display is process-wide: every renderer shares the same connection but
+// owns its own context/surface. eglTerminate must therefore never be called per
+// renderer, or destroying one session would invalidate all the others.
+EGLDisplay GetSharedDisplay() {
+  static std::once_flag once;
+  static EGLDisplay display = EGL_NO_DISPLAY;
+  std::call_once(once, []() {
+    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display == EGL_NO_DISPLAY) {
+      HMRDP_LOGE("eglGetDisplay failed");
+      return;
+    }
+    if (eglInitialize(display, nullptr, nullptr) != EGL_TRUE) {
+      HMRDP_LOGE("eglInitialize failed: 0x%{public}x", eglGetError());
+      display = EGL_NO_DISPLAY;
+    }
+  });
+  return display;
+}
+
 GLuint CompileShader(GLenum type, const char* source) {
   GLuint shader = glCreateShader(type);
   if (shader == 0) {
@@ -117,14 +137,8 @@ bool Renderer::EnsureContext() {
 
   DestroyContext();
 
-  display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  display_ = GetSharedDisplay();
   if (display_ == EGL_NO_DISPLAY) {
-    HMRDP_LOGE("eglGetDisplay failed");
-    return false;
-  }
-  if (eglInitialize(display_, nullptr, nullptr) != EGL_TRUE) {
-    HMRDP_LOGE("eglInitialize failed: 0x%{public}x", eglGetError());
-    display_ = EGL_NO_DISPLAY;
     return false;
   }
 
@@ -220,7 +234,7 @@ void Renderer::DestroyContext() {
     eglDestroySurface(display_, surface_);
     surface_ = EGL_NO_SURFACE;
   }
-  eglTerminate(display_);
+  // The display is shared across all sessions; never terminate it here.
   display_ = EGL_NO_DISPLAY;
   textureWidth_ = 0;
   textureHeight_ = 0;

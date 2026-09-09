@@ -5,7 +5,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+  RdpConnectOrigin, SavedConnection, SessionRequests } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { SettingsStore } from '../services/SettingsStore';
@@ -47,13 +47,16 @@ struct Index {
     options.scalePercent = profile.scalePercent;
     const password: string = await CredentialStore.loadPassword(conn.id);
     options.password = password;
-    PendingConnection.current.options = options;
-    PendingConnection.current.connectionId = conn.id;
-    PendingConnection.current.origin = RdpConnectOrigin.List;
-    PendingConnection.current.onConnected = undefined;
+    const request: PendingConnection = new PendingConnection();
+    request.options = options;
+    request.connectionId = conn.id;
+    request.origin = RdpConnectOrigin.List;
+    request.onConnected = undefined;
+    const sessionKey: string = SessionRequests.newKey();
+    SessionRequests.put(sessionKey, request);
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
-      WindowController.openSessionWindow(context as common.UIAbilityContext);
+      WindowController.openSessionWindow(context as common.UIAbilityContext, sessionKey);
     }
   }
 

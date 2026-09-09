@@ -6,7 +6,7 @@ import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectOrigin, RdpConnectionState,
-  RdpEvent, RdpPointerFlags, RdpTouchFlags } from '../model/RdpModels';
+  RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
 import { CredentialStore } from '../services/CredentialStore';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
@@ -44,7 +44,7 @@ class RdpSurfaceController extends XComponentController {
   }
 }
 
-@Entry
+@Entry({ useSharedStorage: true })
 @Component
 struct SessionPage {
   @State state: RdpConnectionState = RdpConnectionState.Connecting;
@@ -52,9 +52,14 @@ struct SessionPage {
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
   @State isFullscreen: boolean = false;
+  // Identifies this window's launch request, injected by SessionAbility.
+  @LocalStorageLink('sessionKey') sessionKey: string = '';
 
-  private native: RdpNative = RdpNative.get();
-  private options: RdpConnectOptions = PendingConnection.current.options;
+  private native: RdpNative = new RdpNative();
+  private options: RdpConnectOptions = new RdpConnectOptions();
+  private connectionId: string = '';
+  private origin: RdpConnectOrigin = RdpConnectOrigin.List;
+  private onConnectedCallback: (() => void) | undefined = undefined;
   private controller: RdpSurfaceController = new RdpSurfaceController();
   private componentWidth: number = 0;
   private componentHeight: number = 0;
@@ -89,6 +94,7 @@ struct SessionPage {
   private toolbarInWindowed: boolean = false;
 
   aboutToAppear(): void {
+    this.resolveRequest();
     this.loadSessionWindow();
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
@@ -132,9 +138,23 @@ struct SessionPage {
     this.releaseAllTouches();
     this.endPinch();
     this.native.stopSession();
-    this.native.clearListener();
-    PendingConnection.current.options.password = '';
-    PendingConnection.current.options.gatewayPassword = '';
+    this.options.password = '';
+    this.options.gatewayPassword = '';
+  }
+
+  /**
+   * Resolves this window's launch request by its session key and registers the
+   * native session instance so the ability can tear down exactly this one.
+   */
+  private resolveRequest(): void {
+    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
+    if (request !== undefined) {
+      this.options = request.options;
+      this.connectionId = request.connectionId;
+      this.origin = request.origin;
+      this.onConnectedCallback = request.onConnected;
+    }
+    RdpNative.register(this.sessionKey, this.native);
   }
 
   private startSession(): void {
@@ -195,19 +215,19 @@ struct SessionPage {
    * Sessions launched from the home list must not trigger any extra action.
    */
   private handleConnected(): void {
-    if (PendingConnection.current.origin !== RdpConnectOrigin.Editor) {
+    if (this.origin !== RdpConnectOrigin.Editor) {
       return;
     }
     this.persistPassword();
-    const callback: (() => void) | undefined = PendingConnection.current.onConnected;
-    PendingConnection.current.onConnected = undefined;
+    const callback: (() => void) | undefined = this.onConnectedCallback;
+    this.onConnectedCallback = undefined;
     if (callback !== undefined) {
       callback();
     }
   }
 
   private persistPassword(): void {
-    const connectionId: string = PendingConnection.current.connectionId;
+    const connectionId: string = this.connectionId;
     const password: string = this.options.password;
     if (connectionId.length === 0 || password.length === 0) {
       return;

@@ -75,7 +75,40 @@ export class PendingConnection {
   // Invoked once when a session launched from the editor connects successfully.
   // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;
-  static current: PendingConnection = new PendingConnection();
+}
+
+/**
+ * Launch requests are keyed by a per-window key that travels through the Want,
+ * so concurrent session launches never overwrite each other (the old
+ * PendingConnection.current singleton raced when two windows opened at once).
+ */
+export class SessionRequests {
+  private static entries: Map<string, PendingConnection> = new Map<string, PendingConnection>();
+  private static counter: number = 0;
+
+  static newKey(): string {
+    SessionRequests.counter++;
+    return `${Date.now().toString()}#${SessionRequests.counter.toString()}`;
+  }
+
+  static put(key: string, request: PendingConnection): void {
+    SessionRequests.entries.set(key, request);
+  }
+
+  static get(key: string): PendingConnection | undefined {
+    return SessionRequests.entries.get(key);
+  }
+
+  /** Scrubs the transient credentials and drops the request for a session. */
+  static discard(key: string): void {
+    const request: PendingConnection | undefined = SessionRequests.entries.get(key);
+    if (request !== undefined) {
+      request.options.password = '';
+      request.options.gatewayPassword = '';
+      request.onConnected = undefined;
+      SessionRequests.entries.delete(key);
+    }
+  }
 }
 
 export enum RdpConnectionState {

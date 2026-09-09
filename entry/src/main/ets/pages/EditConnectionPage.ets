@@ -6,7 +6,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+  RdpConnectOrigin, SavedConnection, SessionRequests } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
@@ -40,6 +40,7 @@ struct EditConnectionPage {
   private connectionId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
+  private pendingRequest: PendingConnection | undefined = undefined;
 
   aboutToAppear(): void {
     const detected: DisplayProfile = SettingsStore.detectedDisplay();
@@ -89,7 +90,9 @@ struct EditConnectionPage {
   }
 
   aboutToDisappear(): void {
-    PendingConnection.current.onConnected = undefined;
+    if (this.pendingRequest !== undefined) {
+      this.pendingRequest.onConnected = undefined;
+    }
   }
 
   private parsePort(): number {
@@ -163,15 +166,19 @@ struct EditConnectionPage {
     }
     if (connect) {
       options.password = this.password;
-      PendingConnection.current.options = options;
-      PendingConnection.current.connectionId = id;
-      PendingConnection.current.origin = RdpConnectOrigin.Editor;
-      PendingConnection.current.onConnected = () => {
+      const request: PendingConnection = new PendingConnection();
+      request.options = options;
+      request.connectionId = id;
+      request.origin = RdpConnectOrigin.Editor;
+      request.onConnected = () => {
         this.returnToList();
       };
+      this.pendingRequest = request;
+      const sessionKey: string = SessionRequests.newKey();
+      SessionRequests.put(sessionKey, request);
       const context = this.getUIContext().getHostContext();
       if (context !== undefined) {
-        WindowController.openSessionWindow(context as common.UIAbilityContext);
+        WindowController.openSessionWindow(context as common.UIAbilityContext, sessionKey);
       } else {
         this.errorMessage = '无法打开会话窗口';
       }

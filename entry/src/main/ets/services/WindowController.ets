@@ -49,14 +49,17 @@ export class WindowController {
   /**
    * Opens the RDP session in an independent main window (SessionAbility) so it
    * gets a standard title bar with minimize / maximize / close buttons and can
-   * be moved and resized like any other window.
+   * be moved and resized like any other window. `sessionKey` identifies the
+   * launch request and is also used as the unique instanceKey, so several
+   * sessions can be open at once.
    */
-  static openSessionWindow(context: common.UIAbilityContext): void {
+  static openSessionWindow(context: common.UIAbilityContext, sessionKey: string): void {
     const want: Want = {
       bundleName: BUNDLE_NAME,
       abilityName: SESSION_ABILITY,
       parameters: {
-        instanceKey: 'rdp_' + Date.now().toString()
+        instanceKey: 'rdp_' + sessionKey,
+        sessionKey: sessionKey
       }
     };
     const settings: AppSettings = SettingsStore.load();

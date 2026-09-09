@@ -2,12 +2,14 @@
  * HmRdp - UIAbility hosting an independent RDP session window.
  *
  * Launched via startAbility with a unique instanceKey so every connection gets
- * its own main window (standard title bar, movable / resizable).
+ * its own main window (standard title bar, movable / resizable). The launch
+ * request is identified by `sessionKey`, which lets several sessions coexist
+ * and lets each window tear down only its own native session.
  */
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { PendingConnection } from '../model/RdpModels';
+import { SessionRequests } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -16,28 +18,45 @@ const DOMAIN: number = 0x0000;
 const TAG: string = 'HmRdpSessionAbility';
 
 export default class SessionAbility extends UIAbility {
+  private sessionKey: string = '';
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SettingsStore.init(this.context);
-    hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onCreate');
+    this.sessionKey = SessionAbility.readSessionKey(want);
+    hilog.info(DOMAIN, TAG, '%{public}s key=%{public}s', 'SessionAbility onCreate',
+      this.sessionKey);
   }
 
   onDestroy(): void {
     // Final safety net: if the window is closed before the page lifecycle runs,
     // tear down the native session here so the RDP connection never outlives
-    // its window. stopSession() is idempotent.
+    // its window. stopByKey() only affects this window's session.
     this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onDestroy');
   }
 
   /**
-   * Mirrors the toolbar "断开" action: stop the FreeRDP session, drop the event
-   * listener and scrub the transient credentials held by PendingConnection.
+   * Mirrors the toolbar "断开" action: stop this window's FreeRDP session, drop
+   * its event listener and scrub the transient credentials held by its request.
    */
   private releaseSession(): void {
-    RdpNative.get().stopSession();
-    RdpNative.get().clearListener();
-    PendingConnection.current.options.password = '';
-    PendingConnection.current.options.gatewayPassword = '';
+    if (this.sessionKey.length === 0) {
+      return;
+    }
+    RdpNative.stopByKey(this.sessionKey);
+    SessionRequests.discard(this.sessionKey);
+  }
+
+  private static readSessionKey(want: Want): string {
+    const params: Record<string, Object> | undefined = want.parameters;
+    if (params === undefined) {
+      return '';
+    }
+    const value: Object = params['sessionKey'];
+    if (typeof value === 'string') {
+      return value;
+    }
+    return '';
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -48,7 +67,9 @@ export default class SessionAbility extends UIAbility {
         settings.sessionWindowWidth, settings.sessionWindowHeight,
         settings.sessionWindowSizeEnabled);
     }
-    windowStage.loadContent('pages/SessionPage', (err) => {
+    const storage: LocalStorage = new LocalStorage();
+    storage.setOrCreate<string>('sessionKey', this.sessionKey);
+    windowStage.loadContent('pages/SessionPage', storage, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, 'Failed to load the content. Cause: %{public}s',
           JSON.stringify(err));

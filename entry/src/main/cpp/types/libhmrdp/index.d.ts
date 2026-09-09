@@ -22,17 +22,15 @@ export interface RdpOptions {
   gatewayDomain: string;
 }
 
-export type RdpEventCallback = (event: number, data: string) => void;
+export type RdpEventCallback = (handle: number, event: number, data: string) => void;
 
 export const createSession: () => number;
 export const destroySession: (handle: number) => void;
 export const connect: (handle: number, options: RdpOptions) => boolean;
 export const disconnect: (handle: number) => void;
-export const setSurface: (surfaceId: string, width: number, height: number) => void;
-export const updateSurface: (width: number, height: number) => void;
-export const clearSurface: () => void;
-export const attachSurface: (handle: number) => void;
-export const detachSurface: (handle: number) => void;
+export const setSurface: (handle: number, surfaceId: string, width: number, height: number) => void;
+export const updateSurface: (handle: number, width: number, height: number) => void;
+export const clearSurface: (handle: number) => void;
 export const sendMouse: (handle: number, flags: number, x: number, y: number) => boolean;
 export const sendTouch: (handle: number, flags: number, finger: number, pressure: number,
   x: number, y: number) => boolean;

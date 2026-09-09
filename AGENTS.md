@@ -69,7 +69,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    `libX.so`（链接期）与 `libX.so.3`（运行期）。
 6. **连接与密码存储**：连接配置（host/port/用户名/选项）存 `ConnectionStore`（preferences，
    稳定 UUID 作 `id`，`updatedAt` 供列表刷新）；密码单独存 `CredentialStore`（ASSET，按 `id` 索引）。
-   密码**只在连接成功后**写入（`RdpEvent.Connected` 且 `PendingConnection.origin === Editor`）；
+   密码**只在连接成功后**写入（`RdpEvent.Connected` 且会话请求 `origin === Editor`）；
    从列表连接、或连接失败/取消都不写密码。清空密码只删 ASSET 密码、不删连接。
    注意 preferences 的值必须是 XML 合法字符：任意字符串字段先 `encodeURIComponent` 再用 `|`
    拼接，否则控制字符（如 `\u0001`）会让 preferences 文件损坏成 `.broken`、数据无法落盘。
@@ -89,12 +89,20 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    代替系统标题栏（`win.maximize(ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)` / `win.minimize()` /
    `win.recover()`）。工具栏在**窗口模式下默认不显示**（`AppSettings.toolbarInWindowed` 控制），
    全屏模式下**始终显示**。
-9. **会话窗口**：用独立 `SessionAbility`（`launchType: "specified"`，`startAbility` 带唯一
-   `instanceKey`）打开，才有完整的最小化 / 最大化 / 关闭标题栏；`createSubWindow` 的子窗没有
-   最小化按钮，`setWindowTitleButtonVisible` 对子窗报 1300004。连接参数经 `PendingConnection`
-   静态传递（同一进程共享 ArkTS VM），密码不放进 Want。`PendingConnection.origin` 区分入口：
-   仅编辑页发起（`Editor`）且连接成功时保存密码、并经 `onConnected` 回调让编辑页回退到列表；
-   列表发起（`List`）成功/失败都不做额外操作。
+9. **会话窗口（支持多会话并存）**：用独立 `SessionAbility`（`launchType: "specified"`，
+   `startAbility` 带唯一 `instanceKey`）打开，才有完整的最小化 / 最大化 / 关闭标题栏；
+   `createSubWindow` 的子窗没有最小化按钮，`setWindowTitleButtonVisible` 对子窗报 1300004。
+   - 每次连接生成唯一 `sessionKey`：启动页把 `PendingConnection`（含密码）放进
+     `SessionRequests` 注册表，Want 只带 `sessionKey`/`instanceKey`（密码不进 Want）；
+     `SessionAbility` 用 `LocalStorage` 把 key 注入页面，页面按 key 取回请求。
+   - 每个会话窗口独占一个 `RdpNative` 实例 / 原生 handle：原生事件携带 handle，ArkTS 侧
+     按 handle 路由到对应实例；surface 绑定/销毁、鼠标键盘输入都按 handle 下发。
+   - **窗口关闭即断连**：`SessionAbility.onWindowStageDestroy()` / `onDestroy()` 调用
+     `RdpNative.stopByKey(sessionKey)` + `SessionRequests.discard`，只停自己这条会话（等价于
+     工具栏「断开」）。注意 `SessionPage.aboutToDisappear()` 在窗口关闭时**不会触发**，不要
+     依赖它做断连。
+   - `origin` 区分入口：仅编辑页发起（`Editor`）且连接成功时保存密码、并经 `onConnected`
+     回调让编辑页回退到列表；列表发起（`List`）成功/失败都不做额外操作。
 10. **输入分流 / 触屏 / 触控板**：鼠标走 `onMouse` → RDP 鼠标；真触屏走 `onTouch` → RDPEI
     原生触屏（`Session::SendTouch` → `freerdp_client_handle_touch`，连接时打开
     `FreeRDP_MultiTouchInput`）；滚轮 / 触控板走 `onAxisEvent`。用
@@ -144,6 +152,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
+| `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`stopByKey` 按会话 key 断连 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
