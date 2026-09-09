@@ -32,7 +32,6 @@ std::map<int64_t, std::unique_ptr<Session>> g_sessions;
 std::map<int64_t, OHNativeWindow*> g_windows;
 int64_t g_nextId = 1;
 
-napi_env g_env = nullptr;
 napi_threadsafe_function g_eventTsfn = nullptr;
 
 struct EventPayload {
@@ -41,7 +40,7 @@ struct EventPayload {
   std::string data;
 };
 
-void CallJsEvent(napi_env env, napi_value jsCallback, void* context, void* data) {
+void CallJsEvent(napi_env env, napi_value jsCallback, void*, void* data) {
   std::unique_ptr<EventPayload> payload(static_cast<EventPayload*>(data));
   if (env == nullptr || jsCallback == nullptr || payload == nullptr) {
     return;
@@ -163,10 +162,10 @@ napi_value CreateUndefined(napi_env env) {
 
 // --- NAPI methods ---------------------------------------------------------
 
-napi_value CreateSession(napi_env env, napi_callback_info info) {
+napi_value CreateSession(napi_env env, napi_callback_info) {
   std::lock_guard<std::mutex> lock(g_mutex);
   const int64_t id = g_nextId++;
-  auto session = std::make_unique<Session>(id);
+  auto session = std::make_unique<Session>();
   // Bind the handle into the callback so events can be routed to the owning
   // session window when several sessions run at once.
   session->SetEventFn([id](SessionEvent event, const std::string& data) {
@@ -480,42 +479,6 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value IsConnected(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int64_t handle = 0;
-  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
-    return CreateBool(env, false);
-  }
-  std::lock_guard<std::mutex> lock(g_mutex);
-  Session* session = FindSession(handle);
-  return CreateBool(env, session != nullptr && session->IsConnected());
-}
-
-napi_value RequestResize(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value args[3] = {nullptr, nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int64_t handle = 0;
-  int32_t width = 0;
-  int32_t height = 0;
-  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
-      napi_get_value_int32(env, args[1], &width) != napi_ok ||
-      napi_get_value_int32(env, args[2], &height) != napi_ok) {
-    return CreateUndefined(env);
-  }
-  Session* session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
-  if (session != nullptr) {
-    session->RequestResize(width, height);
-  }
-  return CreateUndefined(env);
-}
-
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -538,17 +501,10 @@ napi_value OnEvent(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-napi_value GetVersion(napi_env env, napi_callback_info info) {
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, "HmRdp/0.1 (FreeRDP 3.10.3)", NAPI_AUTO_LENGTH, &result);
-  return result;
-}
-
 }  // namespace
 
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
-  g_env = env;
   napi_property_descriptor desc[] = {
       {"createSession", nullptr, CreateSession, nullptr, nullptr, nullptr, napi_default,
        nullptr},
@@ -568,14 +524,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"isConnected", nullptr, IsConnected, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"getVersion", nullptr, GetVersion, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-  };
+   };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;
 }

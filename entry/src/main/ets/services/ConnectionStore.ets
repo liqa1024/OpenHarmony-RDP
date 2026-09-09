@@ -7,8 +7,11 @@
  */
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SavedConnection } from '../model/RdpModels';
 
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpConnections';
 const STORE_NAME: string = 'hmrdp_connections';
 const IDS_KEY: string = 'ids';
 const ENTRY_PREFIX: string = 'conn_';
@@ -21,8 +24,14 @@ export class ConnectionStore {
   private static store: preferences.Preferences | undefined = undefined;
 
   static init(context: common.Context): void {
-    if (ConnectionStore.store === undefined) {
+    if (ConnectionStore.store !== undefined) {
+      return;
+    }
+    try {
       ConnectionStore.store = preferences.getPreferencesSync(context, { name: STORE_NAME });
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'open connection store failed: %{public}s',
+        JSON.stringify(error));
     }
   }
 
@@ -59,20 +68,24 @@ export class ConnectionStore {
     if (store === undefined || conn.id.length === 0) {
       return;
     }
-    store.putSync(ENTRY_PREFIX + conn.id, ConnectionStore.serialize(conn));
-    const ids: string[] = ConnectionStore.readIds(store);
-    let known: boolean = false;
-    for (const existing of ids) {
-      if (existing === conn.id) {
-        known = true;
-        break;
+    try {
+      store.putSync(ENTRY_PREFIX + conn.id, ConnectionStore.serialize(conn));
+      const ids: string[] = ConnectionStore.readIds(store);
+      let known: boolean = false;
+      for (const existing of ids) {
+        if (existing === conn.id) {
+          known = true;
+          break;
+        }
       }
+      if (!known) {
+        ids.push(conn.id);
+        store.putSync(IDS_KEY, ids.join(','));
+      }
+      store.flush();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'save connection failed: %{public}s', JSON.stringify(error));
     }
-    if (!known) {
-      ids.push(conn.id);
-      store.putSync(IDS_KEY, ids.join(','));
-    }
-    store.flush();
   }
 
   static remove(id: string): void {
@@ -80,16 +93,20 @@ export class ConnectionStore {
     if (store === undefined || id.length === 0) {
       return;
     }
-    store.deleteSync(ENTRY_PREFIX + id);
-    const ids: string[] = ConnectionStore.readIds(store);
-    const kept: string[] = [];
-    for (const existing of ids) {
-      if (existing !== id) {
-        kept.push(existing);
+    try {
+      store.deleteSync(ENTRY_PREFIX + id);
+      const ids: string[] = ConnectionStore.readIds(store);
+      const kept: string[] = [];
+      for (const existing of ids) {
+        if (existing !== id) {
+          kept.push(existing);
+        }
       }
+      store.putSync(IDS_KEY, kept.join(','));
+      store.flush();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'remove connection failed: %{public}s', JSON.stringify(error));
     }
-    store.putSync(IDS_KEY, kept.join(','));
-    store.flush();
   }
 
   private static readIds(store: preferences.Preferences): string[] {
@@ -193,9 +210,13 @@ export class ConnectionStore {
 
   private static readString(store: preferences.Preferences, key: string,
     fallback: string): string {
-    const value: preferences.ValueType = store.getSync(key, fallback);
-    if (typeof value === 'string') {
-      return value as string;
+    try {
+      const value: preferences.ValueType = store.getSync(key, fallback);
+      if (typeof value === 'string') {
+        return value as string;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'read %{public}s failed: %{public}s', key, JSON.stringify(error));
     }
     return fallback;
   }

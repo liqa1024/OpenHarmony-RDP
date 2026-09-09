@@ -101,7 +101,7 @@ BOOL HmrdpDesktopResize(rdpContext* context) {
   return TRUE;
 }
 
-BOOL HmrdpPlaySound(rdpContext* context, const PLAY_SOUND_UPDATE* playSound) {
+BOOL HmrdpPlaySound(rdpContext*, const PLAY_SOUND_UPDATE*) {
   return TRUE;
 }
 
@@ -124,15 +124,15 @@ UINT SendCliprdrFormatList(CliprdrClientContext* cliprdr) {
 }
 
 UINT HmrdpCliprdrMonitorReady(CliprdrClientContext* cliprdr,
-                              const CLIPRDR_MONITOR_READY* monitorReady) {
+                              const CLIPRDR_MONITOR_READY*) {
   if (cliprdr == nullptr || cliprdr->custom == nullptr) {
     return ERROR_INVALID_PARAMETER;
   }
   return static_cast<Session*>(cliprdr->custom)->OnCliprdrMonitorReady();
 }
 
-UINT HmrdpCliprdrServerCapabilities(CliprdrClientContext* cliprdr,
-                                    const CLIPRDR_CAPABILITIES* capabilities) {
+UINT HmrdpCliprdrServerCapabilities(CliprdrClientContext*,
+                                    const CLIPRDR_CAPABILITIES*) {
   return CHANNEL_RC_OK;
 }
 
@@ -144,18 +144,18 @@ UINT HmrdpCliprdrServerFormatList(CliprdrClientContext* cliprdr,
   return static_cast<Session*>(cliprdr->custom)->OnCliprdrServerFormatList(formatList);
 }
 
-UINT HmrdpCliprdrServerFormatListResponse(CliprdrClientContext* cliprdr,
-                                          const CLIPRDR_FORMAT_LIST_RESPONSE* response) {
+UINT HmrdpCliprdrServerFormatListResponse(CliprdrClientContext*,
+                                          const CLIPRDR_FORMAT_LIST_RESPONSE*) {
   return CHANNEL_RC_OK;
 }
 
-UINT HmrdpCliprdrServerLockClipboardData(CliprdrClientContext* cliprdr,
-                                         const CLIPRDR_LOCK_CLIPBOARD_DATA* data) {
+UINT HmrdpCliprdrServerLockClipboardData(CliprdrClientContext*,
+                                         const CLIPRDR_LOCK_CLIPBOARD_DATA*) {
   return CHANNEL_RC_OK;
 }
 
-UINT HmrdpCliprdrServerUnlockClipboardData(CliprdrClientContext* cliprdr,
-                                           const CLIPRDR_UNLOCK_CLIPBOARD_DATA* data) {
+UINT HmrdpCliprdrServerUnlockClipboardData(CliprdrClientContext*,
+                                           const CLIPRDR_UNLOCK_CLIPBOARD_DATA*) {
   return CHANNEL_RC_OK;
 }
 
@@ -263,10 +263,10 @@ BOOL HmrdpClientNew(freerdp* instance, rdpContext* context) {
   return TRUE;
 }
 
-void HmrdpClientFree(freerdp* instance, rdpContext* context) {}
+void HmrdpClientFree(freerdp*, rdpContext*) {}
 
-int HmrdpClientStart(rdpContext* context) { return 0; }
-int HmrdpClientStop(rdpContext* context) { return 0; }
+int HmrdpClientStart(rdpContext*) { return 0; }
+int HmrdpClientStop(rdpContext*) { return 0; }
 
 BOOL HmrdpGlobalInit() {
   if (freerdp_handle_signals() != 0) {
@@ -313,7 +313,7 @@ std::string EncodeError(uint32_t code, const std::string& message) {
 
 }  // namespace
 
-Session::Session(int64_t id) : id_(id) {
+Session::Session() {
   EnsureEntryPoints();
 }
 
@@ -499,7 +499,6 @@ void Session::EventThread() {
   }
 
   freerdp_disconnect(instance);
-  connected_ = false;
   Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
 }
 
@@ -531,7 +530,6 @@ void Session::Disconnect() {
   cliprdr_ = nullptr;
   clipboardReady_ = false;
   running_ = false;
-  connected_ = false;
   renderer_.Reset();
 }
 
@@ -540,7 +538,6 @@ void Session::HandlePostConnect() {
   const UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
   const UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
   renderer_.SetDesktopSize(static_cast<int>(width), static_cast<int>(height));
-  connected_ = true;
   Emit(SessionEvent::kConnected, "");
 }
 
@@ -592,7 +589,6 @@ void Session::HandleDesktopResize() {
 }
 
 void Session::HandlePostDisconnect() {
-  connected_ = false;
   clipboardReady_ = false;
   cliprdr_ = nullptr;
 }
@@ -608,14 +604,6 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
     return false;
   }
   return freerdp_input_send_mouse_event(instance_->context->input, flags, x, y);
-}
-
-bool Session::SendExtendedMouse(uint16_t flags, uint16_t x, uint16_t y) {
-  if (instance_ == nullptr || instance_->context == nullptr ||
-      instance_->context->input == nullptr) {
-    return false;
-  }
-  return freerdp_input_send_extended_mouse_event(instance_->context->input, flags, x, y);
 }
 
 bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x,
@@ -647,30 +635,6 @@ bool Session::SendUnicode(uint16_t codepoint, bool down) {
   UINT16 flags = down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
   return freerdp_input_send_unicode_keyboard_event(instance_->context->input, flags,
                                                    codepoint);
-}
-
-bool Session::SendSynchronize() {
-  if (instance_ == nullptr || instance_->context == nullptr ||
-      instance_->context->input == nullptr) {
-    return false;
-  }
-  return freerdp_input_send_synchronize_event(instance_->context->input, 0);
-}
-
-void Session::RequestResize(int width, int height) {
-  if (instance_ == nullptr || instance_->context == nullptr) {
-    return;
-  }
-  rdpSettings* settings = instance_->context->settings;
-  freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth,
-                              static_cast<uint32_t>(width));
-  freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight,
-                              static_cast<uint32_t>(height));
-  renderer_.SetDesktopSize(width, height);
-}
-
-void Session::SetClipboardEnabled(bool enabled) {
-  clipboardEnabled_ = enabled;
 }
 
 void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {

@@ -37,8 +37,7 @@ export enum RdpEvent {
   Error = 2,
   FirstFrame = 3,
   ClipboardText = 4,
-  Resize = 5,
-  Certificate = 6
+  Resize = 5
 }
 
 export class RdpConnectOptions implements RdpOptions {

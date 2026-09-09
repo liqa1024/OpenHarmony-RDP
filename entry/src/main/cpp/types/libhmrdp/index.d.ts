@@ -37,7 +37,4 @@ export const sendTouch: (handle: number, flags: number, finger: number, pressure
 export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
 export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
 export const setClipboardText: (handle: number, text: string) => boolean;
-export const isConnected: (handle: number) => boolean;
-export const requestResize: (handle: number, width: number, height: number) => void;
 export const onEvent: (callback: RdpEventCallback) => void;
-export const getVersion: () => string;

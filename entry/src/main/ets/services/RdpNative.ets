@@ -6,7 +6,7 @@
  * routed back to the owning instance.
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
-  getVersion, isConnected, onEvent, requestResize, sendKey, sendMouse, sendTouch,
+  onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardText, setSurface, updateSurface,
   RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
@@ -43,20 +43,6 @@ export class RdpNative {
   /** Returns the instance registered for a session key, if any. */
   static findByKey(key: string): RdpNative | undefined {
     return byKey.get(key);
-  }
-
-  /** Stops only the session owned by the given key (window close / destroy). */
-  static stopByKey(key: string): void {
-    const target: RdpNative | undefined = byKey.get(key);
-    if (target !== undefined) {
-      target.stopSession();
-      target.clearListener();
-    }
-    byKey.delete(key);
-  }
-
-  version(): string {
-    return getVersion();
   }
 
   setListener(listener: RdpEventListener): void {
@@ -118,10 +104,6 @@ export class RdpNative {
     }
   }
 
-  connected(): boolean {
-    return this.handle >= 0 && isConnected(this.handle);
-  }
-
   mouse(flags: number, x: number, y: number): void {
     if (this.handle >= 0) {
       sendMouse(this.handle, flags, x, y);
@@ -150,12 +132,6 @@ export class RdpNative {
   setClipboard(text: string): void {
     if (this.handle >= 0) {
       setClipboardText(this.handle, text);
-    }
-  }
-
-  resize(width: number, height: number): void {
-    if (this.handle >= 0) {
-      requestResize(this.handle, width, height);
     }
   }
 }

@@ -31,7 +31,7 @@ export default class SessionAbility extends UIAbility {
   onDestroy(): void {
     // Final safety net: if the window is closed before the page lifecycle runs,
     // tear down the native session here so the RDP connection never outlives
-    // its window. stopByKey() only affects this window's session.
+    // its window. releaseSession() only affects this window's session.
     this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onDestroy');
   }
@@ -71,9 +71,13 @@ export default class SessionAbility extends UIAbility {
     }
     // Single-window mode: block the system close button so the main window can
     // be relaunched first (see WindowController.closeSession).
-    windowStage.on('windowStageClose', () => {
-      return WindowController.closeSession(this.context);
-    });
+    try {
+      windowStage.on('windowStageClose', () => {
+        return WindowController.closeSession(this.context);
+      });
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'watch window close failed: %{public}s', JSON.stringify(error));
+    }
     const storage: LocalStorage = new LocalStorage();
     storage.setOrCreate<string>('sessionKey', this.sessionKey);
     windowStage.loadContent('pages/SessionPage', storage, (err) => {

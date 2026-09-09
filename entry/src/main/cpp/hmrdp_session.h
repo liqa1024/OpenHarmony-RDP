@@ -26,7 +26,6 @@ enum class SessionEvent {
   kFirstFrame = 3,
   kClipboardText = 4,
   kResize = 5,
-  kCertificate = 6,
 };
 
 struct RdpOptions {
@@ -59,35 +58,27 @@ class Session {
  public:
   using EventFn = std::function<void(SessionEvent, const std::string&)>;
 
-  explicit Session(int64_t id);
+  explicit Session();
   ~Session();
 
   Session(const Session&) = delete;
   Session& operator=(const Session&) = delete;
 
-  int64_t id() const { return id_; }
   Renderer* renderer() { return &renderer_; }
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
   bool Connect(const RdpOptions& options);
   void Disconnect();
-  bool IsConnected() const { return connected_.load(); }
 
   bool SendMouse(uint16_t flags, uint16_t x, uint16_t y);
-  bool SendExtendedMouse(uint16_t flags, uint16_t x, uint16_t y);
   bool SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x, int32_t y);
   bool SendKey(uint8_t scancode, bool down, bool extended);
   bool SendUnicode(uint16_t codepoint, bool down);
-  bool SendSynchronize();
 
-  void RequestResize(int width, int height);
-  void SetClipboardEnabled(bool enabled);
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);
-
-  const std::string& LastError() const { return lastError_; }
 
   // Internal callbacks used by the FreeRDP glue.
   freerdp* instance() const { return instance_; }
@@ -110,14 +101,12 @@ class Session {
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
 
-  int64_t id_;
   freerdp* instance_ = nullptr;
   Renderer renderer_;
   EventFn eventFn_;
   std::string lastError_;
   uint32_t lastErrorCode_ = 0;
 
-  std::atomic<bool> connected_{false};
   std::atomic<bool> running_{false};
   std::atomic<bool> stopRequested_{false};
   std::atomic<bool> clipboardEnabled_{true};

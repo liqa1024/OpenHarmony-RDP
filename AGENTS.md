@@ -111,9 +111,11 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     `Client*` 发送函数**。文本按 CF_UNICODETEXT 传输，本地文本缓存为 NUL 结尾 UTF-16LE。
     - **远端→本机**：收到原生 `RdpEvent.ClipboardText`（值为 4）时 `SessionPage` 写回系统剪贴板
       （`setData` 不需要权限）。
-    - **本机→远端**：**不申请 `ohos.permission.READ_PASTEBOARD`**（它是 `system_basic` 级，
-      普通签名装不上真机），改用工具栏里的 `PasteButton` 安全控件：用户点击时系统临时授权，
-      回调里读剪贴板 → `native.setClipboard(text)`。
+    - **本机→远端**：`ClipboardSync` 监听系统剪贴板 `update` 事件，变化时自动推送到远端
+      （`native.setClipboard(text)`），因此需要申请 `ohos.permission.READ_PASTEBOARD`
+      （`module.json5` 声明 + `EntryAbility` 运行时申请）。**该权限为 `system_basic` 级，普通签名
+      真机可能无法授权，届时本机→远端会静默失效；权限方案待后续解决**（曾考虑 PasteButton 安全
+      控件，当前未采用）。
     - 仅支持纯文本，图片/文件不处理。
 12. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
@@ -158,7 +160,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
 | `entry/src/main/ets/services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；`DocumentViewPicker` + `fileIo`，密码不导出） |
-| `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey`/`stopByKey` 按会话 key 复用与断连 |
+| `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 按会话 key 复用实例 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |

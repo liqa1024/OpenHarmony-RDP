@@ -39,5 +39,8 @@ target_link_libraries(hmrdp
     freerdp-client3
 )
 
-target_compile_options(hmrdp PRIVATE -Wall -Wextra -O2 -fPIC)
+# -Wno-unused-command-line-argument silences the OHOS toolchain passing
+# --gcc-toolchain to compile-only invocations (clang reports it as unused).
+target_compile_options(hmrdp PRIVATE -Wall -Wextra -O2 -fPIC
+    -Wno-unused-command-line-argument)
 target_compile_definitions(hmrdp PRIVATE NAPI_VERSION=8)

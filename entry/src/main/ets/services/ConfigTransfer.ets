@@ -176,7 +176,10 @@ export class ConfigTransfer {
         result.message = '已取消导出';
         return result;
       }
-      ConfigTransfer.writeText(uris[0], text);
+      if (!ConfigTransfer.writeText(uris[0], text)) {
+        result.message = '导出失败：无法写入文件';
+        return result;
+      }
       result.success = true;
       result.connectionCount = exported.length;
       result.message = `已导出全局设置和 ${exported.length} 个连接（不含密码）`;
@@ -250,19 +253,24 @@ export class ConfigTransfer {
     return result;
   }
 
-  private static writeText(uri: string, text: string): void {
-    const file: fileIo.File = fileIo.openSync(uri,
-      fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+  private static writeText(uri: string, text: string): boolean {
+    let file: fileIo.File | undefined = undefined;
     try {
+      file = fileIo.openSync(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
       fileIo.writeSync(file.fd, text);
+      return true;
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'write config failed: %{public}s', JSON.stringify(error));
+      return false;
     } finally {
-      fileIo.closeSync(file);
+      ConfigTransfer.closeQuietly(file);
     }
   }
 
   private static readText(uri: string): string {
-    const file: fileIo.File = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+    let file: fileIo.File | undefined = undefined;
     try {
+      file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
       const size: number = fileIo.statSync(file.fd).size;
       if (size <= 0) {
         return '';
@@ -270,8 +278,22 @@ export class ConfigTransfer {
       const buffer: ArrayBuffer = new ArrayBuffer(size);
       fileIo.readSync(file.fd, buffer);
       return util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(buffer));
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'read config failed: %{public}s', JSON.stringify(error));
+      return '';
     } finally {
+      ConfigTransfer.closeQuietly(file);
+    }
+  }
+
+  private static closeQuietly(file: fileIo.File | undefined): void {
+    if (file === undefined) {
+      return;
+    }
+    try {
       fileIo.closeSync(file);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'close config file failed: %{public}s', JSON.stringify(error));
     }
   }
 

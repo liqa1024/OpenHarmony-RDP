@@ -33,7 +33,12 @@ export class WindowController {
     if (stage === undefined) {
       return undefined;
     }
-    return stage.getMainWindowSync();
+    try {
+      return stage.getMainWindowSync();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'get main window failed: %{public}s', JSON.stringify(error));
+      return undefined;
+    }
   }
 
   static applyMainWindowSize(width: number, height: number, enabled: boolean): void {
@@ -52,7 +57,14 @@ export class WindowController {
     if (!enabled || width <= 0 || height <= 0) {
       return;
     }
-    WindowController.resizeAndCenter(stage.getMainWindowSync(), width, height);
+    let mainWindow: window.Window | undefined = undefined;
+    try {
+      mainWindow = stage.getMainWindowSync();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'get main window failed: %{public}s', JSON.stringify(error));
+      return;
+    }
+    WindowController.resizeAndCenter(mainWindow, width, height);
   }
 
   /**
@@ -195,20 +207,24 @@ export class WindowController {
       return;
     }
     const mainWindow: window.Window = win;
-    mainWindow.on('windowStatusChange', (status: window.WindowStatusType) => {
-      if (status === window.WindowStatusType.MAXIMIZE) {
-        // The system maximize button only maximizes; promote it to immersive
-        // fullscreen so the session always fills the whole screen.
-        mainWindow.maximize(
-          window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
-          .catch((error: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'enter immersive failed: %{public}s',
-              JSON.stringify(error));
-          });
-      } else if (status === window.WindowStatusType.FULL_SCREEN) {
-        WindowController.hideSystemTitleAndDock(mainWindow);
-      }
-    });
+    try {
+      mainWindow.on('windowStatusChange', (status: window.WindowStatusType) => {
+        if (status === window.WindowStatusType.MAXIMIZE) {
+          // The system maximize button only maximizes; promote it to immersive
+          // fullscreen so the session always fills the whole screen.
+          mainWindow.maximize(
+            window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
+            .catch((error: BusinessError) => {
+              hilog.error(DOMAIN, TAG, 'enter immersive failed: %{public}s',
+                JSON.stringify(error));
+            });
+        } else if (status === window.WindowStatusType.FULL_SCREEN) {
+          WindowController.hideSystemTitleAndDock(mainWindow);
+        }
+      });
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'watch window status failed: %{public}s', JSON.stringify(error));
+    }
     if (fullscreenDefault) {
       WindowController.hideSystemTitleAndDock(mainWindow);
     }

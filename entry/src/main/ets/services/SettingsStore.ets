@@ -4,7 +4,11 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AdvancedProfile, DisplayProfile, SavedConnection } from '../model/RdpModels';
+
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 350;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
@@ -57,8 +61,13 @@ export class SettingsStore {
   private static store: preferences.Preferences | undefined = undefined;
 
   static init(context: common.Context): void {
-    if (SettingsStore.store === undefined) {
+    if (SettingsStore.store !== undefined) {
+      return;
+    }
+    try {
       SettingsStore.store = preferences.getPreferencesSync(context, { name: 'hmrdp_settings' });
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'open settings store failed: %{public}s', JSON.stringify(error));
     }
   }
 
@@ -142,7 +151,10 @@ export class SettingsStore {
 
   static save(settings: AppSettings): void {
     const store: preferences.Preferences | undefined = SettingsStore.store;
-    if (store !== undefined) {
+    if (store === undefined) {
+      return;
+    }
+    try {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('toolbarInWindowed', settings.toolbarInWindowed);
@@ -167,6 +179,8 @@ export class SettingsStore {
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.flush();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));
     }
   }
 
@@ -307,18 +321,26 @@ export class SettingsStore {
 
   private static readNumber(store: preferences.Preferences, key: string,
     fallback: number): number {
-    const value: preferences.ValueType = store.getSync(key, fallback);
-    if (typeof value === 'number') {
-      return value as number;
+    try {
+      const value: preferences.ValueType = store.getSync(key, fallback);
+      if (typeof value === 'number') {
+        return value as number;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'read %{public}s failed: %{public}s', key, JSON.stringify(error));
     }
     return fallback;
   }
 
   private static readBoolean(store: preferences.Preferences, key: string,
     fallback: boolean): boolean {
-    const value: preferences.ValueType = store.getSync(key, fallback);
-    if (typeof value === 'boolean') {
-      return value as boolean;
+    try {
+      const value: preferences.ValueType = store.getSync(key, fallback);
+      if (typeof value === 'boolean') {
+        return value as boolean;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'read %{public}s failed: %{public}s', key, JSON.stringify(error));
     }
     return fallback;
   }

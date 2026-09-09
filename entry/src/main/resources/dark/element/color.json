@@ -37,18 +37,6 @@
       "value": "#4A8BFF"
     },
     {
-      "name": "accent_pressed",
-      "value": "#3A6FD4"
-    },
-    {
-      "name": "chip_bg",
-      "value": "#1E2C45"
-    },
-    {
-      "name": "chip_text",
-      "value": "#8FBBFF"
-    },
-    {
       "name": "danger",
       "value": "#F05A40"
     },

@@ -3,7 +3,7 @@
  */
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
-import { AdvancedProfile, DisplayProfile } from '../model/RdpModels';
+import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 

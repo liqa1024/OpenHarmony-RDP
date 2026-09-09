@@ -8,6 +8,10 @@
  */
 import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpCredentials';
 
 function toBytes(text: string): Uint8Array {
   return new util.TextEncoder().encodeInto(text);
@@ -32,7 +36,11 @@ export class CredentialStore {
     attributes.set(asset.Tag.ACCESSIBILITY, asset.Accessibility.DEVICE_FIRST_UNLOCKED);
     attributes.set(asset.Tag.AUTH_TYPE, asset.AuthType.NONE);
     attributes.set(asset.Tag.SYNC_TYPE, asset.SyncType.NEVER);
-    await asset.add(attributes);
+    try {
+      await asset.add(attributes);
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'save password failed: %{public}s', JSON.stringify(error));
+    }
   }
 
   static async loadPassword(connectionId: string): Promise<string> {
