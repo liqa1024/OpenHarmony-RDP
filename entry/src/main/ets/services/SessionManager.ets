@@ -15,6 +15,9 @@ import { WindowController } from './WindowController';
 
 const DOMAIN: number = 0xD003;
 const TAG: string = 'HmRdpSessionManager';
+// Safety net for connection attempts that never report a terminal event (an
+// unreachable host or a stalled handshake would otherwise spin forever).
+const CONNECT_TIMEOUT_MS: number = 30000;
 
 export enum ConnectionState {
   Idle = 0,
@@ -24,7 +27,7 @@ export enum ConnectionState {
 }
 
 export type SessionStateListener = (connectionId: string, state: ConnectionState,
-  message: string) => void;
+  message: string, origin: RdpConnectOrigin) => void;
 export type SessionWindowListener = (event: RdpEvent, data: string) => void;
 export type SessionCloseListener = () => void;
 
@@ -36,6 +39,7 @@ class SessionEntry {
   native: RdpNative = new RdpNative();
   request: PendingConnection = new PendingConnection();
   windowOpen: boolean = false;
+  timeoutId: number = -1;
 }
 
 export class SessionManager {
@@ -103,15 +107,18 @@ export class SessionManager {
     native.setListener((event: RdpEvent, data: string) => {
       SessionManager.onNativeEvent(entry, event, data, context);
     });
-    SessionManager.notify(connectionId, ConnectionState.Connecting, '');
+    SessionManager.notify(connectionId, ConnectionState.Connecting, '', request.origin);
     const handle: number = native.startSession(request.options);
     if (handle < 0) {
       entry.state = ConnectionState.Failed;
       entry.message = '无法创建会话';
       native.clearListener();
       SessionManager.cleanup(entry);
-      SessionManager.notify(connectionId, ConnectionState.Failed, entry.message);
+      SessionManager.notify(connectionId, ConnectionState.Failed, entry.message,
+        request.origin);
+      return;
     }
+    SessionManager.armTimeout(entry);
   }
 
   /** User-initiated disconnect from the list; also closes the session window. */
@@ -122,10 +129,11 @@ export class SessionManager {
     }
     const closeCallback: SessionCloseListener | undefined =
       SessionManager.closeListeners.get(entry.sessionKey);
+    const origin: RdpConnectOrigin = entry.request.origin;
     entry.native.stopSession();
     entry.native.clearListener();
     SessionManager.cleanup(entry);
-    SessionManager.notify(connectionId, ConnectionState.Idle, '');
+    SessionManager.notify(connectionId, ConnectionState.Idle, '', origin);
     if (closeCallback !== undefined) {
       closeCallback();
     }
@@ -139,14 +147,18 @@ export class SessionManager {
     }
     entry.state = ConnectionState.Connecting;
     entry.message = '';
-    SessionManager.notify(connectionId, ConnectionState.Connecting, '');
+    SessionManager.notify(connectionId, ConnectionState.Connecting, '',
+      entry.request.origin);
     const handle: number = entry.native.startSession(entry.request.options);
     if (handle < 0) {
       entry.state = ConnectionState.Failed;
       entry.message = '无法创建会话';
       SessionManager.cleanup(entry);
-      SessionManager.notify(connectionId, ConnectionState.Failed, entry.message);
+      SessionManager.notify(connectionId, ConnectionState.Failed, entry.message,
+        entry.request.origin);
+      return;
     }
+    SessionManager.armTimeout(entry);
   }
 
   /** Called when the session window is destroyed: tear down only its session. */
@@ -158,13 +170,16 @@ export class SessionManager {
       return;
     }
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
+    let origin: RdpConnectOrigin = RdpConnectOrigin.List;
     if (entry !== undefined) {
+      origin = entry.request.origin;
+      SessionManager.clearEntryTimeout(entry);
       entry.native.stopSession();
       entry.native.clearListener();
       SessionManager.entries.delete(connectionId);
     }
     SessionManager.byKey.delete(sessionKey);
-    SessionManager.notify(connectionId, ConnectionState.Idle, '');
+    SessionManager.notify(connectionId, ConnectionState.Idle, '', origin);
   }
 
   /** Session window subscribes to native events forwarded by the manager. */
@@ -184,10 +199,12 @@ export class SessionManager {
   private static onNativeEvent(entry: SessionEntry, event: RdpEvent, data: string,
     context: common.UIAbilityContext): void {
     if (event === RdpEvent.Connected) {
+      SessionManager.clearEntryTimeout(entry);
       entry.state = ConnectionState.Connected;
       entry.message = '';
       SessionManager.handleConnected(entry);
-      SessionManager.notify(entry.connectionId, ConnectionState.Connected, '');
+      SessionManager.notify(entry.connectionId, ConnectionState.Connected, '',
+        entry.request.origin);
       if (!entry.windowOpen) {
         entry.windowOpen = true;
         WindowController.openSessionWindow(context, entry.sessionKey);
@@ -199,16 +216,19 @@ export class SessionManager {
       entry.native.stopSession();
       entry.native.clearListener();
       SessionManager.cleanup(entry);
-      SessionManager.notify(entry.connectionId, ConnectionState.Failed, message);
+      SessionManager.notify(entry.connectionId, ConnectionState.Failed, message,
+        entry.request.origin);
       return;
     } else if (event === RdpEvent.Disconnected) {
       if (entry.state === ConnectionState.Connected ||
         entry.state === ConnectionState.Connecting) {
+        SessionManager.clearEntryTimeout(entry);
         const message: string = SessionManager.describeError(data);
         entry.native.stopSession();
         entry.state = ConnectionState.Idle;
         entry.message = message;
-        SessionManager.notify(entry.connectionId, ConnectionState.Idle, message);
+        SessionManager.notify(entry.connectionId, ConnectionState.Idle, message,
+          entry.request.origin);
       }
     }
     const windowListener: SessionWindowListener | undefined =
@@ -237,15 +257,42 @@ export class SessionManager {
   }
 
   private static cleanup(entry: SessionEntry): void {
+    SessionManager.clearEntryTimeout(entry);
     SessionManager.entries.delete(entry.connectionId);
     SessionManager.byKey.delete(entry.sessionKey);
     SessionManager.windowListeners.delete(entry.sessionKey);
     SessionManager.closeListeners.delete(entry.sessionKey);
   }
 
-  private static notify(connectionId: string, state: ConnectionState, message: string): void {
-    for (let i = 0; i < SessionManager.stateListeners.length; i++) {
-      SessionManager.stateListeners[i](connectionId, state, message);
+  private static armTimeout(entry: SessionEntry): void {
+    SessionManager.clearEntryTimeout(entry);
+    entry.timeoutId = setTimeout(() => {
+      entry.timeoutId = -1;
+      if (entry.state !== ConnectionState.Connecting) {
+        return;
+      }
+      entry.state = ConnectionState.Failed;
+      entry.message = '连接超时，请检查地址或网络';
+      entry.native.stopSession();
+      entry.native.clearListener();
+      SessionManager.cleanup(entry);
+      SessionManager.notify(entry.connectionId, ConnectionState.Failed, entry.message,
+        entry.request.origin);
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  private static clearEntryTimeout(entry: SessionEntry): void {
+    if (entry.timeoutId !== -1) {
+      clearTimeout(entry.timeoutId);
+      entry.timeoutId = -1;
+    }
+  }
+
+  private static notify(connectionId: string, state: ConnectionState, message: string,
+    origin: RdpConnectOrigin): void {
+    const listeners: SessionStateListener[] = SessionManager.stateListeners.slice();
+    for (let i = 0; i < listeners.length; i++) {
+      listeners[i](connectionId, state, message, origin);
     }
   }
 

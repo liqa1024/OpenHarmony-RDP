@@ -9,6 +9,19 @@ import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsS
 // resolution is capped only to a sane upper bound.
 const MAX_DESKTOP_SIZE: number = 16384;
 
+// @Builder parameters are only reactive when passed as a single object literal
+// (by reference); passing primitives by value would freeze the displayed value.
+class SliderItemConfig {
+  title: string = '';
+  subtitle: string = '';
+  value: number = 0;
+  min: number = 0;
+  max: number = 100;
+  step: number = 1;
+  unit: string = '';
+  onChange: (v: number) => void = (v: number) => {};
+}
+
 @Entry
 @Component
 struct SettingsPage {
@@ -210,31 +223,30 @@ struct SettingsPage {
   }
 
   @Builder
-  sliderItem(title: string, subtitle: string, value: number, min: number, max: number,
-    step: number, unit: string, onChange: (v: number) => void) {
+  sliderItem(item: SliderItemConfig) {
     Column() {
       Row() {
         Column() {
-          Text(title).fontSize(14).fontColor($r('app.color.text_primary'))
-          Text(subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
+          Text(item.title).fontSize(14).fontColor($r('app.color.text_primary'))
+          Text(item.subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
             .margin({ top: 2 })
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Text(value.toString() + unit)
+        Text(item.value.toString() + item.unit)
           .fontSize(14)
           .fontColor($r('app.color.accent'))
       }
       .width('100%')
 
-      Slider({ value: value, min: min, max: max, step: step })
+      Slider({ value: item.value, min: item.min, max: item.max, step: item.step })
         .width('100%')
         .selectedColor($r('app.color.accent'))
         .trackColor($r('app.color.input_bg'))
         .margin({ top: 6 })
         .onChange((newValue: number, mode: SliderChangeMode) => {
-          onChange(Math.round(newValue));
+          item.onChange(Math.round(newValue));
         })
     }
     .width('100%')
@@ -301,19 +313,35 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            this.sliderItem('工具栏触发停留时间', '鼠标停留在屏幕顶部多久后弹出工具栏',
-              this.hoverDelay, 100, 1200, 50, ' ms', (v: number) => {
+            this.sliderItem({
+              title: '工具栏触发停留时间',
+              subtitle: '鼠标停留在屏幕顶部多久后弹出工具栏',
+              value: this.hoverDelay,
+              min: 100,
+              max: 1200,
+              step: 50,
+              unit: ' ms',
+              onChange: (v: number) => {
                 this.hoverDelay = v;
                 this.persist();
-              })
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 
-            this.sliderItem('工具栏隐藏延迟', '鼠标移开后多久收起工具栏',
-              this.hideDelay, 100, 1000, 50, ' ms', (v: number) => {
+            this.sliderItem({
+              title: '工具栏隐藏延迟',
+              subtitle: '鼠标移开后多久收起工具栏',
+              value: this.hideDelay,
+              min: 100,
+              max: 1000,
+              step: 50,
+              unit: ' ms',
+              onChange: (v: number) => {
                 this.hideDelay = v;
                 this.persist();
-              })
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 
@@ -322,19 +350,35 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
-            this.sliderItem('滚动步长', '触控板双指滑动多少位移换算为一格滚轮',
-              this.touchpadScrollUnit, 10, 120, 5, ' vp', (v: number) => {
+            this.sliderItem({
+              title: '滚动步长',
+              subtitle: '触控板双指滑动多少位移换算为一格滚轮',
+              value: this.touchpadScrollUnit,
+              min: 10,
+              max: 120,
+              step: 5,
+              unit: ' vp',
+              onChange: (v: number) => {
                 this.touchpadScrollUnit = v;
                 this.persist();
-              })
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 
-            this.sliderItem('捏合缩放步进', '捏合比例每变化多少发一格 Ctrl+滚轮 缩放',
-              this.pinchZoomStep, 2, 30, 1, ' %', (v: number) => {
+            this.sliderItem({
+              title: '捏合缩放步进',
+              subtitle: '捏合比例每变化多少发一格 Ctrl+滚轮 缩放',
+              value: this.pinchZoomStep,
+              min: 2,
+              max: 30,
+              step: 1,
+              unit: ' %',
+              onChange: (v: number) => {
                 this.pinchZoomStep = v;
                 this.persist();
-              })
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 

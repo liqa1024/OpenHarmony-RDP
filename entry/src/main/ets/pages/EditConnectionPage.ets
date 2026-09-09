@@ -9,7 +9,7 @@ import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOpti
   RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
-import { SessionManager } from '../services/SessionManager';
+import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 
 const DOMAIN: number = 0xD001;
@@ -37,11 +37,32 @@ struct EditConnectionPage {
   @State editing: boolean = false;
   @State detectedText: string = '';
   @State recommendedScale: number = 100;
+  @State connecting: boolean = false;
   private connectionId: string = '';
+  // Id of the in-flight attempt (may be a brand-new id for a new connection).
+  private activeConnectionId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
 
+  // Tracks this editor's own connection attempt. On failure the page stays put
+  // so the typed password is preserved and can be corrected.
+  private sessionListener: SessionStateListener = (connectionId: string,
+    state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
+    if (origin !== RdpConnectOrigin.Editor || connectionId !== this.activeConnectionId) {
+      return;
+    }
+    if (state === ConnectionState.Connecting) {
+      this.connecting = true;
+    } else if (state === ConnectionState.Failed) {
+      this.connecting = false;
+      this.errorMessage = message;
+    } else if (state === ConnectionState.Idle || state === ConnectionState.Connected) {
+      this.connecting = false;
+    }
+  };
+
   aboutToAppear(): void {
+    SessionManager.subscribe(this.sessionListener);
     const detected: DisplayProfile = SettingsStore.detectedDisplay();
     this.detectedText = detected.valid()
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
@@ -86,6 +107,17 @@ struct EditConnectionPage {
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'load password failed: %{public}s', JSON.stringify(error));
       });
+  }
+
+  aboutToDisappear(): void {
+    SessionManager.unsubscribe(this.sessionListener);
+  }
+
+  onBackPress(): boolean {
+    // Leaving while connecting cancels the attempt instead of letting it run
+    // against a destroyed page.
+    this.cancelConnect();
+    return false;
   }
 
   private parsePort(): number {
@@ -150,29 +182,53 @@ struct EditConnectionPage {
     const conn: SavedConnection = SavedConnection.fromOptions(id, options);
     conn.useGlobalDisplay = this.useGlobalDisplay;
     conn.updatedAt = Date.now();
+    if (!connect) {
+      if (!this.persist(conn)) {
+        return;
+      }
+      this.returnToList();
+      return;
+    }
+    // Connect first; the configuration is persisted only on success so a failed
+    // attempt never creates or modifies a saved connection.
+    options.password = this.password;
+    const request: PendingConnection = new PendingConnection();
+    request.options = options;
+    request.connectionId = id;
+    request.origin = RdpConnectOrigin.Editor;
+    request.onConnected = () => {
+      this.persist(conn);
+      this.returnToList();
+    };
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      this.errorMessage = '无法发起连接';
+      return;
+    }
+    this.activeConnectionId = id;
+    this.errorMessage = '';
+    this.connecting = true;
+    SessionManager.connect(request, context as common.UIAbilityContext);
+    // Stay on the editor while connecting: on failure the typed password is
+    // preserved so the user can correct it; on success onConnected returns.
+  }
+
+  private persist(conn: SavedConnection): boolean {
     try {
       ConnectionStore.save(conn);
+      return true;
     } catch (error) {
       this.errorMessage = '保存失败，请重试';
       hilog.error(DOMAIN, TAG, 'save failed: %{public}s', JSON.stringify(error));
+      return false;
+    }
+  }
+
+  private cancelConnect(): void {
+    if (!this.connecting || this.activeConnectionId.length === 0) {
       return;
     }
-    if (connect) {
-      options.password = this.password;
-      const request: PendingConnection = new PendingConnection();
-      request.options = options;
-      request.connectionId = id;
-      request.origin = RdpConnectOrigin.Editor;
-      request.onConnected = undefined;
-      const context = this.getUIContext().getHostContext();
-      if (context === undefined) {
-        this.errorMessage = '无法发起连接';
-        return;
-      }
-      SessionManager.connect(request, context as common.UIAbilityContext);
-    }
-    // Return to the list so the connection progress / result is visible there.
-    this.returnToList();
+    SessionManager.disconnect(this.activeConnectionId);
   }
 
   private handleSave(): void {
@@ -395,31 +451,68 @@ struct EditConnectionPage {
                   .fontColor($r('app.color.danger'))
                   .backgroundColor($r('app.color.input_bg'))
                   .borderRadius(12)
+                  .enabled(!this.connecting)
                   .onClick(() => {
                     this.deleteCurrent();
                   })
-                Button('连接')
-                  .layoutWeight(2)
-                  .height(48)
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .backgroundColor($r('app.color.accent'))
-                  .borderRadius(12)
-                  .margin({ left: 12 })
-                  .onClick(() => {
+                Button() {
+                  Row() {
+                    if (this.connecting) {
+                      LoadingProgress()
+                        .width(18)
+                        .height(18)
+                        .color('#FFFFFF')
+                    }
+                    Text(this.connecting ? '取消' : '连接')
+                      .fontSize(16)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor('#FFFFFF')
+                      .margin({ left: this.connecting ? 8 : 0 })
+                  }
+                  .justifyContent(FlexAlign.Center)
+                  .alignItems(VerticalAlign.Center)
+                }
+                .layoutWeight(2)
+                .height(48)
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(12)
+                .margin({ left: 12 })
+                .onClick(() => {
+                  if (this.connecting) {
+                    this.cancelConnect();
+                  } else {
                     this.submit(true);
-                  })
+                  }
+                })
               } else {
-                Button('连接')
-                  .width('100%')
-                  .height(48)
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .backgroundColor($r('app.color.accent'))
-                  .borderRadius(12)
-                  .onClick(() => {
+                Button() {
+                  Row() {
+                    if (this.connecting) {
+                      LoadingProgress()
+                        .width(18)
+                        .height(18)
+                        .color('#FFFFFF')
+                    }
+                    Text(this.connecting ? '取消' : '连接')
+                      .fontSize(16)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor('#FFFFFF')
+                      .margin({ left: this.connecting ? 8 : 0 })
+                  }
+                  .justifyContent(FlexAlign.Center)
+                  .alignItems(VerticalAlign.Center)
+                }
+                .width('100%')
+                .height(48)
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(12)
+                .onClick(() => {
+                  if (this.connecting) {
+                    this.cancelConnect();
+                  } else {
                     this.submit(true);
-                  })
+                  }
+                })
               }
             }
             .width('100%')

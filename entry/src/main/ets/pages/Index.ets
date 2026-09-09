@@ -25,7 +25,7 @@ struct Index {
   @State fabPressed: boolean = false;
 
   private sessionListener: SessionStateListener = (connectionId: string,
-    state: ConnectionState, message: string): void => {
+    state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
     const next: Map<string, ConnectionState> = new Map<string, ConnectionState>();
     this.statuses.forEach((value: ConnectionState, key: string) => {
       next.set(key, value);
@@ -36,7 +36,8 @@ struct Index {
       next.set(connectionId, state);
     }
     this.statuses = next;
-    if (state === ConnectionState.Failed) {
+    // Editor-originated failures are reported on the edit page instead.
+    if (state === ConnectionState.Failed && origin === RdpConnectOrigin.List) {
       this.showConnectError(message);
     }
   };

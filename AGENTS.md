@@ -112,8 +112,12 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
      `SessionManager.release(sessionKey)` + `SessionRequests.discard`，只停自己这条会话（等价于
      工具栏「断开」）。注意 `SessionPage.aboutToDisappear()` 在窗口关闭时**不会触发**，不要
      依赖它做断连。
-   - `origin` 区分入口：仅编辑页发起（`Editor`）且连接成功时保存密码；编辑页点「连接」后立即
-     返回列表，由主列表展示连接进度与结果。
+   - `origin` 区分入口：编辑页发起（`Editor`）时**连接成功后才保存配置与密码**（失败不落库），
+     点「连接」后留在编辑页、按钮显示转圈且可点「取消」中断；失败时原页内联显示错误、保留已输入
+     的密码以便继续修改，成功后经 `onConnected` 保存配置并回列表。列表发起（`List`）则在列表行
+     展示转圈/已连接、失败弹对话框。`Index` 只在 `origin === List` 时弹失败对话框。
+   - **连接超时兜底**：`SessionManager` 对每次连接设 30s 定时器（`CONNECT_TIMEOUT_MS`），超时按
+     失败处理（「连接超时」）；否则不可达地址会在 OS 级 TCP 超时前一直转圈。
 10. **输入分流 / 触屏 / 触控板**：鼠标走 `onMouse` → RDP 鼠标；真触屏走 `onTouch` → RDPEI
     原生触屏（`Session::SendTouch` → `freerdp_client_handle_touch`，连接时打开
     `FreeRDP_MultiTouchInput`）；滚轮 / 触控板走 `onAxisEvent`。用
@@ -149,6 +153,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
   `this.getUIContext().getRouter()` 传递。
 - ArkUI `ForEach` 的 key 必须随内容变化，否则列表项会被复用、`onClick` 闭包仍持有旧对象，
   导致 UI 与连接动作使用过期数据。本项目用 `${conn.id}#${conn.updatedAt}` 作 key。
+- ArkUI `@Builder` 的参数**按值传递时不会随状态刷新**（如设置页滑块拖拽/重置后数值不更新）：
+  需要响应状态变化的 builder 必须传**单个对象字面量**（按引用），并在 builder 内访问其属性。
 
 ## 目录结构
 
