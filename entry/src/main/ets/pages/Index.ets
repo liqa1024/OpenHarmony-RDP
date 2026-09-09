@@ -5,11 +5,11 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection, SessionRequests } from '../model/RdpModels';
+  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
-import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -18,13 +18,36 @@ const TAG: string = 'HmRdpIndex';
 @Component
 struct Index {
   @State connections: SavedConnection[] = [];
+  @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
   @State fabHovered: boolean = false;
   @State fabPressed: boolean = false;
 
+  private sessionListener: SessionStateListener = (connectionId: string,
+    state: ConnectionState, message: string): void => {
+    const next: Map<string, ConnectionState> = new Map<string, ConnectionState>();
+    this.statuses.forEach((value: ConnectionState, key: string) => {
+      next.set(key, value);
+    });
+    if (state === ConnectionState.Idle) {
+      next.delete(connectionId);
+    } else {
+      next.set(connectionId, state);
+    }
+    this.statuses = next;
+    if (state === ConnectionState.Failed) {
+      this.showConnectError(message);
+    }
+  };
+
   aboutToAppear(): void {
+    SessionManager.subscribe(this.sessionListener);
     this.refresh();
+  }
+
+  aboutToDisappear(): void {
+    SessionManager.unsubscribe(this.sessionListener);
   }
 
   onPageShow(): void {
@@ -35,8 +58,34 @@ struct Index {
     this.connections = ConnectionStore.list();
   }
 
+  private connState(id: string): ConnectionState {
+    const state: ConnectionState | undefined = this.statuses.get(id);
+    return state === undefined ? ConnectionState.Idle : state;
+  }
+
   private connect(conn: SavedConnection): void {
     this.startConnection(conn);
+  }
+
+  private toggleConnection(conn: SavedConnection): void {
+    const state: ConnectionState = this.connState(conn.id);
+    if (state === ConnectionState.Connecting || state === ConnectionState.Connected) {
+      SessionManager.disconnect(conn.id);
+      return;
+    }
+    this.connect(conn);
+  }
+
+  private showConnectError(message: string): void {
+    this.getUIContext().showAlertDialog({
+      title: '连接失败',
+      message: message,
+      confirm: {
+        value: '知道了',
+        action: () => {
+        }
+      }
+    });
   }
 
   private async startConnection(conn: SavedConnection): Promise<void> {
@@ -52,11 +101,9 @@ struct Index {
     request.connectionId = conn.id;
     request.origin = RdpConnectOrigin.List;
     request.onConnected = undefined;
-    const sessionKey: string = SessionRequests.newKey();
-    SessionRequests.put(sessionKey, request);
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
-      WindowController.openSessionWindow(context as common.UIAbilityContext, sessionKey);
+      SessionManager.connect(request, context as common.UIAbilityContext);
     }
   }
 
@@ -135,9 +182,20 @@ struct Index {
           .height(44)
           .borderRadius(12)
         Column() {
-          Text(conn.label())
-            .fontSize(15)
-            .fontColor($r('app.color.text_primary'))
+          Row() {
+            Text(conn.label())
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+            if (this.connState(conn.id) === ConnectionState.Connected) {
+              Text('已连接')
+                .fontSize(10)
+                .fontColor($r('app.color.success'))
+                .backgroundColor($r('app.color.success_bg'))
+                .borderRadius(4)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .margin({ left: 8 })
+            }
+          }
           Text(conn.username.length > 0 ? conn.username : '未设置用户名')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
@@ -153,19 +211,31 @@ struct Index {
       })
 
       Row() {
-        Image($r('app.media.ic_arrow_right'))
-          .width(18)
-          .height(18)
+        if (this.connState(conn.id) === ConnectionState.Connecting) {
+          LoadingProgress()
+            .width(22)
+            .height(22)
+            .color('#FFFFFF')
+        } else if (this.connState(conn.id) === ConnectionState.Connected) {
+          Image($r('app.media.ic_disconnect'))
+            .width(20)
+            .height(20)
+        } else {
+          Image($r('app.media.ic_arrow_right'))
+            .width(18)
+            .height(18)
+        }
       }
       .width(40)
       .height(40)
       .borderRadius(20)
-      .backgroundColor($r('app.color.accent'))
+      .backgroundColor(this.connState(conn.id) === ConnectionState.Connected
+        ? $r('app.color.danger') : $r('app.color.accent'))
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
       .onClick(() => {
-        this.connect(conn);
+        this.toggleConnection(conn);
       })
     }
     .width('100%')

@@ -90,7 +90,9 @@ class Session {
   void HandleEndPaint();
   void HandleDesktopResize();
   void HandlePostDisconnect();
+  // `code` is a FreeRDP error code (FREERDP_ERROR_*) or 0 for internal errors.
   void SetError(const std::string& error);
+  void SetError(uint32_t code, const std::string& error);
 
  private:
   void EventThread();
@@ -101,6 +103,7 @@ class Session {
   Renderer renderer_;
   EventFn eventFn_;
   std::string lastError_;
+  uint32_t lastErrorCode_ = 0;
 
   std::atomic<bool> connected_{false};
   std::atomic<bool> running_{false};

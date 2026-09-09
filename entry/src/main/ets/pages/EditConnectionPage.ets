@@ -6,11 +6,11 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection, SessionRequests } from '../model/RdpModels';
+  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { SessionManager } from '../services/SessionManager';
 import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
-import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
@@ -40,7 +40,6 @@ struct EditConnectionPage {
   private connectionId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
-  private pendingRequest: PendingConnection | undefined = undefined;
 
   aboutToAppear(): void {
     const detected: DisplayProfile = SettingsStore.detectedDisplay();
@@ -87,12 +86,6 @@ struct EditConnectionPage {
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'load password failed: %{public}s', JSON.stringify(error));
       });
-  }
-
-  aboutToDisappear(): void {
-    if (this.pendingRequest !== undefined) {
-      this.pendingRequest.onConnected = undefined;
-    }
   }
 
   private parsePort(): number {
@@ -170,21 +163,16 @@ struct EditConnectionPage {
       request.options = options;
       request.connectionId = id;
       request.origin = RdpConnectOrigin.Editor;
-      request.onConnected = () => {
-        this.returnToList();
-      };
-      this.pendingRequest = request;
-      const sessionKey: string = SessionRequests.newKey();
-      SessionRequests.put(sessionKey, request);
+      request.onConnected = undefined;
       const context = this.getUIContext().getHostContext();
-      if (context !== undefined) {
-        WindowController.openSessionWindow(context as common.UIAbilityContext, sessionKey);
-      } else {
-        this.errorMessage = '无法打开会话窗口';
+      if (context === undefined) {
+        this.errorMessage = '无法发起连接';
+        return;
       }
-    } else {
-      this.returnToList();
+      SessionManager.connect(request, context as common.UIAbilityContext);
     }
+    // Return to the list so the connection progress / result is visible there.
+    this.returnToList();
   }
 
   private handleSave(): void {

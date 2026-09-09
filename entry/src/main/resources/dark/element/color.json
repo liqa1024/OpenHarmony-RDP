@@ -53,6 +53,14 @@
       "value": "#F05A40"
     },
     {
+      "name": "success",
+      "value": "#4CC77A"
+    },
+    {
+      "name": "success_bg",
+      "value": "#17301F"
+    },
+    {
       "name": "hover_bg",
       "value": "#2E2E32"
     }

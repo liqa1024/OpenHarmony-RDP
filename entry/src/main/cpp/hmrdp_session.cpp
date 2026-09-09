@@ -210,6 +210,17 @@ void AppendArg(std::vector<std::string>& args, const std::string& value) {
   args.push_back(value);
 }
 
+// Error events carry "<code>|<message>"; the code lets the UI distinguish an
+// authentication failure from a network problem. Internal errors use code 0.
+std::string EncodeError(uint32_t code, const std::string& message) {
+  if (code == 0) {
+    return message;
+  }
+  std::ostringstream out;
+  out << code << '|' << message;
+  return out.str();
+}
+
 }  // namespace
 
 Session::Session(int64_t id) : id_(id) {
@@ -227,8 +238,13 @@ void Session::Emit(SessionEvent event, const std::string& data) {
 }
 
 void Session::SetError(const std::string& error) {
+  SetError(0, error);
+}
+
+void Session::SetError(uint32_t code, const std::string& error) {
+  lastErrorCode_ = code;
   lastError_ = error;
-  Emit(SessionEvent::kError, error);
+  Emit(SessionEvent::kError, EncodeError(code, error));
 }
 
 bool Session::Connect(const RdpOptions& options) {
@@ -358,9 +374,9 @@ void Session::EventThread() {
   }
   const BOOL ok = freerdp_connect(instance);
   if (!ok) {
-    const char* error = freerdp_get_last_error_string(
-        static_cast<UINT32>(freerdp_get_last_error(instance->context)));
-    SetError(error != nullptr ? error : "connection failed");
+    const UINT32 code = static_cast<UINT32>(freerdp_get_last_error(instance->context));
+    const char* error = freerdp_get_last_error_string(code);
+    SetError(code, error != nullptr ? error : "connection failed");
   }
 
   if (ok) {
@@ -380,9 +396,10 @@ void Session::EventThread() {
       }
       if (!freerdp_check_event_handles(instance->context)) {
         if (freerdp_get_last_error(instance->context) != FREERDP_ERROR_SUCCESS) {
-          const char* error = freerdp_get_last_error_string(
-              static_cast<UINT32>(freerdp_get_last_error(instance->context)));
+          const UINT32 code = static_cast<UINT32>(freerdp_get_last_error(instance->context));
+          const char* error = freerdp_get_last_error_string(code);
           if (error != nullptr) {
+            lastErrorCode_ = code;
             lastError_ = error;
           }
         }
@@ -393,7 +410,7 @@ void Session::EventThread() {
 
   freerdp_disconnect(instance);
   connected_ = false;
-  Emit(SessionEvent::kDisconnected, lastError_);
+  Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
 }
 
 void Session::Disconnect() {

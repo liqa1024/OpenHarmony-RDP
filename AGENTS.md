@@ -97,12 +97,23 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
      `SessionAbility` 用 `LocalStorage` 把 key 注入页面，页面按 key 取回请求。
    - 每个会话窗口独占一个 `RdpNative` 实例 / 原生 handle：原生事件携带 handle，ArkTS 侧
      按 handle 路由到对应实例；surface 绑定/销毁、鼠标键盘输入都按 handle 下发。
+   - **连接在主窗口后台完成，成功后才开窗**：`SessionManager` 发起连接（此时不建窗口），主列表
+     对应行按钮显示转圈；成功后 `openSessionWindow` 并把已连接的 `RdpNative` 实例按 `sessionKey`
+     交给会话页（`SessionPage` 检测到 `SessionManager.isConnected` 则只绑定 surface、不重复连接）。
+     失败时主列表弹出分类后的错误、不打开任何窗口。
+   - **错误分类**：原生 `kError`/`kDisconnected` 的数据格式为 `<FreeRDP错误码>|<消息>`（码为 0 时
+     只发消息），`SessionManager.describeError` 把 `ERRCONNECT_*` 映射为「用户名或密码错误 /
+     无法连接到服务器 / 网络连接中断」等中文提示。原生 `freerdp_get_last_error` 返回
+     `(CLASS<<16)|TYPE`，`TYPE` 即 `ERRCONNECT_*`。
+   - **主界面控制连接**：列表「已连接」行显示绿色徽标、按钮变红色断开图标（`ic_disconnect`）；
+     点击断开或关闭窗口都经 `SessionManager` 停连并刷新列表。连接成功/断开的状态经
+     `SessionManager.subscribe` 回调驱动 `Index` 的 `@State statuses` 重新渲染。
    - **窗口关闭即断连**：`SessionAbility.onWindowStageDestroy()` / `onDestroy()` 调用
-     `RdpNative.stopByKey(sessionKey)` + `SessionRequests.discard`，只停自己这条会话（等价于
+     `SessionManager.release(sessionKey)` + `SessionRequests.discard`，只停自己这条会话（等价于
      工具栏「断开」）。注意 `SessionPage.aboutToDisappear()` 在窗口关闭时**不会触发**，不要
      依赖它做断连。
-   - `origin` 区分入口：仅编辑页发起（`Editor`）且连接成功时保存密码、并经 `onConnected`
-     回调让编辑页回退到列表；列表发起（`List`）成功/失败都不做额外操作。
+   - `origin` 区分入口：仅编辑页发起（`Editor`）且连接成功时保存密码；编辑页点「连接」后立即
+     返回列表，由主列表展示连接进度与结果。
 10. **输入分流 / 触屏 / 触控板**：鼠标走 `onMouse` → RDP 鼠标；真触屏走 `onTouch` → RDPEI
     原生触屏（`Session::SendTouch` → `freerdp_client_handle_touch`，连接时打开
     `FreeRDP_MultiTouchInput`）；滚轮 / 触控板走 `onAxisEvent`。用
@@ -152,7 +163,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
-| `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`stopByKey` 按会话 key 断连 |
+| `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey`/`stopByKey` 按会话 key 复用与断连 |
+| `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |

@@ -39,11 +39,17 @@ export class RdpNative {
     byKey.set(key, native);
   }
 
+  /** Returns the instance registered for a session key, if any. */
+  static findByKey(key: string): RdpNative | undefined {
+    return byKey.get(key);
+  }
+
   /** Stops only the session owned by the given key (window close / destroy). */
   static stopByKey(key: string): void {
     const target: RdpNative | undefined = byKey.get(key);
     if (target !== undefined) {
       target.stopSession();
+      target.clearListener();
     }
     byKey.delete(key);
   }
@@ -91,7 +97,6 @@ export class RdpNative {
     disconnect(this.handle);
     destroySession(this.handle);
     this.handle = -1;
-    this.listener = undefined;
   }
 
   bindSurface(surfaceId: string, width: number, height: number): void {

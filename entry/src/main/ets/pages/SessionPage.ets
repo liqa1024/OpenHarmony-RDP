@@ -5,10 +5,10 @@ import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { PendingConnection, RdpConnectOptions, RdpConnectOrigin, RdpConnectionState,
+import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
-import { CredentialStore } from '../services/CredentialStore';
 import { RdpNative } from '../services/RdpNative';
+import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 
@@ -58,8 +58,9 @@ struct SessionPage {
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
-  private origin: RdpConnectOrigin = RdpConnectOrigin.List;
-  private onConnectedCallback: (() => void) | undefined = undefined;
+  // True when the manager already connected before this window was opened.
+  private preconnected: boolean = false;
+  private closing: boolean = false;
   private controller: RdpSurfaceController = new RdpSurfaceController();
   private componentWidth: number = 0;
   private componentHeight: number = 0;
@@ -104,9 +105,6 @@ struct SessionPage {
     this.toolbarInWindowed = settings.toolbarInWindowed;
     this.desktopWidth = this.options.width;
     this.desktopHeight = this.options.height;
-    this.native.setListener((event: RdpEvent, data: string) => {
-      this.onRdpEvent(event, data);
-    });
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number) => {
         this.surfaceId = surfaceId;
@@ -123,7 +121,19 @@ struct SessionPage {
         this.native.unbindSurface();
       }
     );
-    this.startSession();
+    if (this.preconnected) {
+      // The manager already connected and owns the event listener; this window
+      // only has to bind the surface and render the live session.
+      this.state = RdpConnectionState.Connected;
+      this.statusText = '已连接';
+      this.showOverlay = false;
+      this.showToolbar = false;
+    } else {
+      this.native.setListener((event: RdpEvent, data: string) => {
+        this.onRdpEvent(event, data);
+      });
+      this.startSession();
+    }
   }
 
   aboutToDisappear(): void {
@@ -151,10 +161,21 @@ struct SessionPage {
     if (request !== undefined) {
       this.options = request.options;
       this.connectionId = request.connectionId;
-      this.origin = request.origin;
-      this.onConnectedCallback = request.onConnected;
     }
+    const existing: RdpNative | undefined = RdpNative.findByKey(this.sessionKey);
+    if (existing !== undefined) {
+      this.native = existing;
+    }
+    this.preconnected = this.connectionId.length > 0 &&
+      SessionManager.isConnected(this.connectionId);
     RdpNative.register(this.sessionKey, this.native);
+    SessionManager.attachWindow(this.sessionKey,
+      (event: RdpEvent, data: string) => {
+        this.onRdpEvent(event, data);
+      },
+      () => {
+        this.terminateWindow();
+      });
   }
 
   private startSession(): void {
@@ -171,7 +192,16 @@ struct SessionPage {
   }
 
   private retry(): void {
-    this.startSession();
+    if (this.connectionId.length > 0) {
+      this.state = RdpConnectionState.Connecting;
+      this.statusText = '正在连接...';
+      this.showOverlay = true;
+      this.showToolbar = true;
+      SessionManager.retry(this.connectionId);
+    } else {
+      this.startSession();
+    }
+    // Re-bind the surface: stopping a session destroyed its native window.
     if (this.surfaceId.length > 0) {
       this.native.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
     }
@@ -182,18 +212,17 @@ struct SessionPage {
       this.state = RdpConnectionState.Connected;
       this.statusText = '已连接';
       this.showToolbar = false;
-      this.handleConnected();
     } else if (event === RdpEvent.FirstFrame) {
       this.showOverlay = false;
       this.showToolbar = false;
     } else if (event === RdpEvent.Disconnected) {
       this.state = RdpConnectionState.Closed;
-      this.statusText = data.length > 0 ? data : '连接已断开';
+      this.statusText = data.length > 0 ? SessionManager.describeError(data) : '连接已断开';
       this.showOverlay = true;
       this.showToolbar = true;
     } else if (event === RdpEvent.Error) {
       this.state = RdpConnectionState.Failed;
-      this.statusText = data.length > 0 ? data : '连接失败';
+      this.statusText = data.length > 0 ? SessionManager.describeError(data) : '连接失败';
       this.showOverlay = true;
       this.showToolbar = true;
     } else if (event === RdpEvent.Resize) {
@@ -207,34 +236,6 @@ struct SessionPage {
         }
       }
     }
-  }
-
-  /**
-   * Post-connect handling only applies to sessions launched from the editor:
-   * the verified password is persisted and the editor returns to the list.
-   * Sessions launched from the home list must not trigger any extra action.
-   */
-  private handleConnected(): void {
-    if (this.origin !== RdpConnectOrigin.Editor) {
-      return;
-    }
-    this.persistPassword();
-    const callback: (() => void) | undefined = this.onConnectedCallback;
-    this.onConnectedCallback = undefined;
-    if (callback !== undefined) {
-      callback();
-    }
-  }
-
-  private persistPassword(): void {
-    const connectionId: string = this.connectionId;
-    const password: string = this.options.password;
-    if (connectionId.length === 0 || password.length === 0) {
-      return;
-    }
-    CredentialStore.savePassword(connectionId, password).catch((error: BusinessError) => {
-      hilog.error(DOMAIN, TAG, 'save password failed: %{public}s', JSON.stringify(error));
-    });
   }
 
   private updateToolbar(y: number): void {
@@ -589,7 +590,22 @@ struct SessionPage {
   }
 
   private disconnect(): void {
+    if (this.connectionId.length > 0) {
+      // The manager stops the session and invokes our close callback, which
+      // terminates this window; the list row goes back to idle.
+      SessionManager.disconnect(this.connectionId);
+      return;
+    }
     this.native.stopSession();
+    this.native.clearListener();
+    this.terminateWindow();
+  }
+
+  private terminateWindow(): void {
+    if (this.closing) {
+      return;
+    }
+    this.closing = true;
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
       const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;

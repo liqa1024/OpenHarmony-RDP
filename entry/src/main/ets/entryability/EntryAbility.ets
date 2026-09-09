@@ -18,6 +18,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { ConnectionStore } from '../services/ConnectionStore';
+import { SessionManager } from '../services/SessionManager';
 import { WindowController } from '../services/WindowController';
 
 const DOMAIN = 0x0000;
@@ -56,7 +57,10 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
-    // Main window is destroyed, release UI related resources
+    // Main window is destroyed, release UI related resources. The list page's
+    // aboutToDisappear() does not run on window close, so drop its state
+    // listener here to avoid notifying a destroyed component.
+    SessionManager.clearStateListeners();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
