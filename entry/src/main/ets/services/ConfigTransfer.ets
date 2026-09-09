@@ -58,6 +58,7 @@ class ExportedConnection {
   gatewayUsername: string = '';
   gatewayDomain: string = '';
   useGlobalDisplay: boolean = true;
+  useGlobalAdvanced: boolean = true;
 
   static fromSaved(conn: SavedConnection): ExportedConnection {
     const item: ExportedConnection = new ExportedConnection();
@@ -82,6 +83,7 @@ class ExportedConnection {
     item.gatewayUsername = conn.gatewayUsername;
     item.gatewayDomain = conn.gatewayDomain;
     item.useGlobalDisplay = conn.useGlobalDisplay;
+    item.useGlobalAdvanced = conn.useGlobalAdvanced;
     return item;
   }
 
@@ -108,6 +110,7 @@ class ExportedConnection {
     item.gatewayUsername = ConfigTransfer.readString(rec, 'gatewayUsername', '');
     item.gatewayDomain = ConfigTransfer.readString(rec, 'gatewayDomain', '');
     item.useGlobalDisplay = ConfigTransfer.readBoolean(rec, 'useGlobalDisplay', true);
+    item.useGlobalAdvanced = ConfigTransfer.readBoolean(rec, 'useGlobalAdvanced', true);
     return item;
   }
 
@@ -134,6 +137,7 @@ class ExportedConnection {
     conn.gatewayUsername = this.gatewayUsername;
     conn.gatewayDomain = this.gatewayDomain;
     conn.useGlobalDisplay = this.useGlobalDisplay;
+    conn.useGlobalAdvanced = this.useGlobalAdvanced;
     conn.updatedAt = Date.now();
     return conn;
   }
@@ -313,6 +317,16 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'scaleAuto', settings.scaleAuto);
     settings.manualScalePercent =
       ConfigTransfer.readNumber(rec, 'manualScalePercent', settings.manualScalePercent);
+    settings.enableClipboard =
+      ConfigTransfer.readBoolean(rec, 'enableClipboard', settings.enableClipboard);
+    settings.enableAudio =
+      ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio);
+    settings.enableGfx =
+      ConfigTransfer.readBoolean(rec, 'enableGfx', settings.enableGfx);
+    settings.enableH264 =
+      ConfigTransfer.readBoolean(rec, 'enableH264', settings.enableH264);
+    settings.ignoreCertificate =
+      ConfigTransfer.readBoolean(rec, 'ignoreCertificate', settings.ignoreCertificate);
     return settings;
   }
 

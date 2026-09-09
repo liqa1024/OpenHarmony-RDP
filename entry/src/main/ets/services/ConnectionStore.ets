@@ -129,6 +129,7 @@ export class ConnectionStore {
     parts.push(conn.updatedAt.toString());
     parts.push(conn.useGlobalDisplay ? '1' : '0');
     parts.push(conn.scalePercent.toString());
+    parts.push(conn.useGlobalAdvanced ? '1' : '0');
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -160,6 +161,7 @@ export class ConnectionStore {
     conn.updatedAt = ConnectionStore.parseNumber(parts[18], 0);
     conn.useGlobalDisplay = parts.length > 19 ? parts[19] === '1' : true;
     conn.scalePercent = parts.length > 20 ? ConnectionStore.parseNumber(parts[20], 0) : 0;
+    conn.useGlobalAdvanced = parts.length > 21 ? parts[21] === '1' : true;
     return conn;
   }
 

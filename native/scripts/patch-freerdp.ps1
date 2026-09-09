@@ -53,4 +53,20 @@ foreach ($file in @(
   Patch-File $file $sl
 }
 
+# 4) OHOS does not implement the standard SL_IID_BUFFERQUEUE used by the
+#    upstream rdpsnd OpenSL ES backend, only the OH-specific
+#    SL_IID_OH_BUFFERQUEUE. Replace the audio output backend with an
+#    OHOS-compatible one, otherwise playback silently produces no sound.
+$Patches = "$PSScriptRoot\..\patches"
+foreach ($pair in @(
+    @("rdpsnd_opensl_io.c", "$Source\channels\rdpsnd\client\opensles\opensl_io.c"),
+    @("rdpsnd_opensl_io.h", "$Source\channels\rdpsnd\client\opensles\opensl_io.h")
+  )) {
+  $from = Join-Path $Patches $pair[0]
+  if (-not (Test-Path -LiteralPath $from)) {
+    throw "patch source not found: $from"
+  }
+  Copy-Item -LiteralPath $from -Destination $pair[1] -Force
+}
+
 Write-Host "FreeRDP OHOS patches applied to $Source"

@@ -3,7 +3,7 @@
  */
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
-import { DisplayProfile } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 
@@ -22,6 +22,15 @@ class SliderItemConfig {
   step: number = 1;
   unit: string = '';
   onChange: (v: number) => void = (v: number) => {};
+}
+
+// Same reasoning as SliderItemConfig: the builder must receive a single object
+// literal (by reference) so a reset / import refreshes the switch.
+class ToggleItemConfig {
+  title: string = '';
+  subtitle: string = '';
+  value: boolean = false;
+  onChange: (v: boolean) => void = (v: boolean) => {};
 }
 
 @Entry
@@ -43,6 +52,11 @@ struct SettingsPage {
   @State sessionSizeEnabled: boolean = false;
   @State sessionFullscreen: boolean = false;
   @State autoHideMainWindow: boolean = false;
+  @State enableClipboard: boolean = true;
+  @State enableAudio: boolean = true;
+  @State enableGfx: boolean = true;
+  @State enableH264: boolean = true;
+  @State ignoreCertificate: boolean = true;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -89,6 +103,11 @@ struct SettingsPage {
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.sessionFullscreen = settings.sessionFullscreen;
     this.autoHideMainWindow = settings.autoHideMainWindow;
+    this.enableClipboard = settings.enableClipboard;
+    this.enableAudio = settings.enableAudio;
+    this.enableGfx = settings.enableGfx;
+    this.enableH264 = settings.enableH264;
+    this.ignoreCertificate = settings.ignoreCertificate;
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
@@ -151,6 +170,11 @@ struct SettingsPage {
     settings.manualScalePercent = this.parseScale(this.manualScaleText, this.recommendedScale);
     settings.sessionFullscreen = this.sessionFullscreen;
     settings.autoHideMainWindow = this.autoHideMainWindow;
+    settings.enableClipboard = this.enableClipboard;
+    settings.enableAudio = this.enableAudio;
+    settings.enableGfx = this.enableGfx;
+    settings.enableH264 = this.enableH264;
+    settings.ignoreCertificate = this.ignoreCertificate;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -180,6 +204,11 @@ struct SettingsPage {
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.sessionFullscreen = defaults.sessionFullscreen;
     this.autoHideMainWindow = defaults.autoHideMainWindow;
+    this.enableClipboard = defaults.enableClipboard;
+    this.enableAudio = defaults.enableAudio;
+    this.enableGfx = defaults.enableGfx;
+    this.enableH264 = defaults.enableH264;
+    this.ignoreCertificate = defaults.ignoreCertificate;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -308,6 +337,29 @@ struct SettingsPage {
         this.manualScaleText = preset.toString();
         this.persist();
       })
+  }
+
+  @Builder
+  toggleItem(item: ToggleItemConfig) {
+    Row() {
+      Column() {
+        Text(item.title).fontSize(14).fontColor($r('app.color.text_primary'))
+        if (item.subtitle.length > 0) {
+          Text(item.subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Toggle({ type: ToggleType.Switch, isOn: item.value })
+        .selectedColor($r('app.color.accent'))
+        .onChange((isOn: boolean) => {
+          item.onChange(isOn);
+        })
+    }
+    .width('100%')
+    .height(item.subtitle.length > 0 ? 58 : 48)
   }
 
   @Builder
@@ -581,6 +633,77 @@ struct SettingsPage {
               }
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+
+            Divider().color($r('app.color.divider'))
+
+            Text('连接特性')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            Text('新连接默认使用的协议特性；可在单个连接的「高级设置」中改为独立配置')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ bottom: 8 })
+
+            this.toggleItem({
+              title: '剪贴板重定向',
+              subtitle: '本机与远端之间复制粘贴文本',
+              value: this.enableClipboard,
+              onChange: (v: boolean) => {
+                this.enableClipboard = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '音频重定向',
+              subtitle: '播放远端的声音',
+              value: this.enableAudio,
+              onChange: (v: boolean) => {
+                this.enableAudio = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: 'GFX 图形管道',
+              subtitle: '更流畅的画面传输，建议开启',
+              value: this.enableGfx,
+              onChange: (v: boolean) => {
+                this.enableGfx = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: 'H.264 / AVC 解码',
+              subtitle: '需服务端支持，GFX 开启时生效',
+              value: this.enableH264,
+              onChange: (v: boolean) => {
+                this.enableH264 = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '忽略证书校验',
+              subtitle: '仅用于自签名证书的测试环境，存在安全风险',
+              value: this.ignoreCertificate,
+              onChange: (v: boolean) => {
+                this.ignoreCertificate = v;
+                this.persist();
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 

@@ -4,8 +4,8 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnection,
+  RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
@@ -95,6 +95,12 @@ struct Index {
     options.width = profile.width;
     options.height = profile.height;
     options.scalePercent = profile.scalePercent;
+    const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
+    options.enableClipboard = advanced.enableClipboard;
+    options.enableAudio = advanced.enableAudio;
+    options.enableGfx = advanced.enableGfx;
+    options.enableH264 = advanced.enableH264;
+    options.ignoreCertificate = advanced.ignoreCertificate;
     const password: string = await CredentialStore.loadPassword(conn.id);
     options.password = password;
     const request: PendingConnection = new PendingConnection();

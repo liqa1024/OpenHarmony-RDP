@@ -11,11 +11,14 @@
 #include <freerdp/channels/channels.h>
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/client/cliprdr.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/utils/signal.h>
+#include <winpr/crt.h>
+#include <winpr/string.h>
 #include <winpr/synch.h>
 #include <winpr/thread.h>
 #include <winpr/wlog.h>
@@ -102,6 +105,92 @@ BOOL HmrdpPlaySound(rdpContext* context, const PLAY_SOUND_UPDATE* playSound) {
   return TRUE;
 }
 
+// Advertises the local clipboard as CF_UNICODETEXT to the server. The channel
+// owns the ClientFormatList sender, so this only builds the format list.
+UINT SendCliprdrFormatList(CliprdrClientContext* cliprdr) {
+  if (cliprdr == nullptr || cliprdr->ClientFormatList == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  HMRDP_LOGI("cliprdr sending local format list (CF_UNICODETEXT)");
+  CLIPRDR_FORMAT format = {};
+  format.formatId = CF_UNICODETEXT;
+  format.formatName = nullptr;
+  CLIPRDR_FORMAT_LIST formatList = {};
+  formatList.common.msgType = CB_FORMAT_LIST;
+  formatList.common.msgFlags = 0;
+  formatList.numFormats = 1;
+  formatList.formats = &format;
+  return cliprdr->ClientFormatList(cliprdr, &formatList);
+}
+
+UINT HmrdpCliprdrMonitorReady(CliprdrClientContext* cliprdr,
+                              const CLIPRDR_MONITOR_READY* monitorReady) {
+  if (cliprdr == nullptr || cliprdr->custom == nullptr) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  return static_cast<Session*>(cliprdr->custom)->OnCliprdrMonitorReady();
+}
+
+UINT HmrdpCliprdrServerCapabilities(CliprdrClientContext* cliprdr,
+                                    const CLIPRDR_CAPABILITIES* capabilities) {
+  return CHANNEL_RC_OK;
+}
+
+UINT HmrdpCliprdrServerFormatList(CliprdrClientContext* cliprdr,
+                                  const CLIPRDR_FORMAT_LIST* formatList) {
+  if (cliprdr == nullptr || cliprdr->custom == nullptr || formatList == nullptr) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  return static_cast<Session*>(cliprdr->custom)->OnCliprdrServerFormatList(formatList);
+}
+
+UINT HmrdpCliprdrServerFormatListResponse(CliprdrClientContext* cliprdr,
+                                          const CLIPRDR_FORMAT_LIST_RESPONSE* response) {
+  return CHANNEL_RC_OK;
+}
+
+UINT HmrdpCliprdrServerLockClipboardData(CliprdrClientContext* cliprdr,
+                                         const CLIPRDR_LOCK_CLIPBOARD_DATA* data) {
+  return CHANNEL_RC_OK;
+}
+
+UINT HmrdpCliprdrServerUnlockClipboardData(CliprdrClientContext* cliprdr,
+                                           const CLIPRDR_UNLOCK_CLIPBOARD_DATA* data) {
+  return CHANNEL_RC_OK;
+}
+
+UINT HmrdpCliprdrServerFormatDataRequest(CliprdrClientContext* cliprdr,
+                                         const CLIPRDR_FORMAT_DATA_REQUEST* request) {
+  if (cliprdr == nullptr || cliprdr->custom == nullptr || request == nullptr) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  return static_cast<Session*>(cliprdr->custom)->OnCliprdrServerFormatDataRequest(request);
+}
+
+UINT HmrdpCliprdrServerFormatDataResponse(CliprdrClientContext* cliprdr,
+                                          const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
+  if (cliprdr == nullptr || cliprdr->custom == nullptr || response == nullptr) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  return static_cast<Session*>(cliprdr->custom)->OnCliprdrServerFormatDataResponse(response);
+}
+
+// Captures the cliprdr channel interface while still letting the default
+// handler run (it is what initialises the GFX pipeline).
+void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
+  freerdp_client_OnChannelConnectedEventHandler(context, e);
+  if (context == nullptr || e == nullptr || e->name == nullptr) {
+    return;
+  }
+  HMRDP_LOGI("channel connected: %{public}s iface=%{public}d", e->name,
+             e->pInterface != nullptr ? 1 : 0);
+  HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(static_cast<rdpContext*>(context));
+  if (ctx->session != nullptr && strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+    ctx->session->HandleCliprdrConnected(
+        reinterpret_cast<CliprdrClientContext*>(e->pInterface));
+  }
+}
+
 BOOL HmrdpPreConnect(freerdp* instance) {
   if (instance == nullptr || instance->context == nullptr) {
     return FALSE;
@@ -112,12 +201,14 @@ BOOL HmrdpPreConnect(freerdp* instance) {
   }
   freerdp_settings_set_uint32(settings, FreeRDP_OsMajorType, OSMAJORTYPE_UNIX);
   freerdp_settings_set_uint32(settings, FreeRDP_OsMinorType, OSMINORTYPE_NATIVE_XSERVER);
+  HMRDP_LOGI("preconnect: clipboard=%{public}d gfx=%{public}d",
+             freerdp_settings_get_bool(settings, FreeRDP_RedirectClipboard) ? 1 : 0,
+             freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) ? 1 : 0);
 
   // The graphics pipeline (RDPGFX) callbacks are registered by the client
   // library when the rdpgfx channel connects. Without these subscriptions the
   // GFX surface commands are never decoded and the screen stays black.
-  PubSub_SubscribeChannelConnected(instance->context->pubSub,
-                                   freerdp_client_OnChannelConnectedEventHandler);
+  PubSub_SubscribeChannelConnected(instance->context->pubSub, HmrdpChannelConnected);
   PubSub_SubscribeChannelDisconnected(instance->context->pubSub,
                                       freerdp_client_OnChannelDisconnectedEventHandler);
   return TRUE;
@@ -154,8 +245,7 @@ void HmrdpPostDisconnect(freerdp* instance) {
   if (ctx->session != nullptr) {
     ctx->session->HandlePostDisconnect();
   }
-  PubSub_UnsubscribeChannelConnected(instance->context->pubSub,
-                                     freerdp_client_OnChannelConnectedEventHandler);
+  PubSub_UnsubscribeChannelConnected(instance->context->pubSub, HmrdpChannelConnected);
   PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub,
                                         freerdp_client_OnChannelDisconnectedEventHandler);
   gdi_free(instance);
@@ -436,6 +526,10 @@ void Session::Disconnect() {
     freerdp_client_context_free(instance_->context);
   }
   instance_ = nullptr;
+  // The channel interface dies with the context; drop it before it can be used
+  // from the UI thread.
+  cliprdr_ = nullptr;
+  clipboardReady_ = false;
   running_ = false;
   connected_ = false;
   renderer_.Reset();
@@ -499,6 +593,8 @@ void Session::HandleDesktopResize() {
 
 void Session::HandlePostDisconnect() {
   connected_ = false;
+  clipboardReady_ = false;
+  cliprdr_ = nullptr;
 }
 
 bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
@@ -575,6 +671,151 @@ void Session::RequestResize(int width, int height) {
 
 void Session::SetClipboardEnabled(bool enabled) {
   clipboardEnabled_ = enabled;
+}
+
+void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
+  if (cliprdr == nullptr || !clipboardEnabled_.load()) {
+    return;
+  }
+  cliprdr_ = cliprdr;
+  cliprdr->custom = this;
+  cliprdr->MonitorReady = HmrdpCliprdrMonitorReady;
+  cliprdr->ServerCapabilities = HmrdpCliprdrServerCapabilities;
+  cliprdr->ServerFormatList = HmrdpCliprdrServerFormatList;
+  cliprdr->ServerFormatListResponse = HmrdpCliprdrServerFormatListResponse;
+  cliprdr->ServerLockClipboardData = HmrdpCliprdrServerLockClipboardData;
+  cliprdr->ServerUnlockClipboardData = HmrdpCliprdrServerUnlockClipboardData;
+  cliprdr->ServerFormatDataRequest = HmrdpCliprdrServerFormatDataRequest;
+  cliprdr->ServerFormatDataResponse = HmrdpCliprdrServerFormatDataResponse;
+  HMRDP_LOGI("cliprdr channel connected");
+}
+
+UINT Session::OnCliprdrMonitorReady() {
+  if (cliprdr_ == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  CLIPRDR_GENERAL_CAPABILITY_SET generalCapabilitySet = {};
+  generalCapabilitySet.capabilitySetType = CB_CAPSTYPE_GENERAL;
+  generalCapabilitySet.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
+  generalCapabilitySet.version = CB_CAPS_VERSION_2;
+  generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+  CLIPRDR_CAPABILITIES capabilities = {};
+  capabilities.cCapabilitiesSets = 1;
+  capabilities.capabilitySets =
+      reinterpret_cast<CLIPRDR_CAPABILITY_SET*>(&generalCapabilitySet);
+  if (cliprdr_->ClientCapabilities != nullptr) {
+    cliprdr_->ClientCapabilities(cliprdr_, &capabilities);
+  }
+  clipboardReady_ = true;
+  HMRDP_LOGI("cliprdr monitor ready");
+  // Always advertise the formats we support right after MonitorReady, even if
+  // the local clipboard is empty: the server needs to know the client accepts
+  // CF_UNICODETEXT before it will offer its own clipboard content.
+  SendCliprdrFormatList(cliprdr_);
+  return CHANNEL_RC_OK;
+}
+
+UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
+  if (cliprdr_ == nullptr || formatList == nullptr ||
+      cliprdr_->ClientFormatDataRequest == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  HMRDP_LOGI("cliprdr server format list: %{public}u formats", formatList->numFormats);
+  for (UINT32 i = 0; i < formatList->numFormats; i++) {
+    HMRDP_LOGI("  format[%{public}u] id=%{public}u", i, formatList->formats[i].formatId);
+    if (formatList->formats[i].formatId != CF_UNICODETEXT) {
+      continue;
+    }
+    CLIPRDR_FORMAT_DATA_REQUEST request = {};
+    request.common.msgType = CB_FORMAT_DATA_REQUEST;
+    request.common.msgFlags = 0;
+    request.requestedFormatId = CF_UNICODETEXT;
+    HMRDP_LOGI("cliprdr requesting CF_UNICODETEXT");
+    return cliprdr_->ClientFormatDataRequest(cliprdr_, &request);
+  }
+  return CHANNEL_RC_OK;
+}
+
+UINT Session::OnCliprdrServerFormatDataRequest(
+    const CLIPRDR_FORMAT_DATA_REQUEST* request) {
+  if (cliprdr_ == nullptr || request == nullptr ||
+      cliprdr_->ClientFormatDataResponse == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  HMRDP_LOGI("cliprdr server data request: format=%{public}u", request->requestedFormatId);
+  // Copy the local text out under the lock, then send without holding it.
+  std::vector<BYTE> payload;
+  if (request->requestedFormatId == CF_UNICODETEXT) {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (localClipboardValid_ && !localClipboardUtf16_.empty()) {
+      payload.assign(localClipboardUtf16_.begin(), localClipboardUtf16_.end());
+    }
+  }
+  HMRDP_LOGI("cliprdr server data request: payload=%{public}u", static_cast<unsigned>(payload.size()));
+  CLIPRDR_FORMAT_DATA_RESPONSE response = {};
+  response.common.msgType = CB_FORMAT_DATA_RESPONSE;
+  if (payload.empty()) {
+    response.common.msgFlags = CB_RESPONSE_FAIL;
+    response.common.dataLen = 0;
+    response.requestedFormatData = nullptr;
+  } else {
+    response.common.msgFlags = CB_RESPONSE_OK;
+    response.common.dataLen = static_cast<UINT32>(payload.size());
+    response.requestedFormatData = payload.data();
+  }
+  return cliprdr_->ClientFormatDataResponse(cliprdr_, &response);
+}
+
+UINT Session::OnCliprdrServerFormatDataResponse(
+    const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
+  if (response == nullptr || (response->common.msgFlags & CB_RESPONSE_FAIL) != 0) {
+    HMRDP_LOGW("cliprdr data response failed or null");
+    return CHANNEL_RC_OK;
+  }
+  const BYTE* data = response->requestedFormatData;
+  const UINT32 size = response->common.dataLen;
+  HMRDP_LOGI("cliprdr data response: size=%{public}u", size);
+  if (data == nullptr || size < sizeof(WCHAR)) {
+    return CHANNEL_RC_OK;
+  }
+  // CF_UNICODETEXT is a NUL-terminated UTF-16LE string; make sure the buffer we
+  // hand to the converter is terminated even if the server omitted the NUL.
+  const size_t wcharCount = (size + sizeof(WCHAR) - 1) / sizeof(WCHAR);
+  std::vector<WCHAR> wide(wcharCount + 1, 0);
+  memcpy(wide.data(), data, size);
+  wide[wcharCount] = 0;
+  size_t utf8Size = 0;
+  char* utf8 = ConvertWCharToUtf8Alloc(wide.data(), &utf8Size);
+  if (utf8 == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  HMRDP_LOGI("cliprdr remote text: %{public}u bytes", static_cast<unsigned>(utf8Size));
+  Emit(SessionEvent::kClipboardText, std::string(utf8, utf8Size));
+  free(utf8);
+  return CHANNEL_RC_OK;
+}
+
+void Session::SetLocalClipboardText(const std::string& utf8) {
+  if (!clipboardEnabled_.load()) {
+    return;
+  }
+  HMRDP_LOGI("set local clipboard: %{public}u bytes, cliprdr=%{public}d ready=%{public}d",
+             static_cast<unsigned>(utf8.size()), cliprdr_ != nullptr ? 1 : 0, clipboardReady_.load() ? 1 : 0);
+  size_t wcharCount = 0;
+  WCHAR* wide = ConvertUtf8ToWCharAlloc(utf8.c_str(), &wcharCount);
+  if (wide == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    localClipboardUtf16_.assign(reinterpret_cast<const char*>(wide),
+                                (wcharCount + 1) * sizeof(WCHAR));
+    localClipboardValid_ = true;
+  }
+  free(wide);
+  if (cliprdr_ != nullptr && clipboardReady_.load()) {
+    SendCliprdrFormatList(cliprdr_);
+  }
 }
 
 }  // namespace hmrdp

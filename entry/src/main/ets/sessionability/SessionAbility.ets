@@ -10,6 +10,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { SessionRequests } from '../model/RdpModels';
+import { ClipboardSync } from '../services/ClipboardSync';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -43,6 +44,7 @@ export default class SessionAbility extends UIAbility {
     if (this.sessionKey.length === 0) {
       return;
     }
+    ClipboardSync.stop(this.sessionKey);
     SessionManager.release(this.sessionKey);
     SessionRequests.discard(this.sessionKey);
   }

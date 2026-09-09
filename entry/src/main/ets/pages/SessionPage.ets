@@ -3,11 +3,12 @@
  */
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
+import { ClipboardSync } from '../services/ClipboardSync';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -94,6 +95,14 @@ struct SessionPage {
   private readonly ctrlScancode: number = 0x1D;
   private sessionWindow: window.Window | undefined = undefined;
   private toolbarInWindowed: boolean = false;
+  // Clipboard redirection. Remote-to-local writes the pasteboard directly;
+  // local-to-remote watches the system pasteboard for changes and pushes them
+  // to the session (requires READ_PASTEBOARD).
+  private clipboardEnabled: boolean = true;
+  // Serializes pasteboard writes: the pasteboard service rejects concurrent
+  // copy operations with error 27787277.
+  private pasteboardBusy: boolean = false;
+  private pendingRemoteText: string = '';
 
   aboutToAppear(): void {
     this.resolveRequest();
@@ -104,6 +113,7 @@ struct SessionPage {
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
     this.toolbarInWindowed = settings.toolbarInWindowed;
+    this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
     this.desktopHeight = this.options.height;
     this.controller.setCallbacks(
@@ -135,6 +145,7 @@ struct SessionPage {
       });
       this.startSession();
     }
+    this.startClipboardSync();
   }
 
   aboutToDisappear(): void {
@@ -148,6 +159,7 @@ struct SessionPage {
     }
     this.releaseAllTouches();
     this.endPinch();
+    this.stopClipboardSync();
     this.native.stopSession();
     this.options.password = '';
     this.options.gatewayPassword = '';
@@ -236,7 +248,61 @@ struct SessionPage {
           this.desktopHeight = height;
         }
       }
+    } else if (event === RdpEvent.ClipboardText) {
+      hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', data.length);
+      this.applyRemoteClipboard(data);
     }
+  }
+
+  private startClipboardSync(): void {
+    if (!this.clipboardEnabled) {
+      return;
+    }
+    ClipboardSync.start(this.sessionKey, (text: string): void => {
+      this.native.setClipboard(text);
+    });
+  }
+
+  private stopClipboardSync(): void {
+    ClipboardSync.stop(this.sessionKey);
+  }
+
+  /** Writes text received from the remote session into the local pasteboard. */
+  private applyRemoteClipboard(text: string): void {
+    if (text.length === 0) {
+      return;
+    }
+    this.pendingRemoteText = text;
+    this.flushRemoteClipboard(0);
+  }
+
+  private flushRemoteClipboard(attempt: number): void {
+    if (this.pasteboardBusy || this.pendingRemoteText.length === 0) {
+      return;
+    }
+    const text: string = this.pendingRemoteText;
+    this.pendingRemoteText = '';
+    this.pasteboardBusy = true;
+    // Remember it so the 'update' event triggered by our own write is ignored.
+    ClipboardSync.markRemoteText(this.sessionKey, text);
+    const data: pasteboard.PasteData =
+      pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+    pasteboard.getSystemPasteboard().setData(data)
+      .then(() => {
+        this.pasteboardBusy = false;
+        hilog.info(DOMAIN, TAG, 'local pasteboard updated from remote');
+        this.flushRemoteClipboard(0);
+      })
+      .catch((error: BusinessError) => {
+        this.pasteboardBusy = false;
+        hilog.warn(DOMAIN, TAG, 'write pasteboard failed: %{public}s', JSON.stringify(error));
+        if (attempt < 3) {
+          setTimeout(() => {
+            this.pendingRemoteText = text;
+            this.flushRemoteClipboard(attempt + 1);
+          }, 150);
+        }
+      });
   }
 
   private updateToolbar(y: number): void {

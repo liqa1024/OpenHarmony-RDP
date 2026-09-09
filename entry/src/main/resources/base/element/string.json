@@ -19,6 +19,10 @@
     {
       "name": "permission_network_info_reason",
       "value": "监测网络状态以维持会话连接"
+    },
+    {
+      "name": "permission_pasteboard_reason",
+      "value": "在本机与远程桌面之间自动同步剪贴板文本"
     }
   ]
 }

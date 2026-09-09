@@ -55,6 +55,18 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 `native/third_party/`、`native/build/`、`native/install/`、`native/tools/` 已 gitignore。
 产出的 `.so` 复制到 `entry/libs/<abi>/`，这些**要提交**。
 
+> **必须保持 `-DWITH_VERBOSE_WINPR_ASSERT=OFF`**（见 `build-freerdp.ps1`）。默认 ON 时
+> `WINPR_ASSERT` 会 `abort()` 整个进程：OHOS 上 OpenSLES 打不开音频设备时
+> `rdpsnd_opensles_open` 的 `WINPR_ASSERT(opensles->stream)` 会直接闪退。关闭后
+> `WINPR_ASSERT` 退化为被 `NDEBUG` 禁用的 `assert()`，音频后端失败时走错误分支静默降级，
+> 不再拖垮应用。改回 ON 前务必先解决音频设备打开失败的问题。
+>
+> **rdpsnd 的 OpenSLES 后端被替换为 `native/patches/rdpsnd_opensl_io.{c,h}`**（见
+> `patch-freerdp.ps1` 第 4 步）。OHOS 只实现了 `SL_IID_OH_BUFFERQUEUE`（拉模型，回调里
+> `GetBuffer`→填充→`Enqueue`），不支持上游用的 `SL_IID_BUFFERQUEUE`；不替换时
+> `CreateAudioPlayer` 会失败、音频无声。已用应用内探针确认：引擎/输出混音/播放器/PLAY/
+> VOLUME/OH_BUFFERQUEUE 全部返回 `SL_RESULT_SUCCESS`。
+
 ## 关键实现要点（改动前必读）
 
 1. **GFX 管线**：`HmrdpPreConnect` 必须把 `ChannelConnected`/`ChannelDisconnected` 订阅到
@@ -89,6 +101,20 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
     `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
     `width/height/scalePercent`；连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
+14. **高级连接特性（全局默认 + 单连接覆盖）**：剪贴板/音频/GFX/H.264/忽略证书这 5 项默认值放在
+    `AppSettings`（设置页「连接特性」区），连接保存自己的独立值 + `useGlobalAdvanced` 标志，
+    **默认跟随全局**（`SavedConnection.useGlobalAdvanced = true`）。连接前用
+    `SettingsStore.resolveAdvanced(conn)` 解析，再写入 `RdpConnectOptions`。编辑页「高级设置」里
+    「使用全局高级设置」关掉后才会用本连接的独立开关；保存时仍持久化独立值，便于随时切回。
+15. **剪贴板重定向（文本）**：原生在 `ChannelConnected` 里捕获 `CliprdrClientContext`（`HmrdpChannelConnected`
+    先调用默认 handler 再判断 `cliprdr`），只覆写 `Server*` 回调与 `MonitorReady`，**不要动
+    `Client*` 发送函数**。文本按 CF_UNICODETEXT 传输，本地文本缓存为 NUL 结尾 UTF-16LE。
+    - **远端→本机**：收到原生 `RdpEvent.ClipboardText`（值为 4）时 `SessionPage` 写回系统剪贴板
+      （`setData` 不需要权限）。
+    - **本机→远端**：**不申请 `ohos.permission.READ_PASTEBOARD`**（它是 `system_basic` 级，
+      普通签名装不上真机），改用工具栏里的 `PasteButton` 安全控件：用户点击时系统临时授权，
+      回调里读剪贴板 → `native.setClipboard(text)`。
+    - 仅支持纯文本，图片/文件不处理。
 12. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
     Dock）；按单会话设计，故 `WindowController` 只用 `mainHidden` 布尔量，不跟踪 session 集合。
@@ -127,8 +153,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、全局分辨率/缩放、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
-| `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、全局分辨率/缩放、全局连接特性（剪贴板/音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
+| `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
 | `entry/src/main/ets/services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；`DocumentViewPicker` + `fileIo`，密码不导出） |

@@ -34,6 +34,12 @@ $cfg = @(
   "-DCMAKE_INSTALL_PREFIX=$Prefix",
   "-DCMAKE_C_FLAGS=-O2 -DNDEBUG -D__OHOS__=1",
   "-DCMAKE_CXX_FLAGS=-O2 -DNDEBUG -D__OHOS__=1",
+  # WINPR_ASSERT must never abort the host app: with the default (ON) any
+  # internal FreeRDP sanity check - e.g. the audio backend failing to open a
+  # device on OHOS - calls abort() and takes the whole process down. Turning it
+  # off makes WINPR_ASSERT a plain assert(), disabled by NDEBUG, so FreeRDP's
+  # error paths run instead of crashing.
+  "-DWITH_VERBOSE_WINPR_ASSERT=OFF",
   "-DZLIB_LIBRARY=$Zlib\lib\libz.a",
   "-DZLIB_INCLUDE_DIR=$Zlib\include",
   "-DOPENSSL_ROOT_DIR=$OpenSsl",

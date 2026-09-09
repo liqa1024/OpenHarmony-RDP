@@ -453,6 +453,33 @@ napi_value SendUnicode(napi_env env, napi_callback_info info) {
                     session->SendUnicode(static_cast<uint16_t>(codepoint), down));
 }
 
+napi_value SetClipboardText(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, args[1], nullptr, 0, &length) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::string text(length, '\0');
+  napi_get_value_string_utf8(env, args[1], text.data(), length + 1, &length);
+  text.resize(length);
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  session->SetLocalClipboardText(text);
+  return CreateBool(env, true);
+}
+
 napi_value IsConnected(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -539,6 +566,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"sendKey", nullptr, SendKey, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"isConnected", nullptr, IsConnected, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"requestResize", nullptr, RequestResize, nullptr, nullptr, nullptr, napi_default,

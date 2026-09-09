@@ -9,9 +9,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <freerdp/freerdp.h>
+#include <freerdp/client/cliprdr.h>
 
 #include "hmrdp_renderer.h"
 
@@ -81,6 +83,9 @@ class Session {
 
   void RequestResize(int width, int height);
   void SetClipboardEnabled(bool enabled);
+  // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
+  // CF_UNICODETEXT. Safe to call from the UI thread.
+  void SetLocalClipboardText(const std::string& utf8);
 
   const std::string& LastError() const { return lastError_; }
 
@@ -90,6 +95,13 @@ class Session {
   void HandleEndPaint();
   void HandleDesktopResize();
   void HandlePostDisconnect();
+  void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
+
+  // Clipboard channel callbacks (invoked on the RDP thread).
+  UINT OnCliprdrMonitorReady();
+  UINT OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList);
+  UINT OnCliprdrServerFormatDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request);
+  UINT OnCliprdrServerFormatDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response);
   // `code` is a FreeRDP error code (FREERDP_ERROR_*) or 0 for internal errors.
   void SetError(const std::string& error);
   void SetError(uint32_t code, const std::string& error);
@@ -109,8 +121,16 @@ class Session {
   std::atomic<bool> running_{false};
   std::atomic<bool> stopRequested_{false};
   std::atomic<bool> clipboardEnabled_{true};
+  std::atomic<bool> clipboardReady_{false};
   void* thread_ = nullptr;
   bool firstFrameSent_ = false;
+
+  // Clipboard redirection state. `localClipboardUtf16_` holds the current local
+  // clipboard text as NUL-terminated UTF-16LE (the CF_UNICODETEXT wire form).
+  CliprdrClientContext* cliprdr_ = nullptr;
+  std::mutex clipboardMutex_;
+  std::string localClipboardUtf16_;
+  bool localClipboardValid_ = false;
 };
 
 }  // namespace hmrdp

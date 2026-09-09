@@ -4,7 +4,7 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
-import { DisplayProfile, SavedConnection } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile, SavedConnection } from '../model/RdpModels';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 350;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
@@ -44,6 +44,13 @@ export class AppSettings {
   manualHeight: number = 0;
   scaleAuto: boolean = true;
   manualScalePercent: number = 100;
+  // Global advanced (protocol feature) defaults. Connections follow these
+  // unless they opt into their own overrides in the editor.
+  enableClipboard: boolean = true;
+  enableAudio: boolean = true;
+  enableGfx: boolean = true;
+  enableH264: boolean = true;
+  ignoreCertificate: boolean = true;
 }
 
 export class SettingsStore {
@@ -119,6 +126,16 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'scaleAuto', settings.scaleAuto);
       settings.manualScalePercent =
         SettingsStore.readNumber(store, 'manualScalePercent', settings.manualScalePercent);
+      settings.enableClipboard =
+        SettingsStore.readBoolean(store, 'enableClipboard', settings.enableClipboard);
+      settings.enableAudio =
+        SettingsStore.readBoolean(store, 'enableAudio', settings.enableAudio);
+      settings.enableGfx =
+        SettingsStore.readBoolean(store, 'enableGfx', settings.enableGfx);
+      settings.enableH264 =
+        SettingsStore.readBoolean(store, 'enableH264', settings.enableH264);
+      settings.ignoreCertificate =
+        SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
     }
     return settings;
   }
@@ -144,6 +161,11 @@ export class SettingsStore {
       store.putSync('manualHeight', settings.manualHeight);
       store.putSync('scaleAuto', settings.scaleAuto);
       store.putSync('manualScalePercent', settings.manualScalePercent);
+      store.putSync('enableClipboard', settings.enableClipboard);
+      store.putSync('enableAudio', settings.enableAudio);
+      store.putSync('enableGfx', settings.enableGfx);
+      store.putSync('enableH264', settings.enableH264);
+      store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.flush();
     }
   }
@@ -216,6 +238,38 @@ export class SettingsStore {
       profile.detected = global.detected;
     }
     profile.scalePercent = conn.scalePercent > 0 ? conn.scalePercent : global.scalePercent;
+    return profile;
+  }
+
+  /** Global advanced (protocol feature) defaults shared by every connection. */
+  static globalAdvancedProfile(): AdvancedProfile {
+    return SettingsStore.advancedFor(SettingsStore.load());
+  }
+
+  /**
+   * Effective advanced profile for a connection: global settings unless the
+   * connection opted into its own overrides.
+   */
+  static resolveAdvanced(conn: SavedConnection): AdvancedProfile {
+    if (conn.useGlobalAdvanced) {
+      return SettingsStore.globalAdvancedProfile();
+    }
+    const profile: AdvancedProfile = new AdvancedProfile();
+    profile.enableClipboard = conn.enableClipboard;
+    profile.enableAudio = conn.enableAudio;
+    profile.enableGfx = conn.enableGfx;
+    profile.enableH264 = conn.enableH264;
+    profile.ignoreCertificate = conn.ignoreCertificate;
+    return profile;
+  }
+
+  private static advancedFor(settings: AppSettings): AdvancedProfile {
+    const profile: AdvancedProfile = new AdvancedProfile();
+    profile.enableClipboard = settings.enableClipboard;
+    profile.enableAudio = settings.enableAudio;
+    profile.enableGfx = settings.enableGfx;
+    profile.enableH264 = settings.enableH264;
+    profile.ignoreCertificate = settings.ignoreCertificate;
     return profile;
   }
 

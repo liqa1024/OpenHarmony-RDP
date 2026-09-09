@@ -18,6 +18,19 @@ export class DisplayProfile {
   }
 }
 
+/**
+ * Effective per-connection protocol features (clipboard / audio / graphics
+ * pipeline / H.264 / certificate handling). Resolved from the global defaults
+ * unless a connection opts into its own overrides.
+ */
+export class AdvancedProfile {
+  enableClipboard: boolean = true;
+  enableAudio: boolean = true;
+  enableGfx: boolean = true;
+  enableH264: boolean = true;
+  ignoreCertificate: boolean = true;
+}
+
 export enum RdpEvent {
   Connected = 0,
   Disconnected = 1,
@@ -142,6 +155,9 @@ export class SavedConnection extends RdpConnectOptions {
   // When true the connection follows the global display settings and ignores
   // width / height / scalePercent; when false the stored values are used.
   useGlobalDisplay: boolean = true;
+  // When true the connection follows the global advanced settings (clipboard /
+  // audio / GFX / H.264 / certificate); when false its own stored values win.
+  useGlobalAdvanced: boolean = true;
 
   label(): string {
     return `${this.host}:${this.port}`;

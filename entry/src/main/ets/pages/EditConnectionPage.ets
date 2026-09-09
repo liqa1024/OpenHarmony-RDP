@@ -5,8 +5,8 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { DisplayProfile, EditConnectionParams, PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnection,
+  RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
@@ -28,6 +28,7 @@ struct EditConnectionPage {
   @State scaleText: string = '100';
   @State useGlobalDisplay: boolean = true;
   @State advancedExpanded: boolean = false;
+  @State useGlobalAdvanced: boolean = true;
   @State enableClipboard: boolean = true;
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
@@ -98,6 +99,7 @@ struct EditConnectionPage {
       this.enableGfx = conn.enableGfx;
       this.enableH264 = conn.enableH264;
       this.ignoreCertificate = conn.ignoreCertificate;
+      this.useGlobalAdvanced = conn.useGlobalAdvanced;
     }
     CredentialStore.loadPassword(id)
       .then((password: string) => {
@@ -147,7 +149,23 @@ struct EditConnectionPage {
     return SCALE_PRESETS.indexOf(value) >= 0;
   }
 
-  private buildOptions(): RdpConnectOptions | undefined {
+  private onOff(value: boolean): string {
+    return value ? '开' : '关';
+  }
+
+  private advancedSummary(profile: AdvancedProfile): string {
+    return `剪贴板${this.onOff(profile.enableClipboard)} · 音频${this.onOff(profile.enableAudio)}`
+      + ` · GFX${this.onOff(profile.enableGfx)} · H.264${this.onOff(profile.enableH264)}`
+      + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`;
+  }
+
+  /**
+   * Builds the options for a connection attempt or for persistence.
+   * `applyGlobalAdvanced` is true only for the live attempt: it substitutes the
+   * global advanced defaults when the connection is set to follow them, while
+   * the connection's own stored values are still persisted for later editing.
+   */
+  private buildOptions(applyGlobalAdvanced: boolean): RdpConnectOptions | undefined {
     const target: string = this.host.trim();
     if (target.length === 0) {
       this.errorMessage = '请输入主机名或 IP 地址';
@@ -169,11 +187,19 @@ struct EditConnectionPage {
     options.enableGfx = this.enableGfx;
     options.enableH264 = this.enableH264;
     options.ignoreCertificate = this.ignoreCertificate;
+    if (applyGlobalAdvanced && this.useGlobalAdvanced) {
+      const advanced: AdvancedProfile = SettingsStore.globalAdvancedProfile();
+      options.enableClipboard = advanced.enableClipboard;
+      options.enableAudio = advanced.enableAudio;
+      options.enableGfx = advanced.enableGfx;
+      options.enableH264 = advanced.enableH264;
+      options.ignoreCertificate = advanced.ignoreCertificate;
+    }
     return options;
   }
 
   private submit(connect: boolean): void {
-    const options: RdpConnectOptions | undefined = this.buildOptions();
+    const options: RdpConnectOptions | undefined = this.buildOptions(false);
     if (options === undefined) {
       return;
     }
@@ -181,6 +207,7 @@ struct EditConnectionPage {
       ? this.connectionId : util.generateRandomUUID(true);
     const conn: SavedConnection = SavedConnection.fromOptions(id, options);
     conn.useGlobalDisplay = this.useGlobalDisplay;
+    conn.useGlobalAdvanced = this.useGlobalAdvanced;
     conn.updatedAt = Date.now();
     if (!connect) {
       if (!this.persist(conn)) {
@@ -191,9 +218,13 @@ struct EditConnectionPage {
     }
     // Connect first; the configuration is persisted only on success so a failed
     // attempt never creates or modifies a saved connection.
-    options.password = this.password;
+    const attempt: RdpConnectOptions | undefined = this.buildOptions(true);
+    if (attempt === undefined) {
+      return;
+    }
+    attempt.password = this.password;
     const request: PendingConnection = new PendingConnection();
-    request.options = options;
+    request.options = attempt;
     request.connectionId = id;
     request.origin = RdpConnectOrigin.Editor;
     request.onConnected = () => {
@@ -525,7 +556,7 @@ struct EditConnectionPage {
             Row() {
               Column() {
                 Text('高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
-                Text('显示、剪贴板、音频等连接独立选项')
+                Text('默认跟随全局设置，展开后可单独覆盖')
                   .fontSize(11)
                   .fontColor($r('app.color.text_tertiary'))
                   .margin({ top: 2 })
@@ -534,7 +565,7 @@ struct EditConnectionPage {
               .layoutWeight(1)
 
               Row() {
-                if (!this.useGlobalDisplay) {
+                if (!this.useGlobalDisplay || !this.useGlobalAdvanced) {
                   Text('已自定义')
                     .fontSize(11)
                     .fontColor($r('app.color.text_tertiary'))
@@ -663,22 +694,49 @@ struct EditConnectionPage {
                   .color($r('app.color.divider'))
                   .margin({ top: 8, bottom: 4 })
 
-                this.optionRow('剪贴板重定向', '', this.enableClipboard, (v: boolean) => {
-                  this.enableClipboard = v;
-                })
-                this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
-                  this.enableAudio = v;
-                })
-                this.optionRow('GFX 图形管道', '更流畅的画面传输', this.enableGfx, (v: boolean) => {
-                  this.enableGfx = v;
-                })
-                this.optionRow('H.264 / AVC 解码', '需服务端支持', this.enableH264, (v: boolean) => {
-                  this.enableH264 = v;
-                })
-                this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,
-                  (v: boolean) => {
-                    this.ignoreCertificate = v;
+                Row() {
+                  Column() {
+                    Text('使用全局高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
+                    Text('剪贴板、音频、图形管道等跟随全局设置')
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .margin({ top: 2 })
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1)
+
+                  Toggle({ type: ToggleType.Switch, isOn: this.useGlobalAdvanced })
+                    .selectedColor($r('app.color.accent'))
+                    .onChange((isOn: boolean) => {
+                      this.useGlobalAdvanced = isOn;
+                    })
+                }
+                .width('100%')
+                .height(58)
+
+                if (this.useGlobalAdvanced) {
+                  Text('全局：' + this.advancedSummary(SettingsStore.globalAdvancedProfile()))
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .width('100%')
+                } else {
+                  this.optionRow('剪贴板重定向', '', this.enableClipboard, (v: boolean) => {
+                    this.enableClipboard = v;
                   })
+                  this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
+                    this.enableAudio = v;
+                  })
+                  this.optionRow('GFX 图形管道', '更流畅的画面传输', this.enableGfx, (v: boolean) => {
+                    this.enableGfx = v;
+                  })
+                  this.optionRow('H.264 / AVC 解码', '需服务端支持', this.enableH264, (v: boolean) => {
+                    this.enableH264 = v;
+                  })
+                  this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,
+                    (v: boolean) => {
+                      this.ignoreCertificate = v;
+                    })
+                }
               }
               .width('100%')
               .alignItems(HorizontalAlign.Start)

@@ -7,7 +7,8 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   getVersion, isConnected, onEvent, requestResize, sendKey, sendMouse, sendTouch,
-  sendUnicode, setSurface, updateSurface, RdpEventCallback } from 'libhmrdp.so';
+  sendUnicode, setClipboardText, setSurface, updateSurface,
+  RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
 export type RdpEventListener = (event: RdpEvent, data: string) => void;
@@ -142,6 +143,13 @@ export class RdpNative {
   unicode(codepoint: number, down: boolean): void {
     if (this.handle >= 0) {
       sendUnicode(this.handle, codepoint, down);
+    }
+  }
+
+  /** Pushes the local clipboard text (UTF-8) to the remote session. */
+  setClipboard(text: string): void {
+    if (this.handle >= 0) {
+      setClipboardText(this.handle, text);
     }
   }
 
