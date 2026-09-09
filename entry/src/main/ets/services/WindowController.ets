@@ -11,9 +11,18 @@ const DOMAIN: number = 0xD002;
 const TAG: string = 'HmRdpWindow';
 const BUNDLE_NAME: string = 'com.lixa.hmrdp';
 const SESSION_ABILITY: string = 'SessionAbility';
+const ENTRY_ABILITY: string = 'EntryAbility';
 
 export class WindowController {
   private static stage: window.WindowStage | undefined = undefined;
+  // Single-window mode ("auto hide main window"): the session still runs in its
+  // own SessionAbility window, but the main window is terminated so only the
+  // session is visible. Only one session is supported in this mode, so a single
+  // flag and a single pending context are enough.
+  private static mainHidden: boolean = false;
+  private static mainContext: common.UIAbilityContext | undefined = undefined;
+  private static pendingSessionContext: common.UIAbilityContext | undefined = undefined;
+  private static pendingTimerId: number = -1;
 
   static init(stage: window.WindowStage): void {
     WindowController.stage = stage;
@@ -48,12 +57,17 @@ export class WindowController {
 
   /**
    * Opens the RDP session in an independent main window (SessionAbility) so it
-   * gets a standard title bar with minimize / maximize / close buttons and can
-   * be moved and resized like any other window. `sessionKey` identifies the
-   * launch request and is also used as the unique instanceKey, so several
-   * sessions can be open at once.
+   * gets a standard title bar with minimize / maximize / close buttons. In
+   * single-window mode the main window is then terminated so the session window
+   * is the only visible window; only one session is supported there.
    */
   static openSessionWindow(context: common.UIAbilityContext, sessionKey: string): void {
+    const settings: AppSettings = SettingsStore.load();
+    const singleWindow: boolean = settings.autoHideMainWindow;
+    if (singleWindow) {
+      WindowController.mainHidden = true;
+      WindowController.mainContext = context;
+    }
     const want: Want = {
       bundleName: BUNDLE_NAME,
       abilityName: SESSION_ABILITY,
@@ -62,19 +76,104 @@ export class WindowController {
         sessionKey: sessionKey
       }
     };
-    const settings: AppSettings = SettingsStore.load();
     if (settings.sessionFullscreen) {
       const options: StartOptions = {
         windowMode: AbilityConstant.WindowMode.WINDOW_MODE_FULLSCREEN
       };
       context.startAbility(want, options).catch((error: BusinessError) => {
+        WindowController.cancelHideOnLaunchFailure(singleWindow);
         hilog.error(DOMAIN, TAG, 'start session ability failed: %{public}s',
           JSON.stringify(error));
       });
       return;
     }
     context.startAbility(want).catch((error: BusinessError) => {
+      WindowController.cancelHideOnLaunchFailure(singleWindow);
       hilog.error(DOMAIN, TAG, 'start session ability failed: %{public}s',
+        JSON.stringify(error));
+    });
+  }
+
+  private static cancelHideOnLaunchFailure(singleWindow: boolean): void {
+    if (singleWindow) {
+      WindowController.mainHidden = false;
+      WindowController.mainContext = undefined;
+    }
+  }
+
+  /**
+   * Called by the session window once its content is loaded. In single-window
+   * mode this is when the main window is terminated: the session ability is now
+   * registered, so the process survives and only the session stays visible.
+   */
+  static onSessionWindowReady(): void {
+    if (!WindowController.mainHidden) {
+      return;
+    }
+    const context: common.UIAbilityContext | undefined = WindowController.mainContext;
+    if (context === undefined) {
+      return;
+    }
+    WindowController.mainContext = undefined;
+    context.terminateSelf().catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'terminate main window failed: %{public}s',
+        JSON.stringify(error));
+    });
+  }
+
+  /**
+   * Called when a session window is about to close. In single-window mode the
+   * main window was terminated, so relaunch it first and terminate this session
+   * afterwards (onMainWindowReady). Returns true when the caller must defer
+   * closing the session window.
+   */
+  static closeSession(context: common.UIAbilityContext): boolean {
+    if (WindowController.pendingSessionContext !== undefined) {
+      // Already relaunching the main window for this session.
+      return true;
+    }
+    if (!WindowController.mainHidden) {
+      return false;
+    }
+    WindowController.pendingSessionContext = context;
+    if (WindowController.pendingTimerId !== -1) {
+      clearTimeout(WindowController.pendingTimerId);
+    }
+    WindowController.pendingTimerId = setTimeout(() => {
+      WindowController.pendingTimerId = -1;
+      WindowController.terminatePendingSession();
+    }, 3000);
+    const want: Want = {
+      bundleName: BUNDLE_NAME,
+      abilityName: ENTRY_ABILITY
+    };
+    context.startAbility(want).catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'restore main window failed: %{public}s',
+        JSON.stringify(error));
+      WindowController.terminatePendingSession();
+    });
+    return true;
+  }
+
+  /** Called by the main EntryAbility once it is created and registered. */
+  static onMainWindowReady(): void {
+    if (WindowController.pendingTimerId !== -1) {
+      clearTimeout(WindowController.pendingTimerId);
+      WindowController.pendingTimerId = -1;
+    }
+    WindowController.terminatePendingSession();
+  }
+
+  private static terminatePendingSession(): void {
+    WindowController.mainHidden = false;
+    const context: common.UIAbilityContext | undefined =
+      WindowController.pendingSessionContext;
+    if (context === undefined) {
+      return;
+    }
+    WindowController.pendingSessionContext = undefined;
+    context.terminateSelf().catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'terminate session failed: %{public}s',
         JSON.stringify(error));
     });
   }

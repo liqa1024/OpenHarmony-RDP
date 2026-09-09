@@ -67,6 +67,11 @@ export default class SessionAbility extends UIAbility {
         settings.sessionWindowWidth, settings.sessionWindowHeight,
         settings.sessionWindowSizeEnabled);
     }
+    // Single-window mode: block the system close button so the main window can
+    // be relaunched first (see WindowController.closeSession).
+    windowStage.on('windowStageClose', () => {
+      return WindowController.closeSession(this.context);
+    });
     const storage: LocalStorage = new LocalStorage();
     storage.setOrCreate<string>('sessionKey', this.sessionKey);
     windowStage.loadContent('pages/SessionPage', storage, (err) => {
@@ -76,8 +81,17 @@ export default class SessionAbility extends UIAbility {
         return;
       }
       WindowController.setupSessionWindow(windowStage, settings.sessionFullscreen);
+      WindowController.onSessionWindowReady();
       hilog.info(DOMAIN, TAG, '%{public}s', 'Succeeded in loading the content.');
     });
+  }
+
+  /**
+   * Intercepts dock/tray close as well as the title-bar close so the main window
+   * is relaunched before this session ability goes away in single-window mode.
+   */
+  onPrepareToTerminate(): boolean {
+    return WindowController.closeSession(this.context);
   }
 
   onWindowStageDestroy(): void {

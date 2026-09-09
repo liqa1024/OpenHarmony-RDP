@@ -10,6 +10,7 @@ import { PendingConnection, RdpConnectOptions, RdpConnectionState,
 import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
+import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 
 const DOMAIN: number = 0xD001;
@@ -607,12 +608,18 @@ struct SessionPage {
     }
     this.closing = true;
     const context = this.getUIContext().getHostContext();
-    if (context !== undefined) {
-      const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-      abilityContext.terminateSelf().catch((error: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'terminate session failed: %{public}s', JSON.stringify(error));
-      });
+    if (context === undefined) {
+      return;
     }
+    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
+    // Single-window mode: this session hid the main window, so the controller
+    // relaunches the main window first and terminates this one afterwards.
+    if (WindowController.closeSession(abilityContext)) {
+      return;
+    }
+    abilityContext.terminateSelf().catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'terminate session failed: %{public}s', JSON.stringify(error));
+    });
   }
 
   @Builder

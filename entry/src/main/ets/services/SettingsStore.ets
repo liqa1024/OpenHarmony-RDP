@@ -34,6 +34,9 @@ export class AppSettings {
   sessionWindowWidth: number = 0;
   sessionWindowHeight: number = 0;
   sessionFullscreen: boolean = false;
+  // When true the main window is minimized while a session window is open and
+  // restored once the last session window closes.
+  autoHideMainWindow: boolean = false;
   // Global display defaults: automatic resolution / scaling by default, with an
   // optional manual override shared by every connection.
   resolutionAuto: boolean = true;
@@ -104,6 +107,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'sessionWindowHeight', settings.sessionWindowHeight);
       settings.sessionFullscreen =
         SettingsStore.readBoolean(store, 'sessionFullscreen', settings.sessionFullscreen);
+      settings.autoHideMainWindow =
+        SettingsStore.readBoolean(store, 'autoHideMainWindow', settings.autoHideMainWindow);
       settings.resolutionAuto =
         SettingsStore.readBoolean(store, 'resolutionAuto', settings.resolutionAuto);
       settings.manualWidth =
@@ -133,6 +138,7 @@ export class SettingsStore {
       store.putSync('sessionWindowWidth', settings.sessionWindowWidth);
       store.putSync('sessionWindowHeight', settings.sessionWindowHeight);
       store.putSync('sessionFullscreen', settings.sessionFullscreen);
+      store.putSync('autoHideMainWindow', settings.autoHideMainWindow);
       store.putSync('resolutionAuto', settings.resolutionAuto);
       store.putSync('manualWidth', settings.manualWidth);
       store.putSync('manualHeight', settings.manualHeight);

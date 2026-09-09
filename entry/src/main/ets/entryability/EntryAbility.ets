@@ -32,6 +32,9 @@ export default class EntryAbility extends UIAbility {
     }
     SettingsStore.init(this.context);
     ConnectionStore.init(this.context);
+    // Single-window mode: if this launch restores the main window after a
+    // session, finish terminating that session now that we are registered.
+    WindowController.onMainWindowReady();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 

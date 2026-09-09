@@ -40,6 +40,7 @@ struct SettingsPage {
   @State mainSizeEnabled: boolean = false;
   @State sessionSizeEnabled: boolean = false;
   @State sessionFullscreen: boolean = false;
+  @State autoHideMainWindow: boolean = false;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -78,6 +79,7 @@ struct SettingsPage {
     this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.sessionFullscreen = settings.sessionFullscreen;
+    this.autoHideMainWindow = settings.autoHideMainWindow;
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
@@ -139,6 +141,7 @@ struct SettingsPage {
     settings.scaleAuto = this.scaleAuto;
     settings.manualScalePercent = this.parseScale(this.manualScaleText, this.recommendedScale);
     settings.sessionFullscreen = this.sessionFullscreen;
+    settings.autoHideMainWindow = this.autoHideMainWindow;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -167,6 +170,7 @@ struct SettingsPage {
     this.mainSizeEnabled = defaults.mainWindowSizeEnabled;
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.sessionFullscreen = defaults.sessionFullscreen;
+    this.autoHideMainWindow = defaults.autoHideMainWindow;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -638,6 +642,30 @@ struct SettingsPage {
                   .selectedColor($r('app.color.accent'))
                   .onChange((isOn: boolean) => {
                     this.sessionFullscreen = isOn;
+                    this.persist();
+                  })
+              }
+              .width('100%')
+              .height(58)
+              .margin({ top: 4 })
+
+              Divider().color($r('app.color.divider'))
+
+              Row() {
+                Column() {
+                  Text('自动隐藏主窗口').fontSize(14).fontColor($r('app.color.text_primary'))
+                  Text('单窗口模式：会话窗口打开时隐藏主窗口，关闭后恢复（不支持多会话）')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Toggle({ type: ToggleType.Switch, isOn: this.autoHideMainWindow })
+                  .selectedColor($r('app.color.accent'))
+                  .onChange((isOn: boolean) => {
+                    this.autoHideMainWindow = isOn;
                     this.persist();
                   })
               }
