@@ -7,6 +7,8 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { PendingConnection } from '../model/RdpModels';
+import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
 
@@ -20,7 +22,22 @@ export default class SessionAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    // Final safety net: if the window is closed before the page lifecycle runs,
+    // tear down the native session here so the RDP connection never outlives
+    // its window. stopSession() is idempotent.
+    this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onDestroy');
+  }
+
+  /**
+   * Mirrors the toolbar "断开" action: stop the FreeRDP session, drop the event
+   * listener and scrub the transient credentials held by PendingConnection.
+   */
+  private releaseSession(): void {
+    RdpNative.get().stopSession();
+    RdpNative.get().clearListener();
+    PendingConnection.current.options.password = '';
+    PendingConnection.current.options.gatewayPassword = '';
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -43,6 +60,10 @@ export default class SessionAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    // Closing the session window (title-bar X / Alt+F4) must disconnect the RDP
+    // session exactly like the toolbar button. This runs even when the page
+    // never receives aboutToDisappear().
+    this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onWindowStageDestroy');
   }
 
