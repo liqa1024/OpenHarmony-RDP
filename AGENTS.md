@@ -117,6 +117,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 
 ## 关键实现要点（改动前必读）
 
+> **全局设置生效时机**：所有设置项（分辨率/缩放、连接特性、触屏高刷新率、使用RDP光标等）在
+> **连接建立时**读取，改动后需**重开会话**才生效；已打开的会话不受影响。
+
 1. **GFX 管线**：`HmrdpPreConnect` 必须把 `ChannelConnected`/`ChannelDisconnected` 订阅到
    `freerdp_client_OnChannelConnectedEventHandler`，否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
 2. **鼠标按键**：`PTR_FLAGS_MOVE` 与按键事件分开送，按键事件不带 MOVE 标志，否则远端忽略点击。
@@ -207,6 +210,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     才弹出，`updateToolbar` 只在全屏生效）；窗口模式**始终显示**，且作为普通行布局在远程画面**上方**
     （`Column`：工具栏 + `Stack`(XComponent + 状态浮层)），渲染区域自然扣除工具栏高度、不再被覆盖，
     指针映射仍以 XComponent 局部坐标为准。
+18. **远端光标同步**（`useRdpCursor`，默认开）：RDP 只传光标**位图**（系统指针仅 `SYSPTR_NULL`/
+    `SYSPTR_DEFAULT`），故照搬位图、不做类型映射；HarmonyOS 会把自定义位图缩放到**固定的系统光标大小**，
+    所以无需按画面/位图尺寸自行缩放。原生 `HmrdpPostConnect` 用 `graphics_register_pointer` 接管
+    `Pointer_Prototype`，`Set` 转 BGRA32 + 去重后经 `kCursorShape` 下发；仅超 256 的位图以**预乘 alpha
+    面积平均**缩到 256（热点同比例，源 >1024 丢弃）。UI 用 `Base64Helper` → `createPixelMapSync` →
+    `pointer.setCustomCursorSync`，默认/隐藏走 `setPointerStyleSync(DEFAULT)` / `setPointerVisibleSync(false)`
+    （模拟器无鼠标，只能真机验证）。关闭开关则不接管、回退默认箭头。
 
 ## ArkTS 规范
 
@@ -233,7 +243,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（右侧依次复制/粘贴、全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动/捏合与触摸模拟、触屏高刷新率、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口尺寸与默认最大化、自动隐藏主窗口、配置导入/导出） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、使用RDP光标、触控板滚动/捏合与触摸模拟、触屏高刷新率、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口尺寸与默认最大化、自动隐藏主窗口、配置导入/导出） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`；`reorder` 持久化拖拽后的 `ids` 顺序） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
@@ -243,7 +253,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
-| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` 查询与开关 |
-| `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
+| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` / `setRdpCursor` 查询与开关 |
+| `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理 |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 中断/错误降级） |
