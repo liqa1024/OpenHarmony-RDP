@@ -433,7 +433,15 @@ bool Session::Connect(const RdpOptions& options) {
     freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, TRUE);
   }
   freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, options.enableClipboard);
-  freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, options.enableAudio);
+  // Audio is only requested when the device actually provides an audio output;
+  // otherwise the channel is left off so an unsupported device degrades to a
+  // silent session instead of failing.
+  const bool audioSupported = AudioOutput::Supported();
+  if (options.enableAudio && !audioSupported) {
+    HMRDP_LOGW("audio: requested but unsupported on this device, disabling");
+  }
+  freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback,
+                            options.enableAudio && audioSupported);
   freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, options.enableGfx);
   freerdp_settings_set_bool(settings, FreeRDP_GfxH264, options.enableH264);
   freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, options.enableRemoteFx);
@@ -551,6 +559,7 @@ void Session::Disconnect() {
   cliprdr_ = nullptr;
   clipboardReady_ = false;
   running_ = false;
+  audio_.Close();
   renderer_.Reset();
 }
 
@@ -615,8 +624,8 @@ void Session::HandlePostDisconnect() {
 }
 
 void Session::OnAudioData(const void* data, size_t size, int sampleRate, int channels) {
-  if (audioFn_ && data != nullptr && size > 0) {
-    audioFn_(data, size, sampleRate, channels);
+  if (data != nullptr && size > 0) {
+    audio_.Write(data, size, sampleRate, channels);
   }
 }
 

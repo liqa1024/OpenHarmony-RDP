@@ -9,6 +9,7 @@ import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnectio
   RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 
@@ -30,6 +31,8 @@ struct EditConnectionPage {
   @State advancedExpanded: boolean = false;
   @State useGlobalAdvanced: boolean = true;
   @State enableClipboard: boolean = true;
+  @State audioSupported: boolean = true;
+  private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
   @State enableH264: boolean = true;
@@ -64,6 +67,9 @@ struct EditConnectionPage {
 
   aboutToAppear(): void {
     SessionManager.subscribe(this.sessionListener);
+    const audioCapability: Capability = DeviceCapabilities.audio();
+    this.audioSupported = audioCapability.supported;
+    this.audioDisabledReason = audioCapability.reason;
     const detected: DisplayProfile = SettingsStore.detectedDisplay();
     this.detectedText = detected.valid()
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
@@ -95,7 +101,7 @@ struct EditConnectionPage {
         this.scaleText = conn.scalePercent.toString();
       }
       this.enableClipboard = conn.enableClipboard;
-      this.enableAudio = conn.enableAudio;
+      this.enableAudio = this.audioSupported && conn.enableAudio;
       this.enableGfx = conn.enableGfx;
       this.enableH264 = conn.enableH264;
       this.ignoreCertificate = conn.ignoreCertificate;
@@ -194,6 +200,9 @@ struct EditConnectionPage {
       options.enableGfx = advanced.enableGfx;
       options.enableH264 = advanced.enableH264;
       options.ignoreCertificate = advanced.ignoreCertificate;
+    }
+    if (!this.audioSupported) {
+      options.enableAudio = false;
     }
     return options;
   }
@@ -328,12 +337,20 @@ struct EditConnectionPage {
 
   @Builder
   optionRow(title: string, subtitle: string, value: boolean,
-    onToggle: (v: boolean) => void) {
+    onToggle: (v: boolean) => void, enabled: boolean, disabledReason: string) {
     Row() {
       Column() {
-        Text(title).fontSize(14).fontColor($r('app.color.text_primary'))
+        Text(title)
+          .fontSize(14)
+          .fontColor(enabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
         if (subtitle.length > 0) {
           Text(subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+        }
+        if (!enabled && disabledReason.length > 0) {
+          Text(disabledReason)
+            .fontSize(11)
+            .fontColor($r('app.color.danger'))
             .margin({ top: 2 })
         }
       }
@@ -341,12 +358,17 @@ struct EditConnectionPage {
       .layoutWeight(1)
 
       Toggle({ type: ToggleType.Switch, isOn: value })
+        .enabled(enabled)
         .onChange((isOn: boolean) => {
+          if (!enabled) {
+            return;
+          }
           onToggle(isOn);
         })
     }
     .width('100%')
-    .height(subtitle.length > 0 ? 58 : 48)
+    .height((subtitle.length > 0 ? 58 : 48) +
+      (!enabled && disabledReason.length > 0 ? 20 : 0))
   }
 
   build() {
@@ -722,20 +744,20 @@ struct EditConnectionPage {
                 } else {
                   this.optionRow('剪贴板重定向', '', this.enableClipboard, (v: boolean) => {
                     this.enableClipboard = v;
-                  })
+                  }, true, '')
                   this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
                     this.enableAudio = v;
-                  })
+                  }, this.audioSupported, this.audioDisabledReason)
                   this.optionRow('GFX 图形管道', '更流畅的画面传输', this.enableGfx, (v: boolean) => {
                     this.enableGfx = v;
-                  })
+                  }, true, '')
                   this.optionRow('H.264 / AVC 解码', '需服务端支持', this.enableH264, (v: boolean) => {
                     this.enableH264 = v;
-                  })
+                  }, true, '')
                   this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,
                     (v: boolean) => {
                       this.ignoreCertificate = v;
-                    })
+                    }, true, '')
                 }
               }
               .width('100%')

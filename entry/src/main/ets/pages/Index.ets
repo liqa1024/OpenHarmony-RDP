@@ -8,6 +8,7 @@ import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnectio
   RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 
@@ -137,7 +138,7 @@ struct Index {
     options.scalePercent = profile.scalePercent;
     const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
     options.enableClipboard = advanced.enableClipboard;
-    options.enableAudio = advanced.enableAudio;
+    options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
     options.enableGfx = advanced.enableGfx;
     options.enableH264 = advanced.enableH264;
     options.ignoreCertificate = advanced.ignoreCertificate;

@@ -16,6 +16,7 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/client/cliprdr.h>
 
+#include "hmrdp_audio.h"
 #include "hmrdp_renderer.h"
 
 namespace hmrdp {
@@ -58,10 +59,6 @@ struct RdpOptions {
 class Session {
  public:
   using EventFn = std::function<void(SessionEvent, const std::string&)>;
-  // Decoded 16-bit PCM handed over by the FreeRDP rdpsnd sink (see
-  // native/patches/rdpsnd_opensles.c). Invoked on the RDP thread.
-  using AudioFn =
-      std::function<void(const void* data, size_t size, int sampleRate, int channels)>;
 
   explicit Session();
   ~Session();
@@ -72,9 +69,9 @@ class Session {
   Renderer* renderer() { return &renderer_; }
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
-  void SetAudioFn(AudioFn fn) { audioFn_ = std::move(fn); }
 
-  // Internal: forwards a PCM buffer produced by the rdpsnd backend.
+  // Internal: forwards a PCM buffer produced by the rdpsnd backend to the
+  // session's audio output.
   void OnAudioData(const void* data, size_t size, int sampleRate, int channels);
 
   bool Connect(const RdpOptions& options);
@@ -112,8 +109,8 @@ class Session {
 
   freerdp* instance_ = nullptr;
   Renderer renderer_;
+  AudioOutput audio_;
   EventFn eventFn_;
-  AudioFn audioFn_;
   std::string lastError_;
   uint32_t lastErrorCode_ = 0;
 

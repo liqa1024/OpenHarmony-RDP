@@ -5,6 +5,7 @@ import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
+import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 import { KeyMapper } from '../utils/KeyMapper';
 
@@ -31,6 +32,10 @@ class ToggleItemConfig {
   title: string = '';
   subtitle: string = '';
   value: boolean = false;
+  // A device that does not provide the feature shows the row greyed out with
+  // `disabledReason` instead of an active switch.
+  enabled: boolean = true;
+  disabledReason: string = '';
   onChange: (v: boolean) => void = (v: boolean) => {};
 }
 
@@ -54,6 +59,8 @@ struct SettingsPage {
   @State sessionSizeEnabled: boolean = false;
   @State sessionFullscreen: boolean = false;
   @State autoHideMainWindow: boolean = false;
+  @State audioSupported: boolean = true;
+  private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
   @State enableH264: boolean = true;
@@ -89,6 +96,9 @@ struct SettingsPage {
   /** Pulls the persisted settings back into the page state (also after import). */
   private syncFromStore(): void {
     const settings: AppSettings = SettingsStore.load();
+    const audioCapability: Capability = DeviceCapabilities.audio();
+    this.audioSupported = audioCapability.supported;
+    this.audioDisabledReason = audioCapability.reason;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
@@ -104,7 +114,9 @@ struct SettingsPage {
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.sessionFullscreen = settings.sessionFullscreen;
     this.autoHideMainWindow = settings.autoHideMainWindow;
-    this.enableAudio = settings.enableAudio;
+    // An unsupported device never requests audio; drop a previously stored
+    // "on" value so the setting matches the greyed-out switch.
+    this.enableAudio = this.audioSupported ? settings.enableAudio : false;
     this.enableGfx = settings.enableGfx;
     this.enableH264 = settings.enableH264;
     this.ignoreCertificate = settings.ignoreCertificate;
@@ -112,6 +124,9 @@ struct SettingsPage {
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(settings.sessionWindowHeight);
+    if (!this.audioSupported && settings.enableAudio) {
+      this.persist();
+    }
   }
 
   private sizeText(value: number): string {
@@ -203,7 +218,7 @@ struct SettingsPage {
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.sessionFullscreen = defaults.sessionFullscreen;
     this.autoHideMainWindow = defaults.autoHideMainWindow;
-    this.enableAudio = defaults.enableAudio;
+    this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
     this.enableGfx = defaults.enableGfx;
     this.enableH264 = defaults.enableH264;
     this.ignoreCertificate = defaults.ignoreCertificate;
@@ -378,9 +393,17 @@ struct SettingsPage {
   toggleItem(item: ToggleItemConfig) {
     Row() {
       Column() {
-        Text(item.title).fontSize(14).fontColor($r('app.color.text_primary'))
+        Text(item.title)
+          .fontSize(14)
+          .fontColor(item.enabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
         if (item.subtitle.length > 0) {
           Text(item.subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+        }
+        if (!item.enabled && item.disabledReason.length > 0) {
+          Text(item.disabledReason)
+            .fontSize(11)
+            .fontColor($r('app.color.danger'))
             .margin({ top: 2 })
         }
       }
@@ -389,12 +412,17 @@ struct SettingsPage {
 
       Toggle({ type: ToggleType.Switch, isOn: item.value })
         .selectedColor($r('app.color.accent'))
+        .enabled(item.enabled)
         .onChange((isOn: boolean) => {
+          if (!item.enabled) {
+            return;
+          }
           item.onChange(isOn);
         })
     }
     .width('100%')
-    .height(item.subtitle.length > 0 ? 58 : 48)
+    .height((item.subtitle.length > 0 ? 58 : 48) +
+      (!item.enabled && item.disabledReason.length > 0 ? 20 : 0))
   }
 
   @Builder
@@ -725,6 +753,8 @@ struct SettingsPage {
               title: '音频重定向',
               subtitle: '播放远端的声音',
               value: this.enableAudio,
+              enabled: this.audioSupported,
+              disabledReason: this.audioDisabledReason,
               onChange: (v: boolean) => {
                 this.enableAudio = v;
                 this.persist();
@@ -737,6 +767,8 @@ struct SettingsPage {
               title: 'GFX 图形管道',
               subtitle: '更流畅的画面传输，建议开启',
               value: this.enableGfx,
+              enabled: true,
+              disabledReason: '',
               onChange: (v: boolean) => {
                 this.enableGfx = v;
                 this.persist();
@@ -749,6 +781,8 @@ struct SettingsPage {
               title: 'H.264 / AVC 解码',
               subtitle: '需服务端支持，GFX 开启时生效',
               value: this.enableH264,
+              enabled: true,
+              disabledReason: '',
               onChange: (v: boolean) => {
                 this.enableH264 = v;
                 this.persist();
@@ -761,6 +795,8 @@ struct SettingsPage {
               title: '忽略证书校验',
               subtitle: '仅用于自签名证书的测试环境，存在安全风险',
               value: this.ignoreCertificate,
+              enabled: true,
+              disabledReason: '',
               onChange: (v: boolean) => {
                 this.ignoreCertificate = v;
                 this.persist();

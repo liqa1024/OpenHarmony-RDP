@@ -24,10 +24,6 @@ export interface RdpOptions {
 
 export type RdpEventCallback = (handle: number, event: number, data: string) => void;
 
-/** Decoded 16-bit PCM pushed by the rdpsnd backend (one RDP audio packet). */
-export type RdpAudioCallback = (handle: number, sampleRate: number, channels: number,
-  data: ArrayBuffer) => void;
-
 export const createSession: () => number;
 export const destroySession: (handle: number) => void;
 export const connect: (handle: number, options: RdpOptions) => boolean;
@@ -42,4 +38,9 @@ export const sendKey: (handle: number, scancode: number, down: boolean, extended
 export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
 export const setClipboardText: (handle: number, text: string) => boolean;
 export const onEvent: (callback: RdpEventCallback) => void;
-export const onAudio: (callback: RdpAudioCallback) => void;
+
+/**
+ * Whether this device provides an audio output. False means the native OHAudio
+ * library is unavailable, so remote audio is disabled gracefully.
+ */
+export const isAudioSupported: () => boolean;

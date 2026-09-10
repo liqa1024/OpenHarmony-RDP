@@ -9,15 +9,12 @@
 #include <native_window/external_window.h>
 #include <napi/native_api.h>
 
-#include <atomic>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <vector>
 
 #include "hmrdp_log.h"
 #include "hmrdp_session.h"
@@ -25,6 +22,7 @@
 namespace {
 
 using hmrdp::RdpOptions;
+using hmrdp::AudioOutput;
 using hmrdp::Session;
 using hmrdp::SessionEvent;
 
@@ -36,24 +34,11 @@ std::map<int64_t, OHNativeWindow*> g_windows;
 int64_t g_nextId = 1;
 
 napi_threadsafe_function g_eventTsfn = nullptr;
-napi_threadsafe_function g_audioTsfn = nullptr;
-
-// Decoded PCM is realtime data: if the UI thread stalls we drop newly arrived
-// packets rather than let the queue grow and add latency.
-constexpr int64_t kMaxPendingAudioBytes = 256 * 1024;
-std::atomic<int64_t> g_pendingAudioBytes{0};
 
 struct EventPayload {
   int64_t handle;
   int event;
   std::string data;
-};
-
-struct AudioPayload {
-  int64_t handle;
-  int sampleRate;
-  int channels;
-  std::vector<uint8_t> pcm;
 };
 
 void CallJsEvent(napi_env env, napi_value jsCallback, void*, void* data) {
@@ -81,59 +66,6 @@ void OnSessionEvent(int64_t handle, SessionEvent event, const std::string& data)
   const napi_status status =
       napi_call_threadsafe_function(g_eventTsfn, payload, napi_tsfn_nonblocking);
   if (status != napi_ok) {
-    delete payload;
-  }
-}
-
-void CallJsAudio(napi_env env, napi_value jsCallback, void*, void* data) {
-  std::unique_ptr<AudioPayload> payload(static_cast<AudioPayload*>(data));
-  if (payload != nullptr) {
-    g_pendingAudioBytes.fetch_sub(static_cast<int64_t>(payload->pcm.size()));
-  }
-  if (env == nullptr || jsCallback == nullptr || payload == nullptr) {
-    return;
-  }
-  void* raw = nullptr;
-  napi_value buffer = nullptr;
-  if (napi_create_arraybuffer(env, payload->pcm.size(), &raw, &buffer) != napi_ok) {
-    return;
-  }
-  if (raw != nullptr && !payload->pcm.empty()) {
-    memcpy(raw, payload->pcm.data(), payload->pcm.size());
-  }
-  napi_value handleValue = nullptr;
-  napi_value rateValue = nullptr;
-  napi_value channelsValue = nullptr;
-  napi_create_int64(env, payload->handle, &handleValue);
-  napi_create_int32(env, payload->sampleRate, &rateValue);
-  napi_create_int32(env, payload->channels, &channelsValue);
-  napi_value argv[4] = {handleValue, rateValue, channelsValue, buffer};
-  napi_value global = nullptr;
-  napi_get_global(env, &global);
-  napi_call_function(env, global, jsCallback, 4, argv, nullptr);
-}
-
-void OnSessionAudio(int64_t handle, const void* data, size_t size, int sampleRate,
-                    int channels) {
-  if (g_audioTsfn == nullptr || data == nullptr || size == 0) {
-    return;
-  }
-  static std::atomic<int> loggedPackets{0};
-  if (loggedPackets.fetch_add(1) == 0) {
-    HMRDP_LOGI("audio: first PCM packet %{public}d bytes rate=%{public}d channels=%{public}d",
-               static_cast<int>(size), sampleRate, channels);
-  }
-  if (g_pendingAudioBytes.load() > kMaxPendingAudioBytes) {
-    return;
-  }
-  AudioPayload* payload = new AudioPayload{handle, sampleRate, channels, {}};
-  const uint8_t* bytes = static_cast<const uint8_t*>(data);
-  payload->pcm.assign(bytes, bytes + size);
-  g_pendingAudioBytes.fetch_add(static_cast<int64_t>(size));
-  const napi_status status =
-      napi_call_threadsafe_function(g_audioTsfn, payload, napi_tsfn_nonblocking);
-  if (status != napi_ok) {
-    g_pendingAudioBytes.fetch_sub(static_cast<int64_t>(size));
     delete payload;
   }
 }
@@ -239,9 +171,6 @@ napi_value CreateSession(napi_env env, napi_callback_info) {
   // session window when several sessions run at once.
   session->SetEventFn([id](SessionEvent event, const std::string& data) {
     OnSessionEvent(id, event, data);
-  });
-  session->SetAudioFn([id](const void* data, size_t size, int sampleRate, int channels) {
-    OnSessionAudio(id, data, size, sampleRate, channels);
   });
   g_sessions[id] = std::move(session);
   return CreateInt(env, id);
@@ -551,26 +480,8 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value OnAudio(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  if (argc < 1) {
-    return CreateUndefined(env);
-  }
-  napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
-    return CreateUndefined(env);
-  }
-  if (g_audioTsfn != nullptr) {
-    napi_release_threadsafe_function(g_audioTsfn, napi_tsfn_release);
-    g_audioTsfn = nullptr;
-  }
-  napi_value resourceName = nullptr;
-  napi_create_string_utf8(env, "HmRdpAudio", NAPI_AUTO_LENGTH, &resourceName);
-  napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr,
-                                  nullptr, nullptr, CallJsAudio, &g_audioTsfn);
-  return CreateUndefined(env);
+napi_value IsAudioSupported(napi_env env, napi_callback_info) {
+  return CreateBool(env, AudioOutput::Supported());
 }
 
 napi_value OnEvent(napi_env env, napi_callback_info info) {
@@ -619,7 +530,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"onAudio", nullptr, OnAudio, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

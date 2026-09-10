@@ -6,20 +6,16 @@
  * routed back to the owning instance.
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
-  onAudio, onEvent, sendKey, sendMouse, sendTouch,
+  onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardText, setSurface, updateSurface,
-  RdpAudioCallback, RdpEventCallback } from 'libhmrdp.so';
+  RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
 export type RdpEventListener = (event: RdpEvent, data: string) => void;
-/** Decoded 16-bit PCM for one RDP audio packet. */
-export type RdpAudioListener = (sampleRate: number, channels: number,
-  data: ArrayBuffer) => void;
 
 const instances: Map<number, RdpNative> = new Map<number, RdpNative>();
 const byKey: Map<string, RdpNative> = new Map<string, RdpNative>();
 let eventBridgeReady: boolean = false;
-let audioBridgeReady: boolean = false;
 
 function ensureEventBridge(): void {
   if (eventBridgeReady) {
@@ -35,28 +31,9 @@ function ensureEventBridge(): void {
   onEvent(callback);
 }
 
-function ensureAudioBridge(): void {
-  if (audioBridgeReady) {
-    return;
-  }
-  audioBridgeReady = true;
-  const callback: RdpAudioCallback =
-    (handle: number, sampleRate: number, channels: number, data: ArrayBuffer): void => {
-      const target: RdpNative | undefined = instances.get(handle);
-      if (target !== undefined) {
-        target.dispatchAudio(sampleRate, channels, data);
-      }
-    };
-  onAudio(callback);
-}
-
 export class RdpNative {
   private handle: number = -1;
   private listener: RdpEventListener | undefined = undefined;
-  private audioListener: RdpAudioListener | undefined = undefined;
-  // Invoked when the session goes away so the owning window can free the
-  // AudioRenderer even if its page is destroyed without aboutToDisappear.
-  private audioRelease: (() => void) | undefined = undefined;
 
   /** Associates an instance with the window's session key for teardown. */
   static register(key: string, native: RdpNative): void {
@@ -84,32 +61,7 @@ export class RdpNative {
     }
   }
 
-  /**
-   * Registers the PCM consumer for this session. `onRelease` runs inside
-   * stopSession so the renderer is freed even when the page is torn down
-   * without its aboutToDisappear hook.
-   */
-  setAudioListener(listener: RdpAudioListener, onRelease: () => void): void {
-    this.audioListener = listener;
-    this.audioRelease = onRelease;
-    ensureAudioBridge();
-  }
-
-  clearAudioListener(): void {
-    this.audioListener = undefined;
-    this.audioRelease = undefined;
-  }
-
-  dispatchAudio(sampleRate: number, channels: number, data: ArrayBuffer): void {
-    const current: RdpAudioListener | undefined = this.audioListener;
-    if (current !== undefined) {
-      current(sampleRate, channels, data);
-    }
-  }
-
   startSession(options: RdpConnectOptions): number {
-    // Restarting the native handle must not tear down the audio consumer: the
-    // same window (and renderer) stays alive across a retry.
     this.teardownHandle();
     ensureEventBridge();
     this.handle = createSession();
@@ -125,11 +77,6 @@ export class RdpNative {
   }
 
   stopSession(): void {
-    const release: (() => void) | undefined = this.audioRelease;
-    this.clearAudioListener();
-    if (release !== undefined) {
-      release();
-    }
     this.teardownHandle();
   }
 

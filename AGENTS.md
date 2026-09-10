@@ -98,14 +98,29 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > `WINPR_ASSERT` 会 `abort()` 整个进程：任何后端健全性检查失败（例如音频设备打不开）都会
 > 直接闪退。关闭后退化为被 `NDEBUG` 禁用的 `assert()`，错误走正常分支降级，不再拖垮应用。
 >
-> **rdpsnd 后端已改为「把 PCM 交给应用层播放」**：`native/patches/rdpsnd_opensles.c`
-> （见 `patch-freerdp.ps1` 第 4 步）替换上游 OpenSLES 后端，它不再自己打开音频设备，而是把
-> 解码后的 16-bit PCM 交给 `HmrdpSetAudioSink` 注册的 sink。sink 由 `libhmrdp` 在
-> `EnsureEntryPoints()` 中注册（`hmrdp_session.cpp`），经 Node-API 的 `onAudio` TSFN 把
-> PCM 以 `ArrayBuffer` 送到 ArkTS，再由 `services/SessionAudio.ets` 用官方
-> `@ohos.multimedia.audio` 的 AudioRenderer 流式播放（`writeData` 拉模型 + 有界队列丢帧）。
-> 原因：OHOS 的 OpenSLES 是已废弃的兼容层、设备打开不稳定，只认非标准的
-> `SL_IID_OH_BUFFERQUEUE`；AudioRenderer 是一等公民，自带音量/焦点/中断处理。
+> **rdpsnd 后端只负责解码，播放由 `libhmrdp` 用原生 OHAudio 完成**：
+> `native/patches/rdpsnd_opensles.c`（见 `patch-freerdp.ps1` 第 4 步）替换上游 OpenSLES
+> 后端，不再自己打开音频设备，而是把解码后的 16-bit PCM 交给 `HmrdpSetAudioSink` 注册的
+> sink。sink 由 `libhmrdp` 在 `EnsureEntryPoints()` 中注册（`hmrdp_session.cpp`），
+> 直接写入 `AudioOutput`（`hmrdp_audio.cpp`）：用 `dlopen("libohaudio.so")` +
+> `dlsym` 动态解析 OHAudio API，建 `OH_AudioRenderer`（`writeData` 拉模型 + 256KB
+> 环形缓冲丢帧 + 中断/错误回调降级）。原因：ArkTS `@ohos.multimedia.audio` 在部分设备上
+> 会触发 syscap 误报，且 OpenSLES 是已废弃兼容层；原生 OHAudio 是一等公民且不受 ArkTS
+> 检查影响。
+>
+> **绝不能在持有音频锁时调用 OHAudio 的 Start/Stop/Release**：`OH_AudioRenderer_Release`
+> 会等待 write 回调退出（`JoinCallbackLoop`），而回调要拿同一把 `mutex_` 才能取环形缓冲，
+> 持锁 Release 会立刻死锁（真机/模拟器表现为关闭会话后 `APP_INPUT_BLOCK` 卡死）。因此
+> `AudioOutput` 用两把锁：`mutex_` 只保护环形缓冲与句柄、绝不跨 OHAudio 调用持有；
+> `lifecycle_` 串行化 open/close，且只在 `mutex_` 之外获取。回调只碰 `mutex_`。
+>
+> **设备能力必须优雅降级，不能假设一定有声卡**：`AudioOutput::Supported()` 用 `dlopen`
+> 探测（**不要**把 `libohaudio.so` 直接链接成 `DT_NEEDED`，否则缺库设备会加载即崩）；
+> `Session::Connect` 会按 `AudioOutput::Supported()` 关掉 `FreeRDP_AudioPlayback`，
+> 渲染器创建/启动/写入任一失败都只静默降级。ArkTS 侧 `services/DeviceCapabilities.ets`
+> 通过 `isAudioSupported()` 把结果暴露给 UI：设置页/编辑页的「音频重定向」开关会**置灰并
+> 显示原因**。新增依赖设备能力的特性时沿用这一套 `Capability` 模式（置灰 + 原因 + 原生
+> 侧兜底），不要只依赖编译期 syscap 告警。
 > `opensl_io.{c,h}` 仍在 opensles 的 CMake 源列表里（必须先执行第 3 步的标识符替换才能编过），
 > 但已不再被后端使用。改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
@@ -225,9 +240,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
 | `entry/src/main/ets/services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；`DocumentViewPicker` + `fileIo`，密码不导出） |
 | `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 按会话 key 复用实例 |
-| `entry/src/main/ets/services/SessionAudio.ets` | 用 `@ohos.multimedia.audio` 的 AudioRenderer 播放 rdpsnd sink 推来的 PCM（懒建渲染器、`writeData` 拉模型、有界队列丢帧、中断处理） |
+| `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
-| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |
+| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` 能力查询 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
+| `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 中断/错误降级） |
