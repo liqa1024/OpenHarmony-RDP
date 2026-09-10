@@ -41,6 +41,9 @@ export class AppSettings {
   // Experimental: forward RDPEI touch at the full input rate instead of the
   // upstream ~20ms (50Hz) coalescing. Off keeps the default behaviour.
   touchHighRate: boolean = false;
+  // When true the remote cursor shape is mapped onto the HarmonyOS system
+  // cursor. Turn off to fall back to the plain default cursor.
+  useRdpCursor: boolean = true;
   // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
   // Win combinations work even though the shell keeps the real Win key.
   winKeySubstitute: number = 0;
@@ -127,6 +130,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'pinchTouchDistance', settings.pinchTouchDistance);
       settings.touchHighRate =
         SettingsStore.readBoolean(store, 'touchHighRate', settings.touchHighRate);
+      settings.useRdpCursor =
+        SettingsStore.readBoolean(store, 'useRdpCursor', settings.useRdpCursor);
       settings.winKeySubstitute =
         SettingsStore.readNumber(store, 'winKeySubstitute', settings.winKeySubstitute);
       settings.mainWindowSizeEnabled =
@@ -184,6 +189,7 @@ export class SettingsStore {
       store.putSync('pinchTouchAngle', settings.pinchTouchAngle);
       store.putSync('pinchTouchDistance', settings.pinchTouchDistance);
       store.putSync('touchHighRate', settings.touchHighRate);
+      store.putSync('useRdpCursor', settings.useRdpCursor);
       store.putSync('winKeySubstitute', settings.winKeySubstitute);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       store.putSync('mainWindowWidth', settings.mainWindowWidth);

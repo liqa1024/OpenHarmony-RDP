@@ -6,6 +6,7 @@ import { display } from '@kit.ArkUI';
 import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
+import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
@@ -57,6 +58,7 @@ struct SettingsPage {
   @State pinchTouchAngle: number = 30;
   @State pinchTouchDistance: number = 4;
   @State touchHighRate: boolean = false;
+  @State useRdpCursor: boolean = true;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
   @State resolutionAuto: boolean = true;
@@ -118,6 +120,8 @@ struct SettingsPage {
     this.pinchTouchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     this.touchHighRate = settings.touchHighRate;
+    this.useRdpCursor = settings.useRdpCursor;
+    RdpNative.applyRdpCursor(this.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
     this.manualWidthText = this.sizeText(settings.manualWidth);
@@ -194,6 +198,7 @@ struct SettingsPage {
     settings.pinchTouchAngle = this.pinchTouchAngle;
     settings.pinchTouchDistance = this.pinchTouchDistance;
     settings.touchHighRate = this.touchHighRate;
+    settings.useRdpCursor = this.useRdpCursor;
     settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
     settings.manualWidth =
@@ -219,6 +224,9 @@ struct SettingsPage {
     settings.sessionWindowHeight =
       this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
     SettingsStore.save(settings);
+    // Apply immediately so a toggle takes effect for sessions opened next,
+    // without waiting for an app restart.
+    RdpNative.applyRdpCursor(this.useRdpCursor);
   }
 
   private resetDefaults(): void {
@@ -231,6 +239,7 @@ struct SettingsPage {
     this.pinchTouchAngle = defaults.pinchTouchAngle;
     this.pinchTouchDistance = defaults.pinchTouchDistance;
     this.touchHighRate = defaults.touchHighRate;
+    this.useRdpCursor = defaults.useRdpCursor;
     this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
@@ -557,6 +566,20 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: number) => {
                 this.hideDelay = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '使用RDP光标',
+              subtitle: '远端的光标形状同步为系统光标；若显示异常可关闭，回退为默认箭头',
+              value: this.useRdpCursor,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.useRdpCursor = v;
                 this.persist();
               }
             })

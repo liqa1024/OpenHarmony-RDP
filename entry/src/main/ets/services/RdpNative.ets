@@ -7,7 +7,7 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
-  sendUnicode, setClipboardText, setSurface, setTouchHighRate, updateSurface,
+  sendUnicode, setClipboardText, setRdpCursor, setSurface, setTouchHighRate, updateSurface,
   RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -52,6 +52,15 @@ export class RdpNative {
    */
   static applyTouchHighRate(enabled: boolean): void {
     setTouchHighRate(enabled);
+  }
+
+  /**
+   * Process-global remote cursor switch. When off, the session leaves the
+   * HarmonyOS default cursor untouched (the pre-cursor-support behaviour).
+   * Planned at connect time, so it applies to sessions opened afterwards.
+   */
+  static applyRdpCursor(enabled: boolean): void {
+    setRdpCursor(enabled);
   }
 
   setListener(listener: RdpEventListener): void {

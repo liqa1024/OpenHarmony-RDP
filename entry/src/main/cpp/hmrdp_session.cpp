@@ -13,7 +13,9 @@
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/cmdline.h>
+#include <freerdp/codec/color.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/graphics.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/utils/signal.h>
@@ -41,6 +43,11 @@ extern "C" void HmrdpSetTouchFrameInterval(UINT32 intervalMs) __attribute__((wea
 
 namespace hmrdp {
 namespace {
+
+// Whether remote cursor updates drive the HarmonyOS system cursor. Global (like
+// the touch frame interval) because it is a user setting, and read when a
+// session connects (HmrdpPostConnect).
+std::atomic<bool> g_useRdpCursor{true};
 
 BOOL HmrdpWLogMessage(const wLogMessage* msg) {
   if (msg == nullptr || msg->TextString == nullptr) {
@@ -77,6 +84,126 @@ void SetupFreeRdpLogging() {
   }
 }
 
+// Standard base64 (no line breaks). Cursor bitmaps are small, and base64 keeps
+// the Node-API event payload free of NUL bytes / invalid UTF-8 so it survives
+// napi_create_string_utf8 intact.
+std::string Base64Encode(const uint8_t* data, size_t len) {
+  static const char kTable[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((len + 2) / 3) * 4);
+  size_t i = 0;
+  while (i + 3 <= len) {
+    const uint32_t n = (static_cast<uint32_t>(data[i]) << 16) |
+                       (static_cast<uint32_t>(data[i + 1]) << 8) |
+                       static_cast<uint32_t>(data[i + 2]);
+    out.push_back(kTable[(n >> 18) & 0x3F]);
+    out.push_back(kTable[(n >> 12) & 0x3F]);
+    out.push_back(kTable[(n >> 6) & 0x3F]);
+    out.push_back(kTable[n & 0x3F]);
+    i += 3;
+  }
+  if (i + 1 == len) {
+    const uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+    out.push_back(kTable[(n >> 18) & 0x3F]);
+    out.push_back(kTable[(n >> 12) & 0x3F]);
+    out.push_back('=');
+    out.push_back('=');
+  } else if (i + 2 == len) {
+    const uint32_t n = (static_cast<uint32_t>(data[i]) << 16) |
+                       (static_cast<uint32_t>(data[i + 1]) << 8);
+    out.push_back(kTable[(n >> 18) & 0x3F]);
+    out.push_back(kTable[(n >> 12) & 0x3F]);
+    out.push_back(kTable[(n >> 6) & 0x3F]);
+    out.push_back('=');
+  }
+  return out;
+}
+
+// FNV-1a over the cursor geometry and pixels, used to drop redundant updates.
+uint32_t CursorHash(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
+                    const uint8_t* data, size_t len) {
+  uint32_t hash = 2166136261u;
+  const uint32_t header[4] = {width, height, hotX, hotY};
+  for (uint32_t value : header) {
+    for (int i = 0; i < 4; i++) {
+      hash ^= (value >> (i * 8)) & 0xFF;
+      hash *= 16777619u;
+    }
+  }
+  for (size_t i = 0; i < len; i++) {
+    hash ^= data[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+// HarmonyOS custom cursors cap at 256x256 (see setCustomCursor). Larger RDP
+// cursors (large pointer, up to 384x384) are downscaled to fit instead of being
+// dropped, so the remote still drives the system cursor. The area average is
+// computed on premultiplied alpha and un-premultiplied afterwards, otherwise
+// transparent pixels (RGB 0) bleed dark fringes into the cursor edges.
+void DownscaleBgra(const std::vector<uint8_t>& src, uint32_t srcW, uint32_t srcH,
+                   uint32_t dstW, uint32_t dstH, std::vector<uint8_t>* dst) {
+  dst->assign(static_cast<size_t>(dstW) * dstH * 4, 0);
+  const double scaleX = static_cast<double>(srcW) / dstW;
+  const double scaleY = static_cast<double>(srcH) / dstH;
+  for (uint32_t dy = 0; dy < dstH; dy++) {
+    const uint32_t y0 = static_cast<uint32_t>(dy * scaleY);
+    uint32_t y1 = static_cast<uint32_t>((dy + 1) * scaleY);
+    if (y1 <= y0) {
+      y1 = y0 + 1;
+    }
+    if (y1 > srcH) {
+      y1 = srcH;
+    }
+    for (uint32_t dx = 0; dx < dstW; dx++) {
+      const uint32_t x0 = static_cast<uint32_t>(dx * scaleX);
+      uint32_t x1 = static_cast<uint32_t>((dx + 1) * scaleX);
+      if (x1 <= x0) {
+        x1 = x0 + 1;
+      }
+      if (x1 > srcW) {
+        x1 = srcW;
+      }
+      uint64_t aSum = 0;
+      uint64_t rSum = 0;
+      uint64_t gSum = 0;
+      uint64_t bSum = 0;
+      uint32_t count = 0;
+      for (uint32_t y = y0; y < y1; y++) {
+        const uint8_t* row = &src[(static_cast<size_t>(y) * srcW + x0) * 4];
+        for (uint32_t x = x0; x < x1; x++) {
+          const uint32_t alpha = row[3];
+          bSum += static_cast<uint64_t>(row[0]) * alpha;
+          gSum += static_cast<uint64_t>(row[1]) * alpha;
+          rSum += static_cast<uint64_t>(row[2]) * alpha;
+          aSum += alpha;
+          row += 4;
+          count++;
+        }
+      }
+      uint8_t* out = &(*dst)[(static_cast<size_t>(dy) * dstW + dx) * 4];
+      if (count == 0 || aSum == 0) {
+        out[0] = 0;
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
+        continue;
+      }
+      out[0] = static_cast<uint8_t>(bSum / aSum);
+      out[1] = static_cast<uint8_t>(gSum / aSum);
+      out[2] = static_cast<uint8_t>(rSum / aSum);
+      out[3] = static_cast<uint8_t>(aSum / count);
+    }
+  }
+}
+
+constexpr uint32_t kMaxCursorSide = 256;
+// Hard cap on the source cursor size; anything beyond this is treated as
+// corrupt and dropped rather than allocated.
+constexpr uint32_t kMaxCursorSourceSide = 1024;
+
 typedef struct {
   rdpClientContext common;
   Session* session;
@@ -112,6 +239,55 @@ BOOL HmrdpDesktopResize(rdpContext* context) {
   if (ctx->session != nullptr) {
     ctx->session->HandleDesktopResize();
   }
+  return TRUE;
+}
+
+// Custom pointer class: forward the remote cursor bitmap to the UI so it can be
+// installed as the HarmonyOS system cursor. `New` is a no-op (we keep no client
+// cursor state) and `Free` must not release the struct: FreeRDP's pointer cache
+// owns it (see libfreerdp/cache/pointer.c).
+BOOL HmrdpPointerNew(rdpContext*, rdpPointer*) {
+  return TRUE;
+}
+
+void HmrdpPointerFree(rdpContext*, rdpPointer*) {}
+
+BOOL HmrdpPointerSet(rdpContext* context, rdpPointer* pointer) {
+  if (context != nullptr && pointer != nullptr) {
+    HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
+    if (ctx->session != nullptr) {
+      ctx->session->HandlePointerShape(pointer->width, pointer->height, pointer->xPos,
+                                       pointer->yPos, pointer->xorBpp, pointer->xorMaskData,
+                                       pointer->lengthXorMask, pointer->andMaskData,
+                                       pointer->lengthAndMask);
+    }
+  }
+  return TRUE;
+}
+
+BOOL HmrdpPointerSetDefault(rdpContext* context) {
+  if (context != nullptr) {
+    HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
+    if (ctx->session != nullptr) {
+      ctx->session->HandlePointerDefault();
+    }
+  }
+  return TRUE;
+}
+
+BOOL HmrdpPointerSetNull(rdpContext* context) {
+  if (context != nullptr) {
+    HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
+    if (ctx->session != nullptr) {
+      ctx->session->HandlePointerHidden();
+    }
+  }
+  return TRUE;
+}
+
+// Only used when FreeRDP_GrabMouse is set (relative mouse); the HmRdp sessions
+// are absolute, so there is nothing to move.
+BOOL HmrdpPointerSetPosition(rdpContext*, UINT32, UINT32) {
   return TRUE;
 }
 
@@ -251,6 +427,22 @@ BOOL HmrdpPostConnect(freerdp* instance) {
   context->update->EndPaint = HmrdpEndPaint;
   context->update->DesktopResize = HmrdpDesktopResize;
   context->update->PlaySound = HmrdpPlaySound;
+
+  // Take over cursor handling so the remote pointer shape (text caret, hand,
+  // resize arrows, ...) drives the HarmonyOS system cursor. Without this the
+  // server's pointer updates are dropped and only the local arrow is shown.
+  // The user can turn this off to fall back to the plain default cursor.
+  if (g_useRdpCursor.load()) {
+    rdpPointer pointer = {};
+    pointer.size = sizeof(rdpPointer);
+    pointer.New = HmrdpPointerNew;
+    pointer.Free = HmrdpPointerFree;
+    pointer.Set = HmrdpPointerSet;
+    pointer.SetNull = HmrdpPointerSetNull;
+    pointer.SetDefault = HmrdpPointerSetDefault;
+    pointer.SetPosition = HmrdpPointerSetPosition;
+    graphics_register_pointer(context->graphics, &pointer);
+  }
 
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
   HMRDP_LOGI("post connect gdi %{public}ux%{public}u stride=%{public}u fmt=%{public}u",
@@ -623,6 +815,71 @@ void Session::HandleDesktopResize() {
   Emit(SessionEvent::kResize, payload.str());
 }
 
+void Session::HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
+                                 uint32_t xorBpp, const uint8_t* xorMask, uint32_t xorLen,
+                                 const uint8_t* andMask, uint32_t andLen) {
+  if (width == 0 || height == 0 || width > kMaxCursorSourceSide ||
+      height > kMaxCursorSourceSide || xorMask == nullptr || xorLen == 0) {
+    return;
+  }
+  const size_t stride = static_cast<size_t>(width) * 4;
+  std::vector<uint8_t> bgra(stride * height, 0);
+  if (!freerdp_image_copy_from_pointer_data(bgra.data(), PIXEL_FORMAT_BGRA32,
+                                            static_cast<UINT32>(stride), 0, 0, width, height,
+                                            xorMask, xorLen, andMask, andLen, xorBpp, nullptr)) {
+    return;
+  }
+  // Custom cursors cap at 256x256, so bigger ones (large pointer) are scaled to
+  // fit -- hot spot included -- instead of falling back to the default arrow.
+  uint32_t outW = width;
+  uint32_t outH = height;
+  uint32_t outHotX = hotX;
+  uint32_t outHotY = hotY;
+  if (width > kMaxCursorSide || height > kMaxCursorSide) {
+    const uint32_t maxSide = width > height ? width : height;
+    const double factor = static_cast<double>(kMaxCursorSide) / maxSide;
+    outW = static_cast<uint32_t>(static_cast<double>(width) * factor + 0.5);
+    outH = static_cast<uint32_t>(static_cast<double>(height) * factor + 0.5);
+    if (outW < 1) {
+      outW = 1;
+    }
+    if (outH < 1) {
+      outH = 1;
+    }
+    outHotX = static_cast<uint32_t>(static_cast<double>(hotX) * factor + 0.5);
+    outHotY = static_cast<uint32_t>(static_cast<double>(hotY) * factor + 0.5);
+    if (outHotX > outW) {
+      outHotX = outW;
+    }
+    if (outHotY > outH) {
+      outHotY = outH;
+    }
+    std::vector<uint8_t> scaled;
+    DownscaleBgra(bgra, width, height, outW, outH, &scaled);
+    bgra.swap(scaled);
+  }
+  const uint32_t hash = CursorHash(outW, outH, outHotX, outHotY, bgra.data(), bgra.size());
+  if (cursorHashValid_ && hash == cursorHash_) {
+    return;
+  }
+  cursorHash_ = hash;
+  cursorHashValid_ = true;
+  std::ostringstream payload;
+  payload << outW << ',' << outH << ',' << outHotX << ',' << outHotY << '|'
+          << Base64Encode(bgra.data(), bgra.size());
+  Emit(SessionEvent::kCursorShape, payload.str());
+}
+
+void Session::HandlePointerDefault() {
+  cursorHashValid_ = false;
+  Emit(SessionEvent::kCursorDefault, "");
+}
+
+void Session::HandlePointerHidden() {
+  cursorHashValid_ = false;
+  Emit(SessionEvent::kCursorHidden, "");
+}
+
 void Session::HandlePostDisconnect() {
   clipboardReady_ = false;
   cliprdr_ = nullptr;
@@ -670,6 +927,10 @@ void Session::SetTouchHighRate(bool enabled) {
     // 0 flushes every frame; 20 is FreeRDP's upstream 50Hz coalescing.
     HmrdpSetTouchFrameInterval(enabled ? 0u : 20u);
   }
+}
+
+void Session::SetRdpCursor(bool enabled) {
+  g_useRdpCursor.store(enabled);
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {

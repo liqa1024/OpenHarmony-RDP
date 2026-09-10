@@ -51,3 +51,10 @@ export const isAudioSupported: () => boolean;
  * Requires the patched FreeRDP build; returns false if the hook is absent.
  */
 export const setTouchHighRate: (enabled: boolean) => boolean;
+
+/**
+ * Process-global remote cursor switch. When true, RDP pointer updates drive the
+ * HarmonyOS system cursor; when false they are ignored and the default cursor is
+ * kept. Applied when a session connects.
+ */
+export const setRdpCursor: (enabled: boolean) => boolean;

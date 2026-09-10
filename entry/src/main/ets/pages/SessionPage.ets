@@ -2,6 +2,9 @@
  * HmRdp - remote session page: XComponent surface + input forwarding.
  */
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { image } from '@kit.ImageKit';
+import { pointer } from '@kit.InputKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -150,6 +153,19 @@ struct SessionPage {
   private clipboardEnabled: boolean = true;
   private remoteClipboardText: string = '';
   private pasteboardBusy: boolean = false;
+  // Remote cursor shape, installed as the HarmonyOS system cursor. The server
+  // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
+  // re-installed when the window re-acquires the pointer. `cursorHidden` tracks
+  // the server's SYSPTR_NULL (e.g. a full-screen video hides the cursor).
+  private cursorPixelMap: image.PixelMap | undefined = undefined;
+  private cursorHotX: number = 0;
+  private cursorHotY: number = 0;
+  private cursorHidden: boolean = false;
+  // Set once a cursor API call fails, so we stop retrying on every update.
+  private cursorSupported: boolean = true;
+  // Global "使用RDP光标" setting; when off the session leaves the system cursor
+  // alone and the native side ignores RDP pointer updates entirely.
+  private useRdpCursor: boolean = true;
 
   // The system paste control grants a one-time clipboard read without the
   // READ_PASTEBOARD permission; on success we push the text to the remote.
@@ -178,6 +194,8 @@ struct SessionPage {
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
+    this.useRdpCursor = settings.useRdpCursor;
+    RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
@@ -225,6 +243,7 @@ struct SessionPage {
     }
     this.releaseAllTouches();
     this.endPinch();
+    this.restoreCursor();
     this.native.stopSession();
     this.options.password = '';
     this.options.gatewayPassword = '';
@@ -298,11 +317,13 @@ struct SessionPage {
       this.statusText = data.length > 0 ? SessionManager.describeError(data) : '连接已断开';
       this.showOverlay = true;
       this.showToolbar = true;
+      this.resetCursor();
     } else if (event === RdpEvent.Error) {
       this.state = RdpConnectionState.Failed;
       this.statusText = data.length > 0 ? SessionManager.describeError(data) : '连接失败';
       this.showOverlay = true;
       this.showToolbar = true;
+      this.resetCursor();
     } else if (event === RdpEvent.Resize) {
       const parts: string[] = data.split('x');
       if (parts.length === 2) {
@@ -316,6 +337,116 @@ struct SessionPage {
     } else if (event === RdpEvent.ClipboardText) {
       hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', data.length);
       this.remoteClipboardText = data;
+    } else if (event === RdpEvent.CursorShape) {
+      this.onCursorShape(data);
+    } else if (event === RdpEvent.CursorDefault) {
+      this.cursorHidden = false;
+      this.cursorPixelMap = undefined;
+      this.applyCursor();
+    } else if (event === RdpEvent.CursorHidden) {
+      this.cursorHidden = true;
+      this.applyCursor();
+    }
+  }
+
+  /** Decodes a remote cursor bitmap and installs it as the system cursor. */
+  private onCursorShape(data: string): void {
+    if (!this.cursorSupported || !this.useRdpCursor) {
+      return;
+    }
+    const separator: number = data.indexOf('|');
+    if (separator <= 0) {
+      return;
+    }
+    const header: string[] = data.substring(0, separator).split(',');
+    if (header.length !== 4) {
+      return;
+    }
+    const width: number = Number.parseInt(header[0], 10);
+    const height: number = Number.parseInt(header[1], 10);
+    const hotX: number = Number.parseInt(header[2], 10);
+    const hotY: number = Number.parseInt(header[3], 10);
+    if (Number.isNaN(width) || Number.isNaN(height) || width <= 0 || height <= 0) {
+      return;
+    }
+    // Native already downscales oversized cursors to <=256; this is only a
+    // safety net should an out-of-range size ever reach the UI.
+    if (width > 256 || height > 256) {
+      this.cursorHidden = false;
+      this.cursorPixelMap = undefined;
+      this.applyCursor();
+      return;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = new util.Base64Helper().decodeSync(data.substring(separator + 1));
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'decode cursor bitmap failed: %{public}s', JSON.stringify(error));
+      return;
+    }
+    const options: image.InitializationOptions = {
+      editable: false,
+      pixelFormat: image.PixelMapFormat.BGRA_8888,
+      size: { width: width, height: height }
+    };
+    try {
+      this.cursorPixelMap = image.createPixelMapSync(bytes.buffer, options);
+      this.cursorHotX = Math.max(0, Math.min(hotX, width));
+      this.cursorHotY = Math.max(0, Math.min(hotY, height));
+      this.cursorHidden = false;
+      this.applyCursor();
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'create cursor pixelmap failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
+  /** Pushes the current cursor state onto this window's system cursor. */
+  private applyCursor(): void {
+    if (!this.cursorSupported || !this.useRdpCursor) {
+      return;
+    }
+    const win: window.Window | undefined = this.sessionWindow;
+    if (win === undefined) {
+      return;
+    }
+    try {
+      const windowId: number = win.getWindowProperties().id;
+      if (windowId < 0) {
+        return;
+      }
+      if (this.cursorHidden) {
+        pointer.setPointerVisibleSync(false);
+        return;
+      }
+      pointer.setPointerVisibleSync(true);
+      const pixelMap: image.PixelMap | undefined = this.cursorPixelMap;
+      if (pixelMap !== undefined) {
+        pointer.setCustomCursorSync(windowId, pixelMap, this.cursorHotX, this.cursorHotY);
+      } else {
+        pointer.setPointerStyleSync(windowId, pointer.PointerStyle.DEFAULT);
+      }
+    } catch (error) {
+      // Capability probing: on a device without a mouse the call throws, so
+      // stop trying and leave the system cursor alone.
+      this.cursorSupported = false;
+      hilog.warn(DOMAIN, TAG, 'set cursor failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
+  /** Restores the default arrow after the session stops driving the cursor. */
+  private resetCursor(): void {
+    this.cursorHidden = false;
+    this.cursorPixelMap = undefined;
+    this.applyCursor();
+  }
+
+  /** Restores cursor visibility; setPointerVisible is process-wide. */
+  private restoreCursor(): void {
+    this.cursorPixelMap = undefined;
+    try {
+      pointer.setPointerVisibleSync(true);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'restore cursor failed: %{public}s', JSON.stringify(error));
     }
   }
 
@@ -1137,6 +1268,13 @@ struct SessionPage {
         .defaultFocus(true)
         .onMouse((event: MouseEvent) => {
           this.handleMouse(event);
+        })
+        .onHover((isHover: boolean) => {
+          // The system may drop a custom cursor when the pointer leaves and
+          // re-enters the window, so re-install the last known shape.
+          if (isHover) {
+            this.applyCursor();
+          }
         })
         .onTouch((event: TouchEvent) => {
           this.handleTouch(event);

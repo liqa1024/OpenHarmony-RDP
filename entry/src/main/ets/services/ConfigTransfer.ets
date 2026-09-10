@@ -319,6 +319,8 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'pinchTouchDistance', settings.pinchTouchDistance);
     settings.touchHighRate =
       ConfigTransfer.readBoolean(rec, 'touchHighRate', settings.touchHighRate);
+    settings.useRdpCursor =
+      ConfigTransfer.readBoolean(rec, 'useRdpCursor', settings.useRdpCursor);
     settings.mainWindowSizeEnabled =
       ConfigTransfer.readBoolean(rec, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
     settings.mainWindowWidth =

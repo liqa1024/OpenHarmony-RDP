@@ -18,6 +18,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { ConnectionStore } from '../services/ConnectionStore';
+import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
 import { WindowController } from '../services/WindowController';
 
@@ -47,6 +48,9 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
     WindowController.init(windowStage);
     const settings: AppSettings = SettingsStore.load();
+    // Apply the process-global cursor switch before any session can connect
+    // (sessions are opened from the list page, not from this ability).
+    RdpNative.applyRdpCursor(settings.useRdpCursor);
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
 

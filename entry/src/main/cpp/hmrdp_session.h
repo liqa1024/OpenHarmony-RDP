@@ -28,6 +28,11 @@ enum class SessionEvent {
   kFirstFrame = 3,
   kClipboardText = 4,
   kResize = 5,
+  // Remote pointer updates. kCursorShape carries "<w>,<h>,<hotX>,<hotY>|<base64 BGRA>";
+  // the others carry no payload and ask the UI to restore/hide the system cursor.
+  kCursorShape = 6,
+  kCursorDefault = 7,
+  kCursorHidden = 8,
 };
 
 struct RdpOptions {
@@ -88,6 +93,11 @@ class Session {
   // (native/scripts/patch-freerdp.ps1).
   static void SetTouchHighRate(bool enabled);
 
+  // Process-global toggle for remote cursor handling. When disabled, RDP
+  // pointer updates are ignored entirely so the HarmonyOS default cursor is
+  // kept (the pre-cursor-support behaviour). Applied when a session connects.
+  static void SetRdpCursor(bool enabled);
+
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);
@@ -99,6 +109,15 @@ class Session {
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
+
+  // Remote pointer (cursor) updates. The server sends the cursor as a bitmap
+  // plus hot spot; the UI converts it into a HarmonyOS system cursor. Returning
+  // to the default system cursor / hiding it is signalled separately.
+  void HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
+                          uint32_t xorBpp, const uint8_t* xorMask, uint32_t xorLen,
+                          const uint8_t* andMask, uint32_t andLen);
+  void HandlePointerDefault();
+  void HandlePointerHidden();
 
   // Clipboard channel callbacks (invoked on the RDP thread).
   UINT OnCliprdrMonitorReady();
@@ -126,6 +145,11 @@ class Session {
   std::atomic<bool> clipboardReady_{false};
   void* thread_ = nullptr;
   bool firstFrameSent_ = false;
+  // Hash of the last cursor bitmap sent to the UI; identical repeats (pointer
+  // cache hits) are dropped so the system cursor is only re-installed on an
+  // actual shape change.
+  uint32_t cursorHash_ = 0;
+  bool cursorHashValid_ = false;
 
   // Clipboard redirection state. `localClipboardUtf16_` holds the current local
   // clipboard text as NUL-terminated UTF-16LE (the CF_UNICODETEXT wire form).

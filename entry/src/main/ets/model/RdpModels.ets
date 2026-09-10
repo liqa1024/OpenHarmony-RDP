@@ -37,7 +37,12 @@ export enum RdpEvent {
   Error = 2,
   FirstFrame = 3,
   ClipboardText = 4,
-  Resize = 5
+  Resize = 5,
+  // Remote cursor: Shape carries "<w>,<h>,<hotX>,<hotY>|<base64 BGRA>", while
+  // Default/Hidden carry no payload.
+  CursorShape = 6,
+  CursorDefault = 7,
+  CursorHidden = 8
 }
 
 export class RdpConnectOptions implements RdpOptions {
