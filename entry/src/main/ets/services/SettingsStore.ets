@@ -12,7 +12,7 @@ const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
-const DEFAULT_TOUCHPAD_SCROLL_UNIT: number = 40;
+const DEFAULT_TOUCHPAD_SCROLL_UNIT: number = 16;
 const DEFAULT_PINCH_ZOOM_STEP_PERCENT: number = 5;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;

@@ -82,15 +82,15 @@ struct SessionPage {
   // Touchpad scroll accumulators: axis values are displacement, not notches.
   private touchpadScrollX: number = 0;
   private touchpadScrollY: number = 0;
-  // Touchpad pinch state: axisPinch is a cumulative scale ratio (starts at 1).
+  // Touchpad pinch state: axisPinch is the ratio of the current two-finger
+  // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
   private pinchAccum: number = 0;
   private pinchActive: boolean = false;
   private pinchCtrlDown: boolean = false;
   private pinchTimer: number = -1;
-  private touchpadScrollUnit: number = 40;
+  private touchpadScrollUnit: number = 16;
   private pinchZoomStepPercent: number = 5;
-  private readonly pinchSensitivity: number = 2;
   private readonly ctrlScancode: number = 0x1D;
   private sessionWindow: window.Window | undefined = undefined;
   // Clipboard redirection is manual, driven by the toolbar. The remote
@@ -522,9 +522,11 @@ struct SessionPage {
 
   private updatePinch(event: AxisEvent): void {
     const scale: number = this.pinchScaleValue(event);
+    // Enter pinch mode the moment a pinch is detected (no threshold/gating):
+    // Ctrl goes down immediately and the current distance becomes the baseline.
     if (!this.pinchActive) {
       this.pinchActive = true;
-      this.pinchScale = scale > 0 ? scale : 1.0;
+      this.pinchScale = scale > 0 ? scale : 0;
       this.pinchAccum = 0;
       this.setPinchCtrl(true);
       return;
@@ -532,12 +534,21 @@ struct SessionPage {
     if (scale <= 0) {
       return;
     }
-    this.pinchAccum += Math.log(scale / this.pinchScale);
+    if (this.pinchScale <= 0) {
+      // The first event carried no usable distance; establish the baseline now.
+      this.pinchScale = scale;
+      return;
+    }
+    // Linear distance mapping. axisPinch is the ratio of the current distance to
+    // the initial one, so (scale - previous) is directly proportional to the
+    // distance the fingers moved. One notch per configured percentage of that
+    // distance; no logarithmic ratio and no sensitivity multiplier.
+    this.pinchAccum += scale - this.pinchScale;
     this.pinchScale = scale;
-    // Sensitivity multiplier makes a pinch trigger sooner without changing the
-    // configured scale-to-notch ratio.
-    const step: number =
-      Math.log(1 + this.pinchZoomStepPercent / 100) / this.pinchSensitivity;
+    const step: number = this.pinchZoomStepPercent / 100;
+    if (step <= 0) {
+      return;
+    }
     const point: number[] = this.mapPointer(event.x, event.y);
     while (this.pinchAccum >= step) {
       this.pinchAccum -= step;

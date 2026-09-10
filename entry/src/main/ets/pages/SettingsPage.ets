@@ -39,7 +39,7 @@ class ToggleItemConfig {
 struct SettingsPage {
   @State hoverDelay: number = 700;
   @State hideDelay: number = 250;
-  @State touchpadScrollUnit: number = 40;
+  @State touchpadScrollUnit: number = 16;
   @State pinchZoomStep: number = 5;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
@@ -504,11 +504,11 @@ struct SettingsPage {
 
             this.sliderItem({
               title: '滚动步长',
-              subtitle: '触控板双指滑动多少位移换算为一格滚轮',
+              subtitle: '触控板双指滑动多少位移换算为一格滚轮（越小越跟手）',
               value: this.touchpadScrollUnit,
-              min: 10,
-              max: 120,
-              step: 5,
+              min: 4,
+              max: 80,
+              step: 4,
               unit: ' vp',
               onChange: (v: number) => {
                 this.touchpadScrollUnit = v;
@@ -520,7 +520,7 @@ struct SettingsPage {
 
             this.sliderItem({
               title: '捏合缩放步进',
-              subtitle: '捏合比例每变化多少发一格 Ctrl+滚轮 缩放',
+              subtitle: '双指距离每变化初始距离的多少发一格 Ctrl+滚轮 缩放',
               value: this.pinchZoomStep,
               min: 2,
               max: 30,
