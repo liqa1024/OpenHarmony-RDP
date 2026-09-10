@@ -23,6 +23,9 @@ $OpenSsl = "$Native\install\$Arch\openssl"
 $Zlib = "$Native\install\$Arch\zlib"
 
 if ($Clean -and (Test-Path $Build)) { Remove-Item -Recurse -Force $Build }
+# Also clear the install prefix: stale libX.so.3 from an older build would
+# otherwise linger next to the new unversioned libX.so.
+if ($Clean -and (Test-Path $Prefix)) { Remove-Item -Recurse -Force $Prefix }
 
 $cfg = @(
   "-S", $Src, "-B", $Build, "-G", "Ninja",
@@ -74,6 +77,10 @@ $cfg = @(
   "-DCHANNEL_DRDYNVC=ON", "-DCHANNEL_DISP=ON", "-DCHANNEL_RDPGFX=ON", "-DCHANNEL_RDPEI=ON",
   "-DCHANNEL_GEOMETRY=OFF", "-DCHANNEL_VIDEO=OFF",
   "-DWITH_WINPR_TOOLS=OFF", "-DWITH_BINARY_VERSIONING=OFF", "-DCMAKE_SKIP_INSTALL_RPATH=ON",
+  # Emit a single, version-less libX.so (SONAME libX.so) instead of libX.so.3;
+  # the OHOS patch to cmake/AddTargetWithResourceFile.cmake keeps the "lib"
+  # prefix and sets the SONAME on non-Windows.
+  "-DWITH_LIBRARY_VERSIONING=OFF",
   "-DWITH_ABSOLUTE_PLUGIN_LOAD_PATHS=OFF",
   "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF"
 )

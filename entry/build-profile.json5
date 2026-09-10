@@ -6,9 +6,15 @@
       "arguments": "",
       "cppFlags": "",
       "abiFilters": [
-        "arm64-v8a",
-        "x86_64"
+        "arm64-v8a"
       ]
+    },
+    "nativeLib": {
+      "filter": {
+        "excludes": [
+          "**/x86_64/**"
+        ]
+      }
     },
     "resOptions": {
       "copyCodeResource": {
@@ -34,6 +40,25 @@
   "targets": [
     {
       "name": "default"
+    },
+    {
+      "name": "emulator",
+      "config": {
+        "buildOption": {
+          "externalNativeOptions": {
+            "abiFilters": [
+              "x86_64"
+            ]
+          },
+          "nativeLib": {
+            "filter": {
+              "excludes": [
+                "**/arm64-v8a/**"
+              ]
+            }
+          }
+        }
+      }
     },
     {
       "name": "ohosTest",

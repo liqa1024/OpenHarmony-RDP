@@ -18,16 +18,31 @@ EGL/GLES 原生渲染；输入经 Node-API 桥接转发。会话在独立的 `Se
 - `DEVECO_HOME` = DevEco Studio 安装目录（SDK 位于 `sdk/default/openharmony`）。
 - 应用 `compatibleSdkVersion` / `targetSdkVersion`：`6.1.0(23)` —— 必须与目标设备/模拟器
   （HarmonyOS 6.1.0）一致，未经确认不要擅自调高。
-- ABI：`arm64-v8a`（真机）、`x86_64`（模拟器）。
+- ABI：`arm64-v8a`（真机，默认产物）、`x86_64`（模拟器，`emulator` target）。
 - 宿主为 Windows；OpenSSL 在 WSL 中编译，驱动 Windows 版 OHOS NDK 的 `clang.exe`。
 
 ## 构建 / 运行 / 验证
 
+产物按 **product** 分为两个变体，**DevEco Studio 右上角 `Product` 下拉即可切换**（命令行用
+`--product`）：`default` 只出 arm64-v8a HAP（实机侧载用），`emulator` 只出 x86_64 HAP
+（模拟器调试）：
+
 ```bash
-devecocli build                                   # 仅编译
-devecocli run --device "<模拟器名/序列号>"        # 编译 + 签名 + 安装 + 启动
+devecocli build                                   # 仅编译（product=default → entry@default，arm64-v8a）
+devecocli build --product emulator                # 仅编译模拟器包（product=emulator → entry@emulator，x86_64）
+devecocli run --device "<真机序列号>"             # 编译 + 签名 + 安装 + 启动（arm）
+devecocli run --product emulator --module entry@emulator --device "127.0.0.1:5555"   # 模拟器
 ```
 
+- product → target 的映射在工程级 `build-profile.json5`：`app.products` 定义
+  `default`/`emulator`，`modules[].targets[].applyToProducts` 把 `entry@default` 挂到
+  `default`、`entry@emulator` 挂到 `emulator`。DevEco 切换右上角 Product 即切换 ABI。
+- `devecocli run` 目前需显式带 target（`--module entry@emulator`），否则会按模块的 `default`
+  target 去找产物而报 `Build metadata not found`。
+- 两个 target 的 ABI/库过滤配置在 `entry/build-profile.json5`：`targets[].config.buildOption`
+  覆盖 `externalNativeOptions.abiFilters` 与 `nativeLib.filter.excludes`（互斥排除另一 ABI 的
+  `libs/<abi>` 目录）。`abiFilters` 只影响 CMake 编译的 ABI，**不会**过滤预置的
+  `entry/libs/<abi>/*.so`，所以必须用 `nativeLib.filter.excludes` 排除。
 - 改动 `.ets` 后先跑 `arkts_check`，再跑 `build_project`。
 - 任务结束前 `build_project` 必须通过。
 - 仓库**不含签名材料**。本地需配置 DevEco 自动签名，或运行 `devecocli signature generate`。
@@ -47,13 +62,25 @@ devecocli run --device "<模拟器名/序列号>"        # 编译 + 签名 + 安
 ## 原生库源码构建（可选；预编译库已提交）
 
 ```
-native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、OpenSLES、client-common SHARED）
+native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、OpenSLES、client-common SHARED、无版本号 SONAME）
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
 
 `native/third_party/`、`native/build/`、`native/install/`、`native/tools/` 已 gitignore。
-产出的 `.so` 复制到 `entry/libs/<abi>/`，这些**要提交**。
+产出库只提交**不带版本号的单一 `libX.so`**（如 `libfreerdp3.so`）。FreeRDP 通过
+`-DWITH_LIBRARY_VERSIONING=OFF`（见 `build-freerdp.ps1`）关闭库版本化，配合
+`native/patches/AddTargetWithResourceFile.cmake`（见 `patch-freerdp.ps1` 第 5 步）在非 Windows
+保留 `lib` 前缀与 `<名><主版本>` 输出名、并显式写入 SONAME，从而不再产生 `libX.so.3` 副本
+（Linux 上 `.so` 只是指向 `.so.3` 的符号链接，Windows 上会被实体化成重复副本）。CMake 直接用
+完整路径链接 `${FREERDP_LIBS}/libX.so`（见 `entry/src/main/cpp/CMakeLists.txt`），运行时
+`DT_NEEDED` 也是 `libX.so`。
+
+**优化等级 / 调试信息**：`libhmrdp.so` 由 hvigor 按构建模式重编，优化等级交给 OHOS 工具链按
+`CMAKE_BUILD_TYPE` 决定（debug → `-O0 -g -fno-limit-debug-info`，release → `-O2 -DNDEBUG`）；
+**不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定
+`-O2 -DNDEBUG`（`build-freerdp.ps1` 写死 Release），**不跟构建模式走**。打包时 hvigor 的
+`DoNativeStrip` 会 strip 所有 `.so`，HAP 内的库不含调试信息。
 
 > **必须保持 `-DWITH_VERBOSE_WINPR_ASSERT=OFF`**（见 `build-freerdp.ps1`）。默认 ON 时
 > `WINPR_ASSERT` 会 `abort()` 整个进程：OHOS 上 OpenSLES 打不开音频设备时
@@ -75,7 +102,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 3. **密码**：绝不经命令行传密码，用 `freerdp_settings_set_string` 设 `FreeRDP_Password` /
    `FreeRDP_GatewayPassword`。
 4. **帧上传**：每次上传整帧（`glTexSubImage2D`）；按脏区部分上传会花屏，除非改用 PBO/EGL image。
-5. **原生库命名**：`entry/libs/<abi>/` 下同时放 `libX.so`（链接期）与 `libX.so.3`（运行期）。
+5. **原生库命名**：只提交不带版本号的单一 `entry/libs/<abi>/libX.so`（FreeRDP 以
+   `WITH_LIBRARY_VERSIONING=OFF` 构建，SONAME 也是 `libX.so`）；CMake 用完整路径链接它，
+   运行期 `DT_NEEDED` 也是 `libX.so`（不再产生 `libX.so.3` 副本）。
 6. **连接与密码存储**：配置存 `ConnectionStore`（preferences，稳定 UUID 作 id、`updatedAt` 供刷新），
    密码单独存 `CredentialStore`（ASSET，按 id），**只在连接成功后**写入。preferences 字符串字段先
    `encodeURIComponent` 再拼接，否则控制字符会损坏文件。
