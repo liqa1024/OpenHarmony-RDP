@@ -11,6 +11,21 @@ import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsS
 // resolution is capped only to a sane upper bound.
 const MAX_DESKTOP_SIZE: number = 16384;
 
+// Ordinary keys the user can remap to Win for the remote session (KeyCode, 0 =
+// disabled). The shell keeps the real Win key, so a substitute is the only way
+// to send Win combinations.
+const WIN_SUBSTITUTE_KEYS: number[] = [0, 2046, 2073, 2067, 2048];
+
+function winSubstituteLabel(keyCode: number): string {
+  switch (keyCode) {
+    case 2046: return '右 Alt';
+    case 2073: return '右 Ctrl';
+    case 2067: return '菜单键';
+    case 2048: return '右 Shift';
+    default: return '关闭';
+  }
+}
+
 // @Builder parameters are only reactive when passed as a single object literal
 // (by reference); passing primitives by value would freeze the displayed value.
 class SliderItemConfig {
@@ -41,6 +56,8 @@ struct SettingsPage {
   @State toolbarInWindowed: boolean = false;
   @State touchpadScrollUnit: number = 40;
   @State pinchZoomStep: number = 5;
+  @State keyboardShortcutPassthrough: boolean = true;
+  @State winKeySubstitute: number = 0;
   @State resolutionAuto: boolean = true;
   @State manualWidthText: string = '';
   @State manualHeightText: string = '';
@@ -93,6 +110,8 @@ struct SettingsPage {
     this.toolbarInWindowed = settings.toolbarInWindowed;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStep = settings.pinchZoomStepPercent;
+    this.keyboardShortcutPassthrough = settings.keyboardShortcutPassthrough;
+    this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
     this.manualWidthText = this.sizeText(settings.manualWidth);
     this.manualHeightText = this.sizeText(settings.manualHeight);
@@ -161,6 +180,8 @@ struct SettingsPage {
     settings.toolbarInWindowed = this.toolbarInWindowed;
     settings.touchpadScrollUnit = this.touchpadScrollUnit;
     settings.pinchZoomStepPercent = this.pinchZoomStep;
+    settings.keyboardShortcutPassthrough = this.keyboardShortcutPassthrough;
+    settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
     settings.manualWidth =
       this.parseSize(this.manualWidthText, this.detectedWidth, MAX_DESKTOP_SIZE);
@@ -195,6 +216,8 @@ struct SettingsPage {
     this.toolbarInWindowed = defaults.toolbarInWindowed;
     this.touchpadScrollUnit = defaults.touchpadScrollUnit;
     this.pinchZoomStep = defaults.pinchZoomStepPercent;
+    this.keyboardShortcutPassthrough = defaults.keyboardShortcutPassthrough;
+    this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
     this.manualHeightText = this.sizeText(this.detectedHeight);
@@ -335,6 +358,22 @@ struct SettingsPage {
       .margin({ right: 8, bottom: 8 })
       .onClick(() => {
         this.manualScaleText = preset.toString();
+        this.persist();
+      })
+  }
+
+  @Builder
+  winSubstituteChip(keyCode: number) {
+    Text(winSubstituteLabel(keyCode))
+      .fontSize(13)
+      .fontColor(this.winKeySubstitute === keyCode ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.winKeySubstitute === keyCode
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .onClick(() => {
+        this.winKeySubstitute = keyCode;
         this.persist();
       })
   }
@@ -519,6 +558,49 @@ struct SettingsPage {
                 this.persist();
               }
             })
+
+            Divider().color($r('app.color.divider'))
+
+            Text('键盘')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            this.toggleItem({
+              title: '按键穿透',
+              subtitle: '开启后将键盘按键转发到远端，关闭则全部由本机处理',
+              value: this.keyboardShortcutPassthrough,
+              onChange: (v: boolean) => {
+                this.keyboardShortcutPassthrough = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            Column() {
+              Text('Win 键替代')
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .width('100%')
+              Text('本机 Win 常被系统占用，可另选一个普通键作为 Win 发到远端')
+                .fontSize(11)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+                .margin({ top: 2 })
+
+              Flex({ wrap: FlexWrap.Wrap }) {
+                ForEach(WIN_SUBSTITUTE_KEYS, (keyCode: number) => {
+                  this.winSubstituteChip(keyCode)
+                }, (keyCode: number) => keyCode.toString())
+              }
+              .width('100%')
+              .margin({ top: 10 })
+            }
+            .width('100%')
+            .padding({ top: 14, bottom: 14 })
+            .alignItems(HorizontalAlign.Start)
+            .opacity(this.keyboardShortcutPassthrough ? 1.0 : 0.4)
 
             Divider().color($r('app.color.divider'))
 

@@ -158,6 +158,15 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     选择文件/路径，`fileIo` 读写）。密码在 ASSET 中，**不导出**，UI 与弹窗需提示「导入后需重新输入」。
     导出用独立的 `ExportedConnection` DTO 而非直接序列化 `SavedConnection`，否则会带出继承的
     `password`/`gatewayPassword` 字段；导入按连接 `id` 覆盖/新增并刷新 `updatedAt`。入口在设置页底部。
+16. **按键穿透**（全局设置 `keyboardShortcutPassthrough`，默认开；另有 `winKeySubstitute` 替代键）：只用
+    **窗口级** `OH_NativeWindowManager_RegisterKeyEventFilter`（公共 API，**不需要 system_basic 权限**），
+    `SessionPage.setupKeyCapture` 随会话窗获焦/失焦注册/注销。是否穿透**完全由该开关决定**：开启时对
+    过滤器收到的每个键一律映射转发，不做主观保留；关闭则完全不注册、全由本机处理。
+    原生把键做 KeyCode→PS/2 set-1 扫描码（表镜像 `utils/KeyMapper.ets`，改一处须同步另一处）后
+    `Session::SendKey`，并返回 true 消费掉，避免 ArkTS 重复处理；**未映射的键返回 false 落回 ArkTS
+    `handleKey`**（无需再禁用 ArkTS 按键处理）。系统在窗口之前就消费掉的键（典型是 Win）窗口过滤器拿不到，
+    改用 `winKeySubstitute`（右 Alt/右 Ctrl/菜单键/右 Shift，可关）在原生里改发 Meta 扫描码。
+    捕获停止（失焦/断连/窗口销毁）时对远端补发所有仍按下的键，避免焦点切换丢掉 key-up 造成远端修饰键卡死。
 
 ## ArkTS 规范
 
@@ -184,7 +193,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、全局分辨率/缩放、全局连接特性（剪贴板/音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、按键穿透与 Win 键替代、全局分辨率/缩放、全局连接特性（剪贴板/音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |

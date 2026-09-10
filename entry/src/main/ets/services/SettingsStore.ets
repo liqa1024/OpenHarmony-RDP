@@ -31,6 +31,12 @@ export class AppSettings {
   toolbarInWindowed: boolean = false;
   touchpadScrollUnit: number = DEFAULT_TOUCHPAD_SCROLL_UNIT;
   pinchZoomStepPercent: number = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
+  // When enabled the session window intercepts keys ArkUI would otherwise
+  // swallow (Tab, arrow keys, ...) and forwards them to the remote desktop.
+  keyboardShortcutPassthrough: boolean = true;
+  // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
+  // Win combinations work even though the shell keeps the real Win key.
+  winKeySubstitute: number = 0;
   mainWindowSizeEnabled: boolean = false;
   mainWindowWidth: number = 0;
   mainWindowHeight: number = 0;
@@ -108,6 +114,11 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'touchpadScrollUnit', settings.touchpadScrollUnit);
       settings.pinchZoomStepPercent =
         SettingsStore.readNumber(store, 'pinchZoomStepPercent', settings.pinchZoomStepPercent);
+      settings.keyboardShortcutPassthrough =
+        SettingsStore.readBoolean(store, 'keyboardShortcutPassthrough',
+          settings.keyboardShortcutPassthrough);
+      settings.winKeySubstitute =
+        SettingsStore.readNumber(store, 'winKeySubstitute', settings.winKeySubstitute);
       settings.mainWindowSizeEnabled =
         SettingsStore.readBoolean(store, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       settings.mainWindowWidth =
@@ -160,6 +171,8 @@ export class SettingsStore {
       store.putSync('toolbarInWindowed', settings.toolbarInWindowed);
       store.putSync('touchpadScrollUnit', settings.touchpadScrollUnit);
       store.putSync('pinchZoomStepPercent', settings.pinchZoomStepPercent);
+      store.putSync('keyboardShortcutPassthrough', settings.keyboardShortcutPassthrough);
+      store.putSync('winKeySubstitute', settings.winKeySubstitute);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       store.putSync('mainWindowWidth', settings.mainWindowWidth);
       store.putSync('mainWindowHeight', settings.mainWindowHeight);
