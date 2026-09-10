@@ -473,8 +473,9 @@ struct SettingsPage {
       Slider({ value: item.value, min: item.min, max: item.max, step: item.step })
         .enabled(item.enabled)
         .width('100%')
-        .selectedColor($r('app.color.accent'))
-        .trackColor($r('app.color.input_bg'))
+        .selectedColor(item.enabled ? $r('app.color.accent') : $r('app.color.text_tertiary'))
+        .trackColor(item.enabled ? $r('app.color.input_bg') : $r('app.color.divider'))
+        .blockColor(item.enabled ? $r('app.color.accent') : $r('app.color.text_tertiary'))
         .margin({ top: 6 })
         .onChange((newValue: number, mode: SliderChangeMode) => {
           const factor: number = Math.pow(10, item.precision);
