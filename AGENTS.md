@@ -178,17 +178,14 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     `SettingsStore.resolveAdvanced(conn)` 解析，再写入 `RdpConnectOptions`。编辑页「高级设置」里
     「使用全局高级设置」关掉后才会用本连接的独立开关；保存时仍持久化独立值，便于随时切回。
     剪贴板固定开启（其全局开关已移除），但仍保留单连接的「剪贴板重定向」开关可单独关闭。
-13. **剪贴板重定向（文本，手动触发、无权限）**：原生在 `HmrdpChannelConnected` 里先调用默认
-    handler 再捕获 `CliprdrClientContext`，只覆写 `Server*` 回调与 `MonitorReady`，**不要动
-    `Client*` 发送函数**；文本按 CF_UNICODETEXT 传输，本地缓存为 NUL 结尾 UTF-16LE。
-    - 会话工具栏里「复制」「粘贴」两个按钮在窗口动作左侧（蓝调底色 + `bindTips` 说明），连接
-      关闭「剪贴板重定向」时不显示。语义：复制＝远端→本机，粘贴＝本机→远端。
-    - 粘贴用 `PasteButton` 安全控件（系统固定文字 + `PasteIconStyle.LINES`）授权后 `getData()`
-      读本机文本 → `native.setClipboard(text)`，**不申请任何剪贴板权限**（安全控件文字/图标/对比
-      受约束，字号过小会导致授权失败）。
-    - 复制由原生在收到 `FORMAT_LIST` 时主动请求 CF_UNICODETEXT 并 `Emit(ClipboardText)`，
-      `SessionPage` 仅缓存到 `remoteClipboardText`；点「复制」才 `setData` 写本机（无需权限）。
-      **不自动写本机剪贴板、不监听 `update`**（原 `ClipboardSync` 已删）。仅支持纯文本。
+13. **剪贴板重定向（手动触发）**：**同步在设计上就是用户手动触发的**——工具栏「复制」（远端→
+    本机）与「粘贴」（本机→远端）两个按钮，**刻意不做自动同步**，扩展图片/文件等类型时也必须沿用。
+    理由：①自动读本机剪贴板需要受限开放的 `READ_PASTEBOARD` 权限、有隐私成本，手动则可用
+    `PasteButton` 安全控件临时授权、无需声明任何权限；②图片/文件等大数据量只有显式触发才可控
+    （二次确认、进度、目标路径）；③两个方向逻辑对称一致（都是「读一侧 → 写另一侧」），扩展类型
+    只需改中间那段转换。**不要引入 `on('update')` 自动监听或自动写本机剪贴板**（原 `ClipboardSync`
+    已删）。实现上原生只覆写 `Server*` 回调与 `MonitorReady`，不动 `Client*` 发送函数。
+    当前仅支持纯文本。
 14. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
     Dock）；按单会话设计，故 `WindowController` 只用 `mainHidden` 布尔量，不跟踪 session 集合。
