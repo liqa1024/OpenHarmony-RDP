@@ -9,7 +9,8 @@
 - **图形管道**：RDPGFX（RemoteFX / 渐进式），EGL/GLES 纹理上传 + GPU 等比缩放
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发）
 - **触控板**：双指滚动映射为滚轮（含横向）、双指捏合映射为 Ctrl+滚轮 缩放，步长/灵敏度可配置
-- **音频**：rdpsnd（OpenSLES 后端）
+- **音频**：rdpsnd 通道由 FreeRDP 解码，`libhmrdp` 用**原生 OHAudio** 播放；设备无音频能力时
+  自动关闭，并在设置中置灰说明原因
 - **剪贴板**：cliprdr 通道已接入
 - **凭证安全存储**：密码经 HarmonyOS Asset Store Kit 密文存储（不落明文、不进日志），
   且**仅在连接验证成功后**才写入；连接配置与密码分离存储
@@ -20,8 +21,8 @@
 - **显示自适应**：默认自动取当前显示器分辨率并推荐 Windows 缩放档位
   （100/125/150/175/200/225）；可在全局设置中改为手动分辨率/缩放，也可在单个连接中覆盖
 - **深浅色主题**：跟随系统
-- **会话工具栏**：鼠标停留屏幕顶部自动滑出，提供「全屏/退出全屏」「最小化」「断开」；
-  窗口模式下默认隐藏（可在设置中开启），全屏模式下始终显示
+- **会话工具栏**：窗口模式下始终显示；全屏模式下鼠标停留屏幕顶部自动滑出。按钮依次为
+  「复制/粘贴」「全屏/退出全屏」「最小化」「断开」
 - **多窗口会话**：连接后在独立的 `SessionAbility` 主窗口中打开远程桌面；最大化即沉浸式全屏
   （隐藏系统标题栏 / dock），可最小化、退出全屏并自由拖动缩放
 - **自动隐藏主窗口（单窗口模式）**：全局设置可开启（默认关）；连接后关闭主窗口、桌面只保留
@@ -45,8 +46,9 @@
 ├─────────────────────────────────────────────────────────────┤
 │  Session wrapper  (hmrdp_session.cpp)                       │
 │  EGL/GLES renderer(hmrdp_renderer.cpp)                      │
+│  OHAudio output   (hmrdp_audio.cpp, dlopen libohaudio)      │
 ├─────────────────────────────────────────────────────────────┤
-│  FreeRDP 3.10.3   libfreerdp3 / libwinpr3 / libfreerdp-client3 │
+│  FreeRDP 3.10.3   libfreerdp3 / winpr3 / client3            │
 │  (entry/libs/<abi>, OpenSSL + zlib 静态链接)                  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -61,8 +63,8 @@ entry/
     entryability/             EntryAbility（主窗口）
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
-    services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · SessionManager · WindowController
-  src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器
+    services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · SessionManager · WindowController · DeviceCapabilities
+  src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器 + OHAudio 播放
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）
 native/
@@ -89,6 +91,9 @@ devecocli run --device <serial>   # 编译 + 安装 + 启动
 
 > 仓库不含签名材料。首次构建请在 DevEco Studio 中配置自动签名，或运行
 > `devecocli signature generate` 生成本地调试签名。
+>
+> 若实机安装报 `PathExistsException`（路径含 `app_icon.png`）：这是 DevEco 安装器的图标缓存
+> 问题，不影响运行。完全退出 DevEco、删除 `%LOCALAPPDATA%\Temp\hap_installer` 后重启再装即可。
 
 ### 从源码重建原生库（可选）
 

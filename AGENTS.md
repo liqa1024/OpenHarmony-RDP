@@ -21,7 +21,7 @@
 EGL/GLES 原生渲染；输入经 Node-API 桥接转发。会话在独立的 `SessionAbility` 主窗口中打开；
 主窗口 / 会话窗口的默认尺寸按屏幕比例推导，会话分辨率/缩放默认自适应当前显示器，均可在
 全局设置中调整，单个连接也可在「高级设置」里覆盖。全局设置还可开启「自动隐藏主窗口」
-（单窗口模式，仅单会话：会话窗口打开时销毁主窗口，关闭后恢复，见第 12 条）。
+（单窗口模式，仅单会话：会话窗口打开时销毁主窗口，关闭后恢复，见第 14 条）。
 
 - 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 目标：HarmonyOS 6.1.0（API 23）
 
@@ -74,7 +74,7 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 ## 原生库源码构建（可选；预编译库已提交）
 
 ```
-native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、OpenSLES、client-common SHARED、无版本号 SONAME）
+native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME）
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
@@ -94,35 +94,26 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 `-O2 -DNDEBUG`（`build-freerdp.ps1` 写死 Release），**不跟构建模式走**。打包时 hvigor 的
 `DoNativeStrip` 会 strip 所有 `.so`，HAP 内的库不含调试信息。
 
-> **必须保持 `-DWITH_VERBOSE_WINPR_ASSERT=OFF`**（见 `build-freerdp.ps1`）。默认 ON 时
-> `WINPR_ASSERT` 会 `abort()` 整个进程：任何后端健全性检查失败（例如音频设备打不开）都会
-> 直接闪退。关闭后退化为被 `NDEBUG` 禁用的 `assert()`，错误走正常分支降级，不再拖垮应用。
+> **必须保持 `-DWITH_VERBOSE_WINPR_ASSERT=OFF`**（见 `build-freerdp.ps1`）：默认 ON 时
+> `WINPR_ASSERT` 会 `abort()` 整个进程，任何后端健全性检查失败（如音频设备打不开）都会闪退；
+> 关闭后退化为被 `NDEBUG` 禁用的 `assert()`，错误走正常分支降级。
 >
-> **rdpsnd 后端只负责解码，播放由 `libhmrdp` 用原生 OHAudio 完成**：
-> `native/patches/rdpsnd_opensles.c`（见 `patch-freerdp.ps1` 第 4 步）替换上游 OpenSLES
-> 后端，不再自己打开音频设备，而是把解码后的 16-bit PCM 交给 `HmrdpSetAudioSink` 注册的
-> sink。sink 由 `libhmrdp` 在 `EnsureEntryPoints()` 中注册（`hmrdp_session.cpp`），
-> 直接写入 `AudioOutput`（`hmrdp_audio.cpp`）：用 `dlopen("libohaudio.so")` +
-> `dlsym` 动态解析 OHAudio API，建 `OH_AudioRenderer`（`writeData` 拉模型 + 256KB
-> 环形缓冲丢帧 + 中断/错误回调降级）。原因：ArkTS `@ohos.multimedia.audio` 在部分设备上
-> 会触发 syscap 误报，且 OpenSLES 是已废弃兼容层；原生 OHAudio 是一等公民且不受 ArkTS
-> 检查影响。
->
-> **绝不能在持有音频锁时调用 OHAudio 的 Start/Stop/Release**：`OH_AudioRenderer_Release`
-> 会等待 write 回调退出（`JoinCallbackLoop`），而回调要拿同一把 `mutex_` 才能取环形缓冲，
-> 持锁 Release 会立刻死锁（真机/模拟器表现为关闭会话后 `APP_INPUT_BLOCK` 卡死）。因此
-> `AudioOutput` 用两把锁：`mutex_` 只保护环形缓冲与句柄、绝不跨 OHAudio 调用持有；
-> `lifecycle_` 串行化 open/close，且只在 `mutex_` 之外获取。回调只碰 `mutex_`。
->
-> **设备能力必须优雅降级，不能假设一定有声卡**：`AudioOutput::Supported()` 用 `dlopen`
-> 探测（**不要**把 `libohaudio.so` 直接链接成 `DT_NEEDED`，否则缺库设备会加载即崩）；
-> `Session::Connect` 会按 `AudioOutput::Supported()` 关掉 `FreeRDP_AudioPlayback`，
-> 渲染器创建/启动/写入任一失败都只静默降级。ArkTS 侧 `services/DeviceCapabilities.ets`
-> 通过 `isAudioSupported()` 把结果暴露给 UI：设置页/编辑页的「音频重定向」开关会**置灰并
-> 显示原因**。新增依赖设备能力的特性时沿用这一套 `Capability` 模式（置灰 + 原因 + 原生
-> 侧兜底），不要只依赖编译期 syscap 告警。
-> `opensl_io.{c,h}` 仍在 opensles 的 CMake 源列表里（必须先执行第 3 步的标识符替换才能编过），
-> 但已不再被后端使用。改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
+> **音频：FreeRDP 只解码，播放由 `libhmrdp` 用原生 OHAudio 完成**。`native/patches/rdpsnd_opensles.c`
+> （`patch-freerdp.ps1` 第 4 步）替换上游 OpenSLES 后端，把 16-bit PCM 交给 `HmrdpSetAudioSink`
+> 注册的 sink（`hmrdp_session.cpp` 注册）；`hmrdp_audio.cpp` 用 `dlopen("libohaudio.so")` +
+> `dlsym` 解析 OHAudio API 建 `OH_AudioRenderer`（`writeData` 拉模型 + 256KB 环形缓冲丢帧）。
+> 不用 ArkTS `@ohos.multimedia.audio` 的原因：该工具链下它会触发 syscap 误报，且 OpenSLES 已废弃。
+> `opensl_io.{c,h}` 仍在 opensles 的 CMake 源列表里（需第 3 步替换标识符才能编过）但已无逻辑。
+> - **绝不持锁调用 Start/Stop/Release**：`OH_AudioRenderer_Release` 会等待 write 回调
+>   （`JoinCallbackLoop`），而回调要同一把 `mutex_` 才能取环形缓冲，持锁 Release 必死锁
+>   （表现为关闭会话后 `APP_INPUT_BLOCK` 卡死）。所以 `mutex_` 只保护环形缓冲/句柄、不跨
+>   OHAudio 调用持有；`lifecycle_` 只在 `mutex_` 之外串行化 open/close；回调只碰 `mutex_`。
+> - **设备能力必须优雅降级**：`AudioOutput::Supported()` 用 `dlopen` 探测（**不要**把
+>   `libohaudio.so` 链成 `DT_NEEDED`，缺库设备会加载即崩）；不支持时 `Session::Connect`
+>   关掉 `FreeRDP_AudioPlayback`，ArkTS 侧 `services/DeviceCapabilities.ets` 把
+>   `isAudioSupported()` 暴露给 UI，设置/编辑页的「音频重定向」置灰并显示原因。
+>   新增设备相关特性沿用此 `Capability` 模式（置灰 + 原因 + 原生兜底），别只靠 syscap 告警。
+> 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
 
@@ -160,30 +151,24 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
     `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
     `width/height/scalePercent`；连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
-14. **高级连接特性（全局默认 + 单连接覆盖）**：音频/GFX/H.264/忽略证书这 4 项默认值放在
+12. **高级连接特性（全局默认 + 单连接覆盖）**：音频/GFX/H.264/忽略证书这 4 项默认值放在
     `AppSettings`（设置页「连接特性」区），连接保存自己的独立值 + `useGlobalAdvanced` 标志，
     **默认跟随全局**（`SavedConnection.useGlobalAdvanced = true`）。连接前用
     `SettingsStore.resolveAdvanced(conn)` 解析，再写入 `RdpConnectOptions`。编辑页「高级设置」里
     「使用全局高级设置」关掉后才会用本连接的独立开关；保存时仍持久化独立值，便于随时切回。
     剪贴板固定开启（其全局开关已移除），但仍保留单连接的「剪贴板重定向」开关可单独关闭。
-15. **剪贴板重定向（文本）**：原生在 `ChannelConnected` 里捕获 `CliprdrClientContext`（`HmrdpChannelConnected`
-    先调用默认 handler 再判断 `cliprdr`），只覆写 `Server*` 回调与 `MonitorReady`，**不要动
-    `Client*` 发送函数**。文本按 CF_UNICODETEXT 传输，本地文本缓存为 NUL 结尾 UTF-16LE。
-    - **手动触发，无权限**：会话工具栏**最右**依次为「复制」「粘贴」+ 固定间距 +「全屏」「最小化」
-      「断开」；剪贴板两个按钮在窗口动作**左侧**，用不同底色（蓝调）与窗口按钮区分；连接的
-      「剪贴板重定向」关闭时两个按钮不显示。语义：复制＝远端→本机，粘贴＝本机→远端。两者都用
-      `bindTips` 给出悬浮功能说明。
-    - **本机→远端（粘贴）**：`PasteButton` 安全控件（系统固定文字"粘贴" + `PasteIconStyle.LINES` 图标），
-      点按授权后 `getData()` 读本机文本 → `native.setClipboard(text)` 通告给服务端。用安全控件而非
-      `READ_PASTEBOARD`，**不再申请任何剪贴板权限**（安全控件文字/图标/背景受约束，字号过小或对比不足
-      会导致授权失败）。
-    - **远端→本机（复制）**：原生收到服务端 `FORMAT_LIST` 会主动请求 CF_UNICODETEXT 并 `Emit(ClipboardText)`，
-      `SessionPage` 只把它缓存进 `remoteClipboardText`；点「复制」才 `setData` 写入本机剪贴板
-      （`setData` 不需要权限）。按钮为 `Row(Image($r('sys.media.ohos_ic_public_copy')) + Text)`，用系统
-      预制图标与粘贴控件保持一致的观感。**不再自动写本机剪贴板，也不监听 `update` 事件**（原
-      `ClipboardSync` 已删）。
-    - 仅支持纯文本，图片/文件不处理。
-12. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
+13. **剪贴板重定向（文本，手动触发、无权限）**：原生在 `HmrdpChannelConnected` 里先调用默认
+    handler 再捕获 `CliprdrClientContext`，只覆写 `Server*` 回调与 `MonitorReady`，**不要动
+    `Client*` 发送函数**；文本按 CF_UNICODETEXT 传输，本地缓存为 NUL 结尾 UTF-16LE。
+    - 会话工具栏里「复制」「粘贴」两个按钮在窗口动作左侧（蓝调底色 + `bindTips` 说明），连接
+      关闭「剪贴板重定向」时不显示。语义：复制＝远端→本机，粘贴＝本机→远端。
+    - 粘贴用 `PasteButton` 安全控件（系统固定文字 + `PasteIconStyle.LINES`）授权后 `getData()`
+      读本机文本 → `native.setClipboard(text)`，**不申请任何剪贴板权限**（安全控件文字/图标/对比
+      受约束，字号过小会导致授权失败）。
+    - 复制由原生在收到 `FORMAT_LIST` 时主动请求 CF_UNICODETEXT 并 `Emit(ClipboardText)`，
+      `SessionPage` 仅缓存到 `remoteClipboardText`；点「复制」才 `setData` 写本机（无需权限）。
+      **不自动写本机剪贴板、不监听 `update`**（原 `ClipboardSync` 已删）。仅支持纯文本。
+14. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
     Dock）；按单会话设计，故 `WindowController` 只用 `mainHidden` 布尔量，不跟踪 session 集合。
     - **进程内最后一个 UIAbility 被销毁 → 进程退出**：必须等会话窗加载完成（`onSessionWindowReady`）
@@ -191,7 +176,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     - 关闭会话时先 `startAbility(EntryAbility)` 拉起主窗口，`onMainWindowReady` 后再终止会话；用
       `windowStage.on('windowStageClose')` + `UIAbility.onPrepareToTerminate()` 拦截关闭（本机模拟器
       后者不触发），`closeSession` 去重 + 3s 超时兜底。关闭该选项则行为不变（多窗口可并存）。
-13. **配置导入/导出**：`ConfigTransfer` 把全局设置 + 全部连接导出为 JSON（`picker.DocumentViewPicker`
+15. **配置导入/导出**：`ConfigTransfer` 把全局设置 + 全部连接导出为 JSON（`picker.DocumentViewPicker`
     选择文件/路径，`fileIo` 读写）。密码在 ASSET 中，**不导出**，UI 与弹窗需提示「导入后需重新输入」。
     导出用独立的 `ExportedConnection` DTO 而非直接序列化 `SavedConnection`，否则会带出继承的
     `password`/`gatewayPassword` 字段；导入按连接 `id` 覆盖/新增并刷新 `updatedAt`。入口在设置页底部。
@@ -199,15 +184,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     名称，可清除；名称表在 `KeyMapper.describe`）：实现是在 `SessionPage.handleKey` 里，若
     `event.keyCode === winKeySubstitute` 就改发 Meta（`RdpNative.winKey` → `sendKey(0x5B, ext)`）。
     **真实 Win（2076/2077）不转发**，避免"远端+本机"双重映射。
-    历史：曾用窗口级 `OH_NativeWindowManager_RegisterKeyEventFilter` 做「按键穿透」，真机实测证明对系统保留键
-    （Win/Alt+Tab）只能旁听、拦不住 shell，而对普通按键又毫无必要（ArkUI `onKeyEvent` 本就在走焦之前触发、
-    会话页也没有输入框/页面快捷键），故**整套按键穿透及 `keyboardShortcutPassthrough` 开关已删除**。若日后确需
-    独占系统快捷键，只能上系统级 `OH_Input_AddKeyEventInterceptor`（`system_basic`）或
-    `OH_Input_AddKeyEventHook`。
+    历史：窗口级「按键穿透」与 `keyboardShortcutPassthrough` 开关已删除（对系统保留键只能旁听、
+    拦不住 shell，对普通键又无必要）；确需独占系统快捷键只能用系统级
+    `OH_Input_AddKeyEventInterceptor`（`system_basic`）或 `OH_Input_AddKeyEventHook`。
 17. **会话工具栏显示**：全屏模式沿用悬浮自动隐藏（`toolbarHoverDelay`/`toolbarHideDelay`，鼠标靠近屏幕顶部
     才弹出，`updateToolbar` 只在全屏生效）；窗口模式**始终显示**，且作为普通行布局在远程画面**上方**
     （`Column`：工具栏 + `Stack`(XComponent + 状态浮层)），渲染区域自然扣除工具栏高度、不再被覆盖，
-    指针映射仍以 XComponent 局部坐标为准。原「窗口模式下显示工具栏」设置（`toolbarInWindowed`）已删除。
+    指针映射仍以 XComponent 局部坐标为准。
 
 ## ArkTS 规范
 
