@@ -8,6 +8,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
+import { SessionAudio } from '../services/SessionAudio';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -57,6 +58,8 @@ struct SessionPage {
   @LocalStorageLink('sessionKey') sessionKey: string = '';
 
   private native: RdpNative = new RdpNative();
+  // Plays the PCM stream decoded by the remote audio channel.
+  private audio: SessionAudio = new SessionAudio();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
   // True when the manager already connected before this window was opened.
@@ -144,6 +147,14 @@ struct SessionPage {
         this.native.unbindSurface();
       }
     );
+    this.native.setAudioListener(
+      (sampleRate: number, channels: number, data: ArrayBuffer) => {
+        this.audio.push(data, sampleRate, channels);
+      },
+      () => {
+        this.audio.release();
+      }
+    );
     if (this.preconnected) {
       // The manager already connected and owns the event listener; this window
       // only has to bind the surface and render the live session.
@@ -171,6 +182,7 @@ struct SessionPage {
     this.releaseAllTouches();
     this.endPinch();
     this.native.stopSession();
+    this.audio.release();
     this.options.password = '';
     this.options.gatewayPassword = '';
   }

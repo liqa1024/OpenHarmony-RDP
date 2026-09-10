@@ -8,6 +8,11 @@
 - **禁止连接用户实机调试**：出于安全考虑，不要对用户连接的**真机**执行安装、启动、调试、
   日志抓取或任何 `hdc` / `start_app` 操作；需要测试时优先采用模拟器
   （见「模拟器（功能测试）」）。
+- **git 只读**：只允许用 git **查看/读取**（如 `log`、`show`、`diff`、`status`、`blame`）。
+  **禁止任何写操作或借助 git 改动仓库**，包括但不限于 `commit`、`amend`、`add`、`stash`、
+  `checkout`、`reset`、`revert`、`restore`、`clean`、`cherry-pick`、`rebase`、`merge`、
+  `branch`、`tag`、`push`、`fetch`、`pull`。需要恢复/回退文件时，直接编辑文件内容，不要用
+  git 命令改工作区或历史。
 
 ## 项目定位
 
@@ -90,16 +95,19 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 `DoNativeStrip` 会 strip 所有 `.so`，HAP 内的库不含调试信息。
 
 > **必须保持 `-DWITH_VERBOSE_WINPR_ASSERT=OFF`**（见 `build-freerdp.ps1`）。默认 ON 时
-> `WINPR_ASSERT` 会 `abort()` 整个进程：OHOS 上 OpenSLES 打不开音频设备时
-> `rdpsnd_opensles_open` 的 `WINPR_ASSERT(opensles->stream)` 会直接闪退。关闭后
-> `WINPR_ASSERT` 退化为被 `NDEBUG` 禁用的 `assert()`，音频后端失败时走错误分支静默降级，
-> 不再拖垮应用。改回 ON 前务必先解决音频设备打开失败的问题。
+> `WINPR_ASSERT` 会 `abort()` 整个进程：任何后端健全性检查失败（例如音频设备打不开）都会
+> 直接闪退。关闭后退化为被 `NDEBUG` 禁用的 `assert()`，错误走正常分支降级，不再拖垮应用。
 >
-> **rdpsnd 的 OpenSLES 后端被替换为 `native/patches/rdpsnd_opensl_io.{c,h}`**（见
-> `patch-freerdp.ps1` 第 4 步）。OHOS 只实现了 `SL_IID_OH_BUFFERQUEUE`（拉模型，回调里
-> `GetBuffer`→填充→`Enqueue`），不支持上游用的 `SL_IID_BUFFERQUEUE`；不替换时
-> `CreateAudioPlayer` 会失败、音频无声。已用应用内探针确认：引擎/输出混音/播放器/PLAY/
-> VOLUME/OH_BUFFERQUEUE 全部返回 `SL_RESULT_SUCCESS`。
+> **rdpsnd 后端已改为「把 PCM 交给应用层播放」**：`native/patches/rdpsnd_opensles.c`
+> （见 `patch-freerdp.ps1` 第 4 步）替换上游 OpenSLES 后端，它不再自己打开音频设备，而是把
+> 解码后的 16-bit PCM 交给 `HmrdpSetAudioSink` 注册的 sink。sink 由 `libhmrdp` 在
+> `EnsureEntryPoints()` 中注册（`hmrdp_session.cpp`），经 Node-API 的 `onAudio` TSFN 把
+> PCM 以 `ArrayBuffer` 送到 ArkTS，再由 `services/SessionAudio.ets` 用官方
+> `@ohos.multimedia.audio` 的 AudioRenderer 流式播放（`writeData` 拉模型 + 有界队列丢帧）。
+> 原因：OHOS 的 OpenSLES 是已废弃的兼容层、设备打开不稳定，只认非标准的
+> `SL_IID_OH_BUFFERQUEUE`；AudioRenderer 是一等公民，自带音量/焦点/中断处理。
+> `opensl_io.{c,h}` 仍在 opensles 的 CMake 源列表里（必须先执行第 3 步的标识符替换才能编过），
+> 但已不再被后端使用。改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
 
@@ -217,6 +225,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
 | `entry/src/main/ets/services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；`DocumentViewPicker` + `fileIo`，密码不导出） |
 | `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 按会话 key 复用实例 |
+| `entry/src/main/ets/services/SessionAudio.ets` | 用 `@ohos.multimedia.audio` 的 AudioRenderer 播放 rdpsnd sink 推来的 PCM（懒建渲染器、`writeData` 拉模型、有界队列丢帧、中断处理） |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 |

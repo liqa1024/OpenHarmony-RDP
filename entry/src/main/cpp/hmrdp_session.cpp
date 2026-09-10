@@ -25,6 +25,15 @@
 
 #include "hmrdp_log.h"
 
+// The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
+// instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
+// registered through HmrdpSetAudioSink. The sink routes the buffer to the
+// owning Session, which forwards it over the Node-API bridge to ArkTS.
+using HmrdpAudioSink = void (*)(void* context, const void* data, size_t size,
+                                int sampleRate, int channels);
+
+extern "C" void HmrdpSetAudioSink(HmrdpAudioSink sink);
+
 namespace hmrdp {
 namespace {
 
@@ -103,6 +112,17 @@ BOOL HmrdpDesktopResize(rdpContext* context) {
 
 BOOL HmrdpPlaySound(rdpContext*, const PLAY_SOUND_UPDATE*) {
   return TRUE;
+}
+
+void HmrdpAudioSinkAdapter(void* context, const void* data, size_t size, int sampleRate,
+                           int channels) {
+  if (context == nullptr || data == nullptr || size == 0) {
+    return;
+  }
+  HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(static_cast<rdpContext*>(context));
+  if (ctx->session != nullptr) {
+    ctx->session->OnAudioData(data, size, sampleRate, channels);
+  }
 }
 
 // Advertises the local clipboard as CF_UNICODETEXT to the server. The channel
@@ -294,6 +314,7 @@ void EnsureEntryPoints() {
   g_entryPoints.ClientFree = HmrdpClientFree;
   g_entryPoints.ClientStart = HmrdpClientStart;
   g_entryPoints.ClientStop = HmrdpClientStop;
+  HmrdpSetAudioSink(&HmrdpAudioSinkAdapter);
 }
 
 void AppendArg(std::vector<std::string>& args, const std::string& value) {
@@ -591,6 +612,12 @@ void Session::HandleDesktopResize() {
 void Session::HandlePostDisconnect() {
   clipboardReady_ = false;
   cliprdr_ = nullptr;
+}
+
+void Session::OnAudioData(const void* data, size_t size, int sampleRate, int channels) {
+  if (audioFn_ && data != nullptr && size > 0) {
+    audioFn_(data, size, sampleRate, channels);
+  }
 }
 
 bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
