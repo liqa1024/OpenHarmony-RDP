@@ -283,6 +283,7 @@ struct Index {
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
+      .hoverEffect(HoverEffect.Scale)
       .bindTips(this.connectTip(conn))
       .onClick(() => {
         this.toggleConnection(conn);

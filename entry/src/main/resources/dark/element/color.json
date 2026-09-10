@@ -37,6 +37,14 @@
       "value": "#4A8BFF"
     },
     {
+      "name": "accent_hover",
+      "value": "#82B0FF"
+    },
+    {
+      "name": "accent_press",
+      "value": "#B8D1FF"
+    },
+    {
       "name": "danger",
       "value": "#F05A40"
     },

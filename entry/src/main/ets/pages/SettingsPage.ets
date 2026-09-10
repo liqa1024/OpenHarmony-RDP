@@ -9,6 +9,7 @@ import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
+import { TextAction } from '../components/TextAction';
 
 // Remote desktop sizes are not limited to the local screen, so manual
 // resolution is capped only to a sane upper bound.
@@ -373,6 +374,7 @@ struct SettingsPage {
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.resolutionAuto = auto;
         this.persist();
@@ -389,6 +391,7 @@ struct SettingsPage {
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.scaleAuto = auto;
         this.persist();
@@ -405,6 +408,7 @@ struct SettingsPage {
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.manualScaleText = preset.toString();
         this.persist();
@@ -489,26 +493,24 @@ struct SettingsPage {
   build() {
     Column() {
       Row() {
-        Text('返回')
-          .fontSize(14)
-          .fontColor($r('app.color.accent'))
-          .padding({ top: 8, bottom: 8 })
-          .onClick(() => {
+        TextAction({
+          label: '返回',
+          onTap: () => {
             this.getUIContext().getRouter().back();
-          })
+          }
+        })
         Text('设置')
           .fontSize(17)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .layoutWeight(1)
           .textAlign(TextAlign.Center)
-        Text('重置')
-          .fontSize(14)
-          .fontColor($r('app.color.accent'))
-          .padding({ top: 8, bottom: 8 })
-          .onClick(() => {
+        TextAction({
+          label: '重置',
+          onTap: () => {
             this.resetDefaults();
-          })
+          }
+        })
       }
       .width('100%')
       .padding({ left: 24, right: 24, top: 16, bottom: 12 })
@@ -699,13 +701,13 @@ struct SettingsPage {
               .layoutWeight(1)
 
               if (this.winKeySubstitute !== 0 && !this.winSubstituteCapturing) {
-                Text('清除')
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_tertiary'))
-                  .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-                  .onClick(() => {
+                TextAction({
+                  label: '清除',
+                  muted: true,
+                  onTap: () => {
                     this.clearWinSubstitute();
-                  })
+                  }
+                })
               }
 
               Text(this.winSubstituteText())
@@ -730,6 +732,7 @@ struct SettingsPage {
                 .onBlur(() => {
                   this.winSubstituteCapturing = false;
                 })
+                .hoverEffect(HoverEffect.Highlight)
                 .onClick(() => {
                   this.beginWinCapture();
                 })

@@ -1050,6 +1050,7 @@ struct SessionPage {
         .padding({ left: 14, right: 14, top: 7, bottom: 7 })
         .backgroundColor('#4D3B82F6')
         .borderRadius(8)
+        .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
           this.pullClipboard();
         })
@@ -1082,6 +1083,7 @@ struct SessionPage {
         .backgroundColor('#33FFFFFF')
         .borderRadius(8)
         .margin({ right: 8 })
+        .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
           this.toggleFullscreen();
         })
@@ -1092,6 +1094,7 @@ struct SessionPage {
         .backgroundColor('#33FFFFFF')
         .borderRadius(8)
         .margin({ right: 8 })
+        .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
           this.minimizeWindow();
         })
@@ -1101,6 +1104,7 @@ struct SessionPage {
         .padding({ left: 16, right: 16, top: 7, bottom: 7 })
         .backgroundColor($r('app.color.danger'))
         .borderRadius(8)
+        .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
           this.disconnect();
         })

@@ -12,6 +12,7 @@ import { CredentialStore } from '../services/CredentialStore';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
+import { TextAction } from '../components/TextAction';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
@@ -330,6 +331,7 @@ struct EditConnectionPage {
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.scaleText = preset.toString();
       })
@@ -377,26 +379,24 @@ struct EditConnectionPage {
         Column() {
           Column() {
             Row() {
-              Text('取消')
-                .fontSize(14)
-                .fontColor($r('app.color.accent'))
-                .padding({ top: 8, bottom: 8 })
-                .onClick(() => {
+              TextAction({
+                label: '取消',
+                onTap: () => {
                   this.getUIContext().getRouter().back();
-                })
+                }
+              })
               Text(this.editing ? '编辑连接' : '新增连接')
                 .fontSize(17)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
                 .layoutWeight(1)
                 .textAlign(TextAlign.Center)
-              Text('保存')
-                .fontSize(14)
-                .fontColor($r('app.color.accent'))
-                .padding({ top: 8, bottom: 8 })
-                .onClick(() => {
+              TextAction({
+                label: '保存',
+                onTap: () => {
                   this.handleSave();
-                })
+                }
+              })
             }
             .width('100%')
 
@@ -601,6 +601,8 @@ struct EditConnectionPage {
             }
             .width('100%')
             .padding({ top: 8, bottom: 8 })
+            .borderRadius(8)
+            .hoverEffect(HoverEffect.Highlight)
             .onClick(() => {
               this.advancedExpanded = !this.advancedExpanded;
             })
