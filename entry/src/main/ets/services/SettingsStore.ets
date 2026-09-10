@@ -27,6 +27,17 @@ export class AppSettings {
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  // When true the touchpad pinch is emulated as a native two-finger touch pinch
+  // at the pointer; when false it stays Ctrl+wheel (the default).
+  pinchAsTouch: boolean = false;
+  // Tilt (degrees) of the synthetic contact pair for touch pinch: positive is
+  // clockwise on screen (left hand), negative flips it (right hand, e.g. -30).
+  // ArkUI cannot report the real finger angle, so this stands in for the hand.
+  pinchTouchAngle: number = 30;
+  // Initial separation of the two synthetic touch-pinch contacts, as a
+  // percentage of the smaller desktop side (window-relative, not a fixed
+  // resolution) at 1.0x gesture ratio.
+  pinchTouchDistance: number = 4;
   // Experimental: forward RDPEI touch at the full input rate instead of the
   // upstream ~20ms (50Hz) coalescing. Off keeps the default behaviour.
   touchHighRate: boolean = false;
@@ -108,6 +119,12 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.pinchZoomSpeed =
         SettingsStore.readNumber(store, 'pinchZoomSpeed', settings.pinchZoomSpeed);
+      settings.pinchAsTouch =
+        SettingsStore.readBoolean(store, 'pinchAsTouch', settings.pinchAsTouch);
+      settings.pinchTouchAngle =
+        SettingsStore.readNumber(store, 'pinchTouchAngle', settings.pinchTouchAngle);
+      settings.pinchTouchDistance =
+        SettingsStore.readNumber(store, 'pinchTouchDistance', settings.pinchTouchDistance);
       settings.touchHighRate =
         SettingsStore.readBoolean(store, 'touchHighRate', settings.touchHighRate);
       settings.winKeySubstitute =
@@ -163,6 +180,9 @@ export class SettingsStore {
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
+      store.putSync('pinchAsTouch', settings.pinchAsTouch);
+      store.putSync('pinchTouchAngle', settings.pinchTouchAngle);
+      store.putSync('pinchTouchDistance', settings.pinchTouchDistance);
       store.putSync('touchHighRate', settings.touchHighRate);
       store.putSync('winKeySubstitute', settings.winKeySubstitute);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);

@@ -26,6 +26,9 @@ class SliderItemConfig {
   unit: string = '';
   // Decimal places used to display the value and to snap slider output.
   precision: number = 0;
+  // A disabled slider is shown greyed out with a reason below the subtitle.
+  enabled: boolean = true;
+  disabledReason: string = '';
   onChange: (v: number) => void = (v: number) => {};
 }
 
@@ -49,6 +52,9 @@ struct SettingsPage {
   @State hideDelay: number = 250;
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  @State pinchAsTouch: boolean = false;
+  @State pinchTouchAngle: number = 30;
+  @State pinchTouchDistance: number = 4;
   @State touchHighRate: boolean = false;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
@@ -107,6 +113,9 @@ struct SettingsPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
     this.pinchZoomSpeed = settings.pinchZoomSpeed;
+    this.pinchAsTouch = settings.pinchAsTouch;
+    this.pinchTouchAngle = settings.pinchTouchAngle;
+    this.pinchTouchDistance = settings.pinchTouchDistance;
     this.touchHighRate = settings.touchHighRate;
     this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
@@ -180,6 +189,9 @@ struct SettingsPage {
     settings.toolbarHideDelay = this.hideDelay;
     settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
     settings.pinchZoomSpeed = this.pinchZoomSpeed;
+    settings.pinchAsTouch = this.pinchAsTouch;
+    settings.pinchTouchAngle = this.pinchTouchAngle;
+    settings.pinchTouchDistance = this.pinchTouchDistance;
     settings.touchHighRate = this.touchHighRate;
     settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
@@ -214,6 +226,9 @@ struct SettingsPage {
     this.hideDelay = defaults.toolbarHideDelay;
     this.touchpadScrollSpeed = defaults.touchpadScrollSpeed;
     this.pinchZoomSpeed = defaults.pinchZoomSpeed;
+    this.pinchAsTouch = defaults.pinchAsTouch;
+    this.pinchTouchAngle = defaults.pinchTouchAngle;
+    this.pinchTouchDistance = defaults.pinchTouchDistance;
     this.touchHighRate = defaults.touchHighRate;
     this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
@@ -437,20 +452,26 @@ struct SettingsPage {
     Column() {
       Row() {
         Column() {
-          Text(item.title).fontSize(14).fontColor($r('app.color.text_primary'))
+          Text(item.title).fontSize(14)
+            .fontColor(item.enabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
           Text(item.subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
             .margin({ top: 2 })
+          if (!item.enabled && item.disabledReason.length > 0) {
+            Text(item.disabledReason).fontSize(11).fontColor($r('app.color.danger'))
+              .margin({ top: 2 })
+          }
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
         Text(item.value.toFixed(item.precision) + item.unit)
           .fontSize(14)
-          .fontColor($r('app.color.accent'))
+          .fontColor(item.enabled ? $r('app.color.accent') : $r('app.color.text_tertiary'))
       }
       .width('100%')
 
       Slider({ value: item.value, min: item.min, max: item.max, step: item.step })
+        .enabled(item.enabled)
         .width('100%')
         .selectedColor($r('app.color.accent'))
         .trackColor($r('app.color.input_bg'))
@@ -510,6 +531,8 @@ struct SettingsPage {
               step: 100,
               unit: ' ms',
               precision: 0,
+              enabled: true,
+              disabledReason: '',
               onChange: (v: number) => {
                 this.hoverDelay = v;
                 this.persist();
@@ -527,6 +550,8 @@ struct SettingsPage {
               step: 50,
               unit: ' ms',
               precision: 0,
+              enabled: true,
+              disabledReason: '',
               onChange: (v: number) => {
                 this.hideDelay = v;
                 this.persist();
@@ -549,6 +574,8 @@ struct SettingsPage {
               step: 0.1,
               unit: '×',
               precision: 1,
+              enabled: true,
+              disabledReason: '',
               onChange: (v: number) => {
                 this.touchpadScrollSpeed = v;
                 this.persist();
@@ -559,18 +586,74 @@ struct SettingsPage {
 
             this.sliderItem({
               title: '缩放速度',
-              subtitle: '触控板双指捏合缩放速度，越大越快，1.0× 为基准',
+              subtitle: 'Ctrl+滚轮模式的缩放速度，越大越快，1.0× 为基准',
               value: this.pinchZoomSpeed,
               min: MIN_SPEED_SCALE,
               max: MAX_SPEED_SCALE,
               step: 0.1,
               unit: '×',
               precision: 1,
+              enabled: !this.pinchAsTouch,
+              disabledReason: '触摸模拟模式下为 1:1 缩放，此速度不生效',
               onChange: (v: number) => {
                 this.pinchZoomSpeed = v;
                 this.persist();
               }
             })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '使用触摸模拟触控板捏合',
+              subtitle: '在鼠标位置用原生双指触摸缩放；关闭后则映射为 Ctrl+滚轮',
+              value: this.pinchAsTouch,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.pinchAsTouch = v;
+                this.persist();
+              }
+            })
+
+            if (this.pinchAsTouch) {
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '触摸捏合角度',
+                subtitle: '模拟触点连线的倾角：正=顺时针（左手），负=逆时针（右手）',
+                value: this.pinchTouchAngle,
+                min: -180,
+                max: 180,
+                step: 15,
+                unit: '°',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.pinchTouchAngle = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '触点初始距离',
+                subtitle: '两个模拟触点起始间距，取窗口较短边的百分比（越大越像真实双指）',
+                value: this.pinchTouchDistance,
+                min: 1,
+                max: 20,
+                step: 1,
+                unit: '%',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.pinchTouchDistance = v;
+                  this.persist();
+                }
+              })
+            }
 
             Divider().color($r('app.color.divider'))
 

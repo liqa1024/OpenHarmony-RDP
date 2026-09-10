@@ -157,9 +157,17 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     位移**而非轮齿，`sourceType` 为 Unknown）：`services/TouchpadWheel.ets` 的 `TouchpadWheelMapper`
     按 `120 / 16vp × 速度倍率` 把位移累加成**高分辨率 RDP 轮转量**（9bit 二补码、120=1 齿、单事件
     上限 0xFF 自动分片，与 FreeRDP SDL 客户端对齐），横向映射 `HWHEEL`；全局设置「滚动速度」
-    `touchpadScrollSpeed`（倍率，默认 1.0×，0.2×~4×）只缩放轮转量、不改变发射粒度。捏合为
-    「缩放速度」`pinchZoomSpeed`（倍率，默认 1.0×，越大越快）：线性映射为 Ctrl+滚轮，每
-    `1/(20×speed)` 的捏合比例变化发一格，全程按住 Ctrl。别用 `easy_go.json` 的 `mouse2TouchEventMode`
+    `touchpadScrollSpeed`（倍率，默认 1.0×，0.2×~4×）只缩放轮转量、不改变发射粒度。捏合默认
+    「缩放速度」`pinchZoomSpeed`（倍率，默认 1.0×，越大越快）线性映射为 Ctrl+滚轮，每
+    `1/(20×speed)` 的捏合比例变化发一格；全局设置「使用触摸模拟触控板捏合」（`pinchAsTouch`，默认关）
+    开启后改为在鼠标位置合成**两个原生触点**（外部 id 20/21）做真实双指缩放：触点距离按 `axisPinch`
+    **1:1** 映射（`缩放速度` 只用于 Ctrl+滚轮模式，触摸模式下**置灰**），初始间距由全局设置「触点初始距离」
+    `pinchTouchDistance`（默认 4%，取窗口较短边的百分比，**不写死分辨率**）决定。慢速捏合会被系统拆成多段
+    `BEGIN/END`，故 `AxisAction.END` 不立即抬指，而是用 `PINCH_END_DEBOUNCE_MS`(150ms) 去抖、期间新段沿用
+    同一对触点（否则每段都"松开+重按"产生假点击），`PINCH_SAFETY_MS` 兜底。注意 ArkUI
+    `AxisType` 只有 `VERTICAL/HORIZONTAL/PINCH`，**拿不到捏合的手指朝向/旋转**（官方明确触控板多指不上报
+    手指信息、RotationGesture 也不支持触控板旋转），故模拟触点按全局设置「触摸捏合角度」
+    `pinchTouchAngle`（度，正=顺时针=左手，负=右手，默认 30°；-30° 即右手）斜置。别用 `easy_go.json` 的 `mouse2TouchEventMode`
     关鼠标转触摸（本机 SDK schema 不含该字段，hvigor 校验失败）。
 11. **分辨率与缩放**：自动分辨率取显示器宽高，缩放取 `densityPixels × 100` 并吸附到
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写

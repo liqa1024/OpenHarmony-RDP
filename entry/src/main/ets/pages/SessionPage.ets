@@ -18,6 +18,28 @@ import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
 
+// Synthetic touch pinch geometry. The initial finger separation is a percentage
+// of the smaller desktop side (window-relative, never a fixed resolution); see
+// the pinchTouchDistance setting.
+const DEFAULT_PINCH_DISTANCE_PERCENT: number = 4;
+const MIN_PINCH_DISTANCE_PERCENT: number = 1;
+const MAX_PINCH_DISTANCE_PERCENT: number = 20;
+const MIN_PINCH_HALF: number = 8;
+// axisPinch is a distance ratio relative to the gesture start; clamp it so a
+// bad sample can never explode or collapse the synthetic finger separation.
+const MIN_PINCH_RATIO: number = 0.05;
+const MAX_PINCH_RATIO: number = 20;
+// A slow gesture is reported as several BEGIN/END segments, so an END must not
+// tear the contacts down immediately: keep them down across short gaps and only
+// release once no pinch event has arrived for this long.
+const PINCH_END_DEBOUNCE_MS: number = 150;
+// Hard safety release if the event stream stops without a final END.
+const PINCH_SAFETY_MS: number = 1500;
+// External RDPEI ids for the synthetic pinch contacts; real screen touches use
+// touch.id + 1 (1..11), so these never collide.
+const PINCH_TOUCH_ID_A: number = 20;
+const PINCH_TOUCH_ID_B: number = 21;
+
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
     (surfaceId: string, width: number, height: number) => {};
@@ -94,6 +116,20 @@ struct SessionPage {
   private pinchTimer: number = -1;
   private pinchZoomSpeed: number = 1;
   private readonly ctrlScancode: number = 0x1D;
+  // Pinch translation: false = Ctrl+wheel (native RDP behaviour), true = a
+  // synthetic native two-finger touch pinch around the pointer.
+  private pinchAsTouch: boolean = false;
+  private pinchTouchDistance: number = DEFAULT_PINCH_DISTANCE_PERCENT;
+  private touchPinchActive: boolean = false;
+  private touchPinchAnchor: number[] = [0, 0];
+  private touchPinchHalf: number = MIN_PINCH_HALF;
+  private touchPinchLastHalf: number = MIN_PINCH_HALF;
+  // Orientation of the synthetic contact pair (degrees, clockwise on screen).
+  // ArkUI cannot report the real finger angle, so the pair is tilted by this
+  // configured amount; the unit vector is cached when a pinch starts.
+  private touchPinchAngle: number = 30;
+  private touchPinchUnitX: number = 1;
+  private touchPinchUnitY: number = 0;
   private sessionWindow: window.Window | undefined = undefined;
   // Clipboard redirection is manual, driven by the toolbar. The remote
   // clipboard is cached when the server offers it; "复制" pulls it to the local
@@ -126,6 +162,9 @@ struct SessionPage {
     this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
     this.pinchZoomSpeed =
       Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, settings.pinchZoomSpeed));
+    this.pinchAsTouch = settings.pinchAsTouch;
+    this.touchPinchAngle = settings.pinchTouchAngle;
+    this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
@@ -489,17 +528,19 @@ struct SessionPage {
   private handleAxis(event: AxisEvent): void {
     const isPinch: boolean = this.isPinchEvent(event);
     if (isPinch || this.pinchActive) {
-      // Ctrl is held for the whole gesture and never toggled between notches.
+      // A slow pinch is reported as several BEGIN/END segments, so an END must
+      // not end the gesture right away: just arm a short release timer and let a
+      // following segment keep it alive. Same handling for both pinch modes.
       if (event.action === AxisAction.END) {
-        this.endPinch();
+        this.armPinchEnd(PINCH_END_DEBOUNCE_MS);
         return;
       }
       if (isPinch) {
         this.updatePinch(event);
+        this.armPinchEnd(PINCH_SAFETY_MS);
       }
       // Scroll axes produced by the same two fingers are suppressed while the
       // pinch is active, so zoom never mixes with scroll.
-      this.armPinchEnd();
       return;
     }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
@@ -547,16 +588,25 @@ struct SessionPage {
 
   private updatePinch(event: AxisEvent): void {
     const scale: number = this.pinchScaleValue(event);
-    // Enter pinch mode the moment a pinch is detected (no threshold/gating):
-    // Ctrl goes down immediately and the current distance becomes the baseline.
+    // Enter pinch mode the moment a pinch is detected (no threshold/gating).
     if (!this.pinchActive) {
       this.pinchActive = true;
-      this.pinchScale = scale > 0 ? scale : 0;
       this.pinchAccum = 0;
-      this.setPinchCtrl(true);
+      if (this.pinchAsTouch) {
+        this.beginTouchPinch(event, scale);
+      } else {
+        // Ctrl goes down immediately and the current distance is the baseline.
+        this.pinchScale = scale > 0 ? scale : 0;
+        this.setPinchCtrl(true);
+      }
       return;
     }
     if (scale <= 0) {
+      return;
+    }
+    if (this.pinchAsTouch) {
+      this.updateTouchPinch(scale);
+      this.sendTouchPinchContacts(RdpTouchFlags.MOTION);
       return;
     }
     if (this.pinchScale <= 0) {
@@ -587,6 +637,66 @@ struct SessionPage {
     }
   }
 
+  /**
+   * Touch-pinch mode: place two virtual contacts symmetrically around the
+   * pointer and move them apart/together with the gesture ratio, so the remote
+   * sees a real two-finger pinch at the cursor (better in touch-aware apps).
+   */
+  private beginTouchPinch(event: AxisEvent, scale: number): void {
+    const minDim: number = Math.min(this.desktopWidth, this.desktopHeight);
+    const percent: number = Math.max(MIN_PINCH_DISTANCE_PERCENT,
+      Math.min(MAX_PINCH_DISTANCE_PERCENT, this.pinchTouchDistance));
+    this.touchPinchAnchor = this.mapPointer(event.x, event.y);
+    this.touchPinchHalf = Math.max(MIN_PINCH_HALF, Math.round(minDim * percent / 100));
+    this.touchPinchLastHalf = this.touchPinchHalf;
+    // The pair is tilted by the configured angle (positive = clockwise on
+    // screen). ArkUI reports no finger angle, so this stands in for the hand.
+    const angle: number = Math.max(-180, Math.min(180, this.touchPinchAngle));
+    const radians: number = angle * Math.PI / 180;
+    this.touchPinchUnitX = Math.cos(radians);
+    this.touchPinchUnitY = Math.sin(radians);
+    this.touchPinchActive = true;
+    // axisPinch is already relative to the gesture start (1.0); apply the
+    // initial sample so a late first event does not drop the first movement.
+    this.updateTouchPinch(scale);
+    this.sendTouchPinchContacts(RdpTouchFlags.DOWN);
+  }
+
+  /**
+   * Maps the gesture distance ratio straight onto the synthetic finger
+   * separation (a true 1:1 pinch; the zoom speed setting does not apply here),
+   * so the remote scale matches the gesture exactly.
+   */
+  private updateTouchPinch(scale: number): void {
+    const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO, scale));
+    this.touchPinchLastHalf =
+      Math.max(MIN_PINCH_HALF, Math.round(this.touchPinchHalf * ratio));
+  }
+
+  private sendTouchPinchContacts(flags: number): void {
+    const point: number[] = this.touchPinchAnchor;
+    const half: number = this.touchPinchLastHalf;
+    const dx: number = half * this.touchPinchUnitX;
+    const dy: number = half * this.touchPinchUnitY;
+    // Keep both contacts inside the remote desktop.
+    const maxX: number = Math.max(0, this.desktopWidth - 1);
+    const maxY: number = Math.max(0, this.desktopHeight - 1);
+    const x1: number = Math.max(0, Math.min(maxX, Math.round(point[0] + dx)));
+    const y1: number = Math.max(0, Math.min(maxY, Math.round(point[1] + dy)));
+    const x2: number = Math.max(0, Math.min(maxX, Math.round(point[0] - dx)));
+    const y2: number = Math.max(0, Math.min(maxY, Math.round(point[1] - dy)));
+    this.native.touch(flags, PINCH_TOUCH_ID_A, 0, x1, y1);
+    this.native.touch(flags, PINCH_TOUCH_ID_B, 0, x2, y2);
+  }
+
+  private endTouchPinch(): void {
+    if (!this.touchPinchActive) {
+      return;
+    }
+    this.touchPinchActive = false;
+    this.sendTouchPinchContacts(RdpTouchFlags.UP);
+  }
+
   private setPinchCtrl(down: boolean): void {
     if (this.pinchCtrlDown === down) {
       return;
@@ -600,6 +710,7 @@ struct SessionPage {
       clearTimeout(this.pinchTimer);
       this.pinchTimer = -1;
     }
+    this.endTouchPinch();
     this.pinchActive = false;
     this.pinchScale = 0;
     this.pinchAccum = 0;
@@ -608,16 +719,17 @@ struct SessionPage {
     this.setPinchCtrl(false);
   }
 
-  private armPinchEnd(): void {
+  private armPinchEnd(delayMs: number): void {
     if (this.pinchTimer !== -1) {
       clearTimeout(this.pinchTimer);
     }
-    // Safety net only; the normal end is AxisAction.END. Long enough that a
-    // brief pause while reversing zoom direction does not release Ctrl.
+    // Release timer: short after an AxisAction.END (so a following BEGIN/END
+    // segment keeps the gesture alive), and a longer safety net during updates
+    // in case the final END never arrives.
     this.pinchTimer = setTimeout(() => {
       this.pinchTimer = -1;
       this.endPinch();
-    }, 1000);
+    }, delayMs);
   }
 
   private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
