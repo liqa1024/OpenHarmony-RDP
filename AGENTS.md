@@ -144,8 +144,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    错误经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
 10. **输入分流**：鼠标→`onMouse`、真触屏→`onTouch`（RDPEI 触屏）、滚轮/触控板→`onAxisEvent`；用
     `event.source === SourceType.TouchScreen` 区分真触屏与鼠标转成的触摸，避免点击变拖动。触屏手指
-    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触控板双指滚动单位是像素、方向与滚轮相反，横向映射
-    `HWHEEL`；捏合映射为 Ctrl+滚轮（全程按住 Ctrl）。别用 `easy_go.json` 的 `mouse2TouchEventMode`
+    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触控板双指滑动靠
+    `event.sourceTool === SourceTool.TOUCHPAD` 区分（其 `axisVertical/axisHorizontal` 是**本次事件的 vp
+    位移**而非轮齿，`sourceType` 为 Unknown）：`services/TouchpadWheel.ets` 的 `TouchpadWheelMapper`
+    按 `120 / 16vp × 速度百分比` 把位移累加成**高分辨率 RDP 轮转量**（9bit 二补码、120=1 齿、单事件
+    上限 0xFF 自动分片，与 FreeRDP SDL 客户端对齐），横向映射 `HWHEEL`；全局设置「滚动速度」
+    `touchpadScrollSpeedPercent`（默认 100%，25%~400%）只缩放轮转量、不改变发射粒度。捏合映射为
+    Ctrl+滚轮（全程按住 Ctrl）。别用 `easy_go.json` 的 `mouse2TouchEventMode`
     关鼠标转触摸（本机 SDK schema 不含该字段，hvigor 校验失败）。
 11. **分辨率与缩放**：自动分辨率取显示器宽高，缩放取 `densityPixels × 100` 并吸附到
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
@@ -217,12 +222,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（右侧依次复制/粘贴、全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动/捏合、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动速度/捏合、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`；`reorder` 持久化拖拽后的 `ids` 顺序） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
 | `entry/src/main/ets/services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；`DocumentViewPicker` + `fileIo`，密码不导出） |
 | `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 按会话 key 复用实例 |
+| `entry/src/main/ets/services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射（`TouchpadWheelMapper`，速度百分比、9bit 二补码、0xFF 分片） |
 | `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |

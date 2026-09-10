@@ -10,6 +10,7 @@ import { PendingConnection, RdpConnectOptions, RdpConnectionState,
 import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
+import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 
@@ -79,9 +80,10 @@ struct SessionPage {
   // Active touch contacts, keyed by the ArkUI touch id. The value is the last
   // remote point sent for that contact (used to drop no-op moves).
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
-  // Touchpad scroll accumulators: axis values are displacement, not notches.
-  private touchpadScrollX: number = 0;
-  private touchpadScrollY: number = 0;
+  // Touchpad scroll: ArkUI reports raw finger displacement (vp); the mapper
+  // converts it into high-resolution RDP wheel chunks.
+  private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
+  private wheelChunks: WheelChunk[] = [];
   // Touchpad pinch state: axisPinch is the ratio of the current two-finger
   // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
@@ -89,7 +91,6 @@ struct SessionPage {
   private pinchActive: boolean = false;
   private pinchCtrlDown: boolean = false;
   private pinchTimer: number = -1;
-  private touchpadScrollUnit: number = 16;
   private pinchZoomStepPercent: number = 5;
   private readonly ctrlScancode: number = 0x1D;
   private sessionWindow: window.Window | undefined = undefined;
@@ -121,7 +122,7 @@ struct SessionPage {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
-    this.touchpadScrollUnit = settings.touchpadScrollUnit;
+    this.touchpadWheel.setSpeedPercent(settings.touchpadScrollSpeedPercent);
     this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
@@ -480,8 +481,7 @@ struct SessionPage {
       return;
     }
     if (event.action === AxisAction.BEGIN) {
-      this.touchpadScrollX = 0;
-      this.touchpadScrollY = 0;
+      this.touchpadWheel.reset();
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
@@ -594,34 +594,33 @@ struct SessionPage {
   }
 
   private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
-    // Natural scrolling: swipe up scrolls the remote content up (WHEEL negative).
-    this.touchpadScrollY -= vertical;
-    while (Math.abs(this.touchpadScrollY) >= this.touchpadScrollUnit) {
-      const up: boolean = this.touchpadScrollY > 0;
-      this.touchpadScrollY += up ? -this.touchpadScrollUnit : this.touchpadScrollUnit;
-      this.sendWheel(up, point);
-    }
-    // Natural scrolling: swipe left scrolls the remote content right (HWHEEL positive).
-    this.touchpadScrollX -= horizontal;
-    while (Math.abs(this.touchpadScrollX) >= this.touchpadScrollUnit) {
-      const right: boolean = this.touchpadScrollX < 0;
-      this.touchpadScrollX += right ? this.touchpadScrollUnit : -this.touchpadScrollUnit;
-      this.sendHorizontalWheel(right, point);
+    // The mapper turns the raw displacement into one or more high-resolution
+    // RDP wheel chunks (9-bit wheel field, 120 == one detent).
+    this.wheelChunks.length = 0;
+    this.touchpadWheel.map(vertical, horizontal, this.wheelChunks);
+    for (let i = 0; i < this.wheelChunks.length; i++) {
+      this.sendWheelChunk(this.wheelChunks[i], point);
     }
   }
 
+  private sendWheelChunk(chunk: WheelChunk, point: number[]): void {
+    // Negative rotation is 9-bit two's complement with the sign bit OR'd in:
+    // magnitude m -> WHEEL_NEGATIVE | (0x100 - m). A detent of 120 encodes to
+    // 0x88, identical to what the RDP/FreeRDP clients emit.
+    let flags: number = chunk.horizontal ? RdpPointerFlags.HWHEEL : RdpPointerFlags.WHEEL;
+    flags |= chunk.negative
+      ? RdpPointerFlags.WHEEL_NEGATIVE | (0x100 - chunk.rotation)
+      : chunk.rotation;
+    this.native.mouse(flags, point[0], point[1]);
+  }
+
+  /** A real mouse wheel already reports notches, so forward one full detent. */
   private sendWheel(up: boolean, point: number[]): void {
-    this.native.mouse(up
-      ? RdpPointerFlags.WHEEL | 0x78
-      : RdpPointerFlags.WHEEL | RdpPointerFlags.WHEEL_NEGATIVE | 0x88,
-      point[0], point[1]);
-  }
-
-  private sendHorizontalWheel(right: boolean, point: number[]): void {
-    this.native.mouse(right
-      ? RdpPointerFlags.HWHEEL | 0x78
-      : RdpPointerFlags.HWHEEL | RdpPointerFlags.WHEEL_NEGATIVE | 0x88,
-      point[0], point[1]);
+    const chunk: WheelChunk = new WheelChunk();
+    chunk.horizontal = false;
+    chunk.negative = !up;
+    chunk.rotation = WHEEL_DETENT;
+    this.sendWheelChunk(chunk, point);
   }
 
   private handleKey(event: KeyEvent): void {

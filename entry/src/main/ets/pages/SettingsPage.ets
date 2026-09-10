@@ -7,6 +7,8 @@ import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
+import { DEFAULT_SCROLL_SPEED_PERCENT, MAX_SCROLL_SPEED_PERCENT,
+  MIN_SCROLL_SPEED_PERCENT } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
 
 // Remote desktop sizes are not limited to the local screen, so manual
@@ -44,7 +46,7 @@ class ToggleItemConfig {
 struct SettingsPage {
   @State hoverDelay: number = 700;
   @State hideDelay: number = 250;
-  @State touchpadScrollUnit: number = 16;
+  @State touchpadScrollSpeed: number = DEFAULT_SCROLL_SPEED_PERCENT;
   @State pinchZoomStep: number = 5;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
@@ -101,7 +103,7 @@ struct SettingsPage {
     this.audioDisabledReason = audioCapability.reason;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
-    this.touchpadScrollUnit = settings.touchpadScrollUnit;
+    this.touchpadScrollSpeed = settings.touchpadScrollSpeedPercent;
     this.pinchZoomStep = settings.pinchZoomStepPercent;
     this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
@@ -173,7 +175,7 @@ struct SettingsPage {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
-    settings.touchpadScrollUnit = this.touchpadScrollUnit;
+    settings.touchpadScrollSpeedPercent = this.touchpadScrollSpeed;
     settings.pinchZoomStepPercent = this.pinchZoomStep;
     settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
@@ -206,7 +208,7 @@ struct SettingsPage {
     const defaults: AppSettings = SettingsStore.defaults();
     this.hoverDelay = defaults.toolbarHoverDelay;
     this.hideDelay = defaults.toolbarHideDelay;
-    this.touchpadScrollUnit = defaults.touchpadScrollUnit;
+    this.touchpadScrollSpeed = defaults.touchpadScrollSpeedPercent;
     this.pinchZoomStep = defaults.pinchZoomStepPercent;
     this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
@@ -531,15 +533,15 @@ struct SettingsPage {
               .margin({ bottom: 4 })
 
             this.sliderItem({
-              title: '滚动步长',
-              subtitle: '触控板双指滑动多少位移换算为一格滚轮（越小越跟手）',
-              value: this.touchpadScrollUnit,
-              min: 4,
-              max: 80,
-              step: 4,
-              unit: ' vp',
+              title: '滚动速度',
+              subtitle: '双指滑动速度；100% 与 FreeRDP 原生手感一致',
+              value: this.touchpadScrollSpeed,
+              min: MIN_SCROLL_SPEED_PERCENT,
+              max: MAX_SCROLL_SPEED_PERCENT,
+              step: 25,
+              unit: '%',
               onChange: (v: number) => {
-                this.touchpadScrollUnit = v;
+                this.touchpadScrollSpeed = v;
                 this.persist();
               }
             })

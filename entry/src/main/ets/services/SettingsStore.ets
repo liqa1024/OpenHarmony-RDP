@@ -6,13 +6,13 @@ import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AdvancedProfile, DisplayProfile, SavedConnection } from '../model/RdpModels';
+import { DEFAULT_SCROLL_SPEED_PERCENT } from './TouchpadWheel';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
-const DEFAULT_TOUCHPAD_SCROLL_UNIT: number = 16;
 const DEFAULT_PINCH_ZOOM_STEP_PERCENT: number = 5;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;
@@ -26,7 +26,7 @@ export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
-  touchpadScrollUnit: number = DEFAULT_TOUCHPAD_SCROLL_UNIT;
+  touchpadScrollSpeedPercent: number = DEFAULT_SCROLL_SPEED_PERCENT;
   pinchZoomStepPercent: number = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
   // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
   // Win combinations work even though the shell keeps the real Win key.
@@ -80,7 +80,7 @@ export class SettingsStore {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = DEFAULT_TOOLBAR_HOVER_DELAY;
     settings.toolbarHideDelay = DEFAULT_TOOLBAR_HIDE_DELAY;
-    settings.touchpadScrollUnit = DEFAULT_TOUCHPAD_SCROLL_UNIT;
+    settings.touchpadScrollSpeedPercent = DEFAULT_SCROLL_SPEED_PERCENT;
     settings.pinchZoomStepPercent = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
     const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
     if (disp !== undefined) {
@@ -102,8 +102,9 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'toolbarHoverDelay', settings.toolbarHoverDelay);
       settings.toolbarHideDelay =
         SettingsStore.readNumber(store, 'toolbarHideDelay', settings.toolbarHideDelay);
-      settings.touchpadScrollUnit =
-        SettingsStore.readNumber(store, 'touchpadScrollUnit', settings.touchpadScrollUnit);
+      settings.touchpadScrollSpeedPercent =
+        SettingsStore.readNumber(store, 'touchpadScrollSpeedPercent',
+          settings.touchpadScrollSpeedPercent);
       settings.pinchZoomStepPercent =
         SettingsStore.readNumber(store, 'pinchZoomStepPercent', settings.pinchZoomStepPercent);
       settings.winKeySubstitute =
@@ -157,7 +158,7 @@ export class SettingsStore {
     try {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
-      store.putSync('touchpadScrollUnit', settings.touchpadScrollUnit);
+      store.putSync('touchpadScrollSpeedPercent', settings.touchpadScrollSpeedPercent);
       store.putSync('pinchZoomStepPercent', settings.pinchZoomStepPercent);
       store.putSync('winKeySubstitute', settings.winKeySubstitute);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
