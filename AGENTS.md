@@ -123,9 +123,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 3. **密码**：绝不经命令行传密码，用 `freerdp_settings_set_string` 设 `FreeRDP_Password` /
    `FreeRDP_GatewayPassword`。
 4. **帧上传**：每次上传整帧（`glTexSubImage2D`）；按脏区部分上传会花屏，除非改用 PBO/EGL image。
-5. **原生库命名**：只提交不带版本号的单一 `entry/libs/<abi>/libX.so`（FreeRDP 以
-   `WITH_LIBRARY_VERSIONING=OFF` 构建，SONAME 也是 `libX.so`）；CMake 用完整路径链接它，
-   运行期 `DT_NEEDED` 也是 `libX.so`（不再产生 `libX.so.3` 副本）。
+5. **原生库命名**：只提交不带版本号的单一 `entry/libs/<abi>/libX.so`（原因与 SONAME 处理见
+   「原生库源码构建」）。
 6. **连接与密码存储**：配置存 `ConnectionStore`（preferences，稳定 UUID 作 id、`updatedAt` 供刷新），
    密码单独存 `CredentialStore`（ASSET，按 id），**只在连接成功后**写入。preferences 字符串字段先
    `encodeURIComponent` 再拼接，否则控制字符会损坏文件。
@@ -142,36 +141,28 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    `SessionAbility.onWindowStageDestroy/onDestroy` → `SessionManager.release` + `SessionRequests.discard`
    （`SessionPage.aboutToDisappear` 在窗口关闭时**不触发**，别依赖它断连）。连接有 30s 超时兜底，
    错误经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
-10. **输入分流**：鼠标→`onMouse`、真触屏→`onTouch`（RDPEI 触屏）、滚轮/触控板→`onAxisEvent`；用
-    `event.source === SourceType.TouchScreen` 区分真触屏与鼠标转成的触摸，避免点击变拖动。触屏手指
-    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触屏还有三条硬性约束：①`handleMouse` 过滤
-    `source===TouchScreen` 的兼容鼠标事件，避免一次触摸走两条通路产生杂点击；②重复 `TouchType.Down`
-    **忽略**而不是补发 UP+DOWN，否则远端会看到"松开+重按"而冒出单击；③`TouchType.Cancel` 不代表抬指
-    （move 会被打断）：先把它挂起不抬指，若随后在最近位置附近出现新的 Down/Move 就判定为同一手指继续、
-    只发 MOTION（`touchContactIds` 保留远端 contactId），`CANCEL_HOLD_MS`(400ms) 内没有续接触才真正发 UP。
-    接触压力按
-    `RdpTouchFlags.HAS_PRESSURE` 透传（ArkUI `[0,65535)` → RDPEI `[0,1024]`，0 表示设备未上报）。
-    FreeRDP 侧 `rdpei` 每 **20ms** 才发一帧且同一接触点会被覆盖合并，故触屏实际上限约 50fps（这是
-    RDPEI 触屏与 mstsc 的主要差距）。`patch-freerdp.ps1` 第 6 步把该间隔改成运行时全局
-    `HmrdpSetTouchFrameInterval`；`libhmrdp` 以**弱符号**引用它，全局设置「触屏-高刷新率」开启时传 0
-    （逐帧下发，默认关闭传 20 保持上游行为）。未打补丁的 FreeRDP 上弱符号为空、开关自动降级为无效。
-    改动后需重编 FreeRDP 并回写 `entry/libs/<abi>/*.so`。触控板双指滑动靠
-    `event.sourceTool === SourceTool.TOUCHPAD` 区分（其 `axisVertical/axisHorizontal` 是**本次事件的 vp
-    位移**而非轮齿，`sourceType` 为 Unknown）：`services/TouchpadWheel.ets` 的 `TouchpadWheelMapper`
-    按 `120 / 16vp × 速度倍率` 把位移累加成**高分辨率 RDP 轮转量**（9bit 二补码、120=1 齿、单事件
-    上限 0xFF 自动分片，与 FreeRDP SDL 客户端对齐），横向映射 `HWHEEL`；全局设置「滚动速度」
-    `touchpadScrollSpeed`（倍率，默认 1.0×，0.2×~4×）只缩放轮转量、不改变发射粒度。捏合默认
-    「缩放速度」`pinchZoomSpeed`（倍率，默认 1.0×，越大越快）线性映射为 Ctrl+滚轮，每
-    `1/(20×speed)` 的捏合比例变化发一格；全局设置「使用触摸模拟触控板捏合」（`pinchAsTouch`，默认关）
-    开启后改为在鼠标位置合成**两个原生触点**（外部 id 20/21）做真实双指缩放：触点距离按 `axisPinch`
-    **1:1** 映射（`缩放速度` 只用于 Ctrl+滚轮模式，触摸模式下**置灰**），初始间距由全局设置「触点初始距离」
-    `pinchTouchDistance`（默认 4%，取窗口较短边的百分比，**不写死分辨率**）决定。手势**不设计时器**，只在真正的
-    `AxisAction.END`（手指抬起）时才结束，因此静止保持时触点/Ctrl 一直按住（用定时器去猜抬指会在 pause 时"松开+重按"
-    产生假点击）。注意 ArkUI
-    `AxisType` 只有 `VERTICAL/HORIZONTAL/PINCH`，**拿不到捏合的手指朝向/旋转**（官方明确触控板多指不上报
-    手指信息、RotationGesture 也不支持触控板旋转），故模拟触点按全局设置「触摸捏合角度」
-    `pinchTouchAngle`（度，正=顺时针=左手，负=右手，默认 30°；-30° 即右手）斜置。别用 `easy_go.json` 的 `mouse2TouchEventMode`
-    关鼠标转触摸（本机 SDK schema 不含该字段，hvigor 校验失败）。
+10. **输入分流**：鼠标→`onMouse`、真触屏→`onTouch`（RDPEI）、滚轮/触控板→`onAxisEvent`。
+    - **触屏**（只认 `event.source===SourceType.TouchScreen`；手指 id `+1` 避开 FreeRDP 的 0 空槽）：
+      ① `handleMouse` 过滤同源兼容鼠标事件，避免一触两通路产生杂点击；② 重复 `TouchType.Down` 忽略
+      （补发 UP+DOWN 会变成"松开+重按"的假点击）；③ `TouchType.Cancel` 不代表抬指（move 会被打断）：
+      挂起不抬指，若附近随后出现新的 Down/Move 判定为同指续接触、只发 MOTION（`touchContactIds` 保留
+      远端 contactId），`CANCEL_HOLD_MS`(400ms) 内无续接触才真正 UP。压力按 `RdpTouchFlags.HAS_PRESSURE`
+      透传（`[0,65535)`→`[0,1024]`，0 表示设备未上报）。
+    - **触屏高刷新率**：FreeRDP `rdpei` 默认每 20ms 才发一帧（≈50fps，与 mstsc 的主要差距）；
+      `patch-freerdp.ps1` 第 6 步导出运行时全局 `HmrdpSetTouchFrameInterval`，`libhmrdp` 以弱符号引用，
+      设置「触屏-高刷新率」开启传 0、默认 20。未打补丁的 FreeRDP 上弱符号为空、开关自动降级。改后需
+      重编 FreeRDP 并回写 `entry/libs/<abi>/*.so`。
+    - **触控板滑动**（`event.sourceTool===SourceTool.TOUCHPAD`，`axisVertical/Horizontal` 是本次事件的 vp
+      位移而非轮齿）：`services/TouchpadWheel.ets` 按 `120/16vp × 速度倍率` 累加成**高分辨率 RDP 轮转量**
+      （9bit 二补码、120=1 齿、单事件 ≤0xFF 分片，对齐 FreeRDP SDL），横向 `HWHEEL`；设置「滚动速度」
+      `touchpadScrollSpeed`（默认 1.0×）只缩放轮转量、不改变发射粒度。
+    - **触控板捏合**：默认按 `1/(20×speed)` 线性映射为 Ctrl+滚轮（「缩放速度」`pinchZoomSpeed`）；设置
+      「使用触摸模拟触控板捏合」`pinchAsTouch`（默认关）改为在鼠标位置合成两个原生触点（id 20/21）做真实
+      双指缩放，距离按 `axisPinch` **1:1**（速度置灰），初始间距取窗口较短边百分比 `pinchTouchDistance`
+      （默认 4%，不写死分辨率），按 `pinchTouchAngle`（默认 30°；-30° 为右手）斜置。**不设计时器**，只在
+      真实 `AxisAction.END` 结束，静止保持时触点/Ctrl 一直按住。ArkUI `AxisType` 无旋转轴，拿不到真实
+      手指朝向（触控板多指不上报手指信息、RotationGesture 不支持触控板旋转），故用角度设置顶替。
+    - 别用 `easy_go.json` 的 `mouse2TouchEventMode`（本机 SDK schema 不含该字段，hvigor 校验失败）。
 11. **分辨率与缩放**：自动分辨率取显示器宽高，缩放取 `densityPixels × 100` 并吸附到
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
     `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
@@ -242,7 +233,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，右下角 FAB） |
 | `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（右侧依次复制/粘贴、全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动速度/捏合、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动/捏合与触摸模拟、触屏高刷新率、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口尺寸与默认最大化、自动隐藏主窗口、配置导入/导出） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`；`reorder` 持久化拖拽后的 `ids` 顺序） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
@@ -252,7 +243,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
-| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` 能力查询 |
+| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` 查询与开关 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件 |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 中断/错误降级） |

@@ -7,8 +7,10 @@
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
 - **图形管道**：RDPGFX（RemoteFX / 渐进式），EGL/GLES 纹理上传 + GPU 等比缩放
-- **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发）
-- **触控板**：双指滚动映射为高分辨率滚轮（含横向）、双指捏合映射为 Ctrl+滚轮 缩放，滚动/缩放速度可配置
+- **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
+  压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）
+- **触控板**：双指滚动映射为高分辨率滚轮（含横向，速度可调）；双指捏合默认映射为 Ctrl+滚轮 缩放，
+  可开启「使用触摸模拟触控板捏合」改为在鼠标位置合成原生双指触摸（角度、初始距离可调，缩放 1:1）
 - **音频**：rdpsnd 通道由 FreeRDP 解码，`libhmrdp` 用**原生 OHAudio** 播放；设备无音频能力时
   自动关闭，并在设置中置灰说明原因
 - **剪贴板**：cliprdr 通道已接入
@@ -63,7 +65,7 @@ entry/
     entryability/             EntryAbility（主窗口）
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
-    services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · SessionManager · WindowController · DeviceCapabilities
+    services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · TouchpadWheel · SessionManager · WindowController · DeviceCapabilities
   src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器 + OHAudio 播放
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）
