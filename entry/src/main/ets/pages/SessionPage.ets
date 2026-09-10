@@ -29,16 +29,23 @@ const MIN_PINCH_HALF: number = 8;
 // bad sample can never explode or collapse the synthetic finger separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
-// A slow gesture is reported as several BEGIN/END segments, so an END must not
-// tear the contacts down immediately: keep them down across short gaps and only
-// release once no pinch event has arrived for this long.
-const PINCH_END_DEBOUNCE_MS: number = 150;
-// Hard safety release if the event stream stops without a final END.
-const PINCH_SAFETY_MS: number = 1500;
+// The pinch (and its synthetic touch contacts / held Ctrl) lives from the first
+// PINCH axis event until the OS sends the real AxisAction.END, i.e. the fingers
+// are actually lifted. No timers are used, so a stationary hold keeps the
+// gesture alive instead of lifting the contacts and producing a fake click.
 // External RDPEI ids for the synthetic pinch contacts; real screen touches use
 // touch.id + 1 (1..11), so these never collide.
 const PINCH_TOUCH_ID_A: number = 20;
 const PINCH_TOUCH_ID_B: number = 21;
+
+// A TouchType.Cancel does not always mean the finger lifted (a move can be
+// interrupted). The contact is held instead, and a following Down within this
+// distance of its last position is treated as the same finger resuming. Only if
+// no such event arrives within CANCEL_HOLD_MS is the contact really released.
+const CANCEL_RESUME_RATIO: number = 0.02;
+const CANCEL_RESUME_MIN_DISTANCE: number = 16;
+const CANCEL_RESUME_MAX_DISTANCE: number = 64;
+const CANCEL_HOLD_MS: number = 400;
 
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -103,6 +110,12 @@ struct SessionPage {
   // Active touch contacts, keyed by the ArkUI touch id. The value is the last
   // remote point sent for that contact (used to drop no-op moves).
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
+  // ArkUI touch id -> remote RDPEI contact id, kept separate so a contact can be
+  // resumed after a Cancel even if ArkUI renumbers the finger.
+  private touchContactIds: Map<number, number> = new Map<number, number>();
+  // Contacts whose Cancel arrived but that may still be down (see CANCEL_*).
+  private pendingCancelIds: number[] = [];
+  private cancelTimers: Map<number, number> = new Map<number, number>();
   // Touchpad scroll: ArkUI reports raw finger displacement (vp); the mapper
   // converts it into high-resolution RDP wheel chunks.
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
@@ -113,7 +126,6 @@ struct SessionPage {
   private pinchAccum: number = 0;
   private pinchActive: boolean = false;
   private pinchCtrlDown: boolean = false;
-  private pinchTimer: number = -1;
   private pinchZoomSpeed: number = 1;
   private readonly ctrlScancode: number = 0x1D;
   // Pinch translation: false = Ctrl+wheel (native RDP behaviour), true = a
@@ -464,46 +476,158 @@ struct SessionPage {
     const changed: TouchObject[] = event.changedTouches;
     for (let i = 0; i < changed.length; i++) {
       const touch: TouchObject = changed[i];
-      // FreeRDP reserves contact id 0 for "empty slot", so shift ArkUI's
-      // 0-based finger ids into a non-zero range.
-      const rdpId: number = touch.id + 1;
       const point: number[] = this.mapPointer(touch.x, touch.y);
       const type: TouchType = touch.type;
       const pressure: number = this.mapPressure(touch.pressure);
       const pressureFlag: number = pressure > 0 ? RdpTouchFlags.HAS_PRESSURE : 0;
       if (type === TouchType.Down) {
-        // A Down for an already-active contact is a retransmission or a
-        // component re-entry. Closing and re-opening the contact would make the
-        // remote see a release followed by a fresh press, i.e. a spurious
-        // click, so the existing contact is kept instead.
-        if (this.touchPoints.has(touch.id)) {
-          continue;
-        }
-        this.touchPoints.set(touch.id, point);
-        this.native.touch(RdpTouchFlags.DOWN | pressureFlag, rdpId, pressure, point[0], point[1]);
+        this.onTouchDown(touch.id, point, pressure, pressureFlag);
       } else if (type === TouchType.Move) {
-        const last: number[] | undefined = this.touchPoints.get(touch.id);
-        // Drop moves for unknown contacts and moves that did not change the
-        // remote pixel; RDPEI would drop the former and the latter only adds
-        // redundant frames.
-        if (last === undefined) {
-          continue;
-        }
-        if (last[0] === point[0] && last[1] === point[1]) {
-          continue;
-        }
-        this.touchPoints.set(touch.id, point);
-        this.native.touch(RdpTouchFlags.MOTION | pressureFlag, rdpId, pressure, point[0], point[1]);
-      } else if (type === TouchType.Up || type === TouchType.Cancel) {
-        if (!this.touchPoints.has(touch.id)) {
-          continue;
-        }
-        this.touchPoints.delete(touch.id);
-        this.native.touch(RdpTouchFlags.UP | pressureFlag, rdpId, pressure, point[0], point[1]);
+        this.onTouchMove(touch.id, point, pressure, pressureFlag);
+      } else if (type === TouchType.Up) {
+        this.onTouchUp(touch.id, point, pressure, pressureFlag);
+      } else if (type === TouchType.Cancel) {
+        this.onTouchCancel(touch.id, point);
       }
     }
-    if (event.type === TouchType.Cancel && event.touches.length === 0) {
-      this.releaseAllTouches();
+  }
+
+  private onTouchDown(id: number, point: number[], pressure: number, pressureFlag: number): void {
+    // A Down for a contact that is still tracked is a retransmission: keep it.
+    if (this.touchContactIds.has(id)) {
+      return;
+    }
+    // A held Cancel resumed near its last position means the same finger is
+    // still down: keep the remote contact and just move it, instead of lifting
+    // and re-pressing (which the remote sees as a click).
+    const resumed: number = this.findResumableCancel(point);
+    if (resumed >= 0) {
+      const rdpId: number | undefined = this.touchContactIds.get(resumed);
+      const resumedId: number = rdpId !== undefined ? rdpId : resumed + 1;
+      this.clearCancelTimer(resumed);
+      this.removePendingCancel(resumed);
+      this.touchPoints.delete(resumed);
+      this.touchContactIds.delete(resumed);
+      this.touchPoints.set(id, point);
+      this.touchContactIds.set(id, resumedId);
+      this.native.touch(RdpTouchFlags.MOTION | pressureFlag, resumedId, pressure,
+        point[0], point[1]);
+      return;
+    }
+    // A genuinely new finger: any held Cancel is now a real release.
+    this.finalizeAllCancels();
+    const rdpId: number = id + 1;
+    this.touchPoints.set(id, point);
+    this.touchContactIds.set(id, rdpId);
+    this.native.touch(RdpTouchFlags.DOWN | pressureFlag, rdpId, pressure, point[0], point[1]);
+  }
+
+  private onTouchMove(id: number, point: number[], pressure: number, pressureFlag: number): void {
+    const rdpId: number | undefined = this.touchContactIds.get(id);
+    if (rdpId === undefined) {
+      return;
+    }
+    // A Move for a held Cancel means the finger resumed without a fresh Down.
+    if (this.isPendingCancel(id)) {
+      this.clearCancelTimer(id);
+      this.removePendingCancel(id);
+    }
+    const last: number[] | undefined = this.touchPoints.get(id);
+    if (last !== undefined && last[0] === point[0] && last[1] === point[1]) {
+      return;
+    }
+    this.touchPoints.set(id, point);
+    this.native.touch(RdpTouchFlags.MOTION | pressureFlag, rdpId, pressure, point[0], point[1]);
+  }
+
+  private onTouchUp(id: number, point: number[], pressure: number, pressureFlag: number): void {
+    const rdpId: number | undefined = this.touchContactIds.get(id);
+    if (rdpId === undefined) {
+      return;
+    }
+    this.clearCancelTimer(id);
+    this.removePendingCancel(id);
+    this.touchPoints.delete(id);
+    this.touchContactIds.delete(id);
+    this.native.touch(RdpTouchFlags.UP | pressureFlag, rdpId, pressure, point[0], point[1]);
+  }
+
+  private onTouchCancel(id: number, point: number[]): void {
+    if (!this.touchContactIds.has(id) || this.isPendingCancel(id)) {
+      return;
+    }
+    // Hold the contact: the finger is often still down. CANCEL_HOLD_MS is only
+    // a safety release for a Cancel that never resumes.
+    this.touchPoints.set(id, point);
+    this.pendingCancelIds.push(id);
+    const timer: number = setTimeout(() => {
+      this.cancelTimers.delete(id);
+      this.finalizeCancel(id);
+    }, CANCEL_HOLD_MS);
+    this.cancelTimers.set(id, timer);
+  }
+
+  /** Nearest held Cancel within the resume distance, or -1. */
+  private findResumableCancel(point: number[]): number {
+    const minDim: number = Math.min(this.desktopWidth, this.desktopHeight);
+    const limit: number = Math.max(CANCEL_RESUME_MIN_DISTANCE,
+      Math.min(CANCEL_RESUME_MAX_DISTANCE, Math.round(minDim * CANCEL_RESUME_RATIO)));
+    const limitSq: number = limit * limit;
+    let best: number = -1;
+    let bestDist: number = limitSq;
+    for (let i = 0; i < this.pendingCancelIds.length; i++) {
+      const id: number = this.pendingCancelIds[i];
+      const last: number[] | undefined = this.touchPoints.get(id);
+      if (last === undefined) {
+        continue;
+      }
+      const dx: number = last[0] - point[0];
+      const dy: number = last[1] - point[1];
+      const dist: number = dx * dx + dy * dy;
+      if (dist <= bestDist) {
+        bestDist = dist;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  private isPendingCancel(id: number): boolean {
+    return this.pendingCancelIds.indexOf(id) >= 0;
+  }
+
+  private removePendingCancel(id: number): void {
+    const index: number = this.pendingCancelIds.indexOf(id);
+    if (index >= 0) {
+      this.pendingCancelIds.splice(index, 1);
+    }
+  }
+
+  private clearCancelTimer(id: number): void {
+    const timer: number | undefined = this.cancelTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.cancelTimers.delete(id);
+    }
+  }
+
+  private finalizeCancel(id: number): void {
+    this.clearCancelTimer(id);
+    this.removePendingCancel(id);
+    const rdpId: number | undefined = this.touchContactIds.get(id);
+    const point: number[] | undefined = this.touchPoints.get(id);
+    this.touchPoints.delete(id);
+    this.touchContactIds.delete(id);
+    if (rdpId !== undefined && point !== undefined) {
+      this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
+    }
+  }
+
+  private finalizeAllCancels(): void {
+    // Copy first: finalizeCancel mutates the list.
+    const ids: number[] = this.pendingCancelIds.slice();
+    for (let i = 0; i < ids.length; i++) {
+      this.finalizeCancel(ids[i]);
     }
   }
 
@@ -519,25 +643,27 @@ struct SessionPage {
   }
 
   private releaseAllTouches(): void {
-    this.touchPoints.forEach((point: number[], id: number) => {
-      this.native.touch(RdpTouchFlags.UP, id + 1, 0, point[0], point[1]);
+    this.finalizeAllCancels();
+    this.touchContactIds.forEach((rdpId: number, id: number) => {
+      const point: number[] | undefined = this.touchPoints.get(id);
+      if (point !== undefined) {
+        this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
+      }
     });
     this.touchPoints.clear();
+    this.touchContactIds.clear();
   }
 
   private handleAxis(event: AxisEvent): void {
     const isPinch: boolean = this.isPinchEvent(event);
     if (isPinch || this.pinchActive) {
-      // A slow pinch is reported as several BEGIN/END segments, so an END must
-      // not end the gesture right away: just arm a short release timer and let a
-      // following segment keep it alive. Same handling for both pinch modes.
+      // The gesture ends only on the real AxisAction.END (fingers lifted).
       if (event.action === AxisAction.END) {
-        this.armPinchEnd(PINCH_END_DEBOUNCE_MS);
+        this.endPinch();
         return;
       }
       if (isPinch) {
         this.updatePinch(event);
-        this.armPinchEnd(PINCH_SAFETY_MS);
       }
       // Scroll axes produced by the same two fingers are suppressed while the
       // pinch is active, so zoom never mixes with scroll.
@@ -706,10 +832,6 @@ struct SessionPage {
   }
 
   private endPinch(): void {
-    if (this.pinchTimer !== -1) {
-      clearTimeout(this.pinchTimer);
-      this.pinchTimer = -1;
-    }
     this.endTouchPinch();
     this.pinchActive = false;
     this.pinchScale = 0;
@@ -717,19 +839,6 @@ struct SessionPage {
     // Release unconditionally: the final event may not carry the pinch axis, so
     // pinchActive can already be false while Ctrl is still logically held.
     this.setPinchCtrl(false);
-  }
-
-  private armPinchEnd(delayMs: number): void {
-    if (this.pinchTimer !== -1) {
-      clearTimeout(this.pinchTimer);
-    }
-    // Release timer: short after an AxisAction.END (so a following BEGIN/END
-    // segment keeps the gesture alive), and a longer safety net during updates
-    // in case the final END never arrives.
-    this.pinchTimer = setTimeout(() => {
-      this.pinchTimer = -1;
-      this.endPinch();
-    }, delayMs);
   }
 
   private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {

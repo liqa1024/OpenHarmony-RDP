@@ -144,9 +144,12 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    错误经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
 10. **输入分流**：鼠标→`onMouse`、真触屏→`onTouch`（RDPEI 触屏）、滚轮/触控板→`onAxisEvent`；用
     `event.source === SourceType.TouchScreen` 区分真触屏与鼠标转成的触摸，避免点击变拖动。触屏手指
-    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触屏还有两条硬性约束：①`handleMouse` 过滤
+    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触屏还有三条硬性约束：①`handleMouse` 过滤
     `source===TouchScreen` 的兼容鼠标事件，避免一次触摸走两条通路产生杂点击；②重复 `TouchType.Down`
-    **忽略**而不是补发 UP+DOWN，否则远端会看到"松开+重按"而冒出单击。接触压力按
+    **忽略**而不是补发 UP+DOWN，否则远端会看到"松开+重按"而冒出单击；③`TouchType.Cancel` 不代表抬指
+    （move 会被打断）：先把它挂起不抬指，若随后在最近位置附近出现新的 Down/Move 就判定为同一手指继续、
+    只发 MOTION（`touchContactIds` 保留远端 contactId），`CANCEL_HOLD_MS`(400ms) 内没有续接触才真正发 UP。
+    接触压力按
     `RdpTouchFlags.HAS_PRESSURE` 透传（ArkUI `[0,65535)` → RDPEI `[0,1024]`，0 表示设备未上报）。
     FreeRDP 侧 `rdpei` 每 **20ms** 才发一帧且同一接触点会被覆盖合并，故触屏实际上限约 50fps（这是
     RDPEI 触屏与 mstsc 的主要差距）。`patch-freerdp.ps1` 第 6 步把该间隔改成运行时全局
@@ -162,9 +165,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     `1/(20×speed)` 的捏合比例变化发一格；全局设置「使用触摸模拟触控板捏合」（`pinchAsTouch`，默认关）
     开启后改为在鼠标位置合成**两个原生触点**（外部 id 20/21）做真实双指缩放：触点距离按 `axisPinch`
     **1:1** 映射（`缩放速度` 只用于 Ctrl+滚轮模式，触摸模式下**置灰**），初始间距由全局设置「触点初始距离」
-    `pinchTouchDistance`（默认 4%，取窗口较短边的百分比，**不写死分辨率**）决定。慢速捏合会被系统拆成多段
-    `BEGIN/END`，故 `AxisAction.END` 不立即抬指，而是用 `PINCH_END_DEBOUNCE_MS`(150ms) 去抖、期间新段沿用
-    同一对触点（否则每段都"松开+重按"产生假点击），`PINCH_SAFETY_MS` 兜底。注意 ArkUI
+    `pinchTouchDistance`（默认 4%，取窗口较短边的百分比，**不写死分辨率**）决定。手势**不设计时器**，只在真正的
+    `AxisAction.END`（手指抬起）时才结束，因此静止保持时触点/Ctrl 一直按住（用定时器去猜抬指会在 pause 时"松开+重按"
+    产生假点击）。注意 ArkUI
     `AxisType` 只有 `VERTICAL/HORIZONTAL/PINCH`，**拿不到捏合的手指朝向/旋转**（官方明确触控板多指不上报
     手指信息、RotationGesture 也不支持触控板旋转），故模拟触点按全局设置「触摸捏合角度」
     `pinchTouchAngle`（度，正=顺时针=左手，负=右手，默认 30°；-30° 即右手）斜置。别用 `easy_go.json` 的 `mouse2TouchEventMode`
