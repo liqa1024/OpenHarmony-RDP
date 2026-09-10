@@ -484,6 +484,18 @@ napi_value IsAudioSupported(napi_env env, napi_callback_info) {
   return CreateBool(env, AudioOutput::Supported());
 }
 
+napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  bool enabled = false;
+  if (argc < 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  Session::SetTouchHighRate(enabled);
+  return CreateBool(env, true);
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -531,6 +543,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setTouchHighRate", nullptr, SetTouchHighRate, nullptr, nullptr, nullptr,
        napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

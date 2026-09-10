@@ -34,6 +34,11 @@ using HmrdpAudioSink = void (*)(void* context, const void* data, size_t size,
 
 extern "C" void HmrdpSetAudioSink(HmrdpAudioSink sink);
 
+// Defined by the patched rdpei client (native/scripts/patch-freerdp.ps1). The
+// weak reference keeps libhmrdp linkable against stock FreeRDP, where touch
+// high-rate simply stays unavailable.
+extern "C" void HmrdpSetTouchFrameInterval(UINT32 intervalMs) __attribute__((weak));
+
 namespace hmrdp {
 namespace {
 
@@ -648,7 +653,23 @@ bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32
     return false;
   }
   rdpClientContext* client = reinterpret_cast<rdpClientContext*>(instance_->context);
+  // Diagnostic only: without the RDPEI channel FreeRDP silently degrades touch
+  // to concentrated mouse emulation, which shows up as stray clicks while
+  // dragging. The first few contacts make that visible in the logs.
+  static int touchLog = 0;
+  if (touchLog < 24) {
+    HMRDP_LOGI("sendTouch flags=0x%{public}x finger=%{public}d pressure=%{public}u rdpei=%{public}d",
+               flags, finger, pressure, client->rdpei != nullptr ? 1 : 0);
+    touchLog++;
+  }
   return freerdp_client_handle_touch(client, flags, finger, pressure, x, y) ? true : false;
+}
+
+void Session::SetTouchHighRate(bool enabled) {
+  if (HmrdpSetTouchFrameInterval != nullptr) {
+    // 0 flushes every frame; 20 is FreeRDP's upstream 50Hz coalescing.
+    HmrdpSetTouchFrameInterval(enabled ? 0u : 20u);
+  }
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {

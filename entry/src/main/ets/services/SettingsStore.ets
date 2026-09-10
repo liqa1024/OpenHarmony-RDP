@@ -27,6 +27,9 @@ export class AppSettings {
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  // Experimental: forward RDPEI touch at the full input rate instead of the
+  // upstream ~20ms (50Hz) coalescing. Off keeps the default behaviour.
+  touchHighRate: boolean = false;
   // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
   // Win combinations work even though the shell keeps the real Win key.
   winKeySubstitute: number = 0;
@@ -105,6 +108,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.pinchZoomSpeed =
         SettingsStore.readNumber(store, 'pinchZoomSpeed', settings.pinchZoomSpeed);
+      settings.touchHighRate =
+        SettingsStore.readBoolean(store, 'touchHighRate', settings.touchHighRate);
       settings.winKeySubstitute =
         SettingsStore.readNumber(store, 'winKeySubstitute', settings.winKeySubstitute);
       settings.mainWindowSizeEnabled =
@@ -158,6 +163,7 @@ export class SettingsStore {
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
+      store.putSync('touchHighRate', settings.touchHighRate);
       store.putSync('winKeySubstitute', settings.winKeySubstitute);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       store.putSync('mainWindowWidth', settings.mainWindowWidth);

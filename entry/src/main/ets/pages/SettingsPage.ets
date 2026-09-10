@@ -49,6 +49,7 @@ struct SettingsPage {
   @State hideDelay: number = 250;
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  @State touchHighRate: boolean = false;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
   @State resolutionAuto: boolean = true;
@@ -106,6 +107,7 @@ struct SettingsPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
     this.pinchZoomSpeed = settings.pinchZoomSpeed;
+    this.touchHighRate = settings.touchHighRate;
     this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
     this.manualWidthText = this.sizeText(settings.manualWidth);
@@ -178,6 +180,7 @@ struct SettingsPage {
     settings.toolbarHideDelay = this.hideDelay;
     settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
     settings.pinchZoomSpeed = this.pinchZoomSpeed;
+    settings.touchHighRate = this.touchHighRate;
     settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
     settings.manualWidth =
@@ -211,6 +214,7 @@ struct SettingsPage {
     this.hideDelay = defaults.toolbarHideDelay;
     this.touchpadScrollSpeed = defaults.touchpadScrollSpeed;
     this.pinchZoomSpeed = defaults.pinchZoomSpeed;
+    this.touchHighRate = defaults.touchHighRate;
     this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
@@ -564,6 +568,25 @@ struct SettingsPage {
               precision: 1,
               onChange: (v: number) => {
                 this.pinchZoomSpeed = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            Text('触屏')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            this.toggleItem({
+              title: '高刷新率（实验）',
+              subtitle: '解除 RDPEI 50Hz 合并，按输入帧率上报触点；可能增加带宽',
+              value: this.touchHighRate,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.touchHighRate = v;
                 this.persist();
               }
             })

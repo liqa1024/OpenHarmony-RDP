@@ -146,6 +146,8 @@ export class RdpTouchFlags {
   static readonly DOWN: number = 0x01;
   static readonly UP: number = 0x02;
   static readonly MOTION: number = 0x04;
+  // FreeRDP keeps pressure only when this bit is set (FREERDP_TOUCH_HAS_PRESSURE).
+  static readonly HAS_PRESSURE: number = 0x100;
 }
 
 export class SavedConnection extends RdpConnectOptions {

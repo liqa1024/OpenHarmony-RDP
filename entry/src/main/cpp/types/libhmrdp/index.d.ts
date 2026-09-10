@@ -44,3 +44,10 @@ export const onEvent: (callback: RdpEventCallback) => void;
  * library is unavailable, so remote audio is disabled gracefully.
  */
 export const isAudioSupported: () => boolean;
+
+/**
+ * Process-global RDPEI frame pacing. When true, touch contacts are forwarded at
+ * the full input rate instead of FreeRDP's default ~20ms (50Hz) coalescing.
+ * Requires the patched FreeRDP build; returns false if the hook is absent.
+ */
+export const setTouchHighRate: (enabled: boolean) => boolean;

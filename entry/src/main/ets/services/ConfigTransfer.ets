@@ -311,6 +311,8 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
     settings.pinchZoomSpeed =
       ConfigTransfer.readNumber(rec, 'pinchZoomSpeed', settings.pinchZoomSpeed);
+    settings.touchHighRate =
+      ConfigTransfer.readBoolean(rec, 'touchHighRate', settings.touchHighRate);
     settings.mainWindowSizeEnabled =
       ConfigTransfer.readBoolean(rec, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
     settings.mainWindowWidth =

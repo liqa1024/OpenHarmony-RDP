@@ -126,6 +126,7 @@ struct SessionPage {
     this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
     this.pinchZoomSpeed =
       Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, settings.pinchZoomSpeed));
+    RdpNative.applyTouchHighRate(settings.touchHighRate);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
@@ -386,6 +387,13 @@ struct SessionPage {
   }
 
   private handleMouse(event: MouseEvent): void {
+    // A touchscreen can also emit compatibility mouse events; those are owned by
+    // handleTouch. Forward only real mouse / touchpad mouse input here so the
+    // remote never sees two input streams for one finger (which shows up as
+    // stray clicks during a drag).
+    if (event.source === SourceType.TouchScreen) {
+      return;
+    }
     this.updateToolbar(event.y);
     const point: number[] = this.mapPointer(event.x, event.y);
     const remoteX: number = point[0];
@@ -422,14 +430,18 @@ struct SessionPage {
       const rdpId: number = touch.id + 1;
       const point: number[] = this.mapPointer(touch.x, touch.y);
       const type: TouchType = touch.type;
+      const pressure: number = this.mapPressure(touch.pressure);
+      const pressureFlag: number = pressure > 0 ? RdpTouchFlags.HAS_PRESSURE : 0;
       if (type === TouchType.Down) {
-        // A down for an already-active contact means the previous sequence was
-        // lost; close it first so RDPEI stays well formed.
+        // A Down for an already-active contact is a retransmission or a
+        // component re-entry. Closing and re-opening the contact would make the
+        // remote see a release followed by a fresh press, i.e. a spurious
+        // click, so the existing contact is kept instead.
         if (this.touchPoints.has(touch.id)) {
-          this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
+          continue;
         }
         this.touchPoints.set(touch.id, point);
-        this.native.touch(RdpTouchFlags.DOWN, rdpId, 0, point[0], point[1]);
+        this.native.touch(RdpTouchFlags.DOWN | pressureFlag, rdpId, pressure, point[0], point[1]);
       } else if (type === TouchType.Move) {
         const last: number[] | undefined = this.touchPoints.get(touch.id);
         // Drop moves for unknown contacts and moves that did not change the
@@ -442,18 +454,29 @@ struct SessionPage {
           continue;
         }
         this.touchPoints.set(touch.id, point);
-        this.native.touch(RdpTouchFlags.MOTION, rdpId, 0, point[0], point[1]);
+        this.native.touch(RdpTouchFlags.MOTION | pressureFlag, rdpId, pressure, point[0], point[1]);
       } else if (type === TouchType.Up || type === TouchType.Cancel) {
         if (!this.touchPoints.has(touch.id)) {
           continue;
         }
         this.touchPoints.delete(touch.id);
-        this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
+        this.native.touch(RdpTouchFlags.UP | pressureFlag, rdpId, pressure, point[0], point[1]);
       }
     }
     if (event.type === TouchType.Cancel && event.touches.length === 0) {
       this.releaseAllTouches();
     }
+  }
+
+  /**
+   * ArkUI reports contact pressure in [0, 65535); RDPEI expects [0, 1024].
+   * Zero means the device did not report pressure, so it is not forwarded.
+   */
+  private mapPressure(pressure: number | undefined): number {
+    if (pressure === undefined || pressure <= 0) {
+      return 0;
+    }
+    return Math.max(1, Math.min(1024, Math.round(pressure / 65535 * 1024)));
   }
 
   private releaseAllTouches(): void {

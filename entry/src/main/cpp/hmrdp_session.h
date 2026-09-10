@@ -82,6 +82,12 @@ class Session {
   bool SendKey(uint8_t scancode, bool down, bool extended);
   bool SendUnicode(uint16_t codepoint, bool down);
 
+  // Process-global RDPEI frame pacing. When enabled, touch contacts are sent at
+  // the full input rate instead of the upstream ~20ms (50Hz) coalescing. No-op
+  // unless FreeRDP was built with the rdpei interval patch
+  // (native/scripts/patch-freerdp.ps1).
+  static void SetTouchHighRate(bool enabled);
+
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);

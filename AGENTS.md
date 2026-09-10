@@ -74,7 +74,7 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 ## 原生库源码构建（可选；预编译库已提交）
 
 ```
-native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME）
+native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调）
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
@@ -144,7 +144,15 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    错误经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
 10. **输入分流**：鼠标→`onMouse`、真触屏→`onTouch`（RDPEI 触屏）、滚轮/触控板→`onAxisEvent`；用
     `event.source === SourceType.TouchScreen` 区分真触屏与鼠标转成的触摸，避免点击变拖动。触屏手指
-    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触控板双指滑动靠
+    id 要 `+1`（FreeRDP 用 `id == 0` 表示空槽）。触屏还有两条硬性约束：①`handleMouse` 过滤
+    `source===TouchScreen` 的兼容鼠标事件，避免一次触摸走两条通路产生杂点击；②重复 `TouchType.Down`
+    **忽略**而不是补发 UP+DOWN，否则远端会看到"松开+重按"而冒出单击。接触压力按
+    `RdpTouchFlags.HAS_PRESSURE` 透传（ArkUI `[0,65535)` → RDPEI `[0,1024]`，0 表示设备未上报）。
+    FreeRDP 侧 `rdpei` 每 **20ms** 才发一帧且同一接触点会被覆盖合并，故触屏实际上限约 50fps（这是
+    RDPEI 触屏与 mstsc 的主要差距）。`patch-freerdp.ps1` 第 6 步把该间隔改成运行时全局
+    `HmrdpSetTouchFrameInterval`；`libhmrdp` 以**弱符号**引用它，全局设置「触屏-高刷新率」开启时传 0
+    （逐帧下发，默认关闭传 20 保持上游行为）。未打补丁的 FreeRDP 上弱符号为空、开关自动降级为无效。
+    改动后需重编 FreeRDP 并回写 `entry/libs/<abi>/*.so`。触控板双指滑动靠
     `event.sourceTool === SourceTool.TOUCHPAD` 区分（其 `axisVertical/axisHorizontal` 是**本次事件的 vp
     位移**而非轮齿，`sourceType` 为 Unknown）：`services/TouchpadWheel.ets` 的 `TouchpadWheelMapper`
     按 `120 / 16vp × 速度倍率` 把位移累加成**高分辨率 RDP 轮转量**（9bit 二补码、120=1 齿、单事件

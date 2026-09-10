@@ -7,7 +7,7 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
-  sendUnicode, setClipboardText, setSurface, updateSurface,
+  sendUnicode, setClipboardText, setSurface, setTouchHighRate, updateSurface,
   RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -43,6 +43,15 @@ export class RdpNative {
   /** Returns the instance registered for a session key, if any. */
   static findByKey(key: string): RdpNative | undefined {
     return byKey.get(key);
+  }
+
+  /**
+   * Process-global RDPEI pacing: forward touch contacts at the full input rate
+   * instead of FreeRDP's 20ms (50Hz) coalescing. No-op unless the linked
+   * FreeRDP carries the rdpei interval patch.
+   */
+  static applyTouchHighRate(enabled: boolean): void {
+    setTouchHighRate(enabled);
   }
 
   setListener(listener: RdpEventListener): void {
