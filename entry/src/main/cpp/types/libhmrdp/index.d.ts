@@ -36,8 +36,5 @@ export const sendTouch: (handle: number, flags: number, finger: number, pressure
   x: number, y: number) => boolean;
 export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
 export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
-export const enableKeyCapture: (handle: number, windowId: number,
-  substituteKeyCode: number) => boolean;
-export const disableKeyCapture: (handle: number) => void;
 export const setClipboardText: (handle: number, text: string) => boolean;
 export const onEvent: (callback: RdpEventCallback) => void;

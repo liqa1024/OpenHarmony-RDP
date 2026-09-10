@@ -6,7 +6,6 @@
  * routed back to the owning instance.
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
-  disableKeyCapture, enableKeyCapture,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardText, setSurface, updateSurface,
   RdpEventCallback } from 'libhmrdp.so';
@@ -130,21 +129,12 @@ export class RdpNative {
   }
 
   /**
-   * Starts the window-level key filter for this session's window. Mapped keys
-   * are forwarded natively and consumed before ArkUI dispatches them; unmapped
-   * keys fall through to the ArkTS handler. Returns false when the filter could
-   * not be registered.
+   * Sends a Win/Meta key event. Used by the configurable "Win key substitute":
+   * a normal key that reaches onKeyEvent is remapped to Win.
    */
-  startKeyCapture(windowId: number, substituteKeyCode: number): boolean {
-    if (this.handle < 0) {
-      return false;
-    }
-    return enableKeyCapture(this.handle, windowId, substituteKeyCode);
-  }
-
-  stopKeyCapture(): void {
+  winKey(down: boolean): void {
     if (this.handle >= 0) {
-      disableKeyCapture(this.handle);
+      sendKey(this.handle, 0x5B, down, true);
     }
   }
 

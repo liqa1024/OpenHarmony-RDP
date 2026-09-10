@@ -112,10 +112,8 @@ struct SessionPage {
       hilog.warn(DOMAIN, TAG, 'paste authorization failed');
       this.toast('未获得剪贴板授权');
     };
-  // Window-level key passthrough: mapped keys are forwarded natively and
-  // consumed before ArkUI dispatches them; unmapped keys keep using the ArkTS
-  // handler below.
-  private keyboardShortcutPassthrough: boolean = true;
+  // KeyCode the user remapped to Win/Meta for the remote (0 = disabled). Lets
+  // Win combinations work even though the shell keeps the real Win key.
   private winKeySubstitute: number = 0;
 
   aboutToAppear(): void {
@@ -125,7 +123,6 @@ struct SessionPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
-    this.keyboardShortcutPassthrough = settings.keyboardShortcutPassthrough;
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
@@ -173,7 +170,6 @@ struct SessionPage {
     }
     this.releaseAllTouches();
     this.endPinch();
-    this.stopKeyCapture();
     this.native.stopSession();
     this.options.password = '';
     this.options.gatewayPassword = '';
@@ -619,6 +615,15 @@ struct SessionPage {
 
   private handleKey(event: KeyEvent): void {
     const down: boolean = event.type === KeyType.Down;
+    // The real Win key is owned by the system, so it is never forwarded;
+    // Win for the remote is produced by the configurable substitute key.
+    if (event.keyCode === 2076 || event.keyCode === 2077) {
+      return;
+    }
+    if (this.winKeySubstitute !== 0 && event.keyCode === this.winKeySubstitute) {
+      this.native.winKey(down);
+      return;
+    }
     const scan: RdpScanCode | undefined = KeyMapper.map(event.keyCode);
     if (scan !== undefined) {
       this.native.key(scan.scancode, down, scan.extended);
@@ -644,42 +649,9 @@ struct SessionPage {
       win.on('windowStatusChange', (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
       });
-      this.setupKeyCapture(win);
     }).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
     });
-  }
-
-  /**
-   * When passthrough is enabled, install the window-level key filter while this
-   * window is focused and remove it on blur so the app's other windows keep
-   * normal keyboard behaviour. Keys the filter handles are consumed before they
-   * reach ArkUI, so the ArkTS handler only sees the rest.
-   */
-  private setupKeyCapture(win: window.Window): void {
-    if (!this.keyboardShortcutPassthrough) {
-      return;
-    }
-    let windowId: number = -1;
-    try {
-      windowId = win.getWindowProperties().id;
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'get window id failed: %{public}s', JSON.stringify(error));
-    }
-    win.on('windowEvent', (event: window.WindowEventType) => {
-      if (event === window.WindowEventType.WINDOW_ACTIVE) {
-        this.native.startKeyCapture(windowId, this.winKeySubstitute);
-      } else if (event === window.WindowEventType.WINDOW_INACTIVE) {
-        this.native.stopKeyCapture();
-      }
-    });
-    // The window is already on top when the page loads, so enable immediately
-    // instead of waiting for a WINDOW_ACTIVE event that has already fired.
-    this.native.startKeyCapture(windowId, this.winKeySubstitute);
-  }
-
-  private stopKeyCapture(): void {
-    this.native.stopKeyCapture();
   }
 
   private minimizeWindow(): void {
@@ -710,7 +682,6 @@ struct SessionPage {
   }
 
   private disconnect(): void {
-    this.stopKeyCapture();
     if (this.connectionId.length > 0) {
       // The manager stops the session and invokes our close callback, which
       // terminates this window; the list row goes back to idle.

@@ -86,4 +86,57 @@ export class KeyMapper {
       default: return undefined;
     }
   }
+
+  /** Human-readable name of a multimodal KeyCode, for display in settings. */
+  static describe(keyCode: number): string {
+    if (keyCode >= KEYCODE_0 && keyCode <= KEYCODE_9) {
+      return (keyCode - KEYCODE_0).toString();
+    }
+    if (keyCode >= KEYCODE_A && keyCode <= KEYCODE_Z) {
+      return String.fromCharCode(65 + (keyCode - KEYCODE_A));
+    }
+    if (keyCode >= 2090 && keyCode <= 2101) {
+      return 'F' + (keyCode - 2089).toString();
+    }
+    switch (keyCode) {
+      case 2012: return '方向键 上';
+      case 2013: return '方向键 下';
+      case 2014: return '方向键 左';
+      case 2015: return '方向键 右';
+      case 2043: return ',';
+      case 2044: return '.';
+      case 2045: return '左 Alt';
+      case 2046: return '右 Alt';
+      case 2047: return '左 Shift';
+      case 2048: return '右 Shift';
+      case 2049: return 'Tab';
+      case 2050: return '空格';
+      case 2054: return '回车';
+      case 2055: return '退格';
+      case 2056: return '`';
+      case 2057: return '-';
+      case 2058: return '=';
+      case 2059: return '[';
+      case 2060: return ']';
+      case 2061: return '\\';
+      case 2062: return ';';
+      case 2063: return '\'';
+      case 2064: return '/';
+      case 2067: return '菜单键';
+      case 2068: return 'Page Up';
+      case 2069: return 'Page Down';
+      case 2070: return 'Esc';
+      case 2071: return 'Delete';
+      case 2072: return '左 Ctrl';
+      case 2073: return '右 Ctrl';
+      case 2074: return 'Caps Lock';
+      case 2075: return 'Scroll Lock';
+      case 2076: return '左 Win';
+      case 2077: return '右 Win';
+      case 2081: return 'Home';
+      case 2082: return 'End';
+      case 2083: return 'Insert';
+      default: return '按键 ' + keyCode.toString();
+    }
+  }
 }

@@ -8,15 +8,12 @@
  */
 #include <native_window/external_window.h>
 #include <napi/native_api.h>
-#include <multimodalinput/oh_input_manager.h>
-#include <window_manager/oh_window_event_filter.h>
 
 #include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 
 #include "hmrdp_log.h"
@@ -98,250 +95,6 @@ void SecureErase(std::string& value) {
     }
   }
   value.clear();
-}
-
-// --- Keyboard shortcut passthrough ---------------------------------------
-// Window-level key filter only, no system_basic permission. Controlled solely
-// by the "keyboardShortcutPassthrough" setting: while it is on and a session
-// window is focused, every key event the filter receives is mapped and
-// forwarded to the remote — nothing is deliberately held back. Keys the shell
-// consumes before they ever reach the window (typically Meta/Win) simply cannot
-// be captured this way; for those, winKeySubstitute lets one ordinary key be
-// sent as Win instead.
-
-std::mutex g_captureMutex;
-bool g_captureActive = false;
-int64_t g_captureHandle = 0;
-int32_t g_captureWindowId = 0;
-// KeyCode remapped to Win/Meta for the remote (0 = disabled).
-int32_t g_substituteKeyCode = 0;
-// Keys currently held down, encoded by PackKey(). Released when capture stops
-// so a key-up swallowed by a focus change cannot leave a modifier stuck remote.
-std::set<uint16_t> g_pressedKeys;
-
-// Maps a HarmonyOS multimodal KeyCode to a PS/2 set-1 scancode. Mirrors
-// entry/src/main/ets/utils/KeyMapper.ets; keep both tables in sync.
-bool MapKeyCode(int32_t keyCode, uint8_t& scancode, bool& extended) {
-  static const uint8_t kDigitScan[10] = {0x0B, 0x02, 0x03, 0x04, 0x05,
-                                         0x06, 0x07, 0x08, 0x09, 0x0A};
-  static const uint8_t kLetterScan[26] = {
-      0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,
-      0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C};
-  if (keyCode >= 2000 && keyCode <= 2009) {
-    scancode = kDigitScan[keyCode - 2000];
-    extended = false;
-    return true;
-  }
-  if (keyCode >= 2017 && keyCode <= 2042) {
-    scancode = kLetterScan[keyCode - 2017];
-    extended = false;
-    return true;
-  }
-  uint8_t scan = 0;
-  bool ext = false;
-  switch (keyCode) {
-    case 2012: scan = 0x48; ext = true; break;   // DPAD_UP
-    case 2013: scan = 0x50; ext = true; break;   // DPAD_DOWN
-    case 2014: scan = 0x4B; ext = true; break;   // DPAD_LEFT
-    case 2015: scan = 0x4D; ext = true; break;   // DPAD_RIGHT
-    case 2043: scan = 0x33; break;               // comma
-    case 2044: scan = 0x34; break;               // period
-    case 2045: scan = 0x38; break;               // alt left
-    case 2046: scan = 0x38; ext = true; break;   // alt right
-    case 2047: scan = 0x2A; break;               // shift left
-    case 2048: scan = 0x36; break;               // shift right
-    case 2049: scan = 0x0F; break;               // tab
-    case 2050: scan = 0x39; break;               // space
-    case 2054: scan = 0x1C; break;               // enter
-    case 2055: scan = 0x0E; break;               // backspace
-    case 2056: scan = 0x29; break;               // grave
-    case 2057: scan = 0x0C; break;               // minus
-    case 2058: scan = 0x0D; break;               // equals
-    case 2059: scan = 0x1A; break;               // left bracket
-    case 2060: scan = 0x1B; break;               // right bracket
-    case 2061: scan = 0x2B; break;               // backslash
-    case 2062: scan = 0x27; break;               // semicolon
-    case 2063: scan = 0x28; break;               // apostrophe
-    case 2064: scan = 0x35; break;               // slash
-    case 2067: scan = 0x5D; ext = true; break;   // menu
-    case 2068: scan = 0x49; ext = true; break;   // page up
-    case 2069: scan = 0x51; ext = true; break;   // page down
-    case 2070: scan = 0x01; break;               // escape
-    case 2071: scan = 0x53; ext = true; break;   // forward delete
-    case 2072: scan = 0x1D; break;               // ctrl left
-    case 2073: scan = 0x1D; ext = true; break;   // ctrl right
-    case 2074: scan = 0x3A; break;               // caps lock
-    case 2075: scan = 0x46; break;               // scroll lock
-    case 2076: scan = 0x5B; ext = true; break;   // meta left
-    case 2077: scan = 0x5C; ext = true; break;   // meta right
-    case 2081: scan = 0x47; ext = true; break;   // home
-    case 2082: scan = 0x4F; ext = true; break;   // end
-    case 2083: scan = 0x52; ext = true; break;   // insert
-    case 2090: scan = 0x3B; break;               // F1
-    case 2091: scan = 0x3C; break;
-    case 2092: scan = 0x3D; break;
-    case 2093: scan = 0x3E; break;
-    case 2094: scan = 0x3F; break;
-    case 2095: scan = 0x40; break;
-    case 2096: scan = 0x41; break;
-    case 2097: scan = 0x42; break;
-    case 2098: scan = 0x43; break;
-    case 2099: scan = 0x44; break;
-    case 2100: scan = 0x57; break;               // F11
-    case 2101: scan = 0x58; break;               // F12
-    default: return false;
-  }
-  scancode = scan;
-  extended = ext;
-  return true;
-}
-
-// Encodes a scancode + extended flag so it can be tracked in a set.
-uint16_t PackKey(uint8_t scancode, bool extended) {
-  return static_cast<uint16_t>(scancode) | (extended ? 0x100u : 0u);
-}
-
-// Sends a key-release for a tracked pressed key to the owning session.
-void ReleaseKey(int64_t handle, uint16_t packed) {
-  Session* session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
-  if (session != nullptr) {
-    session->SendKey(static_cast<uint8_t>(packed & 0xFFu), false, (packed & 0x100u) != 0);
-  }
-}
-
-// Forwards one filtered key event to the owning session. Returns true when the
-// event was handled, so the window filter consumes it instead of letting ArkUI
-// dispatch it (keys not in the map fall through to the ArkTS handler).
-bool HandleCapturedKey(const Input_KeyEvent* event) {
-  int64_t handle = 0;
-  {
-    std::lock_guard<std::mutex> lock(g_captureMutex);
-    handle = g_captureHandle;
-  }
-  if (handle == 0) {
-    return false;
-  }
-  const int32_t action = OH_Input_GetKeyEventAction(event);
-  // A cancelled key sequence has no matching up events: release everything.
-  if (action == KEY_ACTION_CANCEL) {
-    std::set<uint16_t> pressed;
-    {
-      std::lock_guard<std::mutex> lock(g_captureMutex);
-      pressed.swap(g_pressedKeys);
-    }
-    for (const uint16_t packed : pressed) {
-      ReleaseKey(handle, packed);
-    }
-    return true;
-  }
-  const int32_t keyCode = OH_Input_GetKeyEventKeyCode(event);
-  uint8_t scancode = 0;
-  bool extended = false;
-  {
-    std::lock_guard<std::mutex> lock(g_captureMutex);
-    // The user can remap one ordinary key (e.g. right Alt) to Win so that Win
-    // combinations still work even though the shell keeps the real Win key.
-    if (g_substituteKeyCode != 0 && keyCode == g_substituteKeyCode) {
-      scancode = 0x5B;
-      extended = true;
-    }
-  }
-  if (scancode == 0 && !MapKeyCode(keyCode, scancode, extended)) {
-    return false;
-  }
-  const bool down = action == KEY_ACTION_DOWN;
-  const uint16_t packed = PackKey(scancode, extended);
-  {
-    std::lock_guard<std::mutex> lock(g_captureMutex);
-    if (down) {
-      g_pressedKeys.insert(packed);
-    } else {
-      g_pressedKeys.erase(packed);
-    }
-  }
-  Session* session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
-  if (session != nullptr) {
-    session->SendKey(scancode, down, extended);
-  }
-  return true;
-}
-
-bool OnKeyFilter(Input_KeyEvent* event) {
-  return HandleCapturedKey(event);
-}
-
-// Enables the per-window key filter. Returns false when it cannot be
-// registered, so ArkTS keeps handling keys itself.
-bool EnableKeyCapture(int64_t handle, int32_t windowId, int32_t substituteKeyCode) {
-  if (windowId <= 0) {
-    return false;
-  }
-  int64_t previousOwner = 0;
-  std::set<uint16_t> previousPressed;
-  {
-    std::lock_guard<std::mutex> lock(g_captureMutex);
-    if (g_captureActive && g_captureWindowId != windowId) {
-      OH_NativeWindowManager_UnregisterKeyEventFilter(g_captureWindowId);
-      g_captureActive = false;
-    }
-    if (!g_captureActive) {
-      if (OH_NativeWindowManager_RegisterKeyEventFilter(windowId, OnKeyFilter) != OK) {
-        HMRDP_LOGW("key capture: register window filter failed id=%{public}d", windowId);
-        return false;
-      }
-      g_captureActive = true;
-      HMRDP_LOGI("key capture: window filter active id=%{public}d", windowId);
-    }
-    if (g_captureHandle != 0 && g_captureHandle != handle) {
-      previousOwner = g_captureHandle;
-      previousPressed.swap(g_pressedKeys);
-    }
-    g_substituteKeyCode = substituteKeyCode;
-    g_captureHandle = handle;
-    g_captureWindowId = windowId;
-  }
-  // Release keys still held by a previous owner before handing over.
-  for (const uint16_t packed : previousPressed) {
-    ReleaseKey(previousOwner, packed);
-  }
-  return true;
-}
-
-// Disables capture only when the given session is the active owner, so a
-// window that loses focus after another gained it cannot clear the new owner.
-void DisableKeyCapture(int64_t handle) {
-  int64_t owner = 0;
-  std::set<uint16_t> pressed;
-  {
-    std::lock_guard<std::mutex> lock(g_captureMutex);
-    if (g_captureHandle != handle) {
-      return;
-    }
-    owner = g_captureHandle;
-    pressed.swap(g_pressedKeys);
-    if (g_captureActive && g_captureWindowId > 0) {
-      OH_NativeWindowManager_UnregisterKeyEventFilter(g_captureWindowId);
-    }
-    g_captureActive = false;
-    g_captureHandle = 0;
-    g_captureWindowId = 0;
-    g_substituteKeyCode = 0;
-  }
-  if (!pressed.empty()) {
-    HMRDP_LOGI("key capture: releasing %{public}d held key(s)",
-               static_cast<int>(pressed.size()));
-  }
-  for (const uint16_t packed : pressed) {
-    ReleaseKey(owner, packed);
-  }
 }
 
 std::string GetStringProperty(napi_env env, napi_value object, const char* name) {
@@ -430,7 +183,6 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  DisableKeyCapture(handle);
   std::unique_ptr<Session> session;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -505,7 +257,6 @@ napi_value Disconnect(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  DisableKeyCapture(handle);
   Session* session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -701,33 +452,6 @@ napi_value SendUnicode(napi_env env, napi_callback_info info) {
                     session->SendUnicode(static_cast<uint16_t>(codepoint), down));
 }
 
-napi_value EnableKeyCaptureNapi(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value args[3] = {nullptr, nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int64_t handle = 0;
-  int32_t windowId = 0;
-  int32_t substituteKeyCode = 0;
-  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
-      napi_get_value_int32(env, args[1], &windowId) != napi_ok ||
-      napi_get_value_int32(env, args[2], &substituteKeyCode) != napi_ok) {
-    return CreateBool(env, false);
-  }
-  return CreateBool(env, EnableKeyCapture(handle, windowId, substituteKeyCode));
-}
-
-napi_value DisableKeyCaptureNapi(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int64_t handle = 0;
-  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
-    return CreateUndefined(env);
-  }
-  DisableKeyCapture(handle);
-  return CreateUndefined(env);
-}
-
 napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -798,10 +522,6 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"sendKey", nullptr, SendKey, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"enableKeyCapture", nullptr, EnableKeyCaptureNapi, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"disableKeyCapture", nullptr, DisableKeyCaptureNapi, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},

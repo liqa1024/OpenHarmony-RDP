@@ -34,8 +34,6 @@ target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
     native_window
-    native_window_manager
-    ohinput
     EGL
     GLESv3
     ${FREERDP_LIBS}/libfreerdp3.so
