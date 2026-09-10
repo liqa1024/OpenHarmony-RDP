@@ -10,7 +10,8 @@ import { PendingConnection, RdpConnectOptions, RdpConnectionState,
 import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
-import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT } from '../services/TouchpadWheel';
+import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
+  MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 
@@ -91,7 +92,7 @@ struct SessionPage {
   private pinchActive: boolean = false;
   private pinchCtrlDown: boolean = false;
   private pinchTimer: number = -1;
-  private pinchZoomStepPercent: number = 5;
+  private pinchZoomSpeed: number = 1;
   private readonly ctrlScancode: number = 0x1D;
   private sessionWindow: window.Window | undefined = undefined;
   // Clipboard redirection is manual, driven by the toolbar. The remote
@@ -122,8 +123,9 @@ struct SessionPage {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
-    this.touchpadWheel.setSpeedPercent(settings.touchpadScrollSpeedPercent);
-    this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
+    this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
+    this.pinchZoomSpeed =
+      Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, settings.pinchZoomSpeed));
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
@@ -541,11 +543,13 @@ struct SessionPage {
     }
     // Linear distance mapping. axisPinch is the ratio of the current distance to
     // the initial one, so (scale - previous) is directly proportional to the
-    // distance the fingers moved. One notch per configured percentage of that
-    // distance; no logarithmic ratio and no sensitivity multiplier.
+    // distance the fingers moved. The step is derived from the configured zoom
+    // speed: one notch per 1 / (baseNotchesPerUnit * speed) of that ratio, so a
+    // larger speed emits more notches for the same pinch (faster zoom).
     this.pinchAccum += scale - this.pinchScale;
     this.pinchScale = scale;
-    const step: number = this.pinchZoomStepPercent / 100;
+    const notchesPerUnit: number = DEFAULT_PINCH_NOTCHES_PER_UNIT * this.pinchZoomSpeed;
+    const step: number = notchesPerUnit > 0 ? 1 / notchesPerUnit : 0;
     if (step <= 0) {
       return;
     }

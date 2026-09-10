@@ -14,7 +14,7 @@
  *
  *   rotation += displacementVp * (WHEEL_DETENT / VP_PER_DETENT) * speed
  *
- * VP_PER_DETENT is the finger travel equivalent to one detent at 100% speed, so
+ * VP_PER_DETENT is the finger travel equivalent to one detent at 1.0x speed, so
  * the speed setting scales how much rotation a swipe produces without touching
  * the emission granularity. Fractional rotation is carried across events (no
  * rounding loss) and only integer chunks leave the mapper.
@@ -24,13 +24,17 @@
 export const WHEEL_DETENT: number = 120;
 // Largest rotation a single RDP pointer event can carry (9-bit wheel field).
 const WHEEL_MAX_CHUNK: number = 0xFF;
-// Finger travel (vp) that maps to one full detent at 100% speed. Matches the
+// Finger travel (vp) that maps to one full detent at 1.0x speed. Matches the
 // feel of the previous fixed step while leaving room to tune either way.
 export const VP_PER_DETENT: number = 16;
 
-export const MIN_SCROLL_SPEED_PERCENT: number = 25;
-export const MAX_SCROLL_SPEED_PERCENT: number = 400;
-export const DEFAULT_SCROLL_SPEED_PERCENT: number = 100;
+// Shared speed bounds for the touchpad gesture settings (1.0x = baseline).
+export const MIN_SPEED_SCALE: number = 0.2;
+export const MAX_SPEED_SCALE: number = 4;
+export const DEFAULT_SPEED_SCALE: number = 1;
+// Pinch detents emitted per unit change of the two-finger distance ratio at
+// 1.0x speed; larger speed emits more detents for the same pinch (faster zoom).
+export const DEFAULT_PINCH_NOTCHES_PER_UNIT: number = 20;
 
 /** One RDP wheel event produced by the mapper. */
 export class WheelChunk {
@@ -48,10 +52,8 @@ export class TouchpadWheelMapper {
   private accumX: number = 0;
   private accumY: number = 0;
 
-  setSpeedPercent(percent: number): void {
-    const clamped: number =
-      Math.max(MIN_SCROLL_SPEED_PERCENT, Math.min(MAX_SCROLL_SPEED_PERCENT, percent));
-    this.speedScale = clamped / 100;
+  setSpeed(scale: number): void {
+    this.speedScale = Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, scale));
   }
 
   /** Drops any pending sub-chunk remainder (call when a gesture starts). */

@@ -7,8 +7,7 @@ import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
-import { DEFAULT_SCROLL_SPEED_PERCENT, MAX_SCROLL_SPEED_PERCENT,
-  MIN_SCROLL_SPEED_PERCENT } from '../services/TouchpadWheel';
+import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
 
 // Remote desktop sizes are not limited to the local screen, so manual
@@ -25,6 +24,8 @@ class SliderItemConfig {
   max: number = 100;
   step: number = 1;
   unit: string = '';
+  // Decimal places used to display the value and to snap slider output.
+  precision: number = 0;
   onChange: (v: number) => void = (v: number) => {};
 }
 
@@ -46,8 +47,8 @@ class ToggleItemConfig {
 struct SettingsPage {
   @State hoverDelay: number = 700;
   @State hideDelay: number = 250;
-  @State touchpadScrollSpeed: number = DEFAULT_SCROLL_SPEED_PERCENT;
-  @State pinchZoomStep: number = 5;
+  @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
+  @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
   @State resolutionAuto: boolean = true;
@@ -103,8 +104,8 @@ struct SettingsPage {
     this.audioDisabledReason = audioCapability.reason;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
-    this.touchpadScrollSpeed = settings.touchpadScrollSpeedPercent;
-    this.pinchZoomStep = settings.pinchZoomStepPercent;
+    this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
+    this.pinchZoomSpeed = settings.pinchZoomSpeed;
     this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
     this.manualWidthText = this.sizeText(settings.manualWidth);
@@ -175,8 +176,8 @@ struct SettingsPage {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
-    settings.touchpadScrollSpeedPercent = this.touchpadScrollSpeed;
-    settings.pinchZoomStepPercent = this.pinchZoomStep;
+    settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
+    settings.pinchZoomSpeed = this.pinchZoomSpeed;
     settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
     settings.manualWidth =
@@ -208,8 +209,8 @@ struct SettingsPage {
     const defaults: AppSettings = SettingsStore.defaults();
     this.hoverDelay = defaults.toolbarHoverDelay;
     this.hideDelay = defaults.toolbarHideDelay;
-    this.touchpadScrollSpeed = defaults.touchpadScrollSpeedPercent;
-    this.pinchZoomStep = defaults.pinchZoomStepPercent;
+    this.touchpadScrollSpeed = defaults.touchpadScrollSpeed;
+    this.pinchZoomSpeed = defaults.pinchZoomSpeed;
     this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
@@ -439,7 +440,7 @@ struct SettingsPage {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Text(item.value.toString() + item.unit)
+        Text(item.value.toFixed(item.precision) + item.unit)
           .fontSize(14)
           .fontColor($r('app.color.accent'))
       }
@@ -451,7 +452,8 @@ struct SettingsPage {
         .trackColor($r('app.color.input_bg'))
         .margin({ top: 6 })
         .onChange((newValue: number, mode: SliderChangeMode) => {
-          item.onChange(Math.round(newValue));
+          const factor: number = Math.pow(10, item.precision);
+          item.onChange(Math.round(newValue * factor) / factor);
         })
     }
     .width('100%')
@@ -503,6 +505,7 @@ struct SettingsPage {
               max: 2400,
               step: 100,
               unit: ' ms',
+              precision: 0,
               onChange: (v: number) => {
                 this.hoverDelay = v;
                 this.persist();
@@ -519,6 +522,7 @@ struct SettingsPage {
               max: 1000,
               step: 50,
               unit: ' ms',
+              precision: 0,
               onChange: (v: number) => {
                 this.hideDelay = v;
                 this.persist();
@@ -534,12 +538,13 @@ struct SettingsPage {
 
             this.sliderItem({
               title: '滚动速度',
-              subtitle: '双指滑动速度；100% 与 FreeRDP 原生手感一致',
+              subtitle: '触控板双指滑动速度，1.0× 为基准',
               value: this.touchpadScrollSpeed,
-              min: MIN_SCROLL_SPEED_PERCENT,
-              max: MAX_SCROLL_SPEED_PERCENT,
-              step: 25,
-              unit: '%',
+              min: MIN_SPEED_SCALE,
+              max: MAX_SPEED_SCALE,
+              step: 0.1,
+              unit: '×',
+              precision: 1,
               onChange: (v: number) => {
                 this.touchpadScrollSpeed = v;
                 this.persist();
@@ -549,15 +554,16 @@ struct SettingsPage {
             Divider().color($r('app.color.divider'))
 
             this.sliderItem({
-              title: '捏合缩放步进',
-              subtitle: '双指距离每变化初始距离的多少发一格 Ctrl+滚轮 缩放',
-              value: this.pinchZoomStep,
-              min: 2,
-              max: 30,
-              step: 1,
-              unit: ' %',
+              title: '缩放速度',
+              subtitle: '触控板双指捏合缩放速度，越大越快，1.0× 为基准',
+              value: this.pinchZoomSpeed,
+              min: MIN_SPEED_SCALE,
+              max: MAX_SPEED_SCALE,
+              step: 0.1,
+              unit: '×',
+              precision: 1,
               onChange: (v: number) => {
-                this.pinchZoomStep = v;
+                this.pinchZoomSpeed = v;
                 this.persist();
               }
             })
