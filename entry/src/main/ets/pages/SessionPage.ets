@@ -8,7 +8,6 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
-import { ClipboardSync } from '../services/ClipboardSync';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -94,15 +93,25 @@ struct SessionPage {
   private readonly pinchSensitivity: number = 2;
   private readonly ctrlScancode: number = 0x1D;
   private sessionWindow: window.Window | undefined = undefined;
-  private toolbarInWindowed: boolean = false;
-  // Clipboard redirection. Remote-to-local writes the pasteboard directly;
-  // local-to-remote watches the system pasteboard for changes and pushes them
-  // to the session (requires READ_PASTEBOARD).
+  // Clipboard redirection is manual, driven by the toolbar. The remote
+  // clipboard is cached when the server offers it; "复制" pulls it to the local
+  // clipboard and "粘贴" (system paste control, no READ_PASTEBOARD) pushes the
+  // local clipboard to the remote.
   private clipboardEnabled: boolean = true;
-  // Serializes pasteboard writes: the pasteboard service rejects concurrent
-  // copy operations with error 27787277.
+  private remoteClipboardText: string = '';
   private pasteboardBusy: boolean = false;
-  private pendingRemoteText: string = '';
+
+  // The system paste control grants a one-time clipboard read without the
+  // READ_PASTEBOARD permission; on success we push the text to the remote.
+  private pasteButtonCallback: PasteButtonCallback =
+    (event: ClickEvent, result: PasteButtonOnClickResult): void => {
+      if (result === PasteButtonOnClickResult.SUCCESS) {
+        this.submitClipboard();
+        return;
+      }
+      hilog.warn(DOMAIN, TAG, 'paste authorization failed');
+      this.toast('未获得剪贴板授权');
+    };
   // Window-level key passthrough: mapped keys are forwarded natively and
   // consumed before ArkUI dispatches them; unmapped keys keep using the ArkTS
   // handler below.
@@ -118,7 +127,6 @@ struct SessionPage {
     this.pinchZoomStepPercent = settings.pinchZoomStepPercent;
     this.keyboardShortcutPassthrough = settings.keyboardShortcutPassthrough;
     this.winKeySubstitute = settings.winKeySubstitute;
-    this.toolbarInWindowed = settings.toolbarInWindowed;
     this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
     this.desktopHeight = this.options.height;
@@ -152,7 +160,6 @@ struct SessionPage {
       });
       this.startSession();
     }
-    this.startClipboardSync();
   }
 
   aboutToDisappear(): void {
@@ -166,7 +173,6 @@ struct SessionPage {
     }
     this.releaseAllTouches();
     this.endPinch();
-    this.stopClipboardSync();
     this.stopKeyCapture();
     this.native.stopSession();
     this.options.password = '';
@@ -258,63 +264,69 @@ struct SessionPage {
       }
     } else if (event === RdpEvent.ClipboardText) {
       hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', data.length);
-      this.applyRemoteClipboard(data);
+      this.remoteClipboardText = data;
     }
   }
 
-  private startClipboardSync(): void {
-    if (!this.clipboardEnabled) {
+  /** Local clipboard -> remote, invoked by the toolbar's system paste button. */
+  private submitClipboard(): void {
+    pasteboard.getSystemPasteboard().getData()
+      .then((data: pasteboard.PasteData) => {
+        let text: string = '';
+        try {
+          text = data.getPrimaryText();
+        } catch (error) {
+          text = '';
+        }
+        if (text.length === 0) {
+          this.toast('本机剪贴板为空');
+          return;
+        }
+        this.native.setClipboard(text);
+        this.toast('已提交到远端');
+      })
+      .catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'read pasteboard failed: %{public}s', JSON.stringify(error));
+        this.toast('读取本机剪贴板失败');
+      });
+  }
+
+  /** Remote clipboard -> local, invoked by the toolbar's pull button. */
+  private pullClipboard(): void {
+    if (this.remoteClipboardText.length === 0) {
+      this.toast('远端剪贴板为空');
       return;
     }
-    ClipboardSync.start(this.sessionKey, (text: string): void => {
-      this.native.setClipboard(text);
-    });
-  }
-
-  private stopClipboardSync(): void {
-    ClipboardSync.stop(this.sessionKey);
-  }
-
-  /** Writes text received from the remote session into the local pasteboard. */
-  private applyRemoteClipboard(text: string): void {
-    if (text.length === 0) {
+    if (this.pasteboardBusy) {
       return;
     }
-    this.pendingRemoteText = text;
-    this.flushRemoteClipboard(0);
-  }
-
-  private flushRemoteClipboard(attempt: number): void {
-    if (this.pasteboardBusy || this.pendingRemoteText.length === 0) {
-      return;
-    }
-    const text: string = this.pendingRemoteText;
-    this.pendingRemoteText = '';
     this.pasteboardBusy = true;
-    // Remember it so the 'update' event triggered by our own write is ignored.
-    ClipboardSync.markRemoteText(this.sessionKey, text);
     const data: pasteboard.PasteData =
-      pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.remoteClipboardText);
     pasteboard.getSystemPasteboard().setData(data)
       .then(() => {
         this.pasteboardBusy = false;
-        hilog.info(DOMAIN, TAG, 'local pasteboard updated from remote');
-        this.flushRemoteClipboard(0);
+        this.toast('已拉取到本机');
       })
       .catch((error: BusinessError) => {
         this.pasteboardBusy = false;
         hilog.warn(DOMAIN, TAG, 'write pasteboard failed: %{public}s', JSON.stringify(error));
-        if (attempt < 3) {
-          setTimeout(() => {
-            this.pendingRemoteText = text;
-            this.flushRemoteClipboard(attempt + 1);
-          }, 150);
-        }
+        this.toast('写入本机剪贴板失败');
       });
   }
 
+  private toast(message: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: message, duration: 1500 });
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
   private updateToolbar(y: number): void {
-    if (this.state !== RdpConnectionState.Connected) {
+    // The toolbar only auto-hides in fullscreen; in windowed mode it is always
+    // visible and laid out above the remote image.
+    if (!this.isFullscreen || this.state !== RdpConnectionState.Connected) {
       return;
     }
     if (y < this.topTrigger) {
@@ -783,10 +795,103 @@ struct SessionPage {
     .alignItems(HorizontalAlign.Center)
   }
 
+  @Builder
+  sessionToolbar() {
+    Row() {
+      Text(this.options.host)
+        .fontSize(14)
+        .fontColor('#FFFFFF')
+      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
+        .fontSize(12)
+        .fontColor('#B8BCC4')
+      Blank()
+      if (this.clipboardEnabled) {
+        // Clipboard actions sit left of the window actions, tinted
+        // differently and separated from them by a fixed gap.
+        Row() {
+          Image($r('sys.media.ohos_ic_public_copy'))
+            .width(16)
+            .height(16)
+            .fillColor('#FFFFFF')
+          Text('复制')
+            .fontSize(13)
+            .fontColor('#FFFFFF')
+            .margin({ left: 4 })
+        }
+        .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+        .backgroundColor('#4D3B82F6')
+        .borderRadius(8)
+        .onClick(() => {
+          this.pullClipboard();
+        })
+        .bindTips('从远端复制到本机剪贴板')
+        // Local clipboard -> remote. Security control: clicking it grants a
+        // one-time clipboard read without the READ_PASTEBOARD permission.
+        Row() {
+          PasteButton({
+            icon: PasteIconStyle.LINES,
+            text: PasteDescription.PASTE,
+            buttonType: ButtonType.Normal
+          })
+            .iconSize(16)
+            .iconColor('#FFFFFF')
+            .fontSize(13)
+            .fontColor('#FFFFFF')
+            .backgroundColor('#4D3B82F6')
+            .borderRadius(8)
+            .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+            .onClick(this.pasteButtonCallback)
+        }
+        .margin({ left: 8 })
+        .bindTips('把本机剪贴板发送到远端')
+        Row().width(16)
+      }
+      Text(this.isFullscreen ? '退出全屏' : '全屏')
+        .fontSize(13)
+        .fontColor('#FFFFFF')
+        .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+        .backgroundColor('#33FFFFFF')
+        .borderRadius(8)
+        .margin({ right: 8 })
+        .onClick(() => {
+          this.toggleFullscreen();
+        })
+      Text('最小化')
+        .fontSize(13)
+        .fontColor('#FFFFFF')
+        .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+        .backgroundColor('#33FFFFFF')
+        .borderRadius(8)
+        .margin({ right: 8 })
+        .onClick(() => {
+          this.minimizeWindow();
+        })
+      Text('断开')
+        .fontSize(13)
+        .fontColor('#FFFFFF')
+        .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+        .backgroundColor($r('app.color.danger'))
+        .borderRadius(8)
+        .onClick(() => {
+          this.disconnect();
+        })
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: 16, right: 16 })
+    .backgroundColor('#CC1A1A1A')
+  }
+
   build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      XComponent({
-        id: 'rdpSurface',
+    Column() {
+      // Windowed mode: the toolbar is always visible and laid out above the
+      // remote image, so the picture starts below it instead of under it.
+      if (!this.isFullscreen && !this.showOverlay) {
+        this.sessionToolbar()
+      }
+      Stack({ alignContent: Alignment.TopStart }) {
+        XComponent({
+          id: 'rdpSurface',
         type: XComponentType.SURFACE,
         controller: this.controller
       })
@@ -812,53 +917,10 @@ struct SessionPage {
           this.componentHeight = this.lengthToNumber(newArea.height);
         })
 
-      if (this.showToolbar && !this.showOverlay
-        && (this.isFullscreen || this.toolbarInWindowed)) {
-        Row() {
-          Text(this.options.host)
-            .fontSize(14)
-            .fontColor('#FFFFFF')
-          Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
-            .fontSize(12)
-            .fontColor('#B8BCC4')
-          Blank()
-          Text(this.isFullscreen ? '退出全屏' : '全屏')
-            .fontSize(13)
-            .fontColor('#FFFFFF')
-            .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-            .backgroundColor('#33FFFFFF')
-            .borderRadius(8)
-            .margin({ right: 8 })
-            .onClick(() => {
-              this.toggleFullscreen();
-            })
-          Text('最小化')
-            .fontSize(13)
-            .fontColor('#FFFFFF')
-            .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-            .backgroundColor('#33FFFFFF')
-            .borderRadius(8)
-            .margin({ right: 8 })
-            .onClick(() => {
-              this.minimizeWindow();
-            })
-          Text('断开')
-            .fontSize(13)
-            .fontColor('#FFFFFF')
-            .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-            .backgroundColor($r('app.color.danger'))
-            .borderRadius(8)
-            .onClick(() => {
-              this.disconnect();
-            })
+        // Fullscreen mode: the toolbar floats over the image and auto-hides.
+        if (this.isFullscreen && this.showToolbar && !this.showOverlay) {
+          this.sessionToolbar()
         }
-        .width('100%')
-        .height(48)
-        .padding({ left: 16, right: 16 })
-        .backgroundColor('#CC1A1A1A')
-        .transition(TransitionEffect.translate({ y: -48 })
-          .animation({ duration: 180, curve: Curve.EaseOut }))
-      }
 
       if (this.showOverlay) {
         Column() {
@@ -876,6 +938,9 @@ struct SessionPage {
         .alignItems(HorizontalAlign.Center)
         .backgroundColor('#66000000')
       }
+      }
+      .width('100%')
+      .layoutWeight(1)
     }
     .width('100%')
     .height('100%')

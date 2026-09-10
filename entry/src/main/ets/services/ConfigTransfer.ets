@@ -307,8 +307,6 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'toolbarHoverDelay', settings.toolbarHoverDelay);
     settings.toolbarHideDelay =
       ConfigTransfer.readNumber(rec, 'toolbarHideDelay', settings.toolbarHideDelay);
-    settings.toolbarInWindowed =
-      ConfigTransfer.readBoolean(rec, 'toolbarInWindowed', settings.toolbarInWindowed);
     settings.touchpadScrollUnit =
       ConfigTransfer.readNumber(rec, 'touchpadScrollUnit', settings.touchpadScrollUnit);
     settings.pinchZoomStepPercent =

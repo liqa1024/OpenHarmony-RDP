@@ -53,7 +53,6 @@ class ToggleItemConfig {
 struct SettingsPage {
   @State hoverDelay: number = 350;
   @State hideDelay: number = 250;
-  @State toolbarInWindowed: boolean = false;
   @State touchpadScrollUnit: number = 40;
   @State pinchZoomStep: number = 5;
   @State keyboardShortcutPassthrough: boolean = true;
@@ -69,7 +68,6 @@ struct SettingsPage {
   @State sessionSizeEnabled: boolean = false;
   @State sessionFullscreen: boolean = false;
   @State autoHideMainWindow: boolean = false;
-  @State enableClipboard: boolean = true;
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
   @State enableH264: boolean = true;
@@ -107,7 +105,6 @@ struct SettingsPage {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
-    this.toolbarInWindowed = settings.toolbarInWindowed;
     this.touchpadScrollUnit = settings.touchpadScrollUnit;
     this.pinchZoomStep = settings.pinchZoomStepPercent;
     this.keyboardShortcutPassthrough = settings.keyboardShortcutPassthrough;
@@ -122,7 +119,6 @@ struct SettingsPage {
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.sessionFullscreen = settings.sessionFullscreen;
     this.autoHideMainWindow = settings.autoHideMainWindow;
-    this.enableClipboard = settings.enableClipboard;
     this.enableAudio = settings.enableAudio;
     this.enableGfx = settings.enableGfx;
     this.enableH264 = settings.enableH264;
@@ -177,7 +173,6 @@ struct SettingsPage {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
-    settings.toolbarInWindowed = this.toolbarInWindowed;
     settings.touchpadScrollUnit = this.touchpadScrollUnit;
     settings.pinchZoomStepPercent = this.pinchZoomStep;
     settings.keyboardShortcutPassthrough = this.keyboardShortcutPassthrough;
@@ -191,7 +186,6 @@ struct SettingsPage {
     settings.manualScalePercent = this.parseScale(this.manualScaleText, this.recommendedScale);
     settings.sessionFullscreen = this.sessionFullscreen;
     settings.autoHideMainWindow = this.autoHideMainWindow;
-    settings.enableClipboard = this.enableClipboard;
     settings.enableAudio = this.enableAudio;
     settings.enableGfx = this.enableGfx;
     settings.enableH264 = this.enableH264;
@@ -213,7 +207,6 @@ struct SettingsPage {
     const defaults: AppSettings = SettingsStore.defaults();
     this.hoverDelay = defaults.toolbarHoverDelay;
     this.hideDelay = defaults.toolbarHideDelay;
-    this.toolbarInWindowed = defaults.toolbarInWindowed;
     this.touchpadScrollUnit = defaults.touchpadScrollUnit;
     this.pinchZoomStep = defaults.pinchZoomStepPercent;
     this.keyboardShortcutPassthrough = defaults.keyboardShortcutPassthrough;
@@ -227,7 +220,6 @@ struct SettingsPage {
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.sessionFullscreen = defaults.sessionFullscreen;
     this.autoHideMainWindow = defaults.autoHideMainWindow;
-    this.enableClipboard = defaults.enableClipboard;
     this.enableAudio = defaults.enableAudio;
     this.enableGfx = defaults.enableGfx;
     this.enableH264 = defaults.enableH264;
@@ -469,32 +461,9 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
-            Row() {
-              Column() {
-                Text('窗口模式下显示工具栏').fontSize(14).fontColor($r('app.color.text_primary'))
-                Text('全屏模式下始终显示工具栏')
-                  .fontSize(11)
-                  .fontColor($r('app.color.text_tertiary'))
-                  .margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-
-              Toggle({ type: ToggleType.Switch, isOn: this.toolbarInWindowed })
-                .selectedColor($r('app.color.accent'))
-                .onChange((isOn: boolean) => {
-                  this.toolbarInWindowed = isOn;
-                  this.persist();
-                })
-            }
-            .width('100%')
-            .height(58)
-
-            Divider().color($r('app.color.divider'))
-
             this.sliderItem({
               title: '工具栏触发停留时间',
-              subtitle: '鼠标停留在屏幕顶部多久后弹出工具栏',
+              subtitle: '全屏下鼠标停留在屏幕顶部多久后弹出工具栏',
               value: this.hoverDelay,
               min: 100,
               max: 1200,
@@ -510,7 +479,7 @@ struct SettingsPage {
 
             this.sliderItem({
               title: '工具栏隐藏延迟',
-              subtitle: '鼠标移开后多久收起工具栏',
+              subtitle: '全屏下鼠标移开后多久收起工具栏',
               value: this.hideDelay,
               min: 100,
               max: 1000,
@@ -728,18 +697,6 @@ struct SettingsPage {
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
               .margin({ bottom: 8 })
-
-            this.toggleItem({
-              title: '剪贴板重定向',
-              subtitle: '本机与远端之间复制粘贴文本',
-              value: this.enableClipboard,
-              onChange: (v: boolean) => {
-                this.enableClipboard = v;
-                this.persist();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
 
             this.toggleItem({
               title: '音频重定向',

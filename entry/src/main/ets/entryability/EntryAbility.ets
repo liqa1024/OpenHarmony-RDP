@@ -13,9 +13,7 @@
  * limitations under the License.
  */
 
-import { AbilityConstant, abilityAccessCtrl, ConfigurationConstant, PermissionRequestResult,
-  Permissions, UIAbility, Want } from '@kit.AbilityKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
@@ -59,28 +57,6 @@ export default class EntryAbility extends UIAbility {
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });
-    this.requestClipboardPermission();
-  }
-
-  // Automatic clipboard redirection reads the local pasteboard, which requires
-  // this user-grant permission.
-  private requestClipboardPermission(): void {
-    const permissions: Permissions[] = ['ohos.permission.READ_PASTEBOARD'];
-    try {
-      const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
-      manager.requestPermissionsFromUser(this.context, permissions)
-        .then((result: PermissionRequestResult) => {
-          hilog.info(DOMAIN, 'testTag', 'pasteboard permission results: %{public}s',
-            JSON.stringify(result.authResults));
-        })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, 'testTag', 'request pasteboard permission failed: %{public}s',
-            JSON.stringify(error));
-        });
-    } catch (error) {
-      hilog.error(DOMAIN, 'testTag', 'pasteboard permission call failed: %{public}s',
-        JSON.stringify(error));
-    }
   }
 
   onWindowStageDestroy(): void {

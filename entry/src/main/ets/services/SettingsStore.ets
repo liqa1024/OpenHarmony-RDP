@@ -26,9 +26,6 @@ export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
-  // The session toolbar is always available in fullscreen; in windowed mode it
-  // is opt-in so the system title bar remains the primary window control.
-  toolbarInWindowed: boolean = false;
   touchpadScrollUnit: number = DEFAULT_TOUCHPAD_SCROLL_UNIT;
   pinchZoomStepPercent: number = DEFAULT_PINCH_ZOOM_STEP_PERCENT;
   // When enabled the session window intercepts keys ArkUI would otherwise
@@ -108,8 +105,6 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'toolbarHoverDelay', settings.toolbarHoverDelay);
       settings.toolbarHideDelay =
         SettingsStore.readNumber(store, 'toolbarHideDelay', settings.toolbarHideDelay);
-      settings.toolbarInWindowed =
-        SettingsStore.readBoolean(store, 'toolbarInWindowed', settings.toolbarInWindowed);
       settings.touchpadScrollUnit =
         SettingsStore.readNumber(store, 'touchpadScrollUnit', settings.touchpadScrollUnit);
       settings.pinchZoomStepPercent =
@@ -168,7 +163,6 @@ export class SettingsStore {
     try {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
-      store.putSync('toolbarInWindowed', settings.toolbarInWindowed);
       store.putSync('touchpadScrollUnit', settings.touchpadScrollUnit);
       store.putSync('pinchZoomStepPercent', settings.pinchZoomStepPercent);
       store.putSync('keyboardShortcutPassthrough', settings.keyboardShortcutPassthrough);

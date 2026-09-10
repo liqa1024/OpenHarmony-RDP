@@ -130,21 +130,28 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
     `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
     `width/height/scalePercent`；连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
-14. **高级连接特性（全局默认 + 单连接覆盖）**：剪贴板/音频/GFX/H.264/忽略证书这 5 项默认值放在
+14. **高级连接特性（全局默认 + 单连接覆盖）**：音频/GFX/H.264/忽略证书这 4 项默认值放在
     `AppSettings`（设置页「连接特性」区），连接保存自己的独立值 + `useGlobalAdvanced` 标志，
     **默认跟随全局**（`SavedConnection.useGlobalAdvanced = true`）。连接前用
     `SettingsStore.resolveAdvanced(conn)` 解析，再写入 `RdpConnectOptions`。编辑页「高级设置」里
     「使用全局高级设置」关掉后才会用本连接的独立开关；保存时仍持久化独立值，便于随时切回。
+    剪贴板固定开启（其全局开关已移除），但仍保留单连接的「剪贴板重定向」开关可单独关闭。
 15. **剪贴板重定向（文本）**：原生在 `ChannelConnected` 里捕获 `CliprdrClientContext`（`HmrdpChannelConnected`
     先调用默认 handler 再判断 `cliprdr`），只覆写 `Server*` 回调与 `MonitorReady`，**不要动
     `Client*` 发送函数**。文本按 CF_UNICODETEXT 传输，本地文本缓存为 NUL 结尾 UTF-16LE。
-    - **远端→本机**：收到原生 `RdpEvent.ClipboardText`（值为 4）时 `SessionPage` 写回系统剪贴板
-      （`setData` 不需要权限）。
-    - **本机→远端**：`ClipboardSync` 监听系统剪贴板 `update` 事件，变化时自动推送到远端
-      （`native.setClipboard(text)`），因此需要申请 `ohos.permission.READ_PASTEBOARD`
-      （`module.json5` 声明 + `EntryAbility` 运行时申请）。**该权限为 `system_basic` 级，普通签名
-      真机可能无法授权，届时本机→远端会静默失效；权限方案待后续解决**（曾考虑 PasteButton 安全
-      控件，当前未采用）。
+    - **手动触发，无权限**：会话工具栏**最右**依次为「复制」「粘贴」+ 固定间距 +「全屏」「最小化」
+      「断开」；剪贴板两个按钮在窗口动作**左侧**，用不同底色（蓝调）与窗口按钮区分；连接的
+      「剪贴板重定向」关闭时两个按钮不显示。语义：复制＝远端→本机，粘贴＝本机→远端。两者都用
+      `bindTips` 给出悬浮功能说明。
+    - **本机→远端（粘贴）**：`PasteButton` 安全控件（系统固定文字"粘贴" + `PasteIconStyle.LINES` 图标），
+      点按授权后 `getData()` 读本机文本 → `native.setClipboard(text)` 通告给服务端。用安全控件而非
+      `READ_PASTEBOARD`，**不再申请任何剪贴板权限**（安全控件文字/图标/背景受约束，字号过小或对比不足
+      会导致授权失败）。
+    - **远端→本机（复制）**：原生收到服务端 `FORMAT_LIST` 会主动请求 CF_UNICODETEXT 并 `Emit(ClipboardText)`，
+      `SessionPage` 只把它缓存进 `remoteClipboardText`；点「复制」才 `setData` 写入本机剪贴板
+      （`setData` 不需要权限）。按钮为 `Row(Image($r('sys.media.ohos_ic_public_copy')) + Text)`，用系统
+      预制图标与粘贴控件保持一致的观感。**不再自动写本机剪贴板，也不监听 `update` 事件**（原
+      `ClipboardSync` 已删）。
     - 仅支持纯文本，图片/文件不处理。
 12. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
@@ -167,6 +174,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     `handleKey`**（无需再禁用 ArkTS 按键处理）。系统在窗口之前就消费掉的键（典型是 Win）窗口过滤器拿不到，
     改用 `winKeySubstitute`（右 Alt/右 Ctrl/菜单键/右 Shift，可关）在原生里改发 Meta 扫描码。
     捕获停止（失焦/断连/窗口销毁）时对远端补发所有仍按下的键，避免焦点切换丢掉 key-up 造成远端修饰键卡死。
+17. **会话工具栏显示**：全屏模式沿用悬浮自动隐藏（`toolbarHoverDelay`/`toolbarHideDelay`，鼠标靠近屏幕顶部
+    才弹出，`updateToolbar` 只在全屏生效）；窗口模式**始终显示**，且作为普通行布局在远程画面**上方**
+    （`Column`：工具栏 + `Stack`(XComponent + 状态浮层)），渲染区域自然扣除工具栏高度、不再被覆盖，
+    指针映射仍以 XComponent 局部坐标为准。原「窗口模式下显示工具栏」设置（`toolbarInWindowed`）已删除。
 
 ## ArkTS 规范
 
@@ -191,9 +202,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点行→连接，空白区→编辑，右键菜单，右下角 FAB） |
-| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（全屏/最小化/断开）、全屏状态跟踪 |
+| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（右侧依次复制/粘贴、全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
-| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟与窗口模式开关、触控板滚动/捏合、按键穿透与 Win 键替代、全局分辨率/缩放、全局连接特性（剪贴板/音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
+| `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、触控板滚动/捏合、按键穿透与 Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口默认尺寸与默认最大化、自动隐藏主窗口、底部配置导入/导出） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`） |
 | `entry/src/main/ets/services/CredentialStore.ets` | 基于 ASSET 的密码存储（按连接 id，连接成功后写入） |
 | `entry/src/main/ets/services/SettingsStore.ets` | 基于 preferences 的设置存储 + 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`、`SCALE_PRESETS`） |
