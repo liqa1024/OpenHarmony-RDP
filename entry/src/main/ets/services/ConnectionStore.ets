@@ -109,6 +109,33 @@ export class ConnectionStore {
     }
   }
 
+  /** Persists a new display order; unknown ids are dropped, missing ones kept. */
+  static reorder(ids: string[]): void {
+    const store: preferences.Preferences | undefined = ConnectionStore.store;
+    if (store === undefined) {
+      return;
+    }
+    try {
+      const known: string[] = ConnectionStore.readIds(store);
+      const ordered: string[] = [];
+      for (const id of ids) {
+        if (known.indexOf(id) >= 0 && ordered.indexOf(id) < 0) {
+          ordered.push(id);
+        }
+      }
+      // Keep any record the caller forgot so nothing silently disappears.
+      for (const id of known) {
+        if (ordered.indexOf(id) < 0) {
+          ordered.push(id);
+        }
+      }
+      store.putSync(IDS_KEY, ordered.join(','));
+      store.flush();
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'reorder connections failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
   private static readIds(store: preferences.Preferences): string[] {
     const text: string = ConnectionStore.readString(store, IDS_KEY, '');
     const ids: string[] = [];

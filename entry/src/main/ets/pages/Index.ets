@@ -19,6 +19,9 @@ const TAG: string = 'HmRdpIndex';
 struct Index {
   @State connections: SavedConnection[] = [];
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
+  // Index of the item being drag-reordered; -1 when idle. Used only to lift the
+  // dragged item above its siblings.
+  @State draggingIndex: number = -1;
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
   @State fabHovered: boolean = false;
@@ -57,6 +60,31 @@ struct Index {
 
   private refresh(): void {
     this.connections = ConnectionStore.list();
+  }
+
+  private persistOrder(): void {
+    const ids: string[] = [];
+    for (const conn of this.connections) {
+      ids.push(conn.id);
+    }
+    ConnectionStore.reorder(ids);
+  }
+
+  /**
+   * Applies a drag reorder from the list's onMove callback. The array is mutated
+   * in place so the settling animation stays continuous, then persisted.
+   */
+  private moveConnection(from: number, to: number): void {
+    if (from === to || from < 0 || to < 0
+      || from >= this.connections.length || to >= this.connections.length) {
+      return;
+    }
+    const moved: SavedConnection[] = this.connections.splice(from, 1);
+    if (moved.length === 0) {
+      return;
+    }
+    this.connections.splice(to, 0, moved[0]);
+    this.persistOrder();
   }
 
   private connState(id: string): ConnectionState {
@@ -185,9 +213,9 @@ struct Index {
     Row() {
       Row() {
         Image($r('app.media.app_icon'))
-          .width(44)
-          .height(44)
-          .borderRadius(12)
+          .width(40)
+          .height(40)
+          .borderRadius(10)
         Column() {
           Row() {
             Text(conn.label())
@@ -210,7 +238,7 @@ struct Index {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        .margin({ left: 14 })
+        .margin({ left: 12 })
       }
       .layoutWeight(1)
       .onClick(() => {
@@ -220,36 +248,37 @@ struct Index {
       Row() {
         if (this.connState(conn.id) === ConnectionState.Connecting) {
           LoadingProgress()
-            .width(22)
-            .height(22)
+            .width(20)
+            .height(20)
             .color('#FFFFFF')
         } else if (this.connState(conn.id) === ConnectionState.Connected) {
           Image($r('app.media.ic_disconnect'))
-            .width(20)
-            .height(20)
-        } else {
-          Image($r('app.media.ic_arrow_right'))
             .width(18)
             .height(18)
+        } else {
+          Image($r('app.media.ic_arrow_right'))
+            .width(16)
+            .height(16)
         }
       }
-      .width(40)
-      .height(40)
-      .borderRadius(20)
+      .width(36)
+      .height(36)
+      .borderRadius(18)
       .backgroundColor(this.connState(conn.id) === ConnectionState.Connected
         ? $r('app.color.danger') : $r('app.color.accent'))
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
-      .margin({ left: 8 })
+      .margin({ left: 6 })
       .onClick(() => {
         this.toggleConnection(conn);
       })
     }
     .width('100%')
-    .padding(14)
-    .borderRadius(16)
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(14)
     .backgroundColor($r('app.color.card_bg'))
-    .shadow({ radius: 12, color: '#10000000', offsetX: 0, offsetY: 3 })
+    .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
+    .clip(false)
     .bindContextMenu(this.connectionMenu(conn), ResponseType.RightClick)
   }
 
@@ -346,16 +375,33 @@ struct Index {
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
       } else {
-        List({ space: 10 }) {
-          ForEach(this.connections, (conn: SavedConnection) => {
+        List({ space: 6 }) {
+          ForEach(this.connections, (conn: SavedConnection, index: number) => {
             ListItem() {
               this.connectionRow(conn)
             }
+            .margin({ left: 52, right: 52, top: 2, bottom: 2 })
+            // Near the drag preview's scale, a higher z-index keeps the lifted
+            // card above its neighbours instead of being covered at the sides.
+            .zIndex(index === this.draggingIndex ? 1 : 0)
           }, (conn: SavedConnection) => `${conn.id}#${conn.updatedAt}`)
+            .onMove((from: number, to: number) => {
+              this.moveConnection(from, to);
+            }, {
+              onDragStart: (index: number) => {
+                this.draggingIndex = index;
+              },
+              onDrop: (index: number) => {
+                this.draggingIndex = -1;
+              }
+            })
         }
         .layoutWeight(1)
         .width('100%')
-        .padding({ left: 24, right: 24, top: 14, bottom: 24 })
+        // Keep the list full-width so its clip area is as wide as possible; the
+        // card's side insets come from the ListItem margins instead. The list
+        // still clips vertically, which hints the drag position at the edges.
+        .padding({ left: 0, right: 0, top: 12, bottom: 20 })
         .scrollBar(BarState.Auto)
       }
       }
