@@ -163,7 +163,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       「使用触摸模拟触控板捏合」`pinchAsTouch`（默认关）改为在鼠标位置合成两个原生触点（id 20/21）做真实
       双指缩放，距离按 `axisPinch` **1:1**（速度置灰），初始间距取窗口较短边百分比 `pinchTouchDistance`
       （默认 4%，不写死分辨率），按 `pinchTouchAngle`（默认 30°；-30° 为右手）斜置。**不设计时器**，只在
-      真实 `AxisAction.END` 结束，静止保持时触点/Ctrl 一直按住。ArkUI `AxisType` 无旋转轴，拿不到真实
+      真实 `AxisAction.END` 结束，静止保持时触点/Ctrl 一直按住。**起手 30ms（`PINCH_TOUCH_DOWN_FLUSH_MS`）
+      内不发 MOTION**：避免 FreeRDP 的 RDPEI 50Hz 合帧把未发出的 `DOWN` 覆盖成 `UPDATE`（关掉高刷时捏合
+      失效）；该时长远低于 Windows 的捏合判定所需时间，不影响识别。ArkUI `AxisType` 无旋转轴，拿不到真实
       手指朝向（触控板多指不上报手指信息、RotationGesture 不支持触控板旋转），故用角度设置顶替。
     - 别用 `easy_go.json` 的 `mouse2TouchEventMode`（本机 SDK schema 不含该字段，hvigor 校验失败）。
 11. **分辨率与缩放**：自动分辨率取显示器宽高，缩放取 `densityPixels × 100` 并吸附到

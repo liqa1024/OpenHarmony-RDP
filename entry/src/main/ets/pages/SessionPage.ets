@@ -40,6 +40,14 @@ const MAX_PINCH_RATIO: number = 20;
 // touch.id + 1 (1..11), so these never collide.
 const PINCH_TOUCH_ID_A: number = 20;
 const PINCH_TOUCH_ID_B: number = 21;
+// The synthetic pinch's first MOTION must not reach the native RDPEI layer
+// before its DOWN frame has been flushed: FreeRDP coalesces touch frames at
+// 50Hz by default (HmrdpSetTouchFrameInterval(20)), so a MOTION inside that
+// window overwrites the unsent DOWN and the remote never engages the contacts.
+// This margin decouples the app from the coalescing interval (with the
+// high-rate option the interval is 0, so the delay is a no-op in practice) and
+// is far below the time Windows needs to recognise a pinch.
+const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
 
 // A TouchType.Cancel does not always mean the finger lifted (a move can be
 // interrupted). The contact is held instead, and a following Down within this
@@ -139,6 +147,9 @@ struct SessionPage {
   private touchPinchAnchor: number[] = [0, 0];
   private touchPinchHalf: number = MIN_PINCH_HALF;
   private touchPinchLastHalf: number = MIN_PINCH_HALF;
+  // Earliest time a MOTION may be forwarded after the synthetic DOWN (see
+  // PINCH_TOUCH_DOWN_FLUSH_MS); 0 while no touch pinch is active.
+  private touchPinchMotionAt: number = 0;
   // Orientation of the synthetic contact pair (degrees, clockwise on screen).
   // ArkUI cannot report the real finger angle, so the pair is tilted by this
   // configured amount; the unit vector is cached when a pinch starts.
@@ -863,7 +874,12 @@ struct SessionPage {
     }
     if (this.pinchAsTouch) {
       this.updateTouchPinch(scale);
-      this.sendTouchPinchContacts(RdpTouchFlags.MOTION);
+      // Skip the MOTIONs that would otherwise let FreeRDP's 50Hz RDPEI
+      // coalescing overwrite the unsent DOWN; the distance is still tracked
+      // above, so the first forwarded MOTION carries the current gesture.
+      if (Date.now() >= this.touchPinchMotionAt) {
+        this.sendTouchPinchContacts(RdpTouchFlags.MOTION);
+      }
       return;
     }
     if (this.pinchScale <= 0) {
@@ -917,6 +933,8 @@ struct SessionPage {
     // initial sample so a late first event does not drop the first movement.
     this.updateTouchPinch(scale);
     this.sendTouchPinchContacts(RdpTouchFlags.DOWN);
+    // Let the DOWN frame flush before the first MOTION can overwrite it.
+    this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
   }
 
   /**
@@ -967,6 +985,7 @@ struct SessionPage {
     this.pinchActive = false;
     this.pinchScale = 0;
     this.pinchAccum = 0;
+    this.touchPinchMotionAt = 0;
     // Release unconditionally: the final event may not carry the pinch axis, so
     // pinchActive can already be false while Ctrl is still logically held.
     this.setPinchCtrl(false);
