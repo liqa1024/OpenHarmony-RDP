@@ -92,6 +92,18 @@ struct Index {
     return state === undefined ? ConnectionState.Idle : state;
   }
 
+  /** Hover hint for the row's round action button. */
+  private connectTip(conn: SavedConnection): string {
+    const state: ConnectionState = this.connState(conn.id);
+    if (state === ConnectionState.Connecting) {
+      return '取消连接';
+    }
+    if (state === ConnectionState.Connected) {
+      return '断开连接';
+    }
+    return '连接';
+  }
+
   private connect(conn: SavedConnection): void {
     this.startConnection(conn);
   }
@@ -241,6 +253,7 @@ struct Index {
         .margin({ left: 12 })
       }
       .layoutWeight(1)
+      .bindTips('编辑连接')
       .onClick(() => {
         this.openEditor(conn.id);
       })
@@ -248,27 +261,28 @@ struct Index {
       Row() {
         if (this.connState(conn.id) === ConnectionState.Connecting) {
           LoadingProgress()
-            .width(20)
-            .height(20)
+            .width(24)
+            .height(24)
             .color('#FFFFFF')
         } else if (this.connState(conn.id) === ConnectionState.Connected) {
           Image($r('app.media.ic_disconnect'))
-            .width(18)
-            .height(18)
+            .width(22)
+            .height(22)
         } else {
           Image($r('app.media.ic_arrow_right'))
-            .width(16)
-            .height(16)
+            .width(20)
+            .height(20)
         }
       }
-      .width(36)
-      .height(36)
-      .borderRadius(18)
+      .width(44)
+      .height(44)
+      .borderRadius(22)
       .backgroundColor(this.connState(conn.id) === ConnectionState.Connected
         ? $r('app.color.danger') : $r('app.color.accent'))
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
-      .margin({ left: 6 })
+      .margin({ left: 8 })
+      .bindTips(this.connectTip(conn))
       .onClick(() => {
         this.toggleConnection(conn);
       })
@@ -336,6 +350,7 @@ struct Index {
             this.settingsPressed = false;
           }
         })
+        .bindTips('设置')
         .onClick(() => {
           this.openSettings();
         })
@@ -436,6 +451,7 @@ struct Index {
           this.fabPressed = false;
         }
       })
+      .bindTips('新建连接')
       .onClick(() => {
         this.openEditor('');
       })

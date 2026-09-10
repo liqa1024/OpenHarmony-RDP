@@ -37,7 +37,7 @@ class ToggleItemConfig {
 @Entry
 @Component
 struct SettingsPage {
-  @State hoverDelay: number = 350;
+  @State hoverDelay: number = 700;
   @State hideDelay: number = 250;
   @State touchpadScrollUnit: number = 40;
   @State pinchZoomStep: number = 5;
@@ -469,9 +469,9 @@ struct SettingsPage {
               title: '工具栏触发停留时间',
               subtitle: '全屏下鼠标停留在屏幕顶部多久后弹出工具栏',
               value: this.hoverDelay,
-              min: 100,
-              max: 1200,
-              step: 50,
+              min: 0,
+              max: 2400,
+              step: 100,
               unit: ' ms',
               onChange: (v: number) => {
                 this.hoverDelay = v;

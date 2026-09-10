@@ -851,6 +851,8 @@ struct SessionPage {
     .height(48)
     .padding({ left: 16, right: 16 })
     .backgroundColor('#CC1A1A1A')
+    .transition(TransitionEffect.translate({ y: -48 })
+      .animation({ duration: 180, curve: Curve.EaseOut }))
   }
 
   build() {

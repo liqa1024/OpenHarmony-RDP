@@ -10,7 +10,7 @@ import { AdvancedProfile, DisplayProfile, SavedConnection } from '../model/RdpMo
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSettings';
 
-const DEFAULT_TOOLBAR_HOVER_DELAY: number = 350;
+const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
 const DEFAULT_TOUCHPAD_SCROLL_UNIT: number = 40;
 const DEFAULT_PINCH_ZOOM_STEP_PERCENT: number = 5;
