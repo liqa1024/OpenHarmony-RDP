@@ -37,6 +37,9 @@ enum class SessionEvent {
   // carries the HTML fragment; Image carries "<w>,<h>|<base64 BGRA>".
   kClipboardHtml = 9,
   kClipboardImage = 10,
+  // Per-second session telemetry, payload "<rttMs>|<rxBps>|<txBps>|<fps>".
+  // rttMs is -1 while the server has not reported network characteristics.
+  kMetrics = 11,
 };
 
 struct RdpOptions {
@@ -121,6 +124,10 @@ class Session {
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
+  // Pushed by the autodetect callback with the server-reported network
+  // characteristics (0 = not reported yet). FreeRDP's client does not store
+  // these itself, so the values are captured here.
+  void OnNetworkCharacteristics(uint32_t baseRtt, uint32_t averageRtt, uint32_t bandwidth);
 
   // Remote pointer (cursor) updates. The server sends the cursor as a bitmap
   // plus hot spot; the UI converts it into a HarmonyOS system cursor. Returning
@@ -143,6 +150,12 @@ class Session {
  private:
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
+  // Samples RTT / frame rate / transport throughput and emits kMetrics.
+  void EmitMetrics();
+  // Records an input timestamp for the input-to-frame response measurement.
+  // Called from the UI thread; only arms when the scene has been idle so the
+  // sample is not polluted by continuous frame cadence.
+  void MarkInput();
 
   freerdp* instance_ = nullptr;
   Renderer renderer_;
@@ -157,6 +170,33 @@ class Session {
   std::atomic<bool> clipboardReady_{false};
   void* thread_ = nullptr;
   bool firstFrameSent_ = false;
+  // Frames drawn since the last metrics sample (incremented in HandleEndPaint,
+  // drained on the event thread).
+  std::atomic<uint32_t> frameCount_{0};
+  // Latency telemetry accumulated on the RDP event thread and drained once per
+  // second: total DrawFrame time and the input-to-frame samples.
+  uint64_t renderAccumUs_ = 0;
+  uint32_t renderSamples_ = 0;
+  // Ring of the most recent input-to-frame measurements; the emitted value is
+  // their mean (this is a statistic, not a hard real-time figure).
+  uint64_t responseSamplesUs_[5] = {0};
+  uint32_t responseSampleCount_ = 0;
+  uint32_t responseSampleIndex_ = 0;
+  // Written from the RDP thread, read from the UI thread (MarkInput).
+  std::atomic<uint64_t> lastFrameTickUs_{0};
+  // UI thread -> RDP thread hand-off; 0 means "no input pending".
+  std::atomic<uint64_t> pendingInputUs_{0};
+  // Server-reported network characteristics from the autodetect channel.
+  std::atomic<uint32_t> netCharBaseRtt_{0};
+  std::atomic<uint32_t> netCharAverageRtt_{0};
+  std::atomic<uint32_t> netCharBandwidth_{0};
+  // Telemetry baseline. metricsStarted_ is cleared on connect so a reconnect
+  // re-establishes the throughput/frame baseline.
+  bool metricsStarted_ = false;
+  uint64_t lastMetricsTick_ = 0;
+  uint64_t lastInBytes_ = 0;
+  uint64_t lastOutBytes_ = 0;
+  uint32_t lastFrameCount_ = 0;
   // Hash of the last cursor bitmap sent to the UI; identical repeats (pointer
   // cache hits) are dropped so the system cursor is only re-installed on an
   // actual shape change.

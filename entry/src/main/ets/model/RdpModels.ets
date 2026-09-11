@@ -46,7 +46,13 @@ export enum RdpEvent {
   // Rich remote clipboard payloads. Html carries an HTML fragment; Image
   // carries "<w>,<h>|<base64 BGRA>".
   ClipboardHtml = 9,
-  ClipboardImage = 10
+  ClipboardImage = 10,
+  // Per-second telemetry, payload
+  // "<rttMs>|<rxBps>|<txBps>|<fps>|<renderUs>|<responseUs>". rttMs is -1 while
+  // the server has not reported network characteristics; renderUs is the average
+  // DrawFrame time; responseUs is the mean of the recent input-to-frame samples
+  // (0 = none yet).
+  Metrics = 11
 }
 
 export class RdpConnectOptions implements RdpOptions {

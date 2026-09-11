@@ -7,9 +7,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <sstream>
 #include <vector>
 
+#include <freerdp/autodetect.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
@@ -50,6 +52,27 @@ namespace {
 // the touch frame interval) because it is a user setting, and read when a
 // session connects (HmrdpPostConnect).
 std::atomic<bool> g_useRdpCursor{true};
+
+uint64_t NowMs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+uint64_t NowUs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// Input-to-frame response is only sampled after a quiet period: if frames have
+// been flowing, an input is indistinguishable from the normal frame cadence and
+// the delta would collapse to the render time. Samples longer than the maximum
+// are treated as "the frame was not a response" and discarded.
+constexpr uint64_t kResponseIdleGapUs = 200 * 1000;
+constexpr uint64_t kResponseMaxUs = 2 * 1000 * 1000;
+// The response value is the mean of this many most recent measurements.
+constexpr uint32_t kResponseWindow = 5;
 
 BOOL HmrdpWLogMessage(const wLogMessage* msg) {
   if (msg == nullptr || msg->TextString == nullptr) {
@@ -1005,6 +1028,22 @@ typedef struct {
   Session* session;
 } HmrdpContext;
 
+// Server-reported network characteristics (MS-RDPBCGR Network Characteristics
+// Result PDU). FreeRDP's client parses the PDU but only forwards it through
+// this callback, so libhmrdp registers its own handler to capture the RTT.
+BOOL HmrdpNetworkCharacteristicsResult(rdpAutoDetect* autodetect, RDP_TRANSPORT_TYPE, UINT16,
+                                       const rdpNetworkCharacteristicsResult* result) {
+  if (autodetect == nullptr || autodetect->context == nullptr || result == nullptr) {
+    return TRUE;
+  }
+  HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(autodetect->context);
+  if (ctx->session != nullptr) {
+    ctx->session->OnNetworkCharacteristics(result->baseRTT, result->averageRTT,
+                                           result->bandwidth);
+  }
+  return TRUE;
+}
+
 BOOL HmrdpBeginPaint(rdpContext* context) {
   if (context == nullptr || context->gdi == nullptr || context->gdi->primary == nullptr) {
     return TRUE;
@@ -1375,6 +1414,112 @@ void Session::Emit(SessionEvent event, const std::string& data) {
   }
 }
 
+void Session::OnNetworkCharacteristics(uint32_t baseRtt, uint32_t averageRtt,
+                                       uint32_t bandwidth) {
+  if (baseRtt != 0) {
+    netCharBaseRtt_.store(baseRtt);
+  }
+  if (averageRtt != 0) {
+    netCharAverageRtt_.store(averageRtt);
+  }
+  if (bandwidth != 0) {
+    netCharBandwidth_.store(bandwidth);
+  }
+}
+
+void Session::MarkInput() {
+  const uint64_t now = NowUs();
+  const uint64_t lastFrame = lastFrameTickUs_.load();
+  // Only arm after a quiet period; otherwise the next frame is part of the
+  // normal cadence and the sample would just be the render time.
+  if (lastFrame != 0 && now - lastFrame < kResponseIdleGapUs) {
+    return;
+  }
+  uint64_t expected = 0;
+  pendingInputUs_.compare_exchange_strong(expected, now);
+}
+
+void Session::EmitMetrics() {
+  rdpContext* context = instance_ != nullptr ? instance_->context : nullptr;
+  if (context == nullptr) {
+    return;
+  }
+  const uint64_t now = NowMs();
+
+  uint64_t inBytes = 0;
+  uint64_t outBytes = 0;
+  freerdp_get_stats(context->rdp, &inBytes, &outBytes, nullptr, nullptr);
+
+  const uint32_t frames = frameCount_.load();
+  if (!metricsStarted_) {
+    lastMetricsTick_ = now;
+    lastInBytes_ = inBytes;
+    lastOutBytes_ = outBytes;
+    lastFrameCount_ = frames;
+    renderAccumUs_ = 0;
+    renderSamples_ = 0;
+    responseSampleCount_ = 0;
+    responseSampleIndex_ = 0;
+    metricsStarted_ = true;
+    return;
+  }
+
+  const uint64_t elapsedMs = now - lastMetricsTick_;
+  if (elapsedMs == 0) {
+    return;
+  }
+  const double seconds = static_cast<double>(elapsedMs) / 1000.0;
+
+  // Byte counters are cumulative; the difference over the interval is the
+  // actual network throughput regardless of the coding path (GDI or GFX/H.264).
+  const uint64_t rxPerSec = static_cast<uint64_t>(
+      static_cast<double>(inBytes - lastInBytes_) / seconds);
+  const uint64_t txPerSec = static_cast<uint64_t>(
+      static_cast<double>(outBytes - lastOutBytes_) / seconds);
+  const uint32_t fps = static_cast<uint32_t>(
+      static_cast<double>(frames - lastFrameCount_) / seconds + 0.5);
+
+  // Average DrawFrame duration (texture upload + quad + eglSwapBuffers), and
+  // the smallest input-to-frame delta seen in the window. Both are drained here
+  // (same thread as HandleEndPaint).
+  const uint32_t renderSamples = renderSamples_;
+  const uint64_t renderAvgUs = renderSamples > 0 ? renderAccumUs_ / renderSamples : 0;
+  // Response is a moving average of the recent measurements; it intentionally
+  // is not cleared per window so the last value keeps showing between samples.
+  uint64_t responseUs = 0;
+  if (responseSampleCount_ > 0) {
+    uint64_t sum = 0;
+    for (uint32_t i = 0; i < responseSampleCount_; ++i) {
+      sum += responseSamplesUs_[i];
+    }
+    responseUs = sum / responseSampleCount_;
+  }
+  renderAccumUs_ = 0;
+  renderSamples_ = 0;
+
+  lastMetricsTick_ = now;
+  lastInBytes_ = inBytes;
+  lastOutBytes_ = outBytes;
+  lastFrameCount_ = frames;
+
+  // Network characteristics are captured from the autodetect callback (see
+  // HmrdpNetworkCharacteristicsResult). Average RTT is the steady-state value;
+  // base RTT is the fallback before the first average is reported. -1 means
+  // "not measured yet".
+  int32_t rtt = -1;
+  const uint32_t averageRtt = netCharAverageRtt_.load();
+  const uint32_t baseRtt = netCharBaseRtt_.load();
+  const uint32_t measured = averageRtt != 0 ? averageRtt : baseRtt;
+  if (measured != 0) {
+    rtt = static_cast<int32_t>(measured);
+  }
+
+  std::ostringstream payload;
+  payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << renderAvgUs
+          << "|" << responseUs;
+  Emit(SessionEvent::kMetrics, payload.str());
+}
+
 void Session::SetError(const std::string& error) {
   SetError(0, error);
 }
@@ -1392,6 +1537,17 @@ bool Session::Connect(const RdpOptions& options) {
   }
   lastError_.clear();
   firstFrameSent_ = false;
+  frameCount_ = 0;
+  renderAccumUs_ = 0;
+  renderSamples_ = 0;
+  responseSampleCount_ = 0;
+  responseSampleIndex_ = 0;
+  lastFrameTickUs_ = 0;
+  pendingInputUs_ = 0;
+  netCharBaseRtt_ = 0;
+  netCharAverageRtt_ = 0;
+  netCharBandwidth_ = 0;
+  metricsStarted_ = false;
   clipboardEnabled_ = options.enableClipboard;
 
   rdpContext* context = freerdp_client_context_new(&g_entryPoints);
@@ -1402,6 +1558,12 @@ bool Session::Connect(const RdpOptions& options) {
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
   ctx->session = this;
   instance_ = context->instance;
+  // Capture the server's network characteristics via the public autodetect
+  // callback (the client does not store them internally).
+  rdpAutoDetect* autodetect = autodetect_get(context);
+  if (autodetect != nullptr) {
+    autodetect->NetworkCharacteristicsResult = HmrdpNetworkCharacteristicsResult;
+  }
 
   std::vector<std::string> args;
   AppendArg(args, "hmrdp");
@@ -1551,6 +1713,12 @@ void Session::EventThread() {
         }
         break;
       }
+
+      // Emit a telemetry sample once the baseline is established and roughly
+      // once per second. The loop wakes at least every 100ms.
+      if (!metricsStarted_ || NowMs() - lastMetricsTick_ >= 1000) {
+        EmitMetrics();
+      }
     }
   }
 
@@ -1627,7 +1795,28 @@ void Session::HandleEndPaint() {
   }
   hwnd->invalid->null = TRUE;
 
+  const uint64_t renderStart = NowUs();
   renderer_.DrawFrame(gdi->primary_buffer, gdi->stride, x, y, width, height);
+  const uint64_t nowUs = NowUs();
+  renderAccumUs_ += nowUs - renderStart;
+  renderSamples_++;
+  frameCount_.fetch_add(1);
+
+  // Input-to-frame response: if an input armed while idle, this frame is very
+  // likely its visible result. Deltas beyond the maximum are dropped as
+  // unrelated frames. Accepted samples feed a 5-deep moving average.
+  lastFrameTickUs_.store(nowUs);
+  const uint64_t pending = pendingInputUs_.exchange(0);
+  if (pending != 0) {
+    const uint64_t delta = nowUs - pending;
+    if (delta <= kResponseMaxUs) {
+      responseSamplesUs_[responseSampleIndex_] = delta;
+      responseSampleIndex_ = (responseSampleIndex_ + 1) % kResponseWindow;
+      if (responseSampleCount_ < kResponseWindow) {
+        responseSampleCount_++;
+      }
+    }
+  }
 
   if (!firstFrameSent_) {
     firstFrameSent_ = true;
@@ -1737,6 +1926,7 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
       instance_->context->input == nullptr) {
     return false;
   }
+  MarkInput();
   return freerdp_input_send_mouse_event(instance_->context->input, flags, x, y);
 }
 
@@ -1755,6 +1945,7 @@ bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32
                flags, finger, pressure, client->rdpei != nullptr ? 1 : 0);
     touchLog++;
   }
+  MarkInput();
   return freerdp_client_handle_touch(client, flags, finger, pressure, x, y) ? true : false;
 }
 
@@ -1778,6 +1969,7 @@ bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
   if (extended) {
     flags |= KBD_FLAGS_EXTENDED;
   }
+  MarkInput();
   return freerdp_input_send_keyboard_event(instance_->context->input, flags, scancode);
 }
 
@@ -1787,6 +1979,7 @@ bool Session::SendUnicode(uint16_t codepoint, bool down) {
     return false;
   }
   UINT16 flags = down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
+  MarkInput();
   return freerdp_input_send_unicode_keyboard_event(instance_->context->input, flags,
                                                    codepoint);
 }

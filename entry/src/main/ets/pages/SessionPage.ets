@@ -49,6 +49,29 @@ const PINCH_TOUCH_ID_B: number = 21;
 // is far below the time Windows needs to recognise a pinch.
 const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
 
+// Toolbar throughput below this is idle/keep-alive noise, so it is not shown.
+const MIN_BANDWIDTH_BYTES: number = 1024;
+
+// Fixed widths for the toolbar telemetry so a changing number never reflows the
+// items after it. Sized close to the common maximum so the unused space inside
+// a box stays small and the gaps are governed by the margins below.
+const METRIC_WIDTH_NETWORK: number = 66;
+const METRIC_WIDTH_LOCAL: number = 74;
+const METRIC_WIDTH_RESPONSE: number = 74;
+const METRIC_WIDTH_FPS: number = 46;
+// Two gap sizes: the network/local pair sits one character apart, the rest
+// share a wider gap.
+const METRIC_GAP_TIGHT: number = 6;
+const METRIC_GAP_GROUP: number = 8;
+
+// Latency colour thresholds. The network RTT is allowed to be fairly high
+// before it warns (it is dominated by distance), while the local render time is
+// held to a much tighter budget because it is entirely under our control.
+const NETWORK_WARN_MS: number = 100;
+const NETWORK_BAD_MS: number = 200;
+const LOCAL_WARN_MS: number = 16;
+const LOCAL_BAD_MS: number = 33;
+
 // A TouchType.Cancel does not always mean the finger lifted (a move can be
 // interrupted). The contact is held instead, and a following Down within this
 // distance of its last position is treated as the same finger resuming. Only if
@@ -109,6 +132,16 @@ struct SessionPage {
   private componentHeight: number = 0;
   private desktopWidth: number = 1920;
   private desktopHeight: number = 1080;
+  // Live session telemetry pushed once per second by the native side. @State so
+  // the toolbar refreshes on every sample.
+  @State metricsRtt: number = -1;
+  @State metricsRx: number = 0;
+  @State metricsTx: number = 0;
+  @State metricsFps: number = 0;
+  // Average render (upload+draw+present) and smallest input-to-frame response,
+  // in microseconds; 0 means "not measured".
+  @State metricsRenderUs: number = 0;
+  @State metricsResponseUs: number = 0;
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -372,7 +405,111 @@ struct SessionPage {
     } else if (event === RdpEvent.CursorHidden) {
       this.cursorHidden = true;
       this.applyCursor();
+    } else if (event === RdpEvent.Metrics) {
+      this.onMetrics(data);
     }
+  }
+
+  /** Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<renderUs>|<responseUs>". */
+  private onMetrics(data: string): void {
+    const parts: string[] = data.split('|');
+    if (parts.length !== 6) {
+      return;
+    }
+    const rtt: number = Number.parseInt(parts[0], 10);
+    const rx: number = Number.parseInt(parts[1], 10);
+    const tx: number = Number.parseInt(parts[2], 10);
+    const fps: number = Number.parseInt(parts[3], 10);
+    const renderUs: number = Number.parseInt(parts[4], 10);
+    const responseUs: number = Number.parseInt(parts[5], 10);
+    if (!Number.isNaN(rtt)) {
+      this.metricsRtt = rtt;
+    }
+    if (!Number.isNaN(rx)) {
+      this.metricsRx = rx;
+    }
+    if (!Number.isNaN(tx)) {
+      this.metricsTx = tx;
+    }
+    if (!Number.isNaN(fps)) {
+      this.metricsFps = fps;
+    }
+    if (!Number.isNaN(renderUs)) {
+      this.metricsRenderUs = renderUs;
+    }
+    if (!Number.isNaN(responseUs)) {
+      this.metricsResponseUs = responseUs;
+    }
+  }
+
+  /** "网络 28ms", or "网络 --" until the server reports network stats. */
+  private rttLabel(): string {
+    return this.metricsRtt < 0 ? '网络 --' : '网络 ' + this.metricsRtt + 'ms';
+  }
+
+  /** Green / amber / red vs. the given warn/bad thresholds (ms). */
+  private thresholdColor(ms: number, warnMs: number, badMs: number): string {
+    if (ms < 0) {
+      return '#B8BCC4';
+    }
+    if (ms <= warnMs) {
+      return '#4ADE80';
+    }
+    if (ms <= badMs) {
+      return '#FBBF24';
+    }
+    return '#F87171';
+  }
+
+  /** Client render time in ms, or -1 when no frame was drawn this window. */
+  private localMs(): number {
+    return this.metricsRenderUs > 0 ? this.metricsRenderUs / 1000 : -1;
+  }
+
+  private localLabel(): string {
+    const ms: number = this.localMs();
+    return ms < 0 ? '本机 --' : '本机 ' + ms.toFixed(1) + 'ms';
+  }
+
+  /**
+   * Input-to-frame response in ms (moving average of the recent samples), or -1
+   * when nothing was measured yet. Deliberately not threshold-coloured.
+   */
+  private responseMs(): number {
+    return this.metricsResponseUs > 0 ? this.metricsResponseUs / 1000 : -1;
+  }
+
+  private responseLabel(): string {
+    const ms: number = this.responseMs();
+    return ms < 0 ? '响应 --' : '响应 ' + Math.round(ms) + 'ms';
+  }
+
+  /** Compact byte/s label for the toolbar. */
+  private formatRate(bytesPerSec: number): string {
+    if (bytesPerSec >= 1024 * 1024) {
+      return (bytesPerSec / (1024 * 1024)).toFixed(1) + 'MB/s';
+    }
+    if (bytesPerSec >= 1024) {
+      return Math.round(bytesPerSec / 1024) + 'KB/s';
+    }
+    return bytesPerSec + 'B/s';
+  }
+
+  /** True when either direction carries meaningful (non-idle) traffic. */
+  private hasBandwidth(): boolean {
+    return this.metricsRx >= MIN_BANDWIDTH_BYTES || this.metricsTx >= MIN_BANDWIDTH_BYTES;
+  }
+
+  /** Per-direction throughput label, dropping directions below the threshold. */
+  private bandwidthLabel(): string {
+    const parts: string[] = [];
+    if (this.metricsRx >= MIN_BANDWIDTH_BYTES) {
+      parts.push('↓' + this.formatRate(this.metricsRx));
+    }
+    if (this.metricsTx >= MIN_BANDWIDTH_BYTES) {
+      parts.push('↑' + this.formatRate(this.metricsTx));
+    }
+    return parts.join('  ');
   }
 
   /** Decodes a remote cursor bitmap and installs it as the system cursor. */
@@ -1411,6 +1548,40 @@ struct SessionPage {
       Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
         .fontSize(12)
         .fontColor('#B8BCC4')
+      if (this.state === RdpConnectionState.Connected) {
+        Row() {
+          Text(this.rttLabel())
+            .fontSize(12)
+            .fontColor(this.thresholdColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS))
+            .width(METRIC_WIDTH_NETWORK)
+            .maxLines(1)
+          Text(this.localLabel())
+            .fontSize(12)
+            .fontColor(this.thresholdColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS))
+            .width(METRIC_WIDTH_LOCAL)
+            .margin({ left: METRIC_GAP_TIGHT })
+            .maxLines(1)
+          Text(this.responseLabel())
+            .fontSize(12)
+            .fontColor('#B8BCC4')
+            .width(METRIC_WIDTH_RESPONSE)
+            .margin({ left: METRIC_GAP_GROUP })
+            .maxLines(1)
+          Text('FPS ' + this.metricsFps)
+            .fontSize(12)
+            .fontColor('#B8BCC4')
+            .width(METRIC_WIDTH_FPS)
+            .margin({ left: METRIC_GAP_GROUP })
+            .maxLines(1)
+          if (this.hasBandwidth()) {
+            Text(this.bandwidthLabel())
+              .fontSize(12)
+              .fontColor('#B8BCC4')
+              .margin({ left: METRIC_GAP_GROUP })
+          }
+        }
+        .margin({ left: 16 })
+      }
       Blank()
       if (this.clipboardEnabled) {
         // Clipboard actions sit left of the window actions, tinted
