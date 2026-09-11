@@ -60,10 +60,10 @@ namespace {
 std::atomic<bool> g_useRdpCursor{true};
 
 // Prefer hardware (GPU) RemoteFX decoding instead of the CPU decoder. Default
-// on; the GPU RFX path (see PERF-TODO §1.G) reads this when a session connects.
+// on; the GPU RFX path (see PERF-TODO §2) reads this when a session connects.
 std::atomic<bool> g_hardwareDecode{true};
 
-// Dev-only RemoteFX/Progressive stream capture (PERF-TODO §1.G spike): every
+// Dev-only RemoteFX/Progressive stream capture (PERF-TODO §2): every
 // CAPROGRESSIVE surface command is appended to <dir>/hmrdp_rfx.bin so the GPU
 // decoder can be developed/aligned against real data.
 std::mutex g_rfxDumpMutex;

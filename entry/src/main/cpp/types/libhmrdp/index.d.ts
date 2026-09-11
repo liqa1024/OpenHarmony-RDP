@@ -78,6 +78,6 @@ export const setHardwareDecode: (enabled: boolean) => boolean;
 
 /**
  * Dev-only: capture incoming RemoteFX/Progressive GFX surface streams to
- * `<dir>/hmrdp_rfx.bin` (PERF-TODO §1.G spike).
+ * `<dir>/hmrdp_rfx.bin` (PERF-TODO §2).
  */
 export const setRfxDump: (enabled: boolean, dir: string) => boolean;

@@ -3,9 +3,6 @@
  */
 #include "hmrdp_rfx.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 namespace hmrdp {
 namespace {
 
@@ -799,14 +796,8 @@ bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride, int16_
       tile.quantIdxCb >= tile.numQuant || tile.quantIdxCr >= tile.numQuant) {
     return false;
   }
-  // TEMP debug switches (offline reference tuning; see PERF-TODO §1.G).
-  static const int kShiftMode = getenv("HMRDP_RFX_SHIFT") ? atoi(getenv("HMRDP_RFX_SHIFT")) : 0;
-  static const int kOffsetsMode = getenv("HMRDP_RFX_OFFSETS") ? atoi(getenv("HMRDP_RFX_OFFSETS")) : 0;
-  static const int kDwtMode = getenv("HMRDP_RFX_DWT") ? atoi(getenv("HMRDP_RFX_DWT")) : 0;
-  const bool regionExtra = (tile.regionFlags & 0x01u) != 0;
-  const bool extrapolate = (kOffsetsMode == 0) ? regionExtra : (kOffsetsMode == 2);
-  const bool extrapolateDwt = (kDwtMode == 0) ? regionExtra : (kDwtMode == 2);
-  const bool diff = (tile.flags & 0x01u) != 0;
+  const bool extrapolate = (tile.regionFlags & 0x01u) != 0;  // RFX_DWT_REDUCE_EXTRAPOLATE
+  const bool diff = (tile.flags & 0x01u) != 0;               // RFX_TILE_DIFFERENCE
 
   // Per-tile progressive quant (0xFF -> the all-zero "full" table).
   RfxQuant progY;
@@ -820,22 +811,10 @@ bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride, int16_
   const RfxQuant* qv[3] = {&tile.quants[tile.quantIdxY], &tile.quants[tile.quantIdxCb],
                            &tile.quants[tile.quantIdxCr]};
   const RfxQuant* pv[3] = {&progY, &progCb, &progCr};
+  // Per-subband dequant shift used by kFirst: (component quant + progressive
+  // quant) - 1, matching progressive_decompress_tile_first's shiftY/Cb/Cr.
   const auto fieldShift = [](int q, int p) -> uint8_t {
-    int v = 0;
-    switch (kShiftMode) {
-      case 1:
-        v = q;
-        break;
-      case 2:
-        v = q + p;
-        break;
-      case 3:
-        v = 0;
-        break;
-      default:
-        v = q + p - 1;
-        break;
-    }
+    const int v = q + p - 1;
     return static_cast<uint8_t>(v < 0 ? 0 : v);
   };
   RfxQuant shift[3];
@@ -866,21 +845,6 @@ bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride, int16_
     }
     if (!RlgrDecode(RlgrMode::kRlgr1, data[c], len[c], comp[c], 4096)) {
       return false;
-    }
-    if (getenv("HMRDP_RFX_DEBUG") != nullptr && c == 0) {
-      static int rdbg = 0;
-      if (rdbg < 2) {
-        int nz = 0, mn = 32767, mx = -32768;
-        for (int i = 0; i < 4096; ++i) {
-          if (comp[c][i] != 0) nz++;
-          if (comp[c][i] < mn) mn = comp[c][i];
-          if (comp[c][i] > mx) mx = comp[c][i];
-        }
-        printf("  Y rlgr: len=%u nz=%d range[%d..%d] tail:", tile.yLen, nz, mn, mx);
-        for (int i = 4088; i < 4096; ++i) printf(" %d", comp[c][i]);
-        printf("\n");
-        rdbg++;
-      }
     }
     if (extrapolate) {
       DequantSubband(comp[c], 0, 1023, shift[c].HL1);
@@ -918,18 +882,10 @@ bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride, int16_
         }
       }
     }
-    if (extrapolateDwt) {
+    if (extrapolate) {
       RfxDwtExtrapolateDecode(comp[c], temp);
     } else {
       InverseDwt2d(comp[c], temp);
-    }
-  }
-  if (getenv("HMRDP_RFX_DEBUG") != nullptr) {
-    static int dbg = 0;
-    if (dbg < 3) {
-      printf("tile(%u,%u) Ydc=%d Cbdc=%d Crdc=%d\n", tile.xIdx, tile.yIdx, comp[0][0],
-             comp[1][0], comp[2][0]);
-      dbg++;
     }
   }
   YCbCrToBgra(comp[0], comp[1], comp[2], dst, dstStride);

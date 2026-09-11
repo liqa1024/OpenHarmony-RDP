@@ -4,7 +4,7 @@
  * Parses the compressed "RFX Progressive" bitmap stream that the server sends
  * in CAPROGRESSIVE GFX surface commands. It only walks the container (blocks,
  * region, tiles) and exposes the per-tile RLGR payloads; the pixel decoding is
- * done elsewhere (CPU reference or the GPU path, see PERF-TODO §1.G).
+ * done elsewhere (CPU reference or the GPU path, see PERF-TODO §2).
  *
  * Portable C++17 with no OHOS dependencies so it can also be compiled on the
  * host for offline validation against a captured stream.

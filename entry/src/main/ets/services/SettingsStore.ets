@@ -72,9 +72,9 @@ export class AppSettings {
   enableH264: boolean = true;
   ignoreCertificate: boolean = true;
   // Prefer hardware (GPU) RemoteFX decoding over the CPU decoder. See
-  // PERF-TODO.md §1.G.
+  // PERF-TODO.md §2.
   hardwareDecode: boolean = true;
-  // Dev-only capture of the RemoteFX/Progressive stream (PERF-TODO §1.G spike).
+  // Dev-only capture of the RemoteFX/Progressive stream (PERF-TODO §2).
   rfxDump: boolean = false;
 }
 

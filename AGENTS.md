@@ -118,7 +118,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），统一走
 > **RemoteFX Progressive**。`patch-freerdp.ps1`/`build-freerdp.ps1` 不再加 H.264 子系统，
 > `libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，语义改为
-> **面向 GPU RemoteFX 解码**（见 PERF-TODO §1.G）。
+> **面向 GPU RemoteFX 解码**（见 PERF-TODO §2）。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）

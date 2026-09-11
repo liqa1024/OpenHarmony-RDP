@@ -107,11 +107,11 @@ class Session {
 
   // Process-global preference for hardware (GPU) RemoteFX decoding instead of
   // the CPU decoder. Read when a session connects (the GPU RFX path lands in
-  // PERF-TODO §1.G).
+  // PERF-TODO §2).
   static void SetHardwareDecode(bool enabled);
 
   // Dev-only capture of the incoming RemoteFX/Progressive GFX surface streams,
-  // written to `dir` as hmrdp_rfx.bin (see PERF-TODO §1.G spike).
+  // written to `dir` as hmrdp_rfx.bin (see PERF-TODO §2).
   static void SetRfxDump(bool enabled, const std::string& dir);
 
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
