@@ -9,14 +9,17 @@
 #include <cstring>
 #include <chrono>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #include <freerdp/autodetect.h>
 #include <freerdp/channels/channels.h>
+#include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/cmdline.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/graphics.h>
@@ -1044,6 +1047,57 @@ BOOL HmrdpNetworkCharacteristicsResult(rdpAutoDetect* autodetect, RDP_TRANSPORT_
   return TRUE;
 }
 
+// GFX decode timing. FreeRDP exposes no decode hook, but the RdpgfxClientContext
+// routes every surface command (H.264/AVC or bitmap decode) through
+// SurfaceCommand, so libhmrdp chains that callback and measures the call.
+std::mutex g_gfxWrapMutex;
+std::unordered_map<RdpgfxClientContext*, pcRdpgfxSurfaceCommand> g_gfxOriginalSurfaceCommand;
+
+UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
+  pcRdpgfxSurfaceCommand original = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_gfxWrapMutex);
+    const auto it = g_gfxOriginalSurfaceCommand.find(gfx);
+    if (it != g_gfxOriginalSurfaceCommand.end()) {
+      original = it->second;
+    }
+  }
+  if (original == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  const uint64_t start = NowUs();
+  const UINT rc = original(gfx, command);
+  const uint64_t elapsed = NowUs() - start;
+  if (gfx != nullptr && gfx->custom != nullptr) {
+    rdpGdi* gdi = static_cast<rdpGdi*>(gfx->custom);
+    if (gdi->context != nullptr) {
+      HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(gdi->context);
+      if (ctx->session != nullptr) {
+        ctx->session->OnDecodeTime(elapsed);
+      }
+    }
+  }
+  return rc;
+}
+
+void HmrdpWrapGfxDecode(RdpgfxClientContext* gfx) {
+  if (gfx == nullptr || gfx->SurfaceCommand == nullptr ||
+      gfx->SurfaceCommand == HmrdpGfxSurfaceCommand) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_gfxWrapMutex);
+  g_gfxOriginalSurfaceCommand[gfx] = gfx->SurfaceCommand;
+  gfx->SurfaceCommand = HmrdpGfxSurfaceCommand;
+}
+
+void HmrdpUnwrapGfxDecode(RdpgfxClientContext* gfx) {
+  if (gfx == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_gfxWrapMutex);
+  g_gfxOriginalSurfaceCommand.erase(gfx);
+}
+
 BOOL HmrdpBeginPaint(rdpContext* context) {
   if (context == nullptr || context->gdi == nullptr || context->gdi->primary == nullptr) {
     return TRUE;
@@ -1259,6 +1313,13 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     ctx->session->HandleCliprdrConnected(
         reinterpret_cast<CliprdrClientContext*>(e->pInterface));
   }
+  if (ctx->session != nullptr && strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
+    // Runs after freerdp_client_OnChannelConnectedEventHandler (which sets up the
+    // GFX pipeline), so the decode callback is already installed.
+    RdpgfxClientContext* gfx = reinterpret_cast<RdpgfxClientContext*>(e->pInterface);
+    HmrdpWrapGfxDecode(gfx);
+    ctx->session->SetGfxContext(gfx);
+  }
 }
 
 BOOL HmrdpPreConnect(freerdp* instance) {
@@ -1329,6 +1390,8 @@ void HmrdpPostDisconnect(freerdp* instance) {
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(instance->context);
   if (ctx->session != nullptr) {
+    HmrdpUnwrapGfxDecode(static_cast<RdpgfxClientContext*>(ctx->session->gfxContext()));
+    ctx->session->SetGfxContext(nullptr);
     ctx->session->HandlePostDisconnect();
   }
   PubSub_UnsubscribeChannelConnected(instance->context->pubSub, HmrdpChannelConnected);
@@ -1427,6 +1490,14 @@ void Session::OnNetworkCharacteristics(uint32_t baseRtt, uint32_t averageRtt,
   }
 }
 
+void Session::OnDecodeTime(uint64_t micros) {
+  decodeAccumUs_.fetch_add(micros);
+}
+
+void Session::SetGfxContext(void* gfx) {
+  gfxContext_ = gfx;
+}
+
 void Session::MarkInput() {
   const uint64_t now = NowUs();
   const uint64_t lastFrame = lastFrameTickUs_.load();
@@ -1458,8 +1529,14 @@ void Session::EmitMetrics() {
     lastFrameCount_ = frames;
     renderAccumUs_ = 0;
     renderSamples_ = 0;
+    decodeAccumUs_ = 0;
     responseSampleCount_ = 0;
     responseSampleIndex_ = 0;
+    for (uint32_t i = 0; i < 5; ++i) {
+      audioLostWindow_[i] = 0;
+      audioTotalWindow_[i] = 0;
+    }
+    audioWindowIndex_ = 0;
     metricsStarted_ = true;
     return;
   }
@@ -1479,11 +1556,11 @@ void Session::EmitMetrics() {
   const uint32_t fps = static_cast<uint32_t>(
       static_cast<double>(frames - lastFrameCount_) / seconds + 0.5);
 
-  // Average DrawFrame duration (texture upload + quad + eglSwapBuffers), and
-  // the smallest input-to-frame delta seen in the window. Both are drained here
-  // (same thread as HandleEndPaint).
+  // "本机" = decode + present: the wrapped GFX SurfaceCommand time plus the
+  // DrawFrame time (texture upload + quad + eglSwapBuffers), averaged per frame.
   const uint32_t renderSamples = renderSamples_;
-  const uint64_t renderAvgUs = renderSamples > 0 ? renderAccumUs_ / renderSamples : 0;
+  const uint64_t localAccumUs = renderAccumUs_ + decodeAccumUs_.load();
+  const uint64_t localAvgUs = renderSamples > 0 ? localAccumUs / renderSamples : 0;
   // Response is a moving average of the recent measurements; it intentionally
   // is not cleared per window so the last value keeps showing between samples.
   uint64_t responseUs = 0;
@@ -1496,6 +1573,28 @@ void Session::EmitMetrics() {
   }
   renderAccumUs_ = 0;
   renderSamples_ = 0;
+  decodeAccumUs_ = 0;
+
+  // Audio glitch rate over the recent window: bytes that failed to play
+  // (underrun silence + overflow drops) over all bytes the stream handled.
+  uint64_t audioLost = 0;
+  uint64_t audioTotal = 0;
+  const int audioRate = audio_.TakeLossStats(&audioLost, &audioTotal);
+  audioLostWindow_[audioWindowIndex_] = audioLost;
+  audioTotalWindow_[audioWindowIndex_] = audioTotal;
+  audioWindowIndex_ = (audioWindowIndex_ + 1) % 5;
+  uint64_t audioLostSum = 0;
+  uint64_t audioTotalSum = 0;
+  for (uint32_t i = 0; i < 5; ++i) {
+    audioLostSum += audioLostWindow_[i];
+    audioTotalSum += audioTotalWindow_[i];
+  }
+  int32_t audioRateHz = -1;
+  int32_t audioLossBp = -1;
+  if (audioTotalSum > 0) {
+    audioRateHz = audioRate;
+    audioLossBp = static_cast<int32_t>(audioLostSum * 10000 / audioTotalSum);
+  }
 
   lastMetricsTick_ = now;
   lastInBytes_ = inBytes;
@@ -1515,8 +1614,8 @@ void Session::EmitMetrics() {
   }
 
   std::ostringstream payload;
-  payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << renderAvgUs
-          << "|" << responseUs;
+  payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << localAvgUs
+          << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp;
   Emit(SessionEvent::kMetrics, payload.str());
 }
 
@@ -1540,8 +1639,15 @@ bool Session::Connect(const RdpOptions& options) {
   frameCount_ = 0;
   renderAccumUs_ = 0;
   renderSamples_ = 0;
+  decodeAccumUs_ = 0;
+  gfxContext_ = nullptr;
   responseSampleCount_ = 0;
   responseSampleIndex_ = 0;
+  for (uint32_t i = 0; i < 5; ++i) {
+    audioLostWindow_[i] = 0;
+    audioTotalWindow_[i] = 0;
+  }
+  audioWindowIndex_ = 0;
   lastFrameTickUs_ = 0;
   pendingInputUs_ = 0;
   netCharBaseRtt_ = 0;

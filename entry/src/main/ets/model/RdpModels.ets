@@ -48,10 +48,12 @@ export enum RdpEvent {
   ClipboardHtml = 9,
   ClipboardImage = 10,
   // Per-second telemetry, payload
-  // "<rttMs>|<rxBps>|<txBps>|<fps>|<renderUs>|<responseUs>". rttMs is -1 while
-  // the server has not reported network characteristics; renderUs is the average
-  // DrawFrame time; responseUs is the mean of the recent input-to-frame samples
-  // (0 = none yet).
+  // "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<audioRateHz>|<audioLossBp>".
+  // rttMs is -1 while the server has not reported network characteristics;
+  // localUs is the average per-frame decode + present time; responseUs is the
+  // mean of the recent input-to-frame samples (0 = none yet); audioRateHz and
+  // audioLossBp (0.01% units) describe the recent audio playback health, both
+  // -1 when audio is not playing.
   Metrics = 11
 }
 

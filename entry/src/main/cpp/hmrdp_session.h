@@ -128,6 +128,13 @@ class Session {
   // characteristics (0 = not reported yet). FreeRDP's client does not store
   // these itself, so the values are captured here.
   void OnNetworkCharacteristics(uint32_t baseRtt, uint32_t averageRtt, uint32_t bandwidth);
+  // Pushed by the wrapped GFX SurfaceCommand: time spent decoding one surface
+  // command (H.264/AVC or bitmap). Called on the RDP thread.
+  void OnDecodeTime(uint64_t micros);
+  // The GFX channel context whose decode callback libhmrdp wrapped, so it can be
+  // unregistered on disconnect. Stored as void* to keep the header light.
+  void SetGfxContext(void* gfx);
+  void* gfxContext() const { return gfxContext_; }
 
   // Remote pointer (cursor) updates. The server sends the cursor as a bitmap
   // plus hot spot; the UI converts it into a HarmonyOS system cursor. Returning
@@ -177,11 +184,20 @@ class Session {
   // second: total DrawFrame time and the input-to-frame samples.
   uint64_t renderAccumUs_ = 0;
   uint32_t renderSamples_ = 0;
+  // Decode time (GFX SurfaceCommand) accumulated per window; added to the render
+  // time so "本机" covers decode + present.
+  std::atomic<uint64_t> decodeAccumUs_{0};
+  void* gfxContext_ = nullptr;
   // Ring of the most recent input-to-frame measurements; the emitted value is
   // their mean (this is a statistic, not a hard real-time figure).
   uint64_t responseSamplesUs_[5] = {0};
   uint32_t responseSampleCount_ = 0;
   uint32_t responseSampleIndex_ = 0;
+  // Recent audio (lost,total) byte counts, one slot per metric window, summed to
+  // give a short-term glitch rate instead of a cumulative counter.
+  uint64_t audioLostWindow_[5] = {0};
+  uint64_t audioTotalWindow_[5] = {0};
+  uint32_t audioWindowIndex_ = 0;
   // Written from the RDP thread, read from the UI thread (MarkInput).
   std::atomic<uint64_t> lastFrameTickUs_{0};
   // UI thread -> RDP thread hand-off; 0 means "no input pending".

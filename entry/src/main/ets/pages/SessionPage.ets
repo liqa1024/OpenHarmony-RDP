@@ -6,6 +6,7 @@ import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { pointer } from '@kit.InputKit';
 import { window } from '@kit.ArkUI';
+import { display } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
@@ -58,7 +59,8 @@ const MIN_BANDWIDTH_BYTES: number = 1024;
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_LOCAL: number = 74;
 const METRIC_WIDTH_RESPONSE: number = 74;
-const METRIC_WIDTH_FPS: number = 46;
+const METRIC_WIDTH_FPS: number = 66;
+const METRIC_WIDTH_AUDIO: number = 86;
 // Two gap sizes: the network/local pair sits one character apart, the rest
 // share a wider gap.
 const METRIC_GAP_TIGHT: number = 6;
@@ -138,10 +140,15 @@ struct SessionPage {
   @State metricsRx: number = 0;
   @State metricsTx: number = 0;
   @State metricsFps: number = 0;
-  // Average render (upload+draw+present) and smallest input-to-frame response,
-  // in microseconds; 0 means "not measured".
-  @State metricsRenderUs: number = 0;
+  // Average per-frame decode + present time (microseconds); 0 = not measured.
+  @State metricsLocalUs: number = 0;
   @State metricsResponseUs: number = 0;
+  // Audio sample rate (Hz) and recent glitch rate in basis points (0.01%);
+  // -1 when audio is not playing.
+  @State metricsAudioRateHz: number = -1;
+  @State metricsAudioLossBp: number = -1;
+  // Display (panel) refresh rate in Hz; 0 until queried.
+  @State systemRefreshRate: number = 0;
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -410,18 +417,20 @@ struct SessionPage {
     }
   }
 
-  /** Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<renderUs>|<responseUs>". */
+  /** Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<rateHz>|<lossBp>". */
   private onMetrics(data: string): void {
     const parts: string[] = data.split('|');
-    if (parts.length !== 6) {
+    if (parts.length !== 8) {
       return;
     }
     const rtt: number = Number.parseInt(parts[0], 10);
     const rx: number = Number.parseInt(parts[1], 10);
     const tx: number = Number.parseInt(parts[2], 10);
     const fps: number = Number.parseInt(parts[3], 10);
-    const renderUs: number = Number.parseInt(parts[4], 10);
+    const localUs: number = Number.parseInt(parts[4], 10);
     const responseUs: number = Number.parseInt(parts[5], 10);
+    const audioRateHz: number = Number.parseInt(parts[6], 10);
+    const audioLossBp: number = Number.parseInt(parts[7], 10);
     if (!Number.isNaN(rtt)) {
       this.metricsRtt = rtt;
     }
@@ -434,11 +443,28 @@ struct SessionPage {
     if (!Number.isNaN(fps)) {
       this.metricsFps = fps;
     }
-    if (!Number.isNaN(renderUs)) {
-      this.metricsRenderUs = renderUs;
+    if (!Number.isNaN(localUs)) {
+      this.metricsLocalUs = localUs;
     }
     if (!Number.isNaN(responseUs)) {
       this.metricsResponseUs = responseUs;
+    }
+    if (!Number.isNaN(audioRateHz)) {
+      this.metricsAudioRateHz = audioRateHz;
+    }
+    if (!Number.isNaN(audioLossBp)) {
+      this.metricsAudioLossBp = audioLossBp;
+    }
+    this.refreshSystemRefreshRate();
+  }
+
+  /** Samples the display refresh rate; VRR makes this change with content. */
+  private refreshSystemRefreshRate(): void {
+    try {
+      this.systemRefreshRate = Math.round(display.getDefaultDisplaySync().refreshRate);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'read display refresh rate failed: %{public}s',
+        JSON.stringify(error));
     }
   }
 
@@ -461,14 +487,39 @@ struct SessionPage {
     return '#F87171';
   }
 
-  /** Client render time in ms, or -1 when no frame was drawn this window. */
+  /** Client decode + present time in ms, or -1 when nothing was drawn. */
   private localMs(): number {
-    return this.metricsRenderUs > 0 ? this.metricsRenderUs / 1000 : -1;
+    return this.metricsLocalUs > 0 ? this.metricsLocalUs / 1000 : -1;
   }
 
   private localLabel(): string {
     const ms: number = this.localMs();
     return ms < 0 ? '本机 --' : '本机 ' + ms.toFixed(1) + 'ms';
+  }
+
+  /** "FPS <system>/<app>", distinguishing panel refresh from present rate. */
+  private fpsLabel(): string {
+    return 'FPS ' + this.systemRefreshRate + '/' + this.metricsFps;
+  }
+
+  /** Audio sample rate and recent glitch rate, e.g. "音频 48k 0.05%". */
+  private audioLabel(): string {
+    return '音频 ' + Math.round(this.metricsAudioRateHz / 1000) + 'k ' +
+      (this.metricsAudioLossBp / 100).toFixed(2) + '%';
+  }
+
+  /** Any recent glitch is worth flagging: 0 green, <=0.5% amber, else red. */
+  private audioColor(): string {
+    if (this.metricsAudioLossBp < 0) {
+      return '#B8BCC4';
+    }
+    if (this.metricsAudioLossBp === 0) {
+      return '#4ADE80';
+    }
+    if (this.metricsAudioLossBp <= 50) {
+      return '#FBBF24';
+    }
+    return '#F87171';
   }
 
   /**
@@ -1567,7 +1618,7 @@ struct SessionPage {
             .width(METRIC_WIDTH_RESPONSE)
             .margin({ left: METRIC_GAP_GROUP })
             .maxLines(1)
-          Text('FPS ' + this.metricsFps)
+          Text(this.fpsLabel())
             .fontSize(12)
             .fontColor('#B8BCC4')
             .width(METRIC_WIDTH_FPS)
@@ -1578,6 +1629,14 @@ struct SessionPage {
               .fontSize(12)
               .fontColor('#B8BCC4')
               .margin({ left: METRIC_GAP_GROUP })
+          }
+          if (this.metricsAudioRateHz > 0) {
+            Text(this.audioLabel())
+              .fontSize(12)
+              .fontColor(this.audioColor())
+              .width(METRIC_WIDTH_AUDIO)
+              .margin({ left: METRIC_GAP_GROUP })
+              .maxLines(1)
           }
         }
         .margin({ left: 16 })

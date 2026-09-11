@@ -80,13 +80,11 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
 
 `native/third_party/`、`native/build/`、`native/install/`、`native/tools/` 已 gitignore。
-产出库只提交**不带版本号的单一 `libX.so`**（如 `libfreerdp3.so`）。FreeRDP 通过
-`-DWITH_LIBRARY_VERSIONING=OFF`（见 `build-freerdp.ps1`）关闭库版本化，配合
-`native/patches/AddTargetWithResourceFile.cmake`（见 `patch-freerdp.ps1` 第 5 步）在非 Windows
-保留 `lib` 前缀与 `<名><主版本>` 输出名、并显式写入 SONAME，从而不再产生 `libX.so.3` 副本
-（Linux 上 `.so` 只是指向 `.so.3` 的符号链接，Windows 上会被实体化成重复副本）。CMake 直接用
-完整路径链接 `${FREERDP_LIBS}/libX.so`（见 `entry/src/main/cpp/CMakeLists.txt`），运行时
-`DT_NEEDED` 也是 `libX.so`。
+产出库只提交**不带版本号的单一 `libX.so`**（如 `libfreerdp3.so`）：`build-freerdp.ps1` 用
+`-DWITH_LIBRARY_VERSIONING=OFF`，配合 `native/patches/AddTargetWithResourceFile.cmake`
+（`patch-freerdp.ps1` 第 5 步）在非 Windows 保留 `lib` 前缀并显式写入 SONAME，避免 Windows 上
+被实体化成 `libX.so.3` 重复副本。CMake 直接完整路径链接 `${FREERDP_LIBS}/libX.so`
+（`entry/src/main/cpp/CMakeLists.txt`），运行时 `DT_NEEDED` 同样是 `libX.so`。
 
 **优化等级 / 调试信息**：`libhmrdp.so` 由 hvigor 按构建模式重编，优化等级交给 OHOS 工具链按
 `CMAKE_BUILD_TYPE` 决定（debug → `-O0 -g -fno-limit-debug-info`，release → `-O2 -DNDEBUG`）；
@@ -224,7 +222,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 17. **会话工具栏显示**：全屏模式沿用悬浮自动隐藏（`toolbarHoverDelay`/`toolbarHideDelay`，鼠标靠近屏幕顶部
     才弹出，`updateToolbar` 只在全屏生效）；窗口模式**始终显示**，且作为普通行布局在远程画面**上方**
     （`Column`：工具栏 + `Stack`(XComponent + 状态浮层)），渲染区域自然扣除工具栏高度、不再被覆盖，
-    指针映射仍以 XComponent 局部坐标为准。
+    指针映射仍以 XComponent 局部坐标为准。左侧为遥测状态区（见第 19 条）：各指标用**固定宽度**
+    （`METRIC_WIDTH_*`）避免数字位数变化时重排，间距分「网络↔本机」与其余两档（`METRIC_GAP_*`）。
 18. **远端光标同步**（`useRdpCursor`，默认开）：RDP 只传光标**位图**（系统指针仅 `SYSPTR_NULL`/
     `SYSPTR_DEFAULT`），故照搬位图、不做类型映射；HarmonyOS 会把自定义位图缩放到**固定的系统光标大小**，
     所以无需按画面/位图尺寸自行缩放。原生 `HmrdpPostConnect` 用 `graphics_register_pointer` 接管
@@ -232,6 +231,20 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     面积平均**缩到 256（热点同比例，源 >1024 丢弃）。UI 用 `Base64Helper` → `createPixelMapSync` →
     `pointer.setCustomCursorSync`，默认/隐藏走 `setPointerStyleSync(DEFAULT)` / `setPointerVisibleSync(false)`
     （模拟器无鼠标，只能真机验证）。关闭开关则不接管、回退默认箭头。
+19. **会话状态栏遥测**：原生 `Session::EmitMetrics` 每秒经 `kMetrics` 事件下发
+    `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`，`SessionPage` 工具栏渲染。
+    - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端
+      注册该回调），故 `Connect` 时给 `context->autodetect` 注册 `HmrdpNetworkCharacteristicsResult` 自行捕获。
+    - **本机** = **解码 + 呈现**：解码链式包裹 `RdpgfxClientContext::SurfaceCommand`（H.264/位图解码都在
+      这里，`rdpgfx` 通道连接后设置）；呈现为 `DrawFrame`。两者按帧平均（`localUs`）。
+    - **响应**：RDP 输入与画面是两条**无回显**的流，输入延迟只能推断——仅在**空闲 ≥200ms 后输入、2s 内
+      出现首帧**时采样，取近 **5 次均值**；不做该约束会退化成帧节拍。
+    - **带宽**：`freerdp_get_stats(context->rdp)` 的收发字节差分（GFX/H.264 下同样有效）。
+    - **FPS**：`<系统>/<应用>`，应用=实际呈现数，系统=`display.getDefaultDisplaySync().refreshRate`（VRR 下会变）。
+    - **音频**：采样率 + 近期丢帧率；丢帧 = `OnWrite` 欠载补静音 + 环形缓冲溢出的字节，**仅活跃**
+      （300ms 内有包）时统计，取近 **5 个窗口**滑动，避免空闲静音误报。
+    - **不显示**：服务端处理（协议不回报）、压缩比（仅 GDI 位图路径有意义，GFX/H.264 下不存在）、
+      音频丢包（复用在同一传输里，客户端无逐包统计）；音频丢帧率是可感知卡顿的代理。
 
 ## ArkTS 规范
 
@@ -256,7 +269,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `entry/src/main/ets/sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `entry/src/main/ets/pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，右下角 FAB） |
-| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（右侧依次复制/粘贴、全屏/最小化/断开）、全屏状态跟踪 |
+| `entry/src/main/ets/pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏（左侧状态遥测 + 右侧复制/粘贴、全屏/最小化/断开）、全屏状态跟踪 |
 | `entry/src/main/ets/pages/EditConnectionPage.ets` | 新增 / 编辑连接（保存仅写配置，密码连接成功后自动保存；连接按钮下方为可折叠「高级设置」） |
 | `entry/src/main/ets/pages/SettingsPage.ets` | 全局设置（工具栏延迟、使用RDP光标、触控板滚动/捏合与触摸模拟、触屏高刷新率、Win 键替代、全局分辨率/缩放、全局连接特性（音频/GFX/H.264/证书）、窗口尺寸与默认最大化、自动隐藏主窗口、配置导入/导出） |
 | `entry/src/main/ets/services/ConnectionStore.ets` | 基于 preferences 的连接配置存储（稳定 id + updatedAt，含 `useGlobalDisplay`/`scalePercent`/`useGlobalAdvanced`；`reorder` 持久化拖拽后的 `ids` 顺序） |
@@ -269,6 +282,6 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` / `setRdpCursor` 查询与开关 |
-| `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理 |
+| `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理、会话遥测（GFX 解码计时 / 带宽采样 / 每秒 `kMetrics`） |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
-| `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 中断/错误降级） |
+| `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |

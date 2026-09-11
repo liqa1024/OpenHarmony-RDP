@@ -5,6 +5,7 @@
 #include "hmrdp_audio.h"
 
 #include <dlfcn.h>
+#include <chrono>
 #include <cstring>
 
 #include "hmrdp_log.h"
@@ -14,6 +15,15 @@ namespace {
 
 // ~0.6s of 48kHz stereo 16-bit PCM; the oldest data is dropped on overflow.
 constexpr size_t kRingCapacity = 256 * 1024;
+// A packet gap up to this long is normal jitter; beyond it the stream is
+// considered idle and silence is not counted as underrun loss.
+constexpr uint64_t kActiveWindowUs = 300 * 1000;
+
+uint64_t AudioNowUs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 using CreateFn = OH_AudioStream_Result (*)(OH_AudioStreamBuilder**,
                                            OH_AudioStream_Type);
@@ -150,6 +160,9 @@ void AudioOutput::Write(const void* data, size_t size, int sampleRate, int chann
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  // Mark the stream active so the audio thread counts an underrun as loss only
+  // while packets are actually flowing (not for idle silence).
+  activeUntilUs_.store(AudioNowUs() + kActiveWindowUs);
   EnqueueLocked(bytes, size);
 }
 
@@ -269,7 +282,6 @@ void AudioOutput::StartRenderer() {
     api.start(renderer);
   }
 }
-
 void AudioOutput::EnqueueLocked(const uint8_t* data, size_t size) {
   if (pending_.empty()) {
     return;
@@ -278,13 +290,22 @@ void AudioOutput::EnqueueLocked(const uint8_t* data, size_t size) {
   if (size >= capacity) {
     // A single packet larger than the ring: keep only the newest tail.
     data += size - capacity;
+    const size_t dropped = size - capacity;
+    lostBytes_.fetch_add(dropped);
+    totalBytes_.fetch_add(dropped);
     size = capacity;
     head_ = 0;
     count_ = 0;
   }
+  size_t toDrop = 0;
   while (count_ + size > capacity && count_ > 0) {
     head_ = (head_ + 1) % capacity;
     count_--;
+    toDrop++;
+  }
+  if (toDrop > 0) {
+    lostBytes_.fetch_add(toDrop);
+    totalBytes_.fetch_add(toDrop);
   }
   size_t tail = (head_ + count_) % capacity;
   size_t remaining = size;
@@ -300,8 +321,23 @@ void AudioOutput::EnqueueLocked(const uint8_t* data, size_t size) {
   }
 }
 
+int AudioOutput::TakeLossStats(uint64_t* lostBytes, uint64_t* totalBytes) {
+  const uint64_t lost = lostBytes_.exchange(0);
+  const uint64_t total = totalBytes_.exchange(0);
+  if (lostBytes != nullptr) {
+    *lostBytes = lost;
+  }
+  if (totalBytes != nullptr) {
+    *totalBytes = total;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  return renderer_ != nullptr ? rate_ : 0;
+}
+
 // Pull model: the audio thread hands us a buffer to fill. Underrun becomes
-// silence so the callback cadence never stalls.
+// silence so the callback cadence never stalls. While the stream is active, the
+// requested bytes count towards the total and the silence-filled tail towards
+// the loss, so an underrun shows up as a playback glitch rate.
 OH_AudioData_Callback_Result AudioOutput::OnWrite(OH_AudioRenderer*, void* userData,
                                                   void* buffer, int32_t size) {
   AudioOutput* self = static_cast<AudioOutput*>(userData);
@@ -310,6 +346,7 @@ OH_AudioData_Callback_Result AudioOutput::OnWrite(OH_AudioRenderer*, void* userD
   }
   uint8_t* out = static_cast<uint8_t*>(buffer);
   const size_t want = static_cast<size_t>(size);
+  const bool active = AudioNowUs() < self->activeUntilUs_.load();
   size_t copied = 0;
   {
     std::lock_guard<std::mutex> lock(self->mutex_);
@@ -324,6 +361,12 @@ OH_AudioData_Callback_Result AudioOutput::OnWrite(OH_AudioRenderer*, void* userD
   }
   if (copied < want) {
     memset(out + copied, 0, want - copied);
+  }
+  if (active) {
+    self->totalBytes_.fetch_add(want);
+    if (copied < want) {
+      self->lostBytes_.fetch_add(want - copied);
+    }
   }
   return AUDIO_DATA_CALLBACK_RESULT_VALID;
 }

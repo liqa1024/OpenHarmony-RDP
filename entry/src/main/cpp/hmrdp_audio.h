@@ -46,6 +46,13 @@ class AudioOutput {
   // Stops playback and frees the stream. Safe to call repeatedly.
   void Close();
 
+  // Drains the audio loss statistics since the previous call: bytes that were
+  // silence-filled on underrun plus bytes dropped on overflow, over the total
+  // bytes consumed from the ring. Returns the sample rate in Hz, or 0 when no
+  // renderer is open. Only measurements taken while audio was active (a packet
+  // arrived recently) are counted, so idle silence is never reported as loss.
+  int TakeLossStats(uint64_t* lostBytes, uint64_t* totalBytes);
+
  private:
   bool OpenRenderer(int sampleRate, int channels);
   void StartRenderer();
@@ -70,6 +77,12 @@ class AudioOutput {
   // Set by OnError / OnInterrupt, consumed by the next Write on the RDP thread.
   std::atomic<bool> failed_{false};
   std::atomic<bool> resumeRequested_{false};
+
+  // Audio loss accounting, filled on the audio thread and drained by the RDP
+  // thread. Only counted while an audio packet arrived within kActiveWindowUs.
+  std::atomic<uint64_t> lostBytes_{0};
+  std::atomic<uint64_t> totalBytes_{0};
+  std::atomic<uint64_t> activeUntilUs_{0};
 
   // Bounded PCM ring; the oldest data is dropped when the server outruns
   // playback so latency can never grow without bound.
