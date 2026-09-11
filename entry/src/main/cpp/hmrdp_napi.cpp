@@ -582,6 +582,27 @@ napi_value SetHardwareDecode(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
+napi_value SetRfxDump(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  bool enabled = false;
+  if (argc < 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::string dir;
+  if (argc >= 2) {
+    size_t length = 0;
+    if (napi_get_value_string_utf8(env, args[1], nullptr, 0, &length) == napi_ok && length > 0) {
+      dir.resize(length);
+      napi_get_value_string_utf8(env, args[1], dir.data(), length + 1, &length);
+      dir.resize(length);
+    }
+  }
+  Session::SetRfxDump(enabled, dir);
+  return CreateBool(env, true);
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -640,6 +661,7 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setHardwareDecode", nullptr, SetHardwareDecode, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

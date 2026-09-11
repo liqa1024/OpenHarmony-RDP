@@ -24,6 +24,7 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
 #include <freerdp/graphics.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
@@ -61,6 +62,93 @@ std::atomic<bool> g_useRdpCursor{true};
 // Prefer hardware (GPU) RemoteFX decoding instead of the CPU decoder. Default
 // on; the GPU RFX path (see PERF-TODO §1.G) reads this when a session connects.
 std::atomic<bool> g_hardwareDecode{true};
+
+// Dev-only RemoteFX/Progressive stream capture (PERF-TODO §1.G spike): every
+// CAPROGRESSIVE surface command is appended to <dir>/hmrdp_rfx.bin so the GPU
+// decoder can be developed/aligned against real data.
+std::mutex g_rfxDumpMutex;
+bool g_rfxDumpEnabled = false;
+std::string g_rfxDumpDir;
+FILE* g_rfxDumpFile = nullptr;
+uint64_t g_rfxDumpBytes = 0;
+uint32_t g_rfxRecordIndex = 0;
+FILE* g_rfxSurfaceFile = nullptr;
+uint64_t g_rfxSurfaceBytes = 0;
+constexpr uint64_t kRfxDumpMaxBytes = 256ull * 1024 * 1024;
+constexpr uint64_t kRfxSurfaceMaxBytes = 512ull * 1024 * 1024;
+
+// Appends the compressed CAPROGRESSIVE command; returns its 1-based record
+// index (0 when nothing was written), used to correlate the decoded-surface
+// dump below with the compressed record.
+uint32_t MaybeDumpGfxStream(uint32_t codecId, uint32_t surfaceId, uint32_t left, uint32_t top,
+                            uint32_t width, uint32_t height, const uint8_t* data,
+                            uint32_t length) {
+  if (!g_rfxDumpEnabled || data == nullptr || length == 0 || g_rfxDumpDir.empty()) {
+    return 0;
+  }
+  // Only the RemoteFX/Progressive codecs are of interest here.
+  if (codecId != RDPGFX_CODECID_CAPROGRESSIVE && codecId != RDPGFX_CODECID_CAPROGRESSIVE_V2 &&
+      codecId != RDPGFX_CODECID_UNCOMPRESSED) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(g_rfxDumpMutex);
+  const uint32_t index = ++g_rfxRecordIndex;
+  if (g_rfxDumpBytes >= kRfxDumpMaxBytes) {
+    return index;
+  }
+  if (g_rfxDumpFile == nullptr) {
+    const std::string path = g_rfxDumpDir + "/hmrdp_rfx.bin";
+    g_rfxDumpFile = fopen(path.c_str(), "wb");
+    if (g_rfxDumpFile == nullptr) {
+      HMRDP_LOGW("rfx dump: cannot open %{public}s", path.c_str());
+      g_rfxDumpEnabled = false;
+      return 0;
+    }
+    HMRDP_LOGI("rfx dump: writing %{public}s", path.c_str());
+  }
+  const uint32_t magic = 0x31584652u;  // 'RFX1'
+  const uint32_t meta[8] = {magic, codecId, surfaceId, left, top, width, height, length};
+  fwrite(meta, sizeof(meta), 1, g_rfxDumpFile);
+  fwrite(data, 1, length, g_rfxDumpFile);
+  g_rfxDumpBytes += sizeof(meta) + length;
+  return index;
+}
+
+// Appends FreeRDP's own decoded surface (BGRA) after a CAPROGRESSIVE command,
+// so the host can compare another decoder against it pixel by pixel.
+void MaybeDumpGfxSurface(uint32_t recordIndex, RdpgfxClientContext* gfx, uint32_t surfaceId) {
+  if (recordIndex == 0 || gfx == nullptr || gfx->GetSurfaceData == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_rfxDumpMutex);
+    if (!g_rfxDumpEnabled || g_rfxSurfaceBytes >= kRfxSurfaceMaxBytes) {
+      return;
+    }
+  }
+  const UINT16 sid = surfaceId > 0xFFFFu ? 0xFFFFu : static_cast<UINT16>(surfaceId);
+  gdiGfxSurface* surface = static_cast<gdiGfxSurface*>(gfx->GetSurfaceData(gfx, sid));
+  if (surface == nullptr || surface->data == nullptr || surface->width == 0 ||
+      surface->height == 0 || surface->scanline == 0) {
+    return;
+  }
+  const size_t bytes = static_cast<size_t>(surface->scanline) * surface->height;
+  std::lock_guard<std::mutex> lock(g_rfxDumpMutex);
+  if (g_rfxSurfaceFile == nullptr) {
+    const std::string path = g_rfxDumpDir + "/hmrdp_rfx_surface.bin";
+    g_rfxSurfaceFile = fopen(path.c_str(), "wb");
+    if (g_rfxSurfaceFile == nullptr) {
+      HMRDP_LOGW("rfx dump: cannot open %{public}s", path.c_str());
+      return;
+    }
+    HMRDP_LOGI("rfx dump: writing %{public}s", path.c_str());
+  }
+  const uint32_t header[8] = {0x31534653u /* 'SFS1' */, recordIndex, surface->width,
+                              surface->height, surface->scanline, surface->format, 0, 0};
+  fwrite(header, sizeof(header), 1, g_rfxSurfaceFile);
+  fwrite(surface->data, 1, bytes, g_rfxSurfaceFile);
+  g_rfxSurfaceBytes += sizeof(header) + bytes;
+}
 
 uint64_t NowMs() {
   return static_cast<uint64_t>(
@@ -1071,8 +1159,17 @@ UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMA
   if (original == nullptr) {
     return CHANNEL_RC_OK;
   }
+  uint32_t dumpIndex = 0;
+  if (command != nullptr) {
+    dumpIndex =
+        MaybeDumpGfxStream(command->codecId, command->surfaceId, command->left, command->top,
+                           command->width, command->height, command->data, command->length);
+  }
   const uint64_t start = NowUs();
   const UINT rc = original(gfx, command);
+  if (dumpIndex != 0 && command != nullptr) {
+    MaybeDumpGfxSurface(dumpIndex, gfx, command->surfaceId);
+  }
   const uint64_t elapsed = NowUs() - start;
   if (gfx != nullptr && gfx->custom != nullptr) {
     rdpGdi* gdi = static_cast<rdpGdi*>(gfx->custom);
@@ -1585,8 +1682,20 @@ void Session::EmitMetrics() {
   // "本机" = decode + present: the wrapped GFX SurfaceCommand time plus the
   // DrawFrame time (texture upload + quad + eglSwapBuffers), averaged per frame.
   const uint32_t renderSamples = renderSamples_;
-  const uint64_t localAccumUs = renderAccumUs_ + decodeAccumUs_.load();
+  const uint64_t decodeAccumUs = decodeAccumUs_.load();
+  const uint64_t localAccumUs = renderAccumUs_ + decodeAccumUs;
   const uint64_t localAvgUs = renderSamples > 0 ? localAccumUs / renderSamples : 0;
+  // Split "本机" into decode (RFX/H.264 surface command) vs present (upload +
+  // quad + swap) so it is visible which half the cost is in - needed to decide
+  // between GPU decode and a cheaper upload path.
+  if (renderSamples > 0) {
+    const uint64_t decodeAvgMs = decodeAccumUs / renderSamples / 1000;
+    const uint64_t presentAvgMs = renderAccumUs_ / renderSamples / 1000;
+    HMRDP_LOGI("perf: 本机 split decode=%{public}u ms present=%{public}u ms (frames=%{public}u)",
+               static_cast<unsigned int>(decodeAvgMs),
+               static_cast<unsigned int>(presentAvgMs),
+               static_cast<unsigned int>(renderSamples));
+  }
   // Response is a moving average of the recent measurements; it intentionally
   // is not cleared per window so the last value keeps showing between samples.
   uint64_t responseUs = 0;
@@ -2125,6 +2234,24 @@ void Session::SetRdpCursor(bool enabled) {
 void Session::SetHardwareDecode(bool enabled) {
   g_hardwareDecode.store(enabled);
   HMRDP_LOGI("decode: hardware (GPU) preferred %{public}s", enabled ? "on" : "off");
+}
+
+void Session::SetRfxDump(bool enabled, const std::string& dir) {
+  std::lock_guard<std::mutex> lock(g_rfxDumpMutex);
+  if (g_rfxDumpFile != nullptr) {
+    fclose(g_rfxDumpFile);
+    g_rfxDumpFile = nullptr;
+  }
+  if (g_rfxSurfaceFile != nullptr) {
+    fclose(g_rfxSurfaceFile);
+    g_rfxSurfaceFile = nullptr;
+  }
+  g_rfxDumpDir = dir;
+  g_rfxDumpBytes = 0;
+  g_rfxSurfaceBytes = 0;
+  g_rfxRecordIndex = 0;
+  g_rfxDumpEnabled = enabled && !dir.empty();
+  HMRDP_LOGI("rfx dump: %{public}s", g_rfxDumpEnabled ? "enabled" : "disabled");
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {

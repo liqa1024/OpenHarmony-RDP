@@ -8,7 +8,7 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-  setTouchHighRate, updateSurface, setHardwareDecode,
+  setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump,
   RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -67,6 +67,11 @@ export class RdpNative {
   /** Prefer hardware (GPU) RemoteFX decoding; off uses the CPU decoder. */
   static applyHardwareDecode(enabled: boolean): void {
     setHardwareDecode(enabled);
+  }
+
+  /** Dev-only RemoteFX stream capture to the given directory. */
+  static applyRfxDump(enabled: boolean, dir: string): void {
+    setRfxDump(enabled, dir);
   }
 
   setListener(listener: RdpEventListener): void {

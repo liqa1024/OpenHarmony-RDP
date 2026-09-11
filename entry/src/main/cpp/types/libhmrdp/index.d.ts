@@ -75,3 +75,9 @@ export const setRdpCursor: (enabled: boolean) => boolean;
  * session connects.
  */
 export const setHardwareDecode: (enabled: boolean) => boolean;
+
+/**
+ * Dev-only: capture incoming RemoteFX/Progressive GFX surface streams to
+ * `<dir>/hmrdp_rfx.bin` (PERF-TODO §1.G spike).
+ */
+export const setRfxDump: (enabled: boolean, dir: string) => boolean;

@@ -25,6 +25,7 @@ add_library(hmrdp SHARED
     hmrdp_session.cpp
     hmrdp_renderer.cpp
     hmrdp_audio.cpp
+    hmrdp_rfx.cpp
 )
 
 # FreeRDP is built without library versioning (see native/scripts/build-freerdp.ps1

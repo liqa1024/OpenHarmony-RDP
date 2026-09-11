@@ -74,6 +74,8 @@ export class AppSettings {
   // Prefer hardware (GPU) RemoteFX decoding over the CPU decoder. See
   // PERF-TODO.md §1.G.
   hardwareDecode: boolean = true;
+  // Dev-only capture of the RemoteFX/Progressive stream (PERF-TODO §1.G spike).
+  rfxDump: boolean = false;
 }
 
 export class SettingsStore {
@@ -176,6 +178,7 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
       settings.hardwareDecode =
         SettingsStore.readBoolean(store, 'hardwareDecode', settings.hardwareDecode);
+      settings.rfxDump = SettingsStore.readBoolean(store, 'rfxDump', settings.rfxDump);
     }
     return settings;
   }
@@ -215,6 +218,7 @@ export class SettingsStore {
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.putSync('hardwareDecode', settings.hardwareDecode);
+      store.putSync('rfxDump', settings.rfxDump);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));

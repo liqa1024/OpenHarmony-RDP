@@ -253,6 +253,18 @@ struct SessionPage {
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
     RdpNative.applyHardwareDecode(settings.hardwareDecode);
+    let filesDir: string = '';
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx !== undefined) {
+        filesDir = ctx.filesDir;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'filesDir unavailable: %{public}s', JSON.stringify(error));
+    }
+    RdpNative.applyRfxDump(settings.rfxDump, filesDir);
+    hilog.info(DOMAIN, TAG, 'rfx dump=%{public}d dir=%{public}s', settings.rfxDump ? 1 : 0,
+      filesDir);
     this.useRdpCursor = settings.useRdpCursor;
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;

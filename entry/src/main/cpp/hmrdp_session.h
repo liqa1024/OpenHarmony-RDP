@@ -110,6 +110,10 @@ class Session {
   // PERF-TODO §1.G).
   static void SetHardwareDecode(bool enabled);
 
+  // Dev-only capture of the incoming RemoteFX/Progressive GFX surface streams,
+  // written to `dir` as hmrdp_rfx.bin (see PERF-TODO §1.G spike).
+  static void SetRfxDump(bool enabled, const std::string& dir);
+
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);

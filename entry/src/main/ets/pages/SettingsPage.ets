@@ -78,6 +78,8 @@ struct SettingsPage {
   @State enableGfx: boolean = true;
   @State ignoreCertificate: boolean = true;
   @State hardwareDecode: boolean = true;
+  // Dev-only RemoteFX stream capture (PERF-TODO §1.G spike).
+  @State rfxDump: boolean = false;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -139,6 +141,7 @@ struct SettingsPage {
     this.enableGfx = settings.enableGfx;
     this.hardwareDecode = settings.hardwareDecode;
     this.ignoreCertificate = settings.ignoreCertificate;
+    this.rfxDump = settings.rfxDump;
     RdpNative.applyHardwareDecode(this.hardwareDecode);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
@@ -214,6 +217,7 @@ struct SettingsPage {
     settings.enableGfx = this.enableGfx;
     settings.ignoreCertificate = this.ignoreCertificate;
     settings.hardwareDecode = this.hardwareDecode;
+    settings.rfxDump = this.rfxDump;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -256,6 +260,7 @@ struct SettingsPage {
     this.enableGfx = defaults.enableGfx;
     this.ignoreCertificate = defaults.ignoreCertificate;
     this.hardwareDecode = defaults.hardwareDecode;
+    this.rfxDump = defaults.rfxDump;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -914,6 +919,20 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.hardwareDecode = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '抓取 RFX 码流（测试）',
+              subtitle: '把 RemoteFX 压缩流写到应用 files/hmrdp_rfx.bin，供 GPU 解码开发',
+              value: this.rfxDump,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.rfxDump = v;
                 this.persist();
               }
             })
