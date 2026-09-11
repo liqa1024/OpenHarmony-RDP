@@ -48,6 +48,33 @@ struct RfxProgQuant {
   RfxQuant cr;
 };
 
+// Persistent per-tile decode state shared across progressive messages. A tile
+// is first sent as kFirst (absolute RLGR coefficients) and then refined by zero
+// or more kUpgrade passes; both read/write the same coefficient arrays and the
+// per-subband bit positions, so they must survive between messages. This is the
+// decoder-side mirror of FreeRDP's RFX_PROGRESSIVE_TILE (current/sign/bitPos);
+// the GPU port needs the same state (as a device buffer) to stay equivalent.
+//
+// Sized for the three 64x64 components (4096 int16 each). The struct is large
+// (~48 KB); the caller owns one instance per tile of the surface grid.
+struct RfxTileState {
+  bool valid = false;             // a kFirst pass has initialised this tile
+  uint16_t pass = 0;              // progressive pass counter (kFirst -> 1)
+  int16_t current[3][4096];       // pre-DWT dequantized coefficients
+  int16_t sign[3][4096];          // per-coefficient sign/zero marker (kUpgrade)
+  RfxQuant bitPos[3];             // component quant + progressive quant, per subband
+};
+
+// One clipping rectangle of a region (device pixels). FreeRDP composites a
+// decoded tile only inside the union of these rects; the rest of the tile keeps
+// the previous surface content.
+struct RfxRect {
+  uint16_t x = 0;
+  uint16_t y = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
+};
+
 // One 64x64 tile update. For kFirst/kSimple the three component payloads are
 // RLGR-encoded whole coefficients; for kUpgrade they are SRL/raw refinement
 // bands (progressive passes).
@@ -66,6 +93,9 @@ struct RfxTileRef {
   const RfxProgQuant* progQuants = nullptr;
   uint8_t numProgQuant = 0;
   uint8_t regionFlags = 0;
+  // Region clipping rects (valid for the duration of the callback).
+  const RfxRect* rects = nullptr;
+  uint16_t numRects = 0;
 
   // kFirst / kSimple component payloads.
   const uint8_t* yData = nullptr;
@@ -129,10 +159,20 @@ bool RlgrDecode(RlgrMode mode, const uint8_t* src, size_t size, int16_t* dst, si
 // Decodes one kFirst (whole-tile) update into a 64x64 BGRA image (`dstStride`
 // in bytes). This is the CPU reference for the RemoteFX tile pipeline
 // (RLGR -> differential -> dequant -> inverse DWT -> YCbCr->RGB) that the GPU
-// path will mirror. `current` is the per-tile pre-DWT coefficient state used by
-// RFX_TILE_DIFFERENCE tiles: pass nullptr for non-differential tiles only.
+// path will mirror. When `state` is non-null it is updated in place: the raw
+// coefficients are saved as `sign`, the dequantized coefficients become
+// `current` (or are added to it for RFX_TILE_DIFFERENCE tiles) and the
+// per-subband bit positions are recorded for later kUpgrade passes. Pass
+// nullptr only when the tile has no progressive continuation.
 bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride,
-                     int16_t* current[3] = nullptr);
+                     RfxTileState* state = nullptr);
+
+// Decodes one kUpgrade (progressive refinement) into a 64x64 BGRA image. The
+// SRL/raw bit streams are applied on top of `state->current`/`state->sign`,
+// which must have been initialised by an earlier DecodeTileFirst for the same
+// tile (mirrors progressive_decompress_tile_upgrade). Returns false if `state`
+// is null or the tile is not a kUpgrade.
+bool DecodeTileUpgrade(const RfxTileRef& tile, uint8_t* dst, int dstStride, RfxTileState* state);
 
 }  // namespace hmrdp
 
