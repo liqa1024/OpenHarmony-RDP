@@ -71,14 +71,7 @@ export const setTouchHighRate: (enabled: boolean) => boolean;
 export const setRdpCursor: (enabled: boolean) => boolean;
 
 /**
- * H.264 test switch. When true (default) the client advertises AVC444 as well as
- * AVC420; Windows only moves the desktop to H.264 once AVC444 is advertised.
- * Applied when a session connects.
+ * Prefer hardware (GPU) RemoteFX decoding over the CPU decoder. Applied when a
+ * session connects.
  */
-export const setH264Avc444: (enabled: boolean) => boolean;
-
-/**
- * Prefer a hardware H.264 decoder (VDEC). When false the subsystem prefers a
- * software decoder, letting the two be A/B compared. Applied at connect.
- */
-export const setH264Hardware: (enabled: boolean) => boolean;
+export const setHardwareDecode: (enabled: boolean) => boolean;

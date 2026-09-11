@@ -112,19 +112,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 >   `isAudioSupported()` 暴露给 UI，设置/编辑页的「音频重定向」置灰并显示原因。
 >   新增设备相关特性沿用此 `Capability` 模式（置灰 + 原因 + 原生兜底），别只靠 syscap 告警。
 >
-> **H.264/AVC 硬解**：原预编译 FreeRDP `WITH_FFMPEG/OPENH264=OFF` → `WITH_GFX_H264=OFF`，客户端
-> 从不广告 AVC420（「H.264」设置是空操作，实际用 RemoteFX Progressive）。`patch-freerdp.ps1`
-> 步骤 7 加入 OHOS AVCodec 子系统 `native/patches/h264_ohos_avcodec.c`（`OH_VideoDecoder`
-> 同步 buffer 模式，`OH_MD_KEY_ENABLE_SYNC_MODE=1`），`build-freerdp.ps1` 传 `-DWITH_OHOS_AVCODEC=ON`
-> 并据此强制 `WITH_GFX_H264=ON`，客户端才重新广告 AVC420。`libfreerdp3.so` 因此 **DT_NEEDED
-> `libnative_media_{vdec,codecbase,core}.so`**（平台媒体栈）；`Session::Connect` 用 `dlopen` 探测
-> `video/avc`，不支持则不启用 `FreeRDP_GfxH264`。子系统**优先硬件解码器**（`GetCapabilityByCategory(HARDWARE)`
-> + `CreateByName`），全局开关 `硬件解码（H.264）` 置 `HmrdpH264SetHardwarePreferred` 可切到软件解码器；
-> 日志打印所选名称与 `hardware=0/1`。子系统把解码 YUV 写进**自己的平面缓冲**并把
-> `h264->pYUVData/iStride` 指向它，仍由 FreeRDP 做 YUV→RGB 与合成（零拷贝见 PERF-TODO C/Stage 2）。
-> **已在模拟器验证**：仅广告 AVC420 时 Windows 仍走 Progressive，需同时置 `FreeRDP_GfxAVC444` 才会
-> 下发 H.264；要点还有输入缓冲按 NAL 带 `CODEC_DATA`/`SYNC_FRAME`、解码器**一帧输出延迟**（需返回
-> 上一帧/首帧补偿）。细节见 PERF-TODO C。
+> **H.264/AVC 已移除**：曾用 OHOS AVCodec 实现了 H.264 硬解子系统（可参考 git 历史/PERF-TODO），
+> 但真机验证发现：(1) H.264 只有在客户端广告 **AVC444** 时 Windows 才启用，属微软非核心可选项；
+> (2) 即使命中硬解（`hardware=1`）也无明显收益——瓶颈在解码后的 CPU 环节（拷帧/YUV→RGB/合成/上传）。
+> 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），统一走
+> **RemoteFX Progressive**。`patch-freerdp.ps1`/`build-freerdp.ps1` 不再加 H.264 子系统，
+> `libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，语义改为
+> **面向 GPU RemoteFX 解码**（见 PERF-TODO §1.G）。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
@@ -190,7 +184,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
     `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
     `width/height/scalePercent`；连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
-12. **高级连接特性（全局默认 + 单连接覆盖）**：音频/H.264/忽略证书这几项默认值放在
+12. **高级连接特性（全局默认 + 单连接覆盖）**：音频/忽略证书这几项默认值放在
     `AppSettings`（设置页「连接特性」区），连接保存自己的独立值 + `useGlobalAdvanced` 标志，
     **默认跟随全局**（`SavedConnection.useGlobalAdvanced = true`）。连接前用
     `SettingsStore.resolveAdvanced(conn)` 解析，再写入 `RdpConnectOptions`。编辑页「高级设置」里

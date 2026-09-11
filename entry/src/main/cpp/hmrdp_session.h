@@ -105,14 +105,10 @@ class Session {
   // kept (the pre-cursor-support behaviour). Applied when a session connects.
   static void SetRdpCursor(bool enabled);
 
-  // Process-global H.264 test switch: when false the client advertises AVC420
-  // only; when true it also advertises AVC444, which Windows requires before it
-  // moves the desktop to H.264. Read when a session connects.
-  static void SetH264Avc444(bool enabled);
-
-  // Process-global preference for a hardware H.264 decoder; when false the
-  // subsystem prefers a software decoder. Applied when a session connects.
-  static void SetH264Hardware(bool enabled);
+  // Process-global preference for hardware (GPU) RemoteFX decoding instead of
+  // the CPU decoder. Read when a session connects (the GPU RFX path lands in
+  // PERF-TODO §1.G).
+  static void SetHardwareDecode(bool enabled);
 
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.

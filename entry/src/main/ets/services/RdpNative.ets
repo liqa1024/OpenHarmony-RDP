@@ -8,7 +8,7 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-  setTouchHighRate, updateSurface, setH264Avc444, setH264Hardware,
+  setTouchHighRate, updateSurface, setHardwareDecode,
   RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -64,14 +64,9 @@ export class RdpNative {
     setRdpCursor(enabled);
   }
 
-  /** H.264 test switch (temporary): also advertise AVC444. */
-  static applyH264Avc444(enabled: boolean): void {
-    setH264Avc444(enabled);
-  }
-
-  /** Prefer a hardware H.264 decoder; off prefers a software one. */
-  static applyH264Hardware(enabled: boolean): void {
-    setH264Hardware(enabled);
+  /** Prefer hardware (GPU) RemoteFX decoding; off uses the CPU decoder. */
+  static applyHardwareDecode(enabled: boolean): void {
+    setHardwareDecode(enabled);
   }
 
   setListener(listener: RdpEventListener): void {

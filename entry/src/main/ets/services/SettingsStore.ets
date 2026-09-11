@@ -71,12 +71,9 @@ export class AppSettings {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   ignoreCertificate: boolean = true;
-  // Temporary H.264 test switch: also advertise AVC444 (Windows needs it before
-  // it moves the desktop to H.264). See PERF-TODO.md C.
-  h264Avc444: boolean = true;
-  // Prefer a hardware H.264 decoder (VDEC). When off the client prefers a
-  // software decoder. Only meaningful while H.264 is enabled.
-  h264Hardware: boolean = true;
+  // Prefer hardware (GPU) RemoteFX decoding over the CPU decoder. See
+  // PERF-TODO.md §1.G.
+  hardwareDecode: boolean = true;
 }
 
 export class SettingsStore {
@@ -177,10 +174,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'enableH264', settings.enableH264);
       settings.ignoreCertificate =
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
-      settings.h264Avc444 =
-        SettingsStore.readBoolean(store, 'h264Avc444', settings.h264Avc444);
-      settings.h264Hardware =
-        SettingsStore.readBoolean(store, 'h264Hardware', settings.h264Hardware);
+      settings.hardwareDecode =
+        SettingsStore.readBoolean(store, 'hardwareDecode', settings.hardwareDecode);
     }
     return settings;
   }
@@ -219,8 +214,7 @@ export class SettingsStore {
       store.putSync('enableGfx', settings.enableGfx);
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
-      store.putSync('h264Avc444', settings.h264Avc444);
-      store.putSync('h264Hardware', settings.h264Hardware);
+      store.putSync('hardwareDecode', settings.hardwareDecode);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));

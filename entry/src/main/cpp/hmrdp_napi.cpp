@@ -570,7 +570,7 @@ napi_value SetRdpCursor(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value SetH264Avc444(napi_env env, napi_callback_info info) {
+napi_value SetHardwareDecode(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -578,19 +578,7 @@ napi_value SetH264Avc444(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session::SetH264Avc444(enabled);
-  return CreateBool(env, true);
-}
-
-napi_value SetH264Hardware(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  bool enabled = true;
-  if (argc < 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
-    return CreateBool(env, false);
-  }
-  Session::SetH264Hardware(enabled);
+  Session::SetHardwareDecode(enabled);
   return CreateBool(env, true);
 }
 
@@ -650,9 +638,7 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setRdpCursor", nullptr, SetRdpCursor, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setH264Avc444", nullptr, SetH264Avc444, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"setH264Hardware", nullptr, SetH264Hardware, nullptr, nullptr, nullptr,
+      {"setHardwareDecode", nullptr, SetHardwareDecode, nullptr, nullptr, nullptr,
        napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

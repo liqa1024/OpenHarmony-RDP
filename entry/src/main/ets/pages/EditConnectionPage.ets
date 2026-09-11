@@ -36,7 +36,8 @@ struct EditConnectionPage {
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
-  @State enableH264: boolean = true;
+  // H.264 was removed; kept false so the stored model field stays inert.
+  @State enableH264: boolean = false;
   @State ignoreCertificate: boolean = true;
   @State errorMessage: string = '';
   @State editing: boolean = false;
@@ -104,7 +105,6 @@ struct EditConnectionPage {
       this.enableClipboard = conn.enableClipboard;
       this.enableAudio = this.audioSupported && conn.enableAudio;
       this.enableGfx = conn.enableGfx;
-      this.enableH264 = conn.enableH264;
       this.ignoreCertificate = conn.ignoreCertificate;
       this.useGlobalAdvanced = conn.useGlobalAdvanced;
     }
@@ -162,7 +162,6 @@ struct EditConnectionPage {
 
   private advancedSummary(profile: AdvancedProfile): string {
     return `剪贴板${this.onOff(profile.enableClipboard)} · 音频${this.onOff(profile.enableAudio)}`
-      + ` · H.264${this.onOff(profile.enableH264)}`
       + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`;
   }
 
@@ -192,14 +191,14 @@ struct EditConnectionPage {
     options.enableClipboard = this.enableClipboard;
     options.enableAudio = this.enableAudio;
     options.enableGfx = this.enableGfx;
-    options.enableH264 = this.enableH264;
+    options.enableH264 = false;
     options.ignoreCertificate = this.ignoreCertificate;
     if (applyGlobalAdvanced && this.useGlobalAdvanced) {
       const advanced: AdvancedProfile = SettingsStore.globalAdvancedProfile();
       options.enableClipboard = advanced.enableClipboard;
       options.enableAudio = advanced.enableAudio;
       options.enableGfx = advanced.enableGfx;
-      options.enableH264 = advanced.enableH264;
+      options.enableH264 = false;
       options.ignoreCertificate = advanced.ignoreCertificate;
     }
     if (!this.audioSupported) {
@@ -750,10 +749,6 @@ struct EditConnectionPage {
                   this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
                     this.enableAudio = v;
                   }, this.audioSupported, this.audioDisabledReason)
-                  this.optionRow('H.264 / AVC（可硬件解码）',
-                    '声明支持 H.264，客户端可硬解；是否采用看服务端', this.enableH264, (v: boolean) => {
-                    this.enableH264 = v;
-                  }, true, '')
                   this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,
                     (v: boolean) => {
                       this.ignoreCertificate = v;

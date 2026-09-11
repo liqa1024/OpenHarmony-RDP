@@ -252,8 +252,7 @@ struct SessionPage {
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
-    RdpNative.applyH264Avc444(settings.h264Avc444);
-    RdpNative.applyH264Hardware(settings.h264Hardware);
+    RdpNative.applyHardwareDecode(settings.hardwareDecode);
     this.useRdpCursor = settings.useRdpCursor;
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
