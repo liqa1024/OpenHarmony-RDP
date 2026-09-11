@@ -166,11 +166,16 @@ class Session {
   // Clipboard redirection state. The local clipboard is kept in the exact wire
   // form of each format it can provide. Only one kind is owned at a time, so the
   // server only ever requests formats we can answer.
-  enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3 };
+  enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3, kRtf = 4 };
 
   // Pushes the local FormatList for the current kind (no-op until the channel
   // is ready). Called after the clipboard state changes.
   void AdvertiseLocalClipboard();
+
+  // Issues a clipboard data request to the server and marks it in flight. Data
+  // responses carry no format id, so at most one request may be outstanding;
+  // anything newer is deferred (see OnCliprdrServerFormatList).
+  UINT SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind);
 
   CliprdrClientContext* cliprdr_ = nullptr;
   std::mutex clipboardMutex_;
@@ -186,9 +191,14 @@ class Session {
   // Format the server used for "HTML Format" in its latest FormatList, kept for
   // bookkeeping; requests use the id that list carried.
   UINT32 remoteHtmlFormatId_ = 0;
-  // Format currently requested from the server, so the untagged data response
-  // can be dispatched. Cleared once the response arrives.
-  LocalClipKind pendingRemoteKind_ = LocalClipKind::kNone;
+  // Remote fetch serialisation. A data response carries no format id, so only
+  // one request may be in flight; a FormatList arriving meanwhile is remembered
+  // and fetched after the current response.
+  bool remoteRequestInFlight_ = false;
+  LocalClipKind remoteRequestKind_ = LocalClipKind::kNone;
+  bool hasPendingRemoteRefresh_ = false;
+  LocalClipKind pendingRefreshKind_ = LocalClipKind::kNone;
+  UINT32 pendingRefreshFormatId_ = 0;
 };
 
 }  // namespace hmrdp

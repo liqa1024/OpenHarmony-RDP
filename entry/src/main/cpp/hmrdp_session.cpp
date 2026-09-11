@@ -127,6 +127,7 @@ constexpr int kClipNone = 0;
 constexpr int kClipText = 1;
 constexpr int kClipHtml = 2;
 constexpr int kClipImage = 3;
+constexpr int kClipRtf = 4;
 
 // Client-side id and name for the registered "HTML Format" clipboard format.
 // Registered ids start at 0xC000 (WinPR convention); with CB_USE_LONG_FORMAT_NAMES
@@ -134,27 +135,102 @@ constexpr int kClipImage = 3;
 constexpr UINT32 kHtmlFormatId = 0xC000;
 const char kHtmlFormatName[] = "HTML Format";
 
+// ASCII case-insensitive search; the needles used here only contain letters and
+// punctuation whose bit 0x20 is already set, so ORing it is safe.
+size_t FindIgnoreCase(const std::string& haystack, const std::string& needle,
+                      size_t from = 0) {
+  if (needle.empty() || haystack.size() < needle.size()) {
+    return std::string::npos;
+  }
+  for (size_t i = from; i + needle.size() <= haystack.size(); ++i) {
+    size_t j = 0;
+    while (j < needle.size()) {
+      const char a = static_cast<char>(haystack[i + j] | 0x20);
+      const char b = static_cast<char>(needle[j] | 0x20);
+      if (a != b) {
+        break;
+      }
+      ++j;
+    }
+    if (j == needle.size()) {
+      return i;
+    }
+  }
+  return std::string::npos;
+}
+
 // Builds a CF_HTML payload: an ASCII header of byte offsets followed by the HTML
-// fragment. See "HTML Clipboard Format" (MSDN). The offset fields are
+// document. See "HTML Clipboard Format" (MSDN). The offset fields are
 // fixed-width, so the header length is constant and offsets can be computed up
-// front.
-std::string BuildCfHtml(const std::string& html) {
-  static const char kBodyStart[] = "<html><body>";
-  static const char kBodyEnd[] = "</body></html>";
+// front. A full document is embedded as-is (keeping <head> styles); a bare
+// fragment is wrapped, and the fragment markers/offsets point at the copied
+// content, never at the wrapper.
+// Builds a CF_HTML payload around `input`, leaving the HTML content itself
+// untouched (only offsets/markers are added).
+std::string BuildCfHtml(const std::string& input) {
   static const char kStartFragment[] = "<!--StartFragment-->";
   static const char kEndFragment[] = "<!--EndFragment-->";
+  const size_t startMarkerLen = std::strlen(kStartFragment);
   const size_t headerLen = std::strlen("Version:0.9\r\n") +
                            std::strlen("StartHTML:0000000000\r\n") +
                            std::strlen("EndHTML:0000000000\r\n") +
                            std::strlen("StartFragment:0000000000\r\n") +
                            std::strlen("EndFragment:0000000000\r\n");
-  const std::string body =
-      std::string(kBodyStart) + kStartFragment + html + kEndFragment + kBodyEnd;
+
+  std::string document;
+  size_t fragmentOffset = 0;
+  size_t fragmentLength = 0;
+
+  const size_t existingStart = FindIgnoreCase(input, kStartFragment);
+  const size_t existingEnd = FindIgnoreCase(input, kEndFragment);
+  if (existingStart != std::string::npos && existingEnd > existingStart + startMarkerLen) {
+    // The source already carries fragment markers (Word/WPS exports do): keep the
+    // document intact and just point the offsets at the marked content, instead
+    // of inserting a second, confusing pair.
+    document = input;
+    fragmentOffset = existingStart + startMarkerLen;
+    fragmentLength = existingEnd - fragmentOffset;
+  } else {
+    const bool isDocument = FindIgnoreCase(input, "<html") != std::string::npos ||
+                            FindIgnoreCase(input, "<!doctype") != std::string::npos ||
+                            FindIgnoreCase(input, "<body") != std::string::npos;
+    if (isDocument) {
+      // Mark the body content as the fragment while keeping the whole document
+      // (so <head><style> is preserved).
+      const size_t bodyOpen = FindIgnoreCase(input, "<body");
+      size_t bodyInner = std::string::npos;
+      if (bodyOpen != std::string::npos) {
+        const size_t tagEnd = input.find('>', bodyOpen);
+        if (tagEnd != std::string::npos) {
+          bodyInner = tagEnd + 1;
+        }
+      }
+      const size_t bodyClose =
+          bodyInner != std::string::npos ? FindIgnoreCase(input, "</body>", bodyInner)
+                                         : std::string::npos;
+      if (bodyInner != std::string::npos && bodyClose != std::string::npos) {
+        const std::string fragment = input.substr(bodyInner, bodyClose - bodyInner);
+        document = input.substr(0, bodyInner) + kStartFragment + fragment +
+                   kEndFragment + input.substr(bodyClose);
+        fragmentOffset = bodyInner + startMarkerLen;
+        fragmentLength = fragment.size();
+      } else {
+        document = std::string(kStartFragment) + input + kEndFragment;
+        fragmentOffset = startMarkerLen;
+        fragmentLength = input.size();
+      }
+    } else {
+      const std::string bodyStart = std::string("<html><body>") + kStartFragment;
+      document = bodyStart + input + kEndFragment + "</body></html>";
+      fragmentOffset = bodyStart.size();
+      fragmentLength = input.size();
+    }
+  }
+
   const size_t startHtml = headerLen;
-  const size_t endHtml = headerLen + body.size();
-  const size_t startFragment =
-      headerLen + std::strlen(kBodyStart) + std::strlen(kStartFragment);
-  const size_t endFragment = startFragment + html.size();
+  const size_t endHtml = headerLen + document.size();
+  const size_t startFragment = headerLen + fragmentOffset;
+  const size_t endFragment = startFragment + fragmentLength;
   char header[128] = {0};
   std::snprintf(header, sizeof(header),
                 "Version:0.9\r\n"
@@ -163,13 +239,24 @@ std::string BuildCfHtml(const std::string& html) {
                 "StartFragment:%010zu\r\n"
                 "EndFragment:%010zu\r\n",
                 startHtml, endHtml, startFragment, endFragment);
-  return std::string(header) + body;
+  return std::string(header) + document;
 }
 
-// Extracts the HTML fragment from a CF_HTML payload, falling back to the whole
-// payload when the fragment offsets are missing.
+// Extracts the HTML fragment from a CF_HTML payload. The marked fragment is
+// preferred (it is self-contained: inline styles + tags), then the
+// StartFragment/EndFragment offsets, then the whole StartHTML..EndHTML document,
+// then the raw payload. Returning the bare fragment keeps the payload small and
+// avoids handing HarmonyOS a huge Word document it may reject.
 std::string ParseCfHtml(const char* data, size_t size) {
   const std::string text(data, size);
+  const std::string startMarker = "<!--StartFragment-->";
+  const std::string endMarker = "<!--EndFragment-->";
+  const size_t markerBegin = text.find(startMarker);
+  const size_t markerEnd = text.find(endMarker);
+  if (markerBegin != std::string::npos && markerEnd > markerBegin + startMarker.size()) {
+    const size_t begin = markerBegin + startMarker.size();
+    return text.substr(begin, markerEnd - begin);
+  }
   const size_t headerLimit = size < 512 ? size : 512;
   const std::string header = text.substr(0, headerLimit);
   auto readOffset = [&header](const char* key) -> long {
@@ -198,15 +285,356 @@ std::string ParseCfHtml(const char* data, size_t size) {
                        static_cast<size_t>(endFragment - startFragment));
   }
   const long startHtml = readOffset("StartHTML:");
-  if (startHtml >= 0 && static_cast<size_t>(startHtml) < size) {
-    const long endHtml = readOffset("EndHTML:");
-    const size_t end = (endHtml > startHtml && static_cast<size_t>(endHtml) <= size)
-                           ? static_cast<size_t>(endHtml)
-                           : size;
+  const long endHtml = readOffset("EndHTML:");
+  if (startHtml >= 0 && endHtml > startHtml && static_cast<size_t>(endHtml) <= size) {
     return text.substr(static_cast<size_t>(startHtml),
-                       end - static_cast<size_t>(startHtml));
+                       static_cast<size_t>(endHtml - startHtml));
   }
   return text;
+}
+
+std::string HtmlEscapeText(const char* data, size_t len) {
+  std::string out;
+  out.reserve(len);
+  for (size_t i = 0; i < len; i++) {
+    switch (data[i]) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      default: out.push_back(data[i]);
+    }
+  }
+  return out;
+}
+
+void AppendUtf8(std::string* out, int32_t codepoint) {
+  int32_t cp = codepoint < 0 ? codepoint + 0x10000 : codepoint;
+  if (cp <= 0) {
+    return;  // A NUL byte would truncate the JS string event.
+  }
+  const uint32_t value = static_cast<uint32_t>(cp);
+  if (value < 0x80) {
+    out->push_back(static_cast<char>(value));
+  } else if (value < 0x800) {
+    out->push_back(static_cast<char>(0xC0 | (value >> 6)));
+    out->push_back(static_cast<char>(0x80 | (value & 0x3F)));
+  } else if (value < 0x10000) {
+    out->push_back(static_cast<char>(0xE0 | (value >> 12)));
+    out->push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3F)));
+    out->push_back(static_cast<char>(0x80 | (value & 0x3F)));
+  } else {
+    out->push_back(static_cast<char>(0xF0 | (value >> 18)));
+    out->push_back(static_cast<char>(0x80 | ((value >> 12) & 0x3F)));
+    out->push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3F)));
+    out->push_back(static_cast<char>(0x80 | (value & 0x3F)));
+  }
+}
+
+std::string RtfColorHex(int r, int g, int b) {
+  char buffer[8] = {0};
+  std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X", r & 0xFF, g & 0xFF, b & 0xFF);
+  return std::string(buffer);
+}
+
+// Parses the RTF color table; index 0 means "auto" (no explicit color).
+std::vector<std::string> ParseRtfColorTable(const std::string& rtf) {
+  // Index 0 (auto) is the entry produced by the colortbl's leading ';', so do
+  // NOT pre-seed a entry here or every \cfN would be off by one.
+  std::vector<std::string> colors;
+  const size_t pos = rtf.find("\\colortbl");
+  if (pos == std::string::npos) {
+    return colors;
+  }
+  int r = -1;
+  int g = -1;
+  int b = -1;
+  int depth = 0;
+  for (size_t i = pos + 9; i < rtf.size(); i++) {
+    const char c = rtf[i];
+    if (c == '{') {
+      depth++;
+    } else if (c == '}') {
+      if (depth == 0) {
+        break;
+      }
+      depth--;
+    } else if (c == ';') {
+      colors.push_back(r >= 0 ? RtfColorHex(r, g, b) : std::string());
+      r = -1;
+      g = -1;
+      b = -1;
+    } else if (c == '\\') {
+      size_t j = i + 1;
+      std::string word;
+      while (j < rtf.size() && ((rtf[j] >= 'a' && rtf[j] <= 'z') ||
+                                (rtf[j] >= 'A' && rtf[j] <= 'Z'))) {
+        word.push_back(rtf[j++]);
+      }
+      int value = 0;
+      while (j < rtf.size() && rtf[j] >= '0' && rtf[j] <= '9') {
+        value = value * 10 + (rtf[j++] - '0');
+      }
+      if (word == "red") {
+        r = value;
+      } else if (word == "green") {
+        g = value;
+      } else if (word == "blue") {
+        b = value;
+      }
+      i = j - 1;
+    }
+  }
+  return colors;
+}
+
+struct RtfRunStyle {
+  bool bold = false;
+  bool italic = false;
+  bool underline = false;
+  bool strike = false;
+  int colorIndex = 0;
+  int highlightIndex = 0;
+  int fontSizeHalf = 0;
+};
+
+std::string RtfStyleToCss(const RtfRunStyle& style,
+                          const std::vector<std::string>& colors) {
+  std::string css;
+  if (style.bold) {
+    css += "font-weight:bold;";
+  }
+  if (style.italic) {
+    css += "font-style:italic;";
+  }
+  std::string decoration;
+  if (style.underline) {
+    decoration += "underline ";
+  }
+  if (style.strike) {
+    decoration += "line-through ";
+  }
+  if (!decoration.empty()) {
+    css += "text-decoration:" + decoration + ";";
+  }
+  if (style.colorIndex > 0 && style.colorIndex < static_cast<int>(colors.size()) &&
+      !colors[style.colorIndex].empty()) {
+    css += "color:" + colors[style.colorIndex] + ";";
+  }
+  if (style.highlightIndex > 0 &&
+      style.highlightIndex < static_cast<int>(colors.size()) &&
+      !colors[style.highlightIndex].empty()) {
+    css += "background-color:" + colors[style.highlightIndex] + ";";
+  }
+  if (style.fontSizeHalf > 0) {
+    char buffer[32] = {0};
+    std::snprintf(buffer, sizeof(buffer), "font-size:%gpt;", style.fontSizeHalf / 2.0);
+    css += buffer;
+  }
+  return css;
+}
+
+// Converts a CF_RTF payload into a simple HTML fragment. Many Windows apps only
+// offer RTF (no HTML) for rich text, so this keeps the local clipboard rich.
+std::string RtfToHtml(const uint8_t* data, size_t size) {
+  const std::string rtf(reinterpret_cast<const char*>(data), size);
+  const std::vector<std::string> colors = ParseRtfColorTable(rtf);
+  static const char* kDestinations[] = {
+      "fonttbl",   "colortbl",    "stylesheet",   "info",       "pict",
+      "header",    "footer",      "footerl",      "footerr",    "footnote",
+      "listtable", "listoverridetable", "xmlnstbl", "generator", "themedata",
+      "colorschememapping", "latentstyles", "datastore", "field", "fldinst",
+      "bkmkstart", "bkmkend",     "object",       "shppict",    "nonshppict",
+  };
+  std::string html = "<p>";
+  std::string openCss;
+  RtfRunStyle style;
+  std::vector<RtfRunStyle> styleStack;
+  std::vector<bool> skipStack;
+  styleStack.push_back(style);
+  skipStack.push_back(false);
+
+  auto skipping = [&skipStack]() {
+    for (auto it = skipStack.rbegin(); it != skipStack.rend(); ++it) {
+      if (*it) {
+        return true;
+      }
+    }
+    return false;
+  };
+  auto closeRun = [&html, &openCss]() {
+    if (!openCss.empty()) {
+      html += "</span>";
+      openCss.clear();
+    }
+  };
+  auto ensureRun = [&html, &openCss, &colors, &style]() {
+    const std::string css = RtfStyleToCss(style, colors);
+    if (css == openCss) {
+      return;
+    }
+    if (!openCss.empty()) {
+      html += "</span>";
+    }
+    openCss = css;
+    if (!css.empty()) {
+      html += "<span style=\"" + css + "\">";
+    }
+  };
+
+  for (size_t i = 0; i < rtf.size(); i++) {
+    const char c = rtf[i];
+    if (c == '{') {
+      styleStack.push_back(style);
+      skipStack.push_back(false);
+      size_t j = i + 1;
+      while (j < rtf.size() && (rtf[j] == '\r' || rtf[j] == '\n' || rtf[j] == ' ')) {
+        j++;
+      }
+      if (j < rtf.size() && rtf[j] == '\\') {
+        size_t k = j + 1;
+        if (k < rtf.size() && rtf[k] == '*') {
+          skipStack.back() = true;
+        } else {
+          std::string word;
+          while (k < rtf.size() && ((rtf[k] >= 'a' && rtf[k] <= 'z') ||
+                                    (rtf[k] >= 'A' && rtf[k] <= 'Z'))) {
+            word.push_back(rtf[k++]);
+          }
+          for (const char* dest : kDestinations) {
+            if (word == dest) {
+              skipStack.back() = true;
+              break;
+            }
+          }
+        }
+      }
+      continue;
+    }
+    if (c == '}') {
+      closeRun();
+      if (!styleStack.empty()) {
+        style = styleStack.back();
+        styleStack.pop_back();
+      }
+      if (!skipStack.empty()) {
+        skipStack.pop_back();
+      }
+      continue;
+    }
+    if (c == '\\') {
+      i++;
+      if (i >= rtf.size()) {
+        break;
+      }
+      const char nc = rtf[i];
+      if (nc == '\\' || nc == '{' || nc == '}') {
+        if (!skipping()) {
+          ensureRun();
+          html.push_back(nc);
+        }
+        continue;
+      }
+      if (nc == '\'') {
+        if (i + 2 < rtf.size()) {
+          const char hex[3] = {rtf[i + 1], rtf[i + 2], 0};
+          const int value = static_cast<int>(std::strtol(hex, nullptr, 16));
+          if (!skipping()) {
+            ensureRun();
+            AppendUtf8(&html, value);
+          }
+          i += 2;
+        }
+        continue;
+      }
+      if (nc == '~') {
+        if (!skipping()) {
+          ensureRun();
+          html += "&nbsp;";
+        }
+        continue;
+      }
+      if (nc == '-' || nc == '_') {
+        continue;
+      }
+      if (nc == '*') {
+        skipStack.back() = true;
+        continue;
+      }
+      size_t j = i;
+      std::string word;
+      while (j < rtf.size() && ((rtf[j] >= 'a' && rtf[j] <= 'z') ||
+                                (rtf[j] >= 'A' && rtf[j] <= 'Z'))) {
+        word.push_back(rtf[j++]);
+      }
+      bool negative = false;
+      if (j < rtf.size() && rtf[j] == '-') {
+        negative = true;
+        j++;
+      }
+      int value = 0;
+      bool hasValue = false;
+      while (j < rtf.size() && rtf[j] >= '0' && rtf[j] <= '9') {
+        value = value * 10 + (rtf[j++] - '0');
+        hasValue = true;
+      }
+      if (negative) {
+        value = -value;
+      }
+      i = (j < rtf.size() && rtf[j] == ' ') ? j : j - 1;
+      if (skipping()) {
+        continue;
+      }
+      if (word == "b" || word == "ab") {
+        style.bold = hasValue ? (value != 0) : true;
+      } else if (word == "i" || word == "ai") {
+        style.italic = hasValue ? (value != 0) : true;
+      } else if (word == "ul") {
+        style.underline = hasValue ? (value != 0) : true;
+      } else if (word == "ulnone") {
+        style.underline = false;
+      } else if (word == "strike" || word == "striked") {
+        style.strike = true;
+      } else if (word == "cf") {
+        style.colorIndex = value;
+      } else if (word == "highlight") {
+        style.highlightIndex = value;
+      } else if (word == "fs") {
+        style.fontSizeHalf = value;
+      } else if (word == "plain") {
+        style = RtfRunStyle();
+      } else if (word == "par" || word == "pard") {
+        closeRun();
+        html += "</p><p>";
+      } else if (word == "line") {
+        closeRun();
+        html += "<br>";
+      } else if (word == "tab") {
+        ensureRun();
+        html.push_back('\t');
+      } else if (word == "u") {
+        ensureRun();
+        AppendUtf8(&html, value);
+        // Skip the single `\uc` fallback character that follows \uN.
+        size_t k = i + 1;
+        if (k + 2 < rtf.size() && rtf[k] == '\\' && rtf[k + 1] == '\'') {
+          i = k + 3;
+        } else if (k < rtf.size()) {
+          i = k;
+        }
+      }
+      continue;
+    }
+    if (c == '\r' || c == '\n') {
+      continue;
+    }
+    if (!skipping()) {
+      ensureRun();
+      html += HtmlEscapeText(&c, 1);
+    }
+  }
+  closeRun();
+  html += "</p>";
+  return html;
 }
 
 // Minimal HTML -> plain text fallback for the CF_UNICODETEXT half of an HTML
@@ -265,25 +693,52 @@ struct DibImage {
   std::vector<uint8_t> bgra;
 };
 
-// Parses a CF_DIB (BITMAPINFOHEADER + BI_RGB, 24 or 32bpp) into top-down BGRA.
+// Scales a channel extracted with `mask` from `value` up to 8 bits.
+uint8_t MaskToByte(uint32_t value, uint32_t mask) {
+  if (mask == 0) {
+    return 255;
+  }
+  uint32_t shift = 0;
+  uint32_t shifted = mask;
+  while ((shifted & 1u) == 0 && shift < 32) {
+    shifted >>= 1;
+    ++shift;
+  }
+  int bits = 0;
+  while ((shifted & 1u) != 0 && bits < 32) {
+    shifted >>= 1;
+    ++bits;
+  }
+  if (bits <= 0) {
+    return 255;
+  }
+  const uint32_t raw = (value & mask) >> shift;
+  if (bits >= 8) {
+    return static_cast<uint8_t>(raw >> (bits - 8));
+  }
+  const uint32_t maxValue = (1u << bits) - 1u;
+  return static_cast<uint8_t>((raw * 255u + maxValue / 2u) / maxValue);
+}
+
+// Parses a CF_DIB into top-down BGRA. Handles the layouts Windows actually
+// sends: BITMAPINFOHEADER / V4 / V5 headers, 16/24/32bpp, BI_RGB and
+// BI_BITFIELDS (channel masks; defaults to BGRX for 32bpp BI_RGB).
 bool ParseDibToBgra(const uint8_t* data, size_t size, DibImage* out) {
   if (data == nullptr || out == nullptr || size < 40) {
     return false;
   }
   const uint32_t headerSize = ReadDibU32(data + 0);
-  const int32_t width = static_cast<int32_t>(ReadDibU32(data + 4));
+  const int32_t widthRaw = static_cast<int32_t>(ReadDibU32(data + 4));
   const int32_t heightRaw = static_cast<int32_t>(ReadDibU32(data + 8));
   const uint16_t bpp = ReadDibU16(data + 14);
   const uint32_t compression = ReadDibU32(data + 16);
-  if (headerSize < 40 || headerSize > size || width <= 0 || heightRaw == 0) {
+  if (headerSize < 40 || headerSize > size || widthRaw <= 0 || heightRaw == 0) {
     return false;
   }
-  // BI_RGB only; bit-fields / palette layouts are not handled (rare from a
-  // normal Windows copy, and keeping the parser simple avoids wrong pixels).
-  if ((bpp != 24 && bpp != 32) || compression != 0) {
+  if (bpp != 16 && bpp != 24 && bpp != 32) {
     return false;
   }
-  const uint64_t w = static_cast<uint64_t>(width);
+  const uint64_t w = static_cast<uint64_t>(widthRaw);
   const uint64_t h = heightRaw < 0
                          ? static_cast<uint64_t>(-static_cast<int64_t>(heightRaw))
                          : static_cast<uint64_t>(heightRaw);
@@ -292,26 +747,94 @@ bool ParseDibToBgra(const uint8_t* data, size_t size, DibImage* out) {
   }
   const bool topDown = heightRaw < 0;
   const size_t stride = static_cast<size_t>(((w * bpp + 31) / 32) * 4);
-  if (static_cast<size_t>(headerSize) + stride * static_cast<size_t>(h) > size) {
+
+  // Channel masks. For BITMAPINFOHEADER the red/green/blue masks follow the
+  // 40-byte header; for V4/V5 they live at the same offset inside the header.
+  uint32_t redMask = 0;
+  uint32_t greenMask = 0;
+  uint32_t blueMask = 0;
+  uint32_t alphaMask = 0;
+  size_t pixelOffset = headerSize;
+  if (compression == 0) {  // BI_RGB
+    if (bpp == 32) {
+      redMask = 0x00FF0000;
+      greenMask = 0x0000FF00;
+      blueMask = 0x000000FF;
+    } else if (bpp == 16) {
+      redMask = 0x7C00;
+      greenMask = 0x03E0;
+      blueMask = 0x001F;
+    }
+    // 24bpp is stored as plain BGR.
+  } else if (compression == 3 || compression == 6) {  // BI_BITFIELDS / ALPHABITFIELDS
+    if (size < 40 + 12) {
+      return false;
+    }
+    redMask = ReadDibU32(data + 40);
+    greenMask = ReadDibU32(data + 44);
+    blueMask = ReadDibU32(data + 48);
+    if (compression == 6 && size >= 40 + 16) {
+      alphaMask = ReadDibU32(data + 52);
+    }
+    // V4/V5 keep the masks inside the header; a bare header is followed by the
+    // 12/16 mask bytes.
+    pixelOffset = headerSize >= 108 ? headerSize : (40 + (compression == 6 ? 16 : 12));
+  } else {
+    return false;
+  }
+
+  if (pixelOffset + stride * static_cast<size_t>(h) > size) {
     return false;
   }
   out->width = static_cast<uint32_t>(w);
   out->height = static_cast<uint32_t>(h);
   out->bgra.assign(static_cast<size_t>(w * h * 4), 0);
+  bool anyAlpha = false;
   for (uint64_t y = 0; y < h; ++y) {
     const uint64_t srcY = topDown ? y : (h - 1 - y);
-    const uint8_t* row = data + headerSize + static_cast<size_t>(srcY) * stride;
+    const uint8_t* row = data + pixelOffset + static_cast<size_t>(srcY) * stride;
     uint8_t* dst = out->bgra.data() + static_cast<size_t>(y * w * 4);
     for (uint64_t x = 0; x < w; ++x) {
-      const uint8_t* px = row + static_cast<size_t>(x) * (bpp / 8);
-      uint8_t alpha = (bpp == 32) ? px[3] : 255;
-      if (alpha == 0) {
-        alpha = 255;  // BI_RGB carries no alpha; 0 means opaque.
+      uint8_t r = 0;
+      uint8_t g = 0;
+      uint8_t b = 0;
+      uint8_t a = 255;
+      if (bpp == 24) {
+        const uint8_t* px = row + static_cast<size_t>(x) * 3;
+        b = px[0];
+        g = px[1];
+        r = px[2];
+      } else if (bpp == 32) {
+        const uint32_t px = ReadDibU32(row + static_cast<size_t>(x) * 4);
+        r = MaskToByte(px, redMask);
+        g = MaskToByte(px, greenMask);
+        b = MaskToByte(px, blueMask);
+        if (alphaMask != 0) {
+          a = MaskToByte(px, alphaMask);
+        }
+      } else {  // 16bpp
+        const uint16_t px = ReadDibU16(row + static_cast<size_t>(x) * 2);
+        r = MaskToByte(px, redMask);
+        g = MaskToByte(px, greenMask);
+        b = MaskToByte(px, blueMask);
+        if (alphaMask != 0) {
+          a = MaskToByte(px, alphaMask);
+        }
       }
-      dst[x * 4 + 0] = px[0];
-      dst[x * 4 + 1] = px[1];
-      dst[x * 4 + 2] = px[2];
-      dst[x * 4 + 3] = alpha;
+      if (a != 0) {
+        anyAlpha = true;
+      }
+      dst[x * 4 + 0] = b;
+      dst[x * 4 + 1] = g;
+      dst[x * 4 + 2] = r;
+      dst[x * 4 + 3] = a;
+    }
+  }
+  // Many 32bpp DIBs carry an alpha mask but leave it at 0 for an opaque image;
+  // treat an all-zero alpha channel as opaque.
+  if (alphaMask != 0 && !anyAlpha) {
+    for (size_t i = 3; i < out->bgra.size(); i += 4) {
+      out->bgra[i] = 255;
     }
   }
   return true;
@@ -1191,7 +1714,11 @@ void Session::HandlePostDisconnect() {
   clipboardReady_ = false;
   cliprdr_ = nullptr;
   remoteHtmlFormatId_ = 0;
-  pendingRemoteKind_ = LocalClipKind::kNone;
+  remoteRequestInFlight_ = false;
+  remoteRequestKind_ = LocalClipKind::kNone;
+  hasPendingRemoteRefresh_ = false;
+  pendingRefreshKind_ = LocalClipKind::kNone;
+  pendingRefreshFormatId_ = 0;
 }
 
 void Session::OnAudioData(const void* data, size_t size, int sampleRate, int channels) {
@@ -1318,10 +1845,14 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
   UINT32 dibV5Id = 0;
   UINT32 textId = 0;
   UINT32 htmlId = 0;
+  UINT32 rtfId = 0;
   for (UINT32 i = 0; i < formatList->numFormats; i++) {
     const CLIPRDR_FORMAT& format = formatList->formats[i];
     if (format.formatName != nullptr && strcmp(format.formatName, kHtmlFormatName) == 0) {
       htmlId = format.formatId;
+    } else if (format.formatName != nullptr &&
+               strcmp(format.formatName, "Rich Text Format") == 0) {
+      rtfId = format.formatId;
     } else if (format.formatId == CF_DIB) {
       dibId = format.formatId;
     } else if (format.formatId == CF_DIBV5) {
@@ -1344,6 +1875,11 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
   } else if (htmlId != 0) {
     requestId = htmlId;
     kind = kClipHtml;
+  } else if (rtfId != 0) {
+    // Rich Text Format is the only structured format many Windows apps offer
+    // (Word/WPS often omit HTML); convert it to HTML for the local clipboard.
+    requestId = rtfId;
+    kind = kClipRtf;
   } else if (textId != 0) {
     requestId = textId;
     kind = kClipText;
@@ -1353,13 +1889,29 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
     HMRDP_LOGI("cliprdr server format list: no supported format");
     return CHANNEL_RC_OK;
   }
-  pendingRemoteKind_ = static_cast<LocalClipKind>(kind);
+  if (remoteRequestInFlight_) {
+    // Keep only the newest change; it is fetched once the current response
+    // arrives (never overlap requests: responses are untagged).
+    hasPendingRemoteRefresh_ = true;
+    pendingRefreshKind_ = static_cast<LocalClipKind>(kind);
+    pendingRefreshFormatId_ = requestId;
+    return CHANNEL_RC_OK;
+  }
+  return SendRemoteDataRequest(requestId, static_cast<LocalClipKind>(kind));
+}
+
+UINT Session::SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind) {
+  if (cliprdr_ == nullptr || cliprdr_->ClientFormatDataRequest == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  remoteRequestInFlight_ = true;
+  remoteRequestKind_ = kind;
   CLIPRDR_FORMAT_DATA_REQUEST request = {};
   request.common.msgType = CB_FORMAT_DATA_REQUEST;
   request.common.msgFlags = 0;
-  request.requestedFormatId = requestId;
-  HMRDP_LOGI("cliprdr requesting remote format id=%{public}u kind=%{public}d", requestId,
-             kind);
+  request.requestedFormatId = formatId;
+  HMRDP_LOGI("cliprdr requesting remote format id=%{public}u kind=%{public}d", formatId,
+             static_cast<int>(kind));
   return cliprdr_->ClientFormatDataRequest(cliprdr_, &request);
 }
 
@@ -1406,56 +1958,74 @@ UINT Session::OnCliprdrServerFormatDataRequest(
 
 UINT Session::OnCliprdrServerFormatDataResponse(
     const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
-  const LocalClipKind kind = pendingRemoteKind_;
-  pendingRemoteKind_ = LocalClipKind::kNone;
-  if (response == nullptr || (response->common.msgFlags & CB_RESPONSE_FAIL) != 0) {
+  if (!remoteRequestInFlight_) {
+    // No request outstanding: ignore stray/duplicate responses instead of
+    // mis-decoding them as text.
+    return CHANNEL_RC_OK;
+  }
+  const LocalClipKind kind = remoteRequestKind_;
+  remoteRequestInFlight_ = false;
+  remoteRequestKind_ = LocalClipKind::kNone;
+
+  const bool failed =
+      response == nullptr || (response->common.msgFlags & CB_RESPONSE_FAIL) != 0;
+  const BYTE* data = failed ? nullptr : response->requestedFormatData;
+  const UINT32 size = failed ? 0 : response->common.dataLen;
+  HMRDP_LOGI("cliprdr data response: kind=%{public}d size=%{public}u failed=%{public}d",
+             static_cast<int>(kind), size, failed ? 1 : 0);
+  if (failed) {
     HMRDP_LOGW("cliprdr data response failed or null");
-    return CHANNEL_RC_OK;
-  }
-  const BYTE* data = response->requestedFormatData;
-  const UINT32 size = response->common.dataLen;
-  HMRDP_LOGI("cliprdr data response: kind=%{public}d size=%{public}u",
-             static_cast<int>(kind), size);
-  if (data == nullptr || size == 0) {
-    return CHANNEL_RC_OK;
-  }
-  if (kind == LocalClipKind::kImage) {
+  } else if (data == nullptr || size == 0) {
+    // Nothing to decode; fall through to a possible deferred refresh.
+  } else if (kind == LocalClipKind::kImage) {
     DibImage image;
-    if (!ParseDibToBgra(data, size, &image)) {
-      HMRDP_LOGW("cliprdr remote image: unsupported DIB layout");
-      return CHANNEL_RC_OK;
+    if (ParseDibToBgra(data, size, &image)) {
+      std::ostringstream payload;
+      payload << image.width << ',' << image.height << '|'
+              << Base64Encode(image.bgra.data(), image.bgra.size());
+      Emit(SessionEvent::kClipboardImage, payload.str());
+    } else {
+      const uint32_t dibHeader = size >= 4 ? ReadDibU32(data) : 0;
+      const uint16_t dibBpp = size >= 16 ? ReadDibU16(data + 14) : 0;
+      const uint32_t dibCompression = size >= 20 ? ReadDibU32(data + 16) : 0;
+      HMRDP_LOGW(
+          "cliprdr remote image: unsupported DIB size=%{public}u header=%{public}u "
+          "bpp=%{public}u compression=%{public}u",
+          static_cast<unsigned>(size), dibHeader, static_cast<unsigned>(dibBpp),
+          dibCompression);
     }
-    std::ostringstream payload;
-    payload << image.width << ',' << image.height << '|'
-            << Base64Encode(image.bgra.data(), image.bgra.size());
-    Emit(SessionEvent::kClipboardImage, payload.str());
-    return CHANNEL_RC_OK;
-  }
-  if (kind == LocalClipKind::kHtml) {
+  } else if (kind == LocalClipKind::kHtml) {
     const std::string html = ParseCfHtml(reinterpret_cast<const char*>(data), size);
     if (!html.empty()) {
       Emit(SessionEvent::kClipboardHtml, html);
     }
-    return CHANNEL_RC_OK;
+  } else if (kind == LocalClipKind::kRtf) {
+    const std::string html = RtfToHtml(data, size);
+    if (!html.empty()) {
+      Emit(SessionEvent::kClipboardHtml, html);
+    }
+  } else if (kind == LocalClipKind::kText && size >= sizeof(WCHAR)) {
+    // CF_UNICODETEXT is a NUL-terminated UTF-16LE string; make sure the buffer
+    // handed to the converter is terminated even if the server omitted the NUL.
+    const size_t wcharCount = (size + sizeof(WCHAR) - 1) / sizeof(WCHAR);
+    std::vector<WCHAR> wide(wcharCount + 1, 0);
+    memcpy(wide.data(), data, size);
+    wide[wcharCount] = 0;
+    size_t utf8Size = 0;
+    char* utf8 = ConvertWCharToUtf8Alloc(wide.data(), &utf8Size);
+    if (utf8 != nullptr) {
+      HMRDP_LOGI("cliprdr remote text: %{public}u bytes",
+                 static_cast<unsigned>(utf8Size));
+      Emit(SessionEvent::kClipboardText, std::string(utf8, utf8Size));
+      free(utf8);
+    }
   }
-  // Text (default): CF_UNICODETEXT is a NUL-terminated UTF-16LE string; make
-  // sure the buffer handed to the converter is terminated even if the server
-  // omitted the NUL.
-  if (size < sizeof(WCHAR)) {
-    return CHANNEL_RC_OK;
+
+  // A newer clipboard change may have arrived while this request was in flight.
+  if (hasPendingRemoteRefresh_) {
+    hasPendingRemoteRefresh_ = false;
+    return SendRemoteDataRequest(pendingRefreshFormatId_, pendingRefreshKind_);
   }
-  const size_t wcharCount = (size + sizeof(WCHAR) - 1) / sizeof(WCHAR);
-  std::vector<WCHAR> wide(wcharCount + 1, 0);
-  memcpy(wide.data(), data, size);
-  wide[wcharCount] = 0;
-  size_t utf8Size = 0;
-  char* utf8 = ConvertWCharToUtf8Alloc(wide.data(), &utf8Size);
-  if (utf8 == nullptr) {
-    return CHANNEL_RC_OK;
-  }
-  HMRDP_LOGI("cliprdr remote text: %{public}u bytes", static_cast<unsigned>(utf8Size));
-  Emit(SessionEvent::kClipboardText, std::string(utf8, utf8Size));
-  free(utf8);
   return CHANNEL_RC_OK;
 }
 

@@ -526,29 +526,52 @@ struct SessionPage {
 
   /** Dispatches the local clipboard content by MIME, richest type first. */
   private pushLocalPasteData(data: pasteboard.PasteData): void {
-    let types: string[] = [];
+    // Do NOT gate on getMimeTypes(): it may only list a record's default MIME,
+    // while the HTML lives in a non-default Entry of the same record.
+    let pixelMap: image.PixelMap | undefined = undefined;
     try {
-      types = data.getMimeTypes();
+      pixelMap = data.getPrimaryPixelMap();
     } catch (error) {
-      types = [];
+      pixelMap = undefined;
     }
-    if (types.indexOf(pasteboard.MIMETYPE_PIXELMAP) >= 0) {
-      this.pushLocalImage(data);
+    if (pixelMap !== undefined) {
+      this.pushLocalImage(pixelMap);
       return;
     }
-    if (types.indexOf(pasteboard.MIMETYPE_TEXT_HTML) >= 0) {
-      let html: string = '';
+    SessionPage.findHtmlEntry(data)
+      .then((html: string) => {
+        if (html.length > 0) {
+          this.native.pushClipboardHtml(html);
+          this.toast('已发送富文本到远端');
+          return;
+        }
+        this.pushLocalText(data);
+      })
+      .catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'read html entry failed: %{public}s', JSON.stringify(error));
+        this.pushLocalText(data);
+      });
+  }
+
+  /** Scans every record for a HTML entry (the record's default MIME may differ). */
+  private static async findHtmlEntry(data: pasteboard.PasteData): Promise<string> {
+    const count: number = data.getRecordCount();
+    for (let i = 0; i < count; i++) {
       try {
-        html = data.getPrimaryHtml();
+        const record: pasteboard.PasteDataRecord = data.getRecord(i);
+        const value: pasteboard.ValueType =
+          await record.getData(pasteboard.MIMETYPE_TEXT_HTML);
+        if (typeof value === 'string' && value.length > 0) {
+          return value;
+        }
       } catch (error) {
-        html = '';
-      }
-      if (html.length > 0) {
-        this.native.pushClipboardHtml(html);
-        this.toast('已提交到远端');
-        return;
+        // No record / no HTML entry here; try the next one.
       }
     }
+    return '';
+  }
+
+  private pushLocalText(data: pasteboard.PasteData): void {
     let text: string = '';
     try {
       text = data.getPrimaryText();
@@ -560,18 +583,11 @@ struct SessionPage {
       return;
     }
     this.native.setClipboard(text);
-    this.toast('已提交到远端');
+    this.toast('已发送文本到远端');
   }
 
   /** Local image -> remote. Reads the pixels and lets native build a CF_DIB. */
-  private pushLocalImage(data: pasteboard.PasteData): void {
-    let pixelMap: image.PixelMap;
-    try {
-      pixelMap = data.getPrimaryPixelMap();
-    } catch (error) {
-      this.toast('读取本机图片失败');
-      return;
-    }
+  private pushLocalImage(pixelMap: image.PixelMap): void {
     pixelMap.getImageInfo()
       .then((info: image.ImageInfo) => {
         const width: number = info.size.width;
@@ -584,7 +600,7 @@ struct SessionPage {
         pixelMap.readPixelsToBuffer(buffer)
           .then(() => {
             this.native.pushClipboardImage(width, height, info.pixelFormat, buffer);
-            this.toast('已提交到远端');
+            this.toast('已发送图片到远端');
           })
           .catch((error: BusinessError) => {
             hilog.warn(DOMAIN, TAG, 'read image pixels failed: %{public}s', JSON.stringify(error));
@@ -604,35 +620,46 @@ struct SessionPage {
     }
     const pixelMap: image.PixelMap | undefined = this.remoteClipboardPixelMap;
     if (pixelMap !== undefined) {
-      this.writeLocalPasteData(pasteboard.createData(pasteboard.MIMETYPE_PIXELMAP, pixelMap));
+      this.writeLocalPasteData(
+        pasteboard.createData(pasteboard.MIMETYPE_PIXELMAP, pixelMap), '图片');
       return;
     }
     if (this.remoteClipboardHtml.length > 0) {
+      // Remote HTML is usually a bare fragment; wrap it so the local pasteboard
+      // always holds a well-formed document.
+      const htmlDoc: string = SessionPage.ensureHtmlDocument(this.remoteClipboardHtml);
       const data: pasteboard.PasteData =
-        pasteboard.createData(pasteboard.MIMETYPE_TEXT_HTML, this.remoteClipboardHtml);
-      const plain: string = SessionPage.htmlToPlainText(this.remoteClipboardHtml);
+        pasteboard.createData(pasteboard.MIMETYPE_TEXT_HTML, htmlDoc);
+      const plain: string = SessionPage.htmlToPlainText(htmlDoc);
       if (plain.length > 0) {
-        const textRecord: pasteboard.PasteDataRecord =
-          pasteboard.createRecord(pasteboard.MIMETYPE_TEXT_PLAIN, plain);
-        data.addRecord(textRecord);
+        // Same Record, extra Entry: one content fragment in two formats (the
+        // clipboard model requires this instead of two separate Records, or
+        // targets treat them as two independent items and pick plain text).
+        try {
+          const record: pasteboard.PasteDataRecord = data.getRecord(0);
+          record.addEntry(pasteboard.MIMETYPE_TEXT_PLAIN, plain);
+        } catch (error) {
+          hilog.warn(DOMAIN, TAG, 'add plain entry failed: %{public}s', JSON.stringify(error));
+        }
       }
-      this.writeLocalPasteData(data);
+      this.writeLocalPasteData(data, '富文本');
       return;
     }
     if (this.remoteClipboardText.length > 0) {
       this.writeLocalPasteData(
-        pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.remoteClipboardText));
+        pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.remoteClipboardText),
+        '文本');
       return;
     }
     this.toast('远端剪贴板为空');
   }
 
-  private writeLocalPasteData(data: pasteboard.PasteData): void {
+  private writeLocalPasteData(data: pasteboard.PasteData, label: string): void {
     this.pasteboardBusy = true;
     pasteboard.getSystemPasteboard().setData(data)
       .then(() => {
         this.pasteboardBusy = false;
-        this.toast('已拉取到本机');
+        this.toast('已复制' + label + '到本机');
       })
       .catch((error: BusinessError) => {
         this.pasteboardBusy = false;
@@ -641,21 +668,72 @@ struct SessionPage {
       });
   }
 
-  /** Rough HTML -> plain text fallback so a text target still pastes something. */
+  /**
+   * Rough HTML -> plain text fallback so a text target still pastes something.
+   * Skips <head>/<style>/<script>/comments so CSS text never leaks into the
+   * plain-text entry, and turns block tags into line breaks.
+   */
   private static htmlToPlainText(html: string): string {
+    const lower: string = html.toLowerCase();
     let out: string = '';
-    let inTag: boolean = false;
-    for (let i = 0; i < html.length; i++) {
-      const ch: string = html.charAt(i);
-      if (ch === '<') {
-        inTag = true;
-      } else if (ch === '>') {
-        inTag = false;
-      } else if (!inTag) {
-        out += ch;
+    let i: number = 0;
+    while (i < html.length) {
+      const lt: number = html.indexOf('<', i);
+      if (lt < 0) {
+        out += html.substring(i);
+        break;
       }
+      out += html.substring(i, lt);
+      const gt: number = html.indexOf('>', lt);
+      if (gt < 0) {
+        break;
+      }
+      const tag: string = lower.substring(lt + 1, gt).trim();
+      let skipUntil: string = '';
+      if (tag.startsWith('script')) {
+        skipUntil = '</script';
+      } else if (tag.startsWith('style')) {
+        skipUntil = '</style';
+      } else if (tag.startsWith('head')) {
+        skipUntil = '</head';
+      } else if (tag.startsWith('!--')) {
+        skipUntil = '-->';
+      }
+      if (skipUntil.length > 0) {
+        const close: number = lower.indexOf(skipUntil, gt + 1);
+        if (close < 0) {
+          break;
+        }
+        const closeGt: number = html.indexOf('>', close);
+        i = closeGt < 0 ? html.length : closeGt + 1;
+        continue;
+      }
+      if (tag.startsWith('br') || tag.startsWith('p') || tag.startsWith('/p') ||
+        tag.startsWith('div') || tag.startsWith('/div') || tag.startsWith('li') ||
+        tag.startsWith('tr') || tag.startsWith('h1') || tag.startsWith('h2') ||
+        tag.startsWith('h3')) {
+        out += '\n';
+      }
+      i = gt + 1;
     }
-    return out.trim();
+    return SessionPage.decodeHtmlEntities(out).trim();
+  }
+
+  /** Wraps a bare HTML fragment into a minimal document when needed. */
+  private static ensureHtmlDocument(html: string): string {
+    if (html.toLowerCase().indexOf('<html') >= 0) {
+      return html;
+    }
+    return '<html><body>' + html + '</body></html>';
+  }
+
+  private static decodeHtmlEntities(text: string): string {
+    return text.split('&nbsp;').join(' ')
+      .split('&amp;').join('&')
+      .split('&lt;').join('<')
+      .split('&gt;').join('>')
+      .split('&quot;').join('"')
+      .split('&#39;').join('\'');
   }
 
   private toast(message: string): void {

@@ -185,7 +185,23 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     （二次确认、进度、目标路径）；③两个方向逻辑对称一致（都是「读一侧 → 写另一侧」），扩展类型
     只需改中间那段转换。**不要引入 `on('update')` 自动监听或自动写本机剪贴板**（原 `ClipboardSync`
     已删）。实现上原生只覆写 `Server*` 回调与 `MonitorReady`，不动 `Client*` 发送函数。
-    当前支持纯文本 / HTML / 图片；文件传输预留（待 UI 设计后再做）。
+    当前支持纯文本 / 富文本（HTML）/ 图片；文件传输预留（待 UI 设计后再做）。两个按钮按实际类型弹
+    差异化提示（文本/富文本/图片）。
+    - **远端格式协商**：`FORMAT_LIST` 按 `图片(DIB/DIBV5) > HTML Format > Rich Text Format > CF_UNICODETEXT`
+      优先级选一种请求。**数据响应不带格式 id**，所以同一时刻只允许一个请求在途（`remoteRequestInFlight_`），
+      期间的新列表记为待刷新（`pendingRefresh*`），响应回来再取；分派时严格按请求时的 `kind`，绝不用
+      二进制兜底当文本（DIB 头 `28 00 00 00` 按 UTF-16 会变成 `(`）。
+    - **本机 html 读取**：不能只看 `getPrimaryHtml()`（只读第一条记录，且富文本往往把 `text/plain` 作主
+      MIME、HTML 作附加 Entry）。要遍历记录用 `record.getData('text/html')` 取，再回退文本；不要用
+      `getMimeTypes()` 做门控（它可能只列主类型）。
+    - **HTML 只加壳、不改内容**：`BuildCfHtml` 若源 html 已自带 `<!--StartFragment-->`/`<!--EndFragment-->`
+      （Word/WPS 导出都带）就**复用**，只算字节偏移（CF_HTML 偏移是**字节**，非字符），不注入重复标记、
+      不规范化原内容。写本机时若远端只给了片段，用最小 `<html><body>` 包成良构文档；多格式必须落在**同一
+      Record 的不同 Entry**（`createData` + `record.addEntry`），不能建两条 Record。
+    - **RTF 兜底**：很多 Windows 应用只显式提供 `Rich Text Format` 而无 `HTML Format`（HTML 是 Word 在
+      OLE 层按需合成的，rdpclip 用 `EnumClipboardFormats` 枚举**不会触发合成**，客户端只能请求列表内格式），
+      故客户端自带 `RtfToHtml`。注意 `\colortbl` 索引约定：第一个 `;` 是索引 0（auto），后面每个 `;` 递增，
+      解析时**不要预置空条目**否则 `\cfN` 整体错位、颜色丢失；Word 中文用 `\ab`/`\ai` 表示粗/斜。
 14. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
     Dock）；按单会话设计，故 `WindowController` 只用 `mainHidden` 布尔量，不跟踪 session 集合。
