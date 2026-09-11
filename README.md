@@ -144,4 +144,15 @@ pwsh native/scripts/build-freerdp.ps1 -Arch arm64-v8a
 
 ## 许可证
 
-本项目采用 [MIT 许可证](LICENSE)。
+Copyright (C) 2026 Qing'an Li
+
+本项目采用 [GNU 通用公共许可证第 3 版或更新版本](LICENSE)（`GPL-3.0-or-later`）。
+
+本程序是自由软件：你可以依据自由软件基金会发布的 GNU 通用公共许可证条款重新发布和/或修改它，
+无论是该许可证的第 3 版，还是（你选择的）任何更新的版本。
+
+本程序的发布是希望其有用，但不提供任何担保，甚至没有对适销性或特定用途适用性的默示担保；
+详见 GNU 通用公共许可证。你应已随本程序收到一份 GNU 通用公共许可证副本，
+若没有请参见 <https://www.gnu.org/licenses/>。
+
+第三方组件（FreeRDP、OpenSSL、zlib）仍遵循各自的原始许可证，不受本项目授权变更影响。
