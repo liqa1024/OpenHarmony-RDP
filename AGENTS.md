@@ -123,7 +123,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 2. **鼠标按键**：`PTR_FLAGS_MOVE` 与按键事件分开送，按键事件不带 MOVE 标志，否则远端忽略点击。
 3. **密码**：绝不经命令行传密码，用 `freerdp_settings_set_string` 设 `FreeRDP_Password` /
    `FreeRDP_GatewayPassword`。
-4. **帧上传**：每次上传整帧（`glTexSubImage2D`）；按脏区部分上传会花屏，除非改用 PBO/EGL image。
+4. **帧上传**：按脏区部分上传（`glTexSubImage2D`）。**必须用 ES3 上下文并设置
+   `GL_UNPACK_ROW_LENGTH`（= 整桌面 stride/4）**——源缓冲行距是整桌面 stride，GL 默认按上传宽
+   读行会花屏；上传后复位为 0。纹理（重）建后首帧强制整帧上传（`forceFullUpload_`）。
+   **不要再叠加 present-on-change**：静止态早已由 FreeRDP 失效区门控保证——`HmrdpBeginPaint`
+   把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion` 才置 FALSE，
+   而 `HandleEndPaint` 对 `null` 直接 return，故静止桌面根本不进 `DrawFrame`。额外 `memcmp`
+   只增内存/带宽开销（高动态大脏区时反而耗电）。
 5. **原生库命名**：只提交不带版本号的单一 `entry/libs/<abi>/libX.so`（原因与 SONAME 处理见
    「原生库源码构建」）。
 6. **连接与密码存储**：配置存 `ConnectionStore`（preferences，稳定 UUID 作 id、`updatedAt` 供刷新），

@@ -13,7 +13,7 @@
 #include <mutex>
 
 #include <EGL/egl.h>
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
 
 namespace hmrdp {
 
@@ -35,7 +35,12 @@ public:
 
   // Called from the FreeRDP worker thread.
   void SetDesktopSize(int width, int height);
-  void DrawFrame(const uint8_t* data, int stride, int x, int y, int width, int height);
+  // Uploads the given dirty rectangle and presents it. Returns true once the
+  // frame was drawn and swapped; false if the context/texture is not ready.
+  // Redundant presents are already suppressed upstream: FreeRDP only invokes the
+  // EndPaint callback with a non-null invalid region when a drawing primitive
+  // actually ran (gdi_InvalidateRegion), so a static desktop never reaches here.
+  bool DrawFrame(const uint8_t* data, int stride, int x, int y, int width, int height);
   void Reset();
 
 private:
@@ -67,6 +72,11 @@ private:
   int desktopHeight_ = 0;
   int textureWidth_ = 0;
   int textureHeight_ = 0;
+
+  // Set when the EGL surface / texture is (re)created: the next DrawFrame then
+  // uploads the whole desktop even if the server's dirty rectangle is smaller,
+  // so the fresh texture is not left partially blank.
+  bool forceFullUpload_ = true;
 };
 
 }  // namespace hmrdp

@@ -164,7 +164,10 @@ bool Renderer::EnsureContext() {
     return false;
   }
 
-  const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
+  // ES3 is required for GL_UNPACK_ROW_LENGTH, used to upload a sub-rectangle
+  // whose source rows are pitched at the full desktop stride. The GLSL ES 1.00
+  // shaders below remain valid in an ES3 context.
+  const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
   context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, contextAttribs);
   if (context_ == EGL_NO_CONTEXT) {
     HMRDP_LOGE("eglCreateContext failed: 0x%{public}x", eglGetError());
@@ -207,6 +210,7 @@ bool Renderer::EnsureContext() {
   texture_ = 0;
   textureWidth_ = 0;
   textureHeight_ = 0;
+  forceFullUpload_ = true;
 
   surfaceDirty_ = false;
   HMRDP_LOGI("EGL surface ready %{public}dx%{public}d", surfaceWidth_, surfaceHeight_);
@@ -238,6 +242,7 @@ void Renderer::DestroyContext() {
   display_ = EGL_NO_DISPLAY;
   textureWidth_ = 0;
   textureHeight_ = 0;
+  forceFullUpload_ = true;
 }
 
 void Renderer::EnsureTexture() {
@@ -261,6 +266,8 @@ void Renderer::EnsureTexture() {
                GL_UNSIGNED_BYTE, nullptr);
   textureWidth_ = desktopWidth_;
   textureHeight_ = desktopHeight_;
+  // A new texture starts empty; the next frame must cover the whole desktop.
+  forceFullUpload_ = true;
   HMRDP_LOGI("texture %{public}dx%{public}d", textureWidth_, textureHeight_);
 }
 
@@ -306,44 +313,61 @@ void Renderer::DrawQuad() {
   glDisableVertexAttribArray(attrTex_);
 }
 
-void Renderer::DrawFrame(const uint8_t* data, int stride, int x, int y, int width,
+bool Renderer::DrawFrame(const uint8_t* data, int stride, int x, int y, int width,
                          int height) {
   if (data == nullptr || width <= 0 || height <= 0) {
-    return;
+    return false;
   }
   std::lock_guard<std::mutex> lock(mutex_);
   if (!EnsureContext()) {
-    return;
+    return false;
   }
   if (eglMakeCurrent(display_, surface_, surface_, context_) != EGL_TRUE) {
-    return;
+    return false;
   }
   if (desktopWidth_ <= 0 || desktopHeight_ <= 0) {
-    return;
+    return false;
   }
   EnsureTexture();
   if (texture_ == 0) {
-    return;
+    return false;
   }
+  // Row pitch of the source framebuffer; usually desktopWidth*4, but honour the
+  // server's stride in case it pads rows.
+  const int pitch = stride > 0 ? stride : desktopWidth_ * 4;
 
-  glBindTexture(GL_TEXTURE_2D, texture_);
-  const int clampedX = x < 0 ? 0 : x;
-  const int clampedY = y < 0 ? 0 : y;
+  int clampedX = x < 0 ? 0 : x;
+  int clampedY = y < 0 ? 0 : y;
   const int maxW = desktopWidth_ - clampedX;
   const int maxH = desktopHeight_ - clampedY;
-  const int uploadW = width > maxW ? maxW : width;
-  const int uploadH = height > maxH ? maxH : height;
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-  if (stride == desktopWidth_ * 4) {
-    // Robust baseline: refresh the whole texture each frame.
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, desktopWidth_, desktopHeight_, GL_RGBA,
-                    GL_UNSIGNED_BYTE, data);
-  } else if (uploadW > 0 && uploadH > 0) {
-    const uint8_t* src = data + static_cast<size_t>(clampedY) * stride +
-                         static_cast<size_t>(clampedX) * 4;
-    glTexSubImage2D(GL_TEXTURE_2D, 0, clampedX, clampedY, uploadW, uploadH, GL_RGBA,
-                    GL_UNSIGNED_BYTE, src);
+  int uploadW = width > maxW ? maxW : width;
+  int uploadH = height > maxH ? maxH : height;
+  if (forceFullUpload_) {
+    // A fresh / recreated texture must be fully repopulated even when the
+    // server's first dirty rectangle only covers part of the desktop; otherwise
+    // the rest of the texture would stay blank.
+    clampedX = 0;
+    clampedY = 0;
+    uploadW = desktopWidth_;
+    uploadH = desktopHeight_;
+  } else if (uploadW <= 0 || uploadH <= 0) {
+    return false;
   }
+  forceFullUpload_ = false;
+
+  glBindTexture(GL_TEXTURE_2D, texture_);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  // The source is a sub-rectangle of a buffer whose rows are pitched at the full
+  // desktop stride; GL_UNPACK_ROW_LENGTH makes glTexSubImage2D honour that pitch
+  // instead of assuming uploadW. Without it rows skew and the image tears.
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / 4);
+  glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+  glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+  const uint8_t* src = data + static_cast<size_t>(clampedY) * pitch +
+                       static_cast<size_t>(clampedX) * 4;
+  glTexSubImage2D(GL_TEXTURE_2D, 0, clampedX, clampedY, uploadW, uploadH, GL_RGBA,
+                  GL_UNSIGNED_BYTE, src);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 
   glDisable(GL_BLEND);
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -359,6 +383,7 @@ void Renderer::DrawFrame(const uint8_t* data, int stride, int x, int y, int widt
     drawCount++;
   }
   eglSwapBuffers(display_, surface_);
+  return true;
 }
 
 }  // namespace hmrdp

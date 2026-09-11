@@ -1803,7 +1803,19 @@ void Session::EventThread() {
         SetError("freerdp_get_event_handles failed");
         break;
       }
-      const DWORD status = WaitForMultipleObjects(count, handles, FALSE, 100);
+      // Wake only when the transport has work or the next telemetry sample is
+      // due. The render loop is event-driven, so a fixed 100ms poll would just
+      // burn 10 wakeups/s while idle; waiting until the sample deadline drops
+      // that to ~1/s. EmitMetrics still runs on the loop after the wait.
+      DWORD timeoutMs = 0;
+      if (!metricsStarted_) {
+        // Establish the metrics baseline promptly on the first iteration.
+        timeoutMs = 0;
+      } else {
+        const uint64_t since = NowMs() - lastMetricsTick_;
+        timeoutMs = since >= 1000 ? 0 : static_cast<DWORD>(1000 - since);
+      }
+      const DWORD status = WaitForMultipleObjects(count, handles, FALSE, timeoutMs);
       if (status == WAIT_FAILED) {
         SetError("wait for events failed");
         break;
@@ -1902,7 +1914,13 @@ void Session::HandleEndPaint() {
   hwnd->invalid->null = TRUE;
 
   const uint64_t renderStart = NowUs();
-  renderer_.DrawFrame(gdi->primary_buffer, gdi->stride, x, y, width, height);
+  // DrawFrame only fails when the GL context/texture is not ready yet; a
+  // successful call is a real present (fps / 本机 telemetry / input response).
+  const bool presented =
+      renderer_.DrawFrame(gdi->primary_buffer, gdi->stride, x, y, width, height);
+  if (!presented) {
+    return;
+  }
   const uint64_t nowUs = NowUs();
   renderAccumUs_ += nowUs - renderStart;
   renderSamples_++;
