@@ -33,6 +33,10 @@ enum class SessionEvent {
   kCursorShape = 6,
   kCursorDefault = 7,
   kCursorHidden = 8,
+  // Rich local clipboard payloads pulled from the server on demand. Html
+  // carries the HTML fragment; Image carries "<w>,<h>|<base64 BGRA>".
+  kClipboardHtml = 9,
+  kClipboardImage = 10,
 };
 
 struct RdpOptions {
@@ -101,6 +105,14 @@ class Session {
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);
+  // Local HTML clipboard (UTF-8 fragment) pushed from ArkTS; advertised as
+  // CF_HTML with a plain-text fallback so text-only targets still paste.
+  void SetLocalClipboardHtml(const std::string& html);
+  // Local image clipboard pushed from ArkTS. `pixelFormat` is the HarmonyOS
+  // image.PixelMapFormat of `pixels`; the buffer is converted to a CF_DIB
+  // payload for the server. Safe to call from the UI thread.
+  void SetLocalClipboardImage(uint32_t width, uint32_t height, int32_t pixelFormat,
+                              const uint8_t* pixels, size_t byteCount);
 
   // Internal callbacks used by the FreeRDP glue.
   freerdp* instance() const { return instance_; }
@@ -151,12 +163,32 @@ class Session {
   uint32_t cursorHash_ = 0;
   bool cursorHashValid_ = false;
 
-  // Clipboard redirection state. `localClipboardUtf16_` holds the current local
-  // clipboard text as NUL-terminated UTF-16LE (the CF_UNICODETEXT wire form).
+  // Clipboard redirection state. The local clipboard is kept in the exact wire
+  // form of each format it can provide. Only one kind is owned at a time, so the
+  // server only ever requests formats we can answer.
+  enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3 };
+
+  // Pushes the local FormatList for the current kind (no-op until the channel
+  // is ready). Called after the clipboard state changes.
+  void AdvertiseLocalClipboard();
+
   CliprdrClientContext* cliprdr_ = nullptr;
   std::mutex clipboardMutex_;
+  // NUL-terminated UTF-16LE (CF_UNICODETEXT wire form).
   std::string localClipboardUtf16_;
   bool localClipboardValid_ = false;
+  // CF_HTML wire payload, plus its UTF-16LE plain-text fallback.
+  std::string localClipboardHtml_;
+  std::string localClipboardUtf16FromHtml_;
+  // CF_DIB wire payload.
+  std::string localClipboardDib_;
+  LocalClipKind localClipKind_ = LocalClipKind::kNone;
+  // Format the server used for "HTML Format" in its latest FormatList, kept for
+  // bookkeeping; requests use the id that list carried.
+  UINT32 remoteHtmlFormatId_ = 0;
+  // Format currently requested from the server, so the untagged data response
+  // can be dispatched. Cleared once the response arrives.
+  LocalClipKind pendingRemoteKind_ = LocalClipKind::kNone;
 };
 
 }  // namespace hmrdp

@@ -185,7 +185,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     （二次确认、进度、目标路径）；③两个方向逻辑对称一致（都是「读一侧 → 写另一侧」），扩展类型
     只需改中间那段转换。**不要引入 `on('update')` 自动监听或自动写本机剪贴板**（原 `ClipboardSync`
     已删）。实现上原生只覆写 `Server*` 回调与 `MonitorReady`，不动 `Client*` 发送函数。
-    当前仅支持纯文本。
+    当前支持纯文本 / HTML / 图片；文件传输预留（待 UI 设计后再做）。
 14. **自动隐藏主窗口（单窗口模式）**（`AppSettings.autoHideMainWindow`，默认关）：开启后仍**新建**
     `SessionAbility` 会话窗，但**销毁主 `EntryAbility`** 以真正隐藏（无 hide API，`minimize()` 仍在
     Dock）；按单会话设计，故 `WindowController` 只用 `mainHidden` 布尔量，不跟踪 session 集合。

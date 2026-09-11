@@ -37,6 +37,17 @@ export const sendTouch: (handle: number, flags: number, finger: number, pressure
 export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
 export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
 export const setClipboardText: (handle: number, text: string) => boolean;
+
+/** Pushes a local HTML fragment to the session (advertised as CF_HTML). */
+export const setClipboardHtml: (handle: number, html: string) => boolean;
+
+/**
+ * Pushes a local image to the session. `pixelFormat` is the HarmonyOS
+ * image.PixelMapFormat of `pixels`; the native side converts it to CF_DIB.
+ */
+export const setClipboardImage: (handle: number, width: number, height: number,
+  pixelFormat: number, pixels: ArrayBuffer) => boolean;
+
 export const onEvent: (callback: RdpEventCallback) => void;
 
 /**

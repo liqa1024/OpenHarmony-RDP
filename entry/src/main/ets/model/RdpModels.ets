@@ -42,7 +42,11 @@ export enum RdpEvent {
   // Default/Hidden carry no payload.
   CursorShape = 6,
   CursorDefault = 7,
-  CursorHidden = 8
+  CursorHidden = 8,
+  // Rich remote clipboard payloads. Html carries an HTML fragment; Image
+  // carries "<w>,<h>|<base64 BGRA>".
+  ClipboardHtml = 9,
+  ClipboardImage = 10
 }
 
 export class RdpConnectOptions implements RdpOptions {

@@ -480,6 +480,68 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
+napi_value SetClipboardHtml(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, args[1], nullptr, 0, &length) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::string html(length, '\0');
+  napi_get_value_string_utf8(env, args[1], html.data(), length + 1, &length);
+  html.resize(length);
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  session->SetLocalClipboardHtml(html);
+  return CreateBool(env, true);
+}
+
+napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t pixelFormat = 0;
+  if (argc < 5 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &width) != napi_ok ||
+      napi_get_value_int32(env, args[2], &height) != napi_ok ||
+      napi_get_value_int32(env, args[3], &pixelFormat) != napi_ok || width <= 0 ||
+      height <= 0) {
+    return CreateBool(env, false);
+  }
+  void* pixelData = nullptr;
+  size_t byteCount = 0;
+  if (napi_get_arraybuffer_info(env, args[4], &pixelData, &byteCount) != napi_ok ||
+      pixelData == nullptr) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  session->SetLocalClipboardImage(static_cast<uint32_t>(width),
+                                  static_cast<uint32_t>(height), pixelFormat,
+                                  static_cast<const uint8_t*>(pixelData), byteCount);
+  return CreateBool(env, true);
+}
+
 napi_value IsAudioSupported(napi_env env, napi_callback_info) {
   return CreateBool(env, AudioOutput::Supported());
 }
@@ -552,6 +614,10 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setClipboardHtml", nullptr, SetClipboardHtml, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,

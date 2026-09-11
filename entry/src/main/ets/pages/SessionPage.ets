@@ -162,7 +162,12 @@ struct SessionPage {
   // clipboard and "粘贴" (system paste control, no READ_PASTEBOARD) pushes the
   // local clipboard to the remote.
   private clipboardEnabled: boolean = true;
+  // Latest rich payload pulled from the remote. Only one is populated at a time
+  // (native requests the richest supported format per remote copy), so "复制"
+  // can pick by presence alone.
   private remoteClipboardText: string = '';
+  private remoteClipboardHtml: string = '';
+  private remoteClipboardPixelMap: image.PixelMap | undefined = undefined;
   private pasteboardBusy: boolean = false;
   // Remote cursor shape, installed as the HarmonyOS system cursor. The server
   // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
@@ -348,6 +353,16 @@ struct SessionPage {
     } else if (event === RdpEvent.ClipboardText) {
       hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', data.length);
       this.remoteClipboardText = data;
+      this.remoteClipboardHtml = '';
+      this.remoteClipboardPixelMap = undefined;
+    } else if (event === RdpEvent.ClipboardHtml) {
+      hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', data.length);
+      this.remoteClipboardHtml = data;
+      this.remoteClipboardText = '';
+      this.remoteClipboardPixelMap = undefined;
+    } else if (event === RdpEvent.ClipboardImage) {
+      hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}d chars', data.length);
+      this.onClipboardImage(data);
     } else if (event === RdpEvent.CursorShape) {
       this.onCursorShape(data);
     } else if (event === RdpEvent.CursorDefault) {
@@ -411,6 +426,42 @@ struct SessionPage {
     }
   }
 
+  /** Decodes a remote clipboard image ("<w>,<h>|<base64 BGRA>") into a PixelMap. */
+  private onClipboardImage(data: string): void {
+    const separator: number = data.indexOf('|');
+    if (separator <= 0) {
+      return;
+    }
+    const header: string[] = data.substring(0, separator).split(',');
+    if (header.length !== 2) {
+      return;
+    }
+    const width: number = Number.parseInt(header[0], 10);
+    const height: number = Number.parseInt(header[1], 10);
+    if (Number.isNaN(width) || Number.isNaN(height) || width <= 0 || height <= 0) {
+      return;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = new util.Base64Helper().decodeSync(data.substring(separator + 1));
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'decode clipboard image failed: %{public}s', JSON.stringify(error));
+      return;
+    }
+    const options: image.InitializationOptions = {
+      editable: false,
+      pixelFormat: image.PixelMapFormat.BGRA_8888,
+      size: { width: width, height: height }
+    };
+    try {
+      this.remoteClipboardPixelMap = image.createPixelMapSync(bytes.buffer, options);
+      this.remoteClipboardText = '';
+      this.remoteClipboardHtml = '';
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'create clipboard pixelmap failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
   /** Pushes the current cursor state onto this window's system cursor. */
   private applyCursor(): void {
     if (!this.cursorSupported || !this.useRdpCursor) {
@@ -465,18 +516,7 @@ struct SessionPage {
   private submitClipboard(): void {
     pasteboard.getSystemPasteboard().getData()
       .then((data: pasteboard.PasteData) => {
-        let text: string = '';
-        try {
-          text = data.getPrimaryText();
-        } catch (error) {
-          text = '';
-        }
-        if (text.length === 0) {
-          this.toast('本机剪贴板为空');
-          return;
-        }
-        this.native.setClipboard(text);
-        this.toast('已提交到远端');
+        this.pushLocalPasteData(data);
       })
       .catch((error: BusinessError) => {
         hilog.warn(DOMAIN, TAG, 'read pasteboard failed: %{public}s', JSON.stringify(error));
@@ -484,18 +524,111 @@ struct SessionPage {
       });
   }
 
-  /** Remote clipboard -> local, invoked by the toolbar's pull button. */
-  private pullClipboard(): void {
-    if (this.remoteClipboardText.length === 0) {
-      this.toast('远端剪贴板为空');
+  /** Dispatches the local clipboard content by MIME, richest type first. */
+  private pushLocalPasteData(data: pasteboard.PasteData): void {
+    let types: string[] = [];
+    try {
+      types = data.getMimeTypes();
+    } catch (error) {
+      types = [];
+    }
+    if (types.indexOf(pasteboard.MIMETYPE_PIXELMAP) >= 0) {
+      this.pushLocalImage(data);
       return;
     }
+    if (types.indexOf(pasteboard.MIMETYPE_TEXT_HTML) >= 0) {
+      let html: string = '';
+      try {
+        html = data.getPrimaryHtml();
+      } catch (error) {
+        html = '';
+      }
+      if (html.length > 0) {
+        this.native.pushClipboardHtml(html);
+        this.toast('已提交到远端');
+        return;
+      }
+    }
+    let text: string = '';
+    try {
+      text = data.getPrimaryText();
+    } catch (error) {
+      text = '';
+    }
+    if (text.length === 0) {
+      this.toast('本机剪贴板为空');
+      return;
+    }
+    this.native.setClipboard(text);
+    this.toast('已提交到远端');
+  }
+
+  /** Local image -> remote. Reads the pixels and lets native build a CF_DIB. */
+  private pushLocalImage(data: pasteboard.PasteData): void {
+    let pixelMap: image.PixelMap;
+    try {
+      pixelMap = data.getPrimaryPixelMap();
+    } catch (error) {
+      this.toast('读取本机图片失败');
+      return;
+    }
+    pixelMap.getImageInfo()
+      .then((info: image.ImageInfo) => {
+        const width: number = info.size.width;
+        const height: number = info.size.height;
+        if (width <= 0 || height <= 0) {
+          this.toast('本机图片为空');
+          return;
+        }
+        const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
+        pixelMap.readPixelsToBuffer(buffer)
+          .then(() => {
+            this.native.pushClipboardImage(width, height, info.pixelFormat, buffer);
+            this.toast('已提交到远端');
+          })
+          .catch((error: BusinessError) => {
+            hilog.warn(DOMAIN, TAG, 'read image pixels failed: %{public}s', JSON.stringify(error));
+            this.toast('提交本机图片失败');
+          });
+      })
+      .catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'get image info failed: %{public}s', JSON.stringify(error));
+        this.toast('提交本机图片失败');
+      });
+  }
+
+  /** Remote clipboard -> local, invoked by the toolbar's pull button. */
+  private pullClipboard(): void {
     if (this.pasteboardBusy) {
       return;
     }
+    const pixelMap: image.PixelMap | undefined = this.remoteClipboardPixelMap;
+    if (pixelMap !== undefined) {
+      this.writeLocalPasteData(pasteboard.createData(pasteboard.MIMETYPE_PIXELMAP, pixelMap));
+      return;
+    }
+    if (this.remoteClipboardHtml.length > 0) {
+      const data: pasteboard.PasteData =
+        pasteboard.createData(pasteboard.MIMETYPE_TEXT_HTML, this.remoteClipboardHtml);
+      const plain: string = SessionPage.htmlToPlainText(this.remoteClipboardHtml);
+      if (plain.length > 0) {
+        const textRecord: pasteboard.PasteDataRecord =
+          pasteboard.createRecord(pasteboard.MIMETYPE_TEXT_PLAIN, plain);
+        data.addRecord(textRecord);
+      }
+      this.writeLocalPasteData(data);
+      return;
+    }
+    if (this.remoteClipboardText.length > 0) {
+      this.writeLocalPasteData(
+        pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.remoteClipboardText));
+      return;
+    }
+    this.toast('远端剪贴板为空');
+  }
+
+  private writeLocalPasteData(data: pasteboard.PasteData): void {
     this.pasteboardBusy = true;
-    const data: pasteboard.PasteData =
-      pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.remoteClipboardText);
     pasteboard.getSystemPasteboard().setData(data)
       .then(() => {
         this.pasteboardBusy = false;
@@ -506,6 +639,23 @@ struct SessionPage {
         hilog.warn(DOMAIN, TAG, 'write pasteboard failed: %{public}s', JSON.stringify(error));
         this.toast('写入本机剪贴板失败');
       });
+  }
+
+  /** Rough HTML -> plain text fallback so a text target still pastes something. */
+  private static htmlToPlainText(html: string): string {
+    let out: string = '';
+    let inTag: boolean = false;
+    for (let i = 0; i < html.length; i++) {
+      const ch: string = html.charAt(i);
+      if (ch === '<') {
+        inTag = true;
+      } else if (ch === '>') {
+        inTag = false;
+      } else if (!inTag) {
+        out += ch;
+      }
+    }
+    return out.trim();
   }
 
   private toast(message: string): void {

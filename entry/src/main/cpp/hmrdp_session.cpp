@@ -4,6 +4,8 @@
  */
 #include "hmrdp_session.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <vector>
@@ -118,6 +120,277 @@ std::string Base64Encode(const uint8_t* data, size_t len) {
     out.push_back('=');
   }
   return out;
+}
+
+// Local clipboard content kinds; must match Session::LocalClipKind.
+constexpr int kClipNone = 0;
+constexpr int kClipText = 1;
+constexpr int kClipHtml = 2;
+constexpr int kClipImage = 3;
+
+// Client-side id and name for the registered "HTML Format" clipboard format.
+// Registered ids start at 0xC000 (WinPR convention); with CB_USE_LONG_FORMAT_NAMES
+// the server maps it by name.
+constexpr UINT32 kHtmlFormatId = 0xC000;
+const char kHtmlFormatName[] = "HTML Format";
+
+// Builds a CF_HTML payload: an ASCII header of byte offsets followed by the HTML
+// fragment. See "HTML Clipboard Format" (MSDN). The offset fields are
+// fixed-width, so the header length is constant and offsets can be computed up
+// front.
+std::string BuildCfHtml(const std::string& html) {
+  static const char kBodyStart[] = "<html><body>";
+  static const char kBodyEnd[] = "</body></html>";
+  static const char kStartFragment[] = "<!--StartFragment-->";
+  static const char kEndFragment[] = "<!--EndFragment-->";
+  const size_t headerLen = std::strlen("Version:0.9\r\n") +
+                           std::strlen("StartHTML:0000000000\r\n") +
+                           std::strlen("EndHTML:0000000000\r\n") +
+                           std::strlen("StartFragment:0000000000\r\n") +
+                           std::strlen("EndFragment:0000000000\r\n");
+  const std::string body =
+      std::string(kBodyStart) + kStartFragment + html + kEndFragment + kBodyEnd;
+  const size_t startHtml = headerLen;
+  const size_t endHtml = headerLen + body.size();
+  const size_t startFragment =
+      headerLen + std::strlen(kBodyStart) + std::strlen(kStartFragment);
+  const size_t endFragment = startFragment + html.size();
+  char header[128] = {0};
+  std::snprintf(header, sizeof(header),
+                "Version:0.9\r\n"
+                "StartHTML:%010zu\r\n"
+                "EndHTML:%010zu\r\n"
+                "StartFragment:%010zu\r\n"
+                "EndFragment:%010zu\r\n",
+                startHtml, endHtml, startFragment, endFragment);
+  return std::string(header) + body;
+}
+
+// Extracts the HTML fragment from a CF_HTML payload, falling back to the whole
+// payload when the fragment offsets are missing.
+std::string ParseCfHtml(const char* data, size_t size) {
+  const std::string text(data, size);
+  const size_t headerLimit = size < 512 ? size : 512;
+  const std::string header = text.substr(0, headerLimit);
+  auto readOffset = [&header](const char* key) -> long {
+    const size_t pos = header.find(key);
+    if (pos == std::string::npos) {
+      return -1;
+    }
+    size_t begin = pos + std::strlen(key);
+    while (begin < header.size() && header[begin] == ' ') {
+      ++begin;
+    }
+    size_t end = begin;
+    while (end < header.size() && header[end] >= '0' && header[end] <= '9') {
+      ++end;
+    }
+    if (end == begin) {
+      return -1;
+    }
+    return std::strtol(header.substr(begin, end - begin).c_str(), nullptr, 10);
+  };
+  const long startFragment = readOffset("StartFragment:");
+  const long endFragment = readOffset("EndFragment:");
+  if (startFragment >= 0 && endFragment > startFragment &&
+      static_cast<size_t>(endFragment) <= size) {
+    return text.substr(static_cast<size_t>(startFragment),
+                       static_cast<size_t>(endFragment - startFragment));
+  }
+  const long startHtml = readOffset("StartHTML:");
+  if (startHtml >= 0 && static_cast<size_t>(startHtml) < size) {
+    const long endHtml = readOffset("EndHTML:");
+    const size_t end = (endHtml > startHtml && static_cast<size_t>(endHtml) <= size)
+                           ? static_cast<size_t>(endHtml)
+                           : size;
+    return text.substr(static_cast<size_t>(startHtml),
+                       end - static_cast<size_t>(startHtml));
+  }
+  return text;
+}
+
+// Minimal HTML -> plain text fallback for the CF_UNICODETEXT half of an HTML
+// push. Not a renderer: it only needs to be readable in a plain text target.
+std::string StripHtmlToText(const std::string& html) {
+  std::string out;
+  for (size_t i = 0; i < html.size(); ++i) {
+    if (html[i] != '<') {
+      out.push_back(html[i]);
+      continue;
+    }
+    const size_t close = html.find('>', i);
+    if (close == std::string::npos) {
+      break;
+    }
+    const std::string tag = html.substr(i + 1, close - i - 1);
+    const char first = tag.empty() ? '\0' : static_cast<char>(tag[0] | 0x20);
+    if (first == 'b' && tag.size() >= 2 && (tag[1] == 'r' || tag[1] == 'R')) {
+      out.push_back('\n');
+    } else if (first == 'p' || first == 'd' || first == 'l' || first == 't') {
+      out.push_back('\n');
+    }
+    i = close;
+  }
+  struct Entity {
+    const char* code;
+    char ch;
+  };
+  static const Entity kEntities[] = {
+      {"&amp;", '&'},   {"&lt;", '<'},   {"&gt;", '>'},
+      {"&quot;", '"'},  {"&#39;", '\''}, {"&nbsp;", ' '},
+  };
+  for (const Entity& entity : kEntities) {
+    const size_t len = std::strlen(entity.code);
+    size_t pos = 0;
+    while ((pos = out.find(entity.code, pos)) != std::string::npos) {
+      out.replace(pos, len, 1, entity.ch);
+      ++pos;
+    }
+  }
+  return out;
+}
+
+uint16_t ReadDibU16(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0] | (p[1] << 8));
+}
+
+uint32_t ReadDibU32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+struct DibImage {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint8_t> bgra;
+};
+
+// Parses a CF_DIB (BITMAPINFOHEADER + BI_RGB, 24 or 32bpp) into top-down BGRA.
+bool ParseDibToBgra(const uint8_t* data, size_t size, DibImage* out) {
+  if (data == nullptr || out == nullptr || size < 40) {
+    return false;
+  }
+  const uint32_t headerSize = ReadDibU32(data + 0);
+  const int32_t width = static_cast<int32_t>(ReadDibU32(data + 4));
+  const int32_t heightRaw = static_cast<int32_t>(ReadDibU32(data + 8));
+  const uint16_t bpp = ReadDibU16(data + 14);
+  const uint32_t compression = ReadDibU32(data + 16);
+  if (headerSize < 40 || headerSize > size || width <= 0 || heightRaw == 0) {
+    return false;
+  }
+  // BI_RGB only; bit-fields / palette layouts are not handled (rare from a
+  // normal Windows copy, and keeping the parser simple avoids wrong pixels).
+  if ((bpp != 24 && bpp != 32) || compression != 0) {
+    return false;
+  }
+  const uint64_t w = static_cast<uint64_t>(width);
+  const uint64_t h = heightRaw < 0
+                         ? static_cast<uint64_t>(-static_cast<int64_t>(heightRaw))
+                         : static_cast<uint64_t>(heightRaw);
+  if (w == 0 || h == 0 || w > 16384 || h > 16384) {
+    return false;
+  }
+  const bool topDown = heightRaw < 0;
+  const size_t stride = static_cast<size_t>(((w * bpp + 31) / 32) * 4);
+  if (static_cast<size_t>(headerSize) + stride * static_cast<size_t>(h) > size) {
+    return false;
+  }
+  out->width = static_cast<uint32_t>(w);
+  out->height = static_cast<uint32_t>(h);
+  out->bgra.assign(static_cast<size_t>(w * h * 4), 0);
+  for (uint64_t y = 0; y < h; ++y) {
+    const uint64_t srcY = topDown ? y : (h - 1 - y);
+    const uint8_t* row = data + headerSize + static_cast<size_t>(srcY) * stride;
+    uint8_t* dst = out->bgra.data() + static_cast<size_t>(y * w * 4);
+    for (uint64_t x = 0; x < w; ++x) {
+      const uint8_t* px = row + static_cast<size_t>(x) * (bpp / 8);
+      uint8_t alpha = (bpp == 32) ? px[3] : 255;
+      if (alpha == 0) {
+        alpha = 255;  // BI_RGB carries no alpha; 0 means opaque.
+      }
+      dst[x * 4 + 0] = px[0];
+      dst[x * 4 + 1] = px[1];
+      dst[x * 4 + 2] = px[2];
+      dst[x * 4 + 3] = alpha;
+    }
+  }
+  return true;
+}
+
+// Converts a HarmonyOS PixelMap buffer to BGRA. `pixelFormat` is
+// image.PixelMapFormat: 1 ARGB_8888, 3 RGBA_8888, 4 BGRA_8888, 5 RGB_888.
+bool ConvertToBgra(const uint8_t* pixels, size_t byteCount, uint32_t width,
+                   uint32_t height, int32_t pixelFormat, uint8_t* out) {
+  if (pixels == nullptr || out == nullptr || width == 0 || height == 0) {
+    return false;
+  }
+  const size_t count = static_cast<size_t>(width) * height;
+  if (pixelFormat == 3) {  // RGBA_8888
+    if (byteCount < count * 4) {
+      return false;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      const uint8_t* src = pixels + i * 4;
+      uint8_t* dst = out + i * 4;
+      dst[0] = src[2];
+      dst[1] = src[1];
+      dst[2] = src[0];
+      dst[3] = src[3];
+    }
+    return true;
+  }
+  if (pixelFormat == 1 || pixelFormat == 4) {  // ARGB_8888 / BGRA_8888
+    if (byteCount < count * 4) {
+      return false;
+    }
+    std::memcpy(out, pixels, count * 4);
+    return true;
+  }
+  if (pixelFormat == 5) {  // RGB_888
+    if (byteCount < count * 3) {
+      return false;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      const uint8_t* src = pixels + i * 3;
+      uint8_t* dst = out + i * 4;
+      dst[0] = src[2];
+      dst[1] = src[1];
+      dst[2] = src[0];
+      dst[3] = 255;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Serialises top-down BGRA into a CF_DIB payload (BITMAPINFOHEADER, 32bpp,
+// BI_RGB, bottom-up rows).
+std::vector<uint8_t> BuildBgraToDib(const uint8_t* bgra, uint32_t width,
+                                    uint32_t height) {
+  const size_t stride = static_cast<size_t>(width) * 4;
+  std::vector<uint8_t> dib(40 + stride * height, 0);
+  auto writeU16 = [&dib](size_t offset, uint16_t value) {
+    dib[offset] = static_cast<uint8_t>(value & 0xFF);
+    dib[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  };
+  auto writeU32 = [&dib](size_t offset, uint32_t value) {
+    dib[offset] = static_cast<uint8_t>(value & 0xFF);
+    dib[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    dib[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+    dib[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+  };
+  writeU32(0, 40);
+  writeU32(4, width);
+  writeU32(8, height);
+  writeU16(12, 1);
+  writeU16(14, 32);
+  writeU32(16, 0);
+  writeU32(20, static_cast<uint32_t>(stride * height));
+  for (uint32_t y = 0; y < height; ++y) {
+    std::memcpy(dib.data() + 40 + static_cast<size_t>(y) * stride,
+                bgra + static_cast<size_t>(height - 1 - y) * stride, stride);
+  }
+  return dib;
 }
 
 // FNV-1a over the cursor geometry and pixels, used to drop redundant updates.
@@ -306,21 +579,55 @@ void HmrdpAudioSinkAdapter(void* context, const void* data, size_t size, int sam
   }
 }
 
-// Advertises the local clipboard as CF_UNICODETEXT to the server. The channel
-// owns the ClientFormatList sender, so this only builds the format list.
-UINT SendCliprdrFormatList(CliprdrClientContext* cliprdr) {
+// Announces every clipboard format the client understands. Sent once after
+// MonitorReady so the server knows it can offer text / HTML / images; the
+// concrete content advertisements follow when the user pushes something.
+UINT SendCapabilityFormatList(CliprdrClientContext* cliprdr) {
   if (cliprdr == nullptr || cliprdr->ClientFormatList == nullptr) {
     return CHANNEL_RC_OK;
   }
-  HMRDP_LOGI("cliprdr sending local format list (CF_UNICODETEXT)");
-  CLIPRDR_FORMAT format = {};
-  format.formatId = CF_UNICODETEXT;
-  format.formatName = nullptr;
+  CLIPRDR_FORMAT formats[3] = {};
+  formats[0].formatId = CF_UNICODETEXT;
+  formats[1].formatId = CF_DIB;
+  formats[2].formatId = kHtmlFormatId;
+  formats[2].formatName = const_cast<char*>(kHtmlFormatName);
   CLIPRDR_FORMAT_LIST formatList = {};
   formatList.common.msgType = CB_FORMAT_LIST;
   formatList.common.msgFlags = 0;
-  formatList.numFormats = 1;
-  formatList.formats = &format;
+  formatList.numFormats = 3;
+  formatList.formats = formats;
+  HMRDP_LOGI("cliprdr sending capability format list (text/dib/html)");
+  return cliprdr->ClientFormatList(cliprdr, &formatList);
+}
+
+// Advertises the concrete content of the local clipboard for `kind`. The
+// channel owns the ClientFormatList sender, so this only builds the list.
+UINT SendLocalFormatList(CliprdrClientContext* cliprdr, int kind) {
+  if (cliprdr == nullptr || cliprdr->ClientFormatList == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  CLIPRDR_FORMAT formats[2] = {};
+  UINT32 count = 0;
+  if (kind == kClipHtml) {
+    // HTML plus a plain-text fallback so text-only remote targets still paste.
+    formats[count].formatId = kHtmlFormatId;
+    formats[count].formatName = const_cast<char*>(kHtmlFormatName);
+    ++count;
+    formats[count].formatId = CF_UNICODETEXT;
+    ++count;
+  } else if (kind == kClipImage) {
+    formats[count].formatId = CF_DIB;
+    ++count;
+  } else {
+    formats[count].formatId = CF_UNICODETEXT;
+    ++count;
+  }
+  CLIPRDR_FORMAT_LIST formatList = {};
+  formatList.common.msgType = CB_FORMAT_LIST;
+  formatList.common.msgFlags = 0;
+  formatList.numFormats = count;
+  formatList.formats = formats;
+  HMRDP_LOGI("cliprdr sending local format list (kind=%{public}d)", kind);
   return cliprdr->ClientFormatList(cliprdr, &formatList);
 }
 
@@ -883,6 +1190,8 @@ void Session::HandlePointerHidden() {
 void Session::HandlePostDisconnect() {
   clipboardReady_ = false;
   cliprdr_ = nullptr;
+  remoteHtmlFormatId_ = 0;
+  pendingRemoteKind_ = LocalClipKind::kNone;
 }
 
 void Session::OnAudioData(const void* data, size_t size, int sampleRate, int channels) {
@@ -991,9 +1300,9 @@ UINT Session::OnCliprdrMonitorReady() {
   clipboardReady_ = true;
   HMRDP_LOGI("cliprdr monitor ready");
   // Always advertise the formats we support right after MonitorReady, even if
-  // the local clipboard is empty: the server needs to know the client accepts
-  // CF_UNICODETEXT before it will offer its own clipboard content.
-  SendCliprdrFormatList(cliprdr_);
+  // the local clipboard is empty: the server needs to know what the client
+  // accepts before it offers its own clipboard content.
+  SendCapabilityFormatList(cliprdr_);
   return CHANNEL_RC_OK;
 }
 
@@ -1002,20 +1311,56 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
       cliprdr_->ClientFormatDataRequest == nullptr) {
     return CHANNEL_RC_OK;
   }
-  HMRDP_LOGI("cliprdr server format list: %{public}u formats", formatList->numFormats);
+  // File clipboard (FileGroupDescriptorW / FileContents) is reserved for later:
+  // it needs its own UI (progress + cancellation), so it is intentionally not
+  // advertised or requested yet.
+  UINT32 dibId = 0;
+  UINT32 dibV5Id = 0;
+  UINT32 textId = 0;
+  UINT32 htmlId = 0;
   for (UINT32 i = 0; i < formatList->numFormats; i++) {
-    HMRDP_LOGI("  format[%{public}u] id=%{public}u", i, formatList->formats[i].formatId);
-    if (formatList->formats[i].formatId != CF_UNICODETEXT) {
-      continue;
+    const CLIPRDR_FORMAT& format = formatList->formats[i];
+    if (format.formatName != nullptr && strcmp(format.formatName, kHtmlFormatName) == 0) {
+      htmlId = format.formatId;
+    } else if (format.formatId == CF_DIB) {
+      dibId = format.formatId;
+    } else if (format.formatId == CF_DIBV5) {
+      dibV5Id = format.formatId;
+    } else if (format.formatId == CF_UNICODETEXT) {
+      textId = format.formatId;
     }
-    CLIPRDR_FORMAT_DATA_REQUEST request = {};
-    request.common.msgType = CB_FORMAT_DATA_REQUEST;
-    request.common.msgFlags = 0;
-    request.requestedFormatId = CF_UNICODETEXT;
-    HMRDP_LOGI("cliprdr requesting CF_UNICODETEXT");
-    return cliprdr_->ClientFormatDataRequest(cliprdr_, &request);
   }
-  return CHANNEL_RC_OK;
+  // Pull the richest representation, in that order. Only one format is in
+  // flight at a time: the channel does not tag data responses with their
+  // format, so overlapping requests could not be told apart.
+  UINT32 requestId = 0;
+  int kind = kClipNone;
+  if (dibId != 0) {
+    requestId = dibId;
+    kind = kClipImage;
+  } else if (dibV5Id != 0) {
+    requestId = dibV5Id;
+    kind = kClipImage;
+  } else if (htmlId != 0) {
+    requestId = htmlId;
+    kind = kClipHtml;
+  } else if (textId != 0) {
+    requestId = textId;
+    kind = kClipText;
+  }
+  remoteHtmlFormatId_ = htmlId;
+  if (requestId == 0) {
+    HMRDP_LOGI("cliprdr server format list: no supported format");
+    return CHANNEL_RC_OK;
+  }
+  pendingRemoteKind_ = static_cast<LocalClipKind>(kind);
+  CLIPRDR_FORMAT_DATA_REQUEST request = {};
+  request.common.msgType = CB_FORMAT_DATA_REQUEST;
+  request.common.msgFlags = 0;
+  request.requestedFormatId = requestId;
+  HMRDP_LOGI("cliprdr requesting remote format id=%{public}u kind=%{public}d", requestId,
+             kind);
+  return cliprdr_->ClientFormatDataRequest(cliprdr_, &request);
 }
 
 UINT Session::OnCliprdrServerFormatDataRequest(
@@ -1025,12 +1370,23 @@ UINT Session::OnCliprdrServerFormatDataRequest(
     return CHANNEL_RC_OK;
   }
   HMRDP_LOGI("cliprdr server data request: format=%{public}u", request->requestedFormatId);
-  // Copy the local text out under the lock, then send without holding it.
+  // Copy the requested representation out under the lock, then send without
+  // holding it. Only the kind of content the user last pushed is served.
   std::vector<BYTE> payload;
-  if (request->requestedFormatId == CF_UNICODETEXT) {
+  {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    if (localClipboardValid_ && !localClipboardUtf16_.empty()) {
-      payload.assign(localClipboardUtf16_.begin(), localClipboardUtf16_.end());
+    const UINT32 id = request->requestedFormatId;
+    if (id == kHtmlFormatId && localClipKind_ == LocalClipKind::kHtml) {
+      payload.assign(localClipboardHtml_.begin(), localClipboardHtml_.end());
+    } else if (id == CF_DIB && localClipKind_ == LocalClipKind::kImage) {
+      payload.assign(localClipboardDib_.begin(), localClipboardDib_.end());
+    } else if (id == CF_UNICODETEXT) {
+      if (localClipKind_ == LocalClipKind::kText && localClipboardValid_) {
+        payload.assign(localClipboardUtf16_.begin(), localClipboardUtf16_.end());
+      } else if (localClipKind_ == LocalClipKind::kHtml) {
+        payload.assign(localClipboardUtf16FromHtml_.begin(),
+                       localClipboardUtf16FromHtml_.end());
+      }
     }
   }
   HMRDP_LOGI("cliprdr server data request: payload=%{public}u", static_cast<unsigned>(payload.size()));
@@ -1050,18 +1406,44 @@ UINT Session::OnCliprdrServerFormatDataRequest(
 
 UINT Session::OnCliprdrServerFormatDataResponse(
     const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
+  const LocalClipKind kind = pendingRemoteKind_;
+  pendingRemoteKind_ = LocalClipKind::kNone;
   if (response == nullptr || (response->common.msgFlags & CB_RESPONSE_FAIL) != 0) {
     HMRDP_LOGW("cliprdr data response failed or null");
     return CHANNEL_RC_OK;
   }
   const BYTE* data = response->requestedFormatData;
   const UINT32 size = response->common.dataLen;
-  HMRDP_LOGI("cliprdr data response: size=%{public}u", size);
-  if (data == nullptr || size < sizeof(WCHAR)) {
+  HMRDP_LOGI("cliprdr data response: kind=%{public}d size=%{public}u",
+             static_cast<int>(kind), size);
+  if (data == nullptr || size == 0) {
     return CHANNEL_RC_OK;
   }
-  // CF_UNICODETEXT is a NUL-terminated UTF-16LE string; make sure the buffer we
-  // hand to the converter is terminated even if the server omitted the NUL.
+  if (kind == LocalClipKind::kImage) {
+    DibImage image;
+    if (!ParseDibToBgra(data, size, &image)) {
+      HMRDP_LOGW("cliprdr remote image: unsupported DIB layout");
+      return CHANNEL_RC_OK;
+    }
+    std::ostringstream payload;
+    payload << image.width << ',' << image.height << '|'
+            << Base64Encode(image.bgra.data(), image.bgra.size());
+    Emit(SessionEvent::kClipboardImage, payload.str());
+    return CHANNEL_RC_OK;
+  }
+  if (kind == LocalClipKind::kHtml) {
+    const std::string html = ParseCfHtml(reinterpret_cast<const char*>(data), size);
+    if (!html.empty()) {
+      Emit(SessionEvent::kClipboardHtml, html);
+    }
+    return CHANNEL_RC_OK;
+  }
+  // Text (default): CF_UNICODETEXT is a NUL-terminated UTF-16LE string; make
+  // sure the buffer handed to the converter is terminated even if the server
+  // omitted the NUL.
+  if (size < sizeof(WCHAR)) {
+    return CHANNEL_RC_OK;
+  }
   const size_t wcharCount = (size + sizeof(WCHAR) - 1) / sizeof(WCHAR);
   std::vector<WCHAR> wide(wcharCount + 1, 0);
   memcpy(wide.data(), data, size);
@@ -1077,12 +1459,18 @@ UINT Session::OnCliprdrServerFormatDataResponse(
   return CHANNEL_RC_OK;
 }
 
+// Notifies the server of the local clipboard content after it changed.
+void Session::AdvertiseLocalClipboard() {
+  if (cliprdr_ == nullptr || !clipboardReady_.load()) {
+    return;
+  }
+  SendLocalFormatList(cliprdr_, static_cast<int>(localClipKind_));
+}
+
 void Session::SetLocalClipboardText(const std::string& utf8) {
   if (!clipboardEnabled_.load()) {
     return;
   }
-  HMRDP_LOGI("set local clipboard: %{public}u bytes, cliprdr=%{public}d ready=%{public}d",
-             static_cast<unsigned>(utf8.size()), cliprdr_ != nullptr ? 1 : 0, clipboardReady_.load() ? 1 : 0);
   size_t wcharCount = 0;
   WCHAR* wide = ConvertUtf8ToWCharAlloc(utf8.c_str(), &wcharCount);
   if (wide == nullptr) {
@@ -1093,11 +1481,69 @@ void Session::SetLocalClipboardText(const std::string& utf8) {
     localClipboardUtf16_.assign(reinterpret_cast<const char*>(wide),
                                 (wcharCount + 1) * sizeof(WCHAR));
     localClipboardValid_ = true;
+    localClipboardHtml_.clear();
+    localClipboardUtf16FromHtml_.clear();
+    localClipboardDib_.clear();
+    localClipKind_ = LocalClipKind::kText;
   }
   free(wide);
-  if (cliprdr_ != nullptr && clipboardReady_.load()) {
-    SendCliprdrFormatList(cliprdr_);
+  HMRDP_LOGI("set local clipboard text: %{public}u bytes",
+             static_cast<unsigned>(utf8.size()));
+  AdvertiseLocalClipboard();
+}
+
+void Session::SetLocalClipboardHtml(const std::string& html) {
+  if (!clipboardEnabled_.load() || html.empty()) {
+    return;
   }
+  const std::string text = StripHtmlToText(html);
+  size_t wcharCount = 0;
+  WCHAR* wide = ConvertUtf8ToWCharAlloc(text.c_str(), &wcharCount);
+  if (wide == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    localClipboardHtml_ = BuildCfHtml(html);
+    localClipboardUtf16FromHtml_.assign(reinterpret_cast<const char*>(wide),
+                                        (wcharCount + 1) * sizeof(WCHAR));
+    localClipboardUtf16_.clear();
+    localClipboardValid_ = false;
+    localClipboardDib_.clear();
+    localClipKind_ = LocalClipKind::kHtml;
+  }
+  free(wide);
+  HMRDP_LOGI("set local clipboard html: %{public}u bytes",
+             static_cast<unsigned>(html.size()));
+  AdvertiseLocalClipboard();
+}
+
+void Session::SetLocalClipboardImage(uint32_t width, uint32_t height,
+                                     int32_t pixelFormat, const uint8_t* pixels,
+                                     size_t byteCount) {
+  if (!clipboardEnabled_.load() || pixels == nullptr || width == 0 || height == 0) {
+    return;
+  }
+  const size_t count = static_cast<size_t>(width) * height;
+  std::vector<uint8_t> bgra(count * 4, 0);
+  if (!ConvertToBgra(pixels, byteCount, width, height, pixelFormat, bgra.data())) {
+    HMRDP_LOGW("set local clipboard image: unsupported pixel format %{public}d",
+               pixelFormat);
+    return;
+  }
+  const std::vector<uint8_t> dib = BuildBgraToDib(bgra.data(), width, height);
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    localClipboardDib_.assign(dib.begin(), dib.end());
+    localClipboardUtf16_.clear();
+    localClipboardValid_ = false;
+    localClipboardHtml_.clear();
+    localClipboardUtf16FromHtml_.clear();
+    localClipKind_ = LocalClipKind::kImage;
+  }
+  HMRDP_LOGI("set local clipboard image: %{public}ux%{public}u fmt=%{public}d",
+             width, height, pixelFormat);
+  AdvertiseLocalClipboard();
 }
 
 }  // namespace hmrdp

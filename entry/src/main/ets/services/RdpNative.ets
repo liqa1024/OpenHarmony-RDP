@@ -7,8 +7,8 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
-  sendUnicode, setClipboardText, setRdpCursor, setSurface, setTouchHighRate, updateSurface,
-  RdpEventCallback } from 'libhmrdp.so';
+  sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
+  setTouchHighRate, updateSurface, RdpEventCallback } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
 export type RdpEventListener = (event: RdpEvent, data: string) => void;
@@ -164,6 +164,24 @@ export class RdpNative {
   setClipboard(text: string): void {
     if (this.handle >= 0) {
       setClipboardText(this.handle, text);
+    }
+  }
+
+  /** Pushes a local HTML fragment to the remote session (CF_HTML). */
+  pushClipboardHtml(html: string): void {
+    if (this.handle >= 0) {
+      setClipboardHtml(this.handle, html);
+    }
+  }
+
+  /**
+   * Pushes a local image to the remote session. `pixelFormat` is the HarmonyOS
+   * image.PixelMapFormat of `pixels`; native converts it to CF_DIB.
+   */
+  pushClipboardImage(width: number, height: number, pixelFormat: number,
+    pixels: ArrayBuffer): void {
+    if (this.handle >= 0) {
+      setClipboardImage(this.handle, width, height, pixelFormat, pixels);
     }
   }
 }
