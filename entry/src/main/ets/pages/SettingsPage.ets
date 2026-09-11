@@ -78,6 +78,9 @@ struct SettingsPage {
   @State enableGfx: boolean = true;
   @State enableH264: boolean = true;
   @State ignoreCertificate: boolean = true;
+  @State h264Hardware: boolean = true;
+  // Temporary H.264 test switch (see PERF-TODO.md C).
+  @State h264Avc444: boolean = true;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -139,6 +142,10 @@ struct SettingsPage {
     this.enableGfx = settings.enableGfx;
     this.enableH264 = settings.enableH264;
     this.ignoreCertificate = settings.ignoreCertificate;
+    this.h264Avc444 = settings.h264Avc444;
+    this.h264Hardware = settings.h264Hardware;
+    RdpNative.applyH264Avc444(this.h264Avc444);
+    RdpNative.applyH264Hardware(this.h264Hardware);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
@@ -213,6 +220,8 @@ struct SettingsPage {
     settings.enableGfx = this.enableGfx;
     settings.enableH264 = this.enableH264;
     settings.ignoreCertificate = this.ignoreCertificate;
+    settings.h264Avc444 = this.h264Avc444;
+    settings.h264Hardware = this.h264Hardware;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -227,6 +236,8 @@ struct SettingsPage {
     // Apply immediately so a toggle takes effect for sessions opened next,
     // without waiting for an app restart.
     RdpNative.applyRdpCursor(this.useRdpCursor);
+    RdpNative.applyH264Avc444(this.h264Avc444);
+    RdpNative.applyH264Hardware(this.h264Hardware);
   }
 
   private resetDefaults(): void {
@@ -254,6 +265,8 @@ struct SettingsPage {
     this.enableGfx = defaults.enableGfx;
     this.enableH264 = defaults.enableH264;
     this.ignoreCertificate = defaults.ignoreCertificate;
+    this.h264Avc444 = defaults.h264Avc444;
+    this.h264Hardware = defaults.h264Hardware;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -905,13 +918,13 @@ struct SettingsPage {
             Divider().color($r('app.color.divider'))
 
             this.toggleItem({
-              title: 'GFX 图形管道',
-              subtitle: '更流畅的画面传输，建议开启',
-              value: this.enableGfx,
+              title: 'H.264 / AVC（可硬件解码）',
+              subtitle: '声明支持 H.264，客户端可硬解；是否采用取决于服务端。关闭则用 RemoteFX（软件解码）',
+              value: this.enableH264,
               enabled: true,
               disabledReason: '',
               onChange: (v: boolean) => {
-                this.enableGfx = v;
+                this.enableH264 = v;
                 this.persist();
               }
             })
@@ -919,13 +932,27 @@ struct SettingsPage {
             Divider().color($r('app.color.divider'))
 
             this.toggleItem({
-              title: 'H.264 / AVC 解码',
-              subtitle: '需服务端支持，GFX 开启时生效',
-              value: this.enableH264,
+              title: '硬件解码（H.264）',
+              subtitle: '优先使用硬件的 H.264 解码器；关闭则优先软件解码器（用于对比）',
+              value: this.h264Hardware,
               enabled: true,
               disabledReason: '',
               onChange: (v: boolean) => {
-                this.enableH264 = v;
+                this.h264Hardware = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: 'H.264 AVC444（测试）',
+              subtitle: '同时声明 AVC444；Windows 需此才把桌面切到 H.264。用于 A/B 对比',
+              value: this.h264Avc444,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.h264Avc444 = v;
                 this.persist();
               }
             })

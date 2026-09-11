@@ -105,6 +105,15 @@ class Session {
   // kept (the pre-cursor-support behaviour). Applied when a session connects.
   static void SetRdpCursor(bool enabled);
 
+  // Process-global H.264 test switch: when false the client advertises AVC420
+  // only; when true it also advertises AVC444, which Windows requires before it
+  // moves the desktop to H.264. Read when a session connects.
+  static void SetH264Avc444(bool enabled);
+
+  // Process-global preference for a hardware H.264 decoder; when false the
+  // subsystem prefers a software decoder. Applied when a session connects.
+  static void SetH264Hardware(bool enabled);
+
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);
@@ -131,6 +140,9 @@ class Session {
   // Pushed by the wrapped GFX SurfaceCommand: time spent decoding one surface
   // command (H.264/AVC or bitmap). Called on the RDP thread.
   void OnDecodeTime(uint64_t micros);
+  // Pushed by the wrapped GFX SurfaceCommand with the RDPGFX codec id of the
+  // last decoded surface, so the UI can show which decoder is actually in use.
+  void OnGfxCodec(uint32_t codecId);
   // The GFX channel context whose decode callback libhmrdp wrapped, so it can be
   // unregistered on disconnect. Stored as void* to keep the header light.
   void SetGfxContext(void* gfx);
@@ -187,6 +199,11 @@ class Session {
   // Decode time (GFX SurfaceCommand) accumulated per window; added to the render
   // time so "本机" covers decode + present.
   std::atomic<uint64_t> decodeAccumUs_{0};
+  // Decode-mode telemetry for the toolbar: mode of the last non-H264 surface
+  // (1=H264, 2=RFX, 3=RAW; 0=none yet) plus the H264 command count of the
+  // current metrics window (H264 wins the window when any H264 frame arrived).
+  std::atomic<uint32_t> lastGfxMode_{0};
+  std::atomic<uint32_t> h264Commands_{0};
   void* gfxContext_ = nullptr;
   // Ring of the most recent input-to-frame measurements; the emitted value is
   // their mean (this is a statistic, not a hard real-time figure).

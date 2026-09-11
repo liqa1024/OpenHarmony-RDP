@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <dlfcn.h>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -48,6 +50,11 @@ extern "C" void HmrdpSetAudioSink(HmrdpAudioSink sink);
 // high-rate simply stays unavailable.
 extern "C" void HmrdpSetTouchFrameInterval(UINT32 intervalMs) __attribute__((weak));
 
+// Defined by the OHOS AVCodec H.264 subsystem (patched FreeRDP): prefer a
+// hardware decoder over a software one. Weak so libhmrdp still links against a
+// stock FreeRDP without the subsystem.
+extern "C" void HmrdpH264SetHardwarePreferred(int preferred) __attribute__((weak));
+
 namespace hmrdp {
 namespace {
 
@@ -55,6 +62,46 @@ namespace {
 // the touch frame interval) because it is a user setting, and read when a
 // session connects (HmrdpPostConnect).
 std::atomic<bool> g_useRdpCursor{true};
+
+// H.264 test switch: also advertise AVC444. Default on; Windows only switches
+// the desktop to H.264 once AVC444 is advertised (see Connect).
+std::atomic<bool> g_h264Avc444{true};
+
+// Prefer a hardware H.264 decoder (VDEC). Default on; when off the subsystem
+// prefers a software decoder so the two can be A/B compared.
+std::atomic<bool> g_h264Hardware{true};
+
+// Whether the OHOS media stack provides an H.264 video decoder. The bundled
+// FreeRDP now advertises AVC420 whenever FreeRDP_GfxH264 is set, so a device
+// without a decoder must not enable it or the AVC surfaces would fail to decode.
+// libnative_media_vdec.so is probed with dlopen (like OHAudio) so a device that
+// lacks the media stack simply reports unsupported instead of failing to load.
+bool H264DecoderSupported() {
+  static std::once_flag once;
+  static bool supported = false;
+  std::call_once(once, []() {
+    void* handle = dlopen("libnative_media_vdec.so", RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr) {
+      HMRDP_LOGW("h264: libnative_media_vdec.so unavailable");
+      return;
+    }
+    using CreateByMimeFn = void* (*)(const char*);
+    using DestroyFn = int (*)(void*);
+    auto create = reinterpret_cast<CreateByMimeFn>(
+        dlsym(handle, "OH_VideoDecoder_CreateByMime"));
+    auto destroy = reinterpret_cast<DestroyFn>(dlsym(handle, "OH_VideoDecoder_Destroy"));
+    if (create != nullptr && destroy != nullptr) {
+      void* codec = create("video/avc");
+      if (codec != nullptr) {
+        supported = true;
+        destroy(codec);
+      }
+    }
+    dlclose(handle);
+    HMRDP_LOGI("h264: decoder %{public}s", supported ? "available" : "unavailable");
+  });
+  return supported;
+}
 
 uint64_t NowMs() {
   return static_cast<uint64_t>(
@@ -1074,6 +1121,9 @@ UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMA
       HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(gdi->context);
       if (ctx->session != nullptr) {
         ctx->session->OnDecodeTime(elapsed);
+        if (command != nullptr) {
+          ctx->session->OnGfxCodec(command->codecId);
+        }
       }
     }
   }
@@ -1332,9 +1382,11 @@ BOOL HmrdpPreConnect(freerdp* instance) {
   }
   freerdp_settings_set_uint32(settings, FreeRDP_OsMajorType, OSMAJORTYPE_UNIX);
   freerdp_settings_set_uint32(settings, FreeRDP_OsMinorType, OSMINORTYPE_NATIVE_XSERVER);
-  HMRDP_LOGI("preconnect: clipboard=%{public}d gfx=%{public}d",
+  HMRDP_LOGI("preconnect: clipboard=%{public}d gfx=%{public}d h264=%{public}d avc444=%{public}d",
              freerdp_settings_get_bool(settings, FreeRDP_RedirectClipboard) ? 1 : 0,
-             freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) ? 1 : 0);
+             freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) ? 1 : 0,
+             freerdp_settings_get_bool(settings, FreeRDP_GfxH264) ? 1 : 0,
+             freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444) ? 1 : 0);
 
   // The graphics pipeline (RDPGFX) callbacks are registered by the client
   // library when the rdpgfx channel connects. Without these subscriptions the
@@ -1494,6 +1546,22 @@ void Session::OnDecodeTime(uint64_t micros) {
   decodeAccumUs_.fetch_add(micros);
 }
 
+void Session::OnGfxCodec(uint32_t codecId) {
+  switch (codecId) {
+    case RDPGFX_CODECID_AVC420:
+    case RDPGFX_CODECID_AVC444:
+    case RDPGFX_CODECID_AVC444v2:
+      h264Commands_.fetch_add(1);
+      return;
+    case RDPGFX_CODECID_UNCOMPRESSED:
+      lastGfxMode_.store(3);
+      return;
+    default:
+      lastGfxMode_.store(2);
+      return;
+  }
+}
+
 void Session::SetGfxContext(void* gfx) {
   gfxContext_ = gfx;
 }
@@ -1613,9 +1681,13 @@ void Session::EmitMetrics() {
     rtt = static_cast<int32_t>(measured);
   }
 
+  // Decode mode for the toolbar: H264 (1) wins a window that saw any H.264
+  // frame, otherwise the last non-H264 mode (RFX=2, RAW=3); 0 = none yet.
+  const uint32_t codecMode = h264Commands_.exchange(0) > 0 ? 1u : lastGfxMode_.load();
+
   std::ostringstream payload;
   payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << localAvgUs
-          << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp;
+          << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp << "|" << codecMode;
   Emit(SessionEvent::kMetrics, payload.str());
 }
 
@@ -1737,8 +1809,27 @@ bool Session::Connect(const RdpOptions& options) {
   }
   freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback,
                             options.enableAudio && audioSupported);
-  freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, options.enableGfx);
-  freerdp_settings_set_bool(settings, FreeRDP_GfxH264, options.enableH264);
+  // GFX (RDPGFX) is mandatory: without it the session does not render at all,
+  // so it is always enabled and the old per-connection toggle was removed.
+  freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
+  // Advertise AVC420 only when the platform actually has an H.264 decoder;
+  // otherwise the server would send AVC surfaces nothing here can decode.
+  const bool h264Supported = H264DecoderSupported();
+  if (options.enableH264 && !h264Supported) {
+    HMRDP_LOGW("h264: requested but no decoder on this device, disabling");
+  }
+  freerdp_settings_set_bool(settings, FreeRDP_GfxH264,
+                            options.enableH264 && h264Supported);
+  // Windows only switches the desktop to H.264 when the client advertises
+  // AVC444 (CAPVERSION_10); AVC420 alone was observed to fall back to RemoteFX
+  // Progressive. The AVC444 combination itself is done by FreeRDP, so the
+  // decoder subsystem handles it the same way as AVC420. The AVC444 toggle is a
+  // temporary test switch to A/B the two advertisements.
+  freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444,
+                            options.enableH264 && h264Supported && g_h264Avc444.load());
+  if (HmrdpH264SetHardwarePreferred != nullptr) {
+    HmrdpH264SetHardwarePreferred(g_h264Hardware.load() ? 1 : 0);
+  }
   freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, options.enableRemoteFx);
   if (options.performanceFlags != 0) {
     freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags,
@@ -2082,6 +2173,19 @@ void Session::SetTouchHighRate(bool enabled) {
 
 void Session::SetRdpCursor(bool enabled) {
   g_useRdpCursor.store(enabled);
+}
+
+void Session::SetH264Avc444(bool enabled) {
+  g_h264Avc444.store(enabled);
+  HMRDP_LOGI("h264: advertise AVC444 %{public}s", enabled ? "on" : "off");
+}
+
+void Session::SetH264Hardware(bool enabled) {
+  g_h264Hardware.store(enabled);
+  if (HmrdpH264SetHardwarePreferred != nullptr) {
+    HmrdpH264SetHardwarePreferred(enabled ? 1 : 0);
+  }
+  HMRDP_LOGI("h264: hardware decoder preferred %{public}s", enabled ? "on" : "off");
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {

@@ -162,7 +162,7 @@ struct EditConnectionPage {
 
   private advancedSummary(profile: AdvancedProfile): string {
     return `剪贴板${this.onOff(profile.enableClipboard)} · 音频${this.onOff(profile.enableAudio)}`
-      + ` · GFX${this.onOff(profile.enableGfx)} · H.264${this.onOff(profile.enableH264)}`
+      + ` · H.264${this.onOff(profile.enableH264)}`
       + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`;
   }
 
@@ -750,10 +750,8 @@ struct EditConnectionPage {
                   this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
                     this.enableAudio = v;
                   }, this.audioSupported, this.audioDisabledReason)
-                  this.optionRow('GFX 图形管道', '更流畅的画面传输', this.enableGfx, (v: boolean) => {
-                    this.enableGfx = v;
-                  }, true, '')
-                  this.optionRow('H.264 / AVC 解码', '需服务端支持', this.enableH264, (v: boolean) => {
+                  this.optionRow('H.264 / AVC（可硬件解码）',
+                    '声明支持 H.264，客户端可硬解；是否采用看服务端', this.enableH264, (v: boolean) => {
                     this.enableH264 = v;
                   }, true, '')
                   this.optionRow('忽略证书校验', '仅用于自签名证书的测试环境', this.ignoreCertificate,

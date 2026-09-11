@@ -104,4 +104,59 @@ Patch-File "$Source\channels\rdpei\client\rdpei_main.c" @{
   'lastPollEventTime < 20ULL' = 'lastPollEventTime < g_HmrdpTouchFrameIntervalMs'
 }
 
+# 7) HmRdp: HarmonyOS hardware H.264 decode via the OHOS AVCodec video decoder.
+#    Upstream has ffmpeg/openh264/MediaCodec/MediaFoundation subsystems; none is
+#    available on OHOS, so WITH_GFX_H264 was OFF and AVC420 was never advertised
+#    (the session fell back to RemoteFX Progressive). Drop in an OH_VideoDecoder
+#    subsystem, register it first, and force WITH_GFX_H264 so the client
+#    advertises AVC420 again. build-freerdp.ps1 passes -DWITH_OHOS_AVCODEC=ON.
+Copy-Item -LiteralPath (Join-Path $Patches "h264_ohos_avcodec.c") `
+  -Destination "$Source\libfreerdp\codec\h264_ohos_avcodec.c" -Force
+
+$ohosExtern = @'
+#ifdef WITH_OHOS_AVCODEC
+    extern const H264_CONTEXT_SUBSYSTEM g_Subsystem_ohos_avcodec;
+#endif
+#ifdef WITH_VIDEO_FFMPEG
+'@
+Patch-File "$Source\libfreerdp\codec\h264.h" @{
+  '#ifdef WITH_VIDEO_FFMPEG' = $ohosExtern
+}
+
+$ohosRegister = @'
+#ifdef WITH_OHOS_AVCODEC
+    {
+        subSystems[i] = &g_Subsystem_ohos_avcodec;
+        i++;
+    }
+#endif
+#ifdef WITH_MEDIACODEC
+'@
+Patch-File "$Source\libfreerdp\codec\h264.c" @{
+  '#ifdef WITH_MEDIACODEC' = $ohosRegister
+}
+
+$ohosGfxCondition = @'
+option(WITH_OHOS_AVCODEC "Compile the HarmonyOS AVCodec H.264 decoder subsystem" OFF)
+
+if(WITH_OPENH264 OR WITH_MEDIA_FOUNDATION OR WITH_VIDEO_FFMPEG OR WITH_MEDIACODEC OR WITH_OHOS_AVCODEC)
+'@
+Patch-File "$Source\CMakeLists.txt" @{
+  'if(WITH_OPENH264 OR WITH_MEDIA_FOUNDATION OR WITH_VIDEO_FFMPEG OR WITH_MEDIACODEC)' = $ohosGfxCondition
+}
+
+$ohosCodecCmake = @'
+# HmRdp: HarmonyOS hardware H.264 decode via the OHOS AVCodec video decoder.
+if(WITH_OHOS_AVCODEC)
+  list(APPEND CODEC_SRCS h264_ohos_avcodec.c)
+  add_compile_definitions(WITH_OHOS_AVCODEC)
+  list(APPEND CODEC_LIBS native_media_vdec native_media_codecbase native_media_core)
+endif()
+
+add_library(freerdp-codecs OBJECT ${CODEC_SRCS})
+'@
+Patch-File "$Source\libfreerdp\codec\CMakeLists.txt" @{
+  'add_library(freerdp-codecs OBJECT ${CODEC_SRCS})' = $ohosCodecCmake
+}
+
 Write-Host "FreeRDP OHOS patches applied to $Source"

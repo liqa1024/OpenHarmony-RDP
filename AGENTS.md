@@ -74,7 +74,7 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 ## 原生库源码构建（可选；预编译库已提交）
 
 ```
-native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调）
+native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、OHOS AVCodec H.264 子系统）
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
@@ -111,6 +111,20 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 >   关掉 `FreeRDP_AudioPlayback`，ArkTS 侧 `services/DeviceCapabilities.ets` 把
 >   `isAudioSupported()` 暴露给 UI，设置/编辑页的「音频重定向」置灰并显示原因。
 >   新增设备相关特性沿用此 `Capability` 模式（置灰 + 原因 + 原生兜底），别只靠 syscap 告警。
+>
+> **H.264/AVC 硬解**：原预编译 FreeRDP `WITH_FFMPEG/OPENH264=OFF` → `WITH_GFX_H264=OFF`，客户端
+> 从不广告 AVC420（「H.264」设置是空操作，实际用 RemoteFX Progressive）。`patch-freerdp.ps1`
+> 步骤 7 加入 OHOS AVCodec 子系统 `native/patches/h264_ohos_avcodec.c`（`OH_VideoDecoder`
+> 同步 buffer 模式，`OH_MD_KEY_ENABLE_SYNC_MODE=1`），`build-freerdp.ps1` 传 `-DWITH_OHOS_AVCODEC=ON`
+> 并据此强制 `WITH_GFX_H264=ON`，客户端才重新广告 AVC420。`libfreerdp3.so` 因此 **DT_NEEDED
+> `libnative_media_{vdec,codecbase,core}.so`**（平台媒体栈）；`Session::Connect` 用 `dlopen` 探测
+> `video/avc`，不支持则不启用 `FreeRDP_GfxH264`。子系统**优先硬件解码器**（`GetCapabilityByCategory(HARDWARE)`
+> + `CreateByName`），全局开关 `硬件解码（H.264）` 置 `HmrdpH264SetHardwarePreferred` 可切到软件解码器；
+> 日志打印所选名称与 `hardware=0/1`。子系统把解码 YUV 写进**自己的平面缓冲**并把
+> `h264->pYUVData/iStride` 指向它，仍由 FreeRDP 做 YUV→RGB 与合成（零拷贝见 PERF-TODO C/Stage 2）。
+> **已在模拟器验证**：仅广告 AVC420 时 Windows 仍走 Progressive，需同时置 `FreeRDP_GfxAVC444` 才会
+> 下发 H.264；要点还有输入缓冲按 NAL 带 `CODEC_DATA`/`SYNC_FRAME`、解码器**一帧输出延迟**（需返回
+> 上一帧/首帧补偿）。细节见 PERF-TODO C。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
@@ -176,12 +190,14 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     100/125/150/175/200/225（`SettingsStore.SCALE_PRESETS`）；经 `RdpOptions.scalePercent` → 原生只写
     `FreeRDP_DesktopScaleFactor`。每个连接可关「使用全局显示设置」用自己保存的
     `width/height/scalePercent`；连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
-12. **高级连接特性（全局默认 + 单连接覆盖）**：音频/GFX/H.264/忽略证书这 4 项默认值放在
+12. **高级连接特性（全局默认 + 单连接覆盖）**：音频/H.264/忽略证书这几项默认值放在
     `AppSettings`（设置页「连接特性」区），连接保存自己的独立值 + `useGlobalAdvanced` 标志，
     **默认跟随全局**（`SavedConnection.useGlobalAdvanced = true`）。连接前用
     `SettingsStore.resolveAdvanced(conn)` 解析，再写入 `RdpConnectOptions`。编辑页「高级设置」里
     「使用全局高级设置」关掉后才会用本连接的独立开关；保存时仍持久化独立值，便于随时切回。
     剪贴板固定开启（其全局开关已移除），但仍保留单连接的「剪贴板重定向」开关可单独关闭。
+    **GFX 恒开**：关掉图形管线会让会话完全不可用，故其开关已删除，`Connect` 里无条件置
+    `FreeRDP_SupportGraphicsPipeline`（`AppSettings.enableGfx` 字段保留但已不生效）。
 13. **剪贴板重定向（手动触发）**：**同步在设计上就是用户手动触发的**——工具栏「复制」（远端→
     本机）与「粘贴」（本机→远端）两个按钮，**刻意不做自动同步**，扩展图片/文件等类型时也必须沿用。
     理由：①自动读本机剪贴板需要受限开放的 `READ_PASTEBOARD` 权限、有隐私成本，手动则可用
@@ -238,7 +254,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     `pointer.setCustomCursorSync`，默认/隐藏走 `setPointerStyleSync(DEFAULT)` / `setPointerVisibleSync(false)`
     （模拟器无鼠标，只能真机验证）。关闭开关则不接管、回退默认箭头。
 19. **会话状态栏遥测**：原生 `Session::EmitMetrics` 每秒经 `kMetrics` 事件下发
-    `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`，`SessionPage` 工具栏渲染。
+    `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp|codecMode`，`SessionPage` 工具栏渲染。
+    `codecMode`（1=H264/2=RFX/3=RAW/0=未知）在分辨率后显示为 `<width> × <height>(H264)`：由包装的
+    `SurfaceCommand` 按 `command->codecId` 统计，窗口内出现 H.264 则报 H264，否则报最近的非 H.264。
+    用于验证服务端是否真的下发了 H.264（仅广告 AVC420 时 Windows 多仍走 Progressive）。
     - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端
       注册该回调），故 `Connect` 时给 `context->autodetect` 注册 `HmrdpNetworkCharacteristicsResult` 自行捕获。
     - **本机** = **解码 + 呈现**：解码链式包裹 `RdpgfxClientContext::SurfaceCommand`（H.264/位图解码都在

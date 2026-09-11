@@ -147,6 +147,8 @@ struct SessionPage {
   // -1 when audio is not playing.
   @State metricsAudioRateHz: number = -1;
   @State metricsAudioLossBp: number = -1;
+  // Decode mode of the last metrics window: 0 unknown, 1 H264, 2 RFX, 3 RAW.
+  @State metricsCodec: number = 0;
   // Display (panel) refresh rate in Hz; 0 until queried.
   @State systemRefreshRate: number = 0;
   private surfaceId: string = '';
@@ -250,6 +252,8 @@ struct SessionPage {
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
+    RdpNative.applyH264Avc444(settings.h264Avc444);
+    RdpNative.applyH264Hardware(settings.h264Hardware);
     this.useRdpCursor = settings.useRdpCursor;
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
@@ -420,7 +424,7 @@ struct SessionPage {
   /** Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<rateHz>|<lossBp>". */
   private onMetrics(data: string): void {
     const parts: string[] = data.split('|');
-    if (parts.length !== 8) {
+    if (parts.length < 8) {
       return;
     }
     const rtt: number = Number.parseInt(parts[0], 10);
@@ -455,6 +459,12 @@ struct SessionPage {
     if (!Number.isNaN(audioLossBp)) {
       this.metricsAudioLossBp = audioLossBp;
     }
+    if (parts.length >= 9) {
+      const codec: number = Number.parseInt(parts[8], 10);
+      if (!Number.isNaN(codec)) {
+        this.metricsCodec = codec;
+      }
+    }
     this.refreshSystemRefreshRate();
   }
 
@@ -466,6 +476,20 @@ struct SessionPage {
       hilog.warn(DOMAIN, TAG, 'read display refresh rate failed: %{public}s',
         JSON.stringify(error));
     }
+  }
+
+  /** Decode mode shown after the resolution, e.g. "<width> × <height>(H264)". */
+  private codecLabel(): string {
+    if (this.metricsCodec === 1) {
+      return 'H264';
+    }
+    if (this.metricsCodec === 2) {
+      return 'RFX';
+    }
+    if (this.metricsCodec === 3) {
+      return 'RAW';
+    }
+    return '';
   }
 
   /** "网络 28ms", or "网络 --" until the server reports network stats. */
@@ -1596,7 +1620,8 @@ struct SessionPage {
       Text(this.options.host)
         .fontSize(14)
         .fontColor('#FFFFFF')
-      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
+      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight +
+        (this.codecLabel().length > 0 ? '(' + this.codecLabel() + ')' : ''))
         .fontSize(12)
         .fontColor('#B8BCC4')
       if (this.state === RdpConnectionState.Connected) {

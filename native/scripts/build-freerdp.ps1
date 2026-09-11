@@ -61,6 +61,9 @@ $cfg = @(
   "-DOpenSLES_INCLUDE_DIR=$Sysroot\usr\include",
   "-DOpenSLES_LIBRARY=$Sysroot\usr\lib\$Triple\libOpenSLES.so",
   "-DWITH_OPENH264=OFF",
+  # HmRdp: OHOS AVCodec H.264 hardware decode subsystem (see patch-freerdp.ps1
+  # step 7). Also forces WITH_GFX_H264 on so AVC420 is advertised again.
+  "-DWITH_OHOS_AVCODEC=ON",
   "-DWITH_GSM=OFF", "-DWITH_LAME=OFF", "-DWITH_FAAD2=OFF", "-DWITH_FAAC=OFF",
   "-DWITH_SOXR=OFF", "-DWITH_OPUS=OFF", "-DWITH_PKCS11=OFF", "-DWITH_ICU=OFF", "-DWITH_KRB5=OFF",
   "-DWITH_UNICODE_BUILTIN=ON", "-DWITH_INTERNAL_RC4=ON", "-DWITH_INTERNAL_MD4=ON", "-DWITH_INTERNAL_MD5=ON",
