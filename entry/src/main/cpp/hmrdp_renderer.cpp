@@ -4,6 +4,7 @@
  */
 #include "hmrdp_renderer.h"
 
+#include "hmrdp_egl.h"
 #include "hmrdp_log.h"
 
 namespace hmrdp {
@@ -26,26 +27,6 @@ const char* kFragmentShader =
     "  vec4 c = texture2D(uTex, vTex);\n"
     "  gl_FragColor = vec4(c.bgr, 1.0);\n"
     "}\n";
-
-// EGL display is process-wide: every renderer shares the same connection but
-// owns its own context/surface. eglTerminate must therefore never be called per
-// renderer, or destroying one session would invalidate all the others.
-EGLDisplay GetSharedDisplay() {
-  static std::once_flag once;
-  static EGLDisplay display = EGL_NO_DISPLAY;
-  std::call_once(once, []() {
-    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display == EGL_NO_DISPLAY) {
-      HMRDP_LOGE("eglGetDisplay failed");
-      return;
-    }
-    if (eglInitialize(display, nullptr, nullptr) != EGL_TRUE) {
-      HMRDP_LOGE("eglInitialize failed: 0x%{public}x", eglGetError());
-      display = EGL_NO_DISPLAY;
-    }
-  });
-  return display;
-}
 
 GLuint CompileShader(GLenum type, const char* source) {
   GLuint shader = glCreateShader(type);
@@ -137,7 +118,7 @@ bool Renderer::EnsureContext() {
 
   DestroyContext();
 
-  display_ = GetSharedDisplay();
+  display_ = SharedEglDisplay();
   if (display_ == EGL_NO_DISPLAY) {
     return false;
   }
@@ -167,8 +148,13 @@ bool Renderer::EnsureContext() {
   // ES3 is required for GL_UNPACK_ROW_LENGTH, used to upload a sub-rectangle
   // whose source rows are pitched at the full desktop stride. The GLSL ES 1.00
   // shaders below remain valid in an ES3 context.
+  //
+  // The context joins the process-wide share group (SharedEglAnchorContext) so
+  // PresentTexture can sample a texture created by the GPU desktop engine
+  // without a CPU round-trip (PERF-TODO §3.4 / §11.4).
   const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-  context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, contextAttribs);
+  context_ =
+      eglCreateContext(display_, config_, SharedEglAnchorContext(), contextAttribs);
   if (context_ == EGL_NO_CONTEXT) {
     HMRDP_LOGE("eglCreateContext failed: 0x%{public}x", eglGetError());
     DestroyContext();
@@ -293,7 +279,7 @@ void Renderer::UpdateViewport() {
   glViewport(vpX, vpY, vpWidth, vpHeight);
 }
 
-void Renderer::DrawQuad() {
+void Renderer::DrawQuad(GLuint texture) {
   static const GLfloat positions[] = {
       -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f,
   };
@@ -302,7 +288,7 @@ void Renderer::DrawQuad() {
   };
   glUseProgram(program_);
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, texture_);
+  glBindTexture(GL_TEXTURE_2D, texture);
   glUniform1i(uniTex_, 0);
   glEnableVertexAttribArray(attrPos_);
   glEnableVertexAttribArray(attrTex_);
@@ -373,7 +359,7 @@ bool Renderer::DrawFrame(const uint8_t* data, int stride, int x, int y, int widt
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   UpdateViewport();
-  DrawQuad();
+  DrawQuad(texture_);
   static int drawCount = 0;
   if (drawCount < 12) {
     HMRDP_LOGI("draw #%{public}d rect %{public}d,%{public}d %{public}dx%{public}d tex=%{public}dx%{public}d desk=%{public}dx%{public}d surf=%{public}dx%{public}d glerr=0x%{public}x",
@@ -382,6 +368,31 @@ bool Renderer::DrawFrame(const uint8_t* data, int stride, int x, int y, int widt
                surfaceHeight_, glGetError());
     drawCount++;
   }
+  eglSwapBuffers(display_, surface_);
+  return true;
+}
+
+bool Renderer::PresentTexture(GLuint texture, int width, int height) {
+  if (texture == 0 || width <= 0 || height <= 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!EnsureContext()) {
+    return false;
+  }
+  if (eglMakeCurrent(display_, surface_, surface_, context_) != EGL_TRUE) {
+    return false;
+  }
+  // The texture is created and populated by the GPU desktop engine in the same
+  // EGL share group, so it can be sampled directly here; only the viewport math
+  // needs the desktop dimensions.
+  desktopWidth_ = width;
+  desktopHeight_ = height;
+  glDisable(GL_BLEND);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  UpdateViewport();
+  DrawQuad(texture);
   eglSwapBuffers(display_, surface_);
   return true;
 }

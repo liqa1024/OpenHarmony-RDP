@@ -24,6 +24,7 @@ add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
     hmrdp_renderer.cpp
+    hmrdp_egl.cpp
     hmrdp_audio.cpp
     hmrdp_rfx.cpp
     hmrdp_rfx_gpu.cpp

@@ -41,6 +41,10 @@ public:
   // EndPaint callback with a non-null invalid region when a drawing primitive
   // actually ran (gdi_InvalidateRegion), so a static desktop never reaches here.
   bool DrawFrame(const uint8_t* data, int stride, int x, int y, int width, int height);
+  // Presents a texture that lives in the same EGL share group (e.g. the GPU
+  // desktop engine's composed screen) without a CPU readback/upload. `width`/
+  // `height` are the desktop dimensions used for the letterbox viewport.
+  bool PresentTexture(GLuint texture, int width, int height);
   void Reset();
 
 private:
@@ -48,7 +52,7 @@ private:
   void DestroyContext();
   void EnsureTexture();
   void UpdateViewport();
-  void DrawQuad();
+  void DrawQuad(GLuint texture);
 
   std::mutex mutex_;
 

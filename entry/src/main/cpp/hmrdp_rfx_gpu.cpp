@@ -34,6 +34,7 @@
 #include <EGL/eglext.h>
 #include <GLES3/gl31.h>
 
+#include "hmrdp_egl.h"
 #include "hmrdp_gfx_desktop.h"
 #include "hmrdp_log.h"
 
@@ -735,14 +736,17 @@ EGLContext CreateOffscreen(EGLDisplay display, EGLConfig* outConfig, EGLSurface*
   if (*outSurface == EGL_NO_SURFACE) {
     return EGL_NO_CONTEXT;
   }
+  // Join the process-wide share group so the Renderer's window context can
+  // sample the engine's screen texture (PERF-TODO §3.4 / §11.4).
+  const EGLContext share = SharedEglAnchorContext();
   const EGLint ctxAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3,
                                EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE};
-  EGLContext ctx = eglCreateContext(display, *outConfig, EGL_NO_CONTEXT, ctxAttribs);
+  EGLContext ctx = eglCreateContext(display, *outConfig, share, ctxAttribs);
   if (ctx != EGL_NO_CONTEXT) {
     return ctx;
   }
   const EGLint ctx3[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-  return eglCreateContext(display, *outConfig, EGL_NO_CONTEXT, ctx3);
+  return eglCreateContext(display, *outConfig, share, ctx3);
 }
 
 }  // namespace
@@ -764,8 +768,8 @@ const GpuComputeInfo& GetGpuComputeInfo() {
   static std::once_flag once;
   static GpuComputeInfo info;
   std::call_once(once, []() {
-    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display == EGL_NO_DISPLAY || eglInitialize(display, nullptr, nullptr) != EGL_TRUE) {
+    EGLDisplay display = SharedEglDisplay();
+    if (display == EGL_NO_DISPLAY) {
       HMRDP_LOGE("gpu compute: egl init failed");
       return;
     }
@@ -869,8 +873,11 @@ struct GfxGpuDesktop::Impl {
   GLuint tempBuf = 0;
   size_t tempWords = 0;
 
-  // Front (screen) buffer the output-mapped surfaces composite into (W4).
+  // Front (screen) buffer the output-mapped surfaces composite into (W4). The
+  // buffer holds the pixels; `screenTex` mirrors it (GPU-to-GPU PBO upload) so
+  // the Renderer can sample it from its own share-group context (W6).
   GLuint screenBuf = 0;
+  GLuint screenTex = 0;
   size_t screenWords = 0;
   int screenW = 0;
   int screenH = 0;
@@ -962,6 +969,7 @@ void GfxGpuDesktop::Reset() {
     if (impl_->composeRectBuf) glDeleteBuffers(1, &impl_->composeRectBuf);
     if (impl_->tempBuf) glDeleteBuffers(1, &impl_->tempBuf);
     if (impl_->screenBuf) glDeleteBuffers(1, &impl_->screenBuf);
+    if (impl_->screenTex) glDeleteTextures(1, &impl_->screenTex);
     for (auto& kv : impl_->surfaces) {
       Impl::SurfaceGpu& s = kv.second;
       if (s.outBuf) glDeleteBuffers(1, &s.outBuf);
@@ -986,6 +994,7 @@ void GfxGpuDesktop::Reset() {
     impl_->tempBuf = 0;
     impl_->tempWords = 0;
     impl_->screenBuf = 0;
+    impl_->screenTex = 0;
     impl_->screenWords = 0;
     impl_->screenW = 0;
     impl_->screenH = 0;
@@ -2057,11 +2066,13 @@ bool GfxGpuDesktop::ResetGraphics(int width, int height) {
     return false;
   }
   if (width <= 0 || height <= 0) {
-    if (impl_->screenBuf != 0) {
+    if (impl_->screenBuf != 0 || impl_->screenTex != 0) {
       impl_->MakeCurrent();
-      glDeleteBuffers(1, &impl_->screenBuf);
+      if (impl_->screenBuf != 0) glDeleteBuffers(1, &impl_->screenBuf);
+      if (impl_->screenTex != 0) glDeleteTextures(1, &impl_->screenTex);
     }
     impl_->screenBuf = 0;
+    impl_->screenTex = 0;
     impl_->screenWords = 0;
     impl_->screenW = 0;
     impl_->screenH = 0;
@@ -2090,6 +2101,27 @@ bool GfxGpuDesktop::ResetGraphics(int width, int height) {
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
   }
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+  // Shared screen texture the Renderer samples (same EGL share group).
+  if (impl_->screenTex != 0) {
+    glDeleteTextures(1, &impl_->screenTex);
+  }
+  glGenTextures(1, &impl_->screenTex);
+  glBindTexture(GL_TEXTURE_2D, impl_->screenTex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  // Initialise the texture from the (zeroed) screen buffer so it mirrors it.
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER, impl_->screenBuf);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
   impl_->screenDirtyValid = false;
   screenW_ = width;
   screenH_ = height;
@@ -2104,6 +2136,10 @@ void GfxGpuDesktop::ClearScreenDirty() {
 
 bool GfxGpuDesktop::screenDirty() const {
   return impl_ != nullptr && impl_->screenDirtyValid;
+}
+
+uint32_t GfxGpuDesktop::screenTexture() const {
+  return impl_ != nullptr ? static_cast<uint32_t>(impl_->screenTex) : 0u;
 }
 
 bool GfxGpuDesktop::Compose() {
@@ -2165,6 +2201,30 @@ bool GfxGpuDesktop::Compose() {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     impl_->MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
     m.dirtyValid = false;
+  }
+
+  // Mirror the dirty screen region into the shared texture. The buffer is bound
+  // as a pixel-unpack source, so this is a GPU-to-GPU copy with no CPU readback
+  // (the buffer may otherwise still be in flight from the compute dispatch, so a
+  // buffer-update barrier is required first).
+  if (impl_->screenDirtyValid && impl_->screenTex != 0) {
+    const int l = impl_->screenDirtyL;
+    const int t = impl_->screenDirtyT;
+    const int w = impl_->screenDirtyR - l;
+    const int h = impl_->screenDirtyB - t;
+    if (w > 0 && h > 0) {
+      glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER, impl_->screenBuf);
+      glBindTexture(GL_TEXTURE_2D, impl_->screenTex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, scrW);
+      const size_t offset = (static_cast<size_t>(t) * scrW + static_cast<size_t>(l)) * 4;
+      glTexSubImage2D(GL_TEXTURE_2D, 0, l, t, w, h, GL_RGBA, GL_UNSIGNED_BYTE,
+                      reinterpret_cast<const void*>(offset));
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+      glBindTexture(GL_TEXTURE_2D, 0);
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
   }
   return CheckGl("compose") && impl_->screenDirtyValid;
 }
@@ -2396,6 +2456,48 @@ void SynthPut16(uint8_t* p, uint16_t v) {
   p[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
 }
 
+// W6: reads a texture back through an independent ES3 context that only shares
+// the process-wide anchor, proving the Renderer's window context can sample the
+// engine's screen texture without a CPU round-trip. glReadPixels returns rows
+// bottom-up, so callers compare with their buffer flipped.
+bool ReadTextureShared(GLuint tex, int width, int height, std::vector<uint8_t>* out,
+                       std::string* logOut) {
+  EGLDisplay display = SharedEglDisplay();
+  if (display == EGL_NO_DISPLAY) {
+    *logOut = "no shared display";
+    return false;
+  }
+  EGLConfig config = nullptr;
+  EGLSurface pb = EGL_NO_SURFACE;
+  EGLContext ctx = CreateOffscreen(display, &config, &pb);
+  if (ctx == EGL_NO_CONTEXT) {
+    *logOut = "share context create failed";
+    return false;
+  }
+  bool ok = false;
+  if (eglMakeCurrent(display, pb, pb, ctx) == EGL_TRUE) {
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    out->assign(static_cast<size_t>(width) * static_cast<size_t>(height) * 4, 0);
+    if (ok) {
+      glPixelStorei(GL_PACK_ALIGNMENT, 4);
+      glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, out->data());
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  }
+  eglDestroyContext(display, ctx);
+  eglDestroySurface(display, pb);
+  if (!ok) {
+    *logOut = "shared texture readback failed";
+  }
+  return ok;
+}
+
 // Differential check for the surface + compose semantics the captured stream
 // does not exercise (it only ever creates one 1:1-mapped surface): drive the CPU
 // oracle and the GPU engine with the same synthetic command sequence and compare
@@ -2507,7 +2609,53 @@ bool RunSyntheticMultiSurfaceCheck(std::string* logOut) {
   // Compose every mapped surface and compare the whole screen.
   cpu.Compose();
   gpu.Compose();
+  glFinish();  // finish the shared-texture upload before switching contexts
   ok = ok && sameScreen();
+
+  // W6: the screen texture must be readable from another context that only
+  // shares the anchor (what the Renderer's window context does) and match the
+  // CPU oracle. glTexSubImage2D's first data row lands in the lowest texel row,
+  // and glReadPixels starts at that same lower-left texel, so the readback keeps
+  // the upload order (top-down) and no flip is needed.
+  {
+    const GfxScreen& cs = cpu.screen();
+    std::vector<uint8_t> tex;
+    std::string texLog;
+    bool texOk = gpu.screenTexture() != 0 &&
+                 ReadTextureShared(static_cast<GLuint>(gpu.screenTexture()), cs.width, cs.height,
+                                   &tex, &texLog);
+    if (texOk) {
+      const int w = cs.width;
+      const int h = cs.height;
+      texOk = tex.size() == static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
+      if (texOk) {
+        size_t firstDiff = 0;
+        size_t diffBytes = 0;
+        for (size_t i = 0; i < tex.size(); ++i) {
+          if (tex[i] != cs.data[i]) {
+            if (diffBytes == 0) {
+              firstDiff = i;
+            }
+            diffBytes++;
+          }
+        }
+        if (diffBytes != 0) {
+          const size_t px = firstDiff / 4;
+          HMRDP_LOGI("shared texture diff: first px=(%{public}zu,%{public}zu) bytes=%{public}zu of %{public}zu (tex=%02x cpu=%02x)",
+                     px % static_cast<size_t>(w), px / static_cast<size_t>(w), diffBytes,
+                     tex.size(), tex[firstDiff], cs.data[firstDiff]);
+          texOk = false;
+        }
+      } else {
+        HMRDP_LOGI("shared texture size %{public}zu expected %{public}d", tex.size(),
+                   cs.stride * h);
+      }
+    } else {
+      HMRDP_LOGI("shared texture read failed: %{public}s", texLog.c_str());
+    }
+    HMRDP_LOGI("gpu gfx desktop shared texture: %{public}s", texOk ? "ok" : "MISMATCH");
+    ok = ok && texOk;
+  }
 
   // With no new commands, a second compose must leave the screen unchanged and
   // report no dirty region on either side.

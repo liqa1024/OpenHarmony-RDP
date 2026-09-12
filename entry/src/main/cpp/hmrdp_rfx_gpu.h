@@ -120,6 +120,10 @@ class GfxGpuDesktop {
   bool screenDirty() const;
   int screenWidth() const { return screenW_; }
   int screenHeight() const { return screenH_; }
+  // Screen texture (BGRA bytes as RGBA8) in the process-wide EGL share group,
+  // so the Renderer can sample it directly; 0 when no screen is allocated.
+  // Returned as uint32_t to keep GLES out of this header.
+  uint32_t screenTexture() const;
   // Full screen (top-down, `screenW*4` stride) as BGRA. Dev/verification only.
   bool ReadScreen(std::vector<uint8_t>* out);
 
