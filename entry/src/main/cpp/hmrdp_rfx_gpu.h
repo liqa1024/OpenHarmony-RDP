@@ -63,8 +63,17 @@ struct GpuSurface {
   bool mapped = false;
   uint32_t outputX = 0;
   uint32_t outputY = 0;
-  uint32_t targetWidth = 0;   // scaled output width (0 = 1:1)
-  uint32_t targetHeight = 0;  // scaled output height (0 = 1:1)
+  int mappedWidth = 0;        // raw CreateSurface width
+  int mappedHeight = 0;       // raw CreateSurface height
+  int targetWidth = 0;        // scaled output width (== mappedWidth for 1:1)
+  int targetHeight = 0;
+  // Bounding box of the region touched since the last Compose (mirrors the CPU
+  // model; a conservative superset of FreeRDP's per-command invalid rects).
+  bool dirtyValid = false;
+  int dirtyLeft = 0;
+  int dirtyTop = 0;
+  int dirtyRight = 0;
+  int dirtyBottom = 0;
 };
 
 // GPU desktop / surface engine: the GLES mirror of the CPU reference
@@ -98,11 +107,25 @@ class GfxGpuDesktop {
   void DeleteSurface(uint16_t surfaceId);
   const GpuSurface* FindSurface(uint16_t surfaceId) const;
 
-  // Output mapping metadata (PERF-TODO §2.5 / §3.8); recorded only for now.
+  // Output mapping metadata (PERF-TODO §2.5 / §3.8); consumed by Compose.
   void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
   void MapSurfaceToScaledOutput(uint16_t surfaceId, uint32_t outputOriginX,
                                 uint32_t outputOriginY, uint32_t targetWidth,
                                 uint32_t targetHeight);
+
+  // --- Screen (front buffer) ------------------------------------------------
+  // Resets the screen buffer (FreeRDP ResetGraphics); zero releases it.
+  bool ResetGraphics(int width, int height);
+  // Composites every output-mapped surface's dirty region into the screen
+  // (mirrors the CPU GfxDesktop::Compose) and clears their dirty regions.
+  // Returns true when the screen dirty region is non-empty.
+  bool Compose();
+  void ClearScreenDirty();
+  bool screenDirty() const;
+  int screenWidth() const { return screenW_; }
+  int screenHeight() const { return screenH_; }
+  // Full screen (top-down, `screenW*4` stride) as BGRA. Dev/verification only.
+  bool ReadScreen(std::vector<uint8_t>* out);
 
   // --- Pixel commands (mirror GfxDesktop) ---------------------------------
   // Applies one captured/received GFX command. `params`/`payload` may be null
@@ -139,6 +162,8 @@ class GfxGpuDesktop {
   struct Impl;
   Impl* impl_ = nullptr;
   bool ready_ = false;
+  int screenW_ = 0;
+  int screenH_ = 0;
 };
 
 // Offline self-test: replays `rfxPath` (hmrdp_rfx.bin) against `surfacePath`

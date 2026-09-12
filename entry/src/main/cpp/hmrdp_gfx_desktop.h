@@ -82,7 +82,9 @@ struct GfxDesktopStats {
 };
 
 // One GFX surface. Dimensions/scanline are aligned to 16 exactly like FreeRDP's
-// gdiGfxSurface, and the initial clear is 0xFF.
+// gdiGfxSurface, and the initial clear is 0xFF. `mappedWidth`/`mappedHeight` are
+// the raw CreateSurface size (used by the output mapping), while width/height are
+// the aligned pixel-buffer size.
 struct GfxSurface {
   uint32_t id = 0;
   int width = 0;        // aligned to 16
@@ -97,6 +99,32 @@ struct GfxSurface {
   bool mapped = false;
   uint32_t outputX = 0;
   uint32_t outputY = 0;
+  int mappedWidth = 0;        // raw CreateSurface width
+  int mappedHeight = 0;       // raw CreateSurface height
+  int outputTargetWidth = 0;  // scaled target (== mappedWidth for 1:1)
+  int outputTargetHeight = 0;
+  // Bounding box of the region touched since the last Compose (FreeRDP unions
+  // the per-command invalid rects; a bbox is a conservative superset).
+  bool dirtyValid = false;
+  int dirtyLeft = 0;
+  int dirtyTop = 0;
+  int dirtyRight = 0;
+  int dirtyBottom = 0;
+};
+
+// Front (screen) buffer the mapped surfaces composite into. `dirty*` is the
+// bounding box of the composited rectangles since the last ClearScreenDirty;
+// the desktop is only presented when it is non-empty (PERF-TODO §2.5).
+struct GfxScreen {
+  int width = 0;
+  int height = 0;
+  int stride = 0;
+  std::vector<uint8_t> data;
+  bool dirtyValid = false;
+  int dirtyLeft = 0;
+  int dirtyTop = 0;
+  int dirtyRight = 0;
+  int dirtyBottom = 0;
 };
 
 class GfxDesktop {
@@ -115,6 +143,16 @@ class GfxDesktop {
   const GfxDesktopStats& stats() const { return stats_; }
   void Reset();
 
+  // Allocates/resets the screen buffer (FreeRDP ResetGraphics). A zero size
+  // releases it.
+  void ResetGraphics(int width, int height);
+  // Composites every output-mapped surface's dirty region into the screen
+  // (mirrors gdi_OutputUpdate, PERF-TODO §2.5) and clears each surface's dirty
+  // region. Returns true when the screen dirty region is non-empty.
+  bool Compose();
+  const GfxScreen& screen() const { return screen_; }
+  void ClearScreenDirty();
+
  private:
   GfxSurface* EnsureSurface(uint32_t id);
   RfxTileState* TileState(GfxSurface* surface, int xIdx, int yIdx);
@@ -126,9 +164,15 @@ class GfxDesktop {
   void Blit(const GfxSurface& src, int srcX, int srcY, GfxSurface& dst, int dstX, int dstY,
             int width, int height);
   void FillRects(GfxSurface& surface, uint32_t pixel, const uint8_t* params, uint32_t rectCount);
+  void MarkSurfaceDirty(GfxSurface& surface, int left, int top, int right, int bottom);
+  void MarkScreenDirty(int left, int top, int right, int bottom);
+  void ComposeSurface(const GfxSurface& surface);
+  void ScaleBlit(const GfxSurface& src, int srcX, int srcY, int srcW, int srcH, int dstX,
+                 int dstY, int dstW, int dstH);
 
   GfxClearDecoder* clear_ = nullptr;
   std::map<uint32_t, GfxSurface> surfaces_;
+  GfxScreen screen_;
   struct CacheEntry {
     int width = 0;
     int height = 0;

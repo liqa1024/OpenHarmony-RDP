@@ -26,6 +26,7 @@ constexpr uint16_t kCmdStartFrame = 0x000B;
 constexpr uint16_t kCmdEndFrame = 0x000C;
 constexpr uint16_t kCmdResetGraphics = 0x000E;
 constexpr uint16_t kCmdMapSurfaceToOutput = 0x000F;
+constexpr uint16_t kCmdMapSurfaceToScaledOutput = 0x0017;
 
 constexpr uint32_t kCodecUncompressed = 0x0000;
 constexpr uint32_t kCodecRemoteFx = 0x0003;
@@ -113,7 +114,157 @@ GfxDesktop::~GfxDesktop() = default;
 void GfxDesktop::Reset() {
   surfaces_.clear();
   cache_.clear();
+  screen_ = GfxScreen();
   stats_ = GfxDesktopStats();
+}
+
+void GfxDesktop::ResetGraphics(int width, int height) {
+  if (width <= 0 || height <= 0) {
+    screen_ = GfxScreen();
+    return;
+  }
+  screen_.width = width;
+  screen_.height = height;
+  screen_.stride = width * 4;
+  screen_.data.assign(static_cast<size_t>(screen_.stride) * height, 0);
+  screen_.dirtyValid = false;
+}
+
+void GfxDesktop::MarkSurfaceDirty(GfxSurface& surface, int left, int top, int right, int bottom) {
+  if (right <= left || bottom <= top) {
+    return;
+  }
+  if (!surface.dirtyValid) {
+    surface.dirtyValid = true;
+    surface.dirtyLeft = left;
+    surface.dirtyTop = top;
+    surface.dirtyRight = right;
+    surface.dirtyBottom = bottom;
+    return;
+  }
+  if (left < surface.dirtyLeft) surface.dirtyLeft = left;
+  if (top < surface.dirtyTop) surface.dirtyTop = top;
+  if (right > surface.dirtyRight) surface.dirtyRight = right;
+  if (bottom > surface.dirtyBottom) surface.dirtyBottom = bottom;
+}
+
+void GfxDesktop::MarkScreenDirty(int left, int top, int right, int bottom) {
+  if (right <= left || bottom <= top) {
+    return;
+  }
+  if (left < 0) left = 0;
+  if (top < 0) top = 0;
+  if (right > screen_.width) right = screen_.width;
+  if (bottom > screen_.height) bottom = screen_.height;
+  if (right <= left || bottom <= top) {
+    return;
+  }
+  if (!screen_.dirtyValid) {
+    screen_.dirtyValid = true;
+    screen_.dirtyLeft = left;
+    screen_.dirtyTop = top;
+    screen_.dirtyRight = right;
+    screen_.dirtyBottom = bottom;
+    return;
+  }
+  if (left < screen_.dirtyLeft) screen_.dirtyLeft = left;
+  if (top < screen_.dirtyTop) screen_.dirtyTop = top;
+  if (right > screen_.dirtyRight) screen_.dirtyRight = right;
+  if (bottom > screen_.dirtyBottom) screen_.dirtyBottom = bottom;
+}
+
+void GfxDesktop::ClearScreenDirty() {
+  screen_.dirtyValid = false;
+}
+
+// Nearest-neighbour scale-copy, mirroring the GPU compose kernel. For 1:1 input
+// (srcW == dstW && srcH == dstH) this is a straight word copy, which is the path
+// every captured frame uses; the scaling path exists for scaled output mappings
+// (PERF-TODO §3.8) and is not exercised by current captures.
+void GfxDesktop::ScaleBlit(const GfxSurface& src, int srcX, int srcY, int srcW, int srcH,
+                           int dstX, int dstY, int dstW, int dstH) {
+  if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) {
+    return;
+  }
+  const int srcStrideWords = src.stride / 4;
+  const int dstStrideWords = screen_.stride / 4;
+  const uint32_t* srcWords = Words(src.data.data());
+  uint32_t* dstWords = Words(screen_.data.data());
+  for (int row = 0; row < dstH; ++row) {
+    const int sy = srcY + (row * srcH) / dstH;
+    if (sy < 0 || sy >= src.height) {
+      continue;
+    }
+    const uint32_t* srcRow = srcWords + static_cast<size_t>(sy) * srcStrideWords;
+    uint32_t* dstRow = dstWords + static_cast<size_t>(dstY + row) * dstStrideWords;
+    for (int col = 0; col < dstW; ++col) {
+      const int sx = srcX + (col * srcW) / dstW;
+      if (sx < 0 || sx >= src.width) {
+        continue;
+      }
+      dstRow[dstX + col] = srcRow[sx];
+    }
+  }
+}
+
+// Mirrors FreeRDP's gdi_OutputUpdate: for every output-mapped surface, take the
+// invalid region (intersected with the mapped surface rect), scale/offset it to
+// the screen, mark the screen dirty and clear the surface's invalid region.
+void GfxDesktop::ComposeSurface(const GfxSurface& surface) {
+  if (!surface.mapped || !surface.dirtyValid) {
+    return;
+  }
+  int left = surface.dirtyLeft;
+  int top = surface.dirtyTop;
+  int right = surface.dirtyRight;
+  int bottom = surface.dirtyBottom;
+  if (left < 0) left = 0;
+  if (top < 0) top = 0;
+  if (right > surface.mappedWidth) right = surface.mappedWidth;
+  if (bottom > surface.mappedHeight) bottom = surface.mappedHeight;
+  if (right <= left || bottom <= top) {
+    return;
+  }
+  const double sx =
+      surface.mappedWidth > 0
+          ? static_cast<double>(surface.outputTargetWidth) / surface.mappedWidth
+          : 1.0;
+  const double sy =
+      surface.mappedHeight > 0
+          ? static_cast<double>(surface.outputTargetHeight) / surface.mappedHeight
+          : 1.0;
+  const int sw = right - left;
+  const int sh = bottom - top;
+  int dstX = static_cast<int>(surface.outputX + left * sx);
+  int dstY = static_cast<int>(surface.outputY + top * sy);
+  if (dstX >= screen_.width) dstX = screen_.width - 1;
+  if (dstY >= screen_.height) dstY = screen_.height - 1;
+  if (dstX < 0) dstX = 0;
+  if (dstY < 0) dstY = 0;
+  int dstW = static_cast<int>(sw * sx);
+  int dstH = static_cast<int>(sh * sy);
+  if (dstW > screen_.width - dstX) dstW = screen_.width - dstX;
+  if (dstH > screen_.height - dstY) dstH = screen_.height - dstY;
+  if (dstW <= 0 || dstH <= 0) {
+    return;
+  }
+  ScaleBlit(surface, left, top, sw, sh, dstX, dstY, dstW, dstH);
+  MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
+}
+
+bool GfxDesktop::Compose() {
+  if (screen_.data.empty()) {
+    return false;
+  }
+  for (auto& kv : surfaces_) {
+    GfxSurface& surface = kv.second;
+    if (!surface.mapped || !surface.dirtyValid) {
+      continue;
+    }
+    ComposeSurface(surface);
+    surface.dirtyValid = false;
+  }
+  return screen_.dirtyValid;
 }
 
 const GfxSurface* GfxDesktop::FindSurface(uint32_t id) const {
@@ -165,6 +316,7 @@ void GfxDesktop::FillRects(GfxSurface& surface, uint32_t pixel, const uint8_t* p
         row[x] = color;
       }
     }
+    MarkSurfaceDirty(surface, left, top, right, bottom);
   }
 }
 
@@ -188,6 +340,7 @@ void GfxDesktop::Blit(const GfxSurface& src, int srcX, int srcY, GfxSurface& dst
   std::vector<uint32_t> tmp(static_cast<size_t>(w) * h);
   CopyPixels32(tmp.data(), w, 0, 0, Words(src.data.data()), src.stride / 4, sx, sy, w, h);
   CopyPixels32(Words(dst.data.data()), dst.stride / 4, x, y, tmp.data(), w, 0, 0, w, h);
+  MarkSurfaceDirty(dst, x, y, x + w, y + h);
 }
 
 void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
@@ -210,6 +363,10 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
       surface.data.assign(static_cast<size_t>(surface.stride) * surface.height, 0xFF);
       surface.gridW = (surface.width + 63) / 64;
       surface.gridH = (surface.height + 63) / 64;
+      surface.mappedWidth = static_cast<int>(scalars[0]);
+      surface.mappedHeight = static_cast<int>(scalars[1]);
+      surface.outputTargetWidth = surface.mappedWidth;
+      surface.outputTargetHeight = surface.mappedHeight;
       surfaces_[surfaceId] = std::move(surface);
       stats_.created++;
       break;
@@ -307,6 +464,7 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
         // Mirror the GPU copy kernel: cache (src) -> surface (dst).
         CopyPixels32(Words(dst->data.data()), dst->stride / 4, x, y, Words(entry.data.data()),
                      entry.stride / 4, x - px, y - py, w, h);
+        MarkSurfaceDirty(*dst, x, y, x + w, y + h);
       }
       stats_.cacheToSurface++;
       break;
@@ -327,6 +485,22 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
         surface->mapped = true;
         surface->outputX = scalars[0];
         surface->outputY = scalars[1];
+        surface->outputTargetWidth = surface->mappedWidth;
+        surface->outputTargetHeight = surface->mappedHeight;
+        // gdi_MapSurfaceToOutput clears the surface's invalid region.
+        surface->dirtyValid = false;
+      }
+      break;
+    }
+    case kCmdMapSurfaceToScaledOutput: {
+      GfxSurface* surface = EnsureSurface(surfaceId);
+      if (surface != nullptr && scalars != nullptr) {
+        surface->mapped = true;
+        surface->outputX = scalars[0];
+        surface->outputY = scalars[1];
+        surface->outputTargetWidth = static_cast<int>(scalars[2]);
+        surface->outputTargetHeight = static_cast<int>(scalars[3]);
+        surface->dirtyValid = false;
       }
       break;
     }
@@ -335,10 +509,14 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
         ApplyWireToSurface(surfaceId, params, scalars[0], payload, payloadLen);
       }
       break;
+    case kCmdResetGraphics:
+      if (scalars != nullptr) {
+        ResetGraphics(static_cast<int>(scalars[0]), static_cast<int>(scalars[1]));
+      }
+      break;
     case kCmdDeleteEncodingContext:
     case kCmdStartFrame:
     case kCmdEndFrame:
-    case kCmdResetGraphics:
     default:
       break;
   }
@@ -368,6 +546,7 @@ void GfxDesktop::ApplyWireToSurface(uint32_t surfaceId, const uint8_t* params, u
       if (clear_ != nullptr && payload != nullptr) {
         clear_->Decode(payload, payloadLen, width, height, surface->format, surface->data.data(),
                        surface->stride, left, top, surface->width, surface->height);
+        MarkSurfaceDirty(*surface, left, top, left + width, top + height);
       }
       break;
     case kCodecUncompressed:
@@ -414,6 +593,9 @@ void GfxDesktop::ApplyUncompressed(GfxSurface* surface, uint32_t srcFormat, int 
       }
     }
   }
+  // Mark the raw command rect (the GPU engine marks the same box); ComposeSurface
+  // clips to the mapped rect anyway.
+  MarkSurfaceDirty(*surface, left, top, left + width, top + height);
 }
 
 void GfxDesktop::ApplyProgressive(GfxSurface* surface, const uint8_t* payload, uint32_t payloadLen) {
@@ -463,6 +645,10 @@ void GfxDesktop::ApplyProgressive(GfxSurface* surface, const uint8_t* payload, u
             }
           }
         };
+        // Mark the whole tile (a superset of the region rects). ComposeSurface
+        // clips to the mapped rect anyway, and the GPU marks the same box, so the
+        // composed pixels stay identical.
+        MarkSurfaceDirty(*surface, ox, oy, ox + 64, oy + 64);
         if (t.numRects == 0) {
           copyRect(ox, oy, ox + 64, oy + 64);
         } else {
