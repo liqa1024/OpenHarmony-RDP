@@ -68,6 +68,9 @@ struct RdpOptions {
   std::string gatewayDomain;
 };
 
+class GfxGpuDesktop;
+class GfxClearDecoder;
+
 class Session {
  public:
   using EventFn = std::function<void(SessionEvent, const std::string&)>;
@@ -130,6 +133,13 @@ class Session {
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
   void HandleEndPaint();
+  // Feeds one GFX command to the GPU desktop engine (PERF-TODO §3). Called from
+  // the wrapped RdpgfxClientContext callbacks on the RDP thread, in addition to
+  // gdi, while the GPU path is being brought up. No-op unless the engine is
+  // enabled and initialised.
+  void ApplyGfxCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                       const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                       uint32_t payloadLen);
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
@@ -166,6 +176,16 @@ class Session {
  private:
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
+  // Lazily creates the GPU desktop engine (only when hardware decode is enabled
+  // and the device has GLES 3.1 compute). Safe to call repeatedly.
+  void EnsureGpuDesktop();
+  void ReleaseGpuDesktop();
+  // Frame telemetry shared by the gdi and GPU present paths.
+  void AfterPresent(uint64_t renderStartUs);
+  // Dev shadow check: compares the engine's composed screen with gdi's primary
+  // buffer a few times per second and logs the mismatch, so the GPU path can be
+  // validated against FreeRDP on a live session.
+  void GpuShadowCheck();
   // Samples RTT / frame rate / transport throughput and emits kMetrics.
   void EmitMetrics();
   // Records an input timestamp for the input-to-frame response measurement.
@@ -197,6 +217,17 @@ class Session {
   // time so "本机" covers decode + present.
   std::atomic<uint64_t> decodeAccumUs_{0};
   void* gfxContext_ = nullptr;
+  // GPU desktop engine (PERF-TODO §3). Created lazily on the RDP thread when the
+  // hardware-decode setting is on; gdi still decodes alongside it for now.
+  // FreeRDP feeds the GFX commands on one thread while gdi's EndPaint callback
+  // can fire on another, so every engine/renderer GL access is serialised.
+  std::mutex gpuMutex_;
+  std::unique_ptr<GfxGpuDesktop> gpuDesktop_;
+  std::unique_ptr<GfxClearDecoder> gpuClearDecoder_;
+  bool gpuDesktopTried_ = false;
+  uint64_t gpuPresentedFrames_ = 0;
+  uint64_t gpuShadowChecks_ = 0;
+  uint64_t gpuShadowBad_ = 0;
   // Ring of the most recent input-to-frame measurements; the emitted value is
   // their mean (this is a statistic, not a hard real-time figure).
   uint64_t responseSamplesUs_[5] = {0};

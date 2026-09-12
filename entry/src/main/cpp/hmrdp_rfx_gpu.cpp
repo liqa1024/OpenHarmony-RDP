@@ -20,6 +20,7 @@
 #include "hmrdp_rfx_gpu.h"
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -2242,7 +2243,8 @@ bool GfxGpuDesktop::ReadScreen(std::vector<uint8_t>* out) {
   void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
   if (mapped == nullptr) {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    return CheckGl("read screen map");
+    HMRDP_LOGE("gpu gfx desktop: read screen map failed (0x%{public}x)", glGetError());
+    return false;
   }
   std::memcpy(out->data(), mapped, static_cast<size_t>(bytes));
   glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);

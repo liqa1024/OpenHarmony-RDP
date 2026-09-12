@@ -97,6 +97,7 @@ void Renderer::Prepare() {
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   eglSwapBuffers(display_, surface_);
+  eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   HMRDP_LOGI("EGL prepared on %{public}dx%{public}d", surfaceWidth_, surfaceHeight_);
 }
 
@@ -369,6 +370,9 @@ bool Renderer::DrawFrame(const uint8_t* data, int stride, int x, int y, int widt
     drawCount++;
   }
   eglSwapBuffers(display_, surface_);
+  // Release the context (see PresentTexture): frames can arrive on different
+  // threads, and a context left current elsewhere cannot be re-made current.
+  eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   return true;
 }
 
@@ -394,6 +398,9 @@ bool Renderer::PresentTexture(GLuint texture, int width, int height) {
   UpdateViewport();
   DrawQuad(texture);
   eglSwapBuffers(display_, surface_);
+  // Release the context: frames may be presented from different threads, and a
+  // context that is left current on another thread cannot be re-made current.
+  eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   return true;
 }
 

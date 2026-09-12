@@ -10,6 +10,7 @@
 #include <cstring>
 #include <chrono>
 #include <dlfcn.h>
+#include <unistd.h>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
@@ -37,7 +38,9 @@
 #include <winpr/wlog.h>
 
 #include "hmrdp_log.h"
+#include "hmrdp_gfx_desktop.h"
 #include "hmrdp_gfx_dump.h"
+#include "hmrdp_rfx_gpu.h"
 
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
@@ -1245,6 +1248,27 @@ void DumpGfxFrameSurfaces(RdpgfxClientContext* gfx, uint32_t recordIndex) {
   }
 }
 
+// Routes one GFX command to the GPU desktop engine (PERF-TODO §3). The engine
+// consumes only the wire fields, so the same cmdId/scalars/params/payload the
+// capture dump uses are replayed into it. No-op until the engine is enabled and
+// initialised (see Session::ApplyGfxCommand).
+void FeedGfxDesktop(RdpgfxClientContext* gfx, uint16_t cmdId, uint32_t surfaceId,
+                    const uint32_t scalars[4], const uint8_t* params, uint32_t paramsLen,
+                    const uint8_t* payload, uint32_t payloadLen) {
+  if (gfx == nullptr || gfx->custom == nullptr) {
+    return;
+  }
+  rdpGdi* gdi = static_cast<rdpGdi*>(gfx->custom);
+  if (gdi->context == nullptr) {
+    return;
+  }
+  HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(gdi->context);
+  if (ctx->session != nullptr) {
+    ctx->session->ApplyGfxCommand(cmdId, surfaceId, scalars, params, paramsLen, payload,
+                                  payloadLen);
+  }
+}
+
 UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
   if (original == nullptr) {
@@ -1267,6 +1291,8 @@ UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMA
     streamIndex = hmrdp::GfxDumpCommand(0x0001 /*WIRETOSURFACE_1*/, command->surfaceId, sc,
                                         params.data(), static_cast<uint32_t>(params.size()),
                                         command->data, command->length);
+    FeedGfxDesktop(gfx, 0x0001, command->surfaceId, sc, params.data(),
+                   static_cast<uint32_t>(params.size()), command->data, command->length);
     // Legacy progressive-only dump (feeds RunRfxGpuSelfTest).
     dumpIndex =
         MaybeDumpGfxStream(command->codecId, command->surfaceId, command->left, command->top,
@@ -1326,6 +1352,7 @@ UINT HmrdpGfxResetGraphics(RdpgfxClientContext* gfx, const RDPGFX_RESET_GRAPHICS
   if (pdu != nullptr) {
     const uint32_t sc[4] = {pdu->width, pdu->height, pdu->monitorCount, 0};
     hmrdp::GfxDumpCommand(0x000E /*RESETGRAPHICS*/, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
+    FeedGfxDesktop(gfx, 0x000E, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -1353,6 +1380,7 @@ UINT HmrdpGfxCreateSurface(RdpgfxClientContext* gfx, const RDPGFX_CREATE_SURFACE
   if (pdu != nullptr) {
     const uint32_t sc[4] = {pdu->width, pdu->height, pdu->pixelFormat, 0};
     hmrdp::GfxDumpCommand(0x0009 /*CREATESURFACE*/, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
+    FeedGfxDesktop(gfx, 0x0009, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
     std::lock_guard<std::mutex> lock(g_gfxWrapMutex);
     auto it = g_gfxOriginals.find(gfx);
     if (it != g_gfxOriginals.end()) {
@@ -1369,6 +1397,7 @@ UINT HmrdpGfxDeleteSurface(RdpgfxClientContext* gfx, const RDPGFX_DELETE_SURFACE
   }
   if (pdu != nullptr) {
     hmrdp::GfxDumpCommand(0x000A /*DELETESURFACE*/, pdu->surfaceId, nullptr, nullptr, 0, nullptr, 0);
+    FeedGfxDesktop(gfx, 0x000A, pdu->surfaceId, nullptr, nullptr, 0, nullptr, 0);
     std::lock_guard<std::mutex> lock(g_gfxWrapMutex);
     auto it = g_gfxOriginals.find(gfx);
     if (it != g_gfxOriginals.end()) {
@@ -1396,6 +1425,8 @@ UINT HmrdpGfxSolidFill(RdpgfxClientContext* gfx, const RDPGFX_SOLID_FILL_PDU* pd
     }
     hmrdp::GfxDumpCommand(0x0004 /*SOLIDFILL*/, pdu->surfaceId, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
+    FeedGfxDesktop(gfx, 0x0004, pdu->surfaceId, sc, params.data(),
+                   static_cast<uint32_t>(params.size()), nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -1416,6 +1447,8 @@ UINT HmrdpGfxSurfaceToSurface(RdpgfxClientContext* gfx,
     }
     hmrdp::GfxDumpCommand(0x0005 /*SURFACETOSURFACE*/, pdu->surfaceIdDest, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
+    FeedGfxDesktop(gfx, 0x0005, pdu->surfaceIdDest, sc, params.data(),
+                   static_cast<uint32_t>(params.size()), nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -1432,6 +1465,8 @@ UINT HmrdpGfxSurfaceToCache(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_TO_CA
     PutRect(params, pdu->rectSrc);
     hmrdp::GfxDumpCommand(0x0006 /*SURFACETOCACHE*/, pdu->surfaceId, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
+    FeedGfxDesktop(gfx, 0x0006, pdu->surfaceId, sc, params.data(),
+                   static_cast<uint32_t>(params.size()), nullptr, 0);
   }
   // The nested EvictCacheEntry call (same slot) is an implementation detail of
   // gdi_SurfaceToCache, not a wire command, so it must not be captured.
@@ -1455,6 +1490,8 @@ UINT HmrdpGfxCacheToSurface(RdpgfxClientContext* gfx, const RDPGFX_CACHE_TO_SURF
     }
     hmrdp::GfxDumpCommand(0x0007 /*CACHETOSURFACE*/, pdu->surfaceId, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
+    FeedGfxDesktop(gfx, 0x0007, pdu->surfaceId, sc, params.data(),
+                   static_cast<uint32_t>(params.size()), nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -1504,6 +1541,9 @@ UINT HmrdpGfxEvictCacheEntry(RdpgfxClientContext* gfx, const RDPGFX_EVICT_CACHE_
   if (pdu != nullptr && !g_inGfxSurfaceToCache) {
     const uint32_t sc[4] = {pdu->cacheSlot, 0, 0, 0};
     hmrdp::GfxDumpCommand(0x0008 /*EVICTCACHEENTRY*/, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
+    // The nested evict inside gdi_SurfaceToCache is suppressed here exactly like
+    // the capture dump, otherwise it would drop the entry SurfaceToCache stored.
+    FeedGfxDesktop(gfx, 0x0008, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -1517,6 +1557,7 @@ UINT HmrdpGfxMapSurfaceToOutput(RdpgfxClientContext* gfx,
   if (pdu != nullptr) {
     const uint32_t sc[4] = {pdu->outputOriginX, pdu->outputOriginY, 0, 0};
     hmrdp::GfxDumpCommand(0x000F /*MAPSURFACETOOUTPUT*/, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
+    FeedGfxDesktop(gfx, 0x000F, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -1533,6 +1574,7 @@ UINT HmrdpGfxMapSurfaceToScaledOutput(
                             pdu->targetHeight};
     hmrdp::GfxDumpCommand(0x0017 /*MAPSURFACETOSCALEDOUTPUT*/, pdu->surfaceId, sc, nullptr, 0,
                           nullptr, 0);
+    FeedGfxDesktop(gfx, 0x0017, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
   }
   return original(gfx, pdu);
 }
@@ -2431,6 +2473,7 @@ void Session::Disconnect() {
   clipboardReady_ = false;
   running_ = false;
   audio_.Close();
+  ReleaseGpuDesktop();
   renderer_.Reset();
 }
 
@@ -2443,6 +2486,31 @@ void Session::HandlePostConnect() {
 }
 
 void Session::HandleEndPaint() {
+  // GPU desktop path: the engine owns the desktop and presents its shared screen
+  // texture directly (no CPU readback/upload). gdi still decodes alongside it so
+  // a shadow check can validate the engine against FreeRDP on a live session.
+  if (gpuDesktop_ != nullptr) {
+    std::lock_guard<std::mutex> lock(gpuMutex_);
+    const uint64_t renderStart = NowUs();
+    if (!gpuDesktop_->Compose()) {
+      return;  // static frame: nothing dirty, no present (FPS stays 0)
+    }
+    if (renderer_.PresentTexture(gpuDesktop_->screenTexture(), gpuDesktop_->screenWidth(),
+                                 gpuDesktop_->screenHeight())) {
+      // Clear the present gate: a static desktop must not keep re-presenting.
+      gpuDesktop_->ClearScreenDirty();
+      GpuShadowCheck();
+      AfterPresent(renderStart);
+      return;
+    }
+    // Engine present failed (window/surface not ready yet): fall back to gdi.
+    static int gpuFallbackLog = 0;
+    if (gpuFallbackLog < 3) {
+      HMRDP_LOGW("gpu desktop: PresentTexture failed; falling back to gdi");
+      gpuFallbackLog++;
+    }
+  }
+
   rdpGdi* gdi = instance_->context->gdi;
   static int endPaintCount = 0;
   if (gdi == nullptr || gdi->primary == nullptr || gdi->primary_buffer == nullptr) {
@@ -2479,8 +2547,12 @@ void Session::HandleEndPaint() {
   if (!presented) {
     return;
   }
+  AfterPresent(renderStart);
+}
+
+void Session::AfterPresent(uint64_t renderStartUs) {
   const uint64_t nowUs = NowUs();
-  renderAccumUs_ += nowUs - renderStart;
+  renderAccumUs_ += nowUs - renderStartUs;
   renderSamples_++;
   frameCount_.fetch_add(1);
 
@@ -2504,6 +2576,113 @@ void Session::HandleEndPaint() {
     firstFrameSent_ = true;
     Emit(SessionEvent::kFirstFrame, "");
   }
+}
+
+void Session::EnsureGpuDesktop() {
+  if (gpuDesktopTried_) {
+    return;
+  }
+  gpuDesktopTried_ = true;
+  if (!g_hardwareDecode.load()) {
+    HMRDP_LOGI("gpu desktop: disabled (hardware decode off)");
+    return;
+  }
+  if (!GetGpuComputeInfo().compute) {
+    HMRDP_LOGW("gpu desktop: GLES 3.1 compute unavailable; using gdi");
+    return;
+  }
+  gpuClearDecoder_ = CreateFreeRdpClearDecoder();
+  gpuDesktop_.reset(new GfxGpuDesktop(gpuClearDecoder_.get()));
+  if (!gpuDesktop_->Init()) {
+    HMRDP_LOGE("gpu desktop: engine init failed; using gdi");
+    gpuDesktop_.reset();
+    return;
+  }
+  HMRDP_LOGI("gpu desktop: engine enabled id=%{public}x tid=%{public}u (%{public}s)",
+             static_cast<unsigned>(reinterpret_cast<uintptr_t>(this)),
+             static_cast<unsigned>(::gettid()), GetGpuComputeInfo().Describe().c_str());
+}
+
+void Session::ReleaseGpuDesktop() {
+  std::lock_guard<std::mutex> lock(gpuMutex_);
+  gpuDesktop_.reset();
+  gpuClearDecoder_.reset();
+  gpuDesktopTried_ = false;
+  gpuPresentedFrames_ = 0;
+  gpuShadowChecks_ = 0;
+  gpuShadowBad_ = 0;
+}
+
+void Session::ApplyGfxCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                              const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                              uint32_t payloadLen) {
+  std::lock_guard<std::mutex> lock(gpuMutex_);
+  EnsureGpuDesktop();
+  if (gpuDesktop_ == nullptr) {
+    return;
+  }
+  gpuDesktop_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+}
+
+void Session::GpuShadowCheck() {
+  gpuPresentedFrames_++;
+  // The readback is expensive, so sample a few frames per second only.
+  if ((gpuPresentedFrames_ % 30) != 0) {
+    return;
+  }
+  if (instance_ == nullptr || instance_->context == nullptr) {
+    return;
+  }
+  rdpGdi* gdi = instance_->context->gdi;
+  if (gdi == nullptr || gdi->primary_buffer == nullptr) {
+    return;
+  }
+  const int w = gpuDesktop_->screenWidth();
+  const int h = gpuDesktop_->screenHeight();
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  std::vector<uint8_t> screen;
+  if (!gpuDesktop_->ReadScreen(&screen)) {
+    return;
+  }
+  gpuShadowChecks_++;
+  const int cmpW = w < static_cast<int>(gdi->width) ? w : static_cast<int>(gdi->width);
+  const int cmpH = h < static_cast<int>(gdi->height) ? h : static_cast<int>(gdi->height);
+  if (screen.size() != static_cast<size_t>(w) * static_cast<size_t>(h) * 4 || cmpW <= 0 ||
+      cmpH <= 0) {
+    gpuShadowBad_++;
+    HMRDP_LOGW("gpu shadow: size mismatch engine=%{public}dx%{public}d gdi=%{public}ux%{public}u",
+               w, h, static_cast<unsigned>(gdi->width), static_cast<unsigned>(gdi->height));
+    return;
+  }
+  size_t diff = 0;
+  size_t first = 0;
+  bool firstSet = false;
+  for (int row = 0; row < cmpH; ++row) {
+    const uint8_t* a = screen.data() + static_cast<size_t>(row) * w * 4;
+    const uint8_t* b = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
+    for (int i = 0; i < cmpW * 4; ++i) {
+      if (a[i] != b[i]) {
+        if (!firstSet) {
+          first = static_cast<size_t>(row) * w * 4 + static_cast<size_t>(i);
+          firstSet = true;
+        }
+        diff++;
+      }
+    }
+  }
+  if (diff != 0) {
+    gpuShadowBad_++;
+  }
+
+  HMRDP_LOGI(
+      "gpu shadow: checks=%{public}u bad=%{public}u lastDiff=%{public}u first=(%{public}d,%{public}d) frames=%{public}u",
+      static_cast<unsigned>(gpuShadowChecks_), static_cast<unsigned>(gpuShadowBad_),
+      static_cast<unsigned>(diff),
+      firstSet ? static_cast<int>((first / 4) % static_cast<size_t>(w)) : 0,
+      firstSet ? static_cast<int>((first / 4) / static_cast<size_t>(w)) : 0,
+      static_cast<unsigned>(gpuPresentedFrames_));
 }
 
 void Session::HandleDesktopResize() {
