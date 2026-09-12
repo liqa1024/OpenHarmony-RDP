@@ -6,7 +6,10 @@
 ## 特性
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
-- **图形管道**：RDPGFX（RemoteFX / 渐进式），EGL/GLES 纹理上传 + GPU 等比缩放
+- **图形管道（GPU 接管）**：RDPGFX（RemoteFX / 渐进式）。默认由 **GPU 桌面引擎**接管——CPU 只做 ZGFX +
+  命令解析，渐进 / 未压缩解码、多表面合成与上屏都在 **GLES 3.1 compute** 上完成，引擎屏幕以**共享 EGL
+  纹理**直连上屏（无 CPU 读回 / 上传）；ClearCodec 复用 FreeRDP 解码器做 CPU 钩子。设置页「硬件解码」
+  关闭、或设备无 GLES 3.1 compute / 引擎初始化失败时，自动回退 FreeRDP gdi（CPU 软解）
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
   压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）
 - **光标同步**：远端光标形状（文本、手型、窗口边缘缩放等）映射为鸿蒙系统光标，大光标自动缩放到 256；
@@ -23,7 +26,7 @@
 - **凭证安全存储**：密码经 HarmonyOS Asset Store Kit 密文存储（不落明文、不进日志），
   且**仅在连接验证成功后**才写入；连接配置与密码分离存储
 - **连接管理**：书签式列表、右键菜单（连接/编辑/删除）、一键直连；连接配置随时可存，
-  无密码也能保存；每个连接可选「高级设置」（独立分辨率/缩放、剪贴板、音频、GFX、H.264 等）
+  无密码也能保存；每个连接可选「高级设置」（独立分辨率/缩放、剪贴板、音频、证书校验等）
 - **配置备份**：可将全局设置与全部连接导出为 JSON 文件，或从文件导入覆盖；
   密码保存在系统安全存储中，导出时跳过并提示，导入后需重新输入
 - **显示自适应**：默认自动取当前显示器分辨率并推荐 Windows 缩放档位
@@ -57,7 +60,8 @@
 │  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
 ├─────────────────────────────────────────────────────────────┤
 │  Session wrapper  (hmrdp_session.cpp)                       │
-│  EGL/GLES renderer(hmrdp_renderer.cpp)                      │
+│  GPU desktop engine  (hmrdp_rfx_gpu / hmrdp_gfx_desktop)    │
+│  EGL/GLES renderer + EGL share  (hmrdp_renderer / egl)      │
 │  OHAudio output   (hmrdp_audio.cpp, dlopen libohaudio)      │
 ├─────────────────────────────────────────────────────────────┤
 │  FreeRDP 3.10.3   libfreerdp3 / winpr3 / client3            │
@@ -76,7 +80,7 @@ entry/
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
     services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · TouchpadWheel · SessionManager · WindowController · DeviceCapabilities
-  src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + EGL 渲染器 + OHAudio 播放
+  src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + GPU 桌面引擎 + EGL 渲染器 + OHAudio 播放
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）
 native/

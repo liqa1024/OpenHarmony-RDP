@@ -19,7 +19,9 @@
 
 面向 **鸿蒙 PC（2in1）** 的 RDP 客户端。RDP 引擎为 FreeRDP 3.10.3，从源码交叉编译到
 `aarch64-linux-ohos` / `x86_64-linux-ohos`。界面为 ArkTS/ArkUI；画面通过 XComponent 上的
-EGL/GLES 原生渲染；输入经 Node-API 桥接转发。会话在独立的 `SessionAbility` 主窗口中打开；
+EGL/GLES 原生渲染；输入经 Node-API 桥接转发。**GFX 画面默认由 GPU 桌面引擎接管**（多表面 + 合成 +
+共享纹理上屏，见第 20 条），设置页「硬件解码」关闭或设备无 GLES 3.1 compute 时回退 FreeRDP gdi。
+会话在独立的 `SessionAbility` 主窗口中打开；
 主窗口 / 会话窗口的默认尺寸按屏幕比例推导，会话分辨率/缩放默认自适应当前显示器，均可在
 全局设置中调整，单个连接也可在「高级设置」里覆盖。全局设置还可开启「自动隐藏主窗口」
 （单窗口模式，仅单会话：会话窗口打开时销毁主窗口，关闭后恢复，见第 14 条）。
@@ -261,8 +263,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     恒用；`codecMode` 字段与 `OnGfxCodec` 统计已删除）。
     - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端
       注册该回调），故 `Connect` 时给 `context->autodetect` 注册 `HmrdpNetworkCharacteristicsResult` 自行捕获。
-    - **本机** = **解码 + 呈现**：解码链式包裹 `RdpgfxClientContext::SurfaceCommand`（H.264/位图解码都在
-      这里，`rdpgfx` 通道连接后设置）；呈现为 `DrawFrame`。两者按帧平均（`localUs`）。
+    - **本机** = **解码 + 呈现**：gdi 路径下解码链式包裹 `RdpgfxClientContext::SurfaceCommand`、呈现为
+      `DrawFrame`；GPU 接管后为引擎 `Compose()` + `Renderer::PresentTexture()`（此时 decode 计 0，因为
+      解码已在 GPU）。两者按帧平均（`localUs`）。
     - **响应**：RDP 输入与画面是两条**无回显**的流，输入延迟只能推断——仅在**空闲 ≥200ms 后输入、2s 内
       出现首帧**时采样，取近 **5 次均值**；不做该约束会退化成帧节拍。
     - **带宽**：`freerdp_get_stats(context->rdp)` 的收发字节差分（GFX/H.264 下同样有效）。
@@ -271,29 +274,43 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       （300ms 内有包）时统计，取近 **5 个窗口**滑动，避免空闲静音误报。
     - **不显示**：服务端处理（协议不回报）、压缩比（仅 GDI 位图路径有意义，GFX/H.264 下不存在）、
       音频丢包（复用在同一传输里，客户端无逐包统计）；音频丢帧率是可感知卡顿的代理。
-20. **GPU RemoteFX 解码**（`entry/src/main/cpp/hmrdp_rfx.{h,cpp}` + `hmrdp_rfx_gpu.{h,cpp}`）：
-    把 progressive tile 解码链（`RLGR → 去量化 → 逆 DWT → YCbCr→BGRA`）搬到 GLES **3.1 compute**，
-    目标是**只上传压缩码流 + 元数据**（≈网络接收量），去掉 CPU 解码 + BGRA 拷贝 + 纹理上传。
-    **现状**：tile 解码链（progressive 的 FIRST/UPGRADE/diff）CPU 可跑版本与 GPU 实现**在模拟器与真机都
-    逐像素等于 FreeRDP**（`mismatch=0`）。但它**只到 tile 层**：没有 FreeRDP gdi surface 那一套
-    （多 surface、`SolidFill`、`SurfaceToSurface`、bitmap、present），也**未接入会话**（会话仍软解）。
-    **接管后 FreeRDP 的 surface 会过期、无法逐帧回退**，故只能整体拥有桌面（全有或全无）；
-    拆解见 PERF-TODO §2.5。改动前必读要点/坑：
-    - `hmrdp_rfx.cpp` 是**可移植 C++ 参考**（无 OHOS 依赖，宿主机 MSVC 也能编），GPU 版逐行对齐它；
-      修改解码算法时两边必须同步，并用自测回放确认 `mismatch=0`。
+20. **GPU 桌面引擎 / GFX 接管**（`hmrdp_rfx.{h,cpp}` + `hmrdp_rfx_gpu.{h,cpp}` +
+    `hmrdp_gfx_desktop.{h,cpp}` + `hmrdp_gfx_clear.cpp` + `hmrdp_egl.{h,cpp}`）：
+    把 FreeRDP 的 CPU 图像处理搬到 GPU——CPU 只保留 ZGFX + RDPGFX PDU 解析（仍由 `rdpgfx` 完成），
+    图像解码 / 表面绘制 / 合成 / 上屏全在 GLES **3.1 compute** 上，目标是去掉 CPU 解码 + BGRA 拷贝 +
+    纹理上传。**分工与资产**：`hmrdp_rfx.cpp` 是 progressive tile 解码的**可移植 C++ 参考**（宿主机可编）；
+    `hmrdp_gfx_desktop.{h,cpp}` 是**CPU 桌面模型 oracle**（多表面 + fill/copy/cache + `Compose`）；
+    `GfxGpuDesktop`（`hmrdp_rfx_gpu.cpp`）逐条对齐它（`ApplyCommand` 1:1 对应）。
+    **码流分工**：progressive / 未压缩在 GPU 解码；**ClearCodec 用 FreeRDP `clear_decompress` 的 CPU 钩子**
+    （`hmrdp_gfx_clear.cpp`，读回-解码-写回目标表面）；Planar / Alpha / RemoteFX 非渐进等**好实现的
+    计划在 GPU 内实现**（未实现前该表面留旧像素，接管后没有 gdi 兜底）；真正难做的才走 CPU + 上传兜底。
+    **现状**：tile 解码链（FIRST/UPGRADE/diff）与桌面模型在模拟器与真机都**逐像素等于 FreeRDP**
+    （离线抓取回放 `mism=0`、合成差分用例逐字节一致）；已**接入会话并默认接管**：
+    `hmrdp_session.cpp` 的 `kGpuShadowCompare=false` 时 GFX 回调只喂引擎、不链回 gdi，`EndFrame` 里
+    `Compose()` + `Renderer::PresentTexture()` 用**共享 EGL 纹理直连上屏**；置 `true` 保留**双渲染影子
+    模式**（gdi 仍解码并每 30 帧与 `gdi->primary_buffer` 逐字节比对，打 `gpu shadow:`）供后续 A/B。
+    开关：全局「硬件解码」（`AppSettings.hardwareDecode`），关 / 无 compute / 引擎初始化失败 → 回退 gdi。
+    改动前必读要点/坑：
+    - 引擎与 Renderer 的 EGL 上下文经 `SharedEglAnchorContext()` 同处一个 share group，引擎屏幕纹理
+      `screenTex` 用 PBO（`GL_PIXEL_UNPACK_BUFFER` + `glTexSubImage2D`）**GPU→GPU** 同步给 Renderer。
+    - **FreeRDP 在一条线程投递 GFX 命令，gdi 的 EndPaint 可能在另一条线程触发**：引擎/上屏所有 GL
+      必须用 `Session::gpuMutex_` 串行化，且 `Renderer` **每次 present 后 `eglMakeCurrent(NO_CONTEXT)`**，
+      否则另一线程 `eglMakeCurrent` 失败 → 偶发全黑（已踩坑）。
+    - compute 派发用 **2D 网格**（内核用 `gl_NumWorkGroups`/`gl_WorkGroupSize` 还原线性下标）：整屏矩形
+      需要 10 万+ 工作组，超过常见的每轴 65535 上限。
+    - **服务器端缩放映射（`MapSurfaceToScaledOutput`）不支持**：本工程 FreeRDP 无 swscale/cairo，gdi 也
+      画不出；引擎同样 unmap 不合成（与现状一致）。
     - 运行期能力探测 `GetGpuComputeInfo()`（离屏 pbuffer + ES3.1 上下文）；**`compute==false` 必须回退软解**。
-    - **`#version` 必须位于 shader 源码第一行**（原始字符串 `R"GLSL(` 后不能有换行；Mali 不容忍）。
-    - **compose 必须按桌面尺寸裁剪**（`px>=surfaceW || py>=surfaceH` 丢弃）：桌面宽高不是 64 的整数倍，
-      边缘 tile 多出的像素会按 stride **折回下一行**，污染邻接 tile（曾致 rec1 首行前 16px 失配）。
-    - RLGR 必须用 **64 位位读取器**；在 GLSL 里拆成 hi/lo 时，**字节跨 32 位边界（sh∈[25,31]）要同时写
-      hi 的高位**，否则从第 2 个符号起错位。
-    - 每 `(tile,分量)` 的 `current`/`sign`/`bitPos` 需**跨消息常驻**（SSBO，全桌面 `current+sign`≈80MB）；
-      `RFX_TILE_DIFFERENCE` 用**饱和加法且把和写回 `current`**；UPGRADE 走 SRL/raw 增量（两个位流同时活跃）。
-    - int16 系数打包进 `uint` SSBO（`idx>>1` + 高/低 16bit）；`out`/`input` 等是 GLSL 保留字；
-      三元条件必须是 `bool`（`uint & mask` 要写 `!= 0u`）；`glGetBufferSubData` 在 GLES 不可用，用
-      `glMapBufferRange`。
-    - 离线自测：设备开「抓取 RFX 码流（测试）」→ 取码流 + FreeRDP surface → **只比「本 record 更新的
-      tile ∩ region rect」**（否则会被非渐进命令的旧像素误判）。流程与进度见 PERF-TODO §2.3–§2.5。
+    - `#version` 必须位于 shader 源码第一行（原始字符串 `R"GLSL(` 后不能有换行；Mali 不容忍）；
+      compose 必须按桌面尺寸裁剪（桌面宽高非 64 倍数，边缘 tile 会按 stride 折回下一行、污染邻接 tile）。
+    - RLGR 必须用 **64 位位读取器**；GLSL 拆 hi/lo 时**字节跨 32 位边界（sh∈[25,31]）要同时写 hi 的高位**。
+    - 每 `(tile,分量)` 的 `current`/`sign`/`bitPos` 需**跨消息常驻**（SSBO）；`RFX_TILE_DIFFERENCE` 用
+      **饱和加法且写回 `current`**；UPGRADE 走 SRL/raw 增量（两个位流同时活跃）。
+    - int16 系数打包进 `uint` SSBO（`idx>>1` + 高/低 16bit）；`out`/`input` 是 GLSL 保留字；
+      三元条件必须是 `bool`（`uint & mask` 写 `!= 0u`）；`glGetBufferSubData` 在 GLES 不可用，
+      用 `glMapBufferRange`。
+    - 离线自测：设备开「抓取 RFX 码流（测试）」→ 抓全命令流 + 每帧基准，`gfxGpuDesktopSelfTest` 回放
+      比对（另含合成差分与共享纹理用例）。入口与进度见 PERF-TODO §4/§6。
 
 ## ArkTS 规范
 
@@ -330,9 +347,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因 |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
-| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` / `setRdpCursor` 查询与开关 |
-| `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理、会话遥测（GFX 解码计时 / 带宽采样 / 每秒 `kMetrics`） |
-| `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
+| `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` / `setRdpCursor` / `setHardwareDecode` 查询与开关 |
+| `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理、会话遥测（GFX 解码计时 / 带宽采样 / 每秒 `kMetrics`）；GFX 回调喂 GPU 引擎 + 接管/影子对照（`kGpuShadowCompare`） |
+| `entry/src/main/cpp/hmrdp_egl.{h,cpp}` | 进程级 EGL display + share anchor 上下文（引擎与 Renderer 共用一个 share group） |
+| `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器：`DrawFrame`（CPU 帧上传，回退/gdi 路径）与 `PresentTexture`（直接采样共享纹理上屏） |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
 | `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | RemoteFX/Progressive **CPU 可跑的 GPU 代码**：容器解析 + RLGR/去量化/逆 DWT/YCbCr（tile 解码的 CPU 镜像，供 GPU 对照；可移植 C++，宿主机可编） |
-| `entry/src/main/cpp/hmrdp_rfx_gpu.{h,cpp}` | GPU（GLES 3.1 compute）RemoteFX tile 解码 + 表面命令（fill/copy/cache/上传）+ 能力探测 + 离线自测；已逐帧对齐 FreeRDP，**尚未接入会话** |
+| `entry/src/main/cpp/hmrdp_rfx_gpu.{h,cpp}` | GPU（GLES 3.1 compute）tile 解码 + `GfxGpuDesktop` 多表面桌面引擎（fill/copy/cache/上传/合成/屏幕脏区）+ 能力探测 + 离线自测；已逐帧对齐 FreeRDP 并**接入会话接管** |
+| `entry/src/main/cpp/hmrdp_gfx_desktop.{h,cpp}` | **CPU 桌面模型 oracle**（多表面 + fill/copy/cache + 1:1 `Compose`），`GfxGpuDesktop` 的对齐基准与差分用例来源 |
+| `entry/src/main/cpp/hmrdp_gfx_clear.cpp` | ClearCodec 的 CPU 钩子（复用 FreeRDP `clear_decompress`，读回-解码-写回目标表面） |
+| `entry/src/main/cpp/hmrdp_gfx_dump.{h,cpp}` | GFX 命令流抓取（`hmrdp_gfx.bin` + 每帧哈希/全量基准 `hmrdp_gfx_surface.bin`），供离线回放自测 |
