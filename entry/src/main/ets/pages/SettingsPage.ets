@@ -152,6 +152,22 @@ struct SettingsPage {
     }
   }
 
+  // Applies the dev capture toggle immediately (before the next session) so the
+  // cmd stream is captured from the first frame; a no-op when the value is
+  // unchanged on the native side.
+  private applyRfxDumpSetting(): void {
+    let dir: string = '';
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx !== undefined) {
+        dir = ctx.filesDir;
+      }
+    } catch (error) {
+      dir = '';
+    }
+    RdpNative.applyRfxDump(this.rfxDump, dir);
+  }
+
   private sizeText(value: number): string {
     return value > 0 ? value.toString() : '';
   }
@@ -927,13 +943,14 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '抓取 RFX 码流（测试）',
-              subtitle: '把 RemoteFX 压缩流写到应用 files/hmrdp_rfx.bin，供 GPU 解码开发',
+              subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供 GPU 解码开发',
               value: this.rfxDump,
               enabled: true,
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.rfxDump = v;
                 this.persist();
+                this.applyRfxDumpSetting();
               }
             })
 
