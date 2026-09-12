@@ -223,11 +223,27 @@ void GfxDumpSurface(uint32_t recordIndex, uint32_t surfaceId, uint32_t width, ui
     return;
   }
   const uint64_t bytes = static_cast<uint64_t>(stride) * height;
+  // FNV-1a 64 over the whole surface: written for every frame so the offline
+  // replay can validate the entire capture, not just the frames that fit in the
+  // full-baseline size cap.
+  uint64_t hash = 1469598103934665603ull;
+  const uint8_t* p = static_cast<const uint8_t*>(data);
+  for (uint64_t i = 0; i < bytes; ++i) {
+    hash ^= p[i];
+    hash *= 1099511628211ull;
+  }
   std::lock_guard<std::mutex> lock(g_mutex);
-  if (!g_enabled || g_surfBytes >= kSurfMaxBytes) {
+  if (!g_enabled) {
     return;
   }
   if (OpenFileLocked(g_surfFile, "hmrdp_gfx_surface.bin") == nullptr) {
+    return;
+  }
+  const uint32_t hashHeader[8] = {0x31484647u /* 'GFH1' */, recordIndex, surfaceId, width,
+                                  height, stride, static_cast<uint32_t>(hash),
+                                  static_cast<uint32_t>(hash >> 32)};
+  WriteU32s(g_surfFile, hashHeader, 8);
+  if (g_surfBytes >= kSurfMaxBytes) {
     return;
   }
   const uint32_t header[8] = {0x31534647u /* 'GFS1' */, recordIndex, surfaceId, width,

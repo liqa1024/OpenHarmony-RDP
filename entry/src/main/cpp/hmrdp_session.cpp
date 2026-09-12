@@ -1178,6 +1178,11 @@ struct GfxOriginals {
 std::mutex g_gfxWrapMutex;
 std::unordered_map<RdpgfxClientContext*, GfxOriginals> g_gfxOriginals;
 
+// FreeRDP's SurfaceToCache implementation internally calls EvictCacheEntry on
+// the same slot (see libfreerdp/gdi/gfx.c), which would otherwise be captured as
+// a standalone command and corrupt the replay. Suppress that nested capture.
+thread_local bool g_inGfxSurfaceToCache = false;
+
 // Returns the original callback stored for `gfx` (nullptr when not wrapped).
 template <typename Fn>
 Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
@@ -1428,7 +1433,12 @@ UINT HmrdpGfxSurfaceToCache(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_TO_CA
     hmrdp::GfxDumpCommand(0x0006 /*SURFACETOCACHE*/, pdu->surfaceId, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  // The nested EvictCacheEntry call (same slot) is an implementation detail of
+  // gdi_SurfaceToCache, not a wire command, so it must not be captured.
+  g_inGfxSurfaceToCache = true;
+  const UINT rc = original(gfx, pdu);
+  g_inGfxSurfaceToCache = false;
+  return rc;
 }
 
 UINT HmrdpGfxCacheToSurface(RdpgfxClientContext* gfx, const RDPGFX_CACHE_TO_SURFACE_PDU* pdu) {
@@ -1491,7 +1501,7 @@ UINT HmrdpGfxEvictCacheEntry(RdpgfxClientContext* gfx, const RDPGFX_EVICT_CACHE_
   if (original == nullptr) {
     return CHANNEL_RC_OK;
   }
-  if (pdu != nullptr) {
+  if (pdu != nullptr && !g_inGfxSurfaceToCache) {
     const uint32_t sc[4] = {pdu->cacheSlot, 0, 0, 0};
     hmrdp::GfxDumpCommand(0x0008 /*EVICTCACHEENTRY*/, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
   }

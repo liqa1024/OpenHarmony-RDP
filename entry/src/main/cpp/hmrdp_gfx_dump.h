@@ -28,15 +28,23 @@
  *     <params> <payload>
  *
  *   hmrdp_gfx_surface.bin
- *     u32 magic      = 'GFS1'
+ *     u32 magic      = 'GFH1' (per-frame correctness hash, tiny, every frame)
+ *     u32 index      (record index the hash belongs to)
+ *     u32 surfaceId
+ *     u32 width, height, stride
+ *     u32 hashLo, hashHi   (FNV-1a 64 of the stride*height bytes)
+ *
+ *     u32 magic      = 'GFS1' (full BGRA baseline, written until the size cap)
  *     u32 index      (record index the baseline belongs to)
  *     u32 surfaceId
  *     u32 width, height, stride, format
  *     u32 reserved
  *     <BGRA, stride*height bytes>
  *
- * The command-specific meaning of scalars/params/payload is defined next to the
- * wrapper that emits it; the offline replay tool must mirror the same layout.
+ * The per-frame hash lets the offline replay validate every frame of a long
+ * capture; the full baselines (first ~20 frames, 512 MB cap) are kept for
+ * pixel-level localisation when a hash mismatches. The command-specific meaning
+ * of scalars/params/payload is defined next to the wrapper that emits it.
  */
 #ifndef HMRDP_GFX_DUMP_H
 #define HMRDP_GFX_DUMP_H

@@ -8,8 +8,8 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-  setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
-  rfxGpuSelfTest, RdpEventCallback } from 'libhmrdp.so';
+setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
+rfxGpuSelfTest, gfxDesktopSelfTest, RdpEventCallback } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -89,6 +89,13 @@ export class RdpNative {
   static runGpuSelfTest(rfxPath: string, surfacePath: string): string {
     const summary: string = rfxGpuSelfTest(rfxPath, surfacePath);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gpu rfx selftest: %{public}s', summary);
+    return summary;
+  }
+
+  /** Dev/test: replays the captured GFX command stream through the B1 CPU model. */
+  static runGfxDesktopSelfTest(gfxPath: string, surfacePath: string): string {
+    const summary: string = gfxDesktopSelfTest(gfxPath, surfacePath);
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx desktop selftest: %{public}s', summary);
     return summary;
   }
 

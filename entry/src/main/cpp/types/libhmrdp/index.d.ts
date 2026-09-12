@@ -77,8 +77,9 @@ export const setRdpCursor: (enabled: boolean) => boolean;
 export const setHardwareDecode: (enabled: boolean) => boolean;
 
 /**
- * Dev-only: capture incoming RemoteFX/Progressive GFX surface streams to
- * `<dir>/hmrdp_rfx.bin` (PERF-TODO §2).
+ * Dev-only: capture the full GFX command stream (`<dir>/hmrdp_gfx.bin`) plus
+ * per-frame surface baselines (`<dir>/hmrdp_gfx_surface.bin`) and the legacy
+ * RemoteFX stream (`<dir>/hmrdp_rfx.bin`, PERF-TODO §2).
  */
 export const setRfxDump: (enabled: boolean, dir: string) => boolean;
 
@@ -94,3 +95,11 @@ export const gpuComputeInfo: () => string;
  * Returns a one-line summary.
  */
 export const rfxGpuSelfTest: (rfxPath: string, surfacePath: string) => string;
+
+/**
+ * Dev/test helper: replay the captured full GFX command stream (`gfxPath`,
+ * hmrdp_gfx.bin) through the CPU desktop/surface model (B1) and compare it with
+ * the captured FreeRDP surface baselines (`surfacePath`, hmrdp_gfx_surface.bin).
+ * Returns a one-line summary.
+ */
+export const gfxDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;

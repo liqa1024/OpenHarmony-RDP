@@ -70,8 +70,15 @@ export default class EntryAbility extends UIAbility {
       // compares it with the captured FreeRDP surface. No-op when the sample
       // files are absent (the native side returns immediately).
       const sampleDir: string = this.context.filesDir;
-      RdpNative.runGpuSelfTest(`${sampleDir}/hmrdp_rfx.bin`,
-        `${sampleDir}/hmrdp_rfx_surface.bin`);
+      // TEMP dev self-test (GPU tile decoder): disabled while B1 is under test,
+      // it is slow and blocks the desktop self-test below. Both are dev-only.
+      // RdpNative.runGpuSelfTest(`${sampleDir}/hmrdp_rfx.bin`,
+      //   `${sampleDir}/hmrdp_rfx_surface.bin`);
+      // TEMP dev self-test (B1): replays the captured full GFX command stream
+      // through the CPU desktop/surface model. No-op when the sample files are
+      // absent (the native side returns immediately).
+      RdpNative.runGfxDesktopSelfTest(`${sampleDir}/hmrdp_gfx.bin`,
+        `${sampleDir}/hmrdp_gfx_surface.bin`);
     });
   }
 

@@ -18,6 +18,7 @@
 #include <string>
 
 #include "hmrdp_log.h"
+#include "hmrdp_gfx_desktop.h"
 #include "hmrdp_rfx_gpu.h"
 #include "hmrdp_session.h"
 
@@ -648,6 +649,31 @@ napi_value RfxGpuSelfTest(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// Dev/test: replays the captured full GFX command stream (hmrdp_gfx.bin) through
+// the CPU desktop/surface model (B1) and compares it with the captured FreeRDP
+// surface baselines (hmrdp_gfx_surface.bin). Returns a summary string.
+napi_value GfxDesktopSelfTest(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string gfx;
+  std::string surf;
+  if (argc >= 1) gfx = GetStringArg(env, args[0]);
+  if (argc >= 2) surf = GetStringArg(env, args[1]);
+  const hmrdp::GfxDesktopSelfTestResult res = hmrdp::RunGfxDesktopSelfTest(gfx, surf);
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+           "ran=%d ok=%d rec=%u cmpRec=%u badRec=%u cmp=%llu mism=%llu hashOK=%llu hashMism=%llu",
+           res.ran ? 1 : 0, res.ok ? 1 : 0, res.records, res.comparedRecords, res.badRecords,
+           (unsigned long long)res.compared, (unsigned long long)res.mismatch,
+           (unsigned long long)res.surfacesHashed, (unsigned long long)res.hashMismatch);
+  std::string out = std::string(buf) + " | " + res.log;
+  HMRDP_LOGI("gfx desktop selftest: %{public}s", out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -711,6 +737,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr},
       {"rfxGpuSelfTest", nullptr, RfxGpuSelfTest, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"gfxDesktopSelfTest", nullptr, GfxDesktopSelfTest, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;
