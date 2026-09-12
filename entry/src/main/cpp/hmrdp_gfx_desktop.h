@@ -99,10 +99,8 @@ struct GfxSurface {
   bool mapped = false;
   uint32_t outputX = 0;
   uint32_t outputY = 0;
-  int mappedWidth = 0;        // raw CreateSurface width
-  int mappedHeight = 0;       // raw CreateSurface height
-  int outputTargetWidth = 0;  // scaled target (== mappedWidth for 1:1)
-  int outputTargetHeight = 0;
+  int mappedWidth = 0;   // raw CreateSurface width
+  int mappedHeight = 0;  // raw CreateSurface height
   // Bounding box of the region touched since the last Compose (FreeRDP unions
   // the per-command invalid rects; a bbox is a conservative superset).
   bool dirtyValid = false;
@@ -167,8 +165,6 @@ class GfxDesktop {
   void MarkSurfaceDirty(GfxSurface& surface, int left, int top, int right, int bottom);
   void MarkScreenDirty(int left, int top, int right, int bottom);
   void ComposeSurface(const GfxSurface& surface);
-  void ScaleBlit(const GfxSurface& src, int srcX, int srcY, int srcW, int srcH, int dstX,
-                 int dstY, int dstW, int dstH);
 
   GfxClearDecoder* clear_ = nullptr;
   std::map<uint32_t, GfxSurface> surfaces_;

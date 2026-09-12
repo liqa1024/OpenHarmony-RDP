@@ -679,37 +679,6 @@ void main() {
 }
 )GLSL";
 
-// W4: nearest-neighbour scale blit used by the screen compose. For 1:1 input
-// (uSrcW == uDstW && uSrcH == uDstH) this is the same straight copy as the CPU
-// GfxDesktop::ScaleBlit; the integer mapping must match it exactly.
-const char* kScaleShader = R"GLSL(#version 310 es
-precision highp int;
-layout(local_size_x = 64) in;
-layout(std430, binding = 0) readonly buffer Src { uint data[]; } src;
-layout(std430, binding = 1) buffer Dst { uint data[]; } dst;
-uniform uint uSrcStride;
-uniform uint uDstStride;
-uniform int uSrcX;
-uniform int uSrcY;
-uniform int uDstX;
-uniform int uDstY;
-uniform int uSrcW;
-uniform int uSrcH;
-uniform int uDstW;
-uniform int uDstH;
-void main() {
-  uint i = gl_GlobalInvocationID.x;
-  int total = uDstW * uDstH;
-  if (int(i) >= total) return;
-  int col = int(i) % uDstW;
-  int row = int(i) / uDstW;
-  int sx = uSrcX + (col * uSrcW) / uDstW;
-  int sy = uSrcY + (row * uSrcH) / uDstH;
-  dst.data[uint(uDstY + row) * (uDstStride >> 2) + uint(uDstX + col)] =
-      src.data[uint(sy) * (uSrcStride >> 2) + uint(sx)];
-}
-)GLSL";
-
 bool CheckGl(const char* what) {
   const GLenum err = glGetError();
   if (err != GL_NO_ERROR) {
@@ -852,7 +821,6 @@ struct GfxGpuDesktop::Impl {
   GLuint composeProg = 0;
   GLuint fillProg = 0;
   GLuint copyProg = 0;
-  GLuint scaleProg = 0;
   GLuint payloadBuf = 0;
   GLuint metaBuf = 0;
   GLuint coefBuf = 0;
@@ -891,8 +859,6 @@ struct GfxGpuDesktop::Impl {
   GLuint fillStride = 0, fillLeft = 0, fillTop = 0, fillWidth = 0, fillHeight = 0, fillColor = 0;
   GLuint copySrcStride = 0, copyDstStride = 0, copySrcX = 0, copySrcY = 0, copyDstX = 0,
          copyDstY = 0, copyWidth = 0, copyHeight = 0;
-  GLuint scaleSrcStride = 0, scaleDstStride = 0, scaleSrcX = 0, scaleSrcY = 0, scaleDstX = 0,
-         scaleDstY = 0, scaleSrcW = 0, scaleSrcH = 0, scaleDstW = 0, scaleDstH = 0;
   struct CacheBuf {
     int width = 0;
     int height = 0;
@@ -1014,7 +980,6 @@ void GfxGpuDesktop::Reset() {
     if (impl_->composeProg) glDeleteProgram(impl_->composeProg);
     if (impl_->fillProg) glDeleteProgram(impl_->fillProg);
     if (impl_->copyProg) glDeleteProgram(impl_->copyProg);
-    if (impl_->scaleProg) glDeleteProgram(impl_->scaleProg);
     impl_->payloadBuf = impl_->metaBuf = impl_->coefBuf = impl_->tileMetaBuf = 0;
     impl_->composeRectBuf = 0;
     impl_->composeRectCapacity = 0;
@@ -1026,7 +991,6 @@ void GfxGpuDesktop::Reset() {
     impl_->screenH = 0;
     impl_->screenDirtyValid = false;
     impl_->decodeProg = impl_->composeProg = impl_->fillProg = impl_->copyProg = 0;
-    impl_->scaleProg = 0;
     eglMakeCurrent(impl_->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroyContext(impl_->display, impl_->context);
     eglDestroySurface(impl_->display, impl_->surface);
@@ -1067,9 +1031,8 @@ bool GfxGpuDesktop::Init() {
   impl_->composeProg = CompileProgram(kComposeShader, "compose");
   impl_->fillProg = CompileProgram(kFillShader, "fill");
   impl_->copyProg = CompileProgram(kCopyShader, "copy");
-  impl_->scaleProg = CompileProgram(kScaleShader, "scale");
   if (impl_->decodeProg == 0 || impl_->composeProg == 0 || impl_->fillProg == 0 ||
-      impl_->copyProg == 0 || impl_->scaleProg == 0) {
+      impl_->copyProg == 0) {
     return false;
   }
 
@@ -1099,16 +1062,6 @@ bool GfxGpuDesktop::Init() {
   impl_->copyDstY = glGetUniformLocation(impl_->copyProg, "uDstY");
   impl_->copyWidth = glGetUniformLocation(impl_->copyProg, "uWidth");
   impl_->copyHeight = glGetUniformLocation(impl_->copyProg, "uHeight");
-  impl_->scaleSrcStride = glGetUniformLocation(impl_->scaleProg, "uSrcStride");
-  impl_->scaleDstStride = glGetUniformLocation(impl_->scaleProg, "uDstStride");
-  impl_->scaleSrcX = glGetUniformLocation(impl_->scaleProg, "uSrcX");
-  impl_->scaleSrcY = glGetUniformLocation(impl_->scaleProg, "uSrcY");
-  impl_->scaleDstX = glGetUniformLocation(impl_->scaleProg, "uDstX");
-  impl_->scaleDstY = glGetUniformLocation(impl_->scaleProg, "uDstY");
-  impl_->scaleSrcW = glGetUniformLocation(impl_->scaleProg, "uSrcW");
-  impl_->scaleSrcH = glGetUniformLocation(impl_->scaleProg, "uSrcH");
-  impl_->scaleDstW = glGetUniformLocation(impl_->scaleProg, "uDstW");
-  impl_->scaleDstH = glGetUniformLocation(impl_->scaleProg, "uDstH");
 
   // Per-chunk scratch: comp then temp, each chunkStreams*4096 int16.
   const uint32_t chunkStreams = kChunkTiles * 3;
@@ -1185,8 +1138,6 @@ bool GfxGpuDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uin
   surface.meta.gridH = (surface.meta.height + 63) / 64;
   surface.meta.mappedWidth = width;
   surface.meta.mappedHeight = height;
-  surface.meta.targetWidth = width;
-  surface.meta.targetHeight = height;
 
   surface.outWords = static_cast<size_t>(surface.meta.stride) * surface.meta.height / 4;
   glGenBuffers(1, &surface.outBuf);
@@ -1266,23 +1217,7 @@ void GfxGpuDesktop::MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOrigin
     s->meta.mapped = true;
     s->meta.outputX = outputOriginX;
     s->meta.outputY = outputOriginY;
-    s->meta.targetWidth = s->meta.mappedWidth;
-    s->meta.targetHeight = s->meta.mappedHeight;
     // gdi_MapSurfaceToOutput clears the surface's invalid region.
-    s->meta.dirtyValid = false;
-  }
-}
-
-void GfxGpuDesktop::MapSurfaceToScaledOutput(uint16_t surfaceId, uint32_t outputOriginX,
-                                             uint32_t outputOriginY, uint32_t targetWidth,
-                                             uint32_t targetHeight) {
-  Impl::SurfaceGpu* s = impl_ != nullptr ? impl_->Find(surfaceId) : nullptr;
-  if (s != nullptr) {
-    s->meta.mapped = true;
-    s->meta.outputX = outputOriginX;
-    s->meta.outputY = outputOriginY;
-    s->meta.targetWidth = static_cast<int>(targetWidth);
-    s->meta.targetHeight = static_cast<int>(targetHeight);
     s->meta.dirtyValid = false;
   }
 }
@@ -1452,9 +1387,14 @@ void GfxGpuDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint3
       }
       break;
     case kGpuCmdMapSurfaceToScaledOutput:
-      if (scalars != nullptr) {
-        MapSurfaceToScaledOutput(static_cast<uint16_t>(surfaceId), scalars[0], scalars[1],
-                                 scalars[2], scalars[3]);
+      // Server-side scaling is unsupported (this build's FreeRDP has no
+      // swscale/cairo, so gdi draws nothing). Unmap the surface so a stale 1:1
+      // mapping is not reused for the scaled PDU (mirrors the CPU model).
+      if (impl_ != nullptr) {
+        if (Impl::SurfaceGpu* s = impl_->Find(static_cast<uint16_t>(surfaceId))) {
+          s->meta.mapped = false;
+          s->meta.dirtyValid = false;
+        }
       }
       break;
     case kGpuCmdResetGraphics:
@@ -2175,7 +2115,7 @@ bool GfxGpuDesktop::Compose() {
   }
   const int scrW = impl_->screenW;
   const int scrH = impl_->screenH;
-  glUseProgram(impl_->scaleProg);
+  glUseProgram(impl_->copyProg);
   for (auto& kv : impl_->surfaces) {
     Impl::SurfaceGpu& s = kv.second;
     GpuSurface& m = s.meta;
@@ -2194,19 +2134,17 @@ bool GfxGpuDesktop::Compose() {
       m.dirtyValid = false;
       continue;
     }
-    const double sx = m.mappedWidth > 0 ? static_cast<double>(m.targetWidth) / m.mappedWidth : 1.0;
-    const double sy =
-        m.mappedHeight > 0 ? static_cast<double>(m.targetHeight) / m.mappedHeight : 1.0;
-    const int sw = right - left;
-    const int sh = bottom - top;
-    int dstX = static_cast<int>(m.outputX + left * sx);
-    int dstY = static_cast<int>(m.outputY + top * sy);
-    if (dstX >= scrW) dstX = scrW - 1;
-    if (dstY >= scrH) dstY = scrH - 1;
+    // 1:1 output mapping (scaled PDUs unmap the surface); a rect copy.
+    int dstX = static_cast<int>(m.outputX) + left;
+    int dstY = static_cast<int>(m.outputY) + top;
     if (dstX < 0) dstX = 0;
     if (dstY < 0) dstY = 0;
-    int dstW = static_cast<int>(sw * sx);
-    int dstH = static_cast<int>(sh * sy);
+    if (dstX >= scrW || dstY >= scrH) {
+      m.dirtyValid = false;
+      continue;
+    }
+    int dstW = right - left;
+    int dstH = bottom - top;
     if (dstW > scrW - dstX) dstW = scrW - dstX;
     if (dstH > scrH - dstY) dstH = scrH - dstY;
     if (dstW <= 0 || dstH <= 0) {
@@ -2215,16 +2153,14 @@ bool GfxGpuDesktop::Compose() {
     }
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s.outBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->screenBuf);
-    glUniform1ui(impl_->scaleSrcStride, static_cast<GLuint>(m.stride));
-    glUniform1ui(impl_->scaleDstStride, static_cast<GLuint>(scrW * 4));
-    glUniform1i(impl_->scaleSrcX, left);
-    glUniform1i(impl_->scaleSrcY, top);
-    glUniform1i(impl_->scaleDstX, dstX);
-    glUniform1i(impl_->scaleDstY, dstY);
-    glUniform1i(impl_->scaleSrcW, sw);
-    glUniform1i(impl_->scaleSrcH, sh);
-    glUniform1i(impl_->scaleDstW, dstW);
-    glUniform1i(impl_->scaleDstH, dstH);
+    glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(m.stride));
+    glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(scrW * 4));
+    glUniform1i(impl_->copySrcX, left);
+    glUniform1i(impl_->copySrcY, top);
+    glUniform1i(impl_->copyDstX, dstX);
+    glUniform1i(impl_->copyDstY, dstY);
+    glUniform1i(impl_->copyWidth, dstW);
+    glUniform1i(impl_->copyHeight, dstH);
     DispatchPixels(static_cast<size_t>(dstW) * static_cast<size_t>(dstH));
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     impl_->MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
@@ -2500,8 +2436,6 @@ bool RunSyntheticMultiSurfaceCheck(std::string* logOut) {
   apply(kGpuCmdCreateSurface, 2, create2, nullptr, 0);
   const uint32_t create3[4] = {33, 200, 0x21u, 0};  // -> 48x208, taller than screen
   apply(kGpuCmdCreateSurface, 3, create3, nullptr, 0);
-  const uint32_t create4[4] = {40, 30, 0x21u, 0};  // scaled 1.5x
-  apply(kGpuCmdCreateSurface, 4, create4, nullptr, 0);
 
   auto fill = [&](uint32_t sid, uint32_t pixel, uint16_t l, uint16_t t, uint16_t r, uint16_t b) {
     uint8_t rect[8];
@@ -2520,13 +2454,10 @@ bool RunSyntheticMultiSurfaceCheck(std::string* logOut) {
   apply(kGpuCmdMapSurfaceToOutput, 2, map2, nullptr, 0);
   const uint32_t map3[4] = {0, 0, 0, 0};
   apply(kGpuCmdMapSurfaceToOutput, 3, map3, nullptr, 0);
-  const uint32_t map4[4] = {130, 100, 60, 45};  // 40x30 -> 60x45 (1.5x)
-  apply(kGpuCmdMapSurfaceToScaledOutput, 4, map4, nullptr, 0);
 
   fill(1, 0xFF102030u, 0, 0, 50, 40);
   fill(2, 0xFF405060u, 10, 10, 64, 64);
   fill(3, 0xFF708090u, 0, 0, 20, 20);
-  fill(4, 0xFFA0B0C0u, 0, 0, 40, 30);
 
   // Cross-surface copy: surface 1 [0,0]-[50,40] -> surface 2 at (5,5).
   {
@@ -2596,8 +2527,23 @@ bool RunSyntheticMultiSurfaceCheck(std::string* logOut) {
   gpu.Compose();
   ok = ok && sameScreen();
 
-  // Compare every surviving surface.
-  const uint32_t ids[4] = {1, 2, 3, 4};
+  // A scaled output mapping is unsupported: both engines must unmap the surface
+  // (matching this build's gdi, which cannot scale) so the new fill never
+  // reaches the screen.
+  std::vector<uint8_t> screenBefore;
+  ok = ok && gpu.ReadScreen(&screenBefore);
+  const uint32_t scaledMap[4] = {0, 0, 60, 45};
+  apply(kGpuCmdMapSurfaceToScaledOutput, 1, scaledMap, nullptr, 0);
+  fill(1, 0xFFDEADBEu, 0, 0, 10, 10);
+  cpu.Compose();
+  gpu.Compose();
+  ok = ok && sameScreen();
+  std::vector<uint8_t> screenAfter;
+  ok = ok && gpu.ReadScreen(&screenAfter) && (screenAfter == screenBefore);
+  ok = ok && (cpu.FindSurface(1)->mapped == false) && (gpu.FindSurface(1)->mapped == false);
+
+  // Compare every surviving surface (dimensions, pixels and mapped flag).
+  const uint32_t ids[3] = {1, 2, 3};
   for (uint32_t id : ids) {
     const GfxSurface* c = cpu.FindSurface(id);
     const GpuSurface* gm = gpu.FindSurface(id);
@@ -2610,7 +2556,7 @@ bool RunSyntheticMultiSurfaceCheck(std::string* logOut) {
     }
     std::vector<uint8_t> g;
     if (!gpu.ReadSurface(id, &g) || gm->width != c->width || gm->height != c->height ||
-        gm->stride != c->stride || g.size() != c->data.size() ||
+        gm->stride != c->stride || gm->mapped != c->mapped || g.size() != c->data.size() ||
         std::memcmp(g.data(), c->data.data(), g.size()) != 0) {
       ok = false;
       break;

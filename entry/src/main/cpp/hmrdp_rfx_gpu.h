@@ -63,10 +63,8 @@ struct GpuSurface {
   bool mapped = false;
   uint32_t outputX = 0;
   uint32_t outputY = 0;
-  int mappedWidth = 0;        // raw CreateSurface width
-  int mappedHeight = 0;       // raw CreateSurface height
-  int targetWidth = 0;        // scaled output width (== mappedWidth for 1:1)
-  int targetHeight = 0;
+  int mappedWidth = 0;   // raw CreateSurface width
+  int mappedHeight = 0;  // raw CreateSurface height
   // Bounding box of the region touched since the last Compose (mirrors the CPU
   // model; a conservative superset of FreeRDP's per-command invalid rects).
   bool dirtyValid = false;
@@ -107,11 +105,9 @@ class GfxGpuDesktop {
   void DeleteSurface(uint16_t surfaceId);
   const GpuSurface* FindSurface(uint16_t surfaceId) const;
 
-  // Output mapping metadata (PERF-TODO §2.5 / §3.8); consumed by Compose.
+  // Output mapping metadata (PERF-TODO §2.5); consumed by Compose. 1:1 only:
+  // server-side scaled mappings are unsupported (see ApplyCommand).
   void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
-  void MapSurfaceToScaledOutput(uint16_t surfaceId, uint32_t outputOriginX,
-                                uint32_t outputOriginY, uint32_t targetWidth,
-                                uint32_t targetHeight);
 
   // --- Screen (front buffer) ------------------------------------------------
   // Resets the screen buffer (FreeRDP ResetGraphics); zero releases it.

@@ -177,39 +177,10 @@ void GfxDesktop::ClearScreenDirty() {
   screen_.dirtyValid = false;
 }
 
-// Nearest-neighbour scale-copy, mirroring the GPU compose kernel. For 1:1 input
-// (srcW == dstW && srcH == dstH) this is a straight word copy, which is the path
-// every captured frame uses; the scaling path exists for scaled output mappings
-// (PERF-TODO §3.8) and is not exercised by current captures.
-void GfxDesktop::ScaleBlit(const GfxSurface& src, int srcX, int srcY, int srcW, int srcH,
-                           int dstX, int dstY, int dstW, int dstH) {
-  if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) {
-    return;
-  }
-  const int srcStrideWords = src.stride / 4;
-  const int dstStrideWords = screen_.stride / 4;
-  const uint32_t* srcWords = Words(src.data.data());
-  uint32_t* dstWords = Words(screen_.data.data());
-  for (int row = 0; row < dstH; ++row) {
-    const int sy = srcY + (row * srcH) / dstH;
-    if (sy < 0 || sy >= src.height) {
-      continue;
-    }
-    const uint32_t* srcRow = srcWords + static_cast<size_t>(sy) * srcStrideWords;
-    uint32_t* dstRow = dstWords + static_cast<size_t>(dstY + row) * dstStrideWords;
-    for (int col = 0; col < dstW; ++col) {
-      const int sx = srcX + (col * srcW) / dstW;
-      if (sx < 0 || sx >= src.width) {
-        continue;
-      }
-      dstRow[dstX + col] = srcRow[sx];
-    }
-  }
-}
-
-// Mirrors FreeRDP's gdi_OutputUpdate: for every output-mapped surface, take the
-// invalid region (intersected with the mapped surface rect), scale/offset it to
-// the screen, mark the screen dirty and clear the surface's invalid region.
+// Mirrors FreeRDP's gdi_OutputUpdate for the supported path: for every
+// output-mapped surface, take the invalid region (intersected with the mapped
+// surface rect), copy it to the screen at the output origin, mark the screen
+// dirty and clear the surface's invalid region.
 void GfxDesktop::ComposeSurface(const GfxSurface& surface) {
   if (!surface.mapped || !surface.dirtyValid) {
     return;
@@ -225,30 +196,24 @@ void GfxDesktop::ComposeSurface(const GfxSurface& surface) {
   if (right <= left || bottom <= top) {
     return;
   }
-  const double sx =
-      surface.mappedWidth > 0
-          ? static_cast<double>(surface.outputTargetWidth) / surface.mappedWidth
-          : 1.0;
-  const double sy =
-      surface.mappedHeight > 0
-          ? static_cast<double>(surface.outputTargetHeight) / surface.mappedHeight
-          : 1.0;
-  const int sw = right - left;
-  const int sh = bottom - top;
-  int dstX = static_cast<int>(surface.outputX + left * sx);
-  int dstY = static_cast<int>(surface.outputY + top * sy);
-  if (dstX >= screen_.width) dstX = screen_.width - 1;
-  if (dstY >= screen_.height) dstY = screen_.height - 1;
+  // 1:1 output mapping only (server-side scaling is unsupported; scaled PDUs
+  // unmap the surface). gdi_OutputUpdate degenerates to a rect copy here.
+  int dstX = static_cast<int>(surface.outputX) + left;
+  int dstY = static_cast<int>(surface.outputY) + top;
   if (dstX < 0) dstX = 0;
   if (dstY < 0) dstY = 0;
-  int dstW = static_cast<int>(sw * sx);
-  int dstH = static_cast<int>(sh * sy);
+  if (dstX >= screen_.width || dstY >= screen_.height) {
+    return;
+  }
+  int dstW = right - left;
+  int dstH = bottom - top;
   if (dstW > screen_.width - dstX) dstW = screen_.width - dstX;
   if (dstH > screen_.height - dstY) dstH = screen_.height - dstY;
   if (dstW <= 0 || dstH <= 0) {
     return;
   }
-  ScaleBlit(surface, left, top, sw, sh, dstX, dstY, dstW, dstH);
+  CopyPixels32(Words(screen_.data.data()), screen_.stride / 4, dstX, dstY,
+               Words(surface.data.data()), surface.stride / 4, left, top, dstW, dstH);
   MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
 }
 
@@ -365,8 +330,6 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
       surface.gridH = (surface.height + 63) / 64;
       surface.mappedWidth = static_cast<int>(scalars[0]);
       surface.mappedHeight = static_cast<int>(scalars[1]);
-      surface.outputTargetWidth = surface.mappedWidth;
-      surface.outputTargetHeight = surface.mappedHeight;
       surfaces_[surfaceId] = std::move(surface);
       stats_.created++;
       break;
@@ -485,21 +448,19 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
         surface->mapped = true;
         surface->outputX = scalars[0];
         surface->outputY = scalars[1];
-        surface->outputTargetWidth = surface->mappedWidth;
-        surface->outputTargetHeight = surface->mappedHeight;
         // gdi_MapSurfaceToOutput clears the surface's invalid region.
         surface->dirtyValid = false;
       }
       break;
     }
     case kCmdMapSurfaceToScaledOutput: {
+      // Server-side scaling is not supported: this build's FreeRDP has neither
+      // swscale nor cairo, so gdi_OutputUpdate's freerdp_image_scale fails and
+      // the surface is simply not drawn. Mirror that by unmapping it (a stale
+      // 1:1 mapping must not be used for the scaled PDU).
       GfxSurface* surface = EnsureSurface(surfaceId);
-      if (surface != nullptr && scalars != nullptr) {
-        surface->mapped = true;
-        surface->outputX = scalars[0];
-        surface->outputY = scalars[1];
-        surface->outputTargetWidth = static_cast<int>(scalars[2]);
-        surface->outputTargetHeight = static_cast<int>(scalars[3]);
+      if (surface != nullptr) {
+        surface->mapped = false;
         surface->dirtyValid = false;
       }
       break;
