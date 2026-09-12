@@ -124,6 +124,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > `libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，语义改为
 > **面向 GPU RemoteFX 解码**（见 PERF-TODO §2）。GPU 解码器（`hmrdp_rfx_gpu.cpp`）已实现并与 FreeRDP
 > **离线逐像素对齐**（模拟器 + 真机 `mismatch=0`），但**尚未接入会话**，当前会话仍走 FreeRDP 软解。
+> 口径（PERF-TODO §2.9）：所谓「CPU 参考」**不是**独立 CPU 实现，而是**与 GPU 同构、可在 CPU/Windows 上跑
+> 的 GPU 代码**——先据此与 FreeRDP 逐像素验证，再适配真实 GPU，以区分 GPU 适配问题与算法差异，
+> 验证应尽量在 Windows 完成（不经模拟器）。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）

@@ -13,6 +13,12 @@
  * the injectable ClearCodec hook (GfxClearDecoder) and the portable RemoteFX
  * reference (hmrdp_rfx.h), so it also compiles on the host.
  *
+ * NOTE (PERF-TODO §2.9): this is a CPU oracle written in idiomatic CPU style,
+ * NOT the "CPU-runnable GPU code" that the project's method calls for (that
+ * variant must mirror the GPU implementation's flat-buffer / per-pixel structure
+ * so it can be ported mechanically and verified on Windows). It is validated
+ * against FreeRDP but is not a drop-in reference for the GPU port.
+ *
  * Alignment highlights (mirroring libfreerdp/gdi/gfx.c):
  *  - CreateSurface aligns width/height/scanline to 16 and fills with 0xFF.
  *  - Surface ids are UINT16; the GFX pixel format maps 0x20 -> BGRX32,
