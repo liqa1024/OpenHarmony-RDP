@@ -61,26 +61,26 @@ std::vector<uint8_t> ReadFile(const std::string& path) {
   return b;
 }
 
-// Copies a w x h region, handling overlapping source/destination in the same
-// buffer by choosing the row direction (FreeRDP uses freerdp_image_copy).
-void CopyRegion(uint8_t* dst, int dstStride, int dstX, int dstY, const uint8_t* src, int srcStride,
-                int srcX, int srcY, int w, int h) {
-  if (w <= 0 || h <= 0) {
-    return;
-  }
-  const bool sameBuffer = (dst == src);
-  const bool overlap = sameBuffer && dstY > srcY && dstY < srcY + h;
-  if (overlap) {
-    for (int row = h - 1; row >= 0; --row) {
-      std::memmove(dst + static_cast<size_t>(dstY + row) * dstStride + dstX * 4,
-                   src + static_cast<size_t>(srcY + row) * srcStride + srcX * 4,
-                   static_cast<size_t>(w) * 4);
-    }
-  } else {
-    for (int row = 0; row < h; ++row) {
-      std::memmove(dst + static_cast<size_t>(dstY + row) * dstStride + dstX * 4,
-                   src + static_cast<size_t>(srcY + row) * srcStride + srcX * 4,
-                   static_cast<size_t>(w) * 4);
+// One BGRA pixel is one 32-bit word, exactly like the GPU buffers in
+// hmrdp_rfx_gpu.cpp. Every pixel operation below iterates words the same way the
+// compute kernels do, so this file is a direct CPU-runnable mirror of the GPU
+// desktop model (PERF-TODO §2), not an idiomatic CPU implementation.
+inline uint32_t* Words(uint8_t* data) {
+  return reinterpret_cast<uint32_t*>(data);
+}
+inline const uint32_t* Words(const uint8_t* data) {
+  return reinterpret_cast<const uint32_t*>(data);
+}
+
+// Copies a w x h pixel region between flat word buffers. Overlapping same-buffer
+// copies must be staged through a temporary by the caller (the GPU copy kernel
+// has no per-row ordering either).
+void CopyPixels32(uint32_t* dst, int dstStrideWords, int dstX, int dstY, const uint32_t* src,
+                  int srcStrideWords, int srcX, int srcY, int w, int h) {
+  for (int row = 0; row < h; ++row) {
+    for (int col = 0; col < w; ++col) {
+      dst[static_cast<size_t>(dstY + row) * dstStrideWords + dstX + col] =
+          src[static_cast<size_t>(srcY + row) * srcStrideWords + srcX + col];
     }
   }
 }
@@ -143,9 +143,10 @@ RfxTileState* GfxDesktop::TileState(GfxSurface* surface, int xIdx, int yIdx) {
 
 void GfxDesktop::FillRects(GfxSurface& surface, uint32_t pixel, const uint8_t* params,
                            uint32_t rectCount) {
-  const uint8_t b = static_cast<uint8_t>(pixel & 0xFFu);
-  const uint8_t g = static_cast<uint8_t>((pixel >> 8) & 0xFFu);
-  const uint8_t r = static_cast<uint8_t>((pixel >> 16) & 0xFFu);
+  // FreeRDP always uses alpha 0xFF (the PDU's XA byte is ignored).
+  const uint32_t color = (pixel & 0x00FFFFFFu) | 0xFF000000u;
+  uint32_t* surfaceWords = Words(surface.data.data());
+  const int strideWords = surface.stride / 4;
   for (uint32_t i = 0; i < rectCount; ++i) {
     const uint8_t* rect = params + static_cast<size_t>(i) * 8;
     int left = Rd16(rect);
@@ -159,13 +160,9 @@ void GfxDesktop::FillRects(GfxSurface& surface, uint32_t pixel, const uint8_t* p
       bottom = surface.height;
     }
     for (int y = top; y < bottom; ++y) {
-      uint8_t* row = surface.data.data() + static_cast<size_t>(y) * surface.stride + left * 4;
+      uint32_t* row = surfaceWords + static_cast<size_t>(y) * strideWords;
       for (int x = left; x < right; ++x) {
-        row[0] = b;
-        row[1] = g;
-        row[2] = r;
-        row[3] = 0xFF;
-        row += 4;
+        row[x] = color;
       }
     }
   }
@@ -186,7 +183,11 @@ void GfxDesktop::Blit(const GfxSurface& src, int srcX, int srcY, GfxSurface& dst
   if (sx < 0 || sy < 0 || sx + w > src.width || sy + h > src.height) {
     return;
   }
-  CopyRegion(dst.data.data(), dst.stride, x, y, src.data.data(), src.stride, sx, sy, w, h);
+  // Stage the source region through a temporary first, mirroring the GPU
+  // SurfaceToSurface (which cannot rely on per-row ordering for overlap).
+  std::vector<uint32_t> tmp(static_cast<size_t>(w) * h);
+  CopyPixels32(tmp.data(), w, 0, 0, Words(src.data.data()), src.stride / 4, sx, sy, w, h);
+  CopyPixels32(Words(dst.data.data()), dst.stride / 4, x, y, tmp.data(), w, 0, 0, w, h);
 }
 
 void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
@@ -271,11 +272,9 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
       entry.height = h;
       entry.stride = Align(w * 4, 16);
       entry.data.assign(static_cast<size_t>(entry.stride) * h, 0);
-      for (int row = 0; row < h; ++row) {
-        std::memcpy(entry.data.data() + static_cast<size_t>(row) * entry.stride,
-                    src->data.data() + static_cast<size_t>(sy + row) * src->stride + sx * 4,
-                    static_cast<size_t>(w) * 4);
-      }
+      // Mirror the GPU copy kernel: surface (src) -> cache (dst).
+      CopyPixels32(Words(entry.data.data()), entry.stride / 4, 0, 0, Words(src->data.data()),
+                   src->stride / 4, sx, sy, w, h);
       cache_[scalars[0]] = std::move(entry);
       lastCacheStoreSlot_ = static_cast<int>(scalars[0]);
       stats_.surfaceToCache++;
@@ -305,12 +304,9 @@ void GfxDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t
         if (!ClipRect(&x, &y, &w, &h, dst->width, dst->height)) {
           continue;
         }
-        for (int row = 0; row < h; ++row) {
-          std::memcpy(dst->data.data() + static_cast<size_t>(y + row) * dst->stride + x * 4,
-                      entry.data.data() + static_cast<size_t>(y - py + row) * entry.stride +
-                          (x - px) * 4,
-                      static_cast<size_t>(w) * 4);
-        }
+        // Mirror the GPU copy kernel: cache (src) -> surface (dst).
+        CopyPixels32(Words(dst->data.data()), dst->stride / 4, x, y, Words(entry.data.data()),
+                     entry.stride / 4, x - px, y - py, w, h);
       }
       stats_.cacheToSurface++;
       break;
@@ -448,6 +444,9 @@ void GfxDesktop::ApplyProgressive(GfxSurface* surface, const uint8_t* payload, u
         // rect ∩ tile; the rest of the tile keeps the previous surface).
         const int ox = t.xIdx * 64;
         const int oy = t.yIdx * 64;
+        uint32_t* surfaceWords = Words(surface->data.data());
+        const uint32_t* tileWords = Words(tile);
+        const int strideWords = surface->stride / 4;
         auto copyRect = [&](int rl, int rt, int rr, int rb) {
           int x = rl;
           int y = rt;
@@ -456,11 +455,12 @@ void GfxDesktop::ApplyProgressive(GfxSurface* surface, const uint8_t* payload, u
           if (!ClipRect(&x, &y, &w, &h, surface->width, surface->height)) {
             return;
           }
+          // Mirror the GPU compose kernel: per-pixel within rect ∩ tile.
           for (int row = 0; row < h; ++row) {
-            std::memcpy(surface->data.data() + static_cast<size_t>(y + row) * surface->stride +
-                            x * 4,
-                        tile + static_cast<size_t>(y - oy + row) * (64 * 4) + (x - ox) * 4,
-                        static_cast<size_t>(w) * 4);
+            for (int col = 0; col < w; ++col) {
+              surfaceWords[static_cast<size_t>(y + row) * strideWords + x + col] =
+                  tileWords[static_cast<size_t>(y - oy + row) * 64 + (x - ox) + col];
+            }
           }
         };
         if (t.numRects == 0) {

@@ -6,18 +6,19 @@
  * (on the tested server) ClearCodec payloads, so the desktop can only be owned
  * once all of those are reproduced with the exact FreeRDP semantics.
  *
- * This module is the portable C++ reference for that model: it replays the
- * captured command stream (hmrdp_gfx.bin, see hmrdp_gfx_dump.h) into a surface
- * table and can be aligned pixel-by-pixel against the captured FreeRDP surface
- * baselines (hmrdp_gfx_surface.bin). It has no OHOS/FreeRDP dependency except
- * the injectable ClearCodec hook (GfxClearDecoder) and the portable RemoteFX
- * reference (hmrdp_rfx.h), so it also compiles on the host.
+ * This module is the CPU-runnable mirror of the GPU desktop model (PERF-TODO §2):
+ * the same flat 32-bit-word surface/cache buffers and the same per-pixel
+ * fill/copy/compose operations as the compute kernels in hmrdp_rfx_gpu.cpp, just
+ * executed by CPU loops. It replays the captured command stream
+ * (hmrdp_gfx.bin, see hmrdp_gfx_dump.h) and can be aligned pixel-by-pixel
+ * against the captured FreeRDP surface baselines (hmrdp_gfx_surface.bin), so the
+ * algorithm can be verified (ideally on the host) before any GPU adaptation.
  *
- * NOTE (PERF-TODO §2.9): this is a CPU oracle written in idiomatic CPU style,
- * NOT the "CPU-runnable GPU code" that the project's method calls for (that
- * variant must mirror the GPU implementation's flat-buffer / per-pixel structure
- * so it can be ported mechanically and verified on Windows). It is validated
- * against FreeRDP but is not a drop-in reference for the GPU port.
+ * The only non-symmetric piece is ClearCodec: per PERF-TODO §2.8 it is not
+ * GPU-ized and is decoded by the injected GfxClearDecoder hook (FreeRDP's
+ * clear_decompress on device); the model otherwise has no OHOS dependency.
+ *
+ * The CPU reference for the RemoteFX tiles themselves is hmrdp_rfx.cpp.
  *
  * Alignment highlights (mirroring libfreerdp/gdi/gfx.c):
  *  - CreateSurface aligns width/height/scanline to 16 and fills with 0xFF.

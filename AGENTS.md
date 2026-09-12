@@ -124,7 +124,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > `libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，语义改为
 > **面向 GPU RemoteFX 解码**（见 PERF-TODO §2）。GPU 解码器（`hmrdp_rfx_gpu.cpp`）已实现并与 FreeRDP
 > **离线逐像素对齐**（模拟器 + 真机 `mismatch=0`），但**尚未接入会话**，当前会话仍走 FreeRDP 软解。
-> 口径（PERF-TODO §2.9）：所谓「CPU 参考」**不是**独立 CPU 实现，而是**与 GPU 同构、可在 CPU/Windows 上跑
+> 口径（PERF-TODO §2）：所谓「CPU 参考」**不是**独立 CPU 实现，而是**与 GPU 同构、可在 CPU/Windows 上跑
 > 的 GPU 代码**——先据此与 FreeRDP 逐像素验证，再适配真实 GPU，以区分 GPU 适配问题与算法差异，
 > 验证应尽量在 Windows 完成（不经模拟器）。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
@@ -274,7 +274,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 20. **GPU RemoteFX 解码**（`entry/src/main/cpp/hmrdp_rfx.{h,cpp}` + `hmrdp_rfx_gpu.{h,cpp}`）：
     把 progressive tile 解码链（`RLGR → 去量化 → 逆 DWT → YCbCr→BGRA`）搬到 GLES **3.1 compute**，
     目标是**只上传压缩码流 + 元数据**（≈网络接收量），去掉 CPU 解码 + BGRA 拷贝 + 纹理上传。
-    **现状**：tile 解码链（progressive 的 FIRST/UPGRADE/diff）CPU 参考与 GPU 实现**在模拟器与真机都
+    **现状**：tile 解码链（progressive 的 FIRST/UPGRADE/diff）CPU 可跑版本与 GPU 实现**在模拟器与真机都
     逐像素等于 FreeRDP**（`mismatch=0`）。但它**只到 tile 层**：没有 FreeRDP gdi surface 那一套
     （多 surface、`SolidFill`、`SurfaceToSurface`、bitmap、present），也**未接入会话**（会话仍软解）。
     **接管后 FreeRDP 的 surface 会过期、无法逐帧回退**，故只能整体拥有桌面（全有或全无）；
@@ -334,5 +334,5 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理、会话遥测（GFX 解码计时 / 带宽采样 / 每秒 `kMetrics`） |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
-| `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | RemoteFX/Progressive **CPU 参考解码器**：容器解析 + RLGR/去量化/逆 DWT/YCbCr（可移植 C++，宿主机可编，供 GPU 对照） |
+| `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | RemoteFX/Progressive **CPU 可跑的 GPU 代码**：容器解析 + RLGR/去量化/逆 DWT/YCbCr（tile 解码的 CPU 镜像，供 GPU 对照；可移植 C++，宿主机可编） |
 | `entry/src/main/cpp/hmrdp_rfx_gpu.{h,cpp}` | GPU（GLES 3.1 compute）RemoteFX 解码器 + 能力探测 + 离线自测；已逐像素对齐 FreeRDP，**尚未接入会话** |
