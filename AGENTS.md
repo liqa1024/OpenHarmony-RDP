@@ -5,9 +5,10 @@
 ## AI 助手约定（重要）
 
 - **总结必须始终使用中文**：任务收尾 / 最终答复的语言固定为中文（代码、命令、标识符除外）。
-- **禁止连接用户实机调试**：出于安全考虑，不要对用户连接的**真机**执行安装、启动、调试、
-  日志抓取或任何 `hdc` / `start_app` 操作；需要测试时优先采用模拟器
-  （见「模拟器（功能测试）」）。
+- **实机操作默认禁止、需明确授权**：默认不要对用户连接的**真机**执行安装/启动/调试/日志/`hdc`/`start_app`，
+  日常功能测试优先模拟器（见「模拟器（功能测试）」）。仅当用户**明确同意**本次实机验证（例如 GPU/驱动
+  差异只有真机能复现）时才可操作，且：**签名与安装由用户完成**（仓库不含签名材料），AI 只做 push 样本 /
+  重启 / 读 `hilog` 等无破坏性动作。
 - **git 只读**：只允许用 git **查看/读取**（如 `log`、`show`、`diff`、`status`、`blame`）。
   **禁止任何写操作或借助 git 改动仓库**，包括但不限于 `commit`、`amend`、`add`、`stash`、
   `checkout`、`reset`、`revert`、`restore`、`clean`、`cherry-pick`、`rebase`、`merge`、
@@ -70,6 +71,9 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
   `bounds` 计算 `uitest uiInput click <x> <y>` 的中心点（比目测截图可靠）。
 - 截图：`hdc shell snapshot_display -f /data/local/tmp/x.jpeg` + `hdc file recv`。
 - 连接多个设备时 `hdc` 需用 `-t <serial>` 指定目标。
+- **真机 GPU 与模拟器（ANGLE 翻译）在 shader 严格性/驱动行为上可能不同**：例如 `#version` 必须位于
+  shader 第一行（Mali 不容忍前导换行，ANGLE 容忍）。**GPU/驱动相关结论以真机为准**；本轮真机为
+  <target device>（<device>，GLES 3.2）。
 
 ## 原生库源码构建（可选；预编译库已提交）
 
@@ -118,7 +122,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），统一走
 > **RemoteFX Progressive**。`patch-freerdp.ps1`/`build-freerdp.ps1` 不再加 H.264 子系统，
 > `libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，语义改为
-> **面向 GPU RemoteFX 解码**（见 PERF-TODO §2）。
+> **面向 GPU RemoteFX 解码**（见 PERF-TODO §2）。GPU 解码器（`hmrdp_rfx_gpu.cpp`）已实现并与 FreeRDP
+> **离线逐像素对齐**（模拟器 + 真机 `mismatch=0`），但**尚未接入会话**，当前会话仍走 FreeRDP 软解。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
@@ -249,9 +254,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     （模拟器无鼠标，只能真机验证）。关闭开关则不接管、回退默认箭头。
 19. **会话状态栏遥测**：原生 `Session::EmitMetrics` 每秒经 `kMetrics` 事件下发
     `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp|codecMode`，`SessionPage` 工具栏渲染。
-    `codecMode`（1=H264/2=RFX/3=RAW/0=未知）在分辨率后显示为 `<width> × <height>(H264)`：由包装的
+    `codecMode`（1=H264/2=RFX/3=RAW/0=未知）在分辨率后显示为 `<width> × <height>(RFX)`：由包装的
     `SurfaceCommand` 按 `command->codecId` 统计，窗口内出现 H.264 则报 H264，否则报最近的非 H.264。
-    用于验证服务端是否真的下发了 H.264（仅广告 AVC420 时 Windows 多仍走 Progressive）。
+    （H.264 已整体移除，故实际只会出现 `RFX`/`RAW`；该字段保留用于确认服务端确实走 Progressive。）
     - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端
       注册该回调），故 `Connect` 时给 `context->autodetect` 注册 `HmrdpNetworkCharacteristicsResult` 自行捕获。
     - **本机** = **解码 + 呈现**：解码链式包裹 `RdpgfxClientContext::SurfaceCommand`（H.264/位图解码都在
@@ -264,6 +269,27 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       （300ms 内有包）时统计，取近 **5 个窗口**滑动，避免空闲静音误报。
     - **不显示**：服务端处理（协议不回报）、压缩比（仅 GDI 位图路径有意义，GFX/H.264 下不存在）、
       音频丢包（复用在同一传输里，客户端无逐包统计）；音频丢帧率是可感知卡顿的代理。
+20. **GPU RemoteFX 解码**（`entry/src/main/cpp/hmrdp_rfx.{h,cpp}` + `hmrdp_rfx_gpu.{h,cpp}`）：
+    把 progressive tile 解码链（`RLGR → 去量化 → 逆 DWT → YCbCr→BGRA`）搬到 GLES **3.1 compute**，
+    目标是**只上传压缩码流 + 元数据**（≈网络接收量），去掉 CPU 解码 + BGRA 拷贝 + 纹理上传。
+    **现状**：CPU 参考与 GPU 实现在**模拟器与真机都逐像素等于 FreeRDP**（`mismatch=0`），但
+    **尚未接入会话**——会话仍由 FreeRDP 软解，GPU 解码器目前只在离线自测里被调用（见 PERF-TODO §2）。
+    改动前必读要点/坑：
+    - `hmrdp_rfx.cpp` 是**可移植 C++ 参考**（无 OHOS 依赖，宿主机 MSVC 也能编），GPU 版逐行对齐它；
+      修改解码算法时两边必须同步，并用自测回放确认 `mismatch=0`。
+    - 运行期能力探测 `GetGpuComputeInfo()`（离屏 pbuffer + ES3.1 上下文）；**`compute==false` 必须回退软解**。
+    - **`#version` 必须位于 shader 源码第一行**（原始字符串 `R"GLSL(` 后不能有换行；Mali 不容忍）。
+    - **compose 必须按桌面尺寸裁剪**（`px>=surfaceW || py>=surfaceH` 丢弃）：桌面宽高不是 64 的整数倍，
+      边缘 tile 多出的像素会按 stride **折回下一行**，污染邻接 tile（曾致 rec1 首行前 16px 失配）。
+    - RLGR 必须用 **64 位位读取器**；在 GLSL 里拆成 hi/lo 时，**字节跨 32 位边界（sh∈[25,31]）要同时写
+      hi 的高位**，否则从第 2 个符号起错位。
+    - 每 `(tile,分量)` 的 `current`/`sign`/`bitPos` 需**跨消息常驻**（SSBO，全桌面 `current+sign`≈80MB）；
+      `RFX_TILE_DIFFERENCE` 用**饱和加法且把和写回 `current`**；UPGRADE 走 SRL/raw 增量（两个位流同时活跃）。
+    - int16 系数打包进 `uint` SSBO（`idx>>1` + 高/低 16bit）；`out`/`input` 等是 GLSL 保留字；
+      三元条件必须是 `bool`（`uint & mask` 要写 `!= 0u`）；`glGetBufferSubData` 在 GLES 不可用，用
+      `glMapBufferRange`。
+    - 离线自测：设备开「抓取 RFX 码流（测试）」→ 取码流 + FreeRDP surface → **只比「本 record 更新的
+      tile ∩ region rect」**（否则会被非渐进命令的旧像素误判）。流程与进度见 PERF-TODO §2.3–§2.5。
 
 ## ArkTS 规范
 
@@ -304,3 +330,5 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理、会话遥测（GFX 解码计时 / 带宽采样 / 每秒 `kMetrics`） |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
+| `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | RemoteFX/Progressive **CPU 参考解码器**：容器解析 + RLGR/去量化/逆 DWT/YCbCr（可移植 C++，宿主机可编，供 GPU 对照） |
+| `entry/src/main/cpp/hmrdp_rfx_gpu.{h,cpp}` | GPU（GLES 3.1 compute）RemoteFX 解码器 + 能力探测 + 离线自测；已逐像素对齐 FreeRDP，**尚未接入会话** |
