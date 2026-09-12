@@ -10,6 +10,7 @@
 #include <napi/native_api.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -17,6 +18,7 @@
 #include <string>
 
 #include "hmrdp_log.h"
+#include "hmrdp_rfx_gpu.h"
 #include "hmrdp_session.h"
 
 namespace {
@@ -603,6 +605,49 @@ napi_value SetRfxDump(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
+// Dev/test helper: returns a one-line description of the device GLES compute
+// capability (see GpuComputeInfo::Describe).
+napi_value GpuComputeInfo(napi_env env, napi_callback_info) {
+  const std::string desc = hmrdp::GetGpuComputeInfo().Describe();
+  napi_value out = nullptr;
+  napi_create_string_utf8(env, desc.c_str(), desc.size(), &out);
+  return out;
+}
+
+std::string GetStringArg(napi_env env, napi_value v) {
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, v, nullptr, 0, &length) != napi_ok || length == 0) {
+    return std::string();
+  }
+  std::string s(length, '\0');
+  napi_get_value_string_utf8(env, v, s.data(), length + 1, &length);
+  s.resize(length);
+  return s;
+}
+
+// Dev/test: replays a captured Progressive stream on the GPU and compares it
+// with the captured FreeRDP reference surface. Returns a summary string.
+napi_value RfxGpuSelfTest(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string rfx;
+  std::string surf;
+  if (argc >= 1) rfx = GetStringArg(env, args[0]);
+  if (argc >= 2) surf = GetStringArg(env, args[1]);
+  const hmrdp::RfxGpuSelfTestResult res = hmrdp::RunRfxGpuSelfTest(rfx, surf);
+  char buf[256];
+  snprintf(buf, sizeof(buf), "ran=%d ok=%d first=%llu up=%llu cmp=%llu mism=%llu badRec=%d",
+           res.ran ? 1 : 0, res.ok ? 1 : 0, (unsigned long long)res.firstTiles,
+           (unsigned long long)res.upgradeTiles, (unsigned long long)res.compared,
+           (unsigned long long)res.mismatch, res.badRecords);
+  std::string out = std::string(buf) + " | " + res.log;
+  HMRDP_LOGI("gpu rfx selftest: %{public}s", out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -662,6 +707,10 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setHardwareDecode", nullptr, SetHardwareDecode, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"gpuComputeInfo", nullptr, GpuComputeInfo, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"rfxGpuSelfTest", nullptr, RfxGpuSelfTest, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

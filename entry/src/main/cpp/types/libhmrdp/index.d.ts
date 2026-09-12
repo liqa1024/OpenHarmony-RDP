@@ -81,3 +81,16 @@ export const setHardwareDecode: (enabled: boolean) => boolean;
  * `<dir>/hmrdp_rfx.bin` (PERF-TODO §2).
  */
 export const setRfxDump: (enabled: boolean, dir: string) => boolean;
+
+/**
+ * Dev/test helper: one-line description of the device GLES compute capability
+ * (used to decide whether the GPU RemoteFX decoder can run).
+ */
+export const gpuComputeInfo: () => string;
+
+/**
+ * Dev/test helper: replay a captured Progressive stream (`rfxPath`) on the GPU
+ * and compare it with the captured FreeRDP reference surface (`surfacePath`).
+ * Returns a one-line summary.
+ */
+export const rfxGpuSelfTest: (rfxPath: string, surfacePath: string) => string;

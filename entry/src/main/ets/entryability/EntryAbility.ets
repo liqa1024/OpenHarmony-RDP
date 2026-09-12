@@ -51,6 +51,8 @@ export default class EntryAbility extends UIAbility {
     // Apply the process-global cursor switch before any session can connect
     // (sessions are opened from the list page, not from this ability).
     RdpNative.applyRdpCursor(settings.useRdpCursor);
+    // Dev probe: log the device GLES compute capability at startup.
+    RdpNative.describeGpuCompute();
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
 
@@ -60,6 +62,12 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      // TEMP dev self-test: runs the GPU RFX decoder over a captured stream and
+      // compares it with the captured FreeRDP surface. No-op when the sample
+      // files are absent (the native side returns immediately).
+      const sampleDir: string = this.context.filesDir;
+      RdpNative.runGpuSelfTest(`${sampleDir}/hmrdp_rfx.bin`,
+        `${sampleDir}/hmrdp_rfx_surface.bin`);
     });
   }
 

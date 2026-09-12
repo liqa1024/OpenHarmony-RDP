@@ -8,9 +8,13 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-  setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump,
-  RdpEventCallback } from 'libhmrdp.so';
+  setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
+  rfxGpuSelfTest, RdpEventCallback } from 'libhmrdp.so';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
+
+const GPU_DOMAIN: number = 0xD001;
+const GPU_TAG: string = 'HmRdpNative';
 
 export type RdpEventListener = (event: RdpEvent, data: string) => void;
 
@@ -72,6 +76,20 @@ export class RdpNative {
   /** Dev-only RemoteFX stream capture to the given directory. */
   static applyRfxDump(enabled: boolean, dir: string): void {
     setRfxDump(enabled, dir);
+  }
+
+  /** Dev/test: logs the device GLES compute capability, returns its summary. */
+  static describeGpuCompute(): string {
+    const desc: string = gpuComputeInfo();
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'gpu compute: %{public}s', desc);
+    return desc;
+  }
+
+  /** Dev/test: replays a captured Progressive stream on the GPU and compares. */
+  static runGpuSelfTest(rfxPath: string, surfacePath: string): string {
+    const summary: string = rfxGpuSelfTest(rfxPath, surfacePath);
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'gpu rfx selftest: %{public}s', summary);
+    return summary;
   }
 
   setListener(listener: RdpEventListener): void {
