@@ -119,11 +119,11 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > **H.264/AVC 已移除**：曾用 OHOS AVCodec 实现了 H.264 硬解子系统（可参考 git 历史/PERF-TODO），
 > 但真机验证发现：(1) H.264 只有在客户端广告 **AVC444** 时 Windows 才启用，属微软非核心可选项；
 > (2) 即使命中硬解（`hardware=1`）也无明显收益——瓶颈在解码后的 CPU 环节（拷帧/YUV→RGB/合成/上传）。
-> 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），统一走
-> **RemoteFX Progressive**。`patch-freerdp.ps1`/`build-freerdp.ps1` 不再加 H.264 子系统，
-> `libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，语义改为
-> **面向 GPU RemoteFX 解码**（见 PERF-TODO §2）。GPU 解码器（`hmrdp_rfx_gpu.cpp`）已实现并与 FreeRDP
-> **离线逐像素对齐**（模拟器 + 真机 `mismatch=0`），但**尚未接入会话**，当前会话仍走 FreeRDP 软解。
+> 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），其余码流
+> （RemoteFX Progressive / ClearCodec 等）由服务端按内容选择。`patch-freerdp.ps1`/`build-freerdp.ps1`
+> 不再加 H.264 子系统，`libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，
+> 语义面向 **GPU 加速管线**（见 PERF-TODO §2）。GPU 表面模型（`hmrdp_rfx_gpu.cpp`）已实现并与 FreeRDP
+> **离线逐帧对齐**（`mism=0`），但**尚未接入会话**，当前会话仍走 FreeRDP 软解。
 > 口径（PERF-TODO §2）：所谓「CPU 参考」**不是**独立 CPU 实现，而是**与 GPU 同构、可在 CPU/Windows 上跑
 > 的 GPU 代码**——先据此与 FreeRDP 逐像素验证，再适配真实 GPU，以区分 GPU 适配问题与算法差异，
 > 验证应尽量在 Windows 完成（不经模拟器）。
@@ -335,4 +335,4 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器 |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
 | `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | RemoteFX/Progressive **CPU 可跑的 GPU 代码**：容器解析 + RLGR/去量化/逆 DWT/YCbCr（tile 解码的 CPU 镜像，供 GPU 对照；可移植 C++，宿主机可编） |
-| `entry/src/main/cpp/hmrdp_rfx_gpu.{h,cpp}` | GPU（GLES 3.1 compute）RemoteFX 解码器 + 能力探测 + 离线自测；已逐像素对齐 FreeRDP，**尚未接入会话** |
+| `entry/src/main/cpp/hmrdp_rfx_gpu.{h,cpp}` | GPU（GLES 3.1 compute）RemoteFX tile 解码 + 表面命令（fill/copy/cache/上传）+ 能力探测 + 离线自测；已逐帧对齐 FreeRDP，**尚未接入会话** |
