@@ -271,9 +271,11 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 20. **GPU RemoteFX 解码**（`entry/src/main/cpp/hmrdp_rfx.{h,cpp}` + `hmrdp_rfx_gpu.{h,cpp}`）：
     把 progressive tile 解码链（`RLGR → 去量化 → 逆 DWT → YCbCr→BGRA`）搬到 GLES **3.1 compute**，
     目标是**只上传压缩码流 + 元数据**（≈网络接收量），去掉 CPU 解码 + BGRA 拷贝 + 纹理上传。
-    **现状**：CPU 参考与 GPU 实现在**模拟器与真机都逐像素等于 FreeRDP**（`mismatch=0`），但
-    **尚未接入会话**——会话仍由 FreeRDP 软解，GPU 解码器目前只在离线自测里被调用（见 PERF-TODO §2）。
-    改动前必读要点/坑：
+    **现状**：tile 解码链（progressive 的 FIRST/UPGRADE/diff）CPU 参考与 GPU 实现**在模拟器与真机都
+    逐像素等于 FreeRDP**（`mismatch=0`）。但它**只到 tile 层**：没有 FreeRDP gdi surface 那一套
+    （多 surface、`SolidFill`、`SurfaceToSurface`、bitmap、present），也**未接入会话**（会话仍软解）。
+    **接管后 FreeRDP 的 surface 会过期、无法逐帧回退**，故只能整体拥有桌面（全有或全无）；
+    拆解见 PERF-TODO §2.5。改动前必读要点/坑：
     - `hmrdp_rfx.cpp` 是**可移植 C++ 参考**（无 OHOS 依赖，宿主机 MSVC 也能编），GPU 版逐行对齐它；
       修改解码算法时两边必须同步，并用自测回放确认 `mismatch=0`。
     - 运行期能力探测 `GetGpuComputeInfo()`（离屏 pbuffer + ES3.1 上下文）；**`compute==false` 必须回退软解**。
