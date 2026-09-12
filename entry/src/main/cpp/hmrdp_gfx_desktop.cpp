@@ -7,8 +7,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <string>
+
+#include "hmrdp_gfx_capture.h"
 
 namespace hmrdp {
 namespace {
@@ -47,19 +48,6 @@ uint32_t Rd32(const uint8_t* p) {
 
 uint16_t Rd16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
-}
-
-std::vector<uint8_t> ReadFile(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f) {
-    return {};
-  }
-  f.seekg(0, std::ios::end);
-  const std::streamoff n = f.tellg();
-  f.seekg(0, std::ios::beg);
-  std::vector<uint8_t> b(static_cast<size_t>(n));
-  f.read(reinterpret_cast<char*>(b.data()), n);
-  return b;
 }
 
 // One BGRA pixel is one 32-bit word, exactly like the GPU buffers in
@@ -175,6 +163,19 @@ void GfxDesktop::MarkScreenDirty(int left, int top, int right, int bottom) {
 
 void GfxDesktop::ClearScreenDirty() {
   screen_.dirtyValid = false;
+}
+
+bool GfxDesktop::ReadScreen(std::vector<uint8_t>* out) const {
+  if (out == nullptr || screen_.data.empty() || screen_.width <= 0 || screen_.height <= 0) {
+    return false;
+  }
+  out->assign(static_cast<size_t>(screen_.width) * static_cast<size_t>(screen_.height) * 4, 0);
+  for (int y = 0; y < screen_.height; ++y) {
+    std::memcpy(out->data() + static_cast<size_t>(y) * screen_.width * 4,
+                screen_.data.data() + static_cast<size_t>(y) * screen_.stride,
+                static_cast<size_t>(screen_.width) * 4);
+  }
+  return true;
 }
 
 // Mirrors FreeRDP's gdi_OutputUpdate for the supported path: for every
@@ -635,29 +636,6 @@ void GfxDesktop::ApplyProgressive(GfxSurface* surface, const uint8_t* payload, u
 // Offline replay / alignment
 // ---------------------------------------------------------------------------
 
-namespace {
-
-struct BaselineSurface {
-  uint32_t id = 0;
-  uint32_t width = 0;
-  uint32_t height = 0;
-  uint32_t stride = 0;
-  uint32_t format = 0;
-  std::vector<uint8_t> data;
-};
-
-// Must match hmrdp_gfx_dump.cpp's per-frame hash (FNV-1a 64).
-uint64_t HashBytes(const uint8_t* data, size_t size) {
-  uint64_t hash = 1469598103934665603ull;
-  for (size_t i = 0; i < size; ++i) {
-    hash ^= data[i];
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-}  // namespace
-
 GfxDesktopSelfTestResult ReplayGfxCapture(GfxDesktop* desktop, const std::string& gfxPath,
                                           const std::string& surfacePath) {
   GfxDesktopSelfTestResult res;
@@ -665,160 +643,60 @@ GfxDesktopSelfTestResult ReplayGfxCapture(GfxDesktop* desktop, const std::string
     res.log = "no desktop";
     return res;
   }
-  const std::vector<uint8_t> gfx = ReadFile(gfxPath);
-  if (gfx.empty()) {
+  GfxCapture capture;
+  if (!capture.Open(gfxPath)) {
     res.log = "cannot read gfx capture";
     return res;
   }
   // Baselines are only needed for comparison; a missing file still replays.
-  const std::vector<uint8_t> surfaces = ReadFile(surfacePath);
-  std::map<uint32_t, std::vector<BaselineSurface>> baselines;
-  std::map<uint32_t, std::map<uint32_t, uint64_t>> hashes;
-  size_t pos = 0;
-  while (pos + 32 <= surfaces.size()) {
-    const uint32_t magic = Rd32(&surfaces[pos]);
-    if (magic == 0x31484647u /* 'GFH1' */) {
-      const uint32_t index = Rd32(&surfaces[pos + 4]);
-      const uint32_t sid = Rd32(&surfaces[pos + 8]);
-      const uint64_t hash = static_cast<uint64_t>(Rd32(&surfaces[pos + 24])) |
-                            (static_cast<uint64_t>(Rd32(&surfaces[pos + 28])) << 32);
-      hashes[index][sid] = hash;
-      pos += 32;
-      continue;
-    }
-    if (magic == 0x31534647u /* 'GFS1' */) {
-      BaselineSurface s;
-      const uint32_t index = Rd32(&surfaces[pos + 4]);
-      s.id = Rd32(&surfaces[pos + 8]);
-      s.width = Rd32(&surfaces[pos + 12]);
-      s.height = Rd32(&surfaces[pos + 16]);
-      s.stride = Rd32(&surfaces[pos + 20]);
-      s.format = Rd32(&surfaces[pos + 24]);
-      const size_t bytes = static_cast<size_t>(s.stride) * s.height;
-      if (pos + 32 + bytes > surfaces.size()) {
-        break;
-      }
-      s.data.assign(surfaces.begin() + pos + 32, surfaces.begin() + pos + 32 + bytes);
-      baselines[index].push_back(std::move(s));
-      pos += 32 + bytes;
-      continue;
-    }
-    break;
-  }
+  GfxSurfaceBaselines baselines;
+  baselines.Load(surfacePath);
 
   desktop->Reset();
   res.ran = true;
-  pos = 0;
   int64_t totalAbs = 0;
   char line[256];
-  while (pos + 40 <= gfx.size() && Rd32(&gfx[pos]) == 0x31584647u /* 'GFX1' */) {
-    const uint32_t index = Rd32(&gfx[pos + 4]);
-    const uint16_t cmdId = static_cast<uint16_t>(Rd32(&gfx[pos + 8]));
-    const uint32_t surfaceId = Rd32(&gfx[pos + 12]);
-    uint32_t scalars[4] = {Rd32(&gfx[pos + 16]), Rd32(&gfx[pos + 20]), Rd32(&gfx[pos + 24]),
-                           Rd32(&gfx[pos + 28])};
-    const uint32_t paramsLen = Rd32(&gfx[pos + 32]);
-    const uint32_t payloadLen = Rd32(&gfx[pos + 36]);
-    if (pos + 40 + paramsLen + payloadLen > gfx.size()) {
-      break;
-    }
-    const uint8_t* params = paramsLen > 0 ? &gfx[pos + 40] : nullptr;
-    const uint8_t* payload = payloadLen > 0 ? &gfx[pos + 40 + paramsLen] : nullptr;
-    desktop->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+  GfxCaptureRecord rec;
+  while (capture.Next(&rec)) {
+    desktop->ApplyCommand(rec.cmdId, rec.surfaceId, rec.scalars, rec.params, rec.paramsLen,
+                          rec.payload, rec.payloadLen);
     res.records++;
-
-    if (cmdId == kCmdEndFrame) {
-      const auto hIt = hashes.find(index);
-      const auto bIt = baselines.find(index);
-      if (hIt != hashes.end() || bIt != baselines.end()) {
-        uint64_t mism = 0;
-        uint64_t cmp = 0;
-        uint64_t hashed = 0;
-        uint64_t hashMism = 0;
-        int64_t sumAbs = 0;
-        size_t surfaceCount = 0;
-        auto compareFull = [&](const GfxSurface& ours, const BaselineSurface& ref) {
-          if (static_cast<uint32_t>(ours.width) != ref.width ||
-              static_cast<uint32_t>(ours.height) != ref.height ||
-              static_cast<uint32_t>(ours.stride) != ref.stride ||
-              ref.data.size() != ours.data.size()) {
-            mism++;
-            return;
-          }
-          const size_t bytes = ours.data.size();
-          if (std::memcmp(ours.data.data(), ref.data.data(), bytes) != 0) {
-            for (size_t i = 0; i < bytes; ++i) {
-              const int d = static_cast<int>(ours.data[i]) - static_cast<int>(ref.data[i]);
-              const int ad = d < 0 ? -d : d;
-              sumAbs += ad;
-              if (ad > 0) {
-                mism++;
-              }
-            }
-          }
-          cmp += bytes;
-          res.surfacesCompared++;
-        };
-
-        if (hIt != hashes.end()) {
-          for (const auto& kv : hIt->second) {
-            const GfxSurface* ours = desktop->FindSurface(kv.first);
-            surfaceCount++;
-            if (ours == nullptr) {
-              mism++;
-              continue;
-            }
-            const BaselineSurface* full = nullptr;
-            if (bIt != baselines.end()) {
-              for (const BaselineSurface& b : bIt->second) {
-                if (b.id == kv.first) {
-                  full = &b;
-                  break;
-                }
-              }
-            }
-            if (full != nullptr) {
-              compareFull(*ours, *full);
-            } else {
-              const uint64_t h = HashBytes(ours->data.data(), ours->data.size());
-              hashed++;
-              if (h != kv.second) {
-                hashMism++;
-                mism++;
-              }
-            }
-          }
-        } else if (bIt != baselines.end()) {
-          for (const BaselineSurface& ref : bIt->second) {
-            const GfxSurface* ours = desktop->FindSurface(ref.id);
-            surfaceCount++;
-            if (ours == nullptr) {
-              mism++;
-              continue;
-            }
-            compareFull(*ours, ref);
-          }
-        }
-        res.comparedRecords++;
-        res.compared += cmp;
-        res.mismatch += mism;
-        res.surfacesHashed += hashed;
-        res.hashMismatch += hashMism;
-        totalAbs += sumAbs;
-        if (mism != 0) {
-          res.badRecords++;
-        }
-        std::snprintf(line, sizeof(line),
-                      "rec%u surf=%zu cmp=%llu mism=%llu hash=%llu hMism=%llu", index,
-                      surfaceCount, static_cast<unsigned long long>(cmp),
-                      static_cast<unsigned long long>(mism),
-                      static_cast<unsigned long long>(hashed),
-                      static_cast<unsigned long long>(hashMism));
-        res.log += line;
-        res.log += "\n";
-      }
+    if (rec.cmdId != kCmdEndFrame) {
+      continue;
     }
-    pos += 40 + paramsLen + payloadLen;
+    const GfxFrameComparison cmp =
+        GfxCompareFrame(rec.index, baselines, [desktop](uint32_t sid, GfxSurfacePixels* out) {
+          const GfxSurface* surface = desktop->FindSurface(sid);
+          if (surface == nullptr) {
+            return false;
+          }
+          out->data = surface->data.data();
+          out->width = static_cast<uint32_t>(surface->width);
+          out->height = static_cast<uint32_t>(surface->height);
+          out->stride = static_cast<uint32_t>(surface->stride);
+          return true;
+        });
+    if (!cmp.hadBaseline) {
+      continue;
+    }
+    res.comparedRecords++;
+    res.surfacesCompared += cmp.surfacesCompared;
+    res.compared += cmp.comparedBytes;
+    res.mismatch += cmp.mismatch;
+    res.surfacesHashed += cmp.surfacesHashed;
+    res.hashMismatch += cmp.hashMismatch;
+    totalAbs += cmp.sumAbs;
+    if (cmp.mismatch != 0) {
+      res.badRecords++;
+    }
+    std::snprintf(line, sizeof(line), "rec%u surf=%zu cmp=%llu mism=%llu hash=%llu hMism=%llu",
+                  rec.index, cmp.surfaceCount,
+                  static_cast<unsigned long long>(cmp.comparedBytes),
+                  static_cast<unsigned long long>(cmp.mismatch),
+                  static_cast<unsigned long long>(cmp.surfacesHashed),
+                  static_cast<unsigned long long>(cmp.hashMismatch));
+    res.log += line;
+    res.log += "\n";
   }
   res.meanAbs = res.compared ? static_cast<double>(totalAbs) / static_cast<double>(res.compared)
                              : 0.0;

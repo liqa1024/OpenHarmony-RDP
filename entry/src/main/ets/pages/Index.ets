@@ -321,6 +321,18 @@ struct Index {
 
         Blank()
 
+        // Dev-only entry (PERF-TODO §4): recorded RDP replay page.
+        Text('回放测试')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .borderRadius(9)
+          .backgroundColor($r('app.color.hover_bg'))
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.getUIContext().getRouter().pushUrl({ url: 'pages/GfxReplayPage' });
+          })
+
         Stack() {
           Row()
             .width(44)

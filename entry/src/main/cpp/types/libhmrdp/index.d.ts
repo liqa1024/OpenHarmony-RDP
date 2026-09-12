@@ -111,3 +111,13 @@ export const gfxDesktopSelfTest: (gfxPath: string, surfacePath: string) => strin
  * one-line summary.
  */
 export const gfxGpuDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;
+
+/**
+ * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+ * `useCpu` (debug) selects the CPU reference instead of the GPU engine.
+ */
+export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
+  gfxPath: string, useCpu: number) => string;
+export const stopGfxReplayTest: () => void;
+export const resizeGfxReplayTest: (width: number, height: number) => void;
+export const gfxReplayTestStats: () => string;

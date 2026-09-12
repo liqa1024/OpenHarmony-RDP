@@ -9,7 +9,8 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
-rfxGpuSelfTest, gfxDesktopSelfTest, gfxGpuDesktopSelfTest, RdpEventCallback } from 'libhmrdp.so';
+rfxGpuSelfTest, gfxDesktopSelfTest, gfxGpuDesktopSelfTest, RdpEventCallback,
+startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -104,6 +105,29 @@ export class RdpNative {
     const summary: string = gfxGpuDesktopSelfTest(gfxPath, surfacePath);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx gpu desktop selftest: %{public}s', summary);
     return summary;
+  }
+
+  /**
+   * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+   * `useCpu` (debug) selects the CPU reference instead of the GPU engine.
+   */
+  static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
+    gfxPath: string, useCpu: number): string {
+    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath, useCpu);
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx replay: %{public}s', summary);
+    return summary;
+  }
+
+  static stopReplayTest(): void {
+    stopGfxReplayTest();
+  }
+
+  static resizeReplayTest(width: number, height: number): void {
+    resizeGfxReplayTest(width, height);
+  }
+
+  static replayTestStats(): string {
+    return gfxReplayTestStats();
   }
 
   setListener(listener: RdpEventListener): void {

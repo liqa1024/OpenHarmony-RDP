@@ -40,6 +40,7 @@
 #include "hmrdp_log.h"
 #include "hmrdp_gfx_desktop.h"
 #include "hmrdp_gfx_dump.h"
+#include "hmrdp_gfx_pipeline.h"
 #include "hmrdp_rfx_gpu.h"
 
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
@@ -2543,29 +2544,26 @@ void Session::HandlePostConnect() {
 }
 
 bool Session::PresentGpuFrame() {
-  // The engine owns the desktop and presents its shared screen texture directly
-  // (no CPU readback/upload). All engine/renderer GL is serialised because the
-  // GFX commands and the EndPaint callback may arrive on different threads.
+  // The engine owns the desktop and presents its composed screen (shared texture
+  // by default). The exact Compose -> present routine is the shared
+  // GpuPresentComposed(), also used by the replay harness, so the two can never
+  // drift apart. All engine/renderer GL is serialised because GFX commands and
+  // the EndPaint callback may arrive on different threads.
   if (gpuDesktop_ == nullptr) {
     return false;
   }
   std::lock_guard<std::mutex> lock(gpuMutex_);
   const uint64_t renderStart = NowUs();
-  if (!gpuDesktop_->Compose()) {
-    return false;  // static frame: nothing dirty, no present (FPS stays 0)
-  }
-  if (!renderer_.PresentTexture(gpuDesktop_->screenTexture(), gpuDesktop_->screenWidth(),
-                                gpuDesktop_->screenHeight())) {
-    // Window/surface not ready yet; the next frame retries.
+  if (!GpuPresentComposed(gpuDesktop_.get(), &renderer_)) {
+    // Either a static frame (nothing dirty) or the window/surface is not ready
+    // yet; the next frame retries either way.
     static int gpuFallbackLog = 0;
-    if (gpuFallbackLog < 3) {
-      HMRDP_LOGW("gpu desktop: PresentTexture failed (window not ready?)");
+    if (gpuFallbackLog < 3 && gpuDesktop_->screenDirty()) {
+      HMRDP_LOGW("gpu desktop: present failed (window not ready?)");
       gpuFallbackLog++;
     }
     return false;
   }
-  // Clear the present gate: a static desktop must not keep re-presenting.
-  gpuDesktop_->ClearScreenDirty();
   if (kGpuShadowCompare) {
     GpuShadowCheck();
   }

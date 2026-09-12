@@ -3,6 +3,7 @@
     "pages/Index",
     "pages/SessionPage",
     "pages/EditConnectionPage",
-    "pages/SettingsPage"
+    "pages/SettingsPage",
+    "pages/GfxReplayPage"
   ]
 }

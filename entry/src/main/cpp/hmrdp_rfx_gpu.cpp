@@ -36,6 +36,7 @@
 #include <GLES3/gl31.h>
 
 #include "hmrdp_egl.h"
+#include "hmrdp_gfx_capture.h"
 #include "hmrdp_gfx_desktop.h"
 #include "hmrdp_log.h"
 
@@ -2452,15 +2453,6 @@ RfxGpuSelfTestResult RunRfxGpuSelfTest(const std::string& rfxPath,
 
 namespace {
 
-uint64_t GpuHashBytes(const uint8_t* data, size_t size) {
-  uint64_t hash = 1469598103934665603ull;
-  for (size_t i = 0; i < size; ++i) {
-    hash ^= data[i];
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
 // Stop after this many compared frames. Large for full validation; a small
 // value speeds up iteration on the device.
 constexpr uint32_t kGpuSelfTestCompareLimit = 100000;
@@ -2734,53 +2726,13 @@ bool RunSyntheticMultiSurfaceCheck(std::string* logOut) {
 RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
                                                      const std::string& surfacePath) {
   RfxGpuDesktopSelfTestResult res;
-  const std::vector<uint8_t> gfx = ReadFile(gfxPath);
-  const std::vector<uint8_t> surf = ReadFile(surfacePath);
-  if (gfx.empty()) {
+  GfxCapture capture;
+  if (!capture.Open(gfxPath)) {
     res.log = "cannot read gfx capture";
     return res;
   }
-
-  struct FullSurface {
-    uint32_t id = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t stride = 0;
-    std::vector<uint8_t> data;
-  };
-  std::map<uint32_t, std::vector<FullSurface>> fulls;
-  std::map<uint32_t, std::map<uint32_t, uint64_t>> hashes;
-  size_t p = 0;
-  while (p + 32 <= surf.size()) {
-    const uint32_t magic = Rd32(&surf[p]);
-    if (magic == 0x31484647u /* 'GFH1' */) {
-      const uint32_t index = Rd32(&surf[p + 4]);
-      const uint32_t sid = Rd32(&surf[p + 8]);
-      const uint64_t hash = static_cast<uint64_t>(Rd32(&surf[p + 24])) |
-                            (static_cast<uint64_t>(Rd32(&surf[p + 28])) << 32);
-      hashes[index][sid] = hash;
-      p += 32;
-      continue;
-    }
-    if (magic == 0x31534647u /* 'GFS1' */) {
-      FullSurface f;
-      const uint32_t index = Rd32(&surf[p + 4]);
-      f.id = Rd32(&surf[p + 8]);
-      f.width = Rd32(&surf[p + 12]);
-      f.height = Rd32(&surf[p + 16]);
-      f.stride = Rd32(&surf[p + 20]);
-      const size_t bytes = static_cast<size_t>(f.stride) * f.height;
-      if (p + 32 + bytes > surf.size()) {
-        break;
-      }
-      f.data.assign(surf.begin() + p + 32, surf.begin() + p + 32 + bytes);
-      fulls[index].push_back(std::move(f));
-      p += 32 + bytes;
-      continue;
-    }
-    break;
-  }
-  if (fulls.empty() && hashes.empty()) {
+  GfxSurfaceBaselines baselines;
+  if (!baselines.Load(surfacePath)) {
     res.log = "no surface baselines";
     return res;
   }
@@ -2795,135 +2747,61 @@ RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
   }
   res.ran = true;
 
+  // Reads a surface back for the shared comparison helper. `scratch` is reused
+  // across surfaces; each view is consumed before the next read.
+  std::vector<uint8_t> scratch;
+  const GfxSurfaceReader read = [&desktop, &scratch](uint32_t sid, GfxSurfacePixels* out) {
+    const uint16_t surfaceId = static_cast<uint16_t>(sid);
+    const GpuSurface* meta = desktop.FindSurface(surfaceId);
+    if (meta == nullptr || !desktop.ReadSurface(surfaceId, &scratch)) {
+      return false;
+    }
+    out->data = scratch.data();
+    out->width = static_cast<uint32_t>(meta->width);
+    out->height = static_cast<uint32_t>(meta->height);
+    out->stride = static_cast<uint32_t>(meta->stride);
+    return true;
+  };
+
   int64_t totalAbs = 0;
   char line[256];
-  p = 0;
-  while (p + 40 <= gfx.size() && Rd32(&gfx[p]) == 0x31584647u /* 'GFX1' */) {
-    const uint32_t index = Rd32(&gfx[p + 4]);
-    const uint16_t cmd = static_cast<uint16_t>(Rd32(&gfx[p + 8]));
-    const uint32_t sid = Rd32(&gfx[p + 12]);
-    uint32_t scalars[4] = {Rd32(&gfx[p + 16]), Rd32(&gfx[p + 20]), Rd32(&gfx[p + 24]),
-                           Rd32(&gfx[p + 28])};
-    const uint32_t plen = Rd32(&gfx[p + 32]);
-    const uint32_t ylen = Rd32(&gfx[p + 36]);
-    if (p + 40 + plen + ylen > gfx.size()) {
+  GfxCaptureRecord rec;
+  while (capture.Next(&rec)) {
+    res.records++;
+    // One dispatch reproduces the exact FreeRDP semantics (see GfxDesktop).
+    desktop.ApplyCommand(rec.cmdId, rec.surfaceId, rec.scalars, rec.params, rec.paramsLen,
+                         rec.payload, rec.payloadLen);
+    if (rec.cmdId != 0x000Cu) {  // EndFrame compares every surface to the baseline
+      continue;
+    }
+    const GfxFrameComparison cmp = GfxCompareFrame(rec.index, baselines, read);
+    if (!cmp.hadBaseline) {
+      continue;
+    }
+    res.comparedRecords++;
+    res.compared += cmp.comparedBytes;
+    res.mismatch += cmp.mismatch;
+    res.surfacesHashed += cmp.surfacesHashed;
+    res.hashMismatch += cmp.hashMismatch;
+    totalAbs += cmp.sumAbs;
+    if (cmp.mismatch != 0) {
+      res.badRecords++;
+    }
+    if (res.comparedRecords % 100 == 0) {
+      HMRDP_LOGI("gpu gfx desktop progress: rec=%{public}u cmpRec=%{public}u badRec=%{public}u",
+                 res.records, res.comparedRecords, res.badRecords);
+    }
+    std::snprintf(line, sizeof(line), "rec%u surf=%zu cmp=%llu mism=%llu hash=%llu hMism=%llu",
+                  rec.index, cmp.surfaceCount,
+                  static_cast<unsigned long long>(cmp.comparedBytes),
+                  static_cast<unsigned long long>(cmp.mismatch),
+                  static_cast<unsigned long long>(cmp.surfacesHashed),
+                  static_cast<unsigned long long>(cmp.hashMismatch));
+    res.log += line;
+    res.log += "\n";
+    if (res.comparedRecords >= kGpuSelfTestCompareLimit) {
       break;
     }
-    const uint8_t* params = plen > 0 ? &gfx[p + 40] : nullptr;
-    const uint8_t* payload = ylen > 0 ? &gfx[p + 40 + plen] : nullptr;
-    res.records++;
-
-    // One dispatch reproduces the exact FreeRDP semantics (see GfxDesktop).
-    desktop.ApplyCommand(cmd, sid, scalars, params, plen, payload, ylen);
-
-    if (cmd == 0x000Cu) {  // EndFrame: compare every surface against the baseline
-      const auto hIt = hashes.find(index);
-      const auto fIt = fulls.find(index);
-      if (hIt != hashes.end() || fIt != fulls.end()) {
-        uint64_t mism = 0;
-        uint64_t cmp = 0;
-        uint64_t hashed = 0;
-        uint64_t hashMism = 0;
-        int64_t sumAbs = 0;
-        size_t surfaceCount = 0;
-        auto compareFull = [&](const GpuSurface* meta, const std::vector<uint8_t>& ours,
-                               const FullSurface& ref) {
-          if (meta == nullptr || static_cast<uint32_t>(meta->width) != ref.width ||
-              static_cast<uint32_t>(meta->height) != ref.height ||
-              static_cast<uint32_t>(meta->stride) != ref.stride ||
-              ref.data.size() != ours.size()) {
-            mism++;
-            return;
-          }
-          const size_t bytes = ours.size();
-          if (std::memcmp(ours.data(), ref.data.data(), bytes) != 0) {
-            size_t first = 0;
-            while (first < bytes && ours[first] == ref.data[first]) {
-              ++first;
-            }
-            HMRDP_LOGI("gpu gfx mismatch rec=%{public}u sid=%{public}u px=%{public}zu py=%{public}zu",
-                       index, ref.id, (first / 4) % meta->width, (first / 4) / meta->width);
-            for (size_t i = 0; i < bytes; ++i) {
-              const int d = static_cast<int>(ours[i]) - static_cast<int>(ref.data[i]);
-              const int ad = d < 0 ? -d : d;
-              sumAbs += ad;
-              if (ad > 0) {
-                mism++;
-              }
-            }
-          }
-          cmp += bytes;
-        };
-
-        if (hIt != hashes.end()) {
-          for (const auto& kv : hIt->second) {
-            surfaceCount++;
-            const GpuSurface* meta = desktop.FindSurface(static_cast<uint16_t>(kv.first));
-            std::vector<uint8_t> ours;
-            if (meta == nullptr || !desktop.ReadSurface(static_cast<uint16_t>(kv.first), &ours)) {
-              mism++;
-              continue;
-            }
-            const FullSurface* full = nullptr;
-            if (fIt != fulls.end()) {
-              for (const FullSurface& b : fIt->second) {
-                if (b.id == kv.first) {
-                  full = &b;
-                  break;
-                }
-              }
-            }
-            if (full != nullptr) {
-              compareFull(meta, ours, *full);
-            } else {
-              const uint64_t h = GpuHashBytes(ours.data(), ours.size());
-              hashed++;
-              if (h != kv.second) {
-                hashMism++;
-                mism++;
-              }
-            }
-          }
-        } else if (fIt != fulls.end()) {
-          for (const FullSurface& ref : fIt->second) {
-            surfaceCount++;
-            const GpuSurface* meta = desktop.FindSurface(static_cast<uint16_t>(ref.id));
-            std::vector<uint8_t> ours;
-            if (meta == nullptr || !desktop.ReadSurface(static_cast<uint16_t>(ref.id), &ours)) {
-              mism++;
-              continue;
-            }
-            compareFull(meta, ours, ref);
-          }
-        }
-        res.comparedRecords++;
-        res.compared += cmp;
-        res.mismatch += mism;
-        res.surfacesHashed += hashed;
-        res.hashMismatch += hashMism;
-        totalAbs += sumAbs;
-        if (mism != 0) {
-          res.badRecords++;
-        }
-        if (res.comparedRecords % 100 == 0) {
-          HMRDP_LOGI("gpu gfx desktop progress: rec=%{public}u cmpRec=%{public}u "
-                     "badRec=%{public}u",
-                     res.records, res.comparedRecords, res.badRecords);
-        }
-        std::snprintf(line, sizeof(line),
-                      "rec%u surf=%zu cmp=%llu mism=%llu hash=%llu hMism=%llu", index,
-                      surfaceCount, static_cast<unsigned long long>(cmp),
-                      static_cast<unsigned long long>(mism),
-                      static_cast<unsigned long long>(hashed),
-                      static_cast<unsigned long long>(hashMism));
-        res.log += line;
-        res.log += "\n";
-        if (res.comparedRecords >= kGpuSelfTestCompareLimit) {
-          break;
-        }
-      }
-    }
-    p += 40 + plen + ylen;
   }
   res.meanAbs = res.compared ? static_cast<double>(totalAbs) / static_cast<double>(res.compared)
                              : 0.0;

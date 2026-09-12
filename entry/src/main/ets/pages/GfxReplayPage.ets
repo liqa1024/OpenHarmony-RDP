@@ -1,0 +1,219 @@
+/*
+ * HmRdp - dev-only RDP replay page (PERF-TODO §4).
+ *
+ * Binds this XComponent's surface and replays the recorded hmrdp_gfx.bin capture
+ * straight to the screen. The engine is chosen at runtime: the GPU engine by
+ * default, or the CPU reference for an A/B comparison. No RDP session or network
+ * is involved. The capture is not shipped in the HAP - `hdc file send` it into
+ * the app filesDir as hmrdp_gfx.bin before opening this page (entered from the
+ * home screen "回放测试" entry).
+ */
+import { RdpNative } from '../services/RdpNative';
+import { window } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpReplay';
+
+class ReplaySurfaceController extends XComponentController {
+  private createdCb: (surfaceId: string, width: number, height: number) => void =
+    (surfaceId: string, width: number, height: number) => {};
+  private changedCb: (surfaceId: string, width: number, height: number) => void =
+    (surfaceId: string, width: number, height: number) => {};
+  private destroyedCb: (surfaceId: string) => void = (surfaceId: string) => {};
+
+  setCallbacks(created: (surfaceId: string, width: number, height: number) => void,
+    changed: (surfaceId: string, width: number, height: number) => void,
+    destroyed: (surfaceId: string) => void): void {
+    this.createdCb = created;
+    this.changedCb = changed;
+    this.destroyedCb = destroyed;
+  }
+
+  onSurfaceCreated(surfaceId: string): void {
+    const rect: SurfaceRect = this.getXComponentSurfaceRect();
+    this.createdCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
+  }
+
+  onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
+    this.changedCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
+  }
+
+  onSurfaceDestroyed(surfaceId: string): void {
+    this.destroyedCb(surfaceId);
+  }
+}
+
+@Entry
+@Component
+struct GfxReplayPage {
+  @State status: string = '等待 surface...';
+  @State useCpu: boolean = false;  // debug: replay on the CPU reference
+  private controller: ReplaySurfaceController = new ReplaySurfaceController();
+  private statsTimer: number = -1;
+  private surfaceId: string = '';
+  private surfaceW: number = 0;
+  private surfaceH: number = 0;
+
+  aboutToAppear(): void {
+    this.applyFullScreen(true);
+    this.controller.setCallbacks(
+      (surfaceId: string, width: number, height: number) => {
+        this.surfaceId = surfaceId;
+        this.surfaceW = width;
+        this.surfaceH = height;
+        this.startReplay();
+      },
+      (surfaceId: string, width: number, height: number) => {
+        this.surfaceW = width;
+        this.surfaceH = height;
+        RdpNative.resizeReplayTest(width, height);
+      },
+      (surfaceId: string) => {
+        this.stopStatsTimer();
+        RdpNative.stopReplayTest();
+      }
+    );
+  }
+
+  aboutToDisappear(): void {
+    this.stopStatsTimer();
+    RdpNative.stopReplayTest();
+    this.applyFullScreen(false);
+  }
+
+  private startReplay(): void {
+    if (this.surfaceW <= 0 || this.surfaceH <= 0 || this.surfaceId.length === 0) {
+      return;
+    }
+    let dir: string = '';
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx !== undefined) {
+        dir = ctx.filesDir;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'filesDir unavailable: %{public}s', JSON.stringify(error));
+    }
+    if (dir.length === 0) {
+      this.status = 'filesDir 不可用';
+      return;
+    }
+    RdpNative.stopReplayTest();
+    const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW, this.surfaceH,
+      `${dir}/hmrdp_gfx.bin`, this.useCpu ? 1 : 0);
+    this.status = summary.startsWith('failed')
+      ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
+      : summary;
+    this.startStatsTimer();
+  }
+
+  private applyFullScreen(enable: boolean): void {
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx === undefined) {
+        return;
+      }
+      window.getLastWindow(ctx).then((win: window.Window) => {
+        win.setWindowDecorVisible(!enable);
+        win.setWindowLayoutFullScreen(enable).catch((err: BusinessError) => {
+          hilog.warn(DOMAIN, TAG, 'layoutFullScreen failed: %{public}s', JSON.stringify(err));
+        });
+        if (enable) {
+          win.maximize().catch((err: BusinessError) => {
+            hilog.warn(DOMAIN, TAG, 'maximize failed: %{public}s', JSON.stringify(err));
+          });
+        }
+      }).catch((err: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(err));
+      });
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'fullscreen error: %{public}s', JSON.stringify(error));
+    }
+  }
+
+  private startStatsTimer(): void {
+    if (this.statsTimer !== -1) {
+      return;
+    }
+    this.statsTimer = setInterval(() => {
+      this.status = RdpNative.replayTestStats();
+    }, 1000);
+  }
+
+  private stopStatsTimer(): void {
+    if (this.statsTimer !== -1) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = -1;
+    }
+  }
+
+  build() {
+    Column() {
+      Row() {
+        Button('返回')
+          .height(36)
+          .fontSize(14)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(10)
+          .onClick(() => {
+            this.getUIContext().getRouter().back();
+          })
+
+        Text('RDP 回放测试')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 12 })
+          .layoutWeight(1)
+
+        Button('重新回放')
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .onClick(() => {
+            this.startReplay();
+          })
+
+        Button(this.useCpu ? 'CPU 参考' : 'GPU 引擎')
+          .height(34)
+          .fontSize(13)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.useCpu ? '#8A6D3B' : $r('app.color.accent'))
+          .borderRadius(9)
+          .margin({ left: 8 })
+          .onClick(() => {
+            this.useCpu = !this.useCpu;
+            this.startReplay();
+          })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+
+      XComponent({
+        id: 'replaySurface',
+        type: XComponentType.SURFACE,
+        controller: this.controller
+      })
+        .width('100%')
+        .layoutWeight(1)
+        .backgroundColor('#000000')
+
+      Text(this.status)
+        .fontSize(11)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.page_bg'))
+  }
+}

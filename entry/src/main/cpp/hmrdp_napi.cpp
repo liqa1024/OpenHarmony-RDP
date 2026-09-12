@@ -19,6 +19,7 @@
 
 #include "hmrdp_log.h"
 #include "hmrdp_gfx_desktop.h"
+#include "hmrdp_replay.h"
 #include "hmrdp_rfx_gpu.h"
 #include "hmrdp_session.h"
 
@@ -698,6 +699,71 @@ napi_value GfxGpuDesktopSelfTest(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+// `useCpu` (debug) selects the CPU reference instead of the GPU engine.
+napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string out;
+  if (argc < 5) {
+    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath, useCpu)";
+  } else {
+    const std::string surfaceId = GetStringArg(env, args[0]);
+    int32_t surfaceW = 0;
+    int32_t surfaceH = 0;
+    napi_get_value_int32(env, args[1], &surfaceW);
+    napi_get_value_int32(env, args[2], &surfaceH);
+    const std::string gfxPath = GetStringArg(env, args[3]);
+    int32_t useCpu = 0;
+    napi_get_value_int32(env, args[4], &useCpu);
+    const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
+    OHNativeWindow* window = nullptr;
+    const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
+    if (err != 0 || window == nullptr) {
+      out = "failed: native window";
+    } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
+                                                  useCpu != 0)) {
+      out = "started " + hmrdp::GfxReplay::Instance().Stats();
+    } else {
+      out = "failed: " + hmrdp::GfxReplay::Instance().Stats();
+    }
+  }
+  HMRDP_LOGI("gfx replay: %{public}s", out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value StopGfxReplayTest(napi_env env, napi_callback_info info) {
+  (void)info;
+  hmrdp::GfxReplay::Instance().Stop();
+  return CreateUndefined(env);
+}
+
+napi_value ResizeGfxReplayTest(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc >= 2) {
+    napi_get_value_int32(env, args[0], &width);
+    napi_get_value_int32(env, args[1], &height);
+  }
+  hmrdp::GfxReplay::Instance().Resize(width, height);
+  return CreateUndefined(env);
+}
+
+napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {
+  (void)info;
+  const std::string out = hmrdp::GfxReplay::Instance().Stats();
+  HMRDP_LOGI("gfx replay: %{public}s", out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -764,6 +830,14 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"gfxDesktopSelfTest", nullptr, GfxDesktopSelfTest, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"gfxGpuDesktopSelfTest", nullptr, GfxGpuDesktopSelfTest, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"stopGfxReplayTest", nullptr, StopGfxReplayTest, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"resizeGfxReplayTest", nullptr, ResizeGfxReplayTest, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

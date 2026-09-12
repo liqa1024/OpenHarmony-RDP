@@ -151,6 +151,21 @@ class GfxDesktop {
   const GfxScreen& screen() const { return screen_; }
   void ClearScreenDirty();
 
+  // --- Debug-only API parity with the GPU engine ----------------------------
+  // The debug replay harness can drive either engine through the same calls.
+  // The CPU reference has no GPU texture, so screenTexture() returns 0 and the
+  // present path falls back to ReadScreen + Renderer::DrawFrame. This is NOT a
+  // production backend: the production soft/hard choice is FreeRDP's own
+  // "hardware decode" setting (gdi vs the GPU engine).
+  bool Init() { return true; }
+  bool ready() const { return true; }
+  bool screenDirty() const { return screen_.dirtyValid; }
+  int screenWidth() const { return screen_.width; }
+  int screenHeight() const { return screen_.height; }
+  uint32_t screenTexture() const { return 0u; }
+  // Tightly packed (width*4 stride) top-down BGRA copy of the composed screen.
+  bool ReadScreen(std::vector<uint8_t>* out) const;
+
  private:
   GfxSurface* EnsureSurface(uint32_t id);
   RfxTileState* TileState(GfxSurface* surface, int xIdx, int yIdx);
