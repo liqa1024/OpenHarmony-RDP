@@ -647,7 +647,10 @@ uniform int uWidth;
 uniform int uHeight;
 uniform uint uColor;    // B | G<<8 | R<<16 | 0xFF<<24
 void main() {
-  uint i = gl_GlobalInvocationID.x;
+  // 2D grid so a full-desktop rect can exceed the (typically 65535) per-axis
+  // work-group limit; with gy == 1 this is the plain 1D index.
+  uint i = gl_GlobalInvocationID.x +
+           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x);
   uint total = uint(uWidth) * uint(uHeight);
   if (i >= total) return;
   int x = uLeft + int(i % uint(uWidth));
@@ -671,7 +674,10 @@ uniform int uDstY;
 uniform int uWidth;
 uniform int uHeight;
 void main() {
-  uint i = gl_GlobalInvocationID.x;
+  // 2D grid so a full-desktop rect can exceed the (typically 65535) per-axis
+  // work-group limit; with gy == 1 this is the plain 1D index.
+  uint i = gl_GlobalInvocationID.x +
+           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x);
   uint total = uint(uWidth) * uint(uHeight);
   if (i >= total) return;
   uint col = i % uint(uWidth);
@@ -1680,7 +1686,13 @@ bool GfxGpuDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
 namespace {
 
 inline void DispatchPixels(size_t pixels) {
-  glDispatchCompute(static_cast<GLuint>((pixels + 63) / 64), 1, 1);
+  // One invocation per pixel (64 per group). A full desktop needs > 65535 groups,
+  // which is the common per-axis limit, so spread the groups over a 2D grid; the
+  // kernels recover the linear index from gl_NumWorkGroups/gl_WorkGroupSize.
+  const uint32_t groups = static_cast<uint32_t>((pixels + 63) / 64);
+  const uint32_t gx = groups < 65535u ? (groups > 0u ? groups : 1u) : 65535u;
+  const uint32_t gy = (groups + gx - 1) / gx;
+  glDispatchCompute(gx, gy > 0u ? gy : 1u, 1);
 }
 
 // Clips [x,x+w) x [y,y+h) to [0,limitW) x [0,limitH); false when empty.

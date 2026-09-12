@@ -140,6 +140,13 @@ class Session {
   void ApplyGfxCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
                        const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
                        uint32_t payloadLen);
+  // True once the GPU desktop engine is initialised; when it is, the GFX
+  // callbacks stop chaining to gdi (see hmrdp_session.cpp kGpuShadowCompare).
+  bool GpuDesktopReady() const { return gpuDesktop_ != nullptr; }
+  // Composes the engine's desktop and presents the shared screen texture.
+  // Returns true when a frame was presented. Called from the GFX EndFrame
+  // callback in takeover mode, and from EndPaint in shadow-compare mode.
+  bool PresentGpuFrame();
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);

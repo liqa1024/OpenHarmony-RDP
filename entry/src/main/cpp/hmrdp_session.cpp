@@ -68,6 +68,16 @@ std::atomic<bool> g_useRdpCursor{true};
 // on; the GPU RFX path (see PERF-TODO §2) reads this when a session connects.
 std::atomic<bool> g_hardwareDecode{true};
 
+// Debug dual-render: when true the GFX callbacks keep chaining to FreeRDP's gdi
+// implementation while also feeding the GPU desktop engine, and each presented
+// frame is compared against gdi's primary buffer (Session::GpuShadowCheck). Use
+// this to cross-check the engine against FreeRDP on a live session.
+//
+// When false (takeover) gdi's GFX decode is bypassed entirely: the engine owns
+// the desktop and presents from its shared screen texture. Set to true only for
+// A/B work, then set back.
+constexpr bool kGpuShadowCompare = false;
+
 // Dev-only RemoteFX/Progressive stream capture (PERF-TODO §2): every
 // CAPROGRESSIVE surface command is appended to <dir>/hmrdp_rfx.bin so the GPU
 // decoder can be developed/aligned against real data.
@@ -1269,6 +1279,38 @@ void FeedGfxDesktop(RdpgfxClientContext* gfx, uint16_t cmdId, uint32_t surfaceId
   }
 }
 
+// True when the wrapped callback must still chain to FreeRDP's gdi
+// implementation: always in shadow mode (gdi is the cross-check truth), and as a
+// fallback whenever the GPU engine is not available.
+HmrdpContext* GfxSessionContext(RdpgfxClientContext* gfx) {
+  if (gfx == nullptr || gfx->custom == nullptr) {
+    return nullptr;
+  }
+  rdpGdi* gdi = static_cast<rdpGdi*>(gfx->custom);
+  if (gdi->context == nullptr) {
+    return nullptr;
+  }
+  return reinterpret_cast<HmrdpContext*>(gdi->context);
+}
+
+bool GfxChainToGdi(RdpgfxClientContext* gfx) {
+  if (kGpuShadowCompare) {
+    return true;
+  }
+  HmrdpContext* ctx = GfxSessionContext(gfx);
+  return ctx == nullptr || ctx->session == nullptr || !ctx->session->GpuDesktopReady();
+}
+
+// Chains a GFX callback to gdi when required, or reports success when the GPU
+// engine has taken over the command.
+template <typename Fn, typename Pdu>
+UINT GfxChainOrSkip(RdpgfxClientContext* gfx, Fn original, const Pdu* pdu) {
+  if (!GfxChainToGdi(gfx)) {
+    return CHANNEL_RC_OK;
+  }
+  return original(gfx, pdu);
+}
+
 UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
   if (original == nullptr) {
@@ -1299,6 +1341,9 @@ UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMA
                            command->width, command->height, command->data, command->length);
   }
   (void)streamIndex;
+  if (!GfxChainToGdi(gfx)) {
+    return CHANNEL_RC_OK;  // takeover: the engine already decoded this command
+  }
   const uint64_t start = NowUs();
   const UINT rc = original(gfx, command);
   if (dumpIndex != 0 && command != nullptr) {
@@ -1326,7 +1371,7 @@ UINT HmrdpGfxStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* 
     const uint32_t sc[4] = {pdu->timestamp, pdu->frameId, 0, 0};
     hmrdp::GfxDumpCommand(0x000B /*STARTFRAME*/, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* pdu) {
@@ -1338,6 +1383,15 @@ UINT HmrdpGfxEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* pdu)
   if (pdu != nullptr) {
     const uint32_t sc[4] = {pdu->frameId, 0, 0, 0};
     index = hmrdp::GfxDumpCommand(0x000C /*ENDFRAME*/, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
+  }
+  if (!GfxChainToGdi(gfx)) {
+    // Takeover: gdi is bypassed, so present the engine's composed desktop here,
+    // on the GFX thread right after the frame's commands were applied.
+    HmrdpContext* ctx = GfxSessionContext(gfx);
+    if (ctx != nullptr && ctx->session != nullptr) {
+      ctx->session->PresentGpuFrame();
+    }
+    return CHANNEL_RC_OK;
   }
   const UINT rc = original(gfx, pdu);
   DumpGfxFrameSurfaces(gfx, index);
@@ -1354,7 +1408,7 @@ UINT HmrdpGfxResetGraphics(RdpgfxClientContext* gfx, const RDPGFX_RESET_GRAPHICS
     hmrdp::GfxDumpCommand(0x000E /*RESETGRAPHICS*/, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
     FeedGfxDesktop(gfx, 0x000E, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxDeleteEncodingContext(RdpgfxClientContext* gfx,
@@ -1369,7 +1423,7 @@ UINT HmrdpGfxDeleteEncodingContext(RdpgfxClientContext* gfx,
     hmrdp::GfxDumpCommand(0x0003 /*DELETEENCODINGCONTEXT*/, pdu->surfaceId, sc, nullptr, 0, nullptr,
                           0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxCreateSurface(RdpgfxClientContext* gfx, const RDPGFX_CREATE_SURFACE_PDU* pdu) {
@@ -1387,7 +1441,7 @@ UINT HmrdpGfxCreateSurface(RdpgfxClientContext* gfx, const RDPGFX_CREATE_SURFACE
       it->second.surfaceIds.push_back(pdu->surfaceId);
     }
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxDeleteSurface(RdpgfxClientContext* gfx, const RDPGFX_DELETE_SURFACE_PDU* pdu) {
@@ -1405,7 +1459,7 @@ UINT HmrdpGfxDeleteSurface(RdpgfxClientContext* gfx, const RDPGFX_DELETE_SURFACE
       ids.erase(std::remove(ids.begin(), ids.end(), pdu->surfaceId), ids.end());
     }
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxSolidFill(RdpgfxClientContext* gfx, const RDPGFX_SOLID_FILL_PDU* pdu) {
@@ -1428,7 +1482,7 @@ UINT HmrdpGfxSolidFill(RdpgfxClientContext* gfx, const RDPGFX_SOLID_FILL_PDU* pd
     FeedGfxDesktop(gfx, 0x0004, pdu->surfaceId, sc, params.data(),
                    static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxSurfaceToSurface(RdpgfxClientContext* gfx,
@@ -1450,7 +1504,7 @@ UINT HmrdpGfxSurfaceToSurface(RdpgfxClientContext* gfx,
     FeedGfxDesktop(gfx, 0x0005, pdu->surfaceIdDest, sc, params.data(),
                    static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxSurfaceToCache(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_TO_CACHE_PDU* pdu) {
@@ -1467,6 +1521,9 @@ UINT HmrdpGfxSurfaceToCache(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_TO_CA
                           static_cast<uint32_t>(params.size()), nullptr, 0);
     FeedGfxDesktop(gfx, 0x0006, pdu->surfaceId, sc, params.data(),
                    static_cast<uint32_t>(params.size()), nullptr, 0);
+  }
+  if (!GfxChainToGdi(gfx)) {
+    return CHANNEL_RC_OK;  // takeover: the engine already stored the cache entry
   }
   // The nested EvictCacheEntry call (same slot) is an implementation detail of
   // gdi_SurfaceToCache, not a wire command, so it must not be captured.
@@ -1493,7 +1550,7 @@ UINT HmrdpGfxCacheToSurface(RdpgfxClientContext* gfx, const RDPGFX_CACHE_TO_SURF
     FeedGfxDesktop(gfx, 0x0007, pdu->surfaceId, sc, params.data(),
                    static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxCacheImportOffer(RdpgfxClientContext* gfx,
@@ -1512,7 +1569,7 @@ UINT HmrdpGfxCacheImportOffer(RdpgfxClientContext* gfx,
     hmrdp::GfxDumpCommand(0x0010 /*CACHEIMPORTOFFER*/, 0xFFFFFFFFu, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxCacheImportReply(RdpgfxClientContext* gfx,
@@ -1530,7 +1587,7 @@ UINT HmrdpGfxCacheImportReply(RdpgfxClientContext* gfx,
     hmrdp::GfxDumpCommand(0x0011 /*CACHEIMPORTREPLY*/, 0xFFFFFFFFu, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxEvictCacheEntry(RdpgfxClientContext* gfx, const RDPGFX_EVICT_CACHE_ENTRY_PDU* pdu) {
@@ -1545,7 +1602,7 @@ UINT HmrdpGfxEvictCacheEntry(RdpgfxClientContext* gfx, const RDPGFX_EVICT_CACHE_
     // the capture dump, otherwise it would drop the entry SurfaceToCache stored.
     FeedGfxDesktop(gfx, 0x0008, 0xFFFFFFFFu, sc, nullptr, 0, nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxMapSurfaceToOutput(RdpgfxClientContext* gfx,
@@ -1559,7 +1616,7 @@ UINT HmrdpGfxMapSurfaceToOutput(RdpgfxClientContext* gfx,
     hmrdp::GfxDumpCommand(0x000F /*MAPSURFACETOOUTPUT*/, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
     FeedGfxDesktop(gfx, 0x000F, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxMapSurfaceToScaledOutput(
@@ -1576,7 +1633,7 @@ UINT HmrdpGfxMapSurfaceToScaledOutput(
                           nullptr, 0);
     FeedGfxDesktop(gfx, 0x0017, pdu->surfaceId, sc, nullptr, 0, nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxMapSurfaceToWindow(RdpgfxClientContext* gfx,
@@ -1592,7 +1649,7 @@ UINT HmrdpGfxMapSurfaceToWindow(RdpgfxClientContext* gfx,
     hmrdp::GfxDumpCommand(0x0015 /*MAPSURFACETOWINDOW*/, pdu->surfaceId, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 UINT HmrdpGfxMapSurfaceToScaledWindow(
@@ -1610,7 +1667,7 @@ UINT HmrdpGfxMapSurfaceToScaledWindow(
     hmrdp::GfxDumpCommand(0x0018 /*MAPSURFACETOSCALEDWINDOW*/, pdu->surfaceId, sc, params.data(),
                           static_cast<uint32_t>(params.size()), nullptr, 0);
   }
-  return original(gfx, pdu);
+  return GfxChainOrSkip(gfx, original, pdu);
 }
 
 void HmrdpWrapGfxDecode(RdpgfxClientContext* gfx) {
@@ -2485,30 +2542,48 @@ void Session::HandlePostConnect() {
   Emit(SessionEvent::kConnected, "");
 }
 
-void Session::HandleEndPaint() {
-  // GPU desktop path: the engine owns the desktop and presents its shared screen
-  // texture directly (no CPU readback/upload). gdi still decodes alongside it so
-  // a shadow check can validate the engine against FreeRDP on a live session.
-  if (gpuDesktop_ != nullptr) {
-    std::lock_guard<std::mutex> lock(gpuMutex_);
-    const uint64_t renderStart = NowUs();
-    if (!gpuDesktop_->Compose()) {
-      return;  // static frame: nothing dirty, no present (FPS stays 0)
-    }
-    if (renderer_.PresentTexture(gpuDesktop_->screenTexture(), gpuDesktop_->screenWidth(),
-                                 gpuDesktop_->screenHeight())) {
-      // Clear the present gate: a static desktop must not keep re-presenting.
-      gpuDesktop_->ClearScreenDirty();
-      GpuShadowCheck();
-      AfterPresent(renderStart);
-      return;
-    }
-    // Engine present failed (window/surface not ready yet): fall back to gdi.
+bool Session::PresentGpuFrame() {
+  // The engine owns the desktop and presents its shared screen texture directly
+  // (no CPU readback/upload). All engine/renderer GL is serialised because the
+  // GFX commands and the EndPaint callback may arrive on different threads.
+  if (gpuDesktop_ == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(gpuMutex_);
+  const uint64_t renderStart = NowUs();
+  if (!gpuDesktop_->Compose()) {
+    return false;  // static frame: nothing dirty, no present (FPS stays 0)
+  }
+  if (!renderer_.PresentTexture(gpuDesktop_->screenTexture(), gpuDesktop_->screenWidth(),
+                                gpuDesktop_->screenHeight())) {
+    // Window/surface not ready yet; the next frame retries.
     static int gpuFallbackLog = 0;
     if (gpuFallbackLog < 3) {
-      HMRDP_LOGW("gpu desktop: PresentTexture failed; falling back to gdi");
+      HMRDP_LOGW("gpu desktop: PresentTexture failed (window not ready?)");
       gpuFallbackLog++;
     }
+    return false;
+  }
+  // Clear the present gate: a static desktop must not keep re-presenting.
+  gpuDesktop_->ClearScreenDirty();
+  if (kGpuShadowCompare) {
+    GpuShadowCheck();
+  }
+  AfterPresent(renderStart);
+  return true;
+}
+
+void Session::HandleEndPaint() {
+  // Shadow-compare mode keeps gdi decoding, so EndPaint still fires with a
+  // completed gdi frame; present the engine's version instead. In takeover mode
+  // gdi is bypassed entirely and the frame is presented from the GFX EndFrame
+  // callback (PresentGpuFrame), so this callback only appears for non-GFX
+  // updates and must not present a stale primary buffer.
+  if (PresentGpuFrame()) {
+    return;
+  }
+  if (gpuDesktop_ != nullptr) {
+    return;
   }
 
   rdpGdi* gdi = instance_->context->gdi;
