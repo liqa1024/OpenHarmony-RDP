@@ -1177,9 +1177,6 @@ UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMA
       HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(gdi->context);
       if (ctx->session != nullptr) {
         ctx->session->OnDecodeTime(elapsed);
-        if (command != nullptr) {
-          ctx->session->OnGfxCodec(command->codecId);
-        }
       }
     }
   }
@@ -1601,22 +1598,6 @@ void Session::OnDecodeTime(uint64_t micros) {
   decodeAccumUs_.fetch_add(micros);
 }
 
-void Session::OnGfxCodec(uint32_t codecId) {
-  switch (codecId) {
-    case RDPGFX_CODECID_AVC420:
-    case RDPGFX_CODECID_AVC444:
-    case RDPGFX_CODECID_AVC444v2:
-      h264Commands_.fetch_add(1);
-      return;
-    case RDPGFX_CODECID_UNCOMPRESSED:
-      lastGfxMode_.store(3);
-      return;
-    default:
-      lastGfxMode_.store(2);
-      return;
-  }
-}
-
 void Session::SetGfxContext(void* gfx) {
   gfxContext_ = gfx;
 }
@@ -1748,13 +1729,9 @@ void Session::EmitMetrics() {
     rtt = static_cast<int32_t>(measured);
   }
 
-  // Decode mode for the toolbar: H264 (1) wins a window that saw any H.264
-  // frame, otherwise the last non-H264 mode (RFX=2, RAW=3); 0 = none yet.
-  const uint32_t codecMode = h264Commands_.exchange(0) > 0 ? 1u : lastGfxMode_.load();
-
   std::ostringstream payload;
   payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << localAvgUs
-          << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp << "|" << codecMode;
+          << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp;
   Emit(SessionEvent::kMetrics, payload.str());
 }
 

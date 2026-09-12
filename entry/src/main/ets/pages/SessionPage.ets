@@ -147,8 +147,6 @@ struct SessionPage {
   // -1 when audio is not playing.
   @State metricsAudioRateHz: number = -1;
   @State metricsAudioLossBp: number = -1;
-  // Decode mode of the last metrics window: 0 unknown, 1 H264, 2 RFX, 3 RAW.
-  @State metricsCodec: number = 0;
   // Display (panel) refresh rate in Hz; 0 until queried.
   @State systemRefreshRate: number = 0;
   private surfaceId: string = '';
@@ -470,12 +468,6 @@ struct SessionPage {
     if (!Number.isNaN(audioLossBp)) {
       this.metricsAudioLossBp = audioLossBp;
     }
-    if (parts.length >= 9) {
-      const codec: number = Number.parseInt(parts[8], 10);
-      if (!Number.isNaN(codec)) {
-        this.metricsCodec = codec;
-      }
-    }
     this.refreshSystemRefreshRate();
   }
 
@@ -487,20 +479,6 @@ struct SessionPage {
       hilog.warn(DOMAIN, TAG, 'read display refresh rate failed: %{public}s',
         JSON.stringify(error));
     }
-  }
-
-  /** Decode mode shown after the resolution, e.g. "<width> × <height>(H264)". */
-  private codecLabel(): string {
-    if (this.metricsCodec === 1) {
-      return 'H264';
-    }
-    if (this.metricsCodec === 2) {
-      return 'RFX';
-    }
-    if (this.metricsCodec === 3) {
-      return 'RAW';
-    }
-    return '';
   }
 
   /** "网络 28ms", or "网络 --" until the server reports network stats. */
@@ -1631,8 +1609,7 @@ struct SessionPage {
       Text(this.options.host)
         .fontSize(14)
         .fontColor('#FFFFFF')
-      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight +
-        (this.codecLabel().length > 0 ? '(' + this.codecLabel() + ')' : ''))
+      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
         .fontSize(12)
         .fontColor('#B8BCC4')
       if (this.state === RdpConnectionState.Connected) {

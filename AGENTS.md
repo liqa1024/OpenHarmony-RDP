@@ -253,10 +253,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     `pointer.setCustomCursorSync`，默认/隐藏走 `setPointerStyleSync(DEFAULT)` / `setPointerVisibleSync(false)`
     （模拟器无鼠标，只能真机验证）。关闭开关则不接管、回退默认箭头。
 19. **会话状态栏遥测**：原生 `Session::EmitMetrics` 每秒经 `kMetrics` 事件下发
-    `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp|codecMode`，`SessionPage` 工具栏渲染。
-    `codecMode`（1=H264/2=RFX/3=RAW/0=未知）在分辨率后显示为 `<width> × <height>(RFX)`：由包装的
-    `SurfaceCommand` 按 `command->codecId` 统计，窗口内出现 H.264 则报 H264，否则报最近的非 H.264。
-    （H.264 已整体移除，故实际只会出现 `RFX`/`RAW`；该字段保留用于确认服务端确实走 Progressive。）
+    `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`，`SessionPage` 工具栏渲染。
+    工具栏在主机名后只显示分辨率（`<width> × <height>`），**不再显示解码类型**（H.264 已移除，Progressive
+    恒用；`codecMode` 字段与 `OnGfxCodec` 统计已删除）。
     - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端
       注册该回调），故 `Connect` 时给 `context->autodetect` 注册 `HmrdpNetworkCharacteristicsResult` 自行捕获。
     - **本机** = **解码 + 呈现**：解码链式包裹 `RdpgfxClientContext::SurfaceCommand`（H.264/位图解码都在
