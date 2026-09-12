@@ -166,6 +166,10 @@ GfxDesktopSelfTestResult ReplayGfxCapture(GfxDesktop* desktop, const std::string
 GfxDesktopSelfTestResult RunGfxDesktopSelfTest(const std::string& gfxPath,
                                                const std::string& surfacePath);
 
+// Creates a ClearCodec decoder backed by FreeRDP's clear_decompress.
+// Implemented in hmrdp_gfx_clear.cpp (requires libfreerdp3).
+std::unique_ptr<GfxClearDecoder> CreateFreeRdpClearDecoder();
+
 }  // namespace hmrdp
 
 #endif  // HMRDP_GFX_DESKTOP_H

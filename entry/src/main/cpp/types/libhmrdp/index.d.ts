@@ -103,3 +103,11 @@ export const rfxGpuSelfTest: (rfxPath: string, surfacePath: string) => string;
  * Returns a one-line summary.
  */
 export const gfxDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;
+
+/**
+ * Dev/test helper: replay the captured full GFX command stream (`gfxPath`,
+ * hmrdp_gfx.bin) through the GPU desktop surface model (B2) and compare it with
+ * the captured baselines (`surfacePath`, hmrdp_gfx_surface.bin). Returns a
+ * one-line summary.
+ */
+export const gfxGpuDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;

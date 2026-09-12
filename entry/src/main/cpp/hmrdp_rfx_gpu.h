@@ -64,6 +64,23 @@ class RfxGpuDecoder {
   // BGRA surface (top-down, `surfaceW*4` stride) as of the last DecodeMessage.
   bool ReadSurface(std::vector<uint8_t>* out);
 
+  // --- B2: GPU desktop (surface) commands ---------------------------------
+  // The surface created by Init is the single GFX output surface used by the
+  // captured streams (PERF-TODO §2.5 "B2"). ClearCodec is decoded on the CPU by
+  // the caller and uploaded via UploadBgra; every other command runs on the GPU
+  // (compute), mirroring the CPU reference in hmrdp_gfx_desktop.cpp.
+  bool SolidFill(uint32_t bgraPixel, const uint16_t* rects, uint32_t rectCount);
+  // Uploads a BGRA rect into the surface (used for ClearCodec / uncompressed).
+  bool UploadBgra(int left, int top, int width, int height, const uint8_t* bgra, int srcStride);
+  // Full-width row transfer, used to emulate ClearCodec (which must read the
+  // existing surface content for the pixels its bands do not overwrite).
+  bool DownloadRows(int top, int height, uint8_t* dst, int dstStride);
+  bool UploadRows(int top, int height, const uint8_t* src, int srcStride);
+  bool SurfaceToCache(uint16_t slot, int x, int y, int width, int height);
+  bool CacheToSurface(uint16_t slot, int dstX, int dstY);
+  void EvictCache(uint16_t slot);
+  bool SurfaceToSurface(int srcX, int srcY, int width, int height, int dstX, int dstY);
+
   int surfaceWidth() const { return surfaceW_; }
   int surfaceHeight() const { return surfaceH_; }
 
@@ -96,6 +113,26 @@ struct RfxGpuSelfTestResult {
   std::string log;
 };
 RfxGpuSelfTestResult RunRfxGpuSelfTest(const std::string& rfxPath, const std::string& surfacePath);
+
+// B2 offline self-test: replays the full GFX command stream (hmrdp_gfx.bin)
+// through the GPU desktop surface model (progressive on the GPU, ClearCodec
+// decoded on the CPU and uploaded) and compares it with the captured baselines
+// (hmrdp_gfx_surface.bin: 'GFS1' full / 'GFH1' per-frame hash).
+struct RfxGpuDesktopSelfTestResult {
+  bool ran = false;
+  bool ok = false;
+  uint32_t records = 0;
+  uint32_t comparedRecords = 0;
+  uint32_t badRecords = 0;
+  uint64_t compared = 0;
+  uint64_t mismatch = 0;
+  uint64_t surfacesHashed = 0;
+  uint64_t hashMismatch = 0;
+  double meanAbs = 0.0;
+  std::string log;
+};
+RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
+                                                     const std::string& surfacePath);
 
 }  // namespace hmrdp
 

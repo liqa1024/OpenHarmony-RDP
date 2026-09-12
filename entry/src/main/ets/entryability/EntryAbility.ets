@@ -74,10 +74,14 @@ export default class EntryAbility extends UIAbility {
       // it is slow and blocks the desktop self-test below. Both are dev-only.
       // RdpNative.runGpuSelfTest(`${sampleDir}/hmrdp_rfx.bin`,
       //   `${sampleDir}/hmrdp_rfx_surface.bin`);
-      // TEMP dev self-test (B1): replays the captured full GFX command stream
-      // through the CPU desktop/surface model. No-op when the sample files are
-      // absent (the native side returns immediately).
-      RdpNative.runGfxDesktopSelfTest(`${sampleDir}/hmrdp_gfx.bin`,
+      // TEMP dev self-test (B1 CPU model): kept available but disabled while B2
+      // is under test (both are slow and only one can run per launch).
+      // RdpNative.runGfxDesktopSelfTest(`${sampleDir}/hmrdp_gfx.bin`,
+      //   `${sampleDir}/hmrdp_gfx_surface.bin`);
+      // TEMP dev self-test (B2 GPU model): replays the captured full GFX command
+      // stream through the GPU desktop surface model and compares it with the
+      // captured baselines. No-op when the sample files are absent.
+      RdpNative.runGfxGpuDesktopSelfTest(`${sampleDir}/hmrdp_gfx.bin`,
         `${sampleDir}/hmrdp_gfx_surface.bin`);
     });
   }

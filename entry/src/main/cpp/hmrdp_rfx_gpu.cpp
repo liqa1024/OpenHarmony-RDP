@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include <EGL/eglext.h>
 #include <GLES3/gl31.h>
 
+#include "hmrdp_gfx_desktop.h"
 #include "hmrdp_log.h"
 
 namespace hmrdp {
@@ -555,6 +557,7 @@ layout(local_size_x = 64) in;
 layout(std430, binding = 0) readonly buffer TileMeta { uint data[]; } tmeta;
 layout(std430, binding = 1) readonly buffer Coef { uint data[]; } coef;
 layout(std430, binding = 2) buffer Out { uint data[]; } outSurf;
+layout(std430, binding = 3) readonly buffer Rects { uint data[]; } rcts;
 
 uniform uint uNumTiles;
 uniform uint uCompBase;
@@ -582,8 +585,10 @@ void surfPut(uint px, uint py, uint b, uint g, uint r) {
 void main() {
   uint t = gl_GlobalInvocationID.x;
   if (t >= uNumTiles) return;
-  uint px0 = tmeta.data[t * 2u];
-  uint py0 = tmeta.data[t * 2u + 1u];
+  uint px0 = tmeta.data[t * 4u];
+  uint py0 = tmeta.data[t * 4u + 1u];
+  uint rectOff = tmeta.data[t * 4u + 2u];
+  uint rectCnt = tmeta.data[t * 4u + 3u];
   uint base0 = uCompBase + (t * 3u + 0u) * 4096u;
   uint base1 = uCompBase + (t * 3u + 1u) * 4096u;
   uint base2 = uCompBase + (t * 3u + 2u) * 4096u;
@@ -600,9 +605,69 @@ void main() {
       int r = clamp(sR >> 21, 0, 255);
       int g = clamp(sG >> 21, 0, 255);
       int b = clamp(sB >> 21, 0, 255);
-      surfPut(px0 + col, py0 + row, uint(b), uint(g), uint(r));
+      // FreeRDP composites a decoded tile only inside the region's clip rects;
+      // the rest of the tile keeps the previous surface content.
+      uint px = px0 + col;
+      uint py = py0 + row;
+      bool inside = (rectCnt == 0u);
+      for (uint ri = 0u; !inside && ri < rectCnt; ri++) {
+        uint a = rcts.data[(rectOff + ri) * 2u];
+        uint c = rcts.data[(rectOff + ri) * 2u + 1u];
+        uint rx = a & 0xFFFFu;
+        uint ry = a >> 16;
+        uint rw = c & 0xFFFFu;
+        uint rh = c >> 16;
+        if (px >= rx && px < rx + rw && py >= ry && py < ry + rh) inside = true;
+      }
+      if (inside) surfPut(px, py, uint(b), uint(g), uint(r));
     }
   }
+}
+)GLSL";
+
+// B2: fill rects with a solid BGRA colour (one invocation per pixel).
+const char* kFillShader = R"GLSL(#version 310 es
+precision highp int;
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer Dst { uint data[]; } dst;
+uniform uint uStride;   // bytes per row
+uniform int uLeft;
+uniform int uTop;
+uniform int uWidth;
+uniform int uHeight;
+uniform uint uColor;    // B | G<<8 | R<<16 | 0xFF<<24
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint total = uint(uWidth) * uint(uHeight);
+  if (i >= total) return;
+  int x = uLeft + int(i % uint(uWidth));
+  int y = uTop + int(i / uint(uWidth));
+  dst.data[uint(y) * (uStride >> 2) + uint(x)] = uColor;
+}
+)GLSL";
+
+// B2: copy a rect between two BGRA buffers (one invocation per pixel).
+const char* kCopyShader = R"GLSL(#version 310 es
+precision highp int;
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Src { uint data[]; } src;
+layout(std430, binding = 1) buffer Dst { uint data[]; } dst;
+uniform uint uSrcStride;
+uniform uint uDstStride;
+uniform int uSrcX;
+uniform int uSrcY;
+uniform int uDstX;
+uniform int uDstY;
+uniform int uWidth;
+uniform int uHeight;
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint total = uint(uWidth) * uint(uHeight);
+  if (i >= total) return;
+  uint col = i % uint(uWidth);
+  uint row = i / uint(uWidth);
+  dst.data[(uint(uDstY) + row) * (uDstStride >> 2) + uint(uDstX) + col] =
+      src.data[(uint(uSrcY) + row) * (uSrcStride >> 2) + uint(uSrcX) + col];
 }
 )GLSL";
 
@@ -745,10 +810,14 @@ struct RfxGpuDecoder::Impl {
 
   GLuint decodeProg = 0;
   GLuint composeProg = 0;
+  GLuint fillProg = 0;
+  GLuint copyProg = 0;
   GLuint payloadBuf = 0;
   GLuint metaBuf = 0;
   GLuint coefBuf = 0;
   GLuint tileMetaBuf = 0;
+  GLuint composeRectBuf = 0;
+  size_t composeRectCapacity = 0;
   GLuint outBuf = 0;
   GLuint stateCurBuf = 0;
   GLuint stateSignBuf = 0;
@@ -758,6 +827,20 @@ struct RfxGpuDecoder::Impl {
   GLuint composeNumTiles = 0, composeCompBase = 0;
   GLuint composeSurfaceW = 0, composeSurfaceH = 0;
   GLuint composeKr = 0, composeKcrG = 0, composeKcbG = 0, composeKcbB = 0;
+
+  // B2 surface commands.
+  GLuint fillStride = 0, fillLeft = 0, fillTop = 0, fillWidth = 0, fillHeight = 0, fillColor = 0;
+  GLuint copySrcStride = 0, copyDstStride = 0, copySrcX = 0, copySrcY = 0, copyDstX = 0,
+         copyDstY = 0, copyWidth = 0, copyHeight = 0;
+  struct CacheBuf {
+    int width = 0;
+    int height = 0;
+    int stride = 0;
+    GLuint buf = 0;
+  };
+  std::map<uint16_t, CacheBuf> cache;
+  GLuint tempBuf = 0;
+  size_t tempWords = 0;
 
   size_t coefWords = 0;
   size_t outWords = 0;
@@ -774,6 +857,7 @@ struct RfxGpuDecoder::Impl {
     return true;
   }
 };
+
 
 RfxGpuDecoder::RfxGpuDecoder() : impl_(new Impl()) {}
 RfxGpuDecoder::~RfxGpuDecoder() {
@@ -792,15 +876,29 @@ void RfxGpuDecoder::Reset() {
     if (impl_->metaBuf) glDeleteBuffers(1, &impl_->metaBuf);
     if (impl_->coefBuf) glDeleteBuffers(1, &impl_->coefBuf);
     if (impl_->tileMetaBuf) glDeleteBuffers(1, &impl_->tileMetaBuf);
+    if (impl_->composeRectBuf) glDeleteBuffers(1, &impl_->composeRectBuf);
     if (impl_->outBuf) glDeleteBuffers(1, &impl_->outBuf);
     if (impl_->stateCurBuf) glDeleteBuffers(1, &impl_->stateCurBuf);
     if (impl_->stateSignBuf) glDeleteBuffers(1, &impl_->stateSignBuf);
     if (impl_->stateBpBuf) glDeleteBuffers(1, &impl_->stateBpBuf);
+    if (impl_->tempBuf) glDeleteBuffers(1, &impl_->tempBuf);
+    for (auto& kv : impl_->cache) {
+      if (kv.second.buf != 0) {
+        glDeleteBuffers(1, &kv.second.buf);
+      }
+    }
+    impl_->cache.clear();
     if (impl_->decodeProg) glDeleteProgram(impl_->decodeProg);
     if (impl_->composeProg) glDeleteProgram(impl_->composeProg);
+    if (impl_->fillProg) glDeleteProgram(impl_->fillProg);
+    if (impl_->copyProg) glDeleteProgram(impl_->copyProg);
     impl_->payloadBuf = impl_->metaBuf = impl_->coefBuf = impl_->tileMetaBuf = impl_->outBuf = 0;
+    impl_->composeRectBuf = 0;
+    impl_->composeRectCapacity = 0;
     impl_->stateCurBuf = impl_->stateSignBuf = impl_->stateBpBuf = 0;
-    impl_->decodeProg = impl_->composeProg = 0;
+    impl_->tempBuf = 0;
+    impl_->tempWords = 0;
+    impl_->decodeProg = impl_->composeProg = impl_->fillProg = impl_->copyProg = 0;
     eglMakeCurrent(impl_->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroyContext(impl_->display, impl_->context);
     eglDestroySurface(impl_->display, impl_->surface);
@@ -841,7 +939,10 @@ bool RfxGpuDecoder::Init(int gridW, int gridH, int surfaceW, int surfaceH) {
   }
   impl_->decodeProg = CompileProgram(kDecodeShader, "decode");
   impl_->composeProg = CompileProgram(kComposeShader, "compose");
-  if (impl_->decodeProg == 0 || impl_->composeProg == 0) {
+  impl_->fillProg = CompileProgram(kFillShader, "fill");
+  impl_->copyProg = CompileProgram(kCopyShader, "copy");
+  if (impl_->decodeProg == 0 || impl_->composeProg == 0 || impl_->fillProg == 0 ||
+      impl_->copyProg == 0) {
     return false;
   }
 
@@ -857,6 +958,20 @@ bool RfxGpuDecoder::Init(int gridW, int gridH, int surfaceW, int surfaceH) {
   impl_->composeKcrG = glGetUniformLocation(impl_->composeProg, "uKcrG");
   impl_->composeKcbG = glGetUniformLocation(impl_->composeProg, "uKcbG");
   impl_->composeKcbB = glGetUniformLocation(impl_->composeProg, "uKcbB");
+  impl_->fillStride = glGetUniformLocation(impl_->fillProg, "uStride");
+  impl_->fillLeft = glGetUniformLocation(impl_->fillProg, "uLeft");
+  impl_->fillTop = glGetUniformLocation(impl_->fillProg, "uTop");
+  impl_->fillWidth = glGetUniformLocation(impl_->fillProg, "uWidth");
+  impl_->fillHeight = glGetUniformLocation(impl_->fillProg, "uHeight");
+  impl_->fillColor = glGetUniformLocation(impl_->fillProg, "uColor");
+  impl_->copySrcStride = glGetUniformLocation(impl_->copyProg, "uSrcStride");
+  impl_->copyDstStride = glGetUniformLocation(impl_->copyProg, "uDstStride");
+  impl_->copySrcX = glGetUniformLocation(impl_->copyProg, "uSrcX");
+  impl_->copySrcY = glGetUniformLocation(impl_->copyProg, "uSrcY");
+  impl_->copyDstX = glGetUniformLocation(impl_->copyProg, "uDstX");
+  impl_->copyDstY = glGetUniformLocation(impl_->copyProg, "uDstY");
+  impl_->copyWidth = glGetUniformLocation(impl_->copyProg, "uWidth");
+  impl_->copyHeight = glGetUniformLocation(impl_->copyProg, "uHeight");
 
   // Per-chunk scratch: comp then temp, each chunkStreams*4096 int16.
   const uint32_t chunkStreams = kChunkTiles * 3;
@@ -873,7 +988,13 @@ bool RfxGpuDecoder::Init(int gridW, int gridH, int surfaceW, int surfaceH) {
                nullptr, GL_DYNAMIC_DRAW);
   glGenBuffers(1, &impl_->tileMetaBuf);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tileMetaBuf);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(chunkTiles * 8), nullptr,
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(chunkTiles * 16), nullptr,
+               GL_DYNAMIC_DRAW);
+  glGenBuffers(1, &impl_->composeRectBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
+  impl_->composeRectCapacity = static_cast<size_t>(chunkTiles) * 8;  // words, grown on demand
+  glBufferData(GL_SHADER_STORAGE_BUFFER,
+               static_cast<GLsizeiptr>(impl_->composeRectCapacity * sizeof(uint32_t)), nullptr,
                GL_DYNAMIC_DRAW);
 
   glGenBuffers(1, &impl_->payloadBuf);
@@ -967,11 +1088,15 @@ bool RfxGpuDecoder::DecodeMessage(const uint8_t* payload, size_t size) {
   struct TileJob {
     uint32_t x = 0;
     uint32_t y = 0;
+    uint32_t rectOffset = 0;  // index (rects) into rectPool
+    uint32_t rectCount = 0;   // 0 = whole tile
     StreamJob streams[3];
     bool valid = false;
   };
   std::vector<TileJob> tiles;
   tiles.reserve(256);
+  std::vector<uint32_t> rectPool;  // 2 words per rect: [x|y<<16, w|h<<16]
+  rectPool.reserve(256);
   RfxParseStats stats;
   ParseRfxProgressive(
       payload, size,
@@ -987,6 +1112,14 @@ bool RfxGpuDecoder::DecodeMessage(const uint8_t* payload, size_t size) {
         job.x = t.xIdx;
         job.y = t.yIdx;
         job.valid = true;
+        job.rectOffset = static_cast<uint32_t>(rectPool.size() / 2);
+        job.rectCount = t.numRects;
+        for (uint16_t ri = 0; ri < t.numRects; ++ri) {
+          const RfxRect& r = t.rects[ri];
+          rectPool.push_back(static_cast<uint32_t>(r.x) | (static_cast<uint32_t>(r.y) << 16));
+          rectPool.push_back(static_cast<uint32_t>(r.width) |
+                             (static_cast<uint32_t>(r.height) << 16));
+        }
         const RfxQuant* qv[3] = {&t.quants[t.quantIdxY], &t.quants[t.quantIdxCb],
                                  &t.quants[t.quantIdxCr]};
         RfxQuant prog[3];
@@ -1045,6 +1178,19 @@ bool RfxGpuDecoder::DecodeMessage(const uint8_t* payload, size_t size) {
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
   glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(size), payload);
 
+  if (rectPool.size() > impl_->composeRectCapacity) {
+    impl_->composeRectCapacity = rectPool.size() + (rectPool.size() >> 1) + 64;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(impl_->composeRectCapacity * sizeof(uint32_t)), nullptr,
+                 GL_DYNAMIC_DRAW);
+  }
+  if (!rectPool.empty()) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                    static_cast<GLsizeiptr>(rectPool.size() * sizeof(uint32_t)), rectPool.data());
+  }
+
   const uint32_t chunkTiles = kChunkTiles;
   for (size_t start = 0; start < tiles.size(); start += chunkTiles) {
     const uint32_t count =
@@ -1052,11 +1198,13 @@ bool RfxGpuDecoder::DecodeMessage(const uint8_t* payload, size_t size) {
     const uint32_t streams = count * 3;
 
     std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
-    std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 2, 0);
+    std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 4, 0);
     for (uint32_t t = 0; t < count; ++t) {
       const TileJob& job = tiles[start + t];
-      tileMeta[t * 2] = job.x * 64;  // pixel origin of the tile
-      tileMeta[t * 2 + 1] = job.y * 64;
+      tileMeta[t * 4] = job.x * 64;  // pixel origin of the tile
+      tileMeta[t * 4 + 1] = job.y * 64;
+      tileMeta[t * 4 + 2] = job.rectOffset;
+      tileMeta[t * 4 + 3] = job.rectCount;
       for (int c = 0; c < 3; ++c) {
         uint8_t* rec = &meta[(static_cast<size_t>(t) * 3 + c) * kMetaStride];
         const StreamJob& sj = job.streams[c];
@@ -1099,6 +1247,7 @@ bool RfxGpuDecoder::DecodeMessage(const uint8_t* payload, size_t size) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->tileMetaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->coefBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, impl_->outBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, impl_->composeRectBuf);
     glUniform1ui(impl_->composeNumTiles, count);
     glUniform1ui(impl_->composeCompBase, compBase);
     glUniform1i(impl_->composeSurfaceW, surfaceW_);
@@ -1137,8 +1286,345 @@ bool RfxGpuDecoder::ReadSurface(std::vector<uint8_t>* out) {
 }
 
 // ---------------------------------------------------------------------------
+// B2 surface commands (GPU)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+inline void DispatchPixels(size_t pixels) {
+  glDispatchCompute(static_cast<GLuint>((pixels + 63) / 64), 1, 1);
+}
+
+// Clips [x,x+w) x [y,y+h) to [0,limitW) x [0,limitH); false when empty.
+bool ClipRectGpu(int* x, int* y, int* w, int* h, int limitW, int limitH) {
+  if (*x < 0) {
+    *w += *x;
+    *x = 0;
+  }
+  if (*y < 0) {
+    *h += *y;
+    *y = 0;
+  }
+  if (*x + *w > limitW) {
+    *w = limitW - *x;
+  }
+  if (*y + *h > limitH) {
+    *h = limitH - *y;
+  }
+  return *w > 0 && *h > 0;
+}
+
+}  // namespace
+
+bool RfxGpuDecoder::SolidFill(uint32_t bgraPixel, const uint16_t* rects, uint32_t rectCount) {
+  if (!ready_ || impl_ == nullptr || rects == nullptr || rectCount == 0) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glUseProgram(impl_->fillProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->outBuf);
+  glUniform1ui(impl_->fillStride, static_cast<GLuint>(surfaceW_ * 4));
+  glUniform1ui(impl_->fillColor, bgraPixel);
+  for (uint32_t i = 0; i < rectCount; ++i) {
+    int left = rects[i * 4 + 0];
+    int top = rects[i * 4 + 1];
+    int right = rects[i * 4 + 2];
+    int bottom = rects[i * 4 + 3];
+    if (right > surfaceW_) {
+      right = surfaceW_;
+    }
+    if (bottom > surfaceH_) {
+      bottom = surfaceH_;
+    }
+    if (right <= left || bottom <= top) {
+      continue;
+    }
+    glUniform1i(impl_->fillLeft, left);
+    glUniform1i(impl_->fillTop, top);
+    glUniform1i(impl_->fillWidth, right - left);
+    glUniform1i(impl_->fillHeight, bottom - top);
+    DispatchPixels(static_cast<size_t>(right - left) * static_cast<size_t>(bottom - top));
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  }
+  return CheckGl("solid fill");
+}
+
+bool RfxGpuDecoder::UploadBgra(int left, int top, int width, int height, const uint8_t* bgra,
+                               int srcStride) {
+  if (!ready_ || impl_ == nullptr || bgra == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  int sx = left < 0 ? 0 : left;
+  int sy = top < 0 ? 0 : top;
+  int ex = left + width;
+  int ey = top + height;
+  if (ex > surfaceW_) {
+    ex = surfaceW_;
+  }
+  if (ey > surfaceH_) {
+    ey = surfaceH_;
+  }
+  if (ex <= sx || ey <= sy) {
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const int srcCol = sx - left;
+  const int srcRow0 = sy - top;
+  const int rows = ey - sy;
+  const int cols = ex - sx;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->outBuf);
+  // Map the whole touched range once and write the rows into it. Doing a
+  // glBufferSubData per row is orders of magnitude slower (hundreds of GL calls
+  // per ClearCodec command).
+  const size_t offset0 = (static_cast<size_t>(sy) * surfaceW_ + sx) * 4;
+  const size_t offsetEnd =
+      (static_cast<size_t>(ey - 1) * surfaceW_ + static_cast<size_t>(ex)) * 4;
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset0),
+                                  static_cast<GLsizeiptr>(offsetEnd - offset0),
+                                  GL_MAP_WRITE_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("upload bgra map");
+  }
+  uint8_t* base = static_cast<uint8_t*>(mapped) - offset0;
+  for (int row = 0; row < rows; ++row) {
+    const uint8_t* srcRow = bgra + static_cast<size_t>(srcRow0 + row) * srcStride +
+                            static_cast<size_t>(srcCol) * 4;
+    std::memcpy(base + (static_cast<size_t>(sy + row) * surfaceW_ + sx) * 4, srcRow,
+                static_cast<size_t>(cols) * 4);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("upload bgra");
+}
+
+bool RfxGpuDecoder::DownloadRows(int top, int height, uint8_t* dst, int dstStride) {
+  if (!ready_ || impl_ == nullptr || dst == nullptr || height <= 0) {
+    return false;
+  }
+  int y0 = top < 0 ? 0 : top;
+  int y1 = top + height;
+  if (y1 > surfaceH_) {
+    y1 = surfaceH_;
+  }
+  if (y1 <= y0) {
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->outBuf);
+  const size_t offset = static_cast<size_t>(y0) * surfaceW_ * 4;
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset),
+                                  static_cast<GLsizeiptr>((y1 - y0)) * surfaceW_ * 4, GL_MAP_READ_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("download rows map");
+  }
+  const uint8_t* src = static_cast<const uint8_t*>(mapped);
+  for (int row = 0; row < y1 - y0; ++row) {
+    std::memcpy(dst + static_cast<size_t>(row) * dstStride, src + static_cast<size_t>(row) * surfaceW_ * 4,
+                static_cast<size_t>(surfaceW_) * 4);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("download rows");
+}
+
+bool RfxGpuDecoder::UploadRows(int top, int height, const uint8_t* src, int srcStride) {
+  if (!ready_ || impl_ == nullptr || src == nullptr || height <= 0) {
+    return false;
+  }
+  int y0 = top < 0 ? 0 : top;
+  int y1 = top + height;
+  if (y1 > surfaceH_) {
+    y1 = surfaceH_;
+  }
+  if (y1 <= y0) {
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->outBuf);
+  const size_t offset = static_cast<size_t>(y0) * surfaceW_ * 4;
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset),
+                                  static_cast<GLsizeiptr>((y1 - y0)) * surfaceW_ * 4, GL_MAP_WRITE_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("upload rows map");
+  }
+  uint8_t* dst = static_cast<uint8_t*>(mapped);
+  for (int row = 0; row < y1 - y0; ++row) {
+    std::memcpy(dst + static_cast<size_t>(row) * surfaceW_ * 4,
+                src + static_cast<size_t>(y0 - top + row) * srcStride,
+                static_cast<size_t>(surfaceW_) * 4);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("upload rows");
+}
+
+bool RfxGpuDecoder::SurfaceToCache(uint16_t slot, int x, int y, int width, int height) {
+  if (!ready_ || impl_ == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  if (x < 0 || y < 0 || x + width > surfaceW_ || y + height > surfaceH_) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  Impl::CacheBuf& entry = impl_->cache[slot];
+  entry.width = width;
+  entry.height = height;
+  entry.stride = ((width * 4 + 15) / 16) * 16;
+  const size_t bytes = static_cast<size_t>(entry.stride) * height;
+  if (entry.buf == 0) {
+    glGenBuffers(1, &entry.buf);
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, entry.buf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr, GL_DYNAMIC_DRAW);
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->outBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, entry.buf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(surfaceW_ * 4));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(entry.stride));
+  glUniform1i(impl_->copySrcX, x);
+  glUniform1i(impl_->copySrcY, y);
+  glUniform1i(impl_->copyDstX, 0);
+  glUniform1i(impl_->copyDstY, 0);
+  glUniform1i(impl_->copyWidth, width);
+  glUniform1i(impl_->copyHeight, height);
+  DispatchPixels(static_cast<size_t>(width) * height);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  return CheckGl("surface to cache");
+}
+
+bool RfxGpuDecoder::CacheToSurface(uint16_t slot, int dstX, int dstY) {
+  if (!ready_ || impl_ == nullptr) {
+    return false;
+  }
+  const auto it = impl_->cache.find(slot);
+  if (it == impl_->cache.end()) {
+    return false;
+  }
+  const Impl::CacheBuf& entry = it->second;
+  int dx = dstX;
+  int dy = dstY;
+  int w = entry.width;
+  int h = entry.height;
+  if (!ClipRectGpu(&dx, &dy, &w, &h, surfaceW_, surfaceH_)) {
+    return true;  // fully outside the surface
+  }
+  const int srcX = dx - dstX;
+  const int srcY = dy - dstY;
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, entry.buf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->outBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(entry.stride));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(surfaceW_ * 4));
+  glUniform1i(impl_->copySrcX, srcX);
+  glUniform1i(impl_->copySrcY, srcY);
+  glUniform1i(impl_->copyDstX, dx);
+  glUniform1i(impl_->copyDstY, dy);
+  glUniform1i(impl_->copyWidth, w);
+  glUniform1i(impl_->copyHeight, h);
+  DispatchPixels(static_cast<size_t>(w) * h);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  return CheckGl("cache to surface");
+}
+
+void RfxGpuDecoder::EvictCache(uint16_t slot) {
+  if (impl_ == nullptr) {
+    return;
+  }
+  const auto it = impl_->cache.find(slot);
+  if (it == impl_->cache.end()) {
+    return;
+  }
+  if (impl_->context != EGL_NO_CONTEXT) {
+    impl_->MakeCurrent();
+    if (it->second.buf != 0) {
+      glDeleteBuffers(1, &it->second.buf);
+    }
+  }
+  impl_->cache.erase(it);
+}
+
+bool RfxGpuDecoder::SurfaceToSurface(int srcX, int srcY, int width, int height, int dstX,
+                                     int dstY) {
+  if (!ready_ || impl_ == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  // Stage through a temporary buffer so overlapping same-surface copies are
+  // safe (the GPU dispatch has no per-row ordering).
+  const size_t words = static_cast<size_t>(width) * height;
+  if (words > impl_->tempWords) {
+    if (impl_->tempBuf != 0) {
+      glDeleteBuffers(1, &impl_->tempBuf);
+    }
+    glGenBuffers(1, &impl_->tempBuf);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tempBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(words * 4), nullptr,
+                 GL_DYNAMIC_DRAW);
+    impl_->tempWords = words;
+  }
+  int dx = dstX;
+  int dy = dstY;
+  int w = width;
+  int h = height;
+  if (!ClipRectGpu(&dx, &dy, &w, &h, surfaceW_, surfaceH_)) {
+    return true;
+  }
+  const int sx = srcX + (dx - dstX);
+  const int sy = srcY + (dy - dstY);
+  if (sx < 0 || sy < 0 || sx + w > surfaceW_ || sy + h > surfaceH_) {
+    return false;
+  }
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->outBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->tempBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(surfaceW_ * 4));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(w * 4));
+  glUniform1i(impl_->copySrcX, sx);
+  glUniform1i(impl_->copySrcY, sy);
+  glUniform1i(impl_->copyDstX, 0);
+  glUniform1i(impl_->copyDstY, 0);
+  glUniform1i(impl_->copyWidth, w);
+  glUniform1i(impl_->copyHeight, h);
+  DispatchPixels(static_cast<size_t>(w) * h);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->tempBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->outBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(w * 4));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(surfaceW_ * 4));
+  glUniform1i(impl_->copySrcX, 0);
+  glUniform1i(impl_->copySrcY, 0);
+  glUniform1i(impl_->copyDstX, dx);
+  glUniform1i(impl_->copyDstY, dy);
+  glUniform1i(impl_->copyWidth, w);
+  glUniform1i(impl_->copyHeight, h);
+  DispatchPixels(static_cast<size_t>(w) * h);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  return CheckGl("surface to surface");
+}
+
+// ---------------------------------------------------------------------------
 // Offline self-test
 // ---------------------------------------------------------------------------
+
 
 namespace {
 
@@ -1311,6 +1797,319 @@ RfxGpuSelfTestResult RunRfxGpuSelfTest(const std::string& rfxPath,
   }
   res.meanAbs = res.compared ? res.meanAbs / static_cast<double>(res.compared) : 0.0;
   res.ok = res.ran && res.badRecords == 0 && res.compared > 0;
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// B2 offline self-test: full GFX command stream through the GPU surface model
+// ---------------------------------------------------------------------------
+
+namespace {
+
+uint64_t GpuHashBytes(const uint8_t* data, size_t size) {
+  uint64_t hash = 1469598103934665603ull;
+  for (size_t i = 0; i < size; ++i) {
+    hash ^= data[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+uint16_t GpuRd16(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0] | (p[1] << 8));
+}
+
+// Stop after this many compared frames. Large for full validation; a small
+// value speeds up iteration on the device.
+constexpr uint32_t kGpuSelfTestCompareLimit = 100000;
+
+}  // namespace
+
+RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
+                                                     const std::string& surfacePath) {
+  RfxGpuDesktopSelfTestResult res;
+  const std::vector<uint8_t> gfx = ReadFile(gfxPath);
+  const std::vector<uint8_t> surf = ReadFile(surfacePath);
+  if (gfx.empty()) {
+    res.log = "cannot read gfx capture";
+    return res;
+  }
+
+  struct FullSurface {
+    uint32_t id = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t stride = 0;
+    std::vector<uint8_t> data;
+  };
+  std::map<uint32_t, std::vector<FullSurface>> fulls;
+  std::map<uint32_t, std::map<uint32_t, uint64_t>> hashes;
+  uint32_t surfaceW = 0;
+  uint32_t surfaceH = 0;
+  size_t p = 0;
+  while (p + 32 <= surf.size()) {
+    const uint32_t magic = Rd32(&surf[p]);
+    if (magic == 0x31484647u /* 'GFH1' */) {
+      const uint32_t index = Rd32(&surf[p + 4]);
+      const uint32_t sid = Rd32(&surf[p + 8]);
+      const uint32_t w = Rd32(&surf[p + 12]);
+      const uint32_t h = Rd32(&surf[p + 16]);
+      const uint64_t hash = static_cast<uint64_t>(Rd32(&surf[p + 24])) |
+                            (static_cast<uint64_t>(Rd32(&surf[p + 28])) << 32);
+      hashes[index][sid] = hash;
+      if (surfaceW == 0) {
+        surfaceW = w;
+        surfaceH = h;
+      }
+      p += 32;
+      continue;
+    }
+    if (magic == 0x31534647u /* 'GFS1' */) {
+      FullSurface f;
+      const uint32_t index = Rd32(&surf[p + 4]);
+      f.id = Rd32(&surf[p + 8]);
+      f.width = Rd32(&surf[p + 12]);
+      f.height = Rd32(&surf[p + 16]);
+      f.stride = Rd32(&surf[p + 20]);
+      const size_t bytes = static_cast<size_t>(f.stride) * f.height;
+      if (p + 32 + bytes > surf.size()) {
+        break;
+      }
+      f.data.assign(surf.begin() + p + 32, surf.begin() + p + 32 + bytes);
+      fulls[index].push_back(std::move(f));
+      if (surfaceW == 0) {
+        surfaceW = fulls[index].back().width;
+        surfaceH = fulls[index].back().height;
+      }
+      p += 32 + bytes;
+      continue;
+    }
+    break;
+  }
+  if (surfaceW == 0 || surfaceH == 0) {
+    res.log = "no surface baselines";
+    return res;
+  }
+
+  RfxGpuDecoder decoder;
+  const int gridW = static_cast<int>((surfaceW + 63) / 64);
+  const int gridH = static_cast<int>((surfaceH + 63) / 64);
+  if (!decoder.Init(gridW, gridH, static_cast<int>(surfaceW), static_cast<int>(surfaceH))) {
+    res.log = "gpu decoder init failed";
+    return res;
+  }
+  std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
+
+  uint32_t surfaceId = 0xFFFFFFFFu;
+  res.ran = true;
+  int64_t totalAbs = 0;
+  char line[256];
+  p = 0;
+  while (p + 40 <= gfx.size() && Rd32(&gfx[p]) == 0x31584647u /* 'GFX1' */) {
+    const uint32_t index = Rd32(&gfx[p + 4]);
+    const uint16_t cmd = static_cast<uint16_t>(Rd32(&gfx[p + 8]));
+    const uint32_t sid = Rd32(&gfx[p + 12]);
+    const uint32_t s0 = Rd32(&gfx[p + 16]);
+    const uint32_t s1 = Rd32(&gfx[p + 20]);
+    const uint32_t plen = Rd32(&gfx[p + 32]);
+    const uint32_t ylen = Rd32(&gfx[p + 36]);
+    if (p + 40 + plen + ylen > gfx.size()) {
+      break;
+    }
+    const uint8_t* params = plen > 0 ? &gfx[p + 40] : nullptr;
+    const uint8_t* payload = ylen > 0 ? &gfx[p + 40 + plen] : nullptr;
+    res.records++;
+
+    switch (cmd) {
+      case 0x0009: {  // CreateSurface: FreeRDP clears the surface to 0xFF
+        if (surfaceId == 0xFFFFFFFFu) {
+          surfaceId = sid;
+          const uint16_t whole[4] = {0, 0, static_cast<uint16_t>(surfaceW),
+                                     static_cast<uint16_t>(surfaceH)};
+          decoder.SolidFill(0xFFFFFFFFu, whole, 1);
+        }
+        break;
+      }
+      case 0x0004:  // SolidFill (scalars: pixel, count; params: rects u16x4)
+        if (params != nullptr) {
+          // FreeRDP always uses alpha 0xFF regardless of the PDU's XA byte.
+          decoder.SolidFill((s0 & 0x00FFFFFFu) | 0xFF000000u,
+                            reinterpret_cast<const uint16_t*>(params), s1);
+        }
+        break;
+      case 0x0006:  // SurfaceToCache (params: cacheKey u64 + rect u16x4)
+        if (params != nullptr && plen >= 16) {
+          const int x = GpuRd16(params + 8);
+          const int y = GpuRd16(params + 10);
+          const int r = GpuRd16(params + 12);
+          const int b = GpuRd16(params + 14);
+          decoder.SurfaceToCache(static_cast<uint16_t>(s0), x, y, r - x, b - y);
+        }
+        break;
+      case 0x0007: {  // CacheToSurface (params: points u16x2)
+        const uint32_t count = std::min<uint32_t>(s1, plen / 4);
+        for (uint32_t i = 0; i < count; ++i) {
+          const int px = GpuRd16(params + static_cast<size_t>(i) * 4);
+          const int py = GpuRd16(params + static_cast<size_t>(i) * 4 + 2);
+          decoder.CacheToSurface(static_cast<uint16_t>(s0), px, py);
+        }
+        break;
+      }
+      case 0x0008:  // EvictCacheEntry
+        decoder.EvictCache(static_cast<uint16_t>(s0));
+        break;
+      case 0x0005: {  // SurfaceToSurface (params: rectSrc u16x4 + destPts u16x2)
+        if (params != nullptr && plen >= 8) {
+          const int sx = GpuRd16(params);
+          const int sy = GpuRd16(params + 2);
+          const int rx = GpuRd16(params + 4);
+          const int rb = GpuRd16(params + 6);
+          const uint32_t count = std::min<uint32_t>(s1, (plen - 8) / 4);
+          for (uint32_t i = 0; i < count; ++i) {
+            const int px = GpuRd16(params + 8 + static_cast<size_t>(i) * 4);
+            const int py = GpuRd16(params + 8 + static_cast<size_t>(i) * 4 + 2);
+            decoder.SurfaceToSurface(sx, sy, rx - sx, rb - sy, px, py);
+          }
+        }
+        break;
+      }
+      case 0x0001: {  // WireToSurface
+        if (params == nullptr || payload == nullptr) {
+          break;
+        }
+        const uint32_t codec = s0;
+        const uint32_t format = Rd32(params + 4);
+        const int left = static_cast<int>(Rd32(params + 8));
+        const int top = static_cast<int>(Rd32(params + 12));
+        const int width = static_cast<int>(Rd32(params + 24));
+        const int height = static_cast<int>(Rd32(params + 28));
+        if (codec == 0x0009u || codec == 0x000Du) {  // Progressive
+          decoder.DecodeMessage(payload, ylen);
+        } else if (codec == 0x0008u) {  // ClearCodec: read rows, CPU decode, write rows
+          if (clear != nullptr && width > 0 && height > 0) {
+            const int stride = static_cast<int>(surfaceW) * 4;
+            std::vector<uint8_t> scratch(static_cast<size_t>(stride) * height);
+            decoder.DownloadRows(top, height, scratch.data(), stride);
+            if (clear->Decode(payload, ylen, width, height, kPixelFormatBgra32, scratch.data(),
+                              stride, left, 0, static_cast<int>(surfaceW), height)) {
+              decoder.UploadRows(top, height, scratch.data(), stride);
+            } else {
+              HMRDP_LOGI("gpu gfx clearcodec decode failed rec=%{public}u w=%{public}d h=%{public}d",
+                         index, width, height);
+            }
+          }
+        } else if (codec == 0x0000u) {  // Uncompressed
+          const uint32_t bpp = format >> 24;
+          if (bpp == 32) {
+            decoder.UploadBgra(left, top, width, height, payload, width * 4);
+          } else if (bpp == 24 && width > 0 && height > 0) {
+            std::vector<uint8_t> tmp(static_cast<size_t>(width) * height * 4);
+            for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
+              tmp[i * 4] = payload[i * 3];
+              tmp[i * 4 + 1] = payload[i * 3 + 1];
+              tmp[i * 4 + 2] = payload[i * 3 + 2];
+              tmp[i * 4 + 3] = 0xFF;
+            }
+            decoder.UploadBgra(left, top, width, height, tmp.data(), width * 4);
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+
+    if (cmd == 0x000Cu) {  // EndFrame: compare the GPU surface with the baseline
+      std::vector<uint8_t> ours;
+      if (decoder.ReadSurface(&ours)) {
+        const auto hIt = hashes.find(index);
+        const auto fIt = fulls.find(index);
+        if (hIt != hashes.end() || fIt != fulls.end()) {
+          uint64_t mism = 0;
+          uint64_t cmp = 0;
+          uint64_t hashed = 0;
+          uint64_t hashMism = 0;
+          int64_t sumAbs = 0;
+          size_t surfaceCount = 0;
+          if (hIt != hashes.end()) {
+            for (const auto& kv : hIt->second) {
+              surfaceCount++;
+              if (kv.first != surfaceId) {
+                mism++;
+                continue;
+              }
+              const FullSurface* f = nullptr;
+              if (fIt != fulls.end()) {
+                for (const FullSurface& x : fIt->second) {
+                  if (x.id == kv.first) {
+                    f = &x;
+                    break;
+                  }
+                }
+              }
+              if (f != nullptr && f->width == surfaceW && f->height == surfaceH &&
+                  f->stride == surfaceW * 4 && f->data.size() == ours.size()) {
+                const size_t bytes = ours.size();
+                if (std::memcmp(ours.data(), f->data.data(), bytes) != 0) {
+                  size_t first = 0;
+                  while (first < bytes && ours[first] == f->data[first]) {
+                    ++first;
+                  }
+                  HMRDP_LOGI("gpu gfx mismatch rec=%{public}u at px=%{public}zu py=%{public}zu",
+                             index, (first / 4) % surfaceW, (first / 4) / surfaceW);
+                  for (size_t i = 0; i < bytes; ++i) {
+                    const int d = static_cast<int>(ours[i]) - static_cast<int>(f->data[i]);
+                    const int ad = d < 0 ? -d : d;
+                    sumAbs += ad;
+                    if (ad > 0) {
+                      mism++;
+                    }
+                  }
+                }
+                cmp += bytes;
+              } else {
+                const uint64_t h = GpuHashBytes(ours.data(), ours.size());
+                hashed++;
+                if (h != kv.second) {
+                  hashMism++;
+                  mism++;
+                }
+              }
+            }
+          }
+          res.comparedRecords++;
+          res.compared += cmp;
+          res.mismatch += mism;
+          res.surfacesHashed += hashed;
+          res.hashMismatch += hashMism;
+          totalAbs += sumAbs;
+          if (mism != 0) {
+            res.badRecords++;
+          }
+          if (res.comparedRecords % 100 == 0) {
+            HMRDP_LOGI("gpu gfx desktop progress: rec=%{public}u cmpRec=%{public}u "
+                       "badRec=%{public}u",
+                       res.records, res.comparedRecords, res.badRecords);
+          }
+          std::snprintf(line, sizeof(line),
+                        "rec%u surf=%zu cmp=%llu mism=%llu hash=%llu hMism=%llu", index,
+                        surfaceCount, static_cast<unsigned long long>(cmp),
+                        static_cast<unsigned long long>(mism),
+                        static_cast<unsigned long long>(hashed),
+                        static_cast<unsigned long long>(hashMism));
+          res.log += line;
+          res.log += "\n";
+          if (res.comparedRecords >= kGpuSelfTestCompareLimit) {
+            break;
+          }
+        }
+      }
+    }
+    p += 40 + plen + ylen;
+  }
+  res.meanAbs = res.compared ? static_cast<double>(totalAbs) / static_cast<double>(res.compared)
+                             : 0.0;
+  res.ok = res.ran && res.badRecords == 0 && res.comparedRecords > 0;
   return res;
 }
 

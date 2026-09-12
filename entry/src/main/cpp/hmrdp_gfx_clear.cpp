@@ -47,6 +47,10 @@ class FreeRdpClearDecoder : public GfxClearDecoder {
 
 }  // namespace
 
+std::unique_ptr<GfxClearDecoder> CreateFreeRdpClearDecoder() {
+  return std::unique_ptr<GfxClearDecoder>(new FreeRdpClearDecoder());
+}
+
 GfxDesktopSelfTestResult RunGfxDesktopSelfTest(const std::string& gfxPath,
                                                const std::string& surfacePath) {
   FreeRdpClearDecoder clear;
