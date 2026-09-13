@@ -1,34 +1,40 @@
 /*
- * HmRdp - Vulkan GFX surface engine (V1 scope, VULKAN-TODO.md §5 V1).
+ * HmRdp - Vulkan GFX surface engine (V2 scope, VULKAN-TODO.md §5 V2).
  *
  * Reproduces the FreeRDP RDPGFX command semantics that GfxGpuDesktop
  * (hmrdp_rfx.{h,cpp}) implements on GLES 3.1 compute, so the replay harness, the
- * live shadow compare and the dev panel keep working unchanged (VULKAN-TODO
- * §4.3): solid fill, surface-to-surface copy, bitmap cache, uncompressed upload,
- * output mapping, screen compose and dirty tracking.
+ * live shadow compare and the dev panel keep working unchanged: solid fill,
+ * surface-to-surface copy, bitmap cache, uncompressed upload, output mapping,
+ * screen compose and dirty tracking.
  *
- * Design decisions specific to this backend:
+ * V2 storage model (VULKAN-TODO §4.2 item 2):
  *
- *  - Every pixel resource (surface / cache entry / screen / temp) is a
- *    `VkImage` in `VK_FORMAT_B8G8R8A8_UNORM`, which is exactly FreeRDP's packed
- *    BGRA/BGRX byte order - so no channel swizzling is needed anywhere on the
- *    CPU boundary.
- *  - All images live in `VK_IMAGE_LAYOUT_GENERAL` for their whole lifetime.
- *    GENERAL is legal for transfer, colour-attachment and storage use, so there
- *    is no layout state machine to get wrong; VULKAN-TODO §7.2 names
- *    layout/barrier bugs the number-one Vulkan trap, so V1 trades a little
- *    potential bandwidth for provable correctness. Revisit once correctness is
- *    pinned by the compare harness.
- *  - Hazards between operations are covered by one coarse `VkMemoryBarrier`
- *    (all writes -> all reads), emitted lazily only when something was written
- *    since the last one. No `vkDeviceWaitIdle` per command (VULKAN-TODO §7.3).
+ *  - Surfaces and bitmap-cache entries are **persistent-mapped host-visible
+ *    linear `VkBuffer`s**, not images. Their row pitch is the FreeRDP `stride`
+ *    (16B-aligned width*4), so the CPU addresses any pixel directly with no
+ *    staging, no readback and no layout state machine. This is what lets V4's
+ *    ClearCodec read-modify-write surface pixels on the CPU, and what V3's
+ *    Progressive compute shader writes tiles into (the buffers already carry
+ *    `STORAGE_BUFFER` usage).
+ *  - The screen stays a `VkImage` (`VK_IMAGE_LAYOUT_GENERAL`) because it is the
+ *    presentation source. Compose copies each mapped surface's dirty region into
+ *    it with `vkCmdCopyBufferToImage`, carrying the stride via `bufferRowLength`.
+ *  - Pixel commands (fill / upload / cache / copy) run on the CPU against the
+ *    mapping, exactly as FreeRDP's gdi path does. `ReadSurface` is a plain copy
+ *    out of the mapping; only `ReadScreen` and `Flush` touch the device.
+ *  - Image format is `VK_FORMAT_B8G8R8A8_UNORM` (FreeRDP's byte order) for the
+ *    offline harness; when the swapchain forces RGBA8 the CPU boundaries swap
+ *    R/B so the renderer can still blit image-to-image.
+ *  - Hazards are covered by one coarse `VkMemoryBarrier`, emitted lazily and
+ *    split into a HOST_WRITE leg (CPU-written surfaces) and a TRANSFER_WRITE leg
+ *    (device-written screen), both targeting TRANSFER reads. No
+ *    `vkDeviceWaitIdle` per command (VULKAN-TODO §7.3).
  *  - Commands are recorded into one primary command buffer and submitted at
  *    natural boundaries (`Flush()`: readback, present, teardown).
  *
- * Not implemented in V1: Progressive and ClearCodec. Those commands leave the
+ * Not implemented yet: Progressive and ClearCodec. Those commands leave the
  * surface untouched, and `unsupportedSeen()` tells a correctness run to exclude
- * the affected frames from its claim (V1 acceptance: fill/copy/uncompressed
- * `bad=0`).
+ * the affected frames from its claim (V2 acceptance: `primitives` 12/12 `bad=0`).
  */
 #ifndef HMRDP_VK_DESKTOP_H
 #define HMRDP_VK_DESKTOP_H
@@ -57,22 +63,24 @@ class GfxVkDesktop {
   // Brings up the device (no surface needed: the offline harness has none) and
   // the shared command buffer.
   //
-  // `format` is the pixel format of every engine image. The default is FreeRDP's
-  // own byte order, so the offline compare harness needs no channel swizzling at
-  // all (its result must not be able to "cancel out" a swizzle bug). The
-  // presentation path passes the swapchain format instead, which on the current
-  // devices is RGBA8; the engine then swaps R/B on its CPU boundaries and the
-  // renderer blits image-to-image with no CPU round trip.
+  // `format` is the pixel order of the screen image and the surfaces/cache
+  // buffers. The default is FreeRDP's own byte order, so the offline compare
+  // harness needs no channel swizzling at all (its result must not be able to
+  // "cancel out" a swizzle bug). The presentation path passes the swapchain
+  // format instead, which on the current devices is RGBA8; the engine then swaps
+  // R/B on its CPU boundaries and the renderer blits image-to-image with no CPU
+  // round trip.
   bool Init(VkFormat format = VK_FORMAT_B8G8R8A8_UNORM);
   void Reset();
   bool ready() const;
-  // True when the engine images are RGBA8 and the CPU boundary swaps R/B (so
+  // True when the engine storage is RGBA8 and the CPU boundary swaps R/B (so
   // ReadScreen/ReadSurface still return FreeRDP's BGRA bytes).
   bool swapRb() const;
 
   // --- Surface lifecycle (same rules as GfxGpuDesktop) ----------------------
-  // Aligns width/height to 16, fills with 0xFF. `format` is the wire format
-  // (0x20 -> BGRX32, 0x21 -> BGRA32); either way the pixels stay BGRA bytes.
+  // Allocates a persistent-mapped host-visible buffer, aligns width/height to
+  // 16 and fills it with 0xFF. `format` is the wire format (0x20 -> BGRX32,
+  // 0x21 -> BGRA32); either way the pixels stay BGRA bytes.
   bool CreateSurface(uint16_t surfaceId, int width, int height, uint32_t format);
   void DeleteSurface(uint16_t surfaceId);
   const GpuSurface* FindSurface(uint16_t surfaceId) const;
