@@ -379,6 +379,22 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   UnmapMemory = ResolveDevice<PFN_vkUnmapMemory>(gdpa, gipa, device, instance, "vkUnmapMemory");
   FlushMappedMemoryRanges = ResolveDevice<PFN_vkFlushMappedMemoryRanges>(gdpa, gipa, device, instance, "vkFlushMappedMemoryRanges");
   InvalidateMappedMemoryRanges = ResolveDevice<PFN_vkInvalidateMappedMemoryRanges>(gdpa, gipa, device, instance, "vkInvalidateMappedMemoryRanges");
+  // Compute: optional (a device without it just keeps the transfer-only engine).
+  CreateShaderModule = ResolveDevice<PFN_vkCreateShaderModule>(gdpa, gipa, device, instance, "vkCreateShaderModule");
+  DestroyShaderModule = ResolveDevice<PFN_vkDestroyShaderModule>(gdpa, gipa, device, instance, "vkDestroyShaderModule");
+  CreateDescriptorSetLayout = ResolveDevice<PFN_vkCreateDescriptorSetLayout>(gdpa, gipa, device, instance, "vkCreateDescriptorSetLayout");
+  DestroyDescriptorSetLayout = ResolveDevice<PFN_vkDestroyDescriptorSetLayout>(gdpa, gipa, device, instance, "vkDestroyDescriptorSetLayout");
+  CreatePipelineLayout = ResolveDevice<PFN_vkCreatePipelineLayout>(gdpa, gipa, device, instance, "vkCreatePipelineLayout");
+  DestroyPipelineLayout = ResolveDevice<PFN_vkDestroyPipelineLayout>(gdpa, gipa, device, instance, "vkDestroyPipelineLayout");
+  CreateComputePipelines = ResolveDevice<PFN_vkCreateComputePipelines>(gdpa, gipa, device, instance, "vkCreateComputePipelines");
+  DestroyPipeline = ResolveDevice<PFN_vkDestroyPipeline>(gdpa, gipa, device, instance, "vkDestroyPipeline");
+  CreateDescriptorPool = ResolveDevice<PFN_vkCreateDescriptorPool>(gdpa, gipa, device, instance, "vkCreateDescriptorPool");
+  DestroyDescriptorPool = ResolveDevice<PFN_vkDestroyDescriptorPool>(gdpa, gipa, device, instance, "vkDestroyDescriptorPool");
+  AllocateDescriptorSets = ResolveDevice<PFN_vkAllocateDescriptorSets>(gdpa, gipa, device, instance, "vkAllocateDescriptorSets");
+  UpdateDescriptorSets = ResolveDevice<PFN_vkUpdateDescriptorSets>(gdpa, gipa, device, instance, "vkUpdateDescriptorSets");
+  CmdBindPipeline = ResolveDevice<PFN_vkCmdBindPipeline>(gdpa, gipa, device, instance, "vkCmdBindPipeline");
+  CmdBindDescriptorSets = ResolveDevice<PFN_vkCmdBindDescriptorSets>(gdpa, gipa, device, instance, "vkCmdBindDescriptorSets");
+  CmdDispatch = ResolveDevice<PFN_vkCmdDispatch>(gdpa, gipa, device, instance, "vkCmdDispatch");
 
   return CreateSwapchainKHR != nullptr && AcquireNextImageKHR != nullptr &&
          QueuePresentKHR != nullptr && GetSwapchainImagesKHR != nullptr &&

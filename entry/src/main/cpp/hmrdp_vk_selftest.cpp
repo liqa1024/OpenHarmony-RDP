@@ -214,6 +214,12 @@ std::string GfxVkSelfTest::RunPrimitives() {
   const bool bufferOk = engine.readbackAvailable();
   report.verify = bufferOk;
 
+  // V2 groundwork: prove the compute path (SPIR-V + dispatch + SSBO + host
+  // readback) works on this driver before the RFX kernels depend on it. Runs
+  // regardless of the transfer verdict above: the two exercise different parts.
+  std::string computeDetail;
+  const bool computeOk = engine.ComputeSelfTest(4096, &computeDetail);
+
   const uint16_t kSurf = 0;
   const uint16_t kSurf2 = 1;
   const uint32_t kRed = 0xFF0000FFu;    // BGRA
@@ -344,14 +350,20 @@ std::string GfxVkSelfTest::RunPrimitives() {
   }
 
   HMRDP_LOGI("vk selftest: %{public}s", engine.Stats().c_str());
-  char buf[256];
-  std::snprintf(buf, sizeof(buf),
-                "primitives: readback=%s steps=%d bad=%d apiFailures=%d%s%s",
+  char head[256];
+  std::snprintf(head, sizeof(head),
+                "primitives: readback=%s steps=%d bad=%d apiFailures=%d compute=%s",
                 bufferOk ? "ok" : "NONE(此设备无法读回，见 VULKAN-TODO 3.5)", report.steps,
-                bufferOk ? report.bad : 0, apiFailures,
-                report.firstFail.empty() ? "" : " firstFail: ", report.firstFail.c_str());
-  HMRDP_LOGI("vk selftest: %{public}s", buf);
-  return std::string(buf);
+                bufferOk ? report.bad : 0, apiFailures, computeOk ? "ok" : "FAIL");
+  std::string line = head;
+  if (!computeOk && !computeDetail.empty()) {
+    line += " [" + computeDetail + "]";
+  }
+  if (!report.firstFail.empty()) {
+    line += " firstFail: " + report.firstFail;
+  }
+  HMRDP_LOGI("vk selftest: %{public}s", line.c_str());
+  return line;
 }
 
 GfxVkSelfTest& GfxVkSelfTest::Instance() {

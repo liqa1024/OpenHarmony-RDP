@@ -20,6 +20,43 @@ include_directories(
     ${FREERDP_ROOT}/include/winpr3
 )
 
+# --- SPIR-V shaders (VULKAN-TODO.md §5 V2 / §7.2) ------------------------------
+# glslang_validator ships inside the OHOS SDK toolchains, one level up from the
+# NDK root the toolchain file points OHOS_SDK_NATIVE at, so no external Vulkan SDK
+# is needed. Each shader is compiled to SPIR-V and embedded in libhmrdp.so as a
+# word array, which makes "the SPIR-V ships with the HAP" automatic.
+# This block must precede add_library(): HMRDP_SHADER_HEADERS is expanded there.
+set(HMRDP_SHADER_OUT "${CMAKE_CURRENT_BINARY_DIR}/generated")
+if(NOT HMRDP_GLSLANG)
+    set(HMRDP_GLSLANG "${OHOS_SDK_NATIVE}/../toolchains/glslang_validator.exe")
+endif()
+
+# <source file>|<C++ symbol>
+set(HMRDP_SHADERS
+    "probe.comp|Probe"
+)
+
+set(HMRDP_SHADER_HEADERS "")
+foreach(_shader IN LISTS HMRDP_SHADERS)
+    string(REPLACE "|" ";" _parts "${_shader}")
+    list(GET _parts 0 _file)
+    list(GET _parts 1 _symbol)
+    set(_generated "${HMRDP_SHADER_OUT}/${_file}.h")
+    add_custom_command(
+        OUTPUT "${_generated}"
+        COMMAND ${CMAKE_COMMAND}
+                "-DHMRDP_GLSLANG=${HMRDP_GLSLANG}"
+                "-DHMRDP_SRC=${CMAKE_CURRENT_SOURCE_DIR}/shaders/${_file}"
+                "-DHMRDP_OUT=${_generated}"
+                "-DHMRDP_SYMBOL=${_symbol}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${_file}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
+        COMMENT "SPIR-V ${_file}"
+        VERBATIM)
+    list(APPEND HMRDP_SHADER_HEADERS "${_generated}")
+endforeach()
+
 add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
@@ -35,7 +72,12 @@ add_library(hmrdp SHARED
     hmrdp_vk_renderer.cpp
     hmrdp_vk_desktop.cpp
     hmrdp_vk_selftest.cpp
+    hmrdp_vk_shaders.cpp
+    ${HMRDP_SHADER_HEADERS}
 )
+
+# The generated SPIR-V headers (probe.comp.h, ...) live outside the source tree.
+target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 
 # FreeRDP is built without library versioning (see native/scripts/build-freerdp.ps1
 # + -DWITH_LIBRARY_VERSIONING=OFF), so each library is a single version-less

@@ -9,6 +9,7 @@
 
 #include "hmrdp_log.h"
 #include "hmrdp_vk_renderer.h"
+#include "hmrdp_vk_shaders.h"
 
 namespace hmrdp {
 namespace {
@@ -1531,13 +1532,21 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
 bool GfxVkDesktop::CheckBufferTransfer(uint32_t texel, uint32_t* readBack) {
   // Readback capability probe (VULKAN-TODO §3.4), run once from Init() and cached.
   //
-  // One decisive test: the device writes a DEVICE_LOCAL-only buffer (shared memory
-  // explicitly excluded) and an explicit vkCmdCopyBuffer moves it into mapped
-  // staging, which the CPU then reads. That is the textbook discrete-GPU
-  // download, and it is what a device with no usable host/device bridge fails.
+  // Two GPU->CPU paths are exercised, because they fail differently:
+  //   * `fillDirect`: vkCmdFillBuffer writes the mapped staging buffer itself.
+  //   * `copyBack`: vkCmdFillBuffer writes a second buffer, an explicit
+  //     vkCmdCopyBuffer moves it into staging - the textbook download.
+  // The emulator fails both (its host mapping is not the storage the GPU writes,
+  // §3.4). `cpuEcho` writes and reads the same mapping from the CPU alone: if
+  // that does NOT round-trip, the mapping is not ordinary CPU memory at all, and
+  // the two verdicts above say nothing. Only when all three match is the device
+  // trusted to return device-written pixels.
   //
-  // `cpuEcho` writes and reads the same mapping from the CPU alone, so a failure
-  // can be attributed to the platform's bridging rather than to this engine.
+  // Memory type selection must not assume a discrete-GPU layout: on <device>
+  // (UMA) buffers report memoryTypeBits=0x3, i.e. only HOST_VISIBLE types exist,
+  // so "DEVICE_LOCAL but not HOST_VISIBLE" is simply unavailable. Preferring the
+  // non-host-visible type when it exists and falling back otherwise keeps the
+  // test meaningful on both.
   if (!ready()) {
     return false;
   }
@@ -1549,10 +1558,10 @@ bool GfxVkDesktop::CheckBufferTransfer(uint32_t texel, uint32_t* readBack) {
   VkBuffer stageBuf = VK_NULL_HANDLE;
   VkDeviceMemory stageMem = VK_NULL_HANDLE;
   void* mapped = nullptr;
-  bool ok = vk.CmdCopyBuffer != nullptr;
+  const bool haveCmds = vk.CmdFillBuffer != nullptr && vk.CmdCopyBuffer != nullptr;
 
   auto createBuf = [&](VkBuffer* buf, VkDeviceMemory* mem, VkMemoryPropertyFlags required,
-                       VkMemoryPropertyFlags excluded) -> bool {
+                       VkMemoryPropertyFlags excluded, uint32_t* outType) -> bool {
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     info.size = 4096;
@@ -1563,52 +1572,88 @@ bool GfxVkDesktop::CheckBufferTransfer(uint32_t texel, uint32_t* readBack) {
     }
     VkMemoryRequirements req{};
     vk.GetBufferMemoryRequirements(dev, *buf, &req);
-    const uint32_t type = ctx.FindMemoryType(req.memoryTypeBits, required, excluded);
+    uint32_t type = ctx.FindMemoryType(req.memoryTypeBits, required, excluded);
+    if (type == UINT32_MAX && excluded != 0) {
+      // UMA fallback: the "pure device" type does not exist for buffers here.
+      type = ctx.FindMemoryType(req.memoryTypeBits, required, 0);
+    }
     if (type == UINT32_MAX) {
       return false;
+    }
+    if (outType != nullptr) {
+      *outType = type;
     }
     VkMemoryAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc.allocationSize = req.size;
     alloc.memoryTypeIndex = type;
-    return vk.AllocateMemory(dev, &alloc, nullptr, mem) == VK_SUCCESS &&
-           vk.BindBufferMemory(dev, *buf, *mem, 0) == VK_SUCCESS;
+    VkResult ar = vk.AllocateMemory(dev, &alloc, nullptr, mem);
+    if (ar != VK_SUCCESS) {
+      HMRDP_LOGE("vk desktop: readback probe AllocateMemory failed %{public}d (type %{public}u)",
+                 static_cast<int>(ar), type);
+      return false;
+    }
+    return vk.BindBufferMemory(dev, *buf, *mem, 0) == VK_SUCCESS;
   };
 
-  ok = ok &&
-       createBuf(&devBuf, &devMem, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-       createBuf(&stageBuf, &stageMem,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
-  if (ok) {
-    ok = vk.MapMemory(dev, stageMem, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS &&
-         mapped != nullptr;
+  uint32_t devType = UINT32_MAX;
+  uint32_t stageType = UINT32_MAX;
+  const bool okDev =
+      createBuf(&devBuf, &devMem, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &devType);
+  const bool okStage =
+      createBuf(&stageBuf, &stageMem,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0,
+                &stageType);
+  bool mappedOk = false;
+  if (okStage) {
+    mappedOk =
+        vk.MapMemory(dev, stageMem, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS && mapped != nullptr;
   }
 
   const uint32_t marker = 0x13572468u;  // must differ from `texel` (see §3.4)
   uint32_t cpuEcho = 0;
-  if (ok) {
+  uint32_t directValue = 0;
+  uint32_t copyValue = 0;
+  auto writeMarkerAndEcho = [&]() {
     std::memcpy(mapped, &marker, 4);
     std::memcpy(&cpuEcho, mapped, 4);
-  }
-  uint32_t readValue = 0;
-  if (ok && impl_->EnsureRecording()) {
-    VkBufferCopy region{};
-    region.size = 4096;
-    vk.CmdFillBuffer(impl_->commandBuffer, devBuf, 0, 4096, texel);
-    vk.CmdCopyBuffer(impl_->commandBuffer, devBuf, stageBuf, 1, &region);
-    impl_->pendingWrites = true;
-    ok = impl_->Flush();
-    if (ok) {
-      std::memcpy(&readValue, mapped, 4);
+  };
+
+  const bool canTest = haveCmds && okDev && okStage && mappedOk;
+  if (canTest) {
+    // Control first: is the mapping ordinary CPU memory?
+    writeMarkerAndEcho();
+    // Path 1: the GPU writes staging directly.
+    if (impl_->EnsureRecording()) {
+      vk.CmdFillBuffer(impl_->commandBuffer, stageBuf, 0, 4096, texel);
+      impl_->pendingWrites = true;
+      if (impl_->Flush()) {
+        std::memcpy(&directValue, mapped, 4);
+      }
+    }
+    // Path 2: device buffer -> vkCmdCopyBuffer -> staging. Re-arm the CPU marker
+    // so "the copy never ran" cannot masquerade as success.
+    std::memcpy(mapped, &marker, 4);
+    if (impl_->EnsureRecording()) {
+      VkBufferCopy region{};
+      region.size = 4096;
+      vk.CmdFillBuffer(impl_->commandBuffer, devBuf, 0, 4096, texel);
+      vk.CmdCopyBuffer(impl_->commandBuffer, devBuf, stageBuf, 1, &region);
+      impl_->pendingWrites = true;
+      if (impl_->Flush()) {
+        std::memcpy(&copyValue, mapped, 4);
+      }
     }
   }
-  HMRDP_LOGI("vk desktop: readback probe devToHost=0x%{public}08x cpuEcho=0x%{public}08x "
-             "want=0x%{public}08x marker=0x%{public}08x",
-             static_cast<unsigned>(readValue), static_cast<unsigned>(cpuEcho),
-             static_cast<unsigned>(texel), static_cast<unsigned>(marker));
+  HMRDP_LOGI("vk desktop: readback probe fillDirect=0x%{public}08x copyBack=0x%{public}08x "
+             "cpuEcho=0x%{public}08x want=0x%{public}08x marker=0x%{public}08x "
+             "types dev=%{public}u stage=%{public}u",
+             static_cast<unsigned>(directValue), static_cast<unsigned>(copyValue),
+             static_cast<unsigned>(cpuEcho), static_cast<unsigned>(texel),
+             static_cast<unsigned>(marker), devType, stageType);
   if (readBack != nullptr) {
-    *readBack = readValue;
+    *readBack = copyValue;
   }
   if (mapped != nullptr) {
     vk.UnmapMemory(dev, stageMem);
@@ -1617,11 +1662,258 @@ bool GfxVkDesktop::CheckBufferTransfer(uint32_t texel, uint32_t* readBack) {
   if (stageMem != VK_NULL_HANDLE) vk.FreeMemory(dev, stageMem, nullptr);
   if (devBuf != VK_NULL_HANDLE) vk.DestroyBuffer(dev, devBuf, nullptr);
   if (devMem != VK_NULL_HANDLE) vk.FreeMemory(dev, devMem, nullptr);
-  return ok && readValue == texel;
+  return canTest && cpuEcho == marker && directValue == texel && copyValue == texel;
 }
 
-bool GfxVkDesktop::unsupportedSeen() const {
-  return impl_ != nullptr && impl_->unsupported;
+bool GfxVkDesktop::ComputeSelfTest(uint32_t count, std::string* detail) {
+  auto fail = [detail](const char* why) {
+    if (detail != nullptr) {
+      *detail = why;
+    }
+    return false;
+  };
+  if (count == 0) {
+    return fail("no words");
+  }
+  if (!ready()) {
+    return fail("device not ready");
+  }
+  const ShaderBlob blob = ComputeProbeShader();
+  if (!blob.valid()) {
+    return fail("shader missing");
+  }
+  VkApi& vk = impl_->api();
+  const VkDevice dev = impl_->device();
+  if (vk.CreateShaderModule == nullptr || vk.CreateComputePipelines == nullptr ||
+      vk.CmdBindPipeline == nullptr || vk.CmdDispatch == nullptr ||
+      vk.CreateDescriptorSetLayout == nullptr || vk.CreateDescriptorPool == nullptr ||
+      vk.AllocateDescriptorSets == nullptr || vk.UpdateDescriptorSets == nullptr) {
+    return fail("compute entry points unavailable");
+  }
+
+  VkShaderModule module = VK_NULL_HANDLE;
+  VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+  VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkDescriptorPool pool = VK_NULL_HANDLE;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  VkBuffer srcBuf = VK_NULL_HANDLE;
+  VkDeviceMemory srcMem = VK_NULL_HANDLE;
+  void* srcRaw = nullptr;
+  size_t srcCap = 0;
+  VkBuffer dstBuf = VK_NULL_HANDLE;
+  VkDeviceMemory dstMem = VK_NULL_HANDLE;
+  void* dstRaw = nullptr;
+  size_t dstCap = 0;
+  const size_t bytes = static_cast<size_t>(count) * 4;
+
+  // Releases everything in reverse order; declared before the first early exit so
+  // every path cleans up (a leaked pipeline here would poison the device). The
+  // mapped pointers are handed over too, or DeferBuffer would free the mapping
+  // without unmapping it first.
+  auto cleanup = [&]() {
+    if (dstBuf != VK_NULL_HANDLE) impl_->DeferBuffer(&dstBuf, &dstMem, &dstRaw, &dstCap);
+    if (srcBuf != VK_NULL_HANDLE) impl_->DeferBuffer(&srcBuf, &srcMem, &srcRaw, &srcCap);
+    if (pool != VK_NULL_HANDLE) vk.DestroyDescriptorPool(dev, pool, nullptr);
+    if (pipeline != VK_NULL_HANDLE) vk.DestroyPipeline(dev, pipeline, nullptr);
+    if (pipeLayout != VK_NULL_HANDLE) vk.DestroyPipelineLayout(dev, pipeLayout, nullptr);
+    if (setLayout != VK_NULL_HANDLE) vk.DestroyDescriptorSetLayout(dev, setLayout, nullptr);
+    if (module != VK_NULL_HANDLE) vk.DestroyShaderModule(dev, module, nullptr);
+  };
+
+  VkShaderModuleCreateInfo smInfo{};
+  smInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  smInfo.codeSize = static_cast<size_t>(blob.wordCount) * 4;
+  smInfo.pCode = blob.words;
+  if (vk.CreateShaderModule(dev, &smInfo, nullptr, &module) != VK_SUCCESS) {
+    cleanup();
+    return fail("vkCreateShaderModule failed");
+  }
+
+  VkDescriptorSetLayoutBinding bindings[2]{};
+  for (int i = 0; i < 2; ++i) {
+    bindings[i].binding = static_cast<uint32_t>(i);
+    bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[i].descriptorCount = 1;
+    bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo dlInfo{};
+  dlInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  dlInfo.bindingCount = 2;
+  dlInfo.pBindings = bindings;
+  if (vk.CreateDescriptorSetLayout(dev, &dlInfo, nullptr, &setLayout) != VK_SUCCESS) {
+    cleanup();
+    return fail("vkCreateDescriptorSetLayout failed");
+  }
+
+  VkPipelineLayoutCreateInfo plInfo{};
+  plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  plInfo.setLayoutCount = 1;
+  plInfo.pSetLayouts = &setLayout;
+  if (vk.CreatePipelineLayout(dev, &plInfo, nullptr, &pipeLayout) != VK_SUCCESS) {
+    cleanup();
+    return fail("vkCreatePipelineLayout failed");
+  }
+
+  VkComputePipelineCreateInfo cpInfo{};
+  cpInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  cpInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  cpInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  cpInfo.stage.module = module;
+  cpInfo.stage.pName = "main";
+  cpInfo.layout = pipeLayout;
+  if (vk.CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    cleanup();
+    return fail("vkCreateComputePipelines failed");
+  }
+
+  // Host-visible storage buffers: the same unified-memory preference the engine
+  // uses elsewhere, so the probe tests what the real pipeline will use.
+  auto makeStorage = [&](VkBuffer* buf, VkDeviceMemory* mem, void** map, size_t* cap) -> bool {
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = bytes;
+    info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vk.CreateBuffer(dev, &info, nullptr, buf) != VK_SUCCESS) {
+      return false;
+    }
+    VkMemoryRequirements req{};
+    vk.GetBufferMemoryRequirements(dev, *buf, &req);
+    uint32_t type = VkContext::Instance().FindMemoryType(
+        req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (type == UINT32_MAX) {
+      type = VkContext::Instance().FindMemoryType(
+          req.memoryTypeBits,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    if (type == UINT32_MAX) {
+      return false;
+    }
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = type;
+    if (vk.AllocateMemory(dev, &alloc, nullptr, mem) != VK_SUCCESS) {
+      return false;
+    }
+    if (vk.BindBufferMemory(dev, *buf, *mem, 0) != VK_SUCCESS) {
+      return false;
+    }
+    if (vk.MapMemory(dev, *mem, 0, VK_WHOLE_SIZE, 0, map) != VK_SUCCESS || *map == nullptr) {
+      return false;
+    }
+    *cap = bytes;
+    return true;
+  };
+  if (!makeStorage(&srcBuf, &srcMem, &srcRaw, &srcCap) ||
+      !makeStorage(&dstBuf, &dstMem, &dstRaw, &dstCap)) {
+    cleanup();
+    return fail("storage buffer allocation failed");
+  }
+  uint32_t* srcMap = static_cast<uint32_t*>(srcRaw);
+  uint32_t* dstMap = static_cast<uint32_t*>(dstRaw);
+
+  for (uint32_t i = 0; i < count; ++i) {
+    srcMap[i] = (i * 2654435761u) ^ 0xA5A5A5A5u;
+    dstMap[i] = 0xCDCDCDCDu;  // poison: a word the kernel never wrote is detected
+  }
+
+  VkDescriptorPoolSize poolSize{};
+  poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  poolSize.descriptorCount = 2;
+  VkDescriptorPoolCreateInfo dpInfo{};
+  dpInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  dpInfo.maxSets = 1;
+  dpInfo.poolSizeCount = 1;
+  dpInfo.pPoolSizes = &poolSize;
+  if (vk.CreateDescriptorPool(dev, &dpInfo, nullptr, &pool) != VK_SUCCESS) {
+    cleanup();
+    return fail("vkCreateDescriptorPool failed");
+  }
+  VkDescriptorSetAllocateInfo dsInfo{};
+  dsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsInfo.descriptorPool = pool;
+  dsInfo.descriptorSetCount = 1;
+  dsInfo.pSetLayouts = &setLayout;
+  if (vk.AllocateDescriptorSets(dev, &dsInfo, &set) != VK_SUCCESS) {
+    cleanup();
+    return fail("vkAllocateDescriptorSets failed");
+  }
+
+  VkDescriptorBufferInfo srcInfo{};
+  srcInfo.buffer = srcBuf;
+  srcInfo.offset = 0;
+  srcInfo.range = bytes;
+  VkDescriptorBufferInfo dstInfo{};
+  dstInfo.buffer = dstBuf;
+  dstInfo.offset = 0;
+  dstInfo.range = bytes;
+  VkWriteDescriptorSet writes[2]{};
+  for (int i = 0; i < 2; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = static_cast<uint32_t>(i);
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = (i == 0) ? &srcInfo : &dstInfo;
+  }
+  vk.UpdateDescriptorSets(dev, 2, writes, 0, nullptr);
+
+  if (!impl_->EnsureRecording()) {
+    cleanup();
+    return fail("command buffer unavailable");
+  }
+  VkCommandBuffer cb = impl_->commandBuffer;
+  vk.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vk.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeLayout, 0, 1, &set, 0, nullptr);
+  // local_size_x = 64 in probe.comp, so one workgroup per 64 words.
+  vk.CmdDispatch(cb, (count + 63u) / 64u, 1, 1);
+  VkMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+  vk.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
+                        &barrier, 0, nullptr, 0, nullptr);
+  impl_->pendingWrites = true;
+  const bool flushed = impl_->Flush();
+
+  uint32_t mismatches = 0;
+  uint32_t firstIndex = 0;
+  uint32_t firstGot = 0;
+  uint32_t firstWant = 0;
+  if (flushed) {
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t want = (srcMap[i] ^ 0x5A5A5A5Au) * 2654435761u + i;
+      if (dstMap[i] != want) {
+        if (mismatches == 0) {
+          firstIndex = i;
+          firstGot = dstMap[i];
+          firstWant = want;
+        }
+        ++mismatches;
+      }
+    }
+  }
+  HMRDP_LOGI("vk desktop: compute probe words=%{public}u mismatch=%{public}u first=%{public}u "
+             "want=0x%{public}08x got=0x%{public}08x flushed=%{public}d",
+             count, mismatches, firstIndex, firstWant, firstGot, flushed ? 1 : 0);
+  cleanup();
+  if (!flushed) {
+    return fail("submit failed");
+  }
+  if (mismatches != 0) {
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "compute mismatch=%u/%u", mismatches, count);
+    return fail(buf);
+  }
+  return true;
+}
+
+bool GfxVkDesktop::unsupportedSeen() const {  return impl_ != nullptr && impl_->unsupported;
 }
 
 void GfxVkDesktop::resetUnsupportedSeen() {

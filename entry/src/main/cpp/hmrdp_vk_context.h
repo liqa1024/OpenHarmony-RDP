@@ -118,6 +118,25 @@ struct VkApi {
   PFN_vkFlushMappedMemoryRanges FlushMappedMemoryRanges = nullptr;
   PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges = nullptr;
 
+  // Compute (VULKAN-TODO §5 V2/V3: the RFX / ClearCodec decoders run in compute
+  // shaders). Resolved opportunistically: a device that cannot do compute still
+  // runs the V1 transfer-only engine.
+  PFN_vkCreateShaderModule CreateShaderModule = nullptr;
+  PFN_vkDestroyShaderModule DestroyShaderModule = nullptr;
+  PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout = nullptr;
+  PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout = nullptr;
+  PFN_vkCreatePipelineLayout CreatePipelineLayout = nullptr;
+  PFN_vkDestroyPipelineLayout DestroyPipelineLayout = nullptr;
+  PFN_vkCreateComputePipelines CreateComputePipelines = nullptr;
+  PFN_vkDestroyPipeline DestroyPipeline = nullptr;
+  PFN_vkCreateDescriptorPool CreateDescriptorPool = nullptr;
+  PFN_vkDestroyDescriptorPool DestroyDescriptorPool = nullptr;
+  PFN_vkAllocateDescriptorSets AllocateDescriptorSets = nullptr;
+  PFN_vkUpdateDescriptorSets UpdateDescriptorSets = nullptr;
+  PFN_vkCmdBindPipeline CmdBindPipeline = nullptr;
+  PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets = nullptr;
+  PFN_vkCmdDispatch CmdDispatch = nullptr;
+
   // Fills the instance-level commands. Returns false if a required entry is
   // absent (the platform then cannot be used).
   bool LoadInstance(VkInstance instance);
