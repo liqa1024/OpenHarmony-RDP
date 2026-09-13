@@ -20,6 +20,9 @@ const TAG: string = 'HmRdpReplay';
 // (minimum mapped bytes, maximum round trips).
 const BATCH_PRESET_PX: number[] = [0, 262144, 1048576, 4194304];
 const BATCH_PRESET_LABEL: string[] = ['单条', '小', '中', '大'];
+// 0 = GPU only (perf), 1 = CPU(gdi) only (perf reference),
+// 2 = both + per-frame pixel comparison (correctness).
+const ROUTE_LABEL: string[] = ['GPU', 'CPU', '对比'];
 
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -198,7 +201,7 @@ struct GfxReplayPage {
           .margin({ left: 12 })
           .layoutWeight(1)
 
-        Button(this.replayRoute === 0 ? '路线:GPU' : '路线:CPU')
+        Button(`路线:${ROUTE_LABEL[this.replayRoute]}`)
           .height(34)
           .fontSize(13)
           .fontColor($r('app.color.accent'))
@@ -206,7 +209,7 @@ struct GfxReplayPage {
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
-            this.replayRoute = this.replayRoute === 0 ? 1 : 0;
+            this.replayRoute = (this.replayRoute + 1) % ROUTE_LABEL.length;
             this.startReplay();
           })
 
@@ -262,7 +265,7 @@ struct GfxReplayPage {
               .fontSize(12)
               .fontColor('#FF9CDCFE')
               .width('100%')
-            Text(`批次:${BATCH_PRESET_LABEL[this.batchPreset]} (${BATCH_PRESET_PX[this.batchPreset]} px)`)
+            Text(`路线:${ROUTE_LABEL[this.replayRoute]}  批次:${BATCH_PRESET_LABEL[this.batchPreset]} (${BATCH_PRESET_PX[this.batchPreset]} px)`)
               .fontSize(12)
               .fontColor('#FFFFD479')
               .width('100%')

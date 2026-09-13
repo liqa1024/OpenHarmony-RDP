@@ -21,11 +21,13 @@ class Renderer;
 class GfxGpuDesktop;
 class GfxCpuDesktop;
 
-// Which decoder the replay runs. kGpu is the GPU desktop engine (shared EGL
-// texture), kCpu is FreeRDP's own gdi pipeline (offline, CPU upload). Same
-// capture, same ZGX/RDPGFX parsing - only the destination differs, so the two
-// can be compared on screen.
-enum class GfxReplayRoute { kGpu = 0, kCpu = 1 };
+// Which decoder the replay runs.
+//  kGpu     - GPU desktop engine only (perf measurement).
+//  kCpu     - FreeRDP's own gdi pipeline only (perf reference).
+//  kCompare - both fed the same capture simultaneously, with a per-frame pixel
+//             comparison (correctness verification). Perf numbers are not
+//             meaningful in this mode.
+enum class GfxReplayRoute { kGpu = 0, kCpu = 1, kCompare = 2 };
 
 class GfxReplay {
  public:
@@ -73,6 +75,10 @@ class GfxReplay {
   void Run();
   void RunGpuReplay(const std::string& gfxPath);
   void RunCpuReplay(const std::string& gfxPath);
+  // Compare route: GPU engine + offline gdi desktop fed the same stream, with a
+  // sampled per-frame pixel comparison (engine screen vs gdi primary buffer).
+  void RunCompareReplay(const std::string& gfxPath);
+  void CompareFrames();
   // Throttles playback to ~60 Hz, but only for frames that actually produced a
   // picture (see the implementation for why empty frame markers must not pace).
   void PaceFrame(int64_t frameStartUs, bool presented);
@@ -137,8 +143,27 @@ class GfxReplay {
   // Set when the replay loop ends, so Stats() keeps reporting the run's last
   // figures instead of letting fps/feed decay while the page sits idle.
   std::atomic<int64_t> endUs_{0};
+  // Compare-route counters (engine vs gdi, sampled per frame).
+  std::atomic<uint64_t> cmpChecks_{0};
+  std::atomic<uint64_t> cmpBad_{0};
+  std::atomic<uint64_t> cmpMaxDiff_{0};
+  std::atomic<uint64_t> cmpRgbDiff_{0};
+  std::atomic<uint64_t> cmpAlphaDiff_{0};
+  // Diagnostics for the last mismatching frame: difference bounding box and the
+  // largest per-channel delta (tells "unpainted rectangle" from "rounding").
+  std::atomic<int> cmpBBoxX0_{-1};
+  std::atomic<int> cmpBBoxY0_{-1};
+  std::atomic<int> cmpBBoxX1_{-1};
+  std::atomic<int> cmpBBoxY1_{-1};
+  std::atomic<int> cmpMaxDelta_{0};
+  // Pixels whose worst channel delta is <= 2 (rounding-level, not content).
+  std::atomic<uint64_t> cmpSmallDeltaPx_{0};
+  std::atomic<int> cmpFirstX_{-1};
+  std::atomic<int> cmpFirstY_{-1};
+
   // Replay-thread only (no locking needed).
   GfxGpuDesktop* engine_ = nullptr;
+  GfxCpuDesktop* cpuDesktop_ = nullptr;
   std::mutex errorMutex_;
   std::string lastError_;
   // Latest ClearCodec traffic summary from the engine (snapshotted periodically

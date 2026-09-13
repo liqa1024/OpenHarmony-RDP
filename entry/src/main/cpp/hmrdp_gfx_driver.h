@@ -86,6 +86,17 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error);
 
+// Compare route: same GPU context as GfxReplayStream, but the capture is also
+// fed, chunk by chunk, into a second already-built context (`gfxB`, the offline
+// gdi desktop), so the two decoders always consume identical bytes.
+// `onSync` is invoked after both consumed a chunk *and* that chunk contained an
+// EndFrame - the two decoders are then at the same stream position and both have
+// composed, which is the only point where a pixel comparison is valid.
+bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
+                            const std::function<void()>& onFrame, RdpgfxClientContext* gfxB,
+                            const std::function<void()>& onSync, const std::atomic<bool>* stop,
+                            std::string* error);
+
 }  // namespace hmrdp
 
 #endif  // HMRDP_GFX_DRIVER_H

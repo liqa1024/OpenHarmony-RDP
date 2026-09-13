@@ -31,6 +31,9 @@ constexpr int kFrameMs = 16;                      // ~60 Hz playback target
 constexpr int kLogEvery = 120;
 constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap
 constexpr int kStartWaitUs = 3000000;
+// Compare route: sample a full-screen readback every N frames (same idea as the
+// live shadow check - reading the engine screen back is expensive).
+constexpr uint64_t kCompareEvery = 30;
 
 // ClearCodec batch granularity for the GPU route (union-rectangle pixel cap).
 // Configurable so the sync-count vs mapped-bytes trade-off can be measured on
@@ -111,6 +114,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     surfaceH_ = surfaceH;
     gfxPath_ = gfxPath;
     route_.store(static_cast<int>(route));
+    cpuDesktop_ = nullptr;
+    engine_ = nullptr;
     frames_.store(0);
     presents_.store(0);
     presentSkips_.store(0);
@@ -131,6 +136,19 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     cacheCount_.store(0);
     otherUs_.store(0);
     otherCount_.store(0);
+    cmpChecks_.store(0);
+    cmpBad_.store(0);
+    cmpMaxDiff_.store(0);
+    cmpRgbDiff_.store(0);
+    cmpAlphaDiff_.store(0);
+    cmpBBoxX0_.store(-1);
+    cmpBBoxY0_.store(-1);
+    cmpBBoxX1_.store(-1);
+    cmpBBoxY1_.store(-1);
+    cmpMaxDelta_.store(0);
+    cmpSmallDeltaPx_.store(0);
+    cmpFirstX_.store(-1);
+    cmpFirstY_.store(-1);
     clearRunSum_.store(0);
     clearRunCount_.store(0);
     clearRunMax_.store(0);
@@ -233,12 +251,23 @@ std::string GfxReplay::StatsLines() {
                               ? (measuredPump > pace ? measuredPump - pace : 0)
                               : (elapsed > pace ? elapsed - pace : 0);
 
+  const char* routeName = "gpu";
+  switch (static_cast<GfxReplayRoute>(route_.load())) {
+    case GfxReplayRoute::kCpu:
+      routeName = "cpu";
+      break;
+    case GfxReplayRoute::kCompare:
+      routeName = "compare";
+      break;
+    default:
+      break;
+  }
   const unsigned long long frames = static_cast<unsigned long long>(frames_.load());
   char head[320];
   std::snprintf(head, sizeof(head),
                 "route=%s  frames=%llu  presents=%llu  fps=%.1f  fail=%llu  skip=%llu\n"
                 "feed=%llums   present=%.2fms   (running=%d)",
-                route_.load() == static_cast<int>(GfxReplayRoute::kCpu) ? "cpu" : "gpu", frames,
+                routeName, frames,
                 static_cast<unsigned long long>(presents), fps,
                 static_cast<unsigned long long>(presentFailures_.load()),
                 static_cast<unsigned long long>(presentSkips_.load()),
@@ -277,6 +306,21 @@ std::string GfxReplay::StatsLines() {
         static_cast<unsigned long long>(clearRunMax_.load()),
         static_cast<unsigned long long>(clearRunCount_.load()));
     out += cls;
+  }
+  const uint64_t cmpChecks = cmpChecks_.load();
+  if (cmpChecks > 0) {
+    char cmp[192];
+    std::snprintf(cmp, sizeof(cmp),
+                  "\ncompare(GPU vs gdi): checks=%llu bad=%llu rgbPx=%llu alphaPx=%llu "
+                  "maxRgbPx=%llu bbox=(%d,%d)-(%d,%d) maxDelta=%d smallDeltaPx=%llu",
+                  static_cast<unsigned long long>(cmpChecks),
+                  static_cast<unsigned long long>(cmpBad_.load()),
+                  static_cast<unsigned long long>(cmpRgbDiff_.load()),
+                  static_cast<unsigned long long>(cmpAlphaDiff_.load()),
+                  static_cast<unsigned long long>(cmpMaxDiff_.load()), cmpBBoxX0_.load(),
+                  cmpBBoxY0_.load(), cmpBBoxX1_.load(), cmpBBoxY1_.load(), cmpMaxDelta_.load(),
+                  static_cast<unsigned long long>(cmpSmallDeltaPx_.load()));
+    out += cmp;
   }
   if (!traffic.empty()) {
     out += "\n";
@@ -445,10 +489,17 @@ void GfxReplay::OnReplayFrame() {
 
 void GfxReplay::Run() {
   renderer_->Prepare();
-  if (route_.load() == static_cast<int>(GfxReplayRoute::kCpu)) {
-    RunCpuReplay(gfxPath_);
-  } else {
-    RunGpuReplay(gfxPath_);
+  switch (static_cast<GfxReplayRoute>(route_.load())) {
+    case GfxReplayRoute::kCpu:
+      RunCpuReplay(gfxPath_);
+      break;
+    case GfxReplayRoute::kCompare:
+      RunCompareReplay(gfxPath_);
+      break;
+    case GfxReplayRoute::kGpu:
+    default:
+      RunGpuReplay(gfxPath_);
+      break;
   }
   endUs_.store(NowUs());
   running_.store(false);
@@ -524,6 +575,164 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
     lastError_ = error;
   }
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
+}
+
+void GfxReplay::RunCompareReplay(const std::string& gfxPath) {
+  // Correctness route: the GPU engine and FreeRDP's own gdi pipeline are fed the
+  // exact same capture, and (sampled) frames are compared pixel by pixel. The
+  // screen keeps showing the GPU route; the CPU desktop decodes but does not
+  // present, so there is no double present and no timing meaning in this mode.
+  GfxCpuDesktop cpu;
+  std::string error;
+  if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = error;
+    return;
+  }
+  std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
+  GfxGpuDesktop engine(clear.get());
+  engine.SetClearBatchAreaLimit(g_clearBatchArea.load());
+  if (!engine.Init()) {
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = "engine init failed";
+    return;
+  }
+  ReplaySink sink(&engine, this);
+  engine_ = &engine;
+  cpuDesktop_ = &cpu;
+
+  hmrdp::GfxDumpSetReplaying(true);
+  const int64_t pumpStart = NowUs();
+  const bool ok = GfxReplayStreamCompare(
+      gfxPath, &sink, [this]() { OnReplayFrame(); }, cpu.gfx(),
+      [this]() { CompareFrames(); }, &running_, &error);
+  pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
+  HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
+             static_cast<unsigned long long>(pumpUs_.load() / 1000),
+             static_cast<unsigned long long>(paceUs_.load() / 1000));
+
+  if (engine_ != nullptr) {
+    const std::string t = engine_->TrafficStats();
+    std::lock_guard<std::mutex> lock(errorMutex_);
+    traffic_ = t;
+  }
+  hmrdp::GfxDumpSetReplaying(false);
+  cpuDesktop_ = nullptr;
+  engine_ = nullptr;
+  if (!ok) {
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = error;
+  }
+  HMRDP_LOGI("gfx replay: finished (compare): %{public}s", Stats().c_str());
+}
+
+void GfxReplay::CompareFrames() {
+  GfxGpuDesktop* engine = engine_;
+  GfxCpuDesktop* cpu = cpuDesktop_;
+  if (engine == nullptr || cpu == nullptr) {
+    return;
+  }
+  // Sample like the live shadow check: a full screen readback is expensive.
+  if ((frames_.load() % static_cast<uint64_t>(kCompareEvery)) != 0) {
+    return;
+  }
+  rdpGdi* gdi = cpu->gdi();
+  const int w = engine->screenWidth();
+  const int h = engine->screenHeight();
+  if (gdi == nullptr || gdi->primary_buffer == nullptr || w <= 0 || h <= 0) {
+    return;
+  }
+  const int cmpW = w < static_cast<int>(gdi->width) ? w : static_cast<int>(gdi->width);
+  const int cmpH = h < static_cast<int>(gdi->height) ? h : static_cast<int>(gdi->height);
+  if (cmpW <= 0 || cmpH <= 0) {
+    return;
+  }
+  std::vector<uint8_t> screen;
+  if (!engine->ReadScreen(&screen)) {
+    return;
+  }
+  if (screen.size() != static_cast<size_t>(w) * static_cast<size_t>(h) * 4) {
+    return;
+  }
+  // Separate RGB differences (a real decoding/composition mismatch) from
+  // alpha-only differences (BGRX surfaces: the two decoders may disagree only on
+  // the unused byte, which is not a visual difference).
+  size_t diffRgb = 0;
+  size_t diffAlpha = 0;
+  int firstX = -1;
+  int firstY = -1;
+  // Bounding box of the RGB differences and the largest per-channel delta:
+  // "one rectangle" means a command/region the engine failed to paint (or
+  // composed differently), while "+/-1 everywhere" means rounding.
+  int bx0 = cmpW;
+  int by0 = cmpH;
+  int bx1 = -1;
+  int by1 = -1;
+  int maxDelta = 0;
+  size_t smallDeltaPx = 0;  // all channels within +/-2: rounding-level
+  uint32_t firstEngine = 0;
+  uint32_t firstGdi = 0;
+  for (int row = 0; row < cmpH; ++row) {
+    const uint8_t* a = screen.data() + static_cast<size_t>(row) * w * 4;
+    const uint8_t* b = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
+    for (int col = 0; col < cmpW; ++col) {
+      const uint8_t* pa = a + col * 4;
+      const uint8_t* pb = b + col * 4;
+      if (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2]) {
+        if (firstX < 0) {
+          firstX = col;
+          firstY = row;
+          std::memcpy(&firstEngine, pa, 4);
+          std::memcpy(&firstGdi, pb, 4);
+        }
+        if (col < bx0) bx0 = col;
+        if (row < by0) by0 = row;
+        if (col > bx1) bx1 = col;
+        if (row > by1) by1 = row;
+        int worst = 0;
+        for (int k = 0; k < 3; ++k) {
+          const int d = static_cast<int>(pa[k]) - static_cast<int>(pb[k]);
+          const int ad = d < 0 ? -d : d;
+          if (ad > worst) worst = ad;
+        }
+        if (worst > maxDelta) maxDelta = worst;
+        if (worst <= 2) smallDeltaPx++;
+        diffRgb++;
+      } else if (pa[3] != pb[3]) {
+        diffAlpha++;
+      }
+    }
+  }
+  cmpSmallDeltaPx_.fetch_add(smallDeltaPx);
+  if (firstX >= 0) {
+    HMRDP_LOGW("gfx replay: compare first diff (%d,%d) engine=0x%08x gdi=0x%08x",
+               firstX, firstY, static_cast<unsigned>(firstEngine), static_cast<unsigned>(firstGdi));
+  }
+  if (bx1 >= 0) {
+    cmpBBoxX0_.store(bx0);
+    cmpBBoxY0_.store(by0);
+    cmpBBoxX1_.store(bx1);
+    cmpBBoxY1_.store(by1);
+    cmpMaxDelta_.store(maxDelta);
+  }
+  cmpChecks_.fetch_add(1);
+  cmpRgbDiff_.fetch_add(diffRgb);
+  cmpAlphaDiff_.fetch_add(diffAlpha);
+  if (diffRgb != 0 || diffAlpha != 0) {
+    cmpBad_.fetch_add(1);
+    const uint64_t prev = cmpMaxDiff_.load();
+    if (static_cast<uint64_t>(diffRgb) > prev) {
+      cmpMaxDiff_.store(static_cast<uint64_t>(diffRgb));
+    }
+    if (cmpFirstX_.load() < 0 && firstX >= 0) {
+      cmpFirstX_.store(firstX);
+      cmpFirstY_.store(firstY);
+    }
+    HMRDP_LOGW("gfx replay: compare diff rgb=%{public}llu alphaOnly=%{public}llu first=(%{public}d,%{public}d) frame=%{public}llu",
+               static_cast<unsigned long long>(diffRgb),
+               static_cast<unsigned long long>(diffAlpha), firstX, firstY,
+               static_cast<unsigned long long>(frames_.load()));
+  }
 }
 
 void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {

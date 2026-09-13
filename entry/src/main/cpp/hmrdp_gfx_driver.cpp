@@ -178,6 +178,9 @@ namespace {
 struct PumpState {
   GfxCommandSink* sink = nullptr;
   const std::function<void()>* onFrame = nullptr;
+  // Compare route only: set when the current chunk contained an EndFrame, so the
+  // caller knows both decoders are at a comparable (composed) state.
+  bool* sawFrame = nullptr;
 };
 
 PumpState* PumpOf(RdpgfxClientContext* gfx) {
@@ -244,7 +247,13 @@ UINT PmpMapSurfaceToScaledOutput(RdpgfxClientContext* gfx,
 UINT PmpEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* pdu) {
   (void)pdu;
   PumpState* state = PumpOf(gfx);
-  if (state != nullptr && state->onFrame != nullptr && *state->onFrame) {
+  if (state == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  if (state->sawFrame != nullptr) {
+    *state->sawFrame = true;
+  }
+  if (state->onFrame != nullptr && *state->onFrame) {
     (*state->onFrame)();
   }
   return CHANNEL_RC_OK;
@@ -354,6 +363,60 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
   const bool ok = GfxReplayPump(path, gfx, stop, error);
   HmrdpGfxReplayFree(gfx);
   return ok;
+}
+
+bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
+                            const std::function<void()>& onFrame, RdpgfxClientContext* gfxB,
+                            const std::function<void()>& onSync, const std::atomic<bool>* stop,
+                            std::string* error) {
+  auto fail = [error](const char* why) {
+    if (error != nullptr) {
+      *error = why;
+    }
+  };
+  if (HmrdpGfxReplayNew == nullptr || HmrdpGfxReplayFree == nullptr ||
+      HmrdpGfxReplayRecv == nullptr) {
+    fail("FreeRDP was not built with the HmRdp GFX capture patch");
+    return false;
+  }
+  if (gfxB == nullptr) {
+    fail("no second replay context");
+    return false;
+  }
+  RdpgfxClientContext* gfxA = HmrdpGfxReplayNew();
+  if (gfxA == nullptr) {
+    fail("cannot create replay context");
+    return false;
+  }
+  bool sawFrame = false;
+  PumpState state;
+  state.sink = sink;
+  state.onFrame = &onFrame;
+  state.sawFrame = &sawFrame;
+  gfxA->custom = &state;
+  InstallPumpCallbacks(gfxA);
+
+  GfxRawCapture capture;
+  if (!capture.Open(path)) {
+    HmrdpGfxReplayFree(gfxA);
+    fail("cannot open capture");
+    return false;
+  }
+  const uint8_t* data = nullptr;
+  uint32_t size = 0;
+  while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
+    sawFrame = false;
+    HmrdpGfxReplayRecv(gfxA, data, size);
+    HmrdpGfxReplayRecv(gfxB, data, size);
+    // Both contexts consumed the same chunk, so they are at the same stream
+    // position; only compare when this chunk carried an EndFrame (both decoders
+    // have composed their frame at that point).
+    if (sawFrame && onSync) {
+      onSync();
+    }
+  }
+  HmrdpGfxReplayFree(gfxA);
+  return true;
 }
 
 }  // namespace hmrdp

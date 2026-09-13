@@ -645,8 +645,14 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     if (argc >= 5) {
       napi_get_value_int32(env, args[4], &route);
     }
-    const hmrdp::GfxReplayRoute replayRoute =
-        route == 1 ? hmrdp::GfxReplayRoute::kCpu : hmrdp::GfxReplayRoute::kGpu;
+    // 0 = GPU only (perf), 1 = CPU(gdi) only (perf reference),
+    // 2 = both fed the same stream + per-frame pixel comparison (correctness).
+    hmrdp::GfxReplayRoute replayRoute = hmrdp::GfxReplayRoute::kGpu;
+    if (route == 1) {
+      replayRoute = hmrdp::GfxReplayRoute::kCpu;
+    } else if (route == 2) {
+      replayRoute = hmrdp::GfxReplayRoute::kCompare;
+    }
     const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
     OHNativeWindow* window = nullptr;
     const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
