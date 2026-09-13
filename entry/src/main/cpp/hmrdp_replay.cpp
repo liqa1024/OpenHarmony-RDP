@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "hmrdp_gfx_capture.h"
+#include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_log.h"
 #include "hmrdp_renderer.h"
@@ -66,7 +67,7 @@ GfxReplay::~GfxReplay() {
 }
 
 bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
-                      const std::string& gfxPath) {
+                      const std::string& gfxPath, GfxReplayRoute route) {
   Stop();
   if (nativeWindow == nullptr || surfaceW <= 0 || surfaceH <= 0 || gfxPath.empty()) {
     if (nativeWindow != nullptr) {
@@ -84,6 +85,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     surfaceW_ = surfaceW;
     surfaceH_ = surfaceH;
     gfxPath_ = gfxPath;
+    route_.store(static_cast<int>(route));
     frames_.store(0);
     presents_.store(0);
     presentFailures_.store(0);
@@ -107,8 +109,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     Stop();
     return false;
   }
-  HMRDP_LOGI("gfx replay: started surface=%{public}dx%{public}d path=%{public}s", surfaceW,
-             surfaceH, gfxPath.c_str());
+  HMRDP_LOGI("gfx replay: started route=%{public}s surface=%{public}dx%{public}d path=%{public}s",
+             route == GfxReplayRoute::kCpu ? "cpu" : "gpu", surfaceW, surfaceH, gfxPath.c_str());
   return true;
 }
 
@@ -158,9 +160,10 @@ std::string GfxReplay::Stats() {
     std::lock_guard<std::mutex> lock(errorMutex_);
     err = lastError_;
   }
-  char buf[256];
+  char buf[288];
   std::snprintf(buf, sizeof(buf),
-                "running=%d frames=%llu presents=%llu fps=%.1f presentFail=%llu err=%s",
+                "route=%s running=%d frames=%llu presents=%llu fps=%.1f presentFail=%llu err=%s",
+                route_.load() == static_cast<int>(GfxReplayRoute::kCpu) ? "cpu" : "gpu",
                 running_.load() ? 1 : 0,
                 static_cast<unsigned long long>(frames_.load()),
                 static_cast<unsigned long long>(presents), fps,
@@ -196,11 +199,15 @@ void GfxReplay::OnReplayFrame() {
 
 void GfxReplay::Run() {
   renderer_->Prepare();
-  RunReplay(gfxPath_);
+  if (route_.load() == static_cast<int>(GfxReplayRoute::kCpu)) {
+    RunCpuReplay(gfxPath_);
+  } else {
+    RunGpuReplay(gfxPath_);
+  }
   running_.store(false);
 }
 
-void GfxReplay::RunReplay(const std::string& gfxPath) {
+void GfxReplay::RunGpuReplay(const std::string& gfxPath) {
   // Inject FreeRDP's ClearCodec decoder like a live session does, so the
   // replayed desktop is complete (ClearCodec bands are not self-contained).
   std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
@@ -228,6 +235,65 @@ void GfxReplay::RunReplay(const std::string& gfxPath) {
     lastError_ = error;
   }
   HMRDP_LOGI("gfx replay: finished: %{public}s", Stats().c_str());
+}
+
+void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
+  // FreeRDP's own gdi pipeline handles the decoding (clear/progressive/...),
+  // exactly like a live session. Only the destination changes: gdi's primary
+  // buffer is uploaded through the CPU DrawFrame path instead of a shared GPU
+  // texture, so this route is the CPU reference for the GPU engine.
+  GfxCpuDesktop cpu;
+  std::string error;
+  if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = error;
+    return;
+  }
+  cpu.SetFrameFn([this, &cpu]() { OnCpuFrame(&cpu); });
+
+  hmrdp::GfxDumpSetReplaying(true);
+  nextFrameUs_ = NowUs();
+
+  const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error);
+
+  hmrdp::GfxDumpSetReplaying(false);
+  cpu.SetFrameFn(nullptr);
+  if (!ok) {
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = error;
+  }
+  HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
+}
+
+void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
+  if (cpu == nullptr) {
+    return;
+  }
+  if (NowUs() - startUs_.load() > kMaxRunUs) {
+    HMRDP_LOGI("gfx replay: 120s cap reached");
+    running_.store(false);
+    return;
+  }
+  const int pw = pendingW_.exchange(0);
+  const int ph = pendingH_.exchange(0);
+  if (pw > 0 && ph > 0) {
+    renderer_->ResizeSurface(pw, ph);
+  }
+  // DrawFrame() letterboxes against the desktop size and refuses to draw until
+  // it is known; the GPU route passes it to PresentTexture instead.
+  renderer_->SetDesktopSize(cpu->width(), cpu->height());
+  if (PresentGdiFrame(cpu->gdi(), renderer_.get())) {
+    presents_.fetch_add(1);
+  } else {
+    presentFailures_.fetch_add(1);
+  }
+  frames_.fetch_add(1);
+  if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
+    HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
+  }
+  nextFrameUs_ += static_cast<int64_t>(kFrameMs) * 1000;
+  std::this_thread::sleep_until(
+      std::chrono::steady_clock::time_point(std::chrono::microseconds(nextFrameUs_)));
 }
 
 }  // namespace hmrdp

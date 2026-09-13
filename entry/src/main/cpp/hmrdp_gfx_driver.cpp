@@ -9,14 +9,6 @@
 #include "hmrdp_log.h"
 #include "hmrdp_rfx.h"  // GpuCmd ids
 
-// Provided by the patched rdpgfx client (native/scripts/patch-freerdp.ps1). Weak
-// so the app still links against stock FreeRDP, where the replay reports
-// "unavailable" instead of crashing.
-extern "C" RdpgfxClientContext* HmrdpGfxReplayNew(void) __attribute__((weak));
-extern "C" void HmrdpGfxReplayFree(RdpgfxClientContext* context) __attribute__((weak));
-extern "C" UINT HmrdpGfxReplayRecv(RdpgfxClientContext* context, const BYTE* data, UINT32 size)
-    __attribute__((weak));
-
 namespace hmrdp {
 
 namespace {
@@ -308,6 +300,34 @@ void InstallPumpCallbacks(RdpgfxClientContext* gfx) {
 
 }  // namespace
 
+bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
+                   const std::atomic<bool>* stop, std::string* error) {
+  auto fail = [error](const char* why) {
+    if (error != nullptr) {
+      *error = why;
+    }
+  };
+  if (HmrdpGfxReplayRecv == nullptr) {
+    fail("FreeRDP was not built with the HmRdp GFX capture patch");
+    return false;
+  }
+  if (gfx == nullptr) {
+    fail("no RDPGFX replay context");
+    return false;
+  }
+  GfxRawCapture capture;
+  if (!capture.Open(path)) {
+    fail("cannot open capture");
+    return false;
+  }
+  const uint8_t* data = nullptr;
+  uint32_t size = 0;
+  while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
+    HmrdpGfxReplayRecv(gfx, data, size);
+  }
+  return true;
+}
+
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error) {
@@ -316,36 +336,24 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
       *error = why;
     }
   };
-  if (HmrdpGfxReplayNew == nullptr || HmrdpGfxReplayRecv == nullptr ||
-      HmrdpGfxReplayFree == nullptr) {
+  if (HmrdpGfxReplayNew == nullptr || HmrdpGfxReplayFree == nullptr) {
     fail("FreeRDP was not built with the HmRdp GFX capture patch");
     return false;
   }
-  GfxRawCapture capture;
-  if (!capture.Open(path)) {
-    fail("cannot open capture");
-    return false;
-  }
-  PumpState state;
-  state.sink = sink;
-  state.onFrame = &onFrame;
-
   RdpgfxClientContext* gfx = HmrdpGfxReplayNew();
   if (gfx == nullptr) {
     fail("cannot create replay context");
     return false;
   }
+  PumpState state;
+  state.sink = sink;
+  state.onFrame = &onFrame;
   gfx->custom = &state;
   InstallPumpCallbacks(gfx);
 
-  const uint8_t* data = nullptr;
-  uint32_t size = 0;
-  while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
-    HmrdpGfxReplayRecv(gfx, data, size);
-  }
-
+  const bool ok = GfxReplayPump(path, gfx, stop, error);
   HmrdpGfxReplayFree(gfx);
-  return true;
+  return ok;
 }
 
 }  // namespace hmrdp

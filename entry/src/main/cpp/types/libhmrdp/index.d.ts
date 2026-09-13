@@ -91,9 +91,10 @@ export const gpuComputeInfo: () => string;
 
 /**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+ * `route` selects the decoder: 0 = GPU desktop engine, 1 = FreeRDP gdi (CPU).
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
-  gfxPath: string) => string;
+  gfxPath: string, route: number) => string;
 export const stopGfxReplayTest: () => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;

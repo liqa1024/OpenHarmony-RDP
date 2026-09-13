@@ -39,6 +39,7 @@
 
 #include "hmrdp_log.h"
 #include "hmrdp_gfx_capture.h"
+#include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_rfx.h"
 
@@ -2296,14 +2297,12 @@ void Session::HandleEndPaint() {
   if (hwnd->invalid->null) {
     return;
   }
-  hwnd->invalid->null = TRUE;
-
   const uint64_t renderStart = NowUs();
-  // DrawFrame only fails when the GL context/texture is not ready yet; a
-  // successful call is a real present (fps / 本机 telemetry / input response).
-  const bool presented =
-      renderer_.DrawFrame(gdi->primary_buffer, gdi->stride, x, y, width, height);
-  if (!presented) {
+  // Shared with the offline CPU replay route (hmrdp_gfx_cpu.cpp), so the live
+  // gdi fallback and the replay present exactly the same way. It only fails when
+  // the GL context/texture is not ready yet or nothing is dirty; a successful
+  // call is a real present (fps / 本机 telemetry / input response).
+  if (!PresentGdiFrame(gdi, &renderer_)) {
     return;
   }
   AfterPresent(renderStart);

@@ -25,6 +25,21 @@
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/rdpgfx.h>
 
+// Provided by the patched rdpgfx client (native/scripts/patch-freerdp.ps1).
+// Weak so the app still links against stock FreeRDP, where the replay reports
+// "unavailable" instead of crashing.
+extern "C" RdpgfxClientContext* HmrdpGfxReplayNew(void) __attribute__((weak));
+extern "C" void HmrdpGfxReplayFree(RdpgfxClientContext* context) __attribute__((weak));
+// Same as New/Free, but binds the plugin to a caller-owned rdpContext (used by
+// the offline CPU/gdi replay route so gfx->rdpcontext carries the real
+// settings); the caller keeps ownership of the context.
+extern "C" RdpgfxClientContext* HmrdpGfxReplayNewWithContext(rdpContext* rcontext)
+    __attribute__((weak));
+extern "C" void HmrdpGfxReplayFreeWithContext(RdpgfxClientContext* context)
+    __attribute__((weak));
+extern "C" UINT HmrdpGfxReplayRecv(RdpgfxClientContext* context, const BYTE* data, UINT32 size)
+    __attribute__((weak));
+
 namespace hmrdp {
 
 // Destination for GFX commands decoded from RDPGFX PDUs. The live session
@@ -54,10 +69,19 @@ void GfxMapSurfaceToOutput(GfxCommandSink* sink, const RDPGFX_MAP_SURFACE_TO_OUT
 void GfxMapSurfaceToScaledOutput(GfxCommandSink* sink,
                                  const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu);
 
-// Replays one raw hmrdp_gfx.bin capture through FreeRDP's ZGX + RDPGFX parsing
-// into `sink`, invoking `onFrame` after every EndFrame. `stop` may be null.
-// Returns false and fills `error` (when non-null) on failure - in particular
-// when FreeRDP was built without the HmRdp GFX capture patch.
+// Feeds every raw chunk of one hmrdp_gfx.bin capture into an already-built
+// RDPGFX context (FreeRDP does the ZGX + PDU parsing). This is the whole
+// read/decompress/parse loop, shared by both replay routes: the GPU route
+// supplies a context whose callbacks map into a GfxCommandSink, the CPU route
+// supplies a stock gdi-backed context. `stop` may be null. Returns false and
+// fills `error` (when non-null) on failure - in particular when FreeRDP was
+// built without the HmRdp GFX capture patch.
+bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
+                   const std::atomic<bool>* stop, std::string* error);
+
+// GPU replay route: builds the replay context, installs the GfxMap* callbacks
+// feeding `sink`, pumps the capture and invokes `onFrame` after every EndFrame.
+// `stop` may be null. Returns false and fills `error` on failure.
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error);

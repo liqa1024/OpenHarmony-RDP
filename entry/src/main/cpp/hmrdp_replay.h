@@ -19,21 +19,31 @@ namespace hmrdp {
 
 class Renderer;
 class GfxGpuDesktop;
+class GfxCpuDesktop;
+
+// Which decoder the replay runs. kGpu is the GPU desktop engine (shared EGL
+// texture), kCpu is FreeRDP's own gdi pipeline (offline, CPU upload). Same
+// capture, same ZGX/RDPGFX parsing - only the destination differs, so the two
+// can be compared on screen.
+enum class GfxReplayRoute { kGpu = 0, kCpu = 1 };
 
 class GfxReplay {
  public:
   static GfxReplay& Instance();
 
   // Takes ownership of `nativeWindow` (from the XComponent surface id) and
-  // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it. Waits briefly for
-  // the first frame or failure.
-  bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath);
+  // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it through `route`.
+  // Waits briefly for the first frame or failure.
+  bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath,
+             GfxReplayRoute route);
   void Resize(int width, int height);
   void Stop();
   std::string Stats();
 
   // Called by the replay GFX callbacks on every EndFrame (replay thread).
   void OnReplayFrame();
+  // Called from the offline gdi EndPaint hook (CPU route, replay thread).
+  void OnCpuFrame(GfxCpuDesktop* cpu);
 
  private:
   GfxReplay() = default;
@@ -42,7 +52,8 @@ class GfxReplay {
   GfxReplay& operator=(const GfxReplay&) = delete;
 
   void Run();
-  void RunReplay(const std::string& gfxPath);
+  void RunGpuReplay(const std::string& gfxPath);
+  void RunCpuReplay(const std::string& gfxPath);
 
   std::mutex mutex_;
   std::unique_ptr<Renderer> renderer_;
@@ -50,6 +61,7 @@ class GfxReplay {
   std::atomic<bool> running_{false};
   void* window_ = nullptr;
   std::string gfxPath_;
+  std::atomic<int> route_{0};
   int surfaceW_ = 0;
   int surfaceH_ = 0;
   std::atomic<int> pendingW_{0};

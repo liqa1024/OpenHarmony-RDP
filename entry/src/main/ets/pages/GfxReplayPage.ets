@@ -49,6 +49,8 @@ class ReplaySurfaceController extends XComponentController {
 @Component
 struct GfxReplayPage {
   @State status: string = '等待 surface...';
+  // 0 = GPU desktop engine (shared texture), 1 = FreeRDP gdi (CPU reference).
+  @State replayRoute: number = 0;
   private controller: ReplaySurfaceController = new ReplaySurfaceController();
   private statsTimer: number = -1;
   private surfaceId: string = '';
@@ -100,8 +102,8 @@ struct GfxReplayPage {
       return;
     }
     RdpNative.stopReplayTest();
-    const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW, this.surfaceH,
-      `${dir}/hmrdp_gfx.bin`);
+    const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
+      this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRoute);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;
@@ -173,6 +175,18 @@ struct GfxReplayPage {
           .fontColor($r('app.color.text_primary'))
           .margin({ left: 12 })
           .layoutWeight(1)
+
+        Button(this.replayRoute === 0 ? '路线:GPU' : '路线:CPU')
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.replayRoute = this.replayRoute === 0 ? 1 : 0;
+            this.startReplay();
+          })
 
         Button('重新回放')
           .height(34)

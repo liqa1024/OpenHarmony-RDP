@@ -113,7 +113,11 @@ if ([System.IO.File]::ReadAllText($rdpeiMain).Contains('g_HmrdpTouchFrameInterva
 #    channel bytes the server sent are handed to libhmrdp through a runtime
 #    callback registered by libhmrdp (a DVC plugin loads before the NAPI module,
 #    so a weak symbol in libfreerdp would not resolve). A small replay entry
-#    re-runs FreeRDP's own ZGFX + PDU parsing offline for the same stream.
+#    re-runs FreeRDP's own ZGFX + PDU parsing offline for the same stream;
+#    HmrdpGfxReplayNewWithContext/FreeWithContext additionally bind the plugin to
+#    a caller-owned rdpContext, which the CPU/gdi replay route uses (PERF-TODO
+#    §4.2). NOTE: applied as one block - a tree with the old step 7 must be
+#    re-patched from a clean source, not incrementally.
 $rdpgfxMain = "$Source\channels\rdpgfx\client\rdpgfx_main.c"
 if (-not (Test-Path -LiteralPath $rdpgfxMain)) {
   throw "file not found: $rdpgfxMain"
@@ -185,6 +189,39 @@ FREERDP_API void HmrdpGfxReplayFree(RdpgfxClientContext* context)
 	rdpgfx_client_context_free(context);
 	freerdp_settings_free(gfx->rdpcontext->settings);
 	free(gfx->rdpcontext);
+	free(gfx);
+}
+
+/* Same as HmrdpGfxReplayNew(), but binds the plugin to a caller-owned
+ * rdpContext (libhmrdp's offline gdi context) instead of allocating a bare
+ * settings-only one, so gfx->rdpcontext carries the real settings/update.
+ * The caller keeps ownership of rcontext; free the context with
+ * HmrdpGfxReplayFreeWithContext(). */
+FREERDP_API RdpgfxClientContext* HmrdpGfxReplayNewWithContext(rdpContext* rcontext)
+{
+	RDPGFX_PLUGIN* gfx = NULL;
+
+	if (!rcontext || !rcontext->settings)
+		return NULL;
+	gfx = (RDPGFX_PLUGIN*)calloc(1, sizeof(RDPGFX_PLUGIN));
+	if (!gfx)
+		return NULL;
+	if (init_plugin_cb(&gfx->base, rcontext, rcontext->settings) != CHANNEL_RC_OK)
+	{
+		free(gfx);
+		return NULL;
+	}
+	return gfx->context;
+}
+
+FREERDP_API void HmrdpGfxReplayFreeWithContext(RdpgfxClientContext* context)
+{
+	RDPGFX_PLUGIN* gfx = NULL;
+	if (!context)
+		return;
+	gfx = (RDPGFX_PLUGIN*)context->handle;
+	WINPR_ASSERT(gfx);
+	rdpgfx_client_context_free(context);
 	free(gfx);
 }
 

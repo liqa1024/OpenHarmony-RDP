@@ -359,4 +359,5 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
 | `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | GPU RemoteFX/Progressive 引擎：容器解析（块/区域/tile/量化表）+ GPU（GLES 3.1 compute）tile 解码 + `GfxGpuDesktop` 多表面桌面引擎（fill/copy/cache/上传/合成/屏幕脏区）+ ClearCodec 的 FreeRDP 胶水 + 能力探测 + 会话/回放共用的 `GpuPresentComposed` |
 | `entry/src/main/cpp/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制（单文件）：落盘 `hmrdp_gfx.bin`（`u32 长度` + 服务端原始 ZGX 字节）与回放读取（`GfxRawCapture`） |
-| `entry/src/main/cpp/hmrdp_replay.{h,cpp}` | dev 回放上屏：把 `hmrdp_gfx.bin` 喂给 GPU 引擎并 present 到 XComponent（固定复现） |
+| `entry/src/main/cpp/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP CPU（gdi）桌面：复用 FreeRDP 自身解码作为回放的对比路线；`PresentGdiFrame` 为 live gdi 回退与 CPU 回放共用 |
+| `entry/src/main/cpp/hmrdp_replay.{h,cpp}` | dev 回放上屏：把 `hmrdp_gfx.bin` 喂给 GPU 引擎或离线 gdi 桌面（`GfxReplayRoute`）并 present 到 XComponent（固定复现） |

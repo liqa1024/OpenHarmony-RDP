@@ -86,10 +86,13 @@ export class RdpNative {
     return desc;
   }
 
-  /** Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen. */
+  /**
+   * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+   * `route`: 0 = GPU desktop engine, 1 = FreeRDP gdi (CPU reference route).
+   */
   static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
-    gfxPath: string): string {
-    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath);
+    gfxPath: string, route: number): string {
+    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath, route);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx replay: %{public}s', summary);
     return summary;
   }

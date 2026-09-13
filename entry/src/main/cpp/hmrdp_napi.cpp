@@ -628,12 +628,12 @@ std::string GetStringArg(napi_env env, napi_value v) {
 
 // Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
 napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
-  size_t argc = 4;
-  napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+  size_t argc = 5;
+  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string out;
   if (argc < 4) {
-    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath)";
+    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath[, route])";
   } else {
     const std::string surfaceId = GetStringArg(env, args[0]);
     int32_t surfaceW = 0;
@@ -641,12 +641,19 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &surfaceW);
     napi_get_value_int32(env, args[2], &surfaceH);
     const std::string gfxPath = GetStringArg(env, args[3]);
+    int32_t route = 0;
+    if (argc >= 5) {
+      napi_get_value_int32(env, args[4], &route);
+    }
+    const hmrdp::GfxReplayRoute replayRoute =
+        route == 1 ? hmrdp::GfxReplayRoute::kCpu : hmrdp::GfxReplayRoute::kGpu;
     const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
     OHNativeWindow* window = nullptr;
     const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
     if (err != 0 || window == nullptr) {
       out = "failed: native window";
-    } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath)) {
+    } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
+                                                   replayRoute)) {
       out = "started " + hmrdp::GfxReplay::Instance().Stats();
     } else {
       out = "failed: " + hmrdp::GfxReplay::Instance().Stats();
