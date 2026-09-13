@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts are executed by WSL/bash: a CRLF working tree copy fails with
+# "$'\r': command not found" (see native/scripts/build-openssl-wsl.sh), so force
+# LF in the working tree regardless of core.autocrlf.
+*.sh text eol=lf

@@ -119,15 +119,25 @@ devecocli run --device <serial>   # 编译 + 安装 + 启动
 # 1. 下载 FreeRDP 3.10.3 到 native/third_party/FreeRDP 并打补丁
 pwsh native/scripts/patch-freerdp.ps1
 
-# 2. 编译 OpenSSL（在 WSL 中，用现有 Windows OHOS NDK 作为交叉编译器）
+# 2. 编译 zlib（静态库，被 FreeRDP 静态链入）
+pwsh native/scripts/build-zlib.ps1 -Arch arm64-v8a
+
+# 3. 编译 OpenSSL（在 WSL 中，用现有 Windows OHOS NDK 作为交叉编译器）
 wsl -d Ubuntu -e bash -lc 'bash native/scripts/build-openssl-wsl.sh \
   <openssl-src> <build-dir> <install-dir> arm64-v8a'
 
-# 3. 编译 FreeRDP
+# 4. 编译 FreeRDP
 pwsh native/scripts/build-freerdp.ps1 -Arch arm64-v8a
+
+# 5. 把产物放到 entry/libs/<abi>/（该目录已 gitignore）
+copy native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/
 ```
 
 依赖：OpenSSL 3.0.15、zlib 1.3.1（均从源码编译，静态链接进 FreeRDP）。
+
+> 换 ABI 只需把 `arm64-v8a` 换成 `x86_64`（模拟器）并把产物放到 `entry/libs/x86_64/`；
+> 三个脚本都接受 `-Arch`/架构参数，装到 `native/install/<abi>/`。
+> 脚本按顺序有依赖：zlib / OpenSSL 必须先于 FreeRDP。
 
 ## 命名
 

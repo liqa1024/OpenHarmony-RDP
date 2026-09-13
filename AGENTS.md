@@ -117,6 +117,7 @@ native/scripts/install-device.ps1 -Device "<真机序列号>"     # 安装 + 启
 
 ```
 native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、GFX 原始流采集/回放钩子、ClearCodec CPU 解码）
+native/scripts/build-zlib.ps1       # zlib 静态库（Windows NDK）；FreeRDP 静态链入
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
