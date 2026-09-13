@@ -16,6 +16,11 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
 
+// ClearCodec batch presets: union-rectangle pixel cap. 0 = one flush per command
+// (minimum mapped bytes, maximum round trips).
+const BATCH_PRESET_PX: number[] = [0, 262144, 1048576, 4194304];
+const BATCH_PRESET_LABEL: string[] = ['单条', '小', '中', '大'];
+
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
     (surfaceId: string, width: number, height: number) => {};
@@ -55,6 +60,11 @@ struct GfxReplayPage {
   // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
   @State gpuInfo: string = '';
+  // ClearCodec batch granularity presets (union-rectangle pixel cap): index into
+  // BATCH_PRESET_PX. Larger = fewer map/unmap round trips but more padding in
+  // the mapped staging buffer; the right value is device-dependent, which is
+  // exactly what this switch is for.
+  @State batchPreset: number = 2;  // 1M px (~4MB) default
   private controller: ReplaySurfaceController = new ReplaySurfaceController();
   private statsTimer: number = -1;
   private surfaceId: string = '';
@@ -113,6 +123,7 @@ struct GfxReplayPage {
       return;
     }
     RdpNative.stopReplayTest();
+    RdpNative.setReplayBatchArea(BATCH_PRESET_PX[this.batchPreset]);
     const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
       this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRoute);
     this.status = summary.startsWith('failed')
@@ -199,6 +210,18 @@ struct GfxReplayPage {
             this.startReplay();
           })
 
+        Button(`批次:${BATCH_PRESET_LABEL[this.batchPreset]}`)
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.batchPreset = (this.batchPreset + 1) % BATCH_PRESET_PX.length;
+            this.startReplay();
+          })
+
         Button(this.showStats ? '隐藏信息' : '显示信息')
           .height(34)
           .fontSize(13)
@@ -238,6 +261,10 @@ struct GfxReplayPage {
             Text(this.gpuInfo)
               .fontSize(12)
               .fontColor('#FF9CDCFE')
+              .width('100%')
+            Text(`批次:${BATCH_PRESET_LABEL[this.batchPreset]} (${BATCH_PRESET_PX[this.batchPreset]} px)`)
+              .fontSize(12)
+              .fontColor('#FFFFD479')
               .width('100%')
             Text(this.status)
               .fontSize(13)

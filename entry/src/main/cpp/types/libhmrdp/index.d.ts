@@ -96,5 +96,11 @@ export const gpuComputeInfo: () => string;
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
   gfxPath: string, route: number) => string;
 export const stopGfxReplayTest: () => void;
+/**
+ * Dev-only: ClearCodec batch granularity for the GPU replay - the maximum union
+ * rectangle (pixels) a queued ClearCodec run may cover before it is flushed.
+ * 0 = one flush per command (minimum mapped bytes, maximum round trips).
+ */
+export const setGfxReplayBatchArea: (pixels: number) => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;

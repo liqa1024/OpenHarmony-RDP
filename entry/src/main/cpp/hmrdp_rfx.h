@@ -271,6 +271,20 @@ class GfxGpuDesktop {
   // instrumentation, surfaced on the replay page so it can be read on-device.
   std::string TrafficStats() const;
 
+  // Total time spent inside ClearCodec flushes (map/unmap + CPU decode). The
+  // caller can use the delta around ApplyCommand() to separate flush work from
+  // the command's own cost.
+  uint64_t ClearWorkUs() const;
+
+  // Upper bound, in pixels, for the union rectangle a queued ClearCodec run may
+  // cover before it is flushed. Smaller values mean less padding in the mapped
+  // staging buffer but more map/unmap round trips; 0 disables batching (one
+  // command per flush). This is the knob for trading sync count against mapped
+  // bytes - the right value depends on the device, so it is configurable rather
+  // than tuned to a simulator. Default: 1M pixels (~4 MB).
+  void SetClearBatchAreaLimit(int pixels);
+  int clearBatchAreaLimit() const;
+
   // --- Pixel commands (FreeRDP GFX command semantics) ----------------------
   // Applies one captured/received GFX command. `params`/`payload` may be null
   // when their length is 0. Unknown command ids and unknown target surfaces are

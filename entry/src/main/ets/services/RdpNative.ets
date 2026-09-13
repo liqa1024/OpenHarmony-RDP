@@ -10,7 +10,8 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
 RdpEventCallback,
-startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
+startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
+setGfxReplayBatchArea } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -99,6 +100,14 @@ export class RdpNative {
 
   static stopReplayTest(): void {
     stopGfxReplayTest();
+  }
+
+  /**
+   * Dev/test: ClearCodec batch granularity for the GPU replay (union-rectangle
+   * pixel cap). Takes effect on the next replay start.
+   */
+  static setReplayBatchArea(pixels: number): void {
+    setGfxReplayBatchArea(pixels);
   }
 
   static resizeReplayTest(width: number, height: number): void {

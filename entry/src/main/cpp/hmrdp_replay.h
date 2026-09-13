@@ -43,6 +43,12 @@ class GfxReplay {
   std::string Stats();
   std::string StatsLines();
 
+  // ClearCodec batch granularity for the next/current GPU replay: maximum union
+  // rectangle area (pixels) a queued run may cover. 0 = one command per flush.
+  // Applies on the next Start() (the page restarts the replay when it changes).
+  void SetClearBatchArea(int pixels);
+  int ClearBatchArea() const;
+
   // Called by the replay GFX callbacks on every EndFrame (replay thread).
   void OnReplayFrame();
   // Called from the offline gdi EndPaint hook (CPU route, replay thread).
@@ -53,6 +59,9 @@ class GfxReplay {
   // `codecId` (from the surface command) splits the apply time by codec so a
   // slow stream (e.g. ClearCodec's CPU read-modify-write) is visible.
   void RecordApply(uint16_t cmdId, uint32_t surfaceId, uint32_t codecId, uint64_t micros);
+  // Time spent inside a ClearCodec flush that a command triggered. Kept out of
+  // the per-class figures so "prog"/"fill" report their own cost.
+  void RecordFlush(uint64_t micros);
   void RecordPresent(uint64_t micros);
 
  private:
@@ -118,6 +127,7 @@ class GfxReplay {
   uint32_t clearRunLen_ = 0;
   uint32_t clearRunSurface_ = 0xFFFFFFFFu;
   bool clearRunActive_ = false;
+  std::atomic<uint64_t> flushUs_{0};
   std::atomic<uint64_t> presentUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
   // Time spent deliberately sleeping in PaceFrame(); subtracted from pumpUs_ so

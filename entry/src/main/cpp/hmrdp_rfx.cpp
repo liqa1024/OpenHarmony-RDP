@@ -938,10 +938,16 @@ struct GfxGpuDesktop::Impl {
     std::vector<uint8_t> payload;
   };
   std::vector<PendingClear> pendingClears;
-  // Undecoded band bytes currently queued. The queue is bounded by this resource
-  // budget (not by a tuned geometry): the shared map is sized from the batch's
-  // own union rectangle, so no bandwidth heuristic is involved.
+  // Undecoded band bytes currently queued (memory safety bound, not a
+  // performance knob).
   size_t pendingBytes = 0;
+  // Union rectangle of the queued run, maintained as commands are appended so
+  // the batch can be capped by area (see clearBatchAreaLimit).
+  int queueRowMin = 0;
+  int queueRowMax = 0;
+  int queueColMin = 0;
+  int queueColMax = 0;
+  int clearBatchAreaLimit = 1 << 20;  // pixels; 0 = no batching
   // Dev instrumentation for the ClearCodec read-modify-write path.
   uint64_t clearFlushes = 0;
   uint64_t clearCmds = 0;
@@ -1518,15 +1524,40 @@ void GfxGpuDesktop::QueueClear(uint16_t surfaceId, const uint8_t* payload, size_
   if (impl_ == nullptr || payload == nullptr || payloadLen == 0) {
     return;
   }
-  // A run never spans surfaces, and the queue is bounded by the undecoded band
-  // bytes: a resource bound, not a tuned geometry. The map that serves the run is
-  // sized from the run's own union rectangle (see FlushPendingClears), so making
-  // a run longer never maps or writes back more than the bands need.
+  // A run never spans surfaces. Its length is bounded two ways: the union
+  // rectangle may not exceed `clearBatchAreaLimit` pixels (this controls the
+  // padding in the shared staging map), and the queued payloads may not exceed
+  // the memory budget. Both are resource bounds; the area limit is the knob that
+  // trades map/unmap round trips against mapped bytes.
   constexpr size_t kMaxPendingPayloadBytes = 4u << 20;  // 4 MB of undecoded bands
+  const int top0 = top < 0 ? 0 : top;
+  const int bottom0 = top0 + height;
+  const int left0 = left < 0 ? 0 : left;
+  const int right0 = left0 + width;
   const bool sameSurface =
       !impl_->pendingClears.empty() && impl_->pendingClears.back().surfaceId == surfaceId;
-  if (!sameSurface || impl_->pendingBytes + payloadLen > kMaxPendingPayloadBytes) {
+  bool fits = sameSurface;
+  if (fits) {
+    const int rmin = top0 < impl_->queueRowMin ? top0 : impl_->queueRowMin;
+    const int rmax = bottom0 > impl_->queueRowMax ? bottom0 : impl_->queueRowMax;
+    const int cmin = left0 < impl_->queueColMin ? left0 : impl_->queueColMin;
+    const int cmax = right0 > impl_->queueColMax ? right0 : impl_->queueColMax;
+    const long long area = static_cast<long long>(rmax - rmin) * static_cast<long long>(cmax - cmin);
+    fits = impl_->clearBatchAreaLimit > 0 && area <= impl_->clearBatchAreaLimit;
+  }
+  if (!fits || impl_->pendingBytes + payloadLen > kMaxPendingPayloadBytes) {
     FlushPendingClears();
+  }
+  if (impl_->pendingClears.empty()) {
+    impl_->queueRowMin = top0;
+    impl_->queueRowMax = bottom0;
+    impl_->queueColMin = left0;
+    impl_->queueColMax = right0;
+  } else {
+    if (top0 < impl_->queueRowMin) impl_->queueRowMin = top0;
+    if (bottom0 > impl_->queueRowMax) impl_->queueRowMax = bottom0;
+    if (left0 < impl_->queueColMin) impl_->queueColMin = left0;
+    if (right0 > impl_->queueColMax) impl_->queueColMax = right0;
   }
   Impl::PendingClear pc;
   pc.surfaceId = surfaceId;
@@ -2430,6 +2461,23 @@ std::string GfxGpuDesktop::TrafficStats() const {
                 static_cast<unsigned long long>(impl_->clearDecodeUs / 1000),
                 static_cast<unsigned long long>(impl_->clearMapBytes / (1024 * 1024)), used);
   return std::string(buf);
+}
+
+uint64_t GfxGpuDesktop::ClearWorkUs() const {
+  if (impl_ == nullptr) {
+    return 0;
+  }
+  return impl_->clearMapUs + impl_->clearDecodeUs;
+}
+
+void GfxGpuDesktop::SetClearBatchAreaLimit(int pixels) {
+  if (impl_ != nullptr) {
+    impl_->clearBatchAreaLimit = pixels;
+  }
+}
+
+int GfxGpuDesktop::clearBatchAreaLimit() const {
+  return impl_ != nullptr ? impl_->clearBatchAreaLimit : 0;
 }
 
 void GfxGpuDesktop::ClearScreenDirty() {

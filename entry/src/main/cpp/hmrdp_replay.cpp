@@ -32,6 +32,11 @@ constexpr int kLogEvery = 120;
 constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap
 constexpr int kStartWaitUs = 3000000;
 
+// ClearCodec batch granularity for the GPU route (union-rectangle pixel cap).
+// Configurable so the sync-count vs mapped-bytes trade-off can be measured on
+// real hardware instead of being fixed to a simulator-derived value.
+std::atomic<int> g_clearBatchArea{1 << 20};
+
 int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -53,10 +58,19 @@ class ReplaySink : public GfxCommandSink {
     // non-surface commands (fill/copy/cache/...).
     const uint32_t codecId =
         (cmdId == kGpuCmdWireToSurface && scalars != nullptr) ? scalars[0] : 0u;
+    // A command may trigger a ClearCodec flush before it runs; charge that time
+    // to its own bucket so the per-class averages stay meaningful.
+    const uint64_t flushBefore = engine_->ClearWorkUs();
     const int64_t t0 = NowUs();
     engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+    const int64_t total = NowUs() - t0;
+    const int64_t flushUs = static_cast<int64_t>(engine_->ClearWorkUs() - flushBefore);
     if (owner_ != nullptr) {
-      owner_->RecordApply(cmdId, surfaceId, codecId, static_cast<uint64_t>(NowUs() - t0));
+      owner_->RecordApply(cmdId, surfaceId, codecId,
+                          static_cast<uint64_t>(total > flushUs ? total - flushUs : 0));
+      if (flushUs > 0) {
+        owner_->RecordFlush(static_cast<uint64_t>(flushUs));
+      }
     }
   }
 
@@ -123,6 +137,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     clearRunLen_ = 0;
     clearRunSurface_ = 0xFFFFFFFFu;
     clearRunActive_ = false;
+    flushUs_.store(0);
     presentUs_.store(0);
     pumpUs_.store(0);
     paceUs_.store(0);
@@ -239,6 +254,7 @@ std::string GfxReplay::StatsLines() {
         cls, sizeof(cls),
         "\nprog  %.2fms x%llu\nclear %.2fms x%llu\nunc   %.2fms x%llu\n"
         "fill  %.2fms x%llu\nblit  %.2fms x%llu\ncache %.2fms x%llu\nother %.2fms x%llu\n"
+        "flush %.0fms (ClearCodec round trip, excluded above)\n"
         "clearRun avg %.1f max %llu n %llu",
         avgMs(progUs_.load(), progCount_.load()),
         static_cast<unsigned long long>(progCount_.load()),
@@ -254,6 +270,7 @@ std::string GfxReplay::StatsLines() {
         static_cast<unsigned long long>(cacheCount_.load()),
         avgMs(otherUs_.load(), otherCount_.load()),
         static_cast<unsigned long long>(otherCount_.load()),
+        static_cast<double>(flushUs_.load()) / 1000.0,
         clearRunCount_.load() > 0
             ? static_cast<double>(clearRunSum_.load()) / static_cast<double>(clearRunCount_.load())
             : 0.0,
@@ -342,8 +359,20 @@ void GfxReplay::RecordApply(uint16_t cmdId, uint32_t surfaceId, uint32_t codecId
   count->fetch_add(1);
 }
 
+void GfxReplay::RecordFlush(uint64_t micros) {
+  flushUs_.fetch_add(micros);
+}
+
 void GfxReplay::RecordPresent(uint64_t micros) {
   presentUs_.fetch_add(micros);
+}
+
+void GfxReplay::SetClearBatchArea(int pixels) {
+  g_clearBatchArea.store(pixels < 0 ? 0 : pixels);
+}
+
+int GfxReplay::ClearBatchArea() const {
+  return g_clearBatchArea.load();
 }
 
 void GfxReplay::PaceFrame(int64_t frameStartUs, bool presented) {
@@ -430,6 +459,7 @@ void GfxReplay::RunGpuReplay(const std::string& gfxPath) {
   // replayed desktop is complete (ClearCodec bands are not self-contained).
   std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
   GfxGpuDesktop engine(clear.get());
+  engine.SetClearBatchAreaLimit(g_clearBatchArea.load());
   if (!engine.Init()) {
     std::lock_guard<std::mutex> err(errorMutex_);
     lastError_ = "engine init failed";

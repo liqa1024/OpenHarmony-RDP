@@ -696,6 +696,22 @@ napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// Dev-only: ClearCodec batch granularity for the GPU replay (union-rectangle
+// pixel cap; 0 = one flush per command). Lets the sync-count vs mapped-bytes
+// trade-off be measured on a real device.
+napi_value SetGfxReplayBatchArea(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t pixels = 1 << 20;
+  if (argc >= 1) {
+    napi_get_value_int32(env, args[0], &pixels);
+  }
+  hmrdp::GfxReplay::Instance().SetClearBatchArea(pixels);
+  HMRDP_LOGI("gfx replay: clear batch area = %{public}d px", pixels);
+  return CreateUndefined(env);
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -764,6 +780,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"resizeGfxReplayTest", nullptr, ResizeGfxReplayTest, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setGfxReplayBatchArea", nullptr, SetGfxReplayBatchArea, nullptr, nullptr, nullptr,
        napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
