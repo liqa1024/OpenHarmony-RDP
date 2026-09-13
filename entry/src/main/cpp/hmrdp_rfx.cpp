@@ -17,6 +17,7 @@
 #include "hmrdp_rfx.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -683,6 +684,12 @@ void main() {
 }
 )GLSL";
 
+int64_t NowUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 bool CheckGl(const char* what) {
   const GLenum err = glGetError();
   if (err != GL_NO_ERROR) {
@@ -828,12 +835,28 @@ struct GfxGpuDesktop::Impl {
   GLuint composeProg = 0;
   GLuint fillProg = 0;
   GLuint copyProg = 0;
-  GLuint payloadBuf = 0;
-  GLuint metaBuf = 0;
   GLuint coefBuf = 0;
-  GLuint tileMetaBuf = 0;
-  GLuint composeRectBuf = 0;
-  size_t composeRectCapacity = 0;
+
+  // Rotating set of SSBOs for the buffers rewritten on every GFX command
+  // (payload / per-chunk meta / compose rects). The CPU writes slot k+1 while
+  // the GPU may still be reading slot k, so no implicit sync and no per-write
+  // reallocation is needed - the textbook multi-buffering for UMA targets where
+  // memory is shared and the hazard is ordering, not bandwidth.
+  struct SsboRing {
+    static constexpr int kSlots = 3;
+    GLuint buf[kSlots] = {0, 0, 0};
+    size_t cap[kSlots] = {0, 0, 0};
+    int slot = 0;
+    GLuint Next() {
+      slot = (slot + 1) % kSlots;
+      return buf[slot];
+    }
+    size_t& Cap() { return cap[slot]; }
+  };
+  SsboRing payloadRing;
+  SsboRing metaRing;
+  SsboRing tileMetaRing;
+  SsboRing composeRectRing;
 
   GLuint decodeNumStreams = 0, decodeCompBase = 0, decodeTempBase = 0;
   GLuint composeNumTiles = 0, composeCompBase = 0;
@@ -891,7 +914,44 @@ struct GfxGpuDesktop::Impl {
   int screenDirtyB = 0;
 
   size_t coefWords = 0;
-  size_t payloadCapacity = 0;
+
+  // Staging buffer for the ClearCodec batch: the union rectangle of a run is
+  // packed here with a tight stride so the CPU only ever maps - and the driver
+  // only ever has to cache-maintain/write back - the pixels the bands actually
+  // need, instead of whole padded rows.
+  GLuint clearStageBuf = 0;
+  size_t clearStageBytes = 0;
+
+  // Reusable CPU staging scratch, grown on demand: the per-chunk Progressive
+  // meta blobs. Reallocating these per command is avoidable heap churn when the
+  // stream carries thousands of commands per second.
+  std::vector<uint8_t> metaScratch;
+  std::vector<uint32_t> tileMetaScratch;
+
+  // Queued ClearCodec commands sharing one GPU map (see FlushPendingClears).
+  struct PendingClear {
+    uint16_t surfaceId = 0;
+    int left = 0;
+    int top = 0;
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> payload;
+  };
+  std::vector<PendingClear> pendingClears;
+  // Undecoded band bytes currently queued. The queue is bounded by this resource
+  // budget (not by a tuned geometry): the shared map is sized from the batch's
+  // own union rectangle, so no bandwidth heuristic is involved.
+  size_t pendingBytes = 0;
+  // Dev instrumentation for the ClearCodec read-modify-write path.
+  uint64_t clearFlushes = 0;
+  uint64_t clearCmds = 0;
+  uint64_t clearMapUs = 0;
+  uint64_t clearDecodeUs = 0;
+  uint64_t clearMapBytes = 0;
+  // Union rectangle of the batches, to judge how much of the mapped rows/bytes
+  // is actually needed by the bands.
+  uint64_t clearUnionPixels = 0;
+  uint64_t clearSpanPixels = 0;
 
   static void MarkSurfaceDirty(SurfaceGpu& s, int left, int top, int right, int bottom) {
     if (right <= left || bottom <= top) {
@@ -941,7 +1001,16 @@ struct GfxGpuDesktop::Impl {
     if (display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT) {
       return false;
     }
+    // eglMakeCurrent is expensive (ANGLE: a backend round trip) and the engine
+    // is invoked once per GFX command; the same thread usually already has the
+    // context bound. The Renderer binds its own context on the same thread
+    // between engine calls, so query the thread's current context instead of
+    // trusting a cached flag.
+    if (current && eglGetCurrentContext() == context) {
+      return true;
+    }
     if (eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) {
+      current = false;
       return false;
     }
     current = true;
@@ -965,11 +1034,19 @@ void GfxGpuDesktop::Reset() {
   }
   if (impl_->context != EGL_NO_CONTEXT) {
     impl_->MakeCurrent();
-    if (impl_->payloadBuf) glDeleteBuffers(1, &impl_->payloadBuf);
-    if (impl_->metaBuf) glDeleteBuffers(1, &impl_->metaBuf);
+    for (Impl::SsboRing* ring : {&impl_->payloadRing, &impl_->metaRing, &impl_->tileMetaRing,
+                                 &impl_->composeRectRing}) {
+      for (int i = 0; i < Impl::SsboRing::kSlots; ++i) {
+        if (ring->buf[i] != 0) {
+          glDeleteBuffers(1, &ring->buf[i]);
+          ring->buf[i] = 0;
+        }
+        ring->cap[i] = 0;
+      }
+      ring->slot = 0;
+    }
     if (impl_->coefBuf) glDeleteBuffers(1, &impl_->coefBuf);
-    if (impl_->tileMetaBuf) glDeleteBuffers(1, &impl_->tileMetaBuf);
-    if (impl_->composeRectBuf) glDeleteBuffers(1, &impl_->composeRectBuf);
+    if (impl_->clearStageBuf) glDeleteBuffers(1, &impl_->clearStageBuf);
     if (impl_->tempBuf) glDeleteBuffers(1, &impl_->tempBuf);
     if (impl_->screenBuf) glDeleteBuffers(1, &impl_->screenBuf);
     if (impl_->screenTex) glDeleteTextures(1, &impl_->screenTex);
@@ -981,6 +1058,8 @@ void GfxGpuDesktop::Reset() {
       if (s.stateBpBuf) glDeleteBuffers(1, &s.stateBpBuf);
     }
     impl_->surfaces.clear();
+    impl_->pendingClears.clear();
+    impl_->pendingBytes = 0;
     for (auto& kv : impl_->cache) {
       if (kv.second.buf != 0) {
         glDeleteBuffers(1, &kv.second.buf);
@@ -991,9 +1070,9 @@ void GfxGpuDesktop::Reset() {
     if (impl_->composeProg) glDeleteProgram(impl_->composeProg);
     if (impl_->fillProg) glDeleteProgram(impl_->fillProg);
     if (impl_->copyProg) glDeleteProgram(impl_->copyProg);
-    impl_->payloadBuf = impl_->metaBuf = impl_->coefBuf = impl_->tileMetaBuf = 0;
-    impl_->composeRectBuf = 0;
-    impl_->composeRectCapacity = 0;
+    impl_->coefBuf = 0;
+    impl_->clearStageBuf = 0;
+    impl_->clearStageBytes = 0;
     impl_->tempBuf = 0;
     impl_->tempWords = 0;
     impl_->screenBuf = 0;
@@ -1084,26 +1163,21 @@ bool GfxGpuDesktop::Init() {
                GL_DYNAMIC_DRAW);
 
   const uint32_t chunkTiles = kChunkTiles;
-  glGenBuffers(1, &impl_->metaBuf);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->metaBuf);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(chunkStreams * kMetaStride),
-               nullptr, GL_DYNAMIC_DRAW);
-  glGenBuffers(1, &impl_->tileMetaBuf);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tileMetaBuf);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(chunkTiles * 16), nullptr,
-               GL_DYNAMIC_DRAW);
-  glGenBuffers(1, &impl_->composeRectBuf);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
-  impl_->composeRectCapacity = static_cast<size_t>(chunkTiles) * 8;  // words, grown on demand
-  glBufferData(GL_SHADER_STORAGE_BUFFER,
-               static_cast<GLsizeiptr>(impl_->composeRectCapacity * sizeof(uint32_t)), nullptr,
-               GL_DYNAMIC_DRAW);
-
-  glGenBuffers(1, &impl_->payloadBuf);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
-  impl_->payloadCapacity = 1u << 20;  // grown on demand
-  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->payloadCapacity), nullptr,
-               GL_DYNAMIC_DRAW);
+  // Every ring slot is pre-allocated so a rotation never reallocates; capacities
+  // only grow for the payload ring (sized to the largest GFX message seen).
+  auto initRing = [](Impl::SsboRing* ring, size_t bytes) {
+    for (int i = 0; i < Impl::SsboRing::kSlots; ++i) {
+      glGenBuffers(1, &ring->buf[i]);
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, ring->buf[i]);
+      glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr,
+                   GL_DYNAMIC_DRAW);
+      ring->cap[i] = bytes;
+    }
+  };
+  initRing(&impl_->metaRing, static_cast<size_t>(chunkStreams) * kMetaStride);
+  initRing(&impl_->tileMetaRing, static_cast<size_t>(chunkTiles) * 16);
+  initRing(&impl_->composeRectRing, static_cast<size_t>(chunkTiles) * 8 * sizeof(uint32_t));
+  initRing(&impl_->payloadRing, 1u << 20);  // grown on demand
 
   if (!CheckGl("init")) {
     return false;
@@ -1201,6 +1275,7 @@ void GfxGpuDesktop::DeleteSurface(uint16_t surfaceId) {
   if (impl_ == nullptr) {
     return;
   }
+  FlushPendingClears();
   const auto it = impl_->surfaces.find(surfaceId);
   if (it == impl_->surfaces.end()) {
     return;
@@ -1248,16 +1323,19 @@ uint16_t GpuRd16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
-constexpr uint32_t kGpuCodecUncompressed = 0x0000;
-constexpr uint32_t kGpuCodecClearCodec = 0x0008;
-constexpr uint32_t kGpuCodecCaprogressive = 0x0009;
-constexpr uint32_t kGpuCodecCaprogressiveV2 = 0x000D;
-
 }  // namespace
 
 void GfxGpuDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
                                  const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
                                  uint32_t payloadLen) {
+  // Every command that is not itself a queued ClearCodec must see the surface
+  // with all earlier ClearCodec writes applied, so the pending run is flushed
+  // first. (A run is contiguous by construction, so this preserves order.)
+  const bool isClear = (cmdId == kGpuCmdWireToSurface && scalars != nullptr &&
+                        scalars[0] == kGpuCodecClearCodec);
+  if (!isClear) {
+    FlushPendingClears();
+  }
   switch (cmdId) {
     case kGpuCmdCreateSurface:
       if (scalars != nullptr) {
@@ -1343,19 +1421,16 @@ void GfxGpuDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint3
       if (codecId == kGpuCodecCaprogressive || codecId == kGpuCodecCaprogressiveV2) {
         DecodeMessage(sid, payload, payloadLen);
       } else if (codecId == kGpuCodecClearCodec) {
-        // CPU decode + read-modify-write of the target surface. ClearCodec is
-        // not self-contained: pixels its bands do not overwrite keep the current
-        // surface value, so the rows are downloaded, decoded in place and
-        // uploaded back.
+        // Queued, not decoded here: ClearCodec needs a GPU->CPU->GPU
+        // read-modify-write and the stream carries long runs of them, so
+        // consecutive same-surface commands are served by one shared map (see
+        // FlushPendingClears). The read-modify-write itself is unavoidable
+        // because ClearCodec is not self-contained: pixels its bands do not
+        // overwrite keep the current surface value.
         if (impl_->clearDecoder != nullptr && payload != nullptr && width > 0 && height > 0) {
-          const int stride = surface->meta.stride;
-          std::vector<uint8_t> scratch(static_cast<size_t>(stride) * height);
-          if (DownloadRows(sid, top, height, scratch.data(), stride) &&
-              impl_->clearDecoder->Decode(payload, payloadLen, width, height, surface->meta.format,
-                                          scratch.data(), stride, left, 0, surface->meta.width,
-                                          height)) {
-            UploadRows(sid, top, height, scratch.data(), stride);
-            Impl::MarkSurfaceDirty(*surface, left, top, left + width, top + height);
+          const int top0 = top < 0 ? 0 : top;
+          if (top0 + height <= surface->meta.height) {
+            QueueClear(sid, payload, payloadLen, left, top0, width, height);
           }
         }
       } else if (codecId == kGpuCodecUncompressed) {
@@ -1431,6 +1506,194 @@ struct StreamJob {
 };
 
 }  // namespace
+
+namespace {
+// Defined with the other pixel-op helpers below; used by the ClearCodec staging
+// pack/unpack.
+inline void DispatchPixels(size_t pixels);
+}  // namespace
+
+void GfxGpuDesktop::QueueClear(uint16_t surfaceId, const uint8_t* payload, size_t payloadLen,
+                               int left, int top, int width, int height) {
+  if (impl_ == nullptr || payload == nullptr || payloadLen == 0) {
+    return;
+  }
+  // A run never spans surfaces, and the queue is bounded by the undecoded band
+  // bytes: a resource bound, not a tuned geometry. The map that serves the run is
+  // sized from the run's own union rectangle (see FlushPendingClears), so making
+  // a run longer never maps or writes back more than the bands need.
+  constexpr size_t kMaxPendingPayloadBytes = 4u << 20;  // 4 MB of undecoded bands
+  const bool sameSurface =
+      !impl_->pendingClears.empty() && impl_->pendingClears.back().surfaceId == surfaceId;
+  if (!sameSurface || impl_->pendingBytes + payloadLen > kMaxPendingPayloadBytes) {
+    FlushPendingClears();
+  }
+  Impl::PendingClear pc;
+  pc.surfaceId = surfaceId;
+  pc.left = left;
+  pc.top = top;
+  pc.width = width;
+  pc.height = height;
+  pc.payload.assign(payload, payload + payloadLen);
+  impl_->pendingBytes += payloadLen;
+  impl_->pendingClears.push_back(std::move(pc));
+}
+
+void GfxGpuDesktop::FlushPendingClears() {
+  if (impl_ == nullptr || impl_->pendingClears.empty()) {
+    return;
+  }
+  std::vector<Impl::PendingClear>& list = impl_->pendingClears;
+  const uint16_t sid = list.front().surfaceId;
+  Impl::SurfaceGpu* surface = impl_->Find(sid);
+  if (surface == nullptr || impl_->clearDecoder == nullptr) {
+    list.clear();
+    impl_->pendingBytes = 0;
+    return;
+  }
+  // The whole run is served by one map of its union rectangle. The rectangle is
+  // packed into a tight-stride staging buffer first, so the range the CPU maps
+  // (and the driver must make coherent / write back) is exactly the pixels the
+  // bands need - not whole padded rows. This is a residency/cache-maintenance
+  // win that matters on unified memory, where the cost of a read-modify-write is
+  // the sync point and the touched range rather than raw transfer bandwidth.
+  int rowMin = surface->meta.height;
+  int rowMax = 0;
+  int colMin = surface->meta.width;
+  int colMax = 0;
+  for (const Impl::PendingClear& pc : list) {
+    const int t = pc.top < 0 ? 0 : pc.top;
+    int b = pc.top + pc.height;
+    if (b > surface->meta.height) {
+      b = surface->meta.height;
+    }
+    if (t < rowMin) {
+      rowMin = t;
+    }
+    if (b > rowMax) {
+      rowMax = b;
+    }
+    const int l = pc.left < 0 ? 0 : pc.left;
+    int r = pc.left + pc.width;
+    if (r > surface->meta.width) {
+      r = surface->meta.width;
+    }
+    if (l < colMin) {
+      colMin = l;
+    }
+    if (r > colMax) {
+      colMax = r;
+    }
+  }
+  if (colMax > colMin) {
+    impl_->clearUnionPixels +=
+        static_cast<uint64_t>(rowMax - rowMin) * static_cast<uint64_t>(colMax - colMin);
+    impl_->clearSpanPixels += static_cast<uint64_t>(rowMax - rowMin) *
+                              static_cast<uint64_t>(surface->meta.width);
+  }
+  const int unionW = colMax - colMin;
+  const int unionH = rowMax - rowMin;
+  if (unionW <= 0 || unionH <= 0 || !impl_->MakeCurrent()) {
+    list.clear();
+    impl_->pendingBytes = 0;
+    return;
+  }
+  const size_t stageStride = static_cast<size_t>(unionW) * 4;
+  const size_t mapBytes = stageStride * static_cast<size_t>(unionH);
+
+  // Grow the staging buffer to the batch's union rectangle (bounded by the
+  // surface itself, so no arbitrary cap is needed).
+  if (mapBytes > impl_->clearStageBytes) {
+    impl_->clearStageBytes = mapBytes + (mapBytes >> 1);
+    if (impl_->clearStageBuf == 0) {
+      glGenBuffers(1, &impl_->clearStageBuf);
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->clearStageBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->clearStageBytes), nullptr,
+                 GL_DYNAMIC_DRAW);
+  }
+
+  // Pack the union rectangle out of the surface (strided rect copy on the GPU).
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, surface->outBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->clearStageBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(surface->meta.stride));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(stageStride));
+  glUniform1i(impl_->copySrcX, colMin);
+  glUniform1i(impl_->copySrcY, rowMin);
+  glUniform1i(impl_->copyDstX, 0);
+  glUniform1i(impl_->copyDstY, 0);
+  glUniform1i(impl_->copyWidth, unionW);
+  glUniform1i(impl_->copyHeight, unionH);
+  DispatchPixels(static_cast<size_t>(unionW) * static_cast<size_t>(unionH));
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+  const int64_t mapStart = NowUs();
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->clearStageBuf);
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                                  static_cast<GLsizeiptr>(mapBytes),
+                                  GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
+  impl_->clearMapUs += static_cast<uint64_t>(NowUs() - mapStart);
+  if (mapped != nullptr) {
+    uint8_t* base = static_cast<uint8_t*>(mapped);
+    const int64_t decodeStart = NowUs();
+    for (const Impl::PendingClear& pc : list) {
+      const int top0 = pc.top < 0 ? 0 : pc.top;
+      const int left0 = pc.left < 0 ? 0 : pc.left;
+      // The decoder writes at its own band origin inside the packed rectangle;
+      // clear_decompress only touches [0,pc.width)x[0,pc.height) of that origin,
+      // so the tight stride and the bit-exact per-command call agree.
+      uint8_t* dst = base + (static_cast<size_t>(top0 - rowMin) * static_cast<size_t>(unionW) +
+                             static_cast<size_t>(left0 - colMin)) *
+                               4;
+      if (impl_->clearDecoder->Decode(pc.payload.data(), pc.payload.size(), pc.width, pc.height,
+                                      surface->meta.format, dst, static_cast<int>(stageStride), 0, 0,
+                                      unionW, unionH)) {
+        Impl::MarkSurfaceDirty(*surface, left0, top0, left0 + pc.width, top0 + pc.height);
+      }
+    }
+    impl_->clearDecodeUs += static_cast<uint64_t>(NowUs() - decodeStart);
+    const int64_t unmapStart = NowUs();
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    impl_->clearMapUs += static_cast<uint64_t>(NowUs() - unmapStart);
+  }
+
+  // Unpack the decoded rectangle back onto the surface.
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->clearStageBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, surface->outBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(stageStride));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(surface->meta.stride));
+  glUniform1i(impl_->copySrcX, 0);
+  glUniform1i(impl_->copySrcY, 0);
+  glUniform1i(impl_->copyDstX, colMin);
+  glUniform1i(impl_->copyDstY, rowMin);
+  glUniform1i(impl_->copyWidth, unionW);
+  glUniform1i(impl_->copyHeight, unionH);
+  DispatchPixels(static_cast<size_t>(unionW) * static_cast<size_t>(unionH));
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  impl_->clearFlushes++;
+  impl_->clearCmds += list.size();
+  impl_->clearMapBytes += mapBytes;
+  if ((impl_->clearFlushes % 512u) == 0u) {
+    HMRDP_LOGI("gfx clear-traffic: flushes=%{public}llu cmds=%{public}llu map=%{public}llu ms "
+               "decode=%{public}llu ms mapped=%{public}llu MB usedPct=%{public}llu",
+               static_cast<unsigned long long>(impl_->clearFlushes),
+               static_cast<unsigned long long>(impl_->clearCmds),
+               static_cast<unsigned long long>(impl_->clearMapUs / 1000),
+               static_cast<unsigned long long>(impl_->clearDecodeUs / 1000),
+               static_cast<unsigned long long>(impl_->clearMapBytes / (1024 * 1024)),
+               static_cast<unsigned long long>(
+                   impl_->clearSpanPixels > 0
+                        ? impl_->clearUnionPixels * 100u / impl_->clearSpanPixels
+                        : 0u));
+  }
+  list.clear();
+  impl_->pendingBytes = 0;
+}
 
 bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, size_t size) {
   if (!ready_ || impl_ == nullptr || payload == nullptr || size == 0) {
@@ -1537,27 +1800,31 @@ bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, si
     return true;
   }
 
-  // Upload payload (grow the buffer if needed).
-  if (size > impl_->payloadCapacity) {
-    impl_->payloadCapacity = size + (size >> 1);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->payloadCapacity),
-                 nullptr, GL_DYNAMIC_DRAW);
+  // Rotate to a buffer the GPU is not reading, then write it directly (no orphan
+  // reallocation, no implicit sync).
+  const GLuint payloadBuf = impl_->payloadRing.Next();
+  if (size > impl_->payloadRing.Cap()) {
+    impl_->payloadRing.Cap() = size + (size >> 1);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, payloadBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(impl_->payloadRing.Cap()), nullptr, GL_DYNAMIC_DRAW);
   }
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, payloadBuf);
   glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(size), payload);
 
-  if (rectPool.size() > impl_->composeRectCapacity) {
-    impl_->composeRectCapacity = rectPool.size() + (rectPool.size() >> 1) + 64;
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 static_cast<GLsizeiptr>(impl_->composeRectCapacity * sizeof(uint32_t)), nullptr,
-                 GL_DYNAMIC_DRAW);
-  }
+  GLuint composeRectBuf = 0;
   if (!rectPool.empty()) {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                    static_cast<GLsizeiptr>(rectPool.size() * sizeof(uint32_t)), rectPool.data());
+    composeRectBuf = impl_->composeRectRing.Next();
+    const size_t needBytes = rectPool.size() * sizeof(uint32_t);
+    if (needBytes > impl_->composeRectRing.Cap()) {
+      impl_->composeRectRing.Cap() = needBytes + (needBytes >> 1) + 256;
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, composeRectBuf);
+      glBufferData(GL_SHADER_STORAGE_BUFFER,
+                   static_cast<GLsizeiptr>(impl_->composeRectRing.Cap()), nullptr, GL_DYNAMIC_DRAW);
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, composeRectBuf);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(needBytes),
+                    rectPool.data());
   }
 
   const uint32_t chunkTiles = kChunkTiles;
@@ -1566,8 +1833,10 @@ bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, si
         static_cast<uint32_t>(std::min(chunkTiles, static_cast<uint32_t>(tiles.size() - start)));
     const uint32_t streams = count * 3;
 
-    std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
-    std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 4, 0);
+    std::vector<uint8_t>& meta = impl_->metaScratch;
+    std::vector<uint32_t>& tileMeta = impl_->tileMetaScratch;
+    meta.assign(static_cast<size_t>(streams) * kMetaStride, 0);
+    tileMeta.assign(static_cast<size_t>(count) * 4, 0);
     for (uint32_t t = 0; t < count; ++t) {
       const TileJob& job = tiles[start + t];
       tileMeta[t * 4] = job.x * 64;  // pixel origin of the tile
@@ -1594,9 +1863,13 @@ bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, si
         std::memcpy(rec + 42, sj.newBit, 10);
       }
     }
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->metaBuf);
+    // Rotate to fresh slots: the previous chunk's dispatches may still be reading
+    // the current ones.
+    const GLuint metaBuf = impl_->metaRing.Next();
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, metaBuf);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(meta.size()), meta.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tileMetaBuf);
+    const GLuint tileMetaBuf = impl_->tileMetaRing.Next();
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, tileMetaBuf);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     static_cast<GLsizeiptr>(tileMeta.size() * 4), tileMeta.data());
 
@@ -1604,8 +1877,8 @@ bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, si
     const uint32_t compBase = 0;
     const uint32_t tempBase = streams * 4096;
     glUseProgram(impl_->decodeProg);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->payloadBuf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->metaBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, payloadBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, metaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, impl_->coefBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, surface->stateCurBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, surface->stateSignBuf);
@@ -1617,10 +1890,10 @@ bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, si
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     glUseProgram(impl_->composeProg);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->tileMetaBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, tileMetaBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->coefBuf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, surface->outBuf);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, impl_->composeRectBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, composeRectBuf);
     glUniform1ui(impl_->composeNumTiles, count);
     glUniform1ui(impl_->composeCompBase, compBase);
     glUniform1i(impl_->composeSurfaceW, surfaceW);
@@ -1632,7 +1905,12 @@ bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, si
     glDispatchCompute((count + 63) / 64, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
-  glFinish();
+  // No glFinish here: it used to drain the whole GPU pipeline on every
+  // Progressive message (the engine is fed once per GFX command), which
+  // serialised CPU and GPU and dominated replay time. The SSBO barrier above
+  // orders the compute writes for the following Compose/dispatch, and the few
+  // paths that read back to the CPU (ReadScreen/ReadSurface and the ClearCodec
+  // band map) issue their own barrier + finish right before mapping.
   return CheckGl("decode message");
 }
 
@@ -1650,7 +1928,12 @@ bool GfxGpuDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
   const GLsizeiptr bytes = static_cast<GLsizeiptr>(surface->outWords * 4);
   out->assign(surface->outWords * 4, 0);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
-  // GLES has no glGetBufferSubData; map the buffer for reading instead.
+  // GLES has no glGetBufferSubData; map the buffer for reading instead. The
+  // barrier makes prior shader writes visible to the buffer-update path and the
+  // finish guarantees they have completed (DecodeMessage no longer drains the
+  // pipeline on every message).
+  glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+  glFinish();
   void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
   if (mapped == nullptr) {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -1742,9 +2025,12 @@ bool GfxGpuDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint
     glUniform1i(impl_->fillWidth, right - left);
     glUniform1i(impl_->fillHeight, bottom - top);
     DispatchPixels(static_cast<size_t>(right - left) * static_cast<size_t>(bottom - top));
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     Impl::MarkSurfaceDirty(*surface, left, top, right, bottom);
   }
+  // One barrier for the whole command: the rects are disjoint writes into the
+  // same buffer and nothing reads it in between, so a per-rect barrier was
+  // needless (a fill PDU can carry hundreds of rects).
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   return CheckGl("solid fill");
 }
 
@@ -1828,6 +2114,10 @@ bool GfxGpuDesktop::DownloadRows(uint16_t surfaceId, int top, int height, uint8_
   }
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
   const size_t offset = static_cast<size_t>(y0) * pitch;
+  // Prior GPU writes (shaders) must be complete and visible before the CPU
+  // reads them here; this is the only place the ClearCodec path needs a stall.
+  glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+  glFinish();
   void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset),
                                   static_cast<GLsizeiptr>((y1 - y0)) * pitch, GL_MAP_READ_BIT);
   if (mapped == nullptr) {
@@ -2061,6 +2351,7 @@ bool GfxGpuDesktop::ResetGraphics(int width, int height) {
   if (!ready_ || impl_ == nullptr) {
     return false;
   }
+  FlushPendingClears();
   if (width <= 0 || height <= 0) {
     if (impl_->screenBuf != 0 || impl_->screenTex != 0) {
       impl_->MakeCurrent();
@@ -2142,6 +2433,9 @@ bool GfxGpuDesktop::Compose() {
   if (!ready_ || impl_ == nullptr || impl_->screenBuf == 0) {
     return false;
   }
+  // A frame boundary: make sure the queued ClearCodec run is on the surfaces
+  // before they are composited.
+  FlushPendingClears();
   if (!impl_->MakeCurrent()) {
     return false;
   }
@@ -2235,6 +2529,10 @@ bool GfxGpuDesktop::ReadScreen(std::vector<uint8_t>* out) {
   const GLsizeiptr bytes = static_cast<GLsizeiptr>(impl_->screenWords * 4);
   out->assign(impl_->screenWords * 4, 0);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->screenBuf);
+  // The compose dispatches wrote this buffer; make them visible/complete before
+  // the CPU readback (only used by diagnostics / shadow compare).
+  glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+  glFinish();
   void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
   if (mapped == nullptr) {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);

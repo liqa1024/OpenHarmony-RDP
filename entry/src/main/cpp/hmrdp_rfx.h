@@ -303,6 +303,17 @@ class GfxGpuDesktop {
   bool ready_ = false;
   int screenW_ = 0;
   int screenH_ = 0;
+
+  // ClearCodec is decoded on the CPU and is not self-contained, so each command
+  // needs a GPU->CPU->GPU read-modify-write of its band. The stream sends runs of
+  // consecutive ClearCodec commands for the same surface (measured ~17 on
+  // average, up to ~200), so they are queued and served by a single shared
+  // mapping instead of one map/unmap stall per command. Order is preserved: the
+  // queue is flushed, in arrival order, before any other command (and before
+  // every compose), and a run never spans two surfaces.
+  void QueueClear(uint16_t surfaceId, const uint8_t* payload, size_t payloadLen, int left,
+                  int top, int width, int height);
+  void FlushPendingClears();
 };
 
 // --- Shared command/present pipeline (session + replay harness) -------------
@@ -323,6 +334,15 @@ enum GpuCmd : uint16_t {
   kGpuCmdResetGraphics = 0x000E,
   kGpuCmdMapSurfaceToOutput = 0x000F,
   kGpuCmdMapSurfaceToScaledOutput = 0x0017,
+};
+
+// GFX surface command codec ids (RDPGFX_CODECID_*), carried in the surface
+// command's first scalar. Unknown ids are not drawn by the engine.
+enum GpuCodec : uint32_t {
+  kGpuCodecUncompressed = 0x0000,
+  kGpuCodecClearCodec = 0x0008,
+  kGpuCodecCaprogressive = 0x0009,
+  kGpuCodecCaprogressiveV2 = 0x000D,
 };
 
 class Renderer;

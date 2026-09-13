@@ -41,18 +41,28 @@ int64_t NowUs() {
 // Sends the replayed commands into the GPU engine; the driver supplies them.
 class ReplaySink : public GfxCommandSink {
  public:
-  explicit ReplaySink(GfxGpuDesktop* engine) : engine_(engine) {}
+  ReplaySink(GfxGpuDesktop* engine, GfxReplay* owner) : engine_(engine), owner_(owner) {}
 
   void ApplyGfx(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
                 const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
                 uint32_t payloadLen) override {
-    if (engine_ != nullptr) {
-      engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+    if (engine_ == nullptr) {
+      return;
+    }
+    // The surface command carries its codec id in scalars[0]; 0 marks the
+    // non-surface commands (fill/copy/cache/...).
+    const uint32_t codecId =
+        (cmdId == kGpuCmdWireToSurface && scalars != nullptr) ? scalars[0] : 0u;
+    const int64_t t0 = NowUs();
+    engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+    if (owner_ != nullptr) {
+      owner_->RecordApply(cmdId, surfaceId, codecId, static_cast<uint64_t>(NowUs() - t0));
     }
   }
 
  private:
   GfxGpuDesktop* engine_ = nullptr;
+  GfxReplay* owner_ = nullptr;
 };
 
 }  // namespace
@@ -89,6 +99,31 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     frames_.store(0);
     presents_.store(0);
     presentFailures_.store(0);
+    applyUs_.store(0);
+    applyCount_.store(0);
+    progUs_.store(0);
+    progCount_.store(0);
+    clearUs_.store(0);
+    clearCount_.store(0);
+    uncompUs_.store(0);
+    uncompCount_.store(0);
+    fillUs_.store(0);
+    fillCount_.store(0);
+    blitUs_.store(0);
+    blitCount_.store(0);
+    cacheUs_.store(0);
+    cacheCount_.store(0);
+    otherUs_.store(0);
+    otherCount_.store(0);
+    clearRunSum_.store(0);
+    clearRunCount_.store(0);
+    clearRunMax_.store(0);
+    clearRunLen_ = 0;
+    clearRunSurface_ = 0xFFFFFFFFu;
+    clearRunActive_ = false;
+    presentUs_.store(0);
+    pumpUs_.store(0);
+    paceUs_.store(0);
     startUs_.store(NowUs());
     renderer_.reset(new Renderer());
     renderer_->SetSurface(window_, surfaceW_, surfaceH_);
@@ -155,25 +190,135 @@ std::string GfxReplay::Stats() {
   const double fps = elapsedUs > 0 ? static_cast<double>(presents) * 1000000.0 /
                                          static_cast<double>(elapsedUs)
                                    : 0.0;
+  auto avgMs = [](uint64_t total, uint64_t count) {
+    return count > 0 ? static_cast<double>(total) / static_cast<double>(count) / 1000.0 : 0.0;
+  };
   std::string err;
   {
     std::lock_guard<std::mutex> lock(errorMutex_);
     err = lastError_;
   }
-  char buf[288];
-  std::snprintf(buf, sizeof(buf),
-                "route=%s running=%d frames=%llu presents=%llu fps=%.1f presentFail=%llu err=%s",
-                route_.load() == static_cast<int>(GfxReplayRoute::kCpu) ? "cpu" : "gpu",
-                running_.load() ? 1 : 0,
-                static_cast<unsigned long long>(frames_.load()),
-                static_cast<unsigned long long>(presents), fps,
-                static_cast<unsigned long long>(presentFailures_.load()),
-                err.empty() ? "-" : err.c_str());
+  const uint64_t pumpRaw = pumpUs_.load();
+  const uint64_t pace = paceUs_.load();
+  const uint64_t pumpUs = pumpRaw > pace ? pumpRaw - pace : 0;
+  char buf[768];
+  std::snprintf(
+      buf, sizeof(buf),
+      "route=%s running=%d frames=%llu presents=%llu fps=%.1f fail=%llu feedMs=%llu "
+      "[ms/count] prog %.2f/%llu clear %.2f/%llu unc %.2f/%llu fill %.2f/%llu "
+      "blit %.2f/%llu cache %.2f/%llu other %.2f/%llu [clearRun avg %.1f max %llu n %llu] "
+      "present %.2f err=%s",
+      route_.load() == static_cast<int>(GfxReplayRoute::kCpu) ? "cpu" : "gpu",
+      running_.load() ? 1 : 0, static_cast<unsigned long long>(frames_.load()),
+      static_cast<unsigned long long>(presents), fps,
+      static_cast<unsigned long long>(presentFailures_.load()),
+      static_cast<unsigned long long>(pumpUs / 1000), avgMs(progUs_.load(), progCount_.load()),
+      static_cast<unsigned long long>(progCount_.load()),
+      avgMs(clearUs_.load(), clearCount_.load()),
+      static_cast<unsigned long long>(clearCount_.load()),
+      avgMs(uncompUs_.load(), uncompCount_.load()),
+      static_cast<unsigned long long>(uncompCount_.load()),
+      avgMs(fillUs_.load(), fillCount_.load()),
+      static_cast<unsigned long long>(fillCount_.load()),
+      avgMs(blitUs_.load(), blitCount_.load()),
+      static_cast<unsigned long long>(blitCount_.load()),
+      avgMs(cacheUs_.load(), cacheCount_.load()),
+      static_cast<unsigned long long>(cacheCount_.load()),
+      avgMs(otherUs_.load(), otherCount_.load()),
+      static_cast<unsigned long long>(otherCount_.load()),
+      clearRunCount_.load() > 0
+          ? static_cast<double>(clearRunSum_.load()) / static_cast<double>(clearRunCount_.load())
+          : 0.0,
+      static_cast<unsigned long long>(clearRunMax_.load()),
+      static_cast<unsigned long long>(clearRunCount_.load()), avgMs(presentUs_.load(), presents),
+      err.empty() ? "-" : err.c_str());
   return std::string(buf);
 }
 
+void GfxReplay::RecordApply(uint16_t cmdId, uint32_t surfaceId, uint32_t codecId,
+                            uint64_t micros) {
+  applyUs_.fetch_add(micros);
+  applyCount_.fetch_add(1);
+  const bool isClear =
+      (cmdId == kGpuCmdWireToSurface && codecId == kGpuCodecClearCodec);
+  if (isClear) {
+    if (clearRunActive_ && surfaceId == clearRunSurface_) {
+      clearRunLen_++;
+    } else {
+      if (clearRunActive_) {
+        clearRunSum_.fetch_add(clearRunLen_);
+        clearRunCount_.fetch_add(1);
+        if (clearRunLen_ > clearRunMax_.load()) {
+          clearRunMax_.store(clearRunLen_);
+        }
+      }
+      clearRunActive_ = true;
+      clearRunSurface_ = surfaceId;
+      clearRunLen_ = 1;
+    }
+  } else if (clearRunActive_) {
+    clearRunSum_.fetch_add(clearRunLen_);
+    clearRunCount_.fetch_add(1);
+    if (clearRunLen_ > clearRunMax_.load()) {
+      clearRunMax_.store(clearRunLen_);
+    }
+    clearRunActive_ = false;
+  }
+
+  std::atomic<uint64_t>* us = &otherUs_;
+  std::atomic<uint64_t>* count = &otherCount_;
+  if (cmdId == kGpuCmdWireToSurface) {
+    if (codecId == kGpuCodecCaprogressive || codecId == kGpuCodecCaprogressiveV2) {
+      us = &progUs_;
+      count = &progCount_;
+    } else if (codecId == kGpuCodecClearCodec) {
+      us = &clearUs_;
+      count = &clearCount_;
+    } else {
+      us = &uncompUs_;
+      count = &uncompCount_;
+    }
+  } else if (cmdId == kGpuCmdSolidFill) {
+    us = &fillUs_;
+    count = &fillCount_;
+  } else if (cmdId == kGpuCmdSurfaceToSurface) {
+    us = &blitUs_;
+    count = &blitCount_;
+  } else if (cmdId == kGpuCmdSurfaceToCache || cmdId == kGpuCmdCacheToSurface ||
+             cmdId == kGpuCmdEvictCacheEntry) {
+    us = &cacheUs_;
+    count = &cacheCount_;
+  }
+  us->fetch_add(micros);
+  count->fetch_add(1);
+}
+
+void GfxReplay::RecordPresent(uint64_t micros) {
+  presentUs_.fetch_add(micros);
+}
+
+void GfxReplay::PaceFrame(int64_t frameStartUs, bool presented) {
+  // Only frames that actually produced a picture are paced: the GFX stream
+  // carries many frame markers with no drawable update (management/ack frames,
+  // off-screen surfaces), and sleeping on every EndFrame made the replay run far
+  // slower than real time - dragging the reported fps down with it. An empty
+  // frame is allowed to pass through at pump speed. The deadline is anchored to
+  // the frame start so a slow frame never accumulates a sleep debt.
+  if (!presented) {
+    return;
+  }
+  const int64_t target = frameStartUs + static_cast<int64_t>(kFrameMs) * 1000;
+  const int64_t before = NowUs();
+  if (target > before) {
+    std::this_thread::sleep_until(
+        std::chrono::steady_clock::time_point(std::chrono::microseconds(target)));
+    paceUs_.fetch_add(static_cast<uint64_t>(NowUs() - before));
+  }
+}
+
 void GfxReplay::OnReplayFrame() {
-  if (NowUs() - startUs_.load() > kMaxRunUs) {
+  const int64_t frameStartUs = NowUs();
+  if (frameStartUs - startUs_.load() > kMaxRunUs) {
     HMRDP_LOGI("gfx replay: 120s cap reached");
     running_.store(false);
     return;
@@ -183,18 +328,19 @@ void GfxReplay::OnReplayFrame() {
   if (pw > 0 && ph > 0) {
     renderer_->ResizeSurface(pw, ph);
   }
-  if (GpuPresentComposed(engine_, renderer_.get())) {
+  const int64_t presentStart = NowUs();
+  const bool presented = GpuPresentComposed(engine_, renderer_.get());
+  RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
+  frames_.fetch_add(1);
+  if (presented) {
     presents_.fetch_add(1);
   } else {
     presentFailures_.fetch_add(1);
   }
-  frames_.fetch_add(1);
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
-  nextFrameUs_ += static_cast<int64_t>(kFrameMs) * 1000;
-  std::this_thread::sleep_until(
-      std::chrono::steady_clock::time_point(std::chrono::microseconds(nextFrameUs_)));
+  PaceFrame(frameStartUs, presented);
 }
 
 void GfxReplay::Run() {
@@ -217,16 +363,20 @@ void GfxReplay::RunGpuReplay(const std::string& gfxPath) {
     lastError_ = "engine init failed";
     return;
   }
-  ReplaySink sink(&engine);
+  ReplaySink sink(&engine, this);
   engine_ = &engine;
 
   // The replayed stream must not re-trigger the capture hook on the recorder.
   hmrdp::GfxDumpSetReplaying(true);
-  nextFrameUs_ = NowUs();
 
   std::string error;
+  const int64_t pumpStart = NowUs();
   const bool ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_,
                                   &error);
+  pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
+  HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
+             static_cast<unsigned long long>(pumpUs_.load() / 1000),
+             static_cast<unsigned long long>(paceUs_.load() / 1000));
 
   hmrdp::GfxDumpSetReplaying(false);
   engine_ = nullptr;
@@ -252,9 +402,13 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   cpu.SetFrameFn([this, &cpu]() { OnCpuFrame(&cpu); });
 
   hmrdp::GfxDumpSetReplaying(true);
-  nextFrameUs_ = NowUs();
 
+  const int64_t pumpStart = NowUs();
   const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error);
+  pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
+  HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
+             static_cast<unsigned long long>(pumpUs_.load() / 1000),
+             static_cast<unsigned long long>(paceUs_.load() / 1000));
 
   hmrdp::GfxDumpSetReplaying(false);
   cpu.SetFrameFn(nullptr);
@@ -269,7 +423,8 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if (cpu == nullptr) {
     return;
   }
-  if (NowUs() - startUs_.load() > kMaxRunUs) {
+  const int64_t frameStartUs = NowUs();
+  if (frameStartUs - startUs_.load() > kMaxRunUs) {
     HMRDP_LOGI("gfx replay: 120s cap reached");
     running_.store(false);
     return;
@@ -282,18 +437,19 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   // DrawFrame() letterboxes against the desktop size and refuses to draw until
   // it is known; the GPU route passes it to PresentTexture instead.
   renderer_->SetDesktopSize(cpu->width(), cpu->height());
-  if (PresentGdiFrame(cpu->gdi(), renderer_.get())) {
+  const int64_t presentStart = NowUs();
+  const bool presented = PresentGdiFrame(cpu->gdi(), renderer_.get());
+  RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
+  frames_.fetch_add(1);
+  if (presented) {
     presents_.fetch_add(1);
   } else {
     presentFailures_.fetch_add(1);
   }
-  frames_.fetch_add(1);
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
-  nextFrameUs_ += static_cast<int64_t>(kFrameMs) * 1000;
-  std::this_thread::sleep_until(
-      std::chrono::steady_clock::time_point(std::chrono::microseconds(nextFrameUs_)));
+  PaceFrame(frameStartUs, presented);
 }
 
 }  // namespace hmrdp

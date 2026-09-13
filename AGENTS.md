@@ -314,8 +314,25 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       用 `glMapBufferRange`。
     - 录制/回放：设备开「抓取 RFX 码流（测试）」→ 在 GFX 通道收包处（`rdpgfx_on_data_received`，
       ZGX 之前）落盘**原始 ZGX 字节**到单文件 `hmrdp_gfx.bin`；dev 页「回放测试」把字节喂回 FreeRDP 的
-      ZGX+PDU 解析再进引擎上屏。需要**打过补丁并重编的 FreeRDP**（`patch-freerdp.ps1` 第 7 步 +
-      `HmrdpSetGfxRawCapture`）。见 PERF-TODO §4/附录 A。
+      ZGX+PDU 解析再进引擎上屏（GPU 引擎 / 离线 gdi 两条路线可切换）。需要**打过补丁并重编的
+      FreeRDP**（`patch-freerdp.ps1` 第 7 步 + `HmrdpSetGfxRawCapture` /
+      `HmrdpGfxReplayNewWithContext`）。见 PERF-TODO §4/附录 A。
+    - **性能：不要给引擎加 `glFinish`**。引擎按 GFX 命令逐条调用，任何整流水排空（曾在
+      `DecodeMessage` 末尾）都会让 CPU/GPU 串行、回放远慢于 CPU 路线；compute 之间用
+      `glMemoryBarrier`，只有真正回读 CPU（`ReadScreen`/`ReadSurface`/ClearCodec 波带）才 barrier
+      + finish。`Impl::MakeCurrent` 用 `eglGetCurrentContext()` 判重，别每条命令都
+      `eglMakeCurrent`。回放限速只作用于**真正出图**的帧（空帧不睡）。见 PERF-TODO §5 W8。
+    - **ClearCodec 是 GPU 路线的头号开销，且不在解码而在读回**：CPU `clear_decompress` 仅 ≈0.35s，
+      其余是跨 CPU/GPU 边界的读写往返（同步点 + cache 维护范围）。它是**成串**的（平均 17 条/段、
+      最长 197，同 surface），已把连续段合并（`QueueClear`/`FlushPendingClears`，见 `hmrdp_rfx.cpp`）：
+      **先把并集矩形 pack 成紧 stride 暂存再 map**，让映射/cache 维护范围 = 波带真实需要的像素，
+      而不是整行。改 flush 时机务必保持**顺序语义**（任何非 ClearCodec 命令与 `Compose` 之前必须
+      flush）；批次上限只用**资源界**（排队 payload 字节），不要引入按模拟器实测拍的几何常量。
+    - **不要在模拟器上标定性能参数**：模拟器是 ANGLE + 虚拟化，传输模型与真机 UMA 完全不同（真机
+      CPU/GPU 共用内存，跨侧成本主要是同步点/范围而不是带宽）。模拟器只用于**正确性**和**计数类**
+      结构指标（命令条数、段数/段长、每类命令数）；绝对耗时与占位参数以真机为准。真机口径要压的是
+      **同步点数、驱动调用数、CPU 介入次数**。普通缓冲改写用**环形（multi-buffering）**而不是
+      `glBufferData(...,nullptr)` orphan。
 
 ## ArkTS 规范
 

@@ -45,6 +45,13 @@ class GfxReplay {
   // Called from the offline gdi EndPaint hook (CPU route, replay thread).
   void OnCpuFrame(GfxCpuDesktop* cpu);
 
+  // Dev timing: accumulated decode-apply / present time (microseconds), reported
+  // per frame by Stats() so the GPU and CPU routes can be compared directly.
+  // `codecId` (from the surface command) splits the apply time by codec so a
+  // slow stream (e.g. ClearCodec's CPU read-modify-write) is visible.
+  void RecordApply(uint16_t cmdId, uint32_t surfaceId, uint32_t codecId, uint64_t micros);
+  void RecordPresent(uint64_t micros);
+
  private:
   GfxReplay() = default;
   ~GfxReplay();
@@ -54,6 +61,9 @@ class GfxReplay {
   void Run();
   void RunGpuReplay(const std::string& gfxPath);
   void RunCpuReplay(const std::string& gfxPath);
+  // Throttles playback to ~60 Hz, but only for frames that actually produced a
+  // picture (see the implementation for why empty frame markers must not pace).
+  void PaceFrame(int64_t frameStartUs, bool presented);
 
   std::mutex mutex_;
   std::unique_ptr<Renderer> renderer_;
@@ -69,10 +79,44 @@ class GfxReplay {
   std::atomic<uint64_t> frames_{0};
   std::atomic<uint64_t> presents_{0};
   std::atomic<uint64_t> presentFailures_{0};
+  std::atomic<uint64_t> applyUs_{0};
+  std::atomic<uint64_t> applyCount_{0};
+  // Per-command apply time/count (GPU route), split by GFX command kind so a
+  // single slow group is visible: Progressive / ClearCodec / uncompressed
+  // bitmap (WireToSurface), solid fill, surface blit, cache, and the rest
+  // (surface lifecycle / mapping / frame markers).
+  std::atomic<uint64_t> progUs_{0};
+  std::atomic<uint64_t> progCount_{0};
+  std::atomic<uint64_t> clearUs_{0};
+  std::atomic<uint64_t> clearCount_{0};
+  std::atomic<uint64_t> uncompUs_{0};
+  std::atomic<uint64_t> uncompCount_{0};
+  std::atomic<uint64_t> fillUs_{0};
+  std::atomic<uint64_t> fillCount_{0};
+  std::atomic<uint64_t> blitUs_{0};
+  std::atomic<uint64_t> blitCount_{0};
+  std::atomic<uint64_t> cacheUs_{0};
+  std::atomic<uint64_t> cacheCount_{0};
+  std::atomic<uint64_t> otherUs_{0};
+  std::atomic<uint64_t> otherCount_{0};
+  // ClearCodec run statistics: how many ClearCodec commands in a row target the
+  // same surface (they could share one GPU map instead of one each).
+  std::atomic<uint64_t> clearRunSum_{0};
+  std::atomic<uint64_t> clearRunCount_{0};
+  std::atomic<uint64_t> clearRunMax_{0};
+  // Replay-thread-only current-run bookkeeping (RecordApply is only called from
+  // the pump thread).
+  uint32_t clearRunLen_ = 0;
+  uint32_t clearRunSurface_ = 0xFFFFFFFFu;
+  bool clearRunActive_ = false;
+  std::atomic<uint64_t> presentUs_{0};
+  std::atomic<uint64_t> pumpUs_{0};
+  // Time spent deliberately sleeping in PaceFrame(); subtracted from pumpUs_ so
+  // the reported feed cost is compute, not playback throttling.
+  std::atomic<uint64_t> paceUs_{0};
   std::atomic<int64_t> startUs_{0};
   // Replay-thread only (no locking needed).
   GfxGpuDesktop* engine_ = nullptr;
-  int64_t nextFrameUs_ = 0;
   std::mutex errorMutex_;
   std::string lastError_;
 };
