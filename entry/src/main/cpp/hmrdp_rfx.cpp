@@ -2415,6 +2415,23 @@ bool GfxGpuDesktop::ResetGraphics(int width, int height) {
   return CheckGl("reset graphics");
 }
 
+std::string GfxGpuDesktop::TrafficStats() const {
+  if (impl_ == nullptr || impl_->clearFlushes == 0) {
+    return std::string();
+  }
+  const unsigned long long used =
+      impl_->clearSpanPixels > 0 ? impl_->clearUnionPixels * 100ull / impl_->clearSpanPixels : 0ull;
+  char buf[256];
+  std::snprintf(buf, sizeof(buf),
+                "clear: flush=%llu cmd=%llu map=%llums dec=%llums mapMB=%llu use=%llu%%",
+                static_cast<unsigned long long>(impl_->clearFlushes),
+                static_cast<unsigned long long>(impl_->clearCmds),
+                static_cast<unsigned long long>(impl_->clearMapUs / 1000),
+                static_cast<unsigned long long>(impl_->clearDecodeUs / 1000),
+                static_cast<unsigned long long>(impl_->clearMapBytes / (1024 * 1024)), used);
+  return std::string(buf);
+}
+
 void GfxGpuDesktop::ClearScreenDirty() {
   if (impl_ != nullptr) {
     impl_->screenDirtyValid = false;

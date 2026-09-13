@@ -38,7 +38,10 @@ class GfxReplay {
              GfxReplayRoute route);
   void Resize(int width, int height);
   void Stop();
+  // Single-line summary (logs) and a multi-line variant for the on-device
+  // performance panel on the replay page.
   std::string Stats();
+  std::string StatsLines();
 
   // Called by the replay GFX callbacks on every EndFrame (replay thread).
   void OnReplayFrame();
@@ -78,6 +81,12 @@ class GfxReplay {
   std::atomic<int> pendingH_{0};
   std::atomic<uint64_t> frames_{0};
   std::atomic<uint64_t> presents_{0};
+  // EndFrame markers that produced no present because the engine had nothing
+  // dirty mapped to the output (normal "static frame"; the GPU route must not
+  // count these as failures).
+  std::atomic<uint64_t> presentSkips_{0};
+  // EndFrame markers where a present was attempted and did not reach the screen
+  // (window/surface not ready, GL error) - this is the real failure counter.
   std::atomic<uint64_t> presentFailures_{0};
   std::atomic<uint64_t> applyUs_{0};
   std::atomic<uint64_t> applyCount_{0};
@@ -115,10 +124,16 @@ class GfxReplay {
   // the reported feed cost is compute, not playback throttling.
   std::atomic<uint64_t> paceUs_{0};
   std::atomic<int64_t> startUs_{0};
+  // Set when the replay loop ends, so Stats() keeps reporting the run's last
+  // figures instead of letting fps/feed decay while the page sits idle.
+  std::atomic<int64_t> endUs_{0};
   // Replay-thread only (no locking needed).
   GfxGpuDesktop* engine_ = nullptr;
   std::mutex errorMutex_;
   std::string lastError_;
+  // Latest ClearCodec traffic summary from the engine (snapshotted periodically
+  // on the replay thread, read by StatsLines on the UI thread).
+  std::string traffic_;
 };
 
 }  // namespace hmrdp

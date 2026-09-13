@@ -51,6 +51,10 @@ struct GfxReplayPage {
   @State status: string = '等待 surface...';
   // 0 = GPU desktop engine (shared texture), 1 = FreeRDP gdi (CPU reference).
   @State replayRoute: number = 0;
+  // On-device performance panel: the stats string is multi-line, shown in a
+  // floating translucent box so the actual picture keeps the full surface.
+  @State showStats: boolean = true;
+  @State gpuInfo: string = '';
   private controller: ReplaySurfaceController = new ReplaySurfaceController();
   private statsTimer: number = -1;
   private surfaceId: string = '';
@@ -59,6 +63,13 @@ struct GfxReplayPage {
 
   aboutToAppear(): void {
     this.applyFullScreen(true);
+    // Renderer / GLES version - the key signal that the GPU path is really in
+    // use (compute=1) when running on the target device.
+    try {
+      this.gpuInfo = RdpNative.describeGpuCompute();
+    } catch (error) {
+      this.gpuInfo = `gpu info unavailable: ${JSON.stringify(error)}`;
+    }
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number) => {
         this.surfaceId = surfaceId;
@@ -188,6 +199,17 @@ struct GfxReplayPage {
             this.startReplay();
           })
 
+        Button(this.showStats ? '隐藏信息' : '显示信息')
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.showStats = !this.showStats;
+          })
+
         Button('重新回放')
           .height(34)
           .fontSize(13)
@@ -201,22 +223,38 @@ struct GfxReplayPage {
       .width('100%')
       .padding({ left: 12, right: 12, top: 8, bottom: 8 })
 
-      XComponent({
-        id: 'replaySurface',
-        type: XComponentType.SURFACE,
-        controller: this.controller
-      })
-        .width('100%')
-        .layoutWeight(1)
-        .backgroundColor('#000000')
+      Stack({ alignContent: Alignment.BottomStart }) {
+        XComponent({
+          id: 'replaySurface',
+          type: XComponentType.SURFACE,
+          controller: this.controller
+        })
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#000000')
 
-      Text(this.status)
-        .fontSize(11)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.showStats) {
+          Column() {
+            Text(this.gpuInfo)
+              .fontSize(12)
+              .fontColor('#FF9CDCFE')
+              .width('100%')
+            Text(this.status)
+              .fontSize(13)
+              .fontColor('#FFF5F5F5')
+              .width('100%')
+              .margin({ top: 4 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .padding(10)
+          .margin({ left: 12, bottom: 12 })
+          .constraintSize({ maxWidth: '95%' })
+          .backgroundColor('#D9000000')
+          .borderRadius(10)
+        }
+      }
+      .width('100%')
+      .layoutWeight(1)
     }
     .width('100%')
     .height('100%')

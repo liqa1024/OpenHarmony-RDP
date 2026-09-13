@@ -266,6 +266,11 @@ class GfxGpuDesktop {
   // Full screen (top-down, `screenW*4` stride) as BGRA. Dev/verification only.
   bool ReadScreen(std::vector<uint8_t>* out);
 
+  // One-line summary of the ClearCodec read-modify-write traffic (flush count,
+  // map/decode time, bytes mapped, union-rectangle utilization). Dev/performance
+  // instrumentation, surfaced on the replay page so it can be read on-device.
+  std::string TrafficStats() const;
+
   // --- Pixel commands (FreeRDP GFX command semantics) ----------------------
   // Applies one captured/received GFX command. `params`/`payload` may be null
   // when their length is 0. Unknown command ids and unknown target surfaces are

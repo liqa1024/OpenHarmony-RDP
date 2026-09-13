@@ -687,10 +687,12 @@ napi_value ResizeGfxReplayTest(napi_env env, napi_callback_info info) {
 
 napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {
   (void)info;
-  const std::string out = hmrdp::GfxReplay::Instance().Stats();
-  HMRDP_LOGI("gfx replay: %{public}s", out.c_str());
+  // Multi-line form for the on-device performance panel; the log keeps the
+  // single-line variant so one record carries the whole summary.
+  const std::string lines = hmrdp::GfxReplay::Instance().StatsLines();
+  HMRDP_LOGI("gfx replay: %{public}s", hmrdp::GfxReplay::Instance().Stats().c_str());
   napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  napi_create_string_utf8(env, lines.c_str(), lines.size(), &result);
   return result;
 }
 
