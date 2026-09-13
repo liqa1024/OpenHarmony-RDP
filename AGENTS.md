@@ -132,7 +132,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > 不再加 H.264 子系统，`libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，
 > 语义面向 **GPU 加速管线**（见 PERF-TODO §2）。GPU 表面引擎（`hmrdp_rfx.cpp`）已**接入会话并默认接管**
 > （见第 20 条）；验证走真实会话的影子对照（`kGpuShadowCompare`）与抓取的**原始 GFX 流回放**
-> （PERF-TODO §4）。
+> （PERF-TODO §4）——**其正确性状态见第 20 条的状态提示**（该实现存在部分正确性隐患，且 live 接管会崩）。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
@@ -283,6 +283,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     > **纯 Vulkan 重写**（不留 GLES 残留，保留 gdi 回退）。开工请阅读 **`VULKAN-TODO.md`**
     > （自包含交接文档）；本条以下内容仅作历史/算法参考（协议语义、验证回路、踩坑仍然适用）。
     > `PERF-TODO.md` 已同步标注为历史。
+    >
+    > ⚠️ **正确性**：GLES 实现**未达成**"逐像素等于 FreeRDP"，存在**部分正确性隐患**——回放「对比」
+    > 路线实测 `bad=19/21`（内容级差异，非 alpha/非舍入），live 开启 GFX 接管后画面异常且会导致
+    > 模拟器崩溃。所以下列"验证结论"不可作基线，详见 `VULKAN-TODO.md` §1.3/§1.6。
     把 FreeRDP 的 CPU 图像处理搬到 GPU——CPU 只保留 ZGFX + RDPGFX PDU 解析（仍由 `rdpgfx` 完成），
     图像解码 / 表面绘制 / 合成 / 上屏全在 GLES **3.1 compute** 上，目标是去掉 CPU 解码 + BGRA 拷贝 +
     纹理上传。**单个模块**：`hmrdp_rfx.{h,cpp}` 含 progressive 容器解析、`GfxGpuDesktop`
@@ -291,8 +295,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     **码流分工**：progressive / 未压缩在 GPU 解码；**ClearCodec 用 FreeRDP `clear_decompress` 的 CPU 钩子**
     （`hmrdp_rfx.cpp` 内的 ClearCodec 胶水，读回-解码-写回目标表面）；Planar / Alpha / RemoteFX 非渐进等**好实现的
     计划在 GPU 内实现**（未实现前该表面留旧像素，接管后没有 gdi 兜底）；真正难做的才走 CPU + 上传兜底。
-    **现状**：tile 解码链（FIRST/UPGRADE/diff）与 surface 引擎在模拟器与真机都**逐像素等于 FreeRDP**
-    （离线抓取回放 `mism=0`）；已**接入会话并默认接管**：
+    **现状**：tile 解码链（FIRST/UPGRADE/diff）与 surface 引擎的**离线 tile 级比对**曾得到 `mism=0`
+    （只覆盖 tile 解码，不代表整屏合成与 live 路径正确）；已**接入会话并默认接管**：
     `hmrdp_session.cpp` 的 `kGpuShadowCompare=false` 时 GFX 回调只喂引擎、不链回 gdi，`EndFrame` 里
     `Compose()` + `Renderer::PresentTexture()` 用**共享 EGL 纹理直连上屏**；置 `true` 保留**双渲染影子
     模式**（gdi 仍解码并每 30 帧与 `gdi->primary_buffer` 逐字节比对，打 `gpu shadow:`）供后续 A/B。
@@ -318,9 +322,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       用 `glMapBufferRange`。
     - 录制/回放：设备开「抓取 RFX 码流（测试）」→ 在 GFX 通道收包处（`rdpgfx_on_data_received`，
       ZGX 之前）落盘**原始 ZGX 字节**到单文件 `hmrdp_gfx.bin`；dev 页「回放测试」把字节喂回 FreeRDP 的
-      ZGX+PDU 解析再进引擎上屏（GPU 引擎 / 离线 gdi 两条路线可切换）。需要**打过补丁并重编的
-      FreeRDP**（`patch-freerdp.ps1` 第 7 步 + `HmrdpSetGfxRawCapture` /
-      `HmrdpGfxReplayNewWithContext`）。见 PERF-TODO §4/附录 A。
+      ZGX+PDU 解析再进引擎上屏。**三条路线**（页面「路线」按钮）：`GPU` / `CPU(gdi)` 单跑测性能，
+      `对比` 则**同流同时喂两路并采样逐像素比对**（正确性；只上屏 GPU，耗时无性能含义）。
+      需要**打过补丁并重编的 FreeRDP**（`patch-freerdp.ps1` 第 7 步 + `HmrdpSetGfxRawCapture` /
+      `HmrdpGfxReplayNewWithContext`）。见 PERF-TODO §4/附录 A、`VULKAN-TODO.md` §6。
     - **性能：不要给引擎加 `glFinish`**。引擎按 GFX 命令逐条调用，任何整流水排空（曾在
       `DecodeMessage` 末尾）都会让 CPU/GPU 串行、回放远慢于 CPU 路线；compute 之间用
       `glMemoryBarrier`，只有真正回读 CPU（`ReadScreen`/`ReadSurface`/ClearCodec 波带）才 barrier
