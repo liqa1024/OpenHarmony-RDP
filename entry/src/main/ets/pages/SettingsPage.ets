@@ -930,9 +930,12 @@ struct SettingsPage {
             this.toggleItem({
               title: '硬件解码（RFX）',
               subtitle: '优先把 RemoteFX 解码放到 GPU；关闭则用 CPU 软解',
+              // Recording turns this off (see the capture toggle below), so it is
+              // locked while the capture is on.
               value: this.hardwareDecode,
-              enabled: true,
-              disabledReason: '',
+              enabled: !this.rfxDump,
+              disabledReason: this.rfxDump
+                ? '已开启码流抓取：录制需走 RFX 软解（gdi），硬件解码已自动关闭' : '',
               onChange: (v: boolean) => {
                 this.hardwareDecode = v;
                 this.persist();
@@ -943,12 +946,19 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '抓取 RFX 码流（测试）',
-              subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供 GPU 解码开发',
+              subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供 GPU 解码开发；开启后本会话走 RFX 软解',
               value: this.rfxDump,
               enabled: true,
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.rfxDump = v;
+                if (v) {
+                  // The capture is only meaningful with gdi's surface baselines,
+                  // so enabling it turns hardware decode off (and remembers it).
+                  // Done here (ArkTS) so the session path follows the setting.
+                  this.hardwareDecode = false;
+                  RdpNative.applyHardwareDecode(false);
+                }
                 this.persist();
                 this.applyRfxDumpSetting();
               }

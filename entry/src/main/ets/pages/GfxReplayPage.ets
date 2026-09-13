@@ -123,6 +123,12 @@ struct GfxReplayPage {
           win.maximize().catch((err: BusinessError) => {
             hilog.warn(DOMAIN, TAG, 'maximize failed: %{public}s', JSON.stringify(err));
           });
+        } else {
+          // Restore the free-floating window: maximize() must be undone so the
+          // home window does not stay maximized after leaving this dev page.
+          win.recover().catch((err: BusinessError) => {
+            hilog.warn(DOMAIN, TAG, 'recover failed: %{public}s', JSON.stringify(err));
+          });
         }
       }).catch((err: BusinessError) => {
         hilog.warn(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(err));
