@@ -90,5 +90,18 @@ $cfg = @(
 & cmake --build $Build --parallel 8
 & cmake --install $Build --prefix $Prefix
 
+# CMake bakes the absolute install prefix into winpr's build-config.h. That
+# header is part of the header set copied into thirdparty/ (so the app compiles
+# without a local FreeRDP install), and an absolute prefix would embed this
+# machine's paths. Normalize it here so whatever is copied is already clean.
+$BuildConfig = Join-Path $Prefix "include\winpr3\winpr\build-config.h"
+if (Test-Path $BuildConfig) {
+  $text = Get-Content -LiteralPath $BuildConfig -Raw
+  $text = $text -replace '(?m)^#define WINPR_INSTALL_PREFIX .*$', '#define WINPR_INSTALL_PREFIX "freerdp"'
+  $text = $text -replace '(?m)^#define WINPR_INSTALL_SYSCONFDIR .*$', '#define WINPR_INSTALL_SYSCONFDIR "freerdp/etc"'
+  Set-Content -LiteralPath $BuildConfig -Value $text -NoNewline -Encoding UTF8
+  Write-Host "=== normalized $BuildConfig (no machine-local paths) ==="
+}
+
 Write-Host "=== FreeRDP installed to $Prefix ==="
 Get-ChildItem "$Prefix\lib" -Filter *.so* -ErrorAction SilentlyContinue | Select-Object Name, Length

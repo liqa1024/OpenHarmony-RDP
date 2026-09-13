@@ -85,8 +85,8 @@ native/scripts/install-device.ps1 -Device "<真机序列号>"     # 安装 + 启
   target 去找产物而报 `Build metadata not found`。
 - 两个 target 的 ABI/库过滤配置在 `entry/build-profile.json5`：`targets[].config.buildOption`
   覆盖 `externalNativeOptions.abiFilters` 与 `nativeLib.filter.excludes`（互斥排除另一 ABI 的
-  `libs/<abi>` 目录）。`abiFilters` 只影响 CMake 编译的 ABI，**不会**过滤预置的
-  `entry/libs/<abi>/*.so`，所以必须用 `nativeLib.filter.excludes` 排除。
+  `libs/<abi>` 目录）。`abiFilters` 只影响 CMake 编译的 ABI，**不会**过滤本地放在
+  `entry/libs/<abi>/*.so` 的库，所以必须用 `nativeLib.filter.excludes` 排除。
 - 改动 `.ets` 后先跑 `arkts_check`，再跑 `build_project`。
 - 任务结束前 `build_project` 必须通过。
 - 仓库**不含签名材料**，`build-profile.json5` 的 `signingConfigs` **保持 `[]`**：签名配置放仓库外
@@ -113,7 +113,7 @@ native/scripts/install-device.ps1 -Device "<真机序列号>"     # 安装 + 启
   （见开头「Vulkan / 硬件加速例外」与 `VULKAN-TODO.md` §3.4）；Vulkan 相关工作一律在真机、由 AI 按
   `VULKAN-TODO.md` §3.5 的循环自动执行。模拟器只用于**与硬件加速无关**的 ArkTS / UI / 逻辑 / 结构调试。
 
-## 原生库源码构建（可选；预编译库已提交）
+## 原生库源码构建（**预编译库不再提交**）
 
 ```
 native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、GFX 原始流采集/回放钩子、ClearCodec CPU 解码）
@@ -122,11 +122,17 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
 
 `native/third_party/`、`native/build/`、`native/install/`、`native/tools/` 已 gitignore。
-产出库只提交**不带版本号的单一 `libX.so`**（如 `libfreerdp3.so`）：`build-freerdp.ps1` 用
+**`entry/libs/<abi>/` 也必须 gitignore、不得提交**：这些 `.so` 里带着**构建机的绝对安装路径**
+（`CMAKE_INSTALL_PREFIX` 会被编进 winpr 等库），属于本机环境信息。**clone 后先本地构建**，
+把产物放到 `entry/libs/<abi>/` 再编译应用（`entry/src/main/cpp/CMakeLists.txt` 按
+`${FREERDP_LIBS}/libX.so` 完整路径链接）。
+
+产出库是**不带版本号的单一 `libX.so`**（如 `libfreerdp3.so`）：`build-freerdp.ps1` 用
 `-DWITH_LIBRARY_VERSIONING=OFF`，配合 `native/patches/AddTargetWithResourceFile.cmake`
 （`patch-freerdp.ps1` 第 5 步）在非 Windows 保留 `lib` 前缀并显式写入 SONAME，避免 Windows 上
-被实体化成 `libX.so.3` 重复副本。CMake 直接完整路径链接 `${FREERDP_LIBS}/libX.so`
-（`entry/src/main/cpp/CMakeLists.txt`），运行时 `DT_NEEDED` 同样是 `libX.so`。
+被实体化成 `libX.so.3` 重复副本；运行时 `DT_NEEDED` 同样是 `libX.so`。
+同理，`thirdparty/freerdp/include/.../winpr/build-config.h` 里的 `WINPR_INSTALL_*` 保持
+**中性值**（`build-freerdp.ps1` 安装后会自动归一化），别把带绝对路径的版本抄进来。
 
 **优化等级 / 调试信息**：`libhmrdp.so` 由 hvigor 按构建模式重编，优化等级交给 OHOS 工具链按
 `CMAKE_BUILD_TYPE` 决定（debug → `-O0 -g -fno-limit-debug-info`，release → `-O2 -DNDEBUG`）；
@@ -162,7 +168,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > 不再加 H.264 子系统，`libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，
 > 语义面向 **GPU 加速管线**（Vulkan；见 `VULKAN-TODO.md` §4.2 与第 20 条），且是**「真机专属功能」**
 > （模拟器不在支持范围）。GPU 引擎正在整体改为 Vulkan；旧的 `hmrdp_rfx.cpp`（GLES）已冻结、只作参考，
-> 随 V7 删除。改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
+> 随 V7 删除。改动 FreeRDP 侧后需重编，并把产物放到 `entry/libs/<abi>/`（该目录已 gitignore，不再提交）；
+> 只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
 
@@ -181,8 +188,8 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
    把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion` 才置 FALSE，
    而 `HandleEndPaint` 对 `null` 直接 return，故静止桌面根本不进呈现路径。额外 `memcmp`
    只增内存/带宽开销（高动态大脏区时反而耗电）。
-5. **原生库命名**：只提交不带版本号的单一 `entry/libs/<abi>/libX.so`（原因与 SONAME 处理见
-   「原生库源码构建」）。
+5. **原生库命名**：产物是不带版本号的单一 `libX.so`（放在**已 gitignore** 的 `entry/libs/<abi>/`，
+   **不再提交**——库内带本机构建路径）。原因与 SONAME 处理见「原生库源码构建」。
 6. **连接与密码存储**：配置存 `ConnectionStore`（preferences，稳定 UUID 作 id、`updatedAt` 供刷新），
    密码单独存 `CredentialStore`（ASSET，按 id），**只在连接成功后**写入。preferences 字符串字段先
    `encodeURIComponent` 再拼接，否则控制字符会损坏文件。
@@ -209,7 +216,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     - **触屏高刷新率**：FreeRDP `rdpei` 默认每 20ms 才发一帧（≈50fps，与 mstsc 的主要差距）；
       `patch-freerdp.ps1` 第 6 步导出运行时全局 `HmrdpSetTouchFrameInterval`，`libhmrdp` 以弱符号引用，
       设置「触屏-高刷新率」开启传 0、默认 20。未打补丁的 FreeRDP 上弱符号为空、开关自动降级。改后需
-      重编 FreeRDP 并回写 `entry/libs/<abi>/*.so`。
+      重编 FreeRDP 并把产物放到 `entry/libs/<abi>/`（已 gitignore）。
     - **触控板滑动**（`event.sourceTool===SourceTool.TOUCHPAD`，`axisVertical/Horizontal` 是本次事件的 vp
       位移而非轮齿）：`services/TouchpadWheel.ets` 按 `120/16vp × 速度倍率` 累加成**高分辨率 RDP 轮转量**
       （9bit 二补码、120=1 齿、单事件 ≤0xFF 分片，对齐 FreeRDP SDL），横向 `HWHEEL`；设置「滚动速度」
