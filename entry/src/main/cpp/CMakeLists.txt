@@ -31,12 +31,20 @@ add_library(hmrdp SHARED
     hmrdp_gfx_cpu.cpp
     hmrdp_gfx_driver.cpp
     hmrdp_replay.cpp
+    hmrdp_vk_context.cpp
+    hmrdp_vk_renderer.cpp
+    hmrdp_vk_desktop.cpp
+    hmrdp_vk_selftest.cpp
 )
 
 # FreeRDP is built without library versioning (see native/scripts/build-freerdp.ps1
 # + -DWITH_LIBRARY_VERSIONING=OFF), so each library is a single version-less
 # libX.so whose SONAME is also libX.so. Linking it records libX.so in DT_NEEDED,
 # matching the packaged files exactly (no libX.so.3 duplicate).
+#
+# libvulkan.so is deliberately NOT linked: it is dlopen()ed at runtime (see
+# hmrdp_vk_context.h) so a device without a usable Vulkan driver degrades to the
+# FreeRDP gdi path instead of failing to load the application.
 target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
@@ -56,4 +64,4 @@ target_link_libraries(hmrdp
 # native debugging harder.
 target_compile_options(hmrdp PRIVATE -Wall -Wextra -fPIC
     -Wno-unused-command-line-argument)
-target_compile_definitions(hmrdp PRIVATE NAPI_VERSION=8)
+target_compile_definitions(hmrdp PRIVATE NAPI_VERSION=8 VK_USE_PLATFORM_OHOS=1)

@@ -11,7 +11,9 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
 setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
-setGfxReplayBatchArea } from 'libhmrdp.so';
+setGfxReplayBatchArea, vulkanInfo, startVulkanTest, presentVulkanTest, resizeVulkanTest,
+stopVulkanTest, startVulkanEngineTest, stopVulkanEngineTest, resizeVulkanEngineTest,
+vulkanEngineTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -116,6 +118,56 @@ export class RdpNative {
 
   static replayTestStats(): string {
     return gfxReplayTestStats();
+  }
+
+  /** Dev/test: logs and returns the Phase 0 Vulkan capability report. */
+  static describeVulkan(): string {
+    const info: string = vulkanInfo();
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'vulkan info: %{public}s', info);
+    return info;
+  }
+
+  /** Dev/test: bind the XComponent surface to the Vulkan swapchain. */
+  static startVulkanTest(surfaceId: string, surfaceW: number, surfaceH: number): string {
+    const summary: string = startVulkanTest(surfaceId, surfaceW, surfaceH);
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'vulkan test: %{public}s', summary);
+    return summary;
+  }
+
+  static presentVulkanTest(red: number, green: number, blue: number): boolean {
+    return presentVulkanTest(red, green, blue);
+  }
+
+  static resizeVulkanTest(width: number, height: number): void {
+    resizeVulkanTest(width, height);
+  }
+
+  static stopVulkanTest(): void {
+    stopVulkanTest();
+  }
+
+  /**
+   * Dev/test (V1): replay the capture through the Vulkan surface engine and
+   * compare it pixel by pixel with FreeRDP's gdi pipeline on the same bytes.
+   * `present` != 0 also blits the Vulkan screen to the XComponent.
+   */
+  static startVulkanEngineTest(gfxPath: string, surfaceId: string, surfaceW: number,
+    surfaceH: number, present: number): string {
+    const summary: string = startVulkanEngineTest(gfxPath, surfaceId, surfaceW, surfaceH, present);
+    hilog.info(GPU_DOMAIN, GPU_TAG, 'vk engine test: %{public}s', summary);
+    return summary;
+  }
+
+  static stopVulkanEngineTest(): void {
+    stopVulkanEngineTest();
+  }
+
+  static resizeVulkanEngineTest(width: number, height: number): void {
+    resizeVulkanEngineTest(width, height);
+  }
+
+  static vulkanEngineTestStats(): string {
+    return vulkanEngineTestStats();
   }
 
   setListener(listener: RdpEventListener): void {

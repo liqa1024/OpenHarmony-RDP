@@ -104,3 +104,34 @@ export const stopGfxReplayTest: () => void;
 export const setGfxReplayBatchArea: (pixels: number) => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;
+
+/**
+ * Dev/test: Phase 0 Vulkan capability report (VULKAN-TODO §3.2) - loader/device
+ * version, migration-relevant extensions, memory types and queue families.
+ * Multi-line, for the dev panel.
+ */
+export const vulkanInfo: () => string;
+
+/**
+ * Dev/test: binds the XComponent surface to the Vulkan swapchain and presents
+ * the first solid frame (VULKAN-TODO §5 V0). Returns a status line. Independent
+ * of any RDP session; a device without a usable Vulkan driver returns a
+ * `failed:` line instead of crashing.
+ */
+export const startVulkanTest: (surfaceId: string, surfaceW: number, surfaceH: number) => string;
+export const presentVulkanTest: (red: number, green: number, blue: number) => boolean;
+export const resizeVulkanTest: (width: number, height: number) => void;
+export const stopVulkanTest: () => void;
+
+/**
+ * Dev/test (VULKAN-TODO §5 V1): replays the capture through the Vulkan surface
+ * engine while FreeRDP's own gdi pipeline consumes the same bytes, and compares
+ * the two composed screens pixel by pixel. Frames carrying progressive/clear
+ * commands are skipped (V2/V3 scope), so a clean run proves "fill + copy +
+ * uncompressed is pixel-exact". `present` (0/1) also blits to the XComponent.
+ */
+export const startVulkanEngineTest: (gfxPath: string, surfaceId: string, surfaceW: number,
+  surfaceH: number, present: number) => string;
+export const stopVulkanEngineTest: () => void;
+export const resizeVulkanEngineTest: (width: number, height: number) => void;
+export const vulkanEngineTestStats: () => string;

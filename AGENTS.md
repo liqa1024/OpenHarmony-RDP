@@ -5,8 +5,15 @@
 ## AI 助手约定（重要）
 
 - **总结必须始终使用中文**：任务收尾 / 最终答复的语言固定为中文（代码、命令、标识符除外）。
-- **实机操作默认禁止、需明确授权，且是最后手段**：日常功能/回归测试一律先用模拟器（见「模拟器（功能测试）」）；
-  **不要动辄"退回真机"、更不要把结论甩给真机**——上真机很麻烦（签名/安装由用户完成）也很危险（先前的
+- **Vulkan 后端例外（重要）：模拟器的 Vulkan 实现有缺陷**（host↔device 内存桥两个方向都失效，
+  `vkCmdBlitImage` 还会在 `the platform Vulkan layer` 里崩），因此**所有 Vulkan 相关工作一律在真机上进行，并由 AI
+  自动完成**：`devecocli build`（hvigor 顺带签名）→ `native/scripts/install-device.ps1 -Device "<序列号>"`
+  → `hdc shell "hilog -x -D 0xD001"` 读结论。**仓库里不出现任何签名路径/口令**。
+  模拟器仍用于 ArkTS/UI/逻辑/结构类调试，但**不参与 Vulkan 像素验证**。
+  依据、最小复现与门禁见 `VULKAN-TODO.md` §3.4/§3.5（另有 `AGENTS.md` 其余规则照旧）。
+- **实机操作默认禁止、需明确授权，且是最后手段**（**Vulkan 后端除外**：见上条，其真机操作已获授权、
+  由 AI 自动执行）：日常功能/回归测试一律先用模拟器（见「模拟器（功能测试）」）；
+  **不要动辄"退回真机"、更不要把结论甩给真机**——上真机很麻烦、也很危险（先前的
   重型 GPU 负载曾把整机/模拟器弄到黑屏）。仅当**已确认是只有真机能判定的 GPU/驱动差异**、且用户**明确
   同意**本次实机验证时才操作，且：**签名与安装由用户完成**（仓库不含签名材料），AI 只做 push 样本 /
   重启 / 读 `hilog` 等无破坏性动作。
@@ -53,6 +60,19 @@ devecocli run --device "<真机序列号>"             # 编译 + 签名 + 安�
 devecocli run --product emulator --module entry@emulator --device "127.0.0.1:5555"   # 模拟器
 ```
 
+**签名：配置放仓库外、由 hvigor 注入；不提交任何签名信息**（`build-profile.json5` 的
+`signingConfigs` 恒为 `[]`）：
+
+- `.signing/signing-config.json`（已 gitignore）放**本机**签名配置（DevEco 自动签名产生的那段
+  `type` + `material`，口令是 DevEco 的密文，只有 hvigor 能解）；
+- 工程级 `hvigorfile.ts` 通过 `config.ohos.overrides.signingConfig` 把它注入（官方《动态修改编译配置》
+  方式二）。文件不存在时自动跳过，构建仍可用（只出未签名 HAP）。
+
+```powershell
+devecocli build                                              # 同时产出 entry-default-signed.hap
+native/scripts/install-device.ps1 -Device "<真机序列号>"     # 安装 + 启动（不接触签名材料）
+```
+
 - product → target 的映射在工程级 `build-profile.json5`：`app.products` 定义
   `default`/`emulator`，`modules[].targets[].applyToProducts` 把 `entry@default` 挂到
   `default`、`entry@emulator` 挂到 `emulator`。DevEco 切换右上角 Product 即切换 ABI。
@@ -64,13 +84,17 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
   `entry/libs/<abi>/*.so`，所以必须用 `nativeLib.filter.excludes` 排除。
 - 改动 `.ets` 后先跑 `arkts_check`，再跑 `build_project`。
 - 任务结束前 `build_project` 必须通过。
-- 仓库**不含签名材料**。本地需配置 DevEco 自动签名，或运行 `devecocli signature generate`。
-  切勿提交 `*.p12/p7b/cer` 或 keystore。
+- 仓库**不含签名材料**，`build-profile.json5` 的 `signingConfigs` **保持 `[]`**：签名配置放仓库外
+  `.signing/signing-config.json`，由 `hvigorfile.ts` 注入（见上）。**DevEco 重新自动签名后**，把它写回的
+  那段 `material` 覆盖到该文件，并把 `build-profile.json5` 改回 `[]`。切勿提交 `*.p12/p7b/cer`/keystore
+  或任何签名路径。
 
 ### 模拟器（功能测试）
 
 - 首选模拟器：**<2in1 emulator>**（2in1，HarmonyOS 6.1.0，x86_64）。
-- `devecocli emulator start "<2in1 emulator>"`。
+  另有 **<2in1 emulator>**（2in1，HarmonyOS 7.0.0 / API 26，镜像已下载）可用；两者都可启。
+  注意：同一时刻只有一个实例占用 5555。
+- `devecocli emulator start "<2in1 emulator>"`（或 `"<2in1 emulator>"`）。
 - `uitest uiInput` 注入的是**触摸**事件，不会触发 `onMouse`；鼠标请用 `uinput -M ...`，
   但其 `-m` 是**相对/累加**移动且指针常"不可见"，精确定位不可靠。
 - 精确坐标：`uitest dumpLayout -p /data/local/tmp/layout.json` + `hdc file recv`，按控件
@@ -82,6 +106,8 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
   有差异**（例如 `#version` 必须位于 shader 第一行——Mali 不容忍前导换行、ANGLE 容忍），但**只有确认
   属于这类设备相关差异时**才在用户明确授权下用真机复验，不要把它当默认步骤或万能退路。
 - 排查顺序：**代码 / 构建 / 数据 → 模拟器自身状态（重型 GL 压测后先冷启动模拟器）→ 真机（需授权）**。
+- **Vulkan 后端不走这条**：模拟器的 Vulkan 有缺陷（见开头「Vulkan 后端例外」与 `VULKAN-TODO.md` §3.4），
+  Vulkan 相关工作一律在真机、由 AI 按 `VULKAN-TODO.md` §3.5 的循环自动执行。
 
 ## 原生库源码构建（可选；预编译库已提交）
 

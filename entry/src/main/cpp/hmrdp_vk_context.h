@@ -1,0 +1,249 @@
+/*
+ * HmRdp - Vulkan context: runtime loader, Phase 0 capability probe and the
+ * process-wide VkInstance/VkDevice shared by the rendering backend.
+ *
+ * libvulkan.so is loaded with dlopen instead of being linked: a device without a
+ * usable Vulkan driver must degrade to FreeRDP's gdi path, not fail to load the
+ * application (same rule as the OHAudio sink, see AGENTS.md). Every command is
+ * therefore fetched through vkGetInstanceProcAddr / vkGetDeviceProcAddr.
+ *
+ * See VULKAN-TODO.md §3.2 (Phase 0 probe), §4.1 (module split) and §4.2.1
+ * (one VkDevice for the whole process).
+ */
+#ifndef HMRDP_VK_CONTEXT_H
+#define HMRDP_VK_CONTEXT_H
+
+#include <cstdint>
+#include <string>
+
+// Every Vulkan command is resolved at runtime (see the file comment above).
+#ifndef VK_NO_PROTOTYPES
+#define VK_NO_PROTOTYPES 1
+#endif
+#ifndef VK_USE_PLATFORM_OHOS
+#define VK_USE_PLATFORM_OHOS 1
+#endif
+#include <vulkan/vulkan.h>
+
+namespace hmrdp {
+
+// Runtime-resolved Vulkan entry points. `loaded` is false when libvulkan.so is
+// missing or exposes no loader; every other member is then null.
+//
+// Global commands are resolved by GetVkApi(); the instance- and device-level
+// entries are only valid after LoadInstance() / LoadDevice() (per the loader
+// spec, vkGetInstanceProcAddr with a null instance is only guaranteed to return
+// the global commands).
+struct VkApi {
+  bool loaded = false;
+  std::string loadError;
+
+  PFN_vkGetInstanceProcAddr GetInstanceProcAddr = nullptr;
+  PFN_vkGetDeviceProcAddr GetDeviceProcAddr = nullptr;
+
+  // Global commands.
+  PFN_vkEnumerateInstanceVersion EnumerateInstanceVersion = nullptr;
+  PFN_vkEnumerateInstanceExtensionProperties EnumerateInstanceExtensionProperties = nullptr;
+  PFN_vkEnumerateInstanceLayerProperties EnumerateInstanceLayerProperties = nullptr;
+  PFN_vkCreateInstance CreateInstance = nullptr;
+
+  // Instance level (valid after LoadInstance).
+  PFN_vkDestroyInstance DestroyInstance = nullptr;
+  PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices = nullptr;
+  PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties = nullptr;
+  PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties = nullptr;
+  PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties = nullptr;
+  PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties = nullptr;
+  PFN_vkGetPhysicalDeviceSurfaceSupportKHR GetPhysicalDeviceSurfaceSupportKHR = nullptr;
+  PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR GetPhysicalDeviceSurfaceCapabilitiesKHR = nullptr;
+  PFN_vkGetPhysicalDeviceSurfaceFormatsKHR GetPhysicalDeviceSurfaceFormatsKHR = nullptr;
+  PFN_vkGetPhysicalDeviceSurfacePresentModesKHR GetPhysicalDeviceSurfacePresentModesKHR = nullptr;
+  PFN_vkCreateDevice CreateDevice = nullptr;
+  PFN_vkDestroySurfaceKHR DestroySurfaceKHR = nullptr;
+  PFN_vkCreateSurfaceOHOS CreateSurfaceOHOS = nullptr;
+
+  // Device level (valid after LoadDevice).
+  PFN_vkDestroyDevice DestroyDevice = nullptr;
+  PFN_vkDeviceWaitIdle DeviceWaitIdle = nullptr;
+  PFN_vkGetDeviceQueue GetDeviceQueue = nullptr;
+  PFN_vkQueueSubmit QueueSubmit = nullptr;
+  PFN_vkQueueWaitIdle QueueWaitIdle = nullptr;
+  PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
+  PFN_vkDestroySwapchainKHR DestroySwapchainKHR = nullptr;
+  PFN_vkGetSwapchainImagesKHR GetSwapchainImagesKHR = nullptr;
+  PFN_vkAcquireNextImageKHR AcquireNextImageKHR = nullptr;
+  PFN_vkQueuePresentKHR QueuePresentKHR = nullptr;
+  PFN_vkCreateSemaphore CreateSemaphore = nullptr;
+  PFN_vkDestroySemaphore DestroySemaphore = nullptr;
+  PFN_vkCreateFence CreateFence = nullptr;
+  PFN_vkDestroyFence DestroyFence = nullptr;
+  PFN_vkWaitForFences WaitForFences = nullptr;
+  PFN_vkResetFences ResetFences = nullptr;
+  PFN_vkCreateRenderPass CreateRenderPass = nullptr;
+  PFN_vkDestroyRenderPass DestroyRenderPass = nullptr;
+  PFN_vkCreateFramebuffer CreateFramebuffer = nullptr;
+  PFN_vkDestroyFramebuffer DestroyFramebuffer = nullptr;
+  PFN_vkCreateImageView CreateImageView = nullptr;
+  PFN_vkDestroyImageView DestroyImageView = nullptr;
+  PFN_vkCreateCommandPool CreateCommandPool = nullptr;
+  PFN_vkDestroyCommandPool DestroyCommandPool = nullptr;
+  PFN_vkAllocateCommandBuffers AllocateCommandBuffers = nullptr;
+  PFN_vkFreeCommandBuffers FreeCommandBuffers = nullptr;
+  PFN_vkResetCommandBuffer ResetCommandBuffer = nullptr;
+  PFN_vkBeginCommandBuffer BeginCommandBuffer = nullptr;
+  PFN_vkEndCommandBuffer EndCommandBuffer = nullptr;
+  PFN_vkCmdBeginRenderPass CmdBeginRenderPass = nullptr;
+  PFN_vkCmdEndRenderPass CmdEndRenderPass = nullptr;
+  PFN_vkCmdPipelineBarrier CmdPipelineBarrier = nullptr;
+  PFN_vkCmdCopyImage CmdCopyImage = nullptr;
+  PFN_vkCmdBlitImage CmdBlitImage = nullptr;
+  PFN_vkCmdClearColorImage CmdClearColorImage = nullptr;
+  PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage = nullptr;
+  PFN_vkCmdCopyImageToBuffer CmdCopyImageToBuffer = nullptr;
+  PFN_vkCmdFillBuffer CmdFillBuffer = nullptr;
+  PFN_vkCmdCopyBuffer CmdCopyBuffer = nullptr;
+  PFN_vkCmdUpdateBuffer CmdUpdateBuffer = nullptr;
+  PFN_vkCreateImage CreateImage = nullptr;
+  PFN_vkDestroyImage DestroyImage = nullptr;
+  PFN_vkGetImageMemoryRequirements GetImageMemoryRequirements = nullptr;
+  PFN_vkCreateBuffer CreateBuffer = nullptr;
+  PFN_vkDestroyBuffer DestroyBuffer = nullptr;
+  PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements = nullptr;
+  PFN_vkAllocateMemory AllocateMemory = nullptr;
+  PFN_vkFreeMemory FreeMemory = nullptr;
+  PFN_vkBindImageMemory BindImageMemory = nullptr;
+  PFN_vkBindBufferMemory BindBufferMemory = nullptr;
+  PFN_vkMapMemory MapMemory = nullptr;
+  PFN_vkUnmapMemory UnmapMemory = nullptr;
+  PFN_vkFlushMappedMemoryRanges FlushMappedMemoryRanges = nullptr;
+  PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges = nullptr;
+
+  // Fills the instance-level commands. Returns false if a required entry is
+  // absent (the platform then cannot be used).
+  bool LoadInstance(VkInstance instance);
+  // Fills the device-level commands.
+  bool LoadDevice(VkDevice device, VkInstance instance);
+};
+
+// Loads libvulkan.so and the global commands (cached for the process). The
+// returned object is mutated by VkContext as the instance/device come up, so it
+// is only mutated from the context's own serialized lifecycle.
+VkApi& GetVkApi();
+
+// "VK_SUCCESS" / "VK_ERROR_..." for logs.
+std::string VkResultName(int32_t result);
+
+// Phase 0 report (VULKAN-TODO §3.2): what the platform actually offers. It is a
+// snapshot for the dev panel and decides the later design (read-back strategy,
+// queue layout, whether present is even possible).
+struct VulkanCapabilities {
+  bool loaderPresent = false;
+  std::string loadError;
+  bool instanceOk = false;
+  bool deviceFound = false;
+  std::string probeError;
+
+  uint32_t loaderApiVersion = 0;
+  uint32_t deviceApiVersion = 0;
+  uint32_t driverVersion = 0;
+  uint32_t vendorId = 0;
+  uint32_t deviceId = 0;
+  uint32_t deviceType = 0;  // VkPhysicalDeviceType
+  char deviceName[256] = {0};
+
+  bool extKhrSurface = false;
+  bool extOhosSurface = false;
+  bool extKhrSwapchain = false;
+  bool extTimelineSemaphore = false;
+  bool extExternalMemory = false;
+  bool extExternalMemoryFd = false;
+  bool extOhosExternalMemory = false;
+
+  bool memHostVisible = false;
+  bool memHostCoherent = false;
+  // A DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type: when present, read-back does
+  // not need a staging copy (VULKAN-TODO §3.2 item 3).
+  bool memHostVisibleDeviceLocal = false;
+
+  uint32_t queueFamilyCount = 0;
+  uint32_t graphicsQueueFamilies = 0;
+  uint32_t computeQueueFamilies = 0;
+  uint32_t transferQueueFamilies = 0;
+  bool hasGraphicsComputeQueue = false;
+  bool hasDedicatedComputeQueue = false;
+
+  uint32_t instanceExtensionCount = 0;
+  uint32_t deviceExtensionCount = 0;
+  // Comma-separated summaries for the on-device panel.
+  std::string instanceExtensions;
+  std::string deviceExtensions;
+  std::string memoryTypes;
+
+  bool usable() const { return deviceFound; }
+  // One-line summary (logs) and a multi-line variant (dev panel).
+  std::string Describe() const;
+  std::string DescribeLines() const;
+};
+
+// Cached Phase 0 probe. Brings up a short-lived VkInstance (reusing the shared
+// one) but never a device, so it is safe to call before any surface exists.
+const VulkanCapabilities& GetVulkanCapabilities();
+
+// Process-wide instance + device for rendering. The device is created on the
+// first surface because a queue family has to be able to present to it.
+class VkContext {
+ public:
+  static VkContext& Instance();
+
+  // Creates the instance (once) and a device with one graphics + present queue
+  // family for `surface`. A null surface means "no presentation needed" (the
+  // offline correctness harness), which only requires a graphics family. When a
+  // surface is supplied later and the existing queue family cannot present to it,
+  // the device is rebuilt. Returns false and stays unusable on failure.
+  bool EnsureDevice(VkSurfaceKHR surface);
+  // Index of a memory type satisfying `typeBits` and `required` (and carrying none
+  // of `excluded`), or UINT32_MAX.
+  uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) const;
+  uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required,
+                          VkMemoryPropertyFlags excluded) const;
+  void Shutdown();
+  bool ready() const { return device_ != VK_NULL_HANDLE; }
+
+  VkApi& api() { return GetVkApi(); }
+  VkInstance instance() const { return instance_; }
+  VkPhysicalDevice physicalDevice() const { return physical_; }
+  VkDevice device() const { return device_; }
+  VkQueue queue() const { return queue_; }
+  uint32_t queueFamily() const { return queueFamily_; }
+  std::string lastError() const;
+
+  // Wraps the XComponent OHNativeWindow into a VkSurfaceKHR.
+  bool CreateSurface(void* nativeWindow, VkSurfaceKHR* out);
+  void DestroySurface(VkSurfaceKHR surface);
+
+  // Creates the instance only (used by the capability probe).
+  bool EnsureInstance();
+
+ private:
+  VkContext() = default;
+  ~VkContext();
+  VkContext(const VkContext&) = delete;
+  VkContext& operator=(const VkContext&) = delete;
+
+  bool PickPhysicalDevice(VkSurfaceKHR surface);
+  // Destroys only the device (used when rebuilding it for a present-capable
+  // queue family: the instance must survive, or the caller's VkSurfaceKHR, which
+  // was created from it, would be invalidated).
+  void DestroyDevice();
+
+  VkInstance instance_ = VK_NULL_HANDLE;
+  VkPhysicalDevice physical_ = VK_NULL_HANDLE;
+  VkDevice device_ = VK_NULL_HANDLE;
+  VkQueue queue_ = VK_NULL_HANDLE;
+  uint32_t queueFamily_ = 0;
+  std::string error_;
+};
+
+}  // namespace hmrdp
+
+#endif  // HMRDP_VK_CONTEXT_H
