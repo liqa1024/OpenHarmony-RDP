@@ -242,11 +242,11 @@ struct GfxReplayPage {
       return;
     }
     this.vkInfo = RdpNative.describeVulkan();
-    // present = 0: the scaled/letterboxed present needs the V2 sampler pipeline
-    // (vkCmdBlitImage crashes inside the platform's libvulkan), so the V1 run is
-    // headless and reports pixels instead.
+    // present = 1: the engine screen is blitted to the swapchain (scaled and
+    // letterboxed when the desktop does not match the window). This is a
+    // real-device-only feature - the Vulkan backend targets 2in1 hardware.
     const summary: string = RdpNative.startVulkanEngineTest(`${dir}/hmrdp_gfx.bin`,
-      this.surfaceId, this.surfaceW, this.surfaceH, 0);
+      this.surfaceId, this.surfaceW, this.surfaceH, 1);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;

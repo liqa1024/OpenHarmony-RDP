@@ -73,9 +73,6 @@ class GfxVkSelfTest {
   // Set once a command V1 does not implement was applied: the run's pixel
   // comparison is then no longer evidence (persistent surfaces).
   std::atomic<uint64_t> tainted_{0};
-  // This device cannot read device-written pixels back (emulator): no pixel
-  // verdict is produced at all instead of a wrong one.
-  std::atomic<bool> readbackMissing_{false};
   std::atomic<uint64_t> checks_{0};
   std::atomic<uint64_t> bad_{0};
   std::atomic<uint64_t> rgbDiff_{0};

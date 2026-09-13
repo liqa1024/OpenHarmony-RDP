@@ -115,24 +115,6 @@ class GfxVkDesktop {
   // Full surface (top-down, `stride` bytes) as BGRA. Dev/verification only.
   bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
 
-  // V2 groundwork (VULKAN-TODO.md §5 V2): dispatch the bring-up compute kernel
-  // (shaders/probe.comp) over `count` words in two SSBOs and verify every output
-  // word on the CPU. Proves, on this driver, SPIR-V loading + pipeline creation,
-  // two storage-buffer bindings, vkCmdDispatch on the single queue family (§3.3)
-  // and compute->host visibility. `detail` receives a short failure cause.
-  bool ComputeSelfTest(uint32_t count, std::string* detail);
-
-  // Device capability probe + diagnostic (VULKAN-TODO §3.5): can data written by
-  // the device reach the CPU at all? Runs a pure-buffer round trip (no image) and
-  // also checks that the mapping behaves like ordinary CPU memory, so a failure
-  // can be attributed to the implementation's host/device memory bridging rather
-  // than to this engine. Result is cached; applied automatically at Init().
-  bool CheckBufferTransfer(uint32_t texel, uint32_t* readBack);
-  // False when the device cannot return device-written data to the CPU (the
-  // emulator): the readback entry points then refuse instead of returning garbage,
-  // so a verification run can never silently use wrong pixels.
-  bool readbackAvailable() const;
-
   // --- Diagnostics ---------------------------------------------------------
   // True when a command V1 does not implement (Progressive / ClearCodec) was
   // seen since resetUnsupportedSeen(): the compare harness uses this to exclude

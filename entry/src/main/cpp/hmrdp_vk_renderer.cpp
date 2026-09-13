@@ -253,17 +253,30 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
                  FormatName(format_).c_str(), FormatName(imageFormat).c_str());
       return false;
     }
-    // IMPORTANT: vkCmdBlitImage kills the process inside the platform's
-    // libvulkan (SIGSEGV in the driver, reproduced both with a scaled 1x1 source
-    // and with the letterboxed present below). So V1 only copies, which requires
-    // the desktop to match the swapchain extent exactly; the scaled/letterboxed
-    // present needs the V2 sampler pipeline instead of a blit.
-    if (extent_.width != static_cast<uint32_t>(width) ||
-        extent_.height != static_cast<uint32_t>(height)) {
-      error_ = "scaled present needs the V2 sampler pipeline (vkCmdBlitImage crashes here)";
-      HMRDP_LOGW("vulkan %{public}s: %{public}ux%{public}u -> %{public}ux%{public}u",
-                 error_.c_str(), width, height, extent_.width, extent_.height);
-      return false;
+    // Fit the remote desktop into the swapchain image preserving its aspect
+    // ratio, centred (letterboxed). Equal extents take a plain copy; otherwise a
+    // scaled blit. The former "never blit" rule came from a different (emulator)
+    // implementation and does not apply here: on the real device the scaled blit
+    // is correct (VULKAN-TODO §3.3).
+    const uint32_t srcW = static_cast<uint32_t>(width);
+    const uint32_t srcH = static_cast<uint32_t>(height);
+    const uint32_t dstW = extent_.width;
+    const uint32_t dstH = extent_.height;
+    const bool sameSize = srcW == dstW && srcH == dstH;
+    int32_t offX = 0;
+    int32_t offY = 0;
+    int32_t fitW = static_cast<int32_t>(dstW);
+    int32_t fitH = static_cast<int32_t>(dstH);
+    if (!sameSize) {
+      const double scaleX = static_cast<double>(dstW) / static_cast<double>(srcW);
+      const double scaleY = static_cast<double>(dstH) / static_cast<double>(srcH);
+      const double scale = scaleX < scaleY ? scaleX : scaleY;
+      fitW = static_cast<int32_t>(static_cast<double>(srcW) * scale);
+      fitH = static_cast<int32_t>(static_cast<double>(srcH) * scale);
+      if (fitW < 1) fitW = 1;
+      if (fitH < 1) fitH = 1;
+      offX = (static_cast<int32_t>(dstW) - fitW) / 2;
+      offY = (static_cast<int32_t>(dstH) - fitH) / 2;
     }
     const VkDevice device = context.device();
     if (device == VK_NULL_HANDLE) {
@@ -311,16 +324,46 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
     api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
 
-    VkImageCopy region{};
-    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.srcSubresource.layerCount = 1;
-    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.dstSubresource.layerCount = 1;
-    region.extent.width = static_cast<uint32_t>(width);
-    region.extent.height = static_cast<uint32_t>(height);
-    region.extent.depth = 1;
-    api.CmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, target,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    const VkImageSubresourceLayers kColorLayers = [] {
+      VkImageSubresourceLayers layers{};
+      layers.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      layers.layerCount = 1;
+      return layers;
+    }();
+
+    if (sameSize) {
+      VkImageCopy region{};
+      region.srcSubresource = kColorLayers;
+      region.dstSubresource = kColorLayers;
+      region.extent.width = srcW;
+      region.extent.height = srcH;
+      region.extent.depth = 1;
+      api.CmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, target,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    } else {
+      // Clear first: the letterbox bars must not show stale swapchain content.
+      VkClearColorValue black{};
+      black.float32[3] = 1.0f;
+      VkImageSubresourceRange range{};
+      range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      range.levelCount = 1;
+      range.layerCount = 1;
+      api.CmdClearColorImage(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+
+      VkImageBlit blit{};
+      blit.srcSubresource = kColorLayers;
+      blit.srcOffsets[1].x = static_cast<int32_t>(srcW);
+      blit.srcOffsets[1].y = static_cast<int32_t>(srcH);
+      blit.srcOffsets[1].z = 1;
+      blit.dstSubresource = kColorLayers;
+      blit.dstOffsets[0].x = offX;
+      blit.dstOffsets[0].y = offY;
+      blit.dstOffsets[1].x = offX + fitW;
+      blit.dstOffsets[1].y = offY + fitH;
+      blit.dstOffsets[1].z = 1;
+      api.CmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, target,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    }
 
     VkImageMemoryBarrier toPresent = toDst;
     toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -430,7 +473,7 @@ bool VkRenderer::CreateSwapchainLocked() {
     }
   }
   // A device is only usable for a surface it can present to, so it is created
-  // lazily here (VULKAN-TODO §4.2.1 keeps it process-wide from then on). Its
+  // lazily here (VULKAN-TODO §4.2 item 1 keeps it process-wide from then on). Its
   // entry points are only resolved by this call, so they are checked after it.
   if (!context.EnsureDevice(surface_)) {
     error_ = context.lastError();
@@ -472,7 +515,7 @@ bool VkRenderer::CreateSwapchainLocked() {
     api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, presentModes.data());
   }
   // FIFO is the only mode the spec guarantees; it is also the one that matches
-  // the "present only when the picture changed" policy (VULKAN-TODO §4.2 item 6).
+  // the "present only when the picture changed" policy (VULKAN-TODO §4.2 item 5).
   VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
   bool fifoAvailable = false;
   for (VkPresentModeKHR mode : presentModes) {
@@ -486,6 +529,13 @@ bool VkRenderer::CreateSwapchainLocked() {
 
   if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) == 0) {
     error_ = "swapchain images cannot be colour attachments";
+    return false;
+  }
+  // PresentTexture/PresentImage write the swapchain image with transfer commands
+  // (copy when the sizes match, scaled blit otherwise), so TRANSFER_DST is
+  // required in addition to the V0 render-pass path's colour attachment.
+  if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
+    error_ = "swapchain images cannot be transfer destinations";
     return false;
   }
 
@@ -512,7 +562,7 @@ bool VkRenderer::CreateSwapchainLocked() {
   createInfo.imageColorSpace = surfaceFormat.colorSpace;
   createInfo.imageExtent = extent;
   createInfo.imageArrayLayers = 1;
-  createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   createInfo.preTransform = caps.currentTransform;
   createInfo.compositeAlpha = PickCompositeAlpha(caps.supportedCompositeAlpha);

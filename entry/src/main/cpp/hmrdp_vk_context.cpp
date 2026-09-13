@@ -1,5 +1,5 @@
 /*
- * HmRdp - Vulkan context: loader, Phase 0 capability probe and the process-wide
+ * HmRdp - Vulkan context: loader, capability probe and the process-wide
  * instance/device. See hmrdp_vk_context.h and VULKAN-TODO.md §3.2 / §4.1.
  */
 #include "hmrdp_vk_context.h"
@@ -660,7 +660,7 @@ bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
     }
     // The device may have been created by the offline harness without a surface.
     // If its queue family cannot present to this one, rebuild with a family that
-    // can (VULKAN-TODO §4.2.1 keeps one device for the process once it is usable).
+    // can (VULKAN-TODO §4.2 item 1 keeps one device for the process once it is usable).
     VkBool32 present = VK_FALSE;
     if (api.GetPhysicalDeviceSurfaceSupportKHR != nullptr &&
         api.GetPhysicalDeviceSurfaceSupportKHR(physical_, queueFamily_, surface, &present) ==

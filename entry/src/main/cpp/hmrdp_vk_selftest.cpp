@@ -116,10 +116,6 @@ struct RefImage {
 struct PrimReport {
   int steps = 0;
   int bad = 0;
-  // False on a device whose readback does not work: the command path is still
-  // exercised (that is what the emulator can cover), but no content verdict is
-  // produced instead of a wrong one.
-  bool verify = true;
   std::string firstFail;
 
   void Fail(const std::string& label, int x, int y, uint32_t got, uint32_t want) {
@@ -137,9 +133,6 @@ struct PrimReport {
 void CheckSurface(GfxVkDesktop* engine, RefImage* ref, uint16_t id, const char* label,
                   PrimReport* report) {
   report->steps++;
-  if (!report->verify) {
-    return;
-  }
   std::vector<uint8_t> got;
   if (!engine->ReadSurface(id, &got)) {
     report->Fail(std::string(label) + ": ReadSurface failed", 0, 0, 0, 0);
@@ -171,9 +164,6 @@ void CheckSurface(GfxVkDesktop* engine, RefImage* ref, uint16_t id, const char* 
 void CheckScreen(GfxVkDesktop* engine, const RefImage& ref, const char* label,
                  PrimReport* report) {
   report->steps++;
-  if (!report->verify) {
-    return;
-  }
   std::vector<uint8_t> got;
   if (!engine->ReadScreen(&got)) {
     report->Fail(std::string(label) + ": ReadScreen failed", 0, 0, 0, 0);
@@ -207,18 +197,6 @@ std::string GfxVkSelfTest::RunPrimitives() {
   if (!engine.Init()) {
     return "primitives: engine init FAILED";
   }
-
-  // Step 0: can this device move data GPU->CPU at all? (No image involved.)
-  // Every content check below needs it, so when it is unavailable the run still
-  // exercises the whole command path but reports no pixel verdict at all.
-  const bool bufferOk = engine.readbackAvailable();
-  report.verify = bufferOk;
-
-  // V2 groundwork: prove the compute path (SPIR-V + dispatch + SSBO + host
-  // readback) works on this driver before the RFX kernels depend on it. Runs
-  // regardless of the transfer verdict above: the two exercise different parts.
-  std::string computeDetail;
-  const bool computeOk = engine.ComputeSelfTest(4096, &computeDetail);
 
   const uint16_t kSurf = 0;
   const uint16_t kSurf2 = 1;
@@ -351,14 +329,9 @@ std::string GfxVkSelfTest::RunPrimitives() {
 
   HMRDP_LOGI("vk selftest: %{public}s", engine.Stats().c_str());
   char head[256];
-  std::snprintf(head, sizeof(head),
-                "primitives: readback=%s steps=%d bad=%d apiFailures=%d compute=%s",
-                bufferOk ? "ok" : "NONE(此设备无法读回，见 VULKAN-TODO 3.5)", report.steps,
-                bufferOk ? report.bad : 0, apiFailures, computeOk ? "ok" : "FAIL");
+  std::snprintf(head, sizeof(head), "primitives: steps=%d bad=%d apiFailures=%d", report.steps,
+                report.bad, apiFailures);
   std::string line = head;
-  if (!computeOk && !computeDetail.empty()) {
-    line += " [" + computeDetail + "]";
-  }
   if (!report.firstFail.empty()) {
     line += " firstFail: " + report.firstFail;
   }
@@ -517,11 +490,6 @@ void GfxVkSelfTest::CompareFrames() {
   GfxVkDesktop* engine = engine_.get();
   GfxCpuDesktop* cpu = cpu_.get();
   if (engine == nullptr || cpu == nullptr) {
-    return;
-  }
-  if (!engine->readbackAvailable()) {
-    // Comparing would need a readback that this device cannot do.
-    readbackMissing_.store(true);
     return;
   }
   rdpGdi* gdi = cpu->gdi();
@@ -697,10 +665,6 @@ std::string GfxVkSelfTest::StatsLines() {
     out += engine_->Stats() + "\n";
   } else if (!engineStats_.empty()) {
     out += engineStats_ + "\n";
-  }
-  if (readbackMissing_.load()) {
-    out += "像素对比已停用：本设备无法把 GPU 写入读回 CPU（VULKAN-TODO 3.5），"
-           "本轮不产出 bad 结论\n";
   }
   out += "note: frames carrying progressive/clear are skipped (V2/V3)";
   return out;

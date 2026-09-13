@@ -727,7 +727,7 @@ napi_value SetGfxReplayBatchArea(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-// Dev/test (VULKAN-TODO §3.2): the Phase 0 device report - loader/device
+// Dev/test (VULKAN-TODO §3.2): the capability report - loader/device
 // versions, the migration-relevant extensions, memory types and queue families.
 napi_value VulkanInfo(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();

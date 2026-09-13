@@ -1007,7 +1007,7 @@ struct GfxGpuDesktop::Impl {
     if (display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT) {
       return false;
     }
-    // eglMakeCurrent is expensive (ANGLE: a backend round trip) and the engine
+    // eglMakeCurrent is expensive (a backend round trip) and the engine
     // is invoked once per GFX command; the same thread usually already has the
     // context bound. The Renderer binds its own context on the same thread
     // between engine calls, so query the thread's current context instead of

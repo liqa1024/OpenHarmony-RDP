@@ -31,9 +31,11 @@ if(NOT HMRDP_GLSLANG)
     set(HMRDP_GLSLANG "${OHOS_SDK_NATIVE}/../toolchains/glslang_validator.exe")
 endif()
 
-# <source file>|<C++ symbol>
+# <source file>|<C++ symbol>, e.g. "progressive.comp|Progressive".
+# Empty until V2 lands its first decode kernel: the mechanism is kept here so
+# adding one is a one-line change and the SDK-toolchain/byte-order details
+# (cmake/EmbedSpirv.cmake) do not have to be rediscovered.
 set(HMRDP_SHADERS
-    "probe.comp|Probe"
 )
 
 set(HMRDP_SHADER_HEADERS "")
@@ -72,11 +74,11 @@ add_library(hmrdp SHARED
     hmrdp_vk_renderer.cpp
     hmrdp_vk_desktop.cpp
     hmrdp_vk_selftest.cpp
-    hmrdp_vk_shaders.cpp
     ${HMRDP_SHADER_HEADERS}
 )
 
-# The generated SPIR-V headers (probe.comp.h, ...) live outside the source tree.
+# Generated SPIR-V headers (one <shader>.comp.h per entry in HMRDP_SHADERS) live
+# outside the source tree, so include that directory.
 target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 
 # FreeRDP is built without library versioning (see native/scripts/build-freerdp.ps1

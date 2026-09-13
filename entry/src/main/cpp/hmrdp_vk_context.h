@@ -1,5 +1,5 @@
 /*
- * HmRdp - Vulkan context: runtime loader, Phase 0 capability probe and the
+ * HmRdp - Vulkan context: runtime loader, capability probe and the
  * process-wide VkInstance/VkDevice shared by the rendering backend.
  *
  * libvulkan.so is loaded with dlopen instead of being linked: a device without a
@@ -7,7 +7,7 @@
  * application (same rule as the OHAudio sink, see AGENTS.md). Every command is
  * therefore fetched through vkGetInstanceProcAddr / vkGetDeviceProcAddr.
  *
- * See VULKAN-TODO.md §3.2 (Phase 0 probe), §4.1 (module split) and §4.2.1
+ * See VULKAN-TODO.md §3.2 (capability probe), §4.1 (module split) and §4.2 item 1
  * (one VkDevice for the whole process).
  */
 #ifndef HMRDP_VK_CONTEXT_H
@@ -118,9 +118,10 @@ struct VkApi {
   PFN_vkFlushMappedMemoryRanges FlushMappedMemoryRanges = nullptr;
   PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges = nullptr;
 
-  // Compute (VULKAN-TODO §5 V2/V3: the RFX / ClearCodec decoders run in compute
-  // shaders). Resolved opportunistically: a device that cannot do compute still
-  // runs the V1 transfer-only engine.
+  // Compute (VULKAN-TODO §5 V3: the Progressive / RemoteFX decode runs in compute
+  // shaders; ClearCodec deliberately stays on the CPU, §5 V4). Resolved
+  // opportunistically: a device that cannot do compute still runs the V1/V2
+  // transfer-only engine.
   PFN_vkCreateShaderModule CreateShaderModule = nullptr;
   PFN_vkDestroyShaderModule DestroyShaderModule = nullptr;
   PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout = nullptr;
@@ -152,7 +153,7 @@ VkApi& GetVkApi();
 // "VK_SUCCESS" / "VK_ERROR_..." for logs.
 std::string VkResultName(int32_t result);
 
-// Phase 0 report (VULKAN-TODO §3.2): what the platform actually offers. It is a
+// Capability report (VULKAN-TODO §3.2): what the platform actually offers. It is a
 // snapshot for the dev panel and decides the later design (read-back strategy,
 // queue layout, whether present is even possible).
 struct VulkanCapabilities {
@@ -181,7 +182,7 @@ struct VulkanCapabilities {
   bool memHostVisible = false;
   bool memHostCoherent = false;
   // A DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type: when present, read-back does
-  // not need a staging copy (VULKAN-TODO §3.2 item 3).
+  // not need a staging copy (VULKAN-TODO §3.2).
   bool memHostVisibleDeviceLocal = false;
 
   uint32_t queueFamilyCount = 0;
@@ -204,7 +205,7 @@ struct VulkanCapabilities {
   std::string DescribeLines() const;
 };
 
-// Cached Phase 0 probe. Brings up a short-lived VkInstance (reusing the shared
+// Cached capability probe. Brings up a short-lived VkInstance (reusing the shared
 // one) but never a device, so it is safe to call before any surface exists.
 const VulkanCapabilities& GetVulkanCapabilities();
 

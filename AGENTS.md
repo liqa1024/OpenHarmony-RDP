@@ -5,12 +5,14 @@
 ## AI 助手约定（重要）
 
 - **总结必须始终使用中文**：任务收尾 / 最终答复的语言固定为中文（代码、命令、标识符除外）。
-- **Vulkan 后端例外（重要）：模拟器的 Vulkan 实现有缺陷**（host↔device 内存桥两个方向都失效，
-  `vkCmdBlitImage` 还会在 `the platform Vulkan layer` 里崩），因此**所有 Vulkan 相关工作一律在真机上进行，并由 AI
-  自动完成**：`devecocli build`（hvigor 顺带签名）→ `native/scripts/install-device.ps1 -Device "<序列号>"`
-  → `hdc shell "hilog -x -D 0xD001"` 读结论。**仓库里不出现任何签名路径/口令**。
-  模拟器仍用于 ArkTS/UI/逻辑/结构类调试，但**不参与 Vulkan 像素验证**。
-  依据、最小复现与门禁见 `VULKAN-TODO.md` §3.4/§3.5（另有 `AGENTS.md` 其余规则照旧）。
+- **Vulkan / 硬件加速例外（重要）：硬件加速（Vulkan GPU 引擎）与 GPU 回放测试是"真机专属功能"。**
+  模拟器**不在支持范围内**——它的 Vulkan 实现**会按标准接口谎报能力**（host↔device 内存桥两个方向都
+  失效，部分核心命令还会直接崩溃），因此**不为它写降级/适配分支，也不采信其上的任何
+  结论**；Vulkan 相关工作一律在真机上进行，并由 AI 自动完成：`devecocli build`（hvigor 顺带签名）→
+  `native/scripts/install-device.ps1 -Device "<序列号>"` → `hdc shell "hilog -x -D 0xD001"` 读结论。
+  **仓库里不出现任何签名路径/口令**。模拟器仍用于 ArkTS/UI/逻辑/结构类调试，但**不参与 Vulkan 的
+  任何验证**。注意：模拟器上会崩的命令在真机上**实测正常**（缩放上屏已在用），
+  **不要把模拟器结论当成对真机的约束**。依据、最小复现与门禁见 `VULKAN-TODO.md` §3.4/§3.5。
 - **实机操作默认禁止、需明确授权，且是最后手段**（**Vulkan 后端除外**：见上条，其真机操作已获授权、
   由 AI 自动执行）：日常功能/回归测试一律先用模拟器（见「模拟器（功能测试）」）；
   **不要动辄"退回真机"、更不要把结论甩给真机**——上真机很麻烦、也很危险（先前的
@@ -29,9 +31,12 @@
 ## 项目定位
 
 面向 **鸿蒙 PC（2in1）** 的 RDP 客户端。RDP 引擎为 FreeRDP 3.10.3，从源码交叉编译到
-`aarch64-linux-ohos` / `x86_64-linux-ohos`。界面为 ArkTS/ArkUI；画面通过 XComponent 上的
-EGL/GLES 原生渲染；输入经 Node-API 桥接转发。**GFX 画面默认由 GPU 桌面引擎接管**（多表面 + 合成 +
-共享纹理上屏，见第 20 条），设置页「硬件解码」关闭或设备无 GLES 3.1 compute 时回退 FreeRDP gdi。
+`aarch64-linux-ohos` / `x86_64-linux-ohos`。界面为 ArkTS/ArkUI；输入经 Node-API 桥接转发。
+**GFX 画面默认由 GPU 桌面引擎接管**（多表面 + 合成 + 上屏，见第 20 条），设置页「硬件解码」
+关闭或设备不支持时回退 FreeRDP gdi。
+**注意：硬件加速正在从 GLES 迁到纯 Vulkan，且是「真机专属功能」**（模拟器不在支持范围内，
+见「AI 助手约定」与 `VULKAN-TODO.md`）：切换完成后 Vulkan 引擎只按真机设计，模拟器上**不开启**硬件
+加速、也不做 GPU 回放测试（相关 UI 置灰与原因是待跟进的代码工作）。
 会话在独立的 `SessionAbility` 主窗口中打开；
 主窗口 / 会话窗口的默认尺寸按屏幕比例推导，会话分辨率/缩放默认自适应当前显示器，均可在
 全局设置中调整，单个连接也可在「高级设置」里覆盖。全局设置还可开启「自动隐藏主窗口」
@@ -91,28 +96,27 @@ native/scripts/install-device.ps1 -Device "<真机序列号>"     # 安装 + 启
 
 ### 模拟器（功能测试）
 
-- 首选模拟器：**<2in1 emulator>**（2in1，HarmonyOS 6.1.0，x86_64）。
-  另有 **<2in1 emulator>**（2in1，HarmonyOS 7.0.0 / API 26，镜像已下载）可用；两者都可启。
+- 首选 **2in1 模拟器**（HarmonyOS 6.1.0 / x86_64），用于**与硬件加速无关**的调试。
+- 启动：`devecocli emulator start "<模拟器名>"`（名字取自本机已安装的模拟器列表）。
   注意：同一时刻只有一个实例占用 5555。
-- `devecocli emulator start "<2in1 emulator>"`（或 `"<2in1 emulator>"`）。
 - `uitest uiInput` 注入的是**触摸**事件，不会触发 `onMouse`；鼠标请用 `uinput -M ...`，
   但其 `-m` 是**相对/累加**移动且指针常"不可见"，精确定位不可靠。
 - 精确坐标：`uitest dumpLayout -p /data/local/tmp/layout.json` + `hdc file recv`，按控件
   `bounds` 计算 `uitest uiInput click <x> <y>` 的中心点（比目测截图可靠）。
 - 截图：`hdc shell snapshot_display -f /data/local/tmp/x.jpeg` + `hdc file recv`。
 - 连接多个设备时 `hdc` 需用 `-t <serial>` 指定目标。
-- **模拟器优先，不轻易上真机**：模拟器（ANGLE 翻译）足以判定绝大多数功能/逻辑问题。真机 GPU
-  （本轮为 <target device>，GLES 3.2）与模拟器在 shader 严格性、驱动行为上**可能
-  有差异**（例如 `#version` 必须位于 shader 第一行——Mali 不容忍前导换行、ANGLE 容忍），但**只有确认
-  属于这类设备相关差异时**才在用户明确授权下用真机复验，不要把它当默认步骤或万能退路。
+- **模拟器优先，不轻易上真机**：模拟器足以判定绝大多数**功能 / 逻辑**问题。真机 GPU 与模拟器在
+  驱动行为上**可能有差异**，但**只有确认属于这类设备相关差异时**才在用户明确授权下用真机复验，
+  不要把它当默认步骤或万能退路。
 - 排查顺序：**代码 / 构建 / 数据 → 模拟器自身状态（重型 GL 压测后先冷启动模拟器）→ 真机（需授权）**。
-- **Vulkan 后端不走这条**：模拟器的 Vulkan 有缺陷（见开头「Vulkan 后端例外」与 `VULKAN-TODO.md` §3.4），
-  Vulkan 相关工作一律在真机、由 AI 按 `VULKAN-TODO.md` §3.5 的循环自动执行。
+- **硬件加速 / GPU 回放 / Vulkan 不走这条**：它们是**「真机专属功能」**，模拟器**不在支持范围内**
+  （见开头「Vulkan / 硬件加速例外」与 `VULKAN-TODO.md` §3.4）；Vulkan 相关工作一律在真机、由 AI 按
+  `VULKAN-TODO.md` §3.5 的循环自动执行。模拟器只用于**与硬件加速无关**的 ArkTS / UI / 逻辑 / 结构调试。
 
 ## 原生库源码构建（可选；预编译库已提交）
 
 ```
-native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、GFX 原始流采集/回放钩子、OHOS AVCodec H.264 子系统）
+native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、GFX 原始流采集/回放钩子、ClearCodec CPU 解码）
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
@@ -156,10 +160,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），其余码流
 > （RemoteFX Progressive / ClearCodec 等）由服务端按内容选择。`patch-freerdp.ps1`/`build-freerdp.ps1`
 > 不再加 H.264 子系统，`libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，
-> 语义面向 **GPU 加速管线**（见 PERF-TODO §2）。GPU 表面引擎（`hmrdp_rfx.cpp`）已**接入会话并默认接管**
-> （见第 20 条）；验证走真实会话的影子对照（`kGpuShadowCompare`）与抓取的**原始 GFX 流回放**
-> （PERF-TODO §4）——**其正确性状态见第 20 条的状态提示**（该实现存在部分正确性隐患，且 live 接管会崩）。
-> 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
+> 语义面向 **GPU 加速管线**（Vulkan；见 `VULKAN-TODO.md` §4.2 与第 20 条），且是**「真机专属功能」**
+> （模拟器不在支持范围）。GPU 引擎正在整体改为 Vulkan；旧的 `hmrdp_rfx.cpp`（GLES）已冻结、只作参考，
+> 随 V7 删除。改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
 
@@ -171,12 +174,12 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 2. **鼠标按键**：`PTR_FLAGS_MOVE` 与按键事件分开送，按键事件不带 MOVE 标志，否则远端忽略点击。
 3. **密码**：绝不经命令行传密码，用 `freerdp_settings_set_string` 设 `FreeRDP_Password` /
    `FreeRDP_GatewayPassword`。
-4. **帧上传**：按脏区部分上传（`glTexSubImage2D`）。**必须用 ES3 上下文并设置
-   `GL_UNPACK_ROW_LENGTH`（= 整桌面 stride/4）**——源缓冲行距是整桌面 stride，GL 默认按上传宽
-   读行会花屏；上传后复位为 0。纹理（重）建后首帧强制整帧上传（`forceFullUpload_`）。
+4. **帧呈现（gdi 回退路径）**：按脏区部分上传 / 呈现。GLES 版靠 `glTexSubImage2D` +
+   `GL_UNPACK_ROW_LENGTH`（= 整桌面 stride/4，否则默认按上传宽读行会花屏）；Vulkan 版对应
+   `vkCmdCopyBufferToImage` + `bufferRowLength`（GLES 那套随 V7 删除）。
    **不要再叠加 present-on-change**：静止态早已由 FreeRDP 失效区门控保证——`HmrdpBeginPaint`
    把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion` 才置 FALSE，
-   而 `HandleEndPaint` 对 `null` 直接 return，故静止桌面根本不进 `DrawFrame`。额外 `memcmp`
+   而 `HandleEndPaint` 对 `null` 直接 return，故静止桌面根本不进呈现路径。额外 `memcmp`
    只增内存/带宽开销（高动态大脏区时反而耗电）。
 5. **原生库命名**：只提交不带版本号的单一 `entry/libs/<abi>/libX.so`（原因与 SONAME 处理见
    「原生库源码构建」）。
@@ -289,13 +292,14 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     （模拟器无鼠标，只能真机验证）。关闭开关则不接管、回退默认箭头。
 19. **会话状态栏遥测**：原生 `Session::EmitMetrics` 每秒经 `kMetrics` 事件下发
     `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`，`SessionPage` 工具栏渲染。
-    工具栏在主机名后只显示分辨率（`<width> × <height>`），**不再显示解码类型**（H.264 已移除，Progressive
+    工具栏在主机名后只显示分辨率（`宽 × 高`），**不再显示解码类型**（H.264 已移除，Progressive
     恒用；`codecMode` 字段与 `OnGfxCodec` 统计已删除）。
     - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端
       注册该回调），故 `Connect` 时给 `context->autodetect` 注册 `HmrdpNetworkCharacteristicsResult` 自行捕获。
     - **本机** = **解码 + 呈现**：gdi 路径下解码链式包裹 `RdpgfxClientContext::SurfaceCommand`、呈现为
-      `DrawFrame`；GPU 接管后为引擎 `Compose()` + `Renderer::PresentTexture()`（此时 decode 计 0，因为
-      解码已在 GPU）。两者按帧平均（`localUs`）。
+      `DrawFrame`；GPU 接管后为引擎 `Compose()` + 上屏（GLES 版 `Renderer::PresentTexture()`；
+      Vulkan 版 `GfxVkDesktop::Compose()` + `VkRenderer`，此时 decode 计 0，因为解码已在 GPU）。
+      两者按帧平均（`localUs`）。
     - **响应**：RDP 输入与画面是两条**无回显**的流，输入延迟只能推断——仅在**空闲 ≥200ms 后输入、2s 内
       出现首帧**时采样，取近 **5 次均值**；不做该约束会退化成帧节拍。
     - **带宽**：`freerdp_get_stats(context->rdp)` 的收发字节差分（GFX/H.264 下同样有效）。
@@ -304,70 +308,47 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       （300ms 内有包）时统计，取近 **5 个窗口**滑动，避免空闲静音误报。
     - **不显示**：服务端处理（协议不回报）、压缩比（仅 GDI 位图路径有意义，GFX/H.264 下不存在）、
       音频丢包（复用在同一传输里，客户端无逐包统计）；音频丢帧率是可感知卡顿的代理。
-20. **GPU 桌面引擎 / GFX 接管**（`hmrdp_rfx.{h,cpp}` + `hmrdp_egl.{h,cpp}`）：
-    > ⚠️ **状态（2026-09-13）**：本条的 GLES 实现**已弃用冻结**，GPU 引擎与上屏正在改为
-    > **纯 Vulkan 重写**（不留 GLES 残留，保留 gdi 回退）。开工请阅读 **`VULKAN-TODO.md`**
-    > （自包含交接文档）；本条以下内容仅作历史/算法参考（协议语义、验证回路、踩坑仍然适用）。
-    > `PERF-TODO.md` 已同步标注为历史。
+20. **GPU 桌面引擎 / GFX 接管**（Vulkan：`hmrdp_vk_desktop.{h,cpp}` + `hmrdp_vk_renderer.{h,cpp}`）：
+    > ⚠️ **状态（2026-09-14）**：GPU 引擎与上屏**正在整体改为纯 Vulkan**（不留 GLES 残留、保留
+    > gdi 回退）；工作包与真机事实见 **`VULKAN-TODO.md`**（唯一交接文档；`PERF-TODO.md` 仅作历史）。
+    > 旧的 GLES 实现（`hmrdp_rfx` + `hmrdp_egl` + `hmrdp_renderer`）**已冻结、正确性未成立**，
+    > 只作算法/踩坑参考，**随 V7 删除**——不要在 GLES 上做任何新工作。
     >
-    > ⚠️ **正确性**：GLES 实现**未达成**"逐像素等于 FreeRDP"，存在**部分正确性隐患**——回放「对比」
-    > 路线实测 `bad=19/21`（内容级差异，非 alpha/非舍入），live 开启 GFX 接管后画面异常且会导致
-    > 模拟器崩溃。所以下列"验证结论"不可作基线，详见 `VULKAN-TODO.md` §1.3/§1.6。
-    把 FreeRDP 的 CPU 图像处理搬到 GPU——CPU 只保留 ZGFX + RDPGFX PDU 解析（仍由 `rdpgfx` 完成），
-    图像解码 / 表面绘制 / 合成 / 上屏全在 GLES **3.1 compute** 上，目标是去掉 CPU 解码 + BGRA 拷贝 +
-    纹理上传。**单个模块**：`hmrdp_rfx.{h,cpp}` 含 progressive 容器解析、`GfxGpuDesktop`
-    （tile 解码 + 四类表面绘制 + 合成）、ClearCodec 的 FreeRDP 胶水与会话/回放共用的 `GpuPresentComposed`，
-    直接对齐**真实会话（影子对照 gdi）与抓取的原始 GFX 流回放**。
-    **码流分工**：progressive / 未压缩在 GPU 解码；**ClearCodec 用 FreeRDP `clear_decompress` 的 CPU 钩子**
-    （`hmrdp_rfx.cpp` 内的 ClearCodec 胶水，读回-解码-写回目标表面）；Planar / Alpha / RemoteFX 非渐进等**好实现的
-    计划在 GPU 内实现**（未实现前该表面留旧像素，接管后没有 gdi 兜底）；真正难做的才走 CPU + 上传兜底。
-    **现状**：tile 解码链（FIRST/UPGRADE/diff）与 surface 引擎的**离线 tile 级比对**曾得到 `mism=0`
-    （只覆盖 tile 解码，不代表整屏合成与 live 路径正确）；已**接入会话并默认接管**：
-    `hmrdp_session.cpp` 的 `kGpuShadowCompare=false` 时 GFX 回调只喂引擎、不链回 gdi，`EndFrame` 里
-    `Compose()` + `Renderer::PresentTexture()` 用**共享 EGL 纹理直连上屏**；置 `true` 保留**双渲染影子
-    模式**（gdi 仍解码并每 30 帧与 `gdi->primary_buffer` 逐字节比对，打 `gpu shadow:`）供后续 A/B。
-    开关：全局「硬件解码」（`AppSettings.hardwareDecode`），关 / 无 compute / 引擎初始化失败 → 回退 gdi。
-    改动前必读要点/坑：
-    - 引擎与 Renderer 的 EGL 上下文经 `SharedEglAnchorContext()` 同处一个 share group，引擎屏幕纹理
-      `screenTex` 用 PBO（`GL_PIXEL_UNPACK_BUFFER` + `glTexSubImage2D`）**GPU→GPU** 同步给 Renderer。
-    - **FreeRDP 在一条线程投递 GFX 命令，gdi 的 EndPaint 可能在另一条线程触发**：引擎/上屏所有 GL
-      必须用 `Session::gpuMutex_` 串行化，且 `Renderer` **每次 present 后 `eglMakeCurrent(NO_CONTEXT)`**，
-      否则另一线程 `eglMakeCurrent` 失败 → 偶发全黑（已踩坑）。
-    - compute 派发用 **2D 网格**（内核用 `gl_NumWorkGroups`/`gl_WorkGroupSize` 还原线性下标）：整屏矩形
-      需要 10 万+ 工作组，超过常见的每轴 65535 上限。
-    - **服务器端缩放映射（`MapSurfaceToScaledOutput`）不支持**：本工程 FreeRDP 无 swscale/cairo，gdi 也
-      画不出；引擎同样 unmap 不合成（与现状一致）。
-    - 运行期能力探测 `GetGpuComputeInfo()`（离屏 pbuffer + ES3.1 上下文）；**`compute==false` 必须回退软解**。
-    - `#version` 必须位于 shader 源码第一行（原始字符串 `R"GLSL(` 后不能有换行；Mali 不容忍）；
-      compose 必须按桌面尺寸裁剪（桌面宽高非 64 倍数，边缘 tile 会按 stride 折回下一行、污染邻接 tile）。
-    - RLGR 必须用 **64 位位读取器**；GLSL 拆 hi/lo 时**字节跨 32 位边界（sh∈[25,31]）要同时写 hi 的高位**。
-    - 每 `(tile,分量)` 的 `current`/`sign`/`bitPos` 需**跨消息常驻**（SSBO）；`RFX_TILE_DIFFERENCE` 用
-      **饱和加法且写回 `current`**；UPGRADE 走 SRL/raw 增量（两个位流同时活跃）。
-    - int16 系数打包进 `uint` SSBO（`idx>>1` + 高/低 16bit）；`out`/`input` 是 GLSL 保留字；
-      三元条件必须是 `bool`（`uint & mask` 写 `!= 0u`）；`glGetBufferSubData` 在 GLES 不可用，
-      用 `glMapBufferRange`。
-    - 录制/回放：设备开「抓取 RFX 码流（测试）」→ 在 GFX 通道收包处（`rdpgfx_on_data_received`，
-      ZGX 之前）落盘**原始 ZGX 字节**到单文件 `hmrdp_gfx.bin`；dev 页「回放测试」把字节喂回 FreeRDP 的
-      ZGX+PDU 解析再进引擎上屏。**三条路线**（页面「路线」按钮）：`GPU` / `CPU(gdi)` 单跑测性能，
-      `对比` 则**同流同时喂两路并采样逐像素比对**（正确性；只上屏 GPU，耗时无性能含义）。
-      需要**打过补丁并重编的 FreeRDP**（`patch-freerdp.ps1` 第 7 步 + `HmrdpSetGfxRawCapture` /
-      `HmrdpGfxReplayNewWithContext`）。见 PERF-TODO §4/附录 A、`VULKAN-TODO.md` §6。
-    - **性能：不要给引擎加 `glFinish`**。引擎按 GFX 命令逐条调用，任何整流水排空（曾在
-      `DecodeMessage` 末尾）都会让 CPU/GPU 串行、回放远慢于 CPU 路线；compute 之间用
-      `glMemoryBarrier`，只有真正回读 CPU（`ReadScreen`/`ReadSurface`/ClearCodec 波带）才 barrier
-      + finish。`Impl::MakeCurrent` 用 `eglGetCurrentContext()` 判重，别每条命令都
-      `eglMakeCurrent`。回放限速只作用于**真正出图**的帧（空帧不睡）。见 PERF-TODO §5 W8。
-    - **ClearCodec 是 GPU 路线的头号开销，且不在解码而在读回**：CPU `clear_decompress` 仅 ≈0.35s，
-      其余是跨 CPU/GPU 边界的读写往返（同步点 + cache 维护范围）。它是**成串**的（平均 17 条/段、
-      最长 197，同 surface），已把连续段合并（`QueueClear`/`FlushPendingClears`，见 `hmrdp_rfx.cpp`）：
-      **先把并集矩形 pack 成紧 stride 暂存再 map**，让映射/cache 维护范围 = 波带真实需要的像素，
-      而不是整行。改 flush 时机务必保持**顺序语义**（任何非 ClearCodec 命令与 `Compose` 之前必须
-      flush）；批次上限只用**资源界**（排队 payload 字节），不要引入按模拟器实测拍的几何常量。
-    - **不要在模拟器上标定性能参数**：模拟器是 ANGLE + 虚拟化，传输模型与真机 UMA 完全不同（真机
-      CPU/GPU 共用内存，跨侧成本主要是同步点/范围而不是带宽）。模拟器只用于**正确性**和**计数类**
-      结构指标（命令条数、段数/段长、每类命令数）；绝对耗时与占位参数以真机为准。真机口径要压的是
-      **同步点数、驱动调用数、CPU 介入次数**。普通缓冲改写用**环形（multi-buffering）**而不是
-      `glBufferData(...,nullptr)` orphan。
+    > ⚠️ **正确性**：GLES 实现**未达成**"逐像素等于 FreeRDP"——回放「对比」路线实测 `bad≈19/21`
+    > （内容级差异），live 开启 GFX 接管后画面异常且会崩溃。因此**不要引用它的任何"验证结论"**；
+    > 新后端的目标是 `bad=0`（`VULKAN-TODO.md` §2/§6）。
+    **设计口径（Vulkan 版，详见 `VULKAN-TODO.md` §4.2）**：
+    - **码流分工**：Progressive / 未压缩 / 表面绘制 → **GPU**（SPIR-V compute + transfer）；
+      **ClearCodec 留在 CPU**——复用 FreeRDP 的 `clear_decompress`，通过**共享内存**（持久映射的
+      host-visible 表面缓冲）直接读改写表面像素，**不搬 GPU、不做逐区域跨侧往返**。
+    - **表面/缓存存储**：持久映射的 host-visible 线性缓冲（`screen` / swapchain 仍是 image），
+      于是 CPU 侧访问零成本，不需要 staging / 回读 / 布局状态机。
+    - **开关**：全局「硬件解码」（`AppSettings.hardwareDecode`）。关 / 无 Vulkan / 引擎初始化失败 →
+      回退 **gdi**。它是**「真机专属功能」**（模拟器不在支持范围，见「AI 助手约定」）。
+    - **CPU 写过的表面被 GPU 读取前**必须补 `HOST → TRANSFER` barrier（UMA 不等于免费）。
+    - **只做标准能力探测，不做标准 API 的行为自检**（`VULKAN-TODO.md` §3.4）——自检只针对我们自己的
+      语义与算法。
+    - live 接管由 `hmrdp_session` 的 GPU 分支驱动；`kGpuShadowCompare` 保留**双渲染影子对照**（vs gdi）。
+    改动前必读（**与后端无关、必须保留**）：
+    - 协议/算法（详见 `VULKAN-TODO.md` §7.1）：**RLGR 必须 64 位读位**；去量化 `shift = quant + progQuant − 1`；
+      `RFX_TILE_DIFFERENCE` 用**饱和加法并写回 `current`**；UPGRADE 的 SRL/raw **两个位流同时活跃**；
+      每 `(tile,分量)` 的 `current`/`sign`/`bitPos` **跨消息常驻**；compose 必须按桌面尺寸/region clip
+      （桌面宽高非 64 倍数，边缘 tile 会按 stride 折回下一行、污染邻接 tile）。
+    - ClearCodec **非自包含**（未覆盖像素保留原值）；`SurfaceToCache` 内部会嵌套调用 `EvictCacheEntry`，
+      引擎侧要**抑制这次嵌套**；`MapSurfaceToScaledOutput` 本工程不支持（unmap 不合成，与 gdi 现状一致）。
+    - `CreateSurface`：宽/高/scanline 按 **16B 对齐**、**0xFF 初始化**、wire `0x20→BGRX32` / `0x21→BGRA32`。
+      `SolidFill` 的 alpha 固定 `0xFF`；`SurfaceToSurface` 的 `destPts` 语义按 FreeRDP 实现照搬。
+    - compute 派发注意**每轴工作组上限**（`maxComputeWorkGroupCount`，常见 65535）：整屏矩形需要
+      10 万+ 工作组，必须用 2D/3D 网格而不是线性下标。
+    - **RDPGFX 表面持久**：少实现一条命令，引擎与 gdi 就**永久分叉** ⇒ 捕获回放对比只能在
+      Progressive / ClearCodec 补齐后当闸门（V1/V2 用确定性原语自检 `primitives:`）。
+    - 验证回路（跨实现保留）：设置页「抓取 RFX 码流（测试）」→ `hmrdp_gfx.bin`；dev 页「回放测试」
+      三条路线（`GPU` / `CPU(gdi)` / `对比`）；需要**打过补丁并重编的 FreeRDP**
+      （`patch-freerdp.ps1` 第 7 步 + `HmrdpSetGfxRawCapture` / `HmrdpGfxReplayNewWithContext`）。
+    - **不要每命令排空流水线 / 等待设备**（旧 `DecodeMessage` 末尾 `glFinish` 的教训）：GPU 侧用 barrier，
+      只在真正回读 CPU 处同步；**不要立即销毁在飞资源**（fence 延迟回收）。
+    - **不要在非目标设备上标定性能参数**：真机口径要压的是**同步点数 / 驱动调用数 / CPU 介入次数**，
+      不是模拟器耗时。
 
 ## ArkTS 规范
 
@@ -401,15 +382,18 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/ets/services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；`DocumentViewPicker` + `fileIo`，密码不导出） |
 | `entry/src/main/ets/services/RdpNative.ets` | 每个会话窗口一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 按会话 key 复用实例 |
 | `entry/src/main/ets/services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射（`TouchpadWheelMapper`，速度倍率、9bit 二补码、0xFF 分片） |
-| `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因 |
+| `entry/src/main/ets/services/DeviceCapabilities.ets` | 运行时设备能力探测（`Capability{supported,reason}`）；音频能力查 `isAudioSupported()`，供设置/编辑页置灰并给出原因。**待补**：模拟器上置灰「硬件解码」与 GPU 回放入口（硬件加速 = 真机专属） |
 | `entry/src/main/ets/services/SessionManager.ets` | 主窗口后台连接、每连接状态（转圈/已连接/失败）、错误分类、成功后开窗与断连编排 |
 | `entry/src/main/ets/services/WindowController.ets` | 应用窗口默认尺寸、拉起独立会话窗口、会话窗口全屏与系统标题栏/dock 悬停控制、单窗口模式的主窗口隐藏/恢复 |
 | `entry/src/main/cpp/hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + `isAudioSupported` / `setTouchHighRate` / `setRdpCursor` / `setHardwareDecode` 查询与开关 |
 | `entry/src/main/cpp/hmrdp_session.cpp` | FreeRDP 客户端生命周期、输入、事件、光标位图处理、会话遥测（GFX 解码计时 / 带宽采样 / 每秒 `kMetrics`）；GFX 回调喂 GPU 引擎 + 接管/影子对照（`kGpuShadowCompare`） |
-| `entry/src/main/cpp/hmrdp_egl.{h,cpp}` | 进程级 EGL display + share anchor 上下文（引擎与 Renderer 共用一个 share group） |
-| `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器：`DrawFrame`（CPU 帧上传，回退/gdi 路径）与 `PresentTexture`（直接采样共享纹理上屏） |
+| `entry/src/main/cpp/hmrdp_vk_context.{h,cpp}` | Vulkan 上下文：`dlopen("libvulkan.so")` + 标准能力探测 + 进程级 instance/device/queue + 内存类型选择 + 延迟销毁 |
+| `entry/src/main/cpp/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + 缩放/letterbox 的 blit |
+| `entry/src/main/cpp/hmrdp_vk_desktop.{h,cpp}` | Vulkan 表面引擎：表面注册表 + 命令执行 + 合成 + 屏幕脏区（**V2 起改为 host-visible 缓冲**） |
+| `entry/src/main/cpp/hmrdp_vk_selftest.{h,cpp}` | 确定性原语自检 + 捕获回放对比（dev/验收用，回放页「Vulkan:引擎」驱动） |
+| `entry/src/main/cpp/cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入（用 SDK 自带 `glslang_validator.exe`；shader 列表暂空，V3 起生效） |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
-| `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | GPU RemoteFX/Progressive 引擎：容器解析（块/区域/tile/量化表）+ GPU（GLES 3.1 compute）tile 解码 + `GfxGpuDesktop` 多表面桌面引擎（fill/copy/cache/上传/合成/屏幕脏区）+ ClearCodec 的 FreeRDP 胶水 + 能力探测 + 会话/回放共用的 `GpuPresentComposed` |
 | `entry/src/main/cpp/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制（单文件）：落盘 `hmrdp_gfx.bin`（`u32 长度` + 服务端原始 ZGX 字节）与回放读取（`GfxRawCapture`） |
 | `entry/src/main/cpp/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP CPU（gdi）桌面：复用 FreeRDP 自身解码作为回放的对比路线；`PresentGdiFrame` 为 live gdi 回退与 CPU 回放共用 |
 | `entry/src/main/cpp/hmrdp_replay.{h,cpp}` | dev 回放上屏：把 `hmrdp_gfx.bin` 喂给 GPU 引擎或离线 gdi 桌面（`GfxReplayRoute`）并 present 到 XComponent（固定复现） |
+| ⛔ `hmrdp_rfx.{h,cpp}` / `hmrdp_egl.{h,cpp}` / `hmrdp_renderer.{h,cpp}` | **GLES 引擎 / EGL / GLES 渲染器：已冻结，随 V7 删除**，只作算法与踩坑参考 |
