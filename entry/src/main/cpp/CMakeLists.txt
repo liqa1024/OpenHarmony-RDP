@@ -27,11 +27,7 @@ add_library(hmrdp SHARED
     hmrdp_egl.cpp
     hmrdp_audio.cpp
     hmrdp_rfx.cpp
-    hmrdp_rfx_gpu.cpp
-    hmrdp_gfx_dump.cpp
     hmrdp_gfx_capture.cpp
-    hmrdp_gfx_desktop.cpp
-    hmrdp_gfx_clear.cpp
     hmrdp_replay.cpp
 )
 

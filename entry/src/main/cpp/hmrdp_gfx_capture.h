@@ -1,17 +1,20 @@
 /*
- * HmRdp - shared reader for captured RDPGFX data (PERF-TODO §4).
+ * HmRdp - captured RDPGFX data: recording, reading and offline comparison
+ * (PERF-TODO §4).
  *
- * Two consumers replay the same captures:
+ * The capture format is produced by the dev "抓取 RFX 码流（测试）" switch during a
+ * live session (hmrdp_gfx.bin command stream + hmrdp_gfx_surface.bin baselines)
+ * and consumed by two replayers:
  *   - the on-device replay harness (hmrdp_replay.cpp) renders the command
  *     stream to the screen for a fixed, reproducible test;
- *   - the offline self-tests (hmrdp_gfx_desktop.cpp / hmrdp_rfx_gpu.cpp) replay
- *     the same stream and diff each frame against the captured baselines.
+ *   - the offline self-test (hmrdp_rfx.cpp) replays the same stream and diffs
+ *     each frame against the captured baselines.
  *
- * This module is the single place the capture file layouts are parsed, so the
- * present path and the comparison path can never drift apart. It has no FreeRDP
- * or GLES dependency and can be compiled on the host.
+ * This module is the single place the capture layouts are defined and parsed, so
+ * the writer and the readers can never drift apart. The read/compare side has no
+ * FreeRDP or GLES dependency and can be compiled on the host.
  *
- * File formats come from hmrdp_gfx_dump.h:
+ * Layout (little-endian), see PERF-TODO appendix A:
  *   hmrdp_gfx.bin         'GFX1' command records (10 x u32 header + params + payload)
  *   hmrdp_gfx_surface.bin 'GFH1' per-frame FNV-1a hash + 'GFS1' full BGRA baseline
  */
@@ -26,6 +29,37 @@
 #include <vector>
 
 namespace hmrdp {
+
+// ---- Recording (write side, driven by hmrdp_session.cpp) -------------------
+
+// Enables/disables the dump and points it at `dir` (the app filesDir). Passing
+// an empty dir or `enabled=false` closes the files and logs the final command
+// histogram. Safe to call from the UI thread while the RDP thread is recording.
+void GfxDumpConfigure(bool enabled, const std::string& dir);
+
+// Flushes, closes and logs the histogram. Called when the capture is turned off.
+void GfxDumpShutdown();
+
+// Flushes the pending records to disk without closing (called at session
+// disconnect so a crash or abrupt exit cannot lose the tail of the capture).
+void GfxDumpFlush();
+
+// Records one GFX command. `scalars` are four command-specific u32 values.
+// `params`/`payload` may be null when their length is 0. Returns the 1-based
+// record index (0 when the dump is disabled or the size cap was reached).
+uint32_t GfxDumpCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                        const void* params, uint32_t paramsLen, const void* payload,
+                        uint32_t payloadLen);
+
+// Records the BGRA surface `surfaceId` as of `recordIndex`. `data` must be
+// `stride * height` bytes; a null/empty surface is ignored.
+void GfxDumpSurface(uint32_t recordIndex, uint32_t surfaceId, uint32_t width, uint32_t height,
+                    uint32_t stride, uint32_t format, const void* data);
+
+// Human-readable "cmd=count" histogram of the current capture.
+std::string GfxDumpHistogramSummary();
+
+// ---- Playback (read side) --------------------------------------------------
 
 // One record of an hmrdp_gfx.bin command stream. `params`/`payload` point into
 // the buffer owned by GfxCapture and stay valid until it is reopened.
@@ -82,7 +116,7 @@ struct GfxSurfaceBaselines {
   const GfxSurfaceBaseline* FindFull(uint32_t recordIndex, uint32_t surfaceId) const;
 };
 
-// FNV-1a 64, identical to the hash written by hmrdp_gfx_dump.cpp.
+// FNV-1a 64, identical to the hash written by the recorder above.
 uint64_t GfxCaptureHash(const uint8_t* data, size_t size);
 
 // A read-only view of one engine surface's pixels. `stride` is the surface
@@ -113,7 +147,7 @@ struct GfxFrameComparison {
 };
 
 // Compares the surfaces recorded for `recordIndex` against `baselines` using
-// `read`. Shared by the CPU and GPU offline self-tests so both use one policy.
+// `read`.
 GfxFrameComparison GfxCompareFrame(uint32_t recordIndex, const GfxSurfaceBaselines& baselines,
                                    const GfxSurfaceReader& read);
 

@@ -9,7 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
-rfxGpuSelfTest, gfxDesktopSelfTest, gfxGpuDesktopSelfTest, RdpEventCallback,
+rfxGpuSelfTest, gfxGpuDesktopSelfTest, RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
@@ -93,27 +93,17 @@ export class RdpNative {
     return summary;
   }
 
-  /** Dev/test: replays the captured GFX command stream through the B1 CPU model. */
-  static runGfxDesktopSelfTest(gfxPath: string, surfacePath: string): string {
-    const summary: string = gfxDesktopSelfTest(gfxPath, surfacePath);
-    hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx desktop selftest: %{public}s', summary);
-    return summary;
-  }
-
-  /** Dev/test: replays the captured GFX command stream through the B2 GPU model. */
+  /** Dev/test: replays the captured GFX command stream through the GPU model. */
   static runGfxGpuDesktopSelfTest(gfxPath: string, surfacePath: string): string {
     const summary: string = gfxGpuDesktopSelfTest(gfxPath, surfacePath);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx gpu desktop selftest: %{public}s', summary);
     return summary;
   }
 
-  /**
-   * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-   * `useCpu` (debug) selects the CPU reference instead of the GPU engine.
-   */
+  /** Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen. */
   static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
-    gfxPath: string, useCpu: number): string {
-    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath, useCpu);
+    gfxPath: string): string {
+    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx replay: %{public}s', summary);
     return summary;
   }

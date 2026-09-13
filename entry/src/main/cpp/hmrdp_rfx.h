@@ -1,13 +1,21 @@
 /*
- * HmRdp - RemoteFX / Progressive (MS-RDPRFX) container parser.
+ * HmRdp - GPU RemoteFX/Progressive decoder + GFX surface engine.
  *
- * Parses the compressed "RFX Progressive" bitmap stream that the server sends
- * in CAPROGRESSIVE GFX surface commands. It only walks the container (blocks,
- * region, tiles) and exposes the per-tile RLGR payloads; the pixel decoding is
- * done elsewhere (CPU reference or the GPU path, see PERF-TODO §2).
+ * §1 - Container parser: walks the compressed "RFX Progressive" bitmap stream
+ *      (blocks, region, tiles, quantization tables) and exposes the per-tile
+ *      payloads. Portable C++ with no OHOS/FreeRDP dependency.
+ * §2 - GPU decode + surface engine: the integer RemoteFX/Progressive pipeline
+ *      runs in GLES 3.1 compute shaders, and GfxGpuDesktop holds the full GFX
+ *      surface model (PERF-TODO §2.3-§2.5) - a `surfaceId -> GPU surface`
+ *      registry with per-surface progressive state and the four pixel
+ *      operations (decode write / solid fill / surface copy / cache),
+ *      reproducing the FreeRDP command semantics.
  *
- * Portable C++17 with no OHOS dependencies so it can also be compiled on the
- * host for offline validation against a captured stream.
+ * ClearCodec is the one codec not implemented in GLES: it is decoded on the CPU
+ * through FreeRDP's clear_decompress (read-modify-write of the target surface).
+ *
+ * Devices without GLES 3.1 compute cannot use the engine (see
+ * GetGpuComputeInfo()); the session then keeps FreeRDP's own gdi path.
  */
 #ifndef HMRDP_RFX_H
 #define HMRDP_RFX_H
@@ -15,8 +23,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace hmrdp {
+
+// ===========================================================================
+// §1 Container parser
+// ===========================================================================
 
 enum class RfxTileType {
   kFirst = 0,
@@ -46,23 +61,6 @@ struct RfxProgQuant {
   RfxQuant y;
   RfxQuant cb;
   RfxQuant cr;
-};
-
-// Persistent per-tile decode state shared across progressive messages. A tile
-// is first sent as kFirst (absolute RLGR coefficients) and then refined by zero
-// or more kUpgrade passes; both read/write the same coefficient arrays and the
-// per-subband bit positions, so they must survive between messages. This is the
-// decoder-side mirror of FreeRDP's RFX_PROGRESSIVE_TILE (current/sign/bitPos);
-// the GPU port needs the same state (as a device buffer) to stay equivalent.
-//
-// Sized for the three 64x64 components (4096 int16 each). The struct is large
-// (~48 KB); the caller owns one instance per tile of the surface grid.
-struct RfxTileState {
-  bool valid = false;             // a kFirst pass has initialised this tile
-  uint16_t pass = 0;              // progressive pass counter (kFirst -> 1)
-  int16_t current[3][4096];       // pre-DWT dequantized coefficients
-  int16_t sign[3][4096];          // per-coefficient sign/zero marker (kUpgrade)
-  RfxQuant bitPos[3];             // component quant + progressive quant, per subband
 };
 
 // One clipping rectangle of a region (device pixels). FreeRDP composites a
@@ -144,35 +142,237 @@ using RfxTileCallback = std::function<void(const RfxTileRef&)>;
 bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
                          RfxParseStats* stats);
 
-enum class RlgrMode {
-  kRlgr1 = 0,
-  kRlgr3 = 1,
+// ===========================================================================
+// ClearCodec hook (FreeRDP clear_decompress; implemented in hmrdp_rfx.cpp)
+// ===========================================================================
+
+// ClearCodec decode hook, wired to FreeRDP's clear_decompress.
+class GfxClearDecoder {
+ public:
+  virtual ~GfxClearDecoder() = default;
+  // Decodes one ClearCodec payload into `dst` (`dstFormat` packed pixel format,
+  // `stride` bytes/row) at (xDst,yDst), clipped to dstW/dstH. Returns false on
+  // failure.
+  virtual bool Decode(const uint8_t* src, size_t size, int width, int height, uint32_t dstFormat,
+                      uint8_t* dst, int stride, int xDst, int yDst, int dstW, int dstH) = 0;
 };
 
-// Decodes one RLGR (Run-Length Golomb-Rice) encoded component stream into
-// `dst` (dstCount int16 coefficients, zero-padded at the end). This is the
-// per-component entropy decode of a RemoteFX tile; a straight port of
-// FreeRDP's rfx_rlgr_decode so the same math can later run on the GPU.
-bool RlgrDecode(RlgrMode mode, const uint8_t* src, size_t size, int16_t* dst, size_t dstCount,
-                size_t* remainingBits = nullptr);
+// Creates a ClearCodec decoder backed by FreeRDP's clear_decompress.
+std::unique_ptr<GfxClearDecoder> CreateFreeRdpClearDecoder();
 
-// Decodes one kFirst (whole-tile) update into a 64x64 BGRA image (`dstStride`
-// in bytes). This is the CPU reference for the RemoteFX tile pipeline
-// (RLGR -> differential -> dequant -> inverse DWT -> YCbCr->RGB) that the GPU
-// path will mirror. When `state` is non-null it is updated in place: the raw
-// coefficients are saved as `sign`, the dequantized coefficients become
-// `current` (or are added to it for RFX_TILE_DIFFERENCE tiles) and the
-// per-subband bit positions are recorded for later kUpgrade passes. Pass
-// nullptr only when the tile has no progressive continuation.
-bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride,
-                     RfxTileState* state = nullptr);
+// ===========================================================================
+// §2 GPU decode + surface engine
+// ===========================================================================
 
-// Decodes one kUpgrade (progressive refinement) into a 64x64 BGRA image. The
-// SRL/raw bit streams are applied on top of `state->current`/`state->sign`,
-// which must have been initialised by an earlier DecodeTileFirst for the same
-// tile (mirrors progressive_decompress_tile_upgrade). Returns false if `state`
-// is null or the tile is not a kUpgrade.
-bool DecodeTileUpgrade(const RfxTileRef& tile, uint8_t* dst, int dstStride, RfxTileState* state);
+// Runtime GLES compute capability. RFX decoding only uses the GPU path when
+// `compute` is true.
+struct GpuComputeInfo {
+  bool egl = false;      // an offscreen EGL context could be created
+  bool compute = false;  // GLES >= 3.1 (compute shaders) available
+  int glMajor = 0;
+  int glMinor = 0;
+  int maxWorkGroupInvocations = 0;
+  int maxSharedMemory = 0;
+  int maxSsboSize = 0;
+  int maxTextureSize = 0;
+  char renderer[128] = {0};
+  char version[64] = {0};
+
+  std::string Describe() const;
+};
+
+// Probes the device once (result cached). Safe to call from any thread.
+const GpuComputeInfo& GetGpuComputeInfo();
+
+// FreeRDP packed surface pixel formats (values copied from freerdp/codec/color.h
+// so this header stays FreeRDP-free). The wire format maps 0x20 -> BGRX32 and
+// 0x21 -> BGRA32.
+constexpr uint32_t kPixelFormatBgra32 = 0x20048888u;
+constexpr uint32_t kPixelFormatBgrx32 = 0x20040888u;
+
+// Public metadata of one GPU-resident GFX surface (the GL buffers stay private
+// to the engine). Dimensions/stride are aligned to 16 exactly like FreeRDP's
+// gdiGfxSurface; `format` is the packed FreeRDP format above.
+struct GpuSurface {
+  uint16_t id = 0;
+  int width = 0;   // aligned to 16
+  int height = 0;  // aligned to 16
+  int stride = 0;  // aligned width*4, bytes
+  uint32_t format = 0;
+  int gridW = 0;
+  int gridH = 0;
+  bool mapped = false;
+  uint32_t outputX = 0;
+  uint32_t outputY = 0;
+  int mappedWidth = 0;   // raw CreateSurface width
+  int mappedHeight = 0;  // raw CreateSurface height
+  // Bounding box of the region touched since the last Compose (a conservative
+  // superset of FreeRDP's per-command invalid rects).
+  bool dirtyValid = false;
+  int dirtyLeft = 0;
+  int dirtyTop = 0;
+  int dirtyRight = 0;
+  int dirtyBottom = 0;
+};
+
+// GPU desktop / surface engine: it owns an offscreen GLES 3.1 context, one GPU
+// surface buffer (+ progressive tile state) per `surfaceId` and a global bitmap
+// cache, and reproduces the FreeRDP command semantics (PERF-TODO §2.3-§2.5).
+//
+// ClearCodec is decoded on the CPU through the injected GfxClearDecoder hook
+// (FreeRDP's clear_decompress) with a read-modify-write of the target surface;
+// every other command runs on the GPU (compute).
+class GfxGpuDesktop {
+ public:
+  explicit GfxGpuDesktop(GfxClearDecoder* clearDecoder = nullptr);
+  ~GfxGpuDesktop();
+
+  GfxGpuDesktop(const GfxGpuDesktop&) = delete;
+  GfxGpuDesktop& operator=(const GfxGpuDesktop&) = delete;
+
+  // Creates the offscreen context, programs and shared scratch buffers. No
+  // surface exists until CreateSurface is called.
+  bool Init();
+  void Reset();
+  bool ready() const { return ready_; }
+
+  // --- Surface lifecycle ---------------------------------------------------
+  // Aligns width/height to 16, stride to 16 bytes, fills with 0xFF and resets
+  // the per-surface progressive state. `format` is the wire pixel format
+  // (0x20 -> BGRX32, 0x21 -> BGRA32).
+  bool CreateSurface(uint16_t surfaceId, int width, int height, uint32_t format);
+  void DeleteSurface(uint16_t surfaceId);
+  const GpuSurface* FindSurface(uint16_t surfaceId) const;
+
+  // Output mapping metadata (PERF-TODO §2.5); consumed by Compose. 1:1 only:
+  // server-side scaled mappings are unsupported (see ApplyCommand).
+  void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
+
+  // --- Screen (front buffer) ------------------------------------------------
+  // Resets the screen buffer (FreeRDP ResetGraphics); zero releases it.
+  bool ResetGraphics(int width, int height);
+  // Composites every output-mapped surface's dirty region into the screen
+  // (FreeRDP's gdi_OutputUpdate) and clears their dirty regions.
+  // Returns true when the screen dirty region is non-empty.
+  bool Compose();
+  void ClearScreenDirty();
+  bool screenDirty() const;
+  int screenWidth() const { return screenW_; }
+  int screenHeight() const { return screenH_; }
+  // Screen texture (BGRA bytes as RGBA8) in the process-wide EGL share group,
+  // so the Renderer can sample it directly; 0 when no screen is allocated.
+  // Returned as uint32_t to keep GLES out of this header.
+  uint32_t screenTexture() const;
+  // Full screen (top-down, `screenW*4` stride) as BGRA. Dev/verification only.
+  bool ReadScreen(std::vector<uint8_t>* out);
+
+  // --- Pixel commands (FreeRDP GFX command semantics) ----------------------
+  // Applies one captured/received GFX command. `params`/`payload` may be null
+  // when their length is 0. Unknown command ids and unknown target surfaces are
+  // ignored.
+  void ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                    const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                    uint32_t payloadLen);
+
+  // Decodes one Progressive message payload ("WBT" container), updating the
+  // surface's persistent tile state. Returns false on GL failure.
+  bool DecodeMessage(uint16_t surfaceId, const uint8_t* payload, size_t size);
+
+  bool SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
+                 uint32_t rectCount);
+  // Uploads a BGRA rect into the surface (uncompressed 24/32bpp).
+  bool UploadBgra(uint16_t surfaceId, int left, int top, int width, int height,
+                  const uint8_t* bgra, int srcStride);
+  // Full-width row transfer, used to emulate ClearCodec (which must read the
+  // existing surface content for the pixels its bands do not overwrite).
+  bool DownloadRows(uint16_t surfaceId, int top, int height, uint8_t* dst, int dstStride);
+  bool UploadRows(uint16_t surfaceId, int top, int height, const uint8_t* src, int srcStride);
+  bool SurfaceToCache(uint16_t surfaceId, uint16_t slot, int x, int y, int width, int height);
+  bool CacheToSurface(uint16_t surfaceId, uint16_t slot, int dstX, int dstY);
+  void EvictCache(uint16_t slot);
+  bool SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, int width, int height,
+                        uint16_t dstSurfaceId, int dstX, int dstY);
+
+  // Full surface (top-down, `stride` bytes) as BGRA. Dev/verification only: it
+  // maps the GPU buffer back to the CPU.
+  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
+
+ private:
+  struct Impl;
+  Impl* impl_ = nullptr;
+  bool ready_ = false;
+  int screenW_ = 0;
+  int screenH_ = 0;
+};
+
+// --- Shared command/present pipeline (session + replay harness) -------------
+
+// Command ids as delivered to the engine (mirrors the capture stream). A
+// capture carries raw ids; this enum documents the ones the engine implements.
+enum GpuCmd : uint16_t {
+  kGpuCmdWireToSurface = 0x0001,
+  kGpuCmdSolidFill = 0x0004,
+  kGpuCmdSurfaceToSurface = 0x0005,
+  kGpuCmdSurfaceToCache = 0x0006,
+  kGpuCmdCacheToSurface = 0x0007,
+  kGpuCmdEvictCacheEntry = 0x0008,
+  kGpuCmdCreateSurface = 0x0009,
+  kGpuCmdDeleteSurface = 0x000A,
+  kGpuCmdStartFrame = 0x000B,
+  kGpuCmdEndFrame = 0x000C,
+  kGpuCmdResetGraphics = 0x000E,
+  kGpuCmdMapSurfaceToOutput = 0x000F,
+  kGpuCmdMapSurfaceToScaledOutput = 0x0017,
+};
+
+class Renderer;
+
+// Composes the engine screen and presents it, then clears the screen dirty gate.
+// The engine screen texture lives in the process-wide EGL share group, so the
+// Renderer samples it directly (no CPU readback/upload). Returns true when a
+// frame reached the screen.
+bool GpuPresentComposed(GfxGpuDesktop* engine, Renderer* renderer);
+
+// --- Offline self-tests -----------------------------------------------------
+
+// Replays `rfxPath` (hmrdp_rfx.bin) against `surfacePath` (hmrdp_rfx_surface.bin)
+// entirely on the GPU and reports the pixel mismatch on the records that have a
+// captured reference surface.
+struct RfxGpuSelfTestResult {
+  bool ran = false;       // GPU path initialised and replay started
+  bool ok = false;        // all compared records matched (threshold > 2)
+  uint64_t tiles = 0;
+  uint64_t firstTiles = 0;
+  uint64_t upgradeTiles = 0;
+  uint64_t decodedOk = 0;
+  uint64_t decodedFail = 0;
+  uint64_t compared = 0;
+  uint64_t mismatch = 0;
+  double meanAbs = 0.0;
+  int comparedRecords = 0;
+  int badRecords = 0;
+  std::string log;
+};
+RfxGpuSelfTestResult RunRfxGpuSelfTest(const std::string& rfxPath, const std::string& surfacePath);
+
+// Replays the full GFX command stream (hmrdp_gfx.bin) through the GPU desktop
+// surface model and compares it with the captured baselines
+// (hmrdp_gfx_surface.bin: 'GFS1' full / 'GFH1' per-frame hash).
+struct RfxGpuDesktopSelfTestResult {
+  bool ran = false;
+  bool ok = false;
+  uint32_t records = 0;
+  uint32_t comparedRecords = 0;
+  uint32_t badRecords = 0;
+  uint64_t compared = 0;
+  uint64_t mismatch = 0;
+  uint64_t surfacesHashed = 0;
+  uint64_t hashMismatch = 0;
+  double meanAbs = 0.0;
+  std::string log;
+};
+RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
+                                                     const std::string& surfacePath);
 
 }  // namespace hmrdp
 

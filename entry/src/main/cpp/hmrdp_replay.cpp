@@ -11,11 +11,9 @@
 #include <thread>
 
 #include "hmrdp_gfx_capture.h"
-#include "hmrdp_gfx_desktop.h"  // GfxDesktop (CPU reference) + CreateFreeRdpClearDecoder
-#include "hmrdp_gfx_pipeline.h"
 #include "hmrdp_log.h"
 #include "hmrdp_renderer.h"
-#include "hmrdp_rfx_gpu.h"  // GfxGpuDesktop
+#include "hmrdp_rfx.h"  // GfxGpuDesktop + GpuPresentComposed
 
 namespace hmrdp {
 
@@ -44,7 +42,7 @@ GfxReplay::~GfxReplay() {
 }
 
 bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
-                      const std::string& gfxPath, bool useCpu) {
+                      const std::string& gfxPath) {
   Stop();
   if (nativeWindow == nullptr || surfaceW <= 0 || surfaceH <= 0 || gfxPath.empty()) {
     if (nativeWindow != nullptr) {
@@ -62,7 +60,6 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     surfaceW_ = surfaceW;
     surfaceH_ = surfaceH;
     gfxPath_ = gfxPath;
-    cpuMode_.store(useCpu ? 1 : 0);
     frames_.store(0);
     presents_.store(0);
     presentFailures_.store(0);
@@ -86,8 +83,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     Stop();
     return false;
   }
-  HMRDP_LOGI("gfx replay: started cpu=%{public}d surface=%{public}dx%{public}d path=%{public}s",
-             useCpu ? 1 : 0, surfaceW, surfaceH, gfxPath.c_str());
+  HMRDP_LOGI("gfx replay: started surface=%{public}dx%{public}d path=%{public}s", surfaceW,
+             surfaceH, gfxPath.c_str());
   return true;
 }
 
@@ -139,8 +136,8 @@ std::string GfxReplay::Stats() {
   }
   char buf[256];
   std::snprintf(buf, sizeof(buf),
-                "running=%d cpu=%d frames=%llu presents=%llu fps=%.1f presentFail=%llu err=%s",
-                running_.load() ? 1 : 0, cpuMode_.load(),
+                "running=%d frames=%llu presents=%llu fps=%.1f presentFail=%llu err=%s",
+                running_.load() ? 1 : 0,
                 static_cast<unsigned long long>(frames_.load()),
                 static_cast<unsigned long long>(presents), fps,
                 static_cast<unsigned long long>(presentFailures_.load()),
@@ -150,16 +147,11 @@ std::string GfxReplay::Stats() {
 
 void GfxReplay::Run() {
   renderer_->Prepare();
-  if (cpuMode_.load() != 0) {
-    RunEngine<GfxDesktop>(gfxPath_);
-  } else {
-    RunEngine<GfxGpuDesktop>(gfxPath_);
-  }
+  RunReplay(gfxPath_);
   running_.store(false);
 }
 
-template <typename Engine>
-void GfxReplay::RunEngine(const std::string& gfxPath) {
+void GfxReplay::RunReplay(const std::string& gfxPath) {
   auto fail = [this](const char* why) {
     std::lock_guard<std::mutex> lock(errorMutex_);
     lastError_ = why;
@@ -168,8 +160,8 @@ void GfxReplay::RunEngine(const std::string& gfxPath) {
   // Inject FreeRDP's ClearCodec decoder like a live session does, so the
   // replayed desktop is complete (ClearCodec bands are not self-contained).
   std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
-  std::unique_ptr<Engine> engine(new Engine(clear.get()));
-  if (!engine->Init()) {
+  GfxGpuDesktop engine(clear.get());
+  if (!engine.Init()) {
     fail("engine init failed");
     return;
   }
@@ -181,15 +173,15 @@ void GfxReplay::RunEngine(const std::string& gfxPath) {
   auto nextFrame = std::chrono::steady_clock::now();
   GfxCaptureRecord rec;
   while (running_.load() && capture.Next(&rec)) {
-    GpuApplyCommand(engine.get(), rec.cmdId, rec.surfaceId, rec.scalars, rec.params, rec.paramsLen,
-                    rec.payload, rec.payloadLen);
+    engine.ApplyCommand(rec.cmdId, rec.surfaceId, rec.scalars, rec.params, rec.paramsLen,
+                        rec.payload, rec.payloadLen);
     if (rec.cmdId == kGpuCmdEndFrame) {
       const int pw = pendingW_.exchange(0);
       const int ph = pendingH_.exchange(0);
       if (pw > 0 && ph > 0) {
         renderer_->ResizeSurface(pw, ph);
       }
-      if (GpuPresentComposed(engine.get(), renderer_.get())) {
+      if (GpuPresentComposed(&engine, renderer_.get())) {
         presents_.fetch_add(1);
       } else {
         presentFailures_.fetch_add(1);

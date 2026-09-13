@@ -2,11 +2,10 @@
  * HmRdp - dev-only RDP replay page (PERF-TODO §4).
  *
  * Binds this XComponent's surface and replays the recorded hmrdp_gfx.bin capture
- * straight to the screen. The engine is chosen at runtime: the GPU engine by
- * default, or the CPU reference for an A/B comparison. No RDP session or network
- * is involved. The capture is not shipped in the HAP - `hdc file send` it into
- * the app filesDir as hmrdp_gfx.bin before opening this page (entered from the
- * home screen "回放测试" entry).
+ * straight to the screen through the GPU desktop engine. No RDP session or
+ * network is involved. The capture is not shipped in the HAP - `hdc file send`
+ * it into the app filesDir as hmrdp_gfx.bin before opening this page (entered
+ * from the home screen "回放测试" entry).
  */
 import { RdpNative } from '../services/RdpNative';
 import { window } from '@kit.ArkUI';
@@ -50,7 +49,6 @@ class ReplaySurfaceController extends XComponentController {
 @Component
 struct GfxReplayPage {
   @State status: string = '等待 surface...';
-  @State useCpu: boolean = false;  // debug: replay on the CPU reference
   private controller: ReplaySurfaceController = new ReplaySurfaceController();
   private statsTimer: number = -1;
   private surfaceId: string = '';
@@ -103,7 +101,7 @@ struct GfxReplayPage {
     }
     RdpNative.stopReplayTest();
     const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW, this.surfaceH,
-      `${dir}/hmrdp_gfx.bin`, this.useCpu ? 1 : 0);
+      `${dir}/hmrdp_gfx.bin`);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;
@@ -177,18 +175,6 @@ struct GfxReplayPage {
           .backgroundColor($r('app.color.input_bg'))
           .borderRadius(9)
           .onClick(() => {
-            this.startReplay();
-          })
-
-        Button(this.useCpu ? 'CPU 参考' : 'GPU 引擎')
-          .height(34)
-          .fontSize(13)
-          .fontColor('#FFFFFF')
-          .backgroundColor(this.useCpu ? '#8A6D3B' : $r('app.color.accent'))
-          .borderRadius(9)
-          .margin({ left: 8 })
-          .onClick(() => {
-            this.useCpu = !this.useCpu;
             this.startReplay();
           })
       }

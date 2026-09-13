@@ -66,24 +66,6 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
-      // TEMP dev self-test: runs the GPU RFX decoder over a captured stream and
-      // compares it with the captured FreeRDP surface. No-op when the sample
-      // files are absent (the native side returns immediately).
-      const sampleDir: string = this.context.filesDir;
-      // TEMP dev self-test (GPU tile decoder): disabled while B1 is under test,
-      // it is slow and blocks the desktop self-test below. Both are dev-only.
-      // RdpNative.runGpuSelfTest(`${sampleDir}/hmrdp_rfx.bin`,
-      //   `${sampleDir}/hmrdp_rfx_surface.bin`);
-      // TEMP dev self-test (B1 CPU-runnable GPU code): replays the captured full
-      // GFX command stream through the CPU desktop model and compares it with the
-      // captured baselines. No-op when the sample files are absent.
-      // TEMP: disabled for live GPU-desktop testing (the replay blocks the UI).
-      // RdpNative.runGfxDesktopSelfTest(`${sampleDir}/hmrdp_gfx.bin`,
-      //   `${sampleDir}/hmrdp_gfx_surface.bin`);
-      // TEMP dev self-test (B2 GPU model): kept available but disabled while B1
-      // is under test (both are slow and only one can run per launch).
-      // RdpNative.runGfxGpuDesktopSelfTest(`${sampleDir}/hmrdp_gfx.bin`,
-      //   `${sampleDir}/hmrdp_gfx_surface.bin`);
     });
   }
 

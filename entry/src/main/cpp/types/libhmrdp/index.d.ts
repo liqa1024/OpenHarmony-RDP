@@ -98,26 +98,17 @@ export const rfxGpuSelfTest: (rfxPath: string, surfacePath: string) => string;
 
 /**
  * Dev/test helper: replay the captured full GFX command stream (`gfxPath`,
- * hmrdp_gfx.bin) through the CPU desktop/surface model (B1) and compare it with
- * the captured FreeRDP surface baselines (`surfacePath`, hmrdp_gfx_surface.bin).
- * Returns a one-line summary.
- */
-export const gfxDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;
-
-/**
- * Dev/test helper: replay the captured full GFX command stream (`gfxPath`,
- * hmrdp_gfx.bin) through the GPU desktop surface model (B2) and compare it with
- * the captured baselines (`surfacePath`, hmrdp_gfx_surface.bin). Returns a
- * one-line summary.
+ * hmrdp_gfx.bin) through the GPU desktop surface model and compare it with the
+ * captured baselines (`surfacePath`, hmrdp_gfx_surface.bin). Returns a one-line
+ * summary.
  */
 export const gfxGpuDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;
 
 /**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
- * `useCpu` (debug) selects the CPU reference instead of the GPU engine.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
-  gfxPath: string, useCpu: number) => string;
+  gfxPath: string) => string;
 export const stopGfxReplayTest: () => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;

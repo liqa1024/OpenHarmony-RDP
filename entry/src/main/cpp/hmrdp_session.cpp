@@ -38,10 +38,8 @@
 #include <winpr/wlog.h>
 
 #include "hmrdp_log.h"
-#include "hmrdp_gfx_desktop.h"
-#include "hmrdp_gfx_dump.h"
-#include "hmrdp_gfx_pipeline.h"
-#include "hmrdp_rfx_gpu.h"
+#include "hmrdp_gfx_capture.h"
+#include "hmrdp_rfx.h"
 
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
@@ -1161,9 +1159,9 @@ BOOL HmrdpNetworkCharacteristicsResult(rdpAutoDetect* autodetect, RDP_TRANSPORT_
 // chains every RdpgfxClientContext command callback. Two independent jobs ride
 // on the chain:
 //  * SurfaceCommand is timed for the "本机" (decode + present) metric;
-//  * the whole command stream is serialized by hmrdp_gfx_dump (PERF-TODO §2.5
-//    B0) so the desktop-owning GPU decoder (B1/B2) can be replayed offline
-//    against the same FreeRDP surface baselines.
+//  * the whole command stream is serialized by hmrdp_gfx_capture (PERF-TODO §2.5
+//    B0) so the GPU desktop engine can be replayed offline against the same
+//    FreeRDP surface baselines.
 // The wrappers must preserve the original return values and behaviour exactly.
 struct GfxOriginals {
   pcRdpgfxResetGraphics ResetGraphics = nullptr;

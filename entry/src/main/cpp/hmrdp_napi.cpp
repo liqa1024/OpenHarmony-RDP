@@ -18,9 +18,8 @@
 #include <string>
 
 #include "hmrdp_log.h"
-#include "hmrdp_gfx_desktop.h"
 #include "hmrdp_replay.h"
-#include "hmrdp_rfx_gpu.h"
+#include "hmrdp_rfx.h"
 #include "hmrdp_session.h"
 
 namespace {
@@ -650,31 +649,6 @@ napi_value RfxGpuSelfTest(napi_env env, napi_callback_info info) {
   return result;
 }
 
-// Dev/test: replays the captured full GFX command stream (hmrdp_gfx.bin) through
-// the CPU desktop/surface model (B1) and compares it with the captured FreeRDP
-// surface baselines (hmrdp_gfx_surface.bin). Returns a summary string.
-napi_value GfxDesktopSelfTest(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  std::string gfx;
-  std::string surf;
-  if (argc >= 1) gfx = GetStringArg(env, args[0]);
-  if (argc >= 2) surf = GetStringArg(env, args[1]);
-  const hmrdp::GfxDesktopSelfTestResult res = hmrdp::RunGfxDesktopSelfTest(gfx, surf);
-  char buf[256];
-  snprintf(buf, sizeof(buf),
-           "ran=%d ok=%d rec=%u cmpRec=%u badRec=%u cmp=%llu mism=%llu hashOK=%llu hashMism=%llu",
-           res.ran ? 1 : 0, res.ok ? 1 : 0, res.records, res.comparedRecords, res.badRecords,
-           (unsigned long long)res.compared, (unsigned long long)res.mismatch,
-           (unsigned long long)res.surfacesHashed, (unsigned long long)res.hashMismatch);
-  std::string out = std::string(buf) + " | " + res.log;
-  HMRDP_LOGI("gfx desktop selftest: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
-}
-
 // Dev/test: replays the captured full GFX command stream through the GPU
 // desktop surface model (B2) and compares it with the captured baselines.
 napi_value GfxGpuDesktopSelfTest(napi_env env, napi_callback_info info) {
@@ -700,14 +674,13 @@ napi_value GfxGpuDesktopSelfTest(napi_env env, napi_callback_info info) {
 }
 
 // Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-// `useCpu` (debug) selects the CPU reference instead of the GPU engine.
 napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
-  size_t argc = 5;
-  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  size_t argc = 4;
+  napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string out;
-  if (argc < 5) {
-    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath, useCpu)";
+  if (argc < 4) {
+    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath)";
   } else {
     const std::string surfaceId = GetStringArg(env, args[0]);
     int32_t surfaceW = 0;
@@ -715,15 +688,12 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &surfaceW);
     napi_get_value_int32(env, args[2], &surfaceH);
     const std::string gfxPath = GetStringArg(env, args[3]);
-    int32_t useCpu = 0;
-    napi_get_value_int32(env, args[4], &useCpu);
     const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
     OHNativeWindow* window = nullptr;
     const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
     if (err != 0 || window == nullptr) {
       out = "failed: native window";
-    } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
-                                                  useCpu != 0)) {
+    } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath)) {
       out = "started " + hmrdp::GfxReplay::Instance().Stats();
     } else {
       out = "failed: " + hmrdp::GfxReplay::Instance().Stats();
@@ -827,8 +797,6 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr},
       {"rfxGpuSelfTest", nullptr, RfxGpuSelfTest, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"gfxDesktopSelfTest", nullptr, GfxDesktopSelfTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
       {"gfxGpuDesktopSelfTest", nullptr, GfxGpuDesktopSelfTest, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,

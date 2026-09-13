@@ -1,11 +1,2542 @@
 /*
- * HmRdp - RemoteFX / Progressive container parser (see hmrdp_rfx.h).
+ * HmRdp - GPU RemoteFX/Progressive decoder + GPU surface engine
+ * (see hmrdp_rfx.h).
+ *
+ * §1 covers the whole Progressive tile pipeline in GLES 3.1 compute: kFirst
+ * (RLGR1 -> dequant -> extrapolate inverse DWT) and kUpgrade (SRL/raw
+ * refinement), with the per-(tile,component) current/sign/bit-positions state
+ * kept resident in GPU buffers across messages, plus YCbCr->BGRA composition.
+ *
+ * §2 (GfxGpuDesktop) is the full GFX surface model: a multi-surface registry
+ * (CreateSurface/DeleteSurface with FreeRDP's 16-byte alignment and 0xFF fill),
+ * per-surface progressive state, a global bitmap cache, solid fill / surface
+ * copy / cache blits, uncompressed uploads and the ClearCodec read-modify-write.
+ * The offline self-test replays the full captured command stream through it and
+ * compares every surface pixel by pixel against the FreeRDP baselines.
  */
 #include "hmrdp_rfx.h"
 
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <vector>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES3/gl31.h>
+
+#include "hmrdp_egl.h"
+#include "hmrdp_gfx_capture.h"
+#include "hmrdp_log.h"
+
+#include <freerdp/codec/clear.h>
+#include "hmrdp_renderer.h"
 
 namespace hmrdp {
+namespace {
+
+#ifndef EGL_OPENGL_ES3_BIT
+#define EGL_OPENGL_ES3_BIT 0x0040
+#endif
+#ifndef EGL_CONTEXT_MINOR_VERSION
+#define EGL_CONTEXT_MINOR_VERSION 0x30FB
+#endif
+
+constexpr uint32_t kMetaStride = 64;   // bytes per (tile,component) stream job
+constexpr uint32_t kChunkTiles = 512;  // tiles decoded per dispatch
+
+// YCbCr->BGRX fixed-point factors, matching FreeRDP prim_colors.c
+// (general_yCbCrToRGB_16s8u_P3AC4R_BGRX, divisor 16).
+constexpr int kKr = static_cast<int>(1.402525f * (1 << 16));
+constexpr int kKcrG = static_cast<int>(0.714401f * (1 << 16));
+constexpr int kKcbG = static_cast<int>(0.343730f * (1 << 16));
+constexpr int kKcbB = static_cast<int>(1.769905f * (1 << 16));
+
+// The compute shader mirrors hmrdp_rfx.cpp exactly. Extrapolate regions only
+// (every captured Progressive region uses RFX_DWT_REDUCE_EXTRAPOLATE).
+const char* kDecodeShader = R"GLSL(#version 310 es
+precision highp int;
+precision highp float;
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer Payload { uint data[]; } pay;
+layout(std430, binding = 1) readonly buffer Meta { uint data[]; } meta;
+layout(std430, binding = 2) buffer Coef { uint data[]; } coef;
+// Persistent per-(tile,component) progressive state (FreeRDP
+// RFX_PROGRESSIVE_TILE current/sign/bitPos).
+layout(std430, binding = 3) buffer StateCur { uint data[]; } cur;
+layout(std430, binding = 4) buffer StateSign { uint data[]; } sgn;
+layout(std430, binding = 5) buffer StateBP { uint data[]; } bp;
+
+uniform uint uNumStreams;
+uniform uint uCompBase;
+uniform uint uTempBase;
+
+uint payByte(uint off) { uint w = pay.data[off >> 2]; return (w >> ((off & 3u) << 3)) & 0xFFu; }
+uint metaByte(uint off) { uint w = meta.data[off >> 2]; return (w >> ((off & 3u) << 3)) & 0xFFu; }
+uint metaU32(uint off) { return meta.data[off >> 2]; }
+
+int i16(int v) { return (v << 16) >> 16; }
+int i16lo(uint w) { return int(w << 16) >> 16; }
+int i16hi(uint w) { return int(w) >> 16; }
+int coefGet(uint idx) { uint w = coef.data[idx >> 1]; return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w); }
+void coefSet(uint idx, int v) {
+  uint wi = idx >> 1;
+  uint w = coef.data[wi];
+  uint u = uint(v) & 0xFFFFu;
+  if ((idx & 1u) == 0u) w = (w & 0xFFFF0000u) | u;
+  else w = (w & 0x0000FFFFu) | (u << 16);
+  coef.data[wi] = w;
+}
+int curGet(uint idx) { uint w = cur.data[idx >> 1]; return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w); }
+void curSet(uint idx, int v) {
+  uint wi = idx >> 1;
+  uint w = cur.data[wi];
+  uint u = uint(v) & 0xFFFFu;
+  if ((idx & 1u) == 0u) w = (w & 0xFFFF0000u) | u;
+  else w = (w & 0x0000FFFFu) | (u << 16);
+  cur.data[wi] = w;
+}
+int signGet(uint idx) { uint w = sgn.data[idx >> 1]; return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w); }
+void signSet(uint idx, int v) {
+  uint wi = idx >> 1;
+  uint w = sgn.data[wi];
+  uint u = uint(v) & 0xFFFFu;
+  if ((idx & 1u) == 0u) w = (w & 0xFFFF0000u) | u;
+  else w = (w & 0x0000FFFFu) | (u << 16);
+  sgn.data[wi] = w;
+}
+uint bpByte(uint off) { uint w = bp.data[off >> 2]; return (w >> ((off & 3u) << 3)) & 0xFFu; }
+void bpSetByte(uint off, uint v) {
+  uint wi = off >> 2;
+  uint sh = (off & 3u) << 3;
+  uint w = bp.data[wi];
+  bp.data[wi] = (w & ~(0xFFu << sh)) | ((v & 0xFFu) << sh);
+}
+uint bitPosGet(uint stream, uint band) { return bpByte(stream * 10u + band); }
+void bitPosSet(uint stream, uint band, uint v) { bpSetByte(stream * 10u + band, v); }
+int shl16(int v, uint shift) { return i16(int(uint(v) << shift)); }
+
+// ---- 64-bit MSB bit reader (mirrors MsbBitReader in hmrdp_rfx.cpp) --------
+struct BitReader { uint base; uint len; uint hi; uint lo; int bits; uint pos; };
+BitReader gBr;
+void brFetch() {
+  while (gBr.bits <= 32 && gBr.pos < gBr.len) {
+    uint b = payByte(gBr.base + gBr.pos);
+    gBr.pos++;
+    int sh = 56 - gBr.bits;  // sh is always in [24, 56] here
+    if (sh >= 32) {
+      gBr.hi |= b << uint(sh - 32);
+    } else {
+      // The byte spans the 32-bit boundary: low bits go to lo, high bits to hi.
+      gBr.lo |= b << uint(sh);
+      gBr.hi |= b >> uint(32 - sh);
+    }
+    gBr.bits += 8;
+  }
+}
+void brInit(uint base, uint len) {
+  gBr.base = base; gBr.len = len; gBr.hi = 0u; gBr.lo = 0u; gBr.bits = 0; gBr.pos = 0u;
+  brFetch();
+}
+uint brPeek() { return gBr.hi; }
+uint brRemaining() { int r = gBr.bits + int((gBr.len - gBr.pos) * 8u); return r > 0 ? uint(r) : 0u; }
+void brShift(int n) {
+  if (n <= 0) return;
+  if (n >= 64) { gBr.hi = 0u; gBr.lo = 0u; gBr.bits = 0; }
+  else {
+    if (n >= 32) { gBr.hi = gBr.lo << uint(n - 32); gBr.lo = 0u; }
+    else { gBr.hi = (gBr.hi << uint(n)) | (gBr.lo >> uint(32 - n)); gBr.lo = gBr.lo << uint(n); }
+    gBr.bits -= n; if (gBr.bits < 0) gBr.bits = 0;
+  }
+  brFetch();
+}
+int lzcnt32(uint x) { return (x == 0u) ? 32 : (31 - findMSB(x)); }
+uint brReadBits(int n) {
+  if (n <= 0) return 0u;
+  if (n >= 32) { uint v = brPeek(); brShift(n); return v; }
+  uint v = brPeek() >> uint(32 - n);
+  brShift(n);
+  return v;
+}
+
+// Second reader (SRL stream) so an UPGRADE can consume SRL and RAW at once.
+BitReader gSrl;
+void srlFetch() {
+  while (gSrl.bits <= 32 && gSrl.pos < gSrl.len) {
+    uint b = payByte(gSrl.base + gSrl.pos);
+    gSrl.pos++;
+    int sh = 56 - gSrl.bits;
+    if (sh >= 32) gSrl.hi |= b << uint(sh - 32);
+    else { gSrl.lo |= b << uint(sh); gSrl.hi |= b >> uint(32 - sh); }
+    gSrl.bits += 8;
+  }
+}
+void srlInit(uint base, uint len) {
+  gSrl.base = base; gSrl.len = len; gSrl.hi = 0u; gSrl.lo = 0u; gSrl.bits = 0; gSrl.pos = 0u;
+  srlFetch();
+}
+uint srlPeek() { return gSrl.hi; }
+void srlShift(int n) {
+  if (n <= 0) return;
+  if (n >= 64) { gSrl.hi = 0u; gSrl.lo = 0u; gSrl.bits = 0; }
+  else {
+    if (n >= 32) { gSrl.hi = gSrl.lo << uint(n - 32); gSrl.lo = 0u; }
+    else { gSrl.hi = (gSrl.hi << uint(n)) | (gSrl.lo >> uint(32 - n)); gSrl.lo = gSrl.lo << uint(n); }
+    gSrl.bits -= n; if (gSrl.bits < 0) gSrl.bits = 0;
+  }
+  srlFetch();
+}
+
+// ---- RLGR1 (port of FreeRDP rfx_rlgr_decode, RLGR1 mode) ------------------
+void rlgrDecode(uint payBase, uint payLen, uint outBase) {
+  brInit(payBase, payLen);
+  int k = 1; int kp = k << 3;
+  int kr = 1; int krp = kr << 3;
+  uint widx = 0u;
+  while (brRemaining() > 0u && widx < 4096u) {
+    if (k != 0) {
+      uint run = 0u;
+      int cnt = lzcnt32(brPeek());
+      uint nbits = brRemaining();
+      if (uint(cnt) > nbits) cnt = int(nbits);
+      int vk = cnt;
+      while (cnt == 32 && brRemaining() > 0u) {
+        brShift(32);
+        cnt = lzcnt32(brPeek());
+        nbits = brRemaining();
+        if (uint(cnt) > nbits) cnt = int(nbits);
+        vk += cnt;
+      }
+      brShift(vk % 32);
+      if (brRemaining() < 1u) break;
+      brShift(1);
+      while (vk > 0) {
+        run += 1u << uint(k);
+        kp += 4; if (kp > 80) kp = 80;
+        k = kp >> 3;
+        vk--;
+      }
+      if (brRemaining() < uint(k)) break;
+      uint maskK = (k > 0) ? ((1u << uint(k)) - 1u) : 0u;
+      run += (k > 0) ? ((brPeek() >> uint(32 - k)) & maskK) : 0u;
+      brShift(k);
+      if (brRemaining() < 1u) break;
+      uint sign = ((brPeek() & 0x80000000u) != 0u) ? 1u : 0u;
+      brShift(1);
+
+      cnt = lzcnt32(~brPeek());
+      nbits = brRemaining();
+      if (uint(cnt) > nbits) cnt = int(nbits);
+      vk = cnt;
+      while (cnt == 32 && brRemaining() > 0u) {
+        brShift(32);
+        cnt = lzcnt32(~brPeek());
+        nbits = brRemaining();
+        if (uint(cnt) > nbits) cnt = int(nbits);
+        vk += cnt;
+      }
+      brShift(vk % 32);
+      if (brRemaining() < 1u) break;
+      brShift(1);
+      if (brRemaining() < uint(kr)) break;
+      uint maskR = (kr > 0) ? ((1u << uint(kr)) - 1u) : 0u;
+      uint code = (kr > 0) ? ((brPeek() >> uint(32 - kr)) & maskR) : 0u;
+      brShift(kr);
+      code = code | (uint(vk) << uint(kr));
+      if (vk == 0) { krp -= 2; if (krp < 0) krp = 0; kr = krp >> 3; }
+      else if (vk != 1) { krp += vk; if (krp > 80) krp = 80; kr = krp >> 3; }
+      kp -= 6; if (kp < 0) kp = 0; k = kp >> 3;
+      int mag = (sign != 0u) ? -(int(code) + 1) : (int(code) + 1);
+      uint sz = run;
+      if (widx + sz > 4096u) sz = 4096u - widx;
+      for (uint i = 0u; i < sz; i++) coefSet(outBase + widx++, 0);
+      if (widx < 4096u) coefSet(outBase + widx++, mag);
+    } else {
+      int cnt = lzcnt32(~brPeek());
+      uint nbits = brRemaining();
+      if (uint(cnt) > nbits) cnt = int(nbits);
+      int vk = cnt;
+      while (cnt == 32 && brRemaining() > 0u) {
+        brShift(32);
+        cnt = lzcnt32(~brPeek());
+        nbits = brRemaining();
+        if (uint(cnt) > nbits) cnt = int(nbits);
+        vk += cnt;
+      }
+      brShift(vk % 32);
+      if (brRemaining() < 1u) break;
+      brShift(1);
+      if (brRemaining() < uint(kr)) break;
+      uint maskR = (kr > 0) ? ((1u << uint(kr)) - 1u) : 0u;
+      uint code = (kr > 0) ? ((brPeek() >> uint(32 - kr)) & maskR) : 0u;
+      brShift(kr);
+      code = code | (uint(vk) << uint(kr));
+      if (vk == 0) { krp -= 2; if (krp < 0) krp = 0; kr = krp >> 3; }
+      else if (vk != 1) { krp += vk; if (krp > 80) krp = 80; kr = krp >> 3; }
+      int mag = 0;
+      if (code == 0u) {
+        kp += 3; if (kp > 80) kp = 80; k = kp >> 3; mag = 0;
+      } else {
+        kp -= 3; if (kp < 0) kp = 0; k = kp >> 3;
+        mag = ((code & 1u) != 0u) ? -(int((code + 1u) >> 1)) : int(code >> 1);
+      }
+      if (widx < 4096u) coefSet(outBase + widx++, mag);
+    }
+  }
+  while (widx < 4096u) coefSet(outBase + widx++, 0);
+}
+
+void dequantSub(uint base, uint off, uint len, int shift) {
+  if (shift == 0) return;
+  for (uint i = 0u; i < len; i++) coefSet(base + off + i, i16(coefGet(base + off + i) << uint(shift)));
+}
+void diffDecode(uint base, uint off, uint size) {
+  for (uint i = 0u; i + 1u < size; i++)
+    coefSet(base + off + i + 1u, i16(coefGet(base + off + i + 1u) + coefGet(base + off + i)));
+}
+
+// ---- extrapolate inverse DWT (ports ProgDwtBlock/ProgIdwtX/Y) ------------
+void progIdwtX(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
+               uint nLowCount, uint nHighCount, uint nDstCount) {
+  for (uint i = 0u; i < nDstCount; i++) {
+    uint pl = lowBase + i * lowStep;
+    uint ph = highBase + i * highStep;
+    uint px = dstBase + i * dstStep;
+    int H0 = coefGet(ph);
+    int L0 = coefGet(pl);
+    int X0 = i16(L0 - H0);
+    int X2 = X0;
+    uint j = 0u;
+    for (; j + 1u < nHighCount; j++) {
+      int H1 = coefGet(ph + j + 1u);
+      L0 = coefGet(pl + j + 1u);
+      X2 = i16(L0 - ((H0 + H1) / 2));
+      int X1 = i16(((X0 + X2) / 2) + (2 * H0));
+      coefSet(px + 2u * j, X0);
+      coefSet(px + 2u * j + 1u, X1);
+      X0 = X2;
+      H0 = H1;
+    }
+    uint bx = px + 2u * j;
+    if (nLowCount <= nHighCount + 1u) {
+      if (nLowCount <= nHighCount) {
+        coefSet(bx, X2);
+        coefSet(bx + 1u, i16(X2 + 2 * H0));
+      } else {
+        L0 = coefGet(pl + nHighCount);
+        X0 = i16(L0 - H0);
+        coefSet(bx, X2);
+        coefSet(bx + 1u, i16(((X0 + X2) / 2) + 2 * H0));
+        coefSet(bx + 2u, X0);
+      }
+    } else {
+      L0 = coefGet(pl + nHighCount);
+      X0 = i16(L0 - (H0 / 2));
+      coefSet(bx, X2);
+      coefSet(bx + 1u, i16(((X0 + X2) / 2) + 2 * H0));
+      coefSet(bx + 2u, X0);
+      L0 = coefGet(pl + nHighCount + 1u);
+      coefSet(bx + 3u, i16((X0 + L0) / 2));
+    }
+  }
+}
+
+void progIdwtY(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
+               uint nLowCount, uint nHighCount, uint nDstCount) {
+  for (uint i = 0u; i < nDstCount; i++) {
+    uint pl = lowBase + i;
+    uint ph = highBase + i;
+    uint px = dstBase + i;
+    int H0 = coefGet(ph); ph += highStep;
+    int L0 = coefGet(pl); pl += lowStep;
+    int X0 = i16(L0 - H0);
+    int X2 = X0;
+    for (uint j = 0u; j + 1u < nHighCount; j++) {
+      int H1 = coefGet(ph); ph += highStep;
+      L0 = coefGet(pl); pl += lowStep;
+      X2 = i16(L0 - ((H0 + H1) / 2));
+      int X1 = i16(((X0 + X2) / 2) + (2 * H0));
+      coefSet(px, X0); px += dstStep;
+      coefSet(px, X1); px += dstStep;
+      X0 = X2;
+      H0 = H1;
+    }
+    if (nLowCount <= nHighCount + 1u) {
+      if (nLowCount <= nHighCount) {
+        coefSet(px, X2); px += dstStep;
+        coefSet(px, i16(X2 + 2 * H0));
+      } else {
+        L0 = coefGet(pl);
+        X0 = i16(L0 - H0);
+        coefSet(px, X2); px += dstStep;
+        coefSet(px, i16(((X0 + X2) / 2) + 2 * H0)); px += dstStep;
+        coefSet(px, X0);
+      }
+    } else {
+      L0 = coefGet(pl); pl += lowStep;
+      X0 = i16(L0 - (H0 / 2));
+      coefSet(px, X2); px += dstStep;
+      coefSet(px, i16(((X0 + X2) / 2) + 2 * H0)); px += dstStep;
+      coefSet(px, X0); px += dstStep;
+      L0 = coefGet(pl);
+      coefSet(px, i16((X0 + L0) / 2));
+    }
+  }
+}
+
+void progDwtBlock(uint base, uint temp, uint level) {
+  uint nBandL = (64u >> level) + 1u;
+  uint nBandH = (level == 1u) ? 31u : ((64u + (1u << (level - 1u))) >> level);
+  uint off = 0u;
+  uint hl = base + off; off += nBandH * nBandL;
+  uint lh = base + off; off += nBandL * nBandH;
+  uint hh = base + off; off += nBandH * nBandH;
+  uint ll = base + off;
+  uint dstStep = nBandL + nBandH;
+  uint l = temp;
+  uint h = temp + nBandL * dstStep;
+  progIdwtX(ll, nBandL, hl, nBandH, l, dstStep, nBandL, nBandH, nBandL);
+  progIdwtX(lh, nBandL, hh, nBandH, h, dstStep, nBandL, nBandH, nBandH);
+  progIdwtY(l, dstStep, h, dstStep, base, dstStep, nBandL, nBandH, nBandL + nBandH);
+}
+
+void extrapolateDwt(uint base, uint temp) {
+  progDwtBlock(base + 3807u, temp, 3u);
+  progDwtBlock(base + 3007u, temp, 2u);
+  progDwtBlock(base + 0u, temp, 1u);
+}
+
+// ---- kUpgrade: SRL/raw refinement (port of progressive_rfx_upgrade_*) ----
+const uint kSubOff[10] = uint[10](0u, 1023u, 2046u, 3007u, 3279u, 3551u, 3807u, 3879u, 3951u, 4015u);
+const uint kSubLen[10] = uint[10](1023u, 1023u, 961u, 272u, 272u, 256u, 72u, 72u, 64u, 81u);
+
+int srlRead(inout int kp, inout int nz, inout int mode, uint numBits) {
+  if (nz > 0) { nz--; return 0; }
+  uint k = uint(kp) / 8u;
+  if (mode == 0) {
+    uint bit = ((srlPeek() & 0x80000000u) != 0u) ? 1u : 0u;
+    srlShift(1);
+    if (bit == 0u) {
+      nz = int(1u << k);
+      kp += 4; if (kp > 80) kp = 80;
+      nz--;
+      return 0;
+    }
+    nz = 0; mode = 1;
+    if (k != 0u) {
+      nz = int((srlPeek() >> (32u - k)) & ((1u << k) - 1u));
+      srlShift(int(k));
+    }
+    if (nz != 0) { nz--; return 0; }
+  }
+  mode = 0;
+  uint signBit = ((srlPeek() & 0x80000000u) != 0u) ? 1u : 0u;
+  srlShift(1);
+  if (kp < 6) kp = 0; else kp -= 6;
+  if (numBits == 1u) return (signBit != 0u) ? -1 : 1;
+  uint mag = 1u;
+  uint maxMag = (1u << numBits) - 1u;
+  while (mag < maxMag) {
+    uint bit = ((srlPeek() & 0x80000000u) != 0u) ? 1u : 0u;
+    srlShift(1);
+    if (bit != 0u) break;
+    mag++;
+  }
+  if (mag > 32767u) mag = 32767u;
+  return (signBit != 0u) ? -int(mag) : int(mag);
+}
+
+void upgradeBlock(bool nonLL, inout int kp, inout int nz, inout int mode, uint stateBase, uint off,
+                  uint len, uint shift, uint numBits) {
+  if (numBits == 0u) return;
+  if (!nonLL) {
+    for (uint i = 0u; i < len; i++) {
+      int inVal = int(brReadBits(int(numBits)));
+      curSet(stateBase + off + i, i16(curGet(stateBase + off + i) + shl16(inVal, shift)));
+    }
+    return;
+  }
+  for (uint i = 0u; i < len; i++) {
+    int s = signGet(stateBase + off + i);
+    int inVal = 0;
+    if (s > 0) { inVal = int(brReadBits(int(numBits))); }
+    else if (s < 0) { inVal = -int(brReadBits(int(numBits))); }
+    else { inVal = srlRead(kp, nz, mode, numBits); signSet(stateBase + off + i, i16(inVal)); }
+    curSet(stateBase + off + i, i16(curGet(stateBase + off + i) + shl16(inVal, shift)));
+  }
+}
+
+void upgradeComponent(uint compBase, uint tempBase, uint stateBase, uint tileStream, uint srlOff,
+                      uint srlLen, uint rawOff, uint rawLen, const uint newBit[10],
+                      const uint oldBit[10], const uint shift[10]) {
+  srlInit(srlOff, srlLen);
+  brInit(rawOff, rawLen);
+  int kp = 8; int nz = 0; int mode = 0;
+  for (int b = 0; b < 9; b++) {
+    uint nb = newBit[b];
+    uint ob = oldBit[b];
+    uint numBits = (ob > nb) ? (ob - nb) : 0u;
+    uint shv = (nb > 0u) ? (nb - 1u) : 0u;
+    upgradeBlock(true, kp, nz, mode, stateBase, kSubOff[b], kSubLen[b], shv, numBits);
+  }
+  {
+    uint nb = newBit[9];
+    uint ob = oldBit[9];
+    uint numBits = (ob > nb) ? (ob - nb) : 0u;
+    uint shv = (nb > 0u) ? (nb - 1u) : 0u;
+    upgradeBlock(false, kp, nz, mode, stateBase, kSubOff[9], kSubLen[9], shv, numBits);
+  }
+  for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
+  extrapolateDwt(compBase, tempBase);
+  for (int b = 0; b < 10; b++) bitPosSet(tileStream, uint(b), newBit[b]);
+}
+
+void main() {
+  uint sid = gl_GlobalInvocationID.x;
+  if (sid >= uNumStreams) return;
+  uint mb = sid * 64u;
+  uint type = metaByte(mb + 0u);
+  uint flags = metaByte(mb + 1u);
+  uint tileStream = metaU32(mb + 4u);
+  uint payOff = metaU32(mb + 8u);
+  uint payLen = metaU32(mb + 12u);
+  uint srlOff = metaU32(mb + 16u);
+  uint srlLen = metaU32(mb + 20u);
+  uint rawOff = metaU32(mb + 24u);
+  uint rawLen = metaU32(mb + 28u);
+  uint compBase = uCompBase + sid * 4096u;
+  uint stateBase = tileStream * 4096u;
+  uint tempBase = uTempBase + sid * 4096u;
+
+  uint sh[10];
+  uint newBit[10];
+  for (uint i = 0u; i < 10u; i++) {
+    sh[i] = metaByte(mb + 32u + i);
+    newBit[i] = metaByte(mb + 42u + i);
+  }
+
+  if (type == 0u) {
+    rlgrDecode(payOff, payLen, compBase);
+    for (uint i = 0u; i < 4096u; i++) signSet(stateBase + i, coefGet(compBase + i));
+    dequantSub(compBase, 0u, 1023u, int(sh[0]));
+    dequantSub(compBase, 1023u, 1023u, int(sh[1]));
+    dequantSub(compBase, 2046u, 961u, int(sh[2]));
+    dequantSub(compBase, 3007u, 272u, int(sh[3]));
+    dequantSub(compBase, 3279u, 272u, int(sh[4]));
+    dequantSub(compBase, 3551u, 256u, int(sh[5]));
+    dequantSub(compBase, 3807u, 72u, int(sh[6]));
+    dequantSub(compBase, 3879u, 72u, int(sh[7]));
+    dequantSub(compBase, 3951u, 64u, int(sh[8]));
+    diffDecode(compBase, 4015u, 81u);
+    dequantSub(compBase, 4015u, 81u, int(sh[9]));
+    if ((flags & 1u) != 0u) {
+      for (uint i = 0u; i < 4096u; i++) {
+        int v = coefGet(compBase + i) + curGet(stateBase + i);
+        if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+        coefSet(compBase + i, v);
+        curSet(stateBase + i, v);
+      }
+    } else {
+      for (uint i = 0u; i < 4096u; i++) curSet(stateBase + i, coefGet(compBase + i));
+    }
+    for (uint b = 0u; b < 10u; b++) bitPosSet(tileStream, b, newBit[b]);
+    extrapolateDwt(compBase, tempBase);
+  } else {
+    uint oldBit[10];
+    for (uint b = 0u; b < 10u; b++) oldBit[b] = bitPosGet(tileStream, b);
+    upgradeComponent(compBase, tempBase, stateBase, tileStream, srlOff, srlLen, rawOff, rawLen,
+                     newBit, oldBit, sh);
+  }
+}
+)GLSL";
+
+const char* kComposeShader = R"GLSL(#version 310 es
+precision highp int;
+precision highp float;
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer TileMeta { uint data[]; } tmeta;
+layout(std430, binding = 1) readonly buffer Coef { uint data[]; } coef;
+layout(std430, binding = 2) buffer Out { uint data[]; } outSurf;
+layout(std430, binding = 3) readonly buffer Rects { uint data[]; } rcts;
+
+uniform uint uNumTiles;
+uniform uint uCompBase;
+uniform int uSurfaceW;
+uniform int uSurfaceH;
+uniform int uKr;
+uniform int uKcrG;
+uniform int uKcbG;
+uniform int uKcbB;
+
+int i16lo(uint w) { return int(w << 16) >> 16; }
+int i16hi(uint w) { return int(w) >> 16; }
+int coefGet(uint idx) { uint w = coef.data[idx >> 1]; return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w); }
+
+void surfPut(uint px, uint py, uint b, uint g, uint r) {
+  // One BGRA pixel per 32-bit word: byte0=B, byte1=G, byte2=R, byte3=0xFF.
+  // The desktop is not a whole number of tiles, so the right/bottom tiles are
+  // partial: pixels outside the surface must be dropped, otherwise they wrap
+  // into the next row (stride = surface width) and corrupt it.
+  if (px >= uint(uSurfaceW) || py >= uint(uSurfaceH)) return;
+  uint idx = py * uint(uSurfaceW) + px;
+  outSurf.data[idx] = (b & 0xFFu) | ((g & 0xFFu) << 8) | ((r & 0xFFu) << 16) | (0xFFu << 24);
+}
+
+void main() {
+  uint t = gl_GlobalInvocationID.x;
+  if (t >= uNumTiles) return;
+  uint px0 = tmeta.data[t * 4u];
+  uint py0 = tmeta.data[t * 4u + 1u];
+  uint rectOff = tmeta.data[t * 4u + 2u];
+  uint rectCnt = tmeta.data[t * 4u + 3u];
+  uint base0 = uCompBase + (t * 3u + 0u) * 4096u;
+  uint base1 = uCompBase + (t * 3u + 1u) * 4096u;
+  uint base2 = uCompBase + (t * 3u + 2u) * 4096u;
+  for (uint row = 0u; row < 64u; row++) {
+    for (uint col = 0u; col < 64u; col++) {
+      uint i = row * 64u + col;
+      int y = coefGet(base0 + i);
+      int cb = coefGet(base1 + i);
+      int cr = coefGet(base2 + i);
+      int yv = int((uint(y) + 4096u) << 16);
+      int sR = int(uint(cr) * uint(uKr) + uint(yv));
+      int sG = int(uint(yv) - uint(cb) * uint(uKcbG) - uint(cr) * uint(uKcrG));
+      int sB = int(uint(cb) * uint(uKcbB) + uint(yv));
+      int r = clamp(sR >> 21, 0, 255);
+      int g = clamp(sG >> 21, 0, 255);
+      int b = clamp(sB >> 21, 0, 255);
+      // FreeRDP composites a decoded tile only inside the region's clip rects;
+      // the rest of the tile keeps the previous surface content.
+      uint px = px0 + col;
+      uint py = py0 + row;
+      bool inside = (rectCnt == 0u);
+      for (uint ri = 0u; !inside && ri < rectCnt; ri++) {
+        uint a = rcts.data[(rectOff + ri) * 2u];
+        uint c = rcts.data[(rectOff + ri) * 2u + 1u];
+        uint rx = a & 0xFFFFu;
+        uint ry = a >> 16;
+        uint rw = c & 0xFFFFu;
+        uint rh = c >> 16;
+        if (px >= rx && px < rx + rw && py >= ry && py < ry + rh) inside = true;
+      }
+      if (inside) surfPut(px, py, uint(b), uint(g), uint(r));
+    }
+  }
+}
+)GLSL";
+
+// B2: fill rects with a solid BGRA colour (one invocation per pixel).
+const char* kFillShader = R"GLSL(#version 310 es
+precision highp int;
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer Dst { uint data[]; } dst;
+uniform uint uStride;   // bytes per row
+uniform int uLeft;
+uniform int uTop;
+uniform int uWidth;
+uniform int uHeight;
+uniform uint uColor;    // B | G<<8 | R<<16 | 0xFF<<24
+void main() {
+  // 2D grid so a full-desktop rect can exceed the (typically 65535) per-axis
+  // work-group limit; with gy == 1 this is the plain 1D index.
+  uint i = gl_GlobalInvocationID.x +
+           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x);
+  uint total = uint(uWidth) * uint(uHeight);
+  if (i >= total) return;
+  int x = uLeft + int(i % uint(uWidth));
+  int y = uTop + int(i / uint(uWidth));
+  dst.data[uint(y) * (uStride >> 2) + uint(x)] = uColor;
+}
+)GLSL";
+
+// B2: copy a rect between two BGRA buffers (one invocation per pixel).
+const char* kCopyShader = R"GLSL(#version 310 es
+precision highp int;
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer Src { uint data[]; } src;
+layout(std430, binding = 1) buffer Dst { uint data[]; } dst;
+uniform uint uSrcStride;
+uniform uint uDstStride;
+uniform int uSrcX;
+uniform int uSrcY;
+uniform int uDstX;
+uniform int uDstY;
+uniform int uWidth;
+uniform int uHeight;
+void main() {
+  // 2D grid so a full-desktop rect can exceed the (typically 65535) per-axis
+  // work-group limit; with gy == 1 this is the plain 1D index.
+  uint i = gl_GlobalInvocationID.x +
+           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x);
+  uint total = uint(uWidth) * uint(uHeight);
+  if (i >= total) return;
+  uint col = i % uint(uWidth);
+  uint row = i / uint(uWidth);
+  dst.data[(uint(uDstY) + row) * (uDstStride >> 2) + uint(uDstX) + col] =
+      src.data[(uint(uSrcY) + row) * (uSrcStride >> 2) + uint(uSrcX) + col];
+}
+)GLSL";
+
+bool CheckGl(const char* what) {
+  const GLenum err = glGetError();
+  if (err != GL_NO_ERROR) {
+    HMRDP_LOGE("gpu rfx: %{public}s gl error 0x%{public}x", what, err);
+    return false;
+  }
+  return true;
+}
+
+GLuint CompileProgram(const char* source, const char* name) {
+  GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+  if (shader == 0) {
+    return 0;
+  }
+  glShaderSource(shader, 1, &source, nullptr);
+  glCompileShader(shader);
+  GLint ok = GL_FALSE;
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+  if (ok != GL_TRUE) {
+    char log[1024] = {0};
+    glGetShaderInfoLog(shader, sizeof(log) - 1, nullptr, log);
+    HMRDP_LOGE("gpu rfx: %{public}s shader compile failed: %{public}s", name, log);
+    glDeleteShader(shader);
+    return 0;
+  }
+  GLuint prog = glCreateProgram();
+  glAttachShader(prog, shader);
+  glLinkProgram(prog);
+  glDeleteShader(shader);
+  glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+  if (ok != GL_TRUE) {
+    char log[1024] = {0};
+    glGetProgramInfoLog(prog, sizeof(log) - 1, nullptr, log);
+    HMRDP_LOGE("gpu rfx: %{public}s program link failed: %{public}s", name, log);
+    glDeleteProgram(prog);
+    return 0;
+  }
+  return prog;
+}
+
+EGLContext CreateOffscreen(EGLDisplay display, EGLConfig* outConfig, EGLSurface* outSurface) {
+  const EGLint configAttribs[] = {
+      EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+      EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+      EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+      EGL_NONE};
+  EGLint numConfigs = 0;
+  if (eglChooseConfig(display, configAttribs, outConfig, 1, &numConfigs) != EGL_TRUE ||
+      numConfigs < 1) {
+    return EGL_NO_CONTEXT;
+  }
+  const EGLint pbAttribs[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+  *outSurface = eglCreatePbufferSurface(display, *outConfig, pbAttribs);
+  if (*outSurface == EGL_NO_SURFACE) {
+    return EGL_NO_CONTEXT;
+  }
+  // Join the process-wide share group so the Renderer's window context can
+  // sample the engine's screen texture (PERF-TODO §3.4 / §11.4).
+  const EGLContext share = SharedEglAnchorContext();
+  const EGLint ctxAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3,
+                               EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE};
+  EGLContext ctx = eglCreateContext(display, *outConfig, share, ctxAttribs);
+  if (ctx != EGL_NO_CONTEXT) {
+    return ctx;
+  }
+  const EGLint ctx3[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+  return eglCreateContext(display, *outConfig, share, ctx3);
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Capability probe
+// ---------------------------------------------------------------------------
+
+std::string GpuComputeInfo::Describe() const {
+  char buf[320];
+  std::snprintf(buf, sizeof(buf),
+                "egl=%d compute=%d gl=%d.%d renderer=%s version=%s wg=%d shared=%d ssbo=%d tex=%d",
+                egl ? 1 : 0, compute ? 1 : 0, glMajor, glMinor, renderer, version,
+                maxWorkGroupInvocations, maxSharedMemory, maxSsboSize, maxTextureSize);
+  return std::string(buf);
+}
+
+const GpuComputeInfo& GetGpuComputeInfo() {
+  static std::once_flag once;
+  static GpuComputeInfo info;
+  std::call_once(once, []() {
+    EGLDisplay display = SharedEglDisplay();
+    if (display == EGL_NO_DISPLAY) {
+      HMRDP_LOGE("gpu compute: egl init failed");
+      return;
+    }
+    info.egl = true;
+    EGLConfig config = nullptr;
+    EGLSurface surface = EGL_NO_SURFACE;
+    EGLContext context = CreateOffscreen(display, &config, &surface);
+    if (context == EGL_NO_CONTEXT ||
+        eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) {
+      HMRDP_LOGE("gpu compute: offscreen context failed");
+      return;
+    }
+    const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    if (version != nullptr) {
+      std::snprintf(info.version, sizeof(info.version), "%s", version);
+      int major = 0, minor = 0;
+      if (std::sscanf(version, "OpenGL ES %d.%d", &major, &minor) == 2) {
+        info.glMajor = major;
+        info.glMinor = minor;
+      }
+    }
+    if (renderer != nullptr) {
+      std::snprintf(info.renderer, sizeof(info.renderer), "%s", renderer);
+    }
+    info.compute = (info.glMajor > 3) || (info.glMajor == 3 && info.glMinor >= 1);
+    if (info.compute) {
+      glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &info.maxWorkGroupInvocations);
+      glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, &info.maxSharedMemory);
+      glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &info.maxSsboSize);
+      glGetIntegerv(GL_MAX_TEXTURE_SIZE, &info.maxTextureSize);
+    }
+    eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroyContext(display, context);
+    eglDestroySurface(display, surface);
+    HMRDP_LOGI("gpu compute: %{public}s", info.Describe().c_str());
+  });
+  return info;
+}
+
+// ---------------------------------------------------------------------------
+// Decoder
+// ---------------------------------------------------------------------------
+
+struct GfxGpuDesktop::Impl {
+  EGLDisplay display = EGL_NO_DISPLAY;
+  EGLSurface surface = EGL_NO_SURFACE;
+  EGLContext context = EGL_NO_CONTEXT;
+  bool current = false;
+  GfxClearDecoder* clearDecoder = nullptr;
+
+  GLuint decodeProg = 0;
+  GLuint composeProg = 0;
+  GLuint fillProg = 0;
+  GLuint copyProg = 0;
+  GLuint payloadBuf = 0;
+  GLuint metaBuf = 0;
+  GLuint coefBuf = 0;
+  GLuint tileMetaBuf = 0;
+  GLuint composeRectBuf = 0;
+  size_t composeRectCapacity = 0;
+
+  GLuint decodeNumStreams = 0, decodeCompBase = 0, decodeTempBase = 0;
+  GLuint composeNumTiles = 0, composeCompBase = 0;
+  GLuint composeSurfaceW = 0, composeSurfaceH = 0;
+  GLuint composeKr = 0, composeKcrG = 0, composeKcbG = 0, composeKcbB = 0;
+
+  // One GPU surface: public metadata + the GL buffers that used to be single
+  // instance members. The progressive state is per-surface so tile indices can
+  // never leak across surfaces.
+  struct SurfaceGpu {
+    GpuSurface meta;
+    GLuint outBuf = 0;
+    GLuint stateCurBuf = 0;
+    GLuint stateSignBuf = 0;
+    GLuint stateBpBuf = 0;
+    size_t outWords = 0;
+  };
+  std::map<uint16_t, SurfaceGpu> surfaces;
+
+  SurfaceGpu* Find(uint16_t id) {
+    const auto it = surfaces.find(id);
+    return it == surfaces.end() ? nullptr : &it->second;
+  }
+  const SurfaceGpu* Find(uint16_t id) const {
+    const auto it = surfaces.find(id);
+    return it == surfaces.end() ? nullptr : &it->second;
+  }
+
+  // B2 surface commands.
+  GLuint fillStride = 0, fillLeft = 0, fillTop = 0, fillWidth = 0, fillHeight = 0, fillColor = 0;
+  GLuint copySrcStride = 0, copyDstStride = 0, copySrcX = 0, copySrcY = 0, copyDstX = 0,
+         copyDstY = 0, copyWidth = 0, copyHeight = 0;
+  struct CacheBuf {
+    int width = 0;
+    int height = 0;
+    int stride = 0;
+    GLuint buf = 0;
+  };
+  std::map<uint16_t, CacheBuf> cache;
+  GLuint tempBuf = 0;
+  size_t tempWords = 0;
+
+  // Front (screen) buffer the output-mapped surfaces composite into (W4). The
+  // buffer holds the pixels; `screenTex` mirrors it (GPU-to-GPU PBO upload) so
+  // the Renderer can sample it from its own share-group context (W6).
+  GLuint screenBuf = 0;
+  GLuint screenTex = 0;
+  size_t screenWords = 0;
+  int screenW = 0;
+  int screenH = 0;
+  bool screenDirtyValid = false;
+  int screenDirtyL = 0;
+  int screenDirtyT = 0;
+  int screenDirtyR = 0;
+  int screenDirtyB = 0;
+
+  size_t coefWords = 0;
+  size_t payloadCapacity = 0;
+
+  static void MarkSurfaceDirty(SurfaceGpu& s, int left, int top, int right, int bottom) {
+    if (right <= left || bottom <= top) {
+      return;
+    }
+    GpuSurface& m = s.meta;
+    if (!m.dirtyValid) {
+      m.dirtyValid = true;
+      m.dirtyLeft = left;
+      m.dirtyTop = top;
+      m.dirtyRight = right;
+      m.dirtyBottom = bottom;
+      return;
+    }
+    if (left < m.dirtyLeft) m.dirtyLeft = left;
+    if (top < m.dirtyTop) m.dirtyTop = top;
+    if (right > m.dirtyRight) m.dirtyRight = right;
+    if (bottom > m.dirtyBottom) m.dirtyBottom = bottom;
+  }
+
+  void MarkScreenDirty(int left, int top, int right, int bottom) {
+    if (right <= left || bottom <= top) {
+      return;
+    }
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (right > screenW) right = screenW;
+    if (bottom > screenH) bottom = screenH;
+    if (right <= left || bottom <= top) {
+      return;
+    }
+    if (!screenDirtyValid) {
+      screenDirtyValid = true;
+      screenDirtyL = left;
+      screenDirtyT = top;
+      screenDirtyR = right;
+      screenDirtyB = bottom;
+      return;
+    }
+    if (left < screenDirtyL) screenDirtyL = left;
+    if (top < screenDirtyT) screenDirtyT = top;
+    if (right > screenDirtyR) screenDirtyR = right;
+    if (bottom > screenDirtyB) screenDirtyB = bottom;
+  }
+
+  bool MakeCurrent() {
+    if (display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT) {
+      return false;
+    }
+    if (eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) {
+      return false;
+    }
+    current = true;
+    return true;
+  }
+};
+
+
+GfxGpuDesktop::GfxGpuDesktop(GfxClearDecoder* clearDecoder) : impl_(new Impl()) {
+  impl_->clearDecoder = clearDecoder;
+}
+GfxGpuDesktop::~GfxGpuDesktop() {
+  Reset();
+  delete impl_;
+  impl_ = nullptr;
+}
+
+void GfxGpuDesktop::Reset() {
+  if (impl_ == nullptr) {
+    return;
+  }
+  if (impl_->context != EGL_NO_CONTEXT) {
+    impl_->MakeCurrent();
+    if (impl_->payloadBuf) glDeleteBuffers(1, &impl_->payloadBuf);
+    if (impl_->metaBuf) glDeleteBuffers(1, &impl_->metaBuf);
+    if (impl_->coefBuf) glDeleteBuffers(1, &impl_->coefBuf);
+    if (impl_->tileMetaBuf) glDeleteBuffers(1, &impl_->tileMetaBuf);
+    if (impl_->composeRectBuf) glDeleteBuffers(1, &impl_->composeRectBuf);
+    if (impl_->tempBuf) glDeleteBuffers(1, &impl_->tempBuf);
+    if (impl_->screenBuf) glDeleteBuffers(1, &impl_->screenBuf);
+    if (impl_->screenTex) glDeleteTextures(1, &impl_->screenTex);
+    for (auto& kv : impl_->surfaces) {
+      Impl::SurfaceGpu& s = kv.second;
+      if (s.outBuf) glDeleteBuffers(1, &s.outBuf);
+      if (s.stateCurBuf) glDeleteBuffers(1, &s.stateCurBuf);
+      if (s.stateSignBuf) glDeleteBuffers(1, &s.stateSignBuf);
+      if (s.stateBpBuf) glDeleteBuffers(1, &s.stateBpBuf);
+    }
+    impl_->surfaces.clear();
+    for (auto& kv : impl_->cache) {
+      if (kv.second.buf != 0) {
+        glDeleteBuffers(1, &kv.second.buf);
+      }
+    }
+    impl_->cache.clear();
+    if (impl_->decodeProg) glDeleteProgram(impl_->decodeProg);
+    if (impl_->composeProg) glDeleteProgram(impl_->composeProg);
+    if (impl_->fillProg) glDeleteProgram(impl_->fillProg);
+    if (impl_->copyProg) glDeleteProgram(impl_->copyProg);
+    impl_->payloadBuf = impl_->metaBuf = impl_->coefBuf = impl_->tileMetaBuf = 0;
+    impl_->composeRectBuf = 0;
+    impl_->composeRectCapacity = 0;
+    impl_->tempBuf = 0;
+    impl_->tempWords = 0;
+    impl_->screenBuf = 0;
+    impl_->screenTex = 0;
+    impl_->screenWords = 0;
+    impl_->screenW = 0;
+    impl_->screenH = 0;
+    impl_->screenDirtyValid = false;
+    impl_->decodeProg = impl_->composeProg = impl_->fillProg = impl_->copyProg = 0;
+    eglMakeCurrent(impl_->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroyContext(impl_->display, impl_->context);
+    eglDestroySurface(impl_->display, impl_->surface);
+    impl_->context = EGL_NO_CONTEXT;
+    impl_->surface = EGL_NO_SURFACE;
+  }
+  impl_->display = EGL_NO_DISPLAY;
+  screenW_ = 0;
+  screenH_ = 0;
+  ready_ = false;
+}
+
+bool GfxGpuDesktop::Init() {
+  if (impl_ == nullptr) {
+    return false;
+  }
+  Reset();
+
+  const GpuComputeInfo& info = GetGpuComputeInfo();
+  if (!info.compute) {
+    HMRDP_LOGW("gpu rfx: compute unsupported (%{public}s)", info.Describe().c_str());
+    return false;
+  }
+
+  impl_->display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  if (impl_->display == EGL_NO_DISPLAY ||
+      eglInitialize(impl_->display, nullptr, nullptr) != EGL_TRUE) {
+    return false;
+  }
+  EGLConfig config = nullptr;
+  EGLSurface surface = EGL_NO_SURFACE;
+  impl_->context = CreateOffscreen(impl_->display, &config, &surface);
+  impl_->surface = surface;
+  if (impl_->context == EGL_NO_CONTEXT || !impl_->MakeCurrent()) {
+    return false;
+  }
+  impl_->decodeProg = CompileProgram(kDecodeShader, "decode");
+  impl_->composeProg = CompileProgram(kComposeShader, "compose");
+  impl_->fillProg = CompileProgram(kFillShader, "fill");
+  impl_->copyProg = CompileProgram(kCopyShader, "copy");
+  if (impl_->decodeProg == 0 || impl_->composeProg == 0 || impl_->fillProg == 0 ||
+      impl_->copyProg == 0) {
+    return false;
+  }
+
+  // Program uniforms.
+  impl_->decodeNumStreams = glGetUniformLocation(impl_->decodeProg, "uNumStreams");
+  impl_->decodeCompBase = glGetUniformLocation(impl_->decodeProg, "uCompBase");
+  impl_->decodeTempBase = glGetUniformLocation(impl_->decodeProg, "uTempBase");
+  impl_->composeNumTiles = glGetUniformLocation(impl_->composeProg, "uNumTiles");
+  impl_->composeCompBase = glGetUniformLocation(impl_->composeProg, "uCompBase");
+  impl_->composeSurfaceW = glGetUniformLocation(impl_->composeProg, "uSurfaceW");
+  impl_->composeSurfaceH = glGetUniformLocation(impl_->composeProg, "uSurfaceH");
+  impl_->composeKr = glGetUniformLocation(impl_->composeProg, "uKr");
+  impl_->composeKcrG = glGetUniformLocation(impl_->composeProg, "uKcrG");
+  impl_->composeKcbG = glGetUniformLocation(impl_->composeProg, "uKcbG");
+  impl_->composeKcbB = glGetUniformLocation(impl_->composeProg, "uKcbB");
+  impl_->fillStride = glGetUniformLocation(impl_->fillProg, "uStride");
+  impl_->fillLeft = glGetUniformLocation(impl_->fillProg, "uLeft");
+  impl_->fillTop = glGetUniformLocation(impl_->fillProg, "uTop");
+  impl_->fillWidth = glGetUniformLocation(impl_->fillProg, "uWidth");
+  impl_->fillHeight = glGetUniformLocation(impl_->fillProg, "uHeight");
+  impl_->fillColor = glGetUniformLocation(impl_->fillProg, "uColor");
+  impl_->copySrcStride = glGetUniformLocation(impl_->copyProg, "uSrcStride");
+  impl_->copyDstStride = glGetUniformLocation(impl_->copyProg, "uDstStride");
+  impl_->copySrcX = glGetUniformLocation(impl_->copyProg, "uSrcX");
+  impl_->copySrcY = glGetUniformLocation(impl_->copyProg, "uSrcY");
+  impl_->copyDstX = glGetUniformLocation(impl_->copyProg, "uDstX");
+  impl_->copyDstY = glGetUniformLocation(impl_->copyProg, "uDstY");
+  impl_->copyWidth = glGetUniformLocation(impl_->copyProg, "uWidth");
+  impl_->copyHeight = glGetUniformLocation(impl_->copyProg, "uHeight");
+
+  // Per-chunk scratch: comp then temp, each chunkStreams*4096 int16.
+  const uint32_t chunkStreams = kChunkTiles * 3;
+  impl_->coefWords = static_cast<size_t>(chunkStreams) * 4096 / 2 * 2;  // two regions
+  glGenBuffers(1, &impl_->coefBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->coefBuf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->coefWords * 4), nullptr,
+               GL_DYNAMIC_DRAW);
+
+  const uint32_t chunkTiles = kChunkTiles;
+  glGenBuffers(1, &impl_->metaBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->metaBuf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(chunkStreams * kMetaStride),
+               nullptr, GL_DYNAMIC_DRAW);
+  glGenBuffers(1, &impl_->tileMetaBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tileMetaBuf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(chunkTiles * 16), nullptr,
+               GL_DYNAMIC_DRAW);
+  glGenBuffers(1, &impl_->composeRectBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
+  impl_->composeRectCapacity = static_cast<size_t>(chunkTiles) * 8;  // words, grown on demand
+  glBufferData(GL_SHADER_STORAGE_BUFFER,
+               static_cast<GLsizeiptr>(impl_->composeRectCapacity * sizeof(uint32_t)), nullptr,
+               GL_DYNAMIC_DRAW);
+
+  glGenBuffers(1, &impl_->payloadBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
+  impl_->payloadCapacity = 1u << 20;  // grown on demand
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->payloadCapacity), nullptr,
+               GL_DYNAMIC_DRAW);
+
+  if (!CheckGl("init")) {
+    return false;
+  }
+  ready_ = true;
+  HMRDP_LOGI("gpu gfx desktop: engine ready (%{public}s)", info.Describe().c_str());
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Surface lifecycle
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Rounds up to a multiple of `alignment` (mirrors gfx_align_scanline).
+int GpuAlign(int value, int alignment) {
+  const int pad = alignment - (value % alignment);
+  return (pad == alignment) ? value : value + pad;
+}
+
+}  // namespace
+
+bool GfxGpuDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint32_t format) {
+  if (!ready_ || impl_ == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  DeleteSurface(surfaceId);
+
+  Impl::SurfaceGpu surface;
+  surface.meta.id = surfaceId;
+  surface.meta.width = GpuAlign(width, 16);
+  surface.meta.height = GpuAlign(height, 16);
+  surface.meta.stride = GpuAlign(surface.meta.width * 4, 16);
+  // FreeRDP maps the wire format 0x20 -> BGRX32, 0x21 -> BGRA32; anything else
+  // is treated as BGRA32.
+  surface.meta.format =
+      (format == 0x20u) ? kPixelFormatBgrx32 : kPixelFormatBgra32;
+  surface.meta.gridW = (surface.meta.width + 63) / 64;
+  surface.meta.gridH = (surface.meta.height + 63) / 64;
+  surface.meta.mappedWidth = width;
+  surface.meta.mappedHeight = height;
+
+  surface.outWords = static_cast<size_t>(surface.meta.stride) * surface.meta.height / 4;
+  glGenBuffers(1, &surface.outBuf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface.outBuf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(surface.outWords * 4), nullptr,
+               GL_DYNAMIC_DRAW);
+  {
+    void* p = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                               static_cast<GLsizeiptr>(surface.outWords * 4),
+                               GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (p != nullptr) {
+      std::memset(p, 0xFF, surface.outWords * 4);
+      glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    }
+  }
+
+  // Persistent per-(tile,component) progressive state (current/sign int16 +
+  // 10 nibble-ish bytes of bit positions), zero-initialised for this grid.
+  const size_t gridStreams = static_cast<size_t>(surface.meta.gridW) * surface.meta.gridH * 3;
+  const size_t stateCoefBytes = gridStreams * 4096 * 2;
+  const size_t stateBpBytes = ((gridStreams * 10 + 3) / 4) * 4;
+  auto makeZeroed = [](GLuint* buf, size_t bytes) {
+    glGenBuffers(1, buf);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, *buf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr,
+                 GL_DYNAMIC_DRAW);
+    void* p = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(bytes),
+                               GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (p != nullptr) {
+      std::memset(p, 0, bytes);
+      glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  };
+  makeZeroed(&surface.stateCurBuf, stateCoefBytes);
+  makeZeroed(&surface.stateSignBuf, stateCoefBytes);
+  makeZeroed(&surface.stateBpBuf, stateBpBytes);
+
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  impl_->surfaces[surfaceId] = surface;
+  if (!CheckGl("create surface")) {
+    return false;
+  }
+  HMRDP_LOGI("gpu gfx desktop: surface %{public}u %{public}dx%{public}d stride=%{public}d",
+             surfaceId, surface.meta.width, surface.meta.height, surface.meta.stride);
+  return true;
+}
+
+void GfxGpuDesktop::DeleteSurface(uint16_t surfaceId) {
+  if (impl_ == nullptr) {
+    return;
+  }
+  const auto it = impl_->surfaces.find(surfaceId);
+  if (it == impl_->surfaces.end()) {
+    return;
+  }
+  if (impl_->context != EGL_NO_CONTEXT) {
+    impl_->MakeCurrent();
+    Impl::SurfaceGpu& s = it->second;
+    if (s.outBuf) glDeleteBuffers(1, &s.outBuf);
+    if (s.stateCurBuf) glDeleteBuffers(1, &s.stateCurBuf);
+    if (s.stateSignBuf) glDeleteBuffers(1, &s.stateSignBuf);
+    if (s.stateBpBuf) glDeleteBuffers(1, &s.stateBpBuf);
+  }
+  impl_->surfaces.erase(it);
+}
+
+const GpuSurface* GfxGpuDesktop::FindSurface(uint16_t surfaceId) const {
+  const Impl::SurfaceGpu* s = impl_ != nullptr ? impl_->Find(surfaceId) : nullptr;
+  return s != nullptr ? &s->meta : nullptr;
+}
+
+void GfxGpuDesktop::MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX,
+                                       uint32_t outputOriginY) {
+  Impl::SurfaceGpu* s = impl_ != nullptr ? impl_->Find(surfaceId) : nullptr;
+  if (s != nullptr) {
+    s->meta.mapped = true;
+    s->meta.outputX = outputOriginX;
+    s->meta.outputY = outputOriginY;
+    // gdi_MapSurfaceToOutput clears the surface's invalid region.
+    s->meta.dirtyValid = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Command dispatch (FreeRDP GFX command semantics)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+uint32_t GpuRd32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+uint16_t GpuRd16(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0] | (p[1] << 8));
+}
+
+constexpr uint32_t kGpuCodecUncompressed = 0x0000;
+constexpr uint32_t kGpuCodecClearCodec = 0x0008;
+constexpr uint32_t kGpuCodecCaprogressive = 0x0009;
+constexpr uint32_t kGpuCodecCaprogressiveV2 = 0x000D;
+
+}  // namespace
+
+void GfxGpuDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                                 const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                                 uint32_t payloadLen) {
+  switch (cmdId) {
+    case kGpuCmdCreateSurface:
+      if (scalars != nullptr) {
+        CreateSurface(static_cast<uint16_t>(surfaceId), static_cast<int>(scalars[0]),
+                      static_cast<int>(scalars[1]), scalars[2]);
+      }
+      break;
+    case kGpuCmdDeleteSurface:
+      DeleteSurface(static_cast<uint16_t>(surfaceId));
+      break;
+    case kGpuCmdSolidFill:
+      if (scalars != nullptr && params != nullptr) {
+        // FreeRDP always uses alpha 0xFF regardless of the PDU's XA byte.
+        SolidFill(static_cast<uint16_t>(surfaceId), (scalars[0] & 0x00FFFFFFu) | 0xFF000000u,
+                  reinterpret_cast<const uint16_t*>(params), scalars[1]);
+      }
+      break;
+    case kGpuCmdSurfaceToSurface: {
+      if (scalars == nullptr || params == nullptr || paramsLen < 8) {
+        break;
+      }
+      const int sx = GpuRd16(params);
+      const int sy = GpuRd16(params + 2);
+      const int w = GpuRd16(params + 4) - sx;
+      const int h = GpuRd16(params + 6) - sy;
+      const uint32_t count = scalars[1];
+      const uint32_t avail = (paramsLen - 8) / 4;
+      const uint32_t n = count < avail ? count : avail;
+      for (uint32_t i = 0; i < n; ++i) {
+        const int px = GpuRd16(params + 8 + static_cast<size_t>(i) * 4);
+        const int py = GpuRd16(params + 8 + static_cast<size_t>(i) * 4 + 2);
+        SurfaceToSurface(static_cast<uint16_t>(scalars[0]), sx, sy, w, h,
+                         static_cast<uint16_t>(surfaceId), px, py);
+      }
+      break;
+    }
+    case kGpuCmdSurfaceToCache: {
+      if (scalars == nullptr || params == nullptr || paramsLen < 16) {
+        break;
+      }
+      const int sx = GpuRd16(params + 8);
+      const int sy = GpuRd16(params + 10);
+      const int w = GpuRd16(params + 12) - sx;
+      const int h = GpuRd16(params + 14) - sy;
+      SurfaceToCache(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), sx, sy,
+                     w, h);
+      break;
+    }
+    case kGpuCmdCacheToSurface: {
+      if (scalars == nullptr || params == nullptr) {
+        break;
+      }
+      const uint32_t count = scalars[1];
+      const uint32_t avail = paramsLen / 4;
+      const uint32_t n = count < avail ? count : avail;
+      for (uint32_t i = 0; i < n; ++i) {
+        const int px = GpuRd16(params + static_cast<size_t>(i) * 4);
+        const int py = GpuRd16(params + static_cast<size_t>(i) * 4 + 2);
+        CacheToSurface(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), px, py);
+      }
+      break;
+    }
+    case kGpuCmdEvictCacheEntry:
+      if (scalars != nullptr) {
+        EvictCache(static_cast<uint16_t>(scalars[0]));
+      }
+      break;
+    case kGpuCmdWireToSurface: {
+      const uint16_t sid = static_cast<uint16_t>(surfaceId);
+      if (params == nullptr || paramsLen < 32 || scalars == nullptr || impl_ == nullptr) {
+        break;
+      }
+      Impl::SurfaceGpu* surface = impl_->Find(sid);
+      if (surface == nullptr) {
+        break;
+      }
+      const uint32_t codecId = scalars[0];
+      const uint32_t format = GpuRd32(params + 4);
+      const int left = static_cast<int>(GpuRd32(params + 8));
+      const int top = static_cast<int>(GpuRd32(params + 12));
+      const int width = static_cast<int>(GpuRd32(params + 24));
+      const int height = static_cast<int>(GpuRd32(params + 28));
+      if (codecId == kGpuCodecCaprogressive || codecId == kGpuCodecCaprogressiveV2) {
+        DecodeMessage(sid, payload, payloadLen);
+      } else if (codecId == kGpuCodecClearCodec) {
+        // CPU decode + read-modify-write of the target surface. ClearCodec is
+        // not self-contained: pixels its bands do not overwrite keep the current
+        // surface value, so the rows are downloaded, decoded in place and
+        // uploaded back.
+        if (impl_->clearDecoder != nullptr && payload != nullptr && width > 0 && height > 0) {
+          const int stride = surface->meta.stride;
+          std::vector<uint8_t> scratch(static_cast<size_t>(stride) * height);
+          if (DownloadRows(sid, top, height, scratch.data(), stride) &&
+              impl_->clearDecoder->Decode(payload, payloadLen, width, height, surface->meta.format,
+                                          scratch.data(), stride, left, 0, surface->meta.width,
+                                          height)) {
+            UploadRows(sid, top, height, scratch.data(), stride);
+            Impl::MarkSurfaceDirty(*surface, left, top, left + width, top + height);
+          }
+        }
+      } else if (codecId == kGpuCodecUncompressed) {
+        const uint32_t bpp = format >> 24;
+        if (width > 0 && height > 0 && payload != nullptr &&
+            (bpp == 24 || bpp == 32) &&
+            static_cast<uint64_t>(bpp / 8) * width * height <= payloadLen) {
+          if (bpp == 32) {
+            UploadBgra(sid, left, top, width, height, payload, width * 4);
+          } else {
+            std::vector<uint8_t> tmp(static_cast<size_t>(width) * height * 4);
+            for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
+              tmp[i * 4] = payload[i * 3];
+              tmp[i * 4 + 1] = payload[i * 3 + 1];
+              tmp[i * 4 + 2] = payload[i * 3 + 2];
+              tmp[i * 4 + 3] = 0xFF;
+            }
+            UploadBgra(sid, left, top, width, height, tmp.data(), width * 4);
+          }
+          Impl::MarkSurfaceDirty(*surface, left, top, left + width, top + height);
+        }
+      }
+      break;
+    }
+    case kGpuCmdMapSurfaceToOutput:
+      if (scalars != nullptr) {
+        MapSurfaceToOutput(static_cast<uint16_t>(surfaceId), scalars[0], scalars[1]);
+      }
+      break;
+    case kGpuCmdMapSurfaceToScaledOutput:
+      // Server-side scaling is unsupported (this build's FreeRDP has no
+      // swscale/cairo, so gdi draws nothing). Unmap the surface so a stale 1:1
+      // mapping is not reused for the scaled PDU (mirrors FreeRDP).
+      if (impl_ != nullptr) {
+        if (Impl::SurfaceGpu* s = impl_->Find(static_cast<uint16_t>(surfaceId))) {
+          s->meta.mapped = false;
+          s->meta.dirtyValid = false;
+        }
+      }
+      break;
+    case kGpuCmdResetGraphics:
+      if (scalars != nullptr) {
+        ResetGraphics(static_cast<int>(scalars[0]), static_cast<int>(scalars[1]));
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+namespace {
+
+// uint8 nibbles [HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3] in the RfxQuant.
+void QuantArray(const RfxQuant& q, uint8_t out[10]) {
+  out[0] = q.HL1; out[1] = q.LH1; out[2] = q.HH1;
+  out[3] = q.HL2; out[4] = q.LH2; out[5] = q.HH2;
+  out[6] = q.HL3; out[7] = q.LH3; out[8] = q.HH3;
+  out[9] = q.LL3;
+}
+
+struct StreamJob {
+  uint32_t type = 0;   // 0 = kFirst, 2 = kUpgrade
+  uint32_t flags = 0;  // bit0 = RFX_TILE_DIFFERENCE (kFirst)
+  uint32_t tileStream = 0;
+  uint32_t payloadOff = 0;
+  uint32_t payloadLen = 0;
+  uint32_t srlOff = 0;
+  uint32_t srlLen = 0;
+  uint32_t rawOff = 0;
+  uint32_t rawLen = 0;
+  uint8_t shift[10] = {0};
+  uint8_t newBit[10] = {0};
+};
+
+}  // namespace
+
+bool GfxGpuDesktop::DecodeMessage(uint16_t surfaceId, const uint8_t* payload, size_t size) {
+  if (!ready_ || impl_ == nullptr || payload == nullptr || size == 0) {
+    return false;
+  }
+  Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const int gridW = surface->meta.gridW;
+  const int gridH = surface->meta.gridH;
+  const int surfaceW = surface->meta.width;
+  const int surfaceH = surface->meta.height;
+
+  // Parse the container on the CPU (cheap) and resolve each tile component into
+  // a GPU stream job: kFirst (absolute) and kUpgrade (SRL/raw refinement).
+  struct TileJob {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t rectOffset = 0;  // index (rects) into rectPool
+    uint32_t rectCount = 0;   // 0 = whole tile
+    StreamJob streams[3];
+    bool valid = false;
+  };
+  std::vector<TileJob> tiles;
+  tiles.reserve(256);
+  std::vector<uint32_t> rectPool;  // 2 words per rect: [x|y<<16, w|h<<16]
+  rectPool.reserve(256);
+  RfxParseStats stats;
+  ParseRfxProgressive(
+      payload, size,
+      [&](const RfxTileRef& t) {
+        if (t.quants == nullptr) {
+          return;
+        }
+        const bool upgrade = (t.type == RfxTileType::kUpgrade);
+        if (!upgrade && t.type != RfxTileType::kFirst) {
+          return;  // kSimple not used by this server
+        }
+        if (t.xIdx >= static_cast<uint32_t>(gridW) ||
+            t.yIdx >= static_cast<uint32_t>(gridH)) {
+          return;  // tile outside this surface's grid
+        }
+        TileJob job;
+        job.x = t.xIdx;
+        job.y = t.yIdx;
+        job.valid = true;
+        job.rectOffset = static_cast<uint32_t>(rectPool.size() / 2);
+        job.rectCount = t.numRects;
+        for (uint16_t ri = 0; ri < t.numRects; ++ri) {
+          const RfxRect& r = t.rects[ri];
+          rectPool.push_back(static_cast<uint32_t>(r.x) | (static_cast<uint32_t>(r.y) << 16));
+          rectPool.push_back(static_cast<uint32_t>(r.width) |
+                             (static_cast<uint32_t>(r.height) << 16));
+        }
+        const RfxQuant* qv[3] = {&t.quants[t.quantIdxY], &t.quants[t.quantIdxCb],
+                                 &t.quants[t.quantIdxCr]};
+        RfxQuant prog[3];
+        if (t.quality != 0xFF && t.progQuants != nullptr && t.quality < t.numProgQuant) {
+          prog[0] = t.progQuants[t.quality].y;
+          prog[1] = t.progQuants[t.quality].cb;
+          prog[2] = t.progQuants[t.quality].cr;
+        }
+        const uint8_t* data[3] = {t.yData, t.cbData, t.crData};
+        const uint16_t len[3] = {t.yLen, t.cbLen, t.crLen};
+        const uint8_t* srl[3] = {t.ySrlData, t.cbSrlData, t.crSrlData};
+        const uint16_t srlLen[3] = {t.ySrlLen, t.cbSrlLen, t.crSrlLen};
+        const uint8_t* raw[3] = {t.yRawData, t.cbRawData, t.crRawData};
+        const uint16_t rawLen[3] = {t.yRawLen, t.cbRawLen, t.crRawLen};
+        const uint32_t tileIndex = static_cast<uint32_t>(t.yIdx) * static_cast<uint32_t>(gridW) +
+                                   t.xIdx;
+        for (int c = 0; c < 3; ++c) {
+          uint8_t qa[10];
+          uint8_t pa[10];
+          QuantArray(*qv[c], qa);
+          QuantArray(prog[c], pa);
+          StreamJob& sj = job.streams[c];
+          sj.type = upgrade ? 2u : 0u;
+          sj.flags = t.flags & 1u;
+          sj.tileStream = tileIndex * 3u + static_cast<uint32_t>(c);
+          for (int i = 0; i < 10; ++i) {
+            const int nb = static_cast<int>(qa[i]) + static_cast<int>(pa[i]);
+            sj.newBit[i] = static_cast<uint8_t>(nb);
+            const int sh = nb - 1;
+            sj.shift[i] = static_cast<uint8_t>(sh < 0 ? 0 : sh);
+          }
+          if (upgrade) {
+            sj.srlOff = static_cast<uint32_t>(srl[c] - payload);
+            sj.srlLen = srlLen[c];
+            sj.rawOff = static_cast<uint32_t>(raw[c] - payload);
+            sj.rawLen = rawLen[c];
+          } else {
+            sj.payloadOff = static_cast<uint32_t>(data[c] - payload);
+            sj.payloadLen = len[c];
+          }
+        }
+        tiles.push_back(job);
+      },
+      &stats);
+  if (tiles.empty()) {
+    return true;
+  }
+
+  // Upload payload (grow the buffer if needed).
+  if (size > impl_->payloadCapacity) {
+    impl_->payloadCapacity = size + (size >> 1);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->payloadCapacity),
+                 nullptr, GL_DYNAMIC_DRAW);
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->payloadBuf);
+  glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(size), payload);
+
+  if (rectPool.size() > impl_->composeRectCapacity) {
+    impl_->composeRectCapacity = rectPool.size() + (rectPool.size() >> 1) + 64;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 static_cast<GLsizeiptr>(impl_->composeRectCapacity * sizeof(uint32_t)), nullptr,
+                 GL_DYNAMIC_DRAW);
+  }
+  if (!rectPool.empty()) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->composeRectBuf);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                    static_cast<GLsizeiptr>(rectPool.size() * sizeof(uint32_t)), rectPool.data());
+  }
+
+  const uint32_t chunkTiles = kChunkTiles;
+  for (size_t start = 0; start < tiles.size(); start += chunkTiles) {
+    const uint32_t count =
+        static_cast<uint32_t>(std::min(chunkTiles, static_cast<uint32_t>(tiles.size() - start)));
+    const uint32_t streams = count * 3;
+
+    std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
+    std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 4, 0);
+    for (uint32_t t = 0; t < count; ++t) {
+      const TileJob& job = tiles[start + t];
+      tileMeta[t * 4] = job.x * 64;  // pixel origin of the tile
+      tileMeta[t * 4 + 1] = job.y * 64;
+      tileMeta[t * 4 + 2] = job.rectOffset;
+      tileMeta[t * 4 + 3] = job.rectCount;
+      // Mark the whole tile dirty (mirrors the CPU ApplyProgressive marking).
+      Impl::MarkSurfaceDirty(*surface, static_cast<int>(job.x * 64),
+                             static_cast<int>(job.y * 64), static_cast<int>(job.x * 64 + 64),
+                             static_cast<int>(job.y * 64 + 64));
+      for (int c = 0; c < 3; ++c) {
+        uint8_t* rec = &meta[(static_cast<size_t>(t) * 3 + c) * kMetaStride];
+        const StreamJob& sj = job.streams[c];
+        rec[0] = static_cast<uint8_t>(sj.type);
+        rec[1] = static_cast<uint8_t>(sj.flags);
+        std::memcpy(rec + 4, &sj.tileStream, 4);
+        std::memcpy(rec + 8, &sj.payloadOff, 4);
+        std::memcpy(rec + 12, &sj.payloadLen, 4);
+        std::memcpy(rec + 16, &sj.srlOff, 4);
+        std::memcpy(rec + 20, &sj.srlLen, 4);
+        std::memcpy(rec + 24, &sj.rawOff, 4);
+        std::memcpy(rec + 28, &sj.rawLen, 4);
+        std::memcpy(rec + 32, sj.shift, 10);
+        std::memcpy(rec + 42, sj.newBit, 10);
+      }
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->metaBuf);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(meta.size()), meta.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tileMetaBuf);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                    static_cast<GLsizeiptr>(tileMeta.size() * 4), tileMeta.data());
+
+    // decode: comp at word 0, temp at word chunkStreams*4096/2.
+    const uint32_t compBase = 0;
+    const uint32_t tempBase = streams * 4096;
+    glUseProgram(impl_->decodeProg);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->payloadBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->metaBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, impl_->coefBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, surface->stateCurBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, surface->stateSignBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, surface->stateBpBuf);
+    glUniform1ui(impl_->decodeNumStreams, streams);
+    glUniform1ui(impl_->decodeCompBase, compBase);
+    glUniform1ui(impl_->decodeTempBase, tempBase);
+    glDispatchCompute((streams + 63) / 64, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    glUseProgram(impl_->composeProg);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->tileMetaBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->coefBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, surface->outBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, impl_->composeRectBuf);
+    glUniform1ui(impl_->composeNumTiles, count);
+    glUniform1ui(impl_->composeCompBase, compBase);
+    glUniform1i(impl_->composeSurfaceW, surfaceW);
+    glUniform1i(impl_->composeSurfaceH, surfaceH);
+    glUniform1i(impl_->composeKr, kKr);
+    glUniform1i(impl_->composeKcrG, kKcrG);
+    glUniform1i(impl_->composeKcbG, kKcbG);
+    glUniform1i(impl_->composeKcbB, kKcbB);
+    glDispatchCompute((count + 63) / 64, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  }
+  glFinish();
+  return CheckGl("decode message");
+}
+
+bool GfxGpuDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
+  if (!ready_ || impl_ == nullptr || out == nullptr) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const GLsizeiptr bytes = static_cast<GLsizeiptr>(surface->outWords * 4);
+  out->assign(surface->outWords * 4, 0);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
+  // GLES has no glGetBufferSubData; map the buffer for reading instead.
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("map surface");
+  }
+  std::memcpy(out->data(), mapped, static_cast<size_t>(bytes));
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("read surface");
+}
+
+// ---------------------------------------------------------------------------
+// B2 surface commands (GPU)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+inline void DispatchPixels(size_t pixels) {
+  // One invocation per pixel (64 per group). A full desktop needs > 65535 groups,
+  // which is the common per-axis limit, so spread the groups over a 2D grid; the
+  // kernels recover the linear index from gl_NumWorkGroups/gl_WorkGroupSize.
+  const uint32_t groups = static_cast<uint32_t>((pixels + 63) / 64);
+  const uint32_t gx = groups < 65535u ? (groups > 0u ? groups : 1u) : 65535u;
+  const uint32_t gy = (groups + gx - 1) / gx;
+  glDispatchCompute(gx, gy > 0u ? gy : 1u, 1);
+}
+
+// Clips [x,x+w) x [y,y+h) to [0,limitW) x [0,limitH); false when empty.
+bool ClipRectGpu(int* x, int* y, int* w, int* h, int limitW, int limitH) {
+  if (*x < 0) {
+    *w += *x;
+    *x = 0;
+  }
+  if (*y < 0) {
+    *h += *y;
+    *y = 0;
+  }
+  if (*x + *w > limitW) {
+    *w = limitW - *x;
+  }
+  if (*y + *h > limitH) {
+    *h = limitH - *y;
+  }
+  return *w > 0 && *h > 0;
+}
+
+}  // namespace
+
+bool GfxGpuDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
+                              uint32_t rectCount) {
+  if (!ready_ || impl_ == nullptr || rects == nullptr || rectCount == 0) {
+    return false;
+  }
+  Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const int surfaceW = surface->meta.width;
+  const int surfaceH = surface->meta.height;
+  glUseProgram(impl_->fillProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, surface->outBuf);
+  glUniform1ui(impl_->fillStride, static_cast<GLuint>(surface->meta.stride));
+  glUniform1ui(impl_->fillColor, bgraPixel);
+  for (uint32_t i = 0; i < rectCount; ++i) {
+    int left = rects[i * 4 + 0];
+    int top = rects[i * 4 + 1];
+    int right = rects[i * 4 + 2];
+    int bottom = rects[i * 4 + 3];
+    if (right > surfaceW) {
+      right = surfaceW;
+    }
+    if (bottom > surfaceH) {
+      bottom = surfaceH;
+    }
+    if (left < 0) {
+      left = 0;
+    }
+    if (top < 0) {
+      top = 0;
+    }
+    if (right <= left || bottom <= top) {
+      continue;
+    }
+    glUniform1i(impl_->fillLeft, left);
+    glUniform1i(impl_->fillTop, top);
+    glUniform1i(impl_->fillWidth, right - left);
+    glUniform1i(impl_->fillHeight, bottom - top);
+    DispatchPixels(static_cast<size_t>(right - left) * static_cast<size_t>(bottom - top));
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    Impl::MarkSurfaceDirty(*surface, left, top, right, bottom);
+  }
+  return CheckGl("solid fill");
+}
+
+bool GfxGpuDesktop::UploadBgra(uint16_t surfaceId, int left, int top, int width, int height,
+                               const uint8_t* bgra, int srcStride) {
+  if (!ready_ || impl_ == nullptr || bgra == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  const int surfaceW = surface->meta.width;
+  const int surfaceH = surface->meta.height;
+  const size_t pitch = static_cast<size_t>(surface->meta.stride);
+  int sx = left < 0 ? 0 : left;
+  int sy = top < 0 ? 0 : top;
+  int ex = left + width;
+  int ey = top + height;
+  if (ex > surfaceW) {
+    ex = surfaceW;
+  }
+  if (ey > surfaceH) {
+    ey = surfaceH;
+  }
+  if (ex <= sx || ey <= sy) {
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const int srcCol = sx - left;
+  const int srcRow0 = sy - top;
+  const int rows = ey - sy;
+  const int cols = ex - sx;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
+  // Map the whole touched range once and write the rows into it. Doing a
+  // glBufferSubData per row is orders of magnitude slower (hundreds of GL calls
+  // per ClearCodec command).
+  const size_t offset0 = static_cast<size_t>(sy) * pitch + static_cast<size_t>(sx) * 4;
+  const size_t offsetEnd = static_cast<size_t>(ey - 1) * pitch + static_cast<size_t>(ex) * 4;
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset0),
+                                  static_cast<GLsizeiptr>(offsetEnd - offset0),
+                                  GL_MAP_WRITE_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("upload bgra map");
+  }
+  uint8_t* base = static_cast<uint8_t*>(mapped) - offset0;
+  for (int row = 0; row < rows; ++row) {
+    const uint8_t* srcRow = bgra + static_cast<size_t>(srcRow0 + row) * srcStride +
+                            static_cast<size_t>(srcCol) * 4;
+    std::memcpy(base + static_cast<size_t>(sy + row) * pitch + static_cast<size_t>(sx) * 4, srcRow,
+                static_cast<size_t>(cols) * 4);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("upload bgra");
+}
+
+bool GfxGpuDesktop::DownloadRows(uint16_t surfaceId, int top, int height, uint8_t* dst,
+                                 int dstStride) {
+  if (!ready_ || impl_ == nullptr || dst == nullptr || height <= 0) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  const size_t pitch = static_cast<size_t>(surface->meta.stride);
+  int y0 = top < 0 ? 0 : top;
+  int y1 = top + height;
+  if (y1 > surface->meta.height) {
+    y1 = surface->meta.height;
+  }
+  if (y1 <= y0) {
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
+  const size_t offset = static_cast<size_t>(y0) * pitch;
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset),
+                                  static_cast<GLsizeiptr>((y1 - y0)) * pitch, GL_MAP_READ_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("download rows map");
+  }
+  const uint8_t* src = static_cast<const uint8_t*>(mapped);
+  for (int row = 0; row < y1 - y0; ++row) {
+    std::memcpy(dst + static_cast<size_t>(row) * dstStride, src + static_cast<size_t>(row) * pitch,
+                pitch);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("download rows");
+}
+
+bool GfxGpuDesktop::UploadRows(uint16_t surfaceId, int top, int height, const uint8_t* src,
+                               int srcStride) {
+  if (!ready_ || impl_ == nullptr || src == nullptr || height <= 0) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  const size_t pitch = static_cast<size_t>(surface->meta.stride);
+  int y0 = top < 0 ? 0 : top;
+  int y1 = top + height;
+  if (y1 > surface->meta.height) {
+    y1 = surface->meta.height;
+  }
+  if (y1 <= y0) {
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
+  const size_t offset = static_cast<size_t>(y0) * pitch;
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(offset),
+                                  static_cast<GLsizeiptr>((y1 - y0)) * pitch, GL_MAP_WRITE_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return CheckGl("upload rows map");
+  }
+  uint8_t* dst = static_cast<uint8_t*>(mapped);
+  for (int row = 0; row < y1 - y0; ++row) {
+    std::memcpy(dst + static_cast<size_t>(row) * pitch,
+                src + static_cast<size_t>(y0 - top + row) * srcStride, pitch);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("upload rows");
+}
+
+bool GfxGpuDesktop::SurfaceToCache(uint16_t surfaceId, uint16_t slot, int x, int y, int width,
+                                   int height) {
+  if (!ready_ || impl_ == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  if (x < 0 || y < 0 || x + width > surface->meta.width || y + height > surface->meta.height) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  Impl::CacheBuf& entry = impl_->cache[slot];
+  entry.width = width;
+  entry.height = height;
+  entry.stride = ((width * 4 + 15) / 16) * 16;
+  const size_t bytes = static_cast<size_t>(entry.stride) * height;
+  if (entry.buf == 0) {
+    glGenBuffers(1, &entry.buf);
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, entry.buf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr, GL_DYNAMIC_DRAW);
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, surface->outBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, entry.buf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(surface->meta.stride));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(entry.stride));
+  glUniform1i(impl_->copySrcX, x);
+  glUniform1i(impl_->copySrcY, y);
+  glUniform1i(impl_->copyDstX, 0);
+  glUniform1i(impl_->copyDstY, 0);
+  glUniform1i(impl_->copyWidth, width);
+  glUniform1i(impl_->copyHeight, height);
+  DispatchPixels(static_cast<size_t>(width) * height);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  return CheckGl("surface to cache");
+}
+
+bool GfxGpuDesktop::CacheToSurface(uint16_t surfaceId, uint16_t slot, int dstX, int dstY) {
+  if (!ready_ || impl_ == nullptr) {
+    return false;
+  }
+  Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  const auto it = impl_->cache.find(slot);
+  if (it == impl_->cache.end()) {
+    return false;
+  }
+  const Impl::CacheBuf& entry = it->second;
+  int dx = dstX;
+  int dy = dstY;
+  int w = entry.width;
+  int h = entry.height;
+  if (!ClipRectGpu(&dx, &dy, &w, &h, surface->meta.width, surface->meta.height)) {
+    return true;  // fully outside the surface
+  }
+  const int srcX = dx - dstX;
+  const int srcY = dy - dstY;
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, entry.buf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, surface->outBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(entry.stride));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(surface->meta.stride));
+  glUniform1i(impl_->copySrcX, srcX);
+  glUniform1i(impl_->copySrcY, srcY);
+  glUniform1i(impl_->copyDstX, dx);
+  glUniform1i(impl_->copyDstY, dy);
+  glUniform1i(impl_->copyWidth, w);
+  glUniform1i(impl_->copyHeight, h);
+  DispatchPixels(static_cast<size_t>(w) * h);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  Impl::MarkSurfaceDirty(*surface, dx, dy, dx + w, dy + h);
+  return CheckGl("cache to surface");
+}
+
+void GfxGpuDesktop::EvictCache(uint16_t slot) {
+  if (impl_ == nullptr) {
+    return;
+  }
+  const auto it = impl_->cache.find(slot);
+  if (it == impl_->cache.end()) {
+    return;
+  }
+  if (impl_->context != EGL_NO_CONTEXT) {
+    impl_->MakeCurrent();
+    if (it->second.buf != 0) {
+      glDeleteBuffers(1, &it->second.buf);
+    }
+  }
+  impl_->cache.erase(it);
+}
+
+bool GfxGpuDesktop::SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, int width,
+                                     int height, uint16_t dstSurfaceId, int dstX, int dstY) {
+  if (!ready_ || impl_ == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const src = impl_->Find(srcSurfaceId);
+  Impl::SurfaceGpu* const dst = impl_->Find(dstSurfaceId);
+  if (src == nullptr || dst == nullptr) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  // Stage through a temporary buffer so overlapping same-surface copies are
+  // safe (the GPU dispatch has no per-row ordering).
+  const size_t words = static_cast<size_t>(width) * height;
+  if (words > impl_->tempWords) {
+    if (impl_->tempBuf != 0) {
+      glDeleteBuffers(1, &impl_->tempBuf);
+    }
+    glGenBuffers(1, &impl_->tempBuf);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->tempBuf);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(words * 4), nullptr,
+                 GL_DYNAMIC_DRAW);
+    impl_->tempWords = words;
+  }
+  int dx = dstX;
+  int dy = dstY;
+  int w = width;
+  int h = height;
+  if (!ClipRectGpu(&dx, &dy, &w, &h, dst->meta.width, dst->meta.height)) {
+    return true;
+  }
+  const int sx = srcX + (dx - dstX);
+  const int sy = srcY + (dy - dstY);
+  const int srcW = src->meta.width;
+  const int srcH = src->meta.height;
+  if (sx < 0 || sy < 0 || sx + w > srcW || sy + h > srcH) {
+    return false;
+  }
+  glUseProgram(impl_->copyProg);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, src->outBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->tempBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(src->meta.stride));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(w * 4));
+  glUniform1i(impl_->copySrcX, sx);
+  glUniform1i(impl_->copySrcY, sy);
+  glUniform1i(impl_->copyDstX, 0);
+  glUniform1i(impl_->copyDstY, 0);
+  glUniform1i(impl_->copyWidth, w);
+  glUniform1i(impl_->copyHeight, h);
+  DispatchPixels(static_cast<size_t>(w) * h);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, impl_->tempBuf);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, dst->outBuf);
+  glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(w * 4));
+  glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(dst->meta.stride));
+  glUniform1i(impl_->copySrcX, 0);
+  glUniform1i(impl_->copySrcY, 0);
+  glUniform1i(impl_->copyDstX, dx);
+  glUniform1i(impl_->copyDstY, dy);
+  glUniform1i(impl_->copyWidth, w);
+  glUniform1i(impl_->copyHeight, h);
+  DispatchPixels(static_cast<size_t>(w) * h);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  Impl::MarkSurfaceDirty(*dst, dx, dy, dx + w, dy + h);
+  return CheckGl("surface to surface");
+}
+
+// ---------------------------------------------------------------------------
+// Screen compose (W4)
+// ---------------------------------------------------------------------------
+
+bool GfxGpuDesktop::ResetGraphics(int width, int height) {
+  if (!ready_ || impl_ == nullptr) {
+    return false;
+  }
+  if (width <= 0 || height <= 0) {
+    if (impl_->screenBuf != 0 || impl_->screenTex != 0) {
+      impl_->MakeCurrent();
+      if (impl_->screenBuf != 0) glDeleteBuffers(1, &impl_->screenBuf);
+      if (impl_->screenTex != 0) glDeleteTextures(1, &impl_->screenTex);
+    }
+    impl_->screenBuf = 0;
+    impl_->screenTex = 0;
+    impl_->screenWords = 0;
+    impl_->screenW = 0;
+    impl_->screenH = 0;
+    impl_->screenDirtyValid = false;
+    screenW_ = 0;
+    screenH_ = 0;
+    return true;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  if (impl_->screenBuf == 0) {
+    glGenBuffers(1, &impl_->screenBuf);
+  }
+  impl_->screenW = width;
+  impl_->screenH = height;
+  impl_->screenWords = static_cast<size_t>(width) * height;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->screenBuf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(impl_->screenWords * 4), nullptr,
+               GL_DYNAMIC_DRAW);
+  void* p = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0,
+                             static_cast<GLsizeiptr>(impl_->screenWords * 4),
+                             GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+  if (p != nullptr) {
+    std::memset(p, 0, impl_->screenWords * 4);
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  }
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+  // Shared screen texture the Renderer samples (same EGL share group).
+  if (impl_->screenTex != 0) {
+    glDeleteTextures(1, &impl_->screenTex);
+  }
+  glGenTextures(1, &impl_->screenTex);
+  glBindTexture(GL_TEXTURE_2D, impl_->screenTex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  // Initialise the texture from the (zeroed) screen buffer so it mirrors it.
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER, impl_->screenBuf);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, width);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  impl_->screenDirtyValid = false;
+  screenW_ = width;
+  screenH_ = height;
+  return CheckGl("reset graphics");
+}
+
+void GfxGpuDesktop::ClearScreenDirty() {
+  if (impl_ != nullptr) {
+    impl_->screenDirtyValid = false;
+  }
+}
+
+bool GfxGpuDesktop::screenDirty() const {
+  return impl_ != nullptr && impl_->screenDirtyValid;
+}
+
+uint32_t GfxGpuDesktop::screenTexture() const {
+  return impl_ != nullptr ? static_cast<uint32_t>(impl_->screenTex) : 0u;
+}
+
+bool GfxGpuDesktop::Compose() {
+  if (!ready_ || impl_ == nullptr || impl_->screenBuf == 0) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const int scrW = impl_->screenW;
+  const int scrH = impl_->screenH;
+  glUseProgram(impl_->copyProg);
+  for (auto& kv : impl_->surfaces) {
+    Impl::SurfaceGpu& s = kv.second;
+    GpuSurface& m = s.meta;
+    if (!m.mapped || !m.dirtyValid) {
+      continue;
+    }
+    int left = m.dirtyLeft;
+    int top = m.dirtyTop;
+    int right = m.dirtyRight;
+    int bottom = m.dirtyBottom;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (right > m.mappedWidth) right = m.mappedWidth;
+    if (bottom > m.mappedHeight) bottom = m.mappedHeight;
+    if (right <= left || bottom <= top) {
+      m.dirtyValid = false;
+      continue;
+    }
+    // 1:1 output mapping (scaled PDUs unmap the surface); a rect copy.
+    int dstX = static_cast<int>(m.outputX) + left;
+    int dstY = static_cast<int>(m.outputY) + top;
+    if (dstX < 0) dstX = 0;
+    if (dstY < 0) dstY = 0;
+    if (dstX >= scrW || dstY >= scrH) {
+      m.dirtyValid = false;
+      continue;
+    }
+    int dstW = right - left;
+    int dstH = bottom - top;
+    if (dstW > scrW - dstX) dstW = scrW - dstX;
+    if (dstH > scrH - dstY) dstH = scrH - dstY;
+    if (dstW <= 0 || dstH <= 0) {
+      m.dirtyValid = false;
+      continue;
+    }
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s.outBuf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, impl_->screenBuf);
+    glUniform1ui(impl_->copySrcStride, static_cast<GLuint>(m.stride));
+    glUniform1ui(impl_->copyDstStride, static_cast<GLuint>(scrW * 4));
+    glUniform1i(impl_->copySrcX, left);
+    glUniform1i(impl_->copySrcY, top);
+    glUniform1i(impl_->copyDstX, dstX);
+    glUniform1i(impl_->copyDstY, dstY);
+    glUniform1i(impl_->copyWidth, dstW);
+    glUniform1i(impl_->copyHeight, dstH);
+    DispatchPixels(static_cast<size_t>(dstW) * static_cast<size_t>(dstH));
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    impl_->MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
+    m.dirtyValid = false;
+  }
+
+  // Mirror the dirty screen region into the shared texture. The buffer is bound
+  // as a pixel-unpack source, so this is a GPU-to-GPU copy with no CPU readback
+  // (the buffer may otherwise still be in flight from the compute dispatch, so a
+  // buffer-update barrier is required first).
+  if (impl_->screenDirtyValid && impl_->screenTex != 0) {
+    const int l = impl_->screenDirtyL;
+    const int t = impl_->screenDirtyT;
+    const int w = impl_->screenDirtyR - l;
+    const int h = impl_->screenDirtyB - t;
+    if (w > 0 && h > 0) {
+      glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER, impl_->screenBuf);
+      glBindTexture(GL_TEXTURE_2D, impl_->screenTex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, scrW);
+      const size_t offset = (static_cast<size_t>(t) * scrW + static_cast<size_t>(l)) * 4;
+      glTexSubImage2D(GL_TEXTURE_2D, 0, l, t, w, h, GL_RGBA, GL_UNSIGNED_BYTE,
+                      reinterpret_cast<const void*>(offset));
+      glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+      glBindTexture(GL_TEXTURE_2D, 0);
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
+  }
+  return CheckGl("compose") && impl_->screenDirtyValid;
+}
+
+bool GfxGpuDesktop::ReadScreen(std::vector<uint8_t>* out) {
+  if (!ready_ || impl_ == nullptr || out == nullptr || impl_->screenBuf == 0) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const GLsizeiptr bytes = static_cast<GLsizeiptr>(impl_->screenWords * 4);
+  out->assign(impl_->screenWords * 4, 0);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, impl_->screenBuf);
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    HMRDP_LOGE("gpu gfx desktop: read screen map failed (0x%{public}x)", glGetError());
+    return false;
+  }
+  std::memcpy(out->data(), mapped, static_cast<size_t>(bytes));
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("read screen");
+}
+
+// ---------------------------------------------------------------------------
+// Offline self-test
+// ---------------------------------------------------------------------------
+
+
+namespace {
+
+std::vector<uint8_t> ReadFile(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    return {};
+  }
+  f.seekg(0, std::ios::end);
+  const std::streamoff n = f.tellg();
+  f.seekg(0, std::ios::beg);
+  std::vector<uint8_t> b(static_cast<size_t>(n));
+  f.read(reinterpret_cast<char*>(b.data()), n);
+  return b;
+}
+
+uint32_t Rd32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+struct RefSurface {
+  uint32_t w = 0;
+  uint32_t h = 0;
+  uint32_t stride = 0;
+  std::vector<uint8_t> data;
+};
+
+}  // namespace
+
+RfxGpuSelfTestResult RunRfxGpuSelfTest(const std::string& rfxPath,
+                                       const std::string& surfacePath) {
+  RfxGpuSelfTestResult res;
+  // Dev convenience: make sure the sample slots exist and are world-writable so
+  // `hdc file send` can overwrite them (the shell user cannot create files in
+  // the app sandbox). Empty placeholders make the self-test return immediately.
+  for (const std::string* p : {&rfxPath, &surfacePath}) {
+    if (p->empty()) {
+      continue;
+    }
+    FILE* f = std::fopen(p->c_str(), "ab");
+    if (f != nullptr) {
+      std::fclose(f);
+    }
+    ::chmod(p->c_str(), 0666);
+  }
+  const std::vector<uint8_t> cb = ReadFile(rfxPath);
+  const std::vector<uint8_t> sb = ReadFile(surfacePath);
+  if (cb.empty() || sb.empty()) {
+    res.log = "cannot read capture files";
+    return res;
+  }
+
+  std::vector<std::pair<size_t, size_t>> streams;  // (offset, length)
+  size_t pos = 0;
+  while (pos + 32 <= cb.size() && Rd32(&cb[pos]) == 0x31584652u) {
+    const uint32_t len = Rd32(&cb[pos + 28]);
+    if (pos + 32 + len > cb.size()) break;
+    streams.emplace_back(pos + 32, len);
+    pos += 32 + len;
+  }
+  std::map<uint32_t, RefSurface> surfaces;
+  pos = 0;
+  while (pos + 32 <= sb.size() && Rd32(&sb[pos]) == 0x31534653u) {
+    RefSurface s;
+    const uint32_t idx = Rd32(&sb[pos + 4]);
+    s.w = Rd32(&sb[pos + 8]);
+    s.h = Rd32(&sb[pos + 12]);
+    s.stride = Rd32(&sb[pos + 16]);
+    const size_t bytes = static_cast<size_t>(s.stride) * s.h;
+    if (pos + 32 + bytes > sb.size()) break;
+    s.data.assign(sb.begin() + pos + 32, sb.begin() + pos + 32 + bytes);
+    surfaces[idx] = std::move(s);
+    pos += 32 + bytes;
+  }
+  if (surfaces.empty()) {
+    res.log = "no reference surfaces";
+    return res;
+  }
+  const RefSurface& probe = surfaces.begin()->second;
+  const int gridW = static_cast<int>((probe.w + 63) / 64);
+
+  // The progressive-only dump has no surface ids; use one dedicated surface.
+  const uint16_t kProbeSurface = 1;
+  GfxGpuDesktop desktop(nullptr);
+  if (!desktop.Init() ||
+      !desktop.CreateSurface(kProbeSurface, static_cast<int>(probe.w), static_cast<int>(probe.h),
+                             0x21u)) {
+    res.log = "gpu decoder init failed";
+    return res;
+  }
+  res.ran = true;
+
+  char line[256];
+  for (size_t r = 1; r <= streams.size(); ++r) {
+    const uint8_t* payload = cb.data() + streams[r - 1].first;
+    const size_t len = streams[r - 1].second;
+    // Collect the tile set and rects for this record (for clipped comparison).
+    std::vector<uint32_t> tiles;
+    std::vector<RfxRect> rects;
+    RfxParseStats stats;
+    ParseRfxProgressive(
+        payload, len,
+        [&](const RfxTileRef& t) {
+          tiles.push_back(static_cast<uint32_t>(t.yIdx) * gridW + t.xIdx);
+          for (uint16_t i = 0; i < t.numRects; ++i) rects.push_back(t.rects[i]);
+        },
+        &stats);
+    res.tiles += stats.tiles;
+    res.firstTiles += stats.firstTiles;
+    res.upgradeTiles += stats.upgradeTiles;
+
+    const bool ok = desktop.DecodeMessage(kProbeSurface, payload, len);
+    if (ok) {
+      res.decodedOk += stats.tiles;
+    } else {
+      res.decodedFail += stats.tiles;
+    }
+    auto it = surfaces.find(static_cast<uint32_t>(r));
+    if (it == surfaces.end()) {
+      continue;
+    }
+    const RefSurface& ref = it->second;
+    std::vector<uint8_t> ours;
+    if (!desktop.ReadSurface(kProbeSurface, &ours)) {
+      continue;
+    }
+
+    size_t mismatch = 0, compared = 0;
+    int64_t sumAbs = 0;
+    for (uint32_t ti : tiles) {
+      const int tx = static_cast<int>(ti) % gridW;
+      const int ty = static_cast<int>(ti) / gridW;
+      const int copyW = (tx * 64 + 64 <= static_cast<int>(ref.w)) ? 64 : (ref.w - tx * 64);
+      const int copyH = (ty * 64 + 64 <= static_cast<int>(ref.h)) ? 64 : (ref.h - ty * 64);
+      if (copyW <= 0 || copyH <= 0) continue;
+      for (int row = 0; row < copyH; ++row) {
+        const int py = ty * 64 + row;
+        const uint8_t* a = ours.data() + static_cast<size_t>(py) * ref.stride + tx * 64 * 4;
+        const uint8_t* b = ref.data.data() + static_cast<size_t>(py) * ref.stride + tx * 64 * 4;
+        for (int x = 0; x < copyW; ++x) {
+          const int px = tx * 64 + x;
+          bool clipped = rects.empty();
+          for (const RfxRect& rc : rects) {
+            if (px >= rc.x && px < rc.x + rc.width && py >= rc.y && py < rc.y + rc.height) {
+              clipped = true;
+              break;
+            }
+          }
+          if (!clipped) continue;
+          for (int c = 0; c < 3; ++c) {
+            int d = a[x * 4 + c] - b[x * 4 + c];
+            if (d < 0) d = -d;
+            sumAbs += d;
+            if (d > 2) mismatch++;
+            compared++;
+          }
+
+        }
+      }
+    }
+    res.comparedRecords++;
+    res.compared += compared;
+    res.mismatch += mismatch;
+    res.meanAbs += static_cast<double>(sumAbs);
+    if (mismatch != 0) res.badRecords++;
+    std::snprintf(line, sizeof(line),
+                  "rec%zu first=%u up=%u cmp=%zu mism=%zu", r, stats.firstTiles,
+                  stats.upgradeTiles, compared, mismatch);
+    HMRDP_LOGI("gpu rfx rec %{public}s", line);
+    res.log += line;
+    res.log += "\n";
+  }
+  res.meanAbs = res.compared ? res.meanAbs / static_cast<double>(res.compared) : 0.0;
+  res.ok = res.ran && res.badRecords == 0 && res.compared > 0;
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// B2 offline self-test: full GFX command stream through the GPU surface model
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Stop after this many compared frames. Large for full validation; a small
+// value speeds up iteration on the device.
+constexpr uint32_t kGpuSelfTestCompareLimit = 100000;
+
+}  // namespace
+
+RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
+                                                     const std::string& surfacePath) {
+  RfxGpuDesktopSelfTestResult res;
+  GfxCapture capture;
+  if (!capture.Open(gfxPath)) {
+    res.log = "cannot read gfx capture";
+    return res;
+  }
+  GfxSurfaceBaselines baselines;
+  if (!baselines.Load(surfacePath)) {
+    res.log = "no surface baselines";
+    return res;
+  }
+
+  // The clear decoder is injected so ApplyCommand can decode ClearCodec with a
+  // read-modify-write of the target surface, exactly like a live session.
+  std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
+  GfxGpuDesktop desktop(clear.get());
+  if (!desktop.Init()) {
+    res.log = "gpu desktop init failed";
+    return res;
+  }
+  res.ran = true;
+
+  // Reads a surface back for the shared comparison helper. `scratch` is reused
+  // across surfaces; each view is consumed before the next read.
+  std::vector<uint8_t> scratch;
+  const GfxSurfaceReader read = [&desktop, &scratch](uint32_t sid, GfxSurfacePixels* out) {
+    const uint16_t surfaceId = static_cast<uint16_t>(sid);
+    const GpuSurface* meta = desktop.FindSurface(surfaceId);
+    if (meta == nullptr || !desktop.ReadSurface(surfaceId, &scratch)) {
+      return false;
+    }
+    out->data = scratch.data();
+    out->width = static_cast<uint32_t>(meta->width);
+    out->height = static_cast<uint32_t>(meta->height);
+    out->stride = static_cast<uint32_t>(meta->stride);
+    return true;
+  };
+
+  int64_t totalAbs = 0;
+  char line[256];
+  GfxCaptureRecord rec;
+  while (capture.Next(&rec)) {
+    res.records++;
+    // One dispatch reproduces the exact FreeRDP semantics.
+    desktop.ApplyCommand(rec.cmdId, rec.surfaceId, rec.scalars, rec.params, rec.paramsLen,
+                         rec.payload, rec.payloadLen);
+    if (rec.cmdId != 0x000Cu) {  // EndFrame compares every surface to the baseline
+      continue;
+    }
+    const GfxFrameComparison cmp = GfxCompareFrame(rec.index, baselines, read);
+    if (!cmp.hadBaseline) {
+      continue;
+    }
+    res.comparedRecords++;
+    res.compared += cmp.comparedBytes;
+    res.mismatch += cmp.mismatch;
+    res.surfacesHashed += cmp.surfacesHashed;
+    res.hashMismatch += cmp.hashMismatch;
+    totalAbs += cmp.sumAbs;
+    if (cmp.mismatch != 0) {
+      res.badRecords++;
+    }
+    if (res.comparedRecords % 100 == 0) {
+      HMRDP_LOGI("gpu gfx desktop progress: rec=%{public}u cmpRec=%{public}u badRec=%{public}u",
+                 res.records, res.comparedRecords, res.badRecords);
+    }
+    std::snprintf(line, sizeof(line), "rec%u surf=%zu cmp=%llu mism=%llu hash=%llu hMism=%llu",
+                  rec.index, cmp.surfaceCount,
+                  static_cast<unsigned long long>(cmp.comparedBytes),
+                  static_cast<unsigned long long>(cmp.mismatch),
+                  static_cast<unsigned long long>(cmp.surfacesHashed),
+                  static_cast<unsigned long long>(cmp.hashMismatch));
+    res.log += line;
+    res.log += "\n";
+    if (res.comparedRecords >= kGpuSelfTestCompareLimit) {
+      break;
+    }
+  }
+  res.meanAbs = res.compared ? static_cast<double>(totalAbs) / static_cast<double>(res.compared)
+                             : 0.0;
+
+  res.ok = res.ran && res.badRecords == 0 && res.comparedRecords > 0;
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// §1 Progressive container parser
+// ---------------------------------------------------------------------------
+
 namespace {
 
 // Progressive block types (libfreerdp/codec/rfx_constants.h).
@@ -244,972 +2775,6 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// RLGR decoder (ported from libfreerdp/codec/rfx_rlgr.c, Apache-2.0).
-// ---------------------------------------------------------------------------
-
-constexpr int kKpMax = 80;  // max value for kp / krp
-constexpr int kLsgr = 3;    // convert kp -> k; k = kp >> kLsgr
-constexpr int kUpGr = 4;    // += after a zero run in RL mode
-constexpr int kDnGr = 6;    // -= after a nonzero symbol in RL mode
-constexpr int kUqGr = 3;    // += after nonzero symbol in GR mode
-constexpr int kDqGr = 3;    // -= after zero symbol in GR mode
-
-inline int Lzcnt32(uint32_t x) {
-  if (x == 0) {
-    return 32;
-  }
-  int n = 0;
-  while ((x & 0x80000000u) == 0) {
-    x <<= 1;
-    ++n;
-  }
-  return n;
-}
-
-// MSB-first bit reader mirroring FreeRDP's wBitStream 32-bit accumulator. A
-// 64-bit buffer is used so refilling works on non-byte-aligned positions.
-class MsbBitReader {
- public:
-  MsbBitReader(const uint8_t* data, size_t size) : data_(data), size_(size) { Fetch(); }
-
-  uint32_t Peek() const { return static_cast<uint32_t>(acc_ >> 32); }
-  size_t Remaining() const { return static_cast<size_t>(accBits_) + (size_ - pos_) * 8; }
-  // Total bits consumed so far (mirrors wBitStream::position).
-  size_t Position() const { return position_; }
-
-  // Reads the next `n` bits (MSB first); bits past the end read as zero.
-  uint32_t ReadBits(int n) {
-    if (n <= 0) {
-      return 0;
-    }
-    if (n >= 32) {
-      const uint32_t v = Peek();
-      Shift(n);
-      return v;
-    }
-    const uint32_t v = Peek() >> (32 - n);
-    Shift(n);
-    return v;
-  }
-
-  void Shift(int n) {
-    if (n <= 0) {
-      return;
-    }
-    position_ += static_cast<size_t>(n);
-    if (n >= 64) {
-      acc_ = 0;
-      accBits_ = 0;
-    } else {
-      acc_ <<= n;
-      accBits_ -= n;
-      if (accBits_ < 0) {
-        accBits_ = 0;
-      }
-    }
-    Fetch();
-  }
-
- private:
-  void Fetch() {
-    while (accBits_ <= 32 && pos_ < size_) {
-      acc_ |= static_cast<uint64_t>(data_[pos_++]) << (56 - accBits_);
-      accBits_ += 8;
-    }
-  }
-
-  const uint8_t* data_;
-  size_t size_;
-  size_t pos_ = 0;
-  size_t position_ = 0;
-  uint64_t acc_ = 0;
-  int accBits_ = 0;
-};
-
-bool RlgrDecode(RlgrMode mode, const uint8_t* src, size_t size, int16_t* dst, size_t dstCount,
-                size_t* remainingBits) {
-  if (src == nullptr || size == 0 || dst == nullptr || dstCount == 0) {
-    return false;
-  }
-  MsbBitReader br(src, size);
-  int k = 1;
-  int kp = k << kLsgr;
-  int kr = 1;
-  int krp = kr << kLsgr;
-  size_t out = 0;
-
-  while (br.Remaining() > 0 && out < dstCount) {
-    if (k != 0) {
-      // Run-Length (RL) mode.
-      size_t run = 0;
-      int cnt = Lzcnt32(br.Peek());
-      size_t nbits = br.Remaining();
-      if (static_cast<size_t>(cnt) > nbits) {
-        cnt = static_cast<int>(nbits);
-      }
-      int vk = cnt;
-      while (cnt == 32 && br.Remaining() > 0) {
-        br.Shift(32);
-        cnt = Lzcnt32(br.Peek());
-        nbits = br.Remaining();
-        if (static_cast<size_t>(cnt) > nbits) {
-          cnt = static_cast<int>(nbits);
-        }
-        vk += cnt;
-      }
-      br.Shift(vk % 32);
-      if (br.Remaining() < 1) {
-        break;
-      }
-      br.Shift(1);
-      while (vk-- > 0) {
-        run += static_cast<size_t>(1) << k;
-        kp += kUpGr;
-        if (kp > kKpMax) {
-          kp = kKpMax;
-        }
-        k = kp >> kLsgr;
-      }
-      if (br.Remaining() < static_cast<size_t>(k)) {
-        break;
-      }
-      const uint32_t maskK = (k > 0) ? ((1u << k) - 1u) : 0u;
-      run += (k > 0) ? ((br.Peek() >> (32 - k)) & maskK) : 0u;
-      br.Shift(k);
-      if (br.Remaining() < 1) {
-        break;
-      }
-      const uint32_t sign = (br.Peek() & 0x80000000u) ? 1u : 0u;
-      br.Shift(1);
-
-      cnt = Lzcnt32(~br.Peek());
-      nbits = br.Remaining();
-      if (static_cast<size_t>(cnt) > nbits) {
-        cnt = static_cast<int>(nbits);
-      }
-      vk = cnt;
-      while (cnt == 32 && br.Remaining() > 0) {
-        br.Shift(32);
-        cnt = Lzcnt32(~br.Peek());
-        nbits = br.Remaining();
-        if (static_cast<size_t>(cnt) > nbits) {
-          cnt = static_cast<int>(nbits);
-        }
-        vk += cnt;
-      }
-      br.Shift(vk % 32);
-      if (br.Remaining() < 1) {
-        break;
-      }
-      br.Shift(1);
-      if (br.Remaining() < static_cast<size_t>(kr)) {
-        break;
-      }
-      const uint32_t maskR = (kr > 0) ? ((1u << kr) - 1u) : 0u;
-      uint16_t code = (kr > 0) ? static_cast<uint16_t>((br.Peek() >> (32 - kr)) & maskR) : 0;
-      br.Shift(kr);
-      code = static_cast<uint16_t>(code | static_cast<uint16_t>(vk << kr));
-
-      if (vk == 0) {
-        krp -= 2;
-        if (krp < 0) {
-          krp = 0;
-        }
-        kr = krp >> kLsgr;
-      } else if (vk != 1) {
-        krp += vk;
-        if (krp > kKpMax) {
-          krp = kKpMax;
-        }
-        kr = krp >> kLsgr;
-      }
-      kp -= kDnGr;
-      if (kp < 0) {
-        kp = 0;
-      }
-      k = kp >> kLsgr;
-
-      const int16_t mag =
-          sign ? static_cast<int16_t>(-static_cast<int32_t>(code + 1))
-               : static_cast<int16_t>(code + 1);
-      size_t sz = run;
-      if (out + sz > dstCount) {
-        sz = dstCount - out;
-      }
-      for (size_t i = 0; i < sz; ++i) {
-        dst[out++] = 0;
-      }
-      if (out < dstCount) {
-        dst[out++] = mag;
-      }
-    } else {
-      // Golomb-Rice (GR) mode.
-      int cnt = Lzcnt32(~br.Peek());
-      size_t nbits = br.Remaining();
-      if (static_cast<size_t>(cnt) > nbits) {
-        cnt = static_cast<int>(nbits);
-      }
-      int vk = cnt;
-      while (cnt == 32 && br.Remaining() > 0) {
-        br.Shift(32);
-        cnt = Lzcnt32(~br.Peek());
-        nbits = br.Remaining();
-        if (static_cast<size_t>(cnt) > nbits) {
-          cnt = static_cast<int>(nbits);
-        }
-        vk += cnt;
-      }
-      br.Shift(vk % 32);
-      if (br.Remaining() < 1) {
-        break;
-      }
-      br.Shift(1);
-      if (br.Remaining() < static_cast<size_t>(kr)) {
-        break;
-      }
-      const uint32_t maskR = (kr > 0) ? ((1u << kr) - 1u) : 0u;
-      uint16_t code = (kr > 0) ? static_cast<uint16_t>((br.Peek() >> (32 - kr)) & maskR) : 0;
-      br.Shift(kr);
-      code = static_cast<uint16_t>(code | static_cast<uint16_t>(vk << kr));
-
-      if (vk == 0) {
-        krp -= 2;
-        if (krp < 0) {
-          krp = 0;
-        }
-        kr = krp >> kLsgr;
-      } else if (vk != 1) {
-        krp += vk;
-        if (krp > kKpMax) {
-          krp = kKpMax;
-        }
-        kr = krp >> kLsgr;
-      }
-
-      if (mode == RlgrMode::kRlgr1) {
-        int16_t mag = 0;
-        if (code == 0) {
-          kp += kUqGr;
-          if (kp > kKpMax) {
-            kp = kKpMax;
-          }
-          k = kp >> kLsgr;
-          mag = 0;
-        } else {
-          kp -= kDqGr;
-          if (kp < 0) {
-            kp = 0;
-          }
-          k = kp >> kLsgr;
-          mag = (code & 1) ? static_cast<int16_t>(-static_cast<int32_t>((code + 1) >> 1))
-                           : static_cast<int16_t>(code >> 1);
-        }
-        if (out < dstCount) {
-          dst[out++] = mag;
-        }
-      } else {
-        uint32_t nIdx = 0;
-        if (code != 0) {
-          nIdx = static_cast<uint32_t>(32 - Lzcnt32(code));
-        }
-        if (br.Remaining() < nIdx) {
-          break;
-        }
-        const uint32_t maskN = (nIdx > 0) ? ((1u << nIdx) - 1u) : 0u;
-        const uint32_t val1 = (nIdx > 0) ? ((br.Peek() >> (32 - nIdx)) & maskN) : 0u;
-        br.Shift(static_cast<int>(nIdx));
-        const uint32_t val2 = static_cast<uint32_t>(code) - val1;
-        if (val1 != 0 && val2 != 0) {
-          kp -= 2 * kDqGr;
-          if (kp < 0) {
-            kp = 0;
-          }
-          k = kp >> kLsgr;
-        } else if (val1 == 0 && val2 == 0) {
-          kp += 2 * kUqGr;
-          if (kp > kKpMax) {
-            kp = kKpMax;
-          }
-          k = kp >> kLsgr;
-        }
-        const int16_t mag1 = (val1 & 1)
-                                 ? static_cast<int16_t>(-static_cast<int32_t>((val1 + 1) >> 1))
-                                 : static_cast<int16_t>(val1 >> 1);
-        if (out < dstCount) {
-          dst[out++] = mag1;
-        }
-        const int16_t mag2 = (val2 & 1)
-                                 ? static_cast<int16_t>(-static_cast<int32_t>((val2 + 1) >> 1))
-                                 : static_cast<int16_t>(val2 >> 1);
-        if (out < dstCount) {
-          dst[out++] = mag2;
-        }
-      }
-    }
-  }
-
-  while (out < dstCount) {
-    dst[out++] = 0;
-  }
-  if (remainingBits != nullptr) {
-    *remainingBits = br.Remaining();
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// RemoteFX tile pixel decode (ported from libfreerdp/codec/rfx_*.c,
-// primitives/prim_colors.c; Apache-2.0). CPU reference for the GPU path.
-// ---------------------------------------------------------------------------
-
-namespace {
-
-inline int Clip255(int v) {
-  return v < 0 ? 0 : (v > 255 ? 255 : v);
-}
-
-// rfx_differential_decode: cumulative sum over the last `size` coefficients.
-void DifferentialDecode(int16_t* buffer, size_t size) {
-  for (size_t i = 0; i + 1 < size; ++i) {
-    buffer[i + 1] = static_cast<int16_t>(buffer[i + 1] + buffer[i]);
-  }
-}
-
-void DequantSubband(int16_t* buffer, size_t offset, size_t length, uint8_t shift) {
-  if (shift == 0) {
-    return;
-  }
-  for (size_t i = 0; i < length; ++i) {
-    buffer[offset + i] = static_cast<int16_t>(buffer[offset + i] << shift);
-  }
-}
-
-// rfx_dwt_2d_decode_block: one level of the reversible 5/3 inverse DWT.
-void DwtDecodeBlock(int16_t* buffer, int16_t* idwt, size_t subbandWidth) {
-  const size_t totalWidth = subbandWidth << 1;
-  const int16_t* ll = buffer + subbandWidth * subbandWidth * 3;
-  const int16_t* hl = buffer;
-  int16_t* lDst = idwt;
-  const int16_t* lh = buffer + subbandWidth * subbandWidth;
-  const int16_t* hh = buffer + subbandWidth * subbandWidth * 2;
-  int16_t* hDst = idwt + subbandWidth * subbandWidth * 2;
-
-  for (size_t y = 0; y < subbandWidth; ++y) {
-    lDst[0] = static_cast<int16_t>(ll[0] - ((hl[0] + hl[0] + 1) >> 1));
-    hDst[0] = static_cast<int16_t>(lh[0] - ((hh[0] + hh[0] + 1) >> 1));
-    for (size_t n = 1; n < subbandWidth; ++n) {
-      const size_t x = n << 1;
-      lDst[x] = static_cast<int16_t>(ll[n] - ((hl[n - 1] + hl[n] + 1) >> 1));
-      hDst[x] = static_cast<int16_t>(lh[n] - ((hh[n - 1] + hh[n] + 1) >> 1));
-    }
-    size_t n = 0;
-    for (; n < subbandWidth - 1; ++n) {
-      const size_t x = n << 1;
-      lDst[x + 1] = static_cast<int16_t>((hl[n] << 1) + ((lDst[x] + lDst[x + 2]) >> 1));
-      hDst[x + 1] = static_cast<int16_t>((hh[n] << 1) + ((hDst[x] + hDst[x + 2]) >> 1));
-    }
-    const size_t x = n << 1;
-    lDst[x + 1] = static_cast<int16_t>((hl[n] << 1) + lDst[x]);
-    hDst[x + 1] = static_cast<int16_t>((hh[n] << 1) + hDst[x]);
-
-    ll += subbandWidth;
-    hl += subbandWidth;
-    lDst += totalWidth;
-    lh += subbandWidth;
-    hh += subbandWidth;
-    hDst += totalWidth;
-  }
-
-  for (size_t x = 0; x < totalWidth; ++x) {
-    const int16_t* l = idwt + x;
-    const int16_t* h = idwt + x + subbandWidth * totalWidth;
-    int16_t* dst = buffer + x;
-    *dst = static_cast<int16_t>(*l - ((*h * 2 + 1) >> 1));
-    for (size_t n = 1; n < subbandWidth; ++n) {
-      l += totalWidth;
-      h += totalWidth;
-      dst[2 * totalWidth] = static_cast<int16_t>(*l - ((*(h - totalWidth) + *h + 1) >> 1));
-      dst[totalWidth] = static_cast<int16_t>((*(h - totalWidth) << 1) +
-                                             ((*dst + dst[2 * totalWidth]) >> 1));
-      dst += 2 * totalWidth;
-    }
-    dst[totalWidth] = static_cast<int16_t>((*h << 1) + ((*dst * 2) >> 1));
-  }
-}
-
-void InverseDwt2d(int16_t* buffer, int16_t* temp) {
-  DwtDecodeBlock(&buffer[3840], temp, 8);
-  DwtDecodeBlock(&buffer[3072], temp, 16);
-  DwtDecodeBlock(&buffer[0], temp, 32);
-}
-
-// YCbCr(16s) -> BGRA (matches primitives yCbCrToRGB_16s8u_P3AC4R_BGRX).
-void YCbCrToBgra(const int16_t* y, const int16_t* cb, const int16_t* cr, uint8_t* dst,
-                 int dstStride) {
-  for (int row = 0; row < 64; ++row) {
-    for (int col = 0; col < 64; ++col) {
-      const int i = row * 64 + col;
-      const int32_t yv = static_cast<int32_t>(static_cast<uint32_t>(y[i] + 4096) << 16);
-      const int32_t cbv = cb[i];
-      const int32_t crv = cr[i];
-      const int64_t crr = static_cast<int64_t>(crv) * static_cast<int64_t>(1.402525f * 65536.0f);
-      const int64_t crg = static_cast<int64_t>(crv) * static_cast<int64_t>(0.714401f * 65536.0f);
-      const int64_t cbg = static_cast<int64_t>(cbv) * static_cast<int64_t>(0.343730f * 65536.0f);
-      const int64_t cbb = static_cast<int64_t>(cbv) * static_cast<int64_t>(1.769905f * 65536.0f);
-      const int r = static_cast<int16_t>((crr + yv) >> 16) >> 5;
-      const int g = static_cast<int16_t>((yv - cbg - crg) >> 16) >> 5;
-      const int b = static_cast<int16_t>((cbb + yv) >> 16) >> 5;
-      uint8_t* p = dst + static_cast<size_t>(row) * dstStride + col * 4;
-      p[0] = static_cast<uint8_t>(Clip255(b));
-      p[1] = static_cast<uint8_t>(Clip255(g));
-      p[2] = static_cast<uint8_t>(Clip255(r));
-      p[3] = 0xFF;
-    }
-  }
-}
-
-}  // namespace
-
-// --- Reduced-band (extrapolate) inverse DWT, from progressive.c ---------------
-
-static int ProgBandL(size_t level) {
-  return static_cast<int>((64 >> level) + 1);
-}
-
-static int ProgBandH(size_t level) {
-  if (level == 1) {
-    return (64 >> 1) - 1;
-  }
-  return static_cast<int>((64 + (1 << (level - 1))) >> level);
-}
-
-static void ProgIdwtX(const int16_t* pLowBand, size_t nLowStep, const int16_t* pHighBand,
-                      size_t nHighStep, int16_t* pDstBand, size_t nDstStep, size_t nLowCount,
-                      size_t nHighCount, size_t nDstCount) {
-  for (size_t i = 0; i < nDstCount; ++i) {
-    const int16_t* pL = pLowBand;
-    const int16_t* pH = pHighBand;
-    int16_t* pX = pDstBand;
-    int16_t H0 = *pH++;
-    int16_t L0 = *pL++;
-    int16_t X0 = static_cast<int16_t>(L0 - H0);
-    int16_t X2 = static_cast<int16_t>(L0 - H0);
-    for (size_t j = 0; j < (nHighCount - 1); ++j) {
-      const int16_t H1 = *pH++;
-      L0 = *pL++;
-      X2 = static_cast<int16_t>(L0 - ((H0 + H1) / 2));
-      const int16_t X1 = static_cast<int16_t>(((X0 + X2) / 2) + (2 * H0));
-      pX[0] = X0;
-      pX[1] = X1;
-      pX += 2;
-      X0 = X2;
-      H0 = H1;
-    }
-    if (nLowCount <= (nHighCount + 1)) {
-      if (nLowCount <= nHighCount) {
-        pX[0] = X2;
-        pX[1] = static_cast<int16_t>(X2 + (2 * H0));
-      } else {
-        L0 = *pL++;
-        X0 = static_cast<int16_t>(L0 - H0);
-        pX[0] = X2;
-        pX[1] = static_cast<int16_t>(((X0 + X2) / 2) + (2 * H0));
-        pX[2] = X0;
-      }
-    } else {
-      L0 = *pL++;
-      X0 = static_cast<int16_t>(L0 - (H0 / 2));
-      pX[0] = X2;
-      pX[1] = static_cast<int16_t>(((X0 + X2) / 2) + (2 * H0));
-      pX[2] = X0;
-      L0 = *pL++;
-      pX[3] = static_cast<int16_t>((X0 + L0) / 2);
-    }
-    pLowBand += nLowStep;
-    pHighBand += nHighStep;
-    pDstBand += nDstStep;
-  }
-}
-
-static void ProgIdwtY(const int16_t* pLowBand, size_t nLowStep, const int16_t* pHighBand,
-                      size_t nHighStep, int16_t* pDstBand, size_t nDstStep, size_t nLowCount,
-                      size_t nHighCount, size_t nDstCount) {
-  for (size_t i = 0; i < nDstCount; ++i) {
-    const int16_t* pL = pLowBand;
-    const int16_t* pH = pHighBand;
-    int16_t* pX = pDstBand;
-    int16_t H0 = *pH;
-    pH += nHighStep;
-    int16_t L0 = *pL;
-    pL += nLowStep;
-    int16_t X0 = static_cast<int16_t>(L0 - H0);
-    int16_t X2 = static_cast<int16_t>(L0 - H0);
-    for (size_t j = 0; j < (nHighCount - 1); ++j) {
-      const int16_t H1 = *pH;
-      pH += nHighStep;
-      L0 = *pL;
-      pL += nLowStep;
-      X2 = static_cast<int16_t>(L0 - ((H0 + H1) / 2));
-      const int16_t X1 = static_cast<int16_t>(((X0 + X2) / 2) + (2 * H0));
-      *pX = X0;
-      pX += nDstStep;
-      *pX = X1;
-      pX += nDstStep;
-      X0 = X2;
-      H0 = H1;
-    }
-    if (nLowCount <= (nHighCount + 1)) {
-      if (nLowCount <= nHighCount) {
-        *pX = X2;
-        pX += nDstStep;
-        *pX = static_cast<int16_t>(X2 + (2 * H0));
-      } else {
-        L0 = *pL;
-        X0 = static_cast<int16_t>(L0 - H0);
-        *pX = X2;
-        pX += nDstStep;
-        *pX = static_cast<int16_t>(((X0 + X2) / 2) + (2 * H0));
-        pX += nDstStep;
-        *pX = X0;
-      }
-    } else {
-      L0 = *pL;
-      pL += nLowStep;
-      X0 = static_cast<int16_t>(L0 - (H0 / 2));
-      *pX = X2;
-      pX += nDstStep;
-      *pX = static_cast<int16_t>(((X0 + X2) / 2) + (2 * H0));
-      pX += nDstStep;
-      *pX = X0;
-      pX += nDstStep;
-      L0 = *pL;
-      *pX = static_cast<int16_t>((X0 + L0) / 2);
-    }
-    ++pLowBand;
-    ++pHighBand;
-    ++pDstBand;
-  }
-}
-
-static void ProgDwtBlock(int16_t* buffer, int16_t* temp, size_t level) {
-  const size_t nBandL = static_cast<size_t>(ProgBandL(level));
-  const size_t nBandH = static_cast<size_t>(ProgBandH(level));
-  size_t offset = 0;
-  const int16_t* HL = &buffer[offset];
-  offset += nBandH * nBandL;
-  const int16_t* LH = &buffer[offset];
-  offset += nBandL * nBandH;
-  const int16_t* HH = &buffer[offset];
-  offset += nBandH * nBandH;
-  int16_t* LL = &buffer[offset];
-  const size_t nDstStepX = nBandL + nBandH;
-  const size_t nDstStepY = nBandL + nBandH;
-  offset = 0;
-  int16_t* L = &temp[offset];
-  offset += nBandL * nDstStepX;
-  int16_t* H = &temp[offset];
-  int16_t* LLx = &buffer[0];
-
-  ProgIdwtX(LL, nBandL, HL, nBandH, L, nDstStepX, nBandL, nBandH, nBandL);
-  ProgIdwtX(LH, nBandL, HH, nBandH, H, nDstStepX, nBandL, nBandH, nBandH);
-  ProgIdwtY(L, nDstStepX, H, nDstStepX, LLx, nDstStepY, nBandL, nBandH, nBandL + nBandH);
-}
-
-static void RfxDwtExtrapolateDecode(int16_t* buffer, int16_t* temp) {
-  ProgDwtBlock(&buffer[3807], temp, 3);
-  ProgDwtBlock(&buffer[3007], temp, 2);
-  ProgDwtBlock(&buffer[0], temp, 1);
-}
-
-// ---------------------------------------------------------------------------
-// Progressive tile state helpers + kUpgrade (SRL/raw refinement).
-// Ported from libfreerdp/codec/progressive.c (Apache-2.0).
-// ---------------------------------------------------------------------------
-
-namespace {
-
-// Sub-bands in the order progressive_rfx_upgrade_component walks them.
-// LL3 is decoded last with the "non-LL" (raw-only) path.
-struct SubbandSpec {
-  uint32_t offset;
-  uint32_t length;
-};
-constexpr SubbandSpec kSubbands[10] = {
-    {0, 1023},    // HL1
-    {1023, 1023}, // LH1
-    {2046, 961},  // HH1
-    {3007, 272},  // HL2
-    {3279, 272},  // LH2
-    {3551, 256},  // HH2
-    {3807, 72},   // HL3
-    {3879, 72},   // LH3
-    {3951, 64},   // HH3
-    {4015, 81},   // LL3
-};
-
-// RfxQuant fields in kSubbands order.
-void QuantToArray(const RfxQuant& q, uint8_t out[10]) {
-  out[0] = q.HL1;
-  out[1] = q.LH1;
-  out[2] = q.HH1;
-  out[3] = q.HL2;
-  out[4] = q.LH2;
-  out[5] = q.HH2;
-  out[6] = q.HL3;
-  out[7] = q.LH3;
-  out[8] = q.HH3;
-  out[9] = q.LL3;
-}
-
-void ArrayToQuant(const uint8_t in[10], RfxQuant* q) {
-  q->HL1 = in[0];
-  q->LH1 = in[1];
-  q->HH1 = in[2];
-  q->HL2 = in[3];
-  q->LH2 = in[4];
-  q->HH2 = in[5];
-  q->HL3 = in[6];
-  q->LH3 = in[7];
-  q->HH3 = in[8];
-  q->LL3 = in[9];
-}
-
-// progressive_rfx_quant_add: component quant + progressive quant.
-RfxQuant QuantAdd(const RfxQuant& a, const RfxQuant& b) {
-  uint8_t qa[10];
-  uint8_t qb[10];
-  uint8_t sum[10];
-  QuantToArray(a, qa);
-  QuantToArray(b, qb);
-  for (int i = 0; i < 10; ++i) {
-    sum[i] = static_cast<uint8_t>(qa[i] + qb[i]);
-  }
-  RfxQuant out;
-  ArrayToQuant(sum, &out);
-  return out;
-}
-
-// progressive_rfx_quant_lsub(q, 1) with a floor at zero (used for dequant).
-RfxQuant QuantShiftMinus1(const RfxQuant& q) {
-  uint8_t qa[10];
-  uint8_t out[10];
-  QuantToArray(q, qa);
-  for (int i = 0; i < 10; ++i) {
-    const int v = static_cast<int>(qa[i]) - 1;
-    out[i] = static_cast<uint8_t>(v < 0 ? 0 : v);
-  }
-  RfxQuant res;
-  ArrayToQuant(out, &res);
-  return res;
-}
-
-// RFX_PROGRESSIVE_UPGRADE_STATE.
-struct UpgradeState {
-  MsbBitReader* srl = nullptr;
-  MsbBitReader* raw = nullptr;
-  int kp = 8;
-  int nz = 0;
-  int mode = 0; // 0 = zero-run coding next, 1 = unary coding next
-  bool nonLL = true;
-};
-
-// (UINT32)v << shift, truncated to int16 (matches FreeRDP's (INT16) cast).
-int16_t Shl16(int v, uint32_t shift) {
-  return static_cast<int16_t>(static_cast<uint32_t>(v) << shift);
-}
-
-// progressive_rfx_srl_read: one refinement value from the SRL bit stream.
-int SrlRead(UpgradeState& st, uint32_t numBits) {
-  if (st.nz) {
-    st.nz--;
-    return 0;
-  }
-  const uint32_t k = static_cast<uint32_t>(st.kp) / 8u;
-  if (!st.mode) {
-    const uint32_t bit = (st.srl->Peek() & 0x80000000u) ? 1u : 0u;
-    st.srl->Shift(1);
-    if (!bit) {
-      st.nz = 1 << k;
-      st.kp += 4;
-      if (st.kp > 80) {
-        st.kp = 80;
-      }
-      st.nz--;
-      return 0;
-    }
-    st.nz = 0;
-    st.mode = 1;
-    if (k) {
-      st.nz = static_cast<int>((st.srl->Peek() >> (32u - k)) & ((1u << k) - 1u));
-      st.srl->Shift(static_cast<int>(k));
-    }
-    if (st.nz) {
-      st.nz--;
-      return 0;
-    }
-  }
-  st.mode = 0;
-  const uint32_t sign = (st.srl->Peek() & 0x80000000u) ? 1u : 0u;
-  st.srl->Shift(1);
-  if (st.kp < 6) {
-    st.kp = 0;
-  } else {
-    st.kp -= 6;
-  }
-  if (numBits == 1) {
-    return sign ? -1 : 1;
-  }
-  uint32_t mag = 1;
-  const uint32_t maxMag = (1u << numBits) - 1u;
-  while (mag < maxMag) {
-    const uint32_t bit = (st.srl->Peek() & 0x80000000u) ? 1u : 0u;
-    st.srl->Shift(1);
-    if (bit) {
-      break;
-    }
-    mag++;
-  }
-  if (mag > 32767u) {
-    mag = 32767u;
-  }
-  return sign ? -static_cast<int>(mag) : static_cast<int>(mag);
-}
-
-// progressive_rfx_upgrade_block: accumulate one sub-band of refinement.
-void UpgradeBlock(UpgradeState& st, int16_t* buffer, int16_t* sign, uint32_t length, uint32_t shift,
-                  uint32_t numBits) {
-  if (numBits == 0) {
-    return;
-  }
-  if (!st.nonLL) {
-    for (uint32_t i = 0; i < length; ++i) {
-      const int16_t input = static_cast<int16_t>(st.raw->ReadBits(static_cast<int>(numBits)));
-      buffer[i] = static_cast<int16_t>(buffer[i] + Shl16(input, shift));
-    }
-    return;
-  }
-  for (uint32_t i = 0; i < length; ++i) {
-    int input = 0;
-    if (sign[i] > 0) {
-      input = static_cast<int16_t>(st.raw->ReadBits(static_cast<int>(numBits)));
-    } else if (sign[i] < 0) {
-      input = -static_cast<int16_t>(st.raw->ReadBits(static_cast<int>(numBits)));
-    } else {
-      input = SrlRead(st, numBits);
-      sign[i] = static_cast<int16_t>(input);
-    }
-    buffer[i] = static_cast<int16_t>(buffer[i] + Shl16(input, shift));
-  }
-}
-
-// progressive_rfx_upgrade_component: refine one component, updating
-// state->current/sign and the stored bit positions in place. Returns false when
-// the consumed bit counts do not match the declared SRL/raw byte lengths (the
-// same integrity check FreeRDP performs; a mismatch means the tile is corrupt
-// or our state diverged).
-bool UpgradeComponent(RfxTileState* state, int c, const RfxQuant& quant, const RfxQuant& prog,
-                      const uint8_t* srlData, uint16_t srlLen, const uint8_t* rawData,
-                      uint16_t rawLen) {
-  uint8_t qa[10];
-  uint8_t pa[10];
-  uint8_t oldBit[10];
-  uint8_t newBit[10];
-  QuantToArray(quant, qa);
-  QuantToArray(prog, pa);
-  QuantToArray(state->bitPos[c], oldBit);
-  for (int b = 0; b < 10; ++b) {
-    newBit[b] = static_cast<uint8_t>(qa[b] + pa[b]);
-  }
-
-  MsbBitReader srl(srlData, srlLen);
-  MsbBitReader raw(rawData, rawLen);
-  UpgradeState st;
-  st.srl = &srl;
-  st.raw = &raw;
-
-  st.nonLL = true;
-  for (int b = 0; b < 9; ++b) {
-    const uint32_t shift = (newBit[b] > 0) ? static_cast<uint32_t>(newBit[b] - 1) : 0u;
-    const uint32_t numBits = (oldBit[b] > newBit[b]) ? static_cast<uint32_t>(oldBit[b] - newBit[b]) : 0u;
-    UpgradeBlock(st, &state->current[c][kSubbands[b].offset], &state->sign[c][kSubbands[b].offset],
-                 kSubbands[b].length, shift, numBits);
-  }
-  st.nonLL = false;
-  {
-    const uint32_t shift = (newBit[9] > 0) ? static_cast<uint32_t>(newBit[9] - 1) : 0u;
-    const uint32_t numBits =
-        (oldBit[9] > newBit[9]) ? static_cast<uint32_t>(oldBit[9] - newBit[9]) : 0u;
-    UpgradeBlock(st, &state->current[c][kSubbands[9].offset], &state->sign[c][kSubbands[9].offset],
-                 kSubbands[9].length, shift, numBits);
-  }
-
-  ArrayToQuant(newBit, &state->bitPos[c]);
-
-  // progressive_rfx_upgrade_state_finish + length check.
-  int pad = (raw.Position() % 8) ? static_cast<int>(8 - (raw.Position() % 8)) : 0;
-  if (pad) {
-    raw.Shift(pad);
-  }
-  pad = (srl.Position() % 8) ? static_cast<int>(8 - (srl.Position() % 8)) : 0;
-  if (pad) {
-    srl.Shift(pad);
-  }
-  if (srl.Remaining() == 8) {
-    srl.Shift(8);
-  }
-  return ((raw.Position() + 7) / 8) == rawLen && ((srl.Position() + 7) / 8) == srlLen;
-}
-
-// Per-tile progressive quant (0xFF -> the all-zero "full" table).
-void ResolveProgQuant(const RfxTileRef& tile, RfxQuant prog[3]) {
-  if (tile.quality != 0xFF && tile.progQuants != nullptr && tile.quality < tile.numProgQuant) {
-    prog[0] = tile.progQuants[tile.quality].y;
-    prog[1] = tile.progQuants[tile.quality].cb;
-    prog[2] = tile.progQuants[tile.quality].cr;
-  }
-}
-
-}  // namespace
-
-bool DecodeTileFirst(const RfxTileRef& tile, uint8_t* dst, int dstStride, RfxTileState* state) {
-  if (tile.type != RfxTileType::kFirst || dst == nullptr || dstStride < 64 * 4) {
-    return false;
-  }
-  if (tile.quants == nullptr || tile.quantIdxY >= tile.numQuant ||
-      tile.quantIdxCb >= tile.numQuant || tile.quantIdxCr >= tile.numQuant) {
-    return false;
-  }
-  const bool extrapolate = (tile.regionFlags & 0x01u) != 0;  // RFX_DWT_REDUCE_EXTRAPOLATE
-  const bool diff = (tile.flags & 0x01u) != 0;               // RFX_TILE_DIFFERENCE
-
-  RfxQuant prog[3];
-  ResolveProgQuant(tile, prog);
-  const RfxQuant* quant[3] = {&tile.quants[tile.quantIdxY], &tile.quants[tile.quantIdxCb],
-                              &tile.quants[tile.quantIdxCr]};
-  // kFirst dequant shift: (component quant + progressive quant) - 1.
-  RfxQuant shift[3];
-  for (int c = 0; c < 3; ++c) {
-    shift[c] = QuantShiftMinus1(QuantAdd(*quant[c], prog[c]));
-  }
-
-  const uint8_t* data[3] = {tile.yData, tile.cbData, tile.crData};
-  const uint16_t len[3] = {tile.yLen, tile.cbLen, tile.crLen};
-
-  int16_t comp[3][4096];
-  int16_t temp[4096];
-  for (int c = 0; c < 3; ++c) {
-    if (data[c] == nullptr || len[c] == 0) {
-      return false;
-    }
-    if (!RlgrDecode(RlgrMode::kRlgr1, data[c], len[c], comp[c], 4096)) {
-      return false;
-    }
-    if (state != nullptr) {
-      // Raw coefficients are the "sign" reference for later kUpgrade passes.
-      std::memcpy(state->sign[c], comp[c], sizeof(comp[c]));
-    }
-    if (extrapolate) {
-      DequantSubband(comp[c], 0, 1023, shift[c].HL1);
-      DequantSubband(comp[c], 1023, 1023, shift[c].LH1);
-      DequantSubband(comp[c], 2046, 961, shift[c].HH1);
-      DequantSubband(comp[c], 3007, 272, shift[c].HL2);
-      DequantSubband(comp[c], 3279, 272, shift[c].LH2);
-      DequantSubband(comp[c], 3551, 256, shift[c].HH2);
-      DequantSubband(comp[c], 3807, 72, shift[c].HL3);
-      DequantSubband(comp[c], 3879, 72, shift[c].LH3);
-      DequantSubband(comp[c], 3951, 64, shift[c].HH3);
-      DifferentialDecode(&comp[c][4015], 81);
-      DequantSubband(comp[c], 4015, 81, shift[c].LL3);
-    } else {
-      DifferentialDecode(&comp[c][4032], 64);
-      DequantSubband(comp[c], 0, 1024, shift[c].HL1);
-      DequantSubband(comp[c], 1024, 1024, shift[c].LH1);
-      DequantSubband(comp[c], 2048, 1024, shift[c].HH1);
-      DequantSubband(comp[c], 3072, 256, shift[c].HL2);
-      DequantSubband(comp[c], 3328, 256, shift[c].LH2);
-      DequantSubband(comp[c], 3584, 256, shift[c].HH2);
-      DequantSubband(comp[c], 3840, 64, shift[c].HL3);
-      DequantSubband(comp[c], 3904, 64, shift[c].LH3);
-      DequantSubband(comp[c], 3968, 64, shift[c].HH3);
-      DequantSubband(comp[c], 4032, 64, shift[c].LL3);
-    }
-    if (state != nullptr) {
-      if (diff) {
-        // RFX_TILE_DIFFERENCE: FreeRDP's add_16s_inplace is saturating AND
-        // writes the sum back into *both* buffers, so `current` becomes the
-        // accumulated coefficients (used by later kUpgrade passes).
-        for (int i = 0; i < 4096; ++i) {
-          int32_t v = static_cast<int32_t>(comp[c][i]) + static_cast<int32_t>(state->current[c][i]);
-          if (v > 32767) {
-            v = 32767;
-          } else if (v < -32768) {
-            v = -32768;
-          }
-          comp[c][i] = static_cast<int16_t>(v);
-          state->current[c][i] = static_cast<int16_t>(v);
-        }
-      } else {
-        std::memcpy(state->current[c], comp[c], sizeof(comp[c]));
-      }
-      state->bitPos[c] = QuantAdd(*quant[c], prog[c]);
-    }
-    if (extrapolate) {
-      RfxDwtExtrapolateDecode(comp[c], temp);
-    } else {
-      InverseDwt2d(comp[c], temp);
-    }
-  }
-  if (state != nullptr) {
-    state->valid = true;
-    state->pass = 1;
-  }
-  YCbCrToBgra(comp[0], comp[1], comp[2], dst, dstStride);
-  return true;
-}
-
-bool DecodeTileUpgrade(const RfxTileRef& tile, uint8_t* dst, int dstStride, RfxTileState* state) {
-  if (tile.type != RfxTileType::kUpgrade || dst == nullptr || dstStride < 64 * 4 ||
-      state == nullptr || !state->valid) {
-    return false;
-  }
-  if (tile.quants == nullptr || tile.quantIdxY >= tile.numQuant ||
-      tile.quantIdxCb >= tile.numQuant || tile.quantIdxCr >= tile.numQuant) {
-    return false;
-  }
-  const bool extrapolate = (tile.regionFlags & 0x01u) != 0;
-
-  RfxQuant prog[3];
-  ResolveProgQuant(tile, prog);
-  const RfxQuant* quant[3] = {&tile.quants[tile.quantIdxY], &tile.quants[tile.quantIdxCb],
-                              &tile.quants[tile.quantIdxCr]};
-  const uint8_t* srl[3] = {tile.ySrlData, tile.cbSrlData, tile.crSrlData};
-  const uint16_t srlLen[3] = {tile.ySrlLen, tile.cbSrlLen, tile.crSrlLen};
-  const uint8_t* raw[3] = {tile.yRawData, tile.cbRawData, tile.crRawData};
-  const uint16_t rawLen[3] = {tile.yRawLen, tile.cbRawLen, tile.crRawLen};
-
-  int16_t comp[3][4096];
-  int16_t temp[4096];
-  for (int c = 0; c < 3; ++c) {
-    if (srl[c] == nullptr || raw[c] == nullptr) {
-      return false;
-    }
-    if (!UpgradeComponent(state, c, *quant[c], prog[c], srl[c], srlLen[c], raw[c], rawLen[c])) {
-      return false;
-    }
-    // The refined coefficients stay in `current`; DWT runs on a copy.
-    std::memcpy(comp[c], state->current[c], sizeof(comp[c]));
-    if (extrapolate) {
-      RfxDwtExtrapolateDecode(comp[c], temp);
-    } else {
-      InverseDwt2d(comp[c], temp);
-    }
-  }
-  state->pass++;
-  YCbCrToBgra(comp[0], comp[1], comp[2], dst, dstStride);
-  return true;
-}
-
 bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
                          RfxParseStats* stats) {
   if (data == nullptr || size < 6) {
@@ -1259,4 +2824,64 @@ bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback
   return ok;
 }
 
+// ---------------------------------------------------------------------------
+// ClearCodec glue: FreeRDP clear_decompress (the one codec not done in GLES)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class FreeRdpClearDecoder : public GfxClearDecoder {
+ public:
+  FreeRdpClearDecoder() : clear_(clear_context_new(0 /* compressor = FALSE */)) {}
+  ~FreeRdpClearDecoder() override {
+    if (clear_ != nullptr) {
+      clear_context_free(clear_);
+      clear_ = nullptr;
+    }
+  }
+
+  FreeRdpClearDecoder(const FreeRdpClearDecoder&) = delete;
+  FreeRdpClearDecoder& operator=(const FreeRdpClearDecoder&) = delete;
+
+  bool Decode(const uint8_t* src, size_t size, int width, int height, uint32_t dstFormat,
+              uint8_t* dst, int stride, int xDst, int yDst, int dstW, int dstH) override {
+    if (clear_ == nullptr || src == nullptr || dst == nullptr) {
+      return false;
+    }
+    const INT32 rc =
+        clear_decompress(clear_, src, static_cast<UINT32>(size), static_cast<UINT32>(width),
+                         static_cast<UINT32>(height), dst, dstFormat, static_cast<UINT32>(stride),
+                         static_cast<UINT32>(xDst), static_cast<UINT32>(yDst),
+                         static_cast<UINT32>(dstW), static_cast<UINT32>(dstH), nullptr);
+    return rc >= 0;
+  }
+
+ private:
+  CLEAR_CONTEXT* clear_ = nullptr;
+};
+
+}  // namespace
+
+std::unique_ptr<GfxClearDecoder> CreateFreeRdpClearDecoder() {
+  return std::unique_ptr<GfxClearDecoder>(new FreeRdpClearDecoder());
+}
+
+// ---------------------------------------------------------------------------
+// Shared command/present pipeline (session + replay harness)
+// ---------------------------------------------------------------------------
+
+bool GpuPresentComposed(GfxGpuDesktop* engine, Renderer* renderer) {
+  if (engine == nullptr || renderer == nullptr) {
+    return false;
+  }
+  if (!engine->Compose()) {
+    return false;  // static frame: nothing dirty, no present (FPS stays 0)
+  }
+  const bool presented = renderer->PresentTexture(engine->screenTexture(), engine->screenWidth(),
+                                                  engine->screenHeight());
+  if (presented) {
+    engine->ClearScreenDirty();
+  }
+  return presented;
+}
 }  // namespace hmrdp
