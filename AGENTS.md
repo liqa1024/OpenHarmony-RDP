@@ -279,6 +279,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     - **不显示**：服务端处理（协议不回报）、压缩比（仅 GDI 位图路径有意义，GFX/H.264 下不存在）、
       音频丢包（复用在同一传输里，客户端无逐包统计）；音频丢帧率是可感知卡顿的代理。
 20. **GPU 桌面引擎 / GFX 接管**（`hmrdp_rfx.{h,cpp}` + `hmrdp_egl.{h,cpp}`）：
+    > ⚠️ **状态（2026-09-13）**：本条的 GLES 实现**已弃用冻结**，GPU 引擎与上屏正在改为
+    > **纯 Vulkan 重写**（不留 GLES 残留，保留 gdi 回退）。开工请阅读 **`VULKAN-TODO.md`**
+    > （自包含交接文档）；本条以下内容仅作历史/算法参考（协议语义、验证回路、踩坑仍然适用）。
+    > `PERF-TODO.md` 已同步标注为历史。
     把 FreeRDP 的 CPU 图像处理搬到 GPU——CPU 只保留 ZGFX + RDPGFX PDU 解析（仍由 `rdpgfx` 完成），
     图像解码 / 表面绘制 / 合成 / 上屏全在 GLES **3.1 compute** 上，目标是去掉 CPU 解码 + BGRA 拷贝 +
     纹理上传。**单个模块**：`hmrdp_rfx.{h,cpp}` 含 progressive 容器解析、`GfxGpuDesktop`
