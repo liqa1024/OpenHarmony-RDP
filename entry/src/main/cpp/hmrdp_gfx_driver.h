@@ -1,0 +1,67 @@
+/*
+ * HmRdp - shared RDPGFX driver (PERF-TODO §4).
+ *
+ * Two things live here, so the live session and the offline replay share one
+ * implementation instead of each keeping their own copy:
+ *
+ *  1. GfxCommandSink + GfxMap*(): the RDPGFX PDU -> GPU engine command mapping.
+ *     The live GFX wrappers and the replay callbacks both feed a sink, so the
+ *     scalars/params/payload layout is written exactly once.
+ *
+ *  2. GfxReplayStream(): pumps one raw hmrdp_gfx.bin capture back through
+ *     FreeRDP's own ZGX + RDPGFX parsing (needs the patched rdpgfx client) and
+ *     invokes a per-frame callback. The caller only chooses what a frame means
+ *     (present it, compare it, ...), so the on-screen replay and any offline
+ *     pixel comparison share the whole read-decompress-parse-apply chain.
+ */
+#ifndef HMRDP_GFX_DRIVER_H
+#define HMRDP_GFX_DRIVER_H
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <string>
+
+#include <freerdp/channels/rdpgfx.h>
+#include <freerdp/client/rdpgfx.h>
+
+namespace hmrdp {
+
+// Destination for GFX commands decoded from RDPGFX PDUs. The live session
+// (lazily bringing the GPU engine up under its mutex) and the replay (engine
+// directly) each implement it.
+class GfxCommandSink {
+ public:
+  virtual ~GfxCommandSink() = default;
+  virtual void ApplyGfx(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                        const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                        uint32_t payloadLen) = 0;
+};
+
+// RDPGFX PDU -> engine command. `sink` may be null (no-op); `pdu` may be null.
+// Only the commands the GPU engine acts on are mapped (frame markers and
+// management PDUs the engine ignores are not).
+void GfxMapSurfaceCommand(GfxCommandSink* sink, const RDPGFX_SURFACE_COMMAND* command);
+void GfxMapResetGraphics(GfxCommandSink* sink, const RDPGFX_RESET_GRAPHICS_PDU* pdu);
+void GfxMapCreateSurface(GfxCommandSink* sink, const RDPGFX_CREATE_SURFACE_PDU* pdu);
+void GfxMapDeleteSurface(GfxCommandSink* sink, const RDPGFX_DELETE_SURFACE_PDU* pdu);
+void GfxMapSolidFill(GfxCommandSink* sink, const RDPGFX_SOLID_FILL_PDU* pdu);
+void GfxMapSurfaceToSurface(GfxCommandSink* sink, const RDPGFX_SURFACE_TO_SURFACE_PDU* pdu);
+void GfxMapSurfaceToCache(GfxCommandSink* sink, const RDPGFX_SURFACE_TO_CACHE_PDU* pdu);
+void GfxMapCacheToSurface(GfxCommandSink* sink, const RDPGFX_CACHE_TO_SURFACE_PDU* pdu);
+void GfxMapEvictCacheEntry(GfxCommandSink* sink, const RDPGFX_EVICT_CACHE_ENTRY_PDU* pdu);
+void GfxMapSurfaceToOutput(GfxCommandSink* sink, const RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU* pdu);
+void GfxMapSurfaceToScaledOutput(GfxCommandSink* sink,
+                                 const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu);
+
+// Replays one raw hmrdp_gfx.bin capture through FreeRDP's ZGX + RDPGFX parsing
+// into `sink`, invoking `onFrame` after every EndFrame. `stop` may be null.
+// Returns false and fills `error` (when non-null) on failure - in particular
+// when FreeRDP was built without the HmRdp GFX capture patch.
+bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
+                     const std::function<void()>& onFrame, const std::atomic<bool>* stop,
+                     std::string* error);
+
+}  // namespace hmrdp
+
+#endif  // HMRDP_GFX_DRIVER_H

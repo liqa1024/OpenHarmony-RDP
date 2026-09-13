@@ -28,6 +28,7 @@ add_library(hmrdp SHARED
     hmrdp_audio.cpp
     hmrdp_rfx.cpp
     hmrdp_gfx_capture.cpp
+    hmrdp_gfx_driver.cpp
     hmrdp_replay.cpp
 )
 

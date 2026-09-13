@@ -1,11 +1,9 @@
 /*
  * HmRdp - dev-only recorded-RDP replay (PERF-TODO §4).
  *
- * Feeds a captured hmrdp_gfx.bin command stream through the GPU desktop engine
- * and presents each EndFrame to the XComponent surface via the shared
- * GpuPresentComposed() path. This is a DEBUG facility only: it is not a
- * production decode switch (that is FreeRDP's own "hardware decode" setting) and
- * never replaces the gdi software path.
+ * Replays a captured raw GFX channel stream (hmrdp_gfx.bin) through FreeRDP's
+ * own ZGX + RDPGFX parsing into the GPU desktop engine and presents each frame
+ * to the XComponent surface. Debug facility only; never replaces the gdi path.
  */
 #ifndef HMRDP_REPLAY_H
 #define HMRDP_REPLAY_H
@@ -20,17 +18,22 @@
 namespace hmrdp {
 
 class Renderer;
+class GfxGpuDesktop;
 
 class GfxReplay {
  public:
   static GfxReplay& Instance();
 
   // Takes ownership of `nativeWindow` (from the XComponent surface id) and
-  // replays `gfxPath` onto it. Waits briefly for the first frame or failure.
+  // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it. Waits briefly for
+  // the first frame or failure.
   bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath);
   void Resize(int width, int height);
   void Stop();
   std::string Stats();
+
+  // Called by the replay GFX callbacks on every EndFrame (replay thread).
+  void OnReplayFrame();
 
  private:
   GfxReplay() = default;
@@ -55,6 +58,9 @@ class GfxReplay {
   std::atomic<uint64_t> presents_{0};
   std::atomic<uint64_t> presentFailures_{0};
   std::atomic<int64_t> startUs_{0};
+  // Replay-thread only (no locking needed).
+  GfxGpuDesktop* engine_ = nullptr;
+  int64_t nextFrameUs_ = 0;
   std::mutex errorMutex_;
   std::string lastError_;
 };

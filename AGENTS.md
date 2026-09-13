@@ -86,7 +86,7 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 ## 原生库源码构建（可选；预编译库已提交）
 
 ```
-native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、OHOS AVCodec H.264 子系统）
+native/scripts/patch-freerdp.ps1    # FreeRDP 的 OHOS 补丁（musl pthread_cancel、rdpsnd OHAudio sink、client-common SHARED、无版本号 SONAME、RDPEI 帧间隔可调、GFX 原始流采集/回放钩子、OHOS AVCodec H.264 子系统）
 native/scripts/build-openssl-wsl.sh # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 ```
@@ -130,11 +130,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 > 故**整体砍掉 H.264 支持**（`WITH_GFX_H264` 保持 OFF，`Connect` 显式 `GfxH264=false`），其余码流
 > （RemoteFX Progressive / ClearCodec 等）由服务端按内容选择。`patch-freerdp.ps1`/`build-freerdp.ps1`
 > 不再加 H.264 子系统，`libfreerdp3.so` 也不再有媒体库 `DT_NEEDED`。全局设置保留 `硬件解码` 开关，
-> 语义面向 **GPU 加速管线**（见 PERF-TODO §2）。GPU 表面模型（`hmrdp_rfx.cpp`）已实现并与 FreeRDP
-> **离线逐帧对齐**（`mism=0`），但**尚未接入会话**，当前会话仍走 FreeRDP 软解。
-> 口径（PERF-TODO §2）：所谓「CPU 参考」**不是**独立 CPU 实现，而是**与 GPU 同构、可在 CPU/Windows 上跑
-> 的 GPU 代码**——先据此与 FreeRDP 逐像素验证，再适配真实 GPU，以区分 GPU 适配问题与算法差异，
-> 验证应尽量在 Windows 完成（不经模拟器）。
+> 语义面向 **GPU 加速管线**（见 PERF-TODO §2）。GPU 表面引擎（`hmrdp_rfx.cpp`）已**接入会话并默认接管**
+> （见第 20 条）；验证走真实会话的影子对照（`kGpuShadowCompare`）与抓取的**原始 GFX 流回放**
+> （PERF-TODO §4）。
 > 改动 FreeRDP 侧后需重编并提交 `entry/libs/<abi>/*.so`；只改应用层不用重编。
 
 ## 关键实现要点（改动前必读）
@@ -285,7 +283,7 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     图像解码 / 表面绘制 / 合成 / 上屏全在 GLES **3.1 compute** 上，目标是去掉 CPU 解码 + BGRA 拷贝 +
     纹理上传。**单个模块**：`hmrdp_rfx.{h,cpp}` 含 progressive 容器解析、`GfxGpuDesktop`
     （tile 解码 + 四类表面绘制 + 合成）、ClearCodec 的 FreeRDP 胶水与会话/回放共用的 `GpuPresentComposed`，
-    直接对齐**抓取的 FreeRDP 基准表面**。
+    直接对齐**真实会话（影子对照 gdi）与抓取的原始 GFX 流回放**。
     **码流分工**：progressive / 未压缩在 GPU 解码；**ClearCodec 用 FreeRDP `clear_decompress` 的 CPU 钩子**
     （`hmrdp_rfx.cpp` 内的 ClearCodec 胶水，读回-解码-写回目标表面）；Planar / Alpha / RemoteFX 非渐进等**好实现的
     计划在 GPU 内实现**（未实现前该表面留旧像素，接管后没有 gdi 兜底）；真正难做的才走 CPU + 上传兜底。
@@ -314,8 +312,10 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     - int16 系数打包进 `uint` SSBO（`idx>>1` + 高/低 16bit）；`out`/`input` 是 GLSL 保留字；
       三元条件必须是 `bool`（`uint & mask` 写 `!= 0u`）；`glGetBufferSubData` 在 GLES 不可用，
       用 `glMapBufferRange`。
-    - 离线自测：设备开「抓取 RFX 码流（测试）」→ 抓全命令流 + 每帧基准，`gfxGpuDesktopSelfTest` 回放
-      比对；固定上屏复现用 dev 页「回放测试」（`hmrdp_replay`）。入口与进度见 PERF-TODO §4/§6。
+    - 录制/回放：设备开「抓取 RFX 码流（测试）」→ 在 GFX 通道收包处（`rdpgfx_on_data_received`，
+      ZGX 之前）落盘**原始 ZGX 字节**到单文件 `hmrdp_gfx.bin`；dev 页「回放测试」把字节喂回 FreeRDP 的
+      ZGX+PDU 解析再进引擎上屏。需要**打过补丁并重编的 FreeRDP**（`patch-freerdp.ps1` 第 7 步 +
+      `HmrdpSetGfxRawCapture`）。见 PERF-TODO §4/附录 A。
 
 ## ArkTS 规范
 
@@ -357,6 +357,6 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/cpp/hmrdp_egl.{h,cpp}` | 进程级 EGL display + share anchor 上下文（引擎与 Renderer 共用一个 share group） |
 | `entry/src/main/cpp/hmrdp_renderer.cpp` | EGL/GLES 渲染器：`DrawFrame`（CPU 帧上传，回退/gdi 路径）与 `PresentTexture`（直接采样共享纹理上屏） |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
-| `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | GPU RemoteFX/Progressive 引擎：容器解析（块/区域/tile/量化表）+ GPU（GLES 3.1 compute）tile 解码 + `GfxGpuDesktop` 多表面桌面引擎（fill/copy/cache/上传/合成/屏幕脏区）+ ClearCodec 的 FreeRDP 胶水 + 能力探测 + 离线自测 + 会话/回放共用的 `GpuPresentComposed` |
-| `entry/src/main/cpp/hmrdp_gfx_capture.{h,cpp}` | 录制读写：抓取落盘（`hmrdp_gfx.bin` + 每帧哈希/全量基准 `hmrdp_gfx_surface.bin`）、回放读取（`GfxCapture`/`GfxSurfaceBaselines`/`GfxCompareFrame`），离线自测与上屏回放共用 |
+| `entry/src/main/cpp/hmrdp_rfx.{h,cpp}` | GPU RemoteFX/Progressive 引擎：容器解析（块/区域/tile/量化表）+ GPU（GLES 3.1 compute）tile 解码 + `GfxGpuDesktop` 多表面桌面引擎（fill/copy/cache/上传/合成/屏幕脏区）+ ClearCodec 的 FreeRDP 胶水 + 能力探测 + 会话/回放共用的 `GpuPresentComposed` |
+| `entry/src/main/cpp/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制（单文件）：落盘 `hmrdp_gfx.bin`（`u32 长度` + 服务端原始 ZGX 字节）与回放读取（`GfxRawCapture`） |
 | `entry/src/main/cpp/hmrdp_replay.{h,cpp}` | dev 回放上屏：把 `hmrdp_gfx.bin` 喂给 GPU 引擎并 present 到 XComponent（固定复现） |

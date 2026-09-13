@@ -626,53 +626,6 @@ std::string GetStringArg(napi_env env, napi_value v) {
   return s;
 }
 
-// Dev/test: replays a captured Progressive stream on the GPU and compares it
-// with the captured FreeRDP reference surface. Returns a summary string.
-napi_value RfxGpuSelfTest(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  std::string rfx;
-  std::string surf;
-  if (argc >= 1) rfx = GetStringArg(env, args[0]);
-  if (argc >= 2) surf = GetStringArg(env, args[1]);
-  const hmrdp::RfxGpuSelfTestResult res = hmrdp::RunRfxGpuSelfTest(rfx, surf);
-  char buf[256];
-  snprintf(buf, sizeof(buf), "ran=%d ok=%d first=%llu up=%llu cmp=%llu mism=%llu badRec=%d",
-           res.ran ? 1 : 0, res.ok ? 1 : 0, (unsigned long long)res.firstTiles,
-           (unsigned long long)res.upgradeTiles, (unsigned long long)res.compared,
-           (unsigned long long)res.mismatch, res.badRecords);
-  std::string out = std::string(buf) + " | " + res.log;
-  HMRDP_LOGI("gpu rfx selftest: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
-}
-
-// Dev/test: replays the captured full GFX command stream through the GPU
-// desktop surface model (B2) and compares it with the captured baselines.
-napi_value GfxGpuDesktopSelfTest(napi_env env, napi_callback_info info) {
-  size_t argc2 = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc2, args, nullptr, nullptr);
-  std::string gfx;
-  std::string surf;
-  if (argc2 >= 1) gfx = GetStringArg(env, args[0]);
-  if (argc2 >= 2) surf = GetStringArg(env, args[1]);
-  const hmrdp::RfxGpuDesktopSelfTestResult res = hmrdp::RunGfxGpuDesktopSelfTest(gfx, surf);
-  char buf[256];
-  snprintf(buf, sizeof(buf),
-           "ran=%d ok=%d rec=%u cmpRec=%u badRec=%u cmp=%llu mism=%llu hashOK=%llu hashMism=%llu",
-           res.ran ? 1 : 0, res.ok ? 1 : 0, res.records, res.comparedRecords, res.badRecords,
-           (unsigned long long)res.compared, (unsigned long long)res.mismatch,
-           (unsigned long long)res.surfacesHashed, (unsigned long long)res.hashMismatch);
-  std::string out = std::string(buf) + " | " + res.log;
-  HMRDP_LOGI("gfx gpu desktop selftest: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
-}
-
 // Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
 napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
   size_t argc = 4;
@@ -795,10 +748,6 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"gpuComputeInfo", nullptr, GpuComputeInfo, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"rfxGpuSelfTest", nullptr, RfxGpuSelfTest, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"gfxGpuDesktopSelfTest", nullptr, GfxGpuDesktopSelfTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
       {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"stopGfxReplayTest", nullptr, StopGfxReplayTest, nullptr, nullptr, nullptr,

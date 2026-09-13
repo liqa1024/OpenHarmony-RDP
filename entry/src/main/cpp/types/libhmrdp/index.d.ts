@@ -90,21 +90,6 @@ export const setRfxDump: (enabled: boolean, dir: string) => boolean;
 export const gpuComputeInfo: () => string;
 
 /**
- * Dev/test helper: replay a captured Progressive stream (`rfxPath`) on the GPU
- * and compare it with the captured FreeRDP reference surface (`surfacePath`).
- * Returns a one-line summary.
- */
-export const rfxGpuSelfTest: (rfxPath: string, surfacePath: string) => string;
-
-/**
- * Dev/test helper: replay the captured full GFX command stream (`gfxPath`,
- * hmrdp_gfx.bin) through the GPU desktop surface model and compare it with the
- * captured baselines (`surfacePath`, hmrdp_gfx_surface.bin). Returns a one-line
- * summary.
- */
-export const gfxGpuDesktopSelfTest: (gfxPath: string, surfacePath: string) => string;
-
-/**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,

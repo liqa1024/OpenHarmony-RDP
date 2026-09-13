@@ -333,47 +333,6 @@ class Renderer;
 // frame reached the screen.
 bool GpuPresentComposed(GfxGpuDesktop* engine, Renderer* renderer);
 
-// --- Offline self-tests -----------------------------------------------------
-
-// Replays `rfxPath` (hmrdp_rfx.bin) against `surfacePath` (hmrdp_rfx_surface.bin)
-// entirely on the GPU and reports the pixel mismatch on the records that have a
-// captured reference surface.
-struct RfxGpuSelfTestResult {
-  bool ran = false;       // GPU path initialised and replay started
-  bool ok = false;        // all compared records matched (threshold > 2)
-  uint64_t tiles = 0;
-  uint64_t firstTiles = 0;
-  uint64_t upgradeTiles = 0;
-  uint64_t decodedOk = 0;
-  uint64_t decodedFail = 0;
-  uint64_t compared = 0;
-  uint64_t mismatch = 0;
-  double meanAbs = 0.0;
-  int comparedRecords = 0;
-  int badRecords = 0;
-  std::string log;
-};
-RfxGpuSelfTestResult RunRfxGpuSelfTest(const std::string& rfxPath, const std::string& surfacePath);
-
-// Replays the full GFX command stream (hmrdp_gfx.bin) through the GPU desktop
-// surface model and compares it with the captured baselines
-// (hmrdp_gfx_surface.bin: 'GFS1' full / 'GFH1' per-frame hash).
-struct RfxGpuDesktopSelfTestResult {
-  bool ran = false;
-  bool ok = false;
-  uint32_t records = 0;
-  uint32_t comparedRecords = 0;
-  uint32_t badRecords = 0;
-  uint64_t compared = 0;
-  uint64_t mismatch = 0;
-  uint64_t surfacesHashed = 0;
-  uint64_t hashMismatch = 0;
-  double meanAbs = 0.0;
-  std::string log;
-};
-RfxGpuDesktopSelfTestResult RunGfxGpuDesktopSelfTest(const std::string& gfxPath,
-                                                     const std::string& surfacePath);
-
 }  // namespace hmrdp
 
 #endif  // HMRDP_RFX_H

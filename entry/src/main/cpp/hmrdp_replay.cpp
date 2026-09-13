@@ -1,5 +1,11 @@
 /*
- * HmRdp - dev-only recorded-RDP replay (see hmrdp_replay.h).
+ * HmRdp - dev-only recorded-RDP replay (PERF-TODO §4).
+ *
+ * Present-on-screen consumer of the shared replay driver: the capture is read,
+ * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
+ * parsing), the resulting commands go to the GPU desktop engine, and this file
+ * only presents the composed screen on every EndFrame - through the very same
+ * GpuPresentComposed() the live session uses.
  */
 #include "hmrdp_replay.h"
 
@@ -11,6 +17,7 @@
 #include <thread>
 
 #include "hmrdp_gfx_capture.h"
+#include "hmrdp_gfx_driver.h"
 #include "hmrdp_log.h"
 #include "hmrdp_renderer.h"
 #include "hmrdp_rfx.h"  // GfxGpuDesktop + GpuPresentComposed
@@ -29,6 +36,23 @@ int64_t NowUs() {
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
+
+// Sends the replayed commands into the GPU engine; the driver supplies them.
+class ReplaySink : public GfxCommandSink {
+ public:
+  explicit ReplaySink(GfxGpuDesktop* engine) : engine_(engine) {}
+
+  void ApplyGfx(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                uint32_t payloadLen) override {
+    if (engine_ != nullptr) {
+      engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+    }
+  }
+
+ private:
+  GfxGpuDesktop* engine_ = nullptr;
+};
 
 }  // namespace
 
@@ -145,6 +169,31 @@ std::string GfxReplay::Stats() {
   return std::string(buf);
 }
 
+void GfxReplay::OnReplayFrame() {
+  if (NowUs() - startUs_.load() > kMaxRunUs) {
+    HMRDP_LOGI("gfx replay: 120s cap reached");
+    running_.store(false);
+    return;
+  }
+  const int pw = pendingW_.exchange(0);
+  const int ph = pendingH_.exchange(0);
+  if (pw > 0 && ph > 0) {
+    renderer_->ResizeSurface(pw, ph);
+  }
+  if (GpuPresentComposed(engine_, renderer_.get())) {
+    presents_.fetch_add(1);
+  } else {
+    presentFailures_.fetch_add(1);
+  }
+  frames_.fetch_add(1);
+  if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
+    HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
+  }
+  nextFrameUs_ += static_cast<int64_t>(kFrameMs) * 1000;
+  std::this_thread::sleep_until(
+      std::chrono::steady_clock::time_point(std::chrono::microseconds(nextFrameUs_)));
+}
+
 void GfxReplay::Run() {
   renderer_->Prepare();
   RunReplay(gfxPath_);
@@ -152,51 +201,31 @@ void GfxReplay::Run() {
 }
 
 void GfxReplay::RunReplay(const std::string& gfxPath) {
-  auto fail = [this](const char* why) {
-    std::lock_guard<std::mutex> lock(errorMutex_);
-    lastError_ = why;
-  };
-
   // Inject FreeRDP's ClearCodec decoder like a live session does, so the
   // replayed desktop is complete (ClearCodec bands are not self-contained).
   std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
   GfxGpuDesktop engine(clear.get());
   if (!engine.Init()) {
-    fail("engine init failed");
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = "engine init failed";
     return;
   }
-  GfxCapture capture;
-  if (!capture.Open(gfxPath)) {
-    fail("cannot open capture");
-    return;
-  }
-  auto nextFrame = std::chrono::steady_clock::now();
-  GfxCaptureRecord rec;
-  while (running_.load() && capture.Next(&rec)) {
-    engine.ApplyCommand(rec.cmdId, rec.surfaceId, rec.scalars, rec.params, rec.paramsLen,
-                        rec.payload, rec.payloadLen);
-    if (rec.cmdId == kGpuCmdEndFrame) {
-      const int pw = pendingW_.exchange(0);
-      const int ph = pendingH_.exchange(0);
-      if (pw > 0 && ph > 0) {
-        renderer_->ResizeSurface(pw, ph);
-      }
-      if (GpuPresentComposed(&engine, renderer_.get())) {
-        presents_.fetch_add(1);
-      } else {
-        presentFailures_.fetch_add(1);
-      }
-      frames_.fetch_add(1);
-      if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
-        HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
-      }
-      nextFrame += std::chrono::milliseconds(kFrameMs);
-      std::this_thread::sleep_until(nextFrame);
-    }
-    if (NowUs() - startUs_.load() > kMaxRunUs) {
-      HMRDP_LOGI("gfx replay: 120s cap reached");
-      break;
-    }
+  ReplaySink sink(&engine);
+  engine_ = &engine;
+
+  // The replayed stream must not re-trigger the capture hook on the recorder.
+  hmrdp::GfxDumpSetReplaying(true);
+  nextFrameUs_ = NowUs();
+
+  std::string error;
+  const bool ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_,
+                                  &error);
+
+  hmrdp::GfxDumpSetReplaying(false);
+  engine_ = nullptr;
+  if (!ok) {
+    std::lock_guard<std::mutex> err(errorMutex_);
+    lastError_ = error;
   }
   HMRDP_LOGI("gfx replay: finished: %{public}s", Stats().c_str());
 }
