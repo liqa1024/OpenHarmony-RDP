@@ -99,6 +99,11 @@ class GfxReplay {
   void RefCopy(uint16_t srcSurfaceId, uint16_t dstSurfaceId, const uint8_t* params, uint32_t count);
   // Diff of the engine's surface against the reference (called per compare).
   void RefCompareSurfaces();
+  // Absolute per-command check: right after a command was applied to both the
+  // engine and the reference, compare only the rect it wrote. The first failure
+  // therefore names the exact culprit command (this is what the per-frame compare
+  // cannot do - `update_tiles` re-composites earlier tiles and masks the writer).
+  bool RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
   std::string RefAbSummary() const;
 
  private:
@@ -227,6 +232,10 @@ class GfxReplay {
   std::atomic<uint64_t> refBad_{0};
   std::atomic<uint64_t> refBadPx_{0};
   bool refFirstLogged_ = false;
+  // The command class that first failed its own per-command verification.
+  std::string refBadOp_;
+  // Dev: how many cache restores found no entry (diagnostic for the harness).
+  uint32_t refCacheMisses_ = 0;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;
