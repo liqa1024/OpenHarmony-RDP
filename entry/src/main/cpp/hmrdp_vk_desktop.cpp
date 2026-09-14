@@ -97,25 +97,6 @@ inline uint16_t GpuRd16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
-// Clips [x,x+w) x [y,y+h) to [0,limitW) x [0,limitH); false when empty.
-bool ClipRect(int* x, int* y, int* w, int* h, int limitW, int limitH) {
-  if (*x < 0) {
-    *w += *x;
-    *x = 0;
-  }
-  if (*y < 0) {
-    *h += *y;
-    *y = 0;
-  }
-  if (*x + *w > limitW) {
-    *w = limitW - *x;
-  }
-  if (*y + *h > limitH) {
-    *h = limitH - *y;
-  }
-  return *w > 0 && *h > 0;
-}
-
 VkImageSubresourceLayers ColorLayers() {
   VkImageSubresourceLayers layers{};
   layers.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1546,10 +1527,12 @@ struct GfxVkDesktop::Impl {
     if (x + width > surface->meta.width || y + height > surface->meta.height) {
       return false;
     }
-    // Storage order: BGRA for the offline harness, RGBA when the swapchain
-    // forces it. Alpha is 0xFF everywhere in this engine, so the X variants
-    // would be equivalent.
-    const uint32_t format = swapRb ? kPixelFormatRgba32 : kPixelFormatBgra32;
+    // Storage order: the surface's own GFX format (wire 0x20 -> BGRX32,
+    // 0x21 -> BGRA32), exactly what gdi hands to clear_decompress; RGBA when the
+    // swapchain forces the engine storage to RGBA8. Alpha is 0xFF everywhere in
+    // this engine, but the format still has to be the one the surface was
+    // created with so the band/glyph pixel interpretation matches gdi.
+    const uint32_t format = swapRb ? kPixelFormatRgba32 : surface->meta.format;
     if (!clearDecoder->Decode(payload, payloadLen, width, height, format, surface->gpu.mapped,
                               surface->gpu.stride, x, y, surface->meta.width,
                               surface->meta.height)) {
@@ -1817,23 +1800,48 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
     return false;
   }
   impl_->Flush();
-  impl_->DestroyImage(&impl_->screen);
+  // FreeRDP's path is `gdi_ResetGraphics`: it asks the update layer to resize
+  // the primary buffer, and `gdi_resize()` is a **no-op when the size is
+  // unchanged** (the live harness' Resize() early-returns too), so the picture
+  // survives a same-size ResetGraphics. Only an actual size change recreates the
+  // primary buffer - and a fresh gdi_CreateCompatibleBitmap is memset to 0xFF
+  // ("Initialize with 0xff"). Recreating unconditionally here made the engine
+  // blank the screen on every repeated ResetGraphics of the same size, which the
+  // gdi screen did not do (observed as a full-screen diff).
+  const bool sizeChanged = (width != screenW_ || height != screenH_);
   impl_->screenDirtyValid = false;
-  screenW_ = 0;
-  screenH_ = 0;
-  if (width <= 0 || height <= 0) {
-    return true;
+  if (sizeChanged) {
+    impl_->DestroyImage(&impl_->screen);
+    screenW_ = 0;
+    screenH_ = 0;
+    if (width > 0 && height > 0) {
+      if (!impl_->PrepareImage(&impl_->screen, width, height)) {
+        return false;
+      }
+      impl_->FillImage(&impl_->screen, 0xFFFFFFFFu);
+      screenW_ = impl_->screen.width;
+      screenH_ = impl_->screen.height;
+    }
   }
-  if (!impl_->PrepareImage(&impl_->screen, width, height)) {
-    return false;
+  // The rest of gdi_ResetGraphics is per-surface and applies on every call:
+  // wipe every GFX surface to 0xFF and drop its invalid region. The Progressive
+  // state is deliberately NOT touched: this FreeRDP's
+  // `progressive_context_reset()` is a no-op (its own comment: the codec caches
+  // must not be reset by a ResetGraphics PDU), so the per-(tile,component)
+  // `current`/`sign`/bit positions survive - exactly like gdi. ClearCodec *is*
+  // reset by gdi (freerdp_client_codecs_reset -> clear_context_reset, which
+  // restarts its band sequence number), so mirror that too.
+  for (auto& kv : impl_->surfaces) {
+    Impl::Surface& surface = kv.second;
+    if (surface.gpu.valid()) {
+      std::memset(surface.gpu.mapped, 0xFF, surface.gpu.capacity);
+    }
+    surface.meta.dirtyValid = false;
   }
-  // The screen starts fully opaque white: FreeRDP's gdi primary buffer is
-  // created by gdi_CreateCompatibleBitmap, which memsets its bitmap to 0xFF
-  // ("Initialize with 0xff"). Matching it is required for the gdi comparison -
-  // any pixel neither side paints would otherwise differ by construction.
-  impl_->FillImage(&impl_->screen, 0xFFFFFFFFu);
-  screenW_ = impl_->screen.width;
-  screenH_ = impl_->screen.height;
+  if (impl_->clearDecoder != nullptr) {
+    impl_->clearDecoder->Reset();
+  }
+  impl_->HostWrote();
   return true;
 }
 
@@ -2131,19 +2139,18 @@ bool GfxVkDesktop::CacheToSurface(uint16_t surfaceId, uint16_t slot, int dstX, i
     return false;
   }
   const Impl::CacheEntry& entry = it->second;
-  int dx = dstX;
-  int dy = dstY;
-  int w = entry.width;
-  int h = entry.height;
-  if (!ClipRect(&dx, &dy, &w, &h, surface->meta.width, surface->meta.height)) {
-    return true;  // fully outside the surface
+  // gdi_CacheToSurface validates `{destPt, destPt + entrySize}` against the
+  // surface and, when it does not fit, fails the whole command *without*
+  // clipping or copying (the caller then skips the remaining destPts). Clipping
+  // here instead would paint part of a bitmap where gdi paints nothing.
+  if (dstX < 0 || dstY < 0 || dstX + entry.width > surface->meta.width ||
+      dstY + entry.height > surface->meta.height) {
+    return false;
   }
-  const int srcX = dx - dstX;
-  const int srcY = dy - dstY;
-  CpuCopyRows(entry.gpu.mapped, entry.gpu.stride, srcX, srcY, surface->gpu.mapped,
-              surface->gpu.stride, dx, dy, w, h);
+  CpuCopyRows(entry.gpu.mapped, entry.gpu.stride, 0, 0, surface->gpu.mapped, surface->gpu.stride,
+              dstX, dstY, entry.width, entry.height);
   impl_->HostWrote();
-  Impl::MarkSurfaceDirty(*surface, dx, dy, dx + w, dy + h);
+  Impl::MarkSurfaceDirty(*surface, dstX, dstY, dstX + entry.width, dstY + entry.height);
   return true;
 }
 
@@ -2174,18 +2181,21 @@ bool GfxVkDesktop::SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, i
   if (!impl_->SyncForCpuAccess()) {
     return false;
   }
-  int dx = dstX;
-  int dy = dstY;
-  int w = width;
-  int h = height;
-  if (!ClipRect(&dx, &dy, &w, &h, dst->meta.width, dst->meta.height)) {
-    return true;
-  }
-  const int sx = srcX + (dx - dstX);
-  const int sy = srcY + (dy - dstY);
-  if (sx < 0 || sy < 0 || sx + w > src->meta.width || sy + h > src->meta.height) {
+  // gdi_SurfaceToSurface validates the source rect and every destination rect
+  // against their surfaces and fails the whole command on the first mismatch -
+  // it never clips. Clipping here painted pixels gdi leaves untouched.
+  if (srcX < 0 || srcY < 0 || srcX + width > src->meta.width || srcY + height > src->meta.height) {
     return false;
   }
+  if (dstX < 0 || dstY < 0 || dstX + width > dst->meta.width || dstY + height > dst->meta.height) {
+    return false;
+  }
+  const int dx = dstX;
+  const int dy = dstY;
+  const int w = width;
+  const int h = height;
+  const int sx = srcX;
+  const int sy = srcY;
   // Stage through a scratch vector so overlapping same-surface copies are safe
   // (a plain row copy could read rows already overwritten by the destination).
   impl_->copyScratch.resize(static_cast<size_t>(w) * h * 4);
@@ -2232,8 +2242,11 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       for (uint32_t i = 0; i < n; ++i) {
         const int px = GpuRd16(params + 8 + static_cast<size_t>(i) * 4);
         const int py = GpuRd16(params + 8 + static_cast<size_t>(i) * 4 + 2);
-        SurfaceToSurface(static_cast<uint16_t>(scalars[0]), sx, sy, w, h,
-                         static_cast<uint16_t>(surfaceId), px, py);
+        // gdi fails the whole command on the first invalid destination rect.
+        if (!SurfaceToSurface(static_cast<uint16_t>(scalars[0]), sx, sy, w, h,
+                              static_cast<uint16_t>(surfaceId), px, py)) {
+          break;
+        }
       }
       break;
     }
@@ -2259,7 +2272,11 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       for (uint32_t i = 0; i < n; ++i) {
         const int px = GpuRd16(params + static_cast<size_t>(i) * 4);
         const int py = GpuRd16(params + static_cast<size_t>(i) * 4 + 2);
-        CacheToSurface(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), px, py);
+        // gdi fails the whole command on the first invalid destination rect.
+        if (!CacheToSurface(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), px,
+                            py)) {
+          break;
+        }
       }
       break;
     }

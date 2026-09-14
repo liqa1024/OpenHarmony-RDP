@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace hmrdp {
 
@@ -75,6 +76,29 @@ class GfxReplay {
   // the per-class figures so "prog"/"fill" report their own cost.
   void RecordFlush(uint64_t micros);
   void RecordPresent(uint64_t micros);
+
+  // --- Dev: Progressive per-message A/B (VULKAN-TODO §8) -------------------
+  // The compare routes additionally run every Progressive payload through
+  // FreeRDP's own progressive_decompress into a shadow surface and compare the
+  // tiles it writes against the engine's surface. FreeRDP's decoder output
+  // depends only on the progressive stream (its per-tile `current`/`sign`/
+  // bit-state), never on the surface content, so a mismatch is unambiguous proof
+  // of an engine-side decode divergence - and it names the message and tile.
+  // No-ops on the other routes.
+  void ProgAbCreateSurface(uint16_t surfaceId, int width, int height);
+  void ProgAbDeleteSurface(uint16_t surfaceId);
+  void ProgAbMessage(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top);
+  std::string ProgAbSummary() const;
+
+  // ClearCodec half of the A/B: each band is decoded a second time by a stock
+  // FreeRDP CLEAR_CONTEXT *on the engine's own surface content* (the band rect is
+  // copied over first), so the only possible difference is the ClearCodec decoder
+  // itself (context state / arguments) - not the input pixels.
+  void ClearAbBand(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top,
+                   int width, int height);
+  // Mirrors gdi's freerdp_client_codecs_reset() -> clear_context_reset().
+  void ClearAbResetGraphics();
+  std::string ClearAbSummary() const;
 
  private:
   GfxReplay() = default;
@@ -174,6 +198,35 @@ class GfxReplay {
   std::atomic<uint64_t> cmpSmallDeltaPx_{0};
   std::atomic<int> cmpFirstX_{-1};
   std::atomic<int> cmpFirstY_{-1};
+  // Dev diagnosis: the one-shot per-pixel dump has already been written.
+  bool cmpDumpDone_ = false;
+
+  // Dev: Progressive per-message A/B state (replay thread only). `progAb` is a
+  // PROGRESSIVE_CONTEXT* kept as void* so this header stays FreeRDP-free.
+  void* progAb_ = nullptr;
+  std::vector<uint8_t> progAbSurface_;
+  uint16_t progAbSurfaceId_ = 0xFFFFu;
+  int progAbW_ = 0;
+  int progAbH_ = 0;
+  int progAbStride_ = 0;
+  // Atomic: StatsLines() (UI thread) reports the summary while the replay runs.
+  std::atomic<uint64_t> progAbMessages_{0};
+  std::atomic<uint64_t> progAbBadMessages_{0};
+  std::atomic<uint64_t> progAbBadTiles_{0};
+  std::atomic<uint64_t> progAbBadPx_{0};
+  bool progAbFirstLogged_ = false;
+
+  // Dev: ClearCodec A/B state (replay thread only; `clearAb` is a CLEAR_CONTEXT*).
+  void* clearAb_ = nullptr;
+  std::vector<uint8_t> clearAbSurface_;
+  uint16_t clearAbSurfaceId_ = 0xFFFFu;
+  int clearAbW_ = 0;
+  int clearAbH_ = 0;
+  int clearAbStride_ = 0;
+  std::atomic<uint64_t> clearAbBands_{0};
+  std::atomic<uint64_t> clearAbBadBands_{0};
+  std::atomic<uint64_t> clearAbBadPx_{0};
+  bool clearAbFirstLogged_ = false;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;

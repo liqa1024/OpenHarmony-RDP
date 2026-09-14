@@ -155,6 +155,11 @@ class GfxClearDecoder {
   // failure.
   virtual bool Decode(const uint8_t* src, size_t size, int width, int height, uint32_t dstFormat,
                       uint8_t* dst, int stride, int xDst, int yDst, int dstW, int dstH) = 0;
+  // ResetGraphics parity: FreeRDP's gdi_ResetGraphics calls
+  // freerdp_client_codecs_reset(), which for ClearCodec runs
+  // clear_context_reset() - the band sequence number restarts (the glyph / VBar
+  // caches deliberately survive).
+  virtual void Reset() = 0;
 };
 
 // Creates a ClearCodec decoder backed by FreeRDP's clear_decompress.

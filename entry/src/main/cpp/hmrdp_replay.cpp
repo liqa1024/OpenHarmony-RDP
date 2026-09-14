@@ -13,9 +13,15 @@
 
 #include <native_window/external_window.h>
 
+#include <freerdp/codec/clear.h>
+#include <freerdp/codec/color.h>
+#include <freerdp/codec/progressive.h>
+#include <freerdp/codec/region.h>
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -56,6 +62,11 @@ class ReplayDesktop {
   virtual bool Present() = 0;
   virtual bool screenDirty() const = 0;
   virtual bool ReadScreen(std::vector<uint8_t>* out) = 0;
+  // Full surface (top-down, `stride` bytes) as BGRA; dev diagnostics only.
+  virtual bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) = 0;
+  // Geometry of a GFX surface as the engine stores it (16B-aligned width/height,
+  // stride in bytes); dev diagnostics only.
+  virtual bool GetSurfaceInfo(uint16_t surfaceId, int* width, int* height, int* stride) const = 0;
   virtual int screenWidth() const = 0;
   virtual int screenHeight() const = 0;
   // One-line engine summary for the dev panel.
@@ -71,6 +82,11 @@ constexpr int kStartWaitUs = 3000000;
 // Compare route: sample a full-screen readback every N frames (same idea as the
 // live shadow check - reading the engine screen back is expensive).
 constexpr uint64_t kCompareEvery = 30;
+// Dev: per-message codec A/B (VULKAN-TODO §8). Off by default: it reads the
+// engine's whole surface once per Progressive message / ClearCodec band, which
+// costs ~26 MB per command and drags the replay well past real time. Flip to
+// true when a decoder divergence has to be pinned to a message.
+constexpr bool kCodecAbEnabled = false;
 
 // ClearCodec batch granularity for the GLES route (union-rectangle pixel cap).
 // Configurable so the sync-count vs mapped-bytes trade-off can be measured on
@@ -81,6 +97,13 @@ int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
+}
+
+// Little-endian u32 out of a command's params blob (same layout the engines and
+// hmrdp_gfx_driver use for surface commands).
+uint32_t RdU32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 // Stable route name for the stats panel / hilog.
@@ -135,6 +158,19 @@ class GlesReplayDesktop : public ReplayDesktop {
   bool Present() override { return GpuPresentComposed(engine_.get(), renderer_.get()); }
   bool screenDirty() const override { return engine_->screenDirty(); }
   bool ReadScreen(std::vector<uint8_t>* out) override { return engine_->ReadScreen(out); }
+  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) override {
+    return engine_->ReadSurface(surfaceId, out);
+  }
+  bool GetSurfaceInfo(uint16_t surfaceId, int* width, int* height, int* stride) const override {
+    const GpuSurface* s = engine_->FindSurface(surfaceId);
+    if (s == nullptr) {
+      return false;
+    }
+    *width = s->width;
+    *height = s->height;
+    *stride = s->stride;
+    return true;
+  }
   int screenWidth() const override { return engine_->screenWidth(); }
   int screenHeight() const override { return engine_->screenHeight(); }
   std::string Summary() const override { return engine_->TrafficStats(); }
@@ -188,6 +224,19 @@ class VulkanReplayDesktop : public ReplayDesktop {
   bool Present() override { return GpuVkPresentComposed(engine_.get(), renderer_.get()); }
   bool screenDirty() const override { return engine_->screenDirty(); }
   bool ReadScreen(std::vector<uint8_t>* out) override { return engine_->ReadScreen(out); }
+  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) override {
+    return engine_->ReadSurface(surfaceId, out);
+  }
+  bool GetSurfaceInfo(uint16_t surfaceId, int* width, int* height, int* stride) const override {
+    const GpuSurface* s = engine_->FindSurface(surfaceId);
+    if (s == nullptr) {
+      return false;
+    }
+    *width = s->width;
+    *height = s->height;
+    *stride = s->stride;
+    return true;
+  }
   int screenWidth() const override { return engine_->screenWidth(); }
   int screenHeight() const override { return engine_->screenHeight(); }
   std::string Summary() const override { return engine_->Stats(); }
@@ -224,6 +273,28 @@ class ReplaySink : public GfxCommandSink {
                           static_cast<uint64_t>(total > flushUs ? total - flushUs : 0));
       if (flushUs > 0) {
         owner_->RecordFlush(static_cast<uint64_t>(flushUs));
+      }
+      // Dev: per-message Progressive A/B against FreeRDP's own decoder. Runs
+      // after the engine applied the command, so the engine surface is current.
+      if (cmdId == kGpuCmdCreateSurface && scalars != nullptr) {
+        owner_->ProgAbCreateSurface(static_cast<uint16_t>(surfaceId),
+                                    static_cast<int>(scalars[0]), static_cast<int>(scalars[1]));
+      } else if (cmdId == kGpuCmdDeleteSurface) {
+        owner_->ProgAbDeleteSurface(static_cast<uint16_t>(surfaceId));
+      } else if (cmdId == kGpuCmdWireToSurface && codecId == kGpuCodecCaprogressive &&
+                 payload != nullptr && params != nullptr && paramsLen >= 32) {
+        owner_->ProgAbMessage(static_cast<uint16_t>(surfaceId), payload, payloadLen,
+                              static_cast<int>(RdU32(params + 8)),
+                              static_cast<int>(RdU32(params + 12)));
+      } else if (cmdId == kGpuCmdResetGraphics) {
+        owner_->ClearAbResetGraphics();
+      } else if (cmdId == kGpuCmdWireToSurface && codecId == kGpuCodecClearCodec &&
+                 payload != nullptr && params != nullptr && paramsLen >= 32) {
+        owner_->ClearAbBand(static_cast<uint16_t>(surfaceId), payload, payloadLen,
+                            static_cast<int>(RdU32(params + 8)),
+                            static_cast<int>(RdU32(params + 12)),
+                            static_cast<int>(RdU32(params + 24)),
+                            static_cast<int>(RdU32(params + 28)));
       }
     }
   }
@@ -300,6 +371,26 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     cmpSmallDeltaPx_.store(0);
     cmpFirstX_.store(-1);
     cmpFirstY_.store(-1);
+    cmpDumpDone_ = false;
+    progAbMessages_ = 0;
+    progAbBadMessages_ = 0;
+    progAbBadTiles_ = 0;
+    progAbBadPx_ = 0;
+    progAbFirstLogged_ = false;
+    progAbSurface_.clear();
+    progAbSurfaceId_ = 0xFFFFu;
+    progAbW_ = 0;
+    progAbH_ = 0;
+    progAbStride_ = 0;
+    clearAbBands_.store(0);
+    clearAbBadBands_.store(0);
+    clearAbBadPx_.store(0);
+    clearAbFirstLogged_ = false;
+    clearAbSurface_.clear();
+    clearAbSurfaceId_ = 0xFFFFu;
+    clearAbW_ = 0;
+    clearAbH_ = 0;
+    clearAbStride_ = 0;
     clearRunSum_.store(0);
     clearRunCount_.store(0);
     clearRunMax_.store(0);
@@ -469,6 +560,16 @@ std::string GfxReplay::StatsLines() {
                   cmpBBoxY0_.load(), cmpBBoxX1_.load(), cmpBBoxY1_.load(), cmpMaxDelta_.load(),
                   static_cast<unsigned long long>(cmpSmallDeltaPx_.load()));
     out += cmp;
+  }
+  const std::string ab = ProgAbSummary();
+  if (!ab.empty()) {
+    out += "\n";
+    out += ab;
+  }
+  const std::string cab = ClearAbSummary();
+  if (!cab.empty()) {
+    out += "\n";
+    out += cab;
   }
   if (!traffic.empty()) {
     out += "\n";
@@ -681,6 +782,15 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
       return;
     }
     cpuDesktop_ = &cpu;
+    // Dev: reference Progressive decoder for the per-message A/B.
+    progAb_ = progressive_context_new(FALSE);
+    if (progAb_ == nullptr) {
+      HMRDP_LOGW("gfx replay: progAB reference context unavailable");
+    }
+    clearAb_ = clear_context_new(FALSE);
+    if (clearAb_ == nullptr) {
+      HMRDP_LOGW("gfx replay: clearAB reference context unavailable");
+    }
   }
   ReplaySink sink(desktop_.get(), this);
 
@@ -708,6 +818,23 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
   }
   hmrdp::GfxDumpSetReplaying(false);
   cpuDesktop_ = nullptr;
+  if (progAb_ != nullptr) {
+    // Dev: per-message Progressive A/B result (empty when no message diverged).
+    const std::string ab = ProgAbSummary();
+    if (!ab.empty()) {
+      HMRDP_LOGI("gfx replay: %{public}s", ab.c_str());
+    }
+    progressive_context_free(static_cast<PROGRESSIVE_CONTEXT*>(progAb_));
+    progAb_ = nullptr;
+  }
+  if (clearAb_ != nullptr) {
+    const std::string ab = ClearAbSummary();
+    if (!ab.empty()) {
+      HMRDP_LOGI("gfx replay: %{public}s", ab.c_str());
+    }
+    clear_context_free(static_cast<CLEAR_CONTEXT*>(clearAb_));
+    clearAb_ = nullptr;
+  }
   const int64_t releaseStart = NowUs();
   desktop_.reset();
   HMRDP_LOGI("gfx replay: engine teardown %{public}llu ms",
@@ -753,6 +880,288 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
 }
 
+// ---------------------------------------------------------------------------
+// Dev: Progressive per-message A/B (VULKAN-TODO §8)
+//
+// The reference decoder is a stock FreeRDP PROGRESSIVE_CONTEXT fed the very same
+// payloads. Its per-tile output depends only on the progressive stream (the
+// per-(tile,component) `current`/`sign`/bit-position state), never on the
+// surface pixels, so any per-tile mismatch is an engine-side decode divergence -
+// and the log names the message, the tile and the first differing pixel.
+//
+// `-O0`-friendly and replay-thread only: no locking, no cross-thread access.
+// ---------------------------------------------------------------------------
+
+std::string GfxReplay::ProgAbSummary() const {
+  if (progAbMessages_.load() == 0) {
+    return std::string();
+  }
+  char buf[192];
+  std::snprintf(buf, sizeof(buf),
+                "progAB msgs=%llu badMsgs=%llu badTiles=%llu badPx=%llu",
+                static_cast<unsigned long long>(progAbMessages_.load()),
+                static_cast<unsigned long long>(progAbBadMessages_.load()),
+                static_cast<unsigned long long>(progAbBadTiles_.load()),
+                static_cast<unsigned long long>(progAbBadPx_.load()));
+  return std::string(buf);
+}
+
+void GfxReplay::ProgAbCreateSurface(uint16_t surfaceId, int width, int height) {
+  if (progAb_ == nullptr || width <= 0 || height <= 0) {
+    return;
+  }
+  // gdi: gdi_CreateSurface -> progressive_create_surface_context with the
+  // surface's (16B-aligned) size.
+  PROGRESSIVE_CONTEXT* ctx = static_cast<PROGRESSIVE_CONTEXT*>(progAb_);
+  progressive_delete_surface_context(ctx, surfaceId);
+  const int w = (width + 15) & ~15;
+  const int h = (height + 15) & ~15;
+  const INT32 rc = progressive_create_surface_context(ctx, surfaceId, static_cast<UINT32>(w),
+                                                      static_cast<UINT32>(h));
+  if (rc < 0) {
+    HMRDP_LOGW("gfx replay: progAB create surface %{public}u failed rc=%{public}d", surfaceId,
+               static_cast<int>(rc));
+  }
+  if (surfaceId == progAbSurfaceId_) {
+    progAbSurface_.clear();
+    progAbW_ = 0;
+    progAbH_ = 0;
+    progAbStride_ = 0;
+  }
+}
+
+void GfxReplay::ProgAbDeleteSurface(uint16_t surfaceId) {
+  if (progAb_ == nullptr) {
+    return;
+  }
+  // gdi: gdi_DeleteSurface -> progressive_delete_surface_context.
+  progressive_delete_surface_context(static_cast<PROGRESSIVE_CONTEXT*>(progAb_), surfaceId);
+  if (surfaceId == progAbSurfaceId_) {
+    progAbSurface_.clear();
+    progAbW_ = 0;
+    progAbH_ = 0;
+    progAbStride_ = 0;
+  }
+}
+
+void GfxReplay::ProgAbMessage(uint16_t surfaceId, const uint8_t* payload, size_t size, int left,
+                              int top) {
+  if (!kCodecAbEnabled || progAb_ == nullptr || desktop_ == nullptr || payload == nullptr ||
+      size == 0) {
+    return;
+  }
+  int w = 0;
+  int h = 0;
+  int stride = 0;
+  if (!desktop_->GetSurfaceInfo(surfaceId, &w, &h, &stride) || w <= 0 || h <= 0 || stride <= 0) {
+    return;
+  }
+  if (surfaceId != progAbSurfaceId_ || progAbW_ != w || progAbH_ != h || progAbStride_ != stride) {
+    progAbSurfaceId_ = surfaceId;
+    progAbW_ = w;
+    progAbH_ = h;
+    progAbStride_ = stride;
+    progAbSurface_.assign(static_cast<size_t>(stride) * static_cast<size_t>(h), 0xFF);
+  }
+
+  PROGRESSIVE_CONTEXT* ctx = static_cast<PROGRESSIVE_CONTEXT*>(progAb_);
+  REGION16 invalid;
+  region16_init(&invalid);  // zeroes the struct
+  // gdi passes the *frame* id, not the context id; it only groups tiles for the
+  // output update, so the frame counter reproduces the reference behaviour.
+  const INT32 rc = progressive_decompress(
+      ctx, payload, static_cast<UINT32>(size), progAbSurface_.data(), PIXEL_FORMAT_BGRA32,
+      static_cast<UINT32>(progAbStride_), static_cast<UINT32>(left), static_cast<UINT32>(top),
+      &invalid, surfaceId, static_cast<UINT32>(frames_.load()));
+  region16_uninit(&invalid);
+  progAbMessages_++;
+  if (rc < 0) {
+    HMRDP_LOGW("gfx replay: progAB reference decode failed msg=%{public}llu rc=%{public}d",
+               static_cast<unsigned long long>(progAbMessages_), static_cast<int>(rc));
+    return;
+  }
+
+  std::vector<uint8_t> engine;
+  if (!desktop_->ReadSurface(surfaceId, &engine) ||
+      engine.size() < progAbSurface_.size()) {
+    return;
+  }
+
+  uint64_t badTiles = 0;
+  uint64_t badPx = 0;
+  ParseRfxProgressive(
+      payload, size,
+      [&](const RfxTileRef& t) {
+        const int ox = left + static_cast<int>(t.xIdx) * 64;
+        const int oy = top + static_cast<int>(t.yIdx) * 64;
+        bool tileBad = false;
+        for (int row = 0; row < 64; ++row) {
+          const int py = oy + row;
+          if (py < 0 || py >= progAbH_) {
+            continue;
+          }
+          for (int col = 0; col < 64; ++col) {
+            const int px = ox + col;
+            if (px < 0 || px >= progAbW_) {
+              continue;
+            }
+            // FreeRDP composites a tile only inside the region's clip rects; the
+            // rest keeps the previous surface content in both decoders.
+            bool inside = (t.numRects == 0);
+            for (uint16_t ri = 0; !inside && ri < t.numRects; ++ri) {
+              const RfxRect& r = t.rects[ri];
+              const int rx = left + static_cast<int>(r.x);
+              const int ry = top + static_cast<int>(r.y);
+              if (px >= rx && px < rx + static_cast<int>(r.width) && py >= ry &&
+                  py < ry + static_cast<int>(r.height)) {
+                inside = true;
+              }
+            }
+            if (!inside) {
+              continue;
+            }
+            const size_t off =
+                static_cast<size_t>(py) * progAbStride_ + static_cast<size_t>(px) * 4;
+            const uint8_t* a = engine.data() + off;
+            const uint8_t* b = progAbSurface_.data() + off;
+            if (a[0] == b[0] && a[1] == b[1] && a[2] == b[2]) {
+              continue;
+            }
+            badPx++;
+            tileBad = true;
+            if (!progAbFirstLogged_) {
+              progAbFirstLogged_ = true;
+              HMRDP_LOGW(
+                  "gfx replay: progAB FIRST mismatch msg=%{public}llu tile=(%{public}u,%{public}u) "
+                  "px=(%{public}d,%{public}d) engine=b%{public}u g%{public}u r%{public}u ref=b%{public}u g%{public}u r%{public}u "
+                  "flags=%{public}u q=%{public}u",
+                  static_cast<unsigned long long>(progAbMessages_), t.xIdx, t.yIdx, px, py, a[0],
+                  a[1], a[2], b[0], b[1], b[2], static_cast<unsigned>(t.flags),
+                  static_cast<unsigned>(t.quality));
+            }
+          }
+        }
+        if (tileBad) {
+          badTiles++;
+        }
+      },
+      nullptr);
+
+  if (badPx != 0) {
+    progAbBadMessages_++;
+    progAbBadTiles_ += badTiles;
+    progAbBadPx_ += badPx;
+    HMRDP_LOGW(
+        "gfx replay: progAB msg=%{public}llu bad tiles=%{public}llu px=%{public}llu (totals: msgs=%{public}llu badMsgs=%{public}llu tiles=%{public}llu px=%{public}llu)",
+        static_cast<unsigned long long>(progAbMessages_), static_cast<unsigned long long>(badTiles),
+        static_cast<unsigned long long>(badPx),
+        static_cast<unsigned long long>(progAbMessages_),
+        static_cast<unsigned long long>(progAbBadMessages_),
+        static_cast<unsigned long long>(progAbBadTiles_),
+        static_cast<unsigned long long>(progAbBadPx_));
+  }
+}
+
+std::string GfxReplay::ClearAbSummary() const {
+  if (clearAbBands_.load() == 0) {
+    return std::string();
+  }
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), "clearAB bands=%llu badBands=%llu badPx=%llu",
+                static_cast<unsigned long long>(clearAbBands_.load()),
+                static_cast<unsigned long long>(clearAbBadBands_.load()),
+                static_cast<unsigned long long>(clearAbBadPx_.load()));
+  return std::string(buf);
+}
+
+void GfxReplay::ClearAbResetGraphics() {
+  if (clearAb_ != nullptr) {
+    clear_context_reset(static_cast<CLEAR_CONTEXT*>(clearAb_));
+  }
+}
+
+void GfxReplay::ClearAbBand(uint16_t surfaceId, const uint8_t* payload, size_t size, int left,
+                            int top, int width, int height) {
+  if (!kCodecAbEnabled || clearAb_ == nullptr || desktop_ == nullptr || payload == nullptr ||
+      size == 0 || width <= 0 || height <= 0) {
+    return;
+  }
+  int w = 0;
+  int h = 0;
+  int stride = 0;
+  if (!desktop_->GetSurfaceInfo(surfaceId, &w, &h, &stride) || w <= 0 || h <= 0 || stride <= 0) {
+    return;
+  }
+  const int x = left < 0 ? 0 : left;
+  const int y = top < 0 ? 0 : top;
+  if (x + width > w || y + height > h) {
+    return;  // the engine rejects these too
+  }
+  if (surfaceId != clearAbSurfaceId_ || clearAbW_ != w || clearAbH_ != h ||
+      clearAbStride_ != stride) {
+    clearAbSurfaceId_ = surfaceId;
+    clearAbW_ = w;
+    clearAbH_ = h;
+    clearAbStride_ = stride;
+    clearAbSurface_.assign(static_cast<size_t>(stride) * static_cast<size_t>(h), 0xFF);
+  }
+  std::vector<uint8_t> engine;
+  if (!desktop_->ReadSurface(surfaceId, &engine) || engine.size() < clearAbSurface_.size()) {
+    return;
+  }
+  // Align the reference input with the engine's surface for exactly the band (the
+  // only pixels clear_decompress can touch).
+  for (int row = 0; row < height; ++row) {
+    const size_t off = (static_cast<size_t>(y + row) * stride) + static_cast<size_t>(x) * 4;
+    std::memcpy(clearAbSurface_.data() + off, engine.data() + off,
+                static_cast<size_t>(width) * 4);
+  }
+  CLEAR_CONTEXT* ctx = static_cast<CLEAR_CONTEXT*>(clearAb_);
+  const INT32 rc = clear_decompress(ctx, payload, static_cast<UINT32>(size),
+                                    static_cast<UINT32>(width), static_cast<UINT32>(height),
+                                    clearAbSurface_.data(), PIXEL_FORMAT_BGRA32,
+                                    static_cast<UINT32>(stride), static_cast<UINT32>(x),
+                                    static_cast<UINT32>(y), static_cast<UINT32>(w),
+                                    static_cast<UINT32>(h), nullptr);
+  clearAbBands_++;
+  if (rc < 0) {
+    HMRDP_LOGW("gfx replay: clearAB reference decode failed band=%{public}llu rc=%{public}d",
+               static_cast<unsigned long long>(clearAbBands_.load()), static_cast<int>(rc));
+    return;
+  }
+  uint64_t bad = 0;
+  for (int row = 0; row < height; ++row) {
+    const size_t off = (static_cast<size_t>(y + row) * stride) + static_cast<size_t>(x) * 4;
+    const uint8_t* a = engine.data() + off;
+    const uint8_t* b = clearAbSurface_.data() + off;
+    for (int col = 0; col < width; ++col) {
+      if (a[col * 4 + 0] == b[col * 4 + 0] && a[col * 4 + 1] == b[col * 4 + 1] &&
+          a[col * 4 + 2] == b[col * 4 + 2]) {
+        continue;
+      }
+      bad++;
+      if (!clearAbFirstLogged_) {
+        clearAbFirstLogged_ = true;
+        HMRDP_LOGW(
+            "gfx replay: clearAB FIRST mismatch band=%{public}llu rect=(%{public}d,%{public}d)-(%{public}d,%{public}d) px=(%{public}d,%{public}d) engine=b%{public}u g%{public}u r%{public}u ref=b%{public}u g%{public}u r%{public}u",
+            static_cast<unsigned long long>(clearAbBands_.load()), x, y, x + width, y + height,
+            x + col, y + row, a[col * 4 + 0], a[col * 4 + 1], a[col * 4 + 2], b[col * 4 + 0],
+            b[col * 4 + 1], b[col * 4 + 2]);
+      }
+    }
+  }
+  if (bad != 0) {
+    clearAbBadBands_++;
+    clearAbBadPx_ += bad;
+    HMRDP_LOGW(
+        "gfx replay: clearAB band=%{public}llu bad px=%{public}llu rect=(%{public}d,%{public}d)+%{public}dx%{public}d (totals: bands=%{public}llu badBands=%{public}llu px=%{public}llu)",
+        static_cast<unsigned long long>(clearAbBands_.load()), static_cast<unsigned long long>(bad),
+        x, y, width, height, static_cast<unsigned long long>(clearAbBands_.load()),
+        static_cast<unsigned long long>(clearAbBadBands_.load()),
+        static_cast<unsigned long long>(clearAbBadPx_.load()));
+  }
+}
+
 void GfxReplay::CompareFrames() {
   ReplayDesktop* engine = desktop_.get();
   GfxCpuDesktop* cpu = cpuDesktop_;
@@ -778,6 +1187,11 @@ void GfxReplay::CompareFrames() {
   if (!engine->ReadScreen(&screen)) {
     return;
   }
+  // Dev diagnosis: the surface is 1:1 mapped to the whole screen, so a diff that
+  // is also a *surface* diff points at the decoder, while one where screen and
+  // surface agree points at the compose/screen update (stale picture).
+  std::vector<uint8_t> surface;
+  const bool haveSurface = engine->ReadSurface(0, &surface);
   if (screen.size() != static_cast<size_t>(w) * static_cast<size_t>(h) * 4) {
     return;
   }
@@ -803,6 +1217,13 @@ void GfxReplay::CompareFrames() {
   size_t gdiWhiteOnly = 0;  // gdi white, engine not: extra paint / wrong clip
   size_t chanSwap = 0;      // engine pixel == gdi with R/B swapped
   size_t delta255 = 0;      // at least one channel off by 255
+  // Diffs where the engine's *surface* already holds the screen's (wrong) pixel:
+  // the screen faithfully shows a wrongly decoded surface (decoder bug) versus
+  // surface == gdi there, i.e. only the screen update went stale.
+  size_t screenVsSurface = 0;
+  size_t surfaceMatchesGdi = 0;
+  const bool cmpSurface =
+      haveSurface && surface.size() >= static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
   uint32_t firstEngine = 0;
   uint32_t firstGdi = 0;
   for (int row = 0; row < cmpH; ++row) {
@@ -840,6 +1261,15 @@ void GfxReplay::CompareFrames() {
         } else if (pa[0] == pb[2] && pa[1] == pb[1] && pa[2] == pb[0]) {
           chanSwap++;
         }
+        if (cmpSurface) {
+          const uint8_t* ps = surface.data() + (static_cast<size_t>(row) * w + col) * 4;
+          if (ps[0] == pa[0] && ps[1] == pa[1] && ps[2] == pa[2]) {
+            screenVsSurface++;
+          }
+          if (ps[0] == pb[0] && ps[1] == pb[1] && ps[2] == pb[2]) {
+            surfaceMatchesGdi++;
+          }
+        }
         diffRgb++;
       } else if (pa[3] != pb[3]) {
         diffAlpha++;
@@ -847,6 +1277,34 @@ void GfxReplay::CompareFrames() {
     }
   }
   cmpSmallDeltaPx_.fetch_add(smallDeltaPx);
+  // Dev diagnosis: on the first small (analysable) divergence, dump every
+  // differing pixel so the pattern can be inspected offline.
+  if (firstX >= 0 && cmpDumpDone_ == false) {
+    cmpDumpDone_ = true;
+    std::ofstream out(gfxPath_ + ".cmpdump", std::ios::out | std::ios::trunc);
+    if (out) {
+      out << "# frame=" << frames_.load() << " diff=" << diffRgb << " bbox=(" << bx0 << "," << by0
+          << ")-(" << bx1 << "," << by1 << ")\n";
+      for (int row = by0; row <= by1 && static_cast<int>(out.tellp()) < 200000; ++row) {
+        const uint8_t* a2 = screen.data() + static_cast<size_t>(row) * w * 4;
+        const uint8_t* b2 = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
+        for (int col = bx0; col <= bx1; ++col) {
+          const uint8_t* pa2 = a2 + col * 4;
+          const uint8_t* pb2 = b2 + col * 4;
+          if (pa2[0] == pb2[0] && pa2[1] == pb2[1] && pa2[2] == pb2[2]) {
+            continue;
+          }
+          char line[128];
+          std::snprintf(line, sizeof(line), "%d %d e=%02x%02x%02x g=%02x%02x%02x\n", col, row,
+                        pa2[0], pa2[1], pa2[2], pb2[0], pb2[1], pb2[2]);
+          out << line;
+        }
+      }
+    }
+    HMRDP_LOGW("gfx replay: compare dump written (frame=%{public}llu diff=%{public}llu)",
+               static_cast<unsigned long long>(frames_.load()),
+               static_cast<unsigned long long>(diffRgb));
+  }
   if (firstX >= 0) {
     HMRDP_LOGW(
         "gfx replay: compare first diff (%{public}d,%{public}d) engine=0x%{public}x "
@@ -859,6 +1317,9 @@ void GfxReplay::CompareFrames() {
     cmpBBoxX1_.store(bx1);
     cmpBBoxY1_.store(by1);
     cmpMaxDelta_.store(maxDelta);
+    HMRDP_LOGW("gfx replay: compare bbox frame=%{public}llu diff=%{public}llu bbox=(%{public}d,%{public}d)-(%{public}d,%{public}d) maxDelta=%{public}d",
+               static_cast<unsigned long long>(frames_.load()),
+               static_cast<unsigned long long>(diffRgb), bx0, by0, bx1, by1, maxDelta);
   }
   cmpChecks_.fetch_add(1);
   cmpRgbDiff_.fetch_add(diffRgb);
@@ -873,7 +1334,7 @@ void GfxReplay::CompareFrames() {
       cmpFirstX_.store(firstX);
       cmpFirstY_.store(firstY);
     }
-    HMRDP_LOGW("gfx replay: compare diff rgb=%{public}llu alphaOnly=%{public}llu first=(%{public}d,%{public}d) frame=%{public}llu engWhite=%{public}llu gdiWhite=%{public}llu chanSwap=%{public}llu d255=%{public}llu maxDelta=%{public}d small=%{public}llu",
+    HMRDP_LOGW("gfx replay: compare diff rgb=%{public}llu alphaOnly=%{public}llu first=(%{public}d,%{public}d) frame=%{public}llu engWhite=%{public}llu gdiWhite=%{public}llu chanSwap=%{public}llu d255=%{public}llu maxDelta=%{public}d small=%{public}llu surfEqScreen=%{public}llu surfEqGdi=%{public}llu",
                static_cast<unsigned long long>(diffRgb),
                static_cast<unsigned long long>(diffAlpha), firstX, firstY,
                static_cast<unsigned long long>(frames_.load()),
@@ -881,7 +1342,9 @@ void GfxReplay::CompareFrames() {
                static_cast<unsigned long long>(gdiWhiteOnly),
                static_cast<unsigned long long>(chanSwap),
                static_cast<unsigned long long>(delta255), maxDelta,
-               static_cast<unsigned long long>(smallDeltaPx));
+               static_cast<unsigned long long>(smallDeltaPx),
+               static_cast<unsigned long long>(screenVsSurface),
+               static_cast<unsigned long long>(surfaceMatchesGdi));
   }
 }
 

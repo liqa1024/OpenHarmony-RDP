@@ -70,6 +70,15 @@ void bpSetByte(uint off, uint v) {
 uint bitPosGet(uint stream, uint band) { return bpByte(stream * 10u + band); }
 void bitPosSet(uint stream, uint band, uint v) { bpSetByte(stream * 10u + band, v); }
 int shl16(int v, uint shift) { return i16(int(uint(v) << shift)); }
+// FreeRDP's UPGRADE path adds `(INT16)((UINT32)input << (BYTE)(newBit - 1))`.
+// That is a plain 32-bit shift truncated to INT16, so every shift >= 16
+// contributes 0 - and a `newBit` of 0 underflows the BYTE subtraction to 255,
+// which lands in the same case. (The previous "clamp to 0" shortcut added the
+// raw value there instead.)
+int upgradeAdd(int inVal, uint newBit) {
+  if (newBit == 0u || newBit >= 17u) return 0;
+  return i16(int(uint(inVal) << (newBit - 1u)));
+}
 
 // ---- 64-bit MSB bit reader (mirrors MsbBitReader in hmrdp_rfx.cpp) --------
 struct BitReader { uint base; uint len; uint hi; uint lo; int bits; uint pos; };
@@ -242,7 +251,11 @@ void rlgrDecode(uint payBase, uint payLen, uint outBase) {
 }
 
 void dequantSub(uint base, uint off, uint len, int shift) {
-  if (shift == 0) return;
+  // FreeRDP dequantises through prims->lShiftC_16s_inplace(), which returns
+  // without touching the band for shift == 0 *and* for shift >= 16 (the BYTE
+  // quant tables can add up to 30). A plain `<< shift` would zero the band
+  // there instead of leaving it as RLGR decoded it.
+  if (shift <= 0 || shift >= 16) return;
   for (uint i = 0u; i < len; i++) coefSet(base + off + i, i16(coefGet(base + off + i) << uint(shift)));
 }
 void diffDecode(uint base, uint off, uint size) {
@@ -402,12 +415,12 @@ int srlRead(inout int kp, inout int nz, inout int mode, uint numBits) {
 }
 
 void upgradeBlock(bool nonLL, inout int kp, inout int nz, inout int mode, uint stateBase, uint off,
-                  uint len, uint shift, uint numBits) {
+                  uint len, uint newBit, uint numBits) {
   if (numBits == 0u) return;
   if (!nonLL) {
     for (uint i = 0u; i < len; i++) {
       int inVal = int(brReadBits(int(numBits)));
-      curSet(stateBase + off + i, i16(curGet(stateBase + off + i) + shl16(inVal, shift)));
+      curSet(stateBase + off + i, i16(curGet(stateBase + off + i) + upgradeAdd(inVal, newBit)));
     }
     return;
   }
@@ -417,7 +430,7 @@ void upgradeBlock(bool nonLL, inout int kp, inout int nz, inout int mode, uint s
     if (s > 0) { inVal = int(brReadBits(int(numBits))); }
     else if (s < 0) { inVal = -int(brReadBits(int(numBits))); }
     else { inVal = srlRead(kp, nz, mode, numBits); signSet(stateBase + off + i, i16(inVal)); }
-    curSet(stateBase + off + i, i16(curGet(stateBase + off + i) + shl16(inVal, shift)));
+    curSet(stateBase + off + i, i16(curGet(stateBase + off + i) + upgradeAdd(inVal, newBit)));
   }
 }
 
@@ -431,15 +444,13 @@ void upgradeComponent(uint compBase, uint tempBase, uint stateBase, uint tileStr
     uint nb = newBit[b];
     uint ob = oldBit[b];
     uint numBits = (ob > nb) ? (ob - nb) : 0u;
-    uint shv = (nb > 0u) ? (nb - 1u) : 0u;
-    upgradeBlock(true, kp, nz, mode, stateBase, kSubOff[b], kSubLen[b], shv, numBits);
+    upgradeBlock(true, kp, nz, mode, stateBase, kSubOff[b], kSubLen[b], nb, numBits);
   }
   {
     uint nb = newBit[9];
     uint ob = oldBit[9];
     uint numBits = (ob > nb) ? (ob - nb) : 0u;
-    uint shv = (nb > 0u) ? (nb - 1u) : 0u;
-    upgradeBlock(false, kp, nz, mode, stateBase, kSubOff[9], kSubLen[9], shv, numBits);
+    upgradeBlock(false, kp, nz, mode, stateBase, kSubOff[9], kSubLen[9], nb, numBits);
   }
   for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
   extrapolateDwt(compBase, tempBase);

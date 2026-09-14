@@ -2933,6 +2933,12 @@ class FreeRdpClearDecoder : public GfxClearDecoder {
     return rc >= 0;
   }
 
+  void Reset() override {
+    if (clear_ != nullptr) {
+      clear_context_reset(clear_);
+    }
+  }
+
  private:
   CLEAR_CONTEXT* clear_ = nullptr;
 };
