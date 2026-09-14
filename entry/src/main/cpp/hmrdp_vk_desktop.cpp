@@ -217,6 +217,13 @@ struct GfxVkDesktop::Impl {
   // TRANSFER_WRITE (VULKAN-TODO §7.2 "CPU 写的表面 -> GPU 读").
   bool pendingHostWrites = false;
   bool pendingDeviceWrites = false;
+  // A compute dispatch is recorded but has not been submitted yet. The surface
+  // buffers are both GPU-written (Progressive compute) and CPU-accessed
+  // (ClearCodec read-modify-write, bitmap cache, ReadSurface), so a CPU access
+  // while a dispatch is only *recorded* would read the pre-dispatch pixels and
+  // then be overwritten when the dispatch finally runs at the next Flush - the
+  // exact ordering gdi does not have. SyncForCpuAccess() submits and waits first.
+  bool computeInFlight = false;
 
   std::map<uint16_t, Surface> surfaces;
   std::map<uint16_t, CacheEntry> cache;
@@ -795,6 +802,18 @@ struct GfxVkDesktop::Impl {
 
   void HostWrote() { pendingHostWrites = true; }
 
+  // Makes the mapped surface/cache buffers safe to touch on the CPU: a recorded
+  // compute dispatch (Progressive decode) has not executed yet, so the mapping
+  // still holds the *previous* pixels. Submitting and waiting (Flush also emits
+  // the COMPUTE -> HOST barrier) puts the mapping in the same state gdi's surface
+  // has when it performs a CPU read-modify-write. No-op when nothing is pending.
+  bool SyncForCpuAccess() {
+    if (!computeInFlight) {
+      return true;
+    }
+    return Flush();
+  }
+
   // UNDEFINED -> GENERAL. Explicit so no command relies on an implicit
   // transition (the image contents are meaningless either way).
   void TransitionToGeneral(VkImage image) {
@@ -823,17 +842,27 @@ struct GfxVkDesktop::Impl {
     const VkDevice dev = device();
     const int64_t submitStart = NowUs();
     recording = false;
-    if (pendingDeviceWrites) {
+    if (pendingDeviceWrites || computeInFlight) {
       // Make device writes visible to the *host* before the command buffer ends.
       // This is the spec-mandated dependency for a CPU read of device-written
       // memory (dstStage HOST / dstAccess HOST_READ); most drivers do not insist
-      // on it, the platform layer here does.
+      // on it, the platform layer here does. Compute writes (Progressive) need
+      // the same leg: the surface mapping is read back by ClearCodec/bitmap cache.
       VkMemoryBarrier toHost{};
       toHost.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-      toHost.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      toHost.srcAccessMask = 0;
+      VkPipelineStageFlags toHostStage = 0;
+      if (pendingDeviceWrites) {
+        toHost.srcAccessMask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+        toHostStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+      }
+      if (computeInFlight) {
+        toHost.srcAccessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+        toHostStage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+      }
       toHost.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-      vk.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0, nullptr, 0, nullptr);
+      vk.CmdPipelineBarrier(commandBuffer, toHostStage, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost,
+                            0, nullptr, 0, nullptr);
     }
     if (vk.EndCommandBuffer(commandBuffer) != VK_SUCCESS) {
       return false;
@@ -857,8 +886,10 @@ struct GfxVkDesktop::Impl {
     }
     ++submits;
     // Conservative: whatever was written is now complete, but a barrier is still
-    // emitted before the next command buffer's first read.
+    // emitted before the next command buffer's first read. The compute writes
+    // have executed too, so a following CPU access sees the real pixels.
     pendingDeviceWrites = true;
+    computeInFlight = false;
     flushWaitUs += static_cast<uint64_t>(NowUs() - submitStart);
     // The queue is idle now, so everything deferred while recording is safe to
     // destroy (and we are already recording a fresh command buffer).
@@ -1451,6 +1482,7 @@ struct GfxVkDesktop::Impl {
                           sizeof(dpush), &dpush);
       vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
       pendingComputeWrites = true;
+      computeInFlight = true;
 
       VkDescriptorSet composeSet = VK_NULL_HANDLE;
       if (!AllocSet(composeSetLayout, &composeSet)) {
@@ -1481,6 +1513,7 @@ struct GfxVkDesktop::Impl {
                           sizeof(cpush), &cpush);
       vk.CmdDispatch(commandBuffer, (count + 63u) / 64u, 1, 1);
       pendingComputeWrites = true;
+      computeInFlight = true;
       rfxChunks++;
     }
     return true;
@@ -1498,6 +1531,12 @@ struct GfxVkDesktop::Impl {
     }
     Surface* surface = Find(surfaceId);
     if (surface == nullptr || !surface->gpu.valid()) {
+      return false;
+    }
+    // ClearCodec is a CPU read-modify-write: it must see the pixels a recorded
+    // Progressive dispatch produced, and its own writes must not be clobbered
+    // when that dispatch later executes.
+    if (!SyncForCpuAccess()) {
       return false;
     }
     const int x = left < 0 ? 0 : left;
@@ -1939,6 +1978,11 @@ bool GfxVkDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
   if (surface == nullptr || !surface->gpu.valid()) {
     return false;
   }
+  // A recorded Progressive dispatch has not run yet: submit it before reading
+  // the mapping, otherwise the pre-decode pixels are returned.
+  if (!impl_->SyncForCpuAccess()) {
+    return false;
+  }
   // The stored buffer layout (stride * height, top-down) is exactly what the
   // caller expects, so this is a plain copy out of the mapping: no readback, no
   // staging, no stall.
@@ -1962,6 +2006,9 @@ bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint1
   }
   Impl::Surface* surface = impl_->Find(surfaceId);
   if (surface == nullptr || !surface->gpu.valid()) {
+    return false;
+  }
+  if (!impl_->SyncForCpuAccess()) {
     return false;
   }
   const int surfaceW = surface->meta.width;
@@ -1995,6 +2042,9 @@ bool GfxVkDesktop::UploadBgra(uint16_t surfaceId, int left, int top, int width, 
   }
   Impl::Surface* surface = impl_->Find(surfaceId);
   if (surface == nullptr || !surface->gpu.valid()) {
+    return false;
+  }
+  if (!impl_->SyncForCpuAccess()) {
     return false;
   }
   int sx = left < 0 ? 0 : left;
@@ -2044,6 +2094,10 @@ bool GfxVkDesktop::SurfaceToCache(uint16_t surfaceId, uint16_t slot, int x, int 
   if (x < 0 || y < 0 || x + width > surface->meta.width || y + height > surface->meta.height) {
     return false;
   }
+  // The source pixels may still be sitting in a recorded compute dispatch.
+  if (!impl_->SyncForCpuAccess()) {
+    return false;
+  }
   Impl::CacheEntry& entry = impl_->cache[slot];
   if (entry.gpu.width < width || entry.gpu.height < height || !entry.gpu.valid()) {
     impl_->DeferGpuBuffer(&entry.gpu);
@@ -2065,6 +2119,11 @@ bool GfxVkDesktop::CacheToSurface(uint16_t surfaceId, uint16_t slot, int dstX, i
   }
   Impl::Surface* surface = impl_->Find(surfaceId);
   if (surface == nullptr || !surface->gpu.valid()) {
+    return false;
+  }
+  // The write must land after, not before, any recorded compute dispatch that
+  // targets this surface (it would otherwise overwrite the restored pixels).
+  if (!impl_->SyncForCpuAccess()) {
     return false;
   }
   const auto it = impl_->cache.find(slot);
@@ -2108,6 +2167,11 @@ bool GfxVkDesktop::SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, i
   const Impl::Surface* src = impl_->Find(srcSurfaceId);
   Impl::Surface* dst = impl_->Find(dstSurfaceId);
   if (src == nullptr || dst == nullptr || !src->gpu.valid() || !dst->gpu.valid()) {
+    return false;
+  }
+  // Both sides are CPU-accessed: the source pixels may still be in a recorded
+  // compute dispatch, and the destination write must follow it.
+  if (!impl_->SyncForCpuAccess()) {
     return false;
   }
   int dx = dstX;

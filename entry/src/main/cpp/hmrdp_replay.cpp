@@ -797,6 +797,12 @@ void GfxReplay::CompareFrames() {
   int by1 = -1;
   int maxDelta = 0;
   size_t smallDeltaPx = 0;  // all channels within +/-2: rounding-level
+  // Attribution counters (dev diagnostics): distinguishes "the engine never
+  // painted" from "it painted a different colour" from "channels swapped".
+  size_t engWhiteOnly = 0;  // engine white (0xFFFFFFFF), gdi not: missing paint
+  size_t gdiWhiteOnly = 0;  // gdi white, engine not: extra paint / wrong clip
+  size_t chanSwap = 0;      // engine pixel == gdi with R/B swapped
+  size_t delta255 = 0;      // at least one channel off by 255
   uint32_t firstEngine = 0;
   uint32_t firstGdi = 0;
   for (int row = 0; row < cmpH; ++row) {
@@ -824,6 +830,16 @@ void GfxReplay::CompareFrames() {
         }
         if (worst > maxDelta) maxDelta = worst;
         if (worst <= 2) smallDeltaPx++;
+        if (worst == 255) delta255++;
+        const bool engWhite = (pa[0] == 0xFF && pa[1] == 0xFF && pa[2] == 0xFF);
+        const bool gdiWhite = (pb[0] == 0xFF && pb[1] == 0xFF && pb[2] == 0xFF);
+        if (engWhite && !gdiWhite) {
+          engWhiteOnly++;
+        } else if (gdiWhite && !engWhite) {
+          gdiWhiteOnly++;
+        } else if (pa[0] == pb[2] && pa[1] == pb[1] && pa[2] == pb[0]) {
+          chanSwap++;
+        }
         diffRgb++;
       } else if (pa[3] != pb[3]) {
         diffAlpha++;
@@ -832,8 +848,10 @@ void GfxReplay::CompareFrames() {
   }
   cmpSmallDeltaPx_.fetch_add(smallDeltaPx);
   if (firstX >= 0) {
-    HMRDP_LOGW("gfx replay: compare first diff (%d,%d) engine=0x%08x gdi=0x%08x",
-               firstX, firstY, static_cast<unsigned>(firstEngine), static_cast<unsigned>(firstGdi));
+    HMRDP_LOGW(
+        "gfx replay: compare first diff (%{public}d,%{public}d) engine=0x%{public}x "
+        "gdi=0x%{public}x",
+        firstX, firstY, static_cast<unsigned>(firstEngine), static_cast<unsigned>(firstGdi));
   }
   if (bx1 >= 0) {
     cmpBBoxX0_.store(bx0);
@@ -855,10 +873,15 @@ void GfxReplay::CompareFrames() {
       cmpFirstX_.store(firstX);
       cmpFirstY_.store(firstY);
     }
-    HMRDP_LOGW("gfx replay: compare diff rgb=%{public}llu alphaOnly=%{public}llu first=(%{public}d,%{public}d) frame=%{public}llu",
+    HMRDP_LOGW("gfx replay: compare diff rgb=%{public}llu alphaOnly=%{public}llu first=(%{public}d,%{public}d) frame=%{public}llu engWhite=%{public}llu gdiWhite=%{public}llu chanSwap=%{public}llu d255=%{public}llu maxDelta=%{public}d small=%{public}llu",
                static_cast<unsigned long long>(diffRgb),
                static_cast<unsigned long long>(diffAlpha), firstX, firstY,
-               static_cast<unsigned long long>(frames_.load()));
+               static_cast<unsigned long long>(frames_.load()),
+               static_cast<unsigned long long>(engWhiteOnly),
+               static_cast<unsigned long long>(gdiWhiteOnly),
+               static_cast<unsigned long long>(chanSwap),
+               static_cast<unsigned long long>(delta255), maxDelta,
+               static_cast<unsigned long long>(smallDeltaPx));
   }
 }
 
