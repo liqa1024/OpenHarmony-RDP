@@ -1228,7 +1228,10 @@ struct GfxVkDesktop::Impl {
     }
     const size_t gridStreams = static_cast<size_t>(gridW) * static_cast<size_t>(gridH) * 3u;
     const size_t stateCoefBytes = gridStreams * 4096u * 2u;
-    const size_t stateBpBytes = ((gridStreams * 10u + 3u) / 4u) * 4u;
+    // 12 bytes per stream (not 10): see kBitPosStride in rfx_decode.comp - a
+    // 10-byte stride lets adjacent streams share a 32-bit word and lose
+    // read-modify-write updates.
+    const size_t stateBpBytes = gridStreams * 12u;
     RfxState created;
     if (!CreateRawBuffer(&created.cur, stateCoefBytes) ||
         !CreateRawBuffer(&created.sign, stateCoefBytes) ||
@@ -2007,6 +2010,66 @@ bool GfxVkDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
   return true;
 }
 
+bool GfxVkDesktop::ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
+                                   std::vector<uint8_t>* out) {
+  if (!ready() || out == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  Impl::Surface* surface = impl_->Find(surfaceId);
+  if (surface == nullptr || !surface->gpu.valid()) {
+    return false;
+  }
+  if (x < 0 || y < 0 || x + width > surface->meta.width || y + height > surface->meta.height) {
+    return false;
+  }
+  if (!impl_->SyncForCpuAccess()) {
+    return false;
+  }
+  out->resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+  for (int row = 0; row < height; ++row) {
+    const uint8_t* src = surface->gpu.mapped +
+                         static_cast<size_t>(y + row) * surface->gpu.stride +
+                         static_cast<size_t>(x) * 4;
+    std::memcpy(out->data() + static_cast<size_t>(row) * width * 4, src,
+                static_cast<size_t>(width) * 4);
+  }
+  if (impl_->swapRb) {
+    uint32_t* pixels = reinterpret_cast<uint32_t*>(out->data());
+    const size_t count = out->size() / 4;
+    for (size_t i = 0; i < count; ++i) {
+      pixels[i] = SwapRb(pixels[i]);
+    }
+  }
+  return true;
+}
+
+bool GfxVkDesktop::ReadCacheEntry(uint16_t slot, int* width, int* height,
+                                  std::vector<uint8_t>* out) {
+  if (!ready() || out == nullptr) {
+    return false;
+  }
+  const auto it = impl_->cache.find(slot);
+  if (it == impl_->cache.end() || !it->second.gpu.valid() || it->second.width <= 0 ||
+      it->second.height <= 0) {
+    return false;
+  }
+  const int w = it->second.width;
+  const int h = it->second.height;
+  out->resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+  for (int row = 0; row < h; ++row) {
+    std::memcpy(out->data() + static_cast<size_t>(row) * w * 4,
+                it->second.gpu.mapped + static_cast<size_t>(row) * it->second.gpu.stride,
+                static_cast<size_t>(w) * 4);
+  }
+  if (width != nullptr) {
+    *width = w;
+  }
+  if (height != nullptr) {
+    *height = h;
+  }
+  return true;
+}
+
 bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
                             uint32_t rectCount) {
   if (!ready() || rects == nullptr || rectCount == 0) {
@@ -2258,8 +2321,13 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       const int sy = GpuRd16(params + 10);
       const int w = GpuRd16(params + 12) - sx;
       const int h = GpuRd16(params + 14) - sy;
-      SurfaceToCache(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), sx, sy, w,
-                     h);
+      if (!SurfaceToCache(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), sx,
+                          sy, w, h)) {
+        // Dev diagnosis: a failed store leaves the slot empty, so a following
+        // CacheToSurface silently keeps the old surface content.
+        HMRDP_LOGW("vk cache store FAILED slot=%{public}u rect=(%{public}d,%{public}d)+%{public}dx%{public}d sid=%{public}u",
+                   static_cast<unsigned>(scalars[0]), sx, sy, w, h, surfaceId);
+      }
       break;
     }
     case kGpuCmdCacheToSurface: {
@@ -2275,6 +2343,8 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         // gdi fails the whole command on the first invalid destination rect.
         if (!CacheToSurface(static_cast<uint16_t>(surfaceId), static_cast<uint16_t>(scalars[0]), px,
                             py)) {
+          HMRDP_LOGW("vk cache restore FAILED slot=%{public}u dst=(%{public}d,%{public}d) sid=%{public}u",
+                     static_cast<unsigned>(scalars[0]), px, py, surfaceId);
           break;
         }
       }

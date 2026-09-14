@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -77,28 +78,28 @@ class GfxReplay {
   void RecordFlush(uint64_t micros);
   void RecordPresent(uint64_t micros);
 
-  // --- Dev: Progressive per-message A/B (VULKAN-TODO §8) -------------------
-  // The compare routes additionally run every Progressive payload through
-  // FreeRDP's own progressive_decompress into a shadow surface and compare the
-  // tiles it writes against the engine's surface. FreeRDP's decoder output
-  // depends only on the progressive stream (its per-tile `current`/`sign`/
-  // bit-state), never on the surface content, so a mismatch is unambiguous proof
-  // of an engine-side decode divergence - and it names the message and tile.
-  // No-ops on the other routes.
-  void ProgAbCreateSurface(uint16_t surfaceId, int width, int height);
-  void ProgAbDeleteSurface(uint16_t surfaceId);
-  void ProgAbMessage(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top);
-  std::string ProgAbSummary() const;
-
-  // ClearCodec half of the A/B: each band is decoded a second time by a stock
-  // FreeRDP CLEAR_CONTEXT *on the engine's own surface content* (the band rect is
-  // copied over first), so the only possible difference is the ClearCodec decoder
-  // itself (context state / arguments) - not the input pixels.
-  void ClearAbBand(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top,
-                   int width, int height);
-  // Mirrors gdi's freerdp_client_codecs_reset() -> clear_context_reset().
-  void ClearAbResetGraphics();
-  std::string ClearAbSummary() const;
+  // --- Dev: independent CPU reference surface (VULKAN-TODO §8) -------------
+  // The compare routes keep a *complete* second implementation of the GFX
+  // surface in the harness: FreeRDP's own progressive/clear decoders plus
+  // mirrored gdi cache/fill/copy semantics are applied to `refSurface_`, which
+  // never reads the engine's surface. CompareFrames then diffs the engine's
+  // whole surface against it, so any difference is an absolute end-to-end proof
+  // of an engine divergence - the first mismatching pixel and the last command
+  // that wrote it name the culprit. No-ops on the other routes.
+  void RefCreateSurface(uint16_t surfaceId, int width, int height);
+  void RefDeleteSurface(uint16_t surfaceId);
+  void RefResetGraphics();
+  void RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top);
+  void RefClearCodec(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top,
+                     int width, int height);
+  void RefCacheStore(uint16_t surfaceId, uint16_t slot, int x, int y, int width, int height);
+  void RefCacheRestore(uint16_t surfaceId, uint16_t slot, const uint8_t* pts, uint32_t count);
+  void RefCacheEvict(uint16_t slot);
+  void RefFill(uint16_t surfaceId, uint32_t pixel, const uint8_t* rects, uint32_t count);
+  void RefCopy(uint16_t srcSurfaceId, uint16_t dstSurfaceId, const uint8_t* params, uint32_t count);
+  // Diff of the engine's surface against the reference (called per compare).
+  void RefCompareSurfaces();
+  std::string RefAbSummary() const;
 
  private:
   GfxReplay() = default;
@@ -201,32 +202,31 @@ class GfxReplay {
   // Dev diagnosis: the one-shot per-pixel dump has already been written.
   bool cmpDumpDone_ = false;
 
-  // Dev: Progressive per-message A/B state (replay thread only). `progAb` is a
-  // PROGRESSIVE_CONTEXT* kept as void* so this header stays FreeRDP-free.
-  void* progAb_ = nullptr;
-  std::vector<uint8_t> progAbSurface_;
-  uint16_t progAbSurfaceId_ = 0xFFFFu;
-  int progAbW_ = 0;
-  int progAbH_ = 0;
-  int progAbStride_ = 0;
+  // Dev: CPU reference surface state (replay thread only). The two contexts are
+  // kept as void* so this header stays FreeRDP-free.
+  struct RefCacheEntry {
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> data;
+  };
+  void* refProg_ = nullptr;   // PROGRESSIVE_CONTEXT*
+  void* refClear_ = nullptr;  // CLEAR_CONTEXT*
+  std::vector<uint8_t> refSurface_;
+  uint16_t refSurfaceId_ = 0xFFFFu;
+  int refW_ = 0;
+  int refH_ = 0;
+  int refStride_ = 0;
+  std::map<uint16_t, RefCacheEntry> refCache_;
+  // Per-pixel "which command class last modified this pixel" (1 = progressive,
+  // 2 = clearcodec, 3 = cache restore, 4 = fill, 5 = copy). Dev only: it names
+  // the writer of the first diverging pixel.
+  std::vector<uint8_t> refProv_;
   // Atomic: StatsLines() (UI thread) reports the summary while the replay runs.
-  std::atomic<uint64_t> progAbMessages_{0};
-  std::atomic<uint64_t> progAbBadMessages_{0};
-  std::atomic<uint64_t> progAbBadTiles_{0};
-  std::atomic<uint64_t> progAbBadPx_{0};
-  bool progAbFirstLogged_ = false;
-
-  // Dev: ClearCodec A/B state (replay thread only; `clearAb` is a CLEAR_CONTEXT*).
-  void* clearAb_ = nullptr;
-  std::vector<uint8_t> clearAbSurface_;
-  uint16_t clearAbSurfaceId_ = 0xFFFFu;
-  int clearAbW_ = 0;
-  int clearAbH_ = 0;
-  int clearAbStride_ = 0;
-  std::atomic<uint64_t> clearAbBands_{0};
-  std::atomic<uint64_t> clearAbBadBands_{0};
-  std::atomic<uint64_t> clearAbBadPx_{0};
-  bool clearAbFirstLogged_ = false;
+  std::atomic<uint64_t> refCommands_{0};
+  std::atomic<uint64_t> refChecks_{0};
+  std::atomic<uint64_t> refBad_{0};
+  std::atomic<uint64_t> refBadPx_{0};
+  bool refFirstLogged_ = false;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;

@@ -1976,6 +1976,89 @@ bool GfxGpuDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
   return CheckGl("read surface");
 }
 
+// Dev only (per-command A/B harness): same map as ReadSurface, but it only
+// returns the requested rect, tightly packed.
+bool GfxGpuDesktop::ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
+                                    std::vector<uint8_t>* out) {
+  if (!ready_ || impl_ == nullptr || out == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  const Impl::SurfaceGpu* const surface = impl_->Find(surfaceId);
+  if (surface == nullptr) {
+    return false;
+  }
+  if (x < 0 || y < 0 || x + width > surface->meta.width || y + height > surface->meta.height) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const GLsizeiptr bytes = static_cast<GLsizeiptr>(surface->outWords * 4);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, surface->outBuf);
+  glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+  glFinish();
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return false;
+  }
+  const uint8_t* base = static_cast<const uint8_t*>(mapped);
+  out->resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+  for (int row = 0; row < height; ++row) {
+    std::memcpy(out->data() + static_cast<size_t>(row) * width * 4,
+                base + static_cast<size_t>(y + row) * surface->meta.stride +
+                    static_cast<size_t>(x) * 4,
+                static_cast<size_t>(width) * 4);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  return CheckGl("read surface rect");
+}
+
+// Dev only (per-command A/B harness): the bytes the GLES cache holds for a slot.
+bool GfxGpuDesktop::ReadCacheEntry(uint16_t slot, int* width, int* height,
+                                   std::vector<uint8_t>* out) {
+  if (!ready_ || impl_ == nullptr || out == nullptr) {
+    return false;
+  }
+  const auto it = impl_->cache.find(slot);
+  if (it == impl_->cache.end()) {
+    return false;
+  }
+  const Impl::CacheBuf& entry = it->second;
+  if (entry.buf == 0 || entry.width <= 0 || entry.height <= 0 || entry.stride <= 0) {
+    return false;
+  }
+  if (!impl_->MakeCurrent()) {
+    return false;
+  }
+  const GLsizeiptr bytes = static_cast<GLsizeiptr>(entry.stride) * entry.height;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, entry.buf);
+  glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+  glFinish();
+  void* mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
+  if (mapped == nullptr) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return false;
+  }
+  const uint8_t* base = static_cast<const uint8_t*>(mapped);
+  out->resize(static_cast<size_t>(entry.width) * static_cast<size_t>(entry.height) * 4);
+  for (int row = 0; row < entry.height; ++row) {
+    std::memcpy(out->data() + static_cast<size_t>(row) * entry.width * 4,
+                base + static_cast<size_t>(row) * entry.stride,
+                static_cast<size_t>(entry.width) * 4);
+  }
+  glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  if (width != nullptr) {
+    *width = entry.width;
+  }
+  if (height != nullptr) {
+    *height = entry.height;
+  }
+  return CheckGl("read cache entry");
+}
+
 // ---------------------------------------------------------------------------
 // B2 surface commands (GPU)
 // ---------------------------------------------------------------------------
@@ -2796,6 +2879,19 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   }
   for (uint8_t q = 0; q < numQuant; ++q) {
     ReadQuantNibbles(data + p, &quants[q]);
+    // FreeRDP validates the region's component quant table and rejects the whole
+    // region (nothing is decoded at all) when any nibble is outside [6,15]
+    // (progressive.c `progressive_wb_region`: quant < 6 or > 15 -> return -1).
+    // Decoding such a region anyway makes the engine diverge from gdi for every
+    // tile of that message.
+    const uint8_t nibbles[10] = {quants[q].LL3, quants[q].HL3, quants[q].LH3, quants[q].HH3,
+                                 quants[q].HL2, quants[q].LH2, quants[q].HH2, quants[q].HL1,
+                                 quants[q].LH1, quants[q].HH1};
+    for (size_t i = 0; i < 10; ++i) {
+      if (nibbles[i] < 6 || nibbles[i] > 15) {
+        return false;
+      }
+    }
     p += 5;
   }
   // Progressive quant tables: 16 bytes each (quality + Y/Cb/Cr quant).

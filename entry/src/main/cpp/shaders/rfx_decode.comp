@@ -67,8 +67,15 @@ void bpSetByte(uint off, uint v) {
   uint w = bp.data[wi];
   bp.data[wi] = (w & ~(0xFFu << sh)) | ((v & 0xFFu) << sh);
 }
-uint bitPosGet(uint stream, uint band) { return bpByte(stream * 10u + band); }
-void bitPosSet(uint stream, uint band, uint v) { bpSetByte(stream * 10u + band, v); }
+// Each (tile,component) stream owns 10 bit-position bytes, but a 10-byte stride
+// makes adjacent streams SHARE a 32-bit word: `bpSetByte` is a read-modify-write
+// and two invocations doing that on the same word lose one of the updates (the
+// bit positions of a tile then differ from FreeRDP's, and every later UPGRADE of
+// that tile refines against the wrong prediction). Round the stride up to 12 so
+// each stream owns whole words.
+const uint kBitPosStride = 12u;
+uint bitPosGet(uint stream, uint band) { return bpByte(stream * kBitPosStride + band); }
+void bitPosSet(uint stream, uint band, uint v) { bpSetByte(stream * kBitPosStride + band, v); }
 int shl16(int v, uint shift) { return i16(int(uint(v) << shift)); }
 // FreeRDP's UPGRADE path adds `(INT16)((UINT32)input << (BYTE)(newBit - 1))`.
 // That is a plain 32-bit shift truncated to INT16, so every shift >= 16

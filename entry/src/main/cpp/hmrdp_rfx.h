@@ -322,6 +322,12 @@ class GfxGpuDesktop {
   // Full surface (top-down, `stride` bytes) as BGRA. Dev/verification only: it
   // maps the GPU buffer back to the CPU.
   bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
+  // One surface rect as tightly packed BGRA (`width * 4` per row). Dev only, for
+  // the per-command A/B harness.
+  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
+                       std::vector<uint8_t>* out);
+  // Bytes this engine's bitmap cache holds for `slot`. Dev only.
+  bool ReadCacheEntry(uint16_t slot, int* width, int* height, std::vector<uint8_t>* out);
 
  private:
   struct Impl;

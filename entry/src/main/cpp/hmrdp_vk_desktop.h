@@ -123,6 +123,13 @@ class GfxVkDesktop {
 
   // Full surface (top-down, `stride` bytes) as BGRA. Dev/verification only.
   bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
+  // One surface rect as tightly packed BGRA (`width * 4` per row). Dev only: the
+  // per-command A/B harness reads small rects instead of the whole surface.
+  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
+                       std::vector<uint8_t>* out);
+  // Bytes the engine's bitmap cache holds for `slot` (tightly packed BGRA). Dev
+  // only: separates a cache *store* divergence from a *restore* one.
+  bool ReadCacheEntry(uint16_t slot, int* width, int* height, std::vector<uint8_t>* out);
 
   // --- Diagnostics ---------------------------------------------------------
   // One-line engine summary (surface/cache counts, per-command timings, the
