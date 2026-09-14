@@ -1,16 +1,24 @@
 /*
  * HmRdp - Vulkan presenter implementation. See hmrdp_vk_renderer.h and
- * VULKAN-TODO.md §5 V0 / §7.2.
+ * VULKAN-TODO.md §4.1 / §7.2.
  */
 #include "hmrdp_vk_renderer.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 
 #include "hmrdp_log.h"
 
 namespace hmrdp {
 namespace {
+
+int64_t NowUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 std::string FormatName(VkFormat format) {
   switch (format) {
@@ -32,7 +40,7 @@ std::string FormatName(VkFormat format) {
 
 // Prefer BGRA8 (FreeRDP's own byte order, so the engine needs no swizzle), then
 // RGBA8 (the engine then swaps R/B on its CPU boundaries). Colour space is
-// irrelevant here: V1 never samples, it only blits. A single
+// irrelevant here: the presenter never samples, it only blits. A single
 // VK_FORMAT_UNDEFINED entry means "any" and is resolved to BGRA8.
 VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
   if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
@@ -106,11 +114,11 @@ void VkRenderer::DestroySurface() {
 }
 
 bool VkRenderer::Prepare() {
-  return PresentClear(0, 0, 0);
+  std::lock_guard<std::mutex> lock(mutex_);
+  return PresentSolidLocked(0, 0, 0);
 }
 
-bool VkRenderer::PresentClear(uint8_t r, uint8_t g, uint8_t b) {
-  std::lock_guard<std::mutex> lock(mutex_);
+bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
 
@@ -153,8 +161,9 @@ bool VkRenderer::PresentClear(uint8_t r, uint8_t g, uint8_t b) {
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     api.BeginCommandBuffer(cmd, &beginInfo);
 
-    // V0 draws nothing: the render pass attachment itself carries the clear, so
-    // no pipeline or shader is needed to light up the surface.
+    // The bring-up frame draws nothing: the render pass attachment itself
+    // carries the clear, so no pipeline or shader is needed to light up the
+    // surface.
     VkClearValue clearValue{};
     clearValue.color.float32[0] = static_cast<float>(r) / 255.0f;
     clearValue.color.float32[1] = static_cast<float>(g) / 255.0f;
@@ -436,6 +445,7 @@ VkFormat VkRenderer::format() const {
 }
 
 void VkRenderer::Reset() {
+  const int64_t t0 = NowUs();
   std::lock_guard<std::mutex> lock(mutex_);
   DestroySwapchainLocked();
   DestroyFrameResourcesLocked();
@@ -445,6 +455,8 @@ void VkRenderer::Reset() {
   surfaceDirty_ = true;
   error_.clear();
   info_.clear();
+  HMRDP_LOGI("vulkan presenter: reset %{public}llu ms",
+             static_cast<unsigned long long>((NowUs() - t0) / 1000));
 }
 
 bool VkRenderer::EnsureSwapchainLocked() {
@@ -531,9 +543,9 @@ bool VkRenderer::CreateSwapchainLocked() {
     error_ = "swapchain images cannot be colour attachments";
     return false;
   }
-  // PresentTexture/PresentImage write the swapchain image with transfer commands
-  // (copy when the sizes match, scaled blit otherwise), so TRANSFER_DST is
-  // required in addition to the V0 render-pass path's colour attachment.
+  // PresentImage writes the swapchain image with transfer commands (copy when
+  // the sizes match, scaled blit otherwise), so TRANSFER_DST is required in
+  // addition to the render-pass path's colour attachment.
   if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
     error_ = "swapchain images cannot be transfer destinations";
     return false;

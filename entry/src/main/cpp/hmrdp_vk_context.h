@@ -120,8 +120,8 @@ struct VkApi {
 
   // Compute (VULKAN-TODO §5 V3: the Progressive / RemoteFX decode runs in compute
   // shaders; ClearCodec deliberately stays on the CPU, §5 V4). Resolved
-  // opportunistically: a device that cannot do compute still runs the V1/V2
-  // transfer-only engine.
+  // opportunistically: a device that cannot do compute still runs the
+  // transfer-only part of the engine.
   PFN_vkCreateShaderModule CreateShaderModule = nullptr;
   PFN_vkDestroyShaderModule DestroyShaderModule = nullptr;
   PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout = nullptr;

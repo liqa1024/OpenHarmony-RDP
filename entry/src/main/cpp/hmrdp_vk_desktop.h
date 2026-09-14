@@ -32,9 +32,10 @@
  *  - Commands are recorded into one primary command buffer and submitted at
  *    natural boundaries (`Flush()`: readback, present, teardown).
  *
- * Not implemented yet: Progressive and ClearCodec. Those commands leave the
- * surface untouched, and `unsupportedSeen()` tells a correctness run to exclude
- * the affected frames from its claim (V2 acceptance: `primitives` 12/12 `bad=0`).
+ * On top of that the engine decodes RemoteFX Progressive on the GPU (V3) and
+ * ClearCodec on the CPU against the mapped surface (V4). Codec commands it still
+ * cannot serve (Planar / Alpha / RemoteFX non-progressive, CAPROGRESSIVE_V2)
+ * leave the surface untouched and are counted in `Stats()` - never silent.
  */
 #ifndef HMRDP_VK_DESKTOP_H
 #define HMRDP_VK_DESKTOP_H
@@ -124,11 +125,9 @@ class GfxVkDesktop {
   bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
 
   // --- Diagnostics ---------------------------------------------------------
-  // True when a command V1 does not implement (Progressive / ClearCodec) was
-  // seen since resetUnsupportedSeen(): the compare harness uses this to exclude
-  // frames the engine is not yet expected to reproduce.
-  bool unsupportedSeen() const;
-  void resetUnsupportedSeen();
+  // One-line engine summary (surface/cache counts, per-command timings, the
+  // number of commands whose codec is not implemented, ...). Unimplemented or
+  // failed codec commands are counted and visible here, never silent (V5).
   std::string Stats() const;
   std::string lastError() const;
 

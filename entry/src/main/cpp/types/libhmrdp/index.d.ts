@@ -91,47 +91,25 @@ export const gpuComputeInfo: () => string;
 
 /**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
- * `route` selects the decoder: 0 = GPU desktop engine, 1 = FreeRDP gdi (CPU).
+ * `route` selects the decoder: 0 = CPU (FreeRDP gdi), 1 = GLES engine,
+ * 2 = Vulkan engine, 3 = GLES vs gdi compare, 4 = Vulkan vs gdi compare.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
   gfxPath: string, route: number) => string;
 export const stopGfxReplayTest: () => void;
 /**
- * Dev-only: ClearCodec batch granularity for the GPU replay - the maximum union
+ * Dev-only: ClearCodec batch granularity for the GLES replay - the maximum union
  * rectangle (pixels) a queued ClearCodec run may cover before it is flushed.
- * 0 = one flush per command (minimum mapped bytes, maximum round trips).
+ * 0 = one flush per command (minimum mapped bytes, maximum round trips). The
+ * Vulkan engine decodes ClearCodec directly on the mapped surface and ignores it.
  */
 export const setGfxReplayBatchArea: (pixels: number) => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;
 
 /**
- * Dev/test: Phase 0 Vulkan capability report (VULKAN-TODO §3.2) - loader/device
- * version, migration-relevant extensions, memory types and queue families.
- * Multi-line, for the dev panel.
+ * Dev/test: Vulkan capability report (VULKAN-TODO §3.2) - loader/device version,
+ * migration-relevant extensions, memory types and queue families. Multi-line,
+ * for the dev panel. Used to judge whether a device can run the Vulkan engine.
  */
 export const vulkanInfo: () => string;
-
-/**
- * Dev/test: binds the XComponent surface to the Vulkan swapchain and presents
- * the first solid frame (VULKAN-TODO §5 V0). Returns a status line. Independent
- * of any RDP session; a device without a usable Vulkan driver returns a
- * `failed:` line instead of crashing.
- */
-export const startVulkanTest: (surfaceId: string, surfaceW: number, surfaceH: number) => string;
-export const presentVulkanTest: (red: number, green: number, blue: number) => boolean;
-export const resizeVulkanTest: (width: number, height: number) => void;
-export const stopVulkanTest: () => void;
-
-/**
- * Dev/test (VULKAN-TODO §5 V1): replays the capture through the Vulkan surface
- * engine while FreeRDP's own gdi pipeline consumes the same bytes, and compares
- * the two composed screens pixel by pixel. Frames carrying progressive/clear
- * commands are skipped (V2/V3 scope), so a clean run proves "fill + copy +
- * uncompressed is pixel-exact". `present` (0/1) also blits to the XComponent.
- */
-export const startVulkanEngineTest: (gfxPath: string, surfaceId: string, surfaceW: number,
-  surfaceH: number, present: number) => string;
-export const stopVulkanEngineTest: () => void;
-export const resizeVulkanEngineTest: (width: number, height: number) => void;
-export const vulkanEngineTestStats: () => string;

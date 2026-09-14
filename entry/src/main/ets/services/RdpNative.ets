@@ -11,9 +11,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
 setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
-setGfxReplayBatchArea, vulkanInfo, startVulkanTest, presentVulkanTest, resizeVulkanTest,
-stopVulkanTest, startVulkanEngineTest, stopVulkanEngineTest, resizeVulkanEngineTest,
-vulkanEngineTestStats } from 'libhmrdp.so';
+setGfxReplayBatchArea, vulkanInfo } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -91,7 +89,8 @@ export class RdpNative {
 
   /**
    * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-   * `route`: 0 = GPU desktop engine, 1 = FreeRDP gdi (CPU reference route).
+   * `route`: 0 = CPU (FreeRDP gdi), 1 = GLES engine, 2 = Vulkan engine,
+   * 3 = GLES vs gdi compare, 4 = Vulkan vs gdi compare.
    */
   static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
     gfxPath: string, route: number): string {
@@ -105,8 +104,9 @@ export class RdpNative {
   }
 
   /**
-   * Dev/test: ClearCodec batch granularity for the GPU replay (union-rectangle
-   * pixel cap). Takes effect on the next replay start.
+   * Dev/test: ClearCodec batch granularity for the GLES replay (union-rectangle
+   * pixel cap). Takes effect on the next replay start; the Vulkan engine decodes
+   * ClearCodec directly on the mapped surface and ignores it.
    */
   static setReplayBatchArea(pixels: number): void {
     setGfxReplayBatchArea(pixels);
@@ -125,49 +125,6 @@ export class RdpNative {
     const info: string = vulkanInfo();
     hilog.info(GPU_DOMAIN, GPU_TAG, 'vulkan info: %{public}s', info);
     return info;
-  }
-
-  /** Dev/test: bind the XComponent surface to the Vulkan swapchain. */
-  static startVulkanTest(surfaceId: string, surfaceW: number, surfaceH: number): string {
-    const summary: string = startVulkanTest(surfaceId, surfaceW, surfaceH);
-    hilog.info(GPU_DOMAIN, GPU_TAG, 'vulkan test: %{public}s', summary);
-    return summary;
-  }
-
-  static presentVulkanTest(red: number, green: number, blue: number): boolean {
-    return presentVulkanTest(red, green, blue);
-  }
-
-  static resizeVulkanTest(width: number, height: number): void {
-    resizeVulkanTest(width, height);
-  }
-
-  static stopVulkanTest(): void {
-    stopVulkanTest();
-  }
-
-  /**
-   * Dev/test (V1): replay the capture through the Vulkan surface engine and
-   * compare it pixel by pixel with FreeRDP's gdi pipeline on the same bytes.
-   * `present` != 0 also blits the Vulkan screen to the XComponent.
-   */
-  static startVulkanEngineTest(gfxPath: string, surfaceId: string, surfaceW: number,
-    surfaceH: number, present: number): string {
-    const summary: string = startVulkanEngineTest(gfxPath, surfaceId, surfaceW, surfaceH, present);
-    hilog.info(GPU_DOMAIN, GPU_TAG, 'vk engine test: %{public}s', summary);
-    return summary;
-  }
-
-  static stopVulkanEngineTest(): void {
-    stopVulkanEngineTest();
-  }
-
-  static resizeVulkanEngineTest(width: number, height: number): void {
-    resizeVulkanEngineTest(width, height);
-  }
-
-  static vulkanEngineTestStats(): string {
-    return vulkanEngineTestStats();
   }
 
   setListener(listener: RdpEventListener): void {

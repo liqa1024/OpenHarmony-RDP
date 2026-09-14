@@ -349,9 +349,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
     - compute 派发注意**每轴工作组上限**（`maxComputeWorkGroupCount`，常见 65535）：整屏矩形需要
       10 万+ 工作组，必须用 2D/3D 网格而不是线性下标。
     - **RDPGFX 表面持久**：少实现一条命令，引擎与 gdi 就**永久分叉** ⇒ 捕获回放对比只能在
-      Progressive / ClearCodec 补齐后当闸门（V1/V2 用确定性原语自检 `primitives:`）。
+      Progressive / ClearCodec 补齐后当闸门。
     - 验证回路（跨实现保留）：设置页「抓取 RFX 码流（测试）」→ `hmrdp_gfx.bin`；dev 页「回放测试」
-      三条路线（`GPU` / `CPU(gdi)` / `对比`）；需要**打过补丁并重编的 FreeRDP**
+      五条路线（`CPU` / `GLES` / `Vulkan` / `GLES对比` / `Vulkan对比`）；需要**打过补丁并重编的 FreeRDP**
       （`patch-freerdp.ps1` 第 7 步 + `HmrdpSetGfxRawCapture` / `HmrdpGfxReplayNewWithContext`）。
     - **不要每命令排空流水线 / 等待设备**（旧 `DecodeMessage` 末尾 `glFinish` 的教训）：GPU 侧用 barrier，
       只在真正回读 CPU 处同步；**不要立即销毁在飞资源**（fence 延迟回收）。
@@ -398,10 +398,9 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
 | `entry/src/main/cpp/hmrdp_vk_context.{h,cpp}` | Vulkan 上下文：`dlopen("libvulkan.so")` + 标准能力探测 + 进程级 instance/device/queue + 内存类型选择 + 延迟销毁 |
 | `entry/src/main/cpp/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + 缩放/letterbox 的 blit |
 | `entry/src/main/cpp/hmrdp_vk_desktop.{h,cpp}` | Vulkan 表面引擎：表面注册表 + 命令执行 + 合成 + 屏幕脏区（**V2 起改为 host-visible 缓冲**） |
-| `entry/src/main/cpp/hmrdp_vk_selftest.{h,cpp}` | 确定性原语自检 + 捕获回放对比（dev/验收用，回放页「Vulkan:引擎」驱动） |
 | `entry/src/main/cpp/cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入（用 SDK 自带 `glslang_validator.exe`；shader 列表暂空，V3 起生效） |
 | `entry/src/main/cpp/hmrdp_audio.cpp` | `dlopen` OHAudio 的 PCM 播放器（能力探测 + 环形缓冲 + 欠载/溢出丢帧统计 + 中断/错误降级） |
 | `entry/src/main/cpp/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制（单文件）：落盘 `hmrdp_gfx.bin`（`u32 长度` + 服务端原始 ZGX 字节）与回放读取（`GfxRawCapture`） |
 | `entry/src/main/cpp/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP CPU（gdi）桌面：复用 FreeRDP 自身解码作为回放的对比路线；`PresentGdiFrame` 为 live gdi 回退与 CPU 回放共用 |
-| `entry/src/main/cpp/hmrdp_replay.{h,cpp}` | dev 回放上屏：把 `hmrdp_gfx.bin` 喂给 GPU 引擎或离线 gdi 桌面（`GfxReplayRoute`）并 present 到 XComponent（固定复现） |
+| `entry/src/main/cpp/hmrdp_replay.{h,cpp}` | dev 回放上屏：把 `hmrdp_gfx.bin` 喂给桌面引擎（GLES/Vulkan 由 `GfxReplayRoute` 选择）或离线 gdi 桌面（CPU 路线）并 present 到 XComponent；GPU 路线可叠加 gdi 逐像素对比（固定复现） |
 | ⛔ `hmrdp_rfx.{h,cpp}` / `hmrdp_egl.{h,cpp}` / `hmrdp_renderer.{h,cpp}` | **GLES 引擎 / EGL / GLES 渲染器：已冻结，随 V7 删除**，只作算法与踩坑参考 |

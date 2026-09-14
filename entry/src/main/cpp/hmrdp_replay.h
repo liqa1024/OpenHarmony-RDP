@@ -18,16 +18,24 @@
 namespace hmrdp {
 
 class Renderer;
-class GfxGpuDesktop;
 class GfxCpuDesktop;
+class ReplayDesktop;
 
-// Which decoder the replay runs.
-//  kGpu     - GPU desktop engine only (perf measurement).
-//  kCpu     - FreeRDP's own gdi pipeline only (perf reference).
-//  kCompare - both fed the same capture simultaneously, with a per-frame pixel
-//             comparison (correctness verification). Perf numbers are not
-//             meaningful in this mode.
-enum class GfxReplayRoute { kGpu = 0, kCpu = 1, kCompare = 2 };
+// Which decoder/presenter the replay runs.
+//  kCpu           - FreeRDP's own gdi pipeline only (perf reference).
+//  kGles          - GLES desktop engine only (legacy; frozen, removed in V7).
+//  kVulkan        - Vulkan desktop engine only.
+//  kGlesCompare   - GLES engine + gdi fed the same capture simultaneously, with
+//                   a per-frame pixel comparison (correctness verification).
+//  kVulkanCompare - same comparison with the Vulkan engine.
+// Perf numbers are not meaningful on the compare routes.
+enum class GfxReplayRoute {
+  kCpu = 0,
+  kGles = 1,
+  kVulkan = 2,
+  kGlesCompare = 3,
+  kVulkanCompare = 4,
+};
 
 class GfxReplay {
  public:
@@ -45,9 +53,11 @@ class GfxReplay {
   std::string Stats();
   std::string StatsLines();
 
-  // ClearCodec batch granularity for the next/current GPU replay: maximum union
+  // ClearCodec batch granularity for the next/current GLES replay: maximum union
   // rectangle area (pixels) a queued run may cover. 0 = one command per flush.
   // Applies on the next Start() (the page restarts the replay when it changes).
+  // The Vulkan engine decodes ClearCodec directly on the mapped surface, so it
+  // ignores this knob.
   void SetClearBatchArea(int pixels);
   int ClearBatchArea() const;
 
@@ -73,18 +83,22 @@ class GfxReplay {
   GfxReplay& operator=(const GfxReplay&) = delete;
 
   void Run();
-  void RunGpuReplay(const std::string& gfxPath);
+  // Desktop-engine routes (GLES or Vulkan). `vulkan` picks the engine and
+  // `compare` additionally feeds the capture into an offline gdi desktop and
+  // compares the two screens per frame.
+  void RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool compare);
   void RunCpuReplay(const std::string& gfxPath);
-  // Compare route: GPU engine + offline gdi desktop fed the same stream, with a
-  // sampled per-frame pixel comparison (engine screen vs gdi primary buffer).
-  void RunCompareReplay(const std::string& gfxPath);
   void CompareFrames();
   // Throttles playback to ~60 Hz, but only for frames that actually produced a
   // picture (see the implementation for why empty frame markers must not pace).
   void PaceFrame(int64_t frameStartUs, bool presented);
 
   std::mutex mutex_;
+  // GLES presenter for the pure CPU (gdi) route; the desktop-engine routes own
+  // their own presenter inside `desktop_`.
   std::unique_ptr<Renderer> renderer_;
+  // Engine adapter for the GLES/Vulkan routes (null on the CPU route).
+  std::unique_ptr<ReplayDesktop> desktop_;
   std::thread thread_;
   std::atomic<bool> running_{false};
   void* window_ = nullptr;
@@ -162,12 +176,11 @@ class GfxReplay {
   std::atomic<int> cmpFirstY_{-1};
 
   // Replay-thread only (no locking needed).
-  GfxGpuDesktop* engine_ = nullptr;
   GfxCpuDesktop* cpuDesktop_ = nullptr;
   std::mutex errorMutex_;
   std::string lastError_;
-  // Latest ClearCodec traffic summary from the engine (snapshotted periodically
-  // on the replay thread, read by StatsLines on the UI thread).
+  // Latest engine summary (GLES ClearCodec traffic / Vulkan stats), snapshotted
+  // periodically on the replay thread and read by StatsLines on the UI thread.
   std::string traffic_;
 };
 

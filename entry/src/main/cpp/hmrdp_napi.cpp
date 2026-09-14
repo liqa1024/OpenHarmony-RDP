@@ -22,8 +22,6 @@
 #include "hmrdp_rfx.h"
 #include "hmrdp_session.h"
 #include "hmrdp_vk_context.h"
-#include "hmrdp_vk_renderer.h"
-#include "hmrdp_vk_selftest.h"
 
 namespace {
 
@@ -38,12 +36,6 @@ std::map<int64_t, std::unique_ptr<Session>> g_sessions;
 // multiple concurrent sessions never share surface state.
 std::map<int64_t, OHNativeWindow*> g_windows;
 int64_t g_nextId = 1;
-
-// Dev-only Vulkan bring-up harness (VULKAN-TODO §5 V0). Kept separate from the
-// session so the platform path can be proven before the engine work lands.
-std::mutex g_vkMutex;
-std::unique_ptr<hmrdp::VkRenderer> g_vkRenderer;
-OHNativeWindow* g_vkWindow = nullptr;
 
 napi_threadsafe_function g_eventTsfn = nullptr;
 
@@ -654,13 +646,25 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     if (argc >= 5) {
       napi_get_value_int32(env, args[4], &route);
     }
-    // 0 = GPU only (perf), 1 = CPU(gdi) only (perf reference),
-    // 2 = both fed the same stream + per-frame pixel comparison (correctness).
-    hmrdp::GfxReplayRoute replayRoute = hmrdp::GfxReplayRoute::kGpu;
-    if (route == 1) {
-      replayRoute = hmrdp::GfxReplayRoute::kCpu;
-    } else if (route == 2) {
-      replayRoute = hmrdp::GfxReplayRoute::kCompare;
+    // Route ids match GfxReplayRoute: 0 = CPU(gdi) only (perf reference),
+    // 1 = GLES engine, 2 = Vulkan engine, 3 = GLES vs gdi compare,
+    // 4 = Vulkan vs gdi compare.
+    hmrdp::GfxReplayRoute replayRoute = hmrdp::GfxReplayRoute::kCpu;
+    switch (route) {
+      case 1:
+        replayRoute = hmrdp::GfxReplayRoute::kGles;
+        break;
+      case 2:
+        replayRoute = hmrdp::GfxReplayRoute::kVulkan;
+        break;
+      case 3:
+        replayRoute = hmrdp::GfxReplayRoute::kGlesCompare;
+        break;
+      case 4:
+        replayRoute = hmrdp::GfxReplayRoute::kVulkanCompare;
+        break;
+      default:
+        break;
     }
     const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
     OHNativeWindow* window = nullptr;
@@ -738,174 +742,6 @@ napi_value VulkanInfo(napi_env env, napi_callback_info) {
   return result;
 }
 
-// Dev/test (VULKAN-TODO §5 V0): bind this XComponent's surface to the Vulkan
-// presenter and present the first solid frame. Does not touch any RDP session.
-napi_value StartVulkanTest(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value args[3] = {nullptr, nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  std::string out;
-  if (argc < 3) {
-    out = "failed: need (surfaceId, surfaceW, surfaceH)";
-  } else {
-    const std::string surfaceId = GetStringArg(env, args[0]);
-    int32_t surfaceW = 0;
-    int32_t surfaceH = 0;
-    napi_get_value_int32(env, args[1], &surfaceW);
-    napi_get_value_int32(env, args[2], &surfaceH);
-    const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
-    OHNativeWindow* window = nullptr;
-    const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
-    if (err != 0 || window == nullptr) {
-      out = "failed: native window";
-    } else {
-      std::lock_guard<std::mutex> lock(g_vkMutex);
-      if (g_vkRenderer == nullptr) {
-        g_vkRenderer = std::make_unique<hmrdp::VkRenderer>();
-      }
-      if (g_vkWindow != nullptr && g_vkWindow != window) {
-        OH_NativeWindow_DestroyNativeWindow(g_vkWindow);
-      }
-      g_vkWindow = window;
-      g_vkRenderer->SetSurface(window, surfaceW, surfaceH);
-      out = g_vkRenderer->Prepare() ? ("ok " + g_vkRenderer->Describe())
-                                    : ("failed: " + g_vkRenderer->lastError());
-    }
-  }
-  HMRDP_LOGI("vulkan test start: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
-}
-
-// Presents one more solid frame; the dev page drives this so repeated
-// acquire/present and surface re-creation are exercised on device.
-napi_value PresentVulkanTest(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value args[3] = {nullptr, nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int32_t red = 16;
-  int32_t green = 96;
-  int32_t blue = 176;
-  if (argc >= 3) {
-    napi_get_value_int32(env, args[0], &red);
-    napi_get_value_int32(env, args[1], &green);
-    napi_get_value_int32(env, args[2], &blue);
-  }
-  const auto clamp = [](int32_t value) -> uint8_t {
-    if (value < 0) {
-      return 0;
-    }
-    return value > 255 ? 255 : static_cast<uint8_t>(value);
-  };
-  std::lock_guard<std::mutex> lock(g_vkMutex);
-  if (g_vkRenderer == nullptr || !g_vkRenderer->ready()) {
-    return CreateBool(env, false);
-  }
-  return CreateBool(env, g_vkRenderer->PresentClear(clamp(red), clamp(green), clamp(blue)));
-}
-
-napi_value ResizeVulkanTest(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int32_t width = 0;
-  int32_t height = 0;
-  if (argc >= 2) {
-    napi_get_value_int32(env, args[0], &width);
-    napi_get_value_int32(env, args[1], &height);
-  }
-  std::lock_guard<std::mutex> lock(g_vkMutex);
-  if (g_vkRenderer != nullptr) {
-    g_vkRenderer->ResizeSurface(width, height);
-  }
-  return CreateUndefined(env);
-}
-
-napi_value StopVulkanTest(napi_env env, napi_callback_info) {
-  std::lock_guard<std::mutex> lock(g_vkMutex);
-  if (g_vkRenderer != nullptr) {
-    g_vkRenderer->Reset();
-    g_vkRenderer.reset();
-  }
-  if (g_vkWindow != nullptr) {
-    OH_NativeWindow_DestroyNativeWindow(g_vkWindow);
-    g_vkWindow = nullptr;
-  }
-  return CreateUndefined(env);
-}
-
-// Dev/test (VULKAN-TODO §5 V1): replay a capture through the Vulkan surface
-// engine while FreeRDP's own gdi pipeline consumes the same bytes, and compare
-// the two composed screens pixel by pixel. Frames carrying progressive/clear
-// commands are excluded (V2/V3), so a clean run proves "fill + copy +
-// uncompressed is pixel-exact". `present` (0/1) also blits to the XComponent.
-napi_value StartVulkanEngineTest(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  std::string out;
-  if (argc < 5) {
-    out = "failed: need (gfxPath, surfaceId, surfaceW, surfaceH, present)";
-  } else {
-    const std::string gfxPath = GetStringArg(env, args[0]);
-    const std::string surfaceId = GetStringArg(env, args[1]);
-    int32_t surfaceW = 0;
-    int32_t surfaceH = 0;
-    int32_t present = 0;
-    napi_get_value_int32(env, args[2], &surfaceW);
-    napi_get_value_int32(env, args[3], &surfaceH);
-    if (argc >= 5) {
-      napi_get_value_int32(env, args[4], &present);
-    }
-    OHNativeWindow* window = nullptr;
-    if (surfaceId.length() > 0) {
-      const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
-      const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
-      if (err != 0 || window == nullptr) {
-        window = nullptr;
-      }
-    }
-    if (hmrdp::GfxVkSelfTest::Instance().Start(gfxPath, window, surfaceW, surfaceH,
-                                               present != 0)) {
-      out = "started " + hmrdp::GfxVkSelfTest::Instance().Stats();
-    } else {
-      out = "failed: " + hmrdp::GfxVkSelfTest::Instance().StatsLines();
-    }
-  }
-  HMRDP_LOGI("vk selftest: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
-}
-
-napi_value StopVulkanEngineTest(napi_env env, napi_callback_info) {
-  hmrdp::GfxVkSelfTest::Instance().Stop();
-  return CreateUndefined(env);
-}
-
-napi_value ResizeVulkanEngineTest(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int32_t width = 0;
-  int32_t height = 0;
-  if (argc >= 2) {
-    napi_get_value_int32(env, args[0], &width);
-    napi_get_value_int32(env, args[1], &height);
-  }
-  hmrdp::GfxVkSelfTest::Instance().Resize(width, height);
-  return CreateUndefined(env);
-}
-
-napi_value VulkanEngineTestStats(napi_env env, napi_callback_info) {
-  const std::string lines = hmrdp::GfxVkSelfTest::Instance().StatsLines();
-  HMRDP_LOGI("vk selftest: %{public}s", hmrdp::GfxVkSelfTest::Instance().Stats().c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, lines.c_str(), lines.size(), &result);
-  return result;
-}
-
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -978,22 +814,6 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setGfxReplayBatchArea", nullptr, SetGfxReplayBatchArea, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"startVulkanTest", nullptr, StartVulkanTest, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"presentVulkanTest", nullptr, PresentVulkanTest, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"resizeVulkanTest", nullptr, ResizeVulkanTest, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"stopVulkanTest", nullptr, StopVulkanTest, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"startVulkanEngineTest", nullptr, StartVulkanEngineTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"stopVulkanEngineTest", nullptr, StopVulkanEngineTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"resizeVulkanEngineTest", nullptr, ResizeVulkanEngineTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"vulkanEngineTestStats", nullptr, VulkanEngineTestStats, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

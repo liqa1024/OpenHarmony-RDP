@@ -74,7 +74,6 @@ add_library(hmrdp SHARED
     hmrdp_vk_context.cpp
     hmrdp_vk_renderer.cpp
     hmrdp_vk_desktop.cpp
-    hmrdp_vk_selftest.cpp
     ${HMRDP_SHADER_HEADERS}
 )
 

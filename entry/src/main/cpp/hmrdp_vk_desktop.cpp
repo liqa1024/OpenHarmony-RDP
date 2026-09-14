@@ -294,11 +294,9 @@ struct GfxVkDesktop::Impl {
   int screenDirtyR = 0;
   int screenDirtyB = 0;
 
-  // Coverage: `unsupported` means "an unimplemented/failed codec command was
-  // applied since the last reset"; the harness keeps its own ever-seen flag,
-  // because once one is applied the surfaces diverge from gdi for good. The
-  // split counters say *which* codec is responsible (ClearCodec is V4).
-  bool unsupported = false;
+  // Coverage counters: "unsupported" = an unimplemented/failed codec command
+  // was applied. The split counters say *which* codec is responsible
+  // (ClearCodec is V4). Reported by Stats() so nothing fails silently (V5).
   uint64_t unsupportedCount = 0;
   uint64_t clearUnsupported = 0;
   uint64_t clearDecoded = 0;
@@ -1638,8 +1636,10 @@ void GfxVkDesktop::Reset() {
   if (impl_ == nullptr) {
     return;
   }
+  const int64_t resetStart = Impl::NowUs();
   impl_->Flush();
   impl_->ReleasePending();
+  const int64_t afterRelease = Impl::NowUs();
   VkApi& api = GetVkApi();
   const VkDevice device = impl_->device();
   for (auto& kv : impl_->surfaces) {
@@ -1649,10 +1649,12 @@ void GfxVkDesktop::Reset() {
     impl_->DestroyGpuBuffer(&kv.second.rfx.bp);
   }
   impl_->surfaces.clear();
+  const size_t cacheCount = impl_->cache.size();
   for (auto& kv : impl_->cache) {
     impl_->DestroyGpuBuffer(&kv.second.gpu);
   }
   impl_->cache.clear();
+  const int64_t afterCache = Impl::NowUs();
   impl_->DestroyImage(&impl_->screen);
   impl_->DestroyGpuBuffer(&impl_->coef);
   impl_->DestroyStage();
@@ -1680,6 +1682,12 @@ void GfxVkDesktop::Reset() {
   ready_ = false;
   screenW_ = 0;
   screenH_ = 0;
+  HMRDP_LOGI("vk desktop: reset %{public}llu ms (flush+release=%{public}llu cache[%{public}u]=%{public}llu tail=%{public}llu)",
+             static_cast<unsigned long long>((Impl::NowUs() - resetStart) / 1000),
+             static_cast<unsigned long long>((afterRelease - resetStart) / 1000),
+             static_cast<unsigned>(cacheCount),
+             static_cast<unsigned long long>((afterCache - afterRelease) / 1000),
+             static_cast<unsigned long long>((Impl::NowUs() - afterCache) / 1000));
 }
 
 bool GfxVkDesktop::ready() const {
@@ -2234,15 +2242,13 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         // and region rect (gdi does the same).
         if (!impl_->DecodeProgressive(sid, payload, payloadLen, left, top)) {
           // No compute support / malformed container: leave the surface
-          // untouched and flag the frame so a correctness run excludes it.
-          impl_->unsupported = true;
+          // untouched, but count it (never silent).
           impl_->unsupportedCount++;
           impl_->progressiveFailed++;
         }
       } else if (codecId == kGpuCodecClearCodec) {
         // V4: CPU clear_decompress read-modify-write on the mapped surface.
         if (!impl_->ClearCodecDecode(sid, payload, payloadLen, left, top, width, height)) {
-          impl_->unsupported = true;
           impl_->unsupportedCount++;
           impl_->clearUnsupported++;
         }
@@ -2298,16 +2304,6 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         break;
     }
     Impl::AddStat(stat, opStart);
-  }
-}
-
-bool GfxVkDesktop::unsupportedSeen() const {
-  return impl_ != nullptr && impl_->unsupported;
-}
-
-void GfxVkDesktop::resetUnsupportedSeen() {
-  if (impl_ != nullptr) {
-    impl_->unsupported = false;
   }
 }
 
@@ -2378,6 +2374,13 @@ bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {
   }
   if (!engine->Compose()) {
     return false;  // static frame: nothing dirty, no present (FPS stays 0)
+  }
+  // Compose() only *records* the buffer->image copies; the screen image is not
+  // updated until they are submitted. Flush() before blitting it, otherwise the
+  // presenter blits the previous (or initial) screen and, worse, every frame's
+  // commands pile up into one giant submission that only runs at teardown.
+  if (!engine->Flush()) {
+    return false;
   }
   const bool presented = renderer->PresentImage(engine->screenImage(), engine->format(),
                                                engine->screenWidth(), engine->screenHeight());

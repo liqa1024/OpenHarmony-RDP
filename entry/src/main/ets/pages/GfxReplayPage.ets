@@ -17,20 +17,19 @@ const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
 
 // ClearCodec batch presets: union-rectangle pixel cap. 0 = one flush per command
-// (minimum mapped bytes, maximum round trips).
+// (minimum mapped bytes, maximum round trips). Only the GLES route uses this;
+// the Vulkan engine decodes ClearCodec directly on the mapped surface.
 const BATCH_PRESET_PX: number[] = [0, 262144, 1048576, 4194304];
 const BATCH_PRESET_LABEL: string[] = ['单条', '小', '中', '大'];
-// 0 = GPU only (perf), 1 = CPU(gdi) only (perf reference),
-// 2 = both + per-frame pixel comparison (correctness).
-const ROUTE_LABEL: string[] = ['GPU', 'CPU', '对比'];
-// V0 Vulkan bring-up (VULKAN-TODO §5 V0): consecutive presents step through a
-// small palette so a live swapchain is visually obvious.
-const VK_COLOR_R: number[] = [46, 55, 209, 192, 138, 16];
-const VK_COLOR_G: number[] = [125, 179, 162, 80, 92, 16];
-const VK_COLOR_B: number[] = [209, 127, 46, 80, 209, 16];
-// Vulkan test mode: 0 = GL replay, 1 = V0 solid-colour swapchain test,
-// 2 = V1 surface engine replayed + compared against FreeRDP gdi.
-const VK_MODE_LABEL: string[] = ['关', '纯色', '引擎'];
+// 0 = CPU (FreeRDP gdi) only (perf reference), 1 = GLES engine only,
+// 2 = Vulkan engine only, 3 = GLES vs gdi compare, 4 = Vulkan vs gdi compare.
+// Ids match the native GfxReplayRoute enum.
+const ROUTE_CPU: number = 0;
+const ROUTE_GLES: number = 1;
+const ROUTE_VULKAN: number = 2;
+const ROUTE_GLES_COMPARE: number = 3;
+const ROUTE_VULKAN_COMPARE: number = 4;
+const ROUTE_LABEL: string[] = ['CPU', 'GLES', 'Vulkan', 'GLES对比', 'Vulkan对比'];
 
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -65,8 +64,8 @@ class ReplaySurfaceController extends XComponentController {
 @Component
 struct GfxReplayPage {
   @State status: string = '等待 surface...';
-  // 0 = GPU desktop engine (shared texture), 1 = FreeRDP gdi (CPU reference).
-  @State replayRoute: number = 0;
+  // Decoder/presenter route; see ROUTE_LABEL (ids match the native enum).
+  @State replayRoute: number = ROUTE_CPU;
   // On-device performance panel: the stats string is multi-line, shown in a
   // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
@@ -76,20 +75,21 @@ struct GfxReplayPage {
   // the mapped staging buffer; the right value is device-dependent, which is
   // exactly what this switch is for.
   @State batchPreset: number = 2;  // 1M px (~4MB) default
-  // V0/V1 Vulkan bring-up (VULKAN-TODO §5 V0/V1): see VK_MODE_LABEL.
-  @State vkMode: number = 0;
+  // Vulkan capability report, fetched when a Vulkan route starts.
   @State vkInfo: string = '';
-  @State vkIndex: number = 0;
   private controller: ReplaySurfaceController = new ReplaySurfaceController();
   private statsTimer: number = -1;
-  private vkTimer: number = -1;
   private surfaceId: string = '';
   private surfaceW: number = 0;
   private surfaceH: number = 0;
 
+  private isVulkanRoute(): boolean {
+    return this.replayRoute === ROUTE_VULKAN || this.replayRoute === ROUTE_VULKAN_COMPARE;
+  }
+
   aboutToAppear(): void {
     this.applyFullScreen(true);
-    // Renderer / GLES version - the key signal that the GPU path is really in
+    // Renderer / GLES version - the key signal that the GLES path is really in
     // use (compute=1) when running on the target device.
     try {
       this.gpuInfo = RdpNative.describeGpuCompute();
@@ -102,25 +102,16 @@ struct GfxReplayPage {
         this.surfaceW = width;
         this.surfaceH = height;
         // The surface is also re-created after a background/foreground round
-        // trip, so the current mode decides what is brought back up.
-        this.startMode();
+        // trip, so the current route decides what is brought back up.
+        this.startReplay();
       },
       (surfaceId: string, width: number, height: number) => {
         this.surfaceW = width;
         this.surfaceH = height;
-        if (this.vkMode === 1) {
-          RdpNative.resizeVulkanTest(width, height);
-        } else if (this.vkMode === 2) {
-          RdpNative.resizeVulkanEngineTest(width, height);
-        } else {
-          RdpNative.resizeReplayTest(width, height);
-        }
+        RdpNative.resizeReplayTest(width, height);
       },
       (surfaceId: string) => {
         this.stopStatsTimer();
-        this.stopVkTimer();
-        RdpNative.stopVulkanTest();
-        RdpNative.stopVulkanEngineTest();
         RdpNative.stopReplayTest();
       }
     );
@@ -128,26 +119,8 @@ struct GfxReplayPage {
 
   aboutToDisappear(): void {
     this.stopStatsTimer();
-    this.stopVkTimer();
-    RdpNative.stopVulkanTest();
-    RdpNative.stopVulkanEngineTest();
     RdpNative.stopReplayTest();
     this.applyFullScreen(false);
-  }
-
-  // Starts whatever the current mode needs. Called on entry and whenever the
-  // XComponent surface is (re)created.
-  private startMode(): void {
-    if (this.surfaceW <= 0 || this.surfaceH <= 0 || this.surfaceId.length === 0) {
-      return;
-    }
-    if (this.vkMode === 1) {
-      this.startVulkanTest();
-    } else if (this.vkMode === 2) {
-      this.startVulkanEngineTest();
-    } else {
-      this.startReplay();
-    }
   }
 
   private startReplay(): void {
@@ -169,84 +142,15 @@ struct GfxReplayPage {
     }
     RdpNative.stopReplayTest();
     RdpNative.setReplayBatchArea(BATCH_PRESET_PX[this.batchPreset]);
+    if (this.isVulkanRoute()) {
+      try {
+        this.vkInfo = RdpNative.describeVulkan();
+      } catch (error) {
+        this.vkInfo = `vulkan info unavailable: ${JSON.stringify(error)}`;
+      }
+    }
     const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
       this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRoute);
-    this.status = summary.startsWith('failed')
-      ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
-      : summary;
-    this.startStatsTimer();
-  }
-
-  // V0: bind the surface to the Vulkan swapchain and start presenting colours.
-  private startVulkanTest(): void {
-    if (this.surfaceW <= 0 || this.surfaceH <= 0 || this.surfaceId.length === 0) {
-      return;
-    }
-    RdpNative.stopReplayTest();
-    this.stopStatsTimer();
-    this.vkInfo = RdpNative.describeVulkan();
-    this.status = RdpNative.startVulkanTest(this.surfaceId, this.surfaceW, this.surfaceH);
-    this.startVkTimer();
-  }
-
-  private startVkTimer(): void {
-    if (this.vkTimer !== -1) {
-      return;
-    }
-    this.vkTimer = setInterval(() => {
-      const index: number = this.vkIndex;
-      const ok: boolean = RdpNative.presentVulkanTest(VK_COLOR_R[index], VK_COLOR_G[index],
-        VK_COLOR_B[index]);
-      this.status = `Vulkan 上屏 #${index} ${ok ? 'ok' : 'failed'}`;
-      this.vkIndex = (index + 1) % VK_COLOR_R.length;
-    }, 700);
-  }
-
-  private stopVkTimer(): void {
-    if (this.vkTimer !== -1) {
-      clearInterval(this.vkTimer);
-      this.vkTimer = -1;
-    }
-  }
-
-  private toggleVulkanMode(): void {
-    this.cycleVulkanMode((this.vkMode + 1) % VK_MODE_LABEL.length);
-  }
-
-  // Switches between the GL replay (0), the V0 solid-colour swapchain test (1)
-  // and the V1 Vulkan surface engine replayed + compared against gdi (2).
-  private cycleVulkanMode(mode: number): void {
-    this.vkMode = mode;
-    this.stopVkTimer();
-    this.stopStatsTimer();
-    RdpNative.stopVulkanTest();
-    RdpNative.stopVulkanEngineTest();
-    RdpNative.stopReplayTest();
-    this.startMode();
-  }
-
-  // V1: replay the capture through the Vulkan surface engine and compare it
-  // pixel by pixel with FreeRDP's gdi pipeline on the same bytes.
-  private startVulkanEngineTest(): void {
-    let dir: string = '';
-    try {
-      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
-      if (ctx !== undefined) {
-        dir = ctx.filesDir;
-      }
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'filesDir unavailable: %{public}s', JSON.stringify(error));
-    }
-    if (dir.length === 0) {
-      this.status = 'filesDir 不可用';
-      return;
-    }
-    this.vkInfo = RdpNative.describeVulkan();
-    // present = 1: the engine screen is blitted to the swapchain (scaled and
-    // letterboxed when the desktop does not match the window). This is a
-    // real-device-only feature - the Vulkan backend targets 2in1 hardware.
-    const summary: string = RdpNative.startVulkanEngineTest(`${dir}/hmrdp_gfx.bin`,
-      this.surfaceId, this.surfaceW, this.surfaceH, 1);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;
@@ -288,11 +192,7 @@ struct GfxReplayPage {
       return;
     }
     this.statsTimer = setInterval(() => {
-      if (this.vkMode === 2) {
-        this.status = RdpNative.vulkanEngineTestStats();
-      } else {
-        this.status = RdpNative.replayTestStats();
-      }
+      this.status = RdpNative.replayTestStats();
     }, 1000);
   }
 
@@ -347,17 +247,6 @@ struct GfxReplayPage {
             this.startReplay();
           })
 
-        Button(`Vulkan:${VK_MODE_LABEL[this.vkMode]}`)
-          .height(34)
-          .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
-          .borderRadius(9)
-          .margin({ right: 8 })
-          .onClick(() => {
-            this.toggleVulkanMode();
-          })
-
         Button(this.showStats ? '隐藏信息' : '显示信息')
           .height(34)
           .fontSize(13)
@@ -394,7 +283,7 @@ struct GfxReplayPage {
 
         if (this.showStats) {
           Column() {
-            Text(this.vkMode > 0 && this.vkInfo.length > 0 ? this.vkInfo : this.gpuInfo)
+            Text(this.isVulkanRoute() && this.vkInfo.length > 0 ? this.vkInfo : this.gpuInfo)
               .fontSize(12)
               .fontColor('#FF9CDCFE')
               .width('100%')

@@ -1,12 +1,10 @@
 /*
  * HmRdp - Vulkan presenter for one XComponent surface.
  *
- * V0 scope (VULKAN-TODO.md §5 V0): bring up instance -> device -> VkSurfaceKHR ->
- * swapchain and clear the swapchain image to a solid colour, proving the whole
- * platform path end to end (including swapchain re-creation and foreground /
- * background transitions). Frame upload and shared-texture presentation arrive
- * with V1/V2, at which point the public methods mirror Renderer (VULKAN-TODO
- * §4.3).
+ * instance -> device -> VkSurfaceKHR -> swapchain, plus the letterboxed blit of
+ * the GPU desktop engine's composed screen onto the swapchain. The public methods
+ * mirror Renderer (the GLES presenter), so the replay/session code can present
+ * through either backend.
  */
 #ifndef HMRDP_VK_RENDERER_H
 #define HMRDP_VK_RENDERER_H
@@ -34,10 +32,9 @@ class VkRenderer {
   void DestroySurface();
 
   // Creates the swapchain and presents one black frame, so the surface shows
-  // something before the first real frame (mirrors Renderer::Prepare).
+  // something before the first real frame (mirrors Renderer::Prepare). Also
+  // pins the image format the engine must be created with.
   bool Prepare();
-  // Presents one solid frame; re-creates the swapchain when it is out of date.
-  bool PresentClear(uint8_t r, uint8_t g, uint8_t b);
   // Blits an image that lives on the same VkDevice (the GPU desktop engine's
   // composed screen, VK_IMAGE_LAYOUT_GENERAL) into the swapchain, letterboxed and
   // cleared to black outside the picture. No CPU readback: one device, one
@@ -62,6 +59,9 @@ class VkRenderer {
   bool CreateSwapchainLocked();
   void DestroySwapchainLocked();
   void DestroyFrameResourcesLocked();
+  // Clears the swapchain image to one colour and presents it (Prepare's body);
+  // re-creates the swapchain when it is out of date.
+  bool PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b);
 
   // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;

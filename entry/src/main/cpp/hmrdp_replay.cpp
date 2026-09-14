@@ -3,18 +3,23 @@
  *
  * Present-on-screen consumer of the shared replay driver: the capture is read,
  * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
- * parsing), the resulting commands go to the GPU desktop engine, and this file
- * only presents the composed screen on every EndFrame - through the very same
- * GpuPresentComposed() the live session uses.
+ * parsing), the resulting commands go to a desktop engine (GLES or Vulkan), and
+ * this file only presents the composed screen on every EndFrame - through the
+ * very same Gpu{,Vk}PresentComposed() the live session uses. The GPU routes can
+ * additionally run an offline gdi desktop on the same bytes and compare the two
+ * screens pixel by pixel.
  */
 #include "hmrdp_replay.h"
 
 #include <native_window/external_window.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "hmrdp_gfx_capture.h"
 #include "hmrdp_gfx_cpu.h"
@@ -22,8 +27,40 @@
 #include "hmrdp_log.h"
 #include "hmrdp_renderer.h"
 #include "hmrdp_rfx.h"  // GfxGpuDesktop + GpuPresentComposed
+#include "hmrdp_vk_desktop.h"
+#include "hmrdp_vk_renderer.h"
 
 namespace hmrdp {
+
+// Engine-agnostic view of a desktop engine for the replay harness. GfxGpuDesktop
+// (GLES) and GfxVkDesktop (Vulkan) reproduce the same GFX command semantics and
+// each is presented through its own renderer, so the harness only needs this
+// much of them and its routing/stats code stays free of backend types.
+class ReplayDesktop {
+ public:
+  virtual ~ReplayDesktop() = default;
+  // Brings up the engine + presenter on the given XComponent surface; returns
+  // false and fills `error` on failure. `clearBatchArea` is the GLES ClearCodec
+  // batching cap (ignored by the Vulkan engine).
+  virtual bool Init(void* window, int width, int height, int clearBatchArea,
+                    std::string* error) = 0;
+  virtual void Resize(int width, int height) = 0;
+  virtual void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                     const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                     uint32_t payloadLen) = 0;
+  // Total ClearCodec flush work (map/unmap + CPU decode) so far; 0 when the
+  // engine has no such round trip (Vulkan).
+  virtual uint64_t ClearWorkUs() const = 0;
+  // Composes and presents the engine screen. Returns false when nothing was
+  // dirty (static frame) or the present failed.
+  virtual bool Present() = 0;
+  virtual bool screenDirty() const = 0;
+  virtual bool ReadScreen(std::vector<uint8_t>* out) = 0;
+  virtual int screenWidth() const = 0;
+  virtual int screenHeight() const = 0;
+  // One-line engine summary for the dev panel.
+  virtual std::string Summary() const = 0;
+};
 
 namespace {
 
@@ -35,7 +72,7 @@ constexpr int kStartWaitUs = 3000000;
 // live shadow check - reading the engine screen back is expensive).
 constexpr uint64_t kCompareEvery = 30;
 
-// ClearCodec batch granularity for the GPU route (union-rectangle pixel cap).
+// ClearCodec batch granularity for the GLES route (union-rectangle pixel cap).
 // Configurable so the sync-count vs mapped-bytes trade-off can be measured on
 // real hardware instead of being fixed to a simulator-derived value.
 std::atomic<int> g_clearBatchArea{1 << 20};
@@ -46,10 +83,124 @@ int64_t NowUs() {
       .count();
 }
 
-// Sends the replayed commands into the GPU engine; the driver supplies them.
+// Stable route name for the stats panel / hilog.
+const char* RouteName(GfxReplayRoute route) {
+  switch (route) {
+    case GfxReplayRoute::kCpu:
+      return "cpu";
+    case GfxReplayRoute::kGles:
+      return "gles";
+    case GfxReplayRoute::kVulkan:
+      return "vulkan";
+    case GfxReplayRoute::kGlesCompare:
+      return "gles-compare";
+    case GfxReplayRoute::kVulkanCompare:
+      return "vulkan-compare";
+  }
+  return "?";
+}
+
+// GLES desktop engine (frozen legacy path, VULKAN-TODO §5 V7) + its EGL
+// renderer.
+class GlesReplayDesktop : public ReplayDesktop {
+ public:
+  bool Init(void* window, int width, int height, int clearBatchArea,
+            std::string* error) override {
+    clear_ = CreateFreeRdpClearDecoder();
+    engine_ = std::make_unique<GfxGpuDesktop>(clear_.get());
+    engine_->SetClearBatchAreaLimit(clearBatchArea);
+    if (!engine_->Init()) {
+      if (error != nullptr) {
+        *error = "engine init failed";
+      }
+      engine_.reset();
+      clear_.reset();
+      return false;
+    }
+    renderer_ = std::make_unique<Renderer>();
+    renderer_->SetSurface(window, width, height);
+    renderer_->Prepare();
+    return true;
+  }
+
+  void Resize(int width, int height) override { renderer_->ResizeSurface(width, height); }
+
+  void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+             const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+             uint32_t payloadLen) override {
+    engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+  }
+
+  uint64_t ClearWorkUs() const override { return engine_->ClearWorkUs(); }
+  bool Present() override { return GpuPresentComposed(engine_.get(), renderer_.get()); }
+  bool screenDirty() const override { return engine_->screenDirty(); }
+  bool ReadScreen(std::vector<uint8_t>* out) override { return engine_->ReadScreen(out); }
+  int screenWidth() const override { return engine_->screenWidth(); }
+  int screenHeight() const override { return engine_->screenHeight(); }
+  std::string Summary() const override { return engine_->TrafficStats(); }
+
+ private:
+  std::unique_ptr<GfxClearDecoder> clear_;
+  std::unique_ptr<GfxGpuDesktop> engine_;
+  std::unique_ptr<Renderer> renderer_;
+};
+
+// Vulkan desktop engine + its swapchain renderer (VULKAN-TODO §5 V2/V6).
+class VulkanReplayDesktop : public ReplayDesktop {
+ public:
+  bool Init(void* window, int width, int height, int /*clearBatchArea*/,
+            std::string* error) override {
+    renderer_ = std::make_unique<VkRenderer>();
+    renderer_->SetSurface(window, width, height);
+    // Prepare() creates the swapchain and presents a black frame; it also pins
+    // the image format the engine must be created with (a blit cannot convert
+    // channel order, so engine and swapchain have to agree).
+    if (!renderer_->Prepare()) {
+      if (error != nullptr) {
+        *error = "vulkan surface/swapchain failed: " + renderer_->lastError();
+      }
+      renderer_.reset();
+      return false;
+    }
+    engine_ = std::make_unique<GfxVkDesktop>();
+    if (!engine_->Init(renderer_->format())) {
+      if (error != nullptr) {
+        *error = "vulkan engine init failed";
+      }
+      engine_.reset();
+      renderer_.reset();
+      return false;
+    }
+    return true;
+  }
+
+  void Resize(int width, int height) override { renderer_->ResizeSurface(width, height); }
+
+  void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+             const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+             uint32_t payloadLen) override {
+    engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+  }
+
+  // The Vulkan engine decodes ClearCodec directly on the mapped surface, so it
+  // has no staging flush to account for.
+  uint64_t ClearWorkUs() const override { return 0; }
+  bool Present() override { return GpuVkPresentComposed(engine_.get(), renderer_.get()); }
+  bool screenDirty() const override { return engine_->screenDirty(); }
+  bool ReadScreen(std::vector<uint8_t>* out) override { return engine_->ReadScreen(out); }
+  int screenWidth() const override { return engine_->screenWidth(); }
+  int screenHeight() const override { return engine_->screenHeight(); }
+  std::string Summary() const override { return engine_->Stats(); }
+
+ private:
+  std::unique_ptr<GfxVkDesktop> engine_;
+  std::unique_ptr<VkRenderer> renderer_;
+};
+
+// Sends the replayed commands into the engine; the driver supplies them.
 class ReplaySink : public GfxCommandSink {
  public:
-  ReplaySink(GfxGpuDesktop* engine, GfxReplay* owner) : engine_(engine), owner_(owner) {}
+  ReplaySink(ReplayDesktop* engine, GfxReplay* owner) : engine_(engine), owner_(owner) {}
 
   void ApplyGfx(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
                 const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
@@ -65,7 +216,7 @@ class ReplaySink : public GfxCommandSink {
     // to its own bucket so the per-class averages stay meaningful.
     const uint64_t flushBefore = engine_->ClearWorkUs();
     const int64_t t0 = NowUs();
-    engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+    engine_->Apply(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
     const int64_t total = NowUs() - t0;
     const int64_t flushUs = static_cast<int64_t>(engine_->ClearWorkUs() - flushBefore);
     if (owner_ != nullptr) {
@@ -78,7 +229,7 @@ class ReplaySink : public GfxCommandSink {
   }
 
  private:
-  GfxGpuDesktop* engine_ = nullptr;
+  ReplayDesktop* engine_ = nullptr;
   GfxReplay* owner_ = nullptr;
 };
 
@@ -115,7 +266,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     gfxPath_ = gfxPath;
     route_.store(static_cast<int>(route));
     cpuDesktop_ = nullptr;
-    engine_ = nullptr;
+    desktop_.reset();
     frames_.store(0);
     presents_.store(0);
     presentSkips_.store(0);
@@ -161,8 +312,14 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     paceUs_.store(0);
     startUs_.store(NowUs());
     endUs_.store(0);
-    renderer_.reset(new Renderer());
-    renderer_->SetSurface(window_, surfaceW_, surfaceH_);
+    // The pure CPU route presents raw gdi frames through the GLES renderer; the
+    // desktop-engine routes build their own presenter inside the worker.
+    if (route == GfxReplayRoute::kCpu) {
+      renderer_ = std::make_unique<Renderer>();
+      renderer_->SetSurface(window_, surfaceW_, surfaceH_);
+    } else {
+      renderer_.reset();
+    }
     running_.store(true);
     thread_ = std::thread(&GfxReplay::Run, this);
   }
@@ -181,7 +338,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     return false;
   }
   HMRDP_LOGI("gfx replay: started route=%{public}s surface=%{public}dx%{public}d path=%{public}s",
-             route == GfxReplayRoute::kCpu ? "cpu" : "gpu", surfaceW, surfaceH, gfxPath.c_str());
+             RouteName(static_cast<GfxReplayRoute>(route_.load())), surfaceW, surfaceH,
+             gfxPath.c_str());
   return true;
 }
 
@@ -251,17 +409,7 @@ std::string GfxReplay::StatsLines() {
                               ? (measuredPump > pace ? measuredPump - pace : 0)
                               : (elapsed > pace ? elapsed - pace : 0);
 
-  const char* routeName = "gpu";
-  switch (static_cast<GfxReplayRoute>(route_.load())) {
-    case GfxReplayRoute::kCpu:
-      routeName = "cpu";
-      break;
-    case GfxReplayRoute::kCompare:
-      routeName = "compare";
-      break;
-    default:
-      break;
-  }
+  const char* routeName = RouteName(static_cast<GfxReplayRoute>(route_.load()));
   const unsigned long long frames = static_cast<unsigned long long>(frames_.load());
   char head[320];
   std::snprintf(head, sizeof(head),
@@ -447,16 +595,16 @@ void GfxReplay::OnReplayFrame() {
   }
   const int pw = pendingW_.exchange(0);
   const int ph = pendingH_.exchange(0);
-  if (pw > 0 && ph > 0) {
-    renderer_->ResizeSurface(pw, ph);
+  if (pw > 0 && ph > 0 && desktop_ != nullptr) {
+    desktop_->Resize(pw, ph);
   }
   const int64_t presentStart = NowUs();
-  const bool presented = GpuPresentComposed(engine_, renderer_.get());
+  const bool presented = desktop_ != nullptr && desktop_->Present();
   RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
   frames_.fetch_add(1);
   if (presented) {
     presents_.fetch_add(1);
-  } else if (engine_ != nullptr && !engine_->screenDirty()) {
+  } else if (desktop_ != nullptr && !desktop_->screenDirty()) {
     // Nothing to show: no surface had a dirty region mapped to the output, so
     // Compose() bailed out before touching the screen. This is the normal
     // "static frame" case (typically the first frame markers before
@@ -477,8 +625,8 @@ void GfxReplay::OnReplayFrame() {
     }
   }
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
-    if (engine_ != nullptr) {
-      const std::string t = engine_->TrafficStats();
+    if (desktop_ != nullptr) {
+      const std::string t = desktop_->Summary();
       std::lock_guard<std::mutex> lock(errorMutex_);
       traffic_ = t;
     }
@@ -488,61 +636,88 @@ void GfxReplay::OnReplayFrame() {
 }
 
 void GfxReplay::Run() {
-  renderer_->Prepare();
   switch (static_cast<GfxReplayRoute>(route_.load())) {
     case GfxReplayRoute::kCpu:
       RunCpuReplay(gfxPath_);
       break;
-    case GfxReplayRoute::kCompare:
-      RunCompareReplay(gfxPath_);
+    case GfxReplayRoute::kVulkan:
+      RunDesktopReplay(gfxPath_, true, false);
       break;
-    case GfxReplayRoute::kGpu:
+    case GfxReplayRoute::kGlesCompare:
+      RunDesktopReplay(gfxPath_, false, true);
+      break;
+    case GfxReplayRoute::kVulkanCompare:
+      RunDesktopReplay(gfxPath_, true, true);
+      break;
+    case GfxReplayRoute::kGles:
     default:
-      RunGpuReplay(gfxPath_);
+      RunDesktopReplay(gfxPath_, false, false);
       break;
   }
   endUs_.store(NowUs());
   running_.store(false);
 }
 
-void GfxReplay::RunGpuReplay(const std::string& gfxPath) {
-  // Inject FreeRDP's ClearCodec decoder like a live session does, so the
-  // replayed desktop is complete (ClearCodec bands are not self-contained).
-  std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
-  GfxGpuDesktop engine(clear.get());
-  engine.SetClearBatchAreaLimit(g_clearBatchArea.load());
-  if (!engine.Init()) {
+void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool compare) {
+  std::unique_ptr<ReplayDesktop> desktop =
+      vulkan ? std::unique_ptr<ReplayDesktop>(new VulkanReplayDesktop())
+             : std::unique_ptr<ReplayDesktop>(new GlesReplayDesktop());
+  std::string error;
+  if (!desktop->Init(window_, surfaceW_, surfaceH_, g_clearBatchArea.load(), &error)) {
     std::lock_guard<std::mutex> err(errorMutex_);
-    lastError_ = "engine init failed";
+    lastError_ = error.empty() ? "engine init failed" : error;
     return;
   }
-  ReplaySink sink(&engine, this);
-  engine_ = &engine;
+  desktop_ = std::move(desktop);
+  // The correctness routes feed the exact same bytes into FreeRDP's own gdi
+  // pipeline and compare the two composed screens. The CPU desktop decodes but
+  // never presents, so there is no double present and no timing meaning here.
+  GfxCpuDesktop cpu;
+  if (compare) {
+    if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
+      std::lock_guard<std::mutex> err(errorMutex_);
+      lastError_ = error;
+      desktop_.reset();
+      return;
+    }
+    cpuDesktop_ = &cpu;
+  }
+  ReplaySink sink(desktop_.get(), this);
 
   // The replayed stream must not re-trigger the capture hook on the recorder.
   hmrdp::GfxDumpSetReplaying(true);
 
-  std::string error;
   const int64_t pumpStart = NowUs();
-  const bool ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_,
-                                  &error);
+  bool ok = false;
+  if (compare) {
+    ok = GfxReplayStreamCompare(
+        gfxPath, &sink, [this]() { OnReplayFrame(); }, cpu.gfx(),
+        [this]() { CompareFrames(); }, &running_, &error);
+  } else {
+    ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error);
+  }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
              static_cast<unsigned long long>(paceUs_.load() / 1000));
 
-  if (engine_ != nullptr) {
-    const std::string t = engine_->TrafficStats();
+  {
+    const std::string summary = desktop_->Summary();
     std::lock_guard<std::mutex> lock(errorMutex_);
-    traffic_ = t;
+    traffic_ = summary;
   }
   hmrdp::GfxDumpSetReplaying(false);
-  engine_ = nullptr;
+  cpuDesktop_ = nullptr;
+  const int64_t releaseStart = NowUs();
+  desktop_.reset();
+  HMRDP_LOGI("gfx replay: engine teardown %{public}llu ms",
+             static_cast<unsigned long long>((NowUs() - releaseStart) / 1000));
   if (!ok) {
     std::lock_guard<std::mutex> err(errorMutex_);
     lastError_ = error;
   }
-  HMRDP_LOGI("gfx replay: finished: %{public}s", Stats().c_str());
+  HMRDP_LOGI("gfx replay: finished (route=%{public}s): %{public}s",
+             RouteName(static_cast<GfxReplayRoute>(route_.load())), Stats().c_str());
 }
 
 void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
@@ -550,6 +725,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // exactly like a live session. Only the destination changes: gdi's primary
   // buffer is uploaded through the CPU DrawFrame path instead of a shared GPU
   // texture, so this route is the CPU reference for the GPU engine.
+  renderer_->Prepare();
   GfxCpuDesktop cpu;
   std::string error;
   if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
@@ -577,57 +753,8 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
 }
 
-void GfxReplay::RunCompareReplay(const std::string& gfxPath) {
-  // Correctness route: the GPU engine and FreeRDP's own gdi pipeline are fed the
-  // exact same capture, and (sampled) frames are compared pixel by pixel. The
-  // screen keeps showing the GPU route; the CPU desktop decodes but does not
-  // present, so there is no double present and no timing meaning in this mode.
-  GfxCpuDesktop cpu;
-  std::string error;
-  if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
-    std::lock_guard<std::mutex> err(errorMutex_);
-    lastError_ = error;
-    return;
-  }
-  std::unique_ptr<GfxClearDecoder> clear = CreateFreeRdpClearDecoder();
-  GfxGpuDesktop engine(clear.get());
-  engine.SetClearBatchAreaLimit(g_clearBatchArea.load());
-  if (!engine.Init()) {
-    std::lock_guard<std::mutex> err(errorMutex_);
-    lastError_ = "engine init failed";
-    return;
-  }
-  ReplaySink sink(&engine, this);
-  engine_ = &engine;
-  cpuDesktop_ = &cpu;
-
-  hmrdp::GfxDumpSetReplaying(true);
-  const int64_t pumpStart = NowUs();
-  const bool ok = GfxReplayStreamCompare(
-      gfxPath, &sink, [this]() { OnReplayFrame(); }, cpu.gfx(),
-      [this]() { CompareFrames(); }, &running_, &error);
-  pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
-  HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
-             static_cast<unsigned long long>(pumpUs_.load() / 1000),
-             static_cast<unsigned long long>(paceUs_.load() / 1000));
-
-  if (engine_ != nullptr) {
-    const std::string t = engine_->TrafficStats();
-    std::lock_guard<std::mutex> lock(errorMutex_);
-    traffic_ = t;
-  }
-  hmrdp::GfxDumpSetReplaying(false);
-  cpuDesktop_ = nullptr;
-  engine_ = nullptr;
-  if (!ok) {
-    std::lock_guard<std::mutex> err(errorMutex_);
-    lastError_ = error;
-  }
-  HMRDP_LOGI("gfx replay: finished (compare): %{public}s", Stats().c_str());
-}
-
 void GfxReplay::CompareFrames() {
-  GfxGpuDesktop* engine = engine_;
+  ReplayDesktop* engine = desktop_.get();
   GfxCpuDesktop* cpu = cpuDesktop_;
   if (engine == nullptr || cpu == nullptr) {
     return;
