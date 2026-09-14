@@ -2925,8 +2925,15 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     }
   }
 
+  // FreeRDP walks the tile blocks until `tileDataSize` bytes are consumed (not
+  // until `numTiles` blocks) and then requires the count to match: a stream with
+  // *more* tile blocks than the header claims fails the whole region
+  // (progressive.c: usedTiles >= numTiles -> FALSE, count != numTiles -> -1044).
   uint32_t count = 0;
-  while (p + 6 <= tileEnd && count < numTiles) {
+  while (p + 6 <= tileEnd) {
+    if (count >= numTiles) {
+      return false;
+    }
     const uint32_t blockLen = ReadU32(data + p + 2);
     if (blockLen < 6 || p + blockLen > tileEnd) {
       return false;
@@ -2948,13 +2955,15 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     p += blockLen;
     count++;
   }
-  return count == numTiles;
+  // The byte budget must be consumed exactly and every declared tile must be
+  // present (FreeRDP: (end - start) != tileDataSize -> -1041).
+  return count == numTiles && p == tileEnd;
 }
 
 }  // namespace
 
 bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
-                         RfxParseStats* stats) {
+                         RfxParseStats* stats, RfxProgressiveState* state) {
   if (data == nullptr || size < 6) {
     if (stats != nullptr) {
       stats->errors++;
@@ -2978,13 +2987,29 @@ bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback
     const size_t bodyLen = static_cast<size_t>(blockLen) - 6;
     switch (blockType) {
       case kWbtRegion:
+        // FreeRDP ignores (skips, no error) a REGION that arrives before
+        // FRAME_BEGIN or after FRAME_END - the whole region, including its tile
+        // state update. Decoding it anyway diverges from gdi.
+        if (state != nullptr && (!state->frameBegin || state->frameEnd)) {
+          state->skippedRegions++;
+          break;
+        }
         if (!ParseRegion(body, bodyLen, onTile, stats)) {
           ok = false;
         }
         break;
-      case kWbtSync:
       case kWbtFrameBegin:
+        if (state != nullptr) {
+          state->frameBegin = true;
+          state->frameEnd = false;
+        }
+        break;
       case kWbtFrameEnd:
+        if (state != nullptr) {
+          state->frameEnd = true;
+        }
+        break;
+      case kWbtSync:
       case kWbtContext:
         break;
       default:

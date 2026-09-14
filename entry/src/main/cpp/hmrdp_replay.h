@@ -96,6 +96,11 @@ class GfxReplay {
   void RefCacheRestore(uint16_t surfaceId, uint16_t slot, const uint8_t* pts, uint32_t count);
   void RefCacheEvict(uint16_t slot);
   void RefFill(uint16_t surfaceId, uint32_t pixel, const uint8_t* rects, uint32_t count);
+  // Uncompressed bitmap upload (gdi_SurfaceCommand_Uncompressed): 24bpp is
+  // expanded to BGRA with alpha 0xFF, 32bpp is copied, both clipped to the
+  // surface.
+  void RefUpload(uint16_t surfaceId, uint32_t format, int left, int top, int width, int height,
+                 const uint8_t* payload, uint32_t payloadLen);
   void RefCopy(uint16_t srcSurfaceId, uint16_t dstSurfaceId, const uint8_t* params, uint32_t count);
   // Diff of the engine's surface against the reference (called per compare).
   void RefCompareSurfaces();
@@ -236,6 +241,13 @@ class GfxReplay {
   std::string refBadOp_;
   // Dev: how many cache restores found no entry (diagnostic for the harness).
   uint32_t refCacheMisses_ = 0;
+  // First mismatching pixel of the per-command verification (so the Progressive
+  // path can report which tile - and which decode sub-path - is responsible).
+  int refBadX_ = -1;
+  int refBadY_ = -1;
+  bool refBadThisMessage_ = false;
+  // Dev: pre-decode verification count (bounded so the log stays readable).
+  uint64_t refPreChecks_ = 0;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;

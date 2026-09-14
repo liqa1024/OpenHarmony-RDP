@@ -313,6 +313,12 @@ class ReplaySink : public GfxCommandSink {
         owner_->RefProgressive(static_cast<uint16_t>(surfaceId), payload, payloadLen,
                                static_cast<int>(RdU32(params + 8)),
                                static_cast<int>(RdU32(params + 12)));
+      } else if (cmdId == kGpuCmdWireToSurface && codecId == kGpuCodecUncompressed &&
+                 payload != nullptr && params != nullptr && paramsLen >= 32) {
+        owner_->RefUpload(static_cast<uint16_t>(surfaceId), RdU32(params + 4),
+                          static_cast<int>(RdU32(params + 8)), static_cast<int>(RdU32(params + 12)),
+                          static_cast<int>(RdU32(params + 24)),
+                          static_cast<int>(RdU32(params + 28)), payload, payloadLen);
       } else if (cmdId == kGpuCmdWireToSurface && codecId == kGpuCodecClearCodec &&
                  payload != nullptr && params != nullptr && paramsLen >= 32) {
         owner_->RefClearCodec(static_cast<uint16_t>(surfaceId), payload, payloadLen,
@@ -1105,6 +1111,9 @@ bool GfxReplay::RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int h
   refBadPx_ += bad;
   if (!refFirstLogged_) {
     refFirstLogged_ = true;
+    refBadX_ = firstX;
+    refBadY_ = firstY;
+    refBadThisMessage_ = true;
     if (refBadOp_.empty()) {
       refBadOp_ = op;
     }
@@ -1125,6 +1134,28 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
   if (!kCodecAbEnabled || refProg_ == nullptr || payload == nullptr || size == 0 ||
       refSurface_.empty() || surfaceId != refSurfaceId_) {
     return;
+  }
+  // Pre-check: is the engine already different from the reference over the tiles
+  // this message touches, *before* the reference decodes it? A "yes" means the
+  // divergence is older and some earlier command slipped through the per-command
+  // checks; a "no" means this message's own decode is the culprit.
+  if (refPreChecks_ < 200000) {
+    ParseRfxProgressive(
+        payload, size,
+        [&](const RfxTileRef& t) {
+          const int tx = left + static_cast<int>(t.xIdx) * 64;
+          const int ty = top + static_cast<int>(t.yIdx) * 64;
+          if (tx < 0 || ty < 0 || tx + 64 > refW_ || ty + 64 > refH_) {
+            return;
+          }
+          refPreChecks_++;
+          RefVerifyRect(surfaceId, tx, ty, 64, 64, "progressive-pre");
+        },
+        nullptr);
+    if (refBadOp_ == "progressive-pre") {
+      // Report once and stop so the log stays useful.
+      refPreChecks_ = 200001;
+    }
   }
   REGION16 invalid;
   region16_init(&invalid);
@@ -1147,6 +1178,50 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
       RefMarkProv(&refProv_, refStride_, refW_, refH_, rx, ry, rw, rh, 1);
       RefVerifyRect(surfaceId, rx, ry, rw, rh, "progressive");
     }
+  }
+  if (refBadThisMessage_) {
+    // Name the tile that owns the first diverging pixel and the decode sub-path it
+    // takes: plain kFirst -> RLGR/dequant/DWT, kFirst+RFX_TILE_DIFFERENCE -> the
+    // `current` accumulation, kUpgrade -> SRL/raw + persistent bit positions.
+    refBadThisMessage_ = false;
+    const int bx = refBadX_ - left;
+    const int by = refBadY_ - top;
+    ParseRfxProgressive(
+        payload, size,
+        [&](const RfxTileRef& t) {
+          const int tx = static_cast<int>(t.xIdx) * 64;
+          const int ty = static_cast<int>(t.yIdx) * 64;
+          if (bx < tx || bx >= tx + 64 || by < ty || by >= ty + 64) {
+            return;
+          }
+          const char* kind = (t.type == RfxTileType::kUpgrade)
+                                 ? "upgrade"
+                                 : ((t.flags & 1u) != 0u ? "first+diff" : "first");
+          // Is the diverging pixel inside the tile's region clip rects? If not,
+          // the engine wrote a pixel FreeRDP deliberately leaves alone.
+          bool insideClip = false;
+          for (uint16_t ri = 0; !insideClip && ri < t.numRects; ++ri) {
+            const RfxRect& r = t.rects[ri];
+            if (bx >= static_cast<int>(r.x) && bx < static_cast<int>(r.x) + static_cast<int>(r.width) &&
+                by >= static_cast<int>(r.y) &&
+                by < static_cast<int>(r.y) + static_cast<int>(r.height)) {
+              insideClip = true;
+            }
+          }
+          HMRDP_LOGW("gfx replay: refAB failing pixel insideClip=%{public}d (0 = engine wrote outside the region rects)",
+                     insideClip ? 1 : 0);
+          HMRDP_LOGW(
+              "gfx replay: refAB tile (%{public}u,%{public}u) kind=%{public}s q=%{public}u quant=(%{public}u,%{public}u,%{public}u) rects=%{public}u yLen=%{public}u cbLen=%{public}u crLen=%{public}u srl=(%{public}u,%{public}u,%{public}u) raw=(%{public}u,%{public}u,%{public}u) pass-pixel=(%{public}d,%{public}d)",
+              t.xIdx, t.yIdx, kind, static_cast<unsigned>(t.quality),
+              static_cast<unsigned>(t.quantIdxY), static_cast<unsigned>(t.quantIdxCb),
+              static_cast<unsigned>(t.quantIdxCr), static_cast<unsigned>(t.numRects),
+              static_cast<unsigned>(t.yLen), static_cast<unsigned>(t.cbLen),
+              static_cast<unsigned>(t.crLen), static_cast<unsigned>(t.ySrlLen),
+              static_cast<unsigned>(t.cbSrlLen), static_cast<unsigned>(t.crSrlLen),
+              static_cast<unsigned>(t.yRawLen), static_cast<unsigned>(t.cbRawLen),
+              static_cast<unsigned>(t.crRawLen), bx, by);
+        },
+        nullptr);
   }
   region16_uninit(&invalid);
   refCommands_++;
@@ -1256,6 +1331,50 @@ void GfxReplay::RefFill(uint16_t surfaceId, uint32_t pixel, const uint8_t* rects
     RefMarkProv(&refProv_, refStride_, refW_, refH_, left, top, right - left, bottom - top, 4);
     RefVerifyRect(surfaceId, left, top, right - left, bottom - top, "fill");
   }
+  refCommands_++;
+}
+
+void GfxReplay::RefUpload(uint16_t surfaceId, uint32_t format, int left, int top, int width,
+                          int height, const uint8_t* payload, uint32_t payloadLen) {
+  if (!kCodecAbEnabled || payload == nullptr || refSurface_.empty() ||
+      surfaceId != refSurfaceId_ || width <= 0 || height <= 0) {
+    return;
+  }
+  const uint32_t bpp = format >> 24;
+  const uint64_t need = static_cast<uint64_t>(bpp / 8) * static_cast<uint64_t>(width) *
+                        static_cast<uint64_t>(height);
+  if ((bpp != 24 && bpp != 32) || need > payloadLen) {
+    return;
+  }
+  int sx = left < 0 ? 0 : left;
+  int sy = top < 0 ? 0 : top;
+  int ex = left + width;
+  int ey = top + height;
+  if (ex > refW_) ex = refW_;
+  if (ey > refH_) ey = refH_;
+  if (ex <= sx || ey <= sy) {
+    return;
+  }
+  for (int row = sy; row < ey; ++row) {
+    const int srcRow = row - top;
+    const uint8_t* src =
+        payload + (static_cast<size_t>(srcRow) * static_cast<size_t>(width) +
+                   static_cast<size_t>(sx - left)) * (bpp / 8);
+    uint8_t* dst = refSurface_.data() + static_cast<size_t>(row) * refStride_ +
+                   static_cast<size_t>(sx) * 4;
+    if (bpp == 32) {
+      std::memcpy(dst, src, static_cast<size_t>(ex - sx) * 4);
+    } else {
+      for (int col = 0; col < ex - sx; ++col) {
+        dst[col * 4 + 0] = src[col * 3 + 0];
+        dst[col * 4 + 1] = src[col * 3 + 1];
+        dst[col * 4 + 2] = src[col * 3 + 2];
+        dst[col * 4 + 3] = 0xFF;
+      }
+    }
+  }
+  RefMarkProv(&refProv_, refStride_, refW_, refH_, sx, sy, ex - sx, ey - sy, 6);
+  RefVerifyRect(surfaceId, sx, sy, ex - sx, ey - sy, "upload");
   refCommands_++;
 }
 

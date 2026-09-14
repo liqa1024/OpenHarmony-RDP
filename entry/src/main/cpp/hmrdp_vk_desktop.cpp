@@ -262,6 +262,9 @@ struct GfxVkDesktop::Impl {
   size_t stageIndex = 0;
   bool pendingComputeWrites = false;
 
+  // FreeRDP's WBT block state machine (persists across messages, like
+  // progressive->state): a REGION outside FRAME_BEGIN..FRAME_END is ignored.
+  RfxProgressiveState rfxState;
   uint64_t rfxFirstTiles = 0;
   uint64_t rfxUpgradeTiles = 0;
   uint64_t rfxChunks = 0;
@@ -1356,7 +1359,7 @@ struct GfxVkDesktop::Impl {
           }
           tiles.push_back(job);
         },
-        &stats);
+        &stats, &rfxState);
     if (!parsed) {
       // FreeRDP rejects the whole message on a malformed / invalid region header
       // (tileSize, numRects < 1, numQuant > 7, quant nibbles outside [6,15], ...)

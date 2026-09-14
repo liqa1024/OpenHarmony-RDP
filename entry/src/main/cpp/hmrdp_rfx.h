@@ -137,10 +137,20 @@ struct RfxParseStats {
 
 using RfxTileCallback = std::function<void(const RfxTileRef&)>;
 
+// FreeRDP's WBT state machine, which *persists across messages*: a REGION is
+// silently ignored (not an error!) when it arrives before FRAME_BEGIN or after
+// FRAME_END. Pass the owning engine's state so the decoders match gdi; nullptr
+// disables the guard.
+struct RfxProgressiveState {
+  bool frameBegin = false;
+  bool frameEnd = false;
+  uint32_t skippedRegions = 0;
+};
+
 // Parses one Progressive message. Invokes `onTile` for every tile in order.
 // Returns false if the container is malformed (stats->errors is bumped).
 bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
-                         RfxParseStats* stats);
+                         RfxParseStats* stats, RfxProgressiveState* state = nullptr);
 
 // ===========================================================================
 // ClearCodec hook (FreeRDP clear_decompress; implemented in hmrdp_rfx.cpp)
