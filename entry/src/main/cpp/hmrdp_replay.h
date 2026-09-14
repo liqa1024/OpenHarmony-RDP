@@ -109,6 +109,9 @@ class GfxReplay {
   // therefore names the exact culprit command (this is what the per-frame compare
   // cannot do - `update_tiles` re-composites earlier tiles and masks the writer).
   bool RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
+  // Dev: if this command's rect covers the watch pixel, log who wrote it and both
+  // values - so the command that moved only the engine's surface is visible.
+  void RefWatchRect(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
   std::string RefAbSummary() const;
 
  private:
@@ -250,6 +253,11 @@ class GfxReplay {
   uint64_t refPreChecks_ = 0;
   // Dev: log messages touching tile (0,0) with their tile-kind breakdown.
   bool refWatchTile_ = true;
+  // Dev: watch pixel for the per-command write trace.
+  int refWatchX_ = 1408;
+  int refWatchY_ = 1260;
+  uint32_t refWatchLogged_ = 0;
+  uint32_t refTileLogged_ = 0;
   // Dev: how many reference-decode failures have been logged.
   uint32_t refRcLogged_ = 0;
   uint32_t refClearRcLogged_ = 0;

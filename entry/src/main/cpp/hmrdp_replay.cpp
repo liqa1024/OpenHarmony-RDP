@@ -1049,6 +1049,27 @@ void GfxReplay::RefResetGraphics() {
   }
 }
 
+void GfxReplay::RefWatchRect(uint16_t surfaceId, int x, int y, int width, int height,
+                             const char* op) {
+  if (!kCodecAbEnabled || refSurface_.empty() || refWatchLogged_ >= 64) {
+    return;
+  }
+  if (refWatchX_ < x || refWatchX_ >= x + width || refWatchY_ < y || refWatchY_ >= y + height) {
+    return;
+  }
+  std::vector<uint8_t> ea;
+  if (!desktop_->ReadSurfaceRect(surfaceId, refWatchX_, refWatchY_, 1, 1, &ea)) {
+    return;
+  }
+  const size_t off =
+      static_cast<size_t>(refWatchY_) * refStride_ + static_cast<size_t>(refWatchX_) * 4;
+  refWatchLogged_++;
+  HMRDP_LOGW(
+      "gfx replay: refAB watch(%{public}d,%{public}d) cmd#%{public}llu op=%{public}s rect=(%{public}d,%{public}d)+%{public}dx%{public}d engine=b%{public}u g%{public}u r%{public}u ref=b%{public}u g%{public}u r%{public}u",
+      refWatchX_, refWatchY_, static_cast<unsigned long long>(refCommands_.load()), op, x, y, width,
+      height, ea[0], ea[1], ea[2], refSurface_[off], refSurface_[off + 1], refSurface_[off + 2]);
+}
+
 bool GfxReplay::RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int height,
                               const char* op) {
   if (!kCodecAbEnabled || desktop_ == nullptr || refSurface_.empty() || width <= 0 ||
@@ -1109,11 +1130,13 @@ bool GfxReplay::RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int h
   }
   refBad_++;
   refBadPx_ += bad;
+  // Record the failing pixel for every failure (not just the first one) so the
+  // Progressive path can report the tile of each culprit message.
+  refBadX_ = firstX;
+  refBadY_ = firstY;
+  refBadThisMessage_ = true;
   if (!refFirstLogged_) {
     refFirstLogged_ = true;
-    refBadX_ = firstX;
-    refBadY_ = firstY;
-    refBadThisMessage_ = true;
     if (refBadOp_.empty()) {
       refBadOp_ = op;
     }
@@ -1173,7 +1196,11 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
   // this message touches, *before* the reference decodes it? A "yes" means the
   // divergence is older and some earlier command slipped through the per-command
   // checks; a "no" means this message's own decode is the culprit.
-  if (refPreChecks_ < 200000) {
+  // NOTE: the pre-check compares the engine's *post*-command surface against the
+  // reference's *pre*-command one (the engine already applied the command), so it
+  // flags this message's own tiles by construction - it is NOT evidence of a
+  // divergence. Disabled; the post-command check is the meaningful one.
+  if (false && refPreChecks_ < 200000) {
     ParseRfxProgressive(
         payload, size,
         [&](const RfxTileRef& t) {
@@ -1217,13 +1244,15 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
       const int rh = static_cast<int>(rects[i].bottom) - ry;
       RefMarkProv(&refProv_, refStride_, refW_, refH_, rx, ry, rw, rh, 1);
       RefVerifyRect(surfaceId, rx, ry, rw, rh, "progressive");
+      RefWatchRect(surfaceId, rx, ry, rw, rh, "progressive");
     }
   }
-  if (refBadThisMessage_) {
+  if (refBadThisMessage_ && refTileLogged_ < 12) {
     // Name the tile that owns the first diverging pixel and the decode sub-path it
     // takes: plain kFirst -> RLGR/dequant/DWT, kFirst+RFX_TILE_DIFFERENCE -> the
     // `current` accumulation, kUpgrade -> SRL/raw + persistent bit positions.
     refBadThisMessage_ = false;
+    ++refTileLogged_;
     const int bx = refBadX_ - left;
     const int by = refBadY_ - top;
     ParseRfxProgressive(
@@ -1237,6 +1266,7 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
           const char* kind = (t.type == RfxTileType::kUpgrade)
                                  ? "upgrade"
                                  : ((t.flags & 1u) != 0u ? "first+diff" : "first");
+          refTileLogged_ = refTileLogged_ > 0 ? refTileLogged_ : 1;
           // Is the diverging pixel inside the tile's region clip rects? If not,
           // the engine wrote a pixel FreeRDP deliberately leaves alone.
           bool insideClip = false;
@@ -1263,6 +1293,21 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
         },
         nullptr);
   }
+  // Correct whole-tile A/B: after BOTH sides applied the message, compare every
+  // tile it touched in full. Unlike the per-invalid-rect check this also sees the
+  // pixels FreeRDP did not composite, and for the message that first wrote a tile
+  // differently it names that writer.
+  ParseRfxProgressive(
+      payload, size,
+      [&](const RfxTileRef& t) {
+        const int tx = left + static_cast<int>(t.xIdx) * 64;
+        const int ty = top + static_cast<int>(t.yIdx) * 64;
+        if (tx < 0 || ty < 0 || tx + 64 > refW_ || ty + 64 > refH_) {
+          return;
+        }
+        RefVerifyRect(surfaceId, tx, ty, 64, 64, "progressive-tiles");
+      },
+      nullptr);
   region16_uninit(&invalid);
   refCommands_++;
 }
@@ -1292,6 +1337,7 @@ void GfxReplay::RefClearCodec(uint16_t surfaceId, const uint8_t* payload, size_t
   }
   RefMarkProv(&refProv_, refStride_, refW_, refH_, x, y, width, height, 2);
   RefVerifyRect(surfaceId, x, y, width, height, "clearcodec");
+  RefWatchRect(surfaceId, x, y, width, height, "clearcodec");
   refCommands_++;
 }
 
@@ -1353,6 +1399,7 @@ void GfxReplay::RefCacheRestore(uint16_t surfaceId, uint16_t slot, const uint8_t
                 entry.width, entry.height, &scratch);
     RefMarkProv(&refProv_, refStride_, refW_, refH_, px, py, entry.width, entry.height, 3);
     RefVerifyRect(surfaceId, px, py, entry.width, entry.height, "cacheRestore");
+    RefWatchRect(surfaceId, px, py, entry.width, entry.height, "cacheRestore");
   }
   refCommands_++;
 }
@@ -1377,6 +1424,7 @@ void GfxReplay::RefFill(uint16_t surfaceId, uint32_t pixel, const uint8_t* rects
     RefFillRect(refSurface_.data(), refStride_, left, top, right - left, bottom - top, pixel);
     RefMarkProv(&refProv_, refStride_, refW_, refH_, left, top, right - left, bottom - top, 4);
     RefVerifyRect(surfaceId, left, top, right - left, bottom - top, "fill");
+    RefWatchRect(surfaceId, left, top, right - left, bottom - top, "fill");
   }
   refCommands_++;
 }
@@ -1422,6 +1470,7 @@ void GfxReplay::RefUpload(uint16_t surfaceId, uint32_t format, int left, int top
   }
   RefMarkProv(&refProv_, refStride_, refW_, refH_, sx, sy, ex - sx, ey - sy, 6);
   RefVerifyRect(surfaceId, sx, sy, ex - sx, ey - sy, "upload");
+  RefWatchRect(surfaceId, sx, sy, ex - sx, ey - sy, "upload");
   refCommands_++;
 }
 
@@ -1451,6 +1500,7 @@ void GfxReplay::RefCopy(uint16_t srcSurfaceId, uint16_t dstSurfaceId, const uint
                 h, &scratch);
     RefMarkProv(&refProv_, refStride_, refW_, refH_, px, py, w, h, 5);
     RefVerifyRect(dstSurfaceId, px, py, w, h, "surfaceToSurface");
+    RefWatchRect(dstSurfaceId, px, py, w, h, "surfaceToSurface");
   }
   refCommands_++;
 }
