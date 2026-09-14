@@ -292,6 +292,8 @@ struct GfxVkDesktop::Impl {
   uint64_t clearUnsupported = 0;
   uint64_t clearDecoded = 0;
   uint64_t progressiveFailed = 0;
+  // Regions whose composite update_tiles rejected (see DecodeProgressive).
+  uint64_t progressiveComposeSkipped = 0;
   uint64_t submits = 0;
 
   // Dev instrumentation: recording/CPU cost per command class, plus the
@@ -1381,6 +1383,47 @@ struct GfxVkDesktop::Impl {
     if (!EnsureRecording()) {
       return false;
     }
+    // FreeRDP's update_tiles composites a tile only inside
+    // region16_intersect(clippingRects, tileRect) and *fails the whole region*
+    // (composites nothing at all) as soon as one of those intersection rects
+    // leaves the surface:
+    //     if (rect->left + width > surface->width) goto fail;
+    //     if (rect->top + height > surface->height) goto fail;
+    // The intersection is a subset of the tile, so this triggers for every region
+    // that touches the right/bottom tile column whenever the desktop size is not
+    // a multiple of 64 - which is the normal case. The tile state has already
+    // advanced by then, so the engine must still decode (state) but must not
+    // composite any pixel of the region.
+    bool composeRegion = true;
+    for (const TileJob& job : tiles) {
+      const int tx = originX + static_cast<int>(job.x) * 64;
+      const int ty = originY + static_cast<int>(job.y) * 64;
+      for (uint32_t ri = 0; ri < job.rectCount; ++ri) {
+        const size_t wi = static_cast<size_t>(job.rectOffset + ri) * 2;
+        if (wi + 1 >= rectPool.size()) {
+          break;
+        }
+        const uint32_t w0 = rectPool[wi];
+        const uint32_t w1 = rectPool[wi + 1];
+        const int rx = static_cast<int>(w0 & 0xFFFFu);
+        const int ry = static_cast<int>(w0 >> 16);
+        const int rw = static_cast<int>(w1 & 0xFFFFu);
+        const int rh = static_cast<int>(w1 >> 16);
+        const int l = rx > tx ? rx : tx;
+        const int t = ry > ty ? ry : ty;
+        const int r = (rx + rw) < (tx + 64) ? (rx + rw) : (tx + 64);
+        const int b = (ry + rh) < (ty + 64) ? (ry + rh) : (ty + 64);
+        if (r <= l || b <= t) {
+          continue;
+        }
+        if (r > surfaceW || b > surfaceH) {
+          composeRegion = false;
+        }
+      }
+    }
+    if (!composeRegion) {
+      progressiveComposeSkipped++;
+    }
     VkApi& vk = api();
 
     // The payload is bound at its arena offset; every job offset is relative to
@@ -1479,6 +1522,11 @@ struct GfxVkDesktop::Impl {
       pendingComputeWrites = true;
       computeInFlight = true;
 
+      if (!composeRegion) {
+        // update_tiles failed for the region: the tile state has been advanced by
+        // the decode above, but no pixel of the region is composited.
+        continue;
+      }
       VkDescriptorSet composeSet = VK_NULL_HANDLE;
       if (!AllocSet(composeSetLayout, &composeSet)) {
         return false;
@@ -2504,7 +2552,7 @@ std::string GfxVkDesktop::Stats() const {
   std::snprintf(buf2, sizeof(buf2),
                 "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu"
                 "\n  rfxCompute=%d chunks=%llu first=%llu upgrade=%llu clearDec=%llu "
-                "clearUnsup=%llu progFail=%llu"
+                "clearUnsup=%llu progFail=%llu progComposeSkip=%llu"
                 "\n  rfxParse regions=%llu simple=%llu diff=%llu nonExtrap=%llu skipTiles=%llu "
                 "errors=%llu originNonZero=%llu",
                 static_cast<unsigned long long>(impl_->composeCopies),
@@ -2516,6 +2564,7 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->clearDecoded),
                 static_cast<unsigned long long>(impl_->clearUnsupported),
                 static_cast<unsigned long long>(impl_->progressiveFailed),
+                static_cast<unsigned long long>(impl_->progressiveComposeSkipped),
                 static_cast<unsigned long long>(impl_->rfxRegions),
                 static_cast<unsigned long long>(impl_->rfxSimpleTiles),
                 static_cast<unsigned long long>(impl_->rfxDiffTiles),

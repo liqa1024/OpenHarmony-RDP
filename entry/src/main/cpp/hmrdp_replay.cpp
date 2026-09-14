@@ -1120,11 +1120,16 @@ bool GfxReplay::RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int h
     const size_t off = (static_cast<size_t>(firstY) * refStride_) + static_cast<size_t>(firstX) * 4;
     std::vector<uint8_t> ea;
     desktop_->ReadSurfaceRect(surfaceId, firstX, firstY, 1, 1, &ea);
+    // Provenance of the reference pixel: 0 = never written by any mirrored op,
+    // 1 = progressive, 2 = clearcodec, 3 = cacheRestore, 4 = fill, 5 = copy,
+    // 6 = uncompressed upload.
+    const uint8_t rprov =
+        refProv_.empty() ? 0xFF : refProv_[static_cast<size_t>(firstY) * refStride_ + firstX];
     HMRDP_LOGW(
-        "gfx replay: refAB CULPRIT op=%{public}s cmd#%{public}llu rect=(%{public}d,%{public}d)+%{public}dx%{public}d bad=%{public}llu maxDelta=%{public}d px=(%{public}d,%{public}d) engine=b%{public}u g%{public}u r%{public}u ref=b%{public}u g%{public}u r%{public}u",
+        "gfx replay: refAB CULPRIT op=%{public}s cmd#%{public}llu rect=(%{public}d,%{public}d)+%{public}dx%{public}d bad=%{public}llu maxDelta=%{public}d px=(%{public}d,%{public}d) engine=b%{public}u g%{public}u r%{public}u ref=b%{public}u g%{public}u r%{public}u refProv=%{public}u",
         op, static_cast<unsigned long long>(refCommands_.load()), x, y, width, height,
         static_cast<unsigned long long>(bad), maxDelta, firstX, firstY, ea[0], ea[1], ea[2],
-        refSurface_[off], refSurface_[off + 1], refSurface_[off + 2]);
+        refSurface_[off], refSurface_[off + 1], refSurface_[off + 2], static_cast<unsigned>(rprov));
   }
   return false;
 }
@@ -1134,6 +1139,35 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
   if (!kCodecAbEnabled || refProg_ == nullptr || payload == nullptr || size == 0 ||
       refSurface_.empty() || surfaceId != refSurfaceId_) {
     return;
+  }
+  // Dev: log every message that touches the top-left tile (the one the pre-check
+  // keeps flagging) together with its tile-kind breakdown, so the message that
+  // wrote it can be correlated with FreeRDP dropping it.
+  if (refWatchTile_) {
+    uint32_t plain = 0;
+    uint32_t diff = 0;
+    uint32_t up = 0;
+    bool touches = false;
+    ParseRfxProgressive(
+        payload, size,
+        [&](const RfxTileRef& t) {
+          if (t.xIdx == 0 && t.yIdx == 0) {
+            touches = true;
+          }
+          if (t.type == RfxTileType::kUpgrade) {
+            up++;
+          } else if ((t.flags & 1u) != 0u) {
+            diff++;
+          } else {
+            plain++;
+          }
+        },
+        nullptr);
+    if (touches) {
+      HMRDP_LOGW(
+          "gfx replay: refAB msg touches tile(0,0) at cmd#%{public}llu: plain=%{public}u diff=%{public}u upgrade=%{public}u",
+          static_cast<unsigned long long>(refCommands_.load()), plain, diff, up);
+    }
   }
   // Pre-check: is the engine already different from the reference over the tiles
   // this message touches, *before* the reference decodes it? A "yes" means the
@@ -1159,11 +1193,17 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
   }
   REGION16 invalid;
   region16_init(&invalid);
-  progressive_decompress(static_cast<PROGRESSIVE_CONTEXT*>(refProg_), payload,
-                         static_cast<UINT32>(size), refSurface_.data(), PIXEL_FORMAT_BGRA32,
-                         static_cast<UINT32>(refStride_), static_cast<UINT32>(left),
-                         static_cast<UINT32>(top), &invalid, surfaceId,
-                         static_cast<UINT32>(frames_.load()));
+  const INT32 refRc = progressive_decompress(
+      static_cast<PROGRESSIVE_CONTEXT*>(refProg_), payload, static_cast<UINT32>(size),
+      refSurface_.data(), PIXEL_FORMAT_BGRA32, static_cast<UINT32>(refStride_),
+      static_cast<UINT32>(left), static_cast<UINT32>(top), &invalid, surfaceId,
+      static_cast<UINT32>(frames_.load()));
+  if (refRc < 0 && refRcLogged_ < 8) {
+    refRcLogged_++;
+    HMRDP_LOGW(
+        "gfx replay: refAB reference progressive_decompress rc=%{public}d at cmd#%{public}llu (FreeRDP drops the whole message; the engine decodes it)",
+        static_cast<int>(refRc), static_cast<unsigned long long>(refCommands_.load()));
+  }
   {
     UINT32 nbRects = 0;
     const RECTANGLE_16* rects = region16_rects(&invalid, &nbRects);
@@ -1238,11 +1278,18 @@ void GfxReplay::RefClearCodec(uint16_t surfaceId, const uint8_t* payload, size_t
   if (x + width > refW_ || y + height > refH_) {
     return;  // the engine rejects these too
   }
-  clear_decompress(static_cast<CLEAR_CONTEXT*>(refClear_), payload, static_cast<UINT32>(size),
-                   static_cast<UINT32>(width), static_cast<UINT32>(height), refSurface_.data(),
-                   PIXEL_FORMAT_BGRA32, static_cast<UINT32>(refStride_), static_cast<UINT32>(x),
-                   static_cast<UINT32>(y), static_cast<UINT32>(refW_), static_cast<UINT32>(refH_),
-                   nullptr);
+  const INT32 clearRc =
+      clear_decompress(static_cast<CLEAR_CONTEXT*>(refClear_), payload, static_cast<UINT32>(size),
+                       static_cast<UINT32>(width), static_cast<UINT32>(height), refSurface_.data(),
+                       PIXEL_FORMAT_BGRA32, static_cast<UINT32>(refStride_),
+                       static_cast<UINT32>(x), static_cast<UINT32>(y), static_cast<UINT32>(refW_),
+                       static_cast<UINT32>(refH_), nullptr);
+  if (clearRc < 0 && refClearRcLogged_ < 8) {
+    refClearRcLogged_++;
+    HMRDP_LOGW(
+        "gfx replay: refAB reference clear_decompress rc=%{public}d rect=(%{public}d,%{public}d)+%{public}dx%{public}d (FreeRDP leaves the band untouched, the engine decodes it)",
+        static_cast<int>(clearRc), x, y, width, height);
+  }
   RefMarkProv(&refProv_, refStride_, refW_, refH_, x, y, width, height, 2);
   RefVerifyRect(surfaceId, x, y, width, height, "clearcodec");
   refCommands_++;

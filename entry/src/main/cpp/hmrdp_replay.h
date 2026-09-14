@@ -248,6 +248,11 @@ class GfxReplay {
   bool refBadThisMessage_ = false;
   // Dev: pre-decode verification count (bounded so the log stays readable).
   uint64_t refPreChecks_ = 0;
+  // Dev: log messages touching tile (0,0) with their tile-kind breakdown.
+  bool refWatchTile_ = true;
+  // Dev: how many reference-decode failures have been logged.
+  uint32_t refRcLogged_ = 0;
+  uint32_t refClearRcLogged_ = 0;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;
