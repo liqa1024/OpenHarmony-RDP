@@ -1281,7 +1281,7 @@ struct GfxVkDesktop::Impl {
     std::vector<uint32_t> rectPool;
     rectPool.reserve(256);
     RfxParseStats stats;
-    ParseRfxProgressive(
+    const bool parsed = ParseRfxProgressive(
         payload, size,
         [&](const RfxTileRef& t) {
           if (t.quants == nullptr) {
@@ -1357,6 +1357,14 @@ struct GfxVkDesktop::Impl {
           tiles.push_back(job);
         },
         &stats);
+    if (!parsed) {
+      // FreeRDP rejects the whole message on a malformed / invalid region header
+      // (tileSize, numRects < 1, numQuant > 7, quant nibbles outside [6,15], ...)
+      // and decodes nothing at all - including the per-tile state. Decoding the
+      // tiles that happened to parse would make the surface diverge from gdi.
+      rfxParseErrors += stats.errors;
+      return true;
+    }
     rfxRegions += stats.regions;
     rfxSimpleTiles += stats.simpleTiles;
     rfxDiffTiles += stats.diffTiles;

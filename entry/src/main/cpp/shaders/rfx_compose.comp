@@ -73,11 +73,13 @@ void main() {
         r = b;
         b = tmp;
       }
-      // FreeRDP composites a decoded tile only inside the region's clip rects;
-      // the rest of the tile keeps the previous surface content.
+      // FreeRDP composites a decoded tile only inside
+      // region16_intersect_rect(clippingRects, tileRect): with no clipping rects
+      // the intersection is empty, so *nothing* is written - "rectCnt == 0" must
+      // NOT mean "the whole tile" (the region is rejected upstream anyway).
       uint px = px0 + col;
       uint py = py0 + row;
-      bool inside = (rectCnt == 0u);
+      bool inside = false;
       for (uint ri = 0u; !inside && ri < rectCnt; ri++) {
         uint a = rcts.data[(rectOff + ri) * 2u];
         uint c = rcts.data[(rectOff + ri) * 2u + 1u];

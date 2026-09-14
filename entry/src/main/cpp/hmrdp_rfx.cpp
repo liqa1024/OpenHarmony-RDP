@@ -2855,8 +2855,13 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   if (tileSize != 64 || numQuant > 7) {
     return false;
   }
+  // FreeRDP's progressive_wb_read_region_header rejects the whole region (and
+  // therefore the whole message: nothing is decoded, not even the tile state)
+  // when numRects < 1 (-1013) or > 1024. The engine used to accept it, which made
+  // its composite (empty clipping rects used to mean "whole tile") diverge from
+  // gdi for every tile of that message.
   constexpr uint16_t kMaxRects = 1024;
-  if (numRects > kMaxRects) {
+  if (numRects < 1 || numRects > kMaxRects) {
     return false;
   }
   size_t p = 12;

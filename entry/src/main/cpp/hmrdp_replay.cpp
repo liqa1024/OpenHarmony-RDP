@@ -1088,10 +1088,121 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
       }
     }
     if (bad != 0 && !refFirstLogged_) {
+      // Classify by tile kind so the failing decode sub-path is identified:
+      // plain kFirst -> RLGR/dequant/DWT, kFirst+RFX_TILE_DIFFERENCE -> the
+      // `current` add, kUpgrade -> SRL/raw + the persistent bit positions.
+      uint64_t tilesFirst = 0;
+      uint64_t tilesDiff = 0;
+      uint64_t tilesUpgrade = 0;
+      uint64_t badFirst = 0;
+      uint64_t badDiff = 0;
+      uint64_t badUpgrade = 0;
+      uint64_t tilesSeen = 0;
+      std::vector<uint8_t> ta;
+      ParseRfxProgressive(
+          payload, size,
+          [&](const RfxTileRef& t) {
+            tilesSeen++;
+            const int tx = left + static_cast<int>(t.xIdx) * 64;
+            const int ty = top + static_cast<int>(t.yIdx) * 64;
+            const int tw = 64;
+            const int th = 64;
+            if (tx < 0 || ty < 0 || tx + tw > refW_ || ty + th > refH_) {
+              return;
+            }
+            if (!desktop_->ReadSurfaceRect(surfaceId, tx, ty, tw, th, &ta)) {
+              return;
+            }
+            uint64_t tileBad = 0;
+            for (int row = 0; row < th; ++row) {
+              const uint8_t* a = ta.data() + static_cast<size_t>(row) * tw * 4;
+              const uint8_t* b = refSurface_.data() + static_cast<size_t>(ty + row) * refStride_ +
+                                 static_cast<size_t>(tx) * 4;
+              for (int col = 0; col < tw; ++col) {
+                if (a[col * 4 + 0] == b[col * 4 + 0] && a[col * 4 + 1] == b[col * 4 + 1] &&
+                    a[col * 4 + 2] == b[col * 4 + 2]) {
+                  continue;
+                }
+                tileBad++;
+              }
+            }
+            const bool upgrade = (t.type == RfxTileType::kUpgrade);
+            const bool diff = !upgrade && ((t.flags & 1u) != 0u);
+            if (upgrade) {
+              tilesUpgrade++;
+              badUpgrade += tileBad;
+            } else if (diff) {
+              tilesDiff++;
+              badDiff += tileBad;
+            } else {
+              tilesFirst++;
+              badFirst += tileBad;
+            }
+          },
+          nullptr);
+      {
+        // Does this message's tile list contain the tile of the first bad pixel?
+        const int bxIdx = (badX - left) / 64;
+        const int byIdx = (badY - top) / 64;
+        bool contains = false;
+        ParseRfxProgressive(
+            payload, size,
+            [&](const RfxTileRef& t) {
+              if (static_cast<int>(t.xIdx) == bxIdx && static_cast<int>(t.yIdx) == byIdx) {
+                contains = true;
+              }
+            },
+            nullptr);
+      HMRDP_LOGW(
+          "gfx replay: refAB bad pixel tile (%{public}d,%{public}d) in this message's tile list=%{public}d",
+          bxIdx, byIdx, contains ? 1 : 0);
+      if (!contains) {
+        // Dump both tile sets: what our parser claims vs the tiles FreeRDP's own
+        // updated rects imply (rect / 64).
+        std::string mine;
+        ParseRfxProgressive(
+            payload, size,
+            [&](const RfxTileRef& t) {
+              if (mine.size() < 220) {
+                mine += " (" + std::to_string(t.xIdx) + "," + std::to_string(t.yIdx) + ")" +
+                        (t.type == RfxTileType::kUpgrade ? "u" : "f");
+              }
+            },
+            nullptr);
+        std::string theirs;
+        for (UINT32 i = 0; i < nbRects && theirs.size() < 220; ++i) {
+          theirs += " (" + std::to_string(rects[i].left / 64) + "," +
+                    std::to_string(rects[i].top / 64) + ")->(" +
+                    std::to_string((rects[i].right - 1) / 64) + "," +
+                    std::to_string((rects[i].bottom - 1) / 64) + ")";
+        }
+        HMRDP_LOGW("gfx replay: refAB ourTiles:%{public}s", mine.c_str());
+        HMRDP_LOGW("gfx replay: refAB freerdpRects:%{public}s", theirs.c_str());
+        // Block sequence: FreeRDP *skips* (silently, no error) a REGION that comes
+        // before FRAME_BEGIN or after FRAME_END (progressive_wb_region), while our
+        // parser decodes every region.
+        std::string blocks;
+        size_t q = 0;
+        while (q + 6 <= size && blocks.size() < 160) {
+          const uint16_t bt = RdU16(payload + q);
+          const uint32_t bl = RdU32(payload + q + 2);
+          if (bl < 6 || q + bl > size) {
+            break;
+          }
+          blocks += " " + std::to_string(bt);
+          q += bl;
+        }
+        HMRDP_LOGW("gfx replay: refAB blocks:%{public}s", blocks.c_str());
+      }
+      }
+      HMRDP_LOGW(
+          "gfx replay: refAB progmsg tiles=%{public}llu (plain %{public}llu/%{public}llu px, diff %{public}llu/%{public}llu px, up %{public}llu/%{public}llu px) bad total=%{public}llu",
+          static_cast<unsigned long long>(tilesSeen),
+          static_cast<unsigned long long>(tilesFirst), static_cast<unsigned long long>(badFirst),
+          static_cast<unsigned long long>(tilesDiff), static_cast<unsigned long long>(badDiff),
+          static_cast<unsigned long long>(tilesUpgrade), static_cast<unsigned long long>(badUpgrade),
+          static_cast<unsigned long long>(bad));
       std::vector<uint8_t> ea;
-      std::vector<uint8_t> eb;
-      const uint8_t pv = 0;
-      (void)pv;
       desktop_->ReadSurfaceRect(surfaceId, badX, badY, 1, 1, &ea);
       const size_t off =
           static_cast<size_t>(badY) * refStride_ + static_cast<size_t>(badX) * 4;
