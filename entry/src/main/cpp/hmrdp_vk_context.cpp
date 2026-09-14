@@ -390,10 +390,12 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   DestroyPipeline = ResolveDevice<PFN_vkDestroyPipeline>(gdpa, gipa, device, instance, "vkDestroyPipeline");
   CreateDescriptorPool = ResolveDevice<PFN_vkCreateDescriptorPool>(gdpa, gipa, device, instance, "vkCreateDescriptorPool");
   DestroyDescriptorPool = ResolveDevice<PFN_vkDestroyDescriptorPool>(gdpa, gipa, device, instance, "vkDestroyDescriptorPool");
+  ResetDescriptorPool = ResolveDevice<PFN_vkResetDescriptorPool>(gdpa, gipa, device, instance, "vkResetDescriptorPool");
   AllocateDescriptorSets = ResolveDevice<PFN_vkAllocateDescriptorSets>(gdpa, gipa, device, instance, "vkAllocateDescriptorSets");
   UpdateDescriptorSets = ResolveDevice<PFN_vkUpdateDescriptorSets>(gdpa, gipa, device, instance, "vkUpdateDescriptorSets");
   CmdBindPipeline = ResolveDevice<PFN_vkCmdBindPipeline>(gdpa, gipa, device, instance, "vkCmdBindPipeline");
   CmdBindDescriptorSets = ResolveDevice<PFN_vkCmdBindDescriptorSets>(gdpa, gipa, device, instance, "vkCmdBindDescriptorSets");
+  CmdPushConstants = ResolveDevice<PFN_vkCmdPushConstants>(gdpa, gipa, device, instance, "vkCmdPushConstants");
   CmdDispatch = ResolveDevice<PFN_vkCmdDispatch>(gdpa, gipa, device, instance, "vkCmdDispatch");
 
   return CreateSwapchainKHR != nullptr && AcquireNextImageKHR != nullptr &&

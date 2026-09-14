@@ -31,11 +31,12 @@ if(NOT HMRDP_GLSLANG)
     set(HMRDP_GLSLANG "${OHOS_SDK_NATIVE}/../toolchains/glslang_validator.exe")
 endif()
 
-# <source file>|<C++ symbol>, e.g. "progressive.comp|Progressive".
-# Empty until V2 lands its first decode kernel: the mechanism is kept here so
-# adding one is a one-line change and the SDK-toolchain/byte-order details
-# (cmake/EmbedSpirv.cmake) do not have to be rediscovered.
+# <source file>|<C++ symbol>, e.g. "progressive.comp|Progressive". Each entry
+# yields a `k<Symbol>Spv[]` word array in <source file>.h (V3: the RemoteFX
+# Progressive decoder and its YCbCr->BGRA tile compositor).
 set(HMRDP_SHADERS
+    "rfx_decode.comp|RfxDecode"
+    "rfx_compose.comp|RfxCompose"
 )
 
 set(HMRDP_SHADER_HEADERS "")

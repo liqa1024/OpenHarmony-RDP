@@ -132,10 +132,12 @@ struct VkApi {
   PFN_vkDestroyPipeline DestroyPipeline = nullptr;
   PFN_vkCreateDescriptorPool CreateDescriptorPool = nullptr;
   PFN_vkDestroyDescriptorPool DestroyDescriptorPool = nullptr;
+  PFN_vkResetDescriptorPool ResetDescriptorPool = nullptr;
   PFN_vkAllocateDescriptorSets AllocateDescriptorSets = nullptr;
   PFN_vkUpdateDescriptorSets UpdateDescriptorSets = nullptr;
   PFN_vkCmdBindPipeline CmdBindPipeline = nullptr;
   PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets = nullptr;
+  PFN_vkCmdPushConstants CmdPushConstants = nullptr;
   PFN_vkCmdDispatch CmdDispatch = nullptr;
 
   // Fills the instance-level commands. Returns false if a required entry is

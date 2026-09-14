@@ -203,7 +203,6 @@ std::string GfxVkSelfTest::RunPrimitives() {
   const uint32_t kRed = 0xFF0000FFu;    // BGRA
   const uint32_t kGreen = 0xFF00FF00u;
   const uint32_t kWhite = 0xFFFFFFFFu;
-  const uint32_t kBlack = 0x00000000u;
 
   // 64x48 and 32x32 are already 16-aligned, so engine and model agree on size.
   // Every engine call is asserted: a silently-false return is the difference
@@ -226,7 +225,7 @@ std::string GfxVkSelfTest::RunPrimitives() {
   RefImage ref1;
   ref1.Reset(32, 32, kWhite);
   RefImage screen;
-  screen.Reset(128, 96, kBlack);  // ResetGraphics clears to transparent black
+  screen.Reset(128, 96, kWhite);  // ResetGraphics fills 0xFF (gdi primary init)
 
   // 1. Surface creation contract: every pixel 0xFF.
   CheckSurface(&engine, &ref0, kSurf, "create 0xFF init", &report);
@@ -577,8 +576,10 @@ void GfxVkSelfTest::CompareFrames() {
     firstY_.store(firstY);
     firstEngine_.store(firstEngine);
     firstGdi_.store(firstGdi);
-    HMRDP_LOGW("vk selftest: first diff (%d,%d) engine=0x%08x gdi=0x%08x", firstX, firstY,
-               static_cast<unsigned>(firstEngine), static_cast<unsigned>(firstGdi));
+    HMRDP_LOGW("vk selftest: diff#%{public}llu at (%{public}d,%{public}d) "
+               "engine=0x%{public}08x gdi=0x%{public}08x diffPx=%{public}zu",
+               static_cast<unsigned long long>(checks_.load()), firstX, firstY,
+               static_cast<unsigned>(firstEngine), static_cast<unsigned>(firstGdi), diffRgb);
   }
   if (bx1 >= 0) {
     bboxX0_.store(bx0);

@@ -10,8 +10,54 @@
 #include "hmrdp_log.h"
 #include "hmrdp_vk_renderer.h"
 
+// Generated at build time by cmake/EmbedSpirv.cmake (see CMakeLists.txt).
+#include "rfx_compose.comp.h"
+#include "rfx_decode.comp.h"
+
 namespace hmrdp {
 namespace {
+
+// Progressive decode chunking, identical to the GLES engine (hmrdp_rfx.cpp §1):
+// per-chunk scratch holds `kRfxChunkTiles * 3` component streams of 4096 int16.
+constexpr uint32_t kRfxChunkTiles = 512;
+constexpr uint32_t kMetaStride = 64;  // bytes per (tile,component) stream job
+
+// YCbCr->BGRA fixed-point factors, matching FreeRDP prim_colors.c
+// (general_yCbCrToRGB_16s8u_P3AC4R_BGRX, divisor 16) and hmrdp_rfx.cpp.
+constexpr int32_t kKr = static_cast<int32_t>(1.402525f * (1 << 16));
+constexpr int32_t kKcrG = static_cast<int32_t>(0.714401f * (1 << 16));
+constexpr int32_t kKcbG = static_cast<int32_t>(0.343730f * (1 << 16));
+constexpr int32_t kKcbB = static_cast<int32_t>(1.769905f * (1 << 16));
+
+// One (tile,component) decode job, filled by the CPU container parser and
+// consumed by the decode compute shader through the `meta` SSBO.
+struct StreamJob {
+  uint32_t type = 0;   // 0 = kFirst, 2 = kUpgrade
+  uint32_t flags = 0;  // bit0 = RFX_TILE_DIFFERENCE (kFirst)
+  uint32_t tileStream = 0;
+  uint32_t payloadOff = 0;
+  uint32_t payloadLen = 0;
+  uint32_t srlOff = 0;
+  uint32_t srlLen = 0;
+  uint32_t rawOff = 0;
+  uint32_t rawLen = 0;
+  uint8_t shift[10] = {0};
+  uint8_t newBit[10] = {0};
+};
+
+// uint8 nibbles [HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3] in the RfxQuant.
+void QuantArray(const RfxQuant& q, uint8_t out[10]) {
+  out[0] = q.HL1;
+  out[1] = q.LH1;
+  out[2] = q.HH1;
+  out[3] = q.HL2;
+  out[4] = q.LH2;
+  out[5] = q.HH2;
+  out[6] = q.HL3;
+  out[7] = q.LH3;
+  out[8] = q.HH3;
+  out[9] = q.LL3;
+}
 
 // The screen is the only image the engine owns; surfaces / cache entries are
 // persistent-mapped host-visible buffers (V2, VULKAN-TODO §4.2 item 2). It needs
@@ -133,9 +179,21 @@ struct GfxVkDesktop::Impl {
     bool valid() const { return image != VK_NULL_HANDLE; }
   };
 
+  // Persistent per-(tile,component) Progressive state (V3): `cur`/`sign` hold
+  // 4096 int16 per (tile,component) stream and `bp` the 10 bit-position bytes.
+  // They survive across messages and start zeroed for the surface's grid.
+  struct RfxState {
+    GpuBuffer cur;
+    GpuBuffer sign;
+    GpuBuffer bp;
+
+    bool valid() const { return cur.valid(); }
+  };
+
   struct Surface {
     GpuSurface meta;
     GpuBuffer gpu;
+    RfxState rfx;
   };
 
   // A bitmap-cache slot. `gpu` is a grow-only allocation; `width`/`height` are
@@ -181,6 +239,54 @@ struct GfxVkDesktop::Impl {
   // Overlap-safe staging for SurfaceToSurface (same-surface copies).
   std::vector<uint8_t> copyScratch;
 
+  // --- Progressive decode (V3) --------------------------------------------
+  // One compute pipeline per shader stage, the descriptor layouts they use and
+  // the append-only CPU staging arena that feeds their SSBOs. All of it is
+  // created once in Init(); if any part is unavailable `rfxReady` stays false and
+  // Progressive keeps falling back to "unsupported" (counted, never silent).
+  bool rfxReady = false;
+  // ClearCodec (V4) stays on the CPU: FreeRDP's clear_decompress, applied
+  // directly to the persistent-mapped surface. No GPU round trip is needed.
+  std::unique_ptr<GfxClearDecoder> clearDecoder;
+  VkDescriptorSetLayout decodeSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout decodePipeLayout = VK_NULL_HANDLE;
+  VkPipeline decodePipe = VK_NULL_HANDLE;
+  VkDescriptorSetLayout composeSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout composePipeLayout = VK_NULL_HANDLE;
+  VkPipeline composePipe = VK_NULL_HANDLE;
+  VkDescriptorPool rfxPool = VK_NULL_HANDLE;
+
+  // Per-chunk decode scratch: `comp` then `temp`, kRfxChunkTiles*3 streams of
+  // 4096 int16 entries (mirrors the GLES coef buffer).
+  GpuBuffer coef;
+
+  // A host-visible SSBO input arena. Buffers are kept and reused; their `used`
+  // offset is rewound whenever a new command buffer starts (which only happens
+  // after the previous submission's fence wait, so no in-flight reader remains).
+  struct StageBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    uint8_t* mapped = nullptr;
+    size_t capacity = 0;
+    size_t used = 0;
+  };
+  std::vector<StageBuffer> stageBuffers;
+  size_t stageIndex = 0;
+  bool pendingComputeWrites = false;
+
+  uint64_t rfxFirstTiles = 0;
+  uint64_t rfxUpgradeTiles = 0;
+  uint64_t rfxChunks = 0;
+  // Container diagnostics (mirrors RfxParseStats): what the capture actually
+  // carries, so a pixel mismatch can be attributed to a codec path.
+  uint64_t rfxRegions = 0;
+  uint64_t rfxSimpleTiles = 0;
+  uint64_t rfxDiffTiles = 0;
+  uint64_t rfxNonExtrapolate = 0;
+  uint64_t rfxSkippedTiles = 0;
+  uint64_t rfxParseErrors = 0;
+  uint64_t rfxOriginNonZero = 0;
+
   // Screen dirty rectangle (0xFF/0 initialised, mirrors GfxGpuDesktop).
   bool screenDirtyValid = false;
   int screenDirtyL = 0;
@@ -188,11 +294,15 @@ struct GfxVkDesktop::Impl {
   int screenDirtyR = 0;
   int screenDirtyB = 0;
 
-  // V1 coverage: Progressive / ClearCodec are not implemented yet. `unsupported`
-  // means "since the last reset"; the harness keeps its own ever-seen flag,
-  // because once one is applied the surfaces diverge from gdi for good.
+  // Coverage: `unsupported` means "an unimplemented/failed codec command was
+  // applied since the last reset"; the harness keeps its own ever-seen flag,
+  // because once one is applied the surfaces diverge from gdi for good. The
+  // split counters say *which* codec is responsible (ClearCodec is V4).
   bool unsupported = false;
   uint64_t unsupportedCount = 0;
+  uint64_t clearUnsupported = 0;
+  uint64_t clearDecoded = 0;
+  uint64_t progressiveFailed = 0;
   uint64_t submits = 0;
 
   // Dev instrumentation: recording/CPU cost per command class, plus the
@@ -635,6 +745,13 @@ struct GfxVkDesktop::Impl {
     if (vk.ResetCommandBuffer(commandBuffer, 0) != VK_SUCCESS) {
       return false;
     }
+    // A new command buffer only starts after the previous submission's fence
+    // wait, so the staging arena can be rewound and the descriptor pool reset:
+    // neither is referenced by any in-flight command buffer.
+    ResetStage();
+    if (rfxPool != VK_NULL_HANDLE && vk.ResetDescriptorPool != nullptr) {
+      vk.ResetDescriptorPool(device(), rfxPool, 0);
+    }
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -650,7 +767,7 @@ struct GfxVkDesktop::Impl {
   // because surface pixels are written by the CPU directly into the mapping.
   // Emitted lazily, never a per-command device wait.
   void BarrierBeforeRead() {
-    if (!pendingHostWrites && !pendingDeviceWrites) {
+    if (!pendingHostWrites && !pendingDeviceWrites && !pendingComputeWrites) {
       return;
     }
     VkMemoryBarrier barrier{};
@@ -665,11 +782,16 @@ struct GfxVkDesktop::Impl {
       barrier.srcAccessMask |= VK_ACCESS_TRANSFER_WRITE_BIT;
       srcStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
     }
+    if (pendingComputeWrites) {
+      barrier.srcAccessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+      srcStage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
     api().CmdPipelineBarrier(commandBuffer, srcStage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier,
                              0, nullptr, 0, nullptr);
     pendingHostWrites = false;
     pendingDeviceWrites = false;
+    pendingComputeWrites = false;
     barriers++;
   }
 
@@ -818,6 +940,624 @@ struct GfxVkDesktop::Impl {
     pendingDeviceWrites = true;
     return true;
   }
+
+  // --- Progressive decode helpers -----------------------------------------
+
+  // A mapped host-visible buffer of an arbitrary byte size (Progressive state
+  // and scratch). The GpuBuffer stride fields are unused here.
+  bool CreateRawBuffer(GpuBuffer* out, size_t bytes) {
+    if (out == nullptr || bytes == 0) {
+      return false;
+    }
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    if (!AllocateMappedBuffer(bytes, kSurfaceBufferUsage, &buffer, &memory, &mapped)) {
+      return false;
+    }
+    out->buffer = buffer;
+    out->memory = memory;
+    out->mapped = static_cast<uint8_t*>(mapped);
+    out->capacity = bytes;
+    out->width = 0;
+    out->height = 0;
+    out->stride = 0;
+    return true;
+  }
+
+  bool GrowStage(size_t minBytes) {
+    size_t want = minBytes + 4096;
+    if (want < (1u << 20)) {
+      want = 1u << 20;
+    }
+    StageBuffer sb;
+    if (!AllocateMappedBuffer(
+            want, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            &sb.buffer, &sb.memory, reinterpret_cast<void**>(&sb.mapped))) {
+      return false;
+    }
+    sb.capacity = want;
+    sb.used = 0;
+    stageBuffers.push_back(sb);
+    return true;
+  }
+
+  // Copies `bytes` into the arena and reports the backing buffer plus offset. A
+  // new arena buffer is allocated only when the current one is full, so an
+  // already-recorded descriptor never points at a destroyed buffer.
+  bool StageAppend(const void* data, size_t bytes, VkBuffer* outBuffer, VkDeviceSize* outOffset) {
+    if (bytes == 0) {
+      *outBuffer = VK_NULL_HANDLE;
+      *outOffset = 0;
+      return true;
+    }
+    constexpr size_t kAlign = 256;
+    for (;;) {
+      if (stageIndex >= stageBuffers.size()) {
+        if (!GrowStage(bytes)) {
+          return false;
+        }
+      }
+      StageBuffer& sb = stageBuffers[stageIndex];
+      const size_t off = (sb.used + kAlign - 1) & ~(kAlign - 1);
+      if (off + bytes <= sb.capacity) {
+        std::memcpy(sb.mapped + off, data, bytes);
+        sb.used = off + bytes;
+        // The shader reads this through an SSBO: it is a host write that the
+        // next dispatch needs an availability/visibility barrier for.
+        pendingHostWrites = true;
+        *outBuffer = sb.buffer;
+        *outOffset = static_cast<VkDeviceSize>(off);
+        return true;
+      }
+      stageIndex++;
+    }
+  }
+
+  void ResetStage() {
+    stageIndex = 0;
+    for (StageBuffer& sb : stageBuffers) {
+      sb.used = 0;
+    }
+  }
+
+  void DestroyStage() {
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    for (StageBuffer& sb : stageBuffers) {
+      if (dev != VK_NULL_HANDLE) {
+        if (sb.buffer != VK_NULL_HANDLE && vk.DestroyBuffer != nullptr) {
+          vk.DestroyBuffer(dev, sb.buffer, nullptr);
+        }
+        if (sb.memory != VK_NULL_HANDLE) {
+          if (sb.mapped != nullptr && vk.UnmapMemory != nullptr) {
+            vk.UnmapMemory(dev, sb.memory);
+          }
+          if (vk.FreeMemory != nullptr) {
+            vk.FreeMemory(dev, sb.memory, nullptr);
+          }
+        }
+      }
+    }
+    stageBuffers.clear();
+    stageIndex = 0;
+  }
+
+  bool CreateRfxPipelines() {
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (vk.CreateShaderModule == nullptr || vk.CreateComputePipelines == nullptr ||
+        vk.CmdPushConstants == nullptr || vk.ResetDescriptorPool == nullptr) {
+      return false;
+    }
+
+    VkDescriptorSetLayoutBinding decodeBindings[6] = {};
+    for (int i = 0; i < 6; ++i) {
+      decodeBindings[i].binding = static_cast<uint32_t>(i);
+      decodeBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      decodeBindings[i].descriptorCount = 1;
+      decodeBindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo decodeLayoutInfo{};
+    decodeLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    decodeLayoutInfo.bindingCount = 6;
+    decodeLayoutInfo.pBindings = decodeBindings;
+    if (vk.CreateDescriptorSetLayout(dev, &decodeLayoutInfo, nullptr, &decodeSetLayout) !=
+        VK_SUCCESS) {
+      return false;
+    }
+
+    VkDescriptorSetLayoutBinding composeBindings[4] = {};
+    for (int i = 0; i < 4; ++i) {
+      composeBindings[i].binding = static_cast<uint32_t>(i);
+      composeBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      composeBindings[i].descriptorCount = 1;
+      composeBindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo composeLayoutInfo{};
+    composeLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    composeLayoutInfo.bindingCount = 4;
+    composeLayoutInfo.pBindings = composeBindings;
+    if (vk.CreateDescriptorSetLayout(dev, &composeLayoutInfo, nullptr, &composeSetLayout) !=
+        VK_SUCCESS) {
+      return false;
+    }
+
+    VkPushConstantRange decodeRange{};
+    decodeRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    decodeRange.offset = 0;
+    decodeRange.size = 3 * sizeof(uint32_t);
+    VkPipelineLayoutCreateInfo decodePipeInfo{};
+    decodePipeInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    decodePipeInfo.setLayoutCount = 1;
+    decodePipeInfo.pSetLayouts = &decodeSetLayout;
+    decodePipeInfo.pushConstantRangeCount = 1;
+    decodePipeInfo.pPushConstantRanges = &decodeRange;
+    if (vk.CreatePipelineLayout(dev, &decodePipeInfo, nullptr, &decodePipeLayout) != VK_SUCCESS) {
+      return false;
+    }
+
+    VkPushConstantRange composeRange{};
+    composeRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    composeRange.offset = 0;
+    composeRange.size = 9 * sizeof(uint32_t);
+    VkPipelineLayoutCreateInfo composePipeInfo{};
+    composePipeInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    composePipeInfo.setLayoutCount = 1;
+    composePipeInfo.pSetLayouts = &composeSetLayout;
+    composePipeInfo.pushConstantRangeCount = 1;
+    composePipeInfo.pPushConstantRanges = &composeRange;
+    if (vk.CreatePipelineLayout(dev, &composePipeInfo, nullptr, &composePipeLayout) != VK_SUCCESS) {
+      return false;
+    }
+
+    auto makePipeline = [&](const uint32_t* words, uint32_t count, VkPipelineLayout layout,
+                            VkPipeline* out) -> bool {
+      VkShaderModuleCreateInfo moduleInfo{};
+      moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+      moduleInfo.codeSize = static_cast<size_t>(count) * sizeof(uint32_t);
+      moduleInfo.pCode = words;
+      VkShaderModule module = VK_NULL_HANDLE;
+      if (vk.CreateShaderModule(dev, &moduleInfo, nullptr, &module) != VK_SUCCESS) {
+        return false;
+      }
+      VkPipelineShaderStageCreateInfo stage{};
+      stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+      stage.module = module;
+      stage.pName = "main";
+      VkComputePipelineCreateInfo pipelineInfo{};
+      pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+      pipelineInfo.stage = stage;
+      pipelineInfo.layout = layout;
+      const VkResult result =
+          vk.CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, out);
+      vk.DestroyShaderModule(dev, module, nullptr);
+      return result == VK_SUCCESS;
+    };
+    if (!makePipeline(kRfxDecodeSpv, kRfxDecodeSpvWords, decodePipeLayout, &decodePipe)) {
+      return false;
+    }
+    if (!makePipeline(kRfxComposeSpv, kRfxComposeSpvWords, composePipeLayout, &composePipe)) {
+      return false;
+    }
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 4096;
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets = 1024;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    if (vk.CreateDescriptorPool(dev, &poolInfo, nullptr, &rfxPool) != VK_SUCCESS) {
+      return false;
+    }
+    return true;
+  }
+
+  bool AllocSet(VkDescriptorSetLayout layout, VkDescriptorSet* out) {
+    VkDescriptorSetAllocateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    info.descriptorPool = rfxPool;
+    info.descriptorSetCount = 1;
+    info.pSetLayouts = &layout;
+    return api().AllocateDescriptorSets(device(), &info, out) == VK_SUCCESS;
+  }
+
+  void WriteBuffer(VkDescriptorSet set, uint32_t binding, VkBuffer buffer, VkDeviceSize offset,
+                   VkDeviceSize range) {
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = buffer;
+    bufferInfo.offset = offset;
+    bufferInfo.range = range;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &bufferInfo;
+    api().UpdateDescriptorSets(device(), 1, &write, 0, nullptr);
+  }
+
+  // Host/transfer/compute writes -> compute reads. Emitted before a dispatch so
+  // the staging data (CPU) and any previous dispatch's output are visible.
+  void BarrierBeforeCompute() {
+    if (!pendingHostWrites && !pendingDeviceWrites && !pendingComputeWrites) {
+      return;
+    }
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = 0;
+    VkPipelineStageFlags srcStage = 0;
+    if (pendingHostWrites) {
+      barrier.srcAccessMask |= VK_ACCESS_HOST_WRITE_BIT;
+      srcStage |= VK_PIPELINE_STAGE_HOST_BIT;
+    }
+    if (pendingDeviceWrites) {
+      barrier.srcAccessMask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+      srcStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    if (pendingComputeWrites) {
+      barrier.srcAccessMask |= VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+      srcStage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    api().CmdPipelineBarrier(commandBuffer, srcStage, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &barrier, 0, nullptr, 0, nullptr);
+    pendingHostWrites = false;
+    pendingDeviceWrites = false;
+    pendingComputeWrites = false;
+    barriers++;
+  }
+
+  bool CreateRfxState(RfxState* state, int gridW, int gridH) {
+    if (state == nullptr || gridW <= 0 || gridH <= 0) {
+      return false;
+    }
+    const size_t gridStreams = static_cast<size_t>(gridW) * static_cast<size_t>(gridH) * 3u;
+    const size_t stateCoefBytes = gridStreams * 4096u * 2u;
+    const size_t stateBpBytes = ((gridStreams * 10u + 3u) / 4u) * 4u;
+    RfxState created;
+    if (!CreateRawBuffer(&created.cur, stateCoefBytes) ||
+        !CreateRawBuffer(&created.sign, stateCoefBytes) ||
+        !CreateRawBuffer(&created.bp, stateBpBytes)) {
+      DestroyGpuBuffer(&created.cur);
+      DestroyGpuBuffer(&created.sign);
+      DestroyGpuBuffer(&created.bp);
+      return false;
+    }
+    std::memset(created.cur.mapped, 0, stateCoefBytes);
+    std::memset(created.sign.mapped, 0, stateCoefBytes);
+    std::memset(created.bp.mapped, 0, stateBpBytes);
+    HostWrote();
+    *state = created;
+    return true;
+  }
+
+  // Decodes one Progressive ("WBT") message into the surface buffer: parse the
+  // container on the CPU, then for each chunk of <=512 tiles run the decode then
+  // the YCbCr compose compute dispatch. Mirrors GfxGpuDesktop::DecodeMessage.
+  bool DecodeProgressive(uint16_t surfaceId, const uint8_t* payload, size_t size, int originX,
+                         int originY) {
+    if (!rfxReady || payload == nullptr || size == 0) {
+      return false;
+    }
+    if (originX != 0 || originY != 0) {
+      rfxOriginNonZero++;
+    }
+    Surface* surface = Find(surfaceId);
+    if (surface == nullptr || !surface->gpu.valid() || !surface->rfx.valid()) {
+      return false;
+    }
+    const int gridW = surface->meta.gridW;
+    const int gridH = surface->meta.gridH;
+    const int surfaceW = surface->meta.width;
+    const int surfaceH = surface->meta.height;
+
+    struct TileJob {
+      uint32_t x = 0;
+      uint32_t y = 0;
+      uint32_t rectOffset = 0;
+      uint32_t rectCount = 0;
+      StreamJob streams[3];
+    };
+    std::vector<TileJob> tiles;
+    tiles.reserve(256);
+    std::vector<uint32_t> rectPool;
+    rectPool.reserve(256);
+    RfxParseStats stats;
+    ParseRfxProgressive(
+        payload, size,
+        [&](const RfxTileRef& t) {
+          if (t.quants == nullptr) {
+            return;
+          }
+          const bool upgrade = (t.type == RfxTileType::kUpgrade);
+          if (!upgrade && t.type != RfxTileType::kFirst) {
+            rfxSkippedTiles++;  // kSimple not used by this server
+            return;
+          }
+          if (t.xIdx >= static_cast<uint32_t>(gridW) ||
+              t.yIdx >= static_cast<uint32_t>(gridH)) {
+            rfxSkippedTiles++;  // tile outside this surface's grid
+            return;
+          }
+          TileJob job;
+          job.x = t.xIdx;
+          job.y = t.yIdx;
+          job.rectOffset = static_cast<uint32_t>(rectPool.size() / 2);
+          job.rectCount = t.numRects;
+          for (uint16_t ri = 0; ri < t.numRects; ++ri) {
+            const RfxRect& r = t.rects[ri];
+            // Region rects and tiles are relative to the command's destRect
+            // origin, exactly like FreeRDP's gdi (update_tiles:
+            // clippingRect.left = nXDst + rect->x).
+            const uint32_t rx = static_cast<uint32_t>(r.x + originX) & 0xFFFFu;
+            const uint32_t ry = static_cast<uint32_t>(r.y + originY) & 0xFFFFu;
+            rectPool.push_back(rx | (ry << 16));
+            rectPool.push_back(static_cast<uint32_t>(r.width) |
+                               (static_cast<uint32_t>(r.height) << 16));
+          }
+          const RfxQuant* qv[3] = {&t.quants[t.quantIdxY], &t.quants[t.quantIdxCb],
+                                   &t.quants[t.quantIdxCr]};
+          RfxQuant prog[3];
+          if (t.quality != 0xFF && t.progQuants != nullptr && t.quality < t.numProgQuant) {
+            prog[0] = t.progQuants[t.quality].y;
+            prog[1] = t.progQuants[t.quality].cb;
+            prog[2] = t.progQuants[t.quality].cr;
+          }
+          const uint8_t* data[3] = {t.yData, t.cbData, t.crData};
+          const uint16_t len[3] = {t.yLen, t.cbLen, t.crLen};
+          const uint8_t* srl[3] = {t.ySrlData, t.cbSrlData, t.crSrlData};
+          const uint16_t srlLen[3] = {t.ySrlLen, t.cbSrlLen, t.crSrlLen};
+          const uint8_t* raw[3] = {t.yRawData, t.cbRawData, t.crRawData};
+          const uint16_t rawLen[3] = {t.yRawLen, t.cbRawLen, t.crRawLen};
+          const uint32_t tileIndex = static_cast<uint32_t>(t.yIdx) * static_cast<uint32_t>(gridW) +
+                                     t.xIdx;
+          for (int c = 0; c < 3; ++c) {
+            uint8_t qa[10];
+            uint8_t pa[10];
+            QuantArray(*qv[c], qa);
+            QuantArray(prog[c], pa);
+            StreamJob& sj = job.streams[c];
+            sj.type = upgrade ? 2u : 0u;
+            sj.flags = t.flags & 1u;
+            sj.tileStream = tileIndex * 3u + static_cast<uint32_t>(c);
+            for (int i = 0; i < 10; ++i) {
+              const int nb = static_cast<int>(qa[i]) + static_cast<int>(pa[i]);
+              sj.newBit[i] = static_cast<uint8_t>(nb);
+              const int sh = nb - 1;
+              sj.shift[i] = static_cast<uint8_t>(sh < 0 ? 0 : sh);
+            }
+            if (upgrade) {
+              sj.srlOff = static_cast<uint32_t>(srl[c] - payload);
+              sj.srlLen = srlLen[c];
+              sj.rawOff = static_cast<uint32_t>(raw[c] - payload);
+              sj.rawLen = rawLen[c];
+            } else {
+              sj.payloadOff = static_cast<uint32_t>(data[c] - payload);
+              sj.payloadLen = len[c];
+            }
+          }
+          tiles.push_back(job);
+        },
+        &stats);
+    rfxRegions += stats.regions;
+    rfxSimpleTiles += stats.simpleTiles;
+    rfxDiffTiles += stats.diffTiles;
+    rfxNonExtrapolate += (stats.regions > stats.extrapolateRegions)
+                             ? (stats.regions - stats.extrapolateRegions)
+                             : 0u;
+    rfxParseErrors += stats.errors;
+    if (tiles.empty()) {
+      return true;
+    }
+    if (!EnsureRecording()) {
+      return false;
+    }
+    VkApi& vk = api();
+
+    // The payload is bound at its arena offset; every job offset is relative to
+    // it (they were computed as `ptr - payload`). The rect pool is shared by all
+    // chunks via the tile meta offsets.
+    VkBuffer payloadBuffer = VK_NULL_HANDLE;
+    VkDeviceSize payloadOffset = 0;
+    if (!StageAppend(payload, size, &payloadBuffer, &payloadOffset)) {
+      return false;
+    }
+    VkBuffer rectBuffer = VK_NULL_HANDLE;
+    VkDeviceSize rectOffset = 0;
+    if (!rectPool.empty()) {
+      if (!StageAppend(rectPool.data(), rectPool.size() * sizeof(uint32_t), &rectBuffer,
+                       &rectOffset)) {
+        return false;
+      }
+    }
+
+    const uint32_t chunkTiles = kRfxChunkTiles;
+    for (size_t start = 0; start < tiles.size(); start += chunkTiles) {
+      uint32_t count = static_cast<uint32_t>(tiles.size() - start);
+      if (count > chunkTiles) {
+        count = chunkTiles;
+      }
+      const uint32_t streams = count * 3;
+
+      std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
+      std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 4, 0);
+      for (uint32_t t = 0; t < count; ++t) {
+        const TileJob& job = tiles[start + t];
+        // Tile pixel origin = destRect origin + 64 * tile index (gdi's
+        // updateRect = nXDst + tile->x).
+        const int tilePx = originX + static_cast<int>(job.x) * 64;
+        const int tilePy = originY + static_cast<int>(job.y) * 64;
+        tileMeta[t * 4] = static_cast<uint32_t>(tilePx);
+        tileMeta[t * 4 + 1] = static_cast<uint32_t>(tilePy);
+        tileMeta[t * 4 + 2] = job.rectOffset;
+        tileMeta[t * 4 + 3] = job.rectCount;
+        MarkSurfaceDirty(*surface, tilePx, tilePy, tilePx + 64, tilePy + 64);
+        for (int c = 0; c < 3; ++c) {
+          uint8_t* rec = &meta[(static_cast<size_t>(t) * 3 + c) * kMetaStride];
+          const StreamJob& sj = job.streams[c];
+          rec[0] = static_cast<uint8_t>(sj.type);
+          rec[1] = static_cast<uint8_t>(sj.flags);
+          std::memcpy(rec + 4, &sj.tileStream, 4);
+          std::memcpy(rec + 8, &sj.payloadOff, 4);
+          std::memcpy(rec + 12, &sj.payloadLen, 4);
+          std::memcpy(rec + 16, &sj.srlOff, 4);
+          std::memcpy(rec + 20, &sj.srlLen, 4);
+          std::memcpy(rec + 24, &sj.rawOff, 4);
+          std::memcpy(rec + 28, &sj.rawLen, 4);
+          std::memcpy(rec + 32, sj.shift, 10);
+          std::memcpy(rec + 42, sj.newBit, 10);
+          if (sj.type == 0u) {
+            rfxFirstTiles++;
+          } else {
+            rfxUpgradeTiles++;
+          }
+        }
+      }
+
+      VkBuffer metaBuffer = VK_NULL_HANDLE;
+      VkDeviceSize metaOffset = 0;
+      VkBuffer tileMetaBuffer = VK_NULL_HANDLE;
+      VkDeviceSize tileMetaOffset = 0;
+      if (!StageAppend(meta.data(), meta.size(), &metaBuffer, &metaOffset) ||
+          !StageAppend(tileMeta.data(), tileMeta.size() * sizeof(uint32_t), &tileMetaBuffer,
+                       &tileMetaOffset)) {
+        return false;
+      }
+
+      VkDescriptorSet decodeSet = VK_NULL_HANDLE;
+      if (!AllocSet(decodeSetLayout, &decodeSet)) {
+        return false;
+      }
+      WriteBuffer(decodeSet, 0, payloadBuffer, payloadOffset, size);
+      WriteBuffer(decodeSet, 1, metaBuffer, metaOffset, meta.size());
+      WriteBuffer(decodeSet, 2, coef.buffer, 0, VK_WHOLE_SIZE);
+      WriteBuffer(decodeSet, 3, surface->rfx.cur.buffer, 0, VK_WHOLE_SIZE);
+      WriteBuffer(decodeSet, 4, surface->rfx.sign.buffer, 0, VK_WHOLE_SIZE);
+      WriteBuffer(decodeSet, 5, surface->rfx.bp.buffer, 0, VK_WHOLE_SIZE);
+
+      BarrierBeforeCompute();
+      vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, decodePipe);
+      vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, decodePipeLayout, 0, 1,
+                               &decodeSet, 0, nullptr);
+      struct DecodePush {
+        uint32_t numStreams;
+        uint32_t compBase;
+        uint32_t tempBase;
+      } dpush{streams, 0u, streams * 4096u};
+      vk.CmdPushConstants(commandBuffer, decodePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                          sizeof(dpush), &dpush);
+      vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
+      pendingComputeWrites = true;
+
+      VkDescriptorSet composeSet = VK_NULL_HANDLE;
+      if (!AllocSet(composeSetLayout, &composeSet)) {
+        return false;
+      }
+      WriteBuffer(composeSet, 0, tileMetaBuffer, tileMetaOffset, tileMeta.size() * sizeof(uint32_t));
+      WriteBuffer(composeSet, 1, coef.buffer, 0, VK_WHOLE_SIZE);
+      WriteBuffer(composeSet, 2, surface->gpu.buffer, 0, VK_WHOLE_SIZE);
+      WriteBuffer(composeSet, 3, rectBuffer != VK_NULL_HANDLE ? rectBuffer : metaBuffer, rectOffset,
+                  rectPool.empty() ? 4u : rectPool.size() * sizeof(uint32_t));
+
+      BarrierBeforeCompute();
+      vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipe);
+      vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipeLayout, 0, 1,
+                               &composeSet, 0, nullptr);
+      struct ComposePush {
+        uint32_t numTiles;
+        uint32_t compBase;
+        int32_t surfaceW;
+        int32_t surfaceH;
+        int32_t kr;
+        int32_t kcrG;
+        int32_t kcbG;
+        int32_t kcbB;
+        uint32_t swapRb;
+      } cpush{count, 0u, surfaceW, surfaceH, kKr, kKcrG, kKcbG, kKcbB, swapRb ? 1u : 0u};
+      vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                          sizeof(cpush), &cpush);
+      vk.CmdDispatch(commandBuffer, (count + 63u) / 64u, 1, 1);
+      pendingComputeWrites = true;
+      rfxChunks++;
+    }
+    return true;
+  }
+
+  // V4: ClearCodec is not self-contained (band pixels it does not cover keep the
+  // current surface value), so it is a CPU read-modify-write. Since V2 the
+  // surface IS the mapping, so FreeRDP's clear_decompress runs straight on it -
+  // no staging, no GPU round trip (VULKAN-TODO §4.2 item 3).
+  bool ClearCodecDecode(uint16_t surfaceId, const uint8_t* payload, uint32_t payloadLen, int left,
+                        int top, int width, int height) {
+    if (clearDecoder == nullptr || payload == nullptr || payloadLen == 0 || width <= 0 ||
+        height <= 0) {
+      return false;
+    }
+    Surface* surface = Find(surfaceId);
+    if (surface == nullptr || !surface->gpu.valid()) {
+      return false;
+    }
+    const int x = left < 0 ? 0 : left;
+    const int y = top < 0 ? 0 : top;
+    // The band must lie inside the surface; clear_decompress would otherwise
+    // clip, but a partly outside band means the stream is not what we model.
+    if (x + width > surface->meta.width || y + height > surface->meta.height) {
+      return false;
+    }
+    // Storage order: BGRA for the offline harness, RGBA when the swapchain
+    // forces it. Alpha is 0xFF everywhere in this engine, so the X variants
+    // would be equivalent.
+    const uint32_t format = swapRb ? kPixelFormatRgba32 : kPixelFormatBgra32;
+    if (!clearDecoder->Decode(payload, payloadLen, width, height, format, surface->gpu.mapped,
+                              surface->gpu.stride, x, y, surface->meta.width,
+                              surface->meta.height)) {
+      return false;
+    }
+    HostWrote();
+    MarkSurfaceDirty(*surface, x, y, x + width, y + height);
+    clearDecoded++;
+    return true;
+  }
+
+  void DestroyRfxResources() {
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev != VK_NULL_HANDLE) {
+      if (rfxPool != VK_NULL_HANDLE && vk.DestroyDescriptorPool != nullptr) {
+        vk.DestroyDescriptorPool(dev, rfxPool, nullptr);
+      }
+      if (composePipe != VK_NULL_HANDLE && vk.DestroyPipeline != nullptr) {
+        vk.DestroyPipeline(dev, composePipe, nullptr);
+      }
+      if (decodePipe != VK_NULL_HANDLE && vk.DestroyPipeline != nullptr) {
+        vk.DestroyPipeline(dev, decodePipe, nullptr);
+      }
+      if (composePipeLayout != VK_NULL_HANDLE && vk.DestroyPipelineLayout != nullptr) {
+        vk.DestroyPipelineLayout(dev, composePipeLayout, nullptr);
+      }
+      if (decodePipeLayout != VK_NULL_HANDLE && vk.DestroyPipelineLayout != nullptr) {
+        vk.DestroyPipelineLayout(dev, decodePipeLayout, nullptr);
+      }
+      if (composeSetLayout != VK_NULL_HANDLE && vk.DestroyDescriptorSetLayout != nullptr) {
+        vk.DestroyDescriptorSetLayout(dev, composeSetLayout, nullptr);
+      }
+      if (decodeSetLayout != VK_NULL_HANDLE && vk.DestroyDescriptorSetLayout != nullptr) {
+        vk.DestroyDescriptorSetLayout(dev, decodeSetLayout, nullptr);
+      }
+    }
+    rfxPool = VK_NULL_HANDLE;
+    composePipe = VK_NULL_HANDLE;
+    decodePipe = VK_NULL_HANDLE;
+    composePipeLayout = VK_NULL_HANDLE;
+    decodePipeLayout = VK_NULL_HANDLE;
+    composeSetLayout = VK_NULL_HANDLE;
+    decodeSetLayout = VK_NULL_HANDLE;
+  }
 };
 
 GfxVkDesktop::GfxVkDesktop() = default;
@@ -869,8 +1609,28 @@ bool GfxVkDesktop::Init(VkFormat format) {
     HMRDP_LOGE("vk desktop: vkCreateFence failed");
     return false;
   }
+  // V3 Progressive compute. Optional: when it cannot be created the engine still
+  // serves every other command and Progressive stays "unsupported" (counted and
+  // visible in the stats, never silently wrong).
+  if (impl_->CreateRfxPipelines()) {
+    const size_t coefBytes = static_cast<size_t>(kRfxChunkTiles) * 3u * 4096u * 4u;
+    if (impl_->CreateRawBuffer(&impl_->coef, coefBytes)) {
+      impl_->rfxReady = true;
+    } else {
+      HMRDP_LOGE("vk desktop: progressive scratch allocation failed");
+    }
+  } else {
+    HMRDP_LOGW("vk desktop: progressive compute unavailable (pipeline creation failed)");
+  }
+  // V4: ClearCodec read-modify-write on the CPU. Independent of the compute
+  // pipeline; a failure just leaves ClearCodec in the unsupported path.
+  impl_->clearDecoder = CreateFreeRdpClearDecoder();
+  if (impl_->clearDecoder == nullptr) {
+    HMRDP_LOGW("vk desktop: FreeRDP clear_decompress unavailable");
+  }
   ready_ = true;
-  HMRDP_LOGI("vk desktop: engine ready (V2 storage: host-visible buffers)");
+  HMRDP_LOGI("vk desktop: engine ready (V2 storage: host-visible buffers, rfxCompute=%{public}d)",
+             impl_->rfxReady ? 1 : 0);
   return true;
 }
 
@@ -884,6 +1644,9 @@ void GfxVkDesktop::Reset() {
   const VkDevice device = impl_->device();
   for (auto& kv : impl_->surfaces) {
     impl_->DestroyGpuBuffer(&kv.second.gpu);
+    impl_->DestroyGpuBuffer(&kv.second.rfx.cur);
+    impl_->DestroyGpuBuffer(&kv.second.rfx.sign);
+    impl_->DestroyGpuBuffer(&kv.second.rfx.bp);
   }
   impl_->surfaces.clear();
   for (auto& kv : impl_->cache) {
@@ -891,6 +1654,10 @@ void GfxVkDesktop::Reset() {
   }
   impl_->cache.clear();
   impl_->DestroyImage(&impl_->screen);
+  impl_->DestroyGpuBuffer(&impl_->coef);
+  impl_->DestroyStage();
+  impl_->DestroyRfxResources();
+  impl_->clearDecoder.reset();
   if (device != VK_NULL_HANDLE) {
     if (impl_->fillBuffer != VK_NULL_HANDLE) {
       api.DestroyBuffer(device, impl_->fillBuffer, nullptr);
@@ -954,6 +1721,12 @@ bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint
   // symmetric, so it needs no swap.
   std::memset(surface.gpu.mapped, 0xFF, surface.gpu.capacity);
   impl_->HostWrote();
+  // Persistent Progressive tile state. Allocation failure degrades only the
+  // Progressive path for this surface (counted as unsupported), not the surface.
+  if (impl_->rfxReady &&
+      !impl_->CreateRfxState(&surface.rfx, surface.meta.gridW, surface.meta.gridH)) {
+    HMRDP_LOGW("vk desktop: surface %{public}u progressive state allocation failed", surfaceId);
+  }
 
   HMRDP_LOGI("vk desktop: surface %{public}u %{public}dx%{public}d stride=%{public}d", surfaceId,
              surface.meta.width, surface.meta.height, surface.meta.stride);
@@ -1007,8 +1780,11 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
   if (!impl_->PrepareImage(&impl_->screen, width, height)) {
     return false;
   }
-  // The screen starts fully transparent black (FreeRDP's gdi behaviour).
-  impl_->FillImage(&impl_->screen, 0x00000000u);
+  // The screen starts fully opaque white: FreeRDP's gdi primary buffer is
+  // created by gdi_CreateCompatibleBitmap, which memsets its bitmap to 0xFF
+  // ("Initialize with 0xff"). Matching it is required for the gdi comparison -
+  // any pixel neither side paints would otherwise differ by construction.
+  impl_->FillImage(&impl_->screen, 0xFFFFFFFFu);
   screenW_ = impl_->screen.width;
   screenH_ = impl_->screen.height;
   return true;
@@ -1452,13 +2228,24 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
             UploadBgra(sid, left, top, width, height, tmp.data(), width * 4);
           }
         }
-      } else if (codecId == kGpuCodecCaprogressive || codecId == kGpuCodecCaprogressiveV2 ||
-                 codecId == kGpuCodecClearCodec) {
-        // Not implemented yet (VULKAN-TODO §5 V3/V4). The surface keeps
-        // its previous pixels, and the frame is flagged so a correctness run
-        // excludes it.
-        impl_->unsupported = true;
-        impl_->unsupportedCount++;
+      } else if (codecId == kGpuCodecCaprogressive || codecId == kGpuCodecCaprogressiveV2) {
+        // V3: RemoteFX Progressive, decoded by the compute pipeline straight
+        // into the surface buffer. The PDU destRect origin offsets every tile
+        // and region rect (gdi does the same).
+        if (!impl_->DecodeProgressive(sid, payload, payloadLen, left, top)) {
+          // No compute support / malformed container: leave the surface
+          // untouched and flag the frame so a correctness run excludes it.
+          impl_->unsupported = true;
+          impl_->unsupportedCount++;
+          impl_->progressiveFailed++;
+        }
+      } else if (codecId == kGpuCodecClearCodec) {
+        // V4: CPU clear_decompress read-modify-write on the mapped surface.
+        if (!impl_->ClearCodecDecode(sid, payload, payloadLen, left, top, width, height)) {
+          impl_->unsupported = true;
+          impl_->unsupportedCount++;
+          impl_->clearUnsupported++;
+        }
       }
       break;
     }
@@ -1555,12 +2342,29 @@ std::string GfxVkDesktop::Stats() const {
       static_cast<unsigned long long>(impl_->statRead.count),
       static_cast<unsigned long long>(impl_->barriers),
       static_cast<unsigned long long>(impl_->flushWaitUs / 1000));
-  char buf2[192];
+  char buf2[768];
   std::snprintf(buf2, sizeof(buf2),
-                "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu",
+                "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu"
+                "\n  rfxCompute=%d chunks=%llu first=%llu upgrade=%llu clearDec=%llu "
+                "clearUnsup=%llu progFail=%llu"
+                "\n  rfxParse regions=%llu simple=%llu diff=%llu nonExtrap=%llu skipTiles=%llu "
+                "errors=%llu originNonZero=%llu",
                 static_cast<unsigned long long>(impl_->composeCopies),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
-                static_cast<unsigned long long>(impl_->composeSkipClean));
+                static_cast<unsigned long long>(impl_->composeSkipClean), impl_->rfxReady ? 1 : 0,
+                static_cast<unsigned long long>(impl_->rfxChunks),
+                static_cast<unsigned long long>(impl_->rfxFirstTiles),
+                static_cast<unsigned long long>(impl_->rfxUpgradeTiles),
+                static_cast<unsigned long long>(impl_->clearDecoded),
+                static_cast<unsigned long long>(impl_->clearUnsupported),
+                static_cast<unsigned long long>(impl_->progressiveFailed),
+                static_cast<unsigned long long>(impl_->rfxRegions),
+                static_cast<unsigned long long>(impl_->rfxSimpleTiles),
+                static_cast<unsigned long long>(impl_->rfxDiffTiles),
+                static_cast<unsigned long long>(impl_->rfxNonExtrapolate),
+                static_cast<unsigned long long>(impl_->rfxSkippedTiles),
+                static_cast<unsigned long long>(impl_->rfxParseErrors),
+                static_cast<unsigned long long>(impl_->rfxOriginNonZero));
   return std::string(buf) + buf2;
 }
 

@@ -186,9 +186,11 @@ const GpuComputeInfo& GetGpuComputeInfo();
 
 // FreeRDP packed surface pixel formats (values copied from freerdp/codec/color.h
 // so this header stays FreeRDP-free). The wire format maps 0x20 -> BGRX32 and
-// 0x21 -> BGRA32.
+// 0x21 -> BGRA32. The RGBA variants describe the Vulkan engine's storage when
+// the swapchain forces an RGBA8 swapchain (VULKAN-TODO §5 V2/V4).
 constexpr uint32_t kPixelFormatBgra32 = 0x20048888u;
 constexpr uint32_t kPixelFormatBgrx32 = 0x20040888u;
+constexpr uint32_t kPixelFormatRgba32 = 0x20038888u;
 
 // Public metadata of one GPU-resident GFX surface (the GL buffers stay private
 // to the engine). Dimensions/stride are aligned to 16 exactly like FreeRDP's
