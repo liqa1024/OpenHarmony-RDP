@@ -113,6 +113,15 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - UPGRADE 的 SRL/raw **两个位流同时活跃**：非 LL 子带走 raw（按 `sign` 决定符号），LL3 走 SRL。
 - 每 `(tile, 分量)` 的 `current` / `sign` / `bitPos` **跨消息常驻**；`bitPos` 每次解码都写为新的
   `quant + progQuant`。位状态缓冲**每流整字节对齐**（不要 10 字节紧排：相邻流会共享 32 位字、丢 RMW 更新）。
+- **WBT 块状态机是"每条消息"的**：`progressive_decompress` 开头 `progressive->state = 0`，所以
+  "REGION 在 FRAME_BEGIN 之前 / FRAME_END 之后" 这条忽略规则只看**本条消息**里的块（引擎原先把
+  `frameBegin/frameEnd` 跨消息持久化，会接受 gdi 跳过的 region）。**被忽略的 region 连同它的 tile
+  状态更新一起不生效**。
+- **畸形消息的拒收粒度照抄 FreeRDP**：region 头/分量量化表校验失败 ⇒ 整个 region 什么都不做（两边
+  一致）；但**"读了这么多 tile"之后才失败**（tile 头长度、块字节数、`numTiles` 不一致）时，FreeRDP
+  已经把读到的 tile **登记进本帧的 tile 列表**（并更新其元数据），只是不进入解码/合成。UPGRADE 的
+  `aSrlLen/aRawLen` 与声明长度不符时，FreeRDP 在**已把 refinement 累加进 `current`/`sign` 之后**返回
+  失败 ⇒ 该 tile 的像素保持旧值但系数状态已变。
 - 逆 DWT 的抽取/尾块（`ProgIdwtX/Y`）与带偏移/长度必须照抄（抽取路径 0/1023/2046/3007/3279/3551/
   3807/3879/3951/4015；非抽取路径不同，不要混用）。
 - 颜色转换：`yCbCrToRGB` 的 `(y+4096)<<16` + 乘系数后 `>>21`，系数是 **float 截断**得到的整数
@@ -191,10 +200,16 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   否则会把 GPU 执行时间误判成同步开销，做出完全相反的设计。
 - **不要每命令排空流水线 / 等待设备**（旧实现在每条命令末尾 `glFinish` 是反面教材）：GPU 侧用 barrier，
   只在真正需要 CPU 回读处同步；**不要立即销毁在飞资源**（fence 延迟回收）。
-- **compute 派发注意并行度与访存形态**，不只是每轴工作组上限（`maxComputeWorkGroupCount`，常见 65535）：
+- **compute 派发注意并行度与访存形态**，不只是每轴工作组上限（`maxComputeWorkGroupCount`，本机 65535）：
   一个 workgroup 只覆盖 512~1536 个 invocation、且每个 invocation 串行处理 4096 个元素
   （RLGR 位流逐字节 refill、tile 逐像素循环）时，GPU 利用率极低——此时"引擎比 FreeRDP 的 CPU 软解还慢"
   是必然结果。整屏矩形需要 10 万+ 工作组，必须用 2D/3D 网格而不是线性下标。
+  **这条不是"性能建议"而是正确性要求**：`rfx_compose`（一个 invocation 一个像素，线性派发
+  `tileCount*64` 个工作组）在整屏 Progressive 消息上需要 65535 以上（实测最大 91008），超限后平台
+  **静默只执行一部分** —— 消息尾部的 tile 不再被合成、表面/画面停在上一次内容，表现为"下半屏整块
+  stale"（见 [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md) §2.1）。现在主机按 65535 拆 2-D
+  网格、着色器用 `gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x` 还原线性 index；
+  `Stats()` 的 `composeGridSplits`/`composeGroupsMax` 若不为 0 就说明这条路径正在生效。
 - **任何带 `barrier()` 的 kernel，早退必须由整个 workgroup 一致决定**：`if (gid >= uNumStreams) return;`
   这类按 lane 早退会让最后一个 workgroup 的 `barrier()` 只被执行一部分 → **未定义行为**
   （实测表现为花屏 + present 失败）。要么在早退前先 `barrier()` 收敛，要么把参数补齐到整组。
@@ -285,8 +300,10 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
     字节量变化，"两个场景的平均值接近"并不说明大头是固定等待。
   - 单条 Progressive 消息可带**数千条 stream**，而能同时在飞的 workgroup 数量有限，所以**平均值会低估**
     "当前结构下"的并行度上限。
-- **`Vulkan对比` 的既有残留**：视频录像目前 `bad=6`（整屏、maxDelta=255），**与本仓库的批量/解码改动无关**
-  （关闭合并时同样 `bad=6`）。排查路径与工具见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+- **`Vulkan对比` 的现状**（唯一权威处见 [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)）：
+  浏览录像 `bad=0 rgbPx=0`（门禁）；视频录像从"整屏 stale、`rgbPx≈10.3M`"降到 `rgbPx≈2.82M`
+  ——**整块全错的 tile 已经消灭**，剩下小块 tile 的 ±1~4 色度/亮度差异（已定位到具体消息与系数，
+  尚未收窄到一行代码）。**任何一轮性能结论的前提是那一轮 `bad=0`。**
 - **对比结果与呈现路径解耦**：对比读的是引擎屏幕镜像（`ReadScreen()`）与离线 gdi 主缓冲，呈现器只碰
   swapchain/present，所以**换呈现后端、改重建策略都不会影响 `bad` 的判定**；反过来说，`bad` 变化只能来自
   解码/合成。
@@ -299,8 +316,10 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
-- **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）与
-  **视频录像的正确性残留**：单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+- **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
+  单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+- **引擎 vs gdi 逐像素对拍的修复与残留**（compose 派发超限、UPGRADE 拒收语义、状态级对拍工具）：
+  单独成文 → [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)。
 - **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——
   「硬件解码」已完成（`DeviceCapabilities.hardwareDecode()`，见
   [`native-libraries.md`](native-libraries.md) §6）。

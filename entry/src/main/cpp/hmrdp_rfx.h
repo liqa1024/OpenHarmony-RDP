@@ -128,6 +128,12 @@ struct RfxParseStats {
   uint32_t extrapolateRegions = 0;  // region flags & RFX_DWT_REDUCE_EXTRAPOLATE
   uint32_t diffTiles = 0;           // tile flags & RFX_TILE_DIFFERENCE
   uint32_t errors = 0;     // malformed blocks
+  // Dev (doc_agent/gfx-engine.md §6): where the last malformed message failed.
+  // FreeRDP's rejection is *not* all-or-nothing - the region header is validated
+  // before anything is applied, but a failure during the tile walk happens after
+  // the tiles read so far were already registered in the frame's tile list - so
+  // the stage decides whether "both reject" really means "both do nothing".
+  const char* errorStage = nullptr;
 };
 
 using RfxTileCallback = std::function<void(const RfxTileRef&)>;
@@ -144,10 +150,11 @@ struct RfxRegionRef {
 };
 using RfxRegionCallback = std::function<void(const RfxRegionRef&)>;
 
-// FreeRDP's WBT state machine, which *persists across messages*: a REGION is
-// silently ignored (not an error!) when it arrives before FRAME_BEGIN or after
-// FRAME_END. Pass the owning engine's state so the decoders match gdi; nullptr
-// disables the guard.
+// FreeRDP's WBT block state machine: a REGION is silently ignored (not an error!)
+// when it arrives before FRAME_BEGIN or after FRAME_END *of the same message*
+// (progressive_decompress resets it per message), and the ignored region's tile
+// state update goes with it. Pass the owning engine's state so the decoders match
+// gdi; nullptr disables the guard.
 struct RfxProgressiveState {
   bool frameBegin = false;
   bool frameEnd = false;

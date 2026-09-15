@@ -124,7 +124,11 @@ int upgradeAdd(int inVal, uint newBit) {
 }
 
 // ---- 64-bit MSB bit reader (mirrors MsbBitReader in hmrdp_rfx.cpp) --------
-struct BitReader { uint base; uint len; uint hi; uint lo; int bits; uint pos; };
+// `cons` mirrors FreeRDP's `wBitStream::position`: the bits the decoder *asked for*,
+// which keeps growing even when the stream is exhausted (BitStream_Shift never
+// checks the length). The UPGRADE path compares it against the declared SRL/RAW
+// lengths, so it must not be clamped to what was actually available.
+struct BitReader { uint base; uint len; uint hi; uint lo; int bits; uint pos; uint cons; };
 BitReader gBr;
 void brFetch() {
   while (gBr.bits <= 32 && gBr.pos < gBr.len) {
@@ -143,12 +147,16 @@ void brFetch() {
 }
 void brInit(uint base, uint len) {
   gBr.base = base; gBr.len = len; gBr.hi = 0u; gBr.lo = 0u; gBr.bits = 0; gBr.pos = 0u;
+  gBr.cons = 0u;
   brFetch();
 }
 uint brPeek() { return gBr.hi; }
 uint brRemaining() { int r = gBr.bits + int((gBr.len - gBr.pos) * 8u); return r > 0 ? uint(r) : 0u; }
 void brShift(int n) {
   if (n <= 0) return;
+  // BitStream_Shift counts 0 for a count >= 32 (its else branch does nothing) except
+  // for the RLGR loop's Shift32, which is two 16-bit shifts i.e. 32.
+  if (n <= 32) gBr.cons += uint(n);
   if (n >= 64) { gBr.hi = 0u; gBr.lo = 0u; gBr.bits = 0; }
   else {
     if (n >= 32) { gBr.hi = gBr.lo << uint(n - 32); gBr.lo = 0u; }
@@ -158,9 +166,22 @@ void brShift(int n) {
   brFetch();
 }
 int lzcnt32(uint x) { return (x == 0u) ? 32 : (31 - findMSB(x)); }
+// Reads `n` bits out of the RAW stream, replicating FreeRDP's wBitStream for the
+// counts the UPGRADE path can produce.
+//
+// The quant fields are BYTE in FreeRDP, so `numBits = tile->yBitPos - yBitPos`
+// *wraps* when the new pass is coarser than the tile's last one (see
+// upgradeComponent): the count becomes ~226..255. For such a count FreeRDP's
+// `BitStream_Shift` does nothing but log a warning (its `else` branch), while the
+// value the caller reads is still produced - with the hardware's 5-bit-masked
+// shift counts (`(INT16)((accumulator >> ((32 - n) & 31)) & mask)`, and `mask` is
+// all-ones because `(1UL << n) - 1` has only bits above 32 set on a 64-bit long).
+// So the read returns garbage out of the *current* window and consumes nothing -
+// which is what gdi then adds into `current`. Anything else (e.g. clamping the
+// count to 0 and skipping the band, or consuming n bits) is a silent divergence.
 uint brReadBits(int n) {
   if (n <= 0) return 0u;
-  if (n >= 32) { uint v = brPeek(); brShift(n); return v; }
+  if (n >= 32) return brPeek() >> ((uint(32 - n)) & 31u);
   uint v = brPeek() >> uint(32 - n);
   brShift(n);
   return v;
@@ -180,11 +201,17 @@ void srlFetch() {
 }
 void srlInit(uint base, uint len) {
   gSrl.base = base; gSrl.len = len; gSrl.hi = 0u; gSrl.lo = 0u; gSrl.bits = 0; gSrl.pos = 0u;
+  gSrl.cons = 0u;
   srlFetch();
 }
+// Bits already consumed out of each stream: bytes fetched minus the bits still
+// buffered in the 64-bit window.
+uint brConsumed() { return gBr.pos * 8u - uint(gBr.bits); }
+uint srlConsumed() { return gSrl.pos * 8u - uint(gSrl.bits); }
 uint srlPeek() { return gSrl.hi; }
 void srlShift(int n) {
   if (n <= 0) return;
+  if (n <= 32) gSrl.cons += uint(n);
   if (n >= 64) { gSrl.hi = 0u; gSrl.lo = 0u; gSrl.bits = 0; }
   else {
     if (n >= 32) { gSrl.hi = gSrl.lo << uint(n - 32); gSrl.lo = 0u; }
@@ -452,8 +479,14 @@ int srlRead(inout int kp, inout int nz, inout int mode, uint numBits) {
   if (kp < 6) kp = 0; else kp -= 6;
   if (numBits == 1u) return (signBit != 0u) ? -1 : 1;
   uint mag = 1u;
-  uint maxMag = (1u << numBits) - 1u;
-  while (mag < maxMag) {
+  // `numBits >= 32` only comes from the BYTE-wrapped count; FreeRDP computes
+  // `max = (1 << numBits) - 1` in a UINT32 after a 64-bit shift, which is
+  // 0xFFFFFFFF there (see brReadBits).
+  uint maxMag = (numBits >= 32u) ? 0xFFFFFFFFu : ((1u << numBits) - 1u);
+  // `mag` is clamped to INT16_MAX below, so stopping the unary run there cannot
+  // change the result - it only bounds the wrapped case above (which would
+  // otherwise spin ~4e9 times over a zero-filled tail).
+  while (mag < maxMag && mag < 32768u) {
     uint bit = ((srlPeek() & 0x80000000u) != 0u) ? 1u : 0u;
     srlShift(1);
     if (bit != 0u) break;
@@ -489,22 +522,52 @@ void upgradeComponent(uint compBase, uint tempBase, uint stateBase, uint tileStr
   srlInit(srlOff, srlLen);
   brInit(rawOff, rawLen);
   int kp = 8; int nz = 0; int mode = 0;
+  // `numBits` is a BYTE subtraction in FreeRDP (RFX_COMPONENT_CODEC_QUANT fields
+  // are BYTE), so a *coarser* new pass (newBit > oldBit - the server restarts a
+  // region at a lower quality, which busy video does constantly) wraps to
+  // 256 - (new - old) instead of clamping to 0. That is not a no-op: FreeRDP's
+  // readers then take the garbage path of brReadBits/srlRead and still *add* the
+  // result to `current` (its own length check passes, because no extra bits are
+  // consumed), so gdi's tile pixels move while a clamped engine left them alone.
   for (int b = 0; b < 9; b++) {
     uint nb = newBit[b];
     uint ob = oldBit[b];
-    uint numBits = (ob > nb) ? (ob - nb) : 0u;
+    uint numBits = (ob - nb) & 0xFFu;
     upgradeBlock(true, kp, nz, mode, stateBase, kSubOff[b], kSubLen[b], nb, numBits);
   }
   {
     uint nb = newBit[9];
     uint ob = oldBit[9];
-    uint numBits = (ob > nb) ? (ob - nb) : 0u;
+    uint numBits = (ob - nb) & 0xFFu;
     upgradeBlock(false, kp, nz, mode, stateBase, kSubOff[9], kSubLen[9], nb, numBits);
   }
   for (uint wi = 0u; wi < 2048u; wi++) {
     coef.data[(compBase >> 1u) + wi] = cur.data[(stateBase >> 1u) + wi];
   }
   for (int b = 0; b < 10; b++) bitPosSet(tileStream, uint(b), newBit[b]);
+
+  // FreeRDP's UPGRADE verdict (progressive_rfx_upgrade_component, after
+  // progressive_rfx_upgrade_state_finish): both readers are padded to a byte
+  // boundary, a trailing SRL byte is dropped when exactly one is left, and the tile
+  // is *rejected* when the consumed bytes do not equal the declared lengths
+  // (`aSrlLen != srlLen || aRawLen != rawLen`). A rejected tile never gets its pixels
+  // written (`tile->data` is only produced past that check) although `current`,
+  // `sign` and the bit positions already carry the refined values - and because the
+  // tile keeps its previous pixels, a later re-composite of it must be skipped too,
+  // until a decode of that tile succeeds.
+  //
+  // The verdict travels to the compositor in the two spare bytes of the stream's
+  // bit-position entry (bands 0..9 use bytes 0..9): 1 = length matched, 0 = this
+  // stream makes the whole tile stale.
+  uint rawPos = gBr.cons;
+  uint srlPos = gSrl.cons;
+  const uint rawPad = (rawPos & 7u) != 0u ? 8u - (rawPos & 7u) : 0u;
+  const uint srlPad = (srlPos & 7u) != 0u ? 8u - (srlPos & 7u) : 0u;
+  rawPos += rawPad;
+  srlPos += srlPad;
+  if (srlLen * 8u > srlPos && (srlLen * 8u - srlPos) == 8u) { srlPos += 8u; }
+  bitPosSet(tileStream, 10u, ((rawPos + 7u) / 8u == uint(rawLen)) ? 1u : 0u);
+  bitPosSet(tileStream, 11u, ((srlPos + 7u) / 8u == uint(srlLen)) ? 1u : 0u);
 }
 
 // The verified per-lane decode: one invocation per (tile,component) stream. The
@@ -569,7 +632,14 @@ void main() {
       }
     }
     for (uint b = 0u; b < 10u; b++) bitPosSet(tileStream, b, newBit[b]);
+    // A kFirst/kSimple decode always writes the tile's pixels, so it clears the
+    // "stale pixels" verdict (see upgradeComponent).
+    bitPosSet(tileStream, 10u, 1u);
+    bitPosSet(tileStream, 11u, 1u);
   } else if (type == 3u) {
+    // Re-composite only: it changes no state, so it must not clear an UPGRADE's
+    // verdict either (a tile whose last refinement was rejected keeps its old
+    // pixels for every later re-composite).
     // Reverse-only pass. FreeRDP's update_tiles re-composites *every* tile it has
     // decoded in the current frame on each Progressive message, so a tile whose
     // last decode was an earlier message of this frame is composited again here -

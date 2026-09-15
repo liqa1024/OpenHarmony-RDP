@@ -50,6 +50,34 @@ class ReplayDesktop {
   bool Present();
   bool screenDirty() const { return engine_ != nullptr && engine_->screenDirty(); }
   bool ReadScreen(std::vector<uint8_t>* out) { return engine_->ReadScreen(out); }
+  // Ends recording/submits: required before a CPU read of the surfaces when the
+  // dev A/B is run per command (the pending Progressive decode batch must have
+  // executed).
+  bool Flush() { return engine_->Flush(); }
+  // Engine-side surface geometry (16-aligned width/height and the row pitch), so
+  // the dev A/B can walk two buffers with their own strides.
+  // Dev: the engine's own Progressive predictor state for one tile (see
+  // GfxVkDesktop::ReadTileState), so it can be diffed against gdi's.
+  bool TileState(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int16_t* cur, int16_t* sign,
+                 uint8_t bitPos[30]) {
+    return engine_->ReadTileState(surfaceId, xIdx, yIdx, cur, sign, bitPos);
+  }
+  bool SurfaceSize(uint16_t surfaceId, int* width, int* height, int* stride) {
+    const GpuSurface* s = engine_->FindSurface(surfaceId);
+    if (s == nullptr) {
+      return false;
+    }
+    if (width != nullptr) {
+      *width = s->width;
+    }
+    if (height != nullptr) {
+      *height = s->height;
+    }
+    if (stride != nullptr) {
+      *stride = s->stride;
+    }
+    return true;
+  }
   // Full surface (top-down, `stride` bytes) as BGRA; dev diagnostics only.
   bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
     return engine_->ReadSurface(surfaceId, out);
@@ -126,6 +154,32 @@ constexpr uint64_t kCompareEvery = 30;
 // only while a decoder divergence has to be pinned to a message (the replay then
 // looks hung / the picture stays black, so never leave it on).
 constexpr bool kCodecAbEnabled = false;
+// Dev: write both screens (RGB24 PPM, 3120x2080 = ~19 MB each) on the first
+// divergence, so the *shape* of a divergence can be seen offline. Off by default:
+// the files are large and land in the app's filesDir.
+constexpr bool kDumpCompareScreens = false;
+// Dev: whole-surface A/B after every Progressive message. The per-rect A/B above
+// only checks the tiles a message decodes itself, so it is blind to the tiles
+// FreeRDP *re-composites* (update_tiles re-stamps the frame's whole tile list) -
+// and to a surface that was left stale by an earlier message. Comparing the whole
+// surface names the first message after which the engine's surface stops agreeing
+// with gdi's, which is the command that has to be explained. Off by default: a
+// read of the mapped surface per message is cheap, but the log is not.
+constexpr bool kSurfaceAbEnabled = false;
+constexpr uint64_t kSurfaceAbMaxChecks = 300;
+// Dev: per-tile predictor-state A/B (doc_agent/gfx-progressive-kernel.md §3). After
+// a Progressive message the engine's `cur`/`sign`/bit positions for every tile that
+// message decoded are compared with FreeRDP's own `current`/`sign`/bit positions
+// (requires the patched FreeRDP accessor, native/scripts/patch-freerdp.ps1 patch 9).
+// The *pixels* can agree while the state differs - the dequantise step is a no-op
+// for `quant+progQuant-1 >= 16` and the DWT's integer halvings absorb small
+// differences - and the state is what every later refinement builds on, so this is
+// the measurement that names the message where the two decoders part ways. Off by
+// default: it forces a submit+fence per message.
+constexpr bool kTileStateAbEnabled = false;
+// Only the capture's first messages (the first divergence is expected early, and
+// every checked message costs a flush plus a state read per tile).
+constexpr int kTileStateAbMessages = 40;
 
 int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -172,6 +226,12 @@ class ReplaySink : public GfxCommandSink {
     // non-surface commands (fill/copy/cache/...).
     const uint32_t codecId =
         (cmdId == kGpuCmdWireToSurface && scalars != nullptr) ? scalars[0] : 0u;
+    // Dev (`kCodecAbEnabled`): mirror FreeRDP's per-frame tile list so the restamp
+    // (re-composite) pass can be A/B-checked too; the list is reset when the frame id
+    // changes, exactly like PROGRESSIVE_SURFACE_CONTEXT::numUpdatedTiles.
+    if (cmdId == kGpuCmdStartFrame && scalars != nullptr) {
+      startFrameId_ = scalars[0];
+    }
     const int64_t t0 = NowUs();
     engine_->Apply(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
     const int64_t total = NowUs() - t0;
@@ -183,18 +243,167 @@ class ReplaySink : public GfxCommandSink {
       // Only the command's own rects are checked: the pixels a Progressive message
       // also *re-composites* (FreeRDP's update_tiles) are covered by the full-tile
       // check of the message that decoded them.
+      // Dev (`kTileStateAbEnabled`): record the (tile,component) streams this
+      // Progressive message decodes so TileStateAbFlush can diff the engine's own
+      // predictor state against FreeRDP's for the same tiles.
+      if (kTileStateAbEnabled && cmdId == kGpuCmdWireToSurface && payload != nullptr &&
+          codecId == kGpuCodecCaprogressive) {
+        ++progIndex_;
+        ParseRfxProgressive(
+            payload, payloadLen,
+            [&](const RfxTileRef& t) {
+              owner_->TileStateAbCheck(static_cast<uint16_t>(surfaceId), t.xIdx, t.yIdx,
+                                       progIndex_);
+            },
+            nullptr);
+      }
+      // The whole-surface A/B runs on *every* command: the divergence it hunts can
+      // be introduced by a non-Progressive command (a ClearCodec band, an
+      // uncompressed upload, a cache restore) that the per-rect A/B does not cover.
+      if (kSurfaceAbEnabled) {
+        const char* op = "?";
+        switch (cmdId) {
+          case kGpuCmdWireToSurface:
+            op = (codecId == kGpuCodecCaprogressive)     ? "progressive"
+                 : (codecId == kGpuCodecClearCodec)      ? "clearcodec"
+                 : (codecId == kGpuCodecUncompressed)    ? "upload"
+                                                         : "wireOther";
+            break;
+          case kGpuCmdSolidFill:
+            op = "fill";
+            break;
+          case kGpuCmdSurfaceToCache:
+            op = "cacheStore";
+            break;
+          case kGpuCmdCacheToSurface:
+            op = "cacheRestore";
+            break;
+          case kGpuCmdEvictCacheEntry:
+            op = "evictCache";
+            break;
+          case kGpuCmdSurfaceToSurface:
+            op = "surfaceToSurface";
+            break;
+          case kGpuCmdCreateSurface:
+            op = "createSurface";
+            break;
+          case kGpuCmdDeleteSurface:
+            op = "deleteSurface";
+            break;
+          case kGpuCmdMapSurfaceToOutput:
+            op = "mapOutput";
+            break;
+          case kGpuCmdMapSurfaceToScaledOutput:
+            op = "mapScaled";
+            break;
+          case kGpuCmdResetGraphics:
+            op = "resetGraphics";
+            break;
+          case kGpuCmdStartFrame:
+            op = "startFrame";
+            break;
+          case kGpuCmdEndFrame:
+            op = "endFrame";
+            break;
+          default:
+            break;
+        }
+        owner_->SurfaceAbCheck(static_cast<uint16_t>(surfaceId), op);
+      }
       if (kCodecAbEnabled && params != nullptr) {
         if (cmdId == kGpuCmdWireToSurface && paramsLen >= 32 && payload != nullptr) {
           if (codecId == kGpuCodecCaprogressive) {
             const int ox = static_cast<int>(RdU32(params + 8));
             const int oy = static_cast<int>(RdU32(params + 12));
+            ++progIndex_;
+            // Count the message's shape first, then check its tiles: the culprit line
+            // carries it so it can be matched against the `vk progressive msg #n`
+            // log (a kFirst-diff message and an all-upgrade one are different bugs).
+            uint32_t nTiles = 0;
+            uint32_t nUpgrade = 0;
+            uint32_t nDiff = 0;
+            // The message's clip, as the *union bbox* of its raw region rects: the
+            // engine/gdi clip with the band-merged region (a superset of the raw
+            // rects), so this bbox is a superset of the real clip - over-including a
+            // tile only costs a comparison that is expected to pass anyway.
+            int clipX0 = 1 << 30;
+            int clipY0 = 1 << 30;
+            int clipX1 = -1;
+            int clipY1 = -1;
+            std::vector<uint32_t> ownTiles;
+            ParseRfxProgressive(
+                payload, payloadLen,
+                [&](const RfxTileRef& t) {
+                  if (t.type == RfxTileType::kUpgrade) {
+                    nUpgrade++;
+                  } else {
+                    nTiles++;
+                  }
+                  if ((t.flags & 1u) != 0u) {
+                    nDiff++;
+                  }
+                  ownTiles.push_back(static_cast<uint32_t>(t.xIdx) |
+                                     (static_cast<uint32_t>(t.yIdx) << 16));
+                },
+                nullptr, nullptr,
+                [&](const RfxRegionRef& region) {
+                  for (uint16_t ri = 0; ri < region.numRects; ++ri) {
+                    const RfxRect& r = region.rects[ri];
+                    const int x0 = ox + r.x;
+                    const int y0 = oy + r.y;
+                    const int x1 = x0 + r.width;
+                    const int y1 = y0 + r.height;
+                    if (x0 < clipX0) clipX0 = x0;
+                    if (y0 < clipY0) clipY0 = y0;
+                    if (x1 > clipX1) clipX1 = x1;
+                    if (y1 > clipY1) clipY1 = y1;
+                  }
+                });
+            char label[64];
+            std::snprintf(label, sizeof(label), "progressive#%d(%u/%u/%u)", progIndex_, nTiles,
+                          nUpgrade, nDiff);
             ParseRfxProgressive(
                 payload, payloadLen,
                 [&](const RfxTileRef& t) {
                   owner_->GdiAbCheck(static_cast<uint16_t>(surfaceId), ox + t.xIdx * 64,
-                                     oy + t.yIdx * 64, 64, 64, "progressive-tiles");
+                                     oy + t.yIdx * 64, 64, 64, label);
                 },
                 nullptr);
+            // FreeRDP's update_tiles composites the frame's *whole* tile list on every
+            // message (clipped by this message's region rects), so the tiles decoded by
+            // an earlier message of the same frame are re-composited here (the engine's
+            // type-3 "restamps"). The per-rect check above covers only the tiles this
+            // message decodes itself, which is exactly why a restamp is the blind spot;
+            // mirror the frame list and check those tiles as well.
+            const uint16_t sid = static_cast<uint16_t>(surfaceId);
+            if (frameIdForSurface_[sid] != startFrameId_) {
+              frameIdForSurface_[sid] = startFrameId_;
+              frameTilesForSurface_[sid].clear();
+            }
+            if (clipX1 >= clipX0 && clipY1 >= clipY0) {
+              for (const uint32_t key : frameTilesForSurface_[sid]) {
+                const int tx = static_cast<int>(key & 0xFFFFu);
+                const int ty = static_cast<int>(key >> 16);
+                bool own = false;
+                for (const uint32_t o : ownTiles) {
+                  if (o == key) {
+                    own = true;
+                    break;
+                  }
+                }
+                if (own) {
+                  continue;
+                }
+                const int px = ox + tx * 64;
+                const int py = oy + ty * 64;
+                if (px < clipX1 && px + 64 > clipX0 && py < clipY1 && py + 64 > clipY0) {
+                  owner_->GdiAbCheck(sid, px, py, 64, 64, "restamp");
+                }
+              }
+            }
+            for (const uint32_t key : ownTiles) {
+              frameTilesForSurface_[sid].push_back(key);
+            }
           } else if (codecId == kGpuCodecClearCodec || codecId == kGpuCodecUncompressed) {
             const char* op = (codecId == kGpuCodecClearCodec) ? "clearcodec" : "upload";
             owner_->GdiAbCheck(static_cast<uint16_t>(surfaceId),
@@ -233,6 +442,14 @@ class ReplaySink : public GfxCommandSink {
  private:
   ReplayDesktop* engine_ = nullptr;
   GfxReplay* owner_ = nullptr;
+  // Dev (kCodecAbEnabled): Progressive message counter, for the culprit label.
+  int progIndex_ = 0;
+  // Dev (kCodecAbEnabled): mirror of FreeRDP's per-frame updated-tile list, per
+  // surface - the tiles an earlier message of the current frame decoded, which every
+  // later message re-composites ("restamps"). Reset when the frame id changes.
+  uint32_t startFrameId_ = 0;
+  std::map<uint16_t, uint32_t> frameIdForSurface_;
+  std::map<uint16_t, std::vector<uint32_t>> frameTilesForSurface_;
 };
 
 }  // namespace
@@ -493,6 +710,10 @@ std::string GfxReplay::StatsLines() {
     out += "\n";
     out += rab;
   }
+  if (!tileStateProbe_.empty()) {
+    out += "\n";
+    out += tileStateProbe_;
+  }
   if (!traffic.empty()) {
     out += "\n";
     out += traffic;
@@ -690,7 +911,11 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
     // every command and CompareFrames() on gdi's EndFrame - both with both sides
     // at the same stream position. OnReplayFrame keeps presenting and pacing.
     ok = GfxReplayStreamCompare(gfxPath, &sink, [this]() { OnReplayFrame(); },
-                                [this]() { CompareFrames(); }, [this]() { GdiAbFlush(); },
+                                [this]() { CompareFrames(); },
+                                [this]() {
+                                  GdiAbFlush();
+                                  TileStateAbFlush();
+                                },
                                 cpu.gfx(), &running_, &error);
   } else {
     ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error);
@@ -901,6 +1126,288 @@ void GfxReplay::GdiAbFlush() {
   }
 }
 
+void GfxReplay::TileStateAbCheck(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx,
+                                 int progIndex) {
+  if (!kTileStateAbEnabled || cpuDesktop_ == nullptr || desktop_ == nullptr) {
+    return;
+  }
+  if (tileStateAbFirst_ || progIndex > kTileStateAbMessages) {
+    return;
+  }
+  TileStatePending pending;
+  pending.surfaceId = surfaceId;
+  pending.xIdx = xIdx;
+  pending.yIdx = yIdx;
+  pending.progIndex = progIndex;
+  tileStatePending_.push_back(pending);
+}
+
+void GfxReplay::TileStateAbFlush() {
+  if (!kTileStateAbEnabled || tileStatePending_.empty() || cpuDesktop_ == nullptr ||
+      desktop_ == nullptr || tileStateAbFirst_) {
+    tileStatePending_.clear();
+    return;
+  }
+  std::vector<TileStatePending> pending;
+  pending.swap(tileStatePending_);
+  // One submit per message: the decode batch must have executed before the
+  // engine's state mapping can be read.
+  if (!desktop_->Flush()) {
+    return;
+  }
+  std::vector<int16_t> engCur(3u * 4096u);
+  std::vector<int16_t> engSign(3u * 4096u);
+  uint8_t engBitPos[30] = {0};
+  for (const TileStatePending& t : pending) {
+    if (!desktop_->TileState(t.surfaceId, t.xIdx, t.yIdx, engCur.data(), engSign.data(),
+                             engBitPos)) {
+      continue;
+    }
+    const int16_t* gdiCur[3] = {nullptr, nullptr, nullptr};
+    const int16_t* gdiSign[3] = {nullptr, nullptr, nullptr};
+    uint8_t gdiBitPos[30] = {0};
+    if (!cpuDesktop_->TileState(t.surfaceId, t.xIdx, t.yIdx, gdiCur, gdiSign, gdiBitPos)) {
+      tileStateAbUnavailable_++;
+      continue;
+    }
+    tileStateAbChecks_++;
+    // The engine's planes are laid out exactly like gdi's (see ReadTileState).
+    const char* which = nullptr;
+    int comp = 0;
+    int index = 0;
+    int engineValue = 0;
+    int gdiValue = 0;
+    // Cause order, not symptom order: the bit positions decide the dequantise shift
+    // (band order), `sign` is the *raw* RLGR output and `cur` the dequantised plane -
+    // so the first of the three that differs names the stage.
+    for (int c = 0; c < 3 && which == nullptr; ++c) {
+      for (int b = 0; b < 10; ++b) {
+        const int e = engBitPos[c * 10 + b];
+        const int g = gdiBitPos[c * 10 + b];
+        if (e != g) {
+          which = "bitPos";
+          comp = c;
+          index = b;
+          engineValue = e;
+          gdiValue = g;
+          break;
+        }
+      }
+    }
+    for (int c = 0; c < 3 && which == nullptr; ++c) {
+      for (int k = 0; k < 4096; ++k) {
+        const int e = engSign[static_cast<size_t>(c) * 4096u + k];
+        const int g = gdiSign[c][k];
+        if (e != g) {
+          which = "sign(raw)";
+          comp = c;
+          index = k;
+          engineValue = e;
+          gdiValue = g;
+          break;
+        }
+      }
+    }
+    for (int c = 0; c < 3 && which == nullptr; ++c) {
+      for (int k = 0; k < 4096; ++k) {
+        const int e = engCur[static_cast<size_t>(c) * 4096u + k];
+        const int g = gdiCur[c][k];
+        if (e != g) {
+          which = "cur";
+          comp = c;
+          index = k;
+          engineValue = e;
+          gdiValue = g;
+          break;
+        }
+      }
+    }
+    if (which == nullptr) {
+      continue;
+    }
+    tileStateAbFirst_ = true;
+    // Dump the same position out of all three arrays: the stage that first differs
+    // names the bug, and the raw/shift pair next to `cur` says whether the dequantise
+    // input or the shift itself is the one that disagrees.
+    const int band = index < 4096 ? (index >= 4015 ? 9
+                                     : index >= 3951 ? 8
+                                     : index >= 3879 ? 7
+                                     : index >= 3807 ? 6
+                                     : index >= 3551 ? 5
+                                     : index >= 3279 ? 4
+                                     : index >= 3007 ? 3
+                                     : index >= 2046 ? 2
+                                     : index >= 1023 ? 1
+                                                     : 0)
+                                  : 0;
+    const int k = which != nullptr && index < 4096 ? index : 0;
+    // Dump the hit plus its neighbours out of `cur` and `sign` on both sides: a band
+    // that is *shifted* by one element looks completely different from one where a
+    // single coefficient was dequantised/summed differently.
+    char aroundE[256];
+    char aroundG[256];
+    char aroundSE[256];
+    char aroundSG[256];
+    size_t ne = 0;
+    size_t ng = 0;
+    size_t nse = 0;
+    size_t nsg = 0;
+    aroundE[0] = aroundG[0] = aroundSE[0] = aroundSG[0] = '\0';
+    for (int d = -5; d <= 5; ++d) {
+      const int idx = k + d;
+      if (idx < 0 || idx >= 4096) {
+        continue;
+      }
+      const size_t co = static_cast<size_t>(comp) * 4096u + static_cast<size_t>(idx);
+      ne += static_cast<size_t>(std::snprintf(aroundE + ne, sizeof(aroundE) - ne, "%s%d",
+                                              ne == 0 ? "" : ",", static_cast<int>(engCur[co])));
+      ng += static_cast<size_t>(std::snprintf(aroundG + ng, sizeof(aroundG) - ng, "%s%d",
+                                              ng == 0 ? "" : ",", static_cast<int>(gdiCur[comp][idx])));
+      nse += static_cast<size_t>(std::snprintf(aroundSE + nse, sizeof(aroundSE) - nse, "%s%d",
+                                               nse == 0 ? "" : ",",
+                                               static_cast<int>(engSign[co])));
+      nsg += static_cast<size_t>(std::snprintf(aroundSG + nsg, sizeof(aroundSG) - nsg, "%s%d",
+                                               nsg == 0 ? "" : ",",
+                                               static_cast<int>(gdiSign[comp][idx])));
+    }
+    char line[1400];
+    std::snprintf(line, sizeof(line),
+                  "tileState CULPRIT msg=#%d tile=(%d,%d) %s c=%d i=%d engine=%d gdi=%d | "
+                  "signE=%d signG=%d curE=%d curG=%d band=%d bpE=%u bpG=%u "
+                  "curE[%d..]=[%s] curG=[%s] signE=[%s] signG=[%s]",
+                  t.progIndex, static_cast<int>(t.xIdx), static_cast<int>(t.yIdx), which, comp,
+                  index, engineValue, gdiValue,
+                  static_cast<int>(engSign[static_cast<size_t>(comp) * 4096u + k]),
+                  static_cast<int>(gdiSign[comp][k]),
+                  static_cast<int>(engCur[static_cast<size_t>(comp) * 4096u + k]),
+                  static_cast<int>(gdiCur[comp][k]), band,
+                  static_cast<unsigned>(engBitPos[comp * 10 + band]),
+                  static_cast<unsigned>(gdiBitPos[comp * 10 + band]), k - 5, aroundE, aroundG,
+                  aroundSE, aroundSG);
+    HMRDP_LOGW("gfx replay: %{public}s", line);
+    {
+      std::lock_guard<std::mutex> lock(errorMutex_);
+      tileStateProbe_ = line;
+    }
+    break;
+  }
+  // Always leave a status line, so "no divergence in the checked messages" and
+  // "the reference accessor is not available" cannot be confused.
+  if (tileStateProbe_.empty()) {
+    char status[160];
+    std::snprintf(status, sizeof(status), "tileState checks=%llu unavailable=%llu (msgs<=%d)",
+                  static_cast<unsigned long long>(tileStateAbChecks_),
+                  static_cast<unsigned long long>(tileStateAbUnavailable_), kTileStateAbMessages);
+    std::lock_guard<std::mutex> lock(errorMutex_);
+    tileStateProbe_ = status;
+  }
+}
+
+void GfxReplay::SurfaceAbCheck(uint16_t surfaceId, const char* op) {
+  // Whole-surface A/B, run right after a command with gdi and the engine at the
+  // same stream position. The engine's Progressive decode is batched, so the batch
+  // has to be submitted before the mapping can be read.
+  if (!kSurfaceAbEnabled || cpuDesktop_ == nullptr || desktop_ == nullptr ||
+      surfaceAbChecks_ >= kSurfaceAbMaxChecks) {
+    return;
+  }
+  int gw = 0;
+  int gh = 0;
+  int gstride = 0;
+  uint32_t gformat = 0;
+  const uint8_t* gsurf = cpuDesktop_->SurfaceData(surfaceId, &gw, &gh, &gstride, &gformat);
+  if (gsurf == nullptr || gw <= 0 || gh <= 0 || gstride <= 0) {
+    return;
+  }
+  int ew = 0;
+  int eh = 0;
+  int estride = 0;
+  if (!desktop_->SurfaceSize(surfaceId, &ew, &eh, &estride) || ew <= 0 || eh <= 0 ||
+      estride <= 0) {
+    return;
+  }
+  if (!desktop_->Flush()) {
+    return;
+  }
+  std::vector<uint8_t> eng;
+  if (!desktop_->ReadSurface(surfaceId, &eng)) {
+    return;
+  }
+  const int cmpW = gw < ew ? gw : ew;
+  const int cmpH = gh < eh ? gh : eh;
+  surfaceAbChecks_++;
+  const int tgw = (cmpW + 63) / 64;
+  const int tgh = (cmpH + 63) / 64;
+  std::vector<int> tileDiff(static_cast<size_t>(tgw) * static_cast<size_t>(tgh), 0);
+  uint64_t bad = 0;
+  int firstX = -1;
+  int firstY = -1;
+  uint32_t firstEngine = 0;
+  uint32_t firstGdi = 0;
+  for (int row = 0; row < cmpH; ++row) {
+    const size_t eoff = static_cast<size_t>(row) * estride;
+    const size_t goff = static_cast<size_t>(row) * gstride;
+    if (eoff + static_cast<size_t>(cmpW) * 4u > eng.size()) {
+      break;
+    }
+    const uint8_t* a = eng.data() + eoff;
+    const uint8_t* b = gsurf + goff;
+    for (int col = 0; col < cmpW; ++col) {
+      const uint8_t* pa = a + col * 4;
+      const uint8_t* pb = b + col * 4;
+      if (pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]) {
+        continue;
+      }
+      if (firstX < 0) {
+        firstX = col;
+        firstY = row;
+        std::memcpy(&firstEngine, pa, 4);
+        std::memcpy(&firstGdi, pb, 4);
+      }
+      tileDiff[static_cast<size_t>(row / 64) * tgw + col / 64]++;
+      bad++;
+    }
+  }
+  // Log the progression of the first checks (a divergence that appears at message
+  // N and then stays, versus one that heals, are different bugs), and after that
+  // only the checks that actually diverge.
+  if (surfaceAbChecks_ <= 60 || (bad > 0 && !surfaceAbFirst_)) {
+    if (bad > 0) {
+      surfaceAbFirst_ = true;
+    }
+    // Tile shape: a whole-tile difference (the engine never landed the tile) versus
+    // a value-level one (its coefficients differ), plus the first few tiles.
+    int tilesTouched = 0;
+    int tilesFull = 0;
+    std::string firstTiles;
+    for (int ty = 0; ty < tgh; ++ty) {
+      for (int tx = 0; tx < tgw; ++tx) {
+        const int n = tileDiff[static_cast<size_t>(ty) * tgw + tx];
+        if (n == 0) {
+          continue;
+        }
+        tilesTouched++;
+        if (n >= 4000) {
+          tilesFull++;
+        }
+        if (firstTiles.size() < 60) {
+          char b2[32];
+          std::snprintf(b2, sizeof(b2), "(%d,%d)=%d ", tx, ty, n);
+          firstTiles += b2;
+        }
+      }
+    }
+    HMRDP_LOGW("gfx replay: surfaceAB #%{public}llu op=%{public}s sid=%{public}u "
+               "eng=%{public}dx%{public}d gdi=%{public}dx%{public}d bad=%{public}llu "
+               "touched=%{public}d full=%{public}d first=(%{public}d,%{public}d) "
+               "tile=(%{public}d,%{public}d) engine=0x%{public}x gdi=0x%{public}x tiles=%{public}s",
+               static_cast<unsigned long long>(surfaceAbChecks_), op, surfaceId, ew, eh, gw, gh,
+               static_cast<unsigned long long>(bad), tilesTouched, tilesFull, firstX, firstY,
+               firstX / 64, firstY / 64, static_cast<unsigned>(firstEngine),
+               static_cast<unsigned>(firstGdi), firstTiles.c_str());
+  }
+}
+
 void GfxReplay::CompareFrames() {
   ReplayDesktop* engine = desktop_.get();
   GfxCpuDesktop* cpu = cpuDesktop_;
@@ -995,8 +1502,73 @@ void GfxReplay::CompareFrames() {
     }
   }
   cmpSmallDeltaPx_.fetch_add(smallDeltaPx);
-  // Dev diagnosis: on the first small (analysable) divergence, dump every
-  // differing pixel so the pattern can be inspected offline.
+  // Dev diagnosis: on the first divergence, write the two screens (RGB24 PPM) and
+  // a per-64x64-tile diff summary. The pixel dump alone cannot say whether a tile
+  // is *entirely* wrong (a missed/stale tile) or only drifts by a few levels (a
+  // coefficient-level decode difference); the images and the tile histogram do.
+  if (firstX >= 0 && cmpScreenDumpDone_ == false) {
+    cmpScreenDumpDone_ = true;
+    auto writePpm = [&](const std::string& path, const uint8_t* buf, int stride) {
+      std::ofstream ppm(path, std::ios::out | std::ios::trunc | std::ios::binary);
+      if (!ppm) {
+        return;
+      }
+      ppm << "P6\n" << cmpW << " " << cmpH << "\n255\n";
+      std::vector<uint8_t> row(static_cast<size_t>(cmpW) * 3u);
+      for (int y = 0; y < cmpH; ++y) {
+        const uint8_t* p = buf + static_cast<size_t>(y) * stride;
+        for (int x = 0; x < cmpW; ++x) {
+          row[x * 3] = p[x * 4 + 2];
+          row[x * 3 + 1] = p[x * 4 + 1];
+          row[x * 3 + 2] = p[x * 4];
+        }
+        ppm.write(reinterpret_cast<const char*>(row.data()),
+                  static_cast<std::streamsize>(row.size()));
+      }
+    };
+    if (kDumpCompareScreens) {
+      writePpm(gfxPath_ + ".eng.ppm", screen.data(), w * 4);
+      writePpm(gfxPath_ + ".gdi.ppm", gdi->primary_buffer, static_cast<int>(gdi->stride));
+    }
+    // Per-tile diff. `tilesTouched` counts tiles with any difference, `tilesFull`
+    // those where (almost) every pixel differs - the "missed/stale tile" shape.
+    const int gw = (cmpW + 63) / 64;
+    const int gh = (cmpH + 63) / 64;
+    std::vector<int> tileDiff(static_cast<size_t>(gw) * static_cast<size_t>(gh), 0);
+    for (int row = 0; row < cmpH; ++row) {
+      const uint8_t* a = screen.data() + static_cast<size_t>(row) * w * 4;
+      const uint8_t* b = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
+      for (int col = 0; col < cmpW; ++col) {
+        const uint8_t* pa = a + col * 4;
+        const uint8_t* pb = b + col * 4;
+        if (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2]) {
+          tileDiff[static_cast<size_t>(row / 64) * gw + col / 64]++;
+        }
+      }
+    }
+    int tilesTouched = 0;
+    int tilesFull = 0;
+    int tilesHalf = 0;
+    for (const int n : tileDiff) {
+      if (n == 0) {
+        continue;
+      }
+      tilesTouched++;
+      if (n >= 4000) {
+        tilesFull++;
+      } else if (n >= 2048) {
+        tilesHalf++;
+      }
+    }
+    char line[320];
+    std::snprintf(line, sizeof(line),
+                  "compare tiles: grid=%dx%d touched=%d full(>=4000px)=%d half(>=2048px)=%d "
+                  "frame=%llu",
+                  gw, gh, tilesTouched, tilesFull, tilesHalf,
+                  static_cast<unsigned long long>(frames_.load()));
+    HMRDP_LOGW("gfx replay: %{public}s", line);
+  }
+  // Dev diagnosis: dump every differing pixel so the values can be inspected.
   if (firstX >= 0 && cmpDumpDone_ == false) {
     cmpDumpDone_ = true;
     std::ofstream out(gfxPath_ + ".cmpdump", std::ios::out | std::ios::trunc);

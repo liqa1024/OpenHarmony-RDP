@@ -166,8 +166,19 @@ void ReadQuantNibbles(const uint8_t* b, RfxQuant* q) {
 
 bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
                  const RfxRegionCallback& onRegion, RfxParseStats* stats) {
-  if (size < 12) {
+  // Records *where* the region was rejected: FreeRDP validates the region header
+  // (and the component quants) before applying anything, but a failure during the
+  // tile walk happens after the tiles read so far were already registered in the
+  // surface's frame tile list - "both reject the message" is not the same thing
+  // in the two cases (doc_agent/gfx-engine.md §2.2).
+  auto fail = [stats](const char* stage) {
+    if (stats != nullptr) {
+      stats->errorStage = stage;
+    }
     return false;
+  };
+  if (size < 12) {
+    return fail("region-header-short");
   }
   const uint8_t tileSize = data[0];
   const uint16_t numRects = ReadU16(data + 1);
@@ -177,7 +188,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   const uint16_t numTiles = ReadU16(data + 6);
   const uint32_t tileDataSize = ReadU32(data + 8);
   if (tileSize != 64 || numQuant > 7) {
-    return false;
+    return fail("region-header-invalid");
   }
   // FreeRDP's progressive_wb_read_region_header rejects the whole region (and
   // therefore the whole message: nothing is decoded, not even the tile state)
@@ -186,13 +197,13 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   // gdi for every tile of that message.
   constexpr uint16_t kMaxRects = 1024;
   if (numRects < 1 || numRects > kMaxRects) {
-    return false;
+    return fail("region-rects-range");
   }
   size_t p = 12;
   // rects (8 bytes each): x,y,width,height all little-endian u16.
   RfxRect rects[kMaxRects];
   if (p + static_cast<size_t>(numRects) * 8 > size) {
-    return false;
+    return fail("region-rects-short");
   }
   for (uint16_t i = 0; i < numRects; ++i) {
     rects[i].x = ReadU16(data + p);
@@ -204,7 +215,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   // Component quant tables: 5 bytes -> 10 x 4-bit shifts each.
   RfxQuant quants[7];
   if (p + static_cast<size_t>(numQuant) * 5 > size) {
-    return false;
+    return fail("region-quants-short");
   }
   for (uint8_t q = 0; q < numQuant; ++q) {
     ReadQuantNibbles(data + p, &quants[q]);
@@ -218,7 +229,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
                                  quants[q].LH1, quants[q].HH1};
     for (size_t i = 0; i < 10; ++i) {
       if (nibbles[i] < 6 || nibbles[i] > 15) {
-        return false;
+        return fail("region-quants-range");
       }
     }
     p += 5;
@@ -226,7 +237,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   // Progressive quant tables: 16 bytes each (quality + Y/Cb/Cr quant).
   RfxProgQuant progQuants[16];
   if (numProgQuant > 16 || p + static_cast<size_t>(numProgQuant) * 16 > size) {
-    return false;
+    return fail("region-progquants");
   }
   for (uint8_t q = 0; q < numProgQuant; ++q) {
     const uint8_t* b = data + p;
@@ -237,7 +248,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     p += 16;
   }
   if (p + tileDataSize > size) {
-    return false;
+    return fail("region-tiles-short");
   }
   const size_t tileEnd = p + tileDataSize;
 
@@ -268,15 +279,15 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   uint32_t count = 0;
   while (p + 6 <= tileEnd) {
     if (count >= numTiles) {
-      return false;
+      return fail("region-tile-count-high");
     }
     const uint32_t blockLen = ReadU32(data + p + 2);
     if (blockLen < 6 || p + blockLen > tileEnd) {
-      return false;
+      return fail("region-tile-len");
     }
     RfxTileRef tile;
     if (!ParseTile(data + p, blockLen, &tile, stats)) {
-      return false;
+      return fail("tile-block");
     }
     tile.quants = quants;
     tile.numQuant = numQuant;
@@ -293,7 +304,13 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   }
   // The byte budget must be consumed exactly and every declared tile must be
   // present (FreeRDP: (end - start) != tileDataSize -> -1041).
-  return count == numTiles && p == tileEnd;
+  if (p != tileEnd) {
+    return fail("region-tile-bytes");
+  }
+  if (count != numTiles) {
+    return fail("region-tile-count-low");
+  }
+  return true;
 }
 
 }  // namespace
@@ -304,11 +321,21 @@ bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback
   if (data == nullptr || size < 6) {
     if (stats != nullptr) {
       stats->errors++;
+      stats->errorStage = "message-short";
     }
     return false;
   }
   if (stats != nullptr) {
     stats->messages++;
+  }
+  // FreeRDP resets its WBT block state at the start of *every* message
+  // (progressive_decompress: `progressive->state = 0`), so the
+  // "REGION before FRAME_BEGIN / after FRAME_END" guard is evaluated against the
+  // blocks of this message alone. A state that persists across messages can only
+  // ever differ by accepting a region gdi skips.
+  if (state != nullptr) {
+    state->frameBegin = false;
+    state->frameEnd = false;
   }
 
   bool ok = true;
@@ -318,6 +345,9 @@ bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback
     const uint32_t blockLen = ReadU32(data + pos + 2);
     if (blockLen < 6 || pos + blockLen > size) {
       ok = false;
+      if (stats != nullptr) {
+        stats->errorStage = "message-block-len";
+      }
       break;
     }
     const uint8_t* body = data + pos + 6;
@@ -351,12 +381,24 @@ bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback
         break;
       default:
         ok = false;
+        if (stats != nullptr) {
+          stats->errorStage = "message-block-type";
+        }
         break;
     }
     if (!ok) {
       break;
     }
     pos += blockLen;
+  }
+  // FreeRDP walks blocks until the stream is empty and fails on a trailing
+  // fragment shorter than a block header; accepting one would decode tiles gdi
+  // never sees.
+  if (ok && pos != size) {
+    ok = false;
+    if (stats != nullptr) {
+      stats->errorStage = "message-trailing";
+    }
   }
   if (!ok && stats != nullptr) {
     stats->errors++;

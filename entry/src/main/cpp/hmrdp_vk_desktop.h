@@ -127,6 +127,16 @@ class GfxVkDesktop {
   bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
                        std::vector<uint8_t>* out);
 
+  // Dev (doc_agent/gfx-progressive-kernel.md §3): the engine's own per
+  // (tile,component) Progressive predictor state for `tileIndex` on `surfaceId`,
+  // shaped like FreeRDP's HmrdpProgressiveTileState so the two can be diffed
+  // coefficient by coefficient: `curOut`/`signOut` are int16[3 * 4096] planes
+  // (Y, Cb, Cr) and `bitPos` is 30 bytes in band order
+  // (HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3). Returns false when the surface or
+  // tile is unknown.
+  bool ReadTileState(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int16_t* curOut,
+                     int16_t* signOut, uint8_t bitPos[30]);
+
   // --- Diagnostics ---------------------------------------------------------
   // One-line engine summary (surface/cache counts, per-command timings, the
   // number of commands whose codec is not implemented, ...). Unimplemented or

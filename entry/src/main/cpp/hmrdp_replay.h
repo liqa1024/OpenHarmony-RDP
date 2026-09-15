@@ -74,6 +74,14 @@ class GfxReplay {
   // false positives, and gdi itself is the only trustworthy reference.
   void GdiAbCheck(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
   void GdiAbFlush();
+  // Dev (`kSurfaceAbEnabled`): whole-surface A/B against gdi's own surface after
+  // one command, so the first command after which the engine's surface diverges is
+  // named (the per-rect A/B only covers the tiles a message decodes itself).
+  void SurfaceAbCheck(uint16_t surfaceId, const char* op);
+  // Dev (`kTileStateAbEnabled`): per-tile predictor-state A/B. One record per tile a
+  // Progressive message decodes, flushed once per message (see the implementation).
+  void TileStateAbCheck(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int progIndex);
+  void TileStateAbFlush();
   std::string GdiAbSummary() const;
   // Dev: if this command's rect covers the watch pixel, log who wrote it and both
   // values - so the command that moved only the engine's surface is visible.
@@ -180,6 +188,23 @@ class GfxReplay {
   std::atomic<int> cmpFirstY_{-1};
   // Dev diagnosis: the one-shot per-pixel dump has already been written.
   bool cmpDumpDone_ = false;
+  // Dev diagnosis: the one-shot screen/tile dump has already been written.
+  bool cmpScreenDumpDone_ = false;
+  // Dev: surface A/B accounting (kSurfaceAbEnabled).
+  uint64_t surfaceAbChecks_ = 0;
+  bool surfaceAbFirst_ = false;
+  // Dev: predictor-state A/B accounting (kTileStateAbEnabled).
+  struct TileStatePending {
+    uint16_t surfaceId = 0;
+    uint16_t xIdx = 0;
+    uint16_t yIdx = 0;
+    int progIndex = 0;
+  };
+  std::vector<TileStatePending> tileStatePending_;
+  uint64_t tileStateAbChecks_ = 0;
+  uint64_t tileStateAbUnavailable_ = 0;
+  bool tileStateAbFirst_ = false;
+  std::string tileStateProbe_;
 
   // Dev: per-command A/B against gdi's own surface (kCodecAbEnabled only).
   struct GdiAbRect {
