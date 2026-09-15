@@ -1322,6 +1322,47 @@ struct GfxVkDesktop::Impl {
     bool msgClipReady = false;
     uint32_t msgClipCount = 0;
     RfxParseStats stats;
+    // The compose clip is FreeRDP's `clippingRects`: update_tiles unions the
+    // region's rects with region16_union_rect(), which is a *band/coalescing*
+    // union (it merges items overlapping a band into one bounding-box rect, so it
+    // also covers the gaps between them). It is built from the REGION header, not
+    // from the tiles - a Progressive message can carry a region with zero tiles,
+    // and FreeRDP still re-composites its whole frame tile list with that clip.
+    auto buildMsgClip = [&](const RfxRegionRef& region) {
+      if (msgClipReady || region.rects == nullptr || region.numRects == 0) {
+        return;
+      }
+      REGION16 clip;
+      region16_init(&clip);
+      for (uint16_t ri = 0; ri < region.numRects; ++ri) {
+        const RfxRect& r = region.rects[ri];
+        // Rects are relative to the command's destRect origin, exactly like
+        // FreeRDP's gdi (update_tiles: clippingRect.left = nXDst + rect->x).
+        RECTANGLE_16 cr;
+        cr.left = static_cast<UINT16>(r.x + originX);
+        cr.top = static_cast<UINT16>(r.y + originY);
+        cr.right = static_cast<UINT16>(cr.left + r.width);
+        cr.bottom = static_cast<UINT16>(cr.top + r.height);
+        region16_union_rect(&clip, &clip, &cr);
+      }
+      UINT32 mergedCount = 0;
+      const RECTANGLE_16* merged = region16_rects(&clip, &mergedCount);
+      for (UINT32 i = 0; i < mergedCount; ++i) {
+        msgRects.push_back(merged[i].left);
+        msgRects.push_back(merged[i].top);
+        msgRects.push_back(static_cast<int32_t>(merged[i].right - merged[i].left));
+        msgRects.push_back(static_cast<int32_t>(merged[i].bottom - merged[i].top));
+        const uint32_t rx = merged[i].left;
+        const uint32_t ry = merged[i].top;
+        rectPool.push_back(rx | (ry << 16));
+        rectPool.push_back(
+            (static_cast<uint32_t>(merged[i].right - merged[i].left)) |
+            (static_cast<uint32_t>(merged[i].bottom - merged[i].top) << 16));
+      }
+      region16_uninit(&clip);
+      msgClipCount = static_cast<uint32_t>(msgRects.size() / 4);
+      msgClipReady = true;
+    };
     const bool parsed = ParseRfxProgressive(
         payload, size,
         [&](const RfxTileRef& t) {
@@ -1341,49 +1382,6 @@ struct GfxVkDesktop::Impl {
           TileJob job;
           job.x = t.xIdx;
           job.y = t.yIdx;
-          // The compose clip is FreeRDP's `clippingRects`: update_tiles builds it
-          // by unioning the region's rects with region16_union_rect(), which is a
-          // *band/coalescing* union - merging items that overlap a band into one
-          // (bounding-box) rect, so it also covers the gaps between them. Compositing
-          // with the raw rects instead (as the engine used to) misses exactly those
-          // gap pixels. Build the same region with FreeRDP's own code, once per
-          // message (all tiles of a region share its rects).
-          if (!msgClipReady) {
-            REGION16 clip;
-            region16_init(&clip);
-            for (uint16_t ri = 0; ri < t.numRects; ++ri) {
-              const RfxRect& r = t.rects[ri];
-              // Region rects are relative to the command's destRect origin,
-              // exactly like FreeRDP's gdi (update_tiles:
-              // clippingRect.left = nXDst + rect->x).
-              RECTANGLE_16 cr;
-              cr.left = static_cast<UINT16>(r.x + originX);
-              cr.top = static_cast<UINT16>(r.y + originY);
-              cr.right = static_cast<UINT16>(cr.left + r.width);
-              cr.bottom = static_cast<UINT16>(cr.top + r.height);
-              region16_union_rect(&clip, &clip, &cr);
-            }
-            UINT32 mergedCount = 0;
-            const RECTANGLE_16* merged = region16_rects(&clip, &mergedCount);
-            for (UINT32 i = 0; i < mergedCount; ++i) {
-              msgRects.push_back(merged[i].left);
-              msgRects.push_back(merged[i].top);
-              msgRects.push_back(static_cast<int32_t>(merged[i].right - merged[i].left));
-              msgRects.push_back(static_cast<int32_t>(merged[i].bottom - merged[i].top));
-            }
-            region16_uninit(&clip);
-            // One shared clip for every tile: the rect pool is the same slice for
-            // all of them, so it is built once below.
-            for (size_t i = 0; i + 1 < msgRects.size(); i += 4) {
-              const uint32_t rx = static_cast<uint32_t>(msgRects[i]);
-              const uint32_t ry = static_cast<uint32_t>(msgRects[i + 1]);
-              rectPool.push_back(rx | (ry << 16));
-              rectPool.push_back(static_cast<uint32_t>(msgRects[i + 2]) |
-                                 (static_cast<uint32_t>(msgRects[i + 3]) << 16));
-            }
-            msgClipCount = static_cast<uint32_t>(msgRects.size() / 4);
-            msgClipReady = true;
-          }
           job.rectOffset = 0;
           job.rectCount = msgClipCount;
           const RfxQuant* qv[3] = {&t.quants[t.quantIdxY], &t.quants[t.quantIdxCb],
@@ -1430,7 +1428,7 @@ struct GfxVkDesktop::Impl {
           }
           tiles.push_back(job);
         },
-        &stats, &rfxState);
+        &stats, &rfxState, buildMsgClip);
     if (!parsed) {
       // FreeRDP rejects the whole message on a malformed / invalid region header
       // (tileSize, numRects < 1, numQuant > 7, quant nibbles outside [6,15], ...)

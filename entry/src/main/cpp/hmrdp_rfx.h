@@ -137,6 +137,18 @@ struct RfxParseStats {
 
 using RfxTileCallback = std::function<void(const RfxTileRef&)>;
 
+// One REGION block's header data. FreeRDP's update_tiles composites its tile list
+// with the *region's* clipping rects, and a Progressive message can carry a region
+// with zero tiles (a pure re-composite pass) - so the rects must be visible even
+// when no tile callback fires.
+struct RfxRegionRef {
+  const RfxRect* rects = nullptr;
+  uint16_t numRects = 0;
+  uint16_t numTiles = 0;
+  uint8_t flags = 0;
+};
+using RfxRegionCallback = std::function<void(const RfxRegionRef&)>;
+
 // FreeRDP's WBT state machine, which *persists across messages*: a REGION is
 // silently ignored (not an error!) when it arrives before FRAME_BEGIN or after
 // FRAME_END. Pass the owning engine's state so the decoders match gdi; nullptr
@@ -150,7 +162,8 @@ struct RfxProgressiveState {
 // Parses one Progressive message. Invokes `onTile` for every tile in order.
 // Returns false if the container is malformed (stats->errors is bumped).
 bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
-                         RfxParseStats* stats, RfxProgressiveState* state = nullptr);
+                         RfxParseStats* stats, RfxProgressiveState* state = nullptr,
+                         const RfxRegionCallback& onRegion = RfxRegionCallback());
 
 // ===========================================================================
 // ClearCodec hook (FreeRDP clear_decompress; implemented in hmrdp_rfx.cpp)

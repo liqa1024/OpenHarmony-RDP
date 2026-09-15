@@ -92,16 +92,18 @@ namespace {
 
 constexpr int kFrameMs = 16;                      // ~60 Hz playback target
 constexpr int kLogEvery = 120;
-constexpr int64_t kMaxRunUs = 900ll * 1000000ll;  // safety cap (debug: A/B slows the pump)
+constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap
 constexpr int kStartWaitUs = 3000000;
 // Compare route: sample a full-screen readback every N frames (same idea as the
 // live shadow check - reading the engine screen back is expensive).
 constexpr uint64_t kCompareEvery = 30;
-// Dev: per-message codec A/B (VULKAN-TODO §8). Off by default: it reads the
-// engine's whole surface once per Progressive message / ClearCodec band, which
-// costs ~26 MB per command and drags the replay well past real time. Flip to
-// true when a decoder divergence has to be pinned to a message.
-constexpr bool kCodecAbEnabled = true;
+// Dev: per-message codec A/B. Off by default: it reads the engine's whole surface
+// once per Progressive message / ClearCodec band / cache command, which costs a
+// GPU readback per command on the GLES route (~0.2 fps there) and drags the replay
+// far past real time. Flip to true only while a decoder divergence has to be
+// pinned to a message (the replay then looks hung / the picture stays black, so
+// never leave it on).
+constexpr bool kCodecAbEnabled = false;
 
 // ClearCodec batch granularity for the GLES route (union-rectangle pixel cap).
 // Configurable so the sync-count vs mapped-bytes trade-off can be measured on
@@ -453,6 +455,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     gdiBadPx_.store(0);
     gdiFirstLogged_ = false;
     gdiBadOp_.clear();
+    gdiFirstLine_.clear();
     gdiWatchLogged_ = 0;
     gdiAbPending_.clear();
     gdiAbPayloads_.clear();
@@ -904,6 +907,11 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
     clear_context_free(static_cast<CLEAR_CONTEXT*>(refClear_));
     refClear_ = nullptr;
   }
+  if (!gdiFirstLine_.empty()) {
+    // The periodic stats line floods hilog within seconds, so repeat the first
+    // culprit once here (it is the entry point for every follow-up session).
+    HMRDP_LOGW("gfx replay: gdiAB FIRST CULPRIT (rerun) %{public}s", gdiFirstLine_.c_str());
+  }
   {
     // Dev: independent-reference divergence summary.
     const std::string ab = RefAbSummary();
@@ -1350,6 +1358,13 @@ void GfxReplay::GdiAbFlush() {
         gdiBadOp_ = rect.op;
       }
       const size_t off = (static_cast<size_t>(firstY) * gstride) + static_cast<size_t>(firstX) * 4;
+      char firstLine[384];
+      std::snprintf(firstLine, sizeof(firstLine),
+                    "op=%s rect=(%d,%d)+%dx%d bad=%llu maxDelta=%d px=(%d,%d) engine=b%u g%u r%u gdi=b%u g%u r%u gdiSurf=%dx%d fmt=0x%x",
+                    rect.op.c_str(), x, y, width, height, static_cast<unsigned long long>(bad),
+                    maxDelta, firstX, firstY, actual[0], actual[1], actual[2],
+                    gdiSurface[off], gdiSurface[off + 1], gdiSurface[off + 2], gw, gh, gformat);
+      gdiFirstLine_ = firstLine;
       HMRDP_LOGW(
           "gfx replay: gdiAB CULPRIT op=%{public}s rect=(%{public}d,%{public}d)+%{public}dx%{public}d bad=%{public}llu maxDelta=%{public}d px=(%{public}d,%{public}d) engine=b%{public}u g%{public}u r%{public}u gdi=b%{public}u g%{public}u r%{public}u gdiSurf=%{public}dx%{public}d fmt=0x%{public}x",
           rect.op.c_str(), x, y, width, height, static_cast<unsigned long long>(bad), maxDelta,

@@ -2841,7 +2841,7 @@ void ReadQuantNibbles(const uint8_t* b, RfxQuant* q) {
 }
 
 bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
-                 RfxParseStats* stats) {
+                 const RfxRegionCallback& onRegion, RfxParseStats* stats) {
   if (size < 12) {
     return false;
   }
@@ -2925,6 +2925,18 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     }
   }
 
+  // The region's clipping rects are what update_tiles composites every tile of
+  // the frame's list with, and a region can carry zero tiles (a pure re-composite
+  // pass), so hand them out before the tile walk.
+  if (onRegion) {
+    RfxRegionRef ref;
+    ref.rects = rects;
+    ref.numRects = numRects;
+    ref.numTiles = numTiles;
+    ref.flags = regionFlags;
+    onRegion(ref);
+  }
+
   // FreeRDP walks the tile blocks until `tileDataSize` bytes are consumed (not
   // until `numTiles` blocks) and then requires the count to match: a stream with
   // *more* tile blocks than the header claims fails the whole region
@@ -2963,7 +2975,8 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
 }  // namespace
 
 bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback& onTile,
-                         RfxParseStats* stats, RfxProgressiveState* state) {
+                         RfxParseStats* stats, RfxProgressiveState* state,
+                         const RfxRegionCallback& onRegion) {
   if (data == nullptr || size < 6) {
     if (stats != nullptr) {
       stats->errors++;
@@ -2994,7 +3007,7 @@ bool ParseRfxProgressive(const uint8_t* data, size_t size, const RfxTileCallback
           state->skippedRegions++;
           break;
         }
-        if (!ParseRegion(body, bodyLen, onTile, stats)) {
+        if (!ParseRegion(body, bodyLen, onTile, onRegion, stats)) {
           ok = false;
         }
         break;

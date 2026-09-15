@@ -311,6 +311,8 @@ class GfxReplay {
   std::atomic<uint64_t> gdiBadPx_{0};
   bool gdiFirstLogged_ = false;
   std::string gdiBadOp_;
+  // Dev: the first culprit line, repeated at the end of the run (hilog rotates).
+  std::string gdiFirstLine_;
   // Dev: reconstructed per-(surface,tileStream) bit positions, so a Progressive
   // tile's `numBits` (old - new) can be reported next to the message's own
   // quantisation data.

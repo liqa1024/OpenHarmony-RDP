@@ -347,8 +347,16 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       全部 tile"**（`numUpdatedTiles` 只在 frameId 变化时清零 ⇒ 即 RDPGFX StartFrame），而不只是本消息
       的 tile。引擎必须照做（`hmrdp_vk_desktop.cpp` 的 `Surface::frameTiles` + `DecodeProgressive` 的
       reverse job + `rfx_decode.comp` 的 `type==3`），且**必须把 StartFrame 喂给引擎**
-      （`GfxMapStartFrame`：回放泵 `PmpStartFrame` 与实机 `HmrdpGfxStartFrame` 两条路径都要）。
-      漏掉它 = 一条消息少写一批像素，差值会在后续帧累计（`bad` 从 0 涨到 11/16 就是这么来的）。
+      （`GfxMapStartFrame(sink, frameId)`：回放泵 `PmpStartFrame` 与实机 `HmrdpGfxStartFrame` 两条路径
+      都要；引擎按 FreeRDP 的规则**只在 frame id 变化时**清列表）。漏掉它 = 一条消息少写一批像素，
+      差值会在后续帧累计（`bad` 从 0 涨到 11/16 就是这么来的）。
+    - **该重复合成用的 clip 必须取自 REGION 头，且必须是 FreeRDP 的那一份**：FreeRDP 用
+      `region16_union_rect()` 把 region rects 合成 `clippingRects`，而它是**带合并**的（同一带内与
+      unionRect 相交的项会并成一个**跨越间隙的 bbox 矩形**）—— 所以引擎要**直接调用 FreeRDP 的
+      region16 API** 构造同一份集合，不要自己写"原始 rects 并集"。另外**一条 Progressive 消息可以
+      "有 REGION、0 个 tile"**（纯重复合成 pass，实测捕获里有 57 字节的这类消息）：此时仍要用该
+      region 的 clip 重复合成整帧列表 ⇒ **clip 不能从 tile 推**（`ParseRfxProgressive` 的 `onRegion`
+      回调就是为它加的）。
     - ClearCodec **非自包含**（未覆盖像素保留原值）；`SurfaceToCache` 内部会嵌套调用 `EvictCacheEntry`，
       引擎侧要**抑制这次嵌套**；`MapSurfaceToScaledOutput` 本工程不支持（unmap 不合成，与 gdi 现状一致）。
     - `CreateSurface`：宽/高/scanline 按 **16B 对齐**、**0xFF 初始化**、wire `0x20→BGRX32` / `0x21→BGRA32`。
