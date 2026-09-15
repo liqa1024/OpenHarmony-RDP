@@ -135,6 +135,12 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - **一条 Progressive 消息可以"有 REGION、0 个 tile"**（纯重复合成 pass，捕获里确实存在）：
   此时仍要用该 region 的 clip 重复合成整帧列表 ⇒ **clip 不能从 tile 推**（解析器要把 REGION 头的 rects
   单独回调出来）。
+- **不要把多条消息的 decode 合并进一次 dispatch**（"帧内跨消息批量"已实测否决）：restamp（type 3）用 `cur`
+  重建"本帧更早解码过的 tile"，其 `cur` **必须是该消息那一刻的值**。一旦合并：
+  ① 同一 dispatch 内它可能读到更早消息还没写完的 `cur`（lane 竞争）；② 排到批量之后又会拿到更晚消息
+  更新过的 `cur`。两条都与 gdi 不一致（实测：同一构建、同一录像，合并开 → `bad=6`（局部区域），
+  合并关 → `bad=0`）。**并行度只能从"一条 stream 内部"找**（见 §3 的 producer/consumer 拆分），
+  不能靠跨消息合并。
 - **tile 网格公式照抄 FreeRDP**：`gridW = (w + (64 - w % 64)) / 64`，**不是** `(w + 63) / 64`。
   FreeRDP 在 16 对齐宽度是 **64 整数倍**时会**多算一格**（例如 3136 → 50 而非 49）。多出来的那圈 tile
   整块落在表面之外、不可能写出可见像素（与 region rects 的交集为空），但**"两个实现接受的 tile 集合
@@ -166,6 +172,28 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   一个 workgroup 只覆盖 512~1536 个 invocation、且每个 invocation 串行处理 4096 个元素
   （RLGR 位流逐字节 refill、tile 逐像素循环）时，GPU 利用率极低——此时"引擎比 FreeRDP 的 CPU 软解还慢"
   是必然结果。整屏矩形需要 10 万+ 工作组，必须用 2D/3D 网格而不是线性下标。
+- **任何带 `barrier()` 的 kernel，早退必须由整个 workgroup 一致决定**：`if (gid >= uNumStreams) return;`
+  这类按 lane 早退在 stream 数不是 local_size 整数倍时（典型 291/64）会让最后一个 workgroup 的
+  `barrier()` 只被执行一部分 → **未定义行为**（实测表现为花屏 + present 失败）。要么在早退前先
+  `barrier()` 收敛，要么把参数补齐到整组。
+- **已知实测（同一份捕获、真机整轮、GPU timestamp 口径）**：`rlgr≈7.2s  idwt≈2.3s  compose≈0.15s`；
+  同轮 gdi（CPU 单核）后端合计约 **7.1s**（ZGFX+PDU 另计 ~2.6s，两条路线共担）。
+  已验证**不成立**的两个假设：① payload 读的"次数/合并"（加 32bit 字缓存：无变化）；
+  ② payload 读的**延迟**（整段搬进 shared：kernel 只快 17%，而且 16KB shared 把常驻 workgroup 压到每 SM 2 个、
+  整系统反而慢 3 倍 → 说明这套 dispatch 模式严重依赖"多 workgroup 同时在飞"）。
+  ⇒ RLGR 的瓶颈是**分歧型串行位解码在 SIMT 上的低效率**，不是访存，靠微调着色器追不回来。
+- **`rfx_decode.comp` 是寄存器极度敏感的 kernel**：实测**只加两个计数器 + 一个 binding**就慢 2x，加一整套
+  workgroup-per-stream producer/consumer 后慢 10~30x 且结果错（只完成 3/44 次 decode dispatch，下游拿到
+  全 0 系数 ⇒ 画面大片中性灰）。**动它之前先把"每 stream 时间"作为门槛指标**，并优先考虑按类型拆 kernel
+  （每条 kernel 只保留一条路径）来降寄存器压力，而不是在一个 kernel 里堆路径。
+- **已被实测否决/踩过的坑（不要重复）**：
+  1. 跨消息合并 decode（§2.2：与 restamp 互斥）；
+  2. `shared` 窗口超 16KB → 常驻 workgroup 掉到每 SM 2 个，整系统慢 3x；
+  3. 按 lane 早退 + `barrier()` → UB（花屏）；
+  4. 生产者循环里"位流耗尽返回 false 后 `continue`"→ **死循环**（`brRemaining()` 是窗口内位数，可能仍 >0），
+     必须另设 `gExhausted` 标志；
+  5. "值落在奇下标"时整字覆盖会**吃掉前一个系数**（该半字属于上一条目的值，不是本游程的零）；
+     `count == 0`（无零游程、纯值）很常见，必须只在 `count > 0` 时整字写，否则只改高半字。
 - **不要在非目标设备上标定性能**：真机口径要压的是**同步点数 / 驱动调用数 / CPU 介入次数**，
   不是模拟器耗时。
 - **只做标准能力探测，不做标准 API 的行为自检**：自检只针对我们自己的语义与算法
@@ -220,10 +248,25 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
     用正则抓 `route=…(running=N)` 这类文本即可。
   - 性能探针（`ProbeHostMemory` / `ProbeSubmitCost`）是**进程内一次**（`RunDeviceProbes` 的 `call_once`）：
     每次切路线都会重建引擎，逐次重探只会拖慢启动并给数字加噪声。
-- **采集内容与格式**：单文件 `hmrdp_gfx.bin`，存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节  （每条 = `u32 长度` + 原始字节）；采集点在 `rdpgfx_on_data_received` 的 `zgfx_decompress` 之前，
+- **采集内容与格式**：单文件 `hmrdp_gfx.bin`，存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节
+  （每条 = `u32 长度` + 原始字节）；采集点在 `rdpgfx_on_data_received` 的 `zgfx_decompress` 之前，
   由 FreeRDP 补丁以运行期回调注册（见 [`native-libraries.md`](native-libraries.md) §3.7）。
-  录制文件**不入库**：设备端在应用沙箱，本地副本放 gitignore 目录。dev 的抓取开关与
-  「硬件解码」有联动（录制期间走软解），见设置页实现。
+  录制文件**不入库**：设备端在应用沙箱，本地副本放 gitignore 目录；dev 的抓取开关与「硬件解码」有联动
+  （录制期间走软解），见设置页实现。
+- **样本集（本地 `.cache/`，不入库）**：至少保留两种形态，性能结论**必须分场景给**：
+  - `.cache/hmrdp_gfx.bin`：**浏览/滚动**（消息稀疏：490 帧里 209 帧无消息、多为 1 条/帧；**278 streams/chunk**）；
+  - `.cache/hmrdp_gfx_video.bin`：**看视频**（整帧大块变化：198 帧里 120 帧带 4~7 条消息；**813 streams/chunk**；
+    `diff`/restamp 占比高；每帧整屏脏 ⇒ 上屏是整屏拷贝）。
+  两场景瓶颈不同：浏览场景瓶颈在 GPU kernel；视频场景先被**上屏/提交结构**盖住
+  （present 13 → **127 ms/帧**、`flushWait` 12.4 → **26 s**，而 `syncDrains` 只剩 16 次）。
+  **每条 Progressive chunk 的 `rlgr` 耗时在两个场景几乎不变（15.8 vs 14.05 ms）** ⇒ 当下量到的"kernel 时间"
+  里有很大一块是 dispatch 之间的固定等待而非算术；判断 kernel 是否真的变好，要看**每 stream 时间**
+  （56.8 → 17.3 μs）是否与 lane 数（278 → 813）成比例。
+  **视频录像目前 `Vulkan对比` 是 `bad=6`（整屏、maxDelta=255），且与 batch 改造无关**（合并关闭时同样
+  `bad=6`），属既有分叉：先用 harness 的首次分歧材料（`<capture>.cmpdump`、`kCodecAbEnabled` 逐命令 A/B）
+  定位到具体命令，再谈这条场景的优化。视频场景的重负载特征是 `diff`（RFX_TILE_DIFFERENCE）与 restamp
+  占比高（58908 / 1721，浏览场景为 10190 / 591）、每帧 4~7 条消息。
+
 - **差分测试（补齐捕获里没有的码流）**：统一方法 = **同一份载荷**分别喂 FreeRDP 解码器与我们的实现，
   逐像素比对。载荷优先用 FreeRDP 自带编码器生成；边界要覆盖**尺寸非 64 倍数**、纯色/渐变/UI 文本/alpha。
   ClearCodec 只有解码（运行时必须支持）没有编码器 ⇒ 只能用真实捕获；`CAPROGRESSIVE_V2` 双方都未实现 ⇒

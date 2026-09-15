@@ -515,12 +515,14 @@ std::string GfxReplay::StatsLines() {
   char head[320];
   std::snprintf(head, sizeof(head),
                 "route=%s  frames=%llu  presents=%llu  fps=%.1f  fail=%llu  skip=%llu\n"
-                "feed=%llums   present=%.2fms   (running=%d)",
+                "feed=%llums   parse=%llums   present=%.2fms   (running=%d)",
                 routeName, frames,
                 static_cast<unsigned long long>(presents), fps,
                 static_cast<unsigned long long>(presentFailures_.load()),
                 static_cast<unsigned long long>(presentSkips_.load()),
-                static_cast<unsigned long long>(pumpUs / 1000), avgMs(presentUs_.load(), presents),
+                static_cast<unsigned long long>(pumpUs / 1000),
+                static_cast<unsigned long long>(hmrdp::GfxReplayParseUs() / 1000),
+                avgMs(presentUs_.load(), presents),
                 running_.load() ? 1 : 0);
   std::string out(head);
 
@@ -792,6 +794,7 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
 
   // The replayed stream must not re-trigger the capture hook on the recorder.
   hmrdp::GfxDumpSetReplaying(true);
+  hmrdp::GfxReplayResetParseUs();
 
   const int64_t pumpStart = NowUs();
   bool ok = false;
@@ -858,6 +861,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   cpu.SetFrameFn([this, &cpu]() { OnCpuFrame(&cpu); });
 
   hmrdp::GfxDumpSetReplaying(true);
+  hmrdp::GfxReplayResetParseUs();
 
   const int64_t pumpStart = NowUs();
   const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error);

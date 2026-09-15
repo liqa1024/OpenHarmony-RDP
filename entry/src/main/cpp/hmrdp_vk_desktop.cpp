@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <unordered_set>
 
 #include "hmrdp_log.h"
 #include "hmrdp_vk_renderer.h"
@@ -21,12 +22,15 @@
 namespace hmrdp {
 namespace {
 
-// Progressive decode chunking, identical to the GLES engine (hmrdp_rfx.cpp §1):
-// per-chunk scratch holds `kRfxChunkTiles * 3` component streams of 4096 int16.
-constexpr uint32_t kRfxChunkTiles = 512;
+// The Progressive decode scratch is sized by GfxVkDesktop::Impl::kMaxBatchStreams:
+// a batch spans the messages of a frame, so the coefficient plane is no longer a
+// per-chunk allocation.
 constexpr uint32_t kMetaStride = 64;  // bytes per (tile,component) stream job
 // One tile is 64x64 pixels; the compositor dispatches one lane per tile pixel.
 constexpr uint32_t kTilePixels = 4096;
+// Dev bisect for the decode batching: false keeps the code path but flushes after
+// every message (the pre-batching dispatch shape).
+constexpr bool kBatchMergeMessages = false;
 
 
 // Both dev probes below measure a property of the *device*, not of the engine
@@ -292,8 +296,10 @@ struct GfxVkDesktop::Impl {
   VkPipeline idwtPipe = VK_NULL_HANDLE;
   VkDescriptorPool rfxPool = VK_NULL_HANDLE;
 
-  // Per-chunk decode scratch: `comp` then `temp`, kRfxChunkTiles*3 streams of
-  // 4096 int16 entries (mirrors the GLES coef buffer).
+
+  // Decode scratch: kMaxBatchStreams component planes of 4096 int16 each (the
+  // batch's streams are laid out consecutively, so a message's compose addresses
+  // its own slice by its first stream index).
   GpuBuffer coef;
 
   // A host-visible SSBO input arena. Buffers are kept and reused; their `used`
@@ -331,6 +337,79 @@ struct GfxVkDesktop::Impl {
   // StartFrame PDUs whose frame id repeated (FreeRDP keeps its tile list then).
   uint64_t frameIdRepeats = 0;
   uint64_t rfxOriginNonZero = 0;
+
+  // --- Progressive decode batching ------------------------------------------
+  // One Progressive message carries only a few hundred (tile,component) streams -
+  // a handful of workgroups - which leaves the GPU starved: measured on the video
+  // capture the decode's per-stream cost drops 3.3x when the stream count per
+  // dispatch goes 278 -> 813. So the *decode* (and the inverse DWT that follows it)
+  // of every message of a frame is merged into one dispatch pair, while the
+  // composes stay per message and in message order.
+  //
+  // The rule that makes the merge safe: **a batch's messages must have pairwise
+  // disjoint tile sets**.
+  //  * a tile's decode refines persistent per-tile state (`cur`/`sign`/bit
+  //    positions), so two decodes of the same tile inside one batch would race;
+  //  * a message's compose re-composites the tiles decoded earlier *in its frame*
+  //    (FreeRDP's update_tiles / our restamp jobs) from the persistent `cur`, so a
+  //    tile decoded again later in the batch would feed that restamp "future"
+  //    coefficients.
+  // A message whose tiles intersect the batch, targets another surface, or would
+  // overflow the coefficient scratch flushes the batch first. Frame changes and
+  // any drain/present flush it too (see Flush/Compose/StartFrame), so a batch never
+  // spans a frame boundary.
+  struct BatchMessage {
+    bool composeRegion = false;
+    uint32_t tileCount = 0;
+    uint32_t firstStream = 0;     // first stream index inside the merged coef
+    uint32_t tileMetaOffset = 0;  // element offset into batchTileMeta
+    uint32_t rectOffset = 0;      // element offset into batchRects
+  };
+  // The coefficient scratch is sized for this many streams (comp planes only; the
+  // inverse DWT no longer needs a global temp).
+  static constexpr uint32_t kMaxBatchStreams = 6144;
+  std::vector<BatchMessage> batchMessages;
+  std::unordered_set<uint32_t> batchTiles;
+  std::vector<uint8_t> batchMeta;      // host-side stream records (kMetaStride each)
+  std::vector<uint32_t> batchTileMeta;
+  std::vector<uint32_t> batchRects;
+  std::vector<uint8_t> batchPayload;
+  uint32_t batchStreams = 0;
+  uint16_t batchSurfaceId = 0;
+  bool batchOpen = false;
+  uint64_t batchesFlushed = 0;
+  uint64_t batchesSkipped = 0;
+  uint64_t batchMessagesTotal = 0;
+  uint64_t batchStreamsMax = 0;
+  // Dev (perf): how many Progressive messages a frame actually carries. Batching
+  // messages into one bigger decode dispatch only pays when frames carry several
+  // of them (a frame's decodes are the maximum safe batch, see DecodeProgressive).
+  uint32_t messagesThisFrame = 0;
+  uint32_t messagesThisFrameMax = 0;
+  static constexpr uint32_t kMessageBuckets = 6;  // 0,1,2,3,4-7,8+
+  uint64_t messagesPerFrame[kMessageBuckets] = {0};
+  void RecordFrameMessages() {
+    const uint32_t n = messagesThisFrame;
+    uint32_t bucket = 0;
+    if (n == 0) {
+      bucket = 0;
+    } else if (n == 1) {
+      bucket = 1;
+    } else if (n == 2) {
+      bucket = 2;
+    } else if (n == 3) {
+      bucket = 3;
+    } else if (n < 8) {
+      bucket = 4;
+    } else {
+      bucket = 5;
+    }
+    messagesPerFrame[bucket]++;
+    if (n > messagesThisFrameMax) {
+      messagesThisFrameMax = n;
+    }
+    messagesThisFrame = 0;
+  }
 
   // Screen dirty rectangle (0xFF/0 initialised, mirrors GfxGpuDesktop).
   bool screenDirtyValid = false;
@@ -401,6 +480,16 @@ struct GfxVkDesktop::Impl {
   std::vector<TimestampBracket> pendingTimestamps;
   uint64_t gpuTicks[4] = {0, 0, 0, 0};
   uint64_t gpuSamples[4] = {0, 0, 0, 0};
+  // Per-bracket extremes: a kernel whose per-dispatch time is constant while its
+  // input size varies is dominated by waiting, not by arithmetic - the totals alone
+  // cannot tell those apart (doc_agent/gfx-engine.md §6).
+  uint64_t gpuTicksMin[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
+  uint64_t gpuTicksMax[4] = {0, 0, 0, 0};
+  // Input size per chunk, so the decode can be expressed per payload byte / stream.
+  uint64_t chunkBytes = 0;
+  uint64_t chunkBytesMin = UINT64_MAX;
+  uint64_t chunkBytesMax = 0;
+  uint64_t streamCount = 0;
   uint64_t gpuTimestampDrops = 0;
 
   // Opens a GPU-time bracket around the dispatch that follows; returns the token
@@ -415,7 +504,10 @@ struct GfxVkDesktop::Impl {
     }
     const uint32_t start = timestampWrite;
     timestampWrite += kTimestampsPerDispatch;
-    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool,
+    // Both ends at the compute stage: TOP_OF_PIPE -> BOTTOM_OF_PIPE brackets the
+    // *whole* queue up to that point (including waiting for earlier work), which
+    // made the per-kernel numbers overlap and overshoot the wall clock.
+    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPool,
                             start);
     TimestampBracket bracket;
     bracket.start = start;
@@ -428,7 +520,7 @@ struct GfxVkDesktop::Impl {
     if (token == UINT32_MAX) {
       return;
     }
-    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool,
+    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPool,
                             token + 1);
   }
 
@@ -460,8 +552,15 @@ struct GfxVkDesktop::Impl {
         const uint64_t begin = ticks[local];
         const uint64_t end = ticks[local + 1];
         if (end >= begin) {
-          gpuTicks[bracket.slot] += end - begin;
+          const uint64_t delta = end - begin;
+          gpuTicks[bracket.slot] += delta;
           gpuSamples[bracket.slot]++;
+          if (delta < gpuTicksMin[bracket.slot]) {
+            gpuTicksMin[bracket.slot] = delta;
+          }
+          if (delta > gpuTicksMax[bracket.slot]) {
+            gpuTicksMax[bracket.slot] = delta;
+          }
         }
       }
     }
@@ -471,6 +570,16 @@ struct GfxVkDesktop::Impl {
 
   double GpuMs(uint32_t slot) const {
     return static_cast<double>(gpuTicks[slot]) * timestampNsPerTick / 1000000.0;
+  }
+
+  double GpuMsMin(uint32_t slot) const {
+    return gpuTicksMin[slot] == UINT64_MAX
+               ? 0.0
+               : static_cast<double>(gpuTicksMin[slot]) * timestampNsPerTick / 1000000.0;
+  }
+
+  double GpuMsMax(uint32_t slot) const {
+    return static_cast<double>(gpuTicksMax[slot]) * timestampNsPerTick / 1000000.0;
   }
   // Compose decisions: distinguishes "nothing mapped" from "nothing dirty".
   uint64_t composeCopies = 0;
@@ -1340,6 +1449,12 @@ struct GfxVkDesktop::Impl {
   }
 
   bool Flush() {
+    // A pending decode batch must be recorded (its composes included) before this
+    // window is closed: the batch's staged data lives in the arena, which the next
+    // command buffer rewinds.
+    if (!FinishDecodeBatch()) {
+      return false;
+    }
     if (!recording) {
       return true;
     }
@@ -1814,6 +1929,235 @@ struct GfxVkDesktop::Impl {
   // Decodes one Progressive ("WBT") message into the surface buffer: parse the
   // container on the CPU, then for each chunk of <=512 tiles run the decode then
   // the YCbCr compose compute dispatch. Mirrors GfxGpuDesktop::DecodeMessage.
+  // Appends one message's prepared decode work (its stream records, tile meta and
+  // tile-local clip rects, plus the raw payload they point into) to the frame's
+  // batch. `tileKeys` are the surface tile indices this message advances; they are
+  // what enforces the disjointness rule above. The payload offsets inside `meta`
+  // are shifted here to the merged payload base.
+  bool AppendToDecodeBatch(uint16_t surfaceId, bool composeRegion,
+                           const std::vector<uint32_t>& tileKeys, std::vector<uint8_t> meta,
+                           std::vector<uint32_t> tileMeta, std::vector<uint32_t> rects,
+                           const uint8_t* payload, size_t payloadSize) {
+    const uint32_t streams = static_cast<uint32_t>(meta.size() / kMetaStride);
+    bool intersects = false;
+    for (uint32_t key : tileKeys) {
+      if (batchTiles.find(key) != batchTiles.end()) {
+        intersects = true;
+        break;
+      }
+    }
+    if (batchOpen && (surfaceId != batchSurfaceId || intersects ||
+                      batchStreams + streams > kMaxBatchStreams)) {
+      if (!FinishDecodeBatch()) {
+        return false;
+      }
+    }
+    if (!batchOpen) {
+      batchOpen = true;
+      batchSurfaceId = surfaceId;
+      batchStreams = 0;
+    }
+
+    const uint32_t payloadBase = static_cast<uint32_t>(batchPayload.size());
+    if (payloadSize > 0) {
+      batchPayload.insert(batchPayload.end(), payload, payload + payloadSize);
+    }
+    // Shift the three payload-relative byte offsets onto the merged payload base.
+    for (uint32_t s = 0; s < streams; ++s) {
+      uint8_t* rec = &meta[static_cast<size_t>(s) * kMetaStride];
+      const size_t fields[3] = {8u, 16u, 24u};
+      for (size_t f = 0; f < 3; ++f) {
+        uint32_t value = 0;
+        std::memcpy(&value, rec + fields[f], 4);
+        value += payloadBase;
+        std::memcpy(rec + fields[f], &value, 4);
+      }
+    }
+
+    BatchMessage message;
+    message.composeRegion = composeRegion;
+    message.tileCount = static_cast<uint32_t>(tileMeta.size() / 4);
+    message.firstStream = batchStreams;
+    message.tileMetaOffset = static_cast<uint32_t>(batchTileMeta.size());
+    message.rectOffset = static_cast<uint32_t>(batchRects.size());
+
+    batchMeta.insert(batchMeta.end(), meta.begin(), meta.end());
+    batchTileMeta.insert(batchTileMeta.end(), tileMeta.begin(), tileMeta.end());
+    batchRects.insert(batchRects.end(), rects.begin(), rects.end());
+    // The compose reads tile-local rect *offsets*, so shift them by the pool base.
+    for (uint32_t t = 0; t < message.tileCount; ++t) {
+      batchTileMeta[message.tileMetaOffset + t * 4 + 2] += message.rectOffset;
+    }
+    batchMessages.push_back(message);
+    for (uint32_t key : tileKeys) {
+      batchTiles.insert(key);
+    }
+    batchStreams += streams;
+
+    // Input-volume accounting: the decode time means nothing without its denominator.
+    for (uint32_t s = 0; s < streams; ++s) {
+      const uint8_t* rec = &meta[static_cast<size_t>(s) * kMetaStride];
+      uint32_t payloadLen = 0;
+      uint32_t srlLen = 0;
+      uint32_t rawLen = 0;
+      std::memcpy(&payloadLen, rec + 12, 4);
+      std::memcpy(&srlLen, rec + 20, 4);
+      std::memcpy(&rawLen, rec + 28, 4);
+      chunkBytes += payloadLen + srlLen + rawLen;
+    }
+    streamCount += streams;
+    if (batchStreams > batchStreamsMax) {
+      batchStreamsMax = batchStreams;
+    }
+    // Dev bisect: 1 = merge the frame's messages into one dispatch, 0 = one message
+    // per batch (the pre-batching behaviour, through the same code path).
+    if (!kBatchMergeMessages) {
+      return FinishDecodeBatch();
+    }
+    return true;
+  }
+
+  // Records the batch: one merged decode dispatch + one merged inverse DWT for
+  // every batched stream, then each message's compose in message order (the
+  // composes borrow their coefficients from the merged plane).
+  bool FinishDecodeBatch() {
+    if (!batchOpen || batchMessages.empty()) {
+      return true;
+    }
+    VkApi& vk = api();
+    Surface* surface = Find(batchSurfaceId);
+    const uint32_t streams = batchStreams;
+    // "Nothing to record" is not a failure: returning false here would make the
+    // caller's Flush() bail out *without submitting*, which surfaces as a present
+    // failure and a starved pipeline (measured: only 3 of 44 decodes completed).
+    if (surface == nullptr || !surface->gpu.valid() || !surface->rfx.valid() || streams == 0 ||
+        !EnsureRecording()) {
+      batchMessages.clear();
+      batchTiles.clear();
+      batchMeta.clear();
+      batchTileMeta.clear();
+      batchRects.clear();
+      batchPayload.clear();
+      batchStreams = 0;
+      batchOpen = false;
+      batchesSkipped++;
+      return true;
+    }
+    const bool ok = true;
+    if (ok) {
+      VkBuffer payloadBuffer = VK_NULL_HANDLE;
+      VkDeviceSize payloadOffset = 0;
+      VkBuffer metaBuffer = VK_NULL_HANDLE;
+      VkDeviceSize metaOffset = 0;
+      VkBuffer tileMetaBuffer = VK_NULL_HANDLE;
+      VkDeviceSize tileMetaOffset = 0;
+      VkBuffer rectBuffer = VK_NULL_HANDLE;
+      VkDeviceSize rectOffset = 0;
+      const bool staged =
+          StageAppend(batchPayload.data(), batchPayload.size(), &payloadBuffer, &payloadOffset) &&
+          StageAppend(batchMeta.data(), batchMeta.size(), &metaBuffer, &metaOffset) &&
+          StageAppend(batchTileMeta.data(), batchTileMeta.size() * sizeof(uint32_t), &tileMetaBuffer,
+                      &tileMetaOffset) &&
+          (batchRects.empty() ||
+           StageAppend(batchRects.data(), batchRects.size() * sizeof(uint32_t), &rectBuffer,
+                       &rectOffset));
+      VkDescriptorSet decodeSet = VK_NULL_HANDLE;
+      VkDescriptorSet idwtSet = VK_NULL_HANDLE;
+      if (staged && AllocSet(decodeSetLayout, &decodeSet) && AllocSet(idwtSetLayout, &idwtSet)) {
+        WriteBuffer(decodeSet, 0, payloadBuffer, payloadOffset, batchPayload.size());
+        WriteBuffer(decodeSet, 1, metaBuffer, metaOffset, batchMeta.size());
+        WriteBuffer(decodeSet, 2, coef.buffer, 0, VK_WHOLE_SIZE);
+        WriteBuffer(decodeSet, 3, surface->rfx.cur.buffer, 0, VK_WHOLE_SIZE);
+        WriteBuffer(decodeSet, 4, surface->rfx.sign.buffer, 0, VK_WHOLE_SIZE);
+        WriteBuffer(decodeSet, 5, surface->rfx.bp.buffer, 0, VK_WHOLE_SIZE);
+        BarrierBeforeCompute();
+        vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, decodePipe);
+        vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, decodePipeLayout, 0,
+                                 1, &decodeSet, 0, nullptr);
+        struct DecodePush {
+          uint32_t numStreams;
+          uint32_t compBase;
+          uint32_t tempBase;
+        } dpush{streams, 0u, streams * 4096u};
+        vk.CmdPushConstants(commandBuffer, decodePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                            sizeof(dpush), &dpush);
+        const uint32_t decodeToken = TimestampOpen(0);
+        vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
+        TimestampClose(decodeToken);
+
+        WriteBuffer(idwtSet, 0, coef.buffer, 0, VK_WHOLE_SIZE);
+        BarrierBeforeCompute();
+        vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, idwtPipe);
+        vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, idwtPipeLayout, 0, 1,
+                                 &idwtSet, 0, nullptr);
+        struct IdwtPush {
+          uint32_t numStreams;
+          uint32_t compBase;
+        } ipush{streams, 0u};
+        vk.CmdPushConstants(commandBuffer, idwtPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                            sizeof(ipush), &ipush);
+        const uint32_t idwtToken = TimestampOpen(1);
+        vk.CmdDispatch(commandBuffer, streams, 1, 1);
+        TimestampClose(idwtToken);
+        pendingComputeWrites = true;
+        computeInFlight = true;
+        for (const BatchMessage& message : batchMessages) {
+          if (!message.composeRegion || message.tileCount == 0) {
+            continue;
+          }
+          VkDescriptorSet composeSet = VK_NULL_HANDLE;
+          if (!AllocSet(composeSetLayout, &composeSet)) {
+            break;
+          }
+          const uint32_t rectBytes =
+              static_cast<uint32_t>(batchRects.size() * sizeof(uint32_t));
+          WriteBuffer(composeSet, 0, tileMetaBuffer,
+                      tileMetaOffset + static_cast<VkDeviceSize>(message.tileMetaOffset) * 4u,
+                      static_cast<VkDeviceSize>(message.tileCount) * 4u * sizeof(uint32_t));
+          WriteBuffer(composeSet, 1, coef.buffer, 0, VK_WHOLE_SIZE);
+          WriteBuffer(composeSet, 2, surface->gpu.buffer, 0, VK_WHOLE_SIZE);
+          WriteBuffer(composeSet, 3, rectBuffer != VK_NULL_HANDLE ? rectBuffer : metaBuffer,
+                      rectBuffer != VK_NULL_HANDLE ? rectOffset : metaOffset,
+                      rectBytes == 0 ? 4u : rectBytes);
+          BarrierBeforeCompute();
+          vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipe);
+          vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipeLayout,
+                                   0, 1, &composeSet, 0, nullptr);
+          struct ComposePush {
+            uint32_t numTiles;
+            uint32_t compBase;
+            int32_t surfaceW;
+            int32_t surfaceH;
+            int32_t kr;
+            int32_t kcrG;
+            int32_t kcbG;
+            int32_t kcbB;
+            uint32_t swapRb;
+          } cpush{message.tileCount, message.firstStream * 4096u, surface->meta.width,
+                  surface->meta.height, kKr, kKcrG, kKcbG, kKcbB, swapRb ? 1u : 0u};
+          vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                              sizeof(cpush), &cpush);
+          const uint32_t composeToken = TimestampOpen(2);
+          vk.CmdDispatch(commandBuffer, (message.tileCount * kTilePixels + 63u) / 64u, 1, 1);
+          TimestampClose(composeToken);
+          pendingComputeWrites = true;
+          computeInFlight = true;
+        }
+        batchesFlushed++;
+        batchMessagesTotal += batchMessages.size();
+      }
+    }
+    batchMessages.clear();
+    batchTiles.clear();
+    batchMeta.clear();
+    batchTileMeta.clear();
+    batchRects.clear();
+    batchPayload.clear();
+    batchStreams = 0;
+    batchOpen = false;
+    return ok;
+  }
+
   bool DecodeProgressive(uint16_t surfaceId, const uint8_t* payload, size_t size, int originX,
                          int originY) {
     if (!rfxReady || payload == nullptr || size == 0) {
@@ -1826,6 +2170,7 @@ struct GfxVkDesktop::Impl {
     if (surface == nullptr || !surface->gpu.valid() || !surface->rfx.valid()) {
       return false;
     }
+    messagesThisFrame++;
     const int gridW = surface->meta.gridW;
     const int gridH = surface->meta.gridH;
     const int surfaceW = surface->meta.width;
@@ -2100,201 +2445,93 @@ struct GfxVkDesktop::Impl {
     if (!composeRegion) {
       progressiveComposeSkipped++;
     }
-    VkApi& vk = api();
 
-    // The payload is bound at its arena offset; every job offset is relative to
-    // it (they were computed as `ptr - payload`). The rect pool is shared by all
-    // chunks via the tile meta offsets.
-    VkBuffer payloadBuffer = VK_NULL_HANDLE;
-    VkDeviceSize payloadOffset = 0;
-    if (!StageAppend(payload, size, &payloadBuffer, &payloadOffset)) {
+    // Build this message's decode work once and hand it to the frame's batch: the
+    // batch is what sets the dispatch size now (one Progressive message alone only
+    // carries a few hundred streams, which leaves the GPU starved).
+    const uint32_t tileCount = static_cast<uint32_t>(tiles.size());
+    const uint32_t streams = tileCount * 3;
+    std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
+    std::vector<uint32_t> tileMeta(static_cast<size_t>(tileCount) * 4, 0);
+    // The compositor's clip rects, per tile, in *tile-local* pixel coordinates
+    // (x0 | y0 << 8 | x1 << 16 | y1 << 24). Only the rects that actually intersect
+    // the tile are kept, so the kernel's per-pixel probe is one byte extract per
+    // rect instead of a scan of the whole message clip list.
+    std::vector<uint32_t> rects;
+    std::vector<uint32_t> tileKeys;
+    tileKeys.reserve(tileCount);
+    for (uint32_t t = 0; t < tileCount; ++t) {
+      const TileJob& job = tiles[t];
+      // Tile pixel origin = destRect origin + 64 * tile index (gdi's
+      // updateRect = nXDst + tile->x).
+      const int tilePx = originX + static_cast<int>(job.x) * 64;
+      const int tilePy = originY + static_cast<int>(job.y) * 64;
+      const uint32_t rectOff = static_cast<uint32_t>(rects.size());
+      uint32_t rectCnt = 0;
+      for (uint32_t ri = 0; ri < job.rectCount; ++ri) {
+        const size_t wi = static_cast<size_t>(job.rectOffset + ri) * 2;
+        if (wi + 1 >= rectPool.size()) {
+          break;
+        }
+        const uint32_t w0 = rectPool[wi];
+        const uint32_t w1 = rectPool[wi + 1];
+        const int rx = static_cast<int>(w0 & 0xFFFFu);
+        const int ry = static_cast<int>(w0 >> 16);
+        const int rw = static_cast<int>(w1 & 0xFFFFu);
+        const int rh = static_cast<int>(w1 >> 16);
+        const int l = rx > tilePx ? rx : tilePx;
+        const int tp = ry > tilePy ? ry : tilePy;
+        const int r = (rx + rw) < (tilePx + 64) ? (rx + rw) : (tilePx + 64);
+        const int b = (ry + rh) < (tilePy + 64) ? (ry + rh) : (tilePy + 64);
+        if (r <= l || b <= tp) {
+          continue;
+        }
+        const uint32_t lx0 = static_cast<uint32_t>(l - tilePx);
+        const uint32_t ly0 = static_cast<uint32_t>(tp - tilePy);
+        const uint32_t lx1 = static_cast<uint32_t>(r - tilePx);
+        const uint32_t ly1 = static_cast<uint32_t>(b - tilePy);
+        rects.push_back(lx0 | (ly0 << 8) | (lx1 << 16) | (ly1 << 24));
+        rectCnt++;
+      }
+      tileMeta[t * 4] = static_cast<uint32_t>(tilePx);
+      tileMeta[t * 4 + 1] = static_cast<uint32_t>(tilePy);
+      tileMeta[t * 4 + 2] = rectOff;
+      tileMeta[t * 4 + 3] = rectCnt;
+      MarkSurfaceDirty(*surface, tilePx, tilePy, tilePx + 64, tilePy + 64);
+      // Only the tiles this message actually *decodes* take part in the batch's
+      // disjointness rule: a restamp (type 3) job just rebuilds a tile from the
+      // persistent state an earlier message of this frame produced, and it is that
+      // earlier message's tile that must not be decoded again later in the batch.
+      if (job.streams[0].type != 3u) {
+        tileKeys.push_back(static_cast<uint32_t>(job.y) * static_cast<uint32_t>(gridW) +
+                           static_cast<uint32_t>(job.x));
+      }
+      for (int c = 0; c < 3; ++c) {
+        uint8_t* rec = &meta[(static_cast<size_t>(t) * 3 + c) * kMetaStride];
+        const StreamJob& sj = job.streams[c];
+        rec[0] = static_cast<uint8_t>(sj.type);
+        rec[1] = static_cast<uint8_t>(sj.flags);
+        std::memcpy(rec + 4, &sj.tileStream, 4);
+        std::memcpy(rec + 8, &sj.payloadOff, 4);
+        std::memcpy(rec + 12, &sj.payloadLen, 4);
+        std::memcpy(rec + 16, &sj.srlOff, 4);
+        std::memcpy(rec + 20, &sj.srlLen, 4);
+        std::memcpy(rec + 24, &sj.rawOff, 4);
+        std::memcpy(rec + 28, &sj.rawLen, 4);
+        std::memcpy(rec + 32, sj.shift, 10);
+        std::memcpy(rec + 42, sj.newBit, 10);
+        if (sj.type == 0u) {
+          rfxFirstTiles++;
+        } else {
+          rfxUpgradeTiles++;
+        }
+      }
+    }
+    if (!AppendToDecodeBatch(surfaceId, composeRegion, tileKeys, std::move(meta),
+                             std::move(tileMeta), std::move(rects), payload, size)) {
       return false;
     }
-    // The message-level rect pool stays on the CPU: the composeRegion check and
-    // the per-tile clip build read it while filling this chunk's tile meta.
-    const uint32_t chunkTiles = kRfxChunkTiles;
-    for (size_t start = 0; start < tiles.size(); start += chunkTiles) {
-      uint32_t count = static_cast<uint32_t>(tiles.size() - start);
-      if (count > chunkTiles) {
-        count = chunkTiles;
-      }
-      const uint32_t streams = count * 3;
-
-      std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
-      std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 4, 0);
-      // The compositor's clip rects, per tile, in *tile-local* pixel coordinates
-      // (x0 | y0 << 8 | x1 << 16 | y1 << 24). Only the rects that actually
-      // intersect the tile are kept, so the kernel's per-pixel probe is one byte
-      // extract per rect instead of a scan of the whole message clip list.
-      std::vector<uint32_t> chunkRects;
-      for (uint32_t t = 0; t < count; ++t) {
-        const TileJob& job = tiles[start + t];
-        // Tile pixel origin = destRect origin + 64 * tile index (gdi's
-        // updateRect = nXDst + tile->x).
-        const int tilePx = originX + static_cast<int>(job.x) * 64;
-        const int tilePy = originY + static_cast<int>(job.y) * 64;
-        const uint32_t rectOff = static_cast<uint32_t>(chunkRects.size());
-        uint32_t rectCnt = 0;
-        for (uint32_t ri = 0; ri < job.rectCount; ++ri) {
-          const size_t wi = static_cast<size_t>(job.rectOffset + ri) * 2;
-          if (wi + 1 >= rectPool.size()) {
-            break;
-          }
-          const uint32_t w0 = rectPool[wi];
-          const uint32_t w1 = rectPool[wi + 1];
-          const int rx = static_cast<int>(w0 & 0xFFFFu);
-          const int ry = static_cast<int>(w0 >> 16);
-          const int rw = static_cast<int>(w1 & 0xFFFFu);
-          const int rh = static_cast<int>(w1 >> 16);
-          const int l = rx > tilePx ? rx : tilePx;
-          const int tp = ry > tilePy ? ry : tilePy;
-          const int r = (rx + rw) < (tilePx + 64) ? (rx + rw) : (tilePx + 64);
-          const int b = (ry + rh) < (tilePy + 64) ? (ry + rh) : (tilePy + 64);
-          if (r <= l || b <= tp) {
-            continue;
-          }
-          const uint32_t lx0 = static_cast<uint32_t>(l - tilePx);
-          const uint32_t ly0 = static_cast<uint32_t>(tp - tilePy);
-          const uint32_t lx1 = static_cast<uint32_t>(r - tilePx);
-          const uint32_t ly1 = static_cast<uint32_t>(b - tilePy);
-          chunkRects.push_back(lx0 | (ly0 << 8) | (lx1 << 16) | (ly1 << 24));
-          rectCnt++;
-        }
-        tileMeta[t * 4] = static_cast<uint32_t>(tilePx);
-        tileMeta[t * 4 + 1] = static_cast<uint32_t>(tilePy);
-        tileMeta[t * 4 + 2] = rectOff;
-        tileMeta[t * 4 + 3] = rectCnt;
-        MarkSurfaceDirty(*surface, tilePx, tilePy, tilePx + 64, tilePy + 64);
-        for (int c = 0; c < 3; ++c) {
-          uint8_t* rec = &meta[(static_cast<size_t>(t) * 3 + c) * kMetaStride];
-          const StreamJob& sj = job.streams[c];
-          rec[0] = static_cast<uint8_t>(sj.type);
-          rec[1] = static_cast<uint8_t>(sj.flags);
-          std::memcpy(rec + 4, &sj.tileStream, 4);
-          std::memcpy(rec + 8, &sj.payloadOff, 4);
-          std::memcpy(rec + 12, &sj.payloadLen, 4);
-          std::memcpy(rec + 16, &sj.srlOff, 4);
-          std::memcpy(rec + 20, &sj.srlLen, 4);
-          std::memcpy(rec + 24, &sj.rawOff, 4);
-          std::memcpy(rec + 28, &sj.rawLen, 4);
-          std::memcpy(rec + 32, sj.shift, 10);
-          std::memcpy(rec + 42, sj.newBit, 10);
-          if (sj.type == 0u) {
-            rfxFirstTiles++;
-          } else {
-            rfxUpgradeTiles++;
-          }
-        }
-      }
-
-      VkBuffer metaBuffer = VK_NULL_HANDLE;
-      VkDeviceSize metaOffset = 0;
-      VkBuffer tileMetaBuffer = VK_NULL_HANDLE;
-      VkDeviceSize tileMetaOffset = 0;
-      VkBuffer chunkRectBuffer = VK_NULL_HANDLE;
-      VkDeviceSize chunkRectOffset = 0;
-      if (!StageAppend(meta.data(), meta.size(), &metaBuffer, &metaOffset) ||
-          !StageAppend(tileMeta.data(), tileMeta.size() * sizeof(uint32_t), &tileMetaBuffer,
-                       &tileMetaOffset)) {
-        return false;
-      }
-      if (!chunkRects.empty() &&
-          !StageAppend(chunkRects.data(), chunkRects.size() * sizeof(uint32_t), &chunkRectBuffer,
-                       &chunkRectOffset)) {
-        return false;
-      }
-
-      VkDescriptorSet decodeSet = VK_NULL_HANDLE;
-      if (!AllocSet(decodeSetLayout, &decodeSet)) {
-        return false;
-      }
-      WriteBuffer(decodeSet, 0, payloadBuffer, payloadOffset, size);
-      WriteBuffer(decodeSet, 1, metaBuffer, metaOffset, meta.size());
-      WriteBuffer(decodeSet, 2, coef.buffer, 0, VK_WHOLE_SIZE);
-      WriteBuffer(decodeSet, 3, surface->rfx.cur.buffer, 0, VK_WHOLE_SIZE);
-      WriteBuffer(decodeSet, 4, surface->rfx.sign.buffer, 0, VK_WHOLE_SIZE);
-      WriteBuffer(decodeSet, 5, surface->rfx.bp.buffer, 0, VK_WHOLE_SIZE);
-
-      BarrierBeforeCompute();
-      vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, decodePipe);
-      vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, decodePipeLayout, 0, 1,
-                               &decodeSet, 0, nullptr);
-      struct DecodePush {
-        uint32_t numStreams;
-        uint32_t compBase;
-        uint32_t tempBase;
-      } dpush{streams, 0u, streams * 4096u};
-      vk.CmdPushConstants(commandBuffer, decodePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                          sizeof(dpush), &dpush);
-        const uint32_t decodeToken = TimestampOpen(0);
-      vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
-      TimestampClose(decodeToken);
-      pendingComputeWrites = true;
-      computeInFlight = true;
-
-      // Second half of the decode: the inverse DWT, one workgroup per stream,
-      // with the coefficient plane staged in shared memory (rfx_idwt.comp).
-      VkDescriptorSet idwtSet = VK_NULL_HANDLE;
-      if (!AllocSet(idwtSetLayout, &idwtSet)) {
-        return false;
-      }
-      WriteBuffer(idwtSet, 0, coef.buffer, 0, VK_WHOLE_SIZE);
-      BarrierBeforeCompute();
-      vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, idwtPipe);
-      vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, idwtPipeLayout, 0, 1,
-                               &idwtSet, 0, nullptr);
-      struct IdwtPush {
-        uint32_t numStreams;
-        uint32_t compBase;
-      } ipush{streams, 0u};
-      vk.CmdPushConstants(commandBuffer, idwtPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ipush),
-                          &ipush);
-      const uint32_t idwtToken = TimestampOpen(1);
-      vk.CmdDispatch(commandBuffer, streams, 1, 1);
-      TimestampClose(idwtToken);
-      pendingComputeWrites = true;
-      computeInFlight = true;
-
-      if (!composeRegion) {
-        // update_tiles failed for the region: the tile state has been advanced by
-        // the decode above, but no pixel of the region is composited.
-        continue;
-      }
-      VkDescriptorSet composeSet = VK_NULL_HANDLE;
-      if (!AllocSet(composeSetLayout, &composeSet)) {
-        return false;
-      }
-      WriteBuffer(composeSet, 0, tileMetaBuffer, tileMetaOffset, tileMeta.size() * sizeof(uint32_t));
-      WriteBuffer(composeSet, 1, coef.buffer, 0, VK_WHOLE_SIZE);
-      WriteBuffer(composeSet, 2, surface->gpu.buffer, 0, VK_WHOLE_SIZE);
-      WriteBuffer(composeSet, 3, chunkRectBuffer != VK_NULL_HANDLE ? chunkRectBuffer : metaBuffer,
-                  chunkRectBuffer != VK_NULL_HANDLE ? chunkRectOffset : metaOffset,
-                  chunkRects.empty() ? 4u : chunkRects.size() * sizeof(uint32_t));
-
-      BarrierBeforeCompute();
-      vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipe);
-      vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipeLayout, 0, 1,
-                               &composeSet, 0, nullptr);
-      struct ComposePush {
-        uint32_t numTiles;
-        uint32_t compBase;
-        int32_t surfaceW;
-        int32_t surfaceH;
-        int32_t kr;
-        int32_t kcrG;
-        int32_t kcbG;
-        int32_t kcbB;
-        uint32_t swapRb;
-      } cpush{count, 0u, surfaceW, surfaceH, kKr, kKcrG, kKcbG, kKcbB, swapRb ? 1u : 0u};
-      vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                          sizeof(cpush), &cpush);
-        const uint32_t composeToken = TimestampOpen(2);
-      vk.CmdDispatch(commandBuffer, (count * kTilePixels + 63u) / 64u, 1, 1);
-      TimestampClose(composeToken);
-      pendingComputeWrites = true;
-      computeInFlight = true;
-      rfxChunks++;
-    }
+    rfxChunks++;
     return true;
   }
 
@@ -2459,7 +2696,7 @@ bool GfxVkDesktop::Init(VkFormat format) {
   // serves every other command and Progressive stays "unsupported" (counted and
   // visible in the stats, never silently wrong).
   if (impl_->CreateRfxPipelines()) {
-    const size_t coefBytes = static_cast<size_t>(kRfxChunkTiles) * 3u * 4096u * 4u;
+    const size_t coefBytes = static_cast<size_t>(Impl::kMaxBatchStreams) * 4096u * 2u;
     if (impl_->CreateRawBuffer(&impl_->coef, coefBytes)) {
       impl_->rfxReady = true;
     } else {
@@ -2712,6 +2949,12 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
 
 bool GfxVkDesktop::Compose() {
   if (!ready() || impl_->screen.image == VK_NULL_HANDLE) {
+    return false;
+  }
+  // The screen compose reads the surfaces *after* the pending decode batch has
+  // written them, so the batch (decode, inverse DWT and the surface composes it
+  // carries) has to be recorded first.
+  if (!impl_->FinishDecodeBatch()) {
     return false;
   }
   const int64_t composeStart = Impl::NowUs();
@@ -3160,6 +3403,20 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
   const int64_t opStart = impl_ != nullptr ? Impl::NowUs() : 0;
   const uint64_t drainsBefore = impl_ != nullptr ? impl_->syncDrains : 0;
   const uint64_t drainUsBefore = impl_ != nullptr ? impl_->syncDrainUs : 0;
+  // Surface lifecycle commands, and anything that changes what a pending decode
+  // batch would composite, must not overtake it. Only a *Progressive* surface
+  // command feeds the batch: ClearCodec and uncompressed uploads are CPU
+  // read-modify-writes of surface pixels, so they have to be ordered after the
+  // batch's composes like any other pixel command.
+  bool isProgressive = false;
+  if (impl_ != nullptr && cmdId == kGpuCmdWireToSurface && scalars != nullptr) {
+    isProgressive = (scalars[0] == kGpuCodecCaprogressive);
+  }
+  if (impl_ != nullptr && cmdId != kGpuCmdStartFrame && !isProgressive) {
+    if (!impl_->FinishDecodeBatch()) {
+      return;
+    }
+  }
   switch (cmdId) {
     case kGpuCmdCreateSurface:
       if (scalars != nullptr) {
@@ -3318,16 +3575,28 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       // Apply exactly that rule, otherwise the engine drops tiles gdi still
       // re-composites (see Surface::frameTiles).
       if (impl_ != nullptr && scalars != nullptr) {
+        bool frameChanged = false;
         for (auto& entry : impl_->surfaces) {
           if (entry.second.frameId == scalars[0]) {
             impl_->frameIdRepeats++;
             continue;
           }
+          // A *new* frame id starts a new frame: the messages of the previous one
+          // are complete (their decode batch could not grow past the boundary).
+          frameChanged = true;
           entry.second.frameId = scalars[0];
           entry.second.frameTiles.clear();
           if (!entry.second.frameTileSeen.empty()) {
             std::fill(entry.second.frameTileSeen.begin(), entry.second.frameTileSeen.end(), 0);
           }
+        }
+        if (frameChanged) {
+          // A batch never spans a frame boundary: the frame's tile list resets and
+          // a message's compose semantics are defined relative to its own frame.
+          if (!impl_->FinishDecodeBatch()) {
+            return;
+          }
+          impl_->RecordFrameMessages();
         }
       }
       break;
@@ -3410,9 +3679,13 @@ std::string GfxVkDesktop::Stats() const {
       static_cast<unsigned long long>(impl_->statLifecycle.drainUs),
       static_cast<unsigned long long>(impl_->statLifecycle.drains),
       static_cast<unsigned long long>(impl_->releaseUs / 1000));
-  char buf2[1536];
+  char buf2[2048];
   std::snprintf(buf2, sizeof(buf2),
                 "\n  gpuMs rlgr=%.1f idwt=%.1f compose=%.1f (samples %llu/%llu/%llu drops=%llu)"
+                "\n  perChunkMs rlgr min=%.2f max=%.2f | idwt min=%.2f max=%.2f"
+                "\n  decode input %.1f MB / %llu streams (%.0f B per stream), perChunk KB min=%.1f max=%.1f"
+                "\n  batches flushed=%llu skipped=%llu maxStreams=%llu"
+                "\n  msgPerFrame 0=%llu 1=%llu 2=%llu 3=%llu 4-7=%llu 8+=%llu max=%u"
                 "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus"
                 "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu"
                 "\n  alloc calls=%llu us=%llu (cache allocs=%llu)"
@@ -3427,6 +3700,26 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->gpuSamples[1]),
                 static_cast<unsigned long long>(impl_->gpuSamples[2]),
                 static_cast<unsigned long long>(impl_->gpuTimestampDrops),
+                impl_->GpuMsMin(0), impl_->GpuMsMax(0), impl_->GpuMsMin(1), impl_->GpuMsMax(1),
+                static_cast<double>(impl_->chunkBytes) / 1048576.0,
+                static_cast<unsigned long long>(impl_->streamCount),
+                impl_->streamCount > 0
+                    ? static_cast<double>(impl_->chunkBytes) /
+                          static_cast<double>(impl_->streamCount)
+                    : 0.0,
+                impl_->chunkBytesMin == UINT64_MAX ? 0.0
+                                                   : static_cast<double>(impl_->chunkBytesMin) / 1024.0,
+                static_cast<double>(impl_->chunkBytesMax) / 1024.0,
+                static_cast<unsigned long long>(impl_->batchesFlushed),
+                static_cast<unsigned long long>(impl_->batchesSkipped),
+                static_cast<unsigned long long>(impl_->batchStreamsMax),
+                static_cast<unsigned long long>(impl_->messagesPerFrame[0]),
+                static_cast<unsigned long long>(impl_->messagesPerFrame[1]),
+                static_cast<unsigned long long>(impl_->messagesPerFrame[2]),
+                static_cast<unsigned long long>(impl_->messagesPerFrame[3]),
+                static_cast<unsigned long long>(impl_->messagesPerFrame[4]),
+                static_cast<unsigned long long>(impl_->messagesPerFrame[5]),
+                static_cast<unsigned>(impl_->messagesThisFrameMax),
                 impl_->hostMemoryType.c_str(), impl_->hostCoherent ? 1 : 0,
                 static_cast<unsigned long long>(impl_->atomSize),
                 static_cast<unsigned long long>(impl_->emptySubmitUs),

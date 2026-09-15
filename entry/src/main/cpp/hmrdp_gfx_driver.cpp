@@ -3,6 +3,8 @@
  */
 #include "hmrdp_gfx_driver.h"
 
+#include <atomic>
+#include <chrono>
 #include <map>
 
 #include <vector>
@@ -12,6 +14,19 @@
 #include "hmrdp_rfx.h"  // GpuCmd ids
 
 namespace hmrdp {
+
+namespace {
+std::atomic<uint64_t> g_parseUs{0};
+int64_t ParseNowUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+}  // namespace
+
+void GfxReplayResetParseUs() { g_parseUs.store(0); }
+void GfxReplayAddParseUs(uint64_t micros) { g_parseUs.fetch_add(micros); }
+uint64_t GfxReplayParseUs() { return g_parseUs.load(); }
 
 namespace {
 
@@ -357,7 +372,12 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
   const uint8_t* data = nullptr;
   uint32_t size = 0;
   while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
+    // Dev (perf): the ZGFX + RDPGFX PDU parse is a per-record cost that is common
+    // to every route (it happens before the engine or gdi sees the command), so it
+    // is timed here rather than inside either backend.
+    const int64_t recvStart = ParseNowUs();
     HmrdpGfxReplayRecv(gfx, data, size);
+    GfxReplayAddParseUs(static_cast<uint64_t>(ParseNowUs() - recvStart));
   }
   return true;
 }

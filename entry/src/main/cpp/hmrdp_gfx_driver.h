@@ -102,6 +102,14 @@ bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
                             const std::function<void()>& onCommand, RdpgfxClientContext* gfxB,
                             const std::atomic<bool>* stop, std::string* error);
 
+// Dev (perf): accumulated time spent in the ZGFX + RDPGFX PDU parse during a replay
+// (measured in the pump, before any backend sees the command). It is a cost every
+// route pays, so separating it from the backend's own time is what says whether a
+// backend is actually faster than FreeRDP's gdi.
+void GfxReplayResetParseUs();
+void GfxReplayAddParseUs(uint64_t micros);
+uint64_t GfxReplayParseUs();
+
 }  // namespace hmrdp
 
 #endif  // HMRDP_GFX_DRIVER_H

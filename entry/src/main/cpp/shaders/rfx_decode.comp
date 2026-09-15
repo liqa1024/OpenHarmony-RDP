@@ -26,7 +26,9 @@ layout(push_constant) uniform Push {
   uint uTempBase;   // int16 entry index into Coef
 } pc;
 
+
 uint payByte(uint off) { uint w = pay.data[off >> 2]; return (w >> ((off & 3u) << 3)) & 0xFFu; }
+
 uint metaByte(uint off) { uint w = meta.data[off >> 2]; return (w >> ((off & 3u) << 3)) & 0xFFu; }
 uint metaU32(uint off) { return meta.data[off >> 2]; }
 
@@ -506,6 +508,10 @@ void upgradeComponent(uint compBase, uint tempBase, uint stateBase, uint tileStr
   for (int b = 0; b < 10; b++) bitPosSet(tileStream, uint(b), newBit[b]);
 }
 
+// The verified per-lane decode: one invocation per (tile,component) stream. The
+// workgroup-per-stream producer/consumer variant was measured and rejected: this
+// shader is register-bound, and the extra code pushed it off the performance cliff
+// (10-30x) while breaking the coefficient writes (doc_agent/gfx-engine.md §3).
 void main() {
   uint sid = gl_GlobalInvocationID.x;
   if (sid >= pc.uNumStreams) return;
@@ -550,8 +556,6 @@ void main() {
     diffDecode(compBase, 4015u, 81u);
     dequantSub(compBase, 4015u, 81u, int(sh[9]));
     if ((flags & 1u) != 0u) {
-      // RFX_TILE_DIFFERENCE: saturating add of the plane and `current`, written
-      // back to both - two coefficients per word load/store.
       for (uint wi = 0u; wi < 2048u; wi++) {
         const uint cw = coef.data[(compBase >> 1u) + wi];
         const uint sw = cur.data[(stateBase >> 1u) + wi];
