@@ -9,7 +9,6 @@
 #define HMRDP_REPLAY_H
 
 #include <atomic>
-#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -79,55 +78,16 @@ class GfxReplay {
   void RecordFlush(uint64_t micros);
   void RecordPresent(uint64_t micros);
 
-  // --- Dev: independent CPU reference surface (VULKAN-TODO §8) -------------
-  // The compare routes keep a *complete* second implementation of the GFX
-  // surface in the harness: FreeRDP's own progressive/clear decoders plus
-  // mirrored gdi cache/fill/copy semantics are applied to `refSurface_`, which
-  // never reads the engine's surface. CompareFrames then diffs the engine's
-  // whole surface against it, so any difference is an absolute end-to-end proof
-  // of an engine divergence - the first mismatching pixel and the last command
-  // that wrote it name the culprit. No-ops on the other routes.
-  void RefCreateSurface(uint16_t surfaceId, int width, int height);
-  void RefDeleteSurface(uint16_t surfaceId);
-  void RefResetGraphics();
-  void RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top);
-  void RefClearCodec(uint16_t surfaceId, const uint8_t* payload, size_t size, int left, int top,
-                     int width, int height);
-  void RefCacheStore(uint16_t surfaceId, uint16_t slot, int x, int y, int width, int height);
-  void RefCacheRestore(uint16_t surfaceId, uint16_t slot, const uint8_t* pts, uint32_t count);
-  void RefCacheEvict(uint16_t slot);
-  void RefFill(uint16_t surfaceId, uint32_t pixel, const uint8_t* rects, uint32_t count);
-  // Uncompressed bitmap upload (gdi_SurfaceCommand_Uncompressed): 24bpp is
-  // expanded to BGRA with alpha 0xFF, 32bpp is copied, both clipped to the
-  // surface.
-  void RefUpload(uint16_t surfaceId, uint32_t format, int left, int top, int width, int height,
-                 const uint8_t* payload, uint32_t payloadLen);
-  void RefCopy(uint16_t srcSurfaceId, uint16_t dstSurfaceId, const uint8_t* params, uint32_t count);
-  // Diff of the engine's surface against the reference (called per compare).
-  void RefCompareSurfaces();
-  // Absolute per-command check: right after a command was applied to both the
-  // engine and the reference, compare only the rect it wrote. The first failure
-  // therefore names the exact culprit command (this is what the per-frame compare
-  // cannot do - `update_tiles` re-composites earlier tiles and masks the writer).
-  bool RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
-  // Dev A/B against FreeRDP's own gdi surface for the same surfaceId - the
-  // authoritative reference (the mirrored surface above is a hand-written second
-  // implementation and has produced false positives). `GdiAbCheck` only records
-  // the rect (gdi is fed one chunk behind the sink); `GdiAbFlush` performs the
-  // comparison at the chunk boundary, when both sides are at the same position.
-  void GdiAbCheck(uint16_t surfaceId, int x, int y, int width, int height, const char* op,
-                  const std::string& detail = std::string(), int payloadSlot = -1);
+  // --- Dev: per-command A/B against FreeRDP's own gdi surface ---------------
+  // Only active with `kCodecAbEnabled` (see hmrdp_replay.cpp): the sink records
+  // the rects each command claims to write and `GdiAbFlush` - called by the
+  // compare route right after every command, with gdi and the engine at the same
+  // stream position - diffs exactly those pixels against gdi's own surface. An
+  // earlier hand-written mirror of the gdi geometry was removed: it produced
+  // false positives, and gdi itself is the only trustworthy reference.
+  void GdiAbCheck(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
   void GdiAbFlush();
-  // Dev: coefficient-level A/B of one Progressive tile's decoder state against
-  // FreeRDP's own (patch-freerdp.ps1 step 8).
-  void GdiAbCompareState(uint16_t surfaceId, int xIdx, int yIdx);
-  // Dev: the RDPGFX frame id gdi is using (forwarded through the StartFrame chain
-  // command), so the mirrored reference decodes with the same frame boundary rule.
-  void SetMirrorFrameId(uint32_t frameId) { mirrorFrameId_.store(frameId); }
-  // Dev: copy one command payload into the ring and return its slot (the chunk
-  // buffer is reused by the next chunk, so a raw pointer would be stale by the
-  // time the deferred check runs).
-  int GdiAbStashPayload(const uint8_t* payload, uint32_t payloadLen);
+  std::string GdiAbSummary() const;
   // Dev: if this command's rect covers the watch pixel, log who wrote it and both
   // values - so the command that moved only the engine's surface is visible.
   void RefWatchRect(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
@@ -234,56 +194,7 @@ class GfxReplay {
   // Dev diagnosis: the one-shot per-pixel dump has already been written.
   bool cmpDumpDone_ = false;
 
-  // Dev: CPU reference surface state (replay thread only). The two contexts are
-  // kept as void* so this header stays FreeRDP-free.
-  struct RefCacheEntry {
-    int width = 0;
-    int height = 0;
-    std::vector<uint8_t> data;
-  };
-  void* refProg_ = nullptr;   // PROGRESSIVE_CONTEXT*
-  void* refClear_ = nullptr;  // CLEAR_CONTEXT*
-  std::vector<uint8_t> refSurface_;
-  uint16_t refSurfaceId_ = 0xFFFFu;
-  int refW_ = 0;
-  int refH_ = 0;
-  int refStride_ = 0;
-  std::map<uint16_t, RefCacheEntry> refCache_;
-  // Per-pixel "which command class last modified this pixel" (1 = progressive,
-  // 2 = clearcodec, 3 = cache restore, 4 = fill, 5 = copy). Dev only: it names
-  // the writer of the first diverging pixel.
-  std::vector<uint8_t> refProv_;
-  // Atomic: StatsLines() (UI thread) reports the summary while the replay runs.
-  std::atomic<uint64_t> refCommands_{0};
-  std::atomic<uint64_t> refChecks_{0};
-  std::atomic<uint64_t> refBad_{0};
-  std::atomic<uint64_t> refBadPx_{0};
-  bool refFirstLogged_ = false;
-  // The command class that first failed its own per-command verification.
-  std::string refBadOp_;
-  // Dev: how many cache restores found no entry (diagnostic for the harness).
-  uint32_t refCacheMisses_ = 0;
-  // First mismatching pixel of the per-command verification (so the Progressive
-  // path can report which tile - and which decode sub-path - is responsible).
-  int refBadX_ = -1;
-  int refBadY_ = -1;
-  bool refBadThisMessage_ = false;
-  // Dev: pre-decode verification count (bounded so the log stays readable).
-  uint64_t refPreChecks_ = 0;
-  // Dev: log messages touching tile (0,0) with their tile-kind breakdown.
-  bool refWatchTile_ = false;
-  // Dev: watch pixel for the per-command write trace.
-  int refWatchX_ = 1408;
-  int refWatchY_ = 1260;
-  uint32_t refWatchLogged_ = 0;
-  uint32_t refTileLogged_ = 0;
-  // Dev: how many reference-decode failures have been logged.
-  uint32_t refRcLogged_ = 0;
-  uint32_t refClearRcLogged_ = 0;
-
-  // Dev: authoritative per-command A/B against gdi's own surface. Rects are
-  // recorded per command and verified at the next chunk boundary (gdi is fed one
-  // chunk behind the engine).
+  // Dev: per-command A/B against gdi's own surface (kCodecAbEnabled only).
   struct GdiAbRect {
     int x = 0;
     int y = 0;
@@ -291,21 +202,8 @@ class GfxReplay {
     int h = 0;
     uint16_t surfaceId = 0;
     std::string op;
-    // Dev: Progressive tile descriptor (empty for the other command classes).
-    std::string detail;
-    // Index into `gdiAbPayloads_` (the command payload is only valid during the
-    // call - the chunk buffer is reused by the next chunk - so it is copied).
-    int payloadSlot = -1;
   };
   std::vector<GdiAbRect> gdiAbPending_;
-  // Dev: one-shot dump of a divergent tile's decoder inputs/result.
-  bool tileDumpDone_ = false;
-  // Dev: a small ring of recent command payloads. The harness's chunk buffer is
-  // reused as soon as the next chunk is fed, and the deferred check runs at that
-  // point, so a raw pointer would already be stale.
-  std::vector<std::vector<uint8_t>> gdiAbPayloads_;
-  size_t gdiAbPayloadNext_ = 0;
-  std::atomic<uint32_t> mirrorFrameId_{0};
   std::atomic<uint64_t> gdiChecks_{0};
   std::atomic<uint64_t> gdiBad_{0};
   std::atomic<uint64_t> gdiBadPx_{0};
@@ -313,15 +211,6 @@ class GfxReplay {
   std::string gdiBadOp_;
   // Dev: the first culprit line, repeated at the end of the run (hilog rotates).
   std::string gdiFirstLine_;
-  // Dev: reconstructed per-(surface,tileStream) bit positions, so a Progressive
-  // tile's `numBits` (old - new) can be reported next to the message's own
-  // quantisation data.
-  std::map<uint64_t, std::array<uint8_t, 10>> tileBitPos_;
-  // Dev: watch pixel for the gdi write trace (defaults to the first divergence
-  // the previous runs reported).
-  int gdiWatchX_ = 1408;
-  int gdiWatchY_ = 1260;
-  uint32_t gdiWatchLogged_ = 0;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;

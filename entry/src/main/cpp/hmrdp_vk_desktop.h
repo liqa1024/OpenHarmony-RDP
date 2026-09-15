@@ -127,19 +127,6 @@ class GfxVkDesktop {
   // per-command A/B harness reads small rects instead of the whole surface.
   bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
                        std::vector<uint8_t>* out);
-  // Bytes the engine's bitmap cache holds for `slot` (tightly packed BGRA). Dev
-  // only: separates a cache *store* divergence from a *restore* one.
-  bool ReadCacheEntry(uint16_t slot, int* width, int* height, std::vector<uint8_t>* out);
-
-  // Dev/verification only: the engine's persistent Progressive state for one
-  // (tile, component) stream - the 4096 accumulated coefficients (`cur`, the
-  // engine's equivalent of FreeRDP's RFX_PROGRESSIVE_TILE::current), the 4096
-  // sign values and the 10 bit positions in shader band order
-  // [HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3]. `tileIndex` is yIdx*gridW + xIdx
-  // with the engine's own grid. Returns false when the surface/stream is absent.
-  bool ReadRfxTileState(uint16_t surfaceId, uint32_t tileIndex, int component,
-                        std::vector<int16_t>* cur, std::vector<int16_t>* sign,
-                        std::vector<uint8_t>* bitPos);
 
   // --- Diagnostics ---------------------------------------------------------
   // One-line engine summary (surface/cache counts, per-command timings, the

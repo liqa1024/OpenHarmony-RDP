@@ -294,8 +294,6 @@ struct GfxVkDesktop::Impl {
   uint64_t rfxMultiRegion = 0;
   // StartFrame PDUs whose frame id repeated (FreeRDP keeps its tile list then).
   uint64_t frameIdRepeats = 0;
-  // Dev: how many commands were dropped because the engine had no such surface.
-  uint32_t missingSurfaceLog = 0;
   uint64_t rfxOriginNonZero = 0;
 
   // Screen dirty rectangle (0xFF/0 initialised, mirrors GfxGpuDesktop).
@@ -1747,16 +1745,6 @@ struct GfxVkDesktop::Impl {
     HostWrote();
     MarkSurfaceDirty(*surface, x, y, x + width, y + height);
     clearDecoded++;
-    // Dev: prove the CPU write actually landed in the mapping (an A/B that says
-    // "never written" has to distinguish "skipped" from "written elsewhere").
-    if (clearDecoded <= 4) {
-      const uint8_t* p = surface->gpu.mapped + static_cast<size_t>(y) * surface->gpu.stride +
-                         static_cast<size_t>(x) * 4;
-      HMRDP_LOGW(
-          "vk clearcodec applied: sid=%{public}u rect=(%{public}d,%{public}d)+%{public}dx%{public}d first=b%{public}u g%{public}u r%{public}u stride=%{public}d surfW=%{public}d",
-          static_cast<unsigned>(surfaceId), x, y, width, height, p[0], p[1], p[2],
-          surface->gpu.stride, surface->meta.width);
-    }
     return true;
   }
 
@@ -2256,77 +2244,6 @@ bool GfxVkDesktop::ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, 
   return true;
 }
 
-bool GfxVkDesktop::ReadCacheEntry(uint16_t slot, int* width, int* height,
-                                  std::vector<uint8_t>* out) {
-  if (!ready() || out == nullptr) {
-    return false;
-  }
-  const auto it = impl_->cache.find(slot);
-  if (it == impl_->cache.end() || !it->second.gpu.valid() || it->second.width <= 0 ||
-      it->second.height <= 0) {
-    return false;
-  }
-  const int w = it->second.width;
-  const int h = it->second.height;
-  out->resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-  for (int row = 0; row < h; ++row) {
-    std::memcpy(out->data() + static_cast<size_t>(row) * w * 4,
-                it->second.gpu.mapped + static_cast<size_t>(row) * it->second.gpu.stride,
-                static_cast<size_t>(w) * 4);
-  }
-  if (width != nullptr) {
-    *width = w;
-  }
-  if (height != nullptr) {
-    *height = h;
-  }
-  return true;
-}
-
-bool GfxVkDesktop::ReadRfxTileState(uint16_t surfaceId, uint32_t tileIndex, int component,
-                                    std::vector<int16_t>* cur, std::vector<int16_t>* sign,
-                                    std::vector<uint8_t>* bitPos) {
-  // Dev/verification only (see the header): the state is written by the decode
-  // compute shader, so the CPU has to observe the recorded work first.
-  if (!ready() || component < 0 || component > 2 || cur == nullptr || sign == nullptr ||
-      bitPos == nullptr) {
-    return false;
-  }
-  Impl::Surface* surface = impl_->Find(surfaceId);
-  if (surface == nullptr || !surface->rfx.valid()) {
-    return false;
-  }
-  const uint32_t gridStreams =
-      static_cast<uint32_t>(surface->meta.gridW) * static_cast<uint32_t>(surface->meta.gridH) * 3u;
-  const uint32_t stream = tileIndex * 3u + static_cast<uint32_t>(component);
-  if (stream >= gridStreams) {
-    return false;
-  }
-  if (!impl_->SyncForCpuAccess()) {
-    return false;
-  }
-  const auto& curBuf = surface->rfx.cur;
-  const auto& signBuf = surface->rfx.sign;
-  const auto& bpBuf = surface->rfx.bp;
-  const size_t curBytes = static_cast<size_t>(stream) * 4096u * sizeof(int16_t);
-  if (curBytes + 4096u * sizeof(int16_t) > curBuf.capacity ||
-      curBytes + 4096u * sizeof(int16_t) > signBuf.capacity) {
-    return false;
-  }
-  cur->resize(4096);
-  sign->resize(4096);
-  std::memcpy(cur->data(), curBuf.mapped + curBytes, 4096u * sizeof(int16_t));
-  std::memcpy(sign->data(), signBuf.mapped + curBytes, 4096u * sizeof(int16_t));
-  // 12 bytes per stream in the engine (kBitPosStride): 10 bytes are used, the
-  // rest is padding so adjacent streams never share a 32-bit word.
-  const size_t bpBytes = static_cast<size_t>(stream) * 12u;
-  if (bpBytes + 10u > bpBuf.capacity) {
-    return false;
-  }
-  bitPos->assign(bpBuf.mapped + bpBytes, bpBuf.mapped + bpBytes + 10u);
-  return true;
-}
-
 bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
                              uint32_t rectCount) {
   if (!ready() || rects == nullptr || rectCount == 0) {
@@ -2619,15 +2536,7 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       }
       Impl::Surface* surface = impl_->Find(sid);
       if (surface == nullptr) {
-        // Dev: a command for a surface the engine does not have is dropped
-        // silently otherwise (the A/B then reports the pixels as never written).
-        if (impl_->missingSurfaceLog++ < 8) {
-          HMRDP_LOGW(
-              "vk surface command NOT applied: sid=%{public}u codec=0x%{public}x (no such surface)",
-              static_cast<unsigned>(sid),
-              static_cast<unsigned>(scalars != nullptr ? scalars[0] : 0u));
-        }
-        break;
+        break;  // no such surface: nothing to draw on
       }
       const uint32_t codecId = scalars[0];
       const uint32_t format = GpuRd32(params + 4);
@@ -2667,18 +2576,6 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         if (!impl_->ClearCodecDecode(sid, payload, payloadLen, left, top, width, height)) {
           impl_->unsupportedCount++;
           impl_->clearUnsupported++;
-          // Dev: name the reason (a silent bail-out here is invisible otherwise).
-          if (impl_->clearUnsupported <= 8) {
-            const Impl::Surface* s = impl_->Find(sid);
-            std::string info = "missing/not-ready";
-            if (s != nullptr && s->gpu.valid()) {
-              info = std::to_string(s->meta.width) + "x" + std::to_string(s->meta.height);
-            }
-            HMRDP_LOGW(
-                "vk clearcodec NOT applied: sid=%{public}u rect=(%{public}d,%{public}d)+%{public}dx%{public}d payload=%{public}u surface=%{public}s",
-                static_cast<unsigned>(sid), left, top, width, height,
-                static_cast<unsigned>(payloadLen), info.c_str());
-          }
         }
       }
       break;
