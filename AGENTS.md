@@ -37,6 +37,7 @@
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX / Progressive / GPU 引擎（**改前必读**）与回放验收 | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
+| Progressive kernel 优化（未完成）与新录像正确性残留（**后续工作清单**） | [`gfx-progressive-kernel.md`](doc_agent/gfx-progressive-kernel.md) |
 
 ## 环境
 
@@ -80,6 +81,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 要改的东西 | 先读 |
 |---|---|
 | GFX / Progressive / 解码 / 合成 / GPU 引擎 / 回放 | [`gfx-engine.md`](doc_agent/gfx-engine.md)（**协议与合成语义那一节必须逐条对照**） |
+| RLGR/解码 kernel 的并行化改造、查新录像的逐像素分叉 | [`gfx-progressive-kernel.md`](doc_agent/gfx-progressive-kernel.md) |
 | 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、剪贴板 | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置项、连接存储、密码、导入导出 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 页面 / 状态刷新 / 路由 / 主题 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |

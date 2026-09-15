@@ -70,15 +70,15 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 - **Progressive / 未压缩位图 / 表面绘制 → GPU**（SPIR-V compute + transfer），引擎直写表面缓冲；
   Progressive 的解码拆成**两个 kernel**（`rfx_decode.comp` + `rfx_idwt.comp`）：
-  1. `rfx_decode`：**一条 lane 一条 (tile,component) stream**，跑 RLGR/去量化/差分与持久状态同步；
+  1. `rfx_decode`：一条 lane 一条 (tile,component) stream，跑 RLGR/去量化/差分与持久状态同步；
   2. `rfx_idwt`：**一个 workgroup 一条 stream**，把该 stream 的 4096 个系数搬进 **shared memory**
-     （plane 16KB + 打包 temp 8KB，设备上限 32KB）再跑三级逆 DWT，全局只读一次写一次。
-     **为什么必须拆**：这个变换原本在全局 SSBO 上做 ~10 趟 16bit 读-改-写（每 stream ~64k 次全局访存），
-     实测就是 decode 的瓶颈（占 GPU drain 的 49%）；搬进 shared 后 decode 的 GPU 时间降到约 1.4 倍以下。
-     语义（子带偏移/长度、每步 INT16 截断、差分顺序、位状态）与 §2.1 逐条一致，`Vulkan对比` 仍是 `bad=0` 的门禁。
-- **`rfx_compose` 必须按像素并行**（一个 lane 一个像素）：按 tile 并行时 32 个 lane 写 32 个不同 tile
-  （每 4 个有效字节占一条 cache line），且每像素还要遍历整条裁剪 rect 列表；改成按像素后由 host 把
-  裁剪 rect 预先算成**tile 内局部坐标**并存进 tileMeta，实测该 dispatch 从 9.56s 降到 ~0.08s。
+     再跑三级逆 DWT，全局只读一次写一次。
+     **为什么必须拆**：这个变换原本在全局 SSBO 上做多趟 16bit 读-改-写，是当时 decode 的最大头；
+     搬进 shared 后 decode 的 GPU 时间显著下降。语义（子带偏移/长度、每步 INT16 截断、差分顺序、
+     位状态）与 §2.1 逐条一致，`Vulkan对比` 仍是 `bad=0` 的门禁。
+- **`rfx_compose` 必须按像素并行**（一个 lane 一个像素）：按 tile 并行时 32 个 lane 会写 32 个不同 tile
+  （每 4 个有效字节占一条 cache line），且每像素还要遍历整条裁剪 rect 列表；改成按像素 + 由 host 把
+  裁剪 rect 预先算成**tile 内局部坐标**存进 tileMeta 后，该 dispatch 快了约两个数量级。
 - **ClearCodec 留在 CPU**：它不是自包含的（未覆盖像素保留原值），复用 FreeRDP 的 `clear_decompress`
   对**持久映射的表面缓冲**做读改写（共享内存，**不搬 GPU、不做逐区域跨侧往返**）；
 - **表面/缓存存储**是**持久映射的 host-visible 线性缓冲**（屏幕仍是 image），于是 CPU 访问零成本，
@@ -136,11 +136,8 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   此时仍要用该 region 的 clip 重复合成整帧列表 ⇒ **clip 不能从 tile 推**（解析器要把 REGION 头的 rects
   单独回调出来）。
 - **不要把多条消息的 decode 合并进一次 dispatch**（"帧内跨消息批量"已实测否决）：restamp（type 3）用 `cur`
-  重建"本帧更早解码过的 tile"，其 `cur` **必须是该消息那一刻的值**。一旦合并：
-  ① 同一 dispatch 内它可能读到更早消息还没写完的 `cur`（lane 竞争）；② 排到批量之后又会拿到更晚消息
-  更新过的 `cur`。两条都与 gdi 不一致（实测：同一构建、同一录像，合并开 → `bad=6`（局部区域），
-  合并关 → `bad=0`）。**并行度只能从"一条 stream 内部"找**（见 §3 的 producer/consumer 拆分），
-  不能靠跨消息合并。
+  重建"本帧更早解码过的 tile"，其 `cur` **必须是该消息那一刻的值**；合并后无论排在同批之前还是之后都会与
+  gdi 不一致。**并行度只能从"一条 stream 内部"找**。细节见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) §2。
 - **tile 网格公式照抄 FreeRDP**：`gridW = (w + (64 - w % 64)) / 64`，**不是** `(w + 63) / 64`。
   FreeRDP 在 16 对齐宽度是 **64 整数倍**时会**多算一格**（例如 3136 → 50 而非 49）。多出来的那圈 tile
   整块落在表面之外、不可能写出可见像素（与 region rects 的交集为空），但**"两个实现接受的 tile 集合
@@ -173,31 +170,24 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   （RLGR 位流逐字节 refill、tile 逐像素循环）时，GPU 利用率极低——此时"引擎比 FreeRDP 的 CPU 软解还慢"
   是必然结果。整屏矩形需要 10 万+ 工作组，必须用 2D/3D 网格而不是线性下标。
 - **任何带 `barrier()` 的 kernel，早退必须由整个 workgroup 一致决定**：`if (gid >= uNumStreams) return;`
-  这类按 lane 早退在 stream 数不是 local_size 整数倍时（典型 291/64）会让最后一个 workgroup 的
-  `barrier()` 只被执行一部分 → **未定义行为**（实测表现为花屏 + present 失败）。要么在早退前先
-  `barrier()` 收敛，要么把参数补齐到整组。
-- **已知实测（同一份捕获、真机整轮、GPU timestamp 口径）**：`rlgr≈7.2s  idwt≈2.3s  compose≈0.15s`；
-  同轮 gdi（CPU 单核）后端合计约 **7.1s**（ZGFX+PDU 另计 ~2.6s，两条路线共担）。
-  已验证**不成立**的两个假设：① payload 读的"次数/合并"（加 32bit 字缓存：无变化）；
-  ② payload 读的**延迟**（整段搬进 shared：kernel 只快 17%，而且 16KB shared 把常驻 workgroup 压到每 SM 2 个、
-  整系统反而慢 3 倍 → 说明这套 dispatch 模式严重依赖"多 workgroup 同时在飞"）。
-  ⇒ RLGR 的瓶颈是**分歧型串行位解码在 SIMT 上的低效率**，不是访存，靠微调着色器追不回来。
-- **`rfx_decode.comp` 是寄存器极度敏感的 kernel**：实测**只加两个计数器 + 一个 binding**就慢 2x，加一整套
-  workgroup-per-stream producer/consumer 后慢 10~30x 且结果错（只完成 3/44 次 decode dispatch，下游拿到
-  全 0 系数 ⇒ 画面大片中性灰）。**动它之前先把"每 stream 时间"作为门槛指标**，并优先考虑按类型拆 kernel
-  （每条 kernel 只保留一条路径）来降寄存器压力，而不是在一个 kernel 里堆路径。
-- **已被实测否决/踩过的坑（不要重复）**：
-  1. 跨消息合并 decode（§2.2：与 restamp 互斥）；
-  2. `shared` 窗口超 16KB → 常驻 workgroup 掉到每 SM 2 个，整系统慢 3x；
-  3. 按 lane 早退 + `barrier()` → UB（花屏）；
-  4. 生产者循环里"位流耗尽返回 false 后 `continue`"→ **死循环**（`brRemaining()` 是窗口内位数，可能仍 >0），
-     必须另设 `gExhausted` 标志；
-  5. "值落在奇下标"时整字覆盖会**吃掉前一个系数**（该半字属于上一条目的值，不是本游程的零）；
-     `count == 0`（无零游程、纯值）很常见，必须只在 `count > 0` 时整字写，否则只改高半字。
+  这类按 lane 早退会让最后一个 workgroup 的 `barrier()` 只被执行一部分 → **未定义行为**
+  （实测表现为花屏 + present 失败）。要么在早退前先 `barrier()` 收敛，要么把参数补齐到整组。
+- **`rfx_decode.comp` 是寄存器极度敏感的 kernel**：实测**只加两个计数器 + 一个 binding**就慢 2x。
+  因此**不要在一个 kernel 里堆路径**（type 0/2/3 三套逻辑同文件），优先**按类型拆成多条 kernel**，
+  每条只保留一条代码路径；改它的门槛指标是**每 stream 的 GPU 时间**（`gpuMs rlgr` / stream 数）。
+- **不要用"跳过某条 dispatch + 差值反推"做归因**：跳过会改变后续数据相关的负载与依赖，实测偏差可达
+  数倍，而且会渲染出花屏、容易被误判为回归。用 timestamp query 直接量（§6）。
+- **不要用一小段"看起来固定"的耗时推断瓶颈**：先看它**是否随输入量变化**（本工程里 decode 的每 chunk
+  耗时随码流字节在 0.26~48ms 之间变化），再下结论。
 - **不要在非目标设备上标定性能**：真机口径要压的是**同步点数 / 驱动调用数 / CPU 介入次数**，
   不是模拟器耗时。
 - **只做标准能力探测，不做标准 API 的行为自检**：自检只针对我们自己的语义与算法
   （`hmrdp_vk_context.*` 只探测能力）。
+- 已实测**不成立**的两个 RLGR 优化假设：① payload 读的"次数/合并"（加 32bit 字缓存：无变化）；
+  ② payload 读的**延迟**（整段搬进 shared：kernel 只快 17%，而 16KB shared 把常驻 workgroup 压到
+  每 SM 2 个、整系统反而慢 3 倍）。⇒ 现在的瓶颈是**分歧型串行位解码在 SIMT 上的低效率**，
+  不是访存，也不是靠微调着色器能追回来的。下一步的设计见
+  [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 
 ## 4. 关键实现要点（与引擎配套的会话侧约束）
 
@@ -233,15 +223,15 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
      "GPU 真的在跑"；没有它就会把 GPU 执行时间误判成同步开销；
 3. **每条 dispatch 的 GPU 时间靠 timestamp query 直接量**（`rfx_decode`/`rfx_idwt`/`rfx_compose` 各一对
    `vkCmdWriteTimestamp`，fence 等待后 `vkGetQueryPoolResults` 读回，统计在引擎 `Stats()` 的 `gpuMs …` 行）。
-   **不要用"跳过某条 dispatch + 差值反推"**：跳过会改变后续数据相关的负载与依赖，实测偏差极大
-   （同一份捕获：跳差值给 5.68s/3.11s/0.08s，timestamp 实测 7.22s/2.33s/0.15s），而且会渲染出花屏、容易被误判为回归。
+   两端都取 `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`；**不要用"跳过某条 dispatch + 差值反推"**（见 §3）。
 - 归因：需要"是哪条命令分叉"时，开 harness 的逐命令 A/B（见 [`build-and-verify.md`](build-and-verify.md)
   与源码里 `kCodecAbEnabled` 的注释）。**它是诊断工具**：开启后要按命令回读引擎表面，
   GLES 路线会慢到像卡死 ⇒ 只在对某条消息归因时开、查完立刻关（`bad=0` 的验收不依赖它）。
   **判定分叉只以 gdi 自己的表面为准**（历史上用手写镜像做过对比，它会误报）。
 - **量测纪律（否则数字不可比）**：
   - 回放页的「路线 / 批次 / 重新回放」按钮内部都是 `stopReplayTest()` + 重新 `start`，**在一轮还没跑完时点击
-    等于把那一轮掐断**；性能数字只取 `(running=0)` 的**整轮**（整份捕获一律 `frames=490 presents=487`）。
+    等于把那一轮掐断**；性能数字只取 `(running=0)` 的**整轮**，且要记下 `frames=` 以确认是整份跑完
+    （不同录制的帧数不同，不能假定某个固定值）。
   - 判定"跑完"要**轮询** `replayTestStats` 文本里的 `(running=0)`，不要用固定 sleep：早取会拿到中途值，
     晚取白等。
   - `uitest dumpLayout` 的输出**不是合法 JSON**（部分字符串编码后 `ConvertFrom-Json` 会报错），
@@ -253,19 +243,19 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
   由 FreeRDP 补丁以运行期回调注册（见 [`native-libraries.md`](native-libraries.md) §3.7）。
   录制文件**不入库**：设备端在应用沙箱，本地副本放 gitignore 目录；dev 的抓取开关与「硬件解码」有联动
   （录制期间走软解），见设置页实现。
-- **样本集（本地 `.cache/`，不入库）**：至少保留两种形态，性能结论**必须分场景给**：
-  - `.cache/hmrdp_gfx.bin`：**浏览/滚动**（消息稀疏：490 帧里 209 帧无消息、多为 1 条/帧；**278 streams/chunk**）；
-  - `.cache/hmrdp_gfx_video.bin`：**看视频**（整帧大块变化：198 帧里 120 帧带 4~7 条消息；**813 streams/chunk**；
-    `diff`/restamp 占比高；每帧整屏脏 ⇒ 上屏是整屏拷贝）。
-  两场景瓶颈不同：浏览场景瓶颈在 GPU kernel；视频场景先被**上屏/提交结构**盖住
-  （present 13 → **127 ms/帧**、`flushWait` 12.4 → **26 s**，而 `syncDrains` 只剩 16 次）。
-  **每条 Progressive chunk 的 `rlgr` 耗时在两个场景几乎不变（15.8 vs 14.05 ms）** ⇒ 当下量到的"kernel 时间"
-  里有很大一块是 dispatch 之间的固定等待而非算术；判断 kernel 是否真的变好，要看**每 stream 时间**
-  （56.8 → 17.3 μs）是否与 lane 数（278 → 813）成比例。
-  **视频录像目前 `Vulkan对比` 是 `bad=6`（整屏、maxDelta=255），且与 batch 改造无关**（合并关闭时同样
-  `bad=6`），属既有分叉：先用 harness 的首次分歧材料（`<capture>.cmpdump`、`kCodecAbEnabled` 逐命令 A/B）
-  定位到具体命令，再谈这条场景的优化。视频场景的重负载特征是 `diff`（RFX_TILE_DIFFERENCE）与 restamp
-  占比高（58908 / 1721，浏览场景为 10190 / 591）、每帧 4~7 条消息。
+- **样本集（本地 `.cache/`，不入库）**：性能结论**必须分场景给**，且**每份捕获都要先自己过一遍
+  `Vulkan对比 bad=0` 才能当基线**（同名文件的不同录制之间不能互相背书）：
+  - `.cache/hmrdp_gfx.bin`：**浏览/滚动**（消息稀疏：多数帧 0~1 条消息，单条消息平均 ~430 条 stream）；
+  - `.cache/hmrdp_gfx_video.bin`：**看视频**（整帧大块变化：多数帧 4~7 条消息，`diff`/restamp 占比高，
+    每帧整屏脏 ⇒ 上屏接近整屏拷贝）。
+  - 两场景的**瓶颈位置不同**：浏览场景在 GPU kernel；视频场景先被**上屏/提交结构**盖住
+    （present 从 ~13ms/帧 涨到 >100ms/帧）。**判据要看"每 stream 的 GPU 时间"与当时在飞的 lane 数**，
+    而不是看 dispatch 的总耗时——后者会随输入字节量变化（实测 0.26~48ms/chunk），
+    所以"两个场景的平均值接近"并不说明大头是固定等待。
+  - 单条 Progressive 消息最多可带**数千条 stream**（实测上限 4851 ⇒ ≈76 个 workgroup），
+    这是"当前结构下"的并行度上限；平均值（数百）会低估它。
+- **`Vulkan对比` 的既有残留**：视频录像目前 `bad=6`（整屏、maxDelta=255），**与本仓库的批量/解码改动无关**
+  （关闭合并时同样 `bad=6`）。排查路径与工具见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 
 - **差分测试（补齐捕获里没有的码流）**：统一方法 = **同一份载荷**分别喂 FreeRDP 解码器与我们的实现，
   逐像素比对。载荷优先用 FreeRDP 自带编码器生成；边界要覆盖**尺寸非 64 倍数**、纯色/渐变/UI 文本/alpha。
@@ -275,6 +265,8 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
 
 ## 7. 待办
 
+- **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）与
+  **视频录像的正确性残留**：单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 - **UI 收尾**：模拟器上置灰「硬件解码」与 GPU 回放入口（`DeviceCapabilities` 的 Capability 模式，
   给出原因），见 [`native-libraries.md`](native-libraries.md) §6。
 - **删除冻结的 GLES 残留**（`hmrdp_rfx.*` 的引擎部分、`hmrdp_egl.*`、`hmrdp_renderer.*`）与仅服务于
