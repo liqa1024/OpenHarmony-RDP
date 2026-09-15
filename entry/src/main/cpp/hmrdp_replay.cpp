@@ -315,7 +315,10 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     gdiAbPending_.clear();
     presentUs_.store(0);
     pumpUs_.store(0);
+    pumpStartUs_.store(0);
     paceUs_.store(0);
+    lastFrameEndUs_ = 0;
+    firstPacedUs_.store(0);
     startUs_.store(NowUs());
     endUs_.store(0);
     // The pure CPU route presents raw gdi frames through the Vulkan presenter;
@@ -390,11 +393,18 @@ std::string GfxReplay::StatsLines() {
   // (finished) replay.
   const int64_t stopUs = endUs_.load();
   const int64_t nowUs = stopUs != 0 ? stopUs : NowUs();
-  const int64_t elapsedUs = startUs_.load() != 0 ? nowUs - startUs_.load() : 0;
+  // fps is the **playback** rate: measured from the first paced frame (see
+  // PaceFrame) to the end, so the run's start-up (engine/presenter init, waiting for
+  // the first frame) does not dilute it. PaceFrame counts one frame per paced
+  // presentation, hence `presents - 1` periods.
   const uint64_t presents = presents_.load();
-  const double fps = elapsedUs > 0 ? static_cast<double>(presents) * 1000000.0 /
-                                         static_cast<double>(elapsedUs)
-                                   : 0.0;
+  const int64_t firstPacedUs = firstPacedUs_.load();
+  const int64_t elapsedUs =
+      firstPacedUs != 0 ? nowUs - firstPacedUs : (startUs_.load() != 0 ? nowUs - startUs_.load() : 0);
+  const double fps =
+      (elapsedUs > 0 && presents > 1)
+          ? static_cast<double>(presents - 1) * 1000000.0 / static_cast<double>(elapsedUs)
+          : 0.0;
   auto avgMs = [](uint64_t total, uint64_t count) {
     return count > 0 ? static_cast<double>(total) / static_cast<double>(count) / 1000.0 : 0.0;
   };
@@ -411,9 +421,17 @@ std::string GfxReplay::StatsLines() {
   // clock minus the paced sleep is a good live approximation.
   const uint64_t elapsed = elapsedUs > 0 ? static_cast<uint64_t>(elapsedUs) : 0;
   const uint64_t measuredPump = pumpUs_.load();
-  const uint64_t pumpUs = measuredPump > 0
-                              ? (measuredPump > pace ? measuredPump - pace : 0)
-                              : (elapsed > pace ? elapsed - pace : 0);
+  uint64_t pumpUs = measuredPump > 0
+                        ? (measuredPump > pace ? measuredPump - pace : 0)
+                        : (elapsed > pace ? elapsed - pace : 0);
+  // Exclude the run's start-up (engine/presenter init, first frame wait) so `feed`
+  // is the playback's own compute, comparable between runs and routes.
+  const int64_t firstPaced = firstPacedUs_.load();
+  const int64_t pumpStart = pumpStartUs_.load();
+  if (firstPaced != 0 && pumpStart != 0 && firstPaced > pumpStart &&
+      static_cast<uint64_t>(firstPaced - pumpStart) < pumpUs) {
+    pumpUs -= static_cast<uint64_t>(firstPaced - pumpStart);
+  }
 
   const char* routeName = RouteName(static_cast<GfxReplayRoute>(route_.load()));
   const unsigned long long frames = static_cast<unsigned long long>(frames_.load());
@@ -533,28 +551,45 @@ void GfxReplay::RecordPresent(uint64_t micros) {
   presentUs_.fetch_add(micros);
 }
 
-void GfxReplay::PaceFrame(int64_t frameStartUs, bool presented) {
-  // Only frames that actually produced a picture are paced: the GFX stream
-  // carries many frame markers with no drawable update (management/ack frames,
-  // off-screen surfaces), and sleeping on every EndFrame made the replay run far
-  // slower than real time - dragging the reported fps down with it. An empty
-  // frame is allowed to pass through at pump speed. The deadline is anchored to
-  // the frame start so a slow frame never accumulates a sleep debt.
+void GfxReplay::PaceFrame(bool presented) {
+  // Give every presented frame a kFrameMs period: once the frame's own work
+  // (decode + command application + present) is done, sleep for the rest of the
+  // budget.
+  //
+  // Nothing is carried over between frames, on purpose. A frame that overruns keeps
+  // its longer period, and a frame that finishes early sleeps the remainder, so the
+  // reported fps / present / feed figures describe the playback as it actually
+  // happened. A "catch up on later frames" schedule would make the average reach the
+  // target while individual frames were still measured under a different (faster)
+  // cadence - exactly what a reference measurement must not do - and it does not
+  // make playback any smoother either.
+  //
+  // Only frames that produced a picture are paced: the stream carries many frame
+  // markers with no drawable update (management/ack frames, off-screen surfaces),
+  // and those must not spend a frame budget (work between two presented frames is
+  // still inside their period).
   if (!presented) {
     return;
   }
-  const int64_t target = frameStartUs + static_cast<int64_t>(kFrameMs) * 1000;
-  const int64_t before = NowUs();
-  if (target > before) {
-    std::this_thread::sleep_until(
-        std::chrono::steady_clock::time_point(std::chrono::microseconds(target)));
-    paceUs_.fetch_add(static_cast<uint64_t>(NowUs() - before));
+  const int64_t now = static_cast<int64_t>(NowUs());
+  if (lastFrameEndUs_ != 0) {
+    const int64_t target = lastFrameEndUs_ + static_cast<int64_t>(kFrameMs) * 1000;
+    if (target > now) {
+      std::this_thread::sleep_until(
+          std::chrono::steady_clock::time_point(std::chrono::microseconds(target)));
+      paceUs_.fetch_add(static_cast<uint64_t>(static_cast<int64_t>(NowUs()) - now));
+    }
+  }
+  lastFrameEndUs_ = static_cast<int64_t>(NowUs());
+  if (firstPacedUs_.load() == 0) {
+    // fps is measured from here, so the run's start-up is not counted as playback.
+    firstPacedUs_.store(lastFrameEndUs_);
   }
 }
 
 void GfxReplay::OnReplayFrame() {
-  const int64_t frameStartUs = NowUs();
-  if (frameStartUs - startUs_.load() > kMaxRunUs) {
+  const int64_t nowUs = static_cast<int64_t>(NowUs());
+  if (nowUs - startUs_.load() > kMaxRunUs) {
     HMRDP_LOGI("gfx replay: 120s cap reached");
     running_.store(false);
     return;
@@ -598,7 +633,7 @@ void GfxReplay::OnReplayFrame() {
     }
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
-  PaceFrame(frameStartUs, presented);
+  PaceFrame(presented);
 }
 
 void GfxReplay::Run() {
@@ -646,6 +681,8 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
   hmrdp::GfxReplayResetParseUs();
 
   const int64_t pumpStart = NowUs();
+  pumpStartUs_.store(pumpStart);
+
   bool ok = false;
   if (compare) {
     // gdi and the engine consume the capture interleaved per PDU, so the
@@ -713,6 +750,8 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   hmrdp::GfxReplayResetParseUs();
 
   const int64_t pumpStart = NowUs();
+  pumpStartUs_.store(pumpStart);
+
   const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error);
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
@@ -1029,8 +1068,8 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if (cpu == nullptr) {
     return;
   }
-  const int64_t frameStartUs = NowUs();
-  if (frameStartUs - startUs_.load() > kMaxRunUs) {
+  const int64_t nowUs = static_cast<int64_t>(NowUs());
+  if (nowUs - startUs_.load() > kMaxRunUs) {
     HMRDP_LOGI("gfx replay: 120s cap reached");
     running_.store(false);
     return;
@@ -1052,7 +1091,7 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
-  PaceFrame(frameStartUs, presented);
+  PaceFrame(presented);
 }
 
 }  // namespace hmrdp

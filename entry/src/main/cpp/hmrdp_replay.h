@@ -92,9 +92,11 @@ class GfxReplay {
   void RunVulkanReplay(const std::string& gfxPath, bool compare);
   void RunCpuReplay(const std::string& gfxPath);
   void CompareFrames();
-  // Throttles playback to ~60 Hz, but only for frames that actually produced a
-  // picture (see the implementation for why empty frame markers must not pace).
-  void PaceFrame(int64_t frameStartUs, bool presented);
+  // Throttles playback: every presented frame gets a kFrameMs period, so the
+  // frame's whole cost (decode + apply + present) is inside the budget. Nothing is
+  // carried between frames - an overrun keeps its longer period - which is what
+  // keeps the reported figures a faithful description of the playback.
+  void PaceFrame(bool presented);
 
   std::mutex mutex_;
   // Presenter for the CPU (gdi) route (Vulkan, or GLES on devices whose Vulkan
@@ -145,6 +147,16 @@ class GfxReplay {
   // Time spent deliberately sleeping in PaceFrame(); subtracted from pumpUs_ so
   // the reported feed cost is compute, not playback throttling.
   std::atomic<uint64_t> paceUs_{0};
+  // End of the last paced frame: the next frame's kFrameMs budget starts here
+  // (replay thread only).
+  int64_t lastFrameEndUs_ = 0;
+  // When the first paced frame ended: fps is measured from here, so the run's
+  // start-up (engine/presenter init, first-frame wait) does not count as playback
+  // time (replay thread writes, UI thread reads via StatsLines).
+  std::atomic<int64_t> firstPacedUs_{0};
+  // When the pump started, so the reported `feed` (compute) can exclude the run's
+  // start-up and mean "per-frame compute" (replay thread writes).
+  std::atomic<int64_t> pumpStartUs_{0};
   std::atomic<int64_t> startUs_{0};
   // Set when the replay loop ends, so Stats() keeps reporting the run's last
   // figures instead of letting fps/feed decay while the page sits idle.
