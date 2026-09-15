@@ -172,7 +172,13 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   窗口尺寸变化**不是**故障，也不要为"等尺寸稳定"去延迟创建或主动重建。
 - 两条后端的**共同约束**（与设备/分辨率无关）：只上传脏矩形；源行距可能被填充，所以要用调用方给的
   stride（GLES 侧配 `GL_UNPACK_ROW_LENGTH`）；通道顺序按目标面读出来的格式决定（屏幕面通常是 RGBA 序，
-  FreeRDP 给的是 BGRA，GLES 侧由 shader swizzle）；纹理/镜像重建后**首帧强制整幅**，否则其余部分会留空。
+  FreeRDP 给的是 BGRA）；纹理/镜像重建后**首帧强制整幅**，否则其余部分会留空。
+- **两条后端的分工必须完全一致**（否则就是一条快一条慢）：**CPU 只把脏区交出去一次，不做任何像素变换**
+  ——通道交换、缩放、letterbox 一律在 GPU 侧；`glTexSubImage2D`/staging 上传只做行拷贝。Vulkan 侧因此用
+  **一个小 quad（采样 + fragment shader 换通道序 + dynamic viewport 做 letterbox）**而不是
+  `vkCmdBlitImage`：blit 不能换通道序，在 CPU 上逐字节换序会把上屏变成瓶颈（这是实测过的反面做法）。
+- **host-visible staging 的 flush 只覆盖本帧写入的字节**（`size` = 实际写入量，不是 `VK_WHOLE_SIZE`）：
+  该缓冲会按见过的最大脏区增长，整块 flush 会把本帧没碰过的内存一起提交。
 - **不要再叠加 present-on-change**：静止态已由 FreeRDP 的失效区门控保证
   （`HmrdpBeginPaint` 把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion`
   才置 FALSE，`HandleEndPaint` 对 `null` 直接返回）——额外 `memcmp` 只增加内存/带宽开销。

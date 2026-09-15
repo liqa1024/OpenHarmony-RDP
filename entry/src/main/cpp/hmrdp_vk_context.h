@@ -136,6 +136,16 @@ struct VkApi {
   PFN_vkCreatePipelineLayout CreatePipelineLayout = nullptr;
   PFN_vkDestroyPipelineLayout DestroyPipelineLayout = nullptr;
   PFN_vkCreateComputePipelines CreateComputePipelines = nullptr;
+  // Graphics pipeline: the presenter draws the letterboxed picture with one quad
+  // (channel swap + scaling on the GPU), so it needs the graphics entry points
+  // too - no compute involved, hence they are resolved with the same
+  // opportunistic rule as the compute ones above.
+  PFN_vkCreateGraphicsPipelines CreateGraphicsPipelines = nullptr;
+  PFN_vkCreateSampler CreateSampler = nullptr;
+  PFN_vkDestroySampler DestroySampler = nullptr;
+  PFN_vkCmdSetViewport CmdSetViewport = nullptr;
+  PFN_vkCmdSetScissor CmdSetScissor = nullptr;
+  PFN_vkCmdDraw CmdDraw = nullptr;
   PFN_vkDestroyPipeline DestroyPipeline = nullptr;
   PFN_vkCreateDescriptorPool CreateDescriptorPool = nullptr;
   PFN_vkDestroyDescriptorPool DestroyDescriptorPool = nullptr;

@@ -33,11 +33,14 @@ endif()
 
 # <source file>|<C++ symbol>, e.g. "progressive.comp|Progressive". Each entry
 # yields a `k<Symbol>Spv[]` word array in <source file>.h (V3: the RemoteFX
-# Progressive decoder and its YCbCr->BGRA tile compositor).
+# Progressive decoder and its YCbCr->BGRA tile compositor; the presenter quad
+# does the channel swap + letterbox on the GPU - see hmrdp_vk_renderer.cpp).
 set(HMRDP_SHADERS
   "rfx_decode.comp|RfxDecode"
   "rfx_compose.comp|RfxCompose"
   "rfx_idwt.comp|RfxIdwt"
+  "present_quad.vert|PresentQuadVert"
+  "present_quad.frag|PresentQuadFrag"
 )
 
 set(HMRDP_SHADER_HEADERS "")

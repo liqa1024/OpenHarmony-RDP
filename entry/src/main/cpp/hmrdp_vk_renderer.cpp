@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <cstring>
 
+#include "present_quad.frag.h"
+#include "present_quad.vert.h"
+
 #include "hmrdp_log.h"
 
 namespace hmrdp {
@@ -469,6 +472,331 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
   return false;
 }
 
+bool VkRenderer::EnsurePresentPipelineLocked() {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE) {
+    error_ = "Vulkan device not available";
+    return false;
+  }
+  if (presentPipeline_ != VK_NULL_HANDLE && presentPipelineFormat_ == format_ &&
+      renderPass_ != VK_NULL_HANDLE) {
+    return true;
+  }
+  if (api.CreateGraphicsPipelines == nullptr || api.CreateSampler == nullptr ||
+      api.CmdSetViewport == nullptr || api.CmdDraw == nullptr) {
+    error_ = "graphics entry points missing";
+    return false;
+  }
+
+  if (sampler_ == VK_NULL_HANDLE) {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    // The picture is copied 1:1 when the sizes match and scaled otherwise; LINEAR
+    // matches the GLES presenter's texture filtering.
+    info.magFilter = VK_FILTER_LINEAR;
+    info.minFilter = VK_FILTER_LINEAR;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.maxLod = 0.0f;
+    if (api.CreateSampler(device, &info, nullptr, &sampler_) != VK_SUCCESS) {
+      error_ = "vkCreateSampler failed";
+      return false;
+    }
+  }
+
+  if (presentSetLayout_ == VK_NULL_HANDLE) {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binding.pImmutableSamplers = &sampler_;
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 1;
+    info.pBindings = &binding;
+    if (api.CreateDescriptorSetLayout(device, &info, nullptr, &presentSetLayout_) != VK_SUCCESS) {
+      error_ = "vkCreateDescriptorSetLayout (present) failed";
+      return false;
+    }
+  }
+
+  if (presentPipelineLayout_ == VK_NULL_HANDLE) {
+    VkPipelineLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info.setLayoutCount = 1;
+    info.pSetLayouts = &presentSetLayout_;
+    if (api.CreatePipelineLayout(device, &info, nullptr, &presentPipelineLayout_) != VK_SUCCESS) {
+      error_ = "vkCreatePipelineLayout (present) failed";
+      return false;
+    }
+  }
+
+  if (presentPool_ == VK_NULL_HANDLE) {
+    VkDescriptorPoolSize size{};
+    size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    size.descriptorCount = 1;
+    VkDescriptorPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info.maxSets = 1;
+    info.poolSizeCount = 1;
+    info.pPoolSizes = &size;
+    if (api.CreateDescriptorPool(device, &info, nullptr, &presentPool_) != VK_SUCCESS) {
+      error_ = "vkCreateDescriptorPool (present) failed";
+      return false;
+    }
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = presentPool_;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &presentSetLayout_;
+    if (api.AllocateDescriptorSets(device, &alloc, &presentSet_) != VK_SUCCESS) {
+      error_ = "vkAllocateDescriptorSets (present) failed";
+      return false;
+    }
+  }
+
+  VkShaderModule vert = VK_NULL_HANDLE;
+  VkShaderModule frag = VK_NULL_HANDLE;
+  VkShaderModuleCreateInfo shaderInfo{};
+  shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shaderInfo.codeSize = kPresentQuadVertSpvWords * sizeof(uint32_t);
+  shaderInfo.pCode = kPresentQuadVertSpv;
+  if (api.CreateShaderModule(device, &shaderInfo, nullptr, &vert) != VK_SUCCESS) {
+    error_ = "vkCreateShaderModule (present vert) failed";
+    return false;
+  }
+  shaderInfo.codeSize = kPresentQuadFragSpvWords * sizeof(uint32_t);
+  shaderInfo.pCode = kPresentQuadFragSpv;
+  if (api.CreateShaderModule(device, &shaderInfo, nullptr, &frag) != VK_SUCCESS) {
+    api.DestroyShaderModule(device, vert, nullptr);
+    error_ = "vkCreateShaderModule (present frag) failed";
+    return false;
+  }
+
+  // Whether the fragment shader has to swap R/B depends on the swapchain format
+  // (the uploaded bytes are always FreeRDP's BGRA order), so it is a
+  // specialization constant rather than a second shader.
+  const VkBool32 swapRb =
+      (format_ == VK_FORMAT_R8G8B8A8_UNORM || format_ == VK_FORMAT_R8G8B8A8_SRGB) ? VK_TRUE
+                                                                                  : VK_FALSE;
+  VkSpecializationMapEntry mapEntry{};
+  mapEntry.constantID = 0;
+  mapEntry.offset = 0;
+  mapEntry.size = sizeof(VkBool32);
+  VkSpecializationInfo spec{};
+  spec.mapEntryCount = 1;
+  spec.pMapEntries = &mapEntry;
+  spec.dataSize = sizeof(VkBool32);
+  spec.pData = &swapRb;
+
+  VkPipelineShaderStageCreateInfo stages[2] = {};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+  stages[1].pSpecializationInfo = &spec;
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+  // The letterbox rectangle is dynamic (it depends on the frame's dimensions), so
+  // viewport/scissor are dynamic state - the same role glViewport plays in the
+  // GLES presenter.
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.scissorCount = 1;
+  VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount = 2;
+  dynamicState.pDynamicStates = dynamicStates;
+
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.blendEnable = VK_FALSE;
+  blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo blend{};
+  blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  blend.attachmentCount = 1;
+  blend.pAttachments = &blendAttachment;
+
+  VkGraphicsPipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  info.stageCount = 2;
+  info.pStages = stages;
+  info.pVertexInputState = &vertexInput;
+  info.pInputAssemblyState = &inputAssembly;
+  info.pViewportState = &viewportState;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &multisample;
+  info.pColorBlendState = &blend;
+  info.pDynamicState = &dynamicState;
+  info.layout = presentPipelineLayout_;
+  info.renderPass = renderPass_;
+  info.subpass = 0;
+
+  if (presentPipeline_ != VK_NULL_HANDLE) {
+    api.DestroyPipeline(device, presentPipeline_, nullptr);
+    presentPipeline_ = VK_NULL_HANDLE;
+  }
+  const VkResult result =
+      api.CreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &presentPipeline_);
+  api.DestroyShaderModule(device, vert, nullptr);
+  api.DestroyShaderModule(device, frag, nullptr);
+  if (result != VK_SUCCESS) {
+    error_ = "vkCreateGraphicsPipelines (present): " + VkResultName(result);
+    HMRDP_LOGE("vulkan %{public}s", error_.c_str());
+    return false;
+  }
+  presentPipelineFormat_ = format_;
+  // The desktop image is created before the first pipeline, so its view could not
+  // be bound to the descriptor set back then (the set did not exist yet). Bind it
+  // now that both sides are up; a later image recreation rebinds it itself.
+  UpdatePresentDescriptorLocked();
+  return true;
+}
+
+void VkRenderer::DestroyPresentPipelineLocked() {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device != VK_NULL_HANDLE) {
+    if (presentPipeline_ != VK_NULL_HANDLE && api.DestroyPipeline != nullptr) {
+      api.DestroyPipeline(device, presentPipeline_, nullptr);
+    }
+    if (presentPool_ != VK_NULL_HANDLE && api.DestroyDescriptorPool != nullptr) {
+      api.DestroyDescriptorPool(device, presentPool_, nullptr);
+    }
+    if (presentPipelineLayout_ != VK_NULL_HANDLE && api.DestroyPipelineLayout != nullptr) {
+      api.DestroyPipelineLayout(device, presentPipelineLayout_, nullptr);
+    }
+    if (presentSetLayout_ != VK_NULL_HANDLE && api.DestroyDescriptorSetLayout != nullptr) {
+      api.DestroyDescriptorSetLayout(device, presentSetLayout_, nullptr);
+    }
+    if (sampler_ != VK_NULL_HANDLE && api.DestroySampler != nullptr) {
+      api.DestroySampler(device, sampler_, nullptr);
+    }
+  }
+  presentPipeline_ = VK_NULL_HANDLE;
+  presentPool_ = VK_NULL_HANDLE;
+  presentSet_ = VK_NULL_HANDLE;
+  presentPipelineLayout_ = VK_NULL_HANDLE;
+  presentSetLayout_ = VK_NULL_HANDLE;
+  sampler_ = VK_NULL_HANDLE;
+  presentPipelineFormat_ = VK_FORMAT_UNDEFINED;
+}
+
+void VkRenderer::UpdatePresentDescriptorLocked() {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE || presentSet_ == VK_NULL_HANDLE ||
+      desktopImageView_ == VK_NULL_HANDLE || sampler_ == VK_NULL_HANDLE) {
+    return;
+  }
+  VkDescriptorImageInfo imageInfo{};
+  imageInfo.sampler = sampler_;
+  imageInfo.imageView = desktopImageView_;
+  // The desktop image lives in GENERAL for its whole life (see the class comment).
+  imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  VkWriteDescriptorSet write{};
+  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  write.dstSet = presentSet_;
+  write.dstBinding = 0;
+  write.descriptorCount = 1;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  write.pImageInfo = &imageInfo;
+  api.UpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
+
+void VkRenderer::RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
+                                        uint32_t imageIndex) {
+  VkApi& api = GetVkApi();
+  if (presentPipeline_ == VK_NULL_HANDLE || presentSet_ == VK_NULL_HANDLE ||
+      renderPass_ == VK_NULL_HANDLE || imageIndex >= framebuffers_.size()) {
+    return;
+  }
+  // Letterbox: identical math to the GLES presenter's UpdateViewport().
+  const uint32_t dstW = extent_.width;
+  const uint32_t dstH = extent_.height;
+  const uint32_t srcW = static_cast<uint32_t>(srcWidth);
+  const uint32_t srcH = static_cast<uint32_t>(srcHeight);
+  int32_t offX = 0;
+  int32_t offY = 0;
+  uint32_t fitW = dstW;
+  uint32_t fitH = dstH;
+  if (srcW != dstW || srcH != dstH) {
+    const double scaleX = static_cast<double>(dstW) / static_cast<double>(srcW);
+    const double scaleY = static_cast<double>(dstH) / static_cast<double>(srcH);
+    const double scale = scaleX < scaleY ? scaleX : scaleY;
+    fitW = static_cast<uint32_t>(static_cast<double>(srcW) * scale);
+    fitH = static_cast<uint32_t>(static_cast<double>(srcH) * scale);
+    if (fitW < 1) fitW = 1;
+    if (fitH < 1) fitH = 1;
+    offX = (static_cast<int32_t>(dstW) - static_cast<int32_t>(fitW)) / 2;
+    offY = (static_cast<int32_t>(dstH) - static_cast<int32_t>(fitH)) / 2;
+  }
+
+  // The render pass clears the attachment, which paints the letterbox bars black -
+  // the same thing the GLES presenter's glClear does.
+  VkClearValue clear{};
+  clear.color.float32[0] = 0.0f;
+  clear.color.float32[1] = 0.0f;
+  clear.color.float32[2] = 0.0f;
+  clear.color.float32[3] = 1.0f;
+  VkRenderPassBeginInfo passBegin{};
+  passBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  passBegin.renderPass = renderPass_;
+  passBegin.framebuffer = framebuffers_[imageIndex];
+  passBegin.renderArea.offset = {0, 0};
+  passBegin.renderArea.extent = extent_;
+  passBegin.clearValueCount = 1;
+  passBegin.pClearValues = &clear;
+  api.CmdBeginRenderPass(cmd, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+  VkViewport viewport{};
+  viewport.x = static_cast<float>(offX);
+  viewport.y = static_cast<float>(offY);
+  viewport.width = static_cast<float>(fitW);
+  viewport.height = static_cast<float>(fitH);
+  viewport.maxDepth = 1.0f;
+  api.CmdSetViewport(cmd, 0, 1, &viewport);
+  VkRect2D scissor{};
+  scissor.offset = {offX, offY};
+  scissor.extent = {fitW, fitH};
+  api.CmdSetScissor(cmd, 0, 1, &scissor);
+
+  api.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline_);
+  api.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipelineLayout_, 0, 1,
+                           &presentSet_, 0, nullptr);
+  // One fullscreen triangle; the viewport/scissor above turn it into the picture
+  // rectangle.
+  api.CmdDraw(cmd, 3, 1, 0, 0);
+  api.CmdEndRenderPass(cmd);
+}
+
 bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   const bool match = desktopImage_ != VK_NULL_HANDLE && desktopImageWidth_ == width &&
                      desktopImageHeight_ == height && desktopImageFormat_ == format_;
@@ -496,7 +824,9 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  // TRANSFER_DST for the dirty-rect upload, SAMPLED for the present draw.
+  info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_SAMPLED_BIT;
   info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VkResult result = api.CreateImage(device, &info, nullptr, &desktopImage_);
@@ -538,6 +868,28 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   desktopImageWidth_ = width;
   desktopImageHeight_ = height;
   desktopImageFullUpload_ = true;
+
+  // The present draw samples the picture through this view; the descriptor has to
+  // be pointed at the new view whenever the image is (re)created.
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = desktopImage_;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = format_;
+  viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewInfo.subresourceRange.levelCount = 1;
+  viewInfo.subresourceRange.layerCount = 1;
+  result = api.CreateImageView(device, &viewInfo, nullptr, &desktopImageView_);
+  if (result != VK_SUCCESS) {
+    error_ = "vkCreateImageView (desktop): " + VkResultName(result);
+    DestroyDesktopImageLocked();
+    return false;
+  }
+  UpdatePresentDescriptorLocked();
   return true;
 }
 
@@ -546,6 +898,9 @@ void VkRenderer::DestroyDesktopImageLocked() {
   VkContext& context = VkContext::Instance();
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
+    if (desktopImageView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+      api.DestroyImageView(device, desktopImageView_, nullptr);
+    }
     if (desktopImage_ != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
       api.DestroyImage(device, desktopImage_, nullptr);
     }
@@ -553,6 +908,7 @@ void VkRenderer::DestroyDesktopImageLocked() {
       api.FreeMemory(device, desktopImageMemory_, nullptr);
     }
   }
+  desktopImageView_ = VK_NULL_HANDLE;
   desktopImage_ = VK_NULL_HANDLE;
   desktopImageMemory_ = VK_NULL_HANDLE;
   desktopImageFormat_ = VK_FORMAT_UNDEFINED;
@@ -718,41 +1074,46 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
       continue;
     }
 
+    // The present draw needs the swapchain format + the render pass, both ready
+    // once the swapchain is up; without it there is nothing to draw with.
+    if (!EnsurePresentPipelineLocked()) {
+      return false;
+    }
+
     const VkDevice device = context.device();
     // This slot's fence was just waited by AcquireFrameLocked and the slot has
     // not been re-submitted since, so its staging buffer is free to refill.
     const size_t rowBytes = static_cast<size_t>(rw) * 4u;
-    if (!EnsureStageLocked(rowBytes * static_cast<size_t>(rh))) {
+    const size_t stageBytes = rowBytes * static_cast<size_t>(rh);
+    if (!EnsureStageLocked(stageBytes)) {
       return false;
     }
-    // The swapchain may be RGBA8 while FreeRDP hands us BGRA; the channel order
-    // cannot be changed by a copy/blit, so it is swapped while filling the
-    // staging buffer (same rule as GfxVkDesktop's CPU boundaries).
-    const bool swapRb =
-        format_ == VK_FORMAT_R8G8B8A8_UNORM || format_ == VK_FORMAT_R8G8B8A8_SRGB;
+    // No CPU-side transform: the rows are copied verbatim and the channel order
+    // is fixed on the GPU by the presenter shader, exactly like the GLES
+    // presenter (which uploads the same bytes and swizzles in its fragment
+    // shader). A per-byte swap here cost more than the whole rest of the present.
     uint8_t* stage = static_cast<uint8_t*>(stageMapped_[frameIndex_]);
-    for (int row = 0; row < rh; ++row) {
-      const uint8_t* srcRow = data + static_cast<size_t>(ry + row) * static_cast<size_t>(srcStride) +
-                              static_cast<size_t>(rx) * 4u;
-      uint8_t* dstRow = stage + static_cast<size_t>(row) * rowBytes;
-      if (swapRb) {
-        for (int col = 0; col < rw; ++col) {
-          dstRow[col * 4 + 0] = srcRow[col * 4 + 2];
-          dstRow[col * 4 + 1] = srcRow[col * 4 + 1];
-          dstRow[col * 4 + 2] = srcRow[col * 4 + 0];
-          dstRow[col * 4 + 3] = srcRow[col * 4 + 3];
-        }
-      } else {
-        std::memcpy(dstRow, srcRow, rowBytes);
+    if (static_cast<size_t>(srcStride) == rowBytes) {
+      std::memcpy(stage, data + static_cast<size_t>(ry) * static_cast<size_t>(srcStride) +
+                             static_cast<size_t>(rx) * 4u,
+                  stageBytes);
+    } else {
+      for (int row = 0; row < rh; ++row) {
+        const uint8_t* srcRow =
+            data + static_cast<size_t>(ry + row) * static_cast<size_t>(srcStride) +
+            static_cast<size_t>(rx) * 4u;
+        std::memcpy(stage + static_cast<size_t>(row) * rowBytes, srcRow, rowBytes);
       }
     }
-    VkMappedMemoryRange range{};
-    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = stageMemories_[frameIndex_];
-    range.offset = 0;
-    range.size = VK_WHOLE_SIZE;
+    // Flush exactly what was written (the buffer grows to the largest dirty rect
+    // ever seen, so VK_WHOLE_SIZE would flush far more than this frame touched).
     // A no-op on coherent memory; required when the type is not coherent.
     if (api.FlushMappedMemoryRanges != nullptr) {
+      VkMappedMemoryRange range{};
+      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      range.memory = stageMemories_[frameIndex_];
+      range.offset = 0;
+      range.size = stageBytes;
       api.FlushMappedMemoryRanges(device, 1, &range);
     }
 
@@ -787,15 +1148,26 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     api.CmdCopyBufferToImage(cmd, stageBuffers_[frameIndex_], desktopImage_,
                              VK_IMAGE_LAYOUT_GENERAL, 1, &region);
 
-    // The upload is read by the blit below, in the same command buffer.
-    VkMemoryBarrier transferToTransfer{};
-    transferToTransfer.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    transferToTransfer.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    transferToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                           1, &transferToTransfer, 0, nullptr, 0, nullptr);
+    // The upload is read by the present draw below, in the same command buffer.
+    // An image barrier (layout stays GENERAL) states the dependency for the image
+    // subresource explicitly.
+    VkImageMemoryBarrier toSampled{};
+    toSampled.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toSampled.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSampled.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSampled.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSampled.image = desktopImage_;
+    toSampled.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toSampled.subresourceRange.levelCount = 1;
+    toSampled.subresourceRange.layerCount = 1;
+    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &toSampled);
 
-    RecordBlitLocked(cmd, desktopImage_, desktopWidth, desktopHeight, imageIndex);
+    RecordPresentQuadLocked(cmd, desktopWidth, desktopHeight, imageIndex);
     const bool presented = SubmitAndPresentLocked(cmd, imageIndex);
     if (presented) {
       desktopImageFullUpload_ = false;
@@ -1186,6 +1558,7 @@ void VkRenderer::DestroyFrameResourcesLocked() {
   VkContext& context = VkContext::Instance();
   const VkDevice device = context.device();
   DestroyStageLocked();
+  DestroyPresentPipelineLocked();
   // The render pass outlives individual swapchains, so it is released here (the
   // full teardown) rather than in DestroySwapchainLocked().
   if (device != VK_NULL_HANDLE && renderPass_ != VK_NULL_HANDLE &&

@@ -85,6 +85,17 @@ class VkRenderer : public FramePresenter {
                         uint32_t imageIndex);
   // Ends `cmd`, submits it with this frame slot's fence and presents the image.
   bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex);
+  // Present draw for CPU frames: the desktop picture is sampled and written to the
+  // swapchain image with the channel swap and the letterbox done on the GPU, i.e.
+  // the same division of labour as the GLES presenter's quad (no CPU-side pixel
+  // transform). The pipeline depends on the swapchain format and the render pass,
+  // so it is (re)created when that changes and reused across resizes.
+  bool EnsurePresentPipelineLocked();
+  void DestroyPresentPipelineLocked();
+  // Points the descriptor at the current desktop image view.
+  void UpdatePresentDescriptorLocked();
+  void RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
+                               uint32_t imageIndex);
   // CPU-frame path: keeps the persistent desktop image and the per-slot staging
   // buffers, and records one dirty-rect upload.
   bool EnsureDesktopImageLocked(int width, int height);
@@ -108,6 +119,17 @@ class VkRenderer : public FramePresenter {
   // rebuild (a resize is not a format change); this records what it was built
   // for, so it is only rebuilt when that actually changes.
   VkFormat renderPassFormat_ = VK_FORMAT_UNDEFINED;
+  // Present draw resources (CPU frames). The sampler, descriptor set layout and
+  // pipeline layout are format-independent; the pipeline itself is rebuilt only
+  // when the swapchain format changes.
+  VkSampler sampler_ = VK_NULL_HANDLE;
+  VkImageView desktopImageView_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout presentSetLayout_ = VK_NULL_HANDLE;
+  VkPipelineLayout presentPipelineLayout_ = VK_NULL_HANDLE;
+  VkDescriptorPool presentPool_ = VK_NULL_HANDLE;
+  VkDescriptorSet presentSet_ = VK_NULL_HANDLE;
+  VkPipeline presentPipeline_ = VK_NULL_HANDLE;
+  VkFormat presentPipelineFormat_ = VK_FORMAT_UNDEFINED;
   std::vector<VkImage> images_;
   std::vector<VkImageView> views_;
   std::vector<VkFramebuffer> framebuffers_;

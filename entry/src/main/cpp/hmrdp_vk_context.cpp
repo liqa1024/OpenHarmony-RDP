@@ -406,6 +406,15 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdPushConstants = ResolveDevice<PFN_vkCmdPushConstants>(gdpa, gipa, device, instance, "vkCmdPushConstants");
   CmdDispatch = ResolveDevice<PFN_vkCmdDispatch>(gdpa, gipa, device, instance, "vkCmdDispatch");
 
+  // Graphics: the presenter draws its letterboxed picture with one quad, so these
+  // are resolved the same opportunistic way (they are core Vulkan 1.0).
+  CreateGraphicsPipelines = ResolveDevice<PFN_vkCreateGraphicsPipelines>(gdpa, gipa, device, instance, "vkCreateGraphicsPipelines");
+  CreateSampler = ResolveDevice<PFN_vkCreateSampler>(gdpa, gipa, device, instance, "vkCreateSampler");
+  DestroySampler = ResolveDevice<PFN_vkDestroySampler>(gdpa, gipa, device, instance, "vkDestroySampler");
+  CmdSetViewport = ResolveDevice<PFN_vkCmdSetViewport>(gdpa, gipa, device, instance, "vkCmdSetViewport");
+  CmdSetScissor = ResolveDevice<PFN_vkCmdSetScissor>(gdpa, gipa, device, instance, "vkCmdSetScissor");
+  CmdDraw = ResolveDevice<PFN_vkCmdDraw>(gdpa, gipa, device, instance, "vkCmdDraw");
+
   return CreateSwapchainKHR != nullptr && AcquireNextImageKHR != nullptr &&
          QueuePresentKHR != nullptr && GetSwapchainImagesKHR != nullptr &&
          QueueSubmit != nullptr && CreateCommandPool != nullptr;
