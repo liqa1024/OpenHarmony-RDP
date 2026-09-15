@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #include "hmrdp_log.h"
 #include "hmrdp_vk_renderer.h"
@@ -27,14 +28,14 @@ constexpr uint32_t kMetaStride = 64;  // bytes per (tile,component) stream job
 // One tile is 64x64 pixels; the compositor dispatches one lane per tile pixel.
 constexpr uint32_t kTilePixels = 4096;
 
-// Dev (perf): which of a chunk's two dispatches to skip, so the GPU drain time
-// can be attributed to the decode or the YCbCr compose. A skipped dispatch
-// produces a wrong picture - this is a timing-only switch, never ship it on
-// (the doc_agent/gfx-engine.md §6 compare route stops being meaningful with it).
-//  0 = run both (correct), 1 = skip the compose, 2 = skip the tile decode.
-// Set through GpuVkSetPerfSkipDispatch() by the replay harness (a `*.perfskip`
-// file next to the capture), so one build can measure all three modes.
-int g_perfSkipDispatch = 0;
+
+// Both dev probes below measure a property of the *device*, not of the engine
+// instance: the replay page re-creates the engine on every route switch, and
+// re-probing each time only slows the start of a run down and adds noise to the
+// numbers. The first engine instance probes, the rest reuse the result.
+std::once_flag g_probeOnce;
+std::string g_hostMemoryProbe;
+uint64_t g_emptySubmitUs = 0;
 
 // YCbCr->BGRA fixed-point factors, matching FreeRDP prim_colors.c
 // (general_yCbCrToRGB_16s8u_P3AC4R_BGRX, divisor 16) and hmrdp_rfx.cpp.
@@ -382,6 +383,95 @@ struct GfxVkDesktop::Impl {
   uint64_t syncDrains = 0;
   uint64_t syncDrainUs = 0;
   uint64_t releaseUs = 0;
+
+  // --- Per-dispatch GPU time (dev perf) ------------------------------------
+  // A timestamp pair around each compute dispatch, read back after the fence
+  // wait. This is the honest way to attribute the GPU time: it changes nothing
+  // about what is executed (unlike a "skip this dispatch" switch, whose side
+  // effects also shift the work that follows it). Reported per kernel in Stats().
+  static constexpr uint32_t kTimestampsPerDispatch = 2;
+  static constexpr uint32_t kTimestampCapacity = 16384;  // queries (8192 brackets)
+  VkQueryPool timestampPool = VK_NULL_HANDLE;
+  double timestampNsPerTick = 0.0;
+  uint32_t timestampWrite = 0;
+  struct TimestampBracket {
+    uint32_t start = 0;
+    uint32_t slot = 0;  // 0 = RLGR decode, 1 = inverse DWT, 2 = compose, 3 = screen
+  };
+  std::vector<TimestampBracket> pendingTimestamps;
+  uint64_t gpuTicks[4] = {0, 0, 0, 0};
+  uint64_t gpuSamples[4] = {0, 0, 0, 0};
+  uint64_t gpuTimestampDrops = 0;
+
+  // Opens a GPU-time bracket around the dispatch that follows; returns the token
+  // to close (UINT32_MAX when timestamps are unavailable / the pool is full).
+  uint32_t TimestampOpen(uint32_t slot) {
+    if (timestampPool == VK_NULL_HANDLE || api().CmdWriteTimestamp == nullptr ||
+        timestampWrite + kTimestampsPerDispatch > kTimestampCapacity) {
+      if (timestampPool != VK_NULL_HANDLE) {
+        gpuTimestampDrops++;
+      }
+      return UINT32_MAX;
+    }
+    const uint32_t start = timestampWrite;
+    timestampWrite += kTimestampsPerDispatch;
+    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool,
+                            start);
+    TimestampBracket bracket;
+    bracket.start = start;
+    bracket.slot = slot;
+    pendingTimestamps.push_back(bracket);
+    return start;
+  }
+
+  void TimestampClose(uint32_t token) {
+    if (token == UINT32_MAX) {
+      return;
+    }
+    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool,
+                            token + 1);
+  }
+
+  // Called right after the fence wait: every query of the window has completed,
+  // so the results need no wait bit.
+  void CollectTimestamps() {
+    if (pendingTimestamps.empty()) {
+      timestampWrite = 0;
+      return;
+    }
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev == VK_NULL_HANDLE || vk.GetQueryPoolResults == nullptr) {
+      pendingTimestamps.clear();
+      timestampWrite = 0;
+      return;
+    }
+    const uint32_t first = pendingTimestamps.front().start;
+    const uint32_t count = timestampWrite - first;
+    std::vector<uint64_t> ticks(count, 0);
+    if (vk.GetQueryPoolResults(dev, timestampPool, first, count, ticks.size() * sizeof(uint64_t),
+                               ticks.data(), sizeof(uint64_t),
+                               VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+      for (const TimestampBracket& bracket : pendingTimestamps) {
+        const uint32_t local = bracket.start - first;
+        if (local + 1 >= count) {
+          continue;
+        }
+        const uint64_t begin = ticks[local];
+        const uint64_t end = ticks[local + 1];
+        if (end >= begin) {
+          gpuTicks[bracket.slot] += end - begin;
+          gpuSamples[bracket.slot]++;
+        }
+      }
+    }
+    pendingTimestamps.clear();
+    timestampWrite = 0;
+  }
+
+  double GpuMs(uint32_t slot) const {
+    return static_cast<double>(gpuTicks[slot]) * timestampNsPerTick / 1000000.0;
+  }
   // Compose decisions: distinguishes "nothing mapped" from "nothing dirty".
   uint64_t composeCopies = 0;
   uint64_t composeSkipUnmapped = 0;
@@ -452,7 +542,19 @@ struct GfxVkDesktop::Impl {
                static_cast<unsigned long long>(emptySubmitUs), done);
   }
 
-  void ProbeHostMemory() {    VkApi& vk = api();
+  void RunDeviceProbes() {
+    std::call_once(g_probeOnce, [this]() {
+      ProbeHostMemory();
+      ProbeSubmitCost();
+      g_hostMemoryProbe = hostMemoryProbe;
+      g_emptySubmitUs = emptySubmitUs;
+    });
+    hostMemoryProbe = g_hostMemoryProbe;
+    emptySubmitUs = g_emptySubmitUs;
+  }
+
+  void ProbeHostMemory() {
+    VkApi& vk = api();
     const VkDevice dev = device();
     if (dev == VK_NULL_HANDLE || vk.GetPhysicalDeviceMemoryProperties == nullptr) {
       return;
@@ -1151,6 +1253,13 @@ struct GfxVkDesktop::Impl {
       return false;
     }
     recording = true;
+    // The timestamp queries are read back right after the fence wait, so this
+    // window can start from a clean pool (doc_agent/gfx-engine.md §6).
+    pendingTimestamps.clear();
+    timestampWrite = 0;
+    if (timestampPool != VK_NULL_HANDLE && vk.CmdResetQueryPool != nullptr) {
+      vk.CmdResetQueryPool(commandBuffer, timestampPool, 0, kTimestampCapacity);
+    }
     return true;
   }
 
@@ -1291,6 +1400,9 @@ struct GfxVkDesktop::Impl {
     pendingDeviceWrites = true;
     computeInFlight = false;
     flushWaitUs += static_cast<uint64_t>(NowUs() - submitStart);
+    // The queries of this submission have completed, so their GPU times can be
+    // accumulated without a wait bit (doc_agent/gfx-engine.md §6).
+    CollectTimestamps();
     // The queue is idle now, so everything deferred while recording is safe to
     // destroy (and we are already recording a fresh command buffer).
     ReleasePending();
@@ -2114,9 +2226,9 @@ struct GfxVkDesktop::Impl {
       } dpush{streams, 0u, streams * 4096u};
       vk.CmdPushConstants(commandBuffer, decodePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                           sizeof(dpush), &dpush);
-      if (g_perfSkipDispatch != 2) {
-        vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
-      }
+        const uint32_t decodeToken = TimestampOpen(0);
+      vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
+      TimestampClose(decodeToken);
       pendingComputeWrites = true;
       computeInFlight = true;
 
@@ -2137,9 +2249,9 @@ struct GfxVkDesktop::Impl {
       } ipush{streams, 0u};
       vk.CmdPushConstants(commandBuffer, idwtPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ipush),
                           &ipush);
-      if (g_perfSkipDispatch != 2) {
-        vk.CmdDispatch(commandBuffer, streams, 1, 1);
-      }
+      const uint32_t idwtToken = TimestampOpen(1);
+      vk.CmdDispatch(commandBuffer, streams, 1, 1);
+      TimestampClose(idwtToken);
       pendingComputeWrites = true;
       computeInFlight = true;
 
@@ -2176,9 +2288,9 @@ struct GfxVkDesktop::Impl {
       } cpush{count, 0u, surfaceW, surfaceH, kKr, kKcrG, kKcbG, kKcbB, swapRb ? 1u : 0u};
       vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                           sizeof(cpush), &cpush);
-      if (g_perfSkipDispatch != 1) {
-        vk.CmdDispatch(commandBuffer, (count * kTilePixels + 63u) / 64u, 1, 1);
-      }
+        const uint32_t composeToken = TimestampOpen(2);
+      vk.CmdDispatch(commandBuffer, (count * kTilePixels + 63u) / 64u, 1, 1);
+      TimestampClose(composeToken);
       pendingComputeWrites = true;
       computeInFlight = true;
       rfxChunks++;
@@ -2356,14 +2468,32 @@ bool GfxVkDesktop::Init(VkFormat format) {
   } else {
     HMRDP_LOGW("vk desktop: progressive compute unavailable (pipeline creation failed)");
   }
+  // GPU timestamps (dev perf): per-dispatch GPU time with nothing skipped, so the
+  // workload is exactly the one that renders. Optional: without a timestamp period
+  // or the entry points the engine simply reports no per-kernel numbers.
+  if (api.CmdWriteTimestamp != nullptr && api.CreateQueryPool != nullptr &&
+      api.GetQueryPoolResults != nullptr && api.CmdResetQueryPool != nullptr &&
+      physProps.limits.timestampPeriod != 0.0f) {
+    VkQueryPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    poolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    poolInfo.queryCount = impl_->kTimestampCapacity;
+    if (api.CreateQueryPool(device, &poolInfo, nullptr, &impl_->timestampPool) == VK_SUCCESS) {
+      impl_->timestampNsPerTick = static_cast<double>(physProps.limits.timestampPeriod);
+    } else {
+      impl_->timestampPool = VK_NULL_HANDLE;
+    }
+  }
+  if (impl_->timestampPool == VK_NULL_HANDLE) {
+    HMRDP_LOGW("vk desktop: GPU timestamps unavailable; per-kernel timings disabled");
+  }
   // V4: ClearCodec read-modify-write on the CPU. Independent of the compute
   // pipeline; a failure just leaves ClearCodec in the unsupported path.
   impl_->clearDecoder = CreateFreeRdpClearDecoder();
   if (impl_->clearDecoder == nullptr) {
     HMRDP_LOGW("vk desktop: FreeRDP clear_decompress unavailable");
   }
-  impl_->ProbeHostMemory();
-  impl_->ProbeSubmitCost();
+  impl_->RunDeviceProbes();
   ready_ = true;
   HMRDP_LOGI("vk desktop: engine ready (V2 storage: host-visible buffers, rfxCompute=%{public}d, "
              "hostMem=%{public}s coherent=%{public}d atom=%{public}u)",
@@ -2397,6 +2527,11 @@ void GfxVkDesktop::Reset() {
   const int64_t afterCache = Impl::NowUs();
   impl_->DestroyImage(&impl_->screen);
   impl_->DestroyGpuBuffer(&impl_->coef);
+  if (device != VK_NULL_HANDLE && impl_->timestampPool != VK_NULL_HANDLE &&
+      api.DestroyQueryPool != nullptr) {
+    api.DestroyQueryPool(device, impl_->timestampPool, nullptr);
+    impl_->timestampPool = VK_NULL_HANDLE;
+  }
   impl_->DestroyStage();
   impl_->DestroyRfxResources();
   impl_->clearDecoder.reset();
@@ -3277,7 +3412,8 @@ std::string GfxVkDesktop::Stats() const {
       static_cast<unsigned long long>(impl_->releaseUs / 1000));
   char buf2[1536];
   std::snprintf(buf2, sizeof(buf2),
-                "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus perfSkip=%d"
+                "\n  gpuMs rlgr=%.1f idwt=%.1f compose=%.1f (samples %llu/%llu/%llu drops=%llu)"
+                "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus"
                 "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu"
                 "\n  alloc calls=%llu us=%llu (cache allocs=%llu)"
                 "\n  cpu bytes cache=%llu copy=%llu (overlap=%llu) cacheOps store=%llu restore=%llu"
@@ -3286,9 +3422,14 @@ std::string GfxVkDesktop::Stats() const {
                 "clearUnsup=%llu progFail=%llu progComposeSkip=%llu"
                 "\n  rfxParse regions=%llu simple=%llu diff=%llu nonExtrap=%llu skipTiles=%llu "
                 "errors=%llu originNonZero=%llu restamped=%llu multiRegion=%llu frameIdRepeats=%llu",
+                impl_->GpuMs(0), impl_->GpuMs(1), impl_->GpuMs(2),
+                static_cast<unsigned long long>(impl_->gpuSamples[0]),
+                static_cast<unsigned long long>(impl_->gpuSamples[1]),
+                static_cast<unsigned long long>(impl_->gpuSamples[2]),
+                static_cast<unsigned long long>(impl_->gpuTimestampDrops),
                 impl_->hostMemoryType.c_str(), impl_->hostCoherent ? 1 : 0,
                 static_cast<unsigned long long>(impl_->atomSize),
-                static_cast<unsigned long long>(impl_->emptySubmitUs), g_perfSkipDispatch,
+                static_cast<unsigned long long>(impl_->emptySubmitUs),
                 static_cast<unsigned long long>(impl_->composeCopies),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
                 static_cast<unsigned long long>(impl_->composeSkipClean),
@@ -3329,9 +3470,6 @@ std::string GfxVkDesktop::lastError() const {
   return ready() ? std::string() : std::string("vk desktop not ready");
 }
 
-void GpuVkSetPerfSkipDispatch(int mode) {
-  g_perfSkipDispatch = (mode < 0 || mode > 2) ? 0 : mode;
-}
 
 bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {
   if (engine == nullptr || renderer == nullptr) {

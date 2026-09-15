@@ -42,6 +42,41 @@ void coefSet(uint idx, int v) {
   else w = (w & 0x0000FFFFu) | (u << 16);
   coef.data[wi] = w;
 }
+// --- word-wise plane access -------------------------------------------------
+// The coefficient / state buffers hold two INT16 per 32-bit word, so touching one
+// entry at a time costs a read-modify-write per entry (a load *and* a store for
+// half a word). Every plane-wide pass below is therefore written a *word* at a
+// time: two coefficients per load/store, and full-word stores where the pass
+// overwrites both halves anyway. That is what makes the decode kernel's ~40k
+// global memory ops per stream shrink to ~14k (doc_agent/gfx-engine.md §3).
+void coefPutWord(uint wi, int lo, int hi) {
+  coef.data[wi] = (uint(lo) & 0xFFFFu) | ((uint(hi) & 0xFFFFu) << 16);
+}
+// Sequential emitter for the RLGR output, whose writes are one coefficient at a
+// time (zero runs and sparse values) but always in order.
+struct WordWriter { uint wi; uint lo; bool hasLo; };
+void wwInit(inout WordWriter w, uint base) { w.wi = base >> 1u; w.lo = 0u; w.hasLo = false; }
+void wwPut(inout WordWriter w, int v) {
+  uint u = uint(v) & 0xFFFFu;
+  if (!w.hasLo) {
+    w.lo = u;
+    w.hasLo = true;
+  } else {
+    coef.data[w.wi++] = w.lo | (u << 16);
+    w.hasLo = false;
+  }
+}
+void wwFlush(inout WordWriter w) {
+  if (w.hasLo) {
+    coef.data[w.wi++] = w.lo;
+    w.hasLo = false;
+  }
+}
+int sat16(int v) {
+  if (v > 32767) return 32767;
+  if (v < -32768) return -32768;
+  return v;
+}
 int curGet(uint idx) { uint w = cur.data[idx >> 1]; return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w); }
 void curSet(uint idx, int v) {
   uint wi = idx >> 1;
@@ -164,6 +199,8 @@ void rlgrDecode(uint payBase, uint payLen, uint outBase) {
   int k = 1; int kp = k << 3;
   int kr = 1; int krp = kr << 3;
   uint widx = 0u;
+  WordWriter ww;
+  wwInit(ww, outBase);
   while (brRemaining() > 0u && widx < 4096u) {
     if (k != 0) {
       uint run = 0u;
@@ -220,8 +257,8 @@ void rlgrDecode(uint payBase, uint payLen, uint outBase) {
       int mag = (sign != 0u) ? -(int(code) + 1) : (int(code) + 1);
       uint sz = run;
       if (widx + sz > 4096u) sz = 4096u - widx;
-      for (uint i = 0u; i < sz; i++) coefSet(outBase + widx++, 0);
-      if (widx < 4096u) coefSet(outBase + widx++, mag);
+      for (uint i = 0u; i < sz; i++) { wwPut(ww, 0); widx++; }
+      if (widx < 4096u) { wwPut(ww, mag); widx++; }
     } else {
       int cnt = lzcnt32(~brPeek());
       uint nbits = brRemaining();
@@ -251,10 +288,11 @@ void rlgrDecode(uint payBase, uint payLen, uint outBase) {
         kp -= 3; if (kp < 0) kp = 0; k = kp >> 3;
         mag = ((code & 1u) != 0u) ? -(int((code + 1u) >> 1)) : int(code >> 1);
       }
-      if (widx < 4096u) coefSet(outBase + widx++, mag);
+      if (widx < 4096u) { wwPut(ww, mag); widx++; }
     }
   }
-  while (widx < 4096u) coefSet(outBase + widx++, 0);
+  while (widx < 4096u) { wwPut(ww, 0); widx++; }
+  wwFlush(ww);
 }
 
 void dequantSub(uint base, uint off, uint len, int shift) {
@@ -462,7 +500,9 @@ void upgradeComponent(uint compBase, uint tempBase, uint stateBase, uint tileStr
     uint numBits = (ob > nb) ? (ob - nb) : 0u;
     upgradeBlock(false, kp, nz, mode, stateBase, kSubOff[9], kSubLen[9], nb, numBits);
   }
-  for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
+  for (uint wi = 0u; wi < 2048u; wi++) {
+    coef.data[(compBase >> 1u) + wi] = cur.data[(stateBase >> 1u) + wi];
+  }
   for (int b = 0; b < 10; b++) bitPosSet(tileStream, uint(b), newBit[b]);
 }
 
@@ -492,7 +532,12 @@ void main() {
 
   if (type == 0u) {
     rlgrDecode(payOff, payLen, compBase);
-    for (uint i = 0u; i < 4096u; i++) signSet(stateBase + i, coefGet(compBase + i));
+    // `sign` is the RLGR output verbatim (a straight INT16 copy) and the
+    // non-difference `current` is the dequantised plane verbatim, so both are
+    // word copies instead of a read-modify-write per coefficient.
+    for (uint wi = 0u; wi < 2048u; wi++) {
+      sgn.data[(stateBase >> 1u) + wi] = coef.data[(compBase >> 1u) + wi];
+    }
     dequantSub(compBase, 0u, 1023u, int(sh[0]));
     dequantSub(compBase, 1023u, 1023u, int(sh[1]));
     dequantSub(compBase, 2046u, 961u, int(sh[2]));
@@ -505,14 +550,20 @@ void main() {
     diffDecode(compBase, 4015u, 81u);
     dequantSub(compBase, 4015u, 81u, int(sh[9]));
     if ((flags & 1u) != 0u) {
-      for (uint i = 0u; i < 4096u; i++) {
-        int v = coefGet(compBase + i) + curGet(stateBase + i);
-        if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
-        coefSet(compBase + i, v);
-        curSet(stateBase + i, v);
+      // RFX_TILE_DIFFERENCE: saturating add of the plane and `current`, written
+      // back to both - two coefficients per word load/store.
+      for (uint wi = 0u; wi < 2048u; wi++) {
+        const uint cw = coef.data[(compBase >> 1u) + wi];
+        const uint sw = cur.data[(stateBase >> 1u) + wi];
+        const uint nw = (uint(sat16(i16lo(cw) + i16lo(sw))) & 0xFFFFu) |
+                        ((uint(sat16(i16hi(cw) + i16hi(sw))) & 0xFFFFu) << 16);
+        coef.data[(compBase >> 1u) + wi] = nw;
+        cur.data[(stateBase >> 1u) + wi] = nw;
       }
     } else {
-      for (uint i = 0u; i < 4096u; i++) curSet(stateBase + i, coefGet(compBase + i));
+      for (uint wi = 0u; wi < 2048u; wi++) {
+        cur.data[(stateBase >> 1u) + wi] = coef.data[(compBase >> 1u) + wi];
+      }
     }
     for (uint b = 0u; b < 10u; b++) bitPosSet(tileStream, b, newBit[b]);
   } else if (type == 3u) {
@@ -522,7 +573,9 @@ void main() {
     // with its persistent `current` coefficients, i.e. exactly
     // progressive_rfx_dwt_2d_decode(..., reverse = TRUE): copy `current` into the
     // scratch and run the inverse DWT. No payload, no state change.
-    for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
+    for (uint wi = 0u; wi < 2048u; wi++) {
+      coef.data[(compBase >> 1u) + wi] = cur.data[(stateBase >> 1u) + wi];
+    }
   } else {
     uint oldBit[10];
     for (uint b = 0u; b < 10u; b++) oldBit[b] = bitPosGet(tileStream, b);

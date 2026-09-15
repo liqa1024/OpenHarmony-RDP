@@ -117,6 +117,13 @@ struct VkApi {
   PFN_vkUnmapMemory UnmapMemory = nullptr;
   PFN_vkFlushMappedMemoryRanges FlushMappedMemoryRanges = nullptr;
   PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges = nullptr;
+  // GPU timestamps (dev perf attribution): per-dispatch GPU time without changing
+  // what is drawn, unlike a "skip this dispatch" switch.
+  PFN_vkCreateQueryPool CreateQueryPool = nullptr;
+  PFN_vkDestroyQueryPool DestroyQueryPool = nullptr;
+  PFN_vkCmdResetQueryPool CmdResetQueryPool = nullptr;
+  PFN_vkCmdWriteTimestamp CmdWriteTimestamp = nullptr;
+  PFN_vkGetQueryPoolResults GetQueryPoolResults = nullptr;
 
   // Compute (doc_agent/gfx-engine.md §1: the Progressive / RemoteFX decode runs in compute
   // shaders; ClearCodec deliberately stays on the CPU, §5 V4). Resolved

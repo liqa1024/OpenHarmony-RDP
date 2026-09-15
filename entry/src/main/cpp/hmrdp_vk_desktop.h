@@ -152,12 +152,6 @@ class GfxVkDesktop {
 // false when nothing was dirty (a static desktop must not present).
 bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer);
 
-// Dev (perf) only: which of a Progressive chunk's two dispatches to skip, so the
-// GPU drain time can be attributed to the tile decode or the YCbCr compose.
-// See the definition in hmrdp_vk_desktop.cpp - a skipped dispatch makes the
-// picture wrong, so this must stay 0 for any correctness run.
-void GpuVkSetPerfSkipDispatch(int mode);
-
 }  // namespace hmrdp
 
 #endif  // HMRDP_VK_DESKTOP_H

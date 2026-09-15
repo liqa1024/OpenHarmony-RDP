@@ -247,6 +247,7 @@ struct GfxReplayPage {
             this.startReplay();
           })
 
+
         Button(this.showStats ? '隐藏信息' : '显示信息')
           .height(34)
           .fontSize(13)

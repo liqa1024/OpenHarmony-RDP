@@ -203,15 +203,24 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
   1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本（§1）；
   2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返（实测 ~0.5ms）→ 用来区分"同步点固定开销"与
      "GPU 真的在跑"；没有它就会把 GPU 执行时间误判成同步开销；
-  3. `GpuVkSetPerfSkipDispatch(1|2)`（回放侧常量 `kPerfSkipDispatch`）：分别跳过 Progressive chunk 的
-     YCbCr compose / tile decode，用 `syncDrain` 差值把 GPU 时间拆到两条 dispatch 上。
-     **它会让画面变错**，只在量测时开，量完必须复位 0。
+3. **每条 dispatch 的 GPU 时间靠 timestamp query 直接量**（`rfx_decode`/`rfx_idwt`/`rfx_compose` 各一对
+   `vkCmdWriteTimestamp`，fence 等待后 `vkGetQueryPoolResults` 读回，统计在引擎 `Stats()` 的 `gpuMs …` 行）。
+   **不要用"跳过某条 dispatch + 差值反推"**：跳过会改变后续数据相关的负载与依赖，实测偏差极大
+   （同一份捕获：跳差值给 5.68s/3.11s/0.08s，timestamp 实测 7.22s/2.33s/0.15s），而且会渲染出花屏、容易被误判为回归。
 - 归因：需要"是哪条命令分叉"时，开 harness 的逐命令 A/B（见 [`build-and-verify.md`](build-and-verify.md)
   与源码里 `kCodecAbEnabled` 的注释）。**它是诊断工具**：开启后要按命令回读引擎表面，
   GLES 路线会慢到像卡死 ⇒ 只在对某条消息归因时开、查完立刻关（`bad=0` 的验收不依赖它）。
   **判定分叉只以 gdi 自己的表面为准**（历史上用手写镜像做过对比，它会误报）。
-- **采集内容与格式**：单文件 `hmrdp_gfx.bin`，存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节
-  （每条 = `u32 长度` + 原始字节）；采集点在 `rdpgfx_on_data_received` 的 `zgfx_decompress` 之前，
+- **量测纪律（否则数字不可比）**：
+  - 回放页的「路线 / 批次 / 重新回放」按钮内部都是 `stopReplayTest()` + 重新 `start`，**在一轮还没跑完时点击
+    等于把那一轮掐断**；性能数字只取 `(running=0)` 的**整轮**（整份捕获一律 `frames=490 presents=487`）。
+  - 判定"跑完"要**轮询** `replayTestStats` 文本里的 `(running=0)`，不要用固定 sleep：早取会拿到中途值，
+    晚取白等。
+  - `uitest dumpLayout` 的输出**不是合法 JSON**（部分字符串编码后 `ConvertFrom-Json` 会报错），
+    用正则抓 `route=…(running=N)` 这类文本即可。
+  - 性能探针（`ProbeHostMemory` / `ProbeSubmitCost`）是**进程内一次**（`RunDeviceProbes` 的 `call_once`）：
+    每次切路线都会重建引擎，逐次重探只会拖慢启动并给数字加噪声。
+- **采集内容与格式**：单文件 `hmrdp_gfx.bin`，存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节  （每条 = `u32 长度` + 原始字节）；采集点在 `rdpgfx_on_data_received` 的 `zgfx_decompress` 之前，
   由 FreeRDP 补丁以运行期回调注册（见 [`native-libraries.md`](native-libraries.md) §3.7）。
   录制文件**不入库**：设备端在应用沙箱，本地副本放 gitignore 目录。dev 的抓取开关与
   「硬件解码」有联动（录制期间走软解），见设置页实现。

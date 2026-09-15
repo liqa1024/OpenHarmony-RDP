@@ -123,8 +123,7 @@ class GfxReplay {
   std::atomic<int> route_{0};
   int surfaceW_ = 0;
   int surfaceH_ = 0;
-  std::atomic<int> pendingW_{0};
-  std::atomic<int> pendingH_{0};
+  std::atomic<int> pendingW_{0};  std::atomic<int> pendingH_{0};
   std::atomic<uint64_t> frames_{0};
   std::atomic<uint64_t> presents_{0};
   // EndFrame markers that produced no present because the engine had nothing

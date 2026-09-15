@@ -704,8 +704,7 @@ napi_value ResizeGfxReplayTest(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {
-  (void)info;
+napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {  (void)info;
   // Multi-line form for the on-device performance panel; the log keeps the
   // single-line variant so one record carries the whole summary.
   const std::string lines = hmrdp::GfxReplay::Instance().StatsLines();
@@ -730,6 +729,7 @@ napi_value SetGfxReplayBatchArea(napi_env env, napi_callback_info info) {
   HMRDP_LOGI("gfx replay: clear batch area = %{public}d px", pixels);
   return CreateUndefined(env);
 }
+
 
 // Dev/test (doc_agent/gfx-engine.md §1): the capability report - loader/device
 // versions, the migration-relevant extensions, memory types and queue families.
@@ -811,9 +811,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setGfxReplayBatchArea", nullptr, SetGfxReplayBatchArea, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"setGfxReplayBatchArea", nullptr, SetGfxReplayBatchArea, nullptr, nullptr, nullptr,
+     napi_default, nullptr},      {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
    };
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

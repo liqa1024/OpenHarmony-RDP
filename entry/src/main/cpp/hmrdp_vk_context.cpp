@@ -381,8 +381,12 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   BindBufferMemory = ResolveDevice<PFN_vkBindBufferMemory>(gdpa, gipa, device, instance, "vkBindBufferMemory");
   MapMemory = ResolveDevice<PFN_vkMapMemory>(gdpa, gipa, device, instance, "vkMapMemory");
   UnmapMemory = ResolveDevice<PFN_vkUnmapMemory>(gdpa, gipa, device, instance, "vkUnmapMemory");
-  FlushMappedMemoryRanges = ResolveDevice<PFN_vkFlushMappedMemoryRanges>(gdpa, gipa, device, instance, "vkFlushMappedMemoryRanges");
-  InvalidateMappedMemoryRanges = ResolveDevice<PFN_vkInvalidateMappedMemoryRanges>(gdpa, gipa, device, instance, "vkInvalidateMappedMemoryRanges");
+  FlushMappedMemoryRanges = ResolveDevice<PFN_vkFlushMappedMemoryRanges>(gdpa, gipa, device, instance, "vkFlushMappedMemoryRanges");  InvalidateMappedMemoryRanges = ResolveDevice<PFN_vkInvalidateMappedMemoryRanges>(gdpa, gipa, device, instance, "vkInvalidateMappedMemoryRanges");
+  CreateQueryPool = ResolveDevice<PFN_vkCreateQueryPool>(gdpa, gipa, device, instance, "vkCreateQueryPool");
+  DestroyQueryPool = ResolveDevice<PFN_vkDestroyQueryPool>(gdpa, gipa, device, instance, "vkDestroyQueryPool");
+  CmdResetQueryPool = ResolveDevice<PFN_vkCmdResetQueryPool>(gdpa, gipa, device, instance, "vkCmdResetQueryPool");
+  CmdWriteTimestamp = ResolveDevice<PFN_vkCmdWriteTimestamp>(gdpa, gipa, device, instance, "vkCmdWriteTimestamp");
+  GetQueryPoolResults = ResolveDevice<PFN_vkGetQueryPoolResults>(gdpa, gipa, device, instance, "vkGetQueryPoolResults");
   // Compute: optional (a device without it just keeps the transfer-only engine).
   CreateShaderModule = ResolveDevice<PFN_vkCreateShaderModule>(gdpa, gipa, device, instance, "vkCreateShaderModule");
   DestroyShaderModule = ResolveDevice<PFN_vkDestroyShaderModule>(gdpa, gipa, device, instance, "vkDestroyShaderModule");

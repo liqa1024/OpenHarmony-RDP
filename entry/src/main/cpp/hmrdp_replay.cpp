@@ -768,19 +768,6 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
   std::unique_ptr<ReplayDesktop> desktop =
       vulkan ? std::unique_ptr<ReplayDesktop>(new VulkanReplayDesktop())
              : std::unique_ptr<ReplayDesktop>(new GlesReplayDesktop());
-  // Dev (perf) attribution: which of a Progressive chunk's two dispatches to skip
-  // so the GPU drain time can be split between the tile decode and the YCbCr
-  // compose (see GpuVkSetPerfSkipDispatch). Flip and rebuild to measure - the app
-  // sandbox is not writable from the host, so a sidecar file is not an option.
-  // Must stay 0 for any correctness run: a skipped dispatch breaks the picture.
-  constexpr int kPerfSkipDispatch = 0;
-  if (vulkan) {
-    hmrdp::GpuVkSetPerfSkipDispatch(kPerfSkipDispatch);
-    if (kPerfSkipDispatch != 0) {
-      HMRDP_LOGW("gfx replay: perfSkip=%{public}d (picture will be wrong; timing only)",
-                 kPerfSkipDispatch);
-    }
-  }
   std::string error;
   if (!desktop->Init(window_, surfaceW_, surfaceH_, g_clearBatchArea.load(), &error)) {
     std::lock_guard<std::mutex> err(errorMutex_);
