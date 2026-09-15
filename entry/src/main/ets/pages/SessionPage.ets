@@ -12,6 +12,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
+import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
@@ -250,7 +251,11 @@ struct SessionPage {
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
-    RdpNative.applyHardwareDecode(settings.hardwareDecode);
+    // Never ask for GPU decoding on a device whose engine cannot run (the
+    // settings page already forces the stored value off; this covers a config
+    // imported from another device).
+    RdpNative.applyHardwareDecode(settings.hardwareDecode
+      && DeviceCapabilities.hardwareDecode().supported);
     let filesDir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();

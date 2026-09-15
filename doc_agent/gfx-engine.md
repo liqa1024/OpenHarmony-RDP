@@ -271,8 +271,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）与
   **视频录像的正确性残留**：单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
-- **UI 收尾**：模拟器上置灰「硬件解码」与 GPU 回放入口（`DeviceCapabilities` 的 Capability 模式，
-  给出原因），见 [`native-libraries.md`](native-libraries.md) §6。
+- **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——
+  「硬件解码」已完成（`DeviceCapabilities.hardwareDecode()`，见
+  [`native-libraries.md`](native-libraries.md) §6）。
 - **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi +
   `VkRenderer::PresentBgraFrame`）。届时「硬件解码（RFX）」设置项才真正生效（是否可用的判据取
   `vulkanInfo` / `GetVulkanCapabilities()`）；在此之前它只是被保留、不参与决策。

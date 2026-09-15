@@ -470,6 +470,52 @@ std::string VkResultName(int32_t result) {
   return std::string(buf);
 }
 
+namespace {
+
+// Derives the GPU-engine verdict from the probed facts. Kept separate from
+// ProbeVulkan() so every early return (no loader / no device) still gets a
+// verdict, and so there is exactly one place that decides what "supported"
+// means for the engine.
+void FillEngineVerdict(VulkanCapabilities* caps) {
+  if (caps == nullptr) {
+    return;
+  }
+  caps->engineSupported = false;
+  caps->engineUnsupportedCode.clear();
+
+  // GPU acceleration is a real-device-only feature (see AGENTS.md): the emulator
+  // reports standard Vulkan capabilities it does not honour, so probing cannot
+  // exclude it. The emulator package is the x86_64 build (product `emulator`),
+  // which makes the target ABI the reliable signal.
+#if defined(__x86_64__)
+  caps->engineUnsupportedCode = "emulator";
+#else
+  if (!caps->loaderPresent) {
+    caps->engineUnsupportedCode = "no-vulkan";
+  } else if (!caps->instanceOk) {
+    caps->engineUnsupportedCode = "no-instance";
+  } else if (!caps->deviceFound) {
+    caps->engineUnsupportedCode = "no-device";
+  } else if (!caps->hasGraphicsComputeQueue) {
+    // The Progressive decode is a compute dispatch; without a graphics+compute
+    // queue family the engine could only run the transfer-only subset.
+    caps->engineUnsupportedCode = "no-compute";
+  } else if (!caps->memHostVisible) {
+    // Surfaces and bitmap-cache entries are persistent host-visible buffers.
+    caps->engineUnsupportedCode = "no-host-memory";
+  } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
+    caps->engineUnsupportedCode = "no-surface";
+  } else {
+    caps->engineSupported = true;
+  }
+#endif
+  HMRDP_LOGI("vulkan engine: supported=%d reason=%{public}s",
+             caps->engineSupported ? 1 : 0,
+             caps->engineUnsupportedCode.empty() ? "-" : caps->engineUnsupportedCode.c_str());
+}
+
+}  // namespace
+
 std::string VulkanCapabilities::Describe() const {
   if (!loaderPresent) {
     return "vulkan: unavailable (libvulkan.so: " + loadError + ")";
@@ -518,14 +564,20 @@ std::string VulkanCapabilities::DescribeLines() const {
          " transfer=" + std::to_string(transferQueueFamilies) +
          " gfxCompute=" + std::string(hasGraphicsComputeQueue ? "1" : "0") +
          " dedicatedCompute=" + std::string(hasDedicatedComputeQueue ? "1" : "0") + "\n";
-  out += "  device ext: " + deviceExtensions;
+  out += "  device ext: " + deviceExtensions + "\n";
+  out += "  engine " + (engineSupported
+                            ? std::string("supported")
+                            : ("unsupported (" + engineUnsupportedCode + ")"));
   return out;
 }
 
 const VulkanCapabilities& GetVulkanCapabilities() {
   static std::once_flag once;
   static VulkanCapabilities caps;
-  std::call_once(once, []() { caps = ProbeVulkan(); });
+  std::call_once(once, []() {
+    caps = ProbeVulkan();
+    FillEngineVerdict(&caps);
+  });
   return caps;
 }
 

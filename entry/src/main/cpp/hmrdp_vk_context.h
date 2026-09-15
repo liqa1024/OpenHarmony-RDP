@@ -212,6 +212,19 @@ struct VulkanCapabilities {
   // One-line summary (logs) and a multi-line variant (dev panel).
   std::string Describe() const;
   std::string DescribeLines() const;
+
+  // --- GPU engine verdict (hardware decode / GPU replay) --------------------
+  // Whether the Vulkan desktop engine can run on this device, filled by the
+  // probe (FillEngineVerdict) together with the other facts. What the live
+  // takeover needs is exactly this: a usable device, a queue family that can run
+  // the decode compute dispatches, host-visible memory for the surface/cache
+  // buffers, and a surface + swapchain to present to.
+  //
+  // `engineUnsupportedCode` is a short stable token, so the UI layer owns the
+  // wording: "no-vulkan" / "no-instance" / "no-device" / "no-compute" /
+  // "no-host-memory" / "no-surface" / "emulator". It is empty when supported.
+  bool engineSupported = false;
+  std::string engineUnsupportedCode;
 };
 
 // Cached capability probe. Brings up a short-lived VkInstance (reusing the shared

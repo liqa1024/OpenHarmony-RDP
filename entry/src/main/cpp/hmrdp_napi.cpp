@@ -709,6 +709,19 @@ napi_value VulkanInfo(napi_env env, napi_callback_info) {
   return result;
 }
 
+// Whether the GPU (Vulkan) engine can run on this device - the capability behind
+// the "硬件解码（RFX）" setting. Returns "1", or "0|<code>" with a stable code so
+// the UI layer owns the wording (see VulkanCapabilities::engineUnsupportedCode).
+napi_value VulkanEngineSupport(napi_env env, napi_callback_info) {
+  const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
+  const std::string out =
+      caps.engineSupported ? std::string("1") : ("0|" + caps.engineUnsupportedCode);
+  HMRDP_LOGI("vulkan engine support: %{public}s", out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -777,6 +790,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"vulkanEngineSupport", nullptr, VulkanEngineSupport, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
   };
 
 

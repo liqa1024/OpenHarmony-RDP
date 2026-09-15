@@ -84,5 +84,13 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - ArkTS 侧在 `services/DeviceCapabilities.ets` 暴露 `Capability{supported, reason}`；
 - UI 上**置灰**该开关并显示原因。
 
-已用此模式的：音频重定向。**待补**：模拟器上置灰「硬件解码」与 GPU 回放入口
+已用此模式的：音频重定向、**硬件解码（RFX）**。**待补**：GPU 回放入口的置灰
 （硬件加速是"真机专属"，见 [`gfx-engine.md`](gfx-engine.md)）。
+
+硬件解码的判据由原生侧给出（`vulkanEngineSupport()`，取自 `VulkanCapabilities::engineSupported`）：
+设备可用 + 有 **graphics+compute** 队列族（Progressive 解码是 compute dispatch）+ 有 **host-visible** 内存
+（表面/缓存是常驻映射缓冲）+ 有 **VK_OHOS_surface 与 VK_KHR_swapchain**（上屏）；另外**模拟器包
+（x86_64 构建）一律判定不支持**——模拟器会按标准接口谎报能力，能力探测排除不掉它，这与
+"GPU 只在真机验证"的口径一致。原生只回**稳定原因码**（`no-vulkan`/`no-instance`/`no-device`/
+`no-compute`/`no-host-memory`/`no-surface`/`emulator`），中文文案由 `DeviceCapabilities.hardwareDecode()`
+负责；不支持时设置页置灰开关并显示原因，并把已存的值纠正为关。

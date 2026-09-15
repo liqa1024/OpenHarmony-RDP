@@ -78,6 +78,8 @@ struct SettingsPage {
   @State enableGfx: boolean = true;
   @State ignoreCertificate: boolean = true;
   @State hardwareDecode: boolean = true;
+  @State hardwareDecodeSupported: boolean = true;
+  private hardwareDecodeReason: string = '';
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State rfxDump: boolean = false;
   @State mainWidthText: string = '';
@@ -114,6 +116,9 @@ struct SettingsPage {
     const audioCapability: Capability = DeviceCapabilities.audio();
     this.audioSupported = audioCapability.supported;
     this.audioDisabledReason = audioCapability.reason;
+    const hwCapability: Capability = DeviceCapabilities.hardwareDecode();
+    this.hardwareDecodeSupported = hwCapability.supported;
+    this.hardwareDecodeReason = hwCapability.reason;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
@@ -139,15 +144,20 @@ struct SettingsPage {
     // "on" value so the setting matches the greyed-out switch.
     this.enableAudio = this.audioSupported ? settings.enableAudio : false;
     this.enableGfx = settings.enableGfx;
-    this.hardwareDecode = settings.hardwareDecode;
+    // An unsupported device never asks for GPU decoding; drop a previously stored
+    // "on" value so the setting matches the greyed-out switch.
+    this.hardwareDecode = this.hardwareDecodeSupported ? settings.hardwareDecode : false;
     this.ignoreCertificate = settings.ignoreCertificate;
     this.rfxDump = settings.rfxDump;
-    RdpNative.applyHardwareDecode(this.hardwareDecode);
+    RdpNative.applyHardwareDecode(this.hardwareDecode && this.hardwareDecodeSupported);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(settings.sessionWindowHeight);
     if (!this.audioSupported && settings.enableAudio) {
+      this.persist();
+    }
+    if (!this.hardwareDecodeSupported && settings.hardwareDecode) {
       this.persist();
     }
   }
@@ -930,12 +940,15 @@ struct SettingsPage {
             this.toggleItem({
               title: '硬件解码（RFX）',
               subtitle: '优先把 RemoteFX 解码放到 GPU；关闭则用 CPU 软解',
-              // Recording turns this off (see the capture toggle below), so it is
-              // locked while the capture is on.
+              // Locked while the capture is on (recording needs the soft decoder)
+              // and on devices whose GPU engine cannot run (see
+              // DeviceCapabilities.hardwareDecode).
               value: this.hardwareDecode,
-              enabled: !this.rfxDump,
-              disabledReason: this.rfxDump
-                ? '已开启码流抓取：录制需走 RFX 软解（gdi），硬件解码已自动关闭' : '',
+              enabled: this.hardwareDecodeSupported && !this.rfxDump,
+              disabledReason: !this.hardwareDecodeSupported
+                ? this.hardwareDecodeReason
+                : (this.rfxDump
+                  ? '已开启码流抓取：录制需走 RFX 软解（gdi），硬件解码已自动关闭' : ''),
               onChange: (v: boolean) => {
                 this.hardwareDecode = v;
                 this.persist();

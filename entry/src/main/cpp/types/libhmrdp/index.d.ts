@@ -100,3 +100,11 @@ export const gfxReplayTestStats: () => string;
  * for the dev panel. Used to judge whether a device can run the Vulkan engine.
  */
 export const vulkanInfo: () => string;
+
+/**
+ * Whether the GPU (Vulkan) engine can run on this device - the capability behind
+ * the "硬件解码（RFX）" setting. Returns "1", or "0|<code>" with a stable code:
+ * `no-vulkan` / `no-instance` / `no-device` / `no-compute` / `no-host-memory` /
+ * `no-surface` / `emulator`. The UI layer maps the code to its own wording.
+ */
+export const vulkanEngineSupport: () => string;
