@@ -367,7 +367,8 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
 
 bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
                             const std::function<void()>& onFrame, RdpgfxClientContext* gfxB,
-                            const std::function<void()>& onSync, const std::atomic<bool>* stop,
+                            const std::function<void()>& onSync,
+                            const std::function<void()>& onChunk, const std::atomic<bool>* stop,
                             std::string* error) {
   auto fail = [error](const char* why) {
     if (error != nullptr) {
@@ -405,6 +406,11 @@ bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
   const uint8_t* data = nullptr;
   uint32_t size = 0;
   while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
+    // Both consumers are quiescent on the previous chunk here, so this is where
+    // a deferred per-command comparison of their states belongs.
+    if (onChunk) {
+      onChunk();
+    }
     sawFrame = false;
     HmrdpGfxReplayRecv(gfxA, data, size);
     HmrdpGfxReplayRecv(gfxB, data, size);
@@ -414,6 +420,10 @@ bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
     if (sawFrame && onSync) {
       onSync();
     }
+  }
+  // Flush the last chunk's deferred comparisons too.
+  if (onChunk) {
+    onChunk();
   }
   HmrdpGfxReplayFree(gfxA);
   return true;

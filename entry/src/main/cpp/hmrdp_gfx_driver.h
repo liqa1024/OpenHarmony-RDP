@@ -92,9 +92,13 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
 // `onSync` is invoked after both consumed a chunk *and* that chunk contained an
 // EndFrame - the two decoders are then at the same stream position and both have
 // composed, which is the only point where a pixel comparison is valid.
+// `onChunk` is invoked at the top of every chunk, i.e. while `gfxB` and the sink
+// are both quiescent on the *previous* chunk (gfxB is fed one chunk behind the
+// sink, so that is the only moment their states can be compared per command).
 bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
                             const std::function<void()>& onFrame, RdpgfxClientContext* gfxB,
-                            const std::function<void()>& onSync, const std::atomic<bool>* stop,
+                            const std::function<void()>& onSync,
+                            const std::function<void()>& onChunk, const std::atomic<bool>* stop,
                             std::string* error);
 
 }  // namespace hmrdp

@@ -69,8 +69,35 @@ rdpGdi* GfxCpuDesktop::gdi() const {
   return instance_->context->gdi;
 }
 
-bool GfxCpuDesktop::Init(int width, int height, std::string* error) {
-  auto fail = [this, error](const char* why) {
+const uint8_t* GfxCpuDesktop::SurfaceData(uint16_t surfaceId, int* width, int* height, int* stride,
+                                         uint32_t* format) const {
+  if (gfx_ == nullptr || gfx_->GetSurfaceData == nullptr) {
+    return nullptr;
+  }
+  void* data = gfx_->GetSurfaceData(gfx_, surfaceId);
+  if (data == nullptr) {
+    return nullptr;
+  }
+  const gdiGfxSurface* surface = static_cast<const gdiGfxSurface*>(data);
+  if (surface->data == nullptr || surface->width == 0 || surface->height == 0) {
+    return nullptr;
+  }
+  if (width != nullptr) {
+    *width = static_cast<int>(surface->width);
+  }
+  if (height != nullptr) {
+    *height = static_cast<int>(surface->height);
+  }
+  if (stride != nullptr) {
+    *stride = static_cast<int>(surface->scanline);
+  }
+  if (format != nullptr) {
+    *format = surface->format;
+  }
+  return surface->data;
+}
+
+bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail = [this, error](const char* why) {
     if (error != nullptr) {
       *error = why;
     }

@@ -83,7 +83,7 @@ namespace {
 
 constexpr int kFrameMs = 16;                      // ~60 Hz playback target
 constexpr int kLogEvery = 120;
-constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap
+constexpr int64_t kMaxRunUs = 900ll * 1000000ll;  // safety cap (debug: A/B slows the pump)
 constexpr int kStartWaitUs = 3000000;
 // Compare route: sample a full-screen readback every N frames (same idea as the
 // live shadow check - reading the engine screen back is expensive).
@@ -92,7 +92,7 @@ constexpr uint64_t kCompareEvery = 30;
 // engine's whole surface once per Progressive message / ClearCodec band, which
 // costs ~26 MB per command and drags the replay well past real time. Flip to
 // true when a decoder divergence has to be pinned to a message.
-constexpr bool kCodecAbEnabled = false;
+constexpr bool kCodecAbEnabled = true;
 
 // ClearCodec batch granularity for the GLES route (union-rectangle pixel cap).
 // Configurable so the sync-count vs mapped-bytes trade-off can be measured on
@@ -839,7 +839,7 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
   if (compare) {
     ok = GfxReplayStreamCompare(
         gfxPath, &sink, [this]() { OnReplayFrame(); }, cpu.gfx(),
-        [this]() { CompareFrames(); }, &running_, &error);
+        [this]() { CompareFrames(); }, [this]() { GdiAbFlush(); }, &running_, &error);
   } else {
     ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error);
   }
@@ -932,6 +932,32 @@ bool RefRectValid(int x, int y, int w, int h, int limitW, int limitH) {
   return w > 0 && h > 0 && x >= 0 && y >= 0 && x + w <= limitW && y + h <= limitH;
 }
 
+// Mirrors the engine's QuantArray / rfx_compose.comp band order: the shader's
+// kSubOff order HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3.
+void QuantNibbles(const RfxQuant& q, uint8_t out[10]) {
+  out[0] = q.HL1;
+  out[1] = q.LH1;
+  out[2] = q.HH1;
+  out[3] = q.HL2;
+  out[4] = q.LH2;
+  out[5] = q.HH2;
+  out[6] = q.HL3;
+  out[7] = q.LH3;
+  out[8] = q.HH3;
+  out[9] = q.LL3;
+}
+
+// Dev formatting: "a,b,..." for a 10-entry band array.
+std::string JoinNibbles(const int vals[10]) {
+  std::string out;
+  for (int i = 0; i < 10; ++i) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%d,", vals[i]);
+    out += buf;
+  }
+  return out;
+}
+
 void RefMarkProv(std::vector<uint8_t>* prov, int stride, int W, int H, int x, int y, int w, int h,
                  uint8_t code) {
   if (prov == nullptr || prov->empty()) {
@@ -977,16 +1003,22 @@ void RefCopyRect(const uint8_t* src, int srcStride, int srcX, int srcY, uint8_t*
 }  // namespace
 
 std::string GfxReplay::RefAbSummary() const {
-  if (refCommands_.load() == 0 && refChecks_.load() == 0) {
+  if (refCommands_.load() == 0 && refChecks_.load() == 0 && gdiChecks_.load() == 0) {
     return std::string();
   }
-  char buf[256];
-  std::snprintf(buf, sizeof(buf), "refAB cmds=%llu checks=%llu bad=%llu badPx=%llu firstBadOp=%s",
+  char buf[384];
+  std::snprintf(buf, sizeof(buf),
+                "refAB cmds=%llu checks=%llu bad=%llu badPx=%llu firstBadOp=%s "
+                "gdiAB checks=%llu bad=%llu badPx=%llu firstBadOp=%s",
                 static_cast<unsigned long long>(refCommands_.load()),
                 static_cast<unsigned long long>(refChecks_.load()),
                 static_cast<unsigned long long>(refBad_.load()),
                 static_cast<unsigned long long>(refBadPx_.load()),
-                refBadOp_.empty() ? "-" : refBadOp_.c_str());
+                refBadOp_.empty() ? "-" : refBadOp_.c_str(),
+                static_cast<unsigned long long>(gdiChecks_.load()),
+                static_cast<unsigned long long>(gdiBad_.load()),
+                static_cast<unsigned long long>(gdiBadPx_.load()),
+                gdiBadOp_.empty() ? "-" : gdiBadOp_.c_str());
   return std::string(buf);
 }
 
@@ -1072,6 +1104,7 @@ void GfxReplay::RefWatchRect(uint16_t surfaceId, int x, int y, int width, int he
 
 bool GfxReplay::RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int height,
                               const char* op) {
+  GdiAbCheck(surfaceId, x, y, width, height, op);
   if (!kCodecAbEnabled || desktop_ == nullptr || refSurface_.empty() || width <= 0 ||
       height <= 0) {
     return true;
@@ -1155,6 +1188,218 @@ bool GfxReplay::RefVerifyRect(uint16_t surfaceId, int x, int y, int width, int h
         refSurface_[off], refSurface_[off + 1], refSurface_[off + 2], static_cast<unsigned>(rprov));
   }
   return false;
+}
+
+int GfxReplay::GdiAbStashPayload(const uint8_t* payload, uint32_t payloadLen) {
+  if (payload == nullptr || payloadLen == 0) {
+    return -1;
+  }
+  if (gdiAbPayloads_.empty()) {
+    gdiAbPayloads_.resize(16);
+  }
+  gdiAbPayloads_[gdiAbPayloadNext_ % gdiAbPayloads_.size()] =
+      std::vector<uint8_t>(payload, payload + payloadLen);
+  return static_cast<int>(gdiAbPayloadNext_++);
+}
+
+void GfxReplay::GdiAbCheck(uint16_t surfaceId, int x, int y, int width, int height, const char* op,
+                           const std::string& detail, int payloadSlot) {
+  // The engine has applied this command, but gdi (fed one chunk behind) has not,
+  // so the comparison is deferred to the next chunk boundary. Only the rect is
+  // recorded here.
+  if (cpuDesktop_ == nullptr || width <= 0 || height <= 0 || gdiAbPending_.size() >= 4096) {
+    return;
+  }
+  GdiAbRect rect;
+  rect.x = x;
+  rect.y = y;
+  rect.w = width;
+  rect.h = height;
+  rect.surfaceId = surfaceId;
+  rect.op = op;
+  rect.detail = detail;
+  rect.payloadSlot = payloadSlot;
+  gdiAbPending_.push_back(rect);
+}
+
+void GfxReplay::GdiAbFlush() {
+  // Authoritative A/B: the engine's surface vs FreeRDP's own gdi surface for the
+  // same id, both quiescent on the same chunk. The mirrored `refSurface_` is a
+  // hand-written second implementation of the gdi geometry and has produced false
+  // positives, so this check - not that one - decides whether the engine diverged.
+  if (cpuDesktop_ == nullptr || gdiAbPending_.empty()) {
+    return;
+  }
+  std::vector<GdiAbRect> pending;
+  pending.swap(gdiAbPending_);
+  for (const GdiAbRect& rect : pending) {
+    int x = rect.x;
+    int y = rect.y;
+    int width = rect.w;
+    int height = rect.h;
+    int gw = 0;
+    int gh = 0;
+    int gstride = 0;
+    uint32_t gformat = 0;
+    const uint8_t* gdiSurface =
+        cpuDesktop_->SurfaceData(rect.surfaceId, &gw, &gh, &gstride, &gformat);
+    if (gdiSurface == nullptr || gstride <= 0 || gw <= 0 || gh <= 0) {
+      continue;
+    }
+    if (x < 0) {
+      width += x;
+      x = 0;
+    }
+    if (y < 0) {
+      height += y;
+      y = 0;
+    }
+    if (x + width > gw) {
+      width = gw - x;
+    }
+    if (y + height > gh) {
+      height = gh - y;
+    }
+    if (width <= 0 || height <= 0) {
+      continue;
+    }
+    std::vector<uint8_t> actual;
+    if (!desktop_->ReadSurfaceRect(rect.surfaceId, x, y, width, height, &actual)) {
+      continue;
+    }
+    if (actual.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 4u) {
+      continue;
+    }
+    gdiChecks_.fetch_add(1);
+    uint64_t bad = 0;
+    int firstX = -1;
+    int firstY = -1;
+    int maxDelta = 0;
+    for (int row = 0; row < height; ++row) {
+      const uint8_t* a = actual.data() + static_cast<size_t>(row) * width * 4;
+      const uint8_t* b =
+          gdiSurface + static_cast<size_t>(y + row) * gstride + static_cast<size_t>(x) * 4;
+      for (int col = 0; col < width; ++col) {
+        if (a[col * 4 + 0] == b[col * 4 + 0] && a[col * 4 + 1] == b[col * 4 + 1] &&
+            a[col * 4 + 2] == b[col * 4 + 2]) {
+          continue;
+        }
+        if (firstX < 0) {
+          firstX = x + col;
+          firstY = y + row;
+        }
+        for (int k = 0; k < 3; ++k) {
+          const int d = static_cast<int>(a[col * 4 + k]) - static_cast<int>(b[col * 4 + k]);
+          const int ad = d < 0 ? -d : d;
+          if (ad > maxDelta) {
+            maxDelta = ad;
+          }
+        }
+        bad++;
+      }
+    }
+    if (bad == 0) {
+      continue;
+    }
+    gdiBad_.fetch_add(1);
+    gdiBadPx_.fetch_add(bad);
+    if (!gdiFirstLogged_) {
+      gdiFirstLogged_ = true;
+      if (gdiBadOp_.empty()) {
+        gdiBadOp_ = rect.op;
+      }
+      const size_t off = (static_cast<size_t>(firstY) * gstride) + static_cast<size_t>(firstX) * 4;
+      HMRDP_LOGW(
+          "gfx replay: gdiAB CULPRIT op=%{public}s rect=(%{public}d,%{public}d)+%{public}dx%{public}d bad=%{public}llu maxDelta=%{public}d px=(%{public}d,%{public}d) engine=b%{public}u g%{public}u r%{public}u gdi=b%{public}u g%{public}u r%{public}u gdiSurf=%{public}dx%{public}d fmt=0x%{public}x",
+          rect.op.c_str(), x, y, width, height, static_cast<unsigned long long>(bad), maxDelta,
+          firstX, firstY, actual[0], actual[1], actual[2], gdiSurface[off], gdiSurface[off + 1],
+          gdiSurface[off + 2], gw, gh, gformat);
+      if (!rect.detail.empty()) {
+        HMRDP_LOGW("gfx replay: gdiAB CULPRIT tile %{public}s", rect.detail.c_str());
+      }
+      if (rect.payloadSlot >= 0 && !gdiAbPayloads_.empty()) {
+        // Offline-verifiable copy of the exact message that diverged.
+        const std::vector<uint8_t>& bytes =
+            gdiAbPayloads_[static_cast<size_t>(rect.payloadSlot) % gdiAbPayloads_.size()];
+        std::ofstream msg(gfxPath_ + ".progmsg", std::ios::out | std::ios::binary | std::ios::trunc);
+        if (msg) {
+          msg.write(reinterpret_cast<const char*>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+        }
+        HMRDP_LOGW("gfx replay: gdiAB divergent Progressive message dumped (%{public}zu bytes)",
+                   bytes.size());
+      }
+      // Shape dump: the 64x64 tile around the first failing pixel as a 3-way
+      // equality map ('=' all equal, 'g' gdi alone differs, 'm' mirror alone,
+      // 'e' engine alone, 'x' all differ) - this separates "gdi wrote where the
+      // engine did not" (clip/semantics) from "both wrote, different values"
+      // (decode) at a glance.
+      const int tx = (firstX / 64) * 64;
+      const int ty = (firstY / 64) * 64;
+      std::ofstream dump(gfxPath_ + ".gdiadump", std::ios::out | std::ios::trunc);
+      if (dump) {
+        dump << "# op=" << rect.op << " first=(" << firstX << "," << firstY << ") tile=(" << tx
+             << "," << ty << ")\n";
+        for (int row = 0; row < 64; ++row) {
+          const int py = ty + row;
+          if (py < 0 || py >= gh) {
+            continue;
+          }
+          dump << 'r' << py << ' ';
+          for (int col = 0; col < 64; ++col) {
+            const int px = tx + col;
+            if (px < 0 || px >= gw) {
+              dump << ' ';
+              continue;
+            }
+            std::vector<uint8_t> e;
+            const bool haveE =
+                desktop_->ReadSurfaceRect(rect.surfaceId, px, py, 1, 1, &e) && e.size() >= 4;
+            const uint8_t* g = gdiSurface + static_cast<size_t>(py) * gstride +
+                               static_cast<size_t>(px) * 4;
+            const bool haveR = !refSurface_.empty() && px < refW_ && py < refH_;
+            const uint8_t* m =
+                haveR ? refSurface_.data() + static_cast<size_t>(py) * refStride_ +
+                            static_cast<size_t>(px) * 4
+                      : nullptr;
+            const bool sameEG = haveE && e[0] == g[0] && e[1] == g[1] && e[2] == g[2];
+            const bool sameEM = haveE && m != nullptr && e[0] == m[0] && e[1] == m[1] &&
+                                e[2] == m[2];
+            const bool sameGM = m != nullptr && g[0] == m[0] && g[1] == m[1] && g[2] == m[2];
+            char c = '?';
+            if (sameEG && sameEM) {
+              c = '=';
+            } else if (sameEM) {
+              c = 'g';
+            } else if (sameGM) {
+              c = 'e';
+            } else if (sameEG) {
+              c = 'm';
+            } else {
+              c = 'x';
+            }
+            dump << c;
+          }
+          dump << '\n';
+        }
+      }
+      HMRDP_LOGW("gfx replay: gdiAB shape dump written (%s.gdiadump)", gfxPath_.c_str());
+    }
+    // Watch trace: log every covered command with both sides, so "engine moved
+    // but gdi did not" (or the reverse) is visible directly.
+    if (gdiWatchLogged_ < 64 && gdiWatchX_ >= x && gdiWatchX_ < x + width && gdiWatchY_ >= y &&
+        gdiWatchY_ < y + height) {
+      const size_t eo = static_cast<size_t>(gdiWatchY_ - y) * width * 4 +
+                        static_cast<size_t>(gdiWatchX_ - x) * 4;
+      const size_t go =
+          static_cast<size_t>(gdiWatchY_) * gstride + static_cast<size_t>(gdiWatchX_) * 4;
+      gdiWatchLogged_++;
+      HMRDP_LOGW(
+          "gfx replay: gdiAB watch(%{public}d,%{public}d) op=%{public}s rect=(%{public}d,%{public}d)+%{public}dx%{public}d engine=b%{public}u g%{public}u r%{public}u gdi=b%{public}u g%{public}u r%{public}u",
+          gdiWatchX_, gdiWatchY_, rect.op.c_str(), x, y, width, height, actual[eo], actual[eo + 1],
+          actual[eo + 2], gdiSurface[go], gdiSurface[go + 1], gdiSurface[go + 2]);
+    }
+  }
 }
 
 void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_t size, int left,
@@ -1297,17 +1542,96 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
   // tile it touched in full. Unlike the per-invalid-rect check this also sees the
   // pixels FreeRDP did not composite, and for the message that first wrote a tile
   // differently it names that writer.
-  ParseRfxProgressive(
-      payload, size,
-      [&](const RfxTileRef& t) {
-        const int tx = left + static_cast<int>(t.xIdx) * 64;
-        const int ty = top + static_cast<int>(t.yIdx) * 64;
-        if (tx < 0 || ty < 0 || tx + 64 > refW_ || ty + 64 > refH_) {
-          return;
-        }
-        RefVerifyRect(surfaceId, tx, ty, 64, 64, "progressive-tiles");
-      },
-      nullptr);
+  {
+    // Copy the message once for the (deferred) A/B dump: the chunk buffer it
+    // lives in is reused by the next chunk, so every tile record shares one slot.
+    const int messageSlot = GdiAbStashPayload(payload, static_cast<uint32_t>(size));
+    // How many tiles the message carries and how often each one appears (a tile
+    // may be sent twice - e.g. a FIRST followed by an UPGRADE - and FreeRDP
+    // composites it once per update_tiles call).
+    std::map<uint32_t, uint32_t> tileOcc;
+    uint32_t msgTiles = 0;
+    ParseRfxProgressive(
+        payload, size,
+        [&](const RfxTileRef& t) {
+          tileOcc[(static_cast<uint32_t>(t.yIdx) << 16) | t.xIdx]++;
+          msgTiles++;
+        },
+        nullptr);
+    ParseRfxProgressive(
+        payload, size,
+        [&](const RfxTileRef& t) {
+          const int tx = left + static_cast<int>(t.xIdx) * 64;
+          const int ty = top + static_cast<int>(t.yIdx) * 64;
+          if (tx < 0 || ty < 0 || tx + 64 > refW_ || ty + 64 > refH_) {
+            return;
+          }
+          uint8_t quantNibbles[10] = {0};
+          uint8_t progNibbles[10] = {0};
+          char info[512];
+          const char* kind = (t.type == RfxTileType::kUpgrade)
+                                 ? "upgrade"
+                                 : ((t.flags & 1u) != 0u ? "first+diff" : "first");
+          // newBit = quant + progQuant; oldBit is the reconstructed persistent
+          // state, so numBits = old - new is the refinement width FreeRDP uses.
+          const uint32_t tileStream =
+              (static_cast<uint32_t>(t.yIdx) * static_cast<uint32_t>(refW_ / 64) + t.xIdx) * 3u;
+          std::string newBits;
+          std::string oldBits;
+          std::string numBits;
+          for (int c = 0; c < 3; ++c) {
+            const RfxQuant* q =
+                &t.quants[c == 0 ? t.quantIdxY : (c == 1 ? t.quantIdxCb : t.quantIdxCr)];
+            RfxQuant pq;
+            if (t.quality != 0xFF && t.progQuants != nullptr && t.quality < t.numProgQuant) {
+              pq = (c == 0) ? t.progQuants[t.quality].y
+                            : ((c == 1) ? t.progQuants[t.quality].cb : t.progQuants[t.quality].cr);
+            }
+            QuantNibbles(*q, quantNibbles);
+            QuantNibbles(pq, progNibbles);
+            int newBitVals[10] = {0};
+            int oldBitVals[10] = {0};
+            int numBitVals[10] = {0};
+            for (int i = 0; i < 10; ++i) {
+              newBitVals[i] = static_cast<int>(quantNibbles[i]) + static_cast<int>(progNibbles[i]);
+              const uint64_t key = (static_cast<uint64_t>(surfaceId) << 32) |
+                                   (static_cast<uint64_t>(tileStream + static_cast<uint32_t>(c)));
+              const auto it = tileBitPos_.find(key);
+              oldBitVals[i] = it == tileBitPos_.end() ? -1 : static_cast<int>(it->second[i]);
+              numBitVals[i] = (oldBitVals[i] >= 0 && oldBitVals[i] > newBitVals[i])
+                                  ? (oldBitVals[i] - newBitVals[i])
+                                  : 0;
+            }
+            newBits += '[' + JoinNibbles(newBitVals) + ']';
+            oldBits += '[' + JoinNibbles(oldBitVals) + ']';
+            numBits += '[' + JoinNibbles(numBitVals) + ']';
+            std::array<uint8_t, 10> state{};
+            for (int i = 0; i < 10; ++i) {
+              state[i] = static_cast<uint8_t>(newBitVals[i]);
+            }
+            const uint64_t key = (static_cast<uint64_t>(surfaceId) << 32) |
+                                 (static_cast<uint64_t>(tileStream + static_cast<uint32_t>(c)));
+            tileBitPos_[key] = state;
+          }
+          std::snprintf(info, sizeof(info),
+                        "(%u,%u) kind=%s flags=%u q=%u qi=(%u,%u,%u) rects=%u yLen=%u cbLen=%u "
+                        "crLen=%u srlY=%u rawY=%u occ=%u/%u",
+                        static_cast<unsigned>(t.xIdx), static_cast<unsigned>(t.yIdx), kind,
+                        static_cast<unsigned>(t.flags), static_cast<unsigned>(t.quality),
+                        static_cast<unsigned>(t.quantIdxY), static_cast<unsigned>(t.quantIdxCb),
+                        static_cast<unsigned>(t.quantIdxCr), static_cast<unsigned>(t.numRects),
+                        static_cast<unsigned>(t.yLen), static_cast<unsigned>(t.cbLen),
+                        static_cast<unsigned>(t.crLen), static_cast<unsigned>(t.ySrlLen),
+                        static_cast<unsigned>(t.yRawLen),
+                        static_cast<unsigned>(tileOcc[(static_cast<uint32_t>(t.yIdx) << 16) | t.xIdx]),
+                        static_cast<unsigned>(msgTiles));
+          const std::string detail =
+              std::string(info) + " newBit=" + newBits + " oldBit=" + oldBits + " numBits=" + numBits;
+          GdiAbCheck(surfaceId, tx, ty, 64, 64, "progressive-tiles", detail, messageSlot);
+          RefVerifyRect(surfaceId, tx, ty, 64, 64, "progressive-tiles");
+        },
+        nullptr);
+  }
   region16_uninit(&invalid);
   refCommands_++;
 }

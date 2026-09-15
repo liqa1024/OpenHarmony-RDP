@@ -47,6 +47,13 @@ class GfxCpuDesktop {
   RdpgfxClientContext* gfx() const { return gfx_; }
   rdpGdi* gdi() const;
 
+  // Dev A/B only: the surface buffer FreeRDP's own gdi pipeline holds for
+  // `surfaceId` (the authoritative decoder output), or nullptr when gdi has no
+  // such surface. Bytes are BGRA with `*stride` bytes/row and the same
+  // 16-aligned width/height the engines use.
+  const uint8_t* SurfaceData(uint16_t surfaceId, int* width, int* height, int* stride,
+                             uint32_t* format) const;
+
   int width() const { return width_; }
   int height() const { return height_; }
 
