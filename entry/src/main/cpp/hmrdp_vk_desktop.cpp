@@ -1942,8 +1942,18 @@ bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint
   // FreeRDP maps the wire format 0x20 -> BGRX32, 0x21 -> BGRA32; both are BGRA
   // bytes, which is exactly the internal pixel order.
   surface.meta.format = (format == 0x20u) ? kPixelFormatBgrx32 : kPixelFormatBgra32;
-  surface.meta.gridW = (surface.meta.width + 63) / 64;
-  surface.meta.gridH = (surface.meta.height + 63) / 64;
+  // Grid formula copied from FreeRDP's progressive_surface_context_new():
+  //   gridWidth = (width + (64 - width % 64)) / 64
+  // It is deliberately NOT the minimal ceil(width/64): for a surface whose
+  // 16-aligned width is a multiple of 64 it yields one extra column (and row),
+  // and the engine must accept exactly the same tiles as gdi - a tile the engine
+  // rejects but FreeRDP decodes (or vice versa) is a silent divergence in what
+  // the two implementations consider "the same tile grid". Those extra tiles lie
+  // entirely outside the surface, so they cannot change a visible pixel either
+  // way (verified: the region intersection is empty), but the acceptance set has
+  // to match.
+  surface.meta.gridW = (surface.meta.width + (64 - surface.meta.width % 64)) / 64;
+  surface.meta.gridH = (surface.meta.height + (64 - surface.meta.height % 64)) / 64;
   surface.meta.mappedWidth = width;
   surface.meta.mappedHeight = height;
 

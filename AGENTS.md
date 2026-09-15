@@ -357,6 +357,12 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       "有 REGION、0 个 tile"**（纯重复合成 pass，实测捕获里有 57 字节的这类消息）：此时仍要用该
       region 的 clip 重复合成整帧列表 ⇒ **clip 不能从 tile 推**（`ParseRfxProgressive` 的 `onRegion`
       回调就是为它加的）。
+    - **tile 网格公式照抄 FreeRDP**：`gridW = (w + (64 - w % 64)) / 64`（**不是** `(w + 63) / 64`）。
+      FreeRDP 的 `progressive_surface_context_new()` 在 **16 对齐宽度是 64 整数倍**时会**多算一格**
+      （`3136 -> 50` 而非 49），引擎照抄才能**接受与 gdi 完全相同的 tile 集合**。多出来的那圈 tile
+      整块落在表面之外、不可能写出可见像素（已论证：与 region rects 的交集为空），但它们属于
+      "两个实现对同一份流的 tile 网格判定不同"这类隐患 —— 本次 `bad=0` 排查就是被这类分歧坑了很久。
+      （GLES 引擎冻结未改，随 V7 删除。）
     - ClearCodec **非自包含**（未覆盖像素保留原值）；`SurfaceToCache` 内部会嵌套调用 `EvictCacheEntry`，
       引擎侧要**抑制这次嵌套**；`MapSurfaceToScaledOutput` 本工程不支持（unmap 不合成，与 gdi 现状一致）。
     - `CreateSurface`：宽/高/scanline 按 **16B 对齐**、**0xFF 初始化**、wire `0x20→BGRX32` / `0x21→BGRA32`。
