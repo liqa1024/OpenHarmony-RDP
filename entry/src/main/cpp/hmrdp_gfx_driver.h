@@ -78,7 +78,7 @@ class GfxCommandSink {
 // Only the commands the GPU engine acts on are mapped. `GfxMapStartFrame` is not
 // a drawing command: it marks the frame boundary the Progressive re-composite
 // semantics depend on (see the implementation).
-void GfxMapStartFrame(GfxCommandSink* sink);
+void GfxMapStartFrame(GfxCommandSink* sink, uint32_t frameId);
 void GfxMapSurfaceCommand(GfxCommandSink* sink, const RDPGFX_SURFACE_COMMAND* command);
 void GfxMapResetGraphics(GfxCommandSink* sink, const RDPGFX_RESET_GRAPHICS_PDU* pdu);
 void GfxMapCreateSurface(GfxCommandSink* sink, const RDPGFX_CREATE_SURFACE_PDU* pdu);
@@ -109,20 +109,19 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error);
 
-// Compare route: same GPU context as GfxReplayStream, but the capture is also
-// fed, chunk by chunk, into a second already-built context (`gfxB`, the offline
-// gdi desktop), so the two decoders always consume identical bytes.
-// `onSync` is invoked after both consumed a chunk *and* that chunk contained an
-// EndFrame - the two decoders are then at the same stream position and both have
-// composed, which is the only point where a pixel comparison is valid.
-// `onChunk` is invoked at the top of every chunk, i.e. while `gfxB` and the sink
-// are both quiescent on the *previous* chunk (gfxB is fed one chunk behind the
-// sink, so that is the only moment their states can be compared per command).
+// Compare route: gdi and the engine/mirror consume the capture *interleaved, per
+// PDU*. The harness wraps the callbacks gdi installed on its own context
+// (`gfxB`), so each PDU goes to gdi first and to `sink` immediately after - the
+// only arrangement in which a per-command A/B is valid (feeding two contexts
+// chunk by chunk leaves gdi a whole chunk behind and can only compare at chunk
+// boundaries). `onCommand` is invoked after every single PDU, `onFrame` (present
+// / frame accounting) and `onSync` (frame comparison) on EndFrame, after gdi
+// composed its frame.
 bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
-                            const std::function<void()>& onFrame, RdpgfxClientContext* gfxB,
+                            const std::function<void()>& onFrame,
                             const std::function<void()>& onSync,
-                            const std::function<void()>& onChunk, const std::atomic<bool>* stop,
-                            std::string* error);
+                            const std::function<void()>& onCommand, RdpgfxClientContext* gfxB,
+                            const std::atomic<bool>* stop, std::string* error);
 
 }  // namespace hmrdp
 

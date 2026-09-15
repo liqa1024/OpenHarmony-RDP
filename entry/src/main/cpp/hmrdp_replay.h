@@ -121,6 +121,9 @@ class GfxReplay {
   // Dev: coefficient-level A/B of one Progressive tile's decoder state against
   // FreeRDP's own (patch-freerdp.ps1 step 8).
   void GdiAbCompareState(uint16_t surfaceId, int xIdx, int yIdx);
+  // Dev: the RDPGFX frame id gdi is using (forwarded through the StartFrame chain
+  // command), so the mirrored reference decodes with the same frame boundary rule.
+  void SetMirrorFrameId(uint32_t frameId) { mirrorFrameId_.store(frameId); }
   // Dev: copy one command payload into the ring and return its slot (the chunk
   // buffer is reused by the next chunk, so a raw pointer would be stale by the
   // time the deferred check runs).
@@ -302,6 +305,7 @@ class GfxReplay {
   // point, so a raw pointer would already be stale.
   std::vector<std::vector<uint8_t>> gdiAbPayloads_;
   size_t gdiAbPayloadNext_ = 0;
+  std::atomic<uint32_t> mirrorFrameId_{0};
   std::atomic<uint64_t> gdiChecks_{0};
   std::atomic<uint64_t> gdiBad_{0};
   std::atomic<uint64_t> gdiBadPx_{0};

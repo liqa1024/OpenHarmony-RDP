@@ -3,6 +3,8 @@
  */
 #include "hmrdp_vk_desktop.h"
 
+#include <freerdp/codec/region.h>
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -183,6 +185,8 @@ struct GfxVkDesktop::Impl {
     // sized gridSize.
     std::vector<uint32_t> frameTiles;
     std::vector<uint8_t> frameTileSeen;
+    // Last RDPGFX frame id this surface saw (FreeRDP compares it the same way).
+    uint32_t frameId = 0;
   };
 
   // A bitmap-cache slot. `gpu` is a grow-only allocation; `width`/`height` are
@@ -288,6 +292,10 @@ struct GfxVkDesktop::Impl {
   // whole frame's tile list on every message (see DecodeProgressive).
   uint64_t restamped = 0;
   uint64_t rfxMultiRegion = 0;
+  // StartFrame PDUs whose frame id repeated (FreeRDP keeps its tile list then).
+  uint64_t frameIdRepeats = 0;
+  // Dev: how many commands were dropped because the engine had no such surface.
+  uint32_t missingSurfaceLog = 0;
   uint64_t rfxOriginNonZero = 0;
 
   // Screen dirty rectangle (0xFF/0 initialised, mirrors GfxGpuDesktop).
@@ -806,6 +814,11 @@ struct GfxVkDesktop::Impl {
   // the COMPUTE -> HOST barrier) puts the mapping in the same state gdi's surface
   // has when it performs a CPU read-modify-write. No-op when nothing is pending.
   bool SyncForCpuAccess() {
+    // Progressive decode/compose is *recorded* and only executes on Flush(), and a
+    // CPU access to a mapped surface must see its result; a Flush with nothing
+    // recorded is nearly free, so this only needs to run when compute is in
+    // flight (measured: making it unconditional changes no metric, it only adds
+    // sync points - see VULKAN-TODO §7.3).
     if (!computeInFlight) {
       return true;
     }
@@ -1299,9 +1312,15 @@ struct GfxVkDesktop::Impl {
     rectPool.reserve(256);
     // This message's region rects (absolute, device pixels) - the clip its
     // composite uses, shared by every tile of the region.
-    std::vector<int32_t> msgRects;  // x,y,w,h per rect
+    // The message-wide compose clip: FreeRDP's clippingRects (the band-merged
+    // union of the region's rects), as x,y,w,h quadruples.
+    std::vector<int32_t> msgRects;
     // Tiles this message decodes, in message order.
     std::vector<uint32_t> msgTiles;
+    // Message-wide compose clip (FreeRDP's `clippingRects`, merged - see the
+    // callback) and its rect count.
+    bool msgClipReady = false;
+    uint32_t msgClipCount = 0;
     RfxParseStats stats;
     const bool parsed = ParseRfxProgressive(
         payload, size,
@@ -1322,19 +1341,51 @@ struct GfxVkDesktop::Impl {
           TileJob job;
           job.x = t.xIdx;
           job.y = t.yIdx;
-          job.rectOffset = static_cast<uint32_t>(rectPool.size() / 2);
-          job.rectCount = t.numRects;
-          for (uint16_t ri = 0; ri < t.numRects; ++ri) {
-            const RfxRect& r = t.rects[ri];
-            // Region rects and tiles are relative to the command's destRect
-            // origin, exactly like FreeRDP's gdi (update_tiles:
-            // clippingRect.left = nXDst + rect->x).
-            const uint32_t rx = static_cast<uint32_t>(r.x + originX) & 0xFFFFu;
-            const uint32_t ry = static_cast<uint32_t>(r.y + originY) & 0xFFFFu;
-            rectPool.push_back(rx | (ry << 16));
-            rectPool.push_back(static_cast<uint32_t>(r.width) |
-                               (static_cast<uint32_t>(r.height) << 16));
+          // The compose clip is FreeRDP's `clippingRects`: update_tiles builds it
+          // by unioning the region's rects with region16_union_rect(), which is a
+          // *band/coalescing* union - merging items that overlap a band into one
+          // (bounding-box) rect, so it also covers the gaps between them. Compositing
+          // with the raw rects instead (as the engine used to) misses exactly those
+          // gap pixels. Build the same region with FreeRDP's own code, once per
+          // message (all tiles of a region share its rects).
+          if (!msgClipReady) {
+            REGION16 clip;
+            region16_init(&clip);
+            for (uint16_t ri = 0; ri < t.numRects; ++ri) {
+              const RfxRect& r = t.rects[ri];
+              // Region rects are relative to the command's destRect origin,
+              // exactly like FreeRDP's gdi (update_tiles:
+              // clippingRect.left = nXDst + rect->x).
+              RECTANGLE_16 cr;
+              cr.left = static_cast<UINT16>(r.x + originX);
+              cr.top = static_cast<UINT16>(r.y + originY);
+              cr.right = static_cast<UINT16>(cr.left + r.width);
+              cr.bottom = static_cast<UINT16>(cr.top + r.height);
+              region16_union_rect(&clip, &clip, &cr);
+            }
+            UINT32 mergedCount = 0;
+            const RECTANGLE_16* merged = region16_rects(&clip, &mergedCount);
+            for (UINT32 i = 0; i < mergedCount; ++i) {
+              msgRects.push_back(merged[i].left);
+              msgRects.push_back(merged[i].top);
+              msgRects.push_back(static_cast<int32_t>(merged[i].right - merged[i].left));
+              msgRects.push_back(static_cast<int32_t>(merged[i].bottom - merged[i].top));
+            }
+            region16_uninit(&clip);
+            // One shared clip for every tile: the rect pool is the same slice for
+            // all of them, so it is built once below.
+            for (size_t i = 0; i + 1 < msgRects.size(); i += 4) {
+              const uint32_t rx = static_cast<uint32_t>(msgRects[i]);
+              const uint32_t ry = static_cast<uint32_t>(msgRects[i + 1]);
+              rectPool.push_back(rx | (ry << 16));
+              rectPool.push_back(static_cast<uint32_t>(msgRects[i + 2]) |
+                                 (static_cast<uint32_t>(msgRects[i + 3]) << 16));
+            }
+            msgClipCount = static_cast<uint32_t>(msgRects.size() / 4);
+            msgClipReady = true;
           }
+          job.rectOffset = 0;
+          job.rectCount = msgClipCount;
           const RfxQuant* qv[3] = {&t.quants[t.quantIdxY], &t.quants[t.quantIdxCb],
                                    &t.quants[t.quantIdxCr]};
           RfxQuant prog[3];
@@ -1352,15 +1403,6 @@ struct GfxVkDesktop::Impl {
           const uint32_t tileIndex = static_cast<uint32_t>(t.yIdx) * static_cast<uint32_t>(gridW) +
                                      t.xIdx;
           msgTiles.push_back(tileIndex);
-          if (msgRects.empty()) {
-            for (uint16_t ri = 0; ri < t.numRects; ++ri) {
-              const RfxRect& r = t.rects[ri];
-              msgRects.push_back(static_cast<int32_t>(r.x) + originX);
-              msgRects.push_back(static_cast<int32_t>(r.y) + originY);
-              msgRects.push_back(static_cast<int32_t>(r.width));
-              msgRects.push_back(static_cast<int32_t>(r.height));
-            }
-          }
           for (int c = 0; c < 3; ++c) {
             uint8_t qa[10];
             uint8_t pa[10];
@@ -1707,6 +1749,16 @@ struct GfxVkDesktop::Impl {
     HostWrote();
     MarkSurfaceDirty(*surface, x, y, x + width, y + height);
     clearDecoded++;
+    // Dev: prove the CPU write actually landed in the mapping (an A/B that says
+    // "never written" has to distinguish "skipped" from "written elsewhere").
+    if (clearDecoded <= 4) {
+      const uint8_t* p = surface->gpu.mapped + static_cast<size_t>(y) * surface->gpu.stride +
+                         static_cast<size_t>(x) * 4;
+      HMRDP_LOGW(
+          "vk clearcodec applied: sid=%{public}u rect=(%{public}d,%{public}d)+%{public}dx%{public}d first=b%{public}u g%{public}u r%{public}u stride=%{public}d surfW=%{public}d",
+          static_cast<unsigned>(surfaceId), x, y, width, height, p[0], p[1], p[2],
+          surface->gpu.stride, surface->meta.width);
+    }
     return true;
   }
 
@@ -2569,6 +2621,14 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       }
       Impl::Surface* surface = impl_->Find(sid);
       if (surface == nullptr) {
+        // Dev: a command for a surface the engine does not have is dropped
+        // silently otherwise (the A/B then reports the pixels as never written).
+        if (impl_->missingSurfaceLog++ < 8) {
+          HMRDP_LOGW(
+              "vk surface command NOT applied: sid=%{public}u codec=0x%{public}x (no such surface)",
+              static_cast<unsigned>(sid),
+              static_cast<unsigned>(scalars != nullptr ? scalars[0] : 0u));
+        }
         break;
       }
       const uint32_t codecId = scalars[0];
@@ -2609,6 +2669,18 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         if (!impl_->ClearCodecDecode(sid, payload, payloadLen, left, top, width, height)) {
           impl_->unsupportedCount++;
           impl_->clearUnsupported++;
+          // Dev: name the reason (a silent bail-out here is invisible otherwise).
+          if (impl_->clearUnsupported <= 8) {
+            const Impl::Surface* s = impl_->Find(sid);
+            std::string info = "missing/not-ready";
+            if (s != nullptr && s->gpu.valid()) {
+              info = std::to_string(s->meta.width) + "x" + std::to_string(s->meta.height);
+            }
+            HMRDP_LOGW(
+                "vk clearcodec NOT applied: sid=%{public}u rect=(%{public}d,%{public}d)+%{public}dx%{public}d payload=%{public}u surface=%{public}s",
+                static_cast<unsigned>(sid), left, top, width, height,
+                static_cast<unsigned>(payloadLen), info.c_str());
+          }
         }
       }
       break;
@@ -2634,10 +2706,17 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       break;
     case kGpuCmdStartFrame:
       // Frame boundary: FreeRDP resets the Progressive "updated tiles" list when
-      // the RDPGFX frame id changes, so the engine's frame tile list must be
-      // cleared here too (see Surface::frameTiles).
-      if (impl_ != nullptr) {
+      // the RDPGFX frame id *changes* (PROGRESSIVE_SURFACE_CONTEXT::frameId is
+      // compared in progressive_decompress), and the wire frame id can repeat.
+      // Apply exactly that rule, otherwise the engine drops tiles gdi still
+      // re-composites (see Surface::frameTiles).
+      if (impl_ != nullptr && scalars != nullptr) {
         for (auto& entry : impl_->surfaces) {
+          if (entry.second.frameId == scalars[0]) {
+            impl_->frameIdRepeats++;
+            continue;
+          }
+          entry.second.frameId = scalars[0];
           entry.second.frameTiles.clear();
           if (!entry.second.frameTileSeen.empty()) {
             std::fill(entry.second.frameTileSeen.begin(), entry.second.frameTileSeen.end(), 0);
@@ -2715,7 +2794,7 @@ std::string GfxVkDesktop::Stats() const {
                 "\n  rfxCompute=%d chunks=%llu first=%llu upgrade=%llu clearDec=%llu "
                 "clearUnsup=%llu progFail=%llu progComposeSkip=%llu"
                 "\n  rfxParse regions=%llu simple=%llu diff=%llu nonExtrap=%llu skipTiles=%llu "
-                "errors=%llu originNonZero=%llu restamped=%llu multiRegion=%llu",
+                "errors=%llu originNonZero=%llu restamped=%llu multiRegion=%llu frameIdRepeats=%llu",
                 static_cast<unsigned long long>(impl_->composeCopies),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
                 static_cast<unsigned long long>(impl_->composeSkipClean), impl_->rfxReady ? 1 : 0,
@@ -2734,7 +2813,8 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->rfxParseErrors),
                 static_cast<unsigned long long>(impl_->rfxOriginNonZero),
                 static_cast<unsigned long long>(impl_->restamped),
-                static_cast<unsigned long long>(impl_->rfxMultiRegion));
+                static_cast<unsigned long long>(impl_->rfxMultiRegion),
+                static_cast<unsigned long long>(impl_->frameIdRepeats));
   return std::string(buf) + buf2;
 }
 

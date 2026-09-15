@@ -1213,7 +1213,7 @@ UINT HmrdpGfxStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* 
   // The engine needs the frame boundary for the Progressive re-composite
   // semantics (see GfxMapStartFrame), exactly like the offline replay pump.
   SessionGfxSink sink(gfx);
-  GfxMapStartFrame(&sink);
+  GfxMapStartFrame(&sink, pdu != nullptr ? pdu->frameId : 0u);
   return GfxChainOrSkip(gfx, original, pdu);
 }
 

@@ -317,7 +317,13 @@ class ReplaySink : public GfxCommandSink {
         owner_->RecordFlush(static_cast<uint64_t>(flushUs));
       }
       // Dev: mirror the command into the independent CPU reference surface.
-      if (cmdId == kGpuCmdCreateSurface && scalars != nullptr) {
+      if (cmdId == kGpuCmdStartFrame && scalars != nullptr) {
+        // FreeRDP resets its Progressive per-frame tile list when the *wire*
+        // frame id changes; the mirror has to use the same id gdi uses, not the
+        // harness's frame counter (which the compare route does not even
+        // advance), otherwise its update_tiles re-composites a different set.
+        owner_->SetMirrorFrameId(scalars[0]);
+      } else if (cmdId == kGpuCmdCreateSurface && scalars != nullptr) {
         owner_->RefCreateSurface(static_cast<uint16_t>(surfaceId),
                                  static_cast<int>(scalars[0]), static_cast<int>(scalars[1]));
       } else if (cmdId == kGpuCmdDeleteSurface) {
@@ -439,6 +445,21 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     cmpFirstX_.store(-1);
     cmpFirstY_.store(-1);
     cmpDumpDone_ = false;
+    // Dev A/B state is per run: without this a second replay inside one app
+    // session keeps the previous run's "first culprit" and dump flags and logs
+    // nothing.
+    gdiChecks_.store(0);
+    gdiBad_.store(0);
+    gdiBadPx_.store(0);
+    gdiFirstLogged_ = false;
+    gdiBadOp_.clear();
+    gdiWatchLogged_ = 0;
+    gdiAbPending_.clear();
+    gdiAbPayloads_.clear();
+    gdiAbPayloadNext_ = 0;
+    tileDumpDone_ = false;
+    tileBitPos_.clear();
+    mirrorFrameId_.store(0);
     refSurface_.clear();
     refSurfaceId_ = 0xFFFFu;
     refW_ = 0;
@@ -853,9 +874,13 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
   const int64_t pumpStart = NowUs();
   bool ok = false;
   if (compare) {
-    ok = GfxReplayStreamCompare(
-        gfxPath, &sink, [this]() { OnReplayFrame(); }, cpu.gfx(),
-        [this]() { CompareFrames(); }, [this]() { GdiAbFlush(); }, &running_, &error);
+    // gdi and the engine/mirror now consume the capture interleaved per PDU, so
+    // the per-command A/B (GdiAbFlush) runs right after every command and
+    // CompareFrames() on gdi's EndFrame - both with both sides at the same stream
+    // position. OnReplayFrame keeps presenting and pacing the replay.
+    ok = GfxReplayStreamCompare(gfxPath, &sink, [this]() { OnReplayFrame(); },
+                                [this]() { CompareFrames(); }, [this]() { GdiAbFlush(); },
+                                cpu.gfx(), &running_, &error);
   } else {
     ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error);
   }
@@ -1653,13 +1678,17 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
       static_cast<PROGRESSIVE_CONTEXT*>(refProg_), payload, static_cast<UINT32>(size),
       refSurface_.data(), PIXEL_FORMAT_BGRA32, static_cast<UINT32>(refStride_),
       static_cast<UINT32>(left), static_cast<UINT32>(top), &invalid, surfaceId,
-      static_cast<UINT32>(frames_.load()));
+      mirrorFrameId_.load());
   if (refRc < 0 && refRcLogged_ < 8) {
     refRcLogged_++;
     HMRDP_LOGW(
         "gfx replay: refAB reference progressive_decompress rc=%{public}d at cmd#%{public}llu (FreeRDP drops the whole message; the engine decodes it)",
         static_cast<int>(refRc), static_cast<unsigned long long>(refCommands_.load()));
   }
+  // The divergent-message dump needs the same payload slot for every rect this
+  // message records; stash it once, up front (the chunk buffer is reused by the
+  // next chunk, so a pointer would be stale by the time the deferred flush runs).
+  const int messageSlot = GdiAbStashPayload(payload, static_cast<uint32_t>(size));
   {
     UINT32 nbRects = 0;
     const RECTANGLE_16* rects = region16_rects(&invalid, &nbRects);
@@ -1672,6 +1701,7 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
       const int rw = static_cast<int>(rects[i].right) - rx;
       const int rh = static_cast<int>(rects[i].bottom) - ry;
       RefMarkProv(&refProv_, refStride_, refW_, refH_, rx, ry, rw, rh, 1);
+      GdiAbCheck(surfaceId, rx, ry, rw, rh, "progressive", std::string(), messageSlot);
       RefVerifyRect(surfaceId, rx, ry, rw, rh, "progressive");
       RefWatchRect(surfaceId, rx, ry, rw, rh, "progressive");
     }
@@ -1727,9 +1757,6 @@ void GfxReplay::RefProgressive(uint16_t surfaceId, const uint8_t* payload, size_
   // pixels FreeRDP did not composite, and for the message that first wrote a tile
   // differently it names that writer.
   {
-    // Copy the message once for the (deferred) A/B dump: the chunk buffer it
-    // lives in is reused by the next chunk, so every tile record shares one slot.
-    const int messageSlot = GdiAbStashPayload(payload, static_cast<uint32_t>(size));
     // How many tiles the message carries and how often each one appears (a tile
     // may be sent twice - e.g. a FIRST followed by an UPGRADE - and FreeRDP
     // composites it once per update_tiles call).
