@@ -8,10 +8,10 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump, gpuComputeInfo,
+setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
-setGfxReplayBatchArea, vulkanInfo } from 'libhmrdp.so';
+vulkanInfo } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -70,7 +70,9 @@ export class RdpNative {
     setRdpCursor(enabled);
   }
 
-  /** Prefer hardware (GPU) RemoteFX decoding; off uses the CPU decoder. */
+  /** Prefer hardware (GPU) RemoteFX decoding; off uses the CPU decoder. Reserved
+   * until the GPU engine takes over live sessions (every session currently
+   * decodes with gdi / FreeRDP's own CPU path). */
   static applyHardwareDecode(enabled: boolean): void {
     setHardwareDecode(enabled);
   }
@@ -80,17 +82,9 @@ export class RdpNative {
     setRfxDump(enabled, dir);
   }
 
-  /** Dev/test: logs the device GLES compute capability, returns its summary. */
-  static describeGpuCompute(): string {
-    const desc: string = gpuComputeInfo();
-    hilog.info(GPU_DOMAIN, GPU_TAG, 'gpu compute: %{public}s', desc);
-    return desc;
-  }
-
   /**
    * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-   * `route`: 0 = CPU (FreeRDP gdi), 1 = GLES engine, 2 = Vulkan engine,
-   * 3 = GLES vs gdi compare, 4 = Vulkan vs gdi compare.
+   * `route`: 0 = CPU (FreeRDP gdi), 1 = Vulkan engine, 2 = Vulkan vs gdi compare.
    */
   static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
     gfxPath: string, route: number): string {
@@ -101,15 +95,6 @@ export class RdpNative {
 
   static stopReplayTest(): void {
     stopGfxReplayTest();
-  }
-
-  /**
-   * Dev/test: ClearCodec batch granularity for the GLES replay (union-rectangle
-   * pixel cap). Takes effect on the next replay start; the Vulkan engine decodes
-   * ClearCodec directly on the mapped surface and ignores it.
-   */
-  static setReplayBatchArea(pixels: number): void {
-    setGfxReplayBatchArea(pixels);
   }
 
   static resizeReplayTest(width: number, height: number): void {

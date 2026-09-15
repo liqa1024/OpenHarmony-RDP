@@ -84,26 +84,13 @@ export const setHardwareDecode: (enabled: boolean) => boolean;
 export const setRfxDump: (enabled: boolean, dir: string) => boolean;
 
 /**
- * Dev/test helper: one-line description of the device GLES compute capability
- * (used to decide whether the GPU RemoteFX decoder can run).
- */
-export const gpuComputeInfo: () => string;
-
-/**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
- * `route` selects the decoder: 0 = CPU (FreeRDP gdi), 1 = GLES engine,
- * 2 = Vulkan engine, 3 = GLES vs gdi compare, 4 = Vulkan vs gdi compare.
+ * `route` selects the decoder: 0 = CPU (FreeRDP gdi), 1 = Vulkan engine,
+ * 2 = Vulkan engine vs gdi compare.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
   gfxPath: string, route: number) => string;
 export const stopGfxReplayTest: () => void;
-/**
- * Dev-only: ClearCodec batch granularity for the GLES replay - the maximum union
- * rectangle (pixels) a queued ClearCodec run may cover before it is flushed.
- * 0 = one flush per command (minimum mapped bytes, maximum round trips). The
- * Vulkan engine decodes ClearCodec directly on the mapped surface and ignores it.
- */
-export const setGfxReplayBatchArea: (pixels: number) => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;
 

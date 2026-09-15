@@ -47,7 +47,7 @@ Fn ResolveDevice(PFN_vkGetDeviceProcAddr gdpa, PFN_vkGetInstanceProcAddr gipa,
 VkApi LoadVulkan() {
   VkApi api;
   // Loaded once and intentionally never closed: the process keeps using it for
-  // the whole lifetime, exactly like the EGL display.
+  // the whole lifetime.
   void* handle = dlopen(kLibVulkan, RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
     const char* err = dlerror();

@@ -45,18 +45,18 @@
 | 路径 | 职责 |
 |---|---|
 | `hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + 各类查询/开关（音频能力、触屏高刷、RDP 光标、硬件解码…） |
-| `hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；GFX 回调喂 GPU 引擎 + 接管/影子对照 |
+| `hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；GFX 回调只做解码计时，画面由 gdi 出、经 `VkRenderer` 上屏 |
 | `hmrdp_gfx_driver.{h,cpp}` | RDPGFX PDU → 引擎命令的统一映射（实机会话与离线回放共用）；离线回放泵与"逐命令交错 A/B"的链路 |
 | `hmrdp_gfx_capture.{h,cpp}` | 原始通道录制（`hmrdp_gfx.bin`）与读取 |
 | `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的对比路线）；`PresentGdiFrame` 为 live gdi 回退与 CPU 回放共用 |
 | `hmrdp_replay.{h,cpp}` | dev 回放页的引擎侧：把捕获喂给引擎/gdi 并上屏、逐帧对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
 | `hmrdp_vk_context.{h,cpp}` | Vulkan 上下文：`dlopen` + 标准能力探测 + 进程级 instance/device/queue + 内存类型 + 延迟销毁 |
-| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + 缩放/letterbox blit |
+| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + 缩放/letterbox blit；两条素材来源——引擎屏幕镜像，或 CPU/gdi 帧（`PresentBgraFrame`） |
 | `hmrdp_vk_desktop.{h,cpp}` | Vulkan 表面引擎：表面注册表 + 命令执行 + 合成 + 屏幕脏区（host-visible 缓冲存储） |
 | `shaders/*.comp` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入 |
 | `hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
 | `hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
-| ⛔ `hmrdp_rfx.{h,cpp}` / `hmrdp_egl.{h,cpp}` / `hmrdp_renderer.{h,cpp}` | **已冻结的 GLES 引擎/EGL/渲染器**：只作算法与踩坑参考，随清理删除（见 [`gfx-engine.md`](gfx-engine.md) §5） |
+| `hmrdp_rfx.{h,cpp}` | Progressive 容器解析器（`ParseRfxProgressive`）+ 共享命令模型（`GpuSurface`/`GpuCmd`/`GpuCodec`）+ ClearCodec hook |
 
 ## 4. 其它
 

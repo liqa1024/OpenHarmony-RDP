@@ -40,8 +40,6 @@
 #include "hmrdp_log.h"
 #include "hmrdp_gfx_capture.h"
 #include "hmrdp_gfx_cpu.h"
-#include "hmrdp_gfx_driver.h"
-#include "hmrdp_rfx.h"
 
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
@@ -76,19 +74,11 @@ namespace {
 // session connects (HmrdpPostConnect).
 std::atomic<bool> g_useRdpCursor{true};
 
-// Prefer hardware (GPU) RemoteFX decoding instead of the CPU decoder. Default
-// on; the GPU RFX path (see doc_agent/gfx-engine.md §0) reads this when a session connects.
+// Prefer hardware (GPU) RemoteFX decoding instead of the CPU decoder. Default on.
+// No engine is wired to the live session yet (the Vulkan engine is replay-only),
+// so the setting is currently reported and reserved: every session decodes with
+// gdi until the Vulkan engine takes over live.
 std::atomic<bool> g_hardwareDecode{true};
-
-// Debug dual-render: when true the GFX callbacks keep chaining to FreeRDP's gdi
-// implementation while also feeding the GPU desktop engine, and each presented
-// frame is compared against gdi's primary buffer (Session::GpuShadowCheck). Use
-// this to cross-check the engine against FreeRDP on a live session.
-//
-// When false (takeover) gdi's GFX decode is bypassed entirely: the engine owns
-// the desktop and presents from its shared screen texture. Set to true only for
-// A/B work, then set back.
-constexpr bool kGpuShadowCompare = false;
 
 uint64_t NowMs() {
   return static_cast<uint64_t>(
@@ -1081,43 +1071,18 @@ BOOL HmrdpNetworkCharacteristicsResult(rdpAutoDetect* autodetect, RDP_TRANSPORT_
   return TRUE;
 }
 
-// GFX instrumentation / capture. FreeRDP exposes no decode hook, so libhmrdp
-// chains every RdpgfxClientContext command callback. Two independent jobs ride
-// on the chain:
-//  * SurfaceCommand is timed for the "本机" (decode + present) metric;
-//  * the whole command stream is serialized by hmrdp_gfx_capture (doc_agent/gfx-engine.md §0.4
-//    B0) so the GPU desktop engine can be replayed offline against the same
-//    FreeRDP surface baselines.
-// The wrappers must preserve the original return values and behaviour exactly.
+// GFX instrumentation. FreeRDP exposes no decode hook, so libhmrdp chains
+// RdpgfxClientContext::SurfaceCommand to time the image decode (Progressive /
+// ClearCodec / uncompressed) for the "本机" (decode + present) metric, and to
+// serialize the raw command stream for the offline replay harness
+// (hmrdp_gfx_capture / doc_agent/gfx-engine.md §6).
+// The wrapper must preserve the original return value and behaviour exactly.
 struct GfxOriginals {
-  pcRdpgfxResetGraphics ResetGraphics = nullptr;
-  pcRdpgfxStartFrame StartFrame = nullptr;
-  pcRdpgfxEndFrame EndFrame = nullptr;
   pcRdpgfxSurfaceCommand SurfaceCommand = nullptr;
-  pcRdpgfxDeleteEncodingContext DeleteEncodingContext = nullptr;
-  pcRdpgfxCreateSurface CreateSurface = nullptr;
-  pcRdpgfxDeleteSurface DeleteSurface = nullptr;
-  pcRdpgfxSolidFill SolidFill = nullptr;
-  pcRdpgfxSurfaceToSurface SurfaceToSurface = nullptr;
-  pcRdpgfxSurfaceToCache SurfaceToCache = nullptr;
-  pcRdpgfxCacheToSurface CacheToSurface = nullptr;
-  pcRdpgfxCacheImportOffer CacheImportOffer = nullptr;
-  pcRdpgfxCacheImportReply CacheImportReply = nullptr;
-  pcRdpgfxEvictCacheEntry EvictCacheEntry = nullptr;
-  pcRdpgfxMapSurfaceToOutput MapSurfaceToOutput = nullptr;
-  pcRdpgfxMapSurfaceToScaledOutput MapSurfaceToScaledOutput = nullptr;
-  pcRdpgfxMapSurfaceToWindow MapSurfaceToWindow = nullptr;
-  pcRdpgfxMapSurfaceToScaledWindow MapSurfaceToScaledWindow = nullptr;
 };
 
 std::mutex g_gfxWrapMutex;
 std::unordered_map<RdpgfxClientContext*, GfxOriginals> g_gfxOriginals;
-
-// FreeRDP's SurfaceToCache implementation internally calls EvictCacheEntry on
-// the same slot (see libfreerdp/gdi/gfx.c). That nested call is a gdi
-// implementation detail, not a wire command, so it must not be forwarded to the
-// GPU engine (which would drop the entry SurfaceToCache just stored).
-thread_local bool g_inGfxSurfaceToCache = false;
 
 // Returns the original callback stored for `gfx` (nullptr when not wrapped).
 template <typename Fn>
@@ -1130,68 +1095,10 @@ Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
   return it->second.*member;
 }
 
-// True when the wrapped callback must still chain to FreeRDP's gdi
-// implementation: always in shadow mode (gdi is the cross-check truth), and as a
-// fallback whenever the GPU engine is not available.
-HmrdpContext* GfxSessionContext(RdpgfxClientContext* gfx) {
-  if (gfx == nullptr || gfx->custom == nullptr) {
-    return nullptr;
-  }
-  rdpGdi* gdi = static_cast<rdpGdi*>(gfx->custom);
-  if (gdi->context == nullptr) {
-    return nullptr;
-  }
-  return reinterpret_cast<HmrdpContext*>(gdi->context);
-}
-
-// Routes commands decoded by the shared GfxMap*() into this session's GPU
-// engine. Session::ApplyGfxCommand lazily brings the engine up and serialises
-// it, so the sink itself stays trivial.
-class SessionGfxSink : public hmrdp::GfxCommandSink {
- public:
-  explicit SessionGfxSink(RdpgfxClientContext* gfx) : gfx_(gfx) {}
-
-  void ApplyGfx(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                uint32_t payloadLen) override {
-    HmrdpContext* ctx = GfxSessionContext(gfx_);
-    if (ctx != nullptr && ctx->session != nullptr) {
-      ctx->session->ApplyGfxCommand(cmdId, surfaceId, scalars, params, paramsLen, payload,
-                                    payloadLen);
-    }
-  }
-
- private:
-  RdpgfxClientContext* gfx_ = nullptr;
-};
-
-bool GfxChainToGdi(RdpgfxClientContext* gfx) {
-  if (kGpuShadowCompare) {
-    return true;
-  }
-  HmrdpContext* ctx = GfxSessionContext(gfx);
-  return ctx == nullptr || ctx->session == nullptr || !ctx->session->GpuDesktopReady();
-}
-
-// Chains a GFX callback to gdi when required, or reports success when the GPU
-// engine has taken over the command.
-template <typename Fn, typename Pdu>
-UINT GfxChainOrSkip(RdpgfxClientContext* gfx, Fn original, const Pdu* pdu) {
-  if (original == nullptr || !GfxChainToGdi(gfx)) {
-    return CHANNEL_RC_OK;
-  }
-  return original(gfx, pdu);
-}
-
 UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
   if (original == nullptr) {
     return CHANNEL_RC_OK;
-  }
-  SessionGfxSink sink(gfx);
-  GfxMapSurfaceCommand(&sink, command);
-  if (!GfxChainToGdi(gfx)) {
-    return CHANNEL_RC_OK;  // takeover: the engine already decoded this command
   }
   const uint64_t start = NowUs();
   const UINT rc = original(gfx, command);
@@ -1208,154 +1115,6 @@ UINT HmrdpGfxSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMA
   return rc;
 }
 
-UINT HmrdpGfxStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* pdu) {
-  const pcRdpgfxStartFrame original = GfxOriginal(gfx, &GfxOriginals::StartFrame);
-  // The engine needs the frame boundary for the Progressive re-composite
-  // semantics (see GfxMapStartFrame), exactly like the offline replay pump.
-  SessionGfxSink sink(gfx);
-  GfxMapStartFrame(&sink, pdu != nullptr ? pdu->frameId : 0u);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* pdu) {
-  const pcRdpgfxEndFrame original = GfxOriginal(gfx, &GfxOriginals::EndFrame);
-  if (original == nullptr) {
-    return CHANNEL_RC_OK;
-  }
-  if (!GfxChainToGdi(gfx)) {
-    // Takeover: gdi is bypassed, so present the engine's composed desktop here,
-    // on the GFX thread right after the frame's commands were applied.
-    HmrdpContext* ctx = GfxSessionContext(gfx);
-    if (ctx != nullptr && ctx->session != nullptr) {
-      ctx->session->PresentGpuFrame();
-    }
-    return CHANNEL_RC_OK;
-  }
-  const UINT rc = original(gfx, pdu);
-  return rc;
-}
-
-UINT HmrdpGfxResetGraphics(RdpgfxClientContext* gfx, const RDPGFX_RESET_GRAPHICS_PDU* pdu) {
-  const pcRdpgfxResetGraphics original = GfxOriginal(gfx, &GfxOriginals::ResetGraphics);
-  SessionGfxSink sink(gfx);
-  GfxMapResetGraphics(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxDeleteEncodingContext(RdpgfxClientContext* gfx,
-                                   const RDPGFX_DELETE_ENCODING_CONTEXT_PDU* pdu) {
-  const pcRdpgfxDeleteEncodingContext original =
-      GfxOriginal(gfx, &GfxOriginals::DeleteEncodingContext);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxCreateSurface(RdpgfxClientContext* gfx, const RDPGFX_CREATE_SURFACE_PDU* pdu) {
-  const pcRdpgfxCreateSurface original = GfxOriginal(gfx, &GfxOriginals::CreateSurface);
-  SessionGfxSink sink(gfx);
-  GfxMapCreateSurface(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxDeleteSurface(RdpgfxClientContext* gfx, const RDPGFX_DELETE_SURFACE_PDU* pdu) {
-  const pcRdpgfxDeleteSurface original = GfxOriginal(gfx, &GfxOriginals::DeleteSurface);
-  SessionGfxSink sink(gfx);
-  GfxMapDeleteSurface(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxSolidFill(RdpgfxClientContext* gfx, const RDPGFX_SOLID_FILL_PDU* pdu) {
-  const pcRdpgfxSolidFill original = GfxOriginal(gfx, &GfxOriginals::SolidFill);
-  SessionGfxSink sink(gfx);
-  GfxMapSolidFill(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxSurfaceToSurface(RdpgfxClientContext* gfx,
-                              const RDPGFX_SURFACE_TO_SURFACE_PDU* pdu) {
-  const pcRdpgfxSurfaceToSurface original = GfxOriginal(gfx, &GfxOriginals::SurfaceToSurface);
-  SessionGfxSink sink(gfx);
-  GfxMapSurfaceToSurface(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxSurfaceToCache(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_TO_CACHE_PDU* pdu) {
-  const pcRdpgfxSurfaceToCache original = GfxOriginal(gfx, &GfxOriginals::SurfaceToCache);
-  if (original == nullptr) {
-    return CHANNEL_RC_OK;
-  }
-  SessionGfxSink sink(gfx);
-  GfxMapSurfaceToCache(&sink, pdu);
-  if (!GfxChainToGdi(gfx)) {
-    return CHANNEL_RC_OK;  // takeover: the engine already stored the cache entry
-  }
-  // The nested EvictCacheEntry call (same slot) is a gdi implementation detail,
-  // not a wire command, so it must not be forwarded to the engine.
-  g_inGfxSurfaceToCache = true;
-  const UINT rc = original(gfx, pdu);
-  g_inGfxSurfaceToCache = false;
-  return rc;
-}
-
-UINT HmrdpGfxCacheToSurface(RdpgfxClientContext* gfx, const RDPGFX_CACHE_TO_SURFACE_PDU* pdu) {
-  const pcRdpgfxCacheToSurface original = GfxOriginal(gfx, &GfxOriginals::CacheToSurface);
-  SessionGfxSink sink(gfx);
-  GfxMapCacheToSurface(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxCacheImportOffer(RdpgfxClientContext* gfx,
-                              const RDPGFX_CACHE_IMPORT_OFFER_PDU* pdu) {
-  const pcRdpgfxCacheImportOffer original = GfxOriginal(gfx, &GfxOriginals::CacheImportOffer);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxCacheImportReply(RdpgfxClientContext* gfx,
-                              const RDPGFX_CACHE_IMPORT_REPLY_PDU* pdu) {
-  const pcRdpgfxCacheImportReply original = GfxOriginal(gfx, &GfxOriginals::CacheImportReply);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxEvictCacheEntry(RdpgfxClientContext* gfx, const RDPGFX_EVICT_CACHE_ENTRY_PDU* pdu) {
-  const pcRdpgfxEvictCacheEntry original = GfxOriginal(gfx, &GfxOriginals::EvictCacheEntry);
-  // The nested evict inside gdi_SurfaceToCache is suppressed here (it is not a
-  // wire command and would drop the entry SurfaceToCache just stored).
-  if (!g_inGfxSurfaceToCache) {
-    SessionGfxSink sink(gfx);
-    GfxMapEvictCacheEntry(&sink, pdu);
-  }
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxMapSurfaceToOutput(RdpgfxClientContext* gfx,
-                                const RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU* pdu) {
-  const pcRdpgfxMapSurfaceToOutput original = GfxOriginal(gfx, &GfxOriginals::MapSurfaceToOutput);
-  SessionGfxSink sink(gfx);
-  GfxMapSurfaceToOutput(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxMapSurfaceToScaledOutput(
-    RdpgfxClientContext* gfx, const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu) {
-  const pcRdpgfxMapSurfaceToScaledOutput original =
-      GfxOriginal(gfx, &GfxOriginals::MapSurfaceToScaledOutput);
-  SessionGfxSink sink(gfx);
-  GfxMapSurfaceToScaledOutput(&sink, pdu);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxMapSurfaceToWindow(RdpgfxClientContext* gfx,
-                                const RDPGFX_MAP_SURFACE_TO_WINDOW_PDU* pdu) {
-  const pcRdpgfxMapSurfaceToWindow original = GfxOriginal(gfx, &GfxOriginals::MapSurfaceToWindow);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
-UINT HmrdpGfxMapSurfaceToScaledWindow(
-    RdpgfxClientContext* gfx, const RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU* pdu) {
-  const pcRdpgfxMapSurfaceToScaledWindow original =
-      GfxOriginal(gfx, &GfxOriginals::MapSurfaceToScaledWindow);
-  return GfxChainOrSkip(gfx, original, pdu);
-}
-
 void HmrdpWrapGfxDecode(RdpgfxClientContext* gfx) {
   if (gfx == nullptr) {
     return;
@@ -1365,50 +1124,9 @@ void HmrdpWrapGfxDecode(RdpgfxClientContext* gfx) {
     return;
   }
   GfxOriginals& orig = g_gfxOriginals[gfx];
-  orig.ResetGraphics = gfx->ResetGraphics;
-  orig.StartFrame = gfx->StartFrame;
-  orig.EndFrame = gfx->EndFrame;
   orig.SurfaceCommand = gfx->SurfaceCommand;
-  orig.DeleteEncodingContext = gfx->DeleteEncodingContext;
-  orig.CreateSurface = gfx->CreateSurface;
-  orig.DeleteSurface = gfx->DeleteSurface;
-  orig.SolidFill = gfx->SolidFill;
-  orig.SurfaceToSurface = gfx->SurfaceToSurface;
-  orig.SurfaceToCache = gfx->SurfaceToCache;
-  orig.CacheToSurface = gfx->CacheToSurface;
-  orig.CacheImportOffer = gfx->CacheImportOffer;
-  orig.CacheImportReply = gfx->CacheImportReply;
-  orig.EvictCacheEntry = gfx->EvictCacheEntry;
-  orig.MapSurfaceToOutput = gfx->MapSurfaceToOutput;
-  orig.MapSurfaceToScaledOutput = gfx->MapSurfaceToScaledOutput;
-  orig.MapSurfaceToWindow = gfx->MapSurfaceToWindow;
-  orig.MapSurfaceToScaledWindow = gfx->MapSurfaceToScaledWindow;
-
-  if (gfx->SurfaceCommand != nullptr) gfx->SurfaceCommand = HmrdpGfxSurfaceCommand;
-  if (gfx->StartFrame != nullptr) gfx->StartFrame = HmrdpGfxStartFrame;
-  if (gfx->EndFrame != nullptr) gfx->EndFrame = HmrdpGfxEndFrame;
-  if (gfx->ResetGraphics != nullptr) gfx->ResetGraphics = HmrdpGfxResetGraphics;
-  if (gfx->DeleteEncodingContext != nullptr) {
-    gfx->DeleteEncodingContext = HmrdpGfxDeleteEncodingContext;
-  }
-  if (gfx->CreateSurface != nullptr) gfx->CreateSurface = HmrdpGfxCreateSurface;
-  if (gfx->DeleteSurface != nullptr) gfx->DeleteSurface = HmrdpGfxDeleteSurface;
-  if (gfx->SolidFill != nullptr) gfx->SolidFill = HmrdpGfxSolidFill;
-  if (gfx->SurfaceToSurface != nullptr) gfx->SurfaceToSurface = HmrdpGfxSurfaceToSurface;
-  if (gfx->SurfaceToCache != nullptr) gfx->SurfaceToCache = HmrdpGfxSurfaceToCache;
-  if (gfx->CacheToSurface != nullptr) gfx->CacheToSurface = HmrdpGfxCacheToSurface;
-  if (gfx->CacheImportOffer != nullptr) gfx->CacheImportOffer = HmrdpGfxCacheImportOffer;
-  if (gfx->CacheImportReply != nullptr) gfx->CacheImportReply = HmrdpGfxCacheImportReply;
-  if (gfx->EvictCacheEntry != nullptr) gfx->EvictCacheEntry = HmrdpGfxEvictCacheEntry;
-  if (gfx->MapSurfaceToOutput != nullptr) {
-    gfx->MapSurfaceToOutput = HmrdpGfxMapSurfaceToOutput;
-  }
-  if (gfx->MapSurfaceToScaledOutput != nullptr) {
-    gfx->MapSurfaceToScaledOutput = HmrdpGfxMapSurfaceToScaledOutput;
-  }
-  if (gfx->MapSurfaceToWindow != nullptr) gfx->MapSurfaceToWindow = HmrdpGfxMapSurfaceToWindow;
-  if (gfx->MapSurfaceToScaledWindow != nullptr) {
-    gfx->MapSurfaceToScaledWindow = HmrdpGfxMapSurfaceToScaledWindow;
+  if (gfx->SurfaceCommand != nullptr) {
+    gfx->SurfaceCommand = HmrdpGfxSurfaceCommand;
   }
 }
 
@@ -1886,7 +1604,7 @@ void Session::EmitMetrics() {
       static_cast<double>(frames - lastFrameCount_) / seconds + 0.5);
 
   // "本机" = decode + present: the wrapped GFX SurfaceCommand time plus the
-  // DrawFrame time (texture upload + quad + eglSwapBuffers), averaged per frame.
+  // Present time (CPU frame upload + swapchain blit), averaged per frame.
   const uint32_t renderSamples = renderSamples_;
   const uint64_t decodeAccumUs = decodeAccumUs_.load();
   const uint64_t localAccumUs = renderAccumUs_ + decodeAccumUs;
@@ -2222,59 +1940,16 @@ void Session::Disconnect() {
   clipboardReady_ = false;
   running_ = false;
   audio_.Close();
-  ReleaseGpuDesktop();
   renderer_.Reset();
 }
 
 void Session::HandlePostConnect() {
-  rdpSettings* settings = instance_->context->settings;
-  const UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
-  const UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-  renderer_.SetDesktopSize(static_cast<int>(width), static_cast<int>(height));
   Emit(SessionEvent::kConnected, "");
 }
 
-bool Session::PresentGpuFrame() {
-  // The engine owns the desktop and presents its composed screen (shared texture
-  // by default). The exact Compose -> present routine is the shared
-  // GpuPresentComposed(), also used by the replay harness, so the two can never
-  // drift apart. All engine/renderer GL is serialised because GFX commands and
-  // the EndPaint callback may arrive on different threads.
-  if (gpuDesktop_ == nullptr) {
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(gpuMutex_);
-  const uint64_t renderStart = NowUs();
-  if (!GpuPresentComposed(gpuDesktop_.get(), &renderer_)) {
-    // Either a static frame (nothing dirty) or the window/surface is not ready
-    // yet; the next frame retries either way.
-    static int gpuFallbackLog = 0;
-    if (gpuFallbackLog < 3 && gpuDesktop_->screenDirty()) {
-      HMRDP_LOGW("gpu desktop: present failed (window not ready?)");
-      gpuFallbackLog++;
-    }
-    return false;
-  }
-  if (kGpuShadowCompare) {
-    GpuShadowCheck();
-  }
-  AfterPresent(renderStart);
-  return true;
-}
-
 void Session::HandleEndPaint() {
-  // Shadow-compare mode keeps gdi decoding, so EndPaint still fires with a
-  // completed gdi frame; present the engine's version instead. In takeover mode
-  // gdi is bypassed entirely and the frame is presented from the GFX EndFrame
-  // callback (PresentGpuFrame), so this callback only appears for non-GFX
-  // updates and must not present a stale primary buffer.
-  if (PresentGpuFrame()) {
-    return;
-  }
-  if (gpuDesktop_ != nullptr) {
-    return;
-  }
-
+  // FreeRDP's gdi owns the desktop; a completed frame shows up here with the
+  // invalid rectangle final, and it is uploaded through the Vulkan presenter.
   rdpGdi* gdi = instance_->context->gdi;
   static int endPaintCount = 0;
   if (gdi == nullptr || gdi->primary == nullptr || gdi->primary_buffer == nullptr) {
@@ -2303,9 +1978,9 @@ void Session::HandleEndPaint() {
   }
   const uint64_t renderStart = NowUs();
   // Shared with the offline CPU replay route (hmrdp_gfx_cpu.cpp), so the live
-  // gdi fallback and the replay present exactly the same way. It only fails when
-  // the GL context/texture is not ready yet or nothing is dirty; a successful
-  // call is a real present (fps / 本机 telemetry / input response).
+  // path and the replay present exactly the same way. It only fails when the
+  // swapchain is not ready yet or nothing is dirty; a successful call is a real
+  // present (fps / 本机 telemetry / input response).
   if (!PresentGdiFrame(gdi, &renderer_)) {
     return;
   }
@@ -2340,118 +2015,10 @@ void Session::AfterPresent(uint64_t renderStartUs) {
   }
 }
 
-void Session::EnsureGpuDesktop() {
-  if (gpuDesktopTried_) {
-    return;
-  }
-  gpuDesktopTried_ = true;
-  if (!g_hardwareDecode.load()) {
-    HMRDP_LOGI("gpu desktop: disabled (hardware decode off)");
-    return;
-  }
-  if (!GetGpuComputeInfo().compute) {
-    HMRDP_LOGW("gpu desktop: GLES 3.1 compute unavailable; using gdi");
-    return;
-  }
-  gpuClearDecoder_ = CreateFreeRdpClearDecoder();
-  gpuDesktop_.reset(new GfxGpuDesktop(gpuClearDecoder_.get()));
-  if (!gpuDesktop_->Init()) {
-    HMRDP_LOGE("gpu desktop: engine init failed; using gdi");
-    gpuDesktop_.reset();
-    return;
-  }
-  HMRDP_LOGI("gpu desktop: engine enabled id=%{public}x tid=%{public}u (%{public}s)",
-             static_cast<unsigned>(reinterpret_cast<uintptr_t>(this)),
-             static_cast<unsigned>(::gettid()), GetGpuComputeInfo().Describe().c_str());
-}
-
-void Session::ReleaseGpuDesktop() {
-  std::lock_guard<std::mutex> lock(gpuMutex_);
-  gpuDesktop_.reset();
-  gpuClearDecoder_.reset();
-  gpuDesktopTried_ = false;
-  gpuPresentedFrames_ = 0;
-  gpuShadowChecks_ = 0;
-  gpuShadowBad_ = 0;
-}
-
-void Session::ApplyGfxCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                              const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                              uint32_t payloadLen) {
-  std::lock_guard<std::mutex> lock(gpuMutex_);
-  EnsureGpuDesktop();
-  if (gpuDesktop_ == nullptr) {
-    return;
-  }
-  gpuDesktop_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
-}
-
-void Session::GpuShadowCheck() {
-  gpuPresentedFrames_++;
-  // The readback is expensive, so sample a few frames per second only.
-  if ((gpuPresentedFrames_ % 30) != 0) {
-    return;
-  }
-  if (instance_ == nullptr || instance_->context == nullptr) {
-    return;
-  }
-  rdpGdi* gdi = instance_->context->gdi;
-  if (gdi == nullptr || gdi->primary_buffer == nullptr) {
-    return;
-  }
-  const int w = gpuDesktop_->screenWidth();
-  const int h = gpuDesktop_->screenHeight();
-  if (w <= 0 || h <= 0) {
-    return;
-  }
-  std::vector<uint8_t> screen;
-  if (!gpuDesktop_->ReadScreen(&screen)) {
-    return;
-  }
-  gpuShadowChecks_++;
-  const int cmpW = w < static_cast<int>(gdi->width) ? w : static_cast<int>(gdi->width);
-  const int cmpH = h < static_cast<int>(gdi->height) ? h : static_cast<int>(gdi->height);
-  if (screen.size() != static_cast<size_t>(w) * static_cast<size_t>(h) * 4 || cmpW <= 0 ||
-      cmpH <= 0) {
-    gpuShadowBad_++;
-    HMRDP_LOGW("gpu shadow: size mismatch engine=%{public}dx%{public}d gdi=%{public}ux%{public}u",
-               w, h, static_cast<unsigned>(gdi->width), static_cast<unsigned>(gdi->height));
-    return;
-  }
-  size_t diff = 0;
-  size_t first = 0;
-  bool firstSet = false;
-  for (int row = 0; row < cmpH; ++row) {
-    const uint8_t* a = screen.data() + static_cast<size_t>(row) * w * 4;
-    const uint8_t* b = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
-    for (int i = 0; i < cmpW * 4; ++i) {
-      if (a[i] != b[i]) {
-        if (!firstSet) {
-          first = static_cast<size_t>(row) * w * 4 + static_cast<size_t>(i);
-          firstSet = true;
-        }
-        diff++;
-      }
-    }
-  }
-  if (diff != 0) {
-    gpuShadowBad_++;
-  }
-
-  HMRDP_LOGI(
-      "gpu shadow: checks=%{public}u bad=%{public}u lastDiff=%{public}u first=(%{public}d,%{public}d) frames=%{public}u",
-      static_cast<unsigned>(gpuShadowChecks_), static_cast<unsigned>(gpuShadowBad_),
-      static_cast<unsigned>(diff),
-      firstSet ? static_cast<int>((first / 4) % static_cast<size_t>(w)) : 0,
-      firstSet ? static_cast<int>((first / 4) / static_cast<size_t>(w)) : 0,
-      static_cast<unsigned>(gpuPresentedFrames_));
-}
-
 void Session::HandleDesktopResize() {
   rdpSettings* settings = instance_->context->settings;
   const UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
   const UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-  renderer_.SetDesktopSize(static_cast<int>(width), static_cast<int>(height));
   std::ostringstream payload;
   payload << width << "x" << height;
   Emit(SessionEvent::kResize, payload.str());

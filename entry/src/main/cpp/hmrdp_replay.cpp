@@ -3,11 +3,10 @@
  *
  * Present-on-screen consumer of the shared replay driver: the capture is read,
  * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
- * parsing), the resulting commands go to a desktop engine (GLES or Vulkan), and
- * this file only presents the composed screen on every EndFrame - through the
- * very same Gpu{,Vk}PresentComposed() the live session uses. The GPU routes can
- * additionally run an offline gdi desktop on the same bytes and compare the two
- * screens pixel by pixel.
+ * parsing), the resulting commands go to the Vulkan desktop engine, and this
+ * file only presents the composed screen on every EndFrame through
+ * GpuVkPresentComposed(). The compare route can additionally run an offline gdi
+ * desktop on the same bytes and compare the two screens pixel by pixel.
  */
 #include "hmrdp_replay.h"
 
@@ -27,48 +26,89 @@
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_log.h"
-#include "hmrdp_renderer.h"
-#include "hmrdp_rfx.h"  // GfxGpuDesktop + GpuPresentComposed
+#include "hmrdp_rfx.h"  // kGpuCmd / kGpuCodec / ParseRfxProgressive
 #include "hmrdp_vk_desktop.h"
 #include "hmrdp_vk_renderer.h"
 
 namespace hmrdp {
 
-// Engine-agnostic view of a desktop engine for the replay harness. GfxGpuDesktop
-// (GLES) and GfxVkDesktop (Vulkan) reproduce the same GFX command semantics and
-// each is presented through its own renderer, so the harness only needs this
-// much of them and its routing/stats code stays free of backend types.
+// The replay's desktop engine: the Vulkan GFX engine plus its swapchain
+// presenter. It exposes exactly what the pump/stats/compare code needs, so that
+// code stays free of the engine's own types.
 class ReplayDesktop {
  public:
-  virtual ~ReplayDesktop() = default;
   // Brings up the engine + presenter on the given XComponent surface; returns
-  // false and fills `error` on failure. `clearBatchArea` is the GLES ClearCodec
-  // batching cap (ignored by the Vulkan engine).
-  virtual bool Init(void* window, int width, int height, int clearBatchArea,
-                    std::string* error) = 0;
-  virtual void Resize(int width, int height) = 0;
-  virtual void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                     const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                     uint32_t payloadLen) = 0;
-  // Total ClearCodec flush work (map/unmap + CPU decode) so far; 0 when the
-  // engine has no such round trip (Vulkan).
-  virtual uint64_t ClearWorkUs() const = 0;
+  // false and fills `error` on failure.
+  bool Init(void* window, int width, int height, std::string* error);
+  void Resize(int width, int height);
+  void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+             const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+             uint32_t payloadLen);
   // Composes and presents the engine screen. Returns false when nothing was
   // dirty (static frame) or the present failed.
-  virtual bool Present() = 0;
-  virtual bool screenDirty() const = 0;
-  virtual bool ReadScreen(std::vector<uint8_t>* out) = 0;
+  bool Present();
+  bool screenDirty() const { return engine_ != nullptr && engine_->screenDirty(); }
+  bool ReadScreen(std::vector<uint8_t>* out) { return engine_->ReadScreen(out); }
   // Full surface (top-down, `stride` bytes) as BGRA; dev diagnostics only.
-  virtual bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) = 0;
+  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
+    return engine_->ReadSurface(surfaceId, out);
+  }
   // One surface rect, tightly packed BGRA (`width * 4` per row). Dev only: the
   // per-command A/B reads a command's rect instead of the whole surface.
-  virtual bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
-                               std::vector<uint8_t>* out) = 0;
-  virtual int screenWidth() const = 0;
-  virtual int screenHeight() const = 0;
+  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
+                       std::vector<uint8_t>* out) {
+    return engine_->ReadSurfaceRect(surfaceId, x, y, width, height, out);
+  }
+  int screenWidth() const { return engine_->screenWidth(); }
+  int screenHeight() const { return engine_->screenHeight(); }
   // One-line engine summary for the dev panel.
-  virtual std::string Summary() const = 0;
+  std::string Summary() const { return engine_->Stats(); }
+
+ private:
+  std::unique_ptr<GfxVkDesktop> engine_;
+  std::unique_ptr<VkRenderer> renderer_;
 };
+
+
+bool ReplayDesktop::Init(void* window, int width, int height, std::string* error) {
+  renderer_ = std::make_unique<VkRenderer>();
+  renderer_->SetSurface(window, width, height);
+  // Prepare() creates the swapchain and presents a black frame; it also pins the
+  // image format the engine must be created with (a blit cannot convert channel
+  // order, so engine and swapchain have to agree).
+  if (!renderer_->Prepare()) {
+    if (error != nullptr) {
+      *error = "vulkan surface/swapchain failed: " + renderer_->lastError();
+    }
+    renderer_.reset();
+    return false;
+  }
+  engine_ = std::make_unique<GfxVkDesktop>();
+  if (!engine_->Init(renderer_->format())) {
+    if (error != nullptr) {
+      *error = "vulkan engine init failed";
+    }
+    engine_.reset();
+    renderer_.reset();
+    return false;
+  }
+  return true;
+}
+
+
+void ReplayDesktop::Resize(int width, int height) {
+  renderer_->ResizeSurface(width, height);
+}
+
+void ReplayDesktop::Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
+                          const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
+                          uint32_t payloadLen) {
+  engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
+}
+
+bool ReplayDesktop::Present() {
+  return GpuVkPresentComposed(engine_.get(), renderer_.get());
+}
 
 namespace {
 
@@ -81,16 +121,10 @@ constexpr int kStartWaitUs = 3000000;
 constexpr uint64_t kCompareEvery = 30;
 // Dev: per-message codec A/B. Off by default: it reads the engine's whole surface
 // once per Progressive message / ClearCodec band / cache command, which costs a
-// GPU readback per command on the GLES route (~0.2 fps there) and drags the replay
-// far past real time. Flip to true only while a decoder divergence has to be
-// pinned to a message (the replay then looks hung / the picture stays black, so
-// never leave it on).
+// GPU readback per command and drags the replay far past real time. Flip to true
+// only while a decoder divergence has to be pinned to a message (the replay then
+// looks hung / the picture stays black, so never leave it on).
 constexpr bool kCodecAbEnabled = false;
-
-// ClearCodec batch granularity for the GLES route (union-rectangle pixel cap).
-// Configurable so the sync-count vs mapped-bytes trade-off can be measured on
-// real hardware instead of being fixed to a simulator-derived value.
-std::atomic<int> g_clearBatchArea{1 << 20};
 
 int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -114,128 +148,13 @@ const char* RouteName(GfxReplayRoute route) {
   switch (route) {
     case GfxReplayRoute::kCpu:
       return "cpu";
-    case GfxReplayRoute::kGles:
-      return "gles";
     case GfxReplayRoute::kVulkan:
       return "vulkan";
-    case GfxReplayRoute::kGlesCompare:
-      return "gles-compare";
     case GfxReplayRoute::kVulkanCompare:
       return "vulkan-compare";
   }
   return "?";
 }
-
-// GLES desktop engine (frozen legacy path, doc_agent/gfx-engine.md §7) + its EGL
-// renderer.
-class GlesReplayDesktop : public ReplayDesktop {
- public:
-  bool Init(void* window, int width, int height, int clearBatchArea,
-            std::string* error) override {
-    clear_ = CreateFreeRdpClearDecoder();
-    engine_ = std::make_unique<GfxGpuDesktop>(clear_.get());
-    engine_->SetClearBatchAreaLimit(clearBatchArea);
-    if (!engine_->Init()) {
-      if (error != nullptr) {
-        *error = "engine init failed";
-      }
-      engine_.reset();
-      clear_.reset();
-      return false;
-    }
-    renderer_ = std::make_unique<Renderer>();
-    renderer_->SetSurface(window, width, height);
-    renderer_->Prepare();
-    return true;
-  }
-
-  void Resize(int width, int height) override { renderer_->ResizeSurface(width, height); }
-
-  void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-             const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-             uint32_t payloadLen) override {
-    engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
-  }
-
-  uint64_t ClearWorkUs() const override { return engine_->ClearWorkUs(); }
-  bool Present() override { return GpuPresentComposed(engine_.get(), renderer_.get()); }
-  bool screenDirty() const override { return engine_->screenDirty(); }
-  bool ReadScreen(std::vector<uint8_t>* out) override { return engine_->ReadScreen(out); }
-  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) override {
-    return engine_->ReadSurface(surfaceId, out);
-  }
-  int screenWidth() const override { return engine_->screenWidth(); }
-  int screenHeight() const override { return engine_->screenHeight(); }
-  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
-                       std::vector<uint8_t>* out) override {
-    return engine_->ReadSurfaceRect(surfaceId, x, y, width, height, out);
-  }
-  std::string Summary() const override { return engine_->TrafficStats(); }
-
- private:
-  std::unique_ptr<GfxClearDecoder> clear_;
-  std::unique_ptr<GfxGpuDesktop> engine_;
-  std::unique_ptr<Renderer> renderer_;
-};
-
-// Vulkan desktop engine + its swapchain renderer (doc_agent/gfx-engine.md §1).
-class VulkanReplayDesktop : public ReplayDesktop {
- public:
-  bool Init(void* window, int width, int height, int /*clearBatchArea*/,
-            std::string* error) override {
-    renderer_ = std::make_unique<VkRenderer>();
-    renderer_->SetSurface(window, width, height);
-    // Prepare() creates the swapchain and presents a black frame; it also pins
-    // the image format the engine must be created with (a blit cannot convert
-    // channel order, so engine and swapchain have to agree).
-    if (!renderer_->Prepare()) {
-      if (error != nullptr) {
-        *error = "vulkan surface/swapchain failed: " + renderer_->lastError();
-      }
-      renderer_.reset();
-      return false;
-    }
-    engine_ = std::make_unique<GfxVkDesktop>();
-    if (!engine_->Init(renderer_->format())) {
-      if (error != nullptr) {
-        *error = "vulkan engine init failed";
-      }
-      engine_.reset();
-      renderer_.reset();
-      return false;
-    }
-    return true;
-  }
-
-  void Resize(int width, int height) override { renderer_->ResizeSurface(width, height); }
-
-  void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-             const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-             uint32_t payloadLen) override {
-    engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
-  }
-
-  // The Vulkan engine decodes ClearCodec directly on the mapped surface, so it
-  // has no staging flush to account for.
-  uint64_t ClearWorkUs() const override { return 0; }
-  bool Present() override { return GpuVkPresentComposed(engine_.get(), renderer_.get()); }
-  bool screenDirty() const override { return engine_->screenDirty(); }
-  bool ReadScreen(std::vector<uint8_t>* out) override { return engine_->ReadScreen(out); }
-  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) override {
-    return engine_->ReadSurface(surfaceId, out);
-  }
-  int screenWidth() const override { return engine_->screenWidth(); }
-  int screenHeight() const override { return engine_->screenHeight(); }
-  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
-                       std::vector<uint8_t>* out) override {
-    return engine_->ReadSurfaceRect(surfaceId, x, y, width, height, out);
-  }
-  std::string Summary() const override { return engine_->Stats(); }
-
- private:
-  std::unique_ptr<GfxVkDesktop> engine_;
-  std::unique_ptr<VkRenderer> renderer_;
-};
 
 // Sends the replayed commands into the engine; the driver supplies them.
 class ReplaySink : public GfxCommandSink {
@@ -252,19 +171,11 @@ class ReplaySink : public GfxCommandSink {
     // non-surface commands (fill/copy/cache/...).
     const uint32_t codecId =
         (cmdId == kGpuCmdWireToSurface && scalars != nullptr) ? scalars[0] : 0u;
-    // A command may trigger a ClearCodec flush before it runs; charge that time
-    // to its own bucket so the per-class averages stay meaningful.
-    const uint64_t flushBefore = engine_->ClearWorkUs();
     const int64_t t0 = NowUs();
     engine_->Apply(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
     const int64_t total = NowUs() - t0;
-    const int64_t flushUs = static_cast<int64_t>(engine_->ClearWorkUs() - flushBefore);
     if (owner_ != nullptr) {
-      owner_->RecordApply(cmdId, surfaceId, codecId,
-                          static_cast<uint64_t>(total > flushUs ? total - flushUs : 0));
-      if (flushUs > 0) {
-        owner_->RecordFlush(static_cast<uint64_t>(flushUs));
-      }
+      owner_->RecordApply(cmdId, codecId, static_cast<uint64_t>(total));
       // Dev (kCodecAbEnabled): record the rects this command claims to write, so
       // GdiAbFlush - one callback later, with gdi and the engine at the same
       // stream position - can diff exactly those pixels against gdi's own surface.
@@ -401,22 +312,15 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     gdiBadOp_.clear();
     gdiFirstLine_.clear();
     gdiAbPending_.clear();
-    clearRunSum_.store(0);
-    clearRunCount_.store(0);
-    clearRunMax_.store(0);
-    clearRunLen_ = 0;
-    clearRunSurface_ = 0xFFFFFFFFu;
-    clearRunActive_ = false;
-    flushUs_.store(0);
     presentUs_.store(0);
     pumpUs_.store(0);
     paceUs_.store(0);
     startUs_.store(NowUs());
     endUs_.store(0);
-    // The pure CPU route presents raw gdi frames through the GLES renderer; the
-    // desktop-engine routes build their own presenter inside the worker.
+    // The pure CPU route presents raw gdi frames through the Vulkan presenter;
+    // the engine route builds its own presenter inside the worker.
     if (route == GfxReplayRoute::kCpu) {
-      renderer_ = std::make_unique<Renderer>();
+      renderer_ = std::make_unique<VkRenderer>();
       renderer_->SetSurface(window_, surfaceW_, surfaceH_);
     } else {
       renderer_.reset();
@@ -533,9 +437,7 @@ std::string GfxReplay::StatsLines() {
     std::snprintf(
         cls, sizeof(cls),
         "\nprog  %.2fms x%llu\nclear %.2fms x%llu\nunc   %.2fms x%llu\n"
-        "fill  %.2fms x%llu\nblit  %.2fms x%llu\ncache %.2fms x%llu\nother %.2fms x%llu\n"
-        "flush %.0fms (ClearCodec round trip, excluded above)\n"
-        "clearRun avg %.1f max %llu n %llu",
+        "fill  %.2fms x%llu\nblit  %.2fms x%llu\ncache %.2fms x%llu\nother %.2fms x%llu",
         avgMs(progUs_.load(), progCount_.load()),
         static_cast<unsigned long long>(progCount_.load()),
         avgMs(clearUs_.load(), clearCount_.load()),
@@ -549,13 +451,7 @@ std::string GfxReplay::StatsLines() {
         avgMs(cacheUs_.load(), cacheCount_.load()),
         static_cast<unsigned long long>(cacheCount_.load()),
         avgMs(otherUs_.load(), otherCount_.load()),
-        static_cast<unsigned long long>(otherCount_.load()),
-        static_cast<double>(flushUs_.load()) / 1000.0,
-        clearRunCount_.load() > 0
-            ? static_cast<double>(clearRunSum_.load()) / static_cast<double>(clearRunCount_.load())
-            : 0.0,
-        static_cast<unsigned long long>(clearRunMax_.load()),
-        static_cast<unsigned long long>(clearRunCount_.load()));
+        static_cast<unsigned long long>(otherCount_.load()));
     out += cls;
   }
   const uint64_t cmpChecks = cmpChecks_.load();
@@ -601,36 +497,9 @@ std::string GfxReplay::Stats() {
   return s;
 }
 
-void GfxReplay::RecordApply(uint16_t cmdId, uint32_t surfaceId, uint32_t codecId,
-                            uint64_t micros) {
+void GfxReplay::RecordApply(uint16_t cmdId, uint32_t codecId, uint64_t micros) {
   applyUs_.fetch_add(micros);
   applyCount_.fetch_add(1);
-  const bool isClear =
-      (cmdId == kGpuCmdWireToSurface && codecId == kGpuCodecClearCodec);
-  if (isClear) {
-    if (clearRunActive_ && surfaceId == clearRunSurface_) {
-      clearRunLen_++;
-    } else {
-      if (clearRunActive_) {
-        clearRunSum_.fetch_add(clearRunLen_);
-        clearRunCount_.fetch_add(1);
-        if (clearRunLen_ > clearRunMax_.load()) {
-          clearRunMax_.store(clearRunLen_);
-        }
-      }
-      clearRunActive_ = true;
-      clearRunSurface_ = surfaceId;
-      clearRunLen_ = 1;
-    }
-  } else if (clearRunActive_) {
-    clearRunSum_.fetch_add(clearRunLen_);
-    clearRunCount_.fetch_add(1);
-    if (clearRunLen_ > clearRunMax_.load()) {
-      clearRunMax_.store(clearRunLen_);
-    }
-    clearRunActive_ = false;
-  }
-
   std::atomic<uint64_t>* us = &otherUs_;
   std::atomic<uint64_t>* count = &otherCount_;
   if (cmdId == kGpuCmdWireToSurface) {
@@ -659,20 +528,8 @@ void GfxReplay::RecordApply(uint16_t cmdId, uint32_t surfaceId, uint32_t codecId
   count->fetch_add(1);
 }
 
-void GfxReplay::RecordFlush(uint64_t micros) {
-  flushUs_.fetch_add(micros);
-}
-
 void GfxReplay::RecordPresent(uint64_t micros) {
   presentUs_.fetch_add(micros);
-}
-
-void GfxReplay::SetClearBatchArea(int pixels) {
-  g_clearBatchArea.store(pixels < 0 ? 0 : pixels);
-}
-
-int GfxReplay::ClearBatchArea() const {
-  return g_clearBatchArea.load();
 }
 
 void GfxReplay::PaceFrame(int64_t frameStartUs, bool presented) {
@@ -749,29 +606,20 @@ void GfxReplay::Run() {
       RunCpuReplay(gfxPath_);
       break;
     case GfxReplayRoute::kVulkan:
-      RunDesktopReplay(gfxPath_, true, false);
-      break;
-    case GfxReplayRoute::kGlesCompare:
-      RunDesktopReplay(gfxPath_, false, true);
+      RunVulkanReplay(gfxPath_, false);
       break;
     case GfxReplayRoute::kVulkanCompare:
-      RunDesktopReplay(gfxPath_, true, true);
-      break;
-    case GfxReplayRoute::kGles:
-    default:
-      RunDesktopReplay(gfxPath_, false, false);
+      RunVulkanReplay(gfxPath_, true);
       break;
   }
   endUs_.store(NowUs());
   running_.store(false);
 }
 
-void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool compare) {
-  std::unique_ptr<ReplayDesktop> desktop =
-      vulkan ? std::unique_ptr<ReplayDesktop>(new VulkanReplayDesktop())
-             : std::unique_ptr<ReplayDesktop>(new GlesReplayDesktop());
+void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
+  std::unique_ptr<ReplayDesktop> desktop(new ReplayDesktop());
   std::string error;
-  if (!desktop->Init(window_, surfaceW_, surfaceH_, g_clearBatchArea.load(), &error)) {
+  if (!desktop->Init(window_, surfaceW_, surfaceH_, &error)) {
     std::lock_guard<std::mutex> err(errorMutex_);
     lastError_ = error.empty() ? "engine init failed" : error;
     return;
@@ -848,8 +696,8 @@ void GfxReplay::RunDesktopReplay(const std::string& gfxPath, bool vulkan, bool c
 void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // FreeRDP's own gdi pipeline handles the decoding (clear/progressive/...),
   // exactly like a live session. Only the destination changes: gdi's primary
-  // buffer is uploaded through the CPU DrawFrame path instead of a shared GPU
-  // texture, so this route is the CPU reference for the GPU engine.
+  // buffer is uploaded through the presenter's CPU frame path instead of the
+  // engine's screen texture, so this route is the CPU reference for the engine.
   renderer_->Prepare();
   GfxCpuDesktop cpu;
   std::string error;
@@ -1191,9 +1039,6 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if (pw > 0 && ph > 0) {
     renderer_->ResizeSurface(pw, ph);
   }
-  // DrawFrame() letterboxes against the desktop size and refuses to draw until
-  // it is known; the GPU route passes it to PresentTexture instead.
-  renderer_->SetDesktopSize(cpu->width(), cpu->height());
   const int64_t presentStart = NowUs();
   const bool presented = PresentGdiFrame(cpu->gdi(), renderer_.get());
   RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));

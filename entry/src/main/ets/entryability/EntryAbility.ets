@@ -55,8 +55,6 @@ export default class EntryAbility extends UIAbility {
     // command stream (ResetGraphics/CreateSurface included) is captured from the
     // first frame. Re-applying the same value later is a native no-op.
     RdpNative.applyRfxDump(settings.rfxDump, this.context.filesDir);
-    // Dev probe: log the device GLES compute capability at startup.
-    RdpNative.describeGpuCompute();
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
 

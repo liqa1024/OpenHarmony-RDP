@@ -1,5 +1,4 @@
-// HmRdp - RemoteFX Progressive tile compositor (Vulkan SPIR-V variant of the
-// GLES kernel in hmrdp_rfx.cpp §1).
+// HmRdp - RemoteFX Progressive tile compositor (Vulkan compute shader).
 //
 // Converts the three inverse-DWT'ed Y/Cb/Cr component planes of one 64x64 tile
 // to BGRA and writes the pixels inside the region's clip rects straight into the

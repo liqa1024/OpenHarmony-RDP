@@ -411,7 +411,7 @@ struct GfxVkDesktop::Impl {
     messagesThisFrame = 0;
   }
 
-  // Screen dirty rectangle (0xFF/0 initialised, mirrors GfxGpuDesktop).
+  // Screen dirty rectangle (0xFF/0 initialised).
   bool screenDirtyValid = false;
   int screenDirtyL = 0;
   int screenDirtyT = 0;
@@ -1928,7 +1928,7 @@ struct GfxVkDesktop::Impl {
 
   // Decodes one Progressive ("WBT") message into the surface buffer: parse the
   // container on the CPU, then for each chunk of <=512 tiles run the decode then
-  // the YCbCr compose compute dispatch. Mirrors GfxGpuDesktop::DecodeMessage.
+  // the YCbCr compose compute dispatch.
   // Appends one message's prepared decode work (its stream records, tile meta and
   // tile-local clip rects, plus the raw payload they point into) to the frame's
   // batch. `tileKeys` are the surface tile indices this message advances; they are

@@ -94,7 +94,8 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   CPU-only 的缓冲（bitmap cache 项）只被 CPU 访问，不需要任何维护。
 - **CPU 写过的表面被 GPU 读取前必须补 `HOST → TRANSFER` barrier**（UMA 不等于免费）。
 
-开关：全局「硬件解码」。关 / 无 Vulkan / 引擎初始化失败 ⇒ 回退 **gdi**。
+开关：全局「硬件解码」。**注意当前没有引擎接进 live 会话**（Vulkan 引擎只跑回放/对比），
+所以 live 一律走 gdi；将来 Vulkan 接管时，口径是 关 / 无 Vulkan / 引擎初始化失败 ⇒ 回退 **gdi**（见 §7）。
 
 > **「真机专属功能」**：GPU 引擎与 GPU 回放只在真机上验证与使用；**模拟器不参与**（其 Vulkan 实现会按
 > 标准接口谎报能力）。模拟器上不要开硬件加速、不要跑 GPU 回放，也不要拿模拟器结论约束真机行为。
@@ -151,8 +152,8 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ### 2.3 帧呈现（gdi 回退路径）
 
-- 按**脏区**部分上传/呈现：GLES 版靠 `glTexSubImage2D` + `GL_UNPACK_ROW_LENGTH`（= 整桌面 stride/4，
-  否则按上传宽读行会花屏）；Vulkan 版对应 `vkCmdCopyBufferToImage` + `bufferRowLength`。
+- 按**脏区**部分上传/呈现：引擎屏幕镜像用 `vkCmdCopyBufferToImage` + `bufferRowLength`；CPU 帧用
+  `VkRenderer::PresentBgraFrame` 先把脏矩形累积进一张持久桌面图再 blit。
 - **不要再叠加 present-on-change**：静止态已由 FreeRDP 的失效区门控保证
   （`HmrdpBeginPaint` 把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion`
   才置 FALSE，`HandleEndPaint` 对 `null` 直接返回）——额外 `memcmp` 只增加内存/带宽开销。
@@ -199,9 +200,9 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ## 5. 历史包袱（**不要在新代码里依赖**）
 
-- 旧的 **GLES 引擎 / EGL / GLES 渲染器**（`hmrdp_rfx.*` + `hmrdp_egl.*` + `hmrdp_renderer.*`）**已冻结**：
-  它是 GLES 3.1 compute 版本，只作**算法与踩坑参考**，随清理删除。
-  **它没有 §2.2 的那几条合成语义修复**，所以它的"对比路线"结果**不能当结论**。
+- **只有一套引擎：Vulkan**（不要再引入 GLES/EGL；`hmrdp` 原生库不链接 `EGL`/`GLESv3`）。设备能否跑引擎由
+  Vulkan 侧回答（`GetVulkanCapabilities()` / `vulkanInfo`，见 §6）；采集/回放的 GFX 解析与命令映射
+  （`hmrdp_gfx_driver.*`）、容器解析器 `ParseRfxProgressive` 与 ClearCodec hook 保留。
 - 已移除的 H.264/AVC 支持：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
   且命中硬解也无明显收益（瓶颈在解码后的 CPU 环节）⇒ 整体砍掉，服务端改用其他码流
   （Progressive / ClearCodec 等）。**不要再引入媒体库依赖**。
@@ -210,13 +211,16 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ```
 设置页「抓取 RFX 码流（测试）」  →  hmrdp_gfx.bin（原始 ZGX 字节，u32 长度 + payload）
-dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulkan对比
+dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 ```
 
 - **验收口径**：`Vulkan对比` 路线（引擎 vs 离线 gdi 桌面逐像素比对）的
   `compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`。
   每 30 帧采一次（`kCompareEvery`），`bad` = 采样的帧里有多少帧与 gdi 不一致；目标 **`bad=0`**。
 - 首次分歧会写一份 `<capture>.cmpdump`（逐像素 e/g 值），是定位分叉的第一手材料。
+- **三条路线的呈现方式**：`Vulkan` 由引擎 `Compose()` 出屏幕镜像后 `VkRenderer` 上屏；
+  `CPU` 路线的 gdi 帧走 `VkRenderer::PresentBgraFrame`（CPU 帧上传，脏矩形累积在一张持久桌面图里，
+  swapchain 为 RGBA8 时在 CPU 侧换 R/B）——与 live 会话是同一条路径，所以两者不会各自分叉。
 - **引擎性能归因三件套（dev，只在真机跑）**：
   1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本（§1）；
   2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返（实测 ~0.5ms）→ 用来区分"同步点固定开销"与
@@ -226,10 +230,10 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
    两端都取 `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`；**不要用"跳过某条 dispatch + 差值反推"**（见 §3）。
 - 归因：需要"是哪条命令分叉"时，开 harness 的逐命令 A/B（见 [`build-and-verify.md`](build-and-verify.md)
   与源码里 `kCodecAbEnabled` 的注释）。**它是诊断工具**：开启后要按命令回读引擎表面，
-  GLES 路线会慢到像卡死 ⇒ 只在对某条消息归因时开、查完立刻关（`bad=0` 的验收不依赖它）。
+  会慢到像卡死 ⇒ 只在对某条消息归因时开、查完立刻关（`bad=0` 的验收不依赖它）。
   **判定分叉只以 gdi 自己的表面为准**（历史上用手写镜像做过对比，它会误报）。
 - **量测纪律（否则数字不可比）**：
-  - 回放页的「路线 / 批次 / 重新回放」按钮内部都是 `stopReplayTest()` + 重新 `start`，**在一轮还没跑完时点击
+  - 回放页的「路线 / 重新回放」按钮内部都是 `stopReplayTest()` + 重新 `start`，**在一轮还没跑完时点击
     等于把那一轮掐断**；性能数字只取 `(running=0)` 的**整轮**，且要记下 `frames=` 以确认是整份跑完
     （不同录制的帧数不同，不能假定某个固定值）。
   - 判定"跑完"要**轮询** `replayTestStats` 文本里的 `(running=0)`，不要用固定 sleep：早取会拿到中途值，
@@ -269,6 +273,7 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
   **视频录像的正确性残留**：单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 - **UI 收尾**：模拟器上置灰「硬件解码」与 GPU 回放入口（`DeviceCapabilities` 的 Capability 模式，
   给出原因），见 [`native-libraries.md`](native-libraries.md) §6。
-- **删除冻结的 GLES 残留**（`hmrdp_rfx.*` 的引擎部分、`hmrdp_egl.*`、`hmrdp_renderer.*`）与仅服务于
-  它的回放路线；共享的**容器解析器**（`ParseRfxProgressive`）与 GLES 无关，保留。
+- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi +
+  `VkRenderer::PresentBgraFrame`）。届时「硬件解码（RFX）」设置项才真正生效（是否可用的判据取
+  `vulkanInfo` / `GetVulkanCapabilities()`）；在此之前它只是被保留、不参与决策。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。

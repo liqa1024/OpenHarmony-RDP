@@ -9,7 +9,7 @@
  * less than a parsed command stream).
  *
  * The recorder is driven by the FreeRDP hook registered from hmrdp_session.cpp
- * (`HmrdpSetGfxRawCapture`); this module has no FreeRDP or GLES dependency.
+ * (`HmrdpSetGfxRawCapture`); this module has no FreeRDP dependency.
  */
 #ifndef HMRDP_GFX_CAPTURE_H
 #define HMRDP_GFX_CAPTURE_H

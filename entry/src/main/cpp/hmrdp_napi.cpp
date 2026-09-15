@@ -4,7 +4,7 @@
  *
  * Rendering surfaces are bound through the ArkUI XComponent surface id:
  * ArkTS forwards onSurfaceCreated/Changed/Destroyed to this module, which
- * turns the surface id into an OHNativeWindow consumed by the EGL renderer.
+ * turns the surface id into an OHNativeWindow consumed by the Vulkan presenter.
  */
 #include <native_window/external_window.h>
 #include <napi/native_api.h>
@@ -607,15 +607,6 @@ napi_value SetRfxDump(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// Dev/test helper: returns a one-line description of the device GLES compute
-// capability (see GpuComputeInfo::Describe).
-napi_value GpuComputeInfo(napi_env env, napi_callback_info) {
-  const std::string desc = hmrdp::GetGpuComputeInfo().Describe();
-  napi_value out = nullptr;
-  napi_create_string_utf8(env, desc.c_str(), desc.size(), &out);
-  return out;
-}
-
 std::string GetStringArg(napi_env env, napi_value v) {
   size_t length = 0;
   if (napi_get_value_string_utf8(env, v, nullptr, 0, &length) != napi_ok || length == 0) {
@@ -647,20 +638,13 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, args[4], &route);
     }
     // Route ids match GfxReplayRoute: 0 = CPU(gdi) only (perf reference),
-    // 1 = GLES engine, 2 = Vulkan engine, 3 = GLES vs gdi compare,
-    // 4 = Vulkan vs gdi compare.
+    // 1 = Vulkan engine, 2 = Vulkan engine vs gdi compare.
     hmrdp::GfxReplayRoute replayRoute = hmrdp::GfxReplayRoute::kCpu;
     switch (route) {
       case 1:
-        replayRoute = hmrdp::GfxReplayRoute::kGles;
-        break;
-      case 2:
         replayRoute = hmrdp::GfxReplayRoute::kVulkan;
         break;
-      case 3:
-        replayRoute = hmrdp::GfxReplayRoute::kGlesCompare;
-        break;
-      case 4:
+      case 2:
         replayRoute = hmrdp::GfxReplayRoute::kVulkanCompare;
         break;
       default:
@@ -713,23 +697,6 @@ napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {  (void)in
   napi_create_string_utf8(env, lines.c_str(), lines.size(), &result);
   return result;
 }
-
-// Dev-only: ClearCodec batch granularity for the GPU replay (union-rectangle
-// pixel cap; 0 = one flush per command). Lets the sync-count vs mapped-bytes
-// trade-off be measured on a real device.
-napi_value SetGfxReplayBatchArea(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int32_t pixels = 1 << 20;
-  if (argc >= 1) {
-    napi_get_value_int32(env, args[0], &pixels);
-  }
-  hmrdp::GfxReplay::Instance().SetClearBatchArea(pixels);
-  HMRDP_LOGI("gfx replay: clear batch area = %{public}d px", pixels);
-  return CreateUndefined(env);
-}
-
 
 // Dev/test (doc_agent/gfx-engine.md §1): the capability report - loader/device
 // versions, the migration-relevant extensions, memory types and queue families.
@@ -801,8 +768,6 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setHardwareDecode", nullptr, SetHardwareDecode, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"gpuComputeInfo", nullptr, GpuComputeInfo, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
       {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"stopGfxReplayTest", nullptr, StopGfxReplayTest, nullptr, nullptr, nullptr,
@@ -811,9 +776,10 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-    {"setGfxReplayBatchArea", nullptr, SetGfxReplayBatchArea, nullptr, nullptr, nullptr,
-     napi_default, nullptr},      {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
-   };
+      {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
+  };
+
+
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;
 }

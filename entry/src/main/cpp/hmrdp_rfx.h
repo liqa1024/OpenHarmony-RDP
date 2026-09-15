@@ -1,21 +1,16 @@
 /*
- * HmRdp - GPU RemoteFX/Progressive decoder + GFX surface engine.
+ * HmRdp - RemoteFX/Progressive container parser + shared GFX command model.
  *
  * §1 - Container parser: walks the compressed "RFX Progressive" bitmap stream
  *      (blocks, region, tiles, quantization tables) and exposes the per-tile
  *      payloads. Portable C++ with no OHOS/FreeRDP dependency.
- * §2 - GPU decode + surface engine: the integer RemoteFX/Progressive pipeline
- *      runs in GLES 3.1 compute shaders, and GfxGpuDesktop holds the full GFX
- *      surface model (doc_agent/gfx-engine.md §0.2-§0.4) - a `surfaceId -> GPU surface`
- *      registry with per-surface progressive state and the four pixel
- *      operations (decode write / solid fill / surface copy / cache),
- *      reproducing the FreeRDP command semantics.
+ * §2 - Shared GFX surface/command model (GpuSurface / GpuCmd / GpuCodec and the
+ *      packed pixel formats) used by the Vulkan engine (hmrdp_vk_desktop.*) and
+ *      by the replay harness, plus the ClearCodec hook that hands a payload to
+ *      FreeRDP's own clear_decompress.
  *
- * ClearCodec is the one codec not implemented in GLES: it is decoded on the CPU
- * through FreeRDP's clear_decompress (read-modify-write of the target surface).
- *
- * Devices without GLES 3.1 compute cannot use the engine (see
- * GetGpuComputeInfo()); the session then keeps FreeRDP's own gdi path.
+ * The Vulkan engine is the only backend: whether a device can run it is answered
+ * by GetVulkanCapabilities() (hmrdp_vk_context.*).
  */
 #ifndef HMRDP_RFX_H
 #define HMRDP_RFX_H
@@ -189,28 +184,8 @@ class GfxClearDecoder {
 std::unique_ptr<GfxClearDecoder> CreateFreeRdpClearDecoder();
 
 // ===========================================================================
-// §2 GPU decode + surface engine
+// §2 Shared GFX surface/command model
 // ===========================================================================
-
-// Runtime GLES compute capability. RFX decoding only uses the GPU path when
-// `compute` is true.
-struct GpuComputeInfo {
-  bool egl = false;      // an offscreen EGL context could be created
-  bool compute = false;  // GLES >= 3.1 (compute shaders) available
-  int glMajor = 0;
-  int glMinor = 0;
-  int maxWorkGroupInvocations = 0;
-  int maxSharedMemory = 0;
-  int maxSsboSize = 0;
-  int maxTextureSize = 0;
-  char renderer[128] = {0};
-  char version[64] = {0};
-
-  std::string Describe() const;
-};
-
-// Probes the device once (result cached). Safe to call from any thread.
-const GpuComputeInfo& GetGpuComputeInfo();
 
 // FreeRDP packed surface pixel formats (values copied from freerdp/codec/color.h
 // so this header stays FreeRDP-free). The wire format maps 0x20 -> BGRX32 and
@@ -220,8 +195,8 @@ constexpr uint32_t kPixelFormatBgra32 = 0x20048888u;
 constexpr uint32_t kPixelFormatBgrx32 = 0x20040888u;
 constexpr uint32_t kPixelFormatRgba32 = 0x20038888u;
 
-// Public metadata of one GPU-resident GFX surface (the GL buffers stay private
-// to the engine). Dimensions/stride are aligned to 16 exactly like FreeRDP's
+// Public metadata of one GFX surface (the backend buffers stay private to the
+// engine). Dimensions/stride are aligned to 16 exactly like FreeRDP's
 // gdiGfxSurface; `format` is the packed FreeRDP format above.
 struct GpuSurface {
   uint16_t id = 0;
@@ -245,136 +220,10 @@ struct GpuSurface {
   int dirtyBottom = 0;
 };
 
-// GPU desktop / surface engine: it owns an offscreen GLES 3.1 context, one GPU
-// surface buffer (+ progressive tile state) per `surfaceId` and a global bitmap
-// cache, and reproduces the FreeRDP command semantics (doc_agent/gfx-engine.md §0.2-§0.4).
-//
-// ClearCodec is decoded on the CPU through the injected GfxClearDecoder hook
-// (FreeRDP's clear_decompress) with a read-modify-write of the target surface;
-// every other command runs on the GPU (compute).
-class GfxGpuDesktop {
- public:
-  explicit GfxGpuDesktop(GfxClearDecoder* clearDecoder = nullptr);
-  ~GfxGpuDesktop();
+// --- Shared GFX command model (Vulkan engine + replay harness) --------------
 
-  GfxGpuDesktop(const GfxGpuDesktop&) = delete;
-  GfxGpuDesktop& operator=(const GfxGpuDesktop&) = delete;
-
-  // Creates the offscreen context, programs and shared scratch buffers. No
-  // surface exists until CreateSurface is called.
-  bool Init();
-  void Reset();
-  bool ready() const { return ready_; }
-
-  // --- Surface lifecycle ---------------------------------------------------
-  // Aligns width/height to 16, stride to 16 bytes, fills with 0xFF and resets
-  // the per-surface progressive state. `format` is the wire pixel format
-  // (0x20 -> BGRX32, 0x21 -> BGRA32).
-  bool CreateSurface(uint16_t surfaceId, int width, int height, uint32_t format);
-  void DeleteSurface(uint16_t surfaceId);
-  const GpuSurface* FindSurface(uint16_t surfaceId) const;
-
-  // Output mapping metadata (doc_agent/gfx-engine.md §0.4); consumed by Compose. 1:1 only:
-  // server-side scaled mappings are unsupported (see ApplyCommand).
-  void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
-
-  // --- Screen (front buffer) ------------------------------------------------
-  // Resets the screen buffer (FreeRDP ResetGraphics); zero releases it.
-  bool ResetGraphics(int width, int height);
-  // Composites every output-mapped surface's dirty region into the screen
-  // (FreeRDP's gdi_OutputUpdate) and clears their dirty regions.
-  // Returns true when the screen dirty region is non-empty.
-  bool Compose();
-  void ClearScreenDirty();
-  bool screenDirty() const;
-  int screenWidth() const { return screenW_; }
-  int screenHeight() const { return screenH_; }
-  // Screen texture (BGRA bytes as RGBA8) in the process-wide EGL share group,
-  // so the Renderer can sample it directly; 0 when no screen is allocated.
-  // Returned as uint32_t to keep GLES out of this header.
-  uint32_t screenTexture() const;
-  // Full screen (top-down, `screenW*4` stride) as BGRA. Dev/verification only.
-  bool ReadScreen(std::vector<uint8_t>* out);
-
-  // One-line summary of the ClearCodec read-modify-write traffic (flush count,
-  // map/decode time, bytes mapped, union-rectangle utilization). Dev/performance
-  // instrumentation, surfaced on the replay page so it can be read on-device.
-  std::string TrafficStats() const;
-
-  // Total time spent inside ClearCodec flushes (map/unmap + CPU decode). The
-  // caller can use the delta around ApplyCommand() to separate flush work from
-  // the command's own cost.
-  uint64_t ClearWorkUs() const;
-
-  // Upper bound, in pixels, for the union rectangle a queued ClearCodec run may
-  // cover before it is flushed. Smaller values mean less padding in the mapped
-  // staging buffer but more map/unmap round trips; 0 disables batching (one
-  // command per flush). This is the knob for trading sync count against mapped
-  // bytes - the right value depends on the device, so it is configurable rather
-  // than tuned to a simulator. Default: 1M pixels (~4 MB).
-  void SetClearBatchAreaLimit(int pixels);
-  int clearBatchAreaLimit() const;
-
-  // --- Pixel commands (FreeRDP GFX command semantics) ----------------------
-  // Applies one captured/received GFX command. `params`/`payload` may be null
-  // when their length is 0. Unknown command ids and unknown target surfaces are
-  // ignored.
-  void ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                    const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                    uint32_t payloadLen);
-
-  // Decodes one Progressive message payload ("WBT" container), updating the
-  // surface's persistent tile state. Returns false on GL failure.
-  bool DecodeMessage(uint16_t surfaceId, const uint8_t* payload, size_t size);
-
-  bool SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
-                 uint32_t rectCount);
-  // Uploads a BGRA rect into the surface (uncompressed 24/32bpp).
-  bool UploadBgra(uint16_t surfaceId, int left, int top, int width, int height,
-                  const uint8_t* bgra, int srcStride);
-  // Full-width row transfer, used to emulate ClearCodec (which must read the
-  // existing surface content for the pixels its bands do not overwrite).
-  bool DownloadRows(uint16_t surfaceId, int top, int height, uint8_t* dst, int dstStride);
-  bool UploadRows(uint16_t surfaceId, int top, int height, const uint8_t* src, int srcStride);
-  bool SurfaceToCache(uint16_t surfaceId, uint16_t slot, int x, int y, int width, int height);
-  bool CacheToSurface(uint16_t surfaceId, uint16_t slot, int dstX, int dstY);
-  void EvictCache(uint16_t slot);
-  bool SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, int width, int height,
-                        uint16_t dstSurfaceId, int dstX, int dstY);
-
-  // Full surface (top-down, `stride` bytes) as BGRA. Dev/verification only: it
-  // maps the GPU buffer back to the CPU.
-  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
-  // One surface rect as tightly packed BGRA (`width * 4` per row). Dev only, for
-  // the per-command A/B harness.
-  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
-                       std::vector<uint8_t>* out);
-  // Bytes this engine's bitmap cache holds for `slot`. Dev only.
-  bool ReadCacheEntry(uint16_t slot, int* width, int* height, std::vector<uint8_t>* out);
-
- private:
-  struct Impl;
-  Impl* impl_ = nullptr;
-  bool ready_ = false;
-  int screenW_ = 0;
-  int screenH_ = 0;
-
-  // ClearCodec is decoded on the CPU and is not self-contained, so each command
-  // needs a GPU->CPU->GPU read-modify-write of its band. The stream sends runs of
-  // consecutive ClearCodec commands for the same surface (measured ~17 on
-  // average, up to ~200), so they are queued and served by a single shared
-  // mapping instead of one map/unmap stall per command. Order is preserved: the
-  // queue is flushed, in arrival order, before any other command (and before
-  // every compose), and a run never spans two surfaces.
-  void QueueClear(uint16_t surfaceId, const uint8_t* payload, size_t payloadLen, int left,
-                  int top, int width, int height);
-  void FlushPendingClears();
-};
-
-// --- Shared command/present pipeline (session + replay harness) -------------
-
-// Command ids as delivered to the engine (mirrors the capture stream). A
-// capture carries raw ids; this enum documents the ones the engine implements.
+// Command ids as delivered to an engine (mirrors the capture stream). A capture
+// carries raw ids; this enum documents the ones the engines implement.
 enum GpuCmd : uint16_t {
   kGpuCmdWireToSurface = 0x0001,
   kGpuCmdSolidFill = 0x0004,
@@ -399,14 +248,6 @@ enum GpuCodec : uint32_t {
   kGpuCodecCaprogressive = 0x0009,
   kGpuCodecCaprogressiveV2 = 0x000D,
 };
-
-class Renderer;
-
-// Composes the engine screen and presents it, then clears the screen dirty gate.
-// The engine screen texture lives in the process-wide EGL share group, so the
-// Renderer samples it directly (no CPU readback/upload). Returns true when a
-// frame reached the screen.
-bool GpuPresentComposed(GfxGpuDesktop* engine, Renderer* renderer);
 
 }  // namespace hmrdp
 

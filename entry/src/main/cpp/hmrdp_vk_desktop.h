@@ -1,9 +1,8 @@
 /*
  * HmRdp - Vulkan GFX surface engine (V2 scope, doc_agent/gfx-engine.md §1).
  *
- * Reproduces the FreeRDP RDPGFX command semantics that GfxGpuDesktop
- * (hmrdp_rfx.{h,cpp}) implements on GLES 3.1 compute, so the replay harness, the
- * live shadow compare and the dev panel keep working unchanged: solid fill,
+ * Reproduces the FreeRDP RDPGFX command semantics (doc_agent/gfx-engine.md §0.2-§0.4)
+ * so the replay harness and the dev panel keep working: solid fill,
  * surface-to-surface copy, bitmap cache, uncompressed upload, output mapping,
  * screen compose and dirty tracking.
  *
@@ -78,7 +77,7 @@ class GfxVkDesktop {
   // ReadScreen/ReadSurface still return FreeRDP's BGRA bytes).
   bool swapRb() const;
 
-  // --- Surface lifecycle (same rules as GfxGpuDesktop) ----------------------
+  // --- Surface lifecycle -----------------------------------------------------
   // Allocates a persistent-mapped host-visible buffer, aligns width/height to
   // 16 and fills it with 0xFF. `format` is the wire format (0x20 -> BGRX32,
   // 0x21 -> BGRA32); either way the pixels stay BGRA bytes.
@@ -86,7 +85,7 @@ class GfxVkDesktop {
   void DeleteSurface(uint16_t surfaceId);
   const GpuSurface* FindSurface(uint16_t surfaceId) const;
   // 1:1 output mapping only; scaled mappings unmap the surface (unsupported,
-  // exactly like the current gdi/GLES behaviour).
+  // exactly like the gdi behaviour).
   void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
 
   // --- Screen (front buffer) -----------------------------------------------
@@ -147,9 +146,9 @@ class GfxVkDesktop {
   int screenH_ = 0;
 };
 
-// Composes the Vulkan engine screen and presents it through `renderer`. Same
-// contract as GpuPresentComposed: returns true when a frame reached the screen,
-// false when nothing was dirty (a static desktop must not present).
+// Composes the Vulkan engine screen and presents it through `renderer`. Returns
+// true when a frame reached the screen, false when nothing was dirty (a static
+// desktop must not present).
 bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer);
 
 }  // namespace hmrdp

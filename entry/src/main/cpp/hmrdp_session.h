@@ -17,7 +17,7 @@
 #include <freerdp/client/cliprdr.h>
 
 #include "hmrdp_audio.h"
-#include "hmrdp_renderer.h"
+#include "hmrdp_vk_renderer.h"
 
 namespace hmrdp {
 
@@ -68,9 +68,6 @@ struct RdpOptions {
   std::string gatewayDomain;
 };
 
-class GfxGpuDesktop;
-class GfxClearDecoder;
-
 class Session {
  public:
   using EventFn = std::function<void(SessionEvent, const std::string&)>;
@@ -81,7 +78,10 @@ class Session {
   Session(const Session&) = delete;
   Session& operator=(const Session&) = delete;
 
-  Renderer* renderer() { return &renderer_; }
+  // The presenter the ArkTS surface lifecycle drives (setSurface/updateSurface/
+  // clearSurface): the Vulkan one, shared by every path (there is only one
+  // backend now).
+  VkRenderer* renderer() { return &renderer_; }
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
@@ -132,20 +132,6 @@ class Session {
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
   void HandleEndPaint();
-  // Feeds one GFX command to the GPU desktop engine (doc_agent/gfx-engine.md §1). Called from
-  // the wrapped RdpgfxClientContext callbacks on the RDP thread, in addition to
-  // gdi, while the GPU path is being brought up. No-op unless the engine is
-  // enabled and initialised.
-  void ApplyGfxCommand(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                       const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                       uint32_t payloadLen);
-  // True once the GPU desktop engine is initialised; when it is, the GFX
-  // callbacks stop chaining to gdi (see hmrdp_session.cpp kGpuShadowCompare).
-  bool GpuDesktopReady() const { return gpuDesktop_ != nullptr; }
-  // Composes the engine's desktop and presents the shared screen texture.
-  // Returns true when a frame was presented. Called from the GFX EndFrame
-  // callback in takeover mode, and from EndPaint in shadow-compare mode.
-  bool PresentGpuFrame();
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
@@ -182,16 +168,8 @@ class Session {
  private:
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
-  // Lazily creates the GPU desktop engine (only when hardware decode is enabled
-  // and the device has GLES 3.1 compute). Safe to call repeatedly.
-  void EnsureGpuDesktop();
-  void ReleaseGpuDesktop();
-  // Frame telemetry shared by the gdi and GPU present paths.
+  // Frame telemetry shared by every present path.
   void AfterPresent(uint64_t renderStartUs);
-  // Dev shadow check: compares the engine's composed screen with gdi's primary
-  // buffer a few times per second and logs the mismatch, so the GPU path can be
-  // validated against FreeRDP on a live session.
-  void GpuShadowCheck();
   // Samples RTT / frame rate / transport throughput and emits kMetrics.
   void EmitMetrics();
   // Records an input timestamp for the input-to-frame response measurement.
@@ -200,7 +178,9 @@ class Session {
   void MarkInput();
 
   freerdp* instance_ = nullptr;
-  Renderer renderer_;
+  // The Vulkan presenter. FreeRDP feeds GFX commands on one thread while gdi's
+  // EndPaint callback can fire on another, so every present is serialised.
+  VkRenderer renderer_;
   AudioOutput audio_;
   EventFn eventFn_;
   std::string lastError_;
@@ -216,24 +196,13 @@ class Session {
   // drained on the event thread).
   std::atomic<uint32_t> frameCount_{0};
   // Latency telemetry accumulated on the RDP event thread and drained once per
-  // second: total DrawFrame time and the input-to-frame samples.
+  // second: total present time and the input-to-frame samples.
   uint64_t renderAccumUs_ = 0;
   uint32_t renderSamples_ = 0;
   // Decode time (GFX SurfaceCommand) accumulated per window; added to the render
   // time so "本机" covers decode + present.
   std::atomic<uint64_t> decodeAccumUs_{0};
   void* gfxContext_ = nullptr;
-  // GPU desktop engine (doc_agent/gfx-engine.md §1). Created lazily on the RDP thread when the
-  // hardware-decode setting is on; gdi still decodes alongside it for now.
-  // FreeRDP feeds the GFX commands on one thread while gdi's EndPaint callback
-  // can fire on another, so every engine/renderer GL access is serialised.
-  std::mutex gpuMutex_;
-  std::unique_ptr<GfxGpuDesktop> gpuDesktop_;
-  std::unique_ptr<GfxClearDecoder> gpuClearDecoder_;
-  bool gpuDesktopTried_ = false;
-  uint64_t gpuPresentedFrames_ = 0;
-  uint64_t gpuShadowChecks_ = 0;
-  uint64_t gpuShadowBad_ = 0;
   // Ring of the most recent input-to-frame measurements; the emitted value is
   // their mean (this is a statistic, not a hard real-time figure).
   uint64_t responseSamplesUs_[5] = {0};

@@ -7,7 +7,8 @@
 - 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 目标：HarmonyOS 6.1.0（API 23）
 - RDP 引擎：[FreeRDP](https://github.com/FreeRDP/FreeRDP)（源码交叉编译到 `aarch64-linux-ohos` /
   `x86_64-linux-ohos`）；界面 ArkTS/ArkUI，输入经 Node-API 桥接转发；
-  **GFX 画面默认由 GPU 引擎（Vulkan）接管**，关闭「硬件解码」或不支持时回退 FreeRDP gdi。
+  **live 画面由 FreeRDP gdi 出、经 Vulkan 呈现器上屏**；GPU 引擎（Vulkan）目前只跑 dev 回放/对比，
+  「硬件解码」设置项保留但尚未接入 live（见 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §5/§7）。
 
 ## AI 助手约定（硬规则）
 

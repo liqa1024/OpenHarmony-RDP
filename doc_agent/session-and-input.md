@@ -74,8 +74,8 @@
   `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`）：
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端注册
     该回调），故连接时给 `context->autodetect` 自行注册回调捕获。
-  - **本机** = **解码 + 呈现**：gdi 路径为解码链式包裹 + `DrawFrame`；GPU 接管后为引擎
-    `Compose()` + 上屏（此时"解码"计 0，因为解码已在 GPU）。两者按帧平均。
+  - **本机** = **解码 + 呈现**：解码由链式包裹的 `SurfaceCommand` 计时，呈现为 gdi 帧
+    `VkRenderer::PresentBgraFrame` 的时间。两者按帧平均。
   - **响应**：RDP 输入与画面是两条**无回显**的流，输入延迟只能**推断**——仅在**空闲 ≥200ms 后输入、
     2s 内出现首帧**时采样，取近 5 次均值；不做该约束会退化成帧节拍。
   - **带宽**：`freerdp_get_stats()` 的收发字节差分。

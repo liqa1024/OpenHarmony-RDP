@@ -64,8 +64,6 @@ endforeach()
 add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
-    hmrdp_renderer.cpp
-    hmrdp_egl.cpp
     hmrdp_audio.cpp
     hmrdp_rfx.cpp
     hmrdp_gfx_capture.cpp
@@ -94,8 +92,6 @@ target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
     native_window
-    EGL
-    GLESv3
     ${FREERDP_LIBS}/libfreerdp3.so
     ${FREERDP_LIBS}/libwinpr3.so
     ${FREERDP_LIBS}/libfreerdp-client3.so

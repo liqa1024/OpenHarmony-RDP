@@ -1,5 +1,4 @@
-// HmRdp - RemoteFX Progressive tile decoder (Vulkan SPIR-V variant of the GLES
-// kernel in hmrdp_rfx.cpp §1, kept byte-for-byte identical in behaviour).
+// HmRdp - RemoteFX Progressive tile decoder (Vulkan compute shader).
 //
 // One invocation per (tile, component) stream band: kFirst runs RLGR1 ->
 // dequantise -> diff -> extrapolate inverse DWT; kUpgrade runs the SRL/raw
