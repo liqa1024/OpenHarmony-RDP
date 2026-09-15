@@ -306,8 +306,8 @@ napi_value SetSurface(napi_env env, napi_callback_info info) {
   }
   DestroyWindowLocked(handle);
   g_windows[handle] = window;
-  session->renderer()->SetSurface(window, width, height);
-  session->renderer()->Prepare();
+  session->presenter()->SetSurface(window, width, height);
+  session->presenter()->Prepare();
   HMRDP_LOGI("session %{public}d surface bound %{public}dx%{public}d",
              static_cast<int>(handle), width, height);
   return CreateUndefined(env);
@@ -328,7 +328,7 @@ napi_value UpdateSurface(napi_env env, napi_callback_info info) {
   std::lock_guard<std::mutex> lock(g_mutex);
   Session* session = FindSession(handle);
   if (session != nullptr) {
-    session->renderer()->ResizeSurface(width, height);
+    session->presenter()->ResizeSurface(width, height);
   }
   return CreateUndefined(env);
 }
@@ -344,7 +344,7 @@ napi_value ClearSurface(napi_env env, napi_callback_info info) {
   std::lock_guard<std::mutex> lock(g_mutex);
   Session* session = FindSession(handle);
   if (session != nullptr) {
-    session->renderer()->DestroySurface();
+    session->presenter()->DestroySurface();
   }
   DestroyWindowLocked(handle);
   return CreateUndefined(env);

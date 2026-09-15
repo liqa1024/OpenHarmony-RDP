@@ -45,13 +45,14 @@
 | 路径 | 职责 |
 |---|---|
 | `hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + 各类查询/开关（音频能力、触屏高刷、RDP 光标、硬件解码…） |
-| `hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；GFX 回调只做解码计时，画面由 gdi 出、经 `VkRenderer` 上屏 |
+| `hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；GFX 回调只做解码计时，画面由 gdi 出、经 `WinPresenter` 上屏 |
 | `hmrdp_gfx_driver.{h,cpp}` | RDPGFX PDU → 引擎命令的统一映射（实机会话与离线回放共用）；离线回放泵与"逐命令交错 A/B"的链路 |
 | `hmrdp_gfx_capture.{h,cpp}` | 原始通道录制（`hmrdp_gfx.bin`）与读取 |
-| `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的对比路线）；`PresentGdiFrame` 为 live gdi 回退与 CPU 回放共用 |
+| `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的对比路线）；`PresentGdiFrame` 为 live 与 CPU 回放共用 |
+| `hmrdp_win_presenter.{h,cpp}` | **CPU 帧呈现器**（XComponent 原生窗口缓冲队列）：脏区累积 + `RequestBuffer`/`Map`/`FlushBuffer`，**不依赖 Vulkan/EGL/GLES**，是 CPU/gdi 链路的保底上屏路径 |
 | `hmrdp_replay.{h,cpp}` | dev 回放页的引擎侧：把捕获喂给引擎/gdi 并上屏、逐帧对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
 | `hmrdp_vk_context.{h,cpp}` | Vulkan 上下文：`dlopen` + 标准能力探测 + 进程级 instance/device/queue + 内存类型 + 延迟销毁 |
-| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + 缩放/letterbox blit；两条素材来源——引擎屏幕镜像，或 CPU/gdi 帧（`PresentBgraFrame`） |
+| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏（**只服务引擎屏幕镜像**）：`VK_OHOS_surface` + swapchain + 缩放/letterbox blit |
 | `hmrdp_vk_desktop.{h,cpp}` | Vulkan 表面引擎：表面注册表 + 命令执行 + 合成 + 屏幕脏区（host-visible 缓冲存储） |
 | `shaders/*.comp` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入 |
 | `hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |

@@ -152,8 +152,10 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ### 2.3 帧呈现（gdi 回退路径）
 
-- 按**脏区**部分上传/呈现：引擎屏幕镜像用 `vkCmdCopyBufferToImage` + `bufferRowLength`；CPU 帧用
-  `VkRenderer::PresentBgraFrame` 先把脏矩形累积进一张持久桌面图再 blit。
+- 按**脏区**部分上传/呈现。**CPU/gdi 帧**走 `WinPresenter`（XComponent 原生窗口缓冲队列：请求缓冲 → map →
+把 1:1 居中/裁剪的画面写进去 → flush），**不含任何 GPU API**；**引擎屏幕镜像**走 `VkRenderer`
+（`vkCmdCopyBufferToImage` + `bufferRowLength`，image-to-image 无回读）。两条路径按帧来源分工，
+所以没有可用 Vulkan 驱动的设备仍能显示 gdi 画面。
 - **不要再叠加 present-on-change**：静止态已由 FreeRDP 的失效区门控保证
   （`HmrdpBeginPaint` 把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion`
   才置 FALSE，`HandleEndPaint` 对 `null` 直接返回）——额外 `memcmp` 只增加内存/带宽开销。
@@ -195,8 +197,8 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - FreeRDP 的 RDPGFX 回调必须接上 `freerdp_client_OnChannelConnectedEventHandler`（绑到
   `ChannelConnected`/`ChannelDisconnected`），否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
 - live 的 GPU 接管由会话侧驱动；保留**双渲染影子对照**（引擎 vs gdi）作为运行时体检。
-- 引擎屏幕经渲染器上屏（`GfxVkDesktop::Compose()` + `VkRenderer`）；GPU 接管时"本机解码耗时"计 0
-  （解码已在 GPU），含义见 [`session-and-input.md`](session-and-input.md) 的遥测。
+- 引擎屏幕经 `GfxVkDesktop::Compose()` + `VkRenderer` 上屏（目前只用于回放/对比路线）；GPU 接管时
+  "本机解码耗时"计 0（解码已在 GPU），含义见 [`session-and-input.md`](session-and-input.md) 的遥测。
 
 ## 5. 历史包袱（**不要在新代码里依赖**）
 
@@ -218,9 +220,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   `compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`。
   每 30 帧采一次（`kCompareEvery`），`bad` = 采样的帧里有多少帧与 gdi 不一致；目标 **`bad=0`**。
 - 首次分歧会写一份 `<capture>.cmpdump`（逐像素 e/g 值），是定位分叉的第一手材料。
-- **三条路线的呈现方式**：`Vulkan` 由引擎 `Compose()` 出屏幕镜像后 `VkRenderer` 上屏；
-  `CPU` 路线的 gdi 帧走 `VkRenderer::PresentBgraFrame`（CPU 帧上传，脏矩形累积在一张持久桌面图里，
-  swapchain 为 RGBA8 时在 CPU 侧换 R/B）——与 live 会话是同一条路径，所以两者不会各自分叉。
+- **三条路线的呈现方式**：`Vulkan`/`Vulkan对比` 由引擎 `Compose()` 出屏幕镜像后 `VkRenderer` 上屏；
+  `CPU` 路线的 gdi 帧走 `WinPresenter`（原生窗口缓冲，脏矩形累积在 CPU 侧桌面缓冲里，再 1:1 居中写入窗口
+  缓冲）——与 live 会话是同一条路径，所以两者不会各自分叉。
 - **引擎性能归因三件套（dev，只在真机跑）**：
   1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本（§1）；
   2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返（实测 ~0.5ms）→ 用来区分"同步点固定开销"与
@@ -274,7 +276,7 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 - **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——
   「硬件解码」已完成（`DeviceCapabilities.hardwareDecode()`，见
   [`native-libraries.md`](native-libraries.md) §6）。
-- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi +
-  `VkRenderer::PresentBgraFrame`）。届时「硬件解码（RFX）」设置项才真正生效（是否可用的判据取
+- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + `WinPresenter`，
+  不依赖任何 GPU API）。届时「硬件解码（RFX）」设置项才真正生效（是否可用的判据取
   `vulkanInfo` / `GetVulkanCapabilities()`）；在此之前它只是被保留、不参与决策。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。

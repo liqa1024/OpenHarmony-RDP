@@ -2,13 +2,12 @@
  * HmRdp - Vulkan presenter for one XComponent surface.
  *
  * instance -> device -> VkSurfaceKHR -> swapchain, plus the letterboxed blit of
- * a source picture onto the swapchain. Two sources are supported:
+ * the GPU desktop engine's composed screen image onto the swapchain (image to
+ * image, no CPU round trip).
  *
- *  - `PresentImage`: the GPU desktop engine's composed screen image (image to
- *    image, no CPU round trip);
- *  - `PresentBgraFrame`: one CPU (gdi) frame region uploaded into a persistent
- *    desktop image - the live fallback path when the GPU engine does not take
- *    over, and the replay harness' CPU route.
+ * CPU (gdi) frames do NOT come through here: they go through WinPresenter and the
+ * native window buffer queue, so the soft-decode path needs no GPU API at all
+ * (hmrdp_win_presenter.h). This presenter only serves the engine screen.
  */
 #ifndef HMRDP_VK_RENDERER_H
 #define HMRDP_VK_RENDERER_H
@@ -45,14 +44,6 @@ class VkRenderer {
   // queue, image-to-image. `imageFormat` must equal the swapchain format -
   // channel order cannot be converted by a blit.
   bool PresentImage(VkImage image, VkFormat imageFormat, int width, int height);
-  // Presents one CPU (gdi) frame region through a persistent desktop image.
-  // `data` is the whole desktop buffer (top-down BGRA, `srcStride` bytes/row) and
-  // `x,y,width,height` the region that changed; `desktopWidth/Height` are the
-  // desktop dimensions used for the letterbox. The first frame after a (re)create
-  // and every desktop-size change upload the whole desktop, so the caller does
-  // not have to track that itself; R/B are swapped when the swapchain is RGBA8.
-  bool PresentBgraFrame(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
-                        int x, int y, int width, int height);
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 
@@ -84,12 +75,6 @@ class VkRenderer {
                         uint32_t imageIndex);
   // Ends `cmd`, submits it with this frame slot's fence and presents the image.
   bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex);
-  // Upload path of PresentBgraFrame: creates/keeps the desktop image and its
-  // staging buffers, and records one dirty-rect upload into `cmd`.
-  bool EnsureDesktopImageLocked(int width, int height);
-  void DestroyDesktopImageLocked();
-  bool EnsureStageLocked(size_t bytes);
-  void DestroyStageLocked();
 
   // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;
@@ -120,23 +105,6 @@ class VkRenderer {
   // long real-device run is verifiable from hilog alone (no UI needed).
   uint64_t presentCount_ = 0;
 
-  // CPU frame path: the accumulated desktop picture the dirty rects are uploaded
-  // into. It is kept in VK_IMAGE_LAYOUT_GENERAL for its whole life, so no layout
-  // tracking is needed (the blit reads it in GENERAL, like the engine screen).
-  VkImage desktopImage_ = VK_NULL_HANDLE;
-  VkDeviceMemory desktopImageMemory_ = VK_NULL_HANDLE;
-  VkFormat desktopImageFormat_ = VK_FORMAT_UNDEFINED;
-  int desktopImageWidth_ = 0;
-  int desktopImageHeight_ = 0;
-  // Set when the desktop image was just (re)created: the next frame must upload
-  // the whole desktop, because the image starts out undefined.
-  bool desktopImageFullUpload_ = true;
-  // One host-visible staging buffer per frame in flight, so a frame's upload can
-  // never race the copy of the frame that is still executing.
-  VkBuffer stageBuffers_[kFramesInFlight] = {};
-  VkDeviceMemory stageMemories_[kFramesInFlight] = {};
-  void* stageMapped_[kFramesInFlight] = {};
-  size_t stageCapacities_[kFramesInFlight] = {};
 
   std::string error_;
   std::string info_;

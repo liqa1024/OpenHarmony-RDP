@@ -21,7 +21,7 @@
 
 namespace hmrdp {
 
-class VkRenderer;
+class WinPresenter;
 
 // The free-running CPU desktop. One instance per replay run; Init() builds the
 // context, Shutdown() tears it down.
@@ -72,12 +72,12 @@ class GfxCpuDesktop {
   bool resizing_ = false;
 };
 
-// Reads gdi's invalid rectangle out of the primary buffer and uploads it through
-// `renderer` (the Vulkan presenter's CPU frame path). Shared by the live gdi
-// session and the offline CPU replay route so the two present exactly the same
-// way. Returns true when a frame was actually drawn (a null/empty invalid region
-// is a no-op).
-bool PresentGdiFrame(rdpGdi* gdi, VkRenderer* renderer);
+// Reads gdi's invalid rectangle out of the primary buffer and hands it to the
+// CPU frame presenter (native window buffer queue, no GPU API). Shared by the
+// live gdi session and the offline CPU replay route so the two present exactly
+// the same way. Returns true when a frame was actually drawn (a null/empty
+// invalid region is a no-op).
+bool PresentGdiFrame(rdpGdi* gdi, WinPresenter* presenter);
 
 }  // namespace hmrdp
 

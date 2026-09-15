@@ -29,6 +29,7 @@
 #include "hmrdp_rfx.h"  // kGpuCmd / kGpuCodec / ParseRfxProgressive
 #include "hmrdp_vk_desktop.h"
 #include "hmrdp_vk_renderer.h"
+#include "hmrdp_win_presenter.h"
 
 namespace hmrdp {
 
@@ -320,10 +321,10 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     // The pure CPU route presents raw gdi frames through the Vulkan presenter;
     // the engine route builds its own presenter inside the worker.
     if (route == GfxReplayRoute::kCpu) {
-      renderer_ = std::make_unique<VkRenderer>();
-      renderer_->SetSurface(window_, surfaceW_, surfaceH_);
+      presenter_ = std::make_unique<WinPresenter>();
+      presenter_->SetSurface(window_, surfaceW_, surfaceH_);
     } else {
-      renderer_.reset();
+      presenter_.reset();
     }
     running_.store(true);
     thread_ = std::thread(&GfxReplay::Run, this);
@@ -373,7 +374,7 @@ void GfxReplay::Stop() {
     thread_.join();
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  renderer_.reset();
+  presenter_.reset();
   if (window_ != nullptr) {
     OH_NativeWindow_DestroyNativeWindow(static_cast<OHNativeWindow*>(window_));
     window_ = nullptr;
@@ -698,7 +699,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // exactly like a live session. Only the destination changes: gdi's primary
   // buffer is uploaded through the presenter's CPU frame path instead of the
   // engine's screen texture, so this route is the CPU reference for the engine.
-  renderer_->Prepare();
+  presenter_->Prepare();
   GfxCpuDesktop cpu;
   std::string error;
   if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
@@ -1037,10 +1038,10 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   const int pw = pendingW_.exchange(0);
   const int ph = pendingH_.exchange(0);
   if (pw > 0 && ph > 0) {
-    renderer_->ResizeSurface(pw, ph);
+    presenter_->ResizeSurface(pw, ph);
   }
   const int64_t presentStart = NowUs();
-  const bool presented = PresentGdiFrame(cpu->gdi(), renderer_.get());
+  const bool presented = PresentGdiFrame(cpu->gdi(), presenter_.get());
   RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
   frames_.fetch_add(1);
   if (presented) {

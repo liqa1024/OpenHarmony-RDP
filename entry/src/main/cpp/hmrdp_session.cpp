@@ -1940,7 +1940,7 @@ void Session::Disconnect() {
   clipboardReady_ = false;
   running_ = false;
   audio_.Close();
-  renderer_.Reset();
+  presenter_.Reset();
 }
 
 void Session::HandlePostConnect() {
@@ -1981,7 +1981,7 @@ void Session::HandleEndPaint() {
   // path and the replay present exactly the same way. It only fails when the
   // swapchain is not ready yet or nothing is dirty; a successful call is a real
   // present (fps / 本机 telemetry / input response).
-  if (!PresentGdiFrame(gdi, &renderer_)) {
+  if (!PresentGdiFrame(gdi, &presenter_)) {
     return;
   }
   AfterPresent(renderStart);
