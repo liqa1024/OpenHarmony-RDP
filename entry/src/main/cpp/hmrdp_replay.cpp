@@ -73,6 +73,15 @@ class ReplayDesktop {
   // Bytes the engine's bitmap cache holds for `slot`. Dev only.
   virtual bool ReadCacheEntry(uint16_t slot, int* width, int* height,
                               std::vector<uint8_t>* out) = 0;
+  // Dev/verification only: the engine's persistent Progressive state for one
+  // (tile, component) stream, for the coefficient-level A/B against FreeRDP
+  // (see GfxVkDesktop::ReadRfxTileState). Backends without such state return
+  // false.
+  virtual bool ReadRfxTileState(uint16_t surfaceId, uint32_t tileIndex, int component,
+                                std::vector<int16_t>* cur, std::vector<int16_t>* sign,
+                                std::vector<uint8_t>* bitPos) {
+    return false;
+  }
   virtual int screenWidth() const = 0;
   virtual int screenHeight() const = 0;
   // One-line engine summary for the dev panel.
@@ -238,6 +247,13 @@ class VulkanReplayDesktop : public ReplayDesktop {
 
   // The Vulkan engine decodes ClearCodec directly on the mapped surface, so it
   // has no staging flush to account for.
+  // The Vulkan engine's Progressive state buffers are persistent-mapped, so the
+  // per-(tile,component) decoder state can be read back for the A/B.
+  bool ReadRfxTileState(uint16_t surfaceId, uint32_t tileIndex, int component,
+                        std::vector<int16_t>* cur, std::vector<int16_t>* sign,
+                        std::vector<uint8_t>* bitPos) override {
+    return engine_->ReadRfxTileState(surfaceId, tileIndex, component, cur, sign, bitPos);
+  }
   uint64_t ClearWorkUs() const override { return 0; }
   bool Present() override { return GpuVkPresentComposed(engine_.get(), renderer_.get()); }
   bool screenDirty() const override { return engine_->screenDirty(); }
@@ -1317,6 +1333,13 @@ void GfxReplay::GdiAbFlush() {
       if (!rect.detail.empty()) {
         HMRDP_LOGW("gfx replay: gdiAB CULPRIT tile %{public}s", rect.detail.c_str());
       }
+      // Dev: coefficient-level A/B for the failing tile (FreeRDP's own decoder
+      // state vs the engine's persistent state buffers, exposed by
+      // patch-freerdp.ps1 step 8). `cur` differing points at the pre-DWT path
+      // (RLGR / dequant / accumulation); only `bitPos` differing points at the
+      // UPGRADE refinement width; nothing differing points at the DWT or the
+      // colour conversion.
+      GdiAbCompareState(rect.surfaceId, x / 64, y / 64);
       if (rect.payloadSlot >= 0 && !gdiAbPayloads_.empty()) {
         // Offline-verifiable copy of the exact message that diverged.
         const std::vector<uint8_t>& bytes =
@@ -1398,6 +1421,167 @@ void GfxReplay::GdiAbFlush() {
           "gfx replay: gdiAB watch(%{public}d,%{public}d) op=%{public}s rect=(%{public}d,%{public}d)+%{public}dx%{public}d engine=b%{public}u g%{public}u r%{public}u gdi=b%{public}u g%{public}u r%{public}u",
           gdiWatchX_, gdiWatchY_, rect.op.c_str(), x, y, width, height, actual[eo], actual[eo + 1],
           actual[eo + 2], gdiSurface[go], gdiSurface[go + 1], gdiSurface[go + 2]);
+    }
+  }
+}
+
+void GfxReplay::GdiAbCompareState(uint16_t surfaceId, int xIdx, int yIdx) {
+  // FreeRDP side: the mirror's PROGRESSIVE_CONTEXT (same command stream position
+  // as the engine here, because the mirror is driven per command).
+  if (HmrdpProgressiveTileState == nullptr || refProg_ == nullptr || desktop_ == nullptr ||
+      xIdx < 0 || yIdx < 0) {
+    return;
+  }
+  int engW = 0;
+  int engH = 0;
+  int engStride = 0;
+  if (!desktop_->GetSurfaceInfo(surfaceId, &engW, &engH, &engStride) || engW <= 0) {
+    return;
+  }
+  const int engGridW = (engW + 63) / 64;
+  const int engGridH = (engH + 63) / 64;
+  for (int c = 0; c < 3; ++c) {
+    HmrdpProgressiveTileStateData st{};
+    if (HmrdpProgressiveTileState(refProg_, surfaceId, static_cast<uint16_t>(xIdx),
+                                  static_cast<uint16_t>(yIdx), static_cast<uint16_t>(c),
+                                  &st) != 1) {
+      HMRDP_LOGW("gfx replay: gdiAB state c=%{public}d unavailable on the FreeRDP side", c);
+      continue;
+    }
+    const uint32_t gridMismatch =
+        (st.gridWidth != static_cast<uint32_t>(engGridW) ||
+         st.gridHeight != static_cast<uint32_t>(engGridH))
+            ? 1u
+            : 0u;
+    std::vector<int16_t> ecur;
+    std::vector<int16_t> esign;
+    std::vector<uint8_t> ebp;
+    if (!desktop_->ReadRfxTileState(surfaceId,
+                                    static_cast<uint32_t>(yIdx) * static_cast<uint32_t>(engGridW) +
+                                        static_cast<uint32_t>(xIdx),
+                                    c, &ecur, &esign, &ebp)) {
+      HMRDP_LOGW("gfx replay: gdiAB state c=%{public}d unavailable on the engine side", c);
+      continue;
+    }
+    uint32_t curDiff = 0;
+    uint32_t signDiff = 0;
+    uint32_t bpDiff = 0;
+    int firstIdx = -1;
+    int maxAbs = 0;
+    for (size_t i = 0; i < ecur.size() && i < 4096u; ++i) {
+      const int e = ecur[i];
+      const int f = st.current == nullptr ? 0 : st.current[i];
+      if (e != f) {
+        if (firstIdx < 0) {
+          firstIdx = static_cast<int>(i);
+        }
+        const int d = e > f ? e - f : f - e;
+        if (d > maxAbs) {
+          maxAbs = d;
+        }
+        curDiff++;
+      }
+      const int es = i < esign.size() ? esign[i] : 0;
+      const int fs = st.sign == nullptr ? 0 : st.sign[i];
+      if (es != fs) {
+        signDiff++;
+      }
+    }
+    for (size_t i = 0; i < ebp.size() && i < 10u; ++i) {
+      if (ebp[i] != st.bitPos[i]) {
+        bpDiff++;
+      }
+    }
+    char engBp[64];
+    char fdpBp[64];
+    std::snprintf(engBp, sizeof(engBp), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u", ebp.size() > 0 ? ebp[0] : 0u,
+                  ebp.size() > 1 ? ebp[1] : 0u, ebp.size() > 2 ? ebp[2] : 0u,
+                  ebp.size() > 3 ? ebp[3] : 0u, ebp.size() > 4 ? ebp[4] : 0u,
+                  ebp.size() > 5 ? ebp[5] : 0u, ebp.size() > 6 ? ebp[6] : 0u,
+                  ebp.size() > 7 ? ebp[7] : 0u, ebp.size() > 8 ? ebp[8] : 0u,
+                  ebp.size() > 9 ? ebp[9] : 0u);
+    std::snprintf(fdpBp, sizeof(fdpBp), "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u", st.bitPos[0], st.bitPos[1],
+                  st.bitPos[2], st.bitPos[3], st.bitPos[4], st.bitPos[5], st.bitPos[6],
+                  st.bitPos[7], st.bitPos[8], st.bitPos[9]);
+    HMRDP_LOGW(
+        "gfx replay: gdiAB state tile(%{public}d,%{public}d) c=%{public}d curDiff=%{public}u/4096 firstIdx=%{public}d engine=%{public}d fdp=%{public}d maxAbs=%{public}d signDiff=%{public}u/4096 bpDiff=%{public}u/10 engBp=[%{public}s] fdpBp=[%{public}s] fdpGrid=(%{public}u,%{public}u) engGrid=(%{public}d,%{public}d) gridMismatch=%{public}u",
+        xIdx, yIdx, c, static_cast<unsigned>(curDiff), firstIdx,
+        firstIdx >= 0 ? static_cast<int>(ecur[static_cast<size_t>(firstIdx)]) : 0,
+        (firstIdx >= 0 && st.current != nullptr) ? static_cast<int>(st.current[firstIdx]) : 0,
+        maxAbs, static_cast<unsigned>(signDiff), static_cast<unsigned>(bpDiff), engBp, fdpBp,
+        st.gridWidth, st.gridHeight, engGridW, engGridH, static_cast<unsigned>(gridMismatch));
+  }
+  // Dev: with every pre-DWT state buffer identical, the divergence can only be
+  // in the IDWT or the colour conversion. Dump both sides' inputs/results once so
+  // the two stages can be bisected offline (see VULKAN_DEBUG-TODO.md §0):
+  //   engine `cur` (3x4096 int16) | FreeRDP tile->data (64x64 BGRA) |
+  //   engine surface tile (64x64 BGRA) | fdpBp/engBp (3x10) | header.
+  if (!tileDumpDone_) {
+    std::ofstream dump(gfxPath_ + ".tiledump", std::ios::out | std::ios::binary | std::ios::trunc);
+    if (dump) {
+      const int32_t header[6] = {static_cast<int32_t>(surfaceId), xIdx, yIdx, engGridW, engGridH, 0};
+      dump.write(reinterpret_cast<const char*>(header), sizeof(header));
+      bool haveEngineData = true;
+      for (int c = 0; c < 3; ++c) {
+        std::vector<int16_t> ecur;
+        std::vector<int16_t> esign;
+        std::vector<uint8_t> ebp;
+        if (!desktop_->ReadRfxTileState(
+                surfaceId, static_cast<uint32_t>(yIdx) * static_cast<uint32_t>(engGridW) +
+                               static_cast<uint32_t>(xIdx),
+                c, &ecur, &esign, &ebp) ||
+            ecur.size() != 4096) {
+          haveEngineData = false;
+          break;
+        }
+        dump.write(reinterpret_cast<const char*>(ecur.data()), 4096 * 2);
+      }
+      HmrdpProgressiveTileStateData st{};
+      const int16_t* fdpCurrent[3] = {nullptr, nullptr, nullptr};
+      const uint8_t* fdpTile = nullptr;
+      for (int c = 0; c < 3 && haveEngineData; ++c) {
+        HmrdpProgressiveTileStateData one{};
+        if (HmrdpProgressiveTileState(refProg_, surfaceId, static_cast<uint16_t>(xIdx),
+                                      static_cast<uint16_t>(yIdx), static_cast<uint16_t>(c),
+                                      &one) != 1) {
+          haveEngineData = false;
+          break;
+        }
+        fdpCurrent[c] = one.current;
+        fdpTile = one.data;
+        if (c == 0) {
+          st = one;
+        }
+        dump.write(reinterpret_cast<const char*>(one.bitPos), 10);
+      }
+      if (haveEngineData && fdpTile != nullptr && fdpCurrent[0] != nullptr) {
+        dump.write(reinterpret_cast<const char*>(fdpTile), 64 * 64 * 4);
+        std::vector<uint8_t> engTile;
+        if (desktop_->ReadSurfaceRect(surfaceId, xIdx * 64, yIdx * 64, 64, 64, &engTile) &&
+            engTile.size() >= 64u * 64u * 4u) {
+          dump.write(reinterpret_cast<const char*>(engTile.data()), 64 * 64 * 4);
+        }
+        // gdi's own surface tile: the authoritative reference (gdi's update_tiles
+        // re-composites the whole frame's tile list on every message, the engine
+        // only composites the message's own tiles - see VULKAN_DEBUG-TODO §0).
+        int gw = 0;
+        int gh = 0;
+        int gstride = 0;
+        uint32_t gformat = 0;
+        const uint8_t* gdiSurface =
+            cpuDesktop_ == nullptr ? nullptr
+                                   : cpuDesktop_->SurfaceData(surfaceId, &gw, &gh, &gstride, &gformat);
+        if (gdiSurface != nullptr && gstride > 0 && xIdx * 64 + 64 <= gw && yIdx * 64 + 64 <= gh) {
+          for (int row = 0; row < 64; ++row) {
+            dump.write(reinterpret_cast<const char*>(gdiSurface +
+                                                     static_cast<size_t>(yIdx * 64 + row) * gstride +
+                                                     static_cast<size_t>(xIdx * 64) * 4),
+                       64 * 4);
+          }
+        }
+      }
+      tileDumpDone_ = true;
+      HMRDP_LOGW("gfx replay: gdiAB tile dump written (%s.tiledump)", gfxPath_.c_str());
     }
   }
 }

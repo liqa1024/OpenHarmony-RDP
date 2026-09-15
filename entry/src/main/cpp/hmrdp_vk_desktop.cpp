@@ -175,6 +175,14 @@ struct GfxVkDesktop::Impl {
     GpuSurface meta;
     GpuBuffer gpu;
     RfxState rfx;
+    // Tiles decoded in the current RDPGFX frame. FreeRDP's update_tiles
+    // re-composites all of them (clipped by the current message's region rects)
+    // on *every* Progressive message of the frame - PROGRESSIVE_SURFACE_CONTEXT::
+    // numUpdatedTiles is reset only when the frame id changes - and the engine
+    // has to mirror that (see DecodeProgressive). rameTileSeen dedups and is
+    // sized gridSize.
+    std::vector<uint32_t> frameTiles;
+    std::vector<uint8_t> frameTileSeen;
   };
 
   // A bitmap-cache slot. `gpu` is a grow-only allocation; `width`/`height` are
@@ -276,6 +284,10 @@ struct GfxVkDesktop::Impl {
   uint64_t rfxNonExtrapolate = 0;
   uint64_t rfxSkippedTiles = 0;
   uint64_t rfxParseErrors = 0;
+  // Progressive tiles re-composited because FreeRDP's update_tiles re-stamps the
+  // whole frame's tile list on every message (see DecodeProgressive).
+  uint64_t restamped = 0;
+  uint64_t rfxMultiRegion = 0;
   uint64_t rfxOriginNonZero = 0;
 
   // Screen dirty rectangle (0xFF/0 initialised, mirrors GfxGpuDesktop).
@@ -1285,6 +1297,11 @@ struct GfxVkDesktop::Impl {
     tiles.reserve(256);
     std::vector<uint32_t> rectPool;
     rectPool.reserve(256);
+    // This message's region rects (absolute, device pixels) - the clip its
+    // composite uses, shared by every tile of the region.
+    std::vector<int32_t> msgRects;  // x,y,w,h per rect
+    // Tiles this message decodes, in message order.
+    std::vector<uint32_t> msgTiles;
     RfxParseStats stats;
     const bool parsed = ParseRfxProgressive(
         payload, size,
@@ -1334,6 +1351,16 @@ struct GfxVkDesktop::Impl {
           const uint16_t rawLen[3] = {t.yRawLen, t.cbRawLen, t.crRawLen};
           const uint32_t tileIndex = static_cast<uint32_t>(t.yIdx) * static_cast<uint32_t>(gridW) +
                                      t.xIdx;
+          msgTiles.push_back(tileIndex);
+          if (msgRects.empty()) {
+            for (uint16_t ri = 0; ri < t.numRects; ++ri) {
+              const RfxRect& r = t.rects[ri];
+              msgRects.push_back(static_cast<int32_t>(r.x) + originX);
+              msgRects.push_back(static_cast<int32_t>(r.y) + originY);
+              msgRects.push_back(static_cast<int32_t>(r.width));
+              msgRects.push_back(static_cast<int32_t>(r.height));
+            }
+          }
           for (int c = 0; c < 3; ++c) {
             uint8_t qa[10];
             uint8_t pa[10];
@@ -1371,12 +1398,89 @@ struct GfxVkDesktop::Impl {
       return true;
     }
     rfxRegions += stats.regions;
+    // A message normally carries exactly one REGION block; when it carries more,
+    // FreeRDP's update_tiles clips *every* tile with the rects of the LAST one
+    // (`region->rects` is overwritten per block, and update_tiles runs after the
+    // whole message was parsed). The engine clips each tile with its own region's
+    // rects, so such messages diverge.
+    if (stats.regions > 1) {
+      rfxMultiRegion++;
+    }
     rfxSimpleTiles += stats.simpleTiles;
     rfxDiffTiles += stats.diffTiles;
     rfxNonExtrapolate += (stats.regions > stats.extrapolateRegions)
                              ? (stats.regions - stats.extrapolateRegions)
                              : 0u;
     rfxParseErrors += stats.errors;
+    // FreeRDP's update_tiles re-composites *every* tile decoded in the current
+    // frame on each Progressive message, clipped by that message's region rects
+    // (PROGRESSIVE_SURFACE_CONTEXT::numUpdatedTiles is reset only when the frame
+    // id changes). Mirror it: register this message's tiles in the frame list and
+    // prepend one "reverse" job (DWT from the persistent `cur` coefficients, see
+    // type 3 in rfx_decode.comp) for every earlier frame tile whose rect
+    // intersects this message's clips. Tiles this message decodes itself are
+    // skipped - it composites them with their fresh coefficients anyway.
+    const size_t gridSize = static_cast<size_t>(gridW) * static_cast<size_t>(gridH);
+    if (surface->frameTileSeen.size() != gridSize) {
+      surface->frameTileSeen.assign(gridSize, 0);
+      surface->frameTiles.clear();
+    }
+    for (const uint32_t idx : msgTiles) {
+      if (idx < gridSize && surface->frameTileSeen[idx] == 0) {
+        surface->frameTileSeen[idx] = 1;
+        surface->frameTiles.push_back(idx);
+      }
+    }
+    const uint32_t msgRectCount = static_cast<uint32_t>(msgRects.size() / 4);
+    std::vector<TileJob> restamps;
+    if (msgRectCount > 0 && !surface->frameTiles.empty()) {
+      for (const uint32_t idx : surface->frameTiles) {
+        if (idx >= gridSize) {
+          continue;
+        }
+        bool isMsgTile = false;
+        for (const uint32_t m : msgTiles) {
+          if (m == idx) {
+            isMsgTile = true;
+            break;
+          }
+        }
+        if (isMsgTile) {
+          continue;
+        }
+        const int tx = originX + static_cast<int>(idx % static_cast<uint32_t>(gridW)) * 64;
+        const int ty = originY + static_cast<int>(idx / static_cast<uint32_t>(gridW)) * 64;
+        bool hit = false;
+        for (uint32_t ri = 0; ri < msgRectCount && !hit; ++ri) {
+          const int32_t rx = msgRects[ri * 4];
+          const int32_t ry = msgRects[ri * 4 + 1];
+          const int32_t rw = msgRects[ri * 4 + 2];
+          const int32_t rh = msgRects[ri * 4 + 3];
+          if (tx < rx + rw && tx + 64 > rx && ty < ry + rh && ty + 64 > ry) {
+            hit = true;
+          }
+        }
+        if (!hit) {
+          continue;
+        }
+        restamped++;
+        TileJob job;
+        job.x = idx % static_cast<uint32_t>(gridW);
+        job.y = idx / static_cast<uint32_t>(gridW);
+        job.rectOffset = 0;
+        job.rectCount = msgRectCount;
+        for (int c = 0; c < 3; ++c) {
+          job.streams[c].type = 3u;  // reverse: rebuild the tile from `cur`
+          job.streams[c].tileStream = idx * 3u + static_cast<uint32_t>(c);
+        }
+        restamps.push_back(job);
+      }
+    }
+    if (!restamps.empty()) {
+      // Earlier frame tiles first, this message's own tiles last (FreeRDP
+      // composites in updatedTileIndices order, i.e. the same order).
+      tiles.insert(tiles.begin(), restamps.begin(), restamps.end());
+    }
     if (tiles.empty()) {
       return true;
     }
@@ -2129,8 +2233,52 @@ bool GfxVkDesktop::ReadCacheEntry(uint16_t slot, int* width, int* height,
   return true;
 }
 
+bool GfxVkDesktop::ReadRfxTileState(uint16_t surfaceId, uint32_t tileIndex, int component,
+                                    std::vector<int16_t>* cur, std::vector<int16_t>* sign,
+                                    std::vector<uint8_t>* bitPos) {
+  // Dev/verification only (see the header): the state is written by the decode
+  // compute shader, so the CPU has to observe the recorded work first.
+  if (!ready() || component < 0 || component > 2 || cur == nullptr || sign == nullptr ||
+      bitPos == nullptr) {
+    return false;
+  }
+  Impl::Surface* surface = impl_->Find(surfaceId);
+  if (surface == nullptr || !surface->rfx.valid()) {
+    return false;
+  }
+  const uint32_t gridStreams =
+      static_cast<uint32_t>(surface->meta.gridW) * static_cast<uint32_t>(surface->meta.gridH) * 3u;
+  const uint32_t stream = tileIndex * 3u + static_cast<uint32_t>(component);
+  if (stream >= gridStreams) {
+    return false;
+  }
+  if (!impl_->SyncForCpuAccess()) {
+    return false;
+  }
+  const auto& curBuf = surface->rfx.cur;
+  const auto& signBuf = surface->rfx.sign;
+  const auto& bpBuf = surface->rfx.bp;
+  const size_t curBytes = static_cast<size_t>(stream) * 4096u * sizeof(int16_t);
+  if (curBytes + 4096u * sizeof(int16_t) > curBuf.capacity ||
+      curBytes + 4096u * sizeof(int16_t) > signBuf.capacity) {
+    return false;
+  }
+  cur->resize(4096);
+  sign->resize(4096);
+  std::memcpy(cur->data(), curBuf.mapped + curBytes, 4096u * sizeof(int16_t));
+  std::memcpy(sign->data(), signBuf.mapped + curBytes, 4096u * sizeof(int16_t));
+  // 12 bytes per stream in the engine (kBitPosStride): 10 bytes are used, the
+  // rest is padding so adjacent streams never share a 32-bit word.
+  const size_t bpBytes = static_cast<size_t>(stream) * 12u;
+  if (bpBytes + 10u > bpBuf.capacity) {
+    return false;
+  }
+  bitPos->assign(bpBuf.mapped + bpBytes, bpBuf.mapped + bpBytes + 10u);
+  return true;
+}
+
 bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
-                            uint32_t rectCount) {
+                             uint32_t rectCount) {
   if (!ready() || rects == nullptr || rectCount == 0) {
     return false;
   }
@@ -2484,6 +2632,19 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         ResetGraphics(static_cast<int>(scalars[0]), static_cast<int>(scalars[1]));
       }
       break;
+    case kGpuCmdStartFrame:
+      // Frame boundary: FreeRDP resets the Progressive "updated tiles" list when
+      // the RDPGFX frame id changes, so the engine's frame tile list must be
+      // cleared here too (see Surface::frameTiles).
+      if (impl_ != nullptr) {
+        for (auto& entry : impl_->surfaces) {
+          entry.second.frameTiles.clear();
+          if (!entry.second.frameTileSeen.empty()) {
+            std::fill(entry.second.frameTileSeen.begin(), entry.second.frameTileSeen.end(), 0);
+          }
+        }
+      }
+      break;
     default:
       break;
   }
@@ -2554,7 +2715,7 @@ std::string GfxVkDesktop::Stats() const {
                 "\n  rfxCompute=%d chunks=%llu first=%llu upgrade=%llu clearDec=%llu "
                 "clearUnsup=%llu progFail=%llu progComposeSkip=%llu"
                 "\n  rfxParse regions=%llu simple=%llu diff=%llu nonExtrap=%llu skipTiles=%llu "
-                "errors=%llu originNonZero=%llu",
+                "errors=%llu originNonZero=%llu restamped=%llu multiRegion=%llu",
                 static_cast<unsigned long long>(impl_->composeCopies),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
                 static_cast<unsigned long long>(impl_->composeSkipClean), impl_->rfxReady ? 1 : 0,
@@ -2571,7 +2732,9 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->rfxNonExtrapolate),
                 static_cast<unsigned long long>(impl_->rfxSkippedTiles),
                 static_cast<unsigned long long>(impl_->rfxParseErrors),
-                static_cast<unsigned long long>(impl_->rfxOriginNonZero));
+                static_cast<unsigned long long>(impl_->rfxOriginNonZero),
+                static_cast<unsigned long long>(impl_->restamped),
+                static_cast<unsigned long long>(impl_->rfxMultiRegion));
   return std::string(buf) + buf2;
 }
 

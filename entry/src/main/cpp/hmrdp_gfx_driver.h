@@ -40,6 +40,27 @@ extern "C" void HmrdpGfxReplayFreeWithContext(RdpgfxClientContext* context)
 extern "C" UINT HmrdpGfxReplayRecv(RdpgfxClientContext* context, const BYTE* data, UINT32 size)
     __attribute__((weak));
 
+// Dev-only correctness hook (patch-freerdp.ps1 step 8): reads one Progressive
+// tile's decoder state out of FreeRDP so the replay harness can A/B it against
+// the GPU engine's own per-(tile,component) state buffers. `bitPos` is in the
+// engine's band order [HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3].
+// Weak: stock FreeRDP simply has no symbol and the comparison is skipped.
+struct HmrdpProgressiveTileStateData {
+  const int16_t* current;  // 4096 accumulated coefficients (pre-DWT)
+  const int16_t* sign;     // 4096 sign values
+  uint8_t bitPos[10];
+  const uint8_t* data;  // 64x64 BGRA tile (the composite source)
+  uint32_t stride;
+  uint32_t gridWidth;
+  uint32_t gridHeight;
+  int16_t width;
+  int16_t height;
+};
+extern "C" int32_t HmrdpProgressiveTileState(void* progressive, uint16_t surfaceId, uint16_t xIdx,
+                                             uint16_t yIdx, uint16_t component,
+                                             HmrdpProgressiveTileStateData* out)
+    __attribute__((weak));
+
 namespace hmrdp {
 
 // Destination for GFX commands decoded from RDPGFX PDUs. The live session
@@ -54,8 +75,10 @@ class GfxCommandSink {
 };
 
 // RDPGFX PDU -> engine command. `sink` may be null (no-op); `pdu` may be null.
-// Only the commands the GPU engine acts on are mapped (frame markers and
-// management PDUs the engine ignores are not).
+// Only the commands the GPU engine acts on are mapped. `GfxMapStartFrame` is not
+// a drawing command: it marks the frame boundary the Progressive re-composite
+// semantics depend on (see the implementation).
+void GfxMapStartFrame(GfxCommandSink* sink);
 void GfxMapSurfaceCommand(GfxCommandSink* sink, const RDPGFX_SURFACE_COMMAND* command);
 void GfxMapResetGraphics(GfxCommandSink* sink, const RDPGFX_RESET_GRAPHICS_PDU* pdu);
 void GfxMapCreateSurface(GfxCommandSink* sink, const RDPGFX_CREATE_SURFACE_PDU* pdu);

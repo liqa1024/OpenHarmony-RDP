@@ -62,8 +62,19 @@ void GfxMapSurfaceCommand(GfxCommandSink* sink, const RDPGFX_SURFACE_COMMAND* co
                  static_cast<uint32_t>(params.size()), command->data, command->length);
 }
 
-void GfxMapResetGraphics(GfxCommandSink* sink, const RDPGFX_RESET_GRAPHICS_PDU* pdu) {
-  if (sink == nullptr || pdu == nullptr) {
+void GfxMapStartFrame(GfxCommandSink* sink) {
+  if (sink == nullptr) {
+    return;
+  }
+  // Frame boundary. FreeRDP's progressive decoder re-composites every tile it
+  // has decoded in the current frame on each Progressive message
+  // (PROGRESSIVE_SURFACE_CONTEXT::numUpdatedTiles is reset only when the RDPGFX
+  // frame id changes, see gdi_CreateSurface/progressive_decompress), so the
+  // engine has to reset its frame tile list at exactly the same points.
+  sink->ApplyGfx(kGpuCmdStartFrame, 0xFFFFFFFFu, nullptr, nullptr, 0, nullptr, 0);
+}
+
+void GfxMapResetGraphics(GfxCommandSink* sink, const RDPGFX_RESET_GRAPHICS_PDU* pdu) {  if (sink == nullptr || pdu == nullptr) {
     return;
   }
   const uint32_t sc[4] = {pdu->width, pdu->height, pdu->monitorCount, 0};
@@ -244,6 +255,16 @@ UINT PmpMapSurfaceToScaledOutput(RdpgfxClientContext* gfx,
   return CHANNEL_RC_OK;
 }
 
+UINT PmpStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* pdu) {
+  (void)pdu;
+  PumpState* state = PumpOf(gfx);
+  if (state == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  GfxMapStartFrame(state->sink);
+  return CHANNEL_RC_OK;
+}
+
 UINT PmpEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* pdu) {
   (void)pdu;
   PumpState* state = PumpOf(gfx);
@@ -300,6 +321,7 @@ void InstallPumpCallbacks(RdpgfxClientContext* gfx) {
   gfx->EvictCacheEntry = PmpEvictCacheEntry;
   gfx->MapSurfaceToOutput = PmpMapSurfaceToOutput;
   gfx->MapSurfaceToScaledOutput = PmpMapSurfaceToScaledOutput;
+  gfx->StartFrame = PmpStartFrame;
   gfx->EndFrame = PmpEndFrame;
   gfx->CapsAdvertise = PmpNoopCapsAdvertise;
   gfx->FrameAcknowledge = PmpNoopFrameAcknowledge;

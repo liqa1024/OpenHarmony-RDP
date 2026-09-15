@@ -118,6 +118,9 @@ class GfxReplay {
   void GdiAbCheck(uint16_t surfaceId, int x, int y, int width, int height, const char* op,
                   const std::string& detail = std::string(), int payloadSlot = -1);
   void GdiAbFlush();
+  // Dev: coefficient-level A/B of one Progressive tile's decoder state against
+  // FreeRDP's own (patch-freerdp.ps1 step 8).
+  void GdiAbCompareState(uint16_t surfaceId, int xIdx, int yIdx);
   // Dev: copy one command payload into the ring and return its slot (the chunk
   // buffer is reused by the next chunk, so a raw pointer would be stale by the
   // time the deferred check runs).
@@ -292,6 +295,8 @@ class GfxReplay {
     int payloadSlot = -1;
   };
   std::vector<GdiAbRect> gdiAbPending_;
+  // Dev: one-shot dump of a divergent tile's decoder inputs/result.
+  bool tileDumpDone_ = false;
   // Dev: a small ring of recent command payloads. The harness's chunk buffer is
   // reused as soon as the next chunk is fed, and the deferred check runs at that
   // point, so a raw pointer would already be stale.

@@ -514,6 +514,15 @@ void main() {
     }
     for (uint b = 0u; b < 10u; b++) bitPosSet(tileStream, b, newBit[b]);
     extrapolateDwt(compBase, tempBase);
+  } else if (type == 3u) {
+    // Reverse-only pass. FreeRDP's update_tiles re-composites *every* tile it has
+    // decoded in the current frame on each Progressive message, so a tile whose
+    // last decode was an earlier message of this frame is composited again here -
+    // with its persistent `current` coefficients, i.e. exactly
+    // progressive_rfx_dwt_2d_decode(..., reverse = TRUE): copy `current` into the
+    // scratch and run the inverse DWT. No payload, no state change.
+    for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
+    extrapolateDwt(compBase, tempBase);
   } else {
     uint oldBit[10];
     for (uint b = 0u; b < 10u; b++) oldBit[b] = bitPosGet(tileStream, b);

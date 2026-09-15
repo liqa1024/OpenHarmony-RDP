@@ -342,6 +342,13 @@ native/scripts/build-freerdp.ps1    # FreeRDP 的 CMake 构建（Windows NDK）
       `RFX_TILE_DIFFERENCE` 用**饱和加法并写回 `current`**；UPGRADE 的 SRL/raw **两个位流同时活跃**；
       每 `(tile,分量)` 的 `current`/`sign`/`bitPos` **跨消息常驻**；compose 必须按桌面尺寸/region clip
       （桌面宽高非 64 倍数，边缘 tile 会按 stride 折回下一行、污染邻接 tile）。
+    - **Progressive 必须实现 `update_tiles` 的「同帧图块重复合成」**：FreeRDP 每收到一条 Progressive
+      消息，都会用**本消息的 clippingRects** 合成 **`surface->numUpdatedTiles` 里"本帧至今解码过的
+      全部 tile"**（`numUpdatedTiles` 只在 frameId 变化时清零 ⇒ 即 RDPGFX StartFrame），而不只是本消息
+      的 tile。引擎必须照做（`hmrdp_vk_desktop.cpp` 的 `Surface::frameTiles` + `DecodeProgressive` 的
+      reverse job + `rfx_decode.comp` 的 `type==3`），且**必须把 StartFrame 喂给引擎**
+      （`GfxMapStartFrame`：回放泵 `PmpStartFrame` 与实机 `HmrdpGfxStartFrame` 两条路径都要）。
+      漏掉它 = 一条消息少写一批像素，差值会在后续帧累计（`bad` 从 0 涨到 11/16 就是这么来的）。
     - ClearCodec **非自包含**（未覆盖像素保留原值）；`SurfaceToCache` 内部会嵌套调用 `EvictCacheEntry`，
       引擎侧要**抑制这次嵌套**；`MapSurfaceToScaledOutput` 本工程不支持（unmap 不合成，与 gdi 现状一致）。
     - `CreateSurface`：宽/高/scanline 按 **16B 对齐**、**0xFF 初始化**、wire `0x20→BGRX32` / `0x21→BGRA32`。
