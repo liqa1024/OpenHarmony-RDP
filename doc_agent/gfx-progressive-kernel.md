@@ -1,22 +1,20 @@
 # Progressive kernel 优化（未完成）
 
 本文件是**后续工作清单**，不是口径文档：只描述 **RLGR 解码 kernel 的并行化**这条线（方向、依据、
-已踩过的坑、验收方式）。改 GFX 语义前仍以 [`gfx-engine.md`](gfx-engine.md)（尤其 §2.2 与 §3）为准；
-量测口径也在那边的 §3/§6。**"引擎 vs gdi 逐像素对不上"属于另一条线，见
-[`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)。**
+已踩过的坑、验收方式）。改 GFX 语义前以 [`gfx-engine.md`](gfx-engine.md) 为准（尤其 §2.2 与 §3）；
+量测口径也在那边的 §3/§6。
 
 ---
 
 ## 1. 现状
 
-- `Vulkan对比`（引擎 vs 离线 gdi 逐像素比对）在 **`.cache/hmrdp_gfx.bin`（浏览/滚动）** 上
-  `checks=21 bad=0 rgbPx=0`、整份跑完（实测 `frames=659`）——这份捕获是**当前唯一可信的性能基线**。
+- `Vulkan对比`（引擎 vs 离线 gdi 逐像素比对）两份录像都是 `bad=0 rgbPx=0`：
+  **`.cache/hmrdp_gfx.bin`（浏览/滚动）`checks=21`、`frames=659`** 是**性能基线**，
+  `.cache/hmrdp_gfx_video.bin`（看视频）`checks=6` 是整帧大块变化的另一场景。
 - 已落地的三项（都已过 `bad=0`）：host-visible 改 `HOST_CACHED` + 范围级 flush/invalidate；
   `rfx_compose` 改按像素并行；逆 DWT 拆成独立 kernel（`rfx_idwt.comp`，系数走 shared）。
 - **未完成**：RLGR 解码 kernel（`rfx_decode.comp`）的并行化。**改它之前先确认正确性基线**：
-  两份录像都必须仍是 `bad=0 rgbPx=0`（浏览 `.cache/hmrdp_gfx.bin` 是性能基线，
-  视频 `.cache/hmrdp_gfx_video.bin` 是整屏大块变化场景；两者的口径见
-  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)）。
+  两份录像都必须仍是 `bad=0 rgbPx=0`。
 
 ---
 
@@ -82,24 +80,12 @@
 
 ---
 
-## 3. 会话遗留的代码清理项
-
-以下都是"为了做实验"而留下的脚手架，功能上不影响正确性，但应当清掉（需能跑 `bad=0` 复验）：
-
-| 位置 | 内容 | 说明 |
-|---|---|---|
-| `hmrdp_vk_desktop.cpp` | `kBatchMergeMessages = false` 开关 + `AppendToDecodeBatch`/`FinishDecodeBatch`/批状态 | 跨消息合并已被否决；现在等价于"一条消息一个批"，可以退回到原来的逐 chunk 循环（少一层间接） |
-| 同上 | `batchesFlushed/batchesSkipped/batchStreamsMax/messagesThisFrame/messagesPerFrame[]`、`chunkBytes*`/`streamCount` 及其 `Stats()` 输出 | 诊断计数；`gpuMs`/`perChunkMs`/`decode input` 这类**通用**指标建议保留 |
-| `rfx_decode.comp` | 已被 `rfx_idwt.comp` 取代的 DWT 参考实现、`dequantSub`、`WordWriter` 等 | 确认无人调用后删除（删前跑一次 `bad=0`） |
-
----
-
-## 4. 量测口径（细节见 gfx-engine.md §3/§6）
+## 3. 量测口径（细节见 gfx-engine.md §3/§6）
 
 - 每条 dispatch 的 GPU 时间：引擎 `Stats()` 的 `gpuMs rlgr=… idwt=… compose=…`（timestamp query，
   两端 `COMPUTE_SHADER`）；**不要用"跳过某条 dispatch + 差值反推"**。
 - 内存类型与带宽：`ProbeHostMemory`；空提交固定开销：`ProbeSubmitCost`（都是进程内一次）。
 - 整轮口径、节拍与 `fps/feed/present` 的含义、`uitest dumpLayout` 不是合法 JSON 等纪律，
   见 [`gfx-engine.md`](gfx-engine.md) §6。
-- 任何性能结论的**前提**是那一轮 `bad=0`（正确性优先，口径见
-  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md) §1.1）。
+- 任何性能结论的**前提**是那一轮 `bad=0`（正确性优先；两份录像的验收口径见
+  [`gfx-engine.md`](gfx-engine.md) §6）。

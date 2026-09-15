@@ -50,9 +50,6 @@ void coefSet(uint idx, int v) {
 // time: two coefficients per load/store, and full-word stores where the pass
 // overwrites both halves anyway. That is what makes the decode kernel's ~40k
 // global memory ops per stream shrink to ~14k (doc_agent/gfx-engine.md §3).
-void coefPutWord(uint wi, int lo, int hi) {
-  coef.data[wi] = (uint(lo) & 0xFFFFu) | ((uint(hi) & 0xFFFFu) << 16);
-}
 // Sequential emitter for the RLGR output, whose writes are one coefficient at a
 // time (zero runs and sparse values) but always in order.
 struct WordWriter { uint wi; uint lo; bool hasLo; };
@@ -112,7 +109,6 @@ void bpSetByte(uint off, uint v) {
 const uint kBitPosStride = 12u;
 uint bitPosGet(uint stream, uint band) { return bpByte(stream * kBitPosStride + band); }
 void bitPosSet(uint stream, uint band, uint v) { bpSetByte(stream * kBitPosStride + band, v); }
-int shl16(int v, uint shift) { return i16(int(uint(v) << shift)); }
 // FreeRDP's UPGRADE path adds `(INT16)((UINT32)input << (BYTE)(newBit - 1))`.
 // That is a plain 32-bit shift truncated to INT16, so every shift >= 16
 // contributes 0 - and a `newBit` of 0 underflows the BYTE subtraction to 255,
@@ -204,10 +200,6 @@ void srlInit(uint base, uint len) {
   gSrl.cons = 0u;
   srlFetch();
 }
-// Bits already consumed out of each stream: bytes fetched minus the bits still
-// buffered in the 64-bit window.
-uint brConsumed() { return gBr.pos * 8u - uint(gBr.bits); }
-uint srlConsumed() { return gSrl.pos * 8u - uint(gSrl.bits); }
 uint srlPeek() { return gSrl.hi; }
 void srlShift(int n) {
   if (n <= 0) return;
@@ -336,119 +328,9 @@ void diffDecode(uint base, uint off, uint size) {
     coefSet(base + off + i + 1u, i16(coefGet(base + off + i + 1u) + coefGet(base + off + i)));
 }
 
-// ---- inverse DWT: MOVED to rfx_idwt.comp ----------------------------------
-// These ports are kept only as the reference the shared-memory kernel in
-// rfx_idwt.comp was transliterated from; nothing in this shader calls them any
-// more (the global-SSBO round trips they performed were the decode bottleneck).
-void progIdwtX(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
-               uint nLowCount, uint nHighCount, uint nDstCount) {
-  for (uint i = 0u; i < nDstCount; i++) {
-    uint pl = lowBase + i * lowStep;
-    uint ph = highBase + i * highStep;
-    uint px = dstBase + i * dstStep;
-    int H0 = coefGet(ph);
-    int L0 = coefGet(pl);
-    int X0 = i16(L0 - H0);
-    int X2 = X0;
-    uint j = 0u;
-    for (; j + 1u < nHighCount; j++) {
-      int H1 = coefGet(ph + j + 1u);
-      L0 = coefGet(pl + j + 1u);
-      X2 = i16(L0 - ((H0 + H1) / 2));
-      int X1 = i16(((X0 + X2) / 2) + (2 * H0));
-      coefSet(px + 2u * j, X0);
-      coefSet(px + 2u * j + 1u, X1);
-      X0 = X2;
-      H0 = H1;
-    }
-    uint bx = px + 2u * j;
-    if (nLowCount <= nHighCount + 1u) {
-      if (nLowCount <= nHighCount) {
-        coefSet(bx, X2);
-        coefSet(bx + 1u, i16(X2 + 2 * H0));
-      } else {
-        L0 = coefGet(pl + nHighCount);
-        X0 = i16(L0 - H0);
-        coefSet(bx, X2);
-        coefSet(bx + 1u, i16(((X0 + X2) / 2) + 2 * H0));
-        coefSet(bx + 2u, X0);
-      }
-    } else {
-      L0 = coefGet(pl + nHighCount);
-      X0 = i16(L0 - (H0 / 2));
-      coefSet(bx, X2);
-      coefSet(bx + 1u, i16(((X0 + X2) / 2) + 2 * H0));
-      coefSet(bx + 2u, X0);
-      L0 = coefGet(pl + nHighCount + 1u);
-      coefSet(bx + 3u, i16((X0 + L0) / 2));
-    }
-  }
-}
-
-void progIdwtY(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
-               uint nLowCount, uint nHighCount, uint nDstCount) {
-  for (uint i = 0u; i < nDstCount; i++) {
-    uint pl = lowBase + i;
-    uint ph = highBase + i;
-    uint px = dstBase + i;
-    int H0 = coefGet(ph); ph += highStep;
-    int L0 = coefGet(pl); pl += lowStep;
-    int X0 = i16(L0 - H0);
-    int X2 = X0;
-    for (uint j = 0u; j + 1u < nHighCount; j++) {
-      int H1 = coefGet(ph); ph += highStep;
-      L0 = coefGet(pl); pl += lowStep;
-      X2 = i16(L0 - ((H0 + H1) / 2));
-      int X1 = i16(((X0 + X2) / 2) + (2 * H0));
-      coefSet(px, X0); px += dstStep;
-      coefSet(px, X1); px += dstStep;
-      X0 = X2;
-      H0 = H1;
-    }
-    if (nLowCount <= nHighCount + 1u) {
-      if (nLowCount <= nHighCount) {
-        coefSet(px, X2); px += dstStep;
-        coefSet(px, i16(X2 + 2 * H0));
-      } else {
-        L0 = coefGet(pl);
-        X0 = i16(L0 - H0);
-        coefSet(px, X2); px += dstStep;
-        coefSet(px, i16(((X0 + X2) / 2) + 2 * H0)); px += dstStep;
-        coefSet(px, X0);
-      }
-    } else {
-      L0 = coefGet(pl); pl += lowStep;
-      X0 = i16(L0 - (H0 / 2));
-      coefSet(px, X2); px += dstStep;
-      coefSet(px, i16(((X0 + X2) / 2) + 2 * H0)); px += dstStep;
-      coefSet(px, X0); px += dstStep;
-      L0 = coefGet(pl);
-      coefSet(px, i16((X0 + L0) / 2));
-    }
-  }
-}
-
-void progDwtBlock(uint base, uint temp, uint level) {
-  uint nBandL = (64u >> level) + 1u;
-  uint nBandH = (level == 1u) ? 31u : ((64u + (1u << (level - 1u))) >> level);
-  uint off = 0u;
-  uint hl = base + off; off += nBandH * nBandL;
-  uint lh = base + off; off += nBandL * nBandH;
-  uint hh = base + off; off += nBandH * nBandH;
-  uint ll = base + off;
-  uint dstStep = nBandL + nBandH;
-  uint l = temp;
-  uint h = temp + nBandL * dstStep;
-  progIdwtX(ll, nBandL, hl, nBandH, l, dstStep, nBandL, nBandH, nBandL);
-  progIdwtX(lh, nBandL, hh, nBandH, h, dstStep, nBandL, nBandH, nBandH);
-  progIdwtY(l, dstStep, h, dstStep, base, dstStep, nBandL, nBandH, nBandL + nBandH);
-}
-
-void extrapolateDwt(uint base, uint temp) {
-  progDwtBlock(base + 3807u, temp, 3u);
-  progDwtBlock(base + 3007u, temp, 2u);
-  progDwtBlock(base + 0u, temp, 1u);
-}
+// The inverse DWT is the separate rfx_idwt.comp kernel (one workgroup per stream,
+// coefficients staged in shared memory). This kernel ends at the coefficients:
+// RLGR -> dequantise -> differential decode, plus the UPGRADE refinement.
 
 // ---- kUpgrade: SRL/raw refinement (port of progressive_rfx_upgrade_*) ----
 const uint kSubOff[10] = uint[10](0u, 1023u, 2046u, 3007u, 3279u, 3551u, 3807u, 3879u, 3951u, 4015u);

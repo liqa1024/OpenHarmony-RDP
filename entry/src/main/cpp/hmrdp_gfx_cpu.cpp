@@ -12,14 +12,6 @@
 #include "hmrdp_log.h"
 #include "hmrdp_presenter.h"
 
-// Provided by the patched FreeRDP (native/scripts/patch-freerdp.ps1, patch 9):
-// developer accessor for the reference decoder's per-tile Progressive state. Weak
-// so the app still links against stock FreeRDP, where the probe reports
-// "unavailable" instead of failing to link.
-extern "C" BOOL HmrdpProgressiveTileState(void* ctx, UINT16 surfaceId, UINT16 xIdx, UINT16 yIdx,
-                                          const INT16** current, const INT16** sign,
-                                          BYTE bitPos[30]) __attribute__((weak));
-
 namespace hmrdp {
 
 namespace {
@@ -76,56 +68,6 @@ rdpGdi* GfxCpuDesktop::gdi() const {
     return nullptr;
   }
   return instance_->context->gdi;
-}
-
-const uint8_t* GfxCpuDesktop::SurfaceData(uint16_t surfaceId, int* width, int* height, int* stride,
-                                         uint32_t* format) const {
-  if (gfx_ == nullptr || gfx_->GetSurfaceData == nullptr) {
-    return nullptr;
-  }
-  void* data = gfx_->GetSurfaceData(gfx_, surfaceId);
-  if (data == nullptr) {
-    return nullptr;
-  }
-  const gdiGfxSurface* surface = static_cast<const gdiGfxSurface*>(data);
-  if (surface->data == nullptr || surface->width == 0 || surface->height == 0) {
-    return nullptr;
-  }
-  if (width != nullptr) {
-    *width = static_cast<int>(surface->width);
-  }
-  if (height != nullptr) {
-    *height = static_cast<int>(surface->height);
-  }
-  if (stride != nullptr) {
-    *stride = static_cast<int>(surface->scanline);
-  }
-  if (format != nullptr) {
-    *format = surface->format;
-  }
-  return surface->data;
-}
-
-bool GfxCpuDesktop::TileState(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx,
-                             const int16_t** current, const int16_t** sign,
-                             uint8_t bitPos[30]) const {
-  if (HmrdpProgressiveTileState == nullptr || gfx_ == nullptr ||
-      gfx_->GetSurfaceData == nullptr) {
-    return false;
-  }
-  // The Progressive state lives on the *surface's* codecs: gdi's handler decodes
-  // through `surface->codecs->progressive` (gdi_SurfaceCommand_Progressive), which
-  // is not necessarily the same context as `context->codecs`.
-  const gdiGfxSurface* surface =
-      static_cast<const gdiGfxSurface*>(gfx_->GetSurfaceData(gfx_, surfaceId));
-  if (surface == nullptr || surface->codecs == nullptr ||
-      surface->codecs->progressive == nullptr) {
-    return false;
-  }
-  const INT16** cur = reinterpret_cast<const INT16**>(current);
-  const INT16** sgn = reinterpret_cast<const INT16**>(sign);
-  return HmrdpProgressiveTileState(surface->codecs->progressive, surfaceId, xIdx, yIdx, cur, sgn,
-                                   bitPos) != FALSE;
 }
 
 bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail = [this, error](const char* why) {

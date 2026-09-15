@@ -48,6 +48,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
    （运行期回调，因为 DVC 插件比 NAPI 模块先加载，弱符号解析不到），并提供离线重放入口
    （`HmrdpGfxReplayNew*` / `HmrdpGfxReplayRecv`，其中 `…WithContext` 绑定到调用方自己的 `rdpContext`，
    供离线 gdi 桌面使用）。**这一整块按"一次性整体打补丁"设计**：改动它要从干净源码重打。
+8. **Progressive tile 的预测器状态显式清零**：`progressive_tile_new` 里 `tile->current` / `tile->sign`
+   直接来自 `malloc` 且**从未清零**，而 DIFFERENCE / UPGRADE 是**先读后写**的预测器状态；编码器假定
+   客户端状态初值为 0，于是参考解码器的输出取决于堆里恰好有什么（对拍**不可复现**）。补丁在分配后
+   `memset` 为 0。这一条只是"让参考侧确定"，不改协议语义。
 
 ## 4. 编 FreeRDP 时的关键选项
 

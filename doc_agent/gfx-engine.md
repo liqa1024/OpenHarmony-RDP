@@ -122,6 +122,16 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   已经把读到的 tile **登记进本帧的 tile 列表**（并更新其元数据），只是不进入解码/合成。UPGRADE 的
   `aSrlLen/aRawLen` 与声明长度不符时，FreeRDP 在**已把 refinement 累加进 `current`/`sign` 之后**返回
   失败 ⇒ 该 tile 的像素保持旧值但系数状态已变。
+  - 引擎实现：UPGRADE 的这条拒绝判定由解码着色器逐流算出，写在**该流位状态条目的闲置字节**里
+    （前 10 字节是各带 `bitPos`，`kBitPosStride=12`），合成时读它 ⇒ 任一分量被拒就**整块不合成**；
+    判定在"kFirst 解码成功"时清除（type 3 重合成不清），于是旧像素一直保持到该 tile 重新解码成功。
+    改位状态缓冲布局时必须同步这两处。
+  - 判定的记账口径是**"请求过的位数"**（FreeRDP 的 `BitStream::position`：越界也照加，
+    `BitStream_Shift` 对 ≥32 的位移不计数），不是"流里实际有多少位"。
+- **UPGRADE 的 `numBits` 会 BYTE 回绕**：`numBits = tile->yBitPos - yBitPos` 在"本次比该 tile 上次更粗"
+  （`ob < nb`）时回绕成 ~226~255；此时 FreeRDP 的 `BitStream_Shift` 对 ≥32 的位移**什么都不做**，而读出的
+  值仍按硬件 5 位掩码取向 ⇒ **读到垃圾且不消耗位**，长度校验照样通过。把它钳成 0（=跳过该带）或真去
+  消耗 n 位都会分叉。
 - 逆 DWT 的抽取/尾块（`ProgIdwtX/Y`）与带偏移/长度必须照抄（抽取路径 0/1023/2046/3007/3279/3551/
   3807/3879/3951/4015；非抽取路径不同，不要混用）。
 - 颜色转换：`yCbCrToRGB` 的 `(y+4096)<<16` + 乘系数后 `>>21`，系数是 **float 截断**得到的整数
@@ -163,8 +173,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   解码并合成的整条消息丢掉（表面从那一刻起永不自愈）。校验要么逐条照抄 FreeRDP（含它"只用
   字节预算兜底"的写法），要么把上限设成"这条消息的长度能容纳的量"；解码数据一律按声明数量
   定长。另一面：**头校验失败**两边都丢整条，而**读完部分 tile 之后才失败**时 FreeRDP 已经把
-  读到的 tile 登记进本帧列表，两者不能混为一谈（见
-  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md) §2.5）。
+  读到的 tile 登记进本帧列表（`RfxParseStats::errorStage` 记的就是失败的阶段），两者不能混为一谈。
 
 ### 2.3 帧呈现（gdi 回退路径）
 
@@ -214,7 +223,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   **这条不是"性能建议"而是正确性要求**：`rfx_compose`（一个 invocation 一个像素，线性派发
   `tileCount*64` 个工作组）在整屏 Progressive 消息上需要 65535 以上（实测最大 91008），超限后平台
   **静默只执行一部分** —— 消息尾部的 tile 不再被合成、表面/画面停在上一次内容，表现为"下半屏整块
-  stale"（见 [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md) §2.1）。现在主机按 65535 拆 2-D
+  stale"（全屏比对里是 `bbox` 覆盖整屏 + 下半屏 100% 像素错误）。现在主机按 65535 拆 2-D
   网格、着色器用 `gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x` 还原线性 index；
   `Stats()` 的 `composeGridSplits`/`composeGroupsMax` 若不为 0 就说明这条路径正在生效。
 - **任何带 `barrier()` 的 kernel，早退必须由整个 workgroup 一致决定**：`if (gid >= uNumStreams) return;`
@@ -263,7 +272,18 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 - **验收口径**：`Vulkan对比` 路线（引擎 vs 离线 gdi 桌面逐像素比对）的
   `compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`。
   每 30 帧采一次（`kCompareEvery`），`bad` = 采样的帧里有多少帧与 gdi 不一致；目标 **`bad=0`**。
-- 首次分歧会写一份 `<capture>.cmpdump`（逐像素 e/g 值），是定位分叉的第一手材料。
+  同一行还带 `alphaPx`（只差未使用的 alpha 字节，不算视觉差异）、`bbox`（差异包围盒）与
+  `smallDeltaPx`（≤2 的"舍入级"像素数）——`rgbPx` 从 0 变成几百万而 `bbox` 覆盖整屏，说明是**没画**，
+  而不是"画得略有不同"。
+- **改完引擎 / 着色器 / FreeRDP 补丁，两份录像都要跑**（都必须是 `bad=0 rgbPx=0`）：
+  `.cache/hmrdp_gfx.bin`（浏览/滚动：消息稀疏、脏区小）是**回归门**；
+  `.cache/hmrdp_gfx_video.bin`（看视频：整帧大块变化、每帧 4~7 条 Progressive 消息）是另一个场景。
+  当前两份都过：浏览 `checks=21`（`frames=659`）、视频 `checks=6`（`frames=198`）。
+- **先看计数，再加日志**：`Stats()` 里的 `rfxParse`（`errors` 必须为 0）、`rejectedTiles`/`restamped`/
+  `skippedRegions`/`batchOverflow`/`composeGridSplits` 就是"协议级行为有没有按预期发生"的账本，
+  绝大多数分叉靠它们就能定位到"哪条消息/哪条命令没做"。**不要为了查一次分叉就新加一次性日志探针**：
+  周期性统计行会很快冲掉缓冲区，而且没有 `%{public}` 标记的参数会被打成 `<private>`
+  （见 [`build-and-verify.md`](build-and-verify.md) §5.1）。
 - **三条路线的呈现方式**：`Vulkan`/`Vulkan对比` 由引擎 `Compose()` 出屏幕镜像后 `VkRenderer` 上屏；
   `CPU` 路线的 gdi 帧走同一个呈现器接口（`CreateFramePresenter()`：Vulkan 优先，GLES 兜底）——与 live
   会话是同一条路径，所以两者不会各自分叉。
@@ -274,10 +294,11 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 3. **每条 dispatch 的 GPU 时间靠 timestamp query 直接量**（`rfx_decode`/`rfx_idwt`/`rfx_compose` 各一对
    `vkCmdWriteTimestamp`，fence 等待后 `vkGetQueryPoolResults` 读回，统计在引擎 `Stats()` 的 `gpuMs …` 行）。
    两端都取 `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`；**不要用"跳过某条 dispatch + 差值反推"**（见 §3）。
-- 归因：需要"是哪条命令分叉"时，开 harness 的逐命令 A/B（见 [`build-and-verify.md`](build-and-verify.md)
-  与源码里 `kCodecAbEnabled` 的注释）。**它是诊断工具**：开启后要按命令回读引擎表面，
-  会慢到像卡死 ⇒ 只在对某条消息归因时开、查完立刻关（`bad=0` 的验收不依赖它）。
-  **判定分叉只以 gdi 自己的表面为准**（历史上用手写镜像做过对比，它会误报）。
+- **分叉怎么定位**：先看整屏比对（`Vulkan对比` 的 `bad/rgbPx/bbox/maxDelta`）。**判定分叉只以 gdi 自己的
+  表面/主缓冲为准**（历史上用手写镜像做过对比，它会误报）。需要收敛到"哪条命令"时，按
+  **"引擎跳过/多做了一条命令"→"两边对同一条命令算得不一样"**两个方向分开查：前者看引擎自己的
+  `Stats()` 计数（`rfxParse errors`、`skippedRegions`、`rejectedTiles`…）与"引擎这条命令到底做没做"，
+  后者才是解码/合成语义。**不要用"跳过某条 dispatch + 差值反推"做归因**（见 §3）。
 - **量测纪律（否则数字不可比）**：
   - **回放节拍**：每个呈现帧给一个 `kFrameMs` 周期，**预算覆盖整帧**（解码 + 命令应用 + 上屏），不是只
     包住 present；**跨帧不做任何补偿或追赶**——超时的帧保留它更长的周期，提前完成的帧补睡余量。这样
@@ -299,6 +320,11 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   由 FreeRDP 补丁以运行期回调注册（见 [`native-libraries.md`](native-libraries.md) §3.7）。
   录制文件**不入库**：设备端在应用沙箱，本地副本放 gitignore 目录；dev 的抓取开关与「硬件解码」有联动
   （录制期间走软解），见设置页实现。
+- **把某份捕获喂给回放**：`dev 页「回放测试」`读的是**应用 filesDir 里的 `hmrdp_gfx.bin`**
+  （设备侧固定路径 `/data/app/el2/100/base/com.lixa.hmrdp/haps/entry/files/`，用
+  `hdc file send` **覆盖已存在的那个文件**——`hdc` 不能在该目录里新建文件）。
+  所以换样本 = 覆盖同一个文件再点「重新回放」（该按钮会重新读文件）；
+  **同名文件的不同录制不是同一份流**，不能互相背书，换之前把旧的 recv 回 `.cache/` 留档。
 - **样本集（本地 `.cache/`，不入库）**：性能结论**必须分场景给**，且**每份捕获都要先自己过一遍
   `Vulkan对比 bad=0` 才能当基线**（同名文件的不同录制之间不能互相背书）：
   - **浏览/滚动**类：消息稀疏、脏区小，瓶颈在 GPU kernel；
@@ -307,9 +333,8 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
     字节量变化，"两个场景的平均值接近"并不说明大头是固定等待。
   - 单条 Progressive 消息可带**数千条 stream**，而能同时在飞的 workgroup 数量有限，所以**平均值会低估**
     "当前结构下"的并行度上限。
-- **`Vulkan对比` 的现状**（唯一权威处见 [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)）：
-  两份录像都是`bad=0 rgbPx=0 maxDelta=0`——浏览/滚动 `checks=21`（`frames=659`）、
-  看视频 `checks=6`（`frames=198`，整屏大块变化场景）。**任何一轮性能结论的前提是那一轮 `bad=0`。**
+- **`Vulkan对比` 的现状**：两份录像都是 `bad=0 rgbPx=0 maxDelta=0`
+  （浏览/滚动 `checks=21`、看视频 `checks=6`）。**任何一轮性能结论的前提是那一轮 `bad=0`。**
 - **对比结果与呈现路径解耦**：对比读的是引擎屏幕镜像（`ReadScreen()`）与离线 gdi 主缓冲，呈现器只碰
   swapchain/present，所以**换呈现后端、改重建策略都不会影响 `bad` 的判定**；反过来说，`bad` 变化只能来自
   解码/合成。
@@ -324,9 +349,6 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
-- **引擎 vs gdi 逐像素对拍**（compose 派发超限、UPGRADE 拒收语义、region 头上限、状态级/盯 tile
-  对拍工具；**两份录像现均 `bad=0`**）：单独成文 →
-  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。
   每份新捕获都要自己过一遍 `bad=0` 才能当基线（同名文件的不同录制之间不能互相背书）。
 - **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——

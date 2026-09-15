@@ -83,7 +83,6 @@ class GfxVkDesktop {
   // 0x21 -> BGRA32); either way the pixels stay BGRA bytes.
   bool CreateSurface(uint16_t surfaceId, int width, int height, uint32_t format);
   void DeleteSurface(uint16_t surfaceId);
-  const GpuSurface* FindSurface(uint16_t surfaceId) const;
   // 1:1 output mapping only; scaled mappings unmap the surface (unsupported,
   // exactly like the gdi behaviour).
   void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
@@ -119,23 +118,6 @@ class GfxVkDesktop {
   void EvictCache(uint16_t slot);
   bool SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, int width, int height,
                         uint16_t dstSurfaceId, int dstX, int dstY);
-
-  // Full surface (top-down, `stride` bytes) as BGRA. Dev/verification only.
-  bool ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out);
-  // One surface rect as tightly packed BGRA (`width * 4` per row). Dev only: the
-  // per-command A/B harness reads small rects instead of the whole surface.
-  bool ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
-                       std::vector<uint8_t>* out);
-
-  // Dev (doc_agent/gfx-progressive-kernel.md §3): the engine's own per
-  // (tile,component) Progressive predictor state for `tileIndex` on `surfaceId`,
-  // shaped like FreeRDP's HmrdpProgressiveTileState so the two can be diffed
-  // coefficient by coefficient: `curOut`/`signOut` are int16[3 * 4096] planes
-  // (Y, Cb, Cr) and `bitPos` is 30 bytes in band order
-  // (HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3). Returns false when the surface or
-  // tile is unknown.
-  bool ReadTileState(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int16_t* curOut,
-                     int16_t* signOut, uint8_t bitPos[30]);
 
   // --- Diagnostics ---------------------------------------------------------
   // One-line engine summary (surface/cache counts, per-command timings, the

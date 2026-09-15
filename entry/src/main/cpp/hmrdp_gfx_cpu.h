@@ -48,21 +48,6 @@ class GfxCpuDesktop {
   RdpgfxClientContext* gfx() const { return gfx_; }
   rdpGdi* gdi() const;
 
-  // Dev A/B only: the surface buffer FreeRDP's own gdi pipeline holds for
-  // `surfaceId` (the authoritative decoder output), or nullptr when gdi has no
-  // such surface. Bytes are BGRA with `*stride` bytes/row and the same
-  // 16-aligned width/height the engines use.
-  const uint8_t* SurfaceData(uint16_t surfaceId, int* width, int* height, int* stride,
-                             uint32_t* format) const;
-
-  // Dev A/B only (doc_agent/gfx-progressive-kernel.md §3): FreeRDP's per
-  // (tile,component) Progressive predictor state for `tileIndex` on `surfaceId` -
-  // the three 4096-entry `current`/`sign` planes and the 30 bit-position bytes in
-  // *band* order (HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3). Returns false when the
-  // reference state accessor is not linked (stock FreeRDP) or the tile is unknown.
-  bool TileState(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, const int16_t** current,
-                 const int16_t** sign, uint8_t bitPos[30]) const;
-
   int width() const { return width_; }
   int height() const { return height_; }
 

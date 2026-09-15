@@ -11,7 +11,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -64,39 +63,6 @@ class GfxReplay {
   // slow stream is visible.
   void RecordApply(uint16_t cmdId, uint32_t codecId, uint64_t micros);
   void RecordPresent(uint64_t micros);
-
-  // --- Dev: per-command A/B against FreeRDP's own gdi surface ---------------
-  // Only active with `kCodecAbEnabled` (see hmrdp_replay.cpp): the sink records
-  // the rects each command claims to write and `GdiAbFlush` - called by the
-  // compare route right after every command, with gdi and the engine at the same
-  // stream position - diffs exactly those pixels against gdi's own surface. An
-  // earlier hand-written mirror of the gdi geometry was removed: it produced
-  // false positives, and gdi itself is the only trustworthy reference.
-  void GdiAbCheck(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
-  void GdiAbFlush();
-  // Dev (`kSurfaceAbEnabled`): whole-surface A/B against gdi's own surface after
-  // one command, so the first command after which the engine's surface diverges is
-  // named (the per-rect A/B only covers the tiles a message decodes itself).
-  void SurfaceAbCheck(uint16_t surfaceId, const char* op);
-  // Dev (`kTileStateAbEnabled`): per-tile predictor-state A/B. One record per tile a
-  // Progressive message decodes, flushed once per message (see the implementation).
-  void TileStateAbCheck(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int progIndex);
-  void TileStateAbFlush();
-  // Dev (`kWatchTileEnabled`): record which surface the last Progressive message
-  // targeted, so WatchTileProbe can look the watch tile up on both sides.
-  void WatchTileNote(uint16_t surfaceId);
-  // Dev (`kWatchTileEnabled`): one history line per Progressive message for a
-  // single watch tile - the engine's and gdi's `cur`/`sign`/bit positions for that
-  // tile *after* the message, whether or not the message touched it. The
-  // message-scoped A/B above only sees the tiles a message decodes, so it reports a
-  // divergence at whatever later message happens to touch a tile an *earlier*
-  // message corrupted, and the message that introduced it is lost.
-  void WatchTileProbe();
-  std::string GdiAbSummary() const;
-  // Dev: if this command's rect covers the watch pixel, log who wrote it and both
-  // values - so the command that moved only the engine's surface is visible.
-  void RefWatchRect(uint16_t surfaceId, int x, int y, int width, int height, const char* op);
-  std::string RefAbSummary() const;
 
  private:
   GfxReplay() = default;
@@ -194,50 +160,6 @@ class GfxReplay {
   std::atomic<int> cmpMaxDelta_{0};
   // Pixels whose worst channel delta is <= 2 (rounding-level, not content).
   std::atomic<uint64_t> cmpSmallDeltaPx_{0};
-  std::atomic<int> cmpFirstX_{-1};
-  std::atomic<int> cmpFirstY_{-1};
-  // Dev diagnosis: the one-shot per-pixel dump has already been written.
-  bool cmpDumpDone_ = false;
-  // Dev diagnosis: the one-shot screen/tile dump has already been written.
-  bool cmpScreenDumpDone_ = false;
-  // Dev: surface A/B accounting (kSurfaceAbEnabled).
-  uint64_t surfaceAbChecks_ = 0;
-  bool surfaceAbFirst_ = false;
-  // Dev: predictor-state A/B accounting (kTileStateAbEnabled).
-  struct TileStatePending {
-    uint16_t surfaceId = 0;
-    uint16_t xIdx = 0;
-    uint16_t yIdx = 0;
-    int progIndex = 0;
-  };
-  std::vector<TileStatePending> tileStatePending_;
-  uint64_t tileStateAbChecks_ = 0;
-  uint64_t tileStateAbUnavailable_ = 0;
-  bool tileStateAbFirst_ = false;
-  std::string tileStateProbe_;
-  // Dev: watch-tile history probe (kWatchTile* in hmrdp_replay.cpp).
-  uint16_t watchSurfaceId_ = 0;
-  int watchMsgCount_ = 0;
-  int watchProbed_ = 0;
-  bool watchSeen_ = false;
-
-  // Dev: per-command A/B against gdi's own surface (kCodecAbEnabled only).
-  struct GdiAbRect {
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
-    uint16_t surfaceId = 0;
-    std::string op;
-  };
-  std::vector<GdiAbRect> gdiAbPending_;
-  std::atomic<uint64_t> gdiChecks_{0};
-  std::atomic<uint64_t> gdiBad_{0};
-  std::atomic<uint64_t> gdiBadPx_{0};
-  bool gdiFirstLogged_ = false;
-  std::string gdiBadOp_;
-  // Dev: the first culprit line, repeated at the end of the run (hilog rotates).
-  std::string gdiFirstLine_;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;

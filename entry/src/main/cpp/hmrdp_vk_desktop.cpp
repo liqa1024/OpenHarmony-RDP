@@ -23,15 +23,11 @@ namespace hmrdp {
 namespace {
 
 // The Progressive decode scratch is sized by GfxVkDesktop::Impl::kMaxBatchStreams:
-// a batch spans the messages of a frame, so the coefficient plane is no longer a
-// per-chunk allocation.
+// one Progressive message is decoded per dispatch, against a fixed-size coefficient
+// plane (no per-message allocation).
 constexpr uint32_t kMetaStride = 64;  // bytes per (tile,component) stream job
 // One tile is 64x64 pixels; the compositor dispatches one lane per tile pixel.
 constexpr uint32_t kTilePixels = 4096;
-// Dev bisect for the decode batching: false keeps the code path but flushes after
-// every message (the pre-batching dispatch shape).
-constexpr bool kBatchMergeMessages = false;
-
 
 // Both dev probes below measure a property of the *device*, not of the engine
 // instance: the replay page re-creates the engine on every route switch, and
@@ -70,29 +66,6 @@ struct StreamJob {
 // (it copies the tile's own last-decode pixels again), so a divergence that
 // disappears without it means the re-stamp is writing something else.
 constexpr bool kRestampEnabled = true;
-// Dev: log the shape (tiles/first/upgrade/diff/rects/clip/bytes) of the capture's
-// first Progressive messages. Off by default: it is one line per message.
-constexpr bool kLogProgressiveMessages = false;
-// Dev: read back the UPGRADE length verdicts the decode shader leaves in the spare
-// bytes of each stream's bit-position entry, for the capture's first messages. This
-// is the only way to see whether FreeRDP would have thrown a refinement away
-// (`aSrlLen != srlLen || aRawLen != rawLen`): a rejected tile keeps its previous
-// *pixels* in gdi while its `current`/`sign` still take the refined values, so the
-// two decoders diverge. Off by default: it forces a submit+fence per message.
-constexpr bool kLogUpgradeLengths = false;
-constexpr uint64_t kLogUpgradeLengthsMessages = 12;
-// Dev: per-message log of the *host-side* dequantise inputs of one watch tile
-// (`qa` = the region's component quant nibbles, `pa` = the progressive quant
-// nibbles, `nb = qa + pa` = the tile's bit positions, `sh = nb - 1` = the
-// dequantise shift the decode shader is told to use). The state A/B compares the
-// two decoders' *state*, which says that a band diverged but not which input the
-// engine used to get there; this line has the inputs themselves, so a band whose
-// two sides hold different bit positions can be traced to the quant table entry
-// (or to the tile's quant index) instead of to the arithmetic.
-// Pairs with GfxReplay's watch-tile probe (hmrdp_replay.cpp).
-constexpr bool kLogWatchTile = false;
-constexpr uint32_t kLogWatchTileX = 40;
-constexpr uint32_t kLogWatchTileY = 3;
 
 // uint8 nibbles [HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3] in the RfxQuant.
 void QuantArray(const RfxQuant& q, uint8_t out[10]) {
@@ -106,16 +79,6 @@ void QuantArray(const RfxQuant& q, uint8_t out[10]) {
   out[7] = q.LH3;
   out[8] = q.HH3;
   out[9] = q.LL3;
-}
-
-// "a,b,c" for a small nibble array (dev logs only).
-void BytesToText(const uint8_t* in, int count, char* out, size_t outLen) {
-  size_t n = 0;
-  out[0] = '\0';
-  for (int i = 0; i < count && n + 4 < outLen; ++i) {
-    n += static_cast<size_t>(std::snprintf(out + n, outLen - n, "%s%u", i ? "," : "",
-                                           static_cast<unsigned>(in[i])));
-  }
 }
 
 // The screen is the only image the engine owns; surfaces / cache entries are
@@ -377,18 +340,9 @@ struct GfxVkDesktop::Impl {
   // Tiles whose `quality` is 0xFF, i.e. "full quality": the progressive quant table
   // is the all-zero one (see DecodeProgressive).
   uint64_t rfxFullQualityTiles = 0;
-  // Dev: how many uncompressed surface commands have been logged (their `format`
-  // is the only place the source channel order is expressed).
-  uint32_t rfxUncompressedSeen = 0;
-  // Dev: the first uncompressed surface commands (format + geometry), in Stats().
-  std::string uncompressedProbe;
   // Progressive messages whose stream count exceeds the decode scratch (see
   // DecodeProgressive); must stay 0.
   uint64_t rfxBatchOverflow = 0;
-  // Dev (kLogUpgradeLengths): per-message `mismatched/upgrade` upgrade-stream length
-  // verdicts, kept in Stats() because the periodic stats line rotates hilog long
-  // before a run ends.
-  std::string upgradeLengthProbe;
   // Progressive tiles re-composited because FreeRDP's update_tiles re-stamps the
   // whole frame's tile list on every message (see DecodeProgressive).
   uint64_t restamped = 0;
@@ -2083,17 +2037,13 @@ struct GfxVkDesktop::Impl {
     if (batchStreams > batchStreamsMax) {
       batchStreamsMax = batchStreams;
     }
-    // Dev bisect: 1 = merge the frame's messages into one dispatch, 0 = one message
-    // per batch (the pre-batching behaviour, through the same code path).
-    if (!kBatchMergeMessages) {
-      return FinishDecodeBatch();
-    }
-    return true;
+    // One message per dispatch: record it now (the decode is recorded, and the
+    // matching inverse DWT plus the composes follow in FinishDecodeBatch).
+    return FinishDecodeBatch();
   }
 
-  // Records the batch: one merged decode dispatch + one merged inverse DWT for
-  // every batched stream, then each message's compose in message order (the
-  // composes borrow their coefficients from the merged plane).
+  // Records one Progressive message's decode dispatch and its inverse DWT, then the
+  // message's compose (which borrows its coefficients from the decode plane).
   bool FinishDecodeBatch() {
     if (!batchOpen || batchMessages.empty()) {
       return true;
@@ -2427,30 +2377,6 @@ struct GfxVkDesktop::Impl {
               sj.payloadOff = static_cast<uint32_t>(data[c] - payload);
               sj.payloadLen = len[c];
             }
-            // Dev (kLogWatchTile): the *inputs* of this stream's dequantise - the
-            // region's component quant nibbles, the progressive quant nibbles, the
-            // resulting bit positions (`nb`) and the shift the shader will use
-            // (`sh = nb - 1`, clamped at 0). The state A/B says a band diverged;
-            // this line says which table entry the engine got it from.
-            if (kLogWatchTile && job.x == kLogWatchTileX && job.y == kLogWatchTileY) {
-              const uint8_t qIdx[3] = {t.quantIdxY, t.quantIdxCb, t.quantIdxCr};
-              char qaTx[64];
-              char paTx[64];
-              char nbTx[64];
-              char shTx[64];
-              BytesToText(qa, 10, qaTx, sizeof(qaTx));
-              BytesToText(pa, 10, paTx, sizeof(paTx));
-              BytesToText(sj.newBit, 10, nbTx, sizeof(nbTx));
-              BytesToText(sj.shift, 10, shTx, sizeof(shTx));
-              HMRDP_LOGW("vk watch msg=#%{public}llu tile=(%{public}u,%{public}u) "
-                         "c=%{public}d type=%{public}u flags=%{public}u qIdx=%{public}u "
-                         "quality=%{public}u qa=[%{public}s] pa=[%{public}s] nb=[%{public}s] "
-                         "sh=[%{public}s]",
-                         static_cast<unsigned long long>(rfxChunks + 1), job.x, job.y, c,
-                         static_cast<unsigned>(sj.type), static_cast<unsigned>(sj.flags),
-                         static_cast<unsigned>(qIdx[c]), static_cast<unsigned>(t.quality), qaTx,
-                         paTx, nbTx, shTx);
-            }
           }
           tiles.push_back(job);
         },
@@ -2482,20 +2408,6 @@ struct GfxVkDesktop::Impl {
     }
     rfxSimpleTiles += stats.simpleTiles;
     rfxDiffTiles += stats.diffTiles;
-    // Dev: the first messages of a capture, so a divergence that appears at a
-    // specific message can be described (shape of the message, not just a count).
-    if (kLogProgressiveMessages && rfxChunks < 40) {
-      HMRDP_LOGW("vk progressive msg #%{public}llu tiles=%{public}u (first=%{public}u "
-                 "upg=%{public}u diff=%{public}u) regions=%{public}u rects=%{public}u "
-                 "clip0=(%{public}d,%{public}d,%{public}d,%{public}d) bytes=%{public}zu "
-                 "origin=(%{public}d,%{public}d)",
-                 static_cast<unsigned long long>(rfxChunks + 1), static_cast<unsigned>(stats.tiles),
-                 static_cast<unsigned>(stats.firstTiles), static_cast<unsigned>(stats.upgradeTiles),
-                 static_cast<unsigned>(stats.diffTiles), static_cast<unsigned>(stats.regions),
-                 static_cast<unsigned>(stats.rects), msgRects.size() >= 4 ? msgRects[0] : 0,
-                 msgRects.size() >= 4 ? msgRects[1] : 0, msgRects.size() >= 4 ? msgRects[2] : 0,
-                 msgRects.size() >= 4 ? msgRects[3] : 0, size, originX, originY);
-    }
     rfxNonExtrapolate += (stats.regions > stats.extrapolateRegions)
                              ? (stats.regions - stats.extrapolateRegions)
                              : 0u;
@@ -2714,64 +2626,6 @@ struct GfxVkDesktop::Impl {
     if (!AppendToDecodeBatch(surfaceId, composeRegion, tileKeys, std::move(meta),
                              std::move(tileMeta), std::move(rects), payload, size)) {
       return false;
-    }
-    // Dev (kLogUpgradeLengths): the decode shader stores, per UPGRADE stream, whether
-    // its consumed SRL/RAW bytes matched the declared lengths (the two spare bytes of
-    // that stream's bit-position entry). Anything else means FreeRDP rejects the
-    // refinement - i.e. gdi keeps the tile's previous pixels while the engine applies
-    // it - so a non-zero count names the exact messages whose refinement the two
-    // decoders disagree about.
-    if (kLogUpgradeLengths && rfxChunks < kLogUpgradeLengthsMessages) {
-      if (SyncForCpuAccess()) {
-        InvalidateWhole(surface->rfx.bp);
-        const uint8_t* bpBytes = static_cast<const uint8_t*>(surface->rfx.bp.mapped);
-        uint32_t upgrades = 0;
-        uint32_t mismatched = 0;
-        uint32_t rawOnly = 0;
-        uint32_t srlOnly = 0;
-        for (const TileJob& job : tiles) {
-          for (int c = 0; c < 3; ++c) {
-            const StreamJob& sj = job.streams[c];
-            if (sj.type != 2u) {
-              continue;
-            }
-            upgrades++;
-            const size_t off = static_cast<size_t>(sj.tileStream) * 12u;
-            const uint8_t rawOk = bpBytes[off + 10u];
-            const uint8_t srlOk = bpBytes[off + 11u];
-            if (rawOk != 0u && srlOk != 0u) {
-              continue;
-            }
-            mismatched++;
-            if (rawOk == 0u && srlOk == 0u) {
-              // both
-            } else if (rawOk == 0u) {
-              rawOnly++;
-            } else {
-              srlOnly++;
-            }
-            if (mismatched <= 6) {
-              HMRDP_LOGW("vk upgrade length MISMATCH msg=#%{public}llu tile=(%{public}u,%{public}u) "
-                         "c=%{public}d declared raw/srl=%{public}u/%{public}u rawOk=%{public}u "
-                         "srlOk=%{public}u",
-                         static_cast<unsigned long long>(rfxChunks + 1),
-                         static_cast<unsigned>(job.x), static_cast<unsigned>(job.y), c,
-                         static_cast<unsigned>(sj.rawLen), static_cast<unsigned>(sj.srlLen),
-                         static_cast<unsigned>(rawOk), static_cast<unsigned>(srlOk));
-            }
-          }
-        }
-        char line[64];
-        std::snprintf(line, sizeof(line), "#%llu:%u/%u ",
-                      static_cast<unsigned long long>(rfxChunks + 1), mismatched, upgrades);
-        upgradeLengthProbe += line;
-        if (mismatched != 0) {
-          HMRDP_LOGW("vk upgrade lengths msg #%{public}llu: %{public}u/%{public}u streams mismatched "
-                     "(rawOnly=%{public}u srlOnly=%{public}u)",
-                     static_cast<unsigned long long>(rfxChunks + 1), mismatched, upgrades, rawOnly,
-                     srlOnly);
-        }
-      }
     }
     rfxChunks++;
     return true;
@@ -3121,11 +2975,6 @@ void GfxVkDesktop::DeleteSurface(uint16_t surfaceId) {
   impl_->surfaces.erase(it);
 }
 
-const GpuSurface* GfxVkDesktop::FindSurface(uint16_t surfaceId) const {
-  const Impl::Surface* surface = impl_ != nullptr ? impl_->Find(surfaceId) : nullptr;
-  return surface != nullptr ? &surface->meta : nullptr;
-}
-
 void GfxVkDesktop::MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX,
                                       uint32_t outputOriginY) {
   Impl::Surface* surface = impl_ != nullptr ? impl_->Find(surfaceId) : nullptr;
@@ -3332,108 +3181,6 @@ bool GfxVkDesktop::ReadScreen(std::vector<uint8_t>* out) {
     for (size_t i = 0; i < count; ++i) {
       pixels[i] = SwapRb(pixels[i]);
     }
-  }
-  return true;
-}
-
-bool GfxVkDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
-  if (!ready() || out == nullptr) {
-    return false;
-  }
-  Impl::Surface* surface = impl_->Find(surfaceId);
-  if (surface == nullptr || !surface->gpu.valid()) {
-    return false;
-  }
-  // A recorded Progressive dispatch has not run yet: submit it before reading
-  // the mapping, otherwise the pre-decode pixels are returned.
-  if (!impl_->SyncForCpuAccess()) {
-    return false;
-  }
-  // The stored buffer layout (stride * height, top-down) is exactly what the
-  // caller expects, so this is a plain copy out of the mapping: no readback, no
-  // staging, no stall.
-  const size_t bytes = surface->gpu.capacity;
-  out->assign(bytes, 0);
-  impl_->InvalidateWhole(surface->gpu);
-  std::memcpy(out->data(), surface->gpu.mapped, bytes);
-  if (impl_->swapRb) {
-    uint32_t* pixels = reinterpret_cast<uint32_t*>(out->data());
-    const size_t count = bytes / 4;
-    for (size_t i = 0; i < count; ++i) {
-      pixels[i] = SwapRb(pixels[i]);
-    }
-  }
-  return true;
-}
-
-bool GfxVkDesktop::ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, int height,
-                                   std::vector<uint8_t>* out) {
-  if (!ready() || out == nullptr || width <= 0 || height <= 0) {
-    return false;
-  }
-  Impl::Surface* surface = impl_->Find(surfaceId);
-  if (surface == nullptr || !surface->gpu.valid()) {
-    return false;
-  }
-  if (x < 0 || y < 0 || x + width > surface->meta.width || y + height > surface->meta.height) {
-    return false;
-  }
-  if (!impl_->SyncForCpuAccess()) {
-    return false;
-  }
-  out->resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-  impl_->InvalidateRect(surface->gpu, x, y, width, height);
-  for (int row = 0; row < height; ++row) {
-    const uint8_t* src = surface->gpu.mapped +
-                         static_cast<size_t>(y + row) * surface->gpu.stride +
-                         static_cast<size_t>(x) * 4;
-    std::memcpy(out->data() + static_cast<size_t>(row) * width * 4, src,
-                static_cast<size_t>(width) * 4);
-  }
-  if (impl_->swapRb) {
-    uint32_t* pixels = reinterpret_cast<uint32_t*>(out->data());
-    const size_t count = out->size() / 4;
-    for (size_t i = 0; i < count; ++i) {
-      pixels[i] = SwapRb(pixels[i]);
-    }
-  }
-  return true;
-}
-
-bool GfxVkDesktop::ReadTileState(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int16_t* curOut,
-                                 int16_t* signOut, uint8_t bitPos[30]) {
-  if (!ready() || impl_ == nullptr || curOut == nullptr || signOut == nullptr ||
-      bitPos == nullptr) {
-    return false;
-  }
-  Impl::Surface* surface = impl_->Find(surfaceId);
-  if (surface == nullptr || !surface->rfx.valid()) {
-    return false;
-  }
-  if (xIdx >= static_cast<uint16_t>(surface->meta.gridW) ||
-      yIdx >= static_cast<uint16_t>(surface->meta.gridH)) {
-    return false;
-  }
-  const uint32_t tileIndex =
-      static_cast<uint32_t>(yIdx) * static_cast<uint32_t>(surface->meta.gridW) + xIdx;
-  // The decode dispatch may still be recorded: it has to run before the mapping
-  // holds this tile's state.
-  if (!impl_->SyncForCpuAccess()) {
-    return false;
-  }
-  impl_->InvalidateWhole(surface->rfx.cur);
-  impl_->InvalidateWhole(surface->rfx.sign);
-  impl_->InvalidateWhole(surface->rfx.bp);
-  const int16_t* cur = reinterpret_cast<const int16_t*>(surface->rfx.cur.mapped);
-  const int16_t* sgn = reinterpret_cast<const int16_t*>(surface->rfx.sign.mapped);
-  const uint8_t* bp = static_cast<const uint8_t*>(surface->rfx.bp.mapped);
-  for (uint32_t c = 0; c < 3; ++c) {
-    const size_t stream = static_cast<size_t>(tileIndex) * 3u + c;
-    std::memcpy(curOut + static_cast<size_t>(c) * 4096u, cur + stream * 4096u,
-                static_cast<size_t>(4096) * sizeof(int16_t));
-    std::memcpy(signOut + static_cast<size_t>(c) * 4096u, sgn + stream * 4096u,
-                static_cast<size_t>(4096) * sizeof(int16_t));
-    std::memcpy(bitPos + static_cast<size_t>(c) * 10u, bp + stream * 12u, 10u);
   }
   return true;
 }
@@ -3795,18 +3542,6 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       const int height = static_cast<int>(GpuRd32(params + 28));
       if (codecId == kGpuCodecUncompressed) {
         const uint32_t bpp = format >> 24;
-        // Dev: the uncompressed path only reads the bit depth out of `format`; the
-        // channel order it encodes (FreeRDP's PIXEL_FORMAT_* shifts) is ignored, so a
-        // bitmap that is not BGRA/BGR byte order is copied verbatim into a BGRA
-        // surface. Log what the capture actually carries.
-        if (kLogUpgradeLengths && impl_->rfxUncompressedSeen < 8) {
-          impl_->rfxUncompressedSeen++;
-          char up[96];
-          std::snprintf(up, sizeof(up), "#%u f=0x%x %dx%d@%d,%d pl=%u | ",
-                        impl_->rfxUncompressedSeen, static_cast<unsigned>(format), width, height,
-                        left, top, payloadLen);
-          impl_->uncompressedProbe += up;
-        }
         if (width > 0 && height > 0 && payload != nullptr && (bpp == 24 || bpp == 32) &&
             static_cast<uint64_t>(bpp / 8) * width * height <= payloadLen) {
           if (bpp == 32) {
@@ -4055,14 +3790,7 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->restamped),
                 static_cast<unsigned long long>(impl_->rfxMultiRegion),
                 static_cast<unsigned long long>(impl_->frameIdRepeats));
-  std::string probe;
-  if (!impl_->upgradeLengthProbe.empty()) {
-    probe = "\n  upgradeLength mismatched/streams per msg " + impl_->upgradeLengthProbe;
-  }
-  if (!impl_->uncompressedProbe.empty()) {
-    probe += "\n  uncompressed " + impl_->uncompressedProbe;
-  }
-  return std::string(buf) + buf2 + probe +
+  return std::string(buf) + buf2 +
          (impl_->hostMemoryProbe.empty() ? std::string()
                                          : "\n  hostMem " + impl_->hostMemoryProbe);
 }
