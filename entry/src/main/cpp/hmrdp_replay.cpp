@@ -1,5 +1,5 @@
 /*
- * HmRdp - dev-only recorded-RDP replay (PERF-TODO §4).
+ * HmRdp - dev-only recorded-RDP replay (doc_agent/gfx-engine.md §6).
  *
  * Present-on-screen consumer of the shared replay driver: the capture is read,
  * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
@@ -126,7 +126,7 @@ const char* RouteName(GfxReplayRoute route) {
   return "?";
 }
 
-// GLES desktop engine (frozen legacy path, VULKAN-TODO §5 V7) + its EGL
+// GLES desktop engine (frozen legacy path, doc_agent/gfx-engine.md §7) + its EGL
 // renderer.
 class GlesReplayDesktop : public ReplayDesktop {
  public:
@@ -178,7 +178,7 @@ class GlesReplayDesktop : public ReplayDesktop {
   std::unique_ptr<Renderer> renderer_;
 };
 
-// Vulkan desktop engine + its swapchain renderer (VULKAN-TODO §5 V2/V6).
+// Vulkan desktop engine + its swapchain renderer (doc_agent/gfx-engine.md §1).
 class VulkanReplayDesktop : public ReplayDesktop {
  public:
   bool Init(void* window, int width, int height, int /*clearBatchArea*/,
@@ -874,16 +874,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   }
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
 }
-
-// Dev: independent CPU reference surface (VULKAN-TODO §8).
-//
-// The harness keeps a second, complete implementation of the GFX surface:
-// FreeRDP's own progressive/clear decoders plus mirrored gdi cache / fill /
-// copy semantics. The reference never reads the engine's surface, so diffing it
-// against the engine's surface is an absolute end-to-end check - and the first
-// mismatching pixel plus the last command that wrote it name the culprit.
-// ---------------------------------------------------------------------------
-
 
 std::string GfxReplay::GdiAbSummary() const {
   if (gdiChecks_.load() == 0) {

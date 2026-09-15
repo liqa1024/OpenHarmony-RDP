@@ -78,7 +78,7 @@ struct SettingsPage {
   @State enableGfx: boolean = true;
   @State ignoreCertificate: boolean = true;
   @State hardwareDecode: boolean = true;
-  // Dev-only RemoteFX stream capture (PERF-TODO §2).
+  // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State rfxDump: boolean = false;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';

@@ -152,7 +152,7 @@ bool Renderer::EnsureContext() {
   //
   // The context joins the process-wide share group (SharedEglAnchorContext) so
   // PresentTexture can sample a texture created by the GPU desktop engine
-  // without a CPU round-trip (PERF-TODO §3.4 / §11.4).
+  // without a CPU round-trip (doc_agent/gfx-engine.md §1).
   const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
   context_ =
       eglCreateContext(display_, config_, SharedEglAnchorContext(), contextAttribs);

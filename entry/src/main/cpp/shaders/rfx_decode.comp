@@ -6,7 +6,7 @@
 // refinement. The per-(tile,component) current/sign/bit-position state lives in
 // the per-surface bound buffers and persists across messages.
 //
-// VULKAN-TODO.md §5 V3 / §7.1.
+// doc_agent/gfx-engine.md §2.
 #version 450
 
 layout(local_size_x = 64) in;

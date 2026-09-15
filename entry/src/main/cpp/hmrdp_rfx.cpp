@@ -747,7 +747,7 @@ EGLContext CreateOffscreen(EGLDisplay display, EGLConfig* outConfig, EGLSurface*
     return EGL_NO_CONTEXT;
   }
   // Join the process-wide share group so the Renderer's window context can
-  // sample the engine's screen texture (PERF-TODO §3.4 / §11.4).
+  // sample the engine's screen texture (doc_agent/gfx-engine.md §1).
   const EGLContext share = SharedEglAnchorContext();
   const EGLint ctxAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3,
                                EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE};

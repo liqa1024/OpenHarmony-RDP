@@ -62,7 +62,7 @@ void QuantArray(const RfxQuant& q, uint8_t out[10]) {
 }
 
 // The screen is the only image the engine owns; surfaces / cache entries are
-// persistent-mapped host-visible buffers (V2, VULKAN-TODO §4.2 item 2). It needs
+// persistent-mapped host-visible buffers (V2, doc_agent/gfx-engine.md §1). It needs
 // to be a transfer destination (fill / compose) and source (present blit).
 //
 // STORAGE is deliberately absent: with it set, the platform's Vulkan layer
@@ -73,7 +73,7 @@ constexpr VkImageUsageFlags kImageUsage =
 
 // Surfaces / cache need to be a transfer source and destination. STORAGE_BUFFER
 // is included already because V3's Progressive compute shader writes tiles
-// straight into these buffers (VULKAN-TODO §4.2 item 4), and adding it later
+// straight into these buffers (doc_agent/gfx-engine.md §1), and adding it later
 // would mean re-allocating every live surface.
 constexpr VkBufferUsageFlags kSurfaceBufferUsage =
     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -207,7 +207,7 @@ struct GfxVkDesktop::Impl {
   // Writes that later reads in the recorded command buffer must be ordered
   // after. Kept apart because the source stage differs: a CPU write to a mapped
   // buffer is HOST_WRITE, a vkCmdFillBuffer/vkCmdCopyBufferToImage write is
-  // TRANSFER_WRITE (VULKAN-TODO §7.2 "CPU 写的表面 -> GPU 读").
+  // TRANSFER_WRITE (doc_agent/gfx-engine.md §3 "CPU 写的表面 -> GPU 读").
   bool pendingHostWrites = false;
   bool pendingDeviceWrites = false;
   // A compute dispatch is recorded but has not been submitted yet. The surface
@@ -351,7 +351,7 @@ struct GfxVkDesktop::Impl {
 
   // Resources whose last referencing submission may still be in flight. They are
   // released only after a fence wait: destroying them eagerly would either be a
-  // use-after-free or force a submit+wait per command (VULKAN-TODO §7.2 "never
+  // use-after-free or force a submit+wait per command (doc_agent/gfx-engine.md §3 "never
   // destroy in-flight resources", §7.3 "never wait per command").
   struct DeferredResource {
     VkImage image = VK_NULL_HANDLE;
@@ -464,7 +464,7 @@ struct GfxVkDesktop::Impl {
 
   // Prefer DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT (the unified-memory case the
   // target device offers); fall back to plain host-visible. Never assume a pure
-  // DEVICE_LOCAL type exists (VULKAN-TODO §7.2).
+  // DEVICE_LOCAL type exists (doc_agent/gfx-engine.md §3).
   uint32_t FindHostVisibleType(uint32_t typeBits) const {
     uint32_t type = VkContext::Instance().FindMemoryType(
         typeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -772,7 +772,7 @@ struct GfxVkDesktop::Impl {
   }
 
   // Makes every prior write visible to every later read. Deliberately coarse:
-  // correctness over barrier count (VULKAN-TODO §7.2). The host leg is required
+  // correctness over barrier count (doc_agent/gfx-engine.md §3). The host leg is required
   // because surface pixels are written by the CPU directly into the mapping.
   // Emitted lazily, never a per-command device wait.
   void BarrierBeforeRead() {
@@ -816,7 +816,7 @@ struct GfxVkDesktop::Impl {
     // CPU access to a mapped surface must see its result; a Flush with nothing
     // recorded is nearly free, so this only needs to run when compute is in
     // flight (measured: making it unconditional changes no metric, it only adds
-    // sync points - see VULKAN-TODO §7.3).
+    // sync points - see doc_agent/gfx-engine.md §3).
     if (!computeInFlight) {
       return true;
     }
@@ -1707,7 +1707,7 @@ struct GfxVkDesktop::Impl {
   // V4: ClearCodec is not self-contained (band pixels it does not cover keep the
   // current surface value), so it is a CPU read-modify-write. Since V2 the
   // surface IS the mapping, so FreeRDP's clear_decompress runs straight on it -
-  // no staging, no GPU round trip (VULKAN-TODO §4.2 item 3).
+  // no staging, no GPU round trip (doc_agent/gfx-engine.md §1).
   bool ClearCodecDecode(uint16_t surfaceId, const uint8_t* payload, uint32_t payloadLen, int left,
                         int top, int width, int height) {
     if (clearDecoder == nullptr || payload == nullptr || payloadLen == 0 || width <= 0 ||

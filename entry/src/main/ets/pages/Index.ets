@@ -321,7 +321,7 @@ struct Index {
 
         Blank()
 
-        // Dev-only entry (PERF-TODO §4): recorded RDP replay page.
+        // Dev-only entry (doc_agent/gfx-engine.md §6): recorded RDP replay page.
         Text('回放测试')
           .fontSize(12)
           .fontColor($r('app.color.text_secondary'))

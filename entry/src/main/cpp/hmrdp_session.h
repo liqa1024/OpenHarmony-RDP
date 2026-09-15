@@ -109,12 +109,11 @@ class Session {
   static void SetRdpCursor(bool enabled);
 
   // Process-global preference for hardware (GPU) RemoteFX decoding instead of
-  // the CPU decoder. Read when a session connects (the GPU RFX path lands in
-  // PERF-TODO §2).
+  // the CPU decoder. Read when a session connects (see doc_agent/gfx-engine.md §1).
   static void SetHardwareDecode(bool enabled);
 
   // Dev-only capture of the incoming RemoteFX/Progressive GFX surface streams,
-  // written to `dir` as hmrdp_rfx.bin (see PERF-TODO §2).
+  // written to `dir` as hmrdp_rfx.bin (see doc_agent/gfx-engine.md §6).
   static void SetRfxDump(bool enabled, const std::string& dir);
 
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
@@ -133,7 +132,7 @@ class Session {
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
   void HandleEndPaint();
-  // Feeds one GFX command to the GPU desktop engine (PERF-TODO §3). Called from
+  // Feeds one GFX command to the GPU desktop engine (doc_agent/gfx-engine.md §1). Called from
   // the wrapped RdpgfxClientContext callbacks on the RDP thread, in addition to
   // gdi, while the GPU path is being brought up. No-op unless the engine is
   // enabled and initialised.
@@ -224,7 +223,7 @@ class Session {
   // time so "本机" covers decode + present.
   std::atomic<uint64_t> decodeAccumUs_{0};
   void* gfxContext_ = nullptr;
-  // GPU desktop engine (PERF-TODO §3). Created lazily on the RDP thread when the
+  // GPU desktop engine (doc_agent/gfx-engine.md §1). Created lazily on the RDP thread when the
   // hardware-decode setting is on; gdi still decodes alongside it for now.
   // FreeRDP feeds the GFX commands on one thread while gdi's EndPaint callback
   // can fire on another, so every engine/renderer GL access is serialised.

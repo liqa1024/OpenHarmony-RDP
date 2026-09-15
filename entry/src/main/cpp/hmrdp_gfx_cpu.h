@@ -1,5 +1,5 @@
 /*
- * HmRdp - offline FreeRDP CPU (gdi) desktop (PERF-TODO §4).
+ * HmRdp - offline FreeRDP CPU (gdi) desktop (doc_agent/gfx-engine.md §6).
  *
  * The A/B reference route for the GPU desktop engine: instead of re-implementing
  * the image decoders, it builds a session-less FreeRDP context with gdi + the

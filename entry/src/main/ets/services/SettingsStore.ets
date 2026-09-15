@@ -71,10 +71,10 @@ export class AppSettings {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   ignoreCertificate: boolean = true;
-  // Prefer hardware (GPU) RemoteFX decoding over the CPU decoder. See
-  // PERF-TODO.md §2.
+  // Prefer hardware (GPU) RemoteFX decoding over the CPU decoder (see
+  // doc_agent/gfx-engine.md §1).
   hardwareDecode: boolean = true;
-  // Dev-only capture of the RemoteFX/Progressive stream (PERF-TODO §2).
+  // Dev-only capture of the RemoteFX/Progressive stream (doc_agent/gfx-engine.md §6).
   rfxDump: boolean = false;
 }
 

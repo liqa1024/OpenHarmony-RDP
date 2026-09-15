@@ -1,5 +1,5 @@
 /*
- * HmRdp - shared RDPGFX driver (PERF-TODO §4).
+ * HmRdp - shared RDPGFX driver (doc_agent/gfx-engine.md §6).
  *
  * Two things live here, so the live session and the offline replay share one
  * implementation instead of each keeping their own copy:

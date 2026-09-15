@@ -5,7 +5,7 @@
  * context) live in the same EGL share group so GL objects (textures, buffers)
  * are visible across them. This is what lets the Renderer sample the engine's
  * composed screen texture directly instead of a CPU readback + upload
- * (PERF-TODO §3.4 / §11.4).
+ * (doc_agent/gfx-engine.md §1).
  *
  * The display is initialised once and never terminated; the anchor context is
  * created lazily and outlives every client context that shares it.

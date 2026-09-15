@@ -1,5 +1,5 @@
 /*
- * HmRdp - Vulkan GFX surface engine (V2 scope, VULKAN-TODO.md §5 V2).
+ * HmRdp - Vulkan GFX surface engine (V2 scope, doc_agent/gfx-engine.md §1).
  *
  * Reproduces the FreeRDP RDPGFX command semantics that GfxGpuDesktop
  * (hmrdp_rfx.{h,cpp}) implements on GLES 3.1 compute, so the replay harness, the
@@ -7,7 +7,7 @@
  * surface-to-surface copy, bitmap cache, uncompressed upload, output mapping,
  * screen compose and dirty tracking.
  *
- * V2 storage model (VULKAN-TODO §4.2 item 2):
+ * V2 storage model (doc_agent/gfx-engine.md §1):
  *
  *  - Surfaces and bitmap-cache entries are **persistent-mapped host-visible
  *    linear `VkBuffer`s**, not images. Their row pitch is the FreeRDP `stride`
@@ -28,7 +28,7 @@
  *  - Hazards are covered by one coarse `VkMemoryBarrier`, emitted lazily and
  *    split into a HOST_WRITE leg (CPU-written surfaces) and a TRANSFER_WRITE leg
  *    (device-written screen), both targeting TRANSFER reads. No
- *    `vkDeviceWaitIdle` per command (VULKAN-TODO §7.3).
+ *    `vkDeviceWaitIdle` per command (doc_agent/gfx-engine.md §3).
  *  - Commands are recorded into one primary command buffer and submitted at
  *    natural boundaries (`Flush()`: readback, present, teardown).
  *

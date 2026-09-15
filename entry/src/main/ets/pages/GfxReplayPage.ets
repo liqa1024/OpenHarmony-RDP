@@ -1,5 +1,5 @@
 /*
- * HmRdp - dev-only RDP replay page (PERF-TODO §4).
+ * HmRdp - dev-only RDP replay page (doc_agent/gfx-engine.md §6).
  *
  * Binds this XComponent's surface and replays the recorded hmrdp_gfx.bin capture
  * straight to the screen through the GPU desktop engine. No RDP session or

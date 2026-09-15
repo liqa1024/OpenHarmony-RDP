@@ -1,5 +1,5 @@
 /*
- * HmRdp - dev-only recorded-RDP replay (PERF-TODO §4).
+ * HmRdp - dev-only recorded-RDP replay (doc_agent/gfx-engine.md §6).
  *
  * Replays a captured raw GFX channel stream (hmrdp_gfx.bin) through FreeRDP's
  * own ZGX + RDPGFX parsing into the GPU desktop engine and presents each frame

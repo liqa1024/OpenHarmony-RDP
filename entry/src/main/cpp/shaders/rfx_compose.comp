@@ -6,7 +6,7 @@
 // destination surface buffer. Pixels outside the clip rects keep the previous
 // surface content (FreeRDP semantics), so the kernel is a read-modify-write.
 //
-// VULKAN-TODO.md §5 V3.
+// doc_agent/gfx-engine.md §1.
 #version 450
 
 layout(local_size_x = 64) in;
@@ -67,7 +67,7 @@ void main() {
       int b = clamp(sB >> 21, 0, 255);
       // The engine storage is FreeRDP's BGRA byte order for the offline harness
       // and RGBA8 when the swapchain forces it; the CPU boundaries swap, and so
-      // must this kernel (VULKAN-TODO §5 V2 storage note).
+      // must this kernel (doc_agent/gfx-engine.md §1).
       if (pc.uSwapRb != 0u) {
         int tmp = r;
         r = b;

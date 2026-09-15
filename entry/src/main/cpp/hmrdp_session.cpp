@@ -77,7 +77,7 @@ namespace {
 std::atomic<bool> g_useRdpCursor{true};
 
 // Prefer hardware (GPU) RemoteFX decoding instead of the CPU decoder. Default
-// on; the GPU RFX path (see PERF-TODO §2) reads this when a session connects.
+// on; the GPU RFX path (see doc_agent/gfx-engine.md §0) reads this when a session connects.
 std::atomic<bool> g_hardwareDecode{true};
 
 // Debug dual-render: when true the GFX callbacks keep chaining to FreeRDP's gdi
@@ -1085,7 +1085,7 @@ BOOL HmrdpNetworkCharacteristicsResult(rdpAutoDetect* autodetect, RDP_TRANSPORT_
 // chains every RdpgfxClientContext command callback. Two independent jobs ride
 // on the chain:
 //  * SurfaceCommand is timed for the "本机" (decode + present) metric;
-//  * the whole command stream is serialized by hmrdp_gfx_capture (PERF-TODO §2.5
+//  * the whole command stream is serialized by hmrdp_gfx_capture (doc_agent/gfx-engine.md §0.4
 //    B0) so the GPU desktop engine can be replayed offline against the same
 //    FreeRDP surface baselines.
 // The wrappers must preserve the original return values and behaviour exactly.

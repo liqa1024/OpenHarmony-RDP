@@ -1,5 +1,5 @@
 /*
- * HmRdp - raw RDPGFX channel capture (PERF-TODO §4).
+ * HmRdp - raw RDPGFX channel capture (doc_agent/gfx-engine.md §6).
  *
  * Records exactly what the server sent on the GFX dynamic virtual channel,
  * before any decompression: one record per channel chunk (`u32 length` +

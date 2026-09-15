@@ -6,7 +6,7 @@
  *      payloads. Portable C++ with no OHOS/FreeRDP dependency.
  * §2 - GPU decode + surface engine: the integer RemoteFX/Progressive pipeline
  *      runs in GLES 3.1 compute shaders, and GfxGpuDesktop holds the full GFX
- *      surface model (PERF-TODO §2.3-§2.5) - a `surfaceId -> GPU surface`
+ *      surface model (doc_agent/gfx-engine.md §0.2-§0.4) - a `surfaceId -> GPU surface`
  *      registry with per-surface progressive state and the four pixel
  *      operations (decode write / solid fill / surface copy / cache),
  *      reproducing the FreeRDP command semantics.
@@ -215,7 +215,7 @@ const GpuComputeInfo& GetGpuComputeInfo();
 // FreeRDP packed surface pixel formats (values copied from freerdp/codec/color.h
 // so this header stays FreeRDP-free). The wire format maps 0x20 -> BGRX32 and
 // 0x21 -> BGRA32. The RGBA variants describe the Vulkan engine's storage when
-// the swapchain forces an RGBA8 swapchain (VULKAN-TODO §5 V2/V4).
+// the swapchain forces an RGBA8 swapchain (doc_agent/gfx-engine.md §1).
 constexpr uint32_t kPixelFormatBgra32 = 0x20048888u;
 constexpr uint32_t kPixelFormatBgrx32 = 0x20040888u;
 constexpr uint32_t kPixelFormatRgba32 = 0x20038888u;
@@ -247,7 +247,7 @@ struct GpuSurface {
 
 // GPU desktop / surface engine: it owns an offscreen GLES 3.1 context, one GPU
 // surface buffer (+ progressive tile state) per `surfaceId` and a global bitmap
-// cache, and reproduces the FreeRDP command semantics (PERF-TODO §2.3-§2.5).
+// cache, and reproduces the FreeRDP command semantics (doc_agent/gfx-engine.md §0.2-§0.4).
 //
 // ClearCodec is decoded on the CPU through the injected GfxClearDecoder hook
 // (FreeRDP's clear_decompress) with a read-modify-write of the target surface;
@@ -274,7 +274,7 @@ class GfxGpuDesktop {
   void DeleteSurface(uint16_t surfaceId);
   const GpuSurface* FindSurface(uint16_t surfaceId) const;
 
-  // Output mapping metadata (PERF-TODO §2.5); consumed by Compose. 1:1 only:
+  // Output mapping metadata (doc_agent/gfx-engine.md §0.4); consumed by Compose. 1:1 only:
   // server-side scaled mappings are unsupported (see ApplyCommand).
   void MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX, uint32_t outputOriginY);
 

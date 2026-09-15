@@ -1,6 +1,6 @@
 /*
  * HmRdp - Vulkan presenter implementation. See hmrdp_vk_renderer.h and
- * VULKAN-TODO.md §4.1 / §7.2.
+ * doc_agent/gfx-engine.md §3.
  */
 #include "hmrdp_vk_renderer.h"
 
@@ -266,7 +266,7 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
     // ratio, centred (letterboxed). Equal extents take a plain copy; otherwise a
     // scaled blit. The former "never blit" rule came from a different (emulator)
     // implementation and does not apply here: on the real device the scaled blit
-    // is correct (VULKAN-TODO §3.3).
+    // is correct (doc_agent/gfx-engine.md §1).
     const uint32_t srcW = static_cast<uint32_t>(width);
     const uint32_t srcH = static_cast<uint32_t>(height);
     const uint32_t dstW = extent_.width;
@@ -485,7 +485,7 @@ bool VkRenderer::CreateSwapchainLocked() {
     }
   }
   // A device is only usable for a surface it can present to, so it is created
-  // lazily here (VULKAN-TODO §4.2 item 1 keeps it process-wide from then on). Its
+  // lazily here (doc_agent/gfx-engine.md §1 keeps it process-wide from then on). Its
   // entry points are only resolved by this call, so they are checked after it.
   if (!context.EnsureDevice(surface_)) {
     error_ = context.lastError();
@@ -527,7 +527,7 @@ bool VkRenderer::CreateSwapchainLocked() {
     api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, presentModes.data());
   }
   // FIFO is the only mode the spec guarantees; it is also the one that matches
-  // the "present only when the picture changed" policy (VULKAN-TODO §4.2 item 5).
+  // the "present only when the picture changed" policy (doc_agent/gfx-engine.md §1).
   VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
   bool fifoAvailable = false;
   for (VkPresentModeKHR mode : presentModes) {
@@ -763,7 +763,7 @@ void VkRenderer::DestroySwapchainLocked() {
 
   if (swapchain_ != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
     // Re-creation is rare, so a full idle wait is the simple correct answer to
-    // "nothing may still reference these objects" (VULKAN-TODO §7.2).
+    // "nothing may still reference these objects" (doc_agent/gfx-engine.md §3).
     if (api.DeviceWaitIdle != nullptr) {
       api.DeviceWaitIdle(device);
     }

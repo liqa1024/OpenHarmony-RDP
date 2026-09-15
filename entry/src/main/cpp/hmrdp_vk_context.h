@@ -7,7 +7,7 @@
  * application (same rule as the OHAudio sink, see AGENTS.md). Every command is
  * therefore fetched through vkGetInstanceProcAddr / vkGetDeviceProcAddr.
  *
- * See VULKAN-TODO.md §3.2 (capability probe), §4.1 (module split) and §4.2 item 1
+ * See doc_agent/gfx-engine.md §1
  * (one VkDevice for the whole process).
  */
 #ifndef HMRDP_VK_CONTEXT_H
@@ -118,7 +118,7 @@ struct VkApi {
   PFN_vkFlushMappedMemoryRanges FlushMappedMemoryRanges = nullptr;
   PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges = nullptr;
 
-  // Compute (VULKAN-TODO §5 V3: the Progressive / RemoteFX decode runs in compute
+  // Compute (doc_agent/gfx-engine.md §1: the Progressive / RemoteFX decode runs in compute
   // shaders; ClearCodec deliberately stays on the CPU, §5 V4). Resolved
   // opportunistically: a device that cannot do compute still runs the
   // transfer-only part of the engine.
@@ -155,7 +155,7 @@ VkApi& GetVkApi();
 // "VK_SUCCESS" / "VK_ERROR_..." for logs.
 std::string VkResultName(int32_t result);
 
-// Capability report (VULKAN-TODO §3.2): what the platform actually offers. It is a
+// Capability report (doc_agent/gfx-engine.md §1): what the platform actually offers. It is a
 // snapshot for the dev panel and decides the later design (read-back strategy,
 // queue layout, whether present is even possible).
 struct VulkanCapabilities {
@@ -184,7 +184,7 @@ struct VulkanCapabilities {
   bool memHostVisible = false;
   bool memHostCoherent = false;
   // A DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type: when present, read-back does
-  // not need a staging copy (VULKAN-TODO §3.2).
+  // not need a staging copy (doc_agent/gfx-engine.md §1).
   bool memHostVisibleDeviceLocal = false;
 
   uint32_t queueFamilyCount = 0;

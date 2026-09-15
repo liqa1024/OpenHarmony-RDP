@@ -1,15 +1,16 @@
 # RDP 远程桌面
 
 面向 **鸿蒙 PC（2in1）** 的远程桌面（RDP）客户端，基于 **FreeRDP 3.10.3** 从源码交叉编译，
-使用 **ArkUI + Node-API + EGL/OpenGL ES** 实现原生渲染与输入转发。
+使用 **ArkUI + Node-API + Vulkan** 实现原生渲染与输入转发。
 
 ## 特性
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
 - **图形管道（GPU 接管）**：RDPGFX（RemoteFX / 渐进式）。默认由 **GPU 桌面引擎**接管——CPU 只做 ZGFX +
-  命令解析，渐进 / 未压缩解码、多表面合成与上屏都在 **GLES 3.1 compute** 上完成，引擎屏幕以**共享 EGL
-  纹理**直连上屏（无 CPU 读回 / 上传）；ClearCodec 复用 FreeRDP 解码器做 CPU 钩子。设置页「硬件解码」
-  关闭、或设备无 GLES 3.1 compute / 引擎初始化失败时，自动回退 FreeRDP gdi（CPU 软解）
+  命令解析，渐进 / 未压缩解码、多表面合成都在 **Vulkan compute** 上完成（表面是持久映射的 host-visible
+  缓冲，CPU 侧访问零成本），屏幕经 swapchain 直连上屏；**ClearCodec 复用 FreeRDP 解码器在 CPU 做读改写**
+  （它不是自包含的）。设置页「硬件解码」关闭、或设备无 Vulkan / 引擎初始化失败时，自动回退 FreeRDP gdi
+  （CPU 软解）
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
   压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）
 - **光标同步**：远端光标形状（文本、手型、窗口边缘缩放等）映射为鸿蒙系统光标，大光标自动缩放到 256；
@@ -60,8 +61,8 @@
 │  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
 ├─────────────────────────────────────────────────────────────┤
 │  Session wrapper  (hmrdp_session.cpp)                       │
-│  GPU desktop engine  (hmrdp_rfx_gpu / hmrdp_gfx_desktop)    │
-│  EGL/GLES renderer + EGL share  (hmrdp_renderer / egl)      │
+│  GPU desktop engine  (hmrdp_vk_desktop / hmrdp_vk_context)  │
+│  Vulkan renderer + swapchain  (hmrdp_vk_renderer)           │
 │  OHAudio output   (hmrdp_audio.cpp, dlopen libohaudio)      │
 ├─────────────────────────────────────────────────────────────┤
 │  FreeRDP 3.10.3   libfreerdp3 / winpr3 / client3            │
@@ -80,7 +81,7 @@ entry/
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
     services/                 ConnectionStore · CredentialStore · SettingsStore · ConfigTransfer · RdpNative · TouchpadWheel · SessionManager · WindowController · DeviceCapabilities
-  src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + GPU 桌面引擎 + EGL 渲染器 + OHAudio 播放
+  src/main/cpp/               NAPI 桥接 + FreeRDP 封装 + Vulkan 桌面引擎/上屏 + OHAudio 播放
   src/main/cpp/thirdparty/    FreeRDP 头文件
   src/main/resources/         资源（含 dark 深色变体）
 native/
