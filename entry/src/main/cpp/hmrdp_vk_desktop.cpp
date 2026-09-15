@@ -81,6 +81,18 @@ constexpr bool kLogProgressiveMessages = false;
 // two decoders diverge. Off by default: it forces a submit+fence per message.
 constexpr bool kLogUpgradeLengths = false;
 constexpr uint64_t kLogUpgradeLengthsMessages = 12;
+// Dev: per-message log of the *host-side* dequantise inputs of one watch tile
+// (`qa` = the region's component quant nibbles, `pa` = the progressive quant
+// nibbles, `nb = qa + pa` = the tile's bit positions, `sh = nb - 1` = the
+// dequantise shift the decode shader is told to use). The state A/B compares the
+// two decoders' *state*, which says that a band diverged but not which input the
+// engine used to get there; this line has the inputs themselves, so a band whose
+// two sides hold different bit positions can be traced to the quant table entry
+// (or to the tile's quant index) instead of to the arithmetic.
+// Pairs with GfxReplay's watch-tile probe (hmrdp_replay.cpp).
+constexpr bool kLogWatchTile = false;
+constexpr uint32_t kLogWatchTileX = 40;
+constexpr uint32_t kLogWatchTileY = 3;
 
 // uint8 nibbles [HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3] in the RfxQuant.
 void QuantArray(const RfxQuant& q, uint8_t out[10]) {
@@ -94,6 +106,16 @@ void QuantArray(const RfxQuant& q, uint8_t out[10]) {
   out[7] = q.LH3;
   out[8] = q.HH3;
   out[9] = q.LL3;
+}
+
+// "a,b,c" for a small nibble array (dev logs only).
+void BytesToText(const uint8_t* in, int count, char* out, size_t outLen) {
+  size_t n = 0;
+  out[0] = '\0';
+  for (int i = 0; i < count && n + 4 < outLen; ++i) {
+    n += static_cast<size_t>(std::snprintf(out + n, outLen - n, "%s%u", i ? "," : "",
+                                           static_cast<unsigned>(in[i])));
+  }
 }
 
 // The screen is the only image the engine owns; surfaces / cache entries are
@@ -2404,6 +2426,30 @@ struct GfxVkDesktop::Impl {
             } else {
               sj.payloadOff = static_cast<uint32_t>(data[c] - payload);
               sj.payloadLen = len[c];
+            }
+            // Dev (kLogWatchTile): the *inputs* of this stream's dequantise - the
+            // region's component quant nibbles, the progressive quant nibbles, the
+            // resulting bit positions (`nb`) and the shift the shader will use
+            // (`sh = nb - 1`, clamped at 0). The state A/B says a band diverged;
+            // this line says which table entry the engine got it from.
+            if (kLogWatchTile && job.x == kLogWatchTileX && job.y == kLogWatchTileY) {
+              const uint8_t qIdx[3] = {t.quantIdxY, t.quantIdxCb, t.quantIdxCr};
+              char qaTx[64];
+              char paTx[64];
+              char nbTx[64];
+              char shTx[64];
+              BytesToText(qa, 10, qaTx, sizeof(qaTx));
+              BytesToText(pa, 10, paTx, sizeof(paTx));
+              BytesToText(sj.newBit, 10, nbTx, sizeof(nbTx));
+              BytesToText(sj.shift, 10, shTx, sizeof(shTx));
+              HMRDP_LOGW("vk watch msg=#%{public}llu tile=(%{public}u,%{public}u) "
+                         "c=%{public}d type=%{public}u flags=%{public}u qIdx=%{public}u "
+                         "quality=%{public}u qa=[%{public}s] pa=[%{public}s] nb=[%{public}s] "
+                         "sh=[%{public}s]",
+                         static_cast<unsigned long long>(rfxChunks + 1), job.x, job.y, c,
+                         static_cast<unsigned>(sj.type), static_cast<unsigned>(sj.flags),
+                         static_cast<unsigned>(qIdx[c]), static_cast<unsigned>(t.quality), qaTx,
+                         paTx, nbTx, shTx);
             }
           }
           tiles.push_back(job);

@@ -82,6 +82,16 @@ class GfxReplay {
   // Progressive message decodes, flushed once per message (see the implementation).
   void TileStateAbCheck(uint16_t surfaceId, uint16_t xIdx, uint16_t yIdx, int progIndex);
   void TileStateAbFlush();
+  // Dev (`kWatchTileEnabled`): record which surface the last Progressive message
+  // targeted, so WatchTileProbe can look the watch tile up on both sides.
+  void WatchTileNote(uint16_t surfaceId);
+  // Dev (`kWatchTileEnabled`): one history line per Progressive message for a
+  // single watch tile - the engine's and gdi's `cur`/`sign`/bit positions for that
+  // tile *after* the message, whether or not the message touched it. The
+  // message-scoped A/B above only sees the tiles a message decodes, so it reports a
+  // divergence at whatever later message happens to touch a tile an *earlier*
+  // message corrupted, and the message that introduced it is lost.
+  void WatchTileProbe();
   std::string GdiAbSummary() const;
   // Dev: if this command's rect covers the watch pixel, log who wrote it and both
   // values - so the command that moved only the engine's surface is visible.
@@ -205,6 +215,11 @@ class GfxReplay {
   uint64_t tileStateAbUnavailable_ = 0;
   bool tileStateAbFirst_ = false;
   std::string tileStateProbe_;
+  // Dev: watch-tile history probe (kWatchTile* in hmrdp_replay.cpp).
+  uint16_t watchSurfaceId_ = 0;
+  int watchMsgCount_ = 0;
+  int watchProbed_ = 0;
+  bool watchSeen_ = false;
 
   // Dev: per-command A/B against gdi's own surface (kCodecAbEnabled only).
   struct GdiAbRect {

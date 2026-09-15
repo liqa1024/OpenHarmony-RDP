@@ -77,6 +77,9 @@ hdc -t <序列号> shell "hilog -x -D 0xD001"        # 读本应用的原生日�
 - 截图：`hdc shell snapshot_display -f /data/local/tmp/x.jpeg` + `hdc file recv`。
 - 读日志前先 `hilog -r` 清缓冲；`hilog -x -D 0xD001` 只取本应用的原生 domain。
   **周期性统计行会很快冲掉缓冲区**，关键结论行若只在早期打印，应尽早抓取或让代码在收尾时重打一次。
+- **新增日志要自己拼成字符串**：hilog 对没有 `%{public}` 标记的转换说明符一律输出 `<private>`
+  （`%d`/`%u`/`%s` 全都中招），随手加的 `HMRDP_LOGW("... %d", v)` 打出来是一行 `<private>`。
+  要么每个参数都写 `%{public}`，要么先 `snprintf` 成一行再用 `%{public}s` 打。
 
 ## 6. 环境
 

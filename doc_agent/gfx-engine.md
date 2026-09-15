@@ -158,6 +158,13 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   `SurfaceToCache` 内部会嵌套调用 `EvictCacheEntry`，引擎侧要**抑制这次嵌套**；
   `MapSurfaceToScaledOutput` 本工程不支持（unmap、不合成，与 gdi 现状一致）。
 - **RDPGFX 表面是持久的**：少实现一条命令，引擎与 gdi 就**永久分叉**。
+- **不要给协议校验加上参考实现没有的上限**（"更严格"在这里等于"丢弃 gdi 会应用的消息"）：
+  引擎曾自造 `numRects > 1024` / `numProgQuant > 16` 两条 region 头上限，于是把 gdi 会正常
+  解码并合成的整条消息丢掉（表面从那一刻起永不自愈）。校验要么逐条照抄 FreeRDP（含它"只用
+  字节预算兜底"的写法），要么把上限设成"这条消息的长度能容纳的量"；解码数据一律按声明数量
+  定长。另一面：**头校验失败**两边都丢整条，而**读完部分 tile 之后才失败**时 FreeRDP 已经把
+  读到的 tile 登记进本帧列表，两者不能混为一谈（见
+  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md) §2.5）。
 
 ### 2.3 帧呈现（gdi 回退路径）
 
@@ -301,9 +308,8 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   - 单条 Progressive 消息可带**数千条 stream**，而能同时在飞的 workgroup 数量有限，所以**平均值会低估**
     "当前结构下"的并行度上限。
 - **`Vulkan对比` 的现状**（唯一权威处见 [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)）：
-  浏览录像 `bad=0 rgbPx=0`（门禁）；视频录像从"整屏 stale、`rgbPx≈10.3M`"降到 `rgbPx≈2.82M`
-  ——**整块全错的 tile 已经消灭**，剩下小块 tile 的 ±1~4 色度/亮度差异（已定位到具体消息与系数，
-  尚未收窄到一行代码）。**任何一轮性能结论的前提是那一轮 `bad=0`。**
+  两份录像都是`bad=0 rgbPx=0 maxDelta=0`——浏览/滚动 `checks=21`（`frames=659`）、
+  看视频 `checks=6`（`frames=198`，整屏大块变化场景）。**任何一轮性能结论的前提是那一轮 `bad=0`。**
 - **对比结果与呈现路径解耦**：对比读的是引擎屏幕镜像（`ReadScreen()`）与离线 gdi 主缓冲，呈现器只碰
   swapchain/present，所以**换呈现后端、改重建策略都不会影响 `bad` 的判定**；反过来说，`bad` 变化只能来自
   解码/合成。
@@ -318,8 +324,11 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
-- **引擎 vs gdi 逐像素对拍的修复与残留**（compose 派发超限、UPGRADE 拒收语义、状态级对拍工具）：
-  单独成文 → [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)。
+- **引擎 vs gdi 逐像素对拍**（compose 派发超限、UPGRADE 拒收语义、region 头上限、状态级/盯 tile
+  对拍工具；**两份录像现均 `bad=0`**）：单独成文 →
+  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)。
+- **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。
+  每份新捕获都要自己过一遍 `bad=0` 才能当基线（同名文件的不同录制之间不能互相背书）。
 - **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——
   「硬件解码」已完成（`DeviceCapabilities.hardwareDecode()`，见
   [`native-libraries.md`](native-libraries.md) §6）。
@@ -328,4 +337,3 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   在此之前它只是被保留、不参与决策。
 - **呈现能力判定在模拟器上的口径**：现在模拟器一律回落 GLES 呈现器（与"GPU 只在真机"一致）；若以后要让
   模拟器用 Vulkan 上屏，只需改 `FillVerdicts()` 里那一处 emulator 分支。
-- **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。

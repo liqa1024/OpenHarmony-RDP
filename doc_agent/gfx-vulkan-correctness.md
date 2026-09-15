@@ -28,7 +28,7 @@ dev 回放页三条路线：`CPU`（纯 gdi，性能参照）、`Vulkan`（只�
 | 文件 | 场景 | 现状 |
 |---|---|---|
 | `hmrdp_gfx.bin` | 浏览/滚动（消息稀疏、脏区小） | `checks=21 bad=0 rgbPx=0`，`frames=659`；**性能基线与正确性基线都用它** |
-| `hmrdp_gfx_video.bin` | 看视频（整屏大块变化、每帧 4~7 条 Progressive 消息） | 尚有残留（§3），**从未通过过 bad=0**，不要拿它当性能基线 |
+| `hmrdp_gfx_video.bin` | 看视频（整屏大块变化、每帧 4~7 条 Progressive 消息） | `checks=6 bad=0 rgbPx=0`，`frames=198`（最后一处分叉见 §2.5） |
 
 两次录制**同名不代表同一份流**：换样本前把设备里的 `hmrdp_gfx.bin` recv 回 `.cache/` 留档。
 设备侧路径固定为 `/data/app/el2/100/base/com.lixa.hmrdp/haps/entry/files/hmrdp_gfx.bin`，
@@ -46,7 +46,19 @@ dev 回放页三条路线：`CPU`（纯 gdi，性能参照）、`Vulkan`（只�
 3. **整屏 A/B**（`kSurfaceAbEnabled`，默认关）：每条命令后比整个表面，用来看"分叉是在哪条命令之后
    才出现的"（逐命令 A/B 只能看到它自己 claim 的 rect）；
 4. **状态级对拍**（`kTileStateAbEnabled`，默认关）：逐 (tile, 分量) 比 **解码状态**——
-   引擎 `surface->rfx.{cur,sign,bp}` vs FreeRDP `tile->current/sign/yBitPos`（见 §3.3）。
+   引擎 `surface->rfx.{cur,sign,bp}` vs FreeRDP `tile->current/sign/yBitPos`
+   （`cur` = 去量化后的系数、`sign` = RLGR 原值、`bitPos` = 每带 1 字节，**带序** HL1…LL3）。
+   gdi 的 Progressive 状态挂在 **`surface->codecs->progressive`**（`gdi_SurfaceCommand_Progressive`
+   用的就是这个），**不是** `context->codecs`——读错那个会一律 `unavailable`。
+   **它只覆盖"这条消息自己解码的 tile"**：一条被*更早*的消息弄坏、之后才被重新解码的 tile，
+   报出来的是那条更晚的消息（§2.5 就踩过这个坑）。
+5. **盯 tile 的状态历史**（`kWatchTileEnabled` + `kWatchTileX/Y`，默认关）：固定盯一个 tile，
+   **每条 Progressive 消息之后**（不只是它被解码的那些）各读一次两侧的 `cur`/`sign`/位状态，
+   打一行摘要（`bpDiff`/`signDiff`/`curDiff`/`curAbs` + LL3 带的一小段值）。
+   它回答的是第 4 条答不了的问题："**是这条消息把它改坏的，还是引擎压根没做这条消息**"。
+   引擎侧配套 `kLogWatchTile`：同一个 tile 上逐消息打**主机算出来的** `qa`（region 分量量化表
+   nibble）/`pa`（progressive 量化表 nibble）/`nb=qa+pa`（位状态）/`sh=nb-1`（去量化移位）
+   与 `type/flags/quality`，于是"引擎用了哪张表、哪个移位"直接可读。
 
 ---
 
@@ -67,7 +79,7 @@ dev 回放页三条路线：`CPU`（纯 gdi，性能参照）、`Vulkan`（只�
 - **强约束**：**任何"每像素一个 invocation"的 kernel 都必须照此处理**；`rfx_idwt`（一个工作组一条
   stream）与 `rfx_decode`（`(streams+63)/64`）在 `kMaxBatchStreams=6144` 下都远低于上限，但也别让
   新 kernel 直接用线性 `tileCount*64`。
-- **修后**：`rgbPx=2.82M`、`maxRgbPx=0.50M`，全屏 stale 带消失（残余见 §3）。
+- **修后**：`rgbPx=2.82M`、`maxRgbPx=0.50M`，全屏 stale 带消失（剩下的分叉见 §2.5）。
 
 ### 2.2 UPGRADE 细化被参考实现拒收时，引擎仍把像素写出去
 
@@ -108,72 +120,69 @@ dev 回放页三条路线：`CPU`（纯 gdi，性能参照）、`Vulkan`（只�
   "REGION 在 FRAME_BEGIN 之前 / FRAME_END 之后"这条忽略规则只看**本条消息**的块；引擎原先把
   `frameBegin/frameEnd` 跨消息持久化，可能接受 gdi 跳过的 region（本录像 `skippedRegions=0`）。
 
+### 2.5 引擎自造的 region 上限把整条消息丢掉（成因：把"更严格"当成"更安全"）
+
+- **症状**：视频录像 `checks=6 bad=6`、`rgbPx≈2.82M`、`smallDeltaPx≈1.33M`、`maxDelta=255`、
+  bbox 整屏；逐命令 A/B 反复指到同一指纹 `rect=(2560,192)+64x64`（= tile **(40,3)**）
+  `bad=3979 maxDelta=4`，`engine=b16 g17 r13 / gdi=b18 g17 r15`（**G 相同、B/R 同降 2**）——
+  整块均匀的**色度**偏移。
+- **成因**：`ParseRfxProgressive` 给 region 头加了一条**参考实现没有**的上限
+  `numRects > 1024` ⇒ 整条消息判成畸形，**引擎什么都不做**（不解码、不更新 tile 状态、不上屏）。
+  FreeRDP 的 `progressive_wb_read_region_header` 只检查 `tileSize != 64`（-1012）、
+  `numRects < 1`（-1013）、`numQuant > 7`（-1014），**没有任何 rect 数上限**：上限来自 region
+  自己的字节预算（`len / 8 < numRects` → -1015），而 `PROGRESSIVE_BLOCK_REGION::rects` 是
+  `[0x10000]`。捕获里确实有 3 条消息的 region 带几千个 rect
+  （`bytes=169670 / 140223 / 68471`）：gdi 照常解码并合成，引擎整条丢弃 ⇒ 表面从那一刻起
+  **永久分叉**（tile (40,3) 的 `curDiff=104 / curAbs=3360` 一直挂着，直到服务器恰好把同一内容
+  再发一遍才自愈，而这一帧早已被比对过）。
+- **同类自造上限**（一并修）：`numProgQuant > 16`。FreeRDP 的 `quantProgVals[0x100]` 不校验上界，
+  同样只用字节预算卡。现在两条都改成"按声明的数量定长（`std::vector`）+ 字节预算校验"，
+  与参考实现的**接受集合**一致。
+- **依据**（§1.3 第 5 条的盯 tile 探针）：逐消息看 tile (40,3) 的两侧状态历史——
+  第 9 条消息两侧逐位一致；第 10 条 **gdi 的 `sign`/`cur` 被重新写入、引擎的原封不动**，
+  同一时刻引擎打的是 `vk progressive parse FAIL stage=region-rects-range tiles=0 regions=0`
+  ⇒ 不是"两边算得不一样"，而是**引擎根本没做这条消息**。
+  修后这 3 条消息正常解析（`rfxParse regions` 629→632、`errors` 3→0、`restamped` 1721→2873），
+  两份录像都 `bad=0 rgbPx=0`。
+- **强约束**：**不要给协议校验加参考实现没有的上限**。"更严格"在这里等于"丢弃 gdi 会应用的消息"，
+  得到的是**永不自愈**的分叉；要么逐条照抄 FreeRDP 的检查（含"只用字节预算兜底"这种写法），
+  要么把上限设成"这份消息的长度能容纳的量"。
+- **失败阶段要分开看**：region **头校验**失败时 FreeRDP 同样丢弃整条消息，引擎"什么都不做"是对的；
+  但"读完部分 tile 之后才失败"时，FreeRDP 已经把读到的 tile **登记进本帧的 tile 列表**
+  （§2.2、`RfxParseStats::errorStage`）——那种情况才是需要更细处理的地方。
+
 ---
 
-## 3. 残留（仍未收窄到具体一行）
+## 3. 现状：两份录像都通过
 
-### 3.1 症状与分布
+| 捕获 | 结果 |
+|---|---|
+| `.cache/hmrdp_gfx.bin`（浏览） | `compare(GPU vs gdi): checks=21 bad=0 rgbPx=0`，`frames=659` |
+| `.cache/hmrdp_gfx_video.bin`（视频） | `compare(GPU vs gdi): checks=6 bad=0 rgbPx=0`，`frames=198` |
 
-- 整轮 `checks=6 bad=6`，`rgbPx≈2.82M`（每帧 0.45~0.50M）、`smallDeltaPx≈1.33M`（其中 ≤2 的占 ~47%）、
-  `maxDelta=255`、bbox 仍是整屏；逐 tile 摘要 `touched=246 full(≥4000px)=48 half(≥2048px)=67`。
-  逐行看最大贡献在屏幕最下 3 个 tile 行（任务栏一带的高频内容）与少数离散 tile。
-- 逐命令 A/B 反复指到同一类指纹：`rect=(2560,192)+64x64 bad=3979 maxDelta=4`，
-  `engine=b16 g17 r13 / gdi=b18 g17 r15`（**G 相同、B/R 同降 2**）——整块均匀的**色度**偏移，
-  正是 DC（LL3）带出错的形状。
+两份都是 `alphaPx=0`、`maxRgbPx=0`、`maxDelta=0`、`smallDeltaPx=0`、
+`tileState checks=80 unavailable=0`——逐命令、整屏、状态级三种 A/B 都没有命中。
 
-### 3.2 已排除（下列每一条都**没有**改变 `rgbPx`，故都不是元凶）
+### 3.1 已排除（曾怀疑过、实测**不是**元凶，不要再拿它们当解释）
 
 - `nonExtrapolate=0`、`multiRegion=0`、`frameIdRepeats=0`、`skippedRegions=0`（双方 tile 集合一致）；
-- 3 条畸形消息全是 `region-rects-range`（region 头就被 FreeRDP 的 `numRects` 校验挡下 ⇒ 双方都不做事；
-  `Stats()` 的 `batchOverflow` 也必须为 0）；
 - **restamp（type 3）**：把重合成整体关掉（`kRestampEnabled=false`）分叉量几乎不变
   （2.7655M vs 2.7650M）；补上 restamp 的逐 rect A/B 后，命中的仍是 **DIFF 为主的 kFirst 消息**；
-- §2.2 / §2.3 / §2.4 的全部改动（已修但不改变数字）；
-- 未压缩位图：捕获里只有 3 条、都是 `format=0x20040888`（**BGRX32**，与引擎"按 BGRA 字节序直接拷贝"
-  的假设一致）且只有 4 行高——那 11ms 是 `SyncCpuAccess` 的 fence，不是拷贝；
-- 路由顺序（对比路线是否为进程内第一个 gdi 上下文）不影响数字 ⇒ 不是堆残留、可**逐位复现**。
+- §2.2 / §2.3 / §2.4 的全部改动（都修了，但都不改变这组数字）；
+- 未压缩位图：捕获里只有 3 条、都是 `format=0x20040888`（**BGRX32**，与引擎"按 BGRA 字节序直接
+  拷贝"的假设一致）且只有 4 行高——那 11ms 是 `SyncCpuAccess` 的 fence，不是拷贝；
+- 路由顺序（对比路线是否为进程内第一个 gdi 上下文）不影响数字 ⇒ 可**逐位复现**，不是堆残留；
+- **"3 条畸形消息双方都不做事"这条早期结论是错的**：见 §2.5——那 3 条只有引擎拒收。
 
-### 3.3 状态级对拍的结论（工具已就绪，结论待复核）
+### 3.2 换样本复验时先看这三个量
 
-工具（§4 的 `kTileStateAbEnabled`）：FreeRDP 侧导出访问器 `HmrdpProgressiveTileState` 读
-`tile->current/sign/yBitPos`；引擎侧 `GfxVkDesktop::ReadTileState`。逐 (tile, 分量) 比
-`cur`（去量化后的系数）/`sign`（RLGR 原值）/`bitPos`（每带 1 字节，**带序** HL1…LL3）。
+- `rfxParse errors`（**必须为 0**；不为 0 时每条都应有对应的 `parse FAIL stage=…`，逐个查它是不是
+  引擎自造的拒收）；
+- `compare(GPU vs gdi)` 的 `bad / rgbPx / maxDelta`；
+- `tileState checks / unavailable`（`unavailable` 不为 0 ⇒ 探针没读到状态，别急于下结论）。
 
-- **坑**：gdi 的 Progressive 状态挂在 **`surface->codecs->progressive`**
-  （`gdi_SurfaceCommand_Progressive` 用的就是这个），**不是** `context->codecs`——读错那个会一律
-  `unavailable`。
-- `#1..#12` 的全部 tile（80 个）状态**逐系数一致**（含此前被怀疑的 tile (47,2)/#9）；
-- 首个状态分叉：`msg=#14 tile=(40,3)`（**单 tile、98 字节**的 kFirst），命中 **Y 分量、下标 4015**，
-  把命中下标前后各 5 个值打出来后：
-
-  ```
-  curE(4010..4020) = 0 0 0 0 0 -3584 -3520 -3520 -3520 -3520 -3456
-  curG             = 0 0 0 0 0 -3552 -3520 -3520 -3488 -3488 -3456
-  signE = signG    = 0 0 0 0 0 0 0 0 0 0 0        band=9  bpE=bpG=7
-  ```
-
-  两侧都是"直流台阶"（LL3 = DC 带），但**台阶高度差一倍**（引擎每级 +64、gdi 每级 +32）。
-
-### 3.4 下一步（先怀疑工具，再怀疑引擎）
-
-这组数字**自相矛盾**：`bitPos=7` 按两侧代码都推出移位 = 6（引擎 `sh[i]=nb-1`、FreeRDP
-`quant+progQuant-1`），那 gdi 的台阶就不该是 ×32（移位 5）。所以顺序是：
-
-1. **先自检探针**：让访问器再返回 `tile->yQuant.LL3` / `tile->yProgQuant.LL3`，检查
-   `bitPos[9] == yQuant.LL3 + yProgQuant.LL3`。不成立 ⇒ **访问器的"带序"映射错了**（本轮的数字随之
-   作废），先修探针再谈引擎；
-2. 成立再并排看**引擎侧 `qa[9]`/`pa[9]`/`sh[9]`**（`DecodeProgressive` 在**主机**上算的，直接打印最省事）
-   与上面三个 gdi 值：
-   - 输入 nibble 不同 ⇒ **量化表选择**不一致（`quality` / `quantIdx` / `quantProgValFull` 的对应）；
-   - 三者全同而移位仍差 1 ⇒ 落在 `progressive_rfx_quant_lsub` 的 BYTE 语义 / 引擎 `sh[i]=nb-1` 上；
-   - 若确认是"该带去量化移位"差 1：记住**去量化前的值就是 `sign`**（差分 `rfx_differential_decode`
-     在去量化**之前**跑），且**抽取（extrapolate）与非抽取两套带表不能混用**：抽取路径
-     `0/1023/2046/3007/3279/3551/3807/3879/3951/4015`（长度 1023/1023/961/272/272/256/72/72/64/81，
-     差分在 4015/81），非抽取路径是 `0/1024/…/4032`（长度 1024/1024/1024/256/…/64，差分在 4032/64）。
-     kFirst（`progressive_rfx_decode_component`）与 UPGRADE（`progressive_rfx_upgrade_component`）
-     用的是**同一套**抽取表（本录像 `nonExtrapolate=0`），要核对的是**去量化前是否有一步漏做/多做**。
-3. 复现很便宜：`kTileStateAbEnabled=true` + `kTileStateAbMessages=16` 就能命中 `msg #14`
-   （单 tile、98 字节），不必跑完整轮。
+**同一文件名的不同录制不能互相背书**；换分辨率（尤其宽/高为 **64 整数倍**的）、含**多条 REGION**
+消息的捕获仍值得各跑一次（见 [`gfx-engine.md`](gfx-engine.md) §7）。
 
 ---
 
@@ -183,10 +192,12 @@ dev 回放页三条路线：`CPU`（纯 gdi，性能参照）、`Vulkan`（只�
 |---|---|---|
 | `hmrdp_replay.cpp` | `kCodecAbEnabled` | 逐命令 A/B（progressive 自身 tile / clearcodec / upload / fill / cacheRestore / restamp） |
 | 同上 | `kSurfaceAbEnabled` | 每条命令后比整屏表面（看"哪条命令之后分叉出现"） |
-| 同上 | `kTileStateAbEnabled` + `kTileStateAbMessages` | 状态级对拍（§3.3），每消息一次 submit |
+| 同上 | `kTileStateAbEnabled` + `kTileStateAbMessages` | 状态级对拍（§1.3 第 4 条），每消息一次 submit |
+| 同上 | `kWatchTileEnabled` + `kWatchTileX/Y` + `kWatchTileMessages` | 盯 tile 的状态历史（§1.3 第 5 条）：每条消息后比两侧 `cur`/`sign`/位状态，并打 `bpDiff/signDiff/curDiff/curAbs` + LL3 带的一小段值 |
 | 同上 | `kDumpCompareScreens` | 首次分歧写两侧整屏 PPM（~19MB/张，落到 filesDir） |
 | `hmrdp_vk_desktop.cpp` | `kLogUpgradeLengths` | upgrade 长度校验的 `mismatched/streams per msg` 探针 + 未压缩命令的 `format` 日志 |
 | 同上 | `kLogProgressiveMessages` | 前 40 条 Progressive 消息的形状（tiles/first/upg/diff/rects/clip/bytes） |
+| 同上 | `kLogWatchTile` + `kLogWatchTileX/Y` | 盯 tile 的**主机侧解码输入**：`qa`/`pa`/`nb=qa+pa`/`sh=nb-1` + `type/flags/quality`（与上面的历史探针对拍） |
 | 同上 | `kRestampEnabled` | 关掉"重复合成"做二分（**诊断用**，默认开） |
 
 诊断工具只在定位时开，**查完立刻关**：它们都会插入 submit/fence（状态/整屏 A/B 每消息一次，
@@ -196,10 +207,14 @@ dev 回放页三条路线：`CPU`（纯 gdi，性能参照）、`Vulkan`（只�
 
 ## 5. 纪律
 
-- 改引擎 / 着色器 / FreeRDP 补丁后**先跑两份录像**：`.cache/hmrdp_gfx.bin` 必须仍是
-  `bad=0 rgbPx=0`（回归门），再看 `.cache/hmrdp_gfx_video.bin` 的 `rgbPx` 有没有下降。
+- 改引擎 / 着色器 / FreeRDP 补丁后**先跑两份录像**：两份都必须是 `bad=0 rgbPx=0`
+  （`.cache/hmrdp_gfx.bin` 是回归门，`hmrdp_gfx_video.bin` 是整屏大块变化场景）。
 - **不要用"跳过某条 dispatch"做归因**：会改变后续数据相关负载且会花屏；用 §1.3 的分级 A/B。
 - 改了 FreeRDP 源码/补丁要**重编 `libfreerdp3.so` 并放回 `entry/libs/<abi>/`**（见
   [`native-libraries.md`](native-libraries.md)）；`entry/libs/` 与 `native/third_party/` 都不入库。
 - 拼日志前先 `hilog -r`；周期性统计行会很快冲掉缓冲区，关键量尽量进 `Stats()`（回放页会显示）
   或尽早抓取。
+- **探针的日志必须自己拼成字符串**：hilog 对**没有 `%{public}` 标记**的转换说明符一律输出
+  `<private>`（`%d`/`%u`/`%s` 全都中招），所以探针要么每个参数都写 `%{public}`，要么先用
+  `snprintf` 拼成一行再 `HMRDP_LOGW("…%{public}s", line)`（`tileState CULPRIT` 就是这个写法）。
+  否则整轮跑完只会拿到满屏 `<private>`，白跑一趟。

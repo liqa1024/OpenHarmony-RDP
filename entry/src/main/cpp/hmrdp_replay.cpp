@@ -180,6 +180,22 @@ constexpr bool kTileStateAbEnabled = false;
 // Only the capture's first messages (the first divergence is expected early, and
 // every checked message costs a flush plus a state read per tile).
 constexpr int kTileStateAbMessages = 40;
+// Dev (`kWatchTileEnabled`): watch-tile history. The state A/B above only looks at
+// the tiles a message decodes, so a tile an *earlier* message left divergent is
+// reported at whatever later message happens to touch it again - the message that
+// introduced the divergence, and the state the two decoders held before it, are both
+// lost. This probe re-reads one fixed tile after *every* Progressive message
+// instead, so the tile's whole history is on record. Pairs with the engine's
+// per-message `vk watch` log (kLogWatchTile in hmrdp_vk_desktop.cpp), which names
+// the quant table entries the engine used for that tile.
+constexpr bool kWatchTileEnabled = false;
+constexpr uint16_t kWatchTileX = 40;
+constexpr uint16_t kWatchTileY = 3;
+constexpr int kWatchTileMessages = 40;
+// The state window dumped for the watch tile: the LL3 (DC) band starts at 4015, and
+// that is where the residue's divergence has been seen.
+constexpr int kWatchWindowStart = 4010;
+constexpr int kWatchWindowCount = 11;
 
 int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -245,17 +261,24 @@ class ReplaySink : public GfxCommandSink {
       // check of the message that decoded them.
       // Dev (`kTileStateAbEnabled`): record the (tile,component) streams this
       // Progressive message decodes so TileStateAbFlush can diff the engine's own
-      // predictor state against FreeRDP's for the same tiles.
-      if (kTileStateAbEnabled && cmdId == kGpuCmdWireToSurface && payload != nullptr &&
-          codecId == kGpuCodecCaprogressive) {
+      // predictor state against FreeRDP's for the same tiles. `progIndex_` numbers
+      // the Progressive messages for both probes below, so it is bumped once even
+      // when only the watch-tile probe is on.
+      if ((kTileStateAbEnabled || kWatchTileEnabled) && cmdId == kGpuCmdWireToSurface &&
+          payload != nullptr && codecId == kGpuCodecCaprogressive) {
         ++progIndex_;
-        ParseRfxProgressive(
-            payload, payloadLen,
-            [&](const RfxTileRef& t) {
-              owner_->TileStateAbCheck(static_cast<uint16_t>(surfaceId), t.xIdx, t.yIdx,
-                                       progIndex_);
-            },
-            nullptr);
+        if (kWatchTileEnabled) {
+          owner_->WatchTileNote(static_cast<uint16_t>(surfaceId));
+        }
+        if (kTileStateAbEnabled) {
+          ParseRfxProgressive(
+              payload, payloadLen,
+              [&](const RfxTileRef& t) {
+                owner_->TileStateAbCheck(static_cast<uint16_t>(surfaceId), t.xIdx, t.yIdx,
+                                         progIndex_);
+              },
+              nullptr);
+        }
       }
       // The whole-surface A/B runs on *every* command: the divergence it hunts can
       // be introduced by a non-Progressive command (a ClearCodec band, an
@@ -905,6 +928,12 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
   pumpStartUs_.store(pumpStart);
 
   bool ok = false;
+  // Dev: the watch-tile probe counts Progressive messages, so its counters belong to
+  // this run (the page restarts the replay on every route / `重新回放` click, and the
+  // engine instance is re-created with it).
+  watchMsgCount_ = 0;
+  watchProbed_ = 0;
+  watchSeen_ = false;
   if (compare) {
     // gdi and the engine consume the capture interleaved per PDU, so the
     // per-command A/B (GdiAbFlush, only with kCodecAbEnabled) runs right after
@@ -915,6 +944,7 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
                                 [this]() {
                                   GdiAbFlush();
                                   TileStateAbFlush();
+                                  WatchTileProbe();
                                 },
                                 cpu.gfx(), &running_, &error);
   } else {
@@ -1301,6 +1331,114 @@ void GfxReplay::TileStateAbFlush() {
     std::lock_guard<std::mutex> lock(errorMutex_);
     tileStateProbe_ = status;
   }
+}
+
+void GfxReplay::WatchTileNote(uint16_t surfaceId) {
+  if (!kWatchTileEnabled) {
+    return;
+  }
+  ++watchMsgCount_;
+  watchSurfaceId_ = surfaceId;
+  watchSeen_ = true;
+}
+
+void GfxReplay::WatchTileProbe() {
+  if (!kWatchTileEnabled || desktop_ == nullptr || cpuDesktop_ == nullptr || !watchSeen_) {
+    return;
+  }
+  // Once per Progressive message: the probe describes the state *after* a message,
+  // so it must not re-run for the non-Progressive commands in between.
+  if (watchProbed_ >= watchMsgCount_ || watchMsgCount_ > kWatchTileMessages) {
+    return;
+  }
+  watchProbed_ = watchMsgCount_;
+  // One submit per message: the decode batch must have executed before the
+  // engine's state mapping can be read.
+  if (!desktop_->Flush()) {
+    return;
+  }
+  std::vector<int16_t> engCur(3u * 4096u);
+  std::vector<int16_t> engSign(3u * 4096u);
+  uint8_t engBitPos[30] = {0};
+  if (!desktop_->TileState(watchSurfaceId_, kWatchTileX, kWatchTileY, engCur.data(),
+                           engSign.data(), engBitPos)) {
+    HMRDP_LOGW("gfx replay: watch msg=#%d tile=(%u,%u) engine state unavailable", watchMsgCount_,
+               static_cast<unsigned>(kWatchTileX), static_cast<unsigned>(kWatchTileY));
+    return;
+  }
+  const int16_t* gdiCur[3] = {nullptr, nullptr, nullptr};
+  const int16_t* gdiSign[3] = {nullptr, nullptr, nullptr};
+  uint8_t gdiBitPos[30] = {0};
+  if (!cpuDesktop_->TileState(watchSurfaceId_, kWatchTileX, kWatchTileY, gdiCur, gdiSign,
+                              gdiBitPos)) {
+    HMRDP_LOGW("gfx replay: watch msg=#%d tile=(%u,%u) gdi state unavailable", watchMsgCount_,
+               static_cast<unsigned>(kWatchTileX), static_cast<unsigned>(kWatchTileY));
+    return;
+  }
+  // Band order: HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3 (FreeRDP's write order).
+  static const char kCompName[3] = {'Y', 'C', 'R'};
+  char bpDiff[256];
+  size_t nd = 0;
+  bpDiff[0] = '\0';
+  for (int c = 0; c < 3; ++c) {
+    for (int b = 0; b < 10; ++b) {
+      const unsigned e = engBitPos[c * 10 + b];
+      const unsigned g = gdiBitPos[c * 10 + b];
+      if (e != g) {
+        nd += static_cast<size_t>(std::snprintf(bpDiff + nd, sizeof(bpDiff) - nd,
+                                                "%s%c:b%d:%u>%u", nd ? " " : "", kCompName[c], b, e,
+                                                g));
+      }
+    }
+  }
+  if (nd == 0) {
+    std::snprintf(bpDiff, sizeof(bpDiff), "none");
+  }
+  int signDiff = 0;
+  int curDiff = 0;
+  unsigned long long curAbs = 0;
+  for (int c = 0; c < 3; ++c) {
+    for (int k = 0; k < 4096; ++k) {
+      const int e = engCur[static_cast<size_t>(c) * 4096u + static_cast<size_t>(k)];
+      const int g = gdiCur[c][k];
+      if (e != g) {
+        curDiff++;
+        curAbs += static_cast<unsigned long long>((e > g) ? (e - g) : (g - e));
+      }
+      if (engSign[static_cast<size_t>(c) * 4096u + static_cast<size_t>(k)] != gdiSign[c][k]) {
+        signDiff++;
+      }
+    }
+  }
+  char curE[192];
+  char curG[192];
+  char signE[192];
+  char signG[192];
+  size_t ce = 0;
+  size_t cg = 0;
+  size_t se = 0;
+  size_t sg = 0;
+  curE[0] = curG[0] = signE[0] = signG[0] = '\0';
+  for (int k = kWatchWindowStart; k < kWatchWindowStart + kWatchWindowCount; ++k) {
+    ce += static_cast<size_t>(std::snprintf(curE + ce, sizeof(curE) - ce, "%s%d", ce ? "," : "",
+                                            static_cast<int>(engCur[static_cast<size_t>(k)])));
+    cg += static_cast<size_t>(std::snprintf(curG + cg, sizeof(curG) - cg, "%s%d", cg ? "," : "",
+                                            static_cast<int>(gdiCur[0][k])));
+    se += static_cast<size_t>(std::snprintf(signE + se, sizeof(signE) - se, "%s%d", se ? "," : "",
+                                            static_cast<int>(engSign[static_cast<size_t>(k)])));
+    sg += static_cast<size_t>(std::snprintf(signG + sg, sizeof(signG) - sg, "%s%d", sg ? "," : "",
+                                            static_cast<int>(gdiSign[0][k])));
+  }
+  // One pre-formatted string: hilog redacts plain conversion specifiers (only
+  // `%{public}...` survives), and a probe whose numbers are `<private>` is useless.
+  char line[768];
+  std::snprintf(line, sizeof(line),
+                "watch msg=#%d surf=%u tile=(%u,%u) bpDiff=[%s] signDiff=%d curDiff=%d "
+                "curAbs=%llu | Y.cur[%d..]=E[%s] G[%s] Y.sign=E[%s] G[%s]",
+                watchMsgCount_, static_cast<unsigned>(watchSurfaceId_),
+                static_cast<unsigned>(kWatchTileX), static_cast<unsigned>(kWatchTileY), bpDiff,
+                signDiff, curDiff, curAbs, kWatchWindowStart, curE, curG, signE, signG);
+  HMRDP_LOGW("gfx replay: %{public}s", line);
 }
 
 void GfxReplay::SurfaceAbCheck(uint16_t surfaceId, const char* op) {

@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <freerdp/codec/clear.h>
 
@@ -191,20 +192,28 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     return fail("region-header-invalid");
   }
   // FreeRDP's progressive_wb_read_region_header rejects the whole region (and
-  // therefore the whole message: nothing is decoded, not even the tile state)
-  // when numRects < 1 (-1013) or > 1024. The engine used to accept it, which made
-  // its composite (empty clipping rects used to mean "whole tile") diverge from
-  // gdi for every tile of that message.
-  constexpr uint16_t kMaxRects = 1024;
-  if (numRects < 1 || numRects > kMaxRects) {
+  // therefore the whole message: nothing is decoded, not even the tile state) when
+  // `numRects < 1` (-1013). It imposes **no upper bound** on the count - what
+  // limits it is the region's own byte budget, checked below the way FreeRDP's
+  // length-based fallback does (`len / 8 < numRects` -> -1015).
+  //
+  // Do not invent a cap here: the parser used to reject `numRects > 1024`, which
+  // made the engine throw such a message away *entirely* (no tile state, no pixels)
+  // while gdi decoded and composited it normally - a whole-message divergence that
+  // never heals, because the surface is only repaired when the server happens to
+  // re-send the same content (doc_agent/gfx-vulkan-correctness.md). Real captures
+  // do carry regions with thousands of rects.
+  if (numRects < 1) {
     return fail("region-rects-range");
   }
   size_t p = 12;
-  // rects (8 bytes each): x,y,width,height all little-endian u16.
-  RfxRect rects[kMaxRects];
+  // rects (8 bytes each): x,y,width,height all little-endian u16. The budget is
+  // validated before the array is sized, so `numRects` is bounded by the region
+  // length here.
   if (p + static_cast<size_t>(numRects) * 8 > size) {
     return fail("region-rects-short");
   }
+  std::vector<RfxRect> rects(numRects);
   for (uint16_t i = 0; i < numRects; ++i) {
     rects[i].x = ReadU16(data + p);
     rects[i].y = ReadU16(data + p + 2);
@@ -235,10 +244,14 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     p += 5;
   }
   // Progressive quant tables: 16 bytes each (quality + Y/Cb/Cr quant).
-  RfxProgQuant progQuants[16];
-  if (numProgQuant > 16 || p + static_cast<size_t>(numProgQuant) * 16 > size) {
+  // FreeRDP keeps `quantProgVals[0x100]` and never bounds `numProgQuant` (its
+  // header check only covers `numQuant > 7`); what limits the count is the byte
+  // budget, exactly as below. An invented cap here would drop a whole message the
+  // reference decoder applies - the same failure mode as the rect count above.
+  if (p + static_cast<size_t>(numProgQuant) * 16 > size) {
     return fail("region-progquants");
   }
+  std::vector<RfxProgQuant> progQuants(numProgQuant);
   for (uint8_t q = 0; q < numProgQuant; ++q) {
     const uint8_t* b = data + p;
     progQuants[q].quality = b[0];
@@ -265,7 +278,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   // pass), so hand them out before the tile walk.
   if (onRegion) {
     RfxRegionRef ref;
-    ref.rects = rects;
+    ref.rects = rects.data();
     ref.numRects = numRects;
     ref.numTiles = numTiles;
     ref.flags = regionFlags;
@@ -291,10 +304,10 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
     }
     tile.quants = quants;
     tile.numQuant = numQuant;
-    tile.progQuants = progQuants;
+    tile.progQuants = progQuants.data();
     tile.numProgQuant = numProgQuant;
     tile.regionFlags = regionFlags;
-    tile.rects = rects;
+    tile.rects = rects.data();
     tile.numRects = numRects;
     if (onTile) {
       onTile(tile);

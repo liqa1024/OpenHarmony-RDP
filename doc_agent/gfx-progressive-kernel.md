@@ -14,8 +14,9 @@
 - 已落地的三项（都已过 `bad=0`）：host-visible 改 `HOST_CACHED` + 范围级 flush/invalidate；
   `rfx_compose` 改按像素并行；逆 DWT 拆成独立 kernel（`rfx_idwt.comp`，系数走 shared）。
 - **未完成**：RLGR 解码 kernel（`rfx_decode.comp`）的并行化。**改它之前先确认正确性基线**：
-  `.cache/hmrdp_gfx.bin` 必须仍是 `bad=0 rgbPx=0`（另一份视频录像有既有残留，见
-  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md) §3，不要拿它当性能基线）。
+  两份录像都必须仍是 `bad=0 rgbPx=0`（浏览 `.cache/hmrdp_gfx.bin` 是性能基线，
+  视频 `.cache/hmrdp_gfx_video.bin` 是整屏大块变化场景；两者的口径见
+  [`gfx-vulkan-correctness.md`](gfx-vulkan-correctness.md)）。
 
 ---
 

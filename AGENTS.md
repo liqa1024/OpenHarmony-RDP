@@ -39,7 +39,7 @@
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX / Progressive / GPU 引擎（**改前必读**）与回放验收 | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| 引擎 vs gdi 逐像素对拍：验收口径、已修分叉、视频录像残留（**含下一步**） | [`gfx-vulkan-correctness.md`](doc_agent/gfx-vulkan-correctness.md) |
+| 引擎 vs gdi 逐像素对拍：验收口径、已修分叉（两份录像均 `bad=0`）、分级 A/B 工具（**改前必读**） | [`gfx-vulkan-correctness.md`](doc_agent/gfx-vulkan-correctness.md) |
 | Progressive kernel（RLGR 解码）并行化（未完成，**后续工作清单**） | [`gfx-progressive-kernel.md`](doc_agent/gfx-progressive-kernel.md) |
 
 ## 环境
