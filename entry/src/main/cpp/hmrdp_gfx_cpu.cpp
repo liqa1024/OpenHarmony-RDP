@@ -9,7 +9,7 @@
 
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_log.h"
-#include "hmrdp_win_presenter.h"
+#include "hmrdp_presenter.h"
 
 namespace hmrdp {
 
@@ -230,7 +230,7 @@ bool GfxCpuDesktop::Resize(int width, int height) {
   return ok;
 }
 
-bool PresentGdiFrame(rdpGdi* gdi, WinPresenter* presenter) {
+bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter) {
   if (gdi == nullptr || presenter == nullptr || gdi->primary == nullptr ||
       gdi->primary_buffer == nullptr) {
     return false;
@@ -248,8 +248,8 @@ bool PresentGdiFrame(rdpGdi* gdi, WinPresenter* presenter) {
     return false;
   }
   return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride),
-                                static_cast<int>(gdi->width), static_cast<int>(gdi->height), x,
-                                y, width, height);
+                               static_cast<int>(gdi->width), static_cast<int>(gdi->height), x, y,
+                               width, height);
 }
 
 }  // namespace hmrdp

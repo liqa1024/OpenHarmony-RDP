@@ -152,10 +152,27 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ### 2.3 帧呈现（gdi 回退路径）
 
-- 按**脏区**部分上传/呈现。**CPU/gdi 帧**走 `WinPresenter`（XComponent 原生窗口缓冲队列：请求缓冲 → map →
-把 1:1 居中/裁剪的画面写进去 → flush），**不含任何 GPU API**；**引擎屏幕镜像**走 `VkRenderer`
-（`vkCmdCopyBufferToImage` + `bufferRowLength`，image-to-image 无回读）。两条路径按帧来源分工，
-所以没有可用 Vulkan 驱动的设备仍能显示 gdi 画面。
+- 按**脏区**部分上传/呈现，**一律由 GPU 出屏**，CPU 只把脏区交给 GPU 一次：
+  - 默认后端是 **Vulkan 呈现器**（`VkRenderer`）：CPU 帧把脏矩形写进 host-visible staging 缓冲
+    （`vkCmdCopyBufferToImage`/`bufferRowLength` 只传该矩形），引擎帧直接给屏幕镜像 image；
+    两者都由 GPU 做 letterbox blit → swapchain。**CPU 与引擎两条帧来源复用同一个类**。
+  - 兜底后端是 **GLES 呈现器**（`GlesPresenter`，设备 Vulkan 不能上屏时用，实际主要是模拟器）：
+    脏矩形用 ES3 + `GL_UNPACK_ROW_LENGTH` 传进桌面尺寸纹理，letterbox 由 shader 里的
+    BGRA→RGBA swizzle + letterbox viewport 完成。
+  - **不要**让 CPU 直接写窗口缓冲（曾经的"原生窗口缓冲呈现器"已删除）：窗口缓冲默认是 CPU 访问
+    路径，文档明确写它"兼容性好但能与性能开销大"（见 [`native-libraries.md`](native-libraries.md) §6），
+    而且 CPU 既要做 letterbox 又要写显示内存，比"把脏区交给 GPU"慢一个量级。
+  - 后端选择用**独立的呈现能力判定**（`VulkanCapabilities::presenterSupported`），**比硬件解码的引擎判定宽松**
+    （只要 device + `VK_OHOS_surface` + `VK_KHR_swapchain` + host-visible 内存，**不需要 compute**）。
+- **swapchain 的尺寸与重建**（Vulkan 呈现器）：尺寸以 `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` 的
+  `currentExtent` 为准，只有在它是 `UINT32_MAX` 时才用窗口尺寸 clamp；present 返回 `VK_ERROR_OUT_OF_DATE_KHR`
+  就重建后跳过该帧、`VK_SUBOPTIMAL_KHR` 则先呈现再重建；**重建只重建"依赖变了的资源"**——
+  swapchain/图像/视图/framebuffer/每图像信号量，而 render pass 只依赖**格式**、command pool/buffer 与
+  每帧 fence/信号量都与尺寸无关，都要保留；旧 swapchain 通过 `oldSwapchain` 交回驱动复用。
+  窗口尺寸变化**不是**故障，也不要为"等尺寸稳定"去延迟创建或主动重建。
+- 两条后端的**共同约束**（与设备/分辨率无关）：只上传脏矩形；源行距可能被填充，所以要用调用方给的
+  stride（GLES 侧配 `GL_UNPACK_ROW_LENGTH`）；通道顺序按目标面读出来的格式决定（屏幕面通常是 RGBA 序，
+  FreeRDP 给的是 BGRA，GLES 侧由 shader swizzle）；纹理/镜像重建后**首帧强制整幅**，否则其余部分会留空。
 - **不要再叠加 present-on-change**：静止态已由 FreeRDP 的失效区门控保证
   （`HmrdpBeginPaint` 把 `hwnd->invalid->null` 置 TRUE，只有真正执行绘制原语时 `gdi_InvalidateRegion`
   才置 FALSE，`HandleEndPaint` 对 `null` 直接返回）——额外 `memcmp` 只增加内存/带宽开销。
@@ -180,10 +197,9 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   每条只保留一条代码路径；改它的门槛指标是**每 stream 的 GPU 时间**（`gpuMs rlgr` / stream 数）。
 - **不要用"跳过某条 dispatch + 差值反推"做归因**：跳过会改变后续数据相关的负载与依赖，实测偏差可达
   数倍，而且会渲染出花屏、容易被误判为回归。用 timestamp query 直接量（§6）。
-- **不要用一小段"看起来固定"的耗时推断瓶颈**：先看它**是否随输入量变化**（本工程里 decode 的每 chunk
-  耗时随码流字节在 0.26~48ms 之间变化），再下结论。
-- **不要在非目标设备上标定性能**：真机口径要压的是**同步点数 / 驱动调用数 / CPU 介入次数**，
-  不是模拟器耗时。
+- **不要用一小段"看起来固定"的耗时推断瓶颈**：先看它**是否随输入量变化**（本工程的 decode 每 chunk 耗时
+  确实随码流字节量浮动），再下结论。
+- **不要在非目标设备上标定性能**：真机口径要压的是**同步点数 / 驱动调用数 / CPU 介入次数**。
 - **只做标准能力探测，不做标准 API 的行为自检**：自检只针对我们自己的语义与算法
   （`hmrdp_vk_context.*` 只探测能力）。
 - 已实测**不成立**的两个 RLGR 优化假设：① payload 读的"次数/合并"（加 32bit 字缓存：无变化）；
@@ -221,8 +237,8 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   每 30 帧采一次（`kCompareEvery`），`bad` = 采样的帧里有多少帧与 gdi 不一致；目标 **`bad=0`**。
 - 首次分歧会写一份 `<capture>.cmpdump`（逐像素 e/g 值），是定位分叉的第一手材料。
 - **三条路线的呈现方式**：`Vulkan`/`Vulkan对比` 由引擎 `Compose()` 出屏幕镜像后 `VkRenderer` 上屏；
-  `CPU` 路线的 gdi 帧走 `WinPresenter`（原生窗口缓冲，脏矩形累积在 CPU 侧桌面缓冲里，再 1:1 居中写入窗口
-  缓冲）——与 live 会话是同一条路径，所以两者不会各自分叉。
+  `CPU` 路线的 gdi 帧走同一个呈现器接口（`CreateFramePresenter()`：Vulkan 优先，GLES 兜底）——与 live
+  会话是同一条路径，所以两者不会各自分叉。
 - **引擎性能归因三件套（dev，只在真机跑）**：
   1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本（§1）；
   2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返（实测 ~0.5ms）→ 用来区分"同步点固定开销"与
@@ -251,17 +267,17 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   （录制期间走软解），见设置页实现。
 - **样本集（本地 `.cache/`，不入库）**：性能结论**必须分场景给**，且**每份捕获都要先自己过一遍
   `Vulkan对比 bad=0` 才能当基线**（同名文件的不同录制之间不能互相背书）：
-  - `.cache/hmrdp_gfx.bin`：**浏览/滚动**（消息稀疏：多数帧 0~1 条消息，单条消息平均 ~430 条 stream）；
-  - `.cache/hmrdp_gfx_video.bin`：**看视频**（整帧大块变化：多数帧 4~7 条消息，`diff`/restamp 占比高，
-    每帧整屏脏 ⇒ 上屏接近整屏拷贝）。
-  - 两场景的**瓶颈位置不同**：浏览场景在 GPU kernel；视频场景先被**上屏/提交结构**盖住
-    （present 从 ~13ms/帧 涨到 >100ms/帧）。**判据要看"每 stream 的 GPU 时间"与当时在飞的 lane 数**，
-    而不是看 dispatch 的总耗时——后者会随输入字节量变化（实测 0.26~48ms/chunk），
-    所以"两个场景的平均值接近"并不说明大头是固定等待。
-  - 单条 Progressive 消息最多可带**数千条 stream**（实测上限 4851 ⇒ ≈76 个 workgroup），
-    这是"当前结构下"的并行度上限；平均值（数百）会低估它。
+  - **浏览/滚动**类：消息稀疏、脏区小，瓶颈在 GPU kernel；
+  - **看视频**类：整帧大块变化（`diff`/restamp 占比高）、每帧整屏脏，瓶颈先被**上屏/提交结构**盖住。
+  - **判据要看"每 stream 的 GPU 时间"与当时在飞的 lane 数**，而不是 dispatch 的总耗时——后者随输入
+    字节量变化，"两个场景的平均值接近"并不说明大头是固定等待。
+  - 单条 Progressive 消息可带**数千条 stream**，而能同时在飞的 workgroup 数量有限，所以**平均值会低估**
+    "当前结构下"的并行度上限。
 - **`Vulkan对比` 的既有残留**：视频录像目前 `bad=6`（整屏、maxDelta=255），**与本仓库的批量/解码改动无关**
   （关闭合并时同样 `bad=6`）。排查路径与工具见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+- **对比结果与呈现路径解耦**：对比读的是引擎屏幕镜像（`ReadScreen()`）与离线 gdi 主缓冲，呈现器只碰
+  swapchain/present，所以**换呈现后端、改重建策略都不会影响 `bad` 的判定**；反过来说，`bad` 变化只能来自
+  解码/合成。
 
 - **差分测试（补齐捕获里没有的码流）**：统一方法 = **同一份载荷**分别喂 FreeRDP 解码器与我们的实现，
   逐像素比对。载荷优先用 FreeRDP 自带编码器生成；边界要覆盖**尺寸非 64 倍数**、纯色/渐变/UI 文本/alpha。
@@ -276,7 +292,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 - **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——
   「硬件解码」已完成（`DeviceCapabilities.hardwareDecode()`，见
   [`native-libraries.md`](native-libraries.md) §6）。
-- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + `WinPresenter`，
-  不依赖任何 GPU API）。届时「硬件解码（RFX）」设置项才真正生效（是否可用的判据取
-  `vulkanInfo` / `GetVulkanCapabilities()`）；在此之前它只是被保留、不参与决策。
+- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时
+  「硬件解码（RFX）」设置项才真正生效（是否可用的判据取 `vulkanInfo` / `GetVulkanCapabilities()`）；
+  在此之前它只是被保留、不参与决策。
+- **呈现能力判定在模拟器上的口径**：现在模拟器一律回落 GLES 呈现器（与"GPU 只在真机"一致）；若以后要让
+  模拟器用 Vulkan 上屏，只需改 `FillVerdicts()` 里那一处 emulator 分支。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。

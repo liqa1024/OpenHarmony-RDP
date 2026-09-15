@@ -215,7 +215,7 @@ struct VulkanCapabilities {
 
   // --- GPU engine verdict (hardware decode / GPU replay) --------------------
   // Whether the Vulkan desktop engine can run on this device, filled by the
-  // probe (FillEngineVerdict) together with the other facts. What the live
+  // probe (FillVerdicts) together with the other facts. What the live
   // takeover needs is exactly this: a usable device, a queue family that can run
   // the decode compute dispatches, host-visible memory for the surface/cache
   // buffers, and a surface + swapchain to present to.
@@ -225,6 +225,16 @@ struct VulkanCapabilities {
   // "no-host-memory" / "no-surface" / "emulator". It is empty when supported.
   bool engineSupported = false;
   std::string engineUnsupportedCode;
+
+  // --- Presenter verdict (CPU/gdi frames) -----------------------------------
+  // Whether the (much simpler) Vulkan *presenter* can be used, filled the same
+  // way. Presenting only needs a device that can blit to the XComponent surface
+  // plus host-visible memory for the staging buffer: **no compute**, so this is
+  // deliberately looser than engineSupported. When it is false the GLES presenter
+  // takes over (hmrdp_presenter.h). Codes: "emulator" / "no-vulkan" /
+  // "no-instance" / "no-device" / "no-host-memory" / "no-surface".
+  bool presenterSupported = false;
+  std::string presenterUnsupportedCode;
 };
 
 // Cached capability probe. Brings up a short-lived VkInstance (reusing the shared

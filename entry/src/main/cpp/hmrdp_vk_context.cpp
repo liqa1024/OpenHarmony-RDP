@@ -472,16 +472,22 @@ std::string VkResultName(int32_t result) {
 
 namespace {
 
-// Derives the GPU-engine verdict from the probed facts. Kept separate from
-// ProbeVulkan() so every early return (no loader / no device) still gets a
-// verdict, and so there is exactly one place that decides what "supported"
-// means for the engine.
-void FillEngineVerdict(VulkanCapabilities* caps) {
+// Derives both verdicts from the probed facts. Kept separate from ProbeVulkan()
+// so every early return (no loader / no device) still gets one, and so there is
+// exactly one place that decides what "supported" means.
+//
+// The engine one is the strict one: the Progressive decode is a compute dispatch,
+// and the surfaces are host-visible buffers. The presenter one only needs what a
+// blit + a staging upload requires, i.e. the same device with no compute - which
+// keeps Vulkan presenting available on devices that cannot run the engine.
+void FillVerdicts(VulkanCapabilities* caps) {
   if (caps == nullptr) {
     return;
   }
   caps->engineSupported = false;
   caps->engineUnsupportedCode.clear();
+  caps->presenterSupported = false;
+  caps->presenterUnsupportedCode.clear();
 
   // GPU acceleration is a real-device-only feature (see AGENTS.md): the emulator
   // reports standard Vulkan capabilities it does not honour, so probing cannot
@@ -489,29 +495,46 @@ void FillEngineVerdict(VulkanCapabilities* caps) {
   // which makes the target ABI the reliable signal.
 #if defined(__x86_64__)
   caps->engineUnsupportedCode = "emulator";
+  caps->presenterUnsupportedCode = "emulator";
 #else
   if (!caps->loaderPresent) {
     caps->engineUnsupportedCode = "no-vulkan";
+    caps->presenterUnsupportedCode = "no-vulkan";
   } else if (!caps->instanceOk) {
     caps->engineUnsupportedCode = "no-instance";
+    caps->presenterUnsupportedCode = "no-instance";
   } else if (!caps->deviceFound) {
     caps->engineUnsupportedCode = "no-device";
-  } else if (!caps->hasGraphicsComputeQueue) {
-    // The Progressive decode is a compute dispatch; without a graphics+compute
-    // queue family the engine could only run the transfer-only subset.
-    caps->engineUnsupportedCode = "no-compute";
-  } else if (!caps->memHostVisible) {
-    // Surfaces and bitmap-cache entries are persistent host-visible buffers.
-    caps->engineUnsupportedCode = "no-host-memory";
-  } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
-    caps->engineUnsupportedCode = "no-surface";
+    caps->presenterUnsupportedCode = "no-device";
   } else {
-    caps->engineSupported = true;
+    // Engine: needs the decode compute dispatches.
+    if (!caps->hasGraphicsComputeQueue) {
+      caps->engineUnsupportedCode = "no-compute";
+    } else if (!caps->memHostVisible) {
+      // Surfaces and bitmap-cache entries are persistent host-visible buffers.
+      caps->engineUnsupportedCode = "no-host-memory";
+    } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
+      caps->engineUnsupportedCode = "no-surface";
+    } else {
+      caps->engineSupported = true;
+    }
+    // Presenter: host-visible memory for the staging buffer + a surface to blit
+    // to. No compute.
+    if (!caps->memHostVisible) {
+      caps->presenterUnsupportedCode = "no-host-memory";
+    } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
+      caps->presenterUnsupportedCode = "no-surface";
+    } else {
+      caps->presenterSupported = true;
+    }
   }
 #endif
-  HMRDP_LOGI("vulkan engine: supported=%d reason=%{public}s",
+  HMRDP_LOGI("vulkan verdicts: engine=%{public}d(%{public}s) presenter=%{public}d(%{public}s)",
              caps->engineSupported ? 1 : 0,
-             caps->engineUnsupportedCode.empty() ? "-" : caps->engineUnsupportedCode.c_str());
+             caps->engineUnsupportedCode.empty() ? "-" : caps->engineUnsupportedCode.c_str(),
+             caps->presenterSupported ? 1 : 0,
+             caps->presenterUnsupportedCode.empty() ? "-"
+                                                    : caps->presenterUnsupportedCode.c_str());
 }
 
 }  // namespace
@@ -576,7 +599,7 @@ const VulkanCapabilities& GetVulkanCapabilities() {
   static VulkanCapabilities caps;
   std::call_once(once, []() {
     caps = ProbeVulkan();
-    FillEngineVerdict(&caps);
+    FillVerdicts(&caps);
   });
   return caps;
 }

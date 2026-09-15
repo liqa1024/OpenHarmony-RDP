@@ -20,7 +20,7 @@
 
 namespace hmrdp {
 
-class WinPresenter;
+class FramePresenter;
 class GfxCpuDesktop;
 class ReplayDesktop;
 
@@ -97,9 +97,10 @@ class GfxReplay {
   void PaceFrame(int64_t frameStartUs, bool presented);
 
   std::mutex mutex_;
-  // CPU frame presenter for the CPU (gdi) route; the engine route owns its own
-  // Vulkan presenter inside `desktop_`.
-  std::unique_ptr<WinPresenter> presenter_;
+  // Presenter for the CPU (gdi) route (Vulkan, or GLES on devices whose Vulkan
+  // cannot present); the engine route owns its own Vulkan presenter inside
+  // `desktop_`.
+  std::unique_ptr<FramePresenter> presenter_;
   // Engine adapter for the Vulkan routes (null on the CPU route).
   std::unique_ptr<ReplayDesktop> desktop_;
   std::thread thread_;

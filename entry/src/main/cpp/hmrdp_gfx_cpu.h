@@ -21,7 +21,7 @@
 
 namespace hmrdp {
 
-class WinPresenter;
+class FramePresenter;
 
 // The free-running CPU desktop. One instance per replay run; Init() builds the
 // context, Shutdown() tears it down.
@@ -73,11 +73,11 @@ class GfxCpuDesktop {
 };
 
 // Reads gdi's invalid rectangle out of the primary buffer and hands it to the
-// CPU frame presenter (native window buffer queue, no GPU API). Shared by the
-// live gdi session and the offline CPU replay route so the two present exactly
-// the same way. Returns true when a frame was actually drawn (a null/empty
-// invalid region is a no-op).
-bool PresentGdiFrame(rdpGdi* gdi, WinPresenter* presenter);
+// frame presenter (Vulkan by default, GLES fallback). Shared by the live gdi
+// session and the offline CPU replay route so the two present exactly the same
+// way. Returns true when a frame was actually drawn (a null/empty invalid region
+// is a no-op).
+bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter);
 
 }  // namespace hmrdp
 

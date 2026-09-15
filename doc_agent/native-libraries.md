@@ -87,6 +87,17 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 已用此模式的：音频重定向、**硬件解码（RFX）**。**待补**：GPU 回放入口的置灰
 （硬件加速是"真机专属"，见 [`gfx-engine.md`](gfx-engine.md)）。
 
+**两套能力判定，不要混用**（`FillVerdicts()`，`hmrdp_vk_context.*`）：
+
+- **引擎判定**（`engineSupported`）：硬件解码/GPU 回放用，最严 —— device + **graphics+compute 队列**
+  + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`（Progressive 解码是 compute dispatch）。
+- **呈现判定**（`presenterSupported`）：上屏用，**宽松** —— device + host-visible 内存 + `VK_OHOS_surface`/
+  `VK_KHR_swapchain`，**不需要 compute**。它决定用 Vulkan 呈现器还是 GLES 兜底呈现器
+  （`CreateFramePresenter()`）。两者都排除模拟器包（x86_64 构建），所以模拟器上呈现回落到 GLES。
+
+`native_window` 是 `libhmrdp` 显式链接的显示栈 API（把 XComponent 的 surfaceId 变成 `OHNativeWindow`，
+交给 Vulkan/EGL）；`EGL`/`GLESv3` 只服务 GLES 兜底呈现器。都是设备必备库，不需要像 OHAudio 那样做缺库降级。
+
 硬件解码的判据由原生侧给出（`vulkanEngineSupport()`，取自 `VulkanCapabilities::engineSupported`）：
 设备可用 + 有 **graphics+compute** 队列族（Progressive 解码是 compute dispatch）+ 有 **host-visible** 内存
 （表面/缓存是常驻映射缓冲）+ 有 **VK_OHOS_surface 与 VK_KHR_swapchain**（上屏）；另外**模拟器包

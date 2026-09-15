@@ -1510,7 +1510,7 @@ std::string EncodeError(uint32_t code, const std::string& message) {
 
 }  // namespace
 
-Session::Session() {
+Session::Session() : presenter_(CreateFramePresenter()) {
   EnsureEntryPoints();
 }
 
@@ -1940,7 +1940,9 @@ void Session::Disconnect() {
   clipboardReady_ = false;
   running_ = false;
   audio_.Close();
-  presenter_.Reset();
+  if (presenter_ != nullptr) {
+    presenter_->Reset();
+  }
 }
 
 void Session::HandlePostConnect() {
@@ -1981,7 +1983,7 @@ void Session::HandleEndPaint() {
   // path and the replay present exactly the same way. It only fails when the
   // swapchain is not ready yet or nothing is dirty; a successful call is a real
   // present (fps / 本机 telemetry / input response).
-  if (!PresentGdiFrame(gdi, &presenter_)) {
+  if (!PresentGdiFrame(gdi, presenter_.get())) {
     return;
   }
   AfterPresent(renderStart);

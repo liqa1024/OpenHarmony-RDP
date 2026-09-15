@@ -70,7 +70,8 @@ add_library(hmrdp SHARED
     hmrdp_gfx_cpu.cpp
     hmrdp_gfx_driver.cpp
     hmrdp_replay.cpp
-    hmrdp_win_presenter.cpp
+    hmrdp_presenter.cpp
+    hmrdp_gles_presenter.cpp
     hmrdp_vk_context.cpp
     hmrdp_vk_renderer.cpp
     hmrdp_vk_desktop.cpp
@@ -90,14 +91,15 @@ target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 # hmrdp_vk_context.h) so a device without a usable Vulkan driver degrades to the
 # FreeRDP gdi path instead of failing to load the application.
 #
-# `native_window` / `native_buffer` are the display-stack APIs the CPU frame
-# presenter uses (hmrdp_win_presenter.cpp): they are what keeps the gdi chain
-# free of any GPU API, so a device without usable Vulkan still shows the desktop.
+# `native_window` turns the XComponent surface id into the OHNativeWindow the
+# presenters hand to Vulkan/EGL. EGL/GLESv3 back the GLES presenter, which is the
+# fallback for devices whose Vulkan cannot present (hmrdp_presenter.cpp).
 target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
     native_window
-    native_buffer
+    EGL
+    GLESv3
     ${FREERDP_LIBS}/libfreerdp3.so
     ${FREERDP_LIBS}/libwinpr3.so
     ${FREERDP_LIBS}/libfreerdp-client3.so

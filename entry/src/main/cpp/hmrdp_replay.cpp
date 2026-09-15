@@ -29,7 +29,7 @@
 #include "hmrdp_rfx.h"  // kGpuCmd / kGpuCodec / ParseRfxProgressive
 #include "hmrdp_vk_desktop.h"
 #include "hmrdp_vk_renderer.h"
-#include "hmrdp_win_presenter.h"
+#include "hmrdp_presenter.h"
 
 namespace hmrdp {
 
@@ -321,7 +321,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     // The pure CPU route presents raw gdi frames through the Vulkan presenter;
     // the engine route builds its own presenter inside the worker.
     if (route == GfxReplayRoute::kCpu) {
-      presenter_ = std::make_unique<WinPresenter>();
+      presenter_ = CreateFramePresenter();
       presenter_->SetSurface(window_, surfaceW_, surfaceH_);
     } else {
       presenter_.reset();

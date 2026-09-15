@@ -17,7 +17,7 @@
 #include <freerdp/client/cliprdr.h>
 
 #include "hmrdp_audio.h"
-#include "hmrdp_win_presenter.h"
+#include "hmrdp_presenter.h"
 
 namespace hmrdp {
 
@@ -79,9 +79,8 @@ class Session {
   Session& operator=(const Session&) = delete;
 
   // The presenter the ArkTS surface lifecycle drives (setSurface/updateSurface/
-  // clearSurface): the CPU frame presenter on the native window buffer queue, so
-  // the live path needs no GPU API at all.
-  WinPresenter* presenter() { return &presenter_; }
+  // clearSurface): Vulkan when it can present, GLES otherwise (hmrdp_presenter.h).
+  FramePresenter* presenter() { return presenter_.get(); }
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
@@ -178,10 +177,10 @@ class Session {
   void MarkInput();
 
   freerdp* instance_ = nullptr;
-  // CPU frame presenter (native window buffer queue). FreeRDP feeds GFX commands
-  // on one thread while gdi's EndPaint callback can fire on another, so every
-  // present is serialised.
-  WinPresenter presenter_;
+  // CPU frame presenter (Vulkan by default, GLES fallback). FreeRDP feeds GFX
+  // commands on one thread while gdi's EndPaint callback can fire on another, so
+  // every present is serialised by the backend itself.
+  std::unique_ptr<FramePresenter> presenter_;
   AudioOutput audio_;
   EventFn eventFn_;
   std::string lastError_;
