@@ -73,6 +73,15 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   对**持久映射的表面缓冲**做读改写（共享内存，**不搬 GPU、不做逐区域跨侧往返**）；
 - **表面/缓存存储**是**持久映射的 host-visible 线性缓冲**（屏幕仍是 image），于是 CPU 访问零成本，
   不需要 staging / 回读 / 布局状态机；
+- **host-visible 类型必须选 `HOST_CACHED`**（若设备提供）：`DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT`
+  是 uncached 的，CPU 读只有 **~120 MB/s**（实测：本仓库引擎的内存探针），而引擎所有 CPU 像素命令
+  （ClearCodec、cache 存取、`SurfaceToSurface`、填充、未压缩上传）都是"读+写映射"⇒ 会直接变成瓶颈；
+  同一设备上有 `HOST_CACHED` 类型时跨行读 ~11 GB/s（快约 20~180 倍）。
+  **约束**：cached 类型不是 `HOST_COHERENT`，所以 CPU/GPU 交接必须显式做**范围级缓存维护**——
+  CPU 写过的映射在 submit 前 `vkFlushMappedMemoryRanges`，fence 等待后、CPU 读之前
+  `vkInvalidateMappedMemoryRanges`（按行切 range、对齐 `nonCoherentAtomSize`）；
+  CPU 触碰一片 rect 之前也要先 invalidate 该 rect（部分行写入不能把陈旧邻居写回）。
+  CPU-only 的缓冲（bitmap cache 项）只被 CPU 访问，不需要任何维护。
 - **CPU 写过的表面被 GPU 读取前必须补 `HOST → TRANSFER` barrier**（UMA 不等于免费）。
 
 开关：全局「硬件解码」。关 / 无 Vulkan / 引擎初始化失败 ⇒ 回退 **gdi**。
@@ -137,10 +146,16 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ## 3. 性能规则（真机口径）
 
+- **先量内存类型，再谈算法**：CPU 侧像素命令的成本由所选 host-visible 类型决定（见 §1），
+  差一个类型就是 20~180 倍。真机上有内存探针（`ProbeHostMemory`：写/连续拷贝/跨行拷贝三种形状）。
+- **分离"同步点固定开销"与"GPU 真的在跑"**：先测空提交（`ProbeSubmitCost`，实测 ~0.6ms/次），
+  否则会把 GPU 执行时间误判成同步开销，做出完全相反的设计。
 - **不要每命令排空流水线 / 等待设备**（旧实现在每条命令末尾 `glFinish` 是反面教材）：GPU 侧用 barrier，
   只在真正需要 CPU 回读处同步；**不要立即销毁在飞资源**（fence 延迟回收）。
-- compute 派发注意**每轴工作组上限**（`maxComputeWorkGroupCount`，常见 65535）：整屏矩形需要 10 万+
-  工作组，必须用 2D/3D 网格而不是线性下标。
+- **compute 派发注意并行度与访存形态**，不只是每轴工作组上限（`maxComputeWorkGroupCount`，常见 65535）：
+  一个 workgroup 只覆盖 512~1536 个 invocation、且每个 invocation 串行处理 4096 个元素
+  （RLGR 位流逐字节 refill、tile 逐像素循环）时，GPU 利用率极低——此时"引擎比 FreeRDP 的 CPU 软解还慢"
+  是必然结果。整屏矩形需要 10 万+ 工作组，必须用 2D/3D 网格而不是线性下标。
 - **不要在非目标设备上标定性能**：真机口径要压的是**同步点数 / 驱动调用数 / CPU 介入次数**，
   不是模拟器耗时。
 - **只做标准能力探测，不做标准 API 的行为自检**：自检只针对我们自己的语义与算法
@@ -174,6 +189,13 @@ dev 页「回放测试」五条路线：CPU / GLES / Vulkan / GLES对比 / Vulka
   `compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`。
   每 30 帧采一次（`kCompareEvery`），`bad` = 采样的帧里有多少帧与 gdi 不一致；目标 **`bad=0`**。
 - 首次分歧会写一份 `<capture>.cmpdump`（逐像素 e/g 值），是定位分叉的第一手材料。
+- **引擎性能归因三件套（dev，只在真机跑）**：
+  1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本（§1）；
+  2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返（实测 ~0.5ms）→ 用来区分"同步点固定开销"与
+     "GPU 真的在跑"；没有它就会把 GPU 执行时间误判成同步开销；
+  3. `GpuVkSetPerfSkipDispatch(1|2)`（回放侧常量 `kPerfSkipDispatch`）：分别跳过 Progressive chunk 的
+     YCbCr compose / tile decode，用 `syncDrain` 差值把 GPU 时间拆到两条 dispatch 上。
+     **它会让画面变错**，只在量测时开，量完必须复位 0。
 - 归因：需要"是哪条命令分叉"时，开 harness 的逐命令 A/B（见 [`build-and-verify.md`](build-and-verify.md)
   与源码里 `kCodecAbEnabled` 的注释）。**它是诊断工具**：开启后要按命令回读引擎表面，
   GLES 路线会慢到像卡死 ⇒ 只在对某条消息归因时开、查完立刻关（`bad=0` 的验收不依赖它）。

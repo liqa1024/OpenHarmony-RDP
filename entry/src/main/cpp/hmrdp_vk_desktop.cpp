@@ -24,6 +24,15 @@ namespace {
 constexpr uint32_t kRfxChunkTiles = 512;
 constexpr uint32_t kMetaStride = 64;  // bytes per (tile,component) stream job
 
+// Dev (perf): which of a chunk's two dispatches to skip, so the GPU drain time
+// can be attributed to the decode or the YCbCr compose. A skipped dispatch
+// produces a wrong picture - this is a timing-only switch, never ship it on
+// (the doc_agent/gfx-engine.md §6 compare route stops being meaningful with it).
+//  0 = run both (correct), 1 = skip the compose, 2 = skip the tile decode.
+// Set through GpuVkSetPerfSkipDispatch() by the replay harness (a `*.perfskip`
+// file next to the capture), so one build can measure all three modes.
+int g_perfSkipDispatch = 0;
+
 // YCbCr->BGRA fixed-point factors, matching FreeRDP prim_colors.c
 // (general_yCbCrToRGB_16s8u_P3AC4R_BGRX, divisor 16) and hmrdp_rfx.cpp.
 constexpr int32_t kKr = static_cast<int32_t>(1.402525f * (1 << 16));
@@ -200,6 +209,25 @@ struct GfxVkDesktop::Impl {
 
   VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
   bool swapRb = false;
+  // Host-visible memory selection (perf-critical). The CPU addresses surface and
+  // cache pixels directly, so those allocations must use the device's *cached*
+  // host-visible type when it has one: on the target device the
+  // DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type is uncached and reads at
+  // ~120 MB/s (measured: vk desktop host memory probe), which made every CPU-side
+  // pixel command - ClearCodec, cache store/restore, SurfaceToSurface - the
+  // bottleneck (95 MB/s end to end) rather than the GPU.
+  //
+  // A cached type is not HOST_COHERENT, so the CPU/GPU handoff needs explicit
+  // range-scoped cache maintenance: host writes are flushed before the GPU reads
+  // them, device writes are invalidated before the CPU reads them.
+  bool hostCoherent = true;
+  VkDeviceSize atomSize = 64;
+  std::string hostMemoryType;
+  // Device memories the CPU wrote since the last submit. Identified by handle, not
+  // by buffer address: a surface/cache buffer is built in a local and *copied*
+  // into its container, so a stored pointer would dangle.
+  std::vector<VkDeviceMemory> dirtyHostMemories;
+  std::vector<VkMappedMemoryRange> invalidateScratch;
   VkCommandPool commandPool = VK_NULL_HANDLE;
   VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
@@ -235,9 +263,6 @@ struct GfxVkDesktop::Impl {
   VkDeviceMemory readMemory = VK_NULL_HANDLE;
   void* readMapped = nullptr;
   size_t readCapacity = 0;
-
-  // Overlap-safe staging for SurfaceToSurface (same-surface copies).
-  std::vector<uint8_t> copyScratch;
 
   // --- Progressive decode (V3) --------------------------------------------
   // One compute pipeline per shader stage, the descriptor layouts they use and
@@ -319,6 +344,10 @@ struct GfxVkDesktop::Impl {
   struct OpStat {
     uint64_t us = 0;
     uint64_t count = 0;
+    // The part of `us` that was a SyncForCpuAccess() GPU drain: the class' own
+    // CPU cost is `us - drainUs`.
+    uint64_t drains = 0;
+    uint64_t drainUs = 0;
   };
   OpStat statFill;
   OpStat statUpload;
@@ -330,10 +359,165 @@ struct GfxVkDesktop::Impl {
   OpStat statRead;
   uint64_t barriers = 0;
   uint64_t flushWaitUs = 0;
+  // Perf attribution (dev): driver-allocation cost, CPU copy volume and the
+  // sync points the CPU-access path forces.
+  uint64_t allocCalls = 0;
+  uint64_t allocUs = 0;
+  uint64_t cacheAllocCalls = 0;
+  uint64_t cacheBytes = 0;
+  uint64_t copyBytes = 0;
+  uint64_t copyOverlapBytes = 0;
+  uint64_t cacheStoreCalls = 0;
+  uint64_t cacheRestoreCalls = 0;
+  uint64_t syncDrains = 0;
+  uint64_t syncDrainUs = 0;
+  uint64_t releaseUs = 0;
   // Compose decisions: distinguishes "nothing mapped" from "nothing dirty".
   uint64_t composeCopies = 0;
   uint64_t composeSkipUnmapped = 0;
   uint64_t composeSkipClean = 0;
+
+  // Dev (perf): what the CPU can actually do against each host-visible memory type
+  // this device exposes. Every CPU-side pixel command (ClearCodec, cache store /
+  // restore, SurfaceToSurface, SolidFill, uncompressed upload) runs on a mapped
+  // buffer, so these numbers are the ceiling for the whole CPU-side model and
+  // decide whether the bulk pixel moves belong on the device instead.
+  std::string hostMemoryProbe;
+
+  static double MbPerSec(size_t bytes, int64_t micros) {
+    return micros > 0 ? static_cast<double>(bytes) / static_cast<double>(micros) : 0.0;
+  }
+
+  // Dev (perf): the fixed cost of one submit + fence wait with nothing recorded.
+  // Every CPU-access command drains through this path, so the result separates
+  // "the GPU is really executing" from "each synchronization point costs this
+  // much" - the two need opposite fixes (less GPU work vs fewer sync points).
+  uint64_t emptySubmitUs = 0;
+
+  void ProbeSubmitCost() {
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev == VK_NULL_HANDLE || vk.BeginCommandBuffer == nullptr ||
+        vk.EndCommandBuffer == nullptr || vk.ResetCommandBuffer == nullptr) {
+      return;
+    }
+    constexpr int kIterations = 20;
+    int64_t total = 0;
+    int done = 0;
+    for (int i = 0; i < kIterations; ++i) {
+      if (vk.ResetCommandBuffer(commandBuffer, 0) != VK_SUCCESS) {
+        break;
+      }
+      VkCommandBufferBeginInfo begin{};
+      begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+      begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      if (vk.BeginCommandBuffer(commandBuffer, &begin) != VK_SUCCESS) {
+        break;
+      }
+      if (vk.EndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        break;
+      }
+      VkSubmitInfo submit{};
+      submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      submit.commandBufferCount = 1;
+      submit.pCommandBuffers = &commandBuffer;
+      if (vk.ResetFences(dev, 1, &fence) != VK_SUCCESS) {
+        break;
+      }
+      const int64_t start = NowUs();
+      if (vk.QueueSubmit(VkContext::Instance().queue(), 1, &submit, fence) != VK_SUCCESS) {
+        break;
+      }
+      if (vk.WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        break;
+      }
+      total += NowUs() - start;
+      ++done;
+    }
+    if (done > 0) {
+      emptySubmitUs = static_cast<uint64_t>(total) / static_cast<uint64_t>(done);
+    }
+    // Leave the fence signaled: Flush() resets it before its own submit.
+    HMRDP_LOGI("vk submit probe: empty submit+wait = %{public}llu us (%{public}d samples)",
+               static_cast<unsigned long long>(emptySubmitUs), done);
+  }
+
+  void ProbeHostMemory() {    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev == VK_NULL_HANDLE || vk.GetPhysicalDeviceMemoryProperties == nullptr) {
+      return;
+    }
+    constexpr size_t kBytes = 16u << 20;
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = kBytes;
+    info.usage = kSurfaceBufferUsage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer probeBuffer = VK_NULL_HANDLE;
+    if (vk.CreateBuffer(dev, &info, nullptr, &probeBuffer) != VK_SUCCESS) {
+      return;
+    }
+    VkMemoryRequirements req{};
+    vk.GetBufferMemoryRequirements(dev, probeBuffer, &req);
+    VkPhysicalDeviceMemoryProperties memProps{};
+    vk.GetPhysicalDeviceMemoryProperties(VkContext::Instance().physicalDevice(), &memProps);
+    char entry[192];
+    for (uint32_t t = 0; t < memProps.memoryTypeCount; ++t) {
+      const VkMemoryPropertyFlags flags = memProps.memoryTypes[t].propertyFlags;
+      if ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0 ||
+          (req.memoryTypeBits & (1u << t)) == 0) {
+        continue;
+      }
+      VkMemoryAllocateInfo alloc{};
+      alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      alloc.allocationSize = req.size;
+      alloc.memoryTypeIndex = t;
+      VkDeviceMemory memory = VK_NULL_HANDLE;
+      if (vk.AllocateMemory(dev, &alloc, nullptr, &memory) != VK_SUCCESS) {
+        continue;
+      }
+      if (vk.BindBufferMemory(dev, probeBuffer, memory, 0) != VK_SUCCESS) {
+        vk.FreeMemory(dev, memory, nullptr);
+        continue;
+      }
+      void* mapped = nullptr;
+      if (vk.MapMemory(dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+        vk.FreeMemory(dev, memory, nullptr);
+        continue;
+      }
+      uint8_t* base = static_cast<uint8_t*>(mapped);
+      int64_t start = NowUs();
+      std::memset(base, 0xA5, kBytes);
+      const double writeMb = MbPerSec(kBytes, NowUs() - start);
+      // Contiguous read+write, i.e. the best case any CPU copy can hope for.
+      start = NowUs();
+      std::memcpy(base + (kBytes / 4), base, kBytes / 4);
+      const double copyMb = MbPerSec(kBytes / 4, NowUs() - start);
+      // The engine's actual access shape: `rows` rows of `rowBytes`, stepped by a
+      // desktop surface stride - how CpuCopyRows reads and writes.
+      constexpr int kRows = 512;
+      constexpr int kRowBytes = 64;
+      constexpr int kStride = 12480;
+      start = NowUs();
+      for (int row = 0; row < kRows; ++row) {
+        std::memcpy(base + kStride * 64 + row * kStride, base + row * kStride, kRowBytes);
+      }
+      const double stridedMb = MbPerSec(static_cast<size_t>(kRows) * kRowBytes, NowUs() - start);
+      std::snprintf(entry, sizeof(entry), "t%u%s%s%s w=%.0f c=%.0f s=%.0f MB/s", t,
+                    (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "|DL" : "",
+                    (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "|CO" : "",
+                    (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? "|CA" : "", writeMb, copyMb,
+                    stridedMb);
+      if (!hostMemoryProbe.empty()) {
+        hostMemoryProbe += "; ";
+      }
+      hostMemoryProbe += entry;
+      vk.UnmapMemory(dev, memory);
+      vk.FreeMemory(dev, memory, nullptr);
+    }
+    vk.DestroyBuffer(dev, probeBuffer, nullptr);
+    HMRDP_LOGI("vk host memory probe: %{public}s", hostMemoryProbe.c_str());
+  }
 
   static int64_t NowUs() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -380,6 +564,7 @@ struct GfxVkDesktop::Impl {
     if (pendingDestroy.empty()) {
       return;
     }
+    const int64_t releaseStart = NowUs();
     VkApi& vk = api();
     const VkDevice dev = device();
     for (const DeferredResource& deferred : pendingDestroy) {
@@ -402,6 +587,7 @@ struct GfxVkDesktop::Impl {
       }
     }
     pendingDestroy.clear();
+    releaseUs += static_cast<uint64_t>(NowUs() - releaseStart);
   }
 
   VkDevice device() const { return VkContext::Instance().device(); }
@@ -462,18 +648,195 @@ struct GfxVkDesktop::Impl {
 
   // --- Resource helpers ----------------------------------------------------
 
-  // Prefer DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT (the unified-memory case the
-  // target device offers); fall back to plain host-visible. Never assume a pure
-  // DEVICE_LOCAL type exists (doc_agent/gfx-engine.md §3).
+  // Prefer a DEVICE_LOCAL|HOST_VISIBLE type the CPU can actually stream through:
+  // HOST_CACHED first (the CPU-side pixel paths are read-heavy), then COHERENT
+  // (no explicit cache maintenance), then any host-visible type. Never assume a
+  // pure DEVICE_LOCAL type exists (doc_agent/gfx-engine.md §3).
   uint32_t FindHostVisibleType(uint32_t typeBits) const {
-    uint32_t type = VkContext::Instance().FindMemoryType(
-        typeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (type == UINT32_MAX) {
-      type = VkContext::Instance().FindMemoryType(
-          typeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkApi& vk = api();
+    VkPhysicalDeviceMemoryProperties props{};
+    if (vk.GetPhysicalDeviceMemoryProperties == nullptr) {
+      return UINT32_MAX;
     }
-    return type;
+    vk.GetPhysicalDeviceMemoryProperties(VkContext::Instance().physicalDevice(), &props);
+    uint32_t best = UINT32_MAX;
+    int bestScore = -1;
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+      if ((typeBits & (1u << i)) == 0) {
+        continue;
+      }
+      const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+      if ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+        continue;
+      }
+      int score = 0;
+      if ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0) {
+        score += 8;
+      }
+      if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+        score += 4;
+      }
+      if ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) {
+        score += 2;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  // Records the type actually chosen (and whether it needs explicit cache
+  // maintenance). Called once at Init; the findings are also logged there.
+  void NoteHostMemoryType(uint32_t typeIndex) {
+    VkApi& vk = api();
+    VkPhysicalDeviceMemoryProperties props{};
+    if (typeIndex == UINT32_MAX || vk.GetPhysicalDeviceMemoryProperties == nullptr) {
+      return;
+    }
+    vk.GetPhysicalDeviceMemoryProperties(VkContext::Instance().physicalDevice(), &props);
+    const VkMemoryPropertyFlags flags = props.memoryTypes[typeIndex].propertyFlags;
+    hostCoherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    std::string name = (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL" : "";
+    name += name.empty() ? "" : "|";
+    name += "HOST_VISIBLE";
+    if ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) {
+      name += "|HOST_COHERENT";
+    }
+    if ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0) {
+      name += "|HOST_CACHED";
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), " (%u, %s)", typeIndex, name.c_str());
+    hostMemoryType = buf;
+  }
+
+  // Host write -> GPU read. Coarse (one whole-memory range per buffer touched):
+  // the driver writes back only the dirty lines, and the list stays tiny because
+  // it is emptied on every submit.
+  void FlushHostWrites() {
+    if (hostCoherent) {
+      dirtyHostMemories.clear();
+      return;
+    }
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev == VK_NULL_HANDLE || vk.FlushMappedMemoryRanges == nullptr) {
+      dirtyHostMemories.clear();
+      return;
+    }
+    invalidateScratch.clear();
+    for (VkDeviceMemory memory : dirtyHostMemories) {
+      if (memory == VK_NULL_HANDLE) {
+        continue;
+      }
+      VkMappedMemoryRange range{};
+      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      range.memory = memory;
+      range.offset = 0;
+      range.size = VK_WHOLE_SIZE;
+      invalidateScratch.push_back(range);
+    }
+    dirtyHostMemories.clear();
+    // The Progressive staging arena is read by compute too; flushing every arena
+    // buffer is cheaper than tracking them (there are only a handful), and the
+    // driver itself only writes back dirty lines.
+    for (StageBuffer& sb : stageBuffers) {
+      if (sb.memory == VK_NULL_HANDLE || !sb.used) {
+        continue;
+      }
+      VkMappedMemoryRange range{};
+      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      range.memory = sb.memory;
+      range.offset = 0;
+      range.size = VK_WHOLE_SIZE;
+      invalidateScratch.push_back(range);
+    }
+    if (!invalidateScratch.empty()) {
+      vk.FlushMappedMemoryRanges(dev, static_cast<uint32_t>(invalidateScratch.size()),
+                                 invalidateScratch.data());
+    }
+  }
+
+  void MarkHostWrite(GpuBuffer* buffer) {
+    if (buffer == nullptr || hostCoherent || buffer->memory == VK_NULL_HANDLE) {
+      return;
+    }
+    // The list is emptied on every submit and a submit window only touches a
+    // handful of distinct surface / state memories (cache entries are CPU-only),
+    // so a linear duplicate check is cheaper than any bookkeeping flag.
+    for (VkDeviceMemory memory : dirtyHostMemories) {
+      if (memory == buffer->memory) {
+        return;
+      }
+    }
+    dirtyHostMemories.push_back(buffer->memory);
+  }
+
+  // Device write -> CPU read, restricted to the rect the CPU is about to touch
+  // (invalidating the whole surface would move 4x the bytes of a typical band).
+  void InvalidateRect(const GpuBuffer& buffer, int x, int y, int width, int height) {
+    if (hostCoherent || buffer.memory == VK_NULL_HANDLE || width <= 0 || height <= 0) {
+      return;
+    }
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev == VK_NULL_HANDLE || vk.InvalidateMappedMemoryRanges == nullptr) {
+      return;
+    }
+    const VkDeviceSize atom = atomSize != 0 ? atomSize : 1;
+    const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4;
+    const VkDeviceSize rowStart = static_cast<VkDeviceSize>(x) * 4;
+    invalidateScratch.clear();
+    for (int row = 0; row < height; ++row) {
+      const VkDeviceSize begin =
+          static_cast<VkDeviceSize>(y + row) * static_cast<VkDeviceSize>(buffer.stride) + rowStart;
+      VkDeviceSize end = begin + rowBytes;
+      const VkDeviceSize alignedBegin = begin & ~(atom - 1);
+      const VkDeviceSize alignedEnd = (end + atom - 1) & ~(atom - 1);
+      if (!invalidateScratch.empty()) {
+        VkMappedMemoryRange& last = invalidateScratch.back();
+        if (last.offset + last.size >= alignedBegin) {
+          last.size = (alignedEnd > last.offset + last.size)
+                          ? (alignedEnd - last.offset)
+                          : last.size;
+          continue;
+        }
+      }
+      VkMappedMemoryRange range{};
+      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      range.memory = buffer.memory;
+      range.offset = alignedBegin;
+      // A range may not run past the allocation; VK_WHOLE_SIZE from an aligned
+      // offset is the spec-blessed way to say "to the end".
+      range.size = (alignedEnd > buffer.capacity) ? VK_WHOLE_SIZE : (alignedEnd - alignedBegin);
+      invalidateScratch.push_back(range);
+      if (range.size == VK_WHOLE_SIZE) {
+        break;
+      }
+    }
+    if (!invalidateScratch.empty()) {
+      vk.InvalidateMappedMemoryRanges(dev, static_cast<uint32_t>(invalidateScratch.size()),
+                                      invalidateScratch.data());
+    }
+  }
+
+  void InvalidateWhole(const GpuBuffer& buffer) {
+    if (hostCoherent || buffer.memory == VK_NULL_HANDLE) {
+      return;
+    }
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    if (dev == VK_NULL_HANDLE || vk.InvalidateMappedMemoryRanges == nullptr) {
+      return;
+    }
+    VkMappedMemoryRange range{};
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = buffer.memory;
+    range.offset = 0;
+    range.size = VK_WHOLE_SIZE;
+    vk.InvalidateMappedMemoryRanges(dev, 1, &range);
   }
 
   // Allocates, binds and persistently maps a linear buffer of `bytes`.
@@ -484,6 +847,8 @@ struct GfxVkDesktop::Impl {
     if (dev == VK_NULL_HANDLE || bytes == 0) {
       return false;
     }
+    const int64_t allocStart = NowUs();
+    allocCalls++;
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     info.size = bytes;
@@ -498,7 +863,11 @@ struct GfxVkDesktop::Impl {
     const uint32_t type = FindHostVisibleType(req.memoryTypeBits);
     if (type == UINT32_MAX) {
       vk.DestroyBuffer(dev, buffer, nullptr);
+      allocUs += static_cast<uint64_t>(NowUs() - allocStart);
       return false;
+    }
+    if (hostMemoryType.empty()) {
+      NoteHostMemoryType(type);
     }
     VkMemoryAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -507,19 +876,23 @@ struct GfxVkDesktop::Impl {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     if (vk.AllocateMemory(dev, &alloc, nullptr, &memory) != VK_SUCCESS) {
       vk.DestroyBuffer(dev, buffer, nullptr);
+      allocUs += static_cast<uint64_t>(NowUs() - allocStart);
       return false;
     }
     if (vk.BindBufferMemory(dev, buffer, memory, 0) != VK_SUCCESS) {
       vk.FreeMemory(dev, memory, nullptr);
       vk.DestroyBuffer(dev, buffer, nullptr);
+      allocUs += static_cast<uint64_t>(NowUs() - allocStart);
       return false;
     }
     void* mapped = nullptr;
     if (vk.MapMemory(dev, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || mapped == nullptr) {
       vk.FreeMemory(dev, memory, nullptr);
       vk.DestroyBuffer(dev, buffer, nullptr);
+      allocUs += static_cast<uint64_t>(NowUs() - allocStart);
       return false;
     }
+    allocUs += static_cast<uint64_t>(NowUs() - allocStart);
     *outBuffer = buffer;
     *outMemory = memory;
     *outMapped = mapped;
@@ -820,7 +1193,11 @@ struct GfxVkDesktop::Impl {
     if (!computeInFlight) {
       return true;
     }
-    return Flush();
+    const int64_t drainStart = NowUs();
+    const bool ok = Flush();
+    syncDrains++;
+    syncDrainUs += static_cast<uint64_t>(NowUs() - drainStart);
+    return ok;
   }
 
   // UNDEFINED -> GENERAL. Explicit so no command relies on an implicit
@@ -886,6 +1263,10 @@ struct GfxVkDesktop::Impl {
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &commandBuffer;
+    // Host writes the GPU is about to read must be in the memory domain first: a
+    // cached (non-coherent) host-visible type needs an explicit flush, the
+    // pipeline barrier alone does not write the CPU cache lines back.
+    FlushHostWrites();
     vk.ResetFences(dev, 1, &fence);
     if (vk.QueueSubmit(VkContext::Instance().queue(), 1, &submit, fence) != VK_SUCCESS) {
       return false;
@@ -1269,10 +1650,13 @@ struct GfxVkDesktop::Impl {
       DestroyGpuBuffer(&created.bp);
       return false;
     }
-    std::memset(created.cur.mapped, 0, stateCoefBytes);
-    std::memset(created.sign.mapped, 0, stateCoefBytes);
-    std::memset(created.bp.mapped, 0, stateBpBytes);
-    HostWrote();
+  std::memset(created.cur.mapped, 0, stateCoefBytes);
+  std::memset(created.sign.mapped, 0, stateCoefBytes);
+  std::memset(created.bp.mapped, 0, stateBpBytes);
+  MarkHostWrite(&created.cur);
+  MarkHostWrite(&created.sign);
+  MarkHostWrite(&created.bp);
+  HostWrote();
     *state = created;
     return true;
   }
@@ -1660,7 +2044,9 @@ struct GfxVkDesktop::Impl {
       } dpush{streams, 0u, streams * 4096u};
       vk.CmdPushConstants(commandBuffer, decodePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                           sizeof(dpush), &dpush);
-      vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
+      if (g_perfSkipDispatch != 2) {
+        vk.CmdDispatch(commandBuffer, (streams + 63u) / 64u, 1, 1);
+      }
       pendingComputeWrites = true;
       computeInFlight = true;
 
@@ -1696,7 +2082,9 @@ struct GfxVkDesktop::Impl {
       } cpush{count, 0u, surfaceW, surfaceH, kKr, kKcrG, kKcbG, kKcbB, swapRb ? 1u : 0u};
       vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                           sizeof(cpush), &cpush);
-      vk.CmdDispatch(commandBuffer, (count + 63u) / 64u, 1, 1);
+      if (g_perfSkipDispatch != 1) {
+        vk.CmdDispatch(commandBuffer, (count + 63u) / 64u, 1, 1);
+      }
       pendingComputeWrites = true;
       computeInFlight = true;
       rfxChunks++;
@@ -1737,11 +2125,13 @@ struct GfxVkDesktop::Impl {
     // this engine, but the format still has to be the one the surface was
     // created with so the band/glyph pixel interpretation matches gdi.
     const uint32_t format = swapRb ? kPixelFormatRgba32 : surface->meta.format;
+    InvalidateRect(surface->gpu, x, y, width, height);
     if (!clearDecoder->Decode(payload, payloadLen, width, height, format, surface->gpu.mapped,
                               surface->gpu.stride, x, y, surface->meta.width,
                               surface->meta.height)) {
       return false;
     }
+    MarkHostWrite(&surface->gpu);
     HostWrote();
     MarkSurfaceDirty(*surface, x, y, x + width, y + height);
     clearDecoded++;
@@ -1785,7 +2175,6 @@ struct GfxVkDesktop::Impl {
 };
 
 GfxVkDesktop::GfxVkDesktop() = default;
-
 GfxVkDesktop::~GfxVkDesktop() {
   Reset();
 }
@@ -1809,6 +2198,14 @@ bool GfxVkDesktop::Init(VkFormat format) {
   }
   VkApi& api = GetVkApi();
   const VkDevice device = context.device();
+
+  VkPhysicalDeviceProperties physProps{};
+  if (api.GetPhysicalDeviceProperties != nullptr) {
+    api.GetPhysicalDeviceProperties(context.physicalDevice(), &physProps);
+    impl_->atomSize = physProps.limits.nonCoherentAtomSize != 0
+                          ? physProps.limits.nonCoherentAtomSize
+                          : 64;
+  }
 
   VkCommandPoolCreateInfo poolInfo{};
   poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -1852,9 +2249,13 @@ bool GfxVkDesktop::Init(VkFormat format) {
   if (impl_->clearDecoder == nullptr) {
     HMRDP_LOGW("vk desktop: FreeRDP clear_decompress unavailable");
   }
+  impl_->ProbeHostMemory();
+  impl_->ProbeSubmitCost();
   ready_ = true;
-  HMRDP_LOGI("vk desktop: engine ready (V2 storage: host-visible buffers, rfxCompute=%{public}d)",
-             impl_->rfxReady ? 1 : 0);
+  HMRDP_LOGI("vk desktop: engine ready (V2 storage: host-visible buffers, rfxCompute=%{public}d, "
+             "hostMem=%{public}s coherent=%{public}d atom=%{public}u)",
+             impl_->rfxReady ? 1 : 0, impl_->hostMemoryType.c_str(), impl_->hostCoherent ? 1 : 0,
+             static_cast<unsigned>(impl_->atomSize));
   return true;
 }
 
@@ -1964,6 +2365,7 @@ bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint
   // pixels are what the pixel comparison observes. 0xFFFFFFFF is channel-order
   // symmetric, so it needs no swap.
   std::memset(surface.gpu.mapped, 0xFF, surface.gpu.capacity);
+  impl_->MarkHostWrite(&surface.gpu);
   impl_->HostWrote();
   // Persistent Progressive tile state. Allocation failure degrades only the
   // Progressive path for this surface (counted as unsupported), not the surface.
@@ -2049,6 +2451,7 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
     Impl::Surface& surface = kv.second;
     if (surface.gpu.valid()) {
       std::memset(surface.gpu.mapped, 0xFF, surface.gpu.capacity);
+      impl_->MarkHostWrite(&surface.gpu);
     }
     surface.meta.dirtyValid = false;
   }
@@ -2180,6 +2583,14 @@ bool GfxVkDesktop::ReadScreen(std::vector<uint8_t>* out) {
     return false;
   }
   Impl::AddStat(&impl_->statRead, readStart);
+  VkMappedMemoryRange readRange{};
+  readRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+  readRange.memory = impl_->readMemory;
+  readRange.offset = 0;
+  readRange.size = VK_WHOLE_SIZE;
+  if (!impl_->hostCoherent && GetVkApi().InvalidateMappedMemoryRanges != nullptr) {
+    GetVkApi().InvalidateMappedMemoryRanges(impl_->device(), 1, &readRange);
+  }
   std::memcpy(out->data(), impl_->readMapped, bytes);
   if (impl_->swapRb) {
     // Hand the caller FreeRDP's BGRA bytes whatever the internal pixel order.
@@ -2210,6 +2621,7 @@ bool GfxVkDesktop::ReadSurface(uint16_t surfaceId, std::vector<uint8_t>* out) {
   // staging, no stall.
   const size_t bytes = surface->gpu.capacity;
   out->assign(bytes, 0);
+  impl_->InvalidateWhole(surface->gpu);
   std::memcpy(out->data(), surface->gpu.mapped, bytes);
   if (impl_->swapRb) {
     uint32_t* pixels = reinterpret_cast<uint32_t*>(out->data());
@@ -2237,6 +2649,7 @@ bool GfxVkDesktop::ReadSurfaceRect(uint16_t surfaceId, int x, int y, int width, 
     return false;
   }
   out->resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+  impl_->InvalidateRect(surface->gpu, x, y, width, height);
   for (int row = 0; row < height; ++row) {
     const uint8_t* src = surface->gpu.mapped +
                          static_cast<size_t>(y + row) * surface->gpu.stride +
@@ -2283,7 +2696,9 @@ bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint1
     if (width <= 0 || height <= 0) {
       continue;
     }
+    impl_->InvalidateRect(surface->gpu, left, top, width, height);
     CpuFillRect(surface->gpu.mapped, surface->gpu.stride, left, top, width, height, texel);
+    impl_->MarkHostWrite(&surface->gpu);
     impl_->HostWrote();
     Impl::MarkSurfaceDirty(*surface, left, top, right, bottom);
   }
@@ -2316,6 +2731,7 @@ bool GfxVkDesktop::UploadBgra(uint16_t surfaceId, int left, int top, int width, 
   const int rows = ey - sy;
   const int cols = ex - sx;
   const int dstStride = surface->gpu.stride;
+  impl_->InvalidateRect(surface->gpu, sx, sy, cols, rows);
   for (int row = 0; row < rows; ++row) {
     const uint8_t* srcRow =
         bgra + static_cast<size_t>(srcRow0 + row) * srcStride + static_cast<size_t>(srcCol) * 4;
@@ -2332,6 +2748,7 @@ bool GfxVkDesktop::UploadBgra(uint16_t surfaceId, int left, int top, int width, 
       std::memcpy(dstRow, srcRow, static_cast<size_t>(cols) * 4);
     }
   }
+  impl_->MarkHostWrite(&surface->gpu);
   impl_->HostWrote();
   Impl::MarkSurfaceDirty(*surface, sx, sy, ex, ey);
   return true;
@@ -2355,6 +2772,7 @@ bool GfxVkDesktop::SurfaceToCache(uint16_t surfaceId, uint16_t slot, int x, int 
   }
   Impl::CacheEntry& entry = impl_->cache[slot];
   if (entry.gpu.width < width || entry.gpu.height < height || !entry.gpu.valid()) {
+    impl_->cacheAllocCalls++;
     impl_->DeferGpuBuffer(&entry.gpu);
     if (!impl_->CreateGpuBuffer(&entry.gpu, width, height)) {
       return false;
@@ -2362,6 +2780,12 @@ bool GfxVkDesktop::SurfaceToCache(uint16_t surfaceId, uint16_t slot, int x, int 
   }
   entry.width = width;
   entry.height = height;
+  impl_->cacheStoreCalls++;
+  impl_->cacheBytes += static_cast<uint64_t>(width) * height * 4;
+  // The source is device-written (Progressive compute), the destination is
+  // CPU-only (a cache entry is never referenced by a command buffer, so it needs
+  // no cache maintenance - only the surface read below does).
+  impl_->InvalidateRect(surface->gpu, x, y, width, height);
   CpuCopyRows(surface->gpu.mapped, surface->gpu.stride, x, y, entry.gpu.mapped, entry.gpu.stride, 0,
               0, width, height);
   impl_->HostWrote();
@@ -2394,8 +2818,12 @@ bool GfxVkDesktop::CacheToSurface(uint16_t surfaceId, uint16_t slot, int dstX, i
       dstY + entry.height > surface->meta.height) {
     return false;
   }
+  impl_->InvalidateRect(surface->gpu, dstX, dstY, entry.width, entry.height);
   CpuCopyRows(entry.gpu.mapped, entry.gpu.stride, 0, 0, surface->gpu.mapped, surface->gpu.stride,
               dstX, dstY, entry.width, entry.height);
+  impl_->cacheRestoreCalls++;
+  impl_->cacheBytes += static_cast<uint64_t>(entry.width) * entry.height * 4;
+  impl_->MarkHostWrite(&surface->gpu);
   impl_->HostWrote();
   Impl::MarkSurfaceDirty(*surface, dstX, dstY, dstX + entry.width, dstY + entry.height);
   return true;
@@ -2443,12 +2871,36 @@ bool GfxVkDesktop::SurfaceToSurface(uint16_t srcSurfaceId, int srcX, int srcY, i
   const int h = height;
   const int sx = srcX;
   const int sy = srcY;
-  // Stage through a scratch vector so overlapping same-surface copies are safe
-  // (a plain row copy could read rows already overwritten by the destination).
-  impl_->copyScratch.resize(static_cast<size_t>(w) * h * 4);
-  uint8_t* staged = impl_->copyScratch.data();
-  CpuCopyRows(src->gpu.mapped, src->gpu.stride, sx, sy, staged, w * 4, 0, 0, w, h);
-  CpuCopyRows(staged, w * 4, 0, 0, dst->gpu.mapped, dst->gpu.stride, dx, dy, w, h);
+  // Overlapping same-surface copies are copied in the order that never clobbers a
+  // source row before it is read (bottom-up when the destination is further down,
+  // otherwise top-down), with a per-row memmove for the horizontal overlap. This
+  // is the memmove row-order argument: rows map monotonically, so the destination
+  // row of step i only coincides with a source row already handled.
+  impl_->copyBytes += static_cast<uint64_t>(w) * h * 4;
+  const bool sameSurface = (src == dst);
+  const bool overlaps = sameSurface && sx < dx + w && dx < sx + w && sy < dy + h && dy < sy + h;
+  if (overlaps) {
+    impl_->copyOverlapBytes += static_cast<uint64_t>(w) * h * 4;
+  }
+  const size_t rowBytes = static_cast<size_t>(w) * 4;
+  // Both rects are invalidated before the CPU touches them: the source may hold
+  // device writes the CPU has not seen, and the destination may hold stale cache
+  // lines whose untouched neighbours must not be written back.
+  impl_->InvalidateRect(src->gpu, sx, sy, w, h);
+  if (!sameSurface) {
+    impl_->InvalidateRect(dst->gpu, dx, dy, w, h);
+  }
+  const int step = (overlaps && dy > sy) ? -1 : 1;
+  const int first = (step < 0) ? h - 1 : 0;
+  for (int i = 0; i < h; ++i) {
+    const int row = first + step * i;
+    const uint8_t* srcRow = src->gpu.mapped + static_cast<size_t>(sy + row) * src->gpu.stride +
+                            static_cast<size_t>(sx) * 4;
+    uint8_t* dstRow = dst->gpu.mapped + static_cast<size_t>(dy + row) * dst->gpu.stride +
+                      static_cast<size_t>(dx) * 4;
+    std::memmove(dstRow, srcRow, rowBytes);
+  }
+  impl_->MarkHostWrite(&dst->gpu);
   impl_->HostWrote();
   Impl::MarkSurfaceDirty(*dst, dx, dy, dx + w, dy + h);
   return true;
@@ -2458,6 +2910,8 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
                                const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
                                uint32_t payloadLen) {
   const int64_t opStart = impl_ != nullptr ? Impl::NowUs() : 0;
+  const uint64_t drainsBefore = impl_ != nullptr ? impl_->syncDrains : 0;
+  const uint64_t drainUsBefore = impl_ != nullptr ? impl_->syncDrainUs : 0;
   switch (cmdId) {
     case kGpuCmdCreateSurface:
       if (scalars != nullptr) {
@@ -2659,6 +3113,8 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
         break;
     }
     Impl::AddStat(stat, opStart);
+    stat->drains += impl_->syncDrains - drainsBefore;
+    stat->drainUs += impl_->syncDrainUs - drainUsBefore;
   }
 }
 
@@ -2671,7 +3127,9 @@ std::string GfxVkDesktop::Stats() const {
       buf, sizeof(buf),
       "vk desktop: surfaces=%zu cache=%zu submits=%llu unsupported=%llu screen=%dx%d\n"
       "  us/count fill=%llu/%llu upload=%llu/%llu cache=%llu/%llu copy=%llu/%llu life=%llu/%llu "
-      "prog=%llu/%llu compose=%llu/%llu read=%llu/%llu barriers=%llu flushWait=%llums",
+      "prog=%llu/%llu compose=%llu/%llu read=%llu/%llu barriers=%llu flushWait=%llums"
+      "\n  drainUs/drains fill=%llu/%llu cache=%llu/%llu copy=%llu/%llu prog=%llu/%llu"
+      " life=%llu/%llu release=%llums",
       impl_->surfaces.size(), impl_->cache.size(),
       static_cast<unsigned long long>(impl_->submits),
       static_cast<unsigned long long>(impl_->unsupportedCount), screenW_, screenH_,
@@ -2692,17 +3150,46 @@ std::string GfxVkDesktop::Stats() const {
       static_cast<unsigned long long>(impl_->statRead.us),
       static_cast<unsigned long long>(impl_->statRead.count),
       static_cast<unsigned long long>(impl_->barriers),
-      static_cast<unsigned long long>(impl_->flushWaitUs / 1000));
-  char buf2[768];
+      static_cast<unsigned long long>(impl_->flushWaitUs / 1000),
+      static_cast<unsigned long long>(impl_->statFill.drainUs),
+      static_cast<unsigned long long>(impl_->statFill.drains),
+      static_cast<unsigned long long>(impl_->statCache.drainUs),
+      static_cast<unsigned long long>(impl_->statCache.drains),
+      static_cast<unsigned long long>(impl_->statCopy.drainUs),
+      static_cast<unsigned long long>(impl_->statCopy.drains),
+      static_cast<unsigned long long>(impl_->statProgressive.drainUs),
+      static_cast<unsigned long long>(impl_->statProgressive.drains),
+      static_cast<unsigned long long>(impl_->statLifecycle.drainUs),
+      static_cast<unsigned long long>(impl_->statLifecycle.drains),
+      static_cast<unsigned long long>(impl_->releaseUs / 1000));
+  char buf2[1536];
   std::snprintf(buf2, sizeof(buf2),
+                "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus perfSkip=%d"
                 "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu"
+                "\n  alloc calls=%llu us=%llu (cache allocs=%llu)"
+                "\n  cpu bytes cache=%llu copy=%llu (overlap=%llu) cacheOps store=%llu restore=%llu"
+                "\n  syncDrains=%llu syncDrain=%llums"
                 "\n  rfxCompute=%d chunks=%llu first=%llu upgrade=%llu clearDec=%llu "
                 "clearUnsup=%llu progFail=%llu progComposeSkip=%llu"
                 "\n  rfxParse regions=%llu simple=%llu diff=%llu nonExtrap=%llu skipTiles=%llu "
                 "errors=%llu originNonZero=%llu restamped=%llu multiRegion=%llu frameIdRepeats=%llu",
+                impl_->hostMemoryType.c_str(), impl_->hostCoherent ? 1 : 0,
+                static_cast<unsigned long long>(impl_->atomSize),
+                static_cast<unsigned long long>(impl_->emptySubmitUs), g_perfSkipDispatch,
                 static_cast<unsigned long long>(impl_->composeCopies),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
-                static_cast<unsigned long long>(impl_->composeSkipClean), impl_->rfxReady ? 1 : 0,
+                static_cast<unsigned long long>(impl_->composeSkipClean),
+                static_cast<unsigned long long>(impl_->allocCalls),
+                static_cast<unsigned long long>(impl_->allocUs),
+                static_cast<unsigned long long>(impl_->cacheAllocCalls),
+                static_cast<unsigned long long>(impl_->cacheBytes),
+                static_cast<unsigned long long>(impl_->copyBytes),
+                static_cast<unsigned long long>(impl_->copyOverlapBytes),
+                static_cast<unsigned long long>(impl_->cacheStoreCalls),
+                static_cast<unsigned long long>(impl_->cacheRestoreCalls),
+                static_cast<unsigned long long>(impl_->syncDrains),
+                static_cast<unsigned long long>(impl_->syncDrainUs / 1000),
+                impl_->rfxReady ? 1 : 0,
                 static_cast<unsigned long long>(impl_->rfxChunks),
                 static_cast<unsigned long long>(impl_->rfxFirstTiles),
                 static_cast<unsigned long long>(impl_->rfxUpgradeTiles),
@@ -2720,11 +3207,17 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->restamped),
                 static_cast<unsigned long long>(impl_->rfxMultiRegion),
                 static_cast<unsigned long long>(impl_->frameIdRepeats));
-  return std::string(buf) + buf2;
+  return std::string(buf) + buf2 +
+         (impl_->hostMemoryProbe.empty() ? std::string()
+                                         : "\n  hostMem " + impl_->hostMemoryProbe);
 }
 
 std::string GfxVkDesktop::lastError() const {
   return ready() ? std::string() : std::string("vk desktop not ready");
+}
+
+void GpuVkSetPerfSkipDispatch(int mode) {
+  g_perfSkipDispatch = (mode < 0 || mode > 2) ? 0 : mode;
 }
 
 bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {

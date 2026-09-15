@@ -239,6 +239,10 @@ VulkanCapabilities ProbeVulkan() {
       type += type.empty() ? "" : "|";
       type += "HOST_COHERENT";
     }
+    if ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0) {
+      type += type.empty() ? "" : "|";
+      type += "HOST_CACHED";
+    }
     caps.memoryTypes += type.empty() ? "NONE" : type;
   }
 
