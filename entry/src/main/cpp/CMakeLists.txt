@@ -35,8 +35,9 @@ endif()
 # yields a `k<Symbol>Spv[]` word array in <source file>.h (V3: the RemoteFX
 # Progressive decoder and its YCbCr->BGRA tile compositor).
 set(HMRDP_SHADERS
-    "rfx_decode.comp|RfxDecode"
-    "rfx_compose.comp|RfxCompose"
+  "rfx_decode.comp|RfxDecode"
+  "rfx_compose.comp|RfxCompose"
+  "rfx_idwt.comp|RfxIdwt"
 )
 
 set(HMRDP_SHADER_HEADERS "")

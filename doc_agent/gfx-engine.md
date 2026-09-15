@@ -69,6 +69,16 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 ## 1. 码流分工
 
 - **Progressive / 未压缩位图 / 表面绘制 → GPU**（SPIR-V compute + transfer），引擎直写表面缓冲；
+  Progressive 的解码拆成**两个 kernel**（`rfx_decode.comp` + `rfx_idwt.comp`）：
+  1. `rfx_decode`：**一条 lane 一条 (tile,component) stream**，跑 RLGR/去量化/差分与持久状态同步；
+  2. `rfx_idwt`：**一个 workgroup 一条 stream**，把该 stream 的 4096 个系数搬进 **shared memory**
+     （plane 16KB + 打包 temp 8KB，设备上限 32KB）再跑三级逆 DWT，全局只读一次写一次。
+     **为什么必须拆**：这个变换原本在全局 SSBO 上做 ~10 趟 16bit 读-改-写（每 stream ~64k 次全局访存），
+     实测就是 decode 的瓶颈（占 GPU drain 的 49%）；搬进 shared 后 decode 的 GPU 时间降到约 1.4 倍以下。
+     语义（子带偏移/长度、每步 INT16 截断、差分顺序、位状态）与 §2.1 逐条一致，`Vulkan对比` 仍是 `bad=0` 的门禁。
+- **`rfx_compose` 必须按像素并行**（一个 lane 一个像素）：按 tile 并行时 32 个 lane 写 32 个不同 tile
+  （每 4 个有效字节占一条 cache line），且每像素还要遍历整条裁剪 rect 列表；改成按像素后由 host 把
+  裁剪 rect 预先算成**tile 内局部坐标**并存进 tileMeta，实测该 dispatch 从 9.56s 降到 ~0.08s。
 - **ClearCodec 留在 CPU**：它不是自包含的（未覆盖像素保留原值），复用 FreeRDP 的 `clear_decompress`
   对**持久映射的表面缓冲**做读改写（共享内存，**不搬 GPU、不做逐区域跨侧往返**）；
 - **表面/缓存存储**是**持久映射的 host-visible 线性缓冲**（屏幕仍是 image），于是 CPU 访问零成本，

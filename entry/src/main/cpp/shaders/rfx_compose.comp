@@ -6,6 +6,13 @@
 // destination surface buffer. Pixels outside the clip rects keep the previous
 // surface content (FreeRDP semantics), so the kernel is a read-modify-write.
 //
+// One invocation handles ONE pixel (the host dispatches numTiles * 4096 lanes):
+// consecutive lanes then cover consecutive pixels of the same tile row, so the
+// surface store, the coefficient reads and the rect probes are all coalesced.
+// The per-tile shape this replaces had 32 lanes writing 32 different tiles, i.e.
+// one cache line per 4 useful bytes, and spent most of its time on memory
+// transactions instead of the colour math.
+//
 // doc_agent/gfx-engine.md §1.
 #version 450
 
@@ -28,6 +35,9 @@ layout(push_constant) uniform Push {
   uint uSwapRb;     // 1 when the engine storage is RGBA8 (present path)
 } pc;
 
+const uint kTilePixels = 4096u;  // 64x64
+const uint kTileSide = 64u;
+
 int i16lo(uint w) { return int(w << 16) >> 16; }
 int i16hi(uint w) { return int(w) >> 16; }
 int coefGet(uint idx) { uint w = coef.data[idx >> 1]; return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w); }
@@ -43,53 +53,55 @@ void surfPut(uint px, uint py, uint b, uint g, uint r) {
 }
 
 void main() {
-  uint t = gl_GlobalInvocationID.x;
+  uint gid = gl_GlobalInvocationID.x;
+  uint t = gid / kTilePixels;
   if (t >= pc.uNumTiles) return;
+  uint i = gid % kTilePixels;
+  uint col = i % kTileSide;
+  uint row = i / kTileSide;
+
   uint px0 = tmeta.data[t * 4u];
   uint py0 = tmeta.data[t * 4u + 1u];
   uint rectOff = tmeta.data[t * 4u + 2u];
   uint rectCnt = tmeta.data[t * 4u + 3u];
-  uint base0 = pc.uCompBase + (t * 3u + 0u) * 4096u;
-  uint base1 = pc.uCompBase + (t * 3u + 1u) * 4096u;
-  uint base2 = pc.uCompBase + (t * 3u + 2u) * 4096u;
-  for (uint row = 0u; row < 64u; row++) {
-    for (uint col = 0u; col < 64u; col++) {
-      uint i = row * 64u + col;
-      int y = coefGet(base0 + i);
-      int cb = coefGet(base1 + i);
-      int cr = coefGet(base2 + i);
-      int yv = int((uint(y) + 4096u) << 16);
-      int sR = int(uint(cr) * uint(pc.uKr) + uint(yv));
-      int sG = int(uint(yv) - uint(cb) * uint(pc.uKcbG) - uint(cr) * uint(pc.uKcrG));
-      int sB = int(uint(cb) * uint(pc.uKcbB) + uint(yv));
-      int r = clamp(sR >> 21, 0, 255);
-      int g = clamp(sG >> 21, 0, 255);
-      int b = clamp(sB >> 21, 0, 255);
-      // The engine storage is FreeRDP's BGRA byte order for the offline harness
-      // and RGBA8 when the swapchain forces it; the CPU boundaries swap, and so
-      // must this kernel (doc_agent/gfx-engine.md §1).
-      if (pc.uSwapRb != 0u) {
-        int tmp = r;
-        r = b;
-        b = tmp;
-      }
-      // FreeRDP composites a decoded tile only inside
-      // region16_intersect_rect(clippingRects, tileRect): with no clipping rects
-      // the intersection is empty, so *nothing* is written - "rectCnt == 0" must
-      // NOT mean "the whole tile" (the region is rejected upstream anyway).
-      uint px = px0 + col;
-      uint py = py0 + row;
-      bool inside = false;
-      for (uint ri = 0u; !inside && ri < rectCnt; ri++) {
-        uint a = rcts.data[(rectOff + ri) * 2u];
-        uint c = rcts.data[(rectOff + ri) * 2u + 1u];
-        uint rx = a & 0xFFFFu;
-        uint ry = a >> 16;
-        uint rw = c & 0xFFFFu;
-        uint rh = c >> 16;
-        if (px >= rx && px < rx + rw && py >= ry && py < ry + rh) inside = true;
-      }
-      if (inside) surfPut(px, py, uint(b), uint(g), uint(r));
-    }
+  // FreeRDP composites a decoded tile only inside
+  // region16_intersect_rect(clippingRects, tileRect): a tile that intersects no
+  // clip rect composites *nothing* (and rectCnt == 0 must not mean "whole tile").
+  if (rectCnt == 0u) return;
+
+  // The host stores each tile's clip rects in *tile-local* pixel coordinates
+  // (x0 | y0 << 8 | x1 << 16 | y1 << 24, all <= 64), keeping only the rects that
+  // actually intersect this tile - so this probe is a byte extract, not a search
+  // through the message's whole clip list.
+  bool inside = false;
+  for (uint ri = 0u; !inside && ri < rectCnt; ri++) {
+    uint w = rcts.data[rectOff + ri];
+    uint x0 = w & 0xFFu;
+    uint y0 = (w >> 8) & 0xFFu;
+    uint x1 = (w >> 16) & 0xFFu;
+    uint y1 = (w >> 24) & 0xFFu;
+    inside = (col >= x0 && col < x1 && row >= y0 && row < y1);
   }
+  if (!inside) return;
+
+  uint base = pc.uCompBase + t * 3u * kTilePixels + i;
+  int y = coefGet(base);
+  int cb = coefGet(base + kTilePixels);
+  int cr = coefGet(base + 2u * kTilePixels);
+  int yv = int((uint(y) + 4096u) << 16);
+  int sR = int(uint(cr) * uint(pc.uKr) + uint(yv));
+  int sG = int(uint(yv) - uint(cb) * uint(pc.uKcbG) - uint(cr) * uint(pc.uKcrG));
+  int sB = int(uint(cb) * uint(pc.uKcbB) + uint(yv));
+  int r = clamp(sR >> 21, 0, 255);
+  int g = clamp(sG >> 21, 0, 255);
+  int b = clamp(sB >> 21, 0, 255);
+  // The engine storage is FreeRDP's BGRA byte order for the offline harness
+  // and RGBA8 when the swapchain forces it; the CPU boundaries swap, and so
+  // must this kernel (doc_agent/gfx-engine.md §1).
+  if (pc.uSwapRb != 0u) {
+    int tmp = r;
+    r = b;
+    b = tmp;
+  }
+  surfPut(px0 + col, py0 + row, uint(b), uint(g), uint(r));
 }

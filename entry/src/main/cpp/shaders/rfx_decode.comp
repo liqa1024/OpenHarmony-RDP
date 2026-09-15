@@ -270,7 +270,10 @@ void diffDecode(uint base, uint off, uint size) {
     coefSet(base + off + i + 1u, i16(coefGet(base + off + i + 1u) + coefGet(base + off + i)));
 }
 
-// ---- extrapolate inverse DWT (ports ProgDwtBlock/ProgIdwtX/Y) ------------
+// ---- inverse DWT: MOVED to rfx_idwt.comp ----------------------------------
+// These ports are kept only as the reference the shared-memory kernel in
+// rfx_idwt.comp was transliterated from; nothing in this shader calls them any
+// more (the global-SSBO round trips they performed were the decode bottleneck).
 void progIdwtX(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
                uint nLowCount, uint nHighCount, uint nDstCount) {
   for (uint i = 0u; i < nDstCount; i++) {
@@ -460,7 +463,6 @@ void upgradeComponent(uint compBase, uint tempBase, uint stateBase, uint tileStr
     upgradeBlock(false, kp, nz, mode, stateBase, kSubOff[9], kSubLen[9], nb, numBits);
   }
   for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
-  extrapolateDwt(compBase, tempBase);
   for (int b = 0; b < 10; b++) bitPosSet(tileStream, uint(b), newBit[b]);
 }
 
@@ -513,7 +515,6 @@ void main() {
       for (uint i = 0u; i < 4096u; i++) curSet(stateBase + i, coefGet(compBase + i));
     }
     for (uint b = 0u; b < 10u; b++) bitPosSet(tileStream, b, newBit[b]);
-    extrapolateDwt(compBase, tempBase);
   } else if (type == 3u) {
     // Reverse-only pass. FreeRDP's update_tiles re-composites *every* tile it has
     // decoded in the current frame on each Progressive message, so a tile whose
@@ -522,7 +523,6 @@ void main() {
     // progressive_rfx_dwt_2d_decode(..., reverse = TRUE): copy `current` into the
     // scratch and run the inverse DWT. No payload, no state change.
     for (uint i = 0u; i < 4096u; i++) coefSet(compBase + i, curGet(stateBase + i));
-    extrapolateDwt(compBase, tempBase);
   } else {
     uint oldBit[10];
     for (uint b = 0u; b < 10u; b++) oldBit[b] = bitPosGet(tileStream, b);

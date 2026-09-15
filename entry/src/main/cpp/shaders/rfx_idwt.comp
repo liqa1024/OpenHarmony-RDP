@@ -1,0 +1,213 @@
+// HmRdp - RemoteFX Progressive inverse DWT (second half of the tile decode).
+//
+// Split out of rfx_decode.comp because the transform is what made the decode
+// dispatch slow on the target device: it reads and writes its 4096-coefficient
+// working set through the *global* coefficient SSBO ~10 times (two X passes plus
+// a Y pass per DWT level, three levels, all of them 16-bit read-modify-writes),
+// i.e. ~64k global memory operations per (tile,component) stream - an order of
+// magnitude more traffic than the RLGR bit stream itself.
+//
+// Here one workgroup owns one stream's plane in shared memory: the coefficients
+// are loaded once, the three DWT levels run entirely on shared, and the result is
+// stored back once. The transforms are the same ports of FreeRDP's
+// ProgDwtBlock/ProgIdwtX/ProgIdwtY as in rfx_decode.comp, including the INT16
+// truncation at every step (doc_agent/gfx-engine.md §2.1 - the arithmetic is a
+// behaviour contract, not an implementation detail).
+//
+// Placement of the `i` loop (the row index for X, the column index for Y) across
+// the 64 lanes is what parallelises the transform: those iterations are
+// independent, the inner `j` loop is the sequential lifting.
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) buffer Coef { uint data[]; } coef;
+
+layout(push_constant) uniform Push {
+  uint uNumStreams;
+  uint uCompBase;  // int16 entry index into Coef
+} pc;
+
+const uint kTilePixels = 4096u;
+
+// The plane holds one INT16 value per 32-bit slot: the Y pass writes single
+// entries down a column, and a packed layout would make two lanes read-modify-
+// write the same word there.
+shared int plane[kTilePixels];  // 16 KB
+// The X passes write the scratch in aligned pairs (one lane per row segment), so
+// two INT16 per word is safe here and keeps the workgroup inside the device's
+// 32 KB shared budget.
+shared uint temp[kTilePixels / 2u];  // 8 KB
+
+int i16(int v) { return (v << 16) >> 16; }
+int i16lo(uint w) { return int(w << 16) >> 16; }
+int i16hi(uint w) { return int(w) >> 16; }
+
+int plGet(uint idx) { return plane[idx]; }
+void plSet(uint idx, int v) { plane[idx] = i16(v); }
+
+int tmGet(uint idx) {
+  uint w = temp[idx >> 1u];
+  return ((idx & 1u) == 0u) ? i16lo(w) : i16hi(w);
+}
+void tmSet(uint idx, int v) {
+  uint wi = idx >> 1u;
+  uint w = temp[wi];
+  uint u = uint(v) & 0xFFFFu;
+  if ((idx & 1u) == 0u) {
+    temp[wi] = (w & 0xFFFF0000u) | u;
+  } else {
+    temp[wi] = (w & 0x0000FFFFu) | (u << 16);
+  }
+}
+
+// Home of the X pass: reads the plane's low/high bands, writes the scratch pair
+// per output column. `i` is the band row.
+void idwtX(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
+           uint nLowCount, uint nHighCount, uint nDstCount) {
+  for (uint i = gl_LocalInvocationID.x; i < nDstCount; i += 64u) {
+    uint pl = lowBase + i * lowStep;
+    uint ph = highBase + i * highStep;
+    uint px = dstBase + i * dstStep;
+    int H0 = plGet(ph);
+    int L0 = plGet(pl);
+    int X0 = i16(L0 - H0);
+    int X2 = X0;
+    uint j = 0u;
+    for (; j + 1u < nHighCount; j++) {
+      int H1 = plGet(ph + j + 1u);
+      L0 = plGet(pl + j + 1u);
+      X2 = i16(L0 - ((H0 + H1) / 2));
+      int X1 = i16(((X0 + X2) / 2) + (2 * H0));
+      tmSet(px + 2u * j, X0);
+      tmSet(px + 2u * j + 1u, X1);
+      X0 = X2;
+      H0 = H1;
+    }
+    uint bx = px + 2u * j;
+    if (nLowCount <= nHighCount + 1u) {
+      if (nLowCount <= nHighCount) {
+        tmSet(bx, X2);
+        tmSet(bx + 1u, i16(X2 + 2 * H0));
+      } else {
+        L0 = plGet(pl + nHighCount);
+        X0 = i16(L0 - H0);
+        tmSet(bx, X2);
+        tmSet(bx + 1u, i16(((X0 + X2) / 2) + 2 * H0));
+        tmSet(bx + 2u, X0);
+      }
+    } else {
+      L0 = plGet(pl + nHighCount);
+      X0 = i16(L0 - (H0 / 2));
+      tmSet(bx, X2);
+      tmSet(bx + 1u, i16(((X0 + X2) / 2) + 2 * H0));
+      tmSet(bx + 2u, X0);
+      L0 = plGet(pl + nHighCount + 1u);
+      tmSet(bx + 3u, i16((X0 + L0) / 2));
+    }
+  }
+}
+
+// Home of the Y pass: reads the scratch columns, writes the reconstructed plane.
+// `i` is the output column.
+void idwtY(uint lowBase, uint lowStep, uint highBase, uint highStep, uint dstBase, uint dstStep,
+           uint nLowCount, uint nHighCount, uint nDstCount) {
+  for (uint i = gl_LocalInvocationID.x; i < nDstCount; i += 64u) {
+    uint pl = lowBase + i;
+    uint ph = highBase + i;
+    uint px = dstBase + i;
+    int H0 = tmGet(ph);
+    ph += highStep;
+    int L0 = tmGet(pl);
+    pl += lowStep;
+    int X0 = i16(L0 - H0);
+    int X2 = X0;
+    for (uint j = 0u; j + 1u < nHighCount; j++) {
+      int H1 = tmGet(ph);
+      ph += highStep;
+      L0 = tmGet(pl);
+      pl += lowStep;
+      X2 = i16(L0 - ((H0 + H1) / 2));
+      int X1 = i16(((X0 + X2) / 2) + (2 * H0));
+      plSet(px, X0);
+      px += dstStep;
+      plSet(px, X1);
+      px += dstStep;
+      X0 = X2;
+      H0 = H1;
+    }
+    if (nLowCount <= nHighCount + 1u) {
+      if (nLowCount <= nHighCount) {
+        plSet(px, X2);
+        plSet(px + dstStep, i16(X2 + 2 * H0));
+      } else {
+        L0 = tmGet(pl);
+        X0 = i16(L0 - H0);
+        plSet(px, X2);
+        plSet(px + dstStep, i16(((X0 + X2) / 2) + 2 * H0));
+        plSet(px + 2u * dstStep, X0);
+      }
+    } else {
+      L0 = tmGet(pl);
+      X0 = i16(L0 - (H0 / 2));
+      plSet(px, X2);
+      plSet(px + dstStep, i16(((X0 + X2) / 2) + 2 * H0));
+      plSet(px + 2u * dstStep, X0);
+      L0 = tmGet(pl + lowStep);
+      plSet(px + 3u * dstStep, i16((X0 + L0) / 2));
+    }
+  }
+}
+
+// One DWT level: two X passes (band rows into the scratch) then the Y pass that
+// folds them back into the plane. The X passes write disjoint scratch regions and
+// the Y pass reads both, hence the barrier between them.
+void dwtBlock(uint base, uint level) {
+  uint nBandL = (64u >> level) + 1u;
+  uint nBandH = (level == 1u) ? 31u : ((64u + (1u << (level - 1u))) >> level);
+  uint off = 0u;
+  uint hl = base + off;
+  off += nBandH * nBandL;
+  uint lh = base + off;
+  off += nBandL * nBandH;
+  uint hh = base + off;
+  off += nBandH * nBandH;
+  uint ll = base + off;
+  uint dstStep = nBandL + nBandH;
+  uint l = 0u;
+  uint h = nBandL * dstStep;
+  idwtX(ll, nBandL, hl, nBandH, l, dstStep, nBandL, nBandH, nBandL);
+  idwtX(lh, nBandL, hh, nBandH, h, dstStep, nBandL, nBandH, nBandH);
+  barrier();
+  idwtY(l, dstStep, h, dstStep, base, dstStep, nBandL, nBandH, nBandL + nBandH);
+  barrier();
+}
+
+void main() {
+  uint sid = gl_WorkGroupID.x;
+  if (sid >= pc.uNumStreams) {
+    return;
+  }
+  const uint lane = gl_LocalInvocationID.x;
+  const uint compBase = pc.uCompBase + sid * kTilePixels;
+
+  // Stage whole coefficient words (two INT16 each) so no two lanes ever write the
+  // same word.
+  for (uint k = lane; k < kTilePixels / 2u; k += 64u) {
+    uint w = coef.data[compBase / 2u + k];
+    plane[2u * k] = i16lo(w);
+    plane[2u * k + 1u] = i16hi(w);
+  }
+  barrier();
+
+  // Levels 3, 2, 1, in the same order as FreeRDP's extrapolateDwt: each level's
+  // low band already holds the previous level's reconstruction.
+  dwtBlock(3807u, 3u);
+  dwtBlock(3007u, 2u);
+  dwtBlock(0u, 1u);
+
+  for (uint k = lane; k < kTilePixels / 2u; k += 64u) {
+    coef.data[compBase / 2u + k] =
+        (uint(plane[2u * k]) & 0xFFFFu) | ((uint(plane[2u * k + 1u]) & 0xFFFFu) << 16);
+  }
+}

@@ -15,6 +15,7 @@
 // Generated at build time by cmake/EmbedSpirv.cmake (see CMakeLists.txt).
 #include "rfx_compose.comp.h"
 #include "rfx_decode.comp.h"
+#include "rfx_idwt.comp.h"
 
 namespace hmrdp {
 namespace {
@@ -23,6 +24,8 @@ namespace {
 // per-chunk scratch holds `kRfxChunkTiles * 3` component streams of 4096 int16.
 constexpr uint32_t kRfxChunkTiles = 512;
 constexpr uint32_t kMetaStride = 64;  // bytes per (tile,component) stream job
+// One tile is 64x64 pixels; the compositor dispatches one lane per tile pixel.
+constexpr uint32_t kTilePixels = 4096;
 
 // Dev (perf): which of a chunk's two dispatches to skip, so the GPU drain time
 // can be attributed to the decode or the YCbCr compose. A skipped dispatch
@@ -279,6 +282,13 @@ struct GfxVkDesktop::Impl {
   VkDescriptorSetLayout composeSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout composePipeLayout = VK_NULL_HANDLE;
   VkPipeline composePipe = VK_NULL_HANDLE;
+  // Second half of the tile decode: the inverse DWT, one workgroup per
+  // (tile,component) stream with the coefficient plane in shared memory. Split
+  // out of the decode kernel because the transform's global-SSBO round trips were
+  // the decode bottleneck (rfx_idwt.comp).
+  VkDescriptorSetLayout idwtSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout idwtPipeLayout = VK_NULL_HANDLE;
+  VkPipeline idwtPipe = VK_NULL_HANDLE;
   VkDescriptorPool rfxPool = VK_NULL_HANDLE;
 
   // Per-chunk decode scratch: `comp` then `temp`, kRfxChunkTiles*3 streams of
@@ -1486,8 +1496,7 @@ struct GfxVkDesktop::Impl {
       return false;
     }
 
-    VkDescriptorSetLayoutBinding composeBindings[4] = {};
-    for (int i = 0; i < 4; ++i) {
+    VkDescriptorSetLayoutBinding composeBindings[4] = {};    for (int i = 0; i < 4; ++i) {
       composeBindings[i].binding = static_cast<uint32_t>(i);
       composeBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
       composeBindings[i].descriptorCount = 1;
@@ -1499,6 +1508,19 @@ struct GfxVkDesktop::Impl {
     composeLayoutInfo.pBindings = composeBindings;
     if (vk.CreateDescriptorSetLayout(dev, &composeLayoutInfo, nullptr, &composeSetLayout) !=
         VK_SUCCESS) {
+      return false;
+    }
+
+    VkDescriptorSetLayoutBinding idwtBindings[1] = {};
+    idwtBindings[0].binding = 0;
+    idwtBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    idwtBindings[0].descriptorCount = 1;
+    idwtBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo idwtLayoutInfo{};
+    idwtLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    idwtLayoutInfo.bindingCount = 1;
+    idwtLayoutInfo.pBindings = idwtBindings;
+    if (vk.CreateDescriptorSetLayout(dev, &idwtLayoutInfo, nullptr, &idwtSetLayout) != VK_SUCCESS) {
       return false;
     }
 
@@ -1519,14 +1541,27 @@ struct GfxVkDesktop::Impl {
     VkPushConstantRange composeRange{};
     composeRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     composeRange.offset = 0;
-    composeRange.size = 9 * sizeof(uint32_t);
-    VkPipelineLayoutCreateInfo composePipeInfo{};
+    composeRange.size = 9 * sizeof(uint32_t);    VkPipelineLayoutCreateInfo composePipeInfo{};
     composePipeInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     composePipeInfo.setLayoutCount = 1;
     composePipeInfo.pSetLayouts = &composeSetLayout;
     composePipeInfo.pushConstantRangeCount = 1;
     composePipeInfo.pPushConstantRanges = &composeRange;
     if (vk.CreatePipelineLayout(dev, &composePipeInfo, nullptr, &composePipeLayout) != VK_SUCCESS) {
+      return false;
+    }
+
+    VkPushConstantRange idwtRange{};
+    idwtRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    idwtRange.offset = 0;
+    idwtRange.size = 2 * sizeof(uint32_t);
+    VkPipelineLayoutCreateInfo idwtPipeInfo{};
+    idwtPipeInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    idwtPipeInfo.setLayoutCount = 1;
+    idwtPipeInfo.pSetLayouts = &idwtSetLayout;
+    idwtPipeInfo.pushConstantRangeCount = 1;
+    idwtPipeInfo.pPushConstantRanges = &idwtRange;
+    if (vk.CreatePipelineLayout(dev, &idwtPipeInfo, nullptr, &idwtPipeLayout) != VK_SUCCESS) {
       return false;
     }
 
@@ -1558,6 +1593,9 @@ struct GfxVkDesktop::Impl {
       return false;
     }
     if (!makePipeline(kRfxComposeSpv, kRfxComposeSpvWords, composePipeLayout, &composePipe)) {
+      return false;
+    }
+    if (!makePipeline(kRfxIdwtSpv, kRfxIdwtSpvWords, idwtPipeLayout, &idwtPipe)) {
       return false;
     }
 
@@ -1960,15 +1998,8 @@ struct GfxVkDesktop::Impl {
     if (!StageAppend(payload, size, &payloadBuffer, &payloadOffset)) {
       return false;
     }
-    VkBuffer rectBuffer = VK_NULL_HANDLE;
-    VkDeviceSize rectOffset = 0;
-    if (!rectPool.empty()) {
-      if (!StageAppend(rectPool.data(), rectPool.size() * sizeof(uint32_t), &rectBuffer,
-                       &rectOffset)) {
-        return false;
-      }
-    }
-
+    // The message-level rect pool stays on the CPU: the composeRegion check and
+    // the per-tile clip build read it while filling this chunk's tile meta.
     const uint32_t chunkTiles = kRfxChunkTiles;
     for (size_t start = 0; start < tiles.size(); start += chunkTiles) {
       uint32_t count = static_cast<uint32_t>(tiles.size() - start);
@@ -1979,16 +2010,48 @@ struct GfxVkDesktop::Impl {
 
       std::vector<uint8_t> meta(static_cast<size_t>(streams) * kMetaStride, 0);
       std::vector<uint32_t> tileMeta(static_cast<size_t>(count) * 4, 0);
+      // The compositor's clip rects, per tile, in *tile-local* pixel coordinates
+      // (x0 | y0 << 8 | x1 << 16 | y1 << 24). Only the rects that actually
+      // intersect the tile are kept, so the kernel's per-pixel probe is one byte
+      // extract per rect instead of a scan of the whole message clip list.
+      std::vector<uint32_t> chunkRects;
       for (uint32_t t = 0; t < count; ++t) {
         const TileJob& job = tiles[start + t];
         // Tile pixel origin = destRect origin + 64 * tile index (gdi's
         // updateRect = nXDst + tile->x).
         const int tilePx = originX + static_cast<int>(job.x) * 64;
         const int tilePy = originY + static_cast<int>(job.y) * 64;
+        const uint32_t rectOff = static_cast<uint32_t>(chunkRects.size());
+        uint32_t rectCnt = 0;
+        for (uint32_t ri = 0; ri < job.rectCount; ++ri) {
+          const size_t wi = static_cast<size_t>(job.rectOffset + ri) * 2;
+          if (wi + 1 >= rectPool.size()) {
+            break;
+          }
+          const uint32_t w0 = rectPool[wi];
+          const uint32_t w1 = rectPool[wi + 1];
+          const int rx = static_cast<int>(w0 & 0xFFFFu);
+          const int ry = static_cast<int>(w0 >> 16);
+          const int rw = static_cast<int>(w1 & 0xFFFFu);
+          const int rh = static_cast<int>(w1 >> 16);
+          const int l = rx > tilePx ? rx : tilePx;
+          const int tp = ry > tilePy ? ry : tilePy;
+          const int r = (rx + rw) < (tilePx + 64) ? (rx + rw) : (tilePx + 64);
+          const int b = (ry + rh) < (tilePy + 64) ? (ry + rh) : (tilePy + 64);
+          if (r <= l || b <= tp) {
+            continue;
+          }
+          const uint32_t lx0 = static_cast<uint32_t>(l - tilePx);
+          const uint32_t ly0 = static_cast<uint32_t>(tp - tilePy);
+          const uint32_t lx1 = static_cast<uint32_t>(r - tilePx);
+          const uint32_t ly1 = static_cast<uint32_t>(b - tilePy);
+          chunkRects.push_back(lx0 | (ly0 << 8) | (lx1 << 16) | (ly1 << 24));
+          rectCnt++;
+        }
         tileMeta[t * 4] = static_cast<uint32_t>(tilePx);
         tileMeta[t * 4 + 1] = static_cast<uint32_t>(tilePy);
-        tileMeta[t * 4 + 2] = job.rectOffset;
-        tileMeta[t * 4 + 3] = job.rectCount;
+        tileMeta[t * 4 + 2] = rectOff;
+        tileMeta[t * 4 + 3] = rectCnt;
         MarkSurfaceDirty(*surface, tilePx, tilePy, tilePx + 64, tilePy + 64);
         for (int c = 0; c < 3; ++c) {
           uint8_t* rec = &meta[(static_cast<size_t>(t) * 3 + c) * kMetaStride];
@@ -2016,9 +2079,16 @@ struct GfxVkDesktop::Impl {
       VkDeviceSize metaOffset = 0;
       VkBuffer tileMetaBuffer = VK_NULL_HANDLE;
       VkDeviceSize tileMetaOffset = 0;
+      VkBuffer chunkRectBuffer = VK_NULL_HANDLE;
+      VkDeviceSize chunkRectOffset = 0;
       if (!StageAppend(meta.data(), meta.size(), &metaBuffer, &metaOffset) ||
           !StageAppend(tileMeta.data(), tileMeta.size() * sizeof(uint32_t), &tileMetaBuffer,
                        &tileMetaOffset)) {
+        return false;
+      }
+      if (!chunkRects.empty() &&
+          !StageAppend(chunkRects.data(), chunkRects.size() * sizeof(uint32_t), &chunkRectBuffer,
+                       &chunkRectOffset)) {
         return false;
       }
 
@@ -2050,6 +2120,29 @@ struct GfxVkDesktop::Impl {
       pendingComputeWrites = true;
       computeInFlight = true;
 
+      // Second half of the decode: the inverse DWT, one workgroup per stream,
+      // with the coefficient plane staged in shared memory (rfx_idwt.comp).
+      VkDescriptorSet idwtSet = VK_NULL_HANDLE;
+      if (!AllocSet(idwtSetLayout, &idwtSet)) {
+        return false;
+      }
+      WriteBuffer(idwtSet, 0, coef.buffer, 0, VK_WHOLE_SIZE);
+      BarrierBeforeCompute();
+      vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, idwtPipe);
+      vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, idwtPipeLayout, 0, 1,
+                               &idwtSet, 0, nullptr);
+      struct IdwtPush {
+        uint32_t numStreams;
+        uint32_t compBase;
+      } ipush{streams, 0u};
+      vk.CmdPushConstants(commandBuffer, idwtPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ipush),
+                          &ipush);
+      if (g_perfSkipDispatch != 2) {
+        vk.CmdDispatch(commandBuffer, streams, 1, 1);
+      }
+      pendingComputeWrites = true;
+      computeInFlight = true;
+
       if (!composeRegion) {
         // update_tiles failed for the region: the tile state has been advanced by
         // the decode above, but no pixel of the region is composited.
@@ -2062,8 +2155,9 @@ struct GfxVkDesktop::Impl {
       WriteBuffer(composeSet, 0, tileMetaBuffer, tileMetaOffset, tileMeta.size() * sizeof(uint32_t));
       WriteBuffer(composeSet, 1, coef.buffer, 0, VK_WHOLE_SIZE);
       WriteBuffer(composeSet, 2, surface->gpu.buffer, 0, VK_WHOLE_SIZE);
-      WriteBuffer(composeSet, 3, rectBuffer != VK_NULL_HANDLE ? rectBuffer : metaBuffer, rectOffset,
-                  rectPool.empty() ? 4u : rectPool.size() * sizeof(uint32_t));
+      WriteBuffer(composeSet, 3, chunkRectBuffer != VK_NULL_HANDLE ? chunkRectBuffer : metaBuffer,
+                  chunkRectBuffer != VK_NULL_HANDLE ? chunkRectOffset : metaOffset,
+                  chunkRects.empty() ? 4u : chunkRects.size() * sizeof(uint32_t));
 
       BarrierBeforeCompute();
       vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, composePipe);
@@ -2083,7 +2177,7 @@ struct GfxVkDesktop::Impl {
       vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                           sizeof(cpush), &cpush);
       if (g_perfSkipDispatch != 1) {
-        vk.CmdDispatch(commandBuffer, (count + 63u) / 64u, 1, 1);
+        vk.CmdDispatch(commandBuffer, (count * kTilePixels + 63u) / 64u, 1, 1);
       }
       pendingComputeWrites = true;
       computeInFlight = true;
@@ -2148,6 +2242,15 @@ struct GfxVkDesktop::Impl {
       if (composePipe != VK_NULL_HANDLE && vk.DestroyPipeline != nullptr) {
         vk.DestroyPipeline(dev, composePipe, nullptr);
       }
+      if (idwtPipe != VK_NULL_HANDLE && vk.DestroyPipeline != nullptr) {
+        vk.DestroyPipeline(dev, idwtPipe, nullptr);
+      }
+      if (idwtPipeLayout != VK_NULL_HANDLE && vk.DestroyPipelineLayout != nullptr) {
+        vk.DestroyPipelineLayout(dev, idwtPipeLayout, nullptr);
+      }
+      if (idwtSetLayout != VK_NULL_HANDLE && vk.DestroyDescriptorSetLayout != nullptr) {
+        vk.DestroyDescriptorSetLayout(dev, idwtSetLayout, nullptr);
+      }
       if (decodePipe != VK_NULL_HANDLE && vk.DestroyPipeline != nullptr) {
         vk.DestroyPipeline(dev, decodePipe, nullptr);
       }
@@ -2166,6 +2269,9 @@ struct GfxVkDesktop::Impl {
     }
     rfxPool = VK_NULL_HANDLE;
     composePipe = VK_NULL_HANDLE;
+    idwtPipe = VK_NULL_HANDLE;
+    idwtPipeLayout = VK_NULL_HANDLE;
+    idwtSetLayout = VK_NULL_HANDLE;
     decodePipe = VK_NULL_HANDLE;
     composePipeLayout = VK_NULL_HANDLE;
     decodePipeLayout = VK_NULL_HANDLE;
@@ -2205,6 +2311,13 @@ bool GfxVkDesktop::Init(VkFormat format) {
     impl_->atomSize = physProps.limits.nonCoherentAtomSize != 0
                           ? physProps.limits.nonCoherentAtomSize
                           : 64;
+    HMRDP_LOGI("vk desktop: limits sharedMem=%{public}u maxInvocations=%{public}u "
+               "maxWgCount=%{public}u,%{public}u,%{public}u",
+               static_cast<unsigned>(physProps.limits.maxComputeSharedMemorySize),
+               static_cast<unsigned>(physProps.limits.maxComputeWorkGroupInvocations),
+               static_cast<unsigned>(physProps.limits.maxComputeWorkGroupCount[0]),
+               static_cast<unsigned>(physProps.limits.maxComputeWorkGroupCount[1]),
+               static_cast<unsigned>(physProps.limits.maxComputeWorkGroupCount[2]));
   }
 
   VkCommandPoolCreateInfo poolInfo{};
