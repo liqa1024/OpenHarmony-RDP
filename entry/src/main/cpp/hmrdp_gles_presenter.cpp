@@ -305,9 +305,9 @@ void GlesPresenter::DrawQuad(GLuint texture) {
 }
 
 bool GlesPresenter::PresentBgra(const uint8_t* data, int srcStride, int desktopWidth,
-                               int desktopHeight, int x, int y, int width, int height) {
-  if (data == nullptr || width <= 0 || height <= 0 || desktopWidth <= 0 ||
-      desktopHeight <= 0) {
+                               int desktopHeight, const PresentRect* rects, int rectCount) {
+  if (data == nullptr || desktopWidth <= 0 || desktopHeight <= 0 || rects == nullptr ||
+      rectCount <= 0) {
     return false;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -325,35 +325,51 @@ bool GlesPresenter::PresentBgra(const uint8_t* data, int srcStride, int desktopW
   // Row pitch of the source frame; usually desktopWidth*4, but honour the
   // server's stride in case it pads rows.
   const int pitch = srcStride > 0 ? srcStride : desktopWidth * 4;
-  int clampedX = x < 0 ? 0 : x;
-  int clampedY = y < 0 ? 0 : y;
-  const int maxW = desktopWidth - clampedX;
-  const int maxH = desktopHeight - clampedY;
-  int uploadW = width > maxW ? maxW : width;
-  int uploadH = height > maxH ? maxH : height;
-  if (forceFullUpload_) {
-    clampedX = 0;
-    clampedY = 0;
-    uploadW = desktopWidth;
-    uploadH = desktopHeight;
-  } else if (uploadW <= 0 || uploadH <= 0) {
-    return false;
-  }
-  forceFullUpload_ = false;
 
   glBindTexture(GL_TEXTURE_2D, texture_);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
   // The source is a sub-rectangle of a buffer whose rows are pitched at the full
   // desktop stride; GL_UNPACK_ROW_LENGTH makes glTexSubImage2D honour that pitch
-  // instead of assuming uploadW (without it rows skew and the picture tears).
+  // instead of assuming the upload width (without it rows skew and the picture
+  // tears).
   glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / 4);
   glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
   glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-  const uint8_t* src = data + static_cast<size_t>(clampedY) * pitch +
-                       static_cast<size_t>(clampedX) * 4;
-  glTexSubImage2D(GL_TEXTURE_2D, 0, clampedX, clampedY, uploadW, uploadH, GL_RGBA,
-                  GL_UNSIGNED_BYTE, src);
+
+  int uploaded = 0;
+  if (forceFullUpload_) {
+    // The texture was just (re)created and starts empty, so the whole desktop has
+    // to be covered: anything less would leave the rest undefined.
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, desktopWidth, desktopHeight, GL_RGBA,
+                    GL_UNSIGNED_BYTE, data);
+    uploaded = 1;
+  } else {
+    for (int i = 0; i < rectCount; ++i) {
+      // The caller clips to the desktop, but never trust the bounds of a region
+      // that came from the wire.
+      int x = rects[i].x < 0 ? 0 : rects[i].x;
+      int y = rects[i].y < 0 ? 0 : rects[i].y;
+      int w = rects[i].width + (rects[i].x < 0 ? rects[i].x : 0);
+      int h = rects[i].height + (rects[i].y < 0 ? rects[i].y : 0);
+      if (x + w > desktopWidth) {
+        w = desktopWidth - x;
+      }
+      if (y + h > desktopHeight) {
+        h = desktopHeight - y;
+      }
+      if (w <= 0 || h <= 0) {
+        continue;
+      }
+      const uint8_t* src = data + static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4;
+      glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, src);
+      ++uploaded;
+    }
+  }
   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  if (uploaded == 0) {
+    return false;
+  }
+  forceFullUpload_ = false;
 
   glDisable(GL_BLEND);
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);

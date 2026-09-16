@@ -350,7 +350,8 @@ void InstallPumpCallbacks(RdpgfxClientContext* gfx) {
 }  // namespace
 
 bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
-                   const std::atomic<bool>* stop, std::string* error) {
+                   const std::atomic<bool>* stop, std::string* error,
+                   const ReplayPaceFn& pace) {
   auto fail = [error](const char* why) {
     if (error != nullptr) {
       *error = why;
@@ -369,9 +370,17 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
     fail("cannot open capture");
     return false;
   }
+  const bool paced = pace && capture.hasTimestamps();
   const uint8_t* data = nullptr;
   uint32_t size = 0;
   while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
+    // Realtime mode: wait for this record's original arrival time *before* the
+    // record is fed, so the whole read/decode/present chain runs on the cadence
+    // the live session saw. Kept outside the parse timing below (it is playback
+    // throttling, not client work).
+    if (paced) {
+      pace(capture.timestampUs());
+    }
     // Dev (perf): the ZGFX + RDPGFX PDU parse is a per-record cost that is common
     // to every route (it happens before the engine or gdi sees the command), so it
     // is timed here rather than inside either backend.
@@ -384,7 +393,7 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
 
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
-                     std::string* error) {
+                     std::string* error, const ReplayPaceFn& pace) {
   auto fail = [error](const char* why) {
     if (error != nullptr) {
       *error = why;
@@ -405,7 +414,7 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
   gfx->custom = &state;
   InstallPumpCallbacks(gfx);
 
-  const bool ok = GfxReplayPump(path, gfx, stop, error);
+  const bool ok = GfxReplayPump(path, gfx, stop, error, pace);
   HmrdpGfxReplayFree(gfx);
   return ok;
 }
@@ -679,7 +688,8 @@ bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
                             const std::function<void()>& onFrame,
                             const std::function<void()>& onSync,
                             const std::function<void()>& onCommand, RdpgfxClientContext* gfxB,
-                            const std::atomic<bool>* stop, std::string* error) {
+                            const std::atomic<bool>* stop, std::string* error,
+                            const ReplayPaceFn& pace) {
   auto fail = [error](const char* why) {
     if (error != nullptr) {
       *error = why;
@@ -701,9 +711,13 @@ bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
     fail("cannot open capture");
     return false;
   }
+  const bool paced = pace && capture.hasTimestamps();
   const uint8_t* data = nullptr;
   uint32_t size = 0;
   while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
+    if (paced) {
+      pace(capture.timestampUs());
+    }
     // gdi (and, through the chain, the engine/mirror) consume this chunk's PDUs.
     HmrdpGfxReplayRecv(gfxB, data, size);
   }

@@ -58,6 +58,11 @@ struct GfxReplayPage {
   @State status: string = '等待 surface...';
   // Decoder/presenter route; see ROUTE_LABEL (ids match the native enum).
   @State replayRoute: number = ROUTE_CPU;
+  // Playback clock: false = fixed per-frame budget (throughput measurement),
+  // true = the capture's own arrival times (the cadence the live session ran at).
+  // Needs a capture recorded with arrival times; the stats line reports the mode
+  // actually used (`mode=fast|realtime`).
+  @State replayRealtime: boolean = false;
   // On-device performance panel: the stats string is multi-line, shown in a
   // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
@@ -128,7 +133,7 @@ struct GfxReplayPage {
       }
     }
     const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
-      this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRoute);
+      this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRoute, this.replayRealtime);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;
@@ -210,6 +215,18 @@ struct GfxReplayPage {
           .margin({ right: 8 })
           .onClick(() => {
             this.replayRoute = (this.replayRoute + 1) % ROUTE_LABEL.length;
+            this.startReplay();
+          })
+
+        Button(`节拍:${this.replayRealtime ? '实时' : '固定'}`)
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.replayRealtime = !this.replayRealtime;
             this.startReplay();
           })
 

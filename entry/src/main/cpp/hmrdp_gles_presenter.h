@@ -38,7 +38,7 @@ class GlesPresenter : public FramePresenter {
   void DestroySurface() override;
   bool Prepare() override;
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
-                   int x, int y, int width, int height) override;
+                   const PresentRect* rects, int rectCount) override;
   void Reset() override;
 
  private:

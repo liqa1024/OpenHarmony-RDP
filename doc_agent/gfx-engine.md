@@ -198,6 +198,14 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - 两条后端的**共同约束**（与设备/分辨率无关）：只上传脏矩形；源行距可能被填充，所以要用调用方给的
   stride（GLES 侧配 `GL_UNPACK_ROW_LENGTH`）；通道顺序按目标面读出来的格式决定（屏幕面通常是 RGBA 序，
   FreeRDP 给的是 BGRA）；纹理/镜像重建后**首帧强制整幅**，否则其余部分会留空。
+- **"脏矩形"必须是逐条矩形，不是合并包围盒**：gdi 同时维护 `hwnd->invalid`（合并 box）和
+  `hwnd->cinvalid[ninvalid]`（逐条矩形，见 `libfreerdp/gdi/region.c` 的 `gdi_InvalidateRegion`）；
+  `PresentGdiFrame` 在**矩形总面积比 box 小 25% 以上**时按矩形列表上传（上限 32 条，超过则退回 box），
+  否则一条大矩形反而拷贝更少。散块更新（光标/局部刷新/多块 diff）下 box 可能比真实改动大好几倍，按
+  box 上传会多拷多传并污染缓存；视频类整块脏区通常二者接近，会自动落回 box。两条后端都按"一次上传
+  多次拷贝区域 + 仍然只画一次 letterbox quad"实现（Vulkan 用紧凑拼接的 staging + 每个矩形一个
+  `VkBufferImageCopy`，GLES 每个矩形一次 `glTexSubImage2D`），**不要**为每个矩形各走一次 present
+  （那会把整屏 letterbox 画 N 遍）。
 - **两条后端的分工必须完全一致**（否则就是一条快一条慢）：**CPU 只把脏区交出去一次，不做任何像素变换**
   ——通道交换、缩放、letterbox 一律在 GPU 侧；`glTexSubImage2D`/staging 上传只做行拷贝。Vulkan 侧因此用
   **一个小 quad（采样 + fragment shader 换通道序 + dynamic viewport 做 letterbox）**而不是
@@ -300,12 +308,24 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   `Stats()` 计数（`rfxParse errors`、`skippedRegions`、`rejectedTiles`…）与"引擎这条命令到底做没做"，
   后者才是解码/合成语义。**不要用"跳过某条 dispatch + 差值反推"做归因**（见 §3）。
 - **量测纪律（否则数字不可比）**：
-  - **回放节拍**：每个呈现帧给一个 `kFrameMs` 周期，**预算覆盖整帧**（解码 + 命令应用 + 上屏），不是只
-    包住 present；**跨帧不做任何补偿或追赶**——超时的帧保留它更长的周期，提前完成的帧补睡余量。这样
-    汇总数字才是回放的**如实**描述（"由后续帧还清"会让平均值命中目标，而个别帧被测时的节拍并不一样，
-    参考性就没了，实际流畅度也不会变好）。实际周期 = 预算 + 平台唤醒误差，所以 `fps` 会略低于名义值。
-  - 因此 **`fps` = "跟不跟得上流"**（只统计开始出帧之后的窗口，启动/首帧等待不算）；
-    **比较上屏成本用 `present=`**，比较"解码 + 上屏"合计用 `feed=`（同样已剔除启动）。
+  - **两种回放节拍**（`mode=` 字段，dev 页「节拍」按钮切换）：
+    - **`mode=fast`（默认）**：每个呈现帧给一个 `kFrameMs` 周期，**预算覆盖整帧**（解码 + 命令应用 +
+      上屏），不是只包住 present；**跨帧不做任何补偿或追赶**——超时的帧保留它更长的周期，提前完成的帧
+      补睡余量。这样汇总数字才是回放的**如实**描述（"由后续帧还清"会让平均值命中目标，而个别帧被测时的
+      节拍并不一样，参考性就没了，实际流畅度也不会变好）。实际周期 = 预算 + 平台唤醒误差，所以 `fps`
+      会略低于名义值。**`fps` 因此是吞吐量口径**（"这些字节喂进来，客户端吃不吃得下"），不是 live 的
+      出帧率。
+    - **`mode=realtime`（新）**：按**录制时记录的到达时刻**喂数据（`GfxReplayPump` 的每 record 节拍），
+      即复现 live 当时的**帧间隔**。帧间隔本身就是负载的一部分（决定 CPU 频率/大小核落点、几十 MB 表面 +
+      bitmap cache 的缓存局部性、以及 WinPR 线程池 worker 的唤醒代价），所以"客户端能不能扛住真实负载"
+      必须看这个模式。此时 `fps` ≈ 当时的出帧率，可直接与 live 工具栏读数对照；**`lag=`** = 落后录制
+      日程的最大值（= 扛不住的量），**不做追赶**（追赶会把后续间隔压缩，报出一个实际没发生过的节拍）。
+    - **realtime 仍不是闭环**：live 的节奏由服务端与**每帧 `RDPGFX_FRAME_ACKNOWLEDGE`** 共同决定（ack 在
+      `EndFrame` 返回后才发，而我们的上屏就在 `EndFrame` 里），回放既不发 ack 也没有服务端调度。因此
+      realtime 复现的是"服务器已经产出的那份流的到达节奏"，不是"服务器面对一个更快的客户端会怎么发"。
+      版本 0（无时间戳）的旧录像没有到达时刻，`realtime` 会自动回落 `mode=fast` 并在日志里说明。
+  - **比较上屏成本用 `present=`**，比较"解码 + 上屏"合计用 `feed=`（同样已剔除启动；两种模式都剔除节拍
+    睡眠）。
   - 回放页的「路线 / 重新回放」按钮内部都是 `stopReplayTest()` + 重新 `start`，**在一轮还没跑完时点击
     等于把那一轮掐断**；性能数字只取 `(running=0)` 的**整轮**，且要记下 `frames=` 以确认是整份跑完
     （不同录制的帧数不同，不能假定某个固定值）。
@@ -315,11 +335,18 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
     用正则抓 `route=…(running=N)` 这类文本即可。
   - 性能探针（`ProbeHostMemory` / `ProbeSubmitCost`）是**进程内一次**（`RunDeviceProbes` 的 `call_once`）：
     每次切路线都会重建引擎，逐次重探只会拖慢启动并给数字加噪声。
-- **采集内容与格式**：单文件 `hmrdp_gfx.bin`，存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节
-  （每条 = `u32 长度` + 原始字节）；采集点在 `rdpgfx_on_data_received` 的 `zgfx_decompress` 之前，
-  由 FreeRDP 补丁以运行期回调注册（见 [`native-libraries.md`](native-libraries.md) §3.7）。
+- **采集内容与格式**：单文件 `hmrdp_gfx.bin`，存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节；
+  采集点在 `rdpgfx_on_data_received` 的 `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册
+  （见 [`native-libraries.md`](native-libraries.md) §3.7）。两种布局：
+  - **v1（当前）**：文件头 = 8 字节 magic `HMRDPGX1`，之后每条 = `u32 长度` + `u64 到达时刻(µs)` +
+    原始字节。到达时刻由 app 侧在回调里取（宿主单调时钟），**不需要改 FreeRDP 补丁**。
+  - **v0（旧录像）**：无 magic，每条 = `u32 长度` + 原始字节（无时间信息）⇒ 只能 `mode=fast`。
+  `GfxCaptureHasTimestamps()` 只读文件头判断布局，所以 dev 页可以在打开整份文件前决定 realtime 是否可用。
   录制文件**不入库**：设备端在应用沙箱，本地副本放 gitignore 目录；dev 的抓取开关与「硬件解码」有联动
   （录制期间走软解），见设置页实现。
+  **已知扰动**：抓取钩子在 RDP 线程上每条 chunk 取一次锁 + 两次 `fwrite`，而 live 的码流形态是闭环的
+  （客户端快慢会影响服务端怎么发），所以录制本身会把被测对象拖慢一点；要求更高的保真度时要把落盘挪出
+  RDP 线程。
 - **把某份捕获喂给回放**：`dev 页「回放测试」`读的是**应用 filesDir 里的 `hmrdp_gfx.bin`**
   （设备侧固定路径 `/data/app/el2/100/base/com.lixa.hmrdp/haps/entry/files/`，用
   `hdc file send` **覆盖已存在的那个文件**——`hdc` 不能在该目录里新建文件）。

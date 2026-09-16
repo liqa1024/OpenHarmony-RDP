@@ -79,6 +79,73 @@ VkCompositeAlphaFlagBitsKHR PickCompositeAlpha(VkCompositeAlphaFlagsKHR supporte
   return VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
 }
 
+// Rects one PresentBgra call may upload individually. The gdi caller caps its
+// list well below this; anything longer is collapsed into its bounding box so a
+// rogue caller cannot overflow the copy-region array.
+constexpr int kMaxUploadRects = 64;
+
+// Clips the caller's rects to the desktop and drops the empty ones, writing at
+// most `capacity` entries to `out`. Returns the number written (0 when nothing
+// remains visible). When the input is longer than `capacity` the union bounding
+// box is returned instead, so pixels are never dropped - only uploaded in one
+// bigger piece.
+int ClipUploadRects(const PresentRect* rects, int count, int desktopWidth, int desktopHeight,
+                    PresentRect* out, int capacity) {
+  auto clip = [desktopWidth, desktopHeight](PresentRect r) {
+    if (r.x < 0) {
+      r.width += r.x;
+      r.x = 0;
+    }
+    if (r.y < 0) {
+      r.height += r.y;
+      r.y = 0;
+    }
+    if (r.x + r.width > desktopWidth) {
+      r.width = desktopWidth - r.x;
+    }
+    if (r.y + r.height > desktopHeight) {
+      r.height = desktopHeight - r.y;
+    }
+    if (r.width <= 0 || r.height <= 0) {
+      r.width = 0;
+      r.height = 0;
+    }
+    return r;
+  };
+
+  if (count > capacity) {
+    int x0 = desktopWidth;
+    int y0 = desktopHeight;
+    int x1 = 0;
+    int y1 = 0;
+    for (int i = 0; i < count; ++i) {
+      const PresentRect r = clip(rects[i]);
+      if (r.width == 0 || r.height == 0) {
+        continue;
+      }
+      if (r.x < x0) x0 = r.x;
+      if (r.y < y0) y0 = r.y;
+      if (r.x + r.width > x1) x1 = r.x + r.width;
+      if (r.y + r.height > y1) y1 = r.y + r.height;
+    }
+    if (x1 <= x0 || y1 <= y0) {
+      return 0;
+    }
+    out[0] = PresentRect{x0, y0, x1 - x0, y1 - y0};
+    return 1;
+  }
+
+  int n = 0;
+  for (int i = 0; i < count; ++i) {
+    const PresentRect r = clip(rects[i]);
+    if (r.width == 0 || r.height == 0) {
+      continue;
+    }
+    out[n++] = r;
+  }
+  return n;
+}
+
 }  // namespace
 
 VkRenderer::VkRenderer() = default;
@@ -1022,8 +1089,9 @@ void VkRenderer::DestroyStageLocked() {
 }
 
 bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidth,
-                                  int desktopHeight, int x, int y, int width, int height) {
-  if (data == nullptr || srcStride <= 0 || desktopWidth <= 0 || desktopHeight <= 0) {
+                                  int desktopHeight, const PresentRect* rects, int rectCount) {
+  if (data == nullptr || srcStride <= 0 || desktopWidth <= 0 || desktopHeight <= 0 ||
+      rects == nullptr || rectCount <= 0) {
     return false;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -1037,31 +1105,21 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     if (!EnsureDesktopImageLocked(desktopWidth, desktopHeight)) {
       return false;
     }
-    // The image was just (re)created, so it must be painted completely.
-    int rx = desktopImageFullUpload_ ? 0 : x;
-    int ry = desktopImageFullUpload_ ? 0 : y;
-    int rw = desktopImageFullUpload_ ? desktopWidth : width;
-    int rh = desktopImageFullUpload_ ? desktopHeight : height;
-    if (rw <= 0 || rh <= 0) {
-      return false;
+    // Clip the dirty regions to the desktop (the caller's rects come from FreeRDP
+    // and can exceed it, e.g. after a resize) and drop the empty ones, so the
+    // staging size and the copy regions follow from `upload` alone. The image was
+    // just (re)created in the full-upload case, so the whole desktop is uploaded
+    // instead - anything less would leave the rest of the picture undefined.
+    PresentRect upload[kMaxUploadRects];
+    int uploadCount = 0;
+    if (desktopImageFullUpload_) {
+      upload[0] = PresentRect{0, 0, desktopWidth, desktopHeight};
+      uploadCount = 1;
+    } else {
+      uploadCount = ClipUploadRects(rects, rectCount, desktopWidth, desktopHeight, upload,
+                                   kMaxUploadRects);
     }
-    // Clip the dirty region to the desktop (the caller's rect comes from FreeRDP
-    // and can exceed it, e.g. after a resize).
-    if (rx < 0) {
-      rw += rx;
-      rx = 0;
-    }
-    if (ry < 0) {
-      rh += ry;
-      ry = 0;
-    }
-    if (rx + rw > desktopWidth) {
-      rw = desktopWidth - rx;
-    }
-    if (ry + rh > desktopHeight) {
-      rh = desktopHeight - ry;
-    }
-    if (rw <= 0 || rh <= 0) {
+    if (uploadCount <= 0) {
       return false;
     }
 
@@ -1083,8 +1141,13 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     const VkDevice device = context.device();
     // This slot's fence was just waited by AcquireFrameLocked and the slot has
     // not been re-submitted since, so its staging buffer is free to refill.
-    const size_t rowBytes = static_cast<size_t>(rw) * 4u;
-    const size_t stageBytes = rowBytes * static_cast<size_t>(rh);
+    // The uploads are packed back to back in the staging buffer, each keeping its
+    // own row pitch, so one buffer serves any number of rects.
+    size_t stageBytes = 0;
+    for (int i = 0; i < uploadCount; ++i) {
+      stageBytes += static_cast<size_t>(upload[i].width) * 4u *
+                    static_cast<size_t>(upload[i].height);
+    }
     if (!EnsureStageLocked(stageBytes)) {
       return false;
     }
@@ -1093,17 +1156,25 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // presenter (which uploads the same bytes and swizzles in its fragment
     // shader). A per-byte swap here cost more than the whole rest of the present.
     uint8_t* stage = static_cast<uint8_t*>(stageMapped_[frameIndex_]);
-    if (static_cast<size_t>(srcStride) == rowBytes) {
-      std::memcpy(stage, data + static_cast<size_t>(ry) * static_cast<size_t>(srcStride) +
-                             static_cast<size_t>(rx) * 4u,
-                  stageBytes);
-    } else {
-      for (int row = 0; row < rh; ++row) {
-        const uint8_t* srcRow =
-            data + static_cast<size_t>(ry + row) * static_cast<size_t>(srcStride) +
-            static_cast<size_t>(rx) * 4u;
-        std::memcpy(stage + static_cast<size_t>(row) * rowBytes, srcRow, rowBytes);
+    size_t stageOffset = 0;
+    for (int i = 0; i < uploadCount; ++i) {
+      const PresentRect& r = upload[i];
+      const size_t rowBytes = static_cast<size_t>(r.width) * 4u;
+      if (static_cast<size_t>(srcStride) == rowBytes) {
+        // Rows are contiguous: one copy instead of one per row.
+        std::memcpy(stage + stageOffset,
+                    data + static_cast<size_t>(r.y) * static_cast<size_t>(srcStride) +
+                        static_cast<size_t>(r.x) * 4u,
+                    rowBytes * static_cast<size_t>(r.height));
+      } else {
+        for (int row = 0; row < r.height; ++row) {
+          const uint8_t* srcRow =
+              data + static_cast<size_t>(r.y + row) * static_cast<size_t>(srcStride) +
+              static_cast<size_t>(r.x) * 4u;
+          std::memcpy(stage + stageOffset + static_cast<size_t>(row) * rowBytes, srcRow, rowBytes);
+        }
       }
+      stageOffset += rowBytes * static_cast<size_t>(r.height);
     }
     // Flush exactly what was written (the buffer grows to the largest dirty rect
     // ever seen, so VK_WHOLE_SIZE would flush far more than this frame touched).
@@ -1133,20 +1204,30 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
                            &hostToTransfer, 0, nullptr, 0, nullptr);
 
-    VkBufferImageCopy region{};
-    region.bufferOffset = 0;
-    // The staging buffer holds only the dirty rows, tightly packed.
-    region.bufferRowLength = static_cast<uint32_t>(rw);
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset.x = rx;
-    region.imageOffset.y = ry;
-    region.imageExtent.width = static_cast<uint32_t>(rw);
-    region.imageExtent.height = static_cast<uint32_t>(rh);
-    region.imageExtent.depth = 1;
+    VkBufferImageCopy regions[kMaxUploadRects];
+    size_t regionOffset = 0;
+    for (int i = 0; i < uploadCount; ++i) {
+      const PresentRect& r = upload[i];
+      VkBufferImageCopy& region = regions[i];
+      region = VkBufferImageCopy{};
+      // The staging buffer holds only the uploaded rows, tightly packed; each
+      // region keeps its own row pitch.
+      region.bufferOffset = regionOffset;
+      region.bufferRowLength = static_cast<uint32_t>(r.width);
+      region.bufferImageHeight = 0;
+      region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      region.imageSubresource.layerCount = 1;
+      region.imageOffset.x = r.x;
+      region.imageOffset.y = r.y;
+      region.imageExtent.width = static_cast<uint32_t>(r.width);
+      region.imageExtent.height = static_cast<uint32_t>(r.height);
+      region.imageExtent.depth = 1;
+      regionOffset +=
+          static_cast<size_t>(r.width) * 4u * static_cast<size_t>(r.height);
+    }
     api.CmdCopyBufferToImage(cmd, stageBuffers_[frameIndex_], desktopImage_,
-                             VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+                             VK_IMAGE_LAYOUT_GENERAL, static_cast<uint32_t>(uploadCount),
+                             regions);
 
     // The upload is read by the present draw below, in the same command buffer.
     // An image barrier (layout stays GENERAL) states the dependency for the image

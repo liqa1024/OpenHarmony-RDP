@@ -50,10 +50,11 @@ class VkRenderer : public FramePresenter {
   // queue, image-to-image. `imageFormat` must equal the swapchain format -
   // channel order cannot be converted by a blit.
   bool PresentImage(VkImage image, VkFormat imageFormat, int width, int height);
-  // Presents one CPU (gdi) frame region: the dirty rectangle is uploaded into a
-  // persistent desktop image and blitted letterboxed. See hmrdp_presenter.h.
+  // Presents one CPU (gdi) frame: the dirty regions are uploaded into a persistent
+  // desktop image (packed into the per-slot staging buffer, one copy region each)
+  // and the image is blitted letterboxed. See hmrdp_presenter.h.
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
-                   int x, int y, int width, int height) override;
+                   const PresentRect* rects, int rectCount) override;
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 

@@ -203,6 +203,49 @@ bool GfxCpuDesktop::Resize(int width, int height) {
   return ok;
 }
 
+namespace {
+
+// Upper bound on the rects handed to one present. gdi can accumulate more
+// (gdi_InvalidateRegion grows its list by doubling); past this the merged box is
+// used instead, so the presenter never sees an unbounded command list.
+constexpr int kMaxPresentRects = 32;
+// Upload the rect list only when it is at least this much smaller than the box;
+// otherwise the box wins on fewer copies (a video frame's rects fill their box).
+constexpr int64_t kRectListSavingNumerator = 3;    // rectArea * 4 <= boxArea * 3
+constexpr int64_t kRectListSavingDenominator = 4;  //  -> at least 25% saved
+
+// Clips one gdi rect to the desktop; returns false when nothing remains.
+bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, int h,
+                     PresentRect* out) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (x + w > desktopWidth) {
+    w = desktopWidth - x;
+  }
+  if (y + h > desktopHeight) {
+    h = desktopHeight - y;
+  }
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  out->x = x;
+  out->y = y;
+  out->width = w;
+  out->height = h;
+  return true;
+}
+
+}  // namespace
+
 bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter) {
   if (gdi == nullptr || presenter == nullptr || gdi->primary == nullptr ||
       gdi->primary_buffer == nullptr) {
@@ -212,17 +255,59 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter) {
   if (hwnd == nullptr || hwnd->invalid == nullptr || hwnd->invalid->null) {
     return false;
   }
-  const INT32 x = hwnd->invalid->x;
-  const INT32 y = hwnd->invalid->y;
-  const INT32 width = hwnd->invalid->w;
-  const INT32 height = hwnd->invalid->h;
-  hwnd->invalid->null = TRUE;
-  if (width <= 0 || height <= 0) {
+  const int desktopWidth = static_cast<int>(gdi->width);
+  const int desktopHeight = static_cast<int>(gdi->height);
+  if (desktopWidth <= 0 || desktopHeight <= 0) {
     return false;
   }
-  return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride),
-                               static_cast<int>(gdi->width), static_cast<int>(gdi->height), x, y,
-                               width, height);
+
+  // `hwnd->invalid` is the merged bounding box of the frame's dirty regions,
+  // while `hwnd->cinvalid`/`ninvalid` hold the individual rects (see
+  // libfreerdp/gdi/region.c gdi_InvalidateRegion). Uploading the box copies the
+  // pixels that changed *plus* everything between them - for a frame made of a
+  // few scattered updates that can be several times the bytes that actually
+  // changed - so prefer the rect list whenever it is meaningfully smaller.
+  PresentRect rects[kMaxPresentRects];
+  int rectCount = 0;
+  int64_t rectArea = 0;
+  bool tooManyRects = false;
+  if (hwnd->cinvalid != nullptr) {
+    for (INT32 i = 0; i < hwnd->ninvalid; ++i) {
+      if (rectCount >= kMaxPresentRects) {
+        tooManyRects = true;
+        break;
+      }
+      PresentRect clipped;
+      if (!ClipPresentRect(desktopWidth, desktopHeight, hwnd->cinvalid[i].x, hwnd->cinvalid[i].y,
+                           hwnd->cinvalid[i].w, hwnd->cinvalid[i].h, &clipped)) {
+        continue;
+      }
+      rectArea += static_cast<int64_t>(clipped.width) * clipped.height;
+      rects[rectCount++] = clipped;
+    }
+  }
+
+  PresentRect box;
+  const bool haveBox = ClipPresentRect(desktopWidth, desktopHeight, hwnd->invalid->x,
+                                       hwnd->invalid->y, hwnd->invalid->w, hwnd->invalid->h,
+                                       &box);
+  // The region is consumed either way: FreeRDP set it up for exactly this frame
+  // (the next begin_paint resets it).
+  hwnd->invalid->null = TRUE;
+
+  if (rectCount >= 2 && !tooManyRects && haveBox) {
+    const int64_t boxArea = static_cast<int64_t>(box.width) * box.height;
+    if (rectArea * kRectListSavingDenominator <= boxArea * kRectListSavingNumerator) {
+      return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride),
+                                   desktopWidth, desktopHeight, rects, rectCount);
+    }
+  }
+  if (!haveBox) {
+    return false;
+  }
+  rects[0] = box;
+  return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride), desktopWidth,
+                               desktopHeight, rects, 1);
 }
 
 }  // namespace hmrdp

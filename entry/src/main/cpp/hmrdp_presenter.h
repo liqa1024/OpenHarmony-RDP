@@ -30,6 +30,18 @@
 
 namespace hmrdp {
 
+// One changed region of the desktop, in desktop pixels. A present receives the
+// whole list of regions FreeRDP invalidated for this frame, not their merged
+// bounding box: the box of a handful of scattered updates can be several times
+// the pixels that actually changed (the gdi pipeline keeps the individual rects
+// in `hwnd->cinvalid`, see libfreerdp/gdi/region.c gdi_InvalidateRegion).
+struct PresentRect {
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+};
+
 class FramePresenter {
  public:
   virtual ~FramePresenter() = default;
@@ -44,11 +56,13 @@ class FramePresenter {
   virtual bool Prepare() = 0;
 
   // Called from the FreeRDP worker thread. `data` is the whole desktop frame
-  // (top-down BGRA, `srcStride` bytes/row) and `x,y,width,height` the region that
-  // changed; `desktopWidth/Height` are the desktop dimensions used for the
-  // letterbox. Returns true when a frame reached the surface.
+  // (top-down BGRA, `srcStride` bytes/row), `desktopWidth/Height` the desktop
+  // dimensions used for the letterbox, and `rects`/`rectCount` the regions that
+  // changed (at least one; the caller clips them to the desktop). Overlapping
+  // rects are allowed - the pixels copied are identical. Returns true when a
+  // frame reached the surface.
   virtual bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth,
-                           int desktopHeight, int x, int y, int width, int height) = 0;
+                           int desktopHeight, const PresentRect* rects, int rectCount) = 0;
 
   virtual void Reset() = 0;
 };

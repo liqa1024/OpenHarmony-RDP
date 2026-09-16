@@ -87,9 +87,12 @@ export const setRfxDump: (enabled: boolean, dir: string) => boolean;
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
  * `route` selects the decoder: 0 = CPU (FreeRDP gdi), 1 = Vulkan engine,
  * 2 = Vulkan engine vs gdi compare.
+ * `realtime` plays the capture at its recorded arrival times (the cadence the
+ * live session ran at) instead of a fixed per-frame budget; it is ignored for
+ * captures recorded before the arrival times were stored.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
-  gfxPath: string, route: number) => string;
+  gfxPath: string, route: number, realtime: number) => string;
 export const stopGfxReplayTest: () => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;

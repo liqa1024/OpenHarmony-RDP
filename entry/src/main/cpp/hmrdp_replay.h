@@ -43,8 +43,17 @@ class GfxReplay {
   // Takes ownership of `nativeWindow` (from the XComponent surface id) and
   // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it through `route`.
   // Waits briefly for the first frame or failure.
+  //
+  // `realtime` selects the playback clock:
+  //   false - every presented frame gets kFrameMs of budget (default). This is a
+  //           throughput measurement: "can the client chew through this stream".
+  //   true  - each record is fed at the arrival time recorded in the capture, so
+  //           the frame cadence, the per-frame gaps and therefore the machine
+  //           state (CPU placement/frequency, cache locality, threadpool
+  //           wake-ups) match the live session. Requires a version 1 capture;
+  //           for an untimed capture it falls back to false and says so.
   bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath,
-             GfxReplayRoute route);
+             GfxReplayRoute route, bool realtime);
   void Resize(int width, int height);
   void Stop();
   // Single-line summary (logs) and a multi-line variant for the on-device
@@ -80,7 +89,18 @@ class GfxReplay {
   // frame's whole cost (decode + apply + present) is inside the budget. Nothing is
   // carried between frames - an overrun keeps its longer period - which is what
   // keeps the reported figures a faithful description of the playback.
+  //
+  // In the realtime mode the cadence comes from the capture instead (PaceRecord),
+  // so this only maintains the fps/feed bookkeeping and does not sleep; the sleep
+  // it would have added is already counted in paceUs_ by PaceRecord.
   void PaceFrame(bool presented);
+
+  // Realtime mode: called from GfxReplayPump right before a record is fed, with
+  // the record's recorded arrival time (monotonic microseconds). Sleeps until the
+  // recorded offset from the first record has elapsed; when the client is already
+  // behind, it does not sleep (no catch-up, exactly like PaceFrame) and only
+  // records how far behind the schedule it is.
+  void PaceRecord(uint64_t timestampUs);
 
   std::mutex mutex_;
   // Presenter for the CPU (gdi) route (Vulkan, or GLES on devices whose Vulkan
@@ -128,9 +148,21 @@ class GfxReplay {
   std::atomic<uint64_t> otherCount_{0};
   std::atomic<uint64_t> presentUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
-  // Time spent deliberately sleeping in PaceFrame(); subtracted from pumpUs_ so
-  // the reported feed cost is compute, not playback throttling.
+  // Time spent deliberately sleeping in PaceFrame()/PaceRecord(); subtracted from
+  // pumpUs_ so the reported feed cost is compute, not playback throttling.
   std::atomic<uint64_t> paceUs_{0};
+  // Realtime playback: requested by the caller, and effective only when the
+  // capture carries arrival times (an untimed capture always falls back to the
+  // kFrameMs pacing, and says so in the log).
+  std::atomic<int> realtimeRequested_{0};
+  std::atomic<int> realtimeActive_{0};
+  // Worst lateness behind the recorded schedule (realtime mode): the honest
+  // "cannot keep up with the real load" figure, in microseconds.
+  std::atomic<uint64_t> realtimeLagUs_{0};
+  // Realtime schedule origin: first record's recorded time and the wall clock it
+  // was fed at (replay thread only).
+  uint64_t recordBaseUs_ = 0;
+  int64_t recordWallBaseUs_ = 0;
   // End of the last paced frame: the next frame's kFrameMs budget starts here
   // (replay thread only).
   int64_t lastFrameEndUs_ = 0;

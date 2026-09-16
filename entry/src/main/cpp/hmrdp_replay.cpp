@@ -104,7 +104,11 @@ namespace {
 
 constexpr int kFrameMs = 16;                      // ~60 Hz playback target
 constexpr int kLogEvery = 120;
-constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap
+constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap, fast mode
+// In realtime mode the run lasts as long as the recording did (plus whatever the
+// client fell behind), so the cap has to be much higher to avoid cutting a long
+// capture short.
+constexpr int64_t kMaxRealtimeRunUs = 900ll * 1000000ll;
 constexpr int kStartWaitUs = 3000000;
 // Compare route: sample a full-screen readback every N frames (same idea as the
 // live shadow check - reading the engine screen back is expensive).
@@ -169,13 +173,20 @@ GfxReplay::~GfxReplay() {
 }
 
 bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
-                      const std::string& gfxPath, GfxReplayRoute route) {
+                      const std::string& gfxPath, GfxReplayRoute route, bool realtime) {
   Stop();
   if (nativeWindow == nullptr || surfaceW <= 0 || surfaceH <= 0 || gfxPath.empty()) {
     if (nativeWindow != nullptr) {
       OH_NativeWindow_DestroyNativeWindow(static_cast<OHNativeWindow*>(nativeWindow));
     }
     return false;
+  }
+  // The realtime mode needs the arrival times recorded in the capture; an older
+  // (version 0) file has none, so fall back to the fixed pacing and say so - a
+  // silent fallback would make two runs with the same settings incomparable.
+  const bool effectiveRealtime = realtime && GfxCaptureHasTimestamps(gfxPath);
+  if (realtime && !effectiveRealtime) {
+    HMRDP_LOGW("gfx replay: capture has no arrival times, realtime mode unavailable");
   }
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -226,6 +237,11 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     pumpUs_.store(0);
     pumpStartUs_.store(0);
     paceUs_.store(0);
+    realtimeRequested_.store(realtime ? 1 : 0);
+    realtimeActive_.store(effectiveRealtime ? 1 : 0);
+    realtimeLagUs_.store(0);
+    recordBaseUs_ = 0;
+    recordWallBaseUs_ = 0;
     lastFrameEndUs_ = 0;
     firstPacedUs_.store(0);
     startUs_.store(NowUs());
@@ -255,9 +271,11 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     Stop();
     return false;
   }
-  HMRDP_LOGI("gfx replay: started route=%{public}s surface=%{public}dx%{public}d path=%{public}s",
-             RouteName(static_cast<GfxReplayRoute>(route_.load())), surfaceW, surfaceH,
-             gfxPath.c_str());
+  HMRDP_LOGI(
+      "gfx replay: started route=%{public}s mode=%{public}s surface=%{public}dx%{public}d "
+      "path=%{public}s",
+      RouteName(static_cast<GfxReplayRoute>(route_.load())),
+      effectiveRealtime ? "realtime" : "fast", surfaceW, surfaceH, gfxPath.c_str());
   return true;
 }
 
@@ -343,18 +361,29 @@ std::string GfxReplay::StatsLines() {
   }
 
   const char* routeName = RouteName(static_cast<GfxReplayRoute>(route_.load()));
+  // mode=realtime replays the capture's own arrival times; mode=fast gives every
+  // presented frame a kFrameMs budget (a throughput figure, not the live cadence).
+  // `lag` is only meaningful in realtime mode: the worst lateness behind the
+  // recorded schedule, i.e. how much of the live load the client could not absorb.
+  // "fast(untimed)" = realtime was requested but the capture carries no arrival
+  // times, so the fixed pacing ran instead (the difference is visible here on
+  // purpose: two runs that differ in mode are not comparable).
+  const char* modeName = realtimeActive_.load() != 0
+                             ? "realtime"
+                             : (realtimeRequested_.load() != 0 ? "fast(untimed)" : "fast");
   const unsigned long long frames = static_cast<unsigned long long>(frames_.load());
-  char head[320];
+  char head[400];
   std::snprintf(head, sizeof(head),
-                "route=%s  frames=%llu  presents=%llu  fps=%.1f  fail=%llu  skip=%llu\n"
-                "feed=%llums   parse=%llums   present=%.2fms   (running=%d)",
-                routeName, frames,
+                "route=%s  mode=%s  frames=%llu  presents=%llu  fps=%.1f  fail=%llu  skip=%llu\n"
+                "feed=%llums   parse=%llums   present=%.2fms   lag=%llums   (running=%d)",
+                routeName, modeName, frames,
                 static_cast<unsigned long long>(presents), fps,
                 static_cast<unsigned long long>(presentFailures_.load()),
                 static_cast<unsigned long long>(presentSkips_.load()),
                 static_cast<unsigned long long>(pumpUs / 1000),
                 static_cast<unsigned long long>(hmrdp::GfxReplayParseUs() / 1000),
                 avgMs(presentUs_.load(), presents),
+                static_cast<unsigned long long>(realtimeLagUs_.load() / 1000),
                 running_.load() ? 1 : 0);
   std::string out(head);
 
@@ -476,7 +505,9 @@ void GfxReplay::PaceFrame(bool presented) {
     return;
   }
   const int64_t now = static_cast<int64_t>(NowUs());
-  if (lastFrameEndUs_ != 0) {
+  // Realtime mode takes its cadence from the capture (PaceRecord), so no synthetic
+  // kFrameMs budget is added on top of it.
+  if (lastFrameEndUs_ != 0 && realtimeActive_.load() == 0) {
     const int64_t target = lastFrameEndUs_ + static_cast<int64_t>(kFrameMs) * 1000;
     if (target > now) {
       std::this_thread::sleep_until(
@@ -491,10 +522,47 @@ void GfxReplay::PaceFrame(bool presented) {
   }
 }
 
+void GfxReplay::PaceRecord(uint64_t timestampUs) {
+  const int64_t now = static_cast<int64_t>(NowUs());
+  if (recordBaseUs_ == 0) {
+    // First record defines the schedule origin: everything else is measured as an
+    // offset from it, so the run's start-up is not replayed as a stall.
+    recordBaseUs_ = timestampUs;
+    recordWallBaseUs_ = now;
+    return;
+  }
+  const int64_t target =
+      recordWallBaseUs_ + static_cast<int64_t>(timestampUs - recordBaseUs_);
+  if (target > now) {
+    // Sleep in slices so a long gap in the recording (an idle stretch, a paused
+    // session) cannot make Stop() - and therefore a route switch on the dev page -
+    // wait for the whole gap before the pump notices it must stop.
+    constexpr int64_t kSliceUs = 20000;
+    const int64_t start = static_cast<int64_t>(NowUs());
+    while (running_.load() && static_cast<int64_t>(NowUs()) < target) {
+      const int64_t remaining = target - static_cast<int64_t>(NowUs());
+      std::this_thread::sleep_for(
+          std::chrono::microseconds(remaining > kSliceUs ? kSliceUs : remaining));
+    }
+    paceUs_.fetch_add(static_cast<uint64_t>(static_cast<int64_t>(NowUs()) - start));
+    return;
+  }
+  // Already behind the recorded schedule: never catch up (that would compress the
+  // following gaps and report a cadence the client never actually ran at). Only
+  // remember the excursion, which is the honest "cannot keep up with the live
+  // load" number.
+  const uint64_t behind = static_cast<uint64_t>(now - target);
+  if (behind > realtimeLagUs_.load()) {
+    realtimeLagUs_.store(behind);
+  }
+}
+
 void GfxReplay::OnReplayFrame() {
   const int64_t nowUs = static_cast<int64_t>(NowUs());
-  if (nowUs - startUs_.load() > kMaxRunUs) {
-    HMRDP_LOGI("gfx replay: 120s cap reached");
+  const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
+  if (nowUs - startUs_.load() > capUs) {
+    HMRDP_LOGI("gfx replay: %{public}ds cap reached",
+               static_cast<int>(capUs / 1000000));
     running_.store(false);
     return;
   }
@@ -587,15 +655,23 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
 
+  // Realtime mode: the pump waits for each record's recorded arrival time before
+  // feeding it, so the playback runs on the cadence the live session saw.
+  ReplayPaceFn pace;
+  if (realtimeActive_.load() != 0) {
+    pace = [this](uint64_t tsUs) { PaceRecord(tsUs); };
+  }
+
   bool ok = false;
   if (compare) {
     // gdi and the engine consume the capture interleaved per PDU, and CompareFrames()
     // runs on gdi's EndFrame - with both sides at the same stream position, which is
     // what makes the pixel A/B meaningful. OnReplayFrame keeps presenting and pacing.
     ok = GfxReplayStreamCompare(gfxPath, &sink, [this]() { OnReplayFrame(); },
-                                [this]() { CompareFrames(); }, {}, cpu.gfx(), &running_, &error);
+                                [this]() { CompareFrames(); }, {}, cpu.gfx(), &running_, &error,
+                                pace);
   } else {
-    ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error);
+    ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error, pace);
   }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
@@ -642,7 +718,11 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
 
-  const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error);
+  ReplayPaceFn pace;
+  if (realtimeActive_.load() != 0) {
+    pace = [this](uint64_t tsUs) { PaceRecord(tsUs); };
+  }
+  const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace);
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -765,8 +845,10 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
     return;
   }
   const int64_t nowUs = static_cast<int64_t>(NowUs());
-  if (nowUs - startUs_.load() > kMaxRunUs) {
-    HMRDP_LOGI("gfx replay: 120s cap reached");
+  const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
+  if (nowUs - startUs_.load() > capUs) {
+    HMRDP_LOGI("gfx replay: %{public}ds cap reached",
+               static_cast<int>(capUs / 1000000));
     running_.store(false);
     return;
   }

@@ -71,22 +71,30 @@ void GfxMapSurfaceToOutput(GfxCommandSink* sink, const RDPGFX_MAP_SURFACE_TO_OUT
 void GfxMapSurfaceToScaledOutput(GfxCommandSink* sink,
                                  const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu);
 
+// Optional per-record pacing hook for the "realtime" replay mode: called with a
+// record's recorded arrival time (monotonic microseconds) right before that
+// record is fed, so the caller can sleep until the original cadence is reached.
+// The call is made outside the pump's own timing, and is skipped entirely when
+// the capture carries no arrival times (version 0 files).
+using ReplayPaceFn = std::function<void(uint64_t timestampUs)>;
+
 // Feeds every raw chunk of one hmrdp_gfx.bin capture into an already-built
 // RDPGFX context (FreeRDP does the ZGX + PDU parsing). This is the whole
 // read/decompress/parse loop, shared by both replay routes: the GPU route
 // supplies a context whose callbacks map into a GfxCommandSink, the CPU route
-// supplies a stock gdi-backed context. `stop` may be null. Returns false and
-// fills `error` (when non-null) on failure - in particular when FreeRDP was
-// built without the HmRdp GFX capture patch.
+// supplies a stock gdi-backed context. `stop` may be null, `pace` may be empty.
+// Returns false and fills `error` (when non-null) on failure - in particular
+// when FreeRDP was built without the HmRdp GFX capture patch.
 bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
-                   const std::atomic<bool>* stop, std::string* error);
+                   const std::atomic<bool>* stop, std::string* error,
+                   const ReplayPaceFn& pace);
 
 // GPU replay route: builds the replay context, installs the GfxMap* callbacks
 // feeding `sink`, pumps the capture and invokes `onFrame` after every EndFrame.
-// `stop` may be null. Returns false and fills `error` on failure.
+// `stop`/`pace` may be null/empty. Returns false and fills `error` on failure.
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
-                     std::string* error);
+                     std::string* error, const ReplayPaceFn& pace);
 
 // Compare route: gdi and the engine/mirror consume the capture *interleaved, per
 // PDU*. The harness wraps the callbacks gdi installed on its own context
@@ -100,7 +108,8 @@ bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
                             const std::function<void()>& onFrame,
                             const std::function<void()>& onSync,
                             const std::function<void()>& onCommand, RdpgfxClientContext* gfxB,
-                            const std::atomic<bool>* stop, std::string* error);
+                            const std::atomic<bool>* stop, std::string* error,
+                            const ReplayPaceFn& pace);
 
 // Dev (perf): accumulated time spent in the ZGFX + RDPGFX PDU parse during a replay
 // (measured in the pump, before any backend sees the command). It is a cost every

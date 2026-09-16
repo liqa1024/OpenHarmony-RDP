@@ -620,8 +620,8 @@ std::string GetStringArg(napi_env env, napi_value v) {
 
 // Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
 napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
-  size_t argc = 5;
-  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  size_t argc = 6;
+  napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string out;
   if (argc < 4) {
@@ -636,6 +636,12 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     int32_t route = 0;
     if (argc >= 5) {
       napi_get_value_int32(env, args[4], &route);
+    }
+    // Realtime playback (pace the capture's own arrival times instead of the
+    // fixed per-frame budget). Ignored for captures that carry no timing.
+    int32_t realtime = 0;
+    if (argc >= 6) {
+      napi_get_value_int32(env, args[5], &realtime);
     }
     // Route ids match GfxReplayRoute: 0 = CPU(gdi) only (perf reference),
     // 1 = Vulkan engine, 2 = Vulkan engine vs gdi compare.
@@ -656,7 +662,7 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     if (err != 0 || window == nullptr) {
       out = "failed: native window";
     } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
-                                                   replayRoute)) {
+                                                   replayRoute, realtime != 0)) {
       out = "started " + hmrdp::GfxReplay::Instance().Stats();
     } else {
       out = "failed: " + hmrdp::GfxReplay::Instance().Stats();

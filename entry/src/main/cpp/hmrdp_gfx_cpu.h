@@ -66,11 +66,13 @@ class GfxCpuDesktop {
   bool resizing_ = false;
 };
 
-// Reads gdi's invalid rectangle out of the primary buffer and hands it to the
-// frame presenter (Vulkan by default, GLES fallback). Shared by the live gdi
-// session and the offline CPU replay route so the two present exactly the same
-// way. Returns true when a frame was actually drawn (a null/empty invalid region
-// is a no-op).
+// Reads gdi's invalid region out of the primary buffer and hands it to the frame
+// presenter (Vulkan by default, GLES fallback). The individual dirty rects are
+// uploaded when they are meaningfully smaller than their merged bounding box,
+// otherwise the box is - see the implementation. Shared by the live gdi session
+// and the offline CPU replay route so the two present exactly the same way.
+// Returns true when a frame was actually drawn (a null/empty invalid region is a
+// no-op).
 bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter);
 
 }  // namespace hmrdp

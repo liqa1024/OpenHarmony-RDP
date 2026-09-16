@@ -85,10 +85,16 @@ export class RdpNative {
   /**
    * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
    * `route`: 0 = CPU (FreeRDP gdi), 1 = Vulkan engine, 2 = Vulkan vs gdi compare.
+   * `realtime`: play the capture at its recorded arrival times (the live session's
+   * own cadence) instead of the fixed per-frame budget - the mode to use when the
+   * question is "can the client carry the *real* load". Captures recorded before
+   * arrival times were stored fall back to the fixed pacing, and say so in the
+   * stats line (`mode=fast`).
    */
   static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
-    gfxPath: string, route: number): string {
-    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath, route);
+    gfxPath: string, route: number, realtime: boolean): string {
+    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath, route,
+      realtime ? 1 : 0);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx replay: %{public}s', summary);
     return summary;
   }
