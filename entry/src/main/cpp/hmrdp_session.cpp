@@ -73,6 +73,57 @@ extern "C" void HmrdpGfxRawCapture(const BYTE* data, UINT32 size) {
 extern "C" void HmrdpSetGfxRawCapture(void (*fn)(const BYTE* data, UINT32 size))
     __attribute__((weak));
 
+// Defined by the patched winpr (native/scripts/patch-freerdp.ps1): the pool
+// workers and the drdynvc thread call the registered callback once per thread.
+// Weak so a stock FreeRDP still links - the QoS marking is then simply absent.
+extern "C" void HmrdpSetThreadQoSApplier(void (*fn)(void)) __attribute__((weak));
+
+namespace hmrdp {
+
+// HarmonyOS QoS (Kernel_Enhance_Kit, "QoS 开发指导"): a thread can tell the
+// scheduler how important its work is, and a marked producer/consumer pair has
+// both its wake-up and its preemption latency reduced - the same work then
+// finishes in a shorter active window, which is what a mobile device wants.
+// The level is set from *inside* the thread (the API only affects the caller),
+// which is why FreeRDP calls HmrdpThreadQoSHook() on its pool workers and on the
+// drdynvc thread that runs the frame pipeline.
+//
+// libqos.so is dlopen()ed like libohaudio/libvulkan: a device without it (or
+// without the patched FreeRDP) simply runs unmarked.
+using SetThreadQoSFn = int (*)(int level);
+// QoS_Level (qos/qos.h): 0 BACKGROUND, 1 UTILITY, 2 DEFAULT, 3 USER_INITIATED,
+// 4 DEADLINE_REQUEST, 5 USER_INTERACTIVE. The frame pipeline is "user initiated
+// and visibly progressing", i.e. 3 - deliberately below the UI/animation level
+// so the session window's own drawing is never starved by decoding.
+constexpr int kFramePipelineQoS = 3;
+
+SetThreadQoSFn ResolveQoS() {
+  static SetThreadQoSFn fn = []() -> SetThreadQoSFn {
+    void* lib = dlopen("libqos.so", RTLD_NOW | RTLD_LOCAL);
+    if (lib == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<SetThreadQoSFn>(dlsym(lib, "OH_QoS_SetThreadQoS"));
+  }();
+  return fn;
+}
+
+}  // namespace hmrdp
+
+// Called once per thread on the frame pipeline (see the FreeRDP patch): the
+// libwinpr pool workers and the drdynvc thread, plus our own receive thread.
+extern "C" void HmrdpThreadQoSHook(void) {
+  static thread_local bool applied = false;
+  if (applied) {
+    return;
+  }
+  applied = true;
+  hmrdp::SetThreadQoSFn setQos = hmrdp::ResolveQoS();
+  if (setQos != nullptr) {
+    (void)setQos(hmrdp::kFramePipelineQoS);
+  }
+}
+
 namespace hmrdp {
 namespace {
 
@@ -1324,6 +1375,13 @@ BOOL HmrdpPreConnect(freerdp* instance) {
   if (HmrdpSetGfxRawCapture != nullptr) {
     HmrdpSetGfxRawCapture(&HmrdpGfxRawCapture);
   }
+  // Hand the QoS hook to the patched winpr: its pool workers (tile decoding) and
+  // the drdynvc thread (the frame pipeline) call it once per thread.
+  if (HmrdpSetThreadQoSApplier != nullptr) {
+    HmrdpSetThreadQoSApplier(&HmrdpThreadQoSHook);
+    HMRDP_LOGI("qos: applier registered, libqos.so %{public}s",
+               hmrdp::ResolveQoS() != nullptr ? "available" : "unavailable");
+  }
 
   // The graphics pipeline (RDPGFX) callbacks are registered by the client
   // library when the rdpgfx channel connects. Without these subscriptions the
@@ -1572,8 +1630,9 @@ void Session::EmitMetrics() {
     // happens after the EndFrame callback returns).
     HMRDP_LOGI("perf: 本机 %{public}llu us/frame (max %{public}llu) = zgx+parse %{public}llu"
                " + decode %{public}llu + compose %{public}llu + present %{public}llu"
-               " (frames=%{public}llu presents=%{public}u cmds/frame=%{public}llu"
-               " kB/frame=%{public}llu duty=%{public}u.%{public}u%%)",
+               " (frames=%{public}llu presents=%{public}u frames/s=%{public}llu"
+               " cmds/frame=%{public}llu kB/frame=%{public}llu duty=%{public}u.%{public}u%%"
+               " rx=%{public}lluB/s fps=%{public}u)",
                static_cast<unsigned long long>(localAvgUs),
                static_cast<unsigned long long>(work.maxFrameUs),
                static_cast<unsigned long long>(perFrameZgxUs),
@@ -1581,9 +1640,12 @@ void Session::EmitMetrics() {
                static_cast<unsigned long long>(perFrameComposeUs),
                static_cast<unsigned long long>(perFramePresentUs),
                static_cast<unsigned long long>(framesDone), frames - lastFrameCount_,
+               static_cast<unsigned long long>(
+                   static_cast<double>(framesDone) / seconds + 0.5),
                static_cast<unsigned long long>(perFrameCommands),
                static_cast<unsigned long long>(perFrameBytes / 1024),
-               dutyPermille / 10, dutyPermille % 10);
+               dutyPermille / 10, dutyPermille % 10,
+               static_cast<unsigned long long>(rxPerSec), fps);
   }
   // Response is a moving average of the recent measurements; it intentionally
   // is not cleared per window so the last value keeps showing between samples.
@@ -1824,6 +1886,9 @@ void Session::EventThread() {
   if (instance == nullptr) {
     return;
   }
+  // This thread reads the transport and hands the dynamic-channel data to the
+  // drdynvc thread; mark it like the frame pipeline (HarmonyOS QoS).
+  HmrdpThreadQoSHook();
   const BOOL ok = freerdp_connect(instance);
   if (!ok) {
     const UINT32 code = static_cast<UINT32>(freerdp_get_last_error(instance->context));

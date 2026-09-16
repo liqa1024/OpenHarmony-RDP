@@ -6,6 +6,7 @@
  * ArkTS forwards onSurfaceCreated/Changed/Destroyed to this module, which
  * turns the surface id into an OHNativeWindow consumed by the Vulkan presenter.
  */
+#include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
 #include <napi/native_api.h>
 
@@ -165,6 +166,37 @@ napi_value CreateUndefined(napi_env env) {
   return result;
 }
 
+// The window buffer is CPU-accessible by default: good for compatibility, but
+// the CPU path costs energy while the GPU path does not (HarmonyOS FAQ "如何主动
+// 关闭CPU访问窗口缓冲区数据降低功耗"). This client never reads the buffer from the
+// CPU - the Vulkan presenter hands its swapchain images to the compositor and the
+// GLES fallback only writes - so the read bits are dropped and the platform picks
+// the cheaper access mode. CPU_WRITE stays: the GLES fallback requests buffers
+// through OH_NativeWindow and writes them.
+void PreferGpuWindowBuffer(OHNativeWindow* window) {
+  if (window == nullptr) {
+    return;
+  }
+  uint64_t usage = 0;
+  if (OH_NativeWindow_NativeWindowHandleOpt(window, GET_USAGE, &usage) != 0) {
+    return;
+  }
+  const uint64_t reduced =
+      usage & ~(static_cast<uint64_t>(NATIVEBUFFER_USAGE_CPU_READ) |
+                static_cast<uint64_t>(NATIVEBUFFER_USAGE_CPU_READ_OFTEN));
+  if (reduced == usage) {
+    return;
+  }
+  if (OH_NativeWindow_NativeWindowHandleOpt(window, SET_USAGE, reduced) != 0) {
+    HMRDP_LOGW("window usage: SET_USAGE failed, keeping 0x%{public}llx",
+               static_cast<unsigned long long>(usage));
+    return;
+  }
+  HMRDP_LOGI("window usage: 0x%{public}llx -> 0x%{public}llx (cpu read off)",
+             static_cast<unsigned long long>(usage),
+             static_cast<unsigned long long>(reduced));
+}
+
 // --- NAPI methods ---------------------------------------------------------
 
 napi_value CreateSession(napi_env env, napi_callback_info) {
@@ -298,6 +330,7 @@ napi_value SetSurface(napi_env env, napi_callback_info info) {
     HMRDP_LOGE("CreateNativeWindowFromSurfaceId failed: %{public}d", err);
     return CreateUndefined(env);
   }
+  PreferGpuWindowBuffer(window);
   std::lock_guard<std::mutex> lock(g_mutex);
   Session* session = FindSession(handle);
   if (session == nullptr) {
@@ -661,11 +694,14 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
     if (err != 0 || window == nullptr) {
       out = "failed: native window";
-    } else if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
-                                                   replayRoute, realtime != 0)) {
-      out = "started " + hmrdp::GfxReplay::Instance().Stats();
     } else {
-      out = "failed: " + hmrdp::GfxReplay::Instance().Stats();
+      PreferGpuWindowBuffer(window);
+      if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath, replayRoute,
+                                             realtime != 0)) {
+        out = "started " + hmrdp::GfxReplay::Instance().Stats();
+      } else {
+        out = "failed: " + hmrdp::GfxReplay::Instance().Stats();
+      }
     }
   }
   HMRDP_LOGI("gfx replay: %{public}s", out.c_str());

@@ -457,34 +457,8 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
-- **live 低 fps 的归属（已在录像上定位到"到达侧字节预算"，下一步要找出是谁定的预算）**：录像给出的结论
-  是**到达侧被限制在 ~8.9Mbit/s（+1.16MB 突发额度）**，`fps ≈ 预算 / 每帧字节数`（见 §6 "已测的一例"），
-  客户端的解码+上屏 ≤ ~30-40ms/帧、至少 82% 时间在等数据。要定责，按下面的顺序做**低成本**验证：
-  1. **把 autodetect 报给服务端的带宽带进遥测**：`Session::netCharBandwidth_` 已经存着这个值
-     （`HmrdpNetworkCharacteristicsResult` → `OnNetworkCharacteristics`），但 `EmitMetrics` 的
-     `rtt|rxBps|txBps|fps|…` 串里没有它。加一个字段，live 一眼就能看到"我们自己把带宽报成了多少"：
-     ≈8.9Mbit/s ⇒ 闸门是我们报的；远大于它 ⇒ 闸门在服务端策略/链路。
-     （RDP 侧链路：客户端在服务端的 burst 探针里测带宽 `autodetect_recv_bandwidth_measure_*`，
-     再用 NetworkCharacteristicsSync 回给服务端；`FreeRDP_NetworkAutoDetect` 现在是 TRUE。）
-  2. **A/B 对照**（同一场景，各跑一次看整轮 fps）：`FreeRDP_NetworkAutoDetect=FALSE`（不报带宽）、
-     显式设 `FreeRDP_ConnectionType`（LAN=6 / AUTO=7，现在从没设过）、以及服务端组策略里的带宽限制；
-     再拿同一网络里的 mstsc 连同一台机器做基准。三条一起就能把"我们报的 / 服务端策略 / 链路"分开。
-  3. 只有 1/2 把预算放开之后才轮到客户端：**每帧字节数**（1080p 全屏 Progressive ~180KB/帧，AVC 同内容
-     只是零头；`GfxH264`/`GfxAVC444` 恒 FALSE 见 §5，是否重开是产品决策），再往后才是解码/上屏
-     （gdi 每帧几十毫秒会成为新天花板 ⇒ 那才是"GPU 引擎接 live"的立项依据）。
-  说明：**客户端侧的 ack 回路（present 在 `EndFrame` 里做、`queueDepth` 恒为 `QUEUE_DEPTH_UNAVAILABLE`）
-  不是这次的闸门**——录像里出现过连续 10~12 条背靠背到达（服务端并未等 ack），它的优先级排在 3 之后。
-- **"live 的每帧工时为什么是回放的两倍"怎么查**（已具备工具，见 §6 的逐相对照）：同一场景 ① live 跑一轮，
-  记下工具栏 `本机`（悬停看拆相）与每秒 hilog 的 `perf:` 行；② 把这一轮录成 v1 录像，用 **`mode=realtime`**
-  回放，读 stats 的 `perFrame` 行（`本机`/`zgx+parse`/`decode`/`compose`/`present`、`cmds/frame`、
-  `kB/frame`）。先比 `kB/frame` 与 `cmds/frame`（内容不同就没有可比性），再比相位定位。
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
-- **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。
-  每份新捕获都要自己过一遍 `bad=0` 才能当基线（同名文件的不同录制之间不能互相背书）。
-- **UI 收尾**：GPU 回放入口的置灰（`DeviceCapabilities` 的 Capability 模式，给出原因）——
-  「硬件解码」已完成（`DeviceCapabilities.hardwareDecode()`，见
-  [`native-libraries.md`](native-libraries.md) §6）。
 - **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时
   「硬件解码（RFX）」设置项才真正生效（是否可用的判据取 `vulkanInfo` / `GetVulkanCapabilities()`）；
   在此之前它只是被保留、不参与决策。
