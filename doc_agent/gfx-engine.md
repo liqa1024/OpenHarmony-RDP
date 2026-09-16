@@ -213,50 +213,15 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
     + 每个矩形一个 `VkBufferImageCopy`，GLES 每个矩形一次 `glTexSubImage2D`），**不要**为每个矩形各走一次
     present（那会把整屏 letterbox 画 N 遍）。像素一致性已核对：同一段录像两种上传方式跑完的最终画面
     逐像素无差异。
-  - **GPU 路线：逐条合成已实现，但默认关闭（`Impl::kComposeRects = false`，仍合成 bbox）**。引擎同样逐条
-    收集脏矩形（`MarkSurfaceDirty`：Progressive 每个解码 tile 一条，ClearCodec/缓存/填充/未压缩各按自己的
-    rect），`Compose()` 用 `CoalesceRects` 合并成**精确矩形**（同行同跨度先并、再同列并，并集不变），
-    上限 256、超限退回 bbox；`Stats()` 的 `compose copies/rects/maxRects/overflow` 是这条列表的账
-    （实测：滑动 `rects=10587 maxRects=113`、视频 `rects=1422 maxRects=106`，都 `overflow=0`，
-    即逐条合成在这两份录像上都不需要退回 box）。
-    **关闭的原因**：真正逐条合成会稳定暴露一处像素分叉——滑动样本 **156 px @ (992,1728)-(1007,1791)**
-    （`bad=1`，复跑同一 bbox；box 模式 `bad=0`）。已定性到**传输可见性**，不是解码/合成语义错：
-
-    - **引擎表面是对的**：把差异像素从**三处**取回——屏幕镜像（`ReadScreen`）、表面的 CPU 映射
-      （invalidate 前/后）、以及**设备侧**对同一地址的读（`CmdCopyBuffer` 拷回）——CPU 与设备读到的字节
-      都等于 gdi 主缓冲，即"表面内容正确、只是没被拷上屏"。比较侧探针（`GfxReplay::CompareFrames` 的
-      `ProbeMismatchPixels`，只在 `bad` 帧读映射、不做设备读回）长期保留：一次跑完就能把
-      "合成漏拷" 与 "表面内容就不同" 分开。
-    - **区域几何是对的**：覆盖这些像素的那条 region 的 `imageOffset`/`imageExtent` 与
-      `bufferOffset = top*stride + left*4` 都等于期望值（逐像素 1:1），没有错位/裁剪问题。
-    - **失败粒度是缓存行**：差异恰是 **一个 64 字节（= `nonCoherentAtomSize` = 16 px）宽的列 × 该帧被写的行**，
-      不是"某个矩形整块"——即失败粒度属于宿主缓存行，不属于 rect。
-    - **box 为什么掩盖它**：box 的 hull 会在**后续帧**再次覆盖同样的像素，于是"某帧读到陈旧表面"会被
-      后一帧补上；rect 列表一个像素只在被标记时合成一次，陈旧一次就**永久**留下。所以 box/rect 的差别
-      不是"box 拷得对"，而是 **rect 列表把这类一次性的陈旧合成放大成永久分叉**（§6 的"分叉放大器"）。
-    - **已实测排除**：多 region 合批（改成每条 region 一次 `vkCmdCopyBufferToImage` 结果不变）；
-      宿主写"更早 flush"（每次 CPU 写后立刻 `FlushMappedMemoryRanges`，即 §1 的急切做法）结果不变；
-      标记漏覆盖（差异像素在被写那一帧确实在其 rect 列表里）；区域几何/源偏移；解码/内容差异。
-    - **只减轻未根治**：把复合前的 barrier 换成**无条件** `ALL_COMMANDS → TRANSFER`（不依赖标志位与传递性）
-      后 156 px → 60 px（残下一条 1 px 宽列），说明这是**排序/可见性缺口**且该平台并未完全遵守；
-      **不要**据此认为"加个 barrier 就好了"。
-    - **量测纪律**：引擎内的一次性探针（探针自身会 flush/读回，即额外提交）会**改变失败形状**
-      （156 px → 60 px）。定位这类问题不能在被测路径里加读回；用比较侧探针（只读映射）或
-      独立的设备读回探针。
-    - **已实测：换 coherent host-visible 类型不是答案**（`hostMemType=(0,DL|HV|CO) coherent=1`）：同样的
-      156 px 仍在，另外多出一处 192 px 的块。即"cached 类型的 flush/invalidate"不是根因。
-    - **"换一条读回通道对照"在这台设备上不可用**：把屏幕镜像 blit 进 host-visible **linear** 镜像再读回
-      （图形路径 = presenter 的读法），同一区域的 diff 不是变小而是变大（156 → 1281），说明这条通道自身
-      就被污染（与该平台 `vkCmdBlitImage`/`vkCmdClearColorImage` 已知不可靠一致，见 §5）。
-      因此 **"结果错（上屏看到的就不同）" 与 "只是读回陈旧（只有影子对比被骗）" 目前无法用设备内读回区分**。
-    - 要判定"上屏结果是否真的不同"，只剩：① 用 **compute（采样）**读回屏幕镜像；② 外部对窗口截图
-      （需要能冻结在出差的帧）。两者都还没做。
-
+  - **GPU 路线：逐条合成已实现，但默认关闭（`Impl::kComposeRects = false`，合成 bbox）**。引擎逐条收集脏
+    矩形（`MarkSurfaceDirty`：Progressive 每个解码 tile 一条，ClearCodec/缓存/填充/未压缩各按自己的 rect），
+    `Compose()` 用 `CoalesceRects` 合并成**精确矩形**（同行同跨度先并、再同列并，并集不变），上限 256、
+    超限退回 bbox；`Stats()` 的 `compose copies/rects/maxRects/overflow` 是这条列表的账。
   - **逐条 vs box 的口径结论**：**GPU 侧不存在"逐条几乎总是更快"**——CPU 侧那套成立是因为逐条砍掉的是
-    **host→device** 字节（实测 −72.6% 字节 / −33% 上屏）；GPU 侧这些字节本来就在设备内，同样的 −70% 字节
+    **host→device** 字节（实测 −72.6% 字节 / −33% 上屏）；GPU 侧这些字节本来就在设备内，同样的字节降幅
     只换来 ≈0.5ms/帧，还要付出录制开销与**分散小矩形的目的端写**。所以上屏侧 box 与逐条的差别 ≤1ms/帧，
-    **逐条不是为性能留的**，默认 box（Impl::kComposeRects=false）即可（正确、少 region、录制更省）。
-    CPU 侧不受影响：hwnd->invalid 本来就是同一批 gdi_InvalidateRegion 调用的 bbox，其矩形列表与 box
+    **逐条不是为性能留的**，默认 box（`Impl::kComposeRects=false`）即可（正确、少 region、录制更省）。
+    CPU 侧不受影响：`hwnd->invalid` 本来就是同一批 `gdi_InvalidateRegion` 调用的 bbox，其矩形列表与 box
     覆盖范围等价。
   - **上屏（present）那一段的实现、帧槽与设备侧握手、picture ping-pong、CPU vs GPU 耗时对比与后续工作清单**：
     单独成文 → [present-pipeline.md](present-pipeline.md)。
@@ -341,10 +306,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 - **改完引擎 / 着色器 / FreeRDP 补丁，两份录像都要跑**（都必须是 `bad=0 rgbPx=0`）：
   `.cache/hmrdp_gfx.bin`（浏览/滚动：消息稀疏、脏区小）是**回归门**；
   `.cache/hmrdp_gfx_video.bin`（看视频：整帧大块变化、每帧 4~7 条 Progressive 消息）是另一个场景。
-  当前两份都过：浏览 `checks=21`（`frames=659`）、视频 `checks=6`（`frames=198`）。
-- **上屏成本账长期保留**（判断"该优化哪一段"用）：引擎 `Stats()` 的 `composeArea`（每帧逐条并集面积 vs
-  box 面积，比值决定"少拷多少字节"）与 `presentSplit`（present 拆成 `compose` 录制 / `flush` 提交+等待 /
-  `blit` 全幅上屏三段的每帧平均值），回放页 stats 里是 `present=` 一行；CPU 路线对应的账是 `upload=` 行。
+- **上屏成本账长期保留**（判断"该优化哪一段"用）：引擎 `Stats()` 的 `presentSplit`（present 拆成
+  `compose` 录制 / `flush` 提交+等待 / `blit` 全幅上屏三段的每帧平均值），回放页 stats 里是 `present=`
+  一行；CPU 路线对应的账是 `upload=` 行。
 - **先看计数，再加日志**：`Stats()` 里的 `rfxParse`（`errors` 必须为 0）、`rejectedTiles`/`restamped`/
   `skippedRegions`/`batchOverflow`/`composeGridSplits` 就是"协议级行为有没有按预期发生"的账本，
   绝大多数分叉靠它们就能定位到"哪条消息/哪条命令没做"。**不要为了查一次分叉就新加一次性日志探针**：
@@ -361,20 +325,19 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
    `vkCmdWriteTimestamp`，fence 等待后 `vkGetQueryPoolResults` 读回，统计在引擎 `Stats()` 的 `gpuMs …` 行）。
    两端都取 `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`；**不要用"跳过某条 dispatch + 差值反推"**（见 §3）。
 - **分叉怎么定位**：先看整屏比对（`Vulkan对比` 的 `bad/rgbPx/bbox/maxDelta`）。**判定分叉只以 gdi 自己的
-  表面/主缓冲为准**（历史上用手写镜像做过对比，它会误报）。需要收敛到"哪条命令"时，按
-  **"引擎跳过/多做了一条命令"→"两边对同一条命令算得不一样"**两个方向分开查：前者看引擎自己的
-  `Stats()` 计数（`rfxParse errors`、`skippedRegions`、`rejectedTiles`…）与"引擎这条命令到底做没做"，
-  后者才是解码/合成语义。**不要用"跳过某条 dispatch + 差值反推"做归因**（见 §3）。
-- **不要用"脏区/覆盖集合"比对来判定或定位分叉**（实测教训）：参考实现（gdi）的脏矩形是
-  **region16 合并出来的粗超集**——同一帧可能只有一条跨越整个屏幕的 rect——所以"参考覆盖了、引擎没覆盖"
-  在**像素完全一致**的帧上也会大量出现（实测：box 合成 `bad=0`，同一套对照却报出 138 帧不一致；rect
-  合成 `bad=1` 只报 1 帧）。覆盖比较**既不能作为"漏标记"的证据，也不能用来定位**，只会把人带偏。
-  判定/定位只能靠**像素值**：把差异矩形的像素从三处同时打出来——**引擎屏幕（`ReadScreen`）/ 参考的
-  主缓冲（`primary_buffer`）/ 参考的表面（`GetSurfaceData()->data`）**，一次就能区分
-  "引擎合成漏了这块"（表面 == 主缓冲 ≠ 引擎屏幕）、"参考主缓冲自己陈旧"（表面 ≠ 主缓冲）与
-  "解码内容不同"（引擎表面 ≠ 参考表面）。**推论（更一般）**：用一个"更细粒度"的语义（如逐条矩形）替换
-  "更粗"的语义（如 bbox）时，先把它当**分叉放大器**跑一遍门禁——粗语义会把差异静默盖住，换细语义时才
-  暴露出来；这比事后排查便宜，也是这类改动必须过 `bad=0` 的原因。
+  表面/主缓冲为准**（用手写镜像代替它会误报）。需要收敛到"哪条命令"时，按**"引擎跳过/多做了一条命令"→
+  "两边对同一条命令算得不一样"**两个方向分开查：前者看引擎自己的 `Stats()` 计数（`rfxParse errors`、
+  `skippedRegions`、`rejectedTiles`…）与"引擎这条命令到底做没做"，后者才是解码/合成语义。
+  **不要用"跳过某条 dispatch + 差值反推"做归因**（见 §3）。
+- **不要用"脏区/覆盖集合"比对来判定或定位分叉**：参考实现（gdi）的脏矩形是 **region16 合并出来的粗超集**
+  ——同一帧可能只有一条跨越整个屏幕的 rect——所以"参考覆盖了、引擎没覆盖"在**像素完全一致**的帧上也会
+  大量出现。覆盖比较**既不能作为"漏标记"的证据，也不能用来定位**，只会把人带偏。判定/定位只能靠
+  **像素值**：把差异矩形的像素从三处同时取回——**引擎屏幕（`ReadScreen`）/ 参考的主缓冲
+  （`primary_buffer`）/ 参考的表面（`GetSurfaceData()->data`）**，一次就能区分"引擎合成漏了这块"
+  （表面 == 主缓冲 ≠ 引擎屏幕）、"参考主缓冲自己陈旧"（表面 ≠ 主缓冲）与"解码内容不同"
+  （引擎表面 ≠ 参考表面）。**推论（更一般）**：用一个"更细粒度"的语义（如逐条矩形）替换"更粗"的语义
+  （如 bbox）时，先把它当**分叉放大器**跑一遍门禁——粗语义会把差异静默盖住，换细语义时才暴露出来；
+  这比事后排查便宜，也是这类改动必须过 `bad=0` 的原因。
 - **量测纪律（否则数字不可比）**：
   - **两种回放节拍**（`mode=` 字段，dev 页「节拍」按钮切换）：
     - **`mode=fast`（默认）**：每个呈现帧给一个 `kFrameMs` 周期，**预算覆盖整帧**（解码 + 命令应用 +
@@ -428,11 +391,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
     字节量变化，"两个场景的平均值接近"并不说明大头是固定等待。
   - 单条 Progressive 消息可带**数千条 stream**，而能同时在飞的 workgroup 数量有限，所以**平均值会低估**
     "当前结构下"的并行度上限。
-- **`Vulkan对比` 的现状**：两份录像都是 `bad=0 rgbPx=0 maxDelta=0`
-  （浏览/滚动 `checks=21`、看视频 `checks=6`）。**任何一轮性能结论的前提是那一轮 `bad=0`。**
 - **对比结果与呈现路径解耦**：对比读的是引擎屏幕镜像（`ReadScreen()`）与离线 gdi 主缓冲，呈现器只碰
   swapchain/present，所以**换呈现后端、改重建策略都不会影响 `bad` 的判定**；反过来说，`bad` 变化只能来自
-  解码/合成。
+  解码/合成。**任何一轮性能结论的前提是那一轮的 `bad=0`。**
 
 - **差分测试（补齐捕获里没有的码流）**：统一方法 = **同一份载荷**分别喂 FreeRDP 解码器与我们的实现，
   逐像素比对。载荷优先用 FreeRDP 自带编码器生成；边界要覆盖**尺寸非 64 倍数**、纯色/渐变/UI 文本/alpha。
@@ -442,39 +403,6 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
-- **GPU 侧逐条合成（`Impl::kComposeRects`）：传输可见性缺口已被掩盖，降级为潜在隐患**
-  （重建后的管线实测：rect 模式同样 `bad=0`，旧症状不复现；机理、实测数据与"何时该重新拾起"见
-  [`present-pipeline.md`](present-pipeline.md) §4.2）。历史已知：
-  - 复现：同一份滑动样本 `bad=1`、**156 px @ (992,1728)-(1007,1791)**（复跑同一 bbox）；box 模式 `bad=0`；
-    只有 `kComposeRects=true` 才出现（"分叉放大器"效应，见 §6）。
-  - **已定性**：不是解码/合成语义错——差异像素在**引擎屏幕 / 表面的 CPU 映射 / 表面的设备侧读**
-    三处里，后两者都等于 gdi 主缓冲；覆盖它们的 region 几何（`imageOffset`/`imageExtent`、
-    `bufferOffset = top*stride + left*4`）与期望值完全一致；失败粒度是**一个 64 字节
-    （`nonCoherentAtomSize` = 16 px）宽的列 × 该帧被写的行**，即"传输拷贝读到宿主刚写的缓存行时是陈旧的"。
-    box 之所以干净，是因为它会**在后续帧再合成同一批像素**把陈旧值补掉；rect 列表一像素只合成一次，
-    陈旧即永久（详见 §2.3）。
-  - 已排除（都实测过）：多 region 合批（每条 region 单独一次 `vkCmdCopyBufferToImage` 结果不变）；
-    宿主写急切 flush（每次 CPU 写后立刻 `FlushMappedMemoryRanges` 结果不变）；标记被
-    `ResetGraphics`/`MapSurfaceToOutput`/`MapSurfaceToScaledOutput` 丢弃（曾逐个打点验证，全 0）；
-    `ReadScreen()` 未 flush（它先 `Flush()`）；`CoalesceRects` 丢矩形（并集精确）；引擎那几条直写路径
-    （`ClearCodecDecode`/`UploadBgra`/`SolidFill`/`SurfaceToSurface`/`CacheToSurface`）漏标记
-    （都是"写入 rect == 标记 rect"）；Progressive 漏标记（按**整 64×64 tile** 标记，是 tile 内裁剪
-    子写入的超集）；覆盖比较法（§6 已证否，不要再走）。
-  - 只减轻未根治：复合前换成**无条件** `ALL_COMMANDS → TRANSFER` barrier，156 px → 60 px（残下 1 px 宽列）。
-    即"该平台不保证宿主写对 transfer 读的可见性"，而 barrier 不能被假定为已经修好。
-  - **已实测排除（第二轮）**：把表面换成 **coherent** host-visible 类型（`coherent=1`，引擎不再做任何
-    flush/invalidate）——同样的 156 px 仍在，另多一处 192 px 块；把屏幕镜像 blit 进 host-visible
-    **linear** 镜像再读回做对照——同一区域的 diff 反而更大（156 → 1281），该对照通道自身被污染，
-    在这台设备上**不能**用来判"结果错 vs 只是读回陈旧"。
-  - **量测纪律**：引擎内的一次性读回探针会改变失败形状（156 px → 60 px），禁用；定位只用比较侧探针
-    （`GfxReplay::CompareFrames` 的 `ProbeMismatchPixels`：`bad` 帧里从引擎表面取回像素，
-  - **上屏（present）那一段**：实现（一套 quad + 帧槽 + 设备侧握手 + picture ping-pong）、CPU/GPU 耗时对比、
-    以及**按差异来源优化**的待办（用增量 egion16 重写引擎脏区账等）单独成文 →
-    [present-pipeline.md](present-pipeline.md)。
-       （[`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)，22ms/帧 GPU）之后。
-  - 逐条 rect 只有在**换成非 transfer 的合成路径**（compute 写屏幕镜像，见 §1）后才有意义，且只值得
-    在"拷贝带宽成为主成本"的场景（高分辨率 + 稀疏更新 + 解码不再是大头）；顺手用它做"上屏结果是否真的
-    不同"的判定（compute 采样读回，或冻结帧 + 外部窗口截图）。改完两份录像都要 `bad=0` 再打开。
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。

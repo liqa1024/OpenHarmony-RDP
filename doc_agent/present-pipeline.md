@@ -63,15 +63,14 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
    Progressive 一条消息按**每个解码 tile** 各推一条 ⇒ 整屏 I 帧可达 ~2900 条）；
 2. 外加一份**并行的 union box**（`meta.dirtyLeft/Top/Right/Bottom`），只为"矩形太长时退回盒子"服务。
 
-每帧 `Compose()` 对每个表面做（同一份信息被扫 3~4 遍 + 一次排序）：
+每帧 `Compose()` 对每个表面做（同一份信息被扫 3 遍 + 一次排序）：
 
 1. **`CoalesceRects()`**：对全部原始 mark **排序**（`std::sort`）再两趟合并；**box 模式下这个结果只用来
    统计与兜底判断，并不需要列表本身**；
 2. 读 `meta.dirty*` 作为兑现盒；
 3. 逐矩形 `MakeScreenCopyRegion()`：clamp + 计算 dst + `MarkScreenDirty()`；
 4. **ping-pong 的 damage 账**：`pictureMissing[pic][surface]` 的 append/clear + 缺失矩形并集（还要在
-   box 模式下把缺失矩形的 hull 并进盒子）；
-5. **`composeArea` 面积账**：**再扫一遍合并后的列表**，逐矩形 clamp + 相乘（纯 dev/性能账）。
+   box 模式下把缺失矩形的 hull 并进盒子）。
 
 ⇒ 这 0.49 ms 是**记账与录制**，不是带宽（`flush` 只有 334 µs；ping-pong 让字节翻倍但字节便宜）。
 
@@ -79,7 +78,7 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 
 ### 4.1 用"增量 region16"重写引擎的脏区账（目标：上屏 ≤ CPU）
 
-**思路**：把 §3 的 1/2/4/5 换成 gdi 那套——**在写入时增量合并，而不是每帧重算**：
+**思路**：把 §3 的 1/2/4 换成 gdi 那套——**在写入时增量合并，而不是每帧重算**：
 
 - `Surface` 持有一个 **`REGION16 invalidRegion`**（FreeRDP 的 region API；引擎已 include
   `freerdp/codec/region.h`，且 §2.2 已经要求用它的 `region16_union_rect` 构造 clip，属既有依赖）；
@@ -90,8 +89,6 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
   代替逐矩形 clamp（与 `gdi_OutputUpdate` 一致）。
 - **上限/兜底**：`region16_rects()` 的条数照旧按 256 截断（CPU 路线的 `kMaxPresentRects` 也是 256，
   本样本 `truncated=1`，两边口径一致），超限退回 `region16_extents()` 的盒子。
-- **面积账**：`region16_rects()` 已给条数；面积可在 `MarkSurfaceDirty` 时增量累加，
-  **不要**再每帧扫一遍列表（`composeArea` 的目的是"量化 box vs 逐条"，结论已经定了：box 保持默认）。
 - **预期**：每帧只剩"取列表 + 顺序遍历 + 录 region + 一次 submit"，与 CPU 侧同构；引擎还省掉了
   staging memcpy（2.3MB/帧）与 host→device 上传 ⇒ 应当**持平或反超**。
 - **风险/必须验证**：
@@ -105,43 +102,13 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
   - 改完必须两份录像 `bad=0`（滚动 `.cache/hmrdp_gfx.bin`、视频 `.cache/hmrdp_gfx_video.bin`），
     并报 `presentSplit compose` 与 CPU 路线的 `present=` 对比。
 
-### 4.2 传输可见性缺口（**已被掩盖，降级为潜在隐患**）
-
-历史症状：单张 picture 的旧管线上，rect 模式（`kComposeRects=true`）compose 的拷贝会出现
-**64 字节（`nonCoherentAtomSize`）× 该帧被写的行**粒度的陈旧 —— 滑动样本 `bad=1`、156 px @
-(992,1728)-(1007,1791)（**确定性**，固定 frame 210、三次复跑同 bbox），box 模式 `bad=0`。
-引擎表面内容本身正确（CPU 映射读、设备侧读都等于 gdi 主缓冲），region 几何也正确（1:1、偏移一致）。
-已排除：多 region 合批、急切 flush、coherent 内存类型、加强 barrier（只把 156→60）、标记漏覆盖、
-`CoalesceRects` 丢矩形；**"换一条读回通道对照"在这台设备上不可用**（blit 进 host-visible linear 镜像
-再读回，diff 反而更大 ⇒ 该通道自身被污染）。
-
-**现状（重建后的管线实测，点击前请自己复跑）**：Ping-pong + per-slot + 新链之后，把
-`kComposeRects=true` 打开再跑同一滑动样本 ⇒ **`checks=21 bad=0 rgbPx=0`，旧症状不再复现**；
-vulkan 侧 `presentSplit compose=808µs`（box 是 488µs）、`composeArea rects/box=0.428`。
-
-**结论与口径**：
-- **不是修复，而是被掩盖**：ping-pong 的 damage 账会**把每个 delta 再往另一张图拷一次**，于是"某次拷贝
-  读到陈旧行"会被后续那次拷贝纠正 —— 这与 box 干净的机理相同（后续帧再合成同一批像素）。平台侧的可见性
-  行为**没有被证明修复**，我们也没找到机理（只知道它是"传输拷贝读刚被宿主写过的行"这一类，且该平台的
-  拷贝路径有已知怪癖）。
-- **因此不再作为"必须追"的项**：默认 box 干净、rect 模式现在也干净、两份录像门禁都过。只在下列情形重新
-  拾起：① 它重新出现；② 采用**"每个 delta 只拷一次"**的设计（没有那次重复拷贝兜底）——
-  例如 4.5 的"整幅 quad 缩成脏矩形"就是大量小拷贝区域，必须自带兜底或先解决这条。
-- **rect 路径的价值进一步下降**：ping-pong 让它每帧多拷一遍上一帧的 delta（`rects/box` 0.295 → 0.428），
-  录制也更贵（808 vs 488µs）⇒ 默认 box 是明确选择，见 gfx-engine.md §2.3 的口径结论。
-
-### 4.3 "上屏结果是否真的不同"（结果错 vs 只是读回陈旧）
-
-需要一条**非 transfer** 的读回（compute 采样屏幕镜像）或外部窗口截图（要能冻结在出差的帧）来判定。
-`bad` 只比对引擎图像，**抓不到"上屏时通道序被换错"** ⇒ 改上屏/通道序时**必须同时核对截图**。
-
-### 4.4 解码 kernel 并行化（当前 GPU 路线最大的成本）
+### 4.2 解码 kernel 并行化（当前 GPU 路线最大的成本）
 
 `gpuMs rlgr + idwt ≈ 17ms/帧`（视频样本 ≈190ms/帧），是整帧慢的主因，与上屏无关。
 设计见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。上屏已不再等解码（§1 的握手），
 所以解码变快后上屏也不会变成新的串行段。
 
-### 4.5 把上屏的整幅 quad 缩成脏矩形（≈2.8%，排在解码之后）
+### 4.3 把上屏的整幅 quad 缩成脏矩形（≈2.8%，排在解码之后）
 
 `blit` 桶里包含"把 picture 整幅 letterbox 写进 swapchain 图像"。swapchain 图像是**轮转**的（内容在两次
 呈现之间未定义），所以每帧整幅是**默认正确做法**；要省它只能按 **swapchain 图像**各维护"已写入的增量"
@@ -149,7 +116,7 @@ vulkan 侧 `presentSplit compose=808µs`（box 是 488µs）、`composeArea rect
 damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里（且它只是提示、不减少我们自己的写入）；
 **不要**改用 `OH_NativeWindow_*`/`FlushBuffer(..., Region)`（CPU/native 生产者路径，已删除）。
 
-### 4.6 其他
+### 4.4 其他
 
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；
   「硬件解码（RFX）」设置项届时才真正生效。
@@ -163,8 +130,8 @@ damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里
   本地留档 `.cache/hmrdp_gfx.bin`（滚动/碎片）、`.cache/hmrdp_gfx_video.bin`（视频）。**换样本后记得还原**。
 - **判定"跑完"**：轮询回放 stats 文本里的 `(running=0)`（不要固定 sleep）。
 - **长期保留的账**（判断该优化哪一段用）：回放 stats 的 `present=` 行；
-  引擎 `Stats()` 的 `presentSplit`（present 拆成 `compose` 录制 / `flush` 提交 / `blit` 全幅上屏，每帧均值）、
-  `composeArea`（`rectsPx` vs `boxPx`）；CPU 路线是 `upload=` 行（`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
+  引擎 `Stats()` 的 `presentSplit`（present 拆成 `compose` 录制 / `flush` 提交 / `blit` 全幅上屏，每帧均值）；
+  CPU 路线是 `upload=` 行（`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
 - **日志**：hilog domain `0xD001`；**每个格式说明符都要写 `%{public}`**，否则打印 `<private>`。
 - **坑（都踩过，改这块前看一遍）**：
   - winpr 的 `synch.h` 把 `CreateSemaphore` 定义成 `CreateSemaphoreA`，会改写本 TU 里 `api.CreateSemaphore`
@@ -173,10 +140,7 @@ damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里
     `clear_decompress` 收的是后者（裸写 `format` 会静默解析成前者 ⇒ ClearCodec 大面积失败，
     自查 `Stats()` 的 `unsupported`/`clearUnsup` 必须为 0）；
   - **`CoalesceRects` 原地排序/合并** `dirtyRects`："合并前"要用的东西必须**先拷出来**（否则账目错位、
-    静默丢增量，症状是 `bad>0` 但 `maxDelta` 很小、探针显示 `surface==primary` 而 `screen` 是旧值）；
-  - **引擎内的一次性读回探针会改变失败形状**（额外提交/等待），定位只用比较侧探针
-    （`CompareFrames` 的 `ProbeMismatchPixels`，只读映射）；
+    静默丢增量，症状是 `bad>0` 但 `maxDelta` 很小、差异呈"某块漏合成"的形状）；
+  - **在被测路径里加读回探针会扰动测量**（额外提交/等待会改变失败形状）——定位要用不进入被测路径的
+    读法（只读映射、外部对照），不要把探针塞进被测量的那条链；
   - `rfx_compose` 的 `uSwapRb` 是 shader 的 push-constant 布局，**不能删**（只能恒传 0）。
-- **当前工作树**：上屏这一轮改动**未提交**，涉及 `entry/src/main/cpp/hmrdp_vk_desktop.{h,cpp}`、
-  `hmrdp_vk_renderer.{h,cpp}`、`hmrdp_replay.cpp`、`doc_agent/gfx-engine.md`（+ 本文件与 `AGENTS.md` 索引）。
-  随时可用 `git diff` 看全貌；**不要**用 git 写操作恢复。

@@ -18,10 +18,9 @@
  *  - The screen stays a `VkImage` (`VK_IMAGE_LAYOUT_GENERAL`) because it is the
  *    presentation source. Compose copies each mapped surface's dirty region into
  *    it with `vkCmdCopyBufferToImage`, carrying the stride via `bufferRowLength`.
- *    The region is the **list of rects the commands actually touched**, not their
- *    merged box: the GPU route follows the same policy as the CPU (gdi) present
- *    path (doc_agent/gfx-engine.md §2.3), with the box kept only as the bounded
- *    fallback above `GpuSurface::kMaxDirtyRects`.
+ *    The default region is the union box of the rects the commands touched (dirty
+ *    region, not the whole screen); an optional rect-list path exists behind
+ *    `Impl::kComposeRects` (doc_agent/gfx-engine.md §2.3).
  *  - Pixel commands (fill / upload / cache / copy) run on the CPU against the
  *    mapping, exactly as FreeRDP's gdi path does. `ReadSurface` is a plain copy
  *    out of the mapping; only `ReadScreen` and `Flush` touch the device.
@@ -120,23 +119,6 @@ class GfxVkDesktop {
   // number of commands whose codec is not implemented, ...). Unimplemented or
   // failed codec commands are counted and visible here, never silent (V5).
   std::string Stats() const;
-
-  // Triage for a pixel mismatch (doc_agent/gfx-engine.md §6/§7): the screen-level
-  // compare can only report "these pixels differ". Reading the same pixel back out
-  // of every mapped surface that covers it says which side is wrong:
-  //   * the surface already holds the reference's value -> the surface content is
-  //     right and the *compose* (the dirty rect list) never copied it;
-  //   * the surface holds some other value -> the divergence is in the codec /
-  //     command path that produced the pixels, not in the compose.
-  // Values are FreeRDP-order BGRA, exactly like ReadScreen. Returns the number of
-  // hits written; 0 means no mapped surface covers the point.
-  struct ScreenPixelHit {
-    uint16_t surfaceId = 0;
-    int surfaceX = 0;
-    int surfaceY = 0;
-    uint32_t bgra = 0;
-  };
-  int ProbeScreenPixel(int x, int y, ScreenPixelHit* out, int capacity);
 
   // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3): one
   // present's host-time split - record the dirty compose, submit+wait, then blit the

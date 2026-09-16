@@ -13,6 +13,7 @@
 | 首次上手 / 搭环境 / 跑起来 | [`build-and-verify.md`](build-and-verify.md) |
 | 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
 | 改 GFX / Progressive / GPU 引擎 | [`gfx-engine.md`](gfx-engine.md)（**先读"必须保留的语义"**） |
+| 改上屏（present）管线 / 帧槽 / picture ping-pong | [`present-pipeline.md`](present-pipeline.md) |
 | 改 RLGR 解码 kernel 的并行化 | [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)（**后续工作清单**） |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
@@ -32,6 +33,8 @@
   为什么 `entry/libs/<abi>/` 不入库、音频（OHAudio）与能力探测（Capability）模式。
 - [`gfx-engine.md`](gfx-engine.md) —— GFX 码流与 GPU 引擎：架构、**必须保留的协议/算法语义**、性能规则、
   真机专属口径、**回放验证回路与逐像素 `bad=0` 验收（含两份基线录像）**、待办。
+- [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套 `VkRenderer` 实现、帧槽与
+  设备侧握手、picture ping-pong、CPU/GPU 耗时对比与后续工作清单。
 - [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) —— **后续工作清单**：RLGR 解码 kernel 的
   producer/consumer 并行化（依据、实现要点、已踩的坑、已否决方案）。
 

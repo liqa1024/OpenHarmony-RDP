@@ -716,14 +716,11 @@ struct GfxVkDesktop::Impl {
   uint64_t composeRects = 0;
   uint64_t composeMaxRects = 0;
   uint64_t composeRectOverflow = 0;
-  // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3/§3):
-  // the dirty pixels a frame actually carries (the merged rect list's exact union)
-  // vs what the union box would carry, and the host-time split of a present into
-  // "record the dirty compose", "submit it and wait" and "blit the whole screen to
-  // the swapchain + present". The last bucket is the per-frame cost that does *not*
-  // scale with the dirty area, so it decides which strategy can win.
-  uint64_t composeRectPx = 0;
-  uint64_t composeBoxPx = 0;
+  // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3/§3): the
+  // host-time split of a present into "record the dirty compose", "submit it and
+  // wait" and "blit the whole screen to the swapchain + present". The last bucket is
+  // the per-frame cost that does *not* scale with the dirty area, so it decides which
+  // strategy can win.
   uint64_t presentFrames = 0;
   uint64_t presentComposeUs = 0;
   uint64_t presentFlushUs = 0;
@@ -3573,26 +3570,6 @@ bool GfxVkDesktop::Compose() {
     // shared, so the only per-rect cost is another region entry.
     const int merged =
         Impl::CoalesceRects(s.dirtyRects.data(), static_cast<int>(s.dirtyRects.size()));
-    // Perf accounting: the exact dirty pixels (the merged list is exact and
-    // disjoint, so the sum is the union) vs the pixels the union box would carry,
-    // both clipped to the surface's mapped extent, i.e. to what a copy can reach.
-    {
-      const auto clippedArea = [&m](int left, int top, int right, int bottom) -> uint64_t {
-        if (left < 0) left = 0;
-        if (top < 0) top = 0;
-        if (right > m.mappedWidth) right = m.mappedWidth;
-        if (bottom > m.mappedHeight) bottom = m.mappedHeight;
-        if (right <= left || bottom <= top) {
-          return 0;
-        }
-        return static_cast<uint64_t>(right - left) * static_cast<uint64_t>(bottom - top);
-      };
-      for (int i = 0; i < merged; ++i) {
-        impl_->composeRectPx += clippedArea(s.dirtyRects[i].left, s.dirtyRects[i].top,
-                                            s.dirtyRects[i].right, s.dirtyRects[i].bottom);
-      }
-      impl_->composeBoxPx += clippedArea(m.dirtyLeft, m.dirtyTop, m.dirtyRight, m.dirtyBottom);
-    }
     const bool rectListTooLong =
         s.dirtyOverflow || merged > Impl::kMaxComposeRects;
     const bool overflowed = rectListTooLong || !Impl::kComposeRects;
@@ -3744,44 +3721,6 @@ void GfxVkDesktop::NotePresentSplitUs(uint64_t composeUs, uint64_t flushUs, uint
   impl_->presentComposeUs += composeUs;
   impl_->presentFlushUs += flushUs;
   impl_->presentBlitUs += blitUs;
-}
-
-int GfxVkDesktop::ProbeScreenPixel(int x, int y, ScreenPixelHit* out, int capacity) {
-  if (!ready() || out == nullptr || capacity <= 0) {
-    return 0;
-  }
-  int hits = 0;
-  for (auto& kv : impl_->surfaces) {
-    if (hits >= capacity) {
-      break;
-    }
-    Impl::Surface& s = kv.second;
-    if (!s.meta.mapped || !s.gpu.valid() || s.gpu.mapped == nullptr) {
-      continue;
-    }
-    // 1:1 output mapping, clipped to the surface's raw (un-aligned) extent, which
-    // is what Compose copies from (MakeScreenCopyRegion).
-    const int sx = x - static_cast<int>(s.meta.outputX);
-    const int sy = y - static_cast<int>(s.meta.outputY);
-    if (sx < 0 || sy < 0 || sx >= s.meta.mappedWidth || sy >= s.meta.mappedHeight) {
-      continue;
-    }
-    // The compare always reads the screen (with its Flush) right before probing,
-    // so the device is idle; only the CPU's own cached view of this range needs to
-    // be dropped for the read to see the device's (or a flushed CPU write's) bytes.
-    impl_->InvalidateRect(s.gpu, sx, sy, 1, 1);
-    uint32_t bgra = 0;
-    std::memcpy(&bgra,
-                s.gpu.mapped + static_cast<size_t>(sy) * static_cast<size_t>(s.gpu.stride) +
-                    static_cast<size_t>(sx) * 4,
-                4);
-    out[hits].surfaceId = s.meta.id;
-    out[hits].surfaceX = sx;
-    out[hits].surfaceY = sy;
-    out[hits].bgra = bgra;
-    hits++;
-  }
-  return hits;
 }
 
 bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
@@ -4307,7 +4246,6 @@ std::string GfxVkDesktop::Stats() const {
                 "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus"
                 "\n  compose copies=%llu rects=%llu maxRects=%llu overflow=%llu"
                 " skipUnmapped=%llu skipClean=%llu"
-                "\n  composeArea rectsPx=%llu boxPx=%llu (rects/box=%.3f)"
                 "\n  presentSplit frames=%llu avgPerFrameUs compose=%.0f flush=%.0f blit=%.0f"
                 "\n  alloc calls=%llu us=%llu (cache allocs=%llu)"
                 "\n  cpu bytes cache=%llu copy=%llu (overlap=%llu) cacheOps store=%llu restore=%llu"
@@ -4354,12 +4292,6 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->composeRectOverflow),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
                 static_cast<unsigned long long>(impl_->composeSkipClean),
-                static_cast<unsigned long long>(impl_->composeRectPx),
-                static_cast<unsigned long long>(impl_->composeBoxPx),
-                impl_->composeBoxPx != 0
-                    ? static_cast<double>(impl_->composeRectPx) /
-                          static_cast<double>(impl_->composeBoxPx)
-                    : 0.0,
                 static_cast<unsigned long long>(impl_->presentFrames),
                 impl_->presentFrames != 0
                     ? static_cast<double>(impl_->presentComposeUs) /
