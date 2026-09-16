@@ -252,116 +252,15 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
     - 要判定"上屏结果是否真的不同"，只剩：① 用 **compute（采样）**读回屏幕镜像；② 外部对窗口截图
       （需要能冻结在出差的帧）。两者都还没做。
 
-  - **上屏成本账（实测，滑动样本 657 帧，`mode=fast` + `Vulkan对比`；`presentSplit` / `composeArea`
-    两行是长期保留的账）**：每帧 `compose=320µs / flush=11393µs / blit=1760µs`，present 合计 ≈13.5ms
-    （整帧 ≈62ms 的 22%）。⇒ **上屏策略能动的只有约 1ms/帧**：
-    - 脏区拷贝的**带宽**：`composeArea rects/box=0.295`，即 box 每帧多拷 ≈9.1MB，按测得 ≈22GB/s 折
-      ≈0.56ms/帧（这一项只由"拷多少字节"决定，与是否逐条无关）；
-    - **录制开销**：逐条比 box 多 +199µs/帧（519 vs 320µs）；
-    - 剩下 **11.4ms/帧（85%）是 flush = CPU 在等 Progressive 解码 kernel**
-      （`gpuMs rlgr+idwt ≈ 11.3s / 513 chunk ≈ 22ms/帧`），上屏侧怎么改都动不了它。
-    - 同数据 A/B：present 13.47ms（box） vs 13.09ms（逐条），即逐条净赚 ≈0.4ms/帧（0.6%）；端到端
-      `feed` 41.6s vs 42.3s（落在复跑噪声内）。
-    - **口径结论**：**GPU 侧不存在"逐条几乎总是更快"**——CPU 侧那套成立是因为逐条砍掉的是
-      **host→device** 字节（实测 −72.6% 字节 / −33% 上屏）；GPU 侧这些字节本来就在设备内，同样的
-      −70% 字节只换来 ≈0.5ms/帧，还要付出录制开销与**分散小矩形的目的端写**。所以上屏侧 box 与逐条
-      的差别 ≤1ms/帧，**逐条不是为性能留的**，当前默认 box 即可（正确、少 region、录制更省）。
-    - **present 侧剩下的固定成本是"每帧整幅 quad"**：`blit=1760µs/帧`（≈2.8%）——它把 picture 图
-      letterbox 写进 swapchain 图像。**这不是可以靠"换个送显 API"消掉的**：我们走的
-      `VK_OHOS_surface → swapchain → vkQueuePresentKHR` **就是** Vulkan 的 GPU 送显路径（WSI 内部才做
-      native window 的 buffer 队列与 fence）；而 swapchain 图像是**轮转**的，其内容在两次呈现之间
-      未定义，所以每帧必须把要呈现的整幅写满（letterbox 黑边也靠 render pass clear）。
-      想省掉它只能**生产者侧记账**：按 **swapchain 图像**各维护"已写入的增量"（每张图补它错过的
-      delta），再把整幅 quad 缩成脏矩形；`VK_KHR_incremental_present`（脏区提示）不在这台设备的能力
-      列表里，且它只是提示、不减少我们自己的写入。**不要用 `OH_NativeWindow_*`
-      （`RequestBuffer`/`FlushBuffer(..., Region)`）来"按脏区送显"**：那条是 CPU/native 生产者路径，
-      生产者照样要填满 buffer，`Region` 只是给合成器的提示；本仓库试过并因 CPU 侧太慢删掉了（§2.3）。
-      优先级排在解码优化之后，且它和"picture 图 ping-pong 的按图记 damage"是同一套记账机制。
-    CPU 侧不受影响：`hwnd->invalid` 本来就是同一批 `gdi_InvalidateRegion` 调用的 bbox，其矩形列表与 box
+  - **逐条 vs box 的口径结论**：**GPU 侧不存在"逐条几乎总是更快"**——CPU 侧那套成立是因为逐条砍掉的是
+    **host→device** 字节（实测 −72.6% 字节 / −33% 上屏）；GPU 侧这些字节本来就在设备内，同样的 −70% 字节
+    只换来 ≈0.5ms/帧，还要付出录制开销与**分散小矩形的目的端写**。所以上屏侧 box 与逐条的差别 ≤1ms/帧，
+    **逐条不是为性能留的**，默认 box（Impl::kComposeRects=false）即可（正确、少 region、录制更省）。
+    CPU 侧不受影响：hwnd->invalid 本来就是同一批 gdi_InvalidateRegion 调用的 bbox，其矩形列表与 box
     覆盖范围等价。
-  - **CPU 与引擎两条帧来源的上屏已统一为一套实现**（同一个 `VkRenderer`，不再各写一套）：
-    - **只有一条上屏实现**：采样「picture 图」的 letterbox quad（`RecordPresentQuadLocked`，viewport 做
-      letterbox）。`vkCmdBlitImage` 那条已删除——blit 不能换通道序，还逼着引擎把自己的存储格式对齐
-      swapchain 格式。
-    - **生产者一律交 FreeRDP 的 BGRA 序**：CPU 路线把脏区上传进 `desktopImage_`；引擎把脏区合成进
-      自己的屏幕镜像。唯一口径是 `kPictureFormat = B8G8R8A8_UNORM`，**通道序由图像格式承担，shader 不再
-      做 R/B 交换**（特化常量恒 false）；因此引擎侧的 `swapRb` 变成恒 false（CPU 边界不再换序），
-      引擎屏幕镜像的 usage 增加 `SAMPLED`（它现在被采样、不再被 blit）。两条路线剩下的差别只有
-      "谁来填这张图"，不再是"两套上屏代码"。
-    - **每帧 slot 一份 descriptor set**（`presentSets_[kFramesInFlight]`）：**不得改写仍在飞的 set**
-      ——实测把每帧改写当成常态会让 CPU 路线 `present` 从 2.88ms 退化到 3.95ms，改成 per-slot 后回到
-      2.62ms。桌面图（re)创建时要先 drain 在飞帧再改写所有 slot。
-    - **验证口径**：两份录像 `bad=0`（滑动 21 checks / 视频 6 checks）；但 **`bad` 只比对引擎图像，
-      抓不到"上屏时通道序被换错"**，所以改通道序/上屏时必须**同时核对窗口截图**（这次两条路线都核过色）。
-    - **通道序契约与"转换次数"**（改动前后都要按这条审）：`vkCmdCopyBufferToImage`/`CmdCopyBuffer`
-      **不能换通道**，所以"拷贝能到达的链路必须同一字节序"：`surfaces(BGRA) →copy→ 屏幕镜像(同序)
-      →sample→ swapchain`。Vulkan 上屏的约定只要求"**swapchain 图像里是正确语义色、按 swapchain 格式
-      编码**"，源字节序是内部契约；由此推出的唯一硬要求是**声明的 format 必须与实际字节一致**（采样器
-      才能读对语义色）。现在**引擎存储 = FreeRDP 的 BGRA，处处不换序**，转换只保留在上屏那一次
-      （存储格式→语义色→附件格式，硬件格式转换，不是额外 pass、不加带宽）。
-      旧方案（引擎存储跟随 swapchain + blit）为了迁就 blit 把转换前移成：`rfx_compose` **每像素**一次
-      R/B 交换 + 引擎各条 CPU 写路径（`UploadBgra` 逐字节循环、`clear_decompress` 的 `dstFormat` 切换、
-      `CpuFillRect`/`ReadScreen` 的换序）——**别再退回这套**（blit 那条已删，`swapRb` 相关的
-      kernel 参数/CPU 分支已清理，只留 shader 里一个恒 0 的占位字段）。
-      量级：`gpuMs compose` 全程 169ms/657 帧 ≈ **0.26ms/帧**，把它换成免交换是白拿；而 CPU 侧的逐字节
-      交换实测"比上屏其余部分加起来还贵"。⇒ **字节序的成本落在 CPU 链上，GPU kernel 的存储序近乎免费**，
-      所以"以 GPU 侧为主"在这里等价于"**保持处处 BGRA、不要在 CPU 侧换序**"。
-      **改这一段时的两个坑（都踩过，改完按这两条自查）**：① 引擎里是**两套 format 词汇表**——
-      `Impl::format` 是 `VkFormat`（图像格式），`GfxSurface::format` 是 FreeRDP 的**打包**格式
-      （如 `0x20040888`）；`clear_decompress` 收的是后者。删掉中间的局部变量后裸写 `format` 会**静默**
-      解析成前者（枚举→整数隐式转换，编译不报错），表现为 ClearCodec 大面积失败 ⇒ 检查 `Stats()` 的
-      `unsupported`/`clearUnsup` 必须为 0。② `rfx_compose` 的 `uSwapRb` 字段是 shader 的
-      push-constant 布局，**不能删**（只能恒传 0，删了会与 SPIR-V 的布局错位）。
-      **字节序契约只约束我们自己的链路**（surfaces → picture → quad → swapchain）：present 是
-      "采样 + 写附件"，通道序由图像格式承担，不需要为任何"窗口缓冲格式"做取舍（见 §2.3 的两条送显
-      口径：swapchain + `vkQueuePresentKHR` 是唯一要用的上屏路径）。
-    - **上屏握手（已实现，GPU 侧不再等解码）**：引擎有 `kSlots=2` 个帧槽（各有 command buffer / fence /
-      semaphore），`SubmitFrame()` 只提交不等待并 signal 本帧 semaphore；presenter 的 blit wait 它、
-      再 signal 自己的 `blitDone`；引擎下一次提交 wait `blitDone`——**唯一那张 picture 图因此不会被
-      "下一帧的 compose" 覆盖掉 presenter 正在读的内容**（GPU 侧串行，CPU 不参与）。引擎自身的 CPU 等待
-      只剩一处：`EnsureRecording()` 复用某 slot 前等它自己的 fence（= 上一帧的提交），
-      CPU 读回路径（`ReadScreen`、ClearCodec/cache 的 RMW）继续用 `Flush()`。
-      实测（滑动样本）：`present 13.75ms → 2.96ms`（`presentSplit` 的 `flush` 桶 `11507µs → 303µs`）、
-      `fps 14.8 → 16.0`、`feed −8%`；视频样本 `present 193ms → 1.46ms`（该样本受 GPU 解码支配，总时间
-      只 −3%）。**语义要点**：surfaces 是读写共享的持久状态，所以引擎的帧在 GPU 上必须**按序**——这里
-      拿到的是"CPU 与 GPU 重叠"，不是"多帧 GPU 并行"。
-    - **流水线深度**：引擎的 staging arena / descriptor pool / 时间戳池 / 延迟回收列表 / "compute 在飞"
-      标志**都按 slot 记账**（各 `kSlots` 份），所以 `SubmitFrame()` 之后下一帧直接录到**另一个 slot**、
-      CPU 不必等上一帧 ⇒ **CPU 与 GPU 重叠**（"提交后很快被等待"这个前提已经去掉）。等待只剩两类：
-      ① 复用某 slot 前等它自己的 fence（两帧前那次提交，稳态下早已完成）；
-      ② CPU 读回路径（`ReadScreen`、ClearCodec/cache 的 RMW）走 `FlushAll()`——**等所有在飞 slot**
-      （另一个 slot 的 dispatch 可能正在写这块 surface）。
-      实测（相对只做 semaphore 链时）：滑动 `present 2.96→2.50ms`、`feed 38474→37775ms`；
-      视频 **`fps 3.4→4.4`、`feed 57512→44271ms（−23%）**（解码重的样本最吃"CPU 不被卡住"）。
-      **picture 图已 ping-pong（每 slot 一张）并带"按图记 damage"**：每张图记着"另一张图拿到、
-      而自己错过的矩形"（compose 时写 `本帧脏区 ∪ 该图错过的脏区`，随后把它清空、并把本帧脏区交给另一张），
-      所以两张图都能被采成完整桌面。账上只存**矩形**、像素一律从**当前表面**拷（表面已是最新），因此不需要
-      任何历史像素。代价与收益（实测，滑动样本）：compose 的字节 +45%（`composeArea rects/box 0.295→0.428`、
-      录制 +88µs/帧），`feed −2.3%`（视频样本几乎整屏脏，比例 0.983 ⇒ 基本无差）。
-      **改这块的坑**：`CoalesceRects` 会**原地排序/合并** `s.dirtyRects`，任何"合并前"要用的东西（例如交给
-      另一张图的本帧脏区）必须**先拷出来**；否则账目错位、静默丢增量（症状是 `bad>0` 但 `maxDelta` 很小）。
-      **compose 与 blit 已可重叠**：引擎帧之间的顺序改由**引擎自己的链**（`engineChain[slot]`：每次提交
-      都 signal、下一次提交 wait）保证——surfaces/解码 scratch 是跨帧读改写的，这条链是必须的，而它
-      不再顺带把 blit 串进来；picture 的复用由**每 slot 一个"blit 完成"令牌**（`blitDone[slot]`，引擎交给
-      presenter、presenter 在 blit 结束时 signal，两帧后再等它）保护。present 失败的路径要
-      `AbandonBlitDoneHandoff()`（否则那个令牌永远不会被 signal）。
-      **实测收益在噪声内**（滑动 `feed 36902→37182ms`、视频 `44550→44715ms`）：因为上界就是 blit 桶
-      （滑动 ≈2.2ms/56ms 帧；视频受解码支配）。它买到的是"去掉一条真实的串行依赖"而不是当下的吞吐，
-      present 变重（缩放/更大 letterbox）或解码 kernel 并行化之后才会体现。
-    - **参考模型（gdi/FreeRDP 侧，改这块前先看）**：gdi 的"合成"就是**每帧一次**——
-      `gdi_StartFrame` 置 `gdi->inGfxFrame=TRUE`，帧内 `gdi_interFrameUpdate` **不**刷 surface；`EndFrame`
-      才 `gdi_UpdateSurfaces` → `gdi_OutputUpdate`（按 region16 的矩形、clip 到 mapped 范围、1:1 拷进主缓冲）。
-      这正是引擎 `Compose()` 的等价物。**帧回执的语义是"已解码/已应用"，不是"已上屏"**：
-      `rdpgfx_recv_end_frame_pdu` 在 `context->EndFrame` 返回后立刻发 `RDPGFX_FRAME_ACKNOWLEDGE_PDU`
-      （`TotalDecodedFrames++`、`queueDepth = QUEUE_DEPTH_UNAVAILABLE`）；客户端可用
-      `SUSPEND_FRAME_ACKNOWLEDGEMENT` 反向压服务端。⇒ **引擎的 ack 不需要等 GPU**，现在"等"的唯一来源是
-      引擎把 `Flush()`(submit **+** wait) 当成上屏就绪点。gdi 是同步的，所以它天然"不等"；引擎可以做得
-      更好：**CPU 不等待、只用 semaphore 串**（GPU 仍按帧串行，因为 surfaces 是读写共享的持久状态）。
-    - **持久桌面图 + 只写脏区 ⇒ ping-pong 需要"按图记 damage"**：picture 图是**累积**内容（每帧只写本帧
-      脏区），所以两张图各自缺对方的增量——只把本帧脏区写进 A，B 里那块还是更早的内容。要让每张图都能
-      被采成完整桌面，必须给**每张图记"自上次写它以来漏掉的脏区"**（compose 时写 `本帧脏区 ∪ 该图漏掉的
-      脏区`），或退回整幅拷贝（等于放弃脏区合成）。这与"按 swapchain 图像维护已写入增量"是同一套记账，
-      是 ping-pong 的**必要条件**而非可选优化（也是把上屏整幅 quad 缩成脏矩形的同一套机制）。
+  - **上屏（present）那一段的实现、帧槽与设备侧握手、picture ping-pong、CPU vs GPU 耗时对比与后续工作清单**：
+    单独成文 → [present-pipeline.md](present-pipeline.md)。
+
 - **两条后端的分工必须完全一致**（否则就是一条快一条慢）：**CPU 只把脏区交出去一次，不做任何像素变换**
   ——通道交换、缩放、letterbox 一律在 GPU 侧；`glTexSubImage2D`/staging 上传只做行拷贝。Vulkan 侧因此用
   **一个小 quad（采样 + fragment shader 换通道序 + dynamic viewport 做 letterbox）**而不是
@@ -543,7 +442,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
-- **GPU 侧逐条合成：修掉传输可见性缺口，然后打开 `Impl::kComposeRects`**（§2.3）。已知：
+- **GPU 侧逐条合成（`Impl::kComposeRects`）：传输可见性缺口已被掩盖，降级为潜在隐患**
+  （重建后的管线实测：rect 模式同样 `bad=0`，旧症状不复现；机理、实测数据与"何时该重新拾起"见
+  [`present-pipeline.md`](present-pipeline.md) §4.2）。历史已知：
   - 复现：同一份滑动样本 `bad=1`、**156 px @ (992,1728)-(1007,1791)**（复跑同一 bbox）；box 模式 `bad=0`；
     只有 `kComposeRects=true` 才出现（"分叉放大器"效应，见 §6）。
   - **已定性**：不是解码/合成语义错——差异像素在**引擎屏幕 / 表面的 CPU 映射 / 表面的设备侧读**
@@ -567,30 +468,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
     在这台设备上**不能**用来判"结果错 vs 只是读回陈旧"。
   - **量测纪律**：引擎内的一次性读回探针会改变失败形状（156 px → 60 px），禁用；定位只用比较侧探针
     （`GfxReplay::CompareFrames` 的 `ProbeMismatchPixels`：`bad` 帧里从引擎表面取回像素，
-    只读映射、不做设备读回，输出 `surface==primary / surface==screen / noSurface` 计数）。
-  - **上屏策略已定量（见 §2.3 的成本账）**：上屏侧 box 与逐条 rect 的差别 ≤1ms/帧（逐条净赚
-    ≈0.4ms/帧，端到端在噪声内），而每帧 13.5ms 的 present 里 11.4ms 是在等 Progressive 解码 kernel。
-    ⇒ **上屏侧就用 box（`kComposeRects=false`，当前默认）**：它正确、region 少、录制更省，本身就是
-    只拷标记的 hull（不是整屏）。**不要**为了对齐 CPU 侧的逐条上传去打开 `kComposeRects`。
-  - **上屏实现已统一（§2.3）**：一条 quad（采样 picture 图）+ 生产者交 BGRA + per-slot descriptor set；
-    两份录像 `bad=0`，两条路线截图核过色。下一步（按收益）：
-    1. **present 不再等解码：已完成**（`kSlots` 槽位 + `SubmitFrame`/semaphore 链 + **按 slot 记账**
-       （arena/descriptor pool/时间戳池/延迟回收/compute 标志）+ `FlushAll` 给 CPU 读回路径）。
-       两份录像 `bad=0`、`unsupported=0`；滑动 `present 13.75→2.50ms`、`feed −9.7%`；
-       视频 `present 193→1.50ms`、`fps 3.4→4.4`、`feed −23%`。语义：surfaces 是读写共享的持久状态
-       ⇒ 引擎的帧在 **GPU 上仍按序**（靠 blitDone 链），拿到的是"CPU 与 GPU 重叠"。
-    2. **compose 与 blit 重叠：已完成**（picture ping-pong + 按图记 damage + 按 picture 的 blit 令牌 +
-       引擎自身的 `engineChain`）。两份录像 `bad=0`/`unsupported=0`/`fail=0`；ping-pong 本身在滑动样本
-       `feed −2.3%`，而"重叠"那一步实测在噪声内（上界 = blit 桶）。若哪天觉得这份复杂度不值（4 个
-       semaphore + 令牌记账换来当下的 ~0），可以退回到"引擎等上一次 blit"的单令牌版本（§2.3 的旧描述），
-       代价是重新引入那条串行依赖。参见 §2.3 的坑（`CoalesceRects` 原地排序）。
-    3. **合并成一张 picture 图**（引擎不再持有自己的屏幕镜像）：省一张全屏图与其生命周期，也让
-       "presenter 只认一张图"真正成立。
-    4. **把上屏的整幅 quad 缩成脏矩形**（≈2.8%）：按 **swapchain 图像**各维护已写入的增量（生产者侧
-       记账，和上面 ping-pong 的 damage 账是同一套机制），整幅 quad 只画脏区。`vkQueuePresentKHR` 这条
-       路**没有** damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里（且它只是提示、
-       不减少我们自己的写入）；**不要**改用 `OH_NativeWindow_*`/`FlushBuffer(..., Region)`（CPU 生产者
-       路径，本仓库已试过并删除）。优先级在**解码 kernel 并行化**
+  - **上屏（present）那一段**：实现（一套 quad + 帧槽 + 设备侧握手 + picture ping-pong）、CPU/GPU 耗时对比、
+    以及**按差异来源优化**的待办（用增量 egion16 重写引擎脏区账等）单独成文 →
+    [present-pipeline.md](present-pipeline.md)。
        （[`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)，22ms/帧 GPU）之后。
   - 逐条 rect 只有在**换成非 transfer 的合成路径**（compute 写屏幕镜像，见 §1）后才有意义，且只值得
     在"拷贝带宽成为主成本"的场景（高分辨率 + 稀疏更新 + 解码不再是大头）；顺手用它做"上屏结果是否真的
