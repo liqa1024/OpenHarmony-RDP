@@ -76,6 +76,14 @@ export class AppSettings {
   hardwareDecode: boolean = true;
   // Dev-only capture of the RemoteFX/Progressive stream (doc_agent/gfx-engine.md §6).
   rfxDump: boolean = false;
+  // Progressive tile decode workers: 0 = automatic (performance-core count, or
+  // min(cores, 4) when the device does not expose its clusters), 1 = decode on
+  // the receiving thread with no worker pool, n = n workers. The decode is the
+  // dominant cost of the CPU (gdi) path, and on a mobile SoC the useful range is
+  // narrow: past the performance cores the frame time stops improving while the
+  // little cores still get woken, so automatic is the default and the manual
+  // value exists for devices the probe cannot read.
+  decodeThreads: number = 0;
 }
 
 export class SettingsStore {
@@ -179,6 +187,8 @@ export class SettingsStore {
       settings.hardwareDecode =
         SettingsStore.readBoolean(store, 'hardwareDecode', settings.hardwareDecode);
       settings.rfxDump = SettingsStore.readBoolean(store, 'rfxDump', settings.rfxDump);
+      settings.decodeThreads =
+        SettingsStore.readNumber(store, 'decodeThreads', settings.decodeThreads);
     }
     return settings;
   }
@@ -219,6 +229,7 @@ export class SettingsStore {
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.putSync('hardwareDecode', settings.hardwareDecode);
       store.putSync('rfxDump', settings.rfxDump);
+      store.putSync('decodeThreads', settings.decodeThreads);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));

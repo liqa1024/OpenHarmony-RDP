@@ -82,6 +82,8 @@ struct SettingsPage {
   private hardwareDecodeReason: string = '';
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State rfxDump: boolean = false;
+  // Progressive tile decode workers: 0 = automatic (see AppSettings.decodeThreads).
+  @State decodeThreads: number = 0;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -150,6 +152,8 @@ struct SettingsPage {
     this.ignoreCertificate = settings.ignoreCertificate;
     this.rfxDump = settings.rfxDump;
     RdpNative.applyHardwareDecode(this.hardwareDecode && this.hardwareDecodeSupported);
+    this.decodeThreads = settings.decodeThreads;
+    RdpNative.applyDecodeThreads(this.decodeThreads);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
@@ -176,6 +180,20 @@ struct SettingsPage {
       dir = '';
     }
     RdpNative.applyRfxDump(this.rfxDump, dir);
+  }
+
+  // Honest wording, because the measurement says this is NOT a performance knob:
+  // 2, 3, 4, 6 and 8 workers all give the same frame time and the same CPU (the
+  // decode's own parallel efficiency is the limit, not the core count - see
+  // doc_agent/gfx-progressive-kernel.md §4), while 1 (decode on the receiving
+  // thread, no pool) costs far less CPU at a slower frame. So the useful ends are
+  // "automatic" and "1"; the values in between are for experiments.
+  private decodeThreadsSubtitle(): string {
+    const tail: string = '实测 2 及以上基本无差别（瓶颈是解码本身的并行效率）；1 = 只在接收线程解码，最省电';
+    if (this.decodeThreads !== 0) {
+      return `Progressive 解码的线程数。${tail}`;
+    }
+    return `Progressive 解码的线程数（0 = 自动）。${tail}。当前自动：${RdpNative.describeDecodeThreads()}`;
   }
 
   private sizeText(value: number): string {
@@ -244,6 +262,7 @@ struct SettingsPage {
     settings.ignoreCertificate = this.ignoreCertificate;
     settings.hardwareDecode = this.hardwareDecode;
     settings.rfxDump = this.rfxDump;
+    settings.decodeThreads = this.decodeThreads;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -259,6 +278,7 @@ struct SettingsPage {
     // without waiting for an app restart.
     RdpNative.applyRdpCursor(this.useRdpCursor);
     RdpNative.applyHardwareDecode(this.hardwareDecode);
+    RdpNative.applyDecodeThreads(this.decodeThreads);
   }
 
   private resetDefaults(): void {
@@ -287,6 +307,7 @@ struct SettingsPage {
     this.ignoreCertificate = defaults.ignoreCertificate;
     this.hardwareDecode = defaults.hardwareDecode;
     this.rfxDump = defaults.rfxDump;
+    this.decodeThreads = defaults.decodeThreads;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -951,6 +972,30 @@ struct SettingsPage {
                   ? '已开启码流抓取：录制需走 RFX 软解（gdi），硬件解码已自动关闭' : ''),
               onChange: (v: boolean) => {
                 this.hardwareDecode = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.sliderItem({
+              title: '解码线程数',
+              // 0 is "let the app pick": the performance-core count when the
+              // device exposes it, else min(cores, 4). The decode is the CPU
+              // (gdi) path's dominant cost, and past the performance cores the
+              // frame time stops improving while the little cores still get
+              // woken for every message - so more is not better here.
+              subtitle: this.decodeThreadsSubtitle(),
+              value: this.decodeThreads,
+              min: 0,
+              max: 8,
+              step: 1,
+              unit: '',
+              precision: 0,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: number) => {
+                this.decodeThreads = v;
                 this.persist();
               }
             })

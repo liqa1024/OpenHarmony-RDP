@@ -269,6 +269,9 @@ struct SessionPage {
     // imported from another device).
     RdpNative.applyHardwareDecode(settings.hardwareDecode
       && DeviceCapabilities.hardwareDecode().supported);
+    // Process-global decode worker count (live sessions decode on the CPU until
+    // the engine takes over); 0 = automatic.
+    RdpNative.applyDecodeThreads(settings.decodeThreads);
     let filesDir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();

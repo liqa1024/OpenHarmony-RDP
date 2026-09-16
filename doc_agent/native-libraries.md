@@ -52,6 +52,25 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
    直接来自 `malloc` 且**从未清零**，而 DIFFERENCE / UPGRADE 是**先读后写**的预测器状态；编码器假定
    客户端状态初值为 0，于是参考解码器的输出取决于堆里恰好有什么（对拍**不可复现**）。补丁在分配后
    `memset` 为 0。这一条只是"让参考侧确定"，不改协议语义。
+9. **客户端侧带宽 / 帧回执 / 线程扇出**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
+   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；winpr 线程池 worker 与
+   drdynvc 线程在入口调 app 注册的 **QoS** 钩子，并把**线程池扇出上限压到 4**（每核一个 worker
+   被每条 Progressive 消息唤醒只费电不提吞吐）。上限 4 在**"每 tile 记账开销"被第 10 步拿掉之后复测过**：
+   提到 8 没有收益（[`cpu-path.md`](cpu-path.md) §3 有数），所以保持不变。
+10. **CPU（gdi）链路的 progressive 解码调优**：tile 任务**分片 + 共享计数器动态领取**（替代每 tile
+   一个线程池任务）、`update_tiles` **不再逐 tile 建 `REGION16`**（一次取裁剪表 + 普通求交 + per-tile
+   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
+    三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
+    统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
+    [`cpu-path.md`](cpu-path.md) §1/§2。
+11. **解码线程数可运行时控制**：导出 `HmrdpSetDecodeThreads(n)`（0 = 内置默认）、`HmrdpGetDecodeThreads()`、
+    `HmrdpApplyDecodeThreads(PTP_POOL)`（改线程数时**只动解码自己的那个池**，且在 region 边界调用，
+    不会撕掉在飞的 work item）与 `HmrdpGetDecodeThreadsStats()`（dev 读数）。池是**每个 codec 上下文
+    一个**（`rfx.c`），创建时就按同一个解析器定尺寸，所以"改设置 → 下一条会话/回放生效"；`n == 1`
+    在 `progressive.c` 里走**完全串行**分支（不提交、不唤醒、不等待）。上游在该库上做了
+    `-DOHOS_ALLOW_UNDEFINED_SYMBOLS=ON`，所以**导出符号打错/漏定义只有到设备 dlopen 时才炸**
+    （症状：`relocating failed: symbol not found` + `does not provide an export name …` + 启动即退）——
+    改完补丁请用 `llvm-nm -D --undefined-only libwinpr3.so | findstr Hmrdp` 自检一遍。
 
 ## 4. 编 FreeRDP 时的关键选项
 

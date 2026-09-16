@@ -23,6 +23,14 @@ const ROUTE_VULKAN: number = 1;
 const ROUTE_VULKAN_COMPARE: number = 2;
 const ROUTE_LABEL: string[] = ['CPU', 'Vulkan', 'Vulkan对比'];
 
+// Progressive decode worker counts the 「线程」 button cycles through. 0 is the
+// automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
+// the receiving thread with no worker pool. The decode is the CPU (gdi) path's
+// dominant cost, so this is the knob for its time-vs-energy curve
+// (doc_agent/gfx-engine.md §3).
+const DECODE_THREAD_CHOICES: number[] = [0, 1, 2, 3, 4, 6, 8];
+const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
+
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
     (surfaceId: string, width: number, height: number) => {};
@@ -63,6 +71,9 @@ struct GfxReplayPage {
   // Needs a capture recorded with arrival times; the stats line reports the mode
   // actually used (`mode=fast|realtime`).
   @State replayRealtime: boolean = false;
+  // Index into DECODE_THREAD_CHOICES: which Progressive decode worker count this
+  // dev page asks for (applied process-wide, so the CPU route uses it).
+  @State decodeWorkerIndex: number = 0;
   // On-device performance panel: the stats string is multi-line, shown in a
   // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
@@ -123,6 +134,13 @@ struct GfxReplayPage {
     if (dir.length === 0) {
       this.status = 'filesDir 不可用';
       return;
+    }
+    // The decode worker count is process-wide and picked up at the next
+    // Progressive message, so set it before the replay starts feeding.
+    try {
+      RdpNative.applyDecodeThreads(DECODE_THREAD_CHOICES[this.decodeWorkerIndex]);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'decode threads unavailable: %{public}s', JSON.stringify(error));
     }
     RdpNative.stopReplayTest();
     if (this.isVulkanRoute()) {
@@ -250,6 +268,20 @@ struct GfxReplayPage {
           .onClick(() => {
             this.startReplay();
           })
+
+        // Decode worker count for the CPU (gdi) route: each click restarts the
+        // replay, so one click per point on the time-vs-energy curve.
+        Button(`线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ left: 8 })
+          .onClick(() => {
+            this.decodeWorkerIndex = (this.decodeWorkerIndex + 1) % DECODE_THREAD_CHOICES.length;
+            this.startReplay();
+          })
       }
       .width('100%')
       .padding({ left: 12, right: 12, top: 8, bottom: 8 })
@@ -272,7 +304,7 @@ struct GfxReplayPage {
                 .fontColor('#FF9CDCFE')
                 .width('100%')
             }
-            Text(`路线:${ROUTE_LABEL[this.replayRoute]}`)
+            Text(`路线:${ROUTE_LABEL[this.replayRoute]}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
               .fontSize(12)
               .fontColor('#FFFFD479')
               .width('100%')

@@ -15,11 +15,13 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "hmrdp_decode_tuning.h"
 #include "hmrdp_gfx_capture.h"
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
@@ -28,6 +30,15 @@
 #include "hmrdp_vk_desktop.h"
 #include "hmrdp_vk_renderer.h"
 #include "hmrdp_presenter.h"
+
+// DEV-ONLY: phase timers exported by the patched FreeRDP progressive decoder
+// (libfreerdp/codec/progressive.c). Weak, so a stock FreeRDP just reports none.
+extern "C" unsigned long long HmrdpProgStat[8] __attribute__((weak));
+
+// DEV-ONLY: what the patched libwinpr did with the decode worker count -
+// out = { requested, workers the pool really has, resizes }. Weak, so a stock
+// FreeRDP just reports nothing.
+extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((weak));
 
 namespace hmrdp {
 
@@ -121,6 +132,17 @@ int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
+}
+
+// Process CPU time (all threads), the energy proxy for the thread-count A/B: a
+// run that gets no faster while burning more CPU is the wrong side of the
+// efficiency curve. Zero when the platform does not provide it.
+int64_t ProcessCpuUs() {
+  struct timespec ts = {};
+  if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) != 0) {
+    return 0;
+  }
+  return static_cast<int64_t>(ts.tv_sec) * 1000000 + static_cast<int64_t>(ts.tv_nsec) / 1000;
 }
 
 // Stable route name for the stats panel / hilog.
@@ -242,6 +264,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     uploadRectPresents_.store(0);
     uploadTruncated_.store(0);
     uploadMaxRects_.store(0);
+    cpuStartUs_.store(0);
+    cpuEndUs_.store(0);
     pumpUs_.store(0);
     pumpStartUs_.store(0);
     paceUs_.store(0);
@@ -284,6 +308,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
       "path=%{public}s",
       RouteName(static_cast<GfxReplayRoute>(route_.load())),
       effectiveRealtime ? "realtime" : "fast", surfaceW, surfaceH, gfxPath.c_str());
+  HMRDP_LOGI("gfx replay: decode %{public}s", DecodeThreadsInfo().c_str());
   return true;
 }
 
@@ -395,6 +420,24 @@ std::string GfxReplay::StatsLines() {
                 running_.load() ? 1 : 0);
   std::string out(head);
 
+  // Worker count + the run's total process CPU time: the thread-count A/B needs
+  // both the wall time (above) and what it cost, or "same speed, more cores
+  // woken" looks like a tie (doc_agent/gfx-engine.md §3).
+  const int64_t cpuStart = cpuStartUs_.load();
+  const int64_t cpuEnd = cpuEndUs_.load();
+  if (cpuStart != 0 && cpuEnd > cpuStart) {
+    char run[200];
+    unsigned int pool[3] = {0, 0, 0};
+    if (HmrdpGetDecodeThreadsStats != nullptr) {
+      HmrdpGetDecodeThreadsStats(pool);
+    }
+    std::snprintf(run, sizeof(run),
+                  "\nrun  threads=%d  libWants=%u  applies=%u resizes=%u  cpu=%.2fs",
+                  hmrdp::DecodeThreads(), pool[0], pool[1], pool[2],
+                  static_cast<double>(cpuEnd - cpuStart) / 1000000.0);
+    out += run;
+  }
+
   // CPU route only (the GPU route composes in the engine and never presents a gdi
   // frame): how many bytes actually left the CPU, versus what the merged bounding
   // box would have cost for the same run (the saving is then visible in every run
@@ -439,6 +482,60 @@ std::string GfxReplay::StatsLines() {
                   static_cast<unsigned long long>(work.commands / frames),
                   static_cast<unsigned long long>(work.bytes / frames / 1024));
     out += wl;
+
+    // Non-pixel GFX commands, per frame: these used to land in `zgx+parse`
+    // (a CreateSurface / ResetGraphics 0xFF-fills a whole surface).
+    const uint64_t* su = work.setupUs;
+    const uint64_t* sc = work.setupCount;
+    if (work.SetupUs() > 0) {
+      char st[400];
+      auto ms = [&frames](uint64_t us) {
+        return static_cast<double>(us) / static_cast<double>(frames) / 1000.0;
+      };
+      std::snprintf(
+          st, sizeof(st),
+          "\nsetup ms/frame: reset=%.2f(%llu) create=%.2f(%llu) delete=%.2f(%llu) map=%.2f(%llu)"
+          " fill=%.2f(%llu) blit=%.2f(%llu) cache=%.2f(%llu) imp=%.2f(%llu)  total=%.2fms/frame",
+          ms(su[static_cast<int>(GfxSetupKind::kReset)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kReset)]),
+          ms(su[static_cast<int>(GfxSetupKind::kCreate)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kCreate)]),
+          ms(su[static_cast<int>(GfxSetupKind::kDelete)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kDelete)]),
+          ms(su[static_cast<int>(GfxSetupKind::kMap)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kMap)]),
+          ms(su[static_cast<int>(GfxSetupKind::kFill)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kFill)]),
+          ms(su[static_cast<int>(GfxSetupKind::kBlit)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kBlit)]),
+          ms(su[static_cast<int>(GfxSetupKind::kCache)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kCache)]),
+          ms(su[static_cast<int>(GfxSetupKind::kImport)]),
+          static_cast<unsigned long long>(sc[static_cast<int>(GfxSetupKind::kImport)]),
+          ms(work.SetupUs()));
+      out += st;
+    }
+
+  }
+
+  // DEV-ONLY progressive decode attribution (patched FreeRDP, see the weak
+  // declaration above): per-frame milliseconds plus the update_tiles totals.
+  // Only the CPU route installs the meter, so the counters are gated on it -
+  // otherwise a run that follows a CPU replay would show its totals here.
+  if (&HmrdpProgStat[0] != nullptr && work.frames > 0 && HmrdpProgStat[5] > 0) {
+    const double d = static_cast<double>(work.frames > 0 ? work.frames : 1);
+    char ps[288];
+    std::snprintf(ps, sizeof(ps),
+                  "\nprog  ms/frame: read=%.2f dispatch=%.2f wait=%.2f (block=%.2f) "
+                  "update=%.2f  (calls=%llu composited=%llu)",
+                  static_cast<double>(HmrdpProgStat[0]) / d / 1e6,
+                  static_cast<double>(HmrdpProgStat[1]) / d / 1e6,
+                  static_cast<double>(HmrdpProgStat[2]) / d / 1e6,
+                  static_cast<double>(HmrdpProgStat[7]) / d / 1e6,
+                  static_cast<double>(HmrdpProgStat[3]) / d / 1e6,
+                  static_cast<unsigned long long>(HmrdpProgStat[5]),
+                  static_cast<unsigned long long>(HmrdpProgStat[6]));
+    out += ps;
   }
 
   // Per-command-class breakdown only exists on the GPU route (the CPU route
@@ -787,8 +884,17 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   hmrdp::GfxDumpSetReplaying(true);
   hmrdp::GfxReplayResetParseUs();
 
+  // DEV-ONLY: reset the patched decoder's phase counters so this run's figures
+  // are not mixed with a previous one (the library outlives the replay).
+  if (&HmrdpProgStat[0] != nullptr) {
+    for (int i = 0; i < 8; ++i) {
+      HmrdpProgStat[i] = 0;
+    }
+  }
+
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
+  cpuStartUs_.store(ProcessCpuUs());
 
   ReplayPaceFn pace;
   if (realtimeActive_.load() != 0) {
@@ -796,6 +902,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   }
   const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
   const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum);
+  cpuEndUs_.store(ProcessCpuUs());
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -961,7 +1068,11 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
+  // The pacing sleep happens inside this same gdi EndFrame, so report it to the
+  // meter instead of letting it be counted as compose work (hmrdp_gfx_work.h).
+  const int64_t paceStart = NowUs();
   PaceFrame(presented);
+  meter_.OnPace(static_cast<uint64_t>(NowUs() - paceStart));
 }
 
 }  // namespace hmrdp

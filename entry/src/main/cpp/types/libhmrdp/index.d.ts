@@ -75,6 +75,9 @@ export const setRdpCursor: (enabled: boolean) => boolean;
  * session connects.
  */
 export const setHardwareDecode: (enabled: boolean) => boolean;
+/** Progressive tile decode workers: 0 = automatic. */
+export const setDecodeThreads: (workers: number) => boolean;
+export const decodeThreadsInfo: () => string;
 
 /**
  * Dev-only: capture the full GFX command stream (`<dir>/hmrdp_gfx.bin`) plus

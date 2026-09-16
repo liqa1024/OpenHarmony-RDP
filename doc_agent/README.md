@@ -14,7 +14,8 @@
 | 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
 | 改 GFX / Progressive / GPU 引擎 | [`gfx-engine.md`](gfx-engine.md)（**先读"必须保留的语义"**） |
 | 改上屏（present）管线 / 帧槽 / picture ping-pong | [`present-pipeline.md`](present-pipeline.md) |
-| 改 RLGR 解码 kernel 的并行化 | [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)（**后续工作清单**） |
+| 改 CPU（gdi）链路的性能 / 解码线程数 / 线程池 | [`cpu-path.md`](cpu-path.md)（**口径 + 后续工作清单**） |
+| 改 RLGR 解码 kernel（GPU 引擎侧）的并行化 | [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)（**后续工作清单**） |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
@@ -35,8 +36,11 @@
   真机专属口径、**回放验证回路与逐像素 `bad=0` 验收（含两份基线录像）**、待办。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套 `VkRenderer` 实现、帧槽与
   设备侧握手、picture ping-pong、CPU/GPU 耗时对比与后续工作清单。
-- [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) —— **后续工作清单**：RLGR 解码 kernel 的
-  producer/consumer 并行化（依据、实现要点、已踩的坑、已否决方案）。
+- [`cpu-path.md`](cpu-path.md) —— **CPU（gdi）链路**：每帧工时与账目（`prog`/`setup`/`cpu=` 怎么读）、
+  已做的优化与数字、**解码线程数（能效曲线，为什么它不是性能旋钮）**、并行效率（访存/缓存干扰）、
+  WinPR 池的鸿蒙适配、其余候选（三遍冗余搬运/矩形合并/流水线/内存缓存）、实施顺序与**量测陷阱**。
+- [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) —— **后续工作清单（只讲 GPU 引擎侧）**：
+  RLGR 解码 kernel 的 producer/consumer 并行化（依据、实现要点、已踩的坑、已否决方案）。
 
 ## 维护约定
 

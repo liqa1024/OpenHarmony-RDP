@@ -168,6 +168,12 @@ class GfxReplay {
   // count, before the presenter cap): says whether the cap was even near and how
   // scattered the content is.
   std::atomic<uint64_t> uploadMaxRects_{0};
+  // Process CPU time (all threads) at the start and the end of the run: the
+  // energy side of the decode-worker A/B. Wall time alone cannot tell "faster"
+  // from "more cores woken for nothing"; a run whose `本机` stops improving while
+  // cpu climbs is past the sweet spot (doc_agent/gfx-engine.md §3).
+  std::atomic<int64_t> cpuStartUs_{0};
+  std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
   // Time spent deliberately sleeping in PaceFrame()/PaceRecord(); subtracted from
   // pumpUs_ so the reported feed cost is compute, not playback throttling.

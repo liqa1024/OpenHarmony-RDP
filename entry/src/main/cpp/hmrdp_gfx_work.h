@@ -26,6 +26,22 @@
 
 namespace hmrdp {
 
+// The GFX commands that are *not* the per-frame pixel work but sit in the same
+// window (they run before the first SurfaceCommand of a chunk, so their time was
+// landing in the `zgx+parse` bucket - e.g. CreateSurface/ResetGraphics memset a
+// whole surface): counted and timed separately so the attribution is explicit.
+enum class GfxSetupKind {
+  kReset = 0,     // ResetGraphics (memsets every surface + resets both codecs)
+  kCreate,        // CreateSurface (allocates + 0xFF-fills a whole surface)
+  kDelete,        // DeleteSurface
+  kMap,           // MapSurfaceToOutput / MapSurfaceToScaledOutput
+  kFill,          // SolidFill
+  kBlit,          // SurfaceToSurface
+  kCache,         // SurfaceToCache / CacheToSurface / EvictCacheEntry
+  kImport,        // Import/ExportCacheEntry / CacheImportReply / DeleteEncodingContext
+  kCount,
+};
+
 class GfxWorkMeter {
  public:
   // One window of accounted work. Per-frame figures are value / frames.
@@ -33,13 +49,23 @@ class GfxWorkMeter {
     uint64_t frames = 0;      // frames the server ended (EndFrame markers)
     uint64_t zgxParseUs = 0;  // chunk arrival -> first command of that chunk
     uint64_t decodeUs = 0;    // wrapped SurfaceCommand
-    uint64_t composeUs = 0;   // gdi EndFrame minus the present inside it
+    uint64_t composeUs = 0;   // gdi EndFrame minus present and playback pacing
     uint64_t presentUs = 0;   // presenter
     uint64_t bytes = 0;       // raw (still ZGX-compressed) GFX bytes
     uint64_t commands = 0;    // surface commands, i.e. Progressive/bitmap messages
     uint64_t maxFrameUs = 0;  // worst single frame's total client work
+    // Non-pixel GFX commands (see GfxSetupKind), counted/timed per kind.
+    uint64_t setupUs[static_cast<int>(GfxSetupKind::kCount)] = {};
+    uint64_t setupCount[static_cast<int>(GfxSetupKind::kCount)] = {};
 
     uint64_t WorkUs() const { return zgxParseUs + decodeUs + composeUs + presentUs; }
+    uint64_t SetupUs() const {
+      uint64_t total = 0;
+      for (uint64_t us : setupUs) {
+        total += us;
+      }
+      return total;
+    }
   };
 
   // --- fed on the thread that handles the stream (RDP thread / replay thread) ---
@@ -51,8 +77,15 @@ class GfxWorkMeter {
   void AccountChunkPrefix();
   // One decoded surface command (also counts the message).
   void OnDecode(uint64_t micros);
+  // One non-pixel GFX command (surface lifecycle / mapping / fill / blit /
+  // cache). Reported separately from the per-frame phases.
+  void OnSetup(GfxSetupKind kind, uint64_t micros);
   // The presenter finished one present of the current frame.
   void OnPresent(uint64_t micros);
+  // Playback throttling that happened *inside* the frame (the CPU replay paces
+  // between presented frames, and that sleep sits inside gdi's EndFrame). It is
+  // not client work, so it is subtracted from the compose share.
+  void OnPace(uint64_t micros);
   // The frame's EndFrame returned; `micros` is the whole EndFrame (compose +
   // present). Closes the frame and moves its work into the window totals.
   void OnFrameEnd(uint64_t endFrameMicros);
@@ -73,6 +106,7 @@ class GfxWorkMeter {
   uint64_t frameZgxUs_ = 0;
   uint64_t frameDecodeUs_ = 0;
   uint64_t framePresentUs_ = 0;
+  uint64_t framePaceUs_ = 0;
   uint64_t frameBytes_ = 0;
   uint64_t frameCommands_ = 0;
   bool chunkPending_ = false;
@@ -87,6 +121,8 @@ class GfxWorkMeter {
   std::atomic<uint64_t> windowBytes_{0};
   std::atomic<uint64_t> windowCommands_{0};
   std::atomic<uint64_t> windowMaxFrameUs_{0};
+  std::atomic<uint64_t> windowSetupUs_[static_cast<int>(GfxSetupKind::kCount)];
+  std::atomic<uint64_t> windowSetupCount_[static_cast<int>(GfxSetupKind::kCount)];
 };
 
 // The meter currently installed (nullptr when nothing measures). The capture hook

@@ -274,13 +274,12 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 
 - **CPU（gdi）链路的并行度：解码已经并行，流水线没有——后者是我们的活**：
-  - **已经是并行的**：Progressive 的 tile 解码走 WinPR 线程池，`progressive_process_tiles` 对**每个
-    tile** 提交一个 work item（`CreateThreadpoolWork`/`SubmitThreadpoolWork`）再整批
-    `WaitForThreadpoolWorkCallbacks`；池的最小线程数 = CPU 核数，开关是
-    `rfx_context->priv->UseThreads`（`codec/rfx.c` 里默认 TRUE，只有传了
-    `THREADING_FLAGS_DISABLE_THREADS` 才关；`FreeRDP_ThreadingFlags` 默认 0，本工程没设）。
-    ⇒ 共享池由**所有** codec 上下文各建一份（gdi 的 `codecs->progressive` 与 GFX 的
-    `gfx->codecs` 各一个），排查 CPU 占用前先确认这个开关。
+  - **已经是并行的**：Progressive 的 tile 解码走 WinPR 线程池（**每个 codec 上下文一个池**，`rfx.c`
+    的 `CreateThreadpool`；worker 数由 `HmrdpSetDecodeThreads` 控制，默认 `min(性能核数, 4)`，
+    **`n == 1` 走完全串行分支**；开关仍是 `rfx_context->priv->UseThreads`）。提交侧现在是
+    **分片 + 共享计数器动态领取**（patch 第 10 步），不再是"每 tile 一个 work item"。
+    ⇒ 排查 CPU 占用前先确认这个开关与 worker 数（**曲线、能效与"为什么它不是性能旋钮"见
+    [`cpu-path.md`](cpu-path.md) §3**）。
   - **仍然串行（全在 RDP 线程上，按 chunk 从头走到尾）**：transport 读 + drdynvc 重组 → ZGX 解压 →
     RDPGFX PDU 解析 → **每条 Progressive 消息一次 fork/join**（一帧 4~7 次，含逐 tile 建 work item
     与线程池唤醒）→ `update_tiles` 的**重复合成**（`codec/progressive.c`，消息数 × tile 数的
@@ -289,7 +288,25 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
     **没有重叠**，FreeRDP 也不提供这种流水线 ⇒ 要再往上提只有两条路：自己做 producer/consumer，
     或把解码搬进 GPU 引擎（§7）。
   - **量它的办法**：`mode=fast` 回放（不经网络）的 `feed=` ÷ `frames=` 就是这份码流的客户端每帧总耗时
-    上界；LAN 上再把（分相后的）`本机` 与帧周期对照，两者接近就是客户端到顶。
+     上界；LAN 上再把（分相后的）`本机` 与帧周期对照，两者接近就是客户端到顶。
+
+- **CPU 链路的性能：账目、结论与后续清单 → 单独成文 [`cpu-path.md`](cpu-path.md)**。要点（真机实测）：
+  - **账目**：回放 stats 的 `perFrame 本机 = zgx+parse + decode + compose + present`（`decode` 再拆成
+    `prog` 的 read/dispatch/wait(block)/update）、`run … cpu=…s`（整轮进程 CPU，**能耗代理**）、
+    `setup …`（`CreateSurface`/`ResetGraphics` 这类**非像素命令**，它们本来落在 `zgx+parse` 里）。
+    判读顺序与量测陷阱见 cpu-path.md §1/§8。
+  - **已做**：tile 任务分片 + 共享计数器动态领取（`dispatch` 4.0→0.78ms/帧）、`update_tiles` 无分配化 +
+    stamp 去重（`update` 6.3→5.6）、keep-dst-alpha 拷贝走掩码 32 位字、**`ResetGraphics` 不再重分配
+    PLANAR scratch**（滚动样本 `本机` 13.5→**10.5ms**、`feed` −25%、`max` 帧 146→115ms）。
+    **两份录像都过 `bad=0`**。
+  - **线程数（worker）不是性能旋钮**：≥2 之后两条样本墙钟都不再变（视频 24–25ms、滚动 13–14ms），
+    而**串行只烧 43%/60% 的 CPU** ⇒ 它是**省电旋钮**（到达侧限速、duty 很低时用 1），自动值 4 是折中；
+    控制面是 patch 第 11 步 + 设置页「解码线程数」。
+  - **并行效率才是瓶颈（待做）**：同 tile 墙钟串行 **40.9µs** vs 并行(4) **9.1µs** ⇒ 访存/缓存干扰；
+    整轮 CPU 串行 14.46s vs 并行 32.19s，而 tile 数/像素搬运/region 记账/结构命令都不解释它
+    ⇒ 多出来的 CPU 在**并行路径本身**。
+  - **后续清单**（并行效率 / WinPR 池的鸿蒙适配 / 三遍冗余搬运 / 矩形合并 / 流水线化 / 内存缓存 /
+    实施顺序 / 量测纪律）：[`cpu-path.md`](cpu-path.md) §4–§8。
 
 ## 4. 关键实现要点（与引擎配套的会话侧约束）
 
@@ -458,7 +475,9 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 ## 7. 待办
 
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
-  单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+  单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) §1–§3。
+- **CPU（gdi）链路的一切**（并行效率、线程数与能效、WinPR 池的鸿蒙适配、三遍冗余搬运、矩形合并、
+  流水线化、内存缓存、实施顺序、量测纪律）：**单独成文 → [`cpu-path.md`](cpu-path.md)**。
 - **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时
   「硬件解码（RFX）」设置项才真正生效（是否可用的判据取 `vulkanInfo` / `GetVulkanCapabilities()`）；
   在此之前它只是被保留、不参与决策。

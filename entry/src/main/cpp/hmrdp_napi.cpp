@@ -18,6 +18,7 @@
 #include <mutex>
 #include <string>
 
+#include "hmrdp_decode_tuning.h"
 #include "hmrdp_log.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_rfx.h"
@@ -607,6 +608,32 @@ napi_value SetRdpCursor(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
+// Progressive tile decode workers: 0 = automatic (see hmrdp_decode_tuning.h).
+// Applies to the live session and the offline replay alike; the decoder picks
+// the value up at the next Progressive message, so calling this mid-stream is
+// safe.
+napi_value SetDecodeThreads(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t workers = 0;
+  if (argc < 1 || napi_get_value_int32(env, args[0], &workers) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  hmrdp::SetDecodeThreads(workers);
+  return CreateBool(env, true);
+}
+
+// One line describing the choice and what the device exposed, for the settings
+// page ("workers=4 (auto, perf-cores=4[k...])").
+napi_value DecodeThreadsInfo(napi_env env, napi_callback_info info) {
+  (void)info;
+  const std::string out = hmrdp::DecodeThreadsInfo();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value SetHardwareDecode(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -821,6 +848,10 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setRdpCursor", nullptr, SetRdpCursor, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setHardwareDecode", nullptr, SetHardwareDecode, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setDecodeThreads", nullptr, SetDecodeThreads, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"decodeThreadsInfo", nullptr, DecodeThreadsInfo, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,

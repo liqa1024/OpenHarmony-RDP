@@ -3,6 +3,8 @@
  */
 #include "hmrdp_gfx_cpu.h"
 
+#include <chrono>
+
 #include <freerdp/codec/color.h>
 #include <freerdp/codecs.h>
 #include <freerdp/gdi/gfx.h>
@@ -194,12 +196,24 @@ bool GfxCpuDesktop::Resize(int width, int height) {
   if (width == width_ && height == height_) {
     return true;
   }
+  const int oldWidth = width_;
+  const int oldHeight = height_;
   width_ = width;
   height_ = height;
   resizing_ = true;
+  const int64_t t0 = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
   const bool ok =
       gdi_resize(instance_->context->gdi, static_cast<UINT32>(width), static_cast<UINT32>(height));
   resizing_ = false;
+  const int64_t dt = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count() -
+                     t0;
+  HMRDP_LOGI("gfx cpu desktop: resize %{public}dx%{public}d -> %{public}dx%{public}d took "
+             "%{public}lld us",
+             oldWidth, oldHeight, width, height, static_cast<long long>(dt));
   return ok;
 }
 

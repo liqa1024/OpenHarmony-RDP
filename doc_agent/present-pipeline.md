@@ -118,6 +118,10 @@ damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里
 
 ### 4.4 其他
 
+- **CPU 路线：让主缓冲就是 staging buffer（去掉"primary→staging"那一遍 20.6MB/帧的 memcpy）**，
+  以及**逐矩形上传前先把同带相邻矩形并成更长的条**（滚动样本 present 2.5ms 只搬 2.2MB，碎矩形
+  的行拷贝 + copy region 数是主因）：依据、配到的口径与风险见
+  [`cpu-path.md`](cpu-path.md) §6.1/§6.2。
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；
   「硬件解码（RFX）」设置项届时才真正生效。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。

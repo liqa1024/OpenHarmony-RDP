@@ -9,6 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump,
+setDecodeThreads, decodeThreadsInfo,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
 vulkanInfo } from 'libhmrdp.so';
@@ -75,6 +76,22 @@ export class RdpNative {
    * decodes with gdi / FreeRDP's own CPU path). */
   static applyHardwareDecode(enabled: boolean): void {
     setHardwareDecode(enabled);
+  }
+
+  /**
+   * Progressive tile decode workers (process-global, live session and replay
+   * alike). `workers` = 0 means automatic: the performance-core count when the
+   * device exposes it, else min(cores, 4) - the measured sweet spot, see
+   * doc_agent/gfx-engine.md §3. 1 decodes on the receiving thread with no worker
+   * pool at all (the power-optimal end of the range).
+   */
+  static applyDecodeThreads(workers: number): void {
+    setDecodeThreads(workers);
+  }
+
+  /** What the decode worker count currently resolves to, for the settings page. */
+  static describeDecodeThreads(): string {
+    return decodeThreadsInfo();
   }
 
   /** Dev-only RemoteFX stream capture to the given directory. */

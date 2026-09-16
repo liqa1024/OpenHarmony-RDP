@@ -82,7 +82,9 @@
     该回调），故连接时给 `context->autodetect` 自行注册回调捕获。
   - **本机** = **客户端在这一帧上的全部处理时间**（µs/帧）：`zgx+parse`（chunk 到达→该帧第一条命令，
     即 ZGX 解压 + RDPGFX PDU 解析）＋ `decode`（包裹的 `SurfaceCommand`，含 progressive 自己的
-    重复合成 `update_tiles`）＋ `compose`（`gdi_EndFrame` 的 surface→primary 合成）＋ `present`
+     重复合成 `update_tiles`）＋ `compose`（`gdi_EndFrame` 的 surface→primary 合成，**再减去回放的
+     节拍睡眠**——present 在 `EndFrame` 内，而回放的 `PaceFrame` 紧跟在它后面，不扣就会把
+     1.2s 的节拍睡眠算成 8ms/帧的合成；见 `GfxWorkMeter::OnPace`）＋ `present`
     （`PresentGdiFrame`，Vulkan/GLES 呈现器）。
   - **口径约束（读数前必看）**：
     - **分母是 EndFrame 帧数**，不是呈现帧数：一次处理的工作在**它的帧收尾时**才入账，所以"一帧多大"

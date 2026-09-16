@@ -1,8 +1,10 @@
 # Progressive kernel 优化（未完成）
 
-本文件是**后续工作清单**，不是口径文档：只描述 **RLGR 解码 kernel 的并行化**这条线（方向、依据、
-已踩过的坑、验收方式）。改 GFX 语义前以 [`gfx-engine.md`](gfx-engine.md) 为准（尤其 §2.2 与 §3）；
-量测口径也在那边的 §3/§6。
+本文件是**后续工作清单**，不是口径文档，**只讲 GPU 引擎这一侧**（RLGR 解码 kernel 的并行化：
+方向、依据、已踩过的坑、验收方式）。**CPU（gdi）链路的性能优化与清单在
+[`cpu-path.md`](cpu-path.md)**，两者不要混在一起看。
+
+改 GFX 语义前以 [`gfx-engine.md`](gfx-engine.md) 为准（尤其 §2.2 与 §3）；量测口径也在那边的 §3/§6。
 
 ---
 
@@ -89,3 +91,4 @@
   见 [`gfx-engine.md`](gfx-engine.md) §6。
 - 任何性能结论的**前提**是那一轮 `bad=0`（正确性优先；两份录像的验收口径见
   [`gfx-engine.md`](gfx-engine.md) §6）。
+
