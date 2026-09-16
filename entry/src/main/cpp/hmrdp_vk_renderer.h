@@ -18,6 +18,7 @@
 #define HMRDP_VK_RENDERER_H
 
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -52,7 +53,8 @@ class VkRenderer : public FramePresenter {
   // (doc_agent/gfx-engine.md §2.3).
   // `imageFormat` must be VK_FORMAT_B8G8R8A8_UNORM: every producer hands over
   // FreeRDP's BGRA order and the image's own format does the channel conversion.
-  bool PresentImage(VkImage image, VkFormat imageFormat, int width, int height);
+  bool PresentImage(VkImage image, VkFormat imageFormat, int width, int height,
+                    VkSemaphore waitSemaphore, VkSemaphore doneSemaphore);
   // Presents one CPU (gdi) frame: the dirty regions are uploaded into a persistent
   // desktop image (packed into the per-slot staging buffer, one copy region each)
   // and the image is sampled letterboxed. See hmrdp_presenter.h.
@@ -87,7 +89,12 @@ class VkRenderer : public FramePresenter {
   // changes (the engine recreates its screen image on ResetGraphics/resize).
   VkImageView EnsurePresentSourceViewLocked(VkImage image);
   // Ends `cmd`, submits it with this frame slot's fence and presents the image.
-  bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex);
+  // `waitSemaphore` (optional) is the producer's frame-complete signal - the engine
+  // hands its composed picture over on the device instead of the CPU waiting for it;
+  // `signalSemaphore` (optional) reports this blit's completion back to that producer
+  // (see blitDoneSemaphore()).
+  bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex, VkSemaphore waitSemaphore,
+                             VkSemaphore signalSemaphore);
   // The one present draw: the picture (whatever producer filled the source image)
   // is sampled and written to the swapchain image with the letterbox done by the
   // viewport, i.e. no CPU-side pixel transform. The pipeline depends on the render
@@ -135,11 +142,10 @@ class VkRenderer : public FramePresenter {
   VkDescriptorSet presentSets_[kFramesInFlight] = {};
   VkPipeline presentPipeline_ = VK_NULL_HANDLE;
   VkFormat presentPipelineFormat_ = VK_FORMAT_UNDEFINED;
-  // Engine frames: the picture image handed to the last PresentImage() and its view
-  // for the present draw. Both are borrowed (the engine owns the image); the view
-  // is recreated when the handle changes.
-  VkImage presentSourceImage_ = VK_NULL_HANDLE;
-  VkImageView presentSourceView_ = VK_NULL_HANDLE;
+  // Engine frames: a view per picture image handed to PresentImage(). The engine owns
+  // the images and ping-pongs two of them, so they are cached by handle instead of
+  // being recreated per frame (a re-created handle drains the in-flight frames once).
+  std::map<VkImage, VkImageView> presentSourceViews_;
   std::vector<VkImage> images_;
   std::vector<VkImageView> views_;
   std::vector<VkFramebuffer> framebuffers_;
@@ -151,6 +157,9 @@ class VkRenderer : public FramePresenter {
   VkCommandPool commandPool_ = VK_NULL_HANDLE;
   VkCommandBuffer commandBuffers_[kFramesInFlight] = {};
   VkSemaphore imageAvailable_[kFramesInFlight] = {};
+  // Present-completion token: the producer hands over one per frame so it can be told
+  // when the blit that read its picture is done (the presenter owns no semaphore of
+  // its own for this - the engine allocates them per picture slot).
   VkFence inFlight_[kFramesInFlight] = {};
   uint32_t frameIndex_ = 0;
   // Presents reached the screen since construction. Logged periodically so a

@@ -148,6 +148,19 @@ class GfxVkDesktop {
   // presenting, and before destroying resources work still references.
   bool Flush();
 
+  // Present-path hand-off (doc_agent/gfx-engine.md §2.3): submit the frame *without*
+  // waiting, hand `frameSemaphore()` to the presenter so its present waits the frame
+  // on the device instead of blocking the CPU, and pass the presenter's
+  // blit-completion signal back with SetFrameWaitSemaphore() so the next compose
+  // cannot overwrite the picture while the presenter still reads it.
+  bool SubmitFrame();
+  VkSemaphore frameSemaphore() const;
+  // Token the presenter signals when its blit is done reading the frame's picture;
+  // the engine waits it before writing that picture again.
+  VkSemaphore blitDoneSemaphore() const;
+  // The present did not happen, so that token will never be signalled.
+  void AbandonBlitDoneHandoff();
+
  private:
   struct Impl;
   Impl* impl_ = nullptr;

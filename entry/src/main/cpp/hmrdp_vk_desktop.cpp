@@ -5,6 +5,14 @@
 
 #include <freerdp/codec/region.h>
 
+// WinPR's synch.h maps CreateSemaphore -> CreateSemaphoreA, which rewrites the
+// *Vulkan* entry points of the same name reached through VkApi (`api.CreateSemaphore`)
+// in this translation unit. The WinPR headers are already parsed at this point, so
+// dropping the macro here only affects the Vulkan calls below.
+#ifdef CreateSemaphore
+#undef CreateSemaphore
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -256,9 +264,52 @@ struct GfxVkDesktop::Impl {
   std::vector<VkDeviceMemory> dirtyHostMemories;
   std::vector<VkMappedMemoryRange> invalidateScratch;
   VkCommandPool commandPool = VK_NULL_HANDLE;
+  // Frames in flight. Each slot owns a command buffer and a fence so one submission
+  // can stay in flight while the next frame is recorded - the same shape the
+  // presenter already uses (`VkRenderer::kFramesInFlight`), and what lets the
+  // present stop waiting for the frame's own decode (doc_agent/gfx-engine.md §2.3).
+  // `commandBuffer`/`fence`/`recording` are a *view* of the current slot, kept in
+  // sync by SelectSlot()/StoreSlot(), so every recording site keeps addressing one
+  // command buffer.
+  static constexpr int kSlots = 2;
+  int slot = 0;
+  VkCommandBuffer commandBuffers[kSlots] = {};
+  VkFence fences[kSlots] = {};
+  VkSemaphore frameSemaphores[kSlots] = {};
+  bool slotRecording[kSlots] = {};
+  // A slot whose submission has been sent but whose fence has not been waited yet.
+  // Re-recording it (or rewinding the arena/pool it references) requires that wait.
+  bool slotInFlight[kSlots] = {};
+  // The slot whose frame semaphore the presenter must wait (it stays valid even after
+  // the recording slot advances to the next frame).
+  int lastSubmittedSlot = 0;
   VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   bool recording = false;
+  // Device-side hand-off (doc_agent/gfx-engine.md §2.3), all on the GPU so the CPU
+  // never waits for a frame:
+  //  * `frameSemaphores[slot]`: signaled by the frame's submission, waited by the
+  //    presenter's blit for that frame;
+  //  * `engineChain[slot]`: signaled by every submission, waited by the *next* one -
+  //    the surfaces and the decode scratch are read-modify-written across frames, so
+  //    engine frames must stay ordered on the device (this used to be implied by
+  //    waiting the previous blit, which also serialized compose against blit);
+  //  * `blitDone[slot]`: handed to the presenter to signal when its blit finishes;
+  //    waited when this slot's picture is written again (two frames later), so a
+  //    picture is never overwritten while the presenter still reads it.
+  VkSemaphore engineChain[kSlots] = {};
+  bool engineChainPending[kSlots] = {};
+  VkSemaphore blitDone[kSlots] = {};
+  bool blitDonePending[kSlots] = {};
+
+  void SelectSlot(int next) {
+    slot = next;
+    commandBuffer = commandBuffers[next];
+    fence = fences[next];
+    recording = slotRecording[next];
+  }
+
+  void StoreSlot() { slotRecording[slot] = recording; }
   // Writes that later reads in the recorded command buffer must be ordered
   // after. Kept apart because the source stage differs: a CPU write to a mapped
   // buffer is HOST_WRITE, a vkCmdFillBuffer/vkCmdCopyBufferToImage write is
@@ -271,11 +322,32 @@ struct GfxVkDesktop::Impl {
   // while a dispatch is only *recorded* would read the pre-dispatch pixels and
   // then be overwritten when the dispatch finally runs at the next Flush - the
   // exact ordering gdi does not have. SyncForCpuAccess() submits and waits first.
-  bool computeInFlight = false;
+  // Per slot: a slot may have compute recorded/submitted while another slot's
+  // submission is already done (any of them forces a CPU readback to drain first).
+  bool slotComputeInFlight[kSlots] = {};
+
+  bool AnyComputeInFlight() const {
+    for (int i = 0; i < kSlots; ++i) {
+      if (slotComputeInFlight[i]) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   std::map<uint16_t, Surface> surfaces;
   std::map<uint16_t, CacheEntry> cache;
-  GpuImage screen;
+  // Two pictures (ping-pong), one per frame slot: the presenter samples the picture the
+  // last submitted frame composed into while the next frame composes the other one.
+  // Each picture carries the deltas it is *missing* - the rects the other picture got
+  // since this one was last written - because the picture is *accumulated* content
+  // (only this frame's dirty rects are copied into it), so its untouched areas would
+  // otherwise still show the desktop as it was two frames ago
+  // (doc_agent/gfx-engine.md §2.3).
+  GpuImage pictures[kSlots];
+  std::map<uint16_t, std::vector<Surface::DirtyRect>> pictureMissing[kSlots];
+  int pictureW = 0;
+  int pictureH = 0;
 
   // Screen initialisation / fill pattern: vkCmdFillBuffer writes the 32-bit
   // colour, then one vkCmdCopyBufferToImage paints it. The screen is the only
@@ -313,7 +385,9 @@ struct GfxVkDesktop::Impl {
   VkDescriptorSetLayout idwtSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout idwtPipeLayout = VK_NULL_HANDLE;
   VkPipeline idwtPipe = VK_NULL_HANDLE;
-  VkDescriptorPool rfxPool = VK_NULL_HANDLE;
+  // One descriptor pool per frame slot: the sets are allocated while recording and
+  // released by resetting the pool, which must not touch a slot still in flight.
+  VkDescriptorPool rfxPools[kSlots] = {};
 
 
   // Decode scratch: kMaxBatchStreams component planes of 4096 int16 each (the
@@ -331,8 +405,14 @@ struct GfxVkDesktop::Impl {
     size_t capacity = 0;
     size_t used = 0;
   };
-  std::vector<StageBuffer> stageBuffers;
-  size_t stageIndex = 0;
+  // One staging arena per frame slot: the decode/compose dispatches read it, so a
+  // slot that is still in flight must keep its arena intact (doc_agent/gfx-engine.md
+  // §2.3 - the requirement for letting the CPU record a frame ahead).
+  struct StageSlot {
+    std::vector<StageBuffer> buffers;
+    size_t index = 0;
+  };
+  StageSlot stageSlots[kSlots];
   bool pendingComputeWrites = false;
 
   // FreeRDP's WBT block state machine (persists across messages, like
@@ -508,14 +588,17 @@ struct GfxVkDesktop::Impl {
   // effects also shift the work that follows it). Reported per kernel in Stats().
   static constexpr uint32_t kTimestampsPerDispatch = 2;
   static constexpr uint32_t kTimestampCapacity = 16384;  // queries (8192 brackets)
-  VkQueryPool timestampPool = VK_NULL_HANDLE;
+  // Per slot: one submission's queries are read back after *its* fence wait, so the
+  // slots cannot share a pool (a reset while another slot's queries are pending would
+  // discard them).
+  VkQueryPool timestampPools[kSlots] = {};
   double timestampNsPerTick = 0.0;
-  uint32_t timestampWrite = 0;
+  uint32_t timestampWrites[kSlots] = {};
   struct TimestampBracket {
     uint32_t start = 0;
     uint32_t slot = 0;  // 0 = RLGR decode, 1 = inverse DWT, 2 = compose, 3 = screen
   };
-  std::vector<TimestampBracket> pendingTimestamps;
+  std::vector<TimestampBracket> pendingTimestamps[kSlots];
   uint64_t gpuTicks[4] = {0, 0, 0, 0};
   uint64_t gpuSamples[4] = {0, 0, 0, 0};
   // Per-bracket extremes: a kernel whose per-dispatch time is constant while its
@@ -532,25 +615,26 @@ struct GfxVkDesktop::Impl {
 
   // Opens a GPU-time bracket around the dispatch that follows; returns the token
   // to close (UINT32_MAX when timestamps are unavailable / the pool is full).
-  uint32_t TimestampOpen(uint32_t slot) {
-    if (timestampPool == VK_NULL_HANDLE || api().CmdWriteTimestamp == nullptr ||
-        timestampWrite + kTimestampsPerDispatch > kTimestampCapacity) {
-      if (timestampPool != VK_NULL_HANDLE) {
+  uint32_t TimestampOpen(uint32_t kind) {
+    const int s = slot;
+    if (timestampPools[s] == VK_NULL_HANDLE || api().CmdWriteTimestamp == nullptr ||
+        timestampWrites[s] + kTimestampsPerDispatch > kTimestampCapacity) {
+      if (timestampPools[s] != VK_NULL_HANDLE) {
         gpuTimestampDrops++;
       }
       return UINT32_MAX;
     }
-    const uint32_t start = timestampWrite;
-    timestampWrite += kTimestampsPerDispatch;
+    const uint32_t start = timestampWrites[s];
+    timestampWrites[s] += kTimestampsPerDispatch;
     // Both ends at the compute stage: TOP_OF_PIPE -> BOTTOM_OF_PIPE brackets the
     // *whole* queue up to that point (including waiting for earlier work), which
     // made the per-kernel numbers overlap and overshoot the wall clock.
-    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPool,
+    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPools[s],
                             start);
     TimestampBracket bracket;
     bracket.start = start;
-    bracket.slot = slot;
-    pendingTimestamps.push_back(bracket);
+    bracket.slot = kind;
+    pendingTimestamps[s].push_back(bracket);
     return start;
   }
 
@@ -558,31 +642,31 @@ struct GfxVkDesktop::Impl {
     if (token == UINT32_MAX) {
       return;
     }
-    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPool,
+    api().CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestampPools[slot],
                             token + 1);
   }
 
   // Called right after the fence wait: every query of the window has completed,
   // so the results need no wait bit.
-  void CollectTimestamps() {
-    if (pendingTimestamps.empty()) {
-      timestampWrite = 0;
+  void CollectTimestamps(int s) {
+    if (pendingTimestamps[s].empty()) {
+      timestampWrites[s] = 0;
       return;
     }
     VkApi& vk = api();
     const VkDevice dev = device();
     if (dev == VK_NULL_HANDLE || vk.GetQueryPoolResults == nullptr) {
-      pendingTimestamps.clear();
-      timestampWrite = 0;
+      pendingTimestamps[s].clear();
+      timestampWrites[s] = 0;
       return;
     }
-    const uint32_t first = pendingTimestamps.front().start;
-    const uint32_t count = timestampWrite - first;
+    const uint32_t first = pendingTimestamps[s].front().start;
+    const uint32_t count = timestampWrites[s] - first;
     std::vector<uint64_t> ticks(count, 0);
-    if (vk.GetQueryPoolResults(dev, timestampPool, first, count, ticks.size() * sizeof(uint64_t),
+    if (vk.GetQueryPoolResults(dev, timestampPools[s], first, count, ticks.size() * sizeof(uint64_t),
                                ticks.data(), sizeof(uint64_t),
                                VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-      for (const TimestampBracket& bracket : pendingTimestamps) {
+      for (const TimestampBracket& bracket : pendingTimestamps[s]) {
         const uint32_t local = bracket.start - first;
         if (local + 1 >= count) {
           continue;
@@ -602,8 +686,8 @@ struct GfxVkDesktop::Impl {
         }
       }
     }
-    pendingTimestamps.clear();
-    timestampWrite = 0;
+    pendingTimestamps[s].clear();
+    timestampWrites[s] = 0;
   }
 
   double GpuMs(uint32_t slot) const {
@@ -824,7 +908,10 @@ struct GfxVkDesktop::Impl {
     VkDeviceMemory bufferMemory = VK_NULL_HANDLE;
     bool mapped = false;
   };
-  std::vector<DeferredResource> pendingDestroy;
+  // Resources a recorded command buffer may still reference, released only when the
+  // slot that recorded them has been waited: with two slots in flight, releasing on
+  // *any* fence wait would destroy a buffer the other slot still reads.
+  std::vector<DeferredResource> pendingDestroy[kSlots];
 
   void DeferGpuBuffer(GpuBuffer* buffer) {
     if (buffer == nullptr) {
@@ -835,19 +922,19 @@ struct GfxVkDesktop::Impl {
       deferred.buffer = buffer->buffer;
       deferred.bufferMemory = buffer->memory;
       deferred.mapped = (buffer->mapped != nullptr);
-      pendingDestroy.push_back(deferred);
+      pendingDestroy[slot].push_back(deferred);
     }
     *buffer = GpuBuffer{};
   }
 
-  void ReleasePending() {
-    if (pendingDestroy.empty()) {
+  void ReleasePending(int s) {
+    if (pendingDestroy[s].empty()) {
       return;
     }
     const int64_t releaseStart = NowUs();
     VkApi& vk = api();
     const VkDevice dev = device();
-    for (const DeferredResource& deferred : pendingDestroy) {
+    for (const DeferredResource& deferred : pendingDestroy[s]) {
       if (deferred.image != VK_NULL_HANDLE && vk.DestroyImage != nullptr) {
         vk.DestroyImage(dev, deferred.image, nullptr);
       }
@@ -866,7 +953,7 @@ struct GfxVkDesktop::Impl {
         }
       }
     }
-    pendingDestroy.clear();
+    pendingDestroy[s].clear();
     releaseUs += static_cast<uint64_t>(NowUs() - releaseStart);
   }
 
@@ -1007,8 +1094,8 @@ struct GfxVkDesktop::Impl {
     }
     if (left < 0) left = 0;
     if (top < 0) top = 0;
-    if (right > screen.width) right = screen.width;
-    if (bottom > screen.height) bottom = screen.height;
+    if (right > pictureW) right = pictureW;
+    if (bottom > pictureH) bottom = pictureH;
     if (right <= left || bottom <= top) {
       return;
     }
@@ -1124,19 +1211,21 @@ struct GfxVkDesktop::Impl {
       invalidateScratch.push_back(range);
     }
     dirtyHostMemories.clear();
-    // The Progressive staging arena is read by compute too; flushing every arena
-    // buffer is cheaper than tracking them (there are only a handful), and the
-    // driver itself only writes back dirty lines.
-    for (StageBuffer& sb : stageBuffers) {
-      if (sb.memory == VK_NULL_HANDLE || !sb.used) {
-        continue;
+    // The Progressive staging arenas are read by compute too; flushing every arena
+    // buffer (all slots) is cheaper than tracking them (there are only a handful),
+    // and the driver itself only writes back dirty lines.
+    for (StageSlot& arena : stageSlots) {
+      for (StageBuffer& sb : arena.buffers) {
+        if (sb.memory == VK_NULL_HANDLE || !sb.used) {
+          continue;
+        }
+        VkMappedMemoryRange range{};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = sb.memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        invalidateScratch.push_back(range);
       }
-      VkMappedMemoryRange range{};
-      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-      range.memory = sb.memory;
-      range.offset = 0;
-      range.size = VK_WHOLE_SIZE;
-      invalidateScratch.push_back(range);
     }
     if (!invalidateScratch.empty()) {
       vk.FlushMappedMemoryRanges(dev, static_cast<uint32_t>(invalidateScratch.size()),
@@ -1417,7 +1506,7 @@ struct GfxVkDesktop::Impl {
       deferred.buffer = readBuffer;
       deferred.bufferMemory = readMemory;
       deferred.mapped = (readMapped != nullptr);
-      pendingDestroy.push_back(deferred);
+      pendingDestroy[slot].push_back(deferred);
       readBuffer = VK_NULL_HANDLE;
       readMemory = VK_NULL_HANDLE;
       readMapped = nullptr;
@@ -1456,7 +1545,7 @@ struct GfxVkDesktop::Impl {
       DeferredResource deferred;
       deferred.buffer = fillBuffer;
       deferred.bufferMemory = fillMemory;
-      pendingDestroy.push_back(deferred);
+      pendingDestroy[slot].push_back(deferred);
       fillBuffer = VK_NULL_HANDLE;
       fillMemory = VK_NULL_HANDLE;
       fillCapacity = 0;
@@ -1509,15 +1598,22 @@ struct GfxVkDesktop::Impl {
       return true;
     }
     VkApi& vk = api();
+    // This slot's previous submission must be complete before its command buffer is
+    // reset and the arena / descriptor pool it references are rewound: the wait that
+    // used to happen at the present now happens here, when the slot is reused.
+    if (slotInFlight[slot] && !WaitSlot()) {
+      return false;
+    }
     if (vk.ResetCommandBuffer(commandBuffer, 0) != VK_SUCCESS) {
       return false;
     }
-    // A new command buffer only starts after the previous submission's fence
-    // wait, so the staging arena can be rewound and the descriptor pool reset:
-    // neither is referenced by any in-flight command buffer.
-    ResetStage();
-    if (rfxPool != VK_NULL_HANDLE && vk.ResetDescriptorPool != nullptr) {
-      vk.ResetDescriptorPool(device(), rfxPool, 0);
+    // A new command buffer only starts after the previous submission's fence wait
+    // (Flush() waits; step 2 of the pipeline work makes these per slot), so the
+    // staging arena can be rewound and the descriptor pool reset: neither is
+    // referenced by any in-flight command buffer.
+    ResetStage(slot);
+    if (rfxPools[slot] != VK_NULL_HANDLE && vk.ResetDescriptorPool != nullptr) {
+      vk.ResetDescriptorPool(device(), rfxPools[slot], 0);
     }
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1526,12 +1622,14 @@ struct GfxVkDesktop::Impl {
       return false;
     }
     recording = true;
+    StoreSlot();
     // The timestamp queries are read back right after the fence wait, so this
-    // window can start from a clean pool (doc_agent/gfx-engine.md §6).
-    pendingTimestamps.clear();
-    timestampWrite = 0;
-    if (timestampPool != VK_NULL_HANDLE && vk.CmdResetQueryPool != nullptr) {
-      vk.CmdResetQueryPool(commandBuffer, timestampPool, 0, kTimestampCapacity);
+    // window can start from a clean pool (doc_agent/gfx-engine.md §6; per slot once
+    // submissions can overlap).
+    pendingTimestamps[slot].clear();
+    timestampWrites[slot] = 0;
+    if (timestampPools[slot] != VK_NULL_HANDLE && vk.CmdResetQueryPool != nullptr) {
+      vk.CmdResetQueryPool(commandBuffer, timestampPools[slot], 0, kTimestampCapacity);
     }
     return true;
   }
@@ -1582,11 +1680,13 @@ struct GfxVkDesktop::Impl {
     // recorded is nearly free, so this only needs to run when compute is in
     // flight (measured: making it unconditional changes no metric, it only adds
     // sync points - see doc_agent/gfx-engine.md §3).
-    if (!computeInFlight) {
+    if (!AnyComputeInFlight()) {
       return true;
     }
     const int64_t drainStart = NowUs();
-    const bool ok = Flush();
+    // Wait *every* in-flight slot: another slot's dispatch may be writing the
+    // surface this CPU command is about to read-modify-write.
+    const bool ok = FlushAll();
     syncDrains++;
     syncDrainUs += static_cast<uint64_t>(NowUs() - drainStart);
     return ok;
@@ -1612,7 +1712,11 @@ struct GfxVkDesktop::Impl {
                              &barrier);
   }
 
-  bool Flush() {
+  // Ends and submits the current slot. Deliberately does NOT wait: the CPU-readback
+  // paths call Flush() (which waits), while the present path only has to hand the
+  // slot to the presenter - that is what keeps the decode off the present's
+  // critical path (doc_agent/gfx-engine.md §2.3, §7).
+  bool SubmitSlot(bool signalFrame) {
     // A pending decode batch must be recorded (its composes included) before this
     // window is closed: the batch's staged data lives in the arena, which the next
     // command buffer rewinds.
@@ -1624,9 +1728,9 @@ struct GfxVkDesktop::Impl {
     }
     VkApi& vk = api();
     const VkDevice dev = device();
-    const int64_t submitStart = NowUs();
     recording = false;
-    if (pendingDeviceWrites || computeInFlight) {
+    StoreSlot();
+    if (pendingDeviceWrites || slotComputeInFlight[slot]) {
       // Make device writes visible to the *host* before the command buffer ends.
       // This is the spec-mandated dependency for a CPU read of device-written
       // memory (dstStage HOST / dstAccess HOST_READ); most drivers do not insist
@@ -1640,7 +1744,7 @@ struct GfxVkDesktop::Impl {
         toHost.srcAccessMask |= VK_ACCESS_TRANSFER_WRITE_BIT;
         toHostStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
       }
-      if (computeInFlight) {
+      if (slotComputeInFlight[slot]) {
         toHost.srcAccessMask |= VK_ACCESS_SHADER_WRITE_BIT;
         toHostStage |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
       }
@@ -1661,6 +1765,51 @@ struct GfxVkDesktop::Impl {
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &commandBuffer;
+    // Device-side chain (doc_agent/gfx-engine.md §2.3). Two dependencies, both on
+    // the GPU:
+    //   * the *engine's own* previous submission: the surfaces and the decode
+    //     scratch are read-modify-written across frames, so frames must stay
+    //     ordered on the device. (Ordering via the presenter's blit - as it used
+    //     to be - also serialized compose(N) against blit(N-1), which this removes.)
+    //   * the blit that last sampled the picture *this* submission reuses (two
+    //     frames ago, same slot): a picture must not be overwritten while the
+    //     presenter is still reading it.
+    const int prevSlot = (slot + kSlots - 1) % kSlots;
+    VkSemaphore waits[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint32_t waitCount = 0;
+    if (engineChainPending[prevSlot]) {
+      waits[waitCount++] = engineChain[prevSlot];
+      engineChainPending[prevSlot] = false;
+    }
+    if (blitDonePending[slot]) {
+      waits[waitCount++] = blitDone[slot];
+      blitDonePending[slot] = false;
+    }
+    VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                          VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT};
+    if (waitCount > 0) {
+      submit.waitSemaphoreCount = waitCount;
+      submit.pWaitSemaphores = waits;
+      submit.pWaitDstStageMask = waitStages;
+    }
+    // Signals: the chain token for the next engine submission (always - even a
+    // Flush() submission has to order the next frame after itself) and, for a frame
+    // the presenter is going to blit, the token that blit waits.
+    VkSemaphore signals[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint32_t signalCount = 0;
+    if (engineChain[slot] != VK_NULL_HANDLE) {
+      signals[signalCount++] = engineChain[slot];
+      engineChainPending[slot] = true;
+    }
+    if (signalFrame && frameSemaphores[slot] != VK_NULL_HANDLE) {
+      signals[signalCount++] = frameSemaphores[slot];
+    }
+    if (signalCount > 0) {
+      submit.signalSemaphoreCount = signalCount;
+      submit.pSignalSemaphores = signals;
+    }
     // Host writes the GPU is about to read must be in the memory domain first: a
     // cached (non-coherent) host-visible type needs an explicit flush, the
     // pipeline barrier alone does not write the CPU cache lines back.
@@ -1669,22 +1818,74 @@ struct GfxVkDesktop::Impl {
     if (vk.QueueSubmit(VkContext::Instance().queue(), 1, &submit, fence) != VK_SUCCESS) {
       return false;
     }
-    if (vk.WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+    ++submits;
+    slotInFlight[slot] = true;
+    lastSubmittedSlot = slot;
+    return true;
+  }
+
+  // Waits the current slot's fence and does everything that needs the submission to
+  // be complete: make the device writes visible to the host, read back the
+  // timestamp queries and release the deferred resources.
+  bool WaitSlot(int s) {
+    VkApi& vk = api();
+    const VkDevice dev = device();
+    const int64_t waitStart = NowUs();
+    if (vk.WaitForFences(dev, 1, &fences[s], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
       return false;
     }
-    ++submits;
     // Conservative: whatever was written is now complete, but a barrier is still
     // emitted before the next command buffer's first read. The compute writes
     // have executed too, so a following CPU access sees the real pixels.
+    slotInFlight[s] = false;
+    slotComputeInFlight[s] = false;
     pendingDeviceWrites = true;
-    computeInFlight = false;
-    flushWaitUs += static_cast<uint64_t>(NowUs() - submitStart);
+    flushWaitUs += static_cast<uint64_t>(NowUs() - waitStart);
     // The queries of this submission have completed, so their GPU times can be
     // accumulated without a wait bit (doc_agent/gfx-engine.md §6).
-    CollectTimestamps();
-    // The queue is idle now, so everything deferred while recording is safe to
-    // destroy (and we are already recording a fresh command buffer).
-    ReleasePending();
+    CollectTimestamps(s);
+    // The submission is complete, so everything this slot deferred is safe to
+    // destroy (the other slot's list stays untouched).
+    ReleasePending(s);
+    return true;
+  }
+
+  bool WaitSlot() { return WaitSlot(slot); }
+
+  // Every in-flight slot must be waited before the CPU touches memory any of them
+  // may still write (a CPU readback / read-modify-write).
+  bool WaitAllInFlight() {
+    for (int s = 0; s < kSlots; ++s) {
+      if (slotInFlight[s] && !WaitSlot(s)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Submit + wait: the semantics every CPU-readback path needs (surface pixels the
+  // CPU is about to read, the screen readback, teardown). The next recording then
+  // uses the other slot, whose fence is already signaled.
+  bool Flush() {
+    if (!SubmitSlot(false)) {
+      return false;
+    }
+    if (!WaitSlot()) {
+      return false;
+    }
+    SelectSlot((slot + 1) % kSlots);
+    return true;
+  }
+
+  // CPU readback: everything recorded, by any slot, must be complete.
+  bool FlushAll() {
+    if (!SubmitSlot(false)) {
+      return false;
+    }
+    if (!WaitAllInFlight()) {
+      return false;
+    }
+    SelectSlot((slot + 1) % kSlots);
     return true;
   }
 
@@ -1775,19 +1976,19 @@ struct GfxVkDesktop::Impl {
   // Compose: copies the clipped dirty rects out of a persistently mapped surface
   // buffer into the screen image. One command buffer, one call per surface: all
   // regions share the same source buffer and destination image.
-  bool CopyBufferRegionsToScreen(const GpuBuffer& src, const VkBufferImageCopy* regions,
-                                 int count) {
+  bool CopyBufferRegionsToScreen(const GpuBuffer& src, VkImage target,
+                                 const VkBufferImageCopy* regions, int count) {
     if (count <= 0) {
       return true;
     }
-    if (!src.valid() || screen.image == VK_NULL_HANDLE) {
+    if (!src.valid() || target == VK_NULL_HANDLE) {
       return false;
     }
     if (!EnsureRecording()) {
       return false;
     }
     BarrierBeforeRead();
-    api().CmdCopyBufferToImage(commandBuffer, src.buffer, screen.image, VK_IMAGE_LAYOUT_GENERAL,
+    api().CmdCopyBufferToImage(commandBuffer, src.buffer, target, VK_IMAGE_LAYOUT_GENERAL,
                                static_cast<uint32_t>(count), regions);
     pendingDeviceWrites = true;
     return true;
@@ -1817,7 +2018,7 @@ struct GfxVkDesktop::Impl {
     return true;
   }
 
-  bool GrowStage(size_t minBytes) {
+  bool GrowStage(int s, size_t minBytes) {
     size_t want = minBytes + 4096;
     if (want < (1u << 20)) {
       want = 1u << 20;
@@ -1830,7 +2031,7 @@ struct GfxVkDesktop::Impl {
     }
     sb.capacity = want;
     sb.used = 0;
-    stageBuffers.push_back(sb);
+    stageSlots[s].buffers.push_back(sb);
     return true;
   }
 
@@ -1844,13 +2045,14 @@ struct GfxVkDesktop::Impl {
       return true;
     }
     constexpr size_t kAlign = 256;
+    StageSlot& arena = stageSlots[slot];
     for (;;) {
-      if (stageIndex >= stageBuffers.size()) {
-        if (!GrowStage(bytes)) {
+      if (arena.index >= arena.buffers.size()) {
+        if (!GrowStage(slot, bytes)) {
           return false;
         }
       }
-      StageBuffer& sb = stageBuffers[stageIndex];
+      StageBuffer& sb = arena.buffers[arena.index];
       const size_t off = (sb.used + kAlign - 1) & ~(kAlign - 1);
       if (off + bytes <= sb.capacity) {
         std::memcpy(sb.mapped + off, data, bytes);
@@ -1862,13 +2064,13 @@ struct GfxVkDesktop::Impl {
         *outOffset = static_cast<VkDeviceSize>(off);
         return true;
       }
-      stageIndex++;
+      arena.index++;
     }
   }
 
-  void ResetStage() {
-    stageIndex = 0;
-    for (StageBuffer& sb : stageBuffers) {
+  void ResetStage(int s) {
+    stageSlots[s].index = 0;
+    for (StageBuffer& sb : stageSlots[s].buffers) {
       sb.used = 0;
     }
   }
@@ -1876,7 +2078,8 @@ struct GfxVkDesktop::Impl {
   void DestroyStage() {
     VkApi& vk = api();
     const VkDevice dev = device();
-    for (StageBuffer& sb : stageBuffers) {
+    for (StageSlot& arena : stageSlots) {
+    for (StageBuffer& sb : arena.buffers) {
       if (dev != VK_NULL_HANDLE) {
         if (sb.buffer != VK_NULL_HANDLE && vk.DestroyBuffer != nullptr) {
           vk.DestroyBuffer(dev, sb.buffer, nullptr);
@@ -1891,8 +2094,9 @@ struct GfxVkDesktop::Impl {
         }
       }
     }
-    stageBuffers.clear();
-    stageIndex = 0;
+    arena.buffers.clear();
+    arena.index = 0;
+    }
   }
 
   bool CreateRfxPipelines() {
@@ -2037,8 +2241,10 @@ struct GfxVkDesktop::Impl {
     poolInfo.maxSets = 1024;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
-    if (vk.CreateDescriptorPool(dev, &poolInfo, nullptr, &rfxPool) != VK_SUCCESS) {
-      return false;
+    for (int s = 0; s < kSlots; ++s) {
+      if (vk.CreateDescriptorPool(dev, &poolInfo, nullptr, &rfxPools[s]) != VK_SUCCESS) {
+        return false;
+      }
     }
     return true;
   }
@@ -2046,7 +2252,7 @@ struct GfxVkDesktop::Impl {
   bool AllocSet(VkDescriptorSetLayout layout, VkDescriptorSet* out) {
     VkDescriptorSetAllocateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    info.descriptorPool = rfxPool;
+    info.descriptorPool = rfxPools[slot];
     info.descriptorSetCount = 1;
     info.pSetLayouts = &layout;
     return api().AllocateDescriptorSets(device(), &info, out) == VK_SUCCESS;
@@ -2299,7 +2505,7 @@ struct GfxVkDesktop::Impl {
         vk.CmdDispatch(commandBuffer, streams, 1, 1);
         TimestampClose(idwtToken);
         pendingComputeWrites = true;
-        computeInFlight = true;
+        slotComputeInFlight[slot] = true;
         for (const BatchMessage& message : batchMessages) {
           if (!message.composeRegion || message.tileCount == 0) {
             continue;
@@ -2367,7 +2573,7 @@ struct GfxVkDesktop::Impl {
           vk.CmdDispatch(commandBuffer, gx, gy, 1);
           TimestampClose(composeToken);
           pendingComputeWrites = true;
-          computeInFlight = true;
+          slotComputeInFlight[slot] = true;
         }
         batchesFlushed++;
         batchMessagesTotal += batchMessages.size();
@@ -2857,8 +3063,11 @@ struct GfxVkDesktop::Impl {
     VkApi& vk = api();
     const VkDevice dev = device();
     if (dev != VK_NULL_HANDLE) {
-      if (rfxPool != VK_NULL_HANDLE && vk.DestroyDescriptorPool != nullptr) {
-        vk.DestroyDescriptorPool(dev, rfxPool, nullptr);
+      for (int s = 0; s < kSlots; ++s) {
+        if (rfxPools[s] != VK_NULL_HANDLE && vk.DestroyDescriptorPool != nullptr) {
+          vk.DestroyDescriptorPool(dev, rfxPools[s], nullptr);
+          rfxPools[s] = VK_NULL_HANDLE;
+        }
       }
       if (composePipe != VK_NULL_HANDLE && vk.DestroyPipeline != nullptr) {
         vk.DestroyPipeline(dev, composePipe, nullptr);
@@ -2888,7 +3097,7 @@ struct GfxVkDesktop::Impl {
         vk.DestroyDescriptorSetLayout(dev, decodeSetLayout, nullptr);
       }
     }
-    rfxPool = VK_NULL_HANDLE;
+
     composePipe = VK_NULL_HANDLE;
     idwtPipe = VK_NULL_HANDLE;
     idwtPipeLayout = VK_NULL_HANDLE;
@@ -2950,17 +3159,30 @@ bool GfxVkDesktop::Init() {
   alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   alloc.commandPool = impl_->commandPool;
   alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  alloc.commandBufferCount = 1;
-  if (api.AllocateCommandBuffers(device, &alloc, &impl_->commandBuffer) != VK_SUCCESS) {
+  alloc.commandBufferCount = Impl::kSlots;
+  if (api.AllocateCommandBuffers(device, &alloc, impl_->commandBuffers) != VK_SUCCESS) {
     HMRDP_LOGE("vk desktop: vkAllocateCommandBuffers failed");
     return false;
   }
+  // Created signaled: a slot that has never been submitted can be waited without
+  // blocking, and an already-waited slot keeps its fence signaled.
   VkFenceCreateInfo fenceInfo{};
   fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  if (api.CreateFence(device, &fenceInfo, nullptr, &impl_->fence) != VK_SUCCESS) {
-    HMRDP_LOGE("vk desktop: vkCreateFence failed");
-    return false;
+  fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+  VkSemaphoreCreateInfo semaphoreInfo{};
+  semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  for (int i = 0; i < Impl::kSlots; ++i) {
+    if (api.CreateFence(device, &fenceInfo, nullptr, &impl_->fences[i]) != VK_SUCCESS ||
+        api.CreateSemaphore(device, &semaphoreInfo, nullptr, &impl_->frameSemaphores[i]) !=
+            VK_SUCCESS ||
+        api.CreateSemaphore(device, &semaphoreInfo, nullptr, &impl_->engineChain[i]) !=
+            VK_SUCCESS ||
+        api.CreateSemaphore(device, &semaphoreInfo, nullptr, &impl_->blitDone[i]) != VK_SUCCESS) {
+      HMRDP_LOGE("vk desktop: vkCreateFence/vkCreateSemaphore failed");
+      return false;
+    }
   }
+  impl_->SelectSlot(0);
   // V3 Progressive compute. Optional: when it cannot be created the engine still
   // serves every other command and Progressive stays "unsupported" (counted and
   // visible in the stats, never silently wrong).
@@ -2984,13 +3206,22 @@ bool GfxVkDesktop::Init() {
     poolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     poolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
     poolInfo.queryCount = impl_->kTimestampCapacity;
-    if (api.CreateQueryPool(device, &poolInfo, nullptr, &impl_->timestampPool) == VK_SUCCESS) {
+    bool poolsOk = true;
+    for (int s = 0; s < Impl::kSlots; ++s) {
+      if (api.CreateQueryPool(device, &poolInfo, nullptr, &impl_->timestampPools[s]) != VK_SUCCESS) {
+        poolsOk = false;
+        break;
+      }
+    }
+    if (poolsOk) {
       impl_->timestampNsPerTick = static_cast<double>(physProps.limits.timestampPeriod);
     } else {
-      impl_->timestampPool = VK_NULL_HANDLE;
+      // A partial failure leaves the pools that were created; CollectTimestamps()
+      // simply skips the slots whose pool is missing.
+      impl_->timestampNsPerTick = 0.0;
     }
   }
-  if (impl_->timestampPool == VK_NULL_HANDLE) {
+  if (impl_->timestampPools[0] == VK_NULL_HANDLE) {
     HMRDP_LOGW("vk desktop: GPU timestamps unavailable; per-kernel timings disabled");
   }
   // V4: ClearCodec read-modify-write on the CPU. Independent of the compute
@@ -3013,8 +3244,10 @@ void GfxVkDesktop::Reset() {
     return;
   }
   const int64_t resetStart = Impl::NowUs();
-  impl_->Flush();
-  impl_->ReleasePending();
+  impl_->FlushAll();
+  for (int s = 0; s < Impl::kSlots; ++s) {
+    impl_->ReleasePending(s);
+  }
   const int64_t afterRelease = Impl::NowUs();
   VkApi& api = GetVkApi();
   const VkDevice device = impl_->device();
@@ -3031,12 +3264,18 @@ void GfxVkDesktop::Reset() {
   }
   impl_->cache.clear();
   const int64_t afterCache = Impl::NowUs();
-  impl_->DestroyImage(&impl_->screen);
+  for (int s = 0; s < Impl::kSlots; ++s) {
+    impl_->DestroyImage(&impl_->pictures[s]);
+    impl_->pictureMissing[s].clear();
+  }
   impl_->DestroyGpuBuffer(&impl_->coef);
-  if (device != VK_NULL_HANDLE && impl_->timestampPool != VK_NULL_HANDLE &&
-      api.DestroyQueryPool != nullptr) {
-    api.DestroyQueryPool(device, impl_->timestampPool, nullptr);
-    impl_->timestampPool = VK_NULL_HANDLE;
+  if (device != VK_NULL_HANDLE && api.DestroyQueryPool != nullptr) {
+    for (int s = 0; s < Impl::kSlots; ++s) {
+      if (impl_->timestampPools[s] != VK_NULL_HANDLE) {
+        api.DestroyQueryPool(device, impl_->timestampPools[s], nullptr);
+        impl_->timestampPools[s] = VK_NULL_HANDLE;
+      }
+    }
   }
   impl_->DestroyStage();
   impl_->DestroyRfxResources();
@@ -3051,10 +3290,26 @@ void GfxVkDesktop::Reset() {
       api.DestroyBuffer(device, impl_->readBuffer, nullptr);
       api.FreeMemory(device, impl_->readMemory, nullptr);
     }
-    if (impl_->fence != VK_NULL_HANDLE) {
-      api.DestroyFence(device, impl_->fence, nullptr);
+    for (int i = 0; i < Impl::kSlots; ++i) {
+      if (impl_->fences[i] != VK_NULL_HANDLE) {
+        api.DestroyFence(device, impl_->fences[i], nullptr);
+        impl_->fences[i] = VK_NULL_HANDLE;
+      }
+      if (impl_->frameSemaphores[i] != VK_NULL_HANDLE) {
+        api.DestroySemaphore(device, impl_->frameSemaphores[i], nullptr);
+        impl_->frameSemaphores[i] = VK_NULL_HANDLE;
+      }
+      if (impl_->engineChain[i] != VK_NULL_HANDLE) {
+        api.DestroySemaphore(device, impl_->engineChain[i], nullptr);
+        impl_->engineChain[i] = VK_NULL_HANDLE;
+      }
+      if (impl_->blitDone[i] != VK_NULL_HANDLE) {
+        api.DestroySemaphore(device, impl_->blitDone[i], nullptr);
+        impl_->blitDone[i] = VK_NULL_HANDLE;
+      }
     }
     if (impl_->commandPool != VK_NULL_HANDLE) {
+      // Frees the slot command buffers too.
       api.DestroyCommandPool(device, impl_->commandPool, nullptr);
     }
   }
@@ -3077,6 +3332,43 @@ bool GfxVkDesktop::ready() const {
 
 bool GfxVkDesktop::Flush() {
   return impl_ != nullptr && impl_->Flush();
+}
+
+// Submits the frame and keeps the slot in flight: the presenter waits this frame's
+// semaphore on the device, so the CPU does not wait for the frame's decode here
+// (doc_agent/gfx-engine.md §2.3). CPU-readback callers keep using Flush().
+bool GfxVkDesktop::SubmitFrame() {
+  if (impl_ == nullptr || !impl_->SubmitSlot(true)) {
+    return false;
+  }
+  // The presenter will signal this slot's blit token when its blit finishes; the
+  // next time this slot's picture is written (two frames later) it is waited.
+  impl_->blitDonePending[impl_->lastSubmittedSlot] = true;
+  // Move to the other slot so the next frame is recorded into resources that are not
+  // referenced by this submission: the CPU then records it without waiting (the wait
+  // happens here only when the slot comes around again, two frames later, and by then
+  // the chain has long completed it).
+  impl_->SelectSlot((impl_->slot + 1) % Impl::kSlots);
+  return true;
+}
+
+VkSemaphore GfxVkDesktop::frameSemaphore() const {
+  return impl_ != nullptr ? impl_->frameSemaphores[impl_->lastSubmittedSlot] : VK_NULL_HANDLE;
+}
+
+// The token the presenter must signal when it has finished reading this frame's
+// picture; it is waited before that picture is written again (two frames later).
+VkSemaphore GfxVkDesktop::blitDoneSemaphore() const {
+  return impl_ != nullptr ? impl_->blitDone[impl_->lastSubmittedSlot] : VK_NULL_HANDLE;
+}
+
+// Present failed: the token handed out by blitDoneSemaphore() will never be
+// signalled, so stop treating it as pending (the picture stays unsynchronized for one
+// round rather than dead-locking the engine on a signal that never comes).
+void GfxVkDesktop::AbandonBlitDoneHandoff() {
+  if (impl_ != nullptr) {
+    impl_->blitDonePending[impl_->lastSubmittedSlot] = false;
+  }
 }
 
 bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint32_t format) {
@@ -3160,7 +3452,7 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
   if (!ready()) {
     return false;
   }
-  impl_->Flush();
+  impl_->FlushAll();
   // FreeRDP's path is `gdi_ResetGraphics`: it asks the update layer to resize
   // the primary buffer, and `gdi_resize()` is a **no-op when the size is
   // unchanged** (the live harness' Resize() early-returns too), so the picture
@@ -3172,16 +3464,27 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
   const bool sizeChanged = (width != screenW_ || height != screenH_);
   impl_->screenDirtyValid = false;
   if (sizeChanged) {
-    impl_->DestroyImage(&impl_->screen);
+    for (int s = 0; s < Impl::kSlots; ++s) {
+      impl_->DestroyImage(&impl_->pictures[s]);
+      impl_->pictureMissing[s].clear();
+    }
+    impl_->pictureW = 0;
+    impl_->pictureH = 0;
     screenW_ = 0;
     screenH_ = 0;
     if (width > 0 && height > 0) {
-      if (!impl_->PrepareImage(&impl_->screen, width, height)) {
-        return false;
+      // A fresh picture carries no history: both start from the same 0xFF fill, so
+      // neither owes the other anything.
+      for (int s = 0; s < Impl::kSlots; ++s) {
+        if (!impl_->PrepareImage(&impl_->pictures[s], width, height)) {
+          return false;
+        }
+        impl_->FillImage(&impl_->pictures[s], 0xFFFFFFFFu);
       }
-      impl_->FillImage(&impl_->screen, 0xFFFFFFFFu);
-      screenW_ = impl_->screen.width;
-      screenH_ = impl_->screen.height;
+      impl_->pictureW = impl_->pictures[0].width;
+      impl_->pictureH = impl_->pictures[0].height;
+      screenW_ = impl_->pictureW;
+      screenH_ = impl_->pictureH;
     }
   }
   // The rest of gdi_ResetGraphics is per-surface and applies on every call:
@@ -3208,7 +3511,10 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
 }
 
 bool GfxVkDesktop::Compose() {
-  if (!ready() || impl_->screen.image == VK_NULL_HANDLE) {
+  // Compose into this slot's picture; the other one is what the presenter samples.
+  const int pic = impl_->slot;
+  Impl::GpuImage& target = impl_->pictures[pic];
+  if (!ready() || target.image == VK_NULL_HANDLE) {
     return false;
   }
   // The screen compose reads the surfaces *after* the pending decode batch has
@@ -3217,9 +3523,24 @@ bool GfxVkDesktop::Compose() {
   if (!impl_->FinishDecodeBatch()) {
     return false;
   }
+  // Nothing marked anywhere: do not compose and let the caller skip the present.
+  // A picture that is behind keeps its ledger, so the next frame that *does* have
+  // marks brings it up to date before it is sampled - that is what keeps a static
+  // desktop at FPS 0 instead of re-presenting a catch-up every frame.
+  bool anyDirty = false;
+  for (const auto& kv : impl_->surfaces) {
+    if (kv.second.meta.mapped && kv.second.meta.dirtyValid) {
+      anyDirty = true;
+      break;
+    }
+  }
+  if (!anyDirty) {
+    return false;
+  }
   const int64_t composeStart = Impl::NowUs();
-  const int scrW = impl_->screen.width;
-  const int scrH = impl_->screen.height;
+  const int scrW = impl_->pictureW;
+  const int scrH = impl_->pictureH;
+  const int other = (pic + 1) % Impl::kSlots;
   for (auto& kv : impl_->surfaces) {
     Impl::Surface& s = kv.second;
     GpuSurface& m = s.meta;
@@ -3227,7 +3548,21 @@ bool GfxVkDesktop::Compose() {
       impl_->composeSkipUnmapped++;
       continue;
     }
-    if (!m.dirtyValid) {
+    // This picture is missing whatever the *other* picture received since it was
+    // last written: those rects have to be copied again (they live in surface
+    // coordinates, so they belong to this surface's list) or the picture's
+    // untouched areas would still show the older desktop. The last `frameRects`
+    // entries are this frame's own marks and are what the other picture will owe
+    // us next time.
+    std::vector<Impl::Surface::DirtyRect>& missing = impl_->pictureMissing[pic][kv.first];
+    // Copied *before* appending (and before CoalesceRects sorts the list in place):
+    // this is exactly what the other picture owes a re-copy of.
+    const std::vector<Impl::Surface::DirtyRect> frameMarks(s.dirtyRects.begin(),
+                                                           s.dirtyRects.end());
+    if (!missing.empty()) {
+      s.dirtyRects.insert(s.dirtyRects.end(), missing.begin(), missing.end());
+    }
+    if (!m.dirtyValid && s.dirtyRects.empty()) {
       impl_->composeSkipClean++;
       continue;
     }
@@ -3261,14 +3596,27 @@ bool GfxVkDesktop::Compose() {
     const bool rectListTooLong =
         s.dirtyOverflow || merged > Impl::kMaxComposeRects;
     const bool overflowed = rectListTooLong || !Impl::kComposeRects;
+    // The box fallback has to cover the missing deltas as well, not just this
+    // frame's marks (they are appended to `s.dirtyRects` above, so union their
+    // hull with the marked hull).
+    int boxLeft = m.dirtyLeft;
+    int boxTop = m.dirtyTop;
+    int boxRight = m.dirtyRight;
+    int boxBottom = m.dirtyBottom;
+    for (const Impl::Surface::DirtyRect& r : missing) {
+      if (r.left < boxLeft) boxLeft = r.left;
+      if (r.top < boxTop) boxTop = r.top;
+      if (r.right > boxRight) boxRight = r.right;
+      if (r.bottom > boxBottom) boxBottom = r.bottom;
+    }
     VkBufferImageCopy regions[Impl::kMaxComposeRects];
     int regionCount = 0;
     const int listCount = overflowed ? 1 : merged;
     for (int i = 0; i < listCount; ++i) {
-      const int left = overflowed ? m.dirtyLeft : s.dirtyRects[i].left;
-      const int top = overflowed ? m.dirtyTop : s.dirtyRects[i].top;
-      const int right = overflowed ? m.dirtyRight : s.dirtyRects[i].right;
-      const int bottom = overflowed ? m.dirtyBottom : s.dirtyRects[i].bottom;
+      const int left = overflowed ? boxLeft : s.dirtyRects[i].left;
+      const int top = overflowed ? boxTop : s.dirtyRects[i].top;
+      const int right = overflowed ? boxRight : s.dirtyRects[i].right;
+      const int bottom = overflowed ? boxBottom : s.dirtyRects[i].bottom;
       if (impl_->MakeScreenCopyRegion(m, s.gpu, left, top, right, bottom, scrW, scrH,
                                       &regions[regionCount])) {
         regionCount++;
@@ -3280,10 +3628,15 @@ bool GfxVkDesktop::Compose() {
       Impl::ClearSurfaceDirty(s);
       continue;
     }
-    if (!impl_->CopyBufferRegionsToScreen(s.gpu, regions, regionCount)) {
+    if (!impl_->CopyBufferRegionsToScreen(s.gpu, target.image, regions, regionCount)) {
       // Keep the dirty state so a later Compose can retry this surface.
       return false;
     }
+    // This picture caught up: drop its ledger, and hand *this frame's* marks to the
+    // other picture so it re-copies them (it missed them) the next time it composes.
+    missing.clear();
+    std::vector<Impl::Surface::DirtyRect>& otherMissing = impl_->pictureMissing[other][kv.first];
+    otherMissing.insert(otherMissing.end(), frameMarks.begin(), frameMarks.end());
     // The rect figures describe the *merged dirty rect list* (what a rect-mode
     // compose copies), independently of which mode actually composed, so they stay
     // comparable with the CPU present path's `rectlist=`/`maxRects=`/`truncated=`.
@@ -3320,7 +3673,9 @@ int GfxVkDesktop::screenHeight() const {
 }
 
 VkImage GfxVkDesktop::screenImage() const {
-  return impl_ != nullptr ? impl_->screen.image : VK_NULL_HANDLE;
+  // The picture the presenter must sample: the one the last submitted frame composed
+  // into (the pictures ping-pong, so this is *not* the frame currently being recorded).
+  return impl_ != nullptr ? impl_->pictures[impl_->lastSubmittedSlot].image : VK_NULL_HANDLE;
 }
 
 VkFormat GfxVkDesktop::format() const {
@@ -3328,18 +3683,23 @@ VkFormat GfxVkDesktop::format() const {
 }
 
 bool GfxVkDesktop::ReadScreen(std::vector<uint8_t>* out) {
-  if (!ready() || out == nullptr || impl_->screen.image == VK_NULL_HANDLE) {
+  // The presented picture (the last submitted frame's) - the compare reads exactly
+  // what the presenter sampled.
+  const Impl::GpuImage& picture = impl_->pictures[impl_->lastSubmittedSlot];
+  if (!ready() || out == nullptr || picture.image == VK_NULL_HANDLE) {
     return false;
   }
   const int64_t readStart = Impl::NowUs();
-  const int width = impl_->screen.width;
-  const int height = impl_->screen.height;
+  const int width = picture.width;
+  const int height = picture.height;
   const size_t bytes = static_cast<size_t>(width) * height * 4;
   out->assign(bytes, 0);
 
   // Prior work must be complete before the copy is recorded, and the copy itself
-  // must complete before the CPU reads (this is the only place V2 stalls).
-  if (!impl_->Flush()) {
+  // must complete before the CPU reads (this is the only place V2 stalls). Every
+  // in-flight slot has to be waited, not just this one: the picture accumulates
+  // composes from several submissions.
+  if (!impl_->FlushAll()) {
     return false;
   }
   if (!impl_->EnsureReadBuffer(bytes)) {
@@ -3357,7 +3717,7 @@ bool GfxVkDesktop::ReadScreen(std::vector<uint8_t>* out) {
   region.imageExtent.width = static_cast<uint32_t>(width);
   region.imageExtent.height = static_cast<uint32_t>(height);
   region.imageExtent.depth = 1;
-  GetVkApi().CmdCopyImageToBuffer(impl_->commandBuffer, impl_->screen.image,
+  GetVkApi().CmdCopyImageToBuffer(impl_->commandBuffer, picture.image,
                                   VK_IMAGE_LAYOUT_GENERAL, impl_->readBuffer, 1, &region);
   impl_->pendingDeviceWrites = true;
   if (!impl_->Flush()) {
@@ -4079,13 +4439,19 @@ bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {
   // presenter blits the previous (or initial) screen and, worse, every frame's
   // commands pile up into one giant submission that only runs at teardown.
   const uint64_t tCompose1 = nowUs();
-  if (!engine->Flush()) {
+  if (!engine->SubmitFrame()) {
     return false;
   }
   const uint64_t tFlush1 = nowUs();
   const bool presented = renderer->PresentImage(engine->screenImage(), engine->format(),
-                                               engine->screenWidth(), engine->screenHeight());
+                                               engine->screenWidth(), engine->screenHeight(),
+                                               engine->frameSemaphore(),
+                                               engine->blitDoneSemaphore());
   const uint64_t tBlit1 = nowUs();
+  if (!presented) {
+    // No blit was submitted, so the token handed over above will never be signalled.
+    engine->AbandonBlitDoneHandoff();
+  }
   engine->NotePresentSplitUs(tCompose1 - tCompose0, tFlush1 - tCompose1, tBlit1 - tFlush1);
   if (presented) {
     engine->ClearScreenDirty();

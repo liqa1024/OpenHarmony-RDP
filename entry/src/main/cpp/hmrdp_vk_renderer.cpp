@@ -348,7 +348,9 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
   return true;
 }
 
-bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex) {
+bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex,
+                                        VkSemaphore waitSemaphore,
+                                        VkSemaphore signalSemaphore) {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
 
@@ -357,17 +359,21 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
     return false;
   }
 
-  VkSemaphore waitSemaphores[] = {imageAvailable_[frameIndex_]};
-  VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_TRANSFER_BIT};
-  VkSemaphore signalSemaphores[] = {renderFinished_[imageIndex]};
+  // The producer's frame-complete signal (an engine that composed this picture
+  // without the CPU waiting for it) plus the swapchain image's availability.
+  VkSemaphore waitSemaphores[2] = {imageAvailable_[frameIndex_], waitSemaphore};
+  VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
+  VkSemaphore signalSemaphores[2] = {renderFinished_[imageIndex], signalSemaphore};
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submitInfo.waitSemaphoreCount = 1;
+  submitInfo.waitSemaphoreCount = (waitSemaphore != VK_NULL_HANDLE) ? 2u : 1u;
   submitInfo.pWaitSemaphores = waitSemaphores;
   submitInfo.pWaitDstStageMask = waitStages;
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &cmd;
-  submitInfo.signalSemaphoreCount = 1;
+  submitInfo.signalSemaphoreCount = (signalSemaphore != VK_NULL_HANDLE) ? 2u : 1u;
   submitInfo.pSignalSemaphores = signalSemaphores;
   if (api.QueueSubmit(context.queue(), 1, &submitInfo, inFlight_[frameIndex_]) != VK_SUCCESS) {
     error_ = "vkQueueSubmit failed";
@@ -407,7 +413,8 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
   return true;
 }
 
-bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, int height) {
+bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, int height,
+                              VkSemaphore waitSemaphore, VkSemaphore doneSemaphore) {
   if (image == VK_NULL_HANDLE || width <= 0 || height <= 0) {
     return false;
   }
@@ -476,7 +483,7 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
 
     RecordPresentQuadLocked(cmd, width, height, imageIndex);
     (void)device;
-    return SubmitAndPresentLocked(cmd, imageIndex);
+    return SubmitAndPresentLocked(cmd, imageIndex, waitSemaphore, doneSemaphore);
   }
 
   error_ = "swapchain out of date after re-creation";
@@ -490,16 +497,21 @@ VkImageView VkRenderer::EnsurePresentSourceViewLocked(VkImage image) {
   if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE) {
     return VK_NULL_HANDLE;
   }
-  if (presentSourceImage_ == image && presentSourceView_ != VK_NULL_HANDLE) {
-    return presentSourceView_;
+  const auto cached = presentSourceViews_.find(image);
+  if (cached != presentSourceViews_.end()) {
+    return cached->second;
   }
-  // The engine recreates its screen image on ResetGraphics/resize; dropping the old
-  // view while a frame still samples it would be use-after-free, so drain the frames
-  // in flight first (a rare path: once per resize).
-  if (presentSourceView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+  // An unknown handle means the engine re-created its pictures (ResetGraphics/resize);
+  // the frames still sampling the old views have to drain before those views are
+  // destroyed (a rare path - the two ping-pong pictures are cached here instead).
+  if (!presentSourceViews_.empty()) {
     api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
-    api.DestroyImageView(device, presentSourceView_, nullptr);
-    presentSourceView_ = VK_NULL_HANDLE;
+    if (api.DestroyImageView != nullptr) {
+      for (const auto& entry : presentSourceViews_) {
+        api.DestroyImageView(device, entry.second, nullptr);
+      }
+    }
+    presentSourceViews_.clear();
   }
   VkImageViewCreateInfo viewInfo{};
   viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -513,14 +525,14 @@ VkImageView VkRenderer::EnsurePresentSourceViewLocked(VkImage image) {
   viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   viewInfo.subresourceRange.levelCount = 1;
   viewInfo.subresourceRange.layerCount = 1;
+  VkImageView view = VK_NULL_HANDLE;
   if (api.CreateImageView == nullptr ||
-      api.CreateImageView(device, &viewInfo, nullptr, &presentSourceView_) != VK_SUCCESS) {
+      api.CreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
     error_ = "vkCreateImageView (present source) failed";
-    presentSourceView_ = VK_NULL_HANDLE;
     return VK_NULL_HANDLE;
   }
-  presentSourceImage_ = image;
-  return presentSourceView_;
+  presentSourceViews_[image] = view;
+  return view;
 }
 
 bool VkRenderer::EnsurePresentPipelineLocked() {
@@ -1243,7 +1255,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
 
     UpdatePresentDescriptorLocked(frameIndex_, desktopImageView_);
     RecordPresentQuadLocked(cmd, desktopWidth, desktopHeight, imageIndex);
-    const bool presented = SubmitAndPresentLocked(cmd, imageIndex);
+    const bool presented = SubmitAndPresentLocked(cmd, imageIndex, VK_NULL_HANDLE, VK_NULL_HANDLE);
     if (presented) {
       desktopImageFullUpload_ = false;
     }
@@ -1262,17 +1274,18 @@ VkFormat VkRenderer::format() const {
 void VkRenderer::Reset() {
   const int64_t t0 = NowUs();
   std::lock_guard<std::mutex> lock(mutex_);
-  // The present source view belongs to an engine-owned image: drop it before that
-  // image can go away (the engine is torn down after the renderer, but a reset is
+  // The present source views belong to engine-owned images: drop them before those
+  // images can go away (the engine is torn down after the renderer, but a reset is
   // also a resize path).
-  if (presentSourceView_ != VK_NULL_HANDLE) {
+  if (!presentSourceViews_.empty()) {
     VkApi& api = GetVkApi();
     const VkDevice device = VkContext::Instance().device();
     if (device != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
-      api.DestroyImageView(device, presentSourceView_, nullptr);
+      for (const auto& entry : presentSourceViews_) {
+        api.DestroyImageView(device, entry.second, nullptr);
+      }
     }
-    presentSourceView_ = VK_NULL_HANDLE;
-    presentSourceImage_ = VK_NULL_HANDLE;
+    presentSourceViews_.clear();
   }
   DestroySwapchainLocked();
   DestroyDesktopImageLocked();
