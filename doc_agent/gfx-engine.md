@@ -198,14 +198,25 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - 两条后端的**共同约束**（与设备/分辨率无关）：只上传脏矩形；源行距可能被填充，所以要用调用方给的
   stride（GLES 侧配 `GL_UNPACK_ROW_LENGTH`）；通道顺序按目标面读出来的格式决定（屏幕面通常是 RGBA 序，
   FreeRDP 给的是 BGRA）；纹理/镜像重建后**首帧强制整幅**，否则其余部分会留空。
-- **"脏矩形"必须是逐条矩形，不是合并包围盒**：gdi 同时维护 `hwnd->invalid`（合并 box）和
+- **上屏只传逐条脏矩形，包围盒只作上限兜底**：gdi 同时维护 `hwnd->invalid`（合并 box）和
   `hwnd->cinvalid[ninvalid]`（逐条矩形，见 `libfreerdp/gdi/region.c` 的 `gdi_InvalidateRegion`）；
-  `PresentGdiFrame` 在**矩形总面积比 box 小 25% 以上**时按矩形列表上传（上限 32 条，超过则退回 box），
-  否则一条大矩形反而拷贝更少。散块更新（光标/局部刷新/多块 diff）下 box 可能比真实改动大好几倍，按
-  box 上传会多拷多传并污染缓存；视频类整块脏区通常二者接近，会自动落回 box。两条后端都按"一次上传
-  多次拷贝区域 + 仍然只画一次 letterbox quad"实现（Vulkan 用紧凑拼接的 staging + 每个矩形一个
-  `VkBufferImageCopy`，GLES 每个矩形一次 `glTexSubImage2D`），**不要**为每个矩形各走一次 present
-  （那会把整屏 letterbox 画 N 遍）。
+  `PresentGdiFrame` 逐条上传，仅在**矩形数超过上限（256）**时退回包围盒（保证命令列表与拷贝区域数组有界）。
+  一条矩形的帧就是 box，无需特判。
+  - **为什么不留"只用包围盒"这条路（实测，同机同一批录像，CPU 路线 + `mode=fast`）**：
+    滑动/碎片场景（657 帧）box 传 5591.6MB、单次上屏 4.32ms；逐条矩形传 1534.3MB（**−72.6%**）、
+    上屏 2.89ms（**−33%**）、整帧计算 −6.7%，`fps` 无回退；看视频场景（195 帧）两者字节只差 1.8%、
+    上屏 2.06 vs 1.99ms（噪声内）。即 **box 在任何场景都不更快**，而"阈值式自动选择"（矩形比 box 小 ≥25%
+    才用矩形）在两个场景给出的结果与之一致，属于多余旋钮，已删除。
+  - 客观量在回放 stats 的 `upload` 行长期保留：`uploaded=` 真正交给呈现器的字节，`(box=…)` 同一轮按盒
+    上传的字节，`rectlist=used/total presents` 与 `truncated=`（超上限退回盒子的帧数）。
+  - 两条后端都按"一次上传 + 多个拷贝区域 + 仍然只画一次 letterbox quad"实现（Vulkan 用紧凑拼接的 staging
+    + 每个矩形一个 `VkBufferImageCopy`，GLES 每个矩形一次 `glTexSubImage2D`），**不要**为每个矩形各走一次
+    present（那会把整屏 letterbox 画 N 遍）。像素一致性已核对：同一段录像两种上传方式跑完的最终画面
+    逐像素无差异。
+  - **GPU 路线仍是"合并 bbox"口径**（引擎 `GfxVkDesktop::Compose()` 按 `MarkSurfaceDirty` 的单 bbox 拷进
+    device-local 屏幕镜像后整幅 blit 上屏）。按上面的实测，视频类场景逐条与 box 本来就无差别，
+    碎片类才有收益，所以是否要对齐要看 GPU 侧碎片场景的账；改引擎要同时守住 `rfx_compose` 的裁剪语义
+    与 `bad=0` 门禁。
 - **两条后端的分工必须完全一致**（否则就是一条快一条慢）：**CPU 只把脏区交出去一次，不做任何像素变换**
   ——通道交换、缩放、letterbox 一律在 GPU 侧；`glTexSubImage2D`/staging 上传只做行拷贝。Vulkan 侧因此用
   **一个小 quad（采样 + fragment shader 换通道序 + dynamic viewport 做 letterbox）**而不是

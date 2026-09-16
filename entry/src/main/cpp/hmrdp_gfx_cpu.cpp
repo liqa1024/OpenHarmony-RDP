@@ -205,14 +205,13 @@ bool GfxCpuDesktop::Resize(int width, int height) {
 
 namespace {
 
-// Upper bound on the rects handed to one present. gdi can accumulate more
-// (gdi_InvalidateRegion grows its list by doubling); past this the merged box is
-// used instead, so the presenter never sees an unbounded command list.
-constexpr int kMaxPresentRects = 32;
-// Upload the rect list only when it is at least this much smaller than the box;
-// otherwise the box wins on fewer copies (a video frame's rects fill their box).
-constexpr int64_t kRectListSavingNumerator = 3;    // rectArea * 4 <= boxArea * 3
-constexpr int64_t kRectListSavingDenominator = 4;  //  -> at least 25% saved
+// Upper bound on the rects handed to one present (matches the presenter's own
+// cap). gdi can accumulate more (gdi_InvalidateRegion grows its list by
+// doubling); past this the merged box is used instead, so neither the command
+// list nor the copy-region array can grow with the stream. Measured on the
+// scrolling sample: ~15% of frames carry more than 64 rects, so the A/B endpoint
+// ("always the rect list") needs headroom well above that to be meaningful.
+constexpr int kMaxPresentRects = 256;
 
 // Clips one gdi rect to the desktop; returns false when nothing remains.
 bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, int h,
@@ -246,7 +245,7 @@ bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, i
 
 }  // namespace
 
-bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter) {
+bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* info) {
   if (gdi == nullptr || presenter == nullptr || gdi->primary == nullptr ||
       gdi->primary_buffer == nullptr) {
     return false;
@@ -295,19 +294,35 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter) {
   // (the next begin_paint resets it).
   hwnd->invalid->null = TRUE;
 
-  if (rectCount >= 2 && !tooManyRects && haveBox) {
-    const int64_t boxArea = static_cast<int64_t>(box.width) * box.height;
-    if (rectArea * kRectListSavingDenominator <= boxArea * kRectListSavingNumerator) {
-      return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride),
-                                   desktopWidth, desktopHeight, rects, rectCount);
+  // Upload the rects themselves: measured on both sample scenarios, the merged
+  // box is never cheaper (scattered content: 3.6x the bytes and 33% more present
+  // time) and the rect list is never worse (video: equal within noise). The box
+  // survives only as the bounded fallback below.
+  //   - a single rect *is* the box, so there is nothing to gain;
+  //   - past the cap the box is the only bounded option (a video frame can carry
+  //     ~2900 rects, which cannot become ~2900 copy regions).
+  const bool useRects = rectCount >= 2 && !tooManyRects && haveBox;
+  const int64_t boxArea = haveBox ? static_cast<int64_t>(box.width) * box.height : 0;
+
+  if (info != nullptr) {
+    info->boxBytes = boxArea * 4;
+    info->uploadedBytes = (useRects ? rectArea : boxArea) * 4;
+    info->rectCount = useRects ? rectCount : (haveBox ? 1 : 0);
+    info->totalRects = static_cast<int>(hwnd->ninvalid);
+    info->usedRects = useRects;
+    info->rectListTruncated = tooManyRects;
+  }
+
+  if (!useRects) {
+    if (!haveBox) {
+      return false;
     }
+    rects[0] = box;
+    return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride), desktopWidth,
+                                 desktopHeight, rects, 1);
   }
-  if (!haveBox) {
-    return false;
-  }
-  rects[0] = box;
   return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride), desktopWidth,
-                               desktopHeight, rects, 1);
+                               desktopHeight, rects, rectCount);
 }
 
 }  // namespace hmrdp

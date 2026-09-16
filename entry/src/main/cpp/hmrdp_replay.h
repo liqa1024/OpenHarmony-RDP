@@ -147,6 +147,18 @@ class GfxReplay {
   std::atomic<uint64_t> otherUs_{0};
   std::atomic<uint64_t> otherCount_{0};
   std::atomic<uint64_t> presentUs_{0};
+  // CPU present upload (doc_agent/gfx-engine.md §2.3): what this run's presents
+  // actually uploaded vs what the merged box would have cost, how often the rect
+  // list was used, and how often the rect cap forced the box. Kept as a standing
+  // regression read-out - the saving is visible in every run.
+  std::atomic<uint64_t> uploadBytes_{0};
+  std::atomic<uint64_t> uploadBoxBytes_{0};
+  std::atomic<uint64_t> uploadRectPresents_{0};
+  std::atomic<uint64_t> uploadTruncated_{0};
+  // Largest number of individual dirty rects one frame carried (the raw gdi
+  // count, before the presenter cap): says whether the cap was even near and how
+  // scattered the content is.
+  std::atomic<uint64_t> uploadMaxRects_{0};
   std::atomic<uint64_t> pumpUs_{0};
   // Time spent deliberately sleeping in PaceFrame()/PaceRecord(); subtracted from
   // pumpUs_ so the reported feed cost is compute, not playback throttling.

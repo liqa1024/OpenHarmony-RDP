@@ -66,14 +66,26 @@ class GfxCpuDesktop {
   bool resizing_ = false;
 };
 
+// What the CPU present path uploads for one frame. The dirty rects are uploaded
+// individually, with the merged bounding box kept only as the bounded fallback
+// for frames whose rect count exceeds the cap (measured: a video frame can carry
+// ~2900 rects, which cannot become ~2900 copy regions).
+struct PresentUploadInfo {
+  int64_t uploadedBytes = 0;       // bytes handed to the presenter
+  int64_t boxBytes = 0;            // bytes the merged box would have uploaded
+  int rectCount = 0;               // presenter rects (1 = the box)
+  int totalRects = 0;              // rects gdi accumulated for this frame
+  bool usedRects = false;          // the rect list was used
+  bool rectListTruncated = false;  // more rects than the cap: box used instead
+};
+
 // Reads gdi's invalid region out of the primary buffer and hands it to the frame
-// presenter (Vulkan by default, GLES fallback). The individual dirty rects are
-// uploaded when they are meaningfully smaller than their merged bounding box,
-// otherwise the box is - see the implementation. Shared by the live gdi session
-// and the offline CPU replay route so the two present exactly the same way.
-// Returns true when a frame was actually drawn (a null/empty invalid region is a
-// no-op).
-bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter);
+// presenter (Vulkan by default, GLES fallback) as its individual dirty rects -
+// see the implementation. Shared by the live gdi session and the offline CPU
+// replay route so the two present exactly the same way. Returns true when a frame
+// was actually drawn (a null/empty invalid region is a no-op).
+bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter,
+                     PresentUploadInfo* info = nullptr);
 
 }  // namespace hmrdp
 

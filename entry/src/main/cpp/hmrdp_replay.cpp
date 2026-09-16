@@ -110,6 +110,7 @@ constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap, fast mode
 // capture short.
 constexpr int64_t kMaxRealtimeRunUs = 900ll * 1000000ll;
 constexpr int kStartWaitUs = 3000000;
+
 // Compare route: sample a full-screen readback every N frames (same idea as the
 // live shadow check - reading the engine screen back is expensive).
 constexpr uint64_t kCompareEvery = 30;
@@ -234,6 +235,11 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     cmpMaxDelta_.store(0);
     cmpSmallDeltaPx_.store(0);
     presentUs_.store(0);
+    uploadBytes_.store(0);
+    uploadBoxBytes_.store(0);
+    uploadRectPresents_.store(0);
+    uploadTruncated_.store(0);
+    uploadMaxRects_.store(0);
     pumpUs_.store(0);
     pumpStartUs_.store(0);
     paceUs_.store(0);
@@ -386,6 +392,27 @@ std::string GfxReplay::StatsLines() {
                 static_cast<unsigned long long>(realtimeLagUs_.load() / 1000),
                 running_.load() ? 1 : 0);
   std::string out(head);
+
+  // CPU route only (the GPU route composes in the engine and never presents a gdi
+  // frame): how many bytes actually left the CPU, versus what the merged bounding
+  // box would have cost for the same run (the saving is then visible in every run
+  // rather than only during an A/B). `rectlist=used/total presents` and
+  // `truncated` say whether the rect path was exercised or fell back.
+  const uint64_t uploadBoxBytes = uploadBoxBytes_.load();
+  if (uploadBoxBytes > 0) {
+    const double mb = 1.0 / (1024.0 * 1024.0);
+    char up[288];
+    std::snprintf(up, sizeof(up),
+                  "\nupload rects  rectlist=%llu/%llu  uploaded=%.1fMB (box=%.1fMB)  "
+                  "maxRects=%llu  truncated=%llu",
+                  static_cast<unsigned long long>(uploadRectPresents_.load()),
+                  static_cast<unsigned long long>(presents),
+                  static_cast<double>(uploadBytes_.load()) * mb,
+                  static_cast<double>(uploadBoxBytes) * mb,
+                  static_cast<unsigned long long>(uploadMaxRects_.load()),
+                  static_cast<unsigned long long>(uploadTruncated_.load()));
+    out += up;
+  }
 
   // Per-command-class breakdown only exists on the GPU route (the CPU route
   // decodes inside FreeRDP and never calls the sink).
@@ -661,6 +688,9 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
   if (realtimeActive_.load() != 0) {
     pace = [this](uint64_t tsUs) { PaceRecord(tsUs); };
   }
+  // The present (and its pacing sleep) runs inside the recv call, so the parse
+  // figures must not count the throttling as decode work.
+  const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
 
   bool ok = false;
   if (compare) {
@@ -671,7 +701,8 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
                                 [this]() { CompareFrames(); }, {}, cpu.gfx(), &running_, &error,
                                 pace);
   } else {
-    ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error, pace);
+    ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error, pace,
+                         paceAccum);
   }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
@@ -722,7 +753,8 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   if (realtimeActive_.load() != 0) {
     pace = [this](uint64_t tsUs) { PaceRecord(tsUs); };
   }
-  const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace);
+  const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
+  const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum);
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -858,8 +890,21 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
     presenter_->ResizeSurface(pw, ph);
   }
   const int64_t presentStart = NowUs();
-  const bool presented = PresentGdiFrame(cpu->gdi(), presenter_.get());
+  PresentUploadInfo upload;
+  const bool presented = PresentGdiFrame(cpu->gdi(), presenter_.get(), &upload);
   RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
+  uploadBytes_.fetch_add(static_cast<uint64_t>(upload.uploadedBytes));
+  uploadBoxBytes_.fetch_add(static_cast<uint64_t>(upload.boxBytes));
+  if (upload.usedRects) {
+    uploadRectPresents_.fetch_add(1);
+  }
+  if (upload.rectListTruncated) {
+    uploadTruncated_.fetch_add(1);
+  }
+  const uint64_t frameRects = static_cast<uint64_t>(upload.totalRects);
+  if (frameRects > uploadMaxRects_.load()) {
+    uploadMaxRects_.store(frameRects);
+  }
   frames_.fetch_add(1);
   if (presented) {
     presents_.fetch_add(1);

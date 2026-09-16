@@ -77,24 +77,29 @@ void GfxMapSurfaceToScaledOutput(GfxCommandSink* sink,
 // The call is made outside the pump's own timing, and is skipped entirely when
 // the capture carries no arrival times (version 0 files).
 using ReplayPaceFn = std::function<void(uint64_t timestampUs)>;
+// Returns how much deliberate pacing sleep has accumulated so far. Needed because
+// on the CPU route the frame is presented (and paced) *inside* the recv call, so
+// the raw recv time would otherwise count the playback throttling as parse work.
+using ReplayPaceAccumFn = std::function<uint64_t()>;
 
 // Feeds every raw chunk of one hmrdp_gfx.bin capture into an already-built
 // RDPGFX context (FreeRDP does the ZGX + PDU parsing). This is the whole
 // read/decompress/parse loop, shared by both replay routes: the GPU route
 // supplies a context whose callbacks map into a GfxCommandSink, the CPU route
-// supplies a stock gdi-backed context. `stop` may be null, `pace` may be empty.
-// Returns false and fills `error` (when non-null) on failure - in particular
-// when FreeRDP was built without the HmRdp GFX capture patch.
+// supplies a stock gdi-backed context. `stop` may be null; `pace`/`paceAccum` may
+// be empty. Returns false and fills `error` (when non-null) on failure - in
+// particular when FreeRDP was built without the HmRdp GFX capture patch.
 bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
                    const std::atomic<bool>* stop, std::string* error,
-                   const ReplayPaceFn& pace);
+                   const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum);
 
 // GPU replay route: builds the replay context, installs the GfxMap* callbacks
 // feeding `sink`, pumps the capture and invokes `onFrame` after every EndFrame.
 // `stop`/`pace` may be null/empty. Returns false and fills `error` on failure.
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
-                     std::string* error, const ReplayPaceFn& pace);
+                     std::string* error, const ReplayPaceFn& pace,
+                     const ReplayPaceAccumFn& paceAccum);
 
 // Compare route: gdi and the engine/mirror consume the capture *interleaved, per
 // PDU*. The harness wraps the callbacks gdi installed on its own context

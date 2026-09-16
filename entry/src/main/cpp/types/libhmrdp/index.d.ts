@@ -93,6 +93,7 @@ export const setRfxDump: (enabled: boolean, dir: string) => boolean;
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
   gfxPath: string, route: number, realtime: number) => string;
+
 export const stopGfxReplayTest: () => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;

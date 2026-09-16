@@ -79,10 +79,10 @@ VkCompositeAlphaFlagBitsKHR PickCompositeAlpha(VkCompositeAlphaFlagsKHR supporte
   return VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
 }
 
-// Rects one PresentBgra call may upload individually. The gdi caller caps its
-// list well below this; anything longer is collapsed into its bounding box so a
-// rogue caller cannot overflow the copy-region array.
-constexpr int kMaxUploadRects = 64;
+// Rects one PresentBgra call may upload individually (matches the gdi caller's
+// cap). Anything longer is collapsed into its bounding box, so a rogue caller
+// cannot overflow the copy-region array.
+constexpr int kMaxUploadRects = 256;
 
 // Clips the caller's rects to the desktop and drops the empty ones, writing at
 // most `capacity` entries to `out`. Returns the number written (0 when nothing
