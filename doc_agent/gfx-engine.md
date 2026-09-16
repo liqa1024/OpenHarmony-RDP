@@ -273,13 +273,32 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   不是访存，也不是靠微调着色器能追回来的。下一步的设计见
   [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 
+- **CPU（gdi）链路的并行度：解码已经并行，流水线没有——后者是我们的活**：
+  - **已经是并行的**：Progressive 的 tile 解码走 WinPR 线程池，`progressive_process_tiles` 对**每个
+    tile** 提交一个 work item（`CreateThreadpoolWork`/`SubmitThreadpoolWork`）再整批
+    `WaitForThreadpoolWorkCallbacks`；池的最小线程数 = CPU 核数，开关是
+    `rfx_context->priv->UseThreads`（`codec/rfx.c` 里默认 TRUE，只有传了
+    `THREADING_FLAGS_DISABLE_THREADS` 才关；`FreeRDP_ThreadingFlags` 默认 0，本工程没设）。
+    ⇒ 共享池由**所有** codec 上下文各建一份（gdi 的 `codecs->progressive` 与 GFX 的
+    `gfx->codecs` 各一个），排查 CPU 占用前先确认这个开关。
+  - **仍然串行（全在 RDP 线程上，按 chunk 从头走到尾）**：transport 读 + drdynvc 重组 → ZGX 解压 →
+    RDPGFX PDU 解析 → **每条 Progressive 消息一次 fork/join**（一帧 4~7 次，含逐 tile 建 work item
+    与线程池唤醒）→ `update_tiles` 的**重复合成**（`codec/progressive.c`，消息数 × tile 数的
+    `region16` + 行 memcpy）→ `gdi_OutputUpdate` 的表面→主缓冲合成 → present（+ ack）。
+  - ⇒ **客户端吞吐 = 上面这些串行段之和**（解码只把其中一段摊到多核）。"读/ZGX/解析"与"解码"之间
+    **没有重叠**，FreeRDP 也不提供这种流水线 ⇒ 要再往上提只有两条路：自己做 producer/consumer，
+    或把解码搬进 GPU 引擎（§7）。
+  - **量它的办法**：`mode=fast` 回放（不经网络）的 `feed=` ÷ `frames=` 就是这份码流的客户端每帧总耗时
+    上界；LAN 上再把（分相后的）`本机` 与帧周期对照，两者接近就是客户端到顶。
+
 ## 4. 关键实现要点（与引擎配套的会话侧约束）
 
 - FreeRDP 的 RDPGFX 回调必须接上 `freerdp_client_OnChannelConnectedEventHandler`（绑到
   `ChannelConnected`/`ChannelDisconnected`），否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
 - live 的 GPU 接管由会话侧驱动；保留**双渲染影子对照**（引擎 vs gdi）作为运行时体检。
 - 引擎屏幕经 `GfxVkDesktop::Compose()` + `VkRenderer` 上屏（目前只用于回放/对比路线）；GPU 接管时
-  "本机解码耗时"计 0（解码已在 GPU），含义见 [`session-and-input.md`](session-and-input.md) 的遥测。
+  "本机"里的 **decode 段计 0**（解码已在 GPU），`zgx+parse`/`compose`/`present` 三段照旧，
+  含义见 [`session-and-input.md`](session-and-input.md) 的遥测。
 
 ## 5. 历史包袱（**不要在新代码里依赖**）
 
@@ -355,8 +374,43 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
       `EndFrame` 返回后才发，而我们的上屏就在 `EndFrame` 里），回放既不发 ack 也没有服务端调度。因此
       realtime 复现的是"服务器已经产出的那份流的到达节奏"，不是"服务器面对一个更快的客户端会怎么发"。
       版本 0（无时间戳）的旧录像没有到达时刻，`realtime` 会自动回落 `mode=fast` 并在日志里说明。
+    - **realtime 的 `fps` 就是录制节拍本身，不能当"客户端能力"读**：它由 `PaceRecord()` 按到达时刻睡眠
+      得到，录像里的间隔是多少，realtime 就必然报多少 fps——这跟"客户端跑不动"是两件事。判定客户端占了
+      多少只看三个数：`feed=`（同一轮的纯计算，节拍睡眠已剔除）、`lag=`（是否落后录制日程）、以及
+      `mode=fast` 的 `fps`（吞吐上限）。
+    - **时间戳的语义决定了这个模式分不开"谁在慢"**：它由补丁在 `rdpgfx_on_data_received`（整条 DVC
+      chunk 重组完成之后、ZGX 解压之前）取，所以 `gap(i→i+1)` = **客户端处理第 i 条的时间** +
+      **等服务端送第 i+1 条的时间**。**但这两项可以用录像自己拆开**：当相邻两条是"背靠背"到达时
+      （客户端手里有货），`gap` 就退化成前一节的**服务时间上界**。见下条。
+    - **已测的一例（带时间戳录像，250 条 / 41.67s；稳定段 5.7 条/s、~180KB/条、~1.0MB/s，"一条 ≈ 一帧"）**：
+      - 同样的 ~150-165KB 记录，在 t≈17.3~17.8s / 28.3~28.8s / 29.2~29.7s 这几段是 **26~40ms 一条**
+        （≈4MB/s）连续到达，其余时间是 **175ms 一条**。26~40ms 是 `gap ≥ 客户端服务时间` 给的**上界**，
+        即**客户端每帧的解码+上屏 ≤ ~30-40ms**，换算下来整轮 250 帧的客户端工时 < ~10s / 41.67s。
+      - 对"任意 w 秒窗口内的最大到达字节数"做拟合：0.25s→1.10MB、0.5s→1.84MB、1s→2.37MB、2s→3.47MB、
+        5s→6.85MB、10s→12.19MB ⇒ **maxBytes(w) ≈ 1.16MB + 1.11MB/s·w**，即到达侧被塑形成
+        **持续 ≈ 8.9Mbit/s、突发额度 ≈ 1.16MB 的令牌桶**（逐条速率与载荷大小基本无关：R²=0.12，
+        逐条隐含速率 p05~p95 差 10 倍）。
+      - 于是 `fps ≈ 带宽预算 / 每帧字节数`：8.9Mbit/s ÷ 180KB ≈ **6.3fps**，与实测 5.7 吻合；
+        **"低 fps"是到达侧的字节预算问题，不是解码/上屏算力问题**（客户端在这条流上至少 82% 时间在等数据）。
+      - 谁能拿到这个预算：live 里 `Session::EmitMetrics` 每秒打的
+        `perf: 本机 X us/frame = zgx+parse … + decode … + compose … + present … (frames=… presents=…
+        kB/frame=… duty=…%)` 与工具栏（`本机` 的毫秒整数 + FPS）一起看即可当场判定：**本机 ≈ 1000/fps**
+        就是客户端触顶；本机 ≪ 帧周期、duty 只有个位数百分比 ⇒ 客户端在等数据，闸门在到达侧。
+        而**把预算报给服务端的那个值就是 autodetect 的 `netCharBandwidth_`，它目前没有进遥测串**（见 §7）。
   - **比较上屏成本用 `present=`**，比较"解码 + 上屏"合计用 `feed=`（同样已剔除启动；两种模式都剔除节拍
     睡眠）。
+  - **live 与回放的逐相对照（这是"本机为什么是 50ms 而回放只要 25ms"唯一可靠的判定方式）**：
+    CPU 路线回放的 stats 里有一条 `perFrame`，和 live 的 `本机` **同源同义**——两者都由
+    `hmrdp_gfx_work.h` 的 `GfxWorkMeter` 通过同一批钩子计量（chunk 到达→首条命令 = `zgx+parse`、
+    包裹的 `SurfaceCommand` = `decode`、包裹的 `EndFrame` − present = `compose`、`PresentGdiFrame` =
+    `present`），分母都是 EndFrame 帧数。所以：
+    `perFrame 本机=…us (max …) = zgx+parse … + decode … + compose … + present …` / `frames=…
+    cmds/frame=… kB/frame=…` 可以直接与 live 的同名字段（工具栏悬停 / 每秒 hilog）并排比。
+    **判读顺序**：① 先比 `kB/frame`、`cmds/frame`——低 fps 的 live 每帧扛的是累积变化，内容不同就
+    没有可比性；② 内容对得上再比相位，`decode` 差得多 ⇒ 频率/缓存/被别的活抢 CPU，`zgx+parse` 差得多
+    ⇒ 解压/解析（含 live 的抓取落盘、传输后处理），`compose`/`present` 差得多 ⇒ 合成/上屏。
+    **同一份录像用 `mode=realtime` 回放**（复现 live 的到达节拍 ⇒ 同样的内容分帧与同样的空闲分布）是
+    把两者对齐的标准做法；`mode=fast` 只能给吞吐上限，不能用来解释 live 的每帧工时。
   - 回放页的「路线 / 重新回放」按钮内部都是 `stopReplayTest()` + 重新 `start`，**在一轮还没跑完时点击
     等于把那一轮掐断**；性能数字只取 `(running=0)` 的**整轮**，且要记下 `frames=` 以确认是整份跑完
     （不同录制的帧数不同，不能假定某个固定值）。
@@ -403,6 +457,27 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
+- **live 低 fps 的归属（已在录像上定位到"到达侧字节预算"，下一步要找出是谁定的预算）**：录像给出的结论
+  是**到达侧被限制在 ~8.9Mbit/s（+1.16MB 突发额度）**，`fps ≈ 预算 / 每帧字节数`（见 §6 "已测的一例"），
+  客户端的解码+上屏 ≤ ~30-40ms/帧、至少 82% 时间在等数据。要定责，按下面的顺序做**低成本**验证：
+  1. **把 autodetect 报给服务端的带宽带进遥测**：`Session::netCharBandwidth_` 已经存着这个值
+     （`HmrdpNetworkCharacteristicsResult` → `OnNetworkCharacteristics`），但 `EmitMetrics` 的
+     `rtt|rxBps|txBps|fps|…` 串里没有它。加一个字段，live 一眼就能看到"我们自己把带宽报成了多少"：
+     ≈8.9Mbit/s ⇒ 闸门是我们报的；远大于它 ⇒ 闸门在服务端策略/链路。
+     （RDP 侧链路：客户端在服务端的 burst 探针里测带宽 `autodetect_recv_bandwidth_measure_*`，
+     再用 NetworkCharacteristicsSync 回给服务端；`FreeRDP_NetworkAutoDetect` 现在是 TRUE。）
+  2. **A/B 对照**（同一场景，各跑一次看整轮 fps）：`FreeRDP_NetworkAutoDetect=FALSE`（不报带宽）、
+     显式设 `FreeRDP_ConnectionType`（LAN=6 / AUTO=7，现在从没设过）、以及服务端组策略里的带宽限制；
+     再拿同一网络里的 mstsc 连同一台机器做基准。三条一起就能把"我们报的 / 服务端策略 / 链路"分开。
+  3. 只有 1/2 把预算放开之后才轮到客户端：**每帧字节数**（1080p 全屏 Progressive ~180KB/帧，AVC 同内容
+     只是零头；`GfxH264`/`GfxAVC444` 恒 FALSE 见 §5，是否重开是产品决策），再往后才是解码/上屏
+     （gdi 每帧几十毫秒会成为新天花板 ⇒ 那才是"GPU 引擎接 live"的立项依据）。
+  说明：**客户端侧的 ack 回路（present 在 `EndFrame` 里做、`queueDepth` 恒为 `QUEUE_DEPTH_UNAVAILABLE`）
+  不是这次的闸门**——录像里出现过连续 10~12 条背靠背到达（服务端并未等 ack），它的优先级排在 3 之后。
+- **"live 的每帧工时为什么是回放的两倍"怎么查**（已具备工具，见 §6 的逐相对照）：同一场景 ① live 跑一轮，
+  记下工具栏 `本机`（悬停看拆相）与每秒 hilog 的 `perf:` 行；② 把这一轮录成 v1 录像，用 **`mode=realtime`**
+  回放，读 stats 的 `perFrame` 行（`本机`/`zgx+parse`/`decode`/`compose`/`present`、`cmds/frame`、
+  `kB/frame`）。先比 `kB/frame` 与 `cmds/frame`（内容不同就没有可比性），再比相位定位。
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。

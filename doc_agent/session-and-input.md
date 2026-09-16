@@ -70,12 +70,32 @@
   窗口模式**始终显示**，且作为普通行布局在远程画面**上方**（渲染区自然扣除工具栏高度、不再被覆盖，
   指针映射仍以 XComponent 局部坐标为准）。
 - 右侧按钮：复制 / 粘贴 / 全屏·退出全屏 / 最小化 / 断开。
+- **帧工时计量器（`hmrdp_gfx_work.{h,cpp}`，live 与回放共用）**：一个 `GfxWorkMeter`，由**同一批钩子**
+  喂：抓取钩子取 chunk 到达时刻（在 ZGX 之前、**落盘之后**，磁盘 I/O 不进相位）、链式包裹的
+  `SurfaceCommand` 计解码、包裹的 `EndFrame` 计合成+上屏（`EndFrame` 总耗时 − present）。live 里
+  `Session` 持有它在连接期间发布（`SetActiveWorkMeter`），CPU 回放路线装同一对包装器、用同一个计量器，
+  ⇒ **同一份码流在 live 与回放里"本机"的定义完全相同**，才能逐相、按载荷对照（见 gfx-engine.md §6）。
 - 左侧遥测每秒刷新一次（原生 `kMetrics` 事件，字段
-  `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`）：
+  `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`，其后还有
+  `zgxParseUs|decodeUs|composeUs|presentUs|bytesPerFrame|dutyPermille|cmdsPerFrame` 七个**本机拆相**字段）：
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端注册
     该回调），故连接时给 `context->autodetect` 自行注册回调捕获。
-  - **本机** = **解码 + 呈现**：解码由链式包裹的 `SurfaceCommand` 计时，呈现为 gdi 帧经呈现器
-    （Vulkan 优先 / GLES 兜底，`hmrdp_presenter.h`）上屏的时间。两者按帧平均。
+  - **本机** = **客户端在这一帧上的全部处理时间**（µs/帧）：`zgx+parse`（chunk 到达→该帧第一条命令，
+    即 ZGX 解压 + RDPGFX PDU 解析）＋ `decode`（包裹的 `SurfaceCommand`，含 progressive 自己的
+    重复合成 `update_tiles`）＋ `compose`（`gdi_EndFrame` 的 surface→primary 合成）＋ `present`
+    （`PresentGdiFrame`，Vulkan/GLES 呈现器）。
+  - **口径约束（读数前必看）**：
+    - **分母是 EndFrame 帧数**，不是呈现帧数：一次处理的工作在**它的帧收尾时**才入账，所以"一帧多大"
+      （由到达节拍决定）不会跑偏分母；窗口边界最多切到一帧。
+    - **拆相要看**：`decode` 随该帧载荷/命令数变（低 fps 时每帧扛的是累积变化，比高 fps 时大），
+      `compose`/`present` 随桌面尺寸变 ⇒ 单看合计会把它当"客户端常量能力"。`bytesPerFrame`、
+      `cmdsPerFrame`（内容归一量）与 **dutyPermille**（本机工时 / 墙钟，0.1% 单位）才是跨帧率可比的量：
+      duty 远小于 100% 就是客户端在等数据。
+    - **仍不含**：传输层读/drdynvc 重组（在抓取钩子之前）、**RDPGFX 帧回执**（FreeRDP 在 EndFrame
+      回调返回**之后**才写）；`present` 里 `WaitForFences`/`acquireNextImageKHR` 在合成器不还 buffer 时
+      会阻塞，会把排队/显示延迟算进来。
+    - 同一行每秒还有 hilog：`perf: 本机 X us/frame (max M) = zgx+parse … + decode … + compose … +
+      present … (frames=… presents=… cmds/frame=… kB/frame=… duty=…%)`，定位用这一行。
   - **响应**：RDP 输入与画面是两条**无回显**的流，输入延迟只能**推断**——仅在**空闲 ≥200ms 后输入、
     2s 内出现首帧**时采样，取近 5 次均值；不做该约束会退化成帧节拍。
   - **带宽**：`freerdp_get_stats()` 的收发字节差分。
@@ -85,6 +105,9 @@
   - **不显示**：服务端处理（协议不回报）、压缩比（只对 GDI 位图路径有意义）、音频丢包
     （复用在同一传输里，客户端无逐包统计）。
 - 指标用**固定宽度**排布（避免数字位数变化时重排），间距分"网络↔本机"与其余两档。
+- **显示口径**：延迟类（网络/本机/响应）统一用**毫秒、取整到个位**，单位后缀一致；本机的**拆相放在
+  悬停提示**里（同样毫秒整数：解压+解析 / 解码 / 合成 / 上屏，后跟 `KB/帧` 与"本机工时占帧周期的百分比"），
+  免得动到固定宽度的那一行。`本机` 的告警阈值按"还能不能到 60/30fps"理解（16ms / 33ms）。
 
 ## 4. 剪贴板（**手动触发**）
 

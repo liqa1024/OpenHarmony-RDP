@@ -416,6 +416,31 @@ std::string GfxReplay::StatsLines() {
     out += up;
   }
 
+  // Per-frame client work, measured exactly like the live session's "本机"
+  // (hmrdp_gfx_work.h): same hooks, same phases, same denominator. Only the CPU
+  // route installs the meter - it is the one that mirrors live (gdi) - so this
+  // line is where a live session's toolbar figure can be checked against a
+  // replay of the same stream. Whole-run totals, not a per-second window.
+  const GfxWorkMeter::Sample work = meter_.Peek();
+  if (work.frames > 0) {
+    const uint64_t frames = work.frames;
+    char wl[400];
+    std::snprintf(wl, sizeof(wl),
+                  "\nperFrame 本机=%lluus (max %lluus) = zgx+parse %lluus + decode %lluus"
+                  " + compose %lluus + present %lluus\n"
+                  "         frames=%llu cmds/frame=%llu kB/frame=%llu",
+                  static_cast<unsigned long long>(work.WorkUs() / frames),
+                  static_cast<unsigned long long>(work.maxFrameUs),
+                  static_cast<unsigned long long>(work.zgxParseUs / frames),
+                  static_cast<unsigned long long>(work.decodeUs / frames),
+                  static_cast<unsigned long long>(work.composeUs / frames),
+                  static_cast<unsigned long long>(work.presentUs / frames),
+                  static_cast<unsigned long long>(frames),
+                  static_cast<unsigned long long>(work.commands / frames),
+                  static_cast<unsigned long long>(work.bytes / frames / 1024));
+    out += wl;
+  }
+
   // Per-command-class breakdown only exists on the GPU route (the CPU route
   // decodes inside FreeRDP and never calls the sink).
   if (applyCount_.load() > 0) {
@@ -745,6 +770,20 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   }
   cpu.SetFrameFn([this, &cpu]() { OnCpuFrame(&cpu); });
 
+  // Measure this run with the live session's meter (same hooks, same phases), so
+  // the CPU route's per-frame figures can be put next to a live session's. A live
+  // session holds the slot while it is connected and is the authoritative
+  // reporter, so a replay started next to one runs without per-frame accounting
+  // instead of stealing its numbers.
+  const bool metered = ActiveWorkMeter() == nullptr;
+  if (!metered) {
+    HMRDP_LOGW("gfx replay: a live session is measuring, per-frame work not reported");
+  } else {
+    meter_.Reset();
+    SetActiveWorkMeter(&meter_);
+    GfxWorkInstall(cpu.gfx());
+  }
+
   hmrdp::GfxDumpSetReplaying(true);
   hmrdp::GfxReplayResetParseUs();
 
@@ -764,6 +803,10 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
 
   hmrdp::GfxDumpSetReplaying(false);
   cpu.SetFrameFn(nullptr);
+  if (metered) {
+    GfxWorkUninstall(cpu.gfx());
+    SetActiveWorkMeter(nullptr);
+  }
   if (!ok) {
     std::lock_guard<std::mutex> err(errorMutex_);
     lastError_ = error;
@@ -894,7 +937,9 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   const int64_t presentStart = NowUs();
   PresentUploadInfo upload;
   const bool presented = PresentGdiFrame(cpu->gdi(), presenter_.get(), &upload);
-  RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
+  const uint64_t presentUs = static_cast<uint64_t>(NowUs() - presentStart);
+  RecordPresent(presentUs);
+  meter_.OnPresent(presentUs);
   uploadBytes_.fetch_add(static_cast<uint64_t>(upload.uploadedBytes));
   uploadBoxBytes_.fetch_add(static_cast<uint64_t>(upload.boxBytes));
   if (upload.usedRects) {

@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#include "hmrdp_gfx_work.h"
+
 namespace hmrdp {
 
 class FramePresenter;
@@ -103,6 +105,13 @@ class GfxReplay {
   void PaceRecord(uint64_t timestampUs);
 
   std::mutex mutex_;
+  // Per-frame client work for the CPU (gdi) route: the very same meter the live
+  // session uses, fed through the same hooks (chunk stamp + wrapped
+  // SurfaceCommand/EndFrame + present), so a replayed frame and a live frame are
+  // measured identically and can be compared figure by figure
+  // (hmrdp_gfx_work.h). Only the CPU route installs its wrappers - it is the one
+  // that mirrors live (gdi); the engine route keeps its own stats.
+  GfxWorkMeter meter_;
   // Presenter for the CPU (gdi) route (Vulkan, or GLES on devices whose Vulkan
   // cannot present); the engine route owns its own Vulkan presenter inside
   // `desktop_`.

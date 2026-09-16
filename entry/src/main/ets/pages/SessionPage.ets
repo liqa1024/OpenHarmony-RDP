@@ -68,8 +68,10 @@ const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
 
 // Latency colour thresholds. The network RTT is allowed to be fairly high
-// before it warns (it is dominated by distance), while the local render time is
-// held to a much tighter budget because it is entirely under our control.
+// before it warns (it is dominated by distance), while the local per-frame work
+// is held to a much tighter budget because it is entirely under our control:
+// over WARN_MS the client cannot reach 60 fps and over BAD_MS it cannot reach
+// 30 fps, whatever the network delivers.
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
@@ -141,8 +143,19 @@ struct SessionPage {
   @State metricsRx: number = 0;
   @State metricsTx: number = 0;
   @State metricsFps: number = 0;
-  // Average per-frame decode + present time (microseconds); 0 = not measured.
+  // Client work per frame in microseconds (ZGX decompress + RDPGFX parse +
+  // decode + gdi compose + present); 0 = no frame ended in the window.
   @State metricsLocalUs: number = 0;
+  // The same per-frame figure split by phase (microseconds) plus its
+  // normalization: GFX commands and raw bytes per frame, and the duty cycle in
+  // 0.1% units. Shown in the 本机 tooltip.
+  @State metricsZgxUs: number = 0;
+  @State metricsDecodeUs: number = 0;
+  @State metricsComposeUs: number = 0;
+  @State metricsPresentUs: number = 0;
+  @State metricsBytesPerFrame: number = 0;
+  @State metricsDutyPermille: number = 0;
+  @State metricsCmdsPerFrame: number = 0;
   @State metricsResponseUs: number = 0;
   // Audio sample rate (Hz) and recent glitch rate in basis points (0.01%);
   // -1 when audio is not playing.
@@ -435,7 +448,13 @@ struct SessionPage {
     }
   }
 
-  /** Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<rateHz>|<lossBp>". */
+  /**
+   * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<rateHz>|<lossBp>|
+   * <zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|
+   * <cmdsPerFrame>". The first eight fields drive the toolbar row; the rest are
+   * the per-frame breakdown of localUs and are shown in the 本机 tooltip
+   * (see RdpEvent.Metrics).
+   */
   private onMetrics(data: string): void {
     const parts: string[] = data.split('|');
     if (parts.length < 8) {
@@ -473,6 +492,36 @@ struct SessionPage {
     if (!Number.isNaN(audioLossBp)) {
       this.metricsAudioLossBp = audioLossBp;
     }
+    if (parts.length >= 14) {
+      const zgxUs: number = Number.parseInt(parts[8], 10);
+      const decodeUs: number = Number.parseInt(parts[9], 10);
+      const composeUs: number = Number.parseInt(parts[10], 10);
+      const presentUs: number = Number.parseInt(parts[11], 10);
+      const bytesPerFrame: number = Number.parseInt(parts[12], 10);
+      const dutyPermille: number = Number.parseInt(parts[13], 10);
+      const cmdsPerFrame: number = parts.length >= 15 ? Number.parseInt(parts[14], 10) : NaN;
+      if (!Number.isNaN(zgxUs)) {
+        this.metricsZgxUs = zgxUs;
+      }
+      if (!Number.isNaN(decodeUs)) {
+        this.metricsDecodeUs = decodeUs;
+      }
+      if (!Number.isNaN(composeUs)) {
+        this.metricsComposeUs = composeUs;
+      }
+      if (!Number.isNaN(presentUs)) {
+        this.metricsPresentUs = presentUs;
+      }
+      if (!Number.isNaN(bytesPerFrame)) {
+        this.metricsBytesPerFrame = bytesPerFrame;
+      }
+      if (!Number.isNaN(dutyPermille)) {
+        this.metricsDutyPermille = dutyPermille;
+      }
+      if (!Number.isNaN(cmdsPerFrame)) {
+        this.metricsCmdsPerFrame = cmdsPerFrame;
+      }
+    }
     this.refreshSystemRefreshRate();
   }
 
@@ -505,14 +554,33 @@ struct SessionPage {
     return '#F87171';
   }
 
-  /** Client decode + present time in ms, or -1 when nothing was drawn. */
+  /**
+   * Client work per frame in ms (ZGX decompress + parse + decode + compose +
+   * present), or -1 when no frame ended in the window. Reported to the ones
+   * place like the other latency figures so the row stays comparable.
+   */
   private localMs(): number {
     return this.metricsLocalUs > 0 ? this.metricsLocalUs / 1000 : -1;
   }
 
   private localLabel(): string {
     const ms: number = this.localMs();
-    return ms < 0 ? '本机 --' : '本机 ' + ms.toFixed(1) + 'ms';
+    return ms < 0 ? '本机 --' : '本机 ' + Math.round(ms) + 'ms';
+  }
+
+  private usToMs(us: number): number {
+    return Math.round(us / 1000);
+  }
+
+  /** "本机" tooltip: the per-frame breakdown, every figure to the ones place. */
+  private localTips(): string {
+    return '解压+解析 ' + this.usToMs(this.metricsZgxUs) + 'ms' +
+      ' / 解码 ' + this.usToMs(this.metricsDecodeUs) + 'ms' +
+      ' / 合成 ' + this.usToMs(this.metricsComposeUs) + 'ms' +
+      ' / 上屏 ' + this.usToMs(this.metricsPresentUs) + 'ms' +
+      '\n载荷 ' + Math.round(this.metricsBytesPerFrame / 1024) + 'KB/帧' +
+      '（' + this.metricsCmdsPerFrame + ' 条命令）' +
+      '，本机工时占帧周期 ' + Math.round(this.metricsDutyPermille / 10) + '%';
   }
 
   /** "FPS <system>/<app>", distinguishing panel refresh from present rate. */
@@ -1630,6 +1698,7 @@ struct SessionPage {
             .width(METRIC_WIDTH_LOCAL)
             .margin({ left: METRIC_GAP_TIGHT })
             .maxLines(1)
+            .bindTips(this.localTips())
           Text(this.responseLabel())
             .fontSize(12)
             .fontColor('#B8BCC4')

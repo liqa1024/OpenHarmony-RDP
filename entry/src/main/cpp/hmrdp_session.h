@@ -17,6 +17,7 @@
 #include <freerdp/client/cliprdr.h>
 
 #include "hmrdp_audio.h"
+#include "hmrdp_gfx_work.h"
 #include "hmrdp_presenter.h"
 
 namespace hmrdp {
@@ -37,8 +38,11 @@ enum class SessionEvent {
   // carries the HTML fragment; Image carries "<w>,<h>|<base64 BGRA>".
   kClipboardHtml = 9,
   kClipboardImage = 10,
-  // Per-second session telemetry, payload "<rttMs>|<rxBps>|<txBps>|<fps>".
-  // rttMs is -1 while the server has not reported network characteristics.
+  // Per-second session telemetry: "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|
+  // <responseUs>|<audioRateHz>|<audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|
+  // <presentUs>|<bytesPerFrame>|<dutyPermille>". rttMs is -1 while the server has
+  // not reported network characteristics; the fields from index 8 on are the
+  // per-frame breakdown of 本机 (see EmitMetrics).
   kMetrics = 11,
 };
 
@@ -138,9 +142,6 @@ class Session {
   // characteristics (0 = not reported yet). FreeRDP's client does not store
   // these itself, so the values are captured here.
   void OnNetworkCharacteristics(uint32_t baseRtt, uint32_t averageRtt, uint32_t bandwidth);
-  // Pushed by the wrapped GFX SurfaceCommand: time spent decoding one surface
-  // command (Progressive or bitmap). Called on the RDP thread.
-  void OnDecodeTime(uint64_t micros);
   // The GFX channel context whose decode callback libhmrdp wrapped, so it can be
   // unregistered on disconnect. Stored as void* to keep the header light.
   void SetGfxContext(void* gfx);
@@ -195,13 +196,12 @@ class Session {
   // Frames drawn since the last metrics sample (incremented in HandleEndPaint,
   // drained on the event thread).
   std::atomic<uint32_t> frameCount_{0};
-  // Latency telemetry accumulated on the RDP event thread and drained once per
-  // second: total present time and the input-to-frame samples.
-  uint64_t renderAccumUs_ = 0;
-  uint32_t renderSamples_ = 0;
-  // Decode time (GFX SurfaceCommand) accumulated per window; added to the render
-  // time so "本机" covers decode + present.
-  std::atomic<uint64_t> decodeAccumUs_{0};
+  // Per-frame client work for the live telemetry: the capture hook and the
+  // wrapped GFX callbacks feed it while this session is connected, and the event
+  // thread drains one window per second (see hmrdp_gfx_work.h for what each
+  // phase covers - the same meter, fed through the same hooks, is used by the
+  // offline replay so the two figures are comparable).
+  GfxWorkMeter meter_;
   void* gfxContext_ = nullptr;
   // Ring of the most recent input-to-frame measurements; the emitted value is
   // their mean (this is a statistic, not a hard real-time figure).

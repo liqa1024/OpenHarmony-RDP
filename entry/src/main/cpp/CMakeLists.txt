@@ -72,6 +72,7 @@ add_library(hmrdp SHARED
     hmrdp_gfx_capture.cpp
     hmrdp_gfx_cpu.cpp
     hmrdp_gfx_driver.cpp
+    hmrdp_gfx_work.cpp
     hmrdp_replay.cpp
     hmrdp_presenter.cpp
     hmrdp_gles_presenter.cpp

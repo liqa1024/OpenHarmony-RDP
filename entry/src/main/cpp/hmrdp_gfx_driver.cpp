@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "hmrdp_gfx_capture.h"
+#include "hmrdp_gfx_work.h"
 #include "hmrdp_log.h"
 #include "hmrdp_rfx.h"  // GpuCmd ids
 
@@ -380,6 +381,11 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
     // throttling, not client work).
     if (paced) {
       pace(capture.timestampUs());
+    }
+    // Same arrival stamp the live capture hook takes, so the "本机" phases are
+    // measured the same way on both sides (see hmrdp_gfx_work.h).
+    if (GfxWorkMeter* meter = ActiveWorkMeter()) {
+      meter->OnChunk(size);
     }
     // Dev (perf): the ZGFX + RDPGFX PDU parse is a per-record cost that is common
     // to every route (it happens before the engine or gdi sees the command), so it
