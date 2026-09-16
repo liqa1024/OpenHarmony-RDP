@@ -5,6 +5,7 @@
 
 #include <freerdp/codec/region.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -197,6 +198,21 @@ struct GfxVkDesktop::Impl {
     GpuSurface meta;
     GpuBuffer gpu;
     RfxState rfx;
+    // Changed rects since the last Compose, collected as the commands touch the
+    // surface (one per decoded Progressive tile, one per cache restore, ...).
+    // They are merged into exact rectangles at Compose time (CoalesceRects) and
+    // composed individually - never as one bounding box - which is the same policy
+    // the CPU (gdi) present path follows; gdi gets the merging for free from
+    // region16 (doc_agent/gfx-engine.md §2.3). `dirtyOverflow` means even the
+    // merged list was too long, so the union box in `meta` is composed instead.
+    struct DirtyRect {
+      int left = 0;
+      int top = 0;
+      int right = 0;
+      int bottom = 0;
+    };
+    std::vector<DirtyRect> dirtyRects;
+    bool dirtyOverflow = false;
     // Tiles decoded in the current RDPGFX frame. FreeRDP's update_tiles
     // re-composites all of them (clipped by the current message's region rects)
     // on *every* Progressive message of the frame - PROGRESSIVE_SURFACE_CONTEXT::
@@ -604,9 +620,18 @@ struct GfxVkDesktop::Impl {
     return static_cast<double>(gpuTicksMax[slot]) * timestampNsPerTick / 1000000.0;
   }
   // Compose decisions: distinguishes "nothing mapped" from "nothing dirty".
+  // `composeCopies` counts surface composes (one per surface per frame), while
+  // `composeRects`/`composeMaxRects`/`composeRectOverflow` describe the merged
+  // dirty rect list - the engine-side counterpart of the CPU present path's
+  // `rectlist=`/`maxRects=`/`truncated=`. They are collected regardless of
+  // kComposeRects so the list is quantified while the engine is still composing
+  // the box.
   uint64_t composeCopies = 0;
   uint64_t composeSkipUnmapped = 0;
   uint64_t composeSkipClean = 0;
+  uint64_t composeRects = 0;
+  uint64_t composeMaxRects = 0;
+  uint64_t composeRectOverflow = 0;
 
   // Dev (perf): what the CPU can actually do against each host-visible memory type
   // this device exposes. Every CPU-side pixel command (ClearCodec, cache store /
@@ -845,6 +870,31 @@ struct GfxVkDesktop::Impl {
     return it == surfaces.end() ? nullptr : &it->second;
   }
 
+  // Raw marks a surface may collect before the union box takes over. Well above
+  // any measured frame (a full-screen Progressive I-frame marked ~2900 tiles), so
+  // it only bounds a pathological stream; the *composed* count is bounded by
+  // kMaxComposeRects after merging.
+  static constexpr int kMaxRawDirtyRects = 8192;
+  // Merged rects one Compose call will turn into copy regions (the same cap the
+  // CPU present path uses for its upload; the box is the fallback above it).
+  static constexpr int kMaxComposeRects = 256;
+
+  // Whether Compose copies the merged dirty rects individually, the way the CPU
+  // present path uploads its rects, instead of copying their union box.
+  //
+  // **Off until the engine's dirty marking is complete.** With the box every
+  // frame matches gdi (both samples `bad=0`); with the rect list one frame of the
+  // scrolling sample differs deterministically by 156 px at (992,1728)-(1007,1791)
+  // - a 16x64 strip *inside* the frame's dirty hull, i.e. a pixel write the engine
+  // never marks and the box has been covering because it fills the hull's gaps.
+  // That is a pre-existing bug (the box hid it), not a defect of the rect path:
+  // fix the marking, then flip this to true and re-run `bad=0` on both samples
+  // (doc_agent/gfx-engine.md §2.3, §6).
+  static constexpr bool kComposeRects = false;
+
+  // Marks one rect as changed. The rects themselves are kept (Compose composes
+  // exactly those, like the CPU present path uploads its dirty rects); the union
+  // box is maintained alongside as the bounded fallback.
   static void MarkSurfaceDirty(Surface& s, int left, int top, int right, int bottom) {
     if (right <= left || bottom <= top) {
       return;
@@ -856,12 +906,79 @@ struct GfxVkDesktop::Impl {
       m.dirtyTop = top;
       m.dirtyRight = right;
       m.dirtyBottom = bottom;
+    } else {
+      if (left < m.dirtyLeft) m.dirtyLeft = left;
+      if (top < m.dirtyTop) m.dirtyTop = top;
+      if (right > m.dirtyRight) m.dirtyRight = right;
+      if (bottom > m.dirtyBottom) m.dirtyBottom = bottom;
+    }
+    if (s.dirtyOverflow) {
       return;
     }
-    if (left < m.dirtyLeft) m.dirtyLeft = left;
-    if (top < m.dirtyTop) m.dirtyTop = top;
-    if (right > m.dirtyRight) m.dirtyRight = right;
-    if (bottom > m.dirtyBottom) m.dirtyBottom = bottom;
+    if (s.dirtyRects.size() >= kMaxRawDirtyRects) {
+      // Bounded: keep the box and stop collecting.
+      s.dirtyOverflow = true;
+      return;
+    }
+    s.dirtyRects.push_back(Surface::DirtyRect{left, top, right, bottom});
+  }
+
+  // Merges touching rects into the fewest exact rectangles: horizontal runs first
+  // (same top/bottom, touching or overlapping), then vertical ones (identical
+  // left/right, touching). The union is preserved exactly - no gap is ever
+  // included - so the composed pixels are unchanged, while a grid of 64x64
+  // Progressive tiles collapses into per-row strips and the region count drops far
+  // below the cap. gdi gets the same effect from region16's band merging.
+  static int CoalesceRects(Surface::DirtyRect* rects, int count) {
+    if (count <= 1) {
+      return count;
+    }
+    std::sort(rects, rects + count,
+              [](const Surface::DirtyRect& a, const Surface::DirtyRect& b) {
+                if (a.top != b.top) {
+                  return a.top < b.top;
+                }
+                return a.left < b.left;
+              });
+    // Horizontal runs.
+    int out = 0;
+    for (int i = 0; i < count; ++i) {
+      if (out > 0 && rects[out - 1].top == rects[i].top &&
+          rects[out - 1].bottom == rects[i].bottom && rects[i].left <= rects[out - 1].right) {
+        if (rects[i].right > rects[out - 1].right) {
+          rects[out - 1].right = rects[i].right;
+        }
+        continue;
+      }
+      rects[out++] = rects[i];
+    }
+    count = out;
+    // Vertical runs (the list is still ordered by top).
+    std::sort(rects, rects + count,
+              [](const Surface::DirtyRect& a, const Surface::DirtyRect& b) {
+                if (a.left != b.left) {
+                  return a.left < b.left;
+                }
+                return a.top < b.top;
+              });
+    out = 0;
+    for (int i = 0; i < count; ++i) {
+      if (out > 0 && rects[out - 1].left == rects[i].left &&
+          rects[out - 1].right == rects[i].right && rects[i].top <= rects[out - 1].bottom) {
+        if (rects[i].bottom > rects[out - 1].bottom) {
+          rects[out - 1].bottom = rects[i].bottom;
+        }
+        continue;
+      }
+      rects[out++] = rects[i];
+    }
+    return out;
+  }
+
+  static void ClearSurfaceDirty(Surface& s) {
+    s.meta.dirtyValid = false;
+    s.dirtyOverflow = false;
+    s.dirtyRects.clear();
   }
 
   void MarkScreenDirty(int left, int top, int right, int bottom) {
@@ -1587,12 +1704,55 @@ struct GfxVkDesktop::Impl {
     return true;
   }
 
-  // Compose: copies the clipped dirty rect out of a persistently mapped surface
-  // buffer into the screen image. `bufferRowLength` carries the surface stride,
-  // so the desktop size does not have to be a multiple of anything.
-  bool CopyBufferRegionToScreen(const GpuBuffer& src, int srcX, int srcY, int dstX, int dstY,
-                                int width, int height) {
-    if (width <= 0 || height <= 0) {
+  // Fills one copy region for a surface rect -> screen position pair. The surface
+  // stride goes into `bufferRowLength`, so the desktop size does not have to be a
+  // multiple of anything. Returns false when the rect is degenerate.
+  bool MakeScreenCopyRegion(const GpuSurface& m, const GpuBuffer& src, int left, int top,
+                            int right, int bottom, int scrW, int scrH,
+                            VkBufferImageCopy* out) {
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (right > m.mappedWidth) right = m.mappedWidth;
+    if (bottom > m.mappedHeight) bottom = m.mappedHeight;
+    if (right <= left || bottom <= top) {
+      return false;
+    }
+    // 1:1 output mapping (scaled PDUs unmap the surface); a rect copy.
+    int dstX = static_cast<int>(m.outputX) + left;
+    int dstY = static_cast<int>(m.outputY) + top;
+    if (dstX < 0) dstX = 0;
+    if (dstY < 0) dstY = 0;
+    if (dstX >= scrW || dstY >= scrH) {
+      return false;
+    }
+    int dstW = right - left;
+    int dstH = bottom - top;
+    if (dstW > scrW - dstX) dstW = scrW - dstX;
+    if (dstH > scrH - dstY) dstH = scrH - dstY;
+    if (dstW <= 0 || dstH <= 0) {
+      return false;
+    }
+    VkBufferImageCopy region{};
+    region.bufferOffset = static_cast<VkDeviceSize>(top) * static_cast<VkDeviceSize>(src.stride) +
+                          static_cast<VkDeviceSize>(left) * 4;
+    region.bufferRowLength = static_cast<uint32_t>(src.stride / 4);
+    region.bufferImageHeight = 0;
+    region.imageSubresource = ColorLayers();
+    region.imageOffset = {dstX, dstY, 0};
+    region.imageExtent.width = static_cast<uint32_t>(dstW);
+    region.imageExtent.height = static_cast<uint32_t>(dstH);
+    region.imageExtent.depth = 1;
+    *out = region;
+    MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
+    return true;
+  }
+
+  // Compose: copies the clipped dirty rects out of a persistently mapped surface
+  // buffer into the screen image. One command buffer, one call per surface: all
+  // regions share the same source buffer and destination image.
+  bool CopyBufferRegionsToScreen(const GpuBuffer& src, const VkBufferImageCopy* regions,
+                                 int count) {
+    if (count <= 0) {
       return true;
     }
     if (!src.valid() || screen.image == VK_NULL_HANDLE) {
@@ -1602,19 +1762,8 @@ struct GfxVkDesktop::Impl {
       return false;
     }
     BarrierBeforeRead();
-    VkBufferImageCopy region{};
-    region.bufferOffset =
-        static_cast<VkDeviceSize>(srcY) * static_cast<VkDeviceSize>(src.stride) +
-        static_cast<VkDeviceSize>(srcX) * 4;
-    region.bufferRowLength = static_cast<uint32_t>(src.stride / 4);
-    region.bufferImageHeight = 0;
-    region.imageSubresource = ColorLayers();
-    region.imageOffset = {dstX, dstY, 0};
-    region.imageExtent.width = static_cast<uint32_t>(width);
-    region.imageExtent.height = static_cast<uint32_t>(height);
-    region.imageExtent.depth = 1;
-    api().CmdCopyBufferToImage(commandBuffer, src.buffer, screen.image, VK_IMAGE_LAYOUT_GENERAL, 1,
-                               &region);
+    api().CmdCopyBufferToImage(commandBuffer, src.buffer, screen.image, VK_IMAGE_LAYOUT_GENERAL,
+                               static_cast<uint32_t>(count), regions);
     pendingDeviceWrites = true;
     return true;
   }
@@ -2983,7 +3132,7 @@ void GfxVkDesktop::MapSurfaceToOutput(uint16_t surfaceId, uint32_t outputOriginX
     surface->meta.outputX = outputOriginX;
     surface->meta.outputY = outputOriginY;
     // gdi_MapSurfaceToOutput clears the surface's invalid region.
-    surface->meta.dirtyValid = false;
+    Impl::ClearSurfaceDirty(*surface);
   }
 }
 
@@ -3029,7 +3178,7 @@ bool GfxVkDesktop::ResetGraphics(int width, int height) {
       std::memset(surface.gpu.mapped, 0xFF, surface.gpu.capacity);
       impl_->MarkHostWrite(&surface.gpu);
     }
-    surface.meta.dirtyValid = false;
+    Impl::ClearSurfaceDirty(surface);
   }
   if (impl_->clearDecoder != nullptr) {
     impl_->clearDecoder->Reset();
@@ -3062,41 +3211,51 @@ bool GfxVkDesktop::Compose() {
       impl_->composeSkipClean++;
       continue;
     }
-    int left = m.dirtyLeft;
-    int top = m.dirtyTop;
-    int right = m.dirtyRight;
-    int bottom = m.dirtyBottom;
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-    if (right > m.mappedWidth) right = m.mappedWidth;
-    if (bottom > m.mappedHeight) bottom = m.mappedHeight;
-    if (right <= left || bottom <= top) {
-      m.dirtyValid = false;
+    // Merge the marked rects into exact rectangles and compose them individually;
+    // only when even the merged list is too long does the union box take over
+    // (bounded fallback - the same one the CPU present path has). All of a
+    // surface's regions go into one command: the source buffer and stride are
+    // shared, so the only per-rect cost is another region entry.
+    const int merged =
+        Impl::CoalesceRects(s.dirtyRects.data(), static_cast<int>(s.dirtyRects.size()));
+    const bool rectListTooLong =
+        s.dirtyOverflow || merged > Impl::kMaxComposeRects;
+    const bool overflowed = rectListTooLong || !Impl::kComposeRects;
+    VkBufferImageCopy regions[Impl::kMaxComposeRects];
+    int regionCount = 0;
+    const int listCount = overflowed ? 1 : merged;
+    for (int i = 0; i < listCount; ++i) {
+      const int left = overflowed ? m.dirtyLeft : s.dirtyRects[i].left;
+      const int top = overflowed ? m.dirtyTop : s.dirtyRects[i].top;
+      const int right = overflowed ? m.dirtyRight : s.dirtyRects[i].right;
+      const int bottom = overflowed ? m.dirtyBottom : s.dirtyRects[i].bottom;
+      if (impl_->MakeScreenCopyRegion(m, s.gpu, left, top, right, bottom, scrW, scrH,
+                                      &regions[regionCount])) {
+        regionCount++;
+      }
+    }
+    if (regionCount == 0) {
+      // Every rect was outside the surface/output: nothing to copy, nothing to
+      // retry (same as the old "degenerate box" path).
+      Impl::ClearSurfaceDirty(s);
       continue;
     }
-    // 1:1 output mapping (scaled PDUs unmap the surface); a rect copy.
-    int dstX = static_cast<int>(m.outputX) + left;
-    int dstY = static_cast<int>(m.outputY) + top;
-    if (dstX < 0) dstX = 0;
-    if (dstY < 0) dstY = 0;
-    if (dstX >= scrW || dstY >= scrH) {
-      m.dirtyValid = false;
-      continue;
-    }
-    int dstW = right - left;
-    int dstH = bottom - top;
-    if (dstW > scrW - dstX) dstW = scrW - dstX;
-    if (dstH > scrH - dstY) dstH = scrH - dstY;
-    if (dstW <= 0 || dstH <= 0) {
-      m.dirtyValid = false;
-      continue;
-    }
-    if (!impl_->CopyBufferRegionToScreen(s.gpu, left, top, dstX, dstY, dstW, dstH)) {
+    if (!impl_->CopyBufferRegionsToScreen(s.gpu, regions, regionCount)) {
+      // Keep the dirty state so a later Compose can retry this surface.
       return false;
     }
-    impl_->MarkScreenDirty(dstX, dstY, dstX + dstW, dstY + dstH);
-    m.dirtyValid = false;
+    // The rect figures describe the *merged dirty rect list* (what a rect-mode
+    // compose copies), independently of which mode actually composed, so they stay
+    // comparable with the CPU present path's `rectlist=`/`maxRects=`/`truncated=`.
+    impl_->composeRects += static_cast<uint64_t>(merged);
+    if (static_cast<uint64_t>(merged) > impl_->composeMaxRects) {
+      impl_->composeMaxRects = static_cast<uint64_t>(merged);
+    }
+    if (rectListTooLong) {
+      impl_->composeRectOverflow++;
+    }
     impl_->composeCopies++;
+    Impl::ClearSurfaceDirty(s);
   }
   Impl::AddStat(&impl_->statCompose, composeStart);
   return impl_->screenDirtyValid;
@@ -3586,7 +3745,7 @@ void GfxVkDesktop::ApplyCommand(uint16_t cmdId, uint32_t surfaceId, const uint32
       if (impl_ != nullptr) {
         if (Impl::Surface* s = impl_->Find(static_cast<uint16_t>(surfaceId))) {
           s->meta.mapped = false;
-          s->meta.dirtyValid = false;
+          Impl::ClearSurfaceDirty(*s);
         }
       }
       break;
@@ -3715,7 +3874,8 @@ std::string GfxVkDesktop::Stats() const {
                 "composeGroupsMax=%llu"
                 "\n  msgPerFrame 0=%llu 1=%llu 2=%llu 3=%llu 4-7=%llu 8+=%llu max=%u"
                 "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus"
-                "\n  compose copies=%llu skipUnmapped=%llu skipClean=%llu"
+                "\n  compose copies=%llu rects=%llu maxRects=%llu overflow=%llu"
+                " skipUnmapped=%llu skipClean=%llu"
                 "\n  alloc calls=%llu us=%llu (cache allocs=%llu)"
                 "\n  cpu bytes cache=%llu copy=%llu (overlap=%llu) cacheOps store=%llu restore=%llu"
                 "\n  syncDrains=%llu syncDrain=%llums"
@@ -3756,6 +3916,9 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->atomSize),
                 static_cast<unsigned long long>(impl_->emptySubmitUs),
                 static_cast<unsigned long long>(impl_->composeCopies),
+                static_cast<unsigned long long>(impl_->composeRects),
+                static_cast<unsigned long long>(impl_->composeMaxRects),
+                static_cast<unsigned long long>(impl_->composeRectOverflow),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
                 static_cast<unsigned long long>(impl_->composeSkipClean),
                 static_cast<unsigned long long>(impl_->allocCalls),

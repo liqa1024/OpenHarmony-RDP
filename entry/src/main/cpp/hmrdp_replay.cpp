@@ -869,6 +869,14 @@ void GfxReplay::CompareFrames() {
         static_cast<unsigned long long>(diffRgb), static_cast<unsigned long long>(diffAlpha),
         firstX, firstY, bx0, by0, bx1, by1, maxDelta,
         static_cast<unsigned long long>(smallDeltaPx));
+    // Localizing a mismatch (doc_agent/gfx-engine.md §7): this pixel comparison is
+    // the *only* valid signal - comparing dirt-rect *coverage* is not, because the
+    // reference's rects are a coarse superset of what changed, so "gdi covered it,
+    // the engine did not" also happens on frames that match pixel for pixel. To
+    // continue from here, dump the differing rect's pixels from all three sources
+    // (engine screen via ReadScreen, gdi's primary_buffer, gdi's surface via
+    // cpu.gfx()->GetSurfaceData) - that separates "the engine's compose missed the
+    // rect" from "a decode difference / a stale reference buffer".
   }
 }
 

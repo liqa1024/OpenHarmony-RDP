@@ -218,8 +218,15 @@ struct GpuSurface {
   uint32_t outputY = 0;
   int mappedWidth = 0;   // raw CreateSurface width
   int mappedHeight = 0;  // raw CreateSurface height
-  // Bounding box of the region touched since the last Compose (a conservative
-  // superset of FreeRDP's per-command invalid rects).
+  // Union of everything marked since the last Compose. The rect *list* lives in
+  // the engine's Surface (Impl): commands mark the individual rects they touched
+  // (a Progressive message marks one rect per decoded tile, a cache restore or an
+  // uncompressed upload its own rect), the engine merges them into exact
+  // rectangles and Compose copies exactly those - never their merged bounding box.
+  // That is the same policy the CPU (gdi) present path uses for its upload, so a
+  // scene's cost profile is comparable across the two routes
+  // (doc_agent/gfx-engine.md §2.3). This box is the bounded fallback used when
+  // even the merged list is too long.
   bool dirtyValid = false;
   int dirtyLeft = 0;
   int dirtyTop = 0;

@@ -18,6 +18,10 @@
  *  - The screen stays a `VkImage` (`VK_IMAGE_LAYOUT_GENERAL`) because it is the
  *    presentation source. Compose copies each mapped surface's dirty region into
  *    it with `vkCmdCopyBufferToImage`, carrying the stride via `bufferRowLength`.
+ *    The region is the **list of rects the commands actually touched**, not their
+ *    merged box: the GPU route follows the same policy as the CPU (gdi) present
+ *    path (doc_agent/gfx-engine.md §2.3), with the box kept only as the bounded
+ *    fallback above `GpuSurface::kMaxDirtyRects`.
  *  - Pixel commands (fill / upload / cache / copy) run on the CPU against the
  *    mapping, exactly as FreeRDP's gdi path does. `ReadSurface` is a plain copy
  *    out of the mapping; only `ReadScreen` and `Flush` touch the device.
@@ -89,7 +93,7 @@ class GfxVkDesktop {
 
   // --- Screen (front buffer) -----------------------------------------------
   bool ResetGraphics(int width, int height);
-  // Composites every output-mapped surface's dirty region into the screen and
+  // Composites every output-mapped surface's dirty rects into the screen and
   // clears their dirty regions. Returns true when the screen dirty region is
   // non-empty.
   bool Compose();

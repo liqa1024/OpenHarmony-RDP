@@ -198,7 +198,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - 两条后端的**共同约束**（与设备/分辨率无关）：只上传脏矩形；源行距可能被填充，所以要用调用方给的
   stride（GLES 侧配 `GL_UNPACK_ROW_LENGTH`）；通道顺序按目标面读出来的格式决定（屏幕面通常是 RGBA 序，
   FreeRDP 给的是 BGRA）；纹理/镜像重建后**首帧强制整幅**，否则其余部分会留空。
-- **上屏只传逐条脏矩形，包围盒只作上限兜底**：gdi 同时维护 `hwnd->invalid`（合并 box）和
+- **上屏只传逐条脏矩形，包围盒只作上限兜底（CPU 路线已启用）**：gdi 同时维护 `hwnd->invalid`（合并 box）和
   `hwnd->cinvalid[ninvalid]`（逐条矩形，见 `libfreerdp/gdi/region.c` 的 `gdi_InvalidateRegion`）；
   `PresentGdiFrame` 逐条上传，仅在**矩形数超过上限（256）**时退回包围盒（保证命令列表与拷贝区域数组有界）。
   一条矩形的帧就是 box，无需特判。
@@ -213,10 +213,17 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
     + 每个矩形一个 `VkBufferImageCopy`，GLES 每个矩形一次 `glTexSubImage2D`），**不要**为每个矩形各走一次
     present（那会把整屏 letterbox 画 N 遍）。像素一致性已核对：同一段录像两种上传方式跑完的最终画面
     逐像素无差异。
-  - **GPU 路线仍是"合并 bbox"口径**（引擎 `GfxVkDesktop::Compose()` 按 `MarkSurfaceDirty` 的单 bbox 拷进
-    device-local 屏幕镜像后整幅 blit 上屏）。按上面的实测，视频类场景逐条与 box 本来就无差别，
-    碎片类才有收益，所以是否要对齐要看 GPU 侧碎片场景的账；改引擎要同时守住 `rfx_compose` 的裁剪语义
-    与 `bad=0` 门禁。
+  - **GPU 路线：逐条合成已实现，但默认关闭（`Impl::kComposeRects = false`，仍合成 bbox）**。引擎同样逐条
+    收集脏矩形（`MarkSurfaceDirty`：Progressive 每个解码 tile 一条，ClearCodec/缓存/填充/未压缩各按自己的
+    rect），`Compose()` 用 `CoalesceRects` 合并成**精确矩形**（同行同跨度先并、再同列并，并集不变），
+    上限 256、超限退回 bbox；`Stats()` 的 `compose copies/rects/maxRects/overflow` 是这条列表的账
+    （实测：滑动 `rects=10587 maxRects=113`、视频 `rects=1422 maxRects=106`，都 `overflow=0`，
+    即逐条合成在这两份录像上都不需要退回 box）。
+    **关闭的原因**：真正逐条合成会稳定暴露一处像素分叉——滑动样本 **156 px @ (992,1728)-(1007,1791)**
+    （16×64 条带，`bad=1`，三次复跑同一 bbox；box 模式 `bad=0`）。**尚未定性的**是"引擎少合成"
+    还是"参考主缓冲陈旧/解码不同"（覆盖比较法已被证否，见 §6；下一步只能用像素值定位，见 §7）。
+    CPU 侧不受影响：`hwnd->invalid` 本来就是同一批 `gdi_InvalidateRegion` 调用的 bbox，其矩形列表与 box
+    覆盖范围等价。
 - **两条后端的分工必须完全一致**（否则就是一条快一条慢）：**CPU 只把脏区交出去一次，不做任何像素变换**
   ——通道交换、缩放、letterbox 一律在 GPU 侧；`glTexSubImage2D`/staging 上传只做行拷贝。Vulkan 侧因此用
   **一个小 quad（采样 + fragment shader 换通道序 + dynamic viewport 做 letterbox）**而不是
@@ -318,6 +325,16 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   **"引擎跳过/多做了一条命令"→"两边对同一条命令算得不一样"**两个方向分开查：前者看引擎自己的
   `Stats()` 计数（`rfxParse errors`、`skippedRegions`、`rejectedTiles`…）与"引擎这条命令到底做没做"，
   后者才是解码/合成语义。**不要用"跳过某条 dispatch + 差值反推"做归因**（见 §3）。
+- **不要用"脏区/覆盖集合"比对来判定或定位分叉**（实测教训）：参考实现（gdi）的脏矩形是
+  **region16 合并出来的粗超集**——同一帧可能只有一条跨越整个屏幕的 rect——所以"参考覆盖了、引擎没覆盖"
+  在**像素完全一致**的帧上也会大量出现（实测：box 合成 `bad=0`，同一套对照却报出 138 帧不一致；rect
+  合成 `bad=1` 只报 1 帧）。覆盖比较**既不能作为"漏标记"的证据，也不能用来定位**，只会把人带偏。
+  判定/定位只能靠**像素值**：把差异矩形的像素从三处同时打出来——**引擎屏幕（`ReadScreen`）/ 参考的
+  主缓冲（`primary_buffer`）/ 参考的表面（`GetSurfaceData()->data`）**，一次就能区分
+  "引擎合成漏了这块"（表面 == 主缓冲 ≠ 引擎屏幕）、"参考主缓冲自己陈旧"（表面 ≠ 主缓冲）与
+  "解码内容不同"（引擎表面 ≠ 参考表面）。**推论（更一般）**：用一个"更细粒度"的语义（如逐条矩形）替换
+  "更粗"的语义（如 bbox）时，先把它当**分叉放大器**跑一遍门禁——粗语义会把差异静默盖住，换细语义时才
+  暴露出来；这比事后排查便宜，也是这类改动必须过 `bad=0` 的原因。
 - **量测纪律（否则数字不可比）**：
   - **两种回放节拍**（`mode=` 字段，dev 页「节拍」按钮切换）：
     - **`mode=fast`（默认）**：每个呈现帧给一个 `kFrameMs` 周期，**预算覆盖整帧**（解码 + 命令应用 +
@@ -385,6 +402,17 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
+- **GPU 侧逐条合成：定位那处像素分叉，然后打开 `Impl::kComposeRects`**（§2.3）。已知：
+  - 复现：滑动样本 `bad=1`、**156 px @ (992,1728)-(1007,1791)**（16×64 条带，三次复跑同一 bbox）；
+    box 模式 `bad=0`；只有 `kComposeRects=true` 才出现（"分叉放大器"效应，见 §6）。
+  - 已排除：标记被 `ResetGraphics`/`MapSurfaceToOutput`/`MapSurfaceToScaledOutput` 丢弃（曾逐个打点验证，
+    全 0）；`ReadScreen()` 未 flush（它先 `Flush()`）；`CoalesceRects` 丢矩形（并集精确）；
+    引擎那几条直写路径（`ClearCodecDecode`/`UploadBgra`/`SolidFill`/`SurfaceToSurface`/`CacheToSurface`）
+    漏标记（都是"写入 rect == 标记 rect"）；Progressive 漏标记（按**整 64×64 tile** 标记，是 tile 内裁剪
+    子写入的超集）。
+  - **覆盖比较法已证否**（§6），不要再走；下一步只能用像素值：在出差的采样帧把该条带的像素从
+    **引擎屏幕 / gdi 主缓冲 / gdi 表面**三处对照（§6 的三路对照法），据此分到"引擎合成漏了" /
+    "参考主缓冲陈旧" / "解码内容不同" 三类之一，再往下查。
 - **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含已修/未解问题与实现要点）：
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 - **换样本复验**：不同分辨率（特别是宽/高为 **64 整数倍**的）、含**多条 REGION**消息的捕获。
