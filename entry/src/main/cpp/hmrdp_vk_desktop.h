@@ -128,6 +128,28 @@ class GfxVkDesktop {
   // number of commands whose codec is not implemented, ...). Unimplemented or
   // failed codec commands are counted and visible here, never silent (V5).
   std::string Stats() const;
+
+  // Triage for a pixel mismatch (doc_agent/gfx-engine.md §6/§7): the screen-level
+  // compare can only report "these pixels differ". Reading the same pixel back out
+  // of every mapped surface that covers it says which side is wrong:
+  //   * the surface already holds the reference's value -> the surface content is
+  //     right and the *compose* (the dirty rect list) never copied it;
+  //   * the surface holds some other value -> the divergence is in the codec /
+  //     command path that produced the pixels, not in the compose.
+  // Values are FreeRDP-order BGRA, exactly like ReadScreen. Returns the number of
+  // hits written; 0 means no mapped surface covers the point.
+  struct ScreenPixelHit {
+    uint16_t surfaceId = 0;
+    int surfaceX = 0;
+    int surfaceY = 0;
+    uint32_t bgra = 0;
+  };
+  int ProbeScreenPixel(int x, int y, ScreenPixelHit* out, int capacity);
+
+  // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3): one
+  // present's host-time split - record the dirty compose, submit+wait, then blit the
+  // whole screen to the swapchain and present. Reported in Stats().
+  void NotePresentSplitUs(uint64_t composeUs, uint64_t flushUs, uint64_t blitUs);
   std::string lastError() const;
 
   // Ends recording, submits and waits. Required before any CPU readback, before

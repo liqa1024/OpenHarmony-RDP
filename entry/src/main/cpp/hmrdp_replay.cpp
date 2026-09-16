@@ -49,6 +49,12 @@ class ReplayDesktop {
   bool screenDirty() const { return engine_ != nullptr && engine_->screenDirty(); }
   // The composed screen mirror, for the compare route's pixel A/B.
   bool ReadScreen(std::vector<uint8_t>* out) { return engine_->ReadScreen(out); }
+  // Triage (doc_agent/gfx-engine.md §7): the engine's own pixels at one screen
+  // position, from every mapped surface that covers it.
+  int ProbeScreenPixel(int x, int y, GfxVkDesktop::ScreenPixelHit* out, int capacity) {
+    return engine_ != nullptr ? engine_->ProbeScreenPixel(x, y, out, capacity) : 0;
+  }
+
   int screenWidth() const { return engine_->screenWidth(); }
   int screenHeight() const { return engine_->screenHeight(); }
   // One-line engine summary for the dev panel.
@@ -769,6 +775,89 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
 }
 
+// Standing triage for a pixel mismatch (doc_agent/gfx-engine.md §6/§7): the pixel
+// comparison can only say *that* pixels differ, never which side is wrong. Reading
+// the same pixel back out of the engine's own surfaces adds the missing third
+// source: a surface that already holds the primary's value means the content is
+// right and the *compose* copied it stale or not at all, while a surface holding
+// any other value means the codec/command path diverged. Comparing dirt-rect
+// *coverage* cannot answer this - the reference's rects are a coarse superset (§6).
+// It only reads the mapping (no device readback, no extra submission), so unlike an
+// in-engine probe it does not perturb what it measures (§2.3).
+// Bounded: the first kProbeMax differing pixels are classified, the first
+// kProbeDetail of them are printed with their values.
+void ProbeMismatchPixels(ReplayDesktop* engine, const rdpGdi* gdi, const uint8_t* screen,
+                         int screenStride, int cmpW, int cmpH, uint64_t frame) {
+  constexpr int kProbeMax = 4096;
+  constexpr int kProbeDetail = 8;
+  constexpr int kHitMax = 4;
+  int probed = 0;
+  int eqPrimary = 0;
+  int eqScreen = 0;
+  int other = 0;
+  int noSurface = 0;
+  int detailed = 0;
+  std::string detail;
+  for (int row = 0; row < cmpH && probed < kProbeMax; ++row) {
+    const uint8_t* a = screen + static_cast<size_t>(row) * screenStride;
+    const uint8_t* b = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
+    for (int col = 0; col < cmpW && probed < kProbeMax; ++col) {
+      const uint8_t* pa = a + static_cast<size_t>(col) * 4;
+      const uint8_t* pb = b + static_cast<size_t>(col) * 4;
+      if (pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]) {
+        continue;
+      }
+      probed++;
+      GfxVkDesktop::ScreenPixelHit hits[kHitMax];
+      const int n = engine->ProbeScreenPixel(col, row, hits, kHitMax);
+      if (n == 0) {
+        noSurface++;
+        continue;
+      }
+      const uint32_t primary = static_cast<uint32_t>(pb[0]) |
+                               (static_cast<uint32_t>(pb[1]) << 8) |
+                               (static_cast<uint32_t>(pb[2]) << 16);
+      const uint32_t onScreen = static_cast<uint32_t>(pa[0]) |
+                                (static_cast<uint32_t>(pa[1]) << 8) |
+                                (static_cast<uint32_t>(pa[2]) << 16);
+      bool sawPrimary = false;
+      bool sawScreen = false;
+      for (int i = 0; i < n; ++i) {
+        const uint32_t v = hits[i].bgra & 0x00FFFFFFu;
+        if (v == primary) {
+          sawPrimary = true;
+        }
+        if (v == onScreen) {
+          sawScreen = true;
+        }
+      }
+      if (sawPrimary) {
+        eqPrimary++;
+      } else if (sawScreen) {
+        eqScreen++;
+      } else {
+        other++;
+      }
+      if (detailed < kProbeDetail) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      " (%d,%d) screen=%06x primary=%06x surface[%u]@%d,%d=%06x", col, row, onScreen,
+                      primary, static_cast<unsigned>(hits[0].surfaceId), hits[0].surfaceX,
+                      hits[0].surfaceY, hits[0].bgra & 0x00FFFFFFu);
+        detail += buf;
+        detailed++;
+      }
+    }
+  }
+  char line[1024];
+  std::snprintf(line, sizeof(line),
+                "gfx replay: probe frame=%llu probed=%d surface==primary=%d surface==screen=%d "
+                "other=%d noSurface=%d%s",
+                static_cast<unsigned long long>(frame), probed, eqPrimary, eqScreen, other,
+                noSurface, detail.c_str());
+  HMRDP_LOGW("%{public}s", line);
+}
+
 void GfxReplay::CompareFrames() {
   ReplayDesktop* engine = desktop_.get();
   GfxCpuDesktop* cpu = cpuDesktop_;
@@ -870,13 +959,12 @@ void GfxReplay::CompareFrames() {
         firstX, firstY, bx0, by0, bx1, by1, maxDelta,
         static_cast<unsigned long long>(smallDeltaPx));
     // Localizing a mismatch (doc_agent/gfx-engine.md §7): this pixel comparison is
-    // the *only* valid signal - comparing dirt-rect *coverage* is not, because the
-    // reference's rects are a coarse superset of what changed, so "gdi covered it,
-    // the engine did not" also happens on frames that match pixel for pixel. To
-    // continue from here, dump the differing rect's pixels from all three sources
-    // (engine screen via ReadScreen, gdi's primary_buffer, gdi's surface via
-    // cpu.gfx()->GetSurfaceData) - that separates "the engine's compose missed the
-    // rect" from "a decode difference / a stale reference buffer".
+    // the *only* valid signal - comparing dirt-rect *coverage* is not (§6). Follow
+    // up with the engine's own surfaces at the same pixels (ProbeMismatchPixels);
+    // the first few mismatching samples are enough to classify the divergence.
+    if (diffRgb != 0 && cmpBad_.load() <= 3) {
+      ProbeMismatchPixels(engine, gdi, screen.data(), w * 4, cmpW, cmpH, frames_.load());
+    }
   }
 }
 

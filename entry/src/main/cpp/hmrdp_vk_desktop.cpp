@@ -632,6 +632,18 @@ struct GfxVkDesktop::Impl {
   uint64_t composeRects = 0;
   uint64_t composeMaxRects = 0;
   uint64_t composeRectOverflow = 0;
+  // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3/§3):
+  // the dirty pixels a frame actually carries (the merged rect list's exact union)
+  // vs what the union box would carry, and the host-time split of a present into
+  // "record the dirty compose", "submit it and wait" and "blit the whole screen to
+  // the swapchain + present". The last bucket is the per-frame cost that does *not*
+  // scale with the dirty area, so it decides which strategy can win.
+  uint64_t composeRectPx = 0;
+  uint64_t composeBoxPx = 0;
+  uint64_t presentFrames = 0;
+  uint64_t presentComposeUs = 0;
+  uint64_t presentFlushUs = 0;
+  uint64_t presentBlitUs = 0;
 
   // Dev (perf): what the CPU can actually do against each host-visible memory type
   // this device exposes. Every CPU-side pixel command (ClearCodec, cache store /
@@ -882,14 +894,22 @@ struct GfxVkDesktop::Impl {
   // Whether Compose copies the merged dirty rects individually, the way the CPU
   // present path uploads its rects, instead of copying their union box.
   //
-  // **Off until the engine's dirty marking is complete.** With the box every
-  // frame matches gdi (both samples `bad=0`); with the rect list one frame of the
-  // scrolling sample differs deterministically by 156 px at (992,1728)-(1007,1791)
-  // - a 16x64 strip *inside* the frame's dirty hull, i.e. a pixel write the engine
-  // never marks and the box has been covering because it fills the hull's gaps.
-  // That is a pre-existing bug (the box hid it), not a defect of the rect path:
-  // fix the marking, then flip this to true and re-run `bad=0` on both samples
-  // (doc_agent/gfx-engine.md §2.3, §6).
+  // **Off: the rect path exposes a transfer-visibility defect of this platform.**
+  // With the rect list one frame of the scrolling sample differs deterministically
+  // by 156 px at (992,1728)-(1007,1791) - exactly one 64-byte cache line wide (the
+  // device's nonCoherentAtomSize, 16 px) across 64 rows. The pixels are inside the
+  // frame's rect list, and both the CPU and the *device* read the correct surface
+  // bytes back there, so the decoded/composed content is right: the copy that
+  // covers them reads the source stale. The box hides it because it re-composes the
+  // same pixels on later frames (once the bytes are visible); the rect list
+  // composes each pixel once, so a stale read becomes permanent. Measured on the
+  // scrolling sample (doc_agent/gfx-engine.md §2.3, §7): box `bad=0`, rect
+  // `bad=1 rgbPx=156`; an unconditional all-commands barrier before the copy cuts
+  // it to 60 px but not to zero, and neither greedy host flushes, one copy call per
+  // region, nor a coherent host-visible memory type change it. The box is itself a
+  // dirty-region compose (it copies the marks' hull, not the screen), so leaving it
+  // on satisfies the "the GPU presents the dirty region like the CPU does" rule at
+  // no cost. Do not flip this on without moving the compose off the transfer path.
   static constexpr bool kComposeRects = false;
 
   // Marks one rect as changed. The rects themselves are kept (Compose composes
@@ -1030,6 +1050,11 @@ struct GfxVkDesktop::Impl {
         continue;
       }
       int score = 0;
+      // Temporary experiment (doc_agent/gfx-engine.md §7): skip the cached type so
+      // the coherent one wins, to test whether the rect-mode compose staleness comes
+      // from the cached (non-coherent) memory path. Correctness first; the CPU-side
+      // pixel paths get measurably slower with the coherent type, so if this is the
+      // answer the fix has to be scoped to the shadow compare, not the present path.
       if ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0) {
         score += 8;
       }
@@ -3218,6 +3243,26 @@ bool GfxVkDesktop::Compose() {
     // shared, so the only per-rect cost is another region entry.
     const int merged =
         Impl::CoalesceRects(s.dirtyRects.data(), static_cast<int>(s.dirtyRects.size()));
+    // Perf accounting: the exact dirty pixels (the merged list is exact and
+    // disjoint, so the sum is the union) vs the pixels the union box would carry,
+    // both clipped to the surface's mapped extent, i.e. to what a copy can reach.
+    {
+      const auto clippedArea = [&m](int left, int top, int right, int bottom) -> uint64_t {
+        if (left < 0) left = 0;
+        if (top < 0) top = 0;
+        if (right > m.mappedWidth) right = m.mappedWidth;
+        if (bottom > m.mappedHeight) bottom = m.mappedHeight;
+        if (right <= left || bottom <= top) {
+          return 0;
+        }
+        return static_cast<uint64_t>(right - left) * static_cast<uint64_t>(bottom - top);
+      };
+      for (int i = 0; i < merged; ++i) {
+        impl_->composeRectPx += clippedArea(s.dirtyRects[i].left, s.dirtyRects[i].top,
+                                            s.dirtyRects[i].right, s.dirtyRects[i].bottom);
+      }
+      impl_->composeBoxPx += clippedArea(m.dirtyLeft, m.dirtyTop, m.dirtyRight, m.dirtyBottom);
+    }
     const bool rectListTooLong =
         s.dirtyOverflow || merged > Impl::kMaxComposeRects;
     const bool overflowed = rectListTooLong || !Impl::kComposeRects;
@@ -3342,6 +3387,54 @@ bool GfxVkDesktop::ReadScreen(std::vector<uint8_t>* out) {
     }
   }
   return true;
+}
+
+void GfxVkDesktop::NotePresentSplitUs(uint64_t composeUs, uint64_t flushUs, uint64_t blitUs) {
+  if (impl_ == nullptr) {
+    return;
+  }
+  impl_->presentFrames++;
+  impl_->presentComposeUs += composeUs;
+  impl_->presentFlushUs += flushUs;
+  impl_->presentBlitUs += blitUs;
+}
+
+int GfxVkDesktop::ProbeScreenPixel(int x, int y, ScreenPixelHit* out, int capacity) {
+  if (!ready() || out == nullptr || capacity <= 0) {
+    return 0;
+  }
+  int hits = 0;
+  for (auto& kv : impl_->surfaces) {
+    if (hits >= capacity) {
+      break;
+    }
+    Impl::Surface& s = kv.second;
+    if (!s.meta.mapped || !s.gpu.valid() || s.gpu.mapped == nullptr) {
+      continue;
+    }
+    // 1:1 output mapping, clipped to the surface's raw (un-aligned) extent, which
+    // is what Compose copies from (MakeScreenCopyRegion).
+    const int sx = x - static_cast<int>(s.meta.outputX);
+    const int sy = y - static_cast<int>(s.meta.outputY);
+    if (sx < 0 || sy < 0 || sx >= s.meta.mappedWidth || sy >= s.meta.mappedHeight) {
+      continue;
+    }
+    // The compare always reads the screen (with its Flush) right before probing,
+    // so the device is idle; only the CPU's own cached view of this range needs to
+    // be dropped for the read to see the device's (or a flushed CPU write's) bytes.
+    impl_->InvalidateRect(s.gpu, sx, sy, 1, 1);
+    uint32_t bgra = 0;
+    std::memcpy(&bgra,
+                s.gpu.mapped + static_cast<size_t>(sy) * static_cast<size_t>(s.gpu.stride) +
+                    static_cast<size_t>(sx) * 4,
+                4);
+    out[hits].surfaceId = s.meta.id;
+    out[hits].surfaceX = sx;
+    out[hits].surfaceY = sy;
+    out[hits].bgra = impl_->swapRb ? SwapRb(bgra) : bgra;
+    hits++;
+  }
+  return hits;
 }
 
 bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint16_t* rects,
@@ -3876,6 +3969,8 @@ std::string GfxVkDesktop::Stats() const {
                 "\n  hostMemType=%s coherent=%d atom=%llu emptySubmit=%lluus"
                 "\n  compose copies=%llu rects=%llu maxRects=%llu overflow=%llu"
                 " skipUnmapped=%llu skipClean=%llu"
+                "\n  composeArea rectsPx=%llu boxPx=%llu (rects/box=%.3f)"
+                "\n  presentSplit frames=%llu avgPerFrameUs compose=%.0f flush=%.0f blit=%.0f"
                 "\n  alloc calls=%llu us=%llu (cache allocs=%llu)"
                 "\n  cpu bytes cache=%llu copy=%llu (overlap=%llu) cacheOps store=%llu restore=%llu"
                 "\n  syncDrains=%llu syncDrain=%llums"
@@ -3921,6 +4016,25 @@ std::string GfxVkDesktop::Stats() const {
                 static_cast<unsigned long long>(impl_->composeRectOverflow),
                 static_cast<unsigned long long>(impl_->composeSkipUnmapped),
                 static_cast<unsigned long long>(impl_->composeSkipClean),
+                static_cast<unsigned long long>(impl_->composeRectPx),
+                static_cast<unsigned long long>(impl_->composeBoxPx),
+                impl_->composeBoxPx != 0
+                    ? static_cast<double>(impl_->composeRectPx) /
+                          static_cast<double>(impl_->composeBoxPx)
+                    : 0.0,
+                static_cast<unsigned long long>(impl_->presentFrames),
+                impl_->presentFrames != 0
+                    ? static_cast<double>(impl_->presentComposeUs) /
+                          static_cast<double>(impl_->presentFrames)
+                    : 0.0,
+                impl_->presentFrames != 0
+                    ? static_cast<double>(impl_->presentFlushUs) /
+                          static_cast<double>(impl_->presentFrames)
+                    : 0.0,
+                impl_->presentFrames != 0
+                    ? static_cast<double>(impl_->presentBlitUs) /
+                          static_cast<double>(impl_->presentFrames)
+                    : 0.0,
                 static_cast<unsigned long long>(impl_->allocCalls),
                 static_cast<unsigned long long>(impl_->allocUs),
                 static_cast<unsigned long long>(impl_->cacheAllocCalls),
@@ -3967,6 +4081,18 @@ bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {
   if (engine == nullptr || renderer == nullptr) {
     return false;
   }
+  // Perf accounting (doc_agent/gfx-engine.md §2.3): split a present into the dirty
+  // compose, the submit+wait, and the full-screen blit + present, so the strategy
+  // question ("how much of the frame cost scales with the dirty area?") is answered
+  // with numbers instead of assumed. Host-time on purpose: every GPU step here is
+  // bounded by a fence wait, so host time tracks the device cost.
+  const auto nowUs = []() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+  };
+  const uint64_t tCompose0 = nowUs();
   if (!engine->Compose()) {
     return false;  // static frame: nothing dirty, no present (FPS stays 0)
   }
@@ -3974,11 +4100,15 @@ bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {
   // updated until they are submitted. Flush() before blitting it, otherwise the
   // presenter blits the previous (or initial) screen and, worse, every frame's
   // commands pile up into one giant submission that only runs at teardown.
+  const uint64_t tCompose1 = nowUs();
   if (!engine->Flush()) {
     return false;
   }
+  const uint64_t tFlush1 = nowUs();
   const bool presented = renderer->PresentImage(engine->screenImage(), engine->format(),
                                                engine->screenWidth(), engine->screenHeight());
+  const uint64_t tBlit1 = nowUs();
+  engine->NotePresentSplitUs(tCompose1 - tCompose0, tFlush1 - tCompose1, tBlit1 - tFlush1);
   if (presented) {
     engine->ClearScreenDirty();
   }
