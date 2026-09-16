@@ -69,9 +69,10 @@ class ReplayDesktop {
 bool ReplayDesktop::Init(void* window, int width, int height, std::string* error) {
   renderer_ = std::make_unique<VkRenderer>();
   renderer_->SetSurface(window, width, height);
-  // Prepare() creates the swapchain and presents a black frame; it also pins the
-  // image format the engine must be created with (a blit cannot convert channel
-  // order, so engine and swapchain have to agree).
+  // Prepare() creates the swapchain and presents a black frame. The engine and the
+  // CPU upload both hand the presenter FreeRDP-order BGRA; the presenter's quad does
+  // the channel-order conversion, so the engine no longer follows the swapchain
+  // format (doc_agent/gfx-engine.md §2.3).
   if (!renderer_->Prepare()) {
     if (error != nullptr) {
       *error = "vulkan surface/swapchain failed: " + renderer_->lastError();
@@ -80,7 +81,7 @@ bool ReplayDesktop::Init(void* window, int width, int height, std::string* error
     return false;
   }
   engine_ = std::make_unique<GfxVkDesktop>();
-  if (!engine_->Init(renderer_->format())) {
+  if (!engine_->Init()) {
     if (error != nullptr) {
       *error = "vulkan engine init failed";
     }

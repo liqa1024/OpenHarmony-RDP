@@ -271,6 +271,45 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
       图像各维护一份"已上传"状态），优先级排在解码优化之后。
     CPU 侧不受影响：`hwnd->invalid` 本来就是同一批 `gdi_InvalidateRegion` 调用的 bbox，其矩形列表与 box
     覆盖范围等价。
+  - **CPU 与引擎两条帧来源的上屏已统一为一套实现**（同一个 `VkRenderer`，不再各写一套）：
+    - **只有一条上屏实现**：采样「picture 图」的 letterbox quad（`RecordPresentQuadLocked`，viewport 做
+      letterbox）。`vkCmdBlitImage` 那条已删除——blit 不能换通道序，还逼着引擎把自己的存储格式对齐
+      swapchain 格式。
+    - **生产者一律交 FreeRDP 的 BGRA 序**：CPU 路线把脏区上传进 `desktopImage_`；引擎把脏区合成进
+      自己的屏幕镜像。唯一口径是 `kPictureFormat = B8G8R8A8_UNORM`，**通道序由图像格式承担，shader 不再
+      做 R/B 交换**（特化常量恒 false）；因此引擎侧的 `swapRb` 变成恒 false（CPU 边界不再换序），
+      引擎屏幕镜像的 usage 增加 `SAMPLED`（它现在被采样、不再被 blit）。两条路线剩下的差别只有
+      "谁来填这张图"，不再是"两套上屏代码"。
+    - **每帧 slot 一份 descriptor set**（`presentSets_[kFramesInFlight]`）：**不得改写仍在飞的 set**
+      ——实测把每帧改写当成常态会让 CPU 路线 `present` 从 2.88ms 退化到 3.95ms，改成 per-slot 后回到
+      2.62ms。桌面图（re)创建时要先 drain 在飞帧再改写所有 slot。
+    - **验证口径**：两份录像 `bad=0`（滑动 21 checks / 视频 6 checks）；但 **`bad` 只比对引擎图像，
+      抓不到"上屏时通道序被换错"**，所以改通道序/上屏时必须**同时核对窗口截图**（这次两条路线都核过色）。
+    - **通道序契约与"转换次数"**（改动前后都要按这条审）：`vkCmdCopyBufferToImage`/`CmdCopyBuffer`
+      **不能换通道**，所以"拷贝能到达的链路必须同一字节序"：`surfaces(BGRA) →copy→ 屏幕镜像(同序)
+      →sample→ swapchain`。Vulkan 上屏的约定只要求"**swapchain 图像里是正确语义色、按 swapchain 格式
+      编码**"，源字节序是内部契约；由此推出的唯一硬要求是**声明的 format 必须与实际字节一致**（采样器
+      才能读对语义色）。现在**引擎存储 = FreeRDP 的 BGRA，处处不换序**，转换只保留在上屏那一次
+      （存储格式→语义色→附件格式，硬件格式转换，不是额外 pass、不加带宽）。
+      旧方案（引擎存储跟随 swapchain + blit）为了迁就 blit 把转换前移成：`rfx_compose` **每像素**一次
+      R/B 交换 + 引擎各条 CPU 写路径（`UploadBgra` 逐字节循环、`clear_decompress` 的 `dstFormat` 切换、
+      `CpuFillRect`/`ReadScreen` 的换序）——**别再退回这套**（blit 那条已删，`swapRb` 相关的
+      kernel 参数/CPU 分支已清理，只留 shader 里一个恒 0 的占位字段）。
+      量级：`gpuMs compose` 全程 169ms/657 帧 ≈ **0.26ms/帧**，把它换成免交换是白拿；而 CPU 侧的逐字节
+      交换实测"比上屏其余部分加起来还贵"。⇒ **字节序的成本落在 CPU 链上，GPU kernel 的存储序近乎免费**，
+      所以"以 GPU 侧为主"在这里等价于"**保持处处 BGRA、不要在 CPU 侧换序**"。
+      **改这一段时的两个坑（都踩过，改完按这两条自查）**：① 引擎里是**两套 format 词汇表**——
+      `Impl::format` 是 `VkFormat`（图像格式），`GfxSurface::format` 是 FreeRDP 的**打包**格式
+      （如 `0x20040888`）；`clear_decompress` 收的是后者。删掉中间的局部变量后裸写 `format` 会**静默**
+      解析成前者（枚举→整数隐式转换，编译不报错），表现为 ClearCodec 大面积失败 ⇒ 检查 `Stats()` 的
+      `unsupported`/`clearUnsup` 必须为 0。② `rfx_compose` 的 `uSwapRb` 字段是 shader 的
+      push-constant 布局，**不能删**（只能恒传 0，删了会与 SPIR-V 的布局错位）。
+      若将来走"直写上屏"（native window buffer + 脏区 `Region`），呈现缓冲的格式会**决定上游全部字节序**
+      （拷贝不能转换）：应优先争取 **BGRA 窗口缓冲**；若平台只给 RGBA，则翻 kernel 存储序（免费）+ 让
+      CPU 链承担转换（贵），或维持 quad 上屏——这条要在做直写之前先定。
+    - **仍未统一/待做**：① picture 图仍有两张（presenter 的桌面图 + 引擎的屏幕镜像），合并成"一张图 +
+      两个生产者"可省掉引擎那张图及其生命周期；② present 处的 `engine->Flush()`（submit **+ 等本帧
+      全部 GPU 工作**）应改为 semaphore 串（见 §7）。
 - **两条后端的分工必须完全一致**（否则就是一条快一条慢）：**CPU 只把脏区交出去一次，不做任何像素变换**
   ——通道交换、缩放、letterbox 一律在 GPU 侧；`glTexSubImage2D`/staging 上传只做行拷贝。Vulkan 侧因此用
   **一个小 quad（采样 + fragment shader 换通道序 + dynamic viewport 做 letterbox）**而不是
@@ -481,6 +520,17 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
     ≈0.4ms/帧，端到端在噪声内），而每帧 13.5ms 的 present 里 11.4ms 是在等 Progressive 解码 kernel。
     ⇒ **上屏侧就用 box（`kComposeRects=false`，当前默认）**：它正确、region 少、录制更省，本身就是
     只拷标记的 hull（不是整屏）。**不要**为了对齐 CPU 侧的逐条上传去打开 `kComposeRects`。
+  - **上屏实现已统一（§2.3）**：一条 quad（采样 picture 图）+ 生产者交 BGRA + per-slot descriptor set；
+    两份录像 `bad=0`，两条路线截图核过色。下一步（按收益）：
+    1. **present 不再等解码**：`GpuVkPresentComposed` 里 `engine->Flush()` 的"submit+等本帧全部 GPU 工作"
+       换成 **semaphore 串**（引擎提交 signal → presenter 提交 wait），present 只剩 submit；
+       `ReadScreen`/CPU 像素命令等真正需要 CPU 读回处继续 `vkWaitForFences`。预期 present 13.6ms → ≈2ms。
+    2. **合并成一张 picture 图**（引擎不再持有自己的屏幕镜像）：省一张全屏图与其生命周期，也让
+       "presenter 只认一张图"真正成立。
+    3. **去掉全幅 pass**：平台原生的脏区送显在 **native window buffer 队列**（
+       `OH_NativeWindow_NativeWindowFlushBuffer(window, buffer, fenceFd, Region)`，Region ≤1000 条、
+       原点在 buffer 左下角），配合 `VK_OHOS_external_memory` 把 `OH_NativeBuffer` import 成 VkImage，
+       即可 GPU 写窗口 buffer 按脏区送显、不必每帧整幅；swapchain + `vkQueuePresentKHR` 无等价接口。
   - **上屏侧真正的收益在全幅 blit**（`blit=1760µs/帧`≈2.8%，无条件发生）：要做就做"只把脏区交给
     swapchain"（incremental present / 按 swapchain 图像维护已上传状态），优先级在**解码 kernel 并行化**
     （[`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)，22ms/帧 GPU）之后。

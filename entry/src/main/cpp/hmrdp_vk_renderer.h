@@ -44,15 +44,18 @@ class VkRenderer : public FramePresenter {
   // something before the first real frame. Also pins the image format the engine
   // (and the CPU frame upload) must be created with.
   bool Prepare() override;
-  // Blits an image that lives on the same VkDevice (the GPU desktop engine's
-  // composed screen, VK_IMAGE_LAYOUT_GENERAL) into the swapchain, letterboxed and
-  // cleared to black outside the picture. No CPU readback: one device, one
-  // queue, image-to-image. `imageFormat` must equal the swapchain format -
-  // channel order cannot be converted by a blit.
+  // Presents an image that lives on the same VkDevice (the GPU desktop engine's
+  // composed screen, VK_IMAGE_LAYOUT_GENERAL) through the *same* present draw the
+  // CPU frames use: the letterbox quad samples it and writes the swapchain image,
+  // which the render pass clears to black outside the picture. No CPU readback, no
+  // blit: one device, one queue, one present implementation for both producers
+  // (doc_agent/gfx-engine.md §2.3).
+  // `imageFormat` must be VK_FORMAT_B8G8R8A8_UNORM: every producer hands over
+  // FreeRDP's BGRA order and the image's own format does the channel conversion.
   bool PresentImage(VkImage image, VkFormat imageFormat, int width, int height);
   // Presents one CPU (gdi) frame: the dirty regions are uploaded into a persistent
   // desktop image (packed into the per-slot staging buffer, one copy region each)
-  // and the image is blitted letterboxed. See hmrdp_presenter.h.
+  // and the image is sampled letterboxed. See hmrdp_presenter.h.
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
                    const PresentRect* rects, int rectCount) override;
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
@@ -80,21 +83,20 @@ class VkRenderer : public FramePresenter {
   // resets that fence. `retry` is set when the swapchain was out of date and the
   // caller must rebuild it and call again.
   bool AcquireFrameLocked(uint32_t* imageIndex, bool* retry);
-  // Records the letterboxed copy/blit of `src` (VK_IMAGE_LAYOUT_GENERAL) into the
-  // acquired swapchain image, and leaves that image in PRESENT_SRC_KHR.
-  void RecordBlitLocked(VkCommandBuffer cmd, VkImage src, int srcWidth, int srcHeight,
-                        uint32_t imageIndex);
+  // View of `image` for the present draw, recreated only when the image handle
+  // changes (the engine recreates its screen image on ResetGraphics/resize).
+  VkImageView EnsurePresentSourceViewLocked(VkImage image);
   // Ends `cmd`, submits it with this frame slot's fence and presents the image.
   bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex);
-  // Present draw for CPU frames: the desktop picture is sampled and written to the
-  // swapchain image with the channel swap and the letterbox done on the GPU, i.e.
-  // the same division of labour as the GLES presenter's quad (no CPU-side pixel
-  // transform). The pipeline depends on the swapchain format and the render pass,
-  // so it is (re)created when that changes and reused across resizes.
+  // The one present draw: the picture (whatever producer filled the source image)
+  // is sampled and written to the swapchain image with the letterbox done by the
+  // viewport, i.e. no CPU-side pixel transform. The pipeline depends on the render
+  // pass, so it is (re)created when that changes and reused across resizes.
   bool EnsurePresentPipelineLocked();
   void DestroyPresentPipelineLocked();
-  // Points the descriptor at the current desktop image view.
-  void UpdatePresentDescriptorLocked();
+  // Points the given frame slot's descriptor at the picture view (the CPU frames'
+  // desktop image or the engine's composed screen image).
+  void UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view);
   void RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
                                uint32_t imageIndex);
   // CPU-frame path: keeps the persistent desktop image and the per-slot staging
@@ -128,9 +130,16 @@ class VkRenderer : public FramePresenter {
   VkDescriptorSetLayout presentSetLayout_ = VK_NULL_HANDLE;
   VkPipelineLayout presentPipelineLayout_ = VK_NULL_HANDLE;
   VkDescriptorPool presentPool_ = VK_NULL_HANDLE;
-  VkDescriptorSet presentSet_ = VK_NULL_HANDLE;
+  // One set per frame in flight: a set may not be rewritten while a frame that
+  // bound it is still in flight.
+  VkDescriptorSet presentSets_[kFramesInFlight] = {};
   VkPipeline presentPipeline_ = VK_NULL_HANDLE;
   VkFormat presentPipelineFormat_ = VK_FORMAT_UNDEFINED;
+  // Engine frames: the picture image handed to the last PresentImage() and its view
+  // for the present draw. Both are borrowed (the engine owns the image); the view
+  // is recreated when the handle changes.
+  VkImage presentSourceImage_ = VK_NULL_HANDLE;
+  VkImageView presentSourceView_ = VK_NULL_HANDLE;
   std::vector<VkImage> images_;
   std::vector<VkImageView> views_;
   std::vector<VkFramebuffer> framebuffers_;

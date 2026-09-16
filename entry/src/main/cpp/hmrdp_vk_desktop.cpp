@@ -84,13 +84,17 @@ void QuantArray(const RfxQuant& q, uint8_t out[10]) {
 
 // The screen is the only image the engine owns; surfaces / cache entries are
 // persistent-mapped host-visible buffers (V2, doc_agent/gfx-engine.md §1). It needs
-// to be a transfer destination (fill / compose) and source (present blit).
+// to be a transfer destination (fill / compose), a transfer source (readback) and
+// SAMPLED: the presenter samples it with the same letterbox quad it uses for CPU
+// frames, so the composed screen image is no longer blitted
+// (doc_agent/gfx-engine.md §2.3).
 //
 // STORAGE is deliberately absent: with it set, the platform's Vulkan layer
 // silently dropped every transfer to and from images (the 0xFF initialisation
 // read back as all zeros).
-constexpr VkImageUsageFlags kImageUsage =
-    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+constexpr VkImageUsageFlags kImageUsage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                          VK_IMAGE_USAGE_SAMPLED_BIT;
 
 // Surfaces / cache need to be a transfer source and destination. STORAGE_BUFFER
 // is included already because V3's Progressive compute shader writes tiles
@@ -102,13 +106,6 @@ constexpr VkBufferUsageFlags kSurfaceBufferUsage =
 
 inline int Align16(int value) {
   return (value + 15) & ~15;
-}
-
-// Swaps the R and B bytes of one packed pixel. The engine images are BGRA8 when
-// combined with FreeRDP's byte order; for an RGBA8 swapchain the CPU boundaries
-// swizzle instead, so the renderer can still blit image-to-image.
-inline uint32_t SwapRb(uint32_t pixel) {
-  return (pixel & 0xFF00FF00u) | ((pixel & 0x000000FFu) << 16) | ((pixel & 0x00FF0000u) >> 16);
 }
 
 inline uint32_t GpuRd32(const uint8_t* p) {
@@ -234,8 +231,11 @@ struct GfxVkDesktop::Impl {
     int height = 0;
   };
 
-  VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
-  bool swapRb = false;
+  // The engine's one storage/picture format: FreeRDP's own BGRA byte order. The
+  // presenter samples it and lets the image format do the channel conversion
+  // (doc_agent/gfx-engine.md §2.3), so nothing in here has to swap R/B.
+  static constexpr VkFormat kFormat = VK_FORMAT_B8G8R8A8_UNORM;
+  VkFormat format = kFormat;
   // Host-visible memory selection (perf-critical). The CPU addresses surface and
   // cache pixels directly, so those allocations must use the device's *cached*
   // host-visible type when it has one: on the target device the
@@ -1968,7 +1968,8 @@ struct GfxVkDesktop::Impl {
     VkPushConstantRange composeRange{};
     composeRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     composeRange.offset = 0;
-    // numTiles, compBase, surfaceW/H, the four colour coefficients, swapRb, gridW.
+    // numTiles, compBase, surfaceW/H, the four colour coefficients, the (unused)
+    // uSwapRb the shader still declares, gridW.
     composeRange.size = 10 * sizeof(uint32_t);
     VkPipelineLayoutCreateInfo composePipeInfo{};
     composePipeInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -2334,10 +2335,10 @@ struct GfxVkDesktop::Impl {
             int32_t kcrG;
             int32_t kcbG;
             int32_t kcbB;
-            uint32_t swapRb;
+            uint32_t swapRb;  // uSwapRb: must stay in the layout; always 0
             uint32_t gridW;  // tiles per row: tile index from the tile's pixel origin
           } cpush{message.tileCount, message.firstStream * 4096u, surface->meta.width,
-                  surface->meta.height, kKr, kKcrG, kKcbG, kKcbB, swapRb ? 1u : 0u,
+                  surface->meta.height, kKr, kKcrG, kKcbG, kKcbB, 0u /* uSwapRb: storage is BGRA */,
                   static_cast<uint32_t>(surface->meta.gridW)};
           vk.CmdPushConstants(commandBuffer, composePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                               sizeof(cpush), &cpush);
@@ -2833,13 +2834,14 @@ struct GfxVkDesktop::Impl {
       return false;
     }
     // Storage order: the surface's own GFX format (wire 0x20 -> BGRX32,
-    // 0x21 -> BGRA32), exactly what gdi hands to clear_decompress; RGBA when the
-    // swapchain forces the engine storage to RGBA8. Alpha is 0xFF everywhere in
-    // this engine, but the format still has to be the one the surface was
-    // created with so the band/glyph pixel interpretation matches gdi.
-    const uint32_t format = swapRb ? kPixelFormatRgba32 : surface->meta.format;
+    // 0x21 -> BGRA32), exactly what gdi hands to clear_decompress. Alpha is 0xFF
+    // everywhere in this engine, but the format still has to be the one the surface
+    // was created with so the band/glyph pixel interpretation matches gdi.
+    // Do NOT pass Impl::format (a VkFormat) here: clear_decompress takes FreeRDP's
+    // *packed* format, and the two are different vocabularies.
+    const uint32_t packedFormat = surface->meta.format;
     InvalidateRect(surface->gpu, x, y, width, height);
-    if (!clearDecoder->Decode(payload, payloadLen, width, height, format, surface->gpu.mapped,
+    if (!clearDecoder->Decode(payload, payloadLen, width, height, packedFormat, surface->gpu.mapped,
                               surface->gpu.stride, x, y, surface->meta.width,
                               surface->meta.height)) {
       return false;
@@ -2904,17 +2906,14 @@ GfxVkDesktop::~GfxVkDesktop() {
   Reset();
 }
 
-bool GfxVkDesktop::Init(VkFormat format) {
+bool GfxVkDesktop::Init() {
   if (impl_ == nullptr) {
     impl_ = new Impl();
   }
-  if (format != VK_FORMAT_B8G8R8A8_UNORM && format != VK_FORMAT_R8G8B8A8_UNORM) {
-    HMRDP_LOGW("vk desktop: unsupported image format %{public}u, using B8G8R8A8",
-               static_cast<unsigned>(format));
-    format = VK_FORMAT_B8G8R8A8_UNORM;
-  }
-  impl_->format = format;
-  impl_->swapRb = (format == VK_FORMAT_R8G8B8A8_UNORM);
+  // Storage/picture format is fixed (Impl::kFormat): every producer hands over
+  // FreeRDP's BGRA order and the presenter converts at present time, so the engine
+  // never follows the swapchain's format (doc_agent/gfx-engine.md §2.3).
+  impl_->format = Impl::kFormat;
   VkContext& context = VkContext::Instance();
   // No surface: the offline correctness harness never presents.
   if (!context.EnsureDevice(VK_NULL_HANDLE)) {
@@ -3074,10 +3073,6 @@ void GfxVkDesktop::Reset() {
 
 bool GfxVkDesktop::ready() const {
   return ready_ && impl_ != nullptr;
-}
-
-bool GfxVkDesktop::swapRb() const {
-  return impl_ != nullptr && impl_->swapRb;
 }
 
 bool GfxVkDesktop::Flush() {
@@ -3378,14 +3373,6 @@ bool GfxVkDesktop::ReadScreen(std::vector<uint8_t>* out) {
     GetVkApi().InvalidateMappedMemoryRanges(impl_->device(), 1, &readRange);
   }
   std::memcpy(out->data(), impl_->readMapped, bytes);
-  if (impl_->swapRb) {
-    // Hand the caller FreeRDP's BGRA bytes whatever the internal pixel order.
-    uint32_t* pixels = reinterpret_cast<uint32_t*>(out->data());
-    const size_t count = bytes / 4;
-    for (size_t i = 0; i < count; ++i) {
-      pixels[i] = SwapRb(pixels[i]);
-    }
-  }
   return true;
 }
 
@@ -3431,7 +3418,7 @@ int GfxVkDesktop::ProbeScreenPixel(int x, int y, ScreenPixelHit* out, int capaci
     out[hits].surfaceId = s.meta.id;
     out[hits].surfaceX = sx;
     out[hits].surfaceY = sy;
-    out[hits].bgra = impl_->swapRb ? SwapRb(bgra) : bgra;
+    out[hits].bgra = bgra;
     hits++;
   }
   return hits;
@@ -3451,7 +3438,7 @@ bool GfxVkDesktop::SolidFill(uint16_t surfaceId, uint32_t bgraPixel, const uint1
   }
   const int surfaceW = surface->meta.width;
   const int surfaceH = surface->meta.height;
-  const uint32_t texel = impl_->swapRb ? SwapRb(bgraPixel) : bgraPixel;
+  const uint32_t texel = bgraPixel;
   for (uint32_t i = 0; i < rectCount; ++i) {
     int left = rects[i * 4 + 0];
     int top = rects[i * 4 + 1];
@@ -3507,16 +3494,7 @@ bool GfxVkDesktop::UploadBgra(uint16_t surfaceId, int left, int top, int width, 
         bgra + static_cast<size_t>(srcRow0 + row) * srcStride + static_cast<size_t>(srcCol) * 4;
     uint8_t* dstRow = surface->gpu.mapped + static_cast<size_t>(sy + row) * dstStride +
                       static_cast<size_t>(sx) * 4;
-    if (impl_->swapRb) {
-      for (int col = 0; col < cols; ++col) {
-        dstRow[col * 4 + 0] = srcRow[col * 4 + 2];
-        dstRow[col * 4 + 1] = srcRow[col * 4 + 1];
-        dstRow[col * 4 + 2] = srcRow[col * 4 + 0];
-        dstRow[col * 4 + 3] = srcRow[col * 4 + 3];
-      }
-    } else {
-      std::memcpy(dstRow, srcRow, static_cast<size_t>(cols) * 4);
-    }
+    std::memcpy(dstRow, srcRow, static_cast<size_t>(cols) * 4);
   }
   impl_->MarkHostWrite(&surface->gpu);
   impl_->HostWrote();

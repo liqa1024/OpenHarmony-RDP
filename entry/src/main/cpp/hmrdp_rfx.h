@@ -196,11 +196,11 @@ std::unique_ptr<GfxClearDecoder> CreateFreeRdpClearDecoder();
 
 // FreeRDP packed surface pixel formats (values copied from freerdp/codec/color.h
 // so this header stays FreeRDP-free). The wire format maps 0x20 -> BGRX32 and
-// 0x21 -> BGRA32. The RGBA variants describe the Vulkan engine's storage when
-// the swapchain forces an RGBA8 swapchain (doc_agent/gfx-engine.md §1).
+// 0x21 -> BGRA32, and that is also the engine's storage order everywhere: the
+// presenter converts at present time, so there is no RGBA-storage variant
+// (doc_agent/gfx-engine.md §2.3).
 constexpr uint32_t kPixelFormatBgra32 = 0x20048888u;
 constexpr uint32_t kPixelFormatBgrx32 = 0x20040888u;
-constexpr uint32_t kPixelFormatRgba32 = 0x20038888u;
 
 // Public metadata of one GFX surface (the backend buffers stay private to the
 // engine). Dimensions/stride are aligned to 16 exactly like FreeRDP's

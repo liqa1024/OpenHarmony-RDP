@@ -65,21 +65,13 @@ class GfxVkDesktop {
   GfxVkDesktop& operator=(const GfxVkDesktop&) = delete;
 
   // Brings up the device (no surface needed: the offline harness has none) and
-  // the shared command buffer.
-  //
-  // `format` is the pixel order of the screen image and the surfaces/cache
-  // buffers. The default is FreeRDP's own byte order, so the offline compare
-  // harness needs no channel swizzling at all (its result must not be able to
-  // "cancel out" a swizzle bug). The presentation path passes the swapchain
-  // format instead, which on the current devices is RGBA8; the engine then swaps
-  // R/B on its CPU boundaries and the renderer blits image-to-image with no CPU
-  // round trip.
-  bool Init(VkFormat format = VK_FORMAT_B8G8R8A8_UNORM);
+  // the shared command buffer. Storage/picture format is fixed at FreeRDP's BGRA
+  // byte order - the engine does not follow the swapchain, the presenter converts
+  // (doc_agent/gfx-engine.md §2.3) - so there is nothing to configure and no R/B
+  // swap anywhere in the engine.
+  bool Init();
   void Reset();
   bool ready() const;
-  // True when the engine storage is RGBA8 and the CPU boundary swaps R/B (so
-  // ReadScreen/ReadSurface still return FreeRDP's BGRA bytes).
-  bool swapRb() const;
 
   // --- Surface lifecycle -----------------------------------------------------
   // Allocates a persistent-mapped host-visible buffer, aligns width/height to

@@ -84,6 +84,12 @@ VkCompositeAlphaFlagBitsKHR PickCompositeAlpha(VkCompositeAlphaFlagsKHR supporte
 // cannot overflow the copy-region array.
 constexpr int kMaxUploadRects = 256;
 
+// The one picture format every producer hands the presenter: FreeRDP's byte order.
+// Both the CPU frames' desktop image and the engine's composed screen use it, and
+// the format itself does the channel conversion when the quad samples it (so no
+// shader swizzle and no dependency on the swapchain format).
+constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
+
 // Clips the caller's rects to the desktop and drops the empty ones, writing at
 // most `capacity` entries to `out`. Returns the number written (0 when nothing
 // remains visible). When the input is longer than `capacity` the union bounding
@@ -342,102 +348,6 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
   return true;
 }
 
-void VkRenderer::RecordBlitLocked(VkCommandBuffer cmd, VkImage src, int srcWidth, int srcHeight,
-                                 uint32_t imageIndex) {
-  VkApi& api = GetVkApi();
-  // Fit the source picture into the swapchain image preserving its aspect ratio,
-  // centred (letterboxed). Equal extents take a plain copy; otherwise a scaled
-  // blit. The former "never blit" rule came from a different (emulator)
-  // implementation and does not apply here: on the real device the scaled blit
-  // is correct (doc_agent/gfx-engine.md §1).
-  const uint32_t srcW = static_cast<uint32_t>(srcWidth);
-  const uint32_t srcH = static_cast<uint32_t>(srcHeight);
-  const uint32_t dstW = extent_.width;
-  const uint32_t dstH = extent_.height;
-  const bool sameSize = srcW == dstW && srcH == dstH;
-  int32_t offX = 0;
-  int32_t offY = 0;
-  int32_t fitW = static_cast<int32_t>(dstW);
-  int32_t fitH = static_cast<int32_t>(dstH);
-  if (!sameSize) {
-    const double scaleX = static_cast<double>(dstW) / static_cast<double>(srcW);
-    const double scaleY = static_cast<double>(dstH) / static_cast<double>(srcH);
-    const double scale = scaleX < scaleY ? scaleX : scaleY;
-    fitW = static_cast<int32_t>(static_cast<double>(srcW) * scale);
-    fitH = static_cast<int32_t>(static_cast<double>(srcH) * scale);
-    if (fitW < 1) fitW = 1;
-    if (fitH < 1) fitH = 1;
-    offX = (static_cast<int32_t>(dstW) - fitW) / 2;
-    offY = (static_cast<int32_t>(dstH) - fitH) / 2;
-  }
-
-  const VkImage target = images_[imageIndex];
-  VkImageMemoryBarrier toDst{};
-  toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  toDst.srcAccessMask = 0;
-  toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  toDst.image = target;
-  toDst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  toDst.subresourceRange.levelCount = 1;
-  toDst.subresourceRange.layerCount = 1;
-  api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
-
-  const VkImageSubresourceLayers kColorLayers = [] {
-    VkImageSubresourceLayers layers{};
-    layers.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    layers.layerCount = 1;
-    return layers;
-  }();
-
-  if (sameSize) {
-    VkImageCopy region{};
-    region.srcSubresource = kColorLayers;
-    region.dstSubresource = kColorLayers;
-    region.extent.width = srcW;
-    region.extent.height = srcH;
-    region.extent.depth = 1;
-    api.CmdCopyImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, target,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-  } else {
-    // Clear first: the letterbox bars must not show stale swapchain content.
-    VkClearColorValue black{};
-    black.float32[3] = 1.0f;
-    VkImageSubresourceRange range{};
-    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    range.levelCount = 1;
-    range.layerCount = 1;
-    api.CmdClearColorImage(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
-
-    VkImageBlit blit{};
-    blit.srcSubresource = kColorLayers;
-    blit.srcOffsets[1].x = static_cast<int32_t>(srcW);
-    blit.srcOffsets[1].y = static_cast<int32_t>(srcH);
-    blit.srcOffsets[1].z = 1;
-    blit.dstSubresource = kColorLayers;
-    blit.dstOffsets[0].x = offX;
-    blit.dstOffsets[0].y = offY;
-    blit.dstOffsets[1].x = offX + fitW;
-    blit.dstOffsets[1].y = offY + fitH;
-    blit.dstOffsets[1].z = 1;
-    api.CmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, target,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
-  }
-
-  VkImageMemoryBarrier toPresent = toDst;
-  toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  toPresent.dstAccessMask = 0;
-  toPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-  api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                         &toPresent);
-}
-
 bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex) {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
@@ -503,17 +413,29 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
   }
   std::lock_guard<std::mutex> lock(mutex_);
   VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
 
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!EnsureSwapchainLocked()) {
       return false;
     }
-    // A copy cannot convert channel order, so the engine image must already use
-    // the swapchain format (the caller creates the engine with format()).
-    if (imageFormat != format_) {
+    // Producers hand over FreeRDP's BGRA order; the picture image's own format says
+    // so, and the sampler converts to the swapchain's order. There is no blit left
+    // that would need both images to share a format.
+    if (imageFormat != kPictureFormat) {
       error_ = "present image format mismatch";
-      HMRDP_LOGE("vulkan %{public}s: swapchain=%{public}s image=%{public}s", error_.c_str(),
-                 FormatName(format_).c_str(), FormatName(imageFormat).c_str());
+      HMRDP_LOGE("vulkan %{public}s: want=%{public}s image=%{public}s", error_.c_str(),
+                 FormatName(kPictureFormat).c_str(), FormatName(imageFormat).c_str());
+      return false;
+    }
+    // The present draw needs the swapchain format + render pass, both ready once the
+    // swapchain is up.
+    if (!EnsurePresentPipelineLocked()) {
+      return false;
+    }
+    const VkImageView sourceView = EnsurePresentSourceViewLocked(image);
+    if (sourceView == VK_NULL_HANDLE) {
       return false;
     }
     uint32_t imageIndex = 0;
@@ -524,6 +446,8 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
     if (retry) {
       continue;
     }
+    UpdatePresentDescriptorLocked(frameIndex_, sourceView);
+
     const VkCommandBuffer cmd = commandBuffers_[frameIndex_];
     api.ResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo beginInfo{};
@@ -531,12 +455,72 @@ bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, in
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     api.BeginCommandBuffer(cmd, &beginInfo);
 
-    RecordBlitLocked(cmd, image, width, height, imageIndex);
+    // The composed picture was written by the engine's transfer copies (a previous
+    // submission on the same queue, already complete); the quad reads it here, so
+    // the dependency has to be stated in *this* command buffer.
+    VkImageMemoryBarrier toSampled{};
+    toSampled.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toSampled.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    toSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSampled.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSampled.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSampled.image = image;
+    toSampled.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toSampled.subresourceRange.levelCount = 1;
+    toSampled.subresourceRange.layerCount = 1;
+    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &toSampled);
+
+    RecordPresentQuadLocked(cmd, width, height, imageIndex);
+    (void)device;
     return SubmitAndPresentLocked(cmd, imageIndex);
   }
 
   error_ = "swapchain out of date after re-creation";
   return false;
+}
+
+VkImageView VkRenderer::EnsurePresentSourceViewLocked(VkImage image) {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE) {
+    return VK_NULL_HANDLE;
+  }
+  if (presentSourceImage_ == image && presentSourceView_ != VK_NULL_HANDLE) {
+    return presentSourceView_;
+  }
+  // The engine recreates its screen image on ResetGraphics/resize; dropping the old
+  // view while a frame still samples it would be use-after-free, so drain the frames
+  // in flight first (a rare path: once per resize).
+  if (presentSourceView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+    api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
+    api.DestroyImageView(device, presentSourceView_, nullptr);
+    presentSourceView_ = VK_NULL_HANDLE;
+  }
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = image;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = kPictureFormat;
+  viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewInfo.subresourceRange.levelCount = 1;
+  viewInfo.subresourceRange.layerCount = 1;
+  if (api.CreateImageView == nullptr ||
+      api.CreateImageView(device, &viewInfo, nullptr, &presentSourceView_) != VK_SUCCESS) {
+    error_ = "vkCreateImageView (present source) failed";
+    presentSourceView_ = VK_NULL_HANDLE;
+    return VK_NULL_HANDLE;
+  }
+  presentSourceImage_ = image;
+  return presentSourceView_;
 }
 
 bool VkRenderer::EnsurePresentPipelineLocked() {
@@ -547,8 +531,7 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
     error_ = "Vulkan device not available";
     return false;
   }
-  if (presentPipeline_ != VK_NULL_HANDLE && presentPipelineFormat_ == format_ &&
-      renderPass_ != VK_NULL_HANDLE) {
+  if (presentPipeline_ != VK_NULL_HANDLE && renderPass_ != VK_NULL_HANDLE) {
     return true;
   }
   if (api.CreateGraphicsPipelines == nullptr || api.CreateSampler == nullptr ||
@@ -606,22 +589,26 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
   if (presentPool_ == VK_NULL_HANDLE) {
     VkDescriptorPoolSize size{};
     size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    size.descriptorCount = 1;
+    size.descriptorCount = kFramesInFlight;
     VkDescriptorPoolCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    info.maxSets = 1;
+    info.maxSets = kFramesInFlight;
     info.poolSizeCount = 1;
     info.pPoolSizes = &size;
     if (api.CreateDescriptorPool(device, &info, nullptr, &presentPool_) != VK_SUCCESS) {
       error_ = "vkCreateDescriptorPool (present) failed";
       return false;
     }
+    VkDescriptorSetLayout layouts[kFramesInFlight];
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+      layouts[i] = presentSetLayout_;
+    }
     VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = presentPool_;
-    alloc.descriptorSetCount = 1;
-    alloc.pSetLayouts = &presentSetLayout_;
-    if (api.AllocateDescriptorSets(device, &alloc, &presentSet_) != VK_SUCCESS) {
+    alloc.descriptorSetCount = kFramesInFlight;
+    alloc.pSetLayouts = layouts;
+    if (api.AllocateDescriptorSets(device, &alloc, presentSets_) != VK_SUCCESS) {
       error_ = "vkAllocateDescriptorSets (present) failed";
       return false;
     }
@@ -645,12 +632,10 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
     return false;
   }
 
-  // Whether the fragment shader has to swap R/B depends on the swapchain format
-  // (the uploaded bytes are always FreeRDP's BGRA order), so it is a
-  // specialization constant rather than a second shader.
-  const VkBool32 swapRb =
-      (format_ == VK_FORMAT_R8G8B8A8_UNORM || format_ == VK_FORMAT_R8G8B8A8_SRGB) ? VK_TRUE
-                                                                                  : VK_FALSE;
+  // No R/B swap in the shader: the picture image is declared in FreeRDP's byte order
+  // (kPictureFormat), so whatever the swapchain's format is, the sampled value is
+  // already the semantic colour and writing it to the attachment converts it.
+  const VkBool32 swapRb = VK_FALSE;
   VkSpecializationMapEntry mapEntry{};
   mapEntry.constantID = 0;
   mapEntry.offset = 0;
@@ -741,7 +726,6 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
   // The desktop image is created before the first pipeline, so its view could not
   // be bound to the descriptor set back then (the set did not exist yet). Bind it
   // now that both sides are up; a later image recreation rebinds it itself.
-  UpdatePresentDescriptorLocked();
   return true;
 }
 
@@ -768,29 +752,31 @@ void VkRenderer::DestroyPresentPipelineLocked() {
   }
   presentPipeline_ = VK_NULL_HANDLE;
   presentPool_ = VK_NULL_HANDLE;
-  presentSet_ = VK_NULL_HANDLE;
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    presentSets_[i] = VK_NULL_HANDLE;
+  }
   presentPipelineLayout_ = VK_NULL_HANDLE;
   presentSetLayout_ = VK_NULL_HANDLE;
   sampler_ = VK_NULL_HANDLE;
   presentPipelineFormat_ = VK_FORMAT_UNDEFINED;
 }
 
-void VkRenderer::UpdatePresentDescriptorLocked() {
+void VkRenderer::UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view) {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
   const VkDevice device = context.device();
-  if (device == VK_NULL_HANDLE || presentSet_ == VK_NULL_HANDLE ||
-      desktopImageView_ == VK_NULL_HANDLE || sampler_ == VK_NULL_HANDLE) {
+  if (device == VK_NULL_HANDLE || slot >= kFramesInFlight || presentSets_[slot] == VK_NULL_HANDLE ||
+      view == VK_NULL_HANDLE || sampler_ == VK_NULL_HANDLE) {
     return;
   }
   VkDescriptorImageInfo imageInfo{};
   imageInfo.sampler = sampler_;
-  imageInfo.imageView = desktopImageView_;
+  imageInfo.imageView = view;
   // The desktop image lives in GENERAL for its whole life (see the class comment).
   imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
   VkWriteDescriptorSet write{};
   write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  write.dstSet = presentSet_;
+  write.dstSet = presentSets_[slot];
   write.dstBinding = 0;
   write.descriptorCount = 1;
   write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -801,7 +787,7 @@ void VkRenderer::UpdatePresentDescriptorLocked() {
 void VkRenderer::RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
                                         uint32_t imageIndex) {
   VkApi& api = GetVkApi();
-  if (presentPipeline_ == VK_NULL_HANDLE || presentSet_ == VK_NULL_HANDLE ||
+  if (presentPipeline_ == VK_NULL_HANDLE || presentSets_[frameIndex_] == VK_NULL_HANDLE ||
       renderPass_ == VK_NULL_HANDLE || imageIndex >= framebuffers_.size()) {
     return;
   }
@@ -857,7 +843,7 @@ void VkRenderer::RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int 
 
   api.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline_);
   api.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipelineLayout_, 0, 1,
-                           &presentSet_, 0, nullptr);
+                           &presentSets_[frameIndex_], 0, nullptr);
   // One fullscreen triangle; the viewport/scissor above turn it into the picture
   // rectangle.
   api.CmdDraw(cmd, 3, 1, 0, 0);
@@ -866,7 +852,7 @@ void VkRenderer::RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int 
 
 bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   const bool match = desktopImage_ != VK_NULL_HANDLE && desktopImageWidth_ == width &&
-                     desktopImageHeight_ == height && desktopImageFormat_ == format_;
+                     desktopImageHeight_ == height && desktopImageFormat_ == kPictureFormat;
   if (match) {
     return true;
   }
@@ -883,7 +869,7 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   info.imageType = VK_IMAGE_TYPE_2D;
-  info.format = format_;
+  info.format = kPictureFormat;
   info.extent.width = static_cast<uint32_t>(width);
   info.extent.height = static_cast<uint32_t>(height);
   info.extent.depth = 1;
@@ -931,7 +917,7 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
     return false;
   }
 
-  desktopImageFormat_ = format_;
+  desktopImageFormat_ = kPictureFormat;
   desktopImageWidth_ = width;
   desktopImageHeight_ = height;
   desktopImageFullUpload_ = true;
@@ -942,7 +928,7 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   viewInfo.image = desktopImage_;
   viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  viewInfo.format = format_;
+  viewInfo.format = kPictureFormat;
   viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
   viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
   viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -956,7 +942,14 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
     DestroyDesktopImageLocked();
     return false;
   }
-  UpdatePresentDescriptorLocked();
+  // The picture changed: every frame slot's descriptor must point at the new view
+  // before it is used again, and the frames still referencing the old image/view
+  // have to drain first (a rare resize path; the fences are created signaled, so
+  // the wait is safe at any time).
+  api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    UpdatePresentDescriptorLocked(i, desktopImageView_);
+  }
   return true;
 }
 
@@ -1248,6 +1241,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                            &toSampled);
 
+    UpdatePresentDescriptorLocked(frameIndex_, desktopImageView_);
     RecordPresentQuadLocked(cmd, desktopWidth, desktopHeight, imageIndex);
     const bool presented = SubmitAndPresentLocked(cmd, imageIndex);
     if (presented) {
@@ -1268,6 +1262,18 @@ VkFormat VkRenderer::format() const {
 void VkRenderer::Reset() {
   const int64_t t0 = NowUs();
   std::lock_guard<std::mutex> lock(mutex_);
+  // The present source view belongs to an engine-owned image: drop it before that
+  // image can go away (the engine is torn down after the renderer, but a reset is
+  // also a resize path).
+  if (presentSourceView_ != VK_NULL_HANDLE) {
+    VkApi& api = GetVkApi();
+    const VkDevice device = VkContext::Instance().device();
+    if (device != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+      api.DestroyImageView(device, presentSourceView_, nullptr);
+    }
+    presentSourceView_ = VK_NULL_HANDLE;
+    presentSourceImage_ = VK_NULL_HANDLE;
+  }
   DestroySwapchainLocked();
   DestroyDesktopImageLocked();
   DestroyFrameResourcesLocked();
