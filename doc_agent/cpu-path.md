@@ -41,6 +41,7 @@ CPU 回放的 stats 就是这条线的账：
 | `update_tiles`：不再逐 tile 建 `REGION16`；一次取裁剪表 + 普通矩形求交 + per-tile stamp 去重 | patch 第 10 步 | 视频 `update` 6.3 → 5.6ms/帧 |
 | keep-dst-alpha 32bpp 拷贝：每像素一个掩码 32 位字（替代每像素三个字节） | patch 第 10 步（`prim_copy.c`） | 该循环是 `update` 里最热的一段 |
 | **`ResetGraphics` 不再重分配 PLANAR scratch**（几何没变就直接返回） | patch 第 12 步（`planar.c`） | 滚动 `本机` 13.5 → **10.5ms**、`feed` 2.13 → **1.63s**、整轮 `cpu` **−17%**、`max` 帧 146 → **115ms** |
+| **gdi 主缓冲 = 呈现器自带缓冲**（§6.1 ③ 零拷贝上屏） | app 侧（`hmrdp_presenter.h`、`hmrdp_vk_renderer.*`、`hmrdp_gfx_cpu.*`、`hmrdp_session.*`、`hmrdp_replay.cpp`） | 视频（整屏脏）`present` 2.13 → **0.64ms（−70%）**、`本机` 23.6 → **22.0ms**、`cpu`/轮 31.1 → 30.6s、`fps` 40.0 → 42.9；碎片样本 `present` 2.50 → **1.91ms**、`本机` 12.95 → **12.48ms**、`cpu`/轮 3.83 → 3.69s |
 | 归因口径：`prog` 相位 + `setup` 计数 + 每轮 `cpu=` | app 侧（`hmrdp_gfx_work.*`、`hmrdp_replay.cpp`） | 上面四条都是靠它定位的 |
 
 ⚠ 已**否决**：`update_tiles` 的"只拷没写过的区域"（delta 折叠）——stamp 去重实测**命中 0 次**
@@ -179,15 +180,39 @@ CPU 回放的 stats 就是这条线的账：
 |---|---|---|---|
 | ① | tile → surface | `update_tiles` 的 `freerdp_image_copy_no_overlap` | 约占 `update` 的 1/2（≈2–3ms） |
 | ② | surface → primary | `gdi_OutputUpdate` 的 `freerdp_image_scale`（1:1 时退化成行 memcpy） | = `compose` ≈ 1.6ms |
-| ③ | primary → presenter staging | `VkRenderer::PresentBgra` 逐矩形 memcpy | ≈ present 里的 ~1.6ms |
+| ③ | ~~primary → presenter staging~~ **已去掉** | `VkRenderer::PresentBgra` 逐矩形 memcpy | 视频 ≈ present 里的 ~1.5ms |
 
-- **③ 可以整个去掉（推荐先做）**：`gdi` 支持**调用方自带主缓冲**（`gdi_init_ex(instance, format,
-  stride, buffer, pfree)`）⇒ 让**主缓冲就是 presenter 的 staging buffer**（按桌面尺寸、`rowPitch ==
-  gdi->stride` 分配，常驻映射），gdi 合成的像素**直接落在要被 GPU 读的那块内存里**，presenter 不再
-  memcpy，只录脏矩形的 `vkCmdCopyBufferToImage`（`bufferRowLength` 用桌面宽）→ 每帧少搬 20.6MB。
-  配套（都是既定口径）：staging 内存类型**优先 `HOST_CACHED`**（现在选的是 `HOST_COHERENT`，
-  **偏离 [`gfx-engine.md`](gfx-engine.md) §1 的结论**）；`vkFlushMappedMemoryRanges` 只覆盖脏字节
-  （已是）；resize 时重建缓冲并重新 `gdi_resize_ex`。
+- **③ 已做（零拷贝上屏）**：`gdi` 支持**调用方自带主缓冲**（`gdi_init_ex` / 详见下），于是让**主缓冲就是
+  presenter 的 host-visible 缓冲**（桌面尺寸、`stride == 桌面宽 × 4`、常驻映射），gdi 合成的像素**直接落在
+  要被 GPU 读的那块内存里**，presenter 不再 memcpy，只录脏矩形的 `vkCmdCopyBufferToImage`
+  （`bufferRowLength` 用桌面宽）。实测见 §2：视频 `present` −70%、碎片样本 −24%。
+  **实现要点（都是踩过的）**：
+  - **接口**：`FramePresenter::AcquireDesktopBuffer(w, h, &stride)` / `BeginDesktopBufferWrite()` /
+    `ReleaseDesktopBuffer()`（`hmrdp_presenter.h`，默认实现返回 nullptr ⇒ GLES 后端照旧走 staging）。
+    `VkRenderer` 识别"`data` 就是自己那块缓冲"后走直连路径，于是 `PresentBgra` 的签名和调用方都没变。
+  - **要**每帧问一次、成功为止**：Vulkan 设备是随 surface 建的，`PostConnect`（gdi_init）时可能还没有
+    ⇒ 失败就先让 gdi 自己持缓冲，`EndPaint` 里再挂（`AttachPresenterDesktopBuffer`）。live 与回放共用同一套。
+  - **挂接不要用 `gdi_resize_ex`**：它会再调一次 `update_end_paint()`，从帧内调会把 `update->mux`
+    的加解锁配对搞乱（递归锁不会死锁，但会永久多出一层占用）。改成**就地换 `primary->bitmap->data`
+    / `scanline` / `free` 与 `gdi->stride`/`primary_buffer`**，并把旧缓冲按 gdi 的 free 钩子释放；
+    **换之前要把已合成的桌面拷过去**——gdi 的图元会读目标缓冲（memblt / srcalpha / cache 还原），
+    换成新缓冲会让后续帧像素变样。
+  - **单缓冲要等 GPU 读完**：块缓冲只有一份（原来是每槽一份 staging + 2 帧在飞），所以下一帧写之前必须
+    等上一帧的拷贝结束 ⇒ 在 gdi 的 **`BeginPaint`** 里 `BeginDesktopBufferWrite()` 等那个 fence。
+    **这个等待实测是免费的**：GFX 路径的 `update_begin_paint` 是在 `gdi_OutputUpdate` 里调的（在
+    `EndFrame` 时），即**在哪一帧的解码之后** ⇒ present 到下一次 BeginPaint 之间隔着整帧解码（十几 ms），
+    而提交本身只有亚毫秒级。
+  - **内存类型**：优先 `HOST_CACHED`（[`gfx-engine.md`](gfx-engine.md) §1），拿不到再 `HOST_COHERENT`
+    / 仅 `HOST_VISIBLE`。非连贯类型要 `vkFlushMappedMemoryRanges`；**必须先把脏矩形的字节区间排序合并**
+    ——一条矩形的字节跨度是"首行起点→末行末尾"，碎矩形之间重叠得很厉害，逐条刷会变成每帧上百次驱动调用
+    （实测合并后视频 `present` 从 843 → 644µs）。
+  - **几何变化**（`ResetGraphics` → `gdi_resize`）会退回 gdi 自有缓冲，下一次 `EndPaint` 按新尺寸重新
+    挂接（presenter 侧按尺寸重建缓冲）。
+  - **前提**：进程内只建一个 `VkDevice`（[`gfx-engine.md`](gfx-engine.md) §1）。设备若被重建
+    （换 surface 且既有队列族不再能呈现），gdi 手里的指针会失效——这与引擎侧持有 `VkBuffer`
+    的暴露面相同，是既有假设，不是这次新引入的。
+  - **live 侧同一套**：`HmrdpPostConnect` 用 `InitGdiWithPresenter`（设备在就直接给缓冲），
+    `Session::HandleBeginPaint` / `HandleEndPaint` 负责等待与挂接；回放路由（`GfxCpuDesktop`）同理。
 - **② 可以在"表面就是桌面"时跳过**：只有一个表面、`outputMapped` 且 `mappedWidth/Height == 桌面`、
   原点 `(0,0)`、格式与 primary 相同（GFX 全屏会话的常态）时，surface 内容就是桌面镜像，
   **直接呈现 surface**、不写 primary。**风险**：非 GFX 绘制（桌面位图更新等）只写 primary ⇒
@@ -285,8 +310,10 @@ app 侧新增的 `setup` 统计行（把非像素命令从 `zgx+parse` 里拆出
 1. ~~planar scratch 不再随 `ResetGraphics` 重分配~~ **已完成（patch 第 12 步）**：滚动样本
    `本机` 13.5–14.0 → **10.5ms（−22%）**、`feed` 2.13 → **1.63s**、整轮 `cpu` 3.8 → **3.14s**、
    `max` 帧 146–164 → **115ms**；两份录像 `bad=0`。细节见 §6.5。
-2. **A-③：主缓冲 = staging buffer**（§6.1）——去掉 primary→staging 那一遍 20.6MB/帧的拷贝，
-   顺带把 staging 内存类型改成 `HOST_CACHED` 优先（既定口径的补齐）。
+2. ~~**A-③：主缓冲 = presenter 缓冲**（§6.1）~~ **已完成**：去掉 primary→staging 那一遍拷贝，
+   顺带把类型改成 `HOST_CACHED` 优先 + 脏区间合并刷。视频（整屏脏）`present` 2.13 → **0.64ms**、
+   `本机` 23.6 → **22.0ms**；碎片样本 `present` 2.50 → **1.91ms**、`本机` 12.95 → **12.48ms**；
+   两份录像 `bad=0 rgbPx=0`。细节与约束见 §6.1 ③。
 3. **B：区域矩形合并**（§6.2）——`update_tiles` 里按 raster 序合并相邻整块 tile 再 union，
    同时降低 `update`、`gdi_OutputUpdate` 的逐矩形拷贝、`cinvalid` 长度与 present 的 copy region 数。
 4. **C：producer/consumer**（§6.3）——除重叠之外，它还能把"解码的工作集"与"解析/合成的工作集"分开，
@@ -308,5 +335,10 @@ app 侧新增的 `setup` 统计行（把非像素命令从 `zgx+parse` 里拆出
   里 paced 是否为 0。
 - **不要用"跳过某条 dispatch/步骤 + 差值反推"做归因**（依赖关系会变），要用计数器 + 相位桶。
 - **每份新捕获先自己过 `bad=0`** 才能当基线（同名文件的不同录制不能互相背书）。
+- **A/B 必须同会话内做，不要拿历史日志当基线**：文件名会复用，  同名 `.cache/hmrdp_gfx*.bin` 的帧数、
+  `cmds/frame`、脏区形态可以完全不同（同一段代码在两份录制上 `本机` 就能差 1ms 以上），而且设备的后台
+  负载/温度也会漂。
+  做法是**把待测特性关掉再各跑 2~3 轮**（本次是让 `VkRenderer::AcquireDesktopBuffer` 直接返回 nullptr，
+  即退回 staging 路径），取中位数比。判读只看**同一轮 `(running=0)`**。
 - 回放页的「路线 / 重新回放 / 线程」按钮内部都是 `stopReplayTest()` + `start`；**一轮没跑完时点击 = 掐断**，
   性能数字只取 `(running=0)` 的整轮。

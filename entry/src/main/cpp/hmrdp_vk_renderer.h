@@ -63,6 +63,15 @@ class VkRenderer : public FramePresenter {
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 
+  // Zero-copy desktop buffer (doc_agent/cpu-path.md §6.1 ③): the host-visible,
+  // persistently mapped memory gdi composes the desktop into. PresentBgra then
+  // recognises its own buffer and records the dirty rects straight out of it, so
+  // no per-frame copy of the frame happens at all. Needs the device (created with
+  // the surface), hence the "retry every frame" contract in hmrdp_presenter.h.
+  uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
+  void BeginDesktopBufferWrite() override;
+  void ReleaseDesktopBuffer() override;
+
   void Reset() override;
 
   bool ready() const;
@@ -112,6 +121,10 @@ class VkRenderer : public FramePresenter {
   void DestroyDesktopImageLocked();
   bool EnsureStageLocked(size_t bytes);
   void DestroyStageLocked();
+  // The gdi desktop buffer (see AcquireDesktopBuffer). Created once per desktop
+  // size and kept until ReleaseDesktopBuffer/reset.
+  bool CreateDesktopBufferLocked(int width, int height);
+  void DestroyDesktopBufferLocked();
 
   // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;
@@ -182,6 +195,20 @@ class VkRenderer : public FramePresenter {
   void* stageMapped_[kFramesInFlight] = {};
   size_t stageCapacities_[kFramesInFlight] = {};
 
+  // Zero-copy desktop buffer: gdi composes into this memory, so the present is
+  // only a buffer->desktopImage copy. `desktopBufferFence_` is the fence of the
+  // newest submission that read it; the next frame's CPU writes have to wait it
+  // (its fence is normally long signalled - a frame's decode sits between them).
+  VkBuffer desktopBuffer_ = VK_NULL_HANDLE;
+  VkDeviceMemory desktopBufferMemory_ = VK_NULL_HANDLE;
+  void* desktopBufferMapped_ = nullptr;
+  size_t desktopBufferBytes_ = 0;
+  int desktopBufferWidth_ = 0;
+  int desktopBufferHeight_ = 0;
+  int desktopBufferStride_ = 0;
+  bool desktopBufferCoherent_ = false;
+  VkFence desktopBufferFence_ = VK_NULL_HANDLE;
+  bool desktopBufferFencePending_ = false;
 
   std::string error_;
   std::string info_;

@@ -55,6 +55,28 @@ class FramePresenter {
   // keeps going: the next present retries).
   virtual bool Prepare() = 0;
 
+  // --- zero-copy desktop buffer (doc_agent/cpu-path.md §6.1 ③) --------------
+  // A backend that can hand gdi a host-visible frame buffer it owns returns it
+  // here, so gdi composes the desktop straight into the memory the presenter
+  // uploads from and no per-frame copy of the frame happens. `*stride` receives
+  // the buffer's row pitch in bytes: the caller must pass exactly that to gdi
+  // (a caller-provided buffer only works when gdi's stride matches).
+  // Returns nullptr while the backend cannot provide one - the caller then keeps
+  // gdi's own buffer and PresentBgra copies the dirty rects, as before. It is
+  // called once per frame until it succeeds, then never again.
+  virtual uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) {
+    (void)width;
+    (void)height;
+    (void)stride;
+    return nullptr;
+  }
+  // Called before a frame's pixels are written into the buffer AcquireDesktopBuffer
+  // returned: waits (when needed) for the GPU to be done reading the previous frame
+  // out of it. A no-op for backends without a desktop buffer.
+  virtual void BeginDesktopBufferWrite() {}
+  // Releases the buffer (resize/teardown). Safe to call when none was acquired.
+  virtual void ReleaseDesktopBuffer() {}
+
   // Called from the FreeRDP worker thread. `data` is the whole desktop frame
   // (top-down BGRA, `srcStride` bytes/row), `desktopWidth/Height` the desktop
   // dimensions used for the letterbox, and `rects`/`rectCount` the regions that

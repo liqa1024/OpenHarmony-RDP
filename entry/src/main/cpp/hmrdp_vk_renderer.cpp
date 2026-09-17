@@ -1067,6 +1067,171 @@ bool VkRenderer::EnsureStageLocked(size_t bytes) {
   return true;
 }
 
+uint8_t* VkRenderer::AcquireDesktopBuffer(int width, int height, int* stride) {
+  if (stride == nullptr || width <= 0 || height <= 0) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  // The device is created together with the swapchain (SetSurface/Prepare), so
+  // before the first surface there is nothing to allocate from: the caller keeps
+  // gdi's own buffer and asks again next frame.
+  if (!VkContext::Instance().ready()) {
+    return nullptr;
+  }
+  if (desktopBufferMapped_ == nullptr || desktopBufferWidth_ != width ||
+      desktopBufferHeight_ != height) {
+    if (!CreateDesktopBufferLocked(width, height)) {
+      return nullptr;
+    }
+  }
+  *stride = desktopBufferStride_;
+  return static_cast<uint8_t*>(desktopBufferMapped_);
+}
+
+void VkRenderer::BeginDesktopBufferWrite() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  VkApi& api = GetVkApi();
+  const VkDevice device = VkContext::Instance().device();
+  if (desktopBufferFencePending_ && device != VK_NULL_HANDLE && api.WaitForFences != nullptr &&
+      desktopBufferFence_ != VK_NULL_HANDLE) {
+    api.WaitForFences(device, 1, &desktopBufferFence_, VK_TRUE, UINT64_MAX);
+  }
+  desktopBufferFencePending_ = false;
+}
+
+void VkRenderer::ReleaseDesktopBuffer() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  DestroyDesktopBufferLocked();
+}
+
+bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE || api.CreateBuffer == nullptr) {
+    error_ = "Vulkan device not available";
+    return false;
+  }
+  // The previous buffer may still be read by an in-flight copy; this only runs on
+  // a resize, where waiting once is cheaper than tracking the range.
+  if (desktopBufferFencePending_ && api.WaitForFences != nullptr &&
+      desktopBufferFence_ != VK_NULL_HANDLE) {
+    api.WaitForFences(device, 1, &desktopBufferFence_, VK_TRUE, UINT64_MAX);
+  }
+  desktopBufferFencePending_ = false;
+  DestroyDesktopBufferLocked();
+
+  // gdi's own stride is `width * 4`; keeping the same packing means the caller's
+  // rect arithmetic (and the copy regions' row length) is unchanged.
+  const int stride = width * 4;
+  const size_t bytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
+
+  VkBufferCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.size = bytes;
+  info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VkResult result = api.CreateBuffer(device, &info, nullptr, &desktopBuffer_);
+  if (result != VK_SUCCESS) {
+    error_ = "vkCreateBuffer (desktop): " + VkResultName(result);
+    return false;
+  }
+  VkMemoryRequirements req{};
+  api.GetBufferMemoryRequirements(device, desktopBuffer_, &req);
+  // Cached first (the CPU side writes 20+ MB/frame into it and reads it back for
+  // the destination-dependent primitives), then coherent - see
+  // doc_agent/gfx-engine.md §1. A non-coherent type is flushed per dirty rect
+  // before the copy below.
+  uint32_t typeIndex = context.FindMemoryType(
+      req.memoryTypeBits,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+  if (typeIndex == UINT32_MAX) {
+    typeIndex = context.FindMemoryType(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  }
+  if (typeIndex == UINT32_MAX) {
+    typeIndex = context.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+  }
+  if (typeIndex == UINT32_MAX) {
+    error_ = "no host-visible memory type for the desktop buffer";
+    DestroyDesktopBufferLocked();
+    return false;
+  }
+  VkMemoryAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.allocationSize = req.size;
+  alloc.memoryTypeIndex = typeIndex;
+  result = api.AllocateMemory(device, &alloc, nullptr, &desktopBufferMemory_);
+  if (result != VK_SUCCESS) {
+    error_ = "vkAllocateMemory (desktop buffer): " + VkResultName(result);
+    DestroyDesktopBufferLocked();
+    return false;
+  }
+  result = api.BindBufferMemory(device, desktopBuffer_, desktopBufferMemory_, 0);
+  if (result != VK_SUCCESS) {
+    error_ = "vkBindBufferMemory (desktop buffer): " + VkResultName(result);
+    DestroyDesktopBufferLocked();
+    return false;
+  }
+  if (api.MapMemory == nullptr) {
+    error_ = "vkMapMemory unavailable";
+    DestroyDesktopBufferLocked();
+    return false;
+  }
+  result = api.MapMemory(device, desktopBufferMemory_, 0, VK_WHOLE_SIZE, 0,
+                         &desktopBufferMapped_);
+  if (result != VK_SUCCESS || desktopBufferMapped_ == nullptr) {
+    error_ = "vkMapMemory (desktop buffer): " + VkResultName(result);
+    desktopBufferMapped_ = nullptr;
+    DestroyDesktopBufferLocked();
+    return false;
+  }
+  // gdi does *not* initialise a caller-provided buffer (gdi_CreateCompatibleBitmap
+  // is the one that fills 0xFF), and un-drawn desktop pixels must read 0xFF.
+  std::memset(desktopBufferMapped_, 0xFF, bytes);
+
+  VkPhysicalDeviceMemoryProperties props{};
+  context.api().GetPhysicalDeviceMemoryProperties(context.physicalDevice(), &props);
+  desktopBufferCoherent_ =
+      (props.memoryTypes[typeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+  desktopBufferBytes_ = bytes;
+  desktopBufferWidth_ = width;
+  desktopBufferHeight_ = height;
+  desktopBufferStride_ = stride;
+  HMRDP_LOGI("vulkan presenter: desktop buffer %{public}dx%{public}d stride=%{public}d %{public}s"
+             " (gdi composes into it)",
+             width, height, stride,
+             desktopBufferCoherent_ ? "coherent" : "non-coherent (flushed per frame)");
+  return true;
+}
+
+void VkRenderer::DestroyDesktopBufferLocked() {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device != VK_NULL_HANDLE) {
+    if (desktopBufferMapped_ != nullptr && api.UnmapMemory != nullptr) {
+      api.UnmapMemory(device, desktopBufferMemory_);
+    }
+    if (desktopBuffer_ != VK_NULL_HANDLE && api.DestroyBuffer != nullptr) {
+      api.DestroyBuffer(device, desktopBuffer_, nullptr);
+    }
+    if (desktopBufferMemory_ != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+      api.FreeMemory(device, desktopBufferMemory_, nullptr);
+    }
+  }
+  desktopBufferMapped_ = nullptr;
+  desktopBuffer_ = VK_NULL_HANDLE;
+  desktopBufferMemory_ = VK_NULL_HANDLE;
+  desktopBufferBytes_ = 0;
+  desktopBufferWidth_ = 0;
+  desktopBufferHeight_ = 0;
+  desktopBufferStride_ = 0;
+  desktopBufferCoherent_ = false;
+  desktopBufferFencePending_ = false;
+}
+
 void VkRenderer::DestroyStageLocked() {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
@@ -1144,56 +1309,123 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     }
 
     const VkDevice device = context.device();
-    // This slot's fence was just waited by AcquireFrameLocked and the slot has
-    // not been re-submitted since, so its staging buffer is free to refill.
-    // The uploads are packed back to back in the staging buffer, each keeping its
-    // own row pitch, so one buffer serves any number of rects.
-    size_t stageBytes = 0;
-    for (int i = 0; i < uploadCount; ++i) {
-      stageBytes += static_cast<size_t>(upload[i].width) * 4u *
-                    static_cast<size_t>(upload[i].height);
-    }
-    if (!EnsureStageLocked(stageBytes)) {
-      return false;
-    }
-    // No CPU-side transform: the rows are copied verbatim and the channel order
-    // is fixed on the GPU by the presenter shader, exactly like the GLES
-    // presenter (which uploads the same bytes and swizzles in its fragment
-    // shader). A per-byte swap here cost more than the whole rest of the present.
-    uint8_t* stage = static_cast<uint8_t*>(stageMapped_[frameIndex_]);
-    size_t stageOffset = 0;
-    for (int i = 0; i < uploadCount; ++i) {
-      const PresentRect& r = upload[i];
-      const size_t rowBytes = static_cast<size_t>(r.width) * 4u;
-      if (static_cast<size_t>(srcStride) == rowBytes) {
-        // Rows are contiguous: one copy instead of one per row.
-        std::memcpy(stage + stageOffset,
-                    data + static_cast<size_t>(r.y) * static_cast<size_t>(srcStride) +
-                        static_cast<size_t>(r.x) * 4u,
-                    rowBytes * static_cast<size_t>(r.height));
-      } else {
-        for (int row = 0; row < r.height; ++row) {
-          const uint8_t* srcRow =
-              data + static_cast<size_t>(r.y + row) * static_cast<size_t>(srcStride) +
-              static_cast<size_t>(r.x) * 4u;
-          std::memcpy(stage + stageOffset + static_cast<size_t>(row) * rowBytes, srcRow, rowBytes);
+    // SubmitAndPresentLocked advances frameIndex_ at the end, so the slot this
+    // frame is using is captured while it is still current.
+    const uint32_t slot = frameIndex_;
+    // When the caller handed gdi *our* desktop buffer (AcquireDesktopBuffer), the
+    // dirty rects are already laid out in the memory the GPU copies from: the
+    // regions read it in place at the desktop row pitch and no CPU copy of the
+    // frame happens at all (doc_agent/cpu-path.md §6.1 ③). Otherwise the rects are
+    // packed into this slot's staging buffer first.
+    const bool direct =
+        data == static_cast<const uint8_t*>(desktopBufferMapped_) && srcStride == desktopBufferStride_ &&
+        desktopBuffer_ != VK_NULL_HANDLE && desktopWidth == desktopBufferWidth_ &&
+        desktopHeight == desktopBufferHeight_;
+    if (direct) {
+      // Host writes (gdi's composition, made on the FreeRDP thread) must be visible
+      // to the transfer read that follows. Non-coherent types need the explicit
+      // flush; a coherent one already is (the call is then a no-op, and the ranges
+      // are per dirty rect because the rows are strided).
+      if (!desktopBufferCoherent_ && api.FlushMappedMemoryRanges != nullptr) {
+        // One range per dirty rect, then sorted and coalesced: a rect's byte span
+        // reaches from its first row's start to its last row's end, so scattered
+        // rects overlap heavily and the raw list would be up to kMaxUploadRects
+        // driver calls per frame.
+        struct ByteRange {
+          VkDeviceSize offset;
+          VkDeviceSize size;
+        };
+        ByteRange sorted[kMaxUploadRects];
+        for (int i = 0; i < uploadCount; ++i) {
+          const PresentRect& r = upload[i];
+          const VkDeviceSize offset =
+              static_cast<VkDeviceSize>(r.y) * static_cast<VkDeviceSize>(desktopBufferStride_) +
+              static_cast<VkDeviceSize>(r.x) * 4u;
+          VkDeviceSize size = static_cast<VkDeviceSize>(r.height - 1) *
+                                  static_cast<VkDeviceSize>(desktopBufferStride_) +
+                              static_cast<VkDeviceSize>(r.width) * 4u;
+          if (offset + size > desktopBufferBytes_) {
+            size = desktopBufferBytes_ - offset;
+          }
+          sorted[i].offset = offset;
+          sorted[i].size = size;
         }
+        std::sort(sorted, sorted + uploadCount, [](const ByteRange& a, const ByteRange& b) {
+          return a.offset < b.offset;
+        });
+        VkMappedMemoryRange ranges[kMaxUploadRects];
+        uint32_t rangeCount = 0;
+        for (int i = 0; i < uploadCount; ++i) {
+          const VkDeviceSize end = sorted[i].offset + sorted[i].size;
+          if (rangeCount > 0 && sorted[i].offset <=
+                                    ranges[rangeCount - 1].offset + ranges[rangeCount - 1].size) {
+            VkMappedMemoryRange& previous = ranges[rangeCount - 1];
+            if (end > previous.offset + previous.size) {
+              previous.size = end - previous.offset;
+            }
+            continue;
+          }
+          VkMappedMemoryRange& range = ranges[rangeCount++];
+          range = VkMappedMemoryRange{};
+          range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+          range.memory = desktopBufferMemory_;
+          range.offset = sorted[i].offset;
+          range.size = sorted[i].size;
+        }
+        api.FlushMappedMemoryRanges(device, rangeCount, ranges);
       }
-      stageOffset += rowBytes * static_cast<size_t>(r.height);
-    }
-    // Flush exactly what was written (the buffer grows to the largest dirty rect
-    // ever seen, so VK_WHOLE_SIZE would flush far more than this frame touched).
-    // A no-op on coherent memory; required when the type is not coherent.
-    if (api.FlushMappedMemoryRanges != nullptr) {
-      VkMappedMemoryRange range{};
-      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-      range.memory = stageMemories_[frameIndex_];
-      range.offset = 0;
-      range.size = stageBytes;
-      api.FlushMappedMemoryRanges(device, 1, &range);
+    } else {
+      // This slot's fence was just waited by AcquireFrameLocked and the slot has
+      // not been re-submitted since, so its staging buffer is free to refill.
+      // The uploads are packed back to back in the staging buffer, each keeping its
+      // own row pitch, so one buffer serves any number of rects.
+      size_t stageBytes = 0;
+      for (int i = 0; i < uploadCount; ++i) {
+        stageBytes += static_cast<size_t>(upload[i].width) * 4u *
+                      static_cast<size_t>(upload[i].height);
+      }
+      if (!EnsureStageLocked(stageBytes)) {
+        return false;
+      }
+      // No CPU-side transform: the rows are copied verbatim and the channel order
+      // is fixed on the GPU by the presenter shader, exactly like the GLES
+      // presenter (which uploads the same bytes and swizzles in its fragment
+      // shader). A per-byte swap here cost more than the whole rest of the present.
+      uint8_t* stage = static_cast<uint8_t*>(stageMapped_[slot]);
+      size_t stageOffset = 0;
+      for (int i = 0; i < uploadCount; ++i) {
+        const PresentRect& r = upload[i];
+        const size_t rowBytes = static_cast<size_t>(r.width) * 4u;
+        if (static_cast<size_t>(srcStride) == rowBytes) {
+          // Rows are contiguous: one copy instead of one per row.
+          std::memcpy(stage + stageOffset,
+                      data + static_cast<size_t>(r.y) * static_cast<size_t>(srcStride) +
+                          static_cast<size_t>(r.x) * 4u,
+                      rowBytes * static_cast<size_t>(r.height));
+        } else {
+          for (int row = 0; row < r.height; ++row) {
+            const uint8_t* srcRow =
+                data + static_cast<size_t>(r.y + row) * static_cast<size_t>(srcStride) +
+                static_cast<size_t>(r.x) * 4u;
+            std::memcpy(stage + stageOffset + static_cast<size_t>(row) * rowBytes, srcRow, rowBytes);
+          }
+        }
+        stageOffset += rowBytes * static_cast<size_t>(r.height);
+      }
+      // Flush exactly what was written (the buffer grows to the largest dirty rect
+      // ever seen, so VK_WHOLE_SIZE would flush far more than this frame touched).
+      // A no-op on coherent memory; required when the type is not coherent.
+      if (api.FlushMappedMemoryRanges != nullptr) {
+        VkMappedMemoryRange range{};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = stageMemories_[slot];
+        range.offset = 0;
+        range.size = stageBytes;
+        api.FlushMappedMemoryRanges(device, 1, &range);
+      }
     }
 
-    const VkCommandBuffer cmd = commandBuffers_[frameIndex_];
+    const VkCommandBuffer cmd = commandBuffers_[slot];
     api.ResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1215,10 +1447,20 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
       const PresentRect& r = upload[i];
       VkBufferImageCopy& region = regions[i];
       region = VkBufferImageCopy{};
-      // The staging buffer holds only the uploaded rows, tightly packed; each
-      // region keeps its own row pitch.
-      region.bufferOffset = regionOffset;
-      region.bufferRowLength = static_cast<uint32_t>(r.width);
+      if (direct) {
+        // The rect is read where gdi left it: at the desktop row pitch, with the
+        // rows contiguous inside the rect (stride == width * 4).
+        region.bufferOffset =
+            static_cast<VkDeviceSize>(r.y) * static_cast<VkDeviceSize>(desktopBufferStride_) +
+            static_cast<VkDeviceSize>(r.x) * 4u;
+        region.bufferRowLength = static_cast<uint32_t>(desktopBufferStride_ / 4);
+      } else {
+        // The staging buffer holds only the uploaded rows, tightly packed; each
+        // region keeps its own row pitch.
+        region.bufferOffset = regionOffset;
+        region.bufferRowLength = static_cast<uint32_t>(r.width);
+        regionOffset += static_cast<size_t>(r.width) * 4u * static_cast<size_t>(r.height);
+      }
       region.bufferImageHeight = 0;
       region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
       region.imageSubresource.layerCount = 1;
@@ -1227,10 +1469,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
       region.imageExtent.width = static_cast<uint32_t>(r.width);
       region.imageExtent.height = static_cast<uint32_t>(r.height);
       region.imageExtent.depth = 1;
-      regionOffset +=
-          static_cast<size_t>(r.width) * 4u * static_cast<size_t>(r.height);
     }
-    api.CmdCopyBufferToImage(cmd, stageBuffers_[frameIndex_], desktopImage_,
+    api.CmdCopyBufferToImage(cmd, direct ? desktopBuffer_ : stageBuffers_[slot], desktopImage_,
                              VK_IMAGE_LAYOUT_GENERAL, static_cast<uint32_t>(uploadCount),
                              regions);
 
@@ -1258,6 +1498,12 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     const bool presented = SubmitAndPresentLocked(cmd, imageIndex, VK_NULL_HANDLE, VK_NULL_HANDLE);
     if (presented) {
       desktopImageFullUpload_ = false;
+      if (direct) {
+        // The submission just recorded reads gdi's desktop buffer; the next frame
+        // must not overwrite it before this fence signals (BeginDesktopBufferWrite).
+        desktopBufferFence_ = inFlight_[slot];
+        desktopBufferFencePending_ = true;
+      }
     }
     return presented;
   }
@@ -1288,6 +1534,7 @@ void VkRenderer::Reset() {
     presentSourceViews_.clear();
   }
   DestroySwapchainLocked();
+  DestroyDesktopBufferLocked();
   DestroyDesktopImageLocked();
   DestroyFrameResourcesLocked();
   VkContext::Instance().DestroySurface(surface_);

@@ -44,6 +44,10 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 | 是否等本帧 GPU | 不等 | 不等 |
 | 整帧（参考） | `fps 50.0` / `feed 7678ms` | `fps 16.4` / `feed 37139ms`（对照路线还多跑一遍 gdi 解码） |
 
+> 注：上表的 CPU 列（`present= 2.61ms`）是**零拷贝上屏之前**的数；CPU 侧现在把 gdi 主缓冲直接放在
+> presenter 的缓冲里（[`cpu-path.md`](cpu-path.md) §6.1 ③），同量级的整屏脏样本上 CPU `present` 已降到
+> ~0.6ms。GPU 侧的 `presentSplit`（compose/flush/blit）**未变**。
+
 历史口径：这轮改造**之前** GPU 的 `present` 是 **13.75 ms（CPU 的 5.3 倍）**，因为它在 present 里
 `Flush()`（submit **+** wait）等整帧解码；`presentSplit` 的 `flush` 桶 11507 → 334 µs 记录了这条等待的消失。
 整帧仍差与上屏无关（解码 kernel ≈17ms/帧 + 引擎 CPU 侧 PDU 处理）。
@@ -118,10 +122,11 @@ damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里
 
 ### 4.4 其他
 
-- **CPU 路线：让主缓冲就是 staging buffer（去掉"primary→staging"那一遍 20.6MB/帧的 memcpy）**，
-  以及**逐矩形上传前先把同带相邻矩形并成更长的条**（滚动样本 present 2.5ms 只搬 2.2MB，碎矩形
-  的行拷贝 + copy region 数是主因）：依据、配到的口径与风险见
-  [`cpu-path.md`](cpu-path.md) §6.1/§6.2。
+- ~~**CPU 路线：让主缓冲就是 presenter 缓冲**~~ **已做**（`cpu-path.md` §6.1 ③）：gdi 直接合成进
+  presenter 的 host-visible 缓冲，present 只剩"录脏矩形 + 一次 buffer→image 拷贝"，逐矩形 memcpy 整段没了
+  （视频样本 `present` 2.13 → 0.64ms）。**还没做**：逐矩形上传前把同带相邻矩形并成更长的条（碎片样本
+  present 1.9ms 只搬 2.3MB，碎矩形的 copy region 数是主因）：依据与风险见
+  [`cpu-path.md`](cpu-path.md) §6.2。
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；
   「硬件解码（RFX）」设置项届时才真正生效。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。

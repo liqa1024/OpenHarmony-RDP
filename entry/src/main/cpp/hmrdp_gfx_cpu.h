@@ -43,6 +43,9 @@ class GfxCpuDesktop {
   void Shutdown();
 
   void SetFrameFn(FrameFn fn) { frameFn_ = std::move(fn); }
+  // Optional presenter that gdi can compose into (see
+  // AttachPresenterDesktopBuffer). Set before Init().
+  void SetPresenter(FramePresenter* presenter) { presenter_ = presenter; }
 
   // RDPGFX context the raw capture chunks are fed into (GfxReplayPump).
   RdpgfxClientContext* gfx() const { return gfx_; }
@@ -52,6 +55,7 @@ class GfxCpuDesktop {
   int height() const { return height_; }
 
   // Internal: called by the gdi update hooks.
+  void OnBeginPaint();
   void OnEndPaint();
   void OnDesktopResize();
 
@@ -60,11 +64,29 @@ class GfxCpuDesktop {
 
   freerdp* instance_ = nullptr;
   RdpgfxClientContext* gfx_ = nullptr;
+  FramePresenter* presenter_ = nullptr;
+  bool desktopAttached_ = false;
   FrameFn frameFn_;
   int width_ = 0;
   int height_ = 0;
   bool resizing_ = false;
 };
+
+// Brings gdi up on `instance` composing straight into `presenter`'s own desktop
+// buffer when the backend offers one (FramePresenter::AcquireDesktopBuffer,
+// doc_agent/cpu-path.md §6.1 ③). Falls back to a gdi-owned buffer when it does
+// not, which is also what happens before the presenter's device exists - the
+// per-frame AttachPresenterDesktopBuffer() then moves gdi over later.
+bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int width, int height);
+
+// Moves gdi's primary buffer onto the presenter's desktop buffer once the backend
+// can provide one, so the pixels gdi composes are the ones the presenter uploads
+// and the present needs no copy at all. Call it with the frame already composed
+// (gdi's EndPaint) and before it is presented: the desktop content is carried
+// over, because gdi's primitives read the destination buffer. A cheap no-op while
+// the presenter has no buffer yet (retry next frame) and after the first success
+// (the caller normally remembers, see GfxCpuDesktop::desktopAttached_).
+bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter);
 
 // What the CPU present path uploads for one frame. The dirty rects are uploaded
 // individually, with the merged bounding box kept only as the bounded fallback

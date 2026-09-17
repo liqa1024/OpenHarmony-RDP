@@ -4,6 +4,7 @@
 #include "hmrdp_gfx_cpu.h"
 
 #include <chrono>
+#include <cstring>
 
 #include <freerdp/codec/color.h>
 #include <freerdp/codecs.h>
@@ -35,7 +36,12 @@ CpuContext* CpuOf(rdpContext* context) {
 // build and send fastpath orders over a transport that does not exist offline,
 // so both are replaced (the live session replaces them too).
 BOOL CpuBeginPaint(rdpContext* context) {
-  (void)context;
+  if (context != nullptr) {
+    CpuContext* ctx = CpuOf(context);
+    if (ctx->owner != nullptr) {
+      ctx->owner->OnBeginPaint();
+    }
+  }
   return TRUE;
 }
 
@@ -119,7 +125,7 @@ bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail
     return fail("codecs prepare failed");
   }
 
-  if (!gdi_init(instance_, PIXEL_FORMAT_BGRA32)) {
+  if (!InitGdiWithPresenter(instance_, presenter_, width, height)) {
     return fail("gdi_init failed");
   }
 
@@ -162,9 +168,24 @@ void GfxCpuDesktop::Shutdown() {
     freerdp_free(instance_);
     instance_ = nullptr;
   }
+  // gdi is gone, so the presenter's buffer is free to drop (it owns it).
+  if (desktopAttached_ && presenter_ != nullptr) {
+    presenter_->ReleaseDesktopBuffer();
+  }
+  desktopAttached_ = false;
   frameFn_ = nullptr;
   width_ = 0;
   height_ = 0;
+}
+
+void GfxCpuDesktop::OnBeginPaint() {
+  // gdi is about to write this frame's pixels into its primary buffer; when that
+  // buffer belongs to the presenter, the GPU must be done reading the previous
+  // frame out of it first. Normally free: a whole frame's decode sits between the
+  // two (doc_agent/cpu-path.md §6.1 ③).
+  if (desktopAttached_ && presenter_ != nullptr) {
+    presenter_->BeginDesktopBufferWrite();
+  }
 }
 
 void GfxCpuDesktop::OnEndPaint() {
@@ -172,6 +193,11 @@ void GfxCpuDesktop::OnEndPaint() {
   // rebuilt; that is not a decoded frame, so it must not present.
   if (resizing_) {
     return;
+  }
+  // The frame is composed and not yet presented: the right moment to move gdi onto
+  // the presenter's buffer (no-op once that happened).
+  if (!desktopAttached_ && presenter_ != nullptr) {
+    desktopAttached_ = AttachPresenterDesktopBuffer(gdi(), presenter_);
   }
   if (frameFn_) {
     frameFn_();
@@ -207,6 +233,9 @@ bool GfxCpuDesktop::Resize(int width, int height) {
   const bool ok =
       gdi_resize(instance_->context->gdi, static_cast<UINT32>(width), static_cast<UINT32>(height));
   resizing_ = false;
+  // gdi_resize() built a gdi-owned buffer again; the next EndPaint moves the new
+  // desktop back onto the presenter's buffer (sized to the new geometry).
+  desktopAttached_ = false;
   const int64_t dt = std::chrono::duration_cast<std::chrono::microseconds>(
                          std::chrono::steady_clock::now().time_since_epoch())
                          .count() -
@@ -226,6 +255,29 @@ namespace {
 // scrolling sample: ~15% of frames carry more than 64 rects, so the A/B endpoint
 // ("always the rect list") needs headroom well above that to be meaningful.
 constexpr int kMaxPresentRects = 256;
+
+// gdi's local framebuffer is always BGRA32 here, so its row pitch is width * 4
+// and the presenter's desktop buffer uses the very same packing.
+constexpr int kGdiBytesPerPixel = 4;
+
+// Moves gdi's primary buffer onto `buffer` (geometry unchanged) *without* going
+// through gdi_resize_ex: that calls update_end_paint() again from inside a frame
+// and unbalances update->mux. A buffer gdi allocated itself is released through
+// its own free hook, so it cannot leak.
+void SwapGdiPrimaryBuffer(rdpGdi* gdi, uint8_t* buffer, int stride) {
+  gdiBitmap* primary = gdi->primary;
+  if (primary != nullptr && primary->bitmap != nullptr) {
+    HGDI_BITMAP bitmap = primary->bitmap;
+    if (bitmap->data != nullptr && bitmap->data != buffer && bitmap->free != nullptr) {
+      bitmap->free(bitmap->data);
+    }
+    bitmap->data = buffer;
+    bitmap->free = nullptr;
+    bitmap->scanline = static_cast<UINT32>(stride);
+  }
+  gdi->stride = static_cast<UINT32>(stride);
+  gdi->primary_buffer = buffer;
+}
 
 // Clips one gdi rect to the desktop; returns false when nothing remains.
 bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, int h,
@@ -258,6 +310,48 @@ bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, i
 }
 
 }  // namespace
+
+bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int width, int height) {
+  int stride = 0;
+  uint8_t* buffer =
+      presenter != nullptr ? presenter->AcquireDesktopBuffer(width, height, &stride) : nullptr;
+  if (buffer != nullptr && stride > 0) {
+    // gdi does not initialise a caller-provided buffer (its own
+    // gdi_CreateCompatibleBitmap is what fills 0xFF); the presenter filled it.
+    return gdi_init_ex(instance, PIXEL_FORMAT_BGRA32, static_cast<UINT32>(stride), buffer, nullptr);
+  }
+  return gdi_init(instance, PIXEL_FORMAT_BGRA32);
+}
+
+bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter) {
+  if (gdi == nullptr || presenter == nullptr || gdi->primary == nullptr ||
+      gdi->primary_buffer == nullptr || gdi->width <= 0 || gdi->height <= 0) {
+    return false;
+  }
+  int stride = 0;
+  uint8_t* buffer = presenter->AcquireDesktopBuffer(gdi->width, gdi->height, &stride);
+  if (buffer == nullptr || stride <= 0) {
+    return false;
+  }
+  if (gdi->primary_buffer != buffer) {
+    // Carry the composed desktop over: gdi's primitives read the destination
+    // (memblt / srcalpha / cache restore), so swapping in the presenter's fresh
+    // 0xFF buffer would change later frames' pixels.
+    const size_t rowBytes = static_cast<size_t>(gdi->width) * kGdiBytesPerPixel;
+    for (int y = 0; y < gdi->height; ++y) {
+      std::memcpy(buffer + static_cast<size_t>(y) * static_cast<size_t>(stride),
+                  gdi->primary_buffer + static_cast<size_t>(y) * static_cast<size_t>(gdi->stride),
+                  rowBytes);
+    }
+    SwapGdiPrimaryBuffer(gdi, buffer, stride);
+    HMRDP_LOGI("gfx cpu desktop: gdi composes into the presenter's desktop buffer "
+               "(%{public}dx%{public}d stride=%{public}d)",
+               gdi->width, gdi->height, stride);
+  } else {
+    gdi->stride = static_cast<UINT32>(stride);
+  }
+  return true;
+}
 
 bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* info) {
   if (gdi == nullptr || presenter == nullptr || gdi->primary == nullptr ||

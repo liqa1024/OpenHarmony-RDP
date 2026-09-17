@@ -134,6 +134,10 @@ class Session {
   // Internal callbacks used by the FreeRDP glue.
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
+  // Called from gdi's BeginPaint: before this frame's pixels are written into the
+  // primary buffer, which may be the presenter's own buffer (see
+  // AttachPresenterDesktopBuffer).
+  void HandleBeginPaint();
   void HandleEndPaint();
   void HandleDesktopResize();
   void HandlePostDisconnect();
@@ -182,6 +186,10 @@ class Session {
   // commands on one thread while gdi's EndPaint callback can fire on another, so
   // every present is serialised by the backend itself.
   std::unique_ptr<FramePresenter> presenter_;
+  // True once gdi composes into the presenter's own desktop buffer (zero-copy
+  // present, doc_agent/cpu-path.md §6.1 ③). Retried every frame until it succeeds,
+  // which is how the session picks it up when the surface arrives after connect.
+  bool desktopAttached_ = false;
   AudioOutput audio_;
   EventFn eventFn_;
   std::string lastError_;

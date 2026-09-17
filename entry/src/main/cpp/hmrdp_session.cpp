@@ -1137,6 +1137,10 @@ BOOL HmrdpBeginPaint(rdpContext* context) {
   if (hwnd != nullptr && hwnd->invalid != nullptr) {
     hwnd->invalid->null = TRUE;
   }
+  HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
+  if (ctx->session != nullptr) {
+    ctx->session->HandleBeginPaint();
+  }
   return TRUE;
 }
 
@@ -1396,10 +1400,24 @@ BOOL HmrdpPostConnect(freerdp* instance) {
   if (instance == nullptr || instance->context == nullptr) {
     return FALSE;
   }
-  if (!gdi_init(instance, PIXEL_FORMAT_BGRA32)) {
+  rdpContext* context = instance->context;
+  HmrdpContext* pre = reinterpret_cast<HmrdpContext*>(context);
+  const rdpSettings* settings = context->settings;
+  const int desktopWidth = settings != nullptr
+                               ? static_cast<int>(freerdp_settings_get_uint32(
+                                     settings, FreeRDP_DesktopWidth))
+                               : 0;
+  const int desktopHeight = settings != nullptr
+                                ? static_cast<int>(freerdp_settings_get_uint32(
+                                      settings, FreeRDP_DesktopHeight))
+                                : 0;
+  // gdi composes straight into the presenter's desktop buffer when the surface
+  // (and with it the Vulkan device) is already up; otherwise it owns its buffer
+  // and HandleEndPaint moves it over as soon as the presenter can provide one.
+  if (!InitGdiWithPresenter(instance, pre->session != nullptr ? pre->session->presenter() : nullptr,
+                            desktopWidth, desktopHeight)) {
     return FALSE;
   }
-  rdpContext* context = instance->context;
   context->update->BeginPaint = HmrdpBeginPaint;
   context->update->EndPaint = HmrdpEndPaint;
   context->update->DesktopResize = HmrdpDesktopResize;
@@ -1986,6 +2004,8 @@ void Session::Disconnect() {
   clipboardReady_ = false;
   running_ = false;
   audio_.Close();
+  // The desktop buffer dies with the presenter; the next connect re-attaches.
+  desktopAttached_ = false;
   if (presenter_ != nullptr) {
     presenter_->Reset();
   }
@@ -1993,6 +2013,15 @@ void Session::Disconnect() {
 
 void Session::HandlePostConnect() {
   Emit(SessionEvent::kConnected, "");
+}
+
+void Session::HandleBeginPaint() {
+  // gdi is about to compose this frame; if it composes into the presenter's own
+  // buffer, the GPU must be done with the previous frame first (normally free:
+  // a frame's worth of decoding sits between the two).
+  if (desktopAttached_ && presenter_ != nullptr) {
+    presenter_->BeginDesktopBufferWrite();
+  }
 }
 
 void Session::HandleEndPaint() {
@@ -2023,6 +2052,12 @@ void Session::HandleEndPaint() {
   }
   if (hwnd->invalid->null) {
     return;
+  }
+  // The frame is composed and not yet presented: move gdi onto the presenter's
+  // desktop buffer if that has not happened yet (zero-copy present). A no-op once
+  // attached.
+  if (!desktopAttached_ && presenter_ != nullptr) {
+    desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_.get());
   }
   const uint64_t renderStart = NowUs();
   // Shared with the offline CPU replay route (hmrdp_gfx_cpu.cpp), so the live

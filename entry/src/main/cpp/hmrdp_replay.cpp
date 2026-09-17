@@ -859,6 +859,10 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // engine's screen texture, so this route is the CPU reference for the engine.
   presenter_->Prepare();
   GfxCpuDesktop cpu;
+  // gdi composes straight into the presenter's desktop buffer when it can hand one
+  // over (the presenter is up by now, so it does): the present then costs a copy
+  // of the dirty rects out of memory gdi already wrote, with no frame copy at all.
+  cpu.SetPresenter(presenter_.get());
   std::string error;
   if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
     std::lock_guard<std::mutex> err(errorMutex_);
