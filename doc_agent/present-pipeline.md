@@ -112,7 +112,7 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 设计见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。上屏已不再等解码（§1 的握手），
 所以解码变快后上屏也不会变成新的串行段。
 
-### 4.3 把上屏的整幅 quad 缩成脏矩形（≈2.8%，排在解码之后）
+### 4.3 把上屏的整幅 quad 缩成脏矩形（**CPU 路线上是最大的一条固定 GPU 成本**）
 
 `blit` 桶里包含"把 picture 整幅 letterbox 写进 swapchain 图像"。swapchain 图像是**轮转**的（内容在两次
 呈现之间未定义），所以每帧整幅是**默认正确做法**；要省它只能按 **swapchain 图像**各维护"已写入的增量"
@@ -120,13 +120,20 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里（且它只是提示、不减少我们自己的写入）；
 **不要**改用 `OH_NativeWindow_*`/`FlushBuffer(..., Region)`（CPU/native 生产者路径，已删除）。
 
+**它有多大（CPU 路线实测，见 [`cpu-path.md`](cpu-path.md) §8）**：轻样本跑满时，`sync`
+（等 GPU 放开主缓冲）≈2.8ms/帧，反推一帧提交的 GPU 时间 ≈ **10ms**；同一份代码在 CPU 受限的重样本上
+只要 25µs（被 20ms 的 CPU 工作藏住）。也就是说**整幅重上屏的 GPU 成本约 10ms/帧**（3120×2080：
+clear 整张 swapchain + 采样整幅 picture + 写 6.5M 像素），在轻帧上完全暴露，并连带把 `vkAcquireNextImageKHR`/
+`vkQueuePresentKHR` 推成"抖动"的排队态（面板 60Hz，而轻样本能跑到 ~78fps）。
+⇒ 想动"轻负载下的延迟"，这条比脏区形状值得做得多；但它的前置是 §4.1 的 per-image damage 账。
+
 ### 4.4 其他
 
 - ~~**CPU 路线：让主缓冲就是 presenter 缓冲**~~ **已做**（`cpu-path.md` §6.1 ③）：gdi 直接合成进
-  presenter 的 host-visible 缓冲，present 只剩"录脏矩形 + 一次 buffer→image 拷贝"，逐矩形 memcpy 整段没了
-  （视频样本 `present` 2.13 → 0.64ms）。**还没做**：逐矩形上传前把同带相邻矩形并成更长的条（碎片样本
-  present 1.9ms 只搬 2.3MB，碎矩形的 copy region 数是主因）：依据与风险见
-  [`cpu-path.md`](cpu-path.md) §6.2。
+  presenter 的 host-visible 缓冲，present 只剩"录脏区 + 一次 buffer→image 拷贝"，逐矩形 memcpy 整段没了
+  （视频样本 `present` 2.13 → 0.60ms）。**连带**：零拷贝路径现在直接发合并 box 而不是逐条矩形——没有
+  memcpy 之后成本从"字节"变成"条数"，那条"逐条矩形更优"的旧结论只在 staging 路径成立（`cpu-path.md`
+  §6.1 ③ 有 A/B）。所以"把碎矩形并成长条"这条也不用做了。
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；
   「硬件解码（RFX）」设置项届时才真正生效。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。

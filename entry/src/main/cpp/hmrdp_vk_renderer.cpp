@@ -1104,6 +1104,11 @@ void VkRenderer::ReleaseDesktopBuffer() {
   DestroyDesktopBufferLocked();
 }
 
+bool VkRenderer::usesDesktopBuffer() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return desktopBufferMapped_ != nullptr;
+}
+
 bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
@@ -1327,52 +1332,39 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
       // flush; a coherent one already is (the call is then a no-op, and the ranges
       // are per dirty rect because the rows are strided).
       if (!desktopBufferCoherent_ && api.FlushMappedMemoryRanges != nullptr) {
-        // One range per dirty rect, then sorted and coalesced: a rect's byte span
-        // reaches from its first row's start to its last row's end, so scattered
-        // rects overlap heavily and the raw list would be up to kMaxUploadRects
-        // driver calls per frame.
-        struct ByteRange {
-          VkDeviceSize offset;
-          VkDeviceSize size;
-        };
-        ByteRange sorted[kMaxUploadRects];
+        // One range spanning the uploaded rects. A rect's byte span reaches from
+        // its first row's start to its last row's end, so per-rect ranges overlap
+        // heavily and would cost one driver call each (measured: coalescing them
+        // took one sample's present from 843 to 644us); a cache flush only writes
+        // back dirty lines, so the union's extra clean lines are free.
+        VkDeviceSize first = desktopBufferBytes_;
+        VkDeviceSize last = 0;
         for (int i = 0; i < uploadCount; ++i) {
           const PresentRect& r = upload[i];
-          const VkDeviceSize offset =
+          const VkDeviceSize begin =
               static_cast<VkDeviceSize>(r.y) * static_cast<VkDeviceSize>(desktopBufferStride_) +
               static_cast<VkDeviceSize>(r.x) * 4u;
-          VkDeviceSize size = static_cast<VkDeviceSize>(r.height - 1) *
-                                  static_cast<VkDeviceSize>(desktopBufferStride_) +
-                              static_cast<VkDeviceSize>(r.width) * 4u;
-          if (offset + size > desktopBufferBytes_) {
-            size = desktopBufferBytes_ - offset;
+          VkDeviceSize end = begin + static_cast<VkDeviceSize>(r.height - 1) *
+                                         static_cast<VkDeviceSize>(desktopBufferStride_) +
+                             static_cast<VkDeviceSize>(r.width) * 4u;
+          if (end > desktopBufferBytes_) {
+            end = desktopBufferBytes_;
           }
-          sorted[i].offset = offset;
-          sorted[i].size = size;
+          if (begin < first) {
+            first = begin;
+          }
+          if (end > last) {
+            last = end;
+          }
         }
-        std::sort(sorted, sorted + uploadCount, [](const ByteRange& a, const ByteRange& b) {
-          return a.offset < b.offset;
-        });
-        VkMappedMemoryRange ranges[kMaxUploadRects];
-        uint32_t rangeCount = 0;
-        for (int i = 0; i < uploadCount; ++i) {
-          const VkDeviceSize end = sorted[i].offset + sorted[i].size;
-          if (rangeCount > 0 && sorted[i].offset <=
-                                    ranges[rangeCount - 1].offset + ranges[rangeCount - 1].size) {
-            VkMappedMemoryRange& previous = ranges[rangeCount - 1];
-            if (end > previous.offset + previous.size) {
-              previous.size = end - previous.offset;
-            }
-            continue;
-          }
-          VkMappedMemoryRange& range = ranges[rangeCount++];
-          range = VkMappedMemoryRange{};
+        if (last > first) {
+          VkMappedMemoryRange range{};
           range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
           range.memory = desktopBufferMemory_;
-          range.offset = sorted[i].offset;
-          range.size = sorted[i].size;
+          range.offset = first;
+          range.size = last - first;
+          api.FlushMappedMemoryRanges(device, 1, &range);
         }
-        api.FlushMappedMemoryRanges(device, rangeCount, ranges);
       }
     } else {
       // This slot's fence was just waited by AcquireFrameLocked and the slot has

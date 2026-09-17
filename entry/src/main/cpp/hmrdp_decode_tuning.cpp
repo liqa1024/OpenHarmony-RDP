@@ -126,6 +126,40 @@ void ApplyStoredDecodeThreads() {
   Forward(DecodeThreads());
 }
 
+std::string CpuFreqInfo() {
+  // Same sysfs shape as ProbePerfCores: the app sandbox usually allows it, and a
+  // device that does not expose it simply reports nothing.
+  const int cores = DecodeCpuCount();
+  long lo = -1;
+  long hi = 0;
+  for (int cpu = 0; cpu < cores; ++cpu) {
+    char path[128];
+    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+    FILE* f = std::fopen(path, "re");
+    if (f == nullptr) {
+      continue;
+    }
+    long khz = 0;
+    const bool read = std::fscanf(f, "%ld", &khz) == 1;
+    std::fclose(f);
+    if (!read || khz <= 0) {
+      continue;
+    }
+    if (lo < 0 || khz < lo) {
+      lo = khz;
+    }
+    if (khz > hi) {
+      hi = khz;
+    }
+  }
+  if (lo < 0) {
+    return std::string();
+  }
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%ld-%ld", lo, hi);
+  return std::string(buf);
+}
+
 std::string DecodeThreadsInfo() {
   const int cores = DecodeCpuCount();
   const int perf = DecodePerfCores();

@@ -52,6 +52,12 @@ std::string DecodeThreadsInfo();
 // Re-forwards the stored value (used when a library was reloaded).
 void ApplyStoredDecodeThreads();
 
+// Current frequency of the device's CPUs as "min-max" kHz, or an empty string
+// when the platform does not expose it. Sampled on demand: the *playback rate*
+// decides which clock the whole SoC runs at, so a run's figures are only
+// comparable to another run at the same frequency (doc_agent/cpu-path.md §8).
+std::string CpuFreqInfo();
+
 }  // namespace hmrdp
 
 #endif  // HMRDP_DECODE_TUNING_H

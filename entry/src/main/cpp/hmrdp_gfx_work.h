@@ -11,10 +11,19 @@
  * What the phases are:
  *   zgx+parse  chunk arrival (capture hook, before ZGX) -> first command of it
  *   decode     the wrapped SurfaceCommand (includes the codec's own re-composite)
- *   compose    the wrapped EndFrame minus the present inside it (gdi
- *              surface -> primary); the ack FreeRDP writes afterwards is outside
+ *   compose    the wrapped EndFrame minus the present and the present sync inside
+ *              it (gdi surface -> primary); the ack FreeRDP writes afterwards is
+ *              outside
  *   present    the presenter (the caller times its own present call)
+ *   sync       waiting for the GPU to release the pixel source before this frame
+ *              may write it (the CPU route composes into the presenter's own
+ *              buffer, so the previous frame's read has to drain first). It is
+ *              blocked time, not compose work, and it is not present work either
+ *              - it waits on the *previous* frame's present.
  * Not covered: the transport read (it happens before the hook).
+ *
+ * `pace` (the replay's deliberate playback throttling) is the one thing that is
+ * subtracted outright: it is not client work at all.
  */
 #ifndef HMRDP_GFX_WORK_H
 #define HMRDP_GFX_WORK_H
@@ -49,8 +58,9 @@ class GfxWorkMeter {
     uint64_t frames = 0;      // frames the server ended (EndFrame markers)
     uint64_t zgxParseUs = 0;  // chunk arrival -> first command of that chunk
     uint64_t decodeUs = 0;    // wrapped SurfaceCommand
-    uint64_t composeUs = 0;   // gdi EndFrame minus present and playback pacing
+    uint64_t composeUs = 0;   // gdi EndFrame minus present, present sync and pacing
     uint64_t presentUs = 0;   // presenter
+    uint64_t syncUs = 0;      // waiting for the GPU buffer the frame writes into
     uint64_t bytes = 0;       // raw (still ZGX-compressed) GFX bytes
     uint64_t commands = 0;    // surface commands, i.e. Progressive/bitmap messages
     uint64_t maxFrameUs = 0;  // worst single frame's total client work
@@ -58,6 +68,10 @@ class GfxWorkMeter {
     uint64_t setupUs[static_cast<int>(GfxSetupKind::kCount)] = {};
     uint64_t setupCount[static_cast<int>(GfxSetupKind::kCount)] = {};
 
+    // What the frame cost the client in *processing*. Deliberately excludes `sync`:
+    // that is blocked time, so the phases shown on the live toolbar still add up to
+    // the figure next to them. The frame's whole span is this plus `syncUs` (plus
+    // `pace` in a replay).
     uint64_t WorkUs() const { return zgxParseUs + decodeUs + composeUs + presentUs; }
     uint64_t SetupUs() const {
       uint64_t total = 0;
@@ -82,6 +96,12 @@ class GfxWorkMeter {
   void OnSetup(GfxSetupKind kind, uint64_t micros);
   // The presenter finished one present of the current frame.
   void OnPresent(uint64_t micros);
+  // The frame waited for the GPU to finish reading the buffer it composes into
+  // (one desktop buffer, so the previous frame's copy has to drain first). Blocked
+  // time: taken out of the compose share and reported as its own phase, because it
+  // says nothing about how expensive the composition itself is. It is *not* part of
+  // WorkUs() - the frame's whole span is WorkUs() + this.
+  void OnPresentSync(uint64_t micros);
   // Playback throttling that happened *inside* the frame (the CPU replay paces
   // between presented frames, and that sleep sits inside gdi's EndFrame). It is
   // not client work, so it is subtracted from the compose share.
@@ -106,6 +126,7 @@ class GfxWorkMeter {
   uint64_t frameZgxUs_ = 0;
   uint64_t frameDecodeUs_ = 0;
   uint64_t framePresentUs_ = 0;
+  uint64_t frameSyncUs_ = 0;
   uint64_t framePaceUs_ = 0;
   uint64_t frameBytes_ = 0;
   uint64_t frameCommands_ = 0;
@@ -118,6 +139,7 @@ class GfxWorkMeter {
   std::atomic<uint64_t> windowDecodeUs_{0};
   std::atomic<uint64_t> windowComposeUs_{0};
   std::atomic<uint64_t> windowPresentUs_{0};
+  std::atomic<uint64_t> windowSyncUs_{0};
   std::atomic<uint64_t> windowBytes_{0};
   std::atomic<uint64_t> windowCommands_{0};
   std::atomic<uint64_t> windowMaxFrameUs_{0};

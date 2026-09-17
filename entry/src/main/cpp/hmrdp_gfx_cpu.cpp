@@ -19,6 +19,12 @@ namespace hmrdp {
 
 namespace {
 
+int64_t NowUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 // The offline context carries a back-pointer to its desktop (same trick as the
 // live HmrdpContext), so the gdi update hooks can find the owner. `context` must
 // stay first: freerdp_context_new() allocates instance->ContextSize bytes and
@@ -184,8 +190,16 @@ void GfxCpuDesktop::OnBeginPaint() {
   // frame out of it first. Normally free: a whole frame's decode sits between the
   // two (doc_agent/cpu-path.md §6.1 ③).
   if (desktopAttached_ && presenter_ != nullptr) {
+    const int64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();
+    presentSyncUs_ += static_cast<uint64_t>(NowUs() - startUs);
   }
+}
+
+uint64_t GfxCpuDesktop::TakePresentSyncUs() {
+  const uint64_t us = presentSyncUs_;
+  presentSyncUs_ = 0;
+  return us;
 }
 
 void GfxCpuDesktop::OnEndPaint() {
@@ -368,17 +382,40 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
     return false;
   }
 
-  // `hwnd->invalid` is the merged bounding box of the frame's dirty regions,
-  // while `hwnd->cinvalid`/`ninvalid` hold the individual rects (see
-  // libfreerdp/gdi/region.c gdi_InvalidateRegion). Uploading the box copies the
-  // pixels that changed *plus* everything between them - for a frame made of a
-  // few scattered updates that can be several times the bytes that actually
-  // changed - so prefer the rect list whenever it is meaningfully smaller.
+  PresentRect box;
+  const bool haveBox = ClipPresentRect(desktopWidth, desktopHeight, hwnd->invalid->x,
+                                       hwnd->invalid->y, hwnd->invalid->w, hwnd->invalid->h,
+                                       &box);
+  // The region is consumed either way: FreeRDP set it up for exactly this frame
+  // (the next begin_paint resets it).
+  hwnd->invalid->null = TRUE;
+
+  const int64_t boxArea = haveBox ? static_cast<int64_t>(box.width) * box.height : 0;
   PresentRect rects[kMaxPresentRects];
+
+  // Which dirty shape to hand over depends on what the presenter does with it:
+  //
+  //  - zero-copy (`gdi` composes into the presenter's own buffer, see
+  //    FramePresenter::AcquireDesktopBuffer): the pixels are already where the GPU
+  //    reads them, so a rect costs a copy region plus a cache flush and the
+  //    *count* is what the frame pays for. Measured: a fragmented frame reading
+  //    only 2.3MB took 1.91ms with ~250 rects while a full-screen one reading
+  //    20.6MB took 0.64ms. The merged box is one region and bounded by a single
+  //    screen read (~0.6ms), and it measured better or equal on both samples
+  //    (-17% present on the fragmented one), so it is used unconditionally.
+  //  - staging (`cinvalid` rects are memcpy'd into a staging buffer first): the
+  //    cost is the bytes, and the box can be several times the changed pixels
+  //    (measured: 3.6x the bytes and 33% more present time on scattered content),
+  //    so the rect list is used while it is bounded.
+  //
+  // `hwnd->invalid` is the merged bounding box of the frame's dirty regions while
+  // `hwnd->cinvalid`/`ninvalid` hold the individual rects (libfreerdp/gdi/region.c
+  // gdi_InvalidateRegion).
+  const bool zeroCopy = presenter->usesDesktopBuffer();
   int rectCount = 0;
   int64_t rectArea = 0;
   bool tooManyRects = false;
-  if (hwnd->cinvalid != nullptr) {
+  if (!zeroCopy && hwnd->cinvalid != nullptr) {
     for (INT32 i = 0; i < hwnd->ninvalid; ++i) {
       if (rectCount >= kMaxPresentRects) {
         tooManyRects = true;
@@ -393,24 +430,10 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
       rects[rectCount++] = clipped;
     }
   }
-
-  PresentRect box;
-  const bool haveBox = ClipPresentRect(desktopWidth, desktopHeight, hwnd->invalid->x,
-                                       hwnd->invalid->y, hwnd->invalid->w, hwnd->invalid->h,
-                                       &box);
-  // The region is consumed either way: FreeRDP set it up for exactly this frame
-  // (the next begin_paint resets it).
-  hwnd->invalid->null = TRUE;
-
-  // Upload the rects themselves: measured on both sample scenarios, the merged
-  // box is never cheaper (scattered content: 3.6x the bytes and 33% more present
-  // time) and the rect list is never worse (video: equal within noise). The box
-  // survives only as the bounded fallback below.
-  //   - a single rect *is* the box, so there is nothing to gain;
-  //   - past the cap the box is the only bounded option (a video frame can carry
-  //     ~2900 rects, which cannot become ~2900 copy regions).
-  const bool useRects = rectCount >= 2 && !tooManyRects && haveBox;
-  const int64_t boxArea = haveBox ? static_cast<int64_t>(box.width) * box.height : 0;
+  // A single rect *is* the box, and past the cap the box is the only bounded
+  // option (a video frame can carry ~2900 rects, which cannot become ~2900 copy
+  // regions).
+  const bool useRects = !zeroCopy && rectCount >= 2 && !tooManyRects && haveBox;
 
   if (info != nullptr) {
     info->boxBytes = boxArea * 4;

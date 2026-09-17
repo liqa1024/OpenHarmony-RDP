@@ -165,6 +165,10 @@ void GfxWorkMeter::OnPresent(uint64_t micros) {
   framePresentUs_ += micros;
 }
 
+void GfxWorkMeter::OnPresentSync(uint64_t micros) {
+  frameSyncUs_ += micros;
+}
+
 void GfxWorkMeter::OnPace(uint64_t micros) {
   framePaceUs_ += micros;
 }
@@ -173,18 +177,24 @@ void GfxWorkMeter::OnFrameEnd(uint64_t endFrameMicros) {
   // A frame that carried no surface command still paid for its chunk.
   AccountChunkPrefix();
   const uint64_t present = framePresentUs_;
-  const uint64_t notWork = present + framePaceUs_;
-  // The playback throttling is not client work: the CPU replay paces between
-  // presented frames, and because the presenter runs inside gdi's EndFrame that
-  // sleep would otherwise land in `compose` (measured at ~8 ms/frame on the
-  // scrolling sample, i.e. most of a compose that really costs ~0.4 ms).
-  const uint64_t compose = endFrameMicros > notWork ? endFrameMicros - notWork : 0;
-  const uint64_t frameWork = frameZgxUs_ + frameDecodeUs_ + compose + present;
+  const uint64_t sync = frameSyncUs_;
+  // Everything the EndFrame span holds *besides* the composition: the present, the
+  // wait for the GPU to release the buffer this frame writes into, and the
+  // playback throttling. Only the last is not client work at all - the replay
+  // sleeps between presented frames and because the presenter runs inside gdi's
+  // EndFrame that sleep would otherwise land in `compose` (measured at ~8 ms/frame
+  // on the scrolling sample, i.e. most of a compose that really costs ~0.4 ms).
+  // The sync wait is client cost but not composition, so it gets its own phase
+  // instead of being hidden in `compose`.
+  const uint64_t notCompose = present + sync + framePaceUs_;
+  const uint64_t compose = endFrameMicros > notCompose ? endFrameMicros - notCompose : 0;
+  const uint64_t frameWork = frameZgxUs_ + frameDecodeUs_ + compose + present + sync;
   windowFrames_.fetch_add(1);
   windowZgxUs_.fetch_add(frameZgxUs_);
   windowDecodeUs_.fetch_add(frameDecodeUs_);
   windowComposeUs_.fetch_add(compose);
   windowPresentUs_.fetch_add(present);
+  windowSyncUs_.fetch_add(sync);
   windowBytes_.fetch_add(frameBytes_);
   windowCommands_.fetch_add(frameCommands_);
   uint64_t worst = windowMaxFrameUs_.load();
@@ -193,6 +203,7 @@ void GfxWorkMeter::OnFrameEnd(uint64_t endFrameMicros) {
   frameZgxUs_ = 0;
   frameDecodeUs_ = 0;
   framePresentUs_ = 0;
+  frameSyncUs_ = 0;
   framePaceUs_ = 0;
   frameBytes_ = 0;
   frameCommands_ = 0;
@@ -202,6 +213,7 @@ void GfxWorkMeter::Reset() {
   frameZgxUs_ = 0;
   frameDecodeUs_ = 0;
   framePresentUs_ = 0;
+  frameSyncUs_ = 0;
   framePaceUs_ = 0;
   frameBytes_ = 0;
   frameCommands_ = 0;
@@ -212,6 +224,7 @@ void GfxWorkMeter::Reset() {
   windowDecodeUs_ = 0;
   windowComposeUs_ = 0;
   windowPresentUs_ = 0;
+  windowSyncUs_ = 0;
   windowBytes_ = 0;
   windowCommands_ = 0;
   windowMaxFrameUs_ = 0;
@@ -228,6 +241,7 @@ GfxWorkMeter::Sample GfxWorkMeter::Drain() {
   sample.decodeUs = windowDecodeUs_.exchange(0);
   sample.composeUs = windowComposeUs_.exchange(0);
   sample.presentUs = windowPresentUs_.exchange(0);
+  sample.syncUs = windowSyncUs_.exchange(0);
   sample.bytes = windowBytes_.exchange(0);
   sample.commands = windowCommands_.exchange(0);
   sample.maxFrameUs = windowMaxFrameUs_.exchange(0);
@@ -245,6 +259,7 @@ GfxWorkMeter::Sample GfxWorkMeter::Peek() const {
   sample.decodeUs = windowDecodeUs_.load();
   sample.composeUs = windowComposeUs_.load();
   sample.presentUs = windowPresentUs_.load();
+  sample.syncUs = windowSyncUs_.load();
   sample.bytes = windowBytes_.load();
   sample.commands = windowCommands_.load();
   sample.maxFrameUs = windowMaxFrameUs_.load();

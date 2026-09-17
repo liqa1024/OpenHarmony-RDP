@@ -47,8 +47,13 @@ class GfxReplay {
   // Waits briefly for the first frame or failure.
   //
   // `realtime` selects the playback clock:
-  //   false - every presented frame gets kFrameMs of budget (default). This is a
-  //           throughput measurement: "can the client chew through this stream".
+  //   false - **not throttled at all** (default): the pump feeds the next record as
+  //           soon as the previous frame is done, so the machine stays saturated
+  //           and the numbers are a pure throughput measurement ("can the client
+  //           chew through this stream"). Deliberately unpaced: a frame budget
+  //           (the earlier kFrameMs sleep) left the CPU idle between frames, which
+  //           dropped the whole SoC to its lowest clock and made every per-frame
+  //           cost ~3x larger - see doc_agent/cpu-path.md §8.
   //   true  - each record is fed at the arrival time recorded in the capture, so
   //           the frame cadence, the per-frame gaps and therefore the machine
   //           state (CPU placement/frequency, cache locality, threadpool
@@ -87,21 +92,18 @@ class GfxReplay {
   void RunVulkanReplay(const std::string& gfxPath, bool compare);
   void RunCpuReplay(const std::string& gfxPath);
   void CompareFrames();
-  // Throttles playback: every presented frame gets a kFrameMs period, so the
-  // frame's whole cost (decode + apply + present) is inside the budget. Nothing is
-  // carried between frames - an overrun keeps its longer period - which is what
-  // keeps the reported figures a faithful description of the playback.
-  //
-  // In the realtime mode the cadence comes from the capture instead (PaceRecord),
-  // so this only maintains the fps/feed bookkeeping and does not sleep; the sleep
-  // it would have added is already counted in paceUs_ by PaceRecord.
-  void PaceFrame(bool presented);
+  // Closes the frame for the cadence bookkeeping: the first presented frame marks
+  // the fps origin (so a run's start-up does not dilute the rate) and every frame
+  // counts. It deliberately does not sleep - the fast mode runs flat out and the
+  // realtime mode's cadence comes from the capture (PaceRecord), so there is
+  // nothing left to throttle here.
+  void MarkFrameEnd(bool presented);
 
   // Realtime mode: called from GfxReplayPump right before a record is fed, with
   // the record's recorded arrival time (monotonic microseconds). Sleeps until the
   // recorded offset from the first record has elapsed; when the client is already
-  // behind, it does not sleep (no catch-up, exactly like PaceFrame) and only
-  // records how far behind the schedule it is.
+  // behind, it does not sleep (no catch-up) and only records how far behind the
+  // schedule it is. This is the *only* deliberate playback sleep left.
   void PaceRecord(uint64_t timestampUs);
 
   std::mutex mutex_;
@@ -175,12 +177,13 @@ class GfxReplay {
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
-  // Time spent deliberately sleeping in PaceFrame()/PaceRecord(); subtracted from
-  // pumpUs_ so the reported feed cost is compute, not playback throttling.
+  // Time spent deliberately sleeping in PaceRecord(); subtracted from pumpUs_ so
+  // the reported feed cost is compute, not playback throttling. The fast mode does
+  // not sleep, so this is 0 there.
   std::atomic<uint64_t> paceUs_{0};
   // Realtime playback: requested by the caller, and effective only when the
-  // capture carries arrival times (an untimed capture always falls back to the
-  // kFrameMs pacing, and says so in the log).
+  // capture carries arrival times (an untimed capture falls back to the unpaced
+  // fast mode, and says so in the log).
   std::atomic<int> realtimeRequested_{0};
   std::atomic<int> realtimeActive_{0};
   // Worst lateness behind the recorded schedule (realtime mode): the honest
@@ -190,13 +193,10 @@ class GfxReplay {
   // was fed at (replay thread only).
   uint64_t recordBaseUs_ = 0;
   int64_t recordWallBaseUs_ = 0;
-  // End of the last paced frame: the next frame's kFrameMs budget starts here
-  // (replay thread only).
-  int64_t lastFrameEndUs_ = 0;
-  // When the first paced frame ended: fps is measured from here, so the run's
+  // When the first presented frame ended: fps is measured from here, so the run's
   // start-up (engine/presenter init, first-frame wait) does not count as playback
   // time (replay thread writes, UI thread reads via StatsLines).
-  std::atomic<int64_t> firstPacedUs_{0};
+  std::atomic<int64_t> firstFrameEndUs_{0};
   // When the pump started, so the reported `feed` (compute) can exclude the run's
   // start-up and mean "per-frame compute" (replay thread writes).
   std::atomic<int64_t> pumpStartUs_{0};

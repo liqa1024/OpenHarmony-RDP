@@ -66,10 +66,10 @@ struct GfxReplayPage {
   @State status: string = '等待 surface...';
   // Decoder/presenter route; see ROUTE_LABEL (ids match the native enum).
   @State replayRoute: number = ROUTE_CPU;
-  // Playback clock: false = fixed per-frame budget (throughput measurement),
-  // true = the capture's own arrival times (the cadence the live session ran at).
-  // Needs a capture recorded with arrival times; the stats line reports the mode
-  // actually used (`mode=fast|realtime`).
+  // Playback clock: false = not throttled at all (runs flat out, a throughput
+  // measurement), true = the capture's own arrival times (the cadence the live
+  // session ran at). Needs a capture recorded with arrival times; the stats line
+  // reports the mode actually used (`mode=fast|realtime`).
   @State replayRealtime: boolean = false;
   // Index into DECODE_THREAD_CHOICES: which Progressive decode worker count this
   // dev page asks for (applied process-wide, so the CPU route uses it).
@@ -236,7 +236,7 @@ struct GfxReplayPage {
             this.startReplay();
           })
 
-        Button(`节拍:${this.replayRealtime ? '实时' : '固定'}`)
+        Button(`节拍:${this.replayRealtime ? '实时' : '跑满'}`)
           .height(34)
           .fontSize(13)
           .fontColor($r('app.color.accent'))

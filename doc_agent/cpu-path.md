@@ -9,6 +9,15 @@ GFX 协议语义以 [`gfx-engine.md`](gfx-engine.md) 为准（尤其 §0.4 / §2
 > 两份样本（`.cache/hmrdp_gfx_short.bin` 滚动/碎片、`.cache/hmrdp_gfx_video.bin` 整屏视频）
 > **每份都要自己过一遍 `Vulkan对比 bad=0`** 才能当基线。
 
+> **优化目标（决定取舍的判据，不是 fps）**：**把每帧的计算成本降下来 = 能耗降下来**。fps 只要"够用"
+> ——能跟上服务端的到达节奏、用户不觉得卡即可；**不为多几帧去花更多电**，也不把"present 变慢"当性能问题，
+> 除非它已经影响到可用性。因此：
+> - **判收益看**：整轮 `cpu=`（进程 CPU 时间，能耗代理）、`本机` 的拆相、以及 GPU/DRAM 流量；
+>   **不看**单纯墙钟。
+> - **优先做"少干活"**（去掉冗余拷贝、少唤醒、串行化省电），**而不是"把活干快"**（提频、加并行度）——
+>   后者常常把墙钟换成本更高的 CPU 总量（§3 实测：视频并行比串行多烧 2.3x CPU）。
+> - **自适应优先于固定值**：解码 worker 数这类旋钮，应该跟"到达侧是否限速"走，而不是恒取一个中间值。
+
 ## 1. 每帧工时与账目（判读口径）
 
 CPU 回放的 stats 就是这条线的账：
@@ -21,15 +30,22 @@ CPU 回放的 stats 就是这条线的账：
   （`GfxSetupKind`，`hmrdp_gfx_work.*`）。它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 之前先看这行**。
 - 单条超过 20ms 的结构命令会自己打一行 `gfx setup: <Name> took … us`（模式切换/整面清零这类卡顿）。
 
-真机基线（`mode=fast`，不含一次性探针）：
+真机基线（**旧口径：带 16ms 节拍的 `mode=fast`**，不含一次性探针；节拍已撤，见 §8，所以这些绝对值和
+现在的跑满轮次不可直接比，只有"同一轮里的相对关系"仍然有效）：
 
 | 样本 | `本机`/帧 | 拆相 |
 |---|---|---|
 | 视频（195 帧，整屏脏，~1325 tile/帧） | 24.5ms | zgx+parse 1.1–1.4 + decode 19.3（read 0.2 / dispatch 0.8 / **wait-block 11.8** / **update 5.6**）+ compose 1.6 + present 2.1 |
 | 滚动（150 帧，~49 tile/帧） | 13.5 → **10.5**（§2） | zgx+parse 4.2 → 2.7 + decode 6.4 → 4.8 + compose 0.5 + present 2.5 |
 
+跑满口径的当前值（两份本地录像，`cpuKHz=418000-1200000`）：视频 `本机` 22.5ms（zgx+parse 1.0 +
+decode 19.2 + compose 1.7 + present 0.59，`fps` 42）、碎片 `本机` 13.1ms（3.0 + 5.2 + **3.2** + 1.7，
+`fps` 72）。碎片那份的 `compose` 3.2ms 里约 2.4ms 是 `BeginDesktopBufferWrite` 的等待（顶到 GPU/显示
+上限，见 §8），不是像素搬运。
+
 判读顺序：① `setup`（有没有低频重命令）② `kB/frame`/`cmds/frame`（内容是否可比）
-③ `wait(block)`（并行解码的真实墙钟）④ `update`（串行合成）⑤ `present`。
+③ `wait(block)`（并行解码的真实墙钟）④ `update`（串行合成）⑤ `present` ⑥ **`sync`**（等 GPU 放开
+主缓冲的阻塞时间；**不在 `本机` 里**，帧的整段墙钟 = `本机` + `sync`，见 §8）。
 
 ## 2. 已做的优化（结果与数字）
 
@@ -41,7 +57,8 @@ CPU 回放的 stats 就是这条线的账：
 | `update_tiles`：不再逐 tile 建 `REGION16`；一次取裁剪表 + 普通矩形求交 + per-tile stamp 去重 | patch 第 10 步 | 视频 `update` 6.3 → 5.6ms/帧 |
 | keep-dst-alpha 32bpp 拷贝：每像素一个掩码 32 位字（替代每像素三个字节） | patch 第 10 步（`prim_copy.c`） | 该循环是 `update` 里最热的一段 |
 | **`ResetGraphics` 不再重分配 PLANAR scratch**（几何没变就直接返回） | patch 第 12 步（`planar.c`） | 滚动 `本机` 13.5 → **10.5ms**、`feed` 2.13 → **1.63s**、整轮 `cpu` **−17%**、`max` 帧 146 → **115ms** |
-| **gdi 主缓冲 = 呈现器自带缓冲**（§6.1 ③ 零拷贝上屏） | app 侧（`hmrdp_presenter.h`、`hmrdp_vk_renderer.*`、`hmrdp_gfx_cpu.*`、`hmrdp_session.*`、`hmrdp_replay.cpp`） | 视频（整屏脏）`present` 2.13 → **0.64ms（−70%）**、`本机` 23.6 → **22.0ms**、`cpu`/轮 31.1 → 30.6s、`fps` 40.0 → 42.9；碎片样本 `present` 2.50 → **1.91ms**、`本机` 12.95 → **12.48ms**、`cpu`/轮 3.83 → 3.69s |
+| **gdi 主缓冲 = 呈现器自带缓冲**（§6.1 ③ 零拷贝上屏） | app 侧（`hmrdp_presenter.h`、`hmrdp_vk_renderer.*`、`hmrdp_gfx_cpu.*`、`hmrdp_session.*`、`hmrdp_replay.cpp`） | 视频（整屏脏）`present` 2.13 → **0.60ms（−72%）**、`本机` 23.6 → **22.3ms**、`cpu`/轮 31.1 → 30.9s、`fps` 40.0 → 42.3 |
+| **零拷贝路径改用合并 box**（脏区形状随"有没有 memcpy"翻转，见 §6.1 ③） | app 侧（`hmrdp_gfx_cpu.cpp`、`hmrdp_presenter.h`） | 碎片样本 `present` 1.91 → **1.56ms**（合计 2.50 → 1.56，−38%）、`本机` 12.95 → **12.6ms**、`cpu`/轮 3.83 → 3.7s；视频样本与 rect list 持平（0.60 vs 0.64） |
 | 归因口径：`prog` 相位 + `setup` 计数 + 每轮 `cpu=` | app 侧（`hmrdp_gfx_work.*`、`hmrdp_replay.cpp`） | 上面四条都是靠它定位的 |
 
 ⚠ 已**否决**：`update_tiles` 的"只拷没写过的区域"（delta 折叠）——stamp 去重实测**命中 0 次**
@@ -199,13 +216,28 @@ CPU 回放的 stats 就是这条线的账：
     换成新缓冲会让后续帧像素变样。
   - **单缓冲要等 GPU 读完**：块缓冲只有一份（原来是每槽一份 staging + 2 帧在飞），所以下一帧写之前必须
     等上一帧的拷贝结束 ⇒ 在 gdi 的 **`BeginPaint`** 里 `BeginDesktopBufferWrite()` 等那个 fence。
-    **这个等待实测是免费的**：GFX 路径的 `update_begin_paint` 是在 `gdi_OutputUpdate` 里调的（在
-    `EndFrame` 时），即**在哪一帧的解码之后** ⇒ present 到下一次 BeginPaint 之间隔着整帧解码（十几 ms），
-    而提交本身只有亚毫秒级。
+    GFX 路径的 `update_begin_paint` 是在 `gdi_OutputUpdate` 里调的（在 `EndFrame` 时），即**在该帧解码
+    之后** ⇒ present 到下一次 BeginPaint 之间隔着整帧解码，提交本身只有亚毫秒级 —— **前提是这帧解码足够长**。
+    ⚠ 实测（跑满、无节拍）：视频样本（解码 19ms）等 **31µs**；碎片样本（解码 5ms、`fps` 顶到 ~72）
+    要等 **~2.8ms/帧**。这笔等待**单独记成 `sync`**（不再混进 `compose`），但含义不变：
+    **帧时间不再只由 CPU 决定**，别把它当成像素搬运的成本。
   - **内存类型**：优先 `HOST_CACHED`（[`gfx-engine.md`](gfx-engine.md) §1），拿不到再 `HOST_COHERENT`
-    / 仅 `HOST_VISIBLE`。非连贯类型要 `vkFlushMappedMemoryRanges`；**必须先把脏矩形的字节区间排序合并**
-    ——一条矩形的字节跨度是"首行起点→末行末尾"，碎矩形之间重叠得很厉害，逐条刷会变成每帧上百次驱动调用
-    （实测合并后视频 `present` 从 843 → 644µs）。
+    / 仅 `HOST_VISIBLE`。非连贯类型要 `vkFlushMappedMemoryRanges`；**逐条刷是错的**——一条矩形的字节
+    跨度是"首行起点→末行末尾"，碎矩形之间重叠得很厉害，逐条刷会变成每帧上百次驱动调用（实测合并成一个
+    跨全部脏矩形的区间后，视频 `present` 从 843 → 644µs）。cache flush 只会写回脏行，所以区间里多出来的
+    干净行是免费的。
+  - **脏区形状跟着"有没有 memcpy"翻**：原来那条"用逐条矩形、不要合并 box"的结论**只在 staging 路径成立**
+    （那时成本是字节，box 会多搬 3.6 倍）。零拷贝之后 CPU 不再碰这些字节，**成本从"字节"变成"条数"**
+    （每条 = 一个 copy region + 一次 flush），box 反而更优，而且有上界（最坏 = 一次整屏读）。
+    同会话 A/B（中位数）：视频 195 帧 `present` 0.64 → **0.59ms**（box 读 20.6 → 21.0MB/帧，持平）；
+    碎片 150 帧 **1.91 → 1.59ms（−17%）**（box 读 2.3 → 7.4MB/帧，仍然更省）。
+    **证据就是这一对同会话数字**（同一样本、同一频率档）：条数从 ~250 降到 1，`present` 掉 17%，
+    而读的字节反而多了 3.2 倍仍然更省 ⇒ 这一档的开销确实在**条数**上。
+    （⚠ 别拿"碎片 vs 视频"两个样本互比，那是 CPU 频率差 3x 造成的，见 §8。）
+    ⇒ 由 `FramePresenter::usesDesktopBuffer()` 分流：**零拷贝路径恒发 box，staging 路径保持逐条矩形**
+    （§6.2 里"presenter 侧把碎矩形并成长条"随之作废，见下）。
+  - ⚠ **跨样本比 `present` 会被 CPU 频率污染**（§8 第一条）：轻负载样本整机被压在 ~0.6GHz、重负载样本
+    2.0GHz，同一份代码差 3x。上面 box vs 逐条的结论是**同会话 A/B**，成立；"碎片比整屏慢"则是频率差。
   - **几何变化**（`ResetGraphics` → `gdi_resize`）会退回 gdi 自有缓冲，下一次 `EndPaint` 按新尺寸重新
     挂接（presenter 侧按尺寸重建缓冲）。
   - **前提**：进程内只建一个 `VkDevice`（[`gfx-engine.md`](gfx-engine.md) §1）。设备若被重建
@@ -226,16 +258,18 @@ CPU 回放的 stats 就是这条线的账：
   在增长 ⇒ **单次 O(n)、一帧累计近似 O(n²)**（1372 次 × 平均 ~1400 个内部矩形）。
   把它改成：**把本消息的 tile 索引按 raster 序（`zIdx` 升序，等价于对索引数组排序）遍历**，
   在"相邻且两者都整块落在 clip 内"时**先合并成一条矩形再 union**：
-  - 面积完全不变（只并相邻无缝的 64×64 块，不会多覆盖像素）；被部分裁剪的 tile 不参与合并。
-  - 副作用是**整条下游一起变轻**：`gdi_OutputUpdate` 的逐矩形拷贝次数、`hwnd->cinvalid` 的长度
-    （present 的 copy region 数）都会从 ~千级降到十级。
-  - 门禁仍是两份录像 `bad=0`（脏区的**形状**本来就是自由量，只有面积参与语义）。
+   - 面积完全不变（只并相邻无缝的 64×64 块，不会多覆盖像素）；被部分裁剪的 tile 不参与合并。
+   - ⚠ **"下游变轻"这条动机已经没了**（2026-09，零拷贝上屏之后）：present 侧现在恒发 box，
+     `cinvalid` 的长度与 copy region 数都不再被消费；`gdi_OutputUpdate` 的逐矩形
+     `freerdp_image_scale`（`compose` 桶）**不受影响**，它跟的是表面自己的 `invalidRegion`。
+     ⇒ 现在只剩**这条 union 自己的 O(n²)** 是理由，而它**还没量过**（要吃 `update` 桶的账），
+     所以先别做（先量 `update_tiles` 里的 union 到底占多少）。
+   - 门禁仍是两份录像 `bad=0`（脏区的**形状**本来就是自由量，只有面积参与语义）。
 - `update_tiles` 里"整 tile 且 clip 全覆盖"已是整块 memcpy；keep-dst-alpha 那条已是掩码 32 位字，
   **交给编译器自动向量化即可**，不要手写 NEON（逐像素一致的约束见 §4.2(5)）。
-- **presenter 侧的同类合并**：滚动样本 present 2.5ms 只搬 2.2MB（≈0.9GB/s）——因为每帧 ~250 条
-  平均 47px 宽的碎矩形各走一次行拷贝 + 一个 copy region。把同带相邻矩形先并成更长的条
-  （字节不增）能同时降"行拷贝调用数"和"copy region 数"；`box` 与逐条的取舍早已量过
-  （[`gfx-engine.md`](gfx-engine.md) §2.3），这里要量的是**"合并后的逐条" vs "现在的逐条"**。
+- ~~**presenter 侧的同类合并**~~ **已作废**：那条的前提（每条碎矩形各走一次行拷贝 + 一个 copy region）
+  在零拷贝下只剩 copy region，而 §6.1 ③ 已经量出"直接发 box"更好 ⇒ 再去把碎矩形并成长条没有意义了。
+  真要再动 present，只剩"box 和逐条的取舍"本身，而那已经是 `usesDesktopBuffer()` 分流过的现状。
 
 ### 6.3 C 类：流水线化（Amdahl，收益上限先算再动）
 
@@ -305,20 +339,35 @@ app 侧新增的 `setup` 统计行（把非像素命令从 `zgx+parse` 里拆出
 
 ---
 
-## 7. 实施顺序（按 2026-09 第一步量测修正）
+## 7. 实施顺序（按"每帧计算成本 / 能耗"排，不按 fps）
 
-1. ~~planar scratch 不再随 `ResetGraphics` 重分配~~ **已完成（patch 第 12 步）**：滚动样本
-   `本机` 13.5–14.0 → **10.5ms（−22%）**、`feed` 2.13 → **1.63s**、整轮 `cpu` 3.8 → **3.14s**、
-   `max` 帧 146–164 → **115ms**；两份录像 `bad=0`。细节见 §6.5。
-2. ~~**A-③：主缓冲 = presenter 缓冲**（§6.1）~~ **已完成**：去掉 primary→staging 那一遍拷贝，
-   顺带把类型改成 `HOST_CACHED` 优先 + 脏区间合并刷。视频（整屏脏）`present` 2.13 → **0.64ms**、
-   `本机` 23.6 → **22.0ms**；碎片样本 `present` 2.50 → **1.91ms**、`本机` 12.95 → **12.48ms**；
-   两份录像 `bad=0 rgbPx=0`。细节与约束见 §6.1 ③。
-3. **B：区域矩形合并**（§6.2）——`update_tiles` 里按 raster 序合并相邻整块 tile 再 union，
-   同时降低 `update`、`gdi_OutputUpdate` 的逐矩形拷贝、`cinvalid` 长度与 present 的 copy region 数。
-4. **C：producer/consumer**（§6.3）——除重叠之外，它还能把"解码的工作集"与"解析/合成的工作集"分开，
-   直接缓解 §4.1b 量出来的**访存/缓存干扰**（这是并行效率的真正瓶颈）。
-5. **A-②：带"非 GFX 主缓冲写"守卫地跳过 primary**（§6.1）——收益与 ③ 重叠，风险更高，放最后。
+**已做（不要再动）**
+
+- planar scratch 不随 `ResetGraphics` 重分配（§6.5）：滚动 `cpu` −17%。
+- **A-③ 主缓冲 = presenter 缓冲**（§6.1 ③）：去掉整帧拷贝，`present` CPU 侧降到 ~0.6ms。
+- **脏区形状：零拷贝路径恒发 box**（§6.1 ③）：条数从 ~250 降到 1，同会话 A/B `present` −17%。
+- **`mode=fast` 不打节拍**（[`gfx-engine.md`](gfx-engine.md) 节拍小节）：只影响可比性，不省成本。
+- 结论：**这两段的"少搬字节"已经做完了**——CPU 侧 `present` 剩 0.58–1.4ms，其中 ~90% 是固定的
+  Vulkan 调用（acquire/record/submit/present），不是我们能删的活；`compose` 的真值只有 0.5ms（碎片）/1.6ms（视频）。
+  再去抠脏区形状/矩形合并**已经没有能耗收益**。
+
+**待做（按能耗收益排）**
+
+1. **解码 worker 数按"到达侧是否限速"自适应**（§3）——**目前最大的一条**。实测：视频样本
+   串行 1 worker 整轮 `cpu` **13.7s**、4 worker **31.6s**（**+130% CPU**，墙钟只从 65→24ms）；
+   滚动样本串行 `cpu` 也只要 2.4s（并行 3.9s）。也就是说**在到达受限（duty 很低）时用 1 是"墙钟够用
+   且电费减半"**，而现在自动值恒为 4、切换全靠用户手动。判据用已有的 duty（`dutyPermille` /
+   到达间隔），阈值要量（≥ 串行单帧工时才切回去）。风险低：旋钮与热切换早就有
+   （`HmrdpSetDecodeThreads`）。
+2. **A-② 跳过 surface→primary 的整屏 memcpy**（§6.1）：全屏会话每帧再省 **20.6MB** 的读+写。
+   收益与 ③ 同源但独立，代价是**要一个"本帧有没有非 GFX 写过主缓冲"的守卫**（正确性风险）。
+3. **present 的整幅重上屏**（[`present-pipeline.md`](present-pipeline.md) §4.3）：每帧
+   clear 6.5M + 采样 6.5M + 写 6.5M 像素，与脏区无关。**先量 GPU 时间戳**（现在的 ~10ms 是墙钟反推，
+   可能是在等带宽/合成器而不是在跑），量出来再决定——它的收益是 DRAM 流量/能耗，不是 fps。
+4. **C producer/consumer**（§6.3）：把解码工作集与解析/合成工作集分开，缓解 §4.1b 的访存干扰；
+   它同时是"降低并行解码多烧的那 2.3x"的一条路（§3），值得做，但改动最大。
+5. **B `update_tiles` 的 region union**（§6.2）：只剩它自己的 O(n²)，**先量**占 `update` 多少。
+6. **交给系统任务队列 / QoS 分级**（§5）：平台级，改动最大，最后再说。
 
 ## 8. 量测纪律与陷阱（血泪版）
 
@@ -330,11 +379,49 @@ app 侧新增的 `setup` 统计行（把非像素命令从 `zgx+parse` 里拆出
   进程总 CPU 只有 **14.46s**（自相矛盾，差 1.5–2x）。**不要**再拿它做归因。
 - **探针只做一次性实验、量完就删**（per-tile 探针已经这么删过一次）；长期保留的只有 per-message
   计时（每条消息 4~5 次）和 app 侧 `setup` 计数（每条命令一次，可忽略）。
-- **`present` 之后紧接的节拍睡眠在 `gdi_EndFrame` 里**：不扣掉就会把节拍算进 `compose`（滚动样本曾虚高
+- **`present` 之后若还有节拍睡眠，它落在 `gdi_EndFrame` 里**（`mode=fast` 已不打节拍，`realtime` 的睡眠在
+  pump 里、不在这个窗口）：不扣掉就会把节拍算进 `compose`（滚动样本曾虚高
   8ms/帧，真值 ~0.5ms）。`GfxWorkMeter::OnPace` 就是为此存在；判读前先看 `pump … ms (paced … ms)`
   里 paced 是否为 0。
 - **不要用"跳过某条 dispatch/步骤 + 差值反推"做归因**（依赖关系会变），要用计数器 + 相位桶。
 - **每份新捕获先自己过 `bad=0`** 才能当基线（同名文件的不同录制不能互相背书）。
+- **⚠ 频率会跟着回放节拍跑，跨样本比之前先看 `cpuKHz=`。** 曾经的 `mode=fast` 给每帧 16ms 预算、
+  完得早就把余量睡掉 ⇒ 只花 12ms 的样本每帧睡 ~8ms、CPU 占空 ~58%，调频器把全核压到最低档；
+  重负载样本（解码 19ms 连续跑）占满 ⇒ 跑满高频。实测（同一台设备、同一份代码，`scaling_cur_freq`）：
+  **碎片 558–650 MHz vs 视频 840–1995 MHz**，差 ~3 倍，后果是**每一次 Vulkan 调用都慢 ~3x**
+  （同一份 present 代码、同样 1 个 copy region）：`vkAcquireNextImageKHR` 255→560µs、
+  `vkQueueSubmit` 66→200µs、`vkQueuePresentKHR` 170→610µs、连我们自己的命令录制 74→200µs；
+  单位工作量的 decode 也慢 ~1.9x。
+  - **已修**：`mode=fast` 现在**完全不打节拍**（`paced=0`，见 [`gfx-engine.md`](gfx-engine.md) 的节拍小节），
+    两次跑满的轮次频率一致（实测两样本都是 `cpuKHz=418000-1200000`）。要复现 live 的到达节奏用 `realtime`。
+  - 判读纪律：**`run … cpuKHz=` 不同就不要横向比**；"碎片读 2.3MB 要 1.9ms、视频读 20.6MB 只要
+    0.6ms"这类对比当时就是**被频率污染的**，不是结论。**只有同一次会话里的 A/B 才有效**（box vs 逐条
+    矩形就是这么做的，那条结论仍然成立）。
+  - **不要试图用 QoS 修**：把回放线程按 live 的做法标成 frame-pipeline（QoS 3）实测**毫无变化**——
+    这是频率策略，不是调度优先级。
+  - ⚠ **跑满之后轻样本会顶到显示/GPU 上限**：碎片样本 ~72fps 时帧时间不再只由 CPU 决定，
+    `BeginDesktopBufferWrite` 要等 ~2.8ms/帧（视频样本 31µs）。**A/B 纯 CPU 侧的改动要用
+    CPU 受限的样本（视频）**，否则 GPU/合成器会把收益吃掉。
+  - **这笔等待现在有独立账**：`GfxWorkMeter` 的 **`sync`**（`OnPresentSync`，由 `BeginPaint`/`HandleBeginPaint`
+    计量）。它**不计入 `本机`**（本机 = 处理时间，各拆相相加仍等于它），单列在 `perFrame` 行尾
+    `(+ sync … blocked)`；**帧的整段墙钟 = `本机` + `sync`**。它曾经被算进 `compose`：碎片样本
+    `compose` 3226µs 里 2782µs 是等待、真值 543µs。`pace` 仍是唯一直接剔除的项（回放人为节流）。
+- **`present` 的账（一次性探针，已删）：几乎全是固定开销。** 拆到 Vulkan 调用一级
+  （每帧 1 个 copy region，`upload`=flush 只有 1.5–3µs，`vkWaitForFences` <5µs）：
+  - **视频样本（41fps，CPU 受限）**：`vkAcquireNextImageKHR` ~275µs + `vkQueuePresentKHR` ~172µs +
+    录制 ~75µs + `vkQueueSubmit` ~68µs ≈ **0.62ms 左右，而且逐窗口几乎不动**。
+  - **碎片样本（78fps，跑满）**：同样的代码、同样 1 个 region，但**每一个调用都又大又抖**
+    （`image` 260→942µs、`khr` 178→751µs、录制 72→219µs、`queue` 69→255µs）。**"抖"就是排队的指纹**。
+  ⇒ **present 的长度跟脏区形状无关（flush 只有 ~2µs），跟帧率有关**：碎片样本跑到了 **78fps，超过面板的
+    60Hz**（`hidumper -s RenderService -a screen` → `activeMode … refreshRate=60`），于是 acquire/present
+    这几次 WSI 往返开始和系统合成器排队；`sync`（2.8ms）就是等 present 管线。
+    **视频样本 41fps 有 2 倍余量，所以每个调用都平、都小。**
+  ⇒ **能压的不是脏区形状**（box 已经压过），而是"每帧全幅重上屏"这条固定成本：`sync` 反推出它的
+    **墙钟** ≈ 10ms/帧（碎片：提交后 7.5ms 的 CPU 工作 + 再等 2.8ms），视频样本靠 20ms 的 CPU 工作把它
+    藏住了。⚠ 但那 10ms 是**墙钟反推**，包含"被 CPU 抢带宽/被合成器卡住"的成分——**是不是 GPU 真在跑
+    还没量**（要上 GPU 时间戳）。按本文件的优化目标，值不值得做取决于它的**每帧 DRAM 流量**
+    （整幅 = 清 6.5M 像素 + 采样 6.5M + 写 6.5M），而不是它占了多少墙钟；
+    见 [`present-pipeline.md`](present-pipeline.md) §4.3。
 - **A/B 必须同会话内做，不要拿历史日志当基线**：文件名会复用，  同名 `.cache/hmrdp_gfx*.bin` 的帧数、
   `cmds/frame`、脏区形态可以完全不同（同一段代码在两份录制上 `本机` 就能差 1ms 以上），而且设备的后台
   负载/温度也会漂。

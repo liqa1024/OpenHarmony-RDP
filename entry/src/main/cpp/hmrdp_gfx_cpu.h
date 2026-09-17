@@ -59,6 +59,11 @@ class GfxCpuDesktop {
   void OnEndPaint();
   void OnDesktopResize();
 
+  // Microseconds spent in BeginPaint waiting for the GPU to release the desktop
+  // buffer, accumulated since the last call. The caller reports it as the meter's
+  // `sync` phase (see hmrdp_gfx_work.h); it is blocked time, not composition.
+  uint64_t TakePresentSyncUs();
+
  private:
   bool Resize(int width, int height);
 
@@ -66,6 +71,7 @@ class GfxCpuDesktop {
   RdpgfxClientContext* gfx_ = nullptr;
   FramePresenter* presenter_ = nullptr;
   bool desktopAttached_ = false;
+  uint64_t presentSyncUs_ = 0;
   FrameFn frameFn_;
   int width_ = 0;
   int height_ = 0;
@@ -88,10 +94,11 @@ bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int widt
 // (the caller normally remembers, see GfxCpuDesktop::desktopAttached_).
 bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter);
 
-// What the CPU present path uploads for one frame. The dirty rects are uploaded
-// individually, with the merged bounding box kept only as the bounded fallback
-// for frames whose rect count exceeds the cap (measured: a video frame can carry
-// ~2900 rects, which cannot become ~2900 copy regions).
+// What the CPU present path handed over for one frame: either the individual
+// dirty rects (the staging presenter memcpy's them, so bytes are what a frame
+// pays for) or their merged bounding box (zero-copy presenters pay per rect, so
+// the box's single region wins - see PresentGdiFrame). `boxBytes`/`usedRects`
+// report which shape was chosen and what the other one would have cost.
 struct PresentUploadInfo {
   int64_t uploadedBytes = 0;       // bytes handed to the presenter
   int64_t boxBytes = 0;            // bytes the merged box would have uploaded

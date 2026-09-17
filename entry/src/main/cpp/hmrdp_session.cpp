@@ -1634,6 +1634,7 @@ void Session::EmitMetrics() {
   const uint64_t perFrameDecodeUs = perFrame(work.decodeUs);
   const uint64_t perFrameComposeUs = perFrame(work.composeUs);
   const uint64_t perFramePresentUs = perFrame(work.presentUs);
+  const uint64_t perFrameSyncUs = perFrame(work.syncUs);
   const uint64_t perFrameBytes = perFrame(work.bytes);
   const uint64_t perFrameCommands = perFrame(work.commands);
   // Duty cycle: how much of this window's wall clock the client actually spent
@@ -1648,6 +1649,7 @@ void Session::EmitMetrics() {
     // happens after the EndFrame callback returns).
     HMRDP_LOGI("perf: 本机 %{public}llu us/frame (max %{public}llu) = zgx+parse %{public}llu"
                " + decode %{public}llu + compose %{public}llu + present %{public}llu"
+               " + sync %{public}llu"
                " (frames=%{public}llu presents=%{public}u frames/s=%{public}llu"
                " cmds/frame=%{public}llu kB/frame=%{public}llu duty=%{public}u.%{public}u%%"
                " rx=%{public}lluB/s fps=%{public}u)",
@@ -1657,6 +1659,7 @@ void Session::EmitMetrics() {
                static_cast<unsigned long long>(perFrameDecodeUs),
                static_cast<unsigned long long>(perFrameComposeUs),
                static_cast<unsigned long long>(perFramePresentUs),
+               static_cast<unsigned long long>(perFrameSyncUs),
                static_cast<unsigned long long>(framesDone), frames - lastFrameCount_,
                static_cast<unsigned long long>(
                    static_cast<double>(framesDone) / seconds + 0.5),
@@ -1723,7 +1726,7 @@ void Session::EmitMetrics() {
           << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp
           << "|" << perFrameZgxUs << "|" << perFrameDecodeUs << "|" << perFrameComposeUs
           << "|" << perFramePresentUs << "|" << perFrameBytes << "|" << dutyPermille
-          << "|" << perFrameCommands;
+          << "|" << perFrameCommands << "|" << perFrameSyncUs;
   Emit(SessionEvent::kMetrics, payload.str());
 }
 
@@ -2020,7 +2023,11 @@ void Session::HandleBeginPaint() {
   // buffer, the GPU must be done with the previous frame first (normally free:
   // a frame's worth of decoding sits between the two).
   if (desktopAttached_ && presenter_ != nullptr) {
+    const uint64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();
+    // Blocked time, not composition: reported as its own phase so a slow present
+    // pipeline cannot be mistaken for an expensive compose (hmrdp_gfx_work.h).
+    meter_.OnPresentSync(NowUs() - startUs);
   }
 }
 

@@ -76,6 +76,13 @@ class FramePresenter {
   virtual void BeginDesktopBufferWrite() {}
   // Releases the buffer (resize/teardown). Safe to call when none was acquired.
   virtual void ReleaseDesktopBuffer() {}
+  // True while PresentBgra reads the pixels straight out of the backend's own
+  // buffer, i.e. per-rect work costs the presenter a copy region + a cache flush
+  // instead of a CPU copy. The caller picks the cheap dirty shape accordingly:
+  // with a CPU copy in the way the byte count dominates and the rect list wins,
+  // without one the rect *count* dominates and the merged box wins
+  // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/cpu-path.md §6.1 ③).
+  virtual bool usesDesktopBuffer() const { return false; }
 
   // Called from the FreeRDP worker thread. `data` is the whole desktop frame
   // (top-down BGRA, `srcStride` bytes/row), `desktopWidth/Height` the desktop

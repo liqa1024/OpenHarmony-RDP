@@ -71,6 +71,7 @@ class VkRenderer : public FramePresenter {
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
   void BeginDesktopBufferWrite() override;
   void ReleaseDesktopBuffer() override;
+  bool usesDesktopBuffer() const override;
 
   void Reset() override;
 

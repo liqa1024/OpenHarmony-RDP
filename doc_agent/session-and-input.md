@@ -77,15 +77,23 @@
   ⇒ **同一份码流在 live 与回放里"本机"的定义完全相同**，才能逐相、按载荷对照（见 gfx-engine.md §6）。
 - 左侧遥测每秒刷新一次（原生 `kMetrics` 事件，字段
   `rttMs|rxBps|txBps|fps|localUs|responseUs|audioRateHz|audioLossBp`，其后还有
-  `zgxParseUs|decodeUs|composeUs|presentUs|bytesPerFrame|dutyPermille|cmdsPerFrame` 七个**本机拆相**字段）：
+     `zgxParseUs|decodeUs|composeUs|presentUs|bytesPerFrame|dutyPermille|cmdsPerFrame` 七个**本机拆相**字段，
+     末尾再补一个 `syncUs`——**它不属于"本机"**，见下）：
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端注册
     该回调），故连接时给 `context->autodetect` 自行注册回调捕获。
   - **本机** = **客户端在这一帧上的全部处理时间**（µs/帧）：`zgx+parse`（chunk 到达→该帧第一条命令，
     即 ZGX 解压 + RDPGFX PDU 解析）＋ `decode`（包裹的 `SurfaceCommand`，含 progressive 自己的
-     重复合成 `update_tiles`）＋ `compose`（`gdi_EndFrame` 的 surface→primary 合成，**再减去回放的
-     节拍睡眠**——present 在 `EndFrame` 内，而回放的 `PaceFrame` 紧跟在它后面，不扣就会把
-     1.2s 的节拍睡眠算成 8ms/帧的合成；见 `GfxWorkMeter::OnPace`）＋ `present`
-    （`PresentGdiFrame`，Vulkan/GLES 呈现器）。
+     重复合成 `update_tiles`）＋ `compose`（`gdi_EndFrame` 的 surface→primary 合成，**再减去 present、
+     该帧的 `sync` 等待与回放节拍睡眠**——这三样都在 `EndFrame` 窗口里但不是合成；见 `GfxWorkMeter`）
+    ＋ `present`（`PresentGdiFrame`，Vulkan/GLES 呈现器）。
+  - **`sync`（单独一项，不在 `本机` 里）**：本帧在 `BeginPaint` 里等 GPU 放开它要写的桌面缓冲
+    （CPU 路线直接把 gdi 主缓冲放在呈现器内存里，所以上一帧的拷贝必须先读完）。它是**阻塞时间**，不是
+    处理时间 ⇒ 不计入 `本机`（这样工具栏上各拆相相加仍然等于 `本机`），单列报出；**帧的整段墙钟 =
+    `本机` + `sync`**（回放再加节拍睡眠）。实测（跑满、无节拍）：视频样本 31µs（解码够长，天然免费），
+    碎片样本 **2782µs**（`fps` 顶到 ~72，帧时间已不由 CPU 决定）。它曾经被算进 `compose`
+    （碎片样本那里 `compose` 3226µs 里 2782µs 是这笔等待，真值只有 543µs）⇒ 别再把"等 GPU"当成"合成贵"。
+  - **节拍睡眠（`pace`）是唯一直接剔除的一项**：它不是客户端工作。`mode=fast` 现在不打节拍
+    （`MarkFrameEnd` 不再 sleep），只有 `realtime` 的睡眠在 pump 里、不在 `EndFrame` 窗口。
   - **口径约束（读数前必看）**：
     - **分母是 EndFrame 帧数**，不是呈现帧数：一次处理的工作在**它的帧收尾时**才入账，所以"一帧多大"
       （由到达节拍决定）不会跑偏分母；窗口边界最多切到一帧。
@@ -93,9 +101,11 @@
       `compose`/`present` 随桌面尺寸变 ⇒ 单看合计会把它当"客户端常量能力"。`bytesPerFrame`、
       `cmdsPerFrame`（内容归一量）与 **dutyPermille**（本机工时 / 墙钟，0.1% 单位）才是跨帧率可比的量：
       duty 远小于 100% 就是客户端在等数据。
-    - **仍不含**：传输层读/drdynvc 重组（在抓取钩子之前）、**RDPGFX 帧回执**（FreeRDP 在 EndFrame
-      回调返回**之后**才写）；`present` 里 `WaitForFences`/`acquireNextImageKHR` 在合成器不还 buffer 时
-      会阻塞，会把排队/显示延迟算进来。
+       - **仍不含**：传输层读/drdynvc 重组（在抓取钩子之前）、**RDPGFX 帧回执**（FreeRDP 在 EndFrame
+         回调返回**之后**才写）；`present` 里 `WaitForFences`/`acquireNextImageKHR` 在合成器不还 buffer 时
+         会阻塞，会把排队/显示延迟算进来（那是 `present` 的一部分，与下面的 `sync` 不同）。
+       - **`syncUs` 不进 `本机`**：它是"等上屏管线放开主缓冲"的阻塞时间（详见上面的拆相说明）。工具栏目前
+         只显示七个拆相，`本机` 与它们相加仍然相等；要判断"这帧到底花了多久"用 `本机 + syncUs`。
     - 同一行每秒还有 hilog：`perf: 本机 X us/frame (max M) = zgx+parse … + decode … + compose … +
       present … (frames=… presents=… cmds/frame=… kB/frame=… duty=…%)`，定位用这一行。
   - **响应**：RDP 输入与画面是两条**无回显**的流，输入延迟只能**推断**——仅在**空闲 ≥200ms 后输入、
