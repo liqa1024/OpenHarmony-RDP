@@ -111,6 +111,12 @@ class VkRenderer : public FramePresenter {
   // pass, so it is (re)created when that changes and reused across resizes.
   bool EnsurePresentPipelineLocked();
   void DestroyPresentPipelineLocked();
+  // TEMP PRESENT GPU PROBE: GPU time of one present submission, split into the
+  // buffer->image upload and the letterbox blit, so "the whole frame is re-blitted
+  // every frame" can be sized in GPU time instead of wall time. Remove after
+  // reading (doc_agent/present-pipeline.md §4.3).
+  bool EnsurePresentTimerLocked();
+  void CollectPresentTimerLocked(uint32_t slot);
   // Points the given frame slot's descriptor at the picture view (the CPU frames'
   // desktop image or the engine's composed screen image).
   void UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view);
@@ -167,6 +173,14 @@ class VkRenderer : public FramePresenter {
   // image it presented has been re-acquired.
   std::vector<VkSemaphore> renderFinished_;
   VkRenderPass renderPass_ = VK_NULL_HANDLE;
+
+  // TEMP PRESENT GPU PROBE (see EnsurePresentTimerLocked).
+  static constexpr uint32_t kPresentTimestampsPerSlot = 3;
+  VkQueryPool presentTimer_[kFramesInFlight] = {};
+  double presentNsPerTick_ = 0.0;
+  uint64_t presentTimerCopyNs_ = 0;
+  uint64_t presentTimerBlitNs_ = 0;
+  uint64_t presentTimerFrames_ = 0;
 
   VkCommandPool commandPool_ = VK_NULL_HANDLE;
   VkCommandBuffer commandBuffers_[kFramesInFlight] = {};

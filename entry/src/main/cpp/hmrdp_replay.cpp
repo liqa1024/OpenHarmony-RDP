@@ -537,13 +537,14 @@ std::string GfxReplay::StatsLines() {
     char ps[288];
     std::snprintf(ps, sizeof(ps),
                   "\nprog  ms/frame: read=%.2f dispatch=%.2f wait=%.2f (block=%.2f) "
-                  "update=%.2f  (calls=%llu composited=%llu)",
+                  "update=%.2f  (calls=%llu unions=%llu tiles=%llu)",
                   static_cast<double>(HmrdpProgStat[0]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[1]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[2]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[7]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[3]) / d / 1e6,
                   static_cast<unsigned long long>(HmrdpProgStat[5]),
+                  static_cast<unsigned long long>(HmrdpProgStat[4]),
                   static_cast<unsigned long long>(HmrdpProgStat[6]));
     out += ps;
   }

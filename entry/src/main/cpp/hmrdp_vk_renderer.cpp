@@ -741,6 +741,77 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
   return true;
 }
 
+bool VkRenderer::EnsurePresentTimerLocked() {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (presentTimer_[0] != VK_NULL_HANDLE) {
+    return true;
+  }
+  if (device == VK_NULL_HANDLE || api.CreateQueryPool == nullptr || api.GetQueryPoolResults == nullptr ||
+      api.CmdResetQueryPool == nullptr || api.CmdWriteTimestamp == nullptr ||
+      api.GetPhysicalDeviceProperties == nullptr) {
+    return false;
+  }
+  VkPhysicalDeviceProperties props{};
+  api.GetPhysicalDeviceProperties(context.physicalDevice(), &props);
+  if (props.limits.timestampPeriod == 0.0f) {
+    return false;
+  }
+  VkQueryPoolCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+  info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  info.queryCount = kPresentTimestampsPerSlot;
+  for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+    if (api.CreateQueryPool(device, &info, nullptr, &presentTimer_[slot]) != VK_SUCCESS) {
+      presentTimer_[slot] = VK_NULL_HANDLE;
+      return false;
+    }
+  }
+  presentNsPerTick_ = static_cast<double>(props.limits.timestampPeriod);
+  HMRDP_LOGI("vulkan present probe: timestamps ready (period=%{public}.3f ns)",
+             presentNsPerTick_);
+  return true;
+}
+
+void VkRenderer::CollectPresentTimerLocked(uint32_t slot) {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (presentTimer_[slot] == VK_NULL_HANDLE || device == VK_NULL_HANDLE) {
+    return;
+  }
+  uint64_t ticks[kPresentTimestampsPerSlot] = {0, 0, 0};
+  // The slot's fence was waited just before this, so the previous submission that
+  // wrote these queries has completed.
+  const VkResult result =
+      api.GetQueryPoolResults(device, presentTimer_[slot], 0, kPresentTimestampsPerSlot,
+                              sizeof(ticks), ticks, sizeof(uint64_t),
+                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+  if (result != VK_SUCCESS) {
+    return;
+  }
+  if (ticks[1] > ticks[0]) {
+    presentTimerCopyNs_ += static_cast<uint64_t>(
+        static_cast<double>(ticks[1] - ticks[0]) * presentNsPerTick_);
+  }
+  if (ticks[2] > ticks[1]) {
+    presentTimerBlitNs_ += static_cast<uint64_t>(
+        static_cast<double>(ticks[2] - ticks[1]) * presentNsPerTick_);
+  }
+  ++presentTimerFrames_;
+  if ((presentTimerFrames_ % 30) == 0) {
+    HMRDP_LOGI("vulkan present probe: gpu copy=%{public}.2fms blit=%{public}.2fms "
+               "total=%{public}.2fms (n=%{public}llu)",
+               static_cast<double>(presentTimerCopyNs_) / 30.0 / 1e6,
+               static_cast<double>(presentTimerBlitNs_) / 30.0 / 1e6,
+               static_cast<double>(presentTimerCopyNs_ + presentTimerBlitNs_) / 30.0 / 1e6,
+               static_cast<unsigned long long>(presentTimerFrames_));
+    presentTimerCopyNs_ = 0;
+    presentTimerBlitNs_ = 0;
+  }
+}
+
 void VkRenderer::DestroyPresentPipelineLocked() {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
@@ -1317,6 +1388,12 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // SubmitAndPresentLocked advances frameIndex_ at the end, so the slot this
     // frame is using is captured while it is still current.
     const uint32_t slot = frameIndex_;
+    // TEMP PRESENT GPU PROBE: the slot's fence was just waited, so the previous
+    // submission's timestamps are readable.
+    const bool timers = EnsurePresentTimerLocked();
+    if (timers) {
+      CollectPresentTimerLocked(slot);
+    }
     // When the caller handed gdi *our* desktop buffer (AcquireDesktopBuffer), the
     // dirty rects are already laid out in the memory the GPU copies from: the
     // regions read it in place at the desktop row pitch and no CPU copy of the
@@ -1423,6 +1500,10 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     api.BeginCommandBuffer(cmd, &beginInfo);
+    if (timers) {
+      api.CmdResetQueryPool(cmd, presentTimer_[slot], 0, kPresentTimestampsPerSlot);
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, presentTimer_[slot], 0);
+    }
 
     // Host writes -> transfer read (the staging buffer is not read through the
     // host, so a plain memory barrier is enough).
@@ -1465,6 +1546,9 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     api.CmdCopyBufferToImage(cmd, direct ? desktopBuffer_ : stageBuffers_[slot], desktopImage_,
                              VK_IMAGE_LAYOUT_GENERAL, static_cast<uint32_t>(uploadCount),
                              regions);
+    if (timers) {
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, presentTimer_[slot], 1);
+    }
 
     // The upload is read by the present draw below, in the same command buffer.
     // An image barrier (layout stays GENERAL) states the dependency for the image
@@ -1487,6 +1571,11 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
 
     UpdatePresentDescriptorLocked(frameIndex_, desktopImageView_);
     RecordPresentQuadLocked(cmd, desktopWidth, desktopHeight, imageIndex);
+    if (timers) {
+      // Outside the render pass: the blit itself is not measurable portably from
+      // inside one, but the clear + quad + resolve is what the pass does.
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 2);
+    }
     const bool presented = SubmitAndPresentLocked(cmd, imageIndex, VK_NULL_HANDLE, VK_NULL_HANDLE);
     if (presented) {
       desktopImageFullUpload_ = false;
@@ -1906,6 +1995,18 @@ void VkRenderer::DestroyFrameResourcesLocked() {
   }
   renderPass_ = VK_NULL_HANDLE;
   renderPassFormat_ = VK_FORMAT_UNDEFINED;
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    if (presentTimer_[i] != VK_NULL_HANDLE && device != VK_NULL_HANDLE &&
+        api.DestroyQueryPool != nullptr) {
+      api.DestroyQueryPool(device, presentTimer_[i], nullptr);
+    }
+    presentTimer_[i] = VK_NULL_HANDLE;
+  }
+  presentNsPerTick_ = 0.0;
+  presentTimerCopyNs_ = 0;
+  presentTimerBlitNs_ = 0;
+  presentTimerFrames_ = 0;
+
   if (device == VK_NULL_HANDLE) {
     commandPool_ = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {

@@ -30,23 +30,26 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
     被重写前才 wait（picture 复用的保护）。present 失败必须 `AbandonBlitDoneHandoff()`，否则令牌永不被 signal。
   - CPU 读回路径（`ReadScreen`、ClearCodec/cache 的 RMW、`Reset`/`ResetGraphics`）走 `FlushAll()` 等所有在飞槽。
 
-## 2. 现状：上屏耗时已经接近 CPU，但还差 +0.73ms/帧
+## 2. 两条路线的上屏**构成**（不是哪个更快）
 
-同一会话、同一份滑动样本、`mode=fast`（回放页「Vulkan对比」）：
+两边的 `present` 由不同的件组成，比较时必须按件看，不能比总数（`mode`／样本／频率一变总数就不可比）：
 
-| 每帧 | CPU 路线 | GPU 路线 |
+| 件 | CPU 路线（gdi + `VkRenderer::PresentBgra`） | GPU 路线（引擎 + `PresentImage`） |
 |---|---|---|
-| `present=` 合计 | **2.61 ms** | **3.34 ms** |
-| 脏区负载 | 2.3 MB/帧 **主机→device** 上传（staging memcpy + N 个 copy region） | **设备内**拷贝（无 memcpy） |
-| 脏区记账/录制 | 不用 | `compose = 488 µs` |
-| 提交 | 含在上面 | `flush = 334 µs` |
-| letterbox quad + present | 同一份代码 | `blit = 2516 µs`（含 acquire/描述符/录制/提交/present） |
-| 是否等本帧 GPU | 不等 | 不等 |
-| 整帧（参考） | `fps 50.0` / `feed 7678ms` | `fps 16.4` / `feed 37139ms`（对照路线还多跑一遍 gdi 解码） |
+| 脏区像素进 GPU | 无 memcpy：gdi 直接合成进 presenter 的 host-visible 缓冲（零拷贝上屏，见 [`cpu-path.md`](cpu-path.md) §4） | 引擎在**设备内**把表面合成进 picture，无 CPU 搬运 |
+| 脏区记账/录制 | 只发一个合并 box（脏区形状随"有没有 memcpy"翻转：零拷贝后按**条数**算） | `presentSplit compose`（每帧扫脏区 + ping-pong damage 账） |
+| 提交 | 含在 `present=` 里（~90% 是固定的 Vulkan 调用） | `presentSplit flush` |
+| letterbox quad + present | 同一份代码 | 同一份代码（`presentSplit blit`，含 acquire/描述符/录制/提交/present） |
+| 是否等本帧 GPU | 不等（fence 落后 2 帧） | 不等（靠 `engineChain` 保证帧间顺序） |
 
-> 注：上表的 CPU 列（`present= 2.61ms`）是**零拷贝上屏之前**的数；CPU 侧现在把 gdi 主缓冲直接放在
-> presenter 的缓冲里（[`cpu-path.md`](cpu-path.md) §6.1 ③），同量级的整屏脏样本上 CPU `present` 已降到
-> ~0.6ms。GPU 侧的 `presentSplit`（compose/flush/blit）**未变**。
+- **CPU 侧的 `present=` 已没有可压的余地**（拆到 Vulkan 调用一级 ~90% 是 acquire/record/submit/present
+  的固定开销，`flush` 只有几 µs），数字见 [`cpu-path.md`](cpu-path.md) §3。
+- **GPU 侧的 `blit` 是"整幅重上屏"**（clear 整张 swapchain + 采样整幅 picture），**与脏区无关**；
+  它的 GPU 时间已用时间戳量过（0.8–1.1ms/帧），结论是**不值得优化**（§4.3）。
+- 两条路线的整帧差**与上屏无关**：GPU 路线还多跑一遍解码 kernel（`gpuMs rlgr+idwt`）。
+
+> 历史口径（只在同一份样本同一档频率内可比）：两条路线曾在同一份滑动样本上量到 CPU `present=2.61ms` /
+> GPU `3.34ms`（其中 `compose 488 / flush 334 / blit 2516 µs`）——那是**零拷贝上屏之前**的数。
 
 历史口径：这轮改造**之前** GPU 的 `present` 是 **13.75 ms（CPU 的 5.3 倍）**，因为它在 present 里
 `Flush()`（submit **+** wait）等整帧解码；`presentSplit` 的 `flush` 桶 11507 → 334 µs 记录了这条等待的消失。
@@ -112,28 +115,24 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 设计见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。上屏已不再等解码（§1 的握手），
 所以解码变快后上屏也不会变成新的串行段。
 
-### 4.3 把上屏的整幅 quad 缩成脏矩形（**CPU 路线上是最大的一条固定 GPU 成本**）
+### 4.3 整幅重上屏：**已量，判"不做"**
 
-`blit` 桶里包含"把 picture 整幅 letterbox 写进 swapchain 图像"。swapchain 图像是**轮转**的（内容在两次
-呈现之间未定义），所以每帧整幅是**默认正确做法**；要省它只能按 **swapchain 图像**各维护"已写入的增量"
-（每张图补它错过的 delta）——与 §4.1 的 damage 账是同一套机制。`vkQueuePresentKHR` 这条路**没有**
-damage-rect 接口，`VK_KHR_incremental_present` 也不在设备能力列表里（且它只是提示、不减少我们自己的写入）；
-**不要**改用 `OH_NativeWindow_*`/`FlushBuffer(..., Region)`（CPU/native 生产者路径，已删除）。
+`blit` = 把 picture 整幅 letterbox 写进 swapchain 图像。**swapchain 图像是轮转的**（内容在两次呈现之间
+未定义）⇒ 每帧整幅是默认正确做法；要省它只能按 **swapchain 图像**各维护"已写入的增量"（和 §4.1 的
+damage 账同一套机制）。**没有** damage-rect 接口可用（`vkQueuePresentKHR` 不给，
+`VK_KHR_incremental_present` 不在设备能力表里且只是提示）；**不要**改用
+`OH_NativeWindow_*`/`FlushBuffer(..., Region)`（CPU/native 生产者路径，已删除）。
 
-**它有多大（CPU 路线实测，见 [`cpu-path.md`](cpu-path.md) §8）**：轻样本跑满时，`sync`
-（等 GPU 放开主缓冲）≈2.8ms/帧，反推一帧提交的 GPU 时间 ≈ **10ms**；同一份代码在 CPU 受限的重样本上
-只要 25µs（被 20ms 的 CPU 工作藏住）。也就是说**整幅重上屏的 GPU 成本约 10ms/帧**（3120×2080：
-clear 整张 swapchain + 采样整幅 picture + 写 6.5M 像素），在轻帧上完全暴露，并连带把 `vkAcquireNextImageKHR`/
-`vkQueuePresentKHR` 推成"抖动"的排队态（面板 60Hz，而轻样本能跑到 ~78fps）。
-⇒ 想动"轻负载下的延迟"，这条比脏区形状值得做得多；但它的前置是 §4.1 的 per-image damage 账。
+- **多大**：GPU 时间戳实测 `blit` **0.8–1.1ms/帧、与脏区无关**（碎片样本同样 ~1.1ms）；
+  `copy`（脏区字节）另算。⚠ 早前由 `sync` 墙钟反推的"GPU ≈10ms/帧"**已证伪**（那是排队）。
+- **为什么不做**：这 ~0.9ms 被 20ms 的 CPU 工作藏住（CPU 侧成本为 0），而实现它要 per-image damage 账，
+  且**`bad=0` 覆盖不到呈现器**（compare 路线不 present）⇒ 没有自动化正确性门禁。判据是"降成本、fps 够用"。
+  数字与推理见 [`cpu-path.md`](cpu-path.md) §3/§7。
 
 ### 4.4 其他
 
-- ~~**CPU 路线：让主缓冲就是 presenter 缓冲**~~ **已做**（`cpu-path.md` §6.1 ③）：gdi 直接合成进
-  presenter 的 host-visible 缓冲，present 只剩"录脏区 + 一次 buffer→image 拷贝"，逐矩形 memcpy 整段没了
-  （视频样本 `present` 2.13 → 0.60ms）。**连带**：零拷贝路径现在直接发合并 box 而不是逐条矩形——没有
-  memcpy 之后成本从"字节"变成"条数"，那条"逐条矩形更优"的旧结论只在 staging 路径成立（`cpu-path.md`
-  §6.1 ③ 有 A/B）。所以"把碎矩形并成长条"这条也不用做了。
+- **CPU 路线的上屏已经定型**（主缓冲 = presenter 缓冲 + 脏区恒发 box），细节与约束见
+  [`cpu-path.md`](cpu-path.md) §4 ——包括"掉进 memcpy 就没有的东西别去合并"这条。
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；
   「硬件解码（RFX）」设置项届时才真正生效。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。

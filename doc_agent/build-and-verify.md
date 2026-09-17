@@ -73,6 +73,9 @@ hdc -t <序列号> shell "hilog -x -D 0xD001"        # 读本应用的原生日�
 - `uitest uiInput click <x> <y>` 注入的是**触摸**事件，**不会**触发 `onMouse`；鼠标请用 `uinput -M ...`，
   但它的 `-m` 是**相对/累加**移动、指针常不可见，精确定位不可靠。
 - 精确坐标：`uitest dumpLayout -p /data/local/tmp/layout.json` + `hdc file recv`，按控件 `bounds` 算中心点。
+- ⚠ **别用盲点坐标**：会话窗口是**可缩放**的，安装后第一次进来往往是 1404×936 而不是全屏 3120×2080，
+  按全屏算的坐标（`2053,721` / `2305,50` / `2838,50`）会落到桌面或别的窗口上——**症状是"点了没反应"，
+  甚至把应用窗口关掉/切走**，看起来像"应用崩了"（实测：这比真崩溃更容易发生）。切页面后重新 dump 一次。
   比目测截图可靠得多。
 - 截图：`hdc shell snapshot_display -f /data/local/tmp/x.jpeg` + `hdc file recv`。
 - 读日志前先 `hilog -r` 清缓冲；`hilog -x -D 0xD001` 只取本应用的原生 domain。
