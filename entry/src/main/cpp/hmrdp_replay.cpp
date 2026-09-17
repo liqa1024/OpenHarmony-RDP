@@ -48,6 +48,11 @@ extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak)
 // FreeRDP just reports nothing.
 extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((weak));
 
+// DEV-ONLY: how many tile-decode callbacks the platform queue ever ran at the
+// same moment since the previous call (hmrdp_parallel.*). Weak, so a build
+// without the platform executor reports nothing.
+extern "C" unsigned int HmrdpParallelTakeMaxConcurrency(void) __attribute__((weak));
+
 // DEV-ONLY: the patched FreeRDP inverse DWT (libfreerdp/codec/rfx_dwt.c,
 // codec/progressive.c, codec/neon/rfx_neon.c) is compared against the upstream
 // scalar reference on a sample of tiles. `bad=0` cannot cover a decode-side
@@ -1178,10 +1183,17 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   if (&HmrdpProgStat[0] != nullptr) {
     const double poolWallMs = static_cast<double>(HmrdpProgStat[2]) / 1e6;
     const double workerBusyMs = static_cast<double>(HmrdpProgStat[9]) / 1e6;
+    // The platform queue's own read-out: how wide it actually ran. A wall-clock
+    // figure alone cannot tell "ran two chunks at once" from "ran one, twice".
+    const unsigned int parMax = HmrdpParallelTakeMaxConcurrency != nullptr
+                                    ? HmrdpParallelTakeMaxConcurrency()
+                                    : 0;
     HMRDP_LOGI("energy: pool poolWall=%{public}.1fms workerBusy=%{public}.1fms ratio=%{public}.2f "
-               "tiles=%{public}llu",
+               "tiles=%{public}llu ffrt=%{public}llu parMax=%{public}u",
                poolWallMs, workerBusyMs, poolWallMs > 0 ? workerBusyMs / poolWallMs : 0.0,
-               static_cast<unsigned long long>(HmrdpProgStat[8]));
+               static_cast<unsigned long long>(HmrdpProgStat[8]),
+               static_cast<unsigned long long>(HmrdpProgStat[18]),
+               parMax);
   }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",

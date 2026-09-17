@@ -22,17 +22,14 @@ extern "C" void HmrdpSetDecodeThreads(unsigned int workers) __attribute__((weak)
 namespace hmrdp {
 namespace {
 
-// Automatic ceiling. The tile decode's pool section reaches its plateau after a
-// couple of workers and does not improve further: past that point the frame is
-// bounded by the parts that stay on the receiving thread (input parse, the
-// tile-to-surface copies, present) and by the GPU's copy of the dirty area, so
-// each extra worker is just another core woken for every Progressive message
-// (doc_agent/cpu-accel-plan.md §1/§2). The automatic choice therefore stays
-// small; the device's cluster count can only pull it further down. As for any
-// worker-count choice, the energy comparison is `cpu=` at a given `cpuKHz=` band,
-// never frame time alone.
-constexpr int kAutoCap = 4;
-// Manual range.
+// Automatic ceiling. The pool section's wall scales with the width once the
+// requested width is actually honoured (the platform queue does; the codec's own
+// pool did not), so the automatic choice is the whole machine - there is no
+// measured knee below the core count to stop at. The gain per worker flattens,
+// but it does not turn negative, and the per-run energy proxy has been flat to
+// slightly better with more width (doc_agent/cpu-accel-plan.md §1/§2).
+constexpr int kAutoCap = 16;
+// Manual range (the settings slider and the replay page's 「线程」 row).
 constexpr int kMaxWorkers = 8;
 constexpr int kMinWorkers = 1;
 
@@ -115,12 +112,11 @@ int DecodePerfCores() {
 }
 
 int AutoDecodeThreads() {
-  // The performance cores are the ones the decode can actually use; on a device
-  // that does not expose its clusters, the core count is the best proxy. Either
-  // way the result is capped at kAutoCap, where the measured curve is flat.
-  const int perf = DecodePerfCores();
-  const int wanted = perf > 0 ? perf : DecodeCpuCount();
-  return Clamp(std::min(wanted, kAutoCap));
+  // Automatic = the whole machine, capped only by kAutoCap. The decode wall
+  // scales with the width now that the width is honoured, and the per-run energy
+  // proxy does not get worse with more width (doc_agent/cpu-accel-plan.md §1/§2).
+  const int cores = DecodeCpuCount();
+  return std::max(kMinWorkers, std::min(cores, kAutoCap));
 }
 
 int DecodeThreads() {

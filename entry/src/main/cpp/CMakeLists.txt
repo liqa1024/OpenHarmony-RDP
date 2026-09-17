@@ -75,6 +75,7 @@ add_library(hmrdp SHARED
     hmrdp_gfx_work.cpp
     hmrdp_decode_tuning.cpp
     hmrdp_energy.cpp
+    hmrdp_parallel.cpp
     hmrdp_replay.cpp
     hmrdp_presenter.cpp
     hmrdp_gles_presenter.cpp
@@ -100,9 +101,14 @@ target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 # `native_window` turns the XComponent surface id into the OHNativeWindow the
 # presenters hand to Vulkan/EGL. EGL/GLESv3 back the GLES presenter, which is the
 # fallback for devices whose Vulkan cannot present (hmrdp_presenter.cpp).
+#
+# `ffrt.z` is the platform task queue (hmrdp_parallel.cpp). The patched decoder
+# picks it up through weak symbols, so a build without it falls back to the
+# codec's own WinPR pool instead of failing.
 target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
+    ffrt.z
     native_window
     EGL
     GLESv3
