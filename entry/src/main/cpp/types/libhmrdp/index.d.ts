@@ -96,7 +96,7 @@ export const setRfxDump: (enabled: boolean, dir: string) => boolean;
  * captures recorded before the arrival times were stored.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
-  gfxPath: string, route: number, realtime: number) => string;
+  gfxPath: string, route: number, realtime: number, refMode: number) => string;
 
 export const stopGfxReplayTest: () => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;

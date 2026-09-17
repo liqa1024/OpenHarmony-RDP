@@ -11,8 +11,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
 setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
 setDecodeThreads, decodeThreadsInfo,
 RdpEventCallback,
-startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
-vulkanInfo } from 'libhmrdp.so';
+startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -101,17 +100,21 @@ export class RdpNative {
 
   /**
    * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-   * `route`: 0 = CPU (FreeRDP gdi), 1 = Vulkan engine, 2 = Vulkan vs gdi compare.
+   * `route`: 0 = CPU (FreeRDP gdi) - the only route the page drives; 1 = Vulkan
+   * engine, 2 = Vulkan engine vs gdi compare (kept for reference, not offered in
+   * the UI).
    * `realtime`: play the capture at its recorded arrival times (the live session's
    * own cadence) instead of the fixed per-frame budget - the mode to use when the
    * question is "can the client carry the *real* load". Captures recorded before
    * arrival times were stored fall back to the fixed pacing, and say so in the
    * stats line (`mode=fast`).
+   * `refMode`: golden reference (CPU route) - 0 = off (perf run), 1 = record this
+   * run as the reference, 2 = check against the stored one.
    */
   static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
-    gfxPath: string, route: number, realtime: boolean): string {
+    gfxPath: string, route: number, realtime: boolean, refMode: number): string {
     const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath, route,
-      realtime ? 1 : 0);
+      realtime ? 1 : 0, refMode);
     hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx replay: %{public}s', summary);
     return summary;
   }
@@ -126,13 +129,6 @@ export class RdpNative {
 
   static replayTestStats(): string {
     return gfxReplayTestStats();
-  }
-
-  /** Dev/test: logs and returns the Phase 0 Vulkan capability report. */
-  static describeVulkan(): string {
-    const info: string = vulkanInfo();
-    hilog.info(GPU_DOMAIN, GPU_TAG, 'vulkan info: %{public}s', info);
-    return info;
   }
 
   setListener(listener: RdpEventListener): void {

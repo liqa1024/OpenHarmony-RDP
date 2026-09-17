@@ -35,6 +35,7 @@ CPU 回放的 stats 就是这条线的账：
 | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
 | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
 | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间 |
+| `ref export: frames=… -> hmrdp_ref_<tag>.{hash,bmp}  hashMs=…` / `ref compare: refFrames=… checks=… bad=… firstBad=… imageFrame=… rgbPx=… maxDelta=… bbox=… hashMs=…` | **参考画面对比**（golden reference，dev 页「参考」按钮，见 §7）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，
   所以**本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 §4）。它是**阻塞**不是处理 ⇒ 单列；
@@ -181,9 +182,9 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
 
 | # | 项 | 占比 | 做法要点 | 正确性门禁 | 出口 |
 |---|---|---|---|---|---|
-| **C1** | 逆 DWT 向量化 | 4 成半 | even/odd 两段逐元素独立（只有 `(a+b+1)>>1` 需要 int32 中间量）⇒ **逐位等价**改写；顺带把临时缓冲挪进 tile 自己的内存、三级之间少搬一趟 | **标量 vs 新实现采样对拍**（`mismatch=0`，见 §7） | `prog2` 的 `idwt` 绝对量下降、`本机`、帧墙钟 |
-| **C2** | `state` + `color` 的逐 tile 缓冲流量 | 共 3 成半 | ① 三次状态写并成一次遍历（或让 RLGR 直写 `sign`、去量化直写 `current`，省掉中间那份）；② `yCbCrToRGB` 的逐像素 `writePixelBGRX` + 整数乘加向量化（同一批系数与移位） | 同上（对拍） | 同上 |
-| **C3** | `update` 的 tile→surface 拷贝 | 1 成半（串行） | keep-dst-alpha 的"每像素一个 32 位掩码字"→**每两像素一个 64 位掩码字**（逐位等价）+ 自动向量化 | `bad=0`（不改解码语义，参考侧不受影响） | `perFrame decode` |
+| **C1** | 逆 DWT 向量化 | 4 成半 | even/odd 两段逐元素独立（只有 `(a+b+1)>>1` 需要 int32 中间量）⇒ **逐位等价**改写；顺带把临时缓冲挪进 tile 自己的内存、三级之间少搬一趟 | **① 标量 vs 新实现采样对拍**（`mismatch=0`）+ **② `参考:对比` `bad=0`**（见 §7） | `prog2` 的 `idwt` 绝对量下降、`本机`、帧墙钟 |
+| **C2** | `state` + `color` 的逐 tile 缓冲流量 | 共 3 成半 | ① 三次状态写并成一次遍历（或让 RLGR 直写 `sign`、去量化直写 `current`，省掉中间那份）；② `yCbCrToRGB` 的逐像素 `writePixelBGRX` + 整数乘加向量化（同一批系数与移位） | 同上（对拍 + 参考对比） | 同上 |
+| **C3** | `update` 的 tile→surface 拷贝 | 1 成半（串行） | keep-dst-alpha 的"每像素一个 32 位掩码字"→**每两像素一个 64 位掩码字**（逐位等价）+ 自动向量化 | `参考:对比` `bad=0`（同样要求逐位等价） | `perFrame decode` |
 | — | `upgrade` / `dequant` | 半成 / 百分之几 | 占比小，C1–C3 之后再评估 | — | — |
 | — | RLGR | 1 成 | 最小项，最后再看 | — | — |
 
@@ -199,11 +200,16 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
 
 ## 7. 量测纪律与陷阱
 
-- **`bad=0` 是一切的入口**：两份基线录像 + `Vulkan对比`。性能数字只有在该轮 `bad=0` 的前提下才算数；
-  **每份新捕获先自己过 `bad=0`**（同名文件的不同录制不能互相背书）。
-  - ⚠ **但它只对"没改 gdi 解码语义"的改动成立**：参考侧就是 gdi 自己，改它等于两边一起改。
-    C1/C2 这类改动要自带**标量 vs 新实现的对拍**（采样一部分 tile 逐字节比对，计数 `mismatch`）；
-    `bad=0` 照跑，但它只证明"引擎与新的 gdi 一致"。
+- **正确性门禁 = 参考画面（golden reference）**，两份基线录像各一套：先 `参考:导出` 记下
+  `hmrdp_ref_<captureTag>.{hash,bmp}`，之后每轮 `参考:对比` 必须 `bad=0`（逐帧哈希与参考一致）。
+  参考文件名带**录制内容指纹**，所以换一份录像必然缺参考、必须重新导出——这就是"同名文件的不同录制
+  不能互相背书"的机器保证。
+  - ⚠ **它要求"逐位等价"**：参考记录的是 gdi 在被优化之前的输出，所以**只接受逐位等价的改写**
+    （这正是 §0 的硬约束）。改了解码语义（哪怕只是舍入不同）就必须**重新导出参考**，并说明为什么可以接受。
+  - **`bad=0` 的旧口径（引擎 vs gdi 影子对比）只从代码跑得到**（`GfxReplayRoute::kVulkanCompare`）：
+    它仍给出逐像素的 `rgbPx/alphaPx/bbox/maxDelta`，定位"差在哪"时用它；UI 上留给引擎重做之后。
+  - 参考模式**不是性能模式**：每帧对整个桌面哈希（`hashMs=` 报出来），这段时间落在 `EndFrame` 里、
+    会算进 `compose` ⇒ 读性能数字请用 `参考:关` 那一轮。
 - **频率会跟着回放节拍跑**：轻负载样本被压在最低频档、重负载跑满，同一份代码能差数倍。
   ⇒ `mode=fast`（dev 页「跑满」）**不打节拍**；复现 live 的到达节奏用 `realtime`；
   **判读前先看 `cpuKHz=`，不同就不要横向比**。

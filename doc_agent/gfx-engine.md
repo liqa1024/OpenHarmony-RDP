@@ -283,28 +283,41 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ```
 设置页「抓取 RFX 码流（测试）」  →  原始码流文件（u32 长度 + payload，见下）
-dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
+dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / 对比
 ```
 
-- **验收口径**：`Vulkan对比` 路线（引擎 vs 离线 gdi 桌面逐像素比对）的
-  `compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`。每隔若干帧采一次，
-  `bad` = 采样的帧里有多少帧与 gdi 不一致；目标 **`bad=0`**。同一行还带 `alphaPx`（只差未使用的 alpha
-  字节，不算视觉差异）、`bbox`（差异包围盒）与 `smallDeltaPx`（舍入级像素数）——`rgbPx` 从 0 变成
-  百万级而 `bbox` 覆盖整屏，说明是**没画**，而不是"画得略有不同"。
-- **两份基线录像，改完引擎/着色器/补丁都要跑**（都必须是 `bad=0 rgbPx=0`）：
-  一份是**浏览/滚动**（消息稀疏、脏区小）作回归门，一份是**看视频**（整帧大块变化、每帧多条
-  Progressive 消息）覆盖另一场景。样本文件在本地 gitignore 目录，设备侧用同一个固定文件名喂给回放
-  （`hdc` 只能**覆盖**已存在的文件，不能在该目录新建）。
-  **每份新捕获先自己过一遍 `bad=0` 才能当基线**（同名文件的不同录制不能互相背书）。
+- **路线只有两条，且是同一条解码路径的两种上屏后端**：`CPU` = gdi 解码 + GLES 上屏（完全不碰 Vulkan）、
+  `硬件加速` = gdi 解码 + Vulkan 上屏（就是设置里的「硬件加速」，页面上的按钮与它是同一个值）。
+  **GPU 引擎那两条路线（引擎单跑 / 引擎 vs gdi 影子对比）已从 UI 撤掉**（引擎在做重做，
+  [`gpu-accel-plan.md`](gpu-accel-plan.md)）：实现仍在 `GfxReplayRoute::kVulkan*` 里、只有从代码调用才跑得到。
+- **验收口径 = 参考画面（golden reference）**：同一条路线先 `参考:导出` 记一遍
+  （`hmrdp_ref_<captureTag>.hash` + `.bmp`，`captureTag` 是录制内容的指纹，**换一份录像就换一套参考**），
+  之后每轮 `参考:对比` 报
+  `ref compare: refFrames=… checks=… bad=0 firstBad=-1 imageFrame=… rgbPx=0 maxDelta=0`：
+  `bad` = 逐帧哈希与参考不同的帧数（目标 **0**），`rgbPx/maxDelta/bbox` 是参考**图像那一帧**的逐像素差
+  （用来判断"哪一帧、差多少"，不是全集）。失败时会把那一帧 dump 成 `…_fail.bmp`。
+  - **它取代了"引擎 vs gdi"的影子对比**：影子要求引擎与 gdi 两条实现始终一致，实际上做不到长期维护；
+    参考画面只要求"输出不变"，与是 CPU 还是 GPU 出的无关——所以**引擎重做后也用同一套参考**。
+  - 前提是**解码逐位等价**（`cpu-accel-plan.md` 的所有优化都按这条走）⇒ 参考长期有效。
+  - ⚠ **参考模式不是性能模式**：它每帧对整个桌面做一次哈希（`ref export/compare` 行报 `hashMs=`），
+    这段时间落在 gdi 的 `EndFrame` 里、会算进 `compose` ⇒ 读性能数字时用 `参考:关` 那一轮。
+- **两份基线录像，改完解码/引擎/着色器/补丁都要跑**：一份**浏览/滚动**（消息稀疏、脏区小）作回归门，
+  一份**看视频**（整帧大块变化、每帧多条 Progressive 消息）覆盖另一场景。样本与参考文件都在本地
+  gitignore 目录，设备侧用同一个固定文件名喂给回放（`hdc` 只能**覆盖**已存在的文件，不能在该目录新建）。
+  **每份新捕获先自己 `参考:导出` + `参考:对比` 过一遍才能当基线**（同名文件的不同录制不能互相背书——
+  参考文件名里的指纹就是为此）。
 - **先看计数，再加日志**：`Stats()` 里的解析错误计数、`rejectedTiles`/`restamped`/`skippedRegions`/
   `batchOverflow`/`composeGridSplits` 就是"协议级行为有没有按预期发生"的账本，绝大多数分叉靠它们
   就能定位到"哪条消息/哪条命令没做"。**不要为了查一次分叉就新加一次性日志探针**：
   周期性统计行会很快冲掉缓冲区（见 [`build-and-verify.md`](build-and-verify.md) §5.1）。
-- **三条路线的呈现方式**：`Vulkan`/`Vulkan对比` 由引擎 `Compose()` 出屏幕镜像后由呈现器上屏；
-  `CPU` 路线的 gdi 帧走同一个呈现器接口（Vulkan 优先，GLES 兜底）——与 live 会话是同一条路径，
-  所以两者不会各自分叉。**对比结果与呈现路径解耦**：对比读的是引擎屏幕镜像与离线 gdi 主缓冲，
-  呈现器只碰 swapchain/present，所以换呈现后端、改重建策略都不会影响 `bad` 的判定；反过来说
-  `bad` 变化只能来自解码/合成。**任何一轮性能结论的前提是那一轮的 `bad=0`。**
+- **呈现方式**：CPU 路线的 gdi 帧走呈现器接口（`硬件加速` 开 = Vulkan、关 = GLES）——与 live 会话是
+  同一条路径，所以两者不会各自分叉；引擎路线（代码里仍在）由引擎 `Compose()` 出屏幕镜像后走同一个
+  呈现器。**参考判定与呈现路径解耦**：参考哈希读的是 gdi 主缓冲（引擎路线是屏幕镜像，两者内容相同），
+  `present` 只碰 swapchain，所以换呈现后端、改重建策略都不影响 `bad`；反过来说 `bad` 变化只能来自
+  解码/合成。**任何一轮性能结论的前提是那一轮 `bad=0`。**
+- **引擎 vs gdi 的影子对比**（`compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`）现在只从代码
+  （`GfxReplayRoute::kVulkanCompare`）跑得到：它在 `bad>0` 时给出逐像素的 `rgbPx/alphaPx/bbox/maxDelta`，
+  定位引擎分叉时仍是最好的工具；UI 上留给引擎重做之后（见 §7 待办）。
 - **引擎性能归因三件套（dev，只在真机跑）**：
   1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本；
   2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返 → 区分"同步点固定开销"与"GPU 真的在跑"；

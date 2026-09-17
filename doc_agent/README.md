@@ -35,7 +35,7 @@
 - [`native-libraries.md`](native-libraries.md) —— FreeRDP/OpenSSL/zlib 的源码构建与补丁、无版本号 SONAME、
   为什么 `entry/libs/<abi>/` 不入库、音频（OHAudio）与能力探测（Capability）模式。
 - [`gfx-engine.md`](gfx-engine.md) —— GFX 码流与 GPU 引擎：管线框架、**必须保留的协议/算法语义**、
-  性能规则、回放验证回路与逐像素 `bad=0` 验收、待办。
+  性能规则、回放验证回路与**参考画面（golden reference）验收**、待办。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：统一的呈现器实现、帧槽与
   设备侧握手、picture ping-pong、CPU/GPU 耗时对比与后续工作清单。
 - [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路优化计划（接手文档）**：判据、每帧成本结构与

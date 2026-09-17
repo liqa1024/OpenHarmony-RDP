@@ -2,10 +2,17 @@
  * HmRdp - dev-only RDP replay page (doc_agent/gfx-engine.md §6).
  *
  * Binds this XComponent's surface and replays the recorded hmrdp_gfx.bin capture
- * straight to the screen through the Vulkan desktop engine. No RDP session or
- * network is involved. The capture is not shipped in the HAP - `hdc file send`
- * it into the app filesDir as hmrdp_gfx.bin before opening this page (entered
- * from the home screen "回放测试" entry).
+ * straight to the screen. No RDP session or network is involved. The capture is
+ * not shipped in the HAP - `hdc file send` it into the app filesDir as
+ * hmrdp_gfx.bin before opening this page (entered from the home screen "回放测试"
+ * entry).
+ *
+ * The page drives the CPU (gdi) line only: 「路线」 picks which presenter that line
+ * runs through (CPU = GLES, 硬件加速 = Vulkan), 「参考」 runs it against the golden
+ * reference image recorded earlier from the same capture. The GPU *engine* routes
+ * (decode + compose on Vulkan) are no longer offered here - the engine work is
+ * being redone (doc_agent/gpu-accel-plan.md), and its implementation stays
+ * reachable from code but not from the UI.
  */
 import { RdpNative } from '../services/RdpNative';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -18,12 +25,26 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
 
-// 0 = CPU (FreeRDP gdi) only (perf reference), 1 = Vulkan engine only,
-// 2 = Vulkan vs gdi compare. Ids match the native GfxReplayRoute enum.
+// 「路线」 = which presentation line the CPU (gdi) decode runs through:
+//   CPU      - the GLES presenter (no Vulkan at all)
+//   硬件加速  - the Vulkan presenter
+// This is the session's "硬件加速" setting, exposed here so both presenters can be
+// A/B'd on the same capture. The native route id is always the CPU one
+// (GfxReplayRoute::kCpu) - the engine routes are no longer driven from this page.
 const ROUTE_CPU: number = 0;
-const ROUTE_VULKAN: number = 1;
-const ROUTE_VULKAN_COMPARE: number = 2;
-const ROUTE_LABEL: string[] = ['CPU', 'Vulkan', 'Vulkan对比'];
+const LINE_CPU: number = 0;
+const LINE_ACCEL: number = 1;
+const LINE_LABEL: string[] = ['CPU', '硬件加速'];
+
+// 「参考」 = golden-reference gate for the CPU line (doc_agent/cpu-accel-plan.md §7).
+//   关   - plain run (the perf modes above)
+//   导出 - record this run as the reference (hmrdp_ref.hash + hmrdp_ref.bmp)
+//   对比 - check every frame against the stored reference; the stats line reports
+//          `ref compare: … bad=…` plus the pixel diff of the stored image's frame
+const REF_OFF: number = 0;
+const REF_EXPORT: number = 1;
+const REF_COMPARE: number = 2;
+const REF_LABEL: string[] = ['关', '导出', '对比'];
 
 // Progressive decode worker counts the 「线程」 button cycles through. 0 is the
 // automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
@@ -72,8 +93,10 @@ class ReplaySurfaceController extends XComponentController {
 @Component
 struct GfxReplayPage {
   @State status: string = '等待 surface...';
-  // Decoder/presenter route; see ROUTE_LABEL (ids match the native enum).
-  @State replayRoute: number = ROUTE_CPU;
+  // Presentation line (see LINE_LABEL): CPU (GLES) or 硬件加速 (Vulkan).
+  @State line: number = LINE_ACCEL;
+  // Golden-reference mode (see REF_LABEL).
+  @State refMode: number = REF_OFF;
   // Playback clock: false = not throttled at all (runs flat out, a throughput
   // measurement), true = the capture's own arrival times (the cadence the live
   // session ran at). Needs a capture recorded with arrival times; the stats line
@@ -83,33 +106,31 @@ struct GfxReplayPage {
   // dev page asks for (applied process-wide, so the CPU route uses it). Pinned
   // while DECODE_THREAD_PINNED (see the constant).
   @State decodeWorkerIndex: number = DECODE_THREAD_PINNED ? DECODE_THREAD_PINNED_INDEX : 0;
-  // "硬件加速" - the session setting that picks the presenter backend (Vulkan vs
-  // GLES). Driven from here as well so the two presenters can be A/B'd on the
-  // same capture without leaving the page; changing it restarts the run.
-  @State hardwareAccel: boolean = true;
+  // Whether this device can run the Vulkan presenter at all (see
+  // DeviceCapabilities.hardwareAccel); when it cannot, 硬件加速 is not offered.
   @State hardwareAccelSupported: boolean = true;
   // On-device performance panel: the stats string is multi-line, shown in a
   // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
-  // Vulkan capability report, fetched when a Vulkan route starts.
-  @State vkInfo: string = '';
   private controller: ReplaySurfaceController = new ReplaySurfaceController();
   private statsTimer: number = -1;
   private surfaceId: string = '';
   private surfaceW: number = 0;
   private surfaceH: number = 0;
 
-  private isVulkanRoute(): boolean {
-    return this.replayRoute === ROUTE_VULKAN || this.replayRoute === ROUTE_VULKAN_COMPARE;
+  // Whether this run should present through Vulkan: the 硬件加速 line was picked
+  // and the device supports it.
+  private accelOn(): boolean {
+    return this.line === LINE_ACCEL && this.hardwareAccelSupported;
   }
 
   aboutToAppear(): void {
     this.applyFullScreen(true);
-    // Same source of truth as the settings page: the stored value, clamped by
-    // what this device can actually do.
+    // Same source of truth as the settings page: the stored value decides which
+    // line the page starts on, clamped by what this device can actually do.
     const capability: Capability = DeviceCapabilities.hardwareAccel();
     this.hardwareAccelSupported = capability.supported;
-    this.hardwareAccel = SettingsStore.load().hardwareAccel && capability.supported;
+    this.line = (SettingsStore.load().hardwareAccel && capability.supported) ? LINE_ACCEL : LINE_CPU;
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number) => {
         this.surfaceId = surfaceId;
@@ -164,33 +185,26 @@ struct GfxReplayPage {
     // The presenter backend is chosen when the run starts, so apply the
     // acceleration state here as well (it may have been changed on the settings
     // page since this page was opened).
-    RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
+    RdpNative.applyHardwareAccel(this.accelOn());
     RdpNative.stopReplayTest();
-    if (this.isVulkanRoute()) {
-      try {
-        this.vkInfo = RdpNative.describeVulkan();
-      } catch (error) {
-        this.vkInfo = `vulkan info unavailable: ${JSON.stringify(error)}`;
-      }
-    }
+    // The native route is always the CPU (gdi) one - see the file comment; the
+    // line above decides which presenter it presents through.
     const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
-      this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRoute, this.replayRealtime);
+      this.surfaceH, `${dir}/hmrdp_gfx.bin`, ROUTE_CPU, this.replayRealtime, this.refMode);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;
     this.startStatsTimer();
   }
 
-  // Flips the hardware-acceleration setting for the whole process (persisted, so
-  // the session path sees the same value) and restarts the run: the presenter is
-  // created per run, so a restart is what makes the new backend take effect.
-  private toggleHardwareAccel(): void {
-    if (!this.hardwareAccelSupported) {
-      return;
-    }
-    this.hardwareAccel = !this.hardwareAccel;
+  // Switches the presentation line and mirrors it into the "硬件加速" setting
+  // (persisted, so the session path sees the same value), then restarts: the
+  // presenter is created per run, so a restart is what makes it take effect.
+  private switchLine(): void {
+    // 硬件加速 is not offered on a device whose Vulkan cannot present.
+    this.line = (!this.hardwareAccelSupported || this.line === LINE_ACCEL) ? LINE_CPU : LINE_ACCEL;
     const settings: AppSettings = SettingsStore.load();
-    settings.hardwareAccel = this.hardwareAccel;
+    settings.hardwareAccel = this.line === LINE_ACCEL;
     SettingsStore.save(settings);
     this.startReplay();
   }
@@ -261,7 +275,9 @@ struct GfxReplayPage {
           .margin({ left: 12 })
           .layoutWeight(1)
 
-        Button(`路线:${ROUTE_LABEL[this.replayRoute]}`)
+        // Presentation line: CPU (GLES) / 硬件加速 (Vulkan). Mirrors the
+        // "硬件加速" setting and restarts the run.
+        Button(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}`)
           .height(34)
           .fontSize(13)
           .fontColor($r('app.color.accent'))
@@ -269,11 +285,11 @@ struct GfxReplayPage {
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
-            this.replayRoute = (this.replayRoute + 1) % ROUTE_LABEL.length;
-            this.startReplay();
+            this.switchLine();
           })
 
-        Button(`加速:${this.hardwareAccelSupported ? (this.hardwareAccel ? '开' : '关') : '不可用'}`)
+        // Golden-reference gate (CPU line): 关 / 导出 / 对比.
+        Button(`参考:${REF_LABEL[this.refMode]}`)
           .height(34)
           .fontSize(13)
           .fontColor($r('app.color.accent'))
@@ -281,7 +297,8 @@ struct GfxReplayPage {
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
-            this.toggleHardwareAccel();
+            this.refMode = (this.refMode + 1) % REF_LABEL.length;
+            this.startReplay();
           })
 
         Button(`节拍:${this.replayRealtime ? '实时' : '跑满'}`)
@@ -350,13 +367,7 @@ struct GfxReplayPage {
 
         if (this.showStats) {
           Column() {
-            if (this.vkInfo.length > 0) {
-              Text(this.vkInfo)
-                .fontSize(12)
-                .fontColor('#FF9CDCFE')
-                .width('100%')
-            }
-            Text(`路线:${ROUTE_LABEL[this.replayRoute]}  加速:${this.hardwareAccelSupported ? (this.hardwareAccel ? '开' : '关') : '不可用'}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
+            Text(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}  参考:${REF_LABEL[this.refMode]}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
               .fontSize(12)
               .fontColor('#FFFFD479')
               .width('100%')

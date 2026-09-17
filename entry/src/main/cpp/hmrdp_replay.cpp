@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <memory>
 #include <string>
@@ -133,6 +134,162 @@ constexpr int kStartWaitUs = 3000000;
 // live shadow check - reading the engine screen back is expensive).
 constexpr uint64_t kCompareEvery = 30;
 
+// --- golden reference (GfxReplayRefMode) -----------------------------------
+// Fingerprint of a capture file: its size plus the first and last 256KB. Names the
+// reference files (`hmrdp_ref_<tag>.hash/.bmp` next to the capture), so a
+// reference recorded from a *different* recording can never be picked up silently
+// - the device file name is always hmrdp_gfx.bin, and doc_agent/gfx-engine.md §6
+// requires every capture to be verified on its own.
+std::string CaptureTag(const std::string& capturePath) {
+  FILE* f = std::fopen(capturePath.c_str(), "rb");
+  if (f == nullptr) {
+    return std::string("nofile");
+  }
+  std::fseek(f, 0, SEEK_END);
+  const long size = std::ftell(f);
+  uint64_t h = 1469598103934665603ull;
+  h = (h ^ static_cast<uint64_t>(size > 0 ? size : 0)) * 1099511628211ull;
+  const size_t chunk = 256u * 1024u;
+  std::vector<uint8_t> buf(chunk);
+  const long last = size > static_cast<long>(chunk) ? size - static_cast<long>(chunk) : 0;
+  const long offsets[2] = {0, last};
+  for (int i = 0; i < 2; ++i) {
+    std::fseek(f, offsets[i], SEEK_SET);
+    const size_t got = std::fread(buf.data(), 1, chunk, f);
+    for (size_t b = 0; b < got; ++b) {
+      h = (h ^ buf[b]) * 1099511628211ull;
+    }
+  }
+  std::fclose(f);
+  char out[24];
+  std::snprintf(out, sizeof(out), "%08llx", static_cast<unsigned long long>(h & 0xffffffffull));
+  return std::string(out);
+}
+
+// Sibling of the capture.
+std::string RefSibling(const std::string& capturePath, const std::string& name) {
+  const size_t slash = capturePath.find_last_of("/\\");
+  const std::string dir =
+      slash == std::string::npos ? std::string() : capturePath.substr(0, slash + 1);
+  return dir + name;
+}
+
+// One 64-bit hash over a composed frame's pixels (rows are hashed without the
+// stride padding; the geometry is folded in so a resize cannot hash equal). Runs
+// once per frame in the reference modes only - it is a correctness tool, not part
+// of any measured phase.
+uint64_t HashFrame(const uint8_t* data, int stride, int width, int height) {
+  // FNV-1a with four independent lanes: the plain scalar chain is dependency-bound
+  // (one multiply per word, ~3-4 cycles each), which at this platform's low clock
+  // costs several ms for a whole-screen frame. Four lanes hide that latency. Any
+  // stable hash does - it is only ever compared against itself - so this needs no
+  // particular strength, just determinism.
+  uint64_t h[4] = {1469598103934665603ull, 1099511628211ull, 0x9e3779b97f4a7c15ull,
+                   0xc2b2ae3d27d4eb4full};
+  h[0] ^= static_cast<uint64_t>(static_cast<uint32_t>(width)) * 0x9e3779b97f4a7c15ull;
+  h[2] ^= static_cast<uint64_t>(static_cast<uint32_t>(height)) * 0xc2b2ae3d27d4eb4full;
+  const size_t rowBytes = static_cast<size_t>(width) * 4;
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* row = data + static_cast<size_t>(y) * static_cast<size_t>(stride);
+    size_t i = 0;
+    for (; i + 32 <= rowBytes; i += 32) {
+      for (int k = 0; k < 4; ++k) {
+        uint64_t w = 0;
+        std::memcpy(&w, row + i + static_cast<size_t>(k) * 8u, 8);
+        h[k] = (h[k] ^ w) * 1099511628211ull;
+      }
+    }
+    for (; i + 8 <= rowBytes; i += 8) {
+      uint64_t w = 0;
+      std::memcpy(&w, row + i, 8);
+      h[0] = (h[0] ^ w) * 1099511628211ull;
+    }
+    for (; i < rowBytes; ++i) {
+      h[1] = (h[1] ^ row[i]) * 1099511628211ull;
+    }
+  }
+  return h[0] ^ (h[1] * 0x9e3779b97f4a7c15ull) ^ (h[2] * 0xc2b2ae3d27d4eb4full) ^ h[3];
+}
+
+// 32bpp BI_RGB BMP: viewable everywhere (Windows included) and trivial to write,
+// so the reference picture needs no image codec in the app.
+bool WriteBmp(const std::string& path, const uint8_t* data, int stride, int width, int height) {
+  if (data == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+  const uint32_t rowBytes = static_cast<uint32_t>(width) * 4u;
+  const uint32_t imageBytes = rowBytes * static_cast<uint32_t>(height);
+  uint8_t header[54] = {0};
+  header[0] = 'B';
+  header[1] = 'M';
+  const uint32_t fileBytes = 54u + imageBytes;
+  auto put32 = [&header](size_t off, uint32_t v) { std::memcpy(header + off, &v, 4); };
+  put32(2, fileBytes);
+  put32(10, 54u);
+  put32(14, 40u);                                   // BITMAPINFOHEADER
+  put32(18, static_cast<uint32_t>(width));
+  put32(22, static_cast<uint32_t>(height));         // positive: rows bottom-up
+  put32(26, 1u);                                    // planes
+  put32(28, 32u);                                   // bits per pixel
+  put32(34, imageBytes);
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (f == nullptr) {
+    return false;
+  }
+  bool ok = std::fwrite(header, 1, sizeof(header), f) == sizeof(header);
+  for (int y = height - 1; ok && y >= 0; --y) {
+    ok = std::fwrite(data + static_cast<size_t>(y) * static_cast<size_t>(stride), 1, rowBytes, f) ==
+         rowBytes;
+  }
+  std::fclose(f);
+  return ok;
+}
+
+// Reads a 32bpp BI_RGB BMP into a top-down BGRA buffer (row pitch = width * 4).
+bool ReadBmp(const std::string& path, std::vector<uint8_t>* out, int* width, int* height) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (f == nullptr) {
+    return false;
+  }
+  uint8_t header[54] = {0};
+  const bool read = std::fread(header, 1, sizeof(header), f) == sizeof(header);
+  uint32_t w = 0;
+  uint32_t h = 0;
+  uint16_t bpp = 0;
+  if (read) {
+    std::memcpy(&w, header + 18, 4);
+    std::memcpy(&h, header + 22, 4);
+    std::memcpy(&bpp, header + 28, 2);
+  }
+  const uint32_t offset = 54u;
+  const bool usable = read && header[0] == 'B' && header[1] == 'M' && bpp == 32u && w > 0 &&
+                      w <= 16384u && (h != 0u);
+  if (!usable) {
+    std::fclose(f);
+    return false;
+  }
+  const bool bottomUp = (h & 0x80000000u) == 0u;
+  const uint32_t uh = h & 0x7fffffffu;
+  const uint32_t rowBytes = w * 4u;
+  out->assign(static_cast<size_t>(rowBytes) * uh, 0);
+  std::fseek(f, static_cast<long>(offset), SEEK_SET);
+  for (uint32_t row = 0; row < uh; ++row) {
+    const uint32_t y = bottomUp ? (uh - 1u - row) : row;
+    if (std::fread(out->data() + static_cast<size_t>(y) * rowBytes, 1, rowBytes, f) != rowBytes) {
+      std::fclose(f);
+      return false;
+    }
+  }
+  std::fclose(f);
+  *width = static_cast<int>(w);
+  *height = static_cast<int>(uh);
+  return true;
+}
+
+// Header of hmrdp_ref.hash: magic + geometry + the frame the image came from +
+// the frame count, then the per-frame hashes.
+constexpr char kRefMagic[8] = {'H', 'M', 'R', 'D', 'R', 'E', 'F', '1'};
+
 int64_t NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -203,7 +360,8 @@ GfxReplay::~GfxReplay() {
 }
 
 bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
-                      const std::string& gfxPath, GfxReplayRoute route, bool realtime) {
+                      const std::string& gfxPath, GfxReplayRoute route, bool realtime,
+                      GfxReplayRefMode refMode) {
   Stop();
   if (nativeWindow == nullptr || surfaceW <= 0 || surfaceH <= 0 || gfxPath.empty()) {
     if (nativeWindow != nullptr) {
@@ -263,6 +421,26 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     cmpBBoxY1_.store(-1);
     cmpMaxDelta_.store(0);
     cmpSmallDeltaPx_.store(0);
+    refHashes_.clear();
+    refImage_.clear();
+    refImageW_ = 0;
+    refImageH_ = 0;
+    refImageFrame_ = -1;
+    refHashUs_.store(0);
+    refChecks_.store(0);
+    refBad_.store(0);
+    refFirstBad_.store(-1);
+    refNote_.clear();
+    // The reference modes only make sense on the CPU (gdi) route: they hash the
+    // composed desktop, which is what that route produces and what the engine
+    // route is supposed to reproduce.
+    refMode_.store(route == GfxReplayRoute::kCpu ? static_cast<int>(refMode) : 0);
+    refTag_ = CaptureTag(gfxPath);
+    if (refMode_.load() == static_cast<int>(GfxReplayRefMode::kCompare)) {
+      if (!RefLoad(gfxPath)) {
+        HMRDP_LOGW("gfx replay: reference unusable (%{public}s)", refNote_.c_str());
+      }
+    }
     presentUs_.store(0);
     uploadBytes_.store(0);
     uploadBoxBytes_.store(0);
@@ -612,8 +790,10 @@ std::string GfxReplay::StatsLines() {
         static_cast<unsigned long long>(otherCount_.load()));
     out += cls;
   }
+  // Engine-vs-gdi shadow comparison: only the compare route fills these (the
+  // golden-reference gate below reuses the pixel fields for its own image).
   const uint64_t cmpChecks = cmpChecks_.load();
-  if (cmpChecks > 0) {
+  if (cmpChecks > 0 && static_cast<GfxReplayRoute>(route_.load()) == GfxReplayRoute::kVulkanCompare) {
     char cmp[192];
     std::snprintf(cmp, sizeof(cmp),
                   "\ncompare(GPU vs gdi): checks=%llu bad=%llu rgbPx=%llu alphaPx=%llu "
@@ -626,6 +806,34 @@ std::string GfxReplay::StatsLines() {
                   cmpBBoxY0_.load(), cmpBBoxX1_.load(), cmpBBoxY1_.load(), cmpMaxDelta_.load(),
                   static_cast<unsigned long long>(cmpSmallDeltaPx_.load()));
     out += cmp;
+  }
+  // Golden-reference gate (CPU route; see GfxReplayRefMode). The hashes are the
+  // pass/fail; the pixel numbers come from the single frame the stored image was
+  // taken from, i.e. they only say *how* it failed, not where every frame differs.
+  const int refMode = refMode_.load();
+  if (refMode != 0) {
+    char rf[320];
+    if (refMode == static_cast<int>(GfxReplayRefMode::kExport)) {
+      std::snprintf(rf, sizeof(rf),
+                    "\nref export: frames=%llu -> hmrdp_ref_%s.hash + .bmp   hashMs=%.1f",
+                    static_cast<unsigned long long>(refFrames_.load()), refTag_.c_str(),
+                    static_cast<double>(refHashUs_.load()) / 1000.0);
+    } else {
+      std::snprintf(rf, sizeof(rf),
+                    "\nref compare: refFrames=%llu checks=%llu bad=%llu firstBad=%lld "
+                    "imageFrame=%lld rgbPx=%llu alphaPx=%llu maxDelta=%d bbox=(%d,%d)-(%d,%d) hashMs=%.1f%s%s",
+                    static_cast<unsigned long long>(refFrames_.load()),
+                    static_cast<unsigned long long>(refChecks_.load()),
+                    static_cast<unsigned long long>(refBad_.load()),
+                    static_cast<long long>(refFirstBad_.load()),
+                    static_cast<long long>(refImageFrame_),
+                    static_cast<unsigned long long>(cmpRgbDiff_.load()),
+                    static_cast<unsigned long long>(cmpAlphaDiff_.load()), cmpMaxDelta_.load(),
+                    cmpBBoxX0_.load(), cmpBBoxY0_.load(), cmpBBoxX1_.load(), cmpBBoxY1_.load(),
+                    static_cast<double>(refHashUs_.load()) / 1000.0,
+                    refNote_.empty() ? "" : "  note=", refNote_.c_str());
+    }
+    out += rf;
   }
   if (!traffic.empty()) {
     out += "\n";
@@ -947,6 +1155,12 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
              static_cast<unsigned long long>(paceUs_.load() / 1000));
 
+  // Record the reference before the desktop is torn down: the buffer still holds
+  // the last composed frame (the one the hash list's last entry describes).
+  if (refMode_.load() == static_cast<int>(GfxReplayRefMode::kExport)) {
+    RefWrite(gfxPath, &cpu);
+  }
+
   hmrdp::GfxDumpSetReplaying(false);
   cpu.SetFrameFn(nullptr);
   GfxWorkSetFrameBeginHook(nullptr);
@@ -1064,6 +1278,184 @@ void GfxReplay::CompareFrames() {
   }
 }
 
+// ---- golden reference (see GfxReplayRefMode) ------------------------------
+
+bool GfxReplay::RefLoad(const std::string& capturePath) {
+  const std::string hashPath = RefSibling(capturePath, "hmrdp_ref_" + refTag_ + ".hash");
+  FILE* f = std::fopen(hashPath.c_str(), "rb");
+  if (f == nullptr) {
+    refNote_ = "no " + hashPath;
+    return false;
+  }
+  char magic[8] = {0};
+  uint32_t geom[4] = {0, 0, 0, 0};  // width, height, imageFrame, frameCount
+  bool ok = std::fread(magic, 1, sizeof(magic), f) == sizeof(magic) &&
+            std::memcmp(magic, kRefMagic, sizeof(kRefMagic)) == 0 &&
+            std::fread(geom, 1, sizeof(geom), f) == sizeof(geom) && geom[3] > 0u &&
+            geom[3] < 1000000u;
+  if (ok) {
+    refHashes_.resize(geom[3]);
+    ok = std::fread(refHashes_.data(), 8, geom[3], f) == geom[3];
+  }
+  std::fclose(f);
+  if (!ok) {
+    refHashes_.clear();
+    refNote_ = "corrupt " + hashPath;
+    return false;
+  }
+  refFrames_.store(refHashes_.size());
+  refImageFrame_ = static_cast<int64_t>(geom[2]);
+  // The image is optional: the per-frame hashes are the gate, the image exists so
+  // a failure can be looked at (and for the pixel-level numbers on its frame).
+  if (!ReadBmp(RefSibling(capturePath, "hmrdp_ref_" + refTag_ + ".bmp"), &refImage_, &refImageW_, &refImageH_)) {
+    refNote_ = "no reference image (hash-only check)";
+  }
+  HMRDP_LOGI("gfx replay: reference loaded (%{public}zu frames, image %{public}dx%{public}d "
+             "@%{public}lld)",
+             refHashes_.size(), refImageW_, refImageH_,
+             static_cast<long long>(refImageFrame_));
+  return true;
+}
+
+void GfxReplay::RefWrite(const std::string& capturePath, GfxCpuDesktop* cpu) {
+  rdpGdi* gdi = cpu != nullptr ? cpu->gdi() : nullptr;
+  if (gdi == nullptr || gdi->primary_buffer == nullptr || refHashes_.empty()) {
+    return;
+  }
+  const std::string hashPath = RefSibling(capturePath, "hmrdp_ref_" + refTag_ + ".hash");
+  FILE* f = std::fopen(hashPath.c_str(), "wb");
+  if (f == nullptr) {
+    HMRDP_LOGW("gfx replay: cannot write %{public}s", hashPath.c_str());
+    return;
+  }
+  // The image is the last composed frame, i.e. the hash list's last entry.
+  const uint32_t geom[4] = {static_cast<uint32_t>(gdi->width),
+                            static_cast<uint32_t>(gdi->height),
+                            static_cast<uint32_t>(refHashes_.size() - 1u),
+                            static_cast<uint32_t>(refHashes_.size())};
+  std::fwrite(kRefMagic, 1, sizeof(kRefMagic), f);
+  std::fwrite(geom, 1, sizeof(geom), f);
+  std::fwrite(refHashes_.data(), 8, refHashes_.size(), f);
+  std::fclose(f);
+  const bool bmp = WriteBmp(RefSibling(capturePath, "hmrdp_ref_" + refTag_ + ".bmp"), gdi->primary_buffer,
+                            static_cast<int>(gdi->stride), static_cast<int>(gdi->width),
+                            static_cast<int>(gdi->height));
+  HMRDP_LOGI("gfx replay: reference written (%{public}zu frames, image %{public}s)",
+             refHashes_.size(), bmp ? "ok" : "FAILED");
+}
+
+void GfxReplay::RefCompareImage(const uint8_t* data, int stride, int width, int height) {
+  const size_t rowBytes = static_cast<size_t>(width) * 4u;
+  if (refImageW_ != width || refImageH_ != height ||
+      refImage_.size() != rowBytes * static_cast<size_t>(height)) {
+    refNote_ = "stored image geometry differs";
+    return;
+  }
+  uint64_t rgbPx = 0;
+  uint64_t alphaPx = 0;
+  uint64_t smallPx = 0;
+  int maxDelta = 0;
+  int x0 = -1;
+  int y0 = -1;
+  int x1 = -1;
+  int y1 = -1;
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* cur = data + static_cast<size_t>(y) * static_cast<size_t>(stride);
+    const uint8_t* ref = refImage_.data() + static_cast<size_t>(y) * rowBytes;
+    for (int x = 0; x < width; ++x) {
+      const uint8_t* a = cur + static_cast<size_t>(x) * 4u;  // BGRA
+      const uint8_t* b = ref + static_cast<size_t>(x) * 4u;
+      const int dR = std::abs(static_cast<int>(a[2]) - static_cast<int>(b[2]));
+      const int dG = std::abs(static_cast<int>(a[1]) - static_cast<int>(b[1]));
+      const int dB = std::abs(static_cast<int>(a[0]) - static_cast<int>(b[0]));
+      const int d = std::max(dR, std::max(dG, dB));
+      if (d > 0) {
+        ++rgbPx;
+        if (d > maxDelta) {
+          maxDelta = d;
+        }
+        if (d <= 2) {
+          ++smallPx;
+        }
+        if (x0 < 0 || x < x0) {
+          x0 = x;
+        }
+        if (x1 < x) {
+          x1 = x;
+        }
+        if (y0 < 0 || y < y0) {
+          y0 = y;
+        }
+        y1 = y;
+      }
+      if (a[3] != b[3]) {
+        ++alphaPx;
+      }
+    }
+  }
+  cmpChecks_.fetch_add(1);
+  if (rgbPx > 0) {
+    cmpBad_.fetch_add(1);
+  }
+  cmpRgbDiff_.store(rgbPx);
+  cmpAlphaDiff_.store(alphaPx);
+  cmpSmallDeltaPx_.store(smallPx);
+  cmpMaxDiff_.store(static_cast<uint64_t>(maxDelta));
+  cmpMaxDelta_.store(maxDelta);
+  cmpBBoxX0_.store(x0);
+  cmpBBoxY0_.store(y0);
+  cmpBBoxX1_.store(x1);
+  cmpBBoxY1_.store(y1);
+  HMRDP_LOGI("gfx replay: reference image compare: rgbPx=%{public}llu maxDelta=%{public}d",
+             static_cast<unsigned long long>(rgbPx), maxDelta);
+}
+
+void GfxReplay::RefCollectFrame(GfxCpuDesktop* cpu) {
+  const int mode = refMode_.load();
+  if (mode == 0 || cpu == nullptr) {
+    return;
+  }
+  rdpGdi* gdi = cpu->gdi();
+  if (gdi == nullptr || gdi->primary_buffer == nullptr || gdi->width == 0 || gdi->height == 0) {
+    return;
+  }
+  const int width = static_cast<int>(gdi->width);
+  const int height = static_cast<int>(gdi->height);
+  const int stride = static_cast<int>(gdi->stride);
+  // This runs inside gdi's EndFrame (OnCpuFrame is called from its EndPaint hook),
+  // so the time it takes is charged to the `compose` phase: it is reported
+  // separately in the reference line so a reference run is never mistaken for a
+  // performance run.
+  const int64_t hashStart = NowUs();
+  const uint64_t hash = HashFrame(gdi->primary_buffer, stride, width, height);
+  // `frames_` was already incremented for this frame by the caller, so the index
+  // is frames - 1: the same numbering the reference file was written with.
+  const int64_t index = static_cast<int64_t>(frames_.load()) - 1;
+  refHashUs_.fetch_add(static_cast<uint64_t>(NowUs() - hashStart));
+  if (mode == static_cast<int>(GfxReplayRefMode::kExport)) {
+    refHashes_.push_back(hash);
+    refFrames_.store(refHashes_.size());
+    return;
+  }
+  refChecks_.fetch_add(1);
+  if (index >= 0 && static_cast<size_t>(index) < refHashes_.size()) {
+    if (refHashes_[static_cast<size_t>(index)] != hash) {
+      if (refBad_.fetch_add(1) == 0) {
+        refFirstBad_.store(index);
+        // Dump the frame that failed so it can be looked at next to the reference.
+        WriteBmp(RefSibling(gfxPath_, "hmrdp_ref_" + refTag_ + "_fail.bmp"), gdi->primary_buffer, stride, width,
+                 height);
+      }
+    }
+  } else {
+    // This run produced more frames than the reference recorded.
+    refBad_.fetch_add(1);
+  }
+  if (index == refImageFrame_) {
+    RefCompareImage(gdi->primary_buffer, stride, width, height);
+  }
+}
+
 void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if (cpu == nullptr) {
     return;
@@ -1118,6 +1510,9 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   const int64_t paceStart = NowUs();
   MarkFrameEnd(presented);
   meter_.OnPace(static_cast<uint64_t>(NowUs() - paceStart));
+  // Golden-reference bookkeeping, last so it cannot land in any measured phase
+  // (`present` was measured above; the hash is not present work).
+  RefCollectFrame(cpu);
 }
 
 }  // namespace hmrdp

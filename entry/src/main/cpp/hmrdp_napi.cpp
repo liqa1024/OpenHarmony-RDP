@@ -680,12 +680,12 @@ std::string GetStringArg(napi_env env, napi_value v) {
 
 // Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
 napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  size_t argc = 7;
+  napi_value args[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string out;
   if (argc < 4) {
-    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath[, route])";
+    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath[, route, realtime, refMode])";
   } else {
     const std::string surfaceId = GetStringArg(env, args[0]);
     int32_t surfaceW = 0;
@@ -703,8 +703,17 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     if (argc >= 6) {
       napi_get_value_int32(env, args[5], &realtime);
     }
-    // Route ids match GfxReplayRoute: 0 = CPU(gdi) only (perf reference),
-    // 1 = Vulkan engine, 2 = Vulkan engine vs gdi compare.
+    // Golden-reference mode (CPU route only, see GfxReplayRefMode): 0 = off
+    // (perf run), 1 = write the reference, 2 = check against the stored one.
+    int32_t refMode = 0;
+    if (argc >= 7) {
+      napi_get_value_int32(env, args[6], &refMode);
+    }
+    // Route ids match GfxReplayRoute: 0 = CPU(gdi) (the only route the UI offers -
+    // it runs with whatever presenter the "硬件加速" setting selects),
+    // 1 = Vulkan engine, 2 = Vulkan engine vs gdi compare. The engine routes are
+    // kept for reference but are no longer reachable from the page
+    // (doc_agent/gpu-accel-plan.md).
     hmrdp::GfxReplayRoute replayRoute = hmrdp::GfxReplayRoute::kCpu;
     switch (route) {
       case 1:
@@ -716,6 +725,12 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
       default:
         break;
     }
+    hmrdp::GfxReplayRefMode replayRef = hmrdp::GfxReplayRefMode::kOff;
+    if (refMode == 1) {
+      replayRef = hmrdp::GfxReplayRefMode::kExport;
+    } else if (refMode == 2) {
+      replayRef = hmrdp::GfxReplayRefMode::kCompare;
+    }
     const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
     OHNativeWindow* window = nullptr;
     const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
@@ -724,7 +739,7 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     } else {
       PreferGpuWindowBuffer(window);
       if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath, replayRoute,
-                                             realtime != 0)) {
+                                             realtime != 0, replayRef)) {
         out = "started " + hmrdp::GfxReplay::Instance().Stats();
       } else {
         out = "failed: " + hmrdp::GfxReplay::Instance().Stats();

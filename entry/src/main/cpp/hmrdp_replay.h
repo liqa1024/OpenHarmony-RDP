@@ -27,15 +27,41 @@ class ReplayDesktop;
 
 // Which decoder/presenter the replay runs.
 //  kCpu           - FreeRDP's own gdi pipeline only (perf reference), presented
-//                   through the Vulkan presenter's CPU frame path.
-//  kVulkan        - Vulkan desktop engine only.
+//                   through the presenter the "硬件加速" setting selects.
+//  kVulkan        - Vulkan desktop engine only. **Not reachable from the UI any
+//                   more** (the engine routes were dropped while the GPU work is
+//                   being redone, doc_agent/gpu-accel-plan.md); kept so the
+//                   reference implementation stays runnable from code.
 //  kVulkanCompare - same engine, with an offline gdi desktop fed the same
-//                   capture simultaneously and compared per frame (correctness
-//                   verification). Perf numbers are not meaningful here.
+//                   capture simultaneously and compared per frame. Same status:
+//                   kept for reference, no longer a UI route.
 enum class GfxReplayRoute {
   kCpu = 0,
   kVulkan = 1,
   kVulkanCompare = 2,
+};
+
+// Correctness gate for the CPU (gdi) route: replay a capture and check the
+// composed desktop against a *golden reference* recorded from an earlier run of
+// the same capture (replaces the engine-vs-gdi shadow comparison, which cannot be
+// kept consistent and needs the engine, doc_agent/cpu-accel-plan.md §7).
+//
+//  kOff     - nothing (the normal perf run).
+//  kExport  - record the reference: one 64-bit hash of the composed desktop per
+//             frame into `hmrdp_ref.hash`, plus the last frame as `hmrdp_ref.bmp`
+//             so a human can look at it.
+//  kCompare - check every frame's hash against the stored list (`bad` = frames
+//             that differ) and, for the frame the reference image was taken from,
+//             compare pixel by pixel (`rgbPx`/`maxDelta`/`bbox`). A failing run
+//             also dumps the frame that failed as `hmrdp_ref_fail.bmp`.
+//
+// The reference is only meaningful while the decode is *bit-exact*: that is the
+// contract the CPU-side optimizations must keep (逐位等价), so the same golden
+// file stays valid across them.
+enum class GfxReplayRefMode {
+  kOff = 0,
+  kExport = 1,
+  kCompare = 2,
 };
 
 class GfxReplay {
@@ -60,7 +86,7 @@ class GfxReplay {
   //           wake-ups) match the live session. Requires a version 1 capture;
   //           for an untimed capture it falls back to false and says so.
   bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath,
-             GfxReplayRoute route, bool realtime);
+             GfxReplayRoute route, bool realtime, GfxReplayRefMode refMode = GfxReplayRefMode::kOff);
   void Resize(int width, int height);
   void Stop();
   // Single-line summary (logs) and a multi-line variant for the on-device
@@ -92,6 +118,19 @@ class GfxReplay {
   void RunVulkanReplay(const std::string& gfxPath, bool compare);
   void RunCpuReplay(const std::string& gfxPath);
   void CompareFrames();
+  // Golden reference (see GfxReplayRefMode). `RefCollectFrame` runs on the replay
+  // thread once per composed frame (CPU route): it hashes it, and in export mode
+  // keeps the hash / in compare mode checks it against the loaded list.
+  void RefCollectFrame(GfxCpuDesktop* cpu);
+  // Loads `hmrdp_ref.hash` (+ the `.bmp` it names) next to the capture; false with
+  // a one-line reason in `refNote_` when the reference is missing/unusable.
+  bool RefLoad(const std::string& capturePath);
+  // Writes this run as the reference: the per-frame hashes plus the last composed
+  // frame as `.bmp` (the frame the hash list's `imageFrame` points at).
+  void RefWrite(const std::string& capturePath, GfxCpuDesktop* cpu);
+  // Pixel-level comparison against the stored reference image (only for the frame
+  // the image was taken from); fills the cmp* fields.
+  void RefCompareImage(const uint8_t* data, int stride, int width, int height);
   // Closes the frame for the cadence bookkeeping: the first presented frame marks
   // the fps origin (so a run's start-up does not dilute the rate) and every frame
   // counts. It deliberately does not sleep - the fast mode runs flat out and the
@@ -219,6 +258,34 @@ class GfxReplay {
   std::atomic<int> cmpMaxDelta_{0};
   // Pixels whose worst channel delta is <= 2 (rounding-level, not content).
   std::atomic<uint64_t> cmpSmallDeltaPx_{0};
+
+  // --- golden reference (kExport / kCompare, CPU route only) ---------------
+  // One hash per composed frame, in playback order. Written to / read from
+  // `hmrdp_ref.hash` next to the capture (replay thread only).
+  std::vector<uint64_t> refHashes_;
+  std::atomic<int> refMode_{0};
+  // Frames recorded/checked so far (the vector itself is replay-thread only), and
+  // the total time spent hashing them (reported so a reference run's `compose` is
+  // never read as a performance figure - the hash runs inside gdi's EndFrame).
+  std::atomic<uint64_t> refFrames_{0};
+  std::atomic<uint64_t> refHashUs_{0};
+  std::atomic<uint64_t> refChecks_{0};
+  std::atomic<uint64_t> refBad_{0};
+  std::atomic<int64_t> refFirstBad_{-1};
+  // The stored reference image (top-down BGRA, `refImageW_ * 4` bytes per row) and
+  // the frame index it was taken from, both from the stored file when comparing.
+  std::vector<uint8_t> refImage_;
+  int refImageW_ = 0;
+  int refImageH_ = 0;
+  int64_t refImageFrame_ = -1;
+  // Why the stored reference could not be used exactly as recorded (missing
+  // image, geometry change, ...): one line, reported in the stats.
+  std::string refNote_;
+  // Fingerprint of the capture this run replays: the reference files are named
+  // after it (`hmrdp_ref_<tag>.hash/.bmp`), because the device's capture file
+  // name is always hmrdp_gfx.bin - a reference recorded from another recording
+  // must not be usable by accident (doc_agent/gfx-engine.md §6).
+  std::string refTag_;
 
   // Replay-thread only (no locking needed).
   GfxCpuDesktop* cpuDesktop_ = nullptr;
