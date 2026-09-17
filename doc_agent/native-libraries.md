@@ -72,6 +72,17 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
     （症状：`relocating failed: symbol not found` + `does not provide an export name …` + 启动即退）——
     改完补丁请用 `llvm-nm -D --undefined-only libwinpr3.so | findstr Hmrdp` 自检一遍。
 
+13. **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
+     1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
+     只是白搬一遍（视频样本 1566µs/帧、41MB/帧）。这一步把这个 surface 的 `data` 直接指向
+     `gdi->primary_buffer`（不再自己 malloc），解码器写的就是呈现器要上传的内存，拷贝消失
+     （`compose` 1566 → 117µs）。判定凭证是 `surface->data == gdi->primary_buffer`；不满足就退回原路径。
+     **生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的 `DesktopResize` 会换掉
+     primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，否则是"向已释放内存
+     memset"；`gdi_DeleteSurface` 不能释放共享缓冲；出现第二个 surface 时先解除共享。
+     全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见
+     [`cpu-path.md`](cpu-path.md) §6.1 ②。
+
 ## 4. 编 FreeRDP 时的关键选项
 
 - **`-DWITH_VERBOSE_WINPR_ASSERT=OFF` 必须保持**：默认 ON 时 `WINPR_ASSERT` 会 `abort()` 整个进程，

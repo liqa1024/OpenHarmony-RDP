@@ -3413,8 +3413,13 @@ bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint
     HMRDP_LOGW("vk desktop: surface %{public}u progressive state allocation failed", surfaceId);
   }
 
-  HMRDP_LOGI("vk desktop: surface %{public}u %{public}dx%{public}d stride=%{public}d", surfaceId,
-             surface.meta.width, surface.meta.height, surface.meta.stride);
+  // The wire pixel format decides more than the swap: 0x21 (ARGB_8888) maps to
+  // BGRA32, which is exactly gdi's desktop format, so a desktop-sized surface can
+  // share the primary buffer (doc_agent/cpu-path.md §6.1 ②); 0x20 (XRGB_8888)
+  // maps to BGRX32 and cannot.
+  HMRDP_LOGI("vk desktop: surface %{public}u %{public}dx%{public}d stride=%{public}d"
+             " wireFormat=0x%{public}x",
+             surfaceId, surface.meta.width, surface.meta.height, surface.meta.stride, format);
   impl_->surfaces[surfaceId] = surface;
   return true;
 }

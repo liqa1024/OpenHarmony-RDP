@@ -38,10 +38,11 @@ CPU 回放的 stats 就是这条线的账：
 | 视频（195 帧，整屏脏，~1325 tile/帧） | 24.5ms | zgx+parse 1.1–1.4 + decode 19.3（read 0.2 / dispatch 0.8 / **wait-block 11.8** / **update 5.6**）+ compose 1.6 + present 2.1 |
 | 滚动（150 帧，~49 tile/帧） | 13.5 → **10.5**（§2） | zgx+parse 4.2 → 2.7 + decode 6.4 → 4.8 + compose 0.5 + present 2.5 |
 
-跑满口径的当前值（两份本地录像，`cpuKHz=418000-1200000`）：视频 `本机` 22.5ms（zgx+parse 1.0 +
-decode 19.2 + compose 1.7 + present 0.59，`fps` 42）、碎片 `本机` 13.1ms（3.0 + 5.2 + **3.2** + 1.7，
-`fps` 72）。碎片那份的 `compose` 3.2ms 里约 2.4ms 是 `BeginDesktopBufferWrite` 的等待（顶到 GPU/显示
-上限，见 §8），不是像素搬运。
+跑满口径的当前值（两份本地录像，`cpuKHz=418000-1200000`，已含 §6.1 ②③）：
+视频 `本机` **20.8ms**（zgx+parse 0.8 + decode 19.2 + **compose 0.12** + present 0.66，`fps` 45）；
+碎片 `本机` **9.4ms**（2.5 + 5.3 + **0.09** + 1.5，`fps` 76）。碎片那份另有 **`sync` 2.7ms** 的阻塞
+（等 GPU 放开主缓冲——它顶到了显示/GPU 上限，见 §8），视频只要 34µs。**`sync` 不在 `本机` 里**：
+帧的整段墙钟 = `本机` + `sync`。
 
 判读顺序：① `setup`（有没有低频重命令）② `kB/frame`/`cmds/frame`（内容是否可比）
 ③ `wait(block)`（并行解码的真实墙钟）④ `update`（串行合成）⑤ `present` ⑥ **`sync`**（等 GPU 放开
@@ -59,6 +60,7 @@ decode 19.2 + compose 1.7 + present 0.59，`fps` 42）、碎片 `本机` 13.1ms�
 | **`ResetGraphics` 不再重分配 PLANAR scratch**（几何没变就直接返回） | patch 第 12 步（`planar.c`） | 滚动 `本机` 13.5 → **10.5ms**、`feed` 2.13 → **1.63s**、整轮 `cpu` **−17%**、`max` 帧 146 → **115ms** |
 | **gdi 主缓冲 = 呈现器自带缓冲**（§6.1 ③ 零拷贝上屏） | app 侧（`hmrdp_presenter.h`、`hmrdp_vk_renderer.*`、`hmrdp_gfx_cpu.*`、`hmrdp_session.*`、`hmrdp_replay.cpp`） | 视频（整屏脏）`present` 2.13 → **0.60ms（−72%）**、`本机` 23.6 → **22.3ms**、`cpu`/轮 31.1 → 30.9s、`fps` 40.0 → 42.3 |
 | **零拷贝路径改用合并 box**（脏区形状随"有没有 memcpy"翻转，见 §6.1 ③） | app 侧（`hmrdp_gfx_cpu.cpp`、`hmrdp_presenter.h`） | 碎片样本 `present` 1.91 → **1.56ms**（合计 2.50 → 1.56，−38%）、`本机` 12.95 → **12.6ms**、`cpu`/轮 3.83 → 3.7s；视频样本与 rect list 持平（0.60 vs 0.64） |
+| **A-② 桌面镜像 surface 直接合成进 primary**（§6.1 ②） | FreeRDP（patch 第 13 步，`libfreerdp/gdi/gfx.c`） | 视频 `compose` 1566 → **117µs**、`本机` 21987 → **20777µs**、`fps` 41.2 → **45.1**、`cpu`/轮 30.65 → **29.98s**、每帧少 **41MB** DRAM 读写；碎片 `compose` 543 → **93µs**、`本机` 10381 → **9394µs** |
 | 归因口径：`prog` 相位 + `setup` 计数 + 每轮 `cpu=` | app 侧（`hmrdp_gfx_work.*`、`hmrdp_replay.cpp`） | 上面四条都是靠它定位的 |
 
 ⚠ 已**否决**：`update_tiles` 的"只拷没写过的区域"（delta 折叠）——stamp 去重实测**命中 0 次**
@@ -245,10 +247,28 @@ decode 19.2 + compose 1.7 + present 0.59，`fps` 42）、碎片 `本机` 13.1ms�
     的暴露面相同，是既有假设，不是这次新引入的。
   - **live 侧同一套**：`HmrdpPostConnect` 用 `InitGdiWithPresenter`（设备在就直接给缓冲），
     `Session::HandleBeginPaint` / `HandleEndPaint` 负责等待与挂接；回放路由（`GfxCpuDesktop`）同理。
-- **② 可以在"表面就是桌面"时跳过**：只有一个表面、`outputMapped` 且 `mappedWidth/Height == 桌面`、
-  原点 `(0,0)`、格式与 primary 相同（GFX 全屏会话的常态）时，surface 内容就是桌面镜像，
-  **直接呈现 surface**、不写 primary。**风险**：非 GFX 绘制（桌面位图更新等）只写 primary ⇒
-  需要一个"本帧是否发生过非 GFX 主缓冲写"的守卫（回放/GFX-only 捕获里天然没有；live 必须加守卫）。
+- **② 已做（patch 第 13 步）：让"桌面镜像"surface 直接合成进 primary 缓冲**。GFX 全屏会话的常态是
+  **只有一个** surface，`outputMapped` 且映射到 `(0,0)`、`mappedWidth/Height == 桌面`、1:1 不缩放、
+  格式与行距与 primary 相同 ⇒ 这个 surface **就是桌面**，`gdi_OutputUpdate` 里逐矩形的
+  `freerdp_image_scale(surface → primary)` 纯粹是把同一份像素搬一遍。做法是**把 primary 缓冲直接
+  交给这个 surface**（不再 malloc 自己的），于是**解码器写的就是呈现器要上传的那块内存**，那趟拷贝整个
+  消失。实测（视频样本、跑满）：`compose` **1566 → 117µs**、`本机` 21987 → **20777µs**、
+  `fps` 41.2 → **45.1**、`cpu`/轮 30.65 → **29.98s**；碎片样本 `compose` 543 → **93µs**、
+  `本机` 10381 → **9394µs**。**每帧少 41MB（视频）/4.6MB（碎片）的 DRAM 读写**（整轮视频 ≈8GB）。
+  附带收益：`CreateSurface` 不再分配+`0xFF` 填 26MB（`setup create` 0.14 → **0.02ms**）。
+  - **判定与退化**：共享的凭证就是 `surface->data == gdi->primary_buffer`。任何一条不满足
+    （出现第二个 surface、原点/缩放变了、格式或行距不符）都退回**原来的逐矩形拷贝**，
+    所以最坏情况就等于改之前。
+  - **生命周期（这是关键，不是"直接呈现 surface"一句话）**：
+    - `gdi_ResetGraphics` 会**保留** surface 并 `memset(surface->data, 0xFF, …)`，而它调用的
+      `update->DesktopResize` 会把 primary **换成新缓冲**⇒ 必须在**换之前**记下谁在共享，换完之后
+      **重新指向新 primary**（几何仍匹配时，零成本）或**让它自己分配**（几何变了时）。
+      漏掉这一步就是"向已释放内存 memset"，而且是**写进呈现器的 Vulkan 缓冲**。
+    - `gdi_DeleteSurface` **不能**释放共享的缓冲（那是 primary）。
+    - 出现**第二个** surface 时先解除所有共享：否则合成第二个 surface 时会覆盖共享 surface 的像素。
+  - **不需要动头文件、不需要动 app**：全是 `libfreerdp/gdi/gfx.c` 内部的事，因为 app 侧的约定
+    （"gdi 的主缓冲 = 呈现器的缓冲"，A-③）没变，presenter 照样读 `gdi->primary_buffer`。
+    ⇒ **这条对任何呈现器都成立**（GLES / 未挂接桌面缓冲时 gdi 自己持主缓冲也一样省掉那趟拷贝）。
 - **① 只在"同帧重复合成"存在时才可折叠，而本样本实测没有重复**（去重 stamp 命中 0 次）⇒
   **不要做 delta 折叠**（这正是先量后改的价值：看起来最像"重复劳动"的一条其实不存在）。
 
@@ -345,6 +365,9 @@ app 侧新增的 `setup` 统计行（把非像素命令从 `zgx+parse` 里拆出
 
 - planar scratch 不随 `ResetGraphics` 重分配（§6.5）：滚动 `cpu` −17%。
 - **A-③ 主缓冲 = presenter 缓冲**（§6.1 ③）：去掉整帧拷贝，`present` CPU 侧降到 ~0.6ms。
+- **A-② 桌面镜像 surface 直接合成进 primary**（§6.1 ②，patch 第 13 步）：`compose`
+  **1566 → 117µs（视频）/ 543 → 93µs（碎片）**，`本机` −1.2ms / −1.0ms，每帧少 41MB/4.6MB 的
+  DRAM 读写；两份录像 `bad=0`。
 - **脏区形状：零拷贝路径恒发 box**（§6.1 ③）：条数从 ~250 降到 1，同会话 A/B `present` −17%。
 - **`mode=fast` 不打节拍**（[`gfx-engine.md`](gfx-engine.md) 节拍小节）：只影响可比性，不省成本。
 - 结论：**这两段的"少搬字节"已经做完了**——CPU 侧 `present` 剩 0.58–1.4ms，其中 ~90% 是固定的
@@ -359,8 +382,8 @@ app 侧新增的 `setup` 统计行（把非像素命令从 `zgx+parse` 里拆出
    且电费减半"**，而现在自动值恒为 4、切换全靠用户手动。判据用已有的 duty（`dutyPermille` /
    到达间隔），阈值要量（≥ 串行单帧工时才切回去）。风险低：旋钮与热切换早就有
    （`HmrdpSetDecodeThreads`）。
-2. **A-② 跳过 surface→primary 的整屏 memcpy**（§6.1）：全屏会话每帧再省 **20.6MB** 的读+写。
-   收益与 ③ 同源但独立，代价是**要一个"本帧有没有非 GFX 写过主缓冲"的守卫**（正确性风险）。
+2. ~~**A-② 跳过 surface→primary 的整屏 memcpy**~~ **已完成（patch 第 13 步）**：见 §6.1 ②。
+   `compose` 1566 → 117µs（视频）、每帧少 41MB DRAM 读写。
 3. **present 的整幅重上屏**（[`present-pipeline.md`](present-pipeline.md) §4.3）：每帧
    clear 6.5M + 采样 6.5M + 写 6.5M 像素，与脏区无关。**先量 GPU 时间戳**（现在的 ~10ms 是墙钟反推，
    可能是在等带宽/合成器而不是在跑），量出来再决定——它的收益是 DRAM 流量/能耗，不是 fps。
