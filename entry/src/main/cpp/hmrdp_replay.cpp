@@ -650,6 +650,19 @@ std::string GfxReplay::StatsLines() {
     out += run;
   }
 
+  // Energy proxy for the same window as `cpu=` (hmrdp_energy.h). This is the
+  // figure the worker-count choice is judged on: `cpu=` alone cannot say at which
+  // clock those CPU seconds were spent, so it cannot compare "N cores at a low
+  // clock" with "one core at a high clock". Only shown for a finished run, so a
+  // live run cannot display the previous run's figure.
+  {
+    std::lock_guard<std::mutex> lock(energyMutex_);
+    if (!energyLine_.empty() && !running_.load()) {
+      out += "\n";
+      out += energyLine_;
+    }
+  }
+
   // CPU route only (the GPU route composes in the engine and never presents a gdi
   // frame): how many bytes actually left the CPU, versus what the merged bounding
   // box would have cost for the same run (the saving is then visible in every run
@@ -1011,6 +1024,12 @@ void GfxReplay::OnReplayFrame() {
 }
 
 void GfxReplay::Run() {
+  // A new run invalidates the previous run's energy line: Stats() must not show
+  // one run's proxy next to another run's frames.
+  {
+    std::lock_guard<std::mutex> lock(energyMutex_);
+    energyLine_.clear();
+  }
   switch (static_cast<GfxReplayRoute>(route_.load())) {
     case GfxReplayRoute::kCpu:
       RunCpuReplay(gfxPath_);
@@ -1135,6 +1154,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
   cpuStartUs_.store(ProcessCpuUs());
+  energy_.Begin();
 
   ReplayPaceFn pace;
   if (realtimeActive_.load() != 0) {
@@ -1146,6 +1166,23 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
       GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum, &aborted);
   aborted_.store(aborted);
   cpuEndUs_.store(ProcessCpuUs());
+  energy_.End();
+  if (energy_.Valid()) {
+    std::lock_guard<std::mutex> lock(energyMutex_);
+    energyLine_ = energy_.Line(frames_.load());
+  }
+  // The decode pool's own account: the section the receiving thread waited out
+  // versus the summed time the chunk callbacks ran. Their ratio is the *effective*
+  // parallel width - if it stays near 1 when more workers were asked for, the
+  // extra workers are not doing the decode (doc_agent/cpu-accel-plan.md §2).
+  if (&HmrdpProgStat[0] != nullptr) {
+    const double poolWallMs = static_cast<double>(HmrdpProgStat[2]) / 1e6;
+    const double workerBusyMs = static_cast<double>(HmrdpProgStat[9]) / 1e6;
+    HMRDP_LOGI("energy: pool poolWall=%{public}.1fms workerBusy=%{public}.1fms ratio=%{public}.2f "
+               "tiles=%{public}llu",
+               poolWallMs, workerBusyMs, poolWallMs > 0 ? workerBusyMs / poolWallMs : 0.0,
+               static_cast<unsigned long long>(HmrdpProgStat[8]));
+  }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -1354,6 +1391,9 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
   if (cpu == nullptr) {
     return;
   }
+  // Sampled here because this is the CPU route's per-frame hook: the probe only
+  // tags a sample every 250 ms, so a call per frame costs a clock read.
+  energy_.Poll();
   const int64_t nowUs = static_cast<int64_t>(NowUs());
   const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
   if (nowUs - startUs_.load() > capUs) {

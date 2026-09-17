@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "hmrdp_energy.h"
 #include "hmrdp_gfx_work.h"
 
 namespace hmrdp {
@@ -220,6 +221,13 @@ class GfxReplay {
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
+  // Per-core CPU energy proxy for the run (hmrdp_energy.h): the piece `cpu=`
+  // cannot supply, because the worker-count A/B has to weigh "N cores at a low
+  // clock" against "one core at a high clock". Replay thread writes it, the
+  // stats thread reads only the finished line (energyLine_, under its mutex).
+  hmrdp::EnergyProbe energy_;
+  std::mutex energyMutex_;
+  std::string energyLine_;
   // Time spent deliberately sleeping in PaceRecord(); subtracted from pumpUs_ so
   // the reported feed cost is compute, not playback throttling. The fast mode does
   // not sleep, so this is 0 there.

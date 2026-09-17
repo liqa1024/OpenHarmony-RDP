@@ -74,6 +74,7 @@ add_library(hmrdp SHARED
     hmrdp_gfx_driver.cpp
     hmrdp_gfx_work.cpp
     hmrdp_decode_tuning.cpp
+    hmrdp_energy.cpp
     hmrdp_replay.cpp
     hmrdp_presenter.cpp
     hmrdp_gles_presenter.cpp
