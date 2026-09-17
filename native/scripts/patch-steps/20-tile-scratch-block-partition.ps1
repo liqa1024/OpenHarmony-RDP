@@ -1,0 +1,296 @@
+# 20) HmRdp: take the tile decode's working buffers out of the shared pool, and
+#     claim tiles in blocks instead of one at a time.
+#
+#     背景（doc_agent/cpu-accel-plan.md §1/§2）：改之前并行解码在 2 个 worker
+#     之后完全不再涨，而且整轮进程 CPU 是单核的 3 倍以上。两个机制性原因都在
+#     "所有 worker 争同一份共享结构"上：
+#
+#       a) `progressive->bufferPool` 是**带临界区的全局池**，而 tile 解码每个
+#          分量都要 Take/Return 一次 DWT 临时缓冲，加上 tile 自己的 24 KB 工作
+#          缓冲 —— 每个 tile 共 8 次临界区进出（3 分量 ×2 + 2），整屏帧上万次/
+#          帧；池的空闲链表头又是所有 worker 共享写的一条 cache line。
+#       b) 分片投递用一个 `volatile UINT32 nextTile` 动态领取 tile，计数器在 RDP
+#          线程的栈上，所有 worker 用 `__sync_fetch_and_add` 争这条 cache line。
+#
+#     这一步两处都换掉，**不改变任何像素**（缓冲最终内容一样、tile 集合一样、
+#     合成区域一样），只改"谁用哪块内存、工作怎么分"：
+#
+#       a) 每个 chunk 独占一个 2 缓冲的 scratch 槽（工作缓冲 + DWT 临时），随
+#          context 一次性分配、永不在 tile 上 Take/Return。当前槽是线程本地变量
+#          （chunk 回调设置，串行分支用 0 号槽），所以 tile 解码的函数签名保持
+#          上游原样，只换分配调用。
+#       b) 领取计数器保留（动态领取是"负载均衡"的来源：tile 成本不齐，静态区间
+#          在 2 worker 下实测把解码段从 11.8ms 拉到 27.6ms），但**按块领取**
+#          （HMRDP_TILE_CLAIM）：共享计数器的流量降一个数量级，代价最多是尾块
+#          几 tile 的不均衡；计数器本身 64 字节对齐，不与 chunk 描述符同一条
+#          cache line。work item 数量**维持原来的每块 1 个**（不按 worker 数收缩）：
+#          本平台上收缩到 2×worker 会让池的第二个线程不参与（2 worker + 4 个
+#          work item 的解码段与串行一样长）。
+#
+#     顺带修 dev 对拍的 static 缓冲：`rfx_dwt_2d_extrapolate_decode` 的
+#     `ref`/`scratch` 原来是函数内 static，多个 worker 同时打开对拍时会互相踩
+#     （只污染对拍计数，不影响像素），改成 per-call。
+#
+#     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
+function Patch-Regex-All {
+  param([string]$Path, [string]$Pattern, [string]$Replacement, [string]$Marker)
+  if (-not (Test-Path -LiteralPath $Path)) {
+    throw "file not found: $Path"
+  }
+  $raw = [System.IO.File]::ReadAllText($Path)
+  if ($Marker -and $raw.Contains($Marker)) {
+    Write-Host "HmRdp tile scratch already applied to $(Split-Path -Leaf $Path)"
+    return
+  }
+  $crlf = $raw.Contains("`r`n")
+  $text = $raw.Replace("`r`n", "`n")
+  $Replacement = $Replacement.Replace("`r`n", "`n")
+  $re = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+  if (-not $re.IsMatch($text)) {
+    throw "HmRdp tile scratch: pattern not found in $Path"
+  }
+  $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $Replacement }
+  $text = $re.Replace($text, $evaluator)
+  if ($crlf) {
+    $text = $text.Replace("`n", "`r`n")
+  }
+  [System.IO.File]::WriteAllText($Path, $text)
+  Write-Host "HmRdp tile scratch applied to $(Split-Path -Leaf $Path)"
+}
+
+$progScratchH = "$Source\libfreerdp\codec\progressive.h"
+$progScratchC = "$Source\libfreerdp\codec\progressive.c"
+$neonScratchC = "$Source\libfreerdp\codec\neon\rfx_neon.c"
+
+# (a0) the per-context scratch arena pointer.
+Patch-Regex $progScratchH `
+  '\tPROGRESSIVE_TILE_PROCESS_WORK_PARAM params\[0x10000\];\n\tPTP_WORK work_objects\[0x10000\];\n\};' (@'
+	PROGRESSIVE_TILE_PROCESS_WORK_PARAM params[0x10000];
+	PTP_WORK work_objects[0x10000];
+	/* HmRdp: one tile working-buffer slot per dispatched chunk (progressive.c's
+	 * hmrdp_tile_scratch), allocated once per context so the tile decode takes no
+	 * lock and no shared buffer-pool entry. */
+	BYTE* tileScratch;
+};
+'@) 'BYTE* tileScratch;'
+
+# (a1) the scratch helpers, next to the other HmRdp dev globals.
+Patch-Regex $progScratchC `
+  'static INLINE void hmrdp_phase_end\(int slot, unsigned long long t0\)\n\{\n\tif \(t0 != 0\)\n\t\t__atomic_add_fetch\(&HmrdpProgStat\[slot\], hmrdp_now_ns\(\) - t0, __ATOMIC_RELAXED\);\n\}' (@'
+static INLINE void hmrdp_phase_end(int slot, unsigned long long t0)
+{
+	if (t0 != 0)
+		__atomic_add_fetch(&HmrdpProgStat[slot], hmrdp_now_ns() - t0, __ATOMIC_RELAXED);
+}
+
+/*
+ * HmRdp: per-chunk tile working buffers.
+ *
+ * One tile decode needs two 24 KB working buffers (the coefficient working
+ * buffer and the inverse-DWT scratch). Upstream takes both from
+ * `progressive->bufferPool` inside every tile and every component, i.e. eight
+ * lock round trips per tile (a Take and a Return per component plus the tile's
+ * own buffer). On a full-screen frame that is thousands of acquisitions of a
+ * data structure whose free-list head is a cache line shared by every worker -
+ * the main reason the pool does not scale past two workers.
+ *
+ * Instead each dispatched chunk owns one two-buffer slot, allocated once per
+ * context and never taken per tile: no lock and no shared cache line in the
+ * tile decode. The slot in use is a thread-local set by the chunk callback (the
+ * serial branch uses slot 0), so the tile decode keeps its upstream signatures
+ * and only the allocator calls change. The bytes each buffer ends up holding are
+ * unchanged.
+ */
+#define HMRDP_TILE_CHUNKS 64
+#define HMRDP_TILE_CLAIM 4
+#define HMRDP_TILE_SCRATCH_BYTES ((8192ULL + 32ULL) * 3ULL)
+#define HMRDP_TILE_SCRATCH_STRIDE (HMRDP_TILE_SCRATCH_BYTES * 2ULL)
+
+static _Thread_local BYTE* g_HmrdpTlsTileScratch = NULL;
+
+/* The working-buffer slot of the chunk this thread is decoding, or slot 0 when
+ * called outside the chunk dispatch (the serial branch). */
+static INLINE BYTE* hmrdp_tile_scratch(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive)
+{
+	if (g_HmrdpTlsTileScratch)
+		return g_HmrdpTlsTileScratch;
+	return progressive->tileScratch;
+}
+
+/* The inverse-DWT scratch of the current slot. */
+static INLINE INT16* hmrdp_tile_dwt_scratch(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive)
+{
+	return (INT16*)(void*)(hmrdp_tile_scratch(progressive) + HMRDP_TILE_SCRATCH_BYTES);
+}
+
+/* One slot per chunk, one allocation per context; released with the context. */
+static INLINE BOOL hmrdp_alloc_tile_scratch(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive)
+{
+	BYTE* scratch = (BYTE*)winpr_aligned_malloc(
+	    (size_t)HMRDP_TILE_CHUNKS * (size_t)HMRDP_TILE_SCRATCH_STRIDE, 64);
+	if (!scratch)
+		return FALSE;
+	progressive->tileScratch = scratch;
+	return TRUE;
+}
+'@) 'g_HmrdpTlsTileScratch'
+
+# (a2) the old chunk-count define is now next to the scratch helpers.
+Patch-Regex-All $progScratchC `
+  '/\* Upper bound on the work items a single region may be split into\. \*/\n#define HMRDP_TILE_CHUNKS 64' `
+  '/* HMRDP_TILE_CHUNKS is defined with the tile scratch helpers above. */' `
+  'is defined with the tile scratch helpers'
+
+# (a3) the DWT scratch comes from the current chunk's slot.
+Patch-Regex $progScratchC `
+  '\tINT16\* temp = \(INT16\*\)BufferPool_Take\(progressive->bufferPool, -1\); /\* DWT buffer \*/\n\n\tif \(!temp\)\n\t\treturn -2;\n\n\tconst unsigned long long p_idwt = hmrdp_phase_begin\(\);' (@'
+	/* HmRdp: the inverse-DWT scratch is the current chunk's second slot (see
+	 * hmrdp_tile_scratch) - no pool Take/Return per component. */
+	INT16* temp = hmrdp_tile_dwt_scratch(progressive);
+
+	const unsigned long long p_idwt = hmrdp_phase_begin();
+'@) 'hmrdp_tile_dwt_scratch(progressive)'
+
+Patch-Regex $progScratchC '\tBufferPool_Return\(progressive->bufferPool, temp\);\n\treturn 1;' (@'
+	/* HmRdp: no pool Return for the DWT scratch - the slot is reused as is. */
+	return 1;
+'@) 'no pool Return for the DWT scratch'
+
+# (a4) the tile working buffer comes from the current chunk's slot. Both the
+#      FIRST and the UPGRADE tile path take it; neither returns it.
+$tileScratchTake = @'
+	pBuffer = hmrdp_tile_scratch(progressive); /* HmRdp: this chunk's slot */
+'@
+Patch-Regex-All $progScratchC `
+  '\tpBuffer = \(BYTE\*\)BufferPool_Take\(progressive->bufferPool, -1\);' `
+  $tileScratchTake `
+  'pBuffer = hmrdp_tile_scratch(progressive);'
+
+Patch-Regex-All $progScratchC `
+  '\tBufferPool_Return\(progressive->bufferPool, pBuffer\);\n' (@'
+	/* HmRdp: no pool Return for the tile buffer - the slot is reused as is. */
+'@) 'no pool Return for the tile buffer'
+
+# (b1) a chunk carries its own scratch slot and joins the shared claim cursor.
+Patch-Regex $progScratchC `
+  'typedef struct\n\{\n\tPROGRESSIVE_TILE_PROCESS_WORK_PARAM\* params;\n\tvolatile UINT32\* next;\n\tUINT32 numTiles;\n\} PROGRESSIVE_TILE_CHUNK_PARAM;' (@'
+typedef struct
+{
+	PROGRESSIVE_TILE_PROCESS_WORK_PARAM* params;
+	/* HmRdp: the chunk's own working-buffer slot (see hmrdp_tile_scratch), and a
+	 * shared claim cursor the chunk advances in HMRDP_TILE_CLAIM-sized blocks. */
+	BYTE* scratch;
+	volatile UINT32* next;
+	UINT32 numTiles;
+} PROGRESSIVE_TILE_CHUNK_PARAM;
+'@) "the chunk's own working-buffer slot"
+
+# (b2) the callback claims blocks from the shared cursor, with its own slot.
+Patch-Regex $progScratchC `
+  '\tfor \(;;\)\n\t\{\n\t\tconst UINT32 index = __sync_fetch_and_add\(chunk->next, 1u\);\n\t\tif \(index >= chunk->numTiles\)\n\t\t\tbreak;\n\n\t\tprogressive_process_tiles_tile_work_callback\(instance, &chunk->params\[index\], work\);\n\t\tdone\+\+;\n\t\}' (@'
+	/* HmRdp: this thread decodes only this chunk, so its working buffers are the
+	 * chunk's slot - see hmrdp_tile_scratch(). */
+	g_HmrdpTlsTileScratch = chunk->scratch;
+
+	/* HmRdp: tiles are claimed in blocks, not one at a time. Dynamic claiming is
+	 * what balances the workers against each other; the block size only keeps the
+	 * shared counter off the per-tile path, and its cost is an imbalance of at
+	 * most one block at the end of the region. */
+	for (;;)
+	{
+		const UINT32 begin = __sync_fetch_and_add(chunk->next, HMRDP_TILE_CLAIM);
+		if (begin >= chunk->numTiles)
+			break;
+
+		UINT32 end = begin + HMRDP_TILE_CLAIM;
+		if (end > chunk->numTiles)
+			end = chunk->numTiles;
+
+		for (UINT32 index = begin; index < end; index++)
+			progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
+		done += end - begin;
+	}
+'@) 'this thread decodes only this chunk'
+
+# (b3) allocate the arena once, and pin the serial branch to slot 0.
+Patch-Regex $progScratchC `
+  '\tHmrdpApplyDecodeThreads\(progressive->rfx_context->priv->ThreadPool\);\n\n\tif \(!progressive->rfx_context->priv->UseThreads \|\| HmrdpGetDecodeThreads\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(or forced to one worker\): one call per tile, no pool at all\. \*/' (@'
+	HmrdpApplyDecodeThreads(progressive->rfx_context->priv->ThreadPool);
+
+	/* HmRdp: the tile decode's working buffers come from this context's arena
+	 * (one slot per chunk), allocated on the first message and never taken per
+	 * tile - see hmrdp_tile_scratch(). */
+	if (!progressive->tileScratch && !hmrdp_alloc_tile_scratch(progressive))
+	{
+		WLog_Print(progressive->log, WLOG_ERROR, "Failed to allocate the tile decode scratch");
+		return -1;
+	}
+
+	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
+	{
+		/* Serial (or forced to one worker): one call per tile, no pool at all. */
+		g_HmrdpTlsTileScratch = progressive->tileScratch;
+'@) '!hmrdp_alloc_tile_scratch(progressive))'
+
+# (b4) the shared claim cursor, claimed in blocks; one scratch slot per chunk.
+Patch-Regex $progScratchC `
+  '\t\{\n\t\tPROGRESSIVE_TILE_CHUNK_PARAM chunks\[HMRDP_TILE_CHUNKS\];\n\t\tvolatile UINT32 nextTile = 0;\n\t\tconst UINT32 numTiles = region->numTiles;\n\t\tconst UINT32 numChunks = numTiles < HMRDP_TILE_CHUNKS \? numTiles : HMRDP_TILE_CHUNKS;\n\n\t\tfor \(UINT32 c = 0; c < numChunks; c\+\+\)\n\t\t\{\n\t\t\tPROGRESSIVE_TILE_CHUNK_PARAM\* chunk = &chunks\[c\];\n\t\t\tchunk->params = progressive->params;\n\t\t\tchunk->next = &nextTile;\n\t\t\tchunk->numTiles = numTiles;\n\n\t\t\tprogressive->work_objects\[c\] =' (@'
+	{
+		PROGRESSIVE_TILE_CHUNK_PARAM chunks[HMRDP_TILE_CHUNKS];
+		/* HmRdp: the workers claim tiles from this cursor in HMRDP_TILE_CLAIM
+		 * blocks (see the chunk callback). Claiming dynamically is what balances
+		 * the workers; the block size is what keeps the counter off the per-tile
+		 * path. Aligned so the counter does not share a cache line with the chunk
+		 * descriptors the workers also read. */
+		_Alignas(64) volatile UINT32 nextTile = 0;
+		const UINT32 numTiles = region->numTiles;
+		/* HmRdp: keep the original one-work-item-per-block chunking. Reducing the
+		 * count to a small multiple of the worker count does not engage the pool's
+		 * other threads on this platform (a 2-worker run with 4 work items took as
+		 * long as the serial one), and the per-item cost is bounded by the claim
+		 * block, not by the item count. */
+		UINT32 numChunks = HMRDP_TILE_CHUNKS;
+		if (numChunks > numTiles)
+			numChunks = numTiles;
+
+		for (UINT32 c = 0; c < numChunks; c++)
+		{
+			PROGRESSIVE_TILE_CHUNK_PARAM* chunk = &chunks[c];
+			chunk->params = progressive->params;
+			chunk->scratch =
+			    progressive->tileScratch + ((size_t)c * (size_t)HMRDP_TILE_SCRATCH_STRIDE);
+			chunk->next = &nextTile;
+			chunk->numTiles = numTiles;
+
+			progressive->work_objects[c] =
+'@) '_Alignas(64) volatile UINT32 nextTile = 0;'
+
+# (c) dev DWT comparison buffers: per call, not shared between workers. Both the
+#     extrapolate path in progressive.c and the NEON entry in rfx_neon.c (which
+#     is what -DWITH_SIMD=ON actually runs) hold the compared tile in static
+#     buffers; with more than one worker they are overwritten mid-comparison.
+#     (The counters themselves stay plain adds: a race can only lose an update,
+#     never turn a rounding-level delta into a large one.)
+Patch-Regex $progScratchC `
+  '\tstatic INT16 ref\[4096\] = \{ 0 \};\n\tstatic INT16 scratch\[4096\] = \{ 0 \};' (@'
+	/* HmRdp: per-call, not static: the dev comparison must not share these
+	 * buffers between decode workers. */
+	INT16 ref[4096] = { 0 };
+	INT16 scratch[4096] = { 0 };
+'@) 'per-call, not static'
+
+Patch-Regex $neonScratchC `
+  '\tstatic INT16 ref\[4096\] = \{ 0 \};\n\tstatic INT16 scratch\[4096\] = \{ 0 \};' (@'
+	/* HmRdp: per-call, not static: the dev comparison must not share these
+	 * buffers between decode workers. */
+	INT16 ref[4096] = { 0 };
+	INT16 scratch[4096] = { 0 };
+'@) 'per-call, not static'
+
+# (d) release the arena with the context.
+Patch-Regex $progScratchC `
+  '\tBufferPool_Free\(progressive->bufferPool\);\n\tHashTable_Free\(progressive->SurfaceContexts\);' (@'
+	BufferPool_Free(progressive->bufferPool);
+	winpr_aligned_free(progressive->tileScratch);
+	HashTable_Free(progressive->SurfaceContexts);
+'@) 'winpr_aligned_free(progressive->tileScratch)'

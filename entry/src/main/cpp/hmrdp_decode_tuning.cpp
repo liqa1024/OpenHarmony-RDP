@@ -22,28 +22,28 @@ extern "C" void HmrdpSetDecodeThreads(unsigned int workers) __attribute__((weak)
 namespace hmrdp {
 namespace {
 
-// Automatic ceiling. Measured on the test device (video sample, CPU route):
-// 2, 3, 4, 6 and 8 workers all give the same frame time (24.0-25.1 ms) and the
-// same process CPU (~31 s/run), while a single worker is 2.6x slower at less
-// than half the CPU (65.0 ms / 13.7 s). The decode therefore stops scaling after
-// a couple of workers, and each extra one is a core woken for every Progressive
-// message - so the automatic choice stays small and the device's cluster count
-// can only pull it further down (doc_agent/cpu-accel-plan.md §1).
+// Automatic ceiling. The tile decode's pool section reaches its plateau after a
+// couple of workers and does not improve further: past that point the frame is
+// bounded by the parts that stay on the receiving thread (input parse, the
+// tile-to-surface copies, present) and by the GPU's copy of the dirty area, so
+// each extra worker is just another core woken for every Progressive message
+// (doc_agent/cpu-accel-plan.md §1/§2). The automatic choice therefore stays
+// small; the device's cluster count can only pull it further down. As for any
+// worker-count choice, the energy comparison is `cpu=` at a given `cpuKHz=` band,
+// never frame time alone.
 constexpr int kAutoCap = 4;
 // Manual range.
 constexpr int kMaxWorkers = 8;
 constexpr int kMinWorkers = 1;
 
-// The worker count is pinned to serial for now: the parallel path is FreeRDP's
-// own pool (one work item per region, workers woken per message), it is not
-// tuned for this platform, its efficiency is poor, and it is expected to be
-// rewritten (doc_agent/cpu-accel-plan.md §1). Until then one worker is the baseline
-// every session and every measurement shares - the frame wall is within a few
-// percent of the parallel one on fragmented content and about 2.6x on
-// whole-screen content, while the process CPU drops to ~45%. Set to 0 to hand
-// the knob back to the stored/automatic value (the controls are disabled while
-// it is pinned).
-constexpr int kPinnedWorkers = 1;
+// 0 keeps the stored/manual choice (or the automatic one) in effect. The value
+// is process-wide and applied at a Progressive message boundary; the settings
+// slider and the replay page's 「线程」 row both drive it. The automatic end
+// stays the default (doc_agent/cpu-accel-plan.md §1/§2): which end costs less
+// energy depends on the duty cycle, and that trade is read from `cpu=` together
+// with the `cpuKHz=` band the run actually got, never from the CPU seconds
+// alone.
+constexpr int kPinnedWorkers = 0;
 
 // 0 = automatic.
 int g_requested = 0;

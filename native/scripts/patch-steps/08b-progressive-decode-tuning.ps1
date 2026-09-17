@@ -233,7 +233,7 @@ Patch-Regex $progC '\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\
 	}
 
 fail:
-'@) 'volatile UINT32 nextTile = 0;'
+'@) 'param = &progressive->params[idx];'
 
 # (a3a) count the tiles the chunked dispatch decoded, and how long the workers
 #       spent on them. Read per chunk, never per tile. NOTE the figure is a

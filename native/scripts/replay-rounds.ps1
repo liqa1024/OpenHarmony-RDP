@@ -152,12 +152,13 @@ function Click-Control {
   throw "clicking '$Label' at ($($c[0]),$($c[1])) did not start a new run (still run=$beforeRun)"
 }
 
-# Cycles a control (参考/节拍/路线/线程) until its label reads `Target`.
+# Cycles a control (参考/节拍/路线) until its label reads `Target`. The decode
+# worker count is not in here: the replay page renders one 「线程:<value>」 button
+# per value, so it is set directly (see Set-Threads).
 $CYCLES = @{
   "参考" = @("关", "导出", "对比")
   "节拍" = @("跑满", "实时")
   "路线" = @("CPU", "硬件加速")
-  "线程" = @("自动", "1", "2", "3", "4", "6", "8")
 }
 
 function Set-Mode {
@@ -174,6 +175,26 @@ function Set-Mode {
     Click-Control -Label $label | Out-Null
   }
   throw "could not set $Control to $Target"
+}
+
+# Sets the Progressive decode worker count. Every value is a button of its own
+# on the replay page, so this is one click (plus the run that click restarts) -
+# no cycling. The current value can only be read from the status line: the
+# 「线程:<value>」 buttons each carry a candidate value, not the state.
+function Set-Threads {
+  param([string]$Target)
+  $screen = Read-Screen
+  # The status overlay is the only text that carries the current value *and* the
+  # 路线: prefix; the 路线 button and the 线程:<value> buttons each carry only one
+  # of the two.
+  $current = $null
+  foreach ($t in $screen.texts) {
+    if ($t -match "^路线[:：]" -and $t -match "线程[:：](\S+)") { $current = $Matches[1]; break }
+  }
+  if ($null -eq $current) { throw "replay status line not found (cannot read the current thread count)" }
+  if ($current -eq $Target) { return }
+  if ($script:dryRun) { throw "would click 线程:$Target" }
+  Click-Control -Label "线程:$Target" | Out-Null
 }
 
 function Push-File {
@@ -215,7 +236,7 @@ foreach ($round in $Rounds) {
     if ($setting -match "^\s*$") { continue }
     $kv = $setting.Trim() -split "[:：]"
     if ($kv.Count -ne 2) { throw "bad setting '$setting' (expected e.g. 参考:对比)" }
-    Set-Mode -Control $kv[0] -Target $kv[1]
+    if ($kv[0] -eq "线程") { Set-Threads -Target $kv[1] } else { Set-Mode -Control $kv[0] -Target $kv[1] }
   }
   if ($Capture -ne "") {
     $capPath = if ([System.IO.Path]::IsPathRooted($Capture)) { $Capture } else { Join-Path $repo $Capture }

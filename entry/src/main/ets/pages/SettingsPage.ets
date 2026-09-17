@@ -182,19 +182,14 @@ struct SettingsPage {
     RdpNative.applyRfxDump(this.rfxDump, dir);
   }
 
-  // Honest wording, because the measurement says this is NOT a performance knob:
-  // 2, 3, 4, 6 and 8 workers all give the same frame time and the same CPU (the
-  // decode's own parallel efficiency is the limit, not the core count - see
-  // doc_agent/cpu-accel-plan.md §1), while 1 (decode on the receiving
-  // thread, no pool) costs far less CPU at a slower frame. So the useful ends are
-  // "automatic" and "1"; the values in between are for experiments.
-  // The knob is pinned to 1 in the native decoder module while the parallel path
-  // (FreeRDP's own pool) is being reworked - it is not tuned for this platform,
-  // its efficiency is poor, and a single-worker baseline keeps measurements free
-  // of extra variables (doc_agent/cpu-accel-plan.md §1). The stored value is kept, so
-  // the row only has to be re-enabled when that work lands.
+  // Honest wording: which end costs less energy depends on the duty cycle, and
+  // the comparison is per `cpu=` at the same `cpuKHz=` band, not per frame time
+  // (doc_agent/cpu-accel-plan.md §1). 0 is the automatic choice (performance-core
+  // count, capped at 4); 1 decodes on the receiving thread with no pool at all.
+  // The replay page's 「线程」 row selects the same value directly for on-device
+  // calibration.
   private decodeThreadsSubtitle(): string {
-    return 'Progressive 解码的线程数。当前固定为 1（只在接收线程解码，最省电）';
+    return 'Progressive 解码的线程数。0 = 自动（性能核数，上限 4）；1 = 不建池，只在接收线程解码';
   }
 
   private sizeText(value: number): string {
@@ -985,8 +980,8 @@ struct SettingsPage {
               step: 1,
               unit: '',
               precision: 0,
-              enabled: false,
-              disabledReason: '并行解码（FreeRDP 内部线程池）未针对本平台优化、效率低且待重写：暂时固定为 1',
+              enabled: true,
+              disabledReason: '',
               onChange: (v: number) => {
                 this.decodeThreads = v;
                 this.persist();

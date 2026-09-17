@@ -46,19 +46,17 @@ const REF_EXPORT: number = 1;
 const REF_COMPARE: number = 2;
 const REF_LABEL: string[] = ['关', '导出', '对比'];
 
-// Progressive decode worker counts the 「线程」 button cycles through. 0 is the
+// Progressive decode worker counts offered by the 「线程」 row. 0 is the
 // automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
 // the receiving thread with no worker pool. The decode is the CPU (gdi) path's
 // dominant cost, so this is the knob for its time-vs-energy curve
 // (doc_agent/cpu-accel-plan.md §1).
 //
-// The knob is currently pinned to 1 in the native decoder module (the parallel
-// path is FreeRDP's pool, untuned for this platform and due to be rewritten), so
-// the button starts on 1 and is disabled - reopen it together with the pin.
+// Every value is a button of its own: one click selects it and restarts the
+// replay, so a measurement point is reached in one action instead of by cycling
+// through the values in between.
 const DECODE_THREAD_CHOICES: number[] = [0, 1, 2, 3, 4, 6, 8];
 const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
-const DECODE_THREAD_PINNED: boolean = true;
-const DECODE_THREAD_PINNED_INDEX: number = 1;
 
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -103,9 +101,9 @@ struct GfxReplayPage {
   // reports the mode actually used (`mode=fast|realtime`).
   @State replayRealtime: boolean = false;
   // Index into DECODE_THREAD_CHOICES: which Progressive decode worker count this
-  // dev page asks for (applied process-wide, so the CPU route uses it). Pinned
-  // while DECODE_THREAD_PINNED (see the constant).
-  @State decodeWorkerIndex: number = DECODE_THREAD_PINNED ? DECODE_THREAD_PINNED_INDEX : 0;
+  // dev page asks for (applied process-wide, so the CPU route uses it). 0 is the
+  // automatic choice.
+  @State decodeWorkerIndex: number = 0;
   // Whether this device can run the Vulkan presenter at all (see
   // DeviceCapabilities.hardwareAccel); when it cannot, 硬件加速 is not offered.
   @State hardwareAccelSupported: boolean = true;
@@ -206,6 +204,18 @@ struct GfxReplayPage {
     const settings: AppSettings = SettingsStore.load();
     settings.hardwareAccel = this.line === LINE_ACCEL;
     SettingsStore.save(settings);
+    this.startReplay();
+  }
+
+  // Selects a Progressive decode worker count from the 「线程」 row. The value is
+  // process-wide and applied before the next feed (see startReplay), so a
+  // restart is what makes it take effect; re-selecting the current value is a
+  // no-op, so a driver never pays for a redundant run.
+  private selectDecodeThreads(index: number): void {
+    if (this.decodeWorkerIndex === index) {
+      return;
+    }
+    this.decodeWorkerIndex = index;
     this.startReplay();
   }
 
@@ -333,27 +343,29 @@ struct GfxReplayPage {
           .onClick(() => {
             this.startReplay();
           })
-
-        // Decode worker count for the CPU (gdi) route: each click restarts the
-        // replay, so one click per point on the time-vs-energy curve. Disabled
-        // while the count is pinned (DECODE_THREAD_PINNED): the native decoder
-        // module forces 1 worker, so cycling here would only mislabel the run.
-        Button(`线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
-          .height(34)
-          .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
-          .borderRadius(9)
-          .margin({ left: 8 })
-          .enabled(!DECODE_THREAD_PINNED)
-          .opacity(DECODE_THREAD_PINNED ? 0.45 : 1.0)
-          .onClick(() => {
-            this.decodeWorkerIndex = (this.decodeWorkerIndex + 1) % DECODE_THREAD_CHOICES.length;
-            this.startReplay();
-          })
       }
       .width('100%')
       .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+
+      // Progressive decode worker count for the CPU (gdi) route: one button per
+      // value, one click per point on the time-vs-energy curve (see
+      // DECODE_THREAD_LABEL). The active one is filled in.
+      Row() {
+        ForEach(DECODE_THREAD_LABEL, (label: string, index: number) => {
+          Button(`线程:${label}`)
+            .height(32)
+            .fontSize(13)
+            .fontColor(this.decodeWorkerIndex === index ? $r('app.color.page_bg') : $r('app.color.accent'))
+            .backgroundColor(this.decodeWorkerIndex === index ? $r('app.color.accent') : $r('app.color.input_bg'))
+            .borderRadius(9)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.selectDecodeThreads(index);
+            })
+        }, (label: string) => label)
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, bottom: 8 })
 
       Stack({ alignContent: Alignment.BottomStart }) {
         XComponent({
