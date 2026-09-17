@@ -873,8 +873,13 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   } else {
     meter_.Reset();
     SetActiveWorkMeter(&meter_);
-    GfxWorkInstall(cpu.gfx());
   }
+  // Installed even while a live session owns the meter: the wrappers are also
+  // where the frame-begin wait lives (GfxWorkSetFrameBeginHook), and gdi writes the
+  // presenter's desktop buffer in place, so skipping it would bring back the
+  // two-frames-in-one-upload race this replay is often run to catch.
+  GfxWorkInstall(cpu.gfx());
+  GfxWorkSetFrameBeginHook([&cpu]() { cpu.OnFrameBegin(); });
 
   hmrdp::GfxDumpSetReplaying(true);
   hmrdp::GfxReplayResetParseUs();
@@ -905,8 +910,9 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
 
   hmrdp::GfxDumpSetReplaying(false);
   cpu.SetFrameFn(nullptr);
+  GfxWorkSetFrameBeginHook(nullptr);
+  GfxWorkUninstall(cpu.gfx());
   if (metered) {
-    GfxWorkUninstall(cpu.gfx());
     SetActiveWorkMeter(nullptr);
   }
   if (!ok) {

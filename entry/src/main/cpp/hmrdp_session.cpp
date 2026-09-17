@@ -1355,6 +1355,12 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     // replay so both report the same "本机" (hmrdp_gfx_work.h).
     RdpgfxClientContext* gfx = reinterpret_cast<RdpgfxClientContext*>(e->pInterface);
     GfxWorkInstall(gfx);
+    // START_FRAME is the point that is still *before* the frame's writes: gdi
+    // composes into the presenter's own desktop buffer (zero-copy), so the previous
+    // frame's GPU copy out of it has to drain here, not in BeginPaint (which FreeRDP
+    // calls after the frame's decode - see GfxWorkSetFrameBeginHook).
+    Session* session = ctx->session;
+    GfxWorkSetFrameBeginHook([session]() { session->HandleFrameBegin(); });
     ctx->session->SetGfxContext(gfx);
   }
 }
@@ -1455,6 +1461,7 @@ void HmrdpPostDisconnect(freerdp* instance) {
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(instance->context);
   if (ctx->session != nullptr) {
+    GfxWorkSetFrameBeginHook(nullptr);
     GfxWorkUninstall(static_cast<RdpgfxClientContext*>(ctx->session->gfxContext()));
     ctx->session->SetGfxContext(nullptr);
     ctx->session->HandlePostDisconnect();
@@ -2018,15 +2025,32 @@ void Session::HandlePostConnect() {
   Emit(SessionEvent::kConnected, "");
 }
 
-void Session::HandleBeginPaint() {
-  // gdi is about to compose this frame; if it composes into the presenter's own
-  // buffer, the GPU must be done with the previous frame first (normally free:
-  // a frame's worth of decoding sits between the two).
+void Session::HandleFrameBegin() {
+  // RDPGFX START_FRAME: this frame's first pixel write is about to happen. gdi
+  // composes into the presenter's own desktop buffer (zero-copy), and the decoder
+  // writes that buffer in place, so the previous frame's GPU copy out of it must
+  // have finished before now - otherwise the copy reads a buffer this frame has
+  // already overwritten and the presented picture mixes two frames (blocks of the
+  // old frame left at the positions they had before, which the pixel A/B cannot
+  // see because it reads gdi's own buffer). Normally free: the copy is ~ms while a
+  // frame is ~10ms+ (doc_agent/cpu-path.md §4).
   if (desktopAttached_ && presenter_ != nullptr) {
     const uint64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();
     // Blocked time, not composition: reported as its own phase so a slow present
     // pipeline cannot be mistaken for an expensive compose (hmrdp_gfx_work.h).
+    meter_.OnPresentSync(NowUs() - startUs);
+  }
+}
+
+void Session::HandleBeginPaint() {
+  // gdi is about to compose this frame into the primary buffer (the mirrored
+  // surface's pixels are already there). Same wait as HandleFrameBegin, and a
+  // no-op when that one already drained the previous frame's copy - it is kept
+  // because the compose of a *non-mirrored* surface happens here.
+  if (desktopAttached_ && presenter_ != nullptr) {
+    const uint64_t startUs = NowUs();
+    presenter_->BeginDesktopBufferWrite();
     meter_.OnPresentSync(NowUs() - startUs);
   }
 }

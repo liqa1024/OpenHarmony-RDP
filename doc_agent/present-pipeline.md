@@ -31,6 +31,14 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
     signal。
   - CPU 读回路径（`ReadScreen`、ClearCodec/cache 的 RMW、`Reset`/`ResetGraphics`）走 `FlushAll()`
     等所有在飞槽。
+  - **"CPU 不等待"只对设备侧的件成立：主机写缓冲的那两条线必须等**。"上一帧仍在飞的读"和"本帧的
+    写"是同一块内存时（CPU 路线的零拷贝桌面缓冲、引擎的 mapped 表面），等待点必须落在**本帧第一次
+    写之前**，且**每个提交窗口只等一次**：
+    - CPU 路线：`GfxWorkSetFrameBeginHook`（挂在 live 与回放共用的包装层，见 [`cpu-path.md`](cpu-path.md) §4）；
+    - 引擎：`Impl::SyncForCpuAccess()`（提交臂 `submissionSinceHostDrain`，该提交后的第一次主机访问
+      `FlushAll()`）——合成是 **transfer** 不是 dispatch，所以"compute 在飞"那套判断盖不住它。
+    ⚠ 这类顺序**不在 `bad=0` 的覆盖范围内**（对比读的是 gdi 自己的缓冲与引擎 picture，两者都还在），
+    判断只能靠机制 + 计数器；违反时的形状见 [`cpu-path.md`](cpu-path.md) §4。
 
 ## 2. 两条路线的上屏**构成**（不是哪个更快）
 

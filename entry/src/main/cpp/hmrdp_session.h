@@ -134,9 +134,13 @@ class Session {
   // Internal callbacks used by the FreeRDP glue.
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
-  // Called from gdi's BeginPaint: before this frame's pixels are written into the
-  // primary buffer, which may be the presenter's own buffer (see
-  // AttachPresenterDesktopBuffer).
+  // Both wait for the GPU to release the desktop buffer this frame writes into
+  // (which may be the presenter's own buffer, see AttachPresenterDesktopBuffer);
+  // the wait is idempotent per frame, so whichever runs first is the one that
+  // waits:
+  //   * HandleFrameBegin at the GFX START_FRAME (before this frame's writes),
+  //   * HandleBeginPaint at gdi's BeginPaint (before the compose).
+  void HandleFrameBegin();
   void HandleBeginPaint();
   void HandleEndPaint();
   void HandleDesktopResize();

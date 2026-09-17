@@ -55,6 +55,15 @@ class GfxCpuDesktop {
   int height() const { return height_; }
 
   // Internal: called by the gdi update hooks.
+  //
+  // OnFrameBegin runs at the RDPGFX START_FRAME, i.e. before this frame's surface
+  // commands write the desktop; OnBeginPaint runs at update->BeginPaint, which
+  // FreeRDP calls *after* the frame's decode (inside gdi_OutputUpdate), just
+  // before the compose. The wait for the GPU to release the presenter's desktop
+  // buffer belongs at *both* points and is idempotent per frame: the frame-begin
+  // one protects the in-place decode writes, the BeginPaint one the compose
+  // writes, and whichever runs first is the one that waits.
+  void OnFrameBegin();
   void OnBeginPaint();
   void OnEndPaint();
   void OnDesktopResize();

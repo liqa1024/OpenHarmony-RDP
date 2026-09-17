@@ -184,11 +184,26 @@ void GfxCpuDesktop::Shutdown() {
   height_ = 0;
 }
 
+void GfxCpuDesktop::OnFrameBegin() {
+  // The frame's first pixel write is about to happen: when gdi composes into the
+  // presenter's desktop buffer (the zero-copy path), the GPU must be done copying
+  // the previous frame out of it, or this frame's decode overwrites the bytes that
+  // copy has not read yet and the upload becomes a mix of two frames. This is the
+  // point that actually protects the in-place decode writes; the BeginPaint call
+  // below only covers the compose, which happens later in the frame (a no-op once
+  // this one has waited - the pending flag is cleared by the wait).
+  if (desktopAttached_ && presenter_ != nullptr) {
+    const int64_t startUs = NowUs();
+    presenter_->BeginDesktopBufferWrite();
+    presentSyncUs_ += static_cast<uint64_t>(NowUs() - startUs);
+  }
+}
+
 void GfxCpuDesktop::OnBeginPaint() {
-  // gdi is about to write this frame's pixels into its primary buffer; when that
-  // buffer belongs to the presenter, the GPU must be done reading the previous
-  // frame out of it first. Normally free: a whole frame's decode sits between the
-  // two (doc_agent/cpu-path.md §4).
+  // gdi is about to compose this frame into its primary buffer (the mirrored
+  // surface's pixels are already there); the same wait as OnFrameBegin, and free
+  // when that one already drained the previous frame's copy. Normally free either
+  // way: a whole frame's decode sits between the two (doc_agent/cpu-path.md §4).
   if (desktopAttached_ && presenter_ != nullptr) {
     const int64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();

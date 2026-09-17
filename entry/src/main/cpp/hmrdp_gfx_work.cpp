@@ -25,6 +25,7 @@ uint64_t NowUs() {
 // Callbacks this translation unit replaced, per GFX context, so they can be put
 // back (a context may outlive the session/replay that installed them).
 struct GfxOriginals {
+  pcRdpgfxStartFrame StartFrame = nullptr;
   pcRdpgfxSurfaceCommand SurfaceCommand = nullptr;
   pcRdpgfxEndFrame EndFrame = nullptr;
   pcRdpgfxResetGraphics ResetGraphics = nullptr;
@@ -53,7 +54,41 @@ Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
   return it->second.*member;
 }
 
+// The frame-begin hook (see GfxWorkSetFrameBeginHook): owned by whoever owns the
+// presenter, so one at a time.
+std::mutex g_frameBeginMutex;
+std::function<void()> g_frameBeginHook;
+
+// Runs that hook, when one is installed. Called before *every* command that can
+// write the desktop, not only at START_FRAME: the wire carries surface commands
+// outside a GFX frame too (the RDPGFX stream does not have to bracket every
+// update), and those write the same buffer. The cost per call is a mutex plus a
+// bool test inside the presenter - the wait itself happens once per present, because
+// the presenter clears its pending flag when it waits.
+void RunFrameBeginHook() {
+  std::function<void()> hook;
+  {
+    std::lock_guard<std::mutex> lock(g_frameBeginMutex);
+    hook = g_frameBeginHook;
+  }
+  if (hook) {
+    hook();
+  }
+}
+
+UINT MeterStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* startFrame) {
+  // Earliest point of the frame: the previous frame's read of the desktop buffer
+  // has to drain before this frame writes it (see GfxWorkSetFrameBeginHook).
+  RunFrameBeginHook();
+  const pcRdpgfxStartFrame original = GfxOriginal(gfx, &GfxOriginals::StartFrame);
+  return original != nullptr ? original(gfx, startFrame) : CHANNEL_RC_OK;
+}
+
 UINT MeterSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
+  // This is the command that writes the desktop: wait here (see RunFrameBeginHook)
+  // so a mid-frame or out-of-frame message cannot overwrite the buffer the previous
+  // present's GPU copy is still reading.
+  RunFrameBeginHook();
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
   GfxWorkMeter* meter = ActiveWorkMeter();
   if (meter != nullptr) {
@@ -88,6 +123,9 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
 // 0xFF-fills a whole surface, which is a per-frame-sized memset).
 #define HMRDP_SETUP_WRAPPER(NAME, FIELD, KIND)                                          \
   UINT Meter##NAME(RdpgfxClientContext* gfx, const FIELD* pdu) {                        \
+    /* Some of these write the desktop (SolidFill / SurfaceToSurface / cache         \
+     * restore / a whole-surface 0xFF fill): same wait as a surface command. */      \
+    RunFrameBeginHook();                                                               \
     const auto original = GfxOriginal(gfx, &GfxOriginals::NAME);                        \
     const uint64_t start = NowUs();                                                     \
     const UINT rc = original != nullptr ? original(gfx, pdu) : CHANNEL_RC_OK;           \
@@ -287,6 +325,10 @@ void GfxWorkInstall(RdpgfxClientContext* gfx) {
     return;
   }
   GfxOriginals& orig = g_originals[gfx];
+  orig.StartFrame = gfx->StartFrame;
+  if (gfx->StartFrame != nullptr) {
+    gfx->StartFrame = MeterStartFrame;
+  }
   orig.SurfaceCommand = gfx->SurfaceCommand;
   if (gfx->SurfaceCommand != nullptr) {
     gfx->SurfaceCommand = MeterSurfaceCommand;
@@ -349,6 +391,9 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
   }
   // Restore what this TU replaced: leaving the wrappers installed would make the
   // context call into a meter that is going away.
+  if (gfx->StartFrame == &MeterStartFrame) {
+    gfx->StartFrame = it->second.StartFrame;
+  }
   if (gfx->SurfaceCommand == &MeterSurfaceCommand) {
     gfx->SurfaceCommand = it->second.SurfaceCommand;
   }
@@ -386,6 +431,11 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
     gfx->EvictCacheEntry = it->second.EvictCacheEntry;
   }
   g_originals.erase(it);
+}
+
+void GfxWorkSetFrameBeginHook(std::function<void()> hook) {
+  std::lock_guard<std::mutex> lock(g_frameBeginMutex);
+  g_frameBeginHook = std::move(hook);
 }
 
 }  // namespace hmrdp

@@ -30,9 +30,10 @@ CPU 回放的 stats 就是这条线的账：
 | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
 | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间 |
 
-- **`sync` = 等 GPU 放开主缓冲**（`BeginPaint` 里的 `BeginDesktopBufferWrite`；CPU 路线让 gdi 直接合成进
-  呈现器缓冲，所以下一帧写之前要等上一帧读完）。它是**阻塞**不是处理 ⇒ 单列；
-  **帧的整段墙钟 = `本机` + `sync`**（回放再加节拍睡眠）。
+- **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，
+  所以**本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 §4）。它是**阻塞**不是处理 ⇒ 单列；
+  **帧的整段墙钟 = `本机` + `sync`**（回放再加节拍睡眠）。它的长度＝上一帧那次拷贝的时长：
+  帧背靠背（整屏脏区）时是 ms 级，到达稀疏、无积压时接近 0（此时"不背靠背"本身就是保护）。
 - **`pace` 是唯一直接剔除的项**：回放的人为节流不是客户端工作。
 - **判读顺序**：① `setup` ② `kB/frame`/`cmds/frame`（内容是否可比）③ `wait(block)` ④ `update`
   ⑤ `present` ⑥ `sync`。
@@ -81,9 +82,16 @@ CPU 回放的 stats 就是这条线的账：
   - **挂接不要用 `gdi_resize_ex`**（它会再调 `update_end_paint`，把 `update->mux` 的配对搞乱）；
     就地换 `primary->bitmap` 的 data/scanline/free 与 `gdi->stride`，**换前把已合成的桌面拷过去**
     （gdi 图元会读目标缓冲）。
-  - **单缓冲 ⇒ 下一帧写之前要等上一帧的 GPU 读完**（§1 的 `sync`），放在 gdi `BeginPaint`；
-    而 GFX 的 `begin_paint` 在 `EndFrame` 里（即整帧解码之后）⇒ 解码足够长时这笔等待免费。
-    ⚠ 轻样本跑满时会顶到显示/GPU 上限，这笔等待变成数 ms（`sync` 单列，别当成 compose）。
+  - **单缓冲 ⇒ 本帧第一次写之前必须等上一帧的 GPU 读完**（§1 的 `sync`）。这条是**顺序约束**，不是
+    "顺手等等"：读方是上一帧那次上屏的 GPU 拷贝，写方是本帧的解码/合成，两者共用同一块内存。
+    **等待点取在 `update->BeginPaint` 是错的**——它是 FreeRDP 在 `gdi_OutputUpdate` 里发的，即整帧解码
+    之后，此时缓冲早被覆写。正确位置是**每个可能写桌面的命令之前**：GFX 帧边界与表面命令，以及
+    SolidFill / SurfaceToSurface / 缓存 / ResetGraphics 这类结构命令（**帧外**同样会来表面命令）。
+    实现挂在 live 与回放共用的包装层（`hmrdp_gfx_work.cpp` 的 `GfxWorkSetFrameBeginHook`），
+    等待按"提交"去重（呈现器 `desktopBufferFencePending_`）⇒ **每个 present 只真等一次**。
+    ⚠ 等待缺失的后果是**上屏画面混两帧**（旧帧的块留在旧位置），且**只在帧背靠背时**出现（到达侧被
+    塑形、或回放的 `跑满`）；`bad=0` 与它无关（对比读的是 gdi 自己的缓冲与引擎 picture，两者都还在）。
+    ⚠ 这笔等待的长度就是上一帧那次拷贝的时长（整屏帧 ms 级；`sync` 单列，别当成 compose）。
   - 内存类型 `HOST_CACHED` 优先；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
     驱动调用；cache flush 只写回脏行，多出来的干净行免费）。
   - 几何变化（`ResetGraphics` → `gdi_resize`）会退回 gdi 自有缓冲，下一次 `EndPaint` 按新尺寸重挂。

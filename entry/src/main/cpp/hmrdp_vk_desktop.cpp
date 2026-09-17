@@ -335,6 +335,23 @@ struct GfxVkDesktop::Impl {
     return false;
   }
 
+  // A submission was sent and its fence has not been waited: it may still be
+  // executing, i.e. its compose may still be *reading* the surface buffers.
+  bool AnySubmissionInFlight() const {
+    for (int i = 0; i < kSlots; ++i) {
+      if (slotInFlight[i]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A submission has been made and no host access has waited for it yet: the next
+  // one must (see SyncForCpuAccess). Armed by every submission, cleared by the
+  // drain - so the per-frame cost is one wait, and a frame with no host access
+  // never pays it.
+  bool submissionSinceHostDrain = false;
+
   std::map<uint16_t, Surface> surfaces;
   std::map<uint16_t, CacheEntry> cache;
   // Two pictures (ping-pong), one per frame slot: the presenter samples the picture the
@@ -1672,20 +1689,40 @@ struct GfxVkDesktop::Impl {
   // the COMPUTE -> HOST barrier) puts the mapping in the same state gdi's surface
   // has when it performs a CPU read-modify-write. No-op when nothing is pending.
   bool SyncForCpuAccess() {
-    // Progressive decode/compose is *recorded* and only executes on Flush(), and a
-    // CPU access to a mapped surface must see its result; a Flush with nothing
-    // recorded is nearly free, so this only needs to run when compute is in
-    // flight (measured: making it unconditional changes no metric, it only adds
-    // sync points - see doc_agent/gfx-engine.md §3).
-    if (!AnyComputeInFlight()) {
+    // Two different reasons a host access to a mapped surface has to wait:
+    //
+    //  (1) a Progressive decode/compose is *recorded* and only executes on Flush,
+    //      so the mapping still holds the previous pixels ("read the pre-dispatch
+    //      pixels and then be overwritten when the dispatch finally runs" - the
+    //      ordering gdi does not have);
+    //  (2) the *previous frame's* submission may still be executing, and its
+    //      compose reads these very surface buffers (`vkCmdCopyBufferToImage` into
+    //      the picture). A host write landing mid-copy makes that frame's picture -
+    //      and therefore the screen - a mix of two frames: blocks of the old frame
+    //      left at the positions they had before. The compose is a *transfer*, not a
+    //      dispatch, so (1) does not cover it, and a frame made only of CPU-side
+    //      commands (ClearCodec / bitmap cache / SolidFill / SurfaceToSurface /
+    //      uncompressed upload) records no dispatch at all - which is exactly the
+    //      case that used to run with no drain.
+    //
+    // (2) only runs once per submission: after the wait the buffers belong to this
+    // client until the next submission goes out (which arms it again), so a frame
+    // with no host access at all - a Progressive-only frame, which decodes on the
+    // device - pays nothing. Same shape as the CPU route's frame-boundary wait
+    // (doc_agent/cpu-path.md §4). The pixel A/B cannot see this: it reads the engine
+    // screen back every compared frame, which drains the previous submission first.
+    const bool computeInFlight = AnyComputeInFlight();
+    const bool frameInFlight = submissionSinceHostDrain && AnySubmissionInFlight();
+    if (!computeInFlight && !frameInFlight) {
       return true;
     }
     const int64_t drainStart = NowUs();
-    // Wait *every* in-flight slot: another slot's dispatch may be writing the
-    // surface this CPU command is about to read-modify-write.
+    // FlushAll waits *every* in-flight slot: any of them may be reading (or
+    // writing) the surface this CPU command is about to touch.
     const bool ok = FlushAll();
     syncDrains++;
     syncDrainUs += static_cast<uint64_t>(NowUs() - drainStart);
+    submissionSinceHostDrain = false;
     return ok;
   }
 
@@ -1818,6 +1855,9 @@ struct GfxVkDesktop::Impl {
     ++submits;
     slotInFlight[slot] = true;
     lastSubmittedSlot = slot;
+    // That submission composes *from* the surface buffers, so a host write into
+    // any of them has to wait for it first (SyncForCpuAccess).
+    submissionSinceHostDrain = true;
     return true;
   }
 

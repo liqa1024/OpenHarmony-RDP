@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 
 #include <freerdp/client/rdpgfx.h>
 
@@ -160,6 +161,18 @@ void SetActiveWorkMeter(GfxWorkMeter* meter);
 // CPU desktop).
 void GfxWorkInstall(RdpgfxClientContext* gfx);
 void GfxWorkUninstall(RdpgfxClientContext* gfx);
+
+// A hook run at every RDPGFX START_FRAME, i.e. *before* that frame's surface
+// commands write any pixel of the desktop.
+//
+// The presenter's zero-copy desktop buffer needs exactly this point: gdi (or the
+// decoder) writes that buffer in place, so the previous frame's GPU copy out of it
+// must have completed first. FreeRDP's `update->BeginPaint` - where that wait sits
+// today - is called from `gdi_OutputUpdate`, i.e. *after* the frame has already
+// written the buffer, so it waits too late and the upload can be a mix of two
+// frames (visible as blocks of the previous frame at the wrong positions, and
+// invisible to the pixel A/B, which reads gdi's own buffer).
+void GfxWorkSetFrameBeginHook(std::function<void()> hook);
 
 }  // namespace hmrdp
 

@@ -227,6 +227,12 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   误判成同步开销，做出完全相反的设计。
 - **不要每命令排空流水线 / 等待设备**（每条命令末尾 `glFinish` 是反面教材）：GPU 侧用 barrier，
   只在真正需要 CPU 回读处同步；**不要立即销毁在飞资源**（fence 延迟回收）。
+  但"少等"不等于"不等"：**主机写进 mapped 表面之前，必须等"上一帧那次提交"跑完**——它的合成
+  （`vkCmdCopyBufferToImage`）正在**读**这些表面缓冲；主机写落在拷贝中途，那一帧的 picture 与屏幕
+  就是两帧的混合。合成是 transfer 不是 dispatch，所以"compute 在飞"盖不住它，而"整帧只有 CPU 侧命令"
+  （ClearCodec / 缓存 / SolidFill / SurfaceToSurface / 未压缩上传）的帧连一个 dispatch 都没有。
+  这笔账按**提交**记、不是按命令记（`SyncForCpuAccess` 的 `submissionSinceHostDrain`：每个提交窗口
+  只等一次，纯 Progressive 帧不付），顺序约束见 [`present-pipeline.md`](present-pipeline.md) §1。
 - **compute 派发注意并行度与访存形态**，不只是每轴工作组上限（`maxComputeWorkGroupCount`）：
   一个 workgroup 只覆盖少量 invocation、且每个 invocation 串行处理数千个元素（RLGR 位流逐字节
   refill、tile 逐像素循环）时，GPU 利用率极低——此时"引擎比 CPU 软解还慢"是必然结果。
