@@ -30,6 +30,13 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 
 - 补丁脚本的每一步都要**幂等 + 可自检**（已打过的步骤跳过并提示）：源码树是**本地长期存在**的，
   干净源码不一定有备份 ⇒ **改补丁脚本时要保证"重跑安全"**，不要依赖"从干净源码重打"。
+- 补丁**按步拆分**：`native/scripts/patch-steps/<NN>-<topic>.ps1`，入口脚本
+  `native/scripts/patch-freerdp.ps1` 只放参数、公共工具（`Patch-File` / `Patch-Block` / `Patch-Regex` /
+  `Tabs`）与"按名顺序 dot-source"；`<NN>` 就是被改源码注释里引用的步号（`8` 有两块，`18` 试过又撤掉）。
+  加/改一步只动那一个文件；每个步骤**自带 marker**，重跑时打印 `already applied` 并跳过。
+  ⇒ **"跑一遍补丁脚本、确认每步都只报 already applied、且没有异常"本身就是自检**：拆分或改动丢了内容会
+  在那里炸出来（`Patch-Block`/`Patch-Regex` 找不到锚点会直接 throw）。
+- 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` 传给步骤。
 - 只改应用层（`entry/src/main/cpp/*`、`.ets`）**不需要**重编 FreeRDP。
 
 ## 3. 补丁脚本在做什么（以及为什么必须保留）
@@ -100,6 +107,11 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   把**真正跑的那一支**（NEON 或 C）与上游标量参照（`HmrdpDwtReference` /
   `HmrdpDwtExtrapolateReference`）逐元素比，报 `dwt check: tiles=… mismatch=… maxDelta=…`。
   取输入副本必须在解码之前（DWT 会把整个系数缓冲覆盖掉）；`maxDelta` 是"舍入 vs 实现不同"的分界。
+- **`state` 少一趟搬运（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化那趟改成
+  **`sign → buffer`**——原先是"就地改 `buffer` + 另拷一份到 `sign`"，于是每 tile/分量的那趟 8KB 搬运
+  整趟消失，两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"
+  的值，所以它那 64/81 个样本先拷过去、再就地移位。读数见
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §6（`state` −5 成）。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`
