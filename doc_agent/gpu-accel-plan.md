@@ -116,7 +116,8 @@ CPU 侧这两项是"把系数/像素搬到别处"的成本（`state` 每 tile �
 
 ## 6. 同时推进的 CPU 侧（另一条线，两端共享收益）
 
-- 顺序：**逆 DWT 向量化**（最大项）→ `state` 流量与 `color` 的向量化 → `update` 的掩码拷贝 → RLGR 最后。
+- 顺序：**逆 DWT 向量化**（最大项）→ `state` 流量与 `color` 的向量化 → `update` 的掩码拷贝 → RLGR 最后；
+  多核/平台适配排在这一切之后（`cpu-accel-plan.md` §6 的"阶段一 → 阶段二"）。
 - ⚠ **门禁是同一份参考画面**：CPU 侧改动必须**逐位等价**才能继续用旧参考（`cpu-accel-plan.md` §7）；
   引擎/GPU 侧只要像素与参考一致即通过——与实现无关。
 - 细节与量测纪律见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §3/§6/§7。

@@ -51,8 +51,6 @@ class GfxCpuDesktop {
   RdpgfxClientContext* gfx() const { return gfx_; }
   rdpGdi* gdi() const;
 
-  int width() const { return width_; }
-  int height() const { return height_; }
 
   // Internal: called by the gdi update hooks.
   //

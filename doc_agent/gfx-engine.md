@@ -75,7 +75,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
      再跑三级逆 DWT，全局只读一次写一次。
      **为什么必须拆**：这个变换原本在全局 SSBO 上做多趟 16bit 读-改-写，是当时 decode 的最大头；
      搬进 shared 后 GPU 时间显著下降。语义（子带偏移/长度、每步 INT16 截断、差分顺序、位状态）与 §2.1
-     逐条一致，`Vulkan对比` 仍是 `bad=0` 的门禁。
+     逐条一致，参考画面的 `bad=0` 仍是门禁（§6）。
 - **`rfx_compose` 必须按像素并行**（一个 lane 一个像素）：按 tile 并行时 32 个 lane 会写 32 个不同 tile
   （每 4 个有效字节占一条 cache line），且每像素还要遍历整条裁剪 rect 列表；改成按像素 + 由 host 把
   裁剪 rect 预先算成**tile 内局部坐标**存进 tileMeta 后，该 dispatch 快了约两个数量级。
@@ -265,7 +265,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 - FreeRDP 的 RDPGFX 回调必须接上 `freerdp_client_OnChannelConnectedEventHandler`（绑到
   `ChannelConnected`/`ChannelDisconnected`），否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
-- live 的 GPU 接管由会话侧驱动；保留**双渲染影子对照**（引擎 vs gdi）作为运行时体检。
+- live 的 GPU 接管由会话侧驱动；运行时体检走**参考画面对比**（不再跑引擎 vs gdi 的双渲染影子，那套已删）。
 - 引擎屏幕经 `Compose()` + `VkRenderer` 上屏（目前只用于回放/对比路线）；GPU 接管时"本机"里的
   **decode 段计 0**（解码已在 GPU），`zgx+parse`/`compose`/`present` 三段照旧，
   含义见 [`session-and-input.md`](session-and-input.md) §3。
@@ -315,9 +315,11 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   呈现器。**参考判定与呈现路径解耦**：参考哈希读的是 gdi 主缓冲（引擎路线是屏幕镜像，两者内容相同），
   `present` 只碰 swapchain，所以换呈现后端、改重建策略都不影响 `bad`；反过来说 `bad` 变化只能来自
   解码/合成。**任何一轮性能结论的前提是那一轮 `bad=0`。**
-- **引擎 vs gdi 的影子对比**（`compare(GPU vs gdi): checks=… bad=0 rgbPx=0 maxDelta=0`）现在只从代码
-  （`GfxReplayRoute::kVulkanCompare`）跑得到：它在 `bad>0` 时给出逐像素的 `rgbPx/alphaPx/bbox/maxDelta`，
-  定位引擎分叉时仍是最好的工具；UI 上留给引擎重做之后（见 §7 待办）。
+- **影子对比（引擎 vs gdi 同跑逐帧比像素）已经**从代码里**删掉**（连同驱动里的 per-PDU 交织喂送）：
+  它要求两条实现长期一致，维护成本大于收益。定位"差在哪一帧、差多少"现在靠参考对比的
+  `rgbPx/alphaPx/maxDelta/bbox`（只覆盖参考图像那一帧）；要逐帧定位就重新 `参考:导出` 再比。
+  引擎侧的参考核对需要读回引擎画面（`GfxVkDesktop::ReadScreen` 保留着，见
+  [`gpu-accel-plan.md`](gpu-accel-plan.md) §5 M1）。
 - **引擎性能归因三件套（dev，只在真机跑）**：
   1. `ProbeHostMemory`：逐个 host-visible 内存类型的写/连续拷贝/跨行拷贝带宽 → 决定 CPU 侧像素命令的成本；
   2. `ProbeSubmitCost`：空 command buffer 的 submit+fence 往返 → 区分"同步点固定开销"与"GPU 真的在跑"；

@@ -11,8 +11,8 @@
  *  2. GfxReplayStream(): pumps one raw hmrdp_gfx.bin capture back through
  *     FreeRDP's own ZGX + RDPGFX parsing (needs the patched rdpgfx client) and
  *     invokes a per-frame callback. The caller only chooses what a frame means
- *     (present it, compare it, ...), so the on-screen replay and any offline
- *     pixel comparison share the whole read-decompress-parse-apply chain.
+ *     (present it, account for it, ...), so the on-screen replay and any offline
+ *     harness share the whole read-decompress-parse-apply chain.
  */
 #ifndef HMRDP_GFX_DRIVER_H
 #define HMRDP_GFX_DRIVER_H
@@ -100,21 +100,6 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error, const ReplayPaceFn& pace,
                      const ReplayPaceAccumFn& paceAccum);
-
-// Compare route: gdi and the engine/mirror consume the capture *interleaved, per
-// PDU*. The harness wraps the callbacks gdi installed on its own context
-// (`gfxB`), so each PDU goes to gdi first and to `sink` immediately after - the
-// only arrangement in which a per-command A/B is valid (feeding two contexts
-// chunk by chunk leaves gdi a whole chunk behind and can only compare at chunk
-// boundaries). `onCommand` is invoked after every single PDU, `onFrame` (present
-// / frame accounting) and `onSync` (frame comparison) on EndFrame, after gdi
-// composed its frame.
-bool GfxReplayStreamCompare(const std::string& path, GfxCommandSink* sink,
-                            const std::function<void()>& onFrame,
-                            const std::function<void()>& onSync,
-                            const std::function<void()>& onCommand, RdpgfxClientContext* gfxB,
-                            const std::atomic<bool>* stop, std::string* error,
-                            const ReplayPaceFn& pace);
 
 // Dev (perf): accumulated time spent in the ZGFX + RDPGFX PDU parse during a replay
 // (measured in the pump, before any backend sees the command). It is a cost every

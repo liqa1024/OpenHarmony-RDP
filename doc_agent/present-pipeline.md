@@ -143,7 +143,7 @@ damage 账同一套机制）。**没有** damage-rect 接口可用（`vkQueuePre
 ## 5. 操作与踩坑
 
 - **构建/安装/运行**与 **dev 页驱动**：见 [`build-and-verify.md`](build-and-verify.md) §4/§5.1。
-  dev 页「路线」按钮循环 CPU → Vulkan → Vulkan对比，**每次点击都会重启回放**。
+  dev 页「路线」只切 CPU / 硬件加速（上屏后端），「参考」切 关/导出/对比，**每次点击都会重启回放**。
 - **样本**：设备侧读应用 filesDir 下的固定文件名，用 `hdc file send` **覆盖**（`hdc` 不能在该目录新建）；
   本地副本放 gitignore 目录留档。**换样本后记得还原**。
 - **判定"跑完"**：轮询回放 stats 文本里的 `(running=0)`（不要固定 sleep）。

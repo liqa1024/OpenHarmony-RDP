@@ -96,6 +96,9 @@ class GfxVkDesktop {
   VkImage screenImage() const;
   VkFormat format() const;
   // Full screen (top-down, `screenW*4` stride, 0xFF-initialised) as BGRA.
+  // Reads the composed screen back to the CPU (host-drain + copy). Nothing calls
+  // it today: it is kept for the engine-side golden-reference check the GPU work
+  // needs when the decode moves onto the GPU (doc_agent/gpu-accel-plan.md §5 M1).
   bool ReadScreen(std::vector<uint8_t>* out);
 
   // --- Pixel commands ------------------------------------------------------

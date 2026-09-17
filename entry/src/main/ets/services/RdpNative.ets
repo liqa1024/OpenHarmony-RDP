@@ -9,7 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
-setDecodeThreads, decodeThreadsInfo,
+setDecodeThreads,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -86,11 +86,6 @@ export class RdpNative {
    */
   static applyDecodeThreads(workers: number): void {
     setDecodeThreads(workers);
-  }
-
-  /** What the decode worker count currently resolves to, for the settings page. */
-  static describeDecodeThreads(): string {
-    return decodeThreadsInfo();
   }
 
   /** Dev-only RemoteFX stream capture to the given directory. */

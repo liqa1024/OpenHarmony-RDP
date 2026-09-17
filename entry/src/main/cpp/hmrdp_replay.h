@@ -26,19 +26,18 @@ class GfxCpuDesktop;
 class ReplayDesktop;
 
 // Which decoder/presenter the replay runs.
-//  kCpu           - FreeRDP's own gdi pipeline only (perf reference), presented
-//                   through the presenter the "硬件加速" setting selects.
-//  kVulkan        - Vulkan desktop engine only. **Not reachable from the UI any
-//                   more** (the engine routes were dropped while the GPU work is
-//                   being redone, doc_agent/gpu-accel-plan.md); kept so the
-//                   reference implementation stays runnable from code.
-//  kVulkanCompare - same engine, with an offline gdi desktop fed the same
-//                   capture simultaneously and compared per frame. Same status:
-//                   kept for reference, no longer a UI route.
+//  kCpu    - FreeRDP's own gdi pipeline (the only route the dev page drives),
+//            presented through the presenter the "硬件加速" setting selects.
+//  kVulkan - the Vulkan desktop engine (decode + compose on the GPU). **Not
+//            reachable from the UI any more** (doc_agent/gpu-accel-plan.md); kept
+//            so the GPU work has a runnable bench from code.
+//
+// The old "engine vs gdi shadow" route is gone: correctness is checked against a
+// stored golden reference instead (GfxReplayRefMode), which needs no second
+// implementation and stays valid for the engine too.
 enum class GfxReplayRoute {
   kCpu = 0,
   kVulkan = 1,
-  kVulkanCompare = 2,
 };
 
 // Correctness gate for the CPU (gdi) route: replay a capture and check the
@@ -113,11 +112,9 @@ class GfxReplay {
   GfxReplay& operator=(const GfxReplay&) = delete;
 
   void Run();
-  // Vulkan-desktop-engine route. `compare` additionally feeds the capture into an
-  // offline gdi desktop and compares the two screens per frame.
-  void RunVulkanReplay(const std::string& gfxPath, bool compare);
+  // Vulkan-desktop-engine route (code-only bench for the GPU work).
+  void RunVulkanReplay(const std::string& gfxPath);
   void RunCpuReplay(const std::string& gfxPath);
-  void CompareFrames();
   // Golden reference (see GfxReplayRefMode). `RefCollectFrame` runs on the replay
   // thread once per composed frame (CPU route): it hashes it, and in export mode
   // keeps the hash / in compare mode checks it against the loaded list.
@@ -243,21 +240,21 @@ class GfxReplay {
   // Set when the replay loop ends, so Stats() keeps reporting the run's last
   // figures instead of letting fps/feed decay while the page sits idle.
   std::atomic<int64_t> endUs_{0};
-  // Compare-route counters (engine vs gdi, sampled per frame).
-  std::atomic<uint64_t> cmpChecks_{0};
-  std::atomic<uint64_t> cmpBad_{0};
-  std::atomic<uint64_t> cmpMaxDiff_{0};
-  std::atomic<uint64_t> cmpRgbDiff_{0};
-  std::atomic<uint64_t> cmpAlphaDiff_{0};
-  // Diagnostics for the last mismatching frame: difference bounding box and the
-  // largest per-channel delta (tells "unpainted rectangle" from "rounding").
-  std::atomic<int> cmpBBoxX0_{-1};
-  std::atomic<int> cmpBBoxY0_{-1};
-  std::atomic<int> cmpBBoxX1_{-1};
-  std::atomic<int> cmpBBoxY1_{-1};
-  std::atomic<int> cmpMaxDelta_{0};
+  // Golden-reference pixel diff, filled by RefCompareImage for the single frame
+  // the stored reference image was taken from (the per-frame hashes say *if* a
+  // frame differs; these say how much, which tells "unpainted rectangle" from
+  // "rounding").
+  std::atomic<uint64_t> imgDiffChecks_{0};
+  std::atomic<uint64_t> imgDiffBad_{0};
+  std::atomic<uint64_t> imgDiffRgbPx_{0};
+  std::atomic<uint64_t> imgDiffAlphaPx_{0};
+  std::atomic<int> imgDiffBBoxX0_{-1};
+  std::atomic<int> imgDiffBBoxY0_{-1};
+  std::atomic<int> imgDiffBBoxX1_{-1};
+  std::atomic<int> imgDiffBBoxY1_{-1};
+  std::atomic<int> imgDiffMaxDelta_{0};
   // Pixels whose worst channel delta is <= 2 (rounding-level, not content).
-  std::atomic<uint64_t> cmpSmallDeltaPx_{0};
+  std::atomic<uint64_t> imgDiffSmallPx_{0};
 
   // --- golden reference (kExport / kCompare, CPU route only) ---------------
   // One hash per composed frame, in playback order. Written to / read from
@@ -288,7 +285,6 @@ class GfxReplay {
   std::string refTag_;
 
   // Replay-thread only (no locking needed).
-  GfxCpuDesktop* cpuDesktop_ = nullptr;
   std::mutex errorMutex_;
   std::string lastError_;
   // Latest engine summary (Vulkan stats), snapshotted periodically on the replay

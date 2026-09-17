@@ -709,22 +709,12 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     if (argc >= 7) {
       napi_get_value_int32(env, args[6], &refMode);
     }
-    // Route ids match GfxReplayRoute: 0 = CPU(gdi) (the only route the UI offers -
-    // it runs with whatever presenter the "硬件加速" setting selects),
-    // 1 = Vulkan engine, 2 = Vulkan engine vs gdi compare. The engine routes are
-    // kept for reference but are no longer reachable from the page
+    // Route ids match GfxReplayRoute: 0 = CPU(gdi) - the only route the page drives,
+    // it runs with whatever presenter the "硬件加速" setting selects - and 1 = the
+    // Vulkan engine, kept as a code-level bench for the GPU work
     // (doc_agent/gpu-accel-plan.md).
-    hmrdp::GfxReplayRoute replayRoute = hmrdp::GfxReplayRoute::kCpu;
-    switch (route) {
-      case 1:
-        replayRoute = hmrdp::GfxReplayRoute::kVulkan;
-        break;
-      case 2:
-        replayRoute = hmrdp::GfxReplayRoute::kVulkanCompare;
-        break;
-      default:
-        break;
-    }
+    const hmrdp::GfxReplayRoute replayRoute =
+        route == 1 ? hmrdp::GfxReplayRoute::kVulkan : hmrdp::GfxReplayRoute::kCpu;
     hmrdp::GfxReplayRefMode replayRef = hmrdp::GfxReplayRefMode::kOff;
     if (refMode == 1) {
       replayRef = hmrdp::GfxReplayRefMode::kExport;

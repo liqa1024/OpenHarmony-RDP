@@ -5,8 +5,9 @@
  * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
  * parsing), the resulting commands go to the Vulkan desktop engine, and this
  * file only presents the composed screen on every EndFrame through
- * GpuVkPresentComposed(). The compare route can additionally run an offline gdi
- * desktop on the same bytes and compare the two screens pixel by pixel.
+ * GpuVkPresentComposed(); the CPU (gdi) route decodes with FreeRDP's own pipeline
+ * and uploads the composed desktop through the presenter instead. Correctness is
+ * checked against a stored golden reference (GfxReplayRefMode).
  */
 #include "hmrdp_replay.h"
 
@@ -50,8 +51,8 @@ extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((w
 namespace hmrdp {
 
 // The replay's desktop engine: the Vulkan GFX engine plus its swapchain
-// presenter. It exposes exactly what the pump/stats/compare code needs, so that
-// code stays free of the engine's own types.
+// presenter. It exposes exactly what the pump/stats code needs, so that code
+// stays free of the engine's own types.
 class ReplayDesktop {
  public:
   // Brings up the engine + presenter on the given XComponent surface; returns
@@ -65,8 +66,6 @@ class ReplayDesktop {
   // dirty (static frame) or the present failed.
   bool Present();
   bool screenDirty() const { return engine_ != nullptr && engine_->screenDirty(); }
-  // The composed screen mirror, for the compare route's pixel A/B.
-  bool ReadScreen(std::vector<uint8_t>* out) { return engine_->ReadScreen(out); }
 
   int screenWidth() const { return engine_->screenWidth(); }
   int screenHeight() const { return engine_->screenHeight(); }
@@ -130,9 +129,6 @@ constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap, fast mode
 constexpr int64_t kMaxRealtimeRunUs = 900ll * 1000000ll;
 constexpr int kStartWaitUs = 3000000;
 
-// Compare route: sample a full-screen readback every N frames (same idea as the
-// live shadow check - reading the engine screen back is expensive).
-constexpr uint64_t kCompareEvery = 30;
 
 // --- golden reference (GfxReplayRefMode) -----------------------------------
 // Fingerprint of a capture file: its size plus the first and last 256KB. Names the
@@ -314,8 +310,7 @@ const char* RouteName(GfxReplayRoute route) {
       return "cpu";
     case GfxReplayRoute::kVulkan:
       return "vulkan";
-    case GfxReplayRoute::kVulkanCompare:
-      return "vulkan-compare";
+
   }
   return "?";
 }
@@ -388,7 +383,6 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     surfaceH_ = surfaceH;
     gfxPath_ = gfxPath;
     route_.store(static_cast<int>(route));
-    cpuDesktop_ = nullptr;
     desktop_.reset();
     frames_.store(0);
     presents_.store(0);
@@ -410,17 +404,16 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     cacheCount_.store(0);
     otherUs_.store(0);
     otherCount_.store(0);
-    cmpChecks_.store(0);
-    cmpBad_.store(0);
-    cmpMaxDiff_.store(0);
-    cmpRgbDiff_.store(0);
-    cmpAlphaDiff_.store(0);
-    cmpBBoxX0_.store(-1);
-    cmpBBoxY0_.store(-1);
-    cmpBBoxX1_.store(-1);
-    cmpBBoxY1_.store(-1);
-    cmpMaxDelta_.store(0);
-    cmpSmallDeltaPx_.store(0);
+    imgDiffChecks_.store(0);
+    imgDiffBad_.store(0);
+    imgDiffRgbPx_.store(0);
+    imgDiffAlphaPx_.store(0);
+    imgDiffBBoxX0_.store(-1);
+    imgDiffBBoxY0_.store(-1);
+    imgDiffBBoxX1_.store(-1);
+    imgDiffBBoxY1_.store(-1);
+    imgDiffMaxDelta_.store(0);
+    imgDiffSmallPx_.store(0);
     refHashes_.clear();
     refImage_.clear();
     refImageW_ = 0;
@@ -790,23 +783,6 @@ std::string GfxReplay::StatsLines() {
         static_cast<unsigned long long>(otherCount_.load()));
     out += cls;
   }
-  // Engine-vs-gdi shadow comparison: only the compare route fills these (the
-  // golden-reference gate below reuses the pixel fields for its own image).
-  const uint64_t cmpChecks = cmpChecks_.load();
-  if (cmpChecks > 0 && static_cast<GfxReplayRoute>(route_.load()) == GfxReplayRoute::kVulkanCompare) {
-    char cmp[192];
-    std::snprintf(cmp, sizeof(cmp),
-                  "\ncompare(GPU vs gdi): checks=%llu bad=%llu rgbPx=%llu alphaPx=%llu "
-                  "maxRgbPx=%llu bbox=(%d,%d)-(%d,%d) maxDelta=%d smallDeltaPx=%llu",
-                  static_cast<unsigned long long>(cmpChecks),
-                  static_cast<unsigned long long>(cmpBad_.load()),
-                  static_cast<unsigned long long>(cmpRgbDiff_.load()),
-                  static_cast<unsigned long long>(cmpAlphaDiff_.load()),
-                  static_cast<unsigned long long>(cmpMaxDiff_.load()), cmpBBoxX0_.load(),
-                  cmpBBoxY0_.load(), cmpBBoxX1_.load(), cmpBBoxY1_.load(), cmpMaxDelta_.load(),
-                  static_cast<unsigned long long>(cmpSmallDeltaPx_.load()));
-    out += cmp;
-  }
   // Golden-reference gate (CPU route; see GfxReplayRefMode). The hashes are the
   // pass/fail; the pixel numbers come from the single frame the stored image was
   // taken from, i.e. they only say *how* it failed, not where every frame differs.
@@ -827,9 +803,10 @@ std::string GfxReplay::StatsLines() {
                     static_cast<unsigned long long>(refBad_.load()),
                     static_cast<long long>(refFirstBad_.load()),
                     static_cast<long long>(refImageFrame_),
-                    static_cast<unsigned long long>(cmpRgbDiff_.load()),
-                    static_cast<unsigned long long>(cmpAlphaDiff_.load()), cmpMaxDelta_.load(),
-                    cmpBBoxX0_.load(), cmpBBoxY0_.load(), cmpBBoxX1_.load(), cmpBBoxY1_.load(),
+                    static_cast<unsigned long long>(imgDiffRgbPx_.load()),
+                    static_cast<unsigned long long>(imgDiffAlphaPx_.load()),
+                    imgDiffMaxDelta_.load(), imgDiffBBoxX0_.load(), imgDiffBBoxY0_.load(),
+                    imgDiffBBoxX1_.load(), imgDiffBBoxY1_.load(),
                     static_cast<double>(refHashUs_.load()) / 1000.0,
                     refNote_.empty() ? "" : "  note=", refNote_.c_str());
     }
@@ -1003,17 +980,14 @@ void GfxReplay::Run() {
       RunCpuReplay(gfxPath_);
       break;
     case GfxReplayRoute::kVulkan:
-      RunVulkanReplay(gfxPath_, false);
-      break;
-    case GfxReplayRoute::kVulkanCompare:
-      RunVulkanReplay(gfxPath_, true);
+      RunVulkanReplay(gfxPath_);
       break;
   }
   endUs_.store(NowUs());
   running_.store(false);
 }
 
-void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
+void GfxReplay::RunVulkanReplay(const std::string& gfxPath) {
   std::unique_ptr<ReplayDesktop> desktop(new ReplayDesktop());
   std::string error;
   if (!desktop->Init(window_, surfaceW_, surfaceH_, &error)) {
@@ -1022,19 +996,6 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
     return;
   }
   desktop_ = std::move(desktop);
-  // The correctness routes feed the exact same bytes into FreeRDP's own gdi
-  // pipeline and compare the two composed screens. The CPU desktop decodes but
-  // never presents, so there is no double present and no timing meaning here.
-  GfxCpuDesktop cpu;
-  if (compare) {
-    if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
-      std::lock_guard<std::mutex> err(errorMutex_);
-      lastError_ = error;
-      desktop_.reset();
-      return;
-    }
-    cpuDesktop_ = &cpu;
-  }
   ReplaySink sink(desktop_.get(), this);
 
   // The replayed stream must not re-trigger the capture hook on the recorder.
@@ -1054,18 +1015,8 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
   // figures must not count the throttling as decode work.
   const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
 
-  bool ok = false;
-  if (compare) {
-    // gdi and the engine consume the capture interleaved per PDU, and CompareFrames()
-    // runs on gdi's EndFrame - with both sides at the same stream position, which is
-    // what makes the pixel A/B meaningful. OnReplayFrame keeps presenting and pacing.
-    ok = GfxReplayStreamCompare(gfxPath, &sink, [this]() { OnReplayFrame(); },
-                                [this]() { CompareFrames(); }, {}, cpu.gfx(), &running_, &error,
-                                pace);
-  } else {
-    ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error, pace,
-                         paceAccum);
-  }
+  const bool ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error,
+                                  pace, paceAccum);
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -1077,7 +1028,6 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath, bool compare) {
     traffic_ = summary;
   }
   hmrdp::GfxDumpSetReplaying(false);
-  cpuDesktop_ = nullptr;
   const int64_t releaseStart = NowUs();
   desktop_.reset();
   HMRDP_LOGI("gfx replay: engine teardown %{public}llu ms",
@@ -1173,109 +1123,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
     lastError_ = error;
   }
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
-}
-
-void GfxReplay::CompareFrames() {
-  ReplayDesktop* engine = desktop_.get();
-  GfxCpuDesktop* cpu = cpuDesktop_;
-  if (engine == nullptr || cpu == nullptr) {
-    return;
-  }
-  // Sample like the live shadow check: a full screen readback is expensive.
-  if ((frames_.load() % static_cast<uint64_t>(kCompareEvery)) != 0) {
-    return;
-  }
-  rdpGdi* gdi = cpu->gdi();
-  const int w = engine->screenWidth();
-  const int h = engine->screenHeight();
-  if (gdi == nullptr || gdi->primary_buffer == nullptr || w <= 0 || h <= 0) {
-    return;
-  }
-  const int cmpW = w < static_cast<int>(gdi->width) ? w : static_cast<int>(gdi->width);
-  const int cmpH = h < static_cast<int>(gdi->height) ? h : static_cast<int>(gdi->height);
-  if (cmpW <= 0 || cmpH <= 0) {
-    return;
-  }
-  std::vector<uint8_t> screen;
-  if (!engine->ReadScreen(&screen)) {
-    return;
-  }
-  if (screen.size() != static_cast<size_t>(w) * static_cast<size_t>(h) * 4) {
-    return;
-  }
-  // Separate RGB differences (a real decoding/composition mismatch) from
-  // alpha-only differences (BGRX surfaces: the two decoders may disagree only on
-  // the unused byte, which is not a visual difference).
-  size_t diffRgb = 0;
-  size_t diffAlpha = 0;
-  int firstX = -1;
-  int firstY = -1;
-  // Bounding box of the RGB differences and the largest per-channel delta:
-  // "one rectangle" means a command/region the engine failed to paint (or
-  // composed differently), while "+/-1 everywhere" means rounding.
-  int bx0 = cmpW;
-  int by0 = cmpH;
-  int bx1 = -1;
-  int by1 = -1;
-  int maxDelta = 0;
-  size_t smallDeltaPx = 0;  // all channels within +/-2: rounding-level
-  for (int row = 0; row < cmpH; ++row) {
-    const uint8_t* a = screen.data() + static_cast<size_t>(row) * w * 4;
-    const uint8_t* b = gdi->primary_buffer + static_cast<size_t>(row) * gdi->stride;
-    for (int col = 0; col < cmpW; ++col) {
-      const uint8_t* pa = a + col * 4;
-      const uint8_t* pb = b + col * 4;
-      if (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2]) {
-        if (firstX < 0) {
-          firstX = col;
-          firstY = row;
-        }
-        if (col < bx0) bx0 = col;
-        if (row < by0) by0 = row;
-        if (col > bx1) bx1 = col;
-        if (row > by1) by1 = row;
-        int worst = 0;
-        for (int k = 0; k < 3; ++k) {
-          const int d = static_cast<int>(pa[k]) - static_cast<int>(pb[k]);
-          const int ad = d < 0 ? -d : d;
-          if (ad > worst) worst = ad;
-        }
-        if (worst > maxDelta) maxDelta = worst;
-        if (worst <= 2) smallDeltaPx++;
-        diffRgb++;
-      } else if (pa[3] != pb[3]) {
-        diffAlpha++;
-      }
-    }
-  }
-  cmpSmallDeltaPx_.fetch_add(smallDeltaPx);
-  if (bx1 >= 0) {
-    cmpBBoxX0_.store(bx0);
-    cmpBBoxY0_.store(by0);
-    cmpBBoxX1_.store(bx1);
-    cmpBBoxY1_.store(by1);
-    cmpMaxDelta_.store(maxDelta);
-  }
-  cmpChecks_.fetch_add(1);
-  cmpRgbDiff_.fetch_add(diffRgb);
-  cmpAlphaDiff_.fetch_add(diffAlpha);
-  if (diffRgb != 0 || diffAlpha != 0) {
-    cmpBad_.fetch_add(1);
-    const uint64_t prev = cmpMaxDiff_.load();
-    if (static_cast<uint64_t>(diffRgb) > prev) {
-      cmpMaxDiff_.store(static_cast<uint64_t>(diffRgb));
-    }
-    // One line per mismatching sample: enough to tell whether a later run's
-    // divergence has the same shape (bbox / delta) or is a new one.
-    HMRDP_LOGW(
-        "gfx replay: compare diff frame=%{public}llu rgb=%{public}llu alphaOnly=%{public}llu "
-        "first=(%{public}d,%{public}d) bbox=(%{public}d,%{public}d)-(%{public}d,%{public}d) "
-        "maxDelta=%{public}d small=%{public}llu",
-        static_cast<unsigned long long>(frames_.load()),
-        static_cast<unsigned long long>(diffRgb), static_cast<unsigned long long>(diffAlpha),
-        firstX, firstY, bx0, by0, bx1, by1, maxDelta,
-        static_cast<unsigned long long>(smallDeltaPx));
-  }
 }
 
 // ---- golden reference (see GfxReplayRefMode) ------------------------------
@@ -1393,19 +1240,18 @@ void GfxReplay::RefCompareImage(const uint8_t* data, int stride, int width, int 
       }
     }
   }
-  cmpChecks_.fetch_add(1);
+  imgDiffChecks_.fetch_add(1);
   if (rgbPx > 0) {
-    cmpBad_.fetch_add(1);
+    imgDiffBad_.fetch_add(1);
   }
-  cmpRgbDiff_.store(rgbPx);
-  cmpAlphaDiff_.store(alphaPx);
-  cmpSmallDeltaPx_.store(smallPx);
-  cmpMaxDiff_.store(static_cast<uint64_t>(maxDelta));
-  cmpMaxDelta_.store(maxDelta);
-  cmpBBoxX0_.store(x0);
-  cmpBBoxY0_.store(y0);
-  cmpBBoxX1_.store(x1);
-  cmpBBoxY1_.store(y1);
+  imgDiffRgbPx_.store(rgbPx);
+  imgDiffAlphaPx_.store(alphaPx);
+  imgDiffSmallPx_.store(smallPx);
+  imgDiffMaxDelta_.store(maxDelta);
+  imgDiffBBoxX0_.store(x0);
+  imgDiffBBoxY0_.store(y0);
+  imgDiffBBoxX1_.store(x1);
+  imgDiffBBoxY1_.store(y1);
   HMRDP_LOGI("gfx replay: reference image compare: rgbPx=%{public}llu maxDelta=%{public}d",
              static_cast<unsigned long long>(rgbPx), maxDelta);
 }
