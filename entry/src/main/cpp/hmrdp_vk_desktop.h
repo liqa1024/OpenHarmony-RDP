@@ -120,7 +120,7 @@ class GfxVkDesktop {
   // failed codec commands are counted and visible here, never silent (V5).
   std::string Stats() const;
 
-  // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3): one
+  // Perf accounting for the present strategy (doc_agent/present-pipeline.md §2): one
   // present's host-time split - record the dirty compose, submit+wait, then blit the
   // whole screen to the swapchain and present. Reported in Stats().
   void NotePresentSplitUs(uint64_t composeUs, uint64_t flushUs, uint64_t blitUs);
@@ -130,7 +130,7 @@ class GfxVkDesktop {
   // presenting, and before destroying resources work still references.
   bool Flush();
 
-  // Present-path hand-off (doc_agent/gfx-engine.md §2.3): submit the frame *without*
+  // Present-path hand-off (doc_agent/present-pipeline.md §1): submit the frame *without*
   // waiting, hand `frameSemaphore()` to the presenter so its present waits the frame
   // on the device instead of blocking the CPU, and pass the presenter's
   // blit-completion signal back with SetFrameWaitSemaphore() so the next compose

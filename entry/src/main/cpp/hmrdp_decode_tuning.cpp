@@ -28,7 +28,7 @@ namespace {
 // than half the CPU (65.0 ms / 13.7 s). The decode therefore stops scaling after
 // a couple of workers, and each extra one is a core woken for every Progressive
 // message - so the automatic choice stays small and the device's cluster count
-// can only pull it further down (doc_agent/gfx-engine.md §3).
+// can only pull it further down (doc_agent/cpu-path.md §5).
 constexpr int kAutoCap = 4;
 // Manual range.
 constexpr int kMaxWorkers = 8;

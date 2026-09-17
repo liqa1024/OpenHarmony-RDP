@@ -55,7 +55,7 @@ class FramePresenter {
   // keeps going: the next present retries).
   virtual bool Prepare() = 0;
 
-  // --- zero-copy desktop buffer (doc_agent/cpu-path.md §6.1 ③) --------------
+  // --- zero-copy desktop buffer (doc_agent/cpu-path.md §4) --------------
   // A backend that can hand gdi a host-visible frame buffer it owns returns it
   // here, so gdi composes the desktop straight into the memory the presenter
   // uploads from and no per-frame copy of the frame happens. `*stride` receives
@@ -81,7 +81,7 @@ class FramePresenter {
   // instead of a CPU copy. The caller picks the cheap dirty shape accordingly:
   // with a CPU copy in the way the byte count dominates and the rect list wins,
   // without one the rect *count* dominates and the merged box wins
-  // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/cpu-path.md §6.1 ③).
+  // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/cpu-path.md §4).
   virtual bool usesDesktopBuffer() const { return false; }
 
   // Called from the FreeRDP worker thread. `data` is the whole desktop frame

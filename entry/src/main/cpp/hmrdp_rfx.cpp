@@ -171,7 +171,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   // (and the component quants) before applying anything, but a failure during the
   // tile walk happens after the tiles read so far were already registered in the
   // surface's frame tile list - "both reject the message" is not the same thing
-  // in the two cases (doc_agent/gfx-engine.md §2.2).
+  // in the two cases (doc_agent/gfx-engine.md §2.1).
   auto fail = [stats](const char* stage) {
     if (stats != nullptr) {
       stats->errorStage = stage;
@@ -201,7 +201,7 @@ bool ParseRegion(const uint8_t* data, size_t size, const RfxTileCallback& onTile
   // made the engine throw such a message away *entirely* (no tile state, no pixels)
   // while gdi decoded and composited it normally - a whole-message divergence that
   // never heals, because the surface is only repaired when the server happens to
-  // re-send the same content (doc_agent/gfx-vulkan-correctness.md). Real captures
+  // re-send the same content (doc_agent/gfx-engine.md §2.2). Real captures
   // do carry regions with thousands of rects.
   if (numRects < 1) {
     return fail("region-rects-range");

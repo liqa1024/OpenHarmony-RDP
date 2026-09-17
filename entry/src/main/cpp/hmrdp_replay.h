@@ -53,7 +53,7 @@ class GfxReplay {
   //           chew through this stream"). Deliberately unpaced: a frame budget
   //           (the earlier kFrameMs sleep) left the CPU idle between frames, which
   //           dropped the whole SoC to its lowest clock and made every per-frame
-  //           cost ~3x larger - see doc_agent/cpu-path.md §8.
+  //           cost ~3x larger - see doc_agent/cpu-path.md §7.
   //   true  - each record is fed at the arrival time recorded in the capture, so
   //           the frame cadence, the per-frame gaps and therefore the machine
   //           state (CPU placement/frequency, cache locality, threadpool
@@ -173,7 +173,7 @@ class GfxReplay {
   // Process CPU time (all threads) at the start and the end of the run: the
   // energy side of the decode-worker A/B. Wall time alone cannot tell "faster"
   // from "more cores woken for nothing"; a run whose `本机` stops improving while
-  // cpu climbs is past the sweet spot (doc_agent/gfx-engine.md §3).
+  // cpu climbs is past the sweet spot (doc_agent/cpu-path.md §5).
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};

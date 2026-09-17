@@ -398,7 +398,7 @@ std::string GfxReplay::StatsLines() {
   // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
   // not the live cadence (a frame budget used to be applied here; it kept the CPU
   // idle between frames, which dropped the SoC clock ~3x and inflated every
-  // per-frame number - doc_agent/cpu-path.md §8).
+  // per-frame number - doc_agent/cpu-path.md §7).
   // `lag` is only meaningful in realtime mode: the worst lateness behind the
   // recorded schedule, i.e. how much of the live load the client could not absorb.
   // "fast(untimed)" = realtime was requested but the capture carries no arrival
@@ -425,7 +425,7 @@ std::string GfxReplay::StatsLines() {
 
   // Worker count + the run's total process CPU time: the thread-count A/B needs
   // both the wall time (above) and what it cost, or "same speed, more cores
-  // woken" looks like a tie (doc_agent/gfx-engine.md §3).
+  // woken" looks like a tie (doc_agent/cpu-path.md §5).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
@@ -436,7 +436,7 @@ std::string GfxReplay::StatsLines() {
     // cpuKHz is the SoC clock the run actually got: the playback rate decides it
     // (an idle-paced run sits at the lowest frequency and every per-frame figure
     // is ~3x larger), so two runs are only comparable at the same value
-    // (doc_agent/cpu-path.md §8).
+    // (doc_agent/cpu-path.md §7).
     const std::string freq = hmrdp::CpuFreqInfo();
     char run[240];
     std::snprintf(run, sizeof(run),
@@ -649,7 +649,7 @@ void GfxReplay::RecordPresent(uint64_t micros) {
 void GfxReplay::MarkFrameEnd(bool presented) {
   // Cadence bookkeeping only - the fast mode deliberately does not sleep (a frame
   // budget left the CPU idle between frames, which dropped the SoC to its lowest
-  // clock and inflated every per-frame cost ~3x, see doc_agent/cpu-path.md §8), and
+  // clock and inflated every per-frame cost ~3x, see doc_agent/cpu-path.md §7), and
   // the realtime mode's cadence comes from the capture (PaceRecord).
   //
   // Only frames that produced a picture mark the origin: the stream carries many

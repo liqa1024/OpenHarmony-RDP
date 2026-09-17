@@ -267,7 +267,7 @@ struct GfxVkDesktop::Impl {
   // Frames in flight. Each slot owns a command buffer and a fence so one submission
   // can stay in flight while the next frame is recorded - the same shape the
   // presenter already uses (`VkRenderer::kFramesInFlight`), and what lets the
-  // present stop waiting for the frame's own decode (doc_agent/gfx-engine.md §2.3).
+  // present stop waiting for the frame's own decode (doc_agent/present-pipeline.md §1).
   // `commandBuffer`/`fence`/`recording` are a *view* of the current slot, kept in
   // sync by SelectSlot()/StoreSlot(), so every recording site keeps addressing one
   // command buffer.
@@ -286,7 +286,7 @@ struct GfxVkDesktop::Impl {
   VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   bool recording = false;
-  // Device-side hand-off (doc_agent/gfx-engine.md §2.3), all on the GPU so the CPU
+  // Device-side hand-off (doc_agent/present-pipeline.md §1), all on the GPU so the CPU
   // never waits for a frame:
   //  * `frameSemaphores[slot]`: signaled by the frame's submission, waited by the
   //    presenter's blit for that frame;
@@ -343,7 +343,7 @@ struct GfxVkDesktop::Impl {
   // since this one was last written - because the picture is *accumulated* content
   // (only this frame's dirty rects are copied into it), so its untouched areas would
   // otherwise still show the desktop as it was two frames ago
-  // (doc_agent/gfx-engine.md §2.3).
+  // (doc_agent/present-pipeline.md §1).
   GpuImage pictures[kSlots];
   std::map<uint16_t, std::vector<Surface::DirtyRect>> pictureMissing[kSlots];
   int pictureW = 0;
@@ -406,8 +406,8 @@ struct GfxVkDesktop::Impl {
     size_t used = 0;
   };
   // One staging arena per frame slot: the decode/compose dispatches read it, so a
-  // slot that is still in flight must keep its arena intact (doc_agent/gfx-engine.md
-  // §2.3 - the requirement for letting the CPU record a frame ahead).
+  // slot that is still in flight must keep its arena intact
+  // (doc_agent/present-pipeline.md §1 - the requirement for letting the CPU record a frame ahead).
   struct StageSlot {
     std::vector<StageBuffer> buffers;
     size_t index = 0;
@@ -603,7 +603,7 @@ struct GfxVkDesktop::Impl {
   uint64_t gpuSamples[4] = {0, 0, 0, 0};
   // Per-bracket extremes: a kernel whose per-dispatch time is constant while its
   // input size varies is dominated by waiting, not by arithmetic - the totals alone
-  // cannot tell those apart (doc_agent/gfx-engine.md §6).
+  // cannot tell those apart (doc_agent/gfx-engine.md §3).
   uint64_t gpuTicksMin[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
   uint64_t gpuTicksMax[4] = {0, 0, 0, 0};
   // Input size per chunk, so the decode can be expressed per payload byte / stream.
@@ -716,7 +716,7 @@ struct GfxVkDesktop::Impl {
   uint64_t composeRects = 0;
   uint64_t composeMaxRects = 0;
   uint64_t composeRectOverflow = 0;
-  // Perf accounting for the present strategy (doc_agent/gfx-engine.md §2.3/§3): the
+  // Perf accounting for the present strategy (doc_agent/present-pipeline.md §2/§4.3): the
   // host-time split of a present into "record the dirty compose", "submit it and
   // wait" and "blit the whole screen to the swapchain + present". The last bucket is
   // the per-frame cost that does *not* scale with the dirty area, so it decides which
@@ -987,7 +987,7 @@ struct GfxVkDesktop::Impl {
   // covers them reads the source stale. The box hides it because it re-composes the
   // same pixels on later frames (once the bytes are visible); the rect list
   // composes each pixel once, so a stale read becomes permanent. Measured on the
-  // scrolling sample (doc_agent/gfx-engine.md §2.3, §7): box `bad=0`, rect
+  // scrolling sample (doc_agent/gfx-engine.md §2.3): box `bad=0`, rect
   // `bad=1 rgbPx=156`; an unconditional all-commands barrier before the copy cuts
   // it to 60 px but not to zero, and neither greedy host flushes, one copy call per
   // region, nor a coherent host-visible memory type change it. The box is itself a
@@ -1134,7 +1134,7 @@ struct GfxVkDesktop::Impl {
         continue;
       }
       int score = 0;
-      // Temporary experiment (doc_agent/gfx-engine.md §7): skip the cached type so
+      // Temporary experiment (doc_agent/gfx-engine.md §2.3): skip the cached type so
       // the coherent one wins, to test whether the rect-mode compose staleness comes
       // from the cached (non-coherent) memory path. Correctness first; the CPU-side
       // pixel paths get measurably slower with the coherent type, so if this is the
@@ -1712,7 +1712,7 @@ struct GfxVkDesktop::Impl {
   // Ends and submits the current slot. Deliberately does NOT wait: the CPU-readback
   // paths call Flush() (which waits), while the present path only has to hand the
   // slot to the presenter - that is what keeps the decode off the present's
-  // critical path (doc_agent/gfx-engine.md §2.3, §7).
+  // critical path (doc_agent/present-pipeline.md §1).
   bool SubmitSlot(bool signalFrame) {
     // A pending decode batch must be recorded (its composes included) before this
     // window is closed: the batch's staged data lives in the arena, which the next
@@ -1762,7 +1762,7 @@ struct GfxVkDesktop::Impl {
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &commandBuffer;
-    // Device-side chain (doc_agent/gfx-engine.md §2.3). Two dependencies, both on
+    // Device-side chain (doc_agent/present-pipeline.md §1). Two dependencies, both on
     // the GPU:
     //   * the *engine's own* previous submission: the surfaces and the decode
     //     scratch are read-modify-written across frames, so frames must stay
@@ -3415,7 +3415,7 @@ bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint
 
   // The wire pixel format decides more than the swap: 0x21 (ARGB_8888) maps to
   // BGRA32, which is exactly gdi's desktop format, so a desktop-sized surface can
-  // share the primary buffer (doc_agent/cpu-path.md §6.1 ②); 0x20 (XRGB_8888)
+  // share the primary buffer (doc_agent/cpu-path.md §4); 0x20 (XRGB_8888)
   // maps to BGRX32 and cannot.
   HMRDP_LOGI("vk desktop: surface %{public}u %{public}dx%{public}d stride=%{public}d"
              " wireFormat=0x%{public}x",
@@ -4356,7 +4356,7 @@ bool GpuVkPresentComposed(GfxVkDesktop* engine, VkRenderer* renderer) {
   if (engine == nullptr || renderer == nullptr) {
     return false;
   }
-  // Perf accounting (doc_agent/gfx-engine.md §2.3): split a present into the dirty
+  // Perf accounting (doc_agent/present-pipeline.md §2): split a present into the dirty
   // compose, the submit+wait, and the full-screen blit + present, so the strategy
   // question ("how much of the frame cost scales with the dirty area?") is answered
   // with numbers instead of assumed. Host-time on purpose: every GPU step here is

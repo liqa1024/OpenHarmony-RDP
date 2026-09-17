@@ -1397,7 +1397,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // When the caller handed gdi *our* desktop buffer (AcquireDesktopBuffer), the
     // dirty rects are already laid out in the memory the GPU copies from: the
     // regions read it in place at the desktop row pitch and no CPU copy of the
-    // frame happens at all (doc_agent/cpu-path.md §6.1 ③). Otherwise the rects are
+    // frame happens at all (doc_agent/cpu-path.md §4). Otherwise the rects are
     // packed into this slot's staging buffer first.
     const bool direct =
         data == static_cast<const uint8_t*>(desktopBufferMapped_) && srcStride == desktopBufferStride_ &&
@@ -1696,7 +1696,7 @@ bool VkRenderer::CreateSwapchainLocked() {
     api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, presentModes.data());
   }
   // FIFO is the only mode the spec guarantees; it is also the one that matches
-  // the "present only when the picture changed" policy (doc_agent/gfx-engine.md §1).
+  // the "present only when the picture changed" policy (doc_agent/gfx-engine.md §2.3).
   VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
   bool fifoAvailable = false;
   for (VkPresentModeKHR mode : presentModes) {

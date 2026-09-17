@@ -27,7 +27,7 @@ const ROUTE_LABEL: string[] = ['CPU', 'Vulkan', 'Vulkan对比'];
 // automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
 // the receiving thread with no worker pool. The decode is the CPU (gdi) path's
 // dominant cost, so this is the knob for its time-vs-energy curve
-// (doc_agent/gfx-engine.md §3).
+// (doc_agent/cpu-path.md §5).
 const DECODE_THREAD_CHOICES: number[] = [0, 1, 2, 3, 4, 6, 8];
 const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
 

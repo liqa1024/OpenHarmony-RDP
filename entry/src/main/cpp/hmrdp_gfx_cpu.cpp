@@ -188,7 +188,7 @@ void GfxCpuDesktop::OnBeginPaint() {
   // gdi is about to write this frame's pixels into its primary buffer; when that
   // buffer belongs to the presenter, the GPU must be done reading the previous
   // frame out of it first. Normally free: a whole frame's decode sits between the
-  // two (doc_agent/cpu-path.md §6.1 ③).
+  // two (doc_agent/cpu-path.md §4).
   if (desktopAttached_ && presenter_ != nullptr) {
     const int64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();

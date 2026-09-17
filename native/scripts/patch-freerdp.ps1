@@ -996,7 +996,7 @@ Patch-Regex $poolC '\tSYSTEM_INFO info = \{ 0 \};\n\tGetSystemInfo\(&info\);.*?\
 	/* HmRdp: cap the per-pool fan-out. The worker count is a runtime value now
 	 * (HmrdpSetDecodeThreads); this is only the starting point when the app has
 	 * not chosen one. Its default, min(cores, 4), is the measured sweet spot -
-	 * see doc_agent/gfx-engine.md §3. */
+	 * see doc_agent/cpu-path.md §5. */
 	if (!SetThreadpoolThreadMinimum(pool, threads))
 		goto fail;
 	SetThreadpoolThreadMaximum(pool, threads);
@@ -1036,7 +1036,7 @@ Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads\)\n\t\{\n
 #     codec set (the rdp context's and the GFX context's), i.e. ~130ms per event -
 #     measured on device (141.8ms / 128.6ms) for a codec this client never uses
 #     (Progressive / ClearCodec / uncompressed only). See
-#     doc_agent/cpu-path.md §6.5.
+#     doc_agent/cpu-path.md §3.
 #
 #     The buffers are per-message working memory (written before read), so when
 #     the geometry did not change there is nothing to do. `planes[0] != NULL`
@@ -1052,7 +1052,7 @@ Patch-Regex $planarC '\tcontext->bgr = FALSE;\n\tcontext->maxWidth = PLANAR_ALIG
 	 * unconditionally, which is ~117MB of calloc + zeroing per call on a
 	 * 3120x2080 desktop; a single ResetGraphics reaches this once per codec set
 	 * (two sets exist) and cost ~130ms per event, for a codec this client never
-	 * uses (see doc_agent/cpu-path.md §6.5). `planes[0] != NULL`
+	 * uses (see doc_agent/cpu-path.md §3). `planes[0] != NULL`
 	 * means the previous call allocated them, so a failure still falls through. */
 	{
 		const UINT32 newWidth = PLANAR_ALIGN(width, 4);
@@ -1072,9 +1072,9 @@ Patch-Regex $planarC '\tcontext->bgr = FALSE;\n\tcontext->maxWidth = PLANAR_ALIG
 #     That surface *is* the desktop, so gdi_OutputUpdate's per-rect
 #     freerdp_image_scale() into the primary just moves ~20MB/frame from one buffer
 #     to another - measured 1.3ms/frame and 41MB of DRAM traffic per frame on a
-#     3120x2080 stream (doc_agent/cpu-path.md §6.1 ②). With this step the surface is
+#     3120x2080 stream (doc_agent/cpu-path.md §4). With this step the surface is
 #     given the primary buffer instead, so the decoder writes the very pixels the
-#     presenter uploads and the copy disappears (cpu-path.md §7 item 2).
+#     presenter uploads and the copy disappears (cpu-path.md §4).
 #
 #     The sharing test is `surface->data == gdi->primary_buffer`. It stays valid
 #     because the only path that replaces the primary buffer (gdi_ResetGraphics ->
@@ -1396,7 +1396,7 @@ Patch-Block $gdiGfxC $deleteOld $deleteNew 'a shared surface''s buffer belongs t
 #     O(n^2) - measured 6.4ms/frame of *serial* RDP-thread time, ~30% of a frame on
 #     the video sample, for ~1330 tiles. Measured detail: the per-message region is
 #     essentially one rect per tile, so there is nothing to merge per message
-#     (doc_agent/cpu-path.md §6.2) - the cost is the union itself, not the rect
+#     (doc_agent/cpu-path.md §8) - the cost is the union itself, not the rect
 #     count.
 #
 #     So the decoder stops touching the region16 per tile: it keeps one min/max

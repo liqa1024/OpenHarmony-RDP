@@ -185,7 +185,7 @@ struct SettingsPage {
   // Honest wording, because the measurement says this is NOT a performance knob:
   // 2, 3, 4, 6 and 8 workers all give the same frame time and the same CPU (the
   // decode's own parallel efficiency is the limit, not the core count - see
-  // doc_agent/gfx-progressive-kernel.md §4), while 1 (decode on the receiving
+  // doc_agent/cpu-path.md §5), while 1 (decode on the receiving
   // thread, no pool) costs far less CPU at a slower frame. So the useful ends are
   // "automatic" and "1"; the values in between are for experiments.
   private decodeThreadsSubtitle(): string {

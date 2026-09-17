@@ -80,7 +80,7 @@ class GfxCpuDesktop {
 
 // Brings gdi up on `instance` composing straight into `presenter`'s own desktop
 // buffer when the backend offers one (FramePresenter::AcquireDesktopBuffer,
-// doc_agent/cpu-path.md §6.1 ③). Falls back to a gdi-owned buffer when it does
+// doc_agent/cpu-path.md §4). Falls back to a gdi-owned buffer when it does
 // not, which is also what happens before the presenter's device exists - the
 // per-frame AttachPresenterDesktopBuffer() then moves gdi over later.
 bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int width, int height);

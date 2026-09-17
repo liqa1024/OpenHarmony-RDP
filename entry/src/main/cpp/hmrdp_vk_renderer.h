@@ -50,7 +50,7 @@ class VkRenderer : public FramePresenter {
   // CPU frames use: the letterbox quad samples it and writes the swapchain image,
   // which the render pass clears to black outside the picture. No CPU readback, no
   // blit: one device, one queue, one present implementation for both producers
-  // (doc_agent/gfx-engine.md §2.3).
+  // (doc_agent/present-pipeline.md §1).
   // `imageFormat` must be VK_FORMAT_B8G8R8A8_UNORM: every producer hands over
   // FreeRDP's BGRA order and the image's own format does the channel conversion.
   bool PresentImage(VkImage image, VkFormat imageFormat, int width, int height,
@@ -63,7 +63,7 @@ class VkRenderer : public FramePresenter {
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 
-  // Zero-copy desktop buffer (doc_agent/cpu-path.md §6.1 ③): the host-visible,
+  // Zero-copy desktop buffer (doc_agent/cpu-path.md §4): the host-visible,
   // persistently mapped memory gdi composes the desktop into. PresentBgra then
   // recognises its own buffer and records the dirty rects straight out of it, so
   // no per-frame copy of the frame happens at all. Needs the device (created with
