@@ -48,6 +48,16 @@ extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak)
 // FreeRDP just reports nothing.
 extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((weak));
 
+// DEV-ONLY: the patched FreeRDP inverse DWT (libfreerdp/codec/rfx_dwt.c) is a
+// bit-exact rewrite of the scalar reference, and the golden reference cannot
+// prove that on its own (it was recorded by the decoder that changed). The
+// reference modes therefore switch on a per-tile comparison against the scalar
+// original: out = { tiles checked, elements that differed }
+// (doc_agent/cpu-accel-plan.md §7).
+constexpr int kDwtCheckSlots = 2;
+extern "C" unsigned long long HmrdpDwtCheckStat[kDwtCheckSlots] __attribute__((weak));
+extern "C" void HmrdpSetDwtCheck(int on) __attribute__((weak));
+
 namespace hmrdp {
 
 // The replay's desktop engine: the Vulkan GFX engine plus its swapchain
@@ -434,6 +444,12 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
         HMRDP_LOGW("gfx replay: reference unusable (%{public}s)", refNote_.c_str());
       }
     }
+    // The inverse DWT is compared against its scalar reference during the
+    // reference runs only: that is the run that has to prove bit-exactness, and
+    // the extra (sampled) decode work would show up in a performance run.
+    if (HmrdpSetDwtCheck != nullptr) {
+      HmrdpSetDwtCheck(refMode_.load() == static_cast<int>(GfxReplayRefMode::kCompare) ? 1 : 0);
+    }
     presentUs_.store(0);
     uploadBytes_.store(0);
     uploadBoxBytes_.store(0);
@@ -757,6 +773,17 @@ std::string GfxReplay::StatsLines() {
                     phases[3], phases[4], phases[5], sum);
       out += ps2;
     }
+  }
+
+  // DEV-ONLY: the inverse-DWT rewrite (patched FreeRDP) checked against its
+  // scalar reference. Only the reference runs switch it on, and `mismatch=0` is
+  // the gate a decode-side change needs: the golden reference cannot provide it,
+  // because it was recorded by the very decoder that changed.
+  if (refMode_.load() != 0 && &HmrdpDwtCheckStat[0] != nullptr) {
+    char dw[192];
+    std::snprintf(dw, sizeof(dw), "\ndwt check: tiles=%llu mismatch=%llu", HmrdpDwtCheckStat[0],
+                  HmrdpDwtCheckStat[1]);
+    out += dw;
   }
 
   // Per-command-class breakdown only exists on the GPU route (the CPU route
@@ -1086,6 +1113,11 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   if (&HmrdpProgStat[0] != nullptr) {
     for (int i = 0; i < kProgStatSlots; ++i) {
       HmrdpProgStat[i] = 0;
+    }
+  }
+  if (&HmrdpDwtCheckStat[0] != nullptr) {
+    for (int i = 0; i < kDwtCheckSlots; ++i) {
+      HmrdpDwtCheckStat[i] = 0;
     }
   }
 

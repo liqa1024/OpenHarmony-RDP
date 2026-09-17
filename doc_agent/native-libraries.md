@@ -86,6 +86,14 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
   统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
   [`cpu-accel-plan.md`](cpu-accel-plan.md) §1/§2。
+- **逆 DWT 改写（逐位等价）**：Progressive 实际跑的是**抽取（外推）**那一支
+  （`progressive_rfx_idwt_x/_y`，`RFX_DWT_REDUCE_EXTRAPOLATE` 区域），`codec/rfx_dwt.c` 的通用实现
+  在全屏码流上一次也不进。改写只动组织：`X2 = L - (H0+H1)/2` 整段先算、输出对由无依赖的循环写，
+  `idwt_y` 从按列走改成行主序；通用实现那一支另有一份 NEON 版本（`VRHADD`/`VHADD` 是全精度半加，
+  与 C 的 `int` 算术逐位相同；`WITH_SIMD=OFF` 的 `codec/neon/rfx_neon.c` **不是**逐位等价的，不要用它）。
+  导出 `HmrdpSetDwtCheck(int)` / `HmrdpDwtCheckStat[2]`（对拍过的 tile 数 / 逐元素不同的个数），
+  由 app 在 `参考:对比` 那一轮打开并打印 `dwt check: tiles=… mismatch=…`：解码侧改写的正确性门禁是
+  这个对拍，不是参考画面（参考是同一个解码器录的）。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`

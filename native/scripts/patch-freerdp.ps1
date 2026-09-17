@@ -1755,5 +1755,826 @@ Patch-Block $gdiRowsC "`tsurfaceX = surface->outputOriginX;" `
   ($gdiFlushCall + "`tsurfaceX = surface->outputOriginX;") `
   'HmrdpProgressiveFlushDirty(surface->codecs->progressive'
 
+# 15) HmRdp: bit-exact inverse DWT (doc_agent/cpu-accel-plan.md, stage one C1).
+#
+#     The progressive decode spends about half of its tile cost in the inverse
+#     DWT, and the upstream block is pure scalar int16 lifting. The rewrite below
+#     changes only how the same arithmetic is organised, so the output is
+#     byte-for-byte identical to the original (kept verbatim as the scalar
+#     reference):
+#
+#       - the horizontal and the vertical pass are each split into their even- and
+#         odd-sample halves - which is what the original already is: an odd sample
+#         (2n+1) only ever reads the even samples next to it, never another odd
+#         one, so nothing here is a new dependency;
+#       - the vertical pass walks rows (x innermost) instead of columns, so every
+#         access is contiguous;
+#       - on AArch64 the inner loops work on eight samples at a time with the NEON
+#         halving adds: VRHADD is (a + b + 1) >> 1 and VHADD is (a + b) >> 1, both
+#         with the sum evaluated in full precision - exactly the `int` arithmetic
+#         of the C code. The left shift and the final store keep the same INT16
+#         truncation, so nothing saturates or rounds differently. (The upstream
+#         NEON variant in codec/neon/rfx_neon.c does NOT have this property: it
+#         adds in 16-bit lanes and wraps, which is why it stays disabled with
+#         -DWITH_SIMD=OFF and is not what this step turns on.)
+#
+#     `subband_width` is 8, 16 or 32 for every caller, i.e. always a multiple of
+#     the vector width; anything else, and every non-AArch64 target (the emulator
+#     build), runs the scalar reference unchanged.
+#
+#     The block also carries the dev-only proof required by that gate: with
+#     HmrdpSetDwtCheck(1) one tile in HMRDP_DWT_CHECK_EVERY is decoded a second
+#     time with the scalar reference and the differing elements are counted into
+#     HmrdpDwtCheckStat[2] = { tiles checked, elements that differed }. The golden
+#     reference cannot prove this rewrite on its own (it was recorded by the very
+#     decoder that changed), which is why the check exists; the app turns it on
+#     for the 参考:对比 run and prints the counters.
+$dwtC = "$Source\libfreerdp\codec\rfx_dwt.c"
+$dwtNew = @'
+/*
+ * HmRdp: bit-exact restructure of the inverse DWT (see the patch note in
+ * native/scripts/patch-freerdp.ps1 step 15, doc_agent/cpu-accel-plan.md C1). The
+ * upstream scalar version follows verbatim and stays the reference for the
+ * fallback path and for the dev comparison (HmrdpSetDwtCheck).
+ */
+#define HMRDP_DWT_SUBBAND_MAX 64
+
+static INLINE void hmrdp_dwt_2d_decode_block_scalar(INT16* WINPR_RESTRICT buffer,
+                                                    INT16* WINPR_RESTRICT idwt,
+                                                    size_t subband_width)
+{
+	const size_t total_width = subband_width << 1;
+
+	/* Inverse DWT in horizontal direction, results in 2 sub-bands in L, H order in tmp buffer idwt.
+	 */
+	/* The 4 sub-bands are stored in HL(0), LH(1), HH(2), LL(3) order. */
+	/* The lower part L uses LL(3) and HL(0). */
+	/* The higher part H uses LH(1) and HH(2). */
+
+	const INT16* ll = buffer + subband_width * subband_width * 3;
+	const INT16* hl = buffer;
+	INT16* l_dst = idwt;
+
+	const INT16* lh = buffer + subband_width * subband_width;
+	const INT16* hh = buffer + subband_width * subband_width * 2;
+	INT16* h_dst = idwt + subband_width * subband_width * 2;
+
+	for (size_t y = 0; y < subband_width; y++)
+	{
+		/* Even coefficients */
+		l_dst[0] = ll[0] - ((hl[0] + hl[0] + 1) >> 1);
+		h_dst[0] = lh[0] - ((hh[0] + hh[0] + 1) >> 1);
+		for (size_t n = 1; n < subband_width; n++)
+		{
+			const size_t x = n << 1;
+			l_dst[x] = ll[n] - ((hl[n - 1] + hl[n] + 1) >> 1);
+			h_dst[x] = lh[n] - ((hh[n - 1] + hh[n] + 1) >> 1);
+		}
+
+		/* Odd coefficients */
+		size_t n = 0;
+		for (; n < subband_width - 1; n++)
+		{
+			const size_t x = n << 1;
+			l_dst[x + 1] = (hl[n] << 1) + ((l_dst[x] + l_dst[x + 2]) >> 1);
+			h_dst[x + 1] = (hh[n] << 1) + ((h_dst[x] + h_dst[x + 2]) >> 1);
+		}
+
+		const size_t x = n << 1;
+		l_dst[x + 1] = (hl[n] << 1) + (l_dst[x]);
+		h_dst[x + 1] = (hh[n] << 1) + (h_dst[x]);
+
+		ll += subband_width;
+		hl += subband_width;
+		l_dst += total_width;
+
+		lh += subband_width;
+		hh += subband_width;
+		h_dst += total_width;
+	}
+
+	/* Inverse DWT in vertical direction, results are stored in original buffer. */
+	for (size_t x = 0; x < total_width; x++)
+	{
+		const INT16* l = idwt + x;
+		const INT16* h = idwt + x + subband_width * total_width;
+		INT16* dst = buffer + x;
+
+		*dst = *l - ((*h * 2 + 1) >> 1);
+
+		for (size_t n = 1; n < subband_width; n++)
+		{
+			l += total_width;
+			h += total_width;
+
+			/* Even coefficients */
+			dst[2 * total_width] = *l - ((*(h - total_width) + *h + 1) >> 1);
+
+			/* Odd coefficients */
+			dst[total_width] = (*(h - total_width) << 1) + ((*dst + dst[2 * total_width]) >> 1);
+
+			dst += 2 * total_width;
+		}
+
+		dst[total_width] = (*h << 1) + ((*dst * 2) >> 1);
+	}
+}
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+
+#define HMRDP_DWT_LANES 8
+
+/* One row of the horizontal pass: the even samples into a scratch row, then the
+ * odd ones, which are written together with their even neighbour (vst2q stores
+ * the pair interleaved, i.e. dst[2n] / dst[2n+1] exactly as the scalar code
+ * writes them). */
+static INLINE void hmrdp_dwt_2d_decode_h_row(const INT16* WINPR_RESTRICT l,
+                                             const INT16* WINPR_RESTRICT h,
+                                             INT16* WINPR_RESTRICT dst, size_t subband_width)
+{
+	INT16 even[HMRDP_DWT_SUBBAND_MAX];
+	size_t n = 0;
+
+	for (n = 0; n < subband_width; n += HMRDP_DWT_LANES)
+	{
+		const int16x8_t lv = vld1q_s16(l + n);
+		const int16x8_t hv = vld1q_s16(h + n);
+		int16x8_t left;
+
+		if (n == 0)
+		{
+			/* h[n - 1] is h[0] at the row start (the scalar code uses hl[0] twice). */
+			left = vextq_s16(hv, hv, HMRDP_DWT_LANES - 1);
+			left = vsetq_lane_s16(vgetq_lane_s16(hv, 0), left, 0);
+		}
+		else
+			left = vld1q_s16(h + n - 1);
+
+		vst1q_s16(even + n, vsubq_s16(lv, vrhaddq_s16(left, hv)));
+	}
+
+	for (n = 0; n < subband_width; n += HMRDP_DWT_LANES)
+	{
+		const int16x8_t ev = vld1q_s16(even + n);
+		const int16x8_t hv = vld1q_s16(h + n);
+		int16x8x2_t pair;
+		int16x8_t next;
+
+		if (n + HMRDP_DWT_LANES < subband_width)
+			next = vld1q_s16(even + n + 1);
+		else
+		{
+			/* The last odd sample pairs the last even sample with itself. */
+			next = vextq_s16(ev, ev, 1);
+			next = vsetq_lane_s16(vgetq_lane_s16(ev, HMRDP_DWT_LANES - 1), next,
+			                      HMRDP_DWT_LANES - 1);
+		}
+
+		pair.val[0] = ev;
+		pair.val[1] = vaddq_s16(vshlq_n_s16(hv, 1), vhaddq_s16(ev, next));
+		vst2q_s16(dst + 2 * n, pair);
+	}
+}
+
+/* Vertical pass, one row at a time: the even output rows first (each reads the
+ * two high-band rows around it), then the odd rows (each reads the two even rows
+ * around it, both of which are already final). */
+static INLINE void hmrdp_dwt_2d_decode_v(const INT16* WINPR_RESTRICT l,
+                                         const INT16* WINPR_RESTRICT h,
+                                         INT16* WINPR_RESTRICT dst, size_t subband_width)
+{
+	const size_t total_width = subband_width << 1;
+	size_t n = 0;
+	size_t x = 0;
+
+	for (n = 0; n < subband_width; n++)
+	{
+		const INT16* WINPR_RESTRICT ln = l + n * total_width;
+		const INT16* WINPR_RESTRICT hn = h + n * total_width;
+		const INT16* WINPR_RESTRICT hm = (n == 0) ? hn : (hn - total_width);
+		INT16* WINPR_RESTRICT d = dst + (n << 1) * total_width;
+
+		for (x = 0; x < total_width; x += HMRDP_DWT_LANES)
+			vst1q_s16(d + x, vsubq_s16(vld1q_s16(ln + x),
+			                           vrhaddq_s16(vld1q_s16(hm + x), vld1q_s16(hn + x))));
+	}
+
+	for (n = 0; n < subband_width; n++)
+	{
+		const INT16* WINPR_RESTRICT hn = h + n * total_width;
+		INT16* WINPR_RESTRICT d0 = dst + (n << 1) * total_width;
+		INT16* WINPR_RESTRICT d2 = ((n + 1) < subband_width) ? (d0 + (total_width << 1)) : d0;
+		INT16* WINPR_RESTRICT d = d0 + total_width;
+
+		for (x = 0; x < total_width; x += HMRDP_DWT_LANES)
+			vst1q_s16(d + x, vaddq_s16(vshlq_n_s16(vld1q_s16(hn + x), 1),
+			                           vhaddq_s16(vld1q_s16(d0 + x), vld1q_s16(d2 + x))));
+	}
+}
+
+static INLINE void hmrdp_dwt_2d_decode_block_neon(INT16* WINPR_RESTRICT buffer,
+                                                  INT16* WINPR_RESTRICT idwt,
+                                                  size_t subband_width)
+{
+	const size_t area = subband_width * subband_width;
+	const size_t total_width = subband_width << 1;
+	size_t y = 0;
+
+	for (y = 0; y < subband_width; y++)
+	{
+		hmrdp_dwt_2d_decode_h_row(buffer + area * 3 + y * subband_width,
+		                          buffer + y * subband_width, idwt + y * total_width,
+		                          subband_width);
+		hmrdp_dwt_2d_decode_h_row(buffer + area + y * subband_width,
+		                          buffer + area * 2 + y * subband_width,
+		                          idwt + area * 2 + y * total_width, subband_width);
+	}
+
+	hmrdp_dwt_2d_decode_v(idwt, idwt + area * 2, buffer, subband_width);
+}
+#endif /* __aarch64__ */
+
+static INLINE void rfx_dwt_2d_decode_block(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT idwt,
+                                           size_t subband_width)
+{
+#if defined(__aarch64__)
+	if (((subband_width % HMRDP_DWT_LANES) == 0) && (subband_width <= HMRDP_DWT_SUBBAND_MAX))
+	{
+		hmrdp_dwt_2d_decode_block_neon(buffer, idwt, subband_width);
+		return;
+	}
+#endif
+	hmrdp_dwt_2d_decode_block_scalar(buffer, idwt, subband_width);
+}
+
+/* ---- HmRdp dev: scalar reference vs the optimised block ------------------- */
+/* Off unless the app asks for it (HmrdpSetDwtCheck). The decode is single
+ * threaded (the worker count is pinned to one), so plain globals are enough; the
+ * counters are read back into the app statistics line. HmrdpDwtCheckArmed() is
+ * shared with the extrapolated DWT in progressive.c, which is the variant a
+ * Progressive region normally uses. */
+FREERDP_API unsigned long long HmrdpDwtCheckStat[2] = { 0, 0 };
+
+static volatile LONG g_HmrdpDwtCheck = 0;
+static volatile LONG g_HmrdpDwtSample = 0;
+static INT16 g_HmrdpDwtRef[4096] = { 0 };
+static INT16 g_HmrdpDwtScratch[4096] = { 0 };
+
+#define HMRDP_DWT_CHECK_EVERY 16
+
+FREERDP_API void HmrdpSetDwtCheck(int on)
+{
+	__atomic_store_n(&g_HmrdpDwtCheck, on ? 1 : 0, __ATOMIC_RELAXED);
+}
+
+/* True for one decode in HMRDP_DWT_CHECK_EVERY, and only while the check is on. */
+FREERDP_API int HmrdpDwtCheckArmed(void)
+{
+	if (__atomic_load_n(&g_HmrdpDwtCheck, __ATOMIC_RELAXED) == 0)
+		return 0;
+	return (__atomic_add_fetch(&g_HmrdpDwtSample, 1, __ATOMIC_RELAXED) % HMRDP_DWT_CHECK_EVERY) == 0;
+}
+
+/* Collects one compared tile. */
+FREERDP_API void HmrdpDwtCheckResult(unsigned int bad)
+{
+	__atomic_add_fetch(&HmrdpDwtCheckStat[0], 1, __ATOMIC_RELAXED);
+	if (bad != 0)
+		__atomic_add_fetch(&HmrdpDwtCheckStat[1], bad, __ATOMIC_RELAXED);
+}
+
+static void hmrdp_dwt_check(const INT16* buffer)
+{
+	const size_t elements = 4096;
+	size_t i = 0;
+	UINT32 bad = 0;
+
+	/* g_HmrdpDwtRef holds the input coefficients, copied before the optimised
+	 * decode ran: the decode overwrites the whole coefficient buffer, so the
+	 * scalar reference has to start from the same input, not from its result. */
+	hmrdp_dwt_2d_decode_block_scalar(&g_HmrdpDwtRef[3840], g_HmrdpDwtScratch, 8);
+	hmrdp_dwt_2d_decode_block_scalar(&g_HmrdpDwtRef[3072], g_HmrdpDwtScratch, 16);
+	hmrdp_dwt_2d_decode_block_scalar(&g_HmrdpDwtRef[0], g_HmrdpDwtScratch, 32);
+
+	for (i = 0; i < elements; i++)
+	{
+		if (g_HmrdpDwtRef[i] != buffer[i])
+			bad++;
+	}
+
+	HmrdpDwtCheckResult(bad);
+}
+
+void rfx_dwt_2d_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT dwt_buffer)
+{
+	const BOOL check = HmrdpDwtCheckArmed();
+
+	WINPR_ASSERT(buffer);
+	WINPR_ASSERT(dwt_buffer);
+
+	/* HmRdp dev: take the input before the decode overwrites it, then re-decode
+	 * that copy with the scalar reference below and compare. */
+	if (check)
+		memcpy(g_HmrdpDwtRef, buffer, sizeof(g_HmrdpDwtRef));
+
+	rfx_dwt_2d_decode_block(&buffer[3840], dwt_buffer, 8);
+	rfx_dwt_2d_decode_block(&buffer[3072], dwt_buffer, 16);
+	rfx_dwt_2d_decode_block(&buffer[0], dwt_buffer, 32);
+
+	if (check)
+		hmrdp_dwt_check(buffer);
+}
+'@
+Patch-Regex $dwtC 'static INLINE void rfx_dwt_2d_decode_block\(INT16\* WINPR_RESTRICT buffer,\s+INT16\* WINPR_RESTRICT idwt,\n\s*size_t subband_width\)\n\{.*?\nvoid rfx_dwt_2d_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT dwt_buffer\)\n\{.*?\n\}\n' $dwtNew 'HmrdpDwtCheckArmed'
+
+# 16) HmRdp: the extrapolated (reduced) inverse DWT - the one the Progressive
+#     codec actually runs (doc_agent/cpu-accel-plan.md stage one C1).
+#
+#     `rfx_dwt_2d_extrapolate_decode` (below) is what a region with the
+#     RFX_DWT_REDUCE_EXTRAPOLATE flag decodes with, and every tile of a
+#     full-screen Progressive stream carries that flag (measured: the
+#     non-extrapolated rfx_dwt_2d_decode() is never entered on a video capture).
+#     It walks the bands with a recurrence in the *inner* loop:
+#
+#       X2 = L0 - (H0 + H1) / 2;   X1 = (X0 + X2) / 2 + 2 * H0;   X0 = X2;
+#
+#     so every sample of one column depends on the previous one. The rewrite
+#     below changes nothing about that arithmetic - the INT16 truncation on every
+#     assignment and the truncating `/ 2` are the original ones, so the output is
+#     byte-for-byte identical - it only reorders the work:
+#
+#       - the X2 sequence is a plain function of the L/H samples, so it is
+#         computed first (idwt_x into a scratch row, idwt_y into one scratch row
+#         per column) and the two output samples per step are then written by a
+#         dependency-free loop;
+#       - idwt_y becomes row-major: j (the band row) is the outer loop and the
+#         inner loop runs over the tile columns, so both the reads and the writes
+#         are contiguous. The upstream version walks *columns*, i.e. every single
+#         sample lands in a different cache line (128-byte stride), which is why
+#         it costs more than its arithmetic suggests.
+#
+#     The upstream scalar functions are kept verbatim as `..._scalar` and are the
+#     reference for the dev comparison (the extrapolate entry point runs it on a
+#     sample of tiles; see step 15 for the counters). Everything is plain C - no
+#     intrinsics - so the scalar build for other targets keeps working unchanged.
+$progDwtC = "$Source\libfreerdp\codec\progressive.c"
+$progDwtRows = @'
+/*
+ * HmRdp: the reduced (extrapolated) inverse DWT, restructured so its inner loops
+ * are contiguous and dependency-free; the arithmetic is the upstream one (see
+ * the patch note in native/scripts/patch-freerdp.ps1 step 16). The upstream
+ * scalar version follows first and stays the reference for the dev comparison.
+ */
+#define HMRDP_IDWT_ROW_MAX 66
+
+static INLINE void progressive_rfx_idwt_x_scalar(const INT16* WINPR_RESTRICT pLowBand,
+                                                 size_t nLowStep,
+                                                 const INT16* WINPR_RESTRICT pHighBand,
+                                                 size_t nHighStep, INT16* WINPR_RESTRICT pDstBand,
+                                                 size_t nDstStep, size_t nLowCount,
+                                                 size_t nHighCount, size_t nDstCount)
+{
+	INT16 L0 = 0;
+	INT16 H0 = 0;
+	INT16 H1 = 0;
+	INT16 X0 = 0;
+	INT16 X1 = 0;
+	INT16 X2 = 0;
+
+	for (size_t i = 0; i < nDstCount; i++)
+	{
+		const INT16* pL = pLowBand;
+		const INT16* pH = pHighBand;
+		INT16* pX = pDstBand;
+		H0 = *pH++;
+		L0 = *pL++;
+		X0 = L0 - H0;
+		X2 = L0 - H0;
+
+		for (size_t j = 0; j < (nHighCount - 1); j++)
+		{
+			H1 = *pH;
+			pH++;
+			L0 = *pL;
+			pL++;
+			X2 = L0 - ((H0 + H1) / 2);
+			X1 = ((X0 + X2) / 2) + (2 * H0);
+			pX[0] = X0;
+			pX[1] = X1;
+			pX += 2;
+			X0 = X2;
+			H0 = H1;
+		}
+
+		if (nLowCount <= (nHighCount + 1))
+		{
+			if (nLowCount <= nHighCount)
+			{
+				pX[0] = X2;
+				pX[1] = X2 + (2 * H0);
+			}
+			else
+			{
+				L0 = *pL;
+				pL++;
+				X0 = L0 - H0;
+				pX[0] = X2;
+				pX[1] = ((X0 + X2) / 2) + (2 * H0);
+				pX[2] = X0;
+			}
+		}
+		else
+		{
+			L0 = *pL;
+			pL++;
+			X0 = L0 - (H0 / 2);
+			pX[0] = X2;
+			pX[1] = ((X0 + X2) / 2) + (2 * H0);
+			pX[2] = X0;
+			L0 = *pL;
+			pL++;
+			pX[3] = (X0 + L0) / 2;
+		}
+
+		pLowBand += nLowStep;
+		pHighBand += nHighStep;
+		pDstBand += nDstStep;
+	}
+}
+
+static INLINE void progressive_rfx_idwt_y_scalar(const INT16* WINPR_RESTRICT pLowBand,
+                                                 size_t nLowStep,
+                                                 const INT16* WINPR_RESTRICT pHighBand,
+                                                 size_t nHighStep, INT16* WINPR_RESTRICT pDstBand,
+                                                 size_t nDstStep, size_t nLowCount,
+                                                 size_t nHighCount, size_t nDstCount)
+{
+	INT16 L0 = 0;
+	INT16 H0 = 0;
+	INT16 H1 = 0;
+	INT16 X0 = 0;
+	INT16 X1 = 0;
+	INT16 X2 = 0;
+
+	for (size_t i = 0; i < nDstCount; i++)
+	{
+		const INT16* pL = pLowBand;
+		const INT16* pH = pHighBand;
+		INT16* pX = pDstBand;
+		H0 = *pH;
+		pH += nHighStep;
+		L0 = *pL;
+		pL += nLowStep;
+		X0 = L0 - H0;
+		X2 = L0 - H0;
+
+		for (size_t j = 0; j < (nHighCount - 1); j++)
+		{
+			H1 = *pH;
+			pH += nHighStep;
+			L0 = *pL;
+			pL += nLowStep;
+			X2 = L0 - ((H0 + H1) / 2);
+			X1 = ((X0 + X2) / 2) + (2 * H0);
+			*pX = X0;
+			pX += nDstStep;
+			*pX = X1;
+			pX += nDstStep;
+			X0 = X2;
+			H0 = H1;
+		}
+
+		if (nLowCount <= (nHighCount + 1))
+		{
+			if (nLowCount <= nHighCount)
+			{
+				*pX = X2;
+				pX += nDstStep;
+				*pX = X2 + (2 * H0);
+			}
+			else
+			{
+				L0 = *pL;
+				X0 = L0 - H0;
+				*pX = X2;
+				pX += nDstStep;
+				*pX = ((X0 + X2) / 2) + (2 * H0);
+				pX += nDstStep;
+				*pX = X0;
+			}
+		}
+		else
+		{
+			L0 = *pL;
+			pL += nLowStep;
+			X0 = L0 - (H0 / 2);
+			*pX = X2;
+			pX += nDstStep;
+			*pX = ((X0 + X2) / 2) + (2 * H0);
+			pX += nDstStep;
+			*pX = X0;
+			pX += nDstStep;
+			L0 = *pL;
+			*pX = (X0 + L0) / 2;
+		}
+
+		pLowBand++;
+		pHighBand++;
+		pDstBand++;
+	}
+}
+
+static INLINE void progressive_rfx_idwt_x(const INT16* WINPR_RESTRICT pLowBand, size_t nLowStep,
+                                          const INT16* WINPR_RESTRICT pHighBand, size_t nHighStep,
+                                          INT16* WINPR_RESTRICT pDstBand, size_t nDstStep,
+                                          size_t nLowCount, size_t nHighCount, size_t nDstCount)
+{
+	/* X0 at step j (the even sample written at 2j) is the X2 of step j - 1, so
+	 * the whole X2 sequence is one dependency-free run over the bands; the pairs
+	 * are then written by a second run. */
+	INT16 x0[HMRDP_IDWT_ROW_MAX + 1];
+	size_t i = 0;
+	size_t j = 0;
+
+	for (i = 0; i < nDstCount; i++)
+	{
+		const INT16* WINPR_RESTRICT pL = pLowBand;
+		const INT16* WINPR_RESTRICT pH = pHighBand;
+		INT16* WINPR_RESTRICT pX = pDstBand;
+
+		x0[0] = (INT16)(pL[0] - pH[0]);
+		for (j = 0; j + 1 < nHighCount; j++)
+			x0[j + 1] = (INT16)(pL[j + 1] - (((int)pH[j] + (int)pH[j + 1]) / 2));
+
+		for (j = 0; j + 1 < nHighCount; j++)
+		{
+			pX[0] = x0[j];
+			pX[1] = (INT16)((((int)x0[j] + (int)x0[j + 1]) / 2) + (2 * (int)pH[j]));
+			pX += 2;
+		}
+
+		/* The tail keeps the upstream cases, with X2 = x0[nHighCount - 1] and
+		 * H0 = pH[nHighCount - 1] (what the scalar loop leaves behind). */
+		{
+			const INT16 H0 = pH[nHighCount - 1];
+			const INT16 X2 = x0[nHighCount - 1];
+
+			if (nLowCount <= (nHighCount + 1))
+			{
+				if (nLowCount <= nHighCount)
+				{
+					pX[0] = X2;
+					pX[1] = (INT16)(X2 + (2 * (int)H0));
+				}
+				else
+				{
+					const INT16 X0 = (INT16)(pL[nHighCount] - H0);
+					pX[0] = X2;
+					pX[1] = (INT16)((((int)X0 + (int)X2) / 2) + (2 * (int)H0));
+					pX[2] = X0;
+				}
+			}
+			else
+			{
+				const INT16 X0 = (INT16)(pL[nHighCount] - (H0 / 2));
+				pX[0] = X2;
+				pX[1] = (INT16)((((int)X0 + (int)X2) / 2) + (2 * (int)H0));
+				pX[2] = X0;
+				pX[3] = (INT16)(((int)X0 + (int)pL[nHighCount + 1]) / 2);
+			}
+		}
+
+		pLowBand += nLowStep;
+		pHighBand += nHighStep;
+		pDstBand += nDstStep;
+	}
+}
+
+static INLINE void progressive_rfx_idwt_y(const INT16* WINPR_RESTRICT pLowBand, size_t nLowStep,
+                                          const INT16* WINPR_RESTRICT pHighBand, size_t nHighStep,
+                                          INT16* WINPR_RESTRICT pDstBand, size_t nDstStep,
+                                          size_t nLowCount, size_t nHighCount, size_t nDstCount)
+{
+	/* Row-major: the band row is the outer loop and the tile columns are the
+	 * inner one, so every access is a contiguous run. The recurrence only needs
+	 * the previous X2 row, which the swap keeps. */
+	INT16 rowA[HMRDP_IDWT_ROW_MAX + 1];
+	INT16 rowB[HMRDP_IDWT_ROW_MAX + 1];
+	INT16* WINPR_RESTRICT prev = rowA;
+	INT16* WINPR_RESTRICT cur = rowB;
+	size_t i = 0;
+	size_t j = 0;
+
+	for (i = 0; i < nDstCount; i++)
+		prev[i] = (INT16)(pLowBand[i] - pHighBand[i]);
+
+	for (j = 0; j + 1 < nHighCount; j++)
+	{
+		const INT16* WINPR_RESTRICT lj = pLowBand + (j + 1) * nLowStep;
+		const INT16* WINPR_RESTRICT hj = pHighBand + j * nHighStep;
+		INT16* WINPR_RESTRICT o0 = pDstBand + (j * 2) * nDstStep;
+		INT16* WINPR_RESTRICT o1 = o0 + nDstStep;
+
+		for (i = 0; i < nDstCount; i++)
+			cur[i] = (INT16)(lj[i] - (((int)hj[i] + (int)hj[nHighStep + i]) / 2));
+
+		for (i = 0; i < nDstCount; i++)
+		{
+			o0[i] = prev[i];
+			o1[i] = (INT16)((((int)prev[i] + (int)cur[i]) / 2) + (2 * (int)hj[i]));
+		}
+
+		{
+			INT16* WINPR_RESTRICT swap = prev;
+			prev = cur;
+			cur = swap;
+		}
+	}
+
+	/* Tail: X2 = prev, H0 = the last high-band row. */
+	{
+		const INT16* WINPR_RESTRICT h0 = pHighBand + (nHighCount - 1) * nHighStep;
+		INT16* WINPR_RESTRICT o = pDstBand + (2 * (nHighCount - 1)) * nDstStep;
+
+		if (nLowCount <= (nHighCount + 1))
+		{
+			if (nLowCount <= nHighCount)
+			{
+				for (i = 0; i < nDstCount; i++)
+				{
+					o[i] = prev[i];
+					o[nDstStep + i] = (INT16)(prev[i] + (2 * (int)h0[i]));
+				}
+			}
+			else
+			{
+				const INT16* WINPR_RESTRICT ln = pLowBand + nHighCount * nLowStep;
+				for (i = 0; i < nDstCount; i++)
+				{
+					const INT16 X0 = (INT16)(ln[i] - h0[i]);
+					const INT16 X2 = prev[i];
+					o[i] = X2;
+					o[nDstStep + i] =
+					    (INT16)((((int)X0 + (int)X2) / 2) + (2 * (int)h0[i]));
+					o[2 * nDstStep + i] = X0;
+				}
+			}
+		}
+		else
+		{
+			const INT16* WINPR_RESTRICT ln = pLowBand + nHighCount * nLowStep;
+			for (i = 0; i < nDstCount; i++)
+			{
+				const INT16 X0 = (INT16)(ln[i] - (h0[i] / 2));
+				const INT16 X2 = prev[i];
+				const INT16 L1 = ln[nLowStep + i];
+				o[i] = X2;
+				o[nDstStep + i] = (INT16)((((int)X0 + (int)X2) / 2) + (2 * (int)h0[i]));
+				o[2 * nDstStep + i] = X0;
+				o[3 * nDstStep + i] = (INT16)(((int)X0 + (int)L1) / 2);
+			}
+		}
+	}
+}
+
+static INLINE size_t progressive_rfx_get_band_l_count(size_t level)
+{
+	return (64 >> level) + 1;
+}
+
+static INLINE size_t progressive_rfx_get_band_h_count(size_t level)
+{
+	if (level == 1)
+		return (64 >> 1) - 1;
+	else
+		return (64 + (1 << (level - 1))) >> level;
+}
+
+'@
+
+# ... the block wrapper learns a "scalar" switch (used by the dev comparison).
+$progDwtBlock = @'
+static INLINE void progressive_rfx_dwt_2d_decode_block_mode(INT16* WINPR_RESTRICT buffer,
+                                                            INT16* WINPR_RESTRICT temp, size_t level,
+                                                            BOOL scalar)
+{
+	size_t nDstStepX = 0;
+	size_t nDstStepY = 0;
+	const INT16* WINPR_RESTRICT HL = NULL;
+	const INT16* WINPR_RESTRICT LH = NULL;
+	const INT16* WINPR_RESTRICT HH = NULL;
+	INT16* WINPR_RESTRICT LL = NULL;
+	INT16* WINPR_RESTRICT L = NULL;
+	INT16* WINPR_RESTRICT H = NULL;
+	INT16* WINPR_RESTRICT LLx = NULL;
+
+	const size_t nBandL = progressive_rfx_get_band_l_count(level);
+	const size_t nBandH = progressive_rfx_get_band_h_count(level);
+	size_t offset = 0;
+
+	HL = &buffer[offset];
+	offset += (nBandH * nBandL);
+	LH = &buffer[offset];
+	offset += (nBandL * nBandH);
+	HH = &buffer[offset];
+	offset += (nBandH * nBandH);
+	LL = &buffer[offset];
+	nDstStepX = (nBandL + nBandH);
+	nDstStepY = (nBandL + nBandH);
+	offset = 0;
+	L = &temp[offset];
+	offset += (nBandL * nDstStepX);
+	H = &temp[offset];
+	LLx = &buffer[0];
+
+	if (scalar)
+	{
+		/* horizontal (LL + HL -> L) */
+		progressive_rfx_idwt_x_scalar(LL, nBandL, HL, nBandH, L, nDstStepX, nBandL, nBandH, nBandL);
+
+		/* horizontal (LH + HH -> H) */
+		progressive_rfx_idwt_x_scalar(LH, nBandL, HH, nBandH, H, nDstStepX, nBandL, nBandH, nBandH);
+
+		/* vertical (L + H -> LL) */
+		progressive_rfx_idwt_y_scalar(L, nDstStepX, H, nDstStepX, LLx, nDstStepY, nBandL, nBandH,
+		                              nBandL + nBandH);
+		return;
+	}
+
+	/* horizontal (LL + HL -> L) */
+	progressive_rfx_idwt_x(LL, nBandL, HL, nBandH, L, nDstStepX, nBandL, nBandH, nBandL);
+
+	/* horizontal (LH + HH -> H) */
+	progressive_rfx_idwt_x(LH, nBandL, HH, nBandH, H, nDstStepX, nBandL, nBandH, nBandH);
+
+	/* vertical (L + H -> LL) */
+	progressive_rfx_idwt_y(L, nDstStepX, H, nDstStepX, LLx, nDstStepY, nBandL, nBandH,
+	                       nBandL + nBandH);
+}
+
+static INLINE void progressive_rfx_dwt_2d_decode_block(INT16* WINPR_RESTRICT buffer,
+                                                       INT16* WINPR_RESTRICT temp, size_t level)
+{
+	progressive_rfx_dwt_2d_decode_block_mode(buffer, temp, level, FALSE);
+}
+
+'@
+
+# ... and the entry point runs the dev comparison on a sample of tiles.
+$progDwtExtrapolate = @'
+/* Exported by the patched rfx_dwt.c (step 15): the dev comparison of the
+ * inverse DWT against its scalar reference. Armed for one tile in 16 of the
+ * reference runs - the reduced DWT is the one a Progressive region actually
+ * uses, so this is where the sample has to be taken. */
+extern int HmrdpDwtCheckArmed(void);
+extern void HmrdpDwtCheckResult(unsigned int bad);
+
+static void hmrdp_dwt_2d_decode_extrapolate_mode(INT16* WINPR_RESTRICT buffer,
+                                                 INT16* WINPR_RESTRICT temp, BOOL scalar)
+{
+	progressive_rfx_dwt_2d_decode_block_mode(&buffer[3807], temp, 3, scalar);
+	progressive_rfx_dwt_2d_decode_block_mode(&buffer[3007], temp, 2, scalar);
+	progressive_rfx_dwt_2d_decode_block_mode(&buffer[0], temp, 1, scalar);
+}
+
+void rfx_dwt_2d_extrapolate_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT temp)
+{
+	static INT16 ref[4096] = { 0 };
+	static INT16 scratch[4096] = { 0 };
+	const BOOL check = HmrdpDwtCheckArmed();
+
+	WINPR_ASSERT(buffer);
+	WINPR_ASSERT(temp);
+
+	/* HmRdp dev: the decode overwrites the whole coefficient buffer, so the input
+	 * is copied first and the scalar reference runs on that copy below. */
+	if (check)
+		memcpy(ref, buffer, sizeof(ref));
+
+	hmrdp_dwt_2d_decode_extrapolate_mode(buffer, temp, FALSE);
+
+	if (check)
+	{
+		UINT32 bad = 0;
+		size_t i = 0;
+
+		hmrdp_dwt_2d_decode_extrapolate_mode(ref, scratch, TRUE);
+
+		for (i = 0; i < 4096; i++)
+		{
+			if (ref[i] != buffer[i])
+				bad++;
+		}
+		HmrdpDwtCheckResult(bad);
+	}
+}
+'@
+
+# One replacement for the whole region: the `.*?` between the anchors absorbs
+# whatever version is in the tree, so re-running over an already patched source
+# stays safe (the marker below is what makes it a no-op then).
+Patch-Regex $progDwtC 'static INLINE void progressive_rfx_idwt_x\(const INT16\* WINPR_RESTRICT pLowBand.*?\nvoid rfx_dwt_2d_extrapolate_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT temp\)\n\{.*?\n\}\n' ($progDwtRows + $progDwtBlock + $progDwtExtrapolate) 'hmrdp_dwt_2d_decode_extrapolate_mode'
+
 Write-Host "FreeRDP OHOS patches applied to $Source"
 
