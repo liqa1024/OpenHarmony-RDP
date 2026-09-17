@@ -96,8 +96,17 @@ class FramePresenter {
   virtual void Reset() = 0;
 };
 
+// The "硬件加速" setting: whether frames may be presented through Vulkan at all.
+// Process-wide, applied when a presenter is created, so turning it off keeps the
+// session path free of Vulkan (GLES is then the only backend) - that is the mode
+// a device with a partial or untrusted Vulkan implementation needs, and it is
+// what the emulator runs on. Default on.
+void SetHardwareAccelEnabled(bool enabled);
+bool HardwareAccelEnabled();
+
 // Picks the presenter backend from the (cached) Vulkan presenter capability and
-// falls back to GLES. Never returns nullptr.
+// the hardware-acceleration setting, and falls back to GLES. Never returns
+// nullptr.
 std::unique_ptr<FramePresenter> CreateFramePresenter();
 
 }  // namespace hmrdp

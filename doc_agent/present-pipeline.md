@@ -134,10 +134,10 @@ damage 账同一套机制）。**没有** damage-rect 接口可用（`vkQueuePre
 
 ### 4.4 其他
 
-- **CPU 路线的上屏已经定型**（主缓冲 = presenter 缓冲 + 脏区恒发 box），细节与约束见
-  [`cpu-path.md`](cpu-path.md) §4 —— 包括"掉进 memcpy 就没有的东西别去合并"这条。
-- 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；
-  「硬件解码（RFX）」设置项届时才真正生效。
+- **CPU 路线的上屏已经定型**（主缓冲 = presenter 缓冲 + 脏区形状由 `usesDesktopBuffer()` 分流：零拷贝恒发
+  box、staging 逐条矩形），细节与约束见 [`cpu-path.md`](cpu-path.md) §4。
+- 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；届时需要一个独立的
+  引擎开关——「硬件加速」现在管的是上屏后端（Vulkan vs GLES），不要把它和引擎混在一起。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。
 
 ## 5. 操作与踩坑

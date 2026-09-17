@@ -6,11 +6,11 @@
 ## 特性
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
-- **图形管道（GPU 接管）**：RDPGFX（RemoteFX / 渐进式）。默认由 **GPU 桌面引擎**接管——CPU 只做 ZGFX +
-  命令解析，渐进 / 未压缩解码、多表面合成都在 **Vulkan compute** 上完成（表面是持久映射的 host-visible
-  缓冲，CPU 侧访问零成本），屏幕经 swapchain 直连上屏；**ClearCodec 复用 FreeRDP 解码器在 CPU 做读改写**
-  （它不是自包含的）。设置页「硬件解码」关闭、或设备无 Vulkan / 引擎初始化失败时，自动回退 FreeRDP gdi
-  （CPU 软解）
+- **图形管道**：RDPGFX（RemoteFX / 渐进式）的解码由 FreeRDP 的 **gdi** 完成（ClearCodec 也在 CPU，
+  它不是自包含的），输出帧经呈现器上屏：**「硬件加速」**开（默认，设备支持时）用 **Vulkan**
+  （脏区上传 + letterbox blit，gdi 直接合成进呈现器缓冲），关或设备不支持时用 **GLES** 且完全不碰
+  Vulkan（给 Vulkan 不好用/模拟器兜底）。Vulkan 桌面引擎（compute 解码 + 合成）目前只用于 dev
+  回放/对比，未接入 live
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
   压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）
 - **光标同步**：远端光标形状（文本、手型、窗口边缘缩放等）映射为鸿蒙系统光标，大光标自动缩放到 256；

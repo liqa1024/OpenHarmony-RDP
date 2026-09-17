@@ -94,8 +94,9 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   CPU-only 的缓冲（bitmap cache 项）只被 CPU 访问，不需要任何维护。
 - **CPU 写过的表面被 GPU 读取前必须补 `HOST → TRANSFER` barrier**（UMA 不等于免费）。
 
-开关：全局「硬件解码」。**当前没有引擎接进 live 会话**（引擎只跑回放/对比），所以 live 一律走 gdi；
-将来接管时，口径是 关 / 无 Vulkan / 引擎初始化失败 ⇒ 回退 **gdi**（见 §7）。
+开关：全局「硬件加速」管的是**上屏后端**（开 = Vulkan 呈现器，关 = GLES 且不碰 Vulkan），
+**不是**这里说的引擎；解码在 live 一律走 gdi。**当前没有引擎接进 live 会话**（引擎只跑回放/对比），
+将来接管时，口径是 引擎关 / 无 Vulkan / 引擎初始化失败 ⇒ 回退 **gdi**（见 §7）。
 
 > **「真机专属功能」**：GPU 引擎与 GPU 回放只在真机上验证与使用；**模拟器不参与**（其 Vulkan 实现会按
 > 标准接口谎报能力）。模拟器上不要开硬件加速、不要跑 GPU 回放，也不要拿模拟器结论约束真机行为。
@@ -181,7 +182,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
     `GL_UNPACK_ROW_LENGTH` 传进桌面尺寸纹理，letterbox 由 shader 里的 swizzle + letterbox viewport 完成。
   - **不要**让 CPU 直接写窗口缓冲：窗口缓冲默认是 CPU 访问路径，开销大，而且 CPU 既要做 letterbox 又要
     写显示内存，比"把脏区交给 GPU"慢一个量级。
-  - 后端选择用**独立的呈现能力判定**，**比硬件解码的引擎判定宽松**（不需要 compute，
+  - 后端选择用**独立的呈现能力判定**，**比引擎判定宽松**（不需要 compute，
     见 [`native-libraries.md`](native-libraries.md) §6）。
 - **swapchain 的尺寸与重建**（Vulkan 呈现器）：尺寸以 `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` 的
   `currentExtent` 为准，只有在它是 `UINT32_MAX` 时才用窗口尺寸 clamp；present 返回
@@ -375,7 +376,8 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
 - **CPU（gdi）链路的一切**（并行效率、线程数与能效、线程池的平台适配、冗余搬运、矩形合并、流水线化、
   内存缓存、实施顺序、量测纪律）：单独成文 → [`cpu-path.md`](cpu-path.md) §4–§8。
-- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时
-  「硬件解码（RFX）」设置项才真正生效；在此之前它只是被保留、不参与决策。
+- **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时需要一个
+  **引擎开关**与"引擎初始化失败 ⇒ 回退 gdi"的口径；它与现有的「硬件加速」（只管上屏后端）是两回事，
+  不要复用同一个设置项。
 - **呈现能力判定在模拟器上的口径**：现在模拟器一律回落 GLES 呈现器（与"GPU 只在真机"一致）；
   若以后要让模拟器用 Vulkan 上屏，只需改 `FillVerdicts()` 里那一处 emulator 分支。

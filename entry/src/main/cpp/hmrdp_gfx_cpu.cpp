@@ -4,6 +4,7 @@
 #include "hmrdp_gfx_cpu.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include <freerdp/codec/color.h>
@@ -12,6 +13,7 @@
 #include <freerdp/settings.h>
 
 #include "hmrdp_gfx_driver.h"
+#include "hmrdp_gfx_work.h"
 #include "hmrdp_log.h"
 #include "hmrdp_presenter.h"
 
@@ -69,6 +71,34 @@ BOOL CpuDesktopResize(rdpContext* context) {
     }
   }
   return TRUE;
+}
+
+// Kills every surface through the RDPGFX interface while the gdi binding is still
+// valid. The context's own teardown (rdpgfx_client_context_free -> free_surfaces)
+// walks them through DeleteSurface too, but by then
+// gdi_graphics_pipeline_uninit() has already cleared context->custom, and
+// gdi_DeleteSurface reads gdi from there. Without it a desktop-mirror surface
+// cannot tell that its buffer is gdi's primary (the sharing test is
+// `surface->data == gdi->primary_buffer`, doc_agent/cpu-path.md §4) and would
+// free memory it does not own - on the zero-copy path that is the presenter's
+// host-visible buffer, i.e. an invalid free.
+void DestroyGfxSurfaces(RdpgfxClientContext* context) {
+  if (context == nullptr || context->GetSurfaceIds == nullptr ||
+      context->DeleteSurface == nullptr) {
+    return;
+  }
+  UINT16 count = 0;
+  UINT16* ids = nullptr;
+  context->GetSurfaceIds(context, &ids, &count);
+  if (ids == nullptr) {
+    return;
+  }
+  for (UINT16 index = 0; index < count; ++index) {
+    RDPGFX_DELETE_SURFACE_PDU pdu = {0};
+    pdu.surfaceId = ids[index];
+    context->DeleteSurface(context, &pdu);
+  }
+  free(ids);
 }
 
 }  // namespace
@@ -161,6 +191,8 @@ void GfxCpuDesktop::Shutdown() {
   if (gfx_ != nullptr) {
     if (instance_ != nullptr && instance_->context != nullptr &&
         instance_->context->gdi != nullptr) {
+      // Must run before the uninit clears the gdi binding (DestroyGfxSurfaces).
+      DestroyGfxSurfaces(gfx_);
       gdi_graphics_pipeline_uninit(instance_->context->gdi, gfx_);
     }
     if (HmrdpGfxReplayFreeWithContext != nullptr) {
@@ -195,7 +227,14 @@ void GfxCpuDesktop::OnFrameBegin() {
   if (desktopAttached_ && presenter_ != nullptr) {
     const int64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();
-    presentSyncUs_ += static_cast<uint64_t>(NowUs() - startUs);
+    const uint64_t waitedUs = static_cast<uint64_t>(NowUs() - startUs);
+    presentSyncUs_ += waitedUs;
+    // This runs before the frame's first command, so that wait sits inside the
+    // window the meter charges to `zgx+parse`; hand it over so it is not counted
+    // there as well (hmrdp_gfx_work.h).
+    if (GfxWorkMeter* meter = ActiveWorkMeter()) {
+      meter->OnBlockedBeforeFrameWork(waitedUs);
+    }
   }
 }
 
@@ -204,6 +243,8 @@ void GfxCpuDesktop::OnBeginPaint() {
   // surface's pixels are already there); the same wait as OnFrameBegin, and free
   // when that one already drained the previous frame's copy. Normally free either
   // way: a whole frame's decode sits between the two (doc_agent/cpu-path.md §4).
+  // No accounting here: this one runs inside gdi's EndFrame, where the meter
+  // already subtracts the sync wait from the compose share.
   if (desktopAttached_ && presenter_ != nullptr) {
     const int64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();

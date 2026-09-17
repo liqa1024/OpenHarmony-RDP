@@ -71,9 +71,9 @@ export class AppSettings {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   ignoreCertificate: boolean = true;
-  // Prefer hardware (GPU) RemoteFX decoding over the CPU decoder (see
-  // doc_agent/gfx-engine.md §1).
-  hardwareDecode: boolean = true;
+  // Present frames through Vulkan; off keeps the session on the GLES presenter
+  // with no Vulkan at all (see doc_agent/settings-and-storage.md §3).
+  hardwareAccel: boolean = true;
   // Dev-only capture of the RemoteFX/Progressive stream (doc_agent/gfx-engine.md §6).
   rfxDump: boolean = false;
   // Progressive tile decode workers: 0 = automatic (performance-core count, or
@@ -184,8 +184,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'enableH264', settings.enableH264);
       settings.ignoreCertificate =
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
-      settings.hardwareDecode =
-        SettingsStore.readBoolean(store, 'hardwareDecode', settings.hardwareDecode);
+      settings.hardwareAccel =
+        SettingsStore.readBoolean(store, 'hardwareAccel', settings.hardwareAccel);
       settings.rfxDump = SettingsStore.readBoolean(store, 'rfxDump', settings.rfxDump);
       settings.decodeThreads =
         SettingsStore.readNumber(store, 'decodeThreads', settings.decodeThreads);
@@ -227,7 +227,7 @@ export class SettingsStore {
       store.putSync('enableGfx', settings.enableGfx);
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
-      store.putSync('hardwareDecode', settings.hardwareDecode);
+      store.putSync('hardwareAccel', settings.hardwareAccel);
       store.putSync('rfxDump', settings.rfxDump);
       store.putSync('decodeThreads', settings.decodeThreads);
       store.flush();

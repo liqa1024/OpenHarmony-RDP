@@ -264,11 +264,11 @@ struct SessionPage {
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
-    // Never ask for GPU decoding on a device whose engine cannot run (the
+    // Never ask for Vulkan presentation on a device that cannot do it (the
     // settings page already forces the stored value off; this covers a config
     // imported from another device).
-    RdpNative.applyHardwareDecode(settings.hardwareDecode
-      && DeviceCapabilities.hardwareDecode().supported);
+    RdpNative.applyHardwareAccel(settings.hardwareAccel
+      && DeviceCapabilities.hardwareAccel().supported);
     // Process-global decode worker count (live sessions decode on the CPU until
     // the engine takes over); 0 = automatic.
     RdpNative.applyDecodeThreads(settings.decodeThreads);

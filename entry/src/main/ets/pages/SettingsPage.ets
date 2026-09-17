@@ -77,9 +77,9 @@ struct SettingsPage {
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
   @State ignoreCertificate: boolean = true;
-  @State hardwareDecode: boolean = true;
-  @State hardwareDecodeSupported: boolean = true;
-  private hardwareDecodeReason: string = '';
+  @State hardwareAccel: boolean = true;
+  @State hardwareAccelSupported: boolean = true;
+  private hardwareAccelReason: string = '';
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State rfxDump: boolean = false;
   // Progressive tile decode workers: 0 = automatic (see AppSettings.decodeThreads).
@@ -118,9 +118,9 @@ struct SettingsPage {
     const audioCapability: Capability = DeviceCapabilities.audio();
     this.audioSupported = audioCapability.supported;
     this.audioDisabledReason = audioCapability.reason;
-    const hwCapability: Capability = DeviceCapabilities.hardwareDecode();
-    this.hardwareDecodeSupported = hwCapability.supported;
-    this.hardwareDecodeReason = hwCapability.reason;
+    const hwCapability: Capability = DeviceCapabilities.hardwareAccel();
+    this.hardwareAccelSupported = hwCapability.supported;
+    this.hardwareAccelReason = hwCapability.reason;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
@@ -148,10 +148,10 @@ struct SettingsPage {
     this.enableGfx = settings.enableGfx;
     // An unsupported device never asks for GPU decoding; drop a previously stored
     // "on" value so the setting matches the greyed-out switch.
-    this.hardwareDecode = this.hardwareDecodeSupported ? settings.hardwareDecode : false;
+    this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
     this.ignoreCertificate = settings.ignoreCertificate;
     this.rfxDump = settings.rfxDump;
-    RdpNative.applyHardwareDecode(this.hardwareDecode && this.hardwareDecodeSupported);
+    RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
     this.decodeThreads = settings.decodeThreads;
     RdpNative.applyDecodeThreads(this.decodeThreads);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
@@ -161,7 +161,7 @@ struct SettingsPage {
     if (!this.audioSupported && settings.enableAudio) {
       this.persist();
     }
-    if (!this.hardwareDecodeSupported && settings.hardwareDecode) {
+    if (!this.hardwareAccelSupported && settings.hardwareAccel) {
       this.persist();
     }
   }
@@ -260,7 +260,7 @@ struct SettingsPage {
     settings.enableAudio = this.enableAudio;
     settings.enableGfx = this.enableGfx;
     settings.ignoreCertificate = this.ignoreCertificate;
-    settings.hardwareDecode = this.hardwareDecode;
+    settings.hardwareAccel = this.hardwareAccel;
     settings.rfxDump = this.rfxDump;
     settings.decodeThreads = this.decodeThreads;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
@@ -277,7 +277,7 @@ struct SettingsPage {
     // Apply immediately so a toggle takes effect for sessions opened next,
     // without waiting for an app restart.
     RdpNative.applyRdpCursor(this.useRdpCursor);
-    RdpNative.applyHardwareDecode(this.hardwareDecode);
+    RdpNative.applyHardwareAccel(this.hardwareAccel);
     RdpNative.applyDecodeThreads(this.decodeThreads);
   }
 
@@ -305,7 +305,7 @@ struct SettingsPage {
     this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
     this.enableGfx = defaults.enableGfx;
     this.ignoreCertificate = defaults.ignoreCertificate;
-    this.hardwareDecode = defaults.hardwareDecode;
+    this.hardwareAccel = defaults.hardwareAccel;
     this.rfxDump = defaults.rfxDump;
     this.decodeThreads = defaults.decodeThreads;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
@@ -959,19 +959,16 @@ struct SettingsPage {
             Divider().color($r('app.color.divider'))
 
             this.toggleItem({
-              title: '硬件解码（RFX）',
-              subtitle: '优先把 RemoteFX 解码放到 GPU；关闭则用 CPU 软解',
-              // Locked while the capture is on (recording needs the soft decoder)
-              // and on devices whose GPU engine cannot run (see
-              // DeviceCapabilities.hardwareDecode).
-              value: this.hardwareDecode,
-              enabled: this.hardwareDecodeSupported && !this.rfxDump,
-              disabledReason: !this.hardwareDecodeSupported
-                ? this.hardwareDecodeReason
-                : (this.rfxDump
-                  ? '已开启码流抓取：录制需走 RFX 软解（gdi），硬件解码已自动关闭' : ''),
+              title: '硬件加速',
+              subtitle: '用 Vulkan 把画面贴到窗口；关闭则完全不用 Vulkan（GLES 上屏，兼容性优先）',
+              // Locked on devices whose Vulkan cannot present a frame; the
+              // session then runs on the GLES presenter either way (see
+              // DeviceCapabilities.hardwareAccel).
+              value: this.hardwareAccel,
+              enabled: this.hardwareAccelSupported,
+              disabledReason: this.hardwareAccelSupported ? '' : this.hardwareAccelReason,
               onChange: (v: boolean) => {
-                this.hardwareDecode = v;
+                this.hardwareAccel = v;
                 this.persist();
               }
             })
@@ -1004,19 +1001,12 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '抓取 RFX 码流（测试）',
-              subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供 GPU 解码开发；开启后本会话走 RFX 软解',
+              subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供开发/回放使用',
               value: this.rfxDump,
               enabled: true,
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.rfxDump = v;
-                if (v) {
-                  // The capture is only meaningful with gdi's surface baselines,
-                  // so enabling it turns hardware decode off (and remembers it).
-                  // Done here (ArkTS) so the session path follows the setting.
-                  this.hardwareDecode = false;
-                  RdpNative.applyHardwareDecode(false);
-                }
                 this.persist();
                 this.applyRfxDumpSetting();
               }

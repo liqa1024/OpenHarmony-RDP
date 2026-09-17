@@ -97,6 +97,14 @@ class GfxWorkMeter {
   void OnSetup(GfxSetupKind kind, uint64_t micros);
   // The presenter finished one present of the current frame.
   void OnPresent(uint64_t micros);
+  // Blocked time the frame paid *before* its first command, i.e. inside the window
+  // AccountChunkPrefix() charges to `zgx+parse`: the wait for the GPU to release the
+  // buffer this frame writes (the frame-begin hook runs before the first command).
+  // It is the same figure the caller reports as `sync`, so it is removed from the
+  // pending prefix here - otherwise `本机` counts it twice and overstates the
+  // client's own work whenever the GPU is the slower side. No-op when no prefix is
+  // pending (nothing to correct).
+  void OnBlockedBeforeFrameWork(uint64_t micros);
   // The frame waited for the GPU to finish reading the buffer it composes into
   // (one desktop buffer, so the previous frame's copy has to drain first). Blocked
   // time: taken out of the compose share and reported as its own phase, because it

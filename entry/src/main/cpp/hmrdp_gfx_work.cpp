@@ -185,6 +185,14 @@ void GfxWorkMeter::AccountChunkPrefix() {
   frameZgxUs_ += NowUs() - chunkArrivalUs_;
 }
 
+void GfxWorkMeter::OnBlockedBeforeFrameWork(uint64_t micros) {
+  if (chunkPending_) {
+    // Shift the pending chunk's stamp past the wait, so the prefix this frame's
+    // first command closes holds the parse share only (see the header).
+    chunkArrivalUs_ += micros;
+  }
+}
+
 void GfxWorkMeter::OnDecode(uint64_t micros) {
   frameDecodeUs_ += micros;
   frameCommands_ += 1;

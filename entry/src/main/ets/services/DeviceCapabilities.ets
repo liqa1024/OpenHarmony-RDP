@@ -7,7 +7,7 @@
  * runtime; the native layer additionally degrades gracefully so the session
  * itself keeps working.
  */
-import { isAudioSupported, vulkanEngineSupport } from 'libhmrdp.so';
+import { isAudioSupported, vulkanAccelSupport } from 'libhmrdp.so';
 
 /** Support state of one optional feature. */
 export class Capability {
@@ -35,49 +35,47 @@ export class DeviceCapabilities {
   }
 
   /**
-   * GPU (Vulkan) hardware decoding of the RemoteFX/Progressive streams. The
-   * native layer answers with what the engine actually needs - a Vulkan device,
-   * a queue family that can run the decode compute dispatches, host-visible
-   * memory for the surface buffers and a surface + swapchain to present to -
-   * plus the emulator carve-out (GPU acceleration is real-device-only, and the
-   * emulator reports capabilities it does not honour).
+   * GPU (Vulkan) acceleration of the frame presentation. The native layer
+   * answers with what the *presenter* actually needs - a Vulkan device,
+   * host-visible memory for the frame buffer and a surface + swapchain to blit
+   * to (no compute queue) - plus the emulator carve-out (Vulkan acceleration is
+   * real-device-only, and the emulator reports capabilities it does not honour).
+   * When this is false the session runs on the GLES presenter and Vulkan is not
+   * touched at all.
    */
-  static hardwareDecode(): Capability {
+  static hardwareAccel(): Capability {
     const capability: Capability = new Capability();
     let verdict: string = '';
     try {
-      verdict = vulkanEngineSupport();
+      verdict = vulkanAccelSupport();
     } catch (error) {
       capability.supported = false;
-      capability.reason = '无法检测本设备的图形加速能力，已关闭硬件解码';
+      capability.reason = '无法检测本设备的图形加速能力，已关闭硬件加速';
       return capability;
     }
     if (verdict === '1') {
       return capability;
     }
     capability.supported = false;
-    capability.reason = DeviceCapabilities.hardwareDecodeReason(verdict);
+    capability.reason = DeviceCapabilities.hardwareAccelReason(verdict);
     return capability;
   }
 
   /** Wording for the native reason token (the native side only returns codes). */
-  private static hardwareDecodeReason(verdict: string): string {
+  private static hardwareAccelReason(verdict: string): string {
     const code: string = verdict.startsWith('0|') ? verdict.substring(2) : '';
     if (code === 'emulator') {
-      return '模拟器不提供可信的图形加速，硬件解码仅在真机可用';
+      return '模拟器不提供可信的 Vulkan，硬件加速仅在真机可用';
     }
     if (code === 'no-vulkan') {
-      return '本设备没有可用的 Vulkan 驱动，硬件解码不可用';
-    }
-    if (code === 'no-compute') {
-      return '本设备的 Vulkan 不支持计算队列，无法加速解码';
+      return '本设备没有可用的 Vulkan 驱动，硬件加速不可用（已用 GLES 上屏）';
     }
     if (code === 'no-host-memory') {
-      return '本设备的 Vulkan 未提供 host-visible 内存，无法加速解码';
+      return '本设备的 Vulkan 未提供 host-visible 内存，硬件加速不可用（已用 GLES 上屏）';
     }
     if (code === 'no-surface') {
       return '本设备的 Vulkan 不支持 XComponent 上屏所需的表面/交换链扩展';
     }
-    return '本设备的图形加速能力不足，硬件解码不可用';
+    return '本设备的图形加速能力不足，硬件加速不可用（已用 GLES 上屏）';
   }
 }

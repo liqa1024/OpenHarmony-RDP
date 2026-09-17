@@ -71,10 +71,11 @@ export const setTouchHighRate: (enabled: boolean) => boolean;
 export const setRdpCursor: (enabled: boolean) => boolean;
 
 /**
- * Prefer hardware (GPU) RemoteFX decoding over the CPU decoder. Applied when a
- * session connects.
+ * "硬件加速": present frames through Vulkan (on) or through the GLES presenter
+ * only (off - no Vulkan in the session at all). Applied when a session connects;
+ * decoding is FreeRDP's gdi path either way.
  */
-export const setHardwareDecode: (enabled: boolean) => boolean;
+export const setHardwareAccel: (enabled: boolean) => boolean;
 /** Progressive tile decode workers: 0 = automatic. */
 export const setDecodeThreads: (workers: number) => boolean;
 export const decodeThreadsInfo: () => string;
@@ -109,9 +110,10 @@ export const gfxReplayTestStats: () => string;
 export const vulkanInfo: () => string;
 
 /**
- * Whether the GPU (Vulkan) engine can run on this device - the capability behind
- * the "硬件解码（RFX）" setting. Returns "1", or "0|<code>" with a stable code:
- * `no-vulkan` / `no-instance` / `no-device` / `no-compute` / `no-host-memory` /
- * `no-surface` / `emulator`. The UI layer maps the code to its own wording.
+ * Whether frames can be presented through Vulkan on this device - the capability
+ * behind the "硬件加速" setting (the presenter verdict: no compute queue
+ * required). Returns "1", or "0|<code>" with a stable code:
+ * `no-vulkan` / `no-instance` / `no-device` / `no-host-memory` / `no-surface` /
+ * `emulator`. The UI layer maps the code to its own wording.
  */
-export const vulkanEngineSupport: () => string;
+export const vulkanAccelSupport: () => string;

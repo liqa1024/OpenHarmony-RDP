@@ -111,9 +111,11 @@ class Session {
   // kept (the pre-cursor-support behaviour). Applied when a session connects.
   static void SetRdpCursor(bool enabled);
 
-  // Process-global preference for hardware (GPU) RemoteFX decoding instead of
-  // the CPU decoder. Read when a session connects (see doc_agent/gfx-engine.md §1).
-  static void SetHardwareDecode(bool enabled);
+  // Process-global "硬件加速" preference: present frames through Vulkan (on) or
+  // stay on the GLES presenter with no Vulkan in the session (off). Applies from
+  // the next presenter on, so the pre-connect call is what a session sees
+  // (hmrdp_presenter.h). Decoding itself is always FreeRDP's gdi path.
+  static void SetHardwareAccel(bool enabled);
 
   // Dev-only capture of the incoming RemoteFX/Progressive GFX surface streams,
   // written to `dir` as hmrdp_rfx.bin (see doc_agent/gfx-engine.md §6).

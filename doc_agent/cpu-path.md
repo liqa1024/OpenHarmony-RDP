@@ -34,6 +34,11 @@ CPU 回放的 stats 就是这条线的账：
   所以**本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 §4）。它是**阻塞**不是处理 ⇒ 单列；
   **帧的整段墙钟 = `本机` + `sync`**（回放再加节拍睡眠）。它的长度＝上一帧那次拷贝的时长：
   帧背靠背（整屏脏区）时是 ms 级，到达稀疏、无积压时接近 0（此时"不背靠背"本身就是保护）。
+  - ⚠ **这笔等待天然落在 `zgx+parse` 的窗口里**：帧首钩子（`StartFrame` / 帧内第一条表面命令）在
+    `AccountChunkPrefix()` **之前**跑，而抓取的"一条记录"通常就是一整帧的 ZGX 段 ⇒ 该窗口覆盖了这次等待。
+    所以测点必须把它交出来（`OnBlockedBeforeFrameWork()`，调用方用自己已经量到的那笔等待）：
+    不交，`本机` 就把它算两遍、在 GPU 成为慢的一侧时虚高到 `sync` 那么多。
+    自检：`本机 + sync ≈ 1/fps`（每秒窗口口径）——右边明显小于左边就是这里被算重了。
 - **`pace` 是唯一直接剔除的项**：回放的人为节流不是客户端工作。
 - **判读顺序**：① `setup` ② `kB/frame`/`cmds/frame`（内容是否可比）③ `wait(block)` ④ `update`
   ⑤ `present` ⑥ `sync`。
@@ -44,10 +49,13 @@ CPU 回放的 stats 就是这条线的账：
 
 | 样本类型 | `本机`/帧 | 拆相形状 |
 |---|---|---|
-| **整屏变化**（每帧上千 tile，如看视频） | 一二十 ms 量级 | **`decode` 占约 9 成**（内部几乎全在 `wait` + `update`），`compose`/`present` 合计不到 1 成 |
-| **碎片**（消息稀疏、小矩形） | 十 ms 量级 | `zgx+parse` 与 `present` 占比上升，且 `sync` 开始显现（帧时间已不由 CPU 决定） |
+| **整屏变化**（每帧上千 tile，如看视频） | 几十 ms 量级 | **`decode` 占 9 成以上**（内部几乎全在 `wait` + `update`），`zgx+parse`/`present` 各几个百分点，`sync` 与 `present` 同量级 |
+| **碎片**（命令多、矩形小但**总量不小**） | 十 ms 量级 | `decode` 约 6 成、`zgx+parse`/`present` 各约 2 成；**`sync` 可达帧墙钟的三分之一** |
 
 ⇒ 整屏样本里 **decode 占绝对多数**：任何"上屏/合成"侧的优化都不可能显著改变这条线。
+碎片样本再分两种：**小矩形 + 小字节**的轻样本是 CPU 受限；**命令多、每帧脏区字节也大**的样本上，
+GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧率上限由 CPU 与这次拷贝**共同**决定，
+此时压 `本机` 只买到能耗，要动帧率得动拷贝的量（那是呈现器/拷贝路径的事，见 §3/§4）。
 本章其余各节的结论都按"每帧字节/命令数"归一后才可跨样本比较（见 §7）。
 
 ## 3. 一帧的钱花在哪
@@ -60,9 +68,17 @@ CPU 回放的 stats 就是这条线的账：
 - **compose**：`gdi_OutputUpdate` 的 surface→primary 合成；全屏会话里它已被
   "桌面镜像 surface 直接合成进 primary"整段消掉（§4）。
 - **present**：绝大部分是**固定的 Vulkan 调用**（acquire / 录制 / submit / present），不是我们能删的活；
-  `flush`（buffer→image 拷贝）只有 µs 级。**GPU 侧另算**：`copy`（脏区字节 buffer→image）+
-  `blit`（clear 整张 + letterbox quad），**blit 与脏区无关**；这些被 CPU 工作藏住，不构成瓶颈
-  （详见 [`present-pipeline.md`](present-pipeline.md) §2/§4.3）。
+  `flush`（把本帧写过的字节交出去）只有 µs 级。**GPU 侧另算**：`copy`（脏区字节 buffer→image）+
+  `blit`（clear 整张 + letterbox quad），**blit 与脏区无关**（ms 量级，见
+  [`present-pipeline.md`](present-pipeline.md) §2/§4.3）。**这正是零拷贝后端（Vulkan）与 GLES 的差别**：
+  前者 gdi 直接合成进呈现器缓冲（`copy` 是唯一一次搬运），后者必须在 CPU 侧把脏区 memcpy 进 staging
+  再上传 ⇒ GLES 的 `present` 天然贵一截，两个后端不构成"脏区形状"的对照实验。
+  - ⚠ **零拷贝下 `copy` 与帧序是耦合的**：它读的就是本帧要写的那块内存，所以排在**本帧第一次写之前**
+    （`sync`）。脏区字节大时它直接进帧墙钟：碎片但总量大的样本上一次拷十 MB 量级＝ms 级等待，
+    占帧墙钟三分之一量级。判据：**`sync` 与 `uploaded` 同步起落**就是这一项，而不是"合成贵"。
+  - 上一条**不改变**脏区形状的结论（§4）：形状由 `usesDesktopBuffer()` 派生——能交出主缓冲的后端
+    （Vulkan）走 box，交不出的（GLES staging）走逐条矩形；两者不是同一个旋钮的两个取值，
+    跨后端比 `present`/`sync` 也不能当 box/rect 的 A/B（后端的拷贝能力本身不同）。
 - **`setup`（非像素命令）**：低频但可能很重，要按**"每次调用分配多少字节"**查。典型暗礁是
   `ResetGraphics` 按桌面尺寸重分配大块 scratch（且会对多个 codec 集合各做一遍，离线里可能是同一个
   对象 ⇒ 成倍）；现在几何未变就直接返回。⚠ 表面对比那一半（`CreateSurface` 的
@@ -71,10 +87,12 @@ CPU 回放的 stats 就是这条线的账：
 
 ## 4. 已定型的几件事（不要再动，连同约束）
 
-- **脏区形状：零拷贝路径恒发合并 box；staging 路径保持逐条矩形**。原因：有 memcpy 时成本在**字节**
-  （box 会多搬数倍），零拷贝后成本在**条数**（每条 = 一个 copy region + 一次 flush），而 box 有上界
-  （最坏 = 一次整屏读）。由 `FramePresenter::usesDesktopBuffer()` 分流。
-  ⇒ "把碎矩形并成长条"这条**作废**。
+- **脏区形状**：staging 路径用**逐条矩形**（成本在字节，box 会多搬数倍）；零拷贝路径用**合并 box**
+  （CPU 侧成本在条数：每条 = 一个 copy region + 一次 flush，而 box 恒一条；已按 CPU 侧 `present` 量过：
+  box ≤ rect list，碎片样本 −17%）。由 `FramePresenter::usesDesktopBuffer()` **分流**，
+  ⇒ 它不是可独立调的旋钮：GLES（交不出主缓冲）恒走矩形、Vulkan（零拷贝）恒走 box，
+  「把碎矩形并成长条」这条**作废**。box 的字节量是 GPU 那次 buffer→image 拷贝的量、并排在帧首
+  （`sync`，§3）——那是"等 GPU"的账，不是形状选错了；跨后端比 `present`/`sync` 更不是 box/rect 的 A/B。
 - **零拷贝上屏：gdi 主缓冲 = 呈现器的 host-visible 缓冲**（`gdi_init_ex` + 呈现器自带缓冲）。
   实现约束（都要遵守）：
   - 呈现器**每帧问一次、成功为止**（Vulkan 设备随 surface 建，`gdi_init` 时可能还没有），
@@ -105,6 +123,12 @@ CPU 回放的 stats 就是这条线的账：
     ⇒ 必须**换之前**记下谁在共享、换之后重指向或让它自己分配（否则是"向已释放内存 memset"，
     而且是写进呈现器的 Vulkan 缓冲）。
   - `gdi_DeleteSurface` 不能释放共享缓冲；出现**第二个** surface 时先解除共享（否则合成第二个会覆盖它）。
+  - ⚠ **gfx 上下文拆卸也要经 `DeleteSurface` 走一遍**（`rdpgfx_client_context_free` → `free_surfaces`），
+    而 `gdi_DeleteSurface` 从 `context->custom` 取 gdi —— `gdi_graphics_pipeline_uninit` 已经把它清空
+    ⇒ 这一步的共享测试必然失败、把**呈现器的 host-visible 缓冲**当自有缓冲 `winpr_aligned_free`
+    （非法释放，进程直接挂）。**顺序**：谁拆 gfx 上下文，谁就必须**在 uninit 之前**先 `DeleteSurface`
+    掉所有 surface（离线 CPU 桌面就是这么做）。live 靠 FreeRDP 在 `OnClose` 里先 `free_surfaces`；
+    这个顺序不满足时（如断开路径没有 OnClose）同样会挂。
   - 全在 `libfreerdp/gdi/gfx.c` 内部，**不动头文件也不动 app**，因此对任何呈现器都成立。
 - **`update_tiles` 的 region16 记账不是瓶颈**（~0.5ms/帧 量级）：不要再去合并矩形/换 region 结构
   （两次实测收益都在噪声里，见 §8）。
@@ -120,7 +144,7 @@ CPU 回放的 stats 就是这条线的账：
 
 | worker | 墙钟（`本机`/帧） | 整轮进程 CPU |
 |---|---|---|
-| 1（串行） | 整屏样本约 2.6x 慢；碎片样本几乎不变 | **最低**（约并行的 40%–60%） |
+| 1（串行） | 整屏样本约 2.6x 慢；碎片样本接近（总量大的碎片样本 +5% 量级） | **最低**（约并行的 40%–60%） |
 | 2 | 已到并行平台 | 平台值 |
 | 4（自动） | 与 2/6/8 相同 | 平台值 |
 | 6 / 8 | 不再下降 | 不再变化 |
@@ -128,13 +152,16 @@ CPU 回放的 stats 就是这条线的账：
 - **≥2 之后墙钟完全不涨**：串行→2 的跳变已超过 2x，2→8 又不涨 ⇒ **每个 tile 的有效成本随并发度变化**，
   不是"把工作平均切开"。机制是**并发下的访存/缓存干扰**（同一份工作单核串行比多核并行慢数倍）
   ⇒ **调 worker 数是把问题换个位置暴露，不是解**。
-- **串行是省电那一头**：整屏样本慢 2.6x 但 CPU 只有 43%；碎片样本墙钟几乎不变而 CPU 只有 60%。
-  ⇒ **到达侧限速（duty 低）时应回落 1**；自动值 4 是"两头都不吃亏"的折中，**它不是性能旋钮**。
+- **串行是省电那一头**：整屏样本慢 2.6x 但 CPU 只有 43%；碎片样本墙钟几乎不变而 CPU 只有 60%
+  （总量大的碎片样本：CPU 约 45%、墙钟 +4%）。⇒ **到达侧限速（duty 低）时应回落 1**；
+  自动值 4 是"两头都不吃亏"的折中，**它不是性能旋钮**。
+  ⚠ 串行时 `prog` 的 `read/dispatch/wait/update` 拆相**失效**（并行分支才有这些计数，串行的
+  `decode` 时间基本落在计数之外）⇒ 比 worker 数时只看 `本机`/`cpu=`，别看 prog 行。
 - 已否定：池 fan-out 4→8（`wait`/`本机` 都没有收益）⇒ 保持 4。
 
 ## 6. 开放问题（按能耗收益排）
 
-1. **`update` 里的 tile→surface 拷贝**：整帧 ~25% 且**串行在 RDP 线程**。
+1. **`update` 里的 tile→surface 拷贝**：整帧 25%–40%（按样本）且**串行在 RDP 线程**。
    做法：把 keep-dst-alpha 的"每像素一个 32 位掩码字"改成**每两像素一个 64 位掩码字**
    （`dst = (dst & 0xFF000000FF000000) | (src & 0x00FFFFFF00FFFFFF)`，逐位等价）+ 让它自动向量化；
    预期整帧 −15% 量级。门禁 `bad=0`。
@@ -176,7 +203,14 @@ CPU 回放的 stats 就是这条线的账：
 - **不要用"跳过某条 dispatch/步骤 + 差值反推"做归因**（依赖关系会变）：用计数器 + 相位桶。
 - **回放节拍若落在 `gdi_EndFrame` 里，必须扣掉**（否则算进 `compose`）：`GfxWorkMeter::OnPace` 为此存在；
   判读前先看 `pump … ms (paced … ms)` 里 paced 是否为 0。`sync` 同理（见 §1），**别把"等 GPU"当"合成贵"**。
+- **相位是"同一线程上的不重叠区间"，所以要先过一遍 `本机 + sync ≈ 1/fps`**：左边明显大于右边，
+  说明有一笔等待被算了两次（帧首那笔 `sync` 落在 `zgx+parse` 窗口里，§1），此时 `本机` 不是算力。
+- **相加之和不等于整轮 `cpu=` 时要分清**：`cpu=` 是整轮进程 CPU（含 worker 线程、也含平台侧记账），
+  相位只是 RDP 线程。整屏（tile 数千）样本上两者能差一倍 ⇒ 要么池里有自旋/重建，
+  要么该平台的 CPU 时钟口径本身偏大；**不要用相位之和去反推"并行烧了多少电"**。
 - **墙钟反推的"GPU 时间"不算 GPU 时间**：只有时间戳量到的才算，其余是排队。
+  present 的 GPU 时间已有长期探针（`vulkan present probe: gpu copy=… blit=…`）：**`copy` 正比于脏区字节、
+  `blit` 与脏区无关**，用它判"等的是哪一段"，不要靠 `sync` 的墙钟猜。
 - **dev 页驱动：别用盲点坐标**。会话窗口可缩放，按全屏算的坐标会落到桌面/别的窗口上——症状是
   "点了没反应"甚至把应用窗口关掉，**看起来像崩溃**。先 `dumpLayout` 按 `text` 找控件 `bounds` 再点中心
   （见 [`build-and-verify.md`](build-and-verify.md) §5.1）；另外「路线/重新回放/线程」内部都是

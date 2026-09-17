@@ -132,12 +132,6 @@ namespace {
 // session connects (HmrdpPostConnect).
 std::atomic<bool> g_useRdpCursor{true};
 
-// Prefer hardware (GPU) RemoteFX decoding instead of the CPU decoder. Default on.
-// No engine is wired to the live session yet (the Vulkan engine is replay-only),
-// so the setting is currently reported and reserved: every session decodes with
-// gdi until the Vulkan engine takes over live.
-std::atomic<bool> g_hardwareDecode{true};
-
 uint64_t NowMs() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1375,10 +1369,10 @@ BOOL HmrdpPreConnect(freerdp* instance) {
   }
   freerdp_settings_set_uint32(settings, FreeRDP_OsMajorType, OSMAJORTYPE_UNIX);
   freerdp_settings_set_uint32(settings, FreeRDP_OsMinorType, OSMINORTYPE_NATIVE_XSERVER);
-  HMRDP_LOGI("preconnect: clipboard=%{public}d gfx=%{public}d hardware=%{public}d",
+  HMRDP_LOGI("preconnect: clipboard=%{public}d gfx=%{public}d accel=%{public}d",
              freerdp_settings_get_bool(settings, FreeRDP_RedirectClipboard) ? 1 : 0,
              freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) ? 1 : 0,
-             g_hardwareDecode.load() ? 1 : 0);
+             hmrdp::HardwareAccelEnabled() ? 1 : 0);
 
   // Register the raw GFX capture hook (no-op unless the user enabled the
   // capture). Harmless when FreeRDP was not built with the HmRdp patch.
@@ -2037,9 +2031,14 @@ void Session::HandleFrameBegin() {
   if (desktopAttached_ && presenter_ != nullptr) {
     const uint64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();
+    const uint64_t waitedUs = NowUs() - startUs;
     // Blocked time, not composition: reported as its own phase so a slow present
     // pipeline cannot be mistaken for an expensive compose (hmrdp_gfx_work.h).
-    meter_.OnPresentSync(NowUs() - startUs);
+    meter_.OnPresentSync(waitedUs);
+    // ... and this hook runs before the frame's first command, so the same wait
+    // sits inside the window that becomes `zgx+parse`: hand it over, or `本机`
+    // would count it twice.
+    meter_.OnBlockedBeforeFrameWork(waitedUs);
   }
 }
 
@@ -2267,9 +2266,10 @@ void Session::SetRdpCursor(bool enabled) {
   g_useRdpCursor.store(enabled);
 }
 
-void Session::SetHardwareDecode(bool enabled) {
-  g_hardwareDecode.store(enabled);
-  HMRDP_LOGI("decode: hardware (GPU) preferred %{public}s", enabled ? "on" : "off");
+void Session::SetHardwareAccel(bool enabled) {
+  // The presenter backend reads this (hmrdp_presenter.h); the session path picks
+  // it up when the next presenter is created.
+  hmrdp::SetHardwareAccelEnabled(enabled);
 }
 
 void Session::SetRfxDump(bool enabled, const std::string& dir) {

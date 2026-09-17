@@ -8,6 +8,8 @@
  * from the home screen "回放测试" entry).
  */
 import { RdpNative } from '../services/RdpNative';
+import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
+import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -74,6 +76,11 @@ struct GfxReplayPage {
   // Index into DECODE_THREAD_CHOICES: which Progressive decode worker count this
   // dev page asks for (applied process-wide, so the CPU route uses it).
   @State decodeWorkerIndex: number = 0;
+  // "硬件加速" - the session setting that picks the presenter backend (Vulkan vs
+  // GLES). Driven from here as well so the two presenters can be A/B'd on the
+  // same capture without leaving the page; changing it restarts the run.
+  @State hardwareAccel: boolean = true;
+  @State hardwareAccelSupported: boolean = true;
   // On-device performance panel: the stats string is multi-line, shown in a
   // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
@@ -91,6 +98,11 @@ struct GfxReplayPage {
 
   aboutToAppear(): void {
     this.applyFullScreen(true);
+    // Same source of truth as the settings page: the stored value, clamped by
+    // what this device can actually do.
+    const capability: Capability = DeviceCapabilities.hardwareAccel();
+    this.hardwareAccelSupported = capability.supported;
+    this.hardwareAccel = SettingsStore.load().hardwareAccel && capability.supported;
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number) => {
         this.surfaceId = surfaceId;
@@ -142,6 +154,10 @@ struct GfxReplayPage {
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'decode threads unavailable: %{public}s', JSON.stringify(error));
     }
+    // The presenter backend is chosen when the run starts, so apply the
+    // acceleration state here as well (it may have been changed on the settings
+    // page since this page was opened).
+    RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
     RdpNative.stopReplayTest();
     if (this.isVulkanRoute()) {
       try {
@@ -156,6 +172,20 @@ struct GfxReplayPage {
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;
     this.startStatsTimer();
+  }
+
+  // Flips the hardware-acceleration setting for the whole process (persisted, so
+  // the session path sees the same value) and restarts the run: the presenter is
+  // created per run, so a restart is what makes the new backend take effect.
+  private toggleHardwareAccel(): void {
+    if (!this.hardwareAccelSupported) {
+      return;
+    }
+    this.hardwareAccel = !this.hardwareAccel;
+    const settings: AppSettings = SettingsStore.load();
+    settings.hardwareAccel = this.hardwareAccel;
+    SettingsStore.save(settings);
+    this.startReplay();
   }
 
   private applyFullScreen(enable: boolean): void {
@@ -236,6 +266,17 @@ struct GfxReplayPage {
             this.startReplay();
           })
 
+        Button(`加速:${this.hardwareAccelSupported ? (this.hardwareAccel ? '开' : '关') : '不可用'}`)
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.toggleHardwareAccel();
+          })
+
         Button(`节拍:${this.replayRealtime ? '实时' : '跑满'}`)
           .height(34)
           .fontSize(13)
@@ -304,7 +345,7 @@ struct GfxReplayPage {
                 .fontColor('#FF9CDCFE')
                 .width('100%')
             }
-            Text(`路线:${ROUTE_LABEL[this.replayRoute]}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
+            Text(`路线:${ROUTE_LABEL[this.replayRoute]}  加速:${this.hardwareAccelSupported ? (this.hardwareAccel ? '开' : '关') : '不可用'}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
               .fontSize(12)
               .fontColor('#FFFFD479')
               .width('100%')

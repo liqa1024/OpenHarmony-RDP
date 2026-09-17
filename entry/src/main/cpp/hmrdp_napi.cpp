@@ -634,7 +634,7 @@ napi_value DecodeThreadsInfo(napi_env env, napi_callback_info info) {
   return result;
 }
 
-napi_value SetHardwareDecode(napi_env env, napi_callback_info info) {
+napi_value SetHardwareAccel(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -642,7 +642,7 @@ napi_value SetHardwareDecode(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session::SetHardwareDecode(enabled);
+  Session::SetHardwareAccel(enabled);
   return CreateBool(env, true);
 }
 
@@ -778,14 +778,16 @@ napi_value VulkanInfo(napi_env env, napi_callback_info) {
   return result;
 }
 
-// Whether the GPU (Vulkan) engine can run on this device - the capability behind
-// the "硬件解码（RFX）" setting. Returns "1", or "0|<code>" with a stable code so
-// the UI layer owns the wording (see VulkanCapabilities::engineUnsupportedCode).
-napi_value VulkanEngineSupport(napi_env env, napi_callback_info) {
+// Whether frames can be presented through Vulkan on this device - the capability
+// behind the "硬件加速" setting. This is the *presenter* verdict, which needs no
+// compute queue (the engine does, so it is the stricter one and not what this
+// switch is about). Returns "1", or "0|<code>" with a stable code so the UI layer
+// owns the wording (see VulkanCapabilities::presenterUnsupportedCode).
+napi_value VulkanAccelSupport(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   const std::string out =
-      caps.engineSupported ? std::string("1") : ("0|" + caps.engineUnsupportedCode);
-  HMRDP_LOGI("vulkan engine support: %{public}s", out.c_str());
+      caps.presenterSupported ? std::string("1") : ("0|" + caps.presenterUnsupportedCode);
+  HMRDP_LOGI("vulkan accel support: %{public}s", out.c_str());
   napi_value result = nullptr;
   napi_create_string_utf8(env, out.c_str(), out.size(), &result);
   return result;
@@ -847,7 +849,7 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setRdpCursor", nullptr, SetRdpCursor, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setHardwareDecode", nullptr, SetHardwareDecode, nullptr, nullptr, nullptr,
+      {"setHardwareAccel", nullptr, SetHardwareAccel, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setDecodeThreads", nullptr, SetDecodeThreads, nullptr, nullptr, nullptr,
        napi_default, nullptr},
@@ -863,7 +865,7 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"vulkanEngineSupport", nullptr, VulkanEngineSupport, nullptr, nullptr, nullptr,
+      {"vulkanAccelSupport", nullptr, VulkanAccelSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };
 

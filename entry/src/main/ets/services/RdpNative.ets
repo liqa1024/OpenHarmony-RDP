@@ -8,7 +8,7 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-setTouchHighRate, updateSurface, setHardwareDecode, setRfxDump,
+setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
 setDecodeThreads, decodeThreadsInfo,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats,
@@ -71,11 +71,11 @@ export class RdpNative {
     setRdpCursor(enabled);
   }
 
-  /** Prefer hardware (GPU) RemoteFX decoding; off uses the CPU decoder. Reserved
-   * until the GPU engine takes over live sessions (every session currently
-   * decodes with gdi / FreeRDP's own CPU path). */
-  static applyHardwareDecode(enabled: boolean): void {
-    setHardwareDecode(enabled);
+  /** "硬件加速": present frames through Vulkan (on) or keep the session on the
+   * GLES presenter with no Vulkan at all (off). Decoding is FreeRDP's gdi path
+   * either way, so this only decides how frames reach the window. */
+  static applyHardwareAccel(enabled: boolean): void {
+    setHardwareAccel(enabled);
   }
 
   /**
