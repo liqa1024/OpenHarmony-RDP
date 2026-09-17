@@ -508,7 +508,7 @@ Patch-Block $dvcC "static DWORD WINAPI drdynvc_virtual_channel_client_thread(LPV
 #         32 位字"（保留目标第 4 字节、取源低三字节 —— 与逐字节写法逐字节等价，与字节序
 #         无关）。这是 gdi 链路最热的循环。
 #
-#    另外导出 HmrdpProgStat[8]（每条消息只碰几次，不在 per-tile 路径上）供 app 的回放
+#    另外导出 HmrdpProgStat[16]（每条消息只碰几次，不在 per-tile 路径上）供 app 的回放
 #    统计打印 `prog` 行做归因。整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
 function Patch-Regex {
   param([string]$Path, [string]$Pattern, [string]$Replacement, [string]$Marker)
@@ -580,12 +580,17 @@ Patch-Regex $progC '#define TAG FREERDP_TAG\("codec\.progressive"\)\n' (@'
  * progressive decode, read back by the app's replay stats (`prog` line). They
  * are touched a handful of times per message, never per tile, so the probe
  * itself does not show up in the figures it reports.
- *   [0] tile read/parse (serial)      [4] (unused)
- *   [1] work dispatch (serial)        [5] update_tiles calls
- *   [2] work wait+close (serial)      [6] tiles composited
- *   [3] update_tiles (serial)         [7] of [2], the part that really blocked
+ *   [0] tile read/parse               [4] (unused)
+ *   [1] pool dispatch                 [5] update_tiles calls
+ *   [2] pool section                  [6] tiles composited
+ *   [3] update_tiles                  [7] of [2], the part that really blocked
+ *   [8] tiles decoded serially        [9] time spent in that serial loop
+ *
+ * `read` / `update` / the counters are filled on both paths; `dispatch` / the
+ * pool section only exist when the decode runs on pool workers (they are 0 on
+ * the serial branch, which is what [8]/[9] describe instead).
  */
-unsigned long long HmrdpProgStat[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+unsigned long long HmrdpProgStat[16] = { 0 };
 
 static INLINE unsigned long long hmrdp_now_ns(void)
 {
@@ -716,6 +721,34 @@ Patch-Regex $progC '\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\
 
 fail:
 '@) 'volatile UINT32 nextTile = 0;'
+
+# (a3a) count the tiles the chunked dispatch decoded, and how long the workers
+#       spent on them. Read per chunk, never per tile. NOTE the figure is a
+#       *summed* (multi-threaded) CPU time, not a per-frame wall clock: the app
+#       reports it only when the decode ran serially (see its `dec` field).
+Patch-Regex $progC '\tPROGRESSIVE_TILE_CHUNK_PARAM\* chunk = \(PROGRESSIVE_TILE_CHUNK_PARAM\*\)context;\n\n\tWINPR_ASSERT\(chunk\);\n\n\tfor \(;;\)\n\t\{\n\t\tconst UINT32 index = __sync_fetch_and_add\(chunk->next, 1u\);\n\t\tif \(index >= chunk->numTiles\)\n\t\t\tbreak;\n\n\t\tprogressive_process_tiles_tile_work_callback\(instance, &chunk->params\[index\], work\);\n\t\}\n\}\n' (@'
+	PROGRESSIVE_TILE_CHUNK_PARAM* chunk = (PROGRESSIVE_TILE_CHUNK_PARAM*)context;
+	const unsigned long long c0 = hmrdp_now_ns();
+	UINT32 done = 0;
+
+	WINPR_ASSERT(chunk);
+
+	for (;;)
+	{
+		const UINT32 index = __sync_fetch_and_add(chunk->next, 1u);
+		if (index >= chunk->numTiles)
+			break;
+
+		progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
+		done++;
+	}
+
+	/* Per chunk (not per tile): two clock reads here cost nothing measurable,
+	 * while a per-tile pair would show up in the figures it reports. */
+	__atomic_add_fetch(&HmrdpProgStat[8], done, __ATOMIC_RELAXED);
+	__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - c0, __ATOMIC_RELAXED);
+}
+'@) '__atomic_add_fetch(&HmrdpProgStat[8], done'
 
 # (a4) update_tiles: no per-tile REGION16, one visit per tile per pass.
 Patch-Regex $progC '\tBOOL rc = TRUE;\n\tREGION16 clippingRects = \{ 0 \};\n\tregion16_init\(&clippingRects\);\n' (@'
@@ -1026,6 +1059,27 @@ Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads\)\n\t\{\n
 	{
 		/* Serial (or forced to one worker): one call per tile, no pool at all. */
 '@ + "`n") 'HmrdpGetDecodeThreads() <= 1'
+
+# (d) time the serial tile loop too. Without it the serial branch only shows the
+#     parse (`read`) and `update_tiles` costs: the parallel path's dispatch/wait
+#     counters are 0 there, so the per-tile decode - by far the dominant cost of
+#     a whole-screen frame - would be invisible, and the `prog` line would look
+#     like the decode is nearly free whenever the worker count is 1.
+Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads \|\| HmrdpGetDecodeThreads\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(or forced to one worker\): one call per tile, no pool at all\. \*/\n\t\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\t\t\tprogressive_process_tiles_tile_work_callback\(0, &progressive->params\[idx\], 0\);\n\n\t\tgoto fail;\n\t\}\n' (@'
+	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
+	{
+		/* Serial (or forced to one worker): one call per tile, no pool at all.
+		 * HmRdp dev: the tiles and the time spent decoding them are counted
+		 * here - the pool-path counters above stay 0 on this branch. */
+		const unsigned long long s0 = hmrdp_now_ns();
+		for (UINT32 idx = 0; idx < region->numTiles; idx++)
+			progressive_process_tiles_tile_work_callback(0, &progressive->params[idx], 0);
+
+		__atomic_add_fetch(&HmrdpProgStat[8], region->numTiles, __ATOMIC_RELAXED);
+		__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - s0, __ATOMIC_RELAXED);
+		goto fail;
+	}
+'@) '__atomic_add_fetch(&HmrdpProgStat[9]'
 
 # 12) HmRdp: do not re-allocate the PLANAR codec's scratch on every ResetGraphics.
 #

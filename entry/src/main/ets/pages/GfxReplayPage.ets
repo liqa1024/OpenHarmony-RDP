@@ -30,8 +30,14 @@ const ROUTE_LABEL: string[] = ['CPU', 'Vulkan', 'Vulkan对比'];
 // the receiving thread with no worker pool. The decode is the CPU (gdi) path's
 // dominant cost, so this is the knob for its time-vs-energy curve
 // (doc_agent/cpu-path.md §5).
+//
+// The knob is currently pinned to 1 in the native decoder module (the parallel
+// path is FreeRDP's pool, untuned for this platform and due to be rewritten), so
+// the button starts on 1 and is disabled - reopen it together with the pin.
 const DECODE_THREAD_CHOICES: number[] = [0, 1, 2, 3, 4, 6, 8];
 const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
+const DECODE_THREAD_PINNED: boolean = true;
+const DECODE_THREAD_PINNED_INDEX: number = 1;
 
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -74,8 +80,9 @@ struct GfxReplayPage {
   // reports the mode actually used (`mode=fast|realtime`).
   @State replayRealtime: boolean = false;
   // Index into DECODE_THREAD_CHOICES: which Progressive decode worker count this
-  // dev page asks for (applied process-wide, so the CPU route uses it).
-  @State decodeWorkerIndex: number = 0;
+  // dev page asks for (applied process-wide, so the CPU route uses it). Pinned
+  // while DECODE_THREAD_PINNED (see the constant).
+  @State decodeWorkerIndex: number = DECODE_THREAD_PINNED ? DECODE_THREAD_PINNED_INDEX : 0;
   // "硬件加速" - the session setting that picks the presenter backend (Vulkan vs
   // GLES). Driven from here as well so the two presenters can be A/B'd on the
   // same capture without leaving the page; changing it restarts the run.
@@ -311,7 +318,9 @@ struct GfxReplayPage {
           })
 
         // Decode worker count for the CPU (gdi) route: each click restarts the
-        // replay, so one click per point on the time-vs-energy curve.
+        // replay, so one click per point on the time-vs-energy curve. Disabled
+        // while the count is pinned (DECODE_THREAD_PINNED): the native decoder
+        // module forces 1 worker, so cycling here would only mislabel the run.
         Button(`线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
           .height(34)
           .fontSize(13)
@@ -319,6 +328,8 @@ struct GfxReplayPage {
           .backgroundColor($r('app.color.input_bg'))
           .borderRadius(9)
           .margin({ left: 8 })
+          .enabled(!DECODE_THREAD_PINNED)
+          .opacity(DECODE_THREAD_PINNED ? 0.45 : 1.0)
           .onClick(() => {
             this.decodeWorkerIndex = (this.decodeWorkerIndex + 1) % DECODE_THREAD_CHOICES.length;
             this.startReplay();

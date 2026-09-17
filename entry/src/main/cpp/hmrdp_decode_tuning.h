@@ -18,10 +18,16 @@
  * The automatic choice is min(performance cores - or the core count when the
  * device does not expose its clusters - , 4): the decode stops getting faster
  * after a couple of workers (measured, doc_agent/cpu-path.md §5), so the
- * ceiling is small and only comes down on smaller devices. The user can override
- * it; the value is process-wide and applies to the live session and the offline
- * replay alike (a session/replay picks it up when its codec context starts, i.e.
- * when it begins decoding).
+ * ceiling is small and only comes down on smaller devices. The value is
+ * process-wide and applies to the live session and the offline replay alike (a
+ * session/replay picks it up when its codec context starts, i.e. when it begins
+ * decoding).
+ *
+ * **Currently pinned to 1** (`kPinnedWorkers` in the .cpp): the parallel path is
+ * FreeRDP's own pool, untuned for this platform and inefficient, and it is due
+ * to be rewritten - one serial baseline keeps measurements free of extra
+ * variables. Requests are still stored, so reopening the knob (and the settings
+ * / replay controls that set it) is a one-line change.
  */
 #ifndef HMRDP_DECODE_TUNING_H
 #define HMRDP_DECODE_TUNING_H

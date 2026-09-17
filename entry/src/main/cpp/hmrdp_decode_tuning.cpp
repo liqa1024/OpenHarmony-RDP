@@ -34,6 +34,17 @@ constexpr int kAutoCap = 4;
 constexpr int kMaxWorkers = 8;
 constexpr int kMinWorkers = 1;
 
+// The worker count is pinned to serial for now: the parallel path is FreeRDP's
+// own pool (one work item per region, workers woken per message), it is not
+// tuned for this platform, its efficiency is poor, and it is expected to be
+// rewritten (doc_agent/cpu-path.md §5). Until then one worker is the baseline
+// every session and every measurement shares - the frame wall is within a few
+// percent of the parallel one on fragmented content and about 2.6x on
+// whole-screen content, while the process CPU drops to ~45%. Set to 0 to hand
+// the knob back to the stored/automatic value (the controls are disabled while
+// it is pinned).
+constexpr int kPinnedWorkers = 1;
+
 // 0 = automatic.
 int g_requested = 0;
 
@@ -113,6 +124,9 @@ int AutoDecodeThreads() {
 }
 
 int DecodeThreads() {
+  if (kPinnedWorkers > 0) {
+    return kPinnedWorkers;
+  }
   return g_requested > 0 ? Clamp(g_requested) : AutoDecodeThreads();
 }
 
@@ -164,6 +178,13 @@ std::string DecodeThreadsInfo() {
   const int cores = DecodeCpuCount();
   const int perf = DecodePerfCores();
   char buf[160];
+  if (kPinnedWorkers > 0) {
+    std::snprintf(buf, sizeof(buf),
+                  "workers=%d (pinned serial: the parallel pool is not tuned for this platform, "
+                  "see doc_agent/cpu-path.md §5; cores=%d)",
+                  DecodeThreads(), cores);
+    return std::string(buf);
+  }
   const char* perfText = perf > 0 ? "known" : "unknown";
   if (g_requested > 0) {
     std::snprintf(buf, sizeof(buf), "workers=%d (manual, perf-cores=%d[%s] cores=%d)",

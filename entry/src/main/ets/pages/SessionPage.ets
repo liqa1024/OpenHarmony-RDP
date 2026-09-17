@@ -269,8 +269,9 @@ struct SessionPage {
     // imported from another device).
     RdpNative.applyHardwareAccel(settings.hardwareAccel
       && DeviceCapabilities.hardwareAccel().supported);
-    // Process-global decode worker count (live sessions decode on the CPU until
-    // the engine takes over); 0 = automatic.
+    // Process-global decode worker count (0 = automatic). The native decoder
+    // module currently pins it to 1 while the parallel path is reworked, so the
+    // stored value is forwarded but not in effect (doc_agent/cpu-path.md §5).
     RdpNative.applyDecodeThreads(settings.decodeThreads);
     let filesDir: string = '';
     try {

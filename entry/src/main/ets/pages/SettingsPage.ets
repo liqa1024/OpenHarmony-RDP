@@ -188,12 +188,13 @@ struct SettingsPage {
   // doc_agent/cpu-path.md §5), while 1 (decode on the receiving
   // thread, no pool) costs far less CPU at a slower frame. So the useful ends are
   // "automatic" and "1"; the values in between are for experiments.
+  // The knob is pinned to 1 in the native decoder module while the parallel path
+  // (FreeRDP's own pool) is being reworked - it is not tuned for this platform,
+  // its efficiency is poor, and a single-worker baseline keeps measurements free
+  // of extra variables (doc_agent/cpu-path.md §5). The stored value is kept, so
+  // the row only has to be re-enabled when that work lands.
   private decodeThreadsSubtitle(): string {
-    const tail: string = '实测 2 及以上基本无差别（瓶颈是解码本身的并行效率）；1 = 只在接收线程解码，最省电';
-    if (this.decodeThreads !== 0) {
-      return `Progressive 解码的线程数。${tail}`;
-    }
-    return `Progressive 解码的线程数（0 = 自动）。${tail}。当前自动：${RdpNative.describeDecodeThreads()}`;
+    return 'Progressive 解码的线程数。当前固定为 1（只在接收线程解码，最省电）';
   }
 
   private sizeText(value: number): string {
@@ -977,11 +978,6 @@ struct SettingsPage {
 
             this.sliderItem({
               title: '解码线程数',
-              // 0 is "let the app pick": the performance-core count when the
-              // device exposes it, else min(cores, 4). The decode is the CPU
-              // (gdi) path's dominant cost, and past the performance cores the
-              // frame time stops improving while the little cores still get
-              // woken for every message - so more is not better here.
               subtitle: this.decodeThreadsSubtitle(),
               value: this.decodeThreads,
               min: 0,
@@ -989,8 +985,8 @@ struct SettingsPage {
               step: 1,
               unit: '',
               precision: 0,
-              enabled: true,
-              disabledReason: '',
+              enabled: false,
+              disabledReason: '并行解码（FreeRDP 内部线程池）未针对本平台优化、效率低且待重写：暂时固定为 1',
               onChange: (v: number) => {
                 this.decodeThreads = v;
                 this.persist();

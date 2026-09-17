@@ -33,7 +33,13 @@
 
 // DEV-ONLY: phase timers exported by the patched FreeRDP progressive decoder
 // (libfreerdp/codec/progressive.c). Weak, so a stock FreeRDP just reports none.
-extern "C" unsigned long long HmrdpProgStat[8] __attribute__((weak));
+// Slots (see the patch's comment): [0] tile read/parse, [1] pool dispatch,
+// [2] pool section, [3] update_tiles, [4] unions, [5] messages, [6] tiles
+// composited, [7] the blocking part of [2], [8] tiles decoded, [9] tile-decode
+// time (this thread's loop on the serial path, the workers' summed decode time
+// on the pool path - see the reporting code).
+constexpr int kProgStatSlots = 16;
+extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak));
 
 // DEV-ONLY: what the patched libwinpr did with the decode worker count -
 // out = { requested, workers the pool really has, resizes }. Weak, so a stock
@@ -534,18 +540,28 @@ std::string GfxReplay::StatsLines() {
   // otherwise a run that follows a CPU replay would show its totals here.
   if (&HmrdpProgStat[0] != nullptr && work.frames > 0 && HmrdpProgStat[5] > 0) {
     const double d = static_cast<double>(work.frames > 0 ? work.frames : 1);
-    char ps[288];
+    // The tile-decode section is timed by a different slot per path and the two
+    // are not the same kind of figure: on the pool path [2] is the section's wall
+    // clock (its blocking part being [7]), while on the serial path [9] is the
+    // time this thread spent in the per-tile loop. Only one of them is ever
+    // non-zero in a run, so the reported `dec` picks whichever ran. ([9] is also
+    // accumulated per chunk by the pool workers as their own summed decode time -
+    // a multi-threaded CPU figure, not a per-frame one - so it must not be
+    // reported next to the wall-clock phases.)
+    const uint64_t decNs = HmrdpProgStat[2] != 0 ? HmrdpProgStat[2] : HmrdpProgStat[9];
+    char ps[320];
     std::snprintf(ps, sizeof(ps),
-                  "\nprog  ms/frame: read=%.2f dispatch=%.2f wait=%.2f (block=%.2f) "
-                  "update=%.2f  (calls=%llu unions=%llu tiles=%llu)",
+                  "\nprog  ms/frame: read=%.2f dispatch=%.2f dec=%.2f (blocked=%.2f) "
+                  "update=%.2f  (calls=%llu unions=%llu tiles=%llu tilesDec=%llu)",
                   static_cast<double>(HmrdpProgStat[0]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[1]) / d / 1e6,
-                  static_cast<double>(HmrdpProgStat[2]) / d / 1e6,
+                  static_cast<double>(decNs) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[7]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[3]) / d / 1e6,
                   static_cast<unsigned long long>(HmrdpProgStat[5]),
                   static_cast<unsigned long long>(HmrdpProgStat[4]),
-                  static_cast<unsigned long long>(HmrdpProgStat[6]));
+                  static_cast<unsigned long long>(HmrdpProgStat[6]),
+                  static_cast<unsigned long long>(HmrdpProgStat[8]));
     out += ps;
   }
 
@@ -887,7 +903,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // DEV-ONLY: reset the patched decoder's phase counters so this run's figures
   // are not mixed with a previous one (the library outlives the replay).
   if (&HmrdpProgStat[0] != nullptr) {
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < kProgStatSlots; ++i) {
       HmrdpProgStat[i] = 0;
     }
   }
