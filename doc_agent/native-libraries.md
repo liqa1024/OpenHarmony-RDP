@@ -86,14 +86,20 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
   统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
   [`cpu-accel-plan.md`](cpu-accel-plan.md) §1/§2。
-- **逆 DWT 改写（逐位等价）**：Progressive 实际跑的是**抽取（外推）**那一支
+- **逆 DWT 改写**：Progressive 实际跑的是**抽取（外推）**那一支
   （`progressive_rfx_idwt_x/_y`，`RFX_DWT_REDUCE_EXTRAPOLATE` 区域），`codec/rfx_dwt.c` 的通用实现
-  在全屏码流上一次也不进。改写只动组织：`X2 = L - (H0+H1)/2` 整段先算、输出对由无依赖的循环写，
-  `idwt_y` 从按列走改成行主序；通用实现那一支另有一份 NEON 版本（`VRHADD`/`VHADD` 是全精度半加，
-  与 C 的 `int` 算术逐位相同；`WITH_SIMD=OFF` 的 `codec/neon/rfx_neon.c` **不是**逐位等价的，不要用它）。
-  导出 `HmrdpSetDwtCheck(int)` / `HmrdpDwtCheckStat[2]`（对拍过的 tile 数 / 逐元素不同的个数），
-  由 app 在 `参考:对比` 那一轮打开并打印 `dwt check: tiles=… mismatch=…`：解码侧改写的正确性门禁是
-  这个对拍，不是参考画面（参考是同一个解码器录的）。
+  在全屏码流上一次也不进。抽取支与通用支**都**改成"只动组织、不动算术"：`X2 = L - (H0+H1)/2`
+  整段先算、输出对由无依赖的循环写，`idwt_y` 从按列走改成行主序；通用支另有一份 NEON
+  （`VRHADD`/`VHADD` 是全精度半加，与 C 的 `int` 算术逐位相同）。注意抽取支的分母是**截断除 2**，
+  不能写成 `>>1`。**这些是逐位等价的改写：`参考:对比` 的 `bad=0` 仍然直接可用。**
+- **允许舍入的那部分（`-DWITH_SIMD=ON`）**：抽取支的上游 NEON（8 路 16 位）、量化移位、
+  `yCbCrToRGB` 与部分 primitives 由 FreeRDP 自己的实现接管；非抽取支的上游 NEON **不接**
+  （16 位车道相加会回绕，不是舍入）。这类改动由**量级门禁**兜底，见
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7。
+- **dev 对拍（`HmrdpSetDwtCheck` / `HmrdpDwtCheckStat[3]`）**：`参考:对比` 那一轮按 1/16 采样，
+  把**真正跑的那一支**（NEON 或 C）与上游标量参照（`HmrdpDwtReference` /
+  `HmrdpDwtExtrapolateReference`）逐元素比，报 `dwt check: tiles=… mismatch=… maxDelta=…`。
+  取输入副本必须在解码之前（DWT 会把整个系数缓冲覆盖掉）；`maxDelta` 是"舍入 vs 实现不同"的分界。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`
@@ -110,9 +116,12 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   任何后端健全性检查失败（如音频设备打不开）都会闪退；关闭后退化为被 `NDEBUG` 禁用的 `assert()`，
   错误走正常降级分支。
 - `-DWITH_LIBRARY_VERSIONING=OFF`（见 §3）。
-- `-DWITH_SIMD=OFF`：这会让 FreeRDP 使用**通用 C 实现**而不是 NEON/SSE 变体。某些算法
-  （如渐进式解码的 IDWT）在不同实现下**舍入不同**，所以"与 FreeRDP 逐像素一致"这件事**只在同一构建
-  配置下成立**（详见 [`gfx-engine.md`](gfx-engine.md) §3）。
+- `-DWITH_SIMD=ON`：FreeRDP 使用**自己的 NEON 实现**（抽取支逆 DWT、量化移位、`yCbCrToRGB`、部分
+  primitives），它们**不保证**与通用 C 逐位相同——抽取支 DWT 的 `(a+b+1)>>1` 在 16 位车道上会回绕，
+  只是本工程码流上从未触发。所以"与 FreeRDP 逐像素一致"的口径改成**量级**：dev 对拍报 `maxDelta`、
+  参考对比报 `rgbPx/maxDelta`，且只在**同一构建配置**下可比（详见
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7）。**换这个开关必须重录参考画面**：
+  `bad=0` 只表示"自那次重录起没有再变"。
 - 优化等级：`libhmrdp.so` 由 hvigor 按构建模式重编（debug → `-O0 -g`，release → `-O2 -DNDEBUG`），
   **不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定
   `-O2 -DNDEBUG`，**不随构建模式变**。打包时 hvigor 的 `DoNativeStrip` 会 strip 所有 `.so`，

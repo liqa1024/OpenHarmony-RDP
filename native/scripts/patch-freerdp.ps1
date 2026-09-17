@@ -2012,9 +2012,14 @@ static INLINE void rfx_dwt_2d_decode_block(INT16* WINPR_RESTRICT buffer, INT16* 
 /* Off unless the app asks for it (HmrdpSetDwtCheck). The decode is single
  * threaded (the worker count is pinned to one), so plain globals are enough; the
  * counters are read back into the app statistics line. HmrdpDwtCheckArmed() is
- * shared with the extrapolated DWT in progressive.c, which is the variant a
- * Progressive region normally uses. */
-FREERDP_API unsigned long long HmrdpDwtCheckStat[2] = { 0, 0 };
+ * shared with the extrapolated DWT in progressive.c and with the NEON variants,
+ * i.e. with whichever entry point actually runs.
+ *
+ * HmrdpDwtCheckStat = { tiles compared, elements that differed, worst |delta| }:
+ * a rounding-only difference shows up as a small worst delta, a wrap-around or a
+ * wrong index shows up as a large one, so the two can be told apart on the same
+ * run. */
+FREERDP_API unsigned long long HmrdpDwtCheckStat[3] = { 0, 0, 0 };
 
 static volatile LONG g_HmrdpDwtCheck = 0;
 static volatile LONG g_HmrdpDwtSample = 0;
@@ -2037,11 +2042,21 @@ FREERDP_API int HmrdpDwtCheckArmed(void)
 }
 
 /* Collects one compared tile. */
-FREERDP_API void HmrdpDwtCheckResult(unsigned int bad)
+FREERDP_API void HmrdpDwtCheckResult(unsigned int bad, int maxDelta)
 {
-	__atomic_add_fetch(&HmrdpDwtCheckStat[0], 1, __ATOMIC_RELAXED);
-	if (bad != 0)
-		__atomic_add_fetch(&HmrdpDwtCheckStat[1], bad, __ATOMIC_RELAXED);
+	HmrdpDwtCheckStat[0]++;
+	HmrdpDwtCheckStat[1] += bad;
+	if ((int)HmrdpDwtCheckStat[2] < maxDelta)
+		HmrdpDwtCheckStat[2] = (unsigned long long)maxDelta;
+}
+
+/* The three levels of the reference implementation: what the dev comparison (in
+ * this file, in progressive.c and in the NEON variants) runs on a sampled tile. */
+FREERDP_API void HmrdpDwtReference(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT temp)
+{
+	hmrdp_dwt_2d_decode_block_scalar(&buffer[3840], temp, 8);
+	hmrdp_dwt_2d_decode_block_scalar(&buffer[3072], temp, 16);
+	hmrdp_dwt_2d_decode_block_scalar(&buffer[0], temp, 32);
 }
 
 static void hmrdp_dwt_check(const INT16* buffer)
@@ -2049,21 +2064,26 @@ static void hmrdp_dwt_check(const INT16* buffer)
 	const size_t elements = 4096;
 	size_t i = 0;
 	UINT32 bad = 0;
+	int maxDelta = 0;
 
 	/* g_HmrdpDwtRef holds the input coefficients, copied before the optimised
 	 * decode ran: the decode overwrites the whole coefficient buffer, so the
 	 * scalar reference has to start from the same input, not from its result. */
-	hmrdp_dwt_2d_decode_block_scalar(&g_HmrdpDwtRef[3840], g_HmrdpDwtScratch, 8);
-	hmrdp_dwt_2d_decode_block_scalar(&g_HmrdpDwtRef[3072], g_HmrdpDwtScratch, 16);
-	hmrdp_dwt_2d_decode_block_scalar(&g_HmrdpDwtRef[0], g_HmrdpDwtScratch, 32);
+	HmrdpDwtReference(g_HmrdpDwtRef, g_HmrdpDwtScratch);
 
 	for (i = 0; i < elements; i++)
 	{
-		if (g_HmrdpDwtRef[i] != buffer[i])
+		const int cur = buffer[i];
+		const int ref = g_HmrdpDwtRef[i];
+		const int delta = (cur > ref) ? (cur - ref) : (ref - cur);
+
+		if (delta != 0)
 			bad++;
+		if (delta > maxDelta)
+			maxDelta = delta;
 	}
 
-	HmrdpDwtCheckResult(bad);
+	HmrdpDwtCheckResult(bad, maxDelta);
 }
 
 void rfx_dwt_2d_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT dwt_buffer)
@@ -2086,7 +2106,7 @@ void rfx_dwt_2d_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT dwt_b
 		hmrdp_dwt_check(buffer);
 }
 '@
-Patch-Regex $dwtC 'static INLINE void rfx_dwt_2d_decode_block\(INT16\* WINPR_RESTRICT buffer,\s+INT16\* WINPR_RESTRICT idwt,\n\s*size_t subband_width\)\n\{.*?\nvoid rfx_dwt_2d_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT dwt_buffer\)\n\{.*?\n\}\n' $dwtNew 'HmrdpDwtCheckArmed'
+Patch-Regex $dwtC '(?<=#include "rfx_dwt\.h"\n\n).*?\nvoid rfx_dwt_2d_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT dwt_buffer\)\n\{.*?\n\}\n' $dwtNew 'HmrdpDwtReference'
 
 # 16) HmRdp: the extrapolated (reduced) inverse DWT - the one the Progressive
 #     codec actually runs (doc_agent/cpu-accel-plan.md stage one C1).
@@ -2528,7 +2548,7 @@ $progDwtExtrapolate = @'
  * reference runs - the reduced DWT is the one a Progressive region actually
  * uses, so this is where the sample has to be taken. */
 extern int HmrdpDwtCheckArmed(void);
-extern void HmrdpDwtCheckResult(unsigned int bad);
+extern void HmrdpDwtCheckResult(unsigned int bad, int maxDelta);
 
 static void hmrdp_dwt_2d_decode_extrapolate_mode(INT16* WINPR_RESTRICT buffer,
                                                  INT16* WINPR_RESTRICT temp, BOOL scalar)
@@ -2536,6 +2556,15 @@ static void hmrdp_dwt_2d_decode_extrapolate_mode(INT16* WINPR_RESTRICT buffer,
 	progressive_rfx_dwt_2d_decode_block_mode(&buffer[3807], temp, 3, scalar);
 	progressive_rfx_dwt_2d_decode_block_mode(&buffer[3007], temp, 2, scalar);
 	progressive_rfx_dwt_2d_decode_block_mode(&buffer[0], temp, 1, scalar);
+}
+
+/* The bit-exact reference of this entry point, for whichever implementation is
+ * wired up to it (the NEON variant in codec/neon/rfx_neon.c compares through
+ * this): the upstream scalar arithmetic, unchanged. */
+FREERDP_API void HmrdpDwtExtrapolateReference(INT16* WINPR_RESTRICT buffer,
+                                              INT16* WINPR_RESTRICT temp)
+{
+	hmrdp_dwt_2d_decode_extrapolate_mode(buffer, temp, TRUE);
 }
 
 void rfx_dwt_2d_extrapolate_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT temp)
@@ -2557,16 +2586,22 @@ void rfx_dwt_2d_extrapolate_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RE
 	if (check)
 	{
 		UINT32 bad = 0;
+		int maxDelta = 0;
 		size_t i = 0;
 
 		hmrdp_dwt_2d_decode_extrapolate_mode(ref, scratch, TRUE);
 
 		for (i = 0; i < 4096; i++)
 		{
-			if (ref[i] != buffer[i])
+			const int delta = (int)buffer[i] - (int)ref[i];
+			const int absDelta = (delta < 0) ? -delta : delta;
+
+			if (absDelta != 0)
 				bad++;
+			if (absDelta > maxDelta)
+				maxDelta = absDelta;
 		}
-		HmrdpDwtCheckResult(bad);
+		HmrdpDwtCheckResult(bad, maxDelta);
 	}
 }
 '@
@@ -2574,7 +2609,108 @@ void rfx_dwt_2d_extrapolate_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RE
 # One replacement for the whole region: the `.*?` between the anchors absorbs
 # whatever version is in the tree, so re-running over an already patched source
 # stays safe (the marker below is what makes it a no-op then).
-Patch-Regex $progDwtC 'static INLINE void progressive_rfx_idwt_x\(const INT16\* WINPR_RESTRICT pLowBand.*?\nvoid rfx_dwt_2d_extrapolate_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT temp\)\n\{.*?\n\}\n' ($progDwtRows + $progDwtBlock + $progDwtExtrapolate) 'hmrdp_dwt_2d_decode_extrapolate_mode'
+Patch-Regex $progDwtC ' \* LL3      4015        9x9         81\n \*/.*?\nvoid rfx_dwt_2d_extrapolate_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT temp\)\n\{.*?\n\}\n' (' * LL3      4015        9x9         81\n */\n\n' + $progDwtRows + $progDwtBlock + $progDwtExtrapolate) 'HmrdpDwtExtrapolateReference'
+
+# 17) HmRdp: the NEON inverse DWT is no longer bit-exact-with-the-reference-only
+#     territory (doc_agent/cpu-accel-plan.md §0): what matters is that the
+#     difference is a *rounding* difference and imperceptible, so the NEON
+#     variants are allowed in as long as that is measured rather than assumed.
+#
+#     Two things are needed for that:
+#       (a) the dev comparison has to run wherever the decode happened, i.e. also
+#           inside the NEON entry point (with -DWITH_SIMD=ON that is the one that
+#           runs; the C entry in progressive.c never gets called). Its reference
+#           is HmrdpDwtExtrapolateReference() from step 16, so the number it
+#           reports is "NEON vs the upstream scalar arithmetic", and the worst
+#           |delta| it reports is what tells a rounding difference (a few LSB)
+#           from a wrap-around (thousands).
+#       (b) the *non-extrapolated* NEON DWT stays switched off: it does the same
+#           `vaddq_s16` on two neighbours, so it wraps for large coefficients -
+#           not a rounding difference - and this variant never runs on
+#           Progressive content, i.e. there is no measurement to weigh it with.
+#           The bit-exact implementation from step 15 stays in that slot.
+$neonC = "$Source\libfreerdp\codec\neon\rfx_neon.c"
+$neonExterns = @'
+#include <winpr/sysinfo.h>
+
+/* HmRdp dev: the inverse-DWT comparison against the bit-exact reference. Both
+ * live in this library (patch-freerdp.ps1 steps 15/16). */
+extern int HmrdpDwtCheckArmed(void);
+extern void HmrdpDwtCheckResult(unsigned int bad, int maxDelta);
+extern void HmrdpDwtExtrapolateReference(INT16* buffer, INT16* temp);
+'@
+Patch-Block $neonC '#include <winpr/sysinfo.h>' $neonExterns 'HmrdpDwtExtrapolateReference'
+
+$neonEntryOld = @'
+static void rfx_dwt_2d_extrapolate_decode_neon(INT16* buffer, INT16* temp)
+{
+	WINPR_ASSERT(buffer);
+	WINPR_ASSERT(temp);
+	rfx_dwt_2d_decode_extrapolate_block_neon(&buffer[3807], temp, 3);
+	rfx_dwt_2d_decode_extrapolate_block_neon(&buffer[3007], temp, 2);
+	rfx_dwt_2d_decode_extrapolate_block_neon(&buffer[0], temp, 1);
+}
+'@
+$neonEntryNew = @'
+static void rfx_dwt_2d_extrapolate_decode_neon(INT16* buffer, INT16* temp)
+{
+	static INT16 ref[4096] = { 0 };
+	static INT16 scratch[4096] = { 0 };
+	const BOOL check = HmrdpDwtCheckArmed();
+
+	WINPR_ASSERT(buffer);
+	WINPR_ASSERT(temp);
+
+	/* HmRdp dev: the decode overwrites the whole coefficient buffer, so the input
+	 * is copied first; the reference then decodes that copy below, and both the
+	 * number of different elements and the worst |delta| are reported. */
+	if (check)
+		memcpy(ref, buffer, sizeof(ref));
+
+	rfx_dwt_2d_decode_extrapolate_block_neon(&buffer[3807], temp, 3);
+	rfx_dwt_2d_decode_extrapolate_block_neon(&buffer[3007], temp, 2);
+	rfx_dwt_2d_decode_extrapolate_block_neon(&buffer[0], temp, 1);
+
+	if (check)
+	{
+		UINT32 bad = 0;
+		int maxDelta = 0;
+		size_t i = 0;
+
+		HmrdpDwtExtrapolateReference(ref, scratch);
+
+		for (i = 0; i < 4096; i++)
+		{
+			const int delta = (int)buffer[i] - (int)ref[i];
+			const int absDelta = (delta < 0) ? -delta : delta;
+
+			if (absDelta != 0)
+				bad++;
+			if (absDelta > maxDelta)
+				maxDelta = absDelta;
+		}
+		HmrdpDwtCheckResult(bad, maxDelta);
+	}
+}
+'@
+Patch-Block $neonC $neonEntryOld $neonEntryNew 'the reference then decodes that copy below'
+
+$neonInitOld = @'
+		context->quantization_decode = rfx_quantization_decode_NEON;
+		context->dwt_2d_decode = rfx_dwt_2d_decode_NEON;
+		context->dwt_2d_extrapolate_decode = rfx_dwt_2d_extrapolate_decode_neon;
+'@
+$neonInitNew = @'
+		context->quantization_decode = rfx_quantization_decode_NEON;
+		/* HmRdp: the non-extrapolated DWT keeps the bit-exact implementation
+		 * (codec/rfx_dwt.c, step 15). The NEON one above adds two int16
+		 * neighbours in 16-bit lanes and wraps when they do not fit, which is
+		 * not a rounding difference; and this variant never runs on Progressive
+		 * content, so there is no measurement to weigh it with. */
+		WINPR_UNUSED(rfx_dwt_2d_decode_NEON);
+		context->dwt_2d_extrapolate_decode = rfx_dwt_2d_extrapolate_decode_neon;
+'@
+Patch-Block $neonC $neonInitOld $neonInitNew 'the non-extrapolated DWT keeps the bit-exact implementation'
 
 Write-Host "FreeRDP OHOS patches applied to $Source"
 

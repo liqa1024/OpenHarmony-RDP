@@ -83,6 +83,30 @@ hdc -t <序列号> shell "hilog -x -D 0xD001"            # 读本应用的原生
   （`%d`/`%u`/`%s` 全都中招），随手加的 `HMRDP_LOGW("... %d", v)` 打出来是一行 `<private>`。
   要么每个参数都写 `%{public}`，要么先 `snprintf` 成一行再用 `%{public}s` 打。
 
+### 5.2 标准多轮回放（dev 页）
+
+dev 页的 stats 文本**第一行**是状态与轮次号：
+
+```
+state=running|finished|aborted  run=<n>  route=…  mode=…  frames=…  fps=…
+```
+
+多轮测量一律用 `native/scripts/replay-rounds.ps1`，不要手动点：
+
+```powershell
+native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx_video.bin `
+    -RefTag fefd78fd -Rounds "参考:关","参考:对比" -Out .cache/rounds.txt
+```
+
+- 脚本等**自己这一轮**的 `run` 跑到 `finished` 再动下一步；**一轮没跑完绝不点下一次**——模式按钮
+  （参考/节拍/路线/线程）内部是 `stop + start`，中途点击 = 掐断，而掐断的轮次**不是测量**
+  （`state=aborted` 会被报出来，且不会写参考）。
+- 别按"看起来没在跑"判断：两轮的 stats 文本长得一样，按内容猜会把数据记到上一轮头上（`run=` 为此存在）。
+- 脚本用坐标点击 ⇒ 窗口必须在最前（脚本先 `aa start`）；点击没生效会直接报
+  `did not start a new run`，而不是干等到超时。
+- 参考的本地副本在 `.cache/hmrdp_ref_<captureTag>.{hash,bmp}`（不入库）；**解码侧改动后要重录**，
+  判据见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7。
+
 ## 6. 环境
 
 - `DEVECO_HOME` = DevEco Studio 安装目录（SDK 在 `<DEVECO_HOME>/sdk/default/openharmony`）。

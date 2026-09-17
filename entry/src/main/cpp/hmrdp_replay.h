@@ -158,6 +158,13 @@ class GfxReplay {
   std::unique_ptr<ReplayDesktop> desktop_;
   std::thread thread_;
   std::atomic<bool> running_{false};
+  // Which run the reported figures belong to, and whether that run reached the
+  // end of the capture. A driver that starts several rounds uses this to tell
+  // "the stats of the round I just started" from the previous round's, and to
+  // wait for a run to be over instead of guessing: an aborted run is not a
+  // measurement and must not be written as a reference either.
+  std::atomic<uint64_t> runId_{0};
+  std::atomic<bool> aborted_{false};
   void* window_ = nullptr;
   std::string gfxPath_;
   std::atomic<int> route_{0};

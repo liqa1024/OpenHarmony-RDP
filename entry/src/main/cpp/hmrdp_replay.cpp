@@ -48,13 +48,14 @@ extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak)
 // FreeRDP just reports nothing.
 extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((weak));
 
-// DEV-ONLY: the patched FreeRDP inverse DWT (libfreerdp/codec/rfx_dwt.c) is a
-// bit-exact rewrite of the scalar reference, and the golden reference cannot
-// prove that on its own (it was recorded by the decoder that changed). The
-// reference modes therefore switch on a per-tile comparison against the scalar
-// original: out = { tiles checked, elements that differed }
+// DEV-ONLY: the patched FreeRDP inverse DWT (libfreerdp/codec/rfx_dwt.c,
+// codec/progressive.c, codec/neon/rfx_neon.c) is compared against the upstream
+// scalar reference on a sample of tiles. `bad=0` cannot cover a decode-side
+// change, and the SIMD variants are only allowed in while the difference they
+// make is measured: the worst |delta| says whether it is rounding or something
+// structural. out = { tiles checked, elements that differed, worst |delta| }
 // (doc_agent/cpu-accel-plan.md §7).
-constexpr int kDwtCheckSlots = 2;
+constexpr int kDwtCheckSlots = 3;
 extern "C" unsigned long long HmrdpDwtCheckStat[kDwtCheckSlots] __attribute__((weak));
 extern "C" void HmrdpSetDwtCheck(int on) __attribute__((weak));
 
@@ -438,6 +439,10 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     // composed desktop, which is what that route produces and what the engine
     // route is supposed to reproduce.
     refMode_.store(route == GfxReplayRoute::kCpu ? static_cast<int>(refMode) : 0);
+    // This run's number, so a driver can wait for *this* run's end instead of
+    // guessing from a state line that looks the same for every round.
+    runId_.fetch_add(1);
+    aborted_.store(false);
     refTag_ = CaptureTag(gfxPath);
     if (refMode_.load() == static_cast<int>(GfxReplayRefMode::kCompare)) {
       if (!RefLoad(gfxPath)) {
@@ -601,12 +606,17 @@ std::string GfxReplay::StatsLines() {
                              ? "realtime"
                              : (realtimeRequested_.load() != 0 ? "fast(untimed)" : "fast");
   const unsigned long long frames = static_cast<unsigned long long>(frames_.load());
-  char head[400];
+  // The state and the run number come first, so a test driver can (a) wait for
+  // the round it just started to reach "finished" and (b) be sure the figures
+  // below are that round's - polling the figures alone cannot tell them apart.
+  const char* stateName = running_.load() ? "running" : (aborted_.load() ? "aborted" : "finished");
+  char head[420];
   std::snprintf(head, sizeof(head),
-                "route=%s  mode=%s  frames=%llu  presents=%llu  fps=%.1f  fail=%llu  skip=%llu\n"
+                "state=%s  run=%llu  route=%s  mode=%s  frames=%llu  presents=%llu  fps=%.1f  "
+                "fail=%llu  skip=%llu\n"
                 "feed=%llums   parse=%llums   present=%.2fms   lag=%llums   (running=%d)",
-                routeName, modeName, frames,
-                static_cast<unsigned long long>(presents), fps,
+                stateName, static_cast<unsigned long long>(runId_.load()), routeName, modeName,
+                frames, static_cast<unsigned long long>(presents), fps,
                 static_cast<unsigned long long>(presentFailures_.load()),
                 static_cast<unsigned long long>(presentSkips_.load()),
                 static_cast<unsigned long long>(pumpUs / 1000),
@@ -775,14 +785,13 @@ std::string GfxReplay::StatsLines() {
     }
   }
 
-  // DEV-ONLY: the inverse-DWT rewrite (patched FreeRDP) checked against its
-  // scalar reference. Only the reference runs switch it on, and `mismatch=0` is
-  // the gate a decode-side change needs: the golden reference cannot provide it,
-  // because it was recorded by the very decoder that changed.
+  // DEV-ONLY: the inverse-DWT (or any other decode-side rewrite) checked against
+  // the upstream scalar reference. Only the reference runs switch it on; the
+  // worst |delta| is what separates a rounding difference from a structural one.
   if (refMode_.load() != 0 && &HmrdpDwtCheckStat[0] != nullptr) {
     char dw[192];
-    std::snprintf(dw, sizeof(dw), "\ndwt check: tiles=%llu mismatch=%llu", HmrdpDwtCheckStat[0],
-                  HmrdpDwtCheckStat[1]);
+    std::snprintf(dw, sizeof(dw), "\ndwt check: tiles=%llu mismatch=%llu maxDelta=%llu",
+                  HmrdpDwtCheckStat[0], HmrdpDwtCheckStat[1], HmrdpDwtCheckStat[2]);
     out += dw;
   }
 
@@ -1042,8 +1051,10 @@ void GfxReplay::RunVulkanReplay(const std::string& gfxPath) {
   // figures must not count the throttling as decode work.
   const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
 
+  bool aborted = false;
   const bool ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error,
-                                  pace, paceAccum);
+                                  pace, paceAccum, &aborted);
+  aborted_.store(aborted);
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -1130,7 +1141,10 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
     pace = [this](uint64_t tsUs) { PaceRecord(tsUs); };
   }
   const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
-  const bool ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum);
+  bool aborted = false;
+  const bool ok =
+      GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum, &aborted);
+  aborted_.store(aborted);
   cpuEndUs_.store(ProcessCpuUs());
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
@@ -1138,8 +1152,10 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
              static_cast<unsigned long long>(paceUs_.load() / 1000));
 
   // Record the reference before the desktop is torn down: the buffer still holds
-  // the last composed frame (the one the hash list's last entry describes).
-  if (refMode_.load() == static_cast<int>(GfxReplayRefMode::kExport)) {
+  // the last composed frame (the one the hash list's last entry describes). A run
+  // that was cut short is not written: its hash list covers only part of the
+  // capture, and storing it would replace a good reference with a partial one.
+  if (refMode_.load() == static_cast<int>(GfxReplayRefMode::kExport) && !aborted_.load()) {
     RefWrite(gfxPath, &cpu);
   }
 

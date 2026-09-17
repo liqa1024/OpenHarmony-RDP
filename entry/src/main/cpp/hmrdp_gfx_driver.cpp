@@ -346,7 +346,8 @@ void InstallPumpCallbacks(RdpgfxClientContext* gfx) {
 
 bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
                    const std::atomic<bool>* stop, std::string* error,
-                   const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum) {
+                   const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum,
+                   bool* aborted) {
   auto fail = [error](const char* why) {
     if (error != nullptr) {
       *error = why;
@@ -396,13 +397,17 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
     const uint64_t slept = paceAccum ? paceAccum() - paceBefore : 0;
     GfxReplayAddParseUs(recvUs > slept ? recvUs - slept : 0);
   }
+  // Cut short by a stop request, i.e. the capture was not played to its end.
+  if (aborted != nullptr) {
+    *aborted = (stop != nullptr) && !stop->load();
+  }
   return true;
 }
 
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error, const ReplayPaceFn& pace,
-                     const ReplayPaceAccumFn& paceAccum) {
+                     const ReplayPaceAccumFn& paceAccum, bool* aborted) {
   auto fail = [error](const char* why) {
     if (error != nullptr) {
       *error = why;
@@ -423,7 +428,7 @@ bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
   gfx->custom = &state;
   InstallPumpCallbacks(gfx);
 
-  const bool ok = GfxReplayPump(path, gfx, stop, error, pace, paceAccum);
+  const bool ok = GfxReplayPump(path, gfx, stop, error, pace, paceAccum, aborted);
   HmrdpGfxReplayFree(gfx);
   return ok;
 }

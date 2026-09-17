@@ -89,9 +89,14 @@ using ReplayPaceAccumFn = std::function<uint64_t()>;
 // supplies a stock gdi-backed context. `stop` may be null; `pace`/`paceAccum` may
 // be empty. Returns false and fills `error` (when non-null) on failure - in
 // particular when FreeRDP was built without the HmRdp GFX capture patch.
+//
+// `aborted` (optional) reports whether the pump was stopped before the capture
+// was exhausted: a run that was cut short is not a measurement, and the reference
+// export must not be written from it.
 bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
                    const std::atomic<bool>* stop, std::string* error,
-                   const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum);
+                   const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum,
+                   bool* aborted = nullptr);
 
 // GPU replay route: builds the replay context, installs the GfxMap* callbacks
 // feeding `sink`, pumps the capture and invokes `onFrame` after every EndFrame.
@@ -99,7 +104,7 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
 bool GfxReplayStream(const std::string& path, GfxCommandSink* sink,
                      const std::function<void()>& onFrame, const std::atomic<bool>* stop,
                      std::string* error, const ReplayPaceFn& pace,
-                     const ReplayPaceAccumFn& paceAccum);
+                     const ReplayPaceAccumFn& paceAccum, bool* aborted = nullptr);
 
 // Dev (perf): accumulated time spent in the ZGFX + RDPGFX PDU parse during a replay
 // (measured in the pump, before any backend sees the command). It is a cost every
