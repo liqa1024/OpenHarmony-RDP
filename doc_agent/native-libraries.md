@@ -79,7 +79,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **客户端侧带宽 / 帧回执 / 线程扇出**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；winpr 线程池 worker 与
   drdynvc 线程在入口调 app 注册的 **QoS** 钩子，并把**线程池扇出上限压到 4**（每核一个 worker 被每条
-  Progressive 消息唤醒只费电不提吞吐；提到 8 无收益，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §5）。
+  Progressive 消息唤醒只费电不提吞吐；提到 8 无收益，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1）。
 
 **正确性 / 一致性**
 
@@ -92,7 +92,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
   统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §1/§2。
+  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
 - **逆 DWT 改写**：Progressive 实际跑的是**抽取（外推）**那一支
   （`progressive_rfx_idwt_x/_y`，`RFX_DWT_REDUCE_EXTRAPOLATE` 区域），`codec/rfx_dwt.c` 的通用实现
   在全屏码流上一次也不进。抽取支与通用支**都**改成"只动组织、不动算术"：`X2 = L - (H0+H1)/2`
@@ -102,7 +102,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **允许舍入的那部分（`-DWITH_SIMD=ON`）**：抽取支的上游 NEON（8 路 16 位）、量化移位、
   `yCbCrToRGB` 与部分 primitives 由 FreeRDP 自己的实现接管；非抽取支的上游 NEON **不接**
   （16 位车道相加会回绕，不是舍入）。这类改动由**量级门禁**兜底，见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7。
+  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4。
 - **dev 对拍（`HmrdpSetDwtCheck` / `HmrdpDwtCheckStat[3]`）**：`参考:对比` 那一轮按 1/16 采样，
   把**真正跑的那一支**（NEON 或 C）与上游标量参照（`HmrdpDwtReference` /
   `HmrdpDwtExtrapolateReference`）逐元素比，报 `dwt check: tiles=… mismatch=… maxDelta=…`。
@@ -111,7 +111,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **`sign → buffer`**——原先是"就地改 `buffer` + 另拷一份到 `sign`"，于是每 tile/分量的那趟 8KB 搬运
   整趟消失，两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"
   的值，所以它那 64/81 个样本先拷过去、再就地移位。读数见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §6（`state` −5 成）。
+  （`state` 绝对量 −5 成）。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`
@@ -120,7 +120,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的 `DesktopResize` 会换掉
   primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，否则是"向已释放内存
   memset"；`gdi_DeleteSurface` 不能释放共享缓冲；出现第二个 surface 时先解除共享。
-  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
+  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`present-pipeline.md`](present-pipeline.md) §4.5。
 
 ## 4. 编 FreeRDP 时的关键选项
 
@@ -132,7 +132,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   primitives），它们**不保证**与通用 C 逐位相同——抽取支 DWT 的 `(a+b+1)>>1` 在 16 位车道上会回绕，
   只是本工程码流上从未触发。所以"与 FreeRDP 逐像素一致"的口径改成**量级**：dev 对拍报 `maxDelta`、
   参考对比报 `rgbPx/maxDelta`，且只在**同一构建配置**下可比（详见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7）。**换这个开关必须重录参考画面**：
+  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4）。**换这个开关必须重录参考画面**：
   `bad=0` 只表示"自那次重录起没有再变"。
 - 优化等级：`libhmrdp.so` 由 hvigor 按构建模式重编（debug → `-O0 -g`，release → `-O2 -DNDEBUG`），
   **不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定

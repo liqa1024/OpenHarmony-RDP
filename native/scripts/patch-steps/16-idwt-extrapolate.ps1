@@ -1,5 +1,5 @@
 # 16) HmRdp: the extrapolated (reduced) inverse DWT - the one the Progressive
-#     codec actually runs (doc_agent/cpu-accel-plan.md stage one C1).
+#     codec actually runs (doc_agent/gfx-engine.md 8.2).
 #
 #     `rfx_dwt_2d_extrapolate_decode` (below) is what a region with the
 #     RFX_DWT_REDUCE_EXTRAPOLATE flag decodes with, and every tile of a

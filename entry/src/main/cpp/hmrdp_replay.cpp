@@ -54,7 +54,7 @@ extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((w
 // change, and the SIMD variants are only allowed in while the difference they
 // make is measured: the worst |delta| says whether it is rounding or something
 // structural. out = { tiles checked, elements that differed, worst |delta| }
-// (doc_agent/cpu-accel-plan.md §7).
+// (doc_agent/gfx-engine.md §8.4).
 constexpr int kDwtCheckSlots = 3;
 extern "C" unsigned long long HmrdpDwtCheckStat[kDwtCheckSlots] __attribute__((weak));
 extern "C" void HmrdpSetDwtCheck(int on) __attribute__((weak));
@@ -596,7 +596,7 @@ std::string GfxReplay::StatsLines() {
   // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
   // not the live cadence (a frame budget used to be applied here; it kept the CPU
   // idle between frames, which dropped the SoC clock ~3x and inflated every
-  // per-frame number - doc_agent/cpu-accel-plan.md §7).
+  // per-frame number - doc_agent/gfx-engine.md §8.3).
   // `lag` is only meaningful in realtime mode: the worst lateness behind the
   // recorded schedule, i.e. how much of the live load the client could not absorb.
   // "fast(untimed)" = realtime was requested but the capture carries no arrival
@@ -628,7 +628,7 @@ std::string GfxReplay::StatsLines() {
 
   // Worker count + the run's total process CPU time: the thread-count A/B needs
   // both the wall time (above) and what it cost, or "same speed, more cores
-  // woken" looks like a tie (doc_agent/cpu-accel-plan.md §5).
+  // woken" looks like a tie (doc_agent/cpu-accel-plan.md §1).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
@@ -639,7 +639,7 @@ std::string GfxReplay::StatsLines() {
     // cpuKHz is the SoC clock the run actually got: the playback rate decides it
     // (an idle-paced run sits at the lowest frequency and every per-frame figure
     // is ~3x larger), so two runs are only comparable at the same value
-    // (doc_agent/cpu-accel-plan.md §7).
+    // (doc_agent/gfx-engine.md §8.3).
     const std::string freq = hmrdp::CpuFreqInfo();
     char run[240];
     std::snprintf(run, sizeof(run),
@@ -909,7 +909,7 @@ void GfxReplay::RecordPresent(uint64_t micros) {
 void GfxReplay::MarkFrameEnd(bool presented) {
   // Cadence bookkeeping only - the fast mode deliberately does not sleep (a frame
   // budget left the CPU idle between frames, which dropped the SoC to its lowest
-  // clock and inflated every per-frame cost ~3x, see doc_agent/cpu-accel-plan.md §7), and
+  // clock and inflated every per-frame cost ~3x, see doc_agent/gfx-engine.md §8.3), and
   // the realtime mode's cadence comes from the capture (PaceRecord).
   //
   // Only frames that produced a picture mark the origin: the stream carries many

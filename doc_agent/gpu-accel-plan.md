@@ -2,7 +2,7 @@
 
 > **定位**：本文件是**计划**（做什么、按什么顺序、每步的出口），不是口径文档。协议/算法硬约束以
 > [`gfx-engine.md`](gfx-engine.md) §2 为准，上屏以 [`present-pipeline.md`](present-pipeline.md) 为准，
-> CPU 侧的成本结构、优化清单与量测纪律以 [`cpu-accel-plan.md`](cpu-accel-plan.md) 为准。
+> CPU 侧的成本结构、账目与量测纪律以 [`gfx-engine.md`](gfx-engine.md) §8 为准；多核/平台适配见 [`cpu-accel-plan.md`](cpu-accel-plan.md)。
 >
 > **取代**：[`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md)（已标记 **old 弃用**：那边的优先级与
 > 实现方向被本文件取代——它把"RLGR kernel 并行化"放在第一位，本计划先做 IDWT 且要求**按阶段而不是按
@@ -18,8 +18,8 @@
 目标：
 
 - live 与回放共用同一条 GPU 阶段；`硬件加速` 开关最终要能选"解码+合成的后端"（§7）。
-- 判据同 `cpu-accel-plan.md` §0：**每帧计算成本（能耗）为主**，fps 只要够用；正确性门禁是**参考画面**
-  （`参考:对比` 的 `bad=0`，两份录像各一套参考，见 `cpu-accel-plan.md` §7）——它对"谁来出像素"中立，
+- 判据同 [`gfx-engine.md`](gfx-engine.md) §8.1：**每帧计算成本（能耗）为主**，fps 只要够用；正确性门禁是**参考画面**
+  （`参考:对比` 的 `bad=0`，两份录像各一套参考，见 [`gfx-engine.md`](gfx-engine.md) §8.4）——它对"谁来出像素"中立，
   所以 CPU 线、引擎线、重做后的 GPU 阶段共用同一份参考。
 
 非目标（明确不做）：
@@ -116,11 +116,12 @@ CPU 侧这两项是"把系数/像素搬到别处"的成本（`state` 每 tile �
 
 ## 6. 同时推进的 CPU 侧（另一条线，两端共享收益）
 
-- 顺序：**逆 DWT 向量化**（最大项）→ `state` 流量与 `color` 的向量化 → `update` 的掩码拷贝 → RLGR 最后；
-  多核/平台适配排在这一切之后（`cpu-accel-plan.md` §6 的"阶段一 → 阶段二"）。
-- ⚠ **门禁是同一份参考画面**：CPU 侧改动必须**逐位等价**才能继续用旧参考（`cpu-accel-plan.md` §7）；
+- 顺序：**单核优化（已做完）→ 多核与平台适配**。单核那几件的效果、以及"`update` 的掩码拷贝向量化
+  被否证"的理由见 [`gfx-engine.md`](gfx-engine.md) §8.2/§8.5；多核与平台适配的里程碑见
+  [`cpu-accel-plan.md`](cpu-accel-plan.md)。
+- ⚠ **门禁是同一份参考画面**：CPU 侧改动必须**逐位等价**才能继续用旧参考（[`gfx-engine.md`](gfx-engine.md) §8.4）；
   引擎/GPU 侧只要像素与参考一致即通过——与实现无关。
-- 细节与量测纪律见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §3/§6/§7。
+- 细节与量测纪律见 [`gfx-engine.md`](gfx-engine.md) §8。
 
 ## 7. 开关与回退口径
 
@@ -133,7 +134,7 @@ CPU 侧这两项是"把系数/像素搬到别处"的成本（`state` 每 tile �
 ## 8. 别重犯（已否证）
 
 - 用"跳过某条 dispatch + 差值反推"做归因（用 timestamp query）；**每 tile 计时**（本平台时钟贵，
-  要量就用 1/16 采样，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §7）。
+  要量就用 1/16 采样，见 [`gfx-engine.md`](gfx-engine.md) §8.3）。
 - 把 payload 整段搬进 shared；32bit 字缓存；跨消息合并 decode（与 restamp 时序互斥）。
 - 用"逐条矩形"做 GPU 侧脏区（见 [`present-pipeline.md`](present-pipeline.md) §4.3）。
 - **按相位搬中间结果**（§3 的结论）。

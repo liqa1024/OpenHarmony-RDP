@@ -17,7 +17,7 @@
  *
  * The automatic choice is min(performance cores - or the core count when the
  * device does not expose its clusters - , 4): the decode stops getting faster
- * after a couple of workers (measured, doc_agent/cpu-accel-plan.md §5), so the
+ * after a couple of workers (measured, doc_agent/cpu-accel-plan.md §1), so the
  * ceiling is small and only comes down on smaller devices. The value is
  * process-wide and applies to the live session and the offline replay alike (a
  * session/replay picks it up when its codec context starts, i.e. when it begins
@@ -61,7 +61,7 @@ void ApplyStoredDecodeThreads();
 // Current frequency of the device's CPUs as "min-max" kHz, or an empty string
 // when the platform does not expose it. Sampled on demand: the *playback rate*
 // decides which clock the whole SoC runs at, so a run's figures are only
-// comparable to another run at the same frequency (doc_agent/cpu-accel-plan.md §7).
+// comparable to another run at the same frequency (doc_agent/gfx-engine.md §8.3).
 std::string CpuFreqInfo();
 
 }  // namespace hmrdp

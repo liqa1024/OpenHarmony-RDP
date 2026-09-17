@@ -1709,7 +1709,7 @@ struct GfxVkDesktop::Impl {
     // client until the next submission goes out (which arms it again), so a frame
     // with no host access at all - a Progressive-only frame, which decodes on the
     // device - pays nothing. Same shape as the CPU route's frame-boundary wait
-    // (doc_agent/cpu-accel-plan.md §4). The pixel A/B cannot see this: it reads the engine
+    // (doc_agent/present-pipeline.md §4.5). The pixel A/B cannot see this: it reads the engine
     // screen back every compared frame, which drains the previous submission first.
     const bool computeInFlight = AnyComputeInFlight();
     const bool frameInFlight = submissionSinceHostDrain && AnySubmissionInFlight();
@@ -3455,7 +3455,7 @@ bool GfxVkDesktop::CreateSurface(uint16_t surfaceId, int width, int height, uint
 
   // The wire pixel format decides more than the swap: 0x21 (ARGB_8888) maps to
   // BGRA32, which is exactly gdi's desktop format, so a desktop-sized surface can
-  // share the primary buffer (doc_agent/cpu-accel-plan.md §4); 0x20 (XRGB_8888)
+  // share the primary buffer (doc_agent/present-pipeline.md §4.5); 0x20 (XRGB_8888)
   // maps to BGRX32 and cannot.
   HMRDP_LOGI("vk desktop: surface %{public}u %{public}dx%{public}d stride=%{public}d"
              " wireFormat=0x%{public}x",

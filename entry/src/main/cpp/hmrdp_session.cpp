@@ -2027,7 +2027,7 @@ void Session::HandleFrameBegin() {
   // already overwritten and the presented picture mixes two frames (blocks of the
   // old frame left at the positions they had before, which the pixel A/B cannot
   // see because it reads gdi's own buffer). Normally free: the copy is ~ms while a
-  // frame is ~10ms+ (doc_agent/cpu-accel-plan.md §4).
+  // frame is ~10ms+ (doc_agent/present-pipeline.md §4.5).
   if (desktopAttached_ && presenter_ != nullptr) {
     const uint64_t startUs = NowUs();
     presenter_->BeginDesktopBufferWrite();

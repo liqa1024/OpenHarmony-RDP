@@ -1,5 +1,5 @@
 # 17) HmRdp: the NEON inverse DWT is no longer bit-exact-with-the-reference-only
-#     territory (doc_agent/cpu-accel-plan.md §0): what matters is that the
+#     territory (doc_agent/gfx-engine.md §8.4): what matters is that the
 #     difference is a *rounding* difference and imperceptible, so the NEON
 #     variants are allowed in as long as that is measured rather than assumed.
 #

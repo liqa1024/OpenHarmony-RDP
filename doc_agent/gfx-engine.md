@@ -1,7 +1,7 @@
 # GFX 码流 / GPU 桌面引擎
 
 本文件是**改 GFX 相关代码前必读**的口径文档。目标：引擎与 FreeRDP 自己的 gdi 软解**逐像素一致**
-（验收见 §6）。CPU（gdi）链路的成本与优化见 [`cpu-accel-plan.md`](cpu-accel-plan.md)，
+（验收见 §6）。CPU（gdi）链路的成本与优化见本文件 §8，
 上屏管线见 [`present-pipeline.md`](present-pipeline.md)，解码 kernel 的后续工作见
 [`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md)。
 
@@ -135,7 +135,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - 逆 DWT 的抽取/尾块与带偏移/长度必须照抄（抽取路径的起点序列是固定表；非抽取路径不同，不要混用）。
   ⚠ **参考侧（gdi）在 `-DWITH_SIMD=ON` 下走 FreeRDP 自己的 NEON 抽取支**，与上面这套标量算术差
   ±1 量级（它的半加在 16 位车道上做）；引擎要与它比，就得一并接受这个量级，或与**当前构建配置**对齐
-  ——口径见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7。
+  ——口径见本文件 §8.4。
 - 颜色转换：`yCbCrToRGB` 的 `(y+4096)<<16` + 乘系数后 `>>21`，系数是 **float 截断**得到的整数，
   不要用浮点现算。
 
@@ -223,7 +223,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 ## 3. 性能规则
 
 **判据与账目**：这条线只按"每帧计算成本 = 能耗"取舍（fps 只要够用）；成本结构、账目口径与量测纪律见
-[`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§1/§7。以下是与引擎/GPU 强相关的规则。
+本文件 §8。以下是与引擎/GPU 强相关的规则。
 
 - **先量内存类型，再谈算法**：CPU 侧像素命令的成本由所选 host-visible 类型决定（见 §1），
   差一个类型就是一到两个数量级。真机上有内存探针（`ProbeHostMemory`：写/连续拷贝/跨行拷贝三种形状）。
@@ -301,12 +301,12 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   （用来判断"哪一帧、差多少"，不是全集）。失败时会把那一帧 dump 成 `…_fail.bmp`。
   - **它取代了"引擎 vs gdi"的影子对比**：影子要求引擎与 gdi 两条实现始终一致，实际上做不到长期维护；
     参考画面只要求"输出不变"，与是 CPU 还是 GPU 出的无关——所以**引擎重做后也用同一套参考**。
-  - 前提是**解码逐位等价**（`cpu-accel-plan.md` 的所有优化都按这条走）⇒ 参考长期有效。
+  - 前提是**解码逐位等价**（本文件 §8.4）⇒ 参考长期有效。
    - ⚠ **参考模式不是性能模式**：它每帧对整个桌面做一次哈希（`ref export/compare` 行报 `hashMs=`），
      这段时间落在 gdi 的 `EndFrame` 里、会算进 `compose` ⇒ 读性能数字时用 `参考:关` 那一轮。
    - ⚠ **参考的口径跟着构建走**：解码侧允许舍入级改动（`WITH_SIMD` 开关、逐位等价之外的 SIMD 改写）
      ⇒ 改完必须**重录**参考，此后 `bad=0` 只表示"自那次重录起没有再变"（回归门）；改动的量级由
-     `dwt check: … maxDelta=` 与 `rgbPx/maxDelta` 给（[`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7）。
+     `dwt check: … maxDelta=` 与 `rgbPx/maxDelta` 给（本文件 §8.4）。
    - **每轮的 `state=` / `run=`**：stats 文本第一行是 `state=running|finished|aborted  run=<n>`，
      多轮测量按它等待与归属，别按内容猜；驱动脚本见 `native/scripts/replay-rounds.ps1`。
 
@@ -348,7 +348,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   先把它当**分叉放大器**跑一遍门禁——粗语义会把差异静默盖住，换细语义时才暴露出来。
   这比事后排查便宜，也是这类改动必须过 `bad=0` 的原因。
 - **两种回放节拍**（dev 页切换，`mode=` 字段）。跨轮次比较的前提（频率必须一致、纯 CPU 侧的 A/B 要用
-  CPU 受限的样本）见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §7：
+  CPU 受限的样本）见本文件 §8.3：
   - **`mode=fast`（默认「跑满」）**：完全不打节拍——上一帧做完就喂下一条，**`fps` 就是吞吐上限**，
     不是 live 的出帧率。
   - **`mode=realtime`**：按**录制时记录的到达时刻**喂数据，复现 live 的**帧间隔**（帧间隔本身是负载的
@@ -399,10 +399,200 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 - **GPU 硬件加速的推进顺序与形状**（tile 解码 + 合成做成"载荷进、像素出"的**一个阶段**；
   相位适配性、交接成本、M0–M4 里程碑与出口）：单独成文 → [`gpu-accel-plan.md`](gpu-accel-plan.md)。
   RLGR producer/consumer 的实现约束仍在 [`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md)（old）。
-- **CPU（gdi）链路的一切**（并行效率、线程数与能效、线程池的平台适配、冗余搬运、矩形合并、流水线化、
-  内存缓存、实施顺序、量测纪律）：单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md) §4–§8。
+- **CPU（gdi）链路的多核与平台适配**（换池/换任务队列、producer/consumer 流水线、worker 数按 duty
+  自适应）：单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md)（阶段二）。单核部分的知识见本文件 §8。
 - **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时需要一个
   **引擎开关**与"引擎初始化失败 ⇒ 回退 gdi"的口径；它与现有的「硬件加速」（只管上屏后端）是两回事，
   不要复用同一个设置项。整体顺序与出口见 [`gpu-accel-plan.md`](gpu-accel-plan.md) §5/§7。
 - **呈现能力判定在模拟器上的口径**：现在模拟器一律回落 GLES 呈现器（与"GPU 只在真机"一致）；
   若以后要让模拟器用 Vulkan 上屏，只需改 `FillVerdicts()` 里那一处 emulator 分支。
+
+## 8. CPU（gdi）链路：成本结构、账目与量测纪律
+
+**CPU 路线** = FreeRDP gdi 解码 + 我们自己的呈现器；它与 §1 的 GPU 引擎是**两条线**。这一节是这条线的
+**通用知识**：成本怎么读、账怎么记、门禁是什么、哪些估算被否证过。下一步要做的事（多核与平台适配）
+见 [`cpu-accel-plan.md`](cpu-accel-plan.md)；历史口径与旧数据见 [`cpu-path_old.md`](cpu-path_old.md)（old）。
+
+### 8.1 判据与账目口径
+
+- **判据**：**把每帧的计算成本降下来 = 能耗降下来**；fps 只要"够用"（跟得上服务端的到达节奏、不卡）。
+  判收益看每轮 `cpu=`（进程 CPU 时间）、`本机` 拆相、GPU/DRAM 流量；**不看**单纯墙钟。
+  - ⚠ **`cpu=` 只在同一频率档下可比**：动态功耗 ≈ f·V²，多核把 SoC 压到低频档时，同一秒 CPU 时间
+    更便宜 ⇒ "并行换了多少 CPU 秒"**不是能量结论**；要么在同一 `cpuKHz=` 档下比，要么按
+    "CPU 时间 × 档位"估，要么直接看 duty 下的功耗。
+- **优先"少干活"**（去冗余拷贝、少唤醒、去掉重复搬运），但**不是因为"并行不好"**：多核低频在很多负载下
+  比单核高频更省电，**并行本身是正当的能效手段**；不用它的原因是**现在这套池不行**（投递/唤醒/等待的
+  形态不适合本平台，见 [`cpu-accel-plan.md`](cpu-accel-plan.md)），不是"并行"这条路不对。
+- 回放 stats 就是这条线的账：
+
+  | 行 | 含义 |
+  |---|---|
+  | `perFrame 本机=… = zgx+parse + decode + compose + present  (+ sync … blocked)` | **本机 = 处理时间**；各拆相相加**等于**本机，`sync` **不计入**（见下） |
+  | `prog ms/frame: read / dispatch / dec(blocked) / update  (calls= unions= tiles= tilesDec=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**、`update` = `update_tiles` 整段；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数 |
+  | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile |
+  | `run … threads=… cpu=…s  cpuKHz=…` | 该轮的 worker 数与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
+  | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
+  | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
+  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |
+  | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6 与 8.4）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
+  | `dwt check: tiles=… mismatch=… maxDelta=…` | **解码侧改动的对拍**（`参考:对比` 那一轮按 1/16 采样，见 8.4） |
+
+- **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
+  **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`present-pipeline.md`](present-pipeline.md) §1）。
+  它是**阻塞**不是处理 ⇒ 单列；**帧的整段墙钟 = `本机` + `sync`**（回放再加节拍睡眠）。
+  - ⚠ **这笔等待天然落在 `zgx+parse` 的窗口里**：帧首钩子（`StartFrame` / 帧内第一条表面命令）在
+    `AccountChunkPrefix()` **之前**跑，而抓取的"一条记录"通常就是一整帧的 ZGX 段 ⇒ 该窗口覆盖了这次等待。
+    所以测点必须把它交出来（`OnBlockedBeforeFrameWork()`）：不交，`本机` 就把它算两遍、在 GPU 成为慢的
+    一侧时虚高到 `sync` 那么多。自检：**`本机 + sync ≈ 1/fps`**——右边明显小于左边就是被算重了。
+- **`pace` 是唯一直接剔除的项**：回放的人为节流不是客户端工作。
+- **判读顺序**：① `setup` ② `kB/frame`/`cmds/frame`（内容是否可比）③ `dec`（先看 `threads=`）
+  ④ `update` ⑤ `present` ⑥ `sync`。
+
+### 8.2 成本结构（量级，不是结论）
+
+两类样本给出这条线的形状（跑满、无节拍）：
+
+| 样本类型 | `本机`/帧 | 拆相形状 |
+|---|---|---|
+| **整屏变化**（每帧上千 tile，如看视频） | 几十 ms 量级 | **`decode` 占 9 成以上**（内部大半是 `dec` 的 tile 解码，其次 `update`），`zgx+parse`/`present` 各几个百分点 |
+| **碎片**（命令多、矩形小但**总量不小**） | 十 ms 量级 | `decode` 约 6 成、`zgx+parse`/`present` 各约 2 成；**`sync` 可达帧墙钟的三分之一** |
+
+- 跨样本比较必须先按**"每帧字节/命令数"归一**。（小矩形 + 小字节的轻样本是纯 CPU 受限；命令多且每帧
+  脏区字节也大的样本上，帧率上限由 CPU 与那次脏区拷贝**共同**决定——压 `本机` 只买到能耗。）
+- `dec` 之内（`prog2`，1/16 采样）的量级：`idwt` / `state` / `color` / `rlgr` / `upgrade` / `dequant`
+  依次递减；**被默认当成"大头"的 RLGR 其实最小**。GPU 侧那条路"专治 RLGR"的账见
+  [`gpu-accel-plan.md`](gpu-accel-plan.md) §4.4。
+  - ⚠ **`idwt` 跑的是"抽取/外推"那一支，不是 `rfx_dwt_2d_decode_block`**：区域带
+    `RFX_DWT_REDUCE_EXTRAPOLATE` 时解码器走 `rfx_dwt_2d_extrapolate_decode`（`progressive_rfx_idwt_x/_y`），
+    全屏 Progressive 码流的每个区域都是这一支——对拍计数会显示 `codec/rfx_dwt.c` 的通用实现
+    `rfx_dwt_2d_decode` **一次都没进**（`tiles=0`）。两支的算术也不同：抽取支用**截断除 2**（`(a+b)/2`）
+    而不是算术右移，负数上两者不同，照抄时不能写成 `>>1`。抽取支的形状是
+    `X2 = L − (H0+H1)/2`、`X1 = (X0+X2)/2 + 2*H0`、`X0 = X2`：**递推在内层**，且纵向那一趟原来按**列**走
+    （每个样本换一条 cache line）——这两条是它比算术量更贵的原因。
+  - **`dec` 的两种口径**（同一个"tile 解码段"，测点不同、不可混读）：并行时是**池段的墙钟**（投递后到
+    所有 work 等完，`blocked` 是其中真正阻塞的部分）；串行时是**本线程逐 tile 解码的时间**（此时
+    `dispatch`/`blocked` 必然为 0，不是缺失）。⇒ 读 `dec` 前先看 `threads=`。
+  - **`update` 的大头是像素拷贝，不是记账**：`freerdp_image_copy_no_overlap` 把每个 tile（64×64×4B）
+    拷进 surface；带 `KEEP_DST_ALPHA` 掩码（每像素一次掩码写）而不是 memcpy。region16 记账只值
+    ~0.5ms/帧 量级（见 8.5）。
+- **按字节算这笔账**（优化后期，单核的天平已经从"算力"倒向"每帧过多少字节"）：一个 tile（3 分量）大致
+  搬 200KB 量级——RLGR 出 `sign`、去量化 `sign → buffer`、状态更新 `buffer↔current`、逆 DWT 三级级联、
+  `color` 读系数写 tile、`update` 读 tile + 读目的（保 alpha）+ 写目的。各趟实测速率在
+  **L1 级（几十 GB/s）到 DRAM 级（~10GB/s）**之间；**只有 `update` 明显低于 L1 速率**（它的目的按桌面
+  行距跨行落，每行只用满一段）⇒ **再压就得压字节数**，把循环写窄没有用（见 8.5.3/8.5.4）。
+- **compose**：`gdi_OutputUpdate` 的 surface→primary 合成；全屏会话里它已被"桌面镜像 surface 直接合成进
+  primary"整段消掉（见 [`present-pipeline.md`](present-pipeline.md)）。
+- **present**：绝大部分是**固定的 Vulkan 调用**（acquire / 录制 / submit / present），不是能删的活；
+  `flush` 只有 µs 级。**GPU 侧另算**：`copy`（脏区字节 buffer→image）+ `blit`（clear 整张 + letterbox
+  quad），**`blit` 与脏区无关**（见 [`present-pipeline.md`](present-pipeline.md) §2/§4.3）。**这正是零拷贝
+  后端（Vulkan）与 GLES 的差别**：前者 gdi 直接合成进呈现器缓冲（`copy` 是唯一一次搬运），后者必须在
+  CPU 侧把脏区 memcpy 进 staging 再上传 ⇒ 两个后端不构成"脏区形状"的对照实验。
+  - ⚠ **零拷贝下 `copy` 与帧序是耦合的**：它读的就是本帧要写的那块内存，所以排在**本帧第一次写之前**
+    （`sync`）。脏区字节大时它直接进帧墙钟。判据：**`sync` 与 `uploaded` 同步起落**就是这一项，
+    而不是"合成贵"。
+- **`setup`（非像素命令）**：低频但可能很重，要按**"每次调用分配多少字节"**查。典型暗礁是
+  `ResetGraphics` 按桌面尺寸重分配大块 scratch（且会对多个 codec 集合各做一遍）；现在几何未变就直接返回。
+  ⚠ 表面对比那一半（`CreateSurface` 的 `memset(surface->data, 0xFF)`）**不能省**：未绘制区域必须是 0xFF。
+  ⚠ 也不要靠"关掉 planar codec"来省（`gdi_SurfaceCommand_Planar` 会拿到空上下文）。
+
+### 8.3 量测纪律与陷阱
+
+- **频率会跟着回放节拍跑**：轻负载样本被压在最低频档、重负载跑满，同一份代码能差数倍。
+  ⇒ `mode=fast`（dev 页「跑满」）**不打节拍**；复现 live 的到达节奏用 `realtime`；
+  **判读前先看 `cpuKHz=`，不同就不要横向比**。
+- **只有同一次会话里的 A/B 才有效**：把待测特性关掉各跑几轮取中位数；只看 `(running=0)` 的整轮。
+  用 QoS 去修频率**无效**（实测毫无变化）。跑满后轻样本会顶到显示/GPU 上限 ⇒ **A/B 纯 CPU 侧的改动
+  要用 CPU 受限的样本**。
+- **计时器本身会被测出来**：本平台 `clock_gettime` 不是 vDSO 级 ⇒ **per-tile 计时这条路放弃**；
+  要量只能"单线程墙钟差"或**按比例采样**（`prog2` 就是 1/16）。`CLOCK_THREAD_CPUTIME_ID` 在本平台
+  **不可信**（累计值可超过整轮进程 CPU）。
+  - `prog2` 的读法：把**占比**与 `dec` 一起看——1/16 采样会让 `sum` 比 `dec` 高几个百分点（样本偏斜 +
+    缩放），这点差不是发现了新开销。
+- **探针只做一次性实验、量完就删**；长期保留的只有 per-message 计时（`read/dispatch/dec/update`、
+  `calls/unions/tiles/tilesDec`）、**逐相位探针 `prog2`**、app 侧 `setup` 计数、present 的 GPU 时间戳、
+  以及解码侧的**对拍计数**（8.4）。
+- **不要用"跳过某条 dispatch/步骤 + 差值反推"做归因**（依赖关系会变）：用计数器 + 相位桶。
+- **回放节拍若落在 `gdi_EndFrame` 里，必须扣掉**（否则算进 `compose`）：`GfxWorkMeter::OnPace` 为此存在；
+  `sync` 同理，**别把"等 GPU"当"合成贵"**。
+- **相加之和不等于整轮 `cpu=` 时要分清**：`cpu=` 是整轮进程 CPU（含 worker 线程、也含平台侧记账），
+  相位只是 RDP 线程。**串行时两者应当几乎相等**——不等就先查探针，别先怀疑算力。并行时多出来的那部分
+  就是池的账（可达解码段墙钟的十倍量级）——**不要用相位之和反推并行烧了多少电**，但可以用
+  "`cpu=` − 串行那轮的 `cpu=`"估并行多烧的绝对量。
+- **墙钟反推的"GPU 时间"不算 GPU 时间**：只有时间戳量到的才算，其余是排队。
+  present 的 GPU 时间有长期探针（`vulkan present probe: gpu copy=… blit=…`）：**`copy` 正比于脏区字节、
+  `blit` 与脏区无关**。
+- **多轮测试要标准化，不要"猜"**：每个 stats 文本的**第一行**是
+  `state=running|finished|aborted  run=<n>`，`native/scripts/replay-rounds.ps1` 就是按这个写的：
+  - 点一次 → 等**这一轮**的 `run` 变成 `finished`。不要用"现在好像没在跑"来判断：两轮的 stats 文本
+    长得一样，按内容猜必然把数据记到上一轮头上（`run=` 就是为此存在的）。
+  - **一轮没跑完绝不点下一次**：dev 页的模式按钮（参考/节拍/路线/线程）内部都是 `stop + start`，
+    中途点击 = 掐断，而**掐断的轮次不是测量**（驱动会直接把 `state=aborted` 报出来）。
+  - 掐断的轮次**不写参考**（导出只在完整轮次落盘），否则一次半截导出会把好参考换成"跑了十几帧的哈希表"。
+  - 脚本负责"设模式 → 推录像/参考 → 点重新回放 → 收 stats"，落到 `rounds-*.txt`；人只看文件。
+- **dev 页驱动：别用盲点坐标**。先 `dumpLayout` 取控件 `bounds` 再点中心
+  （见 [`build-and-verify.md`](build-and-verify.md) §5.1）；**按钮在顶栏（y 很小），而状态行会重复同名
+  文字**（如 `路线:CPU`），按 `text` 找控件时要取顶栏那个。
+  - ⚠ 驱动脚本用坐标点击，所以**窗口必须在最前**：应用被系统重启/窗口被切走时，点击会落到桌面上
+    （症状：点了没反应，脚本会报"click did not start a new run"）。脚本因此先 `aa start` 把页面拉起来。
+
+### 8.4 正确性门禁：参考画面 + 解码侧对拍
+
+- **门禁 = 参考画面（golden reference）**，两份基线录像各一套：先 `参考:导出` 记下
+  `hmrdp_ref_<captureTag>.{hash,bmp}`，之后每轮 `参考:对比` 报 `bad=0`。参考文件名带**录制内容指纹**，
+  换一份录像必然缺参考、必须重新导出——这就是"同名文件的不同录制不能互相背书"的机器保证。
+  - ⚠ **它是"输出不变"的门禁，不是"与旧解码器逐位一致"**：解码侧允许**舍入级**改动（`WITH_SIMD` 这类
+    SIMD 实现不保证与通用 C 逐位相同），但**必须把差异量出来**：系数/像素最大偏差 **1 量级**、差异像素
+    占比**千分之几** = 舍入，可以收；**成百上千** = 实现不同（16 位回绕、饱和当回绕、错索引），必须改回去。
+    ⇒ **口径一变就要重录参考**，此后 `bad=0` 只表示"自那次重录起没有再变"（回归门），量级账由下一行承担。
+  - ⚠ **参考证明不了"解码侧改动的量级"**（参考就是被改的那个解码器录的，两边一起变）：解码侧改动必须自带
+    **对拍**——patch 里 `HmrdpDwtCheckStat[3]` = `{对拍过的 tile 数, 逐元素不同的个数, 最大 |Δ|}`，
+    `参考:对比` 那一轮按 1/16 采样打开，stats 行报 `dwt check: tiles=… mismatch=… maxDelta=…`。
+    - **判据是 `maxDelta`**：`0` = 逐位等价（最理想，参考可直接复用）；个位数 = 舍入；成百上千 = 实现不同。
+    - 对拍要挂在**真正跑的那一支**上：`-DWITH_SIMD=ON` 时抽取支是 `codec/neon/rfx_neon.c` 的
+      `rfx_dwt_2d_extrapolate_decode_neon`，逐位参照是 `HmrdpDwtExtrapolateReference()`（上游标量实现）；
+      两边都要挂，否则会看到 `tiles=0` 这种"没对拍过"的假通过。
+    - 取输入副本必须在**解码之前**：逆 DWT 的输出就写在系数缓冲上（4096 个系数全被覆盖），解码之后再复制
+      拿到的是输出，两边算的不是同一件事。
+    - **像素级量级**由 `参考:对比` 给：`rgbPx`（差异像素数）+ `maxDelta`（通道最大偏差）。两者都只看量级。
+  - **逐像素诊断**（"差在哪一帧、差多少"）：`rgbPx/alphaPx/maxDelta/bbox` 只覆盖参考图像那一帧；要逐帧
+    定位就重新 `参考:导出` 再比（引擎 vs gdi 的影子对比已从代码删掉，见 §6）。
+  - 参考模式**不是性能模式**：每帧对整个桌面做一次哈希（`hashMs=`），这段时间落在 `EndFrame` 里、会算进
+    `compose` ⇒ 读性能数字请用 `参考:关` 那一轮。
+- **上游 NEON 的边界**：`codec/neon/rfx_neon.c` 的两支逆 DWT 都在**16 位车道上做加法**（`(a+b+1)>>1`
+  与 `>>1`）——|a+b| 超过 int16 时会**回绕**，那不是舍入。实测本工程码流上从未触发（对拍 `maxDelta=1`
+  恒成立），因此抽取支采用上游 NEON；**通用支仍用逐位等价实现**（它在 Progressive 码流上一次也不进）。
+- **`bad=0` 覆盖不到的顺序约束**：上屏侧的帧序/等待（零拷贝单缓冲、picture ping-pong）不属于像素内容，
+  判定只能靠机制 + 计数器（见 [`present-pipeline.md`](present-pipeline.md) §1）。
+
+### 8.5 被否证的假设（成本该按什么估）
+
+1. **"每次 tile 的 region16 union（O(n²)）是 `update` 的大头"** —— 先把相邻 tile 索引合并再 union，
+   `unions ≈ tiles`（Progressive 每条消息的 region 基本就是每 tile 一个矩形，没有可合并对象）⇒ 零收益；
+   再改成"每 tile 行一个 span、帧末一次并进 region"，`unions` 降了 50 倍以上而 `update` 只降 ~0.5ms
+   ⇒ **union 总共只值 ~0.5ms**。⇒ 教训：**`update` 的账按"拷贝字节数"估，不要按"矩形条数"估**。
+2. **"delta 折叠（只拷没写过的区域）"** —— 去重 stamp 实测命中 **0 次**（帧内没有重复合成）⇒ 无收益。
+3. **"`state` 的饱和加是算力瓶颈"** —— 那个循环按元素做两次分支钳位，看着像算力账；换成 `VQADD`
+   （8 路、逐位等价的饱和加）后 `state` 在噪声内 ⇒ 它**受搬的字节数限制**（工作缓冲与持久 `current`
+   两个缓冲都要写），不是受钳位限制。要降它得**少写一趟**，换 SIMD 不解决问题。
+4. **"`update` 的 keep-alpha 拷贝是算力瓶颈"** —— 换成 4 像素/指令的字节掩码选择（逐位等价）后
+   `update`/`本机` 都在噪声内 ⇒ 这个循环同样受字节数限制（16KB 读源 + 16KB 读目的 + 16KB 写目的，
+   目的跨行落）。要动它只能动**字节数**（例如"目的 alpha 恒为 0xFF 时省掉那次读"，但那要求先证明该表面
+   从不出现非 0xFF 的 alpha——`KEEP_DST_ALPHA` 是上游语义、alpha 也在参考哈希里，属**改语义**，
+   不在"舍入"的许可范围内）。
+   - ⚠ 该实验的**判据没当场证实**（`NEON_INTRINSICS_ENABLED` 依赖 CMake 生成的 `config.h`，
+     "NEON 版真的编进去了"没有被独立验证）⇒ **这类实验要先证明"改动确实生效"**（打一个可观测计数），
+     否则"中性"可能只是"没跑"。
+   - ⇒ 教训：**"看着像算力"的循环，先用一个逐位等价的 SIMD 版本试一次**——它是中性的就说明账在内存侧，
+     该动的是数据流而不是指令。
+
+### 8.6 已定型的约束（decode 侧）
+
+- **`update_tiles` 的 region16 记账不是瓶颈**（~0.5ms/帧 量级）：不要再去合并矩形/换 region 结构
+  （两次实测收益都在噪声里，见 8.5.1）。**待收尾**：patch 里"脏区记成每 tile 行一个 span"那一步当初量到
+  净收益 ~0，现在仍在树里且参考对比 `bad=0`——两条路选一条并重跑两份录像确认：撤掉（回到逐 tile union），
+  或保留（并把这条改成"span 形状已定型"）。
+- **`sign` / `current` 是两个持久状态**：`sign` 存 RLGR 原始系数、`current` 存去量化后的系数，
+  两者跨消息常驻（UPGRADE 按 `sign` 判符号、DIFFERENCE 按 `current` 累加）⇒ 任何"少写一趟"的改动都要
+  保证这两个缓冲最终内容不变（逐位等价），否则对拍会立刻显示出来。
+- **上屏侧的约束**（脏区形状、零拷贝桌面缓冲、等待点、picture ping-pong）见
+  [`present-pipeline.md`](present-pipeline.md) §1/§2/§4.4。

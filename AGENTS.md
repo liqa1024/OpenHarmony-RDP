@@ -48,8 +48,8 @@
 | 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
-| GFX / Progressive / GPU 引擎（**改前必读**）、回放验证回路与**参考画面验收** | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| **CPU（gdi）链路优化计划**（成本结构、账目口径、已定型约束、**阶段一：按相位实测量排的单核优化 C1–C3**、阶段二：多核与平台适配、参考画面对拍、量测陷阱） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| GFX / Progressive / GPU 引擎（**改前必读**）、回放验证回路与**参考画面验收**、**CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 解码侧对拍（§8）** | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
+| **CPU（gdi）链路的多核与平台适配计划**（起点基线、WinPR 池的能效曲线与结论、里程碑 M-a/M-b/M-c 与出口） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
 | **GPU 硬件加速计划**（tile 解码 + 合成做成一个 GPU 阶段：相位适配性/交接成本/里程碑/开关口径） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) |
 | **（历史，old 弃用）** 旧 CPU 链路文档 / 旧 GPU kernel 清单：只作依据保留，不要从这里接手 | [`cpu-path_old.md`](doc_agent/cpu-path_old.md)、[`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md) |
 | 上屏（present）管线：一套实现、CPU/GPU 耗时对比、**后续工作清单** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
@@ -96,7 +96,8 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 要改的东西 | 先读 |
 |---|---|
 | GFX / Progressive / 解码 / 合成 / GPU 引擎 / 回放 | [`gfx-engine.md`](doc_agent/gfx-engine.md)（**协议与合成语义那一节必须逐条对照**） |
-| CPU（gdi）链路的成本结构 / 解码线程数 / 线程池 / 量测口径 | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 对拍 | [`gfx-engine.md`](doc_agent/gfx-engine.md) §8 |
+| CPU 解码的并行 / 线程池 / 多核与平台适配 | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
 | GPU 硬件加速（解码 + 合成的 GPU 化；含 RLGR kernel 的实现约束） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) + [`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md)（old） |
 | 上屏（present）：帧槽/`engineChain`/blit 令牌、picture ping-pong、脏区账、CPU vs GPU 上屏耗时 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、剪贴板 | [`session-and-input.md`](doc_agent/session-and-input.md) |

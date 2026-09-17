@@ -34,11 +34,11 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
   - **"CPU 不等待"只对设备侧的件成立：主机写缓冲的那两条线必须等**。"上一帧仍在飞的读"和"本帧的
     写"是同一块内存时（CPU 路线的零拷贝桌面缓冲、引擎的 mapped 表面），等待点必须落在**本帧第一次
     写之前**，且**每个提交窗口只等一次**：
-    - CPU 路线：`GfxWorkSetFrameBeginHook`（挂在 live 与回放共用的包装层，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4）；
+    - CPU 路线：`GfxWorkSetFrameBeginHook`（挂在 live 与回放共用的包装层，约束见 §4.5）；
     - 引擎：`Impl::SyncForCpuAccess()`（提交臂 `submissionSinceHostDrain`，该提交后的第一次主机访问
       `FlushAll()`）——合成是 **transfer** 不是 dispatch，所以"compute 在飞"那套判断盖不住它。
     ⚠ 这类顺序**不在 `bad=0` 的覆盖范围内**（对比读的是 gdi 自己的缓冲与引擎 picture，两者都还在），
-    判断只能靠机制 + 计数器；违反时的形状见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
+    判断只能靠机制 + 计数器；违反时的形状（画面混两帧、只在帧背靠背时出现）见 §4.5。
 
 ## 2. 两条路线的上屏**构成**（不是哪个更快）
 
@@ -46,14 +46,14 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 
 | 件 | CPU 路线（gdi + `PresentBgra`） | GPU 路线（引擎 + `PresentImage`） |
 |---|---|---|
-| 脏区像素进 GPU | 无 memcpy：gdi 直接合成进 presenter 的 host-visible 缓冲（零拷贝上屏，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4） | 引擎在**设备内**把表面合成进 picture，无 CPU 搬运 |
+| 脏区像素进 GPU | 无 memcpy：gdi 直接合成进 presenter 的 host-visible 缓冲（零拷贝上屏，见 §4.5） | 引擎在**设备内**把表面合成进 picture，无 CPU 搬运 |
 | 脏区记账/录制 | 只发一个合并 box（零拷贝后按**条数**算） | `presentSplit compose`（每帧扫脏区 + ping-pong damage 账） |
 | 提交 | 含在 `present=` 里（绝大部分是固定的 Vulkan 调用） | `presentSplit flush` |
 | letterbox quad + present | 同一份代码 | 同一份代码（`presentSplit blit`，含 acquire/描述符/录制/提交/present） |
 | 是否等本帧 GPU | 不等（fence 落后 2 帧） | 不等（靠 `engineChain` 保证帧间顺序） |
 
 - **CPU 侧的 `present=` 已没有可压的余地**：拆到 Vulkan 调用一级几乎全是 acquire/record/submit/present
-  的固定开销，`flush` 只有 µs 级（数字见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §3）。
+  的固定开销，`flush` 只有 µs 级（账目口径见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2）。
 - **GPU 侧的 `blit` 是"整幅重上屏"**（clear 整张 swapchain + 采样整幅 picture），**与脏区无关**；
   结论是**不值得优化**（§4.3）。
 - **曾经的主要病灶是把整帧等待放在 present 里**（每帧在 present 中 `Flush()` = submit **+** wait），
@@ -134,11 +134,48 @@ damage 账同一套机制）。**没有** damage-rect 接口可用（`vkQueuePre
 
 ### 4.4 其他
 
-- **CPU 路线的上屏已经定型**（主缓冲 = presenter 缓冲 + 脏区形状由 `usesDesktopBuffer()` 分流：零拷贝恒发
-  box、staging 逐条矩形），细节与约束见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
+- **CPU 路线的上屏已经定型**：主缓冲 = presenter 缓冲（零拷贝）+ 脏区形状由 `usesDesktopBuffer()`
+  分流：**零拷贝恒发合并 box、staging 逐条矩形**。细节与约束见 §4.5。
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；届时需要一个独立的
   引擎开关——「硬件加速」现在管的是上屏后端（Vulkan vs GLES），不要把它和引擎混在一起。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。
+
+### 4.5 CPU 路线零拷贝上屏的定型约束（不要再动）
+
+- **脏区形状**：staging 路径用**逐条矩形**（成本在字节，box 会多搬数倍）；零拷贝路径用**合并 box**
+  （CPU 侧成本在**条数**：每条 = 一个 copy region + 一次 flush，而 box 恒一条；按 CPU 侧 `present` 量过，
+  box ≤ 逐条，碎片样本 −17%）。由 `FramePresenter::usesDesktopBuffer()` **分流** ⇒ 它不是可独立调的旋钮：
+  GLES（交不出主缓冲）恒走逐条、Vulkan（零拷贝）恒走 box，**"把碎矩形并成长条"这条作废**。box 的字节量
+  是 GPU 那次 buffer→image 拷贝的量、并排在帧首（`sync`）——那是"等 GPU"的账，不是形状选错了。
+- **主缓冲 = 呈现器的 host-visible 缓冲**（`gdi_init_ex` + 呈现器自带缓冲）。实现约束：
+  - 呈现器**每帧问一次、成功为止**（Vulkan 设备随 surface 建，`gdi_init` 时可能还没有），live 与回放共用
+    `InitGdiWithPresenter` / `AttachPresenterDesktopBuffer`。
+  - **挂接不要用 `gdi_resize_ex`**（它会再调 `update_end_paint`，把 `update->mux` 的配对搞乱）；就地换
+    `primary->bitmap` 的 data/scanline/free 与 `gdi->stride`，**换前把已合成的桌面拷过去**（gdi 图元会读
+    目标缓冲）。
+  - **单缓冲 ⇒ 本帧第一次写之前必须等上一帧的 GPU 读完**（§1 的 `sync`）。这是**顺序约束**：等待点取在
+    `update->BeginPaint` 是错的（那是 `gdi_OutputUpdate` 里、整帧解码之后发的），正确位置是**每个可能写
+    桌面的命令之前**（GFX 帧边界与表面命令，以及 SolidFill / SurfaceToSurface / 缓存 / ResetGraphics 这类
+    结构命令——**帧外**同样会来表面命令），挂在 `GfxWorkSetFrameBeginHook`；等待按"提交"去重
+    （`desktopBufferFencePending_`）⇒ **每个 present 只真等一次**。
+    ⚠ 等待缺失的后果是**上屏画面混两帧**，且**只在帧背靠背时**出现；`bad=0` 与它无关。
+  - 内存类型 `HOST_CACHED` 优先；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
+    驱动调用；cache flush 只写回脏行，多出来的干净行免费）。
+  - 几何变化（`ResetGraphics` → `gdi_resize`）会退回 gdi 自有缓冲，下一次 `EndPaint` 按新尺寸重挂。
+  - 前提：**进程内只建一个 `VkDevice`**（见 [`gfx-engine.md`](gfx-engine.md) §1）。
+- **桌面镜像 surface 直接合成进 primary**（全屏 GFX 会话的常态：只有一个 surface、`(0,0)` 1:1、格式/行距
+  与桌面相同 ⇒ 它**就是桌面**，那趟逐矩形 `freerdp_image_scale` 纯属白搬）。做法是把这个 surface 的 `data`
+  指向 `gdi->primary_buffer`。**生命周期是重点**：
+  - 凭证就是 `surface->data == gdi->primary_buffer`；任何一条不满足就退回逐矩形拷贝。
+  - `gdi_ResetGraphics` **保留** surface 并 memset 它，而它调的 `DesktopResize` 会**换掉 primary** ⇒ 必须
+    **换之前**记下谁在共享、换之后重指向或让它自己分配。
+  - `gdi_DeleteSurface` 不能释放共享缓冲；出现**第二个** surface 时先解除共享。
+  - ⚠ **gfx 上下文拆卸也要经 `DeleteSurface` 走一遍**（`rdpgfx_client_context_free` → `free_surfaces`），
+    而 `gdi_DeleteSurface` 从 `context->custom` 取 gdi——`gdi_graphics_pipeline_uninit` 已经把它清空 ⇒
+    共享测试必然失败、把**呈现器的 host-visible 缓冲**当自有缓冲 `winpr_aligned_free`（进程直接挂）。
+    **顺序**：谁拆 gfx 上下文，谁就必须**在 uninit 之前**先 `DeleteSurface` 掉所有 surface（离线 CPU 桌面
+    就是这么做）；live 靠 FreeRDP 在 `OnClose` 里先 `free_surfaces`。
+  - 全在 `libfreerdp/gdi/gfx.c` 内部，**不动头文件也不动 app**，因此对任何呈现器都成立。
 
 ## 5. 操作与踩坑
 

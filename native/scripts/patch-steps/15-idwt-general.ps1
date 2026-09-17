@@ -1,4 +1,4 @@
-# 15) HmRdp: bit-exact inverse DWT (doc_agent/cpu-accel-plan.md, stage one C1).
+# 15) HmRdp: bit-exact inverse DWT (doc_agent/gfx-engine.md 8.2 (single-core C1)).
 #
 #     The progressive decode spends about half of its tile cost in the inverse
 #     DWT, and the upstream block is pure scalar int16 lifting. The rewrite below
@@ -36,7 +36,7 @@ $dwtC = "$Source\libfreerdp\codec\rfx_dwt.c"
 $dwtNew = @'
 /*
  * HmRdp: bit-exact restructure of the inverse DWT (see the patch note in
- * native/scripts/patch-freerdp.ps1 step 15, doc_agent/cpu-accel-plan.md C1). The
+ * native/scripts/patch-freerdp.ps1 step 15, doc_agent/gfx-engine.md 8.2). The
  * upstream scalar version follows verbatim and stays the reference for the
  * fallback path and for the dev comparison (HmrdpSetDwtCheck).
  */

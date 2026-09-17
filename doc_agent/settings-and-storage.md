@@ -35,7 +35,7 @@
   （`加速:开/关`），改它等于改这个设置并重启回放——两个后端可以在同一份录像上当场 A/B。
 - **解码线程数**（`decodeThreads`，进程级）：Progressive 解码的 worker 数，0 = 自动（性能核数封顶 4）、
   1 = 完全串行（接收线程直接解码，不提交/不唤醒/不等待，最省电）；曲线与判据见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §5。**当前固定为 1、设置页这一行置灰**（并行实现是 FreeRDP 内部的池、
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。**当前固定为 1、设置页这一行置灰**（并行实现是 FreeRDP 内部的池、
   未针对本平台优化且待重写）：存的值保留，重开只需改 `kPinnedWorkers` 并去掉设置页/回放页的置灰。
 
 ## 3. 导入 / 导出（`ConfigTransfer`）

@@ -105,7 +105,7 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
 - 脚本用坐标点击 ⇒ 窗口必须在最前（脚本先 `aa start`）；点击没生效会直接报
   `did not start a new run`，而不是干等到超时。
 - 参考的本地副本在 `.cache/hmrdp_ref_<captureTag>.{hash,bmp}`（不入库）；**解码侧改动后要重录**，
-  判据见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§7。
+  判据见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4。
 
 ## 6. 环境
 

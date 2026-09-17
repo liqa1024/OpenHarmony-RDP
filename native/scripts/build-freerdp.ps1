@@ -75,7 +75,7 @@ $cfg = @(
   # code, so the correctness criterion is a *measured* one: the dev comparison
   # against the scalar reference reports the worst |delta| (HmrdpDwtCheckStat)
   # and the reference run reports the pixel-level numbers, and the difference has
-  # to stay at rounding magnitude (doc_agent/cpu-accel-plan.md §0/§7).
+  # to stay at rounding magnitude (doc_agent/gfx-engine.md §8.1/§8.4).
   "-DWITH_SIMD=ON", "-DWITH_AAD=OFF", "-DWITH_SMARTCARD=OFF",
   "-DWITH_KEYBOARD_LAYOUT_FROM_FILE=OFF",
   "-DCHANNEL_AUDIN=ON", "-DCHANNEL_ENCOMSP=OFF", "-DCHANNEL_RAIL=OFF", "-DCHANNEL_REMDESK=OFF",

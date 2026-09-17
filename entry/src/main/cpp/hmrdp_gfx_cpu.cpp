@@ -79,7 +79,7 @@ BOOL CpuDesktopResize(rdpContext* context) {
 // gdi_graphics_pipeline_uninit() has already cleared context->custom, and
 // gdi_DeleteSurface reads gdi from there. Without it a desktop-mirror surface
 // cannot tell that its buffer is gdi's primary (the sharing test is
-// `surface->data == gdi->primary_buffer`, doc_agent/cpu-accel-plan.md §4) and would
+// `surface->data == gdi->primary_buffer`, doc_agent/present-pipeline.md §4.5) and would
 // free memory it does not own - on the zero-copy path that is the presenter's
 // host-visible buffer, i.e. an invalid free.
 void DestroyGfxSurfaces(RdpgfxClientContext* context) {
@@ -242,7 +242,7 @@ void GfxCpuDesktop::OnBeginPaint() {
   // gdi is about to compose this frame into its primary buffer (the mirrored
   // surface's pixels are already there); the same wait as OnFrameBegin, and free
   // when that one already drained the previous frame's copy. Normally free either
-  // way: a whole frame's decode sits between the two (doc_agent/cpu-accel-plan.md §4).
+  // way: a whole frame's decode sits between the two (doc_agent/present-pipeline.md §4.5).
   // No accounting here: this one runs inside gdi's EndFrame, where the meter
   // already subtracts the sync wait from the compose share.
   if (desktopAttached_ && presenter_ != nullptr) {

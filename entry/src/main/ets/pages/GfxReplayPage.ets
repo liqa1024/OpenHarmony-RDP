@@ -36,7 +36,7 @@ const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
 
-// 「参考」 = golden-reference gate for the CPU line (doc_agent/cpu-accel-plan.md §7).
+// 「参考」 = golden-reference gate for the CPU line (doc_agent/gfx-engine.md §8.4).
 //   关   - plain run (the perf modes above)
 //   导出 - record this run as the reference (hmrdp_ref.hash + hmrdp_ref.bmp)
 //   对比 - check every frame against the stored reference; the stats line reports
@@ -50,7 +50,7 @@ const REF_LABEL: string[] = ['关', '导出', '对比'];
 // automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
 // the receiving thread with no worker pool. The decode is the CPU (gdi) path's
 // dominant cost, so this is the knob for its time-vs-energy curve
-// (doc_agent/cpu-accel-plan.md §5).
+// (doc_agent/cpu-accel-plan.md §1).
 //
 // The knob is currently pinned to 1 in the native decoder module (the parallel
 // path is FreeRDP's pool, untuned for this platform and due to be rewritten), so

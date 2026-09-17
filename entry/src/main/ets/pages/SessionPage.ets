@@ -271,7 +271,7 @@ struct SessionPage {
       && DeviceCapabilities.hardwareAccel().supported);
     // Process-global decode worker count (0 = automatic). The native decoder
     // module currently pins it to 1 while the parallel path is reworked, so the
-    // stored value is forwarded but not in effect (doc_agent/cpu-accel-plan.md §5).
+    // stored value is forwarded but not in effect (doc_agent/cpu-accel-plan.md §1).
     RdpNative.applyDecodeThreads(settings.decodeThreads);
     let filesDir: string = '';
     try {
