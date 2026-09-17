@@ -38,7 +38,7 @@
 // composited, [7] the blocking part of [2], [8] tiles decoded, [9] tile-decode
 // time (this thread's loop on the serial path, the workers' summed decode time
 // on the pool path - see the reporting code).
-constexpr int kProgStatSlots = 16;
+constexpr int kProgStatSlots = 24;
 extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak));
 
 // DEV-ONLY: what the patched libwinpr did with the decode worker count -
@@ -404,7 +404,7 @@ std::string GfxReplay::StatsLines() {
   // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
   // not the live cadence (a frame budget used to be applied here; it kept the CPU
   // idle between frames, which dropped the SoC clock ~3x and inflated every
-  // per-frame number - doc_agent/cpu-path.md §7).
+  // per-frame number - doc_agent/cpu-accel-plan.md §7).
   // `lag` is only meaningful in realtime mode: the worst lateness behind the
   // recorded schedule, i.e. how much of the live load the client could not absorb.
   // "fast(untimed)" = realtime was requested but the capture carries no arrival
@@ -431,7 +431,7 @@ std::string GfxReplay::StatsLines() {
 
   // Worker count + the run's total process CPU time: the thread-count A/B needs
   // both the wall time (above) and what it cost, or "same speed, more cores
-  // woken" looks like a tie (doc_agent/cpu-path.md §5).
+  // woken" looks like a tie (doc_agent/cpu-accel-plan.md §5).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
@@ -442,7 +442,7 @@ std::string GfxReplay::StatsLines() {
     // cpuKHz is the SoC clock the run actually got: the playback rate decides it
     // (an idle-paced run sits at the lowest frequency and every per-frame figure
     // is ~3x larger), so two runs are only comparable at the same value
-    // (doc_agent/cpu-path.md §7).
+    // (doc_agent/cpu-accel-plan.md §7).
     const std::string freq = hmrdp::CpuFreqInfo();
     char run[240];
     std::snprintf(run, sizeof(run),
@@ -563,6 +563,29 @@ std::string GfxReplay::StatsLines() {
                   static_cast<unsigned long long>(HmrdpProgStat[6]),
                   static_cast<unsigned long long>(HmrdpProgStat[8]));
     out += ps;
+
+    // DEV-ONLY: where the time inside one decoded tile goes. The probe times a
+    // phase for one tile in 16 ([16] counts the sampled tiles), so a phase's
+    // total is scaled by the tiles decoded per frame to land in the same unit as
+    // `dec` above - their sum should come out just under it (the remainder is the
+    // per-tile call overhead and the message-level work).
+    const uint64_t samples = HmrdpProgStat[16];
+    if (samples > 0) {
+      const double tilesPerFrame = static_cast<double>(HmrdpProgStat[8]) / d;
+      const double scale = tilesPerFrame / static_cast<double>(samples) / 1e6;
+      const double phases[6] = {
+          static_cast<double>(HmrdpProgStat[10]) * scale, static_cast<double>(HmrdpProgStat[11]) * scale,
+          static_cast<double>(HmrdpProgStat[12]) * scale, static_cast<double>(HmrdpProgStat[13]) * scale,
+          static_cast<double>(HmrdpProgStat[14]) * scale, static_cast<double>(HmrdpProgStat[15]) * scale};
+      const double sum = phases[0] + phases[1] + phases[2] + phases[3] + phases[4] + phases[5];
+      char ps2[320];
+      std::snprintf(ps2, sizeof(ps2),
+                    "\nprog2 ms/frame (sampled 1/16, n=%llu): rlgr=%.2f dequant+diff=%.2f "
+                    "idwt=%.2f state=%.2f upgrade=%.2f color=%.2f  sum=%.2f",
+                    static_cast<unsigned long long>(samples), phases[0], phases[1], phases[2],
+                    phases[3], phases[4], phases[5], sum);
+      out += ps2;
+    }
   }
 
   // Per-command-class breakdown only exists on the GPU route (the CPU route
@@ -665,7 +688,7 @@ void GfxReplay::RecordPresent(uint64_t micros) {
 void GfxReplay::MarkFrameEnd(bool presented) {
   // Cadence bookkeeping only - the fast mode deliberately does not sleep (a frame
   // budget left the CPU idle between frames, which dropped the SoC to its lowest
-  // clock and inflated every per-frame cost ~3x, see doc_agent/cpu-path.md §7), and
+  // clock and inflated every per-frame cost ~3x, see doc_agent/cpu-accel-plan.md §7), and
   // the realtime mode's cadence comes from the capture (PaceRecord).
   //
   // Only frames that produced a picture mark the origin: the stream carries many

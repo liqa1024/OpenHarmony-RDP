@@ -29,7 +29,7 @@ const ROUTE_LABEL: string[] = ['CPU', 'Vulkan', 'Vulkan对比'];
 // automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
 // the receiving thread with no worker pool. The decode is the CPU (gdi) path's
 // dominant cost, so this is the knob for its time-vs-energy curve
-// (doc_agent/cpu-path.md §5).
+// (doc_agent/cpu-accel-plan.md §5).
 //
 // The knob is currently pinned to 1 in the native decoder module (the parallel
 // path is FreeRDP's pool, untuned for this platform and due to be rewritten), so

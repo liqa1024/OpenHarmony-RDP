@@ -193,7 +193,7 @@ class Session {
   // every present is serialised by the backend itself.
   std::unique_ptr<FramePresenter> presenter_;
   // True once gdi composes into the presenter's own desktop buffer (zero-copy
-  // present, doc_agent/cpu-path.md §4). Retried every frame until it succeeds,
+  // present, doc_agent/cpu-accel-plan.md §4). Retried every frame until it succeeds,
   // which is how the session picks it up when the surface arrives after connect.
   bool desktopAttached_ = false;
   AudioOutput audio_;

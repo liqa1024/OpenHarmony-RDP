@@ -72,7 +72,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **客户端侧带宽 / 帧回执 / 线程扇出**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；winpr 线程池 worker 与
   drdynvc 线程在入口调 app 注册的 **QoS** 钩子，并把**线程池扇出上限压到 4**（每核一个 worker 被每条
-  Progressive 消息唤醒只费电不提吞吐；提到 8 无收益，见 [`cpu-path.md`](cpu-path.md) §5）。
+  Progressive 消息唤醒只费电不提吞吐；提到 8 无收益，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §5）。
 
 **正确性 / 一致性**
 
@@ -85,7 +85,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
   统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
-  [`cpu-path.md`](cpu-path.md) §1/§2。
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §1/§2。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`
@@ -94,7 +94,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的 `DesktopResize` 会换掉
   primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，否则是"向已释放内存
   memset"；`gdi_DeleteSurface` 不能释放共享缓冲；出现第二个 surface 时先解除共享。
-  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`cpu-path.md`](cpu-path.md) §4。
+  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
 
 ## 4. 编 FreeRDP 时的关键选项
 

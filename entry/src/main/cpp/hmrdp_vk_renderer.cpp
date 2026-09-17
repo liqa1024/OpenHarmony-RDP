@@ -1397,7 +1397,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // When the caller handed gdi *our* desktop buffer (AcquireDesktopBuffer), the
     // dirty rects are already laid out in the memory the GPU copies from: the
     // regions read it in place at the desktop row pitch and no CPU copy of the
-    // frame happens at all (doc_agent/cpu-path.md §4). Otherwise the rects are
+    // frame happens at all (doc_agent/cpu-accel-plan.md §4). Otherwise the rects are
     // packed into this slot's staging buffer first.
     const bool direct =
         data == static_cast<const uint8_t*>(desktopBufferMapped_) && srcStride == desktopBufferStride_ &&

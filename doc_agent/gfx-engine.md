@@ -1,9 +1,9 @@
 # GFX 码流 / GPU 桌面引擎
 
 本文件是**改 GFX 相关代码前必读**的口径文档。目标：引擎与 FreeRDP 自己的 gdi 软解**逐像素一致**
-（验收见 §6）。CPU（gdi）链路的成本与优化见 [`cpu-path.md`](cpu-path.md)，
+（验收见 §6）。CPU（gdi）链路的成本与优化见 [`cpu-accel-plan.md`](cpu-accel-plan.md)，
 上屏管线见 [`present-pipeline.md`](present-pipeline.md)，解码 kernel 的后续工作见
-[`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+[`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md)。
 
 ## 0. 管线框架（先读这一节）
 
@@ -156,7 +156,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   单独回调出来）。
 - **不要把多条消息的 decode 合并进一次 dispatch**：restamp 用 `cur` 重建"本帧更早解码过的 tile"，
   其 `cur` **必须是该消息那一刻的值**；合并后无论排在同批之前还是之后都会与 gdi 不一致。
-  **并行度只能从"一条 stream 内部"找**，细节见 [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) §2。
+  **并行度只能从"一条 stream 内部"找**，细节见 [`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md) §2。
 - **tile 网格公式照抄 FreeRDP**：`gridW = (w + (64 − w % 64)) / 64`，**不是** `(w + 63) / 64`。
   宽度是 64 的整数倍时上游会**多算一格**。多出来的那圈 tile 整块落在表面之外、不可能写出可见像素，
   但**"两个实现接受的 tile 集合不同"本身就是隐患**，照抄才能保证一致。
@@ -220,7 +220,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 ## 3. 性能规则
 
 **判据与账目**：这条线只按"每帧计算成本 = 能耗"取舍（fps 只要够用）；成本结构、账目口径与量测纪律见
-[`cpu-path.md`](cpu-path.md) §0/§1/§7。以下是与引擎/GPU 强相关的规则。
+[`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§1/§7。以下是与引擎/GPU 强相关的规则。
 
 - **先量内存类型，再谈算法**：CPU 侧像素命令的成本由所选 host-visible 类型决定（见 §1），
   差一个类型就是一到两个数量级。真机上有内存探针（`ProbeHostMemory`：写/连续拷贝/跨行拷贝三种形状）。
@@ -259,7 +259,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   ② payload 读的**延迟**（整段搬进 shared：只快十几个百分点，而大块 shared 把常驻 workgroup 数压下来、
   整系统反而慢数倍）。⇒ 现在的瓶颈是**分歧型串行位解码在 SIMT 上的低效率**，
   不是访存，也不是靠微调着色器能追回来的。下一步设计见
-  [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+  [`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md)。
 
 ## 4. 关键实现要点（与引擎配套的会话侧约束）
 
@@ -324,7 +324,7 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
   先把它当**分叉放大器**跑一遍门禁——粗语义会把差异静默盖住，换细语义时才暴露出来。
   这比事后排查便宜，也是这类改动必须过 `bad=0` 的原因。
 - **两种回放节拍**（dev 页切换，`mode=` 字段）。跨轮次比较的前提（频率必须一致、纯 CPU 侧的 A/B 要用
-  CPU 受限的样本）见 [`cpu-path.md`](cpu-path.md) §7：
+  CPU 受限的样本）见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §7：
   - **`mode=fast`（默认「跑满」）**：完全不打节拍——上一帧做完就喂下一条，**`fps` 就是吞吐上限**，
     不是 live 的出帧率。
   - **`mode=realtime`**：按**录制时记录的到达时刻**喂数据，复现 live 的**帧间隔**（帧间隔本身是负载的
@@ -372,12 +372,13 @@ dev 页「回放测试」三条路线：CPU / Vulkan / Vulkan对比
 
 ## 7. 待办
 
-- **RLGR 解码 kernel 的并行化重设计**（producer/consumer，含约束与未解问题）：
-  单独成文 → [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。
+- **GPU 硬件加速的推进顺序与形状**（tile 解码 + 合成做成"载荷进、像素出"的**一个阶段**；
+  相位适配性、交接成本、M0–M4 里程碑与出口）：单独成文 → [`gpu-accel-plan.md`](gpu-accel-plan.md)。
+  RLGR producer/consumer 的实现约束仍在 [`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md)（old）。
 - **CPU（gdi）链路的一切**（并行效率、线程数与能效、线程池的平台适配、冗余搬运、矩形合并、流水线化、
-  内存缓存、实施顺序、量测纪律）：单独成文 → [`cpu-path.md`](cpu-path.md) §4–§8。
+  内存缓存、实施顺序、量测纪律）：单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md) §4–§8。
 - **把 Vulkan 引擎接进 live 会话**（当前只有回放/对比跑引擎；live 一律走 gdi + 呈现器）。届时需要一个
   **引擎开关**与"引擎初始化失败 ⇒ 回退 gdi"的口径；它与现有的「硬件加速」（只管上屏后端）是两回事，
-  不要复用同一个设置项。
+  不要复用同一个设置项。整体顺序与出口见 [`gpu-accel-plan.md`](gpu-accel-plan.md) §5/§7。
 - **呈现能力判定在模拟器上的口径**：现在模拟器一律回落 GLES 呈现器（与"GPU 只在真机"一致）；
   若以后要让模拟器用 Vulkan 上屏，只需改 `FillVerdicts()` 里那一处 emulator 分支。

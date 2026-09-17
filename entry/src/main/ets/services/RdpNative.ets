@@ -82,7 +82,7 @@ export class RdpNative {
    * Progressive tile decode workers (process-global, live session and replay
    * alike). `workers` = 0 means automatic: the performance-core count when the
    * device exposes it, else min(cores, 4) - the measured sweet spot, see
-   * doc_agent/cpu-path.md §5. 1 decodes on the receiving thread with no worker
+   * doc_agent/cpu-accel-plan.md §5. 1 decodes on the receiving thread with no worker
    * pool at all (the power-optimal end of the range).
    */
   static applyDecodeThreads(workers: number): void {

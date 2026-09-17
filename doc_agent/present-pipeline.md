@@ -34,11 +34,11 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
   - **"CPU 不等待"只对设备侧的件成立：主机写缓冲的那两条线必须等**。"上一帧仍在飞的读"和"本帧的
     写"是同一块内存时（CPU 路线的零拷贝桌面缓冲、引擎的 mapped 表面），等待点必须落在**本帧第一次
     写之前**，且**每个提交窗口只等一次**：
-    - CPU 路线：`GfxWorkSetFrameBeginHook`（挂在 live 与回放共用的包装层，见 [`cpu-path.md`](cpu-path.md) §4）；
+    - CPU 路线：`GfxWorkSetFrameBeginHook`（挂在 live 与回放共用的包装层，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4）；
     - 引擎：`Impl::SyncForCpuAccess()`（提交臂 `submissionSinceHostDrain`，该提交后的第一次主机访问
       `FlushAll()`）——合成是 **transfer** 不是 dispatch，所以"compute 在飞"那套判断盖不住它。
     ⚠ 这类顺序**不在 `bad=0` 的覆盖范围内**（对比读的是 gdi 自己的缓冲与引擎 picture，两者都还在），
-    判断只能靠机制 + 计数器；违反时的形状见 [`cpu-path.md`](cpu-path.md) §4。
+    判断只能靠机制 + 计数器；违反时的形状见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
 
 ## 2. 两条路线的上屏**构成**（不是哪个更快）
 
@@ -46,14 +46,14 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 
 | 件 | CPU 路线（gdi + `PresentBgra`） | GPU 路线（引擎 + `PresentImage`） |
 |---|---|---|
-| 脏区像素进 GPU | 无 memcpy：gdi 直接合成进 presenter 的 host-visible 缓冲（零拷贝上屏，见 [`cpu-path.md`](cpu-path.md) §4） | 引擎在**设备内**把表面合成进 picture，无 CPU 搬运 |
+| 脏区像素进 GPU | 无 memcpy：gdi 直接合成进 presenter 的 host-visible 缓冲（零拷贝上屏，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4） | 引擎在**设备内**把表面合成进 picture，无 CPU 搬运 |
 | 脏区记账/录制 | 只发一个合并 box（零拷贝后按**条数**算） | `presentSplit compose`（每帧扫脏区 + ping-pong damage 账） |
 | 提交 | 含在 `present=` 里（绝大部分是固定的 Vulkan 调用） | `presentSplit flush` |
 | letterbox quad + present | 同一份代码 | 同一份代码（`presentSplit blit`，含 acquire/描述符/录制/提交/present） |
 | 是否等本帧 GPU | 不等（fence 落后 2 帧） | 不等（靠 `engineChain` 保证帧间顺序） |
 
 - **CPU 侧的 `present=` 已没有可压的余地**：拆到 Vulkan 调用一级几乎全是 acquire/record/submit/present
-  的固定开销，`flush` 只有 µs 级（数字见 [`cpu-path.md`](cpu-path.md) §3）。
+  的固定开销，`flush` 只有 µs 级（数字见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §3）。
 - **GPU 侧的 `blit` 是"整幅重上屏"**（clear 整张 swapchain + 采样整幅 picture），**与脏区无关**；
   结论是**不值得优化**（§4.3）。
 - **曾经的主要病灶是把整帧等待放在 present 里**（每帧在 present 中 `Flush()` = submit **+** wait），
@@ -116,7 +116,7 @@ CPU 路线（gdi）与 GPU 路线（引擎）**共用同一个 `VkRenderer`**，
 ### 4.2 解码 kernel 并行化（当前 GPU 路线最大的成本）
 
 解码 kernel 是整帧慢的主因，与上屏无关。设计见
-[`gfx-progressive-kernel.md`](gfx-progressive-kernel.md)。上屏已不再等解码（§1 的握手），
+[`gpu-accel-plan.md`](gpu-accel-plan.md)。上屏已不再等解码（§1 的握手），
 所以解码变快后上屏也不会变成新的串行段。
 
 ### 4.3 整幅重上屏：**已量，判"不做"**
@@ -135,7 +135,7 @@ damage 账同一套机制）。**没有** damage-rect 接口可用（`vkQueuePre
 ### 4.4 其他
 
 - **CPU 路线的上屏已经定型**（主缓冲 = presenter 缓冲 + 脏区形状由 `usesDesktopBuffer()` 分流：零拷贝恒发
-  box、staging 逐条矩形），细节与约束见 [`cpu-path.md`](cpu-path.md) §4。
+  box、staging 逐条矩形），细节与约束见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
 - 把 Vulkan 引擎接进 live 会话（现在只有回放/对比跑引擎，live 走 gdi + 呈现器）；届时需要一个独立的
   引擎开关——「硬件加速」现在管的是上屏后端（Vulkan vs GLES），不要把它和引擎混在一起。
 - 换样本复验：不同分辨率（含宽/高为 64 整数倍）、多条 REGION 的消息；**每份新捕获先自己过 `bad=0`**。

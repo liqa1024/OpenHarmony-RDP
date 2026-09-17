@@ -1,7 +1,14 @@
-# Progressive kernel 优化（未完成）
+# Progressive kernel 优化（**old 弃用**）
+
+> **已弃用（old）**：本文件的**优先级与实现方向**已被 [`gpu-accel-plan.md`](gpu-accel-plan.md) 取代——
+> 它把"RLGR kernel 并行化"当作第一件事，而现在的计划是**先做 IDWT**（两侧占比最大的一项）、
+> 并且要求**按"阶段"而不是按"相位"搬数据**（压缩载荷进、像素出，中间表示不跨总线）。
+> **仍然有效、要接着用的部分**：§2.2 的 RLGR 实现约束、§2.3 的强约束（寄存器敏感、按类型拆 kernel）、
+> §2.4 的已否决清单、§1/§3 的实测与量测口径（`gpu-accel-plan.md` §4.4 会引到这里）。
+> 下面正文按原样保留（历史依据）；不要把它当作当前计划或口径入口。
 
 本文件是**后续工作清单**，不是口径文档，**只讲 GPU 引擎这一侧**（RLGR 解码 kernel 的并行化：
-方向、依据、约束、验收）。**CPU（gdi）链路的性能优化与清单在 [`cpu-path.md`](cpu-path.md)**，
+方向、依据、约束、验收）。**CPU（gdi）链路的性能优化与清单在 [`cpu-accel-plan.md`](cpu-accel-plan.md)**，
 两者不要混在一起看。改 GFX 语义前以 [`gfx-engine.md`](gfx-engine.md) 为准（尤其 §2.2 与 §3）；
 量测口径也在那边的 §3/§6。
 
@@ -13,6 +20,19 @@
   `rfx_compose` 改按像素并行；逆 DWT 拆成独立 kernel（`rfx_idwt.comp`，系数走 shared）。
 - **未完成**：RLGR 解码 kernel（`rfx_decode.comp`）的并行化。**改它之前先确认两份录像仍是
   `bad=0 rgbPx=0`**。
+- **先看清这条线值多少**（整屏样本，同一份录像，两边都是时间戳/相位直接量到的）：
+
+  | 同一件事 | CPU 串行（gdi，1 worker） | GPU 引擎（compute） |
+  |---|---|---|
+  | RLGR / 位解码 | 1 成量级 | **比 CPU 整条 decode 还大一个量级**（每帧百 ms 量级） |
+  | 逆 DWT | 4 成半量级（`dec` 之内最大项） | 约为 CPU 那项的两倍 |
+  | 颜色转换 + 合成 | 1 成半 + 1 成（`update`） | 这一项与 CPU 同量级或更好 |
+
+  ⇒ 引擎目前的瓶颈是它自己最想解决的那一项；**"把 CPU 的解码搬到 GPU"在现状下是净亏**（GPU 的
+  RLGR 一项就比 CPU 的整条 `decode` 贵），只有在 kernel 重写成 producer/consumer 之后才谈得上比较，
+  而且即便追上，收益也只落在 CPU 侧占比最小的一成上。CPU 侧的大头（逆 DWT、缓冲流量）**GPU 侧没有
+  对应优势**：那两项是访存密集、逐元素独立的活，向量化 CPU 就能拿到大部分收益，且不引入
+  host↔device 交接（引擎侧 `syncDrain` 的同步开销是每帧 ms 量级）。
 
 ## 2. RLGR 解码 kernel 的并行化（producer / consumer）
 

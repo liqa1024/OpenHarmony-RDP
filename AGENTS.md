@@ -49,8 +49,9 @@
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX / Progressive / GPU 引擎（**改前必读**）、逐像素 `bad=0` 验收与基线录像 | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| CPU（gdi）链路：成本结构、账目口径、已定型项与约束、并行能效、**开放问题**、量测陷阱 | [`cpu-path.md`](doc_agent/cpu-path.md) |
-| Progressive kernel（RLGR 解码）并行化（GPU 引擎侧，未完成，**后续工作清单**） | [`gfx-progressive-kernel.md`](doc_agent/gfx-progressive-kernel.md) |
+| **CPU（gdi）链路优化计划**（成本结构、账目口径、已定型约束、**按相位实测量排的优化清单 C1–C3 与里程碑**、量测陷阱） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| **GPU 硬件加速计划**（tile 解码 + 合成做成一个 GPU 阶段：相位适配性/交接成本/里程碑/开关口径） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) |
+| **（历史，old 弃用）** 旧 CPU 链路文档 / 旧 GPU kernel 清单：只作依据保留，不要从这里接手 | [`cpu-path_old.md`](doc_agent/cpu-path_old.md)、[`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md) |
 | 上屏（present）管线：一套实现、CPU/GPU 耗时对比、**后续工作清单** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 
 ## 环境
@@ -95,8 +96,8 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 要改的东西 | 先读 |
 |---|---|
 | GFX / Progressive / 解码 / 合成 / GPU 引擎 / 回放 | [`gfx-engine.md`](doc_agent/gfx-engine.md)（**协议与合成语义那一节必须逐条对照**） |
-| CPU（gdi）链路的成本结构 / 解码线程数 / 线程池 / 量测口径 | [`cpu-path.md`](doc_agent/cpu-path.md) |
-| RLGR/解码 kernel 的并行化改造（GPU 引擎侧） | [`gfx-progressive-kernel.md`](doc_agent/gfx-progressive-kernel.md) |
+| CPU（gdi）链路的成本结构 / 解码线程数 / 线程池 / 量测口径 | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| GPU 硬件加速（解码 + 合成的 GPU 化；含 RLGR kernel 的实现约束） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) + [`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md)（old） |
 | 上屏（present）：帧槽/`engineChain`/blit 令牌、picture ping-pong、脏区账、CPU vs GPU 上屏耗时 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、剪贴板 | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置项、连接存储、密码、导入导出 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |

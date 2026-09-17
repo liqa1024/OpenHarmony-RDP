@@ -15,8 +15,9 @@
 | 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
 | 改 GFX / Progressive / GPU 引擎 | [`gfx-engine.md`](gfx-engine.md)（**先读「必须保留的语义」**） |
 | 改上屏（present）管线 | [`present-pipeline.md`](present-pipeline.md) |
-| 改 CPU（gdi）链路的性能 / 解码线程数 | [`cpu-path.md`](cpu-path.md)（**口径 + 后续工作清单**） |
-| 改 RLGR 解码 kernel（GPU 引擎侧）的并行化 | [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) |
+| 改 CPU（gdi）链路的性能 / 解码线程数 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（**接手文档**：口径 + 优化清单 + 里程碑） |
+| 做 GPU 硬件加速（tile 解码 + 合成的 GPU 化） | [`gpu-accel-plan.md`](gpu-accel-plan.md)（**计划**，含里程碑与出口） |
+| 查历史依据（**old 弃用**，不要从这里接手） | [`cpu-path_old.md`](cpu-path_old.md)、[`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
@@ -37,10 +38,16 @@
   性能规则、回放验证回路与逐像素 `bad=0` 验收、待办。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：统一的呈现器实现、帧槽与
   设备侧握手、picture ping-pong、CPU/GPU 耗时对比与后续工作清单。
-- [`cpu-path.md`](cpu-path.md) —— **CPU（gdi）链路**：每帧成本结构与账目、已定型项与约束、
-  解码线程数的能效曲线、并行效率、开放问题与量测纪律。
-- [`gfx-progressive-kernel.md`](gfx-progressive-kernel.md) —— GPU 引擎侧**后续工作清单**：
-  RLGR 解码 kernel 的 producer/consumer 并行化（依据、实现要点、约束）。
+- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路优化计划（接手文档）**：判据、每帧成本结构与
+  账目口径、已定型项与约束、`dec` 之内的相位实测占比与**优化清单 C1–C3（含各自的门禁与出口）**、
+  并行能效曲线、量测纪律与被否证的假设。
+- [`gpu-accel-plan.md`](gpu-accel-plan.md) —— **GPU 硬件加速计划**：把 tile 解码 + 合成做成
+  一个"载荷进、像素出"的 GPU 阶段（相位适配性与并行度分析、交接成本模型、M0–M4 里程碑与出口、
+  开关与回退口径）。
+- **（old 弃用，只作历史依据）**：
+  [`cpu-path_old.md`](cpu-path_old.md) —— 旧 CPU 链路文档（与 `cpu-accel-plan.md` 同章节号，内容已被其取代）；
+  [`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md) —— 旧 GPU kernel 清单
+  （RLGR producer/consumer）；两者其中的**约束与实测仍被引用**，但**不要作为接手入口**。
 
 ## 维护约定
 

@@ -185,13 +185,13 @@ struct SettingsPage {
   // Honest wording, because the measurement says this is NOT a performance knob:
   // 2, 3, 4, 6 and 8 workers all give the same frame time and the same CPU (the
   // decode's own parallel efficiency is the limit, not the core count - see
-  // doc_agent/cpu-path.md §5), while 1 (decode on the receiving
+  // doc_agent/cpu-accel-plan.md §5), while 1 (decode on the receiving
   // thread, no pool) costs far less CPU at a slower frame. So the useful ends are
   // "automatic" and "1"; the values in between are for experiments.
   // The knob is pinned to 1 in the native decoder module while the parallel path
   // (FreeRDP's own pool) is being reworked - it is not tuned for this platform,
   // its efficiency is poor, and a single-worker baseline keeps measurements free
-  // of extra variables (doc_agent/cpu-path.md §5). The stored value is kept, so
+  // of extra variables (doc_agent/cpu-accel-plan.md §5). The stored value is kept, so
   // the row only has to be re-enabled when that work lands.
   private decodeThreadsSubtitle(): string {
     return 'Progressive 解码的线程数。当前固定为 1（只在接收线程解码，最省电）';

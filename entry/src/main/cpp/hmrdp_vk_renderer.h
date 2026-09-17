@@ -63,7 +63,7 @@ class VkRenderer : public FramePresenter {
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 
-  // Zero-copy desktop buffer (doc_agent/cpu-path.md §4): the host-visible,
+  // Zero-copy desktop buffer (doc_agent/cpu-accel-plan.md §4): the host-visible,
   // persistently mapped memory gdi composes the desktop into. PresentBgra then
   // recognises its own buffer and records the dirty rects straight out of it, so
   // no per-frame copy of the frame happens at all. Needs the device (created with

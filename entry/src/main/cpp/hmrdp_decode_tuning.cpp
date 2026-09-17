@@ -28,7 +28,7 @@ namespace {
 // than half the CPU (65.0 ms / 13.7 s). The decode therefore stops scaling after
 // a couple of workers, and each extra one is a core woken for every Progressive
 // message - so the automatic choice stays small and the device's cluster count
-// can only pull it further down (doc_agent/cpu-path.md §5).
+// can only pull it further down (doc_agent/cpu-accel-plan.md §5).
 constexpr int kAutoCap = 4;
 // Manual range.
 constexpr int kMaxWorkers = 8;
@@ -37,7 +37,7 @@ constexpr int kMinWorkers = 1;
 // The worker count is pinned to serial for now: the parallel path is FreeRDP's
 // own pool (one work item per region, workers woken per message), it is not
 // tuned for this platform, its efficiency is poor, and it is expected to be
-// rewritten (doc_agent/cpu-path.md §5). Until then one worker is the baseline
+// rewritten (doc_agent/cpu-accel-plan.md §5). Until then one worker is the baseline
 // every session and every measurement shares - the frame wall is within a few
 // percent of the parallel one on fragmented content and about 2.6x on
 // whole-screen content, while the process CPU drops to ~45%. Set to 0 to hand
@@ -181,7 +181,7 @@ std::string DecodeThreadsInfo() {
   if (kPinnedWorkers > 0) {
     std::snprintf(buf, sizeof(buf),
                   "workers=%d (pinned serial: the parallel pool is not tuned for this platform, "
-                  "see doc_agent/cpu-path.md §5; cores=%d)",
+                  "see doc_agent/cpu-accel-plan.md §5; cores=%d)",
                   DecodeThreads(), cores);
     return std::string(buf);
   }
