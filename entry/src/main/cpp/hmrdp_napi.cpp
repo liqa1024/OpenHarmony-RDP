@@ -21,7 +21,6 @@
 #include "hmrdp_decode_tuning.h"
 #include "hmrdp_log.h"
 #include "hmrdp_replay.h"
-#include "hmrdp_rfx.h"
 #include "hmrdp_session.h"
 #include "hmrdp_vk_context.h"
 
@@ -680,12 +679,12 @@ std::string GetStringArg(napi_env env, napi_value v) {
 
 // Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
 napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
-  size_t argc = 7;
-  napi_value args[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  size_t argc = 6;
+  napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string out;
   if (argc < 4) {
-    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath[, route, realtime, refMode])";
+    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath[, realtime, refMode])";
   } else {
     const std::string surfaceId = GetStringArg(env, args[0]);
     int32_t surfaceW = 0;
@@ -693,28 +692,18 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &surfaceW);
     napi_get_value_int32(env, args[2], &surfaceH);
     const std::string gfxPath = GetStringArg(env, args[3]);
-    int32_t route = 0;
-    if (argc >= 5) {
-      napi_get_value_int32(env, args[4], &route);
-    }
     // Realtime playback (pace the capture's own arrival times instead of the
     // fixed per-frame budget). Ignored for captures that carry no timing.
     int32_t realtime = 0;
-    if (argc >= 6) {
-      napi_get_value_int32(env, args[5], &realtime);
+    if (argc >= 5) {
+      napi_get_value_int32(env, args[4], &realtime);
     }
-    // Golden-reference mode (CPU route only, see GfxReplayRefMode): 0 = off
-    // (perf run), 1 = write the reference, 2 = check against the stored one.
+    // Golden-reference mode (see GfxReplayRefMode): 0 = off (perf run),
+    // 1 = write the reference, 2 = check against the stored one.
     int32_t refMode = 0;
-    if (argc >= 7) {
-      napi_get_value_int32(env, args[6], &refMode);
+    if (argc >= 6) {
+      napi_get_value_int32(env, args[5], &refMode);
     }
-    // Route ids match GfxReplayRoute: 0 = CPU(gdi) - the only route the page drives,
-    // it runs with whatever presenter the "硬件加速" setting selects - and 1 = the
-    // Vulkan engine, kept as a code-level bench for the GPU work
-    // (doc_agent/gpu-accel-plan.md).
-    const hmrdp::GfxReplayRoute replayRoute =
-        route == 1 ? hmrdp::GfxReplayRoute::kVulkan : hmrdp::GfxReplayRoute::kCpu;
     hmrdp::GfxReplayRefMode replayRef = hmrdp::GfxReplayRefMode::kOff;
     if (refMode == 1) {
       replayRef = hmrdp::GfxReplayRefMode::kExport;
@@ -728,7 +717,7 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
       out = "failed: native window";
     } else {
       PreferGpuWindowBuffer(window);
-      if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath, replayRoute,
+      if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
                                              realtime != 0, replayRef)) {
         out = "started " + hmrdp::GfxReplay::Instance().Stats();
       } else {
@@ -772,8 +761,8 @@ napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {  (void)in
   return result;
 }
 
-// Dev/test (doc_agent/gfx-engine.md §1): the capability report - loader/device
-// versions, the migration-relevant extensions, memory types and queue families.
+// Dev/test: the capability report - loader/device versions, the
+// migration-relevant extensions, memory types and queue families.
 napi_value VulkanInfo(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   HMRDP_LOGI("vulkan caps: %{public}s", caps.Describe().c_str());
@@ -784,10 +773,10 @@ napi_value VulkanInfo(napi_env env, napi_callback_info) {
 }
 
 // Whether frames can be presented through Vulkan on this device - the capability
-// behind the "硬件加速" setting. This is the *presenter* verdict, which needs no
-// compute queue (the engine does, so it is the stricter one and not what this
-// switch is about). Returns "1", or "0|<code>" with a stable code so the UI layer
-// owns the wording (see VulkanCapabilities::presenterUnsupportedCode).
+// behind the "硬件加速" setting. This is the *presenter* verdict: a Vulkan device
+// with host-visible memory for the frame buffer and a surface + swapchain to blit
+// to. Returns "1", or "0|<code>" with a stable code so the UI layer owns the
+// wording (see VulkanCapabilities::presenterUnsupportedCode).
 napi_value VulkanAccelSupport(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   const std::string out =

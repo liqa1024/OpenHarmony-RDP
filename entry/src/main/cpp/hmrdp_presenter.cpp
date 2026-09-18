@@ -2,11 +2,9 @@
  * HmRdp - presenter backend selection (see hmrdp_presenter.h).
  *
  * The choice is made from the *presenter* verdict of the cached Vulkan probe
- * (VulkanCapabilities::presenterSupported), which is intentionally looser than
- * the engine one: presenting a frame needs a device that can blit to the
- * XComponent surface, not the compute pipeline RemoteFX decoding requires. That
- * way a device whose Vulkan cannot run the engine still presents through Vulkan,
- * and only a device that cannot present at all falls back to GLES.
+ * (VulkanCapabilities::presenterSupported): presenting a frame needs a device
+ * that can blit to the XComponent surface plus host-visible memory for the frame
+ * buffer. A device that cannot present at all falls back to GLES.
  */
 #include "hmrdp_presenter.h"
 

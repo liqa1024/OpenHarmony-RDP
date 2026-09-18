@@ -9,18 +9,16 @@
  *  - Vulkan (VkRenderer): the default. The dirty rectangle is copied once into a
  *    host-visible staging buffer, uploaded into a persistent desktop image and
  *    the GPU does the letterboxed blit to the swapchain - i.e. the CPU only
- *    hands the changed pixels over and never writes display memory itself. The
- *    same class also presents the engine's screen image (PresentImage), so the
- *    CPU and engine frame sources share one implementation.
+ *    hands the changed pixels over and never writes display memory itself.
  *  - GLES (GlesPresenter): the compatibility fallback, mainly for devices whose
  *    Vulkan cannot present (the emulator). Same shape - dirty-rect texture
  *    upload (ES3 + GL_UNPACK_ROW_LENGTH) and a letterboxed quad - so the only
  *    copy of the frame is a driver-side texture upload.
  *
  * Which backend is used is decided by the *presenter* capability
- * (VulkanCapabilities::presenterSupported), which is deliberately looser than the
- * engine/hardware-decode one: presenting needs no compute, only a device that can
- * blit to the XComponent surface (see doc_agent/gfx-engine.md §2.3).
+ * (VulkanCapabilities::presenterSupported): presenting needs no compute, only a
+ * device that can blit to the XComponent surface (see doc_agent/gfx-engine.md
+ * §2.3).
  */
 #ifndef HMRDP_PRESENTER_H
 #define HMRDP_PRESENTER_H

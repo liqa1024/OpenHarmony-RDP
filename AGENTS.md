@@ -7,11 +7,10 @@
 - 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 目标：HarmonyOS 6.1.0（API 23）
 - RDP 引擎：[FreeRDP](https://github.com/FreeRDP/FreeRDP)（源码交叉编译到 `aarch64-linux-ohos` /
   `x86_64-linux-ohos`）；界面 ArkTS/ArkUI，输入经 Node-API 桥接转发；
-  **live 画面由 FreeRDP gdi 出、经呈现器上屏：Vulkan 优先，Vulkan 不能上屏时回落 GLES**
-  （`hmrdp_presenter.h`）；GPU 引擎（Vulkan）目前只跑 dev 回放/对比、尚未接入 live。
-  「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan，给 Vulkan 不好用/模拟器兜底），
-  按**呈现能力**置灰（呈现能力与引擎能力是**两套独立判定**，
-  见 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §2.3）。
+  **画面由 FreeRDP gdi 出、经呈现器上屏：Vulkan 优先，Vulkan 不能上屏时回落 GLES**
+  （`hmrdp_presenter.h`）。「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan，给 Vulkan
+  不好用/模拟器兜底），按**呈现能力**置灰（见 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §1）。
+  自研的 GPU 解码/合成引擎已移除（见 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §3）。
 
 ## AI 助手约定（硬规则）
 
@@ -19,9 +18,9 @@
 - **git 只读**：只允许 `log`/`show`/`diff`/`status`/`blame` 等**查看**操作。**禁止**任何写操作
   （`commit`/`add`/`stash`/`checkout`/`reset`/`restore`/`clean`/`merge`/`rebase`/`branch`/`tag`/`push`/`pull`/`fetch`）；
   要恢复文件就**直接编辑文件内容**，不要用 git 改工作区或历史。
-- **实机操作默认禁止，需明确授权，且是最后手段**——唯一例外是 **Vulkan / 硬件加速 / GPU 回放**：
+- **实机操作默认禁止，需明确授权，且是最后手段**——唯一例外是 **Vulkan / 硬件加速（上屏）**：
   它们**只在真机上验证**（模拟器的 Vulkan 实现会按标准接口谎报能力，因此**不在支持范围内**），
-  这部分由 AI 按 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §6 的循环自动执行。
+  这部分由 AI 按 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §5/§6 的循环自动执行。
   其余情况下**不要动辄"退回真机"**（上真机麻烦且危险），也**不要把结论甩给真机**。
   签名与安装由用户完成（**仓库不含任何签名材料**），AI 只做无破坏性动作（push 样本 / 启动 / 读日志）。
 - **排查顺序**：先怀疑**代码 / 构建 / 数据** → 再怀疑**模拟器自身状态**（跑过重型 GL/GPU 压测后先冷启动）
@@ -48,11 +47,10 @@
 | 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
-| GFX / Progressive / GPU 引擎（**改前必读**）、回放验证回路与**参考画面验收**、**CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 解码侧对拍（§8）** | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
+| GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 解码侧对拍（§8）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
 | **CPU（gdi）链路的并行与平台适配**（执行器/宽度/内存布局/相位归属、能量口径、已验证与被否证、M-b/M-c） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
-| **GPU 硬件加速计划**（tile 解码 + 合成做成一个 GPU 阶段：相位适配性/交接成本/里程碑/开关口径） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) |
-| **（历史，old 弃用）** 旧 CPU 链路文档 / 旧 GPU kernel 清单：只作依据保留，不要从这里接手 | [`cpu-path_old.md`](doc_agent/cpu-path_old.md)、[`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md) |
-| 上屏（present）管线：一套实现、CPU/GPU 耗时对比、**后续工作清单** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
+| **（历史，old 弃用）** 旧 CPU 链路文档：只作依据保留，不要从这里接手 | [`cpu-path_old.md`](doc_agent/cpu-path_old.md) |
+| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲与后续工作清单 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 
 ## 环境
 
@@ -81,14 +79,14 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
   最后 `build_project`。应用编译用的 FreeRDP/winpr 头文件在 `entry/src/main/cpp/thirdparty/`，
   由 `build-freerdp.ps1` 调用 `sync-freerdp-headers.ps1` 生成（同样**不入库**）。
   详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
-- 模拟器优先用于**与硬件加速无关**的功能/逻辑/UI 调试；**Vulkan/GPU 回放只在真机**。
+- 模拟器优先用于**与硬件加速无关**的功能/逻辑/UI 调试；**Vulkan（硬件加速）只在真机验证**。
 
 ## 目录速览
 
 | 路径 | 作用 |
 |---|---|
 | `entry/src/main/ets/` | ArkUI 界面：`entryability/`、`sessionability/`、`pages/`、`services/`、`model/`、`utils/` |
-| `entry/src/main/cpp/` | 原生：FreeRDP 会话、GFX 引擎（Vulkan）、音频、Node-API 桥、dev 回放 |
+| `entry/src/main/cpp/` | 原生：FreeRDP 会话、Vulkan/GLES 呈现器、音频、Node-API 桥、dev 回放 |
 | `entry/src/main/resources/` | 主题色（`base|dark/element/color.json`）与图标 |
 | `native/scripts/` | 原生库源码构建与 FreeRDP 补丁 |
 | `entry/libs/<abi>/` | 本地构建的原生库（**gitignore，不入库**） |
@@ -100,11 +98,10 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 
 | 要改的东西 | 先读 |
 |---|---|
-| GFX / Progressive / 解码 / 合成 / GPU 引擎 / 回放 | [`gfx-engine.md`](doc_agent/gfx-engine.md)（**协议与合成语义那一节必须逐条对照**） |
+| GFX 码流框架 / 会话侧接线 / 回放与参考画面验收 | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
 | CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 对拍 | [`gfx-engine.md`](doc_agent/gfx-engine.md) §8 |
 | CPU 解码的并行 / 线程池 / 多核与平台适配 | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
-| GPU 硬件加速（解码 + 合成的 GPU 化；含 RLGR kernel 的实现约束） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) + [`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md)（old） |
-| 上屏（present）：帧槽/`engineChain`/blit 令牌、picture ping-pong、脏区账、CPU vs GPU 上屏耗时 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
+| 上屏（present）：Vulkan/GLES 后端、脏区上传、零拷贝桌面缓冲、swapchain 重建 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、剪贴板 | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置项、连接存储、密码、导入导出 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 页面 / 状态刷新 / 路由 / 主题 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |

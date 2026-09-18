@@ -3,11 +3,9 @@
  *
  * Present-on-screen consumer of the shared replay driver: the capture is read,
  * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
- * parsing), the resulting commands go to the Vulkan desktop engine, and this
- * file only presents the composed screen on every EndFrame through
- * GpuVkPresentComposed(); the CPU (gdi) route decodes with FreeRDP's own pipeline
- * and uploads the composed desktop through the presenter instead. Correctness is
- * checked against a stored golden reference (GfxReplayRefMode).
+ * parsing), FreeRDP's gdi pipeline decodes it, and the composed desktop is
+ * uploaded through the presenter on every EndFrame. Correctness is checked
+ * against a stored golden reference (GfxReplayRefMode).
  */
 #include "hmrdp_replay.h"
 
@@ -28,9 +26,6 @@
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_log.h"
-#include "hmrdp_rfx.h"  // kGpuCmd / kGpuCodec ids
-#include "hmrdp_vk_desktop.h"
-#include "hmrdp_vk_renderer.h"
 #include "hmrdp_presenter.h"
 
 // DEV-ONLY: phase timers exported by the patched FreeRDP progressive decoder
@@ -66,81 +61,12 @@ extern "C" void HmrdpSetDwtCheck(int on) __attribute__((weak));
 
 // The progressive decode's timing probes (`HmrdpProgStat` / the `prog`/`prog2`
 // lines) are off by default: their clock reads are not free on this platform and
-// only a replay ever displays them. The CPU route turns them on for its run and
-// a live session keeps them off (hmrdp_session.cpp). Weak, so a stock FreeRDP
+// only a replay ever displays them. The replay turns them on for its run and a
+// live session keeps them off (hmrdp_session.cpp). Weak, so a stock FreeRDP
 // simply has no probes to switch.
 extern "C" void HmrdpSetProgSample(int on) __attribute__((weak));
 
 namespace hmrdp {
-
-// The replay's desktop engine: the Vulkan GFX engine plus its swapchain
-// presenter. It exposes exactly what the pump/stats code needs, so that code
-// stays free of the engine's own types.
-class ReplayDesktop {
- public:
-  // Brings up the engine + presenter on the given XComponent surface; returns
-  // false and fills `error` on failure.
-  bool Init(void* window, int width, int height, std::string* error);
-  void Resize(int width, int height);
-  void Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-             const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-             uint32_t payloadLen);
-  // Composes and presents the engine screen. Returns false when nothing was
-  // dirty (static frame) or the present failed.
-  bool Present();
-  bool screenDirty() const { return engine_ != nullptr && engine_->screenDirty(); }
-
-  int screenWidth() const { return engine_->screenWidth(); }
-  int screenHeight() const { return engine_->screenHeight(); }
-  // One-line engine summary for the dev panel.
-  std::string Summary() const { return engine_->Stats(); }
-
- private:
-  std::unique_ptr<GfxVkDesktop> engine_;
-  std::unique_ptr<VkRenderer> renderer_;
-};
-
-
-bool ReplayDesktop::Init(void* window, int width, int height, std::string* error) {
-  renderer_ = std::make_unique<VkRenderer>();
-  renderer_->SetSurface(window, width, height);
-  // Prepare() creates the swapchain and presents a black frame. The engine and the
-  // CPU upload both hand the presenter FreeRDP-order BGRA; the presenter's quad does
-  // the channel-order conversion, so the engine no longer follows the swapchain
-  // format (doc_agent/gfx-engine.md §2.3).
-  if (!renderer_->Prepare()) {
-    if (error != nullptr) {
-      *error = "vulkan surface/swapchain failed: " + renderer_->lastError();
-    }
-    renderer_.reset();
-    return false;
-  }
-  engine_ = std::make_unique<GfxVkDesktop>();
-  if (!engine_->Init()) {
-    if (error != nullptr) {
-      *error = "vulkan engine init failed";
-    }
-    engine_.reset();
-    renderer_.reset();
-    return false;
-  }
-  return true;
-}
-
-
-void ReplayDesktop::Resize(int width, int height) {
-  renderer_->ResizeSurface(width, height);
-}
-
-void ReplayDesktop::Apply(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                          const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                          uint32_t payloadLen) {
-  engine_->ApplyCommand(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
-}
-
-bool ReplayDesktop::Present() {
-  return GpuVkPresentComposed(engine_.get(), renderer_.get());
-}
 
 namespace {
 
@@ -326,46 +252,6 @@ int64_t ProcessCpuUs() {
   return static_cast<int64_t>(ts.tv_sec) * 1000000 + static_cast<int64_t>(ts.tv_nsec) / 1000;
 }
 
-// Stable route name for the stats panel / hilog.
-const char* RouteName(GfxReplayRoute route) {
-  switch (route) {
-    case GfxReplayRoute::kCpu:
-      return "cpu";
-    case GfxReplayRoute::kVulkan:
-      return "vulkan";
-
-  }
-  return "?";
-}
-
-// Sends the replayed commands into the engine; the driver supplies them.
-class ReplaySink : public GfxCommandSink {
- public:
-  ReplaySink(ReplayDesktop* engine, GfxReplay* owner) : engine_(engine), owner_(owner) {}
-
-  void ApplyGfx(uint16_t cmdId, uint32_t surfaceId, const uint32_t scalars[4],
-                const uint8_t* params, uint32_t paramsLen, const uint8_t* payload,
-                uint32_t payloadLen) override {
-    if (engine_ == nullptr) {
-      return;
-    }
-    // The surface command carries its codec id in scalars[0]; 0 marks the
-    // non-surface commands (fill/copy/cache/...).
-    const uint32_t codecId =
-        (cmdId == kGpuCmdWireToSurface && scalars != nullptr) ? scalars[0] : 0u;
-    const int64_t t0 = NowUs();
-    engine_->Apply(cmdId, surfaceId, scalars, params, paramsLen, payload, payloadLen);
-    const int64_t total = NowUs() - t0;
-    if (owner_ != nullptr) {
-      owner_->RecordApply(cmdId, codecId, static_cast<uint64_t>(total));
-    }
-  }
-
- private:
-  ReplayDesktop* engine_ = nullptr;
-  GfxReplay* owner_ = nullptr;
-};
-
 }  // namespace
 
 GfxReplay& GfxReplay::Instance() {
@@ -378,8 +264,7 @@ GfxReplay::~GfxReplay() {
 }
 
 bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
-                      const std::string& gfxPath, GfxReplayRoute route, bool realtime,
-                      GfxReplayRefMode refMode) {
+                      const std::string& gfxPath, bool realtime, GfxReplayRefMode refMode) {
   Stop();
   if (nativeWindow == nullptr || surfaceW <= 0 || surfaceH <= 0 || gfxPath.empty()) {
     if (nativeWindow != nullptr) {
@@ -399,34 +284,14 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     {
       std::lock_guard<std::mutex> err(errorMutex_);
       lastError_.clear();
-      traffic_.clear();
     }
     window_ = nativeWindow;
     surfaceW_ = surfaceW;
     surfaceH_ = surfaceH;
     gfxPath_ = gfxPath;
-    route_.store(static_cast<int>(route));
-    desktop_.reset();
     frames_.store(0);
     presents_.store(0);
-    presentSkips_.store(0);
     presentFailures_.store(0);
-    applyUs_.store(0);
-    applyCount_.store(0);
-    progUs_.store(0);
-    progCount_.store(0);
-    clearUs_.store(0);
-    clearCount_.store(0);
-    uncompUs_.store(0);
-    uncompCount_.store(0);
-    fillUs_.store(0);
-    fillCount_.store(0);
-    blitUs_.store(0);
-    blitCount_.store(0);
-    cacheUs_.store(0);
-    cacheCount_.store(0);
-    otherUs_.store(0);
-    otherCount_.store(0);
     imgDiffChecks_.store(0);
     imgDiffBad_.store(0);
     imgDiffRgbPx_.store(0);
@@ -447,10 +312,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     refBad_.store(0);
     refFirstBad_.store(-1);
     refNote_.clear();
-    // The reference modes only make sense on the CPU (gdi) route: they hash the
-    // composed desktop, which is what that route produces and what the engine
-    // route is supposed to reproduce.
-    refMode_.store(route == GfxReplayRoute::kCpu ? static_cast<int>(refMode) : 0);
+    refMode_.store(static_cast<int>(refMode));
     // This run's number, so a driver can wait for *this* run's end instead of
     // guessing from a state line that looks the same for every round.
     runId_.fetch_add(1);
@@ -467,12 +329,11 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     if (HmrdpSetDwtCheck != nullptr) {
       HmrdpSetDwtCheck(refMode_.load() == static_cast<int>(GfxReplayRefMode::kCompare) ? 1 : 0);
     }
-    // The progressive timing probes exist for this route's `prog`/`prog2` lines
+    // The progressive timing probes exist for the replay's `prog`/`prog2` lines
     // only: a live session never displays them and must not pay their per-tile
-    // clock reads. On while the CPU route runs, off otherwise (the engine route
-    // decodes in the GPU and never fills them).
+    // clock reads.
     if (HmrdpSetProgSample != nullptr) {
-      HmrdpSetProgSample(route == GfxReplayRoute::kCpu ? 1 : 0);
+      HmrdpSetProgSample(1);
     }
     presentUs_.store(0);
     uploadBytes_.store(0);
@@ -493,14 +354,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     firstFrameEndUs_.store(0);
     startUs_.store(NowUs());
     endUs_.store(0);
-    // The pure CPU route presents raw gdi frames through the Vulkan presenter;
-    // the engine route builds its own presenter inside the worker.
-    if (route == GfxReplayRoute::kCpu) {
-      presenter_ = CreateFramePresenter();
-      presenter_->SetSurface(window_, surfaceW_, surfaceH_);
-    } else {
-      presenter_.reset();
-    }
+    presenter_ = CreateFramePresenter();
+    presenter_->SetSurface(window_, surfaceW_, surfaceH_);
     running_.store(true);
     thread_ = std::thread(&GfxReplay::Run, this);
   }
@@ -519,9 +374,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     return false;
   }
   HMRDP_LOGI(
-      "gfx replay: started route=%{public}s mode=%{public}s surface=%{public}dx%{public}d "
-      "path=%{public}s",
-      RouteName(static_cast<GfxReplayRoute>(route_.load())),
+      "gfx replay: started mode=%{public}s surface=%{public}dx%{public}d path=%{public}s",
       effectiveRealtime ? "realtime" : "fast", surfaceW, surfaceH, gfxPath.c_str());
   HMRDP_LOGI("gfx replay: decode %{public}s", DecodeThreadsInfo().c_str());
   return true;
@@ -590,11 +443,9 @@ std::string GfxReplay::StatsLines() {
     return count > 0 ? static_cast<double>(total) / static_cast<double>(count) / 1000.0 : 0.0;
   };
   std::string err;
-  std::string traffic;
   {
     std::lock_guard<std::mutex> lock(errorMutex_);
     err = lastError_;
-    traffic = traffic_;
   }
   const uint64_t pace = paceUs_.load();
   // "feed" = compute time, excluding the deliberate playback throttling (only the
@@ -606,8 +457,8 @@ std::string GfxReplay::StatsLines() {
   uint64_t pumpUs = measuredPump > 0
                         ? (measuredPump > pace ? measuredPump - pace : 0)
                         : (elapsed > pace ? elapsed - pace : 0);
-  // Exclude the run's start-up (engine/presenter init, first frame wait) so `feed`
-  // is the playback's own compute, comparable between runs and routes.
+  // Exclude the run's start-up (presenter init, first frame wait) so `feed`
+  // is the playback's own compute, comparable between runs.
   const int64_t firstFrameEnd = firstFrameEndUs_.load();
   const int64_t pumpStart = pumpStartUs_.load();
   if (firstFrameEnd != 0 && pumpStart != 0 && firstFrameEnd > pumpStart &&
@@ -615,7 +466,6 @@ std::string GfxReplay::StatsLines() {
     pumpUs -= static_cast<uint64_t>(firstFrameEnd - pumpStart);
   }
 
-  const char* routeName = RouteName(static_cast<GfxReplayRoute>(route_.load()));
   // mode=realtime replays the capture's own arrival times; mode=fast is *not
   // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
   // not the live cadence (a frame budget used to be applied here; it kept the CPU
@@ -636,13 +486,12 @@ std::string GfxReplay::StatsLines() {
   const char* stateName = running_.load() ? "running" : (aborted_.load() ? "aborted" : "finished");
   char head[420];
   std::snprintf(head, sizeof(head),
-                "state=%s  run=%llu  route=%s  mode=%s  frames=%llu  presents=%llu  fps=%.1f  "
-                "fail=%llu  skip=%llu\n"
+                "state=%s  run=%llu  mode=%s  frames=%llu  presents=%llu  fps=%.1f  "
+                "fail=%llu\n"
                 "feed=%llums   parse=%llums   present=%.2fms   lag=%llums   (running=%d)",
-                stateName, static_cast<unsigned long long>(runId_.load()), routeName, modeName,
+                stateName, static_cast<unsigned long long>(runId_.load()), modeName,
                 frames, static_cast<unsigned long long>(presents), fps,
                 static_cast<unsigned long long>(presentFailures_.load()),
-                static_cast<unsigned long long>(presentSkips_.load()),
                 static_cast<unsigned long long>(pumpUs / 1000),
                 static_cast<unsigned long long>(hmrdp::GfxReplayParseUs() / 1000),
                 avgMs(presentUs_.load(), presents),
@@ -687,9 +536,8 @@ std::string GfxReplay::StatsLines() {
     }
   }
 
-  // CPU route only (the GPU route composes in the engine and never presents a gdi
-  // frame): how many bytes actually left the CPU, versus what the merged bounding
-  // box would have cost for the same run (the saving is then visible in every run
+  // How many bytes actually left the CPU, versus what the merged bounding box
+  // would have cost for the same run (the saving is then visible in every run
   // rather than only during an A/B). `rectlist=used/total presents` and
   // `truncated` say whether the rect path was exercised or fell back.
   const uint64_t uploadBoxBytes = uploadBoxBytes_.load();
@@ -709,12 +557,11 @@ std::string GfxReplay::StatsLines() {
   }
 
   // Per-frame client work, measured exactly like the live session's phases
-  // (hmrdp_gfx_work.h): same hooks, same sub-items, same denominator. Only the CPU
-  // route installs the meter - it is the one that mirrors live (gdi) - so this
-  // line is where a live session's phase figures can be checked against a replay
-  // of the same stream. Whole-run totals, not a per-second window. The meter keeps
-  // no aggregate, so the per-frame work sum is added here (the four work phases;
-  // `sync` stays out, it is blocked time).
+  // (hmrdp_gfx_work.h): same hooks, same sub-items, same denominator, so a live
+  // session's phase figures can be checked against a replay of the same stream.
+  // Whole-run totals, not a per-second window. The meter keeps no aggregate, so
+  // the per-frame work sum is added here (the four work phases; `sync` stays out,
+  // it is blocked time).
   const GfxWorkMeter::Sample work = meter_.Peek();
   if (work.frames > 0) {
     const uint64_t frames = work.frames;
@@ -775,8 +622,6 @@ std::string GfxReplay::StatsLines() {
 
   // DEV-ONLY progressive decode attribution (patched FreeRDP, see the weak
   // declaration above): per-frame milliseconds plus the update_tiles totals.
-  // Only the CPU route installs the meter, so the counters are gated on it -
-  // otherwise a run that follows a CPU replay would show its totals here.
   if (&HmrdpProgStat[0] != nullptr && work.frames > 0 && HmrdpProgStat[5] > 0) {
     const double d = static_cast<double>(work.frames > 0 ? work.frames : 1);
     // The tile-decode section is timed by a different slot per path and the two
@@ -837,31 +682,7 @@ std::string GfxReplay::StatsLines() {
     out += dw;
   }
 
-  // Per-command-class breakdown only exists on the GPU route (the CPU route
-  // decodes inside FreeRDP and never calls the sink).
-  if (applyCount_.load() > 0) {
-    char cls[640];
-    std::snprintf(
-        cls, sizeof(cls),
-        "\nprog  %.2fms x%llu\nclear %.2fms x%llu\nunc   %.2fms x%llu\n"
-        "fill  %.2fms x%llu\nblit  %.2fms x%llu\ncache %.2fms x%llu\nother %.2fms x%llu",
-        avgMs(progUs_.load(), progCount_.load()),
-        static_cast<unsigned long long>(progCount_.load()),
-        avgMs(clearUs_.load(), clearCount_.load()),
-        static_cast<unsigned long long>(clearCount_.load()),
-        avgMs(uncompUs_.load(), uncompCount_.load()),
-        static_cast<unsigned long long>(uncompCount_.load()),
-        avgMs(fillUs_.load(), fillCount_.load()),
-        static_cast<unsigned long long>(fillCount_.load()),
-        avgMs(blitUs_.load(), blitCount_.load()),
-        static_cast<unsigned long long>(blitCount_.load()),
-        avgMs(cacheUs_.load(), cacheCount_.load()),
-        static_cast<unsigned long long>(cacheCount_.load()),
-        avgMs(otherUs_.load(), otherCount_.load()),
-        static_cast<unsigned long long>(otherCount_.load()));
-    out += cls;
-  }
-  // Golden-reference gate (CPU route; see GfxReplayRefMode). The hashes are the
+  // Golden-reference gate (see GfxReplayRefMode). The hashes are the
   // pass/fail; the pixel numbers come from the single frame the stored image was
   // taken from, i.e. they only say *how* it failed, not where every frame differs.
   const int refMode = refMode_.load();
@@ -890,10 +711,6 @@ std::string GfxReplay::StatsLines() {
     }
     out += rf;
   }
-  if (!traffic.empty()) {
-    out += "\n";
-    out += traffic;
-  }
   if (!err.empty()) {
     out += "\nerr=";
     out += err;
@@ -911,37 +728,6 @@ std::string GfxReplay::Stats() {
     }
   }
   return s;
-}
-
-void GfxReplay::RecordApply(uint16_t cmdId, uint32_t codecId, uint64_t micros) {
-  applyUs_.fetch_add(micros);
-  applyCount_.fetch_add(1);
-  std::atomic<uint64_t>* us = &otherUs_;
-  std::atomic<uint64_t>* count = &otherCount_;
-  if (cmdId == kGpuCmdWireToSurface) {
-    if (codecId == kGpuCodecCaprogressive || codecId == kGpuCodecCaprogressiveV2) {
-      us = &progUs_;
-      count = &progCount_;
-    } else if (codecId == kGpuCodecClearCodec) {
-      us = &clearUs_;
-      count = &clearCount_;
-    } else {
-      us = &uncompUs_;
-      count = &uncompCount_;
-    }
-  } else if (cmdId == kGpuCmdSolidFill) {
-    us = &fillUs_;
-    count = &fillCount_;
-  } else if (cmdId == kGpuCmdSurfaceToSurface) {
-    us = &blitUs_;
-    count = &blitCount_;
-  } else if (cmdId == kGpuCmdSurfaceToCache || cmdId == kGpuCmdCacheToSurface ||
-             cmdId == kGpuCmdEvictCacheEntry) {
-    us = &cacheUs_;
-    count = &cacheCount_;
-  }
-  us->fetch_add(micros);
-  count->fetch_add(1);
 }
 
 void GfxReplay::RecordPresent(uint64_t micros) {
@@ -1001,57 +787,6 @@ void GfxReplay::PaceRecord(uint64_t timestampUs) {
   }
 }
 
-void GfxReplay::OnReplayFrame() {
-  const int64_t nowUs = static_cast<int64_t>(NowUs());
-  const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
-  if (nowUs - startUs_.load() > capUs) {
-    HMRDP_LOGI("gfx replay: %{public}ds cap reached",
-               static_cast<int>(capUs / 1000000));
-    running_.store(false);
-    return;
-  }
-  const int pw = pendingW_.exchange(0);
-  const int ph = pendingH_.exchange(0);
-  if (pw > 0 && ph > 0 && desktop_ != nullptr) {
-    desktop_->Resize(pw, ph);
-  }
-  const int64_t presentStart = NowUs();
-  const bool presented = desktop_ != nullptr && desktop_->Present();
-  RecordPresent(static_cast<uint64_t>(NowUs() - presentStart));
-  frames_.fetch_add(1);
-  if (presented) {
-    presents_.fetch_add(1);
-  } else if (desktop_ != nullptr && !desktop_->screenDirty()) {
-    // Nothing to show: no surface had a dirty region mapped to the output, so
-    // Compose() bailed out before touching the screen. This is the normal
-    // "static frame" case (typically the first frame markers before
-    // ResetGraphics / before any drawable update), not a failure.
-    const uint64_t n = presentSkips_.fetch_add(1) + 1;
-    if (n <= 4) {
-      HMRDP_LOGI("gfx replay: no present #%{public}llu at frame=%{public}llu (nothing dirty)",
-                 static_cast<unsigned long long>(n),
-                 static_cast<unsigned long long>(frames_.load()));
-    }
-  } else {
-    presentFailures_.fetch_add(1);
-    const uint64_t n = presentFailures_.load();
-    if (n <= 4) {
-      HMRDP_LOGW("gfx replay: present failed #%{public}llu at frame=%{public}llu",
-                 static_cast<unsigned long long>(n),
-                 static_cast<unsigned long long>(frames_.load()));
-    }
-  }
-  if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
-    if (desktop_ != nullptr) {
-      const std::string t = desktop_->Summary();
-      std::lock_guard<std::mutex> lock(errorMutex_);
-      traffic_ = t;
-    }
-    HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
-  }
-  MarkFrameEnd(presented);
-}
-
 void GfxReplay::Run() {
   // A new run invalidates the previous run's energy line: Stats() must not show
   // one run's proxy next to another run's frames.
@@ -1059,78 +794,16 @@ void GfxReplay::Run() {
     std::lock_guard<std::mutex> lock(energyMutex_);
     energyLine_.clear();
   }
-  switch (static_cast<GfxReplayRoute>(route_.load())) {
-    case GfxReplayRoute::kCpu:
-      RunCpuReplay(gfxPath_);
-      break;
-    case GfxReplayRoute::kVulkan:
-      RunVulkanReplay(gfxPath_);
-      break;
-  }
+  RunCpuReplay(gfxPath_);
   endUs_.store(NowUs());
   running_.store(false);
-}
-
-void GfxReplay::RunVulkanReplay(const std::string& gfxPath) {
-  std::unique_ptr<ReplayDesktop> desktop(new ReplayDesktop());
-  std::string error;
-  if (!desktop->Init(window_, surfaceW_, surfaceH_, &error)) {
-    std::lock_guard<std::mutex> err(errorMutex_);
-    lastError_ = error.empty() ? "engine init failed" : error;
-    return;
-  }
-  desktop_ = std::move(desktop);
-  ReplaySink sink(desktop_.get(), this);
-
-  // The replayed stream must not re-trigger the capture hook on the recorder.
-  hmrdp::GfxDumpSetReplaying(true);
-  hmrdp::GfxReplayResetParseUs();
-
-  const int64_t pumpStart = NowUs();
-  pumpStartUs_.store(pumpStart);
-
-  // Realtime mode: the pump waits for each record's recorded arrival time before
-  // feeding it, so the playback runs on the cadence the live session saw.
-  ReplayPaceFn pace;
-  if (realtimeActive_.load() != 0) {
-    pace = [this](uint64_t tsUs) { PaceRecord(tsUs); };
-  }
-  // The present (and its pacing sleep) runs inside the recv call, so the parse
-  // figures must not count the throttling as decode work.
-  const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
-
-  bool aborted = false;
-  const bool ok = GfxReplayStream(gfxPath, &sink, [this]() { OnReplayFrame(); }, &running_, &error,
-                                  pace, paceAccum, &aborted);
-  aborted_.store(aborted);
-  pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
-  HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
-             static_cast<unsigned long long>(pumpUs_.load() / 1000),
-             static_cast<unsigned long long>(paceUs_.load() / 1000));
-
-  {
-    const std::string summary = desktop_->Summary();
-    std::lock_guard<std::mutex> lock(errorMutex_);
-    traffic_ = summary;
-  }
-  hmrdp::GfxDumpSetReplaying(false);
-  const int64_t releaseStart = NowUs();
-  desktop_.reset();
-  HMRDP_LOGI("gfx replay: engine teardown %{public}llu ms",
-             static_cast<unsigned long long>((NowUs() - releaseStart) / 1000));
-  if (!ok) {
-    std::lock_guard<std::mutex> err(errorMutex_);
-    lastError_ = error;
-  }
-  HMRDP_LOGI("gfx replay: finished (route=%{public}s): %{public}s",
-             RouteName(static_cast<GfxReplayRoute>(route_.load())), Stats().c_str());
 }
 
 void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // FreeRDP's own gdi pipeline handles the decoding (clear/progressive/...),
   // exactly like a live session. Only the destination changes: gdi's primary
-  // buffer is uploaded through the presenter's CPU frame path instead of the
-  // engine's screen texture, so this route is the CPU reference for the engine.
+  // buffer is composed straight into the presenter's desktop buffer when it can
+  // hand one over.
   presenter_->Prepare();
   GfxCpuDesktop cpu;
   // gdi composes straight into the presenter's desktop buffer when it can hand one

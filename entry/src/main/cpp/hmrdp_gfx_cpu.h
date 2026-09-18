@@ -1,12 +1,12 @@
 /*
  * HmRdp - offline FreeRDP CPU (gdi) desktop (doc_agent/gfx-engine.md §6).
  *
- * The A/B reference route for the GPU desktop engine: instead of re-implementing
- * the image decoders, it builds a session-less FreeRDP context with gdi + the
- * stock rdpgfx gdi pipeline (gdi_graphics_pipeline_init), so the replayed
- * capture is decoded through the very same CPU code a live session uses
- * (clear/progressive/planar/solid fill/cache -> gdi primary buffer). The replay
- * only has to feed it the raw chunks and present the primary buffer.
+ * The replay's decoder: instead of re-implementing the image decoders, it builds
+ * a session-less FreeRDP context with gdi + the stock rdpgfx gdi pipeline
+ * (gdi_graphics_pipeline_init), so the replayed capture is decoded through the
+ * very same CPU code a live session uses (clear/progressive/planar/solid
+ * fill/cache -> gdi primary buffer). The replay only has to feed it the raw
+ * chunks and present the primary buffer.
  */
 #ifndef HMRDP_GFX_CPU_H
 #define HMRDP_GFX_CPU_H

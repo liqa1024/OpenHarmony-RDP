@@ -40,9 +40,9 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 | 改动 | 必须做 |
 |---|---|
 | 任何 `.ets` | 先 `arkts_check <文件>`（快），再 `build_project` |
-| 任何 `.cpp/.h/.comp` | `build_project`（任务结束前必须通过） |
+| 任何 `.cpp/.h/.vert/.frag` | `build_project`（任务结束前必须通过） |
 | 改 FreeRDP 源码/补丁 | 见 [`native-libraries.md`](native-libraries.md)：重打补丁 + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`，再 `build_project` |
-| 改 GFX / Progressive / GPU 引擎 | 见 [`gfx-engine.md`](gfx-engine.md) §6 的**回放验证回路**（真机回放 + `bad=0`） |
+| 改 GFX / 解码 / 回放 | 见 [`gfx-engine.md`](gfx-engine.md) §6 的**回放验证回路**（回放 + `bad=0`；Vulkan 上屏只在真机） |
 | 改输入 / 会话窗口 | 模拟器（2in1）上手工走一遍；光标同步、真机 GPU 相关例外见对应文档 |
 
 - **验证纪律**：先怀疑**代码 / 构建 / 数据** → 再怀疑**模拟器自身状态**（跑过重型 GL/GPU 压测后先冷启动）
@@ -65,8 +65,8 @@ hdc -t <序列号> shell "hilog -x -D 0xD001"            # 读本应用的原生
 
 - 首选 **2in1 模拟器**（与目标系统同版本），用于**与硬件加速无关**的调试。
 - 启动：`devecocli emulator start "<模拟器名>"`；同一时刻只有一个实例占用 5555。
-- **Vulkan / 硬件加速 / GPU 回放是"真机专属功能"，模拟器不在支持范围内**（模拟器的 Vulkan 实现会按
-  标准接口谎报能力），所以不要在模拟器上开硬件加速或跑 GPU 回放，也不要用模拟器结论约束真机行为。
+- **Vulkan / 硬件加速（上屏）是"真机专属功能"，模拟器不在支持范围内**（模拟器的 Vulkan 实现会按
+  标准接口谎报能力），所以不要在模拟器上开硬件加速，也不要用模拟器结论约束真机行为。
 
 ### 5.1 在设备上驱动 UI（可靠用法）
 

@@ -31,8 +31,8 @@
  * on (`ours`), which is the direct answer to "with N workers, how many cores
  * actually work".
  *
- * The probe is installed by the CPU (gdi) replay route only: the GPU route does
- * not decode on the CPU, so the figure would not describe it.
+ * The probe is installed by the replay only: a live session reports the decode
+ * cost through the per-frame meter instead.
  */
 #ifndef HMRDP_ENERGY_H
 #define HMRDP_ENERGY_H

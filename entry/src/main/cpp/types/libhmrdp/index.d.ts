@@ -89,30 +89,29 @@ export const setRfxDump: (enabled: boolean, dir: string) => boolean;
 
 /**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
- * `route` selects the decoder: 0 = CPU (FreeRDP gdi), 1 = Vulkan engine,
- * 2 = Vulkan engine vs gdi compare.
+ * Decoding is FreeRDP's gdi pipeline; the presenter is the one the "硬件加速"
+ * setting selects.
  * `realtime` plays the capture at its recorded arrival times (the cadence the
  * live session ran at) instead of a fixed per-frame budget; it is ignored for
  * captures recorded before the arrival times were stored.
+ * `refMode` selects the golden-reference check: 0 = off, 1 = record, 2 = compare.
  */
 export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
-  gfxPath: string, route: number, realtime: number, refMode: number) => string;
+  gfxPath: string, realtime: number, refMode: number) => string;
 
 export const stopGfxReplayTest: () => void;
 export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;
 
 /**
- * Dev/test: Vulkan capability report (VULKAN-TODO §3.2) - loader/device version,
- * migration-relevant extensions, memory types and queue families. Multi-line,
- * for the dev panel. Used to judge whether a device can run the Vulkan engine.
+ * Dev/test: Vulkan capability report - loader/device version, migration-relevant
+ * extensions, memory types and queue families. Multi-line, for the dev panel.
  */
 export const vulkanInfo: () => string;
 
 /**
  * Whether frames can be presented through Vulkan on this device - the capability
- * behind the "硬件加速" setting (the presenter verdict: no compute queue
- * required). Returns "1", or "0|<code>" with a stable code:
+ * behind the "硬件加速" setting. Returns "1", or "0|<code>" with a stable code:
  * `no-vulkan` / `no-instance` / `no-device` / `no-host-memory` / `no-surface` /
  * `emulator`. The UI layer maps the code to its own wording.
  */

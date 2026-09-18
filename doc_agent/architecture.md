@@ -11,7 +11,7 @@
                         SessionPage（XComponent 画面 + 输入 + 工具栏/遥测）
                               │  每会话一个 RdpNative 实例（Node-API → hmrdp_session）
                               ▼
-                    原生：FreeRDP 客户端 → GFX 命令 → GPU 引擎 / gdi 回退
+                    原生：FreeRDP 客户端 → GFX → gdi 解码 → 呈现器上屏（Vulkan/GLES）
 ```
 
 配置/密码/设置只在**连接建立时**读取，见 [`settings-and-storage.md`](settings-and-storage.md) §4。
@@ -47,19 +47,17 @@
 |---|---|
 | `hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + 各类查询/开关 |
 | `hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；画面由 gdi 出、经呈现器上屏 |
-| `hmrdp_gfx_driver.{h,cpp}` | RDPGFX PDU → 引擎命令的统一映射（live 与离线回放共用）；离线回放泵与逐命令交错 A/B |
+| `hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
 | `hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
-| `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的对比路线）；`PresentGdiFrame` 为 live 与 CPU 回放共用 |
+| `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
 | `hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
 | `hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad |
-| `hmrdp_replay.{h,cpp}` | dev 回放页的引擎侧：喂流、上屏、逐帧对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
+| `hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
 | `hmrdp_vk_context.{h,cpp}` | Vulkan 上下文：`dlopen` + 标准能力探测 + 进程级 instance/device/queue + 内存类型 + 延迟销毁 |
-| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + letterbox blit；两条帧来源共用同一个类 |
-| `hmrdp_vk_desktop.{h,cpp}` | Vulkan 表面引擎：表面注册表 + 命令执行 + 合成 + 屏幕脏区 |
-| `shaders/*.comp` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入 |
+| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 |
+| `shaders/present_quad.*` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入 |
 | `hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
 | `hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
-| `hmrdp_rfx.{h,cpp}` | Progressive 容器解析器（`ParseRfxProgressive`）+ 共享命令模型 + ClearCodec hook |
 
 ## 4. 其它
 

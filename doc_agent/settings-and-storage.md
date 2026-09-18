@@ -27,12 +27,12 @@
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置
   `FreeRDP_SupportGraphicsPipeline`。
 - **硬件加速**（`hardwareAccel`，进程级）：**只选上屏后端**——开 = Vulkan 呈现器，关 = GLES 呈现器
-  且整个会话不碰 Vulkan。解码**始终**是 FreeRDP 的 gdi 软解，与本开关无关（GPU 引擎没有接进 live，
-  见 [`gfx-engine.md`](gfx-engine.md) §7）。存在这个开关的原因是 Vulkan 支持参差不齐的设备
+  且整个会话不碰 Vulkan。解码**始终**是 FreeRDP 的 gdi 软解，与本开关无关（见
+  [`gfx-engine.md`](gfx-engine.md) §3）。存在这个开关的原因是 Vulkan 支持参差不齐的设备
   （模拟器完全不可用）：关掉它就能在一台"Vulkan 不好用"的机器上照常跑。判据用**呈现判定**
   （不需要 compute，见 [`native-libraries.md`](native-libraries.md) §6）：不支持时设置页置灰并显示原因，
   把已存的值纠正为关；支持时默认开（新装/未改过设置即为开）。dev 回放页也有同一个开关
-  （`加速:开/关`），改它等于改这个设置并重启回放——两个后端可以在同一份录像上当场 A/B。
+  （`路线:CPU/硬件加速`），改它等于改这个设置并重启回放——两个后端可以在同一份录像上当场 A/B。
 - **解码线程数**（`decodeThreads`，进程级）：Progressive 解码的**并行宽度**，0 = 自动（全部在线核，上限 16）、
   1 = 完全串行（接收线程直接解码，不提交/不唤醒/不等待）；2..8 = 手动。设置页有滑条，dev 回放页有
   「线程」直选行。执行器、宽度语义与判据见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§1。

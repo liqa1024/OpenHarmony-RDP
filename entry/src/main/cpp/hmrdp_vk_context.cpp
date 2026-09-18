@@ -1,6 +1,6 @@
 /*
  * HmRdp - Vulkan context: loader, capability probe and the process-wide
- * instance/device. See hmrdp_vk_context.h and doc_agent/gfx-engine.md §1.
+ * instance/device. See hmrdp_vk_context.h.
  */
 #include "hmrdp_vk_context.h"
 
@@ -258,17 +258,8 @@ VulkanCapabilities ProbeVulkan() {
     if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0) {
       caps.graphicsQueueFamilies++;
     }
-    if ((flags & VK_QUEUE_COMPUTE_BIT) != 0) {
-      caps.computeQueueFamilies++;
-    }
     if ((flags & VK_QUEUE_TRANSFER_BIT) != 0) {
       caps.transferQueueFamilies++;
-    }
-    if ((flags & VK_QUEUE_GRAPHICS_BIT) != 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0) {
-      caps.hasGraphicsComputeQueue = true;
-    }
-    if ((flags & VK_QUEUE_GRAPHICS_BIT) == 0 && (flags & VK_QUEUE_COMPUTE_BIT) != 0) {
-      caps.hasDedicatedComputeQueue = true;
     }
   }
 
@@ -361,14 +352,7 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdBeginRenderPass = ResolveDevice<PFN_vkCmdBeginRenderPass>(gdpa, gipa, device, instance, "vkCmdBeginRenderPass");
   CmdEndRenderPass = ResolveDevice<PFN_vkCmdEndRenderPass>(gdpa, gipa, device, instance, "vkCmdEndRenderPass");
   CmdPipelineBarrier = ResolveDevice<PFN_vkCmdPipelineBarrier>(gdpa, gipa, device, instance, "vkCmdPipelineBarrier");
-  CmdCopyImage = ResolveDevice<PFN_vkCmdCopyImage>(gdpa, gipa, device, instance, "vkCmdCopyImage");
-  CmdBlitImage = ResolveDevice<PFN_vkCmdBlitImage>(gdpa, gipa, device, instance, "vkCmdBlitImage");
-  CmdClearColorImage = ResolveDevice<PFN_vkCmdClearColorImage>(gdpa, gipa, device, instance, "vkCmdClearColorImage");
   CmdCopyBufferToImage = ResolveDevice<PFN_vkCmdCopyBufferToImage>(gdpa, gipa, device, instance, "vkCmdCopyBufferToImage");
-  CmdCopyImageToBuffer = ResolveDevice<PFN_vkCmdCopyImageToBuffer>(gdpa, gipa, device, instance, "vkCmdCopyImageToBuffer");
-  CmdFillBuffer = ResolveDevice<PFN_vkCmdFillBuffer>(gdpa, gipa, device, instance, "vkCmdFillBuffer");
-  CmdCopyBuffer = ResolveDevice<PFN_vkCmdCopyBuffer>(gdpa, gipa, device, instance, "vkCmdCopyBuffer");
-  CmdUpdateBuffer = ResolveDevice<PFN_vkCmdUpdateBuffer>(gdpa, gipa, device, instance, "vkCmdUpdateBuffer");
   CreateImage = ResolveDevice<PFN_vkCreateImage>(gdpa, gipa, device, instance, "vkCreateImage");
   DestroyImage = ResolveDevice<PFN_vkDestroyImage>(gdpa, gipa, device, instance, "vkDestroyImage");
   GetImageMemoryRequirements = ResolveDevice<PFN_vkGetImageMemoryRequirements>(gdpa, gipa, device, instance, "vkGetImageMemoryRequirements");
@@ -387,14 +371,13 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdResetQueryPool = ResolveDevice<PFN_vkCmdResetQueryPool>(gdpa, gipa, device, instance, "vkCmdResetQueryPool");
   CmdWriteTimestamp = ResolveDevice<PFN_vkCmdWriteTimestamp>(gdpa, gipa, device, instance, "vkCmdWriteTimestamp");
   GetQueryPoolResults = ResolveDevice<PFN_vkGetQueryPoolResults>(gdpa, gipa, device, instance, "vkGetQueryPoolResults");
-  // Compute: optional (a device without it just keeps the transfer-only engine).
+  // Presenter pipeline: shader modules, descriptors and the letterbox quad.
   CreateShaderModule = ResolveDevice<PFN_vkCreateShaderModule>(gdpa, gipa, device, instance, "vkCreateShaderModule");
   DestroyShaderModule = ResolveDevice<PFN_vkDestroyShaderModule>(gdpa, gipa, device, instance, "vkDestroyShaderModule");
   CreateDescriptorSetLayout = ResolveDevice<PFN_vkCreateDescriptorSetLayout>(gdpa, gipa, device, instance, "vkCreateDescriptorSetLayout");
   DestroyDescriptorSetLayout = ResolveDevice<PFN_vkDestroyDescriptorSetLayout>(gdpa, gipa, device, instance, "vkDestroyDescriptorSetLayout");
   CreatePipelineLayout = ResolveDevice<PFN_vkCreatePipelineLayout>(gdpa, gipa, device, instance, "vkCreatePipelineLayout");
   DestroyPipelineLayout = ResolveDevice<PFN_vkDestroyPipelineLayout>(gdpa, gipa, device, instance, "vkDestroyPipelineLayout");
-  CreateComputePipelines = ResolveDevice<PFN_vkCreateComputePipelines>(gdpa, gipa, device, instance, "vkCreateComputePipelines");
   DestroyPipeline = ResolveDevice<PFN_vkDestroyPipeline>(gdpa, gipa, device, instance, "vkDestroyPipeline");
   CreateDescriptorPool = ResolveDevice<PFN_vkCreateDescriptorPool>(gdpa, gipa, device, instance, "vkCreateDescriptorPool");
   DestroyDescriptorPool = ResolveDevice<PFN_vkDestroyDescriptorPool>(gdpa, gipa, device, instance, "vkDestroyDescriptorPool");
@@ -403,8 +386,6 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   UpdateDescriptorSets = ResolveDevice<PFN_vkUpdateDescriptorSets>(gdpa, gipa, device, instance, "vkUpdateDescriptorSets");
   CmdBindPipeline = ResolveDevice<PFN_vkCmdBindPipeline>(gdpa, gipa, device, instance, "vkCmdBindPipeline");
   CmdBindDescriptorSets = ResolveDevice<PFN_vkCmdBindDescriptorSets>(gdpa, gipa, device, instance, "vkCmdBindDescriptorSets");
-  CmdPushConstants = ResolveDevice<PFN_vkCmdPushConstants>(gdpa, gipa, device, instance, "vkCmdPushConstants");
-  CmdDispatch = ResolveDevice<PFN_vkCmdDispatch>(gdpa, gipa, device, instance, "vkCmdDispatch");
 
   // Graphics: the presenter draws its letterboxed picture with one quad, so these
   // are resolved the same opportunistic way (they are core Vulkan 1.0).
@@ -481,69 +462,41 @@ std::string VkResultName(int32_t result) {
 
 namespace {
 
-// Derives both verdicts from the probed facts. Kept separate from ProbeVulkan()
-// so every early return (no loader / no device) still gets one, and so there is
-// exactly one place that decides what "supported" means.
-//
-// The engine one is the strict one: the Progressive decode is a compute dispatch,
-// and the surfaces are host-visible buffers. The presenter one only needs what a
-// blit + a staging upload requires, i.e. the same device with no compute - which
-// keeps Vulkan presenting available on devices that cannot run the engine.
-void FillVerdicts(VulkanCapabilities* caps) {
+// Derives the presenter verdict from the probed facts. Kept separate from
+// ProbeVulkan() so every early return (no loader / no device) still gets one, and
+// so there is exactly one place that decides what "supported" means.
+void FillPresenterVerdict(VulkanCapabilities* caps) {
   if (caps == nullptr) {
     return;
   }
-  caps->engineSupported = false;
-  caps->engineUnsupportedCode.clear();
   caps->presenterSupported = false;
   caps->presenterUnsupportedCode.clear();
 
-  // GPU acceleration is a real-device-only feature (see AGENTS.md): the emulator
-  // reports standard Vulkan capabilities it does not honour, so probing cannot
-  // exclude it. The emulator package is the x86_64 build (product `emulator`),
-  // which makes the target ABI the reliable signal.
+  // Vulkan acceleration is a real-device-only feature (see AGENTS.md): the
+  // emulator reports standard Vulkan capabilities it does not honour, so probing
+  // cannot exclude it. The emulator package is the x86_64 build (product
+  // `emulator`), which makes the target ABI the reliable signal.
 #if defined(__x86_64__)
-  caps->engineUnsupportedCode = "emulator";
   caps->presenterUnsupportedCode = "emulator";
 #else
   if (!caps->loaderPresent) {
-    caps->engineUnsupportedCode = "no-vulkan";
     caps->presenterUnsupportedCode = "no-vulkan";
   } else if (!caps->instanceOk) {
-    caps->engineUnsupportedCode = "no-instance";
     caps->presenterUnsupportedCode = "no-instance";
   } else if (!caps->deviceFound) {
-    caps->engineUnsupportedCode = "no-device";
     caps->presenterUnsupportedCode = "no-device";
+  } else if (!caps->memHostVisible) {
+    // Host-visible memory for the frame buffer.
+    caps->presenterUnsupportedCode = "no-host-memory";
+  } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
+    caps->presenterUnsupportedCode = "no-surface";
   } else {
-    // Engine: needs the decode compute dispatches.
-    if (!caps->hasGraphicsComputeQueue) {
-      caps->engineUnsupportedCode = "no-compute";
-    } else if (!caps->memHostVisible) {
-      // Surfaces and bitmap-cache entries are persistent host-visible buffers.
-      caps->engineUnsupportedCode = "no-host-memory";
-    } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
-      caps->engineUnsupportedCode = "no-surface";
-    } else {
-      caps->engineSupported = true;
-    }
-    // Presenter: host-visible memory for the staging buffer + a surface to blit
-    // to. No compute.
-    if (!caps->memHostVisible) {
-      caps->presenterUnsupportedCode = "no-host-memory";
-    } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
-      caps->presenterUnsupportedCode = "no-surface";
-    } else {
-      caps->presenterSupported = true;
-    }
+    caps->presenterSupported = true;
   }
 #endif
-  HMRDP_LOGI("vulkan verdicts: engine=%{public}d(%{public}s) presenter=%{public}d(%{public}s)",
-             caps->engineSupported ? 1 : 0,
-             caps->engineUnsupportedCode.empty() ? "-" : caps->engineUnsupportedCode.c_str(),
+  HMRDP_LOGI("vulkan verdict: presenter=%{public}d(%{public}s)",
              caps->presenterSupported ? 1 : 0,
-             caps->presenterUnsupportedCode.empty() ? "-"
-                                                    : caps->presenterUnsupportedCode.c_str());
+             caps->presenterUnsupportedCode.empty() ? "-" : caps->presenterUnsupportedCode.c_str());
 }
 
 }  // namespace
@@ -563,13 +516,12 @@ std::string VulkanCapabilities::Describe() const {
       buf, sizeof(buf),
       "vulkan: loader=%s device=%s api=%s driver=0x%08x type=%s "
       "ohosSurface=%d swapchain=%d timeline=%d extMem=%d extMemFd=%d ohosExtMem=%d "
-      "hostVisDevLocal=%d qf=%u gfxCompute=%d dedicatedCompute=%d",
+      "hostVisDevLocal=%d qf=%u",
       VersionString(loaderApiVersion).c_str(), deviceName, VersionString(deviceApiVersion).c_str(),
       driverVersion, DeviceTypeName(deviceType).c_str(), extOhosSurface ? 1 : 0,
       extKhrSwapchain ? 1 : 0, extTimelineSemaphore ? 1 : 0, extExternalMemory ? 1 : 0,
       extExternalMemoryFd ? 1 : 0, extOhosExternalMemory ? 1 : 0,
-      memHostVisibleDeviceLocal ? 1 : 0, queueFamilyCount, hasGraphicsComputeQueue ? 1 : 0,
-      hasDedicatedComputeQueue ? 1 : 0);
+      memHostVisibleDeviceLocal ? 1 : 0, queueFamilyCount);
   return std::string(buf);
 }
 
@@ -592,14 +544,8 @@ std::string VulkanCapabilities::DescribeLines() const {
   out += "  mem types: " + memoryTypes + "\n";
   out += "  queue families=" + std::to_string(queueFamilyCount) +
          " graphics=" + std::to_string(graphicsQueueFamilies) +
-         " compute=" + std::to_string(computeQueueFamilies) +
-         " transfer=" + std::to_string(transferQueueFamilies) +
-         " gfxCompute=" + std::string(hasGraphicsComputeQueue ? "1" : "0") +
-         " dedicatedCompute=" + std::string(hasDedicatedComputeQueue ? "1" : "0") + "\n";
-  out += "  device ext: " + deviceExtensions + "\n";
-  out += "  engine " + (engineSupported
-                            ? std::string("supported")
-                            : ("unsupported (" + engineUnsupportedCode + ")"));
+         " transfer=" + std::to_string(transferQueueFamilies) + "\n";
+  out += "  device ext: " + deviceExtensions;
   return out;
 }
 
@@ -608,7 +554,7 @@ const VulkanCapabilities& GetVulkanCapabilities() {
   static VulkanCapabilities caps;
   std::call_once(once, []() {
     caps = ProbeVulkan();
-    FillVerdicts(&caps);
+    FillPresenterVerdict(&caps);
   });
   return caps;
 }
@@ -705,12 +651,7 @@ bool VkContext::PickPhysicalDevice(VkSurfaceKHR surface) {
       if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
         continue;
       }
-      // Without a surface (offline harness) any graphics family will do;
-      // otherwise the family must also be able to present to it.
-      if (surface == VK_NULL_HANDLE) {
-        chosen = i;
-        break;
-      }
+      // The family must be able to present to the surface the caller brought.
       VkBool32 present = VK_FALSE;
       if (api.GetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present) != VK_SUCCESS) {
         continue;
@@ -739,22 +680,22 @@ bool VkContext::PickPhysicalDevice(VkSurfaceKHR surface) {
     }
   }
   if (physical_ == VK_NULL_HANDLE) {
-    error_ = surface == VK_NULL_HANDLE ? "no device with a graphics queue family"
-                                      : "no device with a graphics + present queue family";
+    error_ = "no device with a graphics + present queue family";
     return false;
   }
   return true;
 }
 
 bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
+  if (surface == VK_NULL_HANDLE) {
+    error_ = "no presentation surface";
+    return false;
+  }
   VkApi& api = GetVkApi();
   if (device_ != VK_NULL_HANDLE) {
-    if (surface == VK_NULL_HANDLE) {
-      return true;
-    }
-    // The device may have been created by the offline harness without a surface.
-    // If its queue family cannot present to this one, rebuild with a family that
-    // can (doc_agent/gfx-engine.md §1 keeps one device for the process once it is usable).
+    // The device may have been created for an earlier surface. If its queue
+    // family cannot present to this one, rebuild with a family that can
+    // (one device for the process once it is usable).
     VkBool32 present = VK_FALSE;
     if (api.GetPhysicalDeviceSurfaceSupportKHR != nullptr &&
         api.GetPhysicalDeviceSurfaceSupportKHR(physical_, queueFamily_, surface, &present) ==
@@ -765,12 +706,7 @@ bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
     HMRDP_LOGI("vulkan: rebuilding device for a present-capable queue family");
     DestroyDevice();
   }
-  if (surface == VK_NULL_HANDLE) {
-    // No surface: the instance alone is not enough, but a device is still needed.
-    if (!EnsureInstance()) {
-      return false;
-    }
-  } else if (!EnsureInstance()) {
+  if (!EnsureInstance()) {
     return false;
   }
   if (physical_ == VK_NULL_HANDLE && !PickPhysicalDevice(surface)) {
@@ -784,7 +720,7 @@ bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
     api.EnumerateDeviceExtensionProperties(physical_, nullptr, &extCount, extensions.data());
   }
   const bool hasSwapchain = HasExtension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-  if (surface != VK_NULL_HANDLE && !hasSwapchain) {
+  if (!hasSwapchain) {
     error_ = "VK_KHR_swapchain not supported";
     return false;
   }
@@ -801,10 +737,8 @@ bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
   deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   deviceInfo.queueCreateInfoCount = 1;
   deviceInfo.pQueueCreateInfos = &queueInfo;
-  if (surface != VK_NULL_HANDLE && hasSwapchain) {
-    deviceInfo.enabledExtensionCount = 1;
-    deviceInfo.ppEnabledExtensionNames = enabledExtensions;
-  }
+  deviceInfo.enabledExtensionCount = 1;
+  deviceInfo.ppEnabledExtensionNames = enabledExtensions;
 
   VkDevice device = VK_NULL_HANDLE;
   const VkResult result = api.CreateDevice(physical_, &deviceInfo, nullptr, &device);

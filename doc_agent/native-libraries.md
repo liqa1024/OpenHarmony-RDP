@@ -165,7 +165,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的 `DesktopResize` 会换掉
   primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，否则是"向已释放内存
   memset"；`gdi_DeleteSurface` 不能释放共享缓冲；出现第二个 surface 时先解除共享。
-  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`present-pipeline.md`](present-pipeline.md) §4.5。
+  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`present-pipeline.md`](present-pipeline.md) §4。
 
 ## 4. 编 FreeRDP 时的关键选项
 
@@ -208,32 +208,30 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - UI 上**置灰**该开关并显示原因。
 
 已用此模式的：音频重定向、硬件加速。原生只回**稳定原因码**
-（`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`；引擎另有 `no-compute`），
+（`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`），
 中文文案由 `DeviceCapabilities.hardwareAccel()` 负责；不支持时设置页置灰开关并显示原因，
 并把已存的值纠正为关。
 
-**两套能力判定，不要混用**（`FillVerdicts()`，`hmrdp_vk_context.*`）：
+**只有一个呈现判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
 
 | 判定 | 用途 | 条件 |
 |---|---|---|
-| **引擎判定**（`engineSupported`） | GPU 引擎 / GPU 回放，最严 | device + **graphics+compute 队列** + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`（Progressive 解码是 compute dispatch） |
-| **呈现判定**（`presenterSupported`） | 「硬件加速」开关 / 上屏，较宽松 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`，**不需要 compute** |
+| **呈现判定**（`presenterSupported`） | 「硬件加速」开关 / 上屏 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
 
-- 呈现判定决定「硬件加速」是否有意义（`vulkanAccelSupport()` → 设置页置灰），以及
+- 它决定「硬件加速」是否有意义（`vulkanAccelSupport()` → 设置页置灰），以及
   `CreateFramePresenter()` 用 Vulkan 呈现器还是 GLES 兜底呈现器（开关关掉时也是 GLES）。
 - **呈现判定实际对应的 Vulkan 面**（`VkRenderer` 用它，逐项可核）：instance 扩展
   `VK_KHR_surface` + `VK_OHOS_surface`，device 扩展**只有** `VK_KHR_swapchain`；一个
-  graphics+present 队列族；swapchain（`R8G8B8A8_UNORM`，FIFO）+ render pass/framebuffer/view；
-  一条 graphics pipeline（`present_quad.vert/frag`，动态 viewport/scissor 做 letterbox，
-  sampler + descriptor set + push constant）；持久桌面 image（`B8G8R8A8_UNORM`）与 host-visible
+  graphics+present 队列族；swapchain（格式优先 `B8G8R8A8_UNORM`，回退 `R8G8B8A8_UNORM`，FIFO）+
+  render pass/framebuffer/view；一条 graphics pipeline（`present_quad.vert/frag`，动态 viewport/scissor
+  做 letterbox，sampler + descriptor set）；持久桌面 image（`B8G8R8A8_UNORM`）与 host-visible
   staging/零拷贝缓冲；command pool/buffer×2、二进制信号量、fence×2；`vkCmdCopyBufferToImage` +
   `vkCmdPipelineBarrier` + `vkCmdBeginRenderPass/Draw/EndRenderPass` + `QueueSubmit/Present`。
   **用不到**：compute（`CmdDispatch`/`CreateComputePipelines`）、`vkCmdBlitImage`、
   `vkCmdClearColorImage`/`CmdCopyImage`/`CmdFillBuffer`/`CmdCopyBuffer`、timeline 信号量、
   外部内存/原生缓冲导入（后两者只在探测里**报告**，没有任何调用点）。
-  ⇒ 只要"能上屏"的设备就能走 Vulkan 呈现器；**硬件加速开关若只控制呈现后端，就该用呈现判定**。
-- 两者都**排除模拟器包**（x86_64 构建）：模拟器会按标准接口谎报能力，能力探测排除不掉它；
-  这与"GPU 只在真机验证"的口径一致，所以模拟器上呈现回落到 GLES。
+- **排除模拟器包**（x86_64 构建）：模拟器会按标准接口谎报能力，能力探测排除不掉它；
+  这与"Vulkan 只在真机验证"的口径一致，所以模拟器上呈现回落到 GLES。
 - `native_window` 是 `libhmrdp` 显式链接的显示栈 API（把 XComponent 的 surfaceId 变成
   `OHNativeWindow`，交给 Vulkan/EGL）；`EGL`/`GLESv3` 只服务 GLES 兜底呈现器。都是设备必备库，
   不需要像 OHAudio 那样做缺库降级。

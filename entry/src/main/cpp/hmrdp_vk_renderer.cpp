@@ -1,6 +1,5 @@
 /*
- * HmRdp - Vulkan presenter implementation. See hmrdp_vk_renderer.h and
- * doc_agent/gfx-engine.md §3.
+ * HmRdp - Vulkan presenter implementation. See hmrdp_vk_renderer.h.
  */
 #include "hmrdp_vk_renderer.h"
 
@@ -42,10 +41,10 @@ std::string FormatName(VkFormat format) {
   return "VkFormat(" + std::to_string(static_cast<int>(format)) + ")";
 }
 
-// Prefer BGRA8 (FreeRDP's own byte order, so the engine needs no swizzle), then
-// RGBA8 (the engine then swaps R/B on its CPU boundaries). Colour space is
-// irrelevant here: the presenter never samples, it only blits. A single
-// VK_FORMAT_UNDEFINED entry means "any" and is resolved to BGRA8.
+// Prefer BGRA8 (FreeRDP's own byte order, so no CPU swizzle is ever needed), then
+// RGBA8. Colour space is irrelevant here: the picture is sampled by the quad and
+// the swizzle is done in the shader. A single VK_FORMAT_UNDEFINED entry means
+// "any" and is resolved to BGRA8.
 VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
   if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
     VkSurfaceFormatKHR picked{};
@@ -84,10 +83,10 @@ VkCompositeAlphaFlagBitsKHR PickCompositeAlpha(VkCompositeAlphaFlagsKHR supporte
 // cannot overflow the copy-region array.
 constexpr int kMaxUploadRects = 256;
 
-// The one picture format every producer hands the presenter: FreeRDP's byte order.
-// Both the CPU frames' desktop image and the engine's composed screen use it, and
-// the format itself does the channel conversion when the quad samples it (so no
-// shader swizzle and no dependency on the swapchain format).
+// The one picture format the presenter hands over: FreeRDP's byte order. The
+// desktop image uses it, and the format itself does the channel conversion when
+// the quad samples it (so no shader swizzle and no dependency on the swapchain
+// format).
 constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
 
 // Clips the caller's rects to the desktop and drops the empty ones, writing at
@@ -353,9 +352,7 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
   return true;
 }
 
-bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex,
-                                        VkSemaphore waitSemaphore,
-                                        VkSemaphore signalSemaphore) {
+bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex) {
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
 
@@ -364,21 +361,17 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
     return false;
   }
 
-  // The producer's frame-complete signal (an engine that composed this picture
-  // without the CPU waiting for it) plus the swapchain image's availability.
-  VkSemaphore waitSemaphores[2] = {imageAvailable_[frameIndex_], waitSemaphore};
-  VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
-  VkSemaphore signalSemaphores[2] = {renderFinished_[imageIndex], signalSemaphore};
+  VkSemaphore waitSemaphores[] = {imageAvailable_[frameIndex_]};
+  VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_TRANSFER_BIT};
+  VkSemaphore signalSemaphores[] = {renderFinished_[imageIndex]};
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submitInfo.waitSemaphoreCount = (waitSemaphore != VK_NULL_HANDLE) ? 2u : 1u;
+  submitInfo.waitSemaphoreCount = 1;
   submitInfo.pWaitSemaphores = waitSemaphores;
   submitInfo.pWaitDstStageMask = waitStages;
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &cmd;
-  submitInfo.signalSemaphoreCount = (signalSemaphore != VK_NULL_HANDLE) ? 2u : 1u;
+  submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
   if (api.QueueSubmit(context.queue(), 1, &submitInfo, inFlight_[frameIndex_]) != VK_SUCCESS) {
     error_ = "vkQueueSubmit failed";
@@ -416,128 +409,6 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
                extent_.height);
   }
   return true;
-}
-
-bool VkRenderer::PresentImage(VkImage image, VkFormat imageFormat, int width, int height,
-                              VkSemaphore waitSemaphore, VkSemaphore doneSemaphore) {
-  if (image == VK_NULL_HANDLE || width <= 0 || height <= 0) {
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
-  const VkDevice device = context.device();
-
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    if (!EnsureSwapchainLocked()) {
-      return false;
-    }
-    // Producers hand over FreeRDP's BGRA order; the picture image's own format says
-    // so, and the sampler converts to the swapchain's order. There is no blit left
-    // that would need both images to share a format.
-    if (imageFormat != kPictureFormat) {
-      error_ = "present image format mismatch";
-      HMRDP_LOGE("vulkan %{public}s: want=%{public}s image=%{public}s", error_.c_str(),
-                 FormatName(kPictureFormat).c_str(), FormatName(imageFormat).c_str());
-      return false;
-    }
-    // The present draw needs the swapchain format + render pass, both ready once the
-    // swapchain is up.
-    if (!EnsurePresentPipelineLocked()) {
-      return false;
-    }
-    const VkImageView sourceView = EnsurePresentSourceViewLocked(image);
-    if (sourceView == VK_NULL_HANDLE) {
-      return false;
-    }
-    uint32_t imageIndex = 0;
-    bool retry = false;
-    if (!AcquireFrameLocked(&imageIndex, &retry)) {
-      return false;
-    }
-    if (retry) {
-      continue;
-    }
-    UpdatePresentDescriptorLocked(frameIndex_, sourceView);
-
-    const VkCommandBuffer cmd = commandBuffers_[frameIndex_];
-    api.ResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    api.BeginCommandBuffer(cmd, &beginInfo);
-
-    // The composed picture was written by the engine's transfer copies (a previous
-    // submission on the same queue, already complete); the quad reads it here, so
-    // the dependency has to be stated in *this* command buffer.
-    VkImageMemoryBarrier toSampled{};
-    toSampled.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    toSampled.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    toSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    toSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    toSampled.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    toSampled.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toSampled.image = image;
-    toSampled.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    toSampled.subresourceRange.levelCount = 1;
-    toSampled.subresourceRange.layerCount = 1;
-    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                           &toSampled);
-
-    RecordPresentQuadLocked(cmd, width, height, imageIndex);
-    (void)device;
-    return SubmitAndPresentLocked(cmd, imageIndex, waitSemaphore, doneSemaphore);
-  }
-
-  error_ = "swapchain out of date after re-creation";
-  return false;
-}
-
-VkImageView VkRenderer::EnsurePresentSourceViewLocked(VkImage image) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
-  const VkDevice device = context.device();
-  if (device == VK_NULL_HANDLE || image == VK_NULL_HANDLE) {
-    return VK_NULL_HANDLE;
-  }
-  const auto cached = presentSourceViews_.find(image);
-  if (cached != presentSourceViews_.end()) {
-    return cached->second;
-  }
-  // An unknown handle means the engine re-created its pictures (ResetGraphics/resize);
-  // the frames still sampling the old views have to drain before those views are
-  // destroyed (a rare path - the two ping-pong pictures are cached here instead).
-  if (!presentSourceViews_.empty()) {
-    api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
-    if (api.DestroyImageView != nullptr) {
-      for (const auto& entry : presentSourceViews_) {
-        api.DestroyImageView(device, entry.second, nullptr);
-      }
-    }
-    presentSourceViews_.clear();
-  }
-  VkImageViewCreateInfo viewInfo{};
-  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  viewInfo.image = image;
-  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  viewInfo.format = kPictureFormat;
-  viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  viewInfo.subresourceRange.levelCount = 1;
-  viewInfo.subresourceRange.layerCount = 1;
-  VkImageView view = VK_NULL_HANDLE;
-  if (api.CreateImageView == nullptr ||
-      api.CreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
-    error_ = "vkCreateImageView (present source) failed";
-    return VK_NULL_HANDLE;
-  }
-  presentSourceViews_[image] = view;
-  return view;
 }
 
 bool VkRenderer::EnsurePresentPipelineLocked() {
@@ -1588,7 +1459,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
       // inside one, but the clear + quad + resolve is what the pass does.
       api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 2);
     }
-    const bool presented = SubmitAndPresentLocked(cmd, imageIndex, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    const bool presented = SubmitAndPresentLocked(cmd, imageIndex);
     if (presented) {
       desktopImageFullUpload_ = false;
       if (direct) {
@@ -1613,19 +1484,6 @@ VkFormat VkRenderer::format() const {
 void VkRenderer::Reset() {
   const int64_t t0 = NowUs();
   std::lock_guard<std::mutex> lock(mutex_);
-  // The present source views belong to engine-owned images: drop them before those
-  // images can go away (the engine is torn down after the renderer, but a reset is
-  // also a resize path).
-  if (!presentSourceViews_.empty()) {
-    VkApi& api = GetVkApi();
-    const VkDevice device = VkContext::Instance().device();
-    if (device != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
-      for (const auto& entry : presentSourceViews_) {
-        api.DestroyImageView(device, entry.second, nullptr);
-      }
-    }
-    presentSourceViews_.clear();
-  }
   DestroySwapchainLocked();
   DestroyDesktopBufferLocked();
   DestroyDesktopImageLocked();
@@ -1666,8 +1524,8 @@ bool VkRenderer::CreateSwapchainLocked() {
     }
   }
   // A device is only usable for a surface it can present to, so it is created
-  // lazily here (doc_agent/gfx-engine.md §1 keeps it process-wide from then on). Its
-  // entry points are only resolved by this call, so they are checked after it.
+  // lazily here (and kept process-wide from then on). Its entry points are only
+  // resolved by this call, so they are checked after it.
   if (!context.EnsureDevice(surface_)) {
     error_ = context.lastError();
     context.DestroySurface(surface_);
@@ -1708,7 +1566,7 @@ bool VkRenderer::CreateSwapchainLocked() {
     api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, presentModes.data());
   }
   // FIFO is the only mode the spec guarantees; it is also the one that matches
-  // the "present only when the picture changed" policy (doc_agent/gfx-engine.md §2.3).
+  // the "present only when the picture changed" policy.
   VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
   bool fifoAvailable = false;
   for (VkPresentModeKHR mode : presentModes) {
@@ -1722,13 +1580,6 @@ bool VkRenderer::CreateSwapchainLocked() {
 
   if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) == 0) {
     error_ = "swapchain images cannot be colour attachments";
-    return false;
-  }
-  // PresentImage writes the swapchain image with transfer commands (copy when
-  // the sizes match, scaled blit otherwise), so TRANSFER_DST is required in
-  // addition to the render-pass path's colour attachment.
-  if ((caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
-    error_ = "swapchain images cannot be transfer destinations";
     return false;
   }
 
@@ -1755,7 +1606,7 @@ bool VkRenderer::CreateSwapchainLocked() {
   createInfo.imageColorSpace = surfaceFormat.colorSpace;
   createInfo.imageExtent = extent;
   createInfo.imageArrayLayers = 1;
-  createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   createInfo.preTransform = caps.currentTransform;
   createInfo.compositeAlpha = PickCompositeAlpha(caps.supportedCompositeAlpha);
@@ -1956,7 +1807,7 @@ void VkRenderer::DestroySwapchainLocked() {
 
   if (swapchain_ != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
     // Re-creation is rare, so a full idle wait is the simple correct answer to
-    // "nothing may still reference these objects" (doc_agent/gfx-engine.md §3).
+    // "nothing may still reference these objects".
     if (api.DeviceWaitIdle != nullptr) {
       api.DeviceWaitIdle(device);
     }

@@ -20,7 +20,7 @@ include_directories(
     ${FREERDP_ROOT}/include/winpr3
 )
 
-# --- SPIR-V shaders (VULKAN-TODO.md §5 V2 / §7.2) ------------------------------
+# --- SPIR-V shaders -----------------------------------------------------------
 # glslang_validator ships inside the OHOS SDK toolchains, one level up from the
 # NDK root the toolchain file points OHOS_SDK_NATIVE at, so no external Vulkan SDK
 # is needed. Each shader is compiled to SPIR-V and embedded in libhmrdp.so as a
@@ -31,14 +31,10 @@ if(NOT HMRDP_GLSLANG)
     set(HMRDP_GLSLANG "${OHOS_SDK_NATIVE}/../toolchains/glslang_validator.exe")
 endif()
 
-# <source file>|<C++ symbol>, e.g. "progressive.comp|Progressive". Each entry
-# yields a `k<Symbol>Spv[]` word array in <source file>.h (V3: the RemoteFX
-# Progressive decoder and its YCbCr->BGRA tile compositor; the presenter quad
-# does the channel swap + letterbox on the GPU - see hmrdp_vk_renderer.cpp).
+# <source file>|<C++ symbol>, e.g. "present_quad.vert|PresentQuadVert". Each entry
+# yields a `k<Symbol>Spv[]` word array in <source file>.h. The presenter quad does
+# the channel swap + letterbox on the GPU - see hmrdp_vk_renderer.cpp.
 set(HMRDP_SHADERS
-  "rfx_decode.comp|RfxDecode"
-  "rfx_compose.comp|RfxCompose"
-  "rfx_idwt.comp|RfxIdwt"
   "present_quad.vert|PresentQuadVert"
   "present_quad.frag|PresentQuadFrag"
 )
@@ -68,7 +64,6 @@ add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
     hmrdp_audio.cpp
-    hmrdp_rfx.cpp
     hmrdp_gfx_capture.cpp
     hmrdp_gfx_cpu.cpp
     hmrdp_gfx_driver.cpp
@@ -81,7 +76,6 @@ add_library(hmrdp SHARED
     hmrdp_gles_presenter.cpp
     hmrdp_vk_context.cpp
     hmrdp_vk_renderer.cpp
-    hmrdp_vk_desktop.cpp
     ${HMRDP_SHADER_HEADERS}
 )
 

@@ -7,12 +7,9 @@
  * hmrdp_gfx.bin before opening this page (entered from the home screen "回放测试"
  * entry).
  *
- * The page drives the CPU (gdi) line only: 「路线」 picks which presenter that line
- * runs through (CPU = GLES, 硬件加速 = Vulkan), 「参考」 runs it against the golden
- * reference image recorded earlier from the same capture. The GPU *engine* routes
- * (decode + compose on Vulkan) are no longer offered here - the engine work is
- * being redone (doc_agent/gpu-accel-plan.md), and its implementation stays
- * reachable from code but not from the UI.
+ * The page drives FreeRDP's gdi decode; 「路线」 picks which presenter it runs
+ * through (CPU = GLES, 硬件加速 = Vulkan), 「参考」 runs it against the golden
+ * reference image recorded earlier from the same capture.
  */
 import { RdpNative } from '../services/RdpNative';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -25,18 +22,16 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
 
-// 「路线」 = which presentation line the CPU (gdi) decode runs through:
+// 「路线」 = which presentation line the gdi decode runs through:
 //   CPU      - the GLES presenter (no Vulkan at all)
 //   硬件加速  - the Vulkan presenter
 // This is the session's "硬件加速" setting, exposed here so both presenters can be
-// A/B'd on the same capture. The native route id is always the CPU one
-// (GfxReplayRoute::kCpu) - the engine routes are no longer driven from this page.
-const ROUTE_CPU: number = 0;
+// A/B'd on the same capture.
 const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
 
-// 「参考」 = golden-reference gate for the CPU line (doc_agent/gfx-engine.md §8.4).
+// 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §8.4).
 //   关   - plain run (the perf modes above)
 //   导出 - record this run as the reference (hmrdp_ref.hash + hmrdp_ref.bmp)
 //   对比 - check every frame against the stored reference; the stats line reports
@@ -185,10 +180,10 @@ struct GfxReplayPage {
     // page since this page was opened).
     RdpNative.applyHardwareAccel(this.accelOn());
     RdpNative.stopReplayTest();
-    // The native route is always the CPU (gdi) one - see the file comment; the
-    // line above decides which presenter it presents through.
+    // The line picked above decides which presenter the gdi decode presents
+    // through.
     const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
-      this.surfaceH, `${dir}/hmrdp_gfx.bin`, ROUTE_CPU, this.replayRealtime, this.refMode);
+      this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRealtime, this.refMode);
     this.status = summary.startsWith('failed')
       ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
       : summary;

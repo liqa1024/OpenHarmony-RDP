@@ -2,7 +2,7 @@
 
 > **定位**：这条线是"FreeRDP gdi 解码 + 我们自己的呈现器"的 **CPU 路线的并行部分**：执行器、宽度、
 > 内存布局与相位归属。单核部分的**知识**（判据、账目口径、成本结构、量测纪律与陷阱、正确性门禁、
-> 被否证的假设）在 [`gfx-engine.md`](gfx-engine.md) §8；协议/算法硬约束见该文件 §2；上屏见
+> 被否证的假设）在 [`gfx-engine.md`](gfx-engine.md) §8；协议框架见该文件 §0/§1；上屏见
 > [`present-pipeline.md`](present-pipeline.md)；补丁与构建见 [`native-libraries.md`](native-libraries.md)；
 > 历史口径与被否证的过程见 [`cpu-path_old.md`](cpu-path_old.md)（old）。
 

@@ -7,8 +7,7 @@
 > 不要从这里接手，也不要在别处引用它当作口径来源。
 >
 > **CPU 路线** = FreeRDP gdi 解码 + 我们自己的呈现器。协议语义见
-> [`gfx-engine.md`](gfx-engine.md)、上屏见 [`present-pipeline.md`](present-pipeline.md)、
-> GPU 侧见 [`gpu-accel-plan.md`](gpu-accel-plan.md)。
+> [`gfx-engine.md`](gfx-engine.md)、上屏见 [`present-pipeline.md`](present-pipeline.md)。
 
 ## 0. 优化判据（决定取舍，不是 fps）
 
@@ -79,7 +78,7 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
   | `dequant+diff` | 百分之几 | 10 段 `lShiftC` + LL3 差分 |
 
   ⇒ **被默认当成"大头"的 RLGR 其实最小**（1 成量级）；真正的钱在**逆 DWT**与**逐 tile 缓冲流量**
-  （`state` + `color`）。GPU 引擎加速的恰好是那条最小的（见 [`gpu-accel-plan.md`](gpu-accel-plan.md) §2）。
+  （`state` + `color`）。
   - **`dec` 的两种口径**（同一个"tile 解码段"，测点不同、不可混读）：并行时它是**池段的墙钟**
     （RDP 线程投递后到所有 work 全部等完，`blocked` 是其中真正阻塞的那部分——两者只在并行时有值）；
     串行时它是**本线程逐 tile 解码的时间**（此时 `dispatch`/`blocked` 必然为 0，不是缺失）。
@@ -92,7 +91,7 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
 - **present**：绝大部分是**固定的 Vulkan 调用**（acquire / 录制 / submit / present），不是我们能删的活；
   `flush`（把本帧写过的字节交出去）只有 µs 级。**GPU 侧另算**：`copy`（脏区字节 buffer→image）+
   `blit`（clear 整张 + letterbox quad），**blit 与脏区无关**（ms 量级，见
-  [`present-pipeline.md`](present-pipeline.md) §2/§4.3）。**这正是零拷贝后端（Vulkan）与 GLES 的差别**：
+  [`present-pipeline.md`](present-pipeline.md) §6）。**这正是零拷贝后端（Vulkan）与 GLES 的差别**：
   前者 gdi 直接合成进呈现器缓冲（`copy` 是唯一一次搬运），后者必须在 CPU 侧把脏区 memcpy 进 staging
   再上传 ⇒ GLES 的 `present` 天然贵一截，两个后端不构成"脏区形状"的对照实验。
   - ⚠ **零拷贝下 `copy` 与帧序是耦合的**：它读的就是本帧要写的那块内存，所以排在**本帧第一次写之前**
@@ -130,12 +129,12 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
     实现挂在 live 与回放共用的包装层（`hmrdp_gfx_work.cpp` 的 `GfxWorkSetFrameBeginHook`），
     等待按"提交"去重（呈现器 `desktopBufferFencePending_`）⇒ **每个 present 只真等一次**。
     ⚠ 等待缺失的后果是**上屏画面混两帧**（旧帧的块留在旧位置），且**只在帧背靠背时**出现（到达侧被
-    塑形、或回放的 `跑满`）；`bad=0` 与它无关（对比读的是 gdi 自己的缓冲与引擎 picture，两者都还在）。
+    塑形、或回放的 `跑满`）；`bad=0` 与它无关（对比读的是 gdi 自己的缓冲，两者都还在）。
     ⚠ 这笔等待的长度就是上一帧那次拷贝的时长（整屏帧 ms 级；`sync` 单列，别当成 compose）。
   - 内存类型 `HOST_CACHED` 优先；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
     驱动调用；cache flush 只写回脏行，多出来的干净行免费）。
   - 几何变化（`ResetGraphics` → `gdi_resize`）会退回 gdi 自有缓冲，下一次 `EndPaint` 按新尺寸重挂。
-  - 前提：**进程内只建一个 `VkDevice`**（见 [`gfx-engine.md`](gfx-engine.md) §1）。
+  - 前提：**进程内只建一个 `VkDevice`**（见 [`present-pipeline.md`](present-pipeline.md) §4）。
 - **桌面镜像 surface 直接合成进 primary**（全屏 GFX 会话的常态：只有一个 surface、`(0,0)` 1:1、
   格式/行距与桌面相同 ⇒ 它**就是桌面**，那趟逐矩形 `freerdp_image_scale` 纯属白搬）。
   做法是把这个 surface 的 `data` 指向 `gdi->primary_buffer`，解码器写的就是呈现器要上传的内存。
@@ -192,7 +191,7 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
 
 0. **先按 `prog2` 的实测占比动手（§3）**：`dec` 之内 `idwt` 约 4 成半、`state`+`color` 约 3 成半、
    `rlgr` 只 1 成 ⇒ 优化顺序是 **逆 DWT → 缓冲流量（`state`/`color`）→ 其余**，
-   不要再从 RLGR 入手（那是 GPU 引擎做的、也是占比最小的那项）。
+   不要再从 RLGR 入手（它是占比最小的那项）。
 1. **逆 DWT（`idwt`，占比第一）**：`rfx_dwt_2d_decode_block` 是纯 int16 lifting，even/odd 两个循环
    **逐元素独立**（只有 `(a+b+1)>>1` 需要 int32 中间量）⇒ 可以**逐位等价**地向量化（同一批算术、
    只改循环组织），这是这条线上最大的一块。**附带**：临时缓冲改用 tile 自己的内存、三级之间不重复搬运。
@@ -212,7 +211,8 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
 5. **producer/consumer（流水线）**：现在**每条 region 一次 fork/join**，解析与 `update_tiles` 都在 RDP 线程
    串行（整屏样本 ~30%）。让 worker 解码 region k 时 RDP 线程解析 k+1 / 合成 k−1，理论上限是把这段
    串行藏起来；它还能把解码工作集与解析/合成工作集分开，缓解 §5 的访存干扰。
-   ⚠ 合成的顺序语义（同帧重复合成、clip 必须取 REGION 头）见 [`gfx-engine.md`](gfx-engine.md) §2.2。
+   ⚠ 合成的顺序语义（同帧重复合成、clip 必须取 REGION 头）以 FreeRDP 的 `update_tiles` 为准
+   （`libfreerdp/codec/progressive.c`）。
 6. **WinPR 线程池 / 平台任务队列**：现在的池"能跑就行"（每个 work item 两次 calloc + 一次 futex 往返；
    `WaitForThreadpoolWorkCallbacks` 等的是**池级全局计数**，**一次 wait 抽干整池** ⇒ 跨 region 无法重叠；
    worker 只在设 minimum 时创建、缩小要全撕重建）。OHOS 侧更对路的是 **`ffrt`**（提交任务、由系统决定
@@ -220,7 +220,7 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
    其次是 **QoS 分级**（`HmrdpApplyThreadQoS` 已有，可按 duty 动态调）。
    ⚠ 不能碰：**同一个 tile 仍必须由单个 callback 独占解码**，否则 `bad=0` 失去意义。
 7. **不划算（已量，别再投入）**：present 整幅重上屏（GPU 侧 ~1ms，被 CPU 藏住；且 `bad=0` 覆盖不到
-   呈现器）见 [`present-pipeline.md`](present-pipeline.md) §4.3；`update_tiles` 的 union/矩形合并（§4）；
+   呈现器）见 [`present-pipeline.md`](present-pipeline.md) §6；`update_tiles` 的 union/矩形合并（§4）；
    delta 折叠（去重 stamp 实测命中 0 次）。
 
 **待收尾**：patch 里"把 per-tile 的 `region16_union_rect` 换成每 tile 行一个 span"这一步已实现并量过，
@@ -246,9 +246,9 @@ GPU 那次脏区拷贝（`sync`）能占到帧墙钟三分之一量级 ⇒ 帧�
   - 逐相位探针**采样 1/16 tile**（每相位一次读表，未采样的 tile 一次都不读）：这是"每 tile 两次调用
     吃掉 ms 级"这条约束下的唯一做法。读法：把 `prog2` 的**占比**与 `dec` 一起看——采样会让
     `sum` 比 `dec` 高几个百分点（样本偏斜 + 缩放），这点差不是发现了新开销。
-- **改了 gdi 侧的解码语义，`bad=0` 就不再是门禁**：`Vulkan对比` 的参考就是 gdi 自己，改它等于两边一起改。
+- **改了 gdi 侧的解码语义，`bad=0` 就不再是门禁**：参考画面就是 gdi 自己录的，改它等于两边一起改。
   这一类改动（如把逆 DWT 向量化）要自带**标量 vs 新实现的对拍**（采样一部分 tile 逐字节比对，
-  计数 `mismatch`），`bad=0` 照旧跑但只证明"引擎与新的 gdi 一致"。
+  计数 `mismatch`）；`bad=0` 照旧跑，但只证明"自那次重录起没有再变"。
 - **不要用"跳过某条 dispatch/步骤 + 差值反推"做归因**（依赖关系会变）：用计数器 + 相位桶。
 - **回放节拍若落在 `gdi_EndFrame` 里，必须扣掉**（否则算进 `compose`）：`GfxWorkMeter::OnPace` 为此存在；
   判读前先看 `pump … ms (paced … ms)` 里 paced 是否为 0。`sync` 同理（见 §1），**别把"等 GPU"当"合成贵"**。

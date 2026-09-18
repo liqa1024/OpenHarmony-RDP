@@ -2,9 +2,9 @@
  * HmRdp - dev-only recorded-RDP replay (doc_agent/gfx-engine.md §6).
  *
  * Replays a captured raw GFX channel stream (hmrdp_gfx.bin) through FreeRDP's
- * own ZGX + RDPGFX parsing into the Vulkan desktop engine and presents each
- * frame to the XComponent surface. Debug facility only; never replaces the live
- * path.
+ * own ZGX + RDPGFX parsing with FreeRDP's gdi pipeline as the decoder, and
+ * presents each frame to the XComponent surface through the presenter the
+ * "硬件加速" setting selects. Debug facility only; never replaces the live path.
  */
 #ifndef HMRDP_REPLAY_H
 #define HMRDP_REPLAY_H
@@ -24,30 +24,13 @@ namespace hmrdp {
 
 class FramePresenter;
 class GfxCpuDesktop;
-class ReplayDesktop;
 // What the CPU present path handed over for one frame (hmrdp_gfx_cpu.h): passed
 // to the frame observers, declared here to keep this header light.
 struct PresentUploadInfo;
 
-// Which decoder/presenter the replay runs.
-//  kCpu    - FreeRDP's own gdi pipeline (the only route the dev page drives),
-//            presented through the presenter the "硬件加速" setting selects.
-//  kVulkan - the Vulkan desktop engine (decode + compose on the GPU). **Not
-//            reachable from the UI any more** (doc_agent/gpu-accel-plan.md); kept
-//            so the GPU work has a runnable bench from code.
-//
-// The old "engine vs gdi shadow" route is gone: correctness is checked against a
-// stored golden reference instead (GfxReplayRefMode), which needs no second
-// implementation and stays valid for the engine too.
-enum class GfxReplayRoute {
-  kCpu = 0,
-  kVulkan = 1,
-};
-
-// Correctness gate for the CPU (gdi) route: replay a capture and check the
-// composed desktop against a *golden reference* recorded from an earlier run of
-// the same capture (replaces the engine-vs-gdi shadow comparison, which cannot be
-// kept consistent and needs the engine, doc_agent/gfx-engine.md §8.4).
+// Correctness gate for the replay: replay a capture and check the composed
+// desktop against a *golden reference* recorded from an earlier run of the same
+// capture (doc_agent/gfx-engine.md §8.4).
 //
 //  kOff     - nothing (the normal perf run).
 //  kExport  - record the reference: one 64-bit hash of the composed desktop per
@@ -72,8 +55,8 @@ class GfxReplay {
   static GfxReplay& Instance();
 
   // Takes ownership of `nativeWindow` (from the XComponent surface id) and
-  // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it through `route`.
-  // Waits briefly for the first frame or failure.
+  // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it. Waits briefly for
+  // the first frame or failure.
   //
   // `realtime` selects the playback clock:
   //   false - **not throttled at all** (default): the pump feeds the next record as
@@ -89,7 +72,7 @@ class GfxReplay {
   //           wake-ups) match the live session. Requires a version 1 capture;
   //           for an untimed capture it falls back to false and says so.
   bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath,
-             GfxReplayRoute route, bool realtime, GfxReplayRefMode refMode = GfxReplayRefMode::kOff);
+             bool realtime, GfxReplayRefMode refMode = GfxReplayRefMode::kOff);
   void Resize(int width, int height);
   void Stop();
   // Single-line summary (logs) and a multi-line variant for the on-device
@@ -97,9 +80,7 @@ class GfxReplay {
   std::string Stats();
   std::string StatsLines();
 
-  // Called by the replay GFX callbacks on every EndFrame (replay thread).
-  void OnReplayFrame();
-  // The CPU route's frame observers, installed on the shared GdiFrameHost and run
+  // The replay's frame observers, installed on the shared GdiFrameHost and run
   // from the same EndPaint chain a live session runs (hmrdp_gfx_cpu.h):
   //   OnCpuFramePre     - run cap / pending surface resize / energy sample; false
   //                       vetoes the frame (a run that hit its cap presents
@@ -110,11 +91,8 @@ class GfxReplay {
   void OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t presentUs,
                          const PresentUploadInfo& upload);
 
-  // Dev timing: accumulated decode-apply / present time (microseconds), reported
-  // per frame by Stats() so the engine and CPU routes can be compared directly.
-  // `codecId` (from the surface command) splits the apply time by codec so a
-  // slow stream is visible.
-  void RecordApply(uint16_t cmdId, uint32_t codecId, uint64_t micros);
+  // Dev timing: accumulated present time (microseconds), reported per frame by
+  // Stats().
   void RecordPresent(uint64_t micros);
 
  private:
@@ -124,12 +102,10 @@ class GfxReplay {
   GfxReplay& operator=(const GfxReplay&) = delete;
 
   void Run();
-  // Vulkan-desktop-engine route (code-only bench for the GPU work).
-  void RunVulkanReplay(const std::string& gfxPath);
   void RunCpuReplay(const std::string& gfxPath);
   // Golden reference (see GfxReplayRefMode). `RefCollectFrame` runs on the replay
-  // thread once per composed frame (CPU route): it hashes it, and in export mode
-  // keeps the hash / in compare mode checks it against the loaded list.
+  // thread once per composed frame: it hashes it, and in export mode keeps the
+  // hash / in compare mode checks it against the loaded list.
   void RefCollectFrame(GfxCpuDesktop* cpu);
   // Loads `hmrdp_ref.hash` (+ the `.bmp` it names) next to the capture; false with
   // a one-line reason in `refNote_` when the reference is missing/unusable.
@@ -155,19 +131,14 @@ class GfxReplay {
   void PaceRecord(uint64_t timestampUs);
 
   std::mutex mutex_;
-  // Per-frame client work for the CPU (gdi) route: the very same meter the live
-  // session uses, fed through the same hooks (chunk stamp + wrapped
-  // SurfaceCommand/EndFrame + present), so a replayed frame and a live frame are
-  // measured identically and can be compared figure by figure
-  // (hmrdp_gfx_work.h). Only the CPU route installs its wrappers - it is the one
-  // that mirrors live (gdi); the engine route keeps its own stats.
+  // Per-frame client work: the very same meter the live session uses, fed through
+  // the same hooks (chunk stamp + wrapped SurfaceCommand/EndFrame + present), so a
+  // replayed frame and a live frame are measured identically and can be compared
+  // figure by figure (hmrdp_gfx_work.h).
   GfxWorkMeter meter_;
-  // Presenter for the CPU (gdi) route (Vulkan, or GLES on devices whose Vulkan
-  // cannot present); the engine route owns its own Vulkan presenter inside
-  // `desktop_`.
+  // Presenter for the replay (Vulkan, or GLES on devices whose Vulkan cannot
+  // present).
   std::unique_ptr<FramePresenter> presenter_;
-  // Engine adapter for the Vulkan routes (null on the CPU route).
-  std::unique_ptr<ReplayDesktop> desktop_;
   std::thread thread_;
   std::atomic<bool> running_{false};
   // Which run the reported figures belong to, and whether that run reached the
@@ -179,39 +150,14 @@ class GfxReplay {
   std::atomic<bool> aborted_{false};
   void* window_ = nullptr;
   std::string gfxPath_;
-  std::atomic<int> route_{0};
   int surfaceW_ = 0;
   int surfaceH_ = 0;
   std::atomic<int> pendingW_{0};  std::atomic<int> pendingH_{0};
   std::atomic<uint64_t> frames_{0};
   std::atomic<uint64_t> presents_{0};
-  // EndFrame markers that produced no present because the engine had nothing
-  // dirty mapped to the output (normal "static frame"; the GPU route must not
-  // count these as failures).
-  std::atomic<uint64_t> presentSkips_{0};
   // EndFrame markers where a present was attempted and did not reach the screen
-  // (window/surface not ready, GL error) - this is the real failure counter.
+  // (window/surface not ready, GL error) - the real failure counter.
   std::atomic<uint64_t> presentFailures_{0};
-  std::atomic<uint64_t> applyUs_{0};
-  std::atomic<uint64_t> applyCount_{0};
-  // Per-command apply time/count (GPU route), split by GFX command kind so a
-  // single slow group is visible: Progressive / ClearCodec / uncompressed
-  // bitmap (WireToSurface), solid fill, surface blit, cache, and the rest
-  // (surface lifecycle / mapping / frame markers).
-  std::atomic<uint64_t> progUs_{0};
-  std::atomic<uint64_t> progCount_{0};
-  std::atomic<uint64_t> clearUs_{0};
-  std::atomic<uint64_t> clearCount_{0};
-  std::atomic<uint64_t> uncompUs_{0};
-  std::atomic<uint64_t> uncompCount_{0};
-  std::atomic<uint64_t> fillUs_{0};
-  std::atomic<uint64_t> fillCount_{0};
-  std::atomic<uint64_t> blitUs_{0};
-  std::atomic<uint64_t> blitCount_{0};
-  std::atomic<uint64_t> cacheUs_{0};
-  std::atomic<uint64_t> cacheCount_{0};
-  std::atomic<uint64_t> otherUs_{0};
-  std::atomic<uint64_t> otherCount_{0};
   std::atomic<uint64_t> presentUs_{0};
   // CPU present upload (doc_agent/gfx-engine.md §2.3): what this run's presents
   // actually uploaded vs what the merged box would have cost, how often the rect
@@ -256,8 +202,8 @@ class GfxReplay {
   uint64_t recordBaseUs_ = 0;
   int64_t recordWallBaseUs_ = 0;
   // When the first presented frame ended: fps is measured from here, so the run's
-  // start-up (engine/presenter init, first-frame wait) does not count as playback
-  // time (replay thread writes, UI thread reads via StatsLines).
+  // start-up (presenter init, first-frame wait) does not count as playback time
+  // (replay thread writes, UI thread reads via StatsLines).
   std::atomic<int64_t> firstFrameEndUs_{0};
   // When the pump started, so the reported `feed` (compute) can exclude the run's
   // start-up and mean "per-frame compute" (replay thread writes).
@@ -282,7 +228,7 @@ class GfxReplay {
   // Pixels whose worst channel delta is <= 2 (rounding-level, not content).
   std::atomic<uint64_t> imgDiffSmallPx_{0};
 
-  // --- golden reference (kExport / kCompare, CPU route only) ---------------
+  // --- golden reference (kExport / kCompare) -------------------------------
   // One hash per composed frame, in playback order. Written to / read from
   // `hmrdp_ref.hash` next to the capture (replay thread only).
   std::vector<uint64_t> refHashes_;
@@ -313,9 +259,6 @@ class GfxReplay {
   // Replay-thread only (no locking needed).
   std::mutex errorMutex_;
   std::string lastError_;
-  // Latest engine summary (Vulkan stats), snapshotted periodically on the replay
-  // thread and read by StatsLines on the UI thread.
-  std::string traffic_;
 };
 
 }  // namespace hmrdp

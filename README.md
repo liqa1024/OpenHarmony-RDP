@@ -8,9 +8,8 @@
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
 - **图形管道**：RDPGFX（RemoteFX / 渐进式）的解码由 FreeRDP 的 **gdi** 完成（ClearCodec 也在 CPU，
   它不是自包含的），输出帧经呈现器上屏：**「硬件加速」**开（默认，设备支持时）用 **Vulkan**
-  （脏区上传 + letterbox blit，gdi 直接合成进呈现器缓冲），关或设备不支持时用 **GLES** 且完全不碰
-  Vulkan（给 Vulkan 不好用/模拟器兜底）。Vulkan 桌面引擎（compute 解码 + 合成）目前只用于 dev
-  回放/对比，未接入 live
+  （脏区上传 + letterbox quad，gdi 直接合成进呈现器缓冲），关或设备不支持时用 **GLES** 且完全不碰
+  Vulkan（给 Vulkan 不好用/模拟器兜底）
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
   压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）
 - **光标同步**：远端光标形状（文本、手型、窗口边缘缩放等）映射为鸿蒙系统光标，大光标自动缩放到 256；
@@ -61,7 +60,7 @@
 │  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
 ├─────────────────────────────────────────────────────────────┤
 │  Session wrapper  (hmrdp_session.cpp)                       │
-│  GPU desktop engine  (hmrdp_vk_desktop / hmrdp_vk_context)  │
+│  gdi desktop + presenters  (hmrdp_gfx_cpu / hmrdp_presenter)│
 │  Vulkan renderer + swapchain  (hmrdp_vk_renderer)           │
 │  OHAudio output   (hmrdp_audio.cpp, dlopen libohaudio)      │
 ├─────────────────────────────────────────────────────────────┤

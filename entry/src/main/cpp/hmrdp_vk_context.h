@@ -6,9 +6,6 @@
  * usable Vulkan driver must degrade to FreeRDP's gdi path, not fail to load the
  * application (same rule as the OHAudio sink, see AGENTS.md). Every command is
  * therefore fetched through vkGetInstanceProcAddr / vkGetDeviceProcAddr.
- *
- * See doc_agent/gfx-engine.md §1
- * (one VkDevice for the whole process).
  */
 #ifndef HMRDP_VK_CONTEXT_H
 #define HMRDP_VK_CONTEXT_H
@@ -95,14 +92,7 @@ struct VkApi {
   PFN_vkCmdBeginRenderPass CmdBeginRenderPass = nullptr;
   PFN_vkCmdEndRenderPass CmdEndRenderPass = nullptr;
   PFN_vkCmdPipelineBarrier CmdPipelineBarrier = nullptr;
-  PFN_vkCmdCopyImage CmdCopyImage = nullptr;
-  PFN_vkCmdBlitImage CmdBlitImage = nullptr;
-  PFN_vkCmdClearColorImage CmdClearColorImage = nullptr;
   PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage = nullptr;
-  PFN_vkCmdCopyImageToBuffer CmdCopyImageToBuffer = nullptr;
-  PFN_vkCmdFillBuffer CmdFillBuffer = nullptr;
-  PFN_vkCmdCopyBuffer CmdCopyBuffer = nullptr;
-  PFN_vkCmdUpdateBuffer CmdUpdateBuffer = nullptr;
   PFN_vkCreateImage CreateImage = nullptr;
   PFN_vkDestroyImage DestroyImage = nullptr;
   PFN_vkGetImageMemoryRequirements GetImageMemoryRequirements = nullptr;
@@ -117,29 +107,22 @@ struct VkApi {
   PFN_vkUnmapMemory UnmapMemory = nullptr;
   PFN_vkFlushMappedMemoryRanges FlushMappedMemoryRanges = nullptr;
   PFN_vkInvalidateMappedMemoryRanges InvalidateMappedMemoryRanges = nullptr;
-  // GPU timestamps (dev perf attribution): per-dispatch GPU time without changing
-  // what is drawn, unlike a "skip this dispatch" switch.
+  // GPU timestamps (dev perf attribution): the presenter's own present-cost probe.
   PFN_vkCreateQueryPool CreateQueryPool = nullptr;
   PFN_vkDestroyQueryPool DestroyQueryPool = nullptr;
   PFN_vkCmdResetQueryPool CmdResetQueryPool = nullptr;
   PFN_vkCmdWriteTimestamp CmdWriteTimestamp = nullptr;
   PFN_vkGetQueryPoolResults GetQueryPoolResults = nullptr;
 
-  // Compute (doc_agent/gfx-engine.md §1: the Progressive / RemoteFX decode runs in compute
-  // shaders; ClearCodec deliberately stays on the CPU, §5 V4). Resolved
-  // opportunistically: a device that cannot do compute still runs the
-  // transfer-only part of the engine.
+  // The presenter draws its letterboxed picture with one quad, so it needs the
+  // shader / descriptor / graphics-pipeline entry points. Resolved
+  // opportunistically: a device that cannot do them simply fails to present.
   PFN_vkCreateShaderModule CreateShaderModule = nullptr;
   PFN_vkDestroyShaderModule DestroyShaderModule = nullptr;
   PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout = nullptr;
   PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout = nullptr;
   PFN_vkCreatePipelineLayout CreatePipelineLayout = nullptr;
   PFN_vkDestroyPipelineLayout DestroyPipelineLayout = nullptr;
-  PFN_vkCreateComputePipelines CreateComputePipelines = nullptr;
-  // Graphics pipeline: the presenter draws the letterboxed picture with one quad
-  // (channel swap + scaling on the GPU), so it needs the graphics entry points
-  // too - no compute involved, hence they are resolved with the same
-  // opportunistic rule as the compute ones above.
   PFN_vkCreateGraphicsPipelines CreateGraphicsPipelines = nullptr;
   PFN_vkCreateSampler CreateSampler = nullptr;
   PFN_vkDestroySampler DestroySampler = nullptr;
@@ -154,8 +137,6 @@ struct VkApi {
   PFN_vkUpdateDescriptorSets UpdateDescriptorSets = nullptr;
   PFN_vkCmdBindPipeline CmdBindPipeline = nullptr;
   PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets = nullptr;
-  PFN_vkCmdPushConstants CmdPushConstants = nullptr;
-  PFN_vkCmdDispatch CmdDispatch = nullptr;
 
   // Fills the instance-level commands. Returns false if a required entry is
   // absent (the platform then cannot be used).
@@ -172,9 +153,8 @@ VkApi& GetVkApi();
 // "VK_SUCCESS" / "VK_ERROR_..." for logs.
 std::string VkResultName(int32_t result);
 
-// Capability report (doc_agent/gfx-engine.md §1): what the platform actually offers. It is a
-// snapshot for the dev panel and decides the later design (read-back strategy,
-// queue layout, whether present is even possible).
+// Capability report: what the platform actually offers. It is a snapshot for the
+// dev panel and decides whether the Vulkan presenter can be used at all.
 struct VulkanCapabilities {
   bool loaderPresent = false;
   std::string loadError;
@@ -200,16 +180,13 @@ struct VulkanCapabilities {
 
   bool memHostVisible = false;
   bool memHostCoherent = false;
-  // A DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type: when present, read-back does
-  // not need a staging copy (doc_agent/gfx-engine.md §1).
+  // A DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type: when present, an upload does
+  // not need a staging copy.
   bool memHostVisibleDeviceLocal = false;
 
   uint32_t queueFamilyCount = 0;
   uint32_t graphicsQueueFamilies = 0;
-  uint32_t computeQueueFamilies = 0;
   uint32_t transferQueueFamilies = 0;
-  bool hasGraphicsComputeQueue = false;
-  bool hasDedicatedComputeQueue = false;
 
   uint32_t instanceExtensionCount = 0;
   uint32_t deviceExtensionCount = 0;
@@ -223,26 +200,12 @@ struct VulkanCapabilities {
   std::string Describe() const;
   std::string DescribeLines() const;
 
-  // --- GPU engine verdict (hardware decode / GPU replay) --------------------
-  // Whether the Vulkan desktop engine can run on this device, filled by the
-  // probe (FillVerdicts) together with the other facts. What the live
-  // takeover needs is exactly this: a usable device, a queue family that can run
-  // the decode compute dispatches, host-visible memory for the surface/cache
-  // buffers, and a surface + swapchain to present to.
-  //
-  // `engineUnsupportedCode` is a short stable token, so the UI layer owns the
-  // wording: "no-vulkan" / "no-instance" / "no-device" / "no-compute" /
-  // "no-host-memory" / "no-surface" / "emulator". It is empty when supported.
-  bool engineSupported = false;
-  std::string engineUnsupportedCode;
-
-  // --- Presenter verdict (CPU/gdi frames) -----------------------------------
-  // Whether the (much simpler) Vulkan *presenter* can be used, filled the same
-  // way. Presenting only needs a device that can blit to the XComponent surface
-  // plus host-visible memory for the staging buffer: **no compute**, so this is
-  // deliberately looser than engineSupported. When it is false the GLES presenter
-  // takes over (hmrdp_presenter.h). Codes: "emulator" / "no-vulkan" /
-  // "no-instance" / "no-device" / "no-host-memory" / "no-surface".
+  // --- Presenter verdict ----------------------------------------------------
+  // Whether the Vulkan *presenter* can be used: a device that can blit to the
+  // XComponent surface plus host-visible memory for the frame buffer. When it is
+  // false the GLES presenter takes over (hmrdp_presenter.h). `presenterUnsupportedCode`
+  // is a short stable token so the UI layer owns the wording: "emulator" /
+  // "no-vulkan" / "no-instance" / "no-device" / "no-host-memory" / "no-surface".
   bool presenterSupported = false;
   std::string presenterUnsupportedCode;
 };
@@ -258,10 +221,9 @@ class VkContext {
   static VkContext& Instance();
 
   // Creates the instance (once) and a device with one graphics + present queue
-  // family for `surface`. A null surface means "no presentation needed" (the
-  // offline correctness harness), which only requires a graphics family. When a
-  // surface is supplied later and the existing queue family cannot present to it,
-  // the device is rebuilt. Returns false and stays unusable on failure.
+  // family for `surface`. When a surface is supplied later and the existing queue
+  // family cannot present to it, the device is rebuilt. Returns false and stays
+  // unusable on failure.
   bool EnsureDevice(VkSurfaceKHR surface);
   // Index of a memory type satisfying `typeBits` and `required` (and carrying none
   // of `excluded`), or UINT32_MAX.
