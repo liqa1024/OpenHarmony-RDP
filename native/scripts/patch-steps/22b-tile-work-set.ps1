@@ -1,7 +1,7 @@
 # 22b) HmRdp: the tile work set comes from the clip rects, and the per-tile
 #      composite is one helper both paths share.
 #
-#      背景（doc_agent/cpu-accel-plan.md §1）：update_tiles 原先走整帧累积的
+#      背景（doc_agent/cpu-accel-plan.md §2）：update_tiles 原先走整帧累积的
 #      updatedTileIndices（一条消息一次解码 ⇒ 同一 tile 一帧内出现多次，整条列表
 #      每条消息都要重走），并且内联做 region16 求交 + 像素拷贝。这一步把工作集改成
 #      "裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile"（hmrdpFrameId），把逐 tile

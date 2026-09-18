@@ -1,6 +1,6 @@
 # 21) HmRdp: run the tile-decode chunks on the platform task queue (ffrt).
 #
-#     动机（doc_agent/cpu-accel-plan.md §1/§2 M-a）：现在这套并行用的是 FreeRDP
+#     动机（doc_agent/cpu-accel-plan.md §0/§2）：现在这套并行用的是 FreeRDP
 #     自己的 WinPR 池——每个 codec 上下文自带一组线程、每个 chunk 一个 work item
 #     进带锁队列、等待走池级全局计数。实测它的代价是"把同一份解码放大成约 4.6 倍
 #     CPU"（整轮进程 CPU 约 3 倍、帧墙钟只降 1.5 倍），而且请求 2/4/8 个 worker

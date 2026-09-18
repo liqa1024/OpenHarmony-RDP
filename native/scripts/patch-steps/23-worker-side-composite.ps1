@@ -1,7 +1,7 @@
 # 23) HmRdp: the tile decode composites the tile itself; update_tiles only keeps
 #     the damage bookkeeping.
 #
-#     动机（doc_agent/cpu-accel-plan.md §1）：并行段之外最大的一块是 `update`——把每个 tile
+#     动机（doc_agent/cpu-accel-plan.md §2）：并行段之外最大的一块是 `update`——把每个 tile
 #     从 `tile->data` 拷进目标 surface（每 tile 48KB：读源 16KB + 读目的 16KB + 写目的 16KB），
 #     整帧约 9ms 且完全落在接收线程上，占该帧 CPU 部分的约 4 成。
 #

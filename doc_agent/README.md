@@ -16,7 +16,7 @@
 | 改 GFX / 解码 / 回放 | [`gfx-engine.md`](gfx-engine.md) |
 | 改上屏（present）管线 | [`present-pipeline.md`](present-pipeline.md) |
 | 改 CPU（gdi）链路的解码 / 成本 / 量测口径 | [`gfx-engine.md`](gfx-engine.md) §8（**先读这一节**） |
-| 做 CPU 解码的并行 / 执行器 / 内存布局 / 相位归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（并行形态、能量口径、已验证与被否证、M-b/M-c） |
+| 做 CPU 解码的并行 / 执行器 / 流水线分段 / 相位归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（执行器与宽度、分段与账目、已验证与被否证、优化候选） |
 | 查历史依据（**old 弃用**，不要从这里接手） | [`cpu-path_old.md`](cpu-path_old.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
@@ -39,9 +39,9 @@
   量测纪律 / 解码侧对拍（§8）**、待办。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
   后端、脏区上传与零拷贝桌面缓冲的定型约束、present 账目与探针。
-- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行与平台适配**：并行形态
-  （执行器/宽度/变体开关）、并行相关的账目与判读、**已验证的结论（量级与相对关系）**、
-  已否证 / 容易走错的路、待办 M-b/M-c。单核部分的知识在
+- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行与平台适配**：执行器与宽度
+  （唯一的 ffrt 队列、无第二执行器）、流水线分段（谁在哪条线程）与并行相关的账目/判读、
+  **已验证的结论（量级与相对关系）**、已否证 / 容易走错的路、优化候选 P1–P4。单核部分的知识在
   [`gfx-engine.md`](gfx-engine.md) §8。
 - **（old 弃用，只作历史依据）**：
   [`cpu-path_old.md`](cpu-path_old.md) —— 旧 CPU 链路文档（旧口径与被否证的过程按原样保留）；

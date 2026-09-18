@@ -1,7 +1,7 @@
 # 20) HmRdp: take the tile decode's working buffers out of the shared pool, and
 #     claim tiles in blocks instead of one at a time.
 #
-#     背景（doc_agent/cpu-accel-plan.md §1/§2）：改之前并行解码在 2 个 worker
+#     背景（doc_agent/cpu-accel-plan.md §2）：改之前并行解码在 2 个 worker
 #     之后完全不再涨，而且整轮进程 CPU 是单核的 3 倍以上。两个机制性原因都在
 #     "所有 worker 争同一份共享结构"上：
 #

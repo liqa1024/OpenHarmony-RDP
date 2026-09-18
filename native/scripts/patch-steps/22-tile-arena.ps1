@@ -1,6 +1,6 @@
 # 22) HmRdp: one arena for the tile decode's persistent buffers.
 #
-#     动机（doc_agent/cpu-accel-plan.md §1）：并行下相位占比显示**访存型相位膨胀、算力型不膨胀**——
+#     动机（doc_agent/cpu-accel-plan.md §2）：并行下相位占比显示**访存型相位膨胀、算力型不膨胀**——
 #     `color` 每 tile 放大 ~9.5×、`dequant` ~8.9×、`idwt` ~6.7×，而纯位解码的 `rlgr` 只有 ~3.7×。
 #     原因是每个 tile 的三份持久缓冲（`sign` 24KB、`current` 24KB、`data` 16KB）都是**各自一次
 #     malloc**，14 个 worker 同时打到 14 片互不相邻的页 ⇒ TLB / DRAM 行冲突。

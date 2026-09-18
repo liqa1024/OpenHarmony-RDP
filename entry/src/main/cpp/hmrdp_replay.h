@@ -173,8 +173,8 @@ class GfxReplay {
   std::atomic<uint64_t> uploadMaxRects_{0};
   // Process CPU time (all threads) at the start and the end of the run: the
   // energy side of the decode-worker A/B. Wall time alone cannot tell "faster"
-  // from "more cores woken for nothing"; a run whose `本机` stops improving while
-  // cpu climbs is past the sweet spot (doc_agent/cpu-accel-plan.md §1).
+  // from "more cores woken for nothing"; the real judgement is `E2` (hmrdp_energy.h)
+  // and the frequency band (doc_agent/cpu-accel-plan.md §2).
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};

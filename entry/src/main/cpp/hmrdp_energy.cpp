@@ -329,10 +329,10 @@ void EnergyProbe::End() {
              "coreBusy=%{public}.1fs e2=%{public}.2f",
              source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_, e2_);
 
-  // Which threads spent the run's CPU. A pool that is doing the work shows it as
-  // the pool threads' own seconds; a pool that is in the way shows up as many
-  // threads with similar time and no extra decode throughput
-  // (doc_agent/cpu-accel-plan.md §1).
+  // Which threads spent the run's CPU: the platform queue's workers show up as
+  // their own seconds alongside the receiving thread, which is how "the decode
+  // really spread over N workers" is read from the account rather than inferred
+  // from the wall clock (doc_agent/cpu-accel-plan.md §1).
   {
     std::vector<std::pair<int, uint64_t>> endThreads;
     ReadThreadCpu(&endThreads);
