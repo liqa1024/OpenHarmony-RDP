@@ -78,8 +78,8 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   `rdpContext`，供离线 gdi 桌面使用）。**这一整块按"一次性整体打补丁"设计**：改动它要从干净源码重打。
 - **客户端侧带宽 / 帧回执 / 线程扇出**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；winpr 线程池 worker 与
-  drdynvc 线程在入口调 app 注册的 **QoS** 钩子，并把**线程池扇出上限压到 4**（每核一个 worker 被每条
-  Progressive 消息唤醒只费电不提吞吐；提到 8 无收益，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1）。
+  drdynvc 线程在入口调 app 注册的 **QoS** 钩子。**线程池的扇出上限只约束兜底路径**——并行宽度现在由
+  平台队列的并发度决定（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0）。
 
 **正确性 / 一致性**
 
@@ -97,14 +97,14 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
   + 任务属性 + 逐 handle 等待）；构建里没有这些导出时回落到原 WinPR 池。**宽度就是设置里的
   「解码线程数」**——实测并发宽度严格等于设定值，而原池不遵守该值。见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §2 M-a。
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§4。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
   malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；
-  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
+  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2。
 - **tile 合成（拷贝）移进并行段**：patch step 23 把目标缓冲与合并后的 clip 存进 codec context，tile 解码
   完一块就直写 surface；`update_tiles` 保留遍历与 O(1) 脏区 span 记账，只在**clip 哈希一致**时跳过那次
   拷贝（哈希折入消息序号；"一条消息多条 region"时两者 clip 不同，仍由 `update_tiles` 覆盖）。
-  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。效果见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
+  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。效果见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2。
 - **dev 探针的两处修正**：`g_HmrdpSampleTile` 改成线程本地（否则多 worker 下 `prog2` 的相位总量无意义）；
   app 侧新增 `energy:` 行（每核 busy×f² 的能量代理 + `C1=Σbusy×f` 的 cycle 代理，数据源为
   `cpuidle` 空闲时间与 `time_in_state` 驻留）。见 [`gfx-engine.md`](gfx-engine.md) §8.3。

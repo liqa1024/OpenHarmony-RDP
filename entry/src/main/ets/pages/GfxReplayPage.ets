@@ -50,7 +50,7 @@ const REF_LABEL: string[] = ['关', '导出', '对比'];
 // automatic choice (performance-core count, else min(cores, 4)); 1 decodes on
 // the receiving thread with no worker pool. The decode is the CPU (gdi) path's
 // dominant cost, so this is the knob for its time-vs-energy curve
-// (doc_agent/cpu-accel-plan.md §1).
+// (doc_agent/cpu-accel-plan.md §2).
 //
 // Every value is a button of its own: one click selects it and restarts the
 // replay, so a measurement point is reached in one action instead of by cycling

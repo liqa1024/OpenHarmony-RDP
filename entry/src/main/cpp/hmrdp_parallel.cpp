@@ -20,7 +20,7 @@ namespace {
 // updates, and it is the only executor that honours the configured width. The
 // codec's own WinPR pool is a third-party thread pool with none of that; it is
 // kept only as the graceful-degradation path when these exports are absent
-// (doc_agent/cpu-accel-plan.md §2 M-a).
+// (doc_agent/cpu-accel-plan.md §0/§4).
 constexpr int kUsePlatformExecutor = 1;
 
 // Upper bound on the tasks one call accepts; the decoder's chunk count is capped

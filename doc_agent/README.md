@@ -16,7 +16,7 @@
 | 改 GFX / Progressive / GPU 引擎 | [`gfx-engine.md`](gfx-engine.md)（**先读「必须保留的语义」**） |
 | 改上屏（present）管线 | [`present-pipeline.md`](present-pipeline.md) |
 | 改 CPU（gdi）链路的解码 / 成本 / 量测口径 | [`gfx-engine.md`](gfx-engine.md) §8（**先读这一节**） |
-| 做 CPU 解码的多核 / 线程池 / 平台适配 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（多核计划，含里程碑与出口） |
+| 做 CPU 解码的并行 / 执行器 / 内存布局 / 相位归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（并行形态、能量口径、已验证与被否证、M-b/M-c） |
 | 做 GPU 硬件加速（tile 解码 + 合成的 GPU 化） | [`gpu-accel-plan.md`](gpu-accel-plan.md)（**计划**，含里程碑与出口） |
 | 查历史依据（**old 弃用**，不要从这里接手） | [`cpu-path_old.md`](cpu-path_old.md)、[`gfx-progressive-kernel_old.md`](gfx-progressive-kernel_old.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
@@ -40,9 +40,10 @@
   量测纪律 / 解码侧对拍（§8）**、待办。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：统一的呈现器实现、帧槽与
   设备侧握手、picture ping-pong、CPU 路线零拷贝上屏的定型约束、CPU/GPU 耗时对比与后续工作清单。
-- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的多核与平台适配计划**：起点基线、
-  现在这套并行（WinPR 池）为什么不能用（能效曲线与结论）、里程碑 M-a/M-b/M-c 与出口。
-  单核部分的知识已上移到 [`gfx-engine.md`](gfx-engine.md) §8。
+- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行与平台适配**：并行形态
+  （执行器/宽度/变体开关）、并行相关的账目与判读、**已验证的结论（量级与相对关系）**、
+  已否证 / 容易走错的路、待办 M-b/M-c。单核部分的知识在
+  [`gfx-engine.md`](gfx-engine.md) §8。
 - [`gpu-accel-plan.md`](gpu-accel-plan.md) —— **GPU 硬件加速计划**：把 tile 解码 + 合成做成
   一个"载荷进、像素出"的 GPU 阶段（相位适配性与并行度分析、交接成本模型、M0–M4 里程碑与出口、
   开关与回退口径）。

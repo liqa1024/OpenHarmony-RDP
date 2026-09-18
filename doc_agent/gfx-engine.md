@@ -421,14 +421,15 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
     更便宜 ⇒ "并行换了多少 CPU 秒"**不是能量结论**；要么在同一 `cpuKHz=` 档下比，要么按
     "CPU 时间 × 档位"估，要么直接看 duty 下的功耗。
 - **优先"少干活"**（去冗余拷贝、少唤醒、去掉重复搬运），但**不是因为"并行不好"**：多核低频在很多负载下
-  比单核高频更省电，**并行本身是正当的能效手段**；不用它的原因是**现在这套池不行**（投递/唤醒/等待的
-  形态不适合本平台，见 [`cpu-accel-plan.md`](cpu-accel-plan.md)），不是"并行"这条路不对。
+  比单核高频更省电，**并行本身是正当的能效手段**。这条线的并行形态（平台任务队列、宽度、相位归属、
+  内存布局）见 [`cpu-accel-plan.md`](cpu-accel-plan.md)：**并行对能耗是赚的**（整屏样本的 `E2` 约为串行的
+  一半）。
 - 回放 stats 就是这条线的账：
 
   | 行 | 含义 |
   |---|---|
   | `perFrame 本机=… = zgx+parse + decode + compose + present  (+ sync … blocked)` | **本机 = 处理时间**；各拆相相加**等于**本机，`sync` **不计入**（见下） |
-  | `prog ms/frame: read / dispatch / dec(blocked) / update  (calls= unions= tiles= tilesDec=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**、`update` = `update_tiles` 整段；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数 |
+  | `prog ms/frame: read / dispatch / dec(blocked) / update  (calls= unions= tiles= tilesDec=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数 |
   | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile |
   | `run … threads=… cpu=…s  cpuKHz=…` | 该轮的 worker 数与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
@@ -469,12 +470,13 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
     而不是算术右移，负数上两者不同，照抄时不能写成 `>>1`。抽取支的形状是
     `X2 = L − (H0+H1)/2`、`X1 = (X0+X2)/2 + 2*H0`、`X0 = X2`：**递推在内层**，且纵向那一趟原来按**列**走
     （每个样本换一条 cache line）——这两条是它比算术量更贵的原因。
-  - **`dec` 的两种口径**（同一个"tile 解码段"，测点不同、不可混读）：并行时是**池段的墙钟**（投递后到
-    所有 work 等完，`blocked` 是其中真正阻塞的部分）；串行时是**本线程逐 tile 解码的时间**（此时
-    `dispatch`/`blocked` 必然为 0，不是缺失）。⇒ 读 `dec` 前先看 `threads=`。
-  - **`update` 的大头是像素拷贝，不是记账**：`freerdp_image_copy_no_overlap` 把每个 tile（64×64×4B）
-    拷进 surface；带 `KEEP_DST_ALPHA` 掩码（每像素一次掩码写）而不是 memcpy。region16 记账只值
-    ~0.5ms/帧 量级（见 8.5）。
+  - **`dec` 的两种口径**（同一个"tile 解码段"，测点不同、不可混读）：并行时是**并行段的墙钟**（提交后到
+     所有任务等完，`blocked` 是其中真正阻塞的部分）；串行时是**本线程逐 tile 解码的时间**（此时
+     `dispatch`/`blocked` 必然为 0，不是缺失）。⇒ 读 `dec` 前先看 `threads=`。
+  - **`update` 的大头本来是像素拷贝，不是记账**：`freerdp_image_copy_no_overlap` 把每个 tile（64×64×4B）
+     拷进 surface；带 `KEEP_DST_ALPHA` 掩码（每像素一次掩码写）而不是 memcpy。region16 记账只值
+     ~0.5ms/帧 量级（见 8.5）。**这份拷贝默认已经随 tile 解码段并行**（`update_tiles` 只留记账，见
+     [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2），所以并行下 `update` 只剩记账量级。
 - **按字节算这笔账**（优化后期，单核的天平已经从"算力"倒向"每帧过多少字节"）：一个 tile（3 分量）大致
   搬 200KB 量级——RLGR 出 `sign`、去量化 `sign → buffer`、状态更新 `buffer↔current`、逆 DWT 三级级联、
   `color` 读系数写 tile、`update` 读 tile + 读目的（保 alpha）+ 写目的。各趟实测速率在
@@ -569,7 +571,8 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 1. **"每次 tile 的 region16 union（O(n²)）是 `update` 的大头"** —— 先把相邻 tile 索引合并再 union，
    `unions ≈ tiles`（Progressive 每条消息的 region 基本就是每 tile 一个矩形，没有可合并对象）⇒ 零收益；
    再改成"每 tile 行一个 span、帧末一次并进 region"，`unions` 降了 50 倍以上而 `update` 只降 ~0.5ms
-   ⇒ **union 总共只值 ~0.5ms**。⇒ 教训：**`update` 的账按"拷贝字节数"估，不要按"矩形条数"估**。
+   ⇒ **union 总共只值 ~0.5ms**。⇒ 教训：**`update` 的账按"拷贝字节数"估，不要按"矩形条数"估**；
+   而这份字节成本**落在哪条线程上**比它的多少更值钱（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2）。
 2. **"delta 折叠（只拷没写过的区域）"** —— 去重 stamp 实测命中 **0 次**（帧内没有重复合成）⇒ 无收益。
 3. **"`state` 的饱和加是算力瓶颈"** —— 那个循环按元素做两次分支钳位，看着像算力账；换成 `VQADD`
    （8 路、逐位等价的饱和加）后 `state` 在噪声内 ⇒ 它**受搬的字节数限制**（工作缓冲与持久 `current`
@@ -587,10 +590,10 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 
 ### 8.6 已定型的约束（decode 侧）
 
-- **`update_tiles` 的 region16 记账不是瓶颈**（~0.5ms/帧 量级）：不要再去合并矩形/换 region 结构
-  （两次实测收益都在噪声里，见 8.5.1）。**待收尾**：patch 里"脏区记成每 tile 行一个 span"那一步当初量到
-  净收益 ~0，现在仍在树里且参考对比 `bad=0`——两条路选一条并重跑两份录像确认：撤掉（回到逐 tile union），
-  或保留（并把这条改成"span 形状已定型"）。
+- **`update_tiles` 的记账形状已定型**：脏区按**每 tile 行一个 span** 记（帧末并进 region16），逐 tile 不再
+  建 region16；这个形状本身只值 ~0.5ms/帧 量级，不要再去合并矩形或换 region 结构（两次实测收益都在噪声
+  里，见 8.5.1）。**该段真正的成本是像素拷贝**，而它默认已随 tile 解码段并行
+  （[`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2）。
 - **`sign` / `current` 是两个持久状态**：`sign` 存 RLGR 原始系数、`current` 存去量化后的系数，
   两者跨消息常驻（UPGRADE 按 `sign` 判符号、DIFFERENCE 按 `current` 累加）⇒ 任何"少写一趟"的改动都要
   保证这两个缓冲最终内容不变（逐位等价），否则对拍会立刻显示出来。

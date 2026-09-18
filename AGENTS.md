@@ -49,7 +49,7 @@
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX / Progressive / GPU 引擎（**改前必读**）、回放验证回路与**参考画面验收**、**CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 解码侧对拍（§8）** | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| **CPU（gdi）链路的多核与平台适配计划**（起点基线、WinPR 池的能效曲线与结论、里程碑 M-a/M-b/M-c 与出口） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| **CPU（gdi）链路的并行与平台适配**（执行器/宽度/内存布局/相位归属、能量口径、已验证与被否证、M-b/M-c） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
 | **GPU 硬件加速计划**（tile 解码 + 合成做成一个 GPU 阶段：相位适配性/交接成本/里程碑/开关口径） | [`gpu-accel-plan.md`](doc_agent/gpu-accel-plan.md) |
 | **（历史，old 弃用）** 旧 CPU 链路文档 / 旧 GPU kernel 清单：只作依据保留，不要从这里接手 | [`cpu-path_old.md`](doc_agent/cpu-path_old.md)、[`gfx-progressive-kernel_old.md`](doc_agent/gfx-progressive-kernel_old.md) |
 | 上屏（present）管线：一套实现、CPU/GPU 耗时对比、**后续工作清单** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |

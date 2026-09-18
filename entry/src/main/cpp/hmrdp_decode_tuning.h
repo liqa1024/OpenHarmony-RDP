@@ -1,33 +1,23 @@
 /*
- * HmRdp - how many workers the Progressive tile decode may use.
+ * HmRdp - how wide the Progressive tile decode may run.
  *
- * FreeRDP decodes Progressive tiles through the WinPR thread pool (one pool per
- * process, one work item per region, workers woken for every message). The
- * worker count is the only knob that shapes that parallelism on this platform:
- * threads cannot be pinned to a core or a cluster here, so "adaptive" means
- * choosing how many workers exist, not where they run.
+ * The decode's executor is the platform task queue (a FFRT concurrent queue, see
+ * hmrdp_parallel.*), and its maximum concurrency is this value; the codec's own
+ * WinPR pool is only the graceful-degradation path when that executor is not
+ * available. Threads cannot be pinned to a core or a cluster here, so the knob
+ * chooses the width, not where the work runs.
  *
- *  - `1` decodes on the receiving thread (the pool is bypassed entirely: no
- *    submission, no wake-up, no wait). That is the power-optimal setting for a
- *    stream the client can already keep up with.
- *  - `n > 1` runs `n` pool workers. The decode wall time only improves until the
- *    work stops scaling - measured on the test device, beyond 4 workers the
- *    frame time does not move at all (the extra workers land on the little
- *    cores), so the automatic choice stays near the performance-core count.
+ *  - `1` decodes on the receiving thread (no queue at all: no submission, no
+ *    wake-up, no wait).
+ *  - `0` (automatic) is the whole machine, capped by kAutoCap: the parallel
+ *    section's wall scales with the width once the width is honoured, and the
+ *    per-run energy proxy does not get worse with more width.
+ *  - `n > 1` sets the queue's maximum concurrency to `n`.
  *
- * The automatic choice is min(performance cores - or the core count when the
- * device does not expose its clusters - , 4): the decode stops getting faster
- * after a couple of workers (measured, doc_agent/cpu-accel-plan.md §1), so the
- * ceiling is small and only comes down on smaller devices. The value is
- * process-wide and applies to the live session and the offline replay alike (a
- * session/replay picks it up when its codec context starts, i.e. when it begins
- * decoding).
- *
- * **Currently pinned to 1** (`kPinnedWorkers` in the .cpp): the parallel path is
- * FreeRDP's own pool, untuned for this platform and inefficient, and it is due
- * to be rewritten - one serial baseline keeps measurements free of extra
- * variables. Requests are still stored, so reopening the knob (and the settings
- * / replay controls that set it) is a one-line change.
+ * The value is process-wide and applies to the live session and the offline
+ * replay alike; the decoder picks it up at a Progressive message boundary.
+ * Width, energy proxy and measurement discipline: doc_agent/cpu-accel-plan.md
+ * §0/§1.
  */
 #ifndef HMRDP_DECODE_TUNING_H
 #define HMRDP_DECODE_TUNING_H

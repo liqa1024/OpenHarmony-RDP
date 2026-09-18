@@ -332,7 +332,7 @@ void EnergyProbe::End() {
   // Which threads spent the run's CPU. A pool that is doing the work shows it as
   // the pool threads' own seconds; a pool that is in the way shows up as many
   // threads with similar time and no extra decode throughput
-  // (doc_agent/cpu-accel-plan.md §2).
+  // (doc_agent/cpu-accel-plan.md §1).
   {
     std::vector<std::pair<int, uint64_t>> endThreads;
     ReadThreadCpu(&endThreads);

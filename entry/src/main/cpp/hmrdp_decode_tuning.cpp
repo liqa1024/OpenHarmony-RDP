@@ -27,22 +27,16 @@ namespace {
 // pool did not), so the automatic choice is the whole machine - there is no
 // measured knee below the core count to stop at. The gain per worker flattens,
 // but it does not turn negative, and the per-run energy proxy has been flat to
-// slightly better with more width (doc_agent/cpu-accel-plan.md §1/§2).
+// slightly better with more width (doc_agent/cpu-accel-plan.md §0/§2).
 constexpr int kAutoCap = 16;
 // Manual range (the settings slider and the replay page's 「线程」 row).
 constexpr int kMaxWorkers = 8;
 constexpr int kMinWorkers = 1;
 
-// 0 keeps the stored/manual choice (or the automatic one) in effect. The value
+// 0 = automatic (the whole machine, capped by kAutoCap); 1..8 = manual. The value
 // is process-wide and applied at a Progressive message boundary; the settings
-// slider and the replay page's 「线程」 row both drive it. The automatic end
-// stays the default (doc_agent/cpu-accel-plan.md §1/§2): which end costs less
-// energy depends on the duty cycle, and that trade is read from `cpu=` together
-// with the `cpuKHz=` band the run actually got, never from the CPU seconds
-// alone.
-constexpr int kPinnedWorkers = 0;
-
-// 0 = automatic.
+// slider and the replay page's 「线程」 row both drive it
+// (doc_agent/cpu-accel-plan.md §0).
 int g_requested = 0;
 
 // Reads cpuinfo_max_freq once: the count of CPUs at (nearly) the top frequency,
@@ -114,15 +108,12 @@ int DecodePerfCores() {
 int AutoDecodeThreads() {
   // Automatic = the whole machine, capped only by kAutoCap. The decode wall
   // scales with the width now that the width is honoured, and the per-run energy
-  // proxy does not get worse with more width (doc_agent/cpu-accel-plan.md §1/§2).
+  // proxy does not get worse with more width (doc_agent/cpu-accel-plan.md §0/§2).
   const int cores = DecodeCpuCount();
   return std::max(kMinWorkers, std::min(cores, kAutoCap));
 }
 
 int DecodeThreads() {
-  if (kPinnedWorkers > 0) {
-    return kPinnedWorkers;
-  }
   return g_requested > 0 ? Clamp(g_requested) : AutoDecodeThreads();
 }
 
@@ -174,13 +165,6 @@ std::string DecodeThreadsInfo() {
   const int cores = DecodeCpuCount();
   const int perf = DecodePerfCores();
   char buf[160];
-  if (kPinnedWorkers > 0) {
-    std::snprintf(buf, sizeof(buf),
-                  "workers=%d (pinned serial: the parallel pool is not tuned for this platform, "
-                  "see doc_agent/cpu-accel-plan.md §1; cores=%d)",
-                  DecodeThreads(), cores);
-    return std::string(buf);
-  }
   const char* perfText = perf > 0 ? "known" : "unknown";
   if (g_requested > 0) {
     std::snprintf(buf, sizeof(buf), "workers=%d (manual, perf-cores=%d[%s] cores=%d)",

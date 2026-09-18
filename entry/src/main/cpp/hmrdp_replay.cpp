@@ -633,7 +633,7 @@ std::string GfxReplay::StatsLines() {
 
   // Worker count + the run's total process CPU time: the thread-count A/B needs
   // both the wall time (above) and what it cost, or "same speed, more cores
-  // woken" looks like a tie (doc_agent/cpu-accel-plan.md §1).
+  // woken" looks like a tie (doc_agent/cpu-accel-plan.md §2).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {

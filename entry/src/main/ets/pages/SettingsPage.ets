@@ -184,7 +184,7 @@ struct SettingsPage {
 
   // Honest wording: which end costs less energy depends on the duty cycle, and
   // the comparison is per `cpu=` at the same `cpuKHz=` band, not per frame time
-  // (doc_agent/cpu-accel-plan.md §1). 0 is the automatic choice (performance-core
+  // (doc_agent/cpu-accel-plan.md §2). 0 is the automatic choice (performance-core
   // count, capped at 4); 1 decodes on the receiving thread with no pool at all.
   // The replay page's 「线程」 row selects the same value directly for on-device
   // calibration.
