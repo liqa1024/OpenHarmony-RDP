@@ -33,7 +33,9 @@ int g_requested = 0;
 
 // Dev A/B for the tile work decomposition (see the header): the default is the
 // home + tail-steal partition, which keeps a worker on contiguous memory while
-// the tail stays block-granular. 0 selects the plain shared claim cursor.
+// the tail stays block-granular. 0 selects the plain shared claim cursor; 2 is
+// home plus "route width 1 through the platform queue" (a dev probe, see
+// hmrdp_parallel.h).
 int g_parallelMode = 1;
 
 // Reads cpuinfo_max_freq once: the count of CPUs at (nearly) the top frequency,
@@ -114,7 +116,9 @@ void SetDecodeThreads(int workers) {
 }
 
 void SetParallelMode(int mode) {
-  g_parallelMode = (mode == 1) ? 1 : 0;
+  // 0 = shared cursor, 1 = home + tail steal (the default), 2 = home + route
+  // width 1 through the platform queue (dev probe, see hmrdp_parallel.h).
+  g_parallelMode = (mode == 1 || mode == 2) ? mode : 0;
   HMRDP_LOGI("decode parallel mode: %{public}s", DecodeThreadsInfo().c_str());
 }
 

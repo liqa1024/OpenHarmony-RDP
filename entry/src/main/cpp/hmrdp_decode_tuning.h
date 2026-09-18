@@ -33,7 +33,10 @@ void SetDecodeThreads(int workers);
 // workers' ranges are far apart - and lets it steal the other homes' remaining
 // blocks once its own is done, so the tail is one block rather than one whole
 // range. Mode 0 is the plain shared claim cursor (blocks of HMRDP_TILE_CLAIM
-// handed out dynamically), kept for the A/B. Read on demand, like the width.
+// handed out dynamically), kept for the A/B. Mode 2 is home plus a dev probe that
+// routes the width-1 case through the platform queue, so the executor's own cost
+// can be measured against the inline serial branch (see hmrdp_parallel.h). Read
+// on demand, like the width.
 void SetParallelMode(int mode);
 int ParallelMode();
 

@@ -58,7 +58,10 @@ const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
 //   段+偷取  - each task owns one contiguous home range (workers stay on
 //              contiguous memory, homes far apart) and steals the others'
 //              remaining blocks, so the tail stays block-granular
-const PAR_MODE_LABEL: string[] = ['正常', '段+偷取'];
+//   排队    - home split, plus width 1 is routed through the platform queue
+//              instead of the receiving thread's serial loop, to price the
+//              executor's own cost (see hmrdp_parallel.h)
+const PAR_MODE_LABEL: string[] = ['正常', '段+偷取', '排队'];
 
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =

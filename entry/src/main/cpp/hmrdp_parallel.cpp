@@ -129,8 +129,17 @@ extern "C" int HmrdpParallelAvailable(void) {
 
 // Dev A/B: 1 = per-task contiguous home ranges with tail stealing (see the patch
 // note in native/scripts/patch-freerdp.ps1 step 20), 0 = the shared claim cursor.
+// Mode 2 is home too - it only adds "force the queue at width 1" (below).
 extern "C" int HmrdpTileHomeMode(void) {
-  return hmrdp::ParallelMode() == 1 ? 1 : 0;
+  return hmrdp::ParallelMode() >= 1 ? 1 : 0;
+}
+
+// Dev probe (patched decoder, native/scripts/patch-steps/26-...): non-zero makes
+// even width 1 decode on the platform queue - one task on a concurrency-1 queue -
+// instead of the receiving thread's serial loop, so the executor's own cost can
+// be measured against that branch. Off in normal operation.
+extern "C" int HmrdpParallelForceQueue(void) {
+  return hmrdp::ParallelMode() == 2 ? 1 : 0;
 }
 
 // The configured decode width, read by the patched decoder to decide between
@@ -148,9 +157,12 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
     return 1;
   }
   // One callback is not worth a queue round trip; the decoder only gets here with
-  // at least two workers, but a single-chunk region is common.
+  // at least two workers, but a single-chunk region is common. The dev force-queue
+  // probe overrides that: it exists precisely to price the round trip against the
+  // inline call at width 1.
   const int concurrency = hmrdp::DecodeThreads();
-  if (tasks == 1 || concurrency <= 1) {
+  const bool forceQueue = hmrdp::ParallelMode() == 2;
+  if (!forceQueue && (tasks == 1 || concurrency <= 1)) {
     fn(ctx, 0);
     return 0;
   }

@@ -19,7 +19,12 @@
 # style is restored on write.
 param(
 	[string]$Source = "$PSScriptRoot\..\third_party\FreeRDP",
-	[switch]$Trace
+	[switch]$Trace,
+	# Applies only the step whose file name starts with this prefix, e.g.
+	# `-Only 26` for a step added after a tree was already patched (a full run
+	# re-checks every step, and a step whose marker does not cover everything it
+	# inserts would be re-applied).
+	[string]$Only = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -144,6 +149,12 @@ function Copy-PatchData {
 # and nothing else. A failure names the step it came from (the helpers above are
 # shared, so the throw site alone would not).
 $steps = Get-ChildItem -LiteralPath "$PSScriptRoot\patch-steps" -Filter *.ps1 | Sort-Object Name
+if ($Only -ne "") {
+	$steps = @($steps | Where-Object { $_.Name.StartsWith($Only) })
+	if ($steps.Count -eq 0) {
+		throw "no patch step matches -Only '$Only'"
+	}
+}
 foreach ($step in $steps) {
 	if ($Trace) {
 		Write-Host "== $($step.Name)"

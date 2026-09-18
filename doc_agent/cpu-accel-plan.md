@@ -6,7 +6,8 @@
 > 补丁与构建见 [`native-libraries.md`](native-libraries.md)。
 
 实现位置：app 侧 `entry/src/main/cpp/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；
-解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25（另 24 为探针门控）。
+解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25（另 24 为探针门控、
+26 为"宽度 1 走队列"的 dev 开关）。
 补丁对 app 模块的绑定方式是**弱符号**：没有这些导出的构建自动退化为串行。
 
 ## 0. 并行范围与线程归属
@@ -101,7 +102,10 @@
 ## 5. dev 开关与读数
 
 - **运行时开关**（均 region 边界生效）：宽度（0/1/2..8）、划分模式 `ParallelMode`（1 默认 /
-  0 对照）。
+  0 对照 / 2 = home + **宽度 1 也走队列**）。模式 2 是 dev 探针：补丁 26 让串行分支可被放行
+  （弱符号 `HmrdpParallelForceQueue()`），app 侧 `HmrdpParallelRun` 同时不再把单任务内联，
+  于是宽度 1 会以"并发 1 的队列上跑一个 task"执行，用来把执行器自身代价（提交 + 唤醒 + 等待）
+  与接收线程内联的串行分支对照。它不进正常运行路径（app 只在模式 2 返回非零）。
 - **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
   `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_FFRT_TASKS = 16`。
 - **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、

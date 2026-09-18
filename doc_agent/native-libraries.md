@@ -57,6 +57,9 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   所以补丁不依赖检出风格。
   ⇒ **"`fetch-sources.ps1 -Force` 重拉 + 跑一遍补丁、确认每步都只报 already applied、且没有异常"本身就是自检**：
   拆分或改动丢了内容会在那里炸出来（`Patch-Block`/`Patch-Regex` 找不到锚点会直接 throw）。
+  - ⚠ **"已打补丁的树"上重跑整表并不总是可行**：后补的步骤会替换掉先前步骤的锚点/标记
+    （例如 22b 重写了 21 插入的 chunk 回调），那一步再跑就会 `pattern not found`。要自检就重拉源码；
+    只是**给已打过补丁的树补一个新步骤**时用 `patch-freerdp.ps1 -Only <NN>` 只跑那一步。
 - 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` / `$Patches` 传给步骤。
 - 只改应用层（`entry/src/main/cpp/*`、`.ets`）**不需要**重编 FreeRDP。
 

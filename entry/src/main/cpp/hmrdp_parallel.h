@@ -36,6 +36,12 @@ extern "C" {
 // Non-zero when the platform queue is selected.
 int HmrdpParallelAvailable(void);
 
+// Dev probe read by the patched decoder: non-zero routes the width-1 case through
+// the platform queue (one task on a concurrency-1 queue) instead of the receiving
+// thread's serial loop, so the executor's own cost can be measured against it
+// (see HmrdpParallelRun). Off in normal operation.
+int HmrdpParallelForceQueue(void);
+
 // The configured decode width (>= 1). The patched decoder reads this to choose
 // between its serial branch and the platform queue; it is resolved on demand,
 // so a settings change takes effect at the next Progressive region.
