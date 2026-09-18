@@ -600,44 +600,6 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
-            this.sliderItem({
-              title: '工具栏触发停留时间',
-              subtitle: '全屏下鼠标停留在屏幕顶部多久后弹出工具栏',
-              value: this.hoverDelay,
-              min: 0,
-              max: 2400,
-              step: 100,
-              unit: ' ms',
-              precision: 0,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: number) => {
-                this.hoverDelay = v;
-                this.persist();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
-
-            this.sliderItem({
-              title: '工具栏隐藏延迟',
-              subtitle: '全屏下鼠标移开后多久收起工具栏',
-              value: this.hideDelay,
-              min: 100,
-              max: 1000,
-              step: 50,
-              unit: ' ms',
-              precision: 0,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: number) => {
-                this.hideDelay = v;
-                this.persist();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
-
             this.toggleItem({
               title: '使用RDP光标',
               subtitle: '远端的光标形状同步为系统光标；若显示异常可关闭，回退为默认箭头',
@@ -746,25 +708,6 @@ struct SettingsPage {
                 }
               })
             }
-
-            Divider().color($r('app.color.divider'))
-
-            Text('触屏')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-              .margin({ bottom: 4 })
-
-            this.toggleItem({
-              title: '高刷新率（实验）',
-              subtitle: '解除 RDPEI 50Hz 合并，按输入帧率上报触点；可能增加带宽',
-              value: this.touchHighRate,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.touchHighRate = v;
-                this.persist();
-              }
-            })
 
             Divider().color($r('app.color.divider'))
 
@@ -1193,7 +1136,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '开发者选项',
-              subtitle: '显示码流抓取、解码线程数、录像回放入口与工具栏性能信息',
+              subtitle: '显示码流抓取、解码线程数、录像回放入口、工具栏性能信息与下面这些实验/调参项',
               value: this.developerMode,
               enabled: true,
               disabledReason: '',
@@ -1242,6 +1185,58 @@ struct SettingsPage {
                 disabledReason: '',
                 onChange: (v: number) => {
                   this.decodeThreads = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.toggleItem({
+                title: '触屏高刷新率（实验）',
+                subtitle: '解除 RDPEI 50Hz 合并，按输入帧率上报触点；可能增加带宽',
+                value: this.touchHighRate,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: boolean) => {
+                  this.touchHighRate = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '工具栏触发停留时间',
+                subtitle: '全屏下鼠标停留在屏幕顶部多久后弹出工具栏',
+                value: this.hoverDelay,
+                min: 0,
+                max: 2400,
+                step: 100,
+                unit: ' ms',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.hoverDelay = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '工具栏隐藏延迟',
+                subtitle: '全屏下鼠标移开后多久收起工具栏',
+                value: this.hideDelay,
+                min: 100,
+                max: 1000,
+                step: 50,
+                unit: ' ms',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.hideDelay = v;
                   this.persist();
                 }
               })
