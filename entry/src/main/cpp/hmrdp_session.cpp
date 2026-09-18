@@ -144,21 +144,6 @@ uint64_t NowMs() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-uint64_t NowUs() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-// Input-to-frame response is only sampled after a quiet period: if frames have
-// been flowing, an input is indistinguishable from the normal frame cadence and
-// the delta would collapse to the render time. Samples longer than the maximum
-// are treated as "the frame was not a response" and discarded.
-constexpr uint64_t kResponseIdleGapUs = 200 * 1000;
-constexpr uint64_t kResponseMaxUs = 2 * 1000 * 1000;
-// The response value is the mean of this many most recent measurements.
-constexpr uint32_t kResponseWindow = 5;
-
 BOOL HmrdpWLogMessage(const wLogMessage* msg) {
   if (msg == nullptr || msg->TextString == nullptr) {
     return TRUE;
@@ -1584,18 +1569,6 @@ void Session::SetGfxContext(void* gfx) {
   gfxContext_ = gfx;
 }
 
-void Session::MarkInput() {
-  const uint64_t now = NowUs();
-  const uint64_t lastFrame = lastFrameTickUs_.load();
-  // Only arm after a quiet period; otherwise the next frame is part of the
-  // normal cadence and the sample would just be the render time.
-  if (lastFrame != 0 && now - lastFrame < kResponseIdleGapUs) {
-    return;
-  }
-  uint64_t expected = 0;
-  pendingInputUs_.compare_exchange_strong(expected, now);
-}
-
 void Session::EmitMetrics() {
   rdpContext* context = instance_ != nullptr ? instance_->context : nullptr;
   if (context == nullptr) {
@@ -1614,8 +1587,6 @@ void Session::EmitMetrics() {
     lastOutBytes_ = outBytes;
     lastFrameCount_ = frames;
     meter_.Reset();
-    responseSampleCount_ = 0;
-    responseSampleIndex_ = 0;
     for (uint32_t i = 0; i < 5; ++i) {
       audioLostWindow_[i] = 0;
       audioTotalWindow_[i] = 0;
@@ -1693,17 +1664,6 @@ void Session::EmitMetrics() {
                dutyPermille / 10, dutyPermille % 10,
                static_cast<unsigned long long>(rxPerSec), fps);
   }
-  // Response is a moving average of the recent measurements; it intentionally
-  // is not cleared per window so the last value keeps showing between samples.
-  uint64_t responseUs = 0;
-  if (responseSampleCount_ > 0) {
-    uint64_t sum = 0;
-    for (uint32_t i = 0; i < responseSampleCount_; ++i) {
-      sum += responseSamplesUs_[i];
-    }
-    responseUs = sum / responseSampleCount_;
-  }
-
   // Audio glitch rate over the recent window: bytes that failed to play
   // (underrun silence + overflow drops) over all bytes the stream handled.
   uint64_t audioLost = 0;
@@ -1742,13 +1702,13 @@ void Session::EmitMetrics() {
     rtt = static_cast<int32_t>(measured);
   }
 
-  // Fields 0..7 are the toolbar's contract (see RdpModels.ets); the rest are the
+  // Fields 0..6 are the toolbar's contract (see RdpModels.ets); the rest are the
   // per-frame breakdown of 本机 in microseconds plus the normalization that keeps
   // it readable across frame rates (commands and bytes per frame, and the duty
   // cycle in ‰).
   std::ostringstream payload;
   payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << localAvgUs
-          << "|" << responseUs << "|" << audioRateHz << "|" << audioLossBp
+          << "|" << audioRateHz << "|" << audioLossBp
           << "|" << perFrameZgxUs << "|" << perFrameDecodeUs << "|" << perFrameComposeUs
           << "|" << perFramePresentUs << "|" << perFrameBytes << "|" << dutyPermille
           << "|" << perFrameCommands << "|" << perFrameSyncUs;
@@ -1775,15 +1735,11 @@ bool Session::Connect(const RdpOptions& options) {
   frameCount_ = 0;
   meter_.Reset();
   gfxContext_ = nullptr;
-  responseSampleCount_ = 0;
-  responseSampleIndex_ = 0;
   for (uint32_t i = 0; i < 5; ++i) {
     audioLostWindow_[i] = 0;
     audioTotalWindow_[i] = 0;
   }
   audioWindowIndex_ = 0;
-  lastFrameTickUs_ = 0;
-  pendingInputUs_ = 0;
   netCharBaseRtt_ = 0;
   netCharAverageRtt_ = 0;
   netCharBandwidth_ = 0;
@@ -2098,28 +2054,11 @@ void Session::HandleEndPaint() {
 }
 
 void Session::AfterPresent(uint64_t presentUs) {
-  const uint64_t nowUs = NowUs();
   // Charged to the frame being handled: the present runs inside the GFX
   // EndFrame (gdi_OutputUpdate -> update_end_paint), so the meter's OnFrameEnd
   // consumes it when the frame closes. Measured once, by the shared frame host.
   meter_.OnPresent(presentUs);
   frameCount_.fetch_add(1);
-
-  // Input-to-frame response: if an input armed while idle, this frame is very
-  // likely its visible result. Deltas beyond the maximum are dropped as
-  // unrelated frames. Accepted samples feed a 5-deep moving average.
-  lastFrameTickUs_.store(nowUs);
-  const uint64_t pending = pendingInputUs_.exchange(0);
-  if (pending != 0) {
-    const uint64_t delta = nowUs - pending;
-    if (delta <= kResponseMaxUs) {
-      responseSamplesUs_[responseSampleIndex_] = delta;
-      responseSampleIndex_ = (responseSampleIndex_ + 1) % kResponseWindow;
-      if (responseSampleCount_ < kResponseWindow) {
-        responseSampleCount_++;
-      }
-    }
-  }
 
   if (!firstFrameSent_) {
     firstFrameSent_ = true;
@@ -2229,7 +2168,6 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
       instance_->context->input == nullptr) {
     return false;
   }
-  MarkInput();
   return freerdp_input_send_mouse_event(instance_->context->input, flags, x, y);
 }
 
@@ -2248,7 +2186,6 @@ bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32
                flags, finger, pressure, client->rdpei != nullptr ? 1 : 0);
     touchLog++;
   }
-  MarkInput();
   return freerdp_client_handle_touch(client, flags, finger, pressure, x, y) ? true : false;
 }
 
@@ -2291,7 +2228,6 @@ bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
   if (extended) {
     flags |= KBD_FLAGS_EXTENDED;
   }
-  MarkInput();
   return freerdp_input_send_keyboard_event(instance_->context->input, flags, scancode);
 }
 
@@ -2301,7 +2237,6 @@ bool Session::SendUnicode(uint16_t codepoint, bool down) {
     return false;
   }
   UINT16 flags = down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
-  MarkInput();
   return freerdp_input_send_unicode_keyboard_event(instance_->context->input, flags,
                                                    codepoint);
 }

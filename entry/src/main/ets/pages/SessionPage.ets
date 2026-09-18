@@ -6,7 +6,6 @@ import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { pointer } from '@kit.InputKit';
 import { window } from '@kit.ArkUI';
-import { display } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
@@ -59,7 +58,6 @@ const MIN_BANDWIDTH_BYTES: number = 1024;
 // a box stays small and the gaps are governed by the margins below.
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_LOCAL: number = 74;
-const METRIC_WIDTH_RESPONSE: number = 74;
 const METRIC_WIDTH_FPS: number = 66;
 const METRIC_WIDTH_AUDIO: number = 86;
 // Two gap sizes: the network/local pair sits one character apart, the rest
@@ -156,13 +154,10 @@ struct SessionPage {
   @State metricsBytesPerFrame: number = 0;
   @State metricsDutyPermille: number = 0;
   @State metricsCmdsPerFrame: number = 0;
-  @State metricsResponseUs: number = 0;
   // Audio sample rate (Hz) and recent glitch rate in basis points (0.01%);
   // -1 when audio is not playing.
   @State metricsAudioRateHz: number = -1;
   @State metricsAudioLossBp: number = -1;
-  // Display (panel) refresh rate in Hz; 0 until queried.
-  @State systemRefreshRate: number = 0;
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -453,15 +448,15 @@ struct SessionPage {
   }
 
   /**
-   * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<rateHz>|<lossBp>|
+   * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<audioRateHz>|<audioLossBp>|
    * <zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|
-   * <cmdsPerFrame>". The first eight fields drive the toolbar row; the rest are
-   * the per-frame breakdown of localUs and are shown in the 本机 tooltip
+   * <cmdsPerFrame>|<syncUs>". rtt/rx/tx/fps/localUs/audio drive the toolbar row;
+   * the rest are the per-frame breakdown of localUs shown in the 本机 tooltip
    * (see RdpEvent.Metrics).
    */
   private onMetrics(data: string): void {
     const parts: string[] = data.split('|');
-    if (parts.length < 8) {
+    if (parts.length < 7) {
       return;
     }
     const rtt: number = Number.parseInt(parts[0], 10);
@@ -469,9 +464,8 @@ struct SessionPage {
     const tx: number = Number.parseInt(parts[2], 10);
     const fps: number = Number.parseInt(parts[3], 10);
     const localUs: number = Number.parseInt(parts[4], 10);
-    const responseUs: number = Number.parseInt(parts[5], 10);
-    const audioRateHz: number = Number.parseInt(parts[6], 10);
-    const audioLossBp: number = Number.parseInt(parts[7], 10);
+    const audioRateHz: number = Number.parseInt(parts[5], 10);
+    const audioLossBp: number = Number.parseInt(parts[6], 10);
     if (!Number.isNaN(rtt)) {
       this.metricsRtt = rtt;
     }
@@ -487,23 +481,20 @@ struct SessionPage {
     if (!Number.isNaN(localUs)) {
       this.metricsLocalUs = localUs;
     }
-    if (!Number.isNaN(responseUs)) {
-      this.metricsResponseUs = responseUs;
-    }
     if (!Number.isNaN(audioRateHz)) {
       this.metricsAudioRateHz = audioRateHz;
     }
     if (!Number.isNaN(audioLossBp)) {
       this.metricsAudioLossBp = audioLossBp;
     }
-    if (parts.length >= 14) {
-      const zgxUs: number = Number.parseInt(parts[8], 10);
-      const decodeUs: number = Number.parseInt(parts[9], 10);
-      const composeUs: number = Number.parseInt(parts[10], 10);
-      const presentUs: number = Number.parseInt(parts[11], 10);
-      const bytesPerFrame: number = Number.parseInt(parts[12], 10);
-      const dutyPermille: number = Number.parseInt(parts[13], 10);
-      const cmdsPerFrame: number = parts.length >= 15 ? Number.parseInt(parts[14], 10) : NaN;
+    if (parts.length >= 13) {
+      const zgxUs: number = Number.parseInt(parts[7], 10);
+      const decodeUs: number = Number.parseInt(parts[8], 10);
+      const composeUs: number = Number.parseInt(parts[9], 10);
+      const presentUs: number = Number.parseInt(parts[10], 10);
+      const bytesPerFrame: number = Number.parseInt(parts[11], 10);
+      const dutyPermille: number = Number.parseInt(parts[12], 10);
+      const cmdsPerFrame: number = parts.length >= 14 ? Number.parseInt(parts[13], 10) : NaN;
       if (!Number.isNaN(zgxUs)) {
         this.metricsZgxUs = zgxUs;
       }
@@ -525,17 +516,6 @@ struct SessionPage {
       if (!Number.isNaN(cmdsPerFrame)) {
         this.metricsCmdsPerFrame = cmdsPerFrame;
       }
-    }
-    this.refreshSystemRefreshRate();
-  }
-
-  /** Samples the display refresh rate; VRR makes this change with content. */
-  private refreshSystemRefreshRate(): void {
-    try {
-      this.systemRefreshRate = Math.round(display.getDefaultDisplaySync().refreshRate);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'read display refresh rate failed: %{public}s',
-        JSON.stringify(error));
     }
   }
 
@@ -587,9 +567,9 @@ struct SessionPage {
       '，本机工时占帧周期 ' + Math.round(this.metricsDutyPermille / 10) + '%';
   }
 
-  /** "FPS <system>/<app>", distinguishing panel refresh from present rate. */
+  /** "FPS <app>": the client's own present rate. */
   private fpsLabel(): string {
-    return 'FPS ' + this.systemRefreshRate + '/' + this.metricsFps;
+    return 'FPS ' + this.metricsFps;
   }
 
   /** Audio sample rate and recent glitch rate, e.g. "音频 48k 0.05%". */
@@ -610,19 +590,6 @@ struct SessionPage {
       return '#FBBF24';
     }
     return '#F87171';
-  }
-
-  /**
-   * Input-to-frame response in ms (moving average of the recent samples), or -1
-   * when nothing was measured yet. Deliberately not threshold-coloured.
-   */
-  private responseMs(): number {
-    return this.metricsResponseUs > 0 ? this.metricsResponseUs / 1000 : -1;
-  }
-
-  private responseLabel(): string {
-    const ms: number = this.responseMs();
-    return ms < 0 ? '响应 --' : '响应 ' + Math.round(ms) + 'ms';
   }
 
   /** Compact byte/s label for the toolbar. */
@@ -1703,12 +1670,6 @@ struct SessionPage {
             .margin({ left: METRIC_GAP_TIGHT })
             .maxLines(1)
             .bindTips(this.localTips())
-          Text(this.responseLabel())
-            .fontSize(12)
-            .fontColor('#B8BCC4')
-            .width(METRIC_WIDTH_RESPONSE)
-            .margin({ left: METRIC_GAP_GROUP })
-            .maxLines(1)
           Text(this.fpsLabel())
             .fontSize(12)
             .fontColor('#B8BCC4')

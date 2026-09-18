@@ -48,14 +48,13 @@ export enum RdpEvent {
   ClipboardHtml = 9,
   ClipboardImage = 10,
   // Per-second telemetry, payload
-  // "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<responseUs>|<audioRateHz>|<audioLossBp>|
+  // "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<audioRateHz>|<audioLossBp>|
   //  <zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|
-  //  <cmdsPerFrame>".
+  //  <cmdsPerFrame>|<syncUs>".
   // rttMs is -1 while the server has not reported network characteristics;
   // localUs is the client's whole per-frame work (ZGX decompress + RDPGFX parse,
   // image decode, gdi compose, present) averaged over the frames the server
-  // ended; responseUs is the mean of the recent input-to-frame samples (0 = none
-  // yet); audioRateHz and audioLossBp (0.01% units) describe the recent audio
+  // ended; audioRateHz and audioLossBp (0.01% units) describe the recent audio
   // playback health, both -1 when audio is not playing. The fields after
   // audioLossBp are the per-frame breakdown of localUs plus its normalization:
   // GFX commands and raw GFX bytes per frame, and the duty cycle in 0.1% units.

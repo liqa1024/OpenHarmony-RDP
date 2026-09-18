@@ -44,10 +44,10 @@ enum class SessionEvent {
   kClipboardHtml = 9,
   kClipboardImage = 10,
   // Per-second session telemetry: "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|
-  // <responseUs>|<audioRateHz>|<audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|
-  // <presentUs>|<bytesPerFrame>|<dutyPermille>". rttMs is -1 while the server has
-  // not reported network characteristics; the fields from index 8 on are the
-  // per-frame breakdown of 本机 (see EmitMetrics).
+  // <audioRateHz>|<audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|
+  // <presentUs>|<bytesPerFrame>|<dutyPermille>|<cmdsPerFrame>|<syncUs>". rttMs is
+  // -1 while the server has not reported network characteristics; the fields from
+  // index 7 on are the per-frame breakdown of 本机 (see EmitMetrics).
   kMetrics = 11,
 };
 
@@ -188,10 +188,6 @@ class Session {
   void AfterPresent(uint64_t presentUs);
   // Samples RTT / frame rate / transport throughput and emits kMetrics.
   void EmitMetrics();
-  // Records an input timestamp for the input-to-frame response measurement.
-  // Called from the UI thread; only arms when the scene has been idle so the
-  // sample is not polluted by continuous frame cadence.
-  void MarkInput();
 
   freerdp* instance_ = nullptr;
   // CPU frame presenter (Vulkan by default, GLES fallback). FreeRDP feeds GFX
@@ -222,20 +218,11 @@ class Session {
   // offline replay so the two figures are comparable).
   GfxWorkMeter meter_;
   void* gfxContext_ = nullptr;
-  // Ring of the most recent input-to-frame measurements; the emitted value is
-  // their mean (this is a statistic, not a hard real-time figure).
-  uint64_t responseSamplesUs_[5] = {0};
-  uint32_t responseSampleCount_ = 0;
-  uint32_t responseSampleIndex_ = 0;
   // Recent audio (lost,total) byte counts, one slot per metric window, summed to
   // give a short-term glitch rate instead of a cumulative counter.
   uint64_t audioLostWindow_[5] = {0};
   uint64_t audioTotalWindow_[5] = {0};
   uint32_t audioWindowIndex_ = 0;
-  // Written from the RDP thread, read from the UI thread (MarkInput).
-  std::atomic<uint64_t> lastFrameTickUs_{0};
-  // UI thread -> RDP thread hand-off; 0 means "no input pending".
-  std::atomic<uint64_t> pendingInputUs_{0};
   // Server-reported network characteristics from the autodetect channel.
   std::atomic<uint32_t> netCharBaseRtt_{0};
   std::atomic<uint32_t> netCharAverageRtt_{0};
