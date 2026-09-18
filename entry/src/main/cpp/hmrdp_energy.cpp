@@ -326,8 +326,9 @@ void EnergyProbe::End() {
   }
   valid_ = true;
   HMRDP_LOGI("energy: end src=%{public}s cores=%{public}u active=%{public}u ours=%{public}u "
-             "coreBusy=%{public}.1fs e2=%{public}.2f",
-             source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_, e2_);
+             "coreBusy=%{public}.1fs favg=%{public}.2fGHz e2=%{public}.2f",
+             source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_,
+             coreBusy_ > 0.0 ? c1_ / coreBusy_ : 0.0, e2_);
 
   // Which threads spent the run's CPU: the platform queue's workers show up as
   // their own seconds alongside the receiving thread, which is how "the decode
@@ -368,13 +369,16 @@ void EnergyProbe::End() {
 }
 
 std::string EnergyProbe::Line(unsigned long long frames) const {
-  char buf[288];
+  char buf[320];
   const double perFrame = frames > 0 ? e2_ / static_cast<double>(frames) : 0.0;
+  // `favg` is the busy-weighted mean clock the run ran at (C1 / coreBusy): the
+  // per-run frequency the CPU-second figures have to be normalized by before two
+  // runs are compared (doc_agent/gfx-engine.md §8.3).
   std::snprintf(buf, sizeof(buf),
-                "energy: src=%s cores=%u active=%u ours=%u coreBusy=%.1fs C1=%.1f (core*GHz*s) "
-                "E2=%.2f (core*GHz^2*s) E2/frame=%.4f",
-                source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_, c1_,
-                e2_, perFrame);
+                "energy: src=%s cores=%u active=%u ours=%u coreBusy=%.1fs favg=%.2fGHz "
+                "C1=%.1f (core*GHz*s) E2=%.2f (core*GHz^2*s) E2/frame=%.4f",
+                source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_,
+                coreBusy_ > 0.0 ? c1_ / coreBusy_ : 0.0, c1_, e2_, perFrame);
   return std::string(buf);
 }
 

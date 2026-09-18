@@ -86,6 +86,12 @@ extern "C" int HmrdpParallelAvailable(void) {
   return kUsePlatformExecutor;
 }
 
+// Dev A/B: 1 = per-task contiguous home ranges with tail stealing (see the patch
+// note in native/scripts/patch-freerdp.ps1 step 20), 0 = the shared claim cursor.
+extern "C" int HmrdpTileHomeMode(void) {
+  return hmrdp::ParallelMode() == 1 ? 1 : 0;
+}
+
 // The configured decode width, read by the patched decoder to decide between
 // the serial branch and the platform queue (see hmrdp_decode_tuning.h). The
 // width is resolved on demand, so a settings change needs no re-arming.

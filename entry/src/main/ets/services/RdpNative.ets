@@ -9,7 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
-setDecodeThreads,
+setDecodeThreads, setDecodeParallelMode,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -86,6 +86,14 @@ export class RdpNative {
    */
   static applyDecodeThreads(workers: number): void {
     setDecodeThreads(workers);
+  }
+
+  /**
+   * Dev-only A/B probe for the decode executor: 0 = normal, 1 = force the
+   * platform queue with a single worker. Applies to the next Progressive region.
+   */
+  static applyDecodeParallelMode(mode: number): void {
+    setDecodeParallelMode(mode);
   }
 
   /** Dev-only RemoteFX stream capture to the given directory. */

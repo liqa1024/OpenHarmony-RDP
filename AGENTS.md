@@ -48,7 +48,7 @@
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的成本结构 / 账目口径 / 量测纪律 / 解码侧对拍（§8）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| **CPU（gdi）链路的并行与平台适配**（执行器/宽度、流水线分段、相位与内存归属、能量口径、已验证与被否证、优化候选） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| **CPU（gdi）链路的并行与平台适配**（**并行划分原则**、执行器/宽度、流水线分段、相位与内存归属、能量口径、**并行效率量测方法**、已验证与被否证、优化候选） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
 | **（历史，old 弃用）** 旧 CPU 链路文档：只作依据保留，不要从这里接手 | [`cpu-path_old.md`](doc_agent/cpu-path_old.md) |
 | 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲与后续工作清单 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 

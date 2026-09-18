@@ -41,6 +41,11 @@ extern int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int),
  * milliseconds of work, so this is deliberately far below HMRDP_TILE_CHUNKS: the
  * platform queue charges per submitted task. */
 #define HMRDP_FFRT_TASKS 16
+
+/* HmRdp dev A/B: 1 = per-task contiguous home ranges with tail stealing (see the
+ * patch note in native/scripts/patch-freerdp.ps1 step 20), 0 = the shared claim
+ * cursor. Read on demand. */
+extern int HmrdpTileHomeMode(void) __attribute__((weak));
 '@) 'the platform task queue (ffrt)'
 
 # (b) the ffrt task body: the same chunk callback the tile work uses, so the
@@ -70,8 +75,32 @@ static void hmrdp_chunk_ffrt_callback(void* ctx, unsigned int index)
 Patch-Regex $progParC `
   '\t\tUINT32 numChunks = HMRDP_TILE_CHUNKS;.*?\n\t\tHmrdpProgStat\[2\] \+= hmrdp_now_ns\(\) - ht2; /\* wait\+close \(serial\) \*/\n' (@'
 		UINT32 numChunks = HMRDP_FFRT_TASKS;
+		const UINT32 homeMode = (HmrdpTileHomeMode != NULL) ? (UINT32)HmrdpTileHomeMode() : 0;
+		if (homeMode != 0)
+		{
+			/* HmRdp dev A/B: one task per worker, so the home range a worker walks -
+			 * and with it its arena range and its destination rows - is contiguous
+			 * and far from the other workers' (see the patch note in
+			 * native/scripts/patch-freerdp.ps1 step 20). */
+			numChunks = hmrdp_decode_width();
+			if (numChunks < 1)
+				numChunks = 1;
+		}
 		if (numChunks > numTiles)
 			numChunks = numTiles;
+
+		_Alignas(64) volatile UINT32 homeNextArr[HMRDP_TILE_CHUNKS];
+		UINT32 homeLimitsArr[HMRDP_TILE_CHUNKS];
+		UINT32 homeCount = 0;
+		if (homeMode != 0 && numChunks > 0)
+		{
+			homeCount = numChunks;
+			for (UINT32 h = 0; h < homeCount; h++)
+			{
+				homeNextArr[h] = (UINT32)(((unsigned long long)h * numTiles) / homeCount);
+				homeLimitsArr[h] = (UINT32)(((unsigned long long)(h + 1) * numTiles) / homeCount);
+			}
+		}
 
 		if (HmrdpParallelAvailable != NULL && HmrdpParallelRun != NULL &&
 		    (HmrdpParallelAvailable() != 0))
@@ -88,6 +117,10 @@ Patch-Regex $progParC `
 				    progressive->tileScratch + ((size_t)c * (size_t)HMRDP_TILE_SCRATCH_STRIDE);
 				chunk->next = &nextTile;
 				chunk->numTiles = numTiles;
+				chunk->homeNext = homeNextArr;
+				chunk->homeLimits = homeLimitsArr;
+				chunk->homeCount = homeCount;
+				chunk->homeIndex = c;
 			}
 
 			HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */

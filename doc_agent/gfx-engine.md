@@ -184,7 +184,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 ## 7. 待办
 
 - **CPU（gdi）链路的多核与平台适配**（ffrt 任务队列、宽度、producer/consumer 流水线、duty 自适应）：
-  单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md)（阶段二）。单核部分的知识见本文件 §8。
+  单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md)。单核部分的知识见本文件 §8。
 - **若重建 GPU 优化**：以现有的 Vulkan 上屏（`VkRenderer` + `hmrdp_vk_context`）为基础；呈现能力判定
   已是唯一判定（§4），不要再引入第二套引擎判定与开关。
 
@@ -210,9 +210,9 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   | 行 | 含义 |
   |---|---|
   | `perFrame work=… = zgx+parse + decode + compose + present  (+ sync … + presentWait … blocked)` | 每帧的四个工作相位；`work` 是它们在**展示端**相加的结果（计量器只产子项，不存总数），`本机` 用的就是这个和；`sync`/`presentWait` 是阻塞时间（等 GPU 缓冲 / 等显示端），**不计入**（见下） |
-  | `prog ms/frame: read / dispatch / dec(blocked) / update  (calls= unions= tiles= tilesDec=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数 |
-  | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile |
-  | `run … threads=… ffrt=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、平台队列实际派发的 region 次数（证明解码确实走了 ffrt）与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
+  | `prog ms/frame: read / dispatch / dec / update  (calls= unions= tiles= tilesDec= ffrt=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**（并行时是并行段墙钟，串行时是本线程逐 tile；读前先看 `threads=`）、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1/§2）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数、`ffrt` = 走平台队列的 region 次数 |
+  | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile。并行下 `sum` 是所有 worker 的时间之和（≈ `dec` × 有效宽度）⇒ **只读占比** |
+  | `run … threads=… ffrt=… parRatio=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、平台队列实际派发的 region 次数（证明解码确实走了 ffrt）、**频不变并行效率**（worker 忙碌和 ÷ `dec` 墙钟）与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
   | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |

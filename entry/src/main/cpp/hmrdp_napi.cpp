@@ -633,6 +633,21 @@ napi_value DecodeThreadsInfo(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// Dev A/B probe for the decode executor: 0 = normal, 1 = platform queue with a
+// single worker (see hmrdp_decode_tuning.h). Read on demand, so it applies to
+// the next Progressive region.
+napi_value SetDecodeParallelMode(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t mode = 0;
+  if (argc < 1 || napi_get_value_int32(env, args[0], &mode) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  hmrdp::SetParallelMode(mode);
+  return CreateBool(env, true);
+}
+
 napi_value SetHardwareAccel(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -848,6 +863,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setDecodeThreads", nullptr, SetDecodeThreads, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"decodeThreadsInfo", nullptr, DecodeThreadsInfo, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setDecodeParallelMode", nullptr, SetDecodeParallelMode, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,

@@ -32,8 +32,8 @@
 // (libfreerdp/codec/progressive.c). Weak, so a stock FreeRDP just reports none.
 // Slots (see the patch's comment): [0] tile read/parse, [1] work dispatch,
 // [2] work wait+close, [3] update_tiles, [4] (unused), [5] messages, [6] tiles
-// composited, [7] the blocking part of [2], [8] tiles decoded, [9] worker busy
-// time (summed over chunks), [18] ffrt region dispatches.
+// composited, [8] tiles decoded, [9] worker busy time (summed over chunks),
+// [18] ffrt region dispatches.
 constexpr int kProgStatSlots = 24;
 extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak));
 
@@ -503,15 +503,24 @@ std::string GfxReplay::StatsLines() {
   if (cpuStart != 0 && cpuEnd > cpuStart) {
     const unsigned long long ffrtRuns =
         &HmrdpProgStat[0] != nullptr ? HmrdpProgStat[18] : 0;
+    // Parallel efficiency, frequency-free: the summed worker time over the decode
+    // section's wall time (both from the decoder's own counters, so the clock
+    // cancels). ~1 means one worker ran at a time; ~width means the width was
+    // really used (doc_agent/cpu-accel-plan.md §1).
+    double parRatio = 0.0;
+    if (&HmrdpProgStat[0] != nullptr && HmrdpProgStat[2] > 0) {
+      parRatio = static_cast<double>(HmrdpProgStat[9]) /
+                 static_cast<double>(HmrdpProgStat[2]);
+    }
     // cpuKHz is the SoC clock the run actually got: the playback rate decides it
     // (an idle-paced run sits at the lowest frequency and every per-frame figure
     // is ~3x larger), so two runs are only comparable at the same value
     // (doc_agent/gfx-engine.md §8.3).
     const std::string freq = hmrdp::CpuFreqInfo();
-    char run[240];
+    char run[260];
     std::snprintf(run, sizeof(run),
-                  "\nrun  threads=%d  ffrt=%llu  cpu=%.2fs  cpuKHz=%s",
-                  hmrdp::DecodeThreads(), ffrtRuns,
+                  "\nrun  threads=%d  ffrt=%llu  parRatio=%.2f  cpu=%.2fs  cpuKHz=%s",
+                  hmrdp::DecodeThreads(), ffrtRuns, parRatio,
                   static_cast<double>(cpuEnd - cpuStart) / 1000000.0,
                   freq.empty() ? "n/a" : freq.c_str());
     out += run;
@@ -620,22 +629,20 @@ std::string GfxReplay::StatsLines() {
     const double d = static_cast<double>(work.frames > 0 ? work.frames : 1);
     // The tile-decode section is timed by a different slot per path and the two
     // are not the same kind of figure: on the parallel path [2] is the section's
-    // wall clock - the wait for the platform queue's tasks (its blocking part
-    // being [7]) - while on the serial path [9] is the time this thread spent in
-    // the per-tile loop. Only one of them is ever non-zero in a run, so the
-    // reported `dec` picks whichever ran. ([9] is also accumulated per chunk by
-    // the queue's tasks as their own summed decode time - a multi-threaded CPU
-    // figure, not a per-frame one - so it must not be reported next to the
-    // wall-clock phases.)
+    // wall clock - the wait for the platform queue's tasks - while on the serial
+    // path [9] is the time this thread spent in the per-tile loop. Only one of
+    // them is ever non-zero in a run, so the reported `dec` picks whichever ran.
+    // ([9] is also accumulated per chunk by the queue's tasks as their own summed
+    // decode time - a multi-threaded CPU figure, not a per-frame one - so it must
+    // not be reported next to the wall-clock phases.)
     const uint64_t decNs = HmrdpProgStat[2] != 0 ? HmrdpProgStat[2] : HmrdpProgStat[9];
     char ps[320];
     std::snprintf(ps, sizeof(ps),
-                  "\nprog  ms/frame: read=%.2f dispatch=%.2f dec=%.2f (blocked=%.2f) "
+                  "\nprog  ms/frame: read=%.2f dispatch=%.2f dec=%.2f "
                   "update=%.2f  (calls=%llu unions=%llu tiles=%llu tilesDec=%llu ffrt=%llu)",
                   static_cast<double>(HmrdpProgStat[0]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[1]) / d / 1e6,
                   static_cast<double>(decNs) / d / 1e6,
-                  static_cast<double>(HmrdpProgStat[7]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[3]) / d / 1e6,
                   static_cast<unsigned long long>(HmrdpProgStat[5]),
                   static_cast<unsigned long long>(HmrdpProgStat[4]),

@@ -197,6 +197,21 @@ function Set-Threads {
   Click-Control -Label "线程:$Target" | Out-Null
 }
 
+# Sets the decode-executor probe (see GfxReplayPage PAR_MODE_LABEL). One button
+# per mode, so this is a single click plus the run it restarts.
+function Set-ParMode {
+  param([string]$Target)
+  $screen = Read-Screen
+  $current = $null
+  foreach ($t in $screen.texts) {
+    if ($t -match "^路线[:：]" -and $t -match "模式[:：](\S+)") { $current = $Matches[1]; break }
+  }
+  if ($null -eq $current) { throw "replay status line not found (cannot read the current parallel mode)" }
+  if ($current -eq $Target) { return }
+  if ($script:dryRun) { throw "would click 模式:$Target" }
+  Click-Control -Label "模式:$Target" | Out-Null
+}
+
 function Push-File {
   param([string]$Local, [string]$Name)
   if (-not (Test-Path -LiteralPath $Local)) { throw "local file not found: $Local" }
@@ -236,7 +251,9 @@ foreach ($round in $Rounds) {
     if ($setting -match "^\s*$") { continue }
     $kv = $setting.Trim() -split "[:：]"
     if ($kv.Count -ne 2) { throw "bad setting '$setting' (expected e.g. 参考:对比)" }
-    if ($kv[0] -eq "线程") { Set-Threads -Target $kv[1] } else { Set-Mode -Control $kv[0] -Target $kv[1] }
+    if ($kv[0] -eq "线程") { Set-Threads -Target $kv[1] }
+    elseif ($kv[0] -eq "模式") { Set-ParMode -Target $kv[1] }
+    else { Set-Mode -Control $kv[0] -Target $kv[1] }
   }
   if ($Capture -ne "") {
     $capPath = if ([System.IO.Path]::IsPathRooted($Capture)) { $Capture } else { Join-Path $repo $Capture }

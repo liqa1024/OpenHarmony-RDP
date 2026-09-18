@@ -81,6 +81,13 @@ export const setDecodeThreads: (workers: number) => boolean;
 export const decodeThreadsInfo: () => string;
 
 /**
+ * Dev A/B probe for the decode executor: 0 = normal (width 1 decodes on the
+ * receiving thread), 1 = force the platform queue with a single worker. Read on
+ * demand, so it applies to the next Progressive region.
+ */
+export const setDecodeParallelMode: (mode: number) => boolean;
+
+/**
  * Dev-only: capture the full GFX command stream (`<dir>/hmrdp_gfx.bin`) plus
  * per-frame surface baselines (`<dir>/hmrdp_gfx_surface.bin`) and the legacy
  * RemoteFX stream (`<dir>/hmrdp_rfx.bin`, PERF-TODO §2).

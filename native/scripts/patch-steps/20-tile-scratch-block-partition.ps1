@@ -156,6 +156,16 @@ typedef struct
 	BYTE* scratch;
 	volatile UINT32* next;
 	UINT32 numTiles;
+	/* HmRdp dev A/B "home + steal" (see the patch note in
+	 * native/scripts/patch-freerdp.ps1 step 20): each task owns one contiguous
+	 * home range - a worker walks contiguous memory and different workers' ranges
+	 * are far apart - and once its home is done it steals the *remaining blocks*
+	 * of the other homes, so the tail is one block instead of one whole range.
+	 * homeCount > 0 selects this mode; 0 uses the claim cursor. */
+	volatile UINT32* homeNext;
+	const UINT32* homeLimits;
+	UINT32 homeCount;
+	UINT32 homeIndex;
 } PROGRESSIVE_TILE_CHUNK_PARAM;
 '@) "the chunk's own working-buffer slot"
 
@@ -166,23 +176,54 @@ Patch-Regex $progScratchC `
 	 * chunk's slot - see hmrdp_tile_scratch(). */
 	g_HmrdpTlsTileScratch = chunk->scratch;
 
-	/* HmRdp: tiles are claimed in blocks, not one at a time. Dynamic claiming is
-	 * what balances the workers against each other; the block size only keeps the
-	 * shared counter off the per-tile path, and its cost is an imbalance of at
-	 * most one block at the end of the region. */
-	for (;;)
+	/* HmRdp dev A/B: home range first (contiguous, this worker's own), then steal
+	 * the other homes' remaining blocks in order - the tail is one block, while a
+	 * worker's normal path stays on one contiguous range. See the patch note in
+	 * native/scripts/patch-freerdp.ps1 step 20. */
+	if (chunk->homeCount > 0)
 	{
-		const UINT32 begin = __sync_fetch_and_add(chunk->next, HMRDP_TILE_CLAIM);
-		if (begin >= chunk->numTiles)
-			break;
+		for (UINT32 round = 0; round < chunk->homeCount; round++)
+		{
+			const UINT32 home = (chunk->homeIndex + round) % chunk->homeCount;
+			volatile UINT32* cursor = &chunk->homeNext[home];
+			const UINT32 limit = chunk->homeLimits[home];
 
-		UINT32 end = begin + HMRDP_TILE_CLAIM;
-		if (end > chunk->numTiles)
-			end = chunk->numTiles;
+			for (;;)
+			{
+				const UINT32 begin = __sync_fetch_and_add(cursor, HMRDP_TILE_CLAIM);
+				if (begin >= limit)
+					break;
 
-		for (UINT32 index = begin; index < end; index++)
-			progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
-		done += end - begin;
+				UINT32 end = begin + HMRDP_TILE_CLAIM;
+				if (end > limit)
+					end = limit;
+
+				for (UINT32 index = begin; index < end; index++)
+					progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
+				done += end - begin;
+			}
+		}
+	}
+	else
+	{
+		/* HmRdp: tiles are claimed in blocks, not one at a time. Dynamic claiming is
+		 * what balances the workers against each other; the block size only keeps
+		 * the shared counter off the per-tile path, and its cost is an imbalance of
+		 * at most one block at the end of the region. */
+		for (;;)
+		{
+			const UINT32 begin = __sync_fetch_and_add(chunk->next, HMRDP_TILE_CLAIM);
+			if (begin >= chunk->numTiles)
+				break;
+
+			UINT32 end = begin + HMRDP_TILE_CLAIM;
+			if (end > chunk->numTiles)
+				end = chunk->numTiles;
+
+			for (UINT32 index = begin; index < end; index++)
+				progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
+			done += end - begin;
+		}
 	}
 '@) 'this thread decodes only this chunk'
 

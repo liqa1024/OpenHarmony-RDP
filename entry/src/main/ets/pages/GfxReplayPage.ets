@@ -53,6 +53,13 @@ const REF_LABEL: string[] = ['关', '导出', '对比'];
 const DECODE_THREAD_CHOICES: number[] = [0, 1, 2, 3, 4, 6, 8];
 const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
 
+// Dev A/B for the tile work decomposition (doc_agent/cpu-accel-plan.md §0):
+//   正常    - shared claim cursor: small blocks handed out dynamically (balance)
+//   段+偷取  - each task owns one contiguous home range (workers stay on
+//              contiguous memory, homes far apart) and steals the others'
+//              remaining blocks, so the tail stays block-granular
+const PAR_MODE_LABEL: string[] = ['正常', '段+偷取'];
+
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
     (surfaceId: string, width: number, height: number) => {};
@@ -99,6 +106,9 @@ struct GfxReplayPage {
   // dev page asks for (applied process-wide, so the CPU route uses it). 0 is the
   // automatic choice.
   @State decodeWorkerIndex: number = 0;
+  // Index into PAR_MODE_LABEL: tile work decomposition (see PAR_MODE_LABEL).
+  // Defaults to the home + tail-steal partition, which is what the decoder ships.
+  @State parModeIndex: number = 1;
   // Whether this device can run the Vulkan presenter at all (see
   // DeviceCapabilities.hardwareAccel); when it cannot, 硬件加速 is not offered.
   @State hardwareAccelSupported: boolean = true;
@@ -172,6 +182,7 @@ struct GfxReplayPage {
     // Progressive message, so set it before the replay starts feeding.
     try {
       RdpNative.applyDecodeThreads(DECODE_THREAD_CHOICES[this.decodeWorkerIndex]);
+      RdpNative.applyDecodeParallelMode(this.parModeIndex);
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'decode threads unavailable: %{public}s', JSON.stringify(error));
     }
@@ -211,6 +222,16 @@ struct GfxReplayPage {
       return;
     }
     this.decodeWorkerIndex = index;
+    this.startReplay();
+  }
+
+  // Selects the decode executor probe (see PAR_MODE_LABEL); same restart rule as
+  // the 「线程」 row.
+  private selectParMode(index: number): void {
+    if (this.parModeIndex === index) {
+      return;
+    }
+    this.parModeIndex = index;
     this.startReplay();
   }
 
@@ -362,6 +383,24 @@ struct GfxReplayPage {
       .width('100%')
       .padding({ left: 12, right: 12, bottom: 8 })
 
+      // Decode executor probe (see PAR_MODE_LABEL): one button per mode.
+      Row() {
+        ForEach(PAR_MODE_LABEL, (label: string, index: number) => {
+          Button(`模式:${label}`)
+            .height(32)
+            .fontSize(13)
+            .fontColor(this.parModeIndex === index ? $r('app.color.page_bg') : $r('app.color.accent'))
+            .backgroundColor(this.parModeIndex === index ? $r('app.color.accent') : $r('app.color.input_bg'))
+            .borderRadius(9)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.selectParMode(index);
+            })
+        }, (label: string) => label)
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, bottom: 8 })
+
       Stack({ alignContent: Alignment.BottomStart }) {
         XComponent({
           id: 'replaySurface',
@@ -374,7 +413,7 @@ struct GfxReplayPage {
 
         if (this.showStats) {
           Column() {
-            Text(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}  参考:${REF_LABEL[this.refMode]}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}`)
+            Text(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}  参考:${REF_LABEL[this.refMode]}  线程:${DECODE_THREAD_LABEL[this.decodeWorkerIndex]}  模式:${PAR_MODE_LABEL[this.parModeIndex]}`)
               .fontSize(12)
               .fontColor('#FFFFD479')
               .width('100%')

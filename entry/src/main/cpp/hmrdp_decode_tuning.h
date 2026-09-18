@@ -28,6 +28,15 @@ namespace hmrdp {
 // workers = 0 means "automatic". Out-of-range values are clamped to [1, 8].
 void SetDecodeThreads(int workers);
 
+// Dev A/B for the tile work decomposition. Mode 1 (the default) gives every task
+// one contiguous *home* range - a worker walks contiguous memory and different
+// workers' ranges are far apart - and lets it steal the other homes' remaining
+// blocks once its own is done, so the tail is one block rather than one whole
+// range. Mode 0 is the plain shared claim cursor (blocks of HMRDP_TILE_CLAIM
+// handed out dynamically), kept for the A/B. Read on demand, like the width.
+void SetParallelMode(int mode);
+int ParallelMode();
+
 // The value that is actually in effect (automatic resolved, clamped).
 int DecodeThreads();
 

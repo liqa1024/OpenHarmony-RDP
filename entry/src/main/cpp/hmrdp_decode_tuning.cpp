@@ -31,6 +31,11 @@ constexpr int kMinWorkers = 1;
 // (doc_agent/cpu-accel-plan.md §0).
 int g_requested = 0;
 
+// Dev A/B for the tile work decomposition (see the header): the default is the
+// home + tail-steal partition, which keeps a worker on contiguous memory while
+// the tail stays block-granular. 0 selects the plain shared claim cursor.
+int g_parallelMode = 1;
+
 // Reads cpuinfo_max_freq once: the count of CPUs at (nearly) the top frequency,
 // i.e. the performance cluster. Returns 0 when the device does not expose it
 // (the app sandbox may deny /sys, and a homogeneous SoC has one value for all).
@@ -108,6 +113,15 @@ void SetDecodeThreads(int workers) {
   HMRDP_LOGI("decode threads: %{public}s", DecodeThreadsInfo().c_str());
 }
 
+void SetParallelMode(int mode) {
+  g_parallelMode = (mode == 1) ? 1 : 0;
+  HMRDP_LOGI("decode parallel mode: %{public}s", DecodeThreadsInfo().c_str());
+}
+
+int ParallelMode() {
+  return g_parallelMode;
+}
+
 std::string CpuFreqInfo() {
   // Same sysfs shape as ProbePerfCores: the app sandbox usually allows it, and a
   // device that does not expose it simply reports nothing.
@@ -145,14 +159,15 @@ std::string CpuFreqInfo() {
 std::string DecodeThreadsInfo() {
   const int cores = DecodeCpuCount();
   const int perf = DecodePerfCores();
-  char buf[160];
+  char buf[200];
   const char* perfText = perf > 0 ? "known" : "unknown";
+  const char* modeText = g_parallelMode == 1 ? "home-steal" : "normal";
   if (g_requested > 0) {
-    std::snprintf(buf, sizeof(buf), "workers=%d (manual, perf-cores=%d[%s] cores=%d)",
-                  DecodeThreads(), perf, perfText, cores);
+    std::snprintf(buf, sizeof(buf), "workers=%d (manual, mode=%s, perf-cores=%d[%s] cores=%d)",
+                  DecodeThreads(), modeText, perf, perfText, cores);
   } else {
-    std::snprintf(buf, sizeof(buf), "workers=%d (auto, perf-cores=%d[%s] cores=%d)",
-                  DecodeThreads(), perf, perfText, cores);
+    std::snprintf(buf, sizeof(buf), "workers=%d (auto, mode=%s, perf-cores=%d[%s] cores=%d)",
+                  DecodeThreads(), modeText, perf, perfText, cores);
   }
   return std::string(buf);
 }
