@@ -112,23 +112,25 @@ Patch-Regex $poolC '\tSYSTEM_INFO info = \{ 0 \};\n\tGetSystemInfo\(&info\);.*?\
 '@) 'const DWORD threads = HmrdpGetDecodeThreads();'
 
 # (a) the runtime API itself ($poolApi already ends with the anchor line).
+#     Marker is a line of the API block: the (b) replacement above mentions
+#     `HmrdpSetDecodeThreads` in a comment, so that name would skip this step.
 Patch-Regex $poolC 'static DWORD WINAPI thread_pool_work_func\(LPVOID arg\)' $poolApi `
-  'HmrdpSetDecodeThreads'
+  'static DWORD HmrdpDefaultDecodeThreads(void)'
 
 # (c) the decoder applies the request at a message boundary.
 Patch-Regex $progC 'static INLINE SSIZE_T progressive_process_tiles\(' (@'
 /* Exported by the patched libwinpr: the worker count the app asked for, and the
  * point where it is safe to resize the pool (no work item in flight yet). */
 extern DWORD HmrdpGetDecodeThreads(void);
-extern void HmrdpApplyDecodeThreads(void);
+extern void HmrdpApplyDecodeThreads(PTP_POOL pool);
 
 static INLINE SSIZE_T progressive_process_tiles(
 '@) 'HmrdpApplyDecodeThreads'
 
 Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads\)\n\t\{\n\t\t/\* Serial: one call per tile, exactly as before the chunking change\. \*/\n' (@'
-	/* HmRdp: apply the app's worker-count choice here - this is the only place
-	 * that submits to the pool, so no work item can be in flight. */
-	HmrdpApplyDecodeThreads();
+	/* HmRdp: apply the app's worker-count choice to the codec's own pool here -
+	 * this is the only place that submits to it, so nothing is in flight. */
+	HmrdpApplyDecodeThreads(progressive->rfx_context->priv->ThreadPool);
 
 	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
 	{
@@ -154,7 +156,7 @@ Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads \|\| Hmrd
 		__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - s0, __ATOMIC_RELAXED);
 		goto fail;
 	}
-'@) '__atomic_add_fetch(&HmrdpProgStat[9]'
+'@ + "`n") 'the tiles and the time spent decoding them are counted'
 
 # (e0) widen the counter array: the per-phase split below needs [10..16], and an
 #      older tree only has 16 slots.
@@ -259,7 +261,7 @@ Patch-Regex $progC '\tconst INT16\*\* ptr = WINPR_REINTERPRET_CAST\(pSrcDst, INT
 	rc = prims->yCbCrToRGB_16s8u_P3AC4R(ptr, 64 * 2, tile->data, tile->stride, progressive->format,
 '@ + "`n") 'hmrdp_phase_end(15, p_color)'
 
-Patch-Regex $progC '\t\t                                    &roi_64x64\);\nfail:\n\tBufferPool_Return\(progressive->bufferPool, pBuffer\);\n\treturn rc;\n\}\n' (@'
+Patch-Regex $progC '\t                                    &roi_64x64\);\nfail:\n\tBufferPool_Return\(progressive->bufferPool, pBuffer\);\n\treturn rc;\n\}\n' (@'
 	                                    &roi_64x64);
 	hmrdp_phase_end(15, p_color);
 fail:

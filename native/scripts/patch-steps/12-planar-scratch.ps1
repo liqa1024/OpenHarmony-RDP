@@ -34,5 +34,6 @@ Patch-Regex $planarC '\tcontext->bgr = FALSE;\n\tcontext->maxWidth = PLANAR_ALIG
 	}
 
 	context->maxWidth = PLANAR_ALIGN(width, 4);
+
 '@) 'scratch buffers below are per-message working memory'
 

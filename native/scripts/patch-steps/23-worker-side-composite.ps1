@@ -248,7 +248,7 @@ Patch-Regex $progWcC `
   'fail:\n\n\tif \(status < 0\)\n\t\treturn -1;\n\n\treturn \(SSIZE_T\)\(end - start\);' (@'
 fail:
 
-	/* HmRdp: the stashed clip dies with the region decode (step 23). */
+	/* HmRdp: the stashed clip dies with the region decode. */
 	progressive->hmrdpClip = NULL;
 	progressive->hmrdpClipCount = 0;
 	region16_uninit(&hmrdpClipRegion);
@@ -290,8 +290,9 @@ Patch-Regex $progWcC `
 		/* HmRdp dev: the pixels this side copied (the worker side counts the same
 		 * area into [19]). */
 		__atomic_add_fetch(&HmrdpProgStat[20], (unsigned long long)width * (unsigned long long)height,
-		                           __ATOMIC_RELAXED);
+		                   __ATOMIC_RELAXED);
 	}
+
 '@) 'already wrote exactly these pixels'
 
 # Self-check: a here-string that is not terminated on its own line leaks the rest

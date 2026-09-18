@@ -499,5 +499,5 @@ void rfx_dwt_2d_extrapolate_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RE
 # One replacement for the whole region: the `.*?` between the anchors absorbs
 # whatever version is in the tree, so re-running over an already patched source
 # stays safe (the marker below is what makes it a no-op then).
-Patch-Regex $progDwtC ' \* LL3      4015        9x9         81\n \*/.*?\nvoid rfx_dwt_2d_extrapolate_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT temp\)\n\{.*?\n\}\n' (' * LL3      4015        9x9         81\n */\n\n' + $progDwtRows + $progDwtBlock + $progDwtExtrapolate) 'HmrdpDwtExtrapolateReference'
+Patch-Regex $progDwtC ' \* LL3      4015        9x9         81\n \*/.*?\nvoid rfx_dwt_2d_extrapolate_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT temp\)\n\{.*?\n\}\n' (" * LL3      4015        9x9         81`n */`n`n" + $progDwtRows + $progDwtBlock + $progDwtExtrapolate) 'HmrdpDwtExtrapolateReference'
 

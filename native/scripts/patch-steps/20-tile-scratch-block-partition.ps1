@@ -32,32 +32,6 @@
 #     （只污染对拍计数，不影响像素），改成 per-call。
 #
 #     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
-function Patch-Regex-All {
-  param([string]$Path, [string]$Pattern, [string]$Replacement, [string]$Marker)
-  if (-not (Test-Path -LiteralPath $Path)) {
-    throw "file not found: $Path"
-  }
-  $raw = [System.IO.File]::ReadAllText($Path)
-  if ($Marker -and $raw.Contains($Marker)) {
-    Write-Host "HmRdp tile scratch already applied to $(Split-Path -Leaf $Path)"
-    return
-  }
-  $crlf = $raw.Contains("`r`n")
-  $text = $raw.Replace("`r`n", "`n")
-  $Replacement = $Replacement.Replace("`r`n", "`n")
-  $re = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
-  if (-not $re.IsMatch($text)) {
-    throw "HmRdp tile scratch: pattern not found in $Path"
-  }
-  $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $Replacement }
-  $text = $re.Replace($text, $evaluator)
-  if ($crlf) {
-    $text = $text.Replace("`n", "`r`n")
-  }
-  [System.IO.File]::WriteAllText($Path, $text)
-  Write-Host "HmRdp tile scratch applied to $(Split-Path -Leaf $Path)"
-}
-
 $progScratchH = "$Source\libfreerdp\codec\progressive.h"
 $progScratchC = "$Source\libfreerdp\codec\progressive.c"
 $neonScratchC = "$Source\libfreerdp\codec\neon\rfx_neon.c"
@@ -214,7 +188,7 @@ Patch-Regex $progScratchC `
 
 # (b3) allocate the arena once, and pin the serial branch to slot 0.
 Patch-Regex $progScratchC `
-  '\tHmrdpApplyDecodeThreads\(progressive->rfx_context->priv->ThreadPool\);\n\n\tif \(!progressive->rfx_context->priv->UseThreads \|\| HmrdpGetDecodeThreads\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(or forced to one worker\): one call per tile, no pool at all\. \*/' (@'
+  '\tHmrdpApplyDecodeThreads\(progressive->rfx_context->priv->ThreadPool\);\n\n\tif \(!progressive->rfx_context->priv->UseThreads \|\| HmrdpGetDecodeThreads\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(or forced to one worker\): one call per tile, no pool at all\.\n\t\t \* HmRdp dev: the tiles and the time spent decoding them are counted\n\t\t \* here - the pool-path counters above stay 0 on this branch\. \*/' (@'
 	HmrdpApplyDecodeThreads(progressive->rfx_context->priv->ThreadPool);
 
 	/* HmRdp: the tile decode's working buffers come from this context's arena
@@ -228,7 +202,9 @@ Patch-Regex $progScratchC `
 
 	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
 	{
-		/* Serial (or forced to one worker): one call per tile, no pool at all. */
+		/* Serial (or forced to one worker): one call per tile, no pool at all.
+		 * HmRdp dev: the tiles and the time spent decoding them are counted
+		 * here - the pool-path counters above stay 0 on this branch. */
 		g_HmrdpTlsTileScratch = progressive->tileScratch;
 '@) '!hmrdp_alloc_tile_scratch(progressive))'
 

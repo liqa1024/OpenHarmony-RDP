@@ -133,14 +133,13 @@ FREERDP_API UINT HmrdpGfxReplayRecv(RdpgfxClientContext* context, const BYTE* da
 }
 
 '@
-  $text = [System.IO.File]::ReadAllText($rdpgfxMain)
-  $text = $text.Replace('static UINT rdpgfx_recv_pdu(GENERIC_CHANNEL_CALLBACK* callback, wStream* s)',
-                        $gfxHelpers + 'static UINT rdpgfx_recv_pdu(GENERIC_CHANNEL_CALLBACK* callback, wStream* s)')
-  $text = $text.Replace("`tstatus = zgfx_decompress(gfx->zgfx, Stream_ConstPointer(data),",
-                        "`tstatus = HmrdpGfxRawCapture(gfx->zgfx, Stream_ConstPointer(data),")
-  $text = $text.Replace('FREERDP_ENTRY_POINT(UINT VCAPITYPE rdpgfx_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS* pEntryPoints))',
-                        $gfxReplay + 'FREERDP_ENTRY_POINT(UINT VCAPITYPE rdpgfx_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS* pEntryPoints))')
-  [System.IO.File]::WriteAllText($rdpgfxMain, $text)
+  $anchorRecv = 'static UINT rdpgfx_recv_pdu(GENERIC_CHANNEL_CALLBACK* callback, wStream* s)'
+  $anchorEntry = 'FREERDP_ENTRY_POINT(UINT VCAPITYPE rdpgfx_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS* pEntryPoints))'
+  Patch-Block $rdpgfxMain $anchorRecv ($gfxHelpers + $anchorRecv) ''
+  Patch-File $rdpgfxMain @{
+    "`tstatus = zgfx_decompress(gfx->zgfx, Stream_ConstPointer(data)," = "`tstatus = HmrdpGfxRawCapture(gfx->zgfx, Stream_ConstPointer(data),"
+  }
+  Patch-Block $rdpgfxMain $anchorEntry ($gfxReplay + $anchorEntry) ''
   Write-Host "HmRdp GFX capture/replay patch applied"
 }
 

@@ -22,35 +22,6 @@
 #
 #    另外导出 HmrdpProgStat[16]（每条消息只碰几次，不在 per-tile 路径上）供 app 的回放
 #    统计打印 `prog` 行做归因。整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
-function Patch-Regex {
-  param([string]$Path, [string]$Pattern, [string]$Replacement, [string]$Marker)
-  if (-not (Test-Path -LiteralPath $Path)) {
-    throw "file not found: $Path"
-  }
-  $raw = [System.IO.File]::ReadAllText($Path)
-  if ($Marker -and $raw.Contains($Marker)) {
-    Write-Host "HmRdp progressive tuning already applied to $(Split-Path -Leaf $Path)"
-    return
-  }
-  # Match on LF-normalized text: the replacement blocks below are written with
-  # one line-ending style, upstream files are not consistent. The file's own
-  # style is restored on write.
-  $crlf = $raw.Contains("`r`n")
-  $text = $raw.Replace("`r`n", "`n")
-  $Replacement = $Replacement.Replace("`r`n", "`n")
-  $re = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
-  if (-not $re.IsMatch($text)) {
-    throw "HmRdp progressive tuning: pattern not found in $Path"
-  }
-  $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $Replacement }
-  $text = $re.Replace($text, $evaluator, 1)
-  if ($crlf) {
-    $text = $text.Replace("`n", "`r`n")
-  }
-  [System.IO.File]::WriteAllText($Path, $text)
-  Write-Host "HmRdp progressive tuning applied to $(Split-Path -Leaf $Path)"
-}
-
 $progH = "$Source\libfreerdp\codec\progressive.h"
 $progC = "$Source\libfreerdp\codec\progressive.c"
 $copyC = "$Source\libfreerdp\primitives\prim_copy.c"
@@ -104,7 +75,6 @@ Patch-Regex $progC '#define TAG FREERDP_TAG\("codec\.progressive"\)\n' (@'
  * the serial branch, which is what [8]/[9] describe instead).
  */
 unsigned long long HmrdpProgStat[24] = { 0 };
-
 static INLINE unsigned long long hmrdp_now_ns(void)
 {
 	struct timespec ts;
@@ -233,7 +203,7 @@ Patch-Regex $progC '\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\
 	}
 
 fail:
-'@) 'param = &progressive->params[idx];'
+'@) 'the per-tile clipping used to go through region16'
 
 # (a3a) count the tiles the chunked dispatch decoded, and how long the workers
 #       spent on them. Read per chunk, never per tile. NOTE the figure is a
@@ -261,6 +231,7 @@ Patch-Regex $progC '\tPROGRESSIVE_TILE_CHUNK_PARAM\* chunk = \(PROGRESSIVE_TILE_
 	__atomic_add_fetch(&HmrdpProgStat[8], done, __ATOMIC_RELAXED);
 	__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - c0, __ATOMIC_RELAXED);
 }
+
 '@) '__atomic_add_fetch(&HmrdpProgStat[8], done'
 
 # (a4) update_tiles: no per-tile REGION16, one visit per tile per pass.

@@ -18,33 +18,35 @@
 #
 #     整块按"一次性整体打补丁"设计：改动它要从干净源码重打；本步对已打过 8b/11/20
 #     的树同样幂等（带 marker，重跑跳过）。
-function Patch-Regex {
-  param([string]$Path, [string]$Pattern, [string]$Replacement, [string]$Marker)
-  if (-not (Test-Path -LiteralPath $Path)) {
-    throw "file not found: $Path"
-  }
-  $raw = [System.IO.File]::ReadAllText($Path)
-  if ($Marker -and $raw.Contains($Marker)) {
-    Write-Host "HmRdp prog probe gate already applied to $(Split-Path -Leaf $Path)"
-    return
-  }
-  $crlf = $raw.Contains("`r`n")
-  $text = $raw.Replace("`r`n", "`n")
-  $Replacement = $Replacement.Replace("`r`n", "`n")
-  $re = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
-  if (-not $re.IsMatch($text)) {
-    throw "HmRdp prog probe gate: pattern not found in $Path"
-  }
-  $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $Replacement }
-  $text = $re.Replace($text, $evaluator, 1)
-  if ($crlf) {
-    $text = $text.Replace("`n", "`r`n")
-  }
-  [System.IO.File]::WriteAllText($Path, $text)
-  Write-Host "HmRdp prog probe gate applied to $(Split-Path -Leaf $Path)"
-}
-
 $progC = "$Source\libfreerdp\codec\progressive.c"
+
+# (0) the counter legend describes what the probes actually measure now (the
+#     work-claim executor replaced the pool, see steps 11/20/21/22b).
+$progLegendOld = @'
+ *   [0] tile read/parse               [4] (unused)
+ *   [1] pool dispatch                 [5] update_tiles calls
+ *   [2] pool section                  [6] tiles composited
+ *   [3] update_tiles                  [7] of [2], the part that really blocked
+ *   [8] tiles decoded                 [9] serial loop time / worker busy ns
+ *   [10..15] per-phase split (sampled)[16] tiles sampled
+ *
+ * `read` / `update` / the counters are filled on both paths; `dispatch` / the
+ * pool section only exist when the decode runs on pool workers (they are 0 on
+ * the serial branch, which is what [8]/[9] describe instead).
+'@
+$progLegendNew = @'
+ *   [0] tile read/parse (serial)      [4] (unused)
+ *   [1] work dispatch (serial)        [5] update_tiles calls
+ *   [2] work wait+close (serial)      [6] tiles composited
+ *   [3] update_tiles (serial)         [7] of [2], the part that really blocked
+ *   [8] tiles decoded                 [9] worker busy ns (sum over chunks)
+ *   [10..15] (unused)
+ *
+ * [8]/[9] are the parallel-efficiency pair: (sum of chunk busy time) / (dispatch
+ * + wait) is how many workers were really running at once, and [9]/[8] is the
+ * cost of one tile including the work-claim overhead.
+'@
+Patch-Block $progC $progLegendOld $progLegendNew 'parallel-efficiency pair'
 
 # (a) the gate itself + hmrdp_now_ns() short-circuit.
 Patch-Regex $progC `

@@ -69,13 +69,16 @@ devecocli build                                    # product=default → arm64�
 devecocli build --product emulator                 # 模拟器包（x86_64）
 devecocli run --device "<真机序列号>"              # 编译 + 签名 + 安装 + 启动
 devecocli run --product emulator --module entry@emulator --device "127.0.0.1:5555"
+native/scripts/fetch-sources.ps1                       # 按固定版本拉取三方源码 + 自动打补丁
 native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（不接触签名材料）
 ```
 
 - **签名材料不进仓库**：`build-profile.json5` 的 `signingConfigs` 恒为 `[]`，本机签名配置放仓库外
   `.signing/signing-config.json`，由 `hvigorfile.ts` 注入。**切勿**提交 `*.p12`/`*.p7b`/`*.cer`/keystore。
-- 改 **FreeRDP 源码或补丁**时要重打补丁 + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`（该目录**不入库**），
-  再 `build_project`。详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
+- **三方源码不入库**：`native/third_party/` 由 `fetch-sources.ps1` 按固定版本（tarball + SHA256）拉取。
+  改 FreeRDP 一律写成 `patch-steps/` 里的补丁步骤（不要在 `third_party/` 里直接改），
+  再 `fetch-sources.ps1 -Force` + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`（该目录**不入库**），
+  最后 `build_project`。详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
 - 模拟器优先用于**与硬件加速无关**的功能/逻辑/UI 调试；**Vulkan/GPU 回放只在真机**。
 
 ## 目录速览

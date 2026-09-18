@@ -7,36 +7,51 @@
 - 源码/中间产物是数百 MB 的下载与构建输出；
 - **产物里带着构建机的绝对安装路径**（`CMAKE_INSTALL_PREFIX` 会被编进 winpr 等库），属本机环境信息。
 
-因此：**clone 后先本地构建**，把产物放到 `entry/libs/<abi>/` 再编译应用。
+因此：**源码由脚本按固定版本拉取**（`native/scripts/fetch-sources.ps1`），构建产物放到
+`entry/libs/<abi>/` 再编译应用。
 `entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接。
 
 ## 2. 构建流程
 
 ```
-native/scripts/patch-freerdp.ps1     # 给 FreeRDP 源码打 OHOS/定制补丁（幂等，可重复跑）
+native/scripts/fetch-sources.ps1     # 按固定版本拉取源码（tarball + SHA256 校验）并自动打补丁
 native/scripts/build-zlib.ps1        # zlib 静态库（Windows NDK）；FreeRDP 静态链入
 native/scripts/build-openssl-wsl.sh  # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
 native/scripts/build-freerdp.ps1     # FreeRDP 的 CMake 构建（Windows NDK）
 ```
 
+- 版本与校验和固定在 `fetch-sources.ps1`（FreeRDP 3.10.3 / zlib 1.3.1 / OpenSSL 3.0.15）。
+  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。只有 FreeRDP 需要打补丁，
+  zlib / OpenSSL 按发布版直接用。
+- `patch-freerdp.ps1` 也可单独重复跑（幂等）。
+
 改 FreeRDP（含改补丁脚本）后的**完整循环**：
 
 ```powershell
+./native/scripts/fetch-sources.ps1   # 首次/换版本；已有的树会跳过
 ./native/scripts/patch-freerdp.ps1
 ./native/scripts/build-freerdp.ps1 -Arch arm64-v8a
 Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 # 然后 build_project（HAP 才会带上新的 .so）
 ```
 
-- 补丁脚本的每一步都要**幂等 + 可自检**（已打过的步骤跳过并提示）：源码树是**本地长期存在**的，
-  干净源码不一定有备份 ⇒ **改补丁脚本时要保证"重跑安全"**，不要依赖"从干净源码重打"。
+- 补丁脚本的每一步都要**幂等 + 可自检**（已打过的步骤跳过并提示）。源码树是可丢弃的：
+  干净上游 + 全部步骤必须能还原出它 ⇒ 新增/修改一律走补丁步骤（`patch-steps/`），
+  **不要在 `third_party/` 里直接改**，否则重拉源码后改动就丢了。
 - 补丁**按步拆分**：`native/scripts/patch-steps/<NN>-<topic>.ps1`，入口脚本
-  `native/scripts/patch-freerdp.ps1` 只放参数、公共工具（`Patch-File` / `Patch-Block` / `Patch-Regex` /
-  `Tabs`）与"按名顺序 dot-source"；`<NN>` 就是被改源码注释里引用的步号（`8` 有两块，`18` 试过又撤掉）。
+  `native/scripts/patch-freerdp.ps1` 是**唯一的公共工具来源**（`Patch-File` / `Patch-Block` /
+  `Patch-Regex` / `Patch-Regex-All` / `Copy-PatchData` / `Tabs`）与"按名顺序 dot-source"。
+  步骤里**不要再定义这些函数**：dot-source 会覆盖入口的定义、并让报错指到错误的文件。
+  `<NN>` 就是被改源码注释里引用的步号（`8` 有两块，`18` 试过又撤掉，`22b` 是后补的"tile 工作集"）。
   加/改一步只动那一个文件；每个步骤**自带 marker**，重跑时打印 `already applied` 并跳过。
-  ⇒ **"跑一遍补丁脚本、确认每步都只报 already applied、且没有异常"本身就是自检**：拆分或改动丢了内容会
-  在那里炸出来（`Patch-Block`/`Patch-Regex` 找不到锚点会直接 throw）。
-- 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` 传给步骤。
+- **marker 必须只出现在该步骤自己插入的文本里**：若某个 marker 同时出现在上游或更早步骤的替换里，
+  该步骤会在干净源码上被静默跳过（症状：树里缺这块，后续步骤找不到锚点而报错）。入口的 `-Trace`
+  会打印当前步骤名，便于定位。
+- 匹配按 **LF 归一化**进行、写入时恢复文件原有风格（tarball 是 LF，Windows checkout 是 CRLF），
+  所以补丁不依赖检出风格。
+  ⇒ **"`fetch-sources.ps1 -Force` 重拉 + 跑一遍补丁、确认每步都只报 already applied、且没有异常"本身就是自检**：
+  拆分或改动丢了内容会在那里炸出来（`Patch-Block`/`Patch-Regex` 找不到锚点会直接 throw）。
+- 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` / `$Patches` 传给步骤。
 - 只改应用层（`entry/src/main/cpp/*`、`.ets`）**不需要**重编 FreeRDP。
 
 ## 3. 补丁脚本在做什么（以及为什么必须保留）
@@ -106,6 +121,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
   malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；
   `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2。
+- **tile 工作集来自裁剪矩形、合成收进共用 helper**：patch step 22b 给 tile 记下解码它的帧
+  （`hmrdpFrameId`），`update_tiles` 由此只走**裁剪矩形覆盖到的 tile 范围**，不再每条消息重走整帧累积的
+  tile 列表；逐 tile 的裁剪求交 + 拷贝 + 脏区 span 记账收进 `hmrdp_composite_tile`，与 tile 解码侧的直写
+  共用同一套几何。结果（tile 集合、裁剪、像素、脏区）不变。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
 - **tile 合成（拷贝）移进并行段**：patch step 23 把目标缓冲与合并后的 clip 存进 codec context，tile 解码
   完一块就直写 surface；`update_tiles` 保留遍历与 O(1) 脏区 span 记账，只在**clip 哈希一致**时跳过那次
   拷贝（哈希折入消息序号；"一条消息多条 region"时两者 clip 不同，仍由 `update_tiles` 覆盖）。

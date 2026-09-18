@@ -21,7 +21,11 @@ $progRowsC = "$Source\libfreerdp\codec\progressive.c"
 $progRowsApi = "$Source\include\freerdp\codec\progressive.h"
 $gdiRowsC = "$Source\libfreerdp\gdi\gfx.c"
 
-Patch-Block $progRowsH '	/* HmRdp: monotonic stamp handed out by each update_tiles() pass. */' (@'
+$progStampAnchor = @'
+	/* HmRdp: monotonic stamp handed out by each update_tiles() pass. */
+	UINT32 updateStamp;
+'@
+Patch-Block $progRowsH $progStampAnchor (@'
 	/* HmRdp: monotonic stamp handed out by each update_tiles() pass. */
 	UINT32 updateStamp;
 	/* HmRdp: the frame's dirty area as one [left,right) span of tile *columns* per
@@ -145,6 +149,8 @@ FREERDP_API BOOL HmrdpProgressiveFlushDirty(PROGRESSIVE_CONTEXT* progressive, UI
 	surface->hmrdpDirtyAny = FALSE;
 	return TRUE;
 }
+
+
 '@
 $progRowsAppendOld = 'INT32 progressive_decompress(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,'
 Patch-Block $progRowsC $progRowsAppendOld ($flushFn + $progRowsAppendOld) 'HmrdpProgressiveFlushDirty'
@@ -156,10 +162,14 @@ $progFlushDecl = @'
 FREERDP_API BOOL HmrdpProgressiveFlushDirty(PROGRESSIVE_CONTEXT* progressive, UINT16 surfaceId,
                                             REGION16* out);
 
-FREERDP_API INT32 progressive_decompress(
+
 '@
-Patch-Block $progRowsApi 'FREERDP_API INT32 progressive_decompress(' `
-  ($progFlushDecl + 'FREERDP_API INT32 progressive_decompress(') 'HmrdpProgressiveFlushDirty'
+# The declaration below is indented with a tab inside `extern "C" {`; consume it
+# (the inserted comment starts at column 0, like the tree) and re-add the
+# declaration after the new block.
+$progFlushAnchor = "`tFREERDP_API INT32 progressive_decompress("
+Patch-Block $progRowsApi $progFlushAnchor `
+  ($progFlushDecl + $progFlushAnchor.TrimStart("`t")) 'HmrdpProgressiveFlushDirty'
 
 # ... and the composer folds them in before it clips/reads the region.
 $gdiFlushCall = @'
@@ -169,6 +179,7 @@ $gdiFlushCall = @'
 	if (surface->codecs != NULL && surface->codecs->progressive != NULL)
 		HmrdpProgressiveFlushDirty(surface->codecs->progressive, surface->surfaceId,
 		                           &(surface->invalidRegion));
+
 
 '@
 Patch-Block $gdiRowsC "`tsurfaceX = surface->outputOriginX;" `

@@ -15,24 +15,6 @@
 #        tile-decoding consumers want the same treatment), and cap the pool
 #        fan-out: one worker per core, woken for every Progressive message,
 #        costs power without buying throughput.
-function Patch-Block {
-  param([string]$Path, [string]$Old, [string]$New, [string]$Marker)
-  if (-not (Test-Path -LiteralPath $Path)) {
-    throw "file not found: $Path"
-  }
-  $text = [System.IO.File]::ReadAllText($Path)
-  if ($Marker -and $text.Contains($Marker)) {
-    Write-Host "HmRdp tuning patch already applied to $(Split-Path -Leaf $Path)"
-    return
-  }
-  if (-not $text.Contains($Old)) {
-    throw "HmRdp tuning patch: block not found in $Path"
-  }
-  $text = $text.Replace($Old, $New)
-  [System.IO.File]::WriteAllText($Path, $text)
-  Write-Host "HmRdp tuning patch applied to $(Split-Path -Leaf $Path)"
-}
-
 # (a) receive window: deliberately NOT patched. Asking for a larger SO_RCVBUF
 #     explicitly disables the kernel's receive-buffer auto-tuning; on the test
 #     device that dropped the measured arrival rate from ~1.28 MB/s to ~0.58 MB/s
@@ -40,18 +22,6 @@ function Patch-Block {
 #     "at least 32 K plus auto-tuning" is the better behaviour here. The receive
 #     window is still what caps a high-RTT link, but it cannot be fixed from the
 #     client side on this platform.
-
-# Tabs <n> <line> builds one C line with <n> tab indents; the line is passed as a
-# literal (single-quoted) string, so C quotes need no PowerShell escaping.
-function Tabs([int]$count, [string]$line) {
-  return ("`t" * $count) + $line
-}
-
-# Tabs <n> <line> builds one C line with <n> tab indents; the line is passed as a
-# literal (single-quoted) string, so C quotes need no PowerShell escaping.
-function Tabs([int]$count, [string]$line) {
-  return ("`t" * $count) + $line
-}
 
 $gfxC = "$Source\channels\rdpgfx\client\rdpgfx_main.c"
 $gfxAckOld = @(

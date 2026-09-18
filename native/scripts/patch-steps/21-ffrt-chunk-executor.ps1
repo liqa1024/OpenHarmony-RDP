@@ -33,7 +33,7 @@ extern int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int),
     __attribute__((weak));
 
 /* Tasks one region is split into when ffrt runs it. A region carries only a few
- * milliseconds of work, so this is deliberately below HMRDP_TILE_CHUNKS: the
+ * milliseconds of work, so this is deliberately far below HMRDP_TILE_CHUNKS: the
  * platform queue charges per submitted task, and 64 tasks per region measured
  * slower than the pool it replaces. */
 #define HMRDP_FFRT_TASKS 16
