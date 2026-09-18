@@ -74,6 +74,11 @@ export class AppSettings {
   // Present frames through Vulkan; off keeps the session on the GLES presenter
   // with no Vulkan at all (see doc_agent/settings-and-storage.md §3).
   hardwareAccel: boolean = true;
+  // Developer options: reveals the dev-only tools (recorded-stream replay entry,
+  // RFX stream capture, decode-worker knob) and the session toolbar's performance
+  // telemetry. Off for a normal install; nothing dev-only is reachable until it
+  // is turned on.
+  developerMode: boolean = false;
   // Dev-only capture of the RemoteFX/Progressive stream (doc_agent/gfx-engine.md §6).
   rfxDump: boolean = false;
   // Progressive tile decode workers: 0 = automatic (performance-core count, or
@@ -186,6 +191,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
       settings.hardwareAccel =
         SettingsStore.readBoolean(store, 'hardwareAccel', settings.hardwareAccel);
+      settings.developerMode =
+        SettingsStore.readBoolean(store, 'developerMode', settings.developerMode);
       settings.rfxDump = SettingsStore.readBoolean(store, 'rfxDump', settings.rfxDump);
       settings.decodeThreads =
         SettingsStore.readNumber(store, 'decodeThreads', settings.decodeThreads);
@@ -228,6 +235,7 @@ export class SettingsStore {
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.putSync('hardwareAccel', settings.hardwareAccel);
+      store.putSync('developerMode', settings.developerMode);
       store.putSync('rfxDump', settings.rfxDump);
       store.putSync('decodeThreads', settings.decodeThreads);
       store.flush();

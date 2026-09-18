@@ -223,7 +223,7 @@ export class SessionManager {
       if (entry.state === ConnectionState.Connected ||
         entry.state === ConnectionState.Connecting) {
         SessionManager.clearEntryTimeout(entry);
-        const message: string = SessionManager.describeError(data);
+        const message: string = SessionManager.describeError(data, '连接已断开');
         entry.native.stopSession();
         entry.state = ConnectionState.Idle;
         entry.message = message;
@@ -296,23 +296,85 @@ export class SessionManager {
     }
   }
 
-  /** Turns the native "<code>|<message>" payload into a user-facing reason. */
-  static describeError(data: string): string {
+  /**
+   * Turns the native "<code>|<message>" payload into a user-facing reason.
+   * `fallback` is what to say when the payload carries no reason at all, so the
+   * same parser serves both a failed connect and a dropped session.
+   *
+   * The code's high 16 bits are the FreeRDP error class: 1 = ERRINFO (the server's
+   * ErrorInfo PDU, e.g. "another connection took over"), 2 = ERRCONNECT (a local
+   * connect failure). See the patch's error.h.
+   */
+  static describeError(data: string, fallback: string = '连接失败'): string {
     const separator: number = data.indexOf('|');
     if (separator < 0) {
-      return data.length > 0 ? data : '连接失败';
+      return data.length > 0 ? data : fallback;
     }
     const code: number = Number.parseInt(data.substring(0, separator), 10);
     const raw: string = data.substring(separator + 1);
     const type: number = code & 0xFFFF;
     const errorClass: number = (code >> 16) & 0xFFFF;
-    if (errorClass === 2) {
-      return SessionManager.connectErrorText(type, raw);
+    if (errorClass === 1) {
+      return SessionManager.disconnectErrorText(type, raw, fallback);
     }
-    return raw.length > 0 ? raw : '连接失败';
+    if (errorClass === 2) {
+      return SessionManager.connectErrorText(type, raw, fallback);
+    }
+    return raw.length > 0 ? raw : fallback;
   }
 
-  private static connectErrorText(type: number, raw: string): string {
+  /**
+   * The server's reason for ending the session (ERRINFO_*, see the FreeRDP
+   * error.h). These are what the disconnect overlay must distinguish: taken over
+   * by another connection, logged off, idle timeout, a server-side crash, ...
+   */
+  private static disconnectErrorText(type: number, raw: string, fallback: string): string {
+    if (type === 0x01) {
+      return '远端服务结束了会话';
+    }
+    if (type === 0x02) {
+      return '远端已注销';
+    }
+    if (type === 0x03) {
+      return '因空闲超时被断开';
+    }
+    if (type === 0x04) {
+      return '登录超时';
+    }
+    if (type === 0x05) {
+      return '已被另一个连接接管（同一账户在其他位置登录）';
+    }
+    if (type === 0x06) {
+      return '远端资源不足';
+    }
+    if (type === 0x07) {
+      return '远端拒绝了连接';
+    }
+    if (type === 0x09) {
+      return '远端权限不足';
+    }
+    if (type === 0x0A) {
+      return '需要重新输入凭据';
+    }
+    if (type === 0x0B) {
+      return '远端用户断开了连接';
+    }
+    if (type === 0x0C) {
+      return '远端用户已注销';
+    }
+    if (type === 0x0F || type === 0x11 || type === 0x12) {
+      return '远端显示驱动异常，会话被断开';
+    }
+    if (type === 0x10) {
+      return '远端桌面窗口管理器异常，会话被断开';
+    }
+    if (type === 0x17 || type === 0x18) {
+      return '远端系统进程异常，会话被断开';
+    }
+    return raw.length > 0 ? raw : fallback;
+  }
+
+  private static connectErrorText(type: number, raw: string, fallback: string): string {
     if (type === 0x01) {
       return '连接初始化失败';
     }
@@ -382,6 +444,6 @@ export class SessionManager {
     if (type === 0x1C) {
       return '连接超时';
     }
-    return raw.length > 0 ? raw : '连接失败';
+    return raw.length > 0 ? raw : fallback;
   }
 }

@@ -27,6 +27,9 @@ struct Index {
   @State settingsPressed: boolean = false;
   @State fabHovered: boolean = false;
   @State fabPressed: boolean = false;
+  // Developer options (SettingsStore.developerMode): the replay entry is a dev
+  // tool, so it only exists while this is on.
+  @State developerMode: boolean = false;
 
   private sessionListener: SessionStateListener = (connectionId: string,
     state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
@@ -61,6 +64,7 @@ struct Index {
 
   private refresh(): void {
     this.connections = ConnectionStore.list();
+    this.developerMode = SettingsStore.load().developerMode;
   }
 
   private persistOrder(): void {
@@ -322,16 +326,19 @@ struct Index {
         Blank()
 
         // Dev-only entry (doc_agent/gfx-engine.md §6): recorded RDP replay page.
-        Text('回放测试')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-          .borderRadius(9)
-          .backgroundColor($r('app.color.hover_bg'))
-          .margin({ right: 8 })
-          .onClick(() => {
-            this.getUIContext().getRouter().pushUrl({ url: 'pages/GfxReplayPage' });
-          })
+        // Only present while developer options are on.
+        if (this.developerMode) {
+          Text('回放测试')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .borderRadius(9)
+            .backgroundColor($r('app.color.hover_bg'))
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.getUIContext().getRouter().pushUrl({ url: 'pages/GfxReplayPage' });
+            })
+        }
 
         Stack() {
           Row()

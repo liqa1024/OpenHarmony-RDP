@@ -156,6 +156,9 @@ struct SessionPage {
   @State metricsBytesPerFrame: number = 0;
   @State metricsDutyPermille: number = 0;
   @State metricsCmdsPerFrame: number = 0;
+  // Developer options (SettingsStore.developerMode): the toolbar's performance
+  // telemetry is a dev tool, so it is only shown while this is on.
+  @State developerMode: boolean = false;
   // Audio sample rate (Hz) and recent glitch rate in basis points (0.01%);
   // -1 when audio is not playing.
   @State metricsAudioRateHz: number = -1;
@@ -252,6 +255,7 @@ struct SessionPage {
   aboutToAppear(): void {
     this.resolveRequest();
     const settings: AppSettings = SettingsStore.load();
+    this.developerMode = settings.developerMode;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
@@ -402,7 +406,7 @@ struct SessionPage {
       this.showToolbar = false;
     } else if (event === RdpEvent.Disconnected) {
       this.state = RdpConnectionState.Closed;
-      this.statusText = data.length > 0 ? SessionManager.describeError(data) : '连接已断开';
+      this.statusText = SessionManager.describeError(data, '连接已断开');
       this.showOverlay = true;
       this.showToolbar = true;
       this.resetCursor();
@@ -1644,16 +1648,20 @@ struct SessionPage {
               this.retry();
             }
           })
-        Button(secondary)
-          .height(42)
-          .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-          .backgroundColor($r('app.color.input_bg'))
-          .borderRadius(10)
-          .margin({ left: 12 })
-          .onClick(() => {
-            this.disconnect();
-          })
+        // The secondary action is optional: "正在连接" only offers 取消, so an
+        // empty label must not render as a blank button next to it.
+        if (secondary.length > 0) {
+          Button(secondary)
+            .height(42)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .backgroundColor($r('app.color.input_bg'))
+            .borderRadius(10)
+            .margin({ left: 12 })
+            .onClick(() => {
+              this.disconnect();
+            })
+        }
       }
       .margin({ top: 24 })
     }
@@ -1674,7 +1682,9 @@ struct SessionPage {
       Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
         .fontSize(12)
         .fontColor('#B8BCC4')
-      if (this.state === RdpConnectionState.Connected) {
+      // The telemetry cluster (network / 本机 / FPS / bandwidth / audio) is a
+      // developer tool: hidden unless developer options are on.
+      if (this.state === RdpConnectionState.Connected && this.developerMode) {
         Row() {
           Text(this.rttLabel())
             .fontSize(12)

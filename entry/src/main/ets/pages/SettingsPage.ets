@@ -80,6 +80,9 @@ struct SettingsPage {
   @State hardwareAccel: boolean = true;
   @State hardwareAccelSupported: boolean = true;
   private hardwareAccelReason: string = '';
+  // Developer options: reveals the dev-only tools below (and the replay entry /
+  // toolbar telemetry elsewhere). Off for a normal install.
+  @State developerMode: boolean = false;
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State rfxDump: boolean = false;
   // Progressive tile decode workers: 0 = automatic (see AppSettings.decodeThreads).
@@ -150,7 +153,10 @@ struct SettingsPage {
     // "on" value so the setting matches the greyed-out switch.
     this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
     this.ignoreCertificate = settings.ignoreCertificate;
-    this.rfxDump = settings.rfxDump;
+    this.developerMode = settings.developerMode;
+    // With developer options off, the dev-only tools are not shown and must not
+    // keep running: a capture left on from a previous session is switched off.
+    this.rfxDump = this.developerMode ? settings.rfxDump : false;
     RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
     this.decodeThreads = settings.decodeThreads;
     RdpNative.applyDecodeThreads(this.decodeThreads);
@@ -164,6 +170,12 @@ struct SettingsPage {
     if (!this.hardwareAccelSupported && settings.hardwareAccel) {
       this.persist();
     }
+    if (!this.developerMode && settings.rfxDump) {
+      this.persist();
+    }
+    // Keep the native capture in step with what the page now shows: with developer
+    // options off it must not be running, whatever the stored value was.
+    this.applyRfxDumpSetting();
   }
 
   // Applies the dev capture toggle immediately (before the next session) so the
@@ -257,6 +269,7 @@ struct SettingsPage {
     settings.enableGfx = this.enableGfx;
     settings.ignoreCertificate = this.ignoreCertificate;
     settings.hardwareAccel = this.hardwareAccel;
+    settings.developerMode = this.developerMode;
     settings.rfxDump = this.rfxDump;
     settings.decodeThreads = this.decodeThreads;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
@@ -302,6 +315,7 @@ struct SettingsPage {
     this.enableGfx = defaults.enableGfx;
     this.ignoreCertificate = defaults.ignoreCertificate;
     this.hardwareAccel = defaults.hardwareAccel;
+    this.developerMode = defaults.developerMode;
     this.rfxDump = defaults.rfxDump;
     this.decodeThreads = defaults.decodeThreads;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
@@ -309,6 +323,8 @@ struct SettingsPage {
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(defaults.sessionWindowHeight);
     this.persist();
+    // A reset turns developer options off: stop a capture that was running.
+    this.applyRfxDumpSetting();
   }
 
   private confirmExport(): void {
@@ -971,40 +987,6 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            this.sliderItem({
-              title: '解码线程数',
-              subtitle: this.decodeThreadsSubtitle(),
-              value: this.decodeThreads,
-              min: 0,
-              max: 8,
-              step: 1,
-              unit: '',
-              precision: 0,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: number) => {
-                this.decodeThreads = v;
-                this.persist();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
-
-            this.toggleItem({
-              title: '抓取 RFX 码流（测试）',
-              subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供开发/回放使用',
-              value: this.rfxDump,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.rfxDump = v;
-                this.persist();
-                this.applyRfxDumpSetting();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
-
             this.toggleItem({
               title: '忽略证书校验',
               subtitle: '仅用于自签名证书的测试环境，存在安全风险',
@@ -1195,6 +1177,75 @@ struct SettingsPage {
             .width('100%')
             .padding({ top: 14, bottom: 14 })
             .alignItems(HorizontalAlign.Start)
+
+            Divider().color($r('app.color.divider'))
+
+            Text('开发者选项')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ top: 4, bottom: 4 })
+
+            Text('调试与性能分析用的功能；正常使用保持关闭')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ bottom: 8 })
+
+            this.toggleItem({
+              title: '开发者选项',
+              subtitle: '显示码流抓取、解码线程数、录像回放入口与工具栏性能信息',
+              value: this.developerMode,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.developerMode = v;
+                // Turning the gate off also stops the tools it revealed, so a
+                // capture cannot keep running invisibly.
+                if (!v && this.rfxDump) {
+                  this.rfxDump = false;
+                  this.persist();
+                  this.applyRfxDumpSetting();
+                } else {
+                  this.persist();
+                }
+              }
+            })
+
+            if (this.developerMode) {
+              Divider().color($r('app.color.divider'))
+
+              this.toggleItem({
+                title: '抓取 RFX 码流（测试）',
+                subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供开发/回放使用',
+                value: this.rfxDump,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: boolean) => {
+                  this.rfxDump = v;
+                  this.persist();
+                  this.applyRfxDumpSetting();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '解码线程数',
+                subtitle: this.decodeThreadsSubtitle(),
+                value: this.decodeThreads,
+                min: 0,
+                max: 8,
+                step: 1,
+                unit: '',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.decodeThreads = v;
+                  this.persist();
+                }
+              })
+            }
 
             Divider().color($r('app.color.divider'))
 

@@ -53,8 +53,10 @@ export default class EntryAbility extends UIAbility {
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     // Dev capture: configure before any session can connect so the RDPGFX
     // command stream (ResetGraphics/CreateSurface included) is captured from the
-    // first frame. Re-applying the same value later is a native no-op.
-    RdpNative.applyRfxDump(settings.rfxDump, this.context.filesDir);
+    // first frame. Re-applying the same value later is a native no-op. Gated on
+    // developer options so a stale stored value cannot start a capture while the
+    // tools are hidden.
+    RdpNative.applyRfxDump(settings.developerMode && settings.rfxDump, this.context.filesDir);
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
 

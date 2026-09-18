@@ -1955,6 +1955,28 @@ void Session::EventThread() {
     }
   }
 
+  // Why the session ended, so the UI can tell "another connection took over" from
+  // a network drop instead of showing one generic text. The server's ErrorInfo
+  // PDU (ERRINFO_*, e.g. 断开原因=被其他连接接管) is more specific than the
+  // client-side last error, so it wins; a user-requested stop has no reason and is
+  // reported as an empty payload (the UI's own "disconnected" wording covers it).
+  if (stopRequested_.load()) {
+    lastErrorCode_ = 0;
+    lastError_.clear();
+  } else if (instance->context != nullptr) {
+    const UINT32 errorInfo = freerdp_error_info(instance);
+    const UINT32 lastError = static_cast<UINT32>(freerdp_get_last_error(instance->context));
+    if (errorInfo != 0) {
+      lastErrorCode_ = (static_cast<UINT32>(FREERDP_ERROR_ERRINFO_CLASS) << 16) | errorInfo;
+      const char* reason = freerdp_get_last_error_string(lastErrorCode_);
+      lastError_ = reason != nullptr ? reason : "";
+    } else if (lastError != FREERDP_ERROR_SUCCESS) {
+      lastErrorCode_ = lastError;
+      const char* reason = freerdp_get_last_error_string(lastError);
+      lastError_ = reason != nullptr ? reason : "";
+    }
+  }
+
   freerdp_disconnect(instance);
   Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
 }

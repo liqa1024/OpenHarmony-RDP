@@ -8,7 +8,13 @@
 - **主窗口后台连接、成功后才开窗**；失败只报错、不开窗。每个会话独占一个 `RdpNative` 实例。
 - **关闭窗口即断连**：`SessionAbility.onWindowStageDestroy/onDestroy` → `SessionManager.release` +
   `SessionRequests.discard`。注意 `SessionPage.aboutToDisappear` 在窗口关闭时**不触发**，别依赖它断连。
-- 连接有**超时兜底**；错误经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
+- 连接有**超时兜底**；错误/断开原因经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
+  - 码的高 16 位是 FreeRDP 错误类：`1` = **ERRINFO**（服务端 ErrorInfo/断开原因），`2` = **ERRCONNECT**
+    （本地连接失败）。原生在断开时优先报服务端 ErrorInfo（经 `freerdp_error_info` 取回，如
+    `ERRINFO_DISCONNECTED_BY_OTHER_CONNECTION` = 被另一个连接接管），否则报客户端 last error；
+    **用户主动断开**没有原因，payload 为空。
+  - 断开弹窗据此区分"被其他连接接管 / 空闲超时 / 远端注销 / 服务端驱动或系统进程异常 / 网络中断"，
+    而不是笼统的"连接已断开"；空 payload 才回落到 `连接已断开`。
 
 ### 1.1 窗口尺寸与全屏
 
