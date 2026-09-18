@@ -2,14 +2,18 @@
 
 应用的原生依赖**全部从源码交叉编译**，不使用系统预编译库。仓库**不提交**任何 `.so`。
 
-## 1. 为什么 `native/third_party/`、`entry/libs/<abi>/` 都不入库
+## 1. 为什么 `native/third_party/`、`entry/libs/<abi>/`、`entry/src/main/cpp/thirdparty/` 都不入库
 
 - 源码/中间产物是数百 MB 的下载与构建输出；
-- **产物里带着构建机的绝对安装路径**（`CMAKE_INSTALL_PREFIX` 会被编进 winpr 等库），属本机环境信息。
+- **产物里带着构建机的绝对安装路径**（`CMAKE_INSTALL_PREFIX` 会被编进 winpr 等库、也会写进生成的
+  `winpr/build-config.h`）与本地 git 版本，属本机环境信息。
 
 因此：**源码由脚本按固定版本拉取**（`native/scripts/fetch-sources.ps1`），构建产物放到
-`entry/libs/<abi>/` 再编译应用。
-`entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接。
+`entry/libs/<abi>/`；应用编译用的 FreeRDP/winpr 头文件由 `build-freerdp.ps1` 在装完后调用
+`native/scripts/sync-freerdp-headers.ps1` 生成到 `entry/src/main/cpp/thirdparty/freerdp/`
+（同步时归一化掉构建机路径与本地 git 版本）。
+`entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接、按
+`thirdparty/freerdp/include/{freerdp3,winpr3}` 找头文件。
 
 ## 2. 构建流程
 
@@ -24,6 +28,8 @@ native/scripts/build-freerdp.ps1     # FreeRDP 的 CMake 构建（Windows NDK）
   已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。只有 FreeRDP 需要打补丁，
   zlib / OpenSSL 按发布版直接用。
 - `patch-freerdp.ps1` 也可单独重复跑（幂等）。
+- `build-freerdp.ps1` 装完后自动跑 `sync-freerdp-headers.ps1`，把应用编译要用的头文件刷新到
+  `entry/src/main/cpp/thirdparty/`（该目录**不入库**，见 §1）。
 
 改 FreeRDP（含改补丁脚本）后的**完整循环**：
 
@@ -177,8 +183,8 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定
   `-O2 -DNDEBUG`，**不随构建模式变**。打包时 hvigor 的 `DoNativeStrip` 会 strip 所有 `.so`，
   HAP 内不含调试信息。
-- FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（构建脚本安装后会自动
-  归一化）——不要把带构建机绝对路径的版本抄进仓库。
+- FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（安装后由
+  `build-freerdp.ps1` / `sync-freerdp-headers.ps1` 自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
 
 ## 5. 音频：FreeRDP 只解码，播放用原生 OHAudio
 

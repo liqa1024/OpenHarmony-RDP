@@ -29,12 +29,15 @@
 # The source/build trees are hundreds of MB of downloaded sources and
 # intermediate output and must never be committed. The resulting libraries are
 # NOT committed either: they embed machine-local install paths, so they are
-# built locally and placed in entry/libs/<abi>/ (ignored below).
+# built locally and placed in entry/libs/<abi>/ (ignored below). The FreeRDP
+# headers the app compiles against are generated the same way, by
+# build-freerdp.ps1 -> native/scripts/sync-freerdp-headers.ps1.
 # ---------------------------------------------------------------------------
 /native/third_party/
 /native/build/
 /native/install/
 /entry/libs/
+/entry/src/main/cpp/thirdparty/
 /native/tools/
 /native/**/*.log
 

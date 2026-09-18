@@ -78,7 +78,9 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 - **三方源码不入库**：`native/third_party/` 由 `fetch-sources.ps1` 按固定版本（tarball + SHA256）拉取。
   改 FreeRDP 一律写成 `patch-steps/` 里的补丁步骤（不要在 `third_party/` 里直接改），
   再 `fetch-sources.ps1 -Force` + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`（该目录**不入库**），
-  最后 `build_project`。详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
+  最后 `build_project`。应用编译用的 FreeRDP/winpr 头文件在 `entry/src/main/cpp/thirdparty/`，
+  由 `build-freerdp.ps1` 调用 `sync-freerdp-headers.ps1` 生成（同样**不入库**）。
+  详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
 - 模拟器优先用于**与硬件加速无关**的功能/逻辑/UI 调试；**Vulkan/GPU 回放只在真机**。
 
 ## 目录速览

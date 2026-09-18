@@ -110,5 +110,9 @@ if (Test-Path $BuildConfig) {
   Write-Host "=== normalized $BuildConfig (no machine-local paths) ==="
 }
 
+# Keep the header set the app compiles against in sync. entry/src/main/cpp/
+# thirdparty/ is generated (gitignored), like entry/libs/<abi>/.
+& (Join-Path $PSScriptRoot "sync-freerdp-headers.ps1") -Arch $Arch
+
 Write-Host "=== FreeRDP installed to $Prefix ==="
 Get-ChildItem "$Prefix\lib" -Filter *.so* -ErrorAction SilentlyContinue | Select-Object Name, Length
