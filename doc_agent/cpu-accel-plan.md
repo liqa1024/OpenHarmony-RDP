@@ -59,10 +59,15 @@
 - 每个 region 把 `region->numTiles` 个 tile 划成 `numChunks = 宽度`（cap 至 tile 数与
   `HMRDP_TILE_CHUNKS = 64`）个任务，一个任务一个 home 区间；任务描述符
   `PROGRESSIVE_TILE_CHUNK_PARAM` 携带共享参数表、scratch 槽与 home 数组（补丁 20/21）。
+- **任务数按 region 的规模定**：`numChunks = min(宽度, numTiles / HMRDP_MIN_TILES_PER_WORKER)`，
+  cap 至 `HMRDP_TILE_CHUNKS = 64`（`hmrdp_region_chunks()`，补丁 21）。一个线程至少要拿到
+  `HMRDP_MIN_TILES_PER_WORKER` 个 tile 才值得被唤醒，所以**小 region 自动降档**：
+  `numChunks <= 1`（即 `numTiles < 2 × 阈值`）时直接走串行分支，连队列都不提交。
+  这是唯一的自适应点，也是唯一需要调的常数。
 - **划分 = home + 段尾块偷取**（唯一形态，没有对照档）：任务 h 的 home 区间为
-  `[h·N/K, (h+1)·N/K)`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 4` 个 tile 的块用
-  `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询偷取其他
-  home 的剩余块（同样按块领取）。尾部不均衡至多一块。**调用线程也是这些 home 之一的所有者**
+  `[h·N/K, (h+1)·N/K)`，K = `numChunks`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 4` 个
+  tile 的块用 `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询
+  偷取其他 home 的剩余块（同样按块领取）。尾部不均衡至多一块。**调用线程也是这些 home 之一的所有者**
   （§1），所以快的那一侧自然会多领。
 - **不变约束**：一个 tile 仍由单次 `progressive_process_tiles_tile_work_callback` 独占解码；
   划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素
@@ -104,28 +109,31 @@
   [`gfx-engine.md`](gfx-engine.md) §8.1 的口径比 `dec` 墙钟与 `par` 的 `work`/`wall`，
   **不要**为了 A/B 在树里留第二套路径。
 - **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
-  `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`。
+  `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_MIN_TILES_PER_WORKER = 8`（§2 的自适应阈值）。
 - **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、
   worker/串行侧拷贝像素、1/16 采样的 per-phase 拆相），由 `HmrdpSetProgSample` 门控（补丁 24）；
   `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。
   账目字段与判读纪律见 [`gfx-engine.md`](gfx-engine.md) §8。
 - **并行段账目「par」**（app 侧 `hmrdp_parallel.*`，与 `HmrdpSetProgSample` 同开同关）：在**任务边界**
-  计时，用**宽度 K**（本 region 生效的配置宽度，不是队列的 `max_concurrency`；调用方参与时为
-  `K − 1` 个 worker 加调用线程自己那一个）算容量，而不是用任务数：
+  计时，用**本 region 的 chunk 数**（`tasks`，也就是这个 region 实际选用的线程数：调用线程自己那个
+  加提交出去的那些）算容量：
 
   | 值 | 定义 | 量纲 |
   |---|---|---|
   | `wall` | 接收线程从开始提交到全部任务等完 | 真实时间 |
-  | `capacity` | `K × wall`：宽度提供的线程时间 | 折叠量 |
+  | `capacity` | `tasks × wall`：该 region 主动要的线程时间 | 折叠量 |
   | `work` | `Σ` 回调执行时长（即 tile 解码段，含 worker 侧合成拷贝） | 折叠量 |
-  | `idle` | `capacity − work`：没被用上的线程容量（导出量） | 折叠量 |
+  | `idle` | `capacity − work`：这份线程时间里没跑回调的部分（导出量） | 折叠量 |
   | `wait` | `Σ(任务开始 − 提交)`：任务排队延迟，**单列** | 折叠量 |
+  | `Kavg` | `capacity / wall`：按墙钟加权的平均实际线程数（导出量） | 折叠量 |
 
-  - **为什么按 K 不按任务数**：任一时刻在跑的回调 ≤ K（`K − 1` 个 worker 加调用线程自己那个）⇒
-    `work ≤ capacity` 恒成立、`idle` 恒非负，于是这套账目**与任务怎么切无关**——改任务粒度只改
-    `tasks`，不改 `capacity`/`work`/`idle` 的含义。逐任务的「提交前空闲 / 完成后空闲」只在任务数
-    == 宽度时才等于线程时间，这种把测量绑死在某一种划分上的口径不用。
+  - **为什么按 `tasks` 不按宽度**：任一时刻在跑的回调 ≤ `tasks`（提交出去的那些加调用线程自己那个）⇒
+    `work ≤ capacity` 恒成立、`idle` 恒非负。而 chunk 数本身就是**这条线唯一自适应的量**
+    （§2：region 越小开得越少），账目必须跟着它走，否则 `busy`/`idle` 会把"阈值故意没用满的宽度"
+    算成闲置。逐任务的「提交前空闲 / 完成后空闲」这类把测量绑死在某一种划分上的口径仍然不用。
+    ⚠ `tasks × wall` 是"**要了**多少线程时间"，不是"池子真给了多少"：池子给不出（自动宽度 = 在线
+    核数）时，要的那部分仍会被算进 `capacity`，体现为 `idle` 与 `wait` 一起变大。
   - **`wait` 不并进容量**：任务排队时 worker 正在跑别的任务，二者是同一段时间的两面 ⇒
     `work + wait` 可以超过 `capacity`。`work`/`idle` 才是线程账，`wait` 只作队列延迟读。
-  - **自检**：① `work ≤ capacity`（`idle` 为负 ⇒ K 取错，或回调被重复计时，例如提交失败回退到
-    接收线程内联执行）；② `work ≈ HmrdpProgStat[9]`（同一批回调的另一路折叠和，两路独立互证）。
+  - **自检**：① `work ≤ capacity`（`idle` 为负 ⇒ 回调被重复计时，例如提交失败回退到接收线程内联
+    执行）；② `work ≈ HmrdpProgStat[9]`（同一批回调的另一路折叠和，两路独立互证）。

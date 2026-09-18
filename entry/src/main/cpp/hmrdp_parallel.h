@@ -66,17 +66,18 @@ unsigned int HmrdpParallelTakeMaxConcurrency(void);
 // replay's `par` line (doc_agent/cpu-accel-plan.md §5). Every figure is timed at
 // the task boundary on the app side of the queue.
 //
-// The thread account needs the **configured width K**, never the task count and
-// never the queue's own maximum concurrency: at most K callbacks run at once -
-// K-1 workers plus the calling thread's own chunk - so the summed callback time
-// can never exceed K * wall. That bound is what makes
+// The thread account needs the region's **chunk count** (the `tasks` passed in),
+// never the queue's own maximum concurrency: at most `tasks` callbacks run at
+// once - the submitted ones plus the calling thread's own chunk - so the summed
+// callback time can never exceed `tasks * wall`. That bound is what makes
 //
 //   workNs <= capacityNs        (idleNs = capacityNs - workNs >= 0)
 //
-// hold for *any* decomposition, with or without caller participation. A finer or
-// coarser split, or a different claim scheme, changes `tasks` but not what
-// capacityNs/workNs mean - so the reading does not tie the measurement to one
-// particular task count.
+// hold for *any* decomposition. The chunk count is the decode's own decision -
+// the decoder derives it from the region's tile count (doc_agent/cpu-accel-plan.md
+// §2) - so the account follows how many threads the region actually asked for
+// instead of the width ceiling, and `capacityNs / wallNs` is the average of that
+// count.
 //
 // `waitNs` is deliberately **not** part of that account: it is the tasks' queue
 // latency, and a queued task overlaps with the work of the tasks already
@@ -90,7 +91,7 @@ struct HmrdpParallelStat {
   unsigned long long regions;  // regions dispatched on the queue (tasks > 1)
   unsigned long long tasks;    // task count summed over those regions
   unsigned long long wallNs;   // region wall clock summed (submit .. all waited)
-  unsigned long long capacityNs;  // K * wall summed: the thread time offered
+  unsigned long long capacityNs;  // tasks * wall summed: the thread time asked for
   unsigned long long workNs;   // summed callback time (worker busy)
   unsigned long long waitNs;   // summed queue latency (task start - submission)
 };

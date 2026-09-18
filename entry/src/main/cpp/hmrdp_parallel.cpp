@@ -221,17 +221,18 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
     }
   }
   if (probe && wallStartNs != 0) {
-    // capacity is K * wall with K = this region's *width* (the thread count the
-    // region may use), not the queue's max_concurrency: with the caller
-    // participating the queue offers width-1 workers, but the calling thread is
-    // the width-th, so at most `width` callbacks run at once either way. See
-    // HmrdpParallelStat for why neither the task count nor the queue limit is
-    // what the thread account is built on.
+    // capacity is `tasks * wall`: every chunk this region chose to run was
+    // available for the whole region, and at most `tasks` callbacks run at once
+    // (the caller's own chunk plus the submitted ones), so work <= capacity holds
+    // for any decomposition. It is the thread time this region *asked for* - 
+    // which is the region's own decision now (the decoder derives the chunk count
+    // from the region's size), so the account follows that decision instead of
+    // the width ceiling. See HmrdpParallelStat.
     const unsigned long long wallNs = NowNs() - wallStartNs;
     g_regions.fetch_add(1, std::memory_order_relaxed);
     g_tasks.fetch_add(tasks, std::memory_order_relaxed);
     g_wallNs.fetch_add(wallNs, std::memory_order_relaxed);
-    g_capacityNs.fetch_add(wallNs * static_cast<unsigned long long>(width),
+    g_capacityNs.fetch_add(wallNs * static_cast<unsigned long long>(tasks),
                            std::memory_order_relaxed);
   }
   return 0;

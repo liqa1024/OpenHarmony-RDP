@@ -211,11 +211,13 @@ Patch-Regex $progScratchC `
 		return -1;
 	}
 
-	if (hmrdp_decode_width() <= 1)
+	if (hmrdp_region_chunks(region->numTiles) <= 1)
 	{
-		/* Serial (width 1, or no platform executor): one call per tile, no task
-		 * submission. HmRdp dev: the tiles and the time spent decoding them are
-		 * counted here - the queue-path counters stay 0 on this branch. */
+		/* Serial: one call per tile, no task submission. Either there is no
+		 * platform executor (or a single-core machine), or the region is too
+		 * small to keep even two threads busy (hmrdp_region_chunks). HmRdp dev:
+		 * the tiles and the time spent decoding them are counted here - the
+		 * queue-path counters stay 0 on this branch. */
 		g_HmrdpTlsTileScratch = progressive->tileScratch;
 '@) '!hmrdp_alloc_tile_scratch(progressive))'
 

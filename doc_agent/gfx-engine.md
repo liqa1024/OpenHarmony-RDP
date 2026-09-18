@@ -219,7 +219,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   | `prog ms/frame: read / dispatch / dec / update  (calls= unions= tiles= tilesDec= ffrt=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**（并行时是并行段墙钟，串行时是本线程逐 tile；读前先看 `threads=`）、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数、`ffrt` = 走平台队列的 region 次数 |
   | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile。并行下 `sum` 是所有 worker 的时间之和（≈ `dec` × 有效宽度）⇒ **只读占比** |
   | `run … threads=… ffrt=… parRatio=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、平台队列实际派发的 region 次数（证明解码确实走了 ffrt）、**频不变并行效率**（worker 忙碌和 ÷ `dec` 墙钟）与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
-  | `par busy=…% idle=…% (regions= tasks= Kavg= wall= capacity= work= wait= wait/task=)` | 并行段的 **worker 侧账目**：`capacity = K×wall`（K = 本轮宽度）是宽度提供的线程时间，`work` = 回调执行时间和，`idle = capacity − work`。三者**与任务数无关**（任一时刻在跑的回调 ≤ K ⇒ `work ≤ capacity`）；`wait` 是任务排队延迟，**单列**（与在跑重叠，可超过 `capacity`）。除 `wall` 外都是**折叠量**。`work ≤ capacity` 是测量自检（`idle` 为负 = 测错）。口径见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §5 |
+  | `par busy=…% idle=…% (regions= tasks= Kavg= wall= capacity= work= wait= wait/task=)` | 并行段的 **worker 侧账目**：`capacity = tasks×wall`（`tasks` = 该 region 选用的线程数，由 `gfx` 侧的 tile 数阈值决定，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2）是这条 region **要的**线程时间，`work` = 回调执行时间和，`idle = capacity − work`，`Kavg = capacity/wall` = 按墙钟加权的平均实际线程数（**小于 `threads=` 就说明阈值在降档**，它也小于"池子真给了多少"）。`work ≤ capacity` 恒成立（任一时刻在跑的回调 ≤ `tasks`）；`wait` 是任务排队延迟，**单列**（与在跑重叠，可超过 `capacity`）。除 `wall` 外都是**折叠量**。`work ≤ capacity` 是测量自检（`idle` 为负 = 测错）。口径见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §5 |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
   | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |
@@ -387,6 +387,10 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
      否则"中性"可能只是"没跑"。
    - ⇒ 教训：**"看着像算力"的循环，先用一个逐位等价的 SIMD 版本试一次**——它是中性的就说明账在内存侧，
      该动的是数据流而不是指令。
+5. **"按预测的线程速度预先分配 home"** —— 移动 SoC 上线程间的吞吐确实差得大（最快/最慢 2 倍量级，
+   同一线程的快慢排序也大致稳定），但**偷取本来就主要发生在子线程之间、并已按速度把 tile 分出去**：
+   预先分配只改**起点**，实测对偷取占比没有显著改善。⇒ 划分继续用"等分 home + 段尾块偷取"，
+   **不要再引入线程速度预测/加权划分**（要动划分，先看 §8.6 的规模自适应那一条）。
 
 ### 8.6 已定型的约束（decode 侧）
 
@@ -399,3 +403,6 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   保证这两个缓冲最终内容不变（逐位等价），否则对拍会立刻显示出来。
 - **上屏侧的约束**（脏区形状、零拷贝桌面缓冲、等待点）见
   [`present-pipeline.md`](present-pipeline.md)。
+- **规模自适应只有一个点**：region 太小就降档甚至串行（`HMRDP_MIN_TILES_PER_WORKER`，
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §2）——小 region 上多开线程的收益低于每 region 的
+  提交/唤醒成本。

@@ -29,6 +29,28 @@ static INLINE UINT32 hmrdp_decode_width(void)
 	return HmrdpDecodeWidth != NULL ? HmrdpDecodeWidth() : 1u;
 }
 
+/* HmRdp: the least number of tiles a chunk must carry to be worth a thread of
+ * its own. The region's chunk count follows from it (hmrdp_region_chunks), so a
+ * region too small to keep even two threads busy stays on the receiving thread
+ * instead of paying the per-region submit/wake cost. This is the tuning point
+ * for that trade-off. */
+#define HMRDP_MIN_TILES_PER_WORKER 8
+
+/* HmRdp: how many chunks this region is worth - one per
+ * HMRDP_MIN_TILES_PER_WORKER tiles, never more than the decode width (or the
+ * chunk descriptor array). 0 means "do not split it": the caller then takes the
+ * serial branch. */
+static INLINE UINT32 hmrdp_region_chunks(UINT32 numTiles)
+{
+	UINT32 chunks = numTiles / HMRDP_MIN_TILES_PER_WORKER;
+	const UINT32 width = hmrdp_decode_width();
+	if (chunks > width)
+		chunks = width;
+	if (chunks > HMRDP_TILE_CHUNKS)
+		chunks = HMRDP_TILE_CHUNKS;
+	return chunks;
+}
+
 /* HmRdp: the platform task queue (ffrt), exported by the app
  * (hmrdp_parallel.*). Both stay unresolved on a build without it; the width
  * helper above then forces the serial branch. */
@@ -69,15 +91,11 @@ Patch-Regex $progParC `
 		 * tiles - a worker walks contiguous memory and the different homes are far
 		 * apart - and steals the other homes' remaining HMRDP_TILE_CLAIM blocks
 		 * once its own is done, so the tail is one block rather than one range.
-		 * The home count is the decode width, the receiving thread runs one of
-		 * them itself (hmrdp_parallel.* caller participation). */
-		UINT32 numChunks = hmrdp_decode_width();
-		if (numChunks < 1)
-			numChunks = 1;
-		if (numChunks > numTiles)
-			numChunks = numTiles;
-		if (numChunks > HMRDP_TILE_CHUNKS)
-			numChunks = HMRDP_TILE_CHUNKS;
+		 * The home count is what the region is worth (hmrdp_region_chunks: one per
+		 * HMRDP_MIN_TILES_PER_WORKER tiles, capped by the width), and the receiving
+		 * thread runs one of them itself (hmrdp_parallel.* caller participation),
+		 * so n homes use n threads. */
+		const UINT32 numChunks = hmrdp_region_chunks(numTiles);
 
 		_Alignas(64) volatile UINT32 homeNextArr[HMRDP_TILE_CHUNKS];
 		UINT32 homeLimitsArr[HMRDP_TILE_CHUNKS];
