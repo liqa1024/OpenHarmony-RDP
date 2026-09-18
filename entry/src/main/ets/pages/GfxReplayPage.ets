@@ -61,7 +61,10 @@ const DECODE_THREAD_LABEL: string[] = ['自动', '1', '2', '3', '4', '6', '8'];
 //   排队    - home split, plus width 1 is routed through the platform queue
 //              instead of the receiving thread's serial loop, to price the
 //              executor's own cost (see hmrdp_parallel.h)
-const PAR_MODE_LABEL: string[] = ['正常', '段+偷取', '排队'];
+//   不参与  - home split, but the calling thread does not run a chunk itself:
+//              the A/B control for caller participation (same decomposition and
+//              width, the chunk goes to the queue instead)
+const PAR_MODE_LABEL: string[] = ['正常', '段+偷取', '排队', '不参与'];
 
 class ReplaySurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =

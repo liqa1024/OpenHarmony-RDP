@@ -21,7 +21,7 @@
 | ZGX 解压、PDU 解析、命令分类 | 接收 |
 | 非像素命令（reset/create/fill/blit/cache…） | 接收 |
 | region 位流解析（`read`，填 tile 元数据） | 接收 |
-| **tile 解码 + tile 合成拷贝**（`dec`） | **ffrt（宽度个）** |
+| **tile 解码 + tile 合成拷贝**（`dec`） | **接收线程 1 个 + ffrt（宽度 − 1 个）** |
 | `update_tiles` 剩余部分（遍历 + 脏区记账，§4） | 接收 |
 | surface → primary 合成、present 提交 | 接收（GPU 侧另算） |
 
@@ -34,11 +34,19 @@
 - **唯一执行器 = 平台任务队列（ffrt 并发队列）**，由 app 的 `hmrdp_parallel.*` 提供，解码器经
   弱符号使用（补丁 11/21）：`HmrdpDecodeWidth()` 决定串行/并行分支；`HmrdpParallelAvailable()`
   / `HmrdpParallelRun(tasks, fn, ctx)` 提交与等待。符号不解析 ⇒ 宽度读作 1 ⇒ 串行。
-- 队列形态（`EnsureQueue`）：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度，队列与每个
+- 队列形态（`EnsureQueue`）：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度 − 1；队列与每个
   任务都带属性（name + `ffrt_qos_user_initiated`）；屏障 = 逐任务 handle `ffrt_queue_wait`。
   宽度变化时销毁重建队列（仅在无任务在途时发生）。
-- `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行；`tasks > 128` 拒绝；
-  单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
+- **调用方参与（caller participation）**：接收线程自己跑一个 chunk，队列只跑剩下 `宽度 − 1` 个
+  （先提交、再跑自己的、最后等屏障）。region 用的线程数仍是宽度个，差别是其中一个从"停在屏障里"
+  变成"干活"：没有线程在 tile 还可领取时空转；向 worker 池少要一个线程（自动档宽度 = 在线核数，
+  池子可能给不出那么多）；且这一份跑在接收线程自己的上下文里（cache 热、QoS 是它自己的），
+  而不是一个刚被唤醒的 worker 上。分块仍按 home + 段尾偷取，所以它做完自己的 home 会继续领块，
+  快的那一侧自然多领。
+- `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行（此时参与就是全量内联）；
+  `tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
+  **force-queue 探针（模式 2）不参与**——它保持"全部提交、调用方只等"的原形，否则它要量的
+  执行器代价正好被参与消除掉。
 - 任务体内原子计数同时刻在途回调数 ⇒ `HmrdpParallelTakeMaxConcurrency()` 给出实测最大并发
   （dev 读数）。
 - **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
@@ -102,10 +110,13 @@
 ## 5. dev 开关与读数
 
 - **运行时开关**（均 region 边界生效）：宽度（0/1/2..8）、划分模式 `ParallelMode`（1 默认 /
-  0 对照 / 2 = home + **宽度 1 也走队列**）。模式 2 是 dev 探针：补丁 26 让串行分支可被放行
-  （弱符号 `HmrdpParallelForceQueue()`），app 侧 `HmrdpParallelRun` 同时不再把单任务内联，
-  于是宽度 1 会以"并发 1 的队列上跑一个 task"执行，用来把执行器自身代价（提交 + 唤醒 + 等待）
-  与接收线程内联的串行分支对照。它不进正常运行路径（app 只在模式 2 返回非零）。
+  0 对照 / 2 = home + **宽度 1 也走队列** / 3 = home + **主线程不参与**）。模式 3 是调用方参与的
+  A/B 对照：同划分、同宽度，只把调用线程那一份交回队列（见 `HmrdpParallelRun`）。模式 2 是 dev
+  探针：补丁 26 让串行分支可被放行
+  （弱符号 `HmrdpParallelForceQueue()`），app 侧 `HmrdpParallelRun` 同时不再把单任务内联、
+  也不做调用方参与（保持"提交全部、调用方只等"），于是宽度 1 会以"并发 1 的队列上跑一个 task"
+  执行，用来把执行器自身代价（提交 + 唤醒 + 等待）与接收线程内联的串行分支对照。它不进正常运行
+  路径（app 只在模式 2 返回非零）。
 - **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
   `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_FFRT_TASKS = 16`。
 - **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、
@@ -113,7 +124,8 @@
   `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。
   账目字段与判读纪律见 [`gfx-engine.md`](gfx-engine.md) §8。
 - **并行段账目「par」**（app 侧 `hmrdp_parallel.*`，与 `HmrdpSetProgSample` 同开同关）：在**任务边界**
-  计时，用**并发上限 K**（= 队列 `max_concurrency` = 本 region 生效的宽度）算容量，而不是用任务数：
+  计时，用**宽度 K**（本 region 生效的配置宽度，不是队列的 `max_concurrency`；调用方参与时为
+  `K − 1` 个 worker 加调用线程自己那一个）算容量，而不是用任务数：
 
   | 值 | 定义 | 量纲 |
   |---|---|---|
@@ -123,10 +135,11 @@
   | `idle` | `capacity − work`：没被用上的线程容量（导出量） | 折叠量 |
   | `wait` | `Σ(任务开始 − 提交)`：任务排队延迟，**单列** | 折叠量 |
 
-  - **为什么按 K 不按任务数**：任一时刻在跑的回调 ≤ K ⇒ `work ≤ capacity` 恒成立、`idle` 恒非负，
-    于是这套账目**与任务怎么切无关**——改任务粒度、改划分（home+偷取 / 共享游标）只改 `tasks`，
-    不改 `capacity`/`work`/`idle` 的含义。逐任务的「提交前空闲 / 完成后空闲」只在任务数 == 宽度时
-    才等于线程时间，这种把测量绑死在某一种划分上的口径不用。
+  - **为什么按 K 不按任务数**：任一时刻在跑的回调 ≤ K（`K − 1` 个 worker 加调用线程自己那个）⇒
+    `work ≤ capacity` 恒成立、`idle` 恒非负，于是这套账目**与任务怎么切无关**——改任务粒度、改划分
+    （home+偷取 / 共享游标）只改 `tasks`，不改 `capacity`/`work`/`idle` 的含义。逐任务的
+    「提交前空闲 / 完成后空闲」只在任务数 == 宽度时才等于线程时间，这种把测量绑死在某一种划分上的
+    口径不用。
   - **`wait` 不并进容量**：任务排队时 worker 正在跑别的任务，二者是同一段时间的两面 ⇒
     `work + wait` 可以超过 `capacity`。`work`/`idle` 才是线程账，`wait` 只作队列延迟读。
   - **自检**：① `work ≤ capacity`（`idle` 为负 ⇒ K 取错，或回调被重复计时，例如提交失败回退到

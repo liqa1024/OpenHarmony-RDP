@@ -117,8 +117,11 @@ void SetDecodeThreads(int workers) {
 
 void SetParallelMode(int mode) {
   // 0 = shared cursor, 1 = home + tail steal (the default), 2 = home + route
-  // width 1 through the platform queue (dev probe, see hmrdp_parallel.h).
-  g_parallelMode = (mode == 1 || mode == 2) ? mode : 0;
+  // width 1 through the platform queue (dev probe, see hmrdp_parallel.h),
+  // 3 = home + tail steal **without** caller participation - the A/B control for
+  //     it: same decomposition, only the calling thread's chunk moves back to the
+  //     queue (see HmrdpParallelRun).
+  g_parallelMode = (mode >= 0 && mode <= 3) ? mode : 0;
   HMRDP_LOGI("decode parallel mode: %{public}s", DecodeThreadsInfo().c_str());
 }
 
@@ -165,7 +168,14 @@ std::string DecodeThreadsInfo() {
   const int perf = DecodePerfCores();
   char buf[200];
   const char* perfText = perf > 0 ? "known" : "unknown";
-  const char* modeText = g_parallelMode == 1 ? "home-steal" : "normal";
+  const char* modeText = "normal";
+  if (g_parallelMode == 1) {
+    modeText = "home-steal";
+  } else if (g_parallelMode == 2) {
+    modeText = "force-queue";
+  } else if (g_parallelMode == 3) {
+    modeText = "home-steal-no-participate";
+  }
   if (g_requested > 0) {
     std::snprintf(buf, sizeof(buf), "workers=%d (manual, mode=%s, perf-cores=%d[%s] cores=%d)",
                   DecodeThreads(), modeText, perf, perfText, cores);

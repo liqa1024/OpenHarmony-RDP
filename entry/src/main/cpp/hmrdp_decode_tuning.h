@@ -2,15 +2,17 @@
  * HmRdp - how wide the Progressive tile decode may run.
  *
  * The decode's executor is the platform task queue (a FFRT concurrent queue, see
- * hmrdp_parallel.*); its maximum concurrency is this value. There is no second
- * executor: a width of 1 decodes on the receiving thread, anything wider is
- * FFRT. Threads cannot be pinned to a core or a cluster here, so the knob
- * chooses the width, not where the work runs.
+ * hmrdp_parallel.*); this value is the number of threads one region may use. The
+ * calling thread runs one chunk itself (caller participation), so the queue's
+ * maximum concurrency is this value minus one. There is no second executor: a
+ * width of 1 decodes on the receiving thread, anything wider is FFRT. Threads
+ * cannot be pinned to a core or a cluster here, so the knob chooses the width,
+ * not where the work runs.
  *
  *  - `1` decodes on the receiving thread (no queue at all: no submission, no
  *    wake-up, no wait).
  *  - `0` (automatic) is the whole machine, capped by kAutoCap.
- *  - `n > 1` sets the queue's maximum concurrency to `n`.
+ *  - `n > 1` uses `n` threads: the calling thread plus `n - 1` queue workers.
  *
  * The value is process-wide and applies to the live session and the offline
  * replay alike; the patched decoder reads it through HmrdpDecodeWidth() and

@@ -10,7 +10,15 @@
  *    A concurrent queue has an explicit maximum concurrency, which is what the
  *    settings' worker count maps to ("并发度...同时也对应 FFRT Worker 数量"), so the
  *    width stays under our control instead of being left to whatever the global
- *    pool happens to run.
+ *    pool happens to run. The limit is the width **minus one**: the calling
+ *    thread runs one chunk itself (caller participation, see below).
+ *  - **caller participation**: the calling (receiving) thread runs one chunk
+ *    while the queue runs the rest, and only then waits. The region still uses
+ *    `width` threads, but one of them is the thread that would otherwise sit in
+ *    the barrier - so no thread is idle while tiles are claimable, one fewer
+ *    worker is asked of the pool, and the caller's share runs in the receiving
+ *    thread's own context (warm caches, its QoS) instead of a freshly woken
+ *    worker's.
  *  - tasks carry a **task attribute** with a name and an explicit QoS. Without
  *    one a task gets the default QoS, whose core class is not the one the
  *    frame-delivery critical path wants.
@@ -39,7 +47,8 @@ int HmrdpParallelAvailable(void);
 // Dev probe read by the patched decoder: non-zero routes the width-1 case through
 // the platform queue (one task on a concurrency-1 queue) instead of the receiving
 // thread's serial loop, so the executor's own cost can be measured against it
-// (see HmrdpParallelRun). Off in normal operation.
+// (see HmrdpParallelRun). Off in normal operation; while it is on, the queue
+// keeps the "submit everything, the caller only waits" shape.
 int HmrdpParallelForceQueue(void);
 
 // The configured decode width (>= 1). The patched decoder reads this to choose
@@ -47,11 +56,12 @@ int HmrdpParallelForceQueue(void);
 // so a settings change takes effect at the next Progressive region.
 unsigned int HmrdpDecodeWidth(void);
 
-// Runs fn(ctx, i) for i in [0, tasks) on the platform concurrent queue and
-// returns once all of them have finished. The queue's maximum concurrency is the
-// configured decode worker count. Returns 0 on success; non-zero means the caller
-// must fall back to its own executor. `fn` is a plain function pointer because
-// the caller is C.
+// Runs fn(ctx, i) for i in [0, tasks) and returns once all of them have finished.
+// The calling thread runs one of the chunks itself and the queue runs the rest
+// (caller participation), so the region uses the configured width's worth of
+// threads while the queue's maximum concurrency is only width-1. Returns 0 on
+// success; non-zero means the caller must fall back to its own executor. `fn` is
+// a plain function pointer because the caller is C.
 int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* ctx);
 
 // Dev read-out: the highest number of callbacks that were inside fn at the same
@@ -63,15 +73,17 @@ unsigned int HmrdpParallelTakeMaxConcurrency(void);
 // replay's `par` line (doc_agent/cpu-accel-plan.md §5). Every figure is timed at
 // the task boundary on the app side of the queue.
 //
-// The thread account needs the queue's **concurrency limit K** (the configured
-// width), never the task count: at most K callbacks run at once, so the summed
-// callback time can never exceed K * wall. That bound is what makes
+// The thread account needs the **configured width K**, never the task count and
+// never the queue's own maximum concurrency: at most K callbacks run at once -
+// K-1 workers plus the calling thread's own chunk - so the summed callback time
+// can never exceed K * wall. That bound is what makes
 //
 //   workNs <= capacityNs        (idleNs = capacityNs - workNs >= 0)
 //
-// hold for *any* decomposition. A finer or coarser split, or a different claim
-// scheme, changes `tasks` but not what capacityNs/workNs mean - so the reading
-// does not tie the measurement to one particular task count.
+// hold for *any* decomposition, with or without caller participation. A finer or
+// coarser split, or a different claim scheme, changes `tasks` but not what
+// capacityNs/workNs mean - so the reading does not tie the measurement to one
+// particular task count.
 //
 // `waitNs` is deliberately **not** part of that account: it is the tasks' queue
 // latency, and a queued task overlaps with the work of the tasks already
