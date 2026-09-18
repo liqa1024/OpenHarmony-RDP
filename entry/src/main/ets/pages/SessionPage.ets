@@ -49,6 +49,10 @@ const PINCH_TOUCH_ID_B: number = 21;
 // high-rate option the interval is 0, so the delay is a no-op in practice) and
 // is far below the time Windows needs to recognise a pinch.
 const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
+// Direction dead zone for the pinch locator cursor: the gesture ratio must move
+// this far past 1.0 before the open/grab hand flips, so a jitter around the start
+// does not make the cursor flicker between the two.
+const PINCH_CURSOR_HYSTERESIS: number = 0.02;
 
 // Toolbar throughput below this is idle/keep-alive noise, so it is not shown.
 const MIN_BANDWIDTH_BYTES: number = 1024;
@@ -198,6 +202,13 @@ struct SessionPage {
   private pinchAsTouch: boolean = false;
   private pinchTouchDistance: number = DEFAULT_PINCH_DISTANCE_PERCENT;
   private touchPinchActive: boolean = false;
+  // While a synthetic-touch pinch is running the OS hides the mouse pointer (a
+  // touch is in progress), which would leave the user with no aim point. With the
+  // RDP cursor on, the system cursor is swapped to a native hand for the duration
+  // so the pinch anchor stays visible: open hand while spreading (zoom in), grab
+  // hand while closing (zoom out).
+  private touchPinchCursor: boolean = false;
+  private touchPinchZoomIn: boolean = true;
   private touchPinchAnchor: number[] = [0, 0];
   private touchPinchHalf: number = MIN_PINCH_HALF;
   private touchPinchLastHalf: number = MIN_PINCH_HALF;
@@ -743,6 +754,24 @@ struct SessionPage {
       if (windowId < 0) {
         return;
       }
+      if (this.touchPinchCursor) {
+        // Locator for the synthetic touch pinch: touch activity hides the pointer,
+        // and the remote cursor bitmap would not be shown either, so a built-in
+        // hand keeps the anchor visible and shows the gesture direction -
+        // spreading (zoom in) is the open hand, closing (zoom out) the grab hand.
+        pointer.setPointerVisibleSync(true);
+        // A style the device does not implement must not take the whole cursor
+        // path down (the outer catch disables it for the session), so fall back to
+        // the plain arrow locally.
+        try {
+          pointer.setPointerStyleSync(windowId, this.touchPinchZoomIn
+            ? pointer.PointerStyle.HAND_OPEN
+            : pointer.PointerStyle.HAND_GRABBING);
+        } catch (styleError) {
+          pointer.setPointerStyleSync(windowId, pointer.PointerStyle.DEFAULT);
+        }
+        return;
+      }
       if (this.cursorHidden) {
         pointer.setPointerVisibleSync(false);
         return;
@@ -765,6 +794,7 @@ struct SessionPage {
   /** Restores the default arrow after the session stops driving the cursor. */
   private resetCursor(): void {
     this.cursorHidden = false;
+    this.touchPinchCursor = false;
     this.cursorPixelMap = undefined;
     this.applyCursor();
   }
@@ -1424,9 +1454,15 @@ struct SessionPage {
     this.touchPinchUnitX = Math.cos(radians);
     this.touchPinchUnitY = Math.sin(radians);
     this.touchPinchActive = true;
+    // Keep an aim point while the synthetic contacts are down (the OS hides the
+    // pointer during touch) - only meaningful with the RDP cursor on. Start on the
+    // open hand and let the direction pick between the two.
+    this.touchPinchCursor = true;
+    this.touchPinchZoomIn = true;
     // axisPinch is already relative to the gesture start (1.0); apply the
     // initial sample so a late first event does not drop the first movement.
     this.updateTouchPinch(scale);
+    this.applyCursor();
     this.sendTouchPinchContacts(RdpTouchFlags.DOWN);
     // Let the DOWN frame flush before the first MOTION can overwrite it.
     this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
@@ -1441,6 +1477,15 @@ struct SessionPage {
     const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO, scale));
     this.touchPinchLastHalf =
       Math.max(MIN_PINCH_HALF, Math.round(this.touchPinchHalf * ratio));
+    // Flip the locator between open (spreading, zoom in) and grab (closing, zoom
+    // out) hand only past the dead zone, and only when it actually changes - a
+    // per-motion pointer-style call would be a syscall per axis event.
+    const zoomIn: boolean = ratio > 1 + PINCH_CURSOR_HYSTERESIS
+      ? true : (ratio < 1 - PINCH_CURSOR_HYSTERESIS ? false : this.touchPinchZoomIn);
+    if (zoomIn !== this.touchPinchZoomIn) {
+      this.touchPinchZoomIn = zoomIn;
+      this.applyCursor();
+    }
   }
 
   private sendTouchPinchContacts(flags: number): void {
@@ -1465,6 +1510,8 @@ struct SessionPage {
     }
     this.touchPinchActive = false;
     this.sendTouchPinchContacts(RdpTouchFlags.UP);
+    this.touchPinchCursor = false;
+    this.applyCursor();
   }
 
   private setPinchCtrl(down: boolean): void {
