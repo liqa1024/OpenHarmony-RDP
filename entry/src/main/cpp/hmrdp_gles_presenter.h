@@ -40,6 +40,10 @@ class GlesPresenter : public FramePresenter {
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
                    const PresentRect* rects, int rectCount) override;
   void Reset() override;
+  // Blocked part of the presents since the last call: the time eglSwapBuffers
+  // spent waiting for the display (it can block on the compositor/vsync). See
+  // hmrdp_presenter.h.
+  uint64_t TakePresentWaitUs() override;
 
  private:
   bool EnsureContext();
@@ -72,6 +76,9 @@ class GlesPresenter : public FramePresenter {
   // A (re)created texture starts empty: the next frame must cover the whole
   // desktop even when the server's dirty rectangle only covers part of it.
   bool forceFullUpload_ = true;
+  // Blocked part (eglSwapBuffers) of the presents since the last
+  // TakePresentWaitUs. Guarded by mutex_ like the rest of the surface state.
+  uint64_t presentWaitUs_ = 0;
 };
 
 }  // namespace hmrdp

@@ -364,10 +364,13 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
     `gap` 退化成前一条的**服务时间上界**。典型观测形状：到达侧被塑形成**持续带宽 + 突发额度的令牌桶**
     （逐条速率与载荷大小基本无关），于是 `fps ≈ 带宽预算 / 每帧字节数`——
     **"低 fps"是到达侧的字节预算问题，不是解码/上屏算力问题**。
-  - **判据**：live 每秒的 `perf:` 行与工具栏一起看即可当场判定——**本机 ≈ 1000/fps** 就是客户端触顶；
-    本机 ≪ 帧周期、duty 只有个位数百分比 ⇒ 客户端在等数据，闸门在到达侧。
-- **live 与回放的逐相对照**（"本机为什么 live 比回放慢"唯一可靠的判定方式）：两者的 `perFrame`/`本机`
-  **同源同义**（同一个计量器、同一批钩子、同样的分母），可以并排比。
+  - **判据**：live 每秒的 `perf:` 行与工具栏一起看即可当场判定——**四个工作相位之和（= 工具栏的本机）≈
+    1000/fps** 就是客户端触顶；它 ≪ 帧周期、duty 只有个位数百分比 ⇒ 客户端在等数据，闸门在到达侧。
+- **live 与回放的逐相对照**（"本机为什么 live 比回放慢"唯一可靠的判定方式）：两者的 `perFrame` 拆相与
+  工具栏 `本机` **同源同义**（同一个计量器、同一批钩子、同样的分母；`本机` 就是四个工作相位之和，在展示
+  端相加，计量器本身不存这个总数），可以并排比。
+  **网络等待不在任何相位里**（到达戳取在完整 chunk 之后、ZGX 解压之前），所以 live 相位偏大只可能来自
+  **低频/被调度/缓存冷**——即下面 §8.3 的频率效应，而不是"把 RTT 算进去了"。
   **判读顺序**：① 先比 `kB/frame`、`cmds/frame`——低 fps 的 live 每帧扛的是累积变化，内容不同就没有
   可比性；② 内容对得上再比相位：`decode` 差得多 ⇒ 频率/缓存/被别的活抢 CPU；`zgx+parse` 差得多
   ⇒ 解压/解析；`compose`/`present` 差得多 ⇒ 合成/上屏。**同一份录像用 `realtime` 回放**是把两者对齐的
@@ -428,7 +431,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 
   | 行 | 含义 |
   |---|---|
-  | `perFrame 本机=… = zgx+parse + decode + compose + present  (+ sync … blocked)` | **本机 = 处理时间**；各拆相相加**等于**本机，`sync` **不计入**（见下） |
+  | `perFrame work=… = zgx+parse + decode + compose + present  (+ sync … + presentWait … blocked)` | 每帧的四个工作相位；`work` 是它们在**展示端**相加的结果（计量器只产子项，不存总数），`本机` 用的就是这个和；`sync`/`presentWait` 是阻塞时间（等 GPU 缓冲 / 等显示端），**不计入**（见下） |
   | `prog ms/frame: read / dispatch / dec(blocked) / update  (calls= unions= tiles= tilesDec=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数 |
   | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile |
   | `run … threads=… cpu=…s  cpuKHz=…` | 该轮的 worker 数与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
@@ -440,7 +443,10 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
   **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`present-pipeline.md`](present-pipeline.md) §1）。
-  它是**阻塞**不是处理 ⇒ 单列；**帧的整段墙钟 = `本机` + `sync`**（回放再加节拍睡眠）。
+- **`presentWait` = 等显示端**：`present` 那一段里 `vkAcquireNextImageKHR`/fence（GLES 是
+  `eglSwapBuffers`）的阻塞。`present` 只记录制/上传/提交，两者相加才是 present 的整段墙钟。
+- 两者都是**阻塞**不是处理 ⇒ 单列、都不进 `本机`；**帧的整段墙钟 = `本机` + `sync` + `presentWait`**
+  （回放再加节拍睡眠）。
   - ⚠ **这笔等待天然落在 `zgx+parse` 的窗口里**：帧首钩子（`StartFrame` / 帧内第一条表面命令）在
     `AccountChunkPrefix()` **之前**跑，而抓取的"一条记录"通常就是一整帧的 ZGX 段 ⇒ 该窗口覆盖了这次等待。
     所以测点必须把它交出来（`OnBlockedBeforeFrameWork()`）：不交，`本机` 就把它算两遍、在 GPU 成为慢的

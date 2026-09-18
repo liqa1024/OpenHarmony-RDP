@@ -43,11 +43,14 @@ enum class SessionEvent {
   // carries the HTML fragment; Image carries "<w>,<h>|<base64 BGRA>".
   kClipboardHtml = 9,
   kClipboardImage = 10,
-  // Per-second session telemetry: "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|
-  // <audioRateHz>|<audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|
-  // <presentUs>|<bytesPerFrame>|<dutyPermille>|<cmdsPerFrame>|<syncUs>". rttMs is
-  // -1 while the server has not reported network characteristics; the fields from
-  // index 7 on are the per-frame breakdown of 本机 (see EmitMetrics).
+  // Per-second session telemetry: "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|
+  // <audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|
+  // <dutyPermille>|<cmdsPerFrame>|<syncUs>|<presentWaitUs>". rttMs is -1 while the
+  // server has not reported network characteristics. There is no pre-summed
+  // client-work total: from index 6 on are the per-frame phases and the blocked
+  // sub-items, and each reader adds the ones it wants - the toolbar sums the four
+  // work phases; `syncUs` and `presentWaitUs` are blocked and stay out
+  // (see EmitMetrics).
   kMetrics = 11,
 };
 
@@ -183,9 +186,10 @@ class Session {
  private:
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
-  // Frame telemetry shared by every present path. `presentUs` is the present
-  // duration already measured by the shared frame host.
-  void AfterPresent(uint64_t presentUs);
+  // Frame telemetry shared by every present path. The present's own meter phases
+  // are fed by the shared frame host (hmrdp_gfx_cpu.h), so this only does the
+  // per-frame bookkeeping.
+  void AfterPresent();
   // Samples RTT / frame rate / transport throughput and emits kMetrics.
   void EmitMetrics();
 

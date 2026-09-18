@@ -184,14 +184,24 @@ bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInf
   }
   const uint64_t startUs = static_cast<uint64_t>(NowUs());
   const bool presented = PresentGdiFrame(gdi, presenter_, info);
-  const uint64_t us = static_cast<uint64_t>(NowUs()) - startUs;
+  const uint64_t spanUs = static_cast<uint64_t>(NowUs()) - startUs;
+  // Split the present into work (record/upload/submit) and the blocked part (the
+  // presenter waited for the display). Only the work half goes into the meter's
+  // `present`; the wait is its own blocked sub-item, so a reader summing the work
+  // phases does not charge display backpressure to the client (hmrdp_gfx_work.h).
+  const uint64_t waitUs = presenter_->TakePresentWaitUs();
+  const uint64_t presentWorkUs = spanUs > waitUs ? spanUs - waitUs : 0;
+  if (meter_ != nullptr) {
+    meter_->OnPresent(presentWorkUs);
+    meter_->OnPresentWait(waitUs);
+  }
   if (presentUs != nullptr) {
-    *presentUs = us;
+    *presentUs = spanUs;
   }
   // The owner accounts for the frame even when the presenter had nothing to draw
   // (the replay tells skips from failures); the live session ignores those.
   if (presentedFn_) {
-    presentedFn_(presented, us, info != nullptr ? *info : PresentUploadInfo{});
+    presentedFn_(presented, spanUs, info != nullptr ? *info : PresentUploadInfo{});
   }
   return presented;
 }

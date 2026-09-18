@@ -72,6 +72,10 @@ class VkRenderer : public FramePresenter {
   void BeginDesktopBufferWrite() override;
   void ReleaseDesktopBuffer() override;
   bool usesDesktopBuffer() const override;
+  // Blocked part of the presents since the last call: the fence wait +
+  // vkAcquireNextImageKHR in AcquireFrameLocked (waiting for a swapchain image is
+  // display backpressure, not client work). See hmrdp_presenter.h.
+  uint64_t TakePresentWaitUs() override;
 
   void Reset() override;
 
@@ -193,6 +197,9 @@ class VkRenderer : public FramePresenter {
   // Presents reached the screen since construction. Logged periodically so a
   // long real-device run is verifiable from hilog alone (no UI needed).
   uint64_t presentCount_ = 0;
+  // Blocked part (fence wait + acquire) of the presents since the last
+  // TakePresentWaitUs. Guarded by mutex_ like the rest of the present state.
+  uint64_t presentWaitUs_ = 0;
 
   // CPU frame path: the accumulated desktop picture the dirty rects are uploaded
   // into. It is kept in VK_IMAGE_LAYOUT_GENERAL for its whole life, so no layout

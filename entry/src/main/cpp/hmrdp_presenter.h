@@ -84,6 +84,15 @@ class FramePresenter {
   // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/present-pipeline.md §4.5).
   virtual bool usesDesktopBuffer() const { return false; }
 
+  // Microseconds of the presents since the last call that were spent *blocked* on
+  // the display rather than working: waiting for a swapchain image
+  // (vkAcquireNextImageKHR) or for the buffer swap (eglSwapBuffers). The host
+  // reports it as the blocked `presentWait` sub-item, which the live toolbar
+  // leaves out of 本机 - it is display backpressure, not client work (the rest of
+  // the present, recording/submitting, is `present`). 0 for a backend with no
+  // such wait.
+  virtual uint64_t TakePresentWaitUs() { return 0; }
+
   // Called from the FreeRDP worker thread. `data` is the whole desktop frame
   // (top-down BGRA, `srcStride` bytes/row), `desktopWidth/Height` the desktop
   // dimensions used for the letterbox, and `rects`/`rectCount` the regions that

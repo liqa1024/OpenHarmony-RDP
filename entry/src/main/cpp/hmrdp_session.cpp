@@ -1534,9 +1534,9 @@ Session::Session()
   // The live observer on the same chain the replay uses: account for a frame that
   // actually reached the surface (telemetry / input response / first frame).
   frameHost_->SetPresentedFn(
-      [this](bool presented, uint64_t presentUs, const PresentUploadInfo&) {
+      [this](bool presented, uint64_t, const PresentUploadInfo&) {
         if (presented) {
-          AfterPresent(presentUs);
+          AfterPresent();
         }
       });
   EnsureEntryPoints();
@@ -1611,51 +1611,59 @@ void Session::EmitMetrics() {
   const uint32_t fps = static_cast<uint32_t>(
       static_cast<double>(frames - lastFrameCount_) / seconds + 0.5);
 
-  // "本机" = the client's whole per-frame work, per phase (see hmrdp_gfx_work.h):
-  // ZGX decompress + RDPGFX parse, image decode (which carries the codec's own
-  // re-composite), the gdi surface->primary compose and the present. Averaged
-  // over the frames the server ended, not over presents: a frame owns this work
-  // and its size is decided by the arrival cadence, so dividing by presents
-  // would make the figure move with the network rate. The phases are kept apart
-  // because the decode share scales with what the frame carries and the
-  // compose/present shares with the desktop size
+  // Per-frame client work, kept per phase (see hmrdp_gfx_work.h): ZGX decompress
+  // + RDPGFX parse, image decode (which carries the codec's own re-composite), the
+  // gdi surface->primary compose and the present. Averaged over the frames the
+  // server ended, not over presents: a frame owns this work and its size is
+  // decided by the arrival cadence, so dividing by presents would make the figure
+  // move with the network rate. There is no pre-summed total anywhere: the phases
+  // carry different kinds of time, and each reader adds the ones it wants - the
+  // toolbar sums the four work phases and leaves the blocked `sync` out
   // (doc_agent/session-and-input.md §3).
   const GfxWorkMeter::Sample work = meter_.Drain();
   const uint64_t framesDone = work.frames;
   auto perFrame = [framesDone](uint64_t value) {
     return framesDone > 0 ? value / framesDone : 0;
   };
-  const uint64_t localAvgUs = perFrame(work.WorkUs());
   const uint64_t perFrameZgxUs = perFrame(work.zgxParseUs);
   const uint64_t perFrameDecodeUs = perFrame(work.decodeUs);
   const uint64_t perFrameComposeUs = perFrame(work.composeUs);
   const uint64_t perFramePresentUs = perFrame(work.presentUs);
+  const uint64_t perFramePresentWaitUs = perFrame(work.presentWaitUs);
   const uint64_t perFrameSyncUs = perFrame(work.syncUs);
   const uint64_t perFrameBytes = perFrame(work.bytes);
   const uint64_t perFrameCommands = perFrame(work.commands);
+  // The four work phases' per-frame sum: the same thing the toolbar shows as 本机.
+  // `sync` is blocked time, not work, and is deliberately not in it.
+  const uint64_t perFrameWorkUs = perFrameZgxUs + perFrameDecodeUs + perFrameComposeUs +
+                                  perFramePresentUs;
   // Duty cycle: how much of this window's wall clock the client actually spent
   // working. Small next to 1000 ‰ means the client is waiting on the far side.
   const uint64_t windowUs = static_cast<uint64_t>(elapsedMs) * 1000;
   const uint32_t dutyPermille =
-      windowUs > 0 ? static_cast<uint32_t>(work.WorkUs() * 1000 / windowUs) : 0;
+      windowUs > 0
+          ? static_cast<uint32_t>((work.zgxParseUs + work.decodeUs + work.composeUs +
+                                   work.presentUs) * 1000 / windowUs)
+          : 0;
   if (framesDone > 0) {
     // One line, split per phase so a slow one is attributable at a glance, plus
     // the normalization that makes it comparable with a replay of the same
-    // stream. The ack FreeRDP writes after this frame is not part of it (it
-    // happens after the EndFrame callback returns).
-    HMRDP_LOGI("perf: 本机 %{public}llu us/frame (max %{public}llu) = zgx+parse %{public}llu"
-               " + decode %{public}llu + compose %{public}llu + present %{public}llu"
-               " + sync %{public}llu"
+    // stream. `sync` is printed next to the phases but is blocked, not work. The
+    // ack FreeRDP writes after this frame is not part of any of it (it happens
+    // after the EndFrame callback returns).
+    HMRDP_LOGI("perf: work %{public}llu us/frame = zgx+parse %{public}llu + decode %{public}llu"
+               " + compose %{public}llu + present %{public}llu"
+               " (+ sync %{public}llu + presentWait %{public}llu blocked)"
                " (frames=%{public}llu presents=%{public}u frames/s=%{public}llu"
                " cmds/frame=%{public}llu kB/frame=%{public}llu duty=%{public}u.%{public}u%%"
                " rx=%{public}lluB/s fps=%{public}u)",
-               static_cast<unsigned long long>(localAvgUs),
-               static_cast<unsigned long long>(work.maxFrameUs),
+               static_cast<unsigned long long>(perFrameWorkUs),
                static_cast<unsigned long long>(perFrameZgxUs),
                static_cast<unsigned long long>(perFrameDecodeUs),
                static_cast<unsigned long long>(perFrameComposeUs),
                static_cast<unsigned long long>(perFramePresentUs),
                static_cast<unsigned long long>(perFrameSyncUs),
+               static_cast<unsigned long long>(perFramePresentWaitUs),
                static_cast<unsigned long long>(framesDone), frames - lastFrameCount_,
                static_cast<unsigned long long>(
                    static_cast<double>(framesDone) / seconds + 0.5),
@@ -1702,16 +1710,18 @@ void Session::EmitMetrics() {
     rtt = static_cast<int32_t>(measured);
   }
 
-  // Fields 0..6 are the toolbar's contract (see RdpModels.ets); the rest are the
-  // per-frame breakdown of 本机 in microseconds plus the normalization that keeps
-  // it readable across frame rates (commands and bytes per frame, and the duty
-  // cycle in ‰).
+  // Fields 0..5 are the toolbar's contract (see RdpModels.ets); the rest are the
+  // per-frame work in microseconds, phase by phase, plus the normalization that
+  // keeps it readable across frame rates (commands and bytes per frame, and the
+  // duty cycle in ‰), and the blocked `sync`/`presentWait` at the end. No
+  // pre-summed total: the UI adds the phases it shows and skips the blocked ones.
   std::ostringstream payload;
-  payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps << "|" << localAvgUs
+  payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps
           << "|" << audioRateHz << "|" << audioLossBp
           << "|" << perFrameZgxUs << "|" << perFrameDecodeUs << "|" << perFrameComposeUs
           << "|" << perFramePresentUs << "|" << perFrameBytes << "|" << dutyPermille
-          << "|" << perFrameCommands << "|" << perFrameSyncUs;
+          << "|" << perFrameCommands << "|" << perFrameSyncUs
+          << "|" << perFramePresentWaitUs;
   Emit(SessionEvent::kMetrics, payload.str());
 }
 
@@ -2053,11 +2063,10 @@ void Session::HandleEndPaint() {
   (void)frameHost_->OnEndPaint(gdi, &presentUs, nullptr);
 }
 
-void Session::AfterPresent(uint64_t presentUs) {
-  // Charged to the frame being handled: the present runs inside the GFX
-  // EndFrame (gdi_OutputUpdate -> update_end_paint), so the meter's OnFrameEnd
-  // consumes it when the frame closes. Measured once, by the shared frame host.
-  meter_.OnPresent(presentUs);
+void Session::AfterPresent() {
+  // The frame's present is charged to the meter by the shared frame host itself
+  // (work and blocked halves), so that the live session and the replay cannot
+  // report it differently; this only does the per-frame bookkeeping.
   frameCount_.fetch_add(1);
 
   if (!firstFrameSent_) {

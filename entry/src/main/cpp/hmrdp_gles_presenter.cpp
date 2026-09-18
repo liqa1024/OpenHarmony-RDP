@@ -3,12 +3,19 @@
  */
 #include "hmrdp_gles_presenter.h"
 
+#include <chrono>
 #include <mutex>
 
 #include "hmrdp_log.h"
 
 namespace hmrdp {
 namespace {
+
+uint64_t NowUs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 // The EGL display is process-wide and initialised once; it is never terminated
 // (the same rule the old EGL helper followed).
@@ -376,8 +383,19 @@ bool GlesPresenter::PresentBgra(const uint8_t* data, int srcStride, int desktopW
   glClear(GL_COLOR_BUFFER_BIT);
   UpdateViewport();
   DrawQuad(texture_);
+  // A buffer swap can block on the compositor: that is display backpressure, not
+  // client work, so it is accumulated separately (hmrdp_presenter.h).
+  const uint64_t swapStartUs = NowUs();
   eglSwapBuffers(display_, surface_);
+  presentWaitUs_ += NowUs() - swapStartUs;
   return true;
+}
+
+uint64_t GlesPresenter::TakePresentWaitUs() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const uint64_t us = presentWaitUs_;
+  presentWaitUs_ = 0;
+  return us;
 }
 
 }  // namespace hmrdp

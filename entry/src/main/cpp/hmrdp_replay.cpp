@@ -708,26 +708,31 @@ std::string GfxReplay::StatsLines() {
     out += up;
   }
 
-  // Per-frame client work, measured exactly like the live session's "本机"
-  // (hmrdp_gfx_work.h): same hooks, same phases, same denominator. Only the CPU
+  // Per-frame client work, measured exactly like the live session's phases
+  // (hmrdp_gfx_work.h): same hooks, same sub-items, same denominator. Only the CPU
   // route installs the meter - it is the one that mirrors live (gdi) - so this
-  // line is where a live session's toolbar figure can be checked against a
-  // replay of the same stream. Whole-run totals, not a per-second window.
+  // line is where a live session's phase figures can be checked against a replay
+  // of the same stream. Whole-run totals, not a per-second window. The meter keeps
+  // no aggregate, so the per-frame work sum is added here (the four work phases;
+  // `sync` stays out, it is blocked time).
   const GfxWorkMeter::Sample work = meter_.Peek();
   if (work.frames > 0) {
     const uint64_t frames = work.frames;
+    const uint64_t workUs =
+        (work.zgxParseUs + work.decodeUs + work.composeUs + work.presentUs) / frames;
     char wl[400];
     std::snprintf(wl, sizeof(wl),
-                  "\nperFrame 本机=%lluus (max %lluus) = zgx+parse %lluus + decode %lluus"
-                  " + compose %lluus + present %lluus  (+ sync %lluus blocked)\n"
+                  "\nperFrame work=%lluus = zgx+parse %lluus + decode %lluus"
+                  " + compose %lluus + present %lluus"
+                  "  (+ sync %lluus + presentWait %lluus blocked)\n"
                   "         frames=%llu cmds/frame=%llu kB/frame=%llu",
-                  static_cast<unsigned long long>(work.WorkUs() / frames),
-                  static_cast<unsigned long long>(work.maxFrameUs),
+                  static_cast<unsigned long long>(workUs),
                   static_cast<unsigned long long>(work.zgxParseUs / frames),
                   static_cast<unsigned long long>(work.decodeUs / frames),
                   static_cast<unsigned long long>(work.composeUs / frames),
                   static_cast<unsigned long long>(work.presentUs / frames),
                   static_cast<unsigned long long>(work.syncUs / frames),
+                  static_cast<unsigned long long>(work.presentWaitUs / frames),
                   static_cast<unsigned long long>(frames),
                   static_cast<unsigned long long>(work.commands / frames),
                   static_cast<unsigned long long>(work.bytes / frames / 1024));
@@ -1456,12 +1461,12 @@ bool GfxReplay::OnCpuFramePre() {
 
 void GfxReplay::OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t presentUs,
                                   const PresentUploadInfo& upload) {
-  // The zero-copy wait (`sync`) and the present itself were measured once, in the
-  // shared GdiFrameHost the live session also uses; this only dispatches the same
-  // figure to the replay's reports (the route-agnostic `present=` line and the
-  // live-comparable `本机` phase). No timing is duplicated here (hmrdp_gfx_cpu.h).
+  // The present (its work and blocked halves), the zero-copy `sync` and the
+  // phases are all measured once, in the shared GdiFrameHost the live session also
+  // uses; this only dispatches the same figure to the replay's own report line
+  // (the route-agnostic `present=`, which is the whole present span). No timing is
+  // duplicated here (hmrdp_gfx_cpu.h).
   RecordPresent(presentUs);
-  meter_.OnPresent(presentUs);
   uploadBytes_.fetch_add(static_cast<uint64_t>(upload.uploadedBytes));
   uploadBoxBytes_.fetch_add(static_cast<uint64_t>(upload.boxBytes));
   if (upload.usedRects) {

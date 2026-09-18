@@ -73,22 +73,27 @@
   指针映射仍以 XComponent 局部坐标为准）。右侧按钮：复制 / 粘贴 / 全屏·退出全屏 / 最小化 / 断开。
 
 - **帧工时计量（`hmrdp_gfx_work.{h,cpp}`，live 与回放共用）**：同一个 `GfxWorkMeter` 由**同一批钩子**
-  喂数，因此**同一份码流在 live 与回放里"本机"的定义完全相同**，可以逐相、按载荷对照：
+  喂数，因此**同一份码流在 live 与回放里各相位的定义完全相同**，可以逐相、按载荷对照：
   抓取钩子取 chunk 到达时刻（在 ZGX 之前、**落盘之后**，磁盘 I/O 不进相位）、链式包裹的
   `SurfaceCommand` 计解码、包裹的 `EndFrame` 计合成 + 上屏。
+  **计量器只产子项、不存"总工时"**：各相位的语义不同（CPU 工作 / GPU 提交 / 阻塞等待），合适的和取决于
+  谁来读，所以由展示端相加。`sync` 这类阻塞项因此天然不会被计入 live 的合计。
 
 - **工具栏左侧遥测**每秒刷新一次（原生 `kMetrics` 事件）。字段：
-  - **本机**（µs/帧）= 客户端在这一帧上的全部**处理**时间：
+  - **本机**（µs/帧）= 展示端把四个**工作**相位相加：
     `zgx+parse`（chunk 到达 → 该帧第一条命令，即 ZGX 解压 + RDPGFX PDU 解析）+
     `decode`（包裹的 `SurfaceCommand`，含 progressive 自己的重复合成 `update_tiles`）+
     `compose`（`gdi_EndFrame` 的 surface→primary 合成，**再减去 present、该帧的 `sync` 等待与回放节拍
     睡眠**——这三样都在 `EndFrame` 窗口里但不是合成）+
     `present`（`PresentGdiFrame`，Vulkan/GLES 呈现器）。
-  - **`sync`（单独一项，不在 `本机` 里）**：本帧在 `BeginPaint` 里等 GPU 放开它要写的桌面缓冲
-    （CPU 路线把 gdi 主缓冲直接放在呈现器内存里，所以上一帧必须先读完）。它是**阻塞时间**、
-    不是处理时间，故单列，这样工具栏上各拆相相加仍然等于 `本机`；
-    **帧的整段墙钟 = `本机` + `sync`**（回放再加节拍睡眠）。轻样本跑满时这笔等待不可忽略
-    （可达数 ms），别把"等 GPU"当成"合成贵"。
+  - **`sync`（阻塞子项，不在 `本机` 里）**：本帧在 `BeginPaint` 里等 GPU 放开它要写的桌面缓冲
+    （CPU 路线把 gdi 主缓冲直接放在呈现器内存里，所以上一帧必须先读完）。
+  - **`presentWait`（阻塞子项，不在 `本机` 里）**：`present` 那一段里**等显示端**的部分
+    （Vulkan 的 `vkAcquireNextImageKHR` + fence 等待；GLES 的 `eglSwapBuffers`）。`present` 只记
+    录制/上传/提交这类客户端动作，两者相加才是这一帧 present 的整段墙钟。
+  - 两个阻塞子项都是**显示/GPU 侧的反压**，不是处理时间，故都在合计之外；
+    **帧的整段墙钟 = 四相之和 + `sync` + `presentWait`**（回放再加节拍睡眠）。轻样本跑满时这笔等待
+    不可忽略（可达数 ms），别把"等 GPU / 等显示"当成"合成贵 / 上屏贵"。
   - **节拍睡眠（`pace`）是唯一直接剔除的一项**：回放的人为节流不是客户端工作。
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值
     （只有服务端注册该回调），故连接时给 `context->autodetect` 自行注册回调捕获。
@@ -105,13 +110,17 @@
     （由到达节拍决定）不会跑偏分母；窗口边界最多切到一帧。
   - **拆相随内容变**：`decode` 随该帧载荷/命令数变（低 fps 时每帧扛的是累积变化，比高 fps 时大），
     `compose`/`present` 随桌面尺寸变 ⇒ 单看合计会把它误当成"客户端常量能力"。
-    `bytesPerFrame`、`cmdsPerFrame` 与 **dutyPermille**（本机工时 / 墙钟）才是跨帧率可比的量：
+    `bytesPerFrame`、`cmdsPerFrame` 与 **dutyPermille**（四相之和 / 墙钟）才是跨帧率可比的量：
     duty 远小于 100% 就是客户端在等数据。
+  - **相位是墙钟，所以低频/被调度会放大它**：RTT 大 ⇒ 帧稀 ⇒ CPU 闲 ⇒ SoC 掉档、cache/线程池变冷 ⇒
+    同一份解码的墙钟变大。**网络等待本身不在任何相位里**（到达戳在完整 chunk 之后、ZGX 解压之前），
+    所以 live 相位偏大只可能来自频率/调度，不是"把 RTT 算进去了"；跨频率比相位无意义，回放侧用
+    `cpuKHz=` 记档（[`gfx-engine.md`](gfx-engine.md) §8.3）。
   - **仍不含**：传输层读/drdynvc 重组（在抓取钩子之前）、**RDPGFX 帧回执**（FreeRDP 在 EndFrame
     回调返回**之后**才写）；`present` 里的 `WaitForFences`/`acquireNextImageKHR` 在合成器不还 buffer
     时会阻塞，排队/显示延迟会算进 `present`（与 `sync` 不同）。
-  - 同一行每秒还有 hilog：`perf: 本机 X us/frame (max M) = zgx+parse … + decode … + compose … +
-    present … (frames=… presents=… cmds/frame=… kB/frame=… duty=…%)`，定位用这一行。
+  - 同一行每秒还有 hilog：`perf: work X us/frame = zgx+parse … + decode … + compose … + present …
+    (+ sync … blocked) (frames=… presents=… cmds/frame=… kB/frame=… duty=…%)`，定位用这一行。
 
 - **显示口径**：指标用**固定宽度**排布（避免数字位数变化时重排），间距分"网络↔本机"与其余两档。
   延迟类（网络/本机）统一用**毫秒、取整到个位**；本机的**拆相放在悬停提示**里

@@ -58,7 +58,7 @@ const MIN_BANDWIDTH_BYTES: number = 1024;
 // a box stays small and the gaps are governed by the margins below.
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_LOCAL: number = 74;
-const METRIC_WIDTH_FPS: number = 66;
+const METRIC_WIDTH_FPS: number = 48;
 const METRIC_WIDTH_AUDIO: number = 86;
 // Two gap sizes: the network/local pair sits one character apart, the rest
 // share a wider gap.
@@ -141,16 +141,18 @@ struct SessionPage {
   @State metricsRx: number = 0;
   @State metricsTx: number = 0;
   @State metricsFps: number = 0;
-  // Client work per frame in microseconds (ZGX decompress + RDPGFX parse +
-  // decode + gdi compose + present); 0 = no frame ended in the window.
-  @State metricsLocalUs: number = 0;
-  // The same per-frame figure split by phase (microseconds) plus its
-  // normalization: GFX commands and raw bytes per frame, and the duty cycle in
-  // 0.1% units. Shown in the 本机 tooltip.
+  // Per-frame work phase by phase, in microseconds: ZGX decompress + RDPGFX parse,
+  // decode, gdi compose, present. The toolbar's "本机" is their sum (see localUs()):
+  // the native side sends no pre-summed total, and blocked time (the GPU `sync`)
+  // is a separate field that is deliberately not summed in.
   @State metricsZgxUs: number = 0;
   @State metricsDecodeUs: number = 0;
   @State metricsComposeUs: number = 0;
   @State metricsPresentUs: number = 0;
+  // Of `presentUs`, the part the presenter spent blocked on the display
+  // (swapchain acquire / buffer swap). Blocked, so it is not in the 本机 sum; it
+  // is only shown as a hint in the tooltip.
+  @State metricsPresentWaitUs: number = 0;
   @State metricsBytesPerFrame: number = 0;
   @State metricsDutyPermille: number = 0;
   @State metricsCmdsPerFrame: number = 0;
@@ -448,24 +450,24 @@ struct SessionPage {
   }
 
   /**
-   * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<localUs>|<audioRateHz>|<audioLossBp>|
-   * <zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|
-   * <cmdsPerFrame>|<syncUs>". rtt/rx/tx/fps/localUs/audio drive the toolbar row;
-   * the rest are the per-frame breakdown of localUs shown in the 本机 tooltip
-   * (see RdpEvent.Metrics).
+   * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|<audioLossBp>|<zgxParseUs>|
+   * <decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|<cmdsPerFrame>|
+   * <syncUs>|<presentWaitUs>". rtt/rx/tx/fps/audio drive the toolbar row; the four
+   * work phase fields are summed into "本机" (see localUs), the trailing `syncUs` /
+   * `presentWaitUs` are blocked and stay out of it, and the tail normalization
+   * feeds the tooltip (see RdpEvent.Metrics).
    */
   private onMetrics(data: string): void {
     const parts: string[] = data.split('|');
-    if (parts.length < 7) {
+    if (parts.length < 6) {
       return;
     }
     const rtt: number = Number.parseInt(parts[0], 10);
     const rx: number = Number.parseInt(parts[1], 10);
     const tx: number = Number.parseInt(parts[2], 10);
     const fps: number = Number.parseInt(parts[3], 10);
-    const localUs: number = Number.parseInt(parts[4], 10);
-    const audioRateHz: number = Number.parseInt(parts[5], 10);
-    const audioLossBp: number = Number.parseInt(parts[6], 10);
+    const audioRateHz: number = Number.parseInt(parts[4], 10);
+    const audioLossBp: number = Number.parseInt(parts[5], 10);
     if (!Number.isNaN(rtt)) {
       this.metricsRtt = rtt;
     }
@@ -478,23 +480,21 @@ struct SessionPage {
     if (!Number.isNaN(fps)) {
       this.metricsFps = fps;
     }
-    if (!Number.isNaN(localUs)) {
-      this.metricsLocalUs = localUs;
-    }
     if (!Number.isNaN(audioRateHz)) {
       this.metricsAudioRateHz = audioRateHz;
     }
     if (!Number.isNaN(audioLossBp)) {
       this.metricsAudioLossBp = audioLossBp;
     }
-    if (parts.length >= 13) {
-      const zgxUs: number = Number.parseInt(parts[7], 10);
-      const decodeUs: number = Number.parseInt(parts[8], 10);
-      const composeUs: number = Number.parseInt(parts[9], 10);
-      const presentUs: number = Number.parseInt(parts[10], 10);
-      const bytesPerFrame: number = Number.parseInt(parts[11], 10);
-      const dutyPermille: number = Number.parseInt(parts[12], 10);
-      const cmdsPerFrame: number = parts.length >= 14 ? Number.parseInt(parts[13], 10) : NaN;
+    if (parts.length >= 12) {
+      const zgxUs: number = Number.parseInt(parts[6], 10);
+      const decodeUs: number = Number.parseInt(parts[7], 10);
+      const composeUs: number = Number.parseInt(parts[8], 10);
+      const presentUs: number = Number.parseInt(parts[9], 10);
+      const bytesPerFrame: number = Number.parseInt(parts[10], 10);
+      const dutyPermille: number = Number.parseInt(parts[11], 10);
+      const cmdsPerFrame: number = parts.length >= 13 ? Number.parseInt(parts[12], 10) : NaN;
+      const presentWaitUs: number = parts.length >= 15 ? Number.parseInt(parts[14], 10) : NaN;
       if (!Number.isNaN(zgxUs)) {
         this.metricsZgxUs = zgxUs;
       }
@@ -515,6 +515,9 @@ struct SessionPage {
       }
       if (!Number.isNaN(cmdsPerFrame)) {
         this.metricsCmdsPerFrame = cmdsPerFrame;
+      }
+      if (!Number.isNaN(presentWaitUs)) {
+        this.metricsPresentWaitUs = presentWaitUs;
       }
     }
   }
@@ -539,12 +542,24 @@ struct SessionPage {
   }
 
   /**
-   * Client work per frame in ms (ZGX decompress + parse + decode + compose +
-   * present), or -1 when no frame ended in the window. Reported to the ones
-   * place like the other latency figures so the row stays comparable.
+   * The four per-frame work phases summed (ZGX decompress + parse, decode,
+   * compose, present), in microseconds. The native side sends no total; this sum
+   * is the reader's choice - blocked time (`sync`, and anything the native side
+   * reports as its own blocked field) is deliberately not added in.
+   */
+  private localUs(): number {
+    return this.metricsZgxUs + this.metricsDecodeUs + this.metricsComposeUs +
+      this.metricsPresentUs;
+  }
+
+  /**
+   * "本机" in ms, or -1 when no frame ended in the window (no phase reported).
+   * Reported to the ones place like the other latency figures so the row stays
+   * comparable.
    */
   private localMs(): number {
-    return this.metricsLocalUs > 0 ? this.metricsLocalUs / 1000 : -1;
+    const us: number = this.localUs();
+    return us > 0 ? us / 1000 : -1;
   }
 
   private localLabel(): string {
@@ -562,6 +577,9 @@ struct SessionPage {
       ' / 解码 ' + this.usToMs(this.metricsDecodeUs) + 'ms' +
       ' / 合成 ' + this.usToMs(this.metricsComposeUs) + 'ms' +
       ' / 上屏 ' + this.usToMs(this.metricsPresentUs) + 'ms' +
+      (this.metricsPresentWaitUs > 0
+        ? '（等显示 ' + this.usToMs(this.metricsPresentWaitUs) + 'ms，不计入本机）'
+        : '') +
       '\n载荷 ' + Math.round(this.metricsBytesPerFrame / 1024) + 'KB/帧' +
       '（' + this.metricsCmdsPerFrame + ' 条命令）' +
       '，本机工时占帧周期 ' + Math.round(this.metricsDutyPermille / 10) + '%';

@@ -329,11 +329,16 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
     return false;
   }
   const VkFence fence = inFlight_[frameIndex_];
+  const int64_t waitStartUs = NowUs();
   api.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
   VkResult result = api.AcquireNextImageKHR(device, swapchain_, UINT64_MAX,
                                             imageAvailable_[frameIndex_], VK_NULL_HANDLE,
                                             imageIndex);
+  // Both are waiting on the display, not client work: the fence wait is normally
+  // signalled, the acquire blocks when the compositor has not returned an image
+  // yet. Reported as the blocked `presentWait` sub-item (hmrdp_presenter.h).
+  presentWaitUs_ += static_cast<uint64_t>(NowUs() - waitStartUs);
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     surfaceDirty_ = true;
     *retry = true;
@@ -1178,6 +1183,13 @@ void VkRenderer::ReleaseDesktopBuffer() {
 bool VkRenderer::usesDesktopBuffer() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return desktopBufferMapped_ != nullptr;
+}
+
+uint64_t VkRenderer::TakePresentWaitUs() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const uint64_t us = presentWaitUs_;
+  presentWaitUs_ = 0;
+  return us;
 }
 
 bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
