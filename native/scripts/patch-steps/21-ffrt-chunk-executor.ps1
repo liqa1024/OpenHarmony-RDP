@@ -6,13 +6,13 @@
 #     CPU"（整轮进程 CPU 约 3 倍、帧墙钟只降 1.5 倍），而且请求 2/4/8 个 worker
 #     得到的 CPU 与墙钟完全一样：请求的宽度没有变成有效并行宽度。
 #
-#     这一步**只换执行器**：chunk 还是那些 chunk（同样的划分、同样的共享领取计数、
-#     同样的 per-chunk scratch），只是由 ffrt 提交/调度/等待，不再建 WinPR 池。
-#     这样 A/B 的差异只归因于执行器本身。
+#     这一步**只换执行器**：chunk 还是那些 chunk（同样的 home 划分、同样的
+#     per-chunk scratch），只是由 ffrt 提交/调度/等待，不再建 WinPR 池。这样
+#     A/B 的差异只归因于执行器本身。
 #
-#     绑定方式是**弱符号**：`HmrdpParallelAvailable/Run` 由 app（hmrdp_parallel.*）
-#     提供，未打过补丁的 FreeRDP 或没有该模块的构建自动走原来的池分支（
-#     native-libraries.md §3 的既有约定）。
+#     绑定方式是**弱符号**：`HmrdpDecodeWidth` / `HmrdpParallelAvailable` /
+#     `HmrdpParallelRun` 由 app（hmrdp_parallel.*）提供，未打过补丁的 FreeRDP 或
+#     没有该模块的构建自动走原来的串行分支（native-libraries.md §3 的既有约定）。
 #
 #     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
 $progParC = "$Source\libfreerdp\codec\progressive.c"
@@ -20,9 +20,8 @@ $progParC = "$Source\libfreerdp\codec\progressive.c"
 # (a) the platform executor, next to the app-width helper inserted by step 11.
 Patch-Regex $progParC `
   '/\* HmRdp: the decode width requested by the app \(hmrdp_parallel\.\* / the settings\n \* knob\)\. Weak, so a build without the platform executor decodes on the receiving\n \* thread\. \*/\nextern unsigned int HmrdpDecodeWidth\(void\) __attribute__\(\(weak\)\);\n\nstatic INLINE UINT32 hmrdp_decode_width\(void\)\n\{\n\treturn HmrdpDecodeWidth != NULL \? HmrdpDecodeWidth\(\) : 1u;\n\}' (@'
-/* HmRdp: the decode width requested by the app (hmrdp_parallel.* / the settings
- * knob). Weak, so a build without the platform executor decodes on the receiving
- * thread. */
+/* HmRdp: the decode width (hmrdp_parallel.*). Weak, so a build without the
+ * platform executor decodes on the receiving thread. */
 extern unsigned int HmrdpDecodeWidth(void) __attribute__((weak));
 
 static INLINE UINT32 hmrdp_decode_width(void)
@@ -36,16 +35,6 @@ static INLINE UINT32 hmrdp_decode_width(void)
 extern int HmrdpParallelAvailable(void) __attribute__((weak));
 extern int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* ctx)
     __attribute__((weak));
-
-/* Tasks one region is split into when ffrt runs it. A region carries only a few
- * milliseconds of work, so this is deliberately far below HMRDP_TILE_CHUNKS: the
- * platform queue charges per submitted task. */
-#define HMRDP_FFRT_TASKS 16
-
-/* HmRdp dev A/B: 1 = per-task contiguous home ranges with tail stealing (see the
- * patch note in native/scripts/patch-freerdp.ps1 step 20), 0 = the shared claim
- * cursor. Read on demand. */
-extern int HmrdpTileHomeMode(void) __attribute__((weak));
 '@) 'the platform task queue (ffrt)'
 
 # (b) the ffrt task body: the same chunk callback the tile work uses, so the
@@ -69,43 +58,40 @@ static void hmrdp_chunk_ffrt_callback(void* ctx, unsigned int index)
 '@) 'hmrdp_chunk_ffrt_callback'
 
 # (c) the parallel branch is the platform queue, full stop: the WinPR pool path
-#     is deleted. A build without the queue never reaches here (the width helper
-#     forces the serial branch), but the fallback keeps the region
+#     is deleted. The chunking is one task per home range - the caller adds its
+#     own chunk on top (caller participation), so a region uses exactly the
+#     configured width. A build without the queue never reaches here (the width
+#     helper forces the serial branch), but the fallback keeps the region
 #     all-or-nothing regardless.
 Patch-Regex $progParC `
   '\t\tUINT32 numChunks = HMRDP_TILE_CHUNKS;.*?\n\t\tHmrdpProgStat\[2\] \+= hmrdp_now_ns\(\) - ht2; /\* wait\+close \(serial\) \*/\n' (@'
-		UINT32 numChunks = HMRDP_FFRT_TASKS;
-		const UINT32 homeMode = (HmrdpTileHomeMode != NULL) ? (UINT32)HmrdpTileHomeMode() : 0;
-		if (homeMode != 0)
-		{
-			/* HmRdp dev A/B: one task per worker, so the home range a worker walks -
-			 * and with it its arena range and its destination rows - is contiguous
-			 * and far from the other workers' (see the patch note in
-			 * native/scripts/patch-freerdp.ps1 step 20). */
-			numChunks = hmrdp_decode_width();
-			if (numChunks < 1)
-				numChunks = 1;
-		}
+		/* HmRdp: one task per home range. Each task owns one contiguous range of
+		 * tiles - a worker walks contiguous memory and the different homes are far
+		 * apart - and steals the other homes' remaining HMRDP_TILE_CLAIM blocks
+		 * once its own is done, so the tail is one block rather than one range.
+		 * The home count is the decode width, the receiving thread runs one of
+		 * them itself (hmrdp_parallel.* caller participation). */
+		UINT32 numChunks = hmrdp_decode_width();
+		if (numChunks < 1)
+			numChunks = 1;
 		if (numChunks > numTiles)
 			numChunks = numTiles;
+		if (numChunks > HMRDP_TILE_CHUNKS)
+			numChunks = HMRDP_TILE_CHUNKS;
 
 		_Alignas(64) volatile UINT32 homeNextArr[HMRDP_TILE_CHUNKS];
 		UINT32 homeLimitsArr[HMRDP_TILE_CHUNKS];
-		UINT32 homeCount = 0;
-		if (homeMode != 0 && numChunks > 0)
+		const UINT32 homeCount = numChunks;
+		for (UINT32 h = 0; h < homeCount; h++)
 		{
-			homeCount = numChunks;
-			for (UINT32 h = 0; h < homeCount; h++)
-			{
-				homeNextArr[h] = (UINT32)(((unsigned long long)h * numTiles) / homeCount);
-				homeLimitsArr[h] = (UINT32)(((unsigned long long)(h + 1) * numTiles) / homeCount);
-			}
+			homeNextArr[h] = (UINT32)(((unsigned long long)h * numTiles) / homeCount);
+			homeLimitsArr[h] = (UINT32)(((unsigned long long)(h + 1) * numTiles) / homeCount);
 		}
 
 		if (HmrdpParallelAvailable != NULL && HmrdpParallelRun != NULL &&
 		    (HmrdpParallelAvailable() != 0))
 		{
-			/* HmRdp: one ffrt task per chunk - see the patch note in
+			/* HmRdp: one ffrt task per home - see the patch note in
 			 * native/scripts/patch-freerdp.ps1 step 21. A region carries only a few
 			 * ms of work, so handing ffrt one task per chunk pays more in task
 			 * objects than it buys in scheduling. */
@@ -115,8 +101,6 @@ Patch-Regex $progParC `
 				chunk->params = progressive->params;
 				chunk->scratch =
 				    progressive->tileScratch + ((size_t)c * (size_t)HMRDP_TILE_SCRATCH_STRIDE);
-				chunk->next = &nextTile;
-				chunk->numTiles = numTiles;
 				chunk->homeNext = homeNextArr;
 				chunk->homeLimits = homeLimitsArr;
 				chunk->homeCount = homeCount;

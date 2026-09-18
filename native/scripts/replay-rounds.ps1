@@ -18,7 +18,7 @@
     * `state=aborted` is reported, not silently treated as a result.
 
   Per round the script:
-    1. sets the requested modes (参考/节拍/路线/线程) by clicking the control
+    1. sets the requested modes (参考/节拍/路线) by clicking the control
        until its label matches; each intermediate click starts a short run, and
        the script waits for it to finish before the next click;
     2. optionally pushes the capture and/or the golden reference into the app's
@@ -152,9 +152,9 @@ function Click-Control {
   throw "clicking '$Label' at ($($c[0]),$($c[1])) did not start a new run (still run=$beforeRun)"
 }
 
-# Cycles a control (参考/节拍/路线) until its label reads `Target`. The decode
-# worker count is not in here: the replay page renders one 「线程:<value>」 button
-# per value, so it is set directly (see Set-Threads).
+# Cycles a control (参考/节拍/路线) until its label reads `Target`. Only the
+# controls whose value is a state (not a radio row) are here; the decode width
+# and its tile decomposition are not settings any more.
 $CYCLES = @{
   "参考" = @("关", "导出", "对比")
   "节拍" = @("跑满", "实时")
@@ -175,41 +175,6 @@ function Set-Mode {
     Click-Control -Label $label | Out-Null
   }
   throw "could not set $Control to $Target"
-}
-
-# Sets the Progressive decode worker count. Every value is a button of its own
-# on the replay page, so this is one click (plus the run that click restarts) -
-# no cycling. The current value can only be read from the status line: the
-# 「线程:<value>」 buttons each carry a candidate value, not the state.
-function Set-Threads {
-  param([string]$Target)
-  $screen = Read-Screen
-  # The status overlay is the only text that carries the current value *and* the
-  # 路线: prefix; the 路线 button and the 线程:<value> buttons each carry only one
-  # of the two.
-  $current = $null
-  foreach ($t in $screen.texts) {
-    if ($t -match "^路线[:：]" -and $t -match "线程[:：](\S+)") { $current = $Matches[1]; break }
-  }
-  if ($null -eq $current) { throw "replay status line not found (cannot read the current thread count)" }
-  if ($current -eq $Target) { return }
-  if ($script:dryRun) { throw "would click 线程:$Target" }
-  Click-Control -Label "线程:$Target" | Out-Null
-}
-
-# Sets the decode-executor probe (see GfxReplayPage PAR_MODE_LABEL). One button
-# per mode, so this is a single click plus the run it restarts.
-function Set-ParMode {
-  param([string]$Target)
-  $screen = Read-Screen
-  $current = $null
-  foreach ($t in $screen.texts) {
-    if ($t -match "^路线[:：]" -and $t -match "模式[:：](\S+)") { $current = $Matches[1]; break }
-  }
-  if ($null -eq $current) { throw "replay status line not found (cannot read the current parallel mode)" }
-  if ($current -eq $Target) { return }
-  if ($script:dryRun) { throw "would click 模式:$Target" }
-  Click-Control -Label "模式:$Target" | Out-Null
 }
 
 function Push-File {
@@ -251,9 +216,7 @@ foreach ($round in $Rounds) {
     if ($setting -match "^\s*$") { continue }
     $kv = $setting.Trim() -split "[:：]"
     if ($kv.Count -ne 2) { throw "bad setting '$setting' (expected e.g. 参考:对比)" }
-    if ($kv[0] -eq "线程") { Set-Threads -Target $kv[1] }
-    elseif ($kv[0] -eq "模式") { Set-ParMode -Target $kv[1] }
-    else { Set-Mode -Control $kv[0] -Target $kv[1] }
+    Set-Mode -Control $kv[0] -Target $kv[1]
   }
   if ($Capture -ne "") {
     $capPath = if ([System.IO.Path]::IsPathRooted($Capture)) { $Capture } else { Join-Path $repo $Capture }

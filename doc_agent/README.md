@@ -40,10 +40,10 @@
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
   后端、脏区上传与零拷贝桌面缓冲的定型约束、present 账目与探针。
 - [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行方案（现状）**：并行范围与线程归属
-  （唯一并行段 = region 的 tile 解码 + worker 侧合成拷贝）、唯一执行器（ffrt 并发队列）与宽度档位/
-  生效时机、任务划分（home + 段尾块偷取 / 共享游标对照）、内存归属（per-chunk scratch 槽、
-  surface 级 tile arena）、合成归属（worker 直写 + clip 哈希去重）。单核部分的知识在
-  [`gfx-engine.md`](gfx-engine.md) §8。
+  （唯一并行段 = region 的 tile 解码 + worker 侧合成拷贝；调用线程也跑一个 chunk）、唯一执行器
+  （ffrt 并发队列，宽度 = 在线核数、队列并发度 = 宽度 − 1）、任务划分（home + 段尾块偷取）、
+  内存归属（per-chunk scratch 槽、surface 级 tile arena）、合成归属（worker 直写 + clip 哈希去重）。
+  单核部分的知识在 [`gfx-engine.md`](gfx-engine.md) §8。
 - **（old 弃用，只作历史依据）**：
   [`cpu-path_old.md`](cpu-path_old.md) —— 旧 CPU 链路文档（旧口径与被否证的过程按原样保留）；
   其中的**约束与实测仍被引用**，但**不要作为接手入口**。

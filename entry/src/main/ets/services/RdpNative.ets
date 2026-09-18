@@ -9,7 +9,6 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
-setDecodeThreads, setDecodeParallelMode,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -75,25 +74,6 @@ export class RdpNative {
    * either way, so this only decides how frames reach the window. */
   static applyHardwareAccel(enabled: boolean): void {
     setHardwareAccel(enabled);
-  }
-
-  /**
-   * Progressive tile decode width (process-global, live session and replay
-   * alike). The decode runs on the platform task queue (ffrt); `workers` is its
-   * maximum concurrency. `workers` = 0 means automatic (all online cores, capped
-   * at 16, see doc_agent/cpu-accel-plan.md §0). 1 decodes on the receiving
-   * thread with no task submission at all.
-   */
-  static applyDecodeThreads(workers: number): void {
-    setDecodeThreads(workers);
-  }
-
-  /**
-   * Dev-only A/B probe for the decode executor: 0 = normal, 1 = force the
-   * platform queue with a single worker. Applies to the next Progressive region.
-   */
-  static applyDecodeParallelMode(mode: number): void {
-    setDecodeParallelMode(mode);
   }
 
   /** Dev-only RemoteFX stream capture to the given directory. */

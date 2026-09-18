@@ -69,9 +69,9 @@ ffrt_queue_t g_queue = nullptr;
 int g_queueConcurrency = 0;
 
 // (Re)creates the concurrent queue when its concurrency limit changes - that is
-// the width minus one while the caller participates, or the full width for the
-// force-queue probe. Called only with no task in flight (HmrdpParallelRun waits
-// for all of them), so it is safe to destroy the previous queue here.
+// the width minus one, because the calling thread always runs one chunk itself
+// (see HmrdpParallelRun). Called only with no task in flight (HmrdpParallelRun
+// waits for all of them), so it is safe to destroy the previous queue here.
 int EnsureQueue(int concurrency) {
   if (g_queue != nullptr && g_queueConcurrency == concurrency) {
     return 0;
@@ -128,24 +128,10 @@ extern "C" int HmrdpParallelAvailable(void) {
   return kUsePlatformExecutor;
 }
 
-// Dev A/B: 1 = per-task contiguous home ranges with tail stealing (see the patch
-// note in native/scripts/patch-freerdp.ps1 step 20), 0 = the shared claim cursor.
-// Mode 2 is home too - it only adds "force the queue at width 1" (below).
-extern "C" int HmrdpTileHomeMode(void) {
-  return hmrdp::ParallelMode() >= 1 ? 1 : 0;
-}
-
-// Dev probe (patched decoder, native/scripts/patch-steps/26-...): non-zero makes
-// even width 1 decode on the platform queue - one task on a concurrency-1 queue -
-// instead of the receiving thread's serial loop, so the executor's own cost can
-// be measured against that branch. Off in normal operation.
-extern "C" int HmrdpParallelForceQueue(void) {
-  return hmrdp::ParallelMode() == 2 ? 1 : 0;
-}
-
-// The configured decode width, read by the patched decoder to decide between
-// the serial branch and the platform queue (see hmrdp_decode_tuning.h). The
-// width is resolved on demand, so a settings change needs no re-arming.
+// The decode width, read by the patched decoder to decide between the serial
+// branch and the platform queue (see hmrdp_decode_tuning.h). It is resolved on
+// demand, so a machine that comes up with a different core count needs no
+// re-arming.
 extern "C" unsigned int HmrdpDecodeWidth(void) {
   return static_cast<unsigned int>(hmrdp::DecodeThreads());
 }
@@ -157,32 +143,23 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
   if (fn == nullptr || tasks > kMaxParallelTasks) {
     return 1;
   }
-  // The configured width is both the number of threads one region may use and
-  // the factor the `par` account is built on (HmrdpParallelStat), so it is read
-  // once here and never replaced by the queue's own concurrency below.
+  // The width is both the number of threads one region may use and the factor
+  // the `par` account is built on (HmrdpParallelStat), so it is read once here
+  // and never replaced by the queue's own concurrency below.
   const int width = hmrdp::DecodeThreads();
-  // The dev force-queue probe (native/scripts/patch-steps/26) exists to price the
-  // executor's own round trip against the inline branch, so it keeps the old
-  // "submit everything, the caller only waits" shape: caller participation would
-  // remove exactly the cost it measures. It also lets width 1 reach the queue.
-  const bool forceQueue = hmrdp::ParallelMode() == 2;
-  if (!forceQueue && (tasks == 1 || width <= 1)) {
+  if (tasks == 1 || width <= 1) {
     // One callback is not worth a queue round trip, and width 1 has no second
     // thread to hand anything to: the calling thread decodes the whole region.
     fn(ctx, 0);
     return 0;
   }
   // Caller participation: the calling (receiving) thread runs one chunk itself
-  // while the queue runs the rest. The region still uses `width` threads - one of
-  // them this thread, which would otherwise sit in the barrier - and the queue
-  // only has to offer `width - 1` workers. That keeps this thread off the idle
-  // path and asks the worker pool for one fewer thread, which matters where the
-  // pool is smaller than the width (the auto width is the online core count).
-  // Mode 3 is the A/B control: the same decomposition and width, but the chunk
-  // goes to the queue like the rest, so only participation differs between the
-  // two runs.
-  const bool participate = !forceQueue && hmrdp::ParallelMode() != 3;
-  const int queueConcurrency = participate ? (width > 1 ? width - 1 : 1) : width;
+  // while the queue runs the rest. The region uses `width` threads - one of them
+  // this thread, which would otherwise sit in the barrier - and the queue only
+  // has to offer `width - 1` workers. That keeps this thread off the idle path
+  // and asks the worker pool for one fewer thread than the width (the width is
+  // the online core count, and the pool does not always have that many).
+  const int queueConcurrency = width > 1 ? width - 1 : 1;
   // The chunk the caller keeps for itself. Any index works (the homes are equal
   // sized and the tail is stolen either way); the first one keeps the submitted
   // chunks' indices contiguous, which is what the home ranges assume.
@@ -213,7 +190,7 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
     items[i].index = i;
     items[i].submitNs = probe ? NowNs() : 0;
     handles[i] = nullptr;
-    if (participate && i == callerIndex) {
+    if (i == callerIndex) {
       // The caller's own chunk is not submitted. Its queue latency is not a
       // thing, so the probe must not charge one: Thunk skips a zero submitNs
       // instead of folding the submission of the other chunks into `wait`.
@@ -233,9 +210,7 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
   // The caller's chunk runs after the submissions - so the workers are already
   // busy and this thread starts at most one chunk late - and before the barrier,
   // so the thread is never idle while work is available.
-  if (participate) {
-    Thunk(&items[callerIndex]);
-  }
+  Thunk(&items[callerIndex]);
 
   // Barrier for exactly our tasks: wait each handle, so the wall is the slowest
   // chunk and not "every task the process ever submitted".

@@ -151,17 +151,12 @@ Patch-Regex $progScratchC `
 typedef struct
 {
 	PROGRESSIVE_TILE_PROCESS_WORK_PARAM* params;
-	/* HmRdp: the chunk's own working-buffer slot (see hmrdp_tile_scratch), and a
-	 * shared claim cursor the chunk advances in HMRDP_TILE_CLAIM-sized blocks. */
+	/* HmRdp: the chunk's own working-buffer slot (see hmrdp_tile_scratch). */
 	BYTE* scratch;
-	volatile UINT32* next;
-	UINT32 numTiles;
-	/* HmRdp dev A/B "home + steal" (see the patch note in
-	 * native/scripts/patch-freerdp.ps1 step 20): each task owns one contiguous
-	 * home range - a worker walks contiguous memory and different workers' ranges
-	 * are far apart - and once its home is done it steals the *remaining blocks*
-	 * of the other homes, so the tail is one block instead of one whole range.
-	 * homeCount > 0 selects this mode; 0 uses the claim cursor. */
+	/* HmRdp: each chunk owns one contiguous *home* range of tiles - a worker walks
+	 * contiguous memory and the different homes are far apart - and once its home
+	 * is done it steals the other homes' remaining HMRDP_TILE_CLAIM blocks, so the
+	 * tail is one block instead of one whole range. */
 	volatile UINT32* homeNext;
 	const UINT32* homeLimits;
 	UINT32 homeCount;
@@ -176,49 +171,26 @@ Patch-Regex $progScratchC `
 	 * chunk's slot - see hmrdp_tile_scratch(). */
 	g_HmrdpTlsTileScratch = chunk->scratch;
 
-	/* HmRdp dev A/B: home range first (contiguous, this worker's own), then steal
-	 * the other homes' remaining blocks in order - the tail is one block, while a
-	 * worker's normal path stays on one contiguous range. See the patch note in
-	 * native/scripts/patch-freerdp.ps1 step 20. */
-	if (chunk->homeCount > 0)
+	/* HmRdp: home range first (contiguous, this worker's own), then steal the
+	 * other homes' remaining blocks in order - the tail is one block, while a
+	 * worker's normal path stays on one contiguous range. Tiles are claimed in
+	 * HMRDP_TILE_CLAIM blocks, which keeps the shared counter off the per-tile
+	 * path; the cost is an imbalance of at most one block at the end. */
+	for (UINT32 round = 0; round < chunk->homeCount; round++)
 	{
-		for (UINT32 round = 0; round < chunk->homeCount; round++)
-		{
-			const UINT32 home = (chunk->homeIndex + round) % chunk->homeCount;
-			volatile UINT32* cursor = &chunk->homeNext[home];
-			const UINT32 limit = chunk->homeLimits[home];
+		const UINT32 home = (chunk->homeIndex + round) % chunk->homeCount;
+		volatile UINT32* cursor = &chunk->homeNext[home];
+		const UINT32 limit = chunk->homeLimits[home];
 
-			for (;;)
-			{
-				const UINT32 begin = __sync_fetch_and_add(cursor, HMRDP_TILE_CLAIM);
-				if (begin >= limit)
-					break;
-
-				UINT32 end = begin + HMRDP_TILE_CLAIM;
-				if (end > limit)
-					end = limit;
-
-				for (UINT32 index = begin; index < end; index++)
-					progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
-				done += end - begin;
-			}
-		}
-	}
-	else
-	{
-		/* HmRdp: tiles are claimed in blocks, not one at a time. Dynamic claiming is
-		 * what balances the workers against each other; the block size only keeps
-		 * the shared counter off the per-tile path, and its cost is an imbalance of
-		 * at most one block at the end of the region. */
 		for (;;)
 		{
-			const UINT32 begin = __sync_fetch_and_add(chunk->next, HMRDP_TILE_CLAIM);
-			if (begin >= chunk->numTiles)
+			const UINT32 begin = __sync_fetch_and_add(cursor, HMRDP_TILE_CLAIM);
+			if (begin >= limit)
 				break;
 
 			UINT32 end = begin + HMRDP_TILE_CLAIM;
-			if (end > chunk->numTiles)
-				end = chunk->numTiles;
+			if (end > limit)
+				end = limit;
 
 			for (UINT32 index = begin; index < end; index++)
 				progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
@@ -252,12 +224,6 @@ Patch-Regex $progScratchC `
   '\t\{\n\t\tPROGRESSIVE_TILE_CHUNK_PARAM chunks\[HMRDP_TILE_CHUNKS\];\n\t\tvolatile UINT32 nextTile = 0;\n\t\tconst UINT32 numTiles = region->numTiles;\n\t\tconst UINT32 numChunks = numTiles < HMRDP_TILE_CHUNKS \? numTiles : HMRDP_TILE_CHUNKS;\n\n\t\tfor \(UINT32 c = 0; c < numChunks; c\+\+\)\n\t\t\{\n\t\t\tPROGRESSIVE_TILE_CHUNK_PARAM\* chunk = &chunks\[c\];\n\t\t\tchunk->params = progressive->params;\n\t\t\tchunk->next = &nextTile;\n\t\t\tchunk->numTiles = numTiles;\n\n\t\t\tprogressive->work_objects\[c\] =' (@'
 	{
 		PROGRESSIVE_TILE_CHUNK_PARAM chunks[HMRDP_TILE_CHUNKS];
-		/* HmRdp: the workers claim tiles from this cursor in HMRDP_TILE_CLAIM
-		 * blocks (see the chunk callback). Claiming dynamically is what balances
-		 * the workers; the block size is what keeps the counter off the per-tile
-		 * path. Aligned so the counter does not share a cache line with the chunk
-		 * descriptors the workers also read. */
-		_Alignas(64) volatile UINT32 nextTile = 0;
 		const UINT32 numTiles = region->numTiles;
 		/* HmRdp: the chunk count = one scratch slot per chunk. This is the upper
 		 * bound; the parallel path picks how many of these slots to submit. */
@@ -271,11 +237,9 @@ Patch-Regex $progScratchC `
 			chunk->params = progressive->params;
 			chunk->scratch =
 			    progressive->tileScratch + ((size_t)c * (size_t)HMRDP_TILE_SCRATCH_STRIDE);
-			chunk->next = &nextTile;
-			chunk->numTiles = numTiles;
 
 			progressive->work_objects[c] =
-'@) '_Alignas(64) volatile UINT32 nextTile = 0;'
+'@) 'the chunk count = one scratch slot per chunk'
 
 # (c) dev DWT comparison buffers: per call, not shared between workers. Both the
 #     extrapolate path in progressive.c and the NEON entry in rfx_neon.c (which

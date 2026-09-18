@@ -6,9 +6,9 @@
 > 补丁与构建见 [`native-libraries.md`](native-libraries.md)。
 
 实现位置：app 侧 `entry/src/main/cpp/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；
-解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25（另 24 为探针门控、
-26 为"宽度 1 走队列"的 dev 开关）。
+解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25（另 24 为探针门控）。
 补丁对 app 模块的绑定方式是**弱符号**：没有这些导出的构建自动退化为串行。
+**并行形态是固定的**：宽度、任务划分、执行器都不再是运行期开关（§5）。
 
 ## 0. 并行范围与线程归属
 
@@ -45,34 +45,25 @@
   快的那一侧自然多领。
 - `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行（此时参与就是全量内联）；
   `tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
-  **force-queue 探针（模式 2）不参与**——它保持"全部提交、调用方只等"的原形，否则它要量的
-  执行器代价正好被参与消除掉。
 - 任务体内原子计数同时刻在途回调数 ⇒ `HmrdpParallelTakeMaxConcurrency()` 给出实测最大并发
   （dev 读数）。
 - **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
 - **QoS**：tile worker 的 QoS 来自队列/任务属性；接收线程的 QoS 由 app 注册的钩子
   （`HmrdpSetThreadQoSApplier`，补丁 09）在 drdynvc 线程入口调用一次。
-- **宽度 = 设置里的「解码并行宽度」**（`AppSettings.decodeThreads`）：设置页滑条 →
-  `RdpNative.applyDecodeThreads` → napi `setDecodeThreads` → `hmrdp::SetDecodeThreads`；
-  dev 回放页「线程」行走同一通道。进程级，对 live 与回放同时生效。
-- 档位：`0` = 自动（在线核数，上限 16）；`1` = 串行；`2..8` = 手动（钳位 [1,8]）。
-- **生效时机**：解码器在**每条 region 边界**按需读 `HmrdpDecodeWidth()`，设置改动从下一条
-  region 起生效，无需重建会话。自动档只数在线核（`sysconf`）；性能核探测（`cpuinfo_max_freq`）
-  仅用于日志与设置页信息展示，不参与宽度决策。
+- **宽度 = 在线核数（上限 16）**，没有设置项：`hmrdp::DecodeThreads()` 只数 `sysconf` 的在线核。
+  解码器在**每条 region 边界**按需读 `HmrdpDecodeWidth()`，所以进程一起来就是这个宽度，无需
+  任何应用。性能核探测（`cpuinfo_max_freq`）只出现在日志行里，不参与宽度决策（§5）。
 
 ## 2. 任务划分（region → 任务 → tile）
 
-- 每个 region 把 `region->numTiles` 个 tile 划成 `numChunks` 个任务；任务描述符
-  `PROGRESSIVE_TILE_CHUNK_PARAM` 携带共享参数表、scratch 槽与 home 数组；描述符数组上限
-  `HMRDP_TILE_CHUNKS = 64`（补丁 20）。
-- **划分模式**（`HmrdpTileHomeMode()`，进程级，region 边界读取；napi `setDecodeParallelMode`，
-  默认 1）：
-  - **1 = home + 段尾块偷取（默认）**：任务数 = 宽度；任务 h 的 home 区间为
-    `[h·N/K, (h+1)·N/K)`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 4` 个 tile 的块用
-    `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询偷取其他
-    home 的剩余块（同样按块领取）。尾部不均衡至多一块。
-  - **0 = 共享领取游标（A/B 对照）**：任务数 = `HMRDP_FFRT_TASKS = 16`（cap 至 tile 数）；
-    全部任务从同一条 64 字节对齐的游标按块动态领取。
+- 每个 region 把 `region->numTiles` 个 tile 划成 `numChunks = 宽度`（cap 至 tile 数与
+  `HMRDP_TILE_CHUNKS = 64`）个任务，一个任务一个 home 区间；任务描述符
+  `PROGRESSIVE_TILE_CHUNK_PARAM` 携带共享参数表、scratch 槽与 home 数组（补丁 20/21）。
+- **划分 = home + 段尾块偷取**（唯一形态，没有对照档）：任务 h 的 home 区间为
+  `[h·N/K, (h+1)·N/K)`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 4` 个 tile 的块用
+  `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询偷取其他
+  home 的剩余块（同样按块领取）。尾部不均衡至多一块。**调用线程也是这些 home 之一的所有者**
+  （§1），所以快的那一侧自然会多领。
 - **不变约束**：一个 tile 仍由单次 `progressive_process_tiles_tile_work_callback` 独占解码；
   划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素
   等价）。
@@ -107,18 +98,13 @@
 - **结果不变性**：同一批 tile、同样的裁剪与像素、同样的脏区；门禁 = 参考画面 `bad=0` +
   解码侧对拍（[`gfx-engine.md`](gfx-engine.md) §8.4）。
 
-## 5. dev 开关与读数
+## 5. 读数、探针与编译期开关
 
-- **运行时开关**（均 region 边界生效）：宽度（0/1/2..8）、划分模式 `ParallelMode`（1 默认 /
-  0 对照 / 2 = home + **宽度 1 也走队列** / 3 = home + **主线程不参与**）。模式 3 是调用方参与的
-  A/B 对照：同划分、同宽度，只把调用线程那一份交回队列（见 `HmrdpParallelRun`）。模式 2 是 dev
-  探针：补丁 26 让串行分支可被放行
-  （弱符号 `HmrdpParallelForceQueue()`），app 侧 `HmrdpParallelRun` 同时不再把单任务内联、
-  也不做调用方参与（保持"提交全部、调用方只等"），于是宽度 1 会以"并发 1 的队列上跑一个 task"
-  执行，用来把执行器自身代价（提交 + 唤醒 + 等待）与接收线程内联的串行分支对照。它不进正常运行
-  路径（app 只在模式 2 返回非零）。
+- **没有运行期开关**：宽度、任务划分、执行器都是固定的（§1/§2）。要对照，改代码重编——按
+  [`gfx-engine.md`](gfx-engine.md) §8.1 的口径比 `dec` 墙钟与 `par` 的 `work`/`wall`，
+  **不要**为了 A/B 在树里留第二套路径。
 - **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
-  `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_FFRT_TASKS = 16`。
+  `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`。
 - **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、
   worker/串行侧拷贝像素、1/16 采样的 per-phase 拆相），由 `HmrdpSetProgSample` 门控（补丁 24）；
   `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。
@@ -136,10 +122,9 @@
   | `wait` | `Σ(任务开始 − 提交)`：任务排队延迟，**单列** | 折叠量 |
 
   - **为什么按 K 不按任务数**：任一时刻在跑的回调 ≤ K（`K − 1` 个 worker 加调用线程自己那个）⇒
-    `work ≤ capacity` 恒成立、`idle` 恒非负，于是这套账目**与任务怎么切无关**——改任务粒度、改划分
-    （home+偷取 / 共享游标）只改 `tasks`，不改 `capacity`/`work`/`idle` 的含义。逐任务的
-    「提交前空闲 / 完成后空闲」只在任务数 == 宽度时才等于线程时间，这种把测量绑死在某一种划分上的
-    口径不用。
+    `work ≤ capacity` 恒成立、`idle` 恒非负，于是这套账目**与任务怎么切无关**——改任务粒度只改
+    `tasks`，不改 `capacity`/`work`/`idle` 的含义。逐任务的「提交前空闲 / 完成后空闲」只在任务数
+    == 宽度时才等于线程时间，这种把测量绑死在某一种划分上的口径不用。
   - **`wait` 不并进容量**：任务排队时 worker 正在跑别的任务，二者是同一段时间的两面 ⇒
     `work + wait` 可以超过 `capacity`。`work`/`idle` 才是线程账，`wait` 只作队列延迟读。
   - **自检**：① `work ≤ capacity`（`idle` 为负 ⇒ K 取错，或回调被重复计时，例如提交失败回退到

@@ -85,8 +85,6 @@ struct SettingsPage {
   @State developerMode: boolean = false;
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State rfxDump: boolean = false;
-  // Progressive tile decode workers: 0 = automatic (see AppSettings.decodeThreads).
-  @State decodeThreads: number = 0;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -158,8 +156,6 @@ struct SettingsPage {
     // keep running: a capture left on from a previous session is switched off.
     this.rfxDump = this.developerMode ? settings.rfxDump : false;
     RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
-    this.decodeThreads = settings.decodeThreads;
-    RdpNative.applyDecodeThreads(this.decodeThreads);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
@@ -192,16 +188,6 @@ struct SettingsPage {
       dir = '';
     }
     RdpNative.applyRfxDump(this.rfxDump, dir);
-  }
-
-  // The decode runs on the platform task queue (ffrt); this value is its width.
-  // 0 is the automatic choice (all online cores, capped at 16); 1 decodes on the
-  // receiving thread with no task submission. The comparison the knob supports is
-  // per `cpu=` at the same `cpuKHz=` band, not per frame time
-  // (doc_agent/cpu-accel-plan.md §0/§2). The replay page's 「线程」 row selects the
-  // same value directly for on-device calibration.
-  private decodeThreadsSubtitle(): string {
-    return 'Progressive 解码的并行宽度。0 = 自动（全部在线核，上限 16）；1 = 串行，只在接收线程解码';
   }
 
   private sizeText(value: number): string {
@@ -271,7 +257,6 @@ struct SettingsPage {
     settings.hardwareAccel = this.hardwareAccel;
     settings.developerMode = this.developerMode;
     settings.rfxDump = this.rfxDump;
-    settings.decodeThreads = this.decodeThreads;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -287,7 +272,6 @@ struct SettingsPage {
     // without waiting for an app restart.
     RdpNative.applyRdpCursor(this.useRdpCursor);
     RdpNative.applyHardwareAccel(this.hardwareAccel);
-    RdpNative.applyDecodeThreads(this.decodeThreads);
   }
 
   private resetDefaults(): void {
@@ -317,7 +301,6 @@ struct SettingsPage {
     this.hardwareAccel = defaults.hardwareAccel;
     this.developerMode = defaults.developerMode;
     this.rfxDump = defaults.rfxDump;
-    this.decodeThreads = defaults.decodeThreads;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
@@ -1167,25 +1150,6 @@ struct SettingsPage {
                   this.rfxDump = v;
                   this.persist();
                   this.applyRfxDumpSetting();
-                }
-              })
-
-              Divider().color($r('app.color.divider'))
-
-              this.sliderItem({
-                title: '解码并行宽度',
-                subtitle: this.decodeThreadsSubtitle(),
-                value: this.decodeThreads,
-                min: 0,
-                max: 8,
-                step: 1,
-                unit: '',
-                precision: 0,
-                enabled: true,
-                disabledReason: '',
-                onChange: (v: number) => {
-                  this.decodeThreads = v;
-                  this.persist();
                 }
               })
 

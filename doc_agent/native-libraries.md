@@ -88,10 +88,11 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 
 - **触屏帧间隔可调**：上游把接触点合并成约 50Hz 一帧，补丁导出运行时全局
   `HmrdpSetTouchFrameInterval`，设置项「触屏-高刷新率」开则传 0。
-- **解码并行宽度可运行时控制**：app 导出 `HmrdpDecodeWidth()`（`hmrdp_parallel.*`，值来自
-  `hmrdp_decode_tuning.*`，0 解析为自动），解码器在每条 region 边界读它 ⇒ "改设置 → 下一条 region
-  生效"，不需要重新建执行器。宽度是平台队列的 `max_concurrency`；没有平台执行器的构建读到 1 ⇒
-  `progressive.c` 走**完全串行**分支（不提交、不唤醒、不等待）。这里**没有 WinPR 池控制面**。
+- **解码宽度**：app 导出 `HmrdpDecodeWidth()`（`hmrdp_parallel.*`，值来自
+  `hmrdp_decode_tuning.*`：在线核数，上限 16，**不是设置项**），解码器在每条 region 边界读它。
+  宽度是"这条 region 能用几个线程"：调用线程自己跑一个 chunk（调用方参与），平台队列的
+  `max_concurrency` 是宽度 − 1；没有平台执行器的构建读到 1 ⇒ `progressive.c` 走**完全串行**
+  分支（不提交、不唤醒、不等待）。这里**没有 WinPR 池控制面**。
 - **解码侧 dev 探针可运行时开关**：`HmrdpSetProgSample(on)` /
   `HmrdpGetProgSample()` 控制 progressive 解码里那组计时（`HmrdpProgStat` 的分相、逐 tile 的 1/16
   相位采样）。它们只有回放 stats 会展示，而 `clock_gettime` 在本平台不是 vDSO、采样计数器又是每 tile
@@ -123,8 +124,8 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **改动它要从干净源码重打**。数字与口径见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
 - **并行执行器 = 平台队列（ffrt），唯一**：patch step 21 让解码在提交 chunk 前看弱符号
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
-  + 任务属性 + 逐 handle 等待）；没有这些导出时宽度读作 1 ⇒ 串行，**没有 WinPR 池兜底**。**宽度就是
-  设置里的「解码并行宽度」**，dev 读数 `parMax` 可核对实际并发。patch step 25 进一步在平台
+  = 宽度 − 1 + 任务属性 + 逐 handle 等待 + 调用线程自己跑一个 chunk）；没有这些导出时宽度读作 1 ⇒
+  串行，**没有 WinPR 池兜底**。dev 读数 `parMax` 可核对实际并发。patch step 25 进一步在平台
   执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不再为解码建 WinPR 池。见
   [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次

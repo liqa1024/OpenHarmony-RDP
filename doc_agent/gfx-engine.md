@@ -111,7 +111,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   （见 [`build-and-verify.md`](build-and-verify.md) §5.1）。
 - **每轮的 `state=` / `run=`**：stats 文本第一行是 `state=running|finished|aborted  run=<n>`，
   多轮测量按它等待与归属，别按内容猜；驱动脚本见 `native/scripts/replay-rounds.ps1`。
-- **回放页的「路线 / 参考 / 节拍 / 线程 / 重新回放」内部都是 `stop + start`**，在一轮没跑完时点击等于把
+- **回放页的「路线 / 参考 / 节拍 / 重新回放」内部都是 `stop + start`**，在一轮没跑完时点击等于把
   那一轮掐断；性能数字只取 `(running=0)` 的**整轮**，并记下 `frames=` 确认整份跑完（不要假定固定帧数）。
   判定"跑完"要**轮询** stats 文本里的 `(running=0)`，不要固定 sleep。
 - **两种回放节拍**（dev 页切换，`mode=` 字段）：
@@ -207,9 +207,9 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   内存归属）见 [`cpu-accel-plan.md`](cpu-accel-plan.md)。
   - ⚠ **并行要收益，调用线程必须进入工作集**（调用方参与，[`cpu-accel-plan.md`](cpu-accel-plan.md) §1）：
     同一批 tile 若全部交给 worker 池、调用线程只停在屏障里，`dec` 墙钟、`par` 的 `work`/`wall` 与
-    整轮 `cpu=` 都会明显变差——小 region 上甚至**不如串行**（对照档：`ParallelMode` 3 = 同划分、
-    同宽度但不参与）。判据就是这一组：`work`/`wall` 随"谁跑那个 chunk"起落，而不是随宽度。
-  - **自动档宽度 = 在线核数，worker 池通常给不出那么多线程**：多出来的 task 只排队（`wait/task`
+    整轮 `cpu=` 都会明显变差——小 region 上甚至**不如串行**。判据就是这一组：`work`/`wall` 随
+    "那个 chunk 由哪个线程跑"起落，而不是随宽度。
+  - **宽度 = 在线核数，worker 池通常给不出那么多线程**：多出来的 task 只排队（`wait/task`
     升、`idle` 升），并不换来墙钟。调用方参与同时把这一份从池子里拿回来。
 - 回放 stats 就是这条线的账：
 
@@ -327,7 +327,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   `state=running|finished|aborted  run=<n>`，`native/scripts/replay-rounds.ps1` 就是按这个写的：
   - 点一次 → 等**这一轮**的 `run` 变成 `finished`。不要用"现在好像没在跑"来判断：两轮的 stats 文本
     长得一样，按内容猜必然把数据记到上一轮头上（`run=` 就是为此存在的）。
-  - **一轮没跑完绝不点下一次**：dev 页的模式按钮（参考/节拍/路线/线程）内部都是 `stop + start`，
+  - **一轮没跑完绝不点下一次**：dev 页的模式按钮（参考/节拍/路线）内部都是 `stop + start`，
     中途点击 = 掐断，而**掐断的轮次不是测量**（驱动会直接把 `state=aborted` 报出来）。
   - 掐断的轮次**不写参考**（导出只在完整轮次落盘），否则一次半截导出会把好参考换成"跑了十几帧的哈希表"。
   - 脚本负责"设模式 → 推录像/参考 → 点重新回放 → 收 stats"，落到 `rounds-*.txt`；人只看文件。
