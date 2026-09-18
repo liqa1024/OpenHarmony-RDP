@@ -69,6 +69,11 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   且在 region 边界调用，不会撕掉在飞的 work item）与 `HmrdpGetDecodeThreadsStats()`（dev 读数）。
   池是**每个 codec 上下文一个**（`rfx.c`），创建时就按同一个解析器定尺寸 ⇒ "改设置 → 下一条会话/回放
   生效"；`n == 1` 在 `progressive.c` 里走**完全串行**分支（不提交、不唤醒、不等待）。
+- **解码侧 dev 探针可运行时开关**：`HmrdpSetProgSample(on)` /
+  `HmrdpGetProgSample()` 控制 progressive 解码里那组计时（`HmrdpProgStat` 的分相、逐 tile 的 1/16
+  相位采样）。它们只有回放 stats 会展示，而 `clock_gettime` 在本平台不是 vDSO、采样计数器又是每 tile
+  一次共享原子加 ⇒ **默认关**；app 的 CPU 回放轮次打开、live 连接显式关闭（[`gfx-engine.md`](gfx-engine.md) §8.3）。
+  逆 DWT 对拍是独立的 `HmrdpSetDwtCheck`。
 
 **采集 / 回放 / QoS**
 
@@ -91,8 +96,8 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   一个线程池任务）、`update_tiles` **不再逐 tile 建 `REGION16`**（一次取裁剪表 + 普通求交 + per-tile
   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
-  统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
-  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
+  统计行做归因（该组探针由 `HmrdpSetProgSample` 门控，见上）。整块按"一次性整体打补丁"设计：
+  **改动它要从干净源码重打**。数字与口径见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
 - **并行执行器换成平台队列（ffrt）**：patch step 21 让解码在提交 chunk 前先看弱符号
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
   + 任务属性 + 逐 handle 等待）；构建里没有这些导出时回落到原 WinPR 池。**宽度就是设置里的

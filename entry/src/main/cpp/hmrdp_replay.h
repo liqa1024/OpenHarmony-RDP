@@ -25,6 +25,9 @@ namespace hmrdp {
 class FramePresenter;
 class GfxCpuDesktop;
 class ReplayDesktop;
+// What the CPU present path handed over for one frame (hmrdp_gfx_cpu.h): passed
+// to the frame observers, declared here to keep this header light.
+struct PresentUploadInfo;
 
 // Which decoder/presenter the replay runs.
 //  kCpu    - FreeRDP's own gdi pipeline (the only route the dev page drives),
@@ -96,8 +99,16 @@ class GfxReplay {
 
   // Called by the replay GFX callbacks on every EndFrame (replay thread).
   void OnReplayFrame();
-  // Called from the offline gdi EndPaint hook (CPU route, replay thread).
-  void OnCpuFrame(GfxCpuDesktop* cpu);
+  // The CPU route's frame observers, installed on the shared GdiFrameHost and run
+  // from the same EndPaint chain a live session runs (hmrdp_gfx_cpu.h):
+  //   OnCpuFramePre     - run cap / pending surface resize / energy sample; false
+  //                       vetoes the frame (a run that hit its cap presents
+  //                       nothing more).
+  //   OnCpuFramePresent - the frame's accounting (present/upload stats, cadence,
+  //                       golden reference), with the present the host measured.
+  bool OnCpuFramePre();
+  void OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t presentUs,
+                         const PresentUploadInfo& upload);
 
   // Dev timing: accumulated decode-apply / present time (microseconds), reported
   // per frame by Stats() so the engine and CPU routes can be compared directly.

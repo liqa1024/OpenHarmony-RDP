@@ -64,6 +64,13 @@ constexpr int kDwtCheckSlots = 3;
 extern "C" unsigned long long HmrdpDwtCheckStat[kDwtCheckSlots] __attribute__((weak));
 extern "C" void HmrdpSetDwtCheck(int on) __attribute__((weak));
 
+// The progressive decode's timing probes (`HmrdpProgStat` / the `prog`/`prog2`
+// lines) are off by default: their clock reads are not free on this platform and
+// only a replay ever displays them. The CPU route turns them on for its run and
+// a live session keeps them off (hmrdp_session.cpp). Weak, so a stock FreeRDP
+// simply has no probes to switch.
+extern "C" void HmrdpSetProgSample(int on) __attribute__((weak));
+
 namespace hmrdp {
 
 // The replay's desktop engine: the Vulkan GFX engine plus its swapchain
@@ -460,6 +467,13 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     if (HmrdpSetDwtCheck != nullptr) {
       HmrdpSetDwtCheck(refMode_.load() == static_cast<int>(GfxReplayRefMode::kCompare) ? 1 : 0);
     }
+    // The progressive timing probes exist for this route's `prog`/`prog2` lines
+    // only: a live session never displays them and must not pay their per-tile
+    // clock reads. On while the CPU route runs, off otherwise (the engine route
+    // decodes in the GPU and never fills them).
+    if (HmrdpSetProgSample != nullptr) {
+      HmrdpSetProgSample(route == GfxReplayRoute::kCpu ? 1 : 0);
+    }
     presentUs_.store(0);
     uploadBytes_.store(0);
     uploadBoxBytes_.store(0);
@@ -538,6 +552,11 @@ void GfxReplay::Stop() {
     thread_.join();
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  // Leaving the progressive timing probes on would make the next live session
+  // pay their clock reads: the switch is process-global in the decoder.
+  if (HmrdpSetProgSample != nullptr) {
+    HmrdpSetProgSample(0);
+  }
   presenter_.reset();
   if (window_ != nullptr) {
     OH_NativeWindow_DestroyNativeWindow(static_cast<OHNativeWindow*>(window_));
@@ -1113,13 +1132,23 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // over (the presenter is up by now, so it does): the present then costs a copy
   // of the dirty rects out of memory gdi already wrote, with no frame copy at all.
   cpu.SetPresenter(presenter_.get());
+  // The frame host reports its `sync` blocked time to this run's own meter, not
+  // to whatever meter a live session may have published (hmrdp_gfx_cpu.h).
+  cpu.SetMeter(&meter_);
   std::string error;
   if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
     std::lock_guard<std::mutex> err(errorMutex_);
     lastError_ = error;
     return;
   }
-  cpu.SetFrameFn([this, &cpu]() { OnCpuFrame(&cpu); });
+  // The same EndPaint chain a live session runs: the shared host attaches, waits,
+  // presents, and calls these two observers. They are the replay-only part (run
+  // cap / resize / energy before, stats / cadence / reference after).
+  cpu.SetPrePresentFn([this](rdpGdi*) { return OnCpuFramePre(); });
+  cpu.SetPresentedFn(
+      [this, &cpu](bool presented, uint64_t presentUs, const PresentUploadInfo& upload) {
+        OnCpuFramePresent(&cpu, presented, presentUs, upload);
+      });
 
   // Measure this run with the live session's meter (same hooks, same phases), so
   // the CPU route's per-frame figures can be put next to a live session's. A live
@@ -1138,7 +1167,7 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // presenter's desktop buffer in place, so skipping it would bring back the
   // two-frames-in-one-upload race this replay is often run to catch.
   GfxWorkInstall(cpu.gfx());
-  GfxWorkSetFrameBeginHook([&cpu]() { cpu.OnFrameBegin(); });
+  GfxWorkSetFrameBeginHook(cpu.gfx(), [&cpu]() { cpu.OnFrameBegin(); });
 
   hmrdp::GfxDumpSetReplaying(true);
   hmrdp::GfxReplayResetParseUs();
@@ -1212,8 +1241,9 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   }
 
   hmrdp::GfxDumpSetReplaying(false);
-  cpu.SetFrameFn(nullptr);
-  GfxWorkSetFrameBeginHook(nullptr);
+  cpu.SetPrePresentFn(nullptr);
+  cpu.SetPresentedFn(nullptr);
+  GfxWorkSetFrameBeginHook(cpu.gfx(), nullptr);
   GfxWorkUninstall(cpu.gfx());
   if (metered) {
     SetActiveWorkMeter(nullptr);
@@ -1402,12 +1432,11 @@ void GfxReplay::RefCollectFrame(GfxCpuDesktop* cpu) {
   }
 }
 
-void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
-  if (cpu == nullptr) {
-    return;
-  }
-  // Sampled here because this is the CPU route's per-frame hook: the probe only
-  // tags a sample every 250 ms, so a call per frame costs a clock read.
+bool GfxReplay::OnCpuFramePre() {
+  // Runs inside the shared frame host's chain, before the present: the energy
+  // probe only tags a sample every 250 ms (a clock read per frame is free), and a
+  // run that hit its cap stops here without presenting or accounting for one more
+  // frame.
   energy_.Poll();
   const int64_t nowUs = static_cast<int64_t>(NowUs());
   const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
@@ -1415,21 +1444,22 @@ void GfxReplay::OnCpuFrame(GfxCpuDesktop* cpu) {
     HMRDP_LOGI("gfx replay: %{public}ds cap reached",
                static_cast<int>(capUs / 1000000));
     running_.store(false);
-    return;
+    return false;
   }
   const int pw = pendingW_.exchange(0);
   const int ph = pendingH_.exchange(0);
   if (pw > 0 && ph > 0) {
     presenter_->ResizeSurface(pw, ph);
   }
-  // The frame's wait for the GPU to release the desktop buffer happened in
-  // BeginPaint, before this; report it so it is not mistaken for compose work
-  // (hmrdp_gfx_work.h).
-  meter_.OnPresentSync(cpu->TakePresentSyncUs());
-  const int64_t presentStart = NowUs();
-  PresentUploadInfo upload;
-  const bool presented = PresentGdiFrame(cpu->gdi(), presenter_.get(), &upload);
-  const uint64_t presentUs = static_cast<uint64_t>(NowUs() - presentStart);
+  return true;
+}
+
+void GfxReplay::OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t presentUs,
+                                  const PresentUploadInfo& upload) {
+  // The zero-copy wait (`sync`) and the present itself were measured once, in the
+  // shared GdiFrameHost the live session also uses; this only dispatches the same
+  // figure to the replay's reports (the route-agnostic `present=` line and the
+  // live-comparable `本机` phase). No timing is duplicated here (hmrdp_gfx_cpu.h).
   RecordPresent(presentUs);
   meter_.OnPresent(presentUs);
   uploadBytes_.fetch_add(static_cast<uint64_t>(upload.uploadedBytes));

@@ -513,6 +513,12 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 - **探针只做一次性实验、量完就删**；长期保留的只有 per-message 计时（`read/dispatch/dec/update`、
   `calls/unions/tiles/tilesDec`）、**逐相位探针 `prog2`**、app 侧 `setup` 计数、present 的 GPU 时间戳、
   以及解码侧的**对拍计数**（8.4）。
+- **解码侧的 dev 计时按"谁展示"开关，不常开**：解码器里那组计时（`HmrdpProgStat` 的 `read/dispatch/dec/
+  update` 与 `prog2` 相位、逐 tile 的 1/16 采样）只有**回放的 stats** 会读，live 工具栏不展示；本平台
+  `clock_gettime` 不是 vDSO、采样计数器又是每 tile 一次共享原子加 ⇒ 本组探针由
+  `HmrdpSetProgSample(on)` 控制，**默认关**：回放 CPU 路线在自己的轮次里打开，live 连接显式关闭。
+  逆 DWT 对拍是另一档（`HmrdpSetDwtCheck`），只在 `参考:对比` 打开（8.4）。
+  ⇒ 读 live 的 `本机`/拆相时，解码段里不含任何 dev 计时；`prog`/`prog2` 的数字只代表回放那一轮。
 - **不要用"跳过某条 dispatch/步骤 + 差值反推"做归因**（依赖关系会变）：用计数器 + 相位桶。
 - **回放节拍若落在 `gdi_EndFrame` 里，必须扣掉**（否则算进 `compose`）：`GfxWorkMeter::OnPace` 为此存在；
   `sync` 同理，**别把"等 GPU"当"合成贵"**。

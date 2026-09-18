@@ -114,6 +114,88 @@ rdpGdi* GfxCpuDesktop::gdi() const {
   return instance_->context->gdi;
 }
 
+void GfxCpuDesktop::SetPresenter(FramePresenter* presenter) {
+  presenter_ = presenter;
+  host_.SetPresenter(presenter);
+}
+
+void GfxCpuDesktop::SetMeter(GfxWorkMeter* meter) {
+  meter_ = meter;
+  host_.SetMeter(meter);
+}
+
+// ---- the shared CPU (gdi) frame host --------------------------------------
+// One implementation of the zero-copy wait and the present, driven by both the
+// live session and this offline desktop (see hmrdp_gfx_cpu.h).
+
+void GdiFrameHost::OnFrameBegin() {
+  // The frame's first pixel write is about to happen: when gdi composes into the
+  // presenter's desktop buffer (the zero-copy path), the GPU must be done copying
+  // the previous frame out of it, or this frame's decode overwrites bytes that
+  // copy has not read yet and the upload becomes a mix of two frames. This is the
+  // point that protects the in-place decode writes; OnBeginPaint only covers the
+  // compose, and is a no-op once this one has waited.
+  if (!desktopAttached_ || presenter_ == nullptr) {
+    return;
+  }
+  const uint64_t startUs = static_cast<uint64_t>(NowUs());
+  presenter_->BeginDesktopBufferWrite();
+  const uint64_t waitedUs = static_cast<uint64_t>(NowUs()) - startUs;
+  if (meter_ != nullptr) {
+    // Blocked time, reported as its own phase so a slow present pipeline cannot
+    // be mistaken for an expensive compose ...
+    meter_->OnPresentSync(waitedUs);
+    // ... and handed out of the pending `zgx+parse` window this hook sits in, or
+    // `本机` would count it twice (hmrdp_gfx_work.h).
+    meter_->OnBlockedBeforeFrameWork(waitedUs);
+  }
+}
+
+void GdiFrameHost::OnBeginPaint() {
+  // gdi is about to compose this frame into the primary buffer (the mirrored
+  // surface's pixels are already there); the same wait as OnFrameBegin, and free
+  // when that one already drained the previous frame's copy.
+  if (!desktopAttached_ || presenter_ == nullptr) {
+    return;
+  }
+  const uint64_t startUs = static_cast<uint64_t>(NowUs());
+  presenter_->BeginDesktopBufferWrite();
+  if (meter_ != nullptr) {
+    meter_->OnPresentSync(static_cast<uint64_t>(NowUs()) - startUs);
+  }
+}
+
+bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInfo* info) {
+  if (presentUs != nullptr) {
+    *presentUs = 0;
+  }
+  if (gdi == nullptr || presenter_ == nullptr) {
+    return false;
+  }
+  // The owner's per-frame hook (the replay's run cap / pending resize / energy
+  // sample) may veto this frame; the live session installs none.
+  if (prePresentFn_ && !prePresentFn_(gdi)) {
+    return false;
+  }
+  // Move gdi onto the presenter's buffer if that has not happened yet (zero-copy
+  // present, a no-op once attached), then hand the dirty region over.
+  if (!desktopAttached_) {
+    desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_);
+  }
+  const uint64_t startUs = static_cast<uint64_t>(NowUs());
+  const bool presented = PresentGdiFrame(gdi, presenter_, info);
+  const uint64_t us = static_cast<uint64_t>(NowUs()) - startUs;
+  if (presentUs != nullptr) {
+    *presentUs = us;
+  }
+  // The owner accounts for the frame even when the presenter had nothing to draw
+  // (the replay tells skips from failures); the live session ignores those.
+  if (presentedFn_) {
+    presentedFn_(presented, us, info != nullptr ? *info : PresentUploadInfo{});
+  }
+  return presented;
+}
+
 bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail = [this, error](const char* why) {
     if (error != nullptr) {
       *error = why;
@@ -126,6 +208,8 @@ bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail
   }
   width_ = width;
   height_ = height;
+  host_.SetPresenter(presenter_);
+  host_.SetMeter(meter_);
 
   instance_ = freerdp_new();
   if (instance_ == nullptr) {
@@ -207,71 +291,43 @@ void GfxCpuDesktop::Shutdown() {
     instance_ = nullptr;
   }
   // gdi is gone, so the presenter's buffer is free to drop (it owns it).
-  if (desktopAttached_ && presenter_ != nullptr) {
+  if (host_.desktopAttached() && presenter_ != nullptr) {
     presenter_->ReleaseDesktopBuffer();
   }
-  desktopAttached_ = false;
-  frameFn_ = nullptr;
+  host_.DetachDesktopBuffer();
+  // The observers capture the replay's stack state; drop them with the context.
+  host_.SetPrePresentFn(nullptr);
+  host_.SetPresentedFn(nullptr);
   width_ = 0;
   height_ = 0;
 }
 
 void GfxCpuDesktop::OnFrameBegin() {
-  // The frame's first pixel write is about to happen: when gdi composes into the
-  // presenter's desktop buffer (the zero-copy path), the GPU must be done copying
-  // the previous frame out of it, or this frame's decode overwrites the bytes that
-  // copy has not read yet and the upload becomes a mix of two frames. This is the
-  // point that actually protects the in-place decode writes; the BeginPaint call
-  // below only covers the compose, which happens later in the frame (a no-op once
-  // this one has waited - the pending flag is cleared by the wait).
-  if (desktopAttached_ && presenter_ != nullptr) {
-    const int64_t startUs = NowUs();
-    presenter_->BeginDesktopBufferWrite();
-    const uint64_t waitedUs = static_cast<uint64_t>(NowUs() - startUs);
-    presentSyncUs_ += waitedUs;
-    // This runs before the frame's first command, so that wait sits inside the
-    // window the meter charges to `zgx+parse`; hand it over so it is not counted
-    // there as well (hmrdp_gfx_work.h).
-    if (GfxWorkMeter* meter = ActiveWorkMeter()) {
-      meter->OnBlockedBeforeFrameWork(waitedUs);
-    }
-  }
+  // The zero-copy wait and its `sync` accounting live in the shared host, so this
+  // route and a live session report it from exactly the same point (GdiFrameHost).
+  host_.OnFrameBegin();
 }
 
 void GfxCpuDesktop::OnBeginPaint() {
-  // gdi is about to compose this frame into its primary buffer (the mirrored
-  // surface's pixels are already there); the same wait as OnFrameBegin, and free
-  // when that one already drained the previous frame's copy. Normally free either
-  // way: a whole frame's decode sits between the two (doc_agent/present-pipeline.md §4.5).
-  // No accounting here: this one runs inside gdi's EndFrame, where the meter
-  // already subtracts the sync wait from the compose share.
-  if (desktopAttached_ && presenter_ != nullptr) {
-    const int64_t startUs = NowUs();
-    presenter_->BeginDesktopBufferWrite();
-    presentSyncUs_ += static_cast<uint64_t>(NowUs() - startUs);
-  }
-}
-
-uint64_t GfxCpuDesktop::TakePresentSyncUs() {
-  const uint64_t us = presentSyncUs_;
-  presentSyncUs_ = 0;
-  return us;
+  host_.OnBeginPaint();
 }
 
 void GfxCpuDesktop::OnEndPaint() {
   // gdi_resize_ex() calls update_end_paint() while the primary buffer is being
-  // rebuilt; that is not a decoded frame, so it must not present.
+  // rebuilt; that is not a decoded frame, so it must not present. Otherwise this
+  // runs the same chain the live session's EndPaint runs: the shared host does
+  // Attach -> PresentGdiFrame and calls the replay's observers (which live installs
+  // as none / telemetry instead).
   if (resizing_) {
     return;
   }
-  // The frame is composed and not yet presented: the right moment to move gdi onto
-  // the presenter's buffer (no-op once that happened).
-  if (!desktopAttached_ && presenter_ != nullptr) {
-    desktopAttached_ = AttachPresenterDesktopBuffer(gdi(), presenter_);
+  rdpGdi* desktop = gdi();
+  if (desktop == nullptr) {
+    return;
   }
-  if (frameFn_) {
-    frameFn_();
-  }
+  uint64_t presentUs = 0;
+  PresentUploadInfo info;
+  (void)host_.OnEndPaint(desktop, &presentUs, &info);
 }
 
 void GfxCpuDesktop::OnDesktopResize() {
@@ -305,7 +361,7 @@ bool GfxCpuDesktop::Resize(int width, int height) {
   resizing_ = false;
   // gdi_resize() built a gdi-owned buffer again; the next EndPaint moves the new
   // desktop back onto the presenter's buffer (sized to the new geometry).
-  desktopAttached_ = false;
+  host_.DetachDesktopBuffer();
   const int64_t dt = std::chrono::duration_cast<std::chrono::microseconds>(
                          std::chrono::steady_clock::now().time_since_epoch())
                          .count() -

@@ -22,6 +22,11 @@
 
 namespace hmrdp {
 
+// The shared CPU (gdi) frame host (hmrdp_gfx_cpu.h): the zero-copy wait, its
+// `sync` accounting and the present, implemented once for the live session and
+// the offline replay. Held by pointer here to keep the header light.
+class GdiFrameHost;
+
 enum class SessionEvent {
   kConnected = 0,
   kDisconnected = 1,
@@ -178,8 +183,9 @@ class Session {
  private:
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
-  // Frame telemetry shared by every present path.
-  void AfterPresent(uint64_t renderStartUs);
+  // Frame telemetry shared by every present path. `presentUs` is the present
+  // duration already measured by the shared frame host.
+  void AfterPresent(uint64_t presentUs);
   // Samples RTT / frame rate / transport throughput and emits kMetrics.
   void EmitMetrics();
   // Records an input timestamp for the input-to-frame response measurement.
@@ -192,10 +198,9 @@ class Session {
   // commands on one thread while gdi's EndPaint callback can fire on another, so
   // every present is serialised by the backend itself.
   std::unique_ptr<FramePresenter> presenter_;
-  // True once gdi composes into the presenter's own desktop buffer (zero-copy
-  // present, doc_agent/present-pipeline.md §4.5). Retried every frame until it succeeds,
-  // which is how the session picks it up when the surface arrives after connect.
-  bool desktopAttached_ = false;
+  // Attach/zero-copy wait/present for this session's gdi (the same host the
+  // offline replay uses), see hmrdp_gfx_cpu.h.
+  std::unique_ptr<GdiFrameHost> frameHost_;
   AudioOutput audio_;
   EventFn eventFn_;
   std::string lastError_;

@@ -73,6 +73,12 @@ extern "C" void HmrdpGfxRawCapture(const BYTE* data, UINT32 size) {
 extern "C" void HmrdpSetGfxRawCapture(void (*fn)(const BYTE* data, UINT32 size))
     __attribute__((weak));
 
+// Defined by the patched progressive decoder: switches the decode's dev timing
+// probes. They are off by default and only a replay displays them, so a live
+// connect explicitly keeps them off and does not pay their per-tile clock reads
+// (see hmrdp_replay.cpp / patch step 24). Weak so stock FreeRDP links unchanged.
+extern "C" void HmrdpSetProgSample(int on) __attribute__((weak));
+
 // Defined by the patched winpr (native/scripts/patch-freerdp.ps1): the pool
 // workers and the drdynvc thread call the registered callback once per thread.
 // Weak so a stock FreeRDP still links - the QoS marking is then simply absent.
@@ -1354,7 +1360,7 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     // frame's GPU copy out of it has to drain here, not in BeginPaint (which FreeRDP
     // calls after the frame's decode - see GfxWorkSetFrameBeginHook).
     Session* session = ctx->session;
-    GfxWorkSetFrameBeginHook([session]() { session->HandleFrameBegin(); });
+    GfxWorkSetFrameBeginHook(gfx, [session]() { session->HandleFrameBegin(); });
     ctx->session->SetGfxContext(gfx);
   }
 }
@@ -1378,6 +1384,12 @@ BOOL HmrdpPreConnect(freerdp* instance) {
   // capture). Harmless when FreeRDP was not built with the HmRdp patch.
   if (HmrdpSetGfxRawCapture != nullptr) {
     HmrdpSetGfxRawCapture(&HmrdpGfxRawCapture);
+  }
+  // The progressive decode's dev timing probes are for the replay's `prog` lines;
+  // a live session never shows them and must not pay their per-tile clock reads.
+  // Set explicitly because a replay may have left them on (the switch is global).
+  if (HmrdpSetProgSample != nullptr) {
+    HmrdpSetProgSample(0);
   }
   // Hand the QoS hook to the patched winpr: its pool workers (tile decoding) and
   // the drdynvc thread (the frame pipeline) call it once per thread.
@@ -1455,8 +1467,9 @@ void HmrdpPostDisconnect(freerdp* instance) {
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(instance->context);
   if (ctx->session != nullptr) {
-    GfxWorkSetFrameBeginHook(nullptr);
-    GfxWorkUninstall(static_cast<RdpgfxClientContext*>(ctx->session->gfxContext()));
+    auto* gfx = static_cast<RdpgfxClientContext*>(ctx->session->gfxContext());
+    GfxWorkSetFrameBeginHook(gfx, nullptr);
+    GfxWorkUninstall(gfx);
     ctx->session->SetGfxContext(nullptr);
     ctx->session->HandlePostDisconnect();
   }
@@ -1529,7 +1542,18 @@ std::string EncodeError(uint32_t code, const std::string& message) {
 
 }  // namespace
 
-Session::Session() : presenter_(CreateFramePresenter()) {
+Session::Session()
+    : presenter_(CreateFramePresenter()), frameHost_(std::make_unique<GdiFrameHost>()) {
+  frameHost_->SetPresenter(presenter_.get());
+  frameHost_->SetMeter(&meter_);
+  // The live observer on the same chain the replay uses: account for a frame that
+  // actually reached the surface (telemetry / input response / first frame).
+  frameHost_->SetPresentedFn(
+      [this](bool presented, uint64_t presentUs, const PresentUploadInfo&) {
+        if (presented) {
+          AfterPresent(presentUs);
+        }
+      });
   EnsureEntryPoints();
 }
 
@@ -2009,7 +2033,7 @@ void Session::Disconnect() {
   running_ = false;
   audio_.Close();
   // The desktop buffer dies with the presenter; the next connect re-attaches.
-  desktopAttached_ = false;
+  frameHost_->DetachDesktopBuffer();
   if (presenter_ != nullptr) {
     presenter_->Reset();
   }
@@ -2020,26 +2044,11 @@ void Session::HandlePostConnect() {
 }
 
 void Session::HandleFrameBegin() {
-  // RDPGFX START_FRAME: this frame's first pixel write is about to happen. gdi
-  // composes into the presenter's own desktop buffer (zero-copy), and the decoder
-  // writes that buffer in place, so the previous frame's GPU copy out of it must
-  // have finished before now - otherwise the copy reads a buffer this frame has
-  // already overwritten and the presented picture mixes two frames (blocks of the
-  // old frame left at the positions they had before, which the pixel A/B cannot
-  // see because it reads gdi's own buffer). Normally free: the copy is ~ms while a
-  // frame is ~10ms+ (doc_agent/present-pipeline.md §4.5).
-  if (desktopAttached_ && presenter_ != nullptr) {
-    const uint64_t startUs = NowUs();
-    presenter_->BeginDesktopBufferWrite();
-    const uint64_t waitedUs = NowUs() - startUs;
-    // Blocked time, not composition: reported as its own phase so a slow present
-    // pipeline cannot be mistaken for an expensive compose (hmrdp_gfx_work.h).
-    meter_.OnPresentSync(waitedUs);
-    // ... and this hook runs before the frame's first command, so the same wait
-    // sits inside the window that becomes `zgx+parse`: hand it over, or `本机`
-    // would count it twice.
-    meter_.OnBlockedBeforeFrameWork(waitedUs);
-  }
+  // RDPGFX START_FRAME: this frame's first pixel write is about to happen. The
+  // zero-copy wait and its `sync` accounting live in the shared frame host, which
+  // the offline replay drives too (hmrdp_gfx_cpu.h), so there is one
+  // implementation and one timing shape for both.
+  frameHost_->OnFrameBegin();
 }
 
 void Session::HandleBeginPaint() {
@@ -2047,16 +2056,12 @@ void Session::HandleBeginPaint() {
   // surface's pixels are already there). Same wait as HandleFrameBegin, and a
   // no-op when that one already drained the previous frame's copy - it is kept
   // because the compose of a *non-mirrored* surface happens here.
-  if (desktopAttached_ && presenter_ != nullptr) {
-    const uint64_t startUs = NowUs();
-    presenter_->BeginDesktopBufferWrite();
-    meter_.OnPresentSync(NowUs() - startUs);
-  }
+  frameHost_->OnBeginPaint();
 }
 
 void Session::HandleEndPaint() {
   // FreeRDP's gdi owns the desktop; a completed frame shows up here with the
-  // invalid rectangle final, and it is uploaded through the Vulkan presenter.
+  // invalid rectangle final, and it is uploaded through the presenter.
   rdpGdi* gdi = instance_->context->gdi;
   static int endPaintCount = 0;
   if (gdi == nullptr || gdi->primary == nullptr || gdi->primary_buffer == nullptr) {
@@ -2083,29 +2088,21 @@ void Session::HandleEndPaint() {
   if (hwnd->invalid->null) {
     return;
   }
-  // The frame is composed and not yet presented: move gdi onto the presenter's
-  // desktop buffer if that has not happened yet (zero-copy present). A no-op once
-  // attached.
-  if (!desktopAttached_ && presenter_ != nullptr) {
-    desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_.get());
-  }
-  const uint64_t renderStart = NowUs();
-  // Shared with the offline CPU replay route (hmrdp_gfx_cpu.cpp), so the live
-  // path and the replay present exactly the same way. It only fails when the
-  // swapchain is not ready yet or nothing is dirty; a successful call is a real
-  // present (fps / 本机 telemetry / input response).
-  if (!PresentGdiFrame(gdi, presenter_.get())) {
-    return;
-  }
-  AfterPresent(renderStart);
+  // Attach gdi to the presenter's desktop buffer (zero-copy), wait for the GPU to
+  // release it, and present the dirty region: all shared with the offline CPU
+  // replay route (hmrdp_gfx_cpu.cpp), so the live path and the replay present
+  // exactly the same way. The frame's own accounting runs in the observer
+  // installed above, exactly where the replay's does.
+  uint64_t presentUs = 0;
+  (void)frameHost_->OnEndPaint(gdi, &presentUs, nullptr);
 }
 
-void Session::AfterPresent(uint64_t renderStartUs) {
+void Session::AfterPresent(uint64_t presentUs) {
   const uint64_t nowUs = NowUs();
   // Charged to the frame being handled: the present runs inside the GFX
   // EndFrame (gdi_OutputUpdate -> update_end_paint), so the meter's OnFrameEnd
-  // consumes it when the frame closes.
-  meter_.OnPresent(nowUs - renderStartUs);
+  // consumes it when the frame closes. Measured once, by the shared frame host.
+  meter_.OnPresent(presentUs);
   frameCount_.fetch_add(1);
 
   // Input-to-frame response: if an input armed while idle, this frame is very
