@@ -2,7 +2,7 @@
 
 本文件是**改 GFX 相关代码前必读**的口径文档。范围：GFX 通道的压缩与命令模型、会话侧的接线约束、
 dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构与量测纪律（§8）。
-上屏这一段见 [`present-pipeline.md`](present-pipeline.md)；CPU 多核与平台适配见
+上屏这一段见 [`present-pipeline.md`](present-pipeline.md)；CPU 并行形态见
 [`cpu-accel-plan.md`](cpu-accel-plan.md)。
 
 > **已移除**：自研的 Vulkan GFX 桌面引擎（GPU Progressive/ClearCodec 解码 + 表面合成）、它的能力判定、
@@ -183,7 +183,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 
 ## 7. 待办
 
-- **CPU（gdi）链路的多核与平台适配**（ffrt 任务队列、宽度、producer/consumer 流水线、duty 自适应）：
+- **CPU（gdi）链路的多核并行**（并行范围、ffrt 执行器、宽度、任务划分、内存归属、合成归属）：
   单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md)。单核部分的知识见本文件 §8。
 - **若重建 GPU 优化**：以现有的 Vulkan 上屏（`VkRenderer` + `hmrdp_vk_context`）为基础；呈现能力判定
   已是唯一判定（§4），不要再引入第二套引擎判定与开关。
@@ -191,8 +191,9 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 ## 8. CPU（gdi）链路：成本结构、账目与量测纪律
 
 **CPU 路线** = FreeRDP gdi 解码 + 我们自己的呈现器；这是解码/合成的**唯一路径**（§0）。这一节是这条线的
-**通用知识**：成本怎么读、账怎么记、门禁是什么、哪些估算被否证过。下一步要做的事（多核与平台适配）
-见 [`cpu-accel-plan.md`](cpu-accel-plan.md)；历史口径与旧数据见 [`cpu-path_old.md`](cpu-path_old.md)（old）。
+**通用知识**：成本怎么读、账怎么记、门禁是什么、哪些估算被否证过。这条线现在的并行形态
+（并行范围、执行器、宽度、任务划分、内存归属）见 [`cpu-accel-plan.md`](cpu-accel-plan.md)；
+历史口径与旧数据见 [`cpu-path_old.md`](cpu-path_old.md)（old）。
 
 ### 8.1 判据与账目口径
 
@@ -202,15 +203,14 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
     更便宜 ⇒ "并行换了多少 CPU 秒"**不是能量结论**；要么在同一 `cpuKHz=` 档下比，要么按
     "CPU 时间 × 档位"估，要么直接看 duty 下的功耗。
 - **优先"少干活"**（去冗余拷贝、少唤醒、去掉重复搬运），但**不是因为"并行不好"**：多核低频在很多负载下
-  比单核高频更省电，**并行本身是正当的能效手段**。这条线的并行形态（平台任务队列、宽度、相位归属、
-  内存布局）见 [`cpu-accel-plan.md`](cpu-accel-plan.md)：**并行对能耗是赚的**（整屏样本的 `E2` 约为串行的
-  一半）。
+  比单核高频更省电，**并行本身是正当的能效手段**。这条线的并行形态（平台任务队列、宽度、任务划分、
+  内存归属）见 [`cpu-accel-plan.md`](cpu-accel-plan.md)。
 - 回放 stats 就是这条线的账：
 
   | 行 | 含义 |
   |---|---|
   | `perFrame work=… = zgx+parse + decode + compose + present  (+ sync … + presentWait … blocked)` | 每帧的四个工作相位；`work` 是它们在**展示端**相加的结果（计量器只产子项，不存总数），`本机` 用的就是这个和；`sync`/`presentWait` 是阻塞时间（等 GPU 缓冲 / 等显示端），**不计入**（见下） |
-  | `prog ms/frame: read / dispatch / dec / update  (calls= unions= tiles= tilesDec= ffrt=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**（并行时是并行段墙钟，串行时是本线程逐 tile；读前先看 `threads=`）、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1/§2）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数、`ffrt` = 走平台队列的 region 次数 |
+  | `prog ms/frame: read / dispatch / dec / update  (calls= unions= tiles= tilesDec= ffrt=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**（并行时是并行段墙钟，串行时是本线程逐 tile；读前先看 `threads=`）、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数、`ffrt` = 走平台队列的 region 次数 |
   | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile。并行下 `sum` 是所有 worker 的时间之和（≈ `dec` × 有效宽度）⇒ **只读占比** |
   | `run … threads=… ffrt=… parRatio=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、平台队列实际派发的 region 次数（证明解码确实走了 ffrt）、**频不变并行效率**（worker 忙碌和 ÷ `dec` 墙钟）与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
@@ -258,8 +258,8 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
      `dispatch`/`blocked` 必然为 0，不是缺失）。⇒ 读 `dec` 前先看 `threads=`。
   - **`update` 的大头本来是像素拷贝，不是记账**：`freerdp_image_copy_no_overlap` 把每个 tile（64×64×4B）
      拷进 surface；带 `KEEP_DST_ALPHA` 掩码（每像素一次掩码写）而不是 memcpy。region16 记账只值
-     ~0.5ms/帧 量级（见 8.5）。**这份拷贝默认已经随 tile 解码段并行**（`update_tiles` 只留记账，见
-     [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2），所以并行下 `update` 只剩记账量级。
+      ~0.5ms/帧 量级（见 8.5）。**这份拷贝默认已经随 tile 解码段并行**（`update_tiles` 只留记账，见
+      [`cpu-accel-plan.md`](cpu-accel-plan.md) §4），所以并行下 `update` 只剩记账量级。
 - **按字节算这笔账**（优化后期，单核的天平已经从"算力"倒向"每帧过多少字节"）：一个 tile（3 分量）大致
   搬 200KB 量级——RLGR 出 `sign`、去量化 `sign → buffer`、状态更新 `buffer↔current`、逆 DWT 三级级联、
   `color` 读系数写 tile、`update` 读 tile + 读目的（保 alpha）+ 写目的。各趟实测速率在
@@ -360,8 +360,8 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 1. **"每次 tile 的 region16 union（O(n²)）是 `update` 的大头"** —— 先把相邻 tile 索引合并再 union，
    `unions ≈ tiles`（Progressive 每条消息的 region 基本就是每 tile 一个矩形，没有可合并对象）⇒ 零收益；
    再改成"每 tile 行一个 span、帧末一次并进 region"，`unions` 降了 50 倍以上而 `update` 只降 ~0.5ms
-   ⇒ **union 总共只值 ~0.5ms**。⇒ 教训：**`update` 的账按"拷贝字节数"估，不要按"矩形条数"估**；
-   而这份字节成本**落在哪条线程上**比它的多少更值钱（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2）。
+   ⇒ **union 总共只值 ~0.5ms**。   ⇒ 教训：**`update` 的账按"拷贝字节数"估，不要按"矩形条数"估**；而这份字节成本**落在哪条线程上**
+   比它的多少更值钱（拷贝现在落在 tile 解码段上，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4）。
 2. **"delta 折叠（只拷没写过的区域）"** —— 去重 stamp 实测命中 **0 次**（帧内没有重复合成）⇒ 无收益。
 3. **"`state` 的饱和加是算力瓶颈"** —— 那个循环按元素做两次分支钳位，看着像算力账；换成 `VQADD`
    （8 路、逐位等价的饱和加）后 `state` 在噪声内 ⇒ 它**受搬的字节数限制**（工作缓冲与持久 `current`
@@ -381,8 +381,8 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 
 - **`update_tiles` 的记账形状已定型**：脏区按**每 tile 行一个 span** 记（帧末并进 region16），逐 tile 不再
   建 region16；这个形状本身只值 ~0.5ms/帧 量级，不要再去合并矩形或换 region 结构（两次实测收益都在噪声
-  里，见 8.5.1）。**该段真正的成本是像素拷贝**，而它默认已随 tile 解码段并行
-  （[`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§2）。
+   里，见 8.5.1）。**该段真正的成本是像素拷贝**，而它默认已随 tile 解码段并行
+   （[`cpu-accel-plan.md`](cpu-accel-plan.md) §4）。
 - **`sign` / `current` 是两个持久状态**：`sign` 存 RLGR 原始系数、`current` 存去量化后的系数，
   两者跨消息常驻（UPGRADE 按 `sign` 判符号、DIFFERENCE 按 `current` 累加）⇒ 任何"少写一趟"的改动都要
   保证这两个缓冲最终内容不变（逐位等价），否则对拍会立刻显示出来。

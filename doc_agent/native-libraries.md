@@ -104,7 +104,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **客户端侧带宽 / 帧回执 / QoS**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；drdynvc 线程在入口调 app 注册的
   **QoS** 钩子（整条帧流水线都在它上面）。解码的 tile worker 不再来自 WinPR 池，它们的 QoS 由平台队列
-  的任务属性给（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0）。
+  的任务属性给（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1）。
 
 **正确性 / 一致性**
 
@@ -121,20 +121,20 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **并行执行器 = 平台队列（ffrt），唯一**：patch step 21 让解码在提交 chunk 前看弱符号
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
   + 任务属性 + 逐 handle 等待）；没有这些导出时宽度读作 1 ⇒ 串行，**没有 WinPR 池兜底**。**宽度就是
-  设置里的「解码并行宽度」**——实测并发宽度严格等于设定值（`parMax`）。patch step 25 进一步在平台
+  设置里的「解码并行宽度」**，dev 读数 `parMax` 可核对实际并发。patch step 25 进一步在平台
   执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不再为解码建 WinPR 池。见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§4。
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
   malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；
-  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2。
+  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §3。
 - **tile 工作集来自裁剪矩形、合成收进共用 helper**：patch step 22b 给 tile 记下解码它的帧
   （`hmrdpFrameId`），`update_tiles` 由此只走**裁剪矩形覆盖到的 tile 范围**，不再每条消息重走整帧累积的
   tile 列表；逐 tile 的裁剪求交 + 拷贝 + 脏区 span 记账收进 `hmrdp_composite_tile`，与 tile 解码侧的直写
-  共用同一套几何。结果（tile 集合、裁剪、像素、脏区）不变。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
+  共用同一套几何。结果（tile 集合、裁剪、像素、脏区）不变。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
 - **tile 合成（拷贝）移进并行段**：patch step 23 把目标缓冲与合并后的 clip 存进 codec context，tile 解码
   完一块就直写 surface；`update_tiles` 保留遍历与 O(1) 脏区 span 记账，只在**clip 哈希一致**时跳过那次
   拷贝（哈希折入消息序号；"一条消息多条 region"时两者 clip 不同，仍由 `update_tiles` 覆盖）。
-  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。效果见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §2。
+  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。形态见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
 - **dev 探针的两处修正**：`g_HmrdpSampleTile` 改成线程本地（否则多 worker 下 `prog2` 的相位总量无意义）；
   app 侧新增 `energy:` 行（每核 busy×f² 的能量代理 + `C1=Σbusy×f` 的 cycle 代理，数据源为
   `cpuidle` 空闲时间与 `time_in_state` 驻留）。见 [`gfx-engine.md`](gfx-engine.md) §8.3。

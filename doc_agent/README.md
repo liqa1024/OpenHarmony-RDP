@@ -16,7 +16,7 @@
 | 改 GFX / 解码 / 回放 | [`gfx-engine.md`](gfx-engine.md) |
 | 改上屏（present）管线 | [`present-pipeline.md`](present-pipeline.md) |
 | 改 CPU（gdi）链路的解码 / 成本 / 量测口径 | [`gfx-engine.md`](gfx-engine.md) §8（**先读这一节**） |
-| 做 CPU 解码的并行 / 执行器 / 流水线分段 / 相位归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（执行器与宽度、分段与账目、已验证与被否证、优化候选） |
+| 做 CPU 解码的并行 / 执行器 / 任务划分 / 内存归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（并行范围、执行器与宽度、任务划分、内存归属、合成归属） |
 | 查历史依据（**old 弃用**，不要从这里接手） | [`cpu-path_old.md`](cpu-path_old.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
@@ -39,10 +39,11 @@
   量测纪律 / 解码侧对拍（§8）**、待办。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
   后端、脏区上传与零拷贝桌面缓冲的定型约束、present 账目与探针。
-- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行与平台适配**：**并行划分原则
-  （均衡与局部性分开设、每线程连续 + 段尾块偷取）**、执行器与宽度（唯一 ffrt 队列、无第二执行器）、
-  流水线分段（谁在哪条线程）与账目/判读、**已验证的结论（量级与相对关系）**、已否证 / 容易走错的路、
-  优化候选 P1–P4、**并行效率的量测方法**。单核部分的知识在 [`gfx-engine.md`](gfx-engine.md) §8。
+- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行方案（现状）**：并行范围与线程归属
+  （唯一并行段 = region 的 tile 解码 + worker 侧合成拷贝）、唯一执行器（ffrt 并发队列）与宽度档位/
+  生效时机、任务划分（home + 段尾块偷取 / 共享游标对照）、内存归属（per-chunk scratch 槽、
+  surface 级 tile arena）、合成归属（worker 直写 + clip 哈希去重）。单核部分的知识在
+  [`gfx-engine.md`](gfx-engine.md) §8。
 - **（old 弃用，只作历史依据）**：
   [`cpu-path_old.md`](cpu-path_old.md) —— 旧 CPU 链路文档（旧口径与被否证的过程按原样保留）；
   其中的**约束与实测仍被引用**，但**不要作为接手入口**。

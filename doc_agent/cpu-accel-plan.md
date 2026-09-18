@@ -1,179 +1,110 @@
-# CPU（gdi）链路：并行与平台适配
+# CPU（gdi）链路：并行方案
 
-> **定位**：这条线是"FreeRDP gdi 解码 + 我们自己的呈现器"的 CPU 路线的**并行部分**：划分原则、执行器、
-> 宽度、流水线分段、相位与内存归属、并行效率的量测方法。单核部分的**知识**（判据、账目口径、成本结构、
-> 量测纪律与陷阱、正确性门禁、被否证的假设）在 [`gfx-engine.md`](gfx-engine.md) §8；协议框架见该文件
-> §0/§1；上屏见 [`present-pipeline.md`](present-pipeline.md)；补丁与构建见
-> [`native-libraries.md`](native-libraries.md)；历史口径与被否证的过程见 [`cpu-path_old.md`](cpu-path_old.md)
-> （old，不要从这里接手）。
+> **定位**：只描述这条线**现在的并行形态**——并行范围、执行器、宽度、任务划分、内存归属、
+> 合成归属——用于快速理解现状，不含结论与优化方向。单核知识、账目口径与判读纪律、正确性门禁
+> 在 [`gfx-engine.md`](gfx-engine.md) §8；上屏见 [`present-pipeline.md`](present-pipeline.md)；
+> 补丁与构建见 [`native-libraries.md`](native-libraries.md)。
 
-**CPU 路线** = FreeRDP gdi 解码 + 我们自己的呈现器。并行只发生在 **tile 解码这一段**（外加随之搬进去的
-tile 合成拷贝，见 §1）。
+实现位置：app 侧 `entry/src/main/cpp/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；
+解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25（另 24 为探针门控）。
+补丁对 app 模块的绑定方式是**弱符号**：没有这些导出的构建自动退化为串行。
 
-## 0. 并行划分的原则（先读这一段）
+## 0. 并行范围与线程归属
 
-### 0.1 均衡与局部性是两件事，必须分开设
+- **唯一并行段 = 一条 Progressive region 的 tile 解码**（`progressive_process_tiles`），外加
+  随之搬进该段的 tile 合成拷贝（§4）。并行只发生在一条 region 之内。
+- 其余各段都在**接收线程**（drdynvc 通道线程）：
 
-- **均衡**只关心"每份活有多少"：工作量子越小、领取越动态，尾部越短、worker 越不容易空转。
-- **局部性**只关心"内存怎么被访问"：同一时刻在跑的 worker 之间，其访问区间应当**互不重叠且彼此远离**；
-  同一个 worker 在一段时间内应当**连续**访问（顺序、可预取、TLB / DRAM 行友好）。
-- 二者**不是同一个旋钮**。把"领取块调大"只是同时改了"每份活多少"和"连续多大"：块一大就牺牲均衡，
-  块一小就回到邻接争用。正确形态是：**每个任务一段连续区间（段间远离）+ 段内按小块推进 + 段尾按小块
-  偷取**——粒度与连续性各自独立设置。
-
-为什么只能是"每线程一段连续"这种形态：
-
-- 解码的持久状态（`sign`/`current`）**跟着 tile 走**（跨消息细化要先读上一消息的系数），不能按线程搬。
-  所以"线程私有内存"只能落在**工作划分**上：让一个 worker 在一段时间内只处理一段连续 tile，于是它碰到
-  的 arena 块、目标 surface 行也连续。
-- 静态大段会让**尾粒度 = 一整段**，高宽度下最慢的一段决定整帧 ⇒ 必须允许**段尾按块偷取**（偷到的部分
-  仍连续，只占尾部很小比例）。
-- 邻接的代价是实打实的：小块动态领取会把**相邻 tile 块**分给两个 worker ⇒ 相邻 arena 块 + **同一批
-  surface 行**互相踩，访存型相位（`dequant`/`idwt`/`color`）在每个 worker 上成倍膨胀。改成按线程连续
-  分区后，整屏样本上**每 tile 周期降到约一半**（频不变口径，§5），高宽度继续用小块偷尾 ⇒ 均衡也保住。
-
-### 0.2 执行器与宽度
-
-- **唯一执行器 = 平台任务队列（ffrt）**：按 FFRT 编程模型用**并发队列**（`ffrt_queue_concurrent`），任务带
-  属性（name + 显式 QoS），屏障**按任务 handle 逐一等待**（不是"等整个进程的所有任务"）。宽度就是并发
-  队列的 `max_concurrency`（官方文档："并发度"即同一时刻的任务数，也对应 worker 数）。
-- **没有第二个执行器**：解码器经**弱符号**接平台队列（app 侧 `hmrdp_parallel.*`）；构建里没有这些导出时
-  宽度读作 1 ⇒ 串行。FreeRDP 自带的 WinPR 池在这条链路上不参与，也不为它建池（`rfx.c` 在平台执行器
-  可用时置 `UseThreads=FALSE`）。**不要再引入第二种池/队列方案或"切换开关"**。
-- **宽度 = 设置里的「解码并行宽度」**（app 经 `HmrdpDecodeWidth()` 导出，值来自 `hmrdp_decode_tuning.*`）：
-  `0` = 自动（全部在线核，上限 16）、`1` = 串行（接收线程直接解码，不建队列、不提交、不等待）、
-  `2..8` = 手动。进程级，解码器在**每条 region 边界**按需读取。
-- **划分模式**（dev A/B，`hmrdp_decode_tuning.*` 的 `ParallelMode`）：`1` = **连续 home + 段尾块偷取**
-  （默认，§0.1）；`0` = 旧的**小块共享领取游标**（对照）。解码器在 region 边界按需读取。
-- **入口符号**：`HmrdpParallelAvailable()` / `HmrdpParallelRun(tasks, fn, ctx)` / `HmrdpDecodeWidth()`
-  / `HmrdpTileHomeMode()`，以及 dev 读数 `HmrdpParallelTakeMaxConcurrency()`。
-- **不变约束**：**同一个 tile 仍由单个 callback 独占解码**（否则参考对比失去意义）。
-- **两个变体开关**（给 A/B 用，默认都开）：`HMRDP_TILE_ARENA` = 每 tile 的三份持久缓冲用 surface 级连续
-  arena；`HMRDP_WORKER_TILE_COPY` = tile 合成（拷贝）在 tile 解码段完成。
-
-## 1. 流水线分段与账目口径
-
-### 1.1 谁在哪条线程
-
-| 段 | 线程 | 说明 |
-|---|---|---|
-| `zgx+parse` | 接收 | ZGX 解压 + PDU 解析 + 命令分类；读它前先看 `setup` 行 |
-| `setup`（非像素命令） | 接收 | reset/create/fill/blit/**cache** 等；`cache` 在碎片样本可达每帧上百次 |
-| `read` | 接收 | 一条 region 的位流解析（填 tile 元数据），随 tile 数增长 |
-| **tile 解码 + worker 侧合成拷贝** | **ffrt（宽度个）** | **唯一并行段**；`dec` 是它的墙钟 |
-| `update_tiles` | 接收 | 只留遍历与 O(1) 脏区 span 记账；像素拷贝已随解码段并行 |
-| `compose` | 接收 | surface → primary |
-| `present` | 接收 | 录制/上传/提交；GPU 侧另算 |
-| `sync` / `presentWait` | 接收（阻塞） | 等 GPU 缓冲 / 等显示端，**不计 work** |
-
-- **每两条相邻消息之间没有重叠**：`read`（解析 k+1）在 `dec`（解码 k）之后。跨消息流水线要动逐 tile 的
-  预测器状态与 `region`/`params`/scratch 的复用，而能省的只是 `dispatch` 量级（见 §3）。
-- `update_tiles` 的像素拷贝默认已在并行段，所以并行下 `update` 只剩记账量级。
-
-### 1.2 账目（`prog` / `prog2` / `run` / `energy`）
-
-| 行 / 字段 | 含义 |
+| 段 | 线程 |
 |---|---|
-| `prog … read / dispatch / dec / update` | `read` 位流解析、`dispatch` 该消息任务提交（含建队列/句柄，串行）、**`dec` = tile 解码段**、`update` = `update_tiles` 整段 |
-| `prog … calls / unions / tiles / tilesDec / ffrt` | `calls` 消息数、`unions`/`tiles` = 脏区并集与访问 tile 数、`tilesDec` 真正解码的 tile 数、**`ffrt` = 走平台队列的 region 次数** |
-| `prog2 ms/frame (sampled 1/16)` | **`dec` 之内的拆相**。⚠ 并行下它的总量是**所有 worker 的时间之和**（≈ `dec` × 有效宽度）⇒ **只读占比**，不能与 `dec` 相加；采样探针必须是**线程本地**的 |
-| `run threads= ffrt= parRatio= cpu= cpuKHz=` | 该轮宽度 / region 实际派发次数 / **频不变并行效率**（worker 忙碌和 ÷ `dec` 墙钟）/ 整轮进程 CPU 时间 / 频率档 |
-| `energy: queue wall workerBusy ratio parMax` | 并行段墙钟 / worker 忙碌之和 / **有效宽度**（ratio）/ **实测最大并发**（parMax） |
-| `energy: … coreBusy favg C1 E2` | `favg` = 本轮 busy 加权的实测平均频率（`C1/coreBusy`）；`C1 = Σ busy×f`（cycle 代理）；`E2 = Σ busy×f²`（能量代理，β=2） |
-| `workerPx / rdpPx`（dev） | 拷贝像素落在并行段与接收线程的比例 |
+| ZGX 解压、PDU 解析、命令分类 | 接收 |
+| 非像素命令（reset/create/fill/blit/cache…） | 接收 |
+| region 位流解析（`read`，填 tile 元数据） | 接收 |
+| **tile 解码 + tile 合成拷贝**（`dec`） | **ffrt（宽度个）** |
+| `update_tiles` 剩余部分（遍历 + 脏区记账，§4） | 接收 |
+| surface → primary 合成、present 提交 | 接收（GPU 侧另算） |
 
-判读纪律：
+- **消息间不重叠**：一条消息按 `read → dec → update` 接力完成后才处理下一条；没有跨消息流水线。
+- **串行分支**（宽度 ≤ 1）：同一 tile 循环直接在接收线程执行，不建队列、不提交、不等待；
+  工作缓冲用 0 号槽（§3）。
 
-- **宽度是否真的生效看 `parMax`**（应等于设定值）；**并行效率用频不变口径**：`parRatio`（worker 忙碌和 ÷
-  `dec` 墙钟）与"每 tile 周期 = workerBusy × favg / tiles"。`ffrt > 0` 才能证明解码确实在平台队列上。
-- **`dec` 有两种口径**（同一个"tile 解码段"，测点不同、不可混读）：并行时是**并行段的墙钟**（提交后到
-  所有任务等完）；串行时是**本线程逐 tile 解码的时间**（此时 `dispatch` 为 0，不是缺失）。⇒ 读 `dec`
-  前先看 `threads=`。
-- **`calls` 与 `ffrt` 相等**表示每条 Progressive 消息只带一条 region（真实码流如此）⇒ "逐 region 屏障"
-  实际就是"逐消息屏障"，**不要再假设一条消息里有多条 region**（§3）。
-- **`cpu=` 的秒数不能当作"做了多少活"**：多核会把频率档压低（见 §2/§5）。跨档比较必须先约掉频率。
-- **量测纪律**：同会话、同录像、各档**交替**、N≥3 取中位数，跨会话/跨档的数字不可比；多轮走
-  `native/scripts/replay-rounds.ps1`，等**这一轮**的 `state=finished` 再动下一步。
+## 1. 执行器与宽度
 
-## 2. 已验证的结论（量级与相对关系）
+- **唯一执行器 = 平台任务队列（ffrt 并发队列）**，由 app 的 `hmrdp_parallel.*` 提供，解码器经
+  弱符号使用（补丁 11/21）：`HmrdpDecodeWidth()` 决定串行/并行分支；`HmrdpParallelAvailable()`
+  / `HmrdpParallelRun(tasks, fn, ctx)` 提交与等待。符号不解析 ⇒ 宽度读作 1 ⇒ 串行。
+- 队列形态（`EnsureQueue`）：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度，队列与每个
+  任务都带属性（name + `ffrt_qos_user_initiated`）；屏障 = 逐任务 handle `ffrt_queue_wait`。
+  宽度变化时销毁重建队列（仅在无任务在途时发生）。
+- `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行；`tasks > 128` 拒绝；
+  单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
+- 任务体内原子计数同时刻在途回调数 ⇒ `HmrdpParallelTakeMaxConcurrency()` 给出实测最大并发
+  （dev 读数）。
+- **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
+- **QoS**：tile worker 的 QoS 来自队列/任务属性；接收线程的 QoS 由 app 注册的钩子
+  （`HmrdpSetThreadQoSApplier`，补丁 09）在 drdynvc 线程入口调用一次。
+- **宽度 = 设置里的「解码并行宽度」**（`AppSettings.decodeThreads`）：设置页滑条 →
+  `RdpNative.applyDecodeThreads` → napi `setDecodeThreads` → `hmrdp::SetDecodeThreads`；
+  dev 回放页「线程」行走同一通道。进程级，对 live 与回放同时生效。
+- 档位：`0` = 自动（在线核数，上限 16）；`1` = 串行；`2..8` = 手动（钳位 [1,8]）。
+- **生效时机**：解码器在**每条 region 边界**按需读 `HmrdpDecodeWidth()`，设置改动从下一条
+  region 起生效，无需重建会话。自动档只数在线核（`sysconf`）；性能核探测（`cpuinfo_max_freq`）
+  仅用于日志与设置页信息展示，不参与宽度决策。
 
-- **并行对能耗是赚的**：按 `E2`（能量代理）读，整屏样本上并行（任意宽度）明显低于串行；⇒ "串行更省电"
-  不成立。⚠ 这个结论只能用 `E2`（或同一 `favg` 档的 `cpu=`）读——多核低频下同一 CPU 秒更便宜。
-- **划分是并行的主要矛盾**：小块共享领取把相邻 tile 分给不同 worker，访存型相位在每个 worker 上成倍
-  膨胀；改成"连续 home + 段尾块偷取"后，整屏样本上**每 tile 周期降到约 0.5×，帧墙钟约 2×**（低中宽度），
-  高宽度的 `parRatio` 与旧领取**持平或略高**，碎片样本小幅变好。这是当前默认。
-  - 正确性：划分只改 region 内 tile 的解码顺序（同消息 tile 互不重叠），逐位不变 ⇒ `参考:对比 bad=0`。
-- **宽度是有效的**：并发宽度严格等于设定值（`parMax`）。旧执行器（FreeRDP 自带的 WinPR 池）没有这个
-  性质（请求 2 时实际并发远高于 2）⇒ 历史上"2/4/8 结果一样"的原因是**旋钮没生效**，不是"并行到顶"。
-  ⚠ 别把 `dec ≈ 解码段 CPU ÷ 宽度` 读成"墙钟随宽度线性下降"：那条式子里"解码段 CPU"本身会随划分变
-  （邻接划分下每 tile 周期随宽度上升）。
-- **频率与工作量必须分开**：`cpu=` 的数倍差异主要来自频率档（串行能上最高频、多核被压在低档）。
-  `cpu × favg` 才是周期量级；`C1`（整机 cycle 代理）用来否掉"大幅额外工作量"，但不能给解码自身定量。
-- **相位拆相用来定位，不用来下结论**：`prog2` 显示并行下**访存型相位（`color`/`dequant`/`idwt`）膨胀、
-  纯位解码 `rlgr` 膨胀小**。但"访存型相位膨胀"本身不等于"内存带宽/容量不够"——降它的手段可以是**改划分**
-  （§0.1），必须用划分 A/B 验证，不能直接从相位占比推出硬件瓶颈。
-- **每 tile 持久缓冲的布局是次要但真实的项**：`sign`/`current`/`data` 从"每 tile 三次分配"改成 surface 级
-  连续 arena（按 tile 连续、cache line 对齐）后，同宽度 A/B 下并行段墙钟与 worker 时间各降**个位数百分比**
-  （`color` 最明显），串行侧 `update` 也一起降，能量在噪声内。
-- **把拷贝从串行段挪进并行段是单核侧最大的一刀**：tile 解码完一块就按本消息的 clip 直写目标 surface
-  （像素刚写完、cache 热，搬运随 worker 分摊），`update_tiles` 只留遍历与 O(1) 脏区记账 ⇒ 该段从 **ms 级
-  降到亚 ms 级**，整帧 `本机` 降约 **四成**，整屏样本 fps 提高约 **五成**；碎片样本的该段本来就小，持平。
-  - 正确性约束：`update_tiles` 用的是"消息里最后一条 region"的合并 clip，而 tile 解码按 region 跑 ⇒
-    两者用**折入消息序号的 clip 哈希**比对，一致才跳过拷贝，否则由 `update_tiles` 覆盖。门禁仍是两份
-    录像的 `参考:对比` `bad=0`。
-- **解码侧的正确性门禁**：参考画面（`bad=0`，两份基线录像各一套）+ 逆 DWT 对拍（`dwt check` 的
-  `maxDelta`）——口径与量级见 [`gfx-engine.md`](gfx-engine.md) §8.4。
+## 2. 任务划分（region → 任务 → tile）
 
-## 3. 已否证 / 容易走错的路
+- 每个 region 把 `region->numTiles` 个 tile 划成 `numChunks` 个任务；任务描述符
+  `PROGRESSIVE_TILE_CHUNK_PARAM` 携带共享参数表、scratch 槽与 home 数组；描述符数组上限
+  `HMRDP_TILE_CHUNKS = 64`（补丁 20）。
+- **划分模式**（`HmrdpTileHomeMode()`，进程级，region 边界读取；napi `setDecodeParallelMode`，
+  默认 1）：
+  - **1 = home + 段尾块偷取（默认）**：任务数 = 宽度；任务 h 的 home 区间为
+    `[h·N/K, (h+1)·N/K)`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 4` 个 tile 的块用
+    `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询偷取其他
+    home 的剩余块（同样按块领取）。尾部不均衡至多一块。
+  - **0 = 共享领取游标（A/B 对照）**：任务数 = `HMRDP_FFRT_TASKS = 16`（cap 至 tile 数）；
+    全部任务从同一条 64 字节对齐的游标按块动态领取。
+- **不变约束**：一个 tile 仍由单次 `progressive_process_tiles_tile_work_callback` 独占解码；
+  划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素
+  等价）。
 
-- **把"任务粒度"当成并行效率的旋钮**：调大/调小领取块只是把**任务量**与**内存连续性**绑在一起——大块
-  静态段在高宽度会因段挤在同一批 surface 行、且尾粒度 = 整段而退化；小块动态领取又让相邻 tile 落到
-  不同 worker。⇒ 粒度与连续性是两件事（§0.1）。
-- **把多 worker 的周期膨胀直接归因于"内存带宽 / 容量不足"**：主因是**划分**（相邻 tile 落到不同 worker）；
-  改划分就能把每 tile 周期砍到约一半，所以先改划分，再谈带宽。
-- **每线程私有 scratch**：实测对每 tile 周期与 `parRatio` 都没有影响——争用在持久状态与目标 surface 的
-  行/块邻接上，不在工作缓冲。⇒ "线程私有内存"要落在**工作划分**，不是 scratch。
-- **把并行段变慢归因于 chunk 机制（领取游标 / chunk 回调 / TLS）**：内联跑同一 chunk 路径与串行逐 tile
-  完全等价 ⇒ 机制本身零成本；差异在执行线程上下文与访存。
-- **用裸 `ffrt_submit_f`（不限宽、无任务属性）换执行器**：比原池略差。那次既没有宽度控制也没有 QoS，
-  **不能**当作"平台队列不行"的依据；正规用法是并发队列 + 任务属性 + 逐一等待。
-- **"一条 Progressive 消息多条 region，所以要去掉逐 region 屏障"**：真实码流上每条消息只带一条 region
-  （`ffrt == calls`），逐 region 屏障就是逐消息屏障，没有可合并的对象；跨消息流水线要动逐 tile 预测器
-  状态与 `region`/`params`/scratch 的复用，而能省的 `dispatch` 只是 `dec` 的**几个百分点** ⇒ 不做。
-- **把 `cpu=` 秒数直接读成能量或工作量**：多核低频下同一秒更便宜（§2）。
-- **为碎片内容调低宽度来"省"**：碎片内容暴露的是并行效率问题，不是"不该并行"。宽度按 duty 选（§4），
-  但目标是把并行做对，不是回避并行。
-- **`update` 的掩码拷贝向量化**：实测中性（该循环受字节数限制），不再投入。
-- **只按字节数找收益**：相位归属与划分方式往往比字节数更值钱。
-- **旧的 WinPR 池执行器**：请求宽度不生效（2/4/8 结果一样）；已整体移除，不要再作为兜底或对照组引入。
+## 3. 内存归属
 
-## 4. 优化候选（按实测排序）
+- **工作缓冲（scratch，补丁 20）**：per-context 一次性分配 `tileScratch` arena——64 个槽，
+  每槽两块缓冲（系数工作缓冲 + 逆 DWT scratch，各 `(8192+32)×3` 字节）。chunk 回调把本任务的
+  槽指针写进 `_Thread_local g_HmrdpTlsTileScratch`，tile 解码经 `hmrdp_tile_scratch()` 取用；
+  串行分支固定槽 0。tile 解码路径不再走 `bufferPool` 的 Take/Return。
+- **持久状态（补丁 22）**：每 tile 的三份跨消息常驻缓冲 `sign`/`current`/`data` 改为
+  **surface 级连续 arena**（`HMRDP_TILE_ARENA = 1` 编译开关）：tile-major 布局——一个 tile 的
+  三份在同一段连续内存、段起点 64 字节对齐；arena 随 tile cache 增长整体重建并复制旧块
+  （预测器状态跨 resize 保留）；tile 结构不再拥有缓冲。首次绑定时显式清零
+  （`sign`/`current` 为 0、`data` 为 0xFF）。
+- **目标 surface**：tile 解码直接写入（§4）；多个 worker 写同一 surface 的不同行，互不重叠由
+  划分保证（tile 互不重叠 + home 连续）。
 
-| # | 项 | 要点 | 出口 |
-|---|---|---|---|
-| **P1** | **连续 home + 段尾块偷取**（已落地为默认，§0.1/§2） | 任务按线程切连续段；段尾按 `HMRDP_TILE_CLAIM` 块偷取保均衡。A/B 开关 `ParallelMode`（1 = home+偷取，0 = 旧领取） | 每 tile 周期、`parRatio`、`dec` |
-| **P2** | **串行残量** | 碎片样本里 `zgx+parse`、`setup`（尤其 `cache`）、`present` 合计占比高；先量后改 | `perFrame` 分相 |
-| **P3** | **`sync`（阻塞）** | 全屏 dirty 字节下的零拷贝单缓冲等待，属 present 侧；判据是 `sync` 与 `uploaded` 同步起落 | `sync` / `uploaded` |
-| **P4** | **宽度按 duty 自适应** | 到达侧限速（duty 低）时回落 1，受限时用 2–4；判据用到达间隔/duty 加滞回 | 同一录像的 duty↔宽度曲线，`E2` 按档读 |
-| — | **`dec` 本身** | 能改的相位只剩 `rlgr`/`state`/`dequant`；或改划分（§0.1） | `prog2` 占比 + `dec` |
+## 4. worker 侧合成拷贝与 update_tiles
 
-- **顺序**：P1 已落地；接着按实测决定 P2/P3；P4 与它们独立，可后置。
-- **出口一律按 `E2`**（或同一 `favg` 档下的 `cpu=`）读，不看单纯墙钟；比较并行效率用**频不变**的
-  `parRatio` 与"每 tile 周期"（§5）；`sync` 是等 GPU 的阻塞，**不计 CPU 能耗**。
+- **直写（补丁 23，`HMRDP_WORKER_TILE_COPY = 1`）**：`progressive_decompress` 把目标缓冲
+  （指针/格式/步长/偏移/surface）暂存进 context；region 解码前按 region rects 建合并 clip
+  （region16 union，与 `update_tiles` 同法）并计算 clip 哈希 `hmrdp_clip_hash`（折入每条消息
+  递增的 `hmrdpMsgSeq`，跨消息不重复）。tile 回调**解码完成一块就**用该 clip 把 tile 直写
+  目标 surface（`hmrdp_tile_copy_now`，几何守卫与 `hmrdp_composite_tile` 一致，
+  `FREERDP_KEEP_DST_ALPHA`），并给 tile 记下 `hmrdpCopied` + 所用 clip 的哈希。
+- **`update_tiles`（接收线程）**：工作集 = 「裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile」
+  （补丁 22b：tile 记 `hmrdpFrameId`，`updateStamp` 保证每 pass 每 tile 访问一次）。对每个
+  访问到的 tile：`hmrdpCopied` 且 clip 哈希等于本 pass 的 `hmrdpUpdateClip` 时**跳过像素拷贝**
+  （只留脏区记账），否则照旧拷贝（后写覆盖）。脏区记账 = 每 tile 行一个 span
+  （`hmrdpDirtyLeft/Right/Any`，O(1)；补丁 14）。region 解码结束清空暂存 clip。
+- **结果不变性**：同一批 tile、同样的裁剪与像素、同样的脏区；门禁 = 参考画面 `bad=0` +
+  解码侧对拍（[`gfx-engine.md`](gfx-engine.md) §8.4）。
 
-## 5. 并行效率的量测方法（可复用）
+## 5. dev 开关与读数
 
-- **先约掉频率，再谈效率**。同一份活在不同宽度下的墙钟/CPU 秒不可直接比（多核压频率档）。三个频不变
-  或归一后的读数：
-  - `parRatio` = worker 忙碌和 ÷ `dec` 墙钟（同一队伍、同一时刻的秒数比，频率自动约掉；理想 ≈ 宽度）；
-  - **每 tile 周期** = `workerBusy × favg / tilesDec`（把 CPU 秒换算成周期，跨频可比）；
-  - `E2` / `C1`（能量 / cycle 代理，见 §1.2）。
-- **归因三对照**（一次性探针，代码里会删；方法是通用知识）：
-  1. **串行 inline**（宽度 1）；
-  2. **并发度 1 的任务路径**（仍走队列、单 worker）——与 1 比，隔离"执行线程上下文 / 落核缓存"；
-  3. **同 chunk 路径内联**（不过队列、在接收线程跑）——与 1 比，隔离"chunk 机制"。
-  三者的差可以把"机制成本 / 执行上下文成本 / 多 worker 争用"分开，避免把任何一种误当成主因。
-- **划分 A/B 用运行时开关**（`ParallelMode`），同一构建、同会话交替，N≥3 取中位数；一次只改一个变量
-  （划分方式），宽度固定。
-- **门禁**：任何一轮性能结论的前提是那一轮 `bad=0`；改了解码侧要附 `dwt check` 的 `maxDelta`
-  （[`gfx-engine.md`](gfx-engine.md) §8.4）。
+- **运行时开关**（均 region 边界生效）：宽度（0/1/2..8）、划分模式 `ParallelMode`（1 默认 /
+  0 对照）。
+- **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
+  `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_FFRT_TASKS = 16`。
+- **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、
+  worker/串行侧拷贝像素、1/16 采样的 per-phase 拆相），由 `HmrdpSetProgSample` 门控（补丁 24）；
+  `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。
+  账目字段与判读纪律见 [`gfx-engine.md`](gfx-engine.md) §8。
