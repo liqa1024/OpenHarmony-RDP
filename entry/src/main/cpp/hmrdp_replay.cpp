@@ -26,6 +26,7 @@
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_log.h"
+#include "hmrdp_parallel.h"
 #include "hmrdp_presenter.h"
 
 // DEV-ONLY: phase timers exported by the patched FreeRDP progressive decoder
@@ -329,6 +330,13 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     if (HmrdpSetProgSample != nullptr) {
       HmrdpSetProgSample(1);
     }
+    // The parallel section's own probe lives on the app side of the queue
+    // (hmrdp_parallel.*), so it is switched here next to the decoder's: the
+    // replay's `par` line needs the task boundaries timed while the CPU route
+    // runs, and a live session must not pay for them (doc_agent/cpu-accel-plan.md
+    // §1).
+    HmrdpParallelResetStat();
+    HmrdpParallelSetProbe(1);
     presentUs_.store(0);
     uploadBytes_.store(0);
     uploadBoxBytes_.store(0);
@@ -404,6 +412,7 @@ void GfxReplay::Stop() {
   if (HmrdpSetProgSample != nullptr) {
     HmrdpSetProgSample(0);
   }
+  HmrdpParallelSetProbe(0);
   presenter_.reset();
   if (window_ != nullptr) {
     OH_NativeWindow_DestroyNativeWindow(static_cast<OHNativeWindow*>(window_));
@@ -524,6 +533,46 @@ std::string GfxReplay::StatsLines() {
                   static_cast<double>(cpuEnd - cpuStart) / 1000000.0,
                   freq.empty() ? "n/a" : freq.c_str());
     out += run;
+  }
+
+  // The worker side of the decode's parallel section, timed at the task boundary
+  // on the app side of the queue (hmrdp_parallel.h). `capacity = K * wall` is the
+  // thread time the width offered (K = the queue's concurrency limit), `work` is
+  // how much of it was spent decoding, and `idle` is the remainder - all three
+  // independent of how many tasks the region was split into. `wait` is the tasks'
+  // queue latency and is reported beside the account, not inside it: a queued task
+  // overlaps with the work of the tasks already running, so work + wait may exceed
+  // capacity. `work <= capacity` has to hold; a negative idle below is the sign
+  // that it does not (a wrong K, or a callback timed twice)
+  // (doc_agent/cpu-accel-plan.md §5).
+  {
+    HmrdpParallelStat par;
+    HmrdpParallelGetStat(&par);
+    if (par.capacityNs > 0) {
+      const double capacity = static_cast<double>(par.capacityNs);
+      const double work = static_cast<double>(par.workNs);
+      const double wait = static_cast<double>(par.waitNs);
+      const double busyPct = 100.0 * work / capacity;
+      const double idlePct = 100.0 - busyPct;
+      const double kavg = par.wallNs > 0
+                              ? static_cast<double>(par.capacityNs) /
+                                    static_cast<double>(par.wallNs)
+                              : 0.0;
+      const double waitPerTask = par.tasks > 0
+                                     ? static_cast<double>(par.waitNs) /
+                                           static_cast<double>(par.tasks) / 1000.0
+                                     : 0.0;
+      char parLine[400];
+      std::snprintf(parLine, sizeof(parLine),
+                    "\npar   busy=%.1f%%  idle=%.1f%%  "
+                    "(regions=%llu tasks=%llu Kavg=%.2f wall=%.1fms capacity=%.1fms work=%.1fms "
+                    "wait=%.1fms wait/task=%.1fus)",
+                    busyPct, idlePct, static_cast<unsigned long long>(par.regions),
+                    static_cast<unsigned long long>(par.tasks), kavg,
+                    static_cast<double>(par.wallNs) / 1e6, capacity / 1e6, work / 1e6, wait / 1e6,
+                    waitPerTask);
+      out += parLine;
+    }
   }
 
   // Energy proxy for the same window as `cpu=` (hmrdp_energy.h). This is the

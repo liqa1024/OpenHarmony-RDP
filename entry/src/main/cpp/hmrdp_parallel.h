@@ -53,6 +53,44 @@ int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* 
 // actually run this in parallel", which wall clock alone cannot.
 unsigned int HmrdpParallelTakeMaxConcurrency(void);
 
+// Dev-only accounting of the decode's parallel section, read back by the
+// replay's `par` line (doc_agent/cpu-accel-plan.md §5). Every figure is timed at
+// the task boundary on the app side of the queue.
+//
+// The thread account needs the queue's **concurrency limit K** (the configured
+// width), never the task count: at most K callbacks run at once, so the summed
+// callback time can never exceed K * wall. That bound is what makes
+//
+//   workNs <= capacityNs        (idleNs = capacityNs - workNs >= 0)
+//
+// hold for *any* decomposition. A finer or coarser split, or a different claim
+// scheme, changes `tasks` but not what capacityNs/workNs mean - so the reading
+// does not tie the measurement to one particular task count.
+//
+// `waitNs` is deliberately **not** part of that account: it is the tasks' queue
+// latency, and a queued task overlaps with the work of the tasks already
+// running, so `workNs + waitNs` may exceed capacityNs. It is reported next to
+// the account, not inside it.
+//
+// There are no per-slot terms on purpose: a per-task "idle before submit /
+// after finish" only equals thread time when the task count equals the width,
+// which is exactly the coupling this account avoids.
+struct HmrdpParallelStat {
+  unsigned long long regions;  // regions dispatched on the queue (tasks > 1)
+  unsigned long long tasks;    // task count summed over those regions
+  unsigned long long wallNs;   // region wall clock summed (submit .. all waited)
+  unsigned long long capacityNs;  // K * wall summed: the thread time offered
+  unsigned long long workNs;   // summed callback time (worker busy)
+  unsigned long long waitNs;   // summed queue latency (task start - submission)
+};
+
+// Off by default: the clock reads are not free on this platform and a live
+// session never displays the figures. The replay turns it on for its own runs,
+// exactly like the decoder's probes (HmrdpSetProgSample).
+void HmrdpParallelSetProbe(int on);
+void HmrdpParallelResetStat(void);
+void HmrdpParallelGetStat(struct HmrdpParallelStat* out);
+
 #ifdef __cplusplus
 }
 #endif

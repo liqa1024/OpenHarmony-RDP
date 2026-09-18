@@ -213,6 +213,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   | `prog ms/frame: read / dispatch / dec / update  (calls= unions= tiles= tilesDec= ffrt=)` | `decode` 的内部：`read` 读输入位流、`dispatch` 投递 tile（并行才有）、**`dec` = tile 解码段**（并行时是并行段墙钟，串行时是本线程逐 tile；读前先看 `threads=`）、`update` = `update_tiles` 整段（其中像素拷贝默认已随解码段并行，见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4）；`calls` 消息数、`unions`/`tiles` = `update_tiles` 的并集次数与被访问 tile 数、`tilesDec` = 真正解码的 tile 数、`ffrt` = 走平台队列的 region 次数 |
   | `prog2 ms/frame (sampled 1/16, n=…): rlgr / dequant+diff / idwt / state / upgrade / color  sum=` | **`dec` 之内的拆相**（1/16 采样探针）；`state` = 系数状态拷贝（`sign`/`current`）、`color` = `yCbCrToRGB` + 写 tile。并行下 `sum` 是所有 worker 的时间之和（≈ `dec` × 有效宽度）⇒ **只读占比** |
   | `run … threads=… ffrt=… parRatio=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、平台队列实际派发的 region 次数（证明解码确实走了 ffrt）、**频不变并行效率**（worker 忙碌和 ÷ `dec` 墙钟）与**整轮进程 CPU 时间**；`cpuKHz` 是本轮拿到的 SoC 频率档 |
+  | `par busy=…% idle=…% (regions= tasks= Kavg= wall= capacity= work= wait= wait/task=)` | 并行段的 **worker 侧账目**：`capacity = K×wall`（K = 本轮宽度）是宽度提供的线程时间，`work` = 回调执行时间和，`idle = capacity − work`。三者**与任务数无关**（任一时刻在跑的回调 ≤ K ⇒ `work ≤ capacity`）；`wait` 是任务排队延迟，**单列**（与在跑重叠，可超过 `capacity`）。除 `wall` 外都是**折叠量**。`work ≤ capacity` 是测量自检（`idle` 为负 = 测错）。口径见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §5 |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
   | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |
@@ -230,6 +231,10 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
     所以测点必须把它交出来（`OnBlockedBeforeFrameWork()`）：不交，`本机` 就把它算两遍、在 GPU 成为慢的
     一侧时虚高到 `sync` 那么多。自检：**`本机 + sync ≈ 1/fps`**——右边明显小于左边就是被算重了。
 - **`pace` 是唯一直接剔除的项**：回放的人为节流不是客户端工作。
+- **折叠量 vs 真实时间（并行下必须分开读）**：并行段里只有墙钟类量是**真实时间**（`本机`/拆相、
+  `dec` 的并行口径、`par` 的 `wall`）；worker 侧求和类是**折叠量**——多线程之和，可达墙钟的 ~K 倍
+  （`HmrdpProgStat[9]`、`prog2` 的 `sum`、`par` 的 `capacity`/`work`/`idle`/`wait`）。
+  **两类不能直接比**；折叠量要跨宽度比，只能除以"提供它的线程时间"（`capacity`）。串行时二者重合。
 - **判读顺序**：① `setup` ② `kB/frame`/`cmds/frame`（内容是否可比）③ `dec`（先看 `threads=`）
   ④ `update` ⑤ `present` ⑥ `sync`。
 

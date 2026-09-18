@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <ctime>
 
 #include <ffrt/queue.h>
 #include <ffrt/task.h>
@@ -35,10 +36,34 @@ struct Item {
   void (*fn)(void*, unsigned int);
   void* ctx;
   unsigned int index;
+  // Probe only: when this task was handed to the queue, so its queue wait can be
+  // told from its execution (see HmrdpParallelStat). 0 while the probe is off.
+  unsigned long long submitNs;
 };
 
 std::atomic<unsigned int> g_active{0};
 std::atomic<unsigned int> g_maxActive{0};
+
+// Dev-only parallel-section accounting (HmrdpParallelStat). All default 0 and
+// are untouched while the probe is off, so a live session pays nothing.
+std::atomic<int> g_probe{0};
+std::atomic<unsigned long long> g_regions{0};
+std::atomic<unsigned long long> g_tasks{0};
+std::atomic<unsigned long long> g_wallNs{0};
+std::atomic<unsigned long long> g_capacityNs{0};
+std::atomic<unsigned long long> g_workNs{0};
+std::atomic<unsigned long long> g_waitNs{0};
+
+inline bool ProbeOn() {
+  return g_probe.load(std::memory_order_relaxed) != 0;
+}
+
+inline unsigned long long NowNs() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (static_cast<unsigned long long>(ts.tv_sec) * 1000000000ull) +
+         static_cast<unsigned long long>(ts.tv_nsec);
+}
 
 ffrt_queue_t g_queue = nullptr;
 int g_queueConcurrency = 0;
@@ -72,12 +97,28 @@ int EnsureQueue(int concurrency) {
 
 void Thunk(void* arg) {
   Item* item = static_cast<Item*>(arg);
+  // The probe reads the clock at the task's own boundaries. This is the worker's
+  // time, so summing it over the tasks says how much of the offered thread time
+  // was spent decoding rather than queued or idle (HmrdpParallelStat).
+  const bool probe = ProbeOn();
+  const unsigned long long startNs = probe ? NowNs() : 0;
   const unsigned int now = g_active.fetch_add(1) + 1;
   unsigned int prevMax = g_maxActive.load();
   while (now > prevMax && !g_maxActive.compare_exchange_weak(prevMax, now)) {
   }
   item->fn(item->ctx, item->index);
   g_active.fetch_sub(1);
+  if (probe) {
+    const unsigned long long endNs = NowNs();
+    // `submitNs == 0` means the probe came on after this task was submitted; its
+    // wait is then unknown, not zero, so it is left out instead of charged to the
+    // region. `startNs >= submitNs` cannot fail for a task submitted after the
+    // probe was already on.
+    if (startNs >= item->submitNs && item->submitNs != 0) {
+      g_waitNs.fetch_add(startNs - item->submitNs, std::memory_order_relaxed);
+    }
+    g_workNs.fetch_add(endNs - startNs, std::memory_order_relaxed);
+  }
 }
 
 }  // namespace
@@ -128,10 +169,16 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
   // after the tasks finished, so they outlive the tasks.
   Item items[kMaxParallelTasks];
   ffrt_task_handle_t handles[kMaxParallelTasks];
+  // Region span from the receiving thread's side. Together with each task's own
+  // submit/start/end this makes the region's `tasks * wall` account whole, with
+  // no bucket left to guess at (HmrdpParallelStat).
+  const bool probe = ProbeOn();
+  const unsigned long long wallStartNs = probe ? NowNs() : 0;
   for (unsigned int i = 0; i < tasks; ++i) {
     items[i].fn = fn;
     items[i].ctx = ctx;
     items[i].index = i;
+    items[i].submitNs = probe ? NowNs() : 0;
     handles[i] = ffrt_queue_submit_h_f(g_queue, Thunk, &items[i], &taskAttr);
     if (handles[i] == nullptr) {
       // A chunk that could not be queued must still run: doing it here keeps the
@@ -150,9 +197,45 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
       ffrt_task_handle_destroy(handles[i]);
     }
   }
+  if (probe && wallStartNs != 0) {
+    // capacity is K * wall with K = this region's concurrency limit (the width
+    // the queue was created with); see HmrdpParallelStat for why the task count
+    // is not what the thread account is built on.
+    const unsigned long long wallNs = NowNs() - wallStartNs;
+    g_regions.fetch_add(1, std::memory_order_relaxed);
+    g_tasks.fetch_add(tasks, std::memory_order_relaxed);
+    g_wallNs.fetch_add(wallNs, std::memory_order_relaxed);
+    g_capacityNs.fetch_add(wallNs * static_cast<unsigned long long>(concurrency),
+                           std::memory_order_relaxed);
+  }
   return 0;
 }
 
 extern "C" unsigned int HmrdpParallelTakeMaxConcurrency(void) {
   return g_maxActive.exchange(0);
+}
+
+extern "C" void HmrdpParallelSetProbe(int on) {
+  g_probe.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+extern "C" void HmrdpParallelResetStat(void) {
+  g_regions.store(0, std::memory_order_relaxed);
+  g_tasks.store(0, std::memory_order_relaxed);
+  g_wallNs.store(0, std::memory_order_relaxed);
+  g_capacityNs.store(0, std::memory_order_relaxed);
+  g_workNs.store(0, std::memory_order_relaxed);
+  g_waitNs.store(0, std::memory_order_relaxed);
+}
+
+extern "C" void HmrdpParallelGetStat(struct HmrdpParallelStat* out) {
+  if (out == nullptr) {
+    return;
+  }
+  out->regions = g_regions.load(std::memory_order_relaxed);
+  out->tasks = g_tasks.load(std::memory_order_relaxed);
+  out->wallNs = g_wallNs.load(std::memory_order_relaxed);
+  out->capacityNs = g_capacityNs.load(std::memory_order_relaxed);
+  out->workNs = g_workNs.load(std::memory_order_relaxed);
+  out->waitNs = g_waitNs.load(std::memory_order_relaxed);
 }

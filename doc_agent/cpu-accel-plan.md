@@ -108,3 +108,22 @@
   worker/串行侧拷贝像素、1/16 采样的 per-phase 拆相），由 `HmrdpSetProgSample` 门控（补丁 24）；
   `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。
   账目字段与判读纪律见 [`gfx-engine.md`](gfx-engine.md) §8。
+- **并行段账目「par」**（app 侧 `hmrdp_parallel.*`，与 `HmrdpSetProgSample` 同开同关）：在**任务边界**
+  计时，用**并发上限 K**（= 队列 `max_concurrency` = 本 region 生效的宽度）算容量，而不是用任务数：
+
+  | 值 | 定义 | 量纲 |
+  |---|---|---|
+  | `wall` | 接收线程从开始提交到全部任务等完 | 真实时间 |
+  | `capacity` | `K × wall`：宽度提供的线程时间 | 折叠量 |
+  | `work` | `Σ` 回调执行时长（即 tile 解码段，含 worker 侧合成拷贝） | 折叠量 |
+  | `idle` | `capacity − work`：没被用上的线程容量（导出量） | 折叠量 |
+  | `wait` | `Σ(任务开始 − 提交)`：任务排队延迟，**单列** | 折叠量 |
+
+  - **为什么按 K 不按任务数**：任一时刻在跑的回调 ≤ K ⇒ `work ≤ capacity` 恒成立、`idle` 恒非负，
+    于是这套账目**与任务怎么切无关**——改任务粒度、改划分（home+偷取 / 共享游标）只改 `tasks`，
+    不改 `capacity`/`work`/`idle` 的含义。逐任务的「提交前空闲 / 完成后空闲」只在任务数 == 宽度时
+    才等于线程时间，这种把测量绑死在某一种划分上的口径不用。
+  - **`wait` 不并进容量**：任务排队时 worker 正在跑别的任务，二者是同一段时间的两面 ⇒
+    `work + wait` 可以超过 `capacity`。`work`/`idle` 才是线程账，`wait` 只作队列延迟读。
+  - **自检**：① `work ≤ capacity`（`idle` 为负 ⇒ K 取错，或回调被重复计时，例如提交失败回退到
+    接收线程内联执行）；② `work ≈ HmrdpProgStat[9]`（同一批回调的另一路折叠和，两路独立互证）。
