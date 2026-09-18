@@ -55,9 +55,14 @@ class EnergyProbe {
 
   bool Valid() const { return valid_; }
   // e.g. "energy: src=cpuidle cores=14 active=3 ours=2 coreBusy=21.4s
-  //       E2=18.73 (core*GHz^2*s) E2/frame=0.0960"
+  //       C1=33.9 (core*GHz*s) E2=18.73 (core*GHz^2*s) E2/frame=0.0960"
   // `active` = cores the machine kept busy (busy > 5% of the wall), `ours` =
   // cores this process's threads were seen on, `coreBusy` = their busy time.
+  // `C1` is the same integral with power ~ f instead of f^2, i.e. a *cycle*
+  // proxy: divided by the work done it gives a per-unit-of-work cost that the
+  // run's frequency band cannot distort, so "one core at 2.7GHz" and "many cores
+  // at 1.2GHz" become comparable in how much work they really did
+  // (doc_agent/cpu-accel-plan.md §1).
   std::string Line(unsigned long long frames) const;
 
  private:
@@ -85,6 +90,7 @@ class EnergyProbe {
   uint32_t ourCores_ = 0;
   double wallSeconds_ = 0.0;
   double coreBusy_ = 0.0;
+  double c1_ = 0.0;
   double e2_ = 0.0;
   std::vector<Residency> beginResid_;
   std::vector<std::vector<uint64_t>> beginIdle_;

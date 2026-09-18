@@ -189,6 +189,7 @@ void EnergyProbe::Begin() {
   ourCores_ = 0;
   wallSeconds_ = 0.0;
   coreBusy_ = 0.0;
+  c1_ = 0.0;
   e2_ = 0.0;
   beginResid_.clear();
   beginIdle_.clear();
@@ -263,10 +264,12 @@ void EnergyProbe::End() {
       continue;
     }
 
-    // Clock of the work: mean f^2 over the frequency steps above this core's
-    // minimum (the minimum is where an idle core sits).
+    // Clock of the work: mean f and mean f^2 over the frequency steps above this
+    // core's minimum (the minimum is where an idle core sits). The f^2 mean
+    // feeds the energy proxy; the f mean feeds the cycle proxy.
     const long minKhz = before.khz.front();
     double aboveSeconds = 0.0;
+    double weightedF = 0.0;
     double weightedF2 = 0.0;
     for (size_t step = 0; step < before.khz.size(); ++step) {
       if (after.ticks[step] <= before.ticks[step] || before.khz[step] <= minKhz) {
@@ -277,6 +280,7 @@ void EnergyProbe::End() {
           static_cast<double>(after.ticks[step] - before.ticks[step]) / hz;
       const double ghz = static_cast<double>(before.khz[step]) / 1000000.0;
       aboveSeconds += seconds;
+      weightedF += seconds * ghz;
       weightedF2 += seconds * ghz * ghz;
     }
 
@@ -308,6 +312,7 @@ void EnergyProbe::End() {
 
     if (busySeconds > 0.0 && aboveSeconds > 0.0) {
       coreBusy_ += busySeconds;
+      c1_ += busySeconds * (weightedF / aboveSeconds);
       e2_ += busySeconds * (weightedF2 / aboveSeconds);
     }
     if (busySeconds > kEnergyActiveFraction * wallSeconds_) {
@@ -366,10 +371,10 @@ std::string EnergyProbe::Line(unsigned long long frames) const {
   char buf[288];
   const double perFrame = frames > 0 ? e2_ / static_cast<double>(frames) : 0.0;
   std::snprintf(buf, sizeof(buf),
-                "energy: src=%s cores=%u active=%u ours=%u coreBusy=%.1fs E2=%.2f (core*GHz^2*s) "
-                "E2/frame=%.4f",
-                source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_, e2_,
-                perFrame);
+                "energy: src=%s cores=%u active=%u ours=%u coreBusy=%.1fs C1=%.1f (core*GHz*s) "
+                "E2=%.2f (core*GHz^2*s) E2/frame=%.4f",
+                source_ == 1 ? "cpuidle" : "resid", cores_, activeCores_, ourCores_, coreBusy_, c1_,
+                e2_, perFrame);
   return std::string(buf);
 }
 

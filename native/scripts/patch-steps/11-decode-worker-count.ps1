@@ -182,7 +182,12 @@ Patch-Regex $progC '\treturn \(\(unsigned long long\)ts\.tv_sec \* 1000000000ull
  * a dev probe, but then the split is not per-tile exact).
  */
 static UINT32 g_HmrdpTileSample = 0;
-static BOOL g_HmrdpSampleTile = FALSE;
+/* HmRdp: per thread. The flag decides whether *this* tile's phases are timed; a
+ * shared flag would leak one worker's sampling decision into the others and make
+ * the per-phase totals meaningless as soon as the decode runs on more than one
+ * thread. A tile decode never yields, so the flag is stable for the whole tile
+ * even though the platform queue's tasks can migrate between workers. */
+static _Thread_local BOOL g_HmrdpSampleTile = FALSE;
 #define HMRDP_PHASE_ARM() \
 	g_HmrdpSampleTile = ((__atomic_add_fetch(&g_HmrdpTileSample, 1, __ATOMIC_RELAXED) & 15u) == 0)
 

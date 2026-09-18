@@ -1189,11 +1189,14 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
                                     ? HmrdpParallelTakeMaxConcurrency()
                                     : 0;
     HMRDP_LOGI("energy: pool poolWall=%{public}.1fms workerBusy=%{public}.1fms ratio=%{public}.2f "
-               "tiles=%{public}llu ffrt=%{public}llu parMax=%{public}u",
+               "tiles=%{public}llu ffrt=%{public}llu parMax=%{public}u workerPx=%{public}llu "
+               "rdpPx=%{public}llu",
                poolWallMs, workerBusyMs, poolWallMs > 0 ? workerBusyMs / poolWallMs : 0.0,
                static_cast<unsigned long long>(HmrdpProgStat[8]),
                static_cast<unsigned long long>(HmrdpProgStat[18]),
-               parMax);
+               parMax,
+               static_cast<unsigned long long>(HmrdpProgStat[19]),
+               static_cast<unsigned long long>(HmrdpProgStat[20]));
   }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",

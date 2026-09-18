@@ -65,12 +65,11 @@ Patch-Regex $progParC `
 		if (HmrdpParallelAvailable != NULL && HmrdpParallelRun != NULL &&
 		    (HmrdpParallelAvailable() != 0))
 		{
-			/* HmRdp: run the chunks on the platform task queue instead of the
+			/* HmRdp: run the same chunks on the platform task queue instead of the
 			 * codec's own pool - see the patch note in native/scripts/patch-freerdp.ps1
-			 * step 21. Each chunk gets its own tile range and its own claim counter,
-			 * so no two tasks share a cache line; the pool path's single shared
-			 * counter is a serialisation point that width cannot hide. */
-			volatile UINT32 ffrtClaims[HMRDP_TILE_CHUNKS];
+			 * step 21. The task count is the only thing that differs from the pool
+			 * path: a region carries only a few ms of work, so handing ffrt one task
+			 * per chunk pays more in task objects than it buys in scheduling. */
 			UINT32 ffrtTasks = HMRDP_FFRT_TASKS;
 			if (ffrtTasks > numTiles)
 				ffrtTasks = numTiles;
@@ -81,9 +80,8 @@ Patch-Regex $progParC `
 				chunk->params = progressive->params;
 				chunk->scratch =
 				    progressive->tileScratch + ((size_t)c * (size_t)HMRDP_TILE_SCRATCH_STRIDE);
-				chunk->next = &ffrtClaims[c];
-				ffrtClaims[c] = (UINT32)(((UINT64)c * numTiles) / ffrtTasks);
-				chunk->numTiles = (UINT32)(((UINT64)(c + 1u) * numTiles) / ffrtTasks);
+				chunk->next = &nextTile;
+				chunk->numTiles = numTiles;
 			}
 
 			HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */

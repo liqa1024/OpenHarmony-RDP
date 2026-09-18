@@ -93,6 +93,21 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
   统计行做归因。整块按"一次性整体打补丁"设计：**改动它要从干净源码重打**。数字与口径见
   [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
+- **并行执行器换成平台队列（ffrt）**：patch step 21 让解码在提交 chunk 前先看弱符号
+  `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
+  + 任务属性 + 逐 handle 等待）；构建里没有这些导出时回落到原 WinPR 池。**宽度就是设置里的
+  「解码线程数」**——实测并发宽度严格等于设定值，而原池不遵守该值。见
+  [`cpu-accel-plan.md`](cpu-accel-plan.md) §2 M-a。
+- **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
+  malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；
+  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
+- **tile 合成（拷贝）移进并行段**：patch step 23 把目标缓冲与合并后的 clip 存进 codec context，tile 解码
+  完一块就直写 surface；`update_tiles` 保留遍历与 O(1) 脏区 span 记账，只在**clip 哈希一致**时跳过那次
+  拷贝（哈希折入消息序号；"一条消息多条 region"时两者 clip 不同，仍由 `update_tiles` 覆盖）。
+  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。效果见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
+- **dev 探针的两处修正**：`g_HmrdpSampleTile` 改成线程本地（否则多 worker 下 `prog2` 的相位总量无意义）；
+  app 侧新增 `energy:` 行（每核 busy×f² 的能量代理 + `C1=Σbusy×f` 的 cycle 代理，数据源为
+  `cpuidle` 空闲时间与 `time_in_state` 驻留）。见 [`gfx-engine.md`](gfx-engine.md) §8.3。
 - **逆 DWT 改写**：Progressive 实际跑的是**抽取（外推）**那一支
   （`progressive_rfx_idwt_x/_y`，`RFX_DWT_REDUCE_EXTRAPOLATE` 区域），`codec/rfx_dwt.c` 的通用实现
   在全屏码流上一次也不进。抽取支与通用支**都**改成"只动组织、不动算术"：`X2 = L - (H0+H1)/2`
