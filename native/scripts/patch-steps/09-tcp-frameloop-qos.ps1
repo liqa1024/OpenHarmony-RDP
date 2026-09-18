@@ -1,4 +1,4 @@
-# 9) HmRdp: client-side bandwidth / frame-loop / thread-fanout tuning.
+# 9) HmRdp: client-side bandwidth / frame-loop / QoS tuning.
 #    (a) tcp.c: size the receive window for the bandwidth-delay product. A
 #        remote/relayed session has a high RTT, where throughput is capped by
 #        window/RTT, and upstream only guarantees a 32 K receive buffer. Set
@@ -10,11 +10,12 @@
 #        paces the next frame). Decoding is already done at this point, so
 #        acknowledging here is honest and the next frame is not held back by our
 #        presentation.
-#    (c) winpr pool workers + the drdynvc thread: call an app-registered
-#        per-thread QoS hook (HarmonyOS QoS levels - a frame's producer and its
-#        tile-decoding consumers want the same treatment), and cap the pool
-#        fan-out: one worker per core, woken for every Progressive message,
-#        costs power without buying throughput.
+#    (c) the drdynvc thread calls an app-registered per-thread QoS hook
+#        (HarmonyOS QoS levels) for the whole frame pipeline it carries: ZGX
+#        decode, PDU parse, image decode, composite, present and acknowledge.
+#        The decode's tile workers get their QoS from the platform queue's task
+#        attribute instead (hmrdp_parallel.*), so the WinPR pool no longer
+#        participates and its fan-out cap is gone.
 # (a) receive window: deliberately NOT patched. Asking for a larger SO_RCVBUF
 #     explicitly disables the kernel's receive-buffer auto-tuning; on the test
 #     device that dropped the measured arrival rate from ~1.28 MB/s to ~0.58 MB/s
@@ -98,40 +99,15 @@ Patch-Block $gfxC "`tconst UINT64 start = GetTickCount64();" `
   ($gfxAckEarly + "`r`n`tconst UINT64 start = GetTickCount64();") 'HmRdp: acknowledge the frame before'
 
 $poolC = "$Source\winpr\libwinpr\pool\pool.c"
-$poolInitOld = @(
-  "`tSYSTEM_INFO info = { 0 };",
-  "`tGetSystemInfo(&info);",
-  "`tif (info.dwNumberOfProcessors < 1)",
-  "`t`tinfo.dwNumberOfProcessors = 1;",
-  "`tif (!SetThreadpoolThreadMinimum(pool, info.dwNumberOfProcessors))",
-  "`t`tgoto fail;",
-  "`tSetThreadpoolThreadMaximum(pool, info.dwNumberOfProcessors);"
-) -join "`r`n"
-$poolInitNew = @(
-  "`tSYSTEM_INFO info = { 0 };",
-  "`tGetSystemInfo(&info);",
-  "`tif (info.dwNumberOfProcessors < 1)",
-  "`t`tinfo.dwNumberOfProcessors = 1;",
-  "`t/* HmRdp: cap the per-pool fan-out. FreeRDP submits one work item per",
-  "`t * Progressive tile and this class of device has many cores; keeping (and",
-  "`t * waking) one worker per core for every message costs power without buying",
-  "`t * throughput, so the pool is bounded to a few workers. */",
-  "`tif (info.dwNumberOfProcessors > 4)",
-  "`t`tinfo.dwNumberOfProcessors = 4;",
-  "`tif (!SetThreadpoolThreadMinimum(pool, info.dwNumberOfProcessors))",
-  "`t`tgoto fail;",
-  "`tSetThreadpoolThreadMaximum(pool, info.dwNumberOfProcessors);"
-) -join "`r`n"
-Patch-Block $poolC $poolInitOld $poolInitNew 'HmRdp: cap the per-pool fan-out'
-
 $qosHook = @(
   "/* ---- HmRdp: per-thread QoS hook ---------------------------------------- */",
   "/* The application registers a callback (libhmrdp dlopen()s libqos.so) that",
-  " * raises the QoS level of the calling thread. Every pool worker and the",
-  " * drdynvc thread call it once: a frame's tile decoding is spread over these",
-  " * workers, and the platform schedules a marked thread with less wake-up and",
-  " * preemption latency (HarmonyOS ""QoS 开发指导"" - mark both halves of a",
-  " * producer/consumer pair). Nothing happens when no app registered a hook. */",
+  " * raises the QoS level of the calling thread. The drdynvc thread calls it once:",
+  " * ZGX decode, PDU parse, image decode, composite, present and the frame",
+  " * acknowledge for every frame run on that thread, and the platform schedules a",
+  " * marked thread with less wake-up and preemption latency (HarmonyOS ""QoS",
+  " * 开发指导"" - mark both halves of a producer/consumer pair). Nothing happens",
+  " * when no app registered a hook. */",
   "static void (*g_HmrdpThreadQoS)(void) = NULL;",
   "",
   "WINPR_API void HmrdpSetThreadQoSApplier(void (*fn)(void))",
@@ -150,8 +126,6 @@ $qosHook = @(
 Patch-Block $poolC 'static DWORD WINAPI thread_pool_work_func(LPVOID arg)' `
   ($qosHook + 'static DWORD WINAPI thread_pool_work_func(LPVOID arg)') `
   'HmRdp: per-thread QoS hook'
-Patch-Block $poolC "`tpool = (PTP_POOL)arg;" `
-  ("`tpool = (PTP_POOL)arg;`r`n`tHmrdpApplyThreadQoS();") 'HmrdpApplyThreadQoS();'
 
 $dvcC = "$Source\channels\drdynvc\client\drdynvc_main.c"
 Patch-Block $dvcC "`tdrdynvcPlugin* drdynvc = (drdynvcPlugin*)arg;" `

@@ -12,22 +12,14 @@
 
 #include "hmrdp_log.h"
 
-// Exported by the patched libwinpr (pool.c): the request is stored and applied
-// by the decoder itself at a Progressive message boundary, so changing it while
-// a stream is decoding can never tear down workers with work in flight. Weak, so
-// nothing here is required for a stock FreeRDP to link - it then keeps its own
-// built-in default (min(cores, 4)).
-extern "C" void HmrdpSetDecodeThreads(unsigned int workers) __attribute__((weak));
-
 namespace hmrdp {
 namespace {
 
-// Automatic ceiling. The pool section's wall scales with the width once the
-// requested width is actually honoured (the platform queue does; the codec's own
-// pool did not), so the automatic choice is the whole machine - there is no
-// measured knee below the core count to stop at. The gain per worker flattens,
-// but it does not turn negative, and the per-run energy proxy has been flat to
-// slightly better with more width (doc_agent/cpu-accel-plan.md §0/§2).
+// Automatic ceiling. The platform queue honours the requested width, so the
+// automatic choice is the whole machine - there is no measured knee below the
+// core count to stop at. The gain per worker flattens, but it does not turn
+// negative, and the per-run energy proxy has been flat to slightly better with
+// more width (doc_agent/cpu-accel-plan.md §0/§2).
 constexpr int kAutoCap = 16;
 // Manual range (the settings slider and the replay page's 「线程」 row).
 constexpr int kMaxWorkers = 8;
@@ -88,12 +80,6 @@ int Clamp(int workers) {
   return std::max(kMinWorkers, std::min(kMaxWorkers, workers));
 }
 
-void Forward(int workers) {
-  if (HmrdpSetDecodeThreads != nullptr) {
-    HmrdpSetDecodeThreads(static_cast<unsigned int>(workers));
-  }
-}
-
 }  // namespace
 
 int DecodeCpuCount() {
@@ -119,12 +105,7 @@ int DecodeThreads() {
 
 void SetDecodeThreads(int workers) {
   g_requested = workers > 0 ? Clamp(workers) : 0;
-  Forward(DecodeThreads());
   HMRDP_LOGI("decode threads: %{public}s", DecodeThreadsInfo().c_str());
-}
-
-void ApplyStoredDecodeThreads() {
-  Forward(DecodeThreads());
 }
 
 std::string CpuFreqInfo() {

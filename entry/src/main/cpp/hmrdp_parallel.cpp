@@ -17,10 +17,8 @@ namespace {
 // The platform queue is the decode's executor. It is not chosen for a marginal
 // measurement win: FFRT is the platform's own task runtime, so its scheduling,
 // QoS and core placement follow the system and keep following it across system
-// updates, and it is the only executor that honours the configured width. The
-// codec's own WinPR pool is a third-party thread pool with none of that; it is
-// kept only as the graceful-degradation path when these exports are absent
-// (doc_agent/cpu-accel-plan.md §0/§4).
+// updates, and it is the only executor the decoder has
+// (doc_agent/cpu-accel-plan.md §0/§1).
 constexpr int kUsePlatformExecutor = 1;
 
 // Upper bound on the tasks one call accepts; the decoder's chunk count is capped
@@ -86,6 +84,13 @@ void Thunk(void* arg) {
 
 extern "C" int HmrdpParallelAvailable(void) {
   return kUsePlatformExecutor;
+}
+
+// The configured decode width, read by the patched decoder to decide between
+// the serial branch and the platform queue (see hmrdp_decode_tuning.h). The
+// width is resolved on demand, so a settings change needs no re-arming.
+extern "C" unsigned int HmrdpDecodeWidth(void) {
+  return static_cast<unsigned int>(hmrdp::DecodeThreads());
 }
 
 extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* ctx) {

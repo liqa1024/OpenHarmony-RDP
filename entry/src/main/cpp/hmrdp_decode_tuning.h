@@ -2,20 +2,19 @@
  * HmRdp - how wide the Progressive tile decode may run.
  *
  * The decode's executor is the platform task queue (a FFRT concurrent queue, see
- * hmrdp_parallel.*), and its maximum concurrency is this value; the codec's own
- * WinPR pool is only the graceful-degradation path when that executor is not
- * available. Threads cannot be pinned to a core or a cluster here, so the knob
+ * hmrdp_parallel.*); its maximum concurrency is this value. There is no second
+ * executor: a width of 1 decodes on the receiving thread, anything wider is
+ * FFRT. Threads cannot be pinned to a core or a cluster here, so the knob
  * chooses the width, not where the work runs.
  *
  *  - `1` decodes on the receiving thread (no queue at all: no submission, no
  *    wake-up, no wait).
- *  - `0` (automatic) is the whole machine, capped by kAutoCap: the parallel
- *    section's wall scales with the width once the width is honoured, and the
- *    per-run energy proxy does not get worse with more width.
+ *  - `0` (automatic) is the whole machine, capped by kAutoCap.
  *  - `n > 1` sets the queue's maximum concurrency to `n`.
  *
  * The value is process-wide and applies to the live session and the offline
- * replay alike; the decoder picks it up at a Progressive message boundary.
+ * replay alike; the patched decoder reads it through HmrdpDecodeWidth() and
+ * picks it up at a Progressive region boundary.
  * Width, energy proxy and measurement discipline: doc_agent/cpu-accel-plan.md
  * §0/§1.
  */
@@ -44,9 +43,6 @@ int DecodePerfCores();
 // One line for the log / the settings page, e.g.
 // "workers=4 (auto: perf-cores=4 cores=9)".
 std::string DecodeThreadsInfo();
-
-// Re-forwards the stored value (used when a library was reloaded).
-void ApplyStoredDecodeThreads();
 
 // Current frequency of the device's CPUs as "min-max" kHz, or an empty string
 // when the platform does not expose it. Sampled on demand: the *playback rate*

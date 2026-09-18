@@ -30,18 +30,12 @@
 
 // DEV-ONLY: phase timers exported by the patched FreeRDP progressive decoder
 // (libfreerdp/codec/progressive.c). Weak, so a stock FreeRDP just reports none.
-// Slots (see the patch's comment): [0] tile read/parse, [1] pool dispatch,
-// [2] pool section, [3] update_tiles, [4] unions, [5] messages, [6] tiles
-// composited, [7] the blocking part of [2], [8] tiles decoded, [9] tile-decode
-// time (this thread's loop on the serial path, the workers' summed decode time
-// on the pool path - see the reporting code).
+// Slots (see the patch's comment): [0] tile read/parse, [1] work dispatch,
+// [2] work wait+close, [3] update_tiles, [4] (unused), [5] messages, [6] tiles
+// composited, [7] the blocking part of [2], [8] tiles decoded, [9] worker busy
+// time (summed over chunks), [18] ffrt region dispatches.
 constexpr int kProgStatSlots = 24;
 extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak));
-
-// DEV-ONLY: what the patched libwinpr did with the decode worker count -
-// out = { requested, workers the pool really has, resizes }. Weak, so a stock
-// FreeRDP just reports nothing.
-extern "C" void HmrdpGetDecodeThreadsStats(unsigned int out[3]) __attribute__((weak));
 
 // DEV-ONLY: how many tile-decode callbacks the platform queue ever ran at the
 // same moment since the previous call (hmrdp_parallel.*). Weak, so a build
@@ -499,16 +493,16 @@ std::string GfxReplay::StatsLines() {
                 running_.load() ? 1 : 0);
   std::string out(head);
 
-  // Worker count + the run's total process CPU time: the thread-count A/B needs
-  // both the wall time (above) and what it cost, or "same speed, more cores
-  // woken" looks like a tie (doc_agent/cpu-accel-plan.md §2).
+  // Worker count + the run's total process CPU time: the width A/B needs both
+  // the wall time (above) and what it cost, or "same speed, more cores woken"
+  // looks like a tie (doc_agent/cpu-accel-plan.md §2). `ffrt` is the number of
+  // regions the platform queue actually dispatched, i.e. proof the decode ran on
+  // FFRT rather than the serial branch.
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
-    unsigned int pool[3] = {0, 0, 0};
-    if (HmrdpGetDecodeThreadsStats != nullptr) {
-      HmrdpGetDecodeThreadsStats(pool);
-    }
+    const unsigned long long ffrtRuns =
+        &HmrdpProgStat[0] != nullptr ? HmrdpProgStat[18] : 0;
     // cpuKHz is the SoC clock the run actually got: the playback rate decides it
     // (an idle-paced run sits at the lowest frequency and every per-frame figure
     // is ~3x larger), so two runs are only comparable at the same value
@@ -516,8 +510,8 @@ std::string GfxReplay::StatsLines() {
     const std::string freq = hmrdp::CpuFreqInfo();
     char run[240];
     std::snprintf(run, sizeof(run),
-                  "\nrun  threads=%d  libWants=%u  applies=%u resizes=%u  cpu=%.2fs  cpuKHz=%s",
-                  hmrdp::DecodeThreads(), pool[0], pool[1], pool[2],
+                  "\nrun  threads=%d  ffrt=%llu  cpu=%.2fs  cpuKHz=%s",
+                  hmrdp::DecodeThreads(), ffrtRuns,
                   static_cast<double>(cpuEnd - cpuStart) / 1000000.0,
                   freq.empty() ? "n/a" : freq.c_str());
     out += run;
@@ -625,18 +619,19 @@ std::string GfxReplay::StatsLines() {
   if (&HmrdpProgStat[0] != nullptr && work.frames > 0 && HmrdpProgStat[5] > 0) {
     const double d = static_cast<double>(work.frames > 0 ? work.frames : 1);
     // The tile-decode section is timed by a different slot per path and the two
-    // are not the same kind of figure: on the pool path [2] is the section's wall
-    // clock (its blocking part being [7]), while on the serial path [9] is the
-    // time this thread spent in the per-tile loop. Only one of them is ever
-    // non-zero in a run, so the reported `dec` picks whichever ran. ([9] is also
-    // accumulated per chunk by the pool workers as their own summed decode time -
-    // a multi-threaded CPU figure, not a per-frame one - so it must not be
-    // reported next to the wall-clock phases.)
+    // are not the same kind of figure: on the parallel path [2] is the section's
+    // wall clock - the wait for the platform queue's tasks (its blocking part
+    // being [7]) - while on the serial path [9] is the time this thread spent in
+    // the per-tile loop. Only one of them is ever non-zero in a run, so the
+    // reported `dec` picks whichever ran. ([9] is also accumulated per chunk by
+    // the queue's tasks as their own summed decode time - a multi-threaded CPU
+    // figure, not a per-frame one - so it must not be reported next to the
+    // wall-clock phases.)
     const uint64_t decNs = HmrdpProgStat[2] != 0 ? HmrdpProgStat[2] : HmrdpProgStat[9];
     char ps[320];
     std::snprintf(ps, sizeof(ps),
                   "\nprog  ms/frame: read=%.2f dispatch=%.2f dec=%.2f (blocked=%.2f) "
-                  "update=%.2f  (calls=%llu unions=%llu tiles=%llu tilesDec=%llu)",
+                  "update=%.2f  (calls=%llu unions=%llu tiles=%llu tilesDec=%llu ffrt=%llu)",
                   static_cast<double>(HmrdpProgStat[0]) / d / 1e6,
                   static_cast<double>(HmrdpProgStat[1]) / d / 1e6,
                   static_cast<double>(decNs) / d / 1e6,
@@ -645,7 +640,8 @@ std::string GfxReplay::StatsLines() {
                   static_cast<unsigned long long>(HmrdpProgStat[5]),
                   static_cast<unsigned long long>(HmrdpProgStat[4]),
                   static_cast<unsigned long long>(HmrdpProgStat[6]),
-                  static_cast<unsigned long long>(HmrdpProgStat[8]));
+                  static_cast<unsigned long long>(HmrdpProgStat[8]),
+                  static_cast<unsigned long long>(HmrdpProgStat[18]));
     out += ps;
 
     // DEV-ONLY: where the time inside one decoded tile goes. The probe times a
@@ -883,22 +879,23 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
     std::lock_guard<std::mutex> lock(energyMutex_);
     energyLine_ = energy_.Line(frames_.load());
   }
-  // The decode pool's own account: the section the receiving thread waited out
-  // versus the summed time the chunk callbacks ran. Their ratio is the *effective*
-  // parallel width - if it stays near 1 when more workers were asked for, the
-  // extra workers are not doing the decode (doc_agent/cpu-accel-plan.md §2).
+  // The platform queue's own account: the section the receiving thread waited
+  // out versus the summed time the chunk callbacks ran. Their ratio is the
+  // *effective* parallel width - if it stays near 1 when more workers were asked
+  // for, the extra workers are not doing the decode
+  // (doc_agent/cpu-accel-plan.md §2).
   if (&HmrdpProgStat[0] != nullptr) {
-    const double poolWallMs = static_cast<double>(HmrdpProgStat[2]) / 1e6;
+    const double wallMs = static_cast<double>(HmrdpProgStat[2]) / 1e6;
     const double workerBusyMs = static_cast<double>(HmrdpProgStat[9]) / 1e6;
     // The platform queue's own read-out: how wide it actually ran. A wall-clock
     // figure alone cannot tell "ran two chunks at once" from "ran one, twice".
     const unsigned int parMax = HmrdpParallelTakeMaxConcurrency != nullptr
                                     ? HmrdpParallelTakeMaxConcurrency()
                                     : 0;
-    HMRDP_LOGI("energy: pool poolWall=%{public}.1fms workerBusy=%{public}.1fms ratio=%{public}.2f "
+    HMRDP_LOGI("energy: queue wall=%{public}.1fms workerBusy=%{public}.1fms ratio=%{public}.2f "
                "tiles=%{public}llu ffrt=%{public}llu parMax=%{public}u workerPx=%{public}llu "
                "rdpPx=%{public}llu",
-               poolWallMs, workerBusyMs, poolWallMs > 0 ? workerBusyMs / poolWallMs : 0.0,
+               wallMs, workerBusyMs, wallMs > 0 ? workerBusyMs / wallMs : 0.0,
                static_cast<unsigned long long>(HmrdpProgStat[8]),
                static_cast<unsigned long long>(HmrdpProgStat[18]),
                parMax,

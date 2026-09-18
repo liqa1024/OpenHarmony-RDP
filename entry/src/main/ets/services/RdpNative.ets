@@ -78,11 +78,11 @@ export class RdpNative {
   }
 
   /**
-   * Progressive tile decode workers (process-global, live session and replay
-   * alike). `workers` = 0 means automatic: the performance-core count when the
-   * device exposes it, else min(cores, 4) - the measured sweet spot, see
-   * doc_agent/cpu-accel-plan.md §1. 1 decodes on the receiving thread with no worker
-   * pool at all (the power-optimal end of the range).
+   * Progressive tile decode width (process-global, live session and replay
+   * alike). The decode runs on the platform task queue (ffrt); `workers` is its
+   * maximum concurrency. `workers` = 0 means automatic (all online cores, capped
+   * at 16, see doc_agent/cpu-accel-plan.md §0). 1 decodes on the receiving
+   * thread with no task submission at all.
    */
   static applyDecodeThreads(workers: number): void {
     setDecodeThreads(workers);

@@ -194,14 +194,14 @@ struct SettingsPage {
     RdpNative.applyRfxDump(this.rfxDump, dir);
   }
 
-  // Honest wording: which end costs less energy depends on the duty cycle, and
-  // the comparison is per `cpu=` at the same `cpuKHz=` band, not per frame time
-  // (doc_agent/cpu-accel-plan.md §2). 0 is the automatic choice (performance-core
-  // count, capped at 4); 1 decodes on the receiving thread with no pool at all.
-  // The replay page's 「线程」 row selects the same value directly for on-device
-  // calibration.
+  // The decode runs on the platform task queue (ffrt); this value is its width.
+  // 0 is the automatic choice (all online cores, capped at 16); 1 decodes on the
+  // receiving thread with no task submission. The comparison the knob supports is
+  // per `cpu=` at the same `cpuKHz=` band, not per frame time
+  // (doc_agent/cpu-accel-plan.md §0/§2). The replay page's 「线程」 row selects the
+  // same value directly for on-device calibration.
   private decodeThreadsSubtitle(): string {
-    return 'Progressive 解码的线程数。0 = 自动（性能核数，上限 4）；1 = 不建池，只在接收线程解码';
+    return 'Progressive 解码的并行宽度。0 = 自动（全部在线核，上限 16）；1 = 串行，只在接收线程解码';
   }
 
   private sizeText(value: number): string {
@@ -1136,7 +1136,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '开发者选项',
-              subtitle: '显示码流抓取、解码线程数、录像回放入口、工具栏性能信息与下面这些实验/调参项',
+              subtitle: '显示码流抓取、解码并行宽度、录像回放入口、工具栏性能信息与下面这些实验/调参项',
               value: this.developerMode,
               enabled: true,
               disabledReason: '',
@@ -1173,7 +1173,7 @@ struct SettingsPage {
               Divider().color($r('app.color.divider'))
 
               this.sliderItem({
-                title: '解码线程数',
+                title: '解码并行宽度',
                 subtitle: this.decodeThreadsSubtitle(),
                 value: this.decodeThreads,
                 min: 0,

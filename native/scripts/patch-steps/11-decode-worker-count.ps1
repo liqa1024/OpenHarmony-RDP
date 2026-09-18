@@ -1,153 +1,44 @@
-# 11) HmRdp: runtime-controllable decode worker count.
+# 11) HmRdp: the decode width comes from the app; the serial/parallel choice
+#     follows it.
 #
-#     (a) The WinPR pool is the only lever on decode parallelism on this platform
-#         (no thread affinity / cluster control), so the worker count becomes a
-#         runtime value: `HmrdpSetDecodeThreads(n)` stores a request, the decoder
-#         applies it at a Progressive message boundary (see (c)) where no work
-#         item can be in flight. `n == 1` means "decode on the receiving thread
-#         with no pool at all" - the power-optimal end of the range.
-#     (b) The pool's built-in default stays min(cores, 4), the measured sweet
-#         spot; the app overrides it with the value it derived (performance-core
-#         count when the device exposes it).
-#     (c) `HmrdpGetDecodeThreads() <= 1` takes the serial branch of the tile
-#         decode, i.e. one worker means "no worker pool at all".
-$poolC = "$Source\winpr\libwinpr\pool\pool.c"
-$poolApi = @'
-/* ---- HmRdp: decode worker count ----------------------------------------- */
-/* The Progressive tile decode is the only user of the codec's pool. The app
- * chooses the count (0 = keep the built-in default) and the decoder applies it
- * at a region boundary, so a running decode never loses workers mid-flight. */
-static volatile LONG g_HmrdpDecodeThreads = 0;
-static volatile LONG g_HmrdpDecodeThreadsApplied = -1;
-/* Dev counters, read back by the app's replay stats. */
-static volatile LONG g_HmrdpDecodeResizes = 0;
-static volatile LONG g_HmrdpDecodeApplies = 0;
-
-static DWORD HmrdpDefaultDecodeThreads(void)
-{
-	SYSTEM_INFO info = { 0 };
-	GetSystemInfo(&info);
-	if (info.dwNumberOfProcessors < 1)
-		info.dwNumberOfProcessors = 1;
-	/* HmRdp: cap the per-pool fan-out. More workers do not reduce the decode
-	 * wall time on this class of device (measured: 8 workers were no faster
-	 * than 4) - the extra ones only land on the little cores and get woken for
-	 * every message, so the default stays at the performance-core count. */
-	if (info.dwNumberOfProcessors > 4)
-		info.dwNumberOfProcessors = 4;
-	return info.dwNumberOfProcessors;
-}
-
-WINPR_API void HmrdpSetDecodeThreads(DWORD workers)
-{
-	if (workers > 64)
-		workers = 64;
-	__atomic_store_n(&g_HmrdpDecodeThreads, (LONG)workers, __ATOMIC_RELAXED);
-}
-
-/* The worker count in effect: the app's request, or the built-in default. */
-WINPR_API DWORD HmrdpGetDecodeThreads(void)
-{
-	const LONG requested = __atomic_load_n(&g_HmrdpDecodeThreads, __ATOMIC_RELAXED);
-	if (requested <= 0)
-		return HmrdpDefaultDecodeThreads();
-	return (DWORD)requested;
-}
-
-/* Resizes `pool` to the requested worker count. The decoder passes its own codec
- * pool (rfx.c creates one per codec context, sized at creation from the same
- * resolver) and calls this at a region boundary, i.e. with nothing in flight. */
-WINPR_API void HmrdpApplyDecodeThreads(PTP_POOL pool)
-{
-	const DWORD want = HmrdpGetDecodeThreads();
-
-	__atomic_add_fetch(&g_HmrdpDecodeApplies, 1, __ATOMIC_RELAXED);
-
-	if (!pool)
-		return;
-
-	if ((LONG)want == __atomic_load_n(&g_HmrdpDecodeThreadsApplied, __ATOMIC_RELAXED))
-		return;
-
-	/* Grow first (that only creates workers). A shrink has to go through
-	 * SetThreadpoolThreadMaximum: it tears the extra workers down (they join) and
-	 * recreates ThreadMinimum of them, so Minimum must already be the new count. */
-	if (!SetThreadpoolThreadMinimum(pool, want))
-		return;
-	SetThreadpoolThreadMaximum(pool, want);
-	__atomic_store_n(&g_HmrdpDecodeThreadsApplied, (LONG)want, __ATOMIC_RELAXED);
-	__atomic_add_fetch(&g_HmrdpDecodeResizes, 1, __ATOMIC_RELAXED);
-}
-
-/* Dev read-out: out = { requested, applies, resizes }. */
-WINPR_API void HmrdpGetDecodeThreadsStats(DWORD out[3])
-{
-	if (!out)
-		return;
-
-	out[0] = HmrdpGetDecodeThreads();
-	out[1] = (DWORD)__atomic_load_n(&g_HmrdpDecodeApplies, __ATOMIC_RELAXED);
-	out[2] = (DWORD)__atomic_load_n(&g_HmrdpDecodeResizes, __ATOMIC_RELAXED);
-}
-
-static DWORD WINAPI thread_pool_work_func(LPVOID arg)
-'@
-# (b) the pool's initial size comes from the same resolver (the "cap the fan-out"
-#     note above is what this replaces; its marker text stays for the step above).
+#     背景：多核执行器已统一到平台的 ffrt 并发队列（hmrdp_parallel.*，见 step 21）。
+#     并行宽度是 app 的一个进程级值，app 通过 `HmrdpDecodeWidth()` 暴露；解码器只
+#     需要据此在"接收线程串行"与"提交平台队列"之间选择。这里不再有任何 WinPR 池
+#     相关接线（宽度不再是"池的 worker 数"）。
 #
-#     NOTE: this runs *before* the API insert below on purpose - both blocks
-#     contain the same `SYSTEM_INFO info = { 0 };` prologue, and the pattern here
-#     is non-greedy, so applying the API first would make this match (and then
-#     wipe out) the API block instead of the pool init.
-Patch-Regex $poolC '\tSYSTEM_INFO info = \{ 0 \};\n\tGetSystemInfo\(&info\);.*?\tSetThreadpoolThreadMaximum\(pool, info\.dwNumberOfProcessors\);\n' (@'
-	const DWORD threads = HmrdpGetDecodeThreads();
-	/* HmRdp: cap the per-pool fan-out. The worker count is a runtime value now
-	 * (HmrdpSetDecodeThreads); this is only the starting point when the app has
-	 * not chosen one. Its default, min(cores, 4), is the measured sweet spot -
-	 * see doc_agent/cpu-path.md §5. */
-	if (!SetThreadpoolThreadMinimum(pool, threads))
-		goto fail;
-	SetThreadpoolThreadMaximum(pool, threads);
-	__atomic_store_n(&g_HmrdpDecodeThreadsApplied, (LONG)threads, __ATOMIC_RELAXED);
-'@) 'const DWORD threads = HmrdpGetDecodeThreads();'
+#     (a) 解码器读 app 导出的 `HmrdpDecodeWidth()`（弱符号；没有平台执行器的构建
+#         返回 1 ⇒ 串行）。
+#     (b) 串行分支的判据是宽度 <= 1（rfx 的 UseThreads 属于旧的池开关，不再参与）。
+#     (c) 保留解码相位计时与 HmrdpProgStat（dev 探针，另有开关见 step 24）。
+#
+#     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
+$progC = "$Source\libfreerdp\codec\progressive.c"
 
-# (a) the runtime API itself ($poolApi already ends with the anchor line).
-#     Marker is a line of the API block: the (b) replacement above mentions
-#     `HmrdpSetDecodeThreads` in a comment, so that name would skip this step.
-Patch-Regex $poolC 'static DWORD WINAPI thread_pool_work_func\(LPVOID arg\)' $poolApi `
-  'static DWORD HmrdpDefaultDecodeThreads(void)'
-
-# (c) the decoder applies the request at a message boundary.
+# (a) the app-provided width, next to the tile-chunk helpers.
 Patch-Regex $progC 'static INLINE SSIZE_T progressive_process_tiles\(' (@'
-/* Exported by the patched libwinpr: the worker count the app asked for, and the
- * point where it is safe to resize the pool (no work item in flight yet). */
-extern DWORD HmrdpGetDecodeThreads(void);
-extern void HmrdpApplyDecodeThreads(PTP_POOL pool);
+/* HmRdp: the decode width requested by the app (hmrdp_parallel.* / the settings
+ * knob). Weak, so a build without the platform executor decodes on the receiving
+ * thread. */
+extern unsigned int HmrdpDecodeWidth(void) __attribute__((weak));
+
+static INLINE UINT32 hmrdp_decode_width(void)
+{
+	return HmrdpDecodeWidth != NULL ? HmrdpDecodeWidth() : 1u;
+}
 
 static INLINE SSIZE_T progressive_process_tiles(
-'@) 'HmrdpApplyDecodeThreads'
+'@) 'hmrdp_decode_width'
 
-Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads\)\n\t\{\n\t\t/\* Serial: one call per tile, exactly as before the chunking change\. \*/\n' (@'
-	/* HmRdp: apply the app's worker-count choice to the codec's own pool here -
-	 * this is the only place that submits to it, so nothing is in flight. */
-	HmrdpApplyDecodeThreads(progressive->rfx_context->priv->ThreadPool);
-
-	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
+# (b) the serial branch: width 1 (or no platform executor) decodes on the
+#     receiving thread, with no task submission. Time it too: without the timers
+#     the serial branch would only show the parse (`read`) and `update_tiles`
+#     costs, and the `prog` line would look like the decode is nearly free.
+Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads\)\n\t\{\n\t\t/\* Serial: one call per tile, exactly as before the chunking change\. \*/\n\t\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\t\t\tprogressive_process_tiles_tile_work_callback\(0, &progressive->params\[idx\], 0\);\n\n\t\tgoto fail;\n\t\}\n' (@'
+	if (hmrdp_decode_width() <= 1)
 	{
-		/* Serial (or forced to one worker): one call per tile, no pool at all. */
-'@ + "`n") 'HmrdpGetDecodeThreads() <= 1'
-
-# (d) time the serial tile loop too. Without it the serial branch only shows the
-#     parse (`read`) and `update_tiles` costs: the parallel path's dispatch/wait
-#     counters are 0 there, so the per-tile decode - by far the dominant cost of
-#     a whole-screen frame - would be invisible, and the `prog` line would look
-#     like the decode is nearly free whenever the worker count is 1.
-Patch-Regex $progC '\tif \(!progressive->rfx_context->priv->UseThreads \|\| HmrdpGetDecodeThreads\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(or forced to one worker\): one call per tile, no pool at all\. \*/\n\t\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\t\t\tprogressive_process_tiles_tile_work_callback\(0, &progressive->params\[idx\], 0\);\n\n\t\tgoto fail;\n\t\}\n' (@'
-	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
-	{
-		/* Serial (or forced to one worker): one call per tile, no pool at all.
-		 * HmRdp dev: the tiles and the time spent decoding them are counted
-		 * here - the pool-path counters above stay 0 on this branch. */
+		/* Serial (width 1, or no platform executor): one call per tile, no task
+		 * submission. HmRdp dev: the tiles and the time spent decoding them are
+		 * counted here - the queue-path counters stay 0 on this branch. */
 		const unsigned long long s0 = hmrdp_now_ns();
 		for (UINT32 idx = 0; idx < region->numTiles; idx++)
 			progressive_process_tiles_tile_work_callback(0, &progressive->params[idx], 0);
@@ -179,9 +70,8 @@ Patch-Regex $progC '\treturn \(\(unsigned long long\)ts\.tv_sec \* 1000000000ull
  * HmRdp dev: per-phase sampling of the tile decode (see the patch note in
  * native/scripts/patch-freerdp.ps1 step 11e). `HMRDP_PHASE_ARM()` is called once
  * per decoded tile; a phase is only instrumented on the sampled tiles, so the
- * clock reads stay out of the figures they report. Designed for the serial
- * branch: with pool workers the `g_HmrdpSampleTile` flag would race (harmless for
- * a dev probe, but then the split is not per-tile exact).
+ * clock reads stay out of the figures they report. The per-tile flag is thread
+ * local, so it is exact on the queue path too.
  */
 static UINT32 g_HmrdpTileSample = 0;
 /* HmRdp: per thread. The flag decides whether *this* tile's phases are timed; a

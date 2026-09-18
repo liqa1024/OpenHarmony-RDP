@@ -17,37 +17,41 @@
 #     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
 $progParC = "$Source\libfreerdp\codec\progressive.c"
 
-# (a) the optional platform executor, next to the existing winpr hooks.
+# (a) the platform executor, next to the app-width helper inserted by step 11.
 Patch-Regex $progParC `
-  '/\* Exported by the patched libwinpr: the worker count the app asked for, and the\n \* point where it is safe to resize the pool \(no work item in flight yet\)\. \*/\nextern DWORD HmrdpGetDecodeThreads\(void\);\nextern void HmrdpApplyDecodeThreads\(PTP_POOL pool\);' (@'
-/* Exported by the patched libwinpr: the worker count the app asked for, and the
- * point where it is safe to resize the pool (no work item in flight yet). */
-extern DWORD HmrdpGetDecodeThreads(void);
-extern void HmrdpApplyDecodeThreads(PTP_POOL pool);
+  '/\* HmRdp: the decode width requested by the app \(hmrdp_parallel\.\* / the settings\n \* knob\)\. Weak, so a build without the platform executor decodes on the receiving\n \* thread\. \*/\nextern unsigned int HmrdpDecodeWidth\(void\) __attribute__\(\(weak\)\);\n\nstatic INLINE UINT32 hmrdp_decode_width\(void\)\n\{\n\treturn HmrdpDecodeWidth != NULL \? HmrdpDecodeWidth\(\) : 1u;\n\}' (@'
+/* HmRdp: the decode width requested by the app (hmrdp_parallel.* / the settings
+ * knob). Weak, so a build without the platform executor decodes on the receiving
+ * thread. */
+extern unsigned int HmrdpDecodeWidth(void) __attribute__((weak));
 
-/* HmRdp: the optional platform task queue (ffrt), exported by the app
- * (hmrdp_parallel.*). Both stay unresolved on a build without it, and the
- * executor falls back to the codec's own WinPR pool. */
+static INLINE UINT32 hmrdp_decode_width(void)
+{
+	return HmrdpDecodeWidth != NULL ? HmrdpDecodeWidth() : 1u;
+}
+
+/* HmRdp: the platform task queue (ffrt), exported by the app
+ * (hmrdp_parallel.*). Both stay unresolved on a build without it; the width
+ * helper above then forces the serial branch. */
 extern int HmrdpParallelAvailable(void) __attribute__((weak));
 extern int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* ctx)
     __attribute__((weak));
 
 /* Tasks one region is split into when ffrt runs it. A region carries only a few
  * milliseconds of work, so this is deliberately far below HMRDP_TILE_CHUNKS: the
- * platform queue charges per submitted task, and 64 tasks per region measured
- * slower than the pool it replaces. */
+ * platform queue charges per submitted task. */
 #define HMRDP_FFRT_TASKS 16
-'@) 'HmrdpParallelAvailable'
+'@) 'the platform task queue (ffrt)'
 
-# (b) the ffrt task body: the same chunk callback the pool path uses, so the two
-#     executors run identical work.
+# (b) the ffrt task body: the same chunk callback the tile work uses, so the
+#     executor swap changes nothing about the work.
 Patch-Regex $progParC `
   '\t__atomic_add_fetch\(&HmrdpProgStat\[9\], hmrdp_now_ns\(\) - c0, __ATOMIC_RELAXED\);\n\}\n\n/\* HMRDP_TILE_CHUNKS is defined with the tile scratch helpers above\. \*/' (@'
 	__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - c0, __ATOMIC_RELAXED);
 }
 
 /* HmRdp: one ffrt task per chunk. It forwards to the very same chunk callback the
- * WinPR path uses, so switching executors changes nothing about the work. */
+ * tile work uses, so the executor swap changes nothing about the work. */
 static void hmrdp_chunk_ffrt_callback(void* ctx, unsigned int index)
 {
 	PROGRESSIVE_TILE_CHUNK_PARAM* chunks = (PROGRESSIVE_TILE_CHUNK_PARAM*)ctx;
@@ -59,22 +63,24 @@ static void hmrdp_chunk_ffrt_callback(void* ctx, unsigned int index)
 /* HMRDP_TILE_CHUNKS is defined with the tile scratch helpers above. */
 '@) 'hmrdp_chunk_ffrt_callback'
 
-# (c) take the platform path when it is there, before any WinPR work item is made.
+# (c) the parallel branch is the platform queue, full stop: the WinPR pool path
+#     is deleted. A build without the queue never reaches here (the width helper
+#     forces the serial branch), but the fallback keeps the region
+#     all-or-nothing regardless.
 Patch-Regex $progParC `
-  '\t\tfor \(UINT32 c = 0; c < numChunks; c\+\+\)\n\t\t\{\n\t\t\tPROGRESSIVE_TILE_CHUNK_PARAM\* chunk = &chunks\[c\];\n\t\t\tchunk->params = progressive->params;\n\t\t\tchunk->scratch =\n\t\t\t    progressive->tileScratch \+ \(\(size_t\)c \* \(size_t\)HMRDP_TILE_SCRATCH_STRIDE\);\n\t\t\tchunk->next = &nextTile;\n\t\t\tchunk->numTiles = numTiles;\n\n\t\t\tprogressive->work_objects\[c\] =' (@'
+  '\t\tUINT32 numChunks = HMRDP_TILE_CHUNKS;.*?\n\t\tHmrdpProgStat\[2\] \+= hmrdp_now_ns\(\) - ht2; /\* wait\+close \(serial\) \*/\n' (@'
+		UINT32 numChunks = HMRDP_FFRT_TASKS;
+		if (numChunks > numTiles)
+			numChunks = numTiles;
+
 		if (HmrdpParallelAvailable != NULL && HmrdpParallelRun != NULL &&
 		    (HmrdpParallelAvailable() != 0))
 		{
-			/* HmRdp: run the same chunks on the platform task queue instead of the
-			 * codec's own pool - see the patch note in native/scripts/patch-freerdp.ps1
-			 * step 21. The task count is the only thing that differs from the pool
-			 * path: a region carries only a few ms of work, so handing ffrt one task
-			 * per chunk pays more in task objects than it buys in scheduling. */
-			UINT32 ffrtTasks = HMRDP_FFRT_TASKS;
-			if (ffrtTasks > numTiles)
-				ffrtTasks = numTiles;
-
-			for (UINT32 c = 0; c < ffrtTasks; c++)
+			/* HmRdp: one ffrt task per chunk - see the patch note in
+			 * native/scripts/patch-freerdp.ps1 step 21. A region carries only a few
+			 * ms of work, so handing ffrt one task per chunk pays more in task
+			 * objects than it buys in scheduling. */
+			for (UINT32 c = 0; c < numChunks; c++)
 			{
 				PROGRESSIVE_TILE_CHUNK_PARAM* chunk = &chunks[c];
 				chunk->params = progressive->params;
@@ -85,24 +91,26 @@ Patch-Regex $progParC `
 			}
 
 			HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */
-			/* Dev: proves which executor ran (HmrdpProgStat[18] is otherwise unused). */
+			/* Dev: proves the decode ran on the platform queue. */
 			HmrdpProgStat[18] += 1;
 			{
 				const unsigned long long ht2 = hmrdp_now_ns();
-				(void)HmrdpParallelRun(ffrtTasks, hmrdp_chunk_ffrt_callback, (void*)chunks);
+				(void)HmrdpParallelRun(numChunks, hmrdp_chunk_ffrt_callback, (void*)chunks);
 				HmrdpProgStat[2] += hmrdp_now_ns() - ht2; /* wait (serial) */
 			}
 			goto fail;
 		}
 
-		for (UINT32 c = 0; c < numChunks; c++)
+		/* No platform queue in this build: decode on the receiving thread. The
+		 * width helper already forces the serial branch then, so this is only
+		 * belt and braces - the region stays all-or-nothing. */
+		g_HmrdpTlsTileScratch = progressive->tileScratch;
+		HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */
 		{
-			PROGRESSIVE_TILE_CHUNK_PARAM* chunk = &chunks[c];
-			chunk->params = progressive->params;
-			chunk->scratch =
-			    progressive->tileScratch + ((size_t)c * (size_t)HMRDP_TILE_SCRATCH_STRIDE);
-			chunk->next = &nextTile;
-			chunk->numTiles = numTiles;
-
-			progressive->work_objects[c] =
-'@) 'the platform task queue instead of the'
+			const unsigned long long ht2 = hmrdp_now_ns();
+			for (UINT32 idx = 0; idx < numTiles; idx++)
+				progressive_process_tiles_tile_work_callback(0, &progressive->params[idx], 0);
+			__atomic_add_fetch(&HmrdpProgStat[8], numTiles, __ATOMIC_RELAXED);
+			HmrdpProgStat[2] += hmrdp_now_ns() - ht2; /* wait (serial) */
+		}
+'@ + "`n") 'never reaches here'

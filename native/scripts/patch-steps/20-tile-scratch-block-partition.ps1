@@ -188,9 +188,7 @@ Patch-Regex $progScratchC `
 
 # (b3) allocate the arena once, and pin the serial branch to slot 0.
 Patch-Regex $progScratchC `
-  '\tHmrdpApplyDecodeThreads\(progressive->rfx_context->priv->ThreadPool\);\n\n\tif \(!progressive->rfx_context->priv->UseThreads \|\| HmrdpGetDecodeThreads\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(or forced to one worker\): one call per tile, no pool at all\.\n\t\t \* HmRdp dev: the tiles and the time spent decoding them are counted\n\t\t \* here - the pool-path counters above stay 0 on this branch\. \*/' (@'
-	HmrdpApplyDecodeThreads(progressive->rfx_context->priv->ThreadPool);
-
+  '\tif \(hmrdp_decode_width\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(width 1, or no platform executor\): one call per tile, no task\n\t\t \* submission\. HmRdp dev: the tiles and the time spent decoding them are\n\t\t \* counted here - the queue-path counters stay 0 on this branch\. \*/' (@'
 	/* HmRdp: the tile decode's working buffers come from this context's arena
 	 * (one slot per chunk), allocated on the first message and never taken per
 	 * tile - see hmrdp_tile_scratch(). */
@@ -200,11 +198,11 @@ Patch-Regex $progScratchC `
 		return -1;
 	}
 
-	if (!progressive->rfx_context->priv->UseThreads || HmrdpGetDecodeThreads() <= 1)
+	if (hmrdp_decode_width() <= 1)
 	{
-		/* Serial (or forced to one worker): one call per tile, no pool at all.
-		 * HmRdp dev: the tiles and the time spent decoding them are counted
-		 * here - the pool-path counters above stay 0 on this branch. */
+		/* Serial (width 1, or no platform executor): one call per tile, no task
+		 * submission. HmRdp dev: the tiles and the time spent decoding them are
+		 * counted here - the queue-path counters stay 0 on this branch. */
 		g_HmrdpTlsTileScratch = progressive->tileScratch;
 '@) '!hmrdp_alloc_tile_scratch(progressive))'
 
@@ -220,11 +218,8 @@ Patch-Regex $progScratchC `
 		 * descriptors the workers also read. */
 		_Alignas(64) volatile UINT32 nextTile = 0;
 		const UINT32 numTiles = region->numTiles;
-		/* HmRdp: keep the original one-work-item-per-block chunking. Reducing the
-		 * count to a small multiple of the worker count does not engage the pool's
-		 * other threads on this platform (a 2-worker run with 4 work items took as
-		 * long as the serial one), and the per-item cost is bounded by the claim
-		 * block, not by the item count. */
+		/* HmRdp: the chunk count = one scratch slot per chunk. This is the upper
+		 * bound; the parallel path picks how many of these slots to submit. */
 		UINT32 numChunks = HMRDP_TILE_CHUNKS;
 		if (numChunks > numTiles)
 			numChunks = numTiles;

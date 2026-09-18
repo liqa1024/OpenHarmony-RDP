@@ -85,11 +85,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 
 - **触屏帧间隔可调**：上游把接触点合并成约 50Hz 一帧，补丁导出运行时全局
   `HmrdpSetTouchFrameInterval`，设置项「触屏-高刷新率」开则传 0。
-- **解码线程数可运行时控制**：导出 `HmrdpSetDecodeThreads(n)`（0 = 内置默认）、
-  `HmrdpGetDecodeThreads()`、`HmrdpApplyDecodeThreads(PTP_POOL)`（改线程数时**只动解码自己的那个池**，
-  且在 region 边界调用，不会撕掉在飞的 work item）与 `HmrdpGetDecodeThreadsStats()`（dev 读数）。
-  池是**每个 codec 上下文一个**（`rfx.c`），创建时就按同一个解析器定尺寸 ⇒ "改设置 → 下一条会话/回放
-  生效"；`n == 1` 在 `progressive.c` 里走**完全串行**分支（不提交、不唤醒、不等待）。
+- **解码并行宽度可运行时控制**：app 导出 `HmrdpDecodeWidth()`（`hmrdp_parallel.*`，值来自
+  `hmrdp_decode_tuning.*`，0 解析为自动），解码器在每条 region 边界读它 ⇒ "改设置 → 下一条 region
+  生效"，不需要重新建执行器。宽度是平台队列的 `max_concurrency`；没有平台执行器的构建读到 1 ⇒
+  `progressive.c` 走**完全串行**分支（不提交、不唤醒、不等待）。这里**没有 WinPR 池控制面**。
 - **解码侧 dev 探针可运行时开关**：`HmrdpSetProgSample(on)` /
   `HmrdpGetProgSample()` 控制 progressive 解码里那组计时（`HmrdpProgStat` 的分相、逐 tile 的 1/16
   相位采样）。它们只有回放 stats 会展示，而 `clock_gettime` 在本平台不是 vDSO、采样计数器又是每 tile
@@ -102,10 +101,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   （运行期回调，因为 DVC 插件比 NAPI 模块先加载，弱符号解析不到），并提供离线重放入口
   （`HmrdpGfxReplayNew*` / `HmrdpGfxReplayRecv`，其中 `…WithContext` 绑定到调用方自己的
   `rdpContext`，供离线 gdi 桌面使用）。**这一整块按"一次性整体打补丁"设计**：改动它要从干净源码重打。
-- **客户端侧带宽 / 帧回执 / 线程扇出**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
-  `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；winpr 线程池 worker 与
-  drdynvc 线程在入口调 app 注册的 **QoS** 钩子。**线程池的扇出上限只约束兜底路径**——并行宽度现在由
-  平台队列的并发度决定（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0）。
+- **客户端侧带宽 / 帧回执 / QoS**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
+  `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；drdynvc 线程在入口调 app 注册的
+  **QoS** 钩子（整条帧流水线都在它上面）。解码的 tile worker 不再来自 WinPR 池，它们的 QoS 由平台队列
+  的任务属性给（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §0）。
 
 **正确性 / 一致性**
 
@@ -119,10 +118,11 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
   统计行做归因（该组探针由 `HmrdpSetProgSample` 门控，见上）。整块按"一次性整体打补丁"设计：
   **改动它要从干净源码重打**。数字与口径见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
-- **并行执行器换成平台队列（ffrt）**：patch step 21 让解码在提交 chunk 前先看弱符号
+- **并行执行器 = 平台队列（ffrt），唯一**：patch step 21 让解码在提交 chunk 前看弱符号
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
-  + 任务属性 + 逐 handle 等待）；构建里没有这些导出时回落到原 WinPR 池。**宽度就是设置里的
-  「解码线程数」**——实测并发宽度严格等于设定值，而原池不遵守该值。见
+  + 任务属性 + 逐 handle 等待）；没有这些导出时宽度读作 1 ⇒ 串行，**没有 WinPR 池兜底**。**宽度就是
+  设置里的「解码并行宽度」**——实测并发宽度严格等于设定值（`parMax`）。patch step 25 进一步在平台
+  执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不再为解码建 WinPR 池。见
   [`cpu-accel-plan.md`](cpu-accel-plan.md) §0/§4。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
   malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；

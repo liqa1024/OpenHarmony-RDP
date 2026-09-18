@@ -214,7 +214,7 @@ Patch-Regex $progWcC `
 
 # (g) the region decode stashes the merged clip update_tiles will use...
 Patch-Regex $progWcC `
-  '\t/\* HmRdp: apply the app.s worker-count choice to the codec.s own pool here -' (@'
+  '\tif \(hmrdp_decode_width\(\) <= 1\)\n' (@'
 	/* HmRdp: the merged clipping rects update_tiles will composite with, built the
 	 * same way (region16 union, so the list is canonical and ordered by top), so
 	 * the tile decode can composite with the same clip and stamp its hash on each
@@ -240,8 +240,8 @@ Patch-Regex $progWcC `
 		                                             progressive->hmrdpClipCount);
 	}
 
-	/* HmRdp: apply the app's worker-count choice to the codec's own pool here -
-'@) 'hmrdpClipRegion'
+	if (hmrdp_decode_width() <= 1)
+'@ + "`n") 'hmrdpClipRegion'
 
 # ... and takes it back at the end of the region.
 Patch-Regex $progWcC `
