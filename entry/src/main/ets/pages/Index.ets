@@ -327,7 +327,7 @@ struct Index {
           .height(44)
           .borderRadius(11)
         Column() {
-          Text('RDP 远程桌面')
+          Text($r('app.string.app_name'))
             .fontSize(20)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
