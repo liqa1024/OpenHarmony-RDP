@@ -1297,7 +1297,9 @@ struct SessionPage {
       this.toast('无法访问应用目录');
       return undefined;
     }
-    const dir: string = `${filesDir}/${name}/${Date.now()}`;
+    const stamp: string = `${Date.now()}`;
+    const root: string = `${filesDir}/${name}`;
+    const dir: string = `${root}/${stamp}`;
     try {
       fileIo.mkdirSync(dir, true);
     } catch (error) {
@@ -1306,7 +1308,44 @@ struct SessionPage {
       this.toast('无法创建文件目录');
       return undefined;
     }
+    SessionPage.purgeStaleTransferDirs(root, stamp);
     return dir;
+  }
+
+  /**
+   * Every transfer gets a fresh timestamped directory and the clipboard only
+   * ever references the newest one, so the previous directory is unreachable
+   * (its URIs were replaced by this transfer). Without this the sandbox would
+   * grow by one directory per transfer, forever.
+   */
+  private static purgeStaleTransferDirs(root: string, keep: string): void {
+    let names: string[] = [];
+    try {
+      names = fileIo.listFileSync(root);
+    } catch (error) {
+      return;  // Root absent or unreadable: nothing to purge.
+    }
+    for (const name of names) {
+      if (name === keep) {
+        continue;
+      }
+      const path: string = `${root}/${name}`;
+      try {
+        // Unlink the contents first so this works whether or not rmdirSync
+        // removes a non-empty directory.
+        for (const child of fileIo.listFileSync(path)) {
+          try {
+            fileIo.unlinkSync(`${path}/${child}`);
+          } catch (error) {
+            // Already gone, or not a plain file: leave it to rmdirSync.
+          }
+        }
+        fileIo.rmdirSync(path);
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'purge %{public}s failed: %{public}s', path,
+          JSON.stringify(error));
+      }
+    }
   }
 
   private static listFiles(dir: string): string[] {
