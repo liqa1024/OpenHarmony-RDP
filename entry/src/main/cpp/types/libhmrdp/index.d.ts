@@ -20,6 +20,15 @@ export interface RdpOptions {
    * ends, so the server sends fewer frames instead of the client dropping them.
    */
   maxFps: number;
+  /**
+   * 超分 (super resolution). `width`/`height` are the *output* resolution; with
+   * this on, the session asks the server for `output ÷ srRatioPercent` and the
+   * Vulkan presenter upscales every frame back with XEngine's GPU spatial
+   * upscale. Ignored by the GLES presenter, so it requires 硬件加速.
+   */
+  srEnabled: boolean;
+  /** Upscale ratio in percent (125 = 1.25×); ignored unless srEnabled. */
+  srRatioPercent: number;
   performanceFlags: number;
   gatewayHost: string;
   gatewayPort: number;
@@ -135,3 +144,14 @@ export const vulkanInfo: () => string;
  * `emulator`. The UI layer maps the code to its own wording.
  */
 export const vulkanAccelSupport: () => string;
+
+/**
+ * Whether this device can upscale a presented frame with XEngine's GPU spatial
+ * upscale - the capability behind the "超分" setting. Returns "1", or "0|<code>"
+ * with a stable code: the `vulkanAccelSupport` codes (`no-vulkan` / `no-instance`
+ * / `no-device` / `no-host-memory` / `no-surface` / `emulator`) when the Vulkan
+ * presenter itself is unusable, or `no-xengine` (libxengine.so missing) /
+ * `no-extension` (the GPU has no XEG_spatial_upscale). 超分 needs the Vulkan
+ * presenter, so the caller must also check `vulkanAccelSupport`.
+ */
+export const superResolutionSupport: () => string;

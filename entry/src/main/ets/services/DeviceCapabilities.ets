@@ -7,7 +7,7 @@
  * runtime; the native layer additionally degrades gracefully so the session
  * itself keeps working.
  */
-import { isAudioSupported, vulkanAccelSupport } from 'libhmrdp.so';
+import { isAudioSupported, superResolutionSupport, vulkanAccelSupport } from 'libhmrdp.so';
 
 /** Support state of one optional feature. */
 export class Capability {
@@ -59,6 +59,46 @@ export class DeviceCapabilities {
     capability.supported = false;
     capability.reason = DeviceCapabilities.hardwareAccelReason(verdict);
     return capability;
+  }
+
+  /**
+   * GPU super-resolution (超分) of the presented frame: the session renders at a
+   * lower resolution and the Vulkan presenter upscales it back with the platform
+   * XEngine spatial upscale. Needs the Vulkan presenter to be usable at all, so
+   * it is a real-device-only capability like 硬件加速.
+   */
+  static superResolution(): Capability {
+    const capability: Capability = new Capability();
+    let verdict: string = '';
+    try {
+      verdict = superResolutionSupport();
+    } catch (error) {
+      capability.supported = false;
+      capability.reason = '无法检测本设备的超分辨率能力';
+      return capability;
+    }
+    if (verdict === '1') {
+      return capability;
+    }
+    capability.supported = false;
+    capability.reason = DeviceCapabilities.superResolutionReason(verdict);
+    return capability;
+  }
+
+  /** Wording for the native reason token (the native side only returns codes). */
+  private static superResolutionReason(verdict: string): string {
+    const code: string = verdict.startsWith('0|') ? verdict.substring(2) : '';
+    if (code === 'emulator' || code === 'no-vulkan' || code === 'no-instance'
+      || code === 'no-device' || code === 'no-host-memory' || code === 'no-surface') {
+      return '超分辨率需要可用的硬件加速（Vulkan 上屏），本设备不满足';
+    }
+    if (code === 'no-xengine') {
+      return '本设备未提供超分辨率所需的图形加速库（libxengine）';
+    }
+    if (code === 'no-extension') {
+      return '本设备的 GPU 不支持超分辨率所需的空域上采样特性';
+    }
+    return '本设备的超分辨率能力不足，超分辨率不可用';
   }
 
   /** Wording for the native reason token (the native side only returns codes). */

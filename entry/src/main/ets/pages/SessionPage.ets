@@ -14,7 +14,8 @@ import { PendingConnection, RdpConnectOptions, RdpConnectionState,
 import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { SessionManager } from '../services/SessionManager';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SettingsStore } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SettingsStore,
+  srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
@@ -414,8 +415,13 @@ struct SessionPage {
     this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
-    this.desktopWidth = this.options.width;
-    this.desktopHeight = this.options.height;
+    // With 超分辨率 the server renders the session (pre-upscale) size, not the
+    // configured output size; the Resize event corrects this if the desktop turns
+    // out different from what was asked for.
+    this.desktopWidth = SettingsStore.srSessionSize(this.options.width,
+      this.options.srEnabled ? this.options.srRatioPercent : 0);
+    this.desktopHeight = SettingsStore.srSessionSize(this.options.height,
+      this.options.srEnabled ? this.options.srRatioPercent : 0);
     this.loadSessionWindow();
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number) => {
@@ -2375,13 +2381,26 @@ struct SessionPage {
     .alignItems(HorizontalAlign.Center)
   }
 
+  /**
+   * Toolbar suffix for 超分辨率: the remote desktop shown next to the host is the
+   * session (pre-upscale) size, so the ratio says what it is scaled back up to
+   * (and that the session is not actually running at the configured output size).
+   * Short on purpose - just the factor in brackets, e.g. " (1.5x)".
+   */
+  private srIndicator(): string {
+    if (!this.options.srEnabled || this.options.srRatioPercent <= 100) {
+      return '';
+    }
+    return ' (' + srRatioLabel(this.options.srRatioPercent) + ')';
+  }
+
   @Builder
   sessionToolbarMainRow() {
     Row() {
       Text(this.options.host)
         .fontSize(14)
         .fontColor(TOOLBAR_FG)
-      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
+      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator())
         .fontSize(12)
         .fontColor(TOOLBAR_FG_SECONDARY)
       Blank()

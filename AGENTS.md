@@ -10,6 +10,9 @@
   **画面由 FreeRDP gdi 出、经呈现器上屏：Vulkan 优先，Vulkan 不能上屏时回落 GLES**
   （`hmrdp_presenter.h`）。「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan，给 Vulkan
   不好用/模拟器兜底），按**呈现能力**置灰（见 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §1）。
+  **超分辨率**（平台文档称「超分」，Vulkan 专有）让会话按「分辨率 ÷ 倍率」出画、本机用 XEngine
+  空域上采样还原到输出分辨率
+  （见 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §4.5）。
   自研的 GPU 解码/合成引擎已移除（见 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §3）。
 
 ## AI 助手约定（硬规则）
@@ -49,7 +52,7 @@
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁（§8）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
 | **CPU（gdi）链路的并行方案**（并行范围、ffrt 执行器与宽度、任务划分、内存归属、合成归属） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
-| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲与后续工作清单 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
+| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**与后续工作清单 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 
 ## 环境
 

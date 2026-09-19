@@ -6,12 +6,13 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnection,
-  RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+  RdpConnectOptions, RdpConnectOrigin, SavedConnection, SrProfile } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { FPS_PRESETS, SCALE_PRESETS, SettingsStore, fpsLabel } from '../services/SettingsStore';
+import { FPS_PRESETS, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore, fpsLabel,
+  srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TextAction } from '../components/TextAction';
 
@@ -45,6 +46,13 @@ struct EditConnectionPage {
   @State enableH264: boolean = false;
   @State ignoreCertificate: boolean = true;
   @State maxFps: number = 0;
+  // 超分: kept out of the display group on purpose - a LAN connection can follow
+  // the (off) global default while the same host reached through a gateway wants
+  // the bandwidth saving, and vice versa.
+  @State useGlobalSr: boolean = true;
+  @State srEnabled: boolean = false;
+  @State srRatioPercent: number = SR_RATIO_PRESETS[0];
+  @State srUsable: boolean = false;
   @State errorMessage: string = '';
   @State editing: boolean = false;
   @State detectedText: string = '';
@@ -86,6 +94,7 @@ struct EditConnectionPage {
     this.detectedText = detected.valid()
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
     this.recommendedScale = SettingsStore.recommendedScalePercent();
+    this.srUsable = SettingsStore.superResolutionUsable();
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
     this.scaleText = this.recommendedScale.toString();
@@ -117,6 +126,9 @@ struct EditConnectionPage {
       this.ignoreCertificate = conn.ignoreCertificate;
       this.maxFps = SettingsStore.snapFpsPreset(conn.maxFps);
       this.useGlobalAdvanced = conn.useGlobalAdvanced;
+      this.useGlobalSr = conn.useGlobalSr;
+      this.srEnabled = conn.srEnabled;
+      this.srRatioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
     }
     CredentialStore.loadPassword(id)
       .then((password: string) => {
@@ -171,10 +183,36 @@ struct EditConnectionPage {
     return value ? '开' : '关';
   }
 
+  private srSummary(profile: SrProfile): string {
+    return profile.enabled ? `${this.onOff(true)} ${srRatioLabel(profile.ratioPercent)}` : '关';
+  }
+
   private advancedSummary(profile: AdvancedProfile): string {
     return `音频${this.onOff(profile.enableAudio)}`
       + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`
       + ` · 帧率${fpsLabel(profile.maxFps)}`;
+  }
+
+  /**
+   * 超分 in effect for this connection (the global defaults when it follows them,
+   * its own values otherwise). Forced off where the device or the 硬件加速
+   * setting cannot back it, so no attempt asks for a lower session resolution
+   * than the presenter can upscale back.
+   */
+  private resolvedSr(): SrProfile {
+    const sr: SrProfile = new SrProfile();
+    if (this.useGlobalSr) {
+      const global: SrProfile = SettingsStore.globalSrProfile();
+      sr.enabled = global.enabled;
+      sr.ratioPercent = global.ratioPercent;
+    } else {
+      sr.enabled = this.srEnabled;
+      sr.ratioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
+    }
+    if (!this.srUsable) {
+      sr.enabled = false;
+    }
+    return sr;
   }
 
   /**
@@ -205,6 +243,9 @@ struct EditConnectionPage {
     options.enableH264 = false;
     options.ignoreCertificate = this.ignoreCertificate;
     options.maxFps = this.maxFps;
+    const sr: SrProfile = this.resolvedSr();
+    options.srEnabled = sr.enabled;
+    options.srRatioPercent = sr.ratioPercent;
     if (applyGlobalAdvanced && this.useGlobalAdvanced) {
       const advanced: AdvancedProfile = SettingsStore.globalAdvancedProfile();
       options.enableAudio = advanced.enableAudio;
@@ -229,6 +270,7 @@ struct EditConnectionPage {
     const conn: SavedConnection = SavedConnection.fromOptions(id, options);
     conn.useGlobalDisplay = this.useGlobalDisplay;
     conn.useGlobalAdvanced = this.useGlobalAdvanced;
+    conn.useGlobalSr = this.useGlobalSr;
     conn.updatedAt = Date.now();
     if (!connect) {
       if (!this.persist(conn)) {
@@ -365,6 +407,22 @@ struct EditConnectionPage {
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.scaleText = preset.toString();
+      })
+  }
+
+  @Builder
+  srRatioChip(preset: number) {
+    Text(srRatioLabel(preset))
+      .fontSize(13)
+      .fontColor(this.srRatioPercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.srRatioPercent === preset
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.srRatioPercent = preset;
       })
   }
 
@@ -622,7 +680,7 @@ struct EditConnectionPage {
               .layoutWeight(1)
 
               Row() {
-                if (!this.useGlobalDisplay || !this.useGlobalAdvanced) {
+                if (!this.useGlobalDisplay || !this.useGlobalAdvanced || !this.useGlobalSr) {
                   Text('已自定义')
                     .fontSize(11)
                     .fontColor($r('app.color.text_tertiary'))
@@ -747,6 +805,59 @@ struct EditConnectionPage {
                   .width('100%')
                   .margin({ top: 16 })
                   .alignItems(HorizontalAlign.Start)
+                }
+
+                Divider()
+                  .color($r('app.color.divider'))
+                  .margin({ top: 8, bottom: 4 })
+
+                Row() {
+                  Column() {
+                    Text('使用全局超分辨率设置').fontSize(14).fontColor($r('app.color.text_primary'))
+                    Text('超分辨率：远端按输出分辨率÷倍率出画，本机 GPU 上采样回输出分辨率')
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .margin({ top: 2 })
+                    if (!this.srUsable) {
+                      Text('本设备或当前设置不满足超分辨率条件（需开启硬件加速且设备支持）')
+                        .fontSize(11)
+                        .fontColor($r('app.color.danger'))
+                        .margin({ top: 2 })
+                    }
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1)
+
+                  Toggle({ type: ToggleType.Switch, isOn: this.useGlobalSr })
+                    .enabled(this.srUsable)
+                    .selectedColor($r('app.color.accent'))
+                    .onChange((isOn: boolean) => {
+                      if (!this.srUsable) {
+                        return;
+                      }
+                      this.useGlobalSr = isOn;
+                    })
+                }
+                .width('100%')
+                .height(58)
+
+                if (this.useGlobalSr) {
+                  Text('全局：' + this.srSummary(SettingsStore.globalSrProfile()))
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .width('100%')
+                } else {
+                  this.optionRow('超分辨率', '会话按输出分辨率÷倍率取流，本机上采样回输出分辨率',
+                    this.srEnabled, (v: boolean) => {
+                      this.srEnabled = v;
+                    }, this.srUsable, '')
+
+                  Flex({ wrap: FlexWrap.Wrap }) {
+                    ForEach(SR_RATIO_PRESETS, (preset: number) => {
+                      this.srRatioChip(preset)
+                    }, (preset: number) => preset.toString())
+                  }
+                  .width('100%').margin({ bottom: 8 })
                 }
 
                 Divider()

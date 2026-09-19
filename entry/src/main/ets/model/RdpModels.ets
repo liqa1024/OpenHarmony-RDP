@@ -4,18 +4,41 @@
 import { RdpOptions } from 'libhmrdp.so';
 
 /**
- * Effective display settings for a session: the remote desktop resolution plus
- * the DPI scale factor (percentage) requested from the server.
+ * Effective display settings for a session: the output resolution, the session
+ * (pre-super-resolution) resolution derived from it, and the DPI scale factor
+ * (percentage) requested from the server.
  */
 export class DisplayProfile {
+  // Output (post-super-resolution) resolution: the user's setting or the current
+  // display, and what the native side is given as width/height.
   width: number = 0;
   height: number = 0;
+  // Session (pre-super-resolution) resolution: with 超分 on it is the output
+  // divided by the ratio, and that is what the server is asked to render.
+  sessionWidth: number = 0;
+  sessionHeight: number = 0;
+  // DPI scale factor of the *session* (pre-super-resolution) desktop.
   scalePercent: number = 100;
+  // 超分: the session renders at output ÷ ratio and the presenter upscales it
+  // back to the output resolution on the GPU.
+  srEnabled: boolean = false;
+  srRatioPercent: number = 0;
   detected: boolean = false;
 
   valid(): boolean {
     return this.width > 0 && this.height > 0;
   }
+}
+
+/**
+ * Effective super-resolution defaults for a connection: whether the session
+ * resolution is reduced and upscaled locally, and by how much. Resolved from the
+ * global defaults unless a connection opted into its own overrides.
+ */
+export class SrProfile {
+  enabled: boolean = false;
+  // Upscale ratio in percent (125 = 1.25×). Values <= 100 mean "no upscale".
+  ratioPercent: number = 0;
 }
 
 /**
@@ -94,6 +117,11 @@ export class RdpConnectOptions implements RdpOptions {
   enableRemoteFx: boolean = true;
   // Frame-rate cap in frames per second (0 = uncapped).
   maxFps: number = 0;
+  // 超分: width/height are the *output* resolution; when this is on the native
+  // side asks the server for output ÷ srRatioPercent and upscales each frame
+  // back to the output resolution on the GPU (Vulkan presenter only).
+  srEnabled: boolean = false;
+  srRatioPercent: number = 0;
   performanceFlags: number = 0;
   gatewayHost: string = '';
   gatewayPort: number = 443;
@@ -197,6 +225,11 @@ export class SavedConnection extends RdpConnectOptions {
   // When true the connection follows the global advanced settings (clipboard /
   // audio / GFX / H.264 / certificate); when false its own stored values win.
   useGlobalAdvanced: boolean = true;
+  // When true the connection follows the global super-resolution settings; when
+  // false its own srEnabled / srRatioPercent win. Kept separate from the display
+  // group so a LAN connection can stay native-resolution while the same machine's
+  // gateway (frp) connection turns 超分 on.
+  useGlobalSr: boolean = true;
 
   label(): string {
     return `${this.host}:${this.port}`;
@@ -219,6 +252,8 @@ export class SavedConnection extends RdpConnectOptions {
     conn.enableH264 = options.enableH264;
     conn.enableRemoteFx = options.enableRemoteFx;
     conn.maxFps = options.maxFps;
+    conn.srEnabled = options.srEnabled;
+    conn.srRatioPercent = options.srRatioPercent;
     conn.performanceFlags = options.performanceFlags;
     conn.gatewayHost = options.gatewayHost;
     conn.gatewayPort = options.gatewayPort;
@@ -240,6 +275,8 @@ export class SavedConnection extends RdpConnectOptions {
     options.enableH264 = this.enableH264;
     options.enableRemoteFx = this.enableRemoteFx;
     options.maxFps = this.maxFps;
+    options.srEnabled = this.srEnabled;
+    options.srRatioPercent = this.srRatioPercent;
     options.performanceFlags = this.performanceFlags;
     options.gatewayHost = this.gatewayHost;
     options.gatewayPort = this.gatewayPort;

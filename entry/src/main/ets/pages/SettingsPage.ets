@@ -7,8 +7,8 @@ import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, FPS_PRESETS, SCALE_PRESETS, SettingsStore,
-  fpsLabel } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, FPS_PRESETS, SCALE_PRESETS, SR_RATIO_PRESETS,
+  SettingsStore, fpsLabel, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
@@ -84,6 +84,10 @@ struct SettingsPage {
   @State hardwareAccel: boolean = true;
   @State hardwareAccelSupported: boolean = true;
   private hardwareAccelReason: string = '';
+  @State srEnabled: boolean = false;
+  @State srRatioPercent: number = SR_RATIO_PRESETS[0];
+  @State srSupported: boolean = true;
+  private srReason: string = '';
   // Developer options: reveals the dev-only tools below (and the replay entry /
   // toolbar telemetry elsewhere). Off for a normal install.
   @State developerMode: boolean = false;
@@ -132,6 +136,9 @@ struct SettingsPage {
     const hwCapability: Capability = DeviceCapabilities.hardwareAccel();
     this.hardwareAccelSupported = hwCapability.supported;
     this.hardwareAccelReason = hwCapability.reason;
+    const srCapability: Capability = DeviceCapabilities.superResolution();
+    this.srSupported = srCapability.supported;
+    this.srReason = srCapability.reason;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
@@ -161,6 +168,11 @@ struct SettingsPage {
     // An unsupported device never asks for GPU decoding; drop a previously stored
     // "on" value so the setting matches the greyed-out switch.
     this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
+    // 超分 rides on the Vulkan presenter, so it is only offered where both the
+    // device and the 硬件加速 setting allow it; a stored "on" value that no longer
+    // can apply is dropped, exactly like the audio / hardware-acceleration rows.
+    this.srEnabled = (this.hardwareAccelSupported && this.srSupported) ? settings.srEnabled : false;
+    this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
     this.ignoreCertificate = settings.ignoreCertificate;
     this.maxFps = SettingsStore.snapFpsPreset(settings.maxFps);
     this.developerMode = settings.developerMode;
@@ -176,6 +188,9 @@ struct SettingsPage {
       this.persist();
     }
     if (!this.hardwareAccelSupported && settings.hardwareAccel) {
+      this.persist();
+    }
+    if ((!this.hardwareAccelSupported || !this.srSupported) && settings.srEnabled) {
       this.persist();
     }
     if (!this.developerMode && settings.rfxDump) {
@@ -231,6 +246,31 @@ struct SettingsPage {
     return SCALE_PRESETS.indexOf(value) >= 0;
   }
 
+  /** The preset a 自动 缩放 resolves to right now (it follows the 超分 ratio). */
+  private effectiveDefaultScale(): number {
+    return SettingsStore.defaultScalePercent(this.srEnabled, this.srRatioPercent);
+  }
+
+  /** Output resolution the page would use, i.e. what 分辨率 resolves to. */
+  private outputWidth(): number {
+    return this.resolutionAuto
+      ? this.detectedWidth
+      : this.parseSize(this.manualWidthText, this.detectedWidth, MAX_DESKTOP_SIZE);
+  }
+
+  private outputHeight(): number {
+    return this.resolutionAuto
+      ? this.detectedHeight
+      : this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
+  }
+
+  /** Session (pre-超分) resolution the server would be asked to render. */
+  private sessionSizeText(): string {
+    const width: number = SettingsStore.srSessionSize(this.outputWidth(), this.srRatioPercent);
+    const height: number = SettingsStore.srSessionSize(this.outputHeight(), this.srRatioPercent);
+    return `${width} × ${height}`;
+  }
+
   private displayOrUndefined(): display.Display | undefined {
     try {
       return display.getDefaultDisplaySync();
@@ -269,6 +309,8 @@ struct SettingsPage {
     settings.ignoreCertificate = this.ignoreCertificate;
     settings.maxFps = this.maxFps;
     settings.hardwareAccel = this.hardwareAccel;
+    settings.srEnabled = this.srEnabled && this.srSupported;
+    settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
     settings.developerMode = this.developerMode;
     settings.rfxDump = this.rfxDump;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
@@ -315,6 +357,8 @@ struct SettingsPage {
     this.ignoreCertificate = defaults.ignoreCertificate;
     this.maxFps = defaults.maxFps;
     this.hardwareAccel = defaults.hardwareAccel;
+    this.srEnabled = defaults.srEnabled;
+    this.srRatioPercent = defaults.srRatioPercent;
     this.developerMode = defaults.developerMode;
     this.rfxDump = defaults.rfxDump;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
@@ -487,6 +531,23 @@ struct SettingsPage {
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.maxFps = preset;
+        this.persist();
+      })
+  }
+
+  @Builder
+  srRatioChip(preset: number) {
+    Text(srRatioLabel(preset))
+      .fontSize(13)
+      .fontColor(this.srRatioPercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.srRatioPercent === preset
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.srRatioPercent = preset;
         this.persist();
       })
   }
@@ -815,7 +876,9 @@ struct SettingsPage {
               Row() {
                 Column() {
                   Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text('自动使用当前显示器的分辨率')
+                  Text(this.srEnabled
+                    ? '超分辨率后的输出分辨率；会话按倍率取更低的桌面分辨率'
+                    : '自动使用当前显示器的分辨率')
                     .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
                 }
                 .alignItems(HorizontalAlign.Start)
@@ -869,7 +932,9 @@ struct SettingsPage {
               Row() {
                 Column() {
                   Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text('按屏幕密度自动选择推荐缩放比例')
+                  Text(this.srEnabled
+                    ? '超分辨率前会话桌面的缩放；默认按推荐值 ÷ 倍率换算'
+                    : '按屏幕密度自动选择推荐缩放比例')
                     .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
                 }
                 .alignItems(HorizontalAlign.Start)
@@ -883,7 +948,7 @@ struct SettingsPage {
               .width('100%')
 
               if (this.scaleAuto) {
-                Text('推荐：' + this.recommendedScale + '%')
+                Text('推荐：' + this.effectiveDefaultScale() + '%')
                   .fontSize(11).fontColor($r('app.color.text_tertiary'))
                   .width('100%').margin({ top: 10 })
               } else {
@@ -959,6 +1024,65 @@ struct SettingsPage {
                 this.persist();
               }
             })
+
+            Divider().color($r('app.color.divider'))
+
+            // The ratio lives in the same section as the switch: turning 超分辨率
+            // on only adds a row of presets below the switch, not a new block.
+            Column() {
+              Row() {
+                Column() {
+                  Text('超分辨率')
+                    .fontSize(14)
+                    .fontColor((this.hardwareAccel && this.srSupported)
+                      ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
+                  Text('远端按「分辨率 ÷ 倍率」出画，本机用 GPU 上采样回输出分辨率：省带宽与解码')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .margin({ top: 2 })
+                  if (!this.srSupported) {
+                    Text(this.srReason)
+                      .fontSize(11)
+                      .fontColor($r('app.color.danger'))
+                      .margin({ top: 2 })
+                  } else if (!this.hardwareAccel) {
+                    Text('超分辨率需要开启硬件加速（Vulkan 上屏）')
+                      .fontSize(11)
+                      .fontColor($r('app.color.danger'))
+                      .margin({ top: 2 })
+                  }
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Toggle({ type: ToggleType.Switch, isOn: this.srEnabled })
+                  .enabled(this.hardwareAccel && this.srSupported)
+                  .selectedColor($r('app.color.accent'))
+                  .onChange((isOn: boolean) => {
+                    if (!this.hardwareAccel || !this.srSupported) {
+                      return;
+                    }
+                    this.srEnabled = isOn;
+                    this.persist();
+                  })
+              }
+              .width('100%')
+
+              if (this.srEnabled && this.srSupported && this.hardwareAccel) {
+                Flex({ wrap: FlexWrap.Wrap }) {
+                  ForEach(SR_RATIO_PRESETS, (preset: number) => {
+                    this.srRatioChip(preset)
+                  }, (preset: number) => preset.toString())
+                }
+                .width('100%').margin({ top: 10 })
+
+                Text('输出 ' + this.outputWidth() + ' × ' + this.outputHeight()
+                  + ' · 会话 ' + this.sessionSizeText())
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 2 })
+              }
+            }
+            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
             Divider().color($r('app.color.divider'))
 

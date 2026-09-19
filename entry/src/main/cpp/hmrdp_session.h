@@ -92,6 +92,12 @@ struct RdpOptions {
   // the frame acknowledge the server waits for is only written when that frame
   // ends (native/scripts/patch-steps/09-tcp-frameloop-qos.ps1).
   int maxFps = 0;
+  // 超分: `width`/`height` are the *output* resolution. When this is on the
+  // session asks the server for output ÷ srRatioPercent and the Vulkan presenter
+  // upscales each frame back to the output resolution (no-op on the GLES
+  // presenter). See SettingsStore.defaultScalePercent for the matching scale.
+  bool srEnabled = false;
+  int srRatioPercent = 0;
   int performanceFlags = 0;
   std::string gatewayHost;
   int gatewayPort = 443;

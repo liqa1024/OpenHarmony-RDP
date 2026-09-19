@@ -207,16 +207,27 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - ArkTS 侧在 `services/DeviceCapabilities.ets` 暴露 `Capability{supported, reason}`；
 - UI 上**置灰**该开关并显示原因。
 
-已用此模式的：音频重定向、硬件加速。原生只回**稳定原因码**
+已用此模式的：音频重定向、硬件加速、超分辨率。原生只回**稳定原因码**
 （`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`），
 中文文案由 `DeviceCapabilities.hardwareAccel()` 负责；不支持时设置页置灰开关并显示原因，
 并把已存的值纠正为关。
 
-**只有一个呈现判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
+**有两个判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
 
 | 判定 | 用途 | 条件 |
 |---|---|---|
 | **呈现判定**（`presenterSupported`） | 「硬件加速」开关 / 上屏 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
+| **超分辨率判定**（`srSupported`） | 「超分辨率」开关 | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
+
+- 超分辨率的原因码（`srUnsupportedCode`）**先取呈现判定的码**（上采样渲染进的是呈现器的图，呈现不成立
+  就没有超分辨率可言），再是 `no-xengine`（libxengine 不可用）与 `no-extension`（设备无空域上采样特性）。
+  `superResolutionSupport()` 回它，中文文案在 `DeviceCapabilities.superResolution()`；
+  `SettingsStore.superResolutionUsable()` 再叠加「硬件加速」开关，是超分辨率生效与否的唯一判据。
+- **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
+  XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
+  （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），
+  与 toolchain 指向的 openharmony sysroot 同级；CMake 按 `${OHOS_SDK_NATIVE}/../../hms/native/sysroot`
+  定位，找不到就不定义 `HMRDP_HAVE_XENGINE`，桥退化为"不支持"而构建照常（见 `hmrdp_xeg.cpp`）。
 
 - 它决定「硬件加速」是否有意义（`vulkanAccelSupport()` → 设置页置灰），以及
   `CreateFramePresenter()` 用 Vulkan 呈现器还是 GLES 兜底呈现器（开关关掉时也是 GLES）。

@@ -86,6 +86,28 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
     就是这么做）；live 靠 FreeRDP 在 `OnClose` 里先 `free_surfaces`。
   - 全在 `libfreerdp/gdi/gfx.c` 内部，**不动头文件也不动 app**，因此对任何呈现器都成立。
 
+## 4.5 超分辨率（Vulkan 专有）
+
+超分辨率（平台文档称「超分」）让会话按**更低的「会话分辨率」**取流，本机再把每帧上采样回设置里的
+**「输出分辨率」**：省的是解码与带宽（服务端少出像素），换来的是边缘更锐的本地放大。倍率与默认缩放见
+[`settings-and-storage.md`](settings-and-storage.md) §2；能力判定见
+[`native-libraries.md`](native-libraries.md) §6。
+
+- **只有 Vulkan 呈现器有**：GLES 是兼容兜底，不做同样功能（`SetSuperResolution()` 的默认实现是空操作，
+  只有 `VkRenderer` 覆盖它）。因此超分辨率要求「硬件加速」开着，否则会话侧根本不会降分辨率。
+- **两张图**：输入仍是桌面图（`kPictureFormat` = `B8G8R8A8_UNORM`，会话分辨率），输出是新增的
+  **输出图**（同格式、`USAGE = COLOR_ATTACHMENT | SAMPLED`、device-local、输出分辨率）。通道序仍由
+  图像格式承担，shader 不做交换。letterbox 改成**采样输出图**，源尺寸取输出分辨率（再 fit 到窗口）。
+- **屏障**：输出图每帧被整幅重写，所以进 pass 前用 `UNDEFINED → GENERAL`（丢弃旧内容，免去布局追踪），
+  出 pass 后用 `COLOR_ATTACHMENT_WRITE → SHADER_READ`；桌面图到上采样输入的依赖沿用原来那条
+  `TRANSFER_WRITE → SHADER_READ` 屏障。
+- **生命周期**：上采样对象与输出图按「输入尺寸 + 输出尺寸」缓存，尺寸变了才重建；重建点放在
+  **acquire 之前**（`EnsureDesktopImageLocked` 之后），这样重建里的 fence 等待不会与
+  `AcquireFrameLocked`（它已 reset 本槽 fence）互锁。桌面图重建会一并拆掉超分辨率资源。
+- **失败就降级且不再重试**（`srFailed_` 锁存）：设备拒绝该尺寸/格式（或库缺失）时不进 pass，直接按桌面图
+  letterbox，会话照常可用。排查看 hilog 的 `xengine: spatial upscale` 与
+  `vulkan presenter: super resolution`。
+
 ## 5. swapchain 的尺寸与重建（Vulkan）
 
 - 尺寸以 `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` 的 `currentExtent` 为准，只有在它是 `UINT32_MAX`

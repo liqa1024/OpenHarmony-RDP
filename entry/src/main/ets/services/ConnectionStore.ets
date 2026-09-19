@@ -176,6 +176,9 @@ export class ConnectionStore {
     parts.push(conn.useGlobalDisplay ? '1' : '0');
     parts.push(conn.scalePercent.toString());
     parts.push(conn.useGlobalAdvanced ? '1' : '0');
+    parts.push(conn.useGlobalSr ? '1' : '0');
+    parts.push(conn.srEnabled ? '1' : '0');
+    parts.push(conn.srRatioPercent.toString());
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -208,6 +211,9 @@ export class ConnectionStore {
     conn.useGlobalDisplay = parts.length > 19 ? parts[19] === '1' : true;
     conn.scalePercent = parts.length > 20 ? ConnectionStore.parseNumber(parts[20], 0) : 0;
     conn.useGlobalAdvanced = parts.length > 21 ? parts[21] === '1' : true;
+    conn.useGlobalSr = parts.length > 22 ? parts[22] === '1' : true;
+    conn.srEnabled = parts.length > 23 ? parts[23] === '1' : false;
+    conn.srRatioPercent = parts.length > 24 ? ConnectionStore.parseNumber(parts[24], 0) : 0;
     return conn;
   }
 

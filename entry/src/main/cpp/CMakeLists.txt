@@ -75,12 +75,28 @@ add_library(hmrdp SHARED
     hmrdp_gles_presenter.cpp
     hmrdp_vk_context.cpp
     hmrdp_vk_renderer.cpp
+    hmrdp_xeg.cpp
     ${HMRDP_SHADER_HEADERS}
 )
 
 # Generated SPIR-V headers (one <shader>.comp.h per entry in HMRDP_SHADERS) live
 # outside the source tree, so include that directory.
 target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
+
+# 超分 needs XEngine's headers, which ship in the HMS sysroot (sibling of the
+# openharmony one the toolchain points at) - not in the plain NDK sysroot. The
+# library itself is still dlopen()ed (hmrdp_xeg.cpp), so nothing links against it
+# and a build without the HMS SDK degrades to "no 超分" instead of failing.
+set(HMS_SYSROOT "${OHOS_SDK_NATIVE}/../../hms/native/sysroot")
+if(EXISTS "${HMS_SYSROOT}/usr/include/xengine/xeg_vulkan_spatial_upscale.h")
+    target_include_directories(hmrdp PRIVATE "${HMS_SYSROOT}/usr/include")
+    # application_target_sdk_version.h (pulled in by the XEngine headers) lives in
+    # the openharmony sysroot, which is already on the include path.
+    target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_XENGINE=1)
+    message(STATUS "HmRdp: XEngine (超分) headers at ${HMS_SYSROOT}")
+else()
+    message(WARNING "HmRdp: XEngine headers not found under ${HMS_SYSROOT}; 超分 disabled")
+endif()
 
 # FreeRDP is built without library versioning (see native/scripts/build-freerdp.ps1
 # + -DWITH_LIBRARY_VERSIONING=OFF), so each library is a single version-less

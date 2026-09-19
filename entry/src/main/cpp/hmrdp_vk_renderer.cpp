@@ -89,6 +89,11 @@ constexpr int kMaxUploadRects = 256;
 // format).
 constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
 
+// 超分: sharpening handed to XEngine's spatial upscale. The documented range is
+// [0.0, 1.0]; a low value keeps a downscaled remote desktop (text-heavy) from
+// ringing, and is what the platform samples use.
+constexpr float kSrSharpness = 0.2f;
+
 // Clips the caller's rects to the desktop and drops the empty ones, writing at
 // most `capacity` entries to `out`. Returns the number written (0 when nothing
 // remains visible). When the input is longer than `capacity` the union bounding
@@ -913,6 +918,9 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
 }
 
 void VkRenderer::DestroyDesktopImageLocked() {
+  // The 超分 output is derived from the desktop (its input size is the desktop
+  // size), so it goes with it.
+  DestroySuperResolutionLocked();
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
   const VkDevice device = context.device();
@@ -934,6 +942,174 @@ void VkRenderer::DestroyDesktopImageLocked() {
   desktopImageWidth_ = 0;
   desktopImageHeight_ = 0;
   desktopImageFullUpload_ = true;
+}
+
+void VkRenderer::SetSuperResolution(bool enabled, int outputWidth, int outputHeight) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const bool changed = srRequested_ != enabled || srOutputWidth_ != outputWidth ||
+                       srOutputHeight_ != outputHeight;
+  srRequested_ = enabled;
+  srOutputWidth_ = outputWidth > 0 ? outputWidth : 0;
+  srOutputHeight_ = outputHeight > 0 ? outputHeight : 0;
+  if (changed) {
+    // A new request starts from a clean slate, including a failure latched for a
+    // previous configuration.
+    srFailed_ = false;
+    DestroySuperResolutionLocked();
+  }
+  HMRDP_LOGI("vulkan presenter: super resolution %{public}s (output %{public}dx%{public}d)",
+             enabled ? "on" : "off", srOutputWidth_, srOutputHeight_);
+}
+
+bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight) {
+  if (!srRequested_ || srFailed_) {
+    return false;
+  }
+  const int outputWidth = srOutputWidth_ > 0 ? srOutputWidth_ : inputWidth;
+  const int outputHeight = srOutputHeight_ > 0 ? srOutputHeight_ : inputHeight;
+  if (outputWidth <= inputWidth || outputHeight <= inputHeight) {
+    // Nothing to upscale (a bad ratio or a desktop that grew): letterbox the
+    // decoded desktop directly, as if 超分 were off.
+    return false;
+  }
+  const bool match = srImageView_ != VK_NULL_HANDLE && srUpscale_.valid() &&
+                     srImageWidth_ == outputWidth && srImageHeight_ == outputHeight &&
+                     srInputWidth_ == inputWidth && srInputHeight_ == inputHeight;
+  if (match) {
+    return true;
+  }
+  DestroySuperResolutionLocked();
+
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE) {
+    return false;
+  }
+  // Rare path (a desktop resize): the frames still reading the old output must
+  // drain first. Safe here because this runs before the frame's swapchain image is
+  // acquired, so no slot's fence is pending for this frame.
+  if (inFlight_[0] != VK_NULL_HANDLE) {
+    api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
+  }
+
+  VkImageCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = kPictureFormat;
+  info.extent.width = static_cast<uint32_t>(outputWidth);
+  info.extent.height = static_cast<uint32_t>(outputHeight);
+  info.extent.depth = 1;
+  info.mipLevels = 1;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  // The upscale renders into it (COLOR_ATTACHMENT) and the present draw samples
+  // it (SAMPLED); TRANSFER_SRC is not needed.
+  info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VkResult result = api.CreateImage(device, &info, nullptr, &srImage_);
+  if (result != VK_SUCCESS) {
+    error_ = "vkCreateImage (super resolution): " + VkResultName(result);
+    HMRDP_LOGE("vulkan %{public}s", error_.c_str());
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  }
+  VkMemoryRequirements req{};
+  api.GetImageMemoryRequirements(device, srImage_, &req);
+  const uint32_t typeIndex =
+      context.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (typeIndex == UINT32_MAX) {
+    error_ = "no device-local memory type for the super-resolution image";
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  }
+  VkMemoryAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.allocationSize = req.size;
+  alloc.memoryTypeIndex = typeIndex;
+  result = api.AllocateMemory(device, &alloc, nullptr, &srImageMemory_);
+  if (result != VK_SUCCESS) {
+    error_ = "vkAllocateMemory (super resolution): " + VkResultName(result);
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  }
+  result = api.BindImageMemory(device, srImage_, srImageMemory_, 0);
+  if (result != VK_SUCCESS) {
+    error_ = "vkBindImageMemory (super resolution): " + VkResultName(result);
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  }
+
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.image = srImage_;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = kPictureFormat;
+  viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewInfo.subresourceRange.levelCount = 1;
+  viewInfo.subresourceRange.layerCount = 1;
+  result = api.CreateImageView(device, &viewInfo, nullptr, &srImageView_);
+  if (result != VK_SUCCESS) {
+    error_ = "vkCreateImageView (super resolution): " + VkResultName(result);
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  }
+
+  VkExtent2D inputExtent{};
+  inputExtent.width = static_cast<uint32_t>(inputWidth);
+  inputExtent.height = static_cast<uint32_t>(inputHeight);
+  VkExtent2D outputExtent{};
+  outputExtent.width = static_cast<uint32_t>(outputWidth);
+  outputExtent.height = static_cast<uint32_t>(outputHeight);
+  if (!srUpscale_.Create(device, kPictureFormat, inputExtent, outputExtent, kSrSharpness)) {
+    // The device refused the configuration (missing XEngine or an unsupported
+    // size/format): keep presenting the plain desktop and do not retry per frame.
+    HMRDP_LOGW("vulkan presenter: super resolution unavailable, presenting the desktop as-is");
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  }
+  srImageWidth_ = outputWidth;
+  srImageHeight_ = outputHeight;
+  srInputWidth_ = inputWidth;
+  srInputHeight_ = inputHeight;
+  return true;
+}
+
+void VkRenderer::DestroySuperResolutionLocked() {
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device != VK_NULL_HANDLE) {
+    if (srImageView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+      api.DestroyImageView(device, srImageView_, nullptr);
+    }
+    if (srImage_ != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
+      api.DestroyImage(device, srImage_, nullptr);
+    }
+    if (srImageMemory_ != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+      api.FreeMemory(device, srImageMemory_, nullptr);
+    }
+  }
+  srUpscale_.Destroy();
+  srImageView_ = VK_NULL_HANDLE;
+  srImage_ = VK_NULL_HANDLE;
+  srImageMemory_ = VK_NULL_HANDLE;
+  srImageWidth_ = 0;
+  srImageHeight_ = 0;
+  srInputWidth_ = 0;
+  srInputHeight_ = 0;
 }
 
 bool VkRenderer::EnsureStageLocked(size_t bytes) {
@@ -1234,6 +1410,9 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     if (!EnsureDesktopImageLocked(desktopWidth, desktopHeight)) {
       return false;
     }
+    // 超分: build the upscale target before the swapchain image is acquired, so
+    // the rare (re)creation can drain the frames still reading the old one.
+    const bool srActive = EnsureSuperResolutionLocked(desktopWidth, desktopHeight);
     // Clip the dirty regions to the desktop (the caller's rects come from FreeRDP
     // and can exceed it, e.g. after a resize) and drop the empty ones, so the
     // staging size and the copy regions follow from `upload` alone. The image was
@@ -1452,8 +1631,52 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                            &toSampled);
 
-    UpdatePresentDescriptorLocked(frameIndex_, desktopImageView_);
-    RecordPresentQuadLocked(cmd, desktopWidth, desktopHeight, imageIndex);
+    if (srActive) {
+      // The desktop image is upscaled into the output image, which then takes the
+      // desktop's place as the letterbox source (its own extent is the output
+      // resolution). The output image is fully rewritten, so discarding its
+      // previous layout is fine and keeps the tracking to nothing.
+      VkImageMemoryBarrier srToAttachment{};
+      srToAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      srToAttachment.srcAccessMask = 0;
+      srToAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      srToAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      srToAttachment.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      srToAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      srToAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      srToAttachment.image = srImage_;
+      srToAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      srToAttachment.subresourceRange.levelCount = 1;
+      srToAttachment.subresourceRange.layerCount = 1;
+      api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &srToAttachment);
+
+      srUpscale_.Record(cmd, desktopImageView_, srImageView_);
+
+      VkImageMemoryBarrier srToSampled{};
+      srToSampled.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      srToSampled.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      srToSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      srToSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+      srToSampled.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      srToSampled.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      srToSampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      srToSampled.image = srImage_;
+      srToSampled.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      srToSampled.subresourceRange.levelCount = 1;
+      srToSampled.subresourceRange.layerCount = 1;
+      api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &srToSampled);
+    }
+
+    // 超分 turns the letterbox source into the upscaled image, so the picture is
+    // laid out with the output resolution (the letterbox still fits it to the
+    // window).
+    UpdatePresentDescriptorLocked(frameIndex_, srActive ? srImageView_ : desktopImageView_);
+    RecordPresentQuadLocked(cmd, srActive ? srImageWidth_ : desktopWidth,
+                            srActive ? srImageHeight_ : desktopHeight, imageIndex);
     if (timers) {
       // Outside the render pass: the blit itself is not measurable portably from
       // inside one, but the clear + quad + resolve is what the pass does.

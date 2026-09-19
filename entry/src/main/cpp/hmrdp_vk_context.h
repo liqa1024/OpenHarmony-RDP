@@ -178,6 +178,11 @@ struct VulkanCapabilities {
   bool extExternalMemoryFd = false;
   bool extOhosExternalMemory = false;
 
+  // XEngine (超分): whether libxengine.so is loadable, and whether the probed
+  // device advertises its XEG_spatial_upscale feature.
+  bool xegLibrary = false;
+  bool xegSpatialUpscale = false;
+
   bool memHostVisible = false;
   bool memHostCoherent = false;
   // A DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT type: when present, an upload does
@@ -208,6 +213,15 @@ struct VulkanCapabilities {
   // "no-vulkan" / "no-instance" / "no-device" / "no-host-memory" / "no-surface".
   bool presenterSupported = false;
   std::string presenterUnsupportedCode;
+
+  // --- Super resolution (超分) verdict ---------------------------------------
+  // Whether XEngine's GPU spatial upscale can be used here. 超分 rides on the
+  // Vulkan presenter (the upscale renders into a presenter image), so the
+  // presenter verdict comes first; then the device must advertise the
+  // XEG_spatial_upscale extension. `srUnsupportedCode` is the presenter code, or
+  // "no-xengine" / "no-extension".
+  bool srSupported = false;
+  std::string srUnsupportedCode;
 };
 
 // Cached capability probe. Brings up a short-lived VkInstance (reusing the shared

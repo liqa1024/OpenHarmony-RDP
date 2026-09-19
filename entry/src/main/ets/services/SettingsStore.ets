@@ -5,8 +5,9 @@ import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AdvancedProfile, DisplayProfile, SavedConnection } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile, SavedConnection, SrProfile } from '../model/RdpModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
+import { DeviceCapabilities } from './DeviceCapabilities';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSettings';
@@ -30,12 +31,30 @@ export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 // Frame-rate cap presets in frames per second; 0 means "no cap". The cap lowers
 // how many frames the server sends (the client holds each frame back before its
 // decode, and the frame acknowledge is written when that frame ends), so it also
-// lowers the decode and bandwidth cost of a busy desktop.
-export const FPS_PRESETS: number[] = [0, 15, 30, 45, 60];
+// lowers the decode and bandwidth cost of a busy desktop. 20 sits between 15 and
+// 30 because that gap is wide enough to be worth a preset of its own.
+export const FPS_PRESETS: number[] = [0, 15, 20, 30, 45, 60];
 
 /** Label shown for an FPS_PRESETS entry. */
 export function fpsLabel(preset: number): string {
   return preset > 0 ? `${preset} fps` : '不限制';
+}
+
+// 超分辨率倍率 (output ÷ session) presets in percent. The platform *recommends*
+// up to 1.5× for its GPU spatial upscale; larger ratios save more bandwidth but
+// the sharper edges of a text-heavy desktop start to ring, so those presets are
+// labelled as such in the UI. There is no hard API limit on the ratio.
+export const SR_RATIO_PRESETS: number[] = [125, 150, 175, 200];
+
+/** Label shown for an SR_RATIO_PRESETS entry ("1.25x"), and in the toolbar. */
+export function srRatioLabel(preset: number): string {
+  if (preset % 100 === 0) {
+    return `${preset / 100}x`;
+  }
+  if (preset % 10 === 0) {
+    return `${(preset / 100).toFixed(1)}x`;
+  }
+  return `${(preset / 100).toFixed(2)}x`;
 }
 
 export class AppSettings {
@@ -95,6 +114,12 @@ export class AppSettings {
   // Frame-rate cap in frames per second shared by every connection that follows
   // the global advanced settings; 0 leaves the frame rate to the server.
   maxFps: number = 0;
+  // 超分 (global default; per-connection override in the editor). The resolution
+  // setting is the *output* resolution, the session renders at output ÷ ratio and
+  // the Vulkan presenter upscales it back. Off by default: it changes what the
+  // server is asked to render, so it is opt-in.
+  srEnabled: boolean = false;
+  srRatioPercent: number = SR_RATIO_PRESETS[0];
   // Present frames through Vulkan; off keeps the session on the GLES presenter
   // with no Vulkan at all (see doc_agent/settings-and-storage.md §3).
   hardwareAccel: boolean = true;
@@ -206,6 +231,9 @@ export class SettingsStore {
       settings.ignoreCertificate =
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
       settings.maxFps = SettingsStore.readNumber(store, 'maxFps', settings.maxFps);
+      settings.srEnabled = SettingsStore.readBoolean(store, 'srEnabled', settings.srEnabled);
+      settings.srRatioPercent =
+        SettingsStore.readNumber(store, 'srRatioPercent', settings.srRatioPercent);
       settings.hardwareAccel =
         SettingsStore.readBoolean(store, 'hardwareAccel', settings.hardwareAccel);
       settings.developerMode =
@@ -250,6 +278,8 @@ export class SettingsStore {
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.putSync('maxFps', settings.maxFps);
+      store.putSync('srEnabled', settings.srEnabled);
+      store.putSync('srRatioPercent', settings.srRatioPercent);
       store.putSync('hardwareAccel', settings.hardwareAccel);
       store.putSync('developerMode', settings.developerMode);
       store.putSync('rfxDump', settings.rfxDump);
@@ -314,34 +344,124 @@ export class SettingsStore {
     return best;
   }
 
+  /** Snaps an arbitrary upscale ratio to the nearest offered preset. */
+  static snapSrRatioPreset(percent: number): number {
+    let best: number = SR_RATIO_PRESETS[0];
+    let bestDiff: number = Math.abs(percent - best);
+    for (const preset of SR_RATIO_PRESETS) {
+      const diff: number = Math.abs(percent - preset);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = preset;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Session (pre-super-resolution) size for an output size: the size the server
+   * is asked to render, so the presenter can upscale it back. Rounded to an even
+   * number of pixels (odd desktop sizes render badly on some servers).
+   */
+  static srSessionSize(output: number, ratioPercent: number): number {
+    if (output <= 0 || ratioPercent <= 100) {
+      return output;
+    }
+    const scaled: number = Math.round(output * 100 / ratioPercent);
+    const even: number = scaled - (scaled % 2);
+    return even > 0 ? even : 2;
+  }
+
+  /**
+   * Default DPI scale for the session desktop. Without 超分 it is the display
+   * density's recommended preset; with 超分 the session desktop is smaller by the
+   * ratio but is displayed at the output size, so the factor shrinks by the same
+   * ratio to keep the remote UI the same physical size (and never goes below the
+   * first Windows preset).
+   */
+  static defaultScalePercent(srEnabled: boolean, ratioPercent: number): number {
+    const recommended: number = SettingsStore.recommendedScalePercent();
+    if (!srEnabled || ratioPercent <= 100) {
+      return recommended;
+    }
+    return SettingsStore.nearestScalePreset(Math.round(recommended * 100 / ratioPercent));
+  }
+
+  /** Global 超分 defaults. */
+  static globalSrProfile(): SrProfile {
+    const settings: AppSettings = SettingsStore.load();
+    const profile: SrProfile = new SrProfile();
+    profile.enabled = settings.srEnabled;
+    profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+    return SettingsStore.gateSr(profile);
+  }
+
+  /**
+   * Effective 超分 for a connection: the global defaults unless the connection
+   * opted into its own. Forced off where the device cannot do it (no Vulkan
+   * presenter, no XEngine spatial upscale) or where 硬件加速 is off, so the
+   * session never negotiates a lower resolution it cannot upscale back.
+   */
+  static resolveSr(conn: SavedConnection): SrProfile {
+    const settings: AppSettings = SettingsStore.load();
+    const profile: SrProfile = new SrProfile();
+    if (conn.useGlobalSr) {
+      profile.enabled = settings.srEnabled;
+      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+    } else {
+      profile.enabled = conn.srEnabled;
+      profile.ratioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
+    }
+    return SettingsStore.gateSr(profile);
+  }
+
+  private static gateSr(profile: SrProfile): SrProfile {
+    if (profile.enabled && !SettingsStore.superResolutionUsable()) {
+      profile.enabled = false;
+    }
+    if (profile.ratioPercent <= 100) {
+      profile.ratioPercent = SR_RATIO_PRESETS[0];
+    }
+    return profile;
+  }
+
+  /**
+   * Whether 超分 can actually be used right now: the Vulkan presenter is allowed
+   * (硬件加速 on) and the device provides the XEngine spatial upscale. A device
+   * that misses either half must not negotiate a lower session resolution.
+   */
+  static superResolutionUsable(): boolean {
+    const settings: AppSettings = SettingsStore.load();
+    return settings.hardwareAccel && DeviceCapabilities.hardwareAccel().supported
+      && DeviceCapabilities.superResolution().supported;
+  }
+
   /**
    * Global display profile (auto detected resolution / recommended scale, or the
-   * manual values when the user has overridden them).
+   * manual values when the user has overridden them), with the global 超分.
    */
   static globalDisplayProfile(): DisplayProfile {
-    return SettingsStore.profileFor(SettingsStore.load());
+    const settings: AppSettings = SettingsStore.load();
+    return SettingsStore.profileFor(settings, SettingsStore.globalSrProfile());
   }
 
   /**
    * Effective display profile for a connection: global settings unless the
-   * connection opted into a per-connection override.
+   * connection opted into a per-connection override. `width`/`height` are the
+   * output resolution and `sessionWidth`/`sessionHeight` what the server renders.
    */
   static resolveDisplay(conn: SavedConnection): DisplayProfile {
-    const global: DisplayProfile = SettingsStore.profileFor(SettingsStore.load());
+    const settings: AppSettings = SettingsStore.load();
+    const sr: SrProfile = SettingsStore.resolveSr(conn);
+    const global: DisplayProfile = SettingsStore.profileFor(settings, sr);
     if (conn.useGlobalDisplay) {
       return global;
     }
-    const profile: DisplayProfile = new DisplayProfile();
-    if (conn.width > 0 && conn.height > 0) {
-      profile.width = conn.width;
-      profile.height = conn.height;
-    } else {
-      profile.width = global.width;
-      profile.height = global.height;
-      profile.detected = global.detected;
-    }
-    profile.scalePercent = conn.scalePercent > 0 ? conn.scalePercent : global.scalePercent;
-    return profile;
+    const hasOwnSize: boolean = conn.width > 0 && conn.height > 0;
+    const width: number = hasOwnSize ? conn.width : global.width;
+    const height: number = hasOwnSize ? conn.height : global.height;
+    const scale: number = conn.scalePercent > 0 ? conn.scalePercent : global.scalePercent;
+    return SettingsStore.makeProfile(width, height, global.detected, scale, sr);
   }
 
   /** Global advanced (protocol feature) defaults shared by every connection. */
@@ -376,27 +496,48 @@ export class SettingsStore {
     return profile;
   }
 
-  private static profileFor(settings: AppSettings): DisplayProfile {
-    const profile: DisplayProfile = new DisplayProfile();
+  private static profileFor(settings: AppSettings, sr: SrProfile): DisplayProfile {
+    let width: number = 0;
+    let height: number = 0;
+    let detected: boolean = false;
     if (!settings.resolutionAuto && settings.manualWidth > 0 && settings.manualHeight > 0) {
-      profile.width = settings.manualWidth;
-      profile.height = settings.manualHeight;
+      width = settings.manualWidth;
+      height = settings.manualHeight;
     } else {
-      const detected: DisplayProfile = SettingsStore.detectedDisplay();
-      if (detected.valid()) {
-        profile.width = detected.width;
-        profile.height = detected.height;
-        profile.detected = true;
+      const display: DisplayProfile = SettingsStore.detectedDisplay();
+      if (display.valid()) {
+        width = display.width;
+        height = display.height;
+        detected = true;
       } else {
-        profile.width = FALLBACK_WIDTH;
-        profile.height = FALLBACK_HEIGHT;
+        width = FALLBACK_WIDTH;
+        height = FALLBACK_HEIGHT;
       }
     }
-    if (!settings.scaleAuto && settings.manualScalePercent > 0) {
-      profile.scalePercent = settings.manualScalePercent;
-    } else {
-      profile.scalePercent = SettingsStore.recommendedScalePercent();
-    }
+    const enabled: boolean = sr.enabled && sr.ratioPercent > 100;
+    const defaultScale: number = SettingsStore.defaultScalePercent(enabled, sr.ratioPercent);
+    const scale: number = (!settings.scaleAuto && settings.manualScalePercent > 0)
+      ? settings.manualScalePercent : defaultScale;
+    return SettingsStore.makeProfile(width, height, detected, scale, sr);
+  }
+
+  /**
+   * Assembles a profile from the output size, its DPI scale and the 超分 choice:
+   * the session size (what the server renders) and the SR fields follow from the
+   * output size and the ratio.
+   */
+  private static makeProfile(width: number, height: number, detected: boolean,
+    scalePercent: number, sr: SrProfile): DisplayProfile {
+    const profile: DisplayProfile = new DisplayProfile();
+    const enabled: boolean = sr.enabled && sr.ratioPercent > 100;
+    profile.width = width;
+    profile.height = height;
+    profile.detected = detected;
+    profile.scalePercent = scalePercent;
+    profile.srEnabled = enabled;
+    profile.srRatioPercent = enabled ? sr.ratioPercent : 0;
+    profile.sessionWidth = enabled ? SettingsStore.srSessionSize(width, sr.ratioPercent) : width;
+    profile.sessionHeight = enabled ? SettingsStore.srSessionSize(height, sr.ratioPercent) : height;
     return profile;
   }
 

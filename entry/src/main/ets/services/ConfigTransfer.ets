@@ -59,6 +59,9 @@ class ExportedConnection {
   gatewayDomain: string = '';
   useGlobalDisplay: boolean = true;
   useGlobalAdvanced: boolean = true;
+  useGlobalSr: boolean = true;
+  srEnabled: boolean = false;
+  srRatioPercent: number = 0;
 
   static fromSaved(conn: SavedConnection): ExportedConnection {
     const item: ExportedConnection = new ExportedConnection();
@@ -84,6 +87,9 @@ class ExportedConnection {
     item.gatewayDomain = conn.gatewayDomain;
     item.useGlobalDisplay = conn.useGlobalDisplay;
     item.useGlobalAdvanced = conn.useGlobalAdvanced;
+    item.useGlobalSr = conn.useGlobalSr;
+    item.srEnabled = conn.srEnabled;
+    item.srRatioPercent = conn.srRatioPercent;
     return item;
   }
 
@@ -111,6 +117,9 @@ class ExportedConnection {
     item.gatewayDomain = ConfigTransfer.readString(rec, 'gatewayDomain', '');
     item.useGlobalDisplay = ConfigTransfer.readBoolean(rec, 'useGlobalDisplay', true);
     item.useGlobalAdvanced = ConfigTransfer.readBoolean(rec, 'useGlobalAdvanced', true);
+    item.useGlobalSr = ConfigTransfer.readBoolean(rec, 'useGlobalSr', true);
+    item.srEnabled = ConfigTransfer.readBoolean(rec, 'srEnabled', false);
+    item.srRatioPercent = ConfigTransfer.readNumber(rec, 'srRatioPercent', 0);
     return item;
   }
 
@@ -138,6 +147,9 @@ class ExportedConnection {
     conn.gatewayDomain = this.gatewayDomain;
     conn.useGlobalDisplay = this.useGlobalDisplay;
     conn.useGlobalAdvanced = this.useGlobalAdvanced;
+    conn.useGlobalSr = this.useGlobalSr;
+    conn.srEnabled = this.srEnabled;
+    conn.srRatioPercent = this.srRatioPercent;
     conn.updatedAt = Date.now();
     return conn;
   }

@@ -22,6 +22,7 @@
 
 #include "hmrdp_presenter.h"
 #include "hmrdp_vk_context.h"
+#include "hmrdp_xeg.h"
 
 namespace hmrdp {
 
@@ -59,6 +60,12 @@ class VkRenderer : public FramePresenter {
   void BeginDesktopBufferWrite() override;
   void ReleaseDesktopBuffer() override;
   bool usesDesktopBuffer() const override;
+  // 超分: upscale the decoded desktop into an output-sized image with XEngine's
+  // GPU spatial upscale and letterbox *that* (see hmrdp_presenter.h). The request
+  // is stored here and the resources are (re)created on the next frame, because
+  // the device and the desktop size only exist once a surface is up. No-op when
+  // the device cannot do it, which leaves the plain desktop letterbox in place.
+  void SetSuperResolution(bool enabled, int outputWidth, int outputHeight) override;
   // Blocked part of the presents since the last call: the fence wait +
   // vkAcquireNextImageKHR in AcquireFrameLocked (waiting for a swapchain image is
   // display backpressure, not client work). See hmrdp_presenter.h.
@@ -115,6 +122,13 @@ class VkRenderer : public FramePresenter {
   // size and kept until ReleaseDesktopBuffer/reset.
   bool CreateDesktopBufferLocked(int width, int height);
   void DestroyDesktopBufferLocked();
+
+  // 超分: keeps the XEngine spatial-upscale object and the output image the
+  // present draw samples instead of the desktop image. (Re)created whenever the
+  // session desktop size changes; `srFailed_` latches a failure so a device that
+  // rejects the configuration is not retried on every frame.
+  bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight);
+  void DestroySuperResolutionLocked();
 
   // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;
@@ -206,6 +220,21 @@ class VkRenderer : public FramePresenter {
 
   std::string error_;
   std::string info_;
+
+  // 超分 state (see SetSuperResolution). `srRequested_`/`srOutput*` come from the
+  // connect options; the rest is built on demand once the device is up.
+  bool srRequested_ = false;
+  int srOutputWidth_ = 0;
+  int srOutputHeight_ = 0;
+  bool srFailed_ = false;
+  XegSpatialUpscale srUpscale_;
+  VkImage srImage_ = VK_NULL_HANDLE;
+  VkDeviceMemory srImageMemory_ = VK_NULL_HANDLE;
+  VkImageView srImageView_ = VK_NULL_HANDLE;
+  int srImageWidth_ = 0;
+  int srImageHeight_ = 0;
+  int srInputWidth_ = 0;
+  int srInputHeight_ = 0;
 };
 
 }  // namespace hmrdp

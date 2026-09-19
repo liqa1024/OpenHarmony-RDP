@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "hmrdp_log.h"
+#include "hmrdp_xeg.h"
 
 namespace hmrdp {
 namespace {
@@ -213,6 +214,14 @@ VulkanCapabilities ProbeVulkan() {
   caps.extExternalMemoryFd = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
   caps.extOhosExternalMemory = HasExtension(devExts, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
 
+  // XEngine (超分) is queried through libxengine.so's own enumeration, not the
+  // Vulkan loader's, so it is probed separately (see hmrdp_xeg.h).
+  caps.xegLibrary = XegAvailable();
+  if (caps.xegLibrary) {
+    std::string reason;
+    caps.xegSpatialUpscale = XegSpatialUpscaleSupported(best, &reason);
+  }
+
   VkPhysicalDeviceMemoryProperties memProps{};
   api.GetPhysicalDeviceMemoryProperties(best, &memProps);
   for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
@@ -266,10 +275,11 @@ VulkanCapabilities ProbeVulkan() {
   // Filtered summary: the full device list is far too long for the dev panel.
   char summary[256];
   std::snprintf(summary, sizeof(summary),
-                "swapchain=%d timeline=%d extMem=%d extMemFd=%d ohosExtMem=%d (of %u)",
+                "swapchain=%d timeline=%d extMem=%d extMemFd=%d ohosExtMem=%d xeg=%d (of %u)",
                 caps.extKhrSwapchain ? 1 : 0, caps.extTimelineSemaphore ? 1 : 0,
                 caps.extExternalMemory ? 1 : 0, caps.extExternalMemoryFd ? 1 : 0,
-                caps.extOhosExternalMemory ? 1 : 0, caps.deviceExtensionCount);
+                caps.extOhosExternalMemory ? 1 : 0, caps.xegSpatialUpscale ? 1 : 0,
+                caps.deviceExtensionCount);
   caps.deviceExtensions = summary;
   return caps;
 }
@@ -497,6 +507,24 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
   HMRDP_LOGI("vulkan verdict: presenter=%{public}d(%{public}s)",
              caps->presenterSupported ? 1 : 0,
              caps->presenterUnsupportedCode.empty() ? "-" : caps->presenterUnsupportedCode.c_str());
+
+  // 超分 verdict: the upscale renders into a presenter image, so the presenter
+  // verdict is a prerequisite; then the device has to offer XEG_spatial_upscale.
+  caps->srSupported = false;
+  caps->srUnsupportedCode.clear();
+  if (!caps->presenterSupported) {
+    caps->srUnsupportedCode = caps->presenterUnsupportedCode.empty()
+                                  ? "no-surface"
+                                  : caps->presenterUnsupportedCode;
+  } else if (!caps->xegLibrary) {
+    caps->srUnsupportedCode = "no-xengine";
+  } else if (!caps->xegSpatialUpscale) {
+    caps->srUnsupportedCode = "no-extension";
+  } else {
+    caps->srSupported = true;
+  }
+  HMRDP_LOGI("vulkan verdict: sr=%{public}d(%{public}s)", caps->srSupported ? 1 : 0,
+             caps->srUnsupportedCode.empty() ? "-" : caps->srUnsupportedCode.c_str());
 }
 
 }  // namespace
@@ -537,7 +565,8 @@ std::string VulkanCapabilities::DescribeLines() const {
          " swapchain=" + std::string(extKhrSwapchain ? "1" : "0") +
          " timeline=" + std::string(extTimelineSemaphore ? "1" : "0") +
          " extMemFd=" + std::string(extExternalMemoryFd ? "1" : "0") +
-         " OHOS_extMem=" + std::string(extOhosExternalMemory ? "1" : "0") + "\n";
+         " OHOS_extMem=" + std::string(extOhosExternalMemory ? "1" : "0") +
+         " xeg=" + std::string(xegSpatialUpscale ? "1" : "0") + "\n";
   out += "  mem hostVisible=" + std::string(memHostVisible ? "1" : "0") +
          " coherent=" + std::string(memHostCoherent ? "1" : "0") +
          " hostVisDevLocal=" + std::string(memHostVisibleDeviceLocal ? "1" : "0") + "\n";

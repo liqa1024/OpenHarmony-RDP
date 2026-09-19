@@ -1725,6 +1725,18 @@ void AppendArg(std::vector<std::string>& args, const std::string& value) {
   args.push_back(value);
 }
 
+// 超分: the size the server is asked to render, i.e. the configured output
+// resolution divided by the upscale ratio, rounded to an even number of pixels
+// (some servers render odd desktop sizes badly). Mirrors SettingsStore.srSessionSize.
+int SuperResolutionSessionSize(int output, int ratioPercent) {
+  if (output <= 0 || ratioPercent <= 100) {
+    return output;
+  }
+  const int scaled = (output * 100 + ratioPercent / 2) / ratioPercent;
+  const int even = scaled - (scaled % 2);
+  return even > 0 ? even : 2;
+}
+
 // Error events carry "<code>|<message>"; the code lets the UI distinguish an
 // authentication failure from a network problem. Internal errors use code 0.
 std::string EncodeError(uint32_t code, const std::string& message) {
@@ -1992,8 +2004,25 @@ bool Session::Connect(const RdpOptions& options) {
   if (!options.domain.empty()) {
     AppendArg(args, "/d:" + options.domain);
   }
-  AppendArg(args, "/w:" + std::to_string(options.width));
-  AppendArg(args, "/h:" + std::to_string(options.height));
+  // 超分: the resolution the server renders is the configured output divided by
+  // the upscale ratio; the presenter upscales the frames back to the output size
+  // (see hmrdp_vk_renderer.cpp). Without it the session desktop *is* the output.
+  int sessionWidth = options.width;
+  int sessionHeight = options.height;
+  if (options.srEnabled && options.srRatioPercent > 100) {
+    sessionWidth = SuperResolutionSessionSize(options.width, options.srRatioPercent);
+    sessionHeight = SuperResolutionSessionSize(options.height, options.srRatioPercent);
+    if (presenter_ != nullptr) {
+      presenter_->SetSuperResolution(true, options.width, options.height);
+    }
+    HMRDP_LOGI("session %{public}dx%{public}d (super resolution %{public}d%% -> %{public}dx%{public}d)",
+               options.width, options.height, options.srRatioPercent, sessionWidth,
+               sessionHeight);
+  } else if (presenter_ != nullptr) {
+    presenter_->SetSuperResolution(false, 0, 0);
+  }
+  AppendArg(args, "/w:" + std::to_string(sessionWidth));
+  AppendArg(args, "/h:" + std::to_string(sessionHeight));
   AppendArg(args, "/bpp:" + std::to_string(options.colorDepth));
   if (!options.gatewayHost.empty()) {
     AppendArg(args, "/g:" + options.gatewayHost + ":" +

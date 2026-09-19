@@ -258,6 +258,8 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.enableH264 = GetBoolProperty(env, args[1], "enableH264", true);
   options.enableRemoteFx = GetBoolProperty(env, args[1], "enableRemoteFx", true);
   options.maxFps = GetIntProperty(env, args[1], "maxFps", 0);
+  options.srEnabled = GetBoolProperty(env, args[1], "srEnabled", false);
+  options.srRatioPercent = GetIntProperty(env, args[1], "srRatioPercent", 0);
   options.performanceFlags = GetIntProperty(env, args[1], "performanceFlags", 0);
   options.gatewayHost = GetStringProperty(env, args[1], "gatewayHost");
   options.gatewayPort = GetIntProperty(env, args[1], "gatewayPort", 443);
@@ -855,6 +857,21 @@ napi_value VulkanAccelSupport(napi_env env, napi_callback_info) {
   return result;
 }
 
+// Whether the device can upscale a frame with XEngine's GPU spatial upscale -
+// the capability behind the "超分" setting. Returns "1", or "0|<code>" with a
+// stable code so the UI layer owns the wording: the presenter codes of
+// vulkanAccelSupport, or "no-xengine" / "no-extension" (see
+// VulkanCapabilities::srUnsupportedCode).
+napi_value SuperResolutionSupport(napi_env env, napi_callback_info) {
+  const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
+  const std::string out =
+      caps.srSupported ? std::string("1") : ("0|" + caps.srUnsupportedCode);
+  HMRDP_LOGI("super resolution support: %{public}s", out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -930,6 +947,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"vulkanAccelSupport", nullptr, VulkanAccelSupport, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"superResolutionSupport", nullptr, SuperResolutionSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };
 

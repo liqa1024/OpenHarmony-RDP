@@ -82,6 +82,19 @@ class FramePresenter {
   // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/present-pipeline.md §4.5).
   virtual bool usesDesktopBuffer() const { return false; }
 
+  // --- 超分 (super resolution) ---------------------------------------------------
+  // The session renders at a lower resolution and the presenter upscales each
+  // frame back to outputWidth x outputHeight before the letterbox. Only the
+  // Vulkan backend implements it (the GLES fallback is compatibility-only, with
+  // no 超分), and the request is remembered until the device and desktop size are
+  // known, so it is called at connect time - before any surface exists. Default
+  // no-op.
+  virtual void SetSuperResolution(bool enabled, int outputWidth, int outputHeight) {
+    (void)enabled;
+    (void)outputWidth;
+    (void)outputHeight;
+  }
+
   // Microseconds of the presents since the last call that were spent *blocked* on
   // the display rather than working: waiting for a swapchain image
   // (vkAcquireNextImageKHR) or for the buffer swap (eglSwapBuffers). The host
