@@ -76,7 +76,7 @@ static INLINE void hmrdp_phase_end(int slot, unsigned long long t0)
  * unchanged.
  */
 #define HMRDP_TILE_CHUNKS 64
-#define HMRDP_TILE_CLAIM 4
+#define HMRDP_TILE_CLAIM 2
 #define HMRDP_TILE_SCRATCH_BYTES ((8192ULL + 32ULL) * 3ULL)
 #define HMRDP_TILE_SCRATCH_STRIDE (HMRDP_TILE_SCRATCH_BYTES * 2ULL)
 

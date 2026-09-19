@@ -63,12 +63,14 @@
   cap 至 `HMRDP_TILE_CHUNKS = 64`（`hmrdp_region_chunks()`，补丁 21）。一个线程至少要拿到
   `HMRDP_MIN_TILES_PER_WORKER` 个 tile 才值得被唤醒，所以**小 region 自动降档**：
   `numChunks <= 1`（即 `numTiles < 2 × 阈值`）时直接走串行分支，连队列都不提交。
-  这是唯一的自适应点，也是唯一需要调的常数。
+  **这是这条线唯一的规模自适应点，也是收益最大的一项**（定档值与判据见
+  [`gfx-engine.md`](gfx-engine.md) §8.6）。
 - **划分 = home + 段尾块偷取**（唯一形态，没有对照档）：任务 h 的 home 区间为
-  `[h·N/K, (h+1)·N/K)`，K = `numChunks`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 4` 个
+  `[h·N/K, (h+1)·N/K)`，K = `numChunks`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 2` 个
   tile 的块用 `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询
-  偷取其他 home 的剩余块（同样按块领取）。尾部不均衡至多一块。**调用线程也是这些 home 之一的所有者**
-  （§1），所以快的那一侧自然会多领。
+  偷取其他 home 的剩余块（同样按块领取）。**块大小是"尾块不均衡"与"领取流量"的折中**：块越小，
+  最后一个块被慢线程攥住的时间越短，但共享游标上的原子操作越多。见 [`gfx-engine.md`](gfx-engine.md) §8.6。
+  **调用线程也是这些 home 之一的所有者**（§1），所以快的那一侧自然会多领。
 - **不变约束**：一个 tile 仍由单次 `progressive_process_tiles_tile_work_callback` 独占解码；
   划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素
   等价）。
@@ -109,7 +111,8 @@
   [`gfx-engine.md`](gfx-engine.md) §8.1 的口径比 `dec` 墙钟与 `par` 的 `work`/`wall`，
   **不要**为了 A/B 在树里留第二套路径。
 - **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
-  `HMRDP_TILE_CLAIM = 4`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_MIN_TILES_PER_WORKER = 8`（§2 的自适应阈值）。
+  `HMRDP_TILE_CLAIM = 2`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_MIN_TILES_PER_WORKER = 64`
+  （§2 的自适应阈值；三者都是按实测定档的，见 [`gfx-engine.md`](gfx-engine.md) §8.6）。
 - **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、
   worker/串行侧拷贝像素、1/16 采样的 per-phase 拆相），由 `HmrdpSetProgSample` 门控（补丁 24）；
   `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。

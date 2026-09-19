@@ -403,6 +403,14 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   保证这两个缓冲最终内容不变（逐位等价），否则对拍会立刻显示出来。
 - **上屏侧的约束**（脏区形状、零拷贝桌面缓冲、等待点）见
   [`present-pipeline.md`](present-pipeline.md)。
-- **规模自适应只有一个点**：region 太小就降档甚至串行（`HMRDP_MIN_TILES_PER_WORKER`，
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §2）——小 region 上多开线程的收益低于每 region 的
-  提交/唤醒成本。
+- **并行的三个常数已按实测定档**（都在解码侧补丁，[`cpu-accel-plan.md`](cpu-accel-plan.md) §2/§5）：
+  - **`HMRDP_MIN_TILES_PER_WORKER`（每线程最少 tile）= 64** —— **收益最大的一项**。小 region 上
+    开满宽度并不划算：每个 chunk 只有十几 tile 时，唤醒与领取争用把 queue 段墙钟拉长。把每 region
+    实际开的线程数从十几降到 3~4（region 足够大时仍吃满宽度）后，queue 段墙钟降约三成、整轮
+    `cpu=` 降约四分之一、`par` 的 `busy` 从约五成升到约九成；region 大的样本不受影响。
+    ⇒ **判据**：`busy` 只有一半上下、`wait/task` 占到 region 墙钟的可观比例 = 线程开多了，
+    该把阈值往上调。
+  - **`HMRDP_TILE_CLAIM`（领取/偷取的块大小）= 2** —— 块越小，最后一个块被慢线程攥住的时间越短
+    （尾块不均衡 ≤ 一个块），但共享游标上的原子操作越多。4 → 2 在"每个 chunk 只有十几个 tile"
+    的样本上有可观收益；2 → 1 不再有进一步改善（领取流量翻倍，回调内累计时间明显上升），所以停在 2。
+  - **等分 home 不再调**：偷取会把速度差异在 region 内抹平（§8.5 第 5 条）。

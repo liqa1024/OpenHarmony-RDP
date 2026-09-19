@@ -34,7 +34,7 @@ static INLINE UINT32 hmrdp_decode_width(void)
  * region too small to keep even two threads busy stays on the receiving thread
  * instead of paying the per-region submit/wake cost. This is the tuning point
  * for that trade-off. */
-#define HMRDP_MIN_TILES_PER_WORKER 8
+#define HMRDP_MIN_TILES_PER_WORKER 64
 
 /* HmRdp: how many chunks this region is worth - one per
  * HMRDP_MIN_TILES_PER_WORKER tiles, never more than the decode width (or the
