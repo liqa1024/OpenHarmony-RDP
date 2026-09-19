@@ -111,6 +111,14 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
 
 - `DEVECO_HOME` = DevEco Studio 安装目录（SDK 在 `<DEVECO_HOME>/sdk/default/openharmony`）。
   缺失时构建/静态检查工具不可用。
-- 应用 `compatibleSdkVersion` / `targetSdkVersion` 必须与目标设备/模拟器的系统版本一致；
-  **未经确认不要擅自调整**。
+- **SDK 版本口径**：`targetSdkVersion` 决定"能编译哪些 API"，`compatibleSdkVersion` 决定"能装到多老的系统"。
+  工程取 `targetSdkVersion` = `26.0.0`、`compatibleSdkVersion` = `6.1.0(23)`：新版 ArkUI 能力（如沉浸光感）
+  可以编译，同时保留 API 23 设备/模拟器的安装与运行。**任何一方的数值未经确认不要擅自调整**。
+- **版本号写法在 API 26 处换过一次**：API 26 之前写 `M.S.F(API)`（如 `6.1.0(23)`），
+  API 26 起写纯 `M.S.F`（如 `26.0.0`）。写成 `26.0.0(26)` 会被 hvigor 拒绝
+  （`api version parameter is illegal`）。
+- **`compatibleSdkVersion` 低于所用 API 的 `since` 时**：编译器对每次调用报
+  "It is recommended to use apiAvailable to safeguard API compatibility" 告警。
+  这类调用必须做运行时版本保护（见 [`arkts-conventions.md`](arkts-conventions.md) §6），
+  否则在老系统上是**直接崩溃**而不是降级。
 - 宿主为 Windows；OpenSSL 在 WSL 内编译，驱动 Windows 版 OHOS NDK 的 `clang.exe`。

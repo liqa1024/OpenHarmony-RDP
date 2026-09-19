@@ -8,6 +8,7 @@ import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
 import { TextAction } from '../components/TextAction';
@@ -97,6 +98,12 @@ struct SettingsPage {
   private defaultSessionHeight: number = 0;
   private detectedWidth: number = 0;
   private detectedHeight: number = 0;
+  // Immersive system material (沉浸光感) for the settings card and the two
+  // confirmation dialogs; both fall back to the flat colours below on a system
+  // without the material capability.
+  private cardMaterial: AttributeModifier<ColumnAttribute> =
+    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+  private dialogMaterial: SystemUiMaterial | undefined = SystemMaterial.of(MaterialSurface.OVERLAY);
 
   aboutToAppear(): void {
     const defaults: AppSettings = SettingsStore.defaults();
@@ -314,6 +321,7 @@ struct SettingsPage {
     this.getUIContext().showAlertDialog({
       title: '导出配置',
       message: '将导出全局设置和全部连接。密码保存在系统安全存储中，出于安全考虑不会导出。',
+      systemMaterial: this.dialogMaterial,
       primaryButton: {
         value: '取消',
         action: () => {
@@ -350,6 +358,7 @@ struct SettingsPage {
     this.getUIContext().showAlertDialog({
       title: '导入配置',
       message: '导入会应用全局设置，并按连接 ID 覆盖或新增连接。密码不会被导入，需重新输入。是否继续？',
+      systemMaterial: this.dialogMaterial,
       primaryButton: {
         value: '取消',
         action: () => {
@@ -1268,10 +1277,11 @@ struct SettingsPage {
           .width('100%')
           .constraintSize({ maxWidth: 720 })
           .padding(24)
-          .backgroundColor($r('app.color.card_bg'))
+          .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
           .borderRadius(20)
           .alignItems(HorizontalAlign.Start)
           .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })
+          .attributeModifier(this.cardMaterial)
         }
         .width('100%')
         .padding({ top: 24, bottom: 32, left: 24, right: 24 })

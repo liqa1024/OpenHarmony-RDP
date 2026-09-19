@@ -35,6 +35,7 @@
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 复用 |
 | `services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因 |
+| `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：版本门槛判断、材质复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
 | `utils/KeyMapper.ets` | 按键名映射（设置页按键框显示用） |
 | `model/RdpModels.ets` | 连接/设置的数据模型与默认值 |
 | `components/TextAction.ets` | 列表/菜单里的通用文本动作项 |

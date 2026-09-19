@@ -11,6 +11,7 @@ import { CredentialStore } from '../services/CredentialStore';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -30,6 +31,19 @@ struct Index {
   // Developer options (SettingsStore.developerMode): the replay entry is a dev
   // tool, so it only exists while this is on.
   @State developerMode: boolean = false;
+
+  // Immersive system material (沉浸光感) for the connection cards and for the
+  // surfaces that pop over them. Every one of these falls back to the flat
+  // colours below on a system without the material capability.
+  private cardMaterial: AttributeModifier<RowAttribute> =
+    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+  // Tooltips, the right-click menu and the dialogs carry the material in their
+  // options object, which an older system simply ignores.
+  private tipsOptions: TipsOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private menuOptions: ContextMenuOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private dialogMaterial: SystemUiMaterial | undefined = SystemMaterial.of(MaterialSurface.OVERLAY);
 
   private sessionListener: SessionStateListener = (connectionId: string,
     state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
@@ -126,6 +140,7 @@ struct Index {
     this.getUIContext().showAlertDialog({
       title: '连接失败',
       message: message,
+      systemMaterial: this.dialogMaterial,
       confirm: {
         value: '知道了',
         action: () => {
@@ -191,6 +206,7 @@ struct Index {
     this.getUIContext().showAlertDialog({
       title: '删除连接',
       message: `确定要删除「${conn.label()}」？该操作无法撤销。`,
+      systemMaterial: this.dialogMaterial,
       primaryButton: {
         value: '取消',
         action: () => {
@@ -258,7 +274,7 @@ struct Index {
         .margin({ left: 12 })
       }
       .layoutWeight(1)
-      .bindTips('编辑连接')
+      .bindTips('编辑连接', this.tipsOptions)
       .onClick(() => {
         this.openEditor(conn.id);
       })
@@ -288,7 +304,7 @@ struct Index {
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
       .hoverEffect(HoverEffect.Scale)
-      .bindTips(this.connectTip(conn))
+      .bindTips(this.connectTip(conn), this.tipsOptions)
       .onClick(() => {
         this.toggleConnection(conn);
       })
@@ -296,10 +312,11 @@ struct Index {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor($r('app.color.card_bg'))
+    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
     .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
     .clip(false)
-    .bindContextMenu(this.connectionMenu(conn), ResponseType.RightClick)
+    .attributeModifier(this.cardMaterial)
+    .bindContextMenu(this.connectionMenu(conn), ResponseType.RightClick, this.menuOptions)
   }
 
   build() {
@@ -371,7 +388,7 @@ struct Index {
             this.settingsPressed = false;
           }
         })
-        .bindTips('设置')
+        .bindTips('设置', this.tipsOptions)
         .onClick(() => {
           this.openSettings();
         })
@@ -472,7 +489,7 @@ struct Index {
           this.fabPressed = false;
         }
       })
-      .bindTips('新建连接')
+      .bindTips('新建连接', this.tipsOptions)
       .onClick(() => {
         this.openEditor('');
       })

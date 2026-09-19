@@ -12,6 +12,7 @@ import { CredentialStore } from '../services/CredentialStore';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TextAction } from '../components/TextAction';
 
 const DOMAIN: number = 0xD001;
@@ -49,6 +50,10 @@ struct EditConnectionPage {
   private activeConnectionId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
+  // Immersive system material (沉浸光感) for the form card; a system without the
+  // material capability keeps the flat card colour below.
+  private cardMaterial: AttributeModifier<ColumnAttribute> =
+    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
 
   // Tracks this editor's own connection attempt. On failure the page stays put
   // so the typed password is preserved and can be corrected.
@@ -274,9 +279,10 @@ struct EditConnectionPage {
   private handleSave(): void {
     if (this.password.length > 0 && this.password !== this.storedPassword) {
       this.getUIContext().showAlertDialog({
-        title: '密码不会被保存',
-        message: '连接验证正确性后会自动保存密码。',
-        primaryButton: {
+      title: '密码不会被保存',
+      message: '连接验证正确性后会自动保存密码。',
+      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+      primaryButton: {
           value: '取消',
           action: () => {
           }
@@ -762,10 +768,11 @@ struct EditConnectionPage {
           .width('100%')
           .constraintSize({ maxWidth: 720 })
           .padding(28)
-          .backgroundColor($r('app.color.card_bg'))
+          .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
           .borderRadius(20)
           .alignItems(HorizontalAlign.Start)
           .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })
+          .attributeModifier(this.cardMaterial)
         }
         .width('100%')
         .padding({ top: 32, bottom: 32, left: 24, right: 24 })

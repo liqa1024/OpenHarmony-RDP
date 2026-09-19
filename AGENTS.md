@@ -54,8 +54,9 @@
 ## 环境
 
 - `DEVECO_HOME` = DevEco Studio 安装目录（SDK 在 `<DEVECO_HOME>/sdk/default/openharmony`）。
-- 应用 `compatibleSdkVersion` / `targetSdkVersion` 必须与目标设备/模拟器系统版本一致；
-  **未经确认不要擅自调整**。
+- `targetSdkVersion` 跟随目标设备系统版本（现为 `26.0.0`），`compatibleSdkVersion` 是允许安装的最低版本
+  （现为 `6.1.0(23)`，兼顾模拟器）；**未经确认不要擅自调整**。版本号写法、门槛与告警处理见
+  [`doc_agent/build-and-verify.md`](doc_agent/build-and-verify.md) §6。
 - ABI：`arm64-v8a`（真机，product `default`）、`x86_64`（模拟器，product `emulator`）。
 - 宿主为 Windows；OpenSSL 在 WSL 中编译，驱动 Windows 版 OHOS NDK 的 `clang.exe`。
 

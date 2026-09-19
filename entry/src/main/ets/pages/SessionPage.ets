@@ -14,6 +14,7 @@ import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
@@ -79,6 +80,21 @@ const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
 const LOCAL_BAD_MS: number = 33;
 
+// The toolbar floats over the remote desktop image, whose colours are unknown,
+// so its palette is deliberately *fixed dark* instead of following the app
+// theme: light chrome would be unreadable over an arbitrary remote screen, and
+// the bar reads as one consistent piece of chrome in both system light and dark
+// mode. The material behind it is pinned dark to match (see SystemMaterial).
+const TOOLBAR_BG: string = '#CC1A1A1A';
+const TOOLBAR_FG: string = '#FFFFFF';
+const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
+const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
+const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
+// Telemetry threshold colours, tuned against the fixed dark bar.
+const METRIC_GOOD: string = '#4ADE80';
+const METRIC_WARN: string = '#FBBF24';
+const METRIC_BAD: string = '#F87171';
+
 // A TouchType.Cancel does not always mean the finger lifted (a move can be
 // interrupted). The contact is held instead, and a following Down within this
 // distance of its last position is treated as the same finger resuming. Only if
@@ -137,6 +153,17 @@ struct SessionPage {
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
+  // Immersive system material for the toolbar and the connection status card.
+  // Both are no-ops on a system without the material capability, in which case
+  // the flat background below is what shows.
+  private toolbarMaterial: AttributeModifier<RowAttribute> =
+    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
+  private statusCardMaterial: AttributeModifier<ColumnAttribute> =
+    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+  // Tooltip surfaces take the material through their options object; a system
+  // without the capability ignores the field and keeps the default tooltip.
+  private tipsOptions: TipsOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   // True when the manager already connected before this window was opened.
   private preconnected: boolean = false;
   private closing: boolean = false;
@@ -567,15 +594,15 @@ struct SessionPage {
   /** Green / amber / red vs. the given warn/bad thresholds (ms). */
   private thresholdColor(ms: number, warnMs: number, badMs: number): string {
     if (ms < 0) {
-      return '#B8BCC4';
+      return TOOLBAR_FG_SECONDARY;
     }
     if (ms <= warnMs) {
-      return '#4ADE80';
+      return METRIC_GOOD;
     }
     if (ms <= badMs) {
-      return '#FBBF24';
+      return METRIC_WARN;
     }
-    return '#F87171';
+    return METRIC_BAD;
   }
 
   /**
@@ -636,15 +663,15 @@ struct SessionPage {
   /** Any recent glitch is worth flagging: 0 green, <=0.5% amber, else red. */
   private audioColor(): string {
     if (this.metricsAudioLossBp < 0) {
-      return '#B8BCC4';
+      return TOOLBAR_FG_SECONDARY;
     }
     if (this.metricsAudioLossBp === 0) {
-      return '#4ADE80';
+      return METRIC_GOOD;
     }
     if (this.metricsAudioLossBp <= 50) {
-      return '#FBBF24';
+      return METRIC_WARN;
     }
-    return '#F87171';
+    return METRIC_BAD;
   }
 
   /** Compact byte/s label for the toolbar. */
@@ -1057,7 +1084,11 @@ struct SessionPage {
 
   private toast(message: string): void {
     try {
-      this.getUIContext().getPromptAction().showToast({ message: message, duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({
+        message: message,
+        duration: 1500,
+        systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY)
+      });
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
     }
@@ -1778,9 +1809,10 @@ struct SessionPage {
     }
     .width(360)
     .padding({ top: 32, bottom: 28, left: 28, right: 28 })
-    .backgroundColor($r('app.color.card_bg'))
+    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
     .borderRadius(20)
     .shadow({ radius: 30, color: '#33000000', offsetX: 0, offsetY: 10 })
+    .attributeModifier(this.statusCardMaterial)
     .alignItems(HorizontalAlign.Center)
   }
 
@@ -1789,10 +1821,10 @@ struct SessionPage {
     Row() {
       Text(this.options.host)
         .fontSize(14)
-        .fontColor('#FFFFFF')
+        .fontColor(TOOLBAR_FG)
       Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
         .fontSize(12)
-        .fontColor('#B8BCC4')
+        .fontColor(TOOLBAR_FG_SECONDARY)
       // The telemetry cluster (network / 本机 / FPS / bandwidth / audio) is a
       // developer tool: hidden unless developer options are on.
       if (this.state === RdpConnectionState.Connected && this.developerMode) {
@@ -1808,17 +1840,17 @@ struct SessionPage {
             .width(METRIC_WIDTH_LOCAL)
             .margin({ left: METRIC_GAP_TIGHT })
             .maxLines(1)
-            .bindTips(this.localTips())
+            .bindTips(this.localTips(), this.tipsOptions)
           Text(this.fpsLabel())
             .fontSize(12)
-            .fontColor('#B8BCC4')
+            .fontColor(TOOLBAR_FG_SECONDARY)
             .width(METRIC_WIDTH_FPS)
             .margin({ left: METRIC_GAP_GROUP })
             .maxLines(1)
           if (this.hasBandwidth()) {
             Text(this.bandwidthLabel())
               .fontSize(12)
-              .fontColor('#B8BCC4')
+              .fontColor(TOOLBAR_FG_SECONDARY)
               .margin({ left: METRIC_GAP_GROUP })
           }
           if (this.metricsAudioRateHz > 0) {
@@ -1840,20 +1872,20 @@ struct SessionPage {
           Image($r('sys.media.ohos_ic_public_copy'))
             .width(16)
             .height(16)
-            .fillColor('#FFFFFF')
+            .fillColor(TOOLBAR_FG)
           Text('复制')
             .fontSize(13)
-            .fontColor('#FFFFFF')
+            .fontColor(TOOLBAR_FG)
             .margin({ left: 4 })
         }
         .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-        .backgroundColor('#4D3B82F6')
+        .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
         .borderRadius(8)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
           this.pullClipboard();
         })
-        .bindTips('从远端复制到本机剪贴板')
+        .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
         // Local clipboard -> remote. Security control: clicking it grants a
         // one-time clipboard read without the READ_PASTEBOARD permission.
         Row() {
@@ -1863,23 +1895,23 @@ struct SessionPage {
             buttonType: ButtonType.Normal
           })
             .iconSize(16)
-            .iconColor('#FFFFFF')
+            .iconColor(TOOLBAR_FG)
             .fontSize(13)
-            .fontColor('#FFFFFF')
-            .backgroundColor('#4D3B82F6')
+            .fontColor(TOOLBAR_FG)
+            .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
             .borderRadius(8)
             .padding({ left: 14, right: 14, top: 7, bottom: 7 })
             .onClick(this.pasteButtonCallback)
         }
         .margin({ left: 8 })
-        .bindTips('把本机剪贴板发送到远端')
+        .bindTips('把本机剪贴板发送到远端', this.tipsOptions)
         Row().width(16)
       }
       Text(this.isFullscreen ? '退出全屏' : '全屏')
         .fontSize(13)
-        .fontColor('#FFFFFF')
+        .fontColor(TOOLBAR_FG)
         .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-        .backgroundColor('#33FFFFFF')
+        .backgroundColor(TOOLBAR_CHIP_BG)
         .borderRadius(8)
         .margin({ right: 8 })
         .hoverEffect(HoverEffect.Highlight)
@@ -1888,9 +1920,9 @@ struct SessionPage {
         })
       Text('最小化')
         .fontSize(13)
-        .fontColor('#FFFFFF')
+        .fontColor(TOOLBAR_FG)
         .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-        .backgroundColor('#33FFFFFF')
+        .backgroundColor(TOOLBAR_CHIP_BG)
         .borderRadius(8)
         .margin({ right: 8 })
         .hoverEffect(HoverEffect.Highlight)
@@ -1911,7 +1943,8 @@ struct SessionPage {
     .width('100%')
     .height(48)
     .padding({ left: 16, right: 16 })
-    .backgroundColor('#CC1A1A1A')
+    .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
+    .attributeModifier(this.toolbarMaterial)
     .transition(TransitionEffect.translate({ y: -48 })
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }
