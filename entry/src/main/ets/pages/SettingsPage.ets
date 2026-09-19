@@ -60,6 +60,7 @@ struct SettingsPage {
   @State pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   @State touchHighRate: boolean = false;
   @State useRdpCursor: boolean = true;
+  @State reconnectOnForeground: boolean = false;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
   @State resolutionAuto: boolean = true;
@@ -138,6 +139,7 @@ struct SettingsPage {
     this.pinchTouchDistance = settings.pinchTouchDistance;
     this.touchHighRate = settings.touchHighRate;
     this.useRdpCursor = settings.useRdpCursor;
+    this.reconnectOnForeground = settings.reconnectOnForeground;
     RdpNative.applyRdpCursor(this.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.resolutionAuto = settings.resolutionAuto;
@@ -248,6 +250,7 @@ struct SettingsPage {
     settings.pinchTouchDistance = this.pinchTouchDistance;
     settings.touchHighRate = this.touchHighRate;
     settings.useRdpCursor = this.useRdpCursor;
+    settings.reconnectOnForeground = this.reconnectOnForeground;
     settings.winKeySubstitute = this.winKeySubstitute;
     settings.resolutionAuto = this.resolutionAuto;
     settings.manualWidth =
@@ -292,6 +295,7 @@ struct SettingsPage {
     this.pinchTouchDistance = defaults.pinchTouchDistance;
     this.touchHighRate = defaults.touchHighRate;
     this.useRdpCursor = defaults.useRdpCursor;
+    this.reconnectOnForeground = defaults.reconnectOnForeground;
     this.winKeySubstitute = defaults.winKeySubstitute;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
@@ -600,6 +604,20 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.useRdpCursor = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '回到前台自动重连',
+              subtitle: '切到后台再回来时，若会话已被系统断开则自动重连，不必手动点「重试」',
+              value: this.reconnectOnForeground,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.reconnectOnForeground = v;
                 this.persist();
               }
             })

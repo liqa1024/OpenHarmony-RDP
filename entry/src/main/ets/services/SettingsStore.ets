@@ -49,6 +49,12 @@ export class AppSettings {
   // When true the remote cursor shape is mapped onto the HarmonyOS system
   // cursor. Turn off to fall back to the plain default cursor.
   useRdpCursor: boolean = true;
+  // When true a session window that comes back to the foreground and finds its
+  // session already dropped reconnects on its own, instead of waiting for the
+  // user to press 重试. A system that freezes and then aborts the app's sockets
+  // while it is away leaves a session that looks connected but no longer is, so
+  // this is a safety net for coming back, not a keep-alive.
+  reconnectOnForeground: boolean = false;
   // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
   // Win combinations work even though the shell keeps the real Win key.
   winKeySubstitute: number = 0;
@@ -147,6 +153,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'touchHighRate', settings.touchHighRate);
       settings.useRdpCursor =
         SettingsStore.readBoolean(store, 'useRdpCursor', settings.useRdpCursor);
+      settings.reconnectOnForeground =
+        SettingsStore.readBoolean(store, 'reconnectOnForeground', settings.reconnectOnForeground);
       settings.winKeySubstitute =
         SettingsStore.readNumber(store, 'winKeySubstitute', settings.winKeySubstitute);
       settings.mainWindowSizeEnabled =
@@ -210,6 +218,7 @@ export class SettingsStore {
       store.putSync('pinchTouchDistance', settings.pinchTouchDistance);
       store.putSync('touchHighRate', settings.touchHighRate);
       store.putSync('useRdpCursor', settings.useRdpCursor);
+      store.putSync('reconnectOnForeground', settings.reconnectOnForeground);
       store.putSync('winKeySubstitute', settings.winKeySubstitute);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       store.putSync('mainWindowWidth', settings.mainWindowWidth);

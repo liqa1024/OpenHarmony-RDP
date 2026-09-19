@@ -1,7 +1,7 @@
 /*
  * HmRdp - remote session page: XComponent surface + input forwarding.
  */
-import { common } from '@kit.AbilityKit';
+import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { pointer } from '@kit.InputKit';
@@ -94,6 +94,13 @@ const METRIC_GOOD: string = '#4ADE80';
 const METRIC_WARN: string = '#FBBF24';
 const METRIC_BAD: string = '#F87171';
 
+// Grace period before the "came back to the foreground" reconnect check. While
+// the app is away the system freezes and then aborts its sockets, but the native
+// read loop only notices that once it runs again, i.e. just after the window is
+// back. One delayed check therefore covers both orders: a session already
+// reported down while we were away is still down by the time it runs.
+const FOREGROUND_RECONNECT_GRACE_MS: number = 400;
+
 // A TouchType.Cancel does not always mean the finger lifted (a move can be
 // interrupted). The contact is held instead, and a following Down within this
 // distance of its last position is treated as the same finger resuming. Only if
@@ -135,6 +142,30 @@ class RdpSurfaceController extends XComponentController {
 
   onSurfaceDestroyed(surfaceId: string): void {
     this.destroyedCb(surfaceId);
+  }
+}
+
+/**
+ * Routes the process-level foreground transitions to the page. Only an actual
+ * round trip matters: the reconnect decision is made on the way back, never on
+ * the way out.
+ */
+class ForegroundStateCallback extends ApplicationStateChangeCallback {
+  private onAway: () => void;
+  private onReturn: () => void;
+
+  constructor(onAway: () => void, onReturn: () => void) {
+    super();
+    this.onAway = onAway;
+    this.onReturn = onReturn;
+  }
+
+  onApplicationForeground(): void {
+    this.onReturn();
+  }
+
+  onApplicationBackground(): void {
+    this.onAway();
   }
 }
 
@@ -285,6 +316,18 @@ struct SessionPage {
   // Global "使用RDP光标" setting; when off the session leaves the system cursor
   // alone and the native side ignores RDP pointer updates entirely.
   private useRdpCursor: boolean = true;
+  // Global "回到前台自动重连" setting, plus the state of the check it arms: a
+  // window that comes back to a session the system already dropped reconnects
+  // without waiting for the user to press 重试.
+  private reconnectOnForeground: boolean = false;
+  // True between leaving the foreground and the reconnect check that follows the
+  // return. A drop while the user is actually watching the window is left to the
+  // manual 重试 button: turning that into an automatic retry loop is a different
+  // (and unwanted) behaviour.
+  private awayFromForeground: boolean = false;
+  private reconnectTimer: number = -1;
+  private appContext: common.ApplicationContext | undefined = undefined;
+  private appStateCallback: ForegroundStateCallback | undefined = undefined;
 
   // The system paste control grants a one-time clipboard read without the
   // READ_PASTEBOARD permission; on success we push the text to the remote.
@@ -332,6 +375,8 @@ struct SessionPage {
     hilog.info(DOMAIN, TAG, 'rfx dump=%{public}d dir=%{public}s', settings.rfxDump ? 1 : 0,
       filesDir);
     this.useRdpCursor = settings.useRdpCursor;
+    this.reconnectOnForeground = settings.reconnectOnForeground;
+    this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.clipboardEnabled = this.options.enableClipboard;
@@ -382,12 +427,97 @@ struct SessionPage {
       clearTimeout(this.moveTimer);
       this.moveTimer = -1;
     }
+    if (this.reconnectTimer !== -1) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = -1;
+    }
+    this.unwatchApplicationState();
     this.releaseAllTouches();
     this.endPinch();
     this.restoreCursor();
     this.native.stopSession();
     this.options.password = '';
     this.options.gatewayPassword = '';
+  }
+
+  onPageShow(): void {
+    this.scheduleForegroundReconnect();
+  }
+
+  onPageHide(): void {
+    this.awayFromForeground = true;
+  }
+
+  /**
+   * Watches the process-level foreground transitions in addition to the page
+   * lifecycle, so leaving and returning is noticed even where the system drives
+   * only one of the two. Registered unconditionally: the callbacks re-read the
+   * setting, so toggling it while a session is open takes effect without
+   * reopening the window.
+   */
+  private watchApplicationState(): void {
+    if (this.appStateCallback !== undefined) {
+      return;
+    }
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx === undefined) {
+        return;
+      }
+      const application: common.ApplicationContext = ctx.getApplicationContext();
+      const callback: ForegroundStateCallback = new ForegroundStateCallback(() => {
+        this.awayFromForeground = true;
+      }, () => {
+        this.scheduleForegroundReconnect();
+      });
+      application.on('applicationStateChange', callback);
+      this.appContext = application;
+      this.appStateCallback = callback;
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'watch application state failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
+  private unwatchApplicationState(): void {
+    const application: common.ApplicationContext | undefined = this.appContext;
+    const callback: ForegroundStateCallback | undefined = this.appStateCallback;
+    this.appContext = undefined;
+    this.appStateCallback = undefined;
+    if (application === undefined || callback === undefined) {
+      return;
+    }
+    try {
+      application.off('applicationStateChange', callback);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'unwatch application state failed: %{public}s',
+        JSON.stringify(error));
+    }
+  }
+
+  /**
+   * Arms the one reconnect attempt that covers coming back to a session the
+   * system dropped while the app was away. Only a session that is actually down
+   * is picked up - a deliberate 断开 or 返回 leaves the page in another state and
+   * must not be undone by an automatic retry.
+   */
+  private scheduleForegroundReconnect(): void {
+    if (!this.awayFromForeground || !this.reconnectOnForeground) {
+      return;
+    }
+    if (this.reconnectTimer !== -1) {
+      clearTimeout(this.reconnectTimer);
+    }
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = -1;
+      // Cleared even when nothing is reconnected: the flag means "we are away",
+      // and running this check is exactly what makes it stale.
+      const wasAway: boolean = this.awayFromForeground;
+      this.awayFromForeground = false;
+      if (wasAway &&
+        (this.state === RdpConnectionState.Closed || this.state === RdpConnectionState.Failed)) {
+        this.retry();
+      }
+    }, FOREGROUND_RECONNECT_GRACE_MS);
   }
 
   /**

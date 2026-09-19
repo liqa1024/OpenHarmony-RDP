@@ -321,6 +321,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'touchHighRate', settings.touchHighRate);
     settings.useRdpCursor =
       ConfigTransfer.readBoolean(rec, 'useRdpCursor', settings.useRdpCursor);
+    settings.reconnectOnForeground =
+      ConfigTransfer.readBoolean(rec, 'reconnectOnForeground', settings.reconnectOnForeground);
     settings.mainWindowSizeEnabled =
       ConfigTransfer.readBoolean(rec, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
     settings.mainWindowWidth =
