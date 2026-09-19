@@ -92,7 +92,8 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 **运行时行为钩子**（都用**弱符号**引用，未打补丁的 FreeRDP 上自动降级）
 
 - **触屏帧间隔可调**：上游把接触点合并成约 50Hz 一帧，补丁导出运行时全局
-  `HmrdpSetTouchFrameInterval`，设置项「触屏-高刷新率」开则传 0。
+  `HmrdpSetTouchFrameInterval`；设置项「触屏-高刷新率」开则传 8ms（125Hz）。**间隔是速率上限**，
+  不要传 0（那样每次输入轮询都发，速率只剩网络这一道约束）。
 - **解码宽度**：app 导出 `HmrdpDecodeWidth()`（`hmrdp_parallel.*`，值来自
   `hmrdp_decode_tuning.*`：在线核数，上限 16，**不是设置项**），解码器在每条 region 边界读它。
   宽度是"这条 region 能用几个线程"：调用线程自己跑一个 chunk（调用方参与），平台队列的

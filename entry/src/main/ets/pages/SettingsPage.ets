@@ -1157,7 +1157,7 @@ struct SettingsPage {
 
               this.toggleItem({
                 title: '触屏高刷新率（实验）',
-                subtitle: '解除 RDPEI 50Hz 合并，按输入帧率上报触点；可能增加带宽',
+                subtitle: '把 RDPEI 50Hz 合帧提高到 125Hz 上报触点；可能增加带宽',
                 value: this.touchHighRate,
                 enabled: true,
                 disabledReason: '',

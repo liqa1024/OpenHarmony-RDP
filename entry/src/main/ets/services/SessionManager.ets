@@ -18,6 +18,12 @@ const TAG: string = 'HmRdpSessionManager';
 // Safety net for connection attempts that never report a terminal event (an
 // unreachable host or a stalled handshake would otherwise spin forever).
 const CONNECT_TIMEOUT_MS: number = 30000;
+// An attempt is a full negotiation plus a logon on the remote, and its only other
+// end is a logoff, so attempts are never repeated back to back: an attempt that
+// is still running is never restarted, and two attempts for one connection are
+// kept at least this far apart. Hammering a retry button (or a double tap on the
+// list) therefore cannot turn into a connect/logon storm.
+const MIN_ATTEMPT_INTERVAL_MS: number = 1500;
 
 export enum ConnectionState {
   Idle = 0,
@@ -46,6 +52,10 @@ export class SessionManager {
   private static entries: Map<string, SessionEntry> = new Map<string, SessionEntry>();
   private static byKey: Map<string, string> = new Map<string, string>();
   private static stateListeners: SessionStateListener[] = [];
+  // Start time of the last connect attempt per connection. Kept outside the
+  // entries because a failed attempt deletes its entry, while the pacing has to
+  // outlive it.
+  private static lastAttemptAt: Map<string, number> = new Map<string, number>();
   private static windowListeners: Map<string, SessionWindowListener> =
     new Map<string, SessionWindowListener>();
   private static closeListeners: Map<string, SessionCloseListener> =
@@ -83,11 +93,12 @@ export class SessionManager {
   static connect(request: PendingConnection, context: common.UIAbilityContext): void {
     const connectionId: string = request.connectionId;
     const existing: SessionEntry | undefined = SessionManager.entries.get(connectionId);
+    const state: ConnectionState = existing === undefined
+      ? ConnectionState.Idle : existing.state;
+    if (!SessionManager.acceptAttempt(connectionId, state)) {
+      return;
+    }
     if (existing !== undefined) {
-      if (existing.state === ConnectionState.Connecting ||
-        existing.state === ConnectionState.Connected) {
-        return;
-      }
       existing.native.stopSession();
       existing.native.clearListener();
       SessionManager.cleanup(existing);
@@ -139,11 +150,19 @@ export class SessionManager {
     }
   }
 
-  /** Retries a dropped session from inside the session window. */
-  static retry(connectionId: string): void {
+  /**
+   * Retries a dropped session from inside the session window. Returns false when
+   * the attempt was refused because one is already running or the last one is too
+   * recent, so the caller does not show progress for an attempt that never
+   * started.
+   */
+  static retry(connectionId: string): boolean {
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
     if (entry === undefined) {
-      return;
+      return false;
+    }
+    if (!SessionManager.acceptAttempt(connectionId, entry.state)) {
+      return false;
     }
     entry.state = ConnectionState.Connecting;
     entry.message = '';
@@ -156,9 +175,28 @@ export class SessionManager {
       SessionManager.cleanup(entry);
       SessionManager.notify(connectionId, ConnectionState.Failed, entry.message,
         entry.request.origin);
-      return;
+      return false;
     }
     SessionManager.armTimeout(entry);
+    return true;
+  }
+
+  /**
+   * Decides whether a new connect attempt may start now, and books it. Refused
+   * while an attempt is in flight (replacing a running handshake only ever adds a
+   * second one) and inside MIN_ATTEMPT_INTERVAL_MS of the previous one.
+   */
+  private static acceptAttempt(connectionId: string, state: ConnectionState): boolean {
+    if (state === ConnectionState.Connecting || state === ConnectionState.Connected) {
+      return false;
+    }
+    const now: number = Date.now();
+    const last: number | undefined = SessionManager.lastAttemptAt.get(connectionId);
+    if (last !== undefined && now - last < MIN_ATTEMPT_INTERVAL_MS) {
+      return false;
+    }
+    SessionManager.lastAttemptAt.set(connectionId, now);
+    return true;
   }
 
   /** Called when the session window is destroyed: tear down only its session. */

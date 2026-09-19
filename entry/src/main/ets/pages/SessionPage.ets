@@ -45,9 +45,9 @@ const PINCH_TOUCH_ID_B: number = 21;
 // before its DOWN frame has been flushed: FreeRDP coalesces touch frames at
 // 50Hz by default (HmrdpSetTouchFrameInterval(20)), so a MOTION inside that
 // window overwrites the unsent DOWN and the remote never engages the contacts.
-// This margin decouples the app from the coalescing interval (with the
-// high-rate option the interval is 0, so the delay is a no-op in practice) and
-// is far below the time Windows needs to recognise a pinch.
+// This margin decouples the app from the coalescing interval (a touch pinch uses
+// the high-rate option, whose interval is below this margin) and is far below the
+// time Windows needs to recognise a pinch.
 const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
 // Direction dead zone for the pinch locator cursor: the gesture ratio must move
 // this far past 1.0 before the open/grab hand flips, so a jitter around the start
@@ -87,6 +87,12 @@ const CANCEL_RESUME_RATIO: number = 0.02;
 const CANCEL_RESUME_MIN_DISTANCE: number = 16;
 const CANCEL_RESUME_MAX_DISTANCE: number = 64;
 const CANCEL_HOLD_MS: number = 400;
+
+// Upper bound on how often a pointer move is forwarded (125Hz). It is the pacing
+// of the input the remote receives, not a display rate: mouse and touchpad events
+// arrive far faster than any pointer needs to move, and each forwarded move is a
+// separate input PDU.
+const MOUSE_MOVE_MIN_INTERVAL_MS: number = 8;
 
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -172,6 +178,7 @@ struct SessionPage {
   private surfaceHeight: number = 0;
   private hoverTimer: number = -1;
   private hideTimer: number = -1;
+  private moveTimer: number = -1;
   private topTrigger: number = 6;
   private toolbarHeight: number = 48;
   private hoverDelay: number = 350;
@@ -189,6 +196,11 @@ struct SessionPage {
   // converts it into high-resolution RDP wheel chunks.
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
   private wheelChunks: WheelChunk[] = [];
+  // Latest pointer position waiting to be sent, and when a MOVE was last sent
+  // (see MOUSE_MOVE_MIN_INTERVAL_MS). -1 means nothing is pending.
+  private pendingMoveX: number = -1;
+  private pendingMoveY: number = -1;
+  private lastMoveSentAt: number = 0;
   // Touchpad pinch state: axisPinch is the ratio of the current two-finger
   // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
@@ -340,6 +352,10 @@ struct SessionPage {
       clearTimeout(this.hideTimer);
       this.hideTimer = -1;
     }
+    if (this.moveTimer !== -1) {
+      clearTimeout(this.moveTimer);
+      this.moveTimer = -1;
+    }
     this.releaseAllTouches();
     this.endPinch();
     this.restoreCursor();
@@ -388,12 +404,22 @@ struct SessionPage {
   }
 
   private retry(): void {
+    // An attempt is a full negotiation plus a logon, so a retry that lands while
+    // one is already on its way is dropped instead of tearing the session down and
+    // starting a second one.
+    if (this.state === RdpConnectionState.Connecting) {
+      return;
+    }
     if (this.connectionId.length > 0) {
+      // The manager refuses an attempt that is too soon after the last one; the
+      // page only shows progress for an attempt that was really started.
+      if (!SessionManager.retry(this.connectionId)) {
+        return;
+      }
       this.state = RdpConnectionState.Connecting;
       this.statusText = '正在连接...';
       this.showOverlay = true;
       this.showToolbar = true;
-      SessionManager.retry(this.connectionId);
     } else {
       this.startSession();
     }
@@ -1121,13 +1147,55 @@ struct SessionPage {
       button = RdpPointerFlags.BUTTON3;
     }
     if (event.action === MouseAction.Press) {
+      this.flushMouseMove();
       this.native.mouse(RdpPointerFlags.MOVE, remoteX, remoteY);
       this.native.mouse(button | RdpPointerFlags.DOWN, remoteX, remoteY);
     } else if (event.action === MouseAction.Release) {
+      this.flushMouseMove();
       this.native.mouse(button, remoteX, remoteY);
     } else if (event.action === MouseAction.Move) {
-      this.native.mouse(RdpPointerFlags.MOVE, remoteX, remoteY);
+      this.queueMouseMove(remoteX, remoteY);
     }
+  }
+
+  /**
+   * Coalesces pointer moves: `onMouse` fires at the device polling rate, and
+   * every event would otherwise become its own FastPath input PDU. A faster link
+   * means less backpressure, so an uncapped stream of moves is exactly the input
+   * load the remote has to absorb. At most one MOVE per
+   * MOUSE_MOVE_MIN_INTERVAL_MS is sent; the newest position is always kept and a
+   * trailing flush is scheduled, so the pointer never stops short of where it
+   * really is.
+   */
+  private queueMouseMove(x: number, y: number): void {
+    this.pendingMoveX = x;
+    this.pendingMoveY = y;
+    const elapsed: number = Date.now() - this.lastMoveSentAt;
+    if (elapsed >= MOUSE_MOVE_MIN_INTERVAL_MS) {
+      this.flushMouseMove();
+    } else if (this.moveTimer === -1) {
+      this.moveTimer = setTimeout(() => {
+        this.moveTimer = -1;
+        this.flushMouseMove();
+      }, MOUSE_MOVE_MIN_INTERVAL_MS - elapsed);
+    }
+  }
+
+  /** Sends the pending move, if any. Called before any non-move pointer event. */
+  private flushMouseMove(): void {
+    if (this.moveTimer !== -1) {
+      clearTimeout(this.moveTimer);
+      this.moveTimer = -1;
+    }
+    if (this.pendingMoveX < 0) {
+      return;
+    }
+    const x: number = this.pendingMoveX;
+    const y: number = this.pendingMoveY;
+    this.pendingMoveX = -1;
+    this.pendingMoveY = -1;
+    this.lastMoveSentAt = Date.now();
+    this.native.mouse(RdpPointerFlags.MOVE, x, y);
   }
 
   private handleTouch(event: TouchEvent): void {

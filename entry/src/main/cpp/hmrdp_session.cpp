@@ -55,6 +55,14 @@ extern "C" void HmrdpSetAudioSink(HmrdpAudioSink sink);
 // high-rate simply stays unavailable.
 extern "C" void HmrdpSetTouchFrameInterval(UINT32 intervalMs) __attribute__((weak));
 
+// Touch pacing handed to the patched rdpei client. The interval is a floor on the
+// flush period, so it is the ceiling on the touch input rate: upstream's default
+// is 50Hz, and the high-rate option raises that to 125Hz. Neither is zero, because
+// a zero interval forwards every input poll and the rate is then bounded by the
+// network alone.
+static constexpr UINT32 kTouchFrameIntervalDefaultMs = 20;
+static constexpr UINT32 kTouchFrameIntervalHighRateMs = 8;
+
 // FreeRDP hands us every raw (still ZGX-compressed) GFX channel chunk through
 // this callback. It is only registered when FreeRDP carries the HmRdp GFX
 // capture patch (native/scripts/freerdp patch) - see GfxDumpRaw. It doubles as
@@ -2210,8 +2218,14 @@ bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32
 
 void Session::SetTouchHighRate(bool enabled) {
   if (HmrdpSetTouchFrameInterval != nullptr) {
-    // 0 flushes every frame; 20 is FreeRDP's upstream 50Hz coalescing.
-    HmrdpSetTouchFrameInterval(enabled ? 0u : 20u);
+    // The interval is the floor on how often the changed contacts may be flushed,
+    // so it is what bounds the touch input rate the remote has to absorb: a lower
+    // value is a higher rate. Upstream coalesces at 20ms (50Hz); the high-rate
+    // option lowers that to 8ms (125Hz) rather than to 0, which would flush on
+    // every input poll and let a drag become an unbounded stream of contact
+    // updates that only the network, never the pacing, limits.
+    HmrdpSetTouchFrameInterval(enabled ? kTouchFrameIntervalHighRateMs
+                                       : kTouchFrameIntervalDefaultMs);
   }
 }
 
