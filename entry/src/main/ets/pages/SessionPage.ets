@@ -13,7 +13,7 @@ import { PendingConnection, RdpConnectOptions, RdpConnectionState,
 import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { SessionManager } from '../services/SessionManager';
-import { AppSettings, SettingsStore } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SettingsStore } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
@@ -24,9 +24,8 @@ const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
 
 // Synthetic touch pinch geometry. The initial finger separation is a percentage
-// of the smaller desktop side (window-relative, never a fixed resolution); see
-// the pinchTouchDistance setting.
-const DEFAULT_PINCH_DISTANCE_PERCENT: number = 4;
+// of the smaller desktop side (window-relative, never a fixed resolution); the
+// value itself is settings.pinchTouchDistance, so only the clamp is local.
 const MIN_PINCH_DISTANCE_PERCENT: number = 1;
 const MAX_PINCH_DISTANCE_PERCENT: number = 20;
 const MIN_PINCH_HALF: number = 8;
@@ -239,7 +238,7 @@ struct SessionPage {
   // Pinch translation: false = Ctrl+wheel (native RDP behaviour), true = a
   // synthetic native two-finger touch pinch around the pointer.
   private pinchAsTouch: boolean = false;
-  private pinchTouchDistance: number = DEFAULT_PINCH_DISTANCE_PERCENT;
+  private pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   private touchPinchActive: boolean = false;
   // While a synthetic-touch pinch is running the OS hides the mouse pointer (a
   // touch is in progress), which would leave the user with no aim point. With the

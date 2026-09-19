@@ -13,6 +13,11 @@ const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
+// Initial separation of the two synthetic touch-pinch contacts, as a percentage
+// of the smaller desktop side (window-relative, not a fixed resolution) at 1.0x
+// gesture ratio. Shared so the settings placeholder and the session's own
+// fallback cannot drift from the stored default.
+export const DEFAULT_PINCH_TOUCH_DISTANCE: number = 8;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;
 const FALLBACK_WIDTH: number = 1920;
@@ -37,7 +42,7 @@ export class AppSettings {
   // Initial separation of the two synthetic touch-pinch contacts, as a
   // percentage of the smaller desktop side (window-relative, not a fixed
   // resolution) at 1.0x gesture ratio.
-  pinchTouchDistance: number = 4;
+  pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   // Experimental: forward RDPEI touch at the full input rate instead of the
   // upstream ~20ms (50Hz) coalescing. Off keeps the default behaviour.
   touchHighRate: boolean = false;

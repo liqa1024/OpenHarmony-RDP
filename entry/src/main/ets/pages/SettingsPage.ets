@@ -7,7 +7,7 @@ import { DisplayProfile } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SCALE_PRESETS, SettingsStore } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
@@ -57,7 +57,7 @@ struct SettingsPage {
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchAsTouch: boolean = false;
   @State pinchTouchAngle: number = 30;
-  @State pinchTouchDistance: number = 4;
+  @State pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   @State touchHighRate: boolean = false;
   @State useRdpCursor: boolean = true;
   @State winKeySubstitute: number = 0;
@@ -1115,6 +1115,65 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
+            Text('配置备份')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ top: 4, bottom: 4 })
+
+            Text('将全局设置和全部连接导出为一个文件，或从文件导入并覆盖。密码保存在系统安全存储中，不会被导出，导入后需重新输入。')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ bottom: 12 })
+
+            Row() {
+              Button('导出配置')
+                .layoutWeight(1)
+                .height(44)
+                .fontSize(15)
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(12)
+                .enabled(!this.transferBusy)
+                .onClick(() => {
+                  this.confirmExport();
+                })
+
+              Button('导入配置')
+                .layoutWeight(1)
+                .height(44)
+                .fontSize(15)
+                .fontColor('#FFFFFF')
+                .backgroundColor($r('app.color.accent'))
+                .borderRadius(12)
+                .margin({ left: 12 })
+                .enabled(!this.transferBusy)
+                .onClick(() => {
+                  this.confirmImport();
+                })
+            }
+            .width('100%')
+
+            if (this.transferBusy || this.transferMessage.length > 0) {
+              Row() {
+                if (this.transferBusy) {
+                  LoadingProgress()
+                    .width(16)
+                    .height(16)
+                    .color($r('app.color.accent'))
+                }
+                Text(this.transferBusy ? '处理中…' : this.transferMessage)
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+                  .layoutWeight(1)
+                  .margin({ left: this.transferBusy ? 8 : 0 })
+              }
+              .width('100%')
+              .margin({ top: 10 })
+            }
+
+            Divider().color($r('app.color.divider'))
+
             Text('开发者选项')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
@@ -1213,65 +1272,6 @@ struct SettingsPage {
                   this.persist();
                 }
               })
-            }
-
-            Divider().color($r('app.color.divider'))
-
-            Text('配置备份')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-              .margin({ top: 4, bottom: 4 })
-
-            Text('将全局设置和全部连接导出为一个文件，或从文件导入并覆盖。密码保存在系统安全存储中，不会被导出，导入后需重新输入。')
-              .fontSize(11)
-              .fontColor($r('app.color.text_tertiary'))
-              .width('100%')
-              .margin({ bottom: 12 })
-
-            Row() {
-              Button('导出配置')
-                .layoutWeight(1)
-                .height(44)
-                .fontSize(15)
-                .fontColor($r('app.color.accent'))
-                .backgroundColor($r('app.color.input_bg'))
-                .borderRadius(12)
-                .enabled(!this.transferBusy)
-                .onClick(() => {
-                  this.confirmExport();
-                })
-
-              Button('导入配置')
-                .layoutWeight(1)
-                .height(44)
-                .fontSize(15)
-                .fontColor('#FFFFFF')
-                .backgroundColor($r('app.color.accent'))
-                .borderRadius(12)
-                .margin({ left: 12 })
-                .enabled(!this.transferBusy)
-                .onClick(() => {
-                  this.confirmImport();
-                })
-            }
-            .width('100%')
-
-            if (this.transferBusy || this.transferMessage.length > 0) {
-              Row() {
-                if (this.transferBusy) {
-                  LoadingProgress()
-                    .width(16)
-                    .height(16)
-                    .color($r('app.color.accent'))
-                }
-                Text(this.transferBusy ? '处理中…' : this.transferMessage)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-                  .layoutWeight(1)
-                  .margin({ left: this.transferBusy ? 8 : 0 })
-              }
-              .width('100%')
-              .margin({ top: 10 })
             }
           }
           .width('100%')
