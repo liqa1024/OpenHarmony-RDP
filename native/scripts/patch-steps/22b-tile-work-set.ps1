@@ -120,8 +120,6 @@ static INLINE BOOL update_tiles(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
                                 REGION16* WINPR_RESTRICT invalidRegion)
 {
 	BOOL rc = TRUE;
-	const unsigned long long ut0 = hmrdp_now_ns();
-	HmrdpProgStat[5]++;
 	REGION16 clippingRects = { 0 };
 	region16_init(&clippingRects);
 	for (UINT32 i = 0; i < region->numRects; i++)
@@ -210,12 +208,10 @@ static INLINE BOOL update_tiles(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
 				if (tile->hmrdpFrameId != surface->frameId)
 					continue;
 
-				/* Counted once per tile per pass, like the list walk below. */
 				if (tile->updateStamp != stamp)
 				{
 					tile->updateStamp = stamp;
 					tile->dirty = FALSE;
-					HmrdpProgStat[6]++;
 				}
 
 				cres = hmrdp_composite_tile(progressive, surface, tile, clip, pDstData, DstFormat,
@@ -238,7 +234,6 @@ static INLINE BOOL update_tiles(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
 	}
 fail:
 	region16_uninit(&clippingRects);
-	HmrdpProgStat[3] += hmrdp_now_ns() - ut0;
 	return rc;
 }
 '@

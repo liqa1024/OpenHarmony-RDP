@@ -180,11 +180,8 @@ Patch-Regex $progWcC `
 	 * (see the patch note in native/scripts/patch-freerdp.ps1 step 23). */
 	if (param->progressive->hmrdpDstValid)
 	{
-		const unsigned long long px = hmrdp_tile_copy_now(param->progressive,
-		                                                  param->progressive->hmrdpSurface,
-		                                                  param->tile);
-		if (px > 0)
-			__atomic_add_fetch(&HmrdpProgStat[19], px, __ATOMIC_RELAXED);
+		(void)hmrdp_tile_copy_now(param->progressive, param->progressive->hmrdpSurface,
+		                          param->tile);
 	}
 #endif
 }
@@ -285,13 +282,6 @@ Patch-Regex $progWcC `
 	                                        tile->stride, nXSrc, nYSrc, NULL,
 	                                        FREERDP_KEEP_DST_ALPHA))
 		return 1;
-	else
-	{
-		/* HmRdp dev: the pixels this side copied (the worker side counts the same
-		 * area into [19]). */
-		__atomic_add_fetch(&HmrdpProgStat[20], (unsigned long long)width * (unsigned long long)height,
-		                   __ATOMIC_RELAXED);
-	}
 
 '@) 'already wrote exactly these pixels'
 

@@ -17,7 +17,6 @@
 #include <thread>
 #include <vector>
 
-#include "hmrdp_energy.h"
 #include "hmrdp_gfx_work.h"
 
 namespace hmrdp {
@@ -171,20 +170,13 @@ class GfxReplay {
   // count, before the presenter cap): says whether the cap was even near and how
   // scattered the content is.
   std::atomic<uint64_t> uploadMaxRects_{0};
-  // Process CPU time (all threads) at the start and the end of the run: the
-  // energy side of the decode-worker A/B. Wall time alone cannot tell "faster"
-  // from "more cores woken for nothing"; the real judgement is `E2` (hmrdp_energy.h)
-  // and the frequency band (doc_agent/cpu-accel-plan.md §2).
+  // Process CPU time (all threads) at the start and the end of the run. Wall time
+  // alone cannot tell "faster" from "more cores woken for nothing", so the
+  // frequency band (`cpuKHz=`) is reported next to it: the two runs are only
+  // comparable at the same clock (doc_agent/gfx-engine.md §8.3).
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
-  // Per-core CPU energy proxy for the run (hmrdp_energy.h): the piece `cpu=`
-  // cannot supply, because the worker-count A/B has to weigh "N cores at a low
-  // clock" against "one core at a high clock". Replay thread writes it, the
-  // stats thread reads only the finished line (energyLine_, under its mutex).
-  hmrdp::EnergyProbe energy_;
-  std::mutex energyMutex_;
-  std::string energyLine_;
   // Time spent deliberately sleeping in PaceRecord(); subtracted from pumpUs_ so
   // the reported feed cost is compute, not playback throttling. The fast mode does
   // not sleep, so this is 0 there.

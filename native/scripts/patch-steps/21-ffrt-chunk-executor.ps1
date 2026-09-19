@@ -19,7 +19,7 @@ $progParC = "$Source\libfreerdp\codec\progressive.c"
 
 # (a) the platform executor, next to the app-width helper inserted by step 11.
 Patch-Regex $progParC `
-  '/\* HmRdp: the decode width requested by the app \(hmrdp_parallel\.\* / the settings\n \* knob\)\. Weak, so a build without the platform executor decodes on the receiving\n \* thread\. \*/\nextern unsigned int HmrdpDecodeWidth\(void\) __attribute__\(\(weak\)\);\n\nstatic INLINE UINT32 hmrdp_decode_width\(void\)\n\{\n\treturn HmrdpDecodeWidth != NULL \? HmrdpDecodeWidth\(\) : 1u;\n\}' (@'
+  '/\* HmRdp: the decode width requested by the app \(hmrdp_parallel\.\*\)\. Weak, so a\n \* build without the platform executor decodes on the receiving thread\. \*/\nextern unsigned int HmrdpDecodeWidth\(void\) __attribute__\(\(weak\)\);\n\nstatic INLINE UINT32 hmrdp_decode_width\(void\)\n\{\n\treturn HmrdpDecodeWidth != NULL \? HmrdpDecodeWidth\(\) : 1u;\n\}' (@'
 /* HmRdp: the decode width (hmrdp_parallel.*). Weak, so a build without the
  * platform executor decodes on the receiving thread. */
 extern unsigned int HmrdpDecodeWidth(void) __attribute__((weak));
@@ -62,10 +62,7 @@ extern int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int),
 # (b) the ffrt task body: the same chunk callback the tile work uses, so the
 #     executor swap changes nothing about the work.
 Patch-Regex $progParC `
-  '\t__atomic_add_fetch\(&HmrdpProgStat\[9\], hmrdp_now_ns\(\) - c0, __ATOMIC_RELAXED\);\n\}\n\n/\* HMRDP_TILE_CHUNKS is defined with the tile scratch helpers above\. \*/' (@'
-	__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - c0, __ATOMIC_RELAXED);
-}
-
+  '/\* HMRDP_TILE_CHUNKS is defined with the tile scratch helpers above\. \*/\n' (@'
 /* HmRdp: one ffrt task per chunk. It forwards to the very same chunk callback the
  * tile work uses, so the executor swap changes nothing about the work. */
 static void hmrdp_chunk_ffrt_callback(void* ctx, unsigned int index)
@@ -86,7 +83,7 @@ static void hmrdp_chunk_ffrt_callback(void* ctx, unsigned int index)
 #     helper forces the serial branch), but the fallback keeps the region
 #     all-or-nothing regardless.
 Patch-Regex $progParC `
-  '\t\tUINT32 numChunks = HMRDP_TILE_CHUNKS;.*?\n\t\tHmrdpProgStat\[2\] \+= hmrdp_now_ns\(\) - ht2; /\* wait\+close \(serial\) \*/\n' (@'
+  '\t\tUINT32 numChunks = HMRDP_TILE_CHUNKS;.*?\n\t\t\tCloseThreadpoolWork\(progressive->work_objects\[c\]\);\n\t\t\}\n' (@'
 		/* HmRdp: one task per home range. Each task owns one contiguous range of
 		 * tiles - a worker walks contiguous memory and the different homes are far
 		 * apart - and steals the other homes' remaining HMRDP_TILE_CLAIM blocks
@@ -125,14 +122,7 @@ Patch-Regex $progParC `
 				chunk->homeIndex = c;
 			}
 
-			HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */
-			/* Dev: proves the decode ran on the platform queue. */
-			HmrdpProgStat[18] += 1;
-			{
-				const unsigned long long ht2 = hmrdp_now_ns();
-				(void)HmrdpParallelRun(numChunks, hmrdp_chunk_ffrt_callback, (void*)chunks);
-				HmrdpProgStat[2] += hmrdp_now_ns() - ht2; /* wait (serial) */
-			}
+			(void)HmrdpParallelRun(numChunks, hmrdp_chunk_ffrt_callback, (void*)chunks);
 			goto fail;
 		}
 
@@ -140,12 +130,6 @@ Patch-Regex $progParC `
 		 * width helper already forces the serial branch then, so this is only
 		 * belt and braces - the region stays all-or-nothing. */
 		g_HmrdpTlsTileScratch = progressive->tileScratch;
-		HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */
-		{
-			const unsigned long long ht2 = hmrdp_now_ns();
-			for (UINT32 idx = 0; idx < numTiles; idx++)
-				progressive_process_tiles_tile_work_callback(0, &progressive->params[idx], 0);
-			__atomic_add_fetch(&HmrdpProgStat[8], numTiles, __ATOMIC_RELAXED);
-			HmrdpProgStat[2] += hmrdp_now_ns() - ht2; /* wait (serial) */
-		}
-'@ + "`n") 'never reaches here'
+		for (UINT32 idx = 0; idx < numTiles; idx++)
+			progressive_process_tiles_tile_work_callback(0, &progressive->params[idx], 0);
+'@ + "`n") 'one task per home range'

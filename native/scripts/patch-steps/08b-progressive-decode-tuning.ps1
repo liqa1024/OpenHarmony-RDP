@@ -20,8 +20,7 @@
 #         32 位字"（保留目标第 4 字节、取源低三字节 —— 与逐字节写法逐字节等价，与字节序
 #         无关）。这是 gdi 链路最热的循环。
 #
-#    另外导出 HmrdpProgStat[16]（每条消息只碰几次，不在 per-tile 路径上）供 app 的回放
-#    统计打印 `prog` 行做归因。整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
+#    整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
 $progH = "$Source\libfreerdp\codec\progressive.h"
 $progC = "$Source\libfreerdp\codec\progressive.c"
 $copyC = "$Source\libfreerdp\primitives\prim_copy.c"
@@ -46,44 +45,7 @@ Patch-Regex $progH '\tUINT32 numUpdatedTiles;\n\tUINT32\* updatedTileIndices;\n\
 } PROGRESSIVE_SURFACE_CONTEXT;
 '@) 'monotonic stamp handed out by each update_tiles'
 
-# (a2) dev-only phase counters + a monotonic clock for them.
-Patch-Regex $progC '#include <freerdp/config\.h>\n\n#include <winpr/assert\.h>' (@'
-#include <freerdp/config.h>
-
-#include <time.h>
-
-#include <winpr/assert.h>
-'@) '#include <time.h>'
-
-Patch-Regex $progC '#define TAG FREERDP_TAG\("codec\.progressive"\)\n' (@'
-#define TAG FREERDP_TAG("codec.progressive")
-
-/*
- * HmRdp dev instrumentation: nanosecond totals for the serial phases of a
- * progressive decode, read back by the app's replay stats (`prog` line). They
- * are touched a handful of times per message, never per tile, so the probe
- * itself does not show up in the figures it reports.
- *   [0] tile read/parse               [4] (unused)
- *   [1] pool dispatch                 [5] update_tiles calls
- *   [2] pool section                  [6] tiles composited
- *   [3] update_tiles                  [7] of [2], the part that really blocked
- *   [8] tiles decoded                 [9] serial loop time / worker busy ns
- *   [10..15] per-phase split (sampled)[16] tiles sampled
- *
- * `read` / `update` / the counters are filled on both paths; `dispatch` / the
- * pool section only exist when the decode runs on pool workers (they are 0 on
- * the serial branch, which is what [8]/[9] describe instead).
- */
-unsigned long long HmrdpProgStat[24] = { 0 };
-static INLINE unsigned long long hmrdp_now_ns(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ((unsigned long long)ts.tv_sec * 1000000000ull) + (unsigned long long)ts.tv_nsec;
-}
-'@) 'HmrdpProgStat'
-
-# (a3) chunked, dynamically balanced tile dispatch.
+# (a2) chunked, dynamically balanced tile dispatch.
 Patch-Regex $progC 'static INLINE SSIZE_T progressive_process_tiles\(' (@'
 /*
  * HmRdp: the tile work is submitted in a small number of chunks instead of one
@@ -119,22 +81,6 @@ static void CALLBACK progressive_process_tile_chunk_callback(PTP_CALLBACK_INSTAN
 
 static INLINE SSIZE_T progressive_process_tiles(
 '@) 'HMRDP_TILE_CHUNKS'
-
-Patch-Regex $progC '\twhile \(\(Stream_GetRemainingLength\(s\) >= 6\) &&\n\t       \(region->tileDataSize > \(Stream_GetPosition\(s\) - start\)\)\)\n\t\{\n\t\tconst size_t pos = Stream_GetPosition\(s\);\n' (@'
-	const unsigned long long ht0 = hmrdp_now_ns();
-	while ((Stream_GetRemainingLength(s) >= 6) &&
-	       (region->tileDataSize > (Stream_GetPosition(s) - start)))
-	{
-		const size_t pos = Stream_GetPosition(s);
-'@) 'const unsigned long long ht0 = hmrdp_now_ns();'
-
-Patch-Regex $progC '\tend = Stream_GetPosition\(s\);\n\tif \(\(end - start\) != region->tileDataSize\)' (@'
-	HmrdpProgStat[0] += hmrdp_now_ns() - ht0; /* tile read/parse (serial) */
-	const unsigned long long ht1 = hmrdp_now_ns();
-
-	end = Stream_GetPosition(s);
-	if ((end - start) != region->tileDataSize)
-'@) 'HmrdpProgStat[0] +='
 
 Patch-Regex $progC '\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\t\{\n\t\tRFX_PROGRESSIVE_TILE\* tile = region->tiles\[idx\];.*?\nfail:' (@'
 	for (UINT32 idx = 0; idx < region->numTiles; idx++)
@@ -183,66 +129,17 @@ Patch-Regex $progC '\tfor \(UINT32 idx = 0; idx < region->numTiles; idx\+\+\)\n\
 			close_cnt = c + 1;
 		}
 
-		HmrdpProgStat[1] += hmrdp_now_ns() - ht1; /* dispatch (serial) */
-		const unsigned long long ht2 = hmrdp_now_ns();
-
 		for (UINT32 c = 0; c < close_cnt; c++)
 		{
-			/* Only the long waits are summed: they are sequential, so their sum
-			 * is the real wall time of the parallel section, while the short ones
-			 * are pure per-item overhead (the futex round trip + the free). */
-			const unsigned long long w0 = hmrdp_now_ns();
 			WaitForThreadpoolWorkCallbacks(progressive->work_objects[c], FALSE);
 			CloseThreadpoolWork(progressive->work_objects[c]);
-			const unsigned long long wdt = hmrdp_now_ns() - w0;
-			if (wdt > 20000ull)
-				HmrdpProgStat[7] += wdt;
 		}
-
-		HmrdpProgStat[2] += hmrdp_now_ns() - ht2; /* wait+close (serial) */
 	}
 
 fail:
 '@) 'the per-tile clipping used to go through region16'
 
-# (a3a) count the tiles the chunked dispatch decoded, and how long the workers
-#       spent on them. Read per chunk, never per tile. NOTE the figure is a
-#       *summed* (multi-threaded) CPU time, not a per-frame wall clock: the app
-#       reports it only when the decode ran serially (see its `dec` field).
-Patch-Regex $progC '\tPROGRESSIVE_TILE_CHUNK_PARAM\* chunk = \(PROGRESSIVE_TILE_CHUNK_PARAM\*\)context;\n\n\tWINPR_ASSERT\(chunk\);\n\n\tfor \(;;\)\n\t\{\n\t\tconst UINT32 index = __sync_fetch_and_add\(chunk->next, 1u\);\n\t\tif \(index >= chunk->numTiles\)\n\t\t\tbreak;\n\n\t\tprogressive_process_tiles_tile_work_callback\(instance, &chunk->params\[index\], work\);\n\t\}\n\}\n' (@'
-	PROGRESSIVE_TILE_CHUNK_PARAM* chunk = (PROGRESSIVE_TILE_CHUNK_PARAM*)context;
-	const unsigned long long c0 = hmrdp_now_ns();
-	UINT32 done = 0;
-
-	WINPR_ASSERT(chunk);
-
-	for (;;)
-	{
-		const UINT32 index = __sync_fetch_and_add(chunk->next, 1u);
-		if (index >= chunk->numTiles)
-			break;
-
-		progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
-		done++;
-	}
-
-	/* Per chunk (not per tile): two clock reads here cost nothing measurable,
-	 * while a per-tile pair would show up in the figures it reports. */
-	__atomic_add_fetch(&HmrdpProgStat[8], done, __ATOMIC_RELAXED);
-	__atomic_add_fetch(&HmrdpProgStat[9], hmrdp_now_ns() - c0, __ATOMIC_RELAXED);
-}
-
-'@) '__atomic_add_fetch(&HmrdpProgStat[8], done'
-
 # (a4) update_tiles: no per-tile REGION16, one visit per tile per pass.
-Patch-Regex $progC '\tBOOL rc = TRUE;\n\tREGION16 clippingRects = \{ 0 \};\n\tregion16_init\(&clippingRects\);\n' (@'
-	BOOL rc = TRUE;
-	const unsigned long long ut0 = hmrdp_now_ns();
-	HmrdpProgStat[5]++;
-	REGION16 clippingRects = { 0 };
-	region16_init(&clippingRects);
-'@) 'HmrdpProgStat[5]++'
-
 Patch-Regex $progC '\tfor \(UINT32 i = 0; i < surface->numUpdatedTiles; i\+\+\)\n\t\{\n\t\tUINT32 nbUpdateRects = 0;.*?\n\t\tregion16_uninit\(&updateRegion\);\n\t\ttile->dirty = FALSE;\n\t\}\n' (@'
 	/*
 	 * HmRdp: the per-tile clipping used to go through region16
@@ -318,19 +215,9 @@ Patch-Regex $progC '\tfor \(UINT32 i = 0; i < surface->numUpdatedTiles; i\+\+\)\
 		}
 
 		tile->dirty = FALSE;
-		HmrdpProgStat[6]++;
 	}
 '@) 'clippingList'
 
-Patch-Regex $progC 'fail:\n\tregion16_uninit\(&clippingRects\);\n\treturn rc;\n\}' (@'
-fail:
-	region16_uninit(&clippingRects);
-	HmrdpProgStat[3] += hmrdp_now_ns() - ut0;
-	return rc;
-}
-'@) 'HmrdpProgStat[3] +='
-
-# (b) keep-destination-alpha 32bpp copy: one masked word per pixel.
 Patch-Regex $copyC 'static INLINE pstatus_t generic_image_copy_bgrx32_bgrx32\([^;]*?\n\{\n.*?\n\treturn PRIMITIVES_SUCCESS;\n\}\n' (@'
 static INLINE pstatus_t generic_image_copy_bgrx32_bgrx32(
     BYTE* WINPR_RESTRICT pDstData, UINT32 nDstStep, UINT32 nXDst, UINT32 nYDst, UINT32 nWidth,

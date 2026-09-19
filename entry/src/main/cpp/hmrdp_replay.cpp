@@ -29,38 +29,6 @@
 #include "hmrdp_parallel.h"
 #include "hmrdp_presenter.h"
 
-// DEV-ONLY: phase timers exported by the patched FreeRDP progressive decoder
-// (libfreerdp/codec/progressive.c). Weak, so a stock FreeRDP just reports none.
-// Slots (see the patch's comment): [0] tile read/parse, [1] work dispatch,
-// [2] work wait+close, [3] update_tiles, [4] (unused), [5] messages, [6] tiles
-// composited, [8] tiles decoded, [9] worker busy time (summed over chunks),
-// [18] ffrt region dispatches.
-constexpr int kProgStatSlots = 24;
-extern "C" unsigned long long HmrdpProgStat[kProgStatSlots] __attribute__((weak));
-
-// DEV-ONLY: how many tile-decode callbacks the platform queue ever ran at the
-// same moment since the previous call (hmrdp_parallel.*). Weak, so a build
-// without the platform executor reports nothing.
-extern "C" unsigned int HmrdpParallelTakeMaxConcurrency(void) __attribute__((weak));
-
-// DEV-ONLY: the patched FreeRDP inverse DWT (libfreerdp/codec/rfx_dwt.c,
-// codec/progressive.c, codec/neon/rfx_neon.c) is compared against the upstream
-// scalar reference on a sample of tiles. `bad=0` cannot cover a decode-side
-// change, and the SIMD variants are only allowed in while the difference they
-// make is measured: the worst |delta| says whether it is rounding or something
-// structural. out = { tiles checked, elements that differed, worst |delta| }
-// (doc_agent/gfx-engine.md §8.4).
-constexpr int kDwtCheckSlots = 3;
-extern "C" unsigned long long HmrdpDwtCheckStat[kDwtCheckSlots] __attribute__((weak));
-extern "C" void HmrdpSetDwtCheck(int on) __attribute__((weak));
-
-// The progressive decode's timing probes (`HmrdpProgStat` / the `prog`/`prog2`
-// lines) are off by default: their clock reads are not free on this platform and
-// only a replay ever displays them. The replay turns them on for its run and a
-// live session keeps them off (hmrdp_session.cpp). Weak, so a stock FreeRDP
-// simply has no probes to switch.
-extern "C" void HmrdpSetProgSample(int on) __attribute__((weak));
-
 namespace hmrdp {
 
 namespace {
@@ -318,25 +286,6 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
         HMRDP_LOGW("gfx replay: reference unusable (%{public}s)", refNote_.c_str());
       }
     }
-    // The inverse DWT is compared against its scalar reference during the
-    // reference runs only: that is the run that has to prove bit-exactness, and
-    // the extra (sampled) decode work would show up in a performance run.
-    if (HmrdpSetDwtCheck != nullptr) {
-      HmrdpSetDwtCheck(refMode_.load() == static_cast<int>(GfxReplayRefMode::kCompare) ? 1 : 0);
-    }
-    // The progressive timing probes exist for the replay's `prog`/`prog2` lines
-    // only: a live session never displays them and must not pay their per-tile
-    // clock reads.
-    if (HmrdpSetProgSample != nullptr) {
-      HmrdpSetProgSample(1);
-    }
-    // The parallel section's own probe lives on the app side of the queue
-    // (hmrdp_parallel.*), so it is switched here next to the decoder's: the
-    // replay's `par` line needs the task boundaries timed while the CPU route
-    // runs, and a live session must not pay for them (doc_agent/cpu-accel-plan.md
-    // §1).
-    HmrdpParallelResetStat();
-    HmrdpParallelSetProbe(1);
     presentUs_.store(0);
     uploadBytes_.store(0);
     uploadBoxBytes_.store(0);
@@ -407,12 +356,6 @@ void GfxReplay::Stop() {
     thread_.join();
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  // Leaving the progressive timing probes on would make the next live session
-  // pay their clock reads: the switch is process-global in the decoder.
-  if (HmrdpSetProgSample != nullptr) {
-    HmrdpSetProgSample(0);
-  }
-  HmrdpParallelSetProbe(0);
   presenter_.reset();
   if (window_ != nullptr) {
     OH_NativeWindow_DestroyNativeWindow(static_cast<OHNativeWindow*>(window_));
@@ -502,90 +445,21 @@ std::string GfxReplay::StatsLines() {
                 running_.load() ? 1 : 0);
   std::string out(head);
 
-  // Worker count + the run's total process CPU time: the width A/B needs both
-  // the wall time (above) and what it cost, or "same speed, more cores woken"
-  // looks like a tie (doc_agent/cpu-accel-plan.md §2). `ffrt` is the number of
-  // regions the platform queue actually dispatched, i.e. proof the decode ran on
-  // FFRT rather than the serial branch.
+  // The run's total process CPU time: the frame time above says how fast the
+  // replay went, this says what it cost. `cpuKHz` is the SoC clock the run
+  // actually got - the playback rate decides it (an idle-paced run sits at the
+  // lowest frequency and every per-frame figure is ~3x larger), so two runs are
+  // only comparable at the same value (doc_agent/gfx-engine.md §8.3).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
-    const unsigned long long ffrtRuns =
-        &HmrdpProgStat[0] != nullptr ? HmrdpProgStat[18] : 0;
-    // Parallel efficiency, frequency-free: the summed worker time over the decode
-    // section's wall time (both from the decoder's own counters, so the clock
-    // cancels). ~1 means one worker ran at a time; ~width means the width was
-    // really used (doc_agent/cpu-accel-plan.md §1).
-    double parRatio = 0.0;
-    if (&HmrdpProgStat[0] != nullptr && HmrdpProgStat[2] > 0) {
-      parRatio = static_cast<double>(HmrdpProgStat[9]) /
-                 static_cast<double>(HmrdpProgStat[2]);
-    }
-    // cpuKHz is the SoC clock the run actually got: the playback rate decides it
-    // (an idle-paced run sits at the lowest frequency and every per-frame figure
-    // is ~3x larger), so two runs are only comparable at the same value
-    // (doc_agent/gfx-engine.md §8.3).
     const std::string freq = hmrdp::CpuFreqInfo();
     char run[260];
-    std::snprintf(run, sizeof(run),
-                  "\nrun  threads=%d  ffrt=%llu  parRatio=%.2f  cpu=%.2fs  cpuKHz=%s",
-                  hmrdp::DecodeThreads(), ffrtRuns, parRatio,
+    std::snprintf(run, sizeof(run), "\nrun  threads=%d  cpu=%.2fs  cpuKHz=%s",
+                  hmrdp::DecodeThreads(),
                   static_cast<double>(cpuEnd - cpuStart) / 1000000.0,
                   freq.empty() ? "n/a" : freq.c_str());
     out += run;
-  }
-
-  // The worker side of the decode's parallel section, timed at the task boundary
-  // on the app side of the queue (hmrdp_parallel.h). `capacity = K * wall` is the
-  // thread time the width offered (K = the queue's concurrency limit), `work` is
-  // how much of it was spent decoding, and `idle` is the remainder - all three
-  // independent of how many tasks the region was split into. `wait` is the tasks'
-  // queue latency and is reported beside the account, not inside it: a queued task
-  // overlaps with the work of the tasks already running, so work + wait may exceed
-  // capacity. `work <= capacity` has to hold; a negative idle below is the sign
-  // that it does not (a wrong K, or a callback timed twice)
-  // (doc_agent/cpu-accel-plan.md §5).
-  {
-    HmrdpParallelStat par;
-    HmrdpParallelGetStat(&par);
-    if (par.capacityNs > 0) {
-      const double capacity = static_cast<double>(par.capacityNs);
-      const double work = static_cast<double>(par.workNs);
-      const double wait = static_cast<double>(par.waitNs);
-      const double busyPct = 100.0 * work / capacity;
-      const double idlePct = 100.0 - busyPct;
-      const double kavg = par.wallNs > 0
-                              ? static_cast<double>(par.capacityNs) /
-                                    static_cast<double>(par.wallNs)
-                              : 0.0;
-      const double waitPerTask = par.tasks > 0
-                                     ? static_cast<double>(par.waitNs) /
-                                           static_cast<double>(par.tasks) / 1000.0
-                                     : 0.0;
-      char parLine[400];
-      std::snprintf(parLine, sizeof(parLine),
-                    "\npar   busy=%.1f%%  idle=%.1f%%  "
-                    "(regions=%llu tasks=%llu Kavg=%.2f wall=%.1fms capacity=%.1fms work=%.1fms "
-                    "wait=%.1fms wait/task=%.1fus)",
-                    busyPct, idlePct, static_cast<unsigned long long>(par.regions),
-                    static_cast<unsigned long long>(par.tasks), kavg,
-                    static_cast<double>(par.wallNs) / 1e6, capacity / 1e6, work / 1e6, wait / 1e6,
-                    waitPerTask);
-      out += parLine;
-    }
-  }
-
-  // Energy proxy for the same window as `cpu=` (hmrdp_energy.h). This is the
-  // figure the worker-count choice is judged on: `cpu=` alone cannot say at which
-  // clock those CPU seconds were spent, so it cannot compare "N cores at a low
-  // clock" with "one core at a high clock". Only shown for a finished run, so a
-  // live run cannot display the previous run's figure.
-  {
-    std::lock_guard<std::mutex> lock(energyMutex_);
-    if (!energyLine_.empty() && !running_.load()) {
-      out += "\n";
-      out += energyLine_;
-    }
   }
 
   // How many bytes actually left the CPU, versus what the merged bounding box
@@ -670,68 +544,6 @@ std::string GfxReplay::StatsLines() {
       out += st;
     }
 
-  }
-
-  // DEV-ONLY progressive decode attribution (patched FreeRDP, see the weak
-  // declaration above): per-frame milliseconds plus the update_tiles totals.
-  if (&HmrdpProgStat[0] != nullptr && work.frames > 0 && HmrdpProgStat[5] > 0) {
-    const double d = static_cast<double>(work.frames > 0 ? work.frames : 1);
-    // The tile-decode section is timed by a different slot per path and the two
-    // are not the same kind of figure: on the parallel path [2] is the section's
-    // wall clock - the wait for the platform queue's tasks - while on the serial
-    // path [9] is the time this thread spent in the per-tile loop. Only one of
-    // them is ever non-zero in a run, so the reported `dec` picks whichever ran.
-    // ([9] is also accumulated per chunk by the queue's tasks as their own summed
-    // decode time - a multi-threaded CPU figure, not a per-frame one - so it must
-    // not be reported next to the wall-clock phases.)
-    const uint64_t decNs = HmrdpProgStat[2] != 0 ? HmrdpProgStat[2] : HmrdpProgStat[9];
-    char ps[320];
-    std::snprintf(ps, sizeof(ps),
-                  "\nprog  ms/frame: read=%.2f dispatch=%.2f dec=%.2f "
-                  "update=%.2f  (calls=%llu unions=%llu tiles=%llu tilesDec=%llu ffrt=%llu)",
-                  static_cast<double>(HmrdpProgStat[0]) / d / 1e6,
-                  static_cast<double>(HmrdpProgStat[1]) / d / 1e6,
-                  static_cast<double>(decNs) / d / 1e6,
-                  static_cast<double>(HmrdpProgStat[3]) / d / 1e6,
-                  static_cast<unsigned long long>(HmrdpProgStat[5]),
-                  static_cast<unsigned long long>(HmrdpProgStat[4]),
-                  static_cast<unsigned long long>(HmrdpProgStat[6]),
-                  static_cast<unsigned long long>(HmrdpProgStat[8]),
-                  static_cast<unsigned long long>(HmrdpProgStat[18]));
-    out += ps;
-
-    // DEV-ONLY: where the time inside one decoded tile goes. The probe times a
-    // phase for one tile in 16 ([16] counts the sampled tiles), so a phase's
-    // total is scaled by the tiles decoded per frame to land in the same unit as
-    // `dec` above - their sum should come out just under it (the remainder is the
-    // per-tile call overhead and the message-level work).
-    const uint64_t samples = HmrdpProgStat[16];
-    if (samples > 0) {
-      const double tilesPerFrame = static_cast<double>(HmrdpProgStat[8]) / d;
-      const double scale = tilesPerFrame / static_cast<double>(samples) / 1e6;
-      const double phases[6] = {
-          static_cast<double>(HmrdpProgStat[10]) * scale, static_cast<double>(HmrdpProgStat[11]) * scale,
-          static_cast<double>(HmrdpProgStat[12]) * scale, static_cast<double>(HmrdpProgStat[13]) * scale,
-          static_cast<double>(HmrdpProgStat[14]) * scale, static_cast<double>(HmrdpProgStat[15]) * scale};
-      const double sum = phases[0] + phases[1] + phases[2] + phases[3] + phases[4] + phases[5];
-      char ps2[320];
-      std::snprintf(ps2, sizeof(ps2),
-                    "\nprog2 ms/frame (sampled 1/16, n=%llu): rlgr=%.2f dequant+diff=%.2f "
-                    "idwt=%.2f state=%.2f upgrade=%.2f color=%.2f  sum=%.2f",
-                    static_cast<unsigned long long>(samples), phases[0], phases[1], phases[2],
-                    phases[3], phases[4], phases[5], sum);
-      out += ps2;
-    }
-  }
-
-  // DEV-ONLY: the inverse-DWT (or any other decode-side rewrite) checked against
-  // the upstream scalar reference. Only the reference runs switch it on; the
-  // worst |delta| is what separates a rounding difference from a structural one.
-  if (refMode_.load() != 0 && &HmrdpDwtCheckStat[0] != nullptr) {
-    char dw[192];
-    std::snprintf(dw, sizeof(dw), "\ndwt check: tiles=%llu mismatch=%llu maxDelta=%llu",
-                  HmrdpDwtCheckStat[0], HmrdpDwtCheckStat[1], HmrdpDwtCheckStat[2]);
-    out += dw;
   }
 
   // Golden-reference gate (see GfxReplayRefMode). The hashes are the
@@ -840,12 +652,6 @@ void GfxReplay::PaceRecord(uint64_t timestampUs) {
 }
 
 void GfxReplay::Run() {
-  // A new run invalidates the previous run's energy line: Stats() must not show
-  // one run's proxy next to another run's frames.
-  {
-    std::lock_guard<std::mutex> lock(energyMutex_);
-    energyLine_.clear();
-  }
   RunCpuReplay(gfxPath_);
   endUs_.store(NowUs());
   running_.store(false);
@@ -903,22 +709,9 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   hmrdp::GfxReplayResetParseUs();
 
   // DEV-ONLY: reset the patched decoder's phase counters so this run's figures
-  // are not mixed with a previous one (the library outlives the replay).
-  if (&HmrdpProgStat[0] != nullptr) {
-    for (int i = 0; i < kProgStatSlots; ++i) {
-      HmrdpProgStat[i] = 0;
-    }
-  }
-  if (&HmrdpDwtCheckStat[0] != nullptr) {
-    for (int i = 0; i < kDwtCheckSlots; ++i) {
-      HmrdpDwtCheckStat[i] = 0;
-    }
-  }
-
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
   cpuStartUs_.store(ProcessCpuUs());
-  energy_.Begin();
 
   ReplayPaceFn pace;
   if (realtimeActive_.load() != 0) {
@@ -930,34 +723,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
       GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum, &aborted);
   aborted_.store(aborted);
   cpuEndUs_.store(ProcessCpuUs());
-  energy_.End();
-  if (energy_.Valid()) {
-    std::lock_guard<std::mutex> lock(energyMutex_);
-    energyLine_ = energy_.Line(frames_.load());
-  }
-  // The platform queue's own account: the section the receiving thread waited
-  // out versus the summed time the chunk callbacks ran. Their ratio is the
-  // *effective* parallel width - if it stays near 1 when more workers were asked
-  // for, the extra workers are not doing the decode
-  // (doc_agent/cpu-accel-plan.md §2).
-  if (&HmrdpProgStat[0] != nullptr) {
-    const double wallMs = static_cast<double>(HmrdpProgStat[2]) / 1e6;
-    const double workerBusyMs = static_cast<double>(HmrdpProgStat[9]) / 1e6;
-    // The platform queue's own read-out: how wide it actually ran. A wall-clock
-    // figure alone cannot tell "ran two chunks at once" from "ran one, twice".
-    const unsigned int parMax = HmrdpParallelTakeMaxConcurrency != nullptr
-                                    ? HmrdpParallelTakeMaxConcurrency()
-                                    : 0;
-    HMRDP_LOGI("energy: queue wall=%{public}.1fms workerBusy=%{public}.1fms ratio=%{public}.2f "
-               "tiles=%{public}llu ffrt=%{public}llu parMax=%{public}u workerPx=%{public}llu "
-               "rdpPx=%{public}llu",
-               wallMs, workerBusyMs, wallMs > 0 ? workerBusyMs / wallMs : 0.0,
-               static_cast<unsigned long long>(HmrdpProgStat[8]),
-               static_cast<unsigned long long>(HmrdpProgStat[18]),
-               parMax,
-               static_cast<unsigned long long>(HmrdpProgStat[19]),
-               static_cast<unsigned long long>(HmrdpProgStat[20]));
-  }
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
   HMRDP_LOGI("gfx replay: pump %{public}llu ms (paced %{public}llu ms)",
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
@@ -1164,11 +929,8 @@ void GfxReplay::RefCollectFrame(GfxCpuDesktop* cpu) {
 }
 
 bool GfxReplay::OnCpuFramePre() {
-  // Runs inside the shared frame host's chain, before the present: the energy
-  // probe only tags a sample every 250 ms (a clock read per frame is free), and a
-  // run that hit its cap stops here without presenting or accounting for one more
-  // frame.
-  energy_.Poll();
+  // Runs inside the shared frame host's chain, before the present: a run that hit
+  // its cap stops here without presenting or accounting for one more frame.
   const int64_t nowUs = static_cast<int64_t>(NowUs());
   const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
   if (nowUs - startUs_.load() > capUs) {

@@ -1,6 +1,6 @@
 /*
  * HmRdp - platform parallel executor for the progressive tile decode
- * (doc_agent/cpu-accel-plan.md §0).
+ * (doc_agent/cpu-accel-plan.md §1).
  *
  * The decode's granularity is a chunk callback that FreeRDP's progressive codec
  * owns; this module is *who runs those callbacks* - FFRT, following the FFRT
@@ -26,7 +26,7 @@
  *    caller waits for exactly those handles (`ffrt_queue_wait`). Nothing waits
  *    on "all work in the system".
  *  - the callbacks themselves are pure with respect to FFRT: they touch the
- *    tile's own buffers plus one atomic claim counter, and never take a
+ *    tile's own buffers plus one atomic claim cursor, and never take a
  *    non-FFRT lock or block. (Should they ever need to block, FFRT's own
  *    mutex/condition_variable are the ones to use - blocking a worker with a
  *    pthread primitive starves the executor.)
@@ -56,52 +56,6 @@ unsigned int HmrdpDecodeWidth(void);
 // means the caller must fall back to its own executor. `fn` is a plain function
 // pointer because the caller is C.
 int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* ctx);
-
-// Dev read-out: the highest number of callbacks that were inside fn at the same
-// moment since the previous call, then reset. Answers "did the platform queue
-// actually run this in parallel", which wall clock alone cannot.
-unsigned int HmrdpParallelTakeMaxConcurrency(void);
-
-// Dev-only accounting of the decode's parallel section, read back by the
-// replay's `par` line (doc_agent/cpu-accel-plan.md §5). Every figure is timed at
-// the task boundary on the app side of the queue.
-//
-// The thread account needs the region's **chunk count** (the `tasks` passed in),
-// never the queue's own maximum concurrency: at most `tasks` callbacks run at
-// once - the submitted ones plus the calling thread's own chunk - so the summed
-// callback time can never exceed `tasks * wall`. That bound is what makes
-//
-//   workNs <= capacityNs        (idleNs = capacityNs - workNs >= 0)
-//
-// hold for *any* decomposition. The chunk count is the decode's own decision -
-// the decoder derives it from the region's tile count (doc_agent/cpu-accel-plan.md
-// §2) - so the account follows how many threads the region actually asked for
-// instead of the width ceiling, and `capacityNs / wallNs` is the average of that
-// count.
-//
-// `waitNs` is deliberately **not** part of that account: it is the tasks' queue
-// latency, and a queued task overlaps with the work of the tasks already
-// running, so `workNs + waitNs` may exceed capacityNs. It is reported next to
-// the account, not inside it.
-//
-// There are no per-slot terms on purpose: a per-task "idle before submit /
-// after finish" only equals thread time when the task count equals the width,
-// which is exactly the coupling this account avoids.
-struct HmrdpParallelStat {
-  unsigned long long regions;  // regions dispatched on the queue (tasks > 1)
-  unsigned long long tasks;    // task count summed over those regions
-  unsigned long long wallNs;   // region wall clock summed (submit .. all waited)
-  unsigned long long capacityNs;  // tasks * wall summed: the thread time asked for
-  unsigned long long workNs;   // summed callback time (worker busy)
-  unsigned long long waitNs;   // summed queue latency (task start - submission)
-};
-
-// Off by default: the clock reads are not free on this platform and a live
-// session never displays the figures. The replay turns it on for its own runs,
-// exactly like the decoder's probes (HmrdpSetProgSample).
-void HmrdpParallelSetProbe(int on);
-void HmrdpParallelResetStat(void);
-void HmrdpParallelGetStat(struct HmrdpParallelStat* out);
 
 #ifdef __cplusplus
 }

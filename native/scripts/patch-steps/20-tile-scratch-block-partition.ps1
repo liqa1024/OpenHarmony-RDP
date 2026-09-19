@@ -27,14 +27,9 @@
 #          本平台上收缩到 2×worker 会让池的第二个线程不参与（2 worker + 4 个
 #          work item 的解码段与串行一样长）。
 #
-#     顺带修 dev 对拍的 static 缓冲：`rfx_dwt_2d_extrapolate_decode` 的
-#     `ref`/`scratch` 原来是函数内 static，多个 worker 同时打开对拍时会互相踩
-#     （只污染对拍计数，不影响像素），改成 per-call。
-#
 #     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
 $progScratchH = "$Source\libfreerdp\codec\progressive.h"
 $progScratchC = "$Source\libfreerdp\codec\progressive.c"
-$neonScratchC = "$Source\libfreerdp\codec\neon\rfx_neon.c"
 
 # (a0) the per-context scratch arena pointer.
 Patch-Regex $progScratchH `
@@ -48,17 +43,13 @@ Patch-Regex $progScratchH `
 };
 '@) 'BYTE* tileScratch;'
 
-# (a1) the scratch helpers, next to the other HmRdp dev globals.
+# (a1) the scratch helpers, near the top of the file (they are used by the tile
+#      callback below).
 Patch-Regex $progScratchC `
-  'static INLINE void hmrdp_phase_end\(int slot, unsigned long long t0\)\n\{\n\tif \(t0 != 0\)\n\t\t__atomic_add_fetch\(&HmrdpProgStat\[slot\], hmrdp_now_ns\(\) - t0, __ATOMIC_RELAXED\);\n\}' (@'
-static INLINE void hmrdp_phase_end(int slot, unsigned long long t0)
-{
-	if (t0 != 0)
-		__atomic_add_fetch(&HmrdpProgStat[slot], hmrdp_now_ns() - t0, __ATOMIC_RELAXED);
-}
+  '#define TAG FREERDP_TAG\("codec\.progressive"\)\n' (@'
+#define TAG FREERDP_TAG("codec.progressive")
 
-/*
- * HmRdp: per-chunk tile working buffers.
+/* HmRdp: per-chunk tile working buffers.
  *
  * One tile decode needs two 24 KB working buffers (the coefficient working
  * buffer and the inverse-DWT scratch). Upstream takes both from
@@ -117,12 +108,11 @@ Patch-Regex-All $progScratchC `
 
 # (a3) the DWT scratch comes from the current chunk's slot.
 Patch-Regex $progScratchC `
-  '\tINT16\* temp = \(INT16\*\)BufferPool_Take\(progressive->bufferPool, -1\); /\* DWT buffer \*/\n\n\tif \(!temp\)\n\t\treturn -2;\n\n\tconst unsigned long long p_idwt = hmrdp_phase_begin\(\);' (@'
+  '\tINT16\* temp = \(INT16\*\)BufferPool_Take\(progressive->bufferPool, -1\); /\* DWT buffer \*/\n\n\tif \(!temp\)\n\t\treturn -2;\n' (@'
 	/* HmRdp: the inverse-DWT scratch is the current chunk's second slot (see
 	 * hmrdp_tile_scratch) - no pool Take/Return per component. */
 	INT16* temp = hmrdp_tile_dwt_scratch(progressive);
 
-	const unsigned long long p_idwt = hmrdp_phase_begin();
 '@) 'hmrdp_tile_dwt_scratch(progressive)'
 
 Patch-Regex $progScratchC '\tBufferPool_Return\(progressive->bufferPool, temp\);\n\treturn 1;' (@'
@@ -166,7 +156,7 @@ typedef struct
 
 # (b2) the callback claims blocks from the shared cursor, with its own slot.
 Patch-Regex $progScratchC `
-  '\tfor \(;;\)\n\t\{\n\t\tconst UINT32 index = __sync_fetch_and_add\(chunk->next, 1u\);\n\t\tif \(index >= chunk->numTiles\)\n\t\t\tbreak;\n\n\t\tprogressive_process_tiles_tile_work_callback\(instance, &chunk->params\[index\], work\);\n\t\tdone\+\+;\n\t\}' (@'
+  '\tfor \(;;\)\n\t\{\n\t\tconst UINT32 index = __sync_fetch_and_add\(chunk->next, 1u\);\n\t\tif \(index >= chunk->numTiles\)\n\t\t\tbreak;\n\n\t\tprogressive_process_tiles_tile_work_callback\(instance, &chunk->params\[index\], work\);\n\t\}' (@'
 	/* HmRdp: this thread decodes only this chunk, so its working buffers are the
 	 * chunk's slot - see hmrdp_tile_scratch(). */
 	g_HmrdpTlsTileScratch = chunk->scratch;
@@ -194,14 +184,13 @@ Patch-Regex $progScratchC `
 
 			for (UINT32 index = begin; index < end; index++)
 				progressive_process_tiles_tile_work_callback(instance, &chunk->params[index], work);
-			done += end - begin;
 		}
 	}
 '@) 'this thread decodes only this chunk'
 
 # (b3) allocate the arena once, and pin the serial branch to slot 0.
 Patch-Regex $progScratchC `
-  '\tif \(hmrdp_decode_width\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(width 1, or no platform executor\): one call per tile, no task\n\t\t \* submission\. HmRdp dev: the tiles and the time spent decoding them are\n\t\t \* counted here - the queue-path counters stay 0 on this branch\. \*/' (@'
+  '\tif \(hmrdp_decode_width\(\) <= 1\)\n\t\{\n\t\t/\* Serial \(width 1, or no platform executor\): one call per tile, no task\n\t\t \* submission\. \*/\n' (@'
 	/* HmRdp: the tile decode's working buffers come from this context's arena
 	 * (one slot per chunk), allocated on the first message and never taken per
 	 * tile - see hmrdp_tile_scratch(). */
@@ -215,9 +204,7 @@ Patch-Regex $progScratchC `
 	{
 		/* Serial: one call per tile, no task submission. Either there is no
 		 * platform executor (or a single-core machine), or the region is too
-		 * small to keep even two threads busy (hmrdp_region_chunks). HmRdp dev:
-		 * the tiles and the time spent decoding them are counted here - the
-		 * queue-path counters stay 0 on this branch. */
+		 * small to keep even two threads busy (hmrdp_region_chunks). */
 		g_HmrdpTlsTileScratch = progressive->tileScratch;
 '@) '!hmrdp_alloc_tile_scratch(progressive))'
 
@@ -243,27 +230,6 @@ Patch-Regex $progScratchC `
 			progressive->work_objects[c] =
 '@) 'the chunk count = one scratch slot per chunk'
 
-# (c) dev DWT comparison buffers: per call, not shared between workers. Both the
-#     extrapolate path in progressive.c and the NEON entry in rfx_neon.c (which
-#     is what -DWITH_SIMD=ON actually runs) hold the compared tile in static
-#     buffers; with more than one worker they are overwritten mid-comparison.
-#     (The counters themselves stay plain adds: a race can only lose an update,
-#     never turn a rounding-level delta into a large one.)
-Patch-Regex $progScratchC `
-  '\tstatic INT16 ref\[4096\] = \{ 0 \};\n\tstatic INT16 scratch\[4096\] = \{ 0 \};' (@'
-	/* HmRdp: per-call, not static: the dev comparison must not share these
-	 * buffers between decode workers. */
-	INT16 ref[4096] = { 0 };
-	INT16 scratch[4096] = { 0 };
-'@) 'per-call, not static'
-
-Patch-Regex $neonScratchC `
-  '\tstatic INT16 ref\[4096\] = \{ 0 \};\n\tstatic INT16 scratch\[4096\] = \{ 0 \};' (@'
-	/* HmRdp: per-call, not static: the dev comparison must not share these
-	 * buffers between decode workers. */
-	INT16 ref[4096] = { 0 };
-	INT16 scratch[4096] = { 0 };
-'@) 'per-call, not static'
 
 # (d) release the arena with the context.
 Patch-Regex $progScratchC `

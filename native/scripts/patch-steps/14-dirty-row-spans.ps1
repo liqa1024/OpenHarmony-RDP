@@ -141,7 +141,6 @@ FREERDP_API BOOL HmrdpProgressiveFlushDirty(PROGRESSIVE_CONTEXT* progressive, UI
 		rect.top = (UINT16)(row * 64);
 		rect.right = (UINT16)(surface->hmrdpDirtyRight[row] * 64);
 		rect.bottom = (UINT16)((row + 1) * 64);
-		HmrdpProgStat[4]++;
 		region16_union_rect(out, out, &rect);
 		surface->hmrdpDirtyLeft[row] = UINT16_MAX;
 		surface->hmrdpDirtyRight[row] = 0;

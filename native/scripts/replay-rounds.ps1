@@ -237,7 +237,7 @@ foreach ($round in $Rounds) {
   $head = "## round ${index}: $round  [$($end.state) run=$($end.run)]"
   $head | Add-Content -LiteralPath $outPath -Encoding utf8
   $stats | Add-Content -LiteralPath $outPath -Encoding utf8
-  ($screen.texts | Where-Object { $_ -match "^(perFrame|prog |prog2|par  |dwt check|ref compare|setup ms|upload rects|run  threads|energy:)" }) |
+  ($screen.texts | Where-Object { $_ -match "^(perFrame|ref compare|setup ms|upload rects|run  threads)" }) |
     ForEach-Object { $_ | Add-Content -LiteralPath $outPath -Encoding utf8 }
   "" | Add-Content -LiteralPath $outPath -Encoding utf8
 

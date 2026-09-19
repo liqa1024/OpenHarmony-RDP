@@ -73,12 +73,6 @@ extern "C" void HmrdpGfxRawCapture(const BYTE* data, UINT32 size) {
 extern "C" void HmrdpSetGfxRawCapture(void (*fn)(const BYTE* data, UINT32 size))
     __attribute__((weak));
 
-// Defined by the patched progressive decoder: switches the decode's dev timing
-// probes. They are off by default and only a replay displays them, so a live
-// connect explicitly keeps them off and does not pay their per-tile clock reads
-// (see hmrdp_replay.cpp / patch step 24). Weak so stock FreeRDP links unchanged.
-extern "C" void HmrdpSetProgSample(int on) __attribute__((weak));
-
 // Defined by the patched winpr (native/scripts/patch-freerdp.ps1): the pool
 // workers and the drdynvc thread call the registered callback once per thread.
 // Weak so a stock FreeRDP still links - the QoS marking is then simply absent.
@@ -1369,12 +1363,6 @@ BOOL HmrdpPreConnect(freerdp* instance) {
   // capture). Harmless when FreeRDP was not built with the HmRdp patch.
   if (HmrdpSetGfxRawCapture != nullptr) {
     HmrdpSetGfxRawCapture(&HmrdpGfxRawCapture);
-  }
-  // The progressive decode's dev timing probes are for the replay's `prog` lines;
-  // a live session never shows them and must not pay their per-tile clock reads.
-  // Set explicitly because a replay may have left them on (the switch is global).
-  if (HmrdpSetProgSample != nullptr) {
-    HmrdpSetProgSample(0);
   }
   // Hand the QoS hook to the patched winpr: its pool workers (tile decoding) and
   // the drdynvc thread (the frame pipeline) call it once per thread.

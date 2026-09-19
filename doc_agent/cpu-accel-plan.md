@@ -45,8 +45,6 @@
   快的那一侧自然多领。
 - `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行（此时参与就是全量内联）；
   `tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
-- 任务体内原子计数同时刻在途回调数 ⇒ `HmrdpParallelTakeMaxConcurrency()` 给出实测最大并发
-  （dev 读数）。
 - **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
 - **QoS**：tile worker 的 QoS 来自队列/任务属性；接收线程的 QoS 由 app 注册的钩子
   （`HmrdpSetThreadQoSApplier`，补丁 09）在 drdynvc 线程入口调用一次。
@@ -102,41 +100,23 @@
   访问到的 tile：`hmrdpCopied` 且 clip 哈希等于本 pass 的 `hmrdpUpdateClip` 时**跳过像素拷贝**
   （只留脏区记账），否则照旧拷贝（后写覆盖）。脏区记账 = 每 tile 行一个 span
   （`hmrdpDirtyLeft/Right/Any`，O(1)；补丁 14）。region 解码结束清空暂存 clip。
-- **结果不变性**：同一批 tile、同样的裁剪与像素、同样的脏区；门禁 = 参考画面 `bad=0` +
-  解码侧对拍（[`gfx-engine.md`](gfx-engine.md) §8.4）。
+- **结果不变性**：同一批 tile、同样的裁剪与像素、同样的脏区；门禁 = 参考画面 `bad=0`
+  （[`gfx-engine.md`](gfx-engine.md) §8.2）。
 
-## 5. 读数、探针与编译期开关
 
-- **没有运行期开关**：宽度、任务划分、执行器都是固定的（§1/§2）。要对照，改代码重编——按
-  [`gfx-engine.md`](gfx-engine.md) §8.1 的口径比 `dec` 墙钟与 `par` 的 `work`/`wall`，
-  **不要**为了 A/B 在树里留第二套路径。
-- **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）；常量
-  `HMRDP_TILE_CLAIM = 2`、`HMRDP_TILE_CHUNKS = 64`、`HMRDP_MIN_TILES_PER_WORKER = 64`
-  （§2 的自适应阈值；三者都是按实测定档的，见 [`gfx-engine.md`](gfx-engine.md) §8.6）。
-- **探针**：`HmrdpProgStat[24]`（`read`/`dispatch`/`dec`/等待、tile 计数、ffrt region 计数、
-  worker/串行侧拷贝像素、1/16 采样的 per-phase 拆相），由 `HmrdpSetProgSample` 门控（补丁 24）；
-  `parMax = HmrdpParallelTakeMaxConcurrency()`；`energy` 行（`hmrdp_energy.*`）。
-  账目字段与判读纪律见 [`gfx-engine.md`](gfx-engine.md) §8。
-- **并行段账目「par」**（app 侧 `hmrdp_parallel.*`，与 `HmrdpSetProgSample` 同开同关）：在**任务边界**
-  计时，用**本 region 的 chunk 数**（`tasks`，也就是这个 region 实际选用的线程数：调用线程自己那个
-  加提交出去的那些）算容量：
+## 5. 编译期开关与定档
 
-  | 值 | 定义 | 量纲 |
-  |---|---|---|
-  | `wall` | 接收线程从开始提交到全部任务等完 | 真实时间 |
-  | `capacity` | `tasks × wall`：该 region 主动要的线程时间 | 折叠量 |
-  | `work` | `Σ` 回调执行时长（即 tile 解码段，含 worker 侧合成拷贝） | 折叠量 |
-  | `idle` | `capacity − work`：这份线程时间里没跑回调的部分（导出量） | 折叠量 |
-  | `wait` | `Σ(任务开始 − 提交)`：任务排队延迟，**单列** | 折叠量 |
-  | `Kavg` | `capacity / wall`：按墙钟加权的平均实际线程数（导出量） | 折叠量 |
-
-  - **为什么按 `tasks` 不按宽度**：任一时刻在跑的回调 ≤ `tasks`（提交出去的那些加调用线程自己那个）⇒
-    `work ≤ capacity` 恒成立、`idle` 恒非负。而 chunk 数本身就是**这条线唯一自适应的量**
-    （§2：region 越小开得越少），账目必须跟着它走，否则 `busy`/`idle` 会把"阈值故意没用满的宽度"
-    算成闲置。逐任务的「提交前空闲 / 完成后空闲」这类把测量绑死在某一种划分上的口径仍然不用。
-    ⚠ `tasks × wall` 是"**要了**多少线程时间"，不是"池子真给了多少"：池子给不出（自动宽度 = 在线
-    核数）时，要的那部分仍会被算进 `capacity`，体现为 `idle` 与 `wait` 一起变大。
-  - **`wait` 不并进容量**：任务排队时 worker 正在跑别的任务，二者是同一段时间的两面 ⇒
-    `work + wait` 可以超过 `capacity`。`work`/`idle` 才是线程账，`wait` 只作队列延迟读。
-  - **自检**：① `work ≤ capacity`（`idle` 为负 ⇒ 回调被重复计时，例如提交失败回退到接收线程内联
-    执行）；② `work ≈ HmrdpProgStat[9]`（同一批回调的另一路折叠和，两路独立互证）。
+- **没有运行期开关**：宽度、任务划分、执行器、规模阈值都是固定的（§1/§2）。要对照就改代码重编，
+  按 [`gfx-engine.md`](gfx-engine.md) §8.1 的口径比（`cpu=` 同频档 + `本机` 拆相），**不要**为了
+  A/B 在树里留第二套路径。
+- **编译期开关**：`HMRDP_TILE_ARENA`（22）、`HMRDP_WORKER_TILE_COPY`（23）。
+- **常量（都按实测定档的，改动要重编 + 回归）**：
+  - `HMRDP_MIN_TILES_PER_WORKER = 64`（§2 的自适应阈值）——**收益最大的一项**。小 region 上开满
+    宽度不划算：每个 chunk 只有十几 tile 时，唤醒与领取争用把 queue 段墙钟拉长。降到每 region 实际
+    只开几个线程后，queue 段墙钟降约三成、整轮 `cpu=` 降约四分之一，region 大的样本不受影响。
+    判据：**如果能看到"宽度开满但线程大半闲着、任务排队延迟占 region 墙钟可观比例"，就是开多了，
+    把阈值往上调**。
+  - `HMRDP_TILE_CLAIM = 2`：领取/偷取的块大小。块越小，最后一个块被慢线程攥住的时间越短（尾块
+    不均衡 ≤ 一个块），但共享游标上的原子操作越多。4 → 2 在小 region 上有可观收益；2 → 1 不再改善
+    （领取流量翻倍），停在 2。
+  - `HMRDP_TILE_CHUNKS = 64`：chunk 描述符与 scratch 槽的上界，不是调参项。

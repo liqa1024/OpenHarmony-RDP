@@ -28,6 +28,11 @@ native/scripts/build-freerdp.ps1     # FreeRDP 的 CMake 构建（Windows NDK）
   已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。只有 FreeRDP 需要打补丁，
   zlib / OpenSSL 按发布版直接用。
 - `patch-freerdp.ps1` 也可单独重复跑（幂等）。
+- **改过补丁后必须用 `build-freerdp.ps1 -Clean`**：重新解包的源码树带着 tarball 里的旧 mtime，
+  ninja 会认为目标文件比源新而**整块跳过编译**——症状是构建"成功"、`-Clean` 之外只产出一两个
+  `.so`，或者改动在 `.so` 里看不到（用 `nm`/字符串搜一下就知道）。`-Clean` 同时清安装前缀。
+- 补丁报错时会连**失败的正则片段**一起打出来（`patch-freerdp.ps1` 的 `Patch-Regex`），
+  照它改锚点即可；锚点跨步骤咬合，改一个要顺带看后面哪一步还引用着它。
 - `build-freerdp.ps1` 装完后自动跑 `sync-freerdp-headers.ps1`，把应用编译要用的头文件刷新到
   `entry/src/main/cpp/thirdparty/`（该目录**不入库**，见 §1）。
 
@@ -93,11 +98,9 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   宽度是"这条 region 能用几个线程"：调用线程自己跑一个 chunk（调用方参与），平台队列的
   `max_concurrency` 是宽度 − 1；没有平台执行器的构建读到 1 ⇒ `progressive.c` 走**完全串行**
   分支（不提交、不唤醒、不等待）。这里**没有 WinPR 池控制面**。
-- **解码侧 dev 探针可运行时开关**：`HmrdpSetProgSample(on)` /
-  `HmrdpGetProgSample()` 控制 progressive 解码里那组计时（`HmrdpProgStat` 的分相、逐 tile 的 1/16
-  相位采样）。它们只有回放 stats 会展示，而 `clock_gettime` 在本平台不是 vDSO、采样计数器又是每 tile
-  一次共享原子加 ⇒ **默认关**；app 的 CPU 回放轮次打开、live 连接显式关闭（[`gfx-engine.md`](gfx-engine.md) §8.3）。
-  逆 DWT 对拍是独立的 `HmrdpSetDwtCheck`。
+- **解码侧没有 dev 探针**：解码路径上只保留功能代码——分相计时、逐 tile 采样、逆 DWT 对拍这一组
+  在 CPU 链路定档时整体删掉了（连同其门控）。要重新量解码内部，只能按
+  [`gfx-engine.md`](gfx-engine.md) §8.1 的口径加一次性探针，量完就删。
 
 **采集 / 回放 / QoS**
 
@@ -119,13 +122,12 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **CPU（gdi）链路的 progressive 解码调优**：tile 任务**分片 + 共享计数器动态领取**（替代每 tile
   一个线程池任务）、`update_tiles` **不再逐 tile 建 `REGION16`**（一次取裁剪表 + 普通求交 + per-tile
   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
-  三处都**不改变结果**（像素逐个相同、脏区面积相同），并导出 `HmrdpProgStat[8]` 供 app 的 `prog`
-  统计行做归因（该组探针由 `HmrdpSetProgSample` 门控，见上）。整块按"一次性整体打补丁"设计：
-  **改动它要从干净源码重打**。数字与口径见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
+  三处都**不改变结果**（像素逐个相同、脏区面积相同）。整块按"一次性整体打补丁"设计：
+  **改动它要从干净源码重打**。口径见 [`gfx-engine.md`](gfx-engine.md) §8.1。
 - **并行执行器 = 平台队列（ffrt），唯一**：patch step 21 让解码在提交 chunk 前看弱符号
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
   = 宽度 − 1 + 任务属性 + 逐 handle 等待 + 调用线程自己跑一个 chunk）；没有这些导出时宽度读作 1 ⇒
-  串行，**没有 WinPR 池兜底**。dev 读数 `parMax` 可核对实际并发。patch step 25 进一步在平台
+  串行，**没有 WinPR 池兜底**。patch step 25 进一步在平台
   执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不再为解码建 WinPR 池。见
   [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
@@ -139,9 +141,6 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   完一块就直写 surface；`update_tiles` 保留遍历与 O(1) 脏区 span 记账，只在**clip 哈希一致**时跳过那次
   拷贝（哈希折入消息序号；"一条消息多条 region"时两者 clip 不同，仍由 `update_tiles` 覆盖）。
   `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。形态见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
-- **dev 探针的两处修正**：`g_HmrdpSampleTile` 改成线程本地（否则多 worker 下 `prog2` 的相位总量无意义）；
-  app 侧新增 `energy:` 行（每核 busy×f² 的能量代理 + `C1=Σbusy×f` 的 cycle 代理，数据源为
-  `cpuidle` 空闲时间与 `time_in_state` 驻留）。见 [`gfx-engine.md`](gfx-engine.md) §8.3。
 - **逆 DWT 改写**：Progressive 实际跑的是**抽取（外推）**那一支
   （`progressive_rfx_idwt_x/_y`，`RFX_DWT_REDUCE_EXTRAPOLATE` 区域），`codec/rfx_dwt.c` 的通用实现
   在全屏码流上一次也不进。抽取支与通用支**都**改成"只动组织、不动算术"：`X2 = L - (H0+H1)/2`
@@ -152,10 +151,6 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   `yCbCrToRGB` 与部分 primitives 由 FreeRDP 自己的实现接管；非抽取支的上游 NEON **不接**
   （16 位车道相加会回绕，不是舍入）。这类改动由**量级门禁**兜底，见
   [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4。
-- **dev 对拍（`HmrdpSetDwtCheck` / `HmrdpDwtCheckStat[3]`）**：`参考:对比` 那一轮按 1/16 采样，
-  把**真正跑的那一支**（NEON 或 C）与上游标量参照（`HmrdpDwtReference` /
-  `HmrdpDwtExtrapolateReference`）逐元素比，报 `dwt check: tiles=… mismatch=… maxDelta=…`。
-  取输入副本必须在解码之前（DWT 会把整个系数缓冲覆盖掉）；`maxDelta` 是"舍入 vs 实现不同"的分界。
 - **`state` 少一趟搬运（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化那趟改成
   **`sign → buffer`**——原先是"就地改 `buffer` + 另拷一份到 `sign`"，于是每 tile/分量的那趟 8KB 搬运
   整趟消失，两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"
@@ -179,9 +174,9 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - `-DWITH_LIBRARY_VERSIONING=OFF`（见 §3）。
 - `-DWITH_SIMD=ON`：FreeRDP 使用**自己的 NEON 实现**（抽取支逆 DWT、量化移位、`yCbCrToRGB`、部分
   primitives），它们**不保证**与通用 C 逐位相同——抽取支 DWT 的 `(a+b+1)>>1` 在 16 位车道上会回绕，
-  只是本工程码流上从未触发。所以"与 FreeRDP 逐像素一致"的口径改成**量级**：dev 对拍报 `maxDelta`、
-  参考对比报 `rgbPx/maxDelta`，且只在**同一构建配置**下可比（详见
-  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4）。**换这个开关必须重录参考画面**：
+  只是本工程码流上从未触发。所以"与 FreeRDP 逐像素一致"的口径改成**量级**：由参考对比的
+  `rgbPx/maxDelta` 给，且只在**同一构建配置**下可比（详见
+  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2）。**换这个开关必须重录参考画面**：
   `bad=0` 只表示"自那次重录起没有再变"。
 - 优化等级：`libhmrdp.so` 由 hvigor 按构建模式重编（debug → `-O0 -g`，release → `-O2 -DNDEBUG`），
   **不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定

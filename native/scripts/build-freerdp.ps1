@@ -72,10 +72,9 @@ $cfg = @(
   # WITH_SIMD=ON brings in FreeRDP's own SSE/NEON implementations (the
   # Progressive decode's inverse DWT, YCbCr->RGB, YCoCg, the SSE3/NEON
   # primitives). Those are not required to be bit-identical to the generic C
-  # code, so the correctness criterion is a *measured* one: the dev comparison
-  # against the scalar reference reports the worst |delta| (HmrdpDwtCheckStat)
-  # and the reference run reports the pixel-level numbers, and the difference has
-  # to stay at rounding magnitude (doc_agent/gfx-engine.md §8.1/§8.4).
+  # code, so the correctness criterion is a *measured* one: the reference run
+  # reports the pixel-level numbers (rgbPx/maxDelta), and the difference has to
+  # stay at rounding magnitude (doc_agent/gfx-engine.md §8.1/§8.2).
   "-DWITH_SIMD=ON", "-DWITH_AAD=OFF", "-DWITH_SMARTCARD=OFF",
   "-DWITH_KEYBOARD_LAYOUT_FROM_FILE=OFF",
   "-DCHANNEL_AUDIN=ON", "-DCHANNEL_ENCOMSP=OFF", "-DCHANNEL_RAIL=OFF", "-DCHANNEL_REMDESK=OFF",

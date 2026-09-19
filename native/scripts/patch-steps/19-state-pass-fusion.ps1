@@ -61,18 +61,15 @@ static INLINE int progressive_rfx_decode_component(
 	int status = 0;
 	const primitives_t* prims = primitives_get();
 
-	const unsigned long long p_rlgr = hmrdp_phase_begin();
 	/* HmRdp: the raw coefficients go straight into `sign` - the buffer that keeps
 	 * them anyway - so the pass below can dequantise sign -> buffer and the copy
 	 * that used to move them over is gone (see the patch note in
 	 * native/scripts/patch-freerdp.ps1 step 19). */
 	status = progressive->rfx_context->rlgr_decode(RLGR1, data, length, sign, 4096);
-	hmrdp_phase_end(10, p_rlgr);
 
 	if (status < 0)
 		return status;
 
-	const unsigned long long p_deq = hmrdp_phase_begin();
 	if (!extrapolate)
 	{
 		CopyMemory(&buffer[4032], &sign[4032], 64ULL * sizeof(INT16));
@@ -103,7 +100,6 @@ static INLINE int progressive_rfx_decode_component(
 		rfx_differential_decode(&buffer[4015], 81);                           /* LL3 */
 		progressive_rfx_decode_block(prims, &buffer[4015], 81, shift->LL3);   /* LL3 */
 	}
-	hmrdp_phase_end(11, p_deq);
 	return progressive_rfx_dwt_2d_decode(progressive, buffer, current, coeffDiff, extrapolate,
 	                                     FALSE);
 }

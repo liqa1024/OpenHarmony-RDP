@@ -111,7 +111,9 @@ function Patch-Regex {
 	}
 	$re = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
 	if (-not $re.IsMatch($f.Text)) {
-		throw "HmRdp progressive tuning: pattern not found in $Path"
+		$head = ($Pattern -replace "`n", "\n")
+		if ($head.Length -gt 120) { $head = $head.Substring(0, 120) + "..." }
+		throw "HmRdp progressive tuning: pattern not found in $Path`n  pattern: $head"
 	}
 	$rep = ConvertTo-LfText $Replacement
 	$evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $rep }

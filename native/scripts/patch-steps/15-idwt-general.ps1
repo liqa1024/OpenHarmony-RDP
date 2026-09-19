@@ -25,20 +25,13 @@
 #     the vector width; anything else, and every non-AArch64 target (the emulator
 #     build), runs the scalar reference unchanged.
 #
-#     The block also carries the dev-only proof required by that gate: with
-#     HmrdpSetDwtCheck(1) one tile in HMRDP_DWT_CHECK_EVERY is decoded a second
-#     time with the scalar reference and the differing elements are counted into
-#     HmrdpDwtCheckStat[2] = { tiles checked, elements that differed }. The golden
-#     reference cannot prove this rewrite on its own (it was recorded by the very
-#     decoder that changed), which is why the check exists; the app turns it on
-#     for the 参考:对比 run and prints the counters.
 $dwtC = "$Source\libfreerdp\codec\rfx_dwt.c"
 $dwtNew = @'
 /*
  * HmRdp: bit-exact restructure of the inverse DWT (see the patch note in
- * native/scripts/patch-freerdp.ps1 step 15, doc_agent/gfx-engine.md 8.2). The
- * upstream scalar version follows verbatim and stays the reference for the
- * fallback path and for the dev comparison (HmrdpSetDwtCheck).
+ * native/scripts/patch-freerdp.ps1 step 15, doc_agent/gfx-engine.md §8.1). The
+ * upstream scalar version follows verbatim: it is the fallback for the sizes and
+ * targets the vector path does not cover.
  */
 #define HMRDP_DWT_SUBBAND_MAX 64
 
@@ -251,103 +244,15 @@ static INLINE void rfx_dwt_2d_decode_block(INT16* WINPR_RESTRICT buffer, INT16* 
 	hmrdp_dwt_2d_decode_block_scalar(buffer, idwt, subband_width);
 }
 
-/* ---- HmRdp dev: scalar reference vs the optimised block ------------------- */
-/* Off unless the app asks for it (HmrdpSetDwtCheck). The decode is single
- * threaded (the worker count is pinned to one), so plain globals are enough; the
- * counters are read back into the app statistics line. HmrdpDwtCheckArmed() is
- * shared with the extrapolated DWT in progressive.c and with the NEON variants,
- * i.e. with whichever entry point actually runs.
- *
- * HmrdpDwtCheckStat = { tiles compared, elements that differed, worst |delta| }:
- * a rounding-only difference shows up as a small worst delta, a wrap-around or a
- * wrong index shows up as a large one, so the two can be told apart on the same
- * run. */
-FREERDP_API unsigned long long HmrdpDwtCheckStat[3] = { 0, 0, 0 };
-
-static volatile LONG g_HmrdpDwtCheck = 0;
-static volatile LONG g_HmrdpDwtSample = 0;
-static INT16 g_HmrdpDwtRef[4096] = { 0 };
-static INT16 g_HmrdpDwtScratch[4096] = { 0 };
-
-#define HMRDP_DWT_CHECK_EVERY 16
-
-FREERDP_API void HmrdpSetDwtCheck(int on)
-{
-	__atomic_store_n(&g_HmrdpDwtCheck, on ? 1 : 0, __ATOMIC_RELAXED);
-}
-
-/* True for one decode in HMRDP_DWT_CHECK_EVERY, and only while the check is on. */
-FREERDP_API int HmrdpDwtCheckArmed(void)
-{
-	if (__atomic_load_n(&g_HmrdpDwtCheck, __ATOMIC_RELAXED) == 0)
-		return 0;
-	return (__atomic_add_fetch(&g_HmrdpDwtSample, 1, __ATOMIC_RELAXED) % HMRDP_DWT_CHECK_EVERY) == 0;
-}
-
-/* Collects one compared tile. */
-FREERDP_API void HmrdpDwtCheckResult(unsigned int bad, int maxDelta)
-{
-	HmrdpDwtCheckStat[0]++;
-	HmrdpDwtCheckStat[1] += bad;
-	if ((int)HmrdpDwtCheckStat[2] < maxDelta)
-		HmrdpDwtCheckStat[2] = (unsigned long long)maxDelta;
-}
-
-/* The three levels of the reference implementation: what the dev comparison (in
- * this file, in progressive.c and in the NEON variants) runs on a sampled tile. */
-FREERDP_API void HmrdpDwtReference(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT temp)
-{
-	hmrdp_dwt_2d_decode_block_scalar(&buffer[3840], temp, 8);
-	hmrdp_dwt_2d_decode_block_scalar(&buffer[3072], temp, 16);
-	hmrdp_dwt_2d_decode_block_scalar(&buffer[0], temp, 32);
-}
-
-static void hmrdp_dwt_check(const INT16* buffer)
-{
-	const size_t elements = 4096;
-	size_t i = 0;
-	UINT32 bad = 0;
-	int maxDelta = 0;
-
-	/* g_HmrdpDwtRef holds the input coefficients, copied before the optimised
-	 * decode ran: the decode overwrites the whole coefficient buffer, so the
-	 * scalar reference has to start from the same input, not from its result. */
-	HmrdpDwtReference(g_HmrdpDwtRef, g_HmrdpDwtScratch);
-
-	for (i = 0; i < elements; i++)
-	{
-		const int cur = buffer[i];
-		const int ref = g_HmrdpDwtRef[i];
-		const int delta = (cur > ref) ? (cur - ref) : (ref - cur);
-
-		if (delta != 0)
-			bad++;
-		if (delta > maxDelta)
-			maxDelta = delta;
-	}
-
-	HmrdpDwtCheckResult(bad, maxDelta);
-}
-
 void rfx_dwt_2d_decode(INT16* WINPR_RESTRICT buffer, INT16* WINPR_RESTRICT dwt_buffer)
 {
-	const BOOL check = HmrdpDwtCheckArmed();
-
 	WINPR_ASSERT(buffer);
 	WINPR_ASSERT(dwt_buffer);
-
-	/* HmRdp dev: take the input before the decode overwrites it, then re-decode
-	 * that copy with the scalar reference below and compare. */
-	if (check)
-		memcpy(g_HmrdpDwtRef, buffer, sizeof(g_HmrdpDwtRef));
 
 	rfx_dwt_2d_decode_block(&buffer[3840], dwt_buffer, 8);
 	rfx_dwt_2d_decode_block(&buffer[3072], dwt_buffer, 16);
 	rfx_dwt_2d_decode_block(&buffer[0], dwt_buffer, 32);
-
-	if (check)
-		hmrdp_dwt_check(buffer);
 }
 '@
-Patch-Regex $dwtC '(?<=#include "rfx_dwt\.h"\n\n).*?\nvoid rfx_dwt_2d_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT dwt_buffer\)\n\{.*?\n\}\n' $dwtNew 'HmrdpDwtReference'
+Patch-Regex $dwtC '(?<=#include "rfx_dwt\.h"\n\n).*?\nvoid rfx_dwt_2d_decode\(INT16\* WINPR_RESTRICT buffer, INT16\* WINPR_RESTRICT dwt_buffer\)\n\{.*?\n\}\n' $dwtNew 'HMRDP_DWT_SUBBAND_MAX'
 
