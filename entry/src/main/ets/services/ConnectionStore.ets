@@ -160,7 +160,9 @@ export class ConnectionStore {
     parts.push(conn.height.toString());
     parts.push(conn.colorDepth.toString());
     parts.push(conn.ignoreCertificate ? '1' : '0');
-    parts.push(conn.enableClipboard ? '1' : '0');
+    // Retired "enableClipboard" slot: clipboard redirection is always on now,
+    // but the field position is kept so previously stored records still parse.
+    parts.push('1');
     parts.push(conn.enableAudio ? '1' : '0');
     parts.push(conn.enableGfx ? '1' : '0');
     parts.push(conn.enableH264 ? '1' : '0');
@@ -192,7 +194,7 @@ export class ConnectionStore {
     conn.height = ConnectionStore.parsePositive(parts[5], 1080);
     conn.colorDepth = ConnectionStore.parsePositive(parts[6], 32);
     conn.ignoreCertificate = parts[7] === '1';
-    conn.enableClipboard = parts[8] === '1';
+    // parts[8] is the retired enableClipboard slot; ignored.
     conn.enableAudio = parts[9] === '1';
     conn.enableGfx = parts[10] === '1';
     conn.enableH264 = parts[11] === '1';

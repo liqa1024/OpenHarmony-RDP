@@ -47,7 +47,6 @@ class ExportedConnection {
   scalePercent: number = 0;
   colorDepth: number = 32;
   ignoreCertificate: boolean = true;
-  enableClipboard: boolean = true;
   enableAudio: boolean = true;
   enableGfx: boolean = true;
   enableH264: boolean = true;
@@ -72,7 +71,6 @@ class ExportedConnection {
     item.scalePercent = conn.scalePercent;
     item.colorDepth = conn.colorDepth;
     item.ignoreCertificate = conn.ignoreCertificate;
-    item.enableClipboard = conn.enableClipboard;
     item.enableAudio = conn.enableAudio;
     item.enableGfx = conn.enableGfx;
     item.enableH264 = conn.enableH264;
@@ -99,7 +97,6 @@ class ExportedConnection {
     item.scalePercent = ConfigTransfer.readNumber(rec, 'scalePercent', 0);
     item.colorDepth = ConfigTransfer.readNumber(rec, 'colorDepth', 32);
     item.ignoreCertificate = ConfigTransfer.readBoolean(rec, 'ignoreCertificate', true);
-    item.enableClipboard = ConfigTransfer.readBoolean(rec, 'enableClipboard', true);
     item.enableAudio = ConfigTransfer.readBoolean(rec, 'enableAudio', true);
     item.enableGfx = ConfigTransfer.readBoolean(rec, 'enableGfx', true);
     item.enableH264 = ConfigTransfer.readBoolean(rec, 'enableH264', true);
@@ -126,7 +123,6 @@ class ExportedConnection {
     conn.scalePercent = this.scalePercent;
     conn.colorDepth = this.colorDepth;
     conn.ignoreCertificate = this.ignoreCertificate;
-    conn.enableClipboard = this.enableClipboard;
     conn.enableAudio = this.enableAudio;
     conn.enableGfx = this.enableGfx;
     conn.enableH264 = this.enableH264;
@@ -349,8 +345,6 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'scaleAuto', settings.scaleAuto);
     settings.manualScalePercent =
       ConfigTransfer.readNumber(rec, 'manualScalePercent', settings.manualScalePercent);
-    settings.enableClipboard =
-      ConfigTransfer.readBoolean(rec, 'enableClipboard', settings.enableClipboard);
     settings.enableAudio =
       ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio);
     settings.enableGfx =

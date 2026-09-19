@@ -19,12 +19,12 @@ export class DisplayProfile {
 }
 
 /**
- * Effective per-connection protocol features (clipboard / audio / graphics
- * pipeline / H.264 / certificate handling). Resolved from the global defaults
- * unless a connection opts into its own overrides.
+ * Effective per-connection protocol features (audio / graphics pipeline /
+ * H.264 / certificate handling). Resolved from the global defaults unless a
+ * connection opts into its own overrides. Clipboard redirection is not a
+ * feature toggle: the manual 复制/粘贴 toolbar actions are always available.
  */
 export class AdvancedProfile {
-  enableClipboard: boolean = true;
   enableAudio: boolean = true;
   enableGfx: boolean = true;
   enableH264: boolean = true;
@@ -60,7 +60,18 @@ export enum RdpEvent {
   // for the desktop buffer's GPU read; `presentWaitUs`: waiting for the display).
   // There is no pre-summed client-work total: the toolbar sums the four work
   // phases and leaves the blocked ones out.
-  Metrics = 11
+  Metrics = 11,
+  // Remote clipboard holds files: payload "<count>|<totalBytes>".
+  ClipboardFileList = 12,
+  // "<direction>|<doneBytes>|<totalBytes>", direction 0 = remote -> local,
+  // 1 = local -> remote.
+  FileTransferProgress = 13,
+  // Download finished: the absolute sandbox paths, one per line.
+  ClipboardFilesReady = 14,
+  // Transfer aborted before completing; payload is the reason.
+  FileTransferFailed = 15,
+  // Upload finished (every advertised byte served); payload is the file count.
+  FileTransferDone = 16
 }
 
 export class RdpConnectOptions implements RdpOptions {
@@ -74,7 +85,6 @@ export class RdpConnectOptions implements RdpOptions {
   scalePercent: number = 0;
   colorDepth: number = 32;
   ignoreCertificate: boolean = true;
-  enableClipboard: boolean = true;
   enableAudio: boolean = true;
   enableGfx: boolean = true;
   enableH264: boolean = true;
@@ -199,7 +209,6 @@ export class SavedConnection extends RdpConnectOptions {
     conn.scalePercent = options.scalePercent;
     conn.colorDepth = options.colorDepth;
     conn.ignoreCertificate = options.ignoreCertificate;
-    conn.enableClipboard = options.enableClipboard;
     conn.enableAudio = options.enableAudio;
     conn.enableGfx = options.enableGfx;
     conn.enableH264 = options.enableH264;
@@ -220,7 +229,6 @@ export class SavedConnection extends RdpConnectOptions {
     options.scalePercent = this.scalePercent;
     options.colorDepth = this.colorDepth;
     options.ignoreCertificate = this.ignoreCertificate;
-    options.enableClipboard = this.enableClipboard;
     options.enableAudio = this.enableAudio;
     options.enableGfx = this.enableGfx;
     options.enableH264 = this.enableH264;

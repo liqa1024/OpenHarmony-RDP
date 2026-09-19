@@ -8,10 +8,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client/cliprdr.h>
@@ -52,6 +54,20 @@ enum class SessionEvent {
   // work phases; `syncUs` and `presentWaitUs` are blocked and stay out
   // (see EmitMetrics).
   kMetrics = 11,
+  // Remote clipboard holds files: "<count>|<totalBytes>". The toolbar's 复制
+  // button downloads them into the sandbox on demand (PullRemoteFiles).
+  kClipboardFileList = 12,
+  // Transfer progress for both directions:
+  // "<direction>|<doneBytes>|<totalBytes>" with direction 0 = remote -> local,
+  // 1 = local -> remote.
+  kFileTransferProgress = 13,
+  // Download finished: the absolute sandbox paths, one per line, in list order.
+  kClipboardFilesReady = 14,
+  // A transfer stopped before completing; the payload is a human-readable reason.
+  kFileTransferFailed = 15,
+  // Upload finished: the server has pulled every advertised byte. Payload is
+  // the number of files. (Downloads finish with kClipboardFilesReady instead.)
+  kFileTransferDone = 16,
 };
 
 struct RdpOptions {
@@ -67,7 +83,6 @@ struct RdpOptions {
   int scalePercent = 0;
   int colorDepth = 32;
   bool ignoreCertificate = true;
-  bool enableClipboard = true;
   bool enableAudio = true;
   bool enableGfx = true;
   bool enableH264 = true;
@@ -141,6 +156,21 @@ class Session {
   void SetLocalClipboardImage(uint32_t width, uint32_t height, int32_t pixelFormat,
                               const uint8_t* pixels, size_t byteCount);
 
+  // Local files (absolute sandbox paths) pushed from ArkTS; advertised to the
+  // server as a FileGroupDescriptorW + FileContents clipboard. Safe to call from
+  // the UI thread.
+  void SetLocalClipboardFiles(const std::vector<std::string>& paths);
+
+  // Downloads the file list the server last advertised into `destDir` (which
+  // must already exist). Safe to call from the UI thread; progress arrives as
+  // kFileTransferProgress, completion as kClipboardFilesReady.
+  void PullRemoteFiles(const std::string& destDir);
+
+  // Aborts an in-flight transfer (either direction); partial downloads are
+  // removed and the advertised file list stops being served. Safe to call from
+  // the UI thread.
+  void CancelFileTransfer();
+
   // Internal callbacks used by the FreeRDP glue.
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
@@ -156,6 +186,10 @@ class Session {
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
+  // Called by the cliprdr glue: serve the peer's request for one of the files
+  // we advertised, and receive one chunk of a file we requested.
+  UINT HandleLocalFileContentsRequest(const CLIPRDR_FILE_CONTENTS_REQUEST* request);
+  UINT HandleRemoteFileContentsResponse(const CLIPRDR_FILE_CONTENTS_RESPONSE* response);
   // Pushed by the autodetect callback with the server-reported network
   // characteristics (0 = not reported yet). FreeRDP's client does not store
   // these itself, so the values are captured here.
@@ -208,7 +242,6 @@ class Session {
 
   std::atomic<bool> running_{false};
   std::atomic<bool> stopRequested_{false};
-  std::atomic<bool> clipboardEnabled_{true};
   std::atomic<bool> clipboardReady_{false};
   void* thread_ = nullptr;
   bool firstFrameSent_ = false;
@@ -247,7 +280,19 @@ class Session {
   // Clipboard redirection state. The local clipboard is kept in the exact wire
   // form of each format it can provide. Only one kind is owned at a time, so the
   // server only ever requests formats we can answer.
-  enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3, kRtf = 4 };
+  enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3, kRtf = 4,
+                             kFiles = 5 };
+
+  // A file advertised on the clipboard (either side). `size` is 0 when the
+  // sender did not include FD_FILESIZE; the size is then fetched on demand.
+  // Directories are advertised too (listIndex must stay aligned) but are
+  // skipped: the file clipboard cannot stream them.
+  struct ClipboardFileInfo {
+    std::string name;
+    uint64_t size = 0;
+    bool sizeKnown = false;
+    bool isDirectory = false;
+  };
 
   // Pushes the local FormatList for the current kind (no-op until the channel
   // is ready). Called after the clipboard state changes.
@@ -257,6 +302,15 @@ class Session {
   // responses carry no format id, so at most one request may be outstanding;
   // anything newer is deferred (see OnCliprdrServerFormatList).
   UINT SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind);
+
+  // Remote-file download state machine (see PullRemoteFiles). One request is in
+  // flight at a time; StartNextRemoteFileStep drives the sequence and is called
+  // once from PullRemoteFiles and then from every file-contents response.
+  UINT StartNextRemoteFileStep();
+  void FinishRemoteFileTransfer();
+  void FailRemoteFileTransfer(const std::string& reason);
+  // Aborts a transfer and removes its partial files; caller holds clipboardMutex_.
+  void ResetRemoteFileDownloadLocked();
 
   CliprdrClientContext* cliprdr_ = nullptr;
   std::mutex clipboardMutex_;
@@ -268,7 +322,26 @@ class Session {
   std::string localClipboardUtf16FromHtml_;
   // CF_DIB wire payload.
   std::string localClipboardDib_;
+  // Local file list (absolute sandbox paths) advertised for the file clipboard.
+  std::vector<std::string> localClipboardFilePaths_;
   LocalClipKind localClipKind_ = LocalClipKind::kNone;
+  // Remote file download state. `remoteFiles_` is the descriptor list the
+  // server last advertised; the rest is the transfer in progress.
+  std::vector<ClipboardFileInfo> remoteFiles_;
+  bool remoteFilesActive_ = false;
+  std::string remoteFilesDestDir_;
+  std::vector<std::string> remoteFilesPaths_;
+  size_t remoteFileIndex_ = 0;
+  uint64_t remoteFileOffset_ = 0;
+  uint64_t remoteFileSize_ = 0;
+  bool remoteFileSizeKnown_ = false;
+  bool remoteFileSizePending_ = false;
+  FILE* remoteFileHandle_ = nullptr;
+  uint64_t remoteTransferDone_ = 0;
+  uint64_t remoteTransferTotal_ = 0;
+  // Local -> remote progress (bytes the server has pulled from us).
+  uint64_t localTransferDone_ = 0;
+  uint64_t localTransferTotal_ = 0;
   // Format the server used for "HTML Format" in its latest FormatList, kept for
   // bookkeeping; requests use the id that list carried.
   UINT32 remoteHtmlFormatId_ = 0;

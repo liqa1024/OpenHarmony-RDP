@@ -171,16 +171,65 @@
 2. 图片/文件等大数据量只有显式触发才可控（二次确认、进度、目标路径）；
 3. 两个方向逻辑对称（都是"读一侧 → 写另一侧"），扩展类型只需改中间那段转换。
 
-**不要引入剪贴板自动监听或自动写本机剪贴板。** 实现上原生只覆写 `Server*` 回调与 `MonitorReady`，
-不动 `Client*` 发送函数。当前支持 **纯文本 / 富文本（HTML）/ 图片**；文件传输预留。
-两个按钮按实际内容类型给差异化提示。
+**不要引入剪贴板自动监听或自动写本机剪贴板。** 原生覆写 cliprdr 的 `Server*` 回调与 `MonitorReady`，
+只从 `Client*` 读/发它需要的表示。当前支持 **纯文本 / 富文本（HTML）/ 图片 / 文件**；文件优先于
+图片 > HTML > RTF > 文本。两个按钮按缓存到的最丰富类型给差异化提示。
 
-### 4.1 实现坑（改剪贴板前必看）
+### 4.1 文件传输
 
-- **远端格式协商**：`FORMAT_LIST` 按 `图片(DIB/DIBV5) > HTML Format > Rich Text Format >
-  CF_UNICODETEXT` 优先级**选一种**请求。**数据响应不带格式 id** ⇒ 同一时刻**只允许一个请求在途**，
-  期间的新列表记为待刷新，响应回来再取；分派时**严格按请求时的 kind**，绝不用二进制兜底当文本
-  （DIB 头 `28 00 00 00` 按 UTF-16 会变成 `(`）。
+- 入口沿用两个按钮（不新增独立按钮）：远端剪贴板是文件列表时「复制」触发下载，本机剪贴板含文件 URI
+  时「粘贴」触发上传。仍**手动触发**，不做自动或监听。
+- **协议**：先传 `FileGroupDescriptorW`（u32 数量 + 592 字节 `FILEDESCRIPTORW` 列表），再按
+  `lindex`/`streamId` 用 `CB_FILECONTENTS_REQUEST/RESPONSE` 流式传字节（`FILECONTENTS_SIZE` 取
+  64 位大小、`FILECONTENTS_RANGE` 取块；描述符已带 `FD_FILESIZE` 时跳过 SIZE，与 Windows 客户端一致）。
+  客户端能力位取 `CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS |
+  CB_HUGE_FILE_SUPPORT_ENABLED`——**不要置 `CB_CAN_LOCK_CLIPDATA`**：一旦协商了锁，服务端会下发
+  `clipDataId` 并要求**每个**文件内容请求回带，未回带的请求被 `CB_RESPONSE_FAIL` 拒绝，表现为
+  「远程拒绝提供文件内容」、上传方向同样卡住；FreeRDP 自带的客户端文件传输也把这个位置注释掉
+  （`client_cliprdr_file.c` 的 `cliprdr_file_context_current_flags`）。通道把客户端声明的标志与服务端
+  能力**取交**（`cliprdr_main.c`），服务端不支持时自动降级。文件格式 id 在客户端注册范围自选
+  （`0xC001`/`0xC002`），服务端按**格式名**识别（依赖已协商的 `CB_USE_LONG_FORMAT_NAMES`）。
+  服务端下发的能力标志在 `HmrdpCliprdrServerCapabilities` 里记 hilog，用来核对取交结果。
+- **字节的源/汇由 App 提供**：FreeRDP 的 client cliprdr 只实现线协议（分块、stream 状态、huge 校验、
+  lock 转发），内容要 App 自己读写 —— 上传从沙箱文件按请求回块，下载把块追加到沙箱文件。
+  `FORMAT_DATA_REQUEST` 仍一次只允许一个在途；文件块用独立的 `streamId` 序列。
+- **平台侧**：本机→远端用系统安全控件授权 + `getDataWithProgress({destUri})`，由系统把剪贴板文件拷进
+  应用沙箱（无需 `READ_PASTEBOARD`，也不必手工处理 URI 授权）；远端→本机先落沙箱，完成后用
+  `fileUri.getUriFromPath` + `MIMETYPE_TEXT_URI` 写回本机剪贴板，其他应用粘贴时由框架按 URI 取。
+  `getDataWithProgress` **不支持文件夹**，故不递归目录；非文件 URI（网页链接）走文本路径。
+- **落地与失败**：下载目录按时间戳分桶避免覆盖；描述符未带 `FD_FILESIZE` 时才逐文件发
+  `FILECONTENTS_SIZE`；任一文件失败即中止并清掉本次分片。进度经 `kFileTransferProgress` 上报
+  （速率由 UI 按相邻两次 `done` 差值算，不进原生；`kFileTransferProgress` 载荷是
+  `方向|已完成|总量|第几个|共几个`），工具栏内联显示「第几个/共几个 + 百分比 + 速率 + 较宽的进度条 +
+  取消」——多文件时靠计数看出整体在推进，不单看进度条。取消分两种：
+  **未开始拉取**（`localTransferDone_ == 0`）时是**干净撤回**——把本地剪贴板改广告成空文本
+  （`CF_UNICODETEXT` + 2 字节 NUL），服务端据此丢掉文件格式，之后远端粘贴得到空文本而不是报错；
+  **已开始拉取**时只能停服，远端粘贴会报协议错误，故这种情况先弹一次确认。下载两态都可直接取消。
+  下载完成走 `kClipboardFilesReady`、上传完成走 `kFileTransferDone`。
+- **上传是"广告"而非推送，不能预传**：cliprdr 的文件字节是**服务端拉取**模型，只有远端粘贴时服务端才发
+  `FILECONTENTS_REQUEST`，客户端无法主动推，所以点「粘贴」后进度停在 0 直到对端粘贴。同理想"撤回"也
+  只能靠换内容——空 `FORMAT_LIST` 会被通道直接丢弃（`cliprdr_main.c`：首次之后 `numFormats == 0`
+  忽略）。故上传方向：点按钮后**在进度行原位**显示「在远端粘贴开始传输」提示（带转圈与取消），
+  **拉取真正开始（`done > 0`）才换成进度行与取消**；不用 toast 提示（字数多且一闪而过看不清）。
+- **不传文件夹**：文件剪贴板只能流文件。远端描述符里带 `FILE_ATTRIBUTE_DIRECTORY` 的条目**只计数、
+  不下载**（`kClipboardFileList` 带 dirs 字段），但**必须留在列表里**——`FILECONTENTS_REQUEST.listIndex`
+  指的是服务端广告的位置，过滤掉目录会让后续所有索引错位。本机侧 `getDataWithProgress` 本身不支持文件夹
+  拷贝（返回的 URI 是目录就表示没拷到东西）。两向都在遇到目录时给显式提示：远端只有目录→「暂不支持文件夹
+  传输」，与本机文件夹同理；混合时下载文件并在完成提示里带上跳过的目录数。
+- **传输期间工具栏不自动隐藏**：只要有传输在跑，或上传还停在「在远端粘贴开始传输」，全屏工具栏就被
+  钉住显示（不再按悬停/延迟收起），让进度和提示始终可见；传输结束（成功/失败/取消）恢复正常的悬停显隐。
+- **一次只允许一个文件传输**：两个按钮在 `transferBusy || transferActive || transferWaiting` 时直接拒绝
+  并提示「正在传输文件，请先取消或等待完成」。否则两条状态机会挤在同一个进度行里，上传侧更糟——服务端正在
+  按 `listIndex` 拉取时替换文件列表会让索引错位。原生侧配套"中止必通知"：远端 `FORMAT_LIST` 变化导致下载
+  被重置、或点击复制时列表已空，都发 `kFileTransferFailed`，避免 UI 进度行等一个永远不会来的事件。
+
+
+### 4.2 实现坑（改剪贴板前必看）
+
+- **远端格式协商**：`FORMAT_LIST` 按 `文件(FileGroupDescriptorW) > 图片(DIB/DIBV5) > HTML Format >
+  Rich Text Format > CF_UNICODETEXT` 优先级**选一种**请求。**数据响应不带格式 id** ⇒ 同一时刻
+  **只允许一个请求在途**，期间的新列表记为待刷新，响应回来再取；分派时**严格按请求时的 kind**，
+  绝不用二进制兜底当文本（DIB 头 `28 00 00 00` 按 UTF-16 会变成 `(`）。
 - **本机 HTML 读取**：不能只看 `getPrimaryHtml()`（只读第一条记录，且富文本常把 `text/plain` 作主 MIME、
   HTML 作附加 Entry）。要**遍历记录**用 `record.getData('text/html')` 取，再回退文本；
   不要用 `getMimeTypes()` 做门控（它可能只列主类型）。

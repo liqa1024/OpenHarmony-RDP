@@ -9,6 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
+setClipboardFiles, pullClipboardFiles, cancelFileTransfer,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -232,6 +233,27 @@ export class RdpNative {
     pixels: ArrayBuffer): void {
     if (this.handle >= 0) {
       setClipboardImage(this.handle, width, height, pixelFormat, pixels);
+    }
+  }
+
+  /** Pushes local files (absolute sandbox paths) to the remote session. */
+  pushClipboardFiles(paths: string[]): void {
+    if (this.handle >= 0 && paths.length > 0) {
+      setClipboardFiles(this.handle, paths.join('\n'));
+    }
+  }
+
+  /** Downloads the file list the server advertised into `destDir`. */
+  pullClipboardFiles(destDir: string): void {
+    if (this.handle >= 0) {
+      pullClipboardFiles(this.handle, destDir);
+    }
+  }
+
+  /** Aborts an in-flight download and removes its partial files. */
+  cancelFileTransfer(): void {
+    if (this.handle >= 0) {
+      cancelFileTransfer(this.handle);
     }
   }
 }

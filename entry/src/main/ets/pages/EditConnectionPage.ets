@@ -32,7 +32,6 @@ struct EditConnectionPage {
   @State useGlobalDisplay: boolean = true;
   @State advancedExpanded: boolean = false;
   @State useGlobalAdvanced: boolean = true;
-  @State enableClipboard: boolean = true;
   @State audioSupported: boolean = true;
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
@@ -107,7 +106,6 @@ struct EditConnectionPage {
       if (conn.scalePercent > 0) {
         this.scaleText = conn.scalePercent.toString();
       }
-      this.enableClipboard = conn.enableClipboard;
       this.enableAudio = this.audioSupported && conn.enableAudio;
       this.enableGfx = conn.enableGfx;
       this.ignoreCertificate = conn.ignoreCertificate;
@@ -166,7 +164,7 @@ struct EditConnectionPage {
   }
 
   private advancedSummary(profile: AdvancedProfile): string {
-    return `剪贴板${this.onOff(profile.enableClipboard)} · 音频${this.onOff(profile.enableAudio)}`
+    return `音频${this.onOff(profile.enableAudio)}`
       + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`;
   }
 
@@ -193,14 +191,12 @@ struct EditConnectionPage {
       ? global.height : this.parseSize(this.desktopHeightText, global.height);
     options.scalePercent = this.useGlobalDisplay
       ? global.scalePercent : this.parseScale(this.scaleText, global.scalePercent);
-    options.enableClipboard = this.enableClipboard;
     options.enableAudio = this.enableAudio;
     options.enableGfx = this.enableGfx;
     options.enableH264 = false;
     options.ignoreCertificate = this.ignoreCertificate;
     if (applyGlobalAdvanced && this.useGlobalAdvanced) {
       const advanced: AdvancedProfile = SettingsStore.globalAdvancedProfile();
-      options.enableClipboard = advanced.enableClipboard;
       options.enableAudio = advanced.enableAudio;
       options.enableGfx = advanced.enableGfx;
       options.enableH264 = false;
@@ -726,7 +722,7 @@ struct EditConnectionPage {
                 Row() {
                   Column() {
                     Text('使用全局高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('剪贴板、音频、图形管道等跟随全局设置')
+                    Text('音频、图形管道等跟随全局设置')
                       .fontSize(11)
                       .fontColor($r('app.color.text_tertiary'))
                       .margin({ top: 2 })
@@ -749,9 +745,6 @@ struct EditConnectionPage {
                     .fontColor($r('app.color.text_tertiary'))
                     .width('100%')
                 } else {
-                  this.optionRow('剪贴板重定向', '', this.enableClipboard, (v: boolean) => {
-                    this.enableClipboard = v;
-                  }, true, '')
                   this.optionRow('音频重定向', '', this.enableAudio, (v: boolean) => {
                     this.enableAudio = v;
                   }, this.audioSupported, this.audioDisabledReason)

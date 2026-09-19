@@ -23,7 +23,8 @@
 - **高级连接特性（音频、忽略证书…）**：默认值放全局 `AppSettings`；单连接保存自己的值 +
   `useGlobalAdvanced` 标志（**默认跟随全局**）。连接前用 `SettingsStore.resolveAdvanced(conn)` 解析。
   编辑页关掉「使用全局高级设置」后才用本连接的独立开关；**保存时仍持久化独立值**，便于随时切回。
-- **剪贴板**固定开启（无全局开关），仅保留单连接的「剪贴板重定向」开关。
+- **剪贴板恒开**：不提供任何开关（全局或单连接）；原生无条件置 `FreeRDP_RedirectClipboard`。
+  工具栏的「复制/粘贴」手动触发，见 [`session-and-input.md`](session-and-input.md) §4。
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置
   `FreeRDP_SupportGraphicsPipeline`。
 - **硬件加速**（`hardwareAccel`，进程级）：**只选上屏后端**——开 = Vulkan 呈现器，关 = GLES 呈现器

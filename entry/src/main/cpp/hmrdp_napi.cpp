@@ -253,7 +253,6 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.scalePercent = GetIntProperty(env, args[1], "scalePercent", 0);
   options.colorDepth = GetIntProperty(env, args[1], "colorDepth", 32);
   options.ignoreCertificate = GetBoolProperty(env, args[1], "ignoreCertificate", true);
-  options.enableClipboard = GetBoolProperty(env, args[1], "enableClipboard", true);
   options.enableAudio = GetBoolProperty(env, args[1], "enableAudio", true);
   options.enableGfx = GetBoolProperty(env, args[1], "enableGfx", true);
   options.enableH264 = GetBoolProperty(env, args[1], "enableH264", true);
@@ -578,11 +577,106 @@ napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value IsAudioSupported(napi_env env, napi_callback_info) {
-  return CreateBool(env, AudioOutput::Supported());
+// Reads a UTF-8 string argument (the helper the clipboard setters share).
+bool ReadStringArg(napi_env env, napi_value value, std::string* out) {
+  if (out == nullptr) {
+    return false;
+  }
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok) {
+    return false;
+  }
+  out->resize(length);
+  napi_get_value_string_utf8(env, value, out->data(), length + 1, &length);
+  out->resize(length);
+  return true;
 }
 
-napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
+napi_value SetClipboardFiles(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::string text;
+  if (!ReadStringArg(env, args[1], &text)) {
+    return CreateBool(env, false);
+  }
+  // Absolute sandbox paths, one per line (they never contain a newline).
+  std::vector<std::string> paths;
+  size_t start = 0;
+  while (start < text.size()) {
+    const size_t end = text.find('\n', start);
+    const size_t stop = end == std::string::npos ? text.size() : end;
+    if (stop > start) {
+      paths.push_back(text.substr(start, stop - start));
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr || paths.empty()) {
+    return CreateBool(env, false);
+  }
+  session->SetLocalClipboardFiles(paths);
+  return CreateBool(env, true);
+}
+
+napi_value PullClipboardFiles(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::string destDir;
+  if (!ReadStringArg(env, args[1], &destDir)) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr || destDir.empty()) {
+    return CreateBool(env, false);
+  }
+  session->PullRemoteFiles(destDir);
+  return CreateBool(env, true);
+}
+
+napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  Session* session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  session->CancelFileTransfer();
+  return CreateBool(env, true);
+}
+
+napi_value IsAudioSupported(napi_env env, napi_callback_info) {
+  return CreateBool(env, AudioOutput::Supported());
+}napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -808,6 +902,12 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setClipboardHtml", nullptr, SetClipboardHtml, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setClipboardFiles", nullptr, SetClipboardFiles, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"pullClipboardFiles", nullptr, PullClipboardFiles, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"cancelFileTransfer", nullptr, CancelFileTransfer, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,

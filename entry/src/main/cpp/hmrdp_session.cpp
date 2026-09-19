@@ -10,10 +10,13 @@
 #include <cstring>
 #include <chrono>
 #include <dlfcn.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <freerdp/autodetect.h>
@@ -223,12 +226,165 @@ constexpr int kClipText = 1;
 constexpr int kClipHtml = 2;
 constexpr int kClipImage = 3;
 constexpr int kClipRtf = 4;
+constexpr int kClipFiles = 5;
 
 // Client-side id and name for the registered "HTML Format" clipboard format.
 // Registered ids start at 0xC000 (WinPR convention); with CB_USE_LONG_FORMAT_NAMES
 // the server maps it by name.
 constexpr UINT32 kHtmlFormatId = 0xC000;
 const char kHtmlFormatName[] = "HTML Format";
+
+// Client-side ids and names for the file clipboard formats. With long format
+// names negotiated (CB_USE_LONG_FORMAT_NAMES) the server maps them by name, so
+// these ids only have to stay unique and stable within the session.
+constexpr UINT32 kFileGroupDescriptorId = 0xC001;
+const char kFileGroupDescriptorName[] = "FileGroupDescriptorW";
+constexpr UINT32 kFileContentsId = 0xC002;
+const char kFileContentsName[] = "FileContents";
+
+// A FILECONTENTS_RANGE response carries at most this many bytes; the server
+// answers each request in a single message, so this only bounds the per-message
+// buffer, not correctness.
+constexpr uint32_t kFileChunkBytes = 256 * 1024;
+
+// [MS-RDPECLIP] 2.2.5.2 FILEGROUPDESCRIPTORW / FILEDESCRIPTORW: a u32 count
+// followed by that many fixed 592-byte entries. The times are FILETIME (two
+// little-endian u32 parts), so no u64 member and no padding.
+constexpr size_t kFileDescriptorNameChars = 260;
+struct FileDescriptorW {
+  uint32_t flags;
+  uint8_t clsid[16];
+  int32_t sizeCx;
+  int32_t sizeCy;
+  int32_t pointX;
+  int32_t pointY;
+  uint32_t fileAttributes;
+  uint32_t creationLow;
+  uint32_t creationHigh;
+  uint32_t accessLow;
+  uint32_t accessHigh;
+  uint32_t writeLow;
+  uint32_t writeHigh;
+  uint32_t sizeHigh;
+  uint32_t sizeLow;
+  uint16_t fileName[kFileDescriptorNameChars];
+};
+static_assert(sizeof(FileDescriptorW) == 592, "FILEDESCRIPTORW must be 592 bytes");
+
+constexpr uint32_t kFdAttributes = 0x00000004;
+constexpr uint32_t kFdFileSize = 0x00000040;
+constexpr uint32_t kFileAttributeNormal = 0x00000080;
+constexpr uint32_t kFileAttributeDirectory = 0x00000010;
+
+// A clipboard file name comes from the peer; never let one escape the target
+// directory.
+std::string SanitizeClipboardFileName(const std::string& name) {
+  std::string out;
+  out.reserve(name.size());
+  for (char c : name) {
+    if (c == '/' || c == '\\' || c == ':' || c == '\0') {
+      out.push_back('_');
+    } else {
+      out.push_back(c);
+    }
+  }
+  if (out.empty() || out == "." || out == "..") {
+    out = "file";
+  }
+  return out;
+}
+
+std::string BaseNameOfPath(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// File-transfer progress event payload:
+// "<direction>|<doneBytes>|<totalBytes>|<fileIndex>|<fileCount>".
+// `fileIndex` is 1-based, 0 while nothing has started.
+std::string BuildTransferProgress(int direction, uint64_t done, uint64_t total,
+                                  uint32_t fileIndex, uint32_t fileCount) {
+  std::ostringstream out;
+  out << direction << '|' << done << '|' << total << '|' << fileIndex << '|'
+      << fileCount;
+  return out.str();
+}
+
+std::string JoinSandboxPath(const std::string& dir, const std::string& name) {
+  if (dir.empty()) {
+    return name;
+  }
+  return dir.back() == '/' ? dir + name : dir + "/" + name;
+}
+
+bool FileSizeOfPath(const std::string& path, uint64_t* size) {
+  struct stat st = {};
+  if (stat(path.c_str(), &st) != 0 || size == nullptr) {
+    return false;
+  }
+  *size = static_cast<uint64_t>(st.st_size);
+  return true;
+}
+
+// Descriptor names are UTF-16LE; the strings crossing the JNI/NAPI boundary are
+// UTF-8.
+std::string FileDescriptorNameToUtf8(const uint16_t* name, size_t maxChars) {
+  size_t chars = 0;
+  while (chars < maxChars && name[chars] != 0) {
+    ++chars;
+  }
+  std::vector<WCHAR> wide(chars + 1, 0);
+  for (size_t i = 0; i < chars; ++i) {
+    wide[i] = static_cast<WCHAR>(name[i]);
+  }
+  size_t utf8Size = 0;
+  char* utf8 = ConvertWCharToUtf8Alloc(wide.data(), &utf8Size);
+  if (utf8 == nullptr) {
+    return std::string();
+  }
+  std::string out(utf8, utf8Size);
+  free(utf8);
+  return out;
+}
+
+void Utf8ToFileDescriptorName(const std::string& utf8, uint16_t* out, size_t maxChars) {
+  if (out == nullptr || maxChars == 0) {
+    return;
+  }
+  size_t wcharCount = 0;
+  WCHAR* wide = ConvertUtf8ToWCharAlloc(utf8.c_str(), &wcharCount);
+  if (wide == nullptr) {
+    out[0] = 0;
+    return;
+  }
+  const size_t count = wcharCount < maxChars - 1 ? wcharCount : maxChars - 1;
+  memcpy(out, wide, count * sizeof(WCHAR));
+  out[count] = 0;
+  free(wide);
+}
+
+// Serialises a FILEGROUPDESCRIPTORW for `paths` (basename only: paths are not
+// portable across the session and the server does not need them).
+std::string BuildFileGroupDescriptor(const std::vector<std::string>& paths) {
+  const uint32_t count = static_cast<uint32_t>(paths.size());
+  std::string out(sizeof(uint32_t) + count * sizeof(FileDescriptorW), '\0');
+  memcpy(out.data(), &count, sizeof(count));
+  for (size_t i = 0; i < paths.size(); ++i) {
+    FileDescriptorW descriptor = {};
+    descriptor.flags = kFdAttributes | kFdFileSize;
+    descriptor.fileAttributes = kFileAttributeNormal;
+    uint64_t size = 0;
+    if (FileSizeOfPath(paths[i], &size)) {
+      descriptor.sizeLow = static_cast<uint32_t>(size & 0xFFFFFFFFull);
+      descriptor.sizeHigh = static_cast<uint32_t>(size >> 32);
+    }
+    Utf8ToFileDescriptorName(BaseNameOfPath(paths[i]), descriptor.fileName,
+                             kFileDescriptorNameChars);
+    memcpy(out.data() + sizeof(uint32_t) + i * sizeof(FileDescriptorW), &descriptor,
+           sizeof(descriptor));
+  }
+  return out;
+}
 
 // ASCII case-insensitive search; the needles used here only contain letters and
 // punctuation whose bit 0x20 is already set, so ORing it is safe.
@@ -1224,17 +1380,21 @@ UINT SendCapabilityFormatList(CliprdrClientContext* cliprdr) {
   if (cliprdr == nullptr || cliprdr->ClientFormatList == nullptr) {
     return CHANNEL_RC_OK;
   }
-  CLIPRDR_FORMAT formats[3] = {};
+  CLIPRDR_FORMAT formats[5] = {};
   formats[0].formatId = CF_UNICODETEXT;
   formats[1].formatId = CF_DIB;
   formats[2].formatId = kHtmlFormatId;
   formats[2].formatName = const_cast<char*>(kHtmlFormatName);
+  formats[3].formatId = kFileGroupDescriptorId;
+  formats[3].formatName = const_cast<char*>(kFileGroupDescriptorName);
+  formats[4].formatId = kFileContentsId;
+  formats[4].formatName = const_cast<char*>(kFileContentsName);
   CLIPRDR_FORMAT_LIST formatList = {};
   formatList.common.msgType = CB_FORMAT_LIST;
   formatList.common.msgFlags = 0;
-  formatList.numFormats = 3;
+  formatList.numFormats = 5;
   formatList.formats = formats;
-  HMRDP_LOGI("cliprdr sending capability format list (text/dib/html)");
+  HMRDP_LOGI("cliprdr sending capability format list (text/dib/html/files)");
   return cliprdr->ClientFormatList(cliprdr, &formatList);
 }
 
@@ -1252,6 +1412,16 @@ UINT SendLocalFormatList(CliprdrClientContext* cliprdr, int kind) {
     formats[count].formatName = const_cast<char*>(kHtmlFormatName);
     ++count;
     formats[count].formatId = CF_UNICODETEXT;
+    ++count;
+  } else if (kind == kClipFiles) {
+    // The descriptor list is what the server pulls to learn the files; the
+    // matching FileContents pseudo-format is announced alongside it, as the
+    // Windows client does.
+    formats[count].formatId = kFileGroupDescriptorId;
+    formats[count].formatName = const_cast<char*>(kFileGroupDescriptorName);
+    ++count;
+    formats[count].formatId = kFileContentsId;
+    formats[count].formatName = const_cast<char*>(kFileContentsName);
     ++count;
   } else if (kind == kClipImage) {
     formats[count].formatId = CF_DIB;
@@ -1278,7 +1448,23 @@ UINT HmrdpCliprdrMonitorReady(CliprdrClientContext* cliprdr,
 }
 
 UINT HmrdpCliprdrServerCapabilities(CliprdrClientContext*,
-                                    const CLIPRDR_CAPABILITIES*) {
+                                    const CLIPRDR_CAPABILITIES* capabilities) {
+  // Logged because the file-clip features the channel lets through are the
+  // intersection with these flags (cliprdr_client_capabilities).
+  if (capabilities == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  for (UINT32 i = 0; i < capabilities->cCapabilitiesSets; i++) {
+    const CLIPRDR_CAPABILITY_SET& set = capabilities->capabilitySets[i];
+    if (set.capabilitySetType != CB_CAPSTYPE_GENERAL ||
+        set.capabilitySetLength < CB_CAPSTYPE_GENERAL_LEN) {
+      continue;
+    }
+    const CLIPRDR_GENERAL_CAPABILITY_SET* general =
+        reinterpret_cast<const CLIPRDR_GENERAL_CAPABILITY_SET*>(&set);
+    HMRDP_LOGI("cliprdr server caps: version=%{public}u flags=0x%{public}x",
+               general->version, general->generalFlags);
+  }
   return CHANNEL_RC_OK;
 }
 
@@ -1319,6 +1505,24 @@ UINT HmrdpCliprdrServerFormatDataResponse(CliprdrClientContext* cliprdr,
     return ERROR_INVALID_PARAMETER;
   }
   return static_cast<Session*>(cliprdr->custom)->OnCliprdrServerFormatDataResponse(response);
+}
+
+UINT HmrdpCliprdrServerFileContentsRequest(CliprdrClientContext* cliprdr,
+                                           const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
+  if (cliprdr == nullptr || cliprdr->custom == nullptr || request == nullptr) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  return static_cast<Session*>(cliprdr->custom)
+      ->HandleLocalFileContentsRequest(request);
+}
+
+UINT HmrdpCliprdrServerFileContentsResponse(CliprdrClientContext* cliprdr,
+                                            const CLIPRDR_FILE_CONTENTS_RESPONSE* response) {
+  if (cliprdr == nullptr || cliprdr->custom == nullptr || response == nullptr) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  return static_cast<Session*>(cliprdr->custom)
+      ->HandleRemoteFileContentsResponse(response);
 }
 
 // Captures the cliprdr channel interface while still letting the default
@@ -1750,7 +1954,6 @@ bool Session::Connect(const RdpOptions& options) {
   netCharAverageRtt_ = 0;
   netCharBandwidth_ = 0;
   metricsStarted_ = false;
-  clipboardEnabled_ = options.enableClipboard;
 
   rdpContext* context = freerdp_client_context_new(&g_entryPoints);
   if (context == nullptr) {
@@ -1823,7 +2026,9 @@ bool Session::Connect(const RdpOptions& options) {
   if (!options.ignoreCertificate) {
     freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, TRUE);
   }
-  freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, options.enableClipboard);
+  // Clipboard redirection is always on: text / HTML / image / file, triggered
+  // manually from the toolbar (see OnCliprdrServerFormatList).
+  freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, TRUE);
   // Audio is only requested when the device actually provides an audio output;
   // otherwise the channel is left off so an unsupported device degrades to a
   // silent session instead of failing.
@@ -2014,6 +2219,11 @@ void Session::Disconnect() {
   // from the UI thread.
   cliprdr_ = nullptr;
   clipboardReady_ = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    ResetRemoteFileDownloadLocked();
+    remoteFiles_.clear();
+  }
   running_ = false;
   audio_.Close();
   // The desktop buffer dies with the presenter; the next connect re-attaches.
@@ -2175,6 +2385,12 @@ void Session::HandlePostDisconnect() {
   remoteRequestKind_ = LocalClipKind::kNone;
   hasPendingRemoteRefresh_ = false;
   pendingRefreshKind_ = LocalClipKind::kNone;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    // The channel is gone: any download in flight can never finish.
+    ResetRemoteFileDownloadLocked();
+    remoteFiles_.clear();
+  }
   // Make the capture durable before the buffers are dropped with the session.
   hmrdp::GfxDumpFlush();
 }
@@ -2275,7 +2491,7 @@ bool Session::SendUnicode(uint16_t codepoint, bool down) {
 }
 
 void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
-  if (cliprdr == nullptr || !clipboardEnabled_.load()) {
+  if (cliprdr == nullptr) {
     return;
   }
   cliprdr_ = cliprdr;
@@ -2288,6 +2504,8 @@ void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
   cliprdr->ServerUnlockClipboardData = HmrdpCliprdrServerUnlockClipboardData;
   cliprdr->ServerFormatDataRequest = HmrdpCliprdrServerFormatDataRequest;
   cliprdr->ServerFormatDataResponse = HmrdpCliprdrServerFormatDataResponse;
+  cliprdr->ServerFileContentsRequest = HmrdpCliprdrServerFileContentsRequest;
+  cliprdr->ServerFileContentsResponse = HmrdpCliprdrServerFileContentsResponse;
   HMRDP_LOGI("cliprdr channel connected");
 }
 
@@ -2299,7 +2517,17 @@ UINT Session::OnCliprdrMonitorReady() {
   generalCapabilitySet.capabilitySetType = CB_CAPSTYPE_GENERAL;
   generalCapabilitySet.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
   generalCapabilitySet.version = CB_CAPS_VERSION_2;
-  generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+  // File transfer needs CB_STREAM_FILECLIP_ENABLED. Deliberately NOT asking for
+  // CB_CAN_LOCK_CLIPDATA: once locking is negotiated the server hands out a
+  // clipDataId and every file-contents request must echo it, and one without it
+  // is answered with CB_RESPONSE_FAIL. FreeRDP's own file-transfer client leaves
+  // the same bit unset (client_cliprdr_file.c, cliprdr_file_context_current_flags).
+  // The channel intersects these with the server's capabilities, so a server that
+  // does not offer file clip simply keeps them masked out (cliprdr_main.c).
+  generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES |
+                                      CB_STREAM_FILECLIP_ENABLED |
+                                      CB_FILECLIP_NO_FILE_PATHS |
+                                      CB_HUGE_FILE_SUPPORT_ENABLED;
   CLIPRDR_CAPABILITIES capabilities = {};
   capabilities.cCapabilitiesSets = 1;
   capabilities.capabilitySets =
@@ -2321,17 +2549,18 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
       cliprdr_->ClientFormatDataRequest == nullptr) {
     return CHANNEL_RC_OK;
   }
-  // File clipboard (FileGroupDescriptorW / FileContents) is reserved for later:
-  // it needs its own UI (progress + cancellation), so it is intentionally not
-  // advertised or requested yet.
   UINT32 dibId = 0;
   UINT32 dibV5Id = 0;
   UINT32 textId = 0;
   UINT32 htmlId = 0;
   UINT32 rtfId = 0;
+  UINT32 fileGroupId = 0;
   for (UINT32 i = 0; i < formatList->numFormats; i++) {
     const CLIPRDR_FORMAT& format = formatList->formats[i];
-    if (format.formatName != nullptr && strcmp(format.formatName, kHtmlFormatName) == 0) {
+    if (format.formatName != nullptr &&
+        strcmp(format.formatName, kFileGroupDescriptorName) == 0) {
+      fileGroupId = format.formatId;
+    } else if (format.formatName != nullptr && strcmp(format.formatName, kHtmlFormatName) == 0) {
       htmlId = format.formatId;
     } else if (format.formatName != nullptr &&
                strcmp(format.formatName, "Rich Text Format") == 0) {
@@ -2344,12 +2573,32 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
       textId = format.formatId;
     }
   }
-  // Pull the richest representation, in that order. Only one format is in
-  // flight at a time: the channel does not tag data responses with their
-  // format, so overlapping requests could not be told apart.
+  bool abortedDownload = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    // Anything the server advertises now supersedes any transfer in progress
+    // (and an empty file list invalidates the cached descriptors).
+    abortedDownload = remoteFilesActive_;
+    ResetRemoteFileDownloadLocked();
+    if (fileGroupId == 0) {
+      remoteFiles_.clear();
+    }
+  }
+  if (abortedDownload) {
+    // Tell the UI: its progress row would otherwise wait for an event that can
+    // no longer arrive.
+    Emit(SessionEvent::kFileTransferFailed, "远端剪贴板已改变，传输已中止");
+  }
+  // Pull the richest representation, in that order. A file copy is a list, so
+  // it is asked for first; the "richest single value" formats follow. Only one
+  // format is in flight at a time: the channel does not tag data responses with
+  // their format, so overlapping requests could not be told apart.
   UINT32 requestId = 0;
   int kind = kClipNone;
-  if (dibId != 0) {
+  if (fileGroupId != 0) {
+    requestId = fileGroupId;
+    kind = kClipFiles;
+  } else if (dibId != 0) {
     requestId = dibId;
     kind = kClipImage;
   } else if (dibV5Id != 0) {
@@ -2408,10 +2657,18 @@ UINT Session::OnCliprdrServerFormatDataRequest(
   // Copy the requested representation out under the lock, then send without
   // holding it. Only the kind of content the user last pushed is served.
   std::vector<BYTE> payload;
+  std::vector<std::string> advertisedFiles;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
     const UINT32 id = request->requestedFormatId;
-    if (id == kHtmlFormatId && localClipKind_ == LocalClipKind::kHtml) {
+    // Both ids we advertise for a file clipboard carry the descriptor list:
+    // servers echo the id from our FORMAT_LIST, but there is no data format
+    // behind FileContents (byte ranges use FILECONTENTS_REQUEST), so accept
+    // either instead of depending on which one the peer picked.
+    if (localClipKind_ == LocalClipKind::kFiles &&
+        (id == kFileGroupDescriptorId || id == kFileContentsId)) {
+      advertisedFiles = localClipboardFilePaths_;
+    } else if (id == kHtmlFormatId && localClipKind_ == LocalClipKind::kHtml) {
       payload.assign(localClipboardHtml_.begin(), localClipboardHtml_.end());
     } else if (id == CF_DIB && localClipKind_ == LocalClipKind::kImage) {
       payload.assign(localClipboardDib_.begin(), localClipboardDib_.end());
@@ -2423,6 +2680,10 @@ UINT Session::OnCliprdrServerFormatDataRequest(
                        localClipboardUtf16FromHtml_.end());
       }
     }
+  }
+  if (!advertisedFiles.empty()) {
+    const std::string descriptor = BuildFileGroupDescriptor(advertisedFiles);
+    payload.assign(descriptor.begin(), descriptor.end());
   }
   HMRDP_LOGI("cliprdr server data request: payload=%{public}u", static_cast<unsigned>(payload.size()));
   CLIPRDR_FORMAT_DATA_RESPONSE response = {};
@@ -2436,7 +2697,23 @@ UINT Session::OnCliprdrServerFormatDataRequest(
     response.common.dataLen = static_cast<UINT32>(payload.size());
     response.requestedFormatData = payload.data();
   }
-  return cliprdr_->ClientFormatDataResponse(cliprdr_, &response);
+  const UINT rc = cliprdr_->ClientFormatDataResponse(cliprdr_, &response);
+  if (!advertisedFiles.empty()) {
+    uint64_t total = 0;
+    size_t fileCount = 0;
+    {
+      std::lock_guard<std::mutex> lock(clipboardMutex_);
+      total = localTransferTotal_;
+      fileCount = localClipboardFilePaths_.size();
+    }
+    if (total == 0) {
+      // All advertised files are empty, so there is nothing left to stream.
+      std::ostringstream donePayload;
+      donePayload << fileCount;
+      Emit(SessionEvent::kFileTransferDone, donePayload.str());
+    }
+  }
+  return rc;
 }
 
 UINT Session::OnCliprdrServerFormatDataResponse(
@@ -2460,6 +2737,59 @@ UINT Session::OnCliprdrServerFormatDataResponse(
     HMRDP_LOGW("cliprdr data response failed or null");
   } else if (data == nullptr || size == 0) {
     // Nothing to decode; fall through to a possible deferred refresh.
+  } else if (kind == LocalClipKind::kFiles) {
+    // FILEGROUPDESCRIPTORW: u32 count + count fixed-size descriptors. The list
+    // itself is small; the file bytes are streamed later, on demand.
+    constexpr size_t kHeaderBytes = sizeof(uint32_t);
+    uint32_t count = 0;
+    if (size >= kHeaderBytes + sizeof(uint32_t)) {
+      memcpy(&count, data, sizeof(count));
+    }
+    const size_t needed = kHeaderBytes + static_cast<size_t>(count) * sizeof(FileDescriptorW);
+    if (count == 0 || needed > size) {
+      HMRDP_LOGW("cliprdr remote file list malformed: count=%{public}u size=%{public}u",
+                 count, static_cast<unsigned>(size));
+    } else {
+      std::vector<ClipboardFileInfo> files;
+      files.reserve(count);
+      uint64_t totalBytes = 0;
+      uint32_t directoryCount = 0;
+      for (uint32_t i = 0; i < count; ++i) {
+        FileDescriptorW descriptor = {};
+        memcpy(&descriptor, data + kHeaderBytes + i * sizeof(FileDescriptorW),
+               sizeof(descriptor));
+        ClipboardFileInfo info;
+        info.name = SanitizeClipboardFileName(
+            FileDescriptorNameToUtf8(descriptor.fileName, kFileDescriptorNameChars));
+        if ((descriptor.flags & kFdAttributes) != 0 &&
+            (descriptor.fileAttributes & kFileAttributeDirectory) != 0) {
+          info.isDirectory = true;
+        }
+        if ((descriptor.flags & kFdFileSize) != 0) {
+          info.size = (static_cast<uint64_t>(descriptor.sizeHigh) << 32) |
+                      descriptor.sizeLow;
+          info.sizeKnown = true;
+        }
+        if (info.isDirectory) {
+          ++directoryCount;
+        }
+        totalBytes += info.size;
+        files.push_back(std::move(info));
+      }
+      {
+        std::lock_guard<std::mutex> lock(clipboardMutex_);
+        // Keep the whole list, directories included: a FILECONTENTS_REQUEST's
+        // listIndex is the position in what the server advertised, so filtering
+        // here would shift every later index.
+        remoteFiles_ = std::move(files);
+      }
+      std::ostringstream payload;
+      payload << (count - directoryCount) << '|' << totalBytes << '|' << directoryCount;
+      HMRDP_LOGI("cliprdr remote file list: files=%{public}u dirs=%{public}u total=%{public}llu",
+                 count - directoryCount, directoryCount,
+                 static_cast<unsigned long long>(totalBytes));
+      Emit(SessionEvent::kClipboardFileList, payload.str());
+    }
   } else if (kind == LocalClipKind::kImage) {
     DibImage image;
     if (ParseDibToBgra(data, size, &image)) {
@@ -2521,9 +2851,6 @@ void Session::AdvertiseLocalClipboard() {
 }
 
 void Session::SetLocalClipboardText(const std::string& utf8) {
-  if (!clipboardEnabled_.load()) {
-    return;
-  }
   size_t wcharCount = 0;
   WCHAR* wide = ConvertUtf8ToWCharAlloc(utf8.c_str(), &wcharCount);
   if (wide == nullptr) {
@@ -2546,7 +2873,7 @@ void Session::SetLocalClipboardText(const std::string& utf8) {
 }
 
 void Session::SetLocalClipboardHtml(const std::string& html) {
-  if (!clipboardEnabled_.load() || html.empty()) {
+  if (html.empty()) {
     return;
   }
   const std::string text = StripHtmlToText(html);
@@ -2574,7 +2901,7 @@ void Session::SetLocalClipboardHtml(const std::string& html) {
 void Session::SetLocalClipboardImage(uint32_t width, uint32_t height,
                                      int32_t pixelFormat, const uint8_t* pixels,
                                      size_t byteCount) {
-  if (!clipboardEnabled_.load() || pixels == nullptr || width == 0 || height == 0) {
+  if (pixels == nullptr || width == 0 || height == 0) {
     return;
   }
   const size_t count = static_cast<size_t>(width) * height;
@@ -2597,6 +2924,471 @@ void Session::SetLocalClipboardImage(uint32_t width, uint32_t height,
   HMRDP_LOGI("set local clipboard image: %{public}ux%{public}u fmt=%{public}d",
              width, height, pixelFormat);
   AdvertiseLocalClipboard();
+}
+
+void Session::SetLocalClipboardFiles(const std::vector<std::string>& paths) {
+  if (paths.empty()) {
+    return;
+  }
+  uint64_t total = 0;
+  for (const std::string& path : paths) {
+    uint64_t size = 0;
+    if (!path.empty() && FileSizeOfPath(path, &size)) {
+      total += size;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    localClipboardFilePaths_ = paths;
+    localClipboardUtf16_.clear();
+    localClipboardValid_ = false;
+    localClipboardHtml_.clear();
+    localClipboardUtf16FromHtml_.clear();
+    localClipboardDib_.clear();
+    localClipKind_ = LocalClipKind::kFiles;
+    localTransferDone_ = 0;
+    localTransferTotal_ = total;
+  }
+  HMRDP_LOGI("set local clipboard files: count=%{public}u total=%{public}llu",
+             static_cast<unsigned>(paths.size()),
+             static_cast<unsigned long long>(total));
+  AdvertiseLocalClipboard();
+  // Tell the UI the size of the upload so it can show a progress bar before the
+  // server starts pulling.
+  Emit(SessionEvent::kFileTransferProgress,
+       BuildTransferProgress(1, 0, total, 0, static_cast<uint32_t>(paths.size())));
+}
+
+void Session::ResetRemoteFileDownloadLocked() {
+  if (remoteFileHandle_ != nullptr) {
+    fclose(remoteFileHandle_);
+    remoteFileHandle_ = nullptr;
+  }
+  if (remoteFilesActive_) {
+    // Drop the partial copies: a half-downloaded file is worse than none, and a
+    // retry starts from scratch anyway.
+    for (const std::string& path : remoteFilesPaths_) {
+      remove(path.c_str());
+    }
+  }
+  remoteFilesActive_ = false;
+  remoteFilesDestDir_.clear();
+  remoteFilesPaths_.clear();
+  remoteFileIndex_ = 0;
+  remoteFileOffset_ = 0;
+  remoteFileSize_ = 0;
+  remoteFileSizeKnown_ = false;
+  remoteFileSizePending_ = false;
+  remoteTransferDone_ = 0;
+  remoteTransferTotal_ = 0;
+}
+
+void Session::CancelFileTransfer() {
+  bool reAdvertise = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    ResetRemoteFileDownloadLocked();
+    if (localClipKind_ != LocalClipKind::kFiles) {
+      return;
+    }
+    const bool pulled = localTransferDone_ > 0;
+    localClipboardFilePaths_.clear();
+    localTransferDone_ = 0;
+    localTransferTotal_ = 0;
+    if (pulled) {
+      // Mid-transfer abort: stop serving, so the remote paste reports a
+      // protocol error (the UI warns about that before calling this).
+      localClipKind_ = LocalClipKind::kNone;
+    } else {
+      // Nothing was pulled yet, so the file list can be withdrawn cleanly:
+      // replace it with an empty text clipboard. The server drops the file
+      // formats and a later paste finds nothing instead of erroring (an empty
+      // FORMAT_LIST would be ignored by the channel, see cliprdr_main.c).
+      localClipboardUtf16_.assign(sizeof(WCHAR), '\0');
+      localClipboardValid_ = true;
+      localClipboardHtml_.clear();
+      localClipboardUtf16FromHtml_.clear();
+      localClipboardDib_.clear();
+      localClipKind_ = LocalClipKind::kText;
+      reAdvertise = true;
+    }
+  }
+  if (reAdvertise) {
+    HMRDP_LOGI("cliprdr file list withdrawn (empty text advertised)");
+    AdvertiseLocalClipboard();
+  }
+}
+
+void Session::PullRemoteFiles(const std::string& destDir) {
+  if (cliprdr_ == nullptr || cliprdr_->ClientFileContentsRequest == nullptr ||
+      destDir.empty()) {
+    Emit(SessionEvent::kFileTransferFailed, "剪贴板通道不可用");
+    return;
+  }
+  size_t fileCount = 0;
+  uint64_t total = 0;
+  bool nothingToPull = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (remoteFilesActive_) {
+      // Already running: the UI serialises transfers, so this is a stray call.
+      return;
+    }
+    nothingToPull = remoteFiles_.empty();
+    if (!nothingToPull) {
+      remoteFilesDestDir_ = destDir;
+      remoteFilesPaths_.clear();
+      remoteFilesPaths_.reserve(remoteFiles_.size());
+      remoteTransferTotal_ = 0;
+      remoteTransferDone_ = 0;
+      for (const ClipboardFileInfo& file : remoteFiles_) {
+        if (file.isDirectory) {
+          // Keep the vector aligned with the server's listIndex, but leave an
+          // empty entry so it is neither downloaded nor reported.
+          remoteFilesPaths_.push_back(std::string());
+          continue;
+        }
+        remoteFilesPaths_.push_back(
+            JoinSandboxPath(destDir, SanitizeClipboardFileName(file.name)));
+        remoteTransferTotal_ += file.size;
+      }
+      remoteFileIndex_ = 0;
+      remoteFileOffset_ = 0;
+      remoteFileSize_ = 0;
+      remoteFileSizeKnown_ = false;
+      remoteFileSizePending_ = false;
+      remoteFilesActive_ = true;
+      total = remoteTransferTotal_;
+      for (const ClipboardFileInfo& file : remoteFiles_) {
+        if (!file.isDirectory) {
+          ++fileCount;
+        }
+      }
+    }
+  }
+  if (nothingToPull) {
+    // The list was cleared (e.g. the remote clipboard changed) between the UI
+    // reading the count and pressing the button; clear its progress row.
+    Emit(SessionEvent::kFileTransferFailed, "没有可下载的文件");
+    return;
+  }
+  HMRDP_LOGI("cliprdr download start: %{public}u file(s)", static_cast<unsigned>(fileCount));
+  Emit(SessionEvent::kFileTransferProgress,
+       BuildTransferProgress(0, 0, total, 0, static_cast<uint32_t>(fileCount)));
+  StartNextRemoteFileStep();
+}
+
+void Session::FinishRemoteFileTransfer() {
+  std::string payload;
+  size_t fileCount = 0;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (remoteFileHandle_ != nullptr) {
+      fclose(remoteFileHandle_);
+      remoteFileHandle_ = nullptr;
+    }
+    for (size_t i = 0; i < remoteFilesPaths_.size(); ++i) {
+      if (i > 0) {
+        payload.push_back('\n');
+      }
+      payload += remoteFilesPaths_[i];
+    }
+    fileCount = remoteFilesPaths_.size();
+    remoteFilesActive_ = false;
+    remoteFileIndex_ = 0;
+    remoteFileOffset_ = 0;
+    remoteFileSize_ = 0;
+    remoteFileSizeKnown_ = false;
+    remoteFileSizePending_ = false;
+  }
+  HMRDP_LOGI("cliprdr download complete: %{public}u file(s)",
+             static_cast<unsigned>(fileCount));
+  Emit(SessionEvent::kClipboardFilesReady, payload);
+}
+
+void Session::FailRemoteFileTransfer(const std::string& reason) {
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    ResetRemoteFileDownloadLocked();
+  }
+  HMRDP_LOGW("cliprdr file transfer failed: %{public}s", reason.c_str());
+  Emit(SessionEvent::kFileTransferFailed, reason);
+}
+
+UINT Session::StartNextRemoteFileStep() {
+  if (cliprdr_ == nullptr || cliprdr_->ClientFileContentsRequest == nullptr) {
+    FailRemoteFileTransfer("剪贴板通道不可用");
+    return CHANNEL_RC_OK;
+  }
+  for (;;) {
+    CLIPRDR_FILE_CONTENTS_REQUEST request = {};
+    std::string path;
+    std::string openError;
+    bool sendRequest = false;
+    bool fileListDone = false;
+    {
+      std::lock_guard<std::mutex> lock(clipboardMutex_);
+      if (!remoteFilesActive_) {
+        return CHANNEL_RC_OK;
+      }
+      if (remoteFileIndex_ >= remoteFiles_.size()) {
+        fileListDone = true;
+      } else {
+        ClipboardFileInfo& info = remoteFiles_[remoteFileIndex_];
+        path = remoteFilesPaths_[remoteFileIndex_];
+        if (info.isDirectory || path.empty()) {
+          // Directories cannot be streamed over the file clipboard: skip them
+          // (the UI tells the user they are unsupported).
+          remoteFileIndex_ += 1;
+          remoteFileOffset_ = 0;
+          remoteFileSize_ = 0;
+          remoteFileSizeKnown_ = false;
+          remoteFileSizePending_ = false;
+          continue;
+        }
+        if (!remoteFileSizeKnown_ && info.sizeKnown) {
+          remoteFileSize_ = info.size;
+          remoteFileSizeKnown_ = true;
+        }
+        if (!remoteFileSizeKnown_) {
+          if (remoteFileSizePending_) {
+            // A size request is already in flight; wait for its response.
+            return CHANNEL_RC_OK;
+          }
+          remoteFileSizePending_ = true;
+          request.dwFlags = FILECONTENTS_SIZE;
+          request.cbRequested = static_cast<UINT32>(sizeof(uint64_t));
+          request.nPositionLow = 0;
+          request.nPositionHigh = 0;
+          sendRequest = true;
+        } else {
+          if (remoteFileHandle_ == nullptr) {
+            remoteFileHandle_ = fopen(path.c_str(), "wb");
+            if (remoteFileHandle_ == nullptr) {
+              openError = "无法创建文件";
+            } else {
+              remoteFileOffset_ = 0;
+            }
+          }
+          if (openError.empty()) {
+            if (remoteFileOffset_ >= remoteFileSize_) {
+              // Current file complete (this also covers zero-byte files).
+              if (remoteFileHandle_ != nullptr) {
+                fclose(remoteFileHandle_);
+                remoteFileHandle_ = nullptr;
+              }
+              remoteFileIndex_ += 1;
+              remoteFileOffset_ = 0;
+              remoteFileSize_ = 0;
+              remoteFileSizeKnown_ = false;
+              continue;
+            }
+            const uint64_t remaining = remoteFileSize_ - remoteFileOffset_;
+            const uint32_t chunk = remaining < kFileChunkBytes
+                                       ? static_cast<uint32_t>(remaining)
+                                       : kFileChunkBytes;
+            request.dwFlags = FILECONTENTS_RANGE;
+            request.nPositionLow =
+                static_cast<UINT32>(remoteFileOffset_ & 0xFFFFFFFFull);
+            request.nPositionHigh = static_cast<UINT32>(remoteFileOffset_ >> 32);
+            request.cbRequested = chunk;
+            sendRequest = true;
+          }
+        }
+        if (sendRequest) {
+          request.common.msgType = CB_FILECONTENTS_REQUEST;
+          request.streamId = static_cast<UINT32>(remoteFileIndex_ + 1);
+          request.listIndex = static_cast<UINT32>(remoteFileIndex_);
+          request.haveClipDataId = FALSE;
+        }
+      }
+    }
+    if (!openError.empty()) {
+      FailRemoteFileTransfer(openError);
+      return CHANNEL_RC_OK;
+    }
+    if (sendRequest) {
+      // One line per file (SIZE / first range), not per chunk.
+      if (request.dwFlags == FILECONTENTS_SIZE ||
+          (request.nPositionLow == 0 && request.nPositionHigh == 0)) {
+        HMRDP_LOGI("cliprdr request file content: index=%{public}u flags=0x%{public}x cb=%{public}u",
+                   request.listIndex, request.dwFlags, request.cbRequested);
+      }
+      return cliprdr_->ClientFileContentsRequest(cliprdr_, &request);
+    }
+    if (fileListDone) {
+      FinishRemoteFileTransfer();
+      return CHANNEL_RC_OK;
+    }
+    return CHANNEL_RC_OK;
+  }
+}
+
+UINT Session::HandleRemoteFileContentsResponse(
+    const CLIPRDR_FILE_CONTENTS_RESPONSE* response) {
+  if (response == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  const bool failed = (response->common.msgFlags & CB_RESPONSE_FAIL) != 0;
+  std::string failReason;
+  uint64_t done = 0;
+  uint64_t total = 0;
+  uint32_t fileCount = 0;
+  uint32_t currentIndex = 0;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (!remoteFilesActive_) {
+      return CHANNEL_RC_OK;
+    }
+    if (failed) {
+      failReason = "远端拒绝提供文件内容";
+    } else if (remoteFileSizePending_) {
+      remoteFileSizePending_ = false;
+      if (response->requestedData == nullptr ||
+          response->cbRequested != sizeof(uint64_t)) {
+        failReason = "文件大小响应无效";
+      } else {
+        uint64_t size = 0;
+        memcpy(&size, response->requestedData, sizeof(size));
+        if (remoteFileIndex_ < remoteFiles_.size()) {
+          ClipboardFileInfo& info = remoteFiles_[remoteFileIndex_];
+          remoteTransferTotal_ = remoteTransferTotal_ - info.size + size;
+          info.size = size;
+          info.sizeKnown = true;
+        }
+        remoteFileSize_ = size;
+        remoteFileSizeKnown_ = true;
+      }
+    } else {
+      if (response->requestedData == nullptr || response->cbRequested == 0) {
+        // An empty range means the server has nothing more for this file.
+        remoteFileOffset_ = remoteFileSize_;
+      } else if (remoteFileHandle_ == nullptr) {
+        failReason = "文件未打开";
+      } else {
+        const size_t written =
+            fwrite(response->requestedData, 1, response->cbRequested, remoteFileHandle_);
+        if (written != response->cbRequested) {
+          failReason = "写入文件失败";
+        } else {
+          remoteFileOffset_ += written;
+          remoteTransferDone_ += written;
+        }
+      }
+    }
+    done = remoteTransferDone_;
+    total = remoteTransferTotal_;
+    for (const ClipboardFileInfo& info : remoteFiles_) {
+      if (!info.isDirectory) {
+        ++fileCount;
+      }
+    }
+    if (remoteFileIndex_ < remoteFiles_.size() && !remoteFiles_[remoteFileIndex_].isDirectory) {
+      currentIndex = static_cast<uint32_t>(remoteFileIndex_) + 1;
+    }
+  }
+  if (!failReason.empty()) {
+    FailRemoteFileTransfer(failReason);
+    return CHANNEL_RC_OK;
+  }
+  Emit(SessionEvent::kFileTransferProgress,
+       BuildTransferProgress(0, done, total, currentIndex, fileCount));
+  return StartNextRemoteFileStep();
+}
+
+UINT Session::HandleLocalFileContentsRequest(
+    const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
+  if (cliprdr_ == nullptr || request == nullptr ||
+      cliprdr_->ClientFileContentsResponse == nullptr) {
+    return CHANNEL_RC_OK;
+  }
+  std::string path;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (localClipKind_ != LocalClipKind::kFiles ||
+        request->listIndex >= localClipboardFilePaths_.size()) {
+      HMRDP_LOGW("cliprdr file request for unknown index %{public}u", request->listIndex);
+    } else {
+      path = localClipboardFilePaths_[request->listIndex];
+    }
+  }
+  std::vector<uint8_t> data;
+  bool ok = !path.empty();
+  if (ok && (request->dwFlags & FILECONTENTS_SIZE) != 0) {
+    uint64_t size = 0;
+    if (FileSizeOfPath(path, &size)) {
+      data.resize(sizeof(uint64_t));
+      memcpy(data.data(), &size, sizeof(size));
+      HMRDP_LOGI("cliprdr serve size: index=%{public}u size=%{public}llu",
+                 request->listIndex, static_cast<unsigned long long>(size));
+    } else {
+      ok = false;
+    }
+  } else if (ok && (request->dwFlags & FILECONTENTS_RANGE) != 0) {
+    const uint64_t position =
+        (static_cast<uint64_t>(request->nPositionHigh) << 32) | request->nPositionLow;
+    FILE* file = fopen(path.c_str(), "rb");
+    if (file == nullptr) {
+      ok = false;
+    } else {
+      if (fseeko(file, static_cast<off_t>(position), SEEK_SET) == 0) {
+        data.resize(request->cbRequested);
+        const size_t readSize =
+            data.empty() ? 0 : fread(data.data(), 1, data.size(), file);
+        data.resize(readSize);
+        if (request->nPositionLow == 0 && request->nPositionHigh == 0) {
+          HMRDP_LOGI("cliprdr serve range: index=%{public}u cb=%{public}u",
+                     request->listIndex, request->cbRequested);
+        }
+      } else {
+        ok = false;
+      }
+      fclose(file);
+    }
+  } else if (ok) {
+    ok = false;
+  }
+  if (!ok) {
+    HMRDP_LOGW("cliprdr serve failed: index=%{public}u flags=0x%{public}x known=%{public}d",
+               request->listIndex, request->dwFlags, path.empty() ? 0 : 1);
+  }
+  CLIPRDR_FILE_CONTENTS_RESPONSE response = {};
+  response.common.msgType = CB_FILECONTENTS_RESPONSE;
+  response.streamId = request->streamId;
+  if (!ok) {
+    response.common.msgFlags = CB_RESPONSE_FAIL;
+    response.cbRequested = 0;
+    response.requestedData = nullptr;
+  } else {
+    response.common.msgFlags = CB_RESPONSE_OK;
+    response.cbRequested = static_cast<UINT32>(data.size());
+    response.requestedData = data.empty() ? nullptr : data.data();
+  }
+  uint64_t done = 0;
+  uint64_t total = 0;
+  uint32_t fileCount = 0;
+  bool uploadDone = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    // Only the range responses move the upload forward; a size response is
+    // bookkeeping and must not be counted (or `done` would overshoot `total`).
+    if ((request->dwFlags & FILECONTENTS_RANGE) != 0) {
+      localTransferDone_ += response.cbRequested;
+    }
+    done = localTransferDone_;
+    total = localTransferTotal_;
+    fileCount = static_cast<uint32_t>(localClipboardFilePaths_.size());
+    uploadDone = ok && (request->dwFlags & FILECONTENTS_RANGE) != 0 && done >= total;
+  }
+  const UINT rc = cliprdr_->ClientFileContentsResponse(cliprdr_, &response);
+  Emit(SessionEvent::kFileTransferProgress,
+       BuildTransferProgress(1, done, total, request->listIndex + 1, fileCount));
+  if (uploadDone) {
+    std::ostringstream donePayload;
+    donePayload << fileCount;
+    Emit(SessionEvent::kFileTransferDone, donePayload.str());
+  }
+  return rc;
 }
 
 }  // namespace hmrdp

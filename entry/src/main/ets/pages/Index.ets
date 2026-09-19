@@ -156,7 +156,6 @@ struct Index {
     options.height = profile.height;
     options.scalePercent = profile.scalePercent;
     const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
-    options.enableClipboard = advanced.enableClipboard;
     options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
     options.enableGfx = advanced.enableGfx;
     options.enableH264 = advanced.enableH264;

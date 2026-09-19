@@ -77,7 +77,6 @@ export class AppSettings {
   manualScalePercent: number = 100;
   // Global advanced (protocol feature) defaults. Connections follow these
   // unless they opt into their own overrides in the editor.
-  enableClipboard: boolean = true;
   enableAudio: boolean = true;
   enableGfx: boolean = true;
   enableH264: boolean = true;
@@ -184,8 +183,6 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'scaleAuto', settings.scaleAuto);
       settings.manualScalePercent =
         SettingsStore.readNumber(store, 'manualScalePercent', settings.manualScalePercent);
-      settings.enableClipboard =
-        SettingsStore.readBoolean(store, 'enableClipboard', settings.enableClipboard);
       settings.enableAudio =
         SettingsStore.readBoolean(store, 'enableAudio', settings.enableAudio);
       settings.enableGfx =
@@ -233,7 +230,6 @@ export class SettingsStore {
       store.putSync('manualHeight', settings.manualHeight);
       store.putSync('scaleAuto', settings.scaleAuto);
       store.putSync('manualScalePercent', settings.manualScalePercent);
-      store.putSync('enableClipboard', settings.enableClipboard);
       store.putSync('enableAudio', settings.enableAudio);
       store.putSync('enableGfx', settings.enableGfx);
       store.putSync('enableH264', settings.enableH264);
@@ -332,7 +328,6 @@ export class SettingsStore {
       return SettingsStore.globalAdvancedProfile();
     }
     const profile: AdvancedProfile = new AdvancedProfile();
-    profile.enableClipboard = conn.enableClipboard;
     profile.enableAudio = conn.enableAudio;
     profile.enableGfx = conn.enableGfx;
     profile.enableH264 = conn.enableH264;
@@ -342,7 +337,6 @@ export class SettingsStore {
 
   private static advancedFor(settings: AppSettings): AdvancedProfile {
     const profile: AdvancedProfile = new AdvancedProfile();
-    profile.enableClipboard = settings.enableClipboard;
     profile.enableAudio = settings.enableAudio;
     profile.enableGfx = settings.enableGfx;
     profile.enableH264 = settings.enableH264;

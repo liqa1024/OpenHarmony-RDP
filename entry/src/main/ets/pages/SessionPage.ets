@@ -7,6 +7,7 @@ import { image } from '@kit.ImageKit';
 import { pointer } from '@kit.InputKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
+import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
@@ -89,6 +90,11 @@ const TOOLBAR_FG: string = '#FFFFFF';
 const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
 const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
 const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
+// Outline for secondary (a step below the filled chips) toolbar actions.
+const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
+// File-transfer progress fill: brighter than the chip tints so the bar reads at
+// a glance on the dark toolbar.
+const TOOLBAR_PROGRESS: string = '#5B9CF8';
 // Telemetry threshold colours, tuned against the fixed dark bar.
 const METRIC_GOOD: string = '#4ADE80';
 const METRIC_WARN: string = '#FBBF24';
@@ -295,14 +301,34 @@ struct SessionPage {
   // clipboard is cached when the server offers it; "复制" pulls it to the local
   // clipboard and "粘贴" (system paste control, no READ_PASTEBOARD) pushes the
   // local clipboard to the remote.
-  private clipboardEnabled: boolean = true;
   // Latest rich payload pulled from the remote. Only one is populated at a time
   // (native requests the richest supported format per remote copy), so "复制"
   // can pick by presence alone.
   private remoteClipboardText: string = '';
   private remoteClipboardHtml: string = '';
   private remoteClipboardPixelMap: image.PixelMap | undefined = undefined;
+  // Remote clipboard file list (names/sizes only; the bytes are pulled on
+  // demand when the user presses 复制). `remoteFolderCount` counts advertised
+  // directories, which the file clipboard cannot stream.
+  private remoteFileCount: number = 0;
+  private remoteFolderCount: number = 0;
   private pasteboardBusy: boolean = false;
+  // File transfer progress shown in the toolbar: 0 = remote -> local,
+  // 1 = local -> remote.
+  @State private transferActive: boolean = false;
+  // An upload is advertised but the remote has not pasted yet: show the hint in
+  // place of the progress row instead of a toast.
+  @State private transferWaiting: boolean = false;
+  @State private transferPercent: number = 0;
+  @State private transferText: string = '';
+  @State private transferSpeed: string = '';
+  // Current file position for a multi-file transfer ("2/5").
+  @State private transferFileIndex: number = 0;
+  @State private transferFileCount: number = 0;
+  private transferDirection: number = 0;
+  private transferBusy: boolean = false;
+  private transferLastDone: number = 0;
+  private transferLastAt: number = 0;
   // Remote cursor shape, installed as the HarmonyOS system cursor. The server
   // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
   // re-installed when the window re-acquires the pointer. `cursorHidden` tracks
@@ -379,7 +405,6 @@ struct SessionPage {
     this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
-    this.clipboardEnabled = this.options.enableClipboard;
     this.desktopWidth = this.options.width;
     this.desktopHeight = this.options.height;
     this.loadSessionWindow();
@@ -620,14 +645,45 @@ struct SessionPage {
       this.remoteClipboardText = data;
       this.remoteClipboardHtml = '';
       this.remoteClipboardPixelMap = undefined;
+      this.remoteFileCount = 0;
+      this.remoteFolderCount = 0;
     } else if (event === RdpEvent.ClipboardHtml) {
       hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', data.length);
       this.remoteClipboardHtml = data;
       this.remoteClipboardText = '';
       this.remoteClipboardPixelMap = undefined;
+      this.remoteFileCount = 0;
+      this.remoteFolderCount = 0;
     } else if (event === RdpEvent.ClipboardImage) {
       hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}d chars', data.length);
+      this.remoteFileCount = 0;
+      this.remoteFolderCount = 0;
       this.onClipboardImage(data);
+    } else if (event === RdpEvent.ClipboardFileList) {
+      // "<fileCount>|<totalBytes>|<folderCount>": the remote clipboard holds
+      // files and/or folders. The bytes are only downloaded when the user
+      // presses 复制.
+      const parts: string[] = data.split('|');
+      const count: number = parts.length > 0 ? Number.parseInt(parts[0], 10) : 0;
+      const total: number = parts.length > 1 ? Number.parseInt(parts[1], 10) : 0;
+      const folders: number = parts.length > 2 ? Number.parseInt(parts[2], 10) : 0;
+      this.remoteFileCount = Number.isNaN(count) ? 0 : count;
+      this.remoteFolderCount = Number.isNaN(folders) ? 0 : folders;
+      this.remoteClipboardText = '';
+      this.remoteClipboardHtml = '';
+      this.remoteClipboardPixelMap = undefined;
+      hilog.info(DOMAIN, TAG, 'remote clipboard files: %{public}d folders=%{public}d total=%{public}d',
+        this.remoteFileCount, this.remoteFolderCount, Number.isNaN(total) ? 0 : total);
+    } else if (event === RdpEvent.FileTransferProgress) {
+      this.onFileTransferProgress(data);
+    } else if (event === RdpEvent.ClipboardFilesReady) {
+      this.onClipboardFilesReady(data);
+    } else if (event === RdpEvent.FileTransferDone) {
+      this.finishFileTransfer();
+      this.toast('已发送文件到远端');
+    } else if (event === RdpEvent.FileTransferFailed) {
+      this.finishFileTransfer();
+      this.toast(data.length > 0 ? data : '文件传输失败');
     } else if (event === RdpEvent.CursorShape) {
       this.onCursorShape(data);
     } else if (event === RdpEvent.CursorDefault) {
@@ -987,8 +1043,45 @@ struct SessionPage {
     }
   }
 
+  /**
+   * One file transfer at a time. A second 复制 / 粘贴 while one is running (or
+   * while an upload is still waiting for the remote paste) would interleave two
+   * state machines in one progress row - and, for uploads, invalidate the file
+   * list the server is already pulling - so both entries share this gate.
+   */
+  private fileTransferBlocking(): boolean {
+    return this.transferBusy || this.transferActive || this.transferWaiting;
+  }
+
+  private rejectConcurrentTransfer(): void {
+    this.toast('正在传输文件，请先取消或等待完成');
+  }
+
   /** Local clipboard -> remote, invoked by the toolbar's system paste button. */
   private submitClipboard(): void {
+    if (this.fileTransferBlocking()) {
+      this.rejectConcurrentTransfer();
+      return;
+    }
+    const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+    // A URI record means the clipboard may hold files; the metadata check needs
+    // no permission and routes to the file path below. Non-file URIs (web
+    // links) produce no files there and fall back to plain text.
+    let hasFiles: boolean = false;
+    try {
+      hasFiles = board.hasDataType(pasteboard.MIMETYPE_TEXT_URI);
+    } catch (error) {
+      hasFiles = false;
+    }
+    if (hasFiles) {
+      this.submitClipboardFiles();
+      return;
+    }
+    this.submitPlainClipboard();
+  }
+
+  /** Local clipboard -> remote for text / HTML / image (the non-file path). */
+  private submitPlainClipboard(): void {
     pasteboard.getSystemPasteboard().getData()
       .then((data: pasteboard.PasteData) => {
         this.pushLocalPasteData(data);
@@ -997,6 +1090,227 @@ struct SessionPage {
         hilog.warn(DOMAIN, TAG, 'read pasteboard failed: %{public}s', JSON.stringify(error));
         this.toast('读取本机剪贴板失败');
       });
+  }
+
+  /**
+   * Local clipboard files -> remote. The system copies the clipboard files into
+   * our sandbox (`getDataWithProgress`), so no READ_PASTEBOARD permission and no
+   * manual URI handling is needed; the sandbox copies are then advertised to the
+   * server, which pulls them over cliprdr.
+   */
+  private submitClipboardFiles(): void {
+    const dir: string | undefined = this.makeSandboxDir('rdp_outbox');
+    if (dir === undefined) {
+      return;
+    }
+    this.transferBusy = true;
+    const params: pasteboard.GetDataParams = {
+      destUri: fileUri.getUriFromPath(dir),
+      fileConflictOptions: pasteboard.FileConflictOptions.OVERWRITE,
+      progressIndicator: pasteboard.ProgressIndicator.DEFAULT
+    };
+    pasteboard.getSystemPasteboard().getDataWithProgress(params)
+      .then((data: pasteboard.PasteData) => {
+        const paths: string[] = SessionPage.listFiles(dir);
+        if (paths.length === 0) {
+          this.transferBusy = false;
+          if (SessionPage.clipboardUriIsFile(data)) {
+            // getDataWithProgress cannot copy folders, so a file URI that
+            // produced nothing is a folder.
+            this.toast('暂不支持文件夹传输，请改选文件');
+            return;
+          }
+          // A web link or other non-file URI: paste it as text.
+          this.submitPlainClipboard();
+          return;
+        }
+        // The button only advertises the files on the remote clipboard: cliprdr
+        // is pull-based, so the bytes move when the remote side pastes. That is
+        // not a running transfer, so release the busy guard first.
+        this.transferBusy = false;
+        this.native.pushClipboardFiles(paths);
+      })
+      .catch((error: BusinessError) => {
+        // getDataWithProgress rejects for a folder (directories are not
+        // supported by the system file-copy path).
+        this.transferBusy = false;
+        hilog.warn(DOMAIN, TAG, 'read clipboard files failed: %{public}s',
+          JSON.stringify(error));
+        this.toast('暂不支持文件夹传输，请改选文件');
+      });
+  }
+
+  /** True when the clipboard's URI is a file/folder rather than a web link. */
+  private static clipboardUriIsFile(data: pasteboard.PasteData): boolean {
+    try {
+      const uri: string = data.getPrimaryUri();
+      if (uri.length === 0) {
+        return false;
+      }
+      return !uri.startsWith('http://') && !uri.startsWith('https://');
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** Progress event: "<direction>|<done>|<total>|<fileIndex>|<fileCount>". */
+  private onFileTransferProgress(data: string): void {
+    const parts: string[] = data.split('|');
+    if (parts.length < 3) {
+      return;
+    }
+    const direction: number = Number.parseInt(parts[0], 10);
+    const done: number = Number.parseInt(parts[1], 10);
+    const total: number = Number.parseInt(parts[2], 10);
+    if (Number.isNaN(direction) || Number.isNaN(done) || Number.isNaN(total)) {
+      return;
+    }
+    const fileIndex: number = parts.length > 3 ? Number.parseInt(parts[3], 10) : 0;
+    const fileCount: number = parts.length > 4 ? Number.parseInt(parts[4], 10) : 0;
+    this.transferFileIndex = Number.isNaN(fileIndex) ? 0 : fileIndex;
+    this.transferFileCount = Number.isNaN(fileCount) ? 0 : fileCount;
+    // An upload only advertises the list; native sends a 0% placeholder when
+    // that happens. Keep the "waiting for the remote paste" hint then, and only
+    // switch to the progress row once bytes actually move.
+    if (direction === 1 && done === 0) {
+      this.transferWaiting = true;
+      this.pinToolbarForTransfer();
+      return;
+    }
+    this.transferWaiting = false;
+    this.transferBusy = true;
+    this.transferActive = true;
+    this.transferDirection = direction;
+    this.pinToolbarForTransfer();
+    this.transferPercent = total > 0 ? Math.min(100, Math.floor(done * 100 / total)) : 0;
+    this.transferText = direction === 0 ? '正在接收文件…' : '正在发送文件…';
+    const now: number = Date.now();
+    if (this.transferLastAt > 0 && now > this.transferLastAt && done >= this.transferLastDone) {
+      const bytesPerSecond: number =
+        (done - this.transferLastDone) * 1000 / (now - this.transferLastAt);
+      this.transferSpeed = bytesPerSecond > 0 ? this.formatRate(bytesPerSecond) : '';
+    }
+    this.transferLastDone = done;
+    this.transferLastAt = now;
+  }
+
+  /** Download finished: the payload is the sandbox paths, one per line. */
+  private onClipboardFilesReady(data: string): void {
+    this.finishFileTransfer();
+    const paths: string[] = [];
+    for (const line of data.split('\n')) {
+      if (line.length > 0) {
+        paths.push(line);
+      }
+    }
+    if (paths.length === 0) {
+      this.toast('远端文件为空');
+      return;
+    }
+    try {
+      const pasteData: pasteboard.PasteData = pasteboard.createData(
+        pasteboard.MIMETYPE_TEXT_URI, fileUri.getUriFromPath(paths[0]));
+      for (let i = 1; i < paths.length; i++) {
+        pasteData.addRecord(pasteboard.MIMETYPE_TEXT_URI, fileUri.getUriFromPath(paths[i]));
+      }
+      const skipped: string = this.remoteFolderCount > 0
+        ? `（跳过 ${this.remoteFolderCount} 个文件夹）` : '';
+      const label: string = (paths.length > 1 ? ` ${paths.length} 个文件` : '文件') + skipped;
+      this.writeLocalPasteData(pasteData, label);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'build file pasteboard failed: %{public}s',
+        JSON.stringify(error));
+      this.toast('写入剪贴板失败');
+    }
+  }
+
+  private finishFileTransfer(): void {
+    this.transferBusy = false;
+    this.transferActive = false;
+    this.transferWaiting = false;
+    this.transferDirection = 0;
+    this.transferPercent = 0;
+    this.transferText = '';
+    this.transferSpeed = '';
+    this.transferFileIndex = 0;
+    this.transferFileCount = 0;
+    this.transferLastDone = 0;
+    this.transferLastAt = 0;
+    this.scheduleToolbarHide();
+  }
+
+  private cancelFileTransfer(): void {
+    if (this.transferDirection === 1) {
+      // Aborting an upload leaves the remote clipboard listing files it can no
+      // longer read, so its paste reports a protocol error. That is harmless
+      // but worth warning about first.
+      this.getUIContext().showAlertDialog({
+        title: '取消文件传输',
+        message: '文件仍在发送。取消后远端粘贴会提示错误，已传部分也会作废。是否继续取消？',
+        systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+        primaryButton: {
+          value: '继续传输',
+          action: () => {
+          }
+        },
+        secondaryButton: {
+          value: '取消传输',
+          fontColor: $r('app.color.danger'),
+          action: () => {
+            this.abortFileTransfer();
+          }
+        }
+      });
+      return;
+    }
+    // Downloads are safe to stop: we are the side pulling the bytes.
+    this.abortFileTransfer();
+  }
+
+  private abortFileTransfer(): void {
+    this.native.cancelFileTransfer();
+    this.finishFileTransfer();
+    this.toast('已取消文件传输');
+  }
+
+  /** Creates (and returns) a per-transfer directory under the app sandbox. */
+  private makeSandboxDir(name: string): string | undefined {
+    let filesDir: string = '';
+    try {
+      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+      if (ctx !== undefined) {
+        filesDir = ctx.filesDir;
+      }
+    } catch (error) {
+      filesDir = '';
+    }
+    if (filesDir.length === 0) {
+      this.toast('无法访问应用目录');
+      return undefined;
+    }
+    const dir: string = `${filesDir}/${name}/${Date.now()}`;
+    try {
+      fileIo.mkdirSync(dir, true);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'mkdir %{public}s failed: %{public}s', dir,
+        JSON.stringify(error));
+      this.toast('无法创建文件目录');
+      return undefined;
+    }
+    return dir;
+  }
+
+  private static listFiles(dir: string): string[] {
+    const paths: string[] = [];
+    try {
+      for (const name of fileIo.listFileSync(dir)) {
+        paths.push(`${dir}/${name}`);
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'list %{public}s failed: %{public}s', dir,
+        JSON.stringify(error));
+    }
+    return paths;
   }
 
   /** Dispatches the local clipboard content by MIME, richest type first. */
@@ -1093,6 +1407,19 @@ struct SessionPage {
     if (this.pasteboardBusy) {
       return;
     }
+    if (this.fileTransferBlocking()) {
+      this.rejectConcurrentTransfer();
+      return;
+    }
+    if (this.remoteFileCount > 0) {
+      this.startFileDownload();
+      return;
+    }
+    if (this.remoteFolderCount > 0) {
+      // The file clipboard cannot stream directories.
+      this.toast('暂不支持文件夹传输，请在远端改选文件');
+      return;
+    }
     const pixelMap: image.PixelMap | undefined = this.remoteClipboardPixelMap;
     if (pixelMap !== undefined) {
       this.writeLocalPasteData(
@@ -1127,6 +1454,27 @@ struct SessionPage {
       return;
     }
     this.toast('远端剪贴板为空');
+  }
+
+  /**
+   * Remote files -> local. Native streams them into a per-transfer sandbox
+   * directory; on completion they are written to the system clipboard as file
+   * URIs so any app can paste them.
+   */
+  private startFileDownload(): void {
+    if (this.transferBusy) {
+      return;
+    }
+    const dir: string | undefined = this.makeSandboxDir('rdp_inbox');
+    if (dir === undefined) {
+      return;
+    }
+    this.transferBusy = true;
+    this.transferActive = true;
+    this.transferPercent = 0;
+    this.transferText = '正在接收文件…';
+    this.pinToolbarForTransfer();
+    this.native.pullClipboardFiles(dir);
   }
 
   private writeLocalPasteData(data: pasteboard.PasteData, label: string): void {
@@ -1229,6 +1577,12 @@ struct SessionPage {
     if (!this.isFullscreen || this.state !== RdpConnectionState.Connected) {
       return;
     }
+    // A running or pending transfer keeps the toolbar pinned so its progress /
+    // "paste on the remote" hint never disappears while the user is waiting.
+    if (this.transferActive || this.transferWaiting) {
+      this.pinToolbarForTransfer();
+      return;
+    }
     if (y < this.topTrigger) {
       if (this.hideTimer !== -1) {
         clearTimeout(this.hideTimer);
@@ -1251,6 +1605,34 @@ struct SessionPage {
           this.showToolbar = false;
         }, this.hideDelay);
       }
+    }
+  }
+
+  /** Keeps the toolbar visible while a transfer is running or pending. */
+  private pinToolbarForTransfer(): void {
+    if (this.hideTimer !== -1) {
+      clearTimeout(this.hideTimer);
+      this.hideTimer = -1;
+    }
+    if (this.hoverTimer !== -1) {
+      clearTimeout(this.hoverTimer);
+      this.hoverTimer = -1;
+    }
+    if (!this.showToolbar) {
+      this.showToolbar = true;
+    }
+  }
+
+  /** Resumes the normal fullscreen auto-hide once no transfer is pending. */
+  private scheduleToolbarHide(): void {
+    if (!this.isFullscreen || this.transferActive || this.transferWaiting) {
+      return;
+    }
+    if (this.showToolbar && this.hideTimer === -1) {
+      this.hideTimer = setTimeout(() => {
+        this.hideTimer = -1;
+        this.showToolbar = false;
+      }, this.hideDelay);
     }
   }
 
@@ -1994,48 +2376,121 @@ struct SessionPage {
         .margin({ left: 16 })
       }
       Blank()
-      if (this.clipboardEnabled) {
-        // Clipboard actions sit left of the window actions, tinted
-        // differently and separated from them by a fixed gap.
+      // File transfer progress: an inline bar next to the clipboard actions,
+      // with a cancel affordance while a download is running.
+      // File transfer row: an upload first shows a short "paste on the remote"
+      // hint in this same place, then turns into the progress row.
+      if (this.transferWaiting) {
         Row() {
-          Image($r('sys.media.ohos_ic_public_copy'))
-            .width(16)
-            .height(16)
-            .fillColor(TOOLBAR_FG)
-          Text('复制')
-            .fontSize(13)
+          LoadingProgress()
+            .width(14)
+            .height(14)
+            .color(TOOLBAR_FG)
+          Text('在远端粘贴开始传输')
+            .fontSize(12)
             .fontColor(TOOLBAR_FG)
-            .margin({ left: 4 })
+            .margin({ left: 6 })
+            .maxLines(1)
+          Text('取消')
+            .fontSize(12)
+            .fontColor(TOOLBAR_FG_SECONDARY)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .border({ width: 1, color: TOOLBAR_CHIP_BORDER })
+            .borderRadius(6)
+            .margin({ left: 8 })
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => {
+              this.abortFileTransfer();
+            })
         }
-        .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-        .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
-        .borderRadius(8)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.pullClipboard();
-        })
-        .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
-        // Local clipboard -> remote. Security control: clicking it grants a
-        // one-time clipboard read without the READ_PASTEBOARD permission.
+        .margin({ right: 12 })
+      } else if (this.transferActive) {
         Row() {
-          PasteButton({
-            icon: PasteIconStyle.LINES,
-            text: PasteDescription.PASTE,
-            buttonType: ButtonType.Normal
-          })
-            .iconSize(16)
-            .iconColor(TOOLBAR_FG)
-            .fontSize(13)
+          Text(this.transferText)
+            .fontSize(12)
             .fontColor(TOOLBAR_FG)
-            .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
-            .borderRadius(8)
-            .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-            .onClick(this.pasteButtonCallback)
+            .maxLines(1)
+          if (this.transferFileCount > 1 && this.transferFileIndex > 0) {
+            // Multi-file transfers: which file is moving, so the bar is not the
+            // only cue that the whole list is progressing.
+            Text(`${this.transferFileIndex}/${this.transferFileCount}`)
+              .fontSize(12)
+              .fontColor(TOOLBAR_FG)
+              .margin({ left: 6 })
+              .maxLines(1)
+          }
+          Text(`${this.transferPercent}%`)
+            .fontSize(12)
+            .fontColor(TOOLBAR_FG)
+            .margin({ left: 6 })
+            .maxLines(1)
+          if (this.transferSpeed.length > 0) {
+            Text(this.transferSpeed)
+              .fontSize(12)
+              .fontColor(TOOLBAR_FG)
+              .margin({ left: 6 })
+              .maxLines(1)
+          }
+          Progress({ value: this.transferPercent, total: 100, type: ProgressType.Linear })
+            .width(140)
+            .color(TOOLBAR_PROGRESS)
+            .margin({ left: 8 })
+          // Secondary action: outlined rather than filled, a step below the
+          // clipboard / window chips.
+          Text('取消')
+            .fontSize(12)
+            .fontColor(TOOLBAR_FG_SECONDARY)
+            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+            .border({ width: 1, color: TOOLBAR_CHIP_BORDER })
+            .borderRadius(6)
+            .margin({ left: 8 })
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => {
+              this.cancelFileTransfer();
+            })
         }
-        .margin({ left: 8 })
-        .bindTips('把本机剪贴板发送到远端', this.tipsOptions)
-        Row().width(16)
+        .margin({ right: 12 })
       }
+      // Clipboard actions sit left of the window actions, tinted
+      // differently and separated from them by a fixed gap.
+      Row() {
+        Image($r('sys.media.ohos_ic_public_copy'))
+          .width(16)
+          .height(16)
+          .fillColor(TOOLBAR_FG)
+        Text('复制')
+          .fontSize(13)
+          .fontColor(TOOLBAR_FG)
+          .margin({ left: 4 })
+      }
+      .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+      .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
+      .borderRadius(8)
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.pullClipboard();
+      })
+      .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
+      // Local clipboard -> remote. Security control: clicking it grants a
+      // one-time clipboard read without the READ_PASTEBOARD permission.
+      Row() {
+        PasteButton({
+          icon: PasteIconStyle.LINES,
+          text: PasteDescription.PASTE,
+          buttonType: ButtonType.Normal
+        })
+          .iconSize(16)
+          .iconColor(TOOLBAR_FG)
+          .fontSize(13)
+          .fontColor(TOOLBAR_FG)
+          .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
+          .borderRadius(8)
+          .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+          .onClick(this.pasteButtonCallback)
+      }
+      .margin({ left: 8 })
+      .bindTips('把本机剪贴板发送到远端', this.tipsOptions)
+      Row().width(16)
       Text(this.isFullscreen ? '退出全屏' : '全屏')
         .fontSize(13)
         .fontColor(TOOLBAR_FG)

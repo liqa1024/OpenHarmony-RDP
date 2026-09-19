@@ -9,7 +9,6 @@ export interface RdpOptions {
   scalePercent: number;
   colorDepth: number;
   ignoreCertificate: boolean;
-  enableClipboard: boolean;
   enableAudio: boolean;
   enableGfx: boolean;
   enableH264: boolean;
@@ -47,6 +46,22 @@ export const setClipboardHtml: (handle: number, html: string) => boolean;
  */
 export const setClipboardImage: (handle: number, width: number, height: number,
   pixelFormat: number, pixels: ArrayBuffer) => boolean;
+
+/**
+ * Pushes local files to the session (advertised as FileGroupDescriptorW +
+ * FileContents). `paths` holds the absolute sandbox paths, one per line.
+ */
+export const setClipboardFiles: (handle: number, paths: string) => boolean;
+
+/**
+ * Downloads the file list the server last advertised into `destDir`, which must
+ * already exist. Completion arrives as the ClipboardFilesReady event; progress
+ * as FileTransferProgress.
+ */
+export const pullClipboardFiles: (handle: number, destDir: string) => boolean;
+
+/** Aborts an in-flight download and removes its partial files. */
+export const cancelFileTransfer: (handle: number) => boolean;
 
 export const onEvent: (callback: RdpEventCallback) => void;
 
