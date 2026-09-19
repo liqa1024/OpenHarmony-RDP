@@ -25,6 +25,11 @@ struct EditConnectionPage {
   @State port: string = '3389';
   @State username: string = '';
   @State password: string = '';
+  // Password Vault (see doc_agent/settings-and-storage.md §1.1): the field types
+  // below make the pair a login form the system can fill. The app never asks the
+  // vault to save, so this only has to be taken away when the page is left — a
+  // form that is gone must not offer itself on the way out.
+  @State autoFill: boolean = true;
   @State domain: string = '';
   @State desktopWidthText: string = '1920';
   @State desktopHeightText: string = '1080';
@@ -129,6 +134,7 @@ struct EditConnectionPage {
     // Leaving while connecting cancels the attempt instead of letting it run
     // against a destroyed page.
     this.cancelConnect();
+    this.autoFill = false;
     return false;
   }
 
@@ -301,6 +307,9 @@ struct EditConnectionPage {
       return;
     }
     this.returned = true;
+    // The page is done: it is no longer a form anything can be filled into, and
+    // an unverified password is left nothing to be offered from.
+    this.autoFill = false;
     this.getUIContext().getRouter().back();
   }
 
@@ -383,7 +392,8 @@ struct EditConnectionPage {
               TextAction({
                 label: '取消',
                 onTap: () => {
-                  this.getUIContext().getRouter().back();
+                  this.cancelConnect();
+                  this.returnToList();
                 }
               })
               Text(this.editing ? '编辑连接' : '新增连接')
@@ -458,6 +468,8 @@ struct EditConnectionPage {
                   .height(46)
                   .borderRadius(10)
                   .backgroundColor($r('app.color.input_bg'))
+                  .type(InputType.USER_NAME)
+                  .enableAutoFill(this.autoFill)
                   .onChange((value: string) => {
                     this.username = value;
                   })
@@ -473,6 +485,7 @@ struct EditConnectionPage {
                   .borderRadius(10)
                   .backgroundColor($r('app.color.input_bg'))
                   .type(InputType.Password)
+                  .enableAutoFill(this.autoFill)
                   .onChange((value: string) => {
                     this.password = value;
                   })
