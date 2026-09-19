@@ -90,6 +90,10 @@ const TOOLBAR_FG: string = '#FFFFFF';
 const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
 const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
 const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
+// Toolbar geometry: the main row is always there; developer mode appends the
+// telemetry line, so the auto-hide boundary has to grow with it.
+const TOOLBAR_ROW_HEIGHT: number = 48;
+const TOOLBAR_TELEMETRY_HEIGHT: number = 24;
 // Outline for secondary (a step below the filled chips) toolbar actions.
 const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
 // File-transfer progress fill: brighter than the chip tints so the bar reads at
@@ -192,8 +196,8 @@ struct SessionPage {
   // Immersive system material for the toolbar and the connection status card.
   // Both are no-ops on a system without the material capability, in which case
   // the flat background below is what shows.
-  private toolbarMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
+  private toolbarMaterial: AttributeModifier<ColumnAttribute> =
+    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private statusCardMaterial: AttributeModifier<ColumnAttribute> =
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
   // Tooltip surfaces take the material through their options object; a system
@@ -243,7 +247,7 @@ struct SessionPage {
   private hideTimer: number = -1;
   private moveTimer: number = -1;
   private topTrigger: number = 6;
-  private toolbarHeight: number = 48;
+  private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
   // Active touch contacts, keyed by the ArkUI touch id. The value is the last
@@ -374,6 +378,11 @@ struct SessionPage {
     this.resolveRequest();
     const settings: AppSettings = SettingsStore.load();
     this.developerMode = settings.developerMode;
+    // Developer mode adds the telemetry line, so the toolbar is taller and the
+    // fullscreen auto-hide boundary must follow.
+    this.toolbarHeight = this.developerMode
+      ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
+      : TOOLBAR_ROW_HEIGHT;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
@@ -2328,7 +2337,7 @@ struct SessionPage {
   }
 
   @Builder
-  sessionToolbar() {
+  sessionToolbarMainRow() {
     Row() {
       Text(this.options.host)
         .fontSize(14)
@@ -2336,45 +2345,6 @@ struct SessionPage {
       Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight)
         .fontSize(12)
         .fontColor(TOOLBAR_FG_SECONDARY)
-      // The telemetry cluster (network / 本机 / FPS / bandwidth / audio) is a
-      // developer tool: hidden unless developer options are on.
-      if (this.state === RdpConnectionState.Connected && this.developerMode) {
-        Row() {
-          Text(this.rttLabel())
-            .fontSize(12)
-            .fontColor(this.thresholdColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS))
-            .width(METRIC_WIDTH_NETWORK)
-            .maxLines(1)
-          Text(this.localLabel())
-            .fontSize(12)
-            .fontColor(this.thresholdColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS))
-            .width(METRIC_WIDTH_LOCAL)
-            .margin({ left: METRIC_GAP_TIGHT })
-            .maxLines(1)
-            .bindTips(this.localTips(), this.tipsOptions)
-          Text(this.fpsLabel())
-            .fontSize(12)
-            .fontColor(TOOLBAR_FG_SECONDARY)
-            .width(METRIC_WIDTH_FPS)
-            .margin({ left: METRIC_GAP_GROUP })
-            .maxLines(1)
-          if (this.hasBandwidth()) {
-            Text(this.bandwidthLabel())
-              .fontSize(12)
-              .fontColor(TOOLBAR_FG_SECONDARY)
-              .margin({ left: METRIC_GAP_GROUP })
-          }
-          if (this.metricsAudioRateHz > 0) {
-            Text(this.audioLabel())
-              .fontSize(12)
-              .fontColor(this.audioColor())
-              .width(METRIC_WIDTH_AUDIO)
-              .margin({ left: METRIC_GAP_GROUP })
-              .maxLines(1)
-          }
-        }
-        .margin({ left: 16 })
-      }
       Blank()
       // File transfer progress: an inline bar next to the clipboard actions,
       // with a cancel affordance while a download is running.
@@ -2525,12 +2495,70 @@ struct SessionPage {
         })
     }
     .width('100%')
-    .height(48)
+    .height(TOOLBAR_ROW_HEIGHT)
     .padding({ left: 16, right: 16 })
+  }
+
+  @Builder
+  sessionToolbar() {
+    Column() {
+      this.sessionToolbarMainRow()
+      // Developer telemetry gets its own line so the main row keeps exactly the
+      // same layout as a normal (non-developer) session.
+      if (this.state === RdpConnectionState.Connected && this.developerMode) {
+        this.toolbarTelemetry()
+      }
+    }
+    .width('100%')
     .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
-    .transition(TransitionEffect.translate({ y: -48 })
+    .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
+  }
+
+  /**
+   * Developer-only telemetry (network / 本机 / FPS / bandwidth / audio), on its
+   * own toolbar line. Hidden unless developer options are on.
+   */
+  @Builder
+  toolbarTelemetry() {
+    Row() {
+      Text(this.rttLabel())
+        .fontSize(12)
+        .fontColor(this.thresholdColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS))
+        .width(METRIC_WIDTH_NETWORK)
+        .maxLines(1)
+      Text(this.localLabel())
+        .fontSize(12)
+        .fontColor(this.thresholdColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS))
+        .width(METRIC_WIDTH_LOCAL)
+        .margin({ left: METRIC_GAP_TIGHT })
+        .maxLines(1)
+        .bindTips(this.localTips(), this.tipsOptions)
+      Text(this.fpsLabel())
+        .fontSize(12)
+        .fontColor(TOOLBAR_FG_SECONDARY)
+        .width(METRIC_WIDTH_FPS)
+        .margin({ left: METRIC_GAP_GROUP })
+        .maxLines(1)
+      if (this.hasBandwidth()) {
+        Text(this.bandwidthLabel())
+          .fontSize(12)
+          .fontColor(TOOLBAR_FG_SECONDARY)
+          .margin({ left: METRIC_GAP_GROUP })
+      }
+      if (this.metricsAudioRateHz > 0) {
+        Text(this.audioLabel())
+          .fontSize(12)
+          .fontColor(this.audioColor())
+          .width(METRIC_WIDTH_AUDIO)
+          .margin({ left: METRIC_GAP_GROUP })
+          .maxLines(1)
+      }
+    }
+    .width('100%')
+    .height(TOOLBAR_TELEMETRY_HEIGHT)
+    .padding({ left: 16, right: 16 })
   }
 
   build() {
