@@ -61,6 +61,11 @@ Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
 std::mutex g_frameBeginMutex;
 std::unordered_map<RdpgfxClientContext*, std::function<void()>> g_frameBeginHooks;
 
+// The START_FRAME-only hooks (see GfxWorkSetStartFrameHook): the live session's
+// frame-rate cap runs there. Same per-context keying as the frame-begin hooks.
+std::mutex g_startFrameMutex;
+std::unordered_map<RdpgfxClientContext*, std::function<void()>> g_startFrameHooks;
+
 // Runs that context's hook, when one is installed. Called before *every* command
 // that can write the desktop, not only at START_FRAME: the wire carries surface
 // commands outside a GFX frame too (the RDPGFX stream does not have to bracket
@@ -81,10 +86,31 @@ void RunFrameBeginHook(RdpgfxClientContext* gfx) {
   }
 }
 
+// Runs that context's START_FRAME hook, when one is installed (see
+// GfxWorkSetStartFrameHook). This is the one point that is both once per frame
+// and still before the frame's decode, which is what the frame-rate cap paces.
+void RunStartFrameHook(RdpgfxClientContext* gfx) {
+  std::function<void()> hook;
+  {
+    std::lock_guard<std::mutex> lock(g_startFrameMutex);
+    const auto it = g_startFrameHooks.find(gfx);
+    if (it != g_startFrameHooks.end()) {
+      hook = it->second;
+    }
+  }
+  if (hook) {
+    hook();
+  }
+}
+
 UINT MeterStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* startFrame) {
   // Earliest point of the frame: the previous frame's read of the desktop buffer
   // has to drain before this frame writes it (see GfxWorkSetFrameBeginHook).
   RunFrameBeginHook(gfx);
+  // Then the frame-rate cap, once per frame and before the decode: the frame's
+  // acknowledge is written when it ends, so the server only sees this frame once
+  // the pacer has released it.
+  RunStartFrameHook(gfx);
   const pcRdpgfxStartFrame original = GfxOriginal(gfx, &GfxOriginals::StartFrame);
   return original != nullptr ? original(gfx, startFrame) : CHANNEL_RC_OK;
 }
@@ -455,6 +481,10 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
     std::lock_guard<std::mutex> hookLock(g_frameBeginMutex);
     g_frameBeginHooks.erase(gfx);
   }
+  {
+    std::lock_guard<std::mutex> hookLock(g_startFrameMutex);
+    g_startFrameHooks.erase(gfx);
+  }
 }
 
 void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> hook) {
@@ -466,6 +496,18 @@ void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> ho
     g_frameBeginHooks[gfx] = std::move(hook);
   } else {
     g_frameBeginHooks.erase(gfx);
+  }
+}
+
+void GfxWorkSetStartFrameHook(RdpgfxClientContext* gfx, std::function<void()> hook) {
+  if (gfx == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_startFrameMutex);
+  if (hook) {
+    g_startFrameHooks[gfx] = std::move(hook);
+  } else {
+    g_startFrameHooks.erase(gfx);
   }
 }
 

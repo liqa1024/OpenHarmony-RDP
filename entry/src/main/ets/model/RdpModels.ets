@@ -29,6 +29,9 @@ export class AdvancedProfile {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   ignoreCertificate: boolean = true;
+  // Frame-rate cap in frames per second; 0 leaves the remote frame rate to the
+  // server. Frames above the cap are never decoded (see RdpOptions.maxFps).
+  maxFps: number = 0;
 }
 
 export enum RdpEvent {
@@ -89,6 +92,8 @@ export class RdpConnectOptions implements RdpOptions {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   enableRemoteFx: boolean = true;
+  // Frame-rate cap in frames per second (0 = uncapped).
+  maxFps: number = 0;
   performanceFlags: number = 0;
   gatewayHost: string = '';
   gatewayPort: number = 443;
@@ -213,6 +218,7 @@ export class SavedConnection extends RdpConnectOptions {
     conn.enableGfx = options.enableGfx;
     conn.enableH264 = options.enableH264;
     conn.enableRemoteFx = options.enableRemoteFx;
+    conn.maxFps = options.maxFps;
     conn.performanceFlags = options.performanceFlags;
     conn.gatewayHost = options.gatewayHost;
     conn.gatewayPort = options.gatewayPort;
@@ -233,6 +239,7 @@ export class SavedConnection extends RdpConnectOptions {
     options.enableGfx = this.enableGfx;
     options.enableH264 = this.enableH264;
     options.enableRemoteFx = this.enableRemoteFx;
+    options.maxFps = this.maxFps;
     options.performanceFlags = this.performanceFlags;
     options.gatewayHost = this.gatewayHost;
     options.gatewayPort = this.gatewayPort;

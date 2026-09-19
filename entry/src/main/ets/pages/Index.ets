@@ -160,6 +160,7 @@ struct Index {
     options.enableGfx = advanced.enableGfx;
     options.enableH264 = advanced.enableH264;
     options.ignoreCertificate = advanced.ignoreCertificate;
+    options.maxFps = advanced.maxFps;
     const password: string = await CredentialStore.loadPassword(conn.id);
     options.password = password;
     const request: PendingConnection = new PendingConnection();

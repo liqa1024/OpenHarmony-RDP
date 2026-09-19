@@ -51,6 +51,7 @@ class ExportedConnection {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   enableRemoteFx: boolean = true;
+  maxFps: number = 0;
   performanceFlags: number = 0;
   gatewayHost: string = '';
   gatewayPort: number = 443;
@@ -75,6 +76,7 @@ class ExportedConnection {
     item.enableGfx = conn.enableGfx;
     item.enableH264 = conn.enableH264;
     item.enableRemoteFx = conn.enableRemoteFx;
+    item.maxFps = conn.maxFps;
     item.performanceFlags = conn.performanceFlags;
     item.gatewayHost = conn.gatewayHost;
     item.gatewayPort = conn.gatewayPort;
@@ -101,6 +103,7 @@ class ExportedConnection {
     item.enableGfx = ConfigTransfer.readBoolean(rec, 'enableGfx', true);
     item.enableH264 = ConfigTransfer.readBoolean(rec, 'enableH264', true);
     item.enableRemoteFx = ConfigTransfer.readBoolean(rec, 'enableRemoteFx', true);
+    item.maxFps = ConfigTransfer.readNumber(rec, 'maxFps', 0);
     item.performanceFlags = ConfigTransfer.readNumber(rec, 'performanceFlags', 0);
     item.gatewayHost = ConfigTransfer.readString(rec, 'gatewayHost', '');
     item.gatewayPort = ConfigTransfer.readNumber(rec, 'gatewayPort', 443);
@@ -127,6 +130,7 @@ class ExportedConnection {
     conn.enableGfx = this.enableGfx;
     conn.enableH264 = this.enableH264;
     conn.enableRemoteFx = this.enableRemoteFx;
+    conn.maxFps = this.maxFps;
     conn.performanceFlags = this.performanceFlags;
     conn.gatewayHost = this.gatewayHost;
     conn.gatewayPort = this.gatewayPort > 0 ? this.gatewayPort : 443;
@@ -353,6 +357,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'enableH264', settings.enableH264);
     settings.ignoreCertificate =
       ConfigTransfer.readBoolean(rec, 'ignoreCertificate', settings.ignoreCertificate);
+    settings.maxFps =
+      ConfigTransfer.readNumber(rec, 'maxFps', settings.maxFps);
     return settings;
   }
 

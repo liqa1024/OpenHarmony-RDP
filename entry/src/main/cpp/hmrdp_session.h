@@ -87,6 +87,11 @@ struct RdpOptions {
   bool enableGfx = true;
   bool enableH264 = true;
   bool enableRemoteFx = true;
+  // Frame-rate cap in frames per second (0 = uncapped). Frames above the cap are
+  // never decoded: the cap holds each RDPGFX frame back before its decode, and
+  // the frame acknowledge the server waits for is only written when that frame
+  // ends (native/scripts/patch-steps/09-tcp-frameloop-qos.ps1).
+  int maxFps = 0;
   int performanceFlags = 0;
   std::string gatewayHost;
   int gatewayPort = 443;
@@ -181,6 +186,12 @@ class Session {
   //   * HandleFrameBegin at the GFX START_FRAME (before this frame's writes),
   //   * HandleBeginPaint at gdi's BeginPaint (before the compose).
   void HandleFrameBegin();
+  // Runs once per frame at the GFX START_FRAME, before the frame is decoded: the
+  // frame-rate cap (`maxFps`) sleeps here until this frame's slot opens. Because
+  // the frame acknowledge is written when this frame ends, holding the frame here
+  // is what the server sees as the client's frame rate - it then sends fewer
+  // frames, so the ones above the cap are never decoded at all.
+  void HandleStartFrame();
   void HandleBeginPaint();
   void HandleEndPaint();
   void HandleDesktopResize();
@@ -255,6 +266,11 @@ class Session {
   // offline replay so the two figures are comparable).
   GfxWorkMeter meter_;
   void* gfxContext_ = nullptr;
+  // Frame-rate cap read from the connect options (0 = uncapped), and the release
+  // stamp of the last frame it let through. Both are touched only on the GFX
+  // thread (the START_FRAME hook), except for the connect-time write.
+  int maxFps_ = 0;
+  uint64_t lastFramePaceUs_ = 0;
   // Recent audio (lost,total) byte counts, one slot per metric window, summed to
   // give a short-term glitch rate instead of a cumulative counter.
   uint64_t audioLostWindow_[5] = {0};

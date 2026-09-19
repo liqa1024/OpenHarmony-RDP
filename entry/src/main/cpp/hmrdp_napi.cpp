@@ -257,6 +257,7 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.enableGfx = GetBoolProperty(env, args[1], "enableGfx", true);
   options.enableH264 = GetBoolProperty(env, args[1], "enableH264", true);
   options.enableRemoteFx = GetBoolProperty(env, args[1], "enableRemoteFx", true);
+  options.maxFps = GetIntProperty(env, args[1], "maxFps", 0);
   options.performanceFlags = GetIntProperty(env, args[1], "performanceFlags", 0);
   options.gatewayHost = GetStringProperty(env, args[1], "gatewayHost");
   options.gatewayPort = GetIntProperty(env, args[1], "gatewayPort", 443);

@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -146,6 +147,12 @@ std::atomic<bool> g_useRdpCursor{true};
 uint64_t NowMs() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+uint64_t NowUs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
@@ -1552,6 +1559,10 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     // calls after the frame's decode - see GfxWorkSetFrameBeginHook).
     Session* session = ctx->session;
     GfxWorkSetFrameBeginHook(gfx, [session]() { session->HandleFrameBegin(); });
+    // The frame-rate cap runs once per frame, at START_FRAME and before the
+    // decode: the frame's acknowledge is written when it ends, so this is what
+    // makes the server send fewer frames (HandleStartFrame).
+    GfxWorkSetStartFrameHook(gfx, [session]() { session->HandleStartFrame(); });
     ctx->session->SetGfxContext(gfx);
   }
 }
@@ -2053,6 +2064,11 @@ bool Session::Connect(const RdpOptions& options) {
     freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags,
                                 static_cast<uint32_t>(options.performanceFlags));
   }
+  // Frame-rate cap: not a FreeRDP setting, this session's START_FRAME hook
+  // applies it (HandleStartFrame). Reset the schedule so a reconnect starts
+  // uncapped until its first frame.
+  maxFps_ = options.maxFps > 0 ? options.maxFps : 0;
+  lastFramePaceUs_ = 0;
   freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
   freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
   // Enables the RDPEI (touch/pen input) channel so ArkUI touch events can be
@@ -2235,6 +2251,36 @@ void Session::Disconnect() {
 
 void Session::HandlePostConnect() {
   Emit(SessionEvent::kConnected, "");
+}
+
+void Session::HandleStartFrame() {
+  // Frame-rate cap (doc_agent/settings-and-storage.md §2). Runs on the GFX
+  // channel thread, once per frame and before its decode: a frame released early
+  // is held until its slot opens. Frames above the cap are therefore never
+  // decoded - the frame acknowledge the server waits for is written when the
+  // frame ends, so the server only sends the next one after we let this one
+  // through. The period is max(1/maxFps, the frame's own work + the round trip),
+  // so the cap only ever lowers the frame rate, never raises it.
+  const int maxFps = maxFps_;
+  if (maxFps <= 0) {
+    return;
+  }
+  const uint64_t intervalUs = 1000000ull / static_cast<uint64_t>(maxFps);
+  const uint64_t now = NowUs();
+  if (lastFramePaceUs_ != 0) {
+    const uint64_t deadlineUs = lastFramePaceUs_ + intervalUs;
+    if (now < deadlineUs) {
+      const uint64_t sleepUs = deadlineUs - now;
+      std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
+      // Blocked time, not client work, and it falls inside the pending
+      // `zgx+parse` window (this hook runs before the frame's first command
+      // closes it): hand it out so `本机` does not absorb it (hmrdp_gfx_work.h).
+      meter_.OnBlockedBeforeFrameWork(sleepUs);
+    }
+  }
+  // Wall clock, not the requested deadline: a frame whose own work overran the
+  // interval must not push every later frame behind as well.
+  lastFramePaceUs_ = NowUs();
 }
 
 void Session::HandleFrameBegin() {

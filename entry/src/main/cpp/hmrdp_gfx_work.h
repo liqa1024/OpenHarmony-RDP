@@ -200,6 +200,21 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx);
 // zero-copy upload unprotected. Pass nullptr to remove that context's hook.
 void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> hook);
 
+// A hook run at RDPGFX START_FRAME and nowhere else, i.e. once per frame and
+// still *before* that frame is decoded.
+//
+// The frame-rate cap needs exactly this point: the frame acknowledge that paces
+// the server is written when this frame ends (see the ack patch in
+// native/scripts/patch-steps/09-tcp-frameloop-qos.ps1), so holding the frame back
+// here is what the server sees as the client's frame rate. Running at every
+// write command instead (GfxWorkSetFrameBeginHook) would pace out-of-frame
+// surface updates too, which are not frames.
+//
+// Keyed by the GFX context, like the frame-begin hook: the live session owns
+// one and installs a pacer; the offline replay installs none. Pass nullptr to
+// remove that context's hook.
+void GfxWorkSetStartFrameHook(RdpgfxClientContext* gfx, std::function<void()> hook);
+
 }  // namespace hmrdp
 
 #endif  // HMRDP_GFX_WORK_H
