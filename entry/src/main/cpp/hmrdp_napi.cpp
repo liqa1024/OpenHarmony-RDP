@@ -259,6 +259,10 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.enableRemoteFx = GetBoolProperty(env, args[1], "enableRemoteFx", true);
   options.maxFps = GetIntProperty(env, args[1], "maxFps", 0);
   options.srEnabled = GetBoolProperty(env, args[1], "srEnabled", false);
+  // 0 = XEngine (the platform upscaler), 1 = the presenter's own FSR.
+  options.srBackend = GetIntProperty(env, args[1], "srBackend", 0) == 1
+                          ? hmrdp::SuperResolutionBackend::kFsr
+                          : hmrdp::SuperResolutionBackend::kXengine;
   options.srRatioPercent = GetIntProperty(env, args[1], "srRatioPercent", 0);
   options.performanceFlags = GetIntProperty(env, args[1], "performanceFlags", 0);
   options.gatewayHost = GetStringProperty(env, args[1], "gatewayHost");
@@ -872,6 +876,27 @@ napi_value SuperResolutionSupport(napi_env env, napi_callback_info) {
   return result;
 }
 
+// Which 超分 backends this build and device can actually run, as a comma-separated
+// list: "xengine", "fsr", "xengine,fsr", or "" when none. The UI greys out the
+// missing ones; superResolutionSupport carries the reason when the list is empty.
+napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
+  const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
+  std::string out;
+  if (caps.srXengineSupported) {
+    out = "xengine";
+  }
+  if (caps.srFsrSupported) {
+    if (!out.empty()) {
+      out += ",";
+    }
+    out += "fsr";
+  }
+  HMRDP_LOGI("super resolution backends: %{public}s", out.empty() ? "-" : out.c_str());
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -949,6 +974,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"vulkanAccelSupport", nullptr, VulkanAccelSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"superResolutionSupport", nullptr, SuperResolutionSupport, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"superResolutionBackends", nullptr, SuperResolutionBackends, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };
 

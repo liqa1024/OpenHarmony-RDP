@@ -155,3 +155,4 @@ export const vulkanAccelSupport: () => string;
  * presenter, so the caller must also check `vulkanAccelSupport`.
  */
 export const superResolutionSupport: () => string;
+export const superResolutionBackends: () => string;

@@ -508,22 +508,42 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
              caps->presenterSupported ? 1 : 0,
              caps->presenterUnsupportedCode.empty() ? "-" : caps->presenterUnsupportedCode.c_str());
 
-  // 超分 verdict: the upscale renders into a presenter image, so the presenter
-  // verdict is a prerequisite; then the device has to offer XEG_spatial_upscale.
+  // 超分 verdicts: both backends upscale into a presenter image, so the presenter
+  // verdict is the prerequisite for either. Past that, FSR is a build question
+  // (its shaders ship in the .so) and XEngine needs the device feature.
+  caps->srFsrSupported = false;
+  caps->srXengineSupported = false;
+  caps->srXengineUnsupportedCode.clear();
   caps->srSupported = false;
   caps->srUnsupportedCode.clear();
   if (!caps->presenterSupported) {
-    caps->srUnsupportedCode = caps->presenterUnsupportedCode.empty()
-                                  ? "no-surface"
-                                  : caps->presenterUnsupportedCode;
-  } else if (!caps->xegLibrary) {
-    caps->srUnsupportedCode = "no-xengine";
-  } else if (!caps->xegSpatialUpscale) {
-    caps->srUnsupportedCode = "no-extension";
+    const std::string code = caps->presenterUnsupportedCode.empty()
+                                 ? "no-surface"
+                                 : caps->presenterUnsupportedCode;
+    caps->srUnsupportedCode = code;
+    caps->srXengineUnsupportedCode = code;
   } else {
-    caps->srSupported = true;
+#if defined(HMRDP_HAVE_FSR)
+    caps->srFsrSupported = true;
+#endif
+    if (!caps->xegLibrary) {
+      caps->srXengineUnsupportedCode = "no-xengine";
+    } else if (!caps->xegSpatialUpscale) {
+      caps->srXengineUnsupportedCode = "no-extension";
+    } else {
+      caps->srXengineSupported = true;
+    }
+    if (caps->srFsrSupported || caps->srXengineSupported) {
+      caps->srSupported = true;
+    } else {
+      caps->srUnsupportedCode = caps->srXengineUnsupportedCode.empty()
+                                    ? "no-extension"
+                                    : caps->srXengineUnsupportedCode;
+    }
   }
-  HMRDP_LOGI("vulkan verdict: sr=%{public}d(%{public}s)", caps->srSupported ? 1 : 0,
+  HMRDP_LOGI("vulkan verdict: sr=%{public}d(fsr=%{public}d,xengine=%{public}d,%{public}s)",
+             caps->srSupported ? 1 : 0, caps->srFsrSupported ? 1 : 0,
+             caps->srXengineSupported ? 1 : 0,
              caps->srUnsupportedCode.empty() ? "-" : caps->srUnsupportedCode.c_str());
 }
 

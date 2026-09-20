@@ -214,12 +214,17 @@ struct VulkanCapabilities {
   bool presenterSupported = false;
   std::string presenterUnsupportedCode;
 
-  // --- Super resolution (超分) verdict ---------------------------------------
-  // Whether XEngine's GPU spatial upscale can be used here. 超分 rides on the
-  // Vulkan presenter (the upscale renders into a presenter image), so the
-  // presenter verdict comes first; then the device must advertise the
-  // XEG_spatial_upscale extension. `srUnsupportedCode` is the presenter code, or
-  // "no-xengine" / "no-extension".
+  // --- Super resolution (超分) verdicts ---------------------------------------
+  // 超分 rides on the Vulkan presenter (both backends render into a presenter
+  // image), so the presenter verdict comes first. On top of that, FSR needs only
+  // the presenter's own pipeline - a build-time question, not a device one - while
+  // XEngine needs the device's XEG_spatial_upscale extension. `srSupported` means
+  // "at least one backend", with `srUnsupportedCode` carrying the reason when none
+  // is; the per-backend flags let the UI offer them separately.
+  bool srFsrSupported = false;
+  bool srXengineSupported = false;
+  // "no-xengine" / "no-extension", or the presenter code when that is the blocker.
+  std::string srXengineUnsupportedCode;
   bool srSupported = false;
   std::string srUnsupportedCode;
 };

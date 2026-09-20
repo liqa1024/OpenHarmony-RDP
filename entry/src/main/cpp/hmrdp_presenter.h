@@ -28,6 +28,16 @@
 
 namespace hmrdp {
 
+// Which upscaler 超分 runs. XEngine is the platform's spatial upscale (needs the
+// device's XEG_spatial_upscale feature); FSR is AMD's FidelityFX Super Resolution
+// 1.0 (EASU + RCAS, MIT) run by the presenter itself, so it needs nothing beyond
+// the Vulkan presenter. Both take the session-resolution desktop to the output
+// resolution; the letterbox draw after them is identical.
+enum class SuperResolutionBackend {
+  kXengine = 0,
+  kFsr = 1,
+};
+
 // One changed region of the desktop, in desktop pixels. A present receives the
 // whole list of regions FreeRDP invalidated for this frame, not their merged
 // bounding box: the box of a handful of scattered updates can be several times
@@ -84,13 +94,15 @@ class FramePresenter {
 
   // --- 超分 (super resolution) ---------------------------------------------------
   // The session renders at a lower resolution and the presenter upscales each
-  // frame back to outputWidth x outputHeight before the letterbox. Only the
-  // Vulkan backend implements it (the GLES fallback is compatibility-only, with
-  // no 超分), and the request is remembered until the device and desktop size are
-  // known, so it is called at connect time - before any surface exists. Default
+  // frame back to outputWidth x outputHeight before the letterbox, with `backend`.
+  // Only the Vulkan backend implements it (the GLES fallback is compatibility-only,
+  // with no 超分), and the request is remembered until the device and desktop size
+  // are known, so it is called at connect time - before any surface exists. Default
   // no-op.
-  virtual void SetSuperResolution(bool enabled, int outputWidth, int outputHeight) {
+  virtual void SetSuperResolution(bool enabled, SuperResolutionBackend backend, int outputWidth,
+                                  int outputHeight) {
     (void)enabled;
+    (void)backend;
     (void)outputWidth;
     (void)outputHeight;
   }

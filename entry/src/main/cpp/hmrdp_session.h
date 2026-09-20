@@ -98,6 +98,9 @@ struct RdpOptions {
   // upscales each frame back to the output resolution (no-op on the GLES
   // presenter). See SettingsStore.defaultScalePercent for the matching scale.
   bool srEnabled = false;
+  // Which upscaler runs when `srEnabled` is on: the platform's XEngine, or the
+  // presenter's own FSR (see hmrdp_presenter.h). Ignored when 超分 is off.
+  SuperResolutionBackend srBackend = SuperResolutionBackend::kXengine;
   int srRatioPercent = 0;
   int performanceFlags = 0;
   std::string gatewayHost;

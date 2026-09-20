@@ -2195,13 +2195,15 @@ bool Session::Connect(const RdpOptions& options) {
       desktopMagnification_ = 1.0;
     }
     if (presenter_ != nullptr) {
-      presenter_->SetSuperResolution(true, options.width, options.height);
+      presenter_->SetSuperResolution(true, options.srBackend, options.width, options.height);
     }
-    HMRDP_LOGI("session %{public}dx%{public}d (super resolution %{public}d%% -> %{public}dx%{public}d)",
-               options.width, options.height, options.srRatioPercent, sessionWidth,
-               sessionHeight);
+    HMRDP_LOGI("session %{public}dx%{public}d (super resolution %{public}s %{public}d%% -> "
+               "%{public}dx%{public}d)",
+               options.width, options.height,
+               options.srBackend == SuperResolutionBackend::kFsr ? "fsr" : "xengine",
+               options.srRatioPercent, sessionWidth, sessionHeight);
   } else if (presenter_ != nullptr) {
-    presenter_->SetSuperResolution(false, 0, 0);
+    presenter_->SetSuperResolution(false, options.srBackend, 0, 0);
   }
   AppendArg(args, "/w:" + std::to_string(sessionWidth));
   AppendArg(args, "/h:" + std::to_string(sessionHeight));

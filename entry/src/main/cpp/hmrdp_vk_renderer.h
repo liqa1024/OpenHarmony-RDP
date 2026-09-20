@@ -65,7 +65,8 @@ class VkRenderer : public FramePresenter {
   // is stored here and the resources are (re)created on the next frame, because
   // the device and the desktop size only exist once a surface is up. No-op when
   // the device cannot do it, which leaves the plain desktop letterbox in place.
-  void SetSuperResolution(bool enabled, int outputWidth, int outputHeight) override;
+  void SetSuperResolution(bool enabled, SuperResolutionBackend backend, int outputWidth,
+                          int outputHeight) override;
   // Blocked part of the presents since the last call: the fence wait +
   // vkAcquireNextImageKHR in AcquireFrameLocked (waiting for a swapchain image is
   // display backpressure, not client work). See hmrdp_presenter.h.
@@ -133,7 +134,19 @@ class VkRenderer : public FramePresenter {
   // session desktop size changes; `srFailed_` latches a failure so a device that
   // rejects the configuration is not retried on every frame.
   bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight);
+  // The two implementations behind EnsureSuperResolutionLocked: XEngine's own
+  // object, or the FSR pipeline (EASU into an intermediate image, RCAS into
+  // `srImage_`). Both leave the letterbox draw sampling `srImageView_`.
+  bool EnsureXengineLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
+  bool EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
+  // Records whichever upscale `srBackend_` selected into the frame's command
+  // buffer, including the barriers around it. False when nothing could be recorded.
+  bool RecordSuperResolutionLocked(VkCommandBuffer cmd);
   void DestroySuperResolutionLocked();
+  // The FSR-only resources (render pass, pipelines, descriptors, intermediate
+  // image). `srImage_`/`srImageView_` belong to the shared state above and survive
+  // a backend switch.
+  void DestroyFsrLocked();
 
   // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;
@@ -236,6 +249,7 @@ class VkRenderer : public FramePresenter {
   // 超分 state (see SetSuperResolution). `srRequested_`/`srOutput*` come from the
   // connect options; the rest is built on demand once the device is up.
   bool srRequested_ = false;
+  SuperResolutionBackend srBackend_ = SuperResolutionBackend::kXengine;
   int srOutputWidth_ = 0;
   int srOutputHeight_ = 0;
   bool srFailed_ = false;
@@ -247,6 +261,36 @@ class VkRenderer : public FramePresenter {
   int srImageHeight_ = 0;
   int srInputWidth_ = 0;
   int srInputHeight_ = 0;
+
+  // FSR backend (see EnsureFsrLocked). EASU reads the desktop image and writes the
+  // intermediate, RCAS reads that and writes `srImage_`; one render pass covers
+  // both because both targets are kPictureFormat. The whole set is rebuilt with the
+  // desktop image, so its descriptors never outlive the views they bind.
+  VkRenderPass fsrRenderPass_ = VK_NULL_HANDLE;
+  VkSampler fsrSampler_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout fsrSetLayout_ = VK_NULL_HANDLE;
+  VkPipelineLayout fsrPipelineLayout_ = VK_NULL_HANDLE;
+  VkDescriptorPool fsrPool_ = VK_NULL_HANDLE;
+  VkDescriptorSet fsrEasuSet_ = VK_NULL_HANDLE;
+  VkDescriptorSet fsrRcasSet_ = VK_NULL_HANDLE;
+  VkPipeline fsrEasuPipeline_ = VK_NULL_HANDLE;
+  VkPipeline fsrRcasPipeline_ = VK_NULL_HANDLE;
+  VkImage fsrEasuImage_ = VK_NULL_HANDLE;
+  VkDeviceMemory fsrEasuImageMemory_ = VK_NULL_HANDLE;
+  VkImageView fsrEasuImageView_ = VK_NULL_HANDLE;
+  VkFramebuffer fsrEasuFramebuffer_ = VK_NULL_HANDLE;
+  VkFramebuffer fsrRcasFramebuffer_ = VK_NULL_HANDLE;
+  // One uniform block per pass: the passes build their own FSR constants from these
+  // plain floats (FsrEasuCon/FsrRcasCon run in the shader), so nothing here needs
+  // the half-float packing the CPU-side constant setup would.
+  static constexpr size_t kFsrParamsBytes = 16 * sizeof(float);
+  VkBuffer fsrEasuParams_ = VK_NULL_HANDLE;
+  VkDeviceMemory fsrEasuParamsMemory_ = VK_NULL_HANDLE;
+  void* fsrEasuParamsMapped_ = nullptr;
+  VkBuffer fsrRcasParams_ = VK_NULL_HANDLE;
+  VkDeviceMemory fsrRcasParamsMemory_ = VK_NULL_HANDLE;
+  void* fsrRcasParamsMapped_ = nullptr;
+  bool fsrParamsCoherent_ = false;
 };
 
 }  // namespace hmrdp

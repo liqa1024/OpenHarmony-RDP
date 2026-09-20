@@ -12,6 +12,11 @@
 #include "present_quad.frag.h"
 #include "present_quad.vert.h"
 
+#if defined(HMRDP_HAVE_FSR)
+#include "fsr_easu.frag.h"
+#include "fsr_rcas.frag.h"
+#endif
+
 #include "hmrdp_log.h"
 
 namespace hmrdp {
@@ -94,6 +99,13 @@ constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
 // ringing, and is what the platform samples use.
 constexpr float kSrSharpness = 0.2f;
 
+// FSR: RCAS sharpening, in "stops" - 0.0 is the maximum and N halves it N times.
+// The value AMD's own FSR 1.0 samples ship with; maximum sharpening is left alone
+// because it rings around glyph edges in text-heavy desktop content.
+#if defined(HMRDP_HAVE_FSR)
+constexpr float kFsrSharpnessStops = 0.2f;
+#endif
+
 // Clips the caller's rects to the desktop and drops the empty ones, writing at
 // most `capacity` entries to `out`. Returns the number written (0 when nothing
 // remains visible). When the input is longer than `capacity` the union bounding
@@ -155,6 +167,158 @@ int ClipUploadRects(const PresentRect* rects, int count, int desktopWidth, int d
   }
   return n;
 }
+
+// The FSR backend's images are plain sampled colour targets, so this pair covers
+// both of them. Optimal tiling, device-local, left in VK_IMAGE_LAYOUT_UNDEFINED.
+#if defined(HMRDP_HAVE_FSR)
+bool CreateDeviceImage(VkApi& api, VkContext& context, VkFormat format, int width, int height,
+                       VkImageUsageFlags usage, VkImage* image, VkDeviceMemory* memory) {
+  const VkDevice device = context.device();
+  VkImageCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = format;
+  info.extent.width = static_cast<uint32_t>(width);
+  info.extent.height = static_cast<uint32_t>(height);
+  info.extent.depth = 1;
+  info.mipLevels = 1;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = usage;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (api.CreateImage(device, &info, nullptr, image) != VK_SUCCESS) {
+    *image = VK_NULL_HANDLE;
+    return false;
+  }
+  VkMemoryRequirements req{};
+  api.GetImageMemoryRequirements(device, *image, &req);
+  const uint32_t typeIndex =
+      context.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (typeIndex == UINT32_MAX) {
+    api.DestroyImage(device, *image, nullptr);
+    *image = VK_NULL_HANDLE;
+    return false;
+  }
+  VkMemoryAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.allocationSize = req.size;
+  alloc.memoryTypeIndex = typeIndex;
+  if (api.AllocateMemory(device, &alloc, nullptr, memory) != VK_SUCCESS) {
+    api.DestroyImage(device, *image, nullptr);
+    *image = VK_NULL_HANDLE;
+    return false;
+  }
+  if (api.BindImageMemory(device, *image, *memory, 0) != VK_SUCCESS) {
+    api.FreeMemory(device, *memory, nullptr);
+    api.DestroyImage(device, *image, nullptr);
+    *image = VK_NULL_HANDLE;
+    *memory = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
+}
+
+bool CreateImageView2D(VkApi& api, VkContext& context, VkFormat format, VkImage image,
+                       VkImageView* view) {
+  VkImageViewCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  info.image = image;
+  info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  info.format = format;
+  info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  info.subresourceRange.levelCount = 1;
+  info.subresourceRange.layerCount = 1;
+  return api.CreateImageView(context.device(), &info, nullptr, view) == VK_SUCCESS;
+}
+
+// One fullscreen-triangle pipeline for an FSR pass. It shares present_quad.vert
+// (the passes only need gl_FragCoord) and differs from the letterbox pipeline only
+// in its fragment stage and its pipeline layout.
+bool CreateFsrPipeline(VkApi& api, VkDevice device, VkRenderPass pass, VkPipelineLayout layout,
+                       const uint32_t* fragSpv, uint32_t fragWords, VkPipeline* out) {
+  VkShaderModule vert = VK_NULL_HANDLE;
+  VkShaderModule frag = VK_NULL_HANDLE;
+  VkShaderModuleCreateInfo shaderInfo{};
+  shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shaderInfo.codeSize = kPresentQuadVertSpvWords * sizeof(uint32_t);
+  shaderInfo.pCode = kPresentQuadVertSpv;
+  if (api.CreateShaderModule(device, &shaderInfo, nullptr, &vert) != VK_SUCCESS) {
+    return false;
+  }
+  shaderInfo.codeSize = fragWords * sizeof(uint32_t);
+  shaderInfo.pCode = fragSpv;
+  if (api.CreateShaderModule(device, &shaderInfo, nullptr, &frag) != VK_SUCCESS) {
+    api.DestroyShaderModule(device, vert, nullptr);
+    return false;
+  }
+  VkPipelineShaderStageCreateInfo stages[2] = {};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.scissorCount = 1;
+  VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount = 2;
+  dynamicState.pDynamicStates = dynamicStates;
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.blendEnable = VK_FALSE;
+  blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo blend{};
+  blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  blend.attachmentCount = 1;
+  blend.pAttachments = &blendAttachment;
+
+  VkGraphicsPipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  info.stageCount = 2;
+  info.pStages = stages;
+  info.pVertexInputState = &vertexInput;
+  info.pInputAssemblyState = &inputAssembly;
+  info.pViewportState = &viewportState;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &multisample;
+  info.pColorBlendState = &blend;
+  info.pDynamicState = &dynamicState;
+  info.layout = layout;
+  info.renderPass = pass;
+  info.subpass = 0;
+  const VkResult result = api.CreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, out);
+  api.DestroyShaderModule(device, vert, nullptr);
+  api.DestroyShaderModule(device, frag, nullptr);
+  return result == VK_SUCCESS;
+}
+#endif  // HMRDP_HAVE_FSR
 
 }  // namespace
 
@@ -968,11 +1132,13 @@ void VkRenderer::DestroyDesktopImageLocked() {
   desktopImageFullUpload_ = true;
 }
 
-void VkRenderer::SetSuperResolution(bool enabled, int outputWidth, int outputHeight) {
+void VkRenderer::SetSuperResolution(bool enabled, SuperResolutionBackend backend, int outputWidth,
+                                    int outputHeight) {
   std::lock_guard<std::mutex> lock(mutex_);
-  const bool changed = srRequested_ != enabled || srOutputWidth_ != outputWidth ||
-                       srOutputHeight_ != outputHeight;
+  const bool changed = srRequested_ != enabled || srBackend_ != backend ||
+                       srOutputWidth_ != outputWidth || srOutputHeight_ != outputHeight;
   srRequested_ = enabled;
+  srBackend_ = backend;
   srOutputWidth_ = outputWidth > 0 ? outputWidth : 0;
   srOutputHeight_ = outputHeight > 0 ? outputHeight : 0;
   if (changed) {
@@ -981,8 +1147,10 @@ void VkRenderer::SetSuperResolution(bool enabled, int outputWidth, int outputHei
     srFailed_ = false;
     DestroySuperResolutionLocked();
   }
-  HMRDP_LOGI("vulkan presenter: super resolution %{public}s (output %{public}dx%{public}d)",
-             enabled ? "on" : "off", srOutputWidth_, srOutputHeight_);
+  HMRDP_LOGI("vulkan presenter: super resolution %{public}s (%{public}s, output %{public}dx%{public}d)",
+             enabled ? "on" : "off",
+             backend == SuperResolutionBackend::kFsr ? "fsr" : "xengine", srOutputWidth_,
+             srOutputHeight_);
 }
 
 bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight) {
@@ -996,6 +1164,14 @@ bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight) {
     // decoded desktop directly, as if 超分 were off.
     return false;
   }
+  if (srBackend_ == SuperResolutionBackend::kFsr) {
+    return EnsureFsrLocked(inputWidth, inputHeight, outputWidth, outputHeight);
+  }
+  return EnsureXengineLocked(inputWidth, inputHeight, outputWidth, outputHeight);
+}
+
+bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int outputWidth,
+                                     int outputHeight) {
   const bool match = srImageView_ != VK_NULL_HANDLE && srUpscale_.valid() &&
                      srImageWidth_ == outputWidth && srImageHeight_ == outputHeight &&
                      srInputWidth_ == inputWidth && srInputHeight_ == inputHeight;
@@ -1112,6 +1288,7 @@ bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight) {
 }
 
 void VkRenderer::DestroySuperResolutionLocked() {
+  DestroyFsrLocked();
   VkApi& api = GetVkApi();
   VkContext& context = VkContext::Instance();
   const VkDevice device = context.device();
@@ -1134,6 +1311,523 @@ void VkRenderer::DestroySuperResolutionLocked() {
   srImageHeight_ = 0;
   srInputWidth_ = 0;
   srInputHeight_ = 0;
+}
+
+bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidth,
+                                 int outputHeight) {
+#if !defined(HMRDP_HAVE_FSR)
+  (void)inputWidth;
+  (void)inputHeight;
+  (void)outputWidth;
+  (void)outputHeight;
+  // A build without the vendored headers: latch like any other refusal, so the
+  // session falls back to letterboxing the desktop directly.
+  srFailed_ = true;
+  HMRDP_LOGW("vulkan presenter: this build has no FSR shaders"
+             " (run native/scripts/fetch-sources.ps1)");
+  return false;
+#else
+  VkApi& api = GetVkApi();
+  VkContext& context = VkContext::Instance();
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE) {
+    return false;
+  }
+  const bool match = srImageView_ != VK_NULL_HANDLE && fsrRcasPipeline_ != VK_NULL_HANDLE &&
+                     srImageWidth_ == outputWidth && srImageHeight_ == outputHeight &&
+                     srInputWidth_ == inputWidth && srInputHeight_ == inputHeight;
+  if (match) {
+    return true;
+  }
+  DestroySuperResolutionLocked();
+  // Rare path (a desktop resize or a backend switch): the frames still reading the
+  // old targets must drain first. Safe here because this runs before the frame's
+  // swapchain image is acquired, so no slot's fence is pending for this frame.
+  if (inFlight_[0] != VK_NULL_HANDLE) {
+    api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
+  }
+  const auto fail = [this](const char* what) {
+    error_ = what;
+    HMRDP_LOGE("vulkan %{public}s", error_.c_str());
+    srFailed_ = true;
+    DestroySuperResolutionLocked();
+    return false;
+  };
+
+  // The letterbox samples this one, exactly as it does on the XEngine path.
+  if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         &srImage_, &srImageMemory_)) {
+    return fail("FSR: output image allocation failed");
+  }
+  if (!CreateImageView2D(api, context, kPictureFormat, srImage_, &srImageView_)) {
+    return fail("FSR: output image view failed");
+  }
+  // EASU's target, which RCAS then reads.
+  if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         &fsrEasuImage_, &fsrEasuImageMemory_)) {
+    return fail("FSR: EASU image allocation failed");
+  }
+  if (!CreateImageView2D(api, context, kPictureFormat, fsrEasuImage_, &fsrEasuImageView_)) {
+    return fail("FSR: EASU image view failed");
+  }
+
+  // One render pass serves both passes: both targets are kPictureFormat and both
+  // are fully overwritten, so nothing has to be loaded.
+  {
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = kPictureFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // The next stage samples it (RCAS, then the letterbox), so leave it in GENERAL
+    // like the rest of the presenter's images.
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkRenderPassCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    info.attachmentCount = 1;
+    info.pAttachments = &colorAttachment;
+    info.subpassCount = 1;
+    info.pSubpasses = &subpass;
+    info.dependencyCount = 1;
+    info.pDependencies = &dependency;
+    if (api.CreateRenderPass(device, &info, nullptr, &fsrRenderPass_) != VK_SUCCESS) {
+      return fail("FSR: vkCreateRenderPass failed");
+    }
+  }
+  const VkExtent2D extent{static_cast<uint32_t>(outputWidth),
+                          static_cast<uint32_t>(outputHeight)};
+  const auto make_framebuffer = [&](VkImageView view, VkFramebuffer* out) -> bool {
+    VkFramebufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    info.renderPass = fsrRenderPass_;
+    info.attachmentCount = 1;
+    info.pAttachments = &view;
+    info.width = extent.width;
+    info.height = extent.height;
+    info.layers = 1;
+    return api.CreateFramebuffer(device, &info, nullptr, out) == VK_SUCCESS;
+  };
+  if (!make_framebuffer(fsrEasuImageView_, &fsrEasuFramebuffer_) ||
+      !make_framebuffer(srImageView_, &fsrRcasFramebuffer_)) {
+    return fail("FSR: vkCreateFramebuffer failed");
+  }
+
+  // EASU gathers four texels per tap and RCAS texel-fetches, so the filter mode is
+  // irrelevant - but the addressing has to be clamped (gather wraps otherwise).
+  {
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.magFilter = VK_FILTER_NEAREST;
+    info.minFilter = VK_FILTER_NEAREST;
+    info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    info.maxLod = 0.0f;
+    if (api.CreateSampler(device, &info, nullptr, &fsrSampler_) != VK_SUCCESS) {
+      return fail("FSR: vkCreateSampler failed");
+    }
+  }
+  {
+    VkDescriptorSetLayoutBinding bindings[2] = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[0].pImmutableSamplers = &fsrSampler_;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 2;
+    info.pBindings = bindings;
+    if (api.CreateDescriptorSetLayout(device, &info, nullptr, &fsrSetLayout_) != VK_SUCCESS) {
+      return fail("FSR: vkCreateDescriptorSetLayout failed");
+    }
+  }
+  {
+    VkPipelineLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info.setLayoutCount = 1;
+    info.pSetLayouts = &fsrSetLayout_;
+    if (api.CreatePipelineLayout(device, &info, nullptr, &fsrPipelineLayout_) != VK_SUCCESS) {
+      return fail("FSR: vkCreatePipelineLayout failed");
+    }
+  }
+  {
+    VkDescriptorPoolSize sizes[2] = {};
+    sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sizes[0].descriptorCount = 2;
+    sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    sizes[1].descriptorCount = 2;
+    VkDescriptorPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info.maxSets = 2;
+    info.poolSizeCount = 2;
+    info.pPoolSizes = sizes;
+    if (api.CreateDescriptorPool(device, &info, nullptr, &fsrPool_) != VK_SUCCESS) {
+      return fail("FSR: vkCreateDescriptorPool failed");
+    }
+    VkDescriptorSetLayout layouts[2] = {fsrSetLayout_, fsrSetLayout_};
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = fsrPool_;
+    alloc.descriptorSetCount = 2;
+    alloc.pSetLayouts = layouts;
+    VkDescriptorSet sets[2] = {};
+    if (api.AllocateDescriptorSets(device, &alloc, sets) != VK_SUCCESS) {
+      return fail("FSR: vkAllocateDescriptorSets failed");
+    }
+    fsrEasuSet_ = sets[0];
+    fsrRcasSet_ = sets[1];
+  }
+  if (!CreateFsrPipeline(api, device, fsrRenderPass_, fsrPipelineLayout_, kFsrEasuFragSpv,
+                         kFsrEasuFragSpvWords, &fsrEasuPipeline_) ||
+      !CreateFsrPipeline(api, device, fsrRenderPass_, fsrPipelineLayout_, kFsrRcasFragSpv,
+                         kFsrRcasFragSpvWords, &fsrRcasPipeline_)) {
+    return fail("FSR: vkCreateGraphicsPipelines failed");
+  }
+
+  // The uniform blocks: the passes build their FSR constants from these floats, so
+  // only the sizes and the sharpness travel. 4 x vec4 (std140) for both.
+  const auto make_params = [&](VkBuffer* buffer, VkDeviceMemory* memory, void** mapped) -> bool {
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = kFsrParamsBytes;
+    info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (api.CreateBuffer(device, &info, nullptr, buffer) != VK_SUCCESS) {
+      return false;
+    }
+    VkMemoryRequirements req{};
+    api.GetBufferMemoryRequirements(device, *buffer, &req);
+    uint32_t typeIndex = context.FindMemoryType(
+        req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    fsrParamsCoherent_ = typeIndex != UINT32_MAX;
+    if (!fsrParamsCoherent_) {
+      typeIndex = context.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    }
+    if (typeIndex == UINT32_MAX) {
+      return false;
+    }
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = typeIndex;
+    if (api.AllocateMemory(device, &alloc, nullptr, memory) != VK_SUCCESS) {
+      return false;
+    }
+    if (api.BindBufferMemory(device, *buffer, *memory, 0) != VK_SUCCESS) {
+      return false;
+    }
+    if (api.MapMemory(device, *memory, 0, kFsrParamsBytes, 0, mapped) != VK_SUCCESS ||
+        *mapped == nullptr) {
+      *mapped = nullptr;
+      return false;
+    }
+    return true;
+  };
+  if (!make_params(&fsrEasuParams_, &fsrEasuParamsMemory_, &fsrEasuParamsMapped_) ||
+      !make_params(&fsrRcasParams_, &fsrRcasParamsMemory_, &fsrRcasParamsMapped_)) {
+    return fail("FSR: parameter buffer allocation failed");
+  }
+  const size_t paramsFloats = kFsrParamsBytes / sizeof(float);
+  float* easuParams = static_cast<float*>(fsrEasuParamsMapped_);
+  float* rcasParams = static_cast<float*>(fsrRcasParamsMapped_);
+  for (size_t i = 0; i < paramsFloats; ++i) {
+    easuParams[i] = 0.0f;
+    rcasParams[i] = 0.0f;
+  }
+  // x, y of each vec4: viewport (the session desktop), the image holding it, and
+  // the resolution this pass renders at.
+  easuParams[0] = static_cast<float>(inputWidth);
+  easuParams[1] = static_cast<float>(inputHeight);
+  easuParams[4] = static_cast<float>(inputWidth);
+  easuParams[5] = static_cast<float>(inputHeight);
+  easuParams[8] = static_cast<float>(outputWidth);
+  easuParams[9] = static_cast<float>(outputHeight);
+  rcasParams[12] = kFsrSharpnessStops;
+  if (!fsrParamsCoherent_) {
+    for (VkDeviceMemory memory : {fsrEasuParamsMemory_, fsrRcasParamsMemory_}) {
+      VkMappedMemoryRange range{};
+      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      range.memory = memory;
+      range.offset = 0;
+      range.size = kFsrParamsBytes;
+      api.FlushMappedMemoryRanges(device, 1, &range);
+    }
+  }
+
+  VkDescriptorImageInfo easuInput{};
+  easuInput.sampler = fsrSampler_;
+  easuInput.imageView = desktopImageView_;
+  easuInput.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  VkDescriptorBufferInfo easuBlock{};
+  easuBlock.buffer = fsrEasuParams_;
+  easuBlock.range = kFsrParamsBytes;
+  VkDescriptorImageInfo rcasInput{};
+  rcasInput.sampler = fsrSampler_;
+  rcasInput.imageView = fsrEasuImageView_;
+  rcasInput.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  VkDescriptorBufferInfo rcasBlock{};
+  rcasBlock.buffer = fsrRcasParams_;
+  rcasBlock.range = kFsrParamsBytes;
+  VkWriteDescriptorSet writes[4] = {};
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[0].dstSet = fsrEasuSet_;
+  writes[0].dstBinding = 0;
+  writes[0].descriptorCount = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[0].pImageInfo = &easuInput;
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[1].dstSet = fsrEasuSet_;
+  writes[1].dstBinding = 1;
+  writes[1].descriptorCount = 1;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  writes[1].pBufferInfo = &easuBlock;
+  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[2].dstSet = fsrRcasSet_;
+  writes[2].dstBinding = 0;
+  writes[2].descriptorCount = 1;
+  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[2].pImageInfo = &rcasInput;
+  writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[3].dstSet = fsrRcasSet_;
+  writes[3].dstBinding = 1;
+  writes[3].descriptorCount = 1;
+  writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  writes[3].pBufferInfo = &rcasBlock;
+  api.UpdateDescriptorSets(device, 4, writes, 0, nullptr);
+
+  srImageWidth_ = outputWidth;
+  srImageHeight_ = outputHeight;
+  srInputWidth_ = inputWidth;
+  srInputHeight_ = inputHeight;
+  return true;
+#endif
+}
+
+void VkRenderer::DestroyFsrLocked() {
+  VkApi& api = GetVkApi();
+  const VkDevice device = VkContext::Instance().device();
+  if (device != VK_NULL_HANDLE) {
+    if (api.UnmapMemory != nullptr) {
+      if (fsrEasuParamsMapped_ != nullptr) {
+        api.UnmapMemory(device, fsrEasuParamsMemory_);
+      }
+      if (fsrRcasParamsMapped_ != nullptr) {
+        api.UnmapMemory(device, fsrRcasParamsMemory_);
+      }
+    }
+    if (api.DestroyFramebuffer != nullptr) {
+      if (fsrEasuFramebuffer_ != VK_NULL_HANDLE) {
+        api.DestroyFramebuffer(device, fsrEasuFramebuffer_, nullptr);
+      }
+      if (fsrRcasFramebuffer_ != VK_NULL_HANDLE) {
+        api.DestroyFramebuffer(device, fsrRcasFramebuffer_, nullptr);
+      }
+    }
+    if (api.DestroyPipeline != nullptr) {
+      if (fsrEasuPipeline_ != VK_NULL_HANDLE) {
+        api.DestroyPipeline(device, fsrEasuPipeline_, nullptr);
+      }
+      if (fsrRcasPipeline_ != VK_NULL_HANDLE) {
+        api.DestroyPipeline(device, fsrRcasPipeline_, nullptr);
+      }
+    }
+    // Destroying the pool frees both descriptor sets.
+    if (api.DestroyDescriptorPool != nullptr && fsrPool_ != VK_NULL_HANDLE) {
+      api.DestroyDescriptorPool(device, fsrPool_, nullptr);
+    }
+    if (api.DestroyPipelineLayout != nullptr && fsrPipelineLayout_ != VK_NULL_HANDLE) {
+      api.DestroyPipelineLayout(device, fsrPipelineLayout_, nullptr);
+    }
+    if (api.DestroyDescriptorSetLayout != nullptr && fsrSetLayout_ != VK_NULL_HANDLE) {
+      api.DestroyDescriptorSetLayout(device, fsrSetLayout_, nullptr);
+    }
+    if (api.DestroySampler != nullptr && fsrSampler_ != VK_NULL_HANDLE) {
+      api.DestroySampler(device, fsrSampler_, nullptr);
+    }
+    if (api.DestroyRenderPass != nullptr && fsrRenderPass_ != VK_NULL_HANDLE) {
+      api.DestroyRenderPass(device, fsrRenderPass_, nullptr);
+    }
+    if (api.DestroyImageView != nullptr && fsrEasuImageView_ != VK_NULL_HANDLE) {
+      api.DestroyImageView(device, fsrEasuImageView_, nullptr);
+    }
+    if (api.DestroyImage != nullptr && fsrEasuImage_ != VK_NULL_HANDLE) {
+      api.DestroyImage(device, fsrEasuImage_, nullptr);
+    }
+    if (api.FreeMemory != nullptr && fsrEasuImageMemory_ != VK_NULL_HANDLE) {
+      api.FreeMemory(device, fsrEasuImageMemory_, nullptr);
+    }
+    if (api.DestroyBuffer != nullptr) {
+      if (fsrEasuParams_ != VK_NULL_HANDLE) {
+        api.DestroyBuffer(device, fsrEasuParams_, nullptr);
+      }
+      if (fsrRcasParams_ != VK_NULL_HANDLE) {
+        api.DestroyBuffer(device, fsrRcasParams_, nullptr);
+      }
+    }
+    if (api.FreeMemory != nullptr) {
+      if (fsrEasuParamsMemory_ != VK_NULL_HANDLE) {
+        api.FreeMemory(device, fsrEasuParamsMemory_, nullptr);
+      }
+      if (fsrRcasParamsMemory_ != VK_NULL_HANDLE) {
+        api.FreeMemory(device, fsrRcasParamsMemory_, nullptr);
+      }
+    }
+  }
+  fsrEasuParamsMapped_ = nullptr;
+  fsrRcasParamsMapped_ = nullptr;
+  fsrRenderPass_ = VK_NULL_HANDLE;
+  fsrSampler_ = VK_NULL_HANDLE;
+  fsrSetLayout_ = VK_NULL_HANDLE;
+  fsrPipelineLayout_ = VK_NULL_HANDLE;
+  fsrPool_ = VK_NULL_HANDLE;
+  fsrEasuSet_ = VK_NULL_HANDLE;
+  fsrRcasSet_ = VK_NULL_HANDLE;
+  fsrEasuPipeline_ = VK_NULL_HANDLE;
+  fsrRcasPipeline_ = VK_NULL_HANDLE;
+  fsrEasuImage_ = VK_NULL_HANDLE;
+  fsrEasuImageMemory_ = VK_NULL_HANDLE;
+  fsrEasuImageView_ = VK_NULL_HANDLE;
+  fsrEasuFramebuffer_ = VK_NULL_HANDLE;
+  fsrRcasFramebuffer_ = VK_NULL_HANDLE;
+  fsrEasuParams_ = VK_NULL_HANDLE;
+  fsrEasuParamsMemory_ = VK_NULL_HANDLE;
+  fsrRcasParams_ = VK_NULL_HANDLE;
+  fsrRcasParamsMemory_ = VK_NULL_HANDLE;
+  fsrParamsCoherent_ = false;
+}
+
+bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
+  VkApi& api = GetVkApi();
+  VkImageSubresourceRange subresource{};
+  subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  subresource.levelCount = 1;
+  subresource.layerCount = 1;
+  // Both paths hand the letterbox the same thing: `srImage_` in GENERAL, written by
+  // the upscale and read by the present draw.
+  const auto targetToSampled = [&](VkImage image) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = subresource;
+    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &barrier);
+  };
+
+  if (srBackend_ != SuperResolutionBackend::kFsr) {
+    // XEngine: the desktop image is already visible to the fragment stage (the
+    // caller barriered it), and the upscale renders straight into the target.
+    VkImageMemoryBarrier toAttachment{};
+    toAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toAttachment.srcAccessMask = 0;
+    toAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toAttachment.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toAttachment.image = srImage_;
+    toAttachment.subresourceRange = subresource;
+    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
+                           nullptr, 1, &toAttachment);
+    srUpscale_.Record(cmd, desktopImageView_, srImageView_);
+    targetToSampled(srImage_);
+    return true;
+  }
+
+#if defined(HMRDP_HAVE_FSR)
+  if (fsrEasuPipeline_ == VK_NULL_HANDLE || fsrRcasPipeline_ == VK_NULL_HANDLE ||
+      fsrEasuFramebuffer_ == VK_NULL_HANDLE || fsrRcasFramebuffer_ == VK_NULL_HANDLE) {
+    return false;
+  }
+  // Both passes cover their whole target, so the viewport is the output size and
+  // the scissor needs no letterbox (that is the present quad's job).
+  const VkExtent2D extent{static_cast<uint32_t>(srImageWidth_),
+                          static_cast<uint32_t>(srImageHeight_)};
+  VkViewport viewport{};
+  viewport.x = 0.0f;
+  viewport.y = 0.0f;
+  viewport.width = static_cast<float>(extent.width);
+  viewport.height = static_cast<float>(extent.height);
+  viewport.maxDepth = 1.0f;
+  VkRect2D scissor{};
+  scissor.offset = {0, 0};
+  scissor.extent = extent;
+  const auto drawPass = [&](VkFramebuffer framebuffer, VkPipeline pipeline, VkDescriptorSet set) {
+    VkRenderPassBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    begin.renderPass = fsrRenderPass_;
+    begin.framebuffer = framebuffer;
+    begin.renderArea.offset = {0, 0};
+    begin.renderArea.extent = extent;
+    // loadOp is DONT_CARE: every pixel is written by the fullscreen triangle.
+    api.CmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    api.CmdSetViewport(cmd, 0, 1, &viewport);
+    api.CmdSetScissor(cmd, 0, 1, &scissor);
+    api.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    api.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fsrPipelineLayout_, 0, 1, &set,
+                              0, nullptr);
+    api.CmdDraw(cmd, 3, 1, 0, 0);
+    api.CmdEndRenderPass(cmd);
+  };
+
+  // EASU: session-resolution desktop -> output-resolution intermediate.
+  drawPass(fsrEasuFramebuffer_, fsrEasuPipeline_, fsrEasuSet_);
+  // ...which RCAS then reads.
+  {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = fsrEasuImage_;
+    barrier.subresourceRange = subresource;
+    api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                           &barrier);
+  }
+  // RCAS: intermediate -> the image the letterbox samples.
+  drawPass(fsrRcasFramebuffer_, fsrRcasPipeline_, fsrRcasSet_);
+  targetToSampled(srImage_);
+  return true;
+#else
+  return false;
+#endif
 }
 
 bool VkRenderer::EnsureStageLocked(size_t bytes) {
@@ -1656,43 +2350,10 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
                            &toSampled);
 
     if (srActive) {
-      // The desktop image is upscaled into the output image, which then takes the
+      // Whichever backend is selected renders into `srImage_`, which then takes the
       // desktop's place as the letterbox source (its own extent is the output
-      // resolution). The output image is fully rewritten, so discarding its
-      // previous layout is fine and keeps the tracking to nothing.
-      VkImageMemoryBarrier srToAttachment{};
-      srToAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      srToAttachment.srcAccessMask = 0;
-      srToAttachment.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-      srToAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      srToAttachment.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      srToAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      srToAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      srToAttachment.image = srImage_;
-      srToAttachment.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      srToAttachment.subresourceRange.levelCount = 1;
-      srToAttachment.subresourceRange.layerCount = 1;
-      api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
-                             nullptr, 1, &srToAttachment);
-
-      srUpscale_.Record(cmd, desktopImageView_, srImageView_);
-
-      VkImageMemoryBarrier srToSampled{};
-      srToSampled.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      srToSampled.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-      srToSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-      srToSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-      srToSampled.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      srToSampled.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      srToSampled.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      srToSampled.image = srImage_;
-      srToSampled.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      srToSampled.subresourceRange.levelCount = 1;
-      srToSampled.subresourceRange.layerCount = 1;
-      api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                             &srToSampled);
+      // resolution). The recording includes the barriers around the upscale.
+      RecordSuperResolutionLocked(cmd);
     }
 
     if (timers) {
