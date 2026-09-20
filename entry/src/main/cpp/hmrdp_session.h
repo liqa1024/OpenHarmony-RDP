@@ -278,6 +278,11 @@ class Session {
   // thread (the START_FRAME hook), except for the connect-time write.
   int maxFps_ = 0;
   uint64_t lastFramePaceUs_ = 0;
+  // 超分辨率 magnification of the remote desktop (output ÷ session resolution).
+  // The server sends the pointer bitmap at the *session* pixel scale, so the
+  // cursor is magnified by the same factor to stay in step with the upscaled
+  // picture; 1.0 without it. Written at connect, read on the RDP thread.
+  double desktopMagnification_ = 1.0;
   // Recent audio (lost,total) byte counts, one slot per metric window, summed to
   // give a short-term glitch rate instead of a cumulative counter.
   uint64_t audioLostWindow_[5] = {0};

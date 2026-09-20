@@ -5,6 +5,7 @@
 #include "hmrdp_session.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1253,6 +1254,68 @@ void DownscaleBgra(const std::vector<uint8_t>& src, uint32_t srcW, uint32_t srcH
   }
 }
 
+// Bilinear magnification of a BGRA cursor bitmap, on premultiplied alpha for the
+// same reason DownscaleBgra averages it that way: interpolating straight-alpha
+// colour across the shape's edge would mix the RGB of the fully transparent
+// pixels around it (0) into the visible ones and draw a dark fringe.
+void UpscaleBgra(const std::vector<uint8_t>& src, uint32_t srcW, uint32_t srcH,
+                 uint32_t dstW, uint32_t dstH, std::vector<uint8_t>* dst) {
+  dst->assign(static_cast<size_t>(dstW) * dstH * 4, 0);
+  const double scaleX = static_cast<double>(srcW) / dstW;
+  const double scaleY = static_cast<double>(srcH) / dstH;
+  auto clampIndex = [](int value, uint32_t limit) -> uint32_t {
+    if (value < 0) {
+      return 0;
+    }
+    const uint32_t index = static_cast<uint32_t>(value);
+    return index >= limit ? limit - 1 : index;
+  };
+  for (uint32_t dy = 0; dy < dstH; dy++) {
+    // Destination centres map back to source centres, so the filter does not
+    // shift the bitmap by half a pixel.
+    const double sy = (static_cast<double>(dy) + 0.5) * scaleY - 0.5;
+    const int y0 = static_cast<int>(std::floor(sy));
+    const double fy = sy - static_cast<double>(y0);
+    const size_t row0 = static_cast<size_t>(clampIndex(y0, srcH)) * srcW;
+    const size_t row1 = static_cast<size_t>(clampIndex(y0 + 1, srcH)) * srcW;
+    for (uint32_t dx = 0; dx < dstW; dx++) {
+      const double sx = (static_cast<double>(dx) + 0.5) * scaleX - 0.5;
+      const int x0 = static_cast<int>(std::floor(sx));
+      const double fx = sx - static_cast<double>(x0);
+      const uint32_t col0 = clampIndex(x0, srcW);
+      const uint32_t col1 = clampIndex(x0 + 1, srcW);
+      const uint8_t* p00 = &src[(row0 + col0) * 4];
+      const uint8_t* p01 = &src[(row0 + col1) * 4];
+      const uint8_t* p10 = &src[(row1 + col0) * 4];
+      const uint8_t* p11 = &src[(row1 + col1) * 4];
+      const double w00 = (1.0 - fx) * (1.0 - fy);
+      const double w01 = fx * (1.0 - fy);
+      const double w10 = (1.0 - fx) * fy;
+      const double w11 = fx * fy;
+      const double alpha = static_cast<double>(p00[3]) * w00 + static_cast<double>(p01[3]) * w01 +
+                           static_cast<double>(p10[3]) * w10 + static_cast<double>(p11[3]) * w11;
+      uint8_t* out = &(*dst)[(static_cast<size_t>(dy) * dstW + dx) * 4];
+      if (alpha <= 0.0) {
+        out[0] = 0;
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
+        continue;
+      }
+      for (int channel = 0; channel < 3; channel++) {
+        const double premul =
+            static_cast<double>(p00[channel]) * p00[3] * w00 +
+            static_cast<double>(p01[channel]) * p01[3] * w01 +
+            static_cast<double>(p10[channel]) * p10[3] * w10 +
+            static_cast<double>(p11[channel]) * p11[3] * w11;
+        const double value = premul / alpha;
+        out[channel] = static_cast<uint8_t>(value < 0.0 ? 0.0 : (value > 255.0 ? 255.0 : value));
+      }
+      out[3] = static_cast<uint8_t>(alpha > 255.0 ? 255.0 : alpha);
+    }
+  }
+}
+
 constexpr uint32_t kMaxCursorSide = 256;
 // Hard cap on the source cursor size; anything beyond this is treated as
 // corrupt and dropped rather than allocated.
@@ -2029,9 +2092,18 @@ bool Session::Connect(const RdpOptions& options) {
   // (see hmrdp_vk_renderer.cpp). Without it the session desktop *is* the output.
   int sessionWidth = options.width;
   int sessionHeight = options.height;
+  desktopMagnification_ = 1.0;
   if (options.srEnabled && options.srRatioPercent > 100) {
     sessionWidth = SuperResolutionSessionSize(options.width, options.srRatioPercent);
     sessionHeight = SuperResolutionSessionSize(options.height, options.srRatioPercent);
+    if (sessionWidth > 0) {
+      // The factor the presenter upscales the picture by; the pointer bitmap is
+      // magnified by the same one (HandlePointerShape).
+      desktopMagnification_ = static_cast<double>(options.width) / sessionWidth;
+    }
+    if (desktopMagnification_ < 1.0) {
+      desktopMagnification_ = 1.0;
+    }
     if (presenter_ != nullptr) {
       presenter_->SetSuperResolution(true, options.width, options.height);
     }
@@ -2421,33 +2493,53 @@ void Session::HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX,
                                             xorMask, xorLen, andMask, andLen, xorBpp, nullptr)) {
     return;
   }
-  // Custom cursors cap at 256x256, so bigger ones (large pointer) are scaled to
-  // fit -- hot spot included -- instead of falling back to the default arrow.
-  uint32_t outW = width;
-  uint32_t outH = height;
-  uint32_t outHotX = hotX;
-  uint32_t outHotY = hotY;
-  if (width > kMaxCursorSide || height > kMaxCursorSide) {
-    const uint32_t maxSide = width > height ? width : height;
-    const double factor = static_cast<double>(kMaxCursorSide) / maxSide;
-    outW = static_cast<uint32_t>(static_cast<double>(width) * factor + 0.5);
-    outH = static_cast<uint32_t>(static_cast<double>(height) * factor + 0.5);
+  // 超分辨率: the bitmap arrives at the *session* (pre-upscale) pixel scale, so it
+  // is magnified by the same factor the desktop is upscaled by - otherwise the
+  // cursor stops matching the picture it sits on. Custom cursors cap at 256x256,
+  // so anything that would exceed it (large pointer, or a magnified session
+  // bitmap) is scaled to fit -- hot spot included -- instead of falling back to
+  // the default arrow.
+  const double magnification = desktopMagnification_ > 1.0 ? desktopMagnification_ : 1.0;
+  uint32_t outW = static_cast<uint32_t>(static_cast<double>(width) * magnification + 0.5);
+  uint32_t outH = static_cast<uint32_t>(static_cast<double>(height) * magnification + 0.5);
+  if (outW < 1) {
+    outW = 1;
+  }
+  if (outH < 1) {
+    outH = 1;
+  }
+  const uint32_t srcSide = width > height ? width : height;
+  uint32_t dstSide = outW > outH ? outW : outH;
+  if (dstSide > kMaxCursorSide) {
+    const double factor = static_cast<double>(kMaxCursorSide) / dstSide;
+    outW = static_cast<uint32_t>(static_cast<double>(outW) * factor + 0.5);
+    outH = static_cast<uint32_t>(static_cast<double>(outH) * factor + 0.5);
     if (outW < 1) {
       outW = 1;
     }
     if (outH < 1) {
       outH = 1;
     }
-    outHotX = static_cast<uint32_t>(static_cast<double>(hotX) * factor + 0.5);
-    outHotY = static_cast<uint32_t>(static_cast<double>(hotY) * factor + 0.5);
-    if (outHotX > outW) {
-      outHotX = outW;
-    }
-    if (outHotY > outH) {
-      outHotY = outH;
-    }
+    dstSide = outW > outH ? outW : outH;
+  }
+  // The anchor follows the size actually produced, so a clamped cursor keeps it.
+  uint32_t outHotX = static_cast<uint32_t>(
+      static_cast<double>(hotX) * (static_cast<double>(outW) / static_cast<double>(width)) + 0.5);
+  uint32_t outHotY = static_cast<uint32_t>(
+      static_cast<double>(hotY) * (static_cast<double>(outH) / static_cast<double>(height)) + 0.5);
+  if (outHotX > outW) {
+    outHotX = outW;
+  }
+  if (outHotY > outH) {
+    outHotY = outH;
+  }
+  if (outW != width || outH != height) {
     std::vector<uint8_t> scaled;
-    DownscaleBgra(bgra, width, height, outW, outH, &scaled);
+    if (dstSide <= srcSide) {
+      DownscaleBgra(bgra, width, height, outW, outH, &scaled);
+    } else {
+      UpscaleBgra(bgra, width, height, outW, outH, &scaled);
+    }
     bgra.swap(scaled);
   }
   const uint32_t hash = CursorHash(outW, outH, outHotX, outHotY, bgra.data(), bgra.size());
