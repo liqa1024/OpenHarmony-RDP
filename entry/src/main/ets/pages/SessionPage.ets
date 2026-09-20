@@ -10,7 +10,8 @@ import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
-  RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
+  RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests,
+  SR_BACKEND_FSR } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { SessionManager } from '../services/SessionManager';
@@ -2466,15 +2467,16 @@ struct SessionPage {
 
   /**
    * Toolbar suffix for 超分辨率: the remote desktop shown next to the host is the
-   * session (pre-upscale) size, so the ratio says what it is scaled back up to
-   * (and that the session is not actually running at the configured output size).
-   * Short on purpose - just the factor in brackets, e.g. " (1.5x)".
+   * session (pre-upscale) size, so the backend and ratio say what it is scaled back
+   * up to with (and that the session is not actually running at the configured
+   * output size). Short on purpose, e.g. " (FSR 1.5x)".
    */
   private srIndicator(): string {
     if (!this.options.srEnabled || this.options.srRatioPercent <= 100) {
       return '';
     }
-    return ' (' + srRatioLabel(this.options.srRatioPercent) + ')';
+    const backend: string = this.options.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';
+    return ' (' + backend + ' ' + srRatioLabel(this.options.srRatioPercent) + ')';
   }
 
   @Builder

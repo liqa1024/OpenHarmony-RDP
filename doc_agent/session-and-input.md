@@ -116,8 +116,8 @@
   开发者选项开启时，遥测（网络 / 本机 / FPS / 带宽 / 音频）另起**第二行**，主行布局与非开发者模式
   **完全一致**（工具栏变高，`toolbarHeight` 随之增长，全屏自动隐藏的判定边界跟着用这个值）。
 - **主行的分辨率是会话（超分辨率前）分辨率**，不是设置里的输出分辨率；开了超分辨率时在后面补一个
-  括号倍率（` (1.5x)`，`SessionPage.srIndicator()`，倍率取连接选项，见
-  [`settings-and-storage.md`](settings-and-storage.md) §2）。会话首帧到达前该值按
+  括号，**先是后端名再是倍率**（` (FSR 1.5x)` / ` (XEngine 1.5x)`，`SessionPage.srIndicator()`，两者都取
+  连接选项，见 [`settings-and-storage.md`](settings-and-storage.md) §2）。会话首帧到达前该值按
   `SettingsStore.srSessionSize()` 预置，收到 `kResize` 后以服务端实际桌面为准。
 
 - **帧工时计量（`hmrdp_gfx_work.{h,cpp}`，live 与回放共用）**：同一个 `GfxWorkMeter` 由**同一批钩子**
