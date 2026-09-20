@@ -56,7 +56,6 @@ struct EditConnectionPage {
   @State errorMessage: string = '';
   @State editing: boolean = false;
   @State detectedText: string = '';
-  @State recommendedScale: number = 100;
   @State connecting: boolean = false;
   private connectionId: string = '';
   // Id of the in-flight attempt (may be a brand-new id for a new connection).
@@ -93,11 +92,10 @@ struct EditConnectionPage {
     const detected: DisplayProfile = SettingsStore.detectedDisplay();
     this.detectedText = detected.valid()
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
-    this.recommendedScale = SettingsStore.recommendedScalePercent();
     this.srUsable = SettingsStore.superResolutionUsable();
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
-    this.scaleText = this.recommendedScale.toString();
+    this.scaleText = this.suggestedScale().toString();
 
     const params: EditConnectionParams =
       this.getUIContext().getRouter().getParams() as EditConnectionParams;
@@ -216,6 +214,25 @@ struct EditConnectionPage {
   }
 
   /**
+   * The scale 自动 would resolve to for what this editor connects with: the
+   * requested (output) resolution alone decides it (see
+   * `SettingsStore.autoScalePercent`), with this connection's 超分. The global
+   * resolution answers when the connection follows the global display, its own
+   * width/height otherwise.
+   */
+  private suggestedScale(): number {
+    const sr: SrProfile = this.resolvedSr();
+    const fallback: DisplayProfile = SettingsStore.globalDisplayProfile();
+    let width: number = fallback.width;
+    let height: number = fallback.height;
+    if (!this.useGlobalDisplay) {
+      width = this.parseSize(this.desktopWidthText, fallback.width);
+      height = this.parseSize(this.desktopHeightText, fallback.height);
+    }
+    return SettingsStore.autoScalePercent(width, height, sr.enabled, sr.ratioPercent);
+  }
+
+  /**
    * Builds the options for a connection attempt or for persistence.
    * `applyGlobalAdvanced` is true only for the live attempt: it substitutes the
    * global advanced defaults when the connection is set to follow them, while
@@ -237,7 +254,7 @@ struct EditConnectionPage {
     options.height = this.useGlobalDisplay
       ? global.height : this.parseSize(this.desktopHeightText, global.height);
     options.scalePercent = this.useGlobalDisplay
-      ? global.scalePercent : this.parseScale(this.scaleText, global.scalePercent);
+      ? global.scalePercent : this.parseScale(this.scaleText, this.suggestedScale());
     options.enableAudio = this.enableAudio;
     options.enableGfx = this.enableGfx;
     options.enableH264 = false;
@@ -724,7 +741,7 @@ struct EditConnectionPage {
 
                 if (this.useGlobalDisplay) {
                   Text('自动检测：' + this.detectedText + ' · 推荐缩放 '
-                    + this.recommendedScale + '%')
+                    + this.suggestedScale() + '%')
                     .fontSize(11)
                     .fontColor($r('app.color.text_tertiary'))
                     .width('100%')
@@ -796,7 +813,7 @@ struct EditConnectionPage {
                         .fontColor($r('app.color.danger'))
                         .margin({ top: 6 })
                     } else {
-                      Text('推荐 ' + this.recommendedScale + '%')
+                      Text('推荐 ' + this.suggestedScale() + '%')
                         .fontSize(11)
                         .fontColor($r('app.color.text_tertiary'))
                         .margin({ top: 4 })

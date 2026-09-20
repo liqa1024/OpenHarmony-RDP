@@ -28,6 +28,13 @@ const FALLBACK_HEIGHT: number = 1080;
 // cause rendering problems, so the scale is always snapped to one of these.
 export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 
+// Longest remote desktop side that maps to 100% in the automatic scale. The
+// factor grows linearly from there (see `scalePresetForResolution`); 1600 sits
+// between a 1280 desktop (where 1080p would already ask 150%) and a 1920 one
+// (where 1440p would stay at 125%), so common desktops land on the middle
+// presets instead of the extremes.
+export const AUTO_SCALE_BASE: number = 1600;
+
 // Frame-rate cap presets in frames per second; 0 means "no cap". The cap lowers
 // how many frames the server sends (the client holds each frame back before its
 // decode, and the frame acknowledge is written when that frame ends), so it also
@@ -305,15 +312,17 @@ export class SettingsStore {
   }
 
   /**
-   * Recommended RDP scale factor derived from the display density: HarmonyOS
-   * uses 160 DPI as 100%, so densityPixels maps directly to a percentage.
+   * Automatic display-scale preset for a desktop resolution: the desktop's
+   * longest side over `AUTO_SCALE_BASE`, snapped to the nearest Windows preset.
+   * Only the remote resolution decides it - this device's own screen and density
+   * never enter - so the same resolution scales identically on any machine. The
+   * longest side drives it, so portrait and ultrawide desktops land on their
+   * resolution's tier, and the whole preset ladder gets used: 1600 -> 100%,
+   * 1920 -> 125%, 2560 -> 150%, 2880 -> 175%, 3200 -> 200%, 3840 -> 225%.
    */
-  static recommendedScalePercent(): number {
-    const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
-    if (disp === undefined || disp.densityPixels <= 0) {
-      return SCALE_PRESETS[0];
-    }
-    return SettingsStore.nearestScalePreset(Math.round(disp.densityPixels * 100));
+  static scalePresetForResolution(width: number, height: number): number {
+    const longest: number = Math.max(width, height);
+    return SettingsStore.nearestScalePreset(Math.round(longest * 100 / AUTO_SCALE_BASE));
   }
 
   /** Snaps an arbitrary frame-rate cap to the nearest supported preset. */
@@ -373,18 +382,25 @@ export class SettingsStore {
   }
 
   /**
-   * Default DPI scale for the session desktop. Without 超分 it is the display
-   * density's recommended preset; with 超分 the session desktop is smaller by the
-   * ratio but is displayed at the output size, so the factor shrinks by the same
-   * ratio to keep the remote UI the same physical size (and never goes below the
-   * first Windows preset).
+   * Automatic DPI scale for a session, derived from the *requested* (output)
+   * resolution alone: Windows' typical preset for that resolution class (see
+   * `scalePresetForResolution`). This device's screen does not participate, so
+   * the same remote resolution scales the same way everywhere.
+   *
+   * With 超分 the server renders the session at output ÷ ratio and the presenter
+   * upscales it back, so the factor shrinks by the same ratio to keep the remote
+   * UI the same physical size (and never drops below the first Windows preset).
    */
-  static defaultScalePercent(srEnabled: boolean, ratioPercent: number): number {
-    const recommended: number = SettingsStore.recommendedScalePercent();
-    if (!srEnabled || ratioPercent <= 100) {
-      return recommended;
+  static autoScalePercent(outputWidth: number, outputHeight: number,
+    srEnabled: boolean, ratioPercent: number): number {
+    if (outputWidth <= 0 || outputHeight <= 0) {
+      return SCALE_PRESETS[0];
     }
-    return SettingsStore.nearestScalePreset(Math.round(recommended * 100 / ratioPercent));
+    const base: number = SettingsStore.scalePresetForResolution(outputWidth, outputHeight);
+    if (!srEnabled || ratioPercent <= 100) {
+      return base;
+    }
+    return SettingsStore.nearestScalePreset(Math.round(base * 100 / ratioPercent));
   }
 
   /** Global 超分 defaults. */
@@ -460,7 +476,11 @@ export class SettingsStore {
     const hasOwnSize: boolean = conn.width > 0 && conn.height > 0;
     const width: number = hasOwnSize ? conn.width : global.width;
     const height: number = hasOwnSize ? conn.height : global.height;
-    const scale: number = conn.scalePercent > 0 ? conn.scalePercent : global.scalePercent;
+    // A connection with no scale of its own auto-resolves from *its own*
+    // resolution, not the global one: the two can differ.
+    const scale: number = conn.scalePercent > 0 ? conn.scalePercent
+      : SettingsStore.autoScalePercent(width, height,
+        sr.enabled && sr.ratioPercent > 100, sr.ratioPercent);
     return SettingsStore.makeProfile(width, height, global.detected, scale, sr);
   }
 
@@ -515,7 +535,8 @@ export class SettingsStore {
       }
     }
     const enabled: boolean = sr.enabled && sr.ratioPercent > 100;
-    const defaultScale: number = SettingsStore.defaultScalePercent(enabled, sr.ratioPercent);
+    const defaultScale: number =
+      SettingsStore.autoScalePercent(width, height, enabled, sr.ratioPercent);
     const scale: number = (!settings.scaleAuto && settings.manualScalePercent > 0)
       ? settings.manualScalePercent : defaultScale;
     return SettingsStore.makeProfile(width, height, detected, scale, sr);

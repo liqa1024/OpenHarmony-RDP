@@ -70,7 +70,6 @@ struct SettingsPage {
   @State scaleAuto: boolean = true;
   @State manualScaleText: string = '100';
   @State detectedText: string = '';
-  @State recommendedScale: number = 100;
   @State mainSizeEnabled: boolean = false;
   @State sessionSizeEnabled: boolean = false;
   @State sessionFullscreen: boolean = false;
@@ -123,7 +122,6 @@ struct SettingsPage {
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
     this.detectedWidth = detected.width;
     this.detectedHeight = detected.height;
-    this.recommendedScale = SettingsStore.recommendedScalePercent();
     this.syncFromStore();
   }
 
@@ -155,8 +153,6 @@ struct SettingsPage {
     this.manualWidthText = this.sizeText(settings.manualWidth);
     this.manualHeightText = this.sizeText(settings.manualHeight);
     this.scaleAuto = settings.scaleAuto;
-    this.manualScaleText = settings.manualScalePercent > 0
-      ? settings.manualScalePercent.toString() : this.recommendedScale.toString();
     this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.sessionFullscreen = settings.sessionFullscreen;
@@ -173,6 +169,8 @@ struct SettingsPage {
     // can apply is dropped, exactly like the audio / hardware-acceleration rows.
     this.srEnabled = (this.hardwareAccelSupported && this.srSupported) ? settings.srEnabled : false;
     this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+    this.manualScaleText = settings.manualScalePercent > 0
+      ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
     this.ignoreCertificate = settings.ignoreCertificate;
     this.maxFps = SettingsStore.snapFpsPreset(settings.maxFps);
     this.developerMode = settings.developerMode;
@@ -246,9 +244,10 @@ struct SettingsPage {
     return SCALE_PRESETS.indexOf(value) >= 0;
   }
 
-  /** The preset a 自动 缩放 resolves to right now (it follows the 超分 ratio). */
+  /** The preset a 自动 缩放 resolves to right now (it follows 分辨率 and 超分 ratio). */
   private effectiveDefaultScale(): number {
-    return SettingsStore.defaultScalePercent(this.srEnabled, this.srRatioPercent);
+    return SettingsStore.autoScalePercent(this.outputWidth(), this.outputHeight(),
+      this.srEnabled, this.srRatioPercent);
   }
 
   /** Output resolution the page would use, i.e. what 分辨率 resolves to. */
@@ -301,7 +300,7 @@ struct SettingsPage {
     settings.manualHeight =
       this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
     settings.scaleAuto = this.scaleAuto;
-    settings.manualScalePercent = this.parseScale(this.manualScaleText, this.recommendedScale);
+    settings.manualScalePercent = this.parseScale(this.manualScaleText, this.effectiveDefaultScale());
     settings.sessionFullscreen = this.sessionFullscreen;
     settings.autoHideMainWindow = this.autoHideMainWindow;
     settings.enableAudio = this.enableAudio;
@@ -347,7 +346,6 @@ struct SettingsPage {
     this.manualWidthText = this.sizeText(this.detectedWidth);
     this.manualHeightText = this.sizeText(this.detectedHeight);
     this.scaleAuto = true;
-    this.manualScaleText = this.recommendedScale.toString();
     this.mainSizeEnabled = defaults.mainWindowSizeEnabled;
     this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
     this.sessionFullscreen = defaults.sessionFullscreen;
@@ -359,6 +357,7 @@ struct SettingsPage {
     this.hardwareAccel = defaults.hardwareAccel;
     this.srEnabled = defaults.srEnabled;
     this.srRatioPercent = defaults.srRatioPercent;
+    this.manualScaleText = this.effectiveDefaultScale().toString();
     this.developerMode = defaults.developerMode;
     this.rfxDump = defaults.rfxDump;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
@@ -933,8 +932,8 @@ struct SettingsPage {
                 Column() {
                   Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
                   Text(this.srEnabled
-                    ? '超分辨率前会话桌面的缩放；默认按推荐值 ÷ 倍率换算'
-                    : '按屏幕密度自动选择推荐缩放比例')
+                    ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
+                    : '按分辨率相对屏幕的比例自动选择推荐缩放比例')
                     .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
                 }
                 .alignItems(HorizontalAlign.Start)
