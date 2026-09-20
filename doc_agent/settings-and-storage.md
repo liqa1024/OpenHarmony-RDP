@@ -47,19 +47,23 @@
     **本机屏幕分辨率/密度不参与**——同一个远端分辨率在任何设备上换算出同一档位。
     开了超分辨率时见下一条的换算。
   - 原生只写 `FreeRDP_DesktopScaleFactor`（缩放交给服务端，客户端不做逐像素缩放）。
-- **超分辨率**（`srEnabled` + `srRatioPercent`，全局默认，**与「硬件加速」同级**放在设置页；
+- **超分辨率**（`srBackend` + `srRatioPercent`，全局默认，**与「硬件加速」同级**放在设置页；
   单连接用独立的「使用全局超分辨率设置」开关覆盖，默认跟随全局）：开启后
-  **会话分辨率 = 分辨率设置 ÷ 倍率**（取偶像素），服务端按它出画，本机 Vulkan 呈现器再用 XEngine
-  空域上采样把它还原到输出分辨率——省解码与带宽，边缘比双线性放大更锐。倍率档位
+  **会话分辨率 = 分辨率设置 ÷ 倍率**（取偶像素），服务端按它出画，本机 Vulkan 呈现器再把它上采样回
+  输出分辨率——省解码与带宽，边缘比双线性放大更锐。倍率档位
   `SR_RATIO_PRESETS` = `1.25x`/`1.5x`/`1.75x`/`2x`：**平台只给建议区间**（空域 GPU 超分建议
   `[1.2, 1.5]`），接口本身对倍率无硬限制，档位超过 `1.5x` 是拿画质换带宽（文字多的桌面在 `2x` 下
   边缘会发硬），所以倍率选项与开关在**同一栏**里，不另起一段。
+  - **是三选一而不是开关**：关闭 / `XEngine` / `FSR`（`SR_BACKEND_XENGINE` / `SR_BACKEND_FSR`，持久化成
+    0/1 并在连接记录尾部占一个字段）。两者都是「会话小、本机放大」，差别只在**用哪个上采样器**：
+    XEngine 是平台空域超分（要设备特性），FSR 是呈现器自己跑的 FidelityFX Super Resolution 1.0
+    （只要 Vulkan 上屏）。见 [`present-pipeline.md`](present-pipeline.md) §4.5。
   - **默认缩放随之换算**：自动档 = 分辨率档位 `÷ 倍率` 再吸附到档位（`SettingsStore.autoScalePercent`）；
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持原来的物理大小。
-  - **两个前提**：Vulkan 呈现器可用（即「硬件加速」开着）且设备报 `XEG_spatial_upscale`。
-    设置页按超分辨率能力**置灰**并显示原因；不满足时按关闭处理。`SettingsStore.resolveSr()` 是唯一的
-    解析与兜底点（`superResolutionUsable()` 把能力与开关合起来判），所以会话绝不会谈下一个
-    本机放大不回去的分辨率。
+  - **两个前提**：Vulkan 呈现器可用（即「硬件加速」开着），且**所选后端**可用（FSR 只要前者，XEngine
+    还要设备报 `XEG_spatial_upscale`）。设置页按后端逐个**置灰**并显示原因；不满足时按关闭处理。
+    `SettingsStore.resolveSr()` 是唯一的解析与兜底点（`srBackendUsable(backend)` 把能力与开关合起来判，
+    选中的后端不可用时改用另一个，都不行才关掉），所以会话绝不会谈下一个本机放大不回去的分辨率。
   - 单连接可独立配置的理由：同一台机器走局域网可以不开，走 frp 转发时需要省带宽就开。
 - **高级连接特性（音频、忽略证书…）**：默认值放全局 `AppSettings`；单连接保存自己的值 +
   `useGlobalAdvanced` 标志（**默认跟随全局**）。连接前用 `SettingsStore.resolveAdvanced(conn)` 解析。
@@ -100,8 +104,9 @@
 - 导出用**独立的 DTO**（`ExportedConnection`）而不是直接序列化 `SavedConnection`：否则会把继承来的
   `password` / `gatewayPassword` 字段带出去。
 - 导入按连接 **`id` 覆盖或新增**，并刷新 `updatedAt`（保证 UI key 变化）。入口在设置页底部。
-- **随设备能力的全局值不导入**（`hardwareAccel`、`srEnabled`/`srRatioPercent`）：它们在别的机器上未必成立，
-  导入后回到默认。**单连接**的 `useGlobalSr`/`srEnabled`/`srRatioPercent` 随连接一起导出导入，
+- **随设备能力的全局值不导入**（`hardwareAccel`、`srEnabled`/`srRatioPercent`/`srBackend`）：它们在别的
+  机器上未必成立，导入后回到默认。**单连接**的 `useGlobalSr`/`srEnabled`/`srRatioPercent`/`srBackend`
+  随连接一起导出导入，
   这样"局域网连接不开、frp 连接开超分辨率"这类分工能整套搬走。
 - 解析导出文件时统一 `JSON.parse(text) as Record<string, Object>` 后逐字段读取（原因见
   [`arkts-conventions.md`](arkts-conventions.md) §2）。

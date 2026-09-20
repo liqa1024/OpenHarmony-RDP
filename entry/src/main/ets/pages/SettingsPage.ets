@@ -3,7 +3,7 @@
  */
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
-import { DisplayProfile } from '../model/RdpModels';
+import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
@@ -85,6 +85,7 @@ struct SettingsPage {
   private hardwareAccelReason: string = '';
   @State srEnabled: boolean = false;
   @State srRatioPercent: number = SR_RATIO_PRESETS[0];
+  @State srBackend: number = SR_BACKEND_XENGINE;
   @State srSupported: boolean = true;
   private srReason: string = '';
   // Developer options: reveals the dev-only tools below (and the replay entry /
@@ -169,6 +170,7 @@ struct SettingsPage {
     // can apply is dropped, exactly like the audio / hardware-acceleration rows.
     this.srEnabled = (this.hardwareAccelSupported && this.srSupported) ? settings.srEnabled : false;
     this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+    this.srBackend = settings.srBackend;
     this.manualScaleText = settings.manualScalePercent > 0
       ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
     this.ignoreCertificate = settings.ignoreCertificate;
@@ -310,6 +312,7 @@ struct SettingsPage {
     settings.hardwareAccel = this.hardwareAccel;
     settings.srEnabled = this.srEnabled && this.srSupported;
     settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
+    settings.srBackend = this.srBackend;
     settings.developerMode = this.developerMode;
     settings.rfxDump = this.rfxDump;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
@@ -357,6 +360,7 @@ struct SettingsPage {
     this.hardwareAccel = defaults.hardwareAccel;
     this.srEnabled = defaults.srEnabled;
     this.srRatioPercent = defaults.srRatioPercent;
+    this.srBackend = defaults.srBackend;
     this.manualScaleText = this.effectiveDefaultScale().toString();
     this.developerMode = defaults.developerMode;
     this.rfxDump = defaults.rfxDump;
@@ -547,6 +551,51 @@ struct SettingsPage {
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.srRatioPercent = preset;
+        this.persist();
+      })
+  }
+
+  /** The 超分 choice as one value: 0 = off, 1 = XEngine, 2 = FSR. */
+  private srChoice(): number {
+    if (!this.srEnabled) {
+      return 0;
+    }
+    return this.srBackend === SR_BACKEND_FSR ? 2 : 1;
+  }
+
+  /** Whether a 超分 choice can be picked here (超分 rides the Vulkan presenter). */
+  private srChoiceUsable(choice: number): boolean {
+    if (choice === 0) {
+      return true;
+    }
+    if (!this.hardwareAccel || !this.hardwareAccelSupported) {
+      return false;
+    }
+    const backend: number = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
+    const token: string = backend === SR_BACKEND_FSR ? 'fsr' : 'xengine';
+    return DeviceCapabilities.srBackends().indexOf(token) >= 0;
+  }
+
+  @Builder
+  srChoiceChip(choice: number) {
+    Text(choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'))
+      .fontSize(13)
+      .fontColor(this.srChoice() === choice ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.srChoice() === choice
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .opacity(this.srChoiceUsable(choice) ? 1.0 : 0.4)
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        if (!this.srChoiceUsable(choice)) {
+          return;
+        }
+        this.srEnabled = choice !== 0;
+        if (choice !== 0) {
+          this.srBackend = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
+        }
         this.persist();
       })
   }
@@ -1054,18 +1103,18 @@ struct SettingsPage {
                 .alignItems(HorizontalAlign.Start)
                 .layoutWeight(1)
 
-                Toggle({ type: ToggleType.Switch, isOn: this.srEnabled })
-                  .enabled(this.hardwareAccel && this.srSupported)
-                  .selectedColor($r('app.color.accent'))
-                  .onChange((isOn: boolean) => {
-                    if (!this.hardwareAccel || !this.srSupported) {
-                      return;
-                    }
-                    this.srEnabled = isOn;
-                    this.persist();
-                  })
               }
               .width('100%')
+
+              // 超分 is a three-way choice: off, the platform's XEngine, or the
+              // presenter's own FSR. A backend this build/device cannot run is
+              // dimmed and unselectable.
+              Flex({ wrap: FlexWrap.Wrap }) {
+                this.srChoiceChip(0)
+                this.srChoiceChip(1)
+                this.srChoiceChip(2)
+              }
+              .width('100%').margin({ top: 10 })
 
               if (this.srEnabled && this.srSupported && this.hardwareAccel) {
                 Flex({ wrap: FlexWrap.Wrap }) {

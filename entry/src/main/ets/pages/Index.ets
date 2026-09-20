@@ -157,6 +157,7 @@ struct Index {
     options.scalePercent = profile.scalePercent;
     options.srEnabled = profile.srEnabled;
     options.srRatioPercent = profile.srRatioPercent;
+    options.srBackend = profile.srBackend;
     const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
     options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
     options.enableGfx = advanced.enableGfx;

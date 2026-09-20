@@ -217,12 +217,17 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 | 判定 | 用途 | 条件 |
 |---|---|---|
 | **呈现判定**（`presenterSupported`） | 「硬件加速」开关 / 上屏 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
-| **超分辨率判定**（`srSupported`） | 「超分辨率」开关 | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
+| **超分：FSR**（`srFsrSupported`） | 超分后端之一 | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
+| **超分：XEngine**（`srXengineSupported`） | 超分后端之一 | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
 
-- 超分辨率的原因码（`srUnsupportedCode`）**先取呈现判定的码**（上采样渲染进的是呈现器的图，呈现不成立
-  就没有超分辨率可言），再是 `no-xengine`（libxengine 不可用）与 `no-extension`（设备无空域上采样特性）。
-  `superResolutionSupport()` 回它，中文文案在 `DeviceCapabilities.superResolution()`；
-  `SettingsStore.superResolutionUsable()` 再叠加「硬件加速」开关，是超分辨率生效与否的唯一判据。
+- 两个超分后端共用「呈现判定」这一前提（上采样渲染进的都是呈现器的图），但门槛不同：**FSR 只多要构建里
+  有它的 shader，XEngine 还要设备特性**。所以 `srSupported` 是「至少一个后端可用」，真机 Vulkan 而无
+  XEngine 扩展的设备仍然能用 FSR。
+- 原因码（`srUnsupportedCode`）在**一个都没有**时才给出：**先取呈现判定的码**，再是 `no-xengine`
+  （libxengine 不可用）与 `no-extension`（设备无空域上采样特性）。`superResolutionSupport()` 回它，
+  中文文案在 `DeviceCapabilities.superResolution()`；`superResolutionBackends()` 另回**可用的后端列表**
+  （`"xengine"`/`"fsr"`/`"xengine,fsr"`/空），UI 按它逐个置灰。`SettingsStore.srBackendUsable(backend)`
+  再叠加「硬件加速」开关，是某个后端能否生效的唯一判据。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
   （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），

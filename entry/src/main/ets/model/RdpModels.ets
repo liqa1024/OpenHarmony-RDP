@@ -8,6 +8,16 @@ import { RdpOptions } from 'libhmrdp.so';
  * (pre-super-resolution) resolution derived from it, and the DPI scale factor
  * (percentage) requested from the server.
  */
+/**
+ * 超分 backend ids. Plain numbers because they are persisted with the connection
+ * and cross the N-API boundary as an int; the native side maps 0/1 to
+ * SuperResolutionBackend (see doc_agent/present-pipeline.md §4.5).
+ *  - XENGINE: the platform's GPU spatial upscale (needs the device feature).
+ *  - FSR: the presenter's own FidelityFX Super Resolution 1.0 (Vulkan only).
+ */
+export const SR_BACKEND_XENGINE: number = 0;
+export const SR_BACKEND_FSR: number = 1;
+
 export class DisplayProfile {
   // Output (post-super-resolution) resolution: the user's setting or the current
   // display, and what the native side is given as width/height.
@@ -23,6 +33,8 @@ export class DisplayProfile {
   // back to the output resolution on the GPU.
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
+  // Which upscaler runs (see SR_BACKEND_*). Ignored when srEnabled is false.
+  srBackend: number = SR_BACKEND_XENGINE;
   detected: boolean = false;
 
   valid(): boolean {
@@ -39,6 +51,7 @@ export class SrProfile {
   enabled: boolean = false;
   // Upscale ratio in percent (125 = 1.25×). Values <= 100 mean "no upscale".
   ratioPercent: number = 0;
+  backend: number = SR_BACKEND_XENGINE;
 }
 
 /**
@@ -123,6 +136,8 @@ export class RdpConnectOptions implements RdpOptions {
   // back to the output resolution on the GPU (Vulkan presenter only).
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
+  // Which upscaler runs: SR_BACKEND_XENGINE or SR_BACKEND_FSR.
+  srBackend: number = SR_BACKEND_XENGINE;
   performanceFlags: number = 0;
   gatewayHost: string = '';
   gatewayPort: number = 443;
@@ -255,6 +270,7 @@ export class SavedConnection extends RdpConnectOptions {
     conn.maxFps = options.maxFps;
     conn.srEnabled = options.srEnabled;
     conn.srRatioPercent = options.srRatioPercent;
+    conn.srBackend = options.srBackend;
     conn.performanceFlags = options.performanceFlags;
     conn.gatewayHost = options.gatewayHost;
     conn.gatewayPort = options.gatewayPort;
@@ -278,6 +294,7 @@ export class SavedConnection extends RdpConnectOptions {
     options.maxFps = this.maxFps;
     options.srEnabled = this.srEnabled;
     options.srRatioPercent = this.srRatioPercent;
+    options.srBackend = this.srBackend;
     options.performanceFlags = this.performanceFlags;
     options.gatewayHost = this.gatewayHost;
     options.gatewayPort = this.gatewayPort;

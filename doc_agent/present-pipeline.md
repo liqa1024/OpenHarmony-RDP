@@ -95,6 +95,17 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 
 - **只有 Vulkan 呈现器有**：GLES 是兼容兜底，不做同样功能（`SetSuperResolution()` 的默认实现是空操作，
   只有 `VkRenderer` 覆盖它）。因此超分辨率要求「硬件加速」开着，否则会话侧根本不会降分辨率。
+- **两个后端，一套接线**：`SetSuperResolution(enabled, backend, outW, outH)` 只选上采样器——
+  **XEngine**（平台空域超分）或 **FSR 1.0**（呈现器自己跑的 EASU + RCAS，MIT）。两者都写进输出分辨率的
+  `srImage_`，其后的 letterbox 完全相同，所以后端只是录制方式不同；后端在呈现器创建时定，换后端要重连会话。
+  门槛不同：**FSR 只需 Vulkan 上屏，XEngine 还要设备的 `XEG_spatial_upscale`**，因此真机 Vulkan 而没有
+  XEngine 扩展的设备仍可用 FSR（`VulkanCapabilities::srFsrSupported` / `srXengineSupported`，UI 按
+  `superResolutionBackends()` 分别置灰）。
+- **FSR 的两个 pass**：EASU 采样会话图（`textureGather`，采样器须 NEAREST + CLAMP）写成输出分辨率的中间图，
+  RCAS 再锐化进 `srImage_`。一个 render pass 覆盖两者（目标格式都是 `kPictureFormat`），共用全屏三角形与
+  `present_quad.vert`。常量在 shader 内用 `FsrEasuCon`/`FsrRcasCon` 从普通 uniform 算，CPU 只传尺寸与锐度，
+  **不需要 float→half 位打包**；RCAS 的锐度是「档数」（0 = 最锐）。头文件由 `fetch-sources.ps1` 固定版本拉取，
+  缺树时 CMake 警告并只保留 XEngine。
 - **两张图**：输入仍是桌面图（`kPictureFormat` = `B8G8R8A8_UNORM`，会话分辨率），输出是新增的
   **输出图**（同格式、`USAGE = COLOR_ATTACHMENT | SAMPLED`、device-local、输出分辨率）。通道序仍由
   图像格式承担，shader 不做交换。letterbox 改成**采样输出图**，源尺寸取输出分辨率（再 fit 到窗口）。

@@ -5,7 +5,9 @@ import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AdvancedProfile, DisplayProfile, SavedConnection, SrProfile } from '../model/RdpModels';
+import {
+  AdvancedProfile, DisplayProfile, SavedConnection, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
+} from '../model/RdpModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
 
@@ -127,6 +129,8 @@ export class AppSettings {
   // server is asked to render, so it is opt-in.
   srEnabled: boolean = false;
   srRatioPercent: number = SR_RATIO_PRESETS[0];
+  // Which upscaler the global 超分 default uses (SR_BACKEND_XENGINE / _FSR).
+  srBackend: number = SR_BACKEND_XENGINE;
   // Present frames through Vulkan; off keeps the session on the GLES presenter
   // with no Vulkan at all (see doc_agent/settings-and-storage.md §3).
   hardwareAccel: boolean = true;
@@ -241,6 +245,7 @@ export class SettingsStore {
       settings.srEnabled = SettingsStore.readBoolean(store, 'srEnabled', settings.srEnabled);
       settings.srRatioPercent =
         SettingsStore.readNumber(store, 'srRatioPercent', settings.srRatioPercent);
+      settings.srBackend = SettingsStore.readNumber(store, 'srBackend', settings.srBackend);
       settings.hardwareAccel =
         SettingsStore.readBoolean(store, 'hardwareAccel', settings.hardwareAccel);
       settings.developerMode =
@@ -287,6 +292,7 @@ export class SettingsStore {
       store.putSync('maxFps', settings.maxFps);
       store.putSync('srEnabled', settings.srEnabled);
       store.putSync('srRatioPercent', settings.srRatioPercent);
+      store.putSync('srBackend', settings.srBackend);
       store.putSync('hardwareAccel', settings.hardwareAccel);
       store.putSync('developerMode', settings.developerMode);
       store.putSync('rfxDump', settings.rfxDump);
@@ -409,14 +415,15 @@ export class SettingsStore {
     const profile: SrProfile = new SrProfile();
     profile.enabled = settings.srEnabled;
     profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+    profile.backend = settings.srBackend;
     return SettingsStore.gateSr(profile);
   }
 
   /**
    * Effective 超分 for a connection: the global defaults unless the connection
-   * opted into its own. Forced off where the device cannot do it (no Vulkan
-   * presenter, no XEngine spatial upscale) or where 硬件加速 is off, so the
-   * session never negotiates a lower resolution it cannot upscale back.
+   * opted into its own. Forced off (or moved to the other backend) where the device
+   * cannot do it, so the session never negotiates a lower resolution it cannot
+   * upscale back.
    */
   static resolveSr(conn: SavedConnection): SrProfile {
     const settings: AppSettings = SettingsStore.load();
@@ -424,16 +431,28 @@ export class SettingsStore {
     if (conn.useGlobalSr) {
       profile.enabled = settings.srEnabled;
       profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+      profile.backend = settings.srBackend;
     } else {
       profile.enabled = conn.srEnabled;
       profile.ratioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
+      profile.backend = conn.srBackend;
     }
     return SettingsStore.gateSr(profile);
   }
 
   private static gateSr(profile: SrProfile): SrProfile {
-    if (profile.enabled && !SettingsStore.superResolutionUsable()) {
-      profile.enabled = false;
+    if (profile.enabled && !SettingsStore.srBackendUsable(profile.backend)) {
+      // The chosen backend is not available here (a different device, 硬件加速 off,
+      // or a build without it): use the other one when that works, otherwise turn
+      // 超分 off rather than negotiate a lower session resolution that cannot be
+      // upscaled back.
+      const other: number = profile.backend === SR_BACKEND_XENGINE ? SR_BACKEND_FSR
+                                                                   : SR_BACKEND_XENGINE;
+      if (SettingsStore.srBackendUsable(other)) {
+        profile.backend = other;
+      } else {
+        profile.enabled = false;
+      }
     }
     if (profile.ratioPercent <= 100) {
       profile.ratioPercent = SR_RATIO_PRESETS[0];
@@ -441,15 +460,29 @@ export class SettingsStore {
     return profile;
   }
 
+  /** A backend id as the token the native capability probe reports. */
+  private static srBackendToken(backend: number): string {
+    return backend === SR_BACKEND_FSR ? 'fsr' : 'xengine';
+  }
+
   /**
-   * Whether 超分 can actually be used right now: the Vulkan presenter is allowed
-   * (硬件加速 on) and the device provides the XEngine spatial upscale. A device
-   * that misses either half must not negotiate a lower session resolution.
+   * Whether one 超分 backend can be used right now. 超分 rides the Vulkan
+   * presenter, so 硬件加速 has to be allowed; on top of that the build/device must
+   * offer that backend. FSR needs nothing beyond the presenter, XEngine also needs
+   * the device's XEG_spatial_upscale feature.
    */
-  static superResolutionUsable(): boolean {
+  static srBackendUsable(backend: number): boolean {
     const settings: AppSettings = SettingsStore.load();
-    return settings.hardwareAccel && DeviceCapabilities.hardwareAccel().supported
-      && DeviceCapabilities.superResolution().supported;
+    if (!settings.hardwareAccel || !DeviceCapabilities.hardwareAccel().supported) {
+      return false;
+    }
+    return DeviceCapabilities.srBackends().indexOf(SettingsStore.srBackendToken(backend)) >= 0;
+  }
+
+  /** Whether any 超分 backend can be used right now. */
+  static superResolutionUsable(): boolean {
+    return SettingsStore.srBackendUsable(SR_BACKEND_XENGINE)
+      || SettingsStore.srBackendUsable(SR_BACKEND_FSR);
   }
 
   /**
@@ -557,6 +590,7 @@ export class SettingsStore {
     profile.scalePercent = scalePercent;
     profile.srEnabled = enabled;
     profile.srRatioPercent = enabled ? sr.ratioPercent : 0;
+    profile.srBackend = enabled ? sr.backend : SR_BACKEND_XENGINE;
     profile.sessionWidth = enabled ? SettingsStore.srSessionSize(width, sr.ratioPercent) : width;
     profile.sessionHeight = enabled ? SettingsStore.srSessionSize(height, sr.ratioPercent) : height;
     return profile;

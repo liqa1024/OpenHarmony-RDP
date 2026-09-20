@@ -7,7 +7,9 @@
  * runtime; the native layer additionally degrades gracefully so the session
  * itself keeps working.
  */
-import { isAudioSupported, superResolutionSupport, vulkanAccelSupport } from 'libhmrdp.so';
+import {
+  isAudioSupported, superResolutionBackends, superResolutionSupport, vulkanAccelSupport
+} from 'libhmrdp.so';
 
 /** Support state of one optional feature. */
 export class Capability {
@@ -83,6 +85,22 @@ export class DeviceCapabilities {
     capability.supported = false;
     capability.reason = DeviceCapabilities.superResolutionReason(verdict);
     return capability;
+  }
+
+  /**
+   * Which 超分 backends this build and device can actually run: "xengine", "fsr"
+   * or both, in that order; empty when none. 超分 rides the Vulkan presenter, so
+   * this is empty wherever 硬件加速 is unavailable (the emulator included).
+   * `superResolution()` carries the wording for the empty case.
+   */
+  static srBackends(): string[] {
+    let list: string = '';
+    try {
+      list = superResolutionBackends();
+    } catch (error) {
+      return [];
+    }
+    return list.length === 0 ? [] : list.split(',');
   }
 
   /** Wording for the native reason token (the native side only returns codes). */

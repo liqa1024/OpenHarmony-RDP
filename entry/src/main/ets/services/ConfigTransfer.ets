@@ -11,7 +11,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { SavedConnection } from '../model/RdpModels';
+import { SavedConnection, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { AppSettings, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
 
@@ -62,6 +62,7 @@ class ExportedConnection {
   useGlobalSr: boolean = true;
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
+  srBackend: number = SR_BACKEND_XENGINE;
 
   static fromSaved(conn: SavedConnection): ExportedConnection {
     const item: ExportedConnection = new ExportedConnection();
@@ -90,6 +91,7 @@ class ExportedConnection {
     item.useGlobalSr = conn.useGlobalSr;
     item.srEnabled = conn.srEnabled;
     item.srRatioPercent = conn.srRatioPercent;
+    item.srBackend = conn.srBackend;
     return item;
   }
 
@@ -120,6 +122,7 @@ class ExportedConnection {
     item.useGlobalSr = ConfigTransfer.readBoolean(rec, 'useGlobalSr', true);
     item.srEnabled = ConfigTransfer.readBoolean(rec, 'srEnabled', false);
     item.srRatioPercent = ConfigTransfer.readNumber(rec, 'srRatioPercent', 0);
+    item.srBackend = ConfigTransfer.readNumber(rec, 'srBackend', SR_BACKEND_XENGINE);
     return item;
   }
 
@@ -150,6 +153,7 @@ class ExportedConnection {
     conn.useGlobalSr = this.useGlobalSr;
     conn.srEnabled = this.srEnabled;
     conn.srRatioPercent = this.srRatioPercent;
+    conn.srBackend = this.srBackend;
     conn.updatedAt = Date.now();
     return conn;
   }

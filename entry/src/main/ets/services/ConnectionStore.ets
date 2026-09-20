@@ -8,7 +8,7 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { SavedConnection } from '../model/RdpModels';
+import { SavedConnection, SR_BACKEND_XENGINE } from '../model/RdpModels';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpConnections';
@@ -179,6 +179,7 @@ export class ConnectionStore {
     parts.push(conn.useGlobalSr ? '1' : '0');
     parts.push(conn.srEnabled ? '1' : '0');
     parts.push(conn.srRatioPercent.toString());
+    parts.push(conn.srBackend.toString());
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -214,6 +215,8 @@ export class ConnectionStore {
     conn.useGlobalSr = parts.length > 22 ? parts[22] === '1' : true;
     conn.srEnabled = parts.length > 23 ? parts[23] === '1' : false;
     conn.srRatioPercent = parts.length > 24 ? ConnectionStore.parseNumber(parts[24], 0) : 0;
+    conn.srBackend = parts.length > 25
+      ? ConnectionStore.parseNumber(parts[25], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
     return conn;
   }
 
