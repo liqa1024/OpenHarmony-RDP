@@ -1726,11 +1726,16 @@ struct SessionPage {
           this.showToolbar = true;
         }, this.hoverDelay);
       }
-    } else if (y >= this.toolbarHeight) {
-      if (this.hoverTimer !== -1) {
-        clearTimeout(this.hoverTimer);
-        this.hoverTimer = -1;
-      }
+      // The dwell only counts while the pointer stays in the top band: leaving
+      // it (even into the toolbar strip itself) means the gesture was a pass-by,
+      // so the pending reveal is dropped.
+      return;
+    }
+    if (this.hoverTimer !== -1) {
+      clearTimeout(this.hoverTimer);
+      this.hoverTimer = -1;
+    }
+    if (y >= this.toolbarHeight) {
       if (this.showToolbar && this.hideTimer === -1) {
         this.hideTimer = setTimeout(() => {
           this.hideTimer = -1;
