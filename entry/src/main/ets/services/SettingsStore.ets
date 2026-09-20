@@ -472,7 +472,14 @@ export class SettingsStore {
    * the device's XEG_spatial_upscale feature.
    */
   static srBackendUsable(backend: number): boolean {
-    const settings: AppSettings = SettingsStore.load();
+    return SettingsStore.srBackendUsableFor(SettingsStore.load(), backend);
+  }
+
+  /**
+   * Same, against an explicit settings object. The config import validates the
+   * incoming file before it is saved, so it cannot use the stored value.
+   */
+  static srBackendUsableFor(settings: AppSettings, backend: number): boolean {
     if (!settings.hardwareAccel || !DeviceCapabilities.hardwareAccel().supported) {
       return false;
     }

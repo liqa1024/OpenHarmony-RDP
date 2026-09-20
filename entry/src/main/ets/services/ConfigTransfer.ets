@@ -375,6 +375,19 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'ignoreCertificate', settings.ignoreCertificate);
     settings.maxFps =
       ConfigTransfer.readNumber(rec, 'maxFps', settings.maxFps);
+    // 超分 rides the device: adopt an imported 超分 choice only when this machine
+    // can actually run that backend, and silently keep the default otherwise - a
+    // file written on another device must not turn on a session resolution this
+    // one cannot upscale back.
+    const srEnabled: boolean = ConfigTransfer.readBoolean(rec, 'srEnabled', false);
+    const srBackend: number =
+      ConfigTransfer.readNumber(rec, 'srBackend', SR_BACKEND_XENGINE);
+    if (srEnabled && SettingsStore.srBackendUsableFor(settings, srBackend)) {
+      settings.srEnabled = true;
+      settings.srBackend = srBackend;
+      settings.srRatioPercent =
+        ConfigTransfer.readNumber(rec, 'srRatioPercent', settings.srRatioPercent);
+    }
     return settings;
   }
 

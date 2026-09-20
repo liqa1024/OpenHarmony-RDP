@@ -104,10 +104,13 @@
 - 导出用**独立的 DTO**（`ExportedConnection`）而不是直接序列化 `SavedConnection`：否则会把继承来的
   `password` / `gatewayPassword` 字段带出去。
 - 导入按连接 **`id` 覆盖或新增**，并刷新 `updatedAt`（保证 UI key 变化）。入口在设置页底部。
-- **随设备能力的全局值不导入**（`hardwareAccel`、`srEnabled`/`srRatioPercent`/`srBackend`）：它们在别的
-  机器上未必成立，导入后回到默认。**单连接**的 `useGlobalSr`/`srEnabled`/`srRatioPercent`/`srBackend`
-  随连接一起导出导入，
-  这样"局域网连接不开、frp 连接开超分辨率"这类分工能整套搬走。
+- **导入时按能力静默跳过**：全局超分（`srEnabled`/`srRatioPercent`/`srBackend`）**随文件导入，但本机跑不了
+  那个后端就不设**（`SettingsStore.srBackendUsableFor()` 判，见
+  [`native-libraries.md`](native-libraries.md) §6），保持默认关闭——在别的机器上做的配置不会让这台去谈一个
+  本机放大不回去的分辨率。`hardwareAccel` 本身不随文件导入（它是设备的运行时能力，不是偏好）。
+  **单连接**的 `useGlobalSr`/`srEnabled`/`srRatioPercent`/`srBackend` 随连接一起导出导入，
+  这样"局域网连接不开、frp 连接开超分辨率"这类分工能整套搬走；连接级的值在连接时还会过
+  `SettingsStore.resolveSr()` 的兜底，所以挂到没有对应能力的设备上也不会真生效。
 - 解析导出文件时统一 `JSON.parse(text) as Record<string, Object>` 后逐字段读取（原因见
   [`arkts-conventions.md`](arkts-conventions.md) §2）。
 
