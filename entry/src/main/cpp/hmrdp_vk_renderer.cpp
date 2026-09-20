@@ -662,7 +662,7 @@ void VkRenderer::CollectPresentTimerLocked(uint32_t slot) {
   if (presentTimer_[slot] == VK_NULL_HANDLE || device == VK_NULL_HANDLE) {
     return;
   }
-  uint64_t ticks[kPresentTimestampsPerSlot] = {0, 0, 0};
+  uint64_t ticks[kPresentTimestampsPerSlot] = {0, 0, 0, 0};
   // The slot's fence was waited just before this, so the previous submission that
   // wrote these queries has completed.
   const VkResult result =
@@ -672,25 +672,49 @@ void VkRenderer::CollectPresentTimerLocked(uint32_t slot) {
   if (result != VK_SUCCESS) {
     return;
   }
-  if (ticks[1] > ticks[0]) {
-    presentTimerCopyNs_ += static_cast<uint64_t>(
-        static_cast<double>(ticks[1] - ticks[0]) * presentNsPerTick_);
-  }
-  if (ticks[2] > ticks[1]) {
-    presentTimerBlitNs_ += static_cast<uint64_t>(
-        static_cast<double>(ticks[2] - ticks[1]) * presentNsPerTick_);
-  }
+  auto nsBetween = [this](uint64_t from, uint64_t to) -> uint64_t {
+    return to > from ? static_cast<uint64_t>(static_cast<double>(to - from) * presentNsPerTick_)
+                     : 0;
+  };
+  const uint64_t copyNs = nsBetween(ticks[0], ticks[1]);
+  const uint64_t srNs = nsBetween(ticks[1], ticks[2]);
+  const uint64_t blitNs = nsBetween(ticks[2], ticks[3]);
+  presentTimerCopyNs_ += copyNs;
+  presentTimerSrNs_ += srNs;
+  presentTimerBlitNs_ += blitNs;
+  gpuWindowCopyNs_ += copyNs;
+  gpuWindowSrNs_ += srNs;
+  gpuWindowBlitNs_ += blitNs;
   ++presentTimerFrames_;
   if ((presentTimerFrames_ % 30) == 0) {
-    HMRDP_LOGI("vulkan present probe: gpu copy=%{public}.2fms blit=%{public}.2fms "
-               "total=%{public}.2fms (n=%{public}llu)",
+    HMRDP_LOGI("vulkan present probe: gpu copy=%{public}.2fms sr=%{public}.2fms"
+               " blit=%{public}.2fms total=%{public}.2fms (n=%{public}llu)",
                static_cast<double>(presentTimerCopyNs_) / 30.0 / 1e6,
+               static_cast<double>(presentTimerSrNs_) / 30.0 / 1e6,
                static_cast<double>(presentTimerBlitNs_) / 30.0 / 1e6,
-               static_cast<double>(presentTimerCopyNs_ + presentTimerBlitNs_) / 30.0 / 1e6,
+               static_cast<double>(presentTimerCopyNs_ + presentTimerSrNs_ + presentTimerBlitNs_) /
+                   30.0 / 1e6,
                static_cast<unsigned long long>(presentTimerFrames_));
     presentTimerCopyNs_ = 0;
+    presentTimerSrNs_ = 0;
     presentTimerBlitNs_ = 0;
   }
+}
+
+void VkRenderer::TakeGpuTimings(uint64_t* copyUs, uint64_t* srUs, uint64_t* blitUs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (copyUs != nullptr) {
+    *copyUs = gpuWindowCopyNs_ / 1000;
+  }
+  if (srUs != nullptr) {
+    *srUs = gpuWindowSrNs_ / 1000;
+  }
+  if (blitUs != nullptr) {
+    *blitUs = gpuWindowBlitNs_ / 1000;
+  }
+  gpuWindowCopyNs_ = 0;
+  gpuWindowSrNs_ = 0;
+  gpuWindowBlitNs_ = 0;
 }
 
 void VkRenderer::DestroyPresentPipelineLocked() {
@@ -1450,8 +1474,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // SubmitAndPresentLocked advances frameIndex_ at the end, so the slot this
     // frame is using is captured while it is still current.
     const uint32_t slot = frameIndex_;
-    // TEMP PRESENT GPU PROBE: the slot's fence was just waited, so the previous
-    // submission's timestamps are readable.
+    // The slot's fence was just waited, so the previous submission's timestamps
+    // are readable.
     const bool timers = EnsurePresentTimerLocked();
     if (timers) {
       CollectPresentTimerLocked(slot);
@@ -1671,6 +1695,14 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
                              &srToSampled);
     }
 
+    if (timers) {
+      // Splits the pre-letterbox GPU work into upload and 超分辨率 upscale, so the
+      // upscale's own cost is attributable instead of hiding inside the blit figure
+      // (the barrier between the two is what makes this reading meaningful).
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            presentTimer_[slot], 2);
+    }
+
     // 超分 turns the letterbox source into the upscaled image, so the picture is
     // laid out with the output resolution (the letterbox still fits it to the
     // window).
@@ -1680,7 +1712,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     if (timers) {
       // Outside the render pass: the blit itself is not measurable portably from
       // inside one, but the clear + quad + resolve is what the pass does.
-      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 2);
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 3);
     }
     const bool presented = SubmitAndPresentLocked(cmd, imageIndex);
     if (presented) {
@@ -2090,8 +2122,12 @@ void VkRenderer::DestroyFrameResourcesLocked() {
   }
   presentNsPerTick_ = 0.0;
   presentTimerCopyNs_ = 0;
+  presentTimerSrNs_ = 0;
   presentTimerBlitNs_ = 0;
   presentTimerFrames_ = 0;
+  gpuWindowCopyNs_ = 0;
+  gpuWindowSrNs_ = 0;
+  gpuWindowBlitNs_ = 0;
 
   if (device == VK_NULL_HANDLE) {
     commandPool_ = VK_NULL_HANDLE;

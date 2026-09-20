@@ -122,7 +122,11 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 
 - **`present=`**：绝大部分是**固定的 Vulkan 调用**（acquire / 录制 / submit / present），不是能删的活；
   `flush` 只有 µs 级。`presentWait`（阻塞）单列，见 §2。
-- **GPU 侧另算**：`copy`（脏区字节 buffer→image）+ `blit`（clear 整张 + letterbox quad）。
+- **GPU 侧另算**：时间戳查询（每槽 4 个）把一次提交切成 **`copy`（脏区字节 buffer→image）/
+  `sr`（超分辨率上采样 pass）/ `blit`（clear 整张 + letterbox quad）**三段；超分辨率关闭时 `sr` 落在
+  屏障之后、自然接近 0。三个数进遥测（`gpuCopyUs`/`gpuSrUs`/`gpuBlitUs`，见
+  [`session-and-input.md`](session-and-input.md) §3），另有一条 30 帧一打的 hilog。
+  **它们只是"本机这一帧让 GPU 干了多久"**：GPU 整机占用率没有对三方应用开放的接口。
   **`blit` 与脏区无关**：swapchain 图像是轮转的（内容在两次呈现之间未定义）⇒ 每帧整幅是默认正确做法；
   要省它只能按 **swapchain 图像**各维护"已写入的增量"。没有 damage-rect 接口可用
   （`vkQueuePresentKHR` 不给，`VK_KHR_incremental_present` 不在设备能力表里且只是提示）；

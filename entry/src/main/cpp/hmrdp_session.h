@@ -47,12 +47,13 @@ enum class SessionEvent {
   kClipboardImage = 10,
   // Per-second session telemetry: "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|
   // <audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|
-  // <dutyPermille>|<cmdsPerFrame>|<syncUs>|<presentWaitUs>". rttMs is -1 while the
-  // server has not reported network characteristics. There is no pre-summed
-  // client-work total: from index 6 on are the per-frame phases and the blocked
-  // sub-items, and each reader adds the ones it wants - the toolbar sums the four
-  // work phases; `syncUs` and `presentWaitUs` are blocked and stay out
-  // (see EmitMetrics).
+  // <dutyPermille>|<cmdsPerFrame>|<syncUs>|<presentWaitUs>|<gpuCopyUs>|<gpuSrUs>|
+  // <gpuBlitUs>". rttMs is -1 while the server has not reported network
+  // characteristics. There is no pre-summed client-work total: from index 6 on are
+  // the per-frame phases and the blocked sub-items, and each reader adds the ones it
+  // wants - the toolbar sums the four work phases; `syncUs` and `presentWaitUs` are
+  // blocked and stay out, and the trailing three are GPU time (the upload, the 超分辨率
+  // upscale and the letterbox), which is not CPU work either (see EmitMetrics).
   kMetrics = 11,
   // Remote clipboard holds files: "<count>|<totalBytes>". The toolbar's 复制
   // button downloads them into the sandbox on demand (PullRemoteFiles).

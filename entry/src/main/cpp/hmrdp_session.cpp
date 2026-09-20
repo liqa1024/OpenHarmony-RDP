@@ -1868,6 +1868,20 @@ void Session::EmitMetrics() {
           ? static_cast<uint32_t>((work.zgxParseUs + work.decodeUs + work.composeUs +
                                    work.presentUs) * 1000 / windowUs)
           : 0;
+  // GPU work of the presents in this window: the dirty-rect upload, the 超分辨率
+  // upscale and the clear + letterbox quad, from the presenter's timestamp queries.
+  // This is *our* work on the GPU, not the GPU's total load - no public API offers
+  // the latter to an app - so the toolbar shows it as ms/frame next to the CPU
+  // percentage. Zero on a backend that cannot measure it (the GLES fallback).
+  uint64_t gpuCopyUs = 0;
+  uint64_t gpuSrUs = 0;
+  uint64_t gpuBlitUs = 0;
+  if (presenter_ != nullptr) {
+    presenter_->TakeGpuTimings(&gpuCopyUs, &gpuSrUs, &gpuBlitUs);
+  }
+  const uint64_t perFrameGpuCopyUs = perFrame(gpuCopyUs);
+  const uint64_t perFrameGpuSrUs = perFrame(gpuSrUs);
+  const uint64_t perFrameGpuBlitUs = perFrame(gpuBlitUs);
   if (framesDone > 0) {
     // One line, split per phase so a slow one is attributable at a glance, plus
     // the normalization that makes it comparable with a replay of the same
@@ -1879,7 +1893,8 @@ void Session::EmitMetrics() {
                " (+ sync %{public}llu + presentWait %{public}llu blocked)"
                " (frames=%{public}llu presents=%{public}u frames/s=%{public}llu"
                " cmds/frame=%{public}llu kB/frame=%{public}llu duty=%{public}u.%{public}u%%"
-               " rx=%{public}lluB/s fps=%{public}u)",
+               " rx=%{public}lluB/s fps=%{public}u gpu copy=%{public}llu sr=%{public}llu"
+               " blit=%{public}llu us/frame)",
                static_cast<unsigned long long>(perFrameWorkUs),
                static_cast<unsigned long long>(perFrameZgxUs),
                static_cast<unsigned long long>(perFrameDecodeUs),
@@ -1893,7 +1908,10 @@ void Session::EmitMetrics() {
                static_cast<unsigned long long>(perFrameCommands),
                static_cast<unsigned long long>(perFrameBytes / 1024),
                dutyPermille / 10, dutyPermille % 10,
-               static_cast<unsigned long long>(rxPerSec), fps);
+               static_cast<unsigned long long>(rxPerSec), fps,
+               static_cast<unsigned long long>(perFrameGpuCopyUs),
+               static_cast<unsigned long long>(perFrameGpuSrUs),
+               static_cast<unsigned long long>(perFrameGpuBlitUs));
   }
   // Audio glitch rate over the recent window: bytes that failed to play
   // (underrun silence + overflow drops) over all bytes the stream handled.
@@ -1936,15 +1954,17 @@ void Session::EmitMetrics() {
   // Fields 0..5 are the toolbar's contract (see RdpModels.ets); the rest are the
   // per-frame work in microseconds, phase by phase, plus the normalization that
   // keeps it readable across frame rates (commands and bytes per frame, and the
-  // duty cycle in ‰), and the blocked `sync`/`presentWait` at the end. No
-  // pre-summed total: the UI adds the phases it shows and skips the blocked ones.
+  // duty cycle in ‰), the blocked `sync`/`presentWait`, and the GPU split
+  // (upload / 超分辨率 upscale / letterbox). No pre-summed total: the UI adds the
+  // phases it shows and skips the blocked and the GPU ones.
   std::ostringstream payload;
   payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps
           << "|" << audioRateHz << "|" << audioLossBp
           << "|" << perFrameZgxUs << "|" << perFrameDecodeUs << "|" << perFrameComposeUs
           << "|" << perFramePresentUs << "|" << perFrameBytes << "|" << dutyPermille
           << "|" << perFrameCommands << "|" << perFrameSyncUs
-          << "|" << perFramePresentWaitUs;
+          << "|" << perFramePresentWaitUs
+          << "|" << perFrameGpuCopyUs << "|" << perFrameGpuSrUs << "|" << perFrameGpuBlitUs;
   Emit(SessionEvent::kMetrics, payload.str());
 }
 

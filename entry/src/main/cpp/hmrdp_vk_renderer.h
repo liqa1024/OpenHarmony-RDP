@@ -70,6 +70,10 @@ class VkRenderer : public FramePresenter {
   // vkAcquireNextImageKHR in AcquireFrameLocked (waiting for a swapchain image is
   // display backpressure, not client work). See hmrdp_presenter.h.
   uint64_t TakePresentWaitUs() override;
+  // GPU time of the presents since the last call, split into upload / 超分辨率
+  // upscale / letterbox (see hmrdp_presenter.h). Drains the window; zeros until the
+  // device's timestamp queries come up.
+  void TakeGpuTimings(uint64_t* copyUs, uint64_t* srUs, uint64_t* blitUs) override;
 
   void Reset() override;
 
@@ -101,10 +105,11 @@ class VkRenderer : public FramePresenter {
   // pass, so it is (re)created when that changes and reused across resizes.
   bool EnsurePresentPipelineLocked();
   void DestroyPresentPipelineLocked();
-  // TEMP PRESENT GPU PROBE: GPU time of one present submission, split into the
-  // buffer->image upload and the letterbox blit, so "the whole frame is re-blitted
-  // every frame" can be sized in GPU time instead of wall time. Remove after
-  // reading (doc_agent/present-pipeline.md §4.3).
+  // GPU accounting of the present submission, from the device's timestamp queries:
+  // the upload, the 超分辨率 upscale and the letterbox, reported to the telemetry
+  // (TakeGpuTimings) and logged every 30 frames. Absent on a device without
+  // timestamp support, which leaves the figures at zero
+  // (doc_agent/present-pipeline.md §6).
   bool EnsurePresentTimerLocked();
   void CollectPresentTimerLocked(uint32_t slot);
   // Points the given frame slot's descriptor at the picture view (the CPU frames'
@@ -167,13 +172,20 @@ class VkRenderer : public FramePresenter {
   std::vector<VkSemaphore> renderFinished_;
   VkRenderPass renderPass_ = VK_NULL_HANDLE;
 
-  // TEMP PRESENT GPU PROBE (see EnsurePresentTimerLocked).
-  static constexpr uint32_t kPresentTimestampsPerSlot = 3;
+  // GPU accounting (see EnsurePresentTimerLocked): one timestamp pair per frame,
+  // split at the 超分辨率 pass so copy / sr / blit are attributable.
+  static constexpr uint32_t kPresentTimestampsPerSlot = 4;
   VkQueryPool presentTimer_[kFramesInFlight] = {};
   double presentNsPerTick_ = 0.0;
   uint64_t presentTimerCopyNs_ = 0;
+  uint64_t presentTimerSrNs_ = 0;
   uint64_t presentTimerBlitNs_ = 0;
   uint64_t presentTimerFrames_ = 0;
+  // The same three figures for the telemetry window (TakeGpuTimings drains these;
+  // the probe above keeps its own 30-frame window for the log).
+  uint64_t gpuWindowCopyNs_ = 0;
+  uint64_t gpuWindowSrNs_ = 0;
+  uint64_t gpuWindowBlitNs_ = 0;
 
   VkCommandPool commandPool_ = VK_NULL_HANDLE;
   VkCommandBuffer commandBuffers_[kFramesInFlight] = {};

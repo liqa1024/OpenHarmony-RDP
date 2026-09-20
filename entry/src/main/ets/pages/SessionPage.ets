@@ -8,7 +8,7 @@ import { pointer } from '@kit.InputKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
+import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions, RdpConnectionState,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
@@ -66,6 +66,9 @@ const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_LOCAL: number = 74;
 const METRIC_WIDTH_FPS: number = 48;
 const METRIC_WIDTH_AUDIO: number = 86;
+// Process CPU usage (%) and this client's own GPU time per frame (ms).
+const METRIC_WIDTH_CPU: number = 60;
+const METRIC_WIDTH_GPU: number = 76;
 // Two gap sizes: the network/local pair sits one character apart, the rest
 // share a wider gap.
 const METRIC_GAP_TIGHT: number = 6;
@@ -234,6 +237,16 @@ struct SessionPage {
   @State metricsBytesPerFrame: number = 0;
   @State metricsDutyPermille: number = 0;
   @State metricsCmdsPerFrame: number = 0;
+  // GPU time of the presented frame in microseconds, split into the dirty-rect
+  // upload, the 超分辨率 upscale and the clear + letterbox quad. Zero on a backend
+  // that cannot measure it (the GLES fallback). This is the client's *own* GPU work,
+  // not the GPU's total load - no public API exposes that to an app.
+  @State metricsGpuCopyUs: number = 0;
+  @State metricsGpuSrUs: number = 0;
+  @State metricsGpuBlitUs: number = 0;
+  // Process CPU usage in percent, or -1 when the device cannot report it
+  // (hidebug). Sampled once per telemetry window - see sampleCpuUsage().
+  @State metricsCpuPercent: number = -1;
   // Developer options (SettingsStore.developerMode): the toolbar's performance
   // telemetry is a dev tool, so it is only shown while this is on.
   @State developerMode: boolean = false;
@@ -716,10 +729,11 @@ struct SessionPage {
   /**
    * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|<audioLossBp>|<zgxParseUs>|
    * <decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|<cmdsPerFrame>|
-   * <syncUs>|<presentWaitUs>". rtt/rx/tx/fps/audio drive the toolbar row; the four
-   * work phase fields are summed into "本机" (see localUs), the trailing `syncUs` /
-   * `presentWaitUs` are blocked and stay out of it, and the tail normalization
-   * feeds the tooltip (see RdpEvent.Metrics).
+   * <syncUs>|<presentWaitUs>|<gpuCopyUs>|<gpuSrUs>|<gpuBlitUs>". rtt/rx/tx/fps/audio
+   * drive the toolbar row; the four work phase fields are summed into "本机" (see
+   * localUs), the `syncUs`/`presentWaitUs` are blocked and stay out of it, the
+   * trailing three are GPU time, and the tail normalization feeds the tooltip
+   * (see RdpEvent.Metrics).
    */
   private onMetrics(data: string): void {
     const parts: string[] = data.split('|');
@@ -784,6 +798,37 @@ struct SessionPage {
         this.metricsPresentWaitUs = presentWaitUs;
       }
     }
+    if (parts.length >= 18) {
+      const gpuCopyUs: number = Number.parseInt(parts[15], 10);
+      const gpuSrUs: number = Number.parseInt(parts[16], 10);
+      const gpuBlitUs: number = Number.parseInt(parts[17], 10);
+      if (!Number.isNaN(gpuCopyUs)) {
+        this.metricsGpuCopyUs = gpuCopyUs;
+      }
+      if (!Number.isNaN(gpuSrUs)) {
+        this.metricsGpuSrUs = gpuSrUs;
+      }
+      if (!Number.isNaN(gpuBlitUs)) {
+        this.metricsGpuBlitUs = gpuBlitUs;
+      }
+    }
+    this.sampleCpuUsage();
+  }
+
+  /**
+   * Process CPU usage for the telemetry row. hidebug documents its interfaces as
+   * comparatively expensive and meant for debugging, so it is called here - once per
+   * metrics window - and the row itself only exists while developer options are on.
+   * A device without the capability (or a failing call) leaves the figure at -1 and
+   * the row shows "CPU --".
+   */
+  private sampleCpuUsage(): void {
+    try {
+      const usage: number = hidebug.getCpuUsage();
+      this.metricsCpuPercent = usage >= 0 ? Math.round(usage * 100) : -1;
+    } catch (error) {
+      this.metricsCpuPercent = -1;
+    }
   }
 
   /** "网络 28ms", or "网络 --" until the server reports network stats. */
@@ -833,6 +878,39 @@ struct SessionPage {
 
   private usToMs(us: number): number {
     return Math.round(us / 1000);
+  }
+
+  /** One-decimal ms, for the GPU figures which are a few ms at most. */
+  private usToMsTenth(us: number): string {
+    return (us / 1000).toFixed(1);
+  }
+
+  /** "CPU 42%", or "CPU --" when the device cannot report process CPU usage. */
+  private cpuLabel(): string {
+    return this.metricsCpuPercent < 0 ? 'CPU --' : 'CPU ' + this.metricsCpuPercent + '%';
+  }
+
+  /**
+   * "GPU 3.2ms": the GPU time one presented frame costs us - upload + 超分辨率
+   * upscale + letterbox. Not a utilization percentage, because the platform exposes
+   * no per-process GPU load to an app; it is the figure that answers "what does 超分
+   * add", with the split in the tooltip.
+   */
+  private gpuLabel(): string {
+    const total: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
+    return total > 0 ? 'GPU ' + this.usToMsTenth(total) + 'ms' : 'GPU --';
+  }
+
+  private gpuTips(): string {
+    const total: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
+    if (total <= 0) {
+      return '本机 GPU 上屏工时（脏区上传 / 超分辨率 / letterbox）\n'
+        + '当前上屏后端不提供 GPU 时间戳，只在使用 Vulkan 硬件加速时可见';
+    }
+    return '本机 GPU 上屏工时/帧：上传 ' + this.usToMsTenth(this.metricsGpuCopyUs) + 'ms'
+      + ' · 超分辨率 ' + this.usToMsTenth(this.metricsGpuSrUs) + 'ms'
+      + ' · letterbox ' + this.usToMsTenth(this.metricsGpuBlitUs) + 'ms'
+      + '\n这是本机自己的 GPU 工作量，不是 GPU 整机占用率（平台未开放该接口）';
   }
 
   /** "本机" tooltip: the per-frame breakdown, every figure to the ones place. */
@@ -2575,8 +2653,13 @@ struct SessionPage {
   }
 
   /**
-   * Developer-only telemetry (network / 本机 / FPS / bandwidth / audio), on its
-   * own toolbar line. Hidden unless developer options are on.
+   * Developer-only telemetry (network / 本机 / FPS / CPU / GPU / bandwidth /
+   * audio), on its own toolbar line. Hidden unless developer options are on.
+   *
+   * The fixed fields come first; the two that can disappear follow in reverse
+   * order of how often they show - bandwidth (any traffic) before audio (only
+   * while playing) - so a field that comes and goes never shifts one that shows
+   * up more often, and 网络/本机/FPS/CPU/GPU never move at all.
    */
   @Builder
   toolbarTelemetry() {
@@ -2599,6 +2682,19 @@ struct SessionPage {
         .width(METRIC_WIDTH_FPS)
         .margin({ left: METRIC_GAP_GROUP })
         .maxLines(1)
+      Text(this.cpuLabel())
+        .fontSize(12)
+        .fontColor(TOOLBAR_FG_SECONDARY)
+        .width(METRIC_WIDTH_CPU)
+        .margin({ left: METRIC_GAP_GROUP })
+        .maxLines(1)
+      Text(this.gpuLabel())
+        .fontSize(12)
+        .fontColor(TOOLBAR_FG_SECONDARY)
+        .width(METRIC_WIDTH_GPU)
+        .margin({ left: METRIC_GAP_GROUP })
+        .maxLines(1)
+        .bindTips(this.gpuTips(), this.tipsOptions)
       if (this.hasBandwidth()) {
         Text(this.bandwidthLabel())
           .fontSize(12)

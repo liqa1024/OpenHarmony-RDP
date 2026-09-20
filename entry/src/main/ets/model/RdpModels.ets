@@ -76,7 +76,7 @@ export enum RdpEvent {
   // Per-second telemetry, payload
   // "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|<audioLossBp>|<zgxParseUs>|
   //  <decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|
-  //  <cmdsPerFrame>|<syncUs>|<presentWaitUs>".
+  //  <cmdsPerFrame>|<syncUs>|<presentWaitUs>|<gpuCopyUs>|<gpuSrUs>|<gpuBlitUs>".
   // rttMs is -1 while the server has not reported network characteristics;
   // audioRateHz and audioLossBp (0.01% units) describe the recent audio playback
   // health, both -1 when audio is not playing. The fields from zgxParseUs on are
@@ -85,7 +85,8 @@ export enum RdpEvent {
   // in 0.1% units), and the two blocked sub-items at the end (`syncUs`: waiting
   // for the desktop buffer's GPU read; `presentWaitUs`: waiting for the display).
   // There is no pre-summed client-work total: the toolbar sums the four work
-  // phases and leaves the blocked ones out.
+  // phases and leaves the blocked ones out, and the trailing three are GPU time
+  // (dirty-rect upload, 超分辨率 upscale, letterbox) rather than CPU work.
   Metrics = 11,
   // Remote clipboard holds files: payload "<count>|<totalBytes>".
   ClipboardFileList = 12,

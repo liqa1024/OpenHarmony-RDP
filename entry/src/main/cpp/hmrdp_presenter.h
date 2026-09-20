@@ -104,6 +104,29 @@ class FramePresenter {
   // such wait.
   virtual uint64_t TakePresentWaitUs() { return 0; }
 
+  // --- GPU accounting (dev telemetry) ---------------------------------------------
+  // GPU time of the presents since the last call, in microseconds, split into the
+  // dirty-rect upload (`copyUs`), the 超分辨率 upscale (`srUs`) and the clear +
+  // letterbox quad (`blitUs`); the call drains the window. All zero when the
+  // backend cannot measure it (the GLES fallback, or a device without Vulkan
+  // timestamp queries), which is the honest answer there rather than a zero-cost
+  // claim.
+  //
+  // This is *our* work on the GPU, not the GPU's total load: no public API exposes
+  // the latter to a third-party app, so the toolbar shows it as ms/frame beside the
+  // CPU percentage (see doc_agent/session-and-input.md §3).
+  virtual void TakeGpuTimings(uint64_t* copyUs, uint64_t* srUs, uint64_t* blitUs) {
+    if (copyUs != nullptr) {
+      *copyUs = 0;
+    }
+    if (srUs != nullptr) {
+      *srUs = 0;
+    }
+    if (blitUs != nullptr) {
+      *blitUs = 0;
+    }
+  }
+
   // Called from the FreeRDP worker thread. `data` is the whole desktop frame
   // (top-down BGRA, `srcStride` bytes/row), `desktopWidth/Height` the desktop
   // dimensions used for the letterbox, and `rects`/`rectCount` the regions that
