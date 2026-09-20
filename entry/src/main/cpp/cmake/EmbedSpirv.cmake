@@ -6,7 +6,11 @@
 #         -DHMRDP_SRC=<shader.comp> \
 #         -DHMRDP_OUT=<generated header> \
 #         -DHMRDP_SYMBOL=<C++ symbol> \
+#         [-DHMRDP_INCLUDE=<dir>] \
 #         -P cmake/EmbedSpirv.cmake
+#
+# HMRDP_INCLUDE is optional and only needed by a shader that #includes a header
+# (the FSR passes pull in the vendored ffx_fsr1.h).
 #
 # Embedding (rather than shipping .spv files next to the .so) keeps the runtime
 # free of file IO and makes "SPIR-V travels with the HAP" automatic: the words are
@@ -26,8 +30,14 @@ get_filename_component(_outDir "${HMRDP_OUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${_outDir}")
 
 set(_spv "${HMRDP_OUT}.spv")
+# The include flag has to be a single token with no space ("-I<dir>"), and an
+# unquoted empty variable expands to no argument at all.
+set(_include "")
+if(DEFINED HMRDP_INCLUDE AND NOT "${HMRDP_INCLUDE}" STREQUAL "")
+  set(_include "-I${HMRDP_INCLUDE}")
+endif()
 execute_process(
-  COMMAND "${HMRDP_GLSLANG}" -V --target-env vulkan1.1 -o "${_spv}" "${HMRDP_SRC}"
+  COMMAND "${HMRDP_GLSLANG}" -V --target-env vulkan1.1 ${_include} -o "${_spv}" "${HMRDP_SRC}"
   RESULT_VARIABLE _rc
   OUTPUT_VARIABLE _stdout
   ERROR_VARIABLE _stderr)

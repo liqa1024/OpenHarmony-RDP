@@ -39,6 +39,25 @@ set(HMRDP_SHADERS
   "present_quad.frag|PresentQuadFrag"
 )
 
+# FSR 1.0 (the alternative 超分 backend, MIT): its two passes #include the vendored
+# AMD headers, so they only build once native/scripts/fetch-sources.ps1 has run.
+# Without the tree the presenter simply has no FSR backend to offer, the same way a
+# missing HMS sysroot leaves out XEngine.
+set(HMRDP_FSR_INCLUDE "")
+set(HMRDP_HAVE_FSR OFF)
+set(_fsr_root "${CMAKE_CURRENT_SOURCE_DIR}/../../../../native/third_party/fidelityfx-fsr-1.0.2/ffx-fsr")
+if(EXISTS "${_fsr_root}/ffx_fsr1.h")
+    set(HMRDP_FSR_INCLUDE "${_fsr_root}")
+    set(HMRDP_HAVE_FSR ON)
+    list(APPEND HMRDP_SHADERS
+      "fsr_easu.frag|FsrEasuFrag"
+      "fsr_rcas.frag|FsrRcasFrag"
+    )
+    message(STATUS "HmRdp: FSR 1.0 headers at ${_fsr_root}")
+else()
+    message(WARNING "HmRdp: FSR headers not found under ${_fsr_root}; run native/scripts/fetch-sources.ps1 to enable the FSR backend")
+endif()
+
 set(HMRDP_SHADER_HEADERS "")
 foreach(_shader IN LISTS HMRDP_SHADERS)
     string(REPLACE "|" ";" _parts "${_shader}")
@@ -52,6 +71,7 @@ foreach(_shader IN LISTS HMRDP_SHADERS)
                 "-DHMRDP_SRC=${CMAKE_CURRENT_SOURCE_DIR}/shaders/${_file}"
                 "-DHMRDP_OUT=${_generated}"
                 "-DHMRDP_SYMBOL=${_symbol}"
+                "-DHMRDP_INCLUDE=${HMRDP_FSR_INCLUDE}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${_file}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
@@ -135,3 +155,6 @@ target_link_libraries(hmrdp
 target_compile_options(hmrdp PRIVATE -Wall -Wextra -fPIC
     -Wno-unused-command-line-argument)
 target_compile_definitions(hmrdp PRIVATE NAPI_VERSION=8 VK_USE_PLATFORM_OHOS=1)
+if(HMRDP_HAVE_FSR)
+    target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_FSR=1)
+endif()

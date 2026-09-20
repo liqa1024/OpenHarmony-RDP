@@ -10,7 +10,7 @@
 #   native/scripts/fetch-sources.ps1 -Force     # re-download and re-extract everything
 #
 # FreeRDP is the only tree the patches touch (native/scripts/patch-freerdp.ps1);
-# zlib and OpenSSL are used as released. The patch helpers match on LF-normalized
+# everything else is used as released. The patch helpers match on LF-normalized
 # text, so the checkout style (LF from the tarball, CRLF from a Windows checkout)
 # does not matter.
 param(
@@ -48,6 +48,17 @@ $Deps = @(
 		ArchiveRoot = "openssl-3.0.15"
 		Url         = "https://www.openssl.org/source/old/3.0/openssl-3.0.15.tar.gz"
 		Sha256      = "23C666D0EDF20F14249B3D8F0368ACAEE9AB585B09E1DE82107C66E1F3EC9533"
+		Patch       = $false
+	},
+	# FSR 1.0 (MIT): the EASU/RCAS shader headers the Vulkan presenter #includes.
+	# Header-only, so nothing is built from it - the app's CMake finds the tree at
+	# native/third_party/fidelityfx-fsr-1.0.2 and embeds the compiled SPIR-V.
+	[pscustomobject]@{
+		Name        = "FidelityFX-FSR"
+		Dir         = "fidelityfx-fsr-1.0.2"
+		ArchiveRoot = "FidelityFX-FSR-1.0.2"
+		Url         = "https://github.com/GPUOpen-Effects/FidelityFX-FSR/archive/refs/tags/v1.0.2.tar.gz"
+		Sha256      = "92EE8F9630364EC3AD7FC16AF5A990601EBF18142571527ED672B79B79D04ACD"
 		Patch       = $false
 	}
 )
