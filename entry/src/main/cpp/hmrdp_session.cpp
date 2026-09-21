@@ -2992,6 +2992,7 @@ UINT Session::OnCliprdrServerFormatDataRequest(
       std::ostringstream donePayload;
       donePayload << fileCount;
       Emit(SessionEvent::kFileTransferDone, donePayload.str());
+      WithdrawLocalFileClipboard();
     }
   }
   return rc;
@@ -3265,36 +3266,53 @@ void Session::ResetRemoteFileDownloadLocked() {
 }
 
 void Session::CancelFileTransfer() {
-  bool reAdvertise = false;
+  bool pulled = false;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
     ResetRemoteFileDownloadLocked();
     if (localClipKind_ != LocalClipKind::kFiles) {
       return;
     }
-    const bool pulled = localTransferDone_ > 0;
+    pulled = localTransferDone_ > 0;
+    if (pulled) {
+      // Mid-transfer abort: the server is still reading the list, so it cannot
+      // be withdrawn; stop serving instead, which makes the remote paste report
+      // a protocol error (the UI warns about that before calling this).
+      localClipboardFilePaths_.clear();
+      localTransferDone_ = 0;
+      localTransferTotal_ = 0;
+      localClipKind_ = LocalClipKind::kNone;
+    }
+  }
+  if (!pulled) {
+    // Nothing was pulled yet (or the transfer already finished): the file list
+    // can be taken back cleanly.
+    WithdrawLocalFileClipboard();
+  }
+}
+
+void Session::WithdrawLocalFileClipboard() {
+  bool withdrawn = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (localClipKind_ != LocalClipKind::kFiles) {
+      return;
+    }
+    // Replace the file list with an empty text clipboard. The server drops the
+    // file formats and a later paste finds nothing instead of erroring (an empty
+    // FORMAT_LIST would be ignored by the channel, see cliprdr_main.c).
     localClipboardFilePaths_.clear();
     localTransferDone_ = 0;
     localTransferTotal_ = 0;
-    if (pulled) {
-      // Mid-transfer abort: stop serving, so the remote paste reports a
-      // protocol error (the UI warns about that before calling this).
-      localClipKind_ = LocalClipKind::kNone;
-    } else {
-      // Nothing was pulled yet, so the file list can be withdrawn cleanly:
-      // replace it with an empty text clipboard. The server drops the file
-      // formats and a later paste finds nothing instead of erroring (an empty
-      // FORMAT_LIST would be ignored by the channel, see cliprdr_main.c).
-      localClipboardUtf16_.assign(sizeof(WCHAR), '\0');
-      localClipboardValid_ = true;
-      localClipboardHtml_.clear();
-      localClipboardUtf16FromHtml_.clear();
-      localClipboardDib_.clear();
-      localClipKind_ = LocalClipKind::kText;
-      reAdvertise = true;
-    }
+    localClipboardUtf16_.assign(sizeof(WCHAR), '\0');
+    localClipboardValid_ = true;
+    localClipboardHtml_.clear();
+    localClipboardUtf16FromHtml_.clear();
+    localClipboardDib_.clear();
+    localClipKind_ = LocalClipKind::kText;
+    withdrawn = true;
   }
-  if (reAdvertise) {
+  if (withdrawn) {
     HMRDP_LOGI("cliprdr file list withdrawn (empty text advertised)");
     AdvertiseLocalClipboard();
   }
@@ -3668,6 +3686,10 @@ UINT Session::HandleLocalFileContentsRequest(
     std::ostringstream donePayload;
     donePayload << fileCount;
     Emit(SessionEvent::kFileTransferDone, donePayload.str());
+    // Every advertised byte is served, so the list has no reason to stay on the
+    // clipboard: withdrawing it keeps a second paste on the remote side from
+    // pulling the same files again (with no progress row to cancel).
+    WithdrawLocalFileClipboard();
   }
   return rc;
 }

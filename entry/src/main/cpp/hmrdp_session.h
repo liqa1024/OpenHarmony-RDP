@@ -186,6 +186,14 @@ class Session {
   // the UI thread.
   void CancelFileTransfer();
 
+  // Drops the advertised file clipboard by advertising an empty text clipboard,
+  // so the server discards the file formats and a later paste on the remote side
+  // finds nothing instead of pulling the same files a second time. Uploads call
+  // this once every advertised byte has been served (see HandleLocalFileContents-
+  // Request); it is the withdrawal an upload cancelled before any byte was pulled
+  // performs. No-op unless the local clipboard is currently a file list.
+  void WithdrawLocalFileClipboard();
+
   // Internal callbacks used by the FreeRDP glue.
   freerdp* instance() const { return instance_; }
   void HandlePostConnect();
