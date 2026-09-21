@@ -2413,7 +2413,7 @@ struct SessionPage {
       if (this.state === RdpConnectionState.Connecting) {
         LoadingProgress().width(44).height(44).color($r('app.color.accent'))
       } else {
-        Image($r('app.media.app_icon')).width(52).height(52).borderRadius(14)
+        Image($r('app.media.ic_remote_desktop')).width(52).height(52).borderRadius(14)
       }
       Text(title)
         .fontSize(17)

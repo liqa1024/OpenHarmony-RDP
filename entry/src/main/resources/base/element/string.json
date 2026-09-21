@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "RDP 远程桌面客户端"
+      "value": "风筝远控 - RDP 远程桌面客户端"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "RDP 远程桌面客户端"
+      "value": "风筝远控 - RDP 远程桌面客户端"
     },
     {
       "name": "EntryAbility_label",
-      "value": "XA 远程桌面"
+      "value": "风筝远控"
     },
     {
       "name": "permission_internet_reason",

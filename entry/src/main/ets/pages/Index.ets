@@ -248,7 +248,7 @@ struct Index {
   connectionRow(conn: SavedConnection) {
     Row() {
       Row() {
-        Image($r('app.media.app_icon'))
+        Image($r('app.media.ic_remote_desktop'))
           .width(40)
           .height(40)
           .borderRadius(10)
