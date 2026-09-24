@@ -184,7 +184,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   **生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的 `DesktopResize` 会换掉
   primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，否则是"向已释放内存
   memset"；`gdi_DeleteSurface` 不能释放共享缓冲；出现第二个 surface 时先解除共享。
-  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`present-pipeline.md`](present-pipeline.md) §4。
+   全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`present-pipeline.md`](present-pipeline.md) §4。
+- **encode-only 的 SIMD 桩不接、也不打警告**：上游 `nsc_neon.c` 的 `nsc_init_neon` 是空实现，只会刷
+  `TODO: Implement neon optimized version of this function`；它对应的是 encode 侧（客户端只解码）⇒ 移除该警告
+  （patch step 29）。
 
 ## 4. 编 FreeRDP 时的关键选项
 
