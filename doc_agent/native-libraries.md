@@ -94,6 +94,25 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **触屏帧间隔可调**：上游把接触点合并成约 50Hz 一帧，补丁导出运行时全局
   `HmrdpSetTouchFrameInterval`；设置项「触屏-高刷新率」开则传 8ms（125Hz）。**间隔是速率上限**，
   不要传 0（那样每次输入轮询都发，速率只剩网络这一道约束）。
+- **合并后的触点帧必须仍是合法状态序列**（patch step 26）：一帧里每个触点只出现一次，所以应用在一个帧
+  窗口（默认 20ms / 高刷 8ms）内产生的 Down/Move/Up 会被合并进同一条记录。上游只保留最新的 flags，于是
+  「DOWN 之后同一窗口内又来一个 Move」会让远端看到的首条记录是 `UPDATE|INRANGE|INCONTACT`——而进入
+  ENGAGED 的合法迁移**只有** `DOWN|INRANGE|INCONTACT`（状态表在 `channels/rdpei/client/rdpei_main.h`）。
+  远端因此从不 engage 这个触点：长按在那边成不了 press-and-hold（**不出右键菜单**），它为该畸形触点画下的
+  触摸圆点还会残留，后续按压继续叠加。合并保留、只把**发出的记录**改成总是合法：DOWN 尚未发出的触点一律
+  按 DOWN 报（坐标/字段取最新，合并不丢内容），在此之前到来的抬指留到下一帧发 UP；已 ENGAGED 的触点沿用旧
+  行为（按住发 UPDATE、抬起发 UP）。"DOWN 已发出"这一标记加在 **channel 私有的** `rdpei_main.h` 结构里，
+  不动公开头文件 ⇒ 不需要重新 sync。**判据**：只要远端收到的某触点首条记录不是 DOWN，就会在那边留下
+  一个不消失的触点视觉。
+- **释放那一帧不能移动触点**（patch step 28）：`rdpei_main.h` 的状态表写明「离开 ENGAGED
+  （`UP`→OUT_OF_RANGE）时触点位置不能变，只能等迁移之后再变」。上游 `freerdp_handle_touch_up` 正是靠
+  「先发一条 lift 位置的 `UPDATE`、再发同位置的 `UP`」来满足它（位置变发生在仍是 ENGAGED 的那条里）。但
+  一帧只带一个触点（step 26），两条落进同一帧就只剩 `UP`，于是**位置变化被并进迁移那一帧**⇒ 远端不认这条
+  释放、触点停在 ENGAGED（**触摸视觉不消失**）。是否落进同一帧取决于两条之间会不会插进一次 flush，所以
+  故障是间歇的、且任何扰动时序的改动都会让出现率漂移。合并照旧，只是让 `UP` 报**远端已知的那个位置**
+  （每触点记住上次上报的坐标，`lastX/lastY`），迁移就不移动触点；没发过 DOWN 的触点在 step 26 里已先补
+  DOWN，它缓发的那条 `UP` 同样用这个位置。**判据**：RDPEI 发出的 `UP` 坐标必须等于该触点上一次上报的
+  坐标（日志里就是 `touch tx ... flags=0x4 x=.. y=..` 与最近一条同坐标）。
 - **解码宽度**：app 导出 `HmrdpDecodeWidth()`（`hmrdp_parallel.*`，值来自
   `hmrdp_decode_tuning.*`：在线核数，上限 16，**不是设置项**），解码器在每条 region 边界读它。
   宽度是"这条 region 能用几个线程"：调用线程自己跑一个 chunk（调用方参与），平台队列的
