@@ -2185,6 +2185,31 @@ void Session::EmitMetrics() {
     audioLossBp = static_cast<int32_t>(audioLostSum * 10000 / audioTotalSum);
   }
 
+  // Probe (dev): the GFX offload queue and the input->screen latency. The queue
+  // tells whether the server paces itself (small/steady) or the client is
+  // buffering a growing backlog (deliberately not reported to the server, and not
+  // bounded by blocking the dispatch thread). The latency is the lower bound on
+  // input feedback from AfterPresent. Both are one-off measurements: delete once
+  // the architecture question they answer is settled.
+  {
+    const size_t queueNow = gfxQueueBytes_.load();
+    const size_t queuePeak = gfxQueuePeakBytes_.exchange(0);
+    const uint64_t inCount = inputLatencyCount_.exchange(0);
+    const uint64_t inSum = inputLatencySumUs_.exchange(0);
+    const uint64_t inMax = inputLatencyMaxUs_.exchange(0);
+    if (queueNow > 0 || queuePeak > 0 || inCount > 0) {
+      HMRDP_LOGI("probe: gfx queue now=%{public}llu peak=%{public}llu bytes"
+                 " | input->present avg=%{public}llu max=%{public}llu us (%{public}llu ev)"
+                 " | rx=%{public}lluB/s",
+                 static_cast<unsigned long long>(queueNow),
+                 static_cast<unsigned long long>(queuePeak),
+                 static_cast<unsigned long long>(inCount > 0 ? inSum / inCount : 0),
+                 static_cast<unsigned long long>(inMax),
+                 static_cast<unsigned long long>(inCount),
+                 static_cast<unsigned long long>(rxPerSec));
+    }
+  }
+
   lastMetricsTick_ = now;
   lastInBytes_ = inBytes;
   lastOutBytes_ = outBytes;
@@ -2668,25 +2693,29 @@ void Session::HandleGfxData(const uint8_t* data, size_t size) {
   if (data == nullptr || size == 0) {
     return;
   }
-  // Safety backpressure: the server throttles on the backlog we report (the
-  // acknowledge's queueDepth), but if it ever ignores that, stall this dispatch
-  // until the queue drains rather than grow without bound. The worker stays the
-  // only processor, so the GFX context is still touched by one thread at a time.
-  constexpr size_t kMaxGfxQueuedBytes = 32u * 1024u * 1024u;
+  // The drdynvc dispatch thread must never be blocked: it carries every dynamic
+  // channel, so waiting here for the frame worker to drain would hold audio and
+  // input behind the frame pipeline - exactly the coupling the offload exists to
+  // remove. The queue is therefore left free to grow; it is a latency buffer, not
+  // a throttle. Bounding it is the frame acknowledge's job, not a producer-side
+  // wait (see GfxWorkReportBufferedBytes).
   bool queued = false;
+  size_t depth = 0;
   {
-    std::unique_lock<std::mutex> lock(gfxQueueMutex_);
-    while (gfxWorkerRun_ && gfxQueueBytes_.load() > kMaxGfxQueuedBytes) {
-      gfxQueueCv_.wait(lock);
-    }
+    std::lock_guard<std::mutex> lock(gfxQueueMutex_);
     if (gfxWorkerRun_) {
       gfxQueue_.emplace_back(data, data + size);
-      gfxQueueBytes_.fetch_add(size);
+      depth = gfxQueueBytes_.fetch_add(size) + size;
       queued = true;
     }
   }
   if (queued) {
-    GfxWorkReportBufferedBytes(gfxQueueBytes_.load());
+    // Probe only (EmitMetrics reports now/peak): whether this grows is the
+    // measurement of whether the server paces itself, not a safety trip.
+    const size_t peak = gfxQueuePeakBytes_.load(std::memory_order_relaxed);
+    if (depth > peak) {
+      gfxQueuePeakBytes_.store(depth, std::memory_order_relaxed);
+    }
     gfxQueueCv_.notify_one();
     return;
   }
@@ -2721,10 +2750,6 @@ void Session::GfxWorkerLoop() {
       gfxQueue_.pop_front();
       gfxQueueBytes_.fetch_sub(chunk.size());
     }
-    // Publish the new backlog for the next acknowledge, and wake any producer
-    // that is stalled on the safety bound.
-    GfxWorkReportBufferedBytes(gfxQueueBytes_.load());
-    gfxQueueCv_.notify_all();
     auto* gfx = static_cast<RdpgfxClientContext*>(gfxWorkerContext_);
     if (gfx == nullptr) {
       continue;
@@ -2771,7 +2796,6 @@ void Session::StopGfxWorker() {
     gfxQueue_.clear();
     gfxQueueBytes_.store(0);
   }
-  GfxWorkReportBufferedBytes(0);
   gfxQueueCv_.notify_all();
   if (gfxWorkerThread_.joinable()) {
     gfxWorkerThread_.join();
@@ -2850,10 +2874,31 @@ void Session::AfterPresent() {
   // report it differently; this only does the per-frame bookkeeping.
   frameCount_.fetch_add(1);
 
+  // Probe (dev): the first frame after an input event closes that event's
+  // feedback latency - how long it took for the input to become visible. It is a
+  // lower bound: the frame may not reflect the input, but under continuous input
+  // it tracks the pipeline lag well.
+  const uint64_t inputUs = lastInputUs_.exchange(0, std::memory_order_relaxed);
+  if (inputUs != 0) {
+    const uint64_t latencyUs = NowUs() - inputUs;
+    inputLatencySumUs_.fetch_add(latencyUs, std::memory_order_relaxed);
+    inputLatencyCount_.fetch_add(1, std::memory_order_relaxed);
+    uint64_t peak = inputLatencyMaxUs_.load(std::memory_order_relaxed);
+    while (latencyUs > peak &&
+           !inputLatencyMaxUs_.compare_exchange_weak(peak, latencyUs,
+                                                     std::memory_order_relaxed)) {
+    }
+  }
+
   if (!firstFrameSent_) {
     firstFrameSent_ = true;
     Emit(SessionEvent::kFirstFrame, "");
   }
+}
+
+void Session::NoteInputSent() {
+  // Only the timestamp is stored here; the latency is closed in AfterPresent.
+  lastInputUs_.store(NowUs(), std::memory_order_relaxed);
 }
 
 void Session::HandleDesktopResize() {
@@ -3001,6 +3046,7 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
     HMRDP_LOGI("sendMouse flags=0x%{public}x x=%{public}u y=%{public}u", flags, x, y);
     mouseLog++;
   }
+  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr ||
       ctx.instance()->context->input == nullptr) {
@@ -3011,6 +3057,7 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
 
 bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x,
                         int32_t y) {
+  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr) {
     return false;
@@ -3065,6 +3112,7 @@ void Session::SetRfxDump(bool enabled, const std::string& dir) {
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
+  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr ||
       ctx.instance()->context->input == nullptr) {
@@ -3078,6 +3126,7 @@ bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
 }
 
 bool Session::SendUnicode(uint16_t codepoint, bool down) {
+  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr ||
       ctx.instance()->context->input == nullptr) {

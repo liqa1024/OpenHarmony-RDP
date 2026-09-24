@@ -83,8 +83,8 @@ std::unordered_map<RdpgfxClientContext*, std::function<void(const uint8_t*, size
     g_dataSinkHooks;
 
 // Raw GFX bytes buffered at the client and not yet processed (see
-// GfxWorkReportBufferedBytes). Written by the session as its offload queue
-// changes, read by FreeRDP when it builds a frame acknowledge.
+// GfxWorkReportBufferedBytes). Written only when the session feeds the report
+// (it currently does not), read by FreeRDP when it builds a frame acknowledge.
 std::atomic<uint32_t> g_gfxBufferedBytes{0};
 
 // Runs that context's hook, when one is installed. Called before *every* command
@@ -403,7 +403,8 @@ extern "C" BOOL HmrdpGfxDataSink(RdpgfxClientContext* gfx, const BYTE* data, UIN
 }
 
 // Read by the patched rdpgfx when it builds a frame acknowledge: the client's
-// real GFX backlog, in bytes (see GfxWorkReportBufferedBytes).
+// real GFX backlog, in bytes (see GfxWorkReportBufferedBytes). It reads 0 while
+// nothing feeds it, so the acknowledge keeps upstream's QUEUE_DEPTH_UNAVAILABLE.
 extern "C" UINT32 HmrdpGfxBufferedBytes(void) {
   return g_gfxBufferedBytes.load();
 }

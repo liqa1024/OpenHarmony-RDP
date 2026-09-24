@@ -229,11 +229,17 @@ void GfxWorkSetDataSinkHook(RdpgfxClientContext* gfx,
                             std::function<void(const uint8_t*, size_t)> hook);
 
 // Reports how many raw GFX bytes are buffered at the client and not yet processed
-// (the offload queue depth, see GfxWorkSetDataSinkHook). FreeRDP puts it into the
-// frame acknowledge's `queueDepth`, whose definition is exactly this quantity: the
-// server then throttles the frame rate to what the client actually drains, so the
-// offload queue stays bounded - and the frame-rate cap becomes a real, server-side
-// throttle without synthesising anything. 0 reports "no backlog".
+// (the offload queue depth, see GfxWorkSetDataSinkHook). FreeRDP puts the value
+// into the frame acknowledge's `queueDepth`, whose definition is exactly this
+// quantity. It is the only client->server signal that can ask the server to slow
+// the frame it sends, so feeding it makes the offload queue a server-visible
+// backlog; leaving it at 0 makes the server pace itself and exposes the queue as
+// pure client-side latency.
+//
+// The live session currently does NOT feed it (HandleGfxData): whether the peer
+// honours `queueDepth` is unproven, and mixing that unproven control loop into
+// the measurement would make the result unattributable. 0 = no backlog /
+// upstream's default.
 void GfxWorkReportBufferedBytes(size_t bytes);
 
 }  // namespace hmrdp
