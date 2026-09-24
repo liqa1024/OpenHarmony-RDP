@@ -9,12 +9,12 @@ import { window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
-import { PendingConnection, RdpConnectOptions, RdpConnectionState,
+import { PendingConnection, RdpConnectOptions,
   RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
-import { SessionManager } from '../services/SessionManager';
+import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -187,7 +187,8 @@ class ForegroundStateCallback extends ApplicationStateChangeCallback {
 @Entry({ useSharedStorage: true })
 @Component
 struct SessionPage {
-  @State state: RdpConnectionState = RdpConnectionState.Connecting;
+  // The manager is the authority; this only mirrors what it publishes.
+  @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接...';
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
@@ -209,8 +210,6 @@ struct SessionPage {
   // without the capability ignores the field and keeps the default tooltip.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  // True when the manager already connected before this window was opened.
-  private preconnected: boolean = false;
   private closing: boolean = false;
   private controller: RdpSurfaceController = new RdpSurfaceController();
   private componentWidth: number = 0;
@@ -453,18 +452,16 @@ struct SessionPage {
         this.native.unbindSurface();
       }
     );
-    if (this.preconnected) {
-      // The manager already connected and owns the event listener; this window
-      // only has to bind the surface and render the live session.
-      this.state = RdpConnectionState.Connected;
-      this.statusText = '已连接';
+    // The manager owns the session and its native listener; this window only
+    // mirrors the manager's state and renders the live session. If the session
+    // dropped between "connected" and this window loading, the manager is the one
+    // that already recorded it, so the drop is shown instead of silently
+    // reconnecting.
+    this.applySessionState(SessionManager.stateOf(this.connectionId),
+      SessionManager.messageOf(this.connectionId));
+    if (this.state === ConnectionState.Connected) {
       this.showOverlay = false;
       this.showToolbar = false;
-    } else {
-      this.native.setListener((event: RdpEvent, data: string) => {
-        this.onRdpEvent(event, data);
-      });
-      this.startSession();
     }
   }
 
@@ -489,7 +486,8 @@ struct SessionPage {
     this.releaseAllTouches();
     this.endPinch();
     this.restoreCursor();
-    this.native.stopSession();
+    // The manager owns the session: this window never stops it (that would race
+    // the window-close teardown). SessionAbility.release() is the one place.
     this.options.password = '';
     this.options.gatewayPassword = '';
   }
@@ -568,7 +566,7 @@ struct SessionPage {
       const wasAway: boolean = this.awayFromForeground;
       this.awayFromForeground = false;
       if (wasAway &&
-        (this.state === RdpConnectionState.Closed || this.state === RdpConnectionState.Failed)) {
+        (this.state === ConnectionState.Idle || this.state === ConnectionState.Failed)) {
         this.retry();
       }
     }, FOREGROUND_RECONNECT_GRACE_MS);
@@ -588,10 +586,13 @@ struct SessionPage {
     if (existing !== undefined) {
       this.native = existing;
     }
-    this.preconnected = this.connectionId.length > 0 &&
-      SessionManager.isConnected(this.connectionId);
     RdpNative.register(this.sessionKey, this.native);
+    // The manager owns the session: it publishes the lifecycle state and forwards
+    // the UI-effect events. This window only renders what it is given.
     SessionManager.attachWindow(this.sessionKey,
+      (state: ConnectionState, message: string) => {
+        this.applySessionState(state, message);
+      },
       (event: RdpEvent, data: string) => {
         this.onRdpEvent(event, data);
       },
@@ -600,38 +601,48 @@ struct SessionPage {
       });
   }
 
-  private startSession(): void {
-    this.state = RdpConnectionState.Connecting;
-    this.statusText = '正在连接...';
-    this.showOverlay = true;
-    this.showToolbar = true;
-    const handle: number = this.native.startSession(this.options);
-    if (handle < 0) {
-      this.state = RdpConnectionState.Failed;
-      this.statusText = '会话创建失败';
+  /**
+   * Renders the manager's state. Everything about "is this session up / why did it
+   * fail" comes from here, so the list and this window can never disagree.
+   */
+  private applySessionState(state: ConnectionState, message: string): void {
+    this.state = state;
+    if (state === ConnectionState.Connected) {
+      this.statusText = '已连接';
+      this.showToolbar = false;
+    } else if (state === ConnectionState.Connecting) {
+      this.statusText = '正在连接...';
       this.showOverlay = true;
+      this.showToolbar = true;
+    } else if (state === ConnectionState.Disconnecting) {
+      this.statusText = '正在断开...';
+    } else {
+      // Failed / Idle (a dropped session): show the reason the manager classified
+      // and offer 重试.
+      this.statusText = message.length > 0 ? message
+        : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
+      this.showOverlay = true;
+      this.showToolbar = true;
+      this.resetCursor();
     }
   }
 
   private retry(): void {
     // An attempt is a full negotiation plus a logon, so a retry that lands while
-    // one is already on its way is dropped instead of tearing the session down and
-    // starting a second one.
-    if (this.state === RdpConnectionState.Connecting) {
+    // one is already on its way (or still tearing down) is dropped instead of
+    // tearing the session down and starting a second one.
+    if (this.state === ConnectionState.Connecting ||
+      this.state === ConnectionState.Disconnecting) {
       return;
     }
-    if (this.connectionId.length > 0) {
-      // The manager refuses an attempt that is too soon after the last one; the
-      // page only shows progress for an attempt that was really started.
-      if (!SessionManager.retry(this.connectionId)) {
-        return;
-      }
-      this.state = RdpConnectionState.Connecting;
-      this.statusText = '正在连接...';
-      this.showOverlay = true;
-      this.showToolbar = true;
-    } else {
-      this.startSession();
+    if (this.connectionId.length === 0) {
+      return;
+    }
+    // The manager refuses an attempt that is too soon after the last one; the
+    // page only shows progress for an attempt that was really started (the
+    // Connecting state is published by the manager).
+    if (!SessionManager.retry(this.connectionId)) {
+      return;
     }
     // Re-bind the surface: stopping a session destroyed its native window.
     if (this.surfaceId.length > 0) {
@@ -640,25 +651,9 @@ struct SessionPage {
   }
 
   private onRdpEvent(event: RdpEvent, data: string): void {
-    if (event === RdpEvent.Connected) {
-      this.state = RdpConnectionState.Connected;
-      this.statusText = '已连接';
-      this.showToolbar = false;
-    } else if (event === RdpEvent.FirstFrame) {
+    if (event === RdpEvent.FirstFrame) {
       this.showOverlay = false;
       this.showToolbar = false;
-    } else if (event === RdpEvent.Disconnected) {
-      this.state = RdpConnectionState.Closed;
-      this.statusText = SessionManager.describeError(data, '连接已断开');
-      this.showOverlay = true;
-      this.showToolbar = true;
-      this.resetCursor();
-    } else if (event === RdpEvent.Error) {
-      this.state = RdpConnectionState.Failed;
-      this.statusText = data.length > 0 ? SessionManager.describeError(data) : '连接失败';
-      this.showOverlay = true;
-      this.showToolbar = true;
-      this.resetCursor();
     } else if (event === RdpEvent.Resize) {
       const parts: string[] = data.split('x');
       if (parts.length === 2) {
@@ -1707,7 +1702,7 @@ struct SessionPage {
   private updateToolbar(y: number): void {
     // The toolbar only auto-hides in fullscreen; in windowed mode it is always
     // visible and laid out above the remote image.
-    if (!this.isFullscreen || this.state !== RdpConnectionState.Connected) {
+    if (!this.isFullscreen || this.state !== ConnectionState.Connected) {
       return;
     }
     // A running or pending transfer keeps the toolbar pinned so its progress /
@@ -2410,7 +2405,7 @@ struct SessionPage {
   @Builder
   statusCard(title: string, subtitle: string, primary: string, secondary: string) {
     Column() {
-      if (this.state === RdpConnectionState.Connecting) {
+      if (this.state === ConnectionState.Connecting) {
         LoadingProgress().width(44).height(44).color($r('app.color.accent'))
       } else {
         Image($r('app.media.ic_remote_desktop')).width(52).height(52).borderRadius(14)
@@ -2433,7 +2428,7 @@ struct SessionPage {
           .backgroundColor($r('app.color.accent'))
           .borderRadius(10)
           .onClick(() => {
-            if (this.state === RdpConnectionState.Connecting) {
+            if (this.state === ConnectionState.Connecting) {
               this.disconnect();
             } else {
               this.retry();
@@ -2648,7 +2643,7 @@ struct SessionPage {
       this.sessionToolbarMainRow()
       // Developer telemetry gets its own line so the main row keeps exactly the
       // same layout as a normal (non-developer) session.
-      if (this.state === RdpConnectionState.Connected && this.developerMode) {
+      if (this.state === ConnectionState.Connected && this.developerMode) {
         this.toolbarTelemetry()
       }
     }
@@ -2771,11 +2766,13 @@ struct SessionPage {
 
       if (this.showOverlay) {
         Column() {
-          if (this.state === RdpConnectionState.Connecting) {
+          if (this.state === ConnectionState.Connecting) {
             this.statusCard('正在连接', this.options.host + ':' + this.options.port, '取消', '')
-          } else if (this.state === RdpConnectionState.Failed) {
+          } else if (this.state === ConnectionState.Disconnecting) {
+            this.statusCard('正在断开', this.statusText, '', '')
+          } else if (this.state === ConnectionState.Failed) {
             this.statusCard('连接失败', this.statusText, '重试', '返回')
-          } else if (this.state === RdpConnectionState.Closed) {
+          } else if (this.state === ConnectionState.Idle) {
             this.statusCard('连接已断开', this.statusText, '重试', '返回')
           }
         }

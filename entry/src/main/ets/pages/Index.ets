@@ -120,6 +120,9 @@ struct Index {
     if (state === ConnectionState.Connected) {
       return '断开连接';
     }
+    if (state === ConnectionState.Disconnecting) {
+      return '正在断开';
+    }
     return '连接';
   }
 
@@ -131,6 +134,10 @@ struct Index {
     const state: ConnectionState = this.connState(conn.id);
     if (state === ConnectionState.Connecting || state === ConnectionState.Connected) {
       SessionManager.disconnect(conn.id);
+      return;
+    }
+    if (state === ConnectionState.Disconnecting) {
+      // The teardown is in flight: a new attempt is refused until it finishes.
       return;
     }
     this.connect(conn);

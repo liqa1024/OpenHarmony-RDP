@@ -81,7 +81,8 @@ struct EditConnectionPage {
     } else if (state === ConnectionState.Failed) {
       this.connecting = false;
       this.errorMessage = message;
-    } else if (state === ConnectionState.Idle || state === ConnectionState.Connected) {
+    } else if (state === ConnectionState.Idle || state === ConnectionState.Connected ||
+      state === ConnectionState.Disconnecting) {
       this.connecting = false;
     }
   };

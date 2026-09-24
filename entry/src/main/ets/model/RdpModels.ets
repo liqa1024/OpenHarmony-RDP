@@ -205,14 +205,6 @@ export class SessionRequests {
   }
 }
 
-export enum RdpConnectionState {
-  Idle = 0,
-  Connecting = 1,
-  Connected = 2,
-  Failed = 3,
-  Closed = 4
-}
-
 export class RdpPointerFlags {
   static readonly MOVE: number = 0x0800;
   static readonly DOWN: number = 0x8000;

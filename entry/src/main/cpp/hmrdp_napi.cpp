@@ -31,11 +31,17 @@ using hmrdp::Session;
 using hmrdp::SessionEvent;
 
 std::mutex g_mutex;
-std::map<int64_t, std::unique_ptr<Session>> g_sessions;
+std::map<int64_t, std::shared_ptr<Session>> g_sessions;
 // Each session owns exactly one OHNativeWindow, keyed by session handle, so
 // multiple concurrent sessions never share surface state.
 std::map<int64_t, OHNativeWindow*> g_windows;
 int64_t g_nextId = 1;
+// How long destroySession() waits for the RDP thread to finish tearing the
+// session down before returning. The teardown is normally immediate; exceeding
+// this only means the caller stopped waiting - the object is still owned by the
+// RDP thread, which frees it when it can, so this can never become a
+// use-after-free.
+constexpr uint32_t kTeardownTimeoutMs = 2000;
 
 napi_threadsafe_function g_eventTsfn = nullptr;
 
@@ -74,9 +80,12 @@ void OnSessionEvent(int64_t handle, SessionEvent event, const std::string& data)
   }
 }
 
-Session* FindSession(int64_t handle) {
+// Copies the session's shared ownership out of the map, so the caller keeps it
+// alive for as long as it needs it even if DestroySession() erases the entry (or
+// the RDP thread tears the session down) in the meantime.
+std::shared_ptr<Session> FindSession(int64_t handle) {
   auto it = g_sessions.find(handle);
-  return it == g_sessions.end() ? nullptr : it->second.get();
+  return it == g_sessions.end() ? nullptr : it->second;
 }
 
 // Must be called with g_mutex held.
@@ -201,7 +210,7 @@ void PreferGpuWindowBuffer(OHNativeWindow* window) {
 napi_value CreateSession(napi_env env, napi_callback_info) {
   std::lock_guard<std::mutex> lock(g_mutex);
   const int64_t id = g_nextId++;
-  auto session = std::make_unique<Session>();
+  auto session = std::make_shared<Session>();
   // Bind the handle into the callback so events can be routed to the owning
   // session window when several sessions run at once.
   session->SetEventFn([id](SessionEvent event, const std::string& data) {
@@ -219,7 +228,7 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  std::unique_ptr<Session> session;
+  std::shared_ptr<Session> session;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     auto it = g_sessions.find(handle);
@@ -228,9 +237,31 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
     }
     session = std::move(it->second);
     g_sessions.erase(it);
+  }
+  bool destroyed = true;
+  if (session) {
+    // Signal the RDP thread to stop. It holds its own reference and performs the
+    // teardown itself (Session::Teardown), so dropping our reference below never
+    // frees the FreeRDP context while that thread is still using it. Then wait
+    // (bounded) for the teardown to finish: a caller that is about to reconnect
+    // gets a session that is really gone rather than one still tearing down.
+    session->Disconnect();
+    destroyed = session->WaitDestroyed(kTeardownTimeoutMs);
+    if (!destroyed) {
+      HMRDP_LOGW("destroySession %{public}d: teardown still running after %{public}dms",
+                 static_cast<int>(handle), kTeardownTimeoutMs);
+    }
+  }
+  if (destroyed) {
+    // The presenter has released the surface (Teardown) or the session never had
+    // one, so the window can be destroyed. SetSurface for this handle already
+    // stops finding a session, so no new window can be attached in between.
+    // When the teardown did not finish in time the window is deliberately left
+    // alone: the presenter still points at it, and leaking a handle is strictly
+    // safer than freeing it under a live presenter.
+    std::lock_guard<std::mutex> lock(g_mutex);
     DestroyWindowLocked(handle);
   }
-  session.reset();
   return CreateUndefined(env);
 }
 
@@ -275,7 +306,7 @@ napi_value Connect(napi_env env, napi_callback_info info) {
     return CreateBool(env, false);
   }
 
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -299,7 +330,7 @@ napi_value Disconnect(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -337,7 +368,7 @@ napi_value SetSurface(napi_env env, napi_callback_info info) {
   }
   PreferGpuWindowBuffer(window);
   std::lock_guard<std::mutex> lock(g_mutex);
-  Session* session = FindSession(handle);
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     OH_NativeWindow_DestroyNativeWindow(window);
     return CreateUndefined(env);
@@ -364,7 +395,7 @@ napi_value UpdateSurface(napi_env env, napi_callback_info info) {
   napi_get_value_int32(env, args[1], &width);
   napi_get_value_int32(env, args[2], &height);
   std::lock_guard<std::mutex> lock(g_mutex);
-  Session* session = FindSession(handle);
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session != nullptr) {
     session->presenter()->ResizeSurface(width, height);
   }
@@ -380,7 +411,7 @@ napi_value ClearSurface(napi_env env, napi_callback_info info) {
     return CreateUndefined(env);
   }
   std::lock_guard<std::mutex> lock(g_mutex);
-  Session* session = FindSession(handle);
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session != nullptr) {
     session->presenter()->DestroySurface();
   }
@@ -402,7 +433,7 @@ napi_value SendMouse(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, args[3], &y) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -434,7 +465,7 @@ napi_value SendTouch(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, args[5], &y) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -460,7 +491,7 @@ napi_value SendKey(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[3], &extended) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -483,7 +514,7 @@ napi_value SendUnicode(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[2], &down) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -510,7 +541,7 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   std::string text(length, '\0');
   napi_get_value_string_utf8(env, args[1], text.data(), length + 1, &length);
   text.resize(length);
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -537,7 +568,7 @@ napi_value SetClipboardHtml(napi_env env, napi_callback_info info) {
   std::string html(length, '\0');
   napi_get_value_string_utf8(env, args[1], html.data(), length + 1, &length);
   html.resize(length);
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -570,7 +601,7 @@ napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
       pixelData == nullptr) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -625,7 +656,7 @@ napi_value SetClipboardFiles(napi_env env, napi_callback_info info) {
     }
     start = end + 1;
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -649,7 +680,7 @@ napi_value PullClipboardFiles(napi_env env, napi_callback_info info) {
   if (!ReadStringArg(env, args[1], &destDir)) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);
@@ -669,7 +700,7 @@ napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateBool(env, false);
   }
-  Session* session = nullptr;
+  std::shared_ptr<Session> session = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     session = FindSession(handle);

@@ -1857,6 +1857,11 @@ void HmrdpGlobalUninit() {}
 RDP_CLIENT_ENTRY_POINTS g_entryPoints = {};
 
 void EnsureEntryPoints() {
+  // Two session windows can connect at the same time, so this construction is
+  // serialised: without it the shared g_entryPoints could be zeroed/filled
+  // concurrently.
+  static std::mutex entryPointsMutex;
+  std::lock_guard<std::mutex> lock(entryPointsMutex);
   if (g_entryPoints.Size != 0) {
     return;
   }
@@ -1903,6 +1908,74 @@ std::string EncodeError(uint32_t code, const std::string& message) {
 
 }  // namespace
 
+namespace {
+
+// Upper bound on how long teardown waits for an outstanding context lease to be
+// returned. A holder only ever does a short, bounded FreeRDP call, so this is
+// only reached if one is stuck; exceeding it delays the free (never corrupts it)
+// and is logged.
+constexpr uint32_t kLeaseDrainTimeoutMs = 1500;
+
+// RAII for Session::AcquireContext(): keeps the FreeRDP context and its cliprdr
+// channel alive for the duration of the call and guarantees the matching
+// release on every path, including early returns.
+class ContextGuard {
+ public:
+  explicit ContextGuard(Session& session) : session_(session), lease_(session.AcquireContext()) {}
+
+  ~ContextGuard() { session_.ReleaseContext(); }
+
+  ContextGuard(const ContextGuard&) = delete;
+  ContextGuard& operator=(const ContextGuard&) = delete;
+
+  bool valid() const { return lease_.valid(); }
+  freerdp* instance() const { return lease_.instance; }
+  CliprdrClientContext* cliprdr() const { return lease_.cliprdr; }
+
+ private:
+  Session& session_;
+  Session::ContextLease lease_;
+};
+
+}  // namespace
+
+Session::ContextLease Session::AcquireContext() {
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+  // A lease is only ever handed out for a live instance; once Teardown() has
+  // started (tearingDown_) or the instance is gone, callers get an invalid lease
+  // and must do nothing.
+  if (instance_ == nullptr || tearingDown_) {
+    return ContextLease{};
+  }
+  activeLeases_++;
+  return ContextLease{instance_, cliprdr_};
+}
+
+void Session::ReleaseContext() {
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+  if (activeLeases_ > 0) {
+    activeLeases_--;
+  }
+  if (activeLeases_ == 0) {
+    leasesCv_.notify_all();
+  }
+}
+
+void Session::MarkDestroyed() {
+  phase_.store(SessionPhase::kDestroyed);
+  {
+    std::lock_guard<std::mutex> lock(destroyedMutex_);
+    destroyed_ = true;
+  }
+  destroyedCv_.notify_all();
+}
+
+bool Session::WaitDestroyed(uint32_t timeoutMs) {
+  std::unique_lock<std::mutex> lock(destroyedMutex_);
+  return destroyedCv_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                               [this] { return destroyed_; });
+}
+
 Session::Session()
     : presenter_(CreateFramePresenter()), frameHost_(std::make_unique<GdiFrameHost>()) {
   frameHost_->SetPresenter(presenter_.get());
@@ -1919,6 +1992,11 @@ Session::Session()
 }
 
 Session::~Session() {
+  // Teardown() (the RDP thread) owns the context, so reaching here with one still
+  // alive means it never ran. Surface that instead of pretending to clean up.
+  if (instance_ != nullptr) {
+    HMRDP_LOGE("session destroyed with a live FreeRDP context (teardown did not run)");
+  }
   Disconnect();
 }
 
@@ -2132,7 +2210,10 @@ void Session::SetError(uint32_t code, const std::string& error) {
 }
 
 bool Session::Connect(const RdpOptions& options) {
-  if (running_.load()) {
+  // A Session is created per attempt and never reused, so kIdle -> kStarting is
+  // the only entry. A second Connect on the same object is a programming error.
+  SessionPhase expected = SessionPhase::kIdle;
+  if (!phase_.compare_exchange_strong(expected, SessionPhase::kStarting)) {
     SetError("session already running");
     return false;
   }
@@ -2154,6 +2235,7 @@ bool Session::Connect(const RdpOptions& options) {
   rdpContext* context = freerdp_client_context_new(&g_entryPoints);
   if (context == nullptr) {
     SetError("freerdp_client_context_new failed");
+    MarkDestroyed();
     return false;
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
@@ -2233,6 +2315,7 @@ bool Session::Connect(const RdpOptions& options) {
     SetError("invalid connection settings");
     freerdp_client_context_free(context);
     instance_ = nullptr;
+    MarkDestroyed();
     return false;
   }
 
@@ -2298,34 +2381,44 @@ bool Session::Connect(const RdpOptions& options) {
     SetError("freerdp_client_start failed");
     freerdp_client_context_free(context);
     instance_ = nullptr;
+    MarkDestroyed();
     return false;
   }
 
-  running_ = true;
   stopRequested_ = false;
   // The capture hook and the GFX wrappers run without a session context of their
-  // own, so the meter is published here (and let go in Disconnect).
+  // own, so the meter is published here (and let go in Teardown).
   SetActiveWorkMeter(&meter_);
-  thread_ = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
-    Session* session = static_cast<Session*>(param);
-    session->EventThread();
+  // The RDP thread keeps the session alive for as long as it runs (it holds a
+  // shared reference) and performs the teardown itself, so neither the FreeRDP
+  // context nor this object can be freed from under it by the UI thread.
+  auto* self = new std::shared_ptr<Session>(shared_from_this());
+  HANDLE thread = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
+    std::unique_ptr<std::shared_ptr<Session>> keep(
+        static_cast<std::shared_ptr<Session>*>(param));
+    (*keep)->EventThread();
     return 0;
-  }, this, 0, nullptr);
-  if (thread_ == nullptr) {
-    running_ = false;
+  }, self, 0, nullptr);
+  if (thread == nullptr) {
+    delete self;
     SetActiveWorkMeter(nullptr);
     SetError("failed to create session thread");
     freerdp_client_stop(context);
     freerdp_client_context_free(context);
     instance_ = nullptr;
+    MarkDestroyed();
     return false;
   }
+  CloseHandle(thread);
   return true;
 }
 
 void Session::EventThread() {
   freerdp* instance = instance_;
   if (instance == nullptr) {
+    // The thread only exists for a live instance, so this is unreachable in
+    // practice; still finish the lifecycle so WaitDestroyed() cannot time out.
+    MarkDestroyed();
     return;
   }
   // This thread reads the transport and hands the dynamic-channel data to the
@@ -2333,12 +2426,19 @@ void Session::EventThread() {
   HmrdpThreadQoSHook();
   const BOOL ok = freerdp_connect(instance);
   if (!ok) {
+    // freerdp_connect() already ran freerdp_disconnect() on failure
+    // (libfreerdp/core/freerdp.c), so it is deliberately not called again here.
+    // The attempt's terminal event is this single kError, never a kDisconnected
+    // as well: an attempt either fails or drops, it does not do both.
     const UINT32 code = static_cast<UINT32>(freerdp_get_last_error(instance->context));
     const char* error = freerdp_get_last_error_string(code);
     SetError(code, error != nullptr ? error : "connection failed");
+    Teardown();
+    return;
   }
 
-  if (ok) {
+  phase_.store(SessionPhase::kConnected);
+  {
     HANDLE handles[MAXIMUM_WAIT_OBJECTS] = {0};
     while (!stopRequested_.load() &&
            !freerdp_shall_disconnect_context(instance->context)) {
@@ -2409,57 +2509,93 @@ void Session::EventThread() {
 
   freerdp_disconnect(instance);
   Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
+  Teardown();
 }
 
 void Session::Disconnect() {
-  // Dropped first: the capture hook must never reach a session that is being
-  // torn down (the RDP thread is stopped below, but the hook runs on it). Only
-  // when this session still owns the slot, so tearing down a previous instance
-  // cannot unregister a session that already replaced it.
-  if (ActiveWorkMeter() == &meter_) {
-    // Dropped first: the capture hook and the GFX wrappers must never reach a
-    // meter that is being torn down (the RDP thread is stopped below, but they
-    // run on it).
-    SetActiveWorkMeter(nullptr);
-  }
-  if (!running_.load() && instance_ == nullptr) {
-    return;
-  }
+  // Runs on the UI thread and only *signals*: the RDP thread owns the teardown
+  // (Teardown()), so the FreeRDP context is never freed while that thread may
+  // still be using it. Idempotent and safe at any point - before the connect
+  // finished, while connected, or after the thread already ended.
   stopRequested_ = true;
+  {
+    // A live attempt moves to kStopping; a never-started (kIdle) or already gone
+    // (kStopping/kDestroyed) session keeps its phase.
+    const SessionPhase phase = phase_.load();
+    if (phase == SessionPhase::kStarting || phase == SessionPhase::kConnected) {
+      SessionPhase expected = phase;
+      phase_.compare_exchange_strong(expected, SessionPhase::kStopping);
+    }
+  }
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
   if (instance_ != nullptr && instance_->context != nullptr) {
+    // The abort event is what the RDP loop waits on
+    // (freerdp_shall_disconnect_context reads it) and what freerdp_disconnect
+    // sets itself, so both a running connect and an established loop wake at
+    // once. Signalled under the lifecycle lock so Teardown() cannot free the
+    // context between the test and the call.
     freerdp_abort_connect_context(instance_->context);
   }
-  if (thread_ != nullptr) {
-    WaitForSingleObject(static_cast<HANDLE>(thread_), 5000);
-    CloseHandle(static_cast<HANDLE>(thread_));
-    thread_ = nullptr;
+}
+
+void Session::Teardown() {
+  // Runs on the RDP thread once its connect/loop has ended. It is the sole
+  // owner of the FreeRDP context: first it stops handing out leases and waits for
+  // the outstanding ones to be returned, then it frees - so no other thread can
+  // be holding the context (or its cliprdr channel) when it goes away.
+  if (ActiveWorkMeter() == &meter_) {
+    SetActiveWorkMeter(nullptr);
   }
-  if (instance_ != nullptr && instance_->context != nullptr) {
-    if (instance_->context->settings != nullptr) {
-      freerdp_settings_set_string(instance_->context->settings, FreeRDP_Password, nullptr);
-      freerdp_settings_set_string(instance_->context->settings, FreeRDP_GatewayPassword,
+  freerdp* instance = nullptr;
+  int leasedAfterWait = 0;
+  {
+    std::unique_lock<std::mutex> lock(lifecycleMutex_);
+    tearingDown_ = true;
+    instance = instance_;
+    instance_ = nullptr;
+    cliprdr_ = nullptr;
+    // Every lease holder only performs a short, bounded FreeRDP call (and the
+    // abort/disconnect this teardown follows makes a blocked send fail), so this
+    // normally returns immediately.
+    leasesCv_.wait_for(lock, std::chrono::milliseconds(kLeaseDrainTimeoutMs),
+                       [this] { return activeLeases_ == 0; });
+    leasedAfterWait = activeLeases_;
+  }
+  if (leasedAfterWait != 0) {
+    // A holder is still inside the context after the wait. Freeing it now would
+    // be a use-after-free, so the context is *abandoned* instead: the memory (and
+    // the window, which destroySession only releases once this marks terminal)
+    // leaks rather than being freed under a live user. This is the pathological
+    // path - it is logged so it is never silent.
+    HMRDP_LOGW("teardown: %{public}d context lease(s) still held after %{public}dms;"
+               " abandoning (not freeing) the context",
+               leasedAfterWait, kLeaseDrainTimeoutMs);
+    return;
+  }
+  if (instance != nullptr && instance->context != nullptr) {
+    if (instance->context->settings != nullptr) {
+      freerdp_settings_set_string(instance->context->settings, FreeRDP_Password, nullptr);
+      freerdp_settings_set_string(instance->context->settings, FreeRDP_GatewayPassword,
                                   nullptr);
     }
-    freerdp_client_stop(instance_->context);
-    freerdp_client_context_free(instance_->context);
+    freerdp_client_stop(instance->context);
+    freerdp_client_context_free(instance->context);
   }
-  instance_ = nullptr;
-  // The channel interface dies with the context; drop it before it can be used
-  // from the UI thread.
-  cliprdr_ = nullptr;
+  // The channel interface died with the context.
   clipboardReady_ = false;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
     ResetRemoteFileDownloadLocked();
     remoteFiles_.clear();
   }
-  running_ = false;
   audio_.Close();
   // The desktop buffer dies with the presenter; the next connect re-attaches.
   frameHost_->DetachDesktopBuffer();
   if (presenter_ != nullptr) {
     presenter_->Reset();
   }
+  // Terminal: publishes the phase and wakes WaitDestroyed().
+  MarkDestroyed();
 }
 
 void Session::HandlePostConnect() {
@@ -2513,9 +2649,15 @@ void Session::HandleBeginPaint() {
 }
 
 void Session::HandleEndPaint() {
+  // Runs on a FreeRDP channel thread: take a lease so teardown cannot free the
+  // context (and with it gdi) while this frame is being presented.
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr) {
+    return;
+  }
   // FreeRDP's gdi owns the desktop; a completed frame shows up here with the
   // invalid rectangle final, and it is uploaded through the presenter.
-  rdpGdi* gdi = instance_->context->gdi;
+  rdpGdi* gdi = ctx.instance()->context->gdi;
   static int endPaintCount = 0;
   if (gdi == nullptr || gdi->primary == nullptr || gdi->primary_buffer == nullptr) {
     if (endPaintCount < 3) {
@@ -2563,7 +2705,11 @@ void Session::AfterPresent() {
 }
 
 void Session::HandleDesktopResize() {
-  rdpSettings* settings = instance_->context->settings;
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr) {
+    return;
+  }
+  rdpSettings* settings = ctx.instance()->context->settings;
   const UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
   const UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
   std::ostringstream payload;
@@ -2660,7 +2806,22 @@ void Session::HandlePointerHidden() {
 
 void Session::HandlePostDisconnect() {
   clipboardReady_ = false;
-  cliprdr_ = nullptr;
+  {
+    // FreeRDP closes the channels right after this callback
+    // (freerdp_disconnect -> freerdp_channels_close), so the channel pointer is
+    // dropped under the lifecycle lock and the outstanding leases are waited out
+    // here: once this returns, no lease can still point at the channel that is
+    // about to be freed.
+    std::unique_lock<std::mutex> lock(lifecycleMutex_);
+    cliprdr_ = nullptr;
+    leasesCv_.wait_for(lock, std::chrono::milliseconds(kLeaseDrainTimeoutMs),
+                       [this] { return activeLeases_ == 0; });
+    if (activeLeases_ != 0) {
+      HMRDP_LOGW("post-disconnect: %{public}d lease(s) still held after %{public}dms;"
+                 " the channel is closing regardless", activeLeases_,
+                 kLeaseDrainTimeoutMs);
+    }
+  }
   remoteHtmlFormatId_ = 0;
   remoteRequestInFlight_ = false;
   remoteRequestKind_ = LocalClipKind::kNone;
@@ -2688,19 +2849,21 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
     HMRDP_LOGI("sendMouse flags=0x%{public}x x=%{public}u y=%{public}u", flags, x, y);
     mouseLog++;
   }
-  if (instance_ == nullptr || instance_->context == nullptr ||
-      instance_->context->input == nullptr) {
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr ||
+      ctx.instance()->context->input == nullptr) {
     return false;
   }
-  return freerdp_input_send_mouse_event(instance_->context->input, flags, x, y);
+  return freerdp_input_send_mouse_event(ctx.instance()->context->input, flags, x, y);
 }
 
 bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x,
                         int32_t y) {
-  if (instance_ == nullptr || instance_->context == nullptr) {
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr) {
     return false;
   }
-  rdpClientContext* client = reinterpret_cast<rdpClientContext*>(instance_->context);
+  rdpClientContext* client = reinterpret_cast<rdpClientContext*>(ctx.instance()->context);
   // Diagnostic only: without the RDPEI channel FreeRDP silently degrades touch
   // to concentrated mouse emulation, which shows up as stray clicks while
   // dragging. The first few contacts make that visible in the logs.
@@ -2750,24 +2913,26 @@ void Session::SetRfxDump(bool enabled, const std::string& dir) {
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
-  if (instance_ == nullptr || instance_->context == nullptr ||
-      instance_->context->input == nullptr) {
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr ||
+      ctx.instance()->context->input == nullptr) {
     return false;
   }
   UINT16 flags = down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
   if (extended) {
     flags |= KBD_FLAGS_EXTENDED;
   }
-  return freerdp_input_send_keyboard_event(instance_->context->input, flags, scancode);
+  return freerdp_input_send_keyboard_event(ctx.instance()->context->input, flags, scancode);
 }
 
 bool Session::SendUnicode(uint16_t codepoint, bool down) {
-  if (instance_ == nullptr || instance_->context == nullptr ||
-      instance_->context->input == nullptr) {
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr ||
+      ctx.instance()->context->input == nullptr) {
     return false;
   }
   UINT16 flags = down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
-  return freerdp_input_send_unicode_keyboard_event(instance_->context->input, flags,
+  return freerdp_input_send_unicode_keyboard_event(ctx.instance()->context->input, flags,
                                                    codepoint);
 }
 
@@ -2775,7 +2940,15 @@ void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
   if (cliprdr == nullptr) {
     return;
   }
-  cliprdr_ = cliprdr;
+  {
+    // Publish the channel under the lifecycle lock (readers snapshot it there),
+    // and refuse to publish it if teardown has already begun.
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    if (tearingDown_) {
+      return;
+    }
+    cliprdr_ = cliprdr;
+  }
   cliprdr->custom = this;
   cliprdr->MonitorReady = HmrdpCliprdrMonitorReady;
   cliprdr->ServerCapabilities = HmrdpCliprdrServerCapabilities;
@@ -3126,13 +3299,17 @@ UINT Session::OnCliprdrServerFormatDataResponse(
 
 // Notifies the server of the local clipboard content after it changed.
 void Session::AdvertiseLocalClipboard() {
-  if (cliprdr_ == nullptr || !clipboardReady_.load()) {
+  CliprdrClientContext* cliprdr = cliprdrLocked();
+  if (cliprdr == nullptr || !clipboardReady_.load()) {
     return;
   }
-  SendLocalFormatList(cliprdr_, static_cast<int>(localClipKind_));
+  SendLocalFormatList(cliprdr, static_cast<int>(localClipKind_));
 }
 
 void Session::SetLocalClipboardText(const std::string& utf8) {
+  // Keep the cliprdr channel alive through the advertise below (see
+  // AdvertiseLocalClipboard); a dead session just updates local state.
+  ContextGuard ctx(*this);
   size_t wcharCount = 0;
   WCHAR* wide = ConvertUtf8ToWCharAlloc(utf8.c_str(), &wcharCount);
   if (wide == nullptr) {
@@ -3155,6 +3332,7 @@ void Session::SetLocalClipboardText(const std::string& utf8) {
 }
 
 void Session::SetLocalClipboardHtml(const std::string& html) {
+  ContextGuard ctx(*this);
   if (html.empty()) {
     return;
   }
@@ -3183,6 +3361,7 @@ void Session::SetLocalClipboardHtml(const std::string& html) {
 void Session::SetLocalClipboardImage(uint32_t width, uint32_t height,
                                      int32_t pixelFormat, const uint8_t* pixels,
                                      size_t byteCount) {
+  ContextGuard ctx(*this);
   if (pixels == nullptr || width == 0 || height == 0) {
     return;
   }
@@ -3209,6 +3388,7 @@ void Session::SetLocalClipboardImage(uint32_t width, uint32_t height,
 }
 
 void Session::SetLocalClipboardFiles(const std::vector<std::string>& paths) {
+  ContextGuard ctx(*this);
   if (paths.empty()) {
     return;
   }
@@ -3319,7 +3499,11 @@ void Session::WithdrawLocalFileClipboard() {
 }
 
 void Session::PullRemoteFiles(const std::string& destDir) {
-  if (cliprdr_ == nullptr || cliprdr_->ClientFileContentsRequest == nullptr ||
+  // Keep the cliprdr channel alive for the whole pull: the step below sends the
+  // first file-contents request on this (UI) thread.
+  ContextGuard ctx(*this);
+  CliprdrClientContext* cliprdr = cliprdrLocked();
+  if (cliprdr == nullptr || cliprdr->ClientFileContentsRequest == nullptr ||
       destDir.empty()) {
     Emit(SessionEvent::kFileTransferFailed, "剪贴板通道不可用");
     return;
@@ -3415,7 +3599,10 @@ void Session::FailRemoteFileTransfer(const std::string& reason) {
 }
 
 UINT Session::StartNextRemoteFileStep() {
-  if (cliprdr_ == nullptr || cliprdr_->ClientFileContentsRequest == nullptr) {
+  // Snapshot under the lock; when this runs from PullRemoteFiles (UI thread) the
+  // caller's lease is what keeps the channel alive until the request is sent.
+  CliprdrClientContext* cliprdr = cliprdrLocked();
+  if (cliprdr == nullptr || cliprdr->ClientFileContentsRequest == nullptr) {
     FailRemoteFileTransfer("剪贴板通道不可用");
     return CHANNEL_RC_OK;
   }
@@ -3513,7 +3700,7 @@ UINT Session::StartNextRemoteFileStep() {
         HMRDP_LOGI("cliprdr request file content: index=%{public}u flags=0x%{public}x cb=%{public}u",
                    request.listIndex, request.dwFlags, request.cbRequested);
       }
-      return cliprdr_->ClientFileContentsRequest(cliprdr_, &request);
+      return cliprdr->ClientFileContentsRequest(cliprdr, &request);
     }
     if (fileListDone) {
       FinishRemoteFileTransfer();

@@ -6,6 +6,7 @@
 #define HMRDP_SESSION_H
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +24,20 @@
 #include "hmrdp_presenter.h"
 
 namespace hmrdp {
+
+// Explicit lifecycle of one connection attempt. A Session object is created per
+// attempt and never reused, so the phases only ever move forward:
+//   kIdle -> kStarting -> kConnected -> kStopping -> kDestroyed
+// and a failed attempt goes kStarting -> kStopping -> kDestroyed (its terminal
+// event is a single kError). Every transition is validated; an illegal one is
+// logged and refused instead of silently corrupting the lifecycle.
+enum class SessionPhase {
+  kIdle = 0,
+  kStarting = 1,
+  kConnected = 2,
+  kStopping = 3,
+  kDestroyed = 4,
+};
 
 // The shared CPU (gdi) frame host (hmrdp_gfx_cpu.h): the zero-copy wait, its
 // `sync` accounting and the present, implemented once for the live session and
@@ -110,7 +125,7 @@ struct RdpOptions {
   std::string gatewayDomain;
 };
 
-class Session {
+class Session : public std::enable_shared_from_this<Session> {
  public:
   using EventFn = std::function<void(SessionEvent, const std::string&)>;
 
@@ -132,6 +147,31 @@ class Session {
 
   bool Connect(const RdpOptions& options);
   void Disconnect();
+
+  // The FreeRDP context and the cliprdr channel outlive neither each other nor
+  // the RDP thread that owns them. Any other thread (UI input, clipboard, the
+  // gdi callbacks) must take a lease for the whole time it touches either:
+  //   ContextLease lease = AcquireContext();
+  //   if (!lease.valid()) return;
+  //   ... use lease.instance / lease.cliprdr ...
+  //   ReleaseContext();
+  // Teardown() (the RDP thread) stops handing out leases, waits for the
+  // outstanding ones to be returned and only then frees, so a lease can never
+  // point at freed memory. The wait is bounded: a stuck lease holder delays the
+  // free but never turns it into a use-after-free.
+  struct ContextLease {
+    freerdp* instance = nullptr;
+    CliprdrClientContext* cliprdr = nullptr;
+    bool valid() const { return instance != nullptr; }
+  };
+  ContextLease AcquireContext();
+  void ReleaseContext();
+
+  // Blocks until the RDP thread has freed the context and marked the session
+  // kDestroyed (or the timeout elapses). Returns true when it is really gone.
+  // A timeout is not a failure of the object's lifetime - the RDP thread still
+  // owns and will eventually free it - it only means the caller stopped waiting.
+  bool WaitDestroyed(uint32_t timeoutMs);
 
   bool SendMouse(uint16_t flags, uint16_t x, uint16_t y);
   bool SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x, int32_t y);
@@ -194,9 +234,14 @@ class Session {
   // performs. No-op unless the local clipboard is currently a file list.
   void WithdrawLocalFileClipboard();
 
-  // Internal callbacks used by the FreeRDP glue.
-  freerdp* instance() const { return instance_; }
+  // Internal callbacks used by the FreeRDP glue. The FreeRDP instance itself is
+  // only reachable through AcquireContext() (see above), never as a raw accessor.
   void HandlePostConnect();
+  // Runs on the RDP thread when its connect/loop has ended: frees the FreeRDP
+  // context and the resources only this session used. The UI thread never frees
+  // them - it only signals through Disconnect() - so nothing is freed while the
+  // RDP thread may still be using it.
+  void Teardown();
   // Both wait for the GPU to release the desktop buffer this frame writes into
   // (which may be the presenter's own buffer, see AttachPresenterDesktopBuffer);
   // the wait is idempotent per frame, so whichever runs first is the one that
@@ -247,6 +292,10 @@ class Session {
   void SetError(uint32_t code, const std::string& error);
 
  private:
+  // Marks the terminal phase and wakes WaitDestroyed(). Called by Teardown() (RDP
+  // thread) and by Connect()'s pre-thread failure paths, which have no RDP thread
+  // to tear anything down.
+  void MarkDestroyed();
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
   // Frame telemetry shared by every present path. The present's own meter phases
@@ -269,10 +318,25 @@ class Session {
   std::string lastError_;
   uint32_t lastErrorCode_ = 0;
 
-  std::atomic<bool> running_{false};
+  // Forward-only lifecycle of this attempt (SessionPhase). Connect() is the only
+  // kIdle -> kStarting transition; Teardown() is the only one into kDestroyed.
+  std::atomic<SessionPhase> phase_{SessionPhase::kIdle};
   std::atomic<bool> stopRequested_{false};
   std::atomic<bool> clipboardReady_{false};
-  void* thread_ = nullptr;
+  // Context lifetime. lifecycleMutex_ guards instance_, cliprdr_, activeLeases_
+  // and tearingDown_; leasesCv_ is waited on (under that mutex) by Teardown()
+  // until the outstanding leases are returned, so the context (and the channel,
+  // which dies with it) is never freed under a user. Disconnect() (UI thread)
+  // only signals; Teardown() (RDP thread) is the sole freer.
+  std::mutex lifecycleMutex_;
+  std::condition_variable leasesCv_;
+  int activeLeases_ = 0;
+  bool tearingDown_ = false;
+  // Publishes the fully-freed state to WaitDestroyed() without reusing
+  // lifecycleMutex_ (that one may be held by a lease holder during teardown).
+  std::mutex destroyedMutex_;
+  std::condition_variable destroyedCv_;
+  bool destroyed_ = false;
   bool firstFrameSent_ = false;
   // Frames drawn since the last metrics sample (incremented in HandleEndPaint,
   // drained on the event thread).
@@ -337,6 +401,14 @@ class Session {
   // Pushes the local FormatList for the current kind (no-op until the channel
   // is ready). Called after the clipboard state changes.
   void AdvertiseLocalClipboard();
+
+  // Synchronized snapshot of the cliprdr channel. A caller that is not the RDP
+  // thread must hold a ContextLease for as long as it uses the returned channel:
+  // the lease is what stops teardown from freeing it mid-use.
+  CliprdrClientContext* cliprdrLocked() {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    return cliprdr_;
+  }
 
   // Issues a clipboard data request to the server and marks it in flight. Data
   // responses carry no format id, so at most one request may be outstanding;
