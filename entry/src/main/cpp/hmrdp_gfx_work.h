@@ -17,8 +17,8 @@
  *   zgx+parse  chunk arrival (capture hook, before ZGX) -> first command of it
  *   decode     the wrapped SurfaceCommand (includes the codec's own re-composite)
  *   compose    the wrapped EndFrame minus the present and the present sync inside
- *              it (gdi surface -> primary); the ack FreeRDP writes afterwards is
- *              outside
+ *              it (gdi surface -> primary); the frame acknowledge is written
+ *              before that callback (see patch-steps/09), so it is outside
  *   present    the presenter (the caller times its own present call)
  *   sync       waiting for the GPU to release the pixel source before this frame
  *              may write it (the CPU route composes into the presenter's own
@@ -203,17 +203,38 @@ void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> ho
 // A hook run at RDPGFX START_FRAME and nowhere else, i.e. once per frame and
 // still *before* that frame is decoded.
 //
-// The frame-rate cap needs exactly this point: the frame acknowledge that paces
-// the server is written when this frame ends (see the ack patch in
-// native/scripts/patch-steps/09-tcp-frameloop-qos.ps1), so holding the frame back
-// here is what the server sees as the client's frame rate. Running at every
-// write command instead (GfxWorkSetFrameBeginHook) would pace out-of-frame
-// surface updates too, which are not frames.
+// The frame-rate cap needs exactly this point: it waits here for this frame's
+// slot before the frame is decoded, and the acknowledge written when the frame
+// ends is what the server sees as the client's rate. This runs on the session's
+// GFX worker thread (see GfxWorkSetDataSinkHook), so that wait never holds audio
+// or input back. Running at every write command instead
+// (GfxWorkSetFrameBeginHook) would pace out-of-frame surface updates too, which
+// are not frames.
 //
-// Keyed by the GFX context, like the frame-begin hook: the live session owns
-// one and installs a pacer; the offline replay installs none. Pass nullptr to
-// remove that context's hook.
+// Keyed by the GFX context, like the frame-begin hook: the live session owns one
+// and installs the cap; the offline replay installs none. Pass nullptr to remove
+// that context's hook.
 void GfxWorkSetStartFrameHook(RdpgfxClientContext* gfx, std::function<void()> hook);
+
+// A hook that takes ownership of the raw RDPGFX channel chunk. While one is set
+// for a context, FreeRDP hands the chunk over instead of processing it inline on
+// the drdynvc thread, and the owner must re-enter through the replay entry
+// (HmrdpGfxReplayRecv) on the thread of its choice.
+//
+// That is what moves the whole frame pipeline off the drdynvc dispatch thread,
+// which every dynamic channel - audio and input included - shares: a heavy frame
+// can then no longer hold their data back. Keyed by the GFX context; when no
+// hook is set the chunk is processed inline, exactly as before.
+void GfxWorkSetDataSinkHook(RdpgfxClientContext* gfx,
+                            std::function<void(const uint8_t*, size_t)> hook);
+
+// Reports how many raw GFX bytes are buffered at the client and not yet processed
+// (the offload queue depth, see GfxWorkSetDataSinkHook). FreeRDP puts it into the
+// frame acknowledge's `queueDepth`, whose definition is exactly this quantity: the
+// server then throttles the frame rate to what the client actually drains, so the
+// offload queue stays bounded - and the frame-rate cap becomes a real, server-side
+// throttle without synthesising anything. 0 reports "no backlog".
+void GfxWorkReportBufferedBytes(size_t bytes);
 
 }  // namespace hmrdp
 

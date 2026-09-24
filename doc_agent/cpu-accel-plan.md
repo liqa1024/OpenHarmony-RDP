@@ -6,7 +6,7 @@
 > 补丁与构建见 [`native-libraries.md`](native-libraries.md)。
 
 实现位置：app 侧 `entry/src/main/cpp/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；
-解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25（另 24 为探针门控）。
+解码侧补丁 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25。
 补丁对 app 模块的绑定方式是**弱符号**：没有这些导出的构建自动退化为串行。
 **并行形态是固定的**：宽度、任务划分、执行器都不再是运行期开关（§5）。
 
@@ -14,19 +14,20 @@
 
 - **唯一并行段 = 一条 Progressive region 的 tile 解码**（`progressive_process_tiles`），外加
   随之搬进该段的 tile 合成拷贝（§4）。并行只发生在一条 region 之内。
-- 其余各段都在**接收线程**（drdynvc 通道线程）：
+- 其余各段都在 **GFX 工作线程**（会话自有；帧流水线已从 drdynvc 分发线程搬来，见
+  [`architecture.md`](architecture.md) §4）：
 
 | 段 | 线程 |
 |---|---|
-| ZGX 解压、PDU 解析、命令分类 | 接收 |
-| 非像素命令（reset/create/fill/blit/cache…） | 接收 |
-| region 位流解析（`read`，填 tile 元数据） | 接收 |
-| **tile 解码 + tile 合成拷贝**（`dec`） | **接收线程 1 个 + ffrt（宽度 − 1 个）** |
-| `update_tiles` 剩余部分（遍历 + 脏区记账，§4） | 接收 |
-| surface → primary 合成、present 提交 | 接收（GPU 侧另算） |
+| ZGX 解压、PDU 解析、命令分类 | GFX 工作线程 |
+| 非像素命令（reset/create/fill/blit/cache…） | GFX 工作线程 |
+| region 位流解析（`read`，填 tile 元数据） | GFX 工作线程 |
+| **tile 解码 + tile 合成拷贝**（`dec`） | **GFX 工作线程 1 个 + ffrt（宽度 − 1 个）** |
+| `update_tiles` 剩余部分（遍历 + 脏区记账，§4） | GFX 工作线程 |
+| surface → primary 合成、present 提交 | GFX 工作线程（GPU 侧另算） |
 
 - **消息间不重叠**：一条消息按 `read → dec → update` 接力完成后才处理下一条；没有跨消息流水线。
-- **串行分支**（宽度 ≤ 1）：同一 tile 循环直接在接收线程执行，不建队列、不提交、不等待；
+- **串行分支**（宽度 ≤ 1）：同一 tile 循环直接在 GFX 工作线程执行，不建队列、不提交、不等待；
   工作缓冲用 0 号槽（§3）。
 
 ## 1. 执行器与宽度
@@ -37,17 +38,18 @@
 - 队列形态（`EnsureQueue`）：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度 − 1；队列与每个
   任务都带属性（name + `ffrt_qos_user_initiated`）；屏障 = 逐任务 handle `ffrt_queue_wait`。
   宽度变化时销毁重建队列（仅在无任务在途时发生）。
-- **调用方参与（caller participation）**：接收线程自己跑一个 chunk，队列只跑剩下 `宽度 − 1` 个
+- **调用方参与（caller participation）**：GFX 工作线程自己跑一个 chunk，队列只跑剩下 `宽度 − 1` 个
   （先提交、再跑自己的、最后等屏障）。region 用的线程数仍是宽度个，差别是其中一个从"停在屏障里"
   变成"干活"：没有线程在 tile 还可领取时空转；向 worker 池少要一个线程（自动档宽度 = 在线核数，
-  池子可能给不出那么多）；且这一份跑在接收线程自己的上下文里（cache 热、QoS 是它自己的），
+  池子可能给不出那么多）；且这一份跑在调用线程自己的上下文里（cache 热、QoS 是它自己的），
   而不是一个刚被唤醒的 worker 上。分块仍按 home + 段尾偷取，所以它做完自己的 home 会继续领块，
   快的那一侧自然多领。
 - `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行（此时参与就是全量内联）；
   `tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
 - **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
-- **QoS**：tile worker 的 QoS 来自队列/任务属性；接收线程的 QoS 由 app 注册的钩子
-  （`HmrdpSetThreadQoSApplier`，补丁 09）在 drdynvc 线程入口调用一次。
+- **QoS**：tile worker 的 QoS 来自队列/任务属性；GFX 工作线程的 QoS 由 app 注册的钩子
+  （`HmrdpSetThreadQoSApplier`，补丁 09）在该线程入口调用一次（drdynvc 线程入口也仍调用它，但那
+  现在只剩拆包转发）。
 - **宽度 = 在线核数（上限 16）**，没有设置项：`hmrdp::DecodeThreads()` 只数 `sysconf` 的在线核。
   解码器在**每条 region 边界**按需读 `HmrdpDecodeWidth()`，所以进程一起来就是这个宽度，无需
   任何应用。性能核探测（`cpuinfo_max_freq`）只出现在日志行里，不参与宽度决策（§5）。
@@ -95,7 +97,7 @@
   递增的 `hmrdpMsgSeq`，跨消息不重复）。tile 回调**解码完成一块就**用该 clip 把 tile 直写
   目标 surface（`hmrdp_tile_copy_now`，几何守卫与 `hmrdp_composite_tile` 一致，
   `FREERDP_KEEP_DST_ALPHA`），并给 tile 记下 `hmrdpCopied` + 所用 clip 的哈希。
-- **`update_tiles`（接收线程）**：工作集 = 「裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile」
+- **`update_tiles`（GFX 工作线程）**：工作集 = 「裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile」
   （补丁 22b：tile 记 `hmrdpFrameId`，`updateStamp` 保证每 pass 每 tile 访问一次）。对每个
   访问到的 tile：`hmrdpCopied` 且 clip 哈希等于本 pass 的 `hmrdpUpdateClip` 时**跳过像素拷贝**
   （只留脏区记账），否则照旧拷贝（后写覆盖）。脏区记账 = 每 tile 行一个 span

@@ -29,6 +29,18 @@ FREERDP_API void HmrdpSetAudioSink(HmrdpAudioSink sink)
 	g_audioSink = sink;
 }
 
+/* HmRdp: the client-side PCM buffer the sink keeps, in ms. rdpsnd_main.c's
+ * generic overrun guard treats a positive value as "the device bounds its own
+ * buffering" and stops pre-dropping samples. Keep in sync with the sink's
+ * high-water mark (entry/src/main/cpp/hmrdp_audio.cpp). */
+UINT32 HmrdpRdpsndBufferLatencyMs(void)
+{
+	/* ~500 ms: audio is delivered on the drdynvc thread, which also runs the
+	 * frame pipeline, so a heavy frame's decode can hold delivery off for a few
+	 * hundred ms; the sink must be deep enough to ride that out. */
+	return 500;
+}
+
 typedef struct
 {
 	rdpsndDevicePlugin device;

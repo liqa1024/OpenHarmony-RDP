@@ -10,10 +10,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <freerdp/freerdp.h>
@@ -249,11 +251,12 @@ class Session : public std::enable_shared_from_this<Session> {
   //   * HandleFrameBegin at the GFX START_FRAME (before this frame's writes),
   //   * HandleBeginPaint at gdi's BeginPaint (before the compose).
   void HandleFrameBegin();
-  // Runs once per frame at the GFX START_FRAME, before the frame is decoded: the
-  // frame-rate cap (`maxFps`) sleeps here until this frame's slot opens. Because
-  // the frame acknowledge is written when this frame ends, holding the frame here
-  // is what the server sees as the client's frame rate - it then sends fewer
-  // frames, so the ones above the cap are never decoded at all.
+  // Runs once per frame at the GFX START_FRAME on the GFX worker thread, before
+  // the frame is decoded: the frame-rate cap (`maxFps`) sleeps here until this
+  // frame's slot opens. Because the frame acknowledge is written when this frame
+  // ends, holding the frame here is what the server sees as the client's frame
+  // rate - it then sends fewer frames. Running it on the worker (not the shared
+  // drdynvc dispatch thread) is what keeps the wait from holding audio/input back.
   void HandleStartFrame();
   void HandleBeginPaint();
   void HandleEndPaint();
@@ -272,6 +275,12 @@ class Session : public std::enable_shared_from_this<Session> {
   // unregistered on disconnect. Stored as void* to keep the header light.
   void SetGfxContext(void* gfx);
   void* gfxContext() const { return gfxContext_; }
+  // GFX data offload lifecycle (see GfxWorkSetDataSinkHook): started when the
+  // live GFX channel connects and stopped before the context is freed. The sink
+  // calls HandleGfxData on the drdynvc thread.
+  void StartGfxWorker(void* gfx);
+  void StopGfxWorker();
+  void HandleGfxData(const uint8_t* data, size_t size);
 
   // Remote pointer (cursor) updates. The server sends the cursor as a bitmap
   // plus hot spot; the UI converts it into a HarmonyOS system cursor. Returning
@@ -305,10 +314,19 @@ class Session : public std::enable_shared_from_this<Session> {
   // Samples RTT / frame rate / transport throughput and emits kMetrics.
   void EmitMetrics();
 
+  // GFX data offload (see GfxWorkSetDataSinkHook). Every dynamic channel shares
+  // the drdynvc dispatch thread, so running the frame pipeline there (ZGX
+  // decompress, decode, composite, present) holds audio and input back behind a
+  // heavy frame. HandleGfxData runs on that thread and only copies the chunk;
+  // GfxWorkerLoop processes it here, on this session's own thread, through the
+  // same replay entry the offline CPU route uses (HmrdpGfxReplayRecv).
+  void GfxWorkerLoop();
+
   freerdp* instance_ = nullptr;
-  // CPU frame presenter (Vulkan by default, GLES fallback). FreeRDP feeds GFX
-  // commands on one thread while gdi's EndPaint callback can fire on another, so
-  // every present is serialised by the backend itself.
+  // CPU frame presenter (Vulkan by default, GLES fallback). The live frame
+  // pipeline all runs on the session's GFX worker thread (architecture.md §4),
+  // and the backend still serialises presents itself so the offline replay route
+  // can drive its own presenter from the replay thread.
   std::unique_ptr<FramePresenter> presenter_;
   // Attach/zero-copy wait/present for this session's gdi (the same host the
   // offline replay uses), see hmrdp_gfx_cpu.h.
@@ -348,6 +366,16 @@ class Session : public std::enable_shared_from_this<Session> {
   // offline replay so the two figures are comparable).
   GfxWorkMeter meter_;
   void* gfxContext_ = nullptr;
+  // GFX offload worker and its queue (see HandleGfxData). gfxWorkerContext_ is
+  // captured at start and used only while a lease is held, so teardown cannot
+  // free it under a send.
+  std::thread gfxWorkerThread_;
+  std::mutex gfxQueueMutex_;
+  std::condition_variable gfxQueueCv_;
+  std::deque<std::vector<uint8_t>> gfxQueue_;
+  std::atomic<bool> gfxWorkerRun_{false};
+  std::atomic<size_t> gfxQueueBytes_{0};
+  void* gfxWorkerContext_ = nullptr;
   // Frame-rate cap read from the connect options (0 = uncapped), and the release
   // stamp of the last frame it let through. Both are touched only on the GFX
   // thread (the START_FRAME hook), except for the connect-time write.

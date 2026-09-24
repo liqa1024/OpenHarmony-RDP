@@ -45,6 +45,7 @@
 #include "hmrdp_log.h"
 #include "hmrdp_gfx_capture.h"
 #include "hmrdp_gfx_cpu.h"
+#include "hmrdp_gfx_driver.h"
 
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
@@ -1716,6 +1717,9 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     // decode: the frame's acknowledge is written when it ends, so this is what
     // makes the server send fewer frames (HandleStartFrame).
     GfxWorkSetStartFrameHook(gfx, [session]() { session->HandleStartFrame(); });
+    // The frame pipeline is offloaded only once the connection is fully
+    // established (HmrdpPostConnect): during the connect sequence a failure tears
+    // the channels down from inside freerdp_connect, which would race the worker.
     ctx->session->SetGfxContext(gfx);
   }
 }
@@ -1805,7 +1809,19 @@ BOOL HmrdpPostConnect(freerdp* instance) {
              context->gdi->width, context->gdi->height, context->gdi->stride,
              context->gdi->dstFormat);
   if (ctx->session != nullptr) {
-    ctx->session->HandlePostConnect();
+    // Now that the connection is established, move the frame pipeline off the
+    // drdynvc dispatch thread: from here the chunks are only copied there and
+    // processed on this session's own thread, so audio and input queued on that
+    // thread are no longer held behind a frame.
+    Session* session = ctx->session;
+    auto* gfx = static_cast<RdpgfxClientContext*>(session->gfxContext());
+    if (gfx != nullptr) {
+      GfxWorkSetDataSinkHook(gfx, [session](const uint8_t* data, size_t size) {
+        session->HandleGfxData(data, size);
+      });
+      session->StartGfxWorker(gfx);
+    }
+    session->HandlePostConnect();
   }
   return TRUE;
 }
@@ -1816,6 +1832,10 @@ void HmrdpPostDisconnect(freerdp* instance) {
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(instance->context);
   if (ctx->session != nullptr) {
+    // Stop the offload first: the worker must not process (or present) a frame
+    // after the channel is gone, and GfxWorkUninstall puts the wrapped callbacks
+    // back, so it must not run next to a live worker.
+    ctx->session->StopGfxWorker();
     auto* gfx = static_cast<RdpgfxClientContext*>(ctx->session->gfxContext());
     GfxWorkSetFrameBeginHook(gfx, nullptr);
     GfxWorkUninstall(gfx);
@@ -2117,8 +2137,8 @@ void Session::EmitMetrics() {
     // One line, split per phase so a slow one is attributable at a glance, plus
     // the normalization that makes it comparable with a replay of the same
     // stream. `sync` is printed next to the phases but is blocked, not work. The
-    // ack FreeRDP writes after this frame is not part of any of it (it happens
-    // after the EndFrame callback returns).
+    // frame acknowledge is not part of any phase: the ack patch writes it before
+    // the EndFrame callback runs (see patch-steps/09).
     HMRDP_LOGI("perf: work %{public}llu us/frame = zgx+parse %{public}llu + decode %{public}llu"
                " + compose %{public}llu + present %{public}llu"
                " (+ sync %{public}llu + presentWait %{public}llu blocked)"
@@ -2507,6 +2527,12 @@ void Session::EventThread() {
     }
   }
 
+  // Stop the GFX offload before the disconnect tears the channels down: the
+  // worker parses into the rdpgfx plugin, which freerdp_disconnect frees (and the
+  // frame acknowledge it sends goes through the same channel). Off the drdynvc
+  // thread these are no longer serialised with that teardown, so the worker must
+  // be joined first.
+  StopGfxWorker();
   freerdp_disconnect(instance);
   Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
   Teardown();
@@ -2543,6 +2569,11 @@ void Session::Teardown() {
   // owner of the FreeRDP context: first it stops handing out leases and waits for
   // the outstanding ones to be returned, then it frees - so no other thread can
   // be holding the context (or its cliprdr channel) when it goes away.
+  //
+  // The offload worker is joined first: it is the one thread that could still
+  // touch the GFX context after this point (HmrdpPostDisconnect normally stops it
+  // already; this covers the paths where that did not run).
+  StopGfxWorker();
   if (ActiveWorkMeter() == &meter_) {
     SetActiveWorkMeter(nullptr);
   }
@@ -2603,9 +2634,10 @@ void Session::HandlePostConnect() {
 }
 
 void Session::HandleStartFrame() {
-  // Frame-rate cap (doc_agent/settings-and-storage.md §2). Runs on the GFX
-  // channel thread, once per frame and before its decode: a frame released early
-  // is held until its slot opens. Frames above the cap are therefore never
+  // Frame-rate cap (doc_agent/settings-and-storage.md §2). Runs once per frame on
+  // this session's GFX worker thread (the frame pipeline no longer runs on the
+  // shared drdynvc dispatch thread - see doc_agent/architecture.md §4), before the
+  // frame is decoded: a frame released early is held until its slot opens. Frames above the cap are therefore never
   // decoded - the frame acknowledge the server waits for is written when the
   // frame ends, so the server only sends the next one after we let this one
   // through. The period is max(1/maxFps, the frame's own work + the round trip),
@@ -2630,6 +2662,126 @@ void Session::HandleStartFrame() {
   // Wall clock, not the requested deadline: a frame whose own work overran the
   // interval must not push every later frame behind as well.
   lastFramePaceUs_ = NowUs();
+}
+
+void Session::HandleGfxData(const uint8_t* data, size_t size) {
+  if (data == nullptr || size == 0) {
+    return;
+  }
+  // Safety backpressure: the server throttles on the backlog we report (the
+  // acknowledge's queueDepth), but if it ever ignores that, stall this dispatch
+  // until the queue drains rather than grow without bound. The worker stays the
+  // only processor, so the GFX context is still touched by one thread at a time.
+  constexpr size_t kMaxGfxQueuedBytes = 32u * 1024u * 1024u;
+  bool queued = false;
+  {
+    std::unique_lock<std::mutex> lock(gfxQueueMutex_);
+    while (gfxWorkerRun_ && gfxQueueBytes_.load() > kMaxGfxQueuedBytes) {
+      gfxQueueCv_.wait(lock);
+    }
+    if (gfxWorkerRun_) {
+      gfxQueue_.emplace_back(data, data + size);
+      gfxQueueBytes_.fetch_add(size);
+      queued = true;
+    }
+  }
+  if (queued) {
+    GfxWorkReportBufferedBytes(gfxQueueBytes_.load());
+    gfxQueueCv_.notify_one();
+    return;
+  }
+  // Worker not running (before it starts, or after it stopped): process inline on
+  // this thread so the chunk is not lost. The lease keeps the context alive
+  // across it, and refuses once teardown has begun.
+  auto* gfx = static_cast<RdpgfxClientContext*>(gfxWorkerContext_);
+  if (gfx == nullptr) {
+    return;
+  }
+  ContextGuard ctx(*this);
+  if (!ctx.valid()) {
+    return;
+  }
+  HmrdpGfxReplayRecv(gfx, data, static_cast<UINT32>(size));
+}
+
+void Session::GfxWorkerLoop() {
+  // The whole frame pipeline runs here - ZGX decompress, PDU parse, image decode,
+  // composite, present and the frame acknowledge - so the drdynvc dispatch thread
+  // is never held behind a frame and audio/input queued on it are serviced at
+  // once.
+  for (;;) {
+    std::vector<uint8_t> chunk;
+    {
+      std::unique_lock<std::mutex> lock(gfxQueueMutex_);
+      gfxQueueCv_.wait(lock, [this] { return !gfxWorkerRun_ || !gfxQueue_.empty(); });
+      if (!gfxWorkerRun_) {
+        break;
+      }
+      chunk = std::move(gfxQueue_.front());
+      gfxQueue_.pop_front();
+      gfxQueueBytes_.fetch_sub(chunk.size());
+    }
+    // Publish the new backlog for the next acknowledge, and wake any producer
+    // that is stalled on the safety bound.
+    GfxWorkReportBufferedBytes(gfxQueueBytes_.load());
+    gfxQueueCv_.notify_all();
+    auto* gfx = static_cast<RdpgfxClientContext*>(gfxWorkerContext_);
+    if (gfx == nullptr) {
+      continue;
+    }
+    ContextGuard ctx(*this);
+    if (!ctx.valid()) {
+      continue;
+    }
+    HmrdpGfxReplayRecv(gfx, chunk.data(), static_cast<UINT32>(chunk.size()));
+  }
+}
+
+void Session::StartGfxWorker(void* gfx) {
+  if (gfx == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(gfxQueueMutex_);
+    if (gfxWorkerRun_) {
+      return;
+    }
+    gfxWorkerContext_ = gfx;
+    gfxWorkerRun_ = true;
+    gfxWorkerThread_ = std::thread([this]() {
+      // Same QoS the frame pipeline used to get on the drdynvc thread (see
+      // HmrdpThreadQoSHook / patch 09): the platform then schedules the frame
+      // work with less wake-up and preemption latency.
+      HmrdpThreadQoSHook();
+      GfxWorkerLoop();
+    });
+  }
+  HMRDP_LOGI("gfx worker: started");
+}
+
+void Session::StopGfxWorker() {
+  void* gfx = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(gfxQueueMutex_);
+    if (!gfxWorkerRun_) {
+      return;
+    }
+    gfxWorkerRun_ = false;
+    gfx = gfxWorkerContext_;
+    gfxQueue_.clear();
+    gfxQueueBytes_.store(0);
+  }
+  GfxWorkReportBufferedBytes(0);
+  gfxQueueCv_.notify_all();
+  if (gfxWorkerThread_.joinable()) {
+    gfxWorkerThread_.join();
+  }
+  // Past this point the context must not be handed any more chunks; the sink
+  // hook is what would hand them over.
+  if (gfx != nullptr) {
+    GfxWorkSetDataSinkHook(static_cast<RdpgfxClientContext*>(gfx), nullptr);
+  }
+  HMRDP_LOGI("gfx worker: stopped");
 }
 
 void Session::HandleFrameBegin() {

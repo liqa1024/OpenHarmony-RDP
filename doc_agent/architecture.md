@@ -61,7 +61,34 @@
 | `hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
 | `hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
 
-## 4. 其它
+## 4. 线程模型（原生）
+
+会话的并发结构是固定的，改任何与通道/渲染相关的东西前先对号入座：
+
+| 线程 | 跑什么 | 约束 |
+|---|---|---|
+| RDP 传输线程（主） | 读 socket、解密、解复用；把 DVC 数据投进 drdynvc 队列；SVC（剪贴板、静态通道）回调；每秒一次遥测采样 | 不做长任务，否则拖慢整条链路 |
+| drdynvc 分发线程 | FreeRDP 所有**动态通道**的分发：RDPGFX、rdpsnd（音频）、RDPEI（触屏/笔）、其它 DVC | **只准做轻活**（拆包 + 拷贝）；任何可能长时间占用的处理都必须交给应用线程 |
+| **GFX 工作线程**（会话自有） | 整条帧流水线：ZGX 解压、PDU 解析、解码、合成、上屏、帧回执、**限帧的等待** | 帧重活只在这里；drdynvc 线程注册 sink 后只把通道数据拷进来，工作线程用 `HmrdpGfxReplayRecv` 重新进入 |
+| rdpsnd 播放线程 | 把 FreeRDP 解出的 PCM 写进 `AudioOutput` 的抖动缓冲 | 由 FreeRDP 建；调度抖动用缓冲深度兜住 |
+| OHAudio 回调线程 | 从抖动缓冲取 PCM 上设备 | 系统管理 |
+| ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |
+
+**规则**：drdynvc 分发线程是**所有动态通道的公共瓶颈**——帧流水线一旦内联在它上面，一个重帧就会把音频、
+输入一起挡住（表现为音频卡顿、且与帧率绑定）。因此帧重活必须通过 sink 钩子交到应用线程
+（`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`native-libraries.md`](native-libraries.md) §4）。
+新增/修改动态通道处理时按这条办。
+
+**offload 的生命周期**（offload 后 worker 与通道拆除不再同线程，必须显式排序）：worker 在
+`HmrdpPostConnect`（连接建立后）启动，**必须在 `freerdp_disconnect` 之前 join**（它释放 rdpgfx 插件，
+worker 正解析进去会 UAF），随后 `GfxWorkUninstall`。同时回执**如实上报 offload 队列字节数**
+（`queueDepth`），服务端据此限帧——这是限帧真正作用到服务端的杠杆，也让队列与延迟有界。
+
+**服务端侧**：音频（rdpsnd）与输入（rdpei）是**独立虚拟通道**，图形流控（帧回执 / `queueDepth`，
+MS-RDPEGFX 3.2.5.13）只作用于图形管线，服务端**不会因为等我们的帧而停发音频**；两边唯一共享的是
+TCP 链路本身（全局带宽，与帧率无关）。
+
+## 5. 其它
 
 - `native/scripts/*` —— 原生库构建与 FreeRDP 补丁（见 [`native-libraries.md`](native-libraries.md)）。
 - `entry/libs/<abi>/` —— 本地构建的原生库（**不入库**）。

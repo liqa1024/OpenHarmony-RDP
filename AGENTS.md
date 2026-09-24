@@ -28,6 +28,10 @@
   签名与安装由用户完成（**仓库不含任何签名材料**），AI 只做无破坏性动作（push 样本 / 启动 / 读日志）。
 - **排查顺序**：先怀疑**代码 / 构建 / 数据** → 再怀疑**模拟器自身状态**（跑过重型 GL/GPU 压测后先冷启动）
   → 最后才是真机（且需授权）。
+- **动态通道的重活不得放在 drdynvc 分发线程上**：那条线程承载**全部**动态通道（RDPGFX、rdpsnd 音频、
+  RDPEI 输入…），帧流水线一旦内联在它上面，一个重帧就会把音频/输入一起挡住（症状是音频卡顿且与帧率
+  绑定）。帧重活必须走 **sink 钩子**（`HmrdpSetGfxDataSink`）交到会话 **GFX 工作线程**上跑。线程模型与
+  判据见 [`doc_agent/architecture.md`](doc_agent/architecture.md) §4。
 - **改完必须自检**：改 `.ets` 先 `arkts_check`，再 `build_project`；**任务结束前 `build_project` 必须通过**。
 - **文档维护**：不要把排查过程、日期、机器/设备型号写进仓库文档。新增结论请写进
   [`doc_agent/`](doc_agent/README.md) 对应的主题文件。
@@ -45,7 +49,7 @@
 | 主题 | 文档 |
 |---|---|
 | 构建 / 运行 / 真机与模拟器 / uitest 技巧 / 最小验证 | [`build-and-verify.md`](doc_agent/build-and-verify.md) |
-| 应用结构（Ability / 页面 / 服务 / 原生模块职责表） | [`architecture.md`](doc_agent/architecture.md) |
+| 应用结构（Ability / 页面 / 服务 / 原生模块职责表）+ **原生线程模型（§4）** | [`architecture.md`](doc_agent/architecture.md) |
 | ArkTS / ArkUI 规范与状态坑 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
 | 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
