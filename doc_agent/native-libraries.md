@@ -88,6 +88,9 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 
 - OHOS 的 OpenSL ES 已废弃且开设备不稳定 ⇒ FreeRDP **只解码**，把 16-bit PCM 交给 `libhmrdp`
   注册的 sink（见 §5）。
+- **客户端侧缓冲/丢弃只有 sink 一套策略**：`rdpsnd_main.c` 自带的 overrun 守卫（用墙钟反推设备积压，
+  阈值 ≈ 1 个包）看不到 sink 的真实队列，只会丢掉 sink 还能播的包 ⇒ 本后端下把它置为"从不判 overrun"
+  （patch step 35）。它不再做任何缓冲/节流决策，只解码 + 转发。要动这层先读 §5。
 
 **运行时行为钩子**（都用**弱符号**引用，未打补丁的 FreeRDP 上自动降级）
 
@@ -225,11 +228,20 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   （`writeData` 拉模型）。**不要**把 `libohaudio.so` 链成 `DT_NEEDED`：缺库设备会加载即崩。
   也不要用 ArkTS `@ohos.multimedia.audio`（该工具链下会触发 syscap 误报，且 OpenSLES 已废弃）。
 - **音频走动态 rdpsnd**：现代 Windows 用**动态** rdpsnd（**不是**静态通道——只提供静态通道时现代服务端
-  会完全不出声，所以不能改成只走静态）。它由 drdynvc 分发到会话；帧流水线已从那条线程搬到会话工作线程
-  （见 §4 与 [`architecture.md`](architecture.md) §4），所以重帧不会挡住音频投递。
-- **缓冲（`hmrdp_audio.cpp`）**：解码后的 PCM 进一个**定长字节环**，环满丢最老的数据（按字节丢，延迟有上界），
-  `OnWrite` 欠载就补静音。丢帧统计 = 欠载补静音 + 环溢出丢掉的字节，仅在**数据仍在到达**的窗口内
-  （`activeUntilUs_`）计入，静音停顿不计。
+  会完全不出声，所以不能改成只走静态）。它的数据面跑在 **FreeRDP 的 async 播放线程**（`rdpsnd->async`
+  下的 `play_thread`），drdynvc 分发线程只做重装 + 投递；画面在会话 GFX 工作线程 ⇒ 音频、输入、画面
+  三条互不阻塞（见 [`architecture.md`](architecture.md) §4）。
+- **单一所有者**：FreeRDP 只解码 + 转发，**不做缓冲/丢弃/节流**；`rdpsnd_main.c` 的 generic overrun 守卫
+  对本后端被关掉（patch step 35，后端是唯一 OHOS 后端，sink 自带定长缓冲，墙钟反推的积压估计是劣质代理）。
+  于是"能否播放/丢谁/何时开始"只在 sink 一处决定，不存在两层策略互相打架。
+- **缓冲（`hmrdp_audio.cpp`）**：解码后的 PCM 按**整包**入队，水位全部用**播放时长（ms）**表达
+  （与格式无关的上界）。新的一段音频先**预缓冲**到目标深度才开始播放（启动补的静音不计损失）；段内抖动
+  **不**重新预缓冲（否则在网络造成的洞上再加一个静音洞）。唯一的丢弃点是队列超过 high-water 时**丢最老
+  的整包**（整包天然帧对齐，不会撕样本，延迟有上界）；`OnWrite` 欠载补静音。丢帧统计 = 欠载补静音 +
+  整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
+- **真实渲染延迟回报**：`AudioOutput::Write` 返回当前排队的播放时长（ms），后端 `Play` 用它作为向服务端
+  Wave Confirm 上报的渲染延迟（设备自缓冲时的标准语义）——不再是常数，"服务端按错误延迟猛灌再被本地丢"
+  这条链一起消失。
 - **绝不持锁调用 `Start`/`Stop`/`Release`**：`OH_AudioRenderer_Release` 会等待 write 回调
   （`JoinCallbackLoop`），而回调要用同一把 `mutex_` 取队列 ⇒ 持锁 Release 必死锁
   （表现为关闭会话后 `APP_INPUT_BLOCK` 卡死）。约定：`mutex_` 只保护队列/句柄，**不跨 OHAudio

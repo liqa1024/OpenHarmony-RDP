@@ -3,8 +3,13 @@
  *
  * OHOS only implements the deprecated OpenSL ES path and the native playback
  * proved fragile, so instead of opening an audio device inside FreeRDP the
- * decoded PCM is handed to a sink registered by libhmrdp. libhmrdp forwards it
- * to ArkTS, which plays it with the first-class AudioRenderer API.
+ * decoded PCM is handed to a sink registered by libhmrdp, which plays it with
+ * OHAudio.
+ *
+ * The sink is the single owner of client-side buffering: rdpsnd_main.c's
+ * generic overrun guard is neutralised for this backend (patch step 35), and
+ * Play answers with the sink's queued render latency so the Wave Confirm the
+ * server receives is truthful.
  *
  * The subsystem entry keeps the upstream "opensles" name so rdpsnd_main.c loads
  * it without any further FreeRDP changes.
@@ -19,8 +24,8 @@
 
 #include "rdpsnd_main.h"
 
-typedef void (*HmrdpAudioSink)(void* context, const void* data, size_t size, int sampleRate,
-                               int channels);
+typedef int (*HmrdpAudioSink)(void* context, const void* data, size_t size, int sampleRate,
+                              int channels);
 
 static HmrdpAudioSink g_audioSink = NULL;
 
@@ -74,13 +79,19 @@ static BOOL rdpsnd_hmrdp_open(rdpsndDevicePlugin* device, const AUDIO_FORMAT* fo
 static UINT rdpsnd_hmrdp_play(rdpsndDevicePlugin* device, const BYTE* data, size_t size)
 {
 	rdpsndHmrdpPlugin* plugin = (rdpsndHmrdpPlugin*)device;
+	UINT latency = 0;
 
 	if ((g_audioSink != NULL) && (data != NULL) && (size > 0))
 	{
 		rdpContext* context = freerdp_rdpsnd_get_context(device->rdpsnd);
-		g_audioSink(context, data, size, (int)plugin->rate, (int)plugin->channels);
+
+		/* The sink keeps the only client-side buffer and answers with the
+		 * playback time it now holds, in ms. rdpsnd adds this to the Wave
+		 * Confirm timestamp, which is how the server learns the real render
+		 * latency (see rdpsnd_treat_wave). */
+		latency = (UINT)g_audioSink(context, data, size, (int)plugin->rate, (int)plugin->channels);
 	}
-	return 10;
+	return latency;
 }
 
 static void rdpsnd_hmrdp_start(rdpsndDevicePlugin* device)

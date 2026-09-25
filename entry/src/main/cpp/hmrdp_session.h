@@ -139,8 +139,9 @@ class Session : public std::enable_shared_from_this<Session> {
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
   // Internal: forwards a PCM buffer produced by the rdpsnd backend to the
-  // session's audio output.
-  void OnAudioData(const void* data, size_t size, int sampleRate, int channels);
+  // session's audio output. Returns the playback time queued after it, in ms,
+  // which rdpsnd reports to the server in the Wave Confirm.
+  int OnAudioData(const void* data, size_t size, int sampleRate, int channels);
 
   bool Connect(const RdpOptions& options);
   void Disconnect();

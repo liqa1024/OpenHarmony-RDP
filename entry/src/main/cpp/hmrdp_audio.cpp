@@ -4,20 +4,28 @@
  */
 #include "hmrdp_audio.h"
 
-#include <dlfcn.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <dlfcn.h>
 
 #include "hmrdp_log.h"
 
 namespace hmrdp {
 namespace {
 
-// ~0.6s of 48kHz stereo 16-bit PCM; the oldest data is dropped on overflow.
-constexpr size_t kRingCapacity = 256 * 1024;
-// A packet gap up to this long is normal jitter; beyond it the stream is
-// considered idle and silence is not counted as underrun loss.
-constexpr uint64_t kActiveWindowUs = 300 * 1000;
+// Prebuffer before playback starts, and the hard latency bound above which the
+// oldest whole packets are dropped. Both in playback ms, so the bound does not
+// change with the format. The prebuffer rides out delivery jitter; the high
+// water caps how far latency may grow when the server (or its clock) runs ahead.
+constexpr size_t kTargetLatencyMs = 120;
+constexpr size_t kHighWaterLatencyMs = 300;
+// A gap longer than this is a new bout of audio (the server paused), not jitter,
+// so the prebuffer runs again; an ordinary jitter gap does not re-prime.
+constexpr uint64_t kIdleResetUs = 1000 * 1000;
+// Underruns count as loss only while packets are still arriving. A gap longer
+// than this is the stream pausing rather than a glitch, so it stops contributing.
+constexpr uint64_t kLiveWindowUs = 500 * 1000;
 
 uint64_t AudioNowUs() {
   return static_cast<uint64_t>(
@@ -124,12 +132,12 @@ bool AudioOutput::Supported() {
   return Api().ready;
 }
 
-void AudioOutput::Write(const void* data, size_t size, int sampleRate, int channels) {
+int AudioOutput::Write(const void* data, size_t size, int sampleRate, int channels) {
   if (data == nullptr || size == 0 || sampleRate <= 0 || channels <= 0) {
-    return;
+    return 0;
   }
   if (!Supported()) {
-    return;
+    return 0;
   }
   const uint8_t* bytes = static_cast<const uint8_t*>(data);
 
@@ -147,7 +155,7 @@ void AudioOutput::Write(const void* data, size_t size, int sampleRate, int chann
   }
   if (needOpen) {
     if (!OpenRenderer(sampleRate, channels)) {
-      return;
+      return 0;
     }
   } else if (resumeRequested_.exchange(false)) {
     StartRenderer();
@@ -160,10 +168,8 @@ void AudioOutput::Write(const void* data, size_t size, int sampleRate, int chann
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  // Mark the stream active so the audio thread counts an underrun as loss only
-  // while packets are actually flowing (not for idle silence).
-  activeUntilUs_.store(AudioNowUs() + kActiveWindowUs);
   EnqueueLocked(bytes, size);
+  return LatencyLocked();
 }
 
 void AudioOutput::Close() {
@@ -180,14 +186,18 @@ void AudioOutput::DetachAndReleaseLocked() {
     renderer_ = nullptr;
     rate_ = 0;
     channels_ = 0;
-    head_ = 0;
-    count_ = 0;
-    pending_.clear();
+    packets_.clear();
+    bufferedBytes_ = 0;
+    bytesPerSec_ = 0;
+    targetBytes_ = 0;
+    highWaterBytes_ = 0;
+    primed_ = false;
+    lastPacketUs_ = 0;
     resumeRequested_.store(false);
     failed_.store(false);
   }
   // Never hold mutex_ here: Stop/Release wait for the write callback, which
-  // needs mutex_ to drain the ring.
+  // needs mutex_ to drain the queue.
   if (renderer != nullptr) {
     api.stop(renderer);
     api.release(renderer);
@@ -245,14 +255,19 @@ bool AudioOutput::OpenRenderer(int sampleRate, int channels) {
     renderer_ = renderer;
     rate_ = sampleRate;
     channels_ = channels;
-    pending_.assign(kRingCapacity, 0);
-    head_ = 0;
-    count_ = 0;
+    bytesPerSec_ = static_cast<size_t>(sampleRate) * static_cast<size_t>(channels) *
+                   sizeof(int16_t);
+    targetBytes_ = bytesPerSec_ * kTargetLatencyMs / 1000;
+    highWaterBytes_ = bytesPerSec_ * kHighWaterLatencyMs / 1000;
+    packets_.clear();
+    bufferedBytes_ = 0;
+    primed_ = false;
+    lastPacketUs_ = 0;
     failed_.store(false);
     resumeRequested_.store(false);
   }
   // Start outside mutex_: the first write callback may fire immediately and
-  // takes mutex_ to drain the ring.
+  // takes mutex_ to drain the queue.
   if (api.start(renderer) != AUDIOSTREAM_SUCCESS) {
     HMRDP_LOGW("audio: renderer start failed");
     {
@@ -260,7 +275,11 @@ bool AudioOutput::OpenRenderer(int sampleRate, int channels) {
       renderer_ = nullptr;
       rate_ = 0;
       channels_ = 0;
-      pending_.clear();
+      bytesPerSec_ = 0;
+      targetBytes_ = 0;
+      highWaterBytes_ = 0;
+      packets_.clear();
+      bufferedBytes_ = 0;
     }
     api.stop(renderer);
     api.release(renderer);
@@ -282,43 +301,45 @@ void AudioOutput::StartRenderer() {
     api.start(renderer);
   }
 }
+
 void AudioOutput::EnqueueLocked(const uint8_t* data, size_t size) {
-  if (pending_.empty()) {
+  if (bytesPerSec_ == 0) {
     return;
   }
-  const size_t capacity = pending_.size();
-  if (size >= capacity) {
-    // A single packet larger than the ring: keep only the newest tail.
-    data += size - capacity;
-    const size_t dropped = size - capacity;
+  const uint64_t now = AudioNowUs();
+  // A packet after a long idle gap starts a new bout: prebuffer it again. A
+  // short gap is jitter and must not re-prime (that would add silence of its
+  // own).
+  if (lastPacketUs_ != 0 && now - lastPacketUs_ > kIdleResetUs) {
+    primed_ = false;
+  }
+  lastPacketUs_ = now;
+
+  Packet& packet = packets_.emplace_back();
+  packet.data.assign(data, data + size);
+  packet.offset = 0;
+  bufferedBytes_ += size;
+  DropToHighWaterLocked();
+}
+
+void AudioOutput::DropToHighWaterLocked() {
+  // Drop the oldest whole packets, never a partial one: trimming a packet to the
+  // byte would break 16-bit sample alignment and click. Keep at least the newest
+  // packet so a single oversized packet is still played rather than discarded.
+  while (bufferedBytes_ > highWaterBytes_ && packets_.size() > 1) {
+    const size_t dropped = packets_.front().remaining();
+    packets_.pop_front();
+    bufferedBytes_ -= dropped;
     lostBytes_.fetch_add(dropped);
     totalBytes_.fetch_add(dropped);
-    size = capacity;
-    head_ = 0;
-    count_ = 0;
   }
-  size_t toDrop = 0;
-  while (count_ + size > capacity && count_ > 0) {
-    head_ = (head_ + 1) % capacity;
-    count_--;
-    toDrop++;
+}
+
+int AudioOutput::LatencyLocked() const {
+  if (bytesPerSec_ == 0) {
+    return 0;
   }
-  if (toDrop > 0) {
-    lostBytes_.fetch_add(toDrop);
-    totalBytes_.fetch_add(toDrop);
-  }
-  size_t tail = (head_ + count_) % capacity;
-  size_t remaining = size;
-  size_t pos = 0;
-  while (remaining > 0) {
-    const size_t first = capacity - tail;
-    const size_t chunk = first < remaining ? first : remaining;
-    memcpy(pending_.data() + tail, data + pos, chunk);
-    tail = (tail + chunk) % capacity;
-    count_ += chunk;
-    pos += chunk;
-    remaining -= chunk;
-  }
+  return static_cast<int>(bufferedBytes_ * 1000 / bytesPerSec_);
 }
 
 int AudioOutput::TakeLossStats(uint64_t* lostBytes, uint64_t* totalBytes) {
@@ -334,10 +355,11 @@ int AudioOutput::TakeLossStats(uint64_t* lostBytes, uint64_t* totalBytes) {
   return renderer_ != nullptr ? rate_ : 0;
 }
 
-// Pull model: the audio thread hands us a buffer to fill. Underrun becomes
-// silence so the callback cadence never stalls. While the stream is active, the
-// requested bytes count towards the total and the silence-filled tail towards
-// the loss, so an underrun shows up as a playback glitch rate.
+// Pull model: the audio thread hands us a buffer to fill. Playback only starts
+// once the queue holds the prebuffer target; an underrun after that is filled
+// with silence so the callback cadence never stalls. While the stream is live
+// (see kLiveWindowUs) the requested bytes count towards the total and the
+// silence-filled tail towards the loss, so an underrun shows up as a glitch rate.
 OH_AudioData_Callback_Result AudioOutput::OnWrite(OH_AudioRenderer*, void* userData,
                                                   void* buffer, int32_t size) {
   AudioOutput* self = static_cast<AudioOutput*>(userData);
@@ -346,23 +368,38 @@ OH_AudioData_Callback_Result AudioOutput::OnWrite(OH_AudioRenderer*, void* userD
   }
   uint8_t* out = static_cast<uint8_t*>(buffer);
   const size_t want = static_cast<size_t>(size);
-  const bool active = AudioNowUs() < self->activeUntilUs_.load();
+  const uint64_t now = AudioNowUs();
   size_t copied = 0;
+  bool live = false;
   {
     std::lock_guard<std::mutex> lock(self->mutex_);
-    while (copied < want && self->count_ > 0) {
-      const size_t first = self->pending_.size() - self->head_;
-      const size_t chunk = first < (want - copied) ? first : (want - copied);
-      memcpy(out + copied, self->pending_.data() + self->head_, chunk);
-      self->head_ = (self->head_ + chunk) % self->pending_.size();
-      self->count_ -= chunk;
-      copied += chunk;
+    if (!self->primed_ && self->bufferedBytes_ >= self->targetBytes_) {
+      self->primed_ = true;
     }
+    if (self->primed_) {
+      // Live = playback started and packets are still (or were just) arriving.
+      // Deliberately keyed on arrival, not delivery: when delivery stalls, that
+      // is exactly what has to be reported.
+      live = self->lastPacketUs_ != 0 && (now - self->lastPacketUs_ < kLiveWindowUs);
+      while (copied < want && !self->packets_.empty()) {
+        Packet& packet = self->packets_.front();
+        const size_t chunk = std::min(packet.remaining(), want - copied);
+        memcpy(out + copied, packet.data.data() + packet.offset, chunk);
+        packet.offset += chunk;
+        self->bufferedBytes_ -= chunk;
+        copied += chunk;
+        if (packet.remaining() == 0) {
+          self->packets_.pop_front();
+        }
+      }
+    }
+    // Not primed yet: leave the buffer as silence so the device stays fed while
+    // the queue fills. A stream start, not a dropped stream, so not counted.
   }
   if (copied < want) {
     memset(out + copied, 0, want - copied);
   }
-  if (active) {
+  if (live) {
     self->totalBytes_.fetch_add(want);
     if (copied < want) {
       self->lostBytes_.fetch_add(want - copied);
@@ -378,7 +415,7 @@ void AudioOutput::OnInterrupt(OH_AudioRenderer*, void* userData,
     return;
   }
   // Only a shared resume needs an explicit restart; forced pause/stop is done
-  // by the system. Restarting happens on the RDP thread in Write().
+  // by the system. Restarting happens on the playback thread in Write().
   if (hint == AUDIOSTREAM_INTERRUPT_HINT_RESUME) {
     self->resumeRequested_.store(true);
   }

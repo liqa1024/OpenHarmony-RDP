@@ -50,9 +50,11 @@
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
 // registered through HmrdpSetAudioSink. The sink routes the buffer to the
-// owning Session, which forwards it over the Node-API bridge to ArkTS.
-using HmrdpAudioSink = void (*)(void* context, const void* data, size_t size,
-                                int sampleRate, int channels);
+// owning Session, which plays it with OHAudio. It returns the render latency in
+// ms (the playback time queued after the packet), which rdpsnd puts into the
+// Wave Confirm sent back to the server.
+using HmrdpAudioSink = int (*)(void* context, const void* data, size_t size,
+                               int sampleRate, int channels);
 
 extern "C" void HmrdpSetAudioSink(HmrdpAudioSink sink);
 
@@ -1517,15 +1519,16 @@ BOOL HmrdpPlaySound(rdpContext*, const PLAY_SOUND_UPDATE*) {
   return TRUE;
 }
 
-void HmrdpAudioSinkAdapter(void* context, const void* data, size_t size, int sampleRate,
-                           int channels) {
+int HmrdpAudioSinkAdapter(void* context, const void* data, size_t size, int sampleRate,
+                          int channels) {
   if (context == nullptr || data == nullptr || size == 0) {
-    return;
+    return 0;
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(static_cast<rdpContext*>(context));
   if (ctx->session != nullptr) {
-    ctx->session->OnAudioData(data, size, sampleRate, channels);
+    return ctx->session->OnAudioData(data, size, sampleRate, channels);
   }
+  return 0;
 }
 
 // Announces every clipboard format the client understands. Sent once after
@@ -2934,10 +2937,11 @@ void Session::HandlePostDisconnect() {
   hmrdp::GfxDumpFlush();
 }
 
-void Session::OnAudioData(const void* data, size_t size, int sampleRate, int channels) {
-  if (data != nullptr && size > 0) {
-    audio_.Write(data, size, sampleRate, channels);
+int Session::OnAudioData(const void* data, size_t size, int sampleRate, int channels) {
+  if (data == nullptr || size == 0) {
+    return 0;
   }
+  return audio_.Write(data, size, sampleRate, channels);
 }
 
 bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {

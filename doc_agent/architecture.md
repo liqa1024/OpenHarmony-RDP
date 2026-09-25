@@ -68,10 +68,10 @@
 | 线程 | 跑什么 | 约束 |
 |---|---|---|
 | RDP 传输线程（主） | 读 socket、解密、解复用；把 DVC 数据投进 drdynvc 队列；SVC（剪贴板、静态通道）回调；每秒一次遥测采样 | 不做长任务，否则拖慢整条链路 |
-| drdynvc 分发线程 | FreeRDP 所有**动态通道**的分发：RDPGFX、rdpsnd（音频）、RDPEI（触屏/笔）、其它 DVC | **只准做轻活**（拆包 + 拷贝）；任何可能长时间占用的处理都必须交给应用线程 |
+| drdynvc 分发线程 | FreeRDP 所有**动态通道**的分发：RDPGFX、rdpsnd（音频）、RDPEI（触屏/笔）、其它 DVC | **只准做轻活**（拆包 + 拷贝）；任何可能长时间占用的处理都必须交给应用线程。rdpsnd 在这里只重装 + 投递到它自己的队列 |
 | **GFX 工作线程**（会话自有） | 整条帧流水线：ZGX 解压、PDU 解析、解码、合成、上屏、帧回执 | 帧重活只在这里；drdynvc 线程注册 sink 后只把通道数据拷进来，工作线程用 `HmrdpGfxReplayRecv` 重新进入 |
-| rdpsnd 播放线程 | 把 FreeRDP 解出的 PCM 写进 `AudioOutput` 的环 | 由 FreeRDP 建；抖动由环本身的深度兜住 |
-| OHAudio 回调线程 | 从环里取 PCM 上设备 | 系统管理 |
+| **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioOutput` 的 jitter buffer | 不碰画面；缓冲/丢弃/预缓冲全在 sink 一处（见 [`native-libraries.md`](native-libraries.md) §5），抖动由 sink 深度兜住 |
+| OHAudio 回调线程 | 从 sink 队列取 PCM 上设备 | 系统管理 |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |
 
 **规则**：drdynvc 分发线程是**所有动态通道的公共瓶颈**——帧流水线一旦内联在它上面，一个重帧就会把音频、
