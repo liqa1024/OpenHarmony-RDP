@@ -152,12 +152,6 @@ uint64_t NowMs() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-uint64_t NowUs() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
 BOOL HmrdpWLogMessage(const wLogMessage* msg) {
   if (msg == nullptr || msg->TextString == nullptr) {
     return TRUE;
@@ -1713,10 +1707,6 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     // calls after the frame's decode - see GfxWorkSetFrameBeginHook).
     Session* session = ctx->session;
     GfxWorkSetFrameBeginHook(gfx, [session]() { session->HandleFrameBegin(); });
-    // The frame-rate cap runs once per frame, at START_FRAME and before the
-    // decode: the frame's acknowledge is written when it ends, so this is what
-    // makes the server send fewer frames (HandleStartFrame).
-    GfxWorkSetStartFrameHook(gfx, [session]() { session->HandleStartFrame(); });
     // The frame pipeline is offloaded only once the connection is fully
     // established (HmrdpPostConnect): during the connect sequence a failure tears
     // the channels down from inside freerdp_connect, which would race the worker.
@@ -2185,31 +2175,6 @@ void Session::EmitMetrics() {
     audioLossBp = static_cast<int32_t>(audioLostSum * 10000 / audioTotalSum);
   }
 
-  // Probe (dev): the GFX offload queue and the input->screen latency. The queue
-  // tells whether the server paces itself (small/steady) or the client is
-  // buffering a growing backlog (deliberately not reported to the server, and not
-  // bounded by blocking the dispatch thread). The latency is the lower bound on
-  // input feedback from AfterPresent. Both are one-off measurements: delete once
-  // the architecture question they answer is settled.
-  {
-    const size_t queueNow = gfxQueueBytes_.load();
-    const size_t queuePeak = gfxQueuePeakBytes_.exchange(0);
-    const uint64_t inCount = inputLatencyCount_.exchange(0);
-    const uint64_t inSum = inputLatencySumUs_.exchange(0);
-    const uint64_t inMax = inputLatencyMaxUs_.exchange(0);
-    if (queueNow > 0 || queuePeak > 0 || inCount > 0) {
-      HMRDP_LOGI("probe: gfx queue now=%{public}llu peak=%{public}llu bytes"
-                 " | input->present avg=%{public}llu max=%{public}llu us (%{public}llu ev)"
-                 " | rx=%{public}lluB/s",
-                 static_cast<unsigned long long>(queueNow),
-                 static_cast<unsigned long long>(queuePeak),
-                 static_cast<unsigned long long>(inCount > 0 ? inSum / inCount : 0),
-                 static_cast<unsigned long long>(inMax),
-                 static_cast<unsigned long long>(inCount),
-                 static_cast<unsigned long long>(rxPerSec));
-    }
-  }
-
   lastMetricsTick_ = now;
   lastInBytes_ = inBytes;
   lastOutBytes_ = outBytes;
@@ -2405,11 +2370,6 @@ bool Session::Connect(const RdpOptions& options) {
     freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags,
                                 static_cast<uint32_t>(options.performanceFlags));
   }
-  // Frame-rate cap: not a FreeRDP setting, this session's START_FRAME hook
-  // applies it (HandleStartFrame). Reset the schedule so a reconnect starts
-  // uncapped until its first frame.
-  maxFps_ = options.maxFps > 0 ? options.maxFps : 0;
-  lastFramePaceUs_ = 0;
   freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
   freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
   // Enables the RDPEI (touch/pen input) channel so ArkUI touch events can be
@@ -2658,37 +2618,6 @@ void Session::HandlePostConnect() {
   Emit(SessionEvent::kConnected, "");
 }
 
-void Session::HandleStartFrame() {
-  // Frame-rate cap (doc_agent/settings-and-storage.md §2). Runs once per frame on
-  // this session's GFX worker thread (the frame pipeline no longer runs on the
-  // shared drdynvc dispatch thread - see doc_agent/architecture.md §4), before the
-  // frame is decoded: a frame released early is held until its slot opens. Frames above the cap are therefore never
-  // decoded - the frame acknowledge the server waits for is written when the
-  // frame ends, so the server only sends the next one after we let this one
-  // through. The period is max(1/maxFps, the frame's own work + the round trip),
-  // so the cap only ever lowers the frame rate, never raises it.
-  const int maxFps = maxFps_;
-  if (maxFps <= 0) {
-    return;
-  }
-  const uint64_t intervalUs = 1000000ull / static_cast<uint64_t>(maxFps);
-  const uint64_t now = NowUs();
-  if (lastFramePaceUs_ != 0) {
-    const uint64_t deadlineUs = lastFramePaceUs_ + intervalUs;
-    if (now < deadlineUs) {
-      const uint64_t sleepUs = deadlineUs - now;
-      std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
-      // Blocked time, not client work, and it falls inside the pending
-      // `zgx+parse` window (this hook runs before the frame's first command
-      // closes it): hand it out so `本机` does not absorb it (hmrdp_gfx_work.h).
-      meter_.OnBlockedBeforeFrameWork(sleepUs);
-    }
-  }
-  // Wall clock, not the requested deadline: a frame whose own work overran the
-  // interval must not push every later frame behind as well.
-  lastFramePaceUs_ = NowUs();
-}
-
 void Session::HandleGfxData(const uint8_t* data, size_t size) {
   if (data == nullptr || size == 0) {
     return;
@@ -2697,25 +2626,17 @@ void Session::HandleGfxData(const uint8_t* data, size_t size) {
   // channel, so waiting here for the frame worker to drain would hold audio and
   // input behind the frame pipeline - exactly the coupling the offload exists to
   // remove. The queue is therefore left free to grow; it is a latency buffer, not
-  // a throttle. Bounding it is the frame acknowledge's job, not a producer-side
-  // wait (see GfxWorkReportBufferedBytes).
+  // a throttle.
   bool queued = false;
-  size_t depth = 0;
   {
     std::lock_guard<std::mutex> lock(gfxQueueMutex_);
     if (gfxWorkerRun_) {
       gfxQueue_.emplace_back(data, data + size);
-      depth = gfxQueueBytes_.fetch_add(size) + size;
+      gfxQueueBytes_.fetch_add(size);
       queued = true;
     }
   }
   if (queued) {
-    // Probe only (EmitMetrics reports now/peak): whether this grows is the
-    // measurement of whether the server paces itself, not a safety trip.
-    const size_t peak = gfxQueuePeakBytes_.load(std::memory_order_relaxed);
-    if (depth > peak) {
-      gfxQueuePeakBytes_.store(depth, std::memory_order_relaxed);
-    }
     gfxQueueCv_.notify_one();
     return;
   }
@@ -2874,31 +2795,10 @@ void Session::AfterPresent() {
   // report it differently; this only does the per-frame bookkeeping.
   frameCount_.fetch_add(1);
 
-  // Probe (dev): the first frame after an input event closes that event's
-  // feedback latency - how long it took for the input to become visible. It is a
-  // lower bound: the frame may not reflect the input, but under continuous input
-  // it tracks the pipeline lag well.
-  const uint64_t inputUs = lastInputUs_.exchange(0, std::memory_order_relaxed);
-  if (inputUs != 0) {
-    const uint64_t latencyUs = NowUs() - inputUs;
-    inputLatencySumUs_.fetch_add(latencyUs, std::memory_order_relaxed);
-    inputLatencyCount_.fetch_add(1, std::memory_order_relaxed);
-    uint64_t peak = inputLatencyMaxUs_.load(std::memory_order_relaxed);
-    while (latencyUs > peak &&
-           !inputLatencyMaxUs_.compare_exchange_weak(peak, latencyUs,
-                                                     std::memory_order_relaxed)) {
-    }
-  }
-
   if (!firstFrameSent_) {
     firstFrameSent_ = true;
     Emit(SessionEvent::kFirstFrame, "");
   }
-}
-
-void Session::NoteInputSent() {
-  // Only the timestamp is stored here; the latency is closed in AfterPresent.
-  lastInputUs_.store(NowUs(), std::memory_order_relaxed);
 }
 
 void Session::HandleDesktopResize() {
@@ -3046,7 +2946,6 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
     HMRDP_LOGI("sendMouse flags=0x%{public}x x=%{public}u y=%{public}u", flags, x, y);
     mouseLog++;
   }
-  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr ||
       ctx.instance()->context->input == nullptr) {
@@ -3057,7 +2956,6 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
 
 bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x,
                         int32_t y) {
-  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr) {
     return false;
@@ -3112,7 +3010,6 @@ void Session::SetRfxDump(bool enabled, const std::string& dir) {
 }
 
 bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
-  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr ||
       ctx.instance()->context->input == nullptr) {
@@ -3126,7 +3023,6 @@ bool Session::SendKey(uint8_t scancode, bool down, bool extended) {
 }
 
 bool Session::SendUnicode(uint16_t codepoint, bool down) {
-  NoteInputSent();
   ContextGuard ctx(*this);
   if (!ctx.valid() || ctx.instance()->context == nullptr ||
       ctx.instance()->context->input == nullptr) {

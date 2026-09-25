@@ -105,11 +105,6 @@ struct RdpOptions {
   bool enableGfx = true;
   bool enableH264 = true;
   bool enableRemoteFx = true;
-  // Frame-rate cap in frames per second (0 = uncapped). Frames above the cap are
-  // never decoded: the cap holds each RDPGFX frame back before its decode, and
-  // the frame acknowledge the server waits for is only written when that frame
-  // ends (native/scripts/patch-steps/09-tcp-frameloop-qos.ps1).
-  int maxFps = 0;
   // 超分: `width`/`height` are the *output* resolution. When this is on the
   // session asks the server for output ÷ srRatioPercent and the Vulkan presenter
   // upscales each frame back to the output resolution (no-op on the GLES
@@ -251,13 +246,6 @@ class Session : public std::enable_shared_from_this<Session> {
   //   * HandleFrameBegin at the GFX START_FRAME (before this frame's writes),
   //   * HandleBeginPaint at gdi's BeginPaint (before the compose).
   void HandleFrameBegin();
-  // Runs once per frame at the GFX START_FRAME on the GFX worker thread, before
-  // the frame is decoded: the frame-rate cap (`maxFps`) sleeps here until this
-  // frame's slot opens. Because the frame acknowledge is written when this frame
-  // ends, holding the frame here is what the server sees as the client's frame
-  // rate - it then sends fewer frames. Running it on the worker (not the shared
-  // drdynvc dispatch thread) is what keeps the wait from holding audio/input back.
-  void HandleStartFrame();
   void HandleBeginPaint();
   void HandleEndPaint();
   void HandleDesktopResize();
@@ -322,10 +310,6 @@ class Session : public std::enable_shared_from_this<Session> {
   // same replay entry the offline CPU route uses (HmrdpGfxReplayRecv).
   void GfxWorkerLoop();
 
-  // Probe (dev): stamps the moment an input event was issued, so AfterPresent
-  // can report how long it took to reach the screen. Called from the UI thread.
-  void NoteInputSent();
-
   freerdp* instance_ = nullptr;
   // CPU frame presenter (Vulkan by default, GLES fallback). The live frame
   // pipeline all runs on the session's GFX worker thread (architecture.md §4),
@@ -380,21 +364,6 @@ class Session : public std::enable_shared_from_this<Session> {
   std::atomic<bool> gfxWorkerRun_{false};
   std::atomic<size_t> gfxQueueBytes_{0};
   void* gfxWorkerContext_ = nullptr;
-  // Probe (dev): peak queued GFX bytes seen since the metrics window started.
-  // Only the drdynvc thread writes it (one producer), read+reset per second.
-  std::atomic<size_t> gfxQueuePeakBytes_{0};
-  // Probe (dev): time from the most recent input event to the next presented
-  // frame - a lower bound on that input's visible feedback latency. Sum/count/
-  // max are rolled up per metrics window.
-  std::atomic<uint64_t> lastInputUs_{0};
-  std::atomic<uint64_t> inputLatencySumUs_{0};
-  std::atomic<uint64_t> inputLatencyCount_{0};
-  std::atomic<uint64_t> inputLatencyMaxUs_{0};
-  // Frame-rate cap read from the connect options (0 = uncapped), and the release
-  // stamp of the last frame it let through. Both are touched only on the GFX
-  // thread (the START_FRAME hook), except for the connect-time write.
-  int maxFps_ = 0;
-  uint64_t lastFramePaceUs_ = 0;
   // 超分辨率 magnification of the remote desktop (output ÷ session resolution).
   // The server sizes the pointer bitmap in *session* pixels, so the cursor is
   // magnified by the same factor - the CPU resample in UpscaleBgra - to stay in

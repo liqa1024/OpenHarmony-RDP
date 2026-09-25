@@ -7,8 +7,8 @@ import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Rdp
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, FPS_PRESETS, SCALE_PRESETS, SR_RATIO_PRESETS,
-  SettingsStore, fpsLabel, srRatioLabel } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SCALE_PRESETS, SR_RATIO_PRESETS,
+  SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
@@ -79,7 +79,6 @@ struct SettingsPage {
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
   @State ignoreCertificate: boolean = true;
-  @State maxFps: number = 0;
   @State hardwareAccel: boolean = true;
   @State hardwareAccelSupported: boolean = true;
   private hardwareAccelReason: string = '';
@@ -174,7 +173,6 @@ struct SettingsPage {
     this.manualScaleText = settings.manualScalePercent > 0
       ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
     this.ignoreCertificate = settings.ignoreCertificate;
-    this.maxFps = SettingsStore.snapFpsPreset(settings.maxFps);
     this.developerMode = settings.developerMode;
     // With developer options off, the dev-only tools are not shown and must not
     // keep running: a capture left on from a previous session is switched off.
@@ -308,7 +306,6 @@ struct SettingsPage {
     settings.enableAudio = this.enableAudio;
     settings.enableGfx = this.enableGfx;
     settings.ignoreCertificate = this.ignoreCertificate;
-    settings.maxFps = this.maxFps;
     settings.hardwareAccel = this.hardwareAccel;
     settings.srEnabled = this.srEnabled && this.srSupported;
     settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
@@ -356,7 +353,6 @@ struct SettingsPage {
     this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
     this.enableGfx = defaults.enableGfx;
     this.ignoreCertificate = defaults.ignoreCertificate;
-    this.maxFps = defaults.maxFps;
     this.hardwareAccel = defaults.hardwareAccel;
     this.srEnabled = defaults.srEnabled;
     this.srRatioPercent = defaults.srRatioPercent;
@@ -517,23 +513,6 @@ struct SettingsPage {
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.scaleAuto = auto;
-        this.persist();
-      })
-  }
-
-  @Builder
-  fpsChip(preset: number) {
-    Text(fpsLabel(preset))
-      .fontSize(13)
-      .fontColor(this.maxFps === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.maxFps === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.maxFps = preset;
         this.persist();
       })
   }
@@ -1129,21 +1108,6 @@ struct SettingsPage {
                   .fontSize(11).fontColor($r('app.color.text_tertiary'))
                   .width('100%').margin({ top: 2 })
               }
-            }
-            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
-
-            Divider().color($r('app.color.divider'))
-
-            Column() {
-              Text('帧率上限').fontSize(14).fontColor($r('app.color.text_primary'))
-              Text('给远端画面限帧：超出上限的帧不会被解码，繁忙桌面的解码与带宽开销随之下降（下次连接生效）')
-                .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-              Flex({ wrap: FlexWrap.Wrap }) {
-                ForEach(FPS_PRESETS, (preset: number) => {
-                  this.fpsChip(preset)
-                }, (preset: number) => preset.toString())
-              }
-              .width('100%').margin({ top: 10 })
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 

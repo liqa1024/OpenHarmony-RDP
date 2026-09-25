@@ -37,18 +37,6 @@ export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 // presets instead of the extremes.
 export const AUTO_SCALE_BASE: number = 1600;
 
-// Frame-rate cap presets in frames per second; 0 means "no cap". The cap lowers
-// how many frames the server sends (the client holds each frame back before its
-// decode, and the frame acknowledge is written when that frame ends), so it also
-// lowers the decode and bandwidth cost of a busy desktop. 20 sits between 15 and
-// 30 because that gap is wide enough to be worth a preset of its own.
-export const FPS_PRESETS: number[] = [0, 15, 20, 30, 45, 60];
-
-/** Label shown for an FPS_PRESETS entry. */
-export function fpsLabel(preset: number): string {
-  return preset > 0 ? `${preset} fps` : '不限制';
-}
-
 // 超分辨率倍率 (output ÷ session) presets in percent. The platform *recommends*
 // up to 1.5× for its GPU spatial upscale; larger ratios save more bandwidth but
 // the sharper edges of a text-heavy desktop start to ring, so those presets are
@@ -120,9 +108,6 @@ export class AppSettings {
   enableGfx: boolean = true;
   enableH264: boolean = true;
   ignoreCertificate: boolean = true;
-  // Frame-rate cap in frames per second shared by every connection that follows
-  // the global advanced settings; 0 leaves the frame rate to the server.
-  maxFps: number = 0;
   // 超分 (global default; per-connection override in the editor). The resolution
   // setting is the *output* resolution, the session renders at output ÷ ratio and
   // the Vulkan presenter upscales it back. Off by default: it changes what the
@@ -241,7 +226,6 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'enableH264', settings.enableH264);
       settings.ignoreCertificate =
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
-      settings.maxFps = SettingsStore.readNumber(store, 'maxFps', settings.maxFps);
       settings.srEnabled = SettingsStore.readBoolean(store, 'srEnabled', settings.srEnabled);
       settings.srRatioPercent =
         SettingsStore.readNumber(store, 'srRatioPercent', settings.srRatioPercent);
@@ -289,7 +273,6 @@ export class SettingsStore {
       store.putSync('enableGfx', settings.enableGfx);
       store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
-      store.putSync('maxFps', settings.maxFps);
       store.putSync('srEnabled', settings.srEnabled);
       store.putSync('srRatioPercent', settings.srRatioPercent);
       store.putSync('srBackend', settings.srBackend);
@@ -329,20 +312,6 @@ export class SettingsStore {
   static scalePresetForResolution(width: number, height: number): number {
     const longest: number = Math.max(width, height);
     return SettingsStore.nearestScalePreset(Math.round(longest * 100 / AUTO_SCALE_BASE));
-  }
-
-  /** Snaps an arbitrary frame-rate cap to the nearest supported preset. */
-  static snapFpsPreset(value: number): number {
-    let best: number = FPS_PRESETS[0];
-    let bestDiff: number = Math.abs(value - best);
-    for (const preset of FPS_PRESETS) {
-      const diff: number = Math.abs(value - preset);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = preset;
-      }
-    }
-    return best;
   }
 
   /** Snaps an arbitrary percentage to the nearest supported Windows preset. */
@@ -542,7 +511,6 @@ export class SettingsStore {
     profile.enableGfx = conn.enableGfx;
     profile.enableH264 = conn.enableH264;
     profile.ignoreCertificate = conn.ignoreCertificate;
-    profile.maxFps = conn.maxFps;
     return profile;
   }
 
@@ -552,7 +520,6 @@ export class SettingsStore {
     profile.enableGfx = settings.enableGfx;
     profile.enableH264 = settings.enableH264;
     profile.ignoreCertificate = settings.ignoreCertificate;
-    profile.maxFps = settings.maxFps;
     return profile;
   }
 

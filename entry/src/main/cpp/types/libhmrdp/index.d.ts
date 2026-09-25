@@ -14,13 +14,6 @@ export interface RdpOptions {
   enableH264: boolean;
   enableRemoteFx: boolean;
   /**
-   * Frame-rate cap in frames per second (0 = uncapped). Frames above the cap are
-   * never decoded: the cap holds each RDPGFX frame back before its decode, and
-   * the frame acknowledge the server waits for is only written when that frame
-   * ends, so the server sends fewer frames instead of the client dropping them.
-   */
-  maxFps: number;
-  /**
    * 超分 (super resolution). `width`/`height` are the *output* resolution; with
    * this on, the session asks the server for `output ÷ srRatioPercent` and the
    * Vulkan presenter upscales every frame back with XEngine's GPU spatial

@@ -16,10 +16,6 @@
 // always processed inline and nothing can be offloaded.
 extern "C" void HmrdpSetGfxDataSink(
     BOOL (*fn)(RdpgfxClientContext*, const BYTE*, UINT32)) __attribute__((weak));
-// Defined by the patched rdpgfx client (native/scripts/patch-steps/
-// 34-rdpgfx-queue-depth-report.ps1). Weak so a stock FreeRDP still links; it then
-// keeps upstream's QUEUE_DEPTH_UNAVAILABLE and nothing throttles the server.
-extern "C" void HmrdpSetGfxQueueDepthFn(UINT32 (*fn)(void)) __attribute__((weak));
 
 namespace hmrdp {
 namespace {
@@ -71,21 +67,11 @@ Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
 std::mutex g_frameBeginMutex;
 std::unordered_map<RdpgfxClientContext*, std::function<void()>> g_frameBeginHooks;
 
-// The START_FRAME-only hooks (see GfxWorkSetStartFrameHook): the live session's
-// frame-rate cap runs there. Same per-context keying as the frame-begin hooks.
-std::mutex g_startFrameMutex;
-std::unordered_map<RdpgfxClientContext*, std::function<void()>> g_startFrameHooks;
-
 // The data-sink hooks (see GfxWorkSetDataSinkHook): when a context has one, the
 // raw GFX chunk is handed to it instead of being processed on the drdynvc thread.
 std::mutex g_dataSinkMutex;
 std::unordered_map<RdpgfxClientContext*, std::function<void(const uint8_t*, size_t)>>
     g_dataSinkHooks;
-
-// Raw GFX bytes buffered at the client and not yet processed (see
-// GfxWorkReportBufferedBytes). Written only when the session feeds the report
-// (it currently does not), read by FreeRDP when it builds a frame acknowledge.
-std::atomic<uint32_t> g_gfxBufferedBytes{0};
 
 // Runs that context's hook, when one is installed. Called before *every* command
 // that can write the desktop, not only at START_FRAME: the wire carries surface
@@ -107,31 +93,10 @@ void RunFrameBeginHook(RdpgfxClientContext* gfx) {
   }
 }
 
-// Runs that context's START_FRAME hook, when one is installed (see
-// GfxWorkSetStartFrameHook). This is the one point that is both once per frame
-// and still before the frame's decode, which is what the frame-rate cap paces.
-void RunStartFrameHook(RdpgfxClientContext* gfx) {
-  std::function<void()> hook;
-  {
-    std::lock_guard<std::mutex> lock(g_startFrameMutex);
-    const auto it = g_startFrameHooks.find(gfx);
-    if (it != g_startFrameHooks.end()) {
-      hook = it->second;
-    }
-  }
-  if (hook) {
-    hook();
-  }
-}
-
 UINT MeterStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* startFrame) {
   // Earliest point of the frame: the previous frame's read of the desktop buffer
   // has to drain before this frame writes it (see GfxWorkSetFrameBeginHook).
   RunFrameBeginHook(gfx);
-  // Then the frame-rate cap, once per frame and before the decode: the frame's
-  // acknowledge is written when it ends, so the server only sees this frame once
-  // the cap has released it.
-  RunStartFrameHook(gfx);
   const pcRdpgfxStartFrame original = GfxOriginal(gfx, &GfxOriginals::StartFrame);
   return original != nullptr ? original(gfx, startFrame) : CHANNEL_RC_OK;
 }
@@ -402,13 +367,6 @@ extern "C" BOOL HmrdpGfxDataSink(RdpgfxClientContext* gfx, const BYTE* data, UIN
   return TRUE;
 }
 
-// Read by the patched rdpgfx when it builds a frame acknowledge: the client's
-// real GFX backlog, in bytes (see GfxWorkReportBufferedBytes). It reads 0 while
-// nothing feeds it, so the acknowledge keeps upstream's QUEUE_DEPTH_UNAVAILABLE.
-extern "C" UINT32 HmrdpGfxBufferedBytes(void) {
-  return g_gfxBufferedBytes.load();
-}
-
 void GfxWorkInstall(RdpgfxClientContext* gfx) {
   if (gfx == nullptr) {
     return;
@@ -418,9 +376,6 @@ void GfxWorkInstall(RdpgfxClientContext* gfx) {
   // wrappers too) is unaffected.
   if (HmrdpSetGfxDataSink != nullptr) {
     HmrdpSetGfxDataSink(&HmrdpGfxDataSink);
-  }
-  if (HmrdpSetGfxQueueDepthFn != nullptr) {
-    HmrdpSetGfxQueueDepthFn(&HmrdpGfxBufferedBytes);
   }
   std::lock_guard<std::mutex> lock(g_installMutex);
   if (g_originals.find(gfx) != g_originals.end()) {
@@ -541,10 +496,6 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
     g_frameBeginHooks.erase(gfx);
   }
   {
-    std::lock_guard<std::mutex> hookLock(g_startFrameMutex);
-    g_startFrameHooks.erase(gfx);
-  }
-  {
     std::lock_guard<std::mutex> hookLock(g_dataSinkMutex);
     g_dataSinkHooks.erase(gfx);
   }
@@ -562,18 +513,6 @@ void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> ho
   }
 }
 
-void GfxWorkSetStartFrameHook(RdpgfxClientContext* gfx, std::function<void()> hook) {
-  if (gfx == nullptr) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(g_startFrameMutex);
-  if (hook) {
-    g_startFrameHooks[gfx] = std::move(hook);
-  } else {
-    g_startFrameHooks.erase(gfx);
-  }
-}
-
 void GfxWorkSetDataSinkHook(RdpgfxClientContext* gfx,
                             std::function<void(const uint8_t*, size_t)> hook) {
   if (gfx == nullptr) {
@@ -585,13 +524,6 @@ void GfxWorkSetDataSinkHook(RdpgfxClientContext* gfx,
   } else {
     g_dataSinkHooks.erase(gfx);
   }
-}
-
-void GfxWorkReportBufferedBytes(size_t bytes) {
-  // queueDepth must stay strictly below SUSPEND_FRAME_ACKNOWLEDGEMENT (0xFFFFFFFF).
-  constexpr size_t kMax = 0xFFFFFFFEu;
-  g_gfxBufferedBytes.store(bytes > kMax ? static_cast<uint32_t>(kMax)
-                                        : static_cast<uint32_t>(bytes));
 }
 
 }  // namespace hmrdp

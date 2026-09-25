@@ -19,7 +19,7 @@
 | 做 CPU 解码的并行 / 执行器 / 任务划分 / 内存归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（并行范围、执行器与宽度、任务划分、内存归属、合成归属） |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
-| 改通道线程 / 帧率上限 / 音频不被帧挡住 | [`architecture.md`](architecture.md) §4（线程模型） |
+| 改通道线程 / 音频不被帧挡住 | [`architecture.md`](architecture.md) §4（线程模型） |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
 
 ## 文档清单

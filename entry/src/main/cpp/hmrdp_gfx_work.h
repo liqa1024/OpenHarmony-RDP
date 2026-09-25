@@ -200,22 +200,6 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx);
 // zero-copy upload unprotected. Pass nullptr to remove that context's hook.
 void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> hook);
 
-// A hook run at RDPGFX START_FRAME and nowhere else, i.e. once per frame and
-// still *before* that frame is decoded.
-//
-// The frame-rate cap needs exactly this point: it waits here for this frame's
-// slot before the frame is decoded, and the acknowledge written when the frame
-// ends is what the server sees as the client's rate. This runs on the session's
-// GFX worker thread (see GfxWorkSetDataSinkHook), so that wait never holds audio
-// or input back. Running at every write command instead
-// (GfxWorkSetFrameBeginHook) would pace out-of-frame surface updates too, which
-// are not frames.
-//
-// Keyed by the GFX context, like the frame-begin hook: the live session owns one
-// and installs the cap; the offline replay installs none. Pass nullptr to remove
-// that context's hook.
-void GfxWorkSetStartFrameHook(RdpgfxClientContext* gfx, std::function<void()> hook);
-
 // A hook that takes ownership of the raw RDPGFX channel chunk. While one is set
 // for a context, FreeRDP hands the chunk over instead of processing it inline on
 // the drdynvc thread, and the owner must re-enter through the replay entry
@@ -227,20 +211,6 @@ void GfxWorkSetStartFrameHook(RdpgfxClientContext* gfx, std::function<void()> ho
 // hook is set the chunk is processed inline, exactly as before.
 void GfxWorkSetDataSinkHook(RdpgfxClientContext* gfx,
                             std::function<void(const uint8_t*, size_t)> hook);
-
-// Reports how many raw GFX bytes are buffered at the client and not yet processed
-// (the offload queue depth, see GfxWorkSetDataSinkHook). FreeRDP puts the value
-// into the frame acknowledge's `queueDepth`, whose definition is exactly this
-// quantity. It is the only client->server signal that can ask the server to slow
-// the frame it sends, so feeding it makes the offload queue a server-visible
-// backlog; leaving it at 0 makes the server pace itself and exposes the queue as
-// pure client-side latency.
-//
-// The live session currently does NOT feed it (HandleGfxData): whether the peer
-// honours `queueDepth` is unproven, and mixing that unproven control loop into
-// the measurement would make the result unattributable. 0 = no backlog /
-// upstream's default.
-void GfxWorkReportBufferedBytes(size_t bytes);
 
 }  // namespace hmrdp
 

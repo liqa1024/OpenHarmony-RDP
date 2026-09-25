@@ -288,7 +288,6 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.enableGfx = GetBoolProperty(env, args[1], "enableGfx", true);
   options.enableH264 = GetBoolProperty(env, args[1], "enableH264", true);
   options.enableRemoteFx = GetBoolProperty(env, args[1], "enableRemoteFx", true);
-  options.maxFps = GetIntProperty(env, args[1], "maxFps", 0);
   options.srEnabled = GetBoolProperty(env, args[1], "srEnabled", false);
   // 0 = XEngine (the platform upscaler), 1 = the presenter's own FSR.
   options.srBackend = GetIntProperty(env, args[1], "srBackend", 0) == 1

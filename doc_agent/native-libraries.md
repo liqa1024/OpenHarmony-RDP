@@ -138,12 +138,6 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   `freerdp_connect` 内部拆通道，早启动会与 worker 抢 rdpgfx 插件的生命周期；停止则必须在
   **`freerdp_disconnect` 之前** join（它释放该插件；offload 后 worker 与通道拆除不再同线程，必须先把
   worker 停掉），随后才 `GfxWorkUninstall`。`Teardown`/`HmrdpPostDisconnect` 里各再兜一次。
-- **回执如实上报本机积压**（patch step 34，`HmrdpSetGfxQueueDepthFn`）：帧回执的 `queueDepth` 定义就是
-  "客户端已缓冲、尚未处理的图形数据字节数"——正是 offload 队列。如实上报后服务端据此限帧，队列与延迟
-  才**有界**（否则限帧时服务端照发、队列无限增长，表现为操作延迟越拖越大）。这也是**限帧真正作用到
-  服务端**的杠杆，报的是真实值而非合成值；`0` = 无积压（不改上游行为）。
-  **判据**：操作延迟应≈一帧量级且**不随会话时长增长**；若持续增大，就是服务端未按上报积压限流
-  （或队列在涨），届时看 offload 队列字节数与 `rx B/s`。
 - **客户端侧带宽 / 帧回执 / QoS**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；app 注册的 **QoS** 钩子由
   drdynvc 线程和 **GFX 工作线程**各自在入口调用一次（整条帧流水线现在在工作线程上）。解码的 tile
@@ -231,24 +225,15 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   （`writeData` 拉模型）。**不要**把 `libohaudio.so` 链成 `DT_NEEDED`：缺库设备会加载即崩。
   也不要用 ArkTS `@ohos.multimedia.audio`（该工具链下会触发 syscap 误报，且 OpenSLES 已废弃）。
 - **音频走动态 rdpsnd**：现代 Windows 用**动态** rdpsnd（**不是**静态通道——只提供静态通道时现代服务端
-  会完全不出声，所以不能改成只走静态）。它由 drdynvc 分发到会话，而帧流水线已从那条线程搬到会话工作
-  线程（见 §4 与 [`architecture.md`](architecture.md) §4），所以重帧不再挡住音频投递；缓冲深度只需兜住
-  偶发的调度延迟，不再需要覆盖一次帧解码那么长。
-- **缓冲与丢帧（`hmrdp_audio.cpp`）**：解码后的 PCM 按**整包**入队，起播前先**预缓冲**
-  （`kTargetLatencyMs`，抖动才不会变成可听空洞；空闲后重新出声也会再预缓冲一次）；队列涨过
-  **高水位**（`kHighWaterLatencyMs`）时丢**最旧的整包**——绝不切包，按字节裁会错开 16-bit 采样对齐而
-  "咔"一声——延迟因此有上界。**唯一的丢包点在这里**：FreeRDP 的 rdpsnd overrun 保护
-  （`rdpsnd_detect_overrun`，按 `2×包时长` 估算、会把突发直接静默丢掉）在本后端被**关闭**——后端导出
-  `HmrdpRdpsndBufferLatencyMs()` 声明自有缓冲，补丁
-  `native/scripts/patch-steps/31-rdpsnd-hmrdp-no-overrun-drop.ps1` 见其为正则不再预丢。两处水位必须同步
-  （`kHighWaterLatencyMs` ↔ `HmrdpRdpsndBufferLatencyMs()`）。
+  会完全不出声，所以不能改成只走静态）。它由 drdynvc 分发到会话；帧流水线已从那条线程搬到会话工作线程
+  （见 §4 与 [`architecture.md`](architecture.md) §4），所以重帧不会挡住音频投递。
+- **缓冲（`hmrdp_audio.cpp`）**：解码后的 PCM 进一个**定长字节环**，环满丢最老的数据（按字节丢，延迟有上界），
+  `OnWrite` 欠载就补静音。丢帧统计 = 欠载补静音 + 环溢出丢掉的字节，仅在**数据仍在到达**的窗口内
+  （`activeUntilUs_`）计入，静音停顿不计。
 - **绝不持锁调用 `Start`/`Stop`/`Release`**：`OH_AudioRenderer_Release` 会等待 write 回调
   （`JoinCallbackLoop`），而回调要用同一把 `mutex_` 取队列 ⇒ 持锁 Release 必死锁
   （表现为关闭会话后 `APP_INPUT_BLOCK` 卡死）。约定：`mutex_` 只保护队列/句柄，**不跨 OHAudio
   调用持有**；`lifecycle_` 只在 `mutex_` 之外串行化 open/close；回调只碰 `mutex_`。
-- 丢帧统计：`OnWrite` 欠载补静音 + 溢出丢掉的整包字节；在**播放已开始且数据仍在到达**时统计
-  （`kLiveWindowUs`）——停顿当场就计，只有流真正结束后才停；起播预缓冲不算丢
-  （见 [`session-and-input.md`](session-and-input.md) §3）。
 
 ## 6. 设备能力探测（Capability 模式）
 

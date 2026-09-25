@@ -12,8 +12,7 @@ import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { FPS_PRESETS, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore, fpsLabel,
-  srRatioLabel } from '../services/SettingsStore';
+import { SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TextAction } from '../components/TextAction';
 
@@ -46,7 +45,6 @@ struct EditConnectionPage {
   // H.264 was removed; kept false so the stored model field stays inert.
   @State enableH264: boolean = false;
   @State ignoreCertificate: boolean = true;
-  @State maxFps: number = 0;
   // 超分: kept out of the display group on purpose - a LAN connection can follow
   // the (off) global default while the same host reached through a gateway wants
   // the bandwidth saving, and vice versa.
@@ -125,7 +123,6 @@ struct EditConnectionPage {
       this.enableAudio = this.audioSupported && conn.enableAudio;
       this.enableGfx = conn.enableGfx;
       this.ignoreCertificate = conn.ignoreCertificate;
-      this.maxFps = SettingsStore.snapFpsPreset(conn.maxFps);
       this.useGlobalAdvanced = conn.useGlobalAdvanced;
       this.useGlobalSr = conn.useGlobalSr;
       this.srEnabled = conn.srEnabled;
@@ -191,8 +188,7 @@ struct EditConnectionPage {
 
   private advancedSummary(profile: AdvancedProfile): string {
     return `音频${this.onOff(profile.enableAudio)}`
-      + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`
-      + ` · 帧率${fpsLabel(profile.maxFps)}`;
+      + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`;
   }
 
   /**
@@ -285,7 +281,6 @@ struct EditConnectionPage {
     options.enableGfx = this.enableGfx;
     options.enableH264 = false;
     options.ignoreCertificate = this.ignoreCertificate;
-    options.maxFps = this.maxFps;
     const sr: SrProfile = this.resolvedSr();
     options.srEnabled = sr.enabled;
     options.srRatioPercent = sr.ratioPercent;
@@ -296,7 +291,6 @@ struct EditConnectionPage {
       options.enableGfx = advanced.enableGfx;
       options.enableH264 = false;
       options.ignoreCertificate = advanced.ignoreCertificate;
-      options.maxFps = advanced.maxFps;
     }
     if (!this.audioSupported) {
       options.enableAudio = false;
@@ -420,22 +414,6 @@ struct EditConnectionPage {
       .fontSize(12)
       .fontColor($r('app.color.text_secondary'))
       .margin({ bottom: 6 })
-  }
-
-  @Builder
-  fpsChip(preset: number) {
-    Text(fpsLabel(preset))
-      .fontSize(13)
-      .fontColor(this.maxFps === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.maxFps === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.maxFps = preset;
-      })
   }
 
   @Builder
@@ -974,19 +952,6 @@ struct EditConnectionPage {
                     (v: boolean) => {
                       this.ignoreCertificate = v;
                     }, true, '')
-
-                  Column() {
-                    Text('帧率上限').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('超出上限的帧不会被解码（下次连接生效）')
-                      .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-                    Flex({ wrap: FlexWrap.Wrap }) {
-                      ForEach(FPS_PRESETS, (preset: number) => {
-                        this.fpsChip(preset)
-                      }, (preset: number) => preset.toString())
-                    }
-                    .width('100%').margin({ top: 10 })
-                  }
-                  .width('100%').margin({ top: 16 }).alignItems(HorizontalAlign.Start)
                 }
               }
               .width('100%')
