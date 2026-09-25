@@ -180,6 +180,9 @@ export class ConnectionStore {
     parts.push(conn.srEnabled ? '1' : '0');
     parts.push(conn.srRatioPercent.toString());
     parts.push(conn.srBackend.toString());
+    // Per-connection frame-rate cap. Appended last so records written before it
+    // existed still parse (they default to 0 = uncapped).
+    parts.push(conn.maxFps.toString());
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -217,6 +220,7 @@ export class ConnectionStore {
     conn.srRatioPercent = parts.length > 24 ? ConnectionStore.parseNumber(parts[24], 0) : 0;
     conn.srBackend = parts.length > 25
       ? ConnectionStore.parseNumber(parts[25], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
+    conn.maxFps = parts.length > 26 ? ConnectionStore.parseNumber(parts[26], 0) : 0;
     return conn;
   }
 
