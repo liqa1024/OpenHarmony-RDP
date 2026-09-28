@@ -145,9 +145,11 @@ struct VkApi {
   bool LoadDevice(VkDevice device, VkInstance instance);
 };
 
-// Loads libvulkan.so and the global commands (cached for the process). The
-// returned object is mutated by VkContext as the instance/device come up, so it
-// is only mutated from the context's own serialized lifecycle.
+// Loads libvulkan.so and the global commands (cached for the process), then
+// `VkInstanceContext::EnsureInstance()` fills in the instance-level ones. Only
+// this process-wide table holds global + instance entries; each device resolves
+// its own entries into a private copy (VkDeviceContext::api()), so a device can
+// never reach another device's function pointers.
 VkApi& GetVkApi();
 
 // "VK_SUCCESS" / "VK_ERROR_..." for logs.
@@ -233,53 +235,79 @@ struct VulkanCapabilities {
 // one) but never a device, so it is safe to call before any surface exists.
 const VulkanCapabilities& GetVulkanCapabilities();
 
-// Process-wide instance + device for rendering. The device is created on the
-// first surface because a queue family has to be able to present to it.
-class VkContext {
+// Process-wide Vulkan instance, shared and never destroyed while the process
+// lives. It is the only Vulkan object sessions share: surfaces are created from
+// it, while every presenter owns its own device (VkDeviceContext), so two
+// sessions never submit on the same queue (doc_agent/architecture.md §4.1).
+class VkInstanceContext {
  public:
-  static VkContext& Instance();
+  static VkInstanceContext& Instance();
 
-  // Creates the instance (once) and a device with one graphics + present queue
-  // family for `surface`. When a surface is supplied later and the existing queue
-  // family cannot present to it, the device is rebuilt. Returns false and stays
-  // unusable on failure.
+  // Creates the instance once. Returns false and stays unusable on failure.
+  bool EnsureInstance();
+  VkInstance instance() const { return instance_; }
+  std::string lastError() const { return error_; }
+  // The instance-level command set (global + instance commands).
+  VkApi& api() { return GetVkApi(); }
+
+  // Wraps the XComponent OHNativeWindow into a VkSurfaceKHR (created from the
+  // shared instance).
+  bool CreateSurface(void* nativeWindow, VkSurfaceKHR* out);
+  void DestroySurface(VkSurfaceKHR surface);
+
+ private:
+  VkInstanceContext() = default;
+  ~VkInstanceContext();
+  VkInstanceContext(const VkInstanceContext&) = delete;
+  VkInstanceContext& operator=(const VkInstanceContext&) = delete;
+
+  VkInstance instance_ = VK_NULL_HANDLE;
+  std::string error_;
+};
+
+// One presenter's Vulkan device + queue, created from the shared instance for the
+// surface it presents to. Owned by the presenter and destroyed with it - never
+// shared between sessions.
+class VkDeviceContext {
+ public:
+  VkDeviceContext() = default;
+  ~VkDeviceContext();
+  VkDeviceContext(const VkDeviceContext&) = delete;
+  VkDeviceContext& operator=(const VkDeviceContext&) = delete;
+
+  // Creates the device with one graphics + present queue family for `surface`.
+  // When a surface is supplied later and the existing queue family cannot present
+  // to it, the device is rebuilt. Returns false and stays unusable on failure.
   bool EnsureDevice(VkSurfaceKHR surface);
+  // Destroys the device (idempotent). The shared instance survives.
+  void Destroy();
+  bool ready() const { return device_ != VK_NULL_HANDLE; }
+  std::string lastError() const { return error_; }
+
+  // This device's command set: global + instance entries plus its own device
+  // entries, so a call can never reach another device's function pointers.
+  VkApi& api() { return api_; }
+  VkInstance instance() const { return VkInstanceContext::Instance().instance(); }
+  VkPhysicalDevice physicalDevice() const { return physical_; }
+  VkDevice device() const { return device_; }
+  VkQueue queue() const { return queue_; }
+  uint32_t queueFamily() const { return queueFamily_; }
+
   // Index of a memory type satisfying `typeBits` and `required` (and carrying none
   // of `excluded`), or UINT32_MAX.
   uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) const;
   uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required,
                           VkMemoryPropertyFlags excluded) const;
-  void Shutdown();
-  bool ready() const { return device_ != VK_NULL_HANDLE; }
 
-  VkApi& api() { return GetVkApi(); }
-  VkInstance instance() const { return instance_; }
-  VkPhysicalDevice physicalDevice() const { return physical_; }
-  VkDevice device() const { return device_; }
-  VkQueue queue() const { return queue_; }
-  uint32_t queueFamily() const { return queueFamily_; }
-  std::string lastError() const;
-
-  // Wraps the XComponent OHNativeWindow into a VkSurfaceKHR.
+  // Surface helpers routed through the shared instance, so a presenter has one
+  // entry point for both the instance and its own device.
   bool CreateSurface(void* nativeWindow, VkSurfaceKHR* out);
   void DestroySurface(VkSurfaceKHR surface);
 
-  // Creates the instance only (used by the capability probe).
-  bool EnsureInstance();
-
  private:
-  VkContext() = default;
-  ~VkContext();
-  VkContext(const VkContext&) = delete;
-  VkContext& operator=(const VkContext&) = delete;
-
   bool PickPhysicalDevice(VkSurfaceKHR surface);
-  // Destroys only the device (used when rebuilding it for a present-capable
-  // queue family: the instance must survive, or the caller's VkSurfaceKHR, which
-  // was created from it, would be invalidated).
-  void DestroyDevice();
 
-  VkInstance instance_ = VK_NULL_HANDLE;
+  VkApi api_;
   VkPhysicalDevice physical_ = VK_NULL_HANDLE;
   VkDevice device_ = VK_NULL_HANDLE;
   VkQueue queue_ = VK_NULL_HANDLE;

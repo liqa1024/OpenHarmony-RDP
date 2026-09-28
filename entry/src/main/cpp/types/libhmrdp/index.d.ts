@@ -108,20 +108,36 @@ export const setHardwareAccel: (enabled: boolean) => boolean;
 export const setGfxCapture: (enabled: boolean, dir: string) => boolean;
 
 /**
- * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+ * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+ * Each call starts an independent instance on `surfaceId` and returns its handle
+ * (>0), or -1 on failure. Several instances can run at once - each owns its own
+ * frame pipeline - so this is also the multi-session regression vehicle.
  * Decoding is FreeRDP's gdi pipeline; the presenter is the one the "硬件加速"
- * setting selects.
+ * setting selects at start.
  * `realtime` plays the capture at its recorded arrival times (the cadence the
  * live session ran at) instead of the unthrottled fast mode; it is ignored for
  * captures recorded before the arrival times were stored.
  * `refMode` selects the golden-reference check: 0 = off, 1 = record, 2 = compare.
  */
-export const startGfxReplayTest: (surfaceId: string, surfaceW: number, surfaceH: number,
-  gfxPath: string, realtime: number, refMode: number) => string;
+export const startReplay: (surfaceId: string, surfaceW: number, surfaceH: number,
+  gfxPath: string, realtime: number, refMode: number) => number;
 
-export const stopGfxReplayTest: () => void;
-export const resizeGfxReplayTest: (width: number, height: number) => void;
-export const gfxReplayTestStats: () => string;
+/** Stops one replay instance and releases its surface. */
+export const stopReplay: (handle: number) => void;
+
+/** Stops every replay instance. */
+export const stopAllReplays: () => void;
+
+export const resizeReplay: (handle: number, width: number, height: number) => void;
+
+/** Multi-line stats of one instance (the dev panel text). */
+export const replayStats: (handle: number) => string;
+
+/**
+ * One compact line per live instance ("count=N\nhandle=<id> <stats>"). This is
+ * the machine-readable form for the dev harness and for an agent reading hilog.
+ */
+export const listReplays: () => string;
 
 /**
  * Dev/test: Vulkan capability report - loader/device version, extensions, memory

@@ -1,15 +1,15 @@
 /*
- * HmRdp - dev-only RDP replay page (doc_agent/gfx-engine.md §6).
+ * HmRdp - dev/test replay page (doc_agent/gfx-engine.md §6).
  *
- * Binds this XComponent's surface and replays the recorded hmrdp_gfx.bin capture
- * straight to the screen. No RDP session or network is involved. The capture is
- * not shipped in the HAP - `hdc file send` it into the app filesDir as
- * hmrdp_gfx.bin before opening this page (entered from the home screen "回放测试"
- * entry).
+ * Hosts up to MAX_SLOTS independent XComponent surfaces and runs one replay
+ * instance per surface, all from the same recorded hmrdp_gfx.bin capture. Each
+ * instance owns its own frame pipeline, so this page is the on-device vehicle
+ * for the multi-session regression: no RDP session, no network, no server.
  *
- * The page drives FreeRDP's gdi decode; 「路线」 picks which presenter it runs
- * through (CPU = GLES, 硬件加速 = Vulkan), 「参考」 runs it against the golden
- * reference image recorded earlier from the same capture.
+ * The capture is not shipped in the HAP - `hdc file send` it into the app
+ * filesDir as hmrdp_gfx.bin before opening this page. The per-instance figures
+ * are polled from the native side and also logged, so a run can be judged from
+ * hilog alone.
  */
 import { RdpNative } from '../services/RdpNative';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -25,32 +25,44 @@ const TAG: string = 'HmRdpReplay';
 // 「路线」 = which presentation line the gdi decode runs through:
 //   CPU      - the GLES presenter (no Vulkan at all)
 //   硬件加速  - the Vulkan presenter
-// This is the session's "硬件加速" setting, exposed here as well so both presenters
-// can be compared on the same capture.
 const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
 
 // 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §8.2).
-//   关   - plain run (the perf modes above)
-//   导出 - record this run as the reference (hmrdp_ref_<tag>.{hash,bmp})
-//   对比 - check every frame against the stored reference; the stats line reports
-//          `ref compare: … bad=…` plus the pixel diff of the stored image's frame
 const REF_OFF: number = 0;
 const REF_EXPORT: number = 1;
 const REF_COMPARE: number = 2;
 const REF_LABEL: string[] = ['关', '导出', '对比'];
 
-class ReplaySurfaceController extends XComponentController {
-  private createdCb: (surfaceId: string, width: number, height: number) => void =
-    (surfaceId: string, width: number, height: number) => {};
-  private changedCb: (surfaceId: string, width: number, height: number) => void =
-    (surfaceId: string, width: number, height: number) => {};
-  private destroyedCb: (surfaceId: string) => void = (surfaceId: string) => {};
+// Concurrent replay instances the page can host (and the max button value).
+const MAX_SLOTS: number = 4;
 
-  setCallbacks(created: (surfaceId: string, width: number, height: number) => void,
-    changed: (surfaceId: string, width: number, height: number) => void,
-    destroyed: (surfaceId: string) => void): void {
+// One replay slot: the surface it is bound to and the native instance handle.
+class ReplaySlot {
+  readonly index: number;
+  surfaceId: string = '';
+  width: number = 0;
+  height: number = 0;
+  handle: number = -1;
+
+  constructor(index: number) {
+    this.index = index;
+  }
+}
+
+class ReplaySurfaceController extends XComponentController {
+  private slot: ReplaySlot;
+  private createdCb: (slot: ReplaySlot, surfaceId: string, width: number, height: number) => void;
+  private changedCb: (slot: ReplaySlot, width: number, height: number) => void;
+  private destroyedCb: (slot: ReplaySlot) => void;
+
+  constructor(slot: ReplaySlot,
+    created: (slot: ReplaySlot, surfaceId: string, width: number, height: number) => void,
+    changed: (slot: ReplaySlot, width: number, height: number) => void,
+    destroyed: (slot: ReplaySlot) => void) {
+    super();
+    this.slot = slot;
     this.createdCb = created;
     this.changedCb = changed;
     this.destroyedCb = destroyed;
@@ -58,15 +70,15 @@ class ReplaySurfaceController extends XComponentController {
 
   onSurfaceCreated(surfaceId: string): void {
     const rect: SurfaceRect = this.getXComponentSurfaceRect();
-    this.createdCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
+    this.createdCb(this.slot, surfaceId, rect.surfaceWidth, rect.surfaceHeight);
   }
 
   onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
-    this.changedCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
+    this.changedCb(this.slot, rect.surfaceWidth, rect.surfaceHeight);
   }
 
   onSurfaceDestroyed(surfaceId: string): void {
-    this.destroyedCb(surfaceId);
+    this.destroyedCb(this.slot);
   }
 }
 
@@ -78,67 +90,28 @@ struct GfxReplayPage {
   @State line: number = LINE_ACCEL;
   // Golden-reference mode (see REF_LABEL).
   @State refMode: number = REF_OFF;
-  // Playback clock: false = not throttled at all (runs flat out, a throughput
-  // measurement), true = the capture's own arrival times (the cadence the live
-  // session ran at). Needs a capture recorded with arrival times; the stats line
-  // reports the mode actually used (`mode=fast|fast(untimed)|realtime`).
+  // Playback clock: false = not throttled (throughput), true = the capture's own
+  // arrival times (the cadence the live session ran at).
   @State replayRealtime: boolean = false;
-  // Whether this device can run the Vulkan presenter at all (see
-  // DeviceCapabilities.hardwareAccel); when it cannot, 硬件加速 is not offered.
+  // How many concurrent replay instances this page runs.
+  @State slotCount: number = 3;
+  // Whether this device can run the Vulkan presenter at all.
   @State hardwareAccelSupported: boolean = true;
-  // On-device performance panel: the stats string is multi-line, shown in a
-  // floating translucent box so the actual picture keeps the full surface.
   @State showStats: boolean = true;
-  private controller: ReplaySurfaceController = new ReplaySurfaceController();
+  private slots: ReplaySlot[] = [];
+  private controllers: ReplaySurfaceController[] = [];
   private statsTimer: number = -1;
-  private surfaceId: string = '';
-  private surfaceW: number = 0;
-  private surfaceH: number = 0;
+  private capturePath: string = '';
 
-  // Whether this run should present through Vulkan: the 硬件加速 line was picked
-  // and the device supports it.
   private accelOn(): boolean {
     return this.line === LINE_ACCEL && this.hardwareAccelSupported;
   }
 
   aboutToAppear(): void {
     this.applyFullScreen(true);
-    // Same source of truth as the settings page: the stored value decides which
-    // line the page starts on, clamped by what this device can actually do.
     const capability: Capability = DeviceCapabilities.hardwareAccel();
     this.hardwareAccelSupported = capability.supported;
     this.line = (SettingsStore.load().hardwareAccel && capability.supported) ? LINE_ACCEL : LINE_CPU;
-    this.controller.setCallbacks(
-      (surfaceId: string, width: number, height: number) => {
-        this.surfaceId = surfaceId;
-        this.surfaceW = width;
-        this.surfaceH = height;
-        // The surface is also re-created after a background/foreground round
-        // trip, so the current route decides what is brought back up.
-        this.startReplay();
-      },
-      (surfaceId: string, width: number, height: number) => {
-        this.surfaceW = width;
-        this.surfaceH = height;
-        RdpNative.resizeReplayTest(width, height);
-      },
-      (surfaceId: string) => {
-        this.stopStatsTimer();
-        RdpNative.stopReplayTest();
-      }
-    );
-  }
-
-  aboutToDisappear(): void {
-    this.stopStatsTimer();
-    RdpNative.stopReplayTest();
-    this.applyFullScreen(false);
-  }
-
-  private startReplay(): void {
-    if (this.surfaceW <= 0 || this.surfaceH <= 0 || this.surfaceId.length === 0) {
-      return;
-    }
     let dir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();
@@ -148,35 +121,108 @@ struct GfxReplayPage {
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'filesDir unavailable: %{public}s', JSON.stringify(error));
     }
-    if (dir.length === 0) {
-      this.status = 'filesDir 不可用';
-      return;
-    }
-    // The presenter backend is chosen when the run starts, so apply the
-    // acceleration state here as well (it may have been changed on the settings
-    // page since this page was opened).
-    RdpNative.applyHardwareAccel(this.accelOn());
-    RdpNative.stopReplayTest();
-    // The line picked above decides which presenter the gdi decode presents
-    // through.
-    const summary: string = RdpNative.startReplayTest(this.surfaceId, this.surfaceW,
-      this.surfaceH, `${dir}/hmrdp_gfx.bin`, this.replayRealtime, this.refMode);
-    this.status = summary.startsWith('failed')
-      ? `${summary}（需先把录制的 hmrdp_gfx.bin 放入应用 filesDir）`
-      : summary;
+    this.capturePath = dir.length > 0 ? `${dir}/hmrdp_gfx.bin` : '';
+    this.buildSlots();
     this.startStatsTimer();
   }
 
-  // Switches the presentation line and mirrors it into the "硬件加速" setting
-  // (persisted, so the session path sees the same value), then restarts: the
-  // presenter is created per run, so a restart is what makes it take effect.
+  aboutToDisappear(): void {
+    this.stopStatsTimer();
+    RdpNative.stopAllReplayInstances();
+    this.applyFullScreen(false);
+  }
+
+  // Every slot keeps its controller for the page's lifetime, so a slot count
+  // change only mounts/unmounts surfaces; the controllers (and the handles bound
+  // to them) stay addressable.
+  private buildSlots(): void {
+    this.slots = [];
+    this.controllers = [];
+    for (let i = 0; i < MAX_SLOTS; i++) {
+      const slot: ReplaySlot = new ReplaySlot(i);
+      this.slots.push(slot);
+      this.controllers.push(new ReplaySurfaceController(slot,
+        (s: ReplaySlot, id: string, w: number, h: number) => {
+          this.onSurfaceCreated(s, id, w, h);
+        },
+        (s: ReplaySlot, w: number, h: number) => {
+          this.onSurfaceChanged(s, w, h);
+        },
+        (s: ReplaySlot) => {
+          this.onSurfaceDestroyed(s);
+        }));
+    }
+  }
+
+  private activeIndexes(): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < this.slotCount; i++) {
+      out.push(i);
+    }
+    return out;
+  }
+
+  private onSurfaceCreated(slot: ReplaySlot, surfaceId: string, width: number, height: number): void {
+    hilog.info(DOMAIN, TAG, 'surface %{public}d created %{public}s %{public}dx%{public}d',
+      slot.index, surfaceId, width, height);
+    slot.surfaceId = surfaceId;
+    slot.width = width;
+    slot.height = height;
+    this.startSlot(slot);
+  }
+
+  private onSurfaceChanged(slot: ReplaySlot, width: number, height: number): void {
+    slot.width = width;
+    slot.height = height;
+    if (slot.handle > 0) {
+      RdpNative.resizeReplayInstance(slot.handle, width, height);
+    }
+  }
+
+  private onSurfaceDestroyed(slot: ReplaySlot): void {
+    RdpNative.stopReplayInstance(slot.handle);
+    slot.handle = -1;
+  }
+
+  private startSlot(slot: ReplaySlot): void {
+    if (this.capturePath.length === 0 || slot.surfaceId.length === 0 ||
+      slot.width <= 0 || slot.height <= 0) {
+      this.status = '需先把录制的 hmrdp_gfx.bin 放入应用 filesDir';
+      hilog.warn(DOMAIN, TAG,
+        'slot %{public}d start skipped: path=%{public}s surface=%{public}s %{public}dx%{public}d',
+        slot.index, this.capturePath, slot.surfaceId, slot.width, slot.height);
+      return;
+    }
+    // The presenter backend is chosen when the run starts, so apply the
+    // acceleration state here as well (it may have changed since page open).
+    RdpNative.applyHardwareAccel(this.accelOn());
+    slot.handle = RdpNative.startReplayInstance(slot.surfaceId, slot.width, slot.height,
+      this.capturePath, this.replayRealtime, this.refMode);
+    hilog.info(DOMAIN, TAG, 'slot %{public}d handle=%{public}d', slot.index, slot.handle);
+  }
+
+  // Restarts every active slot: the presenter is created per instance, so a
+  // restart is what makes a route/reference/clock change take effect.
+  private restartAll(): void {
+    RdpNative.stopAllReplayInstances();
+    for (let i = 0; i < this.slotCount; i++) {
+      const slot: ReplaySlot = this.slots[i];
+      slot.handle = -1;
+      this.startSlot(slot);
+    }
+  }
+
   private switchLine(): void {
-    // 硬件加速 is not offered on a device whose Vulkan cannot present.
     this.line = (!this.hardwareAccelSupported || this.line === LINE_ACCEL) ? LINE_CPU : LINE_ACCEL;
     const settings: AppSettings = SettingsStore.load();
     settings.hardwareAccel = this.line === LINE_ACCEL;
     SettingsStore.save(settings);
-    this.startReplay();
+    this.restartAll();
+  }
+
+  private cycleSlots(): void {
+    this.slotCount = this.slotCount >= MAX_SLOTS ? 1 : this.slotCount + 1;
+    this.restartAll();
   }
 
   private applyFullScreen(enable: boolean): void {
@@ -195,8 +241,6 @@ struct GfxReplayPage {
             hilog.warn(DOMAIN, TAG, 'maximize failed: %{public}s', JSON.stringify(err));
           });
         } else {
-          // Restore the free-floating window: maximize() must be undone so the
-          // home window does not stay maximized after leaving this dev page.
           win.recover().catch((err: BusinessError) => {
             hilog.warn(DOMAIN, TAG, 'recover failed: %{public}s', JSON.stringify(err));
           });
@@ -214,7 +258,7 @@ struct GfxReplayPage {
       return;
     }
     this.statsTimer = setInterval(() => {
-      this.status = RdpNative.replayTestStats();
+      this.status = RdpNative.listReplayInstances();
     }, 1000);
   }
 
@@ -245,8 +289,17 @@ struct GfxReplayPage {
           .margin({ left: 12 })
           .layoutWeight(1)
 
-        // Presentation line: CPU (GLES) / 硬件加速 (Vulkan). Mirrors the
-        // "硬件加速" setting and restarts the run.
+        Button(`并发:${this.slotCount}`)
+          .height(34)
+          .fontSize(13)
+          .fontColor($r('app.color.accent'))
+          .backgroundColor($r('app.color.input_bg'))
+          .borderRadius(9)
+          .margin({ right: 8 })
+          .onClick(() => {
+            this.cycleSlots();
+          })
+
         Button(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}`)
           .height(34)
           .fontSize(13)
@@ -258,7 +311,6 @@ struct GfxReplayPage {
             this.switchLine();
           })
 
-        // Golden-reference gate (CPU line): 关 / 导出 / 对比.
         Button(`参考:${REF_LABEL[this.refMode]}`)
           .height(34)
           .fontSize(13)
@@ -268,7 +320,7 @@ struct GfxReplayPage {
           .margin({ right: 8 })
           .onClick(() => {
             this.refMode = (this.refMode + 1) % REF_LABEL.length;
-            this.startReplay();
+            this.restartAll();
           })
 
         Button(`节拍:${this.replayRealtime ? '实时' : '跑满'}`)
@@ -280,7 +332,7 @@ struct GfxReplayPage {
           .margin({ right: 8 })
           .onClick(() => {
             this.replayRealtime = !this.replayRealtime;
-            this.startReplay();
+            this.restartAll();
           })
 
         Button(this.showStats ? '隐藏信息' : '显示信息')
@@ -294,37 +346,43 @@ struct GfxReplayPage {
             this.showStats = !this.showStats;
           })
 
-        Button('重新回放')
+        Button('重放')
           .height(34)
           .fontSize(13)
           .fontColor($r('app.color.accent'))
           .backgroundColor($r('app.color.input_bg'))
           .borderRadius(9)
           .onClick(() => {
-            this.startReplay();
+            this.restartAll();
           })
       }
       .width('100%')
       .padding({ left: 12, right: 12, top: 8, bottom: 8 })
 
       Stack({ alignContent: Alignment.BottomStart }) {
-        XComponent({
-          id: 'replaySurface',
-          type: XComponentType.SURFACE,
-          controller: this.controller
-        })
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#000000')
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.activeIndexes(), (index: number) => {
+            XComponent({
+              id: `replay_${index}`,
+              type: XComponentType.SURFACE,
+              controller: this.controllers[index]
+            })
+              .width(this.slotCount > 1 ? '50%' : '100%')
+              .height(this.slotCount > 2 ? '50%' : '100%')
+              .backgroundColor('#000000')
+          }, (index: number) => `slot_${index}`)
+        }
+        .width('100%')
+        .height('100%')
 
         if (this.showStats) {
           Column() {
-            Text(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}  参考:${REF_LABEL[this.refMode]}`)
+            Text(`并发:${this.slotCount}  路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}  参考:${REF_LABEL[this.refMode]}`)
               .fontSize(12)
               .fontColor('#FFFFD479')
               .width('100%')
             Text(this.status)
-              .fontSize(13)
+              .fontSize(12)
               .fontColor('#FFF5F5F5')
               .width('100%')
               .margin({ top: 4 })

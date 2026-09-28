@@ -11,7 +11,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
 setTouchHighRate, updateSurface, setHardwareAccel, setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer,
 RdpEventCallback,
-startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
+startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
@@ -94,24 +94,52 @@ export class RdpNative {
    * `refMode`: golden reference - 0 = off (perf run), 1 = record this run as the
    * reference, 2 = check against the stored one.
    */
-  static startReplayTest(surfaceId: string, surfaceW: number, surfaceH: number,
-    gfxPath: string, realtime: boolean, refMode: number): string {
-    const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath,
+  /**
+   * Dev/test: start one replay instance on `surfaceId`; returns its handle (>0)
+   * or -1. Instances are independent (each owns its own frame pipeline), so
+   * several can run at once - the multi-session regression vehicle.
+   * `realtime`: play the capture at its recorded arrival times instead of the
+   * unthrottled fast mode. `refMode`: 0 = off, 1 = record, 2 = compare.
+   */
+  static startReplayInstance(surfaceId: string, surfaceW: number, surfaceH: number,
+    gfxPath: string, realtime: boolean, refMode: number): number {
+    const handle: number = startReplay(surfaceId, surfaceW, surfaceH, gfxPath,
       realtime ? 1 : 0, refMode);
-    hilog.info(DOMAIN, TAG, 'gfx replay: %{public}s', summary);
+    hilog.info(DOMAIN, TAG, 'replay start: handle=%{public}d', handle);
+    return handle;
+  }
+
+  /** Stops one replay instance and releases its surface. */
+  static stopReplayInstance(handle: number): void {
+    if (handle > 0) {
+      stopReplay(handle);
+    }
+  }
+
+  /** Stops every replay instance. */
+  static stopAllReplayInstances(): void {
+    stopAllReplays();
+  }
+
+  static resizeReplayInstance(handle: number, width: number, height: number): void {
+    if (handle > 0) {
+      resizeReplay(handle, width, height);
+    }
+  }
+
+  /** Multi-line stats of one instance (the dev panel text). */
+  static replayInstanceStats(handle: number): string {
+    return replayStats(handle);
+  }
+
+  /**
+   * One compact line per live instance ("count=N\nhandle=<id> <stats>"), the
+   * machine-readable form an agent reads from hilog.
+   */
+  static listReplayInstances(): string {
+    const summary: string = listReplays();
+    hilog.info(DOMAIN, TAG, 'replay list: %{public}s', summary);
     return summary;
-  }
-
-  static stopReplayTest(): void {
-    stopGfxReplayTest();
-  }
-
-  static resizeReplayTest(width: number, height: number): void {
-    resizeGfxReplayTest(width, height);
-  }
-
-  static replayTestStats(): string {
-    return gfxReplayTestStats();
   }
 
   setListener(listener: RdpEventListener): void {

@@ -20,8 +20,6 @@ extern "C" void HmrdpSetGfxDataSink(
 namespace hmrdp {
 namespace {
 
-std::atomic<GfxWorkMeter*> g_activeMeter{nullptr};
-
 uint64_t NowUs() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -48,6 +46,10 @@ struct GfxOriginals {
 
 std::mutex g_installMutex;
 std::unordered_map<RdpgfxClientContext*, GfxOriginals> g_originals;
+// The meter each installed context feeds, stored with the originals so a wrapper
+// reads it straight from the context it was called on (no global slot). Guarded
+// by g_installMutex like g_originals.
+std::unordered_map<RdpgfxClientContext*, GfxWorkMeter*> g_meters;
 
 // Returns the original callback stored for `gfx` (nullptr when not installed).
 template <typename Fn>
@@ -58,6 +60,13 @@ Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
     return nullptr;
   }
   return it->second.*member;
+}
+
+// Returns the meter installed for `gfx` (nullptr when not installed).
+GfxWorkMeter* GfxMeterFor(RdpgfxClientContext* gfx) {
+  std::lock_guard<std::mutex> lock(g_installMutex);
+  const auto it = g_meters.find(gfx);
+  return it == g_meters.end() ? nullptr : it->second;
 }
 
 // The frame-begin hooks (see GfxWorkSetFrameBeginHook): one per GFX context, so a
@@ -107,7 +116,7 @@ UINT MeterSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND*
   // present's GPU copy is still reading.
   RunFrameBeginHook(gfx);
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
-  GfxWorkMeter* meter = ActiveWorkMeter();
+  GfxWorkMeter* meter = GfxMeterFor(gfx);
   if (meter != nullptr) {
     // First command of the chunk this came from: the time since it arrived is
     // the ZGX decompress + PDU parse share of this frame.
@@ -123,7 +132,7 @@ UINT MeterSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND*
 
 UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFrame) {
   const pcRdpgfxEndFrame original = GfxOriginal(gfx, &GfxOriginals::EndFrame);
-  GfxWorkMeter* meter = ActiveWorkMeter();
+  GfxWorkMeter* meter = GfxMeterFor(gfx);
   const uint64_t start = NowUs();
   // The original is gdi_EndFrame: it composites every mapped surface into the
   // primary buffer and, through the update pipeline, presents.
@@ -147,7 +156,7 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
     const uint64_t start = NowUs();                                                     \
     const UINT rc = original != nullptr ? original(gfx, pdu) : CHANNEL_RC_OK;           \
     const uint64_t dt = NowUs() - start;                                                \
-    if (GfxWorkMeter* meter = ActiveWorkMeter()) {                                      \
+    if (GfxWorkMeter* meter = GfxMeterFor(gfx)) {                                      \
       meter->OnSetup(KIND, dt);                                                         \
     }                                                                                   \
     /* A structural command this slow (>= 20ms: a mode change - buffer + swapchain    \
@@ -336,12 +345,11 @@ GfxWorkMeter::Sample GfxWorkMeter::Peek() const {
   return sample;
 }
 
-GfxWorkMeter* ActiveWorkMeter() {
-  return g_activeMeter.load();
-}
-
-void SetActiveWorkMeter(GfxWorkMeter* meter) {
-  g_activeMeter.store(meter);
+GfxWorkMeter* GfxWorkMeterFor(RdpgfxClientContext* gfx) {
+  if (gfx == nullptr) {
+    return nullptr;
+  }
+  return GfxMeterFor(gfx);
 }
 
 // Registered with FreeRDP: hands the raw GFX chunk to the owning context's data
@@ -366,7 +374,7 @@ extern "C" BOOL HmrdpGfxDataSink(RdpgfxClientContext* gfx, const BYTE* data, UIN
   return TRUE;
 }
 
-void GfxWorkInstall(RdpgfxClientContext* gfx) {
+void GfxWorkInstall(RdpgfxClientContext* gfx, GfxWorkMeter* meter) {
   if (gfx == nullptr) {
     return;
   }
@@ -380,6 +388,7 @@ void GfxWorkInstall(RdpgfxClientContext* gfx) {
   if (g_originals.find(gfx) != g_originals.end()) {
     return;
   }
+  g_meters[gfx] = meter;
   GfxOriginals& orig = g_originals[gfx];
   orig.StartFrame = gfx->StartFrame;
   if (gfx->StartFrame != nullptr) {
@@ -487,6 +496,7 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
     gfx->EvictCacheEntry = it->second.EvictCacheEntry;
   }
   g_originals.erase(it);
+  g_meters.erase(gfx);
   // The context's frame-begin hook belongs to its owner; never let a torn-down
   // context keep one (a stale entry would also be looked up again if a new
   // context reuses the address).

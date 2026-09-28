@@ -171,7 +171,7 @@ int ClipUploadRects(const PresentRect* rects, int count, int desktopWidth, int d
 // The FSR backend's images are plain sampled colour targets, so this pair covers
 // both of them. Optimal tiling, device-local, left in VK_IMAGE_LAYOUT_UNDEFINED.
 #if defined(HMRDP_HAVE_FSR)
-bool CreateDeviceImage(VkApi& api, VkContext& context, VkFormat format, int width, int height,
+bool CreateDeviceImage(VkApi& api, VkDeviceContext& context, VkFormat format, int width, int height,
                        VkImageUsageFlags usage, VkImage* image, VkDeviceMemory* memory) {
   const VkDevice device = context.device();
   VkImageCreateInfo info{};
@@ -220,7 +220,7 @@ bool CreateDeviceImage(VkApi& api, VkContext& context, VkFormat format, int widt
   return true;
 }
 
-bool CreateImageView2D(VkApi& api, VkContext& context, VkFormat format, VkImage image,
+bool CreateImageView2D(VkApi& api, VkDeviceContext& context, VkFormat format, VkImage image,
                        VkImageView* view) {
   VkImageViewCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -333,7 +333,7 @@ void VkRenderer::SetSurface(void* nativeWindow, int width, int height) {
   if (pendingWindow_ != nativeWindow) {
     // A new native window means the old VkSurfaceKHR is unusable.
     DestroySwapchainLocked();
-    VkContext::Instance().DestroySurface(surface_);
+    vk_.DestroySurface(surface_);
     surface_ = VK_NULL_HANDLE;
   }
   pendingWindow_ = nativeWindow;
@@ -352,7 +352,7 @@ void VkRenderer::ResizeSurface(int width, int height) {
 void VkRenderer::DestroySurface() {
   std::lock_guard<std::mutex> lock(mutex_);
   DestroySwapchainLocked();
-  VkContext::Instance().DestroySurface(surface_);
+  vk_.DestroySurface(surface_);
   surface_ = VK_NULL_HANDLE;
   pendingWindow_ = nullptr;
   surfaceDirty_ = true;
@@ -364,8 +364,8 @@ bool VkRenderer::Prepare() {
 }
 
 bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
 
   // Two attempts: a surface that went out of date between presents is rebuilt
   // once, then retried (the retry normally succeeds with the fresh swapchain).
@@ -488,8 +488,8 @@ bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   *retry = false;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE) {
@@ -522,8 +522,8 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
 }
 
 bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
 
   if (api.EndCommandBuffer(cmd) != VK_SUCCESS) {
     error_ = "vkEndCommandBuffer failed";
@@ -581,8 +581,8 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
 }
 
 bool VkRenderer::EnsurePresentPipelineLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE) {
     error_ = "Vulkan device not available";
@@ -784,8 +784,8 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
 }
 
 bool VkRenderer::EnsurePresentTimerLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (presentTimer_[0] != VK_NULL_HANDLE) {
     return true;
@@ -817,8 +817,8 @@ bool VkRenderer::EnsurePresentTimerLocked() {
 }
 
 void VkRenderer::CollectPresentTimerLocked(uint32_t slot) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (presentTimer_[slot] == VK_NULL_HANDLE || device == VK_NULL_HANDLE) {
     return;
@@ -879,8 +879,8 @@ void VkRenderer::TakeGpuTimings(uint64_t* copyUs, uint64_t* srUs, uint64_t* blit
 }
 
 void VkRenderer::DestroyPresentPipelineLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
     if (presentPipeline_ != VK_NULL_HANDLE && api.DestroyPipeline != nullptr) {
@@ -911,8 +911,8 @@ void VkRenderer::DestroyPresentPipelineLocked() {
 }
 
 void VkRenderer::UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE || slot >= kFramesInFlight || presentSets_[slot] == VK_NULL_HANDLE ||
       view == VK_NULL_HANDLE || sampler_ == VK_NULL_HANDLE) {
@@ -935,7 +935,7 @@ void VkRenderer::UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view) 
 
 void VkRenderer::RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
                                         uint32_t imageIndex) {
-  VkApi& api = GetVkApi();
+  VkApi& api = vk_.api();
   if (presentPipeline_ == VK_NULL_HANDLE || presentSets_[frameIndex_] == VK_NULL_HANDLE ||
       renderPass_ == VK_NULL_HANDLE || imageIndex >= framebuffers_.size()) {
     return;
@@ -1007,8 +1007,8 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   }
   DestroyDesktopImageLocked();
 
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE) {
     error_ = "Vulkan device not available";
@@ -1106,8 +1106,8 @@ void VkRenderer::DestroyDesktopImageLocked() {
   // The 超分 output is derived from the desktop (its input size is the desktop
   // size), so it goes with it.
   DestroySuperResolutionLocked();
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
     if (desktopImageView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
@@ -1177,8 +1177,8 @@ bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int output
   }
   DestroySuperResolutionLocked();
 
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE) {
     return false;
@@ -1286,8 +1286,8 @@ bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int output
 
 void VkRenderer::DestroySuperResolutionLocked() {
   DestroyFsrLocked();
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
     if (srImageView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
@@ -1324,8 +1324,8 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidt
              " (run native/scripts/fetch-sources.ps1)");
   return false;
 #else
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE) {
     return false;
@@ -1627,8 +1627,8 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidt
 }
 
 void VkRenderer::DestroyFsrLocked() {
-  VkApi& api = GetVkApi();
-  const VkDevice device = VkContext::Instance().device();
+  VkApi& api = vk_.api();
+  const VkDevice device = vk_.device();
   if (device != VK_NULL_HANDLE) {
     if (api.UnmapMemory != nullptr) {
       if (fsrEasuParamsMapped_ != nullptr) {
@@ -1720,7 +1720,7 @@ void VkRenderer::DestroyFsrLocked() {
 }
 
 bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
-  VkApi& api = GetVkApi();
+  VkApi& api = vk_.api();
   VkImageSubresourceRange subresource{};
   subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   subresource.levelCount = 1;
@@ -1832,8 +1832,8 @@ bool VkRenderer::EnsureStageLocked(size_t bytes) {
   if (stageBuffers_[slot] != VK_NULL_HANDLE && stageCapacities_[slot] >= bytes) {
     return true;
   }
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE) {
     error_ = "Vulkan device not available";
@@ -1913,7 +1913,7 @@ uint8_t* VkRenderer::AcquireDesktopBuffer(int width, int height, int* stride) {
   // The device is created together with the swapchain (SetSurface/Prepare), so
   // before the first surface there is nothing to allocate from: the caller keeps
   // gdi's own buffer and asks again next frame.
-  if (!VkContext::Instance().ready()) {
+  if (!vk_.ready()) {
     return nullptr;
   }
   if (desktopBufferMapped_ == nullptr || desktopBufferWidth_ != width ||
@@ -1928,8 +1928,8 @@ uint8_t* VkRenderer::AcquireDesktopBuffer(int width, int height, int* stride) {
 
 void VkRenderer::BeginDesktopBufferWrite() {
   std::lock_guard<std::mutex> lock(mutex_);
-  VkApi& api = GetVkApi();
-  const VkDevice device = VkContext::Instance().device();
+  VkApi& api = vk_.api();
+  const VkDevice device = vk_.device();
   if (desktopBufferFencePending_ && device != VK_NULL_HANDLE && api.WaitForFences != nullptr &&
       desktopBufferFence_ != VK_NULL_HANDLE) {
     api.WaitForFences(device, 1, &desktopBufferFence_, VK_TRUE, UINT64_MAX);
@@ -1955,8 +1955,8 @@ uint64_t VkRenderer::TakePresentWaitUs() {
 }
 
 bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device == VK_NULL_HANDLE || api.CreateBuffer == nullptr) {
     error_ = "Vulkan device not available";
@@ -2057,8 +2057,8 @@ bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
 }
 
 void VkRenderer::DestroyDesktopBufferLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
     if (desktopBufferMapped_ != nullptr && api.UnmapMemory != nullptr) {
@@ -2083,8 +2083,8 @@ void VkRenderer::DestroyDesktopBufferLocked() {
 }
 
 void VkRenderer::DestroyStageLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
     if (api.DeviceWaitIdle != nullptr) {
@@ -2115,8 +2115,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     return false;
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
 
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!EnsureSwapchainLocked()) {
@@ -2400,8 +2400,11 @@ void VkRenderer::Reset() {
   DestroyDesktopBufferLocked();
   DestroyDesktopImageLocked();
   DestroyFrameResourcesLocked();
-  VkContext::Instance().DestroySurface(surface_);
+  vk_.DestroySurface(surface_);
   surface_ = VK_NULL_HANDLE;
+  // Drop this presenter's device too: the next Prepare recreates it (from the
+  // shared instance) when a surface is bound again.
+  vk_.Destroy();
   pendingWindow_ = nullptr;
   surfaceDirty_ = true;
   error_.clear();
@@ -2426,8 +2429,8 @@ bool VkRenderer::EnsureSwapchainLocked() {
 }
 
 bool VkRenderer::CreateSwapchainLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
 
   if (surface_ == VK_NULL_HANDLE) {
     if (!context.CreateSurface(pendingWindow_, &surface_)) {
@@ -2713,8 +2716,8 @@ bool VkRenderer::CreateSwapchainLocked() {
 }
 
 void VkRenderer::DestroySwapchainLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
 
   if (swapchain_ != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
@@ -2757,8 +2760,8 @@ void VkRenderer::DestroySwapchainLocked() {
 }
 
 void VkRenderer::DestroyFrameResourcesLocked() {
-  VkApi& api = GetVkApi();
-  VkContext& context = VkContext::Instance();
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   DestroyStageLocked();
   DestroyPresentPipelineLocked();

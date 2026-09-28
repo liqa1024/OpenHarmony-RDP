@@ -32,20 +32,25 @@
 
 ## 1. 执行器与宽度
 
-- **唯一执行器 = 平台任务队列（ffrt 并发队列）**，由 app 的 `hmrdp_parallel.*` 提供，解码器经
-  弱符号使用（补丁 11/21）：`HmrdpDecodeWidth()` 决定串行/并行分支；`HmrdpParallelAvailable()`
-  / `HmrdpParallelRun(tasks, fn, ctx)` 提交与等待。符号不解析 ⇒ 宽度读作 1 ⇒ 串行。
-- 队列形态（`EnsureQueue`）：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度 − 1；队列与每个
-  任务都带属性（name + `ffrt_qos_user_initiated`）；屏障 = 逐任务 handle `ffrt_queue_wait`。
-  宽度变化时销毁重建队列（仅在无任务在途时发生）。
+- **执行器 = 平台任务队列（ffrt 并发队列），每会话 / 每回放实例一个**（`DecodeExecutor`，由 app 的
+  `hmrdp_parallel.*` 提供），解码器经弱符号使用（补丁 11/21）：`HmrdpDecodeWidth()` 决定串行/并行
+  分支；`HmrdpParallelAvailable()` / `HmrdpParallelRun(tasks, fn, ctx)` 提交与等待。符号不解析 ⇒
+  宽度读作 1 ⇒ 串行。
+- **执行器归属**：`FramePipeline` 持有，一个桌面一份，绝不进程共享——两个会话同时解码不会互相拆
+  队列。解码入口（`HmrdpGfxReplayRecv`）以 `DecodeExecutorScope`（线程局部）把"当前执行器"告知
+  `HmrdpParallelRun`；该线程未绑定执行器时，整条 region 在调用线程内联执行。
+- 队列形态：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度 − 1；队列与每个任务都带属性
+  （name + `ffrt_qos_user_initiated`）；屏障 = 逐任务 handle `ffrt_queue_wait`。宽度变化时销毁重建
+  该执行器自己的队列（仅在其所有者无任务在途时发生，因为 `Run` 先等完自己的任务）。
 - **调用方参与（caller participation）**：GFX 工作线程自己跑一个 chunk，队列只跑剩下 `宽度 − 1` 个
   （先提交、再跑自己的、最后等屏障）。region 用的线程数仍是宽度个，差别是其中一个从"停在屏障里"
   变成"干活"：没有线程在 tile 还可领取时空转；向 worker 池少要一个线程（自动档宽度 = 在线核数，
   池子可能给不出那么多）；且这一份跑在调用线程自己的上下文里（cache 热、QoS 是它自己的），
   而不是一个刚被唤醒的 worker 上。分块仍按 home + 段尾偷取，所以它做完自己的 home 会继续领块，
   快的那一侧自然多领。
-- `HmrdpParallelRun` 的分支：`tasks <= 1` 或宽度 ≤ 1 在调用线程内联执行（此时参与就是全量内联）；
-  `tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条 region all-or-nothing。
+- `HmrdpParallelRun` 的分支：当前线程无绑定执行器 ⇒ 整条 region 内联执行；有执行器时 `tasks <= 1`
+  或宽度 ≤ 1 在调用线程内联执行；`tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条
+  region all-or-nothing。
 - **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
 - **QoS**：tile worker 的 QoS 来自队列/任务属性；GFX 工作线程的 QoS 由 app 注册的钩子
   （`HmrdpSetThreadQoSApplier`，补丁 09）在该线程入口调用一次（drdynvc 线程入口也仍调用它，但那

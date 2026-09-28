@@ -46,6 +46,7 @@
 #include "hmrdp_gfx_capture.h"
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
+#include "hmrdp_parallel.h"
 
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
@@ -74,16 +75,12 @@ static constexpr UINT32 kTouchFrameIntervalHighRateMs = 8;
 // FreeRDP hands us every raw (still ZGX-compressed) GFX channel chunk through
 // this callback. It is only registered when FreeRDP carries the HmRdp GFX
 // capture patch (native/scripts/patch-steps/07-gfx-capture-replay.ps1) - see
-// GfxDumpRaw. It doubles as
-// the arrival stamp for the frame work meter: the hook runs before the chunk is
-// decompressed and parsed, so "本机" can charge that share too. The capture write
-// itself is done first so its disk I/O never lands inside the measured phases.
+// GfxDumpRaw. The capture write happens first so its disk I/O never lands inside
+// the measured phases; the frame-meter arrival stamp lives on the per-context
+// paths instead (the data sink and the replay pump), because this hook carries no
+// context with which to find the owning pipeline's meter.
 extern "C" void HmrdpGfxRawCapture(const BYTE* data, UINT32 size) {
   hmrdp::GfxDumpRaw(data, static_cast<uint32_t>(size));
-  hmrdp::GfxWorkMeter* meter = hmrdp::ActiveWorkMeter();
-  if (meter != nullptr) {
-    meter->OnChunk(static_cast<uint32_t>(size));
-  }
 }
 
 // Defined by the patched rdpgfx client; weak so stock FreeRDP links unchanged.
@@ -1703,7 +1700,7 @@ void HmrdpChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     // feed the frame work meter, and the same wrappers are used by the offline
     // replay so both report the same "本机" (hmrdp_gfx_work.h).
     RdpgfxClientContext* gfx = reinterpret_cast<RdpgfxClientContext*>(e->pInterface);
-    GfxWorkInstall(gfx);
+    GfxWorkInstall(gfx, ctx->session->workMeter());
     // START_FRAME is the point that is still *before* the frame's writes: gdi
     // composes into the presenter's own desktop buffer (zero-copy), so the previous
     // frame's GPU copy out of it has to drain here, not in BeginPaint (which FreeRDP
@@ -1825,10 +1822,9 @@ void HmrdpPostDisconnect(freerdp* instance) {
   }
   HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(instance->context);
   if (ctx->session != nullptr) {
-    // Stop the offload first: the worker must not process (or present) a frame
-    // after the channel is gone, and GfxWorkUninstall puts the wrapped callbacks
-    // back, so it must not run next to a live worker.
-    ctx->session->StopGfxWorker();
+    // The GFX worker was joined before the disconnect (EventThread), so the
+    // wrapped callbacks are no longer running and can be put back here; the
+    // channel interface is dropped right before FreeRDP frees it below.
     auto* gfx = static_cast<RdpgfxClientContext*>(ctx->session->gfxContext());
     GfxWorkSetFrameBeginHook(gfx, nullptr);
     GfxWorkUninstall(gfx);
@@ -1923,12 +1919,6 @@ std::string EncodeError(uint32_t code, const std::string& message) {
 
 namespace {
 
-// Upper bound on how long teardown waits for an outstanding context lease to be
-// returned. A holder only ever does a short, bounded FreeRDP call, so this is
-// only reached if one is stuck; exceeding it delays the free (never corrupts it)
-// and is logged.
-constexpr uint32_t kLeaseDrainTimeoutMs = 1500;
-
 // RAII for Session::AcquireContext(): keeps the FreeRDP context and its cliprdr
 // channel alive for the duration of the call and guarantees the matching
 // release on every path, including early returns.
@@ -1989,13 +1979,10 @@ bool Session::WaitDestroyed(uint32_t timeoutMs) {
                                [this] { return destroyed_; });
 }
 
-Session::Session()
-    : presenter_(CreateFramePresenter()), frameHost_(std::make_unique<GdiFrameHost>()) {
-  frameHost_->SetPresenter(presenter_.get());
-  frameHost_->SetMeter(&meter_);
+Session::Session() {
   // The live observer on the same chain the replay uses: account for a frame that
   // actually reached the surface (telemetry / input response / first frame).
-  frameHost_->SetPresentedFn(
+  pipeline_.host()->SetPresentedFn(
       [this](bool presented, uint64_t, const PresentUploadInfo&) {
         if (presented) {
           AfterPresent();
@@ -2053,7 +2040,7 @@ void Session::EmitMetrics() {
     lastInBytes_ = inBytes;
     lastOutBytes_ = outBytes;
     lastFrameCount_ = frames;
-    meter_.Reset();
+    pipeline_.meter()->Reset();
     for (uint32_t i = 0; i < 5; ++i) {
       audioLostWindow_[i] = 0;
       audioTotalWindow_[i] = 0;
@@ -2087,7 +2074,7 @@ void Session::EmitMetrics() {
   // carry different kinds of time, and each reader adds the ones it wants - the
   // toolbar sums the four work phases and leaves the blocked `sync` out
   // (doc_agent/session-and-input.md §3).
-  const GfxWorkMeter::Sample work = meter_.Drain();
+  const GfxWorkMeter::Sample work = pipeline_.meter()->Drain();
   const uint64_t framesDone = work.frames;
   auto perFrame = [framesDone](uint64_t value) {
     return framesDone > 0 ? value / framesDone : 0;
@@ -2120,8 +2107,8 @@ void Session::EmitMetrics() {
   uint64_t gpuCopyUs = 0;
   uint64_t gpuSrUs = 0;
   uint64_t gpuBlitUs = 0;
-  if (presenter_ != nullptr) {
-    presenter_->TakeGpuTimings(&gpuCopyUs, &gpuSrUs, &gpuBlitUs);
+  if (pipeline_.presenter() != nullptr) {
+    pipeline_.presenter()->TakeGpuTimings(&gpuCopyUs, &gpuSrUs, &gpuBlitUs);
   }
   const uint64_t perFrameGpuCopyUs = perFrame(gpuCopyUs);
   const uint64_t perFrameGpuSrUs = perFrame(gpuSrUs);
@@ -2233,7 +2220,7 @@ bool Session::Connect(const RdpOptions& options) {
   lastError_.clear();
   firstFrameSent_ = false;
   frameCount_ = 0;
-  meter_.Reset();
+  pipeline_.meter()->Reset();
   gfxContext_ = nullptr;
   for (uint32_t i = 0; i < 5; ++i) {
     audioLostWindow_[i] = 0;
@@ -2289,16 +2276,16 @@ bool Session::Connect(const RdpOptions& options) {
     if (desktopMagnification_ < 1.0) {
       desktopMagnification_ = 1.0;
     }
-    if (presenter_ != nullptr) {
-      presenter_->SetSuperResolution(true, options.srBackend, options.width, options.height);
+    if (pipeline_.presenter() != nullptr) {
+      pipeline_.presenter()->SetSuperResolution(true, options.srBackend, options.width, options.height);
     }
     HMRDP_LOGI("session %{public}dx%{public}d (super resolution %{public}s %{public}d%% -> "
                "%{public}dx%{public}d)",
                options.width, options.height,
                options.srBackend == SuperResolutionBackend::kFsr ? "fsr" : "xengine",
                options.srRatioPercent, sessionWidth, sessionHeight);
-  } else if (presenter_ != nullptr) {
-    presenter_->SetSuperResolution(false, options.srBackend, 0, 0);
+  } else if (pipeline_.presenter() != nullptr) {
+    pipeline_.presenter()->SetSuperResolution(false, options.srBackend, 0, 0);
   }
   AppendArg(args, "/w:" + std::to_string(sessionWidth));
   AppendArg(args, "/h:" + std::to_string(sessionHeight));
@@ -2386,9 +2373,6 @@ bool Session::Connect(const RdpOptions& options) {
   }
 
   stopRequested_ = false;
-  // The capture hook and the GFX wrappers run without a session context of their
-  // own, so the meter is published here (and let go in Teardown).
-  SetActiveWorkMeter(&meter_);
   // The RDP thread keeps the session alive for as long as it runs (it holds a
   // shared reference) and performs the teardown itself, so neither the FreeRDP
   // context nor this object can be freed from under it by the UI thread.
@@ -2401,7 +2385,6 @@ bool Session::Connect(const RdpOptions& options) {
   }, self, 0, nullptr);
   if (thread == nullptr) {
     delete self;
-    SetActiveWorkMeter(nullptr);
     SetError("failed to create session thread");
     freerdp_client_stop(context);
     freerdp_client_context_free(context);
@@ -2506,11 +2489,10 @@ void Session::EventThread() {
     }
   }
 
-  // Stop the GFX offload before the disconnect tears the channels down: the
-  // worker parses into the rdpgfx plugin, which freerdp_disconnect frees (and the
-  // frame acknowledge it sends goes through the same channel). Off the drdynvc
-  // thread these are no longer serialised with that teardown, so the worker must
-  // be joined first.
+  // Single teardown order (doc_agent/architecture.md §4.3): join the GFX worker
+  // here, before the disconnect. The worker parses into the rdpgfx plugin, which
+  // freerdp_disconnect frees (freerdp_channels_close), so it must be joined
+  // first; this is the only StopGfxWorker() call for a live session.
   StopGfxWorker();
   freerdp_disconnect(instance);
   Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
@@ -2544,20 +2526,14 @@ void Session::Disconnect() {
 }
 
 void Session::Teardown() {
-  // Runs on the RDP thread once its connect/loop has ended. It is the sole
-  // owner of the FreeRDP context: first it stops handing out leases and waits for
-  // the outstanding ones to be returned, then it frees - so no other thread can
-  // be holding the context (or its cliprdr channel) when it goes away.
-  //
-  // The offload worker is joined first: it is the one thread that could still
-  // touch the GFX context after this point (HmrdpPostDisconnect normally stops it
-  // already; this covers the paths where that did not run).
-  StopGfxWorker();
-  if (ActiveWorkMeter() == &meter_) {
-    SetActiveWorkMeter(nullptr);
-  }
+  // Runs on the RDP thread once its connect/loop has ended. It is the sole owner
+  // of the FreeRDP context: it stops handing out leases, waits for the
+  // outstanding ones to be returned and only then frees - so no other thread can
+  // be holding the context (or its cliprdr channel) when it goes away. This is
+  // the single teardown order of doc_agent/architecture.md §4.3; the GFX worker
+  // was already joined before the disconnect (EventThread), so nothing else runs
+  // against the context here.
   freerdp* instance = nullptr;
-  int leasedAfterWait = 0;
   {
     std::unique_lock<std::mutex> lock(lifecycleMutex_);
     tearingDown_ = true;
@@ -2566,21 +2542,9 @@ void Session::Teardown() {
     cliprdr_ = nullptr;
     // Every lease holder only performs a short, bounded FreeRDP call (and the
     // abort/disconnect this teardown follows makes a blocked send fail), so this
-    // normally returns immediately.
-    leasesCv_.wait_for(lock, std::chrono::milliseconds(kLeaseDrainTimeoutMs),
-                       [this] { return activeLeases_ == 0; });
-    leasedAfterWait = activeLeases_;
-  }
-  if (leasedAfterWait != 0) {
-    // A holder is still inside the context after the wait. Freeing it now would
-    // be a use-after-free, so the context is *abandoned* instead: the memory (and
-    // the window, which destroySession only releases once this marks terminal)
-    // leaks rather than being freed under a live user. This is the pathological
-    // path - it is logged so it is never silent.
-    HMRDP_LOGW("teardown: %{public}d context lease(s) still held after %{public}dms;"
-               " abandoning (not freeing) the context",
-               leasedAfterWait, kLeaseDrainTimeoutMs);
-    return;
+    // returns promptly. The wait is unbounded: the context must never be freed
+    // under a live lease.
+    leasesCv_.wait(lock, [this] { return activeLeases_ == 0; });
   }
   if (instance != nullptr && instance->context != nullptr) {
     if (instance->context->settings != nullptr) {
@@ -2600,9 +2564,9 @@ void Session::Teardown() {
   }
   audio_.Close();
   // The desktop buffer dies with the presenter; the next connect re-attaches.
-  frameHost_->DetachDesktopBuffer();
-  if (presenter_ != nullptr) {
-    presenter_->Reset();
+  pipeline_.host()->DetachDesktopBuffer();
+  if (pipeline_.presenter() != nullptr) {
+    pipeline_.presenter()->Reset();
   }
   // Terminal: publishes the phase and wakes WaitDestroyed().
   MarkDestroyed();
@@ -2616,6 +2580,10 @@ void Session::HandleGfxData(const uint8_t* data, size_t size) {
   if (data == nullptr || size == 0) {
     return;
   }
+  // The raw chunk arrived, still ZGX-compressed and before PDU parse: stamp it on
+  // this session's own meter so `zgx+parse` is measured from the same point the
+  // capture hook used to (the hook has no context to find the meter with).
+  pipeline_.meter()->OnChunk(static_cast<uint32_t>(size));
   // The drdynvc dispatch thread must never be blocked: it carries every dynamic
   // channel, so waiting here for the frame worker to drain would hold audio and
   // input behind the frame pipeline - exactly the coupling the offload exists to
@@ -2645,6 +2613,7 @@ void Session::HandleGfxData(const uint8_t* data, size_t size) {
   if (!ctx.valid()) {
     return;
   }
+  DecodeExecutorScope decodeScope(pipeline_.executor());
   HmrdpGfxReplayRecv(gfx, data, static_cast<UINT32>(size));
 }
 
@@ -2673,6 +2642,7 @@ void Session::GfxWorkerLoop() {
     if (!ctx.valid()) {
       continue;
     }
+    DecodeExecutorScope decodeScope(pipeline_.executor());
     HmrdpGfxReplayRecv(gfx, chunk.data(), static_cast<UINT32>(chunk.size()));
   }
 }
@@ -2727,7 +2697,7 @@ void Session::HandleFrameBegin() {
   // zero-copy wait and its `sync` accounting live in the shared frame host, which
   // the offline replay drives too (hmrdp_gfx_cpu.h), so there is one
   // implementation and one timing shape for both.
-  frameHost_->OnFrameBegin();
+  pipeline_.host()->OnFrameBegin();
 }
 
 void Session::HandleBeginPaint() {
@@ -2735,7 +2705,7 @@ void Session::HandleBeginPaint() {
   // surface's pixels are already there). Same wait as HandleFrameBegin, and a
   // no-op when that one already drained the previous frame's copy - it is kept
   // because the compose of a *non-mirrored* surface happens here.
-  frameHost_->OnBeginPaint();
+  pipeline_.host()->OnBeginPaint();
 }
 
 void Session::HandleEndPaint() {
@@ -2779,7 +2749,7 @@ void Session::HandleEndPaint() {
   // exactly the same way. The frame's own accounting runs in the observer
   // installed above, exactly where the replay's does.
   uint64_t presentUs = 0;
-  (void)frameHost_->OnEndPaint(gdi, &presentUs, nullptr);
+  (void)pipeline_.host()->OnEndPaint(gdi, &presentUs, nullptr);
 }
 
 void Session::AfterPresent() {
@@ -2901,16 +2871,11 @@ void Session::HandlePostDisconnect() {
     // (freerdp_disconnect -> freerdp_channels_close), so the channel pointer is
     // dropped under the lifecycle lock and the outstanding leases are waited out
     // here: once this returns, no lease can still point at the channel that is
-    // about to be freed.
+    // about to be freed. The wait is unbounded, matching the teardown order of
+    // doc_agent/architecture.md §4.3.
     std::unique_lock<std::mutex> lock(lifecycleMutex_);
     cliprdr_ = nullptr;
-    leasesCv_.wait_for(lock, std::chrono::milliseconds(kLeaseDrainTimeoutMs),
-                       [this] { return activeLeases_ == 0; });
-    if (activeLeases_ != 0) {
-      HMRDP_LOGW("post-disconnect: %{public}d lease(s) still held after %{public}dms;"
-                 " the channel is closing regardless", activeLeases_,
-                 kLeaseDrainTimeoutMs);
-    }
+    leasesCv_.wait(lock, [this] { return activeLeases_ == 0; });
   }
   remoteHtmlFormatId_ = 0;
   remoteRequestInFlight_ = false;

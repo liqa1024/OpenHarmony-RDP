@@ -16,11 +16,10 @@
 #include <thread>
 #include <vector>
 
-#include "hmrdp_gfx_work.h"
+#include "hmrdp_frame_pipeline.h"
 
 namespace hmrdp {
 
-class FramePresenter;
 class GfxCpuDesktop;
 struct PresentUploadInfo;  // hmrdp_gfx_cpu.h
 
@@ -40,7 +39,8 @@ enum class GfxReplayRefMode {
 
 class GfxReplay {
  public:
-  static GfxReplay& Instance();
+  GfxReplay();
+  ~GfxReplay();
 
   // Takes ownership of `nativeWindow` and replays `gfxPath` onto it; waits briefly
   // for the first frame or a failure.
@@ -67,8 +67,6 @@ class GfxReplay {
   void RecordPresent(uint64_t micros);
 
  private:
-  GfxReplay() = default;
-  ~GfxReplay();
   GfxReplay(const GfxReplay&) = delete;
   GfxReplay& operator=(const GfxReplay&) = delete;
 
@@ -93,8 +91,10 @@ class GfxReplay {
   void PaceRecord(uint64_t timestampUs);
 
   std::mutex mutex_;
-  GfxWorkMeter meter_;
-  std::unique_ptr<FramePresenter> presenter_;
+  // This replay's own frame pipeline (presenter + gdi host + work meter), so a
+  // replay instance shares nothing with a session or another replay
+  // (doc_agent/architecture.md §4.1).
+  FramePipeline pipeline_;
   std::thread thread_;
   std::atomic<bool> running_{false};
   // Run identity and whether it was cut short. A driver uses runId_ to tell one

@@ -148,12 +148,12 @@ VulkanCapabilities ProbeVulkan() {
     }
   }
 
-  if (!VkContext::Instance().EnsureInstance()) {
-    caps.probeError = VkContext::Instance().lastError();
+  if (!VkInstanceContext::Instance().EnsureInstance()) {
+    caps.probeError = VkInstanceContext::Instance().lastError();
     return caps;
   }
   caps.instanceOk = true;
-  const VkInstance instance = VkContext::Instance().instance();
+  const VkInstance instance = VkInstanceContext::Instance().instance();
 
   uint32_t deviceCount = 0;
   if (api.EnumeratePhysicalDevices(instance, &deviceCount, nullptr) != VK_SUCCESS ||
@@ -608,20 +608,22 @@ const VulkanCapabilities& GetVulkanCapabilities() {
   return caps;
 }
 
-VkContext& VkContext::Instance() {
-  static VkContext context;
+VkInstanceContext& VkInstanceContext::Instance() {
+  static VkInstanceContext context;
   return context;
 }
 
-VkContext::~VkContext() {
-  Shutdown();
+VkInstanceContext::~VkInstanceContext() {
+  VkApi& api = GetVkApi();
+  if (instance_ != VK_NULL_HANDLE) {
+    if (api.DestroyInstance != nullptr) {
+      api.DestroyInstance(instance_, nullptr);
+    }
+    instance_ = VK_NULL_HANDLE;
+  }
 }
 
-std::string VkContext::lastError() const {
-  return error_;
-}
-
-bool VkContext::EnsureInstance() {
+bool VkInstanceContext::EnsureInstance() {
   if (instance_ != VK_NULL_HANDLE) {
     return true;
   }
@@ -669,15 +671,59 @@ bool VkContext::EnsureInstance() {
   return true;
 }
 
-bool VkContext::PickPhysicalDevice(VkSurfaceKHR surface) {
+bool VkInstanceContext::CreateSurface(void* nativeWindow, VkSurfaceKHR* out) {
+  if (nativeWindow == nullptr || out == nullptr) {
+    error_ = "null native window";
+    return false;
+  }
+  if (!EnsureInstance()) {
+    return false;
+  }
   VkApi& api = GetVkApi();
+  if (api.CreateSurfaceOHOS == nullptr) {
+    error_ = "vkCreateSurfaceOHOS missing";
+    return false;
+  }
+  VkSurfaceCreateInfoOHOS createInfo{};
+  createInfo.sType = VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_OHOS;
+  createInfo.pNext = nullptr;
+  createInfo.flags = 0;
+  createInfo.window = static_cast<OHNativeWindow*>(nativeWindow);
+
+  VkSurfaceKHR surface = VK_NULL_HANDLE;
+  const VkResult result = api.CreateSurfaceOHOS(instance_, &createInfo, nullptr, &surface);
+  if (result != VK_SUCCESS) {
+    error_ = "vkCreateSurfaceOHOS failed: " + VkResultName(result);
+    return false;
+  }
+  *out = surface;
+  return true;
+}
+
+void VkInstanceContext::DestroySurface(VkSurfaceKHR surface) {
+  if (surface == VK_NULL_HANDLE) {
+    return;
+  }
+  VkApi& api = GetVkApi();
+  if (api.DestroySurfaceKHR != nullptr && instance_ != VK_NULL_HANDLE) {
+    api.DestroySurfaceKHR(instance_, surface, nullptr);
+  }
+}
+
+VkDeviceContext::~VkDeviceContext() {
+  Destroy();
+}
+
+bool VkDeviceContext::PickPhysicalDevice(VkSurfaceKHR surface) {
+  VkApi& api = GetVkApi();
+  const VkInstance instance = this->instance();
   uint32_t count = 0;
-  if (api.EnumeratePhysicalDevices(instance_, &count, nullptr) != VK_SUCCESS || count == 0) {
+  if (api.EnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS || count == 0) {
     error_ = "no physical device";
     return false;
   }
   std::vector<VkPhysicalDevice> devices(count);
-  if (api.EnumeratePhysicalDevices(instance_, &count, devices.data()) != VK_SUCCESS) {
+  if (api.EnumeratePhysicalDevices(instance, &count, devices.data()) != VK_SUCCESS) {
     error_ = "vkEnumeratePhysicalDevices failed";
     return false;
   }
@@ -735,38 +781,39 @@ bool VkContext::PickPhysicalDevice(VkSurfaceKHR surface) {
   return true;
 }
 
-bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
+bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   if (surface == VK_NULL_HANDLE) {
     error_ = "no presentation surface";
     return false;
   }
-  VkApi& api = GetVkApi();
+  if (!VkInstanceContext::Instance().EnsureInstance()) {
+    error_ = VkInstanceContext::Instance().lastError();
+    return false;
+  }
+  const VkInstance instance = this->instance();
+  VkApi& shared = GetVkApi();
   if (device_ != VK_NULL_HANDLE) {
     // The device may have been created for an earlier surface. If its queue
-    // family cannot present to this one, rebuild with a family that can
-    // (one device for the process once it is usable).
+    // family cannot present to this one, rebuild with a family that can.
     VkBool32 present = VK_FALSE;
-    if (api.GetPhysicalDeviceSurfaceSupportKHR != nullptr &&
-        api.GetPhysicalDeviceSurfaceSupportKHR(physical_, queueFamily_, surface, &present) ==
+    if (shared.GetPhysicalDeviceSurfaceSupportKHR != nullptr &&
+        shared.GetPhysicalDeviceSurfaceSupportKHR(physical_, queueFamily_, surface, &present) ==
             VK_SUCCESS &&
         present == VK_TRUE) {
       return true;
     }
     HMRDP_LOGI("vulkan: rebuilding device for a present-capable queue family");
-    DestroyDevice();
-  }
-  if (!EnsureInstance()) {
-    return false;
+    Destroy();
   }
   if (physical_ == VK_NULL_HANDLE && !PickPhysicalDevice(surface)) {
     return false;
   }
 
   uint32_t extCount = 0;
-  api.EnumerateDeviceExtensionProperties(physical_, nullptr, &extCount, nullptr);
+  shared.EnumerateDeviceExtensionProperties(physical_, nullptr, &extCount, nullptr);
   std::vector<VkExtensionProperties> extensions(extCount);
   if (extCount > 0) {
-    api.EnumerateDeviceExtensionProperties(physical_, nullptr, &extCount, extensions.data());
+    shared.EnumerateDeviceExtensionProperties(physical_, nullptr, &extCount, extensions.data());
   }
   const bool hasSwapchain = HasExtension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
   if (!hasSwapchain) {
@@ -790,35 +837,39 @@ bool VkContext::EnsureDevice(VkSurfaceKHR surface) {
   deviceInfo.ppEnabledExtensionNames = enabledExtensions;
 
   VkDevice device = VK_NULL_HANDLE;
-  const VkResult result = api.CreateDevice(physical_, &deviceInfo, nullptr, &device);
+  const VkResult result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);
   if (result != VK_SUCCESS) {
     error_ = "vkCreateDevice failed: " + VkResultName(result);
     return false;
   }
   device_ = device;
-  if (!api.LoadDevice(device_, instance_)) {
+  // This device's own command table: the shared global + instance entries plus
+  // the device entries resolved here, so a call can never reach another device's
+  // function pointers.
+  api_ = shared;
+  if (!api_.LoadDevice(device_, instance)) {
     error_ = "device entry points missing";
-    if (api.DestroyDevice != nullptr) {
-      api.DestroyDevice(device_, nullptr);
+    if (api_.DestroyDevice != nullptr) {
+      api_.DestroyDevice(device_, nullptr);
     }
     device_ = VK_NULL_HANDLE;
     return false;
   }
-  api.GetDeviceQueue(device_, queueFamily_, 0, &queue_);
+  api_.GetDeviceQueue(device_, queueFamily_, 0, &queue_);
 
   VkPhysicalDeviceProperties props{};
-  api.GetPhysicalDeviceProperties(physical_, &props);
+  shared.GetPhysicalDeviceProperties(physical_, &props);
   HMRDP_LOGI("vulkan device ready: %{public}s (queue family %{public}u)",
              props.deviceName, queueFamily_);
   return true;
 }
 
-uint32_t VkContext::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) const {
+uint32_t VkDeviceContext::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required) const {
   return FindMemoryType(typeBits, required, 0);
 }
 
-uint32_t VkContext::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required,
-                                  VkMemoryPropertyFlags excluded) const {
+uint32_t VkDeviceContext::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags required,
+                                         VkMemoryPropertyFlags excluded) const {
   if (physical_ == VK_NULL_HANDLE) {
     return UINT32_MAX;
   }
@@ -841,67 +892,31 @@ uint32_t VkContext::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags requ
   return UINT32_MAX;
 }
 
-void VkContext::DestroyDevice() {
-  VkApi& api = GetVkApi();
+void VkDeviceContext::Destroy() {
   if (device_ != VK_NULL_HANDLE) {
-    if (api.DestroyDevice != nullptr) {
-      api.DestroyDevice(device_, nullptr);
+    if (api_.DestroyDevice != nullptr) {
+      api_.DestroyDevice(device_, nullptr);
     }
     device_ = VK_NULL_HANDLE;
     queue_ = VK_NULL_HANDLE;
     physical_ = VK_NULL_HANDLE;
     queueFamily_ = 0;
+    // Drop this device's function pointers with it, so a later EnsureDevice cannot
+    // call into a destroyed device.
+    api_ = VkApi{};
   }
 }
 
-void VkContext::Shutdown() {
-  VkApi& api = GetVkApi();
-  DestroyDevice();
-  if (instance_ != VK_NULL_HANDLE) {
-    if (api.DestroyInstance != nullptr) {
-      api.DestroyInstance(instance_, nullptr);
-    }
-    instance_ = VK_NULL_HANDLE;
+bool VkDeviceContext::CreateSurface(void* nativeWindow, VkSurfaceKHR* out) {
+  if (VkInstanceContext::Instance().CreateSurface(nativeWindow, out)) {
+    return true;
   }
+  error_ = VkInstanceContext::Instance().lastError();
+  return false;
 }
 
-bool VkContext::CreateSurface(void* nativeWindow, VkSurfaceKHR* out) {
-  if (nativeWindow == nullptr || out == nullptr) {
-    error_ = "null native window";
-    return false;
-  }
-  if (!EnsureInstance()) {
-    return false;
-  }
-  VkApi& api = GetVkApi();
-  if (api.CreateSurfaceOHOS == nullptr) {
-    error_ = "vkCreateSurfaceOHOS missing";
-    return false;
-  }
-  VkSurfaceCreateInfoOHOS createInfo{};
-  createInfo.sType = VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_OHOS;
-  createInfo.pNext = nullptr;
-  createInfo.flags = 0;
-  createInfo.window = static_cast<OHNativeWindow*>(nativeWindow);
-
-  VkSurfaceKHR surface = VK_NULL_HANDLE;
-  const VkResult result = api.CreateSurfaceOHOS(instance_, &createInfo, nullptr, &surface);
-  if (result != VK_SUCCESS) {
-    error_ = "vkCreateSurfaceOHOS failed: " + VkResultName(result);
-    return false;
-  }
-  *out = surface;
-  return true;
-}
-
-void VkContext::DestroySurface(VkSurfaceKHR surface) {
-  if (surface == VK_NULL_HANDLE) {
-    return;
-  }
-  VkApi& api = GetVkApi();
-  if (api.DestroySurfaceKHR != nullptr && instance_ != VK_NULL_HANDLE) {
-    api.DestroySurfaceKHR(instance_, surface, nullptr);
-  }
+void VkDeviceContext::DestroySurface(VkSurfaceKHR surface) {
+  VkInstanceContext::Instance().DestroySurface(surface);
 }
 
 }  // namespace hmrdp

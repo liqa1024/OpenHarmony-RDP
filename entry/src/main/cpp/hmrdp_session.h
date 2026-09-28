@@ -22,7 +22,7 @@
 #include <freerdp/client/cliprdr.h>
 
 #include "hmrdp_audio.h"
-#include "hmrdp_gfx_work.h"
+#include "hmrdp_frame_pipeline.h"
 #include "hmrdp_presenter.h"
 
 namespace hmrdp {
@@ -40,11 +40,6 @@ enum class SessionPhase {
   kStopping = 3,
   kDestroyed = 4,
 };
-
-// The shared CPU (gdi) frame host (hmrdp_gfx_cpu.h): the zero-copy wait, its
-// `sync` accounting and the present, implemented once for the live session and
-// the offline replay. Held by pointer here to keep the header light.
-class GdiFrameHost;
 
 enum class SessionEvent {
   kConnected = 0,
@@ -129,7 +124,10 @@ class Session : public std::enable_shared_from_this<Session> {
 
   // The presenter the ArkTS surface lifecycle drives (setSurface/updateSurface/
   // clearSurface): Vulkan when it can present, GLES otherwise (hmrdp_presenter.h).
-  FramePresenter* presenter() { return presenter_.get(); }
+  FramePresenter* presenter() { return pipeline_.presenter(); }
+  // This session's frame work meter, installed on its GFX context so the wrapped
+  // callbacks feed it (hmrdp_gfx_work.h). Per session, never a global slot.
+  GfxWorkMeter* workMeter() { return pipeline_.meter(); }
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
@@ -307,14 +305,11 @@ class Session : public std::enable_shared_from_this<Session> {
   void GfxWorkerLoop();
 
   freerdp* instance_ = nullptr;
-  // CPU frame presenter (Vulkan by default, GLES fallback). The live frame
-  // pipeline all runs on the session's GFX worker thread (architecture.md §4),
-  // and the backend still serialises presents itself so the offline replay route
-  // can drive its own presenter from the replay thread.
-  std::unique_ptr<FramePresenter> presenter_;
-  // Attach/zero-copy wait/present for this session's gdi (the same host the
-  // offline replay uses), see hmrdp_gfx_cpu.h.
-  std::unique_ptr<GdiFrameHost> frameHost_;
+  // The session's frame pipeline: presenter (Vulkan by default, GLES fallback),
+  // gdi frame host and work meter, all owned by this session
+  // (doc_agent/architecture.md §4.1). The live frame work all runs on the
+  // session's GFX worker thread (§4.2).
+  FramePipeline pipeline_;
   AudioOutput audio_;
   EventFn eventFn_;
   std::string lastError_;
@@ -347,8 +342,7 @@ class Session : public std::enable_shared_from_this<Session> {
   // wrapped GFX callbacks feed it while this session is connected, and the event
   // thread drains one window per second (see hmrdp_gfx_work.h for what each
   // phase covers - the same meter, fed through the same hooks, is used by the
-  // offline replay so the two figures are comparable).
-  GfxWorkMeter meter_;
+  // offline replay so the two figures are comparable). It lives in pipeline_.
   void* gfxContext_ = nullptr;
   // GFX offload worker and its queue (see HandleGfxData). gfxWorkerContext_ is
   // captured at start and used only while a lease is held, so teardown cannot

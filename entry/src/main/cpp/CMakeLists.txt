@@ -91,6 +91,7 @@ add_library(hmrdp SHARED
     hmrdp_decode_tuning.cpp
     hmrdp_parallel.cpp
     hmrdp_replay.cpp
+    hmrdp_frame_pipeline.cpp
     hmrdp_presenter.cpp
     hmrdp_gles_presenter.cpp
     hmrdp_vk_context.cpp

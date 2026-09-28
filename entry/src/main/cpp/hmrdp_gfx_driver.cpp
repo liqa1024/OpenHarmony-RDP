@@ -60,9 +60,10 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
     if (paced) {
       pace(capture.timestampUs());
     }
-    // Same arrival stamp the live capture hook takes, so the "本机" phases are
-    // measured the same way on both sides (see hmrdp_gfx_work.h).
-    if (GfxWorkMeter* meter = ActiveWorkMeter()) {
+    // Same arrival stamp the live sink takes, so the "本机" phases are measured the
+    // same way on both sides (see hmrdp_gfx_work.h). The meter comes from this
+    // replay's own GFX context, not a process-global slot.
+    if (GfxWorkMeter* meter = GfxWorkMeterFor(gfx)) {
       meter->OnChunk(size);
     }
     // Dev (perf): the ZGFX + RDPGFX PDU parse is a per-record cost the replay

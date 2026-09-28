@@ -217,10 +217,7 @@ int64_t ProcessCpuUs() {
 
 }  // namespace
 
-GfxReplay& GfxReplay::Instance() {
-  static GfxReplay instance;
-  return instance;
-}
+GfxReplay::GfxReplay() = default;
 
 GfxReplay::~GfxReplay() {
   Stop();
@@ -305,8 +302,7 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     firstFrameEndUs_.store(0);
     startUs_.store(NowUs());
     endUs_.store(0);
-    presenter_ = CreateFramePresenter();
-    presenter_->SetSurface(window_, surfaceW_, surfaceH_);
+    pipeline_.presenter()->SetSurface(window_, surfaceW_, surfaceH_);
     running_.store(true);
     thread_ = std::thread(&GfxReplay::Run, this);
   }
@@ -356,7 +352,7 @@ void GfxReplay::Stop() {
     thread_.join();
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  presenter_.reset();
+  pipeline_.presenter()->DestroySurface();
   if (window_ != nullptr) {
     OH_NativeWindow_DestroyNativeWindow(static_cast<OHNativeWindow*>(window_));
     window_ = nullptr;
@@ -484,7 +480,7 @@ std::string GfxReplay::StatsLines() {
   // Whole-run totals, not a per-second window. The meter keeps no aggregate, so
   // the per-frame work sum is added here (the four work phases; `sync` stays out,
   // it is blocked time).
-  const GfxWorkMeter::Sample work = meter_.Peek();
+  const GfxWorkMeter::Sample work = pipeline_.meter()->Peek();
   if (work.frames > 0) {
     const uint64_t frames = work.frames;
     const uint64_t workUs =
@@ -658,15 +654,15 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   // exactly like a live session. Only the destination changes: gdi's primary
   // buffer is composed straight into the presenter's desktop buffer when it can
   // hand one over.
-  presenter_->Prepare();
+  pipeline_.presenter()->Prepare();
   GfxCpuDesktop cpu;
   // gdi composes straight into the presenter's desktop buffer when it can hand one
   // over (the presenter is up by now, so it does): the present then costs a copy
   // of the dirty rects out of memory gdi already wrote, with no frame copy at all.
-  cpu.SetPresenter(presenter_.get());
+  cpu.SetPresenter(pipeline_.presenter());
   // The frame host reports its `sync` blocked time to this run's own meter, not
   // to whatever meter a live session may have published (hmrdp_gfx_cpu.h).
-  cpu.SetMeter(&meter_);
+  cpu.SetMeter(pipeline_.meter());
   std::string error;
   if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
     std::lock_guard<std::mutex> err(errorMutex_);
@@ -682,23 +678,15 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
         OnCpuFramePresent(&cpu, presented, presentUs, upload);
       });
 
-  // Measure this run with the live session's meter (same hooks, same phases), so
-  // the CPU route's per-frame figures can be put next to a live session's. A live
-  // session holds the slot while it is connected and is the authoritative
-  // reporter, so a replay started next to one runs without per-frame accounting
-  // instead of stealing its numbers.
-  const bool metered = ActiveWorkMeter() == nullptr;
-  if (!metered) {
-    HMRDP_LOGW("gfx replay: a live session is measuring, per-frame work not reported");
-  } else {
-    meter_.Reset();
-    SetActiveWorkMeter(&meter_);
-  }
-  // Installed even while a live session owns the meter: the wrappers are also
-  // where the frame-begin wait lives (GfxWorkSetFrameBeginHook), and gdi writes the
-  // presenter's desktop buffer in place, so skipping it would bring back the
-  // two-frames-in-one-upload race this replay is often run to catch.
-  GfxWorkInstall(cpu.gfx());
+  // Measure this run on this instance's own meter (same hooks, same phases as a
+  // live session feeds), so its per-frame figures can be put next to a live
+  // session's without either touching the other's.
+  pipeline_.meter()->Reset();
+  // The wrappers are also where the frame-begin wait lives
+  // (GfxWorkSetFrameBeginHook), and gdi writes the presenter's desktop buffer in
+  // place, so skipping them would bring back the two-frames-in-one-upload race
+  // this replay is often run to catch.
+  GfxWorkInstall(cpu.gfx(), pipeline_.meter());
   GfxWorkSetFrameBeginHook(cpu.gfx(), [&cpu]() { cpu.OnFrameBegin(); });
 
   hmrdp::GfxDumpSetReplaying(true);
@@ -716,8 +704,12 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   }
   const ReplayPaceAccumFn paceAccum = [this]() { return paceUs_.load(); };
   bool aborted = false;
-  const bool ok =
-      GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum, &aborted);
+  bool ok = false;
+  {
+    // The tile decode of this replay's frames runs on this instance's own queue.
+    DecodeExecutorScope decodeScope(pipeline_.executor());
+    ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum, &aborted);
+  }
   aborted_.store(aborted);
   cpuEndUs_.store(ProcessCpuUs());
   pumpUs_.store(static_cast<uint64_t>(NowUs() - pumpStart));
@@ -738,9 +730,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   cpu.SetPresentedFn(nullptr);
   GfxWorkSetFrameBeginHook(cpu.gfx(), nullptr);
   GfxWorkUninstall(cpu.gfx());
-  if (metered) {
-    SetActiveWorkMeter(nullptr);
-  }
   if (!ok) {
     std::lock_guard<std::mutex> err(errorMutex_);
     lastError_ = error;
@@ -939,7 +928,7 @@ bool GfxReplay::OnCpuFramePre() {
   const int pw = pendingW_.exchange(0);
   const int ph = pendingH_.exchange(0);
   if (pw > 0 && ph > 0) {
-    presenter_->ResizeSurface(pw, ph);
+    pipeline_.presenter()->ResizeSurface(pw, ph);
   }
   return true;
 }
@@ -978,7 +967,7 @@ void GfxReplay::OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t p
   // in-EndFrame sleep to `compose` (hmrdp_gfx_work.h).
   const int64_t paceStart = NowUs();
   MarkFrameEnd(presented);
-  meter_.OnPace(static_cast<uint64_t>(NowUs() - paceStart));
+  pipeline_.meter()->OnPace(static_cast<uint64_t>(NowUs() - paceStart));
   // Golden-reference bookkeeping, last so it cannot land in any measured phase
   // (`present` was measured above; the hash is not present work).
   RefCollectFrame(cpu);

@@ -151,6 +151,11 @@ class VkRenderer : public FramePresenter {
   // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;
 
+  // This presenter's own Vulkan device + queue, created from the shared instance
+  // on first use and destroyed with the presenter (or on Reset). Never shared
+  // between sessions (doc_agent/architecture.md §4.1).
+  VkDeviceContext vk_;
+
   void* pendingWindow_ = nullptr;
   int surfaceWidth_ = 0;
   int surfaceHeight_ = 0;

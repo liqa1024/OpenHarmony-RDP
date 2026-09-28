@@ -52,16 +52,34 @@
 | `hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
 | `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
 | `hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
-| `hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad |
+| `hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
+| `hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
+| `hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1） |
 | `hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
-| `hmrdp_vk_context.{h,cpp}` | Vulkan 上下文：`dlopen` + 标准能力探测 + 进程级 instance/device/queue + 内存类型 + 延迟销毁 |
-| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：`VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
+| `hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
+| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
 | `hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
 | `shaders/present_quad.*` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入 |
 | `hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
 | `hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
 
-## 4. 线程模型（原生）
+## 4. 线程模型与所有权（原生）
+
+### 4.1 所有权契约
+
+会话是一条**自洽的数据管线**：管线上的资源全部归该会话所有；进程级只保留不可变对象，
+以及"函数指针全局、但按各自 context 路由到归属会话"的一次性钩子。
+
+| 归属 | 资源 | 生命周期 |
+|---|---|---|
+| **会话私有** | FreeRDP context 及其内部线程、会话控制线程、帧管线（presenter 及其自有 VkDevice/queue、gdi 桌面与 GdiFrameHost、GfxWorkMeter、解码执行器、GFX 工作线程、观察者）、AudioOutput | 随会话创建/销毁，**只在一处销毁** |
+| **进程共享、不可变** | VkInstance（+ 能力探测）、日志、`g_entryPoints`/addin 注册、只读用户设置 | 只建一次，进程存活期不销毁 |
+| **进程共享、按 context 路由** | audio sink、gfx raw capture、thread QoS applier | 一次性注册，调用时由 context 找到归属 |
+
+**不存在进程级共享可变状态**：presenter 的 GPU device/queue、解码执行器、work meter 都随会话走。
+多会话并发因此既不互相阻塞，也不互相破坏——这是本文件最重要的约束。
+
+### 4.2 线程
 
 会话的并发结构是固定的，改任何与通道/渲染相关的东西前先对号入座：
 
@@ -70,6 +88,7 @@
 | RDP 传输线程（主） | 读 socket、解密、解复用；把 DVC 数据投进 drdynvc 队列；SVC（剪贴板、静态通道）回调；每秒一次遥测采样 | 不做长任务，否则拖慢整条链路 |
 | drdynvc 分发线程 | FreeRDP 所有**动态通道**的分发：RDPGFX、rdpsnd（音频）、RDPEI（触屏/笔）、其它 DVC | **只准做轻活**（拆包 + 拷贝）；任何可能长时间占用的处理都必须交给应用线程。rdpsnd 在这里只重装 + 投递到它自己的队列 |
 | **GFX 工作线程**（会话自有） | 整条帧流水线：ZGX 解压、PDU 解析、解码、合成、上屏、帧回执 | 帧重活只在这里；drdynvc 线程注册 sink 后只把通道数据拷进来，工作线程用 `HmrdpGfxReplayRecv` 重新进入 |
+| **解码执行器**（会话自有 ffrt 队列） | progressive tile chunk 解码（每 region 若干任务） | 执行器随会话创建/销毁；解码入口以线程局部指针告知当前执行器，未设置则回退串行 |
 | **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioOutput` 的 jitter buffer | 不碰画面；缓冲/丢弃/预缓冲全在 sink 一处（见 [`native-libraries.md`](native-libraries.md) §5），抖动由 sink 深度兜住 |
 | OHAudio 回调线程 | 从 sink 队列取 PCM 上设备 | 系统管理 |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |
@@ -79,9 +98,13 @@
 （`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`native-libraries.md`](native-libraries.md) §4）。
 新增/修改动态通道处理时按这条办。
 
-**offload 的生命周期**（offload 后 worker 与通道拆除不再同线程，必须显式排序）：worker 在
-`HmrdpPostConnect`（连接建立后）启动，**必须在 `freerdp_disconnect` 之前 join**（它释放 rdpgfx 插件，
-worker 正解析进去会 UAF），随后 `GfxWorkUninstall`。
+### 4.3 拆除（单一状态机）
+
+拆除由会话控制线程独占，顺序固定：`kRunning → kStopping`（摘 sink 钩子、停止收块）`→ kDraining`
+（join worker、quiesce 执行器、detach surface）`→ kFreed`。具体顺序：停收流 → join worker →
+卸载包装器 → `freerdp_disconnect`/join 内部线程 → 销毁管线（执行器 → presenter/device → 桌面）→
+释放 context。offload 后的 worker 与通道拆除不同线程，而 `freerdp_disconnect` 会释放 rdpgfx 插件，
+worker 必须在此之前 join（否则解析进已释放插件）。拆除不依赖超时兜底：有界等待只作诊断。
 
 **服务端侧**：音频（rdpsnd）与输入（rdpei）是**独立虚拟通道**，图形流控（帧回执，MS-RDPEGFX 3.2.5.13）
 只作用于图形管线，服务端**不会因为等待客户端的帧而停发音频**；两边唯一共享的是 TCP 链路本身（全局带宽，

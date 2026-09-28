@@ -20,6 +20,10 @@ GFX 协议框架与 CPU（gdi）链路的成本结构见 [`gfx-engine.md`](gfx-e
 「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan），**不是**解码后端（解码始终是 gdi）。
 判据与 Vulkan 能力见 [`native-libraries.md`](native-libraries.md) §6。
 
+**GPU 归属**：进程只共享不可变的 `VkInstance`；**每个 presenter 自带 `VkDevice` + queue**（GLES 同理，
+只共享 EGL display，context/surface 每实例独立），所以多会话不会共用一条提交队列、也不会互相拆
+device（[`architecture.md`](architecture.md) §4.1）。
+
 ## 2. 帧到屏的路径
 
 - **picture 图**：FreeRDP 的 BGRA 字节序，格式恒为 `B8G8R8A8_UNORM`（`kPictureFormat`）。
@@ -73,7 +77,8 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 - **内存类型 `HOST_CACHED` 优先**；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
   驱动调用；cache flush 只写回脏行，多出来的干净行免费）。
 - **几何变化**（`ResetGraphics` → `gdi_resize`）会退回 gdi 自有缓冲，下一次 `EndPaint` 按新尺寸重挂。
-- 前提：**进程内只建一个 `VkDevice`**。
+- 前提：**桌面缓冲归它所在 presenter 的 `VkDevice`**（每 presenter 一个 device，进程内可有多个，
+  互不共享）。
 - **桌面镜像 surface 直接合成进 primary**（全屏 GFX 会话的常态：只有一个 surface、`(0,0)` 1:1、格式/行距
   与桌面相同 ⇒ 它**就是桌面**，那趟逐矩形 `freerdp_image_scale` 纯属白搬）。做法是把这个 surface 的 `data`
   指向 `gdi->primary_buffer`。**生命周期是重点**：

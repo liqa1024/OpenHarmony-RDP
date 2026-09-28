@@ -152,19 +152,17 @@ class GfxWorkMeter {
   std::atomic<uint64_t> windowSetupCount_[static_cast<int>(GfxSetupKind::kCount)];
 };
 
-// The meter currently installed (nullptr when nothing measures). The capture hook
-// and the GFX wrappers fan out to it, so live and replay share the wiring. One
-// stream is measured at a time: a connected session owns the slot, and a replay
-// started next to one must not take it over (it reports nothing instead).
-GfxWorkMeter* ActiveWorkMeter();
-void SetActiveWorkMeter(GfxWorkMeter* meter);
-
-// Chains RdpgfxClientContext::SurfaceCommand / ::EndFrame so they feed the active
-// meter, and restores them again. No-op when that context is already installed.
-// Works on any context whose callbacks are FreeRDP's (live gdi session, offline
-// CPU desktop).
-void GfxWorkInstall(RdpgfxClientContext* gfx);
+// Chains RdpgfxClientContext::SurfaceCommand / ::EndFrame (and the other surface
+// commands) so they feed `meter`, and restores them again. The meter is stored
+// per context, so a session and a replay each feed their own - there is no
+// process-global meter slot, and two concurrent streams cannot feed each other's
+// figures. No-op when that context is already installed. Works on any context
+// whose callbacks are FreeRDP's (live gdi session, offline CPU desktop).
+void GfxWorkInstall(RdpgfxClientContext* gfx, GfxWorkMeter* meter);
 void GfxWorkUninstall(RdpgfxClientContext* gfx);
+// The meter installed for `gfx` (nullptr when that context is not installed). The
+// replay pump uses it to stamp a chunk's arrival without a global slot.
+GfxWorkMeter* GfxWorkMeterFor(RdpgfxClientContext* gfx);
 
 // A hook run at every RDPGFX START_FRAME, i.e. *before* that frame's surface
 // commands write any pixel of the desktop.

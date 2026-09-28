@@ -115,9 +115,10 @@ GLES 且不碰 Vulkan）。细节见 [`present-pipeline.md`](present-pipeline.md
   （见 [`build-and-verify.md`](build-and-verify.md) §5.1）。
 - **每轮的 `state=` / `run=`**：stats 文本第一行是 `state=running|finished|aborted  run=<n>`，
   多轮测量按它等待与归属，别按内容猜；驱动脚本见 `native/scripts/replay-rounds.ps1`。
-- **回放页的「路线 / 参考 / 节拍 / 重新回放」内部都是 `stop + start`**，在一轮没跑完时点击等于把
-  那一轮掐断；性能数字只取 `(running=0)` 的**整轮**，并记下 `frames=` 确认整份跑完（不要假定固定帧数）。
-  判定"跑完"要**轮询** stats 文本里的 `(running=0)`，不要固定 sleep。
+- **回放页的「并发 / 路线 / 参考 / 节拍 / 重放」内部都是 `stop + start`**（`并发` 会按新的实例
+  数目重建全部实例），在一轮没跑完时点击等于把那一轮掐断；性能数字只取 `(running=0)` 的**整轮**，
+  并记下 `frames=` 确认整份跑完（不要假定固定帧数）。判定"跑完"要**轮询** stats 文本里的
+  `(running=0)`，不要固定 sleep。
 - **两种回放节拍**（dev 页切换，`mode=` 字段）：
   - **`mode=fast`（默认「跑满」）**：完全不打节拍——上一帧做完就喂下一条，**`fps` 就是吞吐上限**，
     不是 live 的出帧率。
@@ -140,8 +141,16 @@ GLES 且不碰 Vulkan）。细节见 [`present-pipeline.md`](present-pipeline.md
 
 ```
 设置页「抓取 GFX 码流（测试）」  →  原始码流文件（u32 长度 + payload，见下）
-dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / 对比
+dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 导出 / 对比
 ```
+
+- **多实例（并发）**：一页可同时跑 N 个回放实例，每个实例一个 surface、一条独立管线（自有
+  presenter/device、work meter、解码执行器与线程），互不共享可变状态（见
+  [`architecture.md`](architecture.md) §4.1）。这是**多会话回归的载体**：不需要 RDP 服务端，
+  在模拟器上即可并发跑同一份录像。机读接口是 NAPI 的 `startReplay / stopReplay / resizeReplay /
+  replayStats / stopAllReplays / listReplays`（`listReplays` 每实例一行），可完全不经 UI 驱动。
+  **判据**：各实例能独立起停、各自 `bad=0`、`frames/presents` 互不串扰（串扰表现为某实例的计数
+  或哈希跟着另一个变），且反复起停后每个实例都能真的停下（无卡死、无线程泄漏）。
 
 - **路线只有两条，且是同一条 gdi 解码路径的两种上屏后端**：`CPU` = GLES 上屏（完全不碰 Vulkan）、
   `硬件加速` = Vulkan 上屏（就是设置里的「硬件加速」，页面上的按钮与它是同一个值）。

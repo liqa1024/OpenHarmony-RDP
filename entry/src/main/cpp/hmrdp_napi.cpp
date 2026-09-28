@@ -17,6 +17,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "hmrdp_log.h"
 #include "hmrdp_replay.h"
@@ -44,6 +46,15 @@ int64_t g_nextId = 1;
 constexpr uint32_t kTeardownTimeoutMs = 2000;
 
 napi_threadsafe_function g_eventTsfn = nullptr;
+
+// Dev/test replay instances, keyed by their own handle. Each instance owns its
+// own frame pipeline, so several can run concurrently without an RDP server -
+// that is the multi-session regression vehicle (doc_agent/gfx-engine.md §6).
+// Kept apart from g_sessions: a replay handle and a session handle are
+// independent namespaces.
+std::mutex g_replayMutex;
+std::map<int64_t, std::shared_ptr<hmrdp::GfxReplay>> g_replays;
+int64_t g_nextReplayId = 1;
 
 struct EventPayload {
   int64_t handle;
@@ -776,23 +787,22 @@ std::string GetStringArg(napi_env env, napi_value v) {
   return s;
 }
 
-// Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
+// Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
+// One instance per `surfaceId`; the returned handle owns it until stopReplay.
+napi_value StartReplay(napi_env env, napi_callback_info info) {
   size_t argc = 6;
   napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  std::string out;
-  if (argc < 4) {
-    out = "failed: need (surfaceId, surfaceW, surfaceH, gfxPath[, realtime, refMode])";
-  } else {
+  int64_t handle = -1;
+  if (argc >= 4) {
     const std::string surfaceId = GetStringArg(env, args[0]);
     int32_t surfaceW = 0;
     int32_t surfaceH = 0;
     napi_get_value_int32(env, args[1], &surfaceW);
     napi_get_value_int32(env, args[2], &surfaceH);
     const std::string gfxPath = GetStringArg(env, args[3]);
-    // Realtime playback: pace by the capture's own arrival times (the default fast
-    // mode is unthrottled). Ignored for captures that carry no timing.
+    // Realtime playback: pace by the capture's own arrival times (the default
+    // fast mode is unthrottled). Ignored for captures that carry no timing.
     int32_t realtime = 0;
     if (argc >= 5) {
       napi_get_value_int32(env, args[4], &realtime);
@@ -812,51 +822,136 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
     OHNativeWindow* window = nullptr;
     const int32_t err = OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window);
-    if (err != 0 || window == nullptr) {
-      out = "failed: native window";
-    } else {
+    if (err == 0 && window != nullptr) {
       PreferGpuWindowBuffer(window);
-      if (hmrdp::GfxReplay::Instance().Start(window, surfaceW, surfaceH, gfxPath,
-                                             realtime != 0, replayRef)) {
-        out = "started " + hmrdp::GfxReplay::Instance().Stats();
+      auto replay = std::make_shared<hmrdp::GfxReplay>();
+      if (replay->Start(window, surfaceW, surfaceH, gfxPath, realtime != 0, replayRef)) {
+        std::lock_guard<std::mutex> lock(g_replayMutex);
+        handle = g_nextReplayId++;
+        g_replays[handle] = replay;
+        HMRDP_LOGI("replay %{public}d: %{public}s", static_cast<int>(handle),
+                   replay->Stats().c_str());
       } else {
-        out = "failed: " + hmrdp::GfxReplay::Instance().Stats();
+        HMRDP_LOGW("replay: start failed (%{public}s)", replay->Stats().c_str());
       }
+    } else {
+      HMRDP_LOGE("CreateNativeWindowFromSurfaceId failed: %{public}d", err);
     }
   }
-  HMRDP_LOGI("gfx replay: %{public}s", out.c_str());
+  return CreateInt(env, handle);
+}
+
+napi_value StopReplay(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  std::shared_ptr<hmrdp::GfxReplay> replay;
+  {
+    std::lock_guard<std::mutex> lock(g_replayMutex);
+    const auto it = g_replays.find(handle);
+    if (it == g_replays.end()) {
+      return CreateUndefined(env);
+    }
+    replay = it->second;
+    g_replays.erase(it);
+  }
+  replay->Stop();
+  HMRDP_LOGI("replay %{public}d: %{public}s", static_cast<int>(handle),
+             replay->Stats().c_str());
+  return CreateUndefined(env);
+}
+
+napi_value StopAllReplays(napi_env env, napi_callback_info info) {
+  (void)info;
+  std::vector<std::shared_ptr<hmrdp::GfxReplay>> replays;
+  {
+    std::lock_guard<std::mutex> lock(g_replayMutex);
+    for (const auto& entry : g_replays) {
+      replays.push_back(entry.second);
+    }
+    g_replays.clear();
+  }
+  for (const auto& replay : replays) {
+    replay->Stop();
+  }
+  HMRDP_LOGI("replay: stopped all (%{public}zu)", replays.size());
+  return CreateUndefined(env);
+}
+
+napi_value ResizeReplay(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  napi_get_value_int32(env, args[1], &width);
+  napi_get_value_int32(env, args[2], &height);
+  std::shared_ptr<hmrdp::GfxReplay> replay;
+  {
+    std::lock_guard<std::mutex> lock(g_replayMutex);
+    const auto it = g_replays.find(handle);
+    if (it != g_replays.end()) {
+      replay = it->second;
+    }
+  }
+  if (replay != nullptr) {
+    replay->Resize(width, height);
+  }
+  return CreateUndefined(env);
+}
+
+napi_value ReplayStats(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  std::shared_ptr<hmrdp::GfxReplay> replay;
+  {
+    std::lock_guard<std::mutex> lock(g_replayMutex);
+    const auto it = g_replays.find(handle);
+    if (it != g_replays.end()) {
+      replay = it->second;
+    }
+  }
+  const std::string lines =
+      replay != nullptr ? replay->StatsLines() : std::string("no such replay");
+  HMRDP_LOGI("replay %{public}d: %{public}s", static_cast<int>(handle),
+             replay != nullptr ? replay->Stats().c_str() : "gone");
   napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  napi_create_string_utf8(env, lines.c_str(), lines.size(), &result);
   return result;
 }
 
-napi_value StopGfxReplayTest(napi_env env, napi_callback_info info) {
+// One compact line per live instance, for the dev harness and for an agent: the
+// per-instance figures must stay independent, which is exactly what a
+// multi-instance regression reads.
+napi_value ListReplays(napi_env env, napi_callback_info info) {
   (void)info;
-  hmrdp::GfxReplay::Instance().Stop();
-  return CreateUndefined(env);
-}
-
-napi_value ResizeGfxReplayTest(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int32_t width = 0;
-  int32_t height = 0;
-  if (argc >= 2) {
-    napi_get_value_int32(env, args[0], &width);
-    napi_get_value_int32(env, args[1], &height);
+  std::vector<std::pair<int64_t, std::shared_ptr<hmrdp::GfxReplay>>> replays;
+  {
+    std::lock_guard<std::mutex> lock(g_replayMutex);
+    for (const auto& entry : g_replays) {
+      replays.push_back(entry);
+    }
   }
-  hmrdp::GfxReplay::Instance().Resize(width, height);
-  return CreateUndefined(env);
-}
-
-napi_value GfxReplayTestStats(napi_env env, napi_callback_info info) {  (void)info;
-  // Multi-line form for the on-device performance panel; the log keeps the
-  // single-line variant so one record carries the whole summary.
-  const std::string lines = hmrdp::GfxReplay::Instance().StatsLines();
-  HMRDP_LOGI("gfx replay: %{public}s", hmrdp::GfxReplay::Instance().Stats().c_str());
+  std::string out = "count=" + std::to_string(replays.size());
+  for (const auto& entry : replays) {
+    out += "\nhandle=" + std::to_string(entry.first) + " " + entry.second->Stats();
+  }
+  HMRDP_LOGI("replay list: %{public}s", out.c_str());
   napi_value result = nullptr;
-  napi_create_string_utf8(env, lines.c_str(), lines.size(), &result);
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
   return result;
 }
 
@@ -987,14 +1082,14 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setHardwareAccel", nullptr, SetHardwareAccel, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setGfxCapture", nullptr, SetGfxCapture, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"stopGfxReplayTest", nullptr, StopGfxReplayTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"resizeGfxReplayTest", nullptr, ResizeGfxReplayTest, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"gfxReplayTestStats", nullptr, GfxReplayTestStats, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
+      {"startReplay", nullptr, StartReplay, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"stopReplay", nullptr, StopReplay, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"stopAllReplays", nullptr, StopAllReplays, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"resizeReplay", nullptr, ResizeReplay, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"replayStats", nullptr, ReplayStats, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"listReplays", nullptr, ListReplays, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"vulkanInfo", nullptr, VulkanInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"vulkanAccelSupport", nullptr, VulkanAccelSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
