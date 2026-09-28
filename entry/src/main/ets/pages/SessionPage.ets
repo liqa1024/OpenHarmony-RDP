@@ -5,7 +5,7 @@ import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { pointer } from '@kit.InputKit';
-import { window } from '@kit.ArkUI';
+import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
@@ -15,8 +15,8 @@ import { PendingConnection, RdpConnectOptions,
 import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SettingsStore,
-  srRatioLabel } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_ZOOM,
+  SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
@@ -36,6 +36,14 @@ const MIN_PINCH_HALF: number = 8;
 // bad sample can never explode or collapse the synthetic finger separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
+// Ceiling of the direct (local) picture zoom; 1.0 is the fitted view.
+const MIN_VIEW_SCALE: number = 1;
+const MAX_VIEW_SCALE: number = 8;
+// A pinch released below this scale snaps back to exactly 100% (VIEW_SNAP_MS).
+const VIEW_SNAP_SCALE: number = 1.08;
+const VIEW_SNAP_MS: number = 180;
+// Pan per mouse wheel notch (vp); the touchpad scroll pans 1:1 instead.
+const PAN_WHEEL_STEP: number = 64;
 // External RDPEI ids for the synthetic pinch contacts; real screen touches use
 // touch.id + 1 (1..11), so these never collide.
 const PINCH_TOUCH_ID_A: number = 20;
@@ -302,9 +310,11 @@ struct SessionPage {
   private pinchCtrlDown: boolean = false;
   private pinchZoomSpeed: number = 1;
   private readonly ctrlScancode: number = 0x1D;
-  // Pinch translation: false = Ctrl+wheel (native RDP behaviour), true = a
-  // synthetic native two-finger touch pinch around the pointer.
+  // How a touchpad two-finger pinch is handled, as the two flags the gesture
+  // branches on: a synthetic native two-finger touch, or a local picture zoom.
+  // (Ctrl+wheel, the default, is neither.)
   private pinchAsTouch: boolean = false;
+  private pinchDirect: boolean = false;
   private pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   private touchPinchActive: boolean = false;
   // While a synthetic-touch pinch is running the OS hides the mouse pointer (a
@@ -326,6 +336,20 @@ struct SessionPage {
   private touchPinchAngle: number = 30;
   private touchPinchUnitX: number = 1;
   private touchPinchUnitY: number = 0;
+  // Direct (local) picture zoom: the transform on the XComponent wrapper plus the
+  // state behind it (1.0 = fitted view). Kept as numbers so a later pinch can
+  // anchor on where the picture currently is (see the direct-zoom methods).
+  @State private viewMatrix: Matrix4Transit = matrix4.identity();
+  private viewScale: number = 1;
+  private viewTransX: number = 0;
+  private viewTransY: number = 0;
+  // Pinch-start snapshot: the anchor under the cursor and the screen offset that
+  // keeps it there; only the scale changes during the gesture.
+  private viewPinchAnchorX: number = 0;
+  private viewPinchAnchorY: number = 0;
+  private viewPinchPanX: number = 0;
+  private viewPinchPanY: number = 0;
+  private viewPinchBaseScale: number = 1;
   private sessionWindow: window.Window | undefined = undefined;
   // Clipboard redirection is manual, driven by the toolbar. The remote
   // clipboard is cached when the server offers it; "复制" pulls it to the local
@@ -414,7 +438,8 @@ struct SessionPage {
     this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
     this.pinchZoomSpeed =
       Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, settings.pinchZoomSpeed));
-    this.pinchAsTouch = settings.pinchAsTouch;
+    this.pinchAsTouch = settings.pinchMode === PINCH_MODE_TOUCH;
+    this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
@@ -687,6 +712,8 @@ struct SessionPage {
         if (!Number.isNaN(width) && !Number.isNaN(height) && width > 0 && height > 0) {
           this.desktopWidth = width;
           this.desktopHeight = height;
+          // A new desktop size moves the fitted rect under any local zoom.
+          this.resetViewZoom();
         }
       }
     } else if (event === RdpEvent.ClipboardText) {
@@ -1801,22 +1828,30 @@ struct SessionPage {
     return 0;
   }
 
-  private mapPointer(x: number, y: number): number[] {
+  /**
+   * The fitted (letterboxed) rectangle of the desktop inside the component, in
+   * vp: `[x, y, width, height]`. It is the mapping both the pointer translation
+   * and the direct picture zoom are built on, so they cannot drift apart.
+   */
+  private baseViewRect(): number[] {
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
     const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
     const desktopAspect: number = this.desktopWidth / this.desktopHeight;
     const compAspect: number = compWidth / compHeight;
-    let viewX: number = 0;
-    let viewY: number = 0;
-    let viewWidth: number = compWidth;
-    let viewHeight: number = compHeight;
     if (desktopAspect > compAspect) {
-      viewHeight = compWidth / desktopAspect;
-      viewY = (compHeight - viewHeight) / 2;
-    } else {
-      viewWidth = compHeight * desktopAspect;
-      viewX = (compWidth - viewWidth) / 2;
+      const viewHeight: number = compWidth / desktopAspect;
+      return [0, (compHeight - viewHeight) / 2, compWidth, viewHeight];
     }
+    const viewWidth: number = compHeight * desktopAspect;
+    return [(compWidth - viewWidth) / 2, 0, viewWidth, compHeight];
+  }
+
+  private mapPointer(x: number, y: number): number[] {
+    const rect: number[] = this.baseViewRect();
+    const viewX: number = rect[0];
+    const viewY: number = rect[1];
+    const viewWidth: number = rect[2];
+    const viewHeight: number = rect[3];
     const normalizedX: number = (x - viewX) / viewWidth;
     const normalizedY: number = (y - viewY) / viewHeight;
     const clampedX: number = Math.min(1, Math.max(0, normalizedX));
@@ -2117,6 +2152,17 @@ struct SessionPage {
     if (vertical === 0 && horizontal === 0) {
       return;
     }
+    // Zoom mode: while the picture is magnified, a scroll pans it locally and
+    // nothing reaches the remote; at 100% the normal scroll returns. Touchpad
+    // displacement is in vp (1:1), a wheel reports notches (fixed step).
+    if (this.pinchDirect && this.viewScale > MIN_VIEW_SCALE) {
+      if (event.sourceTool === SourceTool.TOUCHPAD) {
+        this.panView(-horizontal, -vertical);
+      } else {
+        this.panView(0, -vertical * PAN_WHEEL_STEP);
+      }
+      return;
+    }
     const point: number[] = this.mapPointer(event.x, event.y);
     if (event.sourceTool === SourceTool.TOUCHPAD) {
       this.handleTouchpadScroll(vertical, horizontal, point);
@@ -2155,7 +2201,9 @@ struct SessionPage {
     if (!this.pinchActive) {
       this.pinchActive = true;
       this.pinchAccum = 0;
-      if (this.pinchAsTouch) {
+      if (this.pinchDirect) {
+        this.beginViewPinch(event, scale);
+      } else if (this.pinchAsTouch) {
         this.beginTouchPinch(event, scale);
       } else {
         // Ctrl goes down immediately and the current distance is the baseline.
@@ -2165,6 +2213,10 @@ struct SessionPage {
       return;
     }
     if (scale <= 0) {
+      return;
+    }
+    if (this.pinchDirect) {
+      this.updateViewPinch(scale);
       return;
     }
     if (this.pinchAsTouch) {
@@ -2203,6 +2255,128 @@ struct SessionPage {
       this.pinchAccum += step;
       this.sendWheel(false, point);
     }
+  }
+
+  /**
+   * Direct-zoom pinch start: anchor on the point under the cursor (the desktop
+   * pixel there must not move) and let the gesture ratio only change the scale.
+   * The cursor is the anchor, 100% the floor, and the pan is clamped to cover the
+   * viewport (centred once the picture is smaller) - the automatic alignment.
+   */
+  private beginViewPinch(event: AxisEvent, scale: number): void {
+    const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
+    const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
+    const cx: number = compWidth / 2;
+    const cy: number = compHeight / 2;
+    this.viewPinchAnchorX = Math.max(0, Math.min(compWidth, event.x));
+    this.viewPinchAnchorY = Math.max(0, Math.min(compHeight, event.y));
+    this.viewPinchBaseScale = this.viewScale;
+    // The anchor's current screen position is C + s0*(A - C) + T0; the gesture
+    // keeps exactly that, so the constant pan below is its offset from A.
+    this.viewPinchPanX = cx + this.viewScale * (this.viewPinchAnchorX - cx) + this.viewTransX
+      - this.viewPinchAnchorX;
+    this.viewPinchPanY = cy + this.viewScale * (this.viewPinchAnchorY - cy) + this.viewTransY
+      - this.viewPinchAnchorY;
+    this.updateViewPinch(scale > 0 ? scale : 1);
+  }
+
+  /**
+   * Applies the gesture ratio on top of the scale the pinch started at (axisPinch
+   * is already relative to the start), clamped to the allowed zoom range.
+   */
+  private updateViewPinch(scale: number): void {
+    const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO,
+      scale > 0 ? scale : 1));
+    const clamped: number = Math.max(MIN_VIEW_SCALE, Math.min(MAX_VIEW_SCALE,
+      this.viewPinchBaseScale * ratio));
+    this.applyViewZoom(clamped);
+  }
+
+  /** Rebuilds the transform for `scale`, keeping the pinch anchor in place. */
+  private applyViewZoom(scale: number): void {
+    const rect: number[] = this.baseViewRect();
+    const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
+    const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
+    const cx: number = compWidth / 2;
+    const cy: number = compHeight / 2;
+    const unclampedX: number = this.viewPinchAnchorX +
+      scale * (rect[0] - this.viewPinchAnchorX) + this.viewPinchPanX;
+    const unclampedY: number = this.viewPinchAnchorY +
+      scale * (rect[1] - this.viewPinchAnchorY) + this.viewPinchPanY;
+    const left: number = this.clampViewEdge(unclampedX, compWidth, rect[2] * scale);
+    const top: number = this.clampViewEdge(unclampedY, compHeight, rect[3] * scale);
+    const panX: number = this.viewPinchPanX + (left - unclampedX);
+    const panY: number = this.viewPinchPanY + (top - unclampedY);
+    this.viewScale = scale;
+    this.viewTransX = (1 - scale) * (this.viewPinchAnchorX - cx) + panX;
+    this.viewTransY = (1 - scale) * (this.viewPinchAnchorY - cy) + panY;
+    this.commitViewMatrix();
+  }
+
+  /** Pans the magnified picture by a screen shift (vp), clamped like the zoom. */
+  private panView(dx: number, dy: number): void {
+    const rect: number[] = this.baseViewRect();
+    const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
+    const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
+    const cx: number = compWidth / 2;
+    const cy: number = compHeight / 2;
+    const scale: number = this.viewScale;
+    const width: number = rect[2] * scale;
+    const height: number = rect[3] * scale;
+    const left: number = this.clampViewEdge(
+      cx + scale * (rect[0] - cx) + this.viewTransX + dx, compWidth, width);
+    const top: number = this.clampViewEdge(
+      cy + scale * (rect[1] - cy) + this.viewTransY + dy, compHeight, height);
+    this.viewTransX = left - cx - scale * (rect[0] - cx);
+    this.viewTransY = top - cy - scale * (rect[1] - cy);
+    this.commitViewMatrix();
+  }
+
+  /**
+   * Covers the viewport while the picture is larger than it, and centres it once
+   * it is smaller - this is also what aligns the view back to 100%.
+   */
+  private clampViewEdge(position: number, viewport: number, content: number): number {
+    if (content >= viewport) {
+      return Math.max(viewport - content, Math.min(0, position));
+    }
+    return (viewport - content) / 2;
+  }
+
+  /** The transform ArkUI applies: scale about the component centre + px shift. */
+  private commitViewMatrix(): void {
+    const pxPerVp: number = this.getUIContext().vp2px(1);
+    this.viewMatrix = matrix4.init([
+      this.viewScale, 0, 0, 0,
+      0, this.viewScale, 0, 0,
+      0, 0, 1, 0,
+      this.viewTransX * pxPerVp, this.viewTransY * pxPerVp, 0, 1
+    ]);
+  }
+
+  /** Drops the local zoom back to the fitted (100%) view. */
+  private resetViewZoom(): void {
+    if (this.viewScale === MIN_VIEW_SCALE && this.viewTransX === 0 && this.viewTransY === 0) {
+      return;
+    }
+    this.viewScale = MIN_VIEW_SCALE;
+    this.viewTransX = 0;
+    this.viewTransY = 0;
+    this.viewMatrix = matrix4.identity();
+  }
+
+  /** Snaps a pinch that ended just above 100% smoothly back to exactly 100%. */
+  private snapViewZoom(): void {
+    if (!this.pinchDirect || this.viewScale <= MIN_VIEW_SCALE
+      || this.viewScale >= VIEW_SNAP_SCALE) {
+      return;
+    }
+    this.getUIContext().animateTo({ duration: VIEW_SNAP_MS, curve: Curve.EaseOut }, () => {
+      this.viewScale = MIN_VIEW_SCALE;
+      this.viewTransX = 0;
+      this.viewTransY = 0;
+      this.viewMatrix = matrix4.identity();
+    });
   }
 
   /**
@@ -2301,6 +2475,8 @@ struct SessionPage {
     // Release unconditionally: the final event may not carry the pinch axis, so
     // pinchActive can already be false while Ctrl is still logically held.
     this.setPinchCtrl(false);
+    // Direct mode: a pinch that stopped just above 100% settles back to it.
+    this.snapViewZoom();
   }
 
   private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
@@ -2904,42 +3080,57 @@ struct SessionPage {
         this.sessionToolbar()
       }
       Stack({ alignContent: Alignment.TopStart }) {
-        XComponent({
-          id: 'rdpSurface',
-        type: XComponentType.SURFACE,
-        controller: this.controller
-      })
+        // The picture lives in its own layer so the direct pinch mode can scale
+        // it locally (applyViewZoom); the Stack below clips it, so a magnified
+        // picture cannot spill over the toolbar or past the window.
+        Column() {
+          XComponent({
+            id: 'rdpSurface',
+            type: XComponentType.SURFACE,
+            controller: this.controller
+          })
+            .width('100%')
+            .height('100%')
+            .backgroundColor('#000000')
+            .focusable(true)
+            .defaultFocus(true)
+            .onMouse((event: MouseEvent) => {
+              this.handleMouse(event);
+            })
+            .onHover((isHover: boolean) => {
+              // The system may drop a custom cursor when the pointer leaves and
+              // re-enters the window, so re-install the last known shape.
+              if (isHover) {
+                this.applyCursor();
+              }
+            })
+            .onBlur(() => {
+              this.releaseAllInputs();
+            })
+            .onTouch((event: TouchEvent) => {
+              this.handleTouch(event);
+            })
+            .onAxisEvent((event: AxisEvent) => {
+              this.handleAxis(event);
+            })
+            .onKeyEvent((event: KeyEvent) => {
+              this.handleKey(event);
+            })
+            .onAreaChange((oldArea: Area, newArea: Area) => {
+              const width: number = this.lengthToNumber(newArea.width);
+              const height: number = this.lengthToNumber(newArea.height);
+              if (this.componentWidth !== width || this.componentHeight !== height) {
+                // The fitted rect changed under the zoom; re-fit rather than
+                // leave a stale transform (also the window-resize case).
+                this.resetViewZoom();
+              }
+              this.componentWidth = width;
+              this.componentHeight = height;
+            })
+        }
         .width('100%')
         .height('100%')
-        .backgroundColor('#000000')
-        .focusable(true)
-        .defaultFocus(true)
-        .onMouse((event: MouseEvent) => {
-          this.handleMouse(event);
-        })
-        .onHover((isHover: boolean) => {
-          // The system may drop a custom cursor when the pointer leaves and
-          // re-enters the window, so re-install the last known shape.
-          if (isHover) {
-            this.applyCursor();
-          }
-        })
-        .onBlur(() => {
-          this.releaseAllInputs();
-        })
-        .onTouch((event: TouchEvent) => {
-          this.handleTouch(event);
-        })
-        .onAxisEvent((event: AxisEvent) => {
-          this.handleAxis(event);
-        })
-        .onKeyEvent((event: KeyEvent) => {
-          this.handleKey(event);
-        })
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-          this.componentWidth = this.lengthToNumber(newArea.width);
-          this.componentHeight = this.lengthToNumber(newArea.height);
-        })
+        .transform(this.viewMatrix)
 
         // Fullscreen mode: the toolbar floats over the image and auto-hides.
         if (this.isFullscreen && this.showToolbar && !this.showOverlay) {
@@ -2967,6 +3158,7 @@ struct SessionPage {
       }
       .width('100%')
       .layoutWeight(1)
+      .clip(true)
     }
     .width('100%')
     .height('100%')

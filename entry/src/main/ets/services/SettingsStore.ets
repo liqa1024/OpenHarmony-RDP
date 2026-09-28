@@ -16,6 +16,14 @@ const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
+
+// How a touchpad two-finger pinch is handled (AppSettings.pinchMode):
+//  - WHEEL: map it onto Ctrl+wheel, so the remote application zooms itself;
+//  - TOUCH: synthesise two native touch contacts at the pointer;
+//  - ZOOM:  scale the picture locally with no traffic to the remote at all.
+export const PINCH_MODE_WHEEL: number = 0;
+export const PINCH_MODE_TOUCH: number = 1;
+export const PINCH_MODE_ZOOM: number = 2;
 // Initial separation of the two synthetic touch-pinch contacts, as a percentage
 // of the smaller desktop side (window-relative, not a fixed resolution) at 1.0x
 // gesture ratio. Shared so the settings placeholder and the session's own
@@ -59,9 +67,10 @@ export class AppSettings {
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
-  // When true the touchpad pinch is emulated as a native two-finger touch pinch
-  // at the pointer; when false it stays Ctrl+wheel (the default).
-  pinchAsTouch: boolean = false;
+  // How the touchpad two-finger pinch is handled: Ctrl+wheel (default), a
+  // synthetic native two-finger touch pinch, or a local picture zoom that sends
+  // nothing to the remote (PINCH_MODE_*, see above).
+  pinchMode: number = PINCH_MODE_WHEEL;
   // Tilt (degrees) of the synthetic contact pair for touch pinch: positive is
   // clockwise on screen (left hand), negative flips it (right hand, e.g. -30).
   // ArkUI cannot report the real finger angle, so this stands in for the hand.
@@ -150,6 +159,7 @@ export class SettingsStore {
     settings.toolbarHideDelay = DEFAULT_TOOLBAR_HIDE_DELAY;
     settings.touchpadScrollSpeed = DEFAULT_SPEED_SCALE;
     settings.pinchZoomSpeed = DEFAULT_SPEED_SCALE;
+    settings.pinchMode = PINCH_MODE_WHEEL;
     const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
     if (disp !== undefined) {
       settings.mainWindowSizeEnabled = true;
@@ -174,8 +184,11 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.pinchZoomSpeed =
         SettingsStore.readNumber(store, 'pinchZoomSpeed', settings.pinchZoomSpeed);
-      settings.pinchAsTouch =
-        SettingsStore.readBoolean(store, 'pinchAsTouch', settings.pinchAsTouch);
+      // The old two-way `pinchAsTouch` boolean maps onto the three-way mode, so a
+      // stored value from before the third option is not lost.
+      const legacyPinchTouch: boolean = SettingsStore.readBoolean(store, 'pinchAsTouch', false);
+      settings.pinchMode = SettingsStore.readNumber(store, 'pinchMode',
+        legacyPinchTouch ? PINCH_MODE_TOUCH : PINCH_MODE_WHEEL);
       settings.pinchTouchAngle =
         SettingsStore.readNumber(store, 'pinchTouchAngle', settings.pinchTouchAngle);
       settings.pinchTouchDistance =
@@ -242,7 +255,7 @@ export class SettingsStore {
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
-      store.putSync('pinchAsTouch', settings.pinchAsTouch);
+      store.putSync('pinchMode', settings.pinchMode);
       store.putSync('pinchTouchAngle', settings.pinchTouchAngle);
       store.putSync('pinchTouchDistance', settings.pinchTouchDistance);
       store.putSync('touchHighRate', settings.touchHighRate);

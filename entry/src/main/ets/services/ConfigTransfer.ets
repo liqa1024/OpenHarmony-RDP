@@ -12,7 +12,7 @@ import { fileIo, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { SavedConnection, SR_BACKEND_XENGINE } from '../model/RdpModels';
-import { AppSettings, SettingsStore } from './SettingsStore';
+import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
 import { DeviceCapabilities } from './DeviceCapabilities';
 
@@ -304,8 +304,10 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
     settings.pinchZoomSpeed =
       ConfigTransfer.readNumber(rec, 'pinchZoomSpeed', settings.pinchZoomSpeed);
-    settings.pinchAsTouch =
-      ConfigTransfer.readBoolean(rec, 'pinchAsTouch', settings.pinchAsTouch);
+    // A file written before the third mode carries the old two-way boolean.
+    const legacyPinchTouch: boolean = ConfigTransfer.readBoolean(rec, 'pinchAsTouch', false);
+    settings.pinchMode = ConfigTransfer.readNumber(rec, 'pinchMode',
+      legacyPinchTouch ? PINCH_MODE_TOUCH : PINCH_MODE_WHEEL);
     settings.pinchTouchAngle =
       ConfigTransfer.readNumber(rec, 'pinchTouchAngle', settings.pinchTouchAngle);
     settings.pinchTouchDistance =

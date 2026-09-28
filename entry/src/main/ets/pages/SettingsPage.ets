@@ -7,7 +7,8 @@ import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Rdp
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, SCALE_PRESETS, SR_RATIO_PRESETS,
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
+  PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
@@ -56,7 +57,7 @@ struct SettingsPage {
   @State hideDelay: number = 250;
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
-  @State pinchAsTouch: boolean = false;
+  @State pinchMode: number = PINCH_MODE_WHEEL;
   @State pinchTouchAngle: number = 30;
   @State pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   @State touchHighRate: boolean = false;
@@ -140,7 +141,7 @@ struct SettingsPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
     this.pinchZoomSpeed = settings.pinchZoomSpeed;
-    this.pinchAsTouch = settings.pinchAsTouch;
+    this.pinchMode = settings.pinchMode;
     this.pinchTouchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     this.touchHighRate = settings.touchHighRate;
@@ -285,7 +286,7 @@ struct SettingsPage {
     settings.toolbarHideDelay = this.hideDelay;
     settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
     settings.pinchZoomSpeed = this.pinchZoomSpeed;
-    settings.pinchAsTouch = this.pinchAsTouch;
+    settings.pinchMode = this.pinchMode;
     settings.pinchTouchAngle = this.pinchTouchAngle;
     settings.pinchTouchDistance = this.pinchTouchDistance;
     settings.touchHighRate = this.touchHighRate;
@@ -332,7 +333,7 @@ struct SettingsPage {
     this.hideDelay = defaults.toolbarHideDelay;
     this.touchpadScrollSpeed = defaults.touchpadScrollSpeed;
     this.pinchZoomSpeed = defaults.pinchZoomSpeed;
-    this.pinchAsTouch = defaults.pinchAsTouch;
+    this.pinchMode = defaults.pinchMode;
     this.pinchTouchAngle = defaults.pinchTouchAngle;
     this.pinchTouchDistance = defaults.pinchTouchDistance;
     this.touchHighRate = defaults.touchHighRate;
@@ -511,6 +512,35 @@ struct SettingsPage {
         this.scaleAuto = auto;
         this.persist();
       })
+  }
+
+  /** One choice of the touchpad pinch mode; the accent marks the active one. */
+  @Builder
+  pinchModeChip(mode: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.pinchMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.pinchMode === mode
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.pinchMode = mode;
+        this.persist();
+      })
+  }
+
+  /** One-line explanation of the selected touchpad pinch mode. */
+  private pinchModeDescription(): string {
+    if (this.pinchMode === PINCH_MODE_TOUCH) {
+      return '在鼠标位置合成两个原生触点，远端像真实双指一样缩放';
+    }
+    if (this.pinchMode === PINCH_MODE_ZOOM) {
+      return '只在本机放大画面，不向远端发送数据；以光标为中心，最小 100%';
+    }
+    return '映射为 Ctrl+滚轮，由远端应用自行缩放（会触发远端重绘）';
   }
 
   @Builder
@@ -754,38 +784,44 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            this.sliderItem({
-              title: '缩放速度',
-              subtitle: 'Ctrl+滚轮模式的缩放速度，越大越快，1.0× 为基准',
-              value: this.pinchZoomSpeed,
-              min: MIN_SPEED_SCALE,
-              max: MAX_SPEED_SCALE,
-              step: 0.1,
-              unit: '×',
-              precision: 1,
-              enabled: !this.pinchAsTouch,
-              disabledReason: '触摸模拟模式下为 1:1 缩放，此速度不生效',
-              onChange: (v: number) => {
-                this.pinchZoomSpeed = v;
-                this.persist();
-              }
-            })
+            Text('触控板两指捏合模式')
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+            Text(this.pinchModeDescription())
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .margin({ top: 2 })
 
-            Divider().color($r('app.color.divider'))
+            Row() {
+              this.pinchModeChip(PINCH_MODE_WHEEL, 'Ctrl 滚轮')
+              this.pinchModeChip(PINCH_MODE_TOUCH, '触摸模拟')
+              this.pinchModeChip(PINCH_MODE_ZOOM, '直接缩放')
+            }
+            .width('100%')
+            .margin({ top: 10, bottom: 6 })
 
-            this.toggleItem({
-              title: '使用触摸模拟触控板捏合',
-              subtitle: '在鼠标位置用原生双指触摸缩放；关闭后则映射为 Ctrl+滚轮',
-              value: this.pinchAsTouch,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.pinchAsTouch = v;
-                this.persist();
-              }
-            })
+            if (this.pinchMode === PINCH_MODE_WHEEL) {
+              Divider().color($r('app.color.divider'))
 
-            if (this.pinchAsTouch) {
+              this.sliderItem({
+                title: '缩放速度',
+                subtitle: 'Ctrl+滚轮模式的缩放速度，越大越快，1.0× 为基准',
+                value: this.pinchZoomSpeed,
+                min: MIN_SPEED_SCALE,
+                max: MAX_SPEED_SCALE,
+                step: 0.1,
+                unit: '×',
+                precision: 1,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.pinchZoomSpeed = v;
+                  this.persist();
+                }
+              })
+            }
+
+            if (this.pinchMode === PINCH_MODE_TOUCH) {
               Divider().color($r('app.color.divider'))
 
               this.sliderItem({
