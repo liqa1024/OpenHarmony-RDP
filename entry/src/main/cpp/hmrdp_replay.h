@@ -23,7 +23,7 @@ namespace hmrdp {
 class GfxCpuDesktop;
 struct PresentUploadInfo;  // hmrdp_gfx_cpu.h
 
-// Correctness gate (doc_agent/gfx-engine.md §8.2). Files are named after the
+// Correctness gate (doc_agent/gfx-engine.md §7.2). Files are named after the
 // capture's fingerprint (`hmrdp_ref_<tag>.{hash,bmp}`), so a reference recorded
 // from another capture cannot be used by accident.
 //   kOff     - plain perf run.
@@ -121,7 +121,7 @@ class GfxReplay {
   // Largest raw gdi rect count one frame carried (before the presenter cap).
   std::atomic<uint64_t> uploadMaxRects_{0};
   // Process CPU time at run start/end. Reported next to `cpuKHz=` because two runs
-  // are only comparable at the same clock (doc_agent/gfx-engine.md §8.1).
+  // are only comparable at the same clock (doc_agent/gfx-engine.md §7.1).
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};

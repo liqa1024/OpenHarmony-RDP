@@ -16,7 +16,7 @@
 #     read `sign` and write `buffer` removes that whole copy: the same values end
 #     up in the same two buffers (the pass that used to be in place now reads the
 #     same bytes from the other buffer), so this is a bit-exact change and the
-#     golden reference stays valid (doc_agent/gfx-engine.md 8.2).
+#     golden reference stays valid (doc_agent/gfx-engine.md §7.2).
 #
 #     LL3 keeps its in-place shape: the differential decode has to see the
 #     un-shifted values, so those 64/81 samples are copied over first.

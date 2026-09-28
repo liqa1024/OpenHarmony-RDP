@@ -157,7 +157,7 @@
     （CPU 路线把 gdi 主缓冲直接放在呈现器内存里，上一帧必须先读完）；`presentWait` = `present` 那一段里
     等显示端（Vulkan 的 acquire+fence；GLES 的 `eglSwapBuffers`）。两者都是显示/GPU 侧反压、不是处理，
     故单列；**帧整段墙钟 = 四相之和 + `sync` + `presentWait`**（回放再加节拍睡眠）。定义与自检
-    （`本机 + sync ≈ 1/fps`）见 [`gfx-engine.md`](gfx-engine.md) §8.1。
+    （`本机 + sync ≈ 1/fps`）见 [`gfx-engine.md`](gfx-engine.md) §7.1。
   - **节拍睡眠（`pace`）是唯一直接剔除的一项**：回放的人为节流不是客户端工作。
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值
     （只有服务端注册该回调），故连接时给 `context->autodetect` 自行注册回调捕获。
@@ -186,7 +186,7 @@
   - **相位是墙钟，所以低频/被调度会放大它**：RTT 大 ⇒ 帧稀 ⇒ CPU 闲 ⇒ SoC 掉档、cache/线程池变冷 ⇒
     同一份解码的墙钟变大。**网络等待本身不在任何相位里**（到达戳在完整 chunk 之后、ZGX 解压之前），
     所以 live 相位偏大只可能来自频率/调度，不是"把 RTT 算进去了"；跨频率比相位无意义，回放侧用
-    `cpuKHz=` 记档（[`gfx-engine.md`](gfx-engine.md) §8.1）。
+    `cpuKHz=` 记档（[`gfx-engine.md`](gfx-engine.md) §7.1）。
   - **仍不含**：传输层读/drdynvc 重组（在抓取钩子之前）、**RDPGFX 帧回执**（FreeRDP 在 EndFrame
     回调返回**之后**才写）；`present` 里的 `WaitForFences`/`acquireNextImageKHR` 在合成器不还 buffer
     时会阻塞，排队/显示延迟会算进 `present`（与 `sync` 不同）。

@@ -123,7 +123,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   分支（不提交、不唤醒、不等待）。这里**没有 WinPR 池控制面**。
 - **解码侧没有 dev 探针**：解码路径上只保留功能代码——分相计时、逐 tile 采样、逆 DWT 对拍这一组
   在 CPU 链路定档时整体删掉了（连同其门控）。要重新量解码内部，只能按
-  [`gfx-engine.md`](gfx-engine.md) §8.1 的口径加一次性探针，量完就删。
+  [`gfx-engine.md`](gfx-engine.md) §7.1 的口径加一次性探针，量完就删。
 
 **采集 / 回放 / QoS**
 
@@ -144,8 +144,8 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **客户端侧带宽 / 帧回执 / QoS**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
   `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；app 注册的 **QoS** 钩子由
   drdynvc 线程和 **GFX 工作线程**各自在入口调用一次（整条帧流水线现在在工作线程上）。解码的 tile
-  worker 不再来自 WinPR 池，它们的 QoS 由平台队列的任务属性给（见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §1）。
+   worker 不再来自 WinPR 池，它们的 QoS 由平台队列的任务属性给（见
+   [`gfx-engine.md`](gfx-engine.md) §7.3）。
 
 **正确性 / 一致性**
 
@@ -157,24 +157,24 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   一个线程池任务）、`update_tiles` **不再逐 tile 建 `REGION16`**（一次取裁剪表 + 普通求交 + per-tile
   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
   三处都**不改变结果**（像素逐个相同、脏区面积相同）。整块按"一次性整体打补丁"设计：
-  **改动它要从干净源码重打**。口径见 [`gfx-engine.md`](gfx-engine.md) §8.1。
+  **改动它要从干净源码重打**。口径见 [`gfx-engine.md`](gfx-engine.md) §7.1。
 - **并行执行器 = 平台队列（ffrt），唯一**：patch step 21 让解码在提交 chunk 前看弱符号
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
   = 宽度 − 1 + 任务属性 + 逐 handle 等待 + 调用线程自己跑一个 chunk）；没有这些导出时宽度读作 1 ⇒
   串行，**没有 WinPR 池兜底**。patch step 25 进一步在平台
   执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不再为解码建 WinPR 池。见
-  [`cpu-accel-plan.md`](cpu-accel-plan.md) §1。
+  [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
   malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；
-  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §3。
+  `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **tile 工作集来自裁剪矩形、合成收进共用 helper**：patch step 22b 给 tile 记下解码它的帧
   （`hmrdpFrameId`），`update_tiles` 由此只走**裁剪矩形覆盖到的 tile 范围**，不再每条消息重走整帧累积的
   tile 列表；逐 tile 的裁剪求交 + 拷贝 + 脏区 span 记账收进 `hmrdp_composite_tile`，与 tile 解码侧的直写
-  共用同一套几何。结果（tile 集合、裁剪、像素、脏区）不变。见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
+  共用同一套几何。结果（tile 集合、裁剪、像素、脏区）不变。见 [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **tile 合成（拷贝）移进并行段**：patch step 23 把目标缓冲与合并后的 clip 存进 codec context，tile 解码
   完一块就直写 surface；`update_tiles` 保留遍历与 O(1) 脏区 span 记账，只在**clip 哈希一致**时跳过那次
   拷贝（哈希折入消息序号；"一条消息多条 region"时两者 clip 不同，仍由 `update_tiles` 覆盖）。
-  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。形态见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §4。
+  `HMRDP_WORKER_TILE_COPY` 是 A/B 开关。形态见 [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **逆 DWT 改写**：Progressive 实际跑的是**抽取（外推）**那一支
   （`progressive_rfx_idwt_x/_y`，`RFX_DWT_REDUCE_EXTRAPOLATE` 区域），`codec/rfx_dwt.c` 的通用实现
   在全屏码流上一次也不进。抽取支与通用支**都**改成"只动组织、不动算术"：`X2 = L - (H0+H1)/2`
@@ -184,7 +184,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **允许舍入的那部分（`-DWITH_SIMD=ON`）**：抽取支的上游 NEON（8 路 16 位）、量化移位、
   `yCbCrToRGB` 与部分 primitives 由 FreeRDP 自己的实现接管；非抽取支的上游 NEON **不接**
   （16 位车道相加会回绕，不是舍入）。这类改动由**量级门禁**兜底，见
-  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
+  [`gfx-engine.md`](gfx-engine.md) §7.1/§7.2。
 - **`state` 少一趟搬运（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化那趟改成
   **`sign → buffer`**——原先是"就地改 `buffer` + 另拷一份到 `sign`"，于是每 tile/分量的那趟 8KB 搬运
   整趟消失，两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"
@@ -213,7 +213,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   primitives），它们**不保证**与通用 C 逐位相同——抽取支 DWT 的 `(a+b+1)>>1` 在 16 位车道上会回绕，
   只是本工程码流上从未触发。所以"与 FreeRDP 逐像素一致"的口径改成**量级**：由参考对比的
   `rgbPx/maxDelta` 给，且只在**同一构建配置**下可比（详见
-  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2）。**换这个开关必须重录参考画面**：
+  [`gfx-engine.md`](gfx-engine.md) §7.1/§7.2）。**换这个开关必须重录参考画面**：
   `bad=0` 只表示"自那次重录起没有再变"。
 - 优化等级：`libhmrdp.so` 由 hvigor 按构建模式重编（debug → `-O0 -g`，release → `-O2 -DNDEBUG`），
   **不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定

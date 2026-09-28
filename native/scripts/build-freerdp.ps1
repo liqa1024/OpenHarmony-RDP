@@ -74,7 +74,7 @@ $cfg = @(
   # primitives). Those are not required to be bit-identical to the generic C
   # code, so the correctness criterion is a *measured* one: the reference run
   # reports the pixel-level numbers (rgbPx/maxDelta), and the difference has to
-  # stay at rounding magnitude (doc_agent/gfx-engine.md §8.1/§8.2).
+  # stay at rounding magnitude (doc_agent/gfx-engine.md §7.1/§7.2).
   "-DWITH_SIMD=ON", "-DWITH_AAD=OFF", "-DWITH_SMARTCARD=OFF",
   "-DWITH_KEYBOARD_LAYOUT_FROM_FILE=OFF",
   "-DCHANNEL_AUDIN=ON", "-DCHANNEL_ENCOMSP=OFF", "-DCHANNEL_RAIL=OFF", "-DCHANNEL_REMDESK=OFF",

@@ -1,9 +1,8 @@
 # GFX 码流 / CPU（gdi）链路
 
 本文件是**改 GFX 相关代码前必读**的口径文档。范围：GFX 通道的压缩与命令模型、会话侧的接线约束、
-dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构与量测纪律（§8）。
-上屏这一段见 [`present-pipeline.md`](present-pipeline.md)；CPU 并行形态见
-[`cpu-accel-plan.md`](cpu-accel-plan.md)。
+dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构、量测纪律与并行形态（§7）。
+上屏这一段见 [`present-pipeline.md`](present-pipeline.md)。
 
 > **已移除**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与它的
 > 能力判定）和 H.264/AVC 支持，**不要复活**（理由见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
@@ -156,7 +155,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   `硬件加速` = Vulkan 上屏（就是设置里的「硬件加速」，页面上的按钮与它是同一个值）。
 - **验收口径 = 参考画面（golden reference）**：同一条路线先 `参考:导出` 记一遍
   （`hmrdp_ref_<captureTag>.{hash,bmp}`，`captureTag` 是录制内容指纹，换录像即换参考），之后每轮
-  `参考:对比` 看 `bad=`。判据、量级读法与"参考模式不是性能模式"见 §8.2。
+  `参考:对比` 看 `bad=`。判据、量级读法与"参考模式不是性能模式"见 §7.2。
 - **两份基线录像，改完解码/补丁都要跑**：一份**浏览/滚动**（消息稀疏、脏区小）作回归门，
   一份**看视频**（整帧大块变化、每帧多条 Progressive 消息）覆盖另一场景。样本与参考文件都在本地
   gitignore 目录，设备侧用同一个固定文件名喂给回放（`hdc` 只能**覆盖**已存在的文件，不能在该目录新建）。
@@ -187,21 +186,12 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   ⇒ 对齐"检测到即不支持"。
 - 采集与回放需要**打过补丁并重编的 FreeRDP**（见 [`native-libraries.md`](native-libraries.md) §2/§3）。
 
-## 7. 待办
+## 7. CPU（gdi）链路：判据、门禁与并行形态
 
-- **CPU 多核并行**（并行范围、执行器、宽度、划分、内存归属、合成归属）→
-  [`cpu-accel-plan.md`](cpu-accel-plan.md)；单核知识见 §8。
-- **若重建 GPU 优化**：以现有 Vulkan 上屏（`VkRenderer` + `hmrdp_vk_context`）为基础；呈现判定已是
-  唯一判定（§4），不要再引入第二套引擎判定与开关。
+**CPU 路线** = FreeRDP gdi 解码 + 本项目自己的呈现器；这是解码/合成的**唯一路径**（§0）。
+§7.1 讲**怎么读这笔账**，§7.2 讲**怎么判它没坏**，§7.3 是这条线**固定的并行形态**。
 
-
-## 8. CPU（gdi）链路：判据与门禁
-
-**CPU 路线** = FreeRDP gdi 解码 + 本项目自己的呈现器；这是解码/合成的**唯一路径**（§0）。这一节只留两件
-长期成立的事：**怎么读这笔账**、**怎么判它没坏**。这条线现在的并行形态（并行范围、执行器、宽度、
-划分、内存归属）见 [`cpu-accel-plan.md`](cpu-accel-plan.md)。
-
-### 8.1 判据与账目口径
+### 7.1 判据与账目口径
 
 - **判据**：**把每帧的计算成本降下来 = 能耗降下来**；fps 只要"够用"（跟得上服务端的到达节奏、不卡）。
   判收益看每轮 `cpu=`（整轮进程 CPU 时间）与 `本机` 拆相；**不看**单纯墙钟。
@@ -209,13 +199,12 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
     更便宜 ⇒ "并行换了多少 CPU 秒"**不是能量结论**。发回放轮时同轮记下 `run … cpuKHz=`，不同档不横向比。
 - **优先"少干活"**（去冗余拷贝、少唤醒、去掉重复搬运），但**不是因为"并行不好"**：多核低频在很多负载下
   比单核高频更省电，**并行本身是正当的能效手段**。
-  - ⚠ **并行要收益，调用线程必须进入工作集**（调用方参与，[`cpu-accel-plan.md`](cpu-accel-plan.md) §1）：
+  - ⚠ **并行要收益，调用线程必须进入工作集**（调用方参与，§7.3）：
     同一批 tile 若全部交给 worker 池、调用线程只停在屏障里，解码段墙钟与整轮 `cpu=` 都会明显变差——
     小 region 上甚至**不如串行**。
   - **宽度 = 在线核数，worker 池通常给不出那么多线程**：多出来的 task 只排队，并不换来墙钟。
-  - **规模自适应只有一处**：region 太小就降档甚至串行（`HMRDP_MIN_TILES_PER_WORKER`，
-    [`cpu-accel-plan.md`](cpu-accel-plan.md) §2）。小 region 上"多开线程"的收益低于每 region 的
-    提交/唤醒成本。
+  - **规模自适应只有一处**：region 太小就降档甚至串行（`HMRDP_MIN_TILES_PER_WORKER`，§7.3）。
+    小 region 上"多开线程"的收益低于每 region 的提交/唤醒成本。
 - 回放 stats 就是这条线的账：
 
   | 行 | 含义 |
@@ -225,7 +214,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
   | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |
-  | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6/§8.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
+  | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6/§7.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
   **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`present-pipeline.md`](present-pipeline.md) §4）。
@@ -242,7 +231,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   与墙钟类量（`本机`/拆相、解码段墙钟）**不能直接比**；串行时二者重合。
 - **判读顺序**：① `setup` ② `kB/frame`/`cmds/frame`（内容是否可比）③ `decode` ④ `present` ⑤ `sync`。
 
-### 8.2 正确性门禁：参考画面
+### 7.2 正确性门禁：参考画面
 
 - **门禁 = 参考画面（golden reference）**，两份基线录像各一套：先 `参考:导出` 记下
   `hmrdp_ref_<captureTag>.{hash,bmp}`，之后每轮 `参考:对比` 报 `bad=0`。参考文件名带**录制内容指纹**，
@@ -259,3 +248,119 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
     `compose` ⇒ 读性能数字请用 `参考:关` 那一轮。
 - **`bad=0` 覆盖不到的顺序约束**：上屏侧的帧序/等待（零拷贝单缓冲）不属于像素内容，
   判定只能靠机制 + 计数器（见 [`present-pipeline.md`](present-pipeline.md) §4）。
+
+### 7.3 并行形态（固定）
+
+实现位置：app 侧 `entry/src/main/cpp/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；解码侧补丁
+`native/scripts/patch-steps/` 11、20、21、22、22b、23、25。补丁对 app 模块的绑定是**弱符号**：
+没有这些导出的构建自动退化为串行。宽度、任务划分、执行器都不是运行期开关。
+
+**并行范围与线程归属**
+
+- **唯一并行段 = 一条 Progressive region 的 tile 解码**（`progressive_process_tiles`），外加
+  随之搬进该段的 tile 合成拷贝（见下）。并行只发生在一条 region 之内。
+- 其余各段都在 **GFX 工作线程**（会话自有；帧流水线已从 drdynvc 分发线程搬来，见
+  [`architecture.md`](architecture.md) §4）：
+
+| 段 | 线程 |
+|---|---|
+| ZGX 解压、PDU 解析、命令分类 | GFX 工作线程 |
+| 非像素命令（reset/create/fill/blit/cache…） | GFX 工作线程 |
+| region 位流解析（`read`，填 tile 元数据） | GFX 工作线程 |
+| **tile 解码 + tile 合成拷贝**（`dec`） | **GFX 工作线程 1 个 + ffrt（宽度 − 1 个）** |
+| `update_tiles` 剩余部分（遍历 + 脏区记账） | GFX 工作线程 |
+| surface → primary 合成、present 提交 | GFX 工作线程（GPU 侧另算） |
+
+- **消息间不重叠**：一条消息按 `read → dec → update` 接力完成后才处理下一条；没有跨消息流水线。
+- **串行分支**（宽度 ≤ 1）：同一 tile 循环直接在 GFX 工作线程执行，不建队列、不提交、不等待；
+  工作缓冲用 0 号槽。
+
+**执行器与宽度**
+
+- **执行器 = 平台任务队列（ffrt 并发队列），每会话 / 每回放实例一个**（`DecodeExecutor`，由 app 的
+  `hmrdp_parallel.*` 提供），解码器经弱符号使用：`HmrdpDecodeWidth()` 决定串行/并行分支；
+  `HmrdpParallelAvailable()` / `HmrdpParallelRun(tasks, fn, ctx)` 提交与等待。符号不解析 ⇒
+  宽度读作 1 ⇒ 串行。
+- **执行器归属**：`FramePipeline` 持有，一个桌面一份，绝不进程共享——两个会话同时解码不会互相拆
+  队列。解码入口（`HmrdpGfxReplayRecv`）以 `DecodeExecutorScope`（线程局部）把"当前执行器"告知
+  `HmrdpParallelRun`；该线程未绑定执行器时，整条 region 在调用线程内联执行。
+- 队列形态：`ffrt_queue_concurrent`，`max_concurrency` = 当前宽度 − 1；队列与每个任务都带属性
+  （name + `ffrt_qos_user_initiated`）；屏障 = 逐任务 handle `ffrt_queue_wait`。宽度变化时销毁重建
+  该执行器自己的队列（仅在其所有者无任务在途时发生，因为 `Run` 先等完自己的任务）。
+- **调用方参与（caller participation）**：GFX 工作线程自己跑一个 chunk，队列只跑剩下 `宽度 − 1` 个
+  （先提交、再跑自己的、最后等屏障）。region 用的线程数仍是宽度个，差别是其中一个从"停在屏障里"
+  变成"干活"：没有线程在 tile 还可领取时空转；向 worker 池少要一个线程（自动档宽度 = 在线核数，
+  池子可能给不出那么多）；且这一份跑在调用线程自己的上下文里（cache 热、QoS 是它自己的），而不是
+  一个刚被唤醒的 worker 上。分块仍按 home + 段尾偷取，所以它做完自己的 home 会继续领块，快的那
+  一侧自然多领。
+- `HmrdpParallelRun` 的分支：当前线程无绑定执行器 ⇒ 整条 region 内联执行；有执行器时 `tasks <= 1`
+  或宽度 ≤ 1 在调用线程内联执行；`tasks > 128` 拒绝；单个提交失败的任务在调用线程补跑，保证一条
+  region all-or-nothing。
+- **WinPR 池不参与**（补丁 25）：平台执行器可用时 `rfx.c` 置 `UseThreads = FALSE`，不建池。
+- **QoS**：tile worker 的 QoS 来自队列/任务属性；GFX 工作线程的 QoS 由 app 注册的钩子
+  （`HmrdpSetThreadQoSApplier`，补丁 09）在该线程入口调用一次（drdynvc 线程入口也仍调用它，但那
+  现在只剩拆包转发）。
+- **宽度 = 在线核数（上限 16）**，没有设置项：`hmrdp::DecodeThreads()` 只数 `sysconf` 的在线核。
+  解码器在**每条 region 边界**按需读 `HmrdpDecodeWidth()`，所以进程一起来就是这个宽度，无需
+  任何应用。性能核探测（`cpuinfo_max_freq`）只出现在日志行里，不参与宽度决策。
+
+**任务划分（region → 任务 → tile）**
+
+- **任务数按 region 的规模定**：`numChunks = min(宽度, numTiles / HMRDP_MIN_TILES_PER_WORKER)`，
+  cap 至 `HMRDP_TILE_CHUNKS = 64`（`hmrdp_region_chunks()`，补丁 21）。一个任务一个 home 区间，
+  任务描述符 `PROGRESSIVE_TILE_CHUNK_PARAM` 携带共享参数表、scratch 槽与 home 数组（补丁 20/21）。
+  一个线程至少要拿到 `HMRDP_MIN_TILES_PER_WORKER` 个 tile 才值得被唤醒，所以**小 region 自动降档**：
+  `numChunks <= 1`（即 `numTiles < 2 × 阈值`）时直接走串行分支，连队列都不提交。
+  **这是这条线唯一的规模自适应点**（定档值与判据见下）。
+- **划分 = home + 段尾块偷取**（唯一形态，没有对照档）：任务 h 的 home 区间为
+  `[h·N/K, (h+1)·N/K)`，K = `numChunks`。任务先解自己的 home——按 `HMRDP_TILE_CLAIM = 2` 个
+  tile 的块用 `__sync_fetch_and_add` 领取；home 解完后按 `(homeIndex + round) % homeCount` 轮询
+  偷取其他 home 的剩余块（同样按块领取）。**块大小是"尾块不均衡"与"领取流量"的折中**：块越小，
+  最后一个块被慢线程攥住的时间越短，但共享游标上的原子操作越多（判据见下）。
+  **调用线程也是这些 home 之一的所有者**，所以快的那一侧自然会多领。
+- **不变约束**：一个 tile 仍由单次 `progressive_process_tiles_tile_work_callback` 独占解码；
+  划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素
+  等价）。
+
+**内存归属**
+
+- **工作缓冲（scratch，补丁 20）**：per-context 一次性分配 `tileScratch` arena——64 个槽，
+  每槽两块缓冲（系数工作缓冲 + 逆 DWT scratch，各 `(8192+32)×3` 字节）。chunk 回调把本任务的
+  槽指针写进 `_Thread_local g_HmrdpTlsTileScratch`，tile 解码经 `hmrdp_tile_scratch()` 取用；
+  串行分支固定槽 0。tile 解码路径不再走 `bufferPool` 的 Take/Return。
+- **持久状态（补丁 22）**：每 tile 的三份跨消息常驻缓冲 `sign`/`current`/`data` 改为
+  **surface 级连续 arena**（`HMRDP_TILE_ARENA` 编译开关）：tile-major 布局——一个 tile 的
+  三份在同一段连续内存、段起点 64 字节对齐；arena 随 tile cache 增长整体重建并复制旧块
+  （预测器状态跨 resize 保留）；tile 结构不再拥有缓冲。首次绑定时显式清零
+  （`sign`/`current` 为 0、`data` 为 0xFF）。
+- **目标 surface**：tile 解码直接写入（见下）；多个 worker 写同一 surface 的不同行，互不重叠由
+  划分保证（tile 互不重叠 + home 连续）。
+
+**worker 侧合成拷贝与 `update_tiles`**
+
+- **直写（补丁 23，`HMRDP_WORKER_TILE_COPY` 编译开关）**：`progressive_decompress` 把目标缓冲
+  （指针/格式/步长/偏移/surface）暂存进 context；region 解码前按 region rects 建合并 clip
+  （region16 union，与 `update_tiles` 同法）并计算 clip 哈希 `hmrdp_clip_hash`（折入每条消息
+  递增的 `hmrdpMsgSeq`，跨消息不重复）。tile 回调**解码完成一块就**用该 clip 把 tile 直写
+  目标 surface（`hmrdp_tile_copy_now`，几何守卫与 `hmrdp_composite_tile` 一致，
+  `FREERDP_KEEP_DST_ALPHA`），并给 tile 记下 `hmrdpCopied` + 所用 clip 的哈希。
+- **`update_tiles`（GFX 工作线程）**：工作集 = 「裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile」
+  （补丁 22b：tile 记 `hmrdpFrameId`，`updateStamp` 保证每 pass 每 tile 访问一次）。对每个
+  访问到的 tile：`hmrdpCopied` 且 clip 哈希等于本 pass 的 `hmrdpUpdateClip` 时**跳过像素拷贝**
+  （只留脏区记账），否则照旧拷贝（后写覆盖）。脏区记账 = 每 tile 行一个 span
+  （`hmrdpDirtyLeft/Right/Any`，O(1)；补丁 14）。region 解码结束清空暂存 clip。
+- **结果不变性**：同一批 tile、同样的裁剪与像素、同样的脏区；门禁 = 参考画面 `bad=0`（§7.2）。
+
+**编译期开关与定档**
+
+- **没有运行期开关**：宽度、任务划分、执行器、规模阈值都是固定的。要对照就改代码重编，按 §7.1 的
+  口径比（`cpu=` 同频档 + `本机` 拆相），**不要**为了 A/B 在树里留第二套路径。
+- **编译期开关**：`HMRDP_TILE_ARENA`（补丁 22）、`HMRDP_WORKER_TILE_COPY`（补丁 23）。
+- **常量（都按实测定档，改动要重编 + 回归）**：
+  - `HMRDP_MIN_TILES_PER_WORKER = 64`：小 region 上开满宽度不划算——每个 chunk 只有十几 tile 时，
+    唤醒与领取争用把 queue 段墙钟拉长；降到每 region 实际只开几个线程后 queue 段墙钟明显下降，
+    region 大的样本不受影响。判据：**若"宽度开满但线程大半闲着、任务排队延迟占 region 墙钟可观
+    比例"，就是开多了，把阈值往上调**。
+  - `HMRDP_TILE_CLAIM = 2`：领取/偷取的块大小。块越小，最后一个块被慢线程攥住的时间越短（尾块
+    不均衡 ≤ 一个块），但共享游标上的原子操作越多；块再小到 1 则领取流量翻倍，停在 2。
+  - `HMRDP_TILE_CHUNKS = 64`：chunk 描述符与 scratch 槽的上界，不是调参项。

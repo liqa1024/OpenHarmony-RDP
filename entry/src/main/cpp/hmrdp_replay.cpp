@@ -410,7 +410,7 @@ std::string GfxReplay::StatsLines() {
 
   // mode=realtime replays the capture's own arrival times; mode=fast is *not
   // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
-  // not the live cadence (doc_agent/gfx-engine.md §8.1).
+  // not the live cadence (doc_agent/gfx-engine.md §7.1).
   // `lag` is only meaningful in realtime mode: the worst lateness behind the
   // recorded schedule, i.e. how much of the live load the client could not absorb.
   // "fast(untimed)" = realtime was requested but the capture carries no arrival
@@ -442,7 +442,7 @@ std::string GfxReplay::StatsLines() {
   // The run's total process CPU time: the frame time above says how fast the
   // replay went, this says what it cost. `cpuKHz` is the SoC clock the run
   // actually got - the playback rate decides the band, so two runs are only
-  // comparable at the same value (doc_agent/gfx-engine.md §8.1).
+  // comparable at the same value (doc_agent/gfx-engine.md §7.1).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
@@ -594,7 +594,7 @@ void GfxReplay::RecordPresent(uint64_t micros) {
 void GfxReplay::MarkFrameEnd(bool presented) {
   // Cadence bookkeeping only: the fast mode never sleeps, and the realtime mode's
   // cadence comes from the capture (PaceRecord), so nothing is throttled here
-  // (doc_agent/gfx-engine.md §8.1).
+  // (doc_agent/gfx-engine.md §7.1).
   //
   // Only frames that produced a picture mark the origin: the stream carries many
   // frame markers with no drawable update (management/ack frames, off-screen

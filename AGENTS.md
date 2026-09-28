@@ -54,9 +54,8 @@
 | 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
-| GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁（§8）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| **CPU（gdi）链路的并行方案**（并行范围、ffrt 执行器与宽度、任务划分、内存归属、合成归属） | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
-| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**与后续工作清单 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
+| GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁 / 并行形态（§7）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
+| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 
 ## 环境
 
@@ -106,8 +105,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 要改的东西 | 先读 |
 |---|---|
 | GFX 码流框架 / 会话侧接线 / 回放与参考画面验收 | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| CPU（gdi）链路的判据与账目口径 / 参考画面门禁 | [`gfx-engine.md`](doc_agent/gfx-engine.md) §8 |
-| CPU 解码的并行 / ffrt 执行器与宽度 / 任务划分 / 内存归属 | [`cpu-accel-plan.md`](doc_agent/cpu-accel-plan.md) |
+| CPU（gdi）链路的判据与账目口径 / 参考画面门禁 / 并行形态 | [`gfx-engine.md`](doc_agent/gfx-engine.md) §7 |
 | 上屏（present）：Vulkan/GLES 后端、脏区上传、零拷贝桌面缓冲、swapchain 重建 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、剪贴板 | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置项、连接存储、密码、导入导出 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |

@@ -1,6 +1,6 @@
 /*
  * HmRdp - platform parallel executor for the progressive tile decode
- * (doc_agent/cpu-accel-plan.md §1).
+ * (doc_agent/gfx-engine.md §7.3).
  *
  * The decode's granularity is a chunk callback owned by FreeRDP's progressive
  * codec; this module is *who runs those callbacks*:

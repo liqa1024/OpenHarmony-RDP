@@ -15,8 +15,7 @@
 | 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
 | 改 GFX / 解码 / 回放 | [`gfx-engine.md`](gfx-engine.md) |
 | 改上屏（present）管线 | [`present-pipeline.md`](present-pipeline.md) |
-| 改 CPU（gdi）链路的解码 / 成本 / 量测口径 | [`gfx-engine.md`](gfx-engine.md) §8（**先读这一节**） |
-| 做 CPU 解码的并行 / 执行器 / 任务划分 / 内存归属 | [`cpu-accel-plan.md`](cpu-accel-plan.md)（并行范围、执行器与宽度、任务划分、内存归属、合成归属） |
+| 改 CPU（gdi）链路的解码 / 并行 / 成本 / 量测口径 | [`gfx-engine.md`](gfx-engine.md) §7（**先读这一节**） |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
 | 改通道线程 / 音频不被帧挡住 | [`architecture.md`](architecture.md) §4（线程模型） |
@@ -36,14 +35,9 @@
   为什么 `entry/libs/<abi>/` 不入库、音频（OHAudio）与能力探测（Capability）模式。
 - [`gfx-engine.md`](gfx-engine.md) —— GFX 码流框架：管线与命令模型、会话侧接线、
   回放验证回路与**参考画面（golden reference）验收**、**CPU（gdi）链路的成本结构与账目口径 /
-  判据与门禁（§8）**、待办。
+  判据与门禁 / 并行形态（§7）**。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
   后端、脏区上传与零拷贝桌面缓冲的定型约束、present 账目与探针。
-- [`cpu-accel-plan.md`](cpu-accel-plan.md) —— **CPU（gdi）链路的并行方案（现状）**：并行范围与线程归属
-  （唯一并行段 = region 的 tile 解码 + worker 侧合成拷贝；调用线程也跑一个 chunk）、唯一执行器
-  （ffrt 并发队列，宽度 = 在线核数、队列并发度 = 宽度 − 1）、任务划分（home + 段尾块偷取）、
-  内存归属（per-chunk scratch 槽、surface 级 tile arena）、合成归属（worker 直写 + clip 哈希去重）。
-  单核部分的知识在 [`gfx-engine.md`](gfx-engine.md) §8。
 
 ## 维护约定
 

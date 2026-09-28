@@ -72,7 +72,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   桌面的命令之前**（GFX 帧边界与表面命令，以及 SolidFill / SurfaceToSurface / 缓存 / ResetGraphics 这类
   结构命令——**帧外**同样会来表面命令），挂在 `GfxWorkSetFrameBeginHook`；等待按"提交"去重
   （`desktopBufferFencePending_`）⇒ **每个 present 只真等一次**。
-  它在 gfx-engine §8.1 里记为 `sync`（`BeginDesktopBufferWrite`）：**等 GPU 放开主缓冲**。
+  它在 gfx-engine §7.1 里记为 `sync`（`BeginDesktopBufferWrite`）：**等 GPU 放开主缓冲**。
   ⚠ 等待缺失的后果是**上屏画面混两帧**，且**只在帧背靠背时**出现；`bad=0` 与它无关。
 - **内存类型 `HOST_CACHED` 优先**；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
   驱动调用；cache flush 只写回脏行，多出来的干净行免费）。

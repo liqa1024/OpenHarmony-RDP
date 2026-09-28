@@ -3,7 +3,7 @@
 #     The extrapolated (reduced) DWT is the one a Progressive region actually
 #     runs, so -DWITH_SIMD=ON wires the NEON entry point into it; its arithmetic
 #     is the upstream NEON one and the difference it makes is a rounding-level
-#     one (measured when it went in, doc_agent/gfx-engine.md §8.2).
+#     one (measured when it went in, doc_agent/gfx-engine.md §7.2).
 #
 #     The *non-extrapolated* NEON DWT stays switched off: it does the same
 #     `vaddq_s16` on two neighbours, so it wraps for large coefficients - not a

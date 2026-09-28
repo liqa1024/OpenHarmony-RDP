@@ -54,7 +54,7 @@
 | `hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
 | `hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
 | `hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
-| `hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`cpu-accel-plan.md`](cpu-accel-plan.md) §1） |
+| `hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`gfx-engine.md`](gfx-engine.md) §7.3） |
 | `hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
 | `hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
 | `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |

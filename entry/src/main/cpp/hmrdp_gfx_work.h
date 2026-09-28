@@ -1,6 +1,6 @@
 /*
  * HmRdp - per-frame client work meter (doc_agent/session-and-input.md §3,
- * doc_agent/gfx-engine.md §8.1).
+ * doc_agent/gfx-engine.md §7.1).
  *
  * The live session and the offline replay feed the same meter through the same
  * hooks (raw chunk arrival before ZGX, the wrapped SurfaceCommand, the wrapped

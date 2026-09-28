@@ -1,6 +1,6 @@
 /*
  * HmRdp - platform parallel executor for the progressive tile decode
- * (hmrdp_parallel.h, doc_agent/cpu-accel-plan.md §1).
+ * (hmrdp_parallel.h, doc_agent/gfx-engine.md §7.3).
  */
 #include "hmrdp_parallel.h"
 
@@ -17,7 +17,7 @@ namespace {
 // The platform queue is the decode's executor. FFRT is the platform's own task
 // runtime, so its scheduling, QoS and core placement follow the system and keep
 // following it across system updates, and it is the only executor the decoder
-// has (doc_agent/cpu-accel-plan.md §1).
+// has (doc_agent/gfx-engine.md §7.3).
 constexpr int kUsePlatformExecutor = 1;
 
 // Upper bound on the tasks one call accepts; the decoder's chunk count is capped

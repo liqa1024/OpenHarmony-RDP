@@ -9,7 +9,7 @@
  * receiving thread. Threads cannot be pinned, so the width chooses how many
  * threads, not where they run.
  *
- * Details: doc_agent/cpu-accel-plan.md §1.
+ * Details: doc_agent/gfx-engine.md §7.3.
  */
 #ifndef HMRDP_DECODE_TUNING_H
 #define HMRDP_DECODE_TUNING_H
@@ -30,7 +30,7 @@ std::string DecodeThreadsInfo();
 // Current frequency of the device's CPUs as "min-max" kHz, or an empty string
 // when the platform does not expose it. Sampled on demand: the *playback rate*
 // decides which clock the whole SoC runs at, so a run's figures are only
-// comparable to another run at the same frequency (doc_agent/gfx-engine.md §8.1).
+// comparable to another run at the same frequency (doc_agent/gfx-engine.md §7.1).
 std::string CpuFreqInfo();
 
 }  // namespace hmrdp

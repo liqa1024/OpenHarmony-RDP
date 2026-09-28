@@ -29,7 +29,7 @@ const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
 
-// 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §8.2).
+// 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §7.2).
 const REF_OFF: number = 0;
 const REF_EXPORT: number = 1;
 const REF_COMPARE: number = 2;
