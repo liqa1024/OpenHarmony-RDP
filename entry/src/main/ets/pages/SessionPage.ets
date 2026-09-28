@@ -36,10 +36,6 @@ const MIN_PINCH_HALF: number = 8;
 // bad sample can never explode or collapse the synthetic finger separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
-// The pinch (and its synthetic touch contacts / held Ctrl) lives from the first
-// PINCH axis event until the OS sends the real AxisAction.END, i.e. the fingers
-// are actually lifted. No timers are used, so a stationary hold keeps the
-// gesture alive instead of lifting the contacts and producing a fake click.
 // External RDPEI ids for the synthetic pinch contacts; real screen touches use
 // touch.id + 1 (1..11), so these never collide.
 const PINCH_TOUCH_ID_A: number = 20;
@@ -286,6 +282,10 @@ struct SessionPage {
   // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
   private pinchAccum: number = 0;
+  // The gesture (and its synthetic contacts / held Ctrl) lasts from the first PINCH
+  // axis event until the OS sends the real AxisAction.END, i.e. the fingers are
+  // actually lifted. No timers: a stationary hold keeps it alive instead of lifting
+  // the contacts into a fake click.
   private pinchActive: boolean = false;
   private pinchCtrlDown: boolean = false;
   private pinchZoomSpeed: number = 1;

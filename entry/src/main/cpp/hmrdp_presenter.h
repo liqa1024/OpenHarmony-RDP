@@ -1,23 +1,13 @@
 /*
  * HmRdp - frame presenter interface for CPU (gdi) frames.
  *
- * Only one thing lives here: getting an already-decoded desktop frame onto the
- * XComponent surface. Decoding and composition are not its business.
- *
- * Two backends, picked by CreateFramePresenter():
- *
- *  - Vulkan (VkRenderer): the default. The dirty rectangle is copied once into a
- *    host-visible staging buffer, uploaded into a persistent desktop image and
- *    the GPU does the letterboxed blit to the swapchain - i.e. the CPU only
- *    hands the changed pixels over and never writes display memory itself.
- *  - GLES (GlesPresenter): the compatibility fallback, mainly for devices whose
- *    Vulkan cannot present (the emulator). Same shape - dirty-rect texture
- *    upload (ES3 + GL_UNPACK_ROW_LENGTH) and a letterboxed quad - so the only
- *    copy of the frame is a driver-side texture upload.
- *
- * Which backend is used is decided by the *presenter* capability
- * (VulkanCapabilities::presenterSupported): presenting needs no compute, only a
- * device that can blit to the XComponent surface (doc_agent/gfx-engine.md §2/§4).
+ * Only one job: get an already-decoded desktop frame onto the XComponent surface
+ * (decoding/composition are not its business). Two backends, chosen by
+ * CreateFramePresenter() from the presenter capability
+ * (VulkanCapabilities::presenterSupported, which needs no compute): Vulkan
+ * (VkRenderer, default) and the GLES compatibility fallback (GlesPresenter, for a
+ * device whose Vulkan cannot present). Backends and upload shapes:
+ * doc_agent/present-pipeline.md §1.
  */
 #ifndef HMRDP_PRESENTER_H
 #define HMRDP_PRESENTER_H

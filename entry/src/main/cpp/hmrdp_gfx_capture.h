@@ -1,29 +1,19 @@
 /*
  * HmRdp - raw RDPGFX channel capture (doc_agent/gfx-engine.md §6).
  *
- * Records exactly what the server sent on the GFX dynamic virtual channel,
- * before any decompression: one record per channel chunk. The replay harness
- * (hmrdp_replay.cpp) feeds those bytes back through FreeRDP's own ZGX + RDPGFX
- * parsing, so the file stays completely free of any engine / serialization
- * coupling and is smaller (one compression layer less than a parsed command
- * stream).
+ * Records what the server sent on the GFX channel before any decompression, one
+ * record per channel chunk; the replay (hmrdp_replay.cpp) feeds those bytes back
+ * through FreeRDP's ZGX + RDPGFX parsing. Layout (version 1):
  *
- * On-disk layout (version 1, the current one):
- *
- *   header  'H','M','R','G','P','G','X','1'      (8 bytes magic)
+ *   header  'H','M','R','G','P','G','X','1'   (8-byte magic)
  *   record  u32 length | u64 arrivalUs | payload[length]
  *
- * `arrivalUs` is the monotonic clock at which the chunk arrived, so a replay can
- * reproduce the server's real cadence instead of a synthetic one. Without it a
- * replay can only measure throughput (see doc_agent/gfx-engine.md §6) and cannot
- * reproduce the load the live session actually ran under.
+ * `arrivalUs` (monotonic µs) lets a replay reproduce the server's real cadence;
+ * without it a replay can only measure throughput. Version 0 (no magic, plain
+ * `u32 length | payload`) is still read - `hasTimestamps()` says which layout.
  *
- * Version 0 (no magic, `u32 length | payload[length]`, no timing) is still read:
- * `GfxRawCapture::hasTimestamps()` reports which layout the file uses, and a
- * replay of such a file falls back to the unpaced fast mode (mode=fast(untimed)).
- *
- * The recorder is driven by the FreeRDP hook registered from hmrdp_session.cpp
- * (`HmrdpSetGfxRawCapture`); this module has no FreeRDP dependency.
+ * Driven by the FreeRDP hook registered from hmrdp_session.cpp; no FreeRDP
+ * dependency here.
  */
 #ifndef HMRDP_GFX_CAPTURE_H
 #define HMRDP_GFX_CAPTURE_H

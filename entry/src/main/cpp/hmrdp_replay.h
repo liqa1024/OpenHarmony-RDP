@@ -1,10 +1,9 @@
 /*
- * HmRdp - dev-only recorded-RDP replay (doc_agent/gfx-engine.md §6).
+ * HmRdp - dev-only recorded-RDP replay (doc_agent/gfx-engine.md §5/§6).
  *
- * Replays a captured raw GFX channel stream (hmrdp_gfx.bin) through FreeRDP's
- * own ZGX + RDPGFX parsing with FreeRDP's gdi pipeline as the decoder, and
- * presents each frame to the XComponent surface through the presenter the
- * "硬件加速" setting selects. Debug facility only; never replaces the live path.
+ * Replays a captured raw GFX channel stream (hmrdp_gfx.bin) through FreeRDP's own
+ * ZGX + RDPGFX parsing and gdi pipeline, presenting each frame through the
+ * presenter the "硬件加速" setting selects. Debug facility only.
  */
 #ifndef HMRDP_REPLAY_H
 #define HMRDP_REPLAY_H
@@ -23,23 +22,16 @@ namespace hmrdp {
 
 class FramePresenter;
 class GfxCpuDesktop;
-// What the CPU present path handed over for one frame (hmrdp_gfx_cpu.h): passed
-// to the frame observers, declared here to keep this header light.
-struct PresentUploadInfo;
+struct PresentUploadInfo;  // hmrdp_gfx_cpu.h
 
-// Correctness gate for the replay: compare the composed desktop against a
-// *golden reference* recorded from an earlier run of the same capture
-// (doc_agent/gfx-engine.md §6/§8.2).
-//
-//  kOff     - nothing (the normal perf run).
-//  kExport  - write the reference: one 64-bit hash of the composed desktop per
-//             frame plus the last frame as a BMP.
-//  kCompare - check each frame's hash against the stored list (`bad` = frames
-//             that differ) and pixel-compare the frame the reference image was
-//             taken from (`rgbPx`/`maxDelta`/`bbox`).
-//
-// Files are named after the capture's fingerprint (`hmrdp_ref_<tag>.{hash,bmp}`),
-// so a reference recorded from another capture cannot be used by accident.
+// Correctness gate (doc_agent/gfx-engine.md §8.2). Files are named after the
+// capture's fingerprint (`hmrdp_ref_<tag>.{hash,bmp}`), so a reference recorded
+// from another capture cannot be used by accident.
+//   kOff     - plain perf run.
+//   kExport  - write the reference: one 64-bit hash per composed frame + the last
+//              frame as a BMP.
+//   kCompare - check each frame's hash (`bad` = differing frames) and pixel-compare
+//              the frame the reference image came from (`rgbPx`/`maxDelta`/`bbox`).
 enum class GfxReplayRefMode {
   kOff = 0,
   kExport = 1,
@@ -50,40 +42,28 @@ class GfxReplay {
  public:
   static GfxReplay& Instance();
 
-  // Takes ownership of `nativeWindow` (from the XComponent surface id) and
-  // replays `gfxPath` (a raw hmrdp_gfx.bin capture) onto it. Waits briefly for
-  // the first frame or failure.
-  //
-  // `realtime` selects the playback clock:
-  //   false - not throttled at all (default): the pump feeds the next record as
-  //           soon as the previous frame is done, so the figures are a pure
-  //           throughput measurement, not the live cadence.
-  //   true  - feed each record at the arrival time recorded in the capture, so the
-  //           frame cadence and machine state (frequency, cache, wake-ups) match
-  //           the live session. Needs arrival times (v1 capture); an untimed
-  //           capture falls back to false and says so (mode=fast(untimed)).
+  // Takes ownership of `nativeWindow` and replays `gfxPath` onto it; waits briefly
+  // for the first frame or a failure.
+  // `realtime` = false feeds the next record as soon as the previous frame is done
+  // (pure throughput, not the live cadence); true feeds each record at the arrival
+  // time stored in the capture (v1 only - an untimed capture falls back to false
+  // and reports mode=fast(untimed)).
   bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath,
              bool realtime, GfxReplayRefMode refMode = GfxReplayRefMode::kOff);
   void Resize(int width, int height);
   void Stop();
-  // Single-line summary (logs) and a multi-line variant for the on-device
-  // performance panel on the replay page.
+  // Single-line form for logs, multi-line for the on-device stats panel.
   std::string Stats();
   std::string StatsLines();
 
-  // The replay's frame observers, installed on the shared GdiFrameHost and run
-  // from the same EndPaint chain a live session runs (hmrdp_gfx_cpu.h):
-  //   OnCpuFramePre     - run cap / pending surface resize / energy sample; false
-  //                       vetoes the frame (a run that hit its cap presents
-  //                       nothing more).
-  //   OnCpuFramePresent - the frame's accounting (present/upload stats, cadence,
-  //                       golden reference), with the present the host measured.
+  // Frame observers installed on the shared GdiFrameHost (same EndPaint chain a
+  // live session runs). OnCpuFramePre may veto a frame (run cap, resize, energy
+  // sample); OnCpuFramePresent does the frame's accounting.
   bool OnCpuFramePre();
   void OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t presentUs,
                          const PresentUploadInfo& upload);
 
-  // Dev timing: accumulated present time (microseconds), reported per frame by
-  // Stats().
+  // Accumulated present time (µs), reported per frame by Stats().
   void RecordPresent(uint64_t micros);
 
  private:
@@ -94,49 +74,32 @@ class GfxReplay {
 
   void Run();
   void RunCpuReplay(const std::string& gfxPath);
-  // Golden reference (see GfxReplayRefMode). `RefCollectFrame` runs on the replay
-  // thread once per composed frame: it hashes it, and in export mode keeps the
-  // hash / in compare mode checks it against the loaded list.
+  // Golden reference (see GfxReplayRefMode): hash the composed frame, keep it in
+  // export mode / check it in compare mode. Replay thread, once per frame.
   void RefCollectFrame(GfxCpuDesktop* cpu);
-  // Loads `hmrdp_ref_<tag>.hash` (+ the `.bmp` it names) next to the capture; false
-  // with a one-line reason in `refNote_` when the reference is missing/unusable.
+  // Load `hmrdp_ref_<tag>.hash` (+ the `.bmp` it names) next to the capture; false
+  // with a reason in `refNote_` when it is missing/unusable.
   bool RefLoad(const std::string& capturePath);
-  // Writes this run as the reference: the per-frame hashes plus the last composed
-  // frame as `.bmp` (the frame the hash list's `imageFrame` points at).
+  // Write this run as the reference (per-frame hashes + the last frame as .bmp).
   void RefWrite(const std::string& capturePath, GfxCpuDesktop* cpu);
-  // Pixel-level comparison against the stored reference image (only for the frame
-  // the image was taken from); fills the cmp* fields.
+  // Pixel comparison against the stored reference image (only its frame).
   void RefCompareImage(const uint8_t* data, int stride, int width, int height);
-  // Closes the frame for the cadence bookkeeping: the first presented frame marks
-  // the fps origin (so a run's start-up does not dilute the rate) and every frame
-  // counts. It deliberately does not sleep - the fast mode runs flat out and the
-  // realtime mode's cadence comes from the capture (PaceRecord), so there is
-  // nothing left to throttle here.
+  // Cadence bookkeeping: the first presented frame marks the fps origin; nothing
+  // is throttled here (fast mode never sleeps, realtime paces in PaceRecord).
   void MarkFrameEnd(bool presented);
-
-  // Realtime mode: called from GfxReplayPump right before a record is fed, with
-  // the record's recorded arrival time (monotonic microseconds). Sleeps until the
-  // recorded offset from the first record has elapsed; when the client is already
-  // behind, it does not sleep (no catch-up) and only records how far behind the
-  // schedule it is. This is the *only* deliberate playback sleep left.
+  // Realtime pacing: sleep until the recorded offset from the first record has
+  // elapsed; when already behind, do not sleep (no catch-up), only record `lag`.
+  // The only deliberate playback sleep.
   void PaceRecord(uint64_t timestampUs);
 
   std::mutex mutex_;
-  // Per-frame client work: the very same meter the live session uses, fed through
-  // the same hooks (chunk stamp + wrapped SurfaceCommand/EndFrame + present), so a
-  // replayed frame and a live frame are measured identically and can be compared
-  // figure by figure (hmrdp_gfx_work.h).
   GfxWorkMeter meter_;
-  // Presenter for the replay (Vulkan, or GLES on devices whose Vulkan cannot
-  // present).
   std::unique_ptr<FramePresenter> presenter_;
   std::thread thread_;
   std::atomic<bool> running_{false};
-  // Which run the reported figures belong to, and whether that run reached the
-  // end of the capture. A driver that starts several rounds uses this to tell
-  // "the stats of the round I just started" from the previous round's, and to
-  // wait for a run to be over instead of guessing: an aborted run is not a
-  // measurement and must not be written as a reference either.
+  // Run identity and whether it was cut short. A driver uses runId_ to tell one
+  // round's stats from the previous round's; an aborted run is not a measurement
+  // and must not be written as a reference.
   std::atomic<uint64_t> runId_{0};
   std::atomic<bool> aborted_{false};
   void* window_ = nullptr;
@@ -146,59 +109,44 @@ class GfxReplay {
   std::atomic<int> pendingW_{0};  std::atomic<int> pendingH_{0};
   std::atomic<uint64_t> frames_{0};
   std::atomic<uint64_t> presents_{0};
-  // EndFrame markers where a present was attempted and did not reach the screen
-  // (window/surface not ready, GL error) - the real failure counter.
+  // EndFrame markers whose present did not reach the screen (window/surface not
+  // ready, GL error).
   std::atomic<uint64_t> presentFailures_{0};
   std::atomic<uint64_t> presentUs_{0};
-  // CPU present upload (doc_agent/present-pipeline.md §3): what this run's presents
-  // actually uploaded vs what the merged box would have cost, how often the rect
-  // list was used, and how often the rect cap forced the box.
+  // Present upload accounting (doc_agent/present-pipeline.md §3).
   std::atomic<uint64_t> uploadBytes_{0};
   std::atomic<uint64_t> uploadBoxBytes_{0};
   std::atomic<uint64_t> uploadRectPresents_{0};
   std::atomic<uint64_t> uploadTruncated_{0};
-  // Largest number of individual dirty rects one frame carried (the raw gdi
-  // count, before the presenter cap): says whether the cap was even near and how
-  // scattered the content is.
+  // Largest raw gdi rect count one frame carried (before the presenter cap).
   std::atomic<uint64_t> uploadMaxRects_{0};
-  // Process CPU time (all threads) at the start and the end of the run. Wall time
-  // alone cannot tell "faster" from "more cores woken for nothing", so the
-  // frequency band (`cpuKHz=`) is reported next to it: two runs are only
-  // comparable at the same clock (doc_agent/gfx-engine.md §8.1).
+  // Process CPU time at run start/end. Reported next to `cpuKHz=` because two runs
+  // are only comparable at the same clock (doc_agent/gfx-engine.md §8.1).
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
-  // Time spent deliberately sleeping in PaceRecord(); subtracted from pumpUs_ so
-  // the reported feed cost is compute, not playback throttling. The fast mode does
-  // not sleep, so this is 0 there.
+  // Deliberate PaceRecord() sleep, subtracted from pumpUs_ so `feed` is compute.
   std::atomic<uint64_t> paceUs_{0};
-  // Realtime playback: requested by the caller, and effective only when the
-  // capture carries arrival times (an untimed capture falls back to the unpaced
-  // fast mode, and says so in the log).
+  // realtimeRequested_ = caller's wish; realtimeActive_ = it actually ran paced
+  // (false when the capture has no arrival times).
   std::atomic<int> realtimeRequested_{0};
   std::atomic<int> realtimeActive_{0};
-  // Worst lateness behind the recorded schedule (realtime mode): the honest
-  // "cannot keep up with the real load" figure, in microseconds.
+  // Worst lateness behind the recorded schedule, µs (realtime only).
   std::atomic<uint64_t> realtimeLagUs_{0};
   // Realtime schedule origin: first record's recorded time and the wall clock it
   // was fed at (replay thread only).
   uint64_t recordBaseUs_ = 0;
   int64_t recordWallBaseUs_ = 0;
-  // When the first presented frame ended: fps is measured from here, so the run's
-  // start-up (presenter init, first-frame wait) does not count as playback time
-  // (replay thread writes, UI thread reads via StatsLines).
+  // First presented frame's end: fps is measured from here so start-up does not
+  // count as playback (replay thread writes, UI thread reads).
   std::atomic<int64_t> firstFrameEndUs_{0};
-  // When the pump started, so the reported `feed` (compute) can exclude the run's
-  // start-up and mean "per-frame compute" (replay thread writes).
+  // Pump start, so `feed` can exclude the run's start-up.
   std::atomic<int64_t> pumpStartUs_{0};
   std::atomic<int64_t> startUs_{0};
-  // Set when the replay loop ends, so Stats() keeps reporting the run's last
-  // figures instead of letting fps/feed decay while the page sits idle.
+  // Set when the loop ends, so Stats() stops decaying fps/feed while idle.
   std::atomic<int64_t> endUs_{0};
-  // Golden-reference pixel diff, filled by RefCompareImage for the single frame
-  // the stored reference image was taken from (the per-frame hashes say *if* a
-  // frame differs; these say how much, which tells "unpainted rectangle" from
-  // "rounding").
+  // Golden-reference pixel diff for the single frame the stored image came from
+  // (the hashes say *if* a frame differs; these say by how much).
   std::atomic<uint64_t> imgDiffChecks_{0};
   std::atomic<uint64_t> imgDiffBad_{0};
   std::atomic<uint64_t> imgDiffRgbPx_{0};
@@ -208,38 +156,31 @@ class GfxReplay {
   std::atomic<int> imgDiffBBoxX1_{-1};
   std::atomic<int> imgDiffBBoxY1_{-1};
   std::atomic<int> imgDiffMaxDelta_{0};
-  // Pixels whose worst channel delta is <= 2 (rounding-level, not content).
-  std::atomic<uint64_t> imgDiffSmallPx_{0};
+  std::atomic<uint64_t> imgDiffSmallPx_{0};  // delta <= 2 (rounding, not content)
 
-  // --- golden reference (kExport / kCompare) -------------------------------
-  // One hash per composed frame, in playback order. Written to / read from
-  // `hmrdp_ref_<tag>.hash` next to the capture (replay thread only).
+  // Golden reference: one hash per composed frame, in playback order, written to /
+  // read from `hmrdp_ref_<tag>.hash` (replay thread only).
   std::vector<uint64_t> refHashes_;
   std::atomic<int> refMode_{0};
-  // Frames recorded/checked so far (the vector itself is replay-thread only), and
-  // the total time spent hashing them (reported so a reference run's `compose` is
-  // never read as a performance figure - the hash runs inside gdi's EndFrame).
+  // Frames recorded/checked and the total hash time (a reference run's `compose`
+  // must never be read as a performance figure - the hash runs in gdi's EndFrame).
   std::atomic<uint64_t> refFrames_{0};
   std::atomic<uint64_t> refHashUs_{0};
   std::atomic<uint64_t> refChecks_{0};
   std::atomic<uint64_t> refBad_{0};
   std::atomic<int64_t> refFirstBad_{-1};
-  // The stored reference image (top-down BGRA, `refImageW_ * 4` bytes per row) and
-  // the frame index it was taken from, both from the stored file when comparing.
+  // Stored reference image (top-down BGRA, `refImageW_ * 4` bytes/row) and the
+  // frame index it came from.
   std::vector<uint8_t> refImage_;
   int refImageW_ = 0;
   int refImageH_ = 0;
   int64_t refImageFrame_ = -1;
-  // Why the stored reference could not be used exactly as recorded (missing
-  // image, geometry change, ...): one line, reported in the stats.
+  // Why the stored reference could not be used as recorded, one line in the stats.
   std::string refNote_;
-  // Fingerprint of the capture this run replays: the reference files are named
-  // after it (`hmrdp_ref_<tag>.hash/.bmp`), because the device's capture file
-  // name is always hmrdp_gfx.bin - a reference recorded from another recording
-  // must not be usable by accident (doc_agent/gfx-engine.md §6).
+  // Capture fingerprint: the device's capture name is always hmrdp_gfx.bin, so the
+  // reference is keyed by this tag to keep another recording from reusing it.
   std::string refTag_;
 
-  // Replay-thread only (no locking needed).
   std::mutex errorMutex_;
   std::string lastError_;
 };

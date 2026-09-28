@@ -5,10 +5,9 @@ dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构�
 上屏这一段见 [`present-pipeline.md`](present-pipeline.md)；CPU 并行形态见
 [`cpu-accel-plan.md`](cpu-accel-plan.md)。
 
-> **已移除**：自研的 Vulkan GFX 桌面引擎（GPU Progressive/ClearCodec 解码 + 表面合成）、它的能力判定、
-> dev 回放的引擎路线、`rfx_*` compute 着色器与 Progressive 容器解析器，**已全部从代码删除**。
-> 解码与合成现在只有 FreeRDP 的 gdi 一条路；上屏保留 Vulkan / GLES 两套呈现器（§2）。
-> 后续若做 GPU 优化，以**现有这套 Vulkan 上屏**为基础重建，不要复活旧的解码/合成引擎。
+> **已移除**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与它的
+> 能力判定）和 H.264/AVC 支持，**不要复活**（理由见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
+> Vulkan / GLES 两套呈现器（§2）。
 
 ## 0. 管线框架
 
@@ -61,8 +60,8 @@ dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构�
 4. 把写入的矩形并入**主画面脏区**；清空该表面脏区；
 5. **上屏门控**：主画面脏区**为空 → 不上屏**（静止，或只收到离屏/缓存类更新）→ **FPS = 0**；
    非空 → **只上传脏矩形**；
-6. 服务端等**帧回执**推进下一帧。回执在**解码之后、`EndFrame` 回调之前**就写出（补丁把上游"回调返回后才回执"
-   提前了，见 `native/scripts/patch-steps/09-tcp-frameloop-qos.ps1`）⇒ 本地合成/上屏不占服务端每帧往返。
+6. 服务端等**帧回执**推进下一帧。回执在**解码之后、`EndFrame` 回调之前**写出
+   （`native/scripts/patch-steps/09-tcp-frameloop-qos.ps1`）⇒ 本地合成/上屏不占服务端每帧往返。
    **回执节奏即服务端出帧的时钟**：客户端逐帧推迟回执只压住传输、压不住服务端产帧，未发出的画面变化在
    服务端侧累积，**输入回显随之推迟**。
 
@@ -84,18 +83,16 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   [`session-and-input.md`](session-and-input.md) §3。
 - 采集点在 `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册（见
   [`native-libraries.md`](native-libraries.md) §3）。
-- 帧流水线（解压/解析/解码/合成/上屏/回执）跑在**会话自己的工作线程**上，不是
-  drdynvc 分发线程：所有动态通道共用那条分发线程，若帧处理在它上面内联跑，一个重帧就会把排在后面的
-  音频与输入一起挡住。补丁把 GFX 通道数据交给 app（sink 钩子），drdynvc 线程只拆包转发，app 在自有
-  线程上经 `HmrdpGfxReplayRecv` 重新进入（见 [`native-libraries.md`](native-libraries.md) §4 与
-  [`architecture.md`](architecture.md) §4）。
+- 帧流水线（解压/解析/解码/合成/上屏/回执）跑在**会话自己的 GFX 工作线程**上，不在 drdynvc 分发线程：
+  后者承载全部动态通道，帧处理内联会把排在后面的音频与输入一起挡住。接线（sink 钩子、
+  `HmrdpGfxReplayRecv`、QoS）见 [`native-libraries.md`](native-libraries.md) §3 与
+  [`architecture.md`](architecture.md) §4。
 
 ## 2. 上屏（present）
 
-上屏只有一套实现、两个后端：**Vulkan 优先，Vulkan 不能上屏时回落 GLES**。判据是**呈现能力**
-（`presenterSupported`：device + host-visible 内存 + surface/swapchain，不需要 compute）。
-「硬件加速」开关只选上屏后端（关 = GLES 且不碰 Vulkan）。细节（脏区上传、通道序、零拷贝桌面缓冲、
-等待点、swapchain 重建）见 [`present-pipeline.md`](present-pipeline.md)。
+上屏一套实现、两个后端：**Vulkan 优先，不能上屏时回落 GLES**，判据是**呈现能力**（`presenterSupported`：
+device + host-visible 内存 + surface/swapchain，不需要 compute）。「硬件加速」开关只选上屏后端（关 =
+GLES 且不碰 Vulkan）。细节见 [`present-pipeline.md`](present-pipeline.md)。
 
 ## 3. 已移除的方向（**不要在新代码里重新引入**）
 
@@ -105,11 +102,10 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - 已移除的 H.264/AVC 支持：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
   且命中硬解也无明显收益 ⇒ 整体砍掉，服务端改用其他码流。**不要再引入媒体库依赖**。
 
-## 4. 呈现与呈现能力判定
+## 4. 呈现能力判定
 
-- 呈现能力与解码后端**不再有两套判定**：只有 `presenterSupported` 一个。
-- 模拟器一律回落 GLES 呈现器（与"Vulkan 只在真机验证"一致）；若以后要让模拟器用 Vulkan 上屏，
-  只需改 `FillPresenterVerdict()` 里那一处 ABI 分支。
+- 只有 `presenterSupported` 一个判定（不再是"解码/呈现两套"）。模拟器一律回落 GLES（与"Vulkan 只在
+  真机验证"一致）；要让模拟器用 Vulkan，只需改 `FillPresenterVerdict()` 里那一处 ABI 分支。
 - Vulkan 面与判定口径见 [`native-libraries.md`](native-libraries.md) §6。
 
 ## 5. 量测纪律（回放）
@@ -150,16 +146,8 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 - **路线只有两条，且是同一条 gdi 解码路径的两种上屏后端**：`CPU` = GLES 上屏（完全不碰 Vulkan）、
   `硬件加速` = Vulkan 上屏（就是设置里的「硬件加速」，页面上的按钮与它是同一个值）。
 - **验收口径 = 参考画面（golden reference）**：同一条路线先 `参考:导出` 记一遍
-  （`hmrdp_ref_<captureTag>.hash` + `.bmp`，`captureTag` 是录制内容的指纹，**换一份录像就换一套参考**），
-  之后每轮 `参考:对比` 报
-  `ref compare: refFrames=… checks=… bad=0 firstBad=-1 imageFrame=… rgbPx=0 maxDelta=0`：
-  `bad` = 逐帧哈希与参考不同的帧数（目标 **0**），`rgbPx/maxDelta/bbox` 是参考**图像那一帧**的逐像素差
-  （用来判断"哪一帧、差多少"，不是全集）。失败时会把那一帧 dump 成 `…_fail.bmp`。
-   - ⚠ **参考模式不是性能模式**：它每帧对整个桌面做一次哈希（`ref export/compare` 行报 `hashMs=`），
-     这段时间落在 gdi 的 `EndFrame` 里、会算进 `compose` ⇒ 读性能数字时用 `参考:关` 那一轮。
-   - ⚠ **参考的口径跟着构建走**：解码侧允许舍入级改动（`WITH_SIMD` 开关、逐位等价之外的 SIMD 改写）
-     ⇒ 改完必须**重录**参考，此后 `bad=0` 只表示"自那次重录起没有再变"（回归门）；改动的量级由那一轮的
-     `rgbPx` / `maxDelta` 给（§8.2）。
+  （`hmrdp_ref_<captureTag>.{hash,bmp}`，`captureTag` 是录制内容指纹，换录像即换参考），之后每轮
+  `参考:对比` 看 `bad=`。判据、量级读法与"参考模式不是性能模式"见 §8.2。
 - **两份基线录像，改完解码/补丁都要跑**：一份**浏览/滚动**（消息稀疏、脏区小）作回归门，
   一份**看视频**（整帧大块变化、每帧多条 Progressive 消息）覆盖另一场景。样本与参考文件都在本地
   gitignore 目录，设备侧用同一个固定文件名喂给回放（`hdc` 只能**覆盖**已存在的文件，不能在该目录新建）。
@@ -192,10 +180,10 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
 
 ## 7. 待办
 
-- **CPU（gdi）链路的多核并行**（并行范围、ffrt 执行器、宽度、任务划分、内存归属、合成归属）：
-  单独成文 → [`cpu-accel-plan.md`](cpu-accel-plan.md)。单核部分的知识见本文件 §8。
-- **若重建 GPU 优化**：以现有的 Vulkan 上屏（`VkRenderer` + `hmrdp_vk_context`）为基础；呈现能力判定
-  已是唯一判定（§4），不要再引入第二套引擎判定与开关。
+- **CPU 多核并行**（并行范围、执行器、宽度、划分、内存归属、合成归属）→
+  [`cpu-accel-plan.md`](cpu-accel-plan.md)；单核知识见 §8。
+- **若重建 GPU 优化**：以现有 Vulkan 上屏（`VkRenderer` + `hmrdp_vk_context`）为基础；呈现判定已是
+  唯一判定（§4），不要再引入第二套引擎判定与开关。
 
 
 ## 8. CPU（gdi）链路：判据与门禁
@@ -228,7 +216,7 @@ dev 页「回放测试」：路线:CPU / 硬件加速   参考:关 / 导出 / �
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
   | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |
-  | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6 与 8.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
+  | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6/§8.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
   **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`present-pipeline.md`](present-pipeline.md) §4）。

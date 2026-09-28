@@ -141,11 +141,10 @@
   `SettingsStore.srSessionSize()` 预置，收到 `kResize` 后以服务端实际桌面为准。
 
 - **帧工时计量（`hmrdp_gfx_work.{h,cpp}`，live 与回放共用）**：同一个 `GfxWorkMeter` 由**同一批钩子**
-  喂数，因此**同一份码流在 live 与回放里各相位的定义完全相同**，可以逐相、按载荷对照：
-  抓取钩子取 chunk 到达时刻（在 ZGX 之前、**落盘之后**，磁盘 I/O 不进相位）、链式包裹的
-  `SurfaceCommand` 计解码、包裹的 `EndFrame` 计合成 + 上屏。
-  **计量器只产子项、不存"总工时"**：各相位的语义不同（CPU 工作 / GPU 提交 / 阻塞等待），合适的和取决于
-  谁来读，所以由展示端相加。`sync` 这类阻塞项因此天然不会被计入 live 的合计。
+  喂数（抓取钩子取 chunk 到达时刻，在 ZGX 之前、**落盘之后**；链式包裹的 `SurfaceCommand` 计解码；
+  包裹的 `EndFrame` 计合成 + 上屏），所以**同一份码流在 live 与回放里各相位定义完全相同**，可逐相、
+  按载荷对照。计量器**只产子项、不存总数**：各相位语义不同（CPU 工作 / GPU 提交 / 阻塞等待），合适的和
+  由展示端相加，`sync` 这类阻塞项因此天然不计入 live 的合计。
 
 - **工具栏左侧遥测**每秒刷新一次（原生 `kMetrics` 事件）。字段：
   - **本机**（µs/帧）= 展示端把四个**工作**相位相加：
@@ -154,14 +153,11 @@
     `compose`（`gdi_EndFrame` 的 surface→primary 合成，**再减去 present、该帧的 `sync` 等待与回放节拍
     睡眠**——这三样都在 `EndFrame` 窗口里但不是合成）+
     `present`（`PresentGdiFrame`，Vulkan/GLES 呈现器）。
-  - **`sync`（阻塞子项，不在 `本机` 里）**：本帧在 `BeginPaint` 里等 GPU 放开它要写的桌面缓冲
-    （CPU 路线把 gdi 主缓冲直接放在呈现器内存里，所以上一帧必须先读完）。
-  - **`presentWait`（阻塞子项，不在 `本机` 里）**：`present` 那一段里**等显示端**的部分
-    （Vulkan 的 `vkAcquireNextImageKHR` + fence 等待；GLES 的 `eglSwapBuffers`）。`present` 只记
-    录制/上传/提交这类客户端动作，两者相加才是这一帧 present 的整段墙钟。
-  - 两个阻塞子项都是**显示/GPU 侧的反压**，不是处理时间，故都在合计之外；
-    **帧的整段墙钟 = 四相之和 + `sync` + `presentWait`**（回放再加节拍睡眠）。轻样本跑满时这笔等待
-    不可忽略（可达数 ms），别把"等 GPU / 等显示"当成"合成贵 / 上屏贵"。
+  - **`sync` / `presentWait`（阻塞子项，都不在 `本机` 里）**：`sync` = 等 GPU 放开本帧要写的桌面缓冲
+    （CPU 路线把 gdi 主缓冲直接放在呈现器内存里，上一帧必须先读完）；`presentWait` = `present` 那一段里
+    等显示端（Vulkan 的 acquire+fence；GLES 的 `eglSwapBuffers`）。两者都是显示/GPU 侧反压、不是处理，
+    故单列；**帧整段墙钟 = 四相之和 + `sync` + `presentWait`**（回放再加节拍睡眠）。定义与自检
+    （`本机 + sync ≈ 1/fps`）见 [`gfx-engine.md`](gfx-engine.md) §8.1。
   - **节拍睡眠（`pace`）是唯一直接剔除的一项**：回放的人为节流不是客户端工作。
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值
     （只有服务端注册该回调），故连接时给 `context->autodetect` 自行注册回调捕获。

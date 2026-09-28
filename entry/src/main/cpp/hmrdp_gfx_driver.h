@@ -39,9 +39,9 @@ namespace hmrdp {
 // The call is made outside the pump's own timing, and is skipped entirely when
 // the capture carries no arrival times (version 0 files).
 using ReplayPaceFn = std::function<void(uint64_t timestampUs)>;
-// Returns how much deliberate pacing sleep has accumulated so far. Needed because
-// the frame is presented (and paced) *inside* the recv call, so the raw recv time
-// would otherwise count the playback throttling as parse work.
+// Returns the deliberate pacing sleep accumulated so far: the frame is presented
+// (and paced) inside the recv call, so the raw recv time would otherwise count the
+// throttling as parse work.
 using ReplayPaceAccumFn = std::function<uint64_t()>;
 
 // Feeds every raw chunk of one hmrdp_gfx.bin capture into an already-built
@@ -58,10 +58,8 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
                    const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum,
                    bool* aborted = nullptr);
 
-// Dev (perf): accumulated time spent in the ZGFX + RDPGFX PDU parse during a replay
-// (measured in the pump, before any backend sees the command). It is a cost the
-// replay always pays, so separating it from the decoder's own time is what says
-// how much of a run went into parsing.
+// Accumulated ZGFX + RDPGFX PDU parse time during a replay (measured in the pump,
+// before any backend sees the command), to separate parse from decode.
 void GfxReplayResetParseUs();
 void GfxReplayAddParseUs(uint64_t micros);
 uint64_t GfxReplayParseUs();

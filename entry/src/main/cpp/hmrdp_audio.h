@@ -22,25 +22,18 @@
 namespace hmrdp {
 
 // Plays the 16-bit PCM stream produced by the rdpsnd sink. One instance per
-// session; the server's format (rate/channels) is honoured and a change rebuilds
-// the renderer.
+// session; the server's format is honoured and a change rebuilds the renderer.
 //
-// This is the single owner of client-side audio buffering: FreeRDP hands over
-// every decoded packet and never pre-drops (patch-steps/35), so the drop/start
-// policy exists only here. Packets are queued whole and every watermark is in
-// playback time, so the latency bound is the same number of milliseconds whatever
-// the format. A new bout of audio is prebuffered before playback starts (start-up
-// silence is not loss); a mid-stream jitter gap is not re-primed, which would add
-// a second silence gap on top of the network's. The only drop point is the queue
-// past its high-water mark, which drops the oldest whole packets (sample
-// alignment kept). TakeLossStats reports underrun silence plus those drops.
-// Write() returns the queued playback time as the current render latency, which
-// rdpsnd reports to the server in the Wave Confirm.
+// The single owner of client-side audio buffering (FreeRDP only decodes and
+// forwards, patch-steps/35): queue whole packets, express every watermark in
+// playback time, prebuffer a new bout, drop the oldest whole packet past
+// high-water. Policy and rationale: doc_agent/native-libraries.md §5. Write()
+// returns the queued playback time as the render latency rdpsnd reports in the
+// Wave Confirm.
 //
 // Locking: `mutex_` guards the queue and the renderer handle and is never held
-// while calling into OHAudio; the renderer's write callback takes it on the audio
-// thread, so holding it across Stop/Release (which wait for that callback) would
-// deadlock. `lifecycle_` serialises open/close and is taken only outside `mutex_`.
+// across an OHAudio call (Stop/Release wait for the write callback, which takes
+// it); `lifecycle_` serialises open/close, taken only outside `mutex_`.
 class AudioOutput {
  public:
   // True when libohaudio.so and every required entry point are available.
