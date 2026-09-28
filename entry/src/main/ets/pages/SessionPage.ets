@@ -10,7 +10,7 @@ import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOptions,
-  RdpEvent, RdpPointerFlags, RdpTouchFlags, SessionRequests,
+  RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -2330,6 +2330,15 @@ struct SessionPage {
     if (event.keyCode === 2076 || event.keyCode === 2077) {
       return;
     }
+    // The remote session follows the local toggle keys. A non-lock key may carry
+    // a change made while another window had focus, so it is synced before the
+    // key itself - the character then gets the right case; a lock key is synced
+    // after it, because that key press toggles the remote on its own.
+    const lockKey: boolean = event.keyCode === 2074 || event.keyCode === 2075
+      || event.keyCode === 2102;
+    if (!lockKey) {
+      this.syncLocalLocks(event);
+    }
     if (this.winKeySubstitute !== 0 && event.keyCode === this.winKeySubstitute) {
       this.trackScanKey('win', 0x5B, true, down);
       this.native.winKey(down);
@@ -2340,6 +2349,9 @@ struct SessionPage {
       this.trackScanKey('s' + scan.scancode + (scan.extended ? 'e' : ''), scan.scancode,
         scan.extended, down);
       this.native.key(scan.scancode, down, scan.extended);
+      if (lockKey) {
+        this.syncLocalLocks(event);
+      }
       return;
     }
     const text: string = event.keyText;
@@ -2350,6 +2362,32 @@ struct SessionPage {
         this.native.unicode(code, down);
       }
     }
+  }
+
+  /**
+   * Reports the local toggle-key state to the remote so the session follows
+   * HarmonyOS. The states are only exposed from API 19; when the device does not
+   * provide them nothing is known and the remote keeps its own state. The native
+   * side drops a value the server was already sent, so this is safe per event.
+   */
+  private syncLocalLocks(event: KeyEvent): void {
+    const caps: boolean | undefined = event.isCapsLockOn;
+    const num: boolean | undefined = event.isNumLockOn;
+    const scroll: boolean | undefined = event.isScrollLockOn;
+    if (caps === undefined || num === undefined || scroll === undefined) {
+      return;
+    }
+    let flags: number = 0;
+    if (scroll) {
+      flags |= RdpLockFlags.SCROLL;
+    }
+    if (num) {
+      flags |= RdpLockFlags.NUM;
+    }
+    if (caps) {
+      flags |= RdpLockFlags.CAPS;
+    }
+    this.native.lockState(flags);
   }
 
   private trackScanKey(key: string, scancode: number, extended: boolean, down: boolean): void {

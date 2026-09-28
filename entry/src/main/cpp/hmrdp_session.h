@@ -168,6 +168,11 @@ class Session : public std::enable_shared_from_this<Session> {
   bool SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x, int32_t y);
   bool SendKey(uint8_t scancode, bool down, bool extended);
   bool SendUnicode(uint16_t codepoint, bool down);
+  // Tells the server which toggle keys (scroll/num/caps) the local HarmonyOS
+  // keyboard has on (KBD_SYNC_* bits); the remote session follows the local one.
+  // The cached value is also what a server-side indicator change is corrected
+  // back to. Safe to call from the UI thread.
+  bool SendLockState(uint32_t flags);
 
   // Process-global RDPEI frame pacing. When enabled, touch contacts are sent at
   // the full input rate instead of the upstream ~20ms (50Hz) coalescing. No-op
@@ -272,6 +277,10 @@ class Session : public std::enable_shared_from_this<Session> {
                           const uint8_t* andMask, uint32_t andLen);
   void HandlePointerDefault();
   void HandlePointerHidden();
+  // The server's Set Keyboard Indicators PDU reports the remote session's lock
+  // keys. The local state is authoritative: a remote value that disagrees is
+  // corrected by re-sending the local one (see SendLockState).
+  void HandleRemoteLockState(uint32_t ledFlags);
 
   // Clipboard channel callbacks (invoked on the RDP thread).
   UINT OnCliprdrMonitorReady();
@@ -289,6 +298,10 @@ class Session : public std::enable_shared_from_this<Session> {
   void MarkDestroyed();
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
+  // Sends a Client Synchronize PDU unconditionally (the caller decided the
+  // server's toggle state is stale). SendLockState() is the deduplicated entry
+  // point used by the input path.
+  bool SendSynchronize(uint32_t flags);
   // Frame telemetry shared by every present path. The present's own meter phases
   // are fed by the shared frame host (hmrdp_gfx_cpu.h), so this only does the
   // per-frame bookkeeping.
@@ -381,6 +394,15 @@ class Session : public std::enable_shared_from_this<Session> {
   // actual shape change.
   uint32_t cursorHash_ = 0;
   bool cursorHashValid_ = false;
+  // Toggle keys of the local keyboard as last reported by ArkTS (KBD_SYNC_*
+  // bits). lockKnown_ stays false until the first key event hands us a state, so
+  // a remote indicator change is never "corrected" to a guess. lastRemoteLocks_
+  // dedupes repeated server values so a re-assert cannot ping-pong.
+  std::atomic<uint32_t> localLocks_{0};
+  std::atomic<bool> localLocksKnown_{false};
+  std::atomic<uint32_t> lastRemoteLocks_{0};
+  std::atomic<bool> lastRemoteLocksValid_{false};
+  std::atomic<uint64_t> lastReassertMs_{0};
 
   // Clipboard redirection state. The local clipboard is kept in the exact wire
   // form of each format it can provide. Only one kind is owned at a time, so the

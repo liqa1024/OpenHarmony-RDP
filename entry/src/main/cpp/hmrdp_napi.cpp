@@ -531,6 +531,27 @@ napi_value SendUnicode(napi_env env, napi_callback_info info) {
                     session->SendUnicode(static_cast<uint16_t>(codepoint), down));
 }
 
+napi_value SendLockState(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int32_t flags = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int32(env, args[1], &flags) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::shared_ptr<Session> session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, session->SendLockState(static_cast<uint32_t>(flags)));
+}
+
 napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -1059,6 +1080,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"sendTouch", nullptr, SendTouch, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendKey", nullptr, SendKey, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"sendLockState", nullptr, SendLockState, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
        napi_default, nullptr},

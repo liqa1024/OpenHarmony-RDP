@@ -119,6 +119,15 @@
   **真实 Win 键不转发**，避免"远端+本机"双重映射。
   - 窗口级"按键穿透"开关已删除（对系统保留键只能旁听、拦不住 shell，对普通键又无必要）；
     确需独占系统快捷键只能用系统级 `OH_Input_AddKeyEventInterceptor`/`AddKeyEventHook`（需 `system_basic`）。
+- **锁定键（Caps / Num / Scroll Lock）以本机为准，RDP 跟随本机**：任何按键事件都读本机锁定态
+  （`KeyEvent.isCapsLockOn` / `isNumLockOn` / `isScrollLockOn`，API 19；设备不给这几个字段时保持远端现状）
+  并与已下发值比对，变了就发 RDP `Client Synchronize PDU`
+  （`freerdp_input_send_synchronize_event`，位值与 `KBD_SYNC_*` 一致）。**非锁定键在转发前发**——这样该键的
+  字符大小写已经正确，覆盖"焦点不在本窗口时本机锁定态被改"的情况；**锁定键本身在转发后发**——该键自己已经
+  让远端翻转，先发会变成二次翻转。服务端的 `Set Keyboard Indicators` PDU（`update->SetKeyboardIndicators`）
+  报远端锁定态，其客户端默认实现是**把 PDU 原样回发**，必须接管；远端值与本机不一致时按本机重新下发
+  （1s 节流，避免与服务端来回拉锯）。三个锁定键（Caps 0x3A、Scroll 0x46、Num 0x45）与各自的小键盘扫描码
+  都要在 `KeyMapper` 里齐全，否则本机锁定键根本到不了远端。
 - **远端光标同步**（全局设置，默认开）：RDP 只传光标**位图**（系统指针仅 `SYSPTR_NULL`/`SPTR_DEFAULT`），
   所以照搬位图、**不做类型映射**；HarmonyOS 会把自定义位图缩放到固定的系统光标大小，故**无需**按
   画面/位图尺寸自行缩放。原生侧用 `graphics_register_pointer` 接管并按需缩放（预乘 alpha 面积平均），

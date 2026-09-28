@@ -205,6 +205,18 @@ export class RdpPointerFlags {
   static readonly HWHEEL: number = 0x0400;
 }
 
+/**
+ * Toggle-key bits of the RDP synchronize/indicator PDUs (KBD_SYNC_*). They are
+ * the same values in both directions: a Client Synchronize PDU tells the server
+ * which lock keys the local keyboard has on, and the server's Set Keyboard
+ * Indicators PDU reports the remote session's state.
+ */
+export class RdpLockFlags {
+  static readonly SCROLL: number = 0x01;
+  static readonly NUM: number = 0x02;
+  static readonly CAPS: number = 0x04;
+}
+
 export class RdpTouchFlags {
   static readonly DOWN: number = 0x01;
   static readonly UP: number = 0x02;

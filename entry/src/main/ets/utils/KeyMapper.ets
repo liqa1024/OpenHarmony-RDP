@@ -83,6 +83,24 @@ export class KeyMapper {
       case 2099: return RdpScanCode.of(0x44, false);
       case 2100: return RdpScanCode.of(0x57, false); // F11
       case 2101: return RdpScanCode.of(0x58, false); // F12
+      case 2102: return RdpScanCode.of(0x45, false); // num lock
+      case 2103: return RdpScanCode.of(0x52, false); // numpad 0
+      case 2104: return RdpScanCode.of(0x4F, false); // numpad 1
+      case 2105: return RdpScanCode.of(0x50, false); // numpad 2
+      case 2106: return RdpScanCode.of(0x51, false); // numpad 3
+      case 2107: return RdpScanCode.of(0x4B, false); // numpad 4
+      case 2108: return RdpScanCode.of(0x4C, false); // numpad 5
+      case 2109: return RdpScanCode.of(0x4D, false); // numpad 6
+      case 2110: return RdpScanCode.of(0x47, false); // numpad 7
+      case 2111: return RdpScanCode.of(0x48, false); // numpad 8
+      case 2112: return RdpScanCode.of(0x49, false); // numpad 9
+      case 2113: return RdpScanCode.of(0x35, true); // numpad divide
+      case 2114: return RdpScanCode.of(0x37, false); // numpad multiply
+      case 2115: return RdpScanCode.of(0x4A, false); // numpad subtract
+      case 2116: return RdpScanCode.of(0x4E, false); // numpad add
+      case 2117: return RdpScanCode.of(0x53, false); // numpad dot
+      case 2119: return RdpScanCode.of(0x1C, true); // numpad enter
+      case 2120: return RdpScanCode.of(0x59, false); // numpad equals
       default: return undefined;
     }
   }
@@ -136,6 +154,7 @@ export class KeyMapper {
       case 2081: return 'Home';
       case 2082: return 'End';
       case 2083: return 'Insert';
+      case 2102: return 'Num Lock';
       default: return '按键 ' + keyCode.toString();
     }
   }

@@ -44,6 +44,13 @@ export const sendTouch: (handle: number, flags: number, finger: number, pressure
   x: number, y: number) => boolean;
 export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
 export const sendUnicode: (handle: number, codepoint: number, down: boolean) => boolean;
+
+/**
+ * Reports the local keyboard's toggle keys (KBD_SYNC_* bits: scroll/num/caps)
+ * so the server follows HarmonyOS. Deduplicated natively, so it is safe to call
+ * on every key event.
+ */
+export const sendLockState: (handle: number, flags: number) => boolean;
 export const setClipboardText: (handle: number, text: string) => boolean;
 
 /** Pushes a local HTML fragment to the session (advertised as CF_HTML). */

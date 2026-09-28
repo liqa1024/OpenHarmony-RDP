@@ -1516,6 +1516,20 @@ BOOL HmrdpPlaySound(rdpContext*, const PLAY_SOUND_UPDATE*) {
   return TRUE;
 }
 
+// Server Set Keyboard Indicators PDU: the remote session's toggle-key state.
+// The client-side default for this slot sends the PDU straight back (it exists
+// for proxy forwarding), so it must be replaced to consume it here.
+BOOL HmrdpSetKeyboardIndicators(rdpContext* context, UINT16 ledFlags) {
+  if (context == nullptr) {
+    return TRUE;
+  }
+  HmrdpContext* ctx = reinterpret_cast<HmrdpContext*>(context);
+  if (ctx->session != nullptr) {
+    ctx->session->HandleRemoteLockState(ledFlags);
+  }
+  return TRUE;
+}
+
 int HmrdpAudioSinkAdapter(void* context, const void* data, size_t size, int sampleRate,
                           int channels) {
   if (context == nullptr || data == nullptr || size == 0) {
@@ -1777,6 +1791,9 @@ BOOL HmrdpPostConnect(freerdp* instance) {
   context->update->EndPaint = HmrdpEndPaint;
   context->update->DesktopResize = HmrdpDesktopResize;
   context->update->PlaySound = HmrdpPlaySound;
+  // Consume the server's lock-key indicator updates instead of echoing them back
+  // (see HmrdpSetKeyboardIndicators).
+  context->update->SetKeyboardIndicators = HmrdpSetKeyboardIndicators;
 
   // Take over cursor handling so the remote pointer shape (text caret, hand,
   // resize arrows, ...) drives the HarmonyOS system cursor. Without this the
@@ -2990,6 +3007,63 @@ bool Session::SendUnicode(uint16_t codepoint, bool down) {
   UINT16 flags = down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE;
   return freerdp_input_send_unicode_keyboard_event(ctx.instance()->context->input, flags,
                                                    codepoint);
+}
+
+namespace {
+// Toggle keys the local keyboard can control; the Client Synchronize PDU also
+// carries a Kana bit and nothing here can produce it.
+constexpr uint32_t kLockMask = KBD_SYNC_SCROLL_LOCK | KBD_SYNC_NUM_LOCK | KBD_SYNC_CAPS_LOCK;
+}  // namespace
+
+bool Session::SendSynchronize(uint32_t flags) {
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr ||
+      ctx.instance()->context->input == nullptr) {
+    return false;
+  }
+  return freerdp_input_send_synchronize_event(ctx.instance()->context->input, flags);
+}
+
+bool Session::SendLockState(uint32_t flags) {
+  const uint32_t locks = flags & kLockMask;
+  // The same value the server was already told about needs no PDU: the input
+  // path calls this on every key event so a local change is picked up even when
+  // it happened while the window was not focused.
+  if (localLocksKnown_.load() && localLocks_.load() == locks) {
+    return true;
+  }
+  localLocks_.store(locks);
+  localLocksKnown_.store(true);
+  return SendSynchronize(locks);
+}
+
+void Session::HandleRemoteLockState(uint32_t ledFlags) {
+  const uint32_t locks = ledFlags & kLockMask;
+  if (lastRemoteLocksValid_.load() && lastRemoteLocks_.load() == locks) {
+    return;
+  }
+  lastRemoteLocks_.store(locks);
+  lastRemoteLocksValid_.store(true);
+  if (!localLocksKnown_.load()) {
+    // No local state has been observed yet, so there is nothing to assert; the
+    // first key event reports one and aligns the session.
+    return;
+  }
+  const uint32_t local = localLocks_.load();
+  if (locks == local) {
+    return;
+  }
+  // The local state wins: put the server back on it. Rate-limited because the
+  // assertion and the server's report can trade places if the server keeps
+  // disagreeing.
+  const uint64_t now = NowMs();
+  if (now - lastReassertMs_.load() < 1000) {
+    return;
+  }
+  lastReassertMs_.store(now);
+  HMRDP_LOGI("remote lock keys %{public}u != local %{public}u, re-asserting local", locks,
+             local);
+  SendSynchronize(local);
 }
 
 void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {

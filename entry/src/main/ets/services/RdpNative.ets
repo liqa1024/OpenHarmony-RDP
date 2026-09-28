@@ -9,7 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setTouchHighRate, updateSurface, setHardwareAccel, setGfxCapture,
-setClipboardFiles, pullClipboardFiles, cancelFileTransfer,
+setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
 RdpEventCallback,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -226,6 +226,17 @@ export class RdpNative {
   unicode(codepoint: number, down: boolean): void {
     if (this.handle >= 0) {
       sendUnicode(this.handle, codepoint, down);
+    }
+  }
+
+  /**
+   * Reports the local keyboard's toggle keys (RdpLockFlags bits) so the remote
+   * session follows HarmonyOS. Deduplicated natively, so every key event may
+   * call it.
+   */
+  lockState(flags: number): void {
+    if (this.handle >= 0) {
+      sendLockState(this.handle, flags);
     }
   }
 
