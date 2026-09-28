@@ -344,6 +344,10 @@ void VkRenderer::SetSurface(void* nativeWindow, int width, int height) {
 
 void VkRenderer::ResizeSurface(int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Same size: nothing to rebuild (a repeated event must not churn the swapchain).
+  if (width == surfaceWidth_ && height == surfaceHeight_) {
+    return;
+  }
   surfaceWidth_ = width;
   surfaceHeight_ = height;
   surfaceDirty_ = true;

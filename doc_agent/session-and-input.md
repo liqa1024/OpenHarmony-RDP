@@ -54,6 +54,9 @@
 - `sessionFullscreen` 经 `StartOptions.windowMode = WINDOW_MODE_FULLSCREEN` 直接全屏；
   会话窗的**系统最大化**在 `WindowController.setupSessionWindow` 里转成**沉浸式全屏**
   （隐藏标题栏 / dock 悬停）。
+- **窗口不可见期间不应用 surface 尺寸变化**：最小化/完全遮挡时系统会重新分配它的 surface，恢复时先报过渡
+  尺寸。故不可见期间只挂起，`WINDOW_ACTIVE`/`WINDOW_SHOWN`（或 `onPageShow`）后再重取一次 surface rect
+  应用；尺寸没变不下发。
 
 ### 1.2 自动隐藏主窗口（单窗口模式）
 

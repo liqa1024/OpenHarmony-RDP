@@ -253,6 +253,10 @@ struct SessionPage {
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
+  // Surface sizes reported while the window is hidden are held and re-measured
+  // once it is visible again, so the picture is never fitted to a transient size.
+  private windowVisible: boolean = true;
+  private pendingSurfaceResize: boolean = false;
   private hoverTimer: number = -1;
   private hideTimer: number = -1;
   private moveTimer: number = -1;
@@ -451,9 +455,12 @@ struct SessionPage {
         this.native.bindSurface(surfaceId, width, height);
       },
       (surfaceId: string, width: number, height: number) => {
-        this.surfaceWidth = width;
-        this.surfaceHeight = height;
-        this.native.resizeSurface(width, height);
+        // Hidden: hold the size and re-measure once the window is visible.
+        if (!this.windowVisible) {
+          this.pendingSurfaceResize = true;
+          return;
+        }
+        this.applySurfaceSize(width, height);
       },
       (surfaceId: string) => {
         this.native.unbindSurface();
@@ -508,6 +515,8 @@ struct SessionPage {
   }
 
   onPageShow(): void {
+    this.windowVisible = true;
+    this.flushPendingSurfaceSize();
     this.scheduleForegroundReconnect();
   }
 
@@ -2453,11 +2462,39 @@ struct SessionPage {
         if (data === window.WindowEventType.WINDOW_INACTIVE
           || data === window.WindowEventType.WINDOW_HIDDEN) {
           this.releaseAllInputs();
+          this.windowVisible = false;
+        } else if (data === window.WindowEventType.WINDOW_ACTIVE
+          || data === window.WindowEventType.WINDOW_SHOWN) {
+          this.windowVisible = true;
+          this.flushPendingSurfaceSize();
         }
       });
     }).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
     });
+  }
+
+  /** Applies a surface size as the letterbox target; unchanged sizes are dropped. */
+  private applySurfaceSize(width: number, height: number): void {
+    if (width <= 0 || height <= 0 || this.surfaceId.length === 0) {
+      return;
+    }
+    if (width === this.surfaceWidth && height === this.surfaceHeight) {
+      return;
+    }
+    this.surfaceWidth = width;
+    this.surfaceHeight = height;
+    this.native.resizeSurface(width, height);
+  }
+
+  /** Re-measures the surface once the window is visible again. */
+  private flushPendingSurfaceSize(): void {
+    if (!this.pendingSurfaceResize) {
+      return;
+    }
+    this.pendingSurfaceResize = false;
+    const rect: SurfaceRect = this.controller.getXComponentSurfaceRect();
+    this.applySurfaceSize(rect.surfaceWidth, rect.surfaceHeight);
   }
 
   private minimizeWindow(): void {

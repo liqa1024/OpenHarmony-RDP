@@ -135,6 +135,11 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   **格式**，command pool/buffer 与每帧 fence/信号量都与尺寸无关，都要保留；旧 swapchain 通过
   `oldSwapchain` 交回驱动复用。
 - 窗口尺寸变化**不是**故障，也不要为"等尺寸稳定"去延迟创建或主动重建。
+- **letterbox / 上屏的目标取 surface 的真实像素尺寸**，不取窗口生命周期上报的尺寸：窗口不可见时系统会重新
+  分配 surface 并可能先报一个过渡尺寸，按上报值拟合会把画面缩放到已经不存在的尺寸。Vulkan 取重建自
+  `currentExtent` 的尺寸；GLES 每次上屏用 `eglQuerySurface` 取真实尺寸。
+- **尺寸没变不重建**：`ResizeSurface` 收到与当前相同的尺寸直接返回；重复事件置脏只会白白拆建一次
+  swapchain，观感是一次重拟合。
 
 ## 6. 账目与探针
 

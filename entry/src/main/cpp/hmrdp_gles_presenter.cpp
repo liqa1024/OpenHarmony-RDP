@@ -91,6 +91,10 @@ void GlesPresenter::SetSurface(void* nativeWindow, int width, int height) {
 
 void GlesPresenter::ResizeSurface(int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Same size: the viewport is re-derived from the real surface on every present.
+  if (width == surfaceWidth_ && height == surfaceHeight_) {
+    return;
+  }
   surfaceWidth_ = width;
   surfaceHeight_ = height;
   if (display_ != EGL_NO_DISPLAY && surface_ != EGL_NO_SURFACE) {
@@ -270,24 +274,37 @@ void GlesPresenter::EnsureTexture(int desktopWidth, int desktopHeight) {
 }
 
 void GlesPresenter::UpdateViewport() {
-  if (surfaceWidth_ <= 0 || surfaceHeight_ <= 0 || desktopWidth_ <= 0 ||
+  // Fit to the surface's real pixel size: the size a window event reported can be
+  // transient (a hidden window's surface is re-allocated by the system).
+  int targetWidth = surfaceWidth_;
+  int targetHeight = surfaceHeight_;
+  EGLint queriedWidth = 0;
+  EGLint queriedHeight = 0;
+  if (display_ != EGL_NO_DISPLAY && surface_ != EGL_NO_SURFACE &&
+      eglQuerySurface(display_, surface_, EGL_WIDTH, &queriedWidth) == EGL_TRUE &&
+      eglQuerySurface(display_, surface_, EGL_HEIGHT, &queriedHeight) == EGL_TRUE &&
+      queriedWidth > 0 && queriedHeight > 0) {
+    targetWidth = static_cast<int>(queriedWidth);
+    targetHeight = static_cast<int>(queriedHeight);
+  }
+  if (targetWidth <= 0 || targetHeight <= 0 || desktopWidth_ <= 0 ||
       desktopHeight_ <= 0) {
-    glViewport(0, 0, surfaceWidth_, surfaceHeight_);
+    glViewport(0, 0, targetWidth, targetHeight);
     return;
   }
   const double surfaceAspect =
-      static_cast<double>(surfaceWidth_) / static_cast<double>(surfaceHeight_);
+      static_cast<double>(targetWidth) / static_cast<double>(targetHeight);
   const double desktopAspect =
       static_cast<double>(desktopWidth_) / static_cast<double>(desktopHeight_);
-  int vpWidth = surfaceWidth_;
-  int vpHeight = surfaceHeight_;
+  int vpWidth = targetWidth;
+  int vpHeight = targetHeight;
   if (desktopAspect > surfaceAspect) {
-    vpHeight = static_cast<int>(surfaceWidth_ / desktopAspect);
+    vpHeight = static_cast<int>(targetWidth / desktopAspect);
   } else {
-    vpWidth = static_cast<int>(surfaceHeight_ * desktopAspect);
+    vpWidth = static_cast<int>(targetHeight * desktopAspect);
   }
-  const int vpX = (surfaceWidth_ - vpWidth) / 2;
-  const int vpY = (surfaceHeight_ - vpHeight) / 2;
+  const int vpX = (targetWidth - vpWidth) / 2;
+  const int vpY = (targetHeight - vpHeight) / 2;
   glViewport(vpX, vpY, vpWidth, vpHeight);
 }
 
