@@ -278,6 +278,13 @@ struct SessionPage {
   private pendingMoveX: number = -1;
   private pendingMoveY: number = -1;
   private lastMoveSentAt: number = 0;
+  // Input the remote still sees as held, so a lost Up (focus left the window)
+  // can be flushed. Keys are keyed by remote identity, not by ArkUI key code.
+  private heldScanKeys: Map<string, RdpScanCode> = new Map<string, RdpScanCode>();
+  private heldUnicodeKeys: Set<number> = new Set<number>();
+  private heldButtons: Set<number> = new Set<number>();
+  private lastPointerX: number = 0;
+  private lastPointerY: number = 0;
   // Touchpad pinch state: axisPinch is the ratio of the current two-finger
   // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
@@ -483,8 +490,16 @@ struct SessionPage {
       this.reconnectTimer = -1;
     }
     this.unwatchApplicationState();
-    this.releaseAllTouches();
-    this.endPinch();
+    const win: window.Window | undefined = this.sessionWindow;
+    this.sessionWindow = undefined;
+    if (win !== undefined) {
+      try {
+        win.off('windowEvent');
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'off windowEvent failed: %{public}s', JSON.stringify(error));
+      }
+    }
+    this.releaseAllInputs();
     this.restoreCursor();
     // The manager owns the session: this window never stops it (that would race
     // the window-close teardown). SessionAbility.release() is the one place.
@@ -1821,13 +1836,19 @@ struct SessionPage {
     } else if (event.button === MouseButton.Middle) {
       button = RdpPointerFlags.BUTTON3;
     }
+    this.lastPointerX = remoteX;
+    this.lastPointerY = remoteY;
     if (event.action === MouseAction.Press) {
       this.flushMouseMove();
       this.native.mouse(RdpPointerFlags.MOVE, remoteX, remoteY);
       this.native.mouse(button | RdpPointerFlags.DOWN, remoteX, remoteY);
+      if (button !== 0) {
+        this.heldButtons.add(button);
+      }
     } else if (event.action === MouseAction.Release) {
       this.flushMouseMove();
       this.native.mouse(button, remoteX, remoteY);
+      this.heldButtons.delete(button);
     } else if (event.action === MouseAction.Move) {
       this.queueMouseMove(remoteX, remoteY);
     }
@@ -2310,11 +2331,14 @@ struct SessionPage {
       return;
     }
     if (this.winKeySubstitute !== 0 && event.keyCode === this.winKeySubstitute) {
+      this.trackScanKey('win', 0x5B, true, down);
       this.native.winKey(down);
       return;
     }
     const scan: RdpScanCode | undefined = KeyMapper.map(event.keyCode);
     if (scan !== undefined) {
+      this.trackScanKey('s' + scan.scancode + (scan.extended ? 'e' : ''), scan.scancode,
+        scan.extended, down);
       this.native.key(scan.scancode, down, scan.extended);
       return;
     }
@@ -2322,9 +2346,58 @@ struct SessionPage {
     if (text.length === 1) {
       const code: number = text.charCodeAt(0);
       if (code >= 0x20) {
+        this.trackUnicodeKey(code, down);
         this.native.unicode(code, down);
       }
     }
+  }
+
+  private trackScanKey(key: string, scancode: number, extended: boolean, down: boolean): void {
+    if (down) {
+      if (!this.heldScanKeys.has(key)) {
+        this.heldScanKeys.set(key, RdpScanCode.of(scancode, extended));
+      }
+    } else {
+      this.heldScanKeys.delete(key);
+    }
+  }
+
+  private trackUnicodeKey(code: number, down: boolean): void {
+    if (down) {
+      this.heldUnicodeKeys.add(code);
+    } else {
+      this.heldUnicodeKeys.delete(code);
+    }
+  }
+
+  private releaseAllKeys(): void {
+    this.heldScanKeys.forEach((key: RdpScanCode) => {
+      this.native.key(key.scancode, false, key.extended);
+    });
+    this.heldScanKeys.clear();
+    this.heldUnicodeKeys.forEach((code: number) => {
+      this.native.unicode(code, false);
+    });
+    this.heldUnicodeKeys.clear();
+  }
+
+  private releaseAllButtons(): void {
+    if (this.heldButtons.size === 0) {
+      return;
+    }
+    this.flushMouseMove();
+    this.heldButtons.forEach((button: number) => {
+      this.native.mouse(button, this.lastPointerX, this.lastPointerY);
+    });
+    this.heldButtons.clear();
+  }
+
+  /** Releases every input the remote still sees as down (focus left the window). */
+  private releaseAllInputs(): void {
+    this.releaseAllKeys();
+    this.releaseAllButtons();
+    this.releaseAllTouches();
+    this.endPinch();
   }
 
   private loadSessionWindow(): void {
@@ -2337,6 +2410,12 @@ struct SessionPage {
       this.isFullscreen = win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
       win.on('windowStatusChange', (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
+      });
+      win.on('windowEvent', (data: window.WindowEventType) => {
+        if (data === window.WindowEventType.WINDOW_INACTIVE
+          || data === window.WindowEventType.WINDOW_HIDDEN) {
+          this.releaseAllInputs();
+        }
       });
     }).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
@@ -2744,6 +2823,9 @@ struct SessionPage {
           if (isHover) {
             this.applyCursor();
           }
+        })
+        .onBlur(() => {
+          this.releaseAllInputs();
         })
         .onTouch((event: TouchEvent) => {
           this.handleTouch(event);
