@@ -14,6 +14,7 @@ import { util } from '@kit.ArkTS';
 import { SavedConnection, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { AppSettings, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
+import { DeviceCapabilities } from './DeviceCapabilities';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpConfig';
@@ -335,6 +336,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'useRdpCursor', settings.useRdpCursor);
     settings.reconnectOnForeground =
       ConfigTransfer.readBoolean(rec, 'reconnectOnForeground', settings.reconnectOnForeground);
+    settings.winKeySubstitute =
+      ConfigTransfer.readNumber(rec, 'winKeySubstitute', settings.winKeySubstitute);
     settings.mainWindowSizeEnabled =
       ConfigTransfer.readBoolean(rec, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
     settings.mainWindowWidth =
@@ -361,18 +364,20 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'scaleAuto', settings.scaleAuto);
     settings.manualScalePercent =
       ConfigTransfer.readNumber(rec, 'manualScalePercent', settings.manualScalePercent);
+    // Take the file's value, then clamp device-dependent settings to what this
+    // machine supports (see doc_agent/settings-and-storage.md §3).
     settings.enableAudio =
-      ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio);
+      ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio)
+      && DeviceCapabilities.audio().supported;
     settings.enableGfx =
       ConfigTransfer.readBoolean(rec, 'enableGfx', settings.enableGfx);
     settings.enableH264 =
       ConfigTransfer.readBoolean(rec, 'enableH264', settings.enableH264);
     settings.ignoreCertificate =
       ConfigTransfer.readBoolean(rec, 'ignoreCertificate', settings.ignoreCertificate);
-    // 超分 rides the device: adopt an imported 超分 choice only when this machine
-    // can actually run that backend, and silently keep the default otherwise - a
-    // file written on another device must not turn on a session resolution this
-    // one cannot upscale back.
+    settings.hardwareAccel =
+      ConfigTransfer.readBoolean(rec, 'hardwareAccel', settings.hardwareAccel)
+      && DeviceCapabilities.hardwareAccel().supported;
     const srEnabled: boolean = ConfigTransfer.readBoolean(rec, 'srEnabled', false);
     const srBackend: number =
       ConfigTransfer.readNumber(rec, 'srBackend', SR_BACKEND_XENGINE);
@@ -382,6 +387,9 @@ export class ConfigTransfer {
       settings.srRatioPercent =
         ConfigTransfer.readNumber(rec, 'srRatioPercent', settings.srRatioPercent);
     }
+    settings.developerMode =
+      ConfigTransfer.readBoolean(rec, 'developerMode', settings.developerMode);
+    settings.rfxDump = ConfigTransfer.readBoolean(rec, 'rfxDump', settings.rfxDump);
     return settings;
   }
 

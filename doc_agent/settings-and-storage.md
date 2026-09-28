@@ -88,8 +88,8 @@
 - **开发者选项**（`developerMode`，进程级，默认关）：dev/实验功能的**总开关**。关着时以下入口都不存在：
   首页的「回放测试」；设置页的「抓取 RFX 码流（测试）」「触屏高刷新率（实验）」
   「工具栏触发停留时间」「工具栏隐藏延迟」；以及会话工具栏的性能遥测（网络 / 本机 / FPS / 带宽 / 音频）。
-  关掉它还**一并关闭**已开着的抓取，避免"入口被隐藏、后台还在跑"。导入配置**不读取**这个值（回到关），
-  所以导入他人的配置不会意外打开 dev 工具。
+  关掉它还**一并关闭**已开着的抓取，避免"入口被隐藏、后台还在跑"。它与其余设置一样随导入导出搬运
+  （文件里是什么就还原什么）；抓取本身仍只在开发者选项开着时运行。
 
 ## 3. 导入 / 导出（`ConfigTransfer`）
 
@@ -97,13 +97,11 @@
 - 导出用**独立的 DTO**（`ExportedConnection`）而不是直接序列化 `SavedConnection`：否则会把继承来的
   `password` / `gatewayPassword` 字段带出去。
 - 导入按连接 **`id` 覆盖或新增**，并刷新 `updatedAt`（保证 UI key 变化）。入口在设置页底部。
-- **导入时按能力静默跳过**：全局超分（`srEnabled`/`srRatioPercent`/`srBackend`）**随文件导入，但本机跑不了
-  那个后端就不设**（`SettingsStore.srBackendUsableFor()` 判，见
-  [`native-libraries.md`](native-libraries.md) §6），保持默认关闭——在别的机器上做的配置不会让这台去谈一个
-  本机放大不回去的分辨率。`hardwareAccel` 本身不随文件导入（它是设备的运行时能力，不是偏好）。
-  **单连接**的 `useGlobalSr`/`srEnabled`/`srRatioPercent`/`srBackend` 随连接一起导出导入，
-  这样"局域网连接不开、frp 连接开超分辨率"这类分工能整套搬走；连接级的值在连接时还会过
-  `SettingsStore.resolveSr()` 的兜底，所以挂到没有对应能力的设备上也不会真生效。
+- **导出 / 导入同一份字段集**：设置项一律取文件里的值（含开发者选项），只有与设备能力相关的
+  （硬件加速、音频、超分）在本机提供不了时才回退（关掉 / 换后端），不整项丢弃——所以一份配置能
+  跨能力不同的机器搬运，各自落到本机能用的值，且导入后直接开会话也不会用到本机不支持的能力。
+  **单连接**的超分字段（`useGlobalSr`/`srEnabled`/`srRatioPercent`/`srBackend`）随连接一起导出导入，
+  连接时还会过 `SettingsStore.resolveSr()` 兜底，所以挂到没有对应能力的设备上也不会真生效。
 - 解析导出文件时统一 `JSON.parse(text) as Record<string, Object>` 后逐字段读取（原因见
   [`arkts-conventions.md`](arkts-conventions.md) §2）。
 
