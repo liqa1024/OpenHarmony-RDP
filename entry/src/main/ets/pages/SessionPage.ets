@@ -2487,7 +2487,9 @@ struct SessionPage {
       if (this.state === ConnectionState.Connecting) {
         LoadingProgress().width(44).height(44).color($r('app.color.accent'))
       } else {
-        Image($r('app.media.ic_remote_desktop')).width(52).height(52).borderRadius(14)
+        Image($r('app.media.ic_remote_desktop')).width(52).height(52)
+          .borderRadius(14)
+          .draggable(false)
       }
       Text(title)
         .fontSize(17)
@@ -2645,6 +2647,7 @@ struct SessionPage {
           .width(16)
           .height(16)
           .fillColor(TOOLBAR_FG)
+          .draggable(false)
         Text('复制')
           .fontSize(13)
           .fontColor(TOOLBAR_FG)

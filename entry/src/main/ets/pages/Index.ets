@@ -256,6 +256,7 @@ struct Index {
           .width(40)
           .height(40)
           .borderRadius(10)
+          .draggable(false)
         Column() {
           Row() {
             Text(conn.label())
@@ -296,10 +297,12 @@ struct Index {
           Image($r('app.media.ic_disconnect'))
             .width(22)
             .height(22)
+            .draggable(false)
         } else {
           Image($r('app.media.ic_arrow_right'))
             .width(20)
             .height(20)
+            .draggable(false)
         }
       }
       .width(44)
@@ -334,6 +337,7 @@ struct Index {
           .width(44)
           .height(44)
           .borderRadius(11)
+          .draggable(false)
         Column() {
           Text($r('app.string.app_name'))
             .fontSize(20)
@@ -376,6 +380,7 @@ struct Index {
           Image($r('app.media.ic_settings'))
             .width(24)
             .height(24)
+            .draggable(false)
             .opacity(this.settingsPressed ? 0.55 : 1.0)
             .scale({
               x: this.settingsPressed ? 0.84 : 1.0,
@@ -412,6 +417,7 @@ struct Index {
             .height(72)
             .borderRadius(18)
             .opacity(0.35)
+            .draggable(false)
           Text('还没有保存的连接')
             .fontSize(15)
             .fontColor($r('app.color.text_secondary'))
@@ -472,6 +478,7 @@ struct Index {
         Image($r('app.media.ic_plus'))
           .width(24)
           .height(24)
+          .draggable(false)
       }
       .width(56)
       .height(56)
