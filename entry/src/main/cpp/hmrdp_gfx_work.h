@@ -1,34 +1,23 @@
 /*
- * HmRdp - per-frame client work meter (see doc_agent/session-and-input.md §3).
+ * HmRdp - per-frame client work meter (doc_agent/session-and-input.md §3,
+ * doc_agent/gfx-engine.md §8.1).
  *
- * The live session and the offline replay feed the *same* meter through the
- * *same* hooks - the raw chunk arrival (before ZGX), the wrapped GFX
- * SurfaceCommand, the wrapped GFX EndFrame and the presenter - so every phase
- * means exactly the same thing in a live session and in a replay of it. That is
- * what makes the two comparable: a live frame and the same frame replayed offline
- * can be put side by side, per phase and normalized by payload.
+ * The live session and the offline replay feed the same meter through the same
+ * hooks (raw chunk arrival before ZGX, the wrapped SurfaceCommand, the wrapped
+ * EndFrame, the presenter), so a phase means the same thing in both and the two
+ * can be compared per phase, normalized by payload.
  *
- * The meter deliberately exposes *only* the sub-items, no pre-summed "client
- * work" total: the phases carry different kinds of time and each reader adds the
- * ones it wants (the live toolbar sums the four work phases and leaves the
- * blocked `sync` out).
+ * Phases: zgx+parse (chunk arrival -> first command), decode (wrapped
+ * SurfaceCommand, includes the codec's own re-composite), compose (wrapped
+ * EndFrame minus the present and the present-sync inside it), present (the
+ * presenter call). Blocked items, reported separately and outside any work sum:
+ * sync (waiting for the GPU to release the buffer this frame writes - it waits on
+ * the previous frame's present) and presentWait (the part of the present span
+ * blocked on the display). `pace` (the replay's throttling) is subtracted
+ * outright. The transport read happens before the hook and is not covered.
  *
- * What the phases are:
- *   zgx+parse  chunk arrival (capture hook, before ZGX) -> first command of it
- *   decode     the wrapped SurfaceCommand (includes the codec's own re-composite)
- *   compose    the wrapped EndFrame minus the present and the present sync inside
- *              it (gdi surface -> primary); the frame acknowledge is written
- *              before that callback (see patch-steps/09), so it is outside
- *   present    the presenter (the caller times its own present call)
- *   sync       waiting for the GPU to release the pixel source before this frame
- *              may write it (the CPU route composes into the presenter's own
- *              buffer, so the previous frame's read has to drain first). It is
- *              blocked time, not compose work, and it is not present work either
- *              - it waits on the *previous* frame's present.
- * Not covered: the transport read (it happens before the hook).
- *
- * `pace` (the replay's deliberate playback throttling) is the one thing that is
- * subtracted outright: it is not client work at all.
+ * The meter exposes only the sub-items, no pre-summed total: the phases carry
+ * different kinds of time and each reader adds the ones it wants.
  */
 #ifndef HMRDP_GFX_WORK_H
 #define HMRDP_GFX_WORK_H
@@ -42,9 +31,9 @@
 namespace hmrdp {
 
 // The GFX commands that are *not* the per-frame pixel work but sit in the same
-// window (they run before the first SurfaceCommand of a chunk, so their time was
-// landing in the `zgx+parse` bucket - e.g. CreateSurface/ResetGraphics memset a
-// whole surface): counted and timed separately so the attribution is explicit.
+// window (they run before the first SurfaceCommand of a chunk, so their time is
+// part of `zgx+parse` - e.g. CreateSurface/ResetGraphics memset a whole surface):
+// counted and timed separately so the attribution is explicit.
 enum class GfxSetupKind {
   kReset = 0,     // ResetGraphics (memsets every surface + resets both codecs)
   kCreate,        // CreateSurface (allocates + 0xFF-fills a whole surface)
@@ -59,14 +48,8 @@ enum class GfxSetupKind {
 
 class GfxWorkMeter {
  public:
-  // One window of accounted work. Per-frame figures are value / frames.
-  //
-  // Deliberately *no* aggregate "client work" figure: the phases carry different
-  // kinds of time (CPU work, GPU submit, blocked waits) and the right sum depends
-  // on who is reading it, so each reader adds the sub-items it wants. The live
-  // toolbar shows the four work phases and leaves `syncUs` (blocked) out; the
-  // replay reports every sub-item on its own. Hoisting a total in here would bake
-  // in one reader's choice (and one reader's inclusion of waiting).
+  // One window of accounted work. Per-frame figures are value / frames. No
+  // aggregate "client work" total (see the file comment).
   struct Sample {
     uint64_t frames = 0;      // frames the server ended (EndFrame markers)
     uint64_t zgxParseUs = 0;  // chunk arrival -> first command of that chunk
@@ -188,11 +171,11 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx);
 //
 // The presenter's zero-copy desktop buffer needs exactly this point: gdi (or the
 // decoder) writes that buffer in place, so the previous frame's GPU copy out of it
-// must have completed first. FreeRDP's `update->BeginPaint` - where that wait sits
-// today - is called from `gdi_OutputUpdate`, i.e. *after* the frame has already
-// written the buffer, so it waits too late and the upload can be a mix of two
-// frames (visible as blocks of the previous frame at the wrong positions, and
-// invisible to the pixel A/B, which reads gdi's own buffer).
+// must have completed first. `update->BeginPaint` is called from
+// `gdi_OutputUpdate`, i.e. *after* the frame has already written the buffer, so
+// waiting only there is too late and the upload can mix two frames (blocks of the
+// previous frame at the wrong positions). `bad=0` cannot catch it: the reference
+// hashes gdi's own buffer, not what the presenter uploaded.
 //
 // Keyed by the GFX context: a live session and an offline replay each own their
 // own context, and a single global hook would let a replay started next to a live

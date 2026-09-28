@@ -2,37 +2,26 @@
  * HmRdp - platform parallel executor for the progressive tile decode
  * (doc_agent/cpu-accel-plan.md §1).
  *
- * The decode's granularity is a chunk callback that FreeRDP's progressive codec
- * owns; this module is *who runs those callbacks* - FFRT, following the FFRT
- * programming model rather than only its task API:
+ * The decode's granularity is a chunk callback owned by FreeRDP's progressive
+ * codec; this module is *who runs those callbacks*:
  *
- *  - a **concurrent queue** (`ffrt_queue_concurrent`), not bare task submission.
- *    A concurrent queue has an explicit maximum concurrency, which is what the
- *    decode's width maps to ("并发度...同时也对应 FFRT Worker 数量"), so the thread
- *    count stays under our control instead of being left to whatever the global
- *    pool happens to run. The limit is the width **minus one**: the calling
- *    thread runs one chunk itself (caller participation, see below).
- *  - **caller participation**: the calling (receiving) thread runs one chunk
- *    while the queue runs the rest, and only then waits. The region uses `width`
- *    threads, but one of them is the thread that would otherwise sit in the
- *    barrier - so no thread is idle while tiles are claimable, one fewer worker
- *    is asked of the pool, and the caller's share runs in the receiving thread's
- *    own context (warm caches, its QoS) instead of a freshly woken worker's.
- *    Measured effect and why it is not optional: doc_agent/gfx-engine.md §8.1.
- *  - tasks carry a **task attribute** with a name and an explicit QoS. Without
- *    one a task gets the default QoS, whose core class is not the one the
- *    frame-delivery critical path wants.
+ *  - a FFRT **concurrent queue** (`ffrt_queue_concurrent`) so the thread count
+ *    stays under our control. Its maximum concurrency is the decode width **minus
+ *    one**: the calling thread runs one chunk itself (caller participation).
+ *  - **caller participation**: the receiving thread runs one chunk while the queue
+ *    runs the rest, then waits. No thread is idle while tiles are claimable, one
+ *    fewer worker is asked of the pool, and the caller's share runs in the
+ *    receiving thread's own context (warm caches, its QoS).
+ *  - tasks carry a **named attribute with an explicit QoS**; the default QoS's
+ *    core class is not the one the frame-delivery critical path wants.
  *  - the barrier is per task: every chunk is submitted with a handle and the
- *    caller waits for exactly those handles (`ffrt_queue_wait`). Nothing waits
- *    on "all work in the system".
- *  - the callbacks themselves are pure with respect to FFRT: they touch the
- *    tile's own buffers plus one atomic claim cursor, and never take a
- *    non-FFRT lock or block. (Should they ever need to block, FFRT's own
- *    mutex/condition_variable are the ones to use - blocking a worker with a
- *    pthread primitive starves the executor.)
+ *    caller waits for exactly those (`ffrt_queue_wait`), never "all work".
+ *  - the callbacks never take a non-FFRT lock or block (blocking a worker with a
+ *    pthread primitive starves the executor; use FFRT's own primitives if ever
+ *    needed).
  *
  * The patched decoder calls this through weak symbols, so a build without these
- * exports (or a device without ffrt) decodes on the receiving thread.
+ * exports (or a device without FFRT) decodes on the receiving thread.
  */
 #ifndef HMRDP_PARALLEL_H
 #define HMRDP_PARALLEL_H

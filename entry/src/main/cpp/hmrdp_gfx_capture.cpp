@@ -27,9 +27,9 @@ uint64_t g_logMs = 0;
 constexpr uint64_t kMaxBytes = 512ull * 1024 * 1024;
 constexpr uint64_t kLogIntervalMs = 5 * 1000;
 
-// File magic of the timestamped layout (version 1). Its first four bytes are
-// 0x31584750 = 829M, far above any chunk length a version 0 file could carry
-// (the cap is kMaxBytes), so sniffing the magic cannot mistake the two layouts.
+// File magic of the timestamped layout (version 1). Its first four bytes decode
+// to a u32 far above any chunk length a version 0 file could carry (the capture
+// stops at kMaxBytes), so sniffing the magic cannot mistake the two layouts.
 constexpr uint8_t kMagic[8] = {'H', 'M', 'R', 'G', 'P', 'G', 'X', '1'};
 constexpr size_t kHeaderSize = sizeof(kMagic);
 

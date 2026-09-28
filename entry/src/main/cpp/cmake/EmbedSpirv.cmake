@@ -1,9 +1,9 @@
 # Build-time helper: compile one GLSL shader to SPIR-V and emit a C++ header that
-# embeds the words (VULKAN-TODO.md §5 V2 / §7.2).
+# embeds the words.
 #
 # Run as a script, driven by CMakeLists.txt:
 #   cmake -DHMRDP_GLSLANG=<glslang_validator> \
-#         -DHMRDP_SRC=<shader.comp> \
+#         -DHMRDP_SRC=<shader.vert|.frag> \
 #         -DHMRDP_OUT=<generated header> \
 #         -DHMRDP_SYMBOL=<C++ symbol> \
 #         [-DHMRDP_INCLUDE=<dir>] \

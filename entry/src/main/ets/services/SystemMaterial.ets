@@ -1,26 +1,13 @@
 /*
- * HmRdp - immersive system material (沉浸光感) support.
+ * HmRdp - immersive system material (沉浸光感) support; see
+ * doc_agent/arkts-conventions.md §6 for the rules and the surface list.
  *
- * uiMaterial (API 26) is newer than the compatibleSdkVersion the app declares,
- * so the capability is probed before the module is touched at all: on a system
- * without it every accessor answers undefined, the universal attribute is never
- * applied and each surface keeps the flat background it declares.
- *
- * How strong the effect is - and whether it is applied at all - belongs to the
- * system. A material follows the device's compute tier and the user's 沉浸光感
- * setting, and nothing in the app can read or set that strength, so nothing
- * here tries to: the app only chooses which surfaces carry a material.
- *
- * Materials are applied in two shapes, matching how the component exposes the
- * attribute:
- *  - universal attribute (systemMaterial) -> ImmersiveModifier, so the call is
- *    only made on a system that has the attribute;
- *  - an options object (toast, tips, context menu, alert dialog) -> the
- *    material is passed as a field, which an older system simply ignores.
- *
- * Placement rule that drives the surface list: a material resamples whatever is
- * behind it every frame, so it must never sit on the remote desktop image or
- * any other continuously changing content.
+ * uiMaterial (API 26) is newer than the declared compatibleSdkVersion, so the
+ * capability is probed before the module is touched: without it every accessor
+ * answers undefined and each surface keeps the flat background it declares. The
+ * app only chooses which surfaces carry a material; how strong it is belongs to
+ * the system. A material resamples what is behind it every frame, so it must
+ * never sit on continuously changing content (the remote desktop image).
  */
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { uiMaterial } from '@kit.ArkUI';

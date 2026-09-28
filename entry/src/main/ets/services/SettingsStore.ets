@@ -70,8 +70,8 @@ export class AppSettings {
   // percentage of the smaller desktop side (window-relative, not a fixed
   // resolution) at 1.0x gesture ratio.
   pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
-  // Experimental: forward RDPEI touch at the full input rate instead of the
-  // upstream ~20ms (50Hz) coalescing. Off keeps the default behaviour.
+  // Forward RDPEI touch at the high refresh rate (8ms) instead of FreeRDP's
+  // default ~20ms (50Hz) coalescing. Off keeps the default behaviour.
   touchHighRate: boolean = false;
   // When true the remote cursor shape is mapped onto the HarmonyOS system
   // cursor. Turn off to fall back to the plain default cursor.
@@ -117,14 +117,13 @@ export class AppSettings {
   // Which upscaler the global 超分 default uses (SR_BACKEND_XENGINE / _FSR).
   srBackend: number = SR_BACKEND_XENGINE;
   // Present frames through Vulkan; off keeps the session on the GLES presenter
-  // with no Vulkan at all (see doc_agent/settings-and-storage.md §3).
+  // with no Vulkan at all (see doc_agent/settings-and-storage.md §2).
   hardwareAccel: boolean = true;
   // Developer options: reveals the dev-only tools (recorded-stream replay entry,
-  // RFX stream capture, decode-worker knob) and the session toolbar's performance
-  // telemetry. Off for a normal install; nothing dev-only is reachable until it
-  // is turned on.
+  // GFX stream capture) and the session toolbar's performance telemetry. Off for a
+  // normal install; nothing dev-only is reachable until it is turned on.
   developerMode: boolean = false;
-  // Dev-only capture of the RemoteFX/Progressive stream (doc_agent/gfx-engine.md §6).
+  // Dev-only capture of the raw GFX channel stream (doc_agent/gfx-engine.md §6).
   rfxDump: boolean = false;
 }
 

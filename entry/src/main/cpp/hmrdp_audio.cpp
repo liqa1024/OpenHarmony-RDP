@@ -73,7 +73,8 @@ struct OhaudioApi {
   StartFn start = nullptr;
   StopFn stop = nullptr;
   ReleaseFn release = nullptr;
-  // Optional: only used to pin the volume to full if the default ever changes.
+  // Optional: pins the renderer volume to full so the server-side stream plays at
+  // unity gain.
   SetVolumeFn setVolume = nullptr;
 };
 

@@ -39,12 +39,11 @@ struct PresentUploadInfo {
   bool rectListTruncated = false;  // more rects than the cap: box used instead
 };
 
-// The CPU (gdi) frame host: the *one* implementation of "compose into the
+// The CPU (gdi) frame host: the one implementation of "compose into the
 // presenter's buffer, wait for the previous frame's GPU read, present the dirty
 // rects". The live session and the offline replay both reach it through their
-// gdi update hooks and run the exact same call chain - there is no second,
-// "live-compatible" branch kept behind the abstraction. The two owners differ
-// only in the observers they attach to that chain:
+// gdi update hooks and run the exact same call chain; the two owners differ only
+// in the observers they attach to that chain:
 //
 //   EndPaint -> [PrePresent] -> attach -> PresentGdiFrame -> [Presented]
 //
@@ -159,7 +158,7 @@ class GfxCpuDesktop {
 
 // Brings gdi up on `instance` composing straight into `presenter`'s own desktop
 // buffer when the backend offers one (FramePresenter::AcquireDesktopBuffer,
-// doc_agent/present-pipeline.md §4.5). Falls back to a gdi-owned buffer when it does
+// doc_agent/present-pipeline.md §4). Falls back to a gdi-owned buffer when it does
 // not, which is also what happens before the presenter's device exists - the
 // per-frame AttachPresenterDesktopBuffer() then moves gdi over later.
 bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int width, int height);

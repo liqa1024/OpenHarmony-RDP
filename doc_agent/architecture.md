@@ -28,7 +28,7 @@
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |
 | `services/ConnectionStore.ets` | 连接配置存储（preferences；稳定 id + `updatedAt`；`reorder` 持久化顺序） |
 | `services/CredentialStore.ets` | 密码存储（ASSET，按连接 id，**仅连接成功后写入**） |
-| `services/SettingsStore.ets` | 设置存储（preferences）+ 显示解析（`detectedDisplay`/`recommendedScalePercent`/`resolveDisplay`） |
+| `services/SettingsStore.ets` | 设置存储（preferences）+ 显示解析（`detectedDisplay`/`scalePresetForResolution`/`autoScalePercent`/`resolveDisplay`） |
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
 | `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
@@ -84,7 +84,7 @@
 worker 正解析进去会 UAF），随后 `GfxWorkUninstall`。
 
 **服务端侧**：音频（rdpsnd）与输入（rdpei）是**独立虚拟通道**，图形流控（帧回执，MS-RDPEGFX 3.2.5.13）
-只作用于图形管线，服务端**不会因为等我们的帧而停发音频**；两边唯一共享的是 TCP 链路本身（全局带宽，
+只作用于图形管线，服务端**不会因为等待客户端的帧而停发音频**；两边唯一共享的是 TCP 链路本身（全局带宽，
 与帧率无关）。
 
 ## 5. 其它

@@ -42,7 +42,8 @@ struct EditConnectionPage {
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State enableGfx: boolean = true;
-  // H.264 was removed; kept false so the stored model field stays inert.
+  // H.264 is not offered: the native side forces it off (no GPU decoder here), so
+  // this editor only ever leaves the stored field at false.
   @State enableH264: boolean = false;
   @State ignoreCertificate: boolean = true;
   // 超分: kept out of the display group on purpose - a LAN connection can follow

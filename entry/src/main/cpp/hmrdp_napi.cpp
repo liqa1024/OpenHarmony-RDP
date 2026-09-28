@@ -796,8 +796,8 @@ napi_value StartGfxReplayTest(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &surfaceW);
     napi_get_value_int32(env, args[2], &surfaceH);
     const std::string gfxPath = GetStringArg(env, args[3]);
-    // Realtime playback (pace the capture's own arrival times instead of the
-    // fixed per-frame budget). Ignored for captures that carry no timing.
+    // Realtime playback: pace by the capture's own arrival times (the default fast
+    // mode is unthrottled). Ignored for captures that carry no timing.
     int32_t realtime = 0;
     if (argc >= 5) {
       napi_get_value_int32(env, args[4], &realtime);

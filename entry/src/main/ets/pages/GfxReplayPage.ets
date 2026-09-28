@@ -25,15 +25,15 @@ const TAG: string = 'HmRdpReplay';
 // 「路线」 = which presentation line the gdi decode runs through:
 //   CPU      - the GLES presenter (no Vulkan at all)
 //   硬件加速  - the Vulkan presenter
-// This is the session's "硬件加速" setting, exposed here so both presenters can be
-// A/B'd on the same capture.
+// This is the session's "硬件加速" setting, exposed here as well so both presenters
+// can be compared on the same capture.
 const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
 
-// 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §8.4).
+// 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §8.2).
 //   关   - plain run (the perf modes above)
-//   导出 - record this run as the reference (hmrdp_ref.hash + hmrdp_ref.bmp)
+//   导出 - record this run as the reference (hmrdp_ref_<tag>.{hash,bmp})
 //   对比 - check every frame against the stored reference; the stats line reports
 //          `ref compare: … bad=…` plus the pixel diff of the stored image's frame
 const REF_OFF: number = 0;
@@ -81,7 +81,7 @@ struct GfxReplayPage {
   // Playback clock: false = not throttled at all (runs flat out, a throughput
   // measurement), true = the capture's own arrival times (the cadence the live
   // session ran at). Needs a capture recorded with arrival times; the stats line
-  // reports the mode actually used (`mode=fast|realtime`).
+  // reports the mode actually used (`mode=fast|fast(untimed)|realtime`).
   @State replayRealtime: boolean = false;
   // Whether this device can run the Vulkan presenter at all (see
   // DeviceCapabilities.hardwareAccel); when it cannot, 硬件加速 is not offered.

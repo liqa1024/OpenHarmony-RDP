@@ -85,10 +85,11 @@ hdc -t <序列号> shell "hilog -x -D 0xD001"            # 读本应用的原生
 
 ### 5.2 标准多轮回放（dev 页）
 
-dev 页的 stats 文本**第一行**是状态与轮次号：
+dev 页的 stats 文本**第一行**是状态与轮次号（路线单独一行显示，不在 stats 文本里）：
 
 ```
-state=running|finished|aborted  run=<n>  route=…  mode=…  frames=…  fps=…
+state=running|finished|aborted  run=<n>  mode=<realtime|fast|fast(untimed)>  frames=…  presents=…  fps=…  fail=…
+feed=…ms  parse=…ms  present=…ms  lag=…ms  (running=0|1)
 ```
 
 多轮测量一律用 `native/scripts/replay-rounds.ps1`，不要手动点：
@@ -105,7 +106,7 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
 - 脚本用坐标点击 ⇒ 窗口必须在最前（脚本先 `aa start`）；点击没生效会直接报
   `did not start a new run`，而不是干等到超时。
 - 参考的本地副本在 `.cache/hmrdp_ref_<captureTag>.{hash,bmp}`（不入库）；**解码侧改动后要重录**，
-  判据见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4。
+  判据见 [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
 
 ## 6. 环境
 

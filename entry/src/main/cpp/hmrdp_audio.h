@@ -22,33 +22,25 @@
 namespace hmrdp {
 
 // Plays the 16-bit PCM stream produced by the rdpsnd sink. One instance per
-// session; the server's format (rate/channels) is honoured and a change
-// transparently rebuilds the renderer.
+// session; the server's format (rate/channels) is honoured and a change rebuilds
+// the renderer.
 //
-// This is the single owner of client-side audio buffering. FreeRDP hands over
-// every decoded packet and never pre-drops (its overrun guard is neutralised for
-// this backend, see native/scripts/patch-steps/35-rdpsnd-no-pre-drop.ps1), so
-// there is exactly one drop/start policy - this class.
+// This is the single owner of client-side audio buffering: FreeRDP hands over
+// every decoded packet and never pre-drops (patch-steps/35), so the drop/start
+// policy exists only here. Packets are queued whole and every watermark is in
+// playback time, so the latency bound is the same number of milliseconds whatever
+// the format. A new bout of audio is prebuffered before playback starts (start-up
+// silence is not loss); a mid-stream jitter gap is not re-primed, which would add
+// a second silence gap on top of the network's. The only drop point is the queue
+// past its high-water mark, which drops the oldest whole packets (sample
+// alignment kept). TakeLossStats reports underrun silence plus those drops.
+// Write() returns the queued playback time as the current render latency, which
+// rdpsnd reports to the server in the Wave Confirm.
 //
-// Packets are queued whole and every watermark is expressed in playback time,
-// so the latency bound is the same number of milliseconds whatever the format
-// is. A new bout of audio is prebuffered before playback starts (that start-up
-// silence is not loss); a mid-stream jitter gap is *not* re-primed, because
-// re-priming would add a silence gap on top of the one the network just caused.
-// The only drop point is the queue growing past its high-water mark (the server
-// or its clock running ahead): the oldest whole packets are dropped, which keeps
-// 16-bit sample alignment. TakeLossStats reports underrun silence plus those
-// drops, so the toolbar glitch rate tells whether the path is actually healthy.
-//
-// The same queue depth is what Write() returns as the current render latency, so
-// rdpsnd can report it to the server in the Wave Confirm (a device that buffers
-// internally is expected to answer with its render latency).
-//
-// Locking: `mutex_` only guards the queue and the renderer handle, and is never
-// held while calling into OHAudio. The renderer's write callback runs on the
-// audio thread and takes `mutex_`, so holding it across
-// OH_AudioRenderer_Stop/Release (which wait for that callback) would deadlock.
-// `lifecycle_` serialises open/close and is only ever taken outside `mutex_`.
+// Locking: `mutex_` guards the queue and the renderer handle and is never held
+// while calling into OHAudio; the renderer's write callback takes it on the audio
+// thread, so holding it across Stop/Release (which wait for that callback) would
+// deadlock. `lifecycle_` serialises open/close and is taken only outside `mutex_`.
 class AudioOutput {
  public:
   // True when libohaudio.so and every required entry point are available.

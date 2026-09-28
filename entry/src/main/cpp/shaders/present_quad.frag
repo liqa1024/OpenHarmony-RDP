@@ -1,12 +1,10 @@
 // HmRdp - presenter quad (fragment stage): samples the desktop picture and writes
 // the swapchain image.
 //
-// The channel swap lives here (not in a CPU pass over the frame): FreeRDP hands us
-// BGRA and the screen surface is usually RGBA-ordered, so the texture read has to
-// be swizzled. `kSwapRb` is a specialization constant because it depends on the
-// swapchain format: when the swapchain is BGRA-ordered the uploaded bytes are
-// already in the right order and the swap must not happen. This mirrors what the
-// GLES presenter's fragment shader does.
+// `kSwapRb` is a specialization constant and the pipeline sets it false: the
+// picture image is declared in FreeRDP's byte order (`kPictureFormat`), so the
+// sampled value is already the semantic colour and writing it to the attachment
+// converts to the swapchain's format. No CPU pass over the frame does the swap.
 #version 450
 layout(location = 0) in vec2 vUv;
 layout(location = 0) out vec4 oColor;

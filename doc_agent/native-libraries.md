@@ -184,7 +184,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - **允许舍入的那部分（`-DWITH_SIMD=ON`）**：抽取支的上游 NEON（8 路 16 位）、量化移位、
   `yCbCrToRGB` 与部分 primitives 由 FreeRDP 自己的实现接管；非抽取支的上游 NEON **不接**
   （16 位车道相加会回绕，不是舍入）。这类改动由**量级门禁**兜底，见
-  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.4。
+  [`gfx-engine.md`](gfx-engine.md) §8.1/§8.2。
 - **`state` 少一趟搬运（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化那趟改成
   **`sign → buffer`**——原先是"就地改 `buffer` + 另拷一份到 `sign`"，于是每 tile/分量的那趟 8KB 搬运
   整趟消失，两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"
@@ -258,10 +258,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 
 已用此模式的：音频重定向、硬件加速、超分辨率。原生只回**稳定原因码**
 （`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`），
-中文文案由 `DeviceCapabilities.hardwareAccel()` 负责；不支持时设置页置灰开关并显示原因，
+中文文案由 `DeviceCapabilities` 的对应方法负责；不支持时设置页置灰开关并显示原因，
 并把已存的值纠正为关。
 
-**有两个判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
+**一个呈现判定 + 两个超分后端判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
 
 | 判定 | 用途 | 条件 |
 |---|---|---|
@@ -283,8 +283,6 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   与 toolchain 指向的 openharmony sysroot 同级；CMake 按 `${OHOS_SDK_NATIVE}/../../hms/native/sysroot`
   定位，找不到就不定义 `HMRDP_HAVE_XENGINE`，桥退化为"不支持"而构建照常（见 `hmrdp_xeg.cpp`）。
 
-- 它决定「硬件加速」是否有意义（`vulkanAccelSupport()` → 设置页置灰），以及
-  `CreateFramePresenter()` 用 Vulkan 呈现器还是 GLES 兜底呈现器（开关关掉时也是 GLES）。
 - **呈现判定实际对应的 Vulkan 面**（`VkRenderer` 用它，逐项可核）：instance 扩展
   `VK_KHR_surface` + `VK_OHOS_surface`，device 扩展**只有** `VK_KHR_swapchain`；一个
   graphics+present 队列族；swapchain（格式优先 `B8G8R8A8_UNORM`，回退 `R8G8B8A8_UNORM`，FIFO）+

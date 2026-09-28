@@ -18,7 +18,7 @@ uint64_t NowUs() {
 }
 
 // The EGL display is process-wide and initialised once; it is never terminated
-// (the same rule the old EGL helper followed).
+// (it is shared, and tearing it down would break any other user).
 EGLDisplay SharedDisplay() {
   static std::once_flag once;
   static EGLDisplay display = EGL_NO_DISPLAY;

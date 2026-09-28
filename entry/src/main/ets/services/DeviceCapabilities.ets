@@ -65,9 +65,9 @@ export class DeviceCapabilities {
 
   /**
    * GPU super-resolution (超分) of the presented frame: the session renders at a
-   * lower resolution and the Vulkan presenter upscales it back with the platform
-   * XEngine spatial upscale. Needs the Vulkan presenter to be usable at all, so
-   * it is a real-device-only capability like 硬件加速.
+   * lower resolution and the Vulkan presenter upscales it back with XEngine or
+   * FSR. Needs the Vulkan presenter to be usable at all, so it is a
+   * real-device-only capability like 硬件加速.
    */
   static superResolution(): Capability {
     const capability: Capability = new Capability();

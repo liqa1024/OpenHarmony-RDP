@@ -15,8 +15,8 @@ startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats }
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 
-const GPU_DOMAIN: number = 0xD001;
-const GPU_TAG: string = 'HmRdpNative';
+const DOMAIN: number = 0xD001;
+const TAG: string = 'HmRdpNative';
 
 export type RdpEventListener = (event: RdpEvent, data: string) => void;
 
@@ -63,8 +63,8 @@ export class RdpNative {
 
   /**
    * Process-global remote cursor switch. When off, the session leaves the
-   * HarmonyOS default cursor untouched (the pre-cursor-support behaviour).
-   * Planned at connect time, so it applies to sessions opened afterwards.
+   * HarmonyOS default cursor untouched. Read at connect time, so it applies to
+   * sessions opened afterwards.
    */
   static applyRdpCursor(enabled: boolean): void {
     setRdpCursor(enabled);
@@ -77,7 +77,7 @@ export class RdpNative {
     setHardwareAccel(enabled);
   }
 
-  /** Dev-only RemoteFX stream capture to the given directory. */
+  /** Dev-only raw GFX channel capture to the given directory. */
   static applyRfxDump(enabled: boolean, dir: string): void {
     setRfxDump(enabled, dir);
   }
@@ -87,7 +87,7 @@ export class RdpNative {
    * Decoding is FreeRDP's gdi pipeline; the presenter is the one the
    * "硬件加速" setting selects.
    * `realtime`: play the capture at its recorded arrival times (the live session's
-   * own cadence) instead of a fixed per-frame budget - the mode to use when the
+   * own cadence) instead of the unthrottled fast mode - the mode to use when the
    * question is "can the client carry the *real* load". Captures recorded before
    * arrival times were stored fall back to the unpaced mode and say so in the
    * stats line (`mode=fast(untimed)`).
@@ -98,7 +98,7 @@ export class RdpNative {
     gfxPath: string, realtime: boolean, refMode: number): string {
     const summary: string = startGfxReplayTest(surfaceId, surfaceW, surfaceH, gfxPath,
       realtime ? 1 : 0, refMode);
-    hilog.info(GPU_DOMAIN, GPU_TAG, 'gfx replay: %{public}s', summary);
+    hilog.info(DOMAIN, TAG, 'gfx replay: %{public}s', summary);
     return summary;
   }
 

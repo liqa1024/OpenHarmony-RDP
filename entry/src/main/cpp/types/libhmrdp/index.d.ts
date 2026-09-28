@@ -16,10 +16,15 @@ export interface RdpOptions {
   /**
    * 超分 (super resolution). `width`/`height` are the *output* resolution; with
    * this on, the session asks the server for `output ÷ srRatioPercent` and the
-   * Vulkan presenter upscales every frame back with XEngine's GPU spatial
-   * upscale. Ignored by the GLES presenter, so it requires 硬件加速.
+   * Vulkan presenter upscales every frame back to the output resolution. Ignored
+   * by the GLES presenter, so it requires 硬件加速.
    */
   srEnabled: boolean;
+  /**
+   * Which upscaler runs: 0 = XEngine (platform spatial upscale, needs the device
+   * feature), 1 = the presenter's own FSR 1.0. Ignored unless srEnabled.
+   */
+  srBackend: number;
   /** Upscale ratio in percent (125 = 1.25×); ignored unless srEnabled. */
   srRatioPercent: number;
   performanceFlags: number;
@@ -102,9 +107,8 @@ export const setRdpCursor: (enabled: boolean) => boolean;
 export const setHardwareAccel: (enabled: boolean) => boolean;
 
 /**
- * Dev-only: capture the full GFX command stream (`<dir>/hmrdp_gfx.bin`) plus
- * per-frame surface baselines (`<dir>/hmrdp_gfx_surface.bin`) and the legacy
- * RemoteFX stream (`<dir>/hmrdp_rfx.bin`, PERF-TODO §2).
+ * Dev-only: capture the raw (still ZGX-compressed) GFX channel stream to
+ * `<dir>/hmrdp_gfx.bin`.
  */
 export const setRfxDump: (enabled: boolean, dir: string) => boolean;
 
@@ -113,7 +117,7 @@ export const setRfxDump: (enabled: boolean, dir: string) => boolean;
  * Decoding is FreeRDP's gdi pipeline; the presenter is the one the "硬件加速"
  * setting selects.
  * `realtime` plays the capture at its recorded arrival times (the cadence the
- * live session ran at) instead of a fixed per-frame budget; it is ignored for
+ * live session ran at) instead of the unthrottled fast mode; it is ignored for
  * captures recorded before the arrival times were stored.
  * `refMode` selects the golden-reference check: 0 = off, 1 = record, 2 = compare.
  */
@@ -125,8 +129,8 @@ export const resizeGfxReplayTest: (width: number, height: number) => void;
 export const gfxReplayTestStats: () => string;
 
 /**
- * Dev/test: Vulkan capability report - loader/device version, migration-relevant
- * extensions, memory types and queue families. Multi-line, for the dev panel.
+ * Dev/test: Vulkan capability report - loader/device version, extensions, memory
+ * types and queue families, one field per line.
  */
 export const vulkanInfo: () => string;
 
@@ -139,13 +143,16 @@ export const vulkanInfo: () => string;
 export const vulkanAccelSupport: () => string;
 
 /**
- * Whether this device can upscale a presented frame with XEngine's GPU spatial
- * upscale - the capability behind the "超分" setting. Returns "1", or "0|<code>"
- * with a stable code: the `vulkanAccelSupport` codes (`no-vulkan` / `no-instance`
- * / `no-device` / `no-host-memory` / `no-surface` / `emulator`) when the Vulkan
- * presenter itself is unusable, or `no-xengine` (libxengine.so missing) /
- * `no-extension` (the GPU has no XEG_spatial_upscale). 超分 needs the Vulkan
- * presenter, so the caller must also check `vulkanAccelSupport`.
+ * Whether this device can upscale a presented frame at all (at least one 超分
+ * backend usable) - the capability behind the "超分" setting. Returns "1", or
+ * "0|<code>" with a stable code: the `vulkanAccelSupport` codes when the Vulkan
+ * presenter itself is unusable, else `no-xengine` (no usable backend). 超分 needs
+ * the Vulkan presenter, so the caller must also check `vulkanAccelSupport`.
  */
 export const superResolutionSupport: () => string;
+/**
+ * Which 超分 backends this build and device can run, comma-separated:
+ * "xengine" / "fsr" / "xengine,fsr", or "" when none. The UI greys out the ones
+ * absent from the list.
+ */
 export const superResolutionBackends: () => string;

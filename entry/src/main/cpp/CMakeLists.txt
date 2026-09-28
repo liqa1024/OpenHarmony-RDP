@@ -99,7 +99,7 @@ add_library(hmrdp SHARED
     ${HMRDP_SHADER_HEADERS}
 )
 
-# Generated SPIR-V headers (one <shader>.comp.h per entry in HMRDP_SHADERS) live
+# Generated SPIR-V headers (one <source file>.h per entry in HMRDP_SHADERS) live
 # outside the source tree, so include that directory.
 target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 

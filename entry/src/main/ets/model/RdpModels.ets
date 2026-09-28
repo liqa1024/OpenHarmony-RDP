@@ -4,11 +4,6 @@
 import { RdpOptions } from 'libhmrdp.so';
 
 /**
- * Effective display settings for a session: the output resolution, the session
- * (pre-super-resolution) resolution derived from it, and the DPI scale factor
- * (percentage) requested from the server.
- */
-/**
  * 超分 backend ids. Plain numbers because they are persisted with the connection
  * and cross the N-API boundary as an int; the native side maps 0/1 to
  * SuperResolutionBackend (see doc_agent/present-pipeline.md §4.5).
@@ -18,6 +13,11 @@ import { RdpOptions } from 'libhmrdp.so';
 export const SR_BACKEND_XENGINE: number = 0;
 export const SR_BACKEND_FSR: number = 1;
 
+/**
+ * Effective display settings for a session: the output resolution, the session
+ * (pre-super-resolution) resolution derived from it, and the DPI scale factor
+ * (percentage) requested from the server.
+ */
 export class DisplayProfile {
   // Output (post-super-resolution) resolution: the user's setting or the current
   // display, and what the native side is given as width/height.
@@ -98,10 +98,11 @@ export enum RdpEvent {
   // phases and leaves the blocked ones out, and the trailing three are GPU time
   // (dirty-rect upload, 超分辨率 upscale, letterbox) rather than CPU work.
   Metrics = 11,
-  // Remote clipboard holds files: payload "<count>|<totalBytes>".
+  // Remote clipboard holds files/folders: payload
+  // "<fileCount>|<totalBytes>|<folderCount>".
   ClipboardFileList = 12,
-  // "<direction>|<doneBytes>|<totalBytes>", direction 0 = remote -> local,
-  // 1 = local -> remote.
+  // "<direction>|<done>|<total>|<fileIndex>|<fileCount>", direction 0 = remote ->
+  // local, 1 = local -> remote.
   FileTransferProgress = 13,
   // Download finished: the absolute sandbox paths, one per line.
   ClipboardFilesReady = 14,
@@ -168,8 +169,7 @@ export class PendingConnection {
 
 /**
  * Launch requests are keyed by a per-window key that travels through the Want,
- * so concurrent session launches never overwrite each other (the old
- * PendingConnection.current singleton raced when two windows opened at once).
+ * so concurrent session launches never overwrite each other.
  */
 export class SessionRequests {
   private static entries: Map<string, PendingConnection> = new Map<string, PendingConnection>();

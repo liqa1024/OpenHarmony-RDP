@@ -1,17 +1,11 @@
 /*
  * HmRdp - owns background RDP connections started from the connection list.
  *
- * This is the single authority for a connection's lifecycle: it creates and
- * destroys the native session, owns the native event listener and publishes the
- * one state the list and the session window both render from. The session window
- * never starts or stops a session itself.
- *
- * The state machine is, per connection:
- *   Idle -> Connecting -> Connected -> Disconnecting -> Idle
- *                      \-> Failed -------------/
- * with one attempt = one session key = one epoch. An event only applies when its
- * epoch is still the entry's current one, so a late event from a session that was
- * already replaced can never drive the current one.
+ * The single authority for a connection's lifecycle: it creates and destroys the
+ * native session, owns the native event listener and publishes the one state the
+ * list and the session window both render from. The session window never starts or
+ * stops a session itself. The state machine and the "one attempt = one epoch" rule
+ * are in doc_agent/session-and-input.md §1.
  */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -26,14 +20,10 @@ const TAG: string = 'HmRdpSessionManager';
 // Safety net for connection attempts that never report a terminal event (an
 // unreachable host or a stalled handshake would otherwise spin forever).
 const CONNECT_TIMEOUT_MS: number = 30000;
-// An attempt is a full negotiation plus a logon on the remote, and its other end
-// is a disconnect (the remote session stays as Disconnected, not logged off), so
-// attempts are never repeated back to back: an attempt that
-// is still running is never restarted, and two attempts for one connection are
-// kept at least this far apart. Hammering a retry button (or a double tap on the
-// list) therefore cannot turn into a connect/logon storm. The real gate is that
-// the previous native session has been fully destroyed (RdpNative.stopSession
-// waits for that), so this interval is only a secondary guard.
+// Minimum spacing between two attempts for one connection, so a hammered retry
+// button (or a double tap on the list) cannot become a connect/logon storm. This
+// is a secondary guard: the real gate is that the previous native session has been
+// fully destroyed (RdpNative.stopSession waits for that).
 const MIN_ATTEMPT_INTERVAL_MS: number = 1500;
 
 export enum ConnectionState {

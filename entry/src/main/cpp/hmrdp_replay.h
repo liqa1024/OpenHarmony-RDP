@@ -27,22 +27,19 @@ class GfxCpuDesktop;
 // to the frame observers, declared here to keep this header light.
 struct PresentUploadInfo;
 
-// Correctness gate for the replay: replay a capture and check the composed
-// desktop against a *golden reference* recorded from an earlier run of the same
-// capture (doc_agent/gfx-engine.md §8.4).
+// Correctness gate for the replay: compare the composed desktop against a
+// *golden reference* recorded from an earlier run of the same capture
+// (doc_agent/gfx-engine.md §6/§8.2).
 //
 //  kOff     - nothing (the normal perf run).
-//  kExport  - record the reference: one 64-bit hash of the composed desktop per
-//             frame into `hmrdp_ref.hash`, plus the last frame as `hmrdp_ref.bmp`
-//             so a human can look at it.
-//  kCompare - check every frame's hash against the stored list (`bad` = frames
-//             that differ) and, for the frame the reference image was taken from,
-//             compare pixel by pixel (`rgbPx`/`maxDelta`/`bbox`). A failing run
-//             also dumps the frame that failed as `hmrdp_ref_fail.bmp`.
+//  kExport  - write the reference: one 64-bit hash of the composed desktop per
+//             frame plus the last frame as a BMP.
+//  kCompare - check each frame's hash against the stored list (`bad` = frames
+//             that differ) and pixel-compare the frame the reference image was
+//             taken from (`rgbPx`/`maxDelta`/`bbox`).
 //
-// The reference is only meaningful while the decode is *bit-exact*: that is the
-// contract the CPU-side optimizations must keep (逐位等价), so the same golden
-// file stays valid across them.
+// Files are named after the capture's fingerprint (`hmrdp_ref_<tag>.{hash,bmp}`),
+// so a reference recorded from another capture cannot be used by accident.
 enum class GfxReplayRefMode {
   kOff = 0,
   kExport = 1,
@@ -58,18 +55,13 @@ class GfxReplay {
   // the first frame or failure.
   //
   // `realtime` selects the playback clock:
-  //   false - **not throttled at all** (default): the pump feeds the next record as
-  //           soon as the previous frame is done, so the machine stays saturated
-  //           and the numbers are a pure throughput measurement ("can the client
-  //           chew through this stream"). Deliberately unpaced: a frame budget
-  //           (the earlier kFrameMs sleep) left the CPU idle between frames, which
-  //           dropped the whole SoC to its lowest clock and made every per-frame
-  //           cost ~3x larger - see doc_agent/gfx-engine.md §8.3.
-  //   true  - each record is fed at the arrival time recorded in the capture, so
-  //           the frame cadence, the per-frame gaps and therefore the machine
-  //           state (CPU placement/frequency, cache locality, threadpool
-  //           wake-ups) match the live session. Requires a version 1 capture;
-  //           for an untimed capture it falls back to false and says so.
+  //   false - not throttled at all (default): the pump feeds the next record as
+  //           soon as the previous frame is done, so the figures are a pure
+  //           throughput measurement, not the live cadence.
+  //   true  - feed each record at the arrival time recorded in the capture, so the
+  //           frame cadence and machine state (frequency, cache, wake-ups) match
+  //           the live session. Needs arrival times (v1 capture); an untimed
+  //           capture falls back to false and says so (mode=fast(untimed)).
   bool Start(void* nativeWindow, int surfaceW, int surfaceH, const std::string& gfxPath,
              bool realtime, GfxReplayRefMode refMode = GfxReplayRefMode::kOff);
   void Resize(int width, int height);
@@ -106,8 +98,8 @@ class GfxReplay {
   // thread once per composed frame: it hashes it, and in export mode keeps the
   // hash / in compare mode checks it against the loaded list.
   void RefCollectFrame(GfxCpuDesktop* cpu);
-  // Loads `hmrdp_ref.hash` (+ the `.bmp` it names) next to the capture; false with
-  // a one-line reason in `refNote_` when the reference is missing/unusable.
+  // Loads `hmrdp_ref_<tag>.hash` (+ the `.bmp` it names) next to the capture; false
+  // with a one-line reason in `refNote_` when the reference is missing/unusable.
   bool RefLoad(const std::string& capturePath);
   // Writes this run as the reference: the per-frame hashes plus the last composed
   // frame as `.bmp` (the frame the hash list's `imageFrame` points at).
@@ -158,10 +150,9 @@ class GfxReplay {
   // (window/surface not ready, GL error) - the real failure counter.
   std::atomic<uint64_t> presentFailures_{0};
   std::atomic<uint64_t> presentUs_{0};
-  // CPU present upload (doc_agent/gfx-engine.md §2.3): what this run's presents
+  // CPU present upload (doc_agent/present-pipeline.md §3): what this run's presents
   // actually uploaded vs what the merged box would have cost, how often the rect
-  // list was used, and how often the rect cap forced the box. Kept as a standing
-  // regression read-out - the saving is visible in every run.
+  // list was used, and how often the rect cap forced the box.
   std::atomic<uint64_t> uploadBytes_{0};
   std::atomic<uint64_t> uploadBoxBytes_{0};
   std::atomic<uint64_t> uploadRectPresents_{0};
@@ -172,8 +163,8 @@ class GfxReplay {
   std::atomic<uint64_t> uploadMaxRects_{0};
   // Process CPU time (all threads) at the start and the end of the run. Wall time
   // alone cannot tell "faster" from "more cores woken for nothing", so the
-  // frequency band (`cpuKHz=`) is reported next to it: the two runs are only
-  // comparable at the same clock (doc_agent/gfx-engine.md §8.3).
+  // frequency band (`cpuKHz=`) is reported next to it: two runs are only
+  // comparable at the same clock (doc_agent/gfx-engine.md §8.1).
   std::atomic<int64_t> cpuStartUs_{0};
   std::atomic<int64_t> cpuEndUs_{0};
   std::atomic<uint64_t> pumpUs_{0};
@@ -222,7 +213,7 @@ class GfxReplay {
 
   // --- golden reference (kExport / kCompare) -------------------------------
   // One hash per composed frame, in playback order. Written to / read from
-  // `hmrdp_ref.hash` next to the capture (replay thread only).
+  // `hmrdp_ref_<tag>.hash` next to the capture (replay thread only).
   std::vector<uint64_t> refHashes_;
   std::atomic<int> refMode_{0};
   // Frames recorded/checked so far (the vector itself is replay-thread only), and

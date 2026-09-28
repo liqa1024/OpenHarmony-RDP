@@ -28,7 +28,8 @@ GFX 协议框架与 CPU（gdi）链路的成本结构见 [`gfx-engine.md`](gfx-e
   `vkQueuePresentKHR`。**不要**改用 `OH_NativeWindow_*` / `FlushBuffer(..., Region)`（那是 CPU/native
   生产者路径，生产者照样要填满 buffer，`Region` 只是给合成器的提示）。
 - **帧槽**：`kFramesInFlight = 2`：每槽各有 command buffer / fence / image-available 信号量 /
-  render-finished 信号量 / staging 缓冲，以及各自的 descriptor set 与时间戳池。
+  staging 缓冲，以及各自的 descriptor set 与时间戳池。render-finished 信号量按 **swapchain 图像**
+  各一个（不是按帧槽）——它必须等对应图像被再次 acquire 后才能复用。
 - **CPU 不做任何像素变换**：通道交换、缩放、letterbox 一律在 GPU 侧，上传只做行拷贝。
 - **纹理/桌面图重建后首帧强制整幅**，否则其余部分会留空。
 - **`presentWait` = 等显示端**：`present` 那一段里 `vkAcquireNextImageKHR`/fence（GLES 是
@@ -45,8 +46,9 @@ GFX 协议框架与 CPU（gdi）链路的成本结构见 [`gfx-engine.md`](gfx-e
     降七成以上、上屏耗时降三成。
   - 两者都按"一次上传 + 多个拷贝区域 + **仍然只画一次 letterbox quad**"实现，**不要**为每个矩形各走一次
     present（那会把整屏 letterbox 画 N 遍）。
-- **矩形上限**：单次 present 最多 `kMaxUploadRects` 条逐条矩形；超限退回合并 box（保证命令列表与拷贝区域
-  数组有界）。长期账在回放 stats 的 `upload` 行（`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
+- **矩形上限**：单次 present 最多 `kMaxPresentRects` 条逐条矩形（`hmrdp_gfx_cpu.cpp`，与呈现器内部的
+  `kMaxUploadRects` 数组上界同值），超限退回合并 box，保证命令列表与拷贝区域数组有界。长期账在回放
+  stats 的 `upload` 行（`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
 - **staging 的 flush 只覆盖本帧写入的字节**（`size` = 实际写入量，不是 `VK_WHOLE_SIZE`）：该缓冲会按见过的
   最大脏区增长，整块 flush 会把本帧没碰过的内存一起提交。
 - **不要再叠加 present-on-change**：静止态已由 FreeRDP 的失效区门控保证（未执行绘制原语时失效区为空，

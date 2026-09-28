@@ -19,8 +19,8 @@
  * reproduce the load the live session actually ran under.
  *
  * Version 0 (no magic, `u32 length | payload[length]`, no timing) is still read:
- * `GfxRawCapture::hasTimestamps()` reports which layout the file uses, and the
- * replay falls back to its fixed pacing for those files.
+ * `GfxRawCapture::hasTimestamps()` reports which layout the file uses, and a
+ * replay of such a file falls back to the unpaced fast mode (mode=fast(untimed)).
  *
  * The recorder is driven by the FreeRDP hook registered from hmrdp_session.cpp
  * (`HmrdpSetGfxRawCapture`); this module has no FreeRDP dependency.

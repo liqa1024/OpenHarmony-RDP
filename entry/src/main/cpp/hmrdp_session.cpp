@@ -73,7 +73,8 @@ static constexpr UINT32 kTouchFrameIntervalHighRateMs = 8;
 
 // FreeRDP hands us every raw (still ZGX-compressed) GFX channel chunk through
 // this callback. It is only registered when FreeRDP carries the HmRdp GFX
-// capture patch (native/scripts/freerdp patch) - see GfxDumpRaw. It doubles as
+// capture patch (native/scripts/patch-steps/07-gfx-capture-replay.ps1) - see
+// GfxDumpRaw. It doubles as
 // the arrival stamp for the frame work meter: the hook runs before the chunk is
 // decompressed and parsed, so "本机" can charge that share too. The capture write
 // itself is done first so its disk I/O never lands inside the measured phases.
@@ -415,14 +416,13 @@ size_t FindIgnoreCase(const std::string& haystack, const std::string& needle,
   return std::string::npos;
 }
 
-// Builds a CF_HTML payload: an ASCII header of byte offsets followed by the HTML
-// document. See "HTML Clipboard Format" (MSDN). The offset fields are
+// Builds a CF_HTML payload around `input`: an ASCII header of byte offsets
+// followed by the HTML ("HTML Clipboard Format", MSDN). The offset fields are
 // fixed-width, so the header length is constant and offsets can be computed up
-// front. A full document is embedded as-is (keeping <head> styles); a bare
+// front. The HTML content itself is left untouched (only offsets/markers are
+// added): a full document is embedded as-is (keeping <head> styles), a bare
 // fragment is wrapped, and the fragment markers/offsets point at the copied
 // content, never at the wrapper.
-// Builds a CF_HTML payload around `input`, leaving the HTML content itself
-// untouched (only offsets/markers are added).
 std::string BuildCfHtml(const std::string& input) {
   static const char kStartFragment[] = "<!--StartFragment-->";
   static const char kEndFragment[] = "<!--EndFragment-->";
@@ -1190,7 +1190,7 @@ uint32_t CursorHash(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hot
   return hash;
 }
 
-// HarmonyOS custom cursors cap at 256x256 (see setCustomCursor). Larger RDP
+// HarmonyOS custom cursors cap at 256x256 (see setCustomCursorSync). Larger RDP
 // cursors (large pointer, up to 384x384) are downscaled to fit instead of being
 // dropped, so the remote still drives the system cursor. The area average is
 // computed on premultiplied alpha and un-premultiplied afterwards, otherwise
@@ -2358,14 +2358,10 @@ bool Session::Connect(const RdpOptions& options) {
   }
   freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback,
                             options.enableAudio && audioSupported);
-  // GFX (RDPGFX) is mandatory: without it the session does not render at all,
-  // so it is always enabled and the old per-connection toggle was removed.
+  // GFX (RDPGFX) is mandatory: without it the session does not render at all.
   freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
-  // H.264 (AVC420/AVC444) support was removed: on Windows it only engages when
-  // the client advertises AVC444, which is a niche, non-core path (and it still
-  // needed the whole decode pipeline offloaded to the GPU to be worth it).
-  // RemoteFX Progressive is the default desktop codec, so the client now always
-  // uses it; the "hardware decode" setting targets a future GPU RFX decoder.
+  // H.264/AVC444 stay off: RemoteFX Progressive is the desktop codec this client
+  // uses, and AVC444 is a niche path with no benefit here without a GPU decoder.
   freerdp_settings_set_bool(settings, FreeRDP_GfxH264, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, options.enableRemoteFx);
@@ -2457,9 +2453,8 @@ void Session::EventThread() {
         break;
       }
       // Wake only when the transport has work or the next telemetry sample is
-      // due. The render loop is event-driven, so a fixed 100ms poll would just
-      // burn 10 wakeups/s while idle; waiting until the sample deadline drops
-      // that to ~1/s. EmitMetrics still runs on the loop after the wait.
+      // due; the loop is event-driven, so polling on a fixed period would wake it
+      // needlessly while idle. EmitMetrics still runs on the loop after the wait.
       DWORD timeoutMs = 0;
       if (!metricsStarted_) {
         // Establish the metrics baseline promptly on the first iteration.
@@ -2698,9 +2693,8 @@ void Session::StartGfxWorker(void* gfx) {
     gfxWorkerContext_ = gfx;
     gfxWorkerRun_ = true;
     gfxWorkerThread_ = std::thread([this]() {
-      // Same QoS the frame pipeline used to get on the drdynvc thread (see
-      // HmrdpThreadQoSHook / patch 09): the platform then schedules the frame
-      // work with less wake-up and preemption latency.
+      // QoS for the frame worker (see HmrdpThreadQoSHook / patch 09): the platform
+      // then schedules the frame work with less wake-up and preemption latency.
       HmrdpThreadQoSHook();
       GfxWorkerLoop();
     });

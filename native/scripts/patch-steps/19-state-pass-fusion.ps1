@@ -1,10 +1,10 @@
 # 19) HmRdp: one fewer 8 KB pass per decoded tile/component.
 #
-#     (Number 18 was a NEON version of the DIFFERENCE saturating add. Measured on
-#     both samples it changed nothing: that loop is bound by the bytes it moves
-#     (working buffer + persistent `current`), not by the per-element clamp, so the
-#     step was dropped again instead of keeping a pointless divergence from
-#     upstream - see doc_agent/gfx-engine.md §8.5.)
+#     (Step 18 was a NEON version of the DIFFERENCE saturating add; it changed
+#     nothing on either sample and was dropped - that loop is bound by the bytes it
+#     moves (working buffer + persistent `current`), not by the per-element clamp,
+#     so it is not worth a divergence from upstream. See
+#     doc_agent/native-libraries.md §3.)
 #
 #     `sign` is the persistent "raw" coefficient state and `current` the
 #     dequantised one; both are written on every decode. The upstream flow is

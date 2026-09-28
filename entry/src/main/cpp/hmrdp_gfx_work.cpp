@@ -150,9 +150,9 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
     if (GfxWorkMeter* meter = ActiveWorkMeter()) {                                      \
       meter->OnSetup(KIND, dt);                                                         \
     }                                                                                   \
-    /* A single structural command that takes tens of ms is a visible hitch (a        \
-     * mode change: buffer + swapchain rebuild, whole-surface 0xFF fill), so it is     \
-     * worth a log line of its own instead of hiding in an average. */                 \
+    /* A structural command this slow (>= 20ms: a mode change - buffer + swapchain    \
+     * rebuild, whole-surface 0xFF fill) is a visible hitch, so it is worth its own     \
+     * log line instead of hiding in an average. */                                     \
     if (dt > 20000) {                                                                   \
       if (KIND == GfxSetupKind::kReset) {                                               \
         UINT16 count = 0;                                                               \
@@ -249,11 +249,10 @@ void GfxWorkMeter::OnFrameEnd(uint64_t endFrameMicros) {
   // Everything the EndFrame span holds *besides* the composition: the present, the
   // wait for the GPU to release the buffer this frame writes into, and the
   // playback throttling. Only the last is not client work at all - the replay
-  // sleeps between presented frames and because the presenter runs inside gdi's
-  // EndFrame that sleep would otherwise land in `compose` (measured at ~8 ms/frame
-  // on the scrolling sample, i.e. most of a compose that really costs ~0.4 ms).
-  // The sync wait is client cost but not composition, so it gets its own phase
-  // instead of being hidden in `compose`.
+  // sleeps between presented frames, and because the presenter runs inside gdi's
+  // EndFrame that sleep would otherwise land in `compose`. The sync wait is client
+  // cost but not composition, so it gets its own phase instead of hiding in
+  // `compose`.
   const uint64_t notCompose = present + presentWait + sync + framePaceUs_;
   const uint64_t compose = endFrameMicros > notCompose ? endFrameMicros - notCompose : 0;
   windowFrames_.fetch_add(1);

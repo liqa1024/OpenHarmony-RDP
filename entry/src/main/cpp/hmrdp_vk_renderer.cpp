@@ -780,9 +780,6 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
     return false;
   }
   presentPipelineFormat_ = format_;
-  // The desktop image is created before the first pipeline, so its view could not
-  // be bound to the descriptor set back then (the set did not exist yet). Bind it
-  // now that both sides are up; a later image recreation rebinds it itself.
   return true;
 }
 
@@ -2177,7 +2174,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // When the caller handed gdi *our* desktop buffer (AcquireDesktopBuffer), the
     // dirty rects are already laid out in the memory the GPU copies from: the
     // regions read it in place at the desktop row pitch and no CPU copy of the
-    // frame happens at all (doc_agent/present-pipeline.md §4.5). Otherwise the rects are
+    // frame happens at all (doc_agent/present-pipeline.md §4). Otherwise the rects are
     // packed into this slot's staging buffer first.
     const bool direct =
         data == static_cast<const uint8_t*>(desktopBufferMapped_) && srcStride == desktopBufferStride_ &&
@@ -2191,8 +2188,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
       if (!desktopBufferCoherent_ && api.FlushMappedMemoryRanges != nullptr) {
         // One range spanning the uploaded rects. A rect's byte span reaches from
         // its first row's start to its last row's end, so per-rect ranges overlap
-        // heavily and would cost one driver call each (measured: coalescing them
-        // took one sample's present from 843 to 644us); a cache flush only writes
+        // heavily and would cost one driver call each; a cache flush only writes
         // back dirty lines, so the union's extra clean lines are free.
         VkDeviceSize first = desktopBufferBytes_;
         VkDeviceSize last = 0;

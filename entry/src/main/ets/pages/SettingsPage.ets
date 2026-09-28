@@ -161,8 +161,8 @@ struct SettingsPage {
     // "on" value so the setting matches the greyed-out switch.
     this.enableAudio = this.audioSupported ? settings.enableAudio : false;
     this.enableGfx = settings.enableGfx;
-    // An unsupported device never asks for GPU decoding; drop a previously stored
-    // "on" value so the setting matches the greyed-out switch.
+    // An unsupported device cannot present through Vulkan; force the value off so
+    // the setting matches the greyed-out switch.
     this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
     // 超分 rides on the Vulkan presenter, so it is only offered where both the
     // device and the 硬件加速 setting allow it; a stored "on" value that no longer
@@ -1378,7 +1378,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '开发者选项',
-              subtitle: '显示码流抓取、解码并行宽度、录像回放入口、工具栏性能信息与下面这些实验/调参项',
+              subtitle: '显示码流抓取、工具栏性能信息与下面这些实验/调参项',
               value: this.developerMode,
               enabled: true,
               disabledReason: '',
@@ -1400,8 +1400,8 @@ struct SettingsPage {
               Divider().color($r('app.color.divider'))
 
               this.toggleItem({
-                title: '抓取 RFX 码流（测试）',
-                subtitle: '抓取会话的 RFX 压缩流（hmrdp_rfx.bin）与全部 GFX 命令流（hmrdp_gfx.bin），供开发/回放使用',
+                title: '抓取 GFX 码流（测试）',
+                subtitle: '抓取会话的原始 GFX 通道码流（hmrdp_gfx.bin），供开发/回放使用',
                 value: this.rfxDump,
                 enabled: true,
                 disabledReason: '',

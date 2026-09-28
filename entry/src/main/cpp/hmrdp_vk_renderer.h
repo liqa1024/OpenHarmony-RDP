@@ -51,7 +51,7 @@ class VkRenderer : public FramePresenter {
   // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 
-  // Zero-copy desktop buffer (doc_agent/present-pipeline.md §4.5): the host-visible,
+  // Zero-copy desktop buffer (doc_agent/present-pipeline.md §4): the host-visible,
   // persistently mapped memory gdi composes the desktop into. PresentBgra then
   // recognises its own buffer and records the dirty rects straight out of it, so
   // no per-frame copy of the frame happens at all. Needs the device (created with
@@ -60,8 +60,8 @@ class VkRenderer : public FramePresenter {
   void BeginDesktopBufferWrite() override;
   void ReleaseDesktopBuffer() override;
   bool usesDesktopBuffer() const override;
-  // 超分: upscale the decoded desktop into an output-sized image with XEngine's
-  // GPU spatial upscale and letterbox *that* (see hmrdp_presenter.h). The request
+  // 超分: upscale the decoded desktop into an output-sized image and letterbox
+  // *that* (see hmrdp_presenter.h). `backend` selects XEngine or FSR; the request
   // is stored here and the resources are (re)created on the next frame, because
   // the device and the desktop size only exist once a surface is up. No-op when
   // the device cannot do it, which leaves the plain desktop letterbox in place.
@@ -129,10 +129,10 @@ class VkRenderer : public FramePresenter {
   bool CreateDesktopBufferLocked(int width, int height);
   void DestroyDesktopBufferLocked();
 
-  // 超分: keeps the XEngine spatial-upscale object and the output image the
-  // present draw samples instead of the desktop image. (Re)created whenever the
-  // session desktop size changes; `srFailed_` latches a failure so a device that
-  // rejects the configuration is not retried on every frame.
+  // 超分: keeps the upscale object (XEngine) or FSR pipeline and the output image
+  // the present draw samples instead of the desktop image. (Re)created whenever
+  // the session desktop size changes; `srFailed_` latches a failure so a device
+  // that rejects the configuration is not retried on every frame.
   bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight);
   // The two implementations behind EnsureSuperResolutionLocked: XEngine's own
   // object, or the FSR pipeline (EASU into an intermediate image, RCAS into

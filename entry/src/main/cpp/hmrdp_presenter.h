@@ -17,8 +17,7 @@
  *
  * Which backend is used is decided by the *presenter* capability
  * (VulkanCapabilities::presenterSupported): presenting needs no compute, only a
- * device that can blit to the XComponent surface (see doc_agent/gfx-engine.md
- * §2.3).
+ * device that can blit to the XComponent surface (doc_agent/gfx-engine.md §2/§4).
  */
 #ifndef HMRDP_PRESENTER_H
 #define HMRDP_PRESENTER_H
@@ -63,15 +62,15 @@ class FramePresenter {
   // keeps going: the next present retries).
   virtual bool Prepare() = 0;
 
-  // --- zero-copy desktop buffer (doc_agent/present-pipeline.md §4.5) --------------
+  // --- zero-copy desktop buffer (doc_agent/present-pipeline.md §4) ----------------
   // A backend that can hand gdi a host-visible frame buffer it owns returns it
   // here, so gdi composes the desktop straight into the memory the presenter
   // uploads from and no per-frame copy of the frame happens. `*stride` receives
   // the buffer's row pitch in bytes: the caller must pass exactly that to gdi
   // (a caller-provided buffer only works when gdi's stride matches).
   // Returns nullptr while the backend cannot provide one - the caller then keeps
-  // gdi's own buffer and PresentBgra copies the dirty rects, as before. It is
-  // called once per frame until it succeeds, then never again.
+  // gdi's own buffer and PresentBgra copies the dirty rects. It is called once per
+  // frame until it succeeds, then never again.
   virtual uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) {
     (void)width;
     (void)height;
@@ -89,7 +88,7 @@ class FramePresenter {
   // instead of a CPU copy. The caller picks the cheap dirty shape accordingly:
   // with a CPU copy in the way the byte count dominates and the rect list wins,
   // without one the rect *count* dominates and the merged box wins
-  // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/present-pipeline.md §4.5).
+  // (hmrdp_gfx_cpu.cpp PresentGdiFrame, doc_agent/present-pipeline.md §4).
   virtual bool usesDesktopBuffer() const { return false; }
 
   // --- 超分 (super resolution) ---------------------------------------------------

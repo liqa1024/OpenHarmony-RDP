@@ -79,7 +79,7 @@ BOOL CpuDesktopResize(rdpContext* context) {
 // gdi_graphics_pipeline_uninit() has already cleared context->custom, and
 // gdi_DeleteSurface reads gdi from there. Without it a desktop-mirror surface
 // cannot tell that its buffer is gdi's primary (the sharing test is
-// `surface->data == gdi->primary_buffer`, doc_agent/present-pipeline.md §4.5) and would
+// `surface->data == gdi->primary_buffer`, doc_agent/present-pipeline.md §4) and would
 // free memory it does not own - on the zero-copy path that is the presenter's
 // host-visible buffer, i.e. an invalid free.
 void DestroyGfxSurfaces(RdpgfxClientContext* context) {
@@ -387,9 +387,7 @@ namespace {
 // Upper bound on the rects handed to one present (matches the presenter's own
 // cap). gdi can accumulate more (gdi_InvalidateRegion grows its list by
 // doubling); past this the merged box is used instead, so neither the command
-// list nor the copy-region array can grow with the stream. Measured on the
-// scrolling sample: ~15% of frames carry more than 64 rects, so the A/B endpoint
-// ("always the rect list") needs headroom well above that to be meaningful.
+// list nor the copy-region array can grow with the stream.
 constexpr int kMaxPresentRects = 256;
 
 // gdi's local framebuffer is always BGRA32 here, so its row pitch is width * 4
@@ -520,15 +518,11 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
   //  - zero-copy (`gdi` composes into the presenter's own buffer, see
   //    FramePresenter::AcquireDesktopBuffer): the pixels are already where the GPU
   //    reads them, so a rect costs a copy region plus a cache flush and the
-  //    *count* is what the frame pays for. Measured: a fragmented frame reading
-  //    only 2.3MB took 1.91ms with ~250 rects while a full-screen one reading
-  //    20.6MB took 0.64ms. The merged box is one region and bounded by a single
-  //    screen read (~0.6ms), and it measured better or equal on both samples
-  //    (-17% present on the fragmented one), so it is used unconditionally.
+  //    *count* is what the frame pays for. The merged box is a single region
+  //    bounded by one screen read, so it is used unconditionally.
   //  - staging (`cinvalid` rects are memcpy'd into a staging buffer first): the
-  //    cost is the bytes, and the box can be several times the changed pixels
-  //    (measured: 3.6x the bytes and 33% more present time on scattered content),
-  //    so the rect list is used while it is bounded.
+  //    cost is the bytes, and the box can be several times the changed pixels, so
+  //    the rect list is used while it is bounded.
   //
   // `hwnd->invalid` is the merged bounding box of the frame's dirty regions while
   // `hwnd->cinvalid`/`ninvalid` hold the individual rects (libfreerdp/gdi/region.c
@@ -553,8 +547,8 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
     }
   }
   // A single rect *is* the box, and past the cap the box is the only bounded
-  // option (a video frame can carry ~2900 rects, which cannot become ~2900 copy
-  // regions).
+  // option (a video frame can carry thousands of rects, which cannot become that
+  // many copy regions).
   const bool useRects = !zeroCopy && rectCount >= 2 && !tooManyRects && haveBox;
 
   if (info != nullptr) {

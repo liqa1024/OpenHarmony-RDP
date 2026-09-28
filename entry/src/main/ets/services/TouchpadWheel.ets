@@ -1,31 +1,23 @@
 /*
- * HmRdp - touchpad displacement -> high-resolution RDP wheel mapping.
+ * HmRdp - touchpad displacement -> high-resolution RDP wheel mapping; see
+ * doc_agent/session-and-input.md §2.
  *
  * ArkUI reports a two-finger touchpad swipe as raw finger displacement in vp
- * (sourceTool == TOUCHPAD); unlike a Windows touchpad driver it does not already
- * convert that into wheel detents. RDP carries a wheel rotation as a 9-bit
- * two's-complement value in the pointer flags, where 120 equals one detent, and
- * a single RDP input event can only carry up to 255. FreeRDP's SDL client scales
- * high-resolution wheel input by 120 and splits larger amounts into <= 0xFF
- * chunks; this mapper does the same, so the remote receives the same
- * high-resolution wheel stream a native FreeRDP client would send.
- *
- * The mapping is a continuous rotation accumulator:
- *
- *   rotation += displacementVp * (WHEEL_DETENT / VP_PER_DETENT) * speed
- *
- * VP_PER_DETENT is the finger travel equivalent to one detent at 1.0x speed, so
- * the speed setting scales how much rotation a swipe produces without touching
- * the emission granularity. Fractional rotation is carried across events (no
- * rounding loss) and only integer chunks leave the mapper.
+ * (sourceTool == TOUCHPAD), not as wheel detents. RDP carries a wheel rotation as
+ * a 9-bit two's-complement value in the pointer flags (120 == one detent; one
+ * event carries at most 0xFF), and FreeRDP's SDL client scales high-resolution
+ * wheel input by 120 and splits larger amounts into <= 0xFF chunks. This mapper
+ * does the same, with a continuous accumulator: fractional rotation carries across
+ * events (no rounding loss), only integer chunks leave, and the speed setting
+ * scales the rotation a swipe produces without changing the emission granularity.
  */
 
 // Microsoft/FreeRDP wheel rotation unit: 120 == one wheel detent.
 export const WHEEL_DETENT: number = 120;
 // Largest rotation a single RDP pointer event can carry (9-bit wheel field).
 const WHEEL_MAX_CHUNK: number = 0xFF;
-// Finger travel (vp) that maps to one full detent at 1.0x speed. Matches the
-// feel of the previous fixed step while leaving room to tune either way.
+// Finger travel (vp) that maps to one full detent at 1.0x speed; the speed
+// setting scales the rotation a swipe produces.
 export const VP_PER_DETENT: number = 16;
 
 // Shared speed bounds for the touchpad gesture settings (1.0x = baseline).

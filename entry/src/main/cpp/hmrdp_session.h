@@ -183,8 +183,8 @@ class Session : public std::enable_shared_from_this<Session> {
   static void SetTouchHighRate(bool enabled);
 
   // Process-global toggle for remote cursor handling. When disabled, RDP
-  // pointer updates are ignored entirely so the HarmonyOS default cursor is
-  // kept (the pre-cursor-support behaviour). Applied when a session connects.
+  // pointer updates are ignored entirely so the HarmonyOS default cursor is kept.
+  // Applied when a session connects.
   static void SetRdpCursor(bool enabled);
 
   // Process-global "硬件加速" preference: present frames through Vulkan (on) or
@@ -193,8 +193,8 @@ class Session : public std::enable_shared_from_this<Session> {
   // (hmrdp_presenter.h). Decoding itself is always FreeRDP's gdi path.
   static void SetHardwareAccel(bool enabled);
 
-  // Dev-only capture of the incoming RemoteFX/Progressive GFX surface streams,
-  // written to `dir` as hmrdp_rfx.bin (see doc_agent/gfx-engine.md §6).
+  // Dev-only capture of the raw (still ZGX-compressed) GFX channel stream, written
+  // to `dir` as hmrdp_gfx.bin (see doc_agent/gfx-engine.md §6).
   static void SetRfxDump(bool enabled, const std::string& dir);
 
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as

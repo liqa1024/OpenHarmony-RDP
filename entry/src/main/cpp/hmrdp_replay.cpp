@@ -204,9 +204,9 @@ int64_t NowUs() {
       .count();
 }
 
-// Process CPU time (all threads), the energy proxy for the thread-count A/B: a
-// run that gets no faster while burning more CPU is the wrong side of the
-// efficiency curve. Zero when the platform does not provide it.
+// Process CPU time (all threads), the energy proxy: a run that gets no faster
+// while burning more CPU is the wrong side of the efficiency curve. Zero when the
+// platform does not provide it.
 int64_t ProcessCpuUs() {
   struct timespec ts = {};
   if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) != 0) {
@@ -236,8 +236,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     return false;
   }
   // The realtime mode needs the arrival times recorded in the capture; an older
-  // (version 0) file has none, so fall back to the fixed pacing and say so - a
-  // silent fallback would make two runs with the same settings incomparable.
+  // (version 0) file has none, so fall back to the unpaced fast mode and say so -
+  // the run is then labelled fast(untimed), not realtime.
   const bool effectiveRealtime = realtime && GfxCaptureHasTimestamps(gfxPath);
   if (realtime && !effectiveRealtime) {
     HMRDP_LOGW("gfx replay: capture has no arrival times, realtime mode unavailable");
@@ -414,14 +414,12 @@ std::string GfxReplay::StatsLines() {
 
   // mode=realtime replays the capture's own arrival times; mode=fast is *not
   // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
-  // not the live cadence (a frame budget used to be applied here; it kept the CPU
-  // idle between frames, which dropped the SoC clock ~3x and inflated every
-  // per-frame number - doc_agent/gfx-engine.md §8.3).
+  // not the live cadence (doc_agent/gfx-engine.md §8.1).
   // `lag` is only meaningful in realtime mode: the worst lateness behind the
   // recorded schedule, i.e. how much of the live load the client could not absorb.
   // "fast(untimed)" = realtime was requested but the capture carries no arrival
-  // times, so the unpaced fast mode ran instead (the difference is visible here on
-  // purpose: two runs that differ in mode are not comparable).
+  // times, so the unpaced fast mode ran instead (kept distinct in the label: two
+  // runs that differ in mode are not comparable).
   const char* modeName = realtimeActive_.load() != 0
                              ? "realtime"
                              : (realtimeRequested_.load() != 0 ? "fast(untimed)" : "fast");
@@ -447,9 +445,8 @@ std::string GfxReplay::StatsLines() {
 
   // The run's total process CPU time: the frame time above says how fast the
   // replay went, this says what it cost. `cpuKHz` is the SoC clock the run
-  // actually got - the playback rate decides it (an idle-paced run sits at the
-  // lowest frequency and every per-frame figure is ~3x larger), so two runs are
-  // only comparable at the same value (doc_agent/gfx-engine.md §8.3).
+  // actually got - the playback rate decides the band, so two runs are only
+  // comparable at the same value (doc_agent/gfx-engine.md §8.1).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
@@ -463,8 +460,7 @@ std::string GfxReplay::StatsLines() {
   }
 
   // How many bytes actually left the CPU, versus what the merged bounding box
-  // would have cost for the same run (the saving is then visible in every run
-  // rather than only during an A/B). `rectlist=used/total presents` and
+  // would have cost for the same run. `rectlist=used/total presents` and
   // `truncated` say whether the rect path was exercised or fell back.
   const uint64_t uploadBoxBytes = uploadBoxBytes_.load();
   if (uploadBoxBytes > 0) {
@@ -511,8 +507,9 @@ std::string GfxReplay::StatsLines() {
                   static_cast<unsigned long long>(work.bytes / frames / 1024));
     out += wl;
 
-    // Non-pixel GFX commands, per frame: these used to land in `zgx+parse`
-    // (a CreateSurface / ResetGraphics 0xFF-fills a whole surface).
+    // Non-pixel GFX commands, per frame: they sit inside `zgx+parse` (a
+    // CreateSurface / ResetGraphics 0xFF-fills a whole surface), so read this
+    // line before reading that phase.
     const uint64_t* su = work.setupUs;
     const uint64_t* sc = work.setupCount;
     if (work.SetupUs() > 0) {
@@ -599,10 +596,9 @@ void GfxReplay::RecordPresent(uint64_t micros) {
 }
 
 void GfxReplay::MarkFrameEnd(bool presented) {
-  // Cadence bookkeeping only - the fast mode deliberately does not sleep (a frame
-  // budget left the CPU idle between frames, which dropped the SoC to its lowest
-  // clock and inflated every per-frame cost ~3x, see doc_agent/gfx-engine.md §8.3), and
-  // the realtime mode's cadence comes from the capture (PaceRecord).
+  // Cadence bookkeeping only: the fast mode never sleeps, and the realtime mode's
+  // cadence comes from the capture (PaceRecord), so nothing is throttled here
+  // (doc_agent/gfx-engine.md §8.1).
   //
   // Only frames that produced a picture mark the origin: the stream carries many
   // frame markers with no drawable update (management/ack frames, off-screen
@@ -708,7 +704,8 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   hmrdp::GfxDumpSetReplaying(true);
   hmrdp::GfxReplayResetParseUs();
 
-  // DEV-ONLY: reset the patched decoder's phase counters so this run's figures
+  // Pump start and CPU-time origin: `feed` subtracts the run's start-up from this
+  // stamp, and `cpu=` is measured between the two ProcessCpuUs() readings.
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
   cpuStartUs_.store(ProcessCpuUs());
@@ -976,9 +973,9 @@ void GfxReplay::OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t p
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
-  // The fast mode does not sleep here any more, so this is 0; it stays reported
-  // because the meter must never charge a deliberate in-EndFrame throttle to
-  // `compose` (hmrdp_gfx_work.h) if one is ever reintroduced.
+  // No throttle runs inside EndFrame (the replay's only pace is in GfxReplayPump,
+  // already excluded from `feed`); this keeps the meter from charging a deliberate
+  // in-EndFrame sleep to `compose` (hmrdp_gfx_work.h).
   const int64_t paceStart = NowUs();
   MarkFrameEnd(presented);
   meter_.OnPace(static_cast<uint64_t>(NowUs() - paceStart));
