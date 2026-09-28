@@ -8,7 +8,8 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-setTouchHighRate, updateSurface, setHardwareAccel, setGfxCapture,
+setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
+setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
 RdpEventCallback,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays } from 'libhmrdp.so';
@@ -202,6 +203,17 @@ export class RdpNative {
   unbindSurface(): void {
     if (this.handle >= 0) {
       clearSurface(this.handle);
+    }
+  }
+
+  /**
+   * Client Suppress Output: while true the server stops sending screen updates
+   * and the native side drops the surface commands, so a hidden window stops
+   * decoding and presenting. Applied per session; safe to call any time.
+   */
+  setSuppressed(suppressed: boolean): void {
+    if (this.handle >= 0) {
+      setSuppressedNative(this.handle, suppressed);
     }
   }
 

@@ -253,8 +253,9 @@ struct SessionPage {
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
-  // Surface sizes reported while the window is hidden are held and re-measured
-  // once it is visible again, so the picture is never fitted to a transient size.
+  // Whether this session window is actually being looked at (shown, not
+  // minimized/hidden). It drives two things: surface sizes reported while hidden
+  // are held and re-measured on return, and a hidden window suppresses output.
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
   private hoverTimer: number = -1;
@@ -515,13 +516,13 @@ struct SessionPage {
   }
 
   onPageShow(): void {
-    this.windowVisible = true;
-    this.flushPendingSurfaceSize();
+    this.setWindowVisible(true);
     this.scheduleForegroundReconnect();
   }
 
   onPageHide(): void {
     this.awayFromForeground = true;
+    this.setWindowVisible(false);
   }
 
   /**
@@ -2457,21 +2458,42 @@ struct SessionPage {
       this.isFullscreen = win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
       win.on('windowStatusChange', (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
+        // Minimize is reported here directly, which is the reliable "this session
+        // is not being looked at" signal on 2in1; any other status means restored.
+        this.setWindowVisible(status !== window.WindowStatusType.MINIMIZE);
       });
       win.on('windowEvent', (data: window.WindowEventType) => {
         if (data === window.WindowEventType.WINDOW_INACTIVE
           || data === window.WindowEventType.WINDOW_HIDDEN) {
           this.releaseAllInputs();
-          this.windowVisible = false;
-        } else if (data === window.WindowEventType.WINDOW_ACTIVE
-          || data === window.WindowEventType.WINDOW_SHOWN) {
-          this.windowVisible = true;
-          this.flushPendingSurfaceSize();
+        }
+        // Focus alone is not visibility: an unfocused window is still shown, so
+        // only hidden/shown drive the visible state (and with it suppression).
+        if (data === window.WindowEventType.WINDOW_HIDDEN) {
+          this.setWindowVisible(false);
+        } else if (data === window.WindowEventType.WINDOW_SHOWN) {
+          this.setWindowVisible(true);
         }
       });
     }).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
     });
+  }
+
+  /**
+   * Tracks whether this session window is really being looked at. Hiding it also
+   * suppresses the server's output, so a minimized session stops decoding and
+   * presenting; becoming visible again re-applies the pending surface size.
+   */
+  private setWindowVisible(visible: boolean): void {
+    if (this.windowVisible === visible) {
+      return;
+    }
+    this.windowVisible = visible;
+    if (visible) {
+      this.flushPendingSurfaceSize();
+    }
+    this.native.setSuppressed(!visible);
   }
 
   /** Applies a surface size as the letterbox target; unchanged sizes are dropped. */

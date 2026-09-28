@@ -452,6 +452,27 @@ napi_value SendMouse(napi_env env, napi_callback_info info) {
                     session->SendMouse(static_cast<uint16_t>(flags), ux, uy));
 }
 
+napi_value SetSuppressed(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  bool suppressed = false;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_bool(env, args[1], &suppressed) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  std::shared_ptr<Session> session = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    session = FindSession(handle);
+  }
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, session->SetSuppressed(suppressed));
+}
+
 napi_value SendTouch(napi_env env, napi_callback_info info) {
   size_t argc = 6;
   napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -1077,6 +1098,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"clearSurface", nullptr, ClearSurface, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"sendMouse", nullptr, SendMouse, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"setSuppressed", nullptr, SetSuppressed, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
       {"sendTouch", nullptr, SendTouch, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendKey", nullptr, SendKey, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sendUnicode", nullptr, SendUnicode, nullptr, nullptr, nullptr, napi_default,

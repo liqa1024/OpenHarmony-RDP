@@ -55,8 +55,12 @@
   会话窗的**系统最大化**在 `WindowController.setupSessionWindow` 里转成**沉浸式全屏**
   （隐藏标题栏 / dock 悬停）。
 - **窗口不可见期间不应用 surface 尺寸变化**：最小化/完全遮挡时系统会重新分配它的 surface，恢复时先报过渡
-  尺寸。故不可见期间只挂起，`WINDOW_ACTIVE`/`WINDOW_SHOWN`（或 `onPageShow`）后再重取一次 surface rect
-  应用；尺寸没变不下发。
+  尺寸。故不可见期间只挂起，回到可见（`windowStatusChange` 不再是 `MINIMIZE`、`WINDOW_SHOWN` 或
+  `onPageShow`）后再重取一次 surface rect 应用；尺寸没变不下发。
+- **不可见时主动抑制服务端输出**（MS-RDPBCGR Client Suppress Output，`gdi_send_suppress_output`）：最小化/隐藏
+  期间发 suppress，服务端停发画面更新，客户端同时丢弃 surface 命令（`gdi->suppressOutput`），于是不再解码/
+  合成/上屏；可见后解除，画面由服务端重新下发。只按"真的不可见"驱动——失焦（窗口仍在显示）不抑制。服务端
+  不提供该能力时只省本地工作、不省带宽（`FreeRDP_SuppressOutput` 由能力协商决定）。
 
 ### 1.2 自动隐藏主窗口（单窗口模式）
 

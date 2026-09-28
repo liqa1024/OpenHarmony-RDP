@@ -2930,6 +2930,15 @@ bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {
   return freerdp_input_send_mouse_event(ctx.instance()->context->input, flags, x, y);
 }
 
+bool Session::SetSuppressed(bool suppressed) {
+  ContextGuard ctx(*this);
+  if (!ctx.valid() || ctx.instance()->context == nullptr ||
+      ctx.instance()->context->gdi == nullptr) {
+    return false;
+  }
+  return gdi_send_suppress_output(ctx.instance()->context->gdi, suppressed ? TRUE : FALSE);
+}
+
 bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x,
                         int32_t y) {
   ContextGuard ctx(*this);

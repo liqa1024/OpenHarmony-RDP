@@ -174,6 +174,12 @@ class Session : public std::enable_shared_from_this<Session> {
   // back to. Safe to call from the UI thread.
   bool SendLockState(uint32_t flags);
 
+  // Client Suppress Output (MS-RDPBCGR). While suppressed the server stops
+  // sending screen updates *and* the surface commands are dropped locally, so a
+  // hidden (minimized / fully occluded) window no longer decodes or presents;
+  // the server repaints when output resumes. Safe to call from the UI thread.
+  bool SetSuppressed(bool suppressed);
+
   // Process-global RDPEI frame pacing. When enabled, touch contacts are sent at
   // the full input rate instead of the upstream ~20ms (50Hz) coalescing. No-op
   // unless FreeRDP was built with the rdpei interval patch

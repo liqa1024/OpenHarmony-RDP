@@ -40,6 +40,14 @@ export const setSurface: (handle: number, surfaceId: string, width: number, heig
 export const updateSurface: (handle: number, width: number, height: number) => void;
 export const clearSurface: (handle: number) => void;
 export const sendMouse: (handle: number, flags: number, x: number, y: number) => boolean;
+
+/**
+ * Client Suppress Output: while `suppressed` is true the server stops sending
+ * screen updates and the client drops the surface commands, so a hidden
+ * (minimized / fully occluded) session stops decoding and presenting. The server
+ * repaints when it is set back to false.
+ */
+export const setSuppressed: (handle: number, suppressed: boolean) => boolean;
 export const sendTouch: (handle: number, flags: number, finger: number, pressure: number,
   x: number, y: number) => boolean;
 export const sendKey: (handle: number, scancode: number, down: boolean, extended: boolean) => boolean;
