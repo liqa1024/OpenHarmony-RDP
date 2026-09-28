@@ -158,16 +158,18 @@ export class ConnectionStore {
     parts.push(ConnectionStore.encode(conn.domain));
     parts.push(conn.width.toString());
     parts.push(conn.height.toString());
-    parts.push(conn.colorDepth.toString());
+    // Retired slots are written as fixed values so the positional layout (and with
+    // it every stored record) stays stable: 6 colorDepth = 32, 8 clipboard = on
+    // (always on), 10 gfx = on (GFX is mandatory), 11 h264 = off, 12 remoteFx = on,
+    // 13 performanceFlags = 0 (unused). Only 7 (certificate) and 9 (audio) are live.
+    parts.push('32');
     parts.push(conn.ignoreCertificate ? '1' : '0');
-    // Retired "enableClipboard" slot: clipboard redirection is always on now,
-    // but the field position is kept so previously stored records still parse.
     parts.push('1');
     parts.push(conn.enableAudio ? '1' : '0');
-    parts.push(conn.enableGfx ? '1' : '0');
-    parts.push(conn.enableH264 ? '1' : '0');
-    parts.push(conn.enableRemoteFx ? '1' : '0');
-    parts.push(conn.performanceFlags.toString());
+    parts.push('1');
+    parts.push('0');
+    parts.push('1');
+    parts.push('0');
     parts.push(ConnectionStore.encode(conn.gatewayHost));
     parts.push(conn.gatewayPort.toString());
     parts.push(ConnectionStore.encode(conn.gatewayUsername));
@@ -196,14 +198,11 @@ export class ConnectionStore {
     conn.domain = ConnectionStore.decode(parts[3]);
     conn.width = ConnectionStore.parsePositive(parts[4], 1920);
     conn.height = ConnectionStore.parsePositive(parts[5], 1080);
-    conn.colorDepth = ConnectionStore.parsePositive(parts[6], 32);
+    // Slots 6 (colorDepth), 8 (clipboard), 10 (gfx), 11 (h264), 12 (remoteFx) and
+    // 13 (performanceFlags) are retired: their values are fixed, so they are left
+    // in the layout for older records but not read. Only 7 and 9 are live.
     conn.ignoreCertificate = parts[7] === '1';
-    // parts[8] is the retired enableClipboard slot; ignored.
     conn.enableAudio = parts[9] === '1';
-    conn.enableGfx = parts[10] === '1';
-    conn.enableH264 = parts[11] === '1';
-    conn.enableRemoteFx = parts[12] === '1';
-    conn.performanceFlags = ConnectionStore.parseNumber(parts[13], 0);
     conn.gatewayHost = ConnectionStore.decode(parts[14]);
     conn.gatewayPort = ConnectionStore.parsePositive(parts[15], 443);
     conn.gatewayUsername = ConnectionStore.decode(parts[16]);

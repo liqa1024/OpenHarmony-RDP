@@ -99,12 +99,8 @@ struct RdpOptions {
   // Remote desktop DPI scale factor as a percentage (100 = 100%). Zero leaves
   // the FreeRDP default untouched.
   int scalePercent = 0;
-  int colorDepth = 32;
   bool ignoreCertificate = true;
   bool enableAudio = true;
-  bool enableGfx = true;
-  bool enableH264 = true;
-  bool enableRemoteFx = true;
   // 超分: `width`/`height` are the *output* resolution. When this is on the
   // session asks the server for output ÷ srRatioPercent and the Vulkan presenter
   // upscales each frame back to the output resolution (no-op on the GLES
@@ -114,7 +110,6 @@ struct RdpOptions {
   // presenter's own FSR (see hmrdp_presenter.h). Ignored when 超分 is off.
   SuperResolutionBackend srBackend = SuperResolutionBackend::kXengine;
   int srRatioPercent = 0;
-  int performanceFlags = 0;
   std::string gatewayHost;
   int gatewayPort = 443;
   std::string gatewayUsername;
@@ -195,7 +190,7 @@ class Session : public std::enable_shared_from_this<Session> {
 
   // Dev-only capture of the raw (still ZGX-compressed) GFX channel stream, written
   // to `dir` as hmrdp_gfx.bin (see doc_agent/gfx-engine.md §6).
-  static void SetRfxDump(bool enabled, const std::string& dir);
+  static void SetGfxCapture(bool enabled, const std::string& dir);
 
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.

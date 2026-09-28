@@ -56,7 +56,7 @@ export default class EntryAbility extends UIAbility {
     // first frame. Re-applying the same value later is a native no-op. Gated on
     // developer options so a stale stored value cannot start a capture while the
     // tools are hidden.
-    RdpNative.applyRfxDump(settings.developerMode && settings.rfxDump, this.context.filesDir);
+    RdpNative.applyGfxCapture(settings.developerMode && settings.gfxCapture, this.context.filesDir);
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
 

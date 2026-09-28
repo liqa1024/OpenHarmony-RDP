@@ -105,8 +105,6 @@ export class AppSettings {
   // Global advanced (protocol feature) defaults. Connections follow these
   // unless they opt into their own overrides in the editor.
   enableAudio: boolean = true;
-  enableGfx: boolean = true;
-  enableH264: boolean = true;
   ignoreCertificate: boolean = true;
   // 超分 (global default; per-connection override in the editor). The resolution
   // setting is the *output* resolution, the session renders at output ÷ ratio and
@@ -124,7 +122,7 @@ export class AppSettings {
   // normal install; nothing dev-only is reachable until it is turned on.
   developerMode: boolean = false;
   // Dev-only capture of the raw GFX channel stream (doc_agent/gfx-engine.md §6).
-  rfxDump: boolean = false;
+  gfxCapture: boolean = false;
 }
 
 export class SettingsStore {
@@ -219,10 +217,6 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'manualScalePercent', settings.manualScalePercent);
       settings.enableAudio =
         SettingsStore.readBoolean(store, 'enableAudio', settings.enableAudio);
-      settings.enableGfx =
-        SettingsStore.readBoolean(store, 'enableGfx', settings.enableGfx);
-      settings.enableH264 =
-        SettingsStore.readBoolean(store, 'enableH264', settings.enableH264);
       settings.ignoreCertificate =
         SettingsStore.readBoolean(store, 'ignoreCertificate', settings.ignoreCertificate);
       settings.srEnabled = SettingsStore.readBoolean(store, 'srEnabled', settings.srEnabled);
@@ -233,7 +227,7 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'hardwareAccel', settings.hardwareAccel);
       settings.developerMode =
         SettingsStore.readBoolean(store, 'developerMode', settings.developerMode);
-      settings.rfxDump = SettingsStore.readBoolean(store, 'rfxDump', settings.rfxDump);
+      settings.gfxCapture = SettingsStore.readBoolean(store, 'gfxCapture', settings.gfxCapture);
     }
     return settings;
   }
@@ -269,15 +263,13 @@ export class SettingsStore {
       store.putSync('scaleAuto', settings.scaleAuto);
       store.putSync('manualScalePercent', settings.manualScalePercent);
       store.putSync('enableAudio', settings.enableAudio);
-      store.putSync('enableGfx', settings.enableGfx);
-      store.putSync('enableH264', settings.enableH264);
       store.putSync('ignoreCertificate', settings.ignoreCertificate);
       store.putSync('srEnabled', settings.srEnabled);
       store.putSync('srRatioPercent', settings.srRatioPercent);
       store.putSync('srBackend', settings.srBackend);
       store.putSync('hardwareAccel', settings.hardwareAccel);
       store.putSync('developerMode', settings.developerMode);
-      store.putSync('rfxDump', settings.rfxDump);
+      store.putSync('gfxCapture', settings.gfxCapture);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));
@@ -507,8 +499,6 @@ export class SettingsStore {
     }
     const profile: AdvancedProfile = new AdvancedProfile();
     profile.enableAudio = conn.enableAudio;
-    profile.enableGfx = conn.enableGfx;
-    profile.enableH264 = conn.enableH264;
     profile.ignoreCertificate = conn.ignoreCertificate;
     return profile;
   }
@@ -516,8 +506,6 @@ export class SettingsStore {
   private static advancedFor(settings: AppSettings): AdvancedProfile {
     const profile: AdvancedProfile = new AdvancedProfile();
     profile.enableAudio = settings.enableAudio;
-    profile.enableGfx = settings.enableGfx;
-    profile.enableH264 = settings.enableH264;
     profile.ignoreCertificate = settings.ignoreCertificate;
     return profile;
   }

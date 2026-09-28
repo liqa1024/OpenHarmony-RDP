@@ -55,15 +55,14 @@ export class SrProfile {
 }
 
 /**
- * Effective per-connection protocol features (audio / graphics pipeline /
- * H.264 / certificate handling). Resolved from the global defaults unless a
- * connection opts into its own overrides. Clipboard redirection is not a
- * feature toggle: the manual 复制/粘贴 toolbar actions are always available.
+ * Effective per-connection protocol features (audio / certificate handling).
+ * Resolved from the global defaults unless a connection opts into its own
+ * overrides. Clipboard redirection and the GFX pipeline are not toggles: the
+ * manual 复制/粘贴 toolbar actions are always available and the session always
+ * uses RDPGFX.
  */
 export class AdvancedProfile {
   enableAudio: boolean = true;
-  enableGfx: boolean = true;
-  enableH264: boolean = true;
   ignoreCertificate: boolean = true;
 }
 
@@ -121,12 +120,8 @@ export class RdpConnectOptions implements RdpOptions {
   width: number = 1920;
   height: number = 1080;
   scalePercent: number = 0;
-  colorDepth: number = 32;
   ignoreCertificate: boolean = true;
   enableAudio: boolean = true;
-  enableGfx: boolean = true;
-  enableH264: boolean = true;
-  enableRemoteFx: boolean = true;
   // 超分: width/height are the *output* resolution; when this is on the native
   // side asks the server for output ÷ srRatioPercent and upscales each frame
   // back to the output resolution on the GPU (Vulkan presenter only).
@@ -134,7 +129,6 @@ export class RdpConnectOptions implements RdpOptions {
   srRatioPercent: number = 0;
   // Which upscaler runs: SR_BACKEND_XENGINE or SR_BACKEND_FSR.
   srBackend: number = SR_BACKEND_XENGINE;
-  performanceFlags: number = 0;
   gatewayHost: string = '';
   gatewayPort: number = 443;
   gatewayUsername: string = '';
@@ -225,8 +219,8 @@ export class SavedConnection extends RdpConnectOptions {
   // When true the connection follows the global display settings and ignores
   // width / height / scalePercent; when false the stored values are used.
   useGlobalDisplay: boolean = true;
-  // When true the connection follows the global advanced settings (clipboard /
-  // audio / GFX / H.264 / certificate); when false its own stored values win.
+  // When true the connection follows the global advanced settings (audio /
+  // certificate); when false its own stored values win.
   useGlobalAdvanced: boolean = true;
   // When true the connection follows the global super-resolution settings; when
   // false its own srEnabled / srRatioPercent win. Kept separate from the display
@@ -248,16 +242,11 @@ export class SavedConnection extends RdpConnectOptions {
     conn.width = options.width;
     conn.height = options.height;
     conn.scalePercent = options.scalePercent;
-    conn.colorDepth = options.colorDepth;
     conn.ignoreCertificate = options.ignoreCertificate;
     conn.enableAudio = options.enableAudio;
-    conn.enableGfx = options.enableGfx;
-    conn.enableH264 = options.enableH264;
-    conn.enableRemoteFx = options.enableRemoteFx;
     conn.srEnabled = options.srEnabled;
     conn.srRatioPercent = options.srRatioPercent;
     conn.srBackend = options.srBackend;
-    conn.performanceFlags = options.performanceFlags;
     conn.gatewayHost = options.gatewayHost;
     conn.gatewayPort = options.gatewayPort;
     conn.gatewayUsername = options.gatewayUsername;
@@ -271,16 +260,11 @@ export class SavedConnection extends RdpConnectOptions {
     options.width = this.width;
     options.height = this.height;
     options.scalePercent = this.scalePercent;
-    options.colorDepth = this.colorDepth;
     options.ignoreCertificate = this.ignoreCertificate;
     options.enableAudio = this.enableAudio;
-    options.enableGfx = this.enableGfx;
-    options.enableH264 = this.enableH264;
-    options.enableRemoteFx = this.enableRemoteFx;
     options.srEnabled = this.srEnabled;
     options.srRatioPercent = this.srRatioPercent;
     options.srBackend = this.srBackend;
-    options.performanceFlags = this.performanceFlags;
     options.gatewayHost = this.gatewayHost;
     options.gatewayPort = this.gatewayPort;
     options.gatewayUsername = this.gatewayUsername;

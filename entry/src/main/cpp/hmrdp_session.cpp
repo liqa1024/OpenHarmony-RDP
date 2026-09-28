@@ -2302,7 +2302,7 @@ bool Session::Connect(const RdpOptions& options) {
   }
   AppendArg(args, "/w:" + std::to_string(sessionWidth));
   AppendArg(args, "/h:" + std::to_string(sessionHeight));
-  AppendArg(args, "/bpp:" + std::to_string(options.colorDepth));
+  AppendArg(args, "/bpp:32");
   if (!options.gatewayHost.empty()) {
     AppendArg(args, "/g:" + options.gatewayHost + ":" +
                         std::to_string(options.gatewayPort));
@@ -2364,11 +2364,7 @@ bool Session::Connect(const RdpOptions& options) {
   // uses, and AVC444 is a niche path with no benefit here without a GPU decoder.
   freerdp_settings_set_bool(settings, FreeRDP_GfxH264, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
-  freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, options.enableRemoteFx);
-  if (options.performanceFlags != 0) {
-    freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags,
-                                static_cast<uint32_t>(options.performanceFlags));
-  }
+  freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);
   freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
   freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
   // Enables the RDPEI (touch/pen input) channel so ArkUI touch events can be
@@ -2994,7 +2990,7 @@ void Session::SetHardwareAccel(bool enabled) {
   hmrdp::SetHardwareAccelEnabled(enabled);
 }
 
-void Session::SetRfxDump(bool enabled, const std::string& dir) {
+void Session::SetGfxCapture(bool enabled, const std::string& dir) {
   const bool wantEnabled = enabled && !dir.empty();
   // The capture writes the full GFX command stream (hmrdp_gfx.bin) used by the
   // replay harness. GfxDumpConfigure is idempotent, so re-applying the same

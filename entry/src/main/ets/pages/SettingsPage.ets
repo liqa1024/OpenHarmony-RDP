@@ -77,7 +77,6 @@ struct SettingsPage {
   @State audioSupported: boolean = true;
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
-  @State enableGfx: boolean = true;
   @State ignoreCertificate: boolean = true;
   @State hardwareAccel: boolean = true;
   @State hardwareAccelSupported: boolean = true;
@@ -91,7 +90,7 @@ struct SettingsPage {
   // toolbar telemetry elsewhere). Off for a normal install.
   @State developerMode: boolean = false;
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
-  @State rfxDump: boolean = false;
+  @State gfxCapture: boolean = false;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -160,7 +159,6 @@ struct SettingsPage {
     // An unsupported device never requests audio; drop a previously stored
     // "on" value so the setting matches the greyed-out switch.
     this.enableAudio = this.audioSupported ? settings.enableAudio : false;
-    this.enableGfx = settings.enableGfx;
     // An unsupported device cannot present through Vulkan; force the value off so
     // the setting matches the greyed-out switch.
     this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
@@ -176,7 +174,7 @@ struct SettingsPage {
     this.developerMode = settings.developerMode;
     // With developer options off, the dev-only tools are not shown and must not
     // keep running: a capture left on from a previous session is switched off.
-    this.rfxDump = this.developerMode ? settings.rfxDump : false;
+    this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
     RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
@@ -191,18 +189,18 @@ struct SettingsPage {
     if ((!this.hardwareAccelSupported || !this.srSupported) && settings.srEnabled) {
       this.persist();
     }
-    if (!this.developerMode && settings.rfxDump) {
+    if (!this.developerMode && settings.gfxCapture) {
       this.persist();
     }
     // Keep the native capture in step with what the page now shows: with developer
     // options off it must not be running, whatever the stored value was.
-    this.applyRfxDumpSetting();
+    this.applyGfxCaptureSetting();
   }
 
   // Applies the dev capture toggle immediately (before the next session) so the
   // cmd stream is captured from the first frame; a no-op when the value is
   // unchanged on the native side.
-  private applyRfxDumpSetting(): void {
+  private applyGfxCaptureSetting(): void {
     let dir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();
@@ -212,7 +210,7 @@ struct SettingsPage {
     } catch (error) {
       dir = '';
     }
-    RdpNative.applyRfxDump(this.rfxDump, dir);
+    RdpNative.applyGfxCapture(this.gfxCapture, dir);
   }
 
   private sizeText(value: number): string {
@@ -304,14 +302,13 @@ struct SettingsPage {
     settings.sessionFullscreen = this.sessionFullscreen;
     settings.autoHideMainWindow = this.autoHideMainWindow;
     settings.enableAudio = this.enableAudio;
-    settings.enableGfx = this.enableGfx;
     settings.ignoreCertificate = this.ignoreCertificate;
     settings.hardwareAccel = this.hardwareAccel;
     settings.srEnabled = this.srEnabled && this.srSupported;
     settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
     settings.srBackend = this.srBackend;
     settings.developerMode = this.developerMode;
-    settings.rfxDump = this.rfxDump;
+    settings.gfxCapture = this.gfxCapture;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -351,7 +348,6 @@ struct SettingsPage {
     this.sessionFullscreen = defaults.sessionFullscreen;
     this.autoHideMainWindow = defaults.autoHideMainWindow;
     this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
-    this.enableGfx = defaults.enableGfx;
     this.ignoreCertificate = defaults.ignoreCertificate;
     this.hardwareAccel = defaults.hardwareAccel;
     this.srEnabled = defaults.srEnabled;
@@ -359,14 +355,14 @@ struct SettingsPage {
     this.srBackend = defaults.srBackend;
     this.manualScaleText = this.effectiveDefaultScale().toString();
     this.developerMode = defaults.developerMode;
-    this.rfxDump = defaults.rfxDump;
+    this.gfxCapture = defaults.gfxCapture;
     this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
     this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
     this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(defaults.sessionWindowHeight);
     this.persist();
     // A reset turns developer options off: stop a capture that was running.
-    this.applyRfxDumpSetting();
+    this.applyGfxCaptureSetting();
   }
 
   private confirmExport(): void {
@@ -1386,10 +1382,10 @@ struct SettingsPage {
                 this.developerMode = v;
                 // Turning the gate off also stops the tools it revealed, so a
                 // capture cannot keep running invisibly.
-                if (!v && this.rfxDump) {
-                  this.rfxDump = false;
+                if (!v && this.gfxCapture) {
+                  this.gfxCapture = false;
                   this.persist();
-                  this.applyRfxDumpSetting();
+                  this.applyGfxCaptureSetting();
                 } else {
                   this.persist();
                 }
@@ -1402,13 +1398,13 @@ struct SettingsPage {
               this.toggleItem({
                 title: '抓取 GFX 码流（测试）',
                 subtitle: '抓取会话的原始 GFX 通道码流（hmrdp_gfx.bin），供开发/回放使用',
-                value: this.rfxDump,
+                value: this.gfxCapture,
                 enabled: true,
                 disabledReason: '',
                 onChange: (v: boolean) => {
-                  this.rfxDump = v;
+                  this.gfxCapture = v;
                   this.persist();
-                  this.applyRfxDumpSetting();
+                  this.applyGfxCaptureSetting();
                 }
               })
 

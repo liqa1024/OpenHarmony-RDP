@@ -282,19 +282,14 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.width = GetIntProperty(env, args[1], "width", 1920);
   options.height = GetIntProperty(env, args[1], "height", 1080);
   options.scalePercent = GetIntProperty(env, args[1], "scalePercent", 0);
-  options.colorDepth = GetIntProperty(env, args[1], "colorDepth", 32);
   options.ignoreCertificate = GetBoolProperty(env, args[1], "ignoreCertificate", true);
   options.enableAudio = GetBoolProperty(env, args[1], "enableAudio", true);
-  options.enableGfx = GetBoolProperty(env, args[1], "enableGfx", true);
-  options.enableH264 = GetBoolProperty(env, args[1], "enableH264", true);
-  options.enableRemoteFx = GetBoolProperty(env, args[1], "enableRemoteFx", true);
   options.srEnabled = GetBoolProperty(env, args[1], "srEnabled", false);
   // 0 = XEngine (the platform upscaler), 1 = the presenter's own FSR.
   options.srBackend = GetIntProperty(env, args[1], "srBackend", 0) == 1
                           ? hmrdp::SuperResolutionBackend::kFsr
                           : hmrdp::SuperResolutionBackend::kXengine;
   options.srRatioPercent = GetIntProperty(env, args[1], "srRatioPercent", 0);
-  options.performanceFlags = GetIntProperty(env, args[1], "performanceFlags", 0);
   options.gatewayHost = GetStringProperty(env, args[1], "gatewayHost");
   options.gatewayPort = GetIntProperty(env, args[1], "gatewayPort", 443);
   options.gatewayUsername = GetStringProperty(env, args[1], "gatewayUsername");
@@ -749,7 +744,7 @@ napi_value SetHardwareAccel(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value SetRfxDump(napi_env env, napi_callback_info info) {
+napi_value SetGfxCapture(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -766,7 +761,7 @@ napi_value SetRfxDump(napi_env env, napi_callback_info info) {
       dir.resize(length);
     }
   }
-  Session::SetRfxDump(enabled, dir);
+  Session::SetGfxCapture(enabled, dir);
   return CreateBool(env, true);
 }
 
@@ -991,7 +986,7 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setHardwareAccel", nullptr, SetHardwareAccel, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setRfxDump", nullptr, SetRfxDump, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"setGfxCapture", nullptr, SetGfxCapture, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"startGfxReplayTest", nullptr, StartGfxReplayTest, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"stopGfxReplayTest", nullptr, StopGfxReplayTest, nullptr, nullptr, nullptr,

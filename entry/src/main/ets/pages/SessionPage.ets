@@ -420,8 +420,8 @@ struct SessionPage {
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'filesDir unavailable: %{public}s', JSON.stringify(error));
     }
-    RdpNative.applyRfxDump(settings.rfxDump, filesDir);
-    hilog.info(DOMAIN, TAG, 'rfx dump=%{public}d dir=%{public}s', settings.rfxDump ? 1 : 0,
+    RdpNative.applyGfxCapture(settings.gfxCapture, filesDir);
+    hilog.info(DOMAIN, TAG, 'gfx capture=%{public}d dir=%{public}s', settings.gfxCapture ? 1 : 0,
       filesDir);
     this.useRdpCursor = settings.useRdpCursor;
     this.reconnectOnForeground = settings.reconnectOnForeground;

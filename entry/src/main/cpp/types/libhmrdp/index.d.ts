@@ -7,12 +7,8 @@ export interface RdpOptions {
   width: number;
   height: number;
   scalePercent: number;
-  colorDepth: number;
   ignoreCertificate: boolean;
   enableAudio: boolean;
-  enableGfx: boolean;
-  enableH264: boolean;
-  enableRemoteFx: boolean;
   /**
    * 超分 (super resolution). `width`/`height` are the *output* resolution; with
    * this on, the session asks the server for `output ÷ srRatioPercent` and the
@@ -27,7 +23,6 @@ export interface RdpOptions {
   srBackend: number;
   /** Upscale ratio in percent (125 = 1.25×); ignored unless srEnabled. */
   srRatioPercent: number;
-  performanceFlags: number;
   gatewayHost: string;
   gatewayPort: number;
   gatewayUsername: string;
@@ -110,7 +105,7 @@ export const setHardwareAccel: (enabled: boolean) => boolean;
  * Dev-only: capture the raw (still ZGX-compressed) GFX channel stream to
  * `<dir>/hmrdp_gfx.bin`.
  */
-export const setRfxDump: (enabled: boolean, dir: string) => boolean;
+export const setGfxCapture: (enabled: boolean, dir: string) => boolean;
 
 /**
  * Dev-only: replay a recorded hmrdp_gfx.bin capture straight to the screen.

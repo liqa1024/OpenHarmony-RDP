@@ -46,13 +46,8 @@ class ExportedConnection {
   width: number = 0;
   height: number = 0;
   scalePercent: number = 0;
-  colorDepth: number = 32;
   ignoreCertificate: boolean = true;
   enableAudio: boolean = true;
-  enableGfx: boolean = true;
-  enableH264: boolean = true;
-  enableRemoteFx: boolean = true;
-  performanceFlags: number = 0;
   gatewayHost: string = '';
   gatewayPort: number = 443;
   gatewayUsername: string = '';
@@ -74,13 +69,8 @@ class ExportedConnection {
     item.width = conn.width;
     item.height = conn.height;
     item.scalePercent = conn.scalePercent;
-    item.colorDepth = conn.colorDepth;
     item.ignoreCertificate = conn.ignoreCertificate;
     item.enableAudio = conn.enableAudio;
-    item.enableGfx = conn.enableGfx;
-    item.enableH264 = conn.enableH264;
-    item.enableRemoteFx = conn.enableRemoteFx;
-    item.performanceFlags = conn.performanceFlags;
     item.gatewayHost = conn.gatewayHost;
     item.gatewayPort = conn.gatewayPort;
     item.gatewayUsername = conn.gatewayUsername;
@@ -104,13 +94,8 @@ class ExportedConnection {
     item.width = ConfigTransfer.readNumber(rec, 'width', 0);
     item.height = ConfigTransfer.readNumber(rec, 'height', 0);
     item.scalePercent = ConfigTransfer.readNumber(rec, 'scalePercent', 0);
-    item.colorDepth = ConfigTransfer.readNumber(rec, 'colorDepth', 32);
     item.ignoreCertificate = ConfigTransfer.readBoolean(rec, 'ignoreCertificate', true);
     item.enableAudio = ConfigTransfer.readBoolean(rec, 'enableAudio', true);
-    item.enableGfx = ConfigTransfer.readBoolean(rec, 'enableGfx', true);
-    item.enableH264 = ConfigTransfer.readBoolean(rec, 'enableH264', true);
-    item.enableRemoteFx = ConfigTransfer.readBoolean(rec, 'enableRemoteFx', true);
-    item.performanceFlags = ConfigTransfer.readNumber(rec, 'performanceFlags', 0);
     item.gatewayHost = ConfigTransfer.readString(rec, 'gatewayHost', '');
     item.gatewayPort = ConfigTransfer.readNumber(rec, 'gatewayPort', 443);
     item.gatewayUsername = ConfigTransfer.readString(rec, 'gatewayUsername', '');
@@ -134,13 +119,8 @@ class ExportedConnection {
     conn.width = this.width;
     conn.height = this.height;
     conn.scalePercent = this.scalePercent;
-    conn.colorDepth = this.colorDepth;
     conn.ignoreCertificate = this.ignoreCertificate;
     conn.enableAudio = this.enableAudio;
-    conn.enableGfx = this.enableGfx;
-    conn.enableH264 = this.enableH264;
-    conn.enableRemoteFx = this.enableRemoteFx;
-    conn.performanceFlags = this.performanceFlags;
     conn.gatewayHost = this.gatewayHost;
     conn.gatewayPort = this.gatewayPort > 0 ? this.gatewayPort : 443;
     conn.gatewayUsername = this.gatewayUsername;
@@ -369,10 +349,6 @@ export class ConfigTransfer {
     settings.enableAudio =
       ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio)
       && DeviceCapabilities.audio().supported;
-    settings.enableGfx =
-      ConfigTransfer.readBoolean(rec, 'enableGfx', settings.enableGfx);
-    settings.enableH264 =
-      ConfigTransfer.readBoolean(rec, 'enableH264', settings.enableH264);
     settings.ignoreCertificate =
       ConfigTransfer.readBoolean(rec, 'ignoreCertificate', settings.ignoreCertificate);
     settings.hardwareAccel =
@@ -389,7 +365,7 @@ export class ConfigTransfer {
     }
     settings.developerMode =
       ConfigTransfer.readBoolean(rec, 'developerMode', settings.developerMode);
-    settings.rfxDump = ConfigTransfer.readBoolean(rec, 'rfxDump', settings.rfxDump);
+    settings.gfxCapture = ConfigTransfer.readBoolean(rec, 'gfxCapture', settings.gfxCapture);
     return settings;
   }
 

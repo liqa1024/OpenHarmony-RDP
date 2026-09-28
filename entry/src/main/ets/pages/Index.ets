@@ -167,8 +167,6 @@ struct Index {
     options.srBackend = profile.srBackend;
     const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
     options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
-    options.enableGfx = advanced.enableGfx;
-    options.enableH264 = advanced.enableH264;
     options.ignoreCertificate = advanced.ignoreCertificate;
     const password: string = await CredentialStore.loadPassword(conn.id);
     options.password = password;

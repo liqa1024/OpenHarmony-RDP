@@ -41,10 +41,6 @@ struct EditConnectionPage {
   @State audioSupported: boolean = true;
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
-  @State enableGfx: boolean = true;
-  // H.264 is not offered: the native side forces it off (no GPU decoder here), so
-  // this editor only ever leaves the stored field at false.
-  @State enableH264: boolean = false;
   @State ignoreCertificate: boolean = true;
   // 超分: kept out of the display group on purpose - a LAN connection can follow
   // the (off) global default while the same host reached through a gateway wants
@@ -122,7 +118,6 @@ struct EditConnectionPage {
         this.scaleText = conn.scalePercent.toString();
       }
       this.enableAudio = this.audioSupported && conn.enableAudio;
-      this.enableGfx = conn.enableGfx;
       this.ignoreCertificate = conn.ignoreCertificate;
       this.useGlobalAdvanced = conn.useGlobalAdvanced;
       this.useGlobalSr = conn.useGlobalSr;
@@ -279,8 +274,6 @@ struct EditConnectionPage {
     options.scalePercent = this.useGlobalDisplay
       ? global.scalePercent : this.parseScale(this.scaleText, this.suggestedScale());
     options.enableAudio = this.enableAudio;
-    options.enableGfx = this.enableGfx;
-    options.enableH264 = false;
     options.ignoreCertificate = this.ignoreCertificate;
     const sr: SrProfile = this.resolvedSr();
     options.srEnabled = sr.enabled;
@@ -289,8 +282,6 @@ struct EditConnectionPage {
     if (applyGlobalAdvanced && this.useGlobalAdvanced) {
       const advanced: AdvancedProfile = SettingsStore.globalAdvancedProfile();
       options.enableAudio = advanced.enableAudio;
-      options.enableGfx = advanced.enableGfx;
-      options.enableH264 = false;
       options.ignoreCertificate = advanced.ignoreCertificate;
     }
     if (!this.audioSupported) {
@@ -923,7 +914,7 @@ struct EditConnectionPage {
                 Row() {
                   Column() {
                     Text('使用全局高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('音频、图形管道等跟随全局设置')
+                    Text('音频、证书等跟随全局设置')
                       .fontSize(11)
                       .fontColor($r('app.color.text_tertiary'))
                       .margin({ top: 2 })

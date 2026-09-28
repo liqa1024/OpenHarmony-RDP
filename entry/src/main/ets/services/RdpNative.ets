@@ -8,7 +8,7 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
-setTouchHighRate, updateSurface, setHardwareAccel, setRfxDump,
+setTouchHighRate, updateSurface, setHardwareAccel, setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer,
 RdpEventCallback,
 startGfxReplayTest, stopGfxReplayTest, resizeGfxReplayTest, gfxReplayTestStats } from 'libhmrdp.so';
@@ -78,8 +78,8 @@ export class RdpNative {
   }
 
   /** Dev-only raw GFX channel capture to the given directory. */
-  static applyRfxDump(enabled: boolean, dir: string): void {
-    setRfxDump(enabled, dir);
+  static applyGfxCapture(enabled: boolean, dir: string): void {
+    setGfxCapture(enabled, dir);
   }
 
   /**
