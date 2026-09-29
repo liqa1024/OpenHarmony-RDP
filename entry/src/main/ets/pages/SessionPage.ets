@@ -108,6 +108,10 @@ const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
 // File-transfer progress fill: brighter than the chip tints so the bar reads at
 // a glance on the dark toolbar.
 const TOOLBAR_PROGRESS: string = '#5B9CF8';
+// Pointer zones for the fullscreen auto-hide (SessionPage.setToolbarPointerZone).
+const TOOLBAR_ZONE_NONE: number = 0;
+const TOOLBAR_ZONE_TRIGGER: number = 1;
+const TOOLBAR_ZONE_BAR: number = 2;
 // Telemetry threshold colours, tuned against the fixed dark bar.
 const METRIC_GOOD: string = '#4ADE80';
 const METRIC_WARN: string = '#FBBF24';
@@ -268,10 +272,17 @@ struct SessionPage {
   private windowMinimized: boolean = false;
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
-  private hoverTimer: number = -1;
+  // Fullscreen auto-hide: the pointer zone, the reveal dwell and the hide delay
+  // (see refreshToolbarAutoHide). -1 = timer not running.
+  private pointerZone: number = TOOLBAR_ZONE_NONE;
+  private revealTimer: number = -1;
   private hideTimer: number = -1;
+  // Cleared in aboutToDisappear so a hover-exit during teardown arms nothing.
+  private toolbarAutoHideArmed: boolean = true;
   private moveTimer: number = -1;
-  private topTrigger: number = 6;
+  // The strip is `toolbarHeight` tall; the band that reveals it is much shorter,
+  // so a pass-by along the top edge does not.
+  private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
@@ -508,14 +519,8 @@ struct SessionPage {
   }
 
   aboutToDisappear(): void {
-    if (this.hoverTimer !== -1) {
-      clearTimeout(this.hoverTimer);
-      this.hoverTimer = -1;
-    }
-    if (this.hideTimer !== -1) {
-      clearTimeout(this.hideTimer);
-      this.hideTimer = -1;
-    }
+    this.toolbarAutoHideArmed = false;
+    this.clearToolbarTimers();
     if (this.moveTimer !== -1) {
       clearTimeout(this.moveTimer);
       this.moveTimer = -1;
@@ -679,6 +684,8 @@ struct SessionPage {
       this.showToolbar = true;
       this.resetCursor();
     }
+    // A state change invalidates any pending reveal / hide.
+    this.refreshToolbarAutoHide();
   }
 
   private retry(): void {
@@ -1319,14 +1326,14 @@ struct SessionPage {
     // switch to the progress row once bytes actually move.
     if (direction === 1 && done === 0) {
       this.transferWaiting = true;
-      this.pinToolbarForTransfer();
+      this.refreshToolbarAutoHide();
       return;
     }
     this.transferWaiting = false;
     this.transferBusy = true;
     this.transferActive = true;
     this.transferDirection = direction;
-    this.pinToolbarForTransfer();
+    this.refreshToolbarAutoHide();
     this.transferPercent = total > 0 ? Math.min(100, Math.floor(done * 100 / total)) : 0;
     this.transferText = direction === 0 ? '正在接收文件…' : '正在发送文件…';
     const now: number = Date.now();
@@ -1381,7 +1388,8 @@ struct SessionPage {
     this.transferFileCount = 0;
     this.transferLastDone = 0;
     this.transferLastAt = 0;
-    this.scheduleToolbarHide();
+    // Resumes the normal auto-hide (unless the pointer is still on the strip).
+    this.refreshToolbarAutoHide();
   }
 
   private cancelFileTransfer(): void {
@@ -1657,7 +1665,7 @@ struct SessionPage {
     this.transferActive = true;
     this.transferPercent = 0;
     this.transferText = '正在接收文件…';
-    this.pinToolbarForTransfer();
+    this.refreshToolbarAutoHide();
     this.native.pullClipboardFiles(dir);
   }
 
@@ -1755,73 +1763,89 @@ struct SessionPage {
     }
   }
 
-  private updateToolbar(y: number): void {
-    // The toolbar only auto-hides in fullscreen; in windowed mode it is always
-    // visible and laid out above the remote image.
+  /** Reports which zone the pointer is in; zones come from the surface or the strip. */
+  private setToolbarPointerZone(zone: number): void {
+    if (this.pointerZone === zone) {
+      return;
+    }
+    this.pointerZone = zone;
+    this.refreshToolbarAutoHide();
+  }
+
+  /**
+   * The single place the toolbar's fullscreen visibility is decided: a hide is
+   * never pending while the pointer is on the strip, whatever triggered the call.
+   */
+  private refreshToolbarAutoHide(): void {
+    if (!this.toolbarAutoHideArmed) {
+      return;
+    }
+    // Outside fullscreen the strip is either laid out above the picture
+    // (windowed mode) or covered by the status overlay, so it cannot auto-hide.
     if (!this.isFullscreen || this.state !== ConnectionState.Connected) {
+      this.clearToolbarTimers();
       return;
     }
-    // A running or pending transfer keeps the toolbar pinned so its progress /
-    // "paste on the remote" hint never disappears while the user is waiting.
     if (this.transferActive || this.transferWaiting) {
-      this.pinToolbarForTransfer();
+      this.pinToolbar();
       return;
     }
-    if (y < this.topTrigger) {
-      if (this.hideTimer !== -1) {
-        clearTimeout(this.hideTimer);
-        this.hideTimer = -1;
-      }
-      if (!this.showToolbar && this.hoverTimer === -1) {
-        this.hoverTimer = setTimeout(() => {
-          this.hoverTimer = -1;
+    if (this.pointerZone !== TOOLBAR_ZONE_NONE) {
+      this.cancelHideTimer();
+    }
+    if (this.pointerZone === TOOLBAR_ZONE_TRIGGER && !this.showToolbar) {
+      // Dwell in the top band reveals a hidden strip; leaving the band cancels
+      // the dwell (the gesture was a pass-by).
+      if (this.revealTimer === -1) {
+        this.revealTimer = setTimeout(() => {
+          this.revealTimer = -1;
           this.showToolbar = true;
         }, this.hoverDelay);
       }
-      // The dwell only counts while the pointer stays in the top band: leaving
-      // it (even into the toolbar strip itself) means the gesture was a pass-by,
-      // so the pending reveal is dropped.
       return;
     }
-    if (this.hoverTimer !== -1) {
-      clearTimeout(this.hoverTimer);
-      this.hoverTimer = -1;
+    this.cancelRevealTimer();
+    if (this.pointerZone === TOOLBAR_ZONE_NONE) {
+      this.scheduleToolbarHide();
+      return;
     }
-    if (y >= this.toolbarHeight) {
-      if (this.showToolbar && this.hideTimer === -1) {
-        this.hideTimer = setTimeout(() => {
-          this.hideTimer = -1;
-          this.showToolbar = false;
-        }, this.hideDelay);
-      }
-    }
+    // Pointer on the strip itself: it stays up, whatever revealed it.
+    this.showToolbar = true;
   }
 
-  /** Keeps the toolbar visible while a transfer is running or pending. */
-  private pinToolbarForTransfer(): void {
-    if (this.hideTimer !== -1) {
-      clearTimeout(this.hideTimer);
-      this.hideTimer = -1;
-    }
-    if (this.hoverTimer !== -1) {
-      clearTimeout(this.hoverTimer);
-      this.hoverTimer = -1;
-    }
+  /** Pins the strip for as long as a transfer is running or pending. */
+  private pinToolbar(): void {
+    this.clearToolbarTimers();
     if (!this.showToolbar) {
       this.showToolbar = true;
     }
   }
 
-  /** Resumes the normal fullscreen auto-hide once no transfer is pending. */
   private scheduleToolbarHide(): void {
-    if (!this.isFullscreen || this.transferActive || this.transferWaiting) {
-      return;
-    }
     if (this.showToolbar && this.hideTimer === -1) {
       this.hideTimer = setTimeout(() => {
         this.hideTimer = -1;
         this.showToolbar = false;
       }, this.hideDelay);
+    }
+  }
+
+  private clearToolbarTimers(): void {
+    this.cancelRevealTimer();
+    this.cancelHideTimer();
+  }
+
+  private cancelRevealTimer(): void {
+    if (this.revealTimer !== -1) {
+      clearTimeout(this.revealTimer);
+      this.revealTimer = -1;
+    }
+  }
+
+  private cancelHideTimer(): void {
+    if (this.hideTimer !== -1) {
+      clearTimeout(this.hideTimer);
+      this.hideTimer = -1;
     }
   }
 
@@ -1873,7 +1897,9 @@ struct SessionPage {
     if (event.source === SourceType.TouchScreen) {
       return;
     }
-    this.updateToolbar(event.y);
+    // The strip itself is never reported here: its own hover does that.
+    this.setToolbarPointerZone(event.y < this.revealBand
+      ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     const point: number[] = this.mapPointer(event.x, event.y);
     const remoteX: number = point[0];
     const remoteY: number = point[1];
@@ -2639,6 +2665,8 @@ struct SessionPage {
       win.on('windowStatusChange', (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
         this.setWindowMinimized(status === window.WindowStatusType.MINIMIZE);
+        // The auto-hide only exists in fullscreen: drop or re-arm its timers.
+        this.refreshToolbarAutoHide();
       });
       win.on('windowEvent', (data: window.WindowEventType) => {
         // Focus/visibility events are not visibility sources; they only signal
@@ -3025,6 +3053,11 @@ struct SessionPage {
     .width('100%')
     .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
+    // In fullscreen the strip covers the surface, so only its own hover can
+    // report that the pointer is on it.
+    .onHover((isHover: boolean) => {
+      this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
+    })
     .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }
