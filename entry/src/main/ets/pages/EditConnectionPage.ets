@@ -22,6 +22,7 @@ const TAG: string = 'HmRdpEdit';
 @Entry
 @Component
 struct EditConnectionPage {
+  @State name: string = '';
   @State host: string = '';
   @State port: string = '3389';
   @State username: string = '';
@@ -105,6 +106,7 @@ struct EditConnectionPage {
     }
     const conn: SavedConnection | undefined = ConnectionStore.get(id);
     if (conn !== undefined) {
+      this.name = conn.name;
       this.host = conn.host;
       this.port = conn.port.toString();
       this.username = conn.username;
@@ -267,6 +269,7 @@ struct EditConnectionPage {
     const options: RdpConnectOptions =
       RdpConnectOptions.of(target, this.parsePort(), this.username.trim(), this.password,
         this.domain.trim());
+    options.name = this.name.trim();
     options.width = this.useGlobalDisplay
       ? global.width : this.parseSize(this.desktopWidthText, global.width);
     options.height = this.useGlobalDisplay
@@ -530,6 +533,17 @@ struct EditConnectionPage {
             Divider()
               .color($r('app.color.divider'))
               .margin({ top: 12, bottom: 20 })
+
+            this.fieldLabel('名称（可选）')
+            TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
+              .width('100%')
+              .height(46)
+              .borderRadius(10)
+              .backgroundColor($r('app.color.input_bg'))
+              .margin({ bottom: 16 })
+              .onChange((value: string) => {
+                this.name = value;
+              })
 
             this.fieldLabel('主机名或 IP 地址')
             TextInput({ placeholder: '例如 192.168.1.100', text: this.host })

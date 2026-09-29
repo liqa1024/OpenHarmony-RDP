@@ -182,6 +182,9 @@ export class ConnectionStore {
     parts.push(conn.srEnabled ? '1' : '0');
     parts.push(conn.srRatioPercent.toString());
     parts.push(conn.srBackend.toString());
+    // Appended after the retired/growing tail: older records simply stop before
+    // it, so the positional layout of every existing field stays put.
+    parts.push(ConnectionStore.encode(conn.name));
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -216,6 +219,7 @@ export class ConnectionStore {
     conn.srRatioPercent = parts.length > 24 ? ConnectionStore.parseNumber(parts[24], 0) : 0;
     conn.srBackend = parts.length > 25
       ? ConnectionStore.parseNumber(parts[25], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
+    conn.name = parts.length > 26 ? ConnectionStore.decode(parts[26]) : '';
     return conn;
   }
 

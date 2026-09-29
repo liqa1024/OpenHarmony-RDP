@@ -41,6 +41,8 @@ class ExportedConnection {
   id: string = '';
   host: string = '';
   port: number = 3389;
+  // Optional custom name; absent in files written before it existed.
+  name: string = '';
   username: string = '';
   domain: string = '';
   width: number = 0;
@@ -64,6 +66,7 @@ class ExportedConnection {
     item.id = conn.id;
     item.host = conn.host;
     item.port = conn.port;
+    item.name = conn.name;
     item.username = conn.username;
     item.domain = conn.domain;
     item.width = conn.width;
@@ -89,6 +92,7 @@ class ExportedConnection {
     item.id = ConfigTransfer.readString(rec, 'id', '');
     item.host = ConfigTransfer.readString(rec, 'host', '');
     item.port = ConfigTransfer.readNumber(rec, 'port', 3389);
+    item.name = ConfigTransfer.readString(rec, 'name', '');
     item.username = ConfigTransfer.readString(rec, 'username', '');
     item.domain = ConfigTransfer.readString(rec, 'domain', '');
     item.width = ConfigTransfer.readNumber(rec, 'width', 0);
@@ -114,6 +118,7 @@ class ExportedConnection {
     conn.id = this.id.length > 0 ? this.id : util.generateRandomUUID(true);
     conn.host = this.host;
     conn.port = this.port > 0 ? this.port : 3389;
+    conn.name = this.name;
     conn.username = this.username;
     conn.domain = this.domain;
     conn.width = this.width;

@@ -209,6 +209,18 @@ struct Index {
       });
   }
 
+  /**
+   * List subtitle: the account, prefixed with the address when a custom name
+   * hides it. Empty when there is neither, so the row shows nothing extra.
+   */
+  private connectionSubtitle(conn: SavedConnection): string {
+    if (conn.name.length === 0) {
+      return conn.username;
+    }
+    const target: string = `${conn.host}:${conn.port}`;
+    return conn.username.length > 0 ? `${target} · ${conn.username}` : target;
+  }
+
   private confirmDelete(conn: SavedConnection): void {
     this.getUIContext().showAlertDialog({
       title: '删除连接',
@@ -272,10 +284,12 @@ struct Index {
                 .margin({ left: 8 })
             }
           }
-          Text(conn.username.length > 0 ? conn.username : '未设置用户名')
-            .fontSize(12)
-            .fontColor($r('app.color.text_tertiary'))
-            .margin({ top: 3 })
+          if (this.connectionSubtitle(conn).length > 0) {
+            Text(this.connectionSubtitle(conn))
+              .fontSize(12)
+              .fontColor($r('app.color.text_tertiary'))
+              .margin({ top: 3 })
+          }
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)

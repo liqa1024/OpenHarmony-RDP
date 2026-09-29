@@ -114,6 +114,9 @@ export enum RdpEvent {
 export class RdpConnectOptions implements RdpOptions {
   host: string = '';
   port: number = 3389;
+  // Optional user-set name for this target. Empty means "no custom name", and
+  // every display falls back to host / host:port.
+  name: string = '';
   username: string = '';
   password: string = '';
   domain: string = '';
@@ -144,6 +147,17 @@ export class RdpConnectOptions implements RdpOptions {
     options.password = password;
     options.domain = domain;
     return options;
+  }
+
+  /** Name to show for this target: the custom name when set, else the host. */
+  displayName(): string {
+    return this.name.length > 0 ? this.name : this.host;
+  }
+
+  /** "name · host:port" when a custom name is set, else just "host:port". */
+  targetLabel(): string {
+    const target: string = `${this.host}:${this.port}`;
+    return this.name.length > 0 ? `${this.name} · ${target}` : target;
   }
 }
 
@@ -241,7 +255,7 @@ export class SavedConnection extends RdpConnectOptions {
   useGlobalSr: boolean = true;
 
   label(): string {
-    return `${this.host}:${this.port}`;
+    return this.name.length > 0 ? this.name : `${this.host}:${this.port}`;
   }
 
   static fromOptions(id: string, options: RdpConnectOptions): SavedConnection {
@@ -249,6 +263,7 @@ export class SavedConnection extends RdpConnectOptions {
     conn.id = id;
     conn.host = options.host;
     conn.port = options.port;
+    conn.name = options.name;
     conn.username = options.username;
     conn.domain = options.domain;
     conn.width = options.width;
@@ -269,6 +284,7 @@ export class SavedConnection extends RdpConnectOptions {
   toOptions(): RdpConnectOptions {
     const options: RdpConnectOptions =
       RdpConnectOptions.of(this.host, this.port, this.username, '', this.domain);
+    options.name = this.name;
     options.width = this.width;
     options.height = this.height;
     options.scalePercent = this.scalePercent;

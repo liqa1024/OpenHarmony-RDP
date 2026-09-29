@@ -261,9 +261,11 @@ struct SessionPage {
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
-  // Whether this window is really on screen, from the system's own report
-  // (occlusion / hidden / minimize). Sizes reported while it is off screen are
-  // held until it is back, and an off-screen window suppresses the server's output.
+  // windowVisible = windowOnScreen && !windowMinimized (see
+  // doc_agent/session-and-input.md §1.1). While it is false, surface sizes the
+  // system reports are held until it is back, and the server's output is suppressed.
+  private windowOnScreen: boolean = true;
+  private windowMinimized: boolean = false;
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
   private hoverTimer: number = -1;
@@ -543,13 +545,11 @@ struct SessionPage {
   }
 
   onPageShow(): void {
-    this.setWindowVisible(true);
     this.scheduleForegroundReconnect();
   }
 
   onPageHide(): void {
     this.awayFromForeground = true;
-    this.setWindowVisible(false);
   }
 
   /**
@@ -2638,33 +2638,21 @@ struct SessionPage {
       this.isFullscreen = win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
       win.on('windowStatusChange', (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
-        // Window mode says nothing about whether the window is seen; only minimize
-        // is also a visibility change.
-        if (status === window.WindowStatusType.MINIMIZE) {
-          this.setWindowVisible(false);
-        }
+        this.setWindowMinimized(status === window.WindowStatusType.MINIMIZE);
       });
       win.on('windowEvent', (data: window.WindowEventType) => {
+        // Focus/visibility events are not visibility sources; they only signal
+        // that the inputs the remote still sees as held must be let go.
         if (data === window.WindowEventType.WINDOW_INACTIVE
           || data === window.WindowEventType.WINDOW_HIDDEN) {
           this.releaseAllInputs();
         }
-        if (data === window.WindowEventType.WINDOW_HIDDEN) {
-          this.setWindowVisible(false);
-        } else if (data === window.WindowEventType.WINDOW_SHOWN) {
-          this.setWindowVisible(true);
-        } else if (data === window.WindowEventType.WINDOW_ACTIVE) {
-          // Focused means on top, so it is seen whatever the last report said.
-          this.setWindowVisible(true);
-        }
       });
-      // The system's occlusion report is the visibility source (real rectangles,
-      // every display). Its false means *fully* occluded: a partly covered window -
-      // e.g. a full-screen session with a maximized window on top - still reports
-      // visible, so only a full cover suppresses.
+      // Only a *fully* covered window reports false here; a partly covered one
+      // still reports true (doc_agent/session-and-input.md §1.1).
       try {
         win.on('windowVisibilityChange', (visible: boolean) => {
-          this.setWindowVisible(visible);
+          this.setWindowOnScreen(visible);
         });
       } catch (error) {
         hilog.warn(DOMAIN, TAG, 'on windowVisibilityChange failed: %{public}s',
@@ -2675,8 +2663,25 @@ struct SessionPage {
     });
   }
 
-  /** Records whether this window is on screen and syncs held size + suppression. */
-  private setWindowVisible(visible: boolean): void {
+  private setWindowOnScreen(onScreen: boolean): void {
+    if (this.windowOnScreen === onScreen) {
+      return;
+    }
+    this.windowOnScreen = onScreen;
+    this.syncWindowVisible();
+  }
+
+  private setWindowMinimized(minimized: boolean): void {
+    if (this.windowMinimized === minimized) {
+      return;
+    }
+    this.windowMinimized = minimized;
+    this.syncWindowVisible();
+  }
+
+  /** Recomputes windowVisible and syncs the held surface size + suppression. */
+  private syncWindowVisible(): void {
+    const visible: boolean = this.windowOnScreen && !this.windowMinimized;
     if (this.windowVisible === visible) {
       return;
     }
@@ -2846,7 +2851,7 @@ struct SessionPage {
   @Builder
   sessionToolbarMainRow() {
     Row() {
-      Text(this.options.host)
+      Text(this.options.displayName())
         .fontSize(14)
         .fontColor(TOOLBAR_FG)
       Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator())
@@ -3155,7 +3160,7 @@ struct SessionPage {
       if (this.showOverlay) {
         Column() {
           if (this.state === ConnectionState.Connecting) {
-            this.statusCard('正在连接', this.options.host + ':' + this.options.port, '取消', '')
+            this.statusCard('正在连接', this.options.targetLabel(), '取消', '')
           } else if (this.state === ConnectionState.Disconnecting) {
             this.statusCard('正在断开', this.statusText, '', '')
           } else if (this.state === ConnectionState.Failed) {

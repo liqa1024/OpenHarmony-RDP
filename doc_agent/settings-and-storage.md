@@ -12,6 +12,10 @@
 - **密码绝不落明文、不进日志、不经命令行传递**：原生侧用 `freerdp_settings_set_string` 设
   `FreeRDP_Password` / `FreeRDP_GatewayPassword`。
 - preferences 的字符串字段**先 `encodeURIComponent` 再拼接**，否则控制字符会损坏文件。
+- 连接可带一个**可选自定义名**（`SavedConnection.name`，继承自 `RdpConnectOptions.name`）：非空时
+  列表主标题、删除确认与会话窗口标题都用它（`label()` / `displayName()`），空则回落到 `host:port`。
+  它只是显示名，**不参与任何连接参数**；随连接一起持久化（记录尾部追加一个字段，旧记录缺该字段即
+  视为空）并随导入导出搬运。
 
 ### 1.1 系统密码保险箱（只做填充，保存走应用自身）
 
