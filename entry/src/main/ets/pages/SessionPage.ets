@@ -112,6 +112,11 @@ const TOOLBAR_PROGRESS: string = '#5B9CF8';
 const TOOLBAR_ZONE_NONE: number = 0;
 const TOOLBAR_ZONE_TRIGGER: number = 1;
 const TOOLBAR_ZONE_BAR: number = 2;
+// Reveal hint: a hairline at the top edge whose fill grows over the whole dwell,
+// so a hidden strip is announced before it drops in.
+const REVEAL_HINT_WIDTH: number = 96;
+const REVEAL_HINT_HEIGHT: number = 3;
+const REVEAL_HINT_FADE_MS: number = 140;
 // Telemetry threshold colours, tuned against the fixed dark bar.
 const METRIC_GOOD: string = '#4ADE80';
 const METRIC_WARN: string = '#FBBF24';
@@ -200,6 +205,8 @@ struct SessionPage {
   @State statusText: string = '正在连接...';
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
+  // Fill of the top-edge reveal hint (0..1): shows the dwell, never decides it.
+  @State revealHintFill: number = 0;
   @State isFullscreen: boolean = false;
   // Identifies this window's launch request, injected by SessionAbility.
   @LocalStorageLink('sessionKey') sessionKey: string = '';
@@ -1780,12 +1787,17 @@ struct SessionPage {
     if (!this.toolbarAutoHideArmed) {
       return;
     }
+    // Nothing but a pending reveal keeps the hint up, so anything else retracts it.
+    if (!this.toolbarWillReveal()) {
+      this.hideRevealHint();
+    }
     // Outside fullscreen the strip is either laid out above the picture
     // (windowed mode) or covered by the status overlay, so it cannot auto-hide.
     if (!this.isFullscreen || this.state !== ConnectionState.Connected) {
       this.clearToolbarTimers();
       return;
     }
+    // A running or pending transfer pins the strip.
     if (this.transferActive || this.transferWaiting) {
       this.pinToolbar();
       return;
@@ -1793,14 +1805,16 @@ struct SessionPage {
     if (this.pointerZone !== TOOLBAR_ZONE_NONE) {
       this.cancelHideTimer();
     }
-    if (this.pointerZone === TOOLBAR_ZONE_TRIGGER && !this.showToolbar) {
+    if (this.toolbarWillReveal()) {
       // Dwell in the top band reveals a hidden strip; leaving the band cancels
       // the dwell (the gesture was a pass-by).
       if (this.revealTimer === -1) {
         this.revealTimer = setTimeout(() => {
           this.revealTimer = -1;
           this.showToolbar = true;
+          this.hideRevealHint();
         }, this.hoverDelay);
+        this.showRevealHint(this.hoverDelay);
       }
       return;
     }
@@ -1811,6 +1825,36 @@ struct SessionPage {
     }
     // Pointer on the strip itself: it stays up, whatever revealed it.
     this.showToolbar = true;
+  }
+
+  /** True while the pointer dwells for a strip that is not up yet. */
+  private toolbarWillReveal(): boolean {
+    return this.isFullscreen
+      && this.state === ConnectionState.Connected
+      && !this.transferActive
+      && !this.transferWaiting
+      && this.pointerZone === TOOLBAR_ZONE_TRIGGER
+      && !this.showToolbar;
+  }
+
+  /** Fills the top-edge hint over `duration`, i.e. over the pending dwell. */
+  private showRevealHint(duration: number): void {
+    this.getUIContext().animateTo({ duration: duration, curve: Curve.Linear }, () => {
+      this.revealHintFill = 1;
+    });
+  }
+
+  /** Retracts the hint: the strip will not appear after all. */
+  private hideRevealHint(): void {
+    if (this.revealHintFill === 0) {
+      return;
+    }
+    this.getUIContext().animateTo({
+      duration: REVEAL_HINT_FADE_MS,
+      curve: Curve.FastOutSlowIn
+    }, () => {
+      this.revealHintFill = 0;
+    });
   }
 
   /** Pins the strip for as long as a transfer is running or pending. */
@@ -2876,6 +2920,24 @@ struct SessionPage {
     return ' (' + backend + ' ' + srRatioLabel(this.options.srRatioPercent) + ')';
   }
 
+  /**
+   * Hairline at the top edge that announces a hidden strip: it fills over the
+   * dwell (so the strip drops in when the fill completes) and retracts as soon
+   * as the pointer leaves the reveal band.
+   */
+  @Builder
+  toolbarRevealHint() {
+    Row()
+      .width(REVEAL_HINT_WIDTH * this.revealHintFill)
+      .height(REVEAL_HINT_HEIGHT)
+      .borderRadius(REVEAL_HINT_HEIGHT / 2)
+      .backgroundColor(TOOLBAR_FG)
+      .opacity(this.revealHintFill)
+      // A hint only: the pointer events the reveal band and the strip depend on
+      // must pass straight through it.
+      .hitTestBehavior(HitTestMode.None)
+  }
+
   @Builder
   sessionToolbarMainRow() {
     Row() {
@@ -3184,6 +3246,18 @@ struct SessionPage {
         .width('100%')
         .height('100%')
         .transform(this.viewMatrix)
+
+        // Fullscreen: the reveal hint hugs the top edge, behind the strip (which
+        // slides in over it).
+        if (this.isFullscreen && !this.showOverlay) {
+          Stack() {
+            this.toolbarRevealHint()
+          }
+          .width('100%')
+          .height('100%')
+          .alignContent(Alignment.Top)
+          .hitTestBehavior(HitTestMode.None)
+        }
 
         // Fullscreen mode: the toolbar floats over the image and auto-hides.
         if (this.isFullscreen && this.showToolbar && !this.showOverlay) {
