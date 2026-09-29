@@ -261,9 +261,9 @@ struct SessionPage {
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
-  // Whether this session window is actually being looked at (shown, not
-  // minimized/hidden). It drives two things: surface sizes reported while hidden
-  // are held and re-measured on return, and a hidden window suppresses output.
+  // Whether this window is really on screen, from the system's own report
+  // (occlusion / hidden / minimize). Sizes reported while it is off screen are
+  // held until it is back, and an off-screen window suppresses the server's output.
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
   private hoverTimer: number = -1;
@@ -528,6 +528,8 @@ struct SessionPage {
     if (win !== undefined) {
       try {
         win.off('windowEvent');
+        win.off('windowStatusChange');
+        win.off('windowVisibilityChange');
       } catch (error) {
         hilog.warn(DOMAIN, TAG, 'off windowEvent failed: %{public}s', JSON.stringify(error));
       }
@@ -660,6 +662,8 @@ struct SessionPage {
     if (state === ConnectionState.Connected) {
       this.statusText = '已连接';
       this.showToolbar = false;
+      // A fresh session starts unsuppressed; re-apply this window's visibility.
+      this.native.setSuppressed(!this.windowVisible);
     } else if (state === ConnectionState.Connecting) {
       this.statusText = '正在连接...';
       this.showOverlay = true;
@@ -2634,33 +2638,44 @@ struct SessionPage {
       this.isFullscreen = win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
       win.on('windowStatusChange', (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
-        // Minimize is reported here directly, which is the reliable "this session
-        // is not being looked at" signal on 2in1; any other status means restored.
-        this.setWindowVisible(status !== window.WindowStatusType.MINIMIZE);
+        // Window mode says nothing about whether the window is seen; only minimize
+        // is also a visibility change.
+        if (status === window.WindowStatusType.MINIMIZE) {
+          this.setWindowVisible(false);
+        }
       });
       win.on('windowEvent', (data: window.WindowEventType) => {
         if (data === window.WindowEventType.WINDOW_INACTIVE
           || data === window.WindowEventType.WINDOW_HIDDEN) {
           this.releaseAllInputs();
         }
-        // Focus alone is not visibility: an unfocused window is still shown, so
-        // only hidden/shown drive the visible state (and with it suppression).
         if (data === window.WindowEventType.WINDOW_HIDDEN) {
           this.setWindowVisible(false);
         } else if (data === window.WindowEventType.WINDOW_SHOWN) {
           this.setWindowVisible(true);
+        } else if (data === window.WindowEventType.WINDOW_ACTIVE) {
+          // Focused means on top, so it is seen whatever the last report said.
+          this.setWindowVisible(true);
         }
       });
+      // The system's occlusion report is the visibility source (real rectangles,
+      // every display). Its false means *fully* occluded: a partly covered window -
+      // e.g. a full-screen session with a maximized window on top - still reports
+      // visible, so only a full cover suppresses.
+      try {
+        win.on('windowVisibilityChange', (visible: boolean) => {
+          this.setWindowVisible(visible);
+        });
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'on windowVisibilityChange failed: %{public}s',
+          JSON.stringify(error));
+      }
     }).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
     });
   }
 
-  /**
-   * Tracks whether this session window is really being looked at. Hiding it also
-   * suppresses the server's output, so a minimized session stops decoding and
-   * presenting; becoming visible again re-applies the pending surface size.
-   */
+  /** Records whether this window is on screen and syncs held size + suppression. */
   private setWindowVisible(visible: boolean): void {
     if (this.windowVisible === visible) {
       return;
