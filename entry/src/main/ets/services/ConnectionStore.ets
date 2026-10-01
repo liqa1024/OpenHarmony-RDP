@@ -8,7 +8,10 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { SavedConnection, SR_BACKEND_XENGINE } from '../model/RdpModels';
+import {
+  ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_WINDOW, PROTOCOL_RDP,
+  SavedConnection, SR_BACKEND_XENGINE
+} from '../model/RdpModels';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpConnections';
@@ -185,6 +188,23 @@ export class ConnectionStore {
     // Appended after the retired/growing tail: older records simply stop before
     // it, so the positional layout of every existing field stays put.
     parts.push(ConnectionStore.encode(conn.name));
+    // Protocol and the Moonlight stream settings, appended the same way; an
+    // older record stops before this block and deserializes as plain RDP.
+    parts.push(conn.protocol.toString());
+    parts.push(ConnectionStore.encode(conn.mlDefaultAppId));
+    parts.push(ConnectionStore.encode(conn.mlDefaultAppName));
+    parts.push(conn.mlPaired ? '1' : '0');
+    parts.push(conn.mlResMode.toString());
+    parts.push(conn.mlWidth.toString());
+    parts.push(conn.mlHeight.toString());
+    parts.push(conn.mlFps.toString());
+    parts.push(conn.mlBitrateKbps.toString());
+    parts.push(conn.mlHdr ? '1' : '0');
+    parts.push(conn.mlCodec.toString());
+    parts.push(conn.mlYuv444 ? '1' : '0');
+    parts.push(conn.mlAudioConfig.toString());
+    parts.push(conn.mlGamepad ? '1' : '0');
+    parts.push(conn.useGlobalStream ? '1' : '0');
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -220,6 +240,26 @@ export class ConnectionStore {
     conn.srBackend = parts.length > 25
       ? ConnectionStore.parseNumber(parts[25], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
     conn.name = parts.length > 26 ? ConnectionStore.decode(parts[26]) : '';
+    conn.protocol = parts.length > 27
+      ? ConnectionStore.parseNumber(parts[27], PROTOCOL_RDP) : PROTOCOL_RDP;
+    conn.mlDefaultAppId = parts.length > 28 ? ConnectionStore.decode(parts[28]) : '';
+    conn.mlDefaultAppName = parts.length > 29 ? ConnectionStore.decode(parts[29]) : '';
+    conn.mlPaired = parts.length > 30 ? parts[30] === '1' : false;
+    conn.mlResMode = parts.length > 31
+      ? ConnectionStore.parseNumber(parts[31], ML_RES_FOLLOW_WINDOW) : ML_RES_FOLLOW_WINDOW;
+    conn.mlWidth = parts.length > 32 ? ConnectionStore.parseNumber(parts[32], 0) : 0;
+    conn.mlHeight = parts.length > 33 ? ConnectionStore.parseNumber(parts[33], 0) : 0;
+    conn.mlFps = parts.length > 34 ? ConnectionStore.parsePositive(parts[34], 60) : 60;
+    conn.mlBitrateKbps = parts.length > 35
+      ? ConnectionStore.parsePositive(parts[35], ML_BITRATE_DEFAULT_KBPS) : ML_BITRATE_DEFAULT_KBPS;
+    conn.mlHdr = parts.length > 36 ? parts[36] === '1' : false;
+    conn.mlCodec = parts.length > 37
+      ? ConnectionStore.parseNumber(parts[37], ML_CODEC_AUTO) : ML_CODEC_AUTO;
+    conn.mlYuv444 = parts.length > 38 ? parts[38] === '1' : false;
+    conn.mlAudioConfig = parts.length > 39
+      ? ConnectionStore.parseNumber(parts[39], ML_AUDIO_STEREO) : ML_AUDIO_STEREO;
+    conn.mlGamepad = parts.length > 40 ? parts[40] === '1' : true;
+    conn.useGlobalStream = parts.length > 41 ? parts[41] === '1' : true;
     return conn;
   }
 

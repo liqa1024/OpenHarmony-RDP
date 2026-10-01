@@ -6,7 +6,9 @@ import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  AdvancedProfile, DisplayProfile, SavedConnection, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
+  AdvancedProfile, DisplayProfile, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO,
+  ML_RES_FOLLOW_WINDOW, MoonlightProfile, PROTOCOL_RDP, SavedConnection,
+  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
 } from '../model/RdpModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -139,6 +141,43 @@ export class AppSettings {
   developerMode: boolean = false;
   // Dev-only capture of the raw GFX channel stream (doc_agent/gfx-engine.md §6).
   gfxCapture: boolean = false;
+  // Moonlight stream defaults for new connections (each connection may override
+  // them in its own editor). Auto-discovery decides whether the host field is
+  // pre-filled from an mDNS scan.
+  mlFps: number = 60;
+  mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
+  mlHdr: boolean = false;
+  mlCodec: number = ML_CODEC_AUTO;
+  mlAutoDiscover: boolean = true;
+  mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  mlWidth: number = 0;
+  mlHeight: number = 0;
+  mlYuv444: boolean = false;
+  mlAudioConfig: number = ML_AUDIO_STEREO;
+  mlGamepad: boolean = true;
+  // Protocol the next new connection starts on (the last kind the user added).
+  lastNewProtocol: number = PROTOCOL_RDP;
+  // Moonlight's own copy of the shared interaction / window / session settings.
+  // The two protocols keep separate values; only the settings UI code is shared.
+  mlToolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
+  mlToolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
+  mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
+  mlPinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  mlTouchpadMiddleDoubleTap: boolean = false;
+  mlPinchMode: number = PINCH_MODE_WHEEL;
+  mlPinchTouchAngle: number = 30;
+  mlPinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
+  mlReconnectOnForeground: boolean = false;
+  mlWinKeySubstitute: number = 0;
+  mlShortcutPassthrough: boolean = false;
+  mlMainWindowSizeEnabled: boolean = false;
+  mlMainWindowWidth: number = 0;
+  mlMainWindowHeight: number = 0;
+  mlSessionWindowSizeEnabled: boolean = false;
+  mlSessionWindowWidth: number = 0;
+  mlSessionWindowHeight: number = 0;
+  mlSessionFullscreen: boolean = false;
+  mlAutoHideMainWindow: boolean = false;
 }
 
 export class SettingsStore {
@@ -175,6 +214,12 @@ export class SettingsStore {
       settings.sessionWindowSizeEnabled = true;
       settings.sessionWindowWidth = Math.round(disp.width * SESSION_WINDOW_RATIO);
       settings.sessionWindowHeight = Math.round(disp.height * SESSION_WINDOW_RATIO);
+      settings.mlMainWindowSizeEnabled = true;
+      settings.mlMainWindowWidth = settings.mainWindowWidth;
+      settings.mlMainWindowHeight = settings.mainWindowHeight;
+      settings.mlSessionWindowSizeEnabled = true;
+      settings.mlSessionWindowWidth = settings.sessionWindowWidth;
+      settings.mlSessionWindowHeight = settings.sessionWindowHeight;
     }
     return settings;
   }
@@ -252,6 +297,59 @@ export class SettingsStore {
       settings.developerMode =
         SettingsStore.readBoolean(store, 'developerMode', settings.developerMode);
       settings.gfxCapture = SettingsStore.readBoolean(store, 'gfxCapture', settings.gfxCapture);
+      settings.mlFps = SettingsStore.readNumber(store, 'mlFps', settings.mlFps);
+      settings.mlBitrateKbps =
+        SettingsStore.readNumber(store, 'mlBitrateKbps', settings.mlBitrateKbps);
+      settings.mlHdr = SettingsStore.readBoolean(store, 'mlHdr', settings.mlHdr);
+      settings.mlCodec = SettingsStore.readNumber(store, 'mlCodec', settings.mlCodec);
+      settings.mlAutoDiscover =
+        SettingsStore.readBoolean(store, 'mlAutoDiscover', settings.mlAutoDiscover);
+      settings.mlResMode = SettingsStore.readNumber(store, 'mlResMode', settings.mlResMode);
+      settings.mlWidth = SettingsStore.readNumber(store, 'mlWidth', settings.mlWidth);
+      settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
+      settings.mlYuv444 = SettingsStore.readBoolean(store, 'mlYuv444', settings.mlYuv444);
+      settings.mlAudioConfig =
+        SettingsStore.readNumber(store, 'mlAudioConfig', settings.mlAudioConfig);
+      settings.mlGamepad = SettingsStore.readBoolean(store, 'mlGamepad', settings.mlGamepad);
+      settings.lastNewProtocol =
+        SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
+      settings.mlToolbarHoverDelay =
+        SettingsStore.readNumber(store, 'mlToolbarHoverDelay', settings.mlToolbarHoverDelay);
+      settings.mlToolbarHideDelay =
+        SettingsStore.readNumber(store, 'mlToolbarHideDelay', settings.mlToolbarHideDelay);
+      settings.mlTouchpadScrollSpeed = SettingsStore.readNumber(store, 'mlTouchpadScrollSpeed',
+        settings.mlTouchpadScrollSpeed);
+      settings.mlPinchZoomSpeed =
+        SettingsStore.readNumber(store, 'mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
+      settings.mlTouchpadMiddleDoubleTap = SettingsStore.readBoolean(store,
+        'mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
+      settings.mlPinchMode = SettingsStore.readNumber(store, 'mlPinchMode', settings.mlPinchMode);
+      settings.mlPinchTouchAngle =
+        SettingsStore.readNumber(store, 'mlPinchTouchAngle', settings.mlPinchTouchAngle);
+      settings.mlPinchTouchDistance =
+        SettingsStore.readNumber(store, 'mlPinchTouchDistance', settings.mlPinchTouchDistance);
+      settings.mlReconnectOnForeground = SettingsStore.readBoolean(store,
+        'mlReconnectOnForeground', settings.mlReconnectOnForeground);
+      settings.mlWinKeySubstitute =
+        SettingsStore.readNumber(store, 'mlWinKeySubstitute', settings.mlWinKeySubstitute);
+      settings.mlShortcutPassthrough = SettingsStore.readBoolean(store,
+        'mlShortcutPassthrough', settings.mlShortcutPassthrough);
+      settings.mlMainWindowSizeEnabled = SettingsStore.readBoolean(store,
+        'mlMainWindowSizeEnabled', settings.mlMainWindowSizeEnabled);
+      settings.mlMainWindowWidth =
+        SettingsStore.readNumber(store, 'mlMainWindowWidth', settings.mlMainWindowWidth);
+      settings.mlMainWindowHeight =
+        SettingsStore.readNumber(store, 'mlMainWindowHeight', settings.mlMainWindowHeight);
+      settings.mlSessionWindowSizeEnabled = SettingsStore.readBoolean(store,
+        'mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
+      settings.mlSessionWindowWidth =
+        SettingsStore.readNumber(store, 'mlSessionWindowWidth', settings.mlSessionWindowWidth);
+      settings.mlSessionWindowHeight =
+        SettingsStore.readNumber(store, 'mlSessionWindowHeight', settings.mlSessionWindowHeight);
+      settings.mlSessionFullscreen =
+        SettingsStore.readBoolean(store, 'mlSessionFullscreen', settings.mlSessionFullscreen);
+      settings.mlAutoHideMainWindow = SettingsStore.readBoolean(store,
+        'mlAutoHideMainWindow', settings.mlAutoHideMainWindow);
     }
     return settings;
   }
@@ -296,6 +394,37 @@ export class SettingsStore {
       store.putSync('hardwareAccel', settings.hardwareAccel);
       store.putSync('developerMode', settings.developerMode);
       store.putSync('gfxCapture', settings.gfxCapture);
+      store.putSync('mlFps', settings.mlFps);
+      store.putSync('mlBitrateKbps', settings.mlBitrateKbps);
+      store.putSync('mlHdr', settings.mlHdr);
+      store.putSync('mlCodec', settings.mlCodec);
+      store.putSync('mlAutoDiscover', settings.mlAutoDiscover);
+      store.putSync('mlResMode', settings.mlResMode);
+      store.putSync('mlWidth', settings.mlWidth);
+      store.putSync('mlHeight', settings.mlHeight);
+      store.putSync('mlYuv444', settings.mlYuv444);
+      store.putSync('mlAudioConfig', settings.mlAudioConfig);
+      store.putSync('mlGamepad', settings.mlGamepad);
+      store.putSync('lastNewProtocol', settings.lastNewProtocol);
+      store.putSync('mlToolbarHoverDelay', settings.mlToolbarHoverDelay);
+      store.putSync('mlToolbarHideDelay', settings.mlToolbarHideDelay);
+      store.putSync('mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
+      store.putSync('mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
+      store.putSync('mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
+      store.putSync('mlPinchMode', settings.mlPinchMode);
+      store.putSync('mlPinchTouchAngle', settings.mlPinchTouchAngle);
+      store.putSync('mlPinchTouchDistance', settings.mlPinchTouchDistance);
+      store.putSync('mlReconnectOnForeground', settings.mlReconnectOnForeground);
+      store.putSync('mlWinKeySubstitute', settings.mlWinKeySubstitute);
+      store.putSync('mlShortcutPassthrough', settings.mlShortcutPassthrough);
+      store.putSync('mlMainWindowSizeEnabled', settings.mlMainWindowSizeEnabled);
+      store.putSync('mlMainWindowWidth', settings.mlMainWindowWidth);
+      store.putSync('mlMainWindowHeight', settings.mlMainWindowHeight);
+      store.putSync('mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
+      store.putSync('mlSessionWindowWidth', settings.mlSessionWindowWidth);
+      store.putSync('mlSessionWindowHeight', settings.mlSessionWindowHeight);
+      store.putSync('mlSessionFullscreen', settings.mlSessionFullscreen);
+      store.putSync('mlAutoHideMainWindow', settings.mlAutoHideMainWindow);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));
@@ -527,6 +656,58 @@ export class SettingsStore {
     profile.enableAudio = conn.enableAudio;
     profile.ignoreCertificate = conn.ignoreCertificate;
     return profile;
+  }
+
+  /** Global Moonlight stream defaults shared by new connections. */
+  static globalStreamProfile(): MoonlightProfile {
+    const settings: AppSettings = SettingsStore.load();
+    const profile: MoonlightProfile = new MoonlightProfile();
+    profile.resMode = settings.mlResMode;
+    profile.width = settings.mlWidth;
+    profile.height = settings.mlHeight;
+    profile.fps = settings.mlFps;
+    profile.bitrateKbps = settings.mlBitrateKbps;
+    profile.hdr = settings.mlHdr;
+    profile.codec = settings.mlCodec;
+    profile.yuv444 = settings.mlYuv444;
+    profile.audioConfig = settings.mlAudioConfig;
+    profile.gamepad = settings.mlGamepad;
+    return profile;
+  }
+
+  /**
+   * Effective Moonlight stream profile for a connection: the global defaults
+   * unless the connection opted into its own overrides (same pattern as
+   * `resolveDisplay` / `resolveAdvanced`).
+   */
+  static resolveStream(conn: SavedConnection): MoonlightProfile {
+    if (conn.useGlobalStream) {
+      return SettingsStore.globalStreamProfile();
+    }
+    const profile: MoonlightProfile = new MoonlightProfile();
+    profile.resMode = conn.mlResMode;
+    profile.width = conn.mlWidth;
+    profile.height = conn.mlHeight;
+    profile.fps = conn.mlFps;
+    profile.bitrateKbps = conn.mlBitrateKbps;
+    profile.hdr = conn.mlHdr;
+    profile.codec = conn.mlCodec;
+    profile.yuv444 = conn.mlYuv444;
+    profile.audioConfig = conn.mlAudioConfig;
+    profile.gamepad = conn.mlGamepad;
+    return profile;
+  }
+
+  /** Protocol a new connection should start on (the last one the user added). */
+  static lastNewProtocol(): number {
+    return SettingsStore.load().lastNewProtocol;
+  }
+
+  /** Remembers the protocol of the connection just added. */
+  static rememberNewProtocol(protocol: number): void {
+    const settings: AppSettings = SettingsStore.load();
+    settings.lastNewProtocol = protocol;
+    SettingsStore.save(settings);
   }
 
   private static advancedFor(settings: AppSettings): AdvancedProfile {

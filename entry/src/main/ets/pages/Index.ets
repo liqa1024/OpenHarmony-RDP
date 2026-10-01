@@ -157,6 +157,12 @@ struct Index {
   }
 
   private async startConnection(conn: SavedConnection): Promise<void> {
+    if (conn.isMoonlight()) {
+      // Moonlight's native client and its pairing / app-picker windows land in a
+      // later phase; until then the row must not fall through to the RDP path.
+      this.showToast('Moonlight 连接将在后续版本接入');
+      return;
+    }
     const options: RdpConnectOptions = conn.toOptions();
     const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
     options.width = profile.width;
@@ -181,13 +187,34 @@ struct Index {
     }
   }
 
-  private openEditor(id: string): void {
-    const params: EditConnectionParams = { id: id };
+  private openEditor(id: string, protocol: number): void {
+    const params: EditConnectionParams = { id: id, protocol: protocol };
     this.getUIContext().getRouter()
       .pushUrl({ url: 'pages/EditConnectionPage', params: params })
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'open editor failed: %{public}s', JSON.stringify(error));
       });
+  }
+
+  /**
+   * Opens the editor for a new connection. The protocol is picked inside the
+   * editor itself, so this just defaults to the last one the user added.
+   */
+  private openNewConnection(): void {
+    this.openEditor('', SettingsStore.lastNewProtocol());
+  }
+
+  private showToast(message: string): void {
+    this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
+  }
+
+  /** Moonlight: open the host's application list. Wired up in a later phase. */
+  private openAppPicker(conn: SavedConnection): void {
+    if (this.connState(conn.id) === ConnectionState.Connecting
+      || this.connState(conn.id) === ConnectionState.Connected) {
+      return;
+    }
+    this.showToast('应用选择将在后续版本提供');
   }
 
   private openSettings(): void {
@@ -214,11 +241,27 @@ struct Index {
    * hides it. Empty when there is neither, so the row shows nothing extra.
    */
   private connectionSubtitle(conn: SavedConnection): string {
+    const target: string = `${conn.host}:${conn.port}`;
+    if (conn.isMoonlight()) {
+      // Moonlight has no account; the second line shows the app the connect
+      // button opens (the host desktop when none is chosen).
+      const appName: string = conn.mlDefaultAppName.length > 0 ? conn.mlDefaultAppName : '桌面';
+      return conn.name.length > 0 ? `${target} · ${appName}` : appName;
+    }
     if (conn.name.length === 0) {
       return conn.username;
     }
-    const target: string = `${conn.host}:${conn.port}`;
     return conn.username.length > 0 ? `${target} · ${conn.username}` : target;
+  }
+
+  /**
+   * Protocol badge icon shown on the row's leading tile: the original remote
+   * desktop (screen + signal) for RDP, the purple screen + crescent for
+   * Moonlight.
+   */
+  private protocolIcon(conn: SavedConnection): Resource {
+    return conn.isMoonlight() ? $r('app.media.ic_proto_moonlight')
+                              : $r('app.media.ic_remote_desktop');
   }
 
   private confirmDelete(conn: SavedConnection): void {
@@ -248,9 +291,17 @@ struct Index {
         .onClick(() => {
           this.connect(conn);
         })
+      if (conn.isMoonlight()) {
+        MenuItem({ content: '选择应用' })
+          .enabled(this.connState(conn.id) !== ConnectionState.Connecting
+            && this.connState(conn.id) !== ConnectionState.Connected)
+          .onClick(() => {
+            this.openAppPicker(conn);
+          })
+      }
       MenuItem({ content: '编辑' })
         .onClick(() => {
-          this.openEditor(conn.id);
+          this.openEditor(conn.id, conn.protocol);
         })
       MenuItem({ content: '删除' })
         .contentFontColor($r('app.color.danger'))
@@ -264,7 +315,7 @@ struct Index {
   connectionRow(conn: SavedConnection) {
     Row() {
       Row() {
-        Image($r('app.media.ic_remote_desktop'))
+        Image(this.protocolIcon(conn))
           .width(40)
           .height(40)
           .borderRadius(10)
@@ -298,8 +349,33 @@ struct Index {
       .layoutWeight(1)
       .bindTips('编辑连接', this.tipsOptions)
       .onClick(() => {
-        this.openEditor(conn.id);
+        this.openEditor(conn.id, conn.protocol);
       })
+
+      // Moonlight opens a host's default app from the round button and any
+      // other app from this one; RDP rows only have the round button.
+      if (conn.isMoonlight()) {
+        Row() {
+          Image($r('app.media.ic_apps'))
+            .width(20)
+            .height(20)
+            .draggable(false)
+        }
+        .width(36)
+        .height(36)
+        .borderRadius(18)
+        .backgroundColor($r('app.color.hover_bg'))
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .margin({ left: 8 })
+        .opacity(this.connState(conn.id) === ConnectionState.Connecting
+          || this.connState(conn.id) === ConnectionState.Connected ? 0.4 : 1.0)
+        .hoverEffect(HoverEffect.Scale)
+        .bindTips('选择应用', this.tipsOptions)
+        .onClick(() => {
+          this.openAppPicker(conn);
+        })
+      }
 
       Row() {
         if (this.connState(conn.id) === ConnectionState.Connecting) {
@@ -447,7 +523,7 @@ struct Index {
             .borderRadius(12)
             .margin({ top: 22 })
             .onClick(() => {
-              this.openEditor('');
+              this.openNewConnection();
             })
         }
         .layoutWeight(1)
@@ -519,7 +595,7 @@ struct Index {
       })
       .bindTips('新建连接', this.tipsOptions)
       .onClick(() => {
-        this.openEditor('');
+        this.openNewConnection();
       })
     }
     .width('100%')

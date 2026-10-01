@@ -5,19 +5,25 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnection,
-  RdpConnectOptions, RdpConnectOrigin, SavedConnection, SR_BACKEND_FSR, SR_BACKEND_XENGINE,
+import { AdvancedProfile, DisplayProfile, EditConnectionParams,
+  ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
+  ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
+  ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_RES_FOLLOW_WINDOW,
+  MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnectOptions,
+  RdpConnectOrigin, SavedConnection, SR_BACKEND_FSR, SR_BACKEND_XENGINE,
   SrProfile } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore, srRatioLabel } from '../services/SettingsStore';
+import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
+  srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { TextAction } from '../components/TextAction';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
+const RDP_DEFAULT_PORT: number = 3389;
 
 @Entry
 @Component
@@ -51,6 +57,26 @@ struct EditConnectionPage {
   @State srRatioPercent: number = SR_RATIO_PRESETS[0];
   @State srBackend: number = SR_BACKEND_XENGINE;
   @State srUsable: boolean = false;
+  // Protocol this editor is for. An existing connection keeps its own protocol
+  // (the segment is shown locked); a new one starts on what the caller passed.
+  @State protocol: number = PROTOCOL_RDP;
+  // --- Moonlight (Sunshine) stream settings. ---
+  @State mlPaired: boolean = false;
+  @State mlDefaultAppId: string = '';
+  @State mlDefaultAppName: string = '';
+  @State mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  @State mlWidthText: string = '1920';
+  @State mlHeightText: string = '1080';
+  @State mlFps: number = 60;
+  @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
+  @State mlHdr: boolean = false;
+  @State mlCodec: number = ML_CODEC_AUTO;
+  @State mlYuv444: boolean = false;
+  @State mlAudioConfig: number = ML_AUDIO_STEREO;
+  @State mlGamepad: boolean = true;
+  // Moonlight: follow the global stream defaults unless overridden here (same
+  // pattern as the RDP display / 超分 / advanced groups).
+  @State useGlobalStream: boolean = true;
   @State errorMessage: string = '';
   @State editing: boolean = false;
   @State detectedText: string = '';
@@ -95,6 +121,13 @@ struct EditConnectionPage {
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
     this.scaleText = this.suggestedScale().toString();
+    // Moonlight stream defaults for a new connection, straight from the global
+    // settings; an existing connection overrides them below.
+    const mlDefaults: AppSettings = SettingsStore.load();
+    this.mlFps = mlDefaults.mlFps;
+    this.mlBitrateText = mlDefaults.mlBitrateKbps.toString();
+    this.mlHdr = mlDefaults.mlHdr;
+    this.mlCodec = mlDefaults.mlCodec;
 
     const params: EditConnectionParams =
       this.getUIContext().getRouter().getParams() as EditConnectionParams;
@@ -102,10 +135,15 @@ struct EditConnectionPage {
     this.connectionId = id;
     this.editing = id.length > 0;
     if (!this.editing) {
+      this.protocol = params?.protocol ?? PROTOCOL_RDP;
+      if (this.protocol === PROTOCOL_MOONLIGHT) {
+        this.port = ML_DEFAULT_PORT.toString();
+      }
       return;
     }
     const conn: SavedConnection | undefined = ConnectionStore.get(id);
     if (conn !== undefined) {
+      this.protocol = conn.protocol;
       this.name = conn.name;
       this.host = conn.host;
       this.port = conn.port.toString();
@@ -126,6 +164,22 @@ struct EditConnectionPage {
       this.srEnabled = conn.srEnabled;
       this.srRatioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
       this.srBackend = conn.srBackend;
+      this.mlPaired = conn.mlPaired;
+      this.mlDefaultAppId = conn.mlDefaultAppId;
+      this.mlDefaultAppName = conn.mlDefaultAppName;
+      this.mlResMode = conn.mlResMode;
+      if (conn.mlWidth > 0 && conn.mlHeight > 0) {
+        this.mlWidthText = conn.mlWidth.toString();
+        this.mlHeightText = conn.mlHeight.toString();
+      }
+      this.mlFps = conn.mlFps;
+      this.mlBitrateText = conn.mlBitrateKbps.toString();
+      this.mlHdr = conn.mlHdr;
+      this.mlCodec = conn.mlCodec;
+      this.mlYuv444 = conn.mlYuv444;
+      this.mlAudioConfig = conn.mlAudioConfig;
+      this.mlGamepad = conn.mlGamepad;
+      this.useGlobalStream = conn.useGlobalStream;
     }
     CredentialStore.loadPassword(id)
       .then((password: string) => {
@@ -180,6 +234,41 @@ struct EditConnectionPage {
     return value ? '开' : '关';
   }
 
+  private isMoonlight(): boolean {
+    return this.protocol === PROTOCOL_MOONLIGHT;
+  }
+
+  private parseMoonlightPort(): number {
+    const value: number = Number.parseInt(this.port, 10);
+    return Number.isNaN(value) || value <= 0 ? ML_DEFAULT_PORT : value;
+  }
+
+  private parsedBitrate(): number {
+    const value: number = Number.parseInt(this.mlBitrateText, 10);
+    return Number.isNaN(value) ? ML_BITRATE_DEFAULT_KBPS : value;
+  }
+
+  private effectiveBitrate(): number {
+    return Math.min(Math.max(this.parsedBitrate(), ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
+  }
+
+  private defaultAppText(): string {
+    return this.mlDefaultAppName.length > 0 ? this.mlDefaultAppName : '桌面';
+  }
+
+  private showToast(message: string): void {
+    this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
+  }
+
+  /** Moonlight: pick the default app from the paired host. Added in a later phase. */
+  private chooseDefaultApp(): void {
+    if (!this.mlPaired) {
+      this.showToast('请先完成配对');
+      return;
+    }
+    this.showToast('应用列表将在后续版本提供');
+  }
+
   private srSummary(profile: SrProfile): string {
     return profile.enabled ? `${this.onOff(true)} ${srRatioLabel(profile.ratioPercent)}` : '关';
   }
@@ -187,6 +276,20 @@ struct EditConnectionPage {
   private advancedSummary(profile: AdvancedProfile): string {
     return `音频${this.onOff(profile.enableAudio)}`
       + ` · 忽略证书${this.onOff(profile.ignoreCertificate)}`;
+  }
+
+  private resModeLabel(mode: number): string {
+    if (mode === ML_RES_FIXED) {
+      return '固定';
+    }
+    return mode === ML_RES_FOLLOW_SCREEN ? '跟随屏幕' : '跟随窗口';
+  }
+
+  private streamSummary(profile: MoonlightProfile): string {
+    const res: string = profile.resMode === ML_RES_FIXED
+      ? `${profile.width}×${profile.height}` : this.resModeLabel(profile.resMode);
+    return `${res} · ${profile.fps}fps · ${profile.bitrateKbps}kbps`
+      + (profile.hdr ? ' · HDR' : '');
   }
 
   /**
@@ -294,6 +397,10 @@ struct EditConnectionPage {
   }
 
   private submit(connect: boolean): void {
+    if (this.isMoonlight()) {
+      this.submitMoonlight(connect);
+      return;
+    }
     const options: RdpConnectOptions | undefined = this.buildOptions(false);
     if (options === undefined) {
       return;
@@ -340,9 +447,57 @@ struct EditConnectionPage {
     // preserved so the user can correct it; on success onConnected returns.
   }
 
+  /**
+   * Persists a Moonlight connection. Moonlight has no credentials to verify, so
+   * the connect button simply saves and, for now, says the stream client is not
+   * wired up yet (that arrives in a later phase).
+   */
+  private submitMoonlight(connect: boolean): void {
+    const target: string = this.host.trim();
+    if (target.length === 0) {
+      this.errorMessage = '请输入主机名或 IP 地址';
+      return;
+    }
+    this.errorMessage = '';
+    const id: string = this.connectionId.length > 0
+      ? this.connectionId : util.generateRandomUUID(true);
+    const conn: SavedConnection = new SavedConnection();
+    conn.id = id;
+    conn.protocol = PROTOCOL_MOONLIGHT;
+    conn.host = target;
+    conn.port = this.parseMoonlightPort();
+    conn.name = this.name.trim();
+    conn.mlPaired = this.mlPaired;
+    conn.mlDefaultAppId = this.mlDefaultAppId;
+    conn.mlDefaultAppName = this.mlDefaultAppName;
+    conn.mlResMode = this.mlResMode;
+    conn.mlWidth = this.mlResMode === ML_RES_FIXED
+      ? this.parseSize(this.mlWidthText, 1920) : 0;
+    conn.mlHeight = this.mlResMode === ML_RES_FIXED
+      ? this.parseSize(this.mlHeightText, 1080) : 0;
+    conn.mlFps = this.mlFps;
+    conn.mlBitrateKbps = this.effectiveBitrate();
+    conn.mlHdr = this.mlHdr;
+    conn.mlCodec = this.mlCodec;
+    conn.mlYuv444 = this.mlYuv444;
+    conn.mlAudioConfig = this.mlAudioConfig;
+    conn.mlGamepad = this.mlGamepad;
+    conn.useGlobalStream = this.useGlobalStream;
+    conn.updatedAt = Date.now();
+    if (!this.persist(conn)) {
+      return;
+    }
+    if (connect) {
+      this.showToast('Moonlight 连接将在后续版本接入');
+    }
+    this.returnToList();
+  }
+
   private persist(conn: SavedConnection): boolean {
     try {
       ConnectionStore.save(conn);
+      // Remember the protocol so the next new connection starts on this kind.
+      SettingsStore.rememberNewProtocol(conn.protocol);
       return true;
     } catch (error) {
       this.errorMessage = '保存失败，请重试';
@@ -466,6 +621,356 @@ struct EditConnectionPage {
       })
   }
 
+  /** RDP / Moonlight tab in the header; locked (dimmed) while editing. */
+  @Builder
+  protocolSegment() {
+    Row() {
+      this.protocolTab(PROTOCOL_RDP, 'RDP')
+      this.protocolTab(PROTOCOL_MOONLIGHT, 'Moonlight')
+    }
+  }
+
+  @Builder
+  protocolTab(protocol: number, label: string) {
+    Column() {
+      Text(label)
+        .fontSize(14)
+        .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.protocol === protocol
+          ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
+      Divider()
+        .strokeWidth(2)
+        .width(36)
+        .color(this.protocol === protocol ? $r('app.color.accent') : Color.Transparent)
+        .margin({ top: 5 })
+    }
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 12, right: 12, top: 4 })
+    .opacity(this.editing && this.protocol !== protocol ? 0.4 : 1.0)
+    .onClick(() => {
+      if (this.editing || this.protocol === protocol) {
+        return;
+      }
+      // Move the port with the protocol, unless the user already typed one.
+      const untouched: boolean = this.port.length === 0
+        || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
+      this.protocol = protocol;
+      if (untouched) {
+        this.port = (protocol === PROTOCOL_MOONLIGHT
+          ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
+      }
+    })
+  }
+
+  @Builder
+  mlResModeChip(mode: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlResMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlResMode === mode
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlResMode = mode;
+      })
+  }
+
+  @Builder
+  mlFpsChip(preset: number) {
+    Text(preset.toString())
+      .fontSize(13)
+      .fontColor(this.mlFps === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlFps === preset
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlFps = preset;
+      })
+  }
+
+  @Builder
+  mlCodecChip(codec: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlCodec === codec ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlCodec === codec
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlCodec = codec;
+      })
+  }
+
+  @Builder
+  mlAudioChip(config: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlAudioConfig === config ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlAudioConfig === config
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlAudioConfig = config;
+      })
+  }
+
+  @Builder
+  moonlightForm() {
+    Column() {
+      this.fieldLabel('名称（可选）')
+      TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
+        .width('100%')
+        .height(46)
+        .borderRadius(10)
+        .backgroundColor($r('app.color.input_bg'))
+        .margin({ bottom: 16 })
+        .onChange((value: string) => {
+          this.name = value;
+        })
+
+      Row() {
+        Column() {
+          this.fieldLabel('主机名或 IP 地址')
+          TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
+            .width('100%')
+            .height(46)
+            .borderRadius(10)
+            .backgroundColor($r('app.color.input_bg'))
+            .onChange((value: string) => {
+              this.host = value;
+            })
+        }
+        .layoutWeight(3)
+        .alignItems(HorizontalAlign.Start)
+
+        Column() {
+          this.fieldLabel('端口')
+          TextInput({ placeholder: '47989', text: this.port })
+            .width('100%')
+            .height(46)
+            .borderRadius(10)
+            .backgroundColor($r('app.color.input_bg'))
+            .type(InputType.Number)
+            .onChange((value: string) => {
+              this.port = value;
+            })
+        }
+        .layoutWeight(2)
+        .margin({ left: 16 })
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .margin({ bottom: 16 })
+
+      Row() {
+        Column() {
+          Text('默认应用').fontSize(14).fontColor($r('app.color.text_primary'))
+          Text(this.mlPaired
+            ? ('连接时打开：' + this.defaultAppText())
+            : '配对后可选择；未选择时打开主机的「桌面」')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        TextAction({
+          label: '选择',
+          muted: !this.mlPaired,
+          onTap: () => {
+            this.chooseDefaultApp();
+          }
+        })
+      }
+      .width('100%')
+      .padding({ top: 4, bottom: 16 })
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /** Moonlight's advanced overrides, shown below the action buttons like RDP's. */
+  @Builder
+  moonlightAdvanced() {
+    Column() {
+      Divider()
+        .color($r('app.color.divider'))
+        .margin({ top: 20, bottom: 8 })
+
+      Row() {
+        Column() {
+          Text('高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
+          Text('默认跟随全局设置，展开后可单独覆盖')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Row() {
+          if (!this.useGlobalStream) {
+            Text('已自定义')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .margin({ right: 8 })
+          }
+          Text(this.advancedExpanded ? '收起' : '展开')
+            .fontSize(13)
+            .fontColor($r('app.color.accent'))
+        }
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .padding({ top: 8, bottom: 8 })
+      .borderRadius(8)
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.advancedExpanded = !this.advancedExpanded;
+      })
+
+      if (this.advancedExpanded) {
+        Column() {
+          Row() {
+            Column() {
+              Text('使用会话独立串流设置').fontSize(14).fontColor($r('app.color.text_primary'))
+              Text('分辨率、帧率、码率等使用本连接的独立配置，关闭则跟随全局设置')
+                .fontSize(11)
+                .fontColor($r('app.color.text_tertiary'))
+                .margin({ top: 2 })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+
+            Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalStream })
+              .selectedColor($r('app.color.accent'))
+              .onChange((isOn: boolean) => {
+                this.useGlobalStream = !isOn;
+              })
+          }
+          .width('100%')
+          .height(58)
+
+          if (this.useGlobalStream) {
+            Text('全局：' + this.streamSummary(SettingsStore.globalStreamProfile()))
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+          } else {
+            Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 4 })
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.mlResModeChip(ML_RES_FOLLOW_WINDOW, '跟随窗口')
+              this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
+              this.mlResModeChip(ML_RES_FIXED, '固定')
+            }
+            .width('100%').margin({ top: 8 })
+
+            if (this.mlResMode === ML_RES_FIXED) {
+              Row() {
+                Column() {
+                  this.fieldLabel('宽度')
+                  TextInput({ placeholder: '1920', text: this.mlWidthText })
+                    .width('100%').height(46).borderRadius(10)
+                    .backgroundColor($r('app.color.input_bg'))
+                    .type(InputType.Number)
+                    .onChange((value: string) => {
+                      this.mlWidthText = value;
+                    })
+                }
+                .layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+                Column() {
+                  this.fieldLabel('高度')
+                  TextInput({ placeholder: '1080', text: this.mlHeightText })
+                    .width('100%').height(46).borderRadius(10)
+                    .backgroundColor($r('app.color.input_bg'))
+                    .type(InputType.Number)
+                    .onChange((value: string) => {
+                      this.mlHeightText = value;
+                    })
+                }
+                .layoutWeight(1).margin({ left: 16 }).alignItems(HorizontalAlign.Start)
+              }
+              .width('100%').margin({ bottom: 8 })
+            }
+
+            Text('帧率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
+            Flex({ wrap: FlexWrap.Wrap }) {
+              ForEach(ML_FPS_PRESETS, (preset: number) => {
+                this.mlFpsChip(preset)
+              }, (preset: number) => preset.toString())
+            }
+            .width('100%').margin({ top: 8 })
+
+            Column() {
+              this.fieldLabel('码率 (kbps)')
+              TextInput({ placeholder: '20000', text: this.mlBitrateText })
+                .width('100%').height(46).borderRadius(10)
+                .backgroundColor($r('app.color.input_bg'))
+                .type(InputType.Number)
+                .onChange((value: string) => {
+                  this.mlBitrateText = value;
+                })
+              Text('建议 ' + ML_BITRATE_MIN_KBPS + ' – ' + ML_BITRATE_MAX_KBPS + ' kbps')
+                .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 4 })
+            }
+            .width('100%').alignItems(HorizontalAlign.Start).margin({ top: 4 })
+
+            this.optionRow('HDR', '主机与显示器都支持时输出 HDR', this.mlHdr,
+              (v: boolean) => {
+                this.mlHdr = v;
+              }, true, '')
+
+            Text('编码器').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.mlCodecChip(ML_CODEC_AUTO, '自动')
+              this.mlCodecChip(ML_CODEC_H264, 'H.264')
+              this.mlCodecChip(ML_CODEC_HEVC, 'HEVC')
+              this.mlCodecChip(ML_CODEC_AV1, 'AV1')
+            }
+            .width('100%').margin({ top: 8 })
+
+            this.optionRow('YUV 4:4:4', '色度不抽样，文字与彩色边缘更清晰，但更占带宽',
+              this.mlYuv444, (v: boolean) => {
+                this.mlYuv444 = v;
+              }, true, '')
+
+            Text('音频通道').fontSize(14).fontColor($r('app.color.text_primary'))
+              .margin({ top: 8 })
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.mlAudioChip(ML_AUDIO_STEREO, '立体声')
+              this.mlAudioChip(ML_AUDIO_51, '5.1')
+              this.mlAudioChip(ML_AUDIO_71, '7.1')
+            }
+            .width('100%').margin({ top: 8 })
+
+            this.optionRow('手柄输入', '把连接的手柄转发给主机', this.mlGamepad,
+              (v: boolean) => {
+                this.mlGamepad = v;
+              }, true, '')
+          }
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
   @Builder
   optionRow(title: string, subtitle: string, value: boolean,
     onToggle: (v: boolean) => void, enabled: boolean, disabledReason: string) {
@@ -504,36 +1009,35 @@ struct EditConnectionPage {
 
   build() {
     Column() {
+      Row() {
+        TextAction({
+          label: '取消',
+          onTap: () => {
+            this.cancelConnect();
+            this.returnToList();
+          }
+        })
+        Text(this.editing ? '编辑连接' : '新增连接')
+          .fontSize(17)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .margin({ left: 16 })
+        Blank()
+        Row() {
+          this.protocolSegment()
+        }
+      }
+      .width('100%')
+      .padding({ left: 24, right: 24, top: 10, bottom: 8 })
+
+      Divider().color($r('app.color.divider'))
+
       Scroll() {
         Column() {
           Column() {
-            Row() {
-              TextAction({
-                label: '取消',
-                onTap: () => {
-                  this.cancelConnect();
-                  this.returnToList();
-                }
-              })
-              Text(this.editing ? '编辑连接' : '新增连接')
-                .fontSize(17)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
-                .layoutWeight(1)
-                .textAlign(TextAlign.Center)
-              TextAction({
-                label: '保存',
-                onTap: () => {
-                  this.handleSave();
-                }
-              })
-            }
-            .width('100%')
-
-            Divider()
-              .color($r('app.color.divider'))
-              .margin({ top: 12, bottom: 20 })
-
+            if (this.isMoonlight()) {
+              this.moonlightForm()
+            } else {
             this.fieldLabel('名称（可选）')
             TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
               .width('100%')
@@ -630,6 +1134,7 @@ struct EditConnectionPage {
             }
             .width('100%')
             .margin({ bottom: 16 })
+            }
 
             if (this.errorMessage.length > 0) {
               Text(this.errorMessage)
@@ -652,69 +1157,57 @@ struct EditConnectionPage {
                   .onClick(() => {
                     this.deleteCurrent();
                   })
-                Button() {
-                  Row() {
-                    if (this.connecting) {
-                      LoadingProgress()
-                        .width(18)
-                        .height(18)
-                        .color('#FFFFFF')
-                    }
-                    Text(this.connecting ? '取消' : '连接')
-                      .fontSize(16)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor('#FFFFFF')
-                      .margin({ left: this.connecting ? 8 : 0 })
-                  }
-                  .justifyContent(FlexAlign.Center)
-                  .alignItems(VerticalAlign.Center)
-                }
-                .layoutWeight(2)
-                .height(48)
-                .backgroundColor($r('app.color.accent'))
-                .borderRadius(12)
-                .margin({ left: 12 })
-                .onClick(() => {
-                  if (this.connecting) {
-                    this.cancelConnect();
-                  } else {
-                    this.submit(true);
-                  }
-                })
-              } else {
-                Button() {
-                  Row() {
-                    if (this.connecting) {
-                      LoadingProgress()
-                        .width(18)
-                        .height(18)
-                        .color('#FFFFFF')
-                    }
-                    Text(this.connecting ? '取消' : '连接')
-                      .fontSize(16)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor('#FFFFFF')
-                      .margin({ left: this.connecting ? 8 : 0 })
-                  }
-                  .justifyContent(FlexAlign.Center)
-                  .alignItems(VerticalAlign.Center)
-                }
-                .width('100%')
-                .height(48)
-                .backgroundColor($r('app.color.accent'))
-                .borderRadius(12)
-                .onClick(() => {
-                  if (this.connecting) {
-                    this.cancelConnect();
-                  } else {
-                    this.submit(true);
-                  }
-                })
               }
+
+              Button('保存')
+                .layoutWeight(1)
+                .height(48)
+                .fontSize(16)
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(12)
+                .margin({ left: this.editing ? 12 : 0 })
+                .enabled(!this.connecting)
+                .onClick(() => {
+                  this.handleSave();
+                })
+
+              Button() {
+                Row() {
+                  if (this.connecting) {
+                    LoadingProgress()
+                      .width(18)
+                      .height(18)
+                      .color('#FFFFFF')
+                  }
+                  Text(this.connecting ? '取消' : '连接')
+                    .fontSize(16)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor('#FFFFFF')
+                    .margin({ left: this.connecting ? 8 : 0 })
+                }
+                .justifyContent(FlexAlign.Center)
+                .alignItems(VerticalAlign.Center)
+              }
+              .layoutWeight(1)
+              .height(48)
+              .backgroundColor($r('app.color.accent'))
+              .borderRadius(12)
+              .margin({ left: 12 })
+              .onClick(() => {
+                if (this.connecting) {
+                  this.cancelConnect();
+                } else {
+                  this.submit(true);
+                }
+              })
             }
             .width('100%')
             .margin({ top: 20 })
 
+            if (this.isMoonlight()) {
+              this.moonlightAdvanced()
+            } else {
             Divider()
               .color($r('app.color.divider'))
               .margin({ top: 20, bottom: 8 })
@@ -963,6 +1456,7 @@ struct EditConnectionPage {
               }
               .width('100%')
               .alignItems(HorizontalAlign.Start)
+            }
             }
           }
           .width('100%')

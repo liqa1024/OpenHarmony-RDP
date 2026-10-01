@@ -3,7 +3,10 @@
  */
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
-import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
+import { DisplayProfile, ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS,
+  ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
+  ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_RES_FOLLOW_WINDOW,
+  PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
@@ -94,6 +97,21 @@ struct SettingsPage {
   @State developerMode: boolean = false;
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State gfxCapture: boolean = false;
+  // Active protocol tab. The shared (touchpad / keyboard / window / session)
+  // section is rendered once but backed by that protocol's own stored values.
+  @State protocol: number = PROTOCOL_RDP;
+  // Moonlight stream defaults; each connection can still override them.
+  @State mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  @State mlWidthText: string = '';
+  @State mlHeightText: string = '';
+  @State mlFps: number = 60;
+  @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
+  @State mlHdr: boolean = false;
+  @State mlCodec: number = ML_CODEC_AUTO;
+  @State mlYuv444: boolean = false;
+  @State mlAudioConfig: number = ML_AUDIO_STEREO;
+  @State mlGamepad: boolean = true;
+  @State mlAutoDiscover: boolean = true;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -139,60 +157,65 @@ struct SettingsPage {
     const srCapability: Capability = DeviceCapabilities.superResolution();
     this.srSupported = srCapability.supported;
     this.srReason = srCapability.reason;
-    this.hoverDelay = settings.toolbarHoverDelay;
-    this.hideDelay = settings.toolbarHideDelay;
-    this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
-    this.pinchZoomSpeed = settings.pinchZoomSpeed;
-    this.pinchMode = settings.pinchMode;
-    this.touchpadMiddleDoubleTap = settings.touchpadMiddleDoubleTap;
-    this.pinchTouchAngle = settings.pinchTouchAngle;
-    this.pinchTouchDistance = settings.pinchTouchDistance;
-    this.touchHighRate = settings.touchHighRate;
-    this.useRdpCursor = settings.useRdpCursor;
-    this.reconnectOnForeground = settings.reconnectOnForeground;
-    RdpNative.applyRdpCursor(this.useRdpCursor);
-    this.winKeySubstitute = settings.winKeySubstitute;
-    this.shortcutPassthrough = settings.shortcutPassthrough;
-    this.resolutionAuto = settings.resolutionAuto;
-    this.manualWidthText = this.sizeText(settings.manualWidth);
-    this.manualHeightText = this.sizeText(settings.manualHeight);
-    this.scaleAuto = settings.scaleAuto;
-    this.mainSizeEnabled = settings.mainWindowSizeEnabled;
-    this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
-    this.sessionFullscreen = settings.sessionFullscreen;
-    this.autoHideMainWindow = settings.autoHideMainWindow;
-    // An unsupported device never requests audio; drop a previously stored
-    // "on" value so the setting matches the greyed-out switch.
-    this.enableAudio = this.audioSupported ? settings.enableAudio : false;
-    // An unsupported device cannot present through Vulkan; force the value off so
-    // the setting matches the greyed-out switch.
-    this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
-    // 超分 rides on the Vulkan presenter, so it is only offered where both the
-    // device and the 硬件加速 setting allow it; a stored "on" value that no longer
-    // can apply is dropped, exactly like the audio / hardware-acceleration rows.
-    this.srEnabled = (this.hardwareAccelSupported && this.srSupported) ? settings.srEnabled : false;
-    this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
-    this.srBackend = settings.srBackend;
-    this.manualScaleText = settings.manualScalePercent > 0
-      ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
-    this.ignoreCertificate = settings.ignoreCertificate;
+
+    if (this.protocol === PROTOCOL_RDP) {
+      this.touchHighRate = settings.touchHighRate;
+      this.useRdpCursor = settings.useRdpCursor;
+      RdpNative.applyRdpCursor(this.useRdpCursor);
+      this.resolutionAuto = settings.resolutionAuto;
+      this.manualWidthText = this.sizeText(settings.manualWidth);
+      this.manualHeightText = this.sizeText(settings.manualHeight);
+      this.scaleAuto = settings.scaleAuto;
+      // An unsupported device never requests audio; drop a previously stored
+      // "on" value so the setting matches the greyed-out switch.
+      this.enableAudio = this.audioSupported ? settings.enableAudio : false;
+      // An unsupported device cannot present through Vulkan; force the value off so
+      // the setting matches the greyed-out switch.
+      this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
+      // 超分 rides on the Vulkan presenter, so it is only offered where both the
+      // device and the 硬件加速 setting allow it; a stored "on" value that no longer
+      // can apply is dropped, exactly like the audio / hardware-acceleration rows.
+      this.srEnabled = (this.hardwareAccelSupported && this.srSupported)
+        ? settings.srEnabled : false;
+      this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+      this.srBackend = settings.srBackend;
+      this.manualScaleText = settings.manualScalePercent > 0
+        ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
+      this.ignoreCertificate = settings.ignoreCertificate;
+      RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
+    } else {
+      this.mlResMode = settings.mlResMode;
+      this.mlWidthText = this.sizeText(settings.mlWidth > 0 ? settings.mlWidth : this.detectedWidth);
+      this.mlHeightText = this.sizeText(settings.mlHeight > 0
+        ? settings.mlHeight : this.detectedHeight);
+      this.mlFps = settings.mlFps;
+      this.mlBitrateText = settings.mlBitrateKbps.toString();
+      this.mlHdr = settings.mlHdr;
+      this.mlCodec = settings.mlCodec;
+      this.mlYuv444 = settings.mlYuv444;
+      this.mlAudioConfig = settings.mlAudioConfig;
+      this.mlGamepad = settings.mlGamepad;
+      this.mlAutoDiscover = settings.mlAutoDiscover;
+    }
+
+    // Shared interaction / window settings: the active protocol's own values.
+    this.applyCommon(settings, this.protocol === PROTOCOL_RDP);
+
     this.developerMode = settings.developerMode;
     // With developer options off, the dev-only tools are not shown and must not
     // keep running: a capture left on from a previous session is switched off.
     this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
-    RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
-    this.mainWidthText = this.sizeText(settings.mainWindowWidth);
-    this.mainHeightText = this.sizeText(settings.mainWindowHeight);
-    this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
-    this.sessionHeightText = this.sizeText(settings.sessionWindowHeight);
-    if (!this.audioSupported && settings.enableAudio) {
-      this.persist();
-    }
-    if (!this.hardwareAccelSupported && settings.hardwareAccel) {
-      this.persist();
-    }
-    if ((!this.hardwareAccelSupported || !this.srSupported) && settings.srEnabled) {
-      this.persist();
+
+    if (this.protocol === PROTOCOL_RDP) {
+      if (!this.audioSupported && settings.enableAudio) {
+        this.persist();
+      }
+      if (!this.hardwareAccelSupported && settings.hardwareAccel) {
+        this.persist();
+      }
+      if ((!this.hardwareAccelSupported || !this.srSupported) && settings.srEnabled) {
+        this.persist();
+      }
     }
     if (!this.developerMode && settings.gfxCapture) {
       this.persist();
@@ -200,6 +223,41 @@ struct SettingsPage {
     // Keep the native capture in step with what the page now shows: with developer
     // options off it must not be running, whatever the stored value was.
     this.applyGfxCaptureSetting();
+  }
+
+  /**
+   * Loads the shared (touchpad / keyboard / window / session) settings into the
+   * page state, from the RDP copy or the Moonlight copy. The two protocols keep
+   * separate values; only this UI code is shared.
+   */
+  private applyCommon(settings: AppSettings, rdp: boolean): void {
+    this.hoverDelay = rdp ? settings.toolbarHoverDelay : settings.mlToolbarHoverDelay;
+    this.hideDelay = rdp ? settings.toolbarHideDelay : settings.mlToolbarHideDelay;
+    this.touchpadScrollSpeed = rdp ? settings.touchpadScrollSpeed : settings.mlTouchpadScrollSpeed;
+    this.pinchZoomSpeed = rdp ? settings.pinchZoomSpeed : settings.mlPinchZoomSpeed;
+    this.touchpadMiddleDoubleTap = rdp
+      ? settings.touchpadMiddleDoubleTap : settings.mlTouchpadMiddleDoubleTap;
+    this.pinchMode = rdp ? settings.pinchMode : settings.mlPinchMode;
+    this.pinchTouchAngle = rdp ? settings.pinchTouchAngle : settings.mlPinchTouchAngle;
+    this.pinchTouchDistance = rdp ? settings.pinchTouchDistance : settings.mlPinchTouchDistance;
+    this.reconnectOnForeground = rdp
+      ? settings.reconnectOnForeground : settings.mlReconnectOnForeground;
+    this.winKeySubstitute = rdp ? settings.winKeySubstitute : settings.mlWinKeySubstitute;
+    this.shortcutPassthrough = rdp ? settings.shortcutPassthrough : settings.mlShortcutPassthrough;
+    this.mainSizeEnabled = rdp
+      ? settings.mainWindowSizeEnabled : settings.mlMainWindowSizeEnabled;
+    this.sessionSizeEnabled = rdp
+      ? settings.sessionWindowSizeEnabled : settings.mlSessionWindowSizeEnabled;
+    this.sessionFullscreen = rdp ? settings.sessionFullscreen : settings.mlSessionFullscreen;
+    this.autoHideMainWindow = rdp ? settings.autoHideMainWindow : settings.mlAutoHideMainWindow;
+    this.mainWidthText = this.sizeText(rdp
+      ? settings.mainWindowWidth : settings.mlMainWindowWidth);
+    this.mainHeightText = this.sizeText(rdp
+      ? settings.mainWindowHeight : settings.mlMainWindowHeight);
+    this.sessionWidthText = this.sizeText(rdp
+      ? settings.sessionWindowWidth : settings.mlSessionWindowWidth);
+    this.sessionHeightText = this.sizeText(rdp
+      ? settings.sessionWindowHeight : settings.mlSessionWindowHeight);
   }
 
   // Applies the dev capture toggle immediately (before the next session) so the
@@ -247,6 +305,14 @@ struct SettingsPage {
     return SCALE_PRESETS.indexOf(value) >= 0;
   }
 
+  private effectiveMlBitrate(): number {
+    const value: number = Number.parseInt(this.mlBitrateText, 10);
+    if (Number.isNaN(value)) {
+      return ML_BITRATE_DEFAULT_KBPS;
+    }
+    return Math.min(Math.max(value, ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
+  }
+
   /** The preset a 自动 缩放 resolves to right now (it follows 分辨率 and 超分 ratio). */
   private effectiveDefaultScale(): number {
     return SettingsStore.autoScalePercent(this.outputWidth(), this.outputHeight(),
@@ -285,90 +351,150 @@ struct SettingsPage {
     const disp: display.Display | undefined = this.displayOrUndefined();
     const maxWidth: number = disp !== undefined ? disp.width : Number.MAX_SAFE_INTEGER;
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
-    const settings: AppSettings = new AppSettings();
-    settings.toolbarHoverDelay = this.hoverDelay;
-    settings.toolbarHideDelay = this.hideDelay;
-    settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
-    settings.pinchZoomSpeed = this.pinchZoomSpeed;
-    settings.pinchMode = this.pinchMode;
-    settings.touchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
-    settings.pinchTouchAngle = this.pinchTouchAngle;
-    settings.pinchTouchDistance = this.pinchTouchDistance;
-    settings.touchHighRate = this.touchHighRate;
-    settings.useRdpCursor = this.useRdpCursor;
-    settings.reconnectOnForeground = this.reconnectOnForeground;
-    settings.winKeySubstitute = this.winKeySubstitute;
-    settings.shortcutPassthrough = this.shortcutPassthrough;
-    settings.resolutionAuto = this.resolutionAuto;
-    settings.manualWidth =
-      this.parseSize(this.manualWidthText, this.detectedWidth, MAX_DESKTOP_SIZE);
-    settings.manualHeight =
-      this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
-    settings.scaleAuto = this.scaleAuto;
-    settings.manualScalePercent = this.parseScale(this.manualScaleText, this.effectiveDefaultScale());
-    settings.sessionFullscreen = this.sessionFullscreen;
-    settings.autoHideMainWindow = this.autoHideMainWindow;
-    settings.enableAudio = this.enableAudio;
-    settings.ignoreCertificate = this.ignoreCertificate;
-    settings.hardwareAccel = this.hardwareAccel;
-    settings.srEnabled = this.srEnabled && this.srSupported;
-    settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
-    settings.srBackend = this.srBackend;
+    // Start from what is stored so the other protocol's copy is preserved.
+    const settings: AppSettings = SettingsStore.load();
+    if (this.protocol === PROTOCOL_RDP) {
+      settings.toolbarHoverDelay = this.hoverDelay;
+      settings.toolbarHideDelay = this.hideDelay;
+      settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
+      settings.pinchZoomSpeed = this.pinchZoomSpeed;
+      settings.pinchMode = this.pinchMode;
+      settings.touchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
+      settings.pinchTouchAngle = this.pinchTouchAngle;
+      settings.pinchTouchDistance = this.pinchTouchDistance;
+      settings.touchHighRate = this.touchHighRate;
+      settings.useRdpCursor = this.useRdpCursor;
+      settings.reconnectOnForeground = this.reconnectOnForeground;
+      settings.winKeySubstitute = this.winKeySubstitute;
+      settings.shortcutPassthrough = this.shortcutPassthrough;
+      settings.resolutionAuto = this.resolutionAuto;
+      settings.manualWidth =
+        this.parseSize(this.manualWidthText, this.detectedWidth, MAX_DESKTOP_SIZE);
+      settings.manualHeight =
+        this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
+      settings.scaleAuto = this.scaleAuto;
+      settings.manualScalePercent =
+        this.parseScale(this.manualScaleText, this.effectiveDefaultScale());
+      settings.sessionFullscreen = this.sessionFullscreen;
+      settings.autoHideMainWindow = this.autoHideMainWindow;
+      settings.enableAudio = this.enableAudio;
+      settings.ignoreCertificate = this.ignoreCertificate;
+      settings.hardwareAccel = this.hardwareAccel;
+      settings.srEnabled = this.srEnabled && this.srSupported;
+      settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
+      settings.srBackend = this.srBackend;
+      settings.mainWindowSizeEnabled = this.mainSizeEnabled;
+      settings.mainWindowWidth =
+        this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
+      settings.mainWindowHeight =
+        this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
+      settings.sessionWindowSizeEnabled = this.sessionSizeEnabled;
+      settings.sessionWindowWidth =
+        this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
+      settings.sessionWindowHeight =
+        this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
+    } else {
+      settings.mlResMode = this.mlResMode;
+      settings.mlWidth = this.mlResMode === ML_RES_FIXED
+        ? this.parseSize(this.mlWidthText, this.detectedWidth, MAX_DESKTOP_SIZE) : 0;
+      settings.mlHeight = this.mlResMode === ML_RES_FIXED
+        ? this.parseSize(this.mlHeightText, this.detectedHeight, MAX_DESKTOP_SIZE) : 0;
+      settings.mlFps = this.mlFps;
+      settings.mlBitrateKbps = this.effectiveMlBitrate();
+      settings.mlHdr = this.mlHdr;
+      settings.mlCodec = this.mlCodec;
+      settings.mlYuv444 = this.mlYuv444;
+      settings.mlAudioConfig = this.mlAudioConfig;
+      settings.mlGamepad = this.mlGamepad;
+      settings.mlAutoDiscover = this.mlAutoDiscover;
+      settings.mlToolbarHoverDelay = this.hoverDelay;
+      settings.mlToolbarHideDelay = this.hideDelay;
+      settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
+      settings.mlPinchZoomSpeed = this.pinchZoomSpeed;
+      settings.mlPinchMode = this.pinchMode;
+      settings.mlTouchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
+      settings.mlPinchTouchAngle = this.pinchTouchAngle;
+      settings.mlPinchTouchDistance = this.pinchTouchDistance;
+      settings.mlReconnectOnForeground = this.reconnectOnForeground;
+      settings.mlWinKeySubstitute = this.winKeySubstitute;
+      settings.mlShortcutPassthrough = this.shortcutPassthrough;
+      settings.mlMainWindowSizeEnabled = this.mainSizeEnabled;
+      settings.mlMainWindowWidth =
+        this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
+      settings.mlMainWindowHeight =
+        this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
+      settings.mlSessionWindowSizeEnabled = this.sessionSizeEnabled;
+      settings.mlSessionWindowWidth =
+        this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
+      settings.mlSessionWindowHeight =
+        this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
+      settings.mlSessionFullscreen = this.sessionFullscreen;
+      settings.mlAutoHideMainWindow = this.autoHideMainWindow;
+    }
     settings.developerMode = this.developerMode;
     settings.gfxCapture = this.gfxCapture;
-    settings.mainWindowSizeEnabled = this.mainSizeEnabled;
-    settings.mainWindowWidth =
-      this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
-    settings.mainWindowHeight =
-      this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
-    settings.sessionWindowSizeEnabled = this.sessionSizeEnabled;
-    settings.sessionWindowWidth =
-      this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
-    settings.sessionWindowHeight =
-      this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
     SettingsStore.save(settings);
     // Apply immediately so a toggle takes effect for sessions opened next,
     // without waiting for an app restart.
-    RdpNative.applyRdpCursor(this.useRdpCursor);
-    RdpNative.applyHardwareAccel(this.hardwareAccel);
+    if (this.protocol === PROTOCOL_RDP) {
+      RdpNative.applyRdpCursor(this.useRdpCursor);
+      RdpNative.applyHardwareAccel(this.hardwareAccel);
+    }
+  }
+
+  private confirmReset(): void {
+    const label: string = this.protocol === PROTOCOL_MOONLIGHT ? 'Moonlight' : 'RDP';
+    this.getUIContext().showAlertDialog({
+      title: '恢复默认设置',
+      message: `确定要把 ${label} 的设置恢复为默认值？该协议当前的自定义设置会丢失。`,
+      systemMaterial: this.dialogMaterial,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '恢复默认',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          this.resetDefaults();
+        }
+      }
+    });
   }
 
   private resetDefaults(): void {
     const defaults: AppSettings = SettingsStore.defaults();
-    this.hoverDelay = defaults.toolbarHoverDelay;
-    this.hideDelay = defaults.toolbarHideDelay;
-    this.touchpadScrollSpeed = defaults.touchpadScrollSpeed;
-    this.pinchZoomSpeed = defaults.pinchZoomSpeed;
-    this.pinchMode = defaults.pinchMode;
-    this.touchpadMiddleDoubleTap = defaults.touchpadMiddleDoubleTap;
-    this.pinchTouchAngle = defaults.pinchTouchAngle;
-    this.pinchTouchDistance = defaults.pinchTouchDistance;
-    this.touchHighRate = defaults.touchHighRate;
-    this.useRdpCursor = defaults.useRdpCursor;
-    this.reconnectOnForeground = defaults.reconnectOnForeground;
-    this.winKeySubstitute = defaults.winKeySubstitute;
-    this.shortcutPassthrough = defaults.shortcutPassthrough;
-    this.resolutionAuto = true;
-    this.manualWidthText = this.sizeText(this.detectedWidth);
-    this.manualHeightText = this.sizeText(this.detectedHeight);
-    this.scaleAuto = true;
-    this.mainSizeEnabled = defaults.mainWindowSizeEnabled;
-    this.sessionSizeEnabled = defaults.sessionWindowSizeEnabled;
-    this.sessionFullscreen = defaults.sessionFullscreen;
-    this.autoHideMainWindow = defaults.autoHideMainWindow;
-    this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
-    this.ignoreCertificate = defaults.ignoreCertificate;
-    this.hardwareAccel = defaults.hardwareAccel;
-    this.srEnabled = defaults.srEnabled;
-    this.srRatioPercent = defaults.srRatioPercent;
-    this.srBackend = defaults.srBackend;
-    this.manualScaleText = this.effectiveDefaultScale().toString();
+    if (this.protocol === PROTOCOL_RDP) {
+      this.touchHighRate = defaults.touchHighRate;
+      this.useRdpCursor = defaults.useRdpCursor;
+      this.resolutionAuto = true;
+      this.manualWidthText = this.sizeText(this.detectedWidth);
+      this.manualHeightText = this.sizeText(this.detectedHeight);
+      this.scaleAuto = true;
+      this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
+      this.ignoreCertificate = defaults.ignoreCertificate;
+      this.hardwareAccel = defaults.hardwareAccel;
+      this.srEnabled = defaults.srEnabled;
+      this.srRatioPercent = defaults.srRatioPercent;
+      this.srBackend = defaults.srBackend;
+      this.manualScaleText = this.effectiveDefaultScale().toString();
+    } else {
+      this.mlResMode = defaults.mlResMode;
+      this.mlWidthText = this.sizeText(this.detectedWidth);
+      this.mlHeightText = this.sizeText(this.detectedHeight);
+      this.mlFps = defaults.mlFps;
+      this.mlBitrateText = defaults.mlBitrateKbps.toString();
+      this.mlHdr = defaults.mlHdr;
+      this.mlCodec = defaults.mlCodec;
+      this.mlYuv444 = defaults.mlYuv444;
+      this.mlAudioConfig = defaults.mlAudioConfig;
+      this.mlGamepad = defaults.mlGamepad;
+      this.mlAutoDiscover = defaults.mlAutoDiscover;
+    }
     this.developerMode = defaults.developerMode;
     this.gfxCapture = defaults.gfxCapture;
-    this.mainWidthText = this.sizeText(defaults.mainWindowWidth);
-    this.mainHeightText = this.sizeText(defaults.mainWindowHeight);
-    this.sessionWidthText = this.sizeText(defaults.sessionWindowWidth);
-    this.sessionHeightText = this.sizeText(defaults.sessionWindowHeight);
+    this.applyCommon(defaults, this.protocol === PROTOCOL_RDP);
     this.persist();
     // A reset turns developer options off: stop a capture that was running.
     this.applyGfxCaptureSetting();
@@ -631,6 +757,274 @@ struct SettingsPage {
   }
 
   @Builder
+  mlFpsChip(preset: number) {
+    Text(preset.toString())
+      .fontSize(13)
+      .fontColor(this.mlFps === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlFps === preset
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlFps = preset;
+        this.persist();
+      })
+  }
+
+  @Builder
+  mlCodecChip(codec: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlCodec === codec ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlCodec === codec
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlCodec = codec;
+        this.persist();
+      })
+  }
+
+  @Builder
+  mlResModeChip(mode: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlResMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlResMode === mode
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlResMode = mode;
+        this.persist();
+      })
+  }
+
+  @Builder
+  mlAudioChip(config: number, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlAudioConfig === config ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlAudioConfig === config
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ right: 8, bottom: 8 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlAudioConfig = config;
+        this.persist();
+      })
+  }
+
+  /** Switches the protocol tab, saving the current one and loading the other. */
+  private switchProtocol(protocol: number): void {
+    if (this.protocol === protocol) {
+      return;
+    }
+    this.persist();
+    this.protocol = protocol;
+    this.syncFromStore();
+  }
+
+  /** RDP / Moonlight tab, shown inline in the page header. */
+  @Builder
+  protocolTab(protocol: number, label: string) {
+    Column() {
+      Text(label)
+        .fontSize(14)
+        .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.protocol === protocol
+          ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
+      Divider()
+        .strokeWidth(2)
+        .width(36)
+        .color(this.protocol === protocol ? $r('app.color.accent') : Color.Transparent)
+        .margin({ top: 5 })
+    }
+    .alignItems(HorizontalAlign.Center)
+    .padding({ left: 12, right: 12, top: 4 })
+    .onClick(() => {
+      this.switchProtocol(protocol);
+    })
+  }
+
+  /** Moonlight tab: the global stream defaults, mirrored by the per-connection overrides. */
+  @Builder
+  moonlightStreamSection() {
+    Column() {
+      Text('串流')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .margin({ bottom: 4 })
+
+      Text('新连接默认使用的画质；可在单个连接的「高级设置」中改为独立配置')
+        .fontSize(11)
+        .fontColor($r('app.color.text_tertiary'))
+        .width('100%')
+        .margin({ bottom: 8 })
+
+      Column() {
+        Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+        Text('跟随会话窗口大小出画，或固定一个分辨率')
+          .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.mlResModeChip(ML_RES_FOLLOW_WINDOW, '跟随窗口')
+          this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
+          this.mlResModeChip(ML_RES_FIXED, '固定')
+        }
+        .width('100%').margin({ top: 8 })
+
+        if (this.mlResMode === ML_RES_FIXED) {
+          Row() {
+            TextInput({ placeholder: '1920', text: this.mlWidthText })
+              .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+              .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+              .onChange((value: string) => {
+                this.mlWidthText = value;
+                this.persist();
+              })
+            Text('×')
+              .fontSize(14).fontColor($r('app.color.text_tertiary'))
+              .margin({ left: 10, right: 10 })
+            TextInput({ placeholder: '1080', text: this.mlHeightText })
+              .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+              .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+              .onChange((value: string) => {
+                this.mlHeightText = value;
+                this.persist();
+              })
+          }
+          .width('100%').margin({ top: 10 })
+        }
+      }
+      .width('100%').padding({ top: 8, bottom: 14 }).alignItems(HorizontalAlign.Start)
+
+      Divider().color($r('app.color.divider'))
+
+      Column() {
+        Text('帧率').fontSize(14).fontColor($r('app.color.text_primary'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(ML_FPS_PRESETS, (preset: number) => {
+            this.mlFpsChip(preset)
+          }, (preset: number) => preset.toString())
+        }
+        .width('100%').margin({ top: 8 })
+      }
+      .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+
+      Divider().color($r('app.color.divider'))
+
+      Column() {
+        Text('码率 (kbps)').fontSize(14).fontColor($r('app.color.text_primary'))
+        Text('越高画质越好、越占带宽；建议 '
+          + ML_BITRATE_MIN_KBPS + ' – ' + ML_BITRATE_MAX_KBPS)
+          .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+        TextInput({ placeholder: '20000', text: this.mlBitrateText })
+          .type(InputType.Number).fontSize(14).height(40)
+          .backgroundColor($r('app.color.input_bg')).borderRadius(10).margin({ top: 8 })
+          .onChange((value: string) => {
+            this.mlBitrateText = value;
+            this.persist();
+          })
+      }
+      .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+
+      Divider().color($r('app.color.divider'))
+
+      this.toggleItem({
+        title: 'HDR',
+        subtitle: '主机与显示器都支持时输出 HDR',
+        value: this.mlHdr,
+        enabled: true,
+        disabledReason: '',
+        onChange: (v: boolean) => {
+          this.mlHdr = v;
+          this.persist();
+        }
+      })
+
+      Divider().color($r('app.color.divider'))
+
+      Column() {
+        Text('编码器').fontSize(14).fontColor($r('app.color.text_primary'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.mlCodecChip(ML_CODEC_AUTO, '自动')
+          this.mlCodecChip(ML_CODEC_H264, 'H.264')
+          this.mlCodecChip(ML_CODEC_HEVC, 'HEVC')
+          this.mlCodecChip(ML_CODEC_AV1, 'AV1')
+        }
+        .width('100%').margin({ top: 8 })
+      }
+      .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+
+      Divider().color($r('app.color.divider'))
+
+      this.toggleItem({
+        title: 'YUV 4:4:4',
+        subtitle: '色度不抽样，文字与彩色边缘更清晰，但更占带宽',
+        value: this.mlYuv444,
+        enabled: true,
+        disabledReason: '',
+        onChange: (v: boolean) => {
+          this.mlYuv444 = v;
+          this.persist();
+        }
+      })
+
+      Divider().color($r('app.color.divider'))
+
+      Column() {
+        Text('音频通道').fontSize(14).fontColor($r('app.color.text_primary'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.mlAudioChip(ML_AUDIO_STEREO, '立体声')
+          this.mlAudioChip(ML_AUDIO_51, '5.1')
+          this.mlAudioChip(ML_AUDIO_71, '7.1')
+        }
+        .width('100%').margin({ top: 8 })
+      }
+      .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+
+      Divider().color($r('app.color.divider'))
+
+      this.toggleItem({
+        title: '手柄输入',
+        subtitle: '把连接的手柄转发给主机',
+        value: this.mlGamepad,
+        enabled: true,
+        disabledReason: '',
+        onChange: (v: boolean) => {
+          this.mlGamepad = v;
+          this.persist();
+        }
+      })
+
+      Divider().color($r('app.color.divider'))
+
+      this.toggleItem({
+        title: '自动发现主机',
+        subtitle: '在有局域网时自动扫描可用的 Sunshine 主机',
+        value: this.mlAutoDiscover,
+        enabled: true,
+        disabledReason: '',
+        onChange: (v: boolean) => {
+          this.mlAutoDiscover = v;
+          this.persist();
+        }
+      })
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
   toggleItem(item: ToggleItemConfig) {
     Row() {
       Column() {
@@ -718,23 +1112,22 @@ struct SettingsPage {
           .fontSize(17)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .layoutWeight(1)
-          .textAlign(TextAlign.Center)
-        TextAction({
-          label: '重置',
-          onTap: () => {
-            this.resetDefaults();
-          }
-        })
+          .margin({ left: 16 })
+        Blank()
+        Row() {
+          this.protocolTab(PROTOCOL_RDP, 'RDP')
+          this.protocolTab(PROTOCOL_MOONLIGHT, 'Moonlight')
+        }
       }
       .width('100%')
-      .padding({ left: 24, right: 24, top: 16, bottom: 12 })
+      .padding({ left: 24, right: 24, top: 10, bottom: 8 })
 
       Divider().color($r('app.color.divider'))
 
       Scroll() {
         Column() {
           Column() {
+            if (this.protocol === PROTOCOL_RDP) {
             Text('显示')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
@@ -864,6 +1257,9 @@ struct SettingsPage {
               }
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+            } else {
+              this.moonlightStreamSection()
+            }
 
             Divider().color($r('app.color.divider'))
 
@@ -1076,6 +1472,7 @@ struct SettingsPage {
               }
             })
 
+            if (this.protocol === PROTOCOL_RDP) {
             Divider().color($r('app.color.divider'))
 
             Text('连接特性')
@@ -1190,6 +1587,7 @@ struct SettingsPage {
                 this.persist();
               }
             })
+            }
 
             Divider().color($r('app.color.divider'))
 
@@ -1377,7 +1775,7 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ top: 4, bottom: 4 })
 
-            Text('将全局设置和全部连接导出为一个文件，或从文件导入并覆盖。密码保存在系统安全存储中，不会被导出，导入后需重新输入。')
+            Text('导出全局设置与全部连接，或从文件导入覆盖；密码不会被导出。')
               .fontSize(11)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
@@ -1429,18 +1827,26 @@ struct SettingsPage {
               .margin({ top: 10 })
             }
 
-            Divider().color($r('app.color.divider'))
-
-            Text('开发者选项')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-              .margin({ top: 4, bottom: 4 })
-
-            Text('调试与性能分析用的功能；正常使用保持关闭')
+            Text('仅重置当前协议（'
+              + (this.protocol === PROTOCOL_MOONLIGHT ? 'Moonlight' : 'RDP')
+              + '）的设置，不影响另一协议与已保存的连接。')
               .fontSize(11)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
-              .margin({ bottom: 8 })
+              .margin({ top: 20, bottom: 10 })
+
+            Button('恢复默认设置')
+              .width('100%')
+              .height(44)
+              .fontSize(15)
+              .fontColor($r('app.color.danger'))
+              .backgroundColor($r('app.color.input_bg'))
+              .borderRadius(12)
+              .onClick(() => {
+                this.confirmReset();
+              })
+
+            Divider().color($r('app.color.divider'))
 
             this.toggleItem({
               title: '开发者选项',
