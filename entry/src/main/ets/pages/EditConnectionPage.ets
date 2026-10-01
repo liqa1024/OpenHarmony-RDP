@@ -755,8 +755,8 @@ struct EditConnectionPage {
               Column() {
                 Row() {
                   Column() {
-                    Text('使用全局显示设置').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('分辨率与缩放跟随全局设置')
+                    Text('使用会话独立显示设置').fontSize(14).fontColor($r('app.color.text_primary'))
+                    Text('分辨率与缩放使用本连接的独立配置，关闭则跟随全局设置')
                       .fontSize(11)
                       .fontColor($r('app.color.text_tertiary'))
                       .margin({ top: 2 })
@@ -764,10 +764,10 @@ struct EditConnectionPage {
                   .alignItems(HorizontalAlign.Start)
                   .layoutWeight(1)
 
-                  Toggle({ type: ToggleType.Switch, isOn: this.useGlobalDisplay })
+                  Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalDisplay })
                     .selectedColor($r('app.color.accent'))
                     .onChange((isOn: boolean) => {
-                      this.useGlobalDisplay = isOn;
+                      this.useGlobalDisplay = !isOn;
                     })
                 }
                 .width('100%')
@@ -864,8 +864,9 @@ struct EditConnectionPage {
 
                 Row() {
                   Column() {
-                    Text('使用全局超分辨率设置').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('超分辨率：远端按输出分辨率÷倍率出画，本机 GPU 上采样回输出分辨率')
+                    Text('使用会话独立超分辨率设置')
+                      .fontSize(14).fontColor($r('app.color.text_primary'))
+                    Text('超分辨率：远端按输出分辨率÷倍率出画，本机 GPU 上采样回输出分辨率；关闭则跟随全局设置')
                       .fontSize(11)
                       .fontColor($r('app.color.text_tertiary'))
                       .margin({ top: 2 })
@@ -879,14 +880,14 @@ struct EditConnectionPage {
                   .alignItems(HorizontalAlign.Start)
                   .layoutWeight(1)
 
-                  Toggle({ type: ToggleType.Switch, isOn: this.useGlobalSr })
+                  Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalSr })
                     .enabled(this.srUsable)
                     .selectedColor($r('app.color.accent'))
                     .onChange((isOn: boolean) => {
                       if (!this.srUsable) {
                         return;
                       }
-                      this.useGlobalSr = isOn;
+                      this.useGlobalSr = !isOn;
                     })
                 }
                 .width('100%')
@@ -927,8 +928,8 @@ struct EditConnectionPage {
 
                 Row() {
                   Column() {
-                    Text('使用全局高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('音频、证书等跟随全局设置')
+                    Text('使用会话独立高级设置').fontSize(14).fontColor($r('app.color.text_primary'))
+                    Text('音频、证书等使用本连接的独立配置，关闭则跟随全局设置')
                       .fontSize(11)
                       .fontColor($r('app.color.text_tertiary'))
                       .margin({ top: 2 })
@@ -936,10 +937,10 @@ struct EditConnectionPage {
                   .alignItems(HorizontalAlign.Start)
                   .layoutWeight(1)
 
-                  Toggle({ type: ToggleType.Switch, isOn: this.useGlobalAdvanced })
+                  Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalAdvanced })
                     .selectedColor($r('app.color.accent'))
                     .onChange((isOn: boolean) => {
-                      this.useGlobalAdvanced = isOn;
+                      this.useGlobalAdvanced = !isOn;
                     })
                 }
                 .width('100%')

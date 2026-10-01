@@ -731,7 +731,7 @@ struct SettingsPage {
       Scroll() {
         Column() {
           Column() {
-            Text('会话交互')
+            Text('显示')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
@@ -750,31 +750,116 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            this.toggleItem({
-              title: '回到前台自动重连',
-              subtitle: '切到后台再回来时，若会话已被系统断开则自动重连，不必手动点「重试」',
-              value: this.reconnectOnForeground,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.reconnectOnForeground = v;
-                this.persist();
+            Column() {
+              Row() {
+                Column() {
+                  Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+                  Text(this.srEnabled
+                    ? '超分辨率后的输出分辨率；会话按倍率取更低的桌面分辨率'
+                    : '自动使用当前显示器的分辨率')
+                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Row() {
+                  this.resolutionModeChip('自动', true, 0)
+                  this.resolutionModeChip('手动', false, 8)
+                }
               }
-            })
+              .width('100%')
+
+              if (this.resolutionAuto) {
+                Text('自动检测：' + this.detectedText)
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 10 })
+              } else {
+                Row() {
+                  TextInput({ placeholder: '1920', text: this.manualWidthText })
+                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+                    .onChange((value: string) => {
+                      this.manualWidthText = value;
+                      this.persist();
+                    })
+
+                  Text('×')
+                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
+                    .margin({ left: 10, right: 10 })
+
+                  TextInput({ placeholder: '1080', text: this.manualHeightText })
+                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+                    .onChange((value: string) => {
+                      this.manualHeightText = value;
+                      this.persist();
+                    })
+                }
+                .width('100%').margin({ top: 10 })
+
+                Text('自动检测：' + this.detectedText + '，可参考输入')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 6 })
+              }
+            }
+            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
             Divider().color($r('app.color.divider'))
 
-            this.toggleItem({
-              title: '快捷键穿透',
-              subtitle: '会话窗口聚焦时接管键盘，把 Win、Alt+Tab、Esc 等快捷键发送到远端；开启后本机的系统快捷键会被远端接管',
-              value: this.shortcutPassthrough,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.shortcutPassthrough = v;
-                this.persist();
+            Column() {
+              Row() {
+                Column() {
+                  Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
+                  Text(this.srEnabled
+                    ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
+                    : '按分辨率相对屏幕的比例自动选择推荐缩放比例')
+                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Row() {
+                  this.scaleModeChip('自动', true, 0)
+                  this.scaleModeChip('手动', false, 8)
+                }
               }
-            })
+              .width('100%')
+
+              if (this.scaleAuto) {
+                Text('推荐：' + this.effectiveDefaultScale() + '%')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                  .width('100%').margin({ top: 10 })
+              } else {
+                Flex({ wrap: FlexWrap.Wrap }) {
+                  ForEach(SCALE_PRESETS, (preset: number) => {
+                    this.scaleChip(preset)
+                  }, (preset: number) => preset.toString())
+                }
+                .width('100%').margin({ top: 10 })
+
+                Row() {
+                  TextInput({ placeholder: '100', text: this.manualScaleText })
+                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+                    .onChange((value: string) => {
+                      this.manualScaleText = value;
+                      this.persist();
+                    })
+
+                  Text('%')
+                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
+                    .margin({ left: 10 })
+                }
+                .width('100%')
+
+                if (this.parsedManualScale() > 0 && !this.isPresetScale(this.parsedManualScale())) {
+                  Text('自定义缩放比例可能导致部分应用显示模糊，建议使用上方固定档位')
+                    .fontSize(11).fontColor($r('app.color.danger'))
+                    .width('100%').margin({ top: 6 })
+                }
+              }
+            }
+            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
             Divider().color($r('app.color.divider'))
 
@@ -944,121 +1029,36 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            Text('显示')
+            this.toggleItem({
+              title: '快捷键穿透',
+              subtitle: '会话窗口聚焦时接管键盘，把 Win、Alt+Tab、Esc 等快捷键发送到远端；开启后本机的系统快捷键会被远端接管',
+              value: this.shortcutPassthrough,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.shortcutPassthrough = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            Text('会话')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
-            Column() {
-              Row() {
-                Column() {
-                  Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text(this.srEnabled
-                    ? '超分辨率后的输出分辨率；会话按倍率取更低的桌面分辨率'
-                    : '自动使用当前显示器的分辨率')
-                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Row() {
-                  this.resolutionModeChip('自动', true, 0)
-                  this.resolutionModeChip('手动', false, 8)
-                }
+            this.toggleItem({
+              title: '回到前台自动重连',
+              subtitle: '切到后台再回来时，若会话已被系统断开则自动重连，不必手动点「重试」',
+              value: this.reconnectOnForeground,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.reconnectOnForeground = v;
+                this.persist();
               }
-              .width('100%')
-
-              if (this.resolutionAuto) {
-                Text('自动检测：' + this.detectedText)
-                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  .width('100%').margin({ top: 10 })
-              } else {
-                Row() {
-                  TextInput({ placeholder: '1920', text: this.manualWidthText })
-                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
-                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
-                    .onChange((value: string) => {
-                      this.manualWidthText = value;
-                      this.persist();
-                    })
-
-                  Text('×')
-                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
-                    .margin({ left: 10, right: 10 })
-
-                  TextInput({ placeholder: '1080', text: this.manualHeightText })
-                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
-                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
-                    .onChange((value: string) => {
-                      this.manualHeightText = value;
-                      this.persist();
-                    })
-                }
-                .width('100%').margin({ top: 10 })
-
-                Text('自动检测：' + this.detectedText + '，可参考输入')
-                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  .width('100%').margin({ top: 6 })
-              }
-            }
-            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
-
-            Divider().color($r('app.color.divider'))
-
-            Column() {
-              Row() {
-                Column() {
-                  Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text(this.srEnabled
-                    ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
-                    : '按分辨率相对屏幕的比例自动选择推荐缩放比例')
-                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Row() {
-                  this.scaleModeChip('自动', true, 0)
-                  this.scaleModeChip('手动', false, 8)
-                }
-              }
-              .width('100%')
-
-              if (this.scaleAuto) {
-                Text('推荐：' + this.effectiveDefaultScale() + '%')
-                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  .width('100%').margin({ top: 10 })
-              } else {
-                Flex({ wrap: FlexWrap.Wrap }) {
-                  ForEach(SCALE_PRESETS, (preset: number) => {
-                    this.scaleChip(preset)
-                  }, (preset: number) => preset.toString())
-                }
-                .width('100%').margin({ top: 10 })
-
-                Row() {
-                  TextInput({ placeholder: '100', text: this.manualScaleText })
-                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
-                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
-                    .onChange((value: string) => {
-                      this.manualScaleText = value;
-                      this.persist();
-                    })
-
-                  Text('%')
-                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
-                    .margin({ left: 10 })
-                }
-                .width('100%')
-
-                if (this.parsedManualScale() > 0 && !this.isPresetScale(this.parsedManualScale())) {
-                  Text('自定义缩放比例可能导致部分应用显示模糊，建议使用上方固定档位')
-                    .fontSize(11).fontColor($r('app.color.danger'))
-                    .width('100%').margin({ top: 6 })
-                }
-              }
-            }
-            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+            })
 
             Divider().color($r('app.color.divider'))
 
@@ -1177,7 +1177,7 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            Text('窗口大小')
+            Text('窗口')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })

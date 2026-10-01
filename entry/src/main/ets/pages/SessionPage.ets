@@ -2618,7 +2618,6 @@ struct SessionPage {
       // Keep the real registration result: a denied ACL permission leaves this
       // false and the ordinary onKeyEvent path stays in charge.
       this.interceptActive = this.native.setShortcutPassthrough(true);
-      hilog.info(DOMAIN, TAG, 'shortcut passthrough=%{public}d', this.interceptActive ? 1 : 0);
     } else {
       this.native.setShortcutPassthrough(false);
       this.interceptActive = false;
