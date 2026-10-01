@@ -325,6 +325,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'reconnectOnForeground', settings.reconnectOnForeground);
     settings.winKeySubstitute =
       ConfigTransfer.readNumber(rec, 'winKeySubstitute', settings.winKeySubstitute);
+    settings.shortcutPassthrough =
+      ConfigTransfer.readBoolean(rec, 'shortcutPassthrough', settings.shortcutPassthrough);
     settings.mainWindowSizeEnabled =
       ConfigTransfer.readBoolean(rec, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
     settings.mainWindowWidth =

@@ -6,6 +6,7 @@
  * ArkTS forwards onSurfaceCreated/Changed/Destroyed to this module, which
  * turns the surface id into an OHNativeWindow consumed by the Vulkan presenter.
  */
+#include <multimodalinput/oh_input_manager.h>
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
 #include <napi/native_api.h>
@@ -89,6 +90,36 @@ void OnSessionEvent(int64_t handle, SessionEvent event, const std::string& data)
   if (status != napi_ok) {
     delete payload;
   }
+}
+
+// 快捷键穿透: process-global key event interceptor. HarmonyOS allows one per
+// process and delivers to it only while this application is focused (exactly
+// when a session should own the keyboard). `g_interceptHandle` names the session
+// the events belong to, so a background session never gets another's keys.
+std::mutex g_interceptMutex;
+int64_t g_interceptHandle = 0;
+bool g_interceptActive = false;
+
+void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
+  if (keyEvent == nullptr) {
+    return;
+  }
+  const int32_t action = OH_Input_GetKeyEventAction(keyEvent);
+  if (action != KEY_ACTION_DOWN && action != KEY_ACTION_UP) {
+    return;
+  }
+  const int32_t keyCode = OH_Input_GetKeyEventKeyCode(keyEvent);
+  int64_t handle = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    handle = g_interceptHandle;
+  }
+  if (handle <= 0) {
+    return;
+  }
+  const std::string payload =
+      std::to_string(keyCode) + "|" + (action == KEY_ACTION_DOWN ? "1" : "0");
+  OnSessionEvent(handle, SessionEvent::kKeyIntercept, payload);
 }
 
 // Copies the session's shared ownership out of the map, so the caller keeps it
@@ -571,6 +602,62 @@ napi_value SendLockState(napi_env env, napi_callback_info info) {
     return CreateBool(env, false);
   }
   return CreateBool(env, session->SendLockState(static_cast<uint32_t>(flags)));
+}
+
+// 快捷键穿透: route intercepted keys to `handle` (0/enabled=false releases the
+// interceptor). Returns whether the requested state is in effect; a registration
+// failure (e.g. the ACL permission is missing) returns false, and the caller then
+// keeps the ordinary key path instead of dropping the keyboard.
+napi_value SetShortcutPassthrough(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  bool enabled = false;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_bool(env, args[1], &enabled) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  // Decide under the lock, but register / unregister outside it: the callback
+  // takes the same mutex, and a re-entrant call from the input service into it
+  // (which the API does not promise never to make) would deadlock otherwise. The
+  // callers are all on the JS thread, so there is no competing add/remove.
+  bool callAdd = false;
+  bool callRemove = false;
+  {
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    if (enabled && handle > 0) {
+      g_interceptHandle = handle;
+      callAdd = !g_interceptActive;
+    } else if (g_interceptHandle == handle || handle <= 0) {
+      // Only the session that owns the interceptor may release it, so a stale
+      // blur from another window cannot take it from the focused one.
+      callRemove = g_interceptActive;
+      g_interceptHandle = 0;
+    }
+  }
+
+  if (callAdd) {
+    const Input_Result ret = OH_Input_AddKeyEventInterceptor(OnInterceptedKeyEvent, nullptr);
+    const bool ok = ret == INPUT_SUCCESS || ret == INPUT_REPEAT_INTERCEPTOR;
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    g_interceptActive = ok;
+    if (!ok) {
+      g_interceptHandle = 0;
+      HMRDP_LOGW("key interceptor add failed: %{public}d", static_cast<int32_t>(ret));
+    }
+    return CreateBool(env, ok);
+  }
+  if (callRemove) {
+    OH_Input_RemoveKeyEventInterceptor();
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    g_interceptActive = false;
+    return CreateBool(env, true);
+  }
+  // Nothing to do (already in the requested state, or the enable carried no
+  // usable handle): report what is actually in effect.
+  std::lock_guard<std::mutex> lock(g_interceptMutex);
+  return CreateBool(env, g_interceptActive);
 }
 
 napi_value SetClipboardText(napi_env env, napi_callback_info info) {
@@ -1106,6 +1193,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr},
       {"sendLockState", nullptr, SendLockState, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"setShortcutPassthrough", nullptr, SetShortcutPassthrough, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setClipboardHtml", nullptr, SetClipboardHtml, nullptr, nullptr, nullptr,

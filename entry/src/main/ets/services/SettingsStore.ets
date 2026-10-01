@@ -94,6 +94,10 @@ export class AppSettings {
   // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
   // Win combinations work even though the shell keeps the real Win key.
   winKeySubstitute: number = 0;
+  // 快捷键穿透: while a session window is focused, take the keyboard over so
+  // Win / Alt+Tab / Esc reach the remote (ACL INTERCEPT_INPUT_EVENT). Off by
+  // default, as it also suppresses the local system shortcuts.
+  shortcutPassthrough: boolean = false;
   mainWindowSizeEnabled: boolean = false;
   mainWindowWidth: number = 0;
   mainWindowHeight: number = 0;
@@ -201,6 +205,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'reconnectOnForeground', settings.reconnectOnForeground);
       settings.winKeySubstitute =
         SettingsStore.readNumber(store, 'winKeySubstitute', settings.winKeySubstitute);
+      settings.shortcutPassthrough =
+        SettingsStore.readBoolean(store, 'shortcutPassthrough', settings.shortcutPassthrough);
       settings.mainWindowSizeEnabled =
         SettingsStore.readBoolean(store, 'mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       settings.mainWindowWidth =
@@ -262,6 +268,7 @@ export class SettingsStore {
       store.putSync('useRdpCursor', settings.useRdpCursor);
       store.putSync('reconnectOnForeground', settings.reconnectOnForeground);
       store.putSync('winKeySubstitute', settings.winKeySubstitute);
+      store.putSync('shortcutPassthrough', settings.shortcutPassthrough);
       store.putSync('mainWindowSizeEnabled', settings.mainWindowSizeEnabled);
       store.putSync('mainWindowWidth', settings.mainWindowWidth);
       store.putSync('mainWindowHeight', settings.mainWindowHeight);

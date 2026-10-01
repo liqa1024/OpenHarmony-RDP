@@ -9,6 +9,7 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
+setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
 RdpEventCallback,
@@ -260,6 +261,17 @@ export class RdpNative {
     if (this.handle >= 0) {
       sendKey(this.handle, 0x5B, down, true);
     }
+  }
+
+  /**
+   * 快捷键穿透: route this session's system-intercepted keys (KeyIntercept
+   * events). Returns whether the state is really in effect.
+   */
+  setShortcutPassthrough(enabled: boolean): boolean {
+    if (this.handle < 0) {
+      return false;
+    }
+    return setShortcutPassthroughNative(this.handle, enabled);
   }
 
   /** Pushes the local clipboard text (UTF-8) to the remote session. */

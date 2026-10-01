@@ -108,7 +108,9 @@ export enum RdpEvent {
   // Transfer aborted before completing; payload is the reason.
   FileTransferFailed = 15,
   // Upload finished (every advertised byte served); payload is the file count.
-  FileTransferDone = 16
+  FileTransferDone = 16,
+  // 快捷键穿透: an intercepted key event, payload "<keyCode>|<down>".
+  KeyIntercept = 17
 }
 
 export class RdpConnectOptions implements RdpOptions {

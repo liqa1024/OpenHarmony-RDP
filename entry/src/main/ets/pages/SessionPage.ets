@@ -443,6 +443,15 @@ struct SessionPage {
   // KeyCode the user remapped to Win/Meta for the remote (0 = disabled). Lets
   // Win combinations work even though the shell keeps the real Win key.
   private winKeySubstitute: number = 0;
+  // 快捷键穿透 (ACL INTERCEPT_INPUT_EVENT): route this window's intercepted keys
+  // to the remote (see updateShortcutPassthrough).
+  private shortcutPassthrough: boolean = false;
+  // Whether the native interceptor is registered for this session; a denied
+  // permission leaves it false and the ordinary onKeyEvent path in charge.
+  private interceptActive: boolean = false;
+  // Focus of this window; the interceptor is released when another window
+  // (settings, main list) becomes the active one.
+  private windowFocused: boolean = true;
 
   aboutToAppear(): void {
     this.resolveRequest();
@@ -485,6 +494,7 @@ struct SessionPage {
     this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
+    this.shortcutPassthrough = settings.shortcutPassthrough;
     // With 超分辨率 the server renders the session (pre-upscale) size, not the
     // configured output size; the Resize event corrects this if the desktop turns
     // out different from what was asked for.
@@ -526,6 +536,11 @@ struct SessionPage {
   }
 
   aboutToDisappear(): void {
+    // Give the shell its shortcuts back before the session goes away.
+    if (this.interceptActive) {
+      this.native.setShortcutPassthrough(false);
+      this.interceptActive = false;
+    }
     this.toolbarAutoHideArmed = false;
     this.clearToolbarTimers();
     if (this.moveTimer !== -1) {
@@ -693,6 +708,8 @@ struct SessionPage {
     }
     // A state change invalidates any pending reveal / hide.
     this.refreshToolbarAutoHide();
+    // 快捷键穿透 only makes sense on a live session.
+    this.updateShortcutPassthrough();
   }
 
   private retry(): void {
@@ -789,6 +806,8 @@ struct SessionPage {
       this.applyCursor();
     } else if (event === RdpEvent.Metrics) {
       this.onMetrics(data);
+    } else if (event === RdpEvent.KeyIntercept) {
+      this.handleInterceptedKey(data);
     }
   }
 
@@ -2583,7 +2602,57 @@ struct SessionPage {
     this.sendWheelChunk(chunk, point);
   }
 
+  /**
+   * 快捷键穿透: register/release the interceptor. It may only be held while this
+   * window is the active one and the session is live, because the interceptor
+   * sees the whole application's keys.
+   */
+  private updateShortcutPassthrough(): void {
+    const wanted: boolean = this.shortcutPassthrough
+      && this.state === ConnectionState.Connected
+      && this.windowFocused;
+    if (wanted === this.interceptActive) {
+      return;
+    }
+    if (wanted) {
+      // Keep the real registration result: a denied ACL permission leaves this
+      // false and the ordinary onKeyEvent path stays in charge.
+      this.interceptActive = this.native.setShortcutPassthrough(true);
+      hilog.info(DOMAIN, TAG, 'shortcut passthrough=%{public}d', this.interceptActive ? 1 : 0);
+    } else {
+      this.native.setShortcutPassthrough(false);
+      this.interceptActive = false;
+    }
+  }
+
+  /**
+   * 快捷键穿透: an intercepted key ("<keyCode>|<down>"), mapped and accounted for
+   * like onKeyEvent so focus loss still sends the matching key-up.
+   */
+  private handleInterceptedKey(data: string): void {
+    const parts: string[] = data.split('|');
+    if (parts.length !== 2) {
+      return;
+    }
+    const keyCode: number = Number.parseInt(parts[0], 10);
+    if (Number.isNaN(keyCode)) {
+      return;
+    }
+    const down: boolean = parts[1] === '1';
+    const scan: RdpScanCode | undefined = KeyMapper.map(keyCode);
+    if (scan === undefined) {
+      return;
+    }
+    this.trackScanKey('s' + scan.scancode + (scan.extended ? 'e' : ''), scan.scancode,
+      scan.extended, down);
+    this.native.key(scan.scancode, down, scan.extended);
+  }
+
   private handleKey(event: KeyEvent): void {
+    // The interceptor already forwarded and swallowed this key; don't send twice.
+    if (this.interceptActive) {
+      return;
+    }
     const down: boolean = event.type === KeyType.Down;
     // The real Win key is owned by the system, so it is never forwarded;
     // Win for the remote is produced by the configurable substitute key.
@@ -2714,10 +2783,16 @@ struct SessionPage {
       });
       win.on('windowEvent', (data: window.WindowEventType) => {
         // Focus/visibility events are not visibility sources; they only signal
-        // that the inputs the remote still sees as held must be let go.
-        if (data === window.WindowEventType.WINDOW_INACTIVE
+        // that the inputs the remote still sees as held must be let go. Focus
+        // also drives 快捷键穿透 (application-wide, so released on blur).
+        if (data === window.WindowEventType.WINDOW_ACTIVE) {
+          this.windowFocused = true;
+          this.updateShortcutPassthrough();
+        } else if (data === window.WindowEventType.WINDOW_INACTIVE
           || data === window.WindowEventType.WINDOW_HIDDEN) {
+          this.windowFocused = false;
           this.releaseAllInputs();
+          this.updateShortcutPassthrough();
         }
       });
       // Only a *fully* covered window reports false here; a partly covered one

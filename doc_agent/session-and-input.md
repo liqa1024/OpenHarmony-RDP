@@ -140,8 +140,15 @@
     - 远端分辨率或窗口尺寸变化会重置回 100%（拟合矩形变了，旧变换会失配）。
 - **自定义 Win 键映射**（全局设置，0＝关闭）：在 `SessionPage.handleKey` 里把指定 `keyCode` 改发 Meta。
   **真实 Win 键不转发**，避免"远端+本机"双重映射。
-  - 窗口级"按键穿透"开关已删除（对系统保留键只能旁听、拦不住 shell，对普通键又无必要）；
-    确需独占系统快捷键只能用系统级 `OH_Input_AddKeyEventInterceptor`/`AddKeyEventHook`（需 `system_basic`）。
+- **快捷键穿透**（全局设置 `shortcutPassthrough`，默认关）：系统级按键拦截
+  （`OH_Input_AddKeyEventInterceptor`，需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）接管键盘，
+  让 Win / Alt+Tab / Esc 这些本会被 shell 吃掉的键也到远端。拦截事件按**本会话**路由，走与 `handleKey`
+  相同的映射与记账通路；拦截期间 `handleKey` 不参与，避免双发。（与"自定义 Win 键映射"不同，穿透下
+  **真实 Win 键会被转发**。）
+  - 拦截是**进程级、且只在应用获焦时投递**，故只在**本会话窗口活动**且会话 `Connected` 时注册；其他窗口
+    （设置页 / 主列表）变为活动、或本页离开即释放，否则那些窗口的键盘也会被吞掉。
+  - 代价是开启期间**本机的系统快捷键一并被远端接管**，所以默认关；注册失败（缺 ACL 等）时原生返回
+    `false`，UI 保持普通按键通路而不是把键盘丢掉。
 - **锁定键（Caps / Num / Scroll Lock）以本机为准，RDP 跟随本机**：任何按键事件都读本机锁定态
   （`KeyEvent.isCapsLockOn` / `isNumLockOn` / `isScrollLockOn`，API 19；设备不给这几个字段时保持远端现状）
   并与已下发值比对，变了就发 RDP `Client Synchronize PDU`

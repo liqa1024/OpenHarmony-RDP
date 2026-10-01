@@ -81,6 +81,9 @@ enum class SessionEvent {
   // Upload finished: the server has pulled every advertised byte. Payload is
   // the number of files. (Downloads finish with kClipboardFilesReady instead.)
   kFileTransferDone = 16,
+  // 快捷键穿透 (see SetShortcutPassthrough in hmrdp_napi.cpp): one intercepted
+  // key event, payload "<keyCode>|<down>" with the multimodal KeyCode and 1/0.
+  kKeyIntercept = 17,
 };
 
 struct RdpOptions {

@@ -135,11 +135,15 @@ endif()
 # `ffrt.z` is the platform task queue (hmrdp_parallel.cpp). The patched decoder
 # picks it up through weak symbols, so a build without it falls back to the
 # codec's own WinPR pool instead of failing.
+#
+# `ohinput` backs the 快捷键穿透 key event interceptor
+# (OH_Input_AddKeyEventInterceptor, needs the INTERCEPT_INPUT_EVENT ACL).
 target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
     ffrt.z
     native_window
+    libohinput.so
     EGL
     GLESv3
     ${FREERDP_LIBS}/libfreerdp3.so

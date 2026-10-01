@@ -59,6 +59,15 @@ export const sendUnicode: (handle: number, codepoint: number, down: boolean) => 
  * on every key event.
  */
 export const sendLockState: (handle: number, flags: number) => boolean;
+
+/**
+ * 快捷键穿透: route the system-intercepted key events (OH_Input_AddKeyEventInterceptor,
+ * INTERCEPT_INPUT_EVENT ACL) to this session while enabled, so Win / Alt+Tab / Esc
+ * reach the remote. Each arrives as a KeyIntercept event, payload "<keyCode>|<down>".
+ * Returns whether the state is in effect (false when registration failed).
+ */
+export const setShortcutPassthrough: (handle: number, enabled: boolean) => boolean;
+
 export const setClipboardText: (handle: number, text: string) => boolean;
 
 /** Pushes a local HTML fragment to the session (advertised as CF_HTML). */

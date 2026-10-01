@@ -19,6 +19,10 @@
     {
       "name": "permission_network_info_reason",
       "value": "监测网络状态以维持会话连接"
+    },
+    {
+      "name": "permission_intercept_input_reason",
+      "value": "会话窗口聚焦时接管键盘，把 Win、Alt+Tab 等快捷键发送到远端桌面（快捷键穿透）"
     }
   ]
 }

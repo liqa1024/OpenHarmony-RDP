@@ -65,6 +65,7 @@ struct SettingsPage {
   @State reconnectOnForeground: boolean = false;
   @State winKeySubstitute: number = 0;
   @State winSubstituteCapturing: boolean = false;
+  @State shortcutPassthrough: boolean = false;
   @State resolutionAuto: boolean = true;
   @State manualWidthText: string = '';
   @State manualHeightText: string = '';
@@ -149,6 +150,7 @@ struct SettingsPage {
     this.reconnectOnForeground = settings.reconnectOnForeground;
     RdpNative.applyRdpCursor(this.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
+    this.shortcutPassthrough = settings.shortcutPassthrough;
     this.resolutionAuto = settings.resolutionAuto;
     this.manualWidthText = this.sizeText(settings.manualWidth);
     this.manualHeightText = this.sizeText(settings.manualHeight);
@@ -293,6 +295,7 @@ struct SettingsPage {
     settings.useRdpCursor = this.useRdpCursor;
     settings.reconnectOnForeground = this.reconnectOnForeground;
     settings.winKeySubstitute = this.winKeySubstitute;
+    settings.shortcutPassthrough = this.shortcutPassthrough;
     settings.resolutionAuto = this.resolutionAuto;
     settings.manualWidth =
       this.parseSize(this.manualWidthText, this.detectedWidth, MAX_DESKTOP_SIZE);
@@ -340,6 +343,7 @@ struct SettingsPage {
     this.useRdpCursor = defaults.useRdpCursor;
     this.reconnectOnForeground = defaults.reconnectOnForeground;
     this.winKeySubstitute = defaults.winKeySubstitute;
+    this.shortcutPassthrough = defaults.shortcutPassthrough;
     this.resolutionAuto = true;
     this.manualWidthText = this.sizeText(this.detectedWidth);
     this.manualHeightText = this.sizeText(this.detectedHeight);
@@ -754,6 +758,20 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.reconnectOnForeground = v;
+                this.persist();
+              }
+            })
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '快捷键穿透',
+              subtitle: '会话窗口聚焦时接管键盘，把 Win、Alt+Tab、Esc 等快捷键发送到远端；开启后本机的系统快捷键会被远端接管',
+              value: this.shortcutPassthrough,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.shortcutPassthrough = v;
                 this.persist();
               }
             })

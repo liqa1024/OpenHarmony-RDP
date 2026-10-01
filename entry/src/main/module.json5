@@ -31,6 +31,16 @@
           ],
           "when": "always"
         }
+      },
+      {
+        "name": "ohos.permission.INTERCEPT_INPUT_EVENT",
+        "reason": "$string:permission_intercept_input_reason",
+        "usedScene": {
+          "abilities": [
+            "SessionAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
     "abilities": [
