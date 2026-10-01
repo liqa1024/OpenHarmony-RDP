@@ -309,6 +309,8 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
     settings.pinchZoomSpeed =
       ConfigTransfer.readNumber(rec, 'pinchZoomSpeed', settings.pinchZoomSpeed);
+    settings.touchpadMiddleDoubleTap = ConfigTransfer.readBoolean(rec,
+      'touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
     // A file written before the third mode carries the old two-way boolean.
     const legacyPinchTouch: boolean = ConfigTransfer.readBoolean(rec, 'pinchAsTouch', false);
     settings.pinchMode = ConfigTransfer.readNumber(rec, 'pinchMode',

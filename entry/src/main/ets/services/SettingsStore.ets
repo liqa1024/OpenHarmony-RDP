@@ -67,6 +67,9 @@ export class AppSettings {
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  // 触控板双指双击发送鼠标中键（单次双指轻触仍是右键）。双指轻触要等一个双击窗口
+  // 才能确定不是双击，所以开启后右键有约 300ms 判定延迟；默认关＝无延迟。
+  touchpadMiddleDoubleTap: boolean = false;
   // How the touchpad two-finger pinch is handled: Ctrl+wheel (default), a
   // synthetic native two-finger touch pinch, or a local picture zoom that sends
   // nothing to the remote (PINCH_MODE_*, see above).
@@ -191,6 +194,8 @@ export class SettingsStore {
       // The old two-way `pinchAsTouch` boolean maps onto the three-way mode, so a
       // stored value from before the third option is not lost.
       const legacyPinchTouch: boolean = SettingsStore.readBoolean(store, 'pinchAsTouch', false);
+      settings.touchpadMiddleDoubleTap = SettingsStore.readBoolean(store,
+        'touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
       settings.pinchMode = SettingsStore.readNumber(store, 'pinchMode',
         legacyPinchTouch ? PINCH_MODE_TOUCH : PINCH_MODE_WHEEL);
       settings.pinchTouchAngle =
@@ -261,6 +266,7 @@ export class SettingsStore {
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
+      store.putSync('touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
       store.putSync('pinchMode', settings.pinchMode);
       store.putSync('pinchTouchAngle', settings.pinchTouchAngle);
       store.putSync('pinchTouchDistance', settings.pinchTouchDistance);

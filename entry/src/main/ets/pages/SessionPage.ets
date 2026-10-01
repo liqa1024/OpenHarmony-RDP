@@ -4,7 +4,7 @@
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
-import { pointer } from '@kit.InputKit';
+import { inputDevice, pointer } from '@kit.InputKit';
 import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
@@ -143,6 +143,11 @@ const CANCEL_HOLD_MS: number = 400;
 // arrive far faster than any pointer needs to move, and each forwarded move is a
 // separate input PDU.
 const MOUSE_MOVE_MIN_INTERVAL_MS: number = 8;
+
+// 触控板双指双击 -> 中键的判定窗口：单次双指轻触要等这么久没有第二次才按右键发出。
+const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
+
+
 
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -318,6 +323,22 @@ struct SessionPage {
   private heldButtons: Set<number> = new Set<number>();
   private lastPointerX: number = 0;
   private lastPointerY: number = 0;
+  // 触控板中键手势: a touchpad two-finger tap is a right click, but it may be the
+  // first half of a double tap that means middle, so while the setting is on the
+  // single click is held back for TOUCHPAD_DOUBLE_TAP_MS.
+  private touchpadMiddleDoubleTap: boolean = false;
+  private touchpadClickPending: boolean = false;
+  private touchpadClickTimer: number = -1;
+  private touchpadClickX: number = 0;
+  private touchpadClickY: number = 0;
+  // The second tap of a double was consumed, so its Release is swallowed too.
+  private touchpadMiddleSwallow: boolean = false;
+  // deviceId -> whether that input device is a touchpad (see isTouchpadDevice).
+  private touchpadDevices: Map<number, boolean> = new Map<number, boolean>();
+  private deviceChangeListener: (data: inputDevice.DeviceListener) => void =
+    (data: inputDevice.DeviceListener) => {
+      this.touchpadDevices.clear();
+    };
   // Touchpad pinch state: axisPinch is the ratio of the current two-finger
   // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
@@ -465,6 +486,13 @@ struct SessionPage {
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
+    this.touchpadMiddleDoubleTap = settings.touchpadMiddleDoubleTap;
+    try {
+      // Device IDs can change on replug, so drop the touchpad cache on a change.
+      inputDevice.on('change', this.deviceChangeListener);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'inputDevice.on change failed: %{public}s', JSON.stringify(error));
+    }
     this.pinchZoomSpeed =
       Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, settings.pinchZoomSpeed));
     this.pinchAsTouch = settings.pinchMode === PINCH_MODE_TOUCH;
@@ -552,6 +580,11 @@ struct SessionPage {
       this.reconnectTimer = -1;
     }
     this.unwatchApplicationState();
+    try {
+      inputDevice.off('change', this.deviceChangeListener);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'inputDevice.off change failed: %{public}s', JSON.stringify(error));
+    }
     const win: window.Window | undefined = this.sessionWindow;
     this.sessionWindow = undefined;
     if (win !== undefined) {
@@ -1952,6 +1985,43 @@ struct SessionPage {
     return [remoteX, remoteY];
   }
 
+  /**
+   * 触控板: whether an event came from a touchpad. A touchpad's own gestures
+   * (two-finger scroll / pinch) carry SourceTool.TOUCHPAD. A touchpad *tap*,
+   * however, is delivered as a standard mouse button event and loses that tag
+   * (sourceTool MOUSE, exactly like a real mouse), so the event's originating
+   * input device is the fallback. sourceTool is checked first, so the
+   * high-frequency touchpad scroll never pays for the device lookup.
+   */
+  private isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
+    return sourceTool === SourceTool.TOUCHPAD || this.isTouchpadDevice(deviceId);
+  }
+
+  /**
+   * Whether the input device with this id is a touchpad, from inputDevice's
+   * device sources ('touchpad'). Cached per device id; ids can change on replug,
+   * so the cache is dropped on a device change.
+   */
+  private isTouchpadDevice(deviceId: number | undefined): boolean {
+    if (deviceId === undefined || deviceId <= 0) {
+      return false;
+    }
+    const cached: boolean | undefined = this.touchpadDevices.get(deviceId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    try {
+      const info: inputDevice.InputDeviceData = inputDevice.getDeviceInfoSync(deviceId);
+      const touchpad: boolean = info.sources.indexOf('touchpad') >= 0;
+      this.touchpadDevices.set(deviceId, touchpad);
+      return touchpad;
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'getDeviceInfo(%{public}d) failed: %{public}s', deviceId,
+        JSON.stringify(error));
+    }
+    return false;
+  }
+
   private handleMouse(event: MouseEvent): void {
     // A touchscreen can also emit compatibility mouse events; those are owned by
     // handleTouch. Forward only real mouse / touchpad mouse input here so the
@@ -1974,6 +2044,15 @@ struct SessionPage {
     } else if (event.button === MouseButton.Middle) {
       button = RdpPointerFlags.BUTTON3;
     }
+    // 触控板中键手势: take over touchpad right clicks while the setting is on so a
+    // two-finger double tap can become middle; real mice are untouched.
+    if (this.touchpadMiddleDoubleTap && event.button === MouseButton.Right
+      && this.isTouchpad(event.deviceId, event.sourceTool)) {
+      this.lastPointerX = remoteX;
+      this.lastPointerY = remoteY;
+      this.handleTouchpadRight(event.action, remoteX, remoteY);
+      return;
+    }
     this.lastPointerX = remoteX;
     this.lastPointerY = remoteY;
     if (event.action === MouseAction.Press) {
@@ -1990,6 +2069,67 @@ struct SessionPage {
     } else if (event.action === MouseAction.Move) {
       this.queueMouseMove(remoteX, remoteY);
     }
+  }
+
+  /**
+   * 触控板中键手势: a two-finger tap is a right click and two of them in a row
+   * mean middle. A single one is only known to be single once the window passes,
+   * so it is held back; each click is sent as one whole press+release, so
+   * nothing can stick if focus is lost while one is pending.
+   */
+  private handleTouchpadRight(action: MouseAction, x: number, y: number): void {
+    if (action === MouseAction.Press) {
+      if (this.touchpadClickPending) {
+        // Second tap inside the window: the double is confirmed -> middle.
+        this.cancelTouchpadClickTimer();
+        this.touchpadClickPending = false;
+        this.touchpadMiddleSwallow = true;
+        this.sendSyntheticClick(RdpPointerFlags.BUTTON3, x, y);
+        return;
+      }
+      this.touchpadClickPending = true;
+      this.touchpadClickX = x;
+      this.touchpadClickY = y;
+      return;
+    }
+    if (action !== MouseAction.Release) {
+      return;
+    }
+    if (this.touchpadMiddleSwallow) {
+      this.touchpadMiddleSwallow = false;
+      return;
+    }
+    if (this.touchpadClickPending && this.touchpadClickTimer === -1) {
+      this.touchpadClickTimer = setTimeout(() => {
+        this.touchpadClickTimer = -1;
+        if (!this.touchpadClickPending) {
+          return;
+        }
+        this.touchpadClickPending = false;
+        this.sendSyntheticClick(RdpPointerFlags.BUTTON2, this.touchpadClickX, this.touchpadClickY);
+      }, TOUCHPAD_DOUBLE_TAP_MS);
+    }
+  }
+
+  /** One whole click as press + release, so the remote never keeps a button down. */
+  private sendSyntheticClick(button: number, x: number, y: number): void {
+    this.flushMouseMove();
+    this.native.mouse(RdpPointerFlags.MOVE, x, y);
+    this.native.mouse(button | RdpPointerFlags.DOWN, x, y);
+    this.native.mouse(button, x, y);
+  }
+
+  private cancelTouchpadClickTimer(): void {
+    if (this.touchpadClickTimer !== -1) {
+      clearTimeout(this.touchpadClickTimer);
+      this.touchpadClickTimer = -1;
+    }
+  }
+
+  private clearTouchpadClick(): void {
+    this.cancelTouchpadClickTimer();
+    this.touchpadClickPending = false;
+    this.touchpadMiddleSwallow = false;
   }
 
   /**
@@ -2249,7 +2389,7 @@ struct SessionPage {
     // nothing reaches the remote; at 100% the normal scroll returns. Touchpad
     // displacement is in vp (1:1), a wheel reports notches (fixed step).
     if (this.pinchDirect && this.viewScale > MIN_VIEW_SCALE) {
-      if (event.sourceTool === SourceTool.TOUCHPAD) {
+      if (this.isTouchpad(event.deviceId, event.sourceTool)) {
         this.panView(-horizontal, -vertical);
       } else {
         this.panView(0, -vertical * PAN_WHEEL_STEP);
@@ -2257,7 +2397,7 @@ struct SessionPage {
       return;
     }
     const point: number[] = this.mapPointer(event.x, event.y);
-    if (event.sourceTool === SourceTool.TOUCHPAD) {
+    if (this.isTouchpad(event.deviceId, event.sourceTool)) {
       this.handleTouchpadScroll(vertical, horizontal, point);
     } else if (vertical !== 0) {
       // Mouse wheel: forward/up is negative on the vertical axis.
@@ -2764,6 +2904,8 @@ struct SessionPage {
     this.releaseAllButtons();
     this.releaseAllTouches();
     this.endPinch();
+    // Don't let a pending 中键 candidate fire into a window that lost focus.
+    this.clearTouchpadClick();
   }
 
   private loadSessionWindow(): void {

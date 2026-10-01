@@ -58,6 +58,7 @@ struct SettingsPage {
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchMode: number = PINCH_MODE_WHEEL;
+  @State touchpadMiddleDoubleTap: boolean = false;
   @State pinchTouchAngle: number = 30;
   @State pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   @State touchHighRate: boolean = false;
@@ -143,6 +144,7 @@ struct SettingsPage {
     this.touchpadScrollSpeed = settings.touchpadScrollSpeed;
     this.pinchZoomSpeed = settings.pinchZoomSpeed;
     this.pinchMode = settings.pinchMode;
+    this.touchpadMiddleDoubleTap = settings.touchpadMiddleDoubleTap;
     this.pinchTouchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     this.touchHighRate = settings.touchHighRate;
@@ -289,6 +291,7 @@ struct SettingsPage {
     settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
     settings.pinchZoomSpeed = this.pinchZoomSpeed;
     settings.pinchMode = this.pinchMode;
+    settings.touchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
     settings.pinchTouchAngle = this.pinchTouchAngle;
     settings.pinchTouchDistance = this.pinchTouchDistance;
     settings.touchHighRate = this.touchHighRate;
@@ -337,6 +340,7 @@ struct SettingsPage {
     this.touchpadScrollSpeed = defaults.touchpadScrollSpeed;
     this.pinchZoomSpeed = defaults.pinchZoomSpeed;
     this.pinchMode = defaults.pinchMode;
+    this.touchpadMiddleDoubleTap = defaults.touchpadMiddleDoubleTap;
     this.pinchTouchAngle = defaults.pinchTouchAngle;
     this.pinchTouchDistance = defaults.pinchTouchDistance;
     this.touchHighRate = defaults.touchHighRate;
@@ -885,8 +889,6 @@ struct SettingsPage {
               }
             })
 
-            Divider().color($r('app.color.divider'))
-
             Text('触控板两指捏合模式')
               .fontSize(14)
               .fontColor($r('app.color.text_primary'))
@@ -963,6 +965,20 @@ struct SettingsPage {
                 }
               })
             }
+
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '双指双击发送中键',
+              subtitle: '触控板双指连续轻触两次发送鼠标中键；开启后双指轻触的右键会有约 300ms 判定延迟',
+              value: this.touchpadMiddleDoubleTap,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.touchpadMiddleDoubleTap = v;
+                this.persist();
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 
