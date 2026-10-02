@@ -21,7 +21,7 @@
 | 改通道线程 / 音频不被帧挡住 | [`architecture.md`](architecture.md) §4（线程模型） |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
 | 改 Moonlight 前端（协议建模 / 存储 / 列表 / 编辑页 / 设置分栏） | [`moonlight-connection.md`](moonlight-connection.md) |
-| 改 Moonlight 原生（客户端库构建 / 解码 / 协商 / 上屏） | [`moonlight-native.md`](moonlight-native.md) |
+| 改 Moonlight 原生（客户端库构建 / 解码 / 协商 / 上屏 / HTTP / 凭证 / 配对原语） | [`moonlight-native.md`](moonlight-native.md) |
 
 ## 文档清单
 
@@ -43,7 +43,8 @@
 - [`moonlight-connection.md`](moonlight-connection.md) —— Moonlight（Sunshine）串流连接的**前端**：协议建模与
   存储布局、连接列表与编辑页、设置页的协议分栏与「全局默认 + 会话覆盖」、图标约束、当前实现边界。
 - [`moonlight-native.md`](moonlight-native.md) —— Moonlight 的**原生侧**：客户端库 moonlight-common-c 的
-  拉取/补丁/静态构建与链接、视频解码与上屏、编解码协商、解码桥与降级。
+  拉取/补丁/静态构建与链接、视频解码与上屏、编解码协商、解码桥与降级、HTTP 控制层、客户端身份与信任存储
+  （HUKS 信封加密）、配对加密原语（协议编排与 XML 在 ArkTS，见文内 §4.2）。
 
 ## 维护约定
 

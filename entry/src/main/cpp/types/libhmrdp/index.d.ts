@@ -226,6 +226,81 @@ export const moonlightEnsureCredential: (dir: string) => string;
  */
 export const moonlightClearCredential: (dir: string) => boolean;
 
+/** One Moonlight control request (see moonlightHttpRequest). */
+export interface MoonlightHttpOptions {
+  /** Plain HTTP when false, TLS when true. */
+  useTls: boolean;
+  host: string;
+  port: number;
+  /** Path plus query, e.g. "/serverinfo?uniqueid=...". */
+  path: string;
+  method?: string;
+  /** Request body; omit for GET. */
+  body?: string;
+  contentType?: string;
+  /** Overrides the stored per-host pin (hex DER), e.g. during pairing. */
+  pinServerCertHex?: string;
+}
+
+export interface MoonlightHttpResult {
+  ok: boolean;
+  status?: number;
+  /** Response body as a UTF-8 string. */
+  body?: string;
+  /** Leaf certificate (hex DER) of the TLS peer, for pinning. */
+  serverCertDer?: string;
+  /** Stable error code when ok is false. */
+  error?: string;
+}
+
+/**
+ * Performs one Moonlight control request for the ArkTS protocol layer. For TLS
+ * the stored client certificate is attached and the stored per-host server
+ * certificate pins the peer (unless pinServerCertHex overrides it). The body
+ * comes back as a UTF-8 string; binary responses are not supported yet.
+ */
+export const moonlightHttpRequest: (dir: string, options: MoonlightHttpOptions) =>
+  MoonlightHttpResult;
+
+/** Pins a host's server certificate (hex DER), e.g. after pairing. */
+export const moonlightStorePinnedServerCert: (dir: string, host: string, derHex: string) =>
+  boolean;
+
+/** The pinned server certificate (hex DER) for a host, or "". */
+export const moonlightPinnedServerCertHex: (dir: string, host: string) => string;
+
+export const moonlightClearPinnedServerCert: (dir: string, host: string) => boolean;
+
+// --- pairing crypto primitives (orchestration and XML live in ArkTS) ---
+
+/** AES key = hash(salt || pin)[0:16]; hex in, hex out. */
+export const moonlightPairDeriveKey: (serverMajorVersion: number, saltHex: string,
+  pin: string) => string;
+
+/** AES-128-ECB, no padding (input zero-padded); hex in, hex out. */
+export const moonlightAesEcb: (encrypt: boolean, keyHex: string, dataHex: string) => string;
+
+/** serverchallengeresp value (hash padded to 32 then AES-ECB); hex out. */
+export const moonlightPairChallengeResponse: (serverMajorVersion: number, keyHex: string,
+  serverChallengeHex: string, clientCertSignatureHex: string, clientSecretHex: string) => string;
+
+/** Expected server response hash for the PIN check; hex out. */
+export const moonlightPairExpectedResponse: (serverMajorVersion: number,
+  randomChallengeHex: string, serverCertSignatureHex: string, serverSecretHex: string) => string;
+
+/** Raw signature bytes of a certificate (DER or PEM hex in, hex out). */
+export const moonlightCertSignature: (certHex: string) => string;
+
+/** Signs the client secret with the stored client key (SHA256withRSA); hex out. */
+export const moonlightSignClientSecret: (dir: string, clientSecretHex: string) => string;
+
+/** Verifies a server secret against the server certificate. */
+export const moonlightVerifyServerSecret: (serverCertHex: string, serverSecretHex: string,
+  serverSignatureHex: string) => boolean;
+
+/** `length` random bytes as hex (1..256). */
+export const moonlightRandomHex: (length: number) => string;
+
 /**
  * Bitmask of the Moonlight VIDEO_FORMAT_* codecs to advertise for negotiation.
  * `preference` is an ML_CODEC_* value (default 0 = auto): auto sends every

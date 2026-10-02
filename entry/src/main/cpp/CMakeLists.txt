@@ -119,6 +119,7 @@ add_library(hmrdp SHARED
     hmrdp_moonlight.cpp
     hmrdp_moonlight_http.cpp
     hmrdp_moonlight_cred.cpp
+    hmrdp_moonlight_pair.cpp
     hmrdp_video_decoder.cpp
     hmrdp_audio.cpp
     hmrdp_gfx_capture.cpp

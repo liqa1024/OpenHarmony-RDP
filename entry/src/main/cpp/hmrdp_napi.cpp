@@ -25,6 +25,7 @@
 #include "hmrdp_moonlight.h"
 #include "hmrdp_moonlight_cred.h"
 #include "hmrdp_moonlight_http.h"
+#include "hmrdp_moonlight_pair.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_session.h"
 #include "hmrdp_vk_context.h"
@@ -173,6 +174,46 @@ std::string GetStringProperty(napi_env env, napi_value object, const char* name)
   return result;
 }
 
+std::string ToHex(const std::string& bytes) {
+  static const char* digits = "0123456789abcdef";
+  std::string out;
+  out.reserve(bytes.size() * 2);
+  for (unsigned char c : bytes) {
+    out.push_back(digits[c >> 4]);
+    out.push_back(digits[c & 0x0F]);
+  }
+  return out;
+}
+
+bool FromHex(const std::string& hex, std::string* out) {
+  if (hex.size() % 2 != 0) {
+    return false;
+  }
+  auto nibble = [](char c) -> int {
+    if (c >= '0' && c <= '9') {
+      return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+      return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+      return c - 'A' + 10;
+    }
+    return -1;
+  };
+  out->clear();
+  out->reserve(hex.size() / 2);
+  for (size_t i = 0; i < hex.size(); i += 2) {
+    const int hi = nibble(hex[i]);
+    const int lo = nibble(hex[i + 1]);
+    if (hi < 0 || lo < 0) {
+      return false;
+    }
+    out->push_back(static_cast<char>((hi << 4) | lo));
+  }
+  return true;
+}
+
 std::string GetStringArgument(napi_env env, napi_value value) {
   napi_valuetype type = napi_undefined;
   if (value == nullptr || napi_typeof(env, value, &type) != napi_ok || type != napi_string) {
@@ -183,6 +224,16 @@ std::string GetStringArgument(napi_env env, napi_value value) {
   std::string result(length, '\0');
   napi_get_value_string_utf8(env, value, result.data(), length + 1, &length);
   result.resize(length);
+  return result;
+}
+
+int32_t GetIntArgument(napi_env env, napi_value value, int32_t fallback) {
+  napi_valuetype type = napi_undefined;
+  if (value == nullptr || napi_typeof(env, value, &type) != napi_ok || type != napi_number) {
+    return fallback;
+  }
+  int32_t result = fallback;
+  napi_get_value_int32(env, value, &result);
   return result;
 }
 
@@ -1221,6 +1272,232 @@ napi_value MoonlightClearCredential(napi_env env, napi_callback_info info) {
   return CreateBool(env, !dir.empty() && hmrdp::MoonlightClearCredential(dir));
 }
 
+// One HTTPS/HTTP request for the ArkTS protocol layer. `options` is
+// {useTls, host, port, path, method?, body?, contentType?, pinServerCertHex?}.
+// For TLS the stored credential (client certificate) is attached and the stored
+// per-host server certificate pins the peer unless pinServerCertHex overrides it.
+// Returns {ok, status, body, serverCertDer, error}; serverCertDer is hex.
+napi_value MoonlightHttpRequest(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 2) {
+    return CreateUndefined(env);
+  }
+  const std::string dir = GetStringArgument(env, args[0]);
+  hmrdp::MoonlightHttpRequest request;
+  request.useTls = GetBoolProperty(env, args[1], "useTls", true);
+  request.host = GetStringProperty(env, args[1], "host");
+  request.port = GetIntProperty(env, args[1], "port", 47989);
+  request.path = GetStringProperty(env, args[1], "path");
+  request.method = GetStringProperty(env, args[1], "method");
+  request.body = GetStringProperty(env, args[1], "body");
+  request.contentType = GetStringProperty(env, args[1], "contentType");
+  if (request.method.empty()) {
+    request.method = "GET";
+  }
+  if (request.contentType.empty()) {
+    request.contentType = "application/xml";
+  }
+  if (request.useTls) {
+    const hmrdp::MoonlightCredential credential = hmrdp::MoonlightEnsureCredential(dir);
+    if (!credential.ok) {
+      napi_value obj = nullptr;
+      napi_create_object(env, &obj);
+      napi_value ok = nullptr;
+      napi_get_boolean(env, false, &ok);
+      napi_set_named_property(env, obj, "ok", ok);
+      napi_value error = nullptr;
+      napi_create_string_utf8(env, credential.error.c_str(), credential.error.size(), &error);
+      napi_set_named_property(env, obj, "error", error);
+      return obj;
+    }
+    request.clientCertPem = credential.certPem;
+    request.clientKeyPem = hmrdp::MoonlightClientKeyPem(dir);
+    const std::string overrideHex = GetStringProperty(env, args[1], "pinServerCertHex");
+    if (!overrideHex.empty()) {
+      (void)FromHex(overrideHex, &request.pinnedServerCertDer);
+    } else if (!request.host.empty()) {
+      request.pinnedServerCertDer = hmrdp::MoonlightLoadPinnedServerCert(dir, request.host);
+    }
+  }
+
+  const hmrdp::MoonlightHttpResponse response = hmrdp::MoonlightHttpPerform(request);
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_value ok = nullptr;
+  napi_get_boolean(env, response.ok, &ok);
+  napi_set_named_property(env, obj, "ok", ok);
+  napi_value status = nullptr;
+  napi_create_int32(env, static_cast<int32_t>(response.status), &status);
+  napi_set_named_property(env, obj, "status", status);
+  napi_value body = nullptr;
+  napi_create_string_utf8(env, response.body.c_str(), response.body.size(), &body);
+  napi_set_named_property(env, obj, "body", body);
+  const std::string certHex = ToHex(response.serverCertDer);
+  napi_value cert = nullptr;
+  napi_create_string_utf8(env, certHex.c_str(), certHex.size(), &cert);
+  napi_set_named_property(env, obj, "serverCertDer", cert);
+  napi_value error = nullptr;
+  napi_create_string_utf8(env, response.error.c_str(), response.error.size(), &error);
+  napi_set_named_property(env, obj, "error", error);
+  return obj;
+}
+
+// Pins the server certificate (hex DER) for a host.
+napi_value MoonlightStorePinnedServerCert(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 3) {
+    return CreateBool(env, false);
+  }
+  const std::string dir = GetStringArgument(env, args[0]);
+  const std::string host = GetStringArgument(env, args[1]);
+  std::string der;
+  if (dir.empty() || host.empty() || !FromHex(GetStringArgument(env, args[2]), &der)) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, hmrdp::MoonlightStorePinnedServerCert(dir, host, der));
+}
+
+// The pinned server certificate (hex DER) for a host, or "".
+napi_value MoonlightPinnedServerCertHex(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 2) {
+    return CreateUndefined(env);
+  }
+  const std::string hex = ToHex(hmrdp::MoonlightLoadPinnedServerCert(
+      GetStringArgument(env, args[0]), GetStringArgument(env, args[1])));
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, hex.c_str(), hex.size(), &result);
+  return result;
+}
+
+napi_value MoonlightClearPinnedServerCert(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 2) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, hmrdp::MoonlightClearPinnedServerCert(GetStringArgument(env, args[0]),
+                                                               GetStringArgument(env, args[1])));
+}
+
+// --- pairing crypto primitives (see hmrdp_moonlight_pair.h) ---
+
+napi_value MoonlightPairDeriveKey(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string out = argc >= 3 ? hmrdp::MoonlightPairDeriveKey(
+                                          GetIntArgument(env, args[0], 0),
+                                          GetStringArgument(env, args[1]),
+                                          GetStringArgument(env, args[2]))
+                                    : std::string();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value MoonlightAesEcb(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  bool encrypt = true;
+  if (argc >= 1) {
+    napi_get_value_bool(env, args[0], &encrypt);
+  }
+  const std::string out = argc >= 3 ? hmrdp::MoonlightAesEcb(
+                                          encrypt, GetStringArgument(env, args[1]),
+                                          GetStringArgument(env, args[2]))
+                                    : std::string();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value MoonlightPairChallengeResponse(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string out = argc >= 5
+                              ? hmrdp::MoonlightPairChallengeResponse(
+                                    GetIntArgument(env, args[0], 0),
+                                    GetStringArgument(env, args[1]), GetStringArgument(env, args[2]),
+                                    GetStringArgument(env, args[3]), GetStringArgument(env, args[4]))
+                              : std::string();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value MoonlightPairExpectedResponse(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string out = argc >= 4
+                              ? hmrdp::MoonlightPairExpectedResponse(
+                                    GetIntArgument(env, args[0], 0),
+                                    GetStringArgument(env, args[1]), GetStringArgument(env, args[2]),
+                                    GetStringArgument(env, args[3]))
+                              : std::string();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value MoonlightCertSignature(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string out =
+      argc >= 1 ? hmrdp::MoonlightCertSignature(GetStringArgument(env, args[0])) : std::string();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value MoonlightSignClientSecret(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string out = argc >= 2 ? hmrdp::MoonlightSignClientSecret(
+                                          GetStringArgument(env, args[0]),
+                                          GetStringArgument(env, args[1]))
+                                    : std::string();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+napi_value MoonlightVerifyServerSecret(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const bool ok = argc >= 3 && hmrdp::MoonlightVerifyServerSecret(GetStringArgument(env, args[0]),
+                                                                  GetStringArgument(env, args[1]),
+                                                                  GetStringArgument(env, args[2]));
+  return CreateBool(env, ok);
+}
+
+napi_value MoonlightRandomHex(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t length = 0;
+  if (argc >= 1) {
+    napi_get_value_int32(env, args[0], &length);
+  }
+  const std::string out = hmrdp::MoonlightRandomHex(length);
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 // VIDEO_FORMAT_* bitmask to advertise to the host (codec negotiation), for the
 // given ML_CODEC_* preference (default auto). 0 without a Moonlight client.
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
@@ -1363,6 +1640,30 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightClearCredential", nullptr, MoonlightClearCredential, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"moonlightHttpRequest", nullptr, MoonlightHttpRequest, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightStorePinnedServerCert", nullptr, MoonlightStorePinnedServerCert, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightPinnedServerCertHex", nullptr, MoonlightPinnedServerCertHex, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightClearPinnedServerCert", nullptr, MoonlightClearPinnedServerCert, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightPairDeriveKey", nullptr, MoonlightPairDeriveKey, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightAesEcb", nullptr, MoonlightAesEcb, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"moonlightPairChallengeResponse", nullptr, MoonlightPairChallengeResponse, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightPairExpectedResponse", nullptr, MoonlightPairExpectedResponse, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightCertSignature", nullptr, MoonlightCertSignature, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightSignClientSecret", nullptr, MoonlightSignClientSecret, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightVerifyServerSecret", nullptr, MoonlightVerifyServerSecret, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightRandomHex", nullptr, MoonlightRandomHex, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
       {"moonlightVideoFormats", nullptr, MoonlightVideoFormats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightVideoCodec", nullptr, MoonlightVideoCodec, nullptr, nullptr, nullptr,

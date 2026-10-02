@@ -3,8 +3,9 @@
 本文件是 **Moonlight / Sunshine 串流**这条路的知识：协议建模、存储布局、连接列表与编辑/设置界面的约定、
 图标约束。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；差异集中在连接配置与串流参数。
 RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-storage.md`](settings-and-storage.md)、
-[`present-pipeline.md`](present-pipeline.md)。**原生侧**（客户端库构建与静态链接、桥接层、后续的配对 /
-应用列表 / 会话 / 输入 / 上屏）见 [`moonlight-native.md`](moonlight-native.md)。
+[`present-pipeline.md`](present-pipeline.md)。**原生侧**（客户端库构建与静态链接、桥接层、HTTP 控制层、客户端
+身份与信任存储、配对加密原语，以及后续的会话 / 输入 / 上屏）见 [`moonlight-native.md`](moonlight-native.md)；
+**协议编排与 XML 解析在 ArkTS**（见其 §4.2）。
 
 ## 1. 协议建模
 
@@ -84,10 +85,11 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   `libhmrdp.so`；桥接层有一个连通性探针 `moonlightProbe`（返回 `"1"`，或在未构建该库时返回
   `"0|no-moonlight"`），它真正调用一个 moonlight 入口点，因此"符号已解析"是被链接器保证的。
   构建流程、静态链接约定与目录见 [`moonlight-native.md`](moonlight-native.md)。
-- **HTTPS 原语已就绪**：`hmrdp_moonlight_http.*` 提供可配端口、证书 pin、mTLS 与
-  `Content-Length`/chunked 解析的单次请求；XML 由 ArkTS（`@ohos.xml`）解析（见
-  [`moonlight-native.md`](moonlight-native.md) §4）。
-- **尚未接入**：`serverinfo`/`pair`/`applist`/`launch` 的请求封装与配对密码学、证书存储、应用列表交互、
-  串流会话（`LiStartConnection`）与输入还没有实现。因此当前在列表/编辑页发起 Moonlight 连接只会给出提示，
-  不会建立会话；配对、应用列表与串流会话窗口属于后续工作。
+- **原生控制层已就绪**：`hmrdp_moonlight_http.*`（明文 HTTP / TLS、证书 pin、mTLS、`Content-Length`/chunked）、
+  `hmrdp_moonlight_cred.*`（自签名客户端身份 + HUKS 信封加密私钥 + 按 host 的 pin）、`hmrdp_moonlight_pair.*`
+  （配对加密原语）；均经 NAPI 暴露（`moonlightHttpRequest` + 原语 + pin 存取）。见
+  [`moonlight-native.md`](moonlight-native.md) §4.1/§4.2。
+- **尚未接入**：ArkTS 侧的协议编排——用 `@ohos.xml` 解析并驱动 `serverinfo → pair → applist → launch`
+  （配对编排与**所有** XML 都在 ArkTS），以及应用列表交互、串流会话（`LiStartConnection`）与输入。因此当前在
+  列表/编辑页发起 Moonlight 连接只会给出提示，不会建立会话。
 - 本文件描述**已落地的前端约定与已就绪的原生基础**；原生侧的会话/输入/上屏约束在接入后再补进本文件。

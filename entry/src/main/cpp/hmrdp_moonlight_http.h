@@ -27,6 +27,10 @@ struct MoonlightHttpRequest {
   // Request body. `contentType` is only sent when the body is non-empty.
   std::string body;
   std::string contentType = "application/xml";
+  // Plain HTTP when false, TLS when true. The GameStream control port is HTTP
+  // (47989) for serverinfo / pair / unpair and HTTPS (47984) for the paired
+  // endpoints; plain requests use neither pin nor client certificate.
+  bool useTls = true;
   // TLS trust. When `pinnedServerCertDer` is non-empty the peer's leaf
   // certificate must equal it exactly (the paired state); when it is empty any
   // certificate is accepted, which is the first-contact pairing handshake every

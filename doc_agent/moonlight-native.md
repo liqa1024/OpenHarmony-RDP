@@ -1,7 +1,8 @@
 # Moonlight 原生客户端
 
 本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与静态链接、视频解码与上屏、
-桥接层约定，以及后续的配对、应用列表、串流会话、输入接线。**前端**侧（协议建模、存储布局、连接列表与
+桥接层约定、HTTP 控制层、客户端身份与信任存储与配对加密原语，以及后续的串流会话与输入接线。**协议编排与
+全部 XML 解析在 ArkTS**（§4.2），不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
 编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)；RDP 的
 FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（本文件不重复它）。
 
@@ -120,9 +121,9 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 
 ## 4. GameStream HTTP / 配对层
 
-- **一个原语**：`hmrdp_moonlight_http.{h,cpp}` 只做一件事——一次 TLS + HTTP/1.1 请求，返回**未解析的响应体**。
-  `/serverinfo`、`/pair`、`/applist`、`/launch`、`/resume` 都由它拼装。**XML 由 ArkTS（`@ohos.xml`）解析**，
-  不在原生手写解析（已知标签的手写扫描坑多，不值得自研）；配对、证书与请求收发留在原生，与 RDP 一致。
+- **一个原语**：`hmrdp_moonlight_http.{h,cpp}` 只做一件事——一次 HTTP/1.1 请求（TLS 或明文），返回**未解析的响应
+  体**。`/serverinfo`、`/pair`、`/applist`、`/launch`、`/resume` 都由它拼装。**请求编排与全部 XML 解析都在 ArkTS**
+  （`@ohos.xml`），原生不解析 XML，只提供"传输 + 证书/凭证 + 加密原语"——分层理由见 §4.2。
 - **不复用 `freerdp_http_request`**：它端口写死 443、走系统 CA、只发 form-urlencoded、没有客户端证书——
   本层需要可配端口（47989/47984）、自签名主机与 mTLS。FreeRDP gateway 的 `http.c` 是 `FREERDP_LOCAL`
   （未导出），同样不可用。
@@ -161,12 +162,35 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - **依赖**：链接 `libhuks_ndk.z.so`（设备核心安全服务）。
 - **能力探针/入口**：`moonlightCredentialProbe` / `moonlightEnsureCredential(dir)` / `moonlightClearCredential(dir)`。
 
+### 4.2 配对：原生加密原语 + ArkTS 编排
+
+- **分层与官方实现一致**：Qt 的 `NvHTTP::getXmlString` 用 `QXmlStreamReader`，Android 的 `NvHTTP.getXmlString`
+  用 `XmlPullParser`；**配对编排（`NvPairingManager` / `PairingManager`）与普通端点共用同一套 XML 解析器、同在一个
+  应用层**。本仓库照此办理：**配对编排与所有 XML 都在 ArkTS**，原生退为加密原语 + 通用 HTTP + 凭证/pin。**不在原生
+  手写标签扫描**——那是参考实现里不存在的方言；OHOS sysroot 也没有 expat/libxml，原生用"真解析器"还得新增三方依赖。
+- **时序**：**客户端生成并显示 4 位 PIN**，用户在**主机**上输入；`getservercert` 会等到主机端完成输入，故该步
+  **无读超时**（其余步骤 5s 量级），由 ArkTS 用长超时发起。
+- **步骤**（前四步走 **HTTP 47989**，最后一步走 **HTTPS 47984**）：
+  `getservercert` → `clientchallenge` → `serverchallengeresp` → `clientpairingsecret` → `pairchallenge`（HTTPS +
+  mTLS）。失败时 ArkTS 尽力 `/unpair` 清掉主机端半程状态。
+- **原生原语**（`hmrdp_moonlight_pair.*`，hex 进 hex 出）：`moonlightPairDeriveKey`
+  （`aesKey = SHA256/SHA1(salt‖pin)[0:16]`，主版本 < 7 用 SHA-1）、`moonlightAesEcb`（AES-128-ECB、零填充、无 IV）、
+  `moonlightPairChallengeResponse`（哈希补零到 32 再 AES-ECB）、`moonlightPairExpectedResponse`（PIN 校验哈希）、
+  `moonlightCertSignature`（证书的签名值字节）、`moonlightSignClientSecret`（`SHA256withRSA`）、
+  `moonlightVerifyServerSecret`、`moonlightRandomHex`。哈希里串入的是**证书签名值字节**（`X509_get0_signature` 的
+  ASN.1 BIT STRING 内容），不是公钥。
+- **HTTP 客户端**支持**明文 HTTP**（`useTls=false`，47989 的 serverinfo / pair / unpair）与 TLS（配对后端点）；明文
+  不带 pin、不带客户端证书，TLS 带存储的客户端证书并按 host pin（配对过程中可用 `pinServerCertHex` 覆盖）。
+- **结果判定在 ArkTS**：PIN 错、`<plaincert>` 为空（另一设备在配对）、验签失败（MITM）等；成功后调
+  `moonlightStorePinnedServerCert` 落 pin。
+
 ## 5. 范围与后续方向
 
 - 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）、HTTP / 配对层（§4）。
 - 超分链路（buffer 模式 + Vulkan 导入 + 复用 `VkRenderer`）只在真机验证，属独立后续里程碑，复用约束见 §2
   「与 RDP 呈现器的复用口径」。
-- 主机发现、应用列表交互、串流会话建立（`LiStartConnection`）与输入接线不在本文件范围；解码桥与 HTTP 层把
-  两侧备好，会话建立后即可接。路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
+- 主机发现、应用列表交互、串流会话建立（`LiStartConnection`）与输入接线不在本文件范围；**协议编排（驱动
+  `serverinfo → pair → applist → launch`）与 XML 解析也在 ArkTS**，不在本文件范围。解码桥与原生控制层把两侧备好，
+  编排接上后即可跑。路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
 - **改前必读**：会话侧接线要遵守既有的线程模型（动态通道分发线程只做轻活，帧重活走 sink 钩子），见
   [`architecture.md`](architecture.md) §4。

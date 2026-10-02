@@ -1,10 +1,10 @@
 /*
  * HmRdp - HarmonyOS RDP client
- * Moonlight (GameStream) HTTPS control surface - see hmrdp_moonlight_http.h.
+ * Moonlight (GameStream) control surface - see hmrdp_moonlight_http.h.
  *
- * A single request is one self-contained TLS + HTTP/1.1 exchange: fresh
- * SSL_CTX, fresh socket, no process-global state, so several control requests
- * can run concurrently without sharing anything.
+ * A single request is one self-contained HTTP/1.1 exchange (over TLS or plain
+ * TCP): fresh context, fresh socket, no process-global state, so several control
+ * requests can run concurrently without sharing anything.
  */
 #include "hmrdp_moonlight_http.h"
 
@@ -83,8 +83,6 @@ bool DecodeChunked(const std::string& in, size_t start, std::string& out, bool& 
     }
     const size_t dataStart = lineEnd + 2;
     if (size == 0) {
-      // Trailer section ends at the next CRLF; the body is complete once it is
-      // there.
       complete = in.find("\r\n", dataStart) != std::string::npos;
       return true;
     }
@@ -187,7 +185,7 @@ int ConnectTcp(const std::string& host, int port, int timeoutMs, std::string& er
   freeaddrinfo(result);
 
   if (fd < 0) {
-    errcode = (errno == ETIMEDOUT) ? "connect" : "connect";
+    errcode = "connect";
     return -1;
   }
   const int one = 1;
@@ -200,55 +198,52 @@ int ConnectTcp(const std::string& host, int port, int timeoutMs, std::string& er
   return fd;
 }
 
-MoonlightHttpResponse Fail(const std::string& code) {
-  MoonlightHttpResponse response;
-  response.ok = false;
-  response.error = code;
-  return response;
+// One connected transport: TLS (with a pin/optional client certificate) or plain
+// TCP. `fd` is owned by the SSL object for TLS (BIO_CLOSE) and by this struct
+// otherwise.
+struct Transport {
+  bool tls = false;
+  int fd = -1;
+  SSL* ssl = nullptr;
+  SSL_CTX* ctx = nullptr;
+};
+
+void TransportClose(Transport& transport) {
+  if (transport.tls) {
+    SSL_free(transport.ssl);  // closes the socket (BIO_CLOSE)
+    SSL_CTX_free(transport.ctx);
+  } else if (transport.fd >= 0) {
+    close(transport.fd);
+  }
 }
 
-MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
-  if (request.host.empty()) {
-    return Fail("request");
+// Sets up the transport. TLS performs the handshake; plain does nothing. Returns
+// a stable error code, or "" on success.
+std::string TransportOpen(Transport& transport, const MoonlightHttpRequest& request, int fd) {
+  transport.fd = fd;
+  if (!request.useTls) {
+    return std::string();
   }
-
-  MoonlightHttpResponse response;
-  std::string errcode;
-  const int fd = ConnectTcp(request.host, request.port, request.timeoutMs, errcode);
-  if (fd < 0) {
-    HMRDP_LOGW("moonlight http: connect %{public}s:%{public}d failed",
-               request.host.c_str(), request.port);
-    return Fail(errcode);
-  }
-
-  SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
-  if (ctx == nullptr) {
-    close(fd);
-    return Fail("tls");
+  transport.ctx = SSL_CTX_new(TLS_client_method());
+  if (transport.ctx == nullptr) {
+    return "tls";
   }
   // The pin is read by the verify callback during the handshake, on this thread,
-  // so the local request outlives it.
-  SSL_CTX_set_cert_verify_callback(ctx, PinnedVerify,
+  // so the request outlives it.
+  SSL_CTX_set_cert_verify_callback(transport.ctx, PinnedVerify,
                                    const_cast<std::string*>(&request.pinnedServerCertDer));
-  SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+  SSL_CTX_set_verify(transport.ctx, SSL_VERIFY_PEER, nullptr);
 
-  SSL* ssl = SSL_new(ctx);
-  if (ssl == nullptr) {
-    close(fd);
-    SSL_CTX_free(ctx);
-    return Fail("tls");
+  transport.ssl = SSL_new(transport.ctx);
+  if (transport.ssl == nullptr) {
+    return "tls";
   }
-  // BIO_CLOSE moves the socket into the SSL object: SSL_free closes it, so no
-  // path below has to remember to.
   BIO* bio = BIO_new_socket(fd, BIO_CLOSE);
   if (bio == nullptr) {
-    close(fd);
-    SSL_free(ssl);
-    SSL_CTX_free(ctx);
-    return Fail("tls");
+    return "tls";
   }
-  SSL_set_bio(ssl, bio, bio);
-  SSL_set_tlsext_host_name(ssl, request.host.c_str());
+  SSL_set_bio(transport.ssl, bio, bio);
+  SSL_set_tlsext_host_name(transport.ssl, request.host.c_str());
 
   if (!request.clientCertPem.empty()) {
     BIO* certBio = BIO_new_mem_buf(request.clientCertPem.data(),
@@ -266,30 +261,88 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
     if (keyBio != nullptr) {
       BIO_free(keyBio);
     }
-    if (cert == nullptr || key == nullptr || SSL_use_certificate(ssl, cert) != 1 ||
-        SSL_use_PrivateKey(ssl, key) != 1) {
+    if (cert == nullptr || key == nullptr || SSL_use_certificate(transport.ssl, cert) != 1 ||
+        SSL_use_PrivateKey(transport.ssl, key) != 1) {
       HMRDP_LOGE("moonlight http: client certificate/key rejected");
       X509_free(cert);
       EVP_PKEY_free(key);
-      SSL_free(ssl);
-      SSL_CTX_free(ctx);
-      return Fail("tls");
+      return "tls";
     }
     X509_free(cert);
     EVP_PKEY_free(key);
   }
 
-  if (SSL_connect(ssl) != 1) {
+  if (SSL_connect(transport.ssl) != 1) {
     HMRDP_LOGW("moonlight http: tls handshake failed (%{public}s)",
                ERR_error_string(ERR_get_error(), nullptr));
-    SSL_free(ssl);
-    SSL_CTX_free(ctx);
-    return Fail("tls");
+    return "tls";
   }
-  response.serverCertDer = PeerCertDer(ssl);
+  return std::string();
+}
 
-  // Request. Connection: close keeps the response framing simple (a server that
-  // omits Content-Length is then delimited by the close).
+enum class ReadStatus { kOk, kEof, kTimeout, kError };
+
+ReadStatus TransportRead(Transport& transport, char* buffer, int length, int* out) {
+  if (transport.tls) {
+    const int n = SSL_read(transport.ssl, buffer, length);
+    if (n > 0) {
+      *out = n;
+      return ReadStatus::kOk;
+    }
+    const int sslError = SSL_get_error(transport.ssl, n);
+    if (sslError == SSL_ERROR_ZERO_RETURN ||
+        (sslError == SSL_ERROR_SYSCALL && errno == 0 && n == 0)) {
+      return ReadStatus::kEof;
+    }
+    if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE ||
+        (sslError == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK))) {
+      return ReadStatus::kTimeout;
+    }
+    return ReadStatus::kError;
+  }
+  const ssize_t n = recv(transport.fd, buffer, static_cast<size_t>(length), 0);
+  if (n > 0) {
+    *out = static_cast<int>(n);
+    return ReadStatus::kOk;
+  }
+  if (n == 0) {
+    return ReadStatus::kEof;
+  }
+  if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    return ReadStatus::kTimeout;
+  }
+  return ReadStatus::kError;
+}
+
+bool TransportWriteAll(Transport& transport, const std::string& data) {
+  size_t sent = 0;
+  while (sent < data.size()) {
+    if (transport.tls) {
+      const int n =
+          SSL_write(transport.ssl, data.data() + sent, static_cast<int>(data.size() - sent));
+      if (n <= 0) {
+        return false;
+      }
+      sent += static_cast<size_t>(n);
+    } else {
+      const ssize_t n = send(transport.fd, data.data() + sent, data.size() - sent, 0);
+      if (n <= 0) {
+        return false;
+      }
+      sent += static_cast<size_t>(n);
+    }
+  }
+  return true;
+}
+
+MoonlightHttpResponse Fail(const std::string& code) {
+  MoonlightHttpResponse response;
+  response.ok = false;
+  response.error = code;
+  return response;
+}
+
+std::string BuildRequest(const MoonlightHttpRequest& request) {
   std::string out;
   out.reserve(256 + request.body.size());
   out += request.method;
@@ -309,21 +362,41 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
   }
   out += "\r\n";
   out += request.body;
+  return out;
+}
 
-  size_t sent = 0;
-  while (sent < out.size()) {
-    const int n = SSL_write(ssl, out.data() + sent, static_cast<int>(out.size() - sent));
-    if (n <= 0) {
-      HMRDP_LOGW("moonlight http: write failed");
-      SSL_free(ssl);
-      SSL_CTX_free(ctx);
-      return Fail("io");
-    }
-    sent += static_cast<size_t>(n);
+MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
+  if (request.host.empty()) {
+    return Fail("request");
   }
 
-  // Response: read until the frame is complete (Content-Length / chunked) or the
-  // peer closes.
+  std::string errcode;
+  const int fd = ConnectTcp(request.host, request.port, request.timeoutMs, errcode);
+  if (fd < 0) {
+    HMRDP_LOGW("moonlight http: connect %{public}s:%{public}d failed", request.host.c_str(),
+               request.port);
+    return Fail(errcode);
+  }
+
+  Transport transport;
+  const std::string openError = TransportOpen(transport, request, fd);
+  if (!openError.empty()) {
+    TransportClose(transport);
+    return Fail(openError);
+  }
+  MoonlightHttpResponse response;
+  if (transport.tls) {
+    response.serverCertDer = PeerCertDer(transport.ssl);
+  }
+
+  if (!TransportWriteAll(transport, BuildRequest(request))) {
+    HMRDP_LOGW("moonlight http: write failed");
+    TransportClose(transport);
+    return Fail("io");
+  }
+
+  // Read until the frame is complete (Content-Length / chunked) or the peer
+  // closes.
   std::string raw;
   std::string decoded;
   size_t headerEnd = std::string::npos;
@@ -335,8 +408,9 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
   bool timedOut = false;
   while (!done) {
     char buffer[kReadChunk];
-    const int n = SSL_read(ssl, buffer, static_cast<int>(sizeof(buffer)));
-    if (n > 0) {
+    int n = 0;
+    const ReadStatus status = TransportRead(transport, buffer, static_cast<int>(sizeof(buffer)), &n);
+    if (status == ReadStatus::kOk) {
       raw.append(buffer, static_cast<size_t>(n));
       if (!haveHeaders) {
         headerEnd = raw.find("\r\n\r\n");
@@ -353,9 +427,8 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
                                          : statusLine.find(' ', firstSpace + 1);
           if (firstSpace != std::string::npos) {
             const std::string code = statusLine.substr(
-                firstSpace + 1, secondSpace == std::string::npos
-                                    ? std::string::npos
-                                    : secondSpace - firstSpace - 1);
+                firstSpace + 1,
+                secondSpace == std::string::npos ? std::string::npos : secondSpace - firstSpace - 1);
             response.status = std::strtol(code.c_str(), nullptr, 10);
           }
           size_t pos = lineEnd + 2;
@@ -385,8 +458,7 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
         if (chunked) {
           bool complete = false;
           if (!DecodeChunked(raw, bodyStart, decoded, complete)) {
-            SSL_free(ssl);
-            SSL_CTX_free(ctx);
+            TransportClose(transport);
             return Fail("http");
           }
           if (complete) {
@@ -401,20 +473,15 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
             done = true;
           }
         }
-        // No length and not chunked: keep reading until the peer closes, which
-        // delimits the body (see the close handling below).
+        // No length and not chunked: keep reading until the peer closes.
       }
       if (!haveHeaders && raw.size() > kMaxHeaderBytes) {
-        SSL_free(ssl);
-        SSL_CTX_free(ctx);
+        TransportClose(transport);
         return Fail("http");
       }
       continue;
     }
-
-    const int sslError = SSL_get_error(ssl, n);
-    if (sslError == SSL_ERROR_ZERO_RETURN ||
-        (sslError == SSL_ERROR_SYSCALL && errno == 0 && n == 0)) {
+    if (status == ReadStatus::kEof) {
       // Peer closed. For a response with neither Content-Length nor chunked
       // framing the close is what delimits the body.
       if (haveHeaders && !chunked && contentLength < 0) {
@@ -423,22 +490,16 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
         bodyComplete = true;
       }
       done = true;
-    } else if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
-      continue;
-    } else if (sslError == SSL_ERROR_SYSCALL &&
-               (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    } else if (status == ReadStatus::kTimeout) {
       timedOut = true;
       done = true;
     } else {
-      HMRDP_LOGW("moonlight http: read failed (%{public}s)",
-                 ERR_error_string(ERR_get_error(), nullptr));
-      SSL_free(ssl);
-      SSL_CTX_free(ctx);
+      HMRDP_LOGW("moonlight http: read failed");
+      TransportClose(transport);
       return Fail("io");
     }
   }
-  SSL_free(ssl);
-  SSL_CTX_free(ctx);
+  TransportClose(transport);
 
   if (!haveHeaders || !bodyComplete) {
     return Fail(timedOut ? "timeout" : "http");
@@ -449,9 +510,7 @@ MoonlightHttpResponse Perform(const MoonlightHttpRequest& request) {
 
 }  // namespace
 
-std::string MoonlightHttpProbe() {
-  return "1";
-}
+std::string MoonlightHttpProbe() { return "1"; }
 
 MoonlightHttpResponse MoonlightHttpPerform(const MoonlightHttpRequest& request) {
   return Perform(request);
@@ -463,9 +522,7 @@ MoonlightHttpResponse MoonlightHttpPerform(const MoonlightHttpRequest& request) 
 
 namespace hmrdp {
 
-std::string MoonlightHttpProbe() {
-  return "0|no-moonlight-http";
-}
+std::string MoonlightHttpProbe() { return "0|no-moonlight-http"; }
 
 MoonlightHttpResponse MoonlightHttpPerform(const MoonlightHttpRequest&) {
   MoonlightHttpResponse response;

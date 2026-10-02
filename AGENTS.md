@@ -57,7 +57,7 @@
 | GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁 / 并行形态（§7）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
 | 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | Moonlight（Sunshine）串流**前端**：协议建模、存储、连接列表/编辑页/设置页分栏、图标 | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
-| Moonlight **原生侧**：客户端库构建与静态链接、视频解码与编解码协商、解码桥与降级 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
+| Moonlight **原生侧**：客户端库构建与静态链接、视频解码与编解码协商、解码桥与降级、HTTP 控制层、客户端身份与信任存储、配对加密原语 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
 | Moonlight 接入路线图（未定项多，仅方向） | [`MOONLIGHT_PLAN.md`](MOONLIGHT_PLAN.md) |
 
 ## 环境
@@ -115,4 +115,4 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 页面 / 状态刷新 / 路由 / 主题 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
 | FreeRDP 补丁、音频、能力探测、构建选项 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | Moonlight 前端（列表、编辑页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
-| Moonlight 原生（客户端库构建/链接、解码、编解码协商、上屏） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
+| Moonlight 原生（客户端库构建/链接、解码、编解码协商、上屏、HTTP、凭证、配对原语） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
