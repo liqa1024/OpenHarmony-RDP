@@ -14,6 +14,18 @@ endif()
 set(FREERDP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/freerdp")
 set(FREERDP_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
 
+# Moonlight (GameStream) client library. Unlike FreeRDP it ships as *static*
+# archives (native/scripts/build-moonlight.ps1 collects them into
+# thirdparty/moonlight/, which is generated and gitignored). Absent archives mean
+# the Moonlight wrapper compiles to "unsupported" and nothing links, so a
+# checkout without the native build still builds - the same degrade path FSR and
+# XEngine use.
+set(MOONLIGHT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/moonlight")
+set(HMRDP_HAVE_MOONLIGHT OFF)
+if(EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h" AND EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a")
+    set(HMRDP_HAVE_MOONLIGHT ON)
+endif()
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${FREERDP_ROOT}/include/freerdp3
@@ -83,6 +95,7 @@ endforeach()
 add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
+    hmrdp_moonlight.cpp
     hmrdp_audio.cpp
     hmrdp_gfx_capture.cpp
     hmrdp_gfx_cpu.cpp
@@ -150,6 +163,26 @@ target_link_libraries(hmrdp
     ${FREERDP_LIBS}/libwinpr3.so
     ${FREERDP_LIBS}/libfreerdp-client3.so
 )
+
+# Moonlight static archives (built by native/scripts/build-moonlight.ps1). Link
+# order matters for static libraries: moonlight references enet and OpenSSL's
+# crypto, so it must precede them. libcrypto.a is the same static build FreeRDP
+# already links; it is synced next to the moonlight archives so the module build
+# only reads from thirdparty/.
+if(HMRDP_HAVE_MOONLIGHT)
+    target_include_directories(hmrdp PRIVATE "${MOONLIGHT_ROOT}/include")
+    target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_MOONLIGHT=1)
+    # Plain signature (no PRIVATE): the FreeRDP link above uses plain, and CMake
+    # rejects mixing the two on one target.
+    target_link_libraries(hmrdp
+        "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
+        "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a"
+        "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libcrypto.a"
+    )
+    message(STATUS "HmRdp: Moonlight client linked from ${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}")
+else()
+    message(WARNING "HmRdp: Moonlight archives not found under ${MOONLIGHT_ROOT}; run native/scripts/build-moonlight.ps1 to enable Moonlight")
+endif()
 
 # -Wno-unused-command-line-argument silences the OHOS toolchain passing
 # --gcc-toolchain to compile-only invocations (clang reports it as unused).

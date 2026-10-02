@@ -9,10 +9,11 @@
 #   native/scripts/fetch-sources.ps1            # fetch what is missing, then patch
 #   native/scripts/fetch-sources.ps1 -Force     # re-download and re-extract everything
 #
-# FreeRDP is the only tree the patches touch (native/scripts/patch-freerdp.ps1);
-# everything else is used as released. The patch helpers match on LF-normalized
-# text, so the checkout style (LF from the tarball, CRLF from a Windows checkout)
-# does not matter.
+# FreeRDP (native/scripts/patch-freerdp.ps1) and moonlight-common-c
+# (native/scripts/patch-moonlight.ps1) are the only trees the patches touch;
+# everything else is used as released. The FreeRDP patch helpers match on
+# LF-normalized text, so the checkout style (LF from the tarball, CRLF from a
+# Windows checkout) does not matter.
 param(
 	[switch]$Force
 )
@@ -60,6 +61,39 @@ $Deps = @(
 		Url         = "https://github.com/GPUOpen-Effects/FidelityFX-FSR/archive/refs/tags/v1.0.2.tar.gz"
 		Sha256      = "92EE8F9630364EC3AD7FC16AF5A990601EBF18142571527ED672B79B79D04ACD"
 		Patch       = $false
+	},
+	# Moonlight (GameStream) client core: pairing, HTTP app list, RTSP session
+	# negotiation and the control/audio/video stream framing. It has no release
+	# tags, so it is pinned to an exact commit. Its two submodules (enet, nanors)
+	# are pinned separately below - a commit tarball leaves those directories empty.
+	[pscustomobject]@{
+		Name        = "moonlight-common-c"
+		Dir         = "moonlight-common-c"
+		ArchiveRoot = "moonlight-common-c-f900dd4767759c7b9d0e93bcea666b55c69ea62f"
+		Url         = "https://github.com/moonlight-stream/moonlight-common-c/archive/f900dd4767759c7b9d0e93bcea666b55c69ea62f.tar.gz"
+		Sha256      = "BE204CEBB6687ACD2D65DAB548EA6D9C8D60BD277984EF49719BAD5CBC0385DB"
+		Patch       = $false
+	}
+)
+
+# Submodules that must live inside the moonlight-common-c tree (its CMakeLists
+# does add_subdirectory(enet) and compiles nanors/rs.c), so they cannot use the
+# flat $Deps loop above. StampFile is what says "this tree is already in place".
+$MlTree = Join-Path $Third "moonlight-common-c"
+$Submodules = @(
+	[pscustomobject]@{
+		Name        = "enet"
+		ArchiveRoot = "enet-aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1"
+		Url         = "https://github.com/cgutman/enet/archive/aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1.tar.gz"
+		Sha256      = "6BB1A151E6D21E1756BAEFF5A95EAF85A5B6731AEDA6D0BC255651192BA4A32D"
+		StampFile   = "CMakeLists.txt"
+	},
+	[pscustomobject]@{
+		Name        = "nanors"
+		ArchiveRoot = "nanors-b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a"
+		Url         = "https://github.com/sleepybishop/nanors/archive/b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a.tar.gz"
+		Sha256      = "41EDC0309B255B0EEB5E8EB1AD79F7C7E9E6C31DB1BD79A16D73271C62867003"
+		StampFile   = "rs.c"
 	}
 )
 
@@ -122,6 +156,36 @@ foreach ($dep in $Deps) {
 	Write-Host "$($dep.Name): extracted to $target ($($dep.Dir))"
 }
 
+# Place the moonlight-common-c submodules where its CMakeLists expects them.
+if (Test-Path -LiteralPath $MlTree) {
+	foreach ($sub in $Submodules) {
+		$dst = Join-Path $MlTree $sub.Name
+		if ((Test-Path -LiteralPath (Join-Path $dst $sub.StampFile)) -and -not $Force) {
+			Write-Host "$($sub.Name): $dst already present (use -Force to re-fetch)"
+			continue
+		}
+		$tgz = Get-PinnedArchive $sub
+		$staging = Join-Path $Third (".$($sub.Name).staging")
+		if (Test-Path -LiteralPath $staging) {
+			Remove-Item -Recurse -Force $staging
+		}
+		New-Item -ItemType Directory -Path $staging | Out-Null
+		& tar -xzf $tgz -C $staging
+		if ($LASTEXITCODE -ne 0) {
+			throw "tar failed for $tgz"
+		}
+		if (Test-Path -LiteralPath $dst) {
+			Remove-Item -Recurse -Force $dst
+		}
+		Move-Item -LiteralPath (Join-Path $staging $sub.ArchiveRoot) -Destination $dst
+		Remove-Item -Recurse -Force $staging
+		Write-Host "$($sub.Name): extracted to $dst"
+	}
+}
+else {
+	throw "moonlight-common-c tree missing: $MlTree (fetch it before its submodules)"
+}
+
 # Apply the FreeRDP patches last: the script is idempotent and reports each step
 # it skipped ("already applied"), which is the self-check for an already-patched
 # tree.
@@ -133,6 +197,14 @@ if ($LASTEXITCODE -ne 0) {
 	throw "patch-freerdp.ps1 failed"
 }
 
+# Strip moonlight-common-c's -Werror (see patch-moonlight.ps1).
+$mlSrc = Join-Path $Third "moonlight-common-c"
+Write-Host "patching $mlSrc"
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-moonlight.ps1") -Source $mlSrc
+if ($LASTEXITCODE -ne 0) {
+	throw "patch-moonlight.ps1 failed"
+}
+
 Write-Host ""
 Write-Host "third-party sources are ready under $Third"
-Write-Host "next: native/scripts/build-zlib.ps1 / build-openssl-wsl.sh / build-freerdp.ps1"
+Write-Host "next: native/scripts/build-zlib.ps1 / build-openssl-wsl.sh / build-freerdp.ps1 / build-moonlight.ps1"

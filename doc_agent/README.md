@@ -20,7 +20,8 @@
 | 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
 | 改通道线程 / 音频不被帧挡住 | [`architecture.md`](architecture.md) §4（线程模型） |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
-| 改 Moonlight / 云串流连接 | [`moonlight-connection.md`](moonlight-connection.md) |
+| 改 Moonlight 前端（协议建模 / 存储 / 列表 / 编辑页 / 设置分栏） | [`moonlight-connection.md`](moonlight-connection.md) |
+| 改 Moonlight 原生（客户端库构建 / 配对 / 会话 / 输入 / 上屏） | [`moonlight-native.md`](moonlight-native.md) |
 
 ## 文档清单
 
@@ -39,8 +40,10 @@
   判据与门禁 / 并行形态（§7）**。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
   后端、脏区上传与零拷贝桌面缓冲的定型约束、present 账目与探针。
-- [`moonlight-connection.md`](moonlight-connection.md) —— Moonlight（Sunshine）串流连接：协议建模与存储布局、
-  连接列表与编辑页、设置页的协议分栏与「全局默认 + 会话覆盖」、图标约束、当前实现边界。
+- [`moonlight-connection.md`](moonlight-connection.md) —— Moonlight（Sunshine）串流连接的**前端**：协议建模与
+  存储布局、连接列表与编辑页、设置页的协议分栏与「全局默认 + 会话覆盖」、图标约束、当前实现边界。
+- [`moonlight-native.md`](moonlight-native.md) —— Moonlight 的**原生侧**：客户端库 moonlight-common-c 的
+  拉取/补丁/静态构建与链接、桥接层与降级、当前边界与后续（配对 / 应用列表 / 会话 / 输入 / 上屏）。
 
 ## 维护约定
 

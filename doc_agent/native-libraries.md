@@ -25,8 +25,9 @@ native/scripts/build-freerdp.ps1     # FreeRDP 的 CMake 构建（Windows NDK）
 ```
 
 - 版本与校验和固定在 `fetch-sources.ps1`（FreeRDP 3.10.3 / zlib 1.3.1 / OpenSSL 3.0.15）。
-  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。只有 FreeRDP 需要打补丁，
-  zlib / OpenSSL 按发布版直接用。
+  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。zlib / OpenSSL 按发布版直接用。
+  （`fetch-sources.ps1` 也拉取并按 commit 固定 moonlight-common-c，其构建与补丁见
+  [`moonlight-native.md`](moonlight-native.md)，不在本文件内。）
 - `patch-freerdp.ps1` 也可单独重复跑（幂等）。
 - **改过补丁后必须用 `build-freerdp.ps1 -Clean`**：重新解包的源码树带着 tarball 里的旧 mtime，
   ninja 会认为目标文件比源新而**整块跳过编译**——症状是构建"成功"、`-Clean` 之外只产出一两个

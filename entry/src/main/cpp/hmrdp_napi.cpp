@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "hmrdp_log.h"
+#include "hmrdp_moonlight.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_session.h"
 #include "hmrdp_vk_context.h"
@@ -1146,6 +1147,16 @@ napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   return result;
 }
 
+// Whether the Moonlight (GameStream) client is linked into this build. Returns
+// "1", or "0|<code>" with a stable code (see hmrdp_moonlight.h). M1 foundation
+// probe; the pairing / app list / session entry points land on top of it.
+napi_value MoonlightProbe(napi_env env, napi_callback_info) {
+  const std::string out = hmrdp::MoonlightProbe();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1232,6 +1243,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"superResolutionBackends", nullptr, SuperResolutionBackends, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"moonlightProbe", nullptr, MoonlightProbe, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
   };
 
 
