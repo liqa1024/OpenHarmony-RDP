@@ -118,6 +118,7 @@ add_library(hmrdp SHARED
     hmrdp_session.cpp
     hmrdp_moonlight.cpp
     hmrdp_moonlight_http.cpp
+    hmrdp_moonlight_cred.cpp
     hmrdp_video_decoder.cpp
     hmrdp_audio.cpp
     hmrdp_gfx_capture.cpp
@@ -184,6 +185,9 @@ target_link_libraries(hmrdp
     native_media_vdec
     native_media_core
     native_media_codecbase
+    # HUKS wraps the Moonlight client private key (AES-256-GCM under a
+    # non-exportable key); it is a core security service present on every device.
+    libhuks_ndk.z.so
     libohinput.so
     EGL
     GLESv3

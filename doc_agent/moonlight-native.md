@@ -142,6 +142,25 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   `io` / `timeout` / `http`。
 - **能力探针**：`moonlightHttpProbe` 回 `"1"`，未构建该层时回 `"0|no-moonlight-http"`（同其它能力探测模式）。
 
+### 4.1 客户端身份与信任存储（`hmrdp_moonlight_cred.*`）
+
+- **客户端身份**：自签名 X.509，RSA-2048、`SHA256withRSA`、20 年、随机序列号、`CN=NVIDIA GameStream Client`
+  （与官方客户端一致；Sunshine 忽略 CN，GFE 需要它），证书输出为 **PEM 且 LF 换行**（CRLF 会被 PC 端拒收）。
+- **私钥落盘用 HUKS 信封加密**：HUKS 内生成一把**不可导出的 AES-256-GCM 密钥**（按别名），私钥 PKCS8 用它加密
+  后落 `client.key.enc`（`HMRDPML1` 魔数 + nonce + 密文 + GCM tag）；用时解密进内存再交 OpenSSL。证书是公开
+  数据，明文落盘。
+- **为什么不是 `certManager`「应用证书凭据」或 ASSET**：`certManager` 与 HUKS 的设计都是**私钥不可导出、只给
+  签名**，而配对后的 applist/launch 走 **HTTPS mTLS**，原生 OpenSSL 必须拿到私钥字节来签握手——直接冲突
+  （除非自写 OpenSSL provider，超出范围）。ASSET 容量 **≤ 1KB**，放不下 RSA-2048 的 PKCS8 私钥（≈1.2KB），
+  官方也明说超过 1KB 改用 HUKS 或加解密框架。⇒ 取"HUKS 包裹的可读私钥"这一折中，私钥静态加密、运行时可读。
+- **服务器证书 pin 按 host 存** `server_<key>.der`（DER，公开数据）。未配对接受任意主机证书，配对后逐字节
+  比对叶证书 DER（§4 信任模型）。
+- **目录**：`<dir>/moonlight/`，`dir` 是应用沙箱 files dir，由 ArkTS 传入。
+- **损坏判定**：读回时校验魔数与 GCM tag，任一不过即视为损坏——删除 HUKS 密钥、重建身份并**清空全部 pin**
+  （强制重新配对）。HUKS 密钥随应用卸载销毁，残留密文因此不可解密，走同一条重建路径。
+- **依赖**：链接 `libhuks_ndk.z.so`（设备核心安全服务）。
+- **能力探针/入口**：`moonlightCredentialProbe` / `moonlightEnsureCredential(dir)` / `moonlightClearCredential(dir)`。
+
 ## 5. 范围与后续方向
 
 - 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）、HTTP / 配对层（§4）。

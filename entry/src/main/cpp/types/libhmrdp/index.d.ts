@@ -206,6 +206,27 @@ export const moonlightProbe: () => string;
 export const moonlightHttpProbe: () => string;
 
 /**
+ * Whether the Moonlight credential store (self-signed client identity + pinned
+ * server certificates) is built into this module. "1", or "0|<code>".
+ */
+export const moonlightCredentialProbe: () => string;
+
+/**
+ * Ensures the self-signed Moonlight client identity exists under `dir` (the app
+ * sandbox files directory), creating it on first use, and returns
+ * "1|<certPem>" or "0|<code>" with a stable code. The private key is stored
+ * AES-256-GCM encrypted under a non-exportable HUKS key and never returned.
+ */
+export const moonlightEnsureCredential: (dir: string) => string;
+
+/**
+ * Deletes the Moonlight client identity and every pinned server certificate, so
+ * the next connect creates a fresh identity and re-pairs. Returns false when
+ * `dir` is empty or the layer is not built.
+ */
+export const moonlightClearCredential: (dir: string) => boolean;
+
+/**
  * Bitmask of the Moonlight VIDEO_FORMAT_* codecs to advertise for negotiation.
  * `preference` is an ML_CODEC_* value (default 0 = auto): auto sends every
  * codec the device can hardware-decode (or the software set when there is no

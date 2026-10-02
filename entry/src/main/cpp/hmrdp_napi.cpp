@@ -23,6 +23,7 @@
 
 #include "hmrdp_log.h"
 #include "hmrdp_moonlight.h"
+#include "hmrdp_moonlight_cred.h"
 #include "hmrdp_moonlight_http.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_session.h"
@@ -162,6 +163,19 @@ std::string GetStringProperty(napi_env env, napi_value object, const char* name)
   }
   napi_valuetype type = napi_undefined;
   if (napi_typeof(env, value, &type) != napi_ok || type != napi_string) {
+    return std::string();
+  }
+  size_t length = 0;
+  napi_get_value_string_utf8(env, value, nullptr, 0, &length);
+  std::string result(length, '\0');
+  napi_get_value_string_utf8(env, value, result.data(), length + 1, &length);
+  result.resize(length);
+  return result;
+}
+
+std::string GetStringArgument(napi_env env, napi_value value) {
+  napi_valuetype type = napi_undefined;
+  if (value == nullptr || napi_typeof(env, value, &type) != napi_ok || type != napi_string) {
     return std::string();
   }
   size_t length = 0;
@@ -1168,6 +1182,45 @@ napi_value MoonlightHttpProbe(napi_env env, napi_callback_info) {
   return result;
 }
 
+// Whether the Moonlight credential store (self-signed client identity + pinned
+// server certificates) is built into this module.
+napi_value MoonlightCredentialProbe(napi_env env, napi_callback_info) {
+  const std::string out = hmrdp::MoonlightCredentialProbe();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+// Ensures the Moonlight client identity exists under `dir` (the app sandbox
+// files directory), creating it on first use, and returns "1|<certPem>" or
+// "0|<code>" with a stable code. The private key stays in the store.
+napi_value MoonlightEnsureCredential(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string dir = argc >= 1 ? GetStringArgument(env, args[0]) : std::string();
+  if (dir.empty()) {
+    napi_value result = nullptr;
+    napi_create_string_utf8(env, "0|dir", NAPI_AUTO_LENGTH, &result);
+    return result;
+  }
+  const hmrdp::MoonlightCredential cred = hmrdp::MoonlightEnsureCredential(dir);
+  const std::string out = cred.ok ? ("1|" + cred.certPem) : ("0|" + cred.error);
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+// Deletes the Moonlight client identity and every pinned server certificate, so
+// the next connect creates a fresh identity and re-pairs.
+napi_value MoonlightClearCredential(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const std::string dir = argc >= 1 ? GetStringArgument(env, args[0]) : std::string();
+  return CreateBool(env, !dir.empty() && hmrdp::MoonlightClearCredential(dir));
+}
+
 // VIDEO_FORMAT_* bitmask to advertise to the host (codec negotiation), for the
 // given ML_CODEC_* preference (default auto). 0 without a Moonlight client.
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
@@ -1303,6 +1356,12 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightProbe", nullptr, MoonlightProbe, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"moonlightHttpProbe", nullptr, MoonlightHttpProbe, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightCredentialProbe", nullptr, MoonlightCredentialProbe, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightEnsureCredential", nullptr, MoonlightEnsureCredential, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightClearCredential", nullptr, MoonlightClearCredential, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightVideoFormats", nullptr, MoonlightVideoFormats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
