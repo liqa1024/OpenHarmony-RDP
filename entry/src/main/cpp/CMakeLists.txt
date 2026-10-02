@@ -14,17 +14,38 @@ endif()
 set(FREERDP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/freerdp")
 set(FREERDP_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
 
+# OpenSSL headers, needed to compile the Moonlight HTTP/pairing layer (TLS,
+# RSA/AES/SHA, self-signed client certificate generation) and referenced by
+# moonlight-common-c's pairing AES. Only the headers are synced under
+# thirdparty/openssl/ by native/scripts/sync-openssl.ps1 (generated, gitignored):
+# the OpenSSL *code* is the copy FreeRDP already statically links into
+# libwinpr3.so and exports, so libhmrdp resolves SSL_* / EVP_* / X509_* against
+# winpr3 instead of carrying a duplicate OpenSSL in the process. See
+# doc_agent/native-libraries.md.
+#
+# Headers absent means the Moonlight HTTP layer compiles to "unsupported" and
+# nothing links, so a checkout without the native build still builds - the same
+# degrade path FSR and XEngine use.
+set(OPENSSL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openssl")
+set(HMRDP_HAVE_OPENSSL_HEADERS OFF)
+if(EXISTS "${OPENSSL_ROOT}/include/openssl/ssl.h")
+    set(HMRDP_HAVE_OPENSSL_HEADERS ON)
+endif()
+
 # Moonlight (GameStream) client library. Unlike FreeRDP it ships as *static*
 # archives (native/scripts/build-moonlight.ps1 collects them into
-# thirdparty/moonlight/, which is generated and gitignored). Absent archives mean
-# the Moonlight wrapper compiles to "unsupported" and nothing links, so a
-# checkout without the native build still builds - the same degrade path FSR and
-# XEngine use.
+# thirdparty/moonlight/, which is generated and gitignored). Its OpenSSL
+# references resolve against the same winpr3 OpenSSL as above.
 set(MOONLIGHT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/moonlight")
 set(HMRDP_HAVE_MOONLIGHT OFF)
 if(EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h" AND EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a")
     set(HMRDP_HAVE_MOONLIGHT ON)
 endif()
+
+# The Moonlight HTTP/pairing layer only needs the OpenSSL headers (no
+# moonlight-common-c), so it is enabled on them alone. This is what lets
+# serverinfo / pairing / the app list work before a stream is ever established.
+set(HMRDP_HAVE_MOONLIGHT_HTTP ${HMRDP_HAVE_OPENSSL_HEADERS})
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -96,6 +117,7 @@ add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
     hmrdp_moonlight.cpp
+    hmrdp_moonlight_http.cpp
     hmrdp_video_decoder.cpp
     hmrdp_audio.cpp
     hmrdp_gfx_capture.cpp
@@ -170,24 +192,33 @@ target_link_libraries(hmrdp
     ${FREERDP_LIBS}/libfreerdp-client3.so
 )
 
-# Moonlight static archives (built by native/scripts/build-moonlight.ps1). Link
-# order matters for static libraries: moonlight references enet and OpenSSL's
-# crypto, so it must precede them. libcrypto.a is the same static build FreeRDP
-# already links; it is synced next to the moonlight archives so the module build
-# only reads from thirdparty/.
+# Moonlight static archives (built by native/scripts/build-moonlight.ps1) plus the
+# OpenSSL headers the HTTP/pairing layer compiles against. OpenSSL *code* is not
+# linked here: it comes from libwinpr3.so above, which already statically carries
+# and exports it (see the OPENSSL_ROOT note near the top). Plain signature (no
+# PRIVATE): the FreeRDP link above uses plain, and CMake rejects mixing the two on
+# one target.
+if(HMRDP_HAVE_OPENSSL_HEADERS)
+    target_include_directories(hmrdp PRIVATE "${OPENSSL_ROOT}/include")
+endif()
+
 if(HMRDP_HAVE_MOONLIGHT)
     target_include_directories(hmrdp PRIVATE "${MOONLIGHT_ROOT}/include")
     target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_MOONLIGHT=1)
-    # Plain signature (no PRIVATE): the FreeRDP link above uses plain, and CMake
-    # rejects mixing the two on one target.
     target_link_libraries(hmrdp
         "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
         "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a"
-        "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libcrypto.a"
     )
     message(STATUS "HmRdp: Moonlight client linked from ${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}")
 else()
     message(WARNING "HmRdp: Moonlight archives not found under ${MOONLIGHT_ROOT}; run native/scripts/build-moonlight.ps1 to enable Moonlight")
+endif()
+
+if(HMRDP_HAVE_MOONLIGHT_HTTP)
+    target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_MOONLIGHT_HTTP=1)
+    message(STATUS "HmRdp: Moonlight HTTP/pairing layer enabled (OpenSSL headers at ${OPENSSL_ROOT})")
+else()
+    message(WARNING "HmRdp: OpenSSL headers not found under ${OPENSSL_ROOT}; run native/scripts/sync-openssl.ps1 to enable the Moonlight HTTP layer")
 endif()
 
 # -Wno-unused-command-line-argument silences the OHOS toolchain passing

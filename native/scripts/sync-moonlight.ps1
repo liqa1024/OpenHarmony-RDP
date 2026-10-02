@@ -27,7 +27,16 @@ New-Item -ItemType Directory -Path "$Dst\include" -Force | Out-Null
 Copy-Item -Path "$Src\include\*" -Destination "$Dst\include" -Recurse -Force
 
 New-Item -ItemType Directory -Path "$Dst\lib\$Arch" -Force | Out-Null
-Copy-Item -Path "$Src\lib\*" -Destination "$Dst\lib\$Arch" -Recurse -Force
+Copy-Item -LiteralPath "$Src\lib\libmoonlight-common-c.a" -Destination "$Dst\lib\$Arch\" -Force
+Copy-Item -LiteralPath "$Src\lib\libenet.a" -Destination "$Dst\lib\$Arch\" -Force
+
+# OpenSSL's libcrypto is synced under thirdparty/openssl/ instead (see
+# sync-openssl.ps1): moonlight references it, but the module links it once for
+# both the client and the HTTP/pairing layer. Drop any copy an older sync left.
+$staleCrypto = Join-Path $Dst "lib\$Arch\libcrypto.a"
+if (Test-Path -LiteralPath $staleCrypto) {
+	Remove-Item -LiteralPath $staleCrypto -Force
+}
 
 # Copy-Item preserves the source timestamps; the module build tracks header
 # changes by mtime, so make the refreshed files look new.

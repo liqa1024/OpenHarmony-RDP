@@ -199,6 +199,13 @@ export const superResolutionBackends: () => string;
 export const moonlightProbe: () => string;
 
 /**
+ * Whether the Moonlight HTTPS control layer (serverinfo / pairing / app list) is
+ * built into this module. "1", or "0|<code>" (currently only
+ * `no-moonlight-http`) when the OpenSSL archives were not linked in.
+ */
+export const moonlightHttpProbe: () => string;
+
+/**
  * Bitmask of the Moonlight VIDEO_FORMAT_* codecs to advertise for negotiation.
  * `preference` is an ML_CODEC_* value (default 0 = auto): auto sends every
  * codec the device can hardware-decode (or the software set when there is no

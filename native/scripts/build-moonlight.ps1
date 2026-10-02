@@ -72,11 +72,14 @@ New-Item -ItemType Directory -Path "$Out\include" -Force | Out-Null
 Copy-Item -LiteralPath "$Build\libmoonlight-common-c.a" -Destination "$Out\lib\" -Force
 Copy-Item -LiteralPath "$Build\enet\libenet.a" -Destination "$Out\lib\" -Force
 Copy-Item -LiteralPath "$Src\src\Limelight.h" -Destination "$Out\include\" -Force
-Copy-Item -LiteralPath "$OpenSsl\lib\libcrypto.a" -Destination "$Out\lib\" -Force
 
 Write-Host "=== moonlight-common-c ($Arch) collected in $Out ==="
 Get-ChildItem "$Out\lib" | Select-Object Name, Length
 
-# Keep entry/src/main/cpp/thirdparty/moonlight/ in sync (generated, gitignored).
+# Keep entry/src/main/cpp/thirdparty/ in sync (generated, gitignored): the
+# moonlight archives plus the OpenSSL headers/libssl/libcrypto the module links
+# once for both the client and the HTTP/pairing layer.
 & (Join-Path $PSScriptRoot "sync-moonlight.ps1") -Arch $Arch
 if ($LASTEXITCODE -ne 0) { throw "sync-moonlight.ps1 failed" }
+& (Join-Path $PSScriptRoot "sync-openssl.ps1") -Arch $Arch
+if ($LASTEXITCODE -ne 0) { throw "sync-openssl.ps1 failed" }

@@ -15,6 +15,16 @@
 `entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接、按
 `thirdparty/freerdp/include/{freerdp3,winpr3}` 找头文件。
 
+**OpenSSL 只同步头，代码复用 winpr3 里那份**：Moonlight 的 HTTP/配对层（TLS、RSA/AES/SHA、自签名证书）
+需要 OpenSSL 头才能编译，由 `native/scripts/sync-openssl.ps1` 复制到
+`entry/src/main/cpp/thirdparty/openssl/include`。但**不另外链 `libssl.a`/`libcrypto.a`**：FreeRDP 把
+OpenSSL 静态编进 `libwinpr3.so` 且符号默认可见（`nm -D libwinpr3.so` 可见 `SSL_*`/`EVP_*`/`X509_*`），
+`libhmrdp.so` 的引用就解析到它上面；再链一份只会让进程里多一份 OpenSSL、并让 HAP 变大，链接器在任何顺序下
+都先绑到 winpr3。`moonlight-common-c` 的配对 AES 同样落在这一份上，故 `thirdparty/moonlight/lib/` 不带
+`libcrypto.a`。（`build-openssl-wsl.sh` 仍产 `libssl.a`/`libcrypto.a` 供 `build-moonlight.ps1` 构建时使用。）
+**这条依赖是"编进 winpr3 的第三方符号默认可见"这一构建事实**：若给 FreeRDP/OpenSSL 加了
+`-fvisibility=hidden` 或版本脚本，需回来改成显式提供 OpenSSL。
+
 ## 2. 构建流程
 
 ```

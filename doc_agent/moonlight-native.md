@@ -118,12 +118,36 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
   - 输入积压超过阈值时回 `DR_NEED_IDR` 请主机补关键帧，避免无界排队。
 
-## 4. 范围与后续方向
+## 4. GameStream HTTP / 配对层
 
-- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）。
+- **一个原语**：`hmrdp_moonlight_http.{h,cpp}` 只做一件事——一次 TLS + HTTP/1.1 请求，返回**未解析的响应体**。
+  `/serverinfo`、`/pair`、`/applist`、`/launch`、`/resume` 都由它拼装。**XML 由 ArkTS（`@ohos.xml`）解析**，
+  不在原生手写解析（已知标签的手写扫描坑多，不值得自研）；配对、证书与请求收发留在原生，与 RDP 一致。
+- **不复用 `freerdp_http_request`**：它端口写死 443、走系统 CA、只发 form-urlencoded、没有客户端证书——
+  本层需要可配端口（47989/47984）、自签名主机与 mTLS。FreeRDP gateway 的 `http.c` 是 `FREERDP_LOCAL`
+  （未导出），同样不可用。
+- **OpenSSL 只同步头、不链库**：`native/scripts/sync-openssl.ps1` 只把本地 OpenSSL 构建的 `include/` 复制到
+  `thirdparty/openssl/include`。TLS / RSA / AES / SHA 的**代码**用 `libwinpr3.so` 已静态包含并导出的那一份
+  （FreeRDP 把 OpenSSL 静态编进 winpr3，符号默认可见 ⇒ 导出；`nm -D libwinpr3.so` 可见 `SSL_*`/`EVP_*`/
+  `X509_*`）。再链一份 `libssl.a`/`libcrypto.a` 只会让进程里多一份 OpenSSL、并让 HAP 变大——链接器在任何
+  顺序下都先绑到 winpr3。`moonlight-common-c` 的配对 AES 也落在这份上，故 `thirdparty/moonlight/lib/` 不带
+  `libcrypto.a`。
+- **信任模型 = 证书 pin**：未配对时 `pinnedServerCertDer` 为空 ⇒ 接受任意主机证书（首触，与官方客户端一致）；
+  配对后存下**叶证书 DER**，之后每次请求要求逐字节一致。响应总是回报对端叶证书 DER（`serverCertDer`）供
+  存储。`SSL_CTX_set_cert_verify_callback` 替换默认链校验是**有意**的：主机自签名，信任靠 pin 而非 CA。
+- **mTLS**：已配对请求带客户端证书 + 私钥（PEM，`clientCertPem`/`clientKeyPem`）。
+- **帧**：请求带 `Connection: close`；响应按 `Content-Length`，否则按 chunked，再否则以对端关闭界定。每请求
+  一个新 `SSL_CTX` + socket，无进程级状态，可并发。
+- **错误用稳定码**（`response.error`，中文文案归 UI）：`no-http` / `request` / `resolve` / `connect` / `tls` /
+  `io` / `timeout` / `http`。
+- **能力探针**：`moonlightHttpProbe` 回 `"1"`，未构建该层时回 `"0|no-moonlight-http"`（同其它能力探测模式）。
+
+## 5. 范围与后续方向
+
+- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）、HTTP / 配对层（§4）。
 - 超分链路（buffer 模式 + Vulkan 导入 + 复用 `VkRenderer`）只在真机验证，属独立后续里程碑，复用约束见 §2
   「与 RDP 呈现器的复用口径」。
-- 主机发现、配对、应用列表、串流会话建立与输入接线不在本文件范围；解码桥把解码侧备好，会话建立后即可接。
-  路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
+- 主机发现、应用列表交互、串流会话建立（`LiStartConnection`）与输入接线不在本文件范围；解码桥与 HTTP 层把
+  两侧备好，会话建立后即可接。路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
 - **改前必读**：会话侧接线要遵守既有的线程模型（动态通道分发线程只做轻活，帧重活走 sink 钩子），见
   [`architecture.md`](architecture.md) §4。

@@ -23,6 +23,7 @@
 
 #include "hmrdp_log.h"
 #include "hmrdp_moonlight.h"
+#include "hmrdp_moonlight_http.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_session.h"
 #include "hmrdp_vk_context.h"
@@ -1157,6 +1158,16 @@ napi_value MoonlightProbe(napi_env env, napi_callback_info) {
   return result;
 }
 
+// Whether the Moonlight HTTPS control layer (serverinfo / pairing / app list)
+// is built into this module. "1", or "0|<code>" (currently only
+// `no-moonlight-http`) when the OpenSSL archives were not linked in.
+napi_value MoonlightHttpProbe(napi_env env, napi_callback_info) {
+  const std::string out = hmrdp::MoonlightHttpProbe();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 // VIDEO_FORMAT_* bitmask to advertise to the host (codec negotiation), for the
 // given ML_CODEC_* preference (default auto). 0 without a Moonlight client.
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
@@ -1291,6 +1302,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightProbe", nullptr, MoonlightProbe, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"moonlightHttpProbe", nullptr, MoonlightHttpProbe, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"moonlightVideoFormats", nullptr, MoonlightVideoFormats, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightVideoCodec", nullptr, MoonlightVideoCodec, nullptr, nullptr, nullptr,

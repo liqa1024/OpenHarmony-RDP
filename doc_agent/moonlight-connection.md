@@ -84,6 +84,10 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   `libhmrdp.so`；桥接层有一个连通性探针 `moonlightProbe`（返回 `"1"`，或在未构建该库时返回
   `"0|no-moonlight"`），它真正调用一个 moonlight 入口点，因此"符号已解析"是被链接器保证的。
   构建流程、静态链接约定与目录见 [`moonlight-native.md`](moonlight-native.md)。
-- **尚未接入**：配对、应用列表、串流会话与输入还没有原生实现。因此当前在列表/编辑页发起 Moonlight 连接
-  只会给出提示，不会建立会话；配对与串流会话窗口属于后续工作。
+- **HTTPS 原语已就绪**：`hmrdp_moonlight_http.*` 提供可配端口、证书 pin、mTLS 与
+  `Content-Length`/chunked 解析的单次请求；XML 由 ArkTS（`@ohos.xml`）解析（见
+  [`moonlight-native.md`](moonlight-native.md) §4）。
+- **尚未接入**：`serverinfo`/`pair`/`applist`/`launch` 的请求封装与配对密码学、证书存储、应用列表交互、
+  串流会话（`LiStartConnection`）与输入还没有实现。因此当前在列表/编辑页发起 Moonlight 连接只会给出提示，
+  不会建立会话；配对、应用列表与串流会话窗口属于后续工作。
 - 本文件描述**已落地的前端约定与已就绪的原生基础**；原生侧的会话/输入/上屏约束在接入后再补进本文件。
