@@ -14,7 +14,8 @@ import { AdvancedProfile, DisplayProfile, EditConnectionParams,
   SrProfile } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
-import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
+import { Capability, CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE,
+  DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
@@ -77,6 +78,11 @@ struct EditConnectionPage {
   // Moonlight: follow the global stream defaults unless overridden here (same
   // pattern as the RDP display / 超分 / advanced groups).
   @State useGlobalStream: boolean = true;
+  // Per-codec decoder support (CODEC_SUPPORT_*) of this device, read once so
+  // the chips can grey what cannot run and warn about software-only codecs.
+  private mlH264Support: number = CODEC_SUPPORT_NONE;
+  private mlHevcSupport: number = CODEC_SUPPORT_NONE;
+  private mlAv1Support: number = CODEC_SUPPORT_NONE;
   @State errorMessage: string = '';
   @State editing: boolean = false;
   @State detectedText: string = '';
@@ -111,6 +117,9 @@ struct EditConnectionPage {
 
   aboutToAppear(): void {
     SessionManager.subscribe(this.sessionListener);
+    this.mlH264Support = DeviceCapabilities.codecSupport(ML_CODEC_H264);
+    this.mlHevcSupport = DeviceCapabilities.codecSupport(ML_CODEC_HEVC);
+    this.mlAv1Support = DeviceCapabilities.codecSupport(ML_CODEC_AV1);
     const audioCapability: Capability = DeviceCapabilities.audio();
     this.audioSupported = audioCapability.supported;
     this.audioDisabledReason = audioCapability.reason;
@@ -128,6 +137,7 @@ struct EditConnectionPage {
     this.mlBitrateText = mlDefaults.mlBitrateKbps.toString();
     this.mlHdr = mlDefaults.mlHdr;
     this.mlCodec = mlDefaults.mlCodec;
+    this.clampMlCodec();
 
     const params: EditConnectionParams =
       this.getUIContext().getRouter().getParams() as EditConnectionParams;
@@ -176,6 +186,7 @@ struct EditConnectionPage {
       this.mlBitrateText = conn.mlBitrateKbps.toString();
       this.mlHdr = conn.mlHdr;
       this.mlCodec = conn.mlCodec;
+      this.clampMlCodec();
       this.mlYuv444 = conn.mlYuv444;
       this.mlAudioConfig = conn.mlAudioConfig;
       this.mlGamepad = conn.mlGamepad;
@@ -694,18 +705,55 @@ struct EditConnectionPage {
       })
   }
 
+  /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
+   * best any codec offers. */
+  private mlCodecSupportOf(codec: number): number {
+    if (codec === ML_CODEC_H264) {
+      return this.mlH264Support;
+    }
+    if (codec === ML_CODEC_HEVC) {
+      return this.mlHevcSupport;
+    }
+    if (codec === ML_CODEC_AV1) {
+      return this.mlAv1Support;
+    }
+    return Math.max(this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
+  }
+
+  /** Whether a codec choice can run on this device (auto included). */
+  private mlCodecUsable(codec: number): boolean {
+    return this.mlCodecSupportOf(codec) > CODEC_SUPPORT_NONE;
+  }
+
+  /** Whether a codec choice would decode in software only. */
+  private mlCodecSoftware(codec: number): boolean {
+    return this.mlCodecSupportOf(codec) === CODEC_SUPPORT_SOFTWARE;
+  }
+
+  /** Falls back to auto when the stored choice cannot run here. */
+  private clampMlCodec(): void {
+    if (!this.mlCodecUsable(this.mlCodec)) {
+      this.mlCodec = ML_CODEC_AUTO;
+    }
+  }
+
   @Builder
   mlCodecChip(codec: number, label: string) {
     Text(label)
       .fontSize(13)
-      .fontColor(this.mlCodec === codec ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .fontColor(!this.mlCodecUsable(codec) ? $r('app.color.text_tertiary')
+        : (this.mlCodec === codec ? '#FFFFFF' : $r('app.color.text_secondary')))
       .backgroundColor(this.mlCodec === codec
         ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .opacity(this.mlCodecUsable(codec) ? 1.0 : 0.4)
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
+      .hoverEffect(this.mlCodecUsable(codec) ? HoverEffect.Highlight : HoverEffect.None)
       .onClick(() => {
+        if (!this.mlCodecUsable(codec)) {
+          return;
+        }
         this.mlCodec = codec;
       })
   }
@@ -935,6 +983,13 @@ struct EditConnectionPage {
               }, true, '')
 
             Text('编码器').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
+            if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
+              Text('本设备无可用视频解码器，无法串流')
+                .fontSize(11).fontColor($r('app.color.danger')).margin({ top: 2 })
+            } else if (this.mlCodecSoftware(this.mlCodec)) {
+              Text('无硬件解码支持，将使用软件解码')
+                .fontSize(11).fontColor($r('app.color.danger')).margin({ top: 2 })
+            }
             Flex({ wrap: FlexWrap.Wrap }) {
               this.mlCodecChip(ML_CODEC_AUTO, '自动')
               this.mlCodecChip(ML_CODEC_H264, 'H.264')

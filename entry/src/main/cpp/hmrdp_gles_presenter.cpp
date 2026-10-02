@@ -91,17 +91,11 @@ void GlesPresenter::SetSurface(void* nativeWindow, int width, int height) {
 
 void GlesPresenter::ResizeSurface(int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
-  // Same size: the viewport is re-derived from the real surface on every present.
-  if (width == surfaceWidth_ && height == surfaceHeight_) {
-    return;
-  }
+  // Only record the size: the viewport is re-derived from the real surface on
+  // every present, so doing GL here (on whichever thread calls resize) would only
+  // make the context current off the present path for nothing.
   surfaceWidth_ = width;
   surfaceHeight_ = height;
-  if (display_ != EGL_NO_DISPLAY && surface_ != EGL_NO_SURFACE) {
-    eglMakeCurrent(display_, surface_, surface_, context_);
-    UpdateViewport();
-    eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-  }
 }
 
 void GlesPresenter::DestroySurface() {

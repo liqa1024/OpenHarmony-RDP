@@ -13,7 +13,8 @@ setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
 RdpEventCallback,
-startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays } from 'libhmrdp.so';
+startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
+} from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 

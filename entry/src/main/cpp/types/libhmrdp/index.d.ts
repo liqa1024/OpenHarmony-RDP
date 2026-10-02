@@ -191,3 +191,38 @@ export const superResolutionSupport: () => string;
  * absent from the list.
  */
 export const superResolutionBackends: () => string;
+
+/**
+ * Whether the Moonlight (GameStream) client library is linked into this build.
+ * "1", or "0|<code>" (currently only `no-moonlight`).
+ */
+export const moonlightProbe: () => string;
+
+/**
+ * Bitmask of the Moonlight VIDEO_FORMAT_* codecs to advertise for negotiation.
+ * `preference` is an ML_CODEC_* value (default 0 = auto): auto sends every
+ * codec the device can hardware-decode (or the software set when there is no
+ * hardware decoder), a specific codec sends just that one when it is decodable.
+ * 0 without a Moonlight client.
+ */
+export const moonlightVideoFormats: (preference?: number) => number;
+
+/**
+ * The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream
+ * starts. The toolbar pairs it with the resolution, e.g. "1920 x 1080 (HEVC)".
+ */
+export const moonlightVideoCodec: () => string;
+
+/**
+ * Decoder support for an ML_CODEC_* value (1 H.264 / 2 HEVC / 3 AV1):
+ * 0 none, 1 software only, 2 hardware. Auto/unknown returns 0. The settings UI
+ * greys unsupported codecs and warns on software-only ones.
+ */
+export const moonlightVideoCodecSupport: (codec: number) => number;
+
+/**
+ * Stable code for the current decode path, "" when fine:
+ * "software-decode|<mime>" (only a software decoder exists for the negotiated
+ * codec) or "no-decoder|<mime>". The UI owns the wording.
+ */
+export const moonlightVideoWarning: () => string;

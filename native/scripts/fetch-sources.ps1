@@ -62,8 +62,9 @@ $Deps = @(
 		Sha256      = "92EE8F9630364EC3AD7FC16AF5A990601EBF18142571527ED672B79B79D04ACD"
 		Patch       = $false
 	},
-	# Moonlight (GameStream) client core: pairing, HTTP app list, RTSP session
-	# negotiation and the control/audio/video stream framing. It has no release
+	# Moonlight (GameStream) client core: RTSP session negotiation and the
+	# control/audio/video stream framing. The HTTPS serverinfo / pairing / app
+	# list / launch layer is the client's, not this library's. It has no release
 	# tags, so it is pinned to an exact commit. Its two submodules (enet, nanors)
 	# are pinned separately below - a commit tarball leaves those directories empty.
 	[pscustomobject]@{

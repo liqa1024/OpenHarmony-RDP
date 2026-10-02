@@ -8,7 +8,8 @@
  * itself keeps working.
  */
 import {
-  isAudioSupported, superResolutionBackends, superResolutionSupport, vulkanAccelSupport
+  isAudioSupported, moonlightVideoCodecSupport, superResolutionBackends,
+  superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
 /** Support state of one optional feature. */
@@ -16,6 +17,11 @@ export class Capability {
   supported: boolean = true;
   reason: string = '';
 }
+
+/** Decoder support level of one Moonlight codec (mirrors the native enum). */
+export const CODEC_SUPPORT_NONE: number = 0;
+export const CODEC_SUPPORT_SOFTWARE: number = 1;
+export const CODEC_SUPPORT_HARDWARE: number = 2;
 
 export class DeviceCapabilities {
   /**
@@ -85,6 +91,19 @@ export class DeviceCapabilities {
     capability.supported = false;
     capability.reason = DeviceCapabilities.superResolutionReason(verdict);
     return capability;
+  }
+
+  /**
+   * Decoder support for one ML_CODEC_* value: CODEC_SUPPORT_NONE (the machine
+   * cannot decode it), _SOFTWARE (software decoder only) or _HARDWARE. The
+   * settings UI greys what is unsupported and warns about software-only codecs.
+   */
+  static codecSupport(codec: number): number {
+    try {
+      return moonlightVideoCodecSupport(codec);
+    } catch (error) {
+      return CODEC_SUPPORT_NONE;
+    }
   }
 
   /**

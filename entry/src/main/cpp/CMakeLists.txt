@@ -96,6 +96,7 @@ add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
     hmrdp_moonlight.cpp
+    hmrdp_video_decoder.cpp
     hmrdp_audio.cpp
     hmrdp_gfx_capture.cpp
     hmrdp_gfx_cpu.cpp
@@ -151,11 +152,16 @@ endif()
 #
 # `ohinput` backs the 快捷键穿透 key event interceptor
 # (OH_Input_AddKeyEventInterceptor, needs the INTERCEPT_INPUT_EVENT ACL).
+# `native_media_vdec` / `native_media_core` / `native_media_codecbase` are the
+# AVCodec NDK the Moonlight video decoder uses (device-required media stack).
 target_link_libraries(hmrdp
     ace_napi.z
     hilog_ndk.z
     ffrt.z
     native_window
+    native_media_vdec
+    native_media_core
+    native_media_codecbase
     libohinput.so
     EGL
     GLESv3

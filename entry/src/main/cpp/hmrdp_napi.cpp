@@ -1157,6 +1157,52 @@ napi_value MoonlightProbe(napi_env env, napi_callback_info) {
   return result;
 }
 
+// VIDEO_FORMAT_* bitmask to advertise to the host (codec negotiation), for the
+// given ML_CODEC_* preference (default auto). 0 without a Moonlight client.
+napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t preference = 0;
+  if (argc >= 1) {
+    napi_get_value_int32(env, args[0], &preference);
+  }
+  const hmrdp::MoonlightVideoPreference value =
+      static_cast<hmrdp::MoonlightVideoPreference>(preference);
+  return CreateInt(env, hmrdp::MoonlightVideoFormats(value));
+}
+
+// Decoder support for one ML_CODEC_* value: 0 none, 1 software, 2 hardware. The
+// settings UI greys unsupported codecs and warns on software-only ones.
+napi_value MoonlightVideoCodecSupport(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t codec = 0;
+  if (argc >= 1) {
+    napi_get_value_int32(env, args[0], &codec);
+  }
+  return CreateInt(env, hmrdp::MoonlightVideoCodecSupport(codec));
+}
+
+// The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream
+// starts. The session toolbar shows it next to the resolution.
+napi_value MoonlightVideoCodec(napi_env env, napi_callback_info) {
+  const std::string out = hmrdp::MoonlightVideoCodec();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+// Stable code for a decode-path warning ("software-decode|<mime>" /
+// "no-decoder|<mime>"), or "" when nothing is wrong. The UI owns the wording.
+napi_value MoonlightVideoWarning(napi_env env, napi_callback_info) {
+  const std::string out = hmrdp::MoonlightVideoWarning();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1245,6 +1291,14 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightProbe", nullptr, MoonlightProbe, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"moonlightVideoFormats", nullptr, MoonlightVideoFormats, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightVideoCodec", nullptr, MoonlightVideoCodec, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightVideoCodecSupport", nullptr, MoonlightVideoCodecSupport, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightVideoWarning", nullptr, MoonlightVideoWarning, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
   };
 
 
