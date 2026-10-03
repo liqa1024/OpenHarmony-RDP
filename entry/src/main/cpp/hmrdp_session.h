@@ -54,9 +54,9 @@ enum class SessionEvent {
   kCursorShape = 6,
   kCursorDefault = 7,
   kCursorHidden = 8,
-  // Rich local clipboard payloads pulled from the server on demand. Html
-  // carries the HTML fragment; Image carries the header "<w>,<h>" in `text` plus
-  // the BGRA bitmap in the event's byte buffer.
+  // Rich local clipboard payloads pulled from the server on demand. Both hand
+  // ArkTS the raw wire payload in the event's byte buffer (Html = CF_HTML,
+  // Image = CF_DIB); ArkTS owns the decode (ClipboardCodec).
   kClipboardHtml = 9,
   kClipboardImage = 10,
   // Reserved. Telemetry is no longer emitted: EmitMetrics() stores the window in
@@ -80,6 +80,9 @@ enum class SessionEvent {
   // 快捷键穿透 (see SetShortcutPassthrough in hmrdp_napi.cpp): one intercepted
   // key event, payload "<keyCode>|<down>" with the multimodal KeyCode and 1/0.
   kKeyIntercept = 17,
+  // Rich Text Format clipboard payload, carried like kClipboardHtml (raw RTF in
+  // the byte buffer). Kept a separate event so ArkTS can tell the two apart.
+  kClipboardRtf = 18,
 };
 
 struct RdpOptions {

@@ -148,8 +148,22 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
     case static_cast<int>(SessionEvent::kClipboardText):
       setStr("text", data);
       break;
-    case static_cast<int>(SessionEvent::kClipboardHtml):
-      setStr("html", data);
+    case static_cast<int>(SessionEvent::kClipboardHtml): {
+      // Raw CF_HTML in `bytes`; ArkTS parses it (ClipboardCodec.parseCfHtml).
+      if (!bytes.empty()) {
+        auto buffer = std::make_shared<NativeBuffer>();
+        buffer->bytes = bytes;
+        setInt("dataHandle", g_buffers.Add(buffer));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kClipboardRtf):
+      // Raw RTF in `bytes`; ArkTS converts it (ClipboardCodec.parseRtf).
+      if (!bytes.empty()) {
+        auto buffer = std::make_shared<NativeBuffer>();
+        buffer->bytes = bytes;
+        setInt("dataHandle", g_buffers.Add(buffer));
+      }
       break;
     case static_cast<int>(SessionEvent::kCursorShape): {
       // header "<w>,<h>,<hotX>,<hotY>" in text, the BGRA bitmap in `bytes`.
@@ -168,12 +182,7 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
       break;
     }
     case static_cast<int>(SessionEvent::kClipboardImage): {
-      // header "<w>,<h>" in text, the BGRA bitmap in `bytes`.
-      const std::vector<std::string> head = SplitOn(data, ',');
-      if (head.size() == 2) {
-        setInt("width", ParseInt64(head[0]));
-        setInt("height", ParseInt64(head[1]));
-      }
+      // The raw CF_DIB travels in `bytes`; ArkTS decodes it (ClipboardCodec).
       if (!bytes.empty()) {
         auto buffer = std::make_shared<NativeBuffer>();
         buffer->bytes = bytes;

@@ -22,7 +22,7 @@ import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PE
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
-import { ClipboardCodec } from '../utils/ClipboardCodec';
+import { ClipboardCodec, DibImage } from '../utils/ClipboardCodec';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -828,16 +828,11 @@ struct SessionPage {
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
     } else if (event === RdpEvent.ClipboardHtml) {
-      const html: string = payload.html ?? '';
-      hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', html.length);
-      this.remoteClipboardHtml = html;
-      this.remoteClipboardText = '';
-      this.remoteClipboardPixelMap = undefined;
-      this.remoteFileCount = 0;
-      this.remoteFolderCount = 0;
+      this.onRemoteClipboardHtml(payload);
+    } else if (event === RdpEvent.ClipboardRtf) {
+      this.onRemoteClipboardRtf(payload);
     } else if (event === RdpEvent.ClipboardImage) {
-      hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}dx%{public}d',
-        payload.width ?? 0, payload.height ?? 0);
+      hilog.info(DOMAIN, TAG, 'remote clipboard image (raw DIB)');
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
       this.onClipboardImage(payload);
@@ -1112,25 +1107,67 @@ struct SessionPage {
     }
   }
 
-  /** Decodes a remote clipboard image into a PixelMap. */
-  private onClipboardImage(payload: RdpEventPayload): void {
-    const width: number = payload.width ?? 0;
-    const height: number = payload.height ?? 0;
-    const imageHandle: number = payload.imageHandle ?? 0;
-    if (width <= 0 || height <= 0 || imageHandle <= 0) {
+  /** Decodes a raw CF_HTML payload (ClipboardCodec) into the remote HTML cache. */
+  private onRemoteClipboardHtml(payload: RdpEventPayload): void {
+    const dataHandle: number = payload.dataHandle ?? 0;
+    if (dataHandle <= 0) {
       return;
     }
-    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
-    if (bytes === undefined) {
+    const cfHtml: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
+    if (cfHtml === undefined) {
+      return;
+    }
+    const html: string = ClipboardCodec.parseCfHtml(cfHtml);
+    hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', html.length);
+    this.setRemoteHtml(html);
+  }
+
+  /** Converts a raw RTF payload (ClipboardCodec) into the remote HTML cache. */
+  private onRemoteClipboardRtf(payload: RdpEventPayload): void {
+    const dataHandle: number = payload.dataHandle ?? 0;
+    if (dataHandle <= 0) {
+      return;
+    }
+    const rtf: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
+    if (rtf === undefined) {
+      return;
+    }
+    const html: string = ClipboardCodec.parseRtf(rtf);
+    hilog.info(DOMAIN, TAG, 'remote clipboard rtf->html: %{public}d chars', html.length);
+    this.setRemoteHtml(html);
+  }
+
+  /** Caches remote HTML as the active remote clipboard content. */
+  private setRemoteHtml(html: string): void {
+    this.remoteClipboardHtml = html;
+    this.remoteClipboardText = '';
+    this.remoteClipboardPixelMap = undefined;
+    this.remoteFileCount = 0;
+    this.remoteFolderCount = 0;
+  }
+
+  /** Decodes a remote CF_DIB into a PixelMap (the DIB codec lives in ArkTS). */
+  private onClipboardImage(payload: RdpEventPayload): void {
+    const imageHandle: number = payload.imageHandle ?? 0;
+    if (imageHandle <= 0) {
+      return;
+    }
+    const dib: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
+    if (dib === undefined) {
+      return;
+    }
+    const parsed: DibImage | undefined = ClipboardCodec.parseDib(dib);
+    if (parsed === undefined || parsed.width <= 0 || parsed.height <= 0) {
+      hilog.warn(DOMAIN, TAG, 'unsupported remote DIB');
       return;
     }
     const options: image.InitializationOptions = {
       editable: false,
       pixelFormat: image.PixelMapFormat.BGRA_8888,
-      size: { width: width, height: height }
+      size: { width: parsed.width, height: parsed.height }
     };
     try {
-      this.remoteClipboardPixelMap = image.createPixelMapSync(bytes, options);
+      this.remoteClipboardPixelMap = image.createPixelMapSync(parsed.bgra, options);
       this.remoteClipboardText = '';
       this.remoteClipboardHtml = '';
     } catch (error) {

@@ -145,8 +145,9 @@ export enum RdpEvent {
   CursorShape = 6,
   CursorDefault = 7,
   CursorHidden = 8,
-  // Rich remote clipboard payloads. Html carries an HTML fragment; Image
-  // carries "<w>,<h>|<base64 BGRA>".
+  // Rich remote clipboard payloads. Html carries a raw CF_HTML payload and
+  // Image a raw CF_DIB (both as a native buffer handle); ClipboardCodec decodes
+  // them. Text arrives already decoded on ClipboardText.
   ClipboardHtml = 9,
   ClipboardImage = 10,
   // Reserved. Per-second telemetry no longer crosses the boundary as an event:
@@ -167,7 +168,9 @@ export enum RdpEvent {
   // Upload finished (every advertised byte served); payload is the file count.
   FileTransferDone = 16,
   // 快捷键穿透: an intercepted key event, payload "<keyCode>|<down>".
-  KeyIntercept = 17
+  KeyIntercept = 17,
+  // RTF clipboard content already converted to HTML (native conversion for now).
+  ClipboardRtf = 18
 }
 
 export class RdpConnectOptions implements RdpOptions {

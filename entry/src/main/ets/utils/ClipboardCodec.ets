@@ -77,6 +77,223 @@ function pad10(value: number): string {
   return value.toString().padStart(10, '0');
 }
 
+/** Scales a channel extracted with `mask` from `value` up to 8 bits. */
+function scaleMask(value: number, mask: number): number {
+  if (mask === 0) {
+    return 255;
+  }
+  let shift: number = 0;
+  let shifted: number = mask >>> 0;
+  while ((shifted & 1) === 0 && shift < 32) {
+    shifted >>>= 1;
+    shift++;
+  }
+  let bits: number = 0;
+  while ((shifted & 1) !== 0 && bits < 32) {
+    shifted >>>= 1;
+    bits++;
+  }
+  if (bits <= 0) {
+    return 255;
+  }
+  const raw: number = ((value & mask) >>> shift) >>> 0;
+  if (bits >= 8) {
+    return (raw >>> (bits - 8)) & 0xFF;
+  }
+  const maxValue: number = (1 << bits) - 1;
+  return Math.floor((raw * 255 + Math.floor(maxValue / 2)) / maxValue) & 0xFF;
+}
+
+/** Decoded CF_DIB: top-down BGRA pixels plus their dimensions. */
+export class DibImage {
+  width: number = 0;
+  height: number = 0;
+  bgra: ArrayBuffer = new ArrayBuffer(0);
+}
+
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): number {
+  if (needle.length === 0 || haystack.length < needle.length) {
+    return -1;
+  }
+  for (let i = from; i + needle.length <= haystack.length; i++) {
+    let j: number = 0;
+    while (j < needle.length && haystack[i + j] === needle[j]) {
+      j++;
+    }
+    if (j === needle.length) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Reads a fixed-width decimal field ("Key:0000001234") from a byte header. */
+function readOffset(header: Uint8Array, key: string): number {
+  const keyBytes: Uint8Array = utf8(key);
+  const pos: number = indexOfBytes(header, keyBytes, 0);
+  if (pos < 0) {
+    return -1;
+  }
+  let begin: number = pos + keyBytes.length;
+  while (begin < header.length && header[begin] === 0x20) {
+    begin++;
+  }
+  let end: number = begin;
+  while (end < header.length && header[end] >= 0x30 && header[end] <= 0x39) {
+    end++;
+  }
+  if (end === begin) {
+    return -1;
+  }
+  let value: number = 0;
+  for (let i = begin; i < end; i++) {
+    value = value * 10 + (header[i] - 0x30);
+  }
+  return value;
+}
+
+function decodeUtf8(bytes: Uint8Array): string {
+  try {
+    return util.TextDecoder.create('utf-8').decodeToString(bytes);
+  } catch (error) {
+    return '';
+  }
+}
+
+function isAlphaByte(b: number): boolean {
+  return (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A);
+}
+
+function hexVal(b: number): number {
+  if (b >= 0x30 && b <= 0x39) {
+    return b - 0x30;
+  }
+  if (b >= 0x61 && b <= 0x66) {
+    return b - 0x61 + 10;
+  }
+  if (b >= 0x41 && b <= 0x46) {
+    return b - 0x41 + 10;
+  }
+  return 0;
+}
+
+function byteHex(value: number): string {
+  const v: number = value & 0xFF;
+  const hex: string = v.toString(16).toUpperCase();
+  return v < 16 ? '0' + hex : hex;
+}
+
+function rtfColorHex(r: number, g: number, b: number): string {
+  return '#' + byteHex(r) + byteHex(g) + byteHex(b);
+}
+
+/** Run formatting of the RTF group currently open. */
+class RtfRunStyle {
+  bold: boolean = false;
+  italic: boolean = false;
+  underline: boolean = false;
+  strike: boolean = false;
+  colorIndex: number = 0;
+  highlightIndex: number = 0;
+  fontSizeHalf: number = 0;
+}
+
+function cloneRtfStyle(style: RtfRunStyle): RtfRunStyle {
+  const copy: RtfRunStyle = new RtfRunStyle();
+  copy.bold = style.bold;
+  copy.italic = style.italic;
+  copy.underline = style.underline;
+  copy.strike = style.strike;
+  copy.colorIndex = style.colorIndex;
+  copy.highlightIndex = style.highlightIndex;
+  copy.fontSizeHalf = style.fontSizeHalf;
+  return copy;
+}
+
+function rtfStyleToCss(style: RtfRunStyle, colors: string[]): string {
+  let css: string = '';
+  if (style.bold) {
+    css += 'font-weight:bold;';
+  }
+  if (style.italic) {
+    css += 'font-style:italic;';
+  }
+  let decoration: string = '';
+  if (style.underline) {
+    decoration += 'underline ';
+  }
+  if (style.strike) {
+    decoration += 'line-through ';
+  }
+  if (decoration.length > 0) {
+    css += 'text-decoration:' + decoration + ';';
+  }
+  if (style.colorIndex > 0 && style.colorIndex < colors.length
+    && colors[style.colorIndex].length > 0) {
+    css += 'color:' + colors[style.colorIndex] + ';';
+  }
+  if (style.highlightIndex > 0 && style.highlightIndex < colors.length
+    && colors[style.highlightIndex].length > 0) {
+    css += 'background-color:' + colors[style.highlightIndex] + ';';
+  }
+  if (style.fontSizeHalf > 0) {
+    css += 'font-size:' + (style.fontSizeHalf / 2).toString() + 'pt;';
+  }
+  return css;
+}
+
+/** Parses the RTF color table; index 0 means "auto" (no explicit color). */
+function parseRtfColorTable(bytes: Uint8Array): string[] {
+  const colors: string[] = [];
+  const pos: number = indexOfBytes(bytes, utf8('\\colortbl'), 0);
+  if (pos < 0) {
+    return colors;
+  }
+  let r: number = -1;
+  let g: number = -1;
+  let b: number = -1;
+  let depth: number = 0;
+  let i: number = pos + 9;
+  while (i < bytes.length) {
+    const c: number = bytes[i];
+    if (c === 0x7B) {
+      depth++;
+    } else if (c === 0x7D) {
+      if (depth === 0) {
+        break;
+      }
+      depth--;
+    } else if (c === 0x3B) {
+      colors.push(r >= 0 ? rtfColorHex(r, g, b) : '');
+      r = -1;
+      g = -1;
+      b = -1;
+    } else if (c === 0x5C) {
+      let j: number = i + 1;
+      let word: string = '';
+      while (j < bytes.length && isAlphaByte(bytes[j])) {
+        word += String.fromCharCode(bytes[j]);
+        j++;
+      }
+      let value: number = 0;
+      while (j < bytes.length && bytes[j] >= 0x30 && bytes[j] <= 0x39) {
+        value = value * 10 + (bytes[j] - 0x30);
+        j++;
+      }
+      if (word === 'red') {
+        r = value;
+      } else if (word === 'green') {
+        g = value;
+      } else if (word === 'blue') {
+        b = value;
+      }
+      i = j - 1;
+    }
+    i++;
+  }
+  return colors;
+}
+
 export class ClipboardCodec {
   /**
    * Serialises a HarmonyOS PixelMap buffer (top-down, `pixelFormat`) into a
@@ -249,5 +466,409 @@ export class ClipboardCodec {
       out = out.split(codes[k]).join(chars[k]);
     }
     return out;
+  }
+
+  /**
+   * Parses a CF_DIB into top-down BGRA. Handles the layouts Windows actually
+   * sends: BITMAPINFOHEADER / V4 / V5 headers, 16/24/32bpp, BI_RGB and
+   * BI_BITFIELDS (channel masks; BGRX default for 32bpp BI_RGB). Returns
+   * undefined for an unsupported or truncated payload. Mirrors the native
+   * ParseDibToBgra it replaces.
+   */
+  static parseDib(dib: ArrayBuffer): DibImage | undefined {
+    const size: number = dib.byteLength;
+    if (size < 40) {
+      return undefined;
+    }
+    const view: DataView = new DataView(dib);
+    const bytes: Uint8Array = new Uint8Array(dib);
+    const headerSize: number = view.getUint32(0, true);
+    const widthRaw: number = view.getInt32(4, true);
+    const heightRaw: number = view.getInt32(8, true);
+    const bpp: number = view.getUint16(14, true);
+    const compression: number = view.getUint32(16, true);
+    if (headerSize < 40 || headerSize > size || widthRaw <= 0 || heightRaw === 0) {
+      return undefined;
+    }
+    if (bpp !== 16 && bpp !== 24 && bpp !== 32) {
+      return undefined;
+    }
+    const w: number = widthRaw;
+    const h: number = heightRaw < 0 ? -heightRaw : heightRaw;
+    if (w === 0 || h === 0 || w > 16384 || h > 16384) {
+      return undefined;
+    }
+    const topDown: boolean = heightRaw < 0;
+    const stride: number = Math.floor((w * bpp + 31) / 32) * 4;
+    let redMask: number = 0;
+    let greenMask: number = 0;
+    let blueMask: number = 0;
+    let alphaMask: number = 0;
+    let pixelOffset: number = headerSize;
+    if (compression === 0) {
+      if (bpp === 32) {
+        redMask = 0x00FF0000;
+        greenMask = 0x0000FF00;
+        blueMask = 0x000000FF;
+      } else if (bpp === 16) {
+        redMask = 0x7C00;
+        greenMask = 0x03E0;
+        blueMask = 0x001F;
+      }
+    } else if (compression === 3 || compression === 6) {
+      if (size < 40 + 12) {
+        return undefined;
+      }
+      redMask = view.getUint32(40, true);
+      greenMask = view.getUint32(44, true);
+      blueMask = view.getUint32(48, true);
+      if (compression === 6 && size >= 40 + 16) {
+        alphaMask = view.getUint32(52, true);
+      }
+      pixelOffset = headerSize >= 108 ? headerSize : (40 + (compression === 6 ? 16 : 12));
+    } else {
+      return undefined;
+    }
+    if (pixelOffset + stride * h > size) {
+      return undefined;
+    }
+    const bgra: Uint8Array = new Uint8Array(w * h * 4);
+    let anyAlpha: boolean = false;
+    for (let y = 0; y < h; y++) {
+      const srcY: number = topDown ? y : (h - 1 - y);
+      const row: number = pixelOffset + srcY * stride;
+      const dstRow: number = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        let r: number = 0;
+        let g: number = 0;
+        let b: number = 0;
+        let a: number = 255;
+        if (bpp === 24) {
+          const px: number = row + x * 3;
+          b = bytes[px];
+          g = bytes[px + 1];
+          r = bytes[px + 2];
+        } else if (bpp === 32) {
+          const px: number = view.getUint32(row + x * 4, true);
+          r = scaleMask(px, redMask);
+          g = scaleMask(px, greenMask);
+          b = scaleMask(px, blueMask);
+          if (alphaMask !== 0) {
+            a = scaleMask(px, alphaMask);
+          }
+        } else {
+          const px: number = view.getUint16(row + x * 2, true);
+          r = scaleMask(px, redMask);
+          g = scaleMask(px, greenMask);
+          b = scaleMask(px, blueMask);
+          if (alphaMask !== 0) {
+            a = scaleMask(px, alphaMask);
+          }
+        }
+        if (a !== 0) {
+          anyAlpha = true;
+        }
+        const d: number = dstRow + x * 4;
+        bgra[d] = b;
+        bgra[d + 1] = g;
+        bgra[d + 2] = r;
+        bgra[d + 3] = a;
+      }
+    }
+    if (alphaMask !== 0 && !anyAlpha) {
+      for (let i = 3; i < bgra.length; i += 4) {
+        bgra[i] = 255;
+      }
+    }
+    const out: DibImage = new DibImage();
+    out.width = w;
+    out.height = h;
+    out.bgra = bgra.buffer as ArrayBuffer;
+    return out;
+  }
+
+  /**
+   * Extracts the HTML fragment from a CF_HTML payload. Preference order: the
+   * marked fragment (self-contained: inline styles + tags), then the
+   * StartFragment/EndFragment offsets, then the whole StartHTML..EndHTML
+   * document, then the raw payload decoded as UTF-8. Mirrors the native
+   * ParseCfHtml it replaces.
+   */
+  static parseCfHtml(cfHtml: ArrayBuffer): string {
+    const bytes: Uint8Array = new Uint8Array(cfHtml);
+    const startMarker: Uint8Array = utf8(HTML_START_FRAGMENT);
+    const endMarker: Uint8Array = utf8(HTML_END_FRAGMENT);
+    const markerBegin: number = indexOfBytes(bytes, startMarker, 0);
+    const markerEnd: number = indexOfBytes(bytes, endMarker, 0);
+    if (markerBegin >= 0 && markerEnd > markerBegin + startMarker.length) {
+      const begin: number = markerBegin + startMarker.length;
+      return decodeUtf8(bytes.subarray(begin, markerEnd));
+    }
+    const headerLimit: number = bytes.length < 512 ? bytes.length : 512;
+    const header: Uint8Array = bytes.subarray(0, headerLimit);
+    const startFragment: number = readOffset(header, 'StartFragment:');
+    const endFragment: number = readOffset(header, 'EndFragment:');
+    if (startFragment >= 0 && endFragment > startFragment && endFragment <= bytes.length) {
+      return decodeUtf8(bytes.subarray(startFragment, endFragment));
+    }
+    const startHtml: number = readOffset(header, 'StartHTML:');
+    const endHtml: number = readOffset(header, 'EndHTML:');
+    if (startHtml >= 0 && endHtml > startHtml && endHtml <= bytes.length) {
+      return decodeUtf8(bytes.subarray(startHtml, endHtml));
+    }
+    return decodeUtf8(bytes);
+  }
+
+  /**
+   * Converts a CF_RTF payload into a simple HTML fragment. Many Windows apps
+   * only offer RTF (no HTML) for rich text, so this keeps the local clipboard
+   * rich. Operates on the raw bytes (mirroring the native RtfToHtml it
+   * replaces): control words map to bold/italic/underline/strike/color/size,
+   * destinations are skipped, and `\uN` / `\'XX` are UTF-8 encoded.
+   */
+  static parseRtf(rtf: ArrayBuffer): string {
+    const bytes: Uint8Array = new Uint8Array(rtf);
+    const len: number = bytes.length;
+    const colors: string[] = parseRtfColorTable(bytes);
+    const destinations: string[] = ['fonttbl', 'colortbl', 'stylesheet', 'info',
+      'pict', 'header', 'footer', 'footerl', 'footerr', 'footnote', 'listtable',
+      'listoverridetable', 'xmlnstbl', 'generator', 'themedata', 'colorschememapping',
+      'latentstyles', 'datastore', 'field', 'fldinst', 'bkmkstart', 'bkmkend',
+      'object', 'shppict', 'nonshppict'];
+
+    const out: number[] = [];
+    const push = (s: string): void => {
+      for (let k = 0; k < s.length; k++) {
+        out.push(s.charCodeAt(k));
+      }
+    };
+    const pushByte = (b: number): void => {
+      out.push(b & 0xFF);
+    };
+    const appendUtf8 = (codepoint: number): void => {
+      const cp: number = codepoint < 0 ? codepoint + 0x10000 : codepoint;
+      if (cp <= 0) {
+        return;
+      }
+      if (cp < 0x80) {
+        pushByte(cp);
+      } else if (cp < 0x800) {
+        pushByte(0xC0 | (cp >> 6));
+        pushByte(0x80 | (cp & 0x3F));
+      } else if (cp < 0x10000) {
+        pushByte(0xE0 | (cp >> 12));
+        pushByte(0x80 | ((cp >> 6) & 0x3F));
+        pushByte(0x80 | (cp & 0x3F));
+      } else {
+        pushByte(0xF0 | (cp >> 18));
+        pushByte(0x80 | ((cp >> 12) & 0x3F));
+        pushByte(0x80 | ((cp >> 6) & 0x3F));
+        pushByte(0x80 | (cp & 0x3F));
+      }
+    };
+    const escapePush = (c: number): void => {
+      if (c === 0x26) {
+        push('&amp;');
+      } else if (c === 0x3C) {
+        push('&lt;');
+      } else if (c === 0x3E) {
+        push('&gt;');
+      } else {
+        pushByte(c);
+      }
+    };
+
+    push('<p>');
+    let openCss: string = '';
+    let style: RtfRunStyle = new RtfRunStyle();
+    const styleStack: RtfRunStyle[] = [cloneRtfStyle(style)];
+    const skipStack: boolean[] = [false];
+
+    const skipping = (): boolean => {
+      for (let k = skipStack.length - 1; k >= 0; k--) {
+        if (skipStack[k]) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const closeRun = (): void => {
+      if (openCss.length > 0) {
+        push('</span>');
+        openCss = '';
+      }
+    };
+    const ensureRun = (): void => {
+      const css: string = rtfStyleToCss(style, colors);
+      if (css === openCss) {
+        return;
+      }
+      if (openCss.length > 0) {
+        push('</span>');
+      }
+      openCss = css;
+      if (css.length > 0) {
+        push('<span style="' + css + '">');
+      }
+    };
+
+    for (let i = 0; i < len; i++) {
+      const c: number = bytes[i];
+      if (c === 0x7B) {
+        styleStack.push(cloneRtfStyle(style));
+        skipStack.push(false);
+        let j: number = i + 1;
+        while (j < len && (bytes[j] === 0x0D || bytes[j] === 0x0A || bytes[j] === 0x20)) {
+          j++;
+        }
+        if (j < len && bytes[j] === 0x5C) {
+          let k: number = j + 1;
+          if (k < len && bytes[k] === 0x2A) {
+            skipStack[skipStack.length - 1] = true;
+          } else {
+            let word: string = '';
+            while (k < len && isAlphaByte(bytes[k])) {
+              word += String.fromCharCode(bytes[k]);
+              k++;
+            }
+            for (const dest of destinations) {
+              if (word === dest) {
+                skipStack[skipStack.length - 1] = true;
+                break;
+              }
+            }
+          }
+        }
+        continue;
+      }
+      if (c === 0x7D) {
+        closeRun();
+        const restored: RtfRunStyle | undefined = styleStack.pop();
+        if (restored !== undefined) {
+          style = restored;
+        }
+        if (skipStack.length > 0) {
+          skipStack.pop();
+        }
+        continue;
+      }
+      if (c === 0x5C) {
+        i++;
+        if (i >= len) {
+          break;
+        }
+        const nc: number = bytes[i];
+        if (nc === 0x5C || nc === 0x7B || nc === 0x7D) {
+          if (!skipping()) {
+            ensureRun();
+            pushByte(nc);
+          }
+          continue;
+        }
+        if (nc === 0x27) {
+          if (i + 2 < len) {
+            const value: number = hexVal(bytes[i + 1]) * 16 + hexVal(bytes[i + 2]);
+            if (!skipping()) {
+              ensureRun();
+              appendUtf8(value);
+            }
+            i += 2;
+          }
+          continue;
+        }
+        if (nc === 0x7E) {
+          if (!skipping()) {
+            ensureRun();
+            push('&nbsp;');
+          }
+          continue;
+        }
+        if (nc === 0x2D || nc === 0x5F) {
+          continue;
+        }
+        if (nc === 0x2A) {
+          skipStack[skipStack.length - 1] = true;
+          continue;
+        }
+        let j: number = i;
+        let word: string = '';
+        while (j < len && isAlphaByte(bytes[j])) {
+          word += String.fromCharCode(bytes[j]);
+          j++;
+        }
+        let negative: boolean = false;
+        if (j < len && bytes[j] === 0x2D) {
+          negative = true;
+          j++;
+        }
+        let value: number = 0;
+        let hasValue: boolean = false;
+        while (j < len && bytes[j] >= 0x30 && bytes[j] <= 0x39) {
+          value = value * 10 + (bytes[j] - 0x30);
+          j++;
+          hasValue = true;
+        }
+        if (negative) {
+          value = -value;
+        }
+        i = (j < len && bytes[j] === 0x20) ? j : j - 1;
+        if (skipping()) {
+          continue;
+        }
+        if (word === 'b' || word === 'ab') {
+          style.bold = hasValue ? (value !== 0) : true;
+        } else if (word === 'i' || word === 'ai') {
+          style.italic = hasValue ? (value !== 0) : true;
+        } else if (word === 'ul') {
+          style.underline = hasValue ? (value !== 0) : true;
+        } else if (word === 'ulnone') {
+          style.underline = false;
+        } else if (word === 'strike' || word === 'striked') {
+          style.strike = true;
+        } else if (word === 'cf') {
+          style.colorIndex = value;
+        } else if (word === 'highlight') {
+          style.highlightIndex = value;
+        } else if (word === 'fs') {
+          style.fontSizeHalf = value;
+        } else if (word === 'plain') {
+          style = new RtfRunStyle();
+        } else if (word === 'par' || word === 'pard') {
+          closeRun();
+          push('</p><p>');
+        } else if (word === 'line') {
+          closeRun();
+          push('<br>');
+        } else if (word === 'tab') {
+          ensureRun();
+          pushByte(0x09);
+        } else if (word === 'u') {
+          ensureRun();
+          appendUtf8(value);
+          // Skip the single `\uc` fallback character that follows \uN.
+          const fallback: number = i + 1;
+          if (fallback + 2 < len && bytes[fallback] === 0x5C && bytes[fallback + 1] === 0x27) {
+            i = fallback + 3;
+          } else if (fallback < len) {
+            i = fallback;
+          }
+        }
+        continue;
+      }
+      if (c === 0x0D || c === 0x0A) {
+        continue;
+      }
+      if (!skipping()) {
+        ensureRun();
+        escapePush(c);
+      }
+    }
+    closeRun();
+    push('</p>');
+    const result: Uint8Array = new Uint8Array(out.length);
+    for (let k = 0; k < out.length; k++) {
+      result[k] = out[k];
+    }
+    return decodeUtf8(result);
   }
 }

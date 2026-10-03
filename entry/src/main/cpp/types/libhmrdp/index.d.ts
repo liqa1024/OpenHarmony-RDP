@@ -39,8 +39,10 @@ export interface RdpOptions {
  *  - Disconnected / Error: `code` (FreeRDP error, 0 = internal) + `message`.
  *  - Resize: `width` + `height`.
  *  - CursorShape: `width` / `height` / `hotX` / `hotY` + `imageHandle`.
- *  - ClipboardText: `text`. ClipboardHtml: `html`.
- *  - ClipboardImage: `width` / `height` + `imageHandle`.
+ *  - ClipboardText: `text`.
+ *  - ClipboardHtml: `dataHandle` (a raw CF_HTML; ArkTS parses it).
+ *  - ClipboardRtf: `dataHandle` (a raw RTF payload; ArkTS converts it).
+ *  - ClipboardImage: `imageHandle` (a raw CF_DIB; ArkTS decodes it).
  *  - ClipboardFileList: `fileCount` / `totalBytes` / `folderCount`.
  *  - FileTransferProgress: `direction` / `doneBytes` / `totalBytes` /
  *    `fileIndex` / `fileCount`.
@@ -56,10 +58,17 @@ export interface RdpEventPayload {
   hotX?: number;
   hotY?: number;
   /**
-   * Handle of a native byte buffer holding the raw BGRA bitmap (see the buffer
-   * functions). Read it with bufferRead(), then bufferRelease() it.
+   * Handle of a native byte buffer for the event's image: raw BGRA for a cursor
+   * shape, raw CF_DIB for a clipboard image. Read it with bufferRead(), then
+   * bufferRelease() it.
    */
   imageHandle?: number;
+  /**
+   * Handle of a native byte buffer for a raw clipboard format payload that is
+   * neither an image nor text (currently CF_HTML). Read it with bufferRead(),
+   * then bufferRelease() it.
+   */
+  dataHandle?: number;
   text?: string;
   html?: string;
   fileCount?: number;
