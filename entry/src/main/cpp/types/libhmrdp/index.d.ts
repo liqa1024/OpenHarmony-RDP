@@ -148,11 +148,11 @@ export const setClipboardText: (handle: number, text: string) => boolean;
 export const setClipboardHtml: (handle: number, html: string) => boolean;
 
 /**
- * Pushes a local image to the session. `pixelFormat` is the HarmonyOS
- * image.PixelMapFormat of `pixels`; the native side converts it to CF_DIB.
+ * Pushes a local image to the session as a ready CF_DIB payload. ArkTS builds
+ * the DIB from the PixelMap (ClipboardCodec.buildDib); the native side only
+ * stores and serves the bytes, so the image codec lives on the ArkTS side.
  */
-export const setClipboardImage: (handle: number, width: number, height: number,
-  pixelFormat: number, pixels: ArrayBuffer) => boolean;
+export const setClipboardImageDib: (handle: number, dib: ArrayBuffer) => boolean;
 
 /**
  * Pushes local files to the session (advertised as FileGroupDescriptorW +

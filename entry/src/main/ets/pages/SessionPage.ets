@@ -22,6 +22,7 @@ import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PE
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
+import { ClipboardCodec } from '../utils/ClipboardCodec';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -1564,7 +1565,7 @@ struct SessionPage {
     this.toast('已发送文本到远端');
   }
 
-  /** Local image -> remote. Reads the pixels and lets native build a CF_DIB. */
+  /** Local image -> remote. Reads the pixels and builds the CF_DIB here. */
   private pushLocalImage(pixelMap: image.PixelMap): void {
     pixelMap.getImageInfo()
       .then((info: image.ImageInfo) => {
@@ -1577,7 +1578,15 @@ struct SessionPage {
         const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
         pixelMap.readPixelsToBuffer(buffer)
           .then(() => {
-            this.native.pushClipboardImage(width, height, info.pixelFormat, buffer);
+            const dib: ArrayBuffer | undefined =
+              ClipboardCodec.buildDib(buffer, width, height, info.pixelFormat);
+            if (dib === undefined) {
+              hilog.warn(DOMAIN, TAG, 'unsupported clipboard pixel format: %{public}d',
+                info.pixelFormat);
+              this.toast('提交本机图片失败');
+              return;
+            }
+            this.native.pushClipboardDib(dib);
             this.toast('已发送图片到远端');
           })
           .catch((error: BusinessError) => {

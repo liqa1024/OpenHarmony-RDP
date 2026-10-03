@@ -7,7 +7,7 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
-  sendUnicode, setClipboardHtml, setClipboardImage, setClipboardText, setRdpCursor, setSurface,
+  sendUnicode, setClipboardHtml, setClipboardImageDib, setClipboardText, setRdpCursor, setSurface,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
@@ -322,13 +322,12 @@ export class RdpNative {
   }
 
   /**
-   * Pushes a local image to the remote session. `pixelFormat` is the HarmonyOS
-   * image.PixelMapFormat of `pixels`; native converts it to CF_DIB.
+   * Pushes a local image to the remote session. `dib` is a ready CF_DIB payload
+   * (see ClipboardCodec.buildDib); native only stores and serves it.
    */
-  pushClipboardImage(width: number, height: number, pixelFormat: number,
-    pixels: ArrayBuffer): void {
+  pushClipboardDib(dib: ArrayBuffer): void {
     if (this.handle >= 0) {
-      setClipboardImage(this.handle, width, height, pixelFormat, pixels);
+      setClipboardImageDib(this.handle, dib);
     }
   }
 

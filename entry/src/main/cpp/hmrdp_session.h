@@ -244,11 +244,10 @@ class Session : public std::enable_shared_from_this<Session> {
   // Local HTML clipboard (UTF-8 fragment) pushed from ArkTS; advertised as
   // CF_HTML with a plain-text fallback so text-only targets still paste.
   void SetLocalClipboardHtml(const std::string& html);
-  // Local image clipboard pushed from ArkTS. `pixelFormat` is the HarmonyOS
-  // image.PixelMapFormat of `pixels`; the buffer is converted to a CF_DIB
-  // payload for the server. Safe to call from the UI thread.
-  void SetLocalClipboardImage(uint32_t width, uint32_t height, int32_t pixelFormat,
-                              const uint8_t* pixels, size_t byteCount);
+  // Local image clipboard pushed from ArkTS as a ready CF_DIB payload. ArkTS
+  // builds the DIB (ClipboardCodec.buildDib); native only stores and serves the
+  // bytes. Safe to call from the UI thread.
+  void SetLocalClipboardImageDib(const uint8_t* dib, size_t byteCount);
 
   // Local files (absolute sandbox paths) pushed from ArkTS; advertised to the
   // server as a FileGroupDescriptorW + FileContents clipboard. Safe to call from

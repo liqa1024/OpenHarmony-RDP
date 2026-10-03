@@ -1057,82 +1057,6 @@ bool ParseDibToBgra(const uint8_t* data, size_t size, DibImage* out) {
   return true;
 }
 
-// Converts a HarmonyOS PixelMap buffer to BGRA. `pixelFormat` is
-// image.PixelMapFormat: 1 ARGB_8888, 3 RGBA_8888, 4 BGRA_8888, 5 RGB_888.
-bool ConvertToBgra(const uint8_t* pixels, size_t byteCount, uint32_t width,
-                   uint32_t height, int32_t pixelFormat, uint8_t* out) {
-  if (pixels == nullptr || out == nullptr || width == 0 || height == 0) {
-    return false;
-  }
-  const size_t count = static_cast<size_t>(width) * height;
-  if (pixelFormat == 3) {  // RGBA_8888
-    if (byteCount < count * 4) {
-      return false;
-    }
-    for (size_t i = 0; i < count; ++i) {
-      const uint8_t* src = pixels + i * 4;
-      uint8_t* dst = out + i * 4;
-      dst[0] = src[2];
-      dst[1] = src[1];
-      dst[2] = src[0];
-      dst[3] = src[3];
-    }
-    return true;
-  }
-  if (pixelFormat == 1 || pixelFormat == 4) {  // ARGB_8888 / BGRA_8888
-    if (byteCount < count * 4) {
-      return false;
-    }
-    std::memcpy(out, pixels, count * 4);
-    return true;
-  }
-  if (pixelFormat == 5) {  // RGB_888
-    if (byteCount < count * 3) {
-      return false;
-    }
-    for (size_t i = 0; i < count; ++i) {
-      const uint8_t* src = pixels + i * 3;
-      uint8_t* dst = out + i * 4;
-      dst[0] = src[2];
-      dst[1] = src[1];
-      dst[2] = src[0];
-      dst[3] = 255;
-    }
-    return true;
-  }
-  return false;
-}
-
-// Serialises top-down BGRA into a CF_DIB payload (BITMAPINFOHEADER, 32bpp,
-// BI_RGB, bottom-up rows).
-std::vector<uint8_t> BuildBgraToDib(const uint8_t* bgra, uint32_t width,
-                                    uint32_t height) {
-  const size_t stride = static_cast<size_t>(width) * 4;
-  std::vector<uint8_t> dib(40 + stride * height, 0);
-  auto writeU16 = [&dib](size_t offset, uint16_t value) {
-    dib[offset] = static_cast<uint8_t>(value & 0xFF);
-    dib[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-  };
-  auto writeU32 = [&dib](size_t offset, uint32_t value) {
-    dib[offset] = static_cast<uint8_t>(value & 0xFF);
-    dib[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-    dib[offset + 2] = static_cast<uint8_t>((value >> 16) & 0xFF);
-    dib[offset + 3] = static_cast<uint8_t>((value >> 24) & 0xFF);
-  };
-  writeU32(0, 40);
-  writeU32(4, width);
-  writeU32(8, height);
-  writeU16(12, 1);
-  writeU16(14, 32);
-  writeU32(16, 0);
-  writeU32(20, static_cast<uint32_t>(stride * height));
-  for (uint32_t y = 0; y < height; ++y) {
-    std::memcpy(dib.data() + 40 + static_cast<size_t>(y) * stride,
-                bgra + static_cast<size_t>(height - 1 - y) * stride, stride);
-  }
-  return dib;
-}
-
 // FNV-1a over the cursor geometry and pixels, used to drop redundant updates.
 uint32_t CursorHash(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
                     const uint8_t* data, size_t len) {
@@ -3480,32 +3404,22 @@ void Session::SetLocalClipboardHtml(const std::string& html) {
   AdvertiseLocalClipboard();
 }
 
-void Session::SetLocalClipboardImage(uint32_t width, uint32_t height,
-                                     int32_t pixelFormat, const uint8_t* pixels,
-                                     size_t byteCount) {
+void Session::SetLocalClipboardImageDib(const uint8_t* dib, size_t byteCount) {
   ContextGuard ctx(*this);
-  if (pixels == nullptr || width == 0 || height == 0) {
+  if (dib == nullptr || byteCount == 0) {
     return;
   }
-  const size_t count = static_cast<size_t>(width) * height;
-  std::vector<uint8_t> bgra(count * 4, 0);
-  if (!ConvertToBgra(pixels, byteCount, width, height, pixelFormat, bgra.data())) {
-    HMRDP_LOGW("set local clipboard image: unsupported pixel format %{public}d",
-               pixelFormat);
-    return;
-  }
-  const std::vector<uint8_t> dib = BuildBgraToDib(bgra.data(), width, height);
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    localClipboardDib_.assign(dib.begin(), dib.end());
+    localClipboardDib_.assign(reinterpret_cast<const char*>(dib), byteCount);
     localClipboardUtf16_.clear();
     localClipboardValid_ = false;
     localClipboardHtml_.clear();
     localClipboardUtf16FromHtml_.clear();
     localClipKind_ = LocalClipKind::kImage;
   }
-  HMRDP_LOGI("set local clipboard image: %{public}ux%{public}u fmt=%{public}d",
-             width, height, pixelFormat);
+  HMRDP_LOGI("set local clipboard image: CF_DIB %{public}u bytes",
+             static_cast<unsigned>(byteCount));
   AdvertiseLocalClipboard();
 }
 
