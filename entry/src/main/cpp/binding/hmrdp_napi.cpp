@@ -173,6 +173,24 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
         setInt("dataHandle", g_buffers.Add(buffer));
       }
       break;
+    case static_cast<int>(SessionEvent::kRemoteFileChunk): {
+      // "<listIndex>|<isSize>|<sizeValue>|<failed>"; a range response carries its
+      // bytes in `bytes` (absent for an end-of-file marker or a size response).
+      const std::vector<std::string> parts = SplitOn(data, '|');
+      if (parts.size() >= 4) {
+        setInt("listIndex", ParseInt64(parts[0]));
+        setBool("isSize", ParseInt64(parts[1]) != 0);
+        setInt("sizeValue", ParseInt64(parts[2]));
+        setBool("failed", ParseInt64(parts[3]) != 0);
+      }
+      if (!bytes.empty()) {
+        auto buffer = std::make_shared<NativeBuffer>();
+        buffer->bytes = bytes;
+        setInt("dataHandle", g_buffers.Add(buffer));
+      }
+      break;
+    }
+    // kRemoteClipboardChanged carries no payload.
     case static_cast<int>(SessionEvent::kCursorShape): {
       // header "<w>,<h>,<hotX>,<hotY>" in text, the BGRA bitmap in `bytes`.
       const std::vector<std::string> head = SplitOn(data, ',');
@@ -445,20 +463,6 @@ bool GetBoolProperty(napi_env env, napi_value object, const char* name, bool fal
   }
   bool result = fallback;
   napi_get_value_bool(env, value, &result);
-  return result;
-}
-
-int64_t GetInt64Property(napi_env env, napi_value object, const char* name, int64_t fallback) {
-  napi_value value = nullptr;
-  if (napi_get_named_property(env, object, name, &value) != napi_ok || value == nullptr) {
-    return fallback;
-  }
-  napi_valuetype type = napi_undefined;
-  if (napi_typeof(env, value, &type) != napi_ok || type != napi_number) {
-    return fallback;
-  }
-  int64_t result = fallback;
-  napi_get_value_int64(env, value, &result);
   return result;
 }
 
@@ -1015,62 +1019,32 @@ napi_value SetClipboardFileOffer(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// Replaces the remote file list with the descriptors ArkTS parsed from the
-// server's FILEGROUPDESCRIPTORW (arg 1 is a RemoteFileDescriptor[]).
-napi_value SetRemoteFileList(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
+// One step of the ArkTS-driven file download: ask the server for a file's size
+// (sizeOnly) or a byte range. The response arrives as a RemoteFileChunk event.
+napi_value RequestRemoteFileContents(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int64_t handle = 0;
-  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
-    return CreateBool(env, false);
-  }
-  bool isArray = false;
-  if (napi_is_array(env, args[1], &isArray) != napi_ok || !isArray) {
-    return CreateBool(env, false);
-  }
-  uint32_t length = 0;
-  napi_get_array_length(env, args[1], &length);
-  std::vector<hmrdp::fileclip::FileInfo> files;
-  files.reserve(length);
-  for (uint32_t i = 0; i < length; ++i) {
-    napi_value element = nullptr;
-    if (napi_get_element(env, args[1], i, &element) != napi_ok || element == nullptr) {
-      continue;
-    }
-    hmrdp::fileclip::FileInfo entry;
-    entry.name = GetStringProperty(env, element, "name");
-    entry.size = static_cast<uint64_t>(GetInt64Property(env, element, "size", 0));
-    entry.sizeKnown = GetBoolProperty(env, element, "sizeKnown", false);
-    entry.isDirectory = GetBoolProperty(env, element, "isDirectory", false);
-    files.push_back(std::move(entry));
-  }
-  std::shared_ptr<Session> session = FindSession(handle);
-  if (session == nullptr) {
-    return CreateBool(env, false);
-  }
-  session->SetRemoteFileList(std::move(files));
-  return CreateBool(env, true);
-}
-
-napi_value PullClipboardFiles(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
-  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int64_t handle = 0;
-  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
-    return CreateBool(env, false);
-  }
-  std::string destDir;
-  if (!ReadStringArg(env, args[1], &destDir)) {
+  int64_t listIndex = 0;
+  bool sizeOnly = false;
+  double offset = 0;
+  int64_t length = 0;
+  if (argc < 5 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int64(env, args[1], &listIndex) != napi_ok ||
+      napi_get_value_bool(env, args[2], &sizeOnly) != napi_ok ||
+      napi_get_value_double(env, args[3], &offset) != napi_ok ||
+      napi_get_value_int64(env, args[4], &length) != napi_ok) {
     return CreateBool(env, false);
   }
   std::shared_ptr<Session> session = FindSession(handle);
-  if (session == nullptr || destDir.empty()) {
+  if (session == nullptr || listIndex < 0 || offset < 0 || length < 0) {
     return CreateBool(env, false);
   }
-  session->PullRemoteFiles(destDir);
-  return CreateBool(env, true);
+  const bool ok = session->RequestRemoteFileContents(
+      static_cast<uint32_t>(listIndex), sizeOnly, static_cast<uint64_t>(offset),
+      static_cast<uint32_t>(length));
+  return CreateBool(env, ok);
 }
 
 napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
@@ -1089,11 +1063,11 @@ napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// The latest telemetry window for a session, as a struct (see SessionCounters).
-// ArkTS pulls it at its own cadence, so the native side never assembles a
-// per-second string for it to re-parse. An unknown handle yields an empty object
-// and the caller keeps its current figures.
-napi_value GetSessionCounters(napi_env env, napi_callback_info info) {
+// The raw telemetry reading of a session (see SessionTelemetry). ArkTS pulls it
+// at its own cadence and computes the displayed rates itself, so the native side
+// neither aggregates nor assembles a per-second string. An unknown handle yields
+// the zeroed shape (rttMs = -1) and the caller keeps its current figures.
+napi_value GetSessionTelemetry(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -1105,32 +1079,35 @@ napi_value GetSessionCounters(napi_env env, napi_callback_info info) {
   }
   std::shared_ptr<Session> session = FindSession(handle);
   // Always populate every field, so a stale handle yields the same shape with
-  // defaults (rttMs = -1) rather than an object ArkTS would read as undefined.
-  const hmrdp::SessionCounters counters =
-      session != nullptr ? session->Counters() : hmrdp::SessionCounters();
+  // defaults rather than an object ArkTS would read as undefined.
+  const hmrdp::SessionTelemetry telemetry =
+      session != nullptr ? session->ReadTelemetry() : hmrdp::SessionTelemetry();
   auto setInt = [env, result](const char* name, int64_t value) {
     napi_value v = nullptr;
     napi_create_int64(env, value, &v);
     napi_set_named_property(env, result, name, v);
   };
-  setInt("rttMs", counters.rttMs);
-  setInt("rxBytesPerSec", static_cast<int64_t>(counters.rxBytesPerSec));
-  setInt("txBytesPerSec", static_cast<int64_t>(counters.txBytesPerSec));
-  setInt("fps", counters.fps);
-  setInt("audioRateHz", counters.audioRateHz);
-  setInt("audioLossBp", counters.audioLossBp);
-  setInt("zgxParseUs", static_cast<int64_t>(counters.zgxParseUs));
-  setInt("decodeUs", static_cast<int64_t>(counters.decodeUs));
-  setInt("composeUs", static_cast<int64_t>(counters.composeUs));
-  setInt("presentUs", static_cast<int64_t>(counters.presentUs));
-  setInt("bytesPerFrame", static_cast<int64_t>(counters.bytesPerFrame));
-  setInt("dutyPermille", counters.dutyPermille);
-  setInt("commandsPerFrame", static_cast<int64_t>(counters.commandsPerFrame));
-  setInt("syncUs", static_cast<int64_t>(counters.syncUs));
-  setInt("presentWaitUs", static_cast<int64_t>(counters.presentWaitUs));
-  setInt("gpuCopyUs", static_cast<int64_t>(counters.gpuCopyUs));
-  setInt("gpuSrUs", static_cast<int64_t>(counters.gpuSrUs));
-  setInt("gpuBlitUs", static_cast<int64_t>(counters.gpuBlitUs));
+  setInt("sampleSeq", static_cast<int64_t>(telemetry.sampleSeq));
+  setInt("windowElapsedMs", static_cast<int64_t>(telemetry.windowElapsedMs));
+  setInt("rxBytesWindow", static_cast<int64_t>(telemetry.rxBytesWindow));
+  setInt("txBytesWindow", static_cast<int64_t>(telemetry.txBytesWindow));
+  setInt("framesWindow", static_cast<int64_t>(telemetry.framesWindow));
+  setInt("rttMs", telemetry.rttMs);
+  setInt("windowFrames", static_cast<int64_t>(telemetry.windowFrames));
+  setInt("zgxParseUs", static_cast<int64_t>(telemetry.zgxParseUs));
+  setInt("decodeUs", static_cast<int64_t>(telemetry.decodeUs));
+  setInt("composeUs", static_cast<int64_t>(telemetry.composeUs));
+  setInt("presentUs", static_cast<int64_t>(telemetry.presentUs));
+  setInt("presentWaitUs", static_cast<int64_t>(telemetry.presentWaitUs));
+  setInt("syncUs", static_cast<int64_t>(telemetry.syncUs));
+  setInt("windowBytes", static_cast<int64_t>(telemetry.windowBytes));
+  setInt("windowCommands", static_cast<int64_t>(telemetry.windowCommands));
+  setInt("audioRateHz", telemetry.audioRateHz);
+  setInt("audioLostBytes", static_cast<int64_t>(telemetry.audioLostBytes));
+  setInt("audioTotalBytes", static_cast<int64_t>(telemetry.audioTotalBytes));
+  setInt("gpuCopyUs", static_cast<int64_t>(telemetry.gpuCopyUs));
+  setInt("gpuSrUs", static_cast<int64_t>(telemetry.gpuSrUs));
+  setInt("gpuBlitUs", static_cast<int64_t>(telemetry.gpuBlitUs));
   return result;
 }
 
@@ -1847,14 +1824,12 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setClipboardFileOffer", nullptr, SetClipboardFileOffer, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setRemoteFileList", nullptr, SetRemoteFileList, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"pullClipboardFiles", nullptr, PullClipboardFiles, nullptr, nullptr, nullptr,
+      {"requestRemoteFileContents", nullptr, RequestRemoteFileContents, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"cancelFileTransfer", nullptr, CancelFileTransfer, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"sessionCounters", nullptr, GetSessionCounters, nullptr, nullptr, nullptr,
+      {"sessionTelemetry", nullptr, GetSessionTelemetry, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"bufferSize", nullptr, BufferSize, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"bufferRead", nullptr, BufferRead, nullptr, nullptr, nullptr, napi_default, nullptr},

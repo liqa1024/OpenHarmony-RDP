@@ -4,7 +4,7 @@
  * The native clipboard channel only stores and serves bytes; the
  * FILEGROUPDESCRIPTORW format lives here (doc_agent/architecture.md), the same
  * way the HTML / DIB / RTF codecs do. It builds the descriptor for a local file
- * offer and parses the server's descriptor list into `RemoteFileDescriptor`s.
+ * offer and parses the server's descriptor list into `FileDescriptorInput`s.
  */
 
 /** One file advertised on the clipboard. */

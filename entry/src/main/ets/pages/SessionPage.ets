@@ -8,11 +8,12 @@ import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
-import { RdpCounters, RdpEventPayload, RemoteFileDescriptor } from 'libhmrdp.so';
+import { RdpEventPayload } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOptions,
   RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
 import { RdpNative } from '../services/RdpNative';
+import { RdpCounters } from '../services/SessionTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_ZOOM,
@@ -112,6 +113,9 @@ const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
 // File-transfer progress fill: brighter than the chip tints so the bar reads at
 // a glance on the dark toolbar.
 const TOOLBAR_PROGRESS: string = '#5B9CF8';
+// One FILECONTENTS_RANGE request asks for at most this many bytes (the server
+// answers each request in a single message; mirrors the old native bound).
+const FILE_CHUNK_BYTES: number = 256 * 1024;
 // Pointer zones for the fullscreen auto-hide (SessionPage.setToolbarPointerZone).
 const TOOLBAR_ZONE_NONE: number = 0;
 const TOOLBAR_ZONE_TRIGGER: number = 1;
@@ -431,6 +435,21 @@ struct SessionPage {
   private transferBusy: boolean = false;
   private transferLastDone: number = 0;
   private transferLastAt: number = 0;
+  // Remote file descriptors parsed from the last remote FILEGROUPDESCRIPTORW
+  // (FileTransferCodec); index order is the FILECONTENTS listIndex.
+  private remoteFiles: FileDescriptorInput[] = [];
+  // Download state machine (ArkTS-owned; native only relays chunks and sends
+  // requests). `downloadPaths` stays aligned with `remoteFiles` (empty for a
+  // directory, which is skipped), and the local file is written here.
+  private downloadActive: boolean = false;
+  private downloadPaths: string[] = [];
+  private downloadIndex: number = 0;
+  private downloadOffset: number = 0;
+  private downloadSize: number = 0;
+  private downloadSizeKnown: boolean = false;
+  private downloadFile: fileIo.File | undefined = undefined;
+  private downloadDone: number = 0;
+  private downloadTotal: number = 0;
   // Remote cursor shape, installed as the HarmonyOS system cursor. The server
   // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
   // re-installed when the window re-acquires the pointer. `cursorHidden` tracks
@@ -839,10 +858,12 @@ struct SessionPage {
       this.onClipboardImage(payload);
     } else if (event === RdpEvent.RemoteFileListRaw) {
       this.onRemoteFileListRaw(payload);
+    } else if (event === RdpEvent.RemoteFileChunk) {
+      this.onRemoteFileChunk(payload);
+    } else if (event === RdpEvent.RemoteClipboardChanged) {
+      this.onRemoteClipboardChanged();
     } else if (event === RdpEvent.FileTransferProgress) {
       this.onFileTransferProgress(payload);
-    } else if (event === RdpEvent.ClipboardFilesReady) {
-      this.onClipboardFilesReady(payload);
     } else if (event === RdpEvent.FileTransferDone) {
       this.finishFileTransfer();
       this.toast('已发送文件到远端');
@@ -1141,8 +1162,8 @@ struct SessionPage {
 
   /**
    * Parses the server's raw FILEGROUPDESCRIPTORW (FileTransferCodec) into the
-   * remote file list and hands the descriptors back to native, which streams
-   * the bytes on demand. The order is preserved (FILECONTENTS listIndex).
+   * remote file list. ArkTS keeps the descriptors (index order is the
+   * FILECONTENTS listIndex) and owns the download (see startFileDownload).
    */
   private onRemoteFileListRaw(payload: RdpEventPayload): void {
     const dataHandle: number = payload.dataHandle ?? 0;
@@ -1154,15 +1175,11 @@ struct SessionPage {
       return;
     }
     const parsed: FileDescriptorInput[] = FileTransferCodec.parseFileGroupDescriptor(fgd);
-    const descriptors: RemoteFileDescriptor[] = [];
+    this.remoteFiles = parsed;
     let fileCount: number = 0;
     let folderCount: number = 0;
     let totalBytes: number = 0;
     for (const entry of parsed) {
-      descriptors.push({
-        name: entry.name, size: entry.size, sizeKnown: entry.sizeKnown,
-        isDirectory: entry.isDirectory
-      });
       if (entry.isDirectory) {
         folderCount++;
       } else {
@@ -1170,7 +1187,6 @@ struct SessionPage {
       }
       totalBytes += entry.size;
     }
-    this.native.applyRemoteFileList(descriptors);
     this.remoteFileCount = fileCount;
     this.remoteFolderCount = folderCount;
     this.remoteClipboardText = '';
@@ -1178,6 +1194,19 @@ struct SessionPage {
     this.remoteClipboardPixelMap = undefined;
     hilog.info(DOMAIN, TAG, 'remote clipboard files: %{public}d folders=%{public}d total=%{public}d',
       fileCount, folderCount, totalBytes);
+  }
+
+  /**
+   * The server's clipboard changed. A download in flight can never finish, so it
+   * is aborted; the cached descriptors are dropped until the new list arrives.
+   */
+  private onRemoteClipboardChanged(): void {
+    this.remoteFiles = [];
+    this.remoteFileCount = 0;
+    this.remoteFolderCount = 0;
+    if (this.downloadActive) {
+      this.abortDownload('远端剪贴板已改变，传输已中止');
+    }
   }
 
   /** Decodes a remote CF_DIB into a PixelMap (the DIB codec lives in ArkTS). */
@@ -1426,10 +1455,12 @@ struct SessionPage {
     this.transferLastAt = now;
   }
 
-  /** Download finished: the payload carries the absolute sandbox paths. */
-  private onClipboardFilesReady(payload: RdpEventPayload): void {
-    this.finishFileTransfer();
-    const paths: string[] = payload.paths ?? [];
+  /**
+   * Writes the finished download's sandbox files to the system clipboard as file
+   * URIs, so any app can paste them. `folderCount` is the number of advertised
+   * directories skipped (the file clipboard cannot stream them).
+   */
+  private writeDownloadedFiles(paths: string[], folderCount: number): void {
     if (paths.length === 0) {
       this.toast('远端文件为空');
       return;
@@ -1440,8 +1471,8 @@ struct SessionPage {
       for (let i = 1; i < paths.length; i++) {
         pasteData.addRecord(pasteboard.MIMETYPE_TEXT_URI, fileUri.getUriFromPath(paths[i]));
       }
-      const skipped: string = this.remoteFolderCount > 0
-        ? `（跳过 ${this.remoteFolderCount} 个文件夹）` : '';
+      const skipped: string = folderCount > 0
+        ? `（跳过 ${folderCount} 个文件夹）` : '';
       const label: string = (paths.length > 1 ? ` ${paths.length} 个文件` : '文件') + skipped;
       this.writeLocalPasteData(pasteData, label);
     } catch (error) {
@@ -1491,8 +1522,9 @@ struct SessionPage {
       });
       return;
     }
-    // Downloads are safe to stop: we are the side pulling the bytes.
-    this.abortFileTransfer();
+    // Downloads are safe to stop: we are the side pulling the bytes, and the
+    // state machine is local (native only relays chunks).
+    this.abortDownload('已取消文件传输');
   }
 
   private abortFileTransfer(): void {
@@ -1748,24 +1780,251 @@ struct SessionPage {
   }
 
   /**
-   * Remote files -> local. Native streams them into a per-transfer sandbox
-   * directory; on completion they are written to the system clipboard as file
-   * URIs so any app can paste them.
+   * Remote files -> local. This is the whole download state machine (native only
+   * relays FILECONTENTS chunks and sends requests): files stream into a
+   * per-transfer sandbox directory and, on completion, are written to the system
+   * clipboard as file URIs so any app can paste them.
    */
   private startFileDownload(): void {
-    if (this.transferBusy) {
+    if (this.transferBusy || this.downloadActive) {
+      return;
+    }
+    const files: FileDescriptorInput[] = this.remoteFiles;
+    if (files.length === 0) {
+      this.toast('没有可下载的文件');
       return;
     }
     const dir: string | undefined = this.makeSandboxDir('rdp_inbox');
     if (dir === undefined) {
       return;
     }
+    // Paths stay aligned with the server's list (a directory keeps an empty
+    // entry) because the FILECONTENTS listIndex is the advertised position.
+    this.downloadPaths = [];
+    this.downloadTotal = 0;
+    let fileCount: number = 0;
+    for (const file of files) {
+      if (file.isDirectory) {
+        this.downloadPaths.push('');
+        continue;
+      }
+      this.downloadPaths.push(`${dir}/${file.name}`);
+      this.downloadTotal += file.size;
+      fileCount++;
+    }
+    if (fileCount === 0) {
+      this.toast('暂不支持文件夹传输，请在远端改选文件');
+      return;
+    }
+    this.downloadActive = true;
+    this.downloadIndex = 0;
+    this.downloadOffset = 0;
+    this.downloadSize = 0;
+    this.downloadSizeKnown = false;
+    this.downloadFile = undefined;
+    this.downloadDone = 0;
     this.transferBusy = true;
     this.transferActive = true;
+    this.transferDirection = 0;
     this.transferPercent = 0;
     this.transferText = '正在接收文件…';
+    this.transferSpeed = '';
+    this.transferFileCount = fileCount;
+    this.transferFileIndex = 0;
+    this.transferLastDone = 0;
+    this.transferLastAt = 0;
     this.refreshToolbarAutoHide();
-    this.native.pullClipboardFiles(dir);
+    this.requestNextDownloadStep();
+  }
+
+  /**
+   * Drives the download: skip directories, resolve a missing size with a SIZE
+   * request, then pull the next RANGE. One request is in flight at a time (the
+   * response carries no listIndex, so native tags it from the pending request).
+   */
+  private requestNextDownloadStep(): void {
+    for (;;) {
+      if (!this.downloadActive) {
+        return;
+      }
+      if (this.downloadIndex >= this.remoteFiles.length) {
+        this.finishDownload();
+        return;
+      }
+      const info: FileDescriptorInput = this.remoteFiles[this.downloadIndex];
+      const path: string = this.downloadPaths[this.downloadIndex];
+      if (info.isDirectory || path.length === 0) {
+        // Directories cannot be streamed: skip, keeping the index aligned.
+        this.downloadIndex++;
+        this.resetCurrentDownloadFileState();
+        continue;
+      }
+      if (!this.downloadSizeKnown && info.sizeKnown) {
+        this.downloadSize = info.size;
+        this.downloadSizeKnown = true;
+      }
+      if (!this.downloadSizeKnown) {
+        // The descriptor carried no FD_FILESIZE: ask for the size first.
+        if (!this.native.requestRemoteFileContents(this.downloadIndex, true, 0, 8)) {
+          this.abortDownload('文件传输请求失败');
+        }
+        return;
+      }
+      if (this.downloadFile === undefined) {
+        try {
+          this.downloadFile = fileIo.openSync(path, fileIo.OpenMode.CREATE
+            | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+          this.downloadOffset = 0;
+        } catch (error) {
+          hilog.warn(DOMAIN, TAG, 'open %{public}s failed: %{public}s', path,
+            JSON.stringify(error));
+          this.abortDownload('无法创建文件');
+          return;
+        }
+      }
+      if (this.downloadOffset >= this.downloadSize) {
+        // Current file complete (also covers a zero-byte file).
+        this.closeCurrentDownloadFile();
+        this.downloadIndex++;
+        this.resetCurrentDownloadFileState();
+        continue;
+      }
+      const remaining: number = this.downloadSize - this.downloadOffset;
+      const chunk: number = remaining < FILE_CHUNK_BYTES ? remaining : FILE_CHUNK_BYTES;
+      this.transferFileIndex = this.downloadIndex + 1;
+      if (!this.native.requestRemoteFileContents(this.downloadIndex, false,
+        this.downloadOffset, chunk)) {
+        this.abortDownload('文件传输请求失败');
+      }
+      return;
+    }
+  }
+
+  /** One FILECONTENTS response from native (see RdpEvent.RemoteFileChunk). */
+  private onRemoteFileChunk(payload: RdpEventPayload): void {
+    if (!this.downloadActive) {
+      // A late response after a cancel/abort: release its buffer, do not write.
+      RdpNative.releaseBuffer(payload.dataHandle ?? 0);
+      return;
+    }
+    if (payload.failed ?? false) {
+      RdpNative.releaseBuffer(payload.dataHandle ?? 0);
+      this.abortDownload((payload.isSize ?? false) ? '文件大小响应无效' : '远端拒绝提供文件内容');
+      return;
+    }
+    if (payload.isSize ?? false) {
+      const size: number = payload.sizeValue ?? 0;
+      this.downloadSize = size;
+      this.downloadSizeKnown = true;
+      if (this.downloadIndex < this.remoteFiles.length) {
+        const info: FileDescriptorInput = this.remoteFiles[this.downloadIndex];
+        this.downloadTotal = this.downloadTotal - info.size + size;
+        info.size = size;
+        info.sizeKnown = true;
+      }
+      this.updateDownloadProgress();
+      this.requestNextDownloadStep();
+      return;
+    }
+    const dataHandle: number = payload.dataHandle ?? 0;
+    if (dataHandle <= 0) {
+      // An empty range means the server has nothing more for this file.
+      this.downloadOffset = this.downloadSize;
+      this.requestNextDownloadStep();
+      return;
+    }
+    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
+    const file: fileIo.File | undefined = this.downloadFile;
+    if (bytes === undefined || file === undefined) {
+      this.abortDownload('写入文件失败');
+      return;
+    }
+    try {
+      const written: number = fileIo.writeSync(file.fd, bytes);
+      if (written !== bytes.byteLength) {
+        this.abortDownload('写入文件失败');
+        return;
+      }
+      this.downloadOffset += written;
+      this.downloadDone += written;
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'write download failed: %{public}s', JSON.stringify(error));
+      this.abortDownload('写入文件失败');
+      return;
+    }
+    this.updateDownloadProgress();
+    this.requestNextDownloadStep();
+  }
+
+  /** Paints the toolbar progress row from the download's own counters. */
+  private updateDownloadProgress(): void {
+    this.transferFileIndex = this.downloadIndex + 1;
+    this.transferPercent = this.downloadTotal > 0
+      ? Math.min(100, Math.floor(this.downloadDone * 100 / this.downloadTotal)) : 0;
+    this.transferText = '正在接收文件…';
+    const now: number = Date.now();
+    if (this.transferLastAt > 0 && now > this.transferLastAt
+      && this.downloadDone >= this.transferLastDone) {
+      const bytesPerSecond: number =
+        (this.downloadDone - this.transferLastDone) * 1000 / (now - this.transferLastAt);
+      this.transferSpeed = bytesPerSecond > 0 ? this.formatRate(bytesPerSecond) : '';
+    }
+    this.transferLastDone = this.downloadDone;
+    this.transferLastAt = now;
+    this.refreshToolbarAutoHide();
+  }
+
+  private finishDownload(): void {
+    this.closeCurrentDownloadFile();
+    const paths: string[] = [];
+    for (const path of this.downloadPaths) {
+      if (path.length > 0) {
+        paths.push(path);
+      }
+    }
+    const folderCount: number = this.remoteFolderCount;
+    this.downloadActive = false;
+    this.downloadPaths = [];
+    this.finishFileTransfer();
+    hilog.info(DOMAIN, TAG, 'download complete: %{public}d file(s)', paths.length);
+    this.writeDownloadedFiles(paths, folderCount);
+  }
+
+  /** Aborts the download and removes this transfer's partial copies. */
+  private abortDownload(reason: string): void {
+    this.closeCurrentDownloadFile();
+    for (const path of this.downloadPaths) {
+      if (path.length === 0) {
+        continue;
+      }
+      try {
+        fileIo.unlinkSync(path);
+      } catch (error) {
+        // Already gone or never created: nothing to clean.
+      }
+    }
+    this.downloadActive = false;
+    this.downloadPaths = [];
+    this.finishFileTransfer();
+    this.toast(reason);
+  }
+
+  private closeCurrentDownloadFile(): void {
+    if (this.downloadFile !== undefined) {
+      try {
+        fileIo.closeSync(this.downloadFile);
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'close download file failed: %{public}s',
+          JSON.stringify(error));
+      }
+      this.downloadFile = undefined;
+    }
+  }
+
+  private resetCurrentDownloadFileState(): void {
+    this.downloadOffset = 0;
+    this.downloadSize = 0;
+    this.downloadSizeKnown = false;
   }
 
   private writeLocalPasteData(data: pasteboard.PasteData, label: string): void {

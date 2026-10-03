@@ -369,7 +369,7 @@ std::string GfxReplay::StatsLines() {
   const int64_t stopUs = endUs_.load();
   const int64_t nowUs = stopUs != 0 ? stopUs : NowUs();
   // fps is the **playback** rate: measured from the first presented frame (see
-  // MarkFrameEnd) to the end, so the run's start-up (engine/presenter init, waiting
+  // MarkFrameEnd) to the end, so the run's start-up (core/presenter init, waiting
   // for the first frame) does not dilute it. MarkFrameEnd counts one frame per
   // presented frame, hence `presents - 1` periods.
   const uint64_t presents = presents_.load();

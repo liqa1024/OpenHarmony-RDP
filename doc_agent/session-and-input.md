@@ -219,7 +219,10 @@
   按载荷对照。计量器**只产子项、不存总数**：各相位语义不同（CPU 工作 / GPU 提交 / 阻塞等待），合适的和
   由展示端相加，`sync` 这类阻塞项因此天然不计入 live 的合计。
 
-- **工具栏左侧遥测**每秒刷新一次（原生 `kMetrics` 事件）。字段：
+- **工具栏左侧遥测**每秒刷新一次：原生在 RDP 线程按 ~1s 采一个**原始样本**（`sessionTelemetry()`——
+  该窗口的收发/帧增量与工作/音频/GPU 子项，源在采样时清零；采样留在 RDP 线程，故不会与管线拆除竞争），
+  **聚合在 ArkTS**（`services/SessionTelemetry`）：它把样本按自身窗口时长/帧数换算成速率与每帧均值，
+  原生不产任何展示用速率。字段：
   - **本机**（µs/帧）= 展示端把四个**工作**相位相加：
     `zgx+parse`（chunk 到达 → 该帧第一条命令，即 ZGX 解压 + RDPGFX PDU 解析）+
     `decode`（包裹的 `SurfaceCommand`，含 progressive 自己的重复合成 `update_tiles`）+
@@ -263,7 +266,8 @@
   - **仍不含**：传输层读/drdynvc 重组（在抓取钩子之前）、**RDPGFX 帧回执**（FreeRDP 在 EndFrame
     回调返回**之后**才写）；`present` 里的 `WaitForFences`/`acquireNextImageKHR` 在合成器不还 buffer
     时会阻塞，排队/显示延迟会算进 `present`（与 `sync` 不同）。
-  - 同一行每秒还有 hilog：`perf: work X us/frame = zgx+parse … + decode … + compose … + present …
+  - 同一行每秒还有 hilog（由 ArkTS 聚合侧按同一 domain/tag 打出，字段与口径不变）：
+    `perf: work X us/frame = zgx+parse … + decode … + compose … + present …
     (+ sync … blocked) (frames=… presents=… cmds/frame=… kB/frame=… duty=…%  gpu copy=… sr=… blit=…
     us/frame)`，定位用这一行。
 
@@ -306,21 +310,26 @@
   （`0xC001`/`0xC002`），服务端按**格式名**识别（依赖已协商的 `CB_USE_LONG_FORMAT_NAMES`）。
   服务端下发的能力标志在 `HmrdpCliprdrServerCapabilities` 里记 hilog，用来核对取交结果。
 - **字节的源/汇由 App 提供**：FreeRDP 的 client cliprdr 只实现线协议（分块、stream 状态、huge 校验、
-  lock 转发），内容要 App 自己读写 —— 上传从沙箱文件按请求回块，下载把块追加到沙箱文件。
-  `FORMAT_DATA_REQUEST` 仍一次只允许一个在途；文件块用独立的 `streamId` 序列。
+  lock 转发），内容要 App 自己读写。分工按 [`architecture.md`](architecture.md) §3.1 的判据：**上传**是
+  server 拉块、回调须在 RDP 线程**同步应答**，故留在原生（按请求从沙箱文件回块）；**下载**不是同步回调
+  （只要求在回调期间把字节拷走），故状态机整个在 ArkTS——原生把每个 `FILECONTENTS_RESPONSE` 拷成
+  `RemoteFileChunk` 事件交给 ArkTS，由它写沙箱文件、维护 offset/size 序列并发下一个请求
+  （`requestRemoteFileContents`，一次一个在途）。文件块用独立的 `streamId` 序列。
 - **平台侧**：本机→远端用系统安全控件授权 + `getDataWithProgress({destUri})`，由系统把剪贴板文件拷进
   应用沙箱（无需 `READ_PASTEBOARD`，也不必手工处理 URI 授权）；远端→本机先落沙箱，完成后用
   `fileUri.getUriFromPath` + `MIMETYPE_TEXT_URI` 写回本机剪贴板，其他应用粘贴时由框架按 URI 取。
   `getDataWithProgress` **不支持文件夹**，故不递归目录；非文件 URI（网页链接）走文本路径。
 - **落地与失败**：下载目录按时间戳分桶避免覆盖；描述符未带 `FD_FILESIZE` 时才逐文件发
-  `FILECONTENTS_SIZE`；任一文件失败即中止并清掉本次分片。进度经 `kFileTransferProgress` 上报
-  （速率由 UI 按相邻两次 `done` 差值算，不进原生；`kFileTransferProgress` 载荷是
-  `方向|已完成|总量|第几个|共几个`），工具栏内联显示「第几个/共几个 + 百分比 + 速率 + 较宽的进度条 +
-  取消」——多文件时靠计数看出整体在推进，不单看进度条。取消分两种：
-  **未开始拉取**（`localTransferDone_ == 0`）时是**干净撤回**——把本地剪贴板改广告成空文本
+  `FILECONTENTS_SIZE`；任一文件失败即中止并清掉本次分片。**上传**进度由原生随同步 serve 上报
+  （`kFileTransferProgress`，载荷 `方向|已完成|总量|第几个|共几个`）；**下载**进度在 ArkTS 本地按
+  自身 done/total 计算，不再跨边界。速率均由 UI 按相邻两次 `done` 差值算，不进原生。工具栏内联显示
+  「第几个/共几个 + 百分比 + 速率 + 较宽的进度条 + 取消」——多文件时靠计数看出整体在推进，不单看进度条。
+  取消分两种：
+  **上传未开始拉取**（`localTransferDone_ == 0`）时是**干净撤回**——把本地剪贴板改广告成空文本
   （`CF_UNICODETEXT` + 2 字节 NUL），服务端据此丢掉文件格式，之后远端粘贴得到空文本而不是报错；
-  **已开始拉取**时只能停服，远端粘贴会报协议错误，故这种情况先弹一次确认。下载两态都可直接取消。
-  下载完成走 `kClipboardFilesReady`、上传完成走 `kFileTransferDone`。
+  **上传已开始拉取**时只能停服，远端粘贴会报协议错误，故这种情况先弹一次确认。**下载**在 ArkTS 侧
+  直接停并清掉本次分片。
+  下载完成由 ArkTS 写本机剪贴板、上传完成走 `kFileTransferDone`。
 - **上传完成后必须撤回文件剪贴板**（`WithdrawLocalFileClipboard()`，即上面「未开始拉取」那一段逻辑）：
   广告出去的列表字节全部送完之后（`localTransferDone_ >= localTransferTotal_`，全零字节的文件在描述符响应里
   即算完成），远端若再粘贴一次会**重新拉同一批文件**，而此时 UI 的进度行与取消已随完成清空，表现成「没有进度条
@@ -340,12 +349,13 @@
   钉住显示（不再按悬停/延迟收起），让进度和提示始终可见；传输结束（成功/失败/取消）恢复正常的悬停显隐。
 - **沙箱临时文件的清理口径**：每次传输新建 `<时间戳>` 目录，而剪贴板只引用**最新**那一个，所以新建时删除同
   root 下的旧目录（`rdp_inbox` / `rdp_outbox` 各自只保留一个），占用因此恒定，也不会破坏当前剪贴板里仍然
-  有效的 URI；取消/失败时原生再 `remove()` 掉本次已落盘的分片。**不在启动或会话结束时清**——前者会让上个
+  有效的 URI；取消/失败时删掉本次已落盘的分片（下载侧在 ArkTS）。**不在启动或会话结束时清**——前者会让上个
   进程残留在剪贴板里的 URI 失效，后者在多窗口下会误删别的窗口刚写入的目录。
 - **一次只允许一个文件传输**：两个按钮在 `transferBusy || transferActive || transferWaiting` 时直接拒绝
   并提示「正在传输文件，请先取消或等待完成」。否则两条状态机会挤在同一个进度行里，上传侧更糟——服务端正在
-  按 `listIndex` 拉取时替换文件列表会让索引错位。原生侧配套"中止必通知"：远端 `FORMAT_LIST` 变化导致下载
-  被重置、或点击复制时列表已空，都发 `kFileTransferFailed`，避免 UI 进度行等一个永远不会来的事件。
+  按 `listIndex` 拉取时替换文件列表会让索引错位。**中止必通知**：远端 `FORMAT_LIST` 变化时原生发
+  `kRemoteClipboardChanged`，ArkTS 据此中止自己正在跑的下载（清理分片并收起进度行），避免进度行等一个
+  永远不会来的事件；点击复制时列表已空则直接提示。
 
 
 ### 4.2 实现坑（改剪贴板前必看）

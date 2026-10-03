@@ -23,7 +23,7 @@
 | `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
-| `pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪 |
+| `pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪；**文件下载状态机**（原生只中继 `FILECONTENTS` 块） |
 | `pages/EditConnectionPage.ets` | 新增/编辑连接（保存只写配置；密码在连接成功后自动保存；可折叠「高级设置」） |
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |
 | `services/ConnectionStore.ets` | 连接配置存储（preferences；稳定 id + `updatedAt`；`reorder` 持久化顺序） |
@@ -47,30 +47,42 @@
 源码按职责分两层（`CMakeLists.txt` 把两层都加入 include 路径，头文件名保持不前缀）：
 
 - **`binding/`** —— **Node-API 翻译层**：只做句柄/标量/小事件的编组与跨线程事件投递，不含业务逻辑；
-- **`engine/`** —— **原生引擎**：资源驱动与数字热路径（FreeRDP 宿主、gdi 帧管线、GPU 呈现、编解码、音频、Moonlight 传输），以及 FreeRDP 在自有线程上要求**同步返回**的回调适配。
+- **`core/`** —— **原生能力层**：只保留「必须原生」的部分（判据见 §3.1）——资源驱动与数字热路径（FreeRDP 宿主、gdi 帧管线、GPU 呈现、编解码、音频、Moonlight 传输），以及 FreeRDP 在自有线程上要求**同步返回**的回调适配。
+
+### 3.1 边界判据：什么必须留在原生
+
+一个能力只有满足下面**任一条**才留在原生；不满足的一律属于 ArkTS（控制面、状态机、格式编解码、协议编排、遥测聚合）：
+
+1. **API 只存在于原生**：FreeRDP、Vulkan / `OHNativeWindow`、OHAudio、`OH_AVCodec`、ffrt、HUKS、OpenSSL、moonlight-common-c、XEngine。
+2. **回调必须同步返回或绑定线程**：FreeRDP 在自有线程上要求同步返回的回调（gdi `BeginPaint`/`EndPaint`、cliprdr、rdpsnd、pointer、autodetect）；跨到 ArkTS 再返回既无法同步，也无法保证线程。
+3. **热数据路径的逐项穿越**：每帧 / 每音频样本一次 NAPI 调用会引入 JS 停顿与 GC。
+
+第 3 条不构成「把逻辑放原生」的理由：跨边界的是**控制**而非**数据**——二进制留在原生、ArkTS 持句柄按需读取（`bufferRead`），遥测由 ArkTS 主动拉取原始读数（`sessionTelemetry`）并自行聚合，事件是离散的。所以热路径只要求「每条数据的搬运不逐项穿越边界」，不要求把聚合或状态机放原生。
+
+**推论**：native 的职责只是**调用封装（`binding/`）+ 原生数据处理（`core/`）**，不承放应用逻辑；凡「因为看着像核心」而留在原生的状态机、聚合与格式处理，都应回到 ArkTS。判定一个候选是否该迁：把 §3.1 三条逐一对照，一条不满足即迁 ArkTS。
 
 | 路径 | 职责 |
 |---|---|
 | `binding/hmrdp_napi.cpp` | Node-API 翻译层：类型化句柄注册表、结构化事件 + 计数拉取、位图缓冲句柄、各原语导出 |
 | `binding/handle_registry.h` | 类型化句柄注册表（单调不复用、按类型隔离、查找交出 `shared_ptr`） |
-| `engine/hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；画面由 gdi 出、经呈现器上屏 |
-| `engine/hmrdp_file_clipboard.{h,cpp}` | 文件剪贴板域：`FileInfo`、文件格式 id/名、`kFileChunkBytes`、路径/名称/大小工具 |
-| `engine/hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
-| `engine/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
-| `engine/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
-| `engine/hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
-| `engine/hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
-| `engine/hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
-| `engine/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`gfx-engine.md`](gfx-engine.md) §7.3） |
-| `engine/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
-| `engine/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
-| `engine/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
-| `engine/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
-| `engine/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针与解码桥、TLS/HTTP 原语、凭证（HUKS 信封）、配对加密原语 |
-| `engine/hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
-| `engine/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
-| `engine/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
-| `engine/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
+| `core/hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；画面由 gdi 出、经呈现器上屏 |
+| `core/hmrdp_file_clipboard.{h,cpp}` | 文件剪贴板域：文件格式 id/名、上传进度载荷与文件大小工具（供上传 serve 用；下载状态机在 ArkTS） |
+| `core/hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
+| `core/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
+| `core/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
+| `core/hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
+| `core/hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
+| `core/hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
+| `core/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`gfx-engine.md`](gfx-engine.md) §7.3） |
+| `core/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
+| `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
+| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
+| `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
+| `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针与解码桥、TLS/HTTP 原语、凭证（HUKS 信封）、配对加密原语 |
+| `core/hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
+| `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
+| `core/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
+| `core/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
 | `shaders/present_quad.*` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入（仍在 `cpp/` 根） |
 
 ## 4. 线程模型与所有权（原生）
@@ -107,6 +119,12 @@
 输入一起挡住（表现为音频卡顿、且与帧率绑定）。因此帧重活必须通过 sink 钩子交到应用线程
 （`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`native-libraries.md`](native-libraries.md) §4）。
 新增/修改动态通道处理时按这条办。
+
+**分层原则**：真正的并发模型在 ArkTS 侧——页面/服务可按需为自己的缓冲、编排、状态机起独立线程；原生只保留
+**必须同步返回、或必须绑在库自有线程上**的适配器（文件上传 serve、rdpsnd sink、gdi / cliprdr / pointer
+回调）。原生线程因此保持**简单且相互独立**：只做"拆包 + 拷贝 + 同步应答"，不承载应用状态机与缓冲策略。
+判定某个处理该放哪一侧时，先看它是否被这三类适配器"钉住"（[§3.1](architecture.md) 只是把同一判据用在
+功能层）：钉住则原生，否则归 ArkTS。
 
 ### 4.3 拆除（单一状态机）
 

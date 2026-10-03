@@ -151,9 +151,9 @@ export enum RdpEvent {
   ClipboardHtml = 9,
   ClipboardImage = 10,
   // Reserved. Per-second telemetry no longer crosses the boundary as an event:
-  // it is pulled with sessionCounters() as an RdpCounters struct (see
-  // libhmrdp.so), so nothing emits this any more. The id is kept only to preserve
-  // the numbering of the events that follow it.
+  // raw readings are pulled with sessionTelemetry() and aggregated in ArkTS (see
+  // services/SessionTelemetry), so nothing emits this any more. The id is kept
+  // only to preserve the numbering of the events that follow it.
   Metrics = 11,
   // Reserved. The remote file list now arrives as RemoteFileListRaw (a raw
   // FILEGROUPDESCRIPTORW) that ArkTS parses; this id is kept for numbering.
@@ -171,9 +171,16 @@ export enum RdpEvent {
   KeyIntercept = 17,
   // RTF clipboard content; payload is a raw RTF buffer the codec converts.
   ClipboardRtf = 18,
-  // Raw FILEGROUPDESCRIPTORW (a native buffer handle); ArkTS parses it into the
-  // file list and hands the descriptors back via setRemoteFileList.
-  RemoteFileListRaw = 19
+  // Raw FILEGROUPDESCRIPTORW (a native buffer handle); ArkTS parses it and owns
+  // the download state machine (FileDownload).
+  RemoteFileListRaw = 19,
+  // One FILECONTENTS response relayed from native: listIndex / isSize /
+  // sizeValue / failed, plus a data buffer handle for a range response. ArkTS
+  // writes the bytes and issues the next request.
+  RemoteFileChunk = 20,
+  // The server's clipboard changed; ArkTS aborts a running download and refreshes
+  // its cached remote descriptors.
+  RemoteClipboardChanged = 21
 }
 
 export class RdpConnectOptions implements RdpOptions {

@@ -11,14 +11,15 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
-setClipboardFileOffer, setRemoteFileList, RemoteFileDescriptor,
-pullClipboardFiles, cancelFileTransfer, sendLockState,
-RdpEventCallback, RdpEventPayload, RdpCounters, sessionCounters,
+setClipboardFileOffer, requestRemoteFileContents,
+cancelFileTransfer, sendLockState,
+RdpEventCallback, RdpEventPayload, RdpTelemetry, sessionTelemetry,
 bufferRead, bufferRelease,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
 } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
+import { RdpCounters, SessionTelemetry } from './SessionTelemetry';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpNative';
@@ -47,6 +48,8 @@ function ensureEventBridge(): void {
 export class RdpNative {
   private handle: number = -1;
   private listener: RdpEventListener | undefined = undefined;
+  // This session's telemetry aggregation (native sends raw readings only).
+  private telemetry: SessionTelemetry = new SessionTelemetry();
 
   /** Associates an instance with the window's session key for teardown. */
   static register(key: string, native: RdpNative): void {
@@ -140,6 +143,13 @@ export class RdpNative {
     try {
       return bufferRead(handle);
     } finally {
+      bufferRelease(handle);
+    }
+  }
+
+  /** Releases a native byte buffer without reading it (dropping a stale chunk). */
+  static releaseBuffer(handle: number): void {
+    if (handle > 0) {
       bufferRelease(handle);
     }
   }
@@ -240,16 +250,17 @@ export class RdpNative {
   }
 
   /**
-   * The latest telemetry window of this session (see RdpCounters). Native keeps
-   * sampling once per second; the caller pulls when it wants to paint the row,
-   * so no per-second string crosses the boundary. An unknown handle yields an
-   * empty object, so the caller falls back to its current figures.
+   * The latest display telemetry window of this session (see RdpCounters). The
+   * native side returns raw readings (RdpTelemetry); this instance's aggregator
+   * differences/averages them over the pull cadence. Returns undefined until a
+   * baseline exists, so the caller falls back to its current figures.
    */
   readCounters(): RdpCounters | undefined {
     if (this.handle < 0) {
       return undefined;
     }
-    return sessionCounters(this.handle);
+    const raw: RdpTelemetry = sessionTelemetry(this.handle);
+    return this.telemetry.sample(raw);
   }
 
   mouse(flags: number, x: number, y: number): void {
@@ -347,23 +358,23 @@ export class RdpNative {
   }
 
   /**
-   * Replaces the native remote-file list with the descriptors ArkTS parsed from
-   * the server's FILEGROUPDESCRIPTORW (see the RemoteFileListRaw event).
+   * One step of the ArkTS-driven file download (see FileDownload): a size query
+   * when `sizeOnly`, else the byte range at `offset`. The response arrives as a
+   * RemoteFileChunk event. Returns false when the channel is unavailable or a
+   * request is already in flight.
    */
-  applyRemoteFileList(files: RemoteFileDescriptor[]): void {
-    if (this.handle >= 0) {
-      setRemoteFileList(this.handle, files);
+  requestRemoteFileContents(listIndex: number, sizeOnly: boolean, offset: number,
+    length: number): boolean {
+    if (this.handle < 0) {
+      return false;
     }
+    return requestRemoteFileContents(this.handle, listIndex, sizeOnly, offset, length);
   }
 
-  /** Downloads the file list the server advertised into `destDir`. */
-  pullClipboardFiles(destDir: string): void {
-    if (this.handle >= 0) {
-      pullClipboardFiles(this.handle, destDir);
-    }
-  }
-
-  /** Aborts an in-flight download and removes its partial files. */
+  /**
+   * Aborts an in-flight upload (drops partial state and stops serving the
+   * advertised file list). Downloads are cancelled on the ArkTS side.
+   */
   cancelFileTransfer(): void {
     if (this.handle >= 0) {
       cancelFileTransfer(this.handle);

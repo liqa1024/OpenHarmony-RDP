@@ -60,9 +60,9 @@ enum class SessionEvent {
   // Image = CF_DIB); ArkTS owns the decode (ClipboardCodec).
   kClipboardHtml = 9,
   kClipboardImage = 10,
-  // Reserved. Telemetry is no longer emitted: EmitMetrics() stores the window in
-  // the SessionCounters struct and ArkTS pulls it with sessionCounters(), so this
-  // id is kept only to preserve the numbering of the events that follow it.
+  // Reserved. Telemetry is not emitted as an event: the session exposes raw
+  // readings through ReadTelemetry() / sessionTelemetry(), so this id is kept
+  // only to preserve the numbering of the events that follow it.
   kMetrics = 11,
   // Reserved. The remote file list now arrives as kRemoteFileListRaw; this id is
   // kept only to preserve the numbering of the events that follow it.
@@ -71,12 +71,13 @@ enum class SessionEvent {
   // "<direction>|<doneBytes>|<totalBytes>" with direction 0 = remote -> local,
   // 1 = local -> remote.
   kFileTransferProgress = 13,
-  // Download finished: the absolute sandbox paths, one per line, in list order.
+  // Reserved. Downloads are assembled in ArkTS, which knows its own destination
+  // paths, so nothing emits this any more; the id is kept for numbering.
   kClipboardFilesReady = 14,
   // A transfer stopped before completing; the payload is a human-readable reason.
   kFileTransferFailed = 15,
   // Upload finished: the server has pulled every advertised byte. Payload is
-  // the number of files. (Downloads finish with kClipboardFilesReady instead.)
+  // the number of files.
   kFileTransferDone = 16,
   // 快捷键穿透 (see SetShortcutPassthrough in hmrdp_napi.cpp): one intercepted
   // key event, payload "<keyCode>|<down>" with the multimodal KeyCode and 1/0.
@@ -85,9 +86,16 @@ enum class SessionEvent {
   // the byte buffer). Kept a separate event so ArkTS can tell the two apart.
   kClipboardRtf = 18,
   // Raw FILEGROUPDESCRIPTORW for a remote file clipboard, in the byte buffer.
-  // ArkTS parses it (FileTransferCodec) and hands the descriptor list back
-  // through SetRemoteFileList so native can stream the bytes on demand.
+  // ArkTS parses it (FileTransferCodec) and owns the download from there.
   kRemoteFileListRaw = 19,
+  // One FILECONTENTS response relayed to ArkTS, which owns the download state
+  // machine. Data string "<listIndex>|<isSize>|<sizeValue>|<failed>"; a range
+  // response carries its bytes in the byte buffer (empty for end-of-file), a
+  // size response carries `sizeValue` and no bytes.
+  kRemoteFileChunk = 20,
+  // The server's clipboard changed (a FORMAT_LIST arrived). ArkTS aborts any
+  // download it has running and refreshes its cached remote descriptors.
+  kRemoteClipboardChanged = 21,
 };
 
 struct RdpOptions {
@@ -119,31 +127,41 @@ struct RdpOptions {
   std::string gatewayDomain;
 };
 
-// One telemetry window: exactly the figures the toolbar shows. The native side
-// samples once per second on the RDP thread and stores the latest window here;
-// ArkTS pulls it with sessionCounters() when it wants to paint the row, so no
-// per-second string is assembled natively and re-parsed across the boundary.
-// rttMs / audioRateHz / audioLossBp are -1 while not measured / not playing.
-struct SessionCounters {
+// One raw telemetry sample: the figures the RDP-thread tick (~1s) read off the
+// session, with none of the displayed rates computed. Transport / frame counts
+// are the window's deltas, the work / audio / GPU fields are the window's sums
+// (the sources drain on the tick), and `rttMs` is the server-reported value.
+// ArkTS pulls it with sessionTelemetry() and turns it into the toolbar figures
+// (rates, per-frame averages, duty, loss rate) itself, so no per-second string
+// crosses the boundary and the presentation arithmetic stays on the UI side
+// (doc_agent/architecture.md §3.1). The tick keeps the drain on the RDP thread,
+// where teardown also runs, so a UI pull never races the pipeline's lifetime.
+struct SessionTelemetry {
+  // Monotonic sample id: a reader that sees the same id twice is holding the
+  // same window and must not fold it into its rolling figures a second time.
+  uint64_t sampleSeq = 0;
+  // Window length (ms) and the transport / frame deltas over it.
+  uint64_t windowElapsedMs = 0;
+  uint64_t rxBytesWindow = 0;
+  uint64_t txBytesWindow = 0;
+  uint64_t framesWindow = 0;
+  // Server-reported average RTT in ms, -1 until the server reports it.
   int32_t rttMs = -1;
-  uint64_t rxBytesPerSec = 0;
-  uint64_t txBytesPerSec = 0;
-  uint32_t fps = 0;
-  int32_t audioRateHz = -1;
-  int32_t audioLossBp = -1;
-  // Per-frame client work phases, in microseconds (see EmitMetrics): ZGX
-  // decompress + RDPGFX parse, decode, gdi compose, present, then the blocked
-  // `syncUs` / `presentWaitUs`, and the three GPU figures. There is no pre-summed
-  // total: the reader adds the phases it shows.
+  // Work over the window. Per-frame figures are value / windowFrames.
+  uint64_t windowFrames = 0;
   uint64_t zgxParseUs = 0;
   uint64_t decodeUs = 0;
   uint64_t composeUs = 0;
   uint64_t presentUs = 0;
-  uint64_t bytesPerFrame = 0;
-  uint32_t dutyPermille = 0;
-  uint64_t commandsPerFrame = 0;
-  uint64_t syncUs = 0;
   uint64_t presentWaitUs = 0;
+  uint64_t syncUs = 0;
+  uint64_t windowBytes = 0;
+  uint64_t windowCommands = 0;
+  // Audio over the window: output rate in Hz (0 when nothing is playing) and the
+  // lost/total byte counts. The reader derives "playing" / loss rate itself.
+  int32_t audioRateHz = 0;
+  uint64_t audioLostBytes = 0;
+  uint64_t audioTotalBytes = 0;
   uint64_t gpuCopyUs = 0;
   uint64_t gpuSrUs = 0;
   uint64_t gpuBlitUs = 0;
@@ -170,9 +188,9 @@ class Session : public std::enable_shared_from_this<Session> {
   // callbacks feed it (hmrdp_gfx_work.h). Per session, never a global slot.
   GfxWorkMeter* workMeter() { return pipeline_.meter(); }
 
-  // The latest telemetry window (see SessionCounters). EmitMetrics() refreshes it
-  // once per second on the RDP thread; safe to call from the UI thread.
-  SessionCounters Counters() const;
+  // The latest raw telemetry sample (see SessionTelemetry), refreshed by the RDP
+  // thread's tick; safe to call from the UI thread (it only copies the sample).
+  SessionTelemetry ReadTelemetry();
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
@@ -266,19 +284,18 @@ class Session : public std::enable_shared_from_this<Session> {
   void SetLocalFileOffer(const uint8_t* descriptor, size_t descriptorLen,
                          const std::vector<std::string>& paths);
 
-  // Replaces the remote file list with the descriptors ArkTS parsed from the
-  // server's FILEGROUPDESCRIPTORW. Index order matters: it is the listIndex in
-  // every FILECONTENTS request.
-  void SetRemoteFileList(std::vector<fileclip::FileInfo> files);
+  // One step of the ArkTS-driven download (it owns the state machine; native
+  // only relays bytes and sends requests). Sends a FILECONTENTS request for
+  // `listIndex`: FILECONTENTS_SIZE when `sizeOnly`, else FILECONTENTS_RANGE from
+  // `offset` for `length` bytes. Returns false when the channel is unavailable or
+  // a request is already in flight. Safe to call from the UI thread.
+  bool RequestRemoteFileContents(uint32_t listIndex, bool sizeOnly, uint64_t offset,
+                                 uint32_t length);
 
-  // Downloads the file list the server last advertised into `destDir` (which
-  // must already exist). Safe to call from the UI thread; progress arrives as
-  // kFileTransferProgress, completion as kClipboardFilesReady.
-  void PullRemoteFiles(const std::string& destDir);
-
-  // Aborts an in-flight transfer (either direction); partial downloads are
-  // removed and the advertised file list stops being served. Safe to call from
-  // the UI thread.
+  // Aborts an in-flight upload: partial state is dropped and the advertised file
+  // list stops being served (a clean withdrawal when nothing was pulled yet).
+  // Downloads are cancelled entirely on the ArkTS side. Safe to call from the UI
+  // thread.
   void CancelFileTransfer();
 
   // Drops the advertised file clipboard by advertising an empty text clipboard,
@@ -309,8 +326,9 @@ class Session : public std::enable_shared_from_this<Session> {
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
-  // Called by the cliprdr glue: serve the peer's request for one of the files
-  // we advertised, and receive one chunk of a file we requested.
+  // Called by the cliprdr glue: serve the peer's request for one of the files we
+  // advertised (upload), and relay one chunk of a file we requested (download)
+  // to ArkTS, which owns the download state machine.
   UINT HandleLocalFileContentsRequest(const CLIPRDR_FILE_CONTENTS_REQUEST* request);
   UINT HandleRemoteFileContentsResponse(const CLIPRDR_FILE_CONTENTS_RESPONSE* response);
   // Pushed by the autodetect callback with the server-reported network
@@ -366,9 +384,10 @@ class Session : public std::enable_shared_from_this<Session> {
   // are fed by the shared frame host (hmrdp_gfx_cpu.h), so this only does the
   // per-frame bookkeeping.
   void AfterPresent();
-  // Samples RTT / frame rate / transport throughput and publishes the window
-  // into counters_ (read by Counters()).
-  void EmitMetrics();
+  // One telemetry tick (~1s, RDP thread): reads the transport/frame deltas, drains
+  // the work meter / audio / GPU sources and stores the raw sample for
+  // ReadTelemetry(). Kept on the RDP thread so the drain never races teardown.
+  void SampleTelemetry();
 
   // GFX data offload (see GfxWorkSetDataSinkHook). Every dynamic channel shares
   // the drdynvc dispatch thread, so running the frame pipeline there (ZGX
@@ -434,25 +453,22 @@ class Session : public std::enable_shared_from_this<Session> {
   // step with the upscaled picture; 1.0 without it. Written at connect, read on
   // the RDP thread.
   double desktopMagnification_ = 1.0;
-  // Recent audio (lost,total) byte counts, one slot per metric window, summed to
-  // give a short-term glitch rate instead of a cumulative counter.
-  uint64_t audioLostWindow_[5] = {0};
-  uint64_t audioTotalWindow_[5] = {0};
-  uint32_t audioWindowIndex_ = 0;
   // Server-reported network characteristics from the autodetect channel.
   std::atomic<uint32_t> netCharBaseRtt_{0};
   std::atomic<uint32_t> netCharAverageRtt_{0};
   std::atomic<uint32_t> netCharBandwidth_{0};
-  // Telemetry baseline. metricsStarted_ is cleared on connect so a reconnect
-  // re-establishes the throughput/frame baseline.
+  // Latest raw telemetry sample, written by the RDP-thread tick and copied by
+  // ReadTelemetry() (any thread).
+  mutable std::mutex telemetryMutex_;
+  SessionTelemetry telemetry_;
+  // Telemetry sample cadence and the cumulative baselines the tick differences.
+  // Cleared on connect so a reconnect re-establishes them.
   bool metricsStarted_ = false;
   uint64_t lastMetricsTick_ = 0;
   uint64_t lastInBytes_ = 0;
   uint64_t lastOutBytes_ = 0;
-  uint32_t lastFrameCount_ = 0;
-  // Latest telemetry window, published by EmitMetrics() and read by Counters().
-  mutable std::mutex countersMutex_;
-  SessionCounters counters_;
+  uint64_t lastFrameCount_ = 0;
+  uint64_t telemetrySeq_ = 0;
   // Hash of the last cursor bitmap sent to the UI; identical repeats (pointer
   // cache hits) are dropped so the system cursor is only re-installed on an
   // actual shape change.
@@ -491,15 +507,6 @@ class Session : public std::enable_shared_from_this<Session> {
   // anything newer is deferred (see OnCliprdrServerFormatList).
   UINT SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind);
 
-  // Remote-file download state machine (see PullRemoteFiles). One request is in
-  // flight at a time; StartNextRemoteFileStep drives the sequence and is called
-  // once from PullRemoteFiles and then from every file-contents response.
-  UINT StartNextRemoteFileStep();
-  void FinishRemoteFileTransfer();
-  void FailRemoteFileTransfer(const std::string& reason);
-  // Aborts a transfer and removes its partial files; caller holds clipboardMutex_.
-  void ResetRemoteFileDownloadLocked();
-
   CliprdrClientContext* cliprdr_ = nullptr;
   std::mutex clipboardMutex_;
   // NUL-terminated UTF-16LE (CF_UNICODETEXT wire form).
@@ -515,20 +522,12 @@ class Session : public std::enable_shared_from_this<Session> {
   // Ready FILEGROUPDESCRIPTORW for the advertised files (built by ArkTS).
   std::string localClipboardFileDescriptor_;
   LocalClipKind localClipKind_ = LocalClipKind::kNone;
-  // Remote file download state. `remoteFiles_` is the descriptor list the
-  // server last advertised; the rest is the transfer in progress.
-  std::vector<fileclip::FileInfo> remoteFiles_;
-  bool remoteFilesActive_ = false;
-  std::string remoteFilesDestDir_;
-  std::vector<std::string> remoteFilesPaths_;
-  size_t remoteFileIndex_ = 0;
-  uint64_t remoteFileOffset_ = 0;
-  uint64_t remoteFileSize_ = 0;
-  bool remoteFileSizeKnown_ = false;
-  bool remoteFileSizePending_ = false;
-  FILE* remoteFileHandle_ = nullptr;
-  uint64_t remoteTransferDone_ = 0;
-  uint64_t remoteTransferTotal_ = 0;
+  // The FILECONTENTS request whose response is awaited (ArkTS serialises them):
+  // its listIndex and whether it was a SIZE request (to interpret the 8-byte
+  // response). Guarded by clipboardMutex_.
+  bool fileContentsPending_ = false;
+  uint32_t pendingFileContentsIndex_ = 0;
+  bool pendingFileContentsSizeOnly_ = false;
   // Local -> remote progress (bytes the server has pulled from us).
   uint64_t localTransferDone_ = 0;
   uint64_t localTransferTotal_ = 0;

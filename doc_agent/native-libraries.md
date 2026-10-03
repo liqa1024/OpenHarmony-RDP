@@ -77,7 +77,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
     （例如 22b 重写了 21 插入的 chunk 回调），那一步再跑就会 `pattern not found`。要自检就重拉源码；
     只是**给已打过补丁的树补一个新步骤**时用 `patch-freerdp.ps1 -Only <NN>` 只跑那一步。
 - 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` / `$Patches` 传给步骤。
-- 只改应用层（`entry/src/main/cpp/{binding,engine}/*`、`.ets`）**不需要**重编 FreeRDP。
+- 只改应用层（`entry/src/main/cpp/{binding,core}/*`、`.ets`）**不需要**重编 FreeRDP。
 
 ## 3. 补丁脚本在做什么（以及为什么必须保留）
 
@@ -233,30 +233,36 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（安装后由
   `build-freerdp.ps1` / `sync-freerdp-headers.ps1` 自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
 
-## 5. 音频：FreeRDP 只解码，播放用原生 OHAudio
+## 5. 音频：FreeRDP 同步 sink，播放层可 ArkTS
 
-- `libhmrdp` 用 **`dlopen("libohaudio.so")` + `dlsym`** 解析 OHAudio API 建 `OH_AudioRenderer`
-  （`writeData` 拉模型）。**不要**把 `libohaudio.so` 链成 `DT_NEEDED`：缺库设备会加载即崩。
-  也不要用 ArkTS `@ohos.multimedia.audio`（该工具链下会触发 syscap 误报，且 OpenSLES 已废弃）。
+- **强制原生的只有 sink**：替换后的 rdpsnd 后端是一个注册进 FreeRDP 的 **C 函数指针**
+  （`HmrdpSetAudioSink`），在 FreeRDP 的 async 播放线程（`rdpsnd->async` 下的 `play_thread`）上被调用，
+  且必须**同步返回**该包的渲染延迟（ms，进 Wave Confirm）——与文件上传 serve 同一类约束
+  （[`architecture.md`](architecture.md) §3.1 criterion 2）。故 sink 适配器与一个**交接缓冲**留在原生。
+- **播放 API 不是强制的**：`OH_AudioRenderer`（OHAudio）与 ArkTS `AudioRenderer`（`on('writeData')`）
+  是同一套音频框架的两条入口（同为 PCM S16LE 拉模型），等价。播放器与缓冲策略不属于"必须原生"之列，
+  可以放在 ArkTS，并跑在 **ArkTS 自己的线程**上。**不要**以"ArkTS 音频会触发 syscap 误报"或
+  "OpenSLES 已废弃"为由留在原生：前者在当前工具链不复现（引入 `@kit.AudioKit` 构建无 syscap 告警），
+  后者与 ArkTS `AudioRenderer` 无关（它并不走 OpenSLES）。
 - **音频走动态 rdpsnd**：现代 Windows 用**动态** rdpsnd（**不是**静态通道——只提供静态通道时现代服务端
-  会完全不出声，所以不能改成只走静态）。它的数据面跑在 **FreeRDP 的 async 播放线程**（`rdpsnd->async`
-  下的 `play_thread`），drdynvc 分发线程只做重装 + 投递；画面在会话 GFX 工作线程 ⇒ 音频、输入、画面
-  三条互不阻塞（见 [`architecture.md`](architecture.md) §4）。
+  会完全不出声，所以不能改成只走静态）。数据面在 FreeRDP 的 async 播放线程，drdynvc 分发线程只做重装 +
+  投递；画面在会话 GFX 工作线程 ⇒ 音频、输入、画面三条互不阻塞
+  （见 [`architecture.md`](architecture.md) §4），与播放层放在哪一侧无关。
 - **单一所有者**：FreeRDP 只解码 + 转发，**不做缓冲/丢弃/节流**；`rdpsnd_main.c` 的 generic overrun 守卫
-  对本后端被关掉（patch step 35，后端是唯一 OHOS 后端，sink 自带定长缓冲，墙钟反推的积压估计是劣质代理）。
-  于是"能否播放/丢谁/何时开始"只在 sink 一处决定，不存在两层策略互相打架。
-- **缓冲（`hmrdp_audio.cpp`）**：解码后的 PCM 按**整包**入队，水位全部用**播放时长（ms）**表达
-  （与格式无关的上界）。新的一段音频先**预缓冲**到目标深度才开始播放（启动补的静音不计损失）；段内抖动
-  **不**重新预缓冲（否则在网络造成的洞上再加一个静音洞）。唯一的丢弃点是队列超过 high-water 时**丢最老
-  的整包**（整包天然帧对齐，不会撕样本，延迟有上界）；`OnWrite` 欠载补静音。丢帧统计 = 欠载补静音 +
-  整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
-- **真实渲染延迟回报**：`AudioOutput::Write` 返回当前排队的播放时长（ms），后端 `Play` 用它作为向服务端
-  Wave Confirm 上报的渲染延迟（设备自缓冲时的标准语义）——不再是常数，"服务端按错误延迟猛灌再被本地丢"
-  这条链一起消失。
-- **绝不持锁调用 `Start`/`Stop`/`Release`**：`OH_AudioRenderer_Release` 会等待 write 回调
-  （`JoinCallbackLoop`），而回调要用同一把 `mutex_` 取队列 ⇒ 持锁 Release 必死锁
-  （表现为关闭会话后 `APP_INPUT_BLOCK` 卡死）。约定：`mutex_` 只保护队列/句柄，**不跨 OHAudio
-  调用持有**；`lifecycle_` 只在 `mutex_` 之外串行化 open/close；回调只碰 `mutex_`。
+  对本后端被关掉（patch step 35）。"能否播放 / 丢谁 / 何时开始"只在缓冲那一处决定，不存在两层策略互相打架。
+- **缓冲语义**：解码后的 PCM 按**整包**入队，水位全部用**播放时长（ms）**表达（与格式无关的上界）。
+  新的一段音频先**预缓冲**到目标深度才开始播放（启动补的静音不计损失）；段内抖动**不**重新预缓冲。唯一
+  丢弃点是超过 high-water 时丢**最老的整包**（整包帧对齐，不撕样本，延迟有上界）；欠载补静音。丢帧统计
+  = 欠载补静音 + 整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
+- **真实渲染延迟回报**：sink 同步返回的不是常数，而是**当前排队的播放时长（ms）**（设备自缓冲时的标准
+  语义），服务端据此做 Wave Confirm——"按错误延迟猛灌再被本地丢"这条链因此消失。
+- **当前实现与锁纪律**：native `hmrdp_audio.cpp` 用 **`dlopen("libohaudio.so")` + `dlsym`** 建
+  `OH_AudioRenderer`（**不**链成 `DT_NEEDED`：缺库设备会加载即崩，dlopen 才能优雅降级为"无音频"），
+  `AudioOutput::Write` 即 sink 调用点，返回排队时长，并在原生侧实现上面的缓冲与 `OnWrite` 拉取。
+  **绝不持锁调用 `Start`/`Stop`/`Release`**：`OH_AudioRenderer_Release` 会等待 write 回调
+  （`JoinCallbackLoop`），而回调要用同一把 `mutex_` 取队列 ⇒ 持锁 Release 必死锁（表现为关闭会话后
+  `APP_INPUT_BLOCK` 卡死）。约定：`mutex_` 只保护队列/句柄、**不跨 OHAudio 调用持有**；`lifecycle_`
+  只在 `mutex_` 之外串行化 open/close；回调只碰 `mutex_`。
 
 ## 6. 设备能力探测（Capability 模式）
 

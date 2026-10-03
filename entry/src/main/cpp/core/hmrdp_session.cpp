@@ -142,15 +142,11 @@ namespace hmrdp {
 // The file-clipboard domain lives in its own unit (hmrdp_file_clipboard.*); pull
 // its names in so the session reads as a wire-up.
 using fileclip::BuildTransferProgress;
-using fileclip::FileInfo;
 using fileclip::FileSizeOfPath;
-using fileclip::JoinSandboxPath;
-using fileclip::kFileChunkBytes;
 using fileclip::kFileContentsId;
 using fileclip::kFileContentsName;
 using fileclip::kFileGroupDescriptorId;
 using fileclip::kFileGroupDescriptorName;
-using fileclip::SanitizeClipboardFileName;
 
 namespace {
 
@@ -1090,196 +1086,66 @@ void Session::SetGfxContext(void* gfx) {
   gfxContext_ = gfx;
 }
 
-void Session::EmitMetrics() {
-  rdpContext* context = instance_ != nullptr ? instance_->context : nullptr;
-  if (context == nullptr) {
-    return;
-  }
+void Session::SampleTelemetry() {
   const uint64_t now = NowMs();
+  const uint64_t elapsedMs = metricsStarted_ ? now - lastMetricsTick_ : 0;
+  lastMetricsTick_ = now;
+
+  SessionTelemetry sample;
+  sample.sampleSeq = ++telemetrySeq_;
+  sample.windowElapsedMs = elapsedMs;
 
   uint64_t inBytes = 0;
   uint64_t outBytes = 0;
-  freerdp_get_stats(context->rdp, &inBytes, &outBytes, nullptr, nullptr);
-
+  rdpContext* context = instance_ != nullptr ? instance_->context : nullptr;
+  if (context != nullptr) {
+    freerdp_get_stats(context->rdp, &inBytes, &outBytes, nullptr, nullptr);
+  }
   const uint32_t frames = frameCount_.load();
-  if (!metricsStarted_) {
-    lastMetricsTick_ = now;
-    lastInBytes_ = inBytes;
-    lastOutBytes_ = outBytes;
-    lastFrameCount_ = frames;
-    pipeline_.meter()->Reset();
-    for (uint32_t i = 0; i < 5; ++i) {
-      audioLostWindow_[i] = 0;
-      audioTotalWindow_[i] = 0;
-    }
-    audioWindowIndex_ = 0;
-    metricsStarted_ = true;
-    return;
+  if (metricsStarted_) {
+    sample.rxBytesWindow = inBytes - lastInBytes_;
+    sample.txBytesWindow = outBytes - lastOutBytes_;
+    sample.framesWindow = frames - lastFrameCount_;
   }
-
-  const uint64_t elapsedMs = now - lastMetricsTick_;
-  if (elapsedMs == 0) {
-    return;
-  }
-  const double seconds = static_cast<double>(elapsedMs) / 1000.0;
-
-  // Byte counters are cumulative; the difference over the interval is the
-  // actual network throughput regardless of the coding path (GDI or GFX/H.264).
-  const uint64_t rxPerSec = static_cast<uint64_t>(
-      static_cast<double>(inBytes - lastInBytes_) / seconds);
-  const uint64_t txPerSec = static_cast<uint64_t>(
-      static_cast<double>(outBytes - lastOutBytes_) / seconds);
-  const uint32_t fps = static_cast<uint32_t>(
-      static_cast<double>(frames - lastFrameCount_) / seconds + 0.5);
-
-  // Per-frame client work, kept per phase (see hmrdp_gfx_work.h): ZGX decompress
-  // + RDPGFX parse, image decode (which carries the codec's own re-composite), the
-  // gdi surface->primary compose and the present. Averaged over the frames the
-  // server ended, not over presents: a frame owns this work and its size is
-  // decided by the arrival cadence, so dividing by presents would make the figure
-  // move with the network rate. There is no pre-summed total anywhere: the phases
-  // carry different kinds of time, and each reader adds the ones it wants - the
-  // toolbar sums the four work phases and leaves the blocked `sync` out
-  // (doc_agent/session-and-input.md §3).
-  const GfxWorkMeter::Sample work = pipeline_.meter()->Drain();
-  const uint64_t framesDone = work.frames;
-  auto perFrame = [framesDone](uint64_t value) {
-    return framesDone > 0 ? value / framesDone : 0;
-  };
-  const uint64_t perFrameZgxUs = perFrame(work.zgxParseUs);
-  const uint64_t perFrameDecodeUs = perFrame(work.decodeUs);
-  const uint64_t perFrameComposeUs = perFrame(work.composeUs);
-  const uint64_t perFramePresentUs = perFrame(work.presentUs);
-  const uint64_t perFramePresentWaitUs = perFrame(work.presentWaitUs);
-  const uint64_t perFrameSyncUs = perFrame(work.syncUs);
-  const uint64_t perFrameBytes = perFrame(work.bytes);
-  const uint64_t perFrameCommands = perFrame(work.commands);
-  // The four work phases' per-frame sum: the same thing the toolbar shows as 本机.
-  // `sync` is blocked time, not work, and is deliberately not in it.
-  const uint64_t perFrameWorkUs = perFrameZgxUs + perFrameDecodeUs + perFrameComposeUs +
-                                  perFramePresentUs;
-  // Duty cycle: how much of this window's wall clock the client actually spent
-  // working. Small next to 1000 ‰ means the client is waiting on the far side.
-  const uint64_t windowUs = static_cast<uint64_t>(elapsedMs) * 1000;
-  const uint32_t dutyPermille =
-      windowUs > 0
-          ? static_cast<uint32_t>((work.zgxParseUs + work.decodeUs + work.composeUs +
-                                   work.presentUs) * 1000 / windowUs)
-          : 0;
-  // GPU work of the presents in this window: the dirty-rect upload, the 超分辨率
-  // upscale and the clear + letterbox quad, from the presenter's timestamp queries.
-  // This is *our* work on the GPU, not the GPU's total load - no public API offers
-  // the latter to an app - so the toolbar shows it as ms/frame next to the CPU
-  // percentage. Zero on a backend that cannot measure it (the GLES fallback).
-  uint64_t gpuCopyUs = 0;
-  uint64_t gpuSrUs = 0;
-  uint64_t gpuBlitUs = 0;
-  if (pipeline_.presenter() != nullptr) {
-    pipeline_.presenter()->TakeGpuTimings(&gpuCopyUs, &gpuSrUs, &gpuBlitUs);
-  }
-  const uint64_t perFrameGpuCopyUs = perFrame(gpuCopyUs);
-  const uint64_t perFrameGpuSrUs = perFrame(gpuSrUs);
-  const uint64_t perFrameGpuBlitUs = perFrame(gpuBlitUs);
-  if (framesDone > 0) {
-    // One line, split per phase so a slow one is attributable at a glance, plus
-    // the normalization that makes it comparable with a replay of the same
-    // stream. `sync` is printed next to the phases but is blocked, not work. The
-    // frame acknowledge is not part of any phase: the ack patch writes it before
-    // the EndFrame callback runs (see patch-steps/09).
-    HMRDP_LOGI("perf: work %{public}llu us/frame = zgx+parse %{public}llu + decode %{public}llu"
-               " + compose %{public}llu + present %{public}llu"
-               " (+ sync %{public}llu + presentWait %{public}llu blocked)"
-               " (frames=%{public}llu presents=%{public}u frames/s=%{public}llu"
-               " cmds/frame=%{public}llu kB/frame=%{public}llu duty=%{public}u.%{public}u%%"
-               " rx=%{public}lluB/s fps=%{public}u gpu copy=%{public}llu sr=%{public}llu"
-               " blit=%{public}llu us/frame)",
-               static_cast<unsigned long long>(perFrameWorkUs),
-               static_cast<unsigned long long>(perFrameZgxUs),
-               static_cast<unsigned long long>(perFrameDecodeUs),
-               static_cast<unsigned long long>(perFrameComposeUs),
-               static_cast<unsigned long long>(perFramePresentUs),
-               static_cast<unsigned long long>(perFrameSyncUs),
-               static_cast<unsigned long long>(perFramePresentWaitUs),
-               static_cast<unsigned long long>(framesDone), frames - lastFrameCount_,
-               static_cast<unsigned long long>(
-                   static_cast<double>(framesDone) / seconds + 0.5),
-               static_cast<unsigned long long>(perFrameCommands),
-               static_cast<unsigned long long>(perFrameBytes / 1024),
-               dutyPermille / 10, dutyPermille % 10,
-               static_cast<unsigned long long>(rxPerSec), fps,
-               static_cast<unsigned long long>(perFrameGpuCopyUs),
-               static_cast<unsigned long long>(perFrameGpuSrUs),
-               static_cast<unsigned long long>(perFrameGpuBlitUs));
-  }
-  // Audio glitch rate over the recent window: bytes that failed to play
-  // (underrun silence + overflow drops) over all bytes the stream handled.
-  uint64_t audioLost = 0;
-  uint64_t audioTotal = 0;
-  const int audioRate = audio_.TakeLossStats(&audioLost, &audioTotal);
-  audioLostWindow_[audioWindowIndex_] = audioLost;
-  audioTotalWindow_[audioWindowIndex_] = audioTotal;
-  audioWindowIndex_ = (audioWindowIndex_ + 1) % 5;
-  uint64_t audioLostSum = 0;
-  uint64_t audioTotalSum = 0;
-  for (uint32_t i = 0; i < 5; ++i) {
-    audioLostSum += audioLostWindow_[i];
-    audioTotalSum += audioTotalWindow_[i];
-  }
-  int32_t audioRateHz = -1;
-  int32_t audioLossBp = -1;
-  if (audioTotalSum > 0) {
-    audioRateHz = audioRate;
-    audioLossBp = static_cast<int32_t>(audioLostSum * 10000 / audioTotalSum);
-  }
-
-  lastMetricsTick_ = now;
   lastInBytes_ = inBytes;
   lastOutBytes_ = outBytes;
   lastFrameCount_ = frames;
+  metricsStarted_ = true;
 
-  // Network characteristics are captured from the autodetect callback (see
-  // HmrdpNetworkCharacteristicsResult). Average RTT is the steady-state value;
-  // base RTT is the fallback before the first average is reported. -1 means
-  // "not measured yet".
-  int32_t rtt = -1;
+  // Average RTT is the steady-state value; base RTT is the fallback before the
+  // first average is reported. -1 means "not measured yet".
   const uint32_t averageRtt = netCharAverageRtt_.load();
   const uint32_t baseRtt = netCharBaseRtt_.load();
   const uint32_t measured = averageRtt != 0 ? averageRtt : baseRtt;
-  if (measured != 0) {
-    rtt = static_cast<int32_t>(measured);
-  }
+  sample.rttMs = measured != 0 ? static_cast<int32_t>(measured) : -1;
 
-  // Publish the window as a struct, not a string: ArkTS pulls it with
-  // sessionCounters() when it paints the row (see SessionCounters). No field is a
-  // pre-summed total - the reader adds the phases it shows.
-  SessionCounters sample;
-  sample.rttMs = rtt;
-  sample.rxBytesPerSec = rxPerSec;
-  sample.txBytesPerSec = txPerSec;
-  sample.fps = fps;
-  sample.audioRateHz = audioRateHz;
-  sample.audioLossBp = audioLossBp;
-  sample.zgxParseUs = perFrameZgxUs;
-  sample.decodeUs = perFrameDecodeUs;
-  sample.composeUs = perFrameComposeUs;
-  sample.presentUs = perFramePresentUs;
-  sample.bytesPerFrame = perFrameBytes;
-  sample.dutyPermille = dutyPermille;
-  sample.commandsPerFrame = perFrameCommands;
-  sample.syncUs = perFrameSyncUs;
-  sample.presentWaitUs = perFramePresentWaitUs;
-  sample.gpuCopyUs = perFrameGpuCopyUs;
-  sample.gpuSrUs = perFrameGpuSrUs;
-  sample.gpuBlitUs = perFrameGpuBlitUs;
+  // The work sources drain here, on the RDP thread, so the window is exactly one
+  // tick and the drain never races the pipeline's teardown. No field is a
+  // pre-summed total: the reader adds the phases it shows.
+  const GfxWorkMeter::Sample work = pipeline_.meter()->Drain();
+  sample.windowFrames = work.frames;
+  sample.zgxParseUs = work.zgxParseUs;
+  sample.decodeUs = work.decodeUs;
+  sample.composeUs = work.composeUs;
+  sample.presentUs = work.presentUs;
+  sample.presentWaitUs = work.presentWaitUs;
+  sample.syncUs = work.syncUs;
+  sample.windowBytes = work.bytes;
+  sample.windowCommands = work.commands;
+
+  sample.audioRateHz = audio_.TakeLossStats(&sample.audioLostBytes, &sample.audioTotalBytes);
+  if (pipeline_.presenter() != nullptr) {
+    pipeline_.presenter()->TakeGpuTimings(&sample.gpuCopyUs, &sample.gpuSrUs, &sample.gpuBlitUs);
+  }
   {
-    std::lock_guard<std::mutex> lock(countersMutex_);
-    counters_ = sample;
+    std::lock_guard<std::mutex> lock(telemetryMutex_);
+    telemetry_ = sample;
   }
 }
 
-SessionCounters Session::Counters() const {
-  std::lock_guard<std::mutex> lock(countersMutex_);
-  return counters_;
+SessionTelemetry Session::ReadTelemetry() {
+  std::lock_guard<std::mutex> lock(telemetryMutex_);
+  return telemetry_;
 }
 
 void Session::SetError(const std::string& error) {
@@ -1305,11 +1171,10 @@ bool Session::Connect(const RdpOptions& options) {
   frameCount_ = 0;
   pipeline_.meter()->Reset();
   gfxContext_ = nullptr;
-  for (uint32_t i = 0; i < 5; ++i) {
-    audioLostWindow_[i] = 0;
-    audioTotalWindow_[i] = 0;
-  }
-  audioWindowIndex_ = 0;
+  lastInBytes_ = 0;
+  lastOutBytes_ = 0;
+  lastFrameCount_ = 0;
+  telemetrySeq_ = 0;
   netCharBaseRtt_ = 0;
   netCharAverageRtt_ = 0;
   netCharBandwidth_ = 0;
@@ -1516,7 +1381,7 @@ void Session::EventThread() {
       }
       // Wake only when the transport has work or the next telemetry sample is
       // due; the loop is event-driven, so polling on a fixed period would wake it
-      // needlessly while idle. EmitMetrics still runs on the loop after the wait.
+      // needlessly while idle. SampleTelemetry runs on the loop after the wait.
       DWORD timeoutMs = 0;
       if (!metricsStarted_) {
         // Establish the metrics baseline promptly on the first iteration.
@@ -1542,10 +1407,13 @@ void Session::EventThread() {
         break;
       }
 
-      // Emit a telemetry sample once the baseline is established and roughly
-      // once per second. The loop wakes at least every 100ms.
+      // Take one telemetry sample once the baseline is established and roughly
+      // once per second. It runs on this (RDP) thread so draining the work meter /
+      // audio / GPU sources cannot race the pipeline's teardown; ArkTS pulls the
+      // stored sample and computes the displayed figures. The loop wakes at least
+      // every 100ms.
       if (!metricsStarted_ || NowMs() - lastMetricsTick_ >= 1000) {
-        EmitMetrics();
+        SampleTelemetry();
       }
     }
   }
@@ -1642,8 +1510,8 @@ void Session::Teardown() {
   clipboardReady_ = false;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    ResetRemoteFileDownloadLocked();
-    remoteFiles_.clear();
+    // The channel is gone; a pending download request can never be answered.
+    fileContentsPending_ = false;
   }
   audio_.Close();
   // The desktop buffer dies with the presenter; the next connect re-attaches.
@@ -1966,9 +1834,8 @@ void Session::HandlePostDisconnect() {
   pendingRefreshKind_ = LocalClipKind::kNone;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    // The channel is gone: any download in flight can never finish.
-    ResetRemoteFileDownloadLocked();
-    remoteFiles_.clear();
+    // The channel is gone: a pending download request can never be answered.
+    fileContentsPending_ = false;
   }
   // Make the capture durable before the buffers are dropped with the session.
   hmrdp::GfxDumpFlush();
@@ -2231,22 +2098,10 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
       textId = format.formatId;
     }
   }
-  bool abortedDownload = false;
-  {
-    std::lock_guard<std::mutex> lock(clipboardMutex_);
-    // Anything the server advertises now supersedes any transfer in progress
-    // (and an empty file list invalidates the cached descriptors).
-    abortedDownload = remoteFilesActive_;
-    ResetRemoteFileDownloadLocked();
-    if (fileGroupId == 0) {
-      remoteFiles_.clear();
-    }
-  }
-  if (abortedDownload) {
-    // Tell the UI: its progress row would otherwise wait for an event that can
-    // no longer arrive.
-    Emit(SessionEvent::kFileTransferFailed, "远端剪贴板已改变，传输已中止");
-  }
+  // Any server clipboard change supersedes a download in progress (and may
+  // invalidate cached descriptors). ArkTS owns the download state machine, so it
+  // is told about every change and aborts its own transfer if one is running.
+  Emit(SessionEvent::kRemoteClipboardChanged, "");
   // Pull the richest representation, in that order. A file copy is a list, so
   // it is asked for first; the "richest single value" formats follow. Only one
   // format is in flight at a time: the channel does not tag data responses with
@@ -2397,8 +2252,7 @@ UINT Session::OnCliprdrServerFormatDataResponse(
     // Nothing to decode; fall through to a possible deferred refresh.
   } else if (kind == LocalClipKind::kFiles) {
     // Hand the raw FILEGROUPDESCRIPTORW to ArkTS, which owns the parse
-    // (FileTransferCodec) and returns the descriptor list through
-    // SetRemoteFileList for the streaming state machine.
+    // (FileTransferCodec) and the whole download state machine.
     std::vector<uint8_t> descriptor(data, data + size);
     Emit(SessionEvent::kRemoteFileListRaw, "", descriptor);
   } else if (kind == LocalClipKind::kImage) {
@@ -2559,54 +2413,57 @@ void Session::SetLocalFileOffer(const uint8_t* descriptor, size_t descriptorLen,
        BuildTransferProgress(1, 0, total, 0, static_cast<uint32_t>(paths.size())));
 }
 
-void Session::SetRemoteFileList(std::vector<FileInfo> files) {
-  std::vector<FileInfo> infos;
-  infos.reserve(files.size());
-  for (FileInfo& entry : files) {
-    FileInfo info;
-    info.name = std::move(entry.name);
-    info.size = entry.size;
-    info.sizeKnown = entry.sizeKnown;
-    info.isDirectory = entry.isDirectory;
-    infos.push_back(std::move(info));
+bool Session::RequestRemoteFileContents(uint32_t listIndex, bool sizeOnly, uint64_t offset,
+                                        uint32_t length) {
+  // Keep the channel alive while the request is sent on this (UI) thread.
+  ContextGuard ctx(*this);
+  CliprdrClientContext* cliprdr = cliprdrLocked();
+  if (cliprdr == nullptr || cliprdr->ClientFileContentsRequest == nullptr) {
+    return false;
   }
-  HMRDP_LOGI("cliprdr remote file list: count=%{public}u", static_cast<unsigned>(infos.size()));
-  std::lock_guard<std::mutex> lock(clipboardMutex_);
-  // Keep the whole list, directories included: a FILECONTENTS_REQUEST's
-  // listIndex is the position in what the server advertised, so filtering here
-  // would shift every later index.
-  remoteFiles_ = std::move(infos);
-}
-
-void Session::ResetRemoteFileDownloadLocked() {
-  if (remoteFileHandle_ != nullptr) {
-    fclose(remoteFileHandle_);
-    remoteFileHandle_ = nullptr;
-  }
-  if (remoteFilesActive_) {
-    // Drop the partial copies: a half-downloaded file is worse than none, and a
-    // retry starts from scratch anyway.
-    for (const std::string& path : remoteFilesPaths_) {
-      remove(path.c_str());
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    if (fileContentsPending_) {
+      // ArkTS serialises the requests; a second one would be untagged on return.
+      return false;
     }
+    fileContentsPending_ = true;
+    pendingFileContentsIndex_ = listIndex;
+    pendingFileContentsSizeOnly_ = sizeOnly;
   }
-  remoteFilesActive_ = false;
-  remoteFilesDestDir_.clear();
-  remoteFilesPaths_.clear();
-  remoteFileIndex_ = 0;
-  remoteFileOffset_ = 0;
-  remoteFileSize_ = 0;
-  remoteFileSizeKnown_ = false;
-  remoteFileSizePending_ = false;
-  remoteTransferDone_ = 0;
-  remoteTransferTotal_ = 0;
+  CLIPRDR_FILE_CONTENTS_REQUEST request = {};
+  request.common.msgType = CB_FILECONTENTS_REQUEST;
+  request.streamId = listIndex + 1;
+  request.listIndex = listIndex;
+  request.haveClipDataId = FALSE;
+  if (sizeOnly) {
+    request.dwFlags = FILECONTENTS_SIZE;
+    request.cbRequested = static_cast<UINT32>(sizeof(uint64_t));
+    request.nPositionLow = 0;
+    request.nPositionHigh = 0;
+  } else {
+    request.dwFlags = FILECONTENTS_RANGE;
+    request.nPositionLow = static_cast<UINT32>(offset & 0xFFFFFFFFull);
+    request.nPositionHigh = static_cast<UINT32>(offset >> 32);
+    request.cbRequested = length;
+  }
+  // One line per file (SIZE / first range), not per chunk.
+  if (request.dwFlags == FILECONTENTS_SIZE ||
+      (request.nPositionLow == 0 && request.nPositionHigh == 0)) {
+    HMRDP_LOGI("cliprdr request file content: index=%{public}u flags=0x%{public}x cb=%{public}u",
+               request.listIndex, request.dwFlags, request.cbRequested);
+  }
+  const UINT rc = cliprdr->ClientFileContentsRequest(cliprdr, &request);
+  if (rc != CHANNEL_RC_OK) {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    fileContentsPending_ = false;
+  }
+  return rc == CHANNEL_RC_OK;
 }
-
 void Session::CancelFileTransfer() {
   bool pulled = false;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    ResetRemoteFileDownloadLocked();
     if (localClipKind_ != LocalClipKind::kFiles) {
       return;
     }
@@ -2655,290 +2512,54 @@ void Session::WithdrawLocalFileClipboard() {
   }
 }
 
-void Session::PullRemoteFiles(const std::string& destDir) {
-  // Keep the cliprdr channel alive for the whole pull: the step below sends the
-  // first file-contents request on this (UI) thread.
-  ContextGuard ctx(*this);
-  CliprdrClientContext* cliprdr = cliprdrLocked();
-  if (cliprdr == nullptr || cliprdr->ClientFileContentsRequest == nullptr ||
-      destDir.empty()) {
-    Emit(SessionEvent::kFileTransferFailed, "剪贴板通道不可用");
-    return;
-  }
-  size_t fileCount = 0;
-  uint64_t total = 0;
-  bool nothingToPull = false;
-  {
-    std::lock_guard<std::mutex> lock(clipboardMutex_);
-    if (remoteFilesActive_) {
-      // Already running: the UI serialises transfers, so this is a stray call.
-      return;
-    }
-    nothingToPull = remoteFiles_.empty();
-    if (!nothingToPull) {
-      remoteFilesDestDir_ = destDir;
-      remoteFilesPaths_.clear();
-      remoteFilesPaths_.reserve(remoteFiles_.size());
-      remoteTransferTotal_ = 0;
-      remoteTransferDone_ = 0;
-      for (const FileInfo& file : remoteFiles_) {
-        if (file.isDirectory) {
-          // Keep the vector aligned with the server's listIndex, but leave an
-          // empty entry so it is neither downloaded nor reported.
-          remoteFilesPaths_.push_back(std::string());
-          continue;
-        }
-        remoteFilesPaths_.push_back(
-            JoinSandboxPath(destDir, SanitizeClipboardFileName(file.name)));
-        remoteTransferTotal_ += file.size;
-      }
-      remoteFileIndex_ = 0;
-      remoteFileOffset_ = 0;
-      remoteFileSize_ = 0;
-      remoteFileSizeKnown_ = false;
-      remoteFileSizePending_ = false;
-      remoteFilesActive_ = true;
-      total = remoteTransferTotal_;
-      for (const FileInfo& file : remoteFiles_) {
-        if (!file.isDirectory) {
-          ++fileCount;
-        }
-      }
-    }
-  }
-  if (nothingToPull) {
-    // The list was cleared (e.g. the remote clipboard changed) between the UI
-    // reading the count and pressing the button; clear its progress row.
-    Emit(SessionEvent::kFileTransferFailed, "没有可下载的文件");
-    return;
-  }
-  HMRDP_LOGI("cliprdr download start: %{public}u file(s)", static_cast<unsigned>(fileCount));
-  Emit(SessionEvent::kFileTransferProgress,
-       BuildTransferProgress(0, 0, total, 0, static_cast<uint32_t>(fileCount)));
-  StartNextRemoteFileStep();
-}
-
-void Session::FinishRemoteFileTransfer() {
-  std::string payload;
-  size_t fileCount = 0;
-  {
-    std::lock_guard<std::mutex> lock(clipboardMutex_);
-    if (remoteFileHandle_ != nullptr) {
-      fclose(remoteFileHandle_);
-      remoteFileHandle_ = nullptr;
-    }
-    for (size_t i = 0; i < remoteFilesPaths_.size(); ++i) {
-      if (i > 0) {
-        payload.push_back('\n');
-      }
-      payload += remoteFilesPaths_[i];
-    }
-    fileCount = remoteFilesPaths_.size();
-    remoteFilesActive_ = false;
-    remoteFileIndex_ = 0;
-    remoteFileOffset_ = 0;
-    remoteFileSize_ = 0;
-    remoteFileSizeKnown_ = false;
-    remoteFileSizePending_ = false;
-  }
-  HMRDP_LOGI("cliprdr download complete: %{public}u file(s)",
-             static_cast<unsigned>(fileCount));
-  Emit(SessionEvent::kClipboardFilesReady, payload);
-}
-
-void Session::FailRemoteFileTransfer(const std::string& reason) {
-  {
-    std::lock_guard<std::mutex> lock(clipboardMutex_);
-    ResetRemoteFileDownloadLocked();
-  }
-  HMRDP_LOGW("cliprdr file transfer failed: %{public}s", reason.c_str());
-  Emit(SessionEvent::kFileTransferFailed, reason);
-}
-
-UINT Session::StartNextRemoteFileStep() {
-  // Snapshot under the lock; when this runs from PullRemoteFiles (UI thread) the
-  // caller's lease is what keeps the channel alive until the request is sent.
-  CliprdrClientContext* cliprdr = cliprdrLocked();
-  if (cliprdr == nullptr || cliprdr->ClientFileContentsRequest == nullptr) {
-    FailRemoteFileTransfer("剪贴板通道不可用");
-    return CHANNEL_RC_OK;
-  }
-  for (;;) {
-    CLIPRDR_FILE_CONTENTS_REQUEST request = {};
-    std::string path;
-    std::string openError;
-    bool sendRequest = false;
-    bool fileListDone = false;
-    {
-      std::lock_guard<std::mutex> lock(clipboardMutex_);
-      if (!remoteFilesActive_) {
-        return CHANNEL_RC_OK;
-      }
-      if (remoteFileIndex_ >= remoteFiles_.size()) {
-        fileListDone = true;
-      } else {
-        FileInfo& info = remoteFiles_[remoteFileIndex_];
-        path = remoteFilesPaths_[remoteFileIndex_];
-        if (info.isDirectory || path.empty()) {
-          // Directories cannot be streamed over the file clipboard: skip them
-          // (the UI tells the user they are unsupported).
-          remoteFileIndex_ += 1;
-          remoteFileOffset_ = 0;
-          remoteFileSize_ = 0;
-          remoteFileSizeKnown_ = false;
-          remoteFileSizePending_ = false;
-          continue;
-        }
-        if (!remoteFileSizeKnown_ && info.sizeKnown) {
-          remoteFileSize_ = info.size;
-          remoteFileSizeKnown_ = true;
-        }
-        if (!remoteFileSizeKnown_) {
-          if (remoteFileSizePending_) {
-            // A size request is already in flight; wait for its response.
-            return CHANNEL_RC_OK;
-          }
-          remoteFileSizePending_ = true;
-          request.dwFlags = FILECONTENTS_SIZE;
-          request.cbRequested = static_cast<UINT32>(sizeof(uint64_t));
-          request.nPositionLow = 0;
-          request.nPositionHigh = 0;
-          sendRequest = true;
-        } else {
-          if (remoteFileHandle_ == nullptr) {
-            remoteFileHandle_ = fopen(path.c_str(), "wb");
-            if (remoteFileHandle_ == nullptr) {
-              openError = "无法创建文件";
-            } else {
-              remoteFileOffset_ = 0;
-            }
-          }
-          if (openError.empty()) {
-            if (remoteFileOffset_ >= remoteFileSize_) {
-              // Current file complete (this also covers zero-byte files).
-              if (remoteFileHandle_ != nullptr) {
-                fclose(remoteFileHandle_);
-                remoteFileHandle_ = nullptr;
-              }
-              remoteFileIndex_ += 1;
-              remoteFileOffset_ = 0;
-              remoteFileSize_ = 0;
-              remoteFileSizeKnown_ = false;
-              continue;
-            }
-            const uint64_t remaining = remoteFileSize_ - remoteFileOffset_;
-            const uint32_t chunk = remaining < kFileChunkBytes
-                                       ? static_cast<uint32_t>(remaining)
-                                       : kFileChunkBytes;
-            request.dwFlags = FILECONTENTS_RANGE;
-            request.nPositionLow =
-                static_cast<UINT32>(remoteFileOffset_ & 0xFFFFFFFFull);
-            request.nPositionHigh = static_cast<UINT32>(remoteFileOffset_ >> 32);
-            request.cbRequested = chunk;
-            sendRequest = true;
-          }
-        }
-        if (sendRequest) {
-          request.common.msgType = CB_FILECONTENTS_REQUEST;
-          request.streamId = static_cast<UINT32>(remoteFileIndex_ + 1);
-          request.listIndex = static_cast<UINT32>(remoteFileIndex_);
-          request.haveClipDataId = FALSE;
-        }
-      }
-    }
-    if (!openError.empty()) {
-      FailRemoteFileTransfer(openError);
-      return CHANNEL_RC_OK;
-    }
-    if (sendRequest) {
-      // One line per file (SIZE / first range), not per chunk.
-      if (request.dwFlags == FILECONTENTS_SIZE ||
-          (request.nPositionLow == 0 && request.nPositionHigh == 0)) {
-        HMRDP_LOGI("cliprdr request file content: index=%{public}u flags=0x%{public}x cb=%{public}u",
-                   request.listIndex, request.dwFlags, request.cbRequested);
-      }
-      return cliprdr->ClientFileContentsRequest(cliprdr, &request);
-    }
-    if (fileListDone) {
-      FinishRemoteFileTransfer();
-      return CHANNEL_RC_OK;
-    }
-    return CHANNEL_RC_OK;
-  }
-}
-
 UINT Session::HandleRemoteFileContentsResponse(
     const CLIPRDR_FILE_CONTENTS_RESPONSE* response) {
   if (response == nullptr) {
     return CHANNEL_RC_OK;
   }
-  const bool failed = (response->common.msgFlags & CB_RESPONSE_FAIL) != 0;
-  std::string failReason;
-  uint64_t done = 0;
-  uint64_t total = 0;
-  uint32_t fileCount = 0;
-  uint32_t currentIndex = 0;
+  uint32_t listIndex = 0;
+  bool sizeOnly = false;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    if (!remoteFilesActive_) {
+    if (!fileContentsPending_) {
+      // No request outstanding: ignore a stray/duplicate response.
       return CHANNEL_RC_OK;
     }
-    if (failed) {
-      failReason = "远端拒绝提供文件内容";
-    } else if (remoteFileSizePending_) {
-      remoteFileSizePending_ = false;
-      if (response->requestedData == nullptr ||
-          response->cbRequested != sizeof(uint64_t)) {
-        failReason = "文件大小响应无效";
-      } else {
-        uint64_t size = 0;
-        memcpy(&size, response->requestedData, sizeof(size));
-        if (remoteFileIndex_ < remoteFiles_.size()) {
-          FileInfo& info = remoteFiles_[remoteFileIndex_];
-          remoteTransferTotal_ = remoteTransferTotal_ - info.size + size;
-          info.size = size;
-          info.sizeKnown = true;
-        }
-        remoteFileSize_ = size;
-        remoteFileSizeKnown_ = true;
-      }
-    } else {
-      if (response->requestedData == nullptr || response->cbRequested == 0) {
-        // An empty range means the server has nothing more for this file.
-        remoteFileOffset_ = remoteFileSize_;
-      } else if (remoteFileHandle_ == nullptr) {
-        failReason = "文件未打开";
-      } else {
-        const size_t written =
-            fwrite(response->requestedData, 1, response->cbRequested, remoteFileHandle_);
-        if (written != response->cbRequested) {
-          failReason = "写入文件失败";
-        } else {
-          remoteFileOffset_ += written;
-          remoteTransferDone_ += written;
-        }
-      }
-    }
-    done = remoteTransferDone_;
-    total = remoteTransferTotal_;
-    for (const FileInfo& info : remoteFiles_) {
-      if (!info.isDirectory) {
-        ++fileCount;
-      }
-    }
-    if (remoteFileIndex_ < remoteFiles_.size() && !remoteFiles_[remoteFileIndex_].isDirectory) {
-      currentIndex = static_cast<uint32_t>(remoteFileIndex_) + 1;
-    }
+    fileContentsPending_ = false;
+    listIndex = pendingFileContentsIndex_;
+    sizeOnly = pendingFileContentsSizeOnly_;
   }
-  if (!failReason.empty()) {
-    FailRemoteFileTransfer(failReason);
+  // Meta "<listIndex>|<isSize>|<sizeValue>|<failed>"; a range response carries
+  // its bytes in the byte buffer (empty for an end-of-file marker).
+  std::ostringstream meta;
+  meta << listIndex << '|';
+  const bool failed = (response->common.msgFlags & CB_RESPONSE_FAIL) != 0;
+  if (failed) {
+    meta << (sizeOnly ? 1 : 0) << "|0|1";
+    HMRDP_LOGW("cliprdr file contents response failed: index=%{public}u", listIndex);
+    Emit(SessionEvent::kRemoteFileChunk, meta.str());
     return CHANNEL_RC_OK;
   }
-  Emit(SessionEvent::kFileTransferProgress,
-       BuildTransferProgress(0, done, total, currentIndex, fileCount));
-  return StartNextRemoteFileStep();
+  if (sizeOnly) {
+    if (response->requestedData == nullptr || response->cbRequested != sizeof(uint64_t)) {
+      meta << "1|0|1";
+      Emit(SessionEvent::kRemoteFileChunk, meta.str());
+      return CHANNEL_RC_OK;
+    }
+    uint64_t size = 0;
+    memcpy(&size, response->requestedData, sizeof(size));
+    meta << "1|" << size << "|0";
+    Emit(SessionEvent::kRemoteFileChunk, meta.str());
+    return CHANNEL_RC_OK;
+  }
+  std::vector<uint8_t> data;
+  if (response->requestedData != nullptr && response->cbRequested > 0) {
+    data.assign(response->requestedData, response->requestedData + response->cbRequested);
+  }
+  meta << "0|0|0";
+  Emit(SessionEvent::kRemoteFileChunk, meta.str(), data);
+  return CHANNEL_RC_OK;
 }
-
 UINT Session::HandleLocalFileContentsRequest(
     const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
   if (cliprdr_ == nullptr || request == nullptr ||

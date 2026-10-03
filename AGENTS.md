@@ -59,6 +59,7 @@
 | Moonlight（Sunshine）串流**前端**：协议建模、存储、连接列表/编辑页/设置页分栏、图标 | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
 | Moonlight **原生侧**：客户端库构建与静态链接、视频解码与编解码协商、解码桥与降级、HTTP 控制层、客户端身份与信任存储、配对加密原语 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
 | Moonlight 接入路线图（未定项多，仅方向） | [`MOONLIGHT_PLAN.md`](MOONLIGHT_PLAN.md) |
+| 原生边界重构 / ArkTS 并发模型（执行计划） | [`REFACTOR_PLAN.md`](REFACTOR_PLAN.md) |
 
 ## 环境
 
@@ -95,7 +96,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 路径 | 作用 |
 |---|---|
 | `entry/src/main/ets/` | ArkUI 界面：`entryability/`、`sessionability/`、`pages/`、`services/`、`model/`、`utils/` |
-| `entry/src/main/cpp/` | 原生：`binding/`（Node-API 翻译层）+ `engine/`（FreeRDP 会话、gdi 帧管线、Vulkan/GLES 呈现器、音频、Moonlight 传输、dev 回放） |
+| `entry/src/main/cpp/` | 原生：`binding/`（Node-API 翻译层）+ `core/`（FreeRDP 会话、gdi 帧管线、Vulkan/GLES 呈现器、音频、Moonlight 传输、dev 回放） |
 | `entry/src/main/resources/` | 主题色（`base|dark/element/color.json`）与图标 |
 | `native/scripts/` | 原生库源码构建与 FreeRDP 补丁 |
 | `entry/libs/<abi>/` | 本地构建的原生库（**gitignore，不入库**） |

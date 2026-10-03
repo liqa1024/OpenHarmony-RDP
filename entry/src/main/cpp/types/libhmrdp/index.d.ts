@@ -43,11 +43,17 @@ export interface RdpOptions {
  *  - ClipboardHtml: `dataHandle` (a raw CF_HTML; ArkTS parses it).
  *  - ClipboardRtf: `dataHandle` (a raw RTF payload; ArkTS converts it).
  *  - RemoteFileListRaw: `dataHandle` (a raw FILEGROUPDESCRIPTORW; ArkTS parses
- *    it and calls setRemoteFileList).
+ *    it and owns the download from there).
+ *  - RemoteFileChunk: `listIndex` / `isSize` / `sizeValue` / `failed`, plus
+ *    `dataHandle` for a range response (absent for a size response or an
+ *    end-of-file marker). ArkTS writes the bytes and drives the next request.
+ *  - RemoteClipboardChanged: none. The server's clipboard changed; ArkTS aborts
+ *    any download it has running and refreshes its cached descriptors.
  *  - ClipboardImage: `imageHandle` (a raw CF_DIB; ArkTS decodes it).
  *  - FileTransferProgress: `direction` / `doneBytes` / `totalBytes` /
  *    `fileIndex` / `fileCount`.
- *  - ClipboardFilesReady: `paths` (absolute sandbox paths).
+ *  - ClipboardFilesReady: reserved (downloads are assembled in ArkTS, which
+ *    knows its own destination paths).
  *  - FileTransferFailed: `reason`. FileTransferDone: `fileCount`.
  *  - KeyIntercept: `keyCode` + `down`.
  */
@@ -82,35 +88,50 @@ export interface RdpEventPayload {
   reason?: string;
   keyCode?: number;
   down?: boolean;
+  /** RemoteFileChunk: the server-advertised file index this response is for. */
+  listIndex?: number;
+  /** RemoteFileChunk: true when the response answers a FILECONTENTS_SIZE query. */
+  isSize?: boolean;
+  /** RemoteFileChunk: the file size for a size response. */
+  sizeValue?: number;
+  /** RemoteFileChunk: true when the server refused the request. */
+  failed?: boolean;
 }
 
 export type RdpEventCallback = (handle: number, event: number, payload: RdpEventPayload) => void;
 
 /**
- * One telemetry window of a live session (the native SessionCounters). ArkTS
- * pulls it with sessionCounters() at its own cadence instead of receiving a
- * per-second string. `rttMs` is -1 until the server reports network
- * characteristics; `audioRateHz` / `audioLossBp` are -1 while no audio plays.
- * The per-frame fields are microseconds and carry no pre-summed total: the
- * reader adds the phases it shows (`syncUs` / `presentWaitUs` are blocked time
- * and the trailing three are GPU time, so they stay out).
+ * One raw telemetry sample of a live session (the native SessionTelemetry): the
+ * RDP-thread tick (~1s) reads the transport / frame deltas and drains the work /
+ * audio / GPU sources, and computes none of the displayed rates. ArkTS pulls it
+ * with sessionTelemetry() and turns it into the toolbar figures itself (rates
+ * from the window deltas, per-frame averages from the window sums / windowFrames,
+ * duty and audio loss rate). `rttMs` is -1 until the server reports network
+ * characteristics; `audioRateHz` is 0 while no audio plays. `sampleSeq` is
+ * monotonic, so a reader that sees the same id twice holds the same window and
+ * must not fold it into its rolling figures again. No field is a pre-summed
+ * total: the reader adds the phases it shows (`syncUs` / `presentWaitUs` are
+ * blocked time, the trailing three are GPU time).
  */
-export interface RdpCounters {
+export interface RdpTelemetry {
+  sampleSeq: number;
+  windowElapsedMs: number;
+  rxBytesWindow: number;
+  txBytesWindow: number;
+  framesWindow: number;
   rttMs: number;
-  rxBytesPerSec: number;
-  txBytesPerSec: number;
-  fps: number;
-  audioRateHz: number;
-  audioLossBp: number;
+  windowFrames: number;
   zgxParseUs: number;
   decodeUs: number;
   composeUs: number;
   presentUs: number;
-  bytesPerFrame: number;
-  dutyPermille: number;
-  commandsPerFrame: number;
-  syncUs: number;
   presentWaitUs: number;
+  syncUs: number;
+  windowBytes: number;
+  windowCommands: number;
+  audioRateHz: number;
+  audioLostBytes: number;
+  audioTotalBytes: number;
   gpuCopyUs: number;
   gpuSrUs: number;
   gpuBlitUs: number;
@@ -178,39 +199,29 @@ export const setClipboardImageDib: (handle: number, dib: ArrayBuffer) => boolean
 export const setClipboardFileOffer: (handle: number, descriptor: ArrayBuffer,
   paths: string) => boolean;
 
-/** One file the server advertised, parsed from FILEGROUPDESCRIPTORW by ArkTS. */
-export interface RemoteFileDescriptor {
-  name: string;
-  size: number;
-  sizeKnown: boolean;
-  isDirectory: boolean;
-}
+/**
+ * One step of the ArkTS-driven file download. Sends a FILECONTENTS request for
+ * the server-advertised `listIndex`: a size query when `sizeOnly` (offset /
+ * length ignored), else the byte range at `offset` for `length` bytes. Callers
+ * serialize the requests (only one may be in flight). Responses arrive as the
+ * RemoteFileChunk event. Recommended range size: 256 KiB.
+ */
+export const requestRemoteFileContents: (handle: number, listIndex: number,
+  sizeOnly: boolean, offset: number, length: number) => boolean;
 
 /**
- * Replaces the native remote-file list with the descriptors ArkTS parsed from
- * the server's FILEGROUPDESCRIPTORW (see the RemoteFileListRaw event). Native
- * keeps the order (it is the FILECONTENTS listIndex) and streams from it.
+ * Aborts an in-flight upload (drops partial state and stops serving the
+ * advertised file list). Downloads are cancelled entirely on the ArkTS side.
  */
-export const setRemoteFileList: (handle: number, files: RemoteFileDescriptor[]) =>
-  boolean;
-
-/**
- * Downloads the file list the server last advertised into `destDir`, which must
- * already exist. Completion arrives as the ClipboardFilesReady event; progress
- * as FileTransferProgress.
- */
-export const pullClipboardFiles: (handle: number, destDir: string) => boolean;
-
-/** Aborts an in-flight download and removes its partial files. */
 export const cancelFileTransfer: (handle: number) => boolean;
 
 export const onEvent: (callback: RdpEventCallback) => void;
 
 /**
- * The latest telemetry window of `handle` (see RdpCounters). An unknown handle
- * yields an empty object, so the caller keeps its current figures.
+ * The raw telemetry reading of `handle` (see RdpTelemetry). An unknown handle
+ * yields the zeroed shape, so the caller keeps its current figures.
  */
-export const sessionCounters: (handle: number) => RdpCounters;
+export const sessionTelemetry: (handle: number) => RdpTelemetry;
 
 /**
  * Native byte buffer (a cursor / clipboard bitmap). The bytes stay native; ArkTS
