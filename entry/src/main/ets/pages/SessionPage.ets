@@ -9,6 +9,7 @@ import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
+import { RdpCounters } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOptions,
   RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
@@ -42,6 +43,8 @@ const MAX_VIEW_SCALE: number = 8;
 // A pinch released below this scale snaps back to exactly 100% (VIEW_SNAP_MS).
 const VIEW_SNAP_SCALE: number = 1.08;
 const VIEW_SNAP_MS: number = 180;
+// Telemetry pull cadence; one sample per second, matching the native window.
+const METRICS_INTERVAL_MS: number = 1000;
 // Pan per mouse wheel notch (vp); the touchpad scroll pans 1:1 instead.
 const PAN_WHEEL_STEP: number = 64;
 // External RDPEI ids for the synthetic pinch contacts; real screen touches use
@@ -289,6 +292,9 @@ struct SessionPage {
   private pointerZone: number = TOOLBAR_ZONE_NONE;
   private revealTimer: number = -1;
   private hideTimer: number = -1;
+  // Pulls the native telemetry window once per second while the session is
+  // connected (see refreshCounters). -1 = timer not running.
+  private metricsTimer: number = -1;
   // Cleared in aboutToDisappear so a hover-exit during teardown arms nothing.
   private toolbarAutoHideArmed: boolean = true;
   private moveTimer: number = -1;
@@ -571,6 +577,7 @@ struct SessionPage {
     }
     this.toolbarAutoHideArmed = false;
     this.clearToolbarTimers();
+    this.stopMetricsTimer();
     if (this.moveTimer !== -1) {
       clearTimeout(this.moveTimer);
       this.moveTimer = -1;
@@ -743,6 +750,37 @@ struct SessionPage {
     this.refreshToolbarAutoHide();
     // 快捷键穿透 only makes sense on a live session.
     this.updateShortcutPassthrough();
+    // Telemetry is only meaningful while connected, and it is pulled, not pushed.
+    if (state === ConnectionState.Connected) {
+      this.startMetricsTimer();
+    } else {
+      this.stopMetricsTimer();
+    }
+  }
+
+  private startMetricsTimer(): void {
+    if (this.metricsTimer !== -1) {
+      return;
+    }
+    this.metricsTimer = setInterval(() => {
+      this.refreshCounters();
+    }, METRICS_INTERVAL_MS);
+  }
+
+  private stopMetricsTimer(): void {
+    if (this.metricsTimer === -1) {
+      return;
+    }
+    clearInterval(this.metricsTimer);
+    this.metricsTimer = -1;
+  }
+
+  /** Reads the native telemetry window and paints it (see applyCounters). */
+  private refreshCounters(): void {
+    const counters: RdpCounters | undefined = this.native.readCounters();
+    if (counters !== undefined) {
+      this.applyCounters(counters);
+    }
   }
 
   private retry(): void {
@@ -837,99 +875,37 @@ struct SessionPage {
     } else if (event === RdpEvent.CursorHidden) {
       this.cursorHidden = true;
       this.applyCursor();
-    } else if (event === RdpEvent.Metrics) {
-      this.onMetrics(data);
     } else if (event === RdpEvent.KeyIntercept) {
       this.handleInterceptedKey(data);
     }
   }
 
   /**
-   * Parses "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|<audioLossBp>|<zgxParseUs>|
-   * <decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|<dutyPermille>|<cmdsPerFrame>|
-   * <syncUs>|<presentWaitUs>|<gpuCopyUs>|<gpuSrUs>|<gpuBlitUs>". rtt/rx/tx/fps/audio
-   * drive the toolbar row; the four work phase fields are summed into "本机" (see
-   * localUs), the `syncUs`/`presentWaitUs` are blocked and stay out of it, the
-   * trailing three are GPU time, and the tail normalization feeds the tooltip
-   * (see RdpEvent.Metrics).
+   * Paints one telemetry window pulled from the native side (see RdpCounters).
+   * rtt/rx/tx/fps/audio drive the toolbar row; the four work phase fields are
+   * summed into "本机" (see localUs); `syncUs`/`presentWaitUs` are blocked and stay
+   * out of it, and the three GPU figures feed the GPU label/tooltip. There is no
+   * pre-summed total and no string parsing here - native stores the struct and
+   * this reader takes the fields it shows.
    */
-  private onMetrics(data: string): void {
-    const parts: string[] = data.split('|');
-    if (parts.length < 6) {
-      return;
-    }
-    const rtt: number = Number.parseInt(parts[0], 10);
-    const rx: number = Number.parseInt(parts[1], 10);
-    const tx: number = Number.parseInt(parts[2], 10);
-    const fps: number = Number.parseInt(parts[3], 10);
-    const audioRateHz: number = Number.parseInt(parts[4], 10);
-    const audioLossBp: number = Number.parseInt(parts[5], 10);
-    if (!Number.isNaN(rtt)) {
-      this.metricsRtt = rtt;
-    }
-    if (!Number.isNaN(rx)) {
-      this.metricsRx = rx;
-    }
-    if (!Number.isNaN(tx)) {
-      this.metricsTx = tx;
-    }
-    if (!Number.isNaN(fps)) {
-      this.metricsFps = fps;
-    }
-    if (!Number.isNaN(audioRateHz)) {
-      this.metricsAudioRateHz = audioRateHz;
-    }
-    if (!Number.isNaN(audioLossBp)) {
-      this.metricsAudioLossBp = audioLossBp;
-    }
-    if (parts.length >= 12) {
-      const zgxUs: number = Number.parseInt(parts[6], 10);
-      const decodeUs: number = Number.parseInt(parts[7], 10);
-      const composeUs: number = Number.parseInt(parts[8], 10);
-      const presentUs: number = Number.parseInt(parts[9], 10);
-      const bytesPerFrame: number = Number.parseInt(parts[10], 10);
-      const dutyPermille: number = Number.parseInt(parts[11], 10);
-      const cmdsPerFrame: number = parts.length >= 13 ? Number.parseInt(parts[12], 10) : NaN;
-      const presentWaitUs: number = parts.length >= 15 ? Number.parseInt(parts[14], 10) : NaN;
-      if (!Number.isNaN(zgxUs)) {
-        this.metricsZgxUs = zgxUs;
-      }
-      if (!Number.isNaN(decodeUs)) {
-        this.metricsDecodeUs = decodeUs;
-      }
-      if (!Number.isNaN(composeUs)) {
-        this.metricsComposeUs = composeUs;
-      }
-      if (!Number.isNaN(presentUs)) {
-        this.metricsPresentUs = presentUs;
-      }
-      if (!Number.isNaN(bytesPerFrame)) {
-        this.metricsBytesPerFrame = bytesPerFrame;
-      }
-      if (!Number.isNaN(dutyPermille)) {
-        this.metricsDutyPermille = dutyPermille;
-      }
-      if (!Number.isNaN(cmdsPerFrame)) {
-        this.metricsCmdsPerFrame = cmdsPerFrame;
-      }
-      if (!Number.isNaN(presentWaitUs)) {
-        this.metricsPresentWaitUs = presentWaitUs;
-      }
-    }
-    if (parts.length >= 18) {
-      const gpuCopyUs: number = Number.parseInt(parts[15], 10);
-      const gpuSrUs: number = Number.parseInt(parts[16], 10);
-      const gpuBlitUs: number = Number.parseInt(parts[17], 10);
-      if (!Number.isNaN(gpuCopyUs)) {
-        this.metricsGpuCopyUs = gpuCopyUs;
-      }
-      if (!Number.isNaN(gpuSrUs)) {
-        this.metricsGpuSrUs = gpuSrUs;
-      }
-      if (!Number.isNaN(gpuBlitUs)) {
-        this.metricsGpuBlitUs = gpuBlitUs;
-      }
-    }
+  private applyCounters(counters: RdpCounters): void {
+    this.metricsRtt = counters.rttMs;
+    this.metricsRx = counters.rxBytesPerSec;
+    this.metricsTx = counters.txBytesPerSec;
+    this.metricsFps = counters.fps;
+    this.metricsAudioRateHz = counters.audioRateHz;
+    this.metricsAudioLossBp = counters.audioLossBp;
+    this.metricsZgxUs = counters.zgxParseUs;
+    this.metricsDecodeUs = counters.decodeUs;
+    this.metricsComposeUs = counters.composeUs;
+    this.metricsPresentUs = counters.presentUs;
+    this.metricsBytesPerFrame = counters.bytesPerFrame;
+    this.metricsDutyPermille = counters.dutyPermille;
+    this.metricsCmdsPerFrame = counters.commandsPerFrame;
+    this.metricsPresentWaitUs = counters.presentWaitUs;
+    this.metricsGpuCopyUs = counters.gpuCopyUs;
+    this.metricsGpuSrUs = counters.gpuSrUs;
+    this.metricsGpuBlitUs = counters.gpuBlitUs;
     this.sampleCpuUsage();
   }
 

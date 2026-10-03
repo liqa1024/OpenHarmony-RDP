@@ -57,15 +57,9 @@ enum class SessionEvent {
   // carries the HTML fragment; Image carries "<w>,<h>|<base64 BGRA>".
   kClipboardHtml = 9,
   kClipboardImage = 10,
-  // Per-second session telemetry: "<rttMs>|<rxBps>|<txBps>|<fps>|<audioRateHz>|
-  // <audioLossBp>|<zgxParseUs>|<decodeUs>|<composeUs>|<presentUs>|<bytesPerFrame>|
-  // <dutyPermille>|<cmdsPerFrame>|<syncUs>|<presentWaitUs>|<gpuCopyUs>|<gpuSrUs>|
-  // <gpuBlitUs>". rttMs is -1 while the server has not reported network
-  // characteristics. There is no pre-summed client-work total: from index 6 on are
-  // the per-frame phases and the blocked sub-items, and each reader adds the ones it
-  // wants - the toolbar sums the four work phases; `syncUs` and `presentWaitUs` are
-  // blocked and stay out, and the trailing three are GPU time (the upload, the 超分辨率
-  // upscale and the letterbox), which is not CPU work either (see EmitMetrics).
+  // Reserved. Telemetry is no longer emitted: EmitMetrics() stores the window in
+  // the SessionCounters struct and ArkTS pulls it with sessionCounters(), so this
+  // id is kept only to preserve the numbering of the events that follow it.
   kMetrics = 11,
   // Remote clipboard holds files: "<count>|<totalBytes>". The toolbar's 复制
   // button downloads them into the sandbox on demand (PullRemoteFiles).
@@ -115,6 +109,36 @@ struct RdpOptions {
   std::string gatewayDomain;
 };
 
+// One telemetry window: exactly the figures the toolbar shows. The native side
+// samples once per second on the RDP thread and stores the latest window here;
+// ArkTS pulls it with sessionCounters() when it wants to paint the row, so no
+// per-second string is assembled natively and re-parsed across the boundary.
+// rttMs / audioRateHz / audioLossBp are -1 while not measured / not playing.
+struct SessionCounters {
+  int32_t rttMs = -1;
+  uint64_t rxBytesPerSec = 0;
+  uint64_t txBytesPerSec = 0;
+  uint32_t fps = 0;
+  int32_t audioRateHz = -1;
+  int32_t audioLossBp = -1;
+  // Per-frame client work phases, in microseconds (see EmitMetrics): ZGX
+  // decompress + RDPGFX parse, decode, gdi compose, present, then the blocked
+  // `syncUs` / `presentWaitUs`, and the three GPU figures. There is no pre-summed
+  // total: the reader adds the phases it shows.
+  uint64_t zgxParseUs = 0;
+  uint64_t decodeUs = 0;
+  uint64_t composeUs = 0;
+  uint64_t presentUs = 0;
+  uint64_t bytesPerFrame = 0;
+  uint32_t dutyPermille = 0;
+  uint64_t commandsPerFrame = 0;
+  uint64_t syncUs = 0;
+  uint64_t presentWaitUs = 0;
+  uint64_t gpuCopyUs = 0;
+  uint64_t gpuSrUs = 0;
+  uint64_t gpuBlitUs = 0;
+};
+
 class Session : public std::enable_shared_from_this<Session> {
  public:
   using EventFn = std::function<void(SessionEvent, const std::string&)>;
@@ -131,6 +155,10 @@ class Session : public std::enable_shared_from_this<Session> {
   // This session's frame work meter, installed on its GFX context so the wrapped
   // callbacks feed it (hmrdp_gfx_work.h). Per session, never a global slot.
   GfxWorkMeter* workMeter() { return pipeline_.meter(); }
+
+  // The latest telemetry window (see SessionCounters). EmitMetrics() refreshes it
+  // once per second on the RDP thread; safe to call from the UI thread.
+  SessionCounters Counters() const;
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
@@ -315,7 +343,8 @@ class Session : public std::enable_shared_from_this<Session> {
   // are fed by the shared frame host (hmrdp_gfx_cpu.h), so this only does the
   // per-frame bookkeeping.
   void AfterPresent();
-  // Samples RTT / frame rate / transport throughput and emits kMetrics.
+  // Samples RTT / frame rate / transport throughput and publishes the window
+  // into counters_ (read by Counters()).
   void EmitMetrics();
 
   // GFX data offload (see GfxWorkSetDataSinkHook). Every dynamic channel shares
@@ -398,6 +427,9 @@ class Session : public std::enable_shared_from_this<Session> {
   uint64_t lastInBytes_ = 0;
   uint64_t lastOutBytes_ = 0;
   uint32_t lastFrameCount_ = 0;
+  // Latest telemetry window, published by EmitMetrics() and read by Counters().
+  mutable std::mutex countersMutex_;
+  SessionCounters counters_;
   // Hash of the last cursor bitmap sent to the UI; identical repeats (pointer
   // cache hits) are dropped so the system cursor is only re-installed on an
   // actual shape change.

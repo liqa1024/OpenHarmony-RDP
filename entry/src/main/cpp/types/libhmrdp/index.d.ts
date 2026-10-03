@@ -32,6 +32,36 @@ export interface RdpOptions {
 
 export type RdpEventCallback = (handle: number, event: number, data: string) => void;
 
+/**
+ * One telemetry window of a live session (the native SessionCounters). ArkTS
+ * pulls it with sessionCounters() at its own cadence instead of receiving a
+ * per-second string. `rttMs` is -1 until the server reports network
+ * characteristics; `audioRateHz` / `audioLossBp` are -1 while no audio plays.
+ * The per-frame fields are microseconds and carry no pre-summed total: the
+ * reader adds the phases it shows (`syncUs` / `presentWaitUs` are blocked time
+ * and the trailing three are GPU time, so they stay out).
+ */
+export interface RdpCounters {
+  rttMs: number;
+  rxBytesPerSec: number;
+  txBytesPerSec: number;
+  fps: number;
+  audioRateHz: number;
+  audioLossBp: number;
+  zgxParseUs: number;
+  decodeUs: number;
+  composeUs: number;
+  presentUs: number;
+  bytesPerFrame: number;
+  dutyPermille: number;
+  commandsPerFrame: number;
+  syncUs: number;
+  presentWaitUs: number;
+  gpuCopyUs: number;
+  gpuSrUs: number;
+  gpuBlitUs: number;
+}
+
 export const createSession: () => number;
 export const destroySession: (handle: number) => void;
 export const connect: (handle: number, options: RdpOptions) => boolean;
@@ -97,6 +127,12 @@ export const pullClipboardFiles: (handle: number, destDir: string) => boolean;
 export const cancelFileTransfer: (handle: number) => boolean;
 
 export const onEvent: (callback: RdpEventCallback) => void;
+
+/**
+ * The latest telemetry window of `handle` (see RdpCounters). An unknown handle
+ * yields an empty object, so the caller keeps its current figures.
+ */
+export const sessionCounters: (handle: number) => RdpCounters;
 
 /**
  * Whether this device provides an audio output. False means the native OHAudio

@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "binding/handle_registry.h"
 #include "hmrdp_log.h"
 #include "hmrdp_moonlight.h"
 #include "hmrdp_moonlight_cred.h"
@@ -36,13 +37,17 @@ using hmrdp::RdpOptions;
 using hmrdp::AudioOutput;
 using hmrdp::Session;
 using hmrdp::SessionEvent;
+using hmrdp::binding::HandleRegistry;
 
-std::mutex g_mutex;
-std::map<int64_t, std::shared_ptr<Session>> g_sessions;
+// Sessions live behind typed handles (see binding/handle_registry.h): the object
+// stays here, ArkTS only keeps the integer returned by createSession(). This
+// registry's id space is independent of the replay registry, so a session handle
+// can never be resolved as a replay.
+HandleRegistry<Session> g_sessions;
 // Each session owns exactly one OHNativeWindow, keyed by session handle, so
 // multiple concurrent sessions never share surface state.
+std::mutex g_windowMutex;
 std::map<int64_t, OHNativeWindow*> g_windows;
-int64_t g_nextId = 1;
 // How long destroySession() waits for the RDP thread to finish tearing the
 // session down before returning. The teardown is normally immediate; exceeding
 // this only means the caller stopped waiting - the object is still owned by the
@@ -55,11 +60,9 @@ napi_threadsafe_function g_eventTsfn = nullptr;
 // Dev/test replay instances, keyed by their own handle. Each instance owns its
 // own frame pipeline, so several can run concurrently without an RDP server -
 // that is the multi-session regression vehicle (doc_agent/gfx-engine.md §6).
-// Kept apart from g_sessions: a replay handle and a session handle are
+// A separate registry from g_sessions: a replay handle and a session handle are
 // independent namespaces.
-std::mutex g_replayMutex;
-std::map<int64_t, std::shared_ptr<hmrdp::GfxReplay>> g_replays;
-int64_t g_nextReplayId = 1;
+HandleRegistry<hmrdp::GfxReplay> g_replays;
 
 struct EventPayload {
   int64_t handle;
@@ -126,16 +129,15 @@ void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
   OnSessionEvent(handle, SessionEvent::kKeyIntercept, payload);
 }
 
-// Copies the session's shared ownership out of the map, so the caller keeps it
-// alive for as long as it needs it even if DestroySession() erases the entry (or
-// the RDP thread tears the session down) in the meantime.
+// Copies the session's shared ownership out of the registry, so the caller keeps
+// it alive for as long as it needs it even if DestroySession() removes the entry
+// (or the RDP thread tears the session down) in the meantime.
 std::shared_ptr<Session> FindSession(int64_t handle) {
-  auto it = g_sessions.find(handle);
-  return it == g_sessions.end() ? nullptr : it->second;
+  return g_sessions.Find(handle);
 }
 
-// Must be called with g_mutex held.
-void DestroyWindowLocked(int64_t handle) {
+void DestroyWindow(int64_t handle) {
+  std::lock_guard<std::mutex> lock(g_windowMutex);
   auto it = g_windows.find(handle);
   if (it == g_windows.end()) {
     return;
@@ -317,15 +319,14 @@ void PreferGpuWindowBuffer(OHNativeWindow* window) {
 // --- NAPI methods ---------------------------------------------------------
 
 napi_value CreateSession(napi_env env, napi_callback_info) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  const int64_t id = g_nextId++;
   auto session = std::make_shared<Session>();
+  const int64_t id = g_sessions.Add(session);
   // Bind the handle into the callback so events can be routed to the owning
-  // session window when several sessions run at once.
+  // session window when several sessions run at once. No event can fire before
+  // connect(), which the caller only issues after this returns.
   session->SetEventFn([id](SessionEvent event, const std::string& data) {
     OnSessionEvent(id, event, data);
   });
-  g_sessions[id] = std::move(session);
   return CreateInt(env, id);
 }
 
@@ -337,15 +338,9 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  std::shared_ptr<Session> session;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    auto it = g_sessions.find(handle);
-    if (it == g_sessions.end()) {
-      return CreateUndefined(env);
-    }
-    session = std::move(it->second);
-    g_sessions.erase(it);
+  std::shared_ptr<Session> session = g_sessions.Take(handle);
+  if (session == nullptr) {
+    return CreateUndefined(env);
   }
   bool destroyed = true;
   if (session) {
@@ -368,8 +363,7 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
     // When the teardown did not finish in time the window is deliberately left
     // alone: the presenter still points at it, and leaking a handle is strictly
     // safer than freeing it under a live presenter.
-    std::lock_guard<std::mutex> lock(g_mutex);
-    DestroyWindowLocked(handle);
+    DestroyWindow(handle);
   }
   return CreateUndefined(env);
 }
@@ -409,11 +403,7 @@ napi_value Connect(napi_env env, napi_callback_info info) {
     return CreateBool(env, false);
   }
 
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     SecureErase(options.password);
     SecureErase(options.gatewayPassword);
@@ -433,11 +423,7 @@ napi_value Disconnect(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session != nullptr) {
     session->Disconnect();
   }
@@ -470,14 +456,16 @@ napi_value SetSurface(napi_env env, napi_callback_info info) {
     return CreateUndefined(env);
   }
   PreferGpuWindowBuffer(window);
-  std::lock_guard<std::mutex> lock(g_mutex);
   std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     OH_NativeWindow_DestroyNativeWindow(window);
     return CreateUndefined(env);
   }
-  DestroyWindowLocked(handle);
-  g_windows[handle] = window;
+  DestroyWindow(handle);
+  {
+    std::lock_guard<std::mutex> lock(g_windowMutex);
+    g_windows[handle] = window;
+  }
   session->presenter()->SetSurface(window, width, height);
   session->presenter()->Prepare();
   HMRDP_LOGI("session %{public}d surface bound %{public}dx%{public}d",
@@ -497,7 +485,6 @@ napi_value UpdateSurface(napi_env env, napi_callback_info info) {
   }
   napi_get_value_int32(env, args[1], &width);
   napi_get_value_int32(env, args[2], &height);
-  std::lock_guard<std::mutex> lock(g_mutex);
   std::shared_ptr<Session> session = FindSession(handle);
   if (session != nullptr) {
     session->presenter()->ResizeSurface(width, height);
@@ -513,12 +500,11 @@ napi_value ClearSurface(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  std::lock_guard<std::mutex> lock(g_mutex);
   std::shared_ptr<Session> session = FindSession(handle);
   if (session != nullptr) {
     session->presenter()->DestroySurface();
   }
-  DestroyWindowLocked(handle);
+  DestroyWindow(handle);
   return CreateUndefined(env);
 }
 
@@ -536,11 +522,7 @@ napi_value SendMouse(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, args[3], &y) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -560,11 +542,7 @@ napi_value SetSuppressed(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[1], &suppressed) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -589,11 +567,7 @@ napi_value SendTouch(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, args[5], &y) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -615,11 +589,7 @@ napi_value SendKey(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[3], &extended) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -638,11 +608,7 @@ napi_value SendUnicode(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[2], &down) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -660,11 +626,7 @@ napi_value SendLockState(napi_env env, napi_callback_info info) {
       napi_get_value_int32(env, args[1], &flags) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -742,11 +704,7 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   std::string text(length, '\0');
   napi_get_value_string_utf8(env, args[1], text.data(), length + 1, &length);
   text.resize(length);
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -769,11 +727,7 @@ napi_value SetClipboardHtml(napi_env env, napi_callback_info info) {
   std::string html(length, '\0');
   napi_get_value_string_utf8(env, args[1], html.data(), length + 1, &length);
   html.resize(length);
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -802,11 +756,7 @@ napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
       pixelData == nullptr) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -857,11 +807,7 @@ napi_value SetClipboardFiles(napi_env env, napi_callback_info info) {
     }
     start = end + 1;
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr || paths.empty()) {
     return CreateBool(env, false);
   }
@@ -881,11 +827,7 @@ napi_value PullClipboardFiles(napi_env env, napi_callback_info info) {
   if (!ReadStringArg(env, args[1], &destDir)) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr || destDir.empty()) {
     return CreateBool(env, false);
   }
@@ -901,11 +843,7 @@ napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateBool(env, false);
   }
-  std::shared_ptr<Session> session = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    session = FindSession(handle);
-  }
+  std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
@@ -913,9 +851,56 @@ napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
+// The latest telemetry window for a session, as a struct (see SessionCounters).
+// ArkTS pulls it at its own cadence, so the native side never assembles a
+// per-second string for it to re-parse. An unknown handle yields an empty object
+// and the caller keeps its current figures.
+napi_value GetSessionCounters(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  napi_value result = nullptr;
+  napi_create_object(env, &result);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return result;
+  }
+  std::shared_ptr<Session> session = FindSession(handle);
+  // Always populate every field, so a stale handle yields the same shape with
+  // defaults (rttMs = -1) rather than an object ArkTS would read as undefined.
+  const hmrdp::SessionCounters counters =
+      session != nullptr ? session->Counters() : hmrdp::SessionCounters();
+  auto setInt = [env, result](const char* name, int64_t value) {
+    napi_value v = nullptr;
+    napi_create_int64(env, value, &v);
+    napi_set_named_property(env, result, name, v);
+  };
+  setInt("rttMs", counters.rttMs);
+  setInt("rxBytesPerSec", static_cast<int64_t>(counters.rxBytesPerSec));
+  setInt("txBytesPerSec", static_cast<int64_t>(counters.txBytesPerSec));
+  setInt("fps", counters.fps);
+  setInt("audioRateHz", counters.audioRateHz);
+  setInt("audioLossBp", counters.audioLossBp);
+  setInt("zgxParseUs", static_cast<int64_t>(counters.zgxParseUs));
+  setInt("decodeUs", static_cast<int64_t>(counters.decodeUs));
+  setInt("composeUs", static_cast<int64_t>(counters.composeUs));
+  setInt("presentUs", static_cast<int64_t>(counters.presentUs));
+  setInt("bytesPerFrame", static_cast<int64_t>(counters.bytesPerFrame));
+  setInt("dutyPermille", counters.dutyPermille);
+  setInt("commandsPerFrame", static_cast<int64_t>(counters.commandsPerFrame));
+  setInt("syncUs", static_cast<int64_t>(counters.syncUs));
+  setInt("presentWaitUs", static_cast<int64_t>(counters.presentWaitUs));
+  setInt("gpuCopyUs", static_cast<int64_t>(counters.gpuCopyUs));
+  setInt("gpuSrUs", static_cast<int64_t>(counters.gpuSrUs));
+  setInt("gpuBlitUs", static_cast<int64_t>(counters.gpuBlitUs));
+  return result;
+}
+
 napi_value IsAudioSupported(napi_env env, napi_callback_info) {
   return CreateBool(env, AudioOutput::Supported());
-}napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
+}
+
+napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -1022,9 +1007,7 @@ napi_value StartReplay(napi_env env, napi_callback_info info) {
       PreferGpuWindowBuffer(window);
       auto replay = std::make_shared<hmrdp::GfxReplay>();
       if (replay->Start(window, surfaceW, surfaceH, gfxPath, realtime != 0, replayRef)) {
-        std::lock_guard<std::mutex> lock(g_replayMutex);
-        handle = g_nextReplayId++;
-        g_replays[handle] = replay;
+        handle = g_replays.Add(replay);
         HMRDP_LOGI("replay %{public}d: %{public}s", static_cast<int>(handle),
                    replay->Stats().c_str());
       } else {
@@ -1045,15 +1028,9 @@ napi_value StopReplay(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  std::shared_ptr<hmrdp::GfxReplay> replay;
-  {
-    std::lock_guard<std::mutex> lock(g_replayMutex);
-    const auto it = g_replays.find(handle);
-    if (it == g_replays.end()) {
-      return CreateUndefined(env);
-    }
-    replay = it->second;
-    g_replays.erase(it);
+  std::shared_ptr<hmrdp::GfxReplay> replay = g_replays.Take(handle);
+  if (replay == nullptr) {
+    return CreateUndefined(env);
   }
   replay->Stop();
   HMRDP_LOGI("replay %{public}d: %{public}s", static_cast<int>(handle),
@@ -1063,14 +1040,7 @@ napi_value StopReplay(napi_env env, napi_callback_info info) {
 
 napi_value StopAllReplays(napi_env env, napi_callback_info info) {
   (void)info;
-  std::vector<std::shared_ptr<hmrdp::GfxReplay>> replays;
-  {
-    std::lock_guard<std::mutex> lock(g_replayMutex);
-    for (const auto& entry : g_replays) {
-      replays.push_back(entry.second);
-    }
-    g_replays.clear();
-  }
+  std::vector<std::shared_ptr<hmrdp::GfxReplay>> replays = g_replays.TakeAll();
   for (const auto& replay : replays) {
     replay->Stop();
   }
@@ -1090,14 +1060,7 @@ napi_value ResizeReplay(napi_env env, napi_callback_info info) {
   }
   napi_get_value_int32(env, args[1], &width);
   napi_get_value_int32(env, args[2], &height);
-  std::shared_ptr<hmrdp::GfxReplay> replay;
-  {
-    std::lock_guard<std::mutex> lock(g_replayMutex);
-    const auto it = g_replays.find(handle);
-    if (it != g_replays.end()) {
-      replay = it->second;
-    }
-  }
+  std::shared_ptr<hmrdp::GfxReplay> replay = g_replays.Find(handle);
   if (replay != nullptr) {
     replay->Resize(width, height);
   }
@@ -1112,14 +1075,7 @@ napi_value ReplayStats(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
-  std::shared_ptr<hmrdp::GfxReplay> replay;
-  {
-    std::lock_guard<std::mutex> lock(g_replayMutex);
-    const auto it = g_replays.find(handle);
-    if (it != g_replays.end()) {
-      replay = it->second;
-    }
-  }
+  std::shared_ptr<hmrdp::GfxReplay> replay = g_replays.Find(handle);
   const std::string lines =
       replay != nullptr ? replay->StatsLines() : std::string("no such replay");
   HMRDP_LOGI("replay %{public}d: %{public}s", static_cast<int>(handle),
@@ -1134,13 +1090,8 @@ napi_value ReplayStats(napi_env env, napi_callback_info info) {
 // multi-instance regression reads.
 napi_value ListReplays(napi_env env, napi_callback_info info) {
   (void)info;
-  std::vector<std::pair<int64_t, std::shared_ptr<hmrdp::GfxReplay>>> replays;
-  {
-    std::lock_guard<std::mutex> lock(g_replayMutex);
-    for (const auto& entry : g_replays) {
-      replays.push_back(entry);
-    }
-  }
+  std::vector<std::pair<int64_t, std::shared_ptr<hmrdp::GfxReplay>>> replays =
+      g_replays.Snapshot();
   std::string out = "count=" + std::to_string(replays.size());
   for (const auto& entry : replays) {
     out += "\nhandle=" + std::to_string(entry.first) + " " + entry.second->Stats();
@@ -1606,6 +1557,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"cancelFileTransfer", nullptr, CancelFileTransfer, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"sessionCounters", nullptr, GetSessionCounters, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setTouchHighRate", nullptr, SetTouchHighRate, nullptr, nullptr, nullptr,

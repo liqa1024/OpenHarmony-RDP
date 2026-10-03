@@ -2199,21 +2199,37 @@ void Session::EmitMetrics() {
     rtt = static_cast<int32_t>(measured);
   }
 
-  // Fields 0..5 are the toolbar's contract (see RdpModels.ets); the rest are the
-  // per-frame work in microseconds, phase by phase, plus the normalization that
-  // keeps it readable across frame rates (commands and bytes per frame, and the
-  // duty cycle in ‰), the blocked `sync`/`presentWait`, and the GPU split
-  // (upload / 超分辨率 upscale / letterbox). No pre-summed total: the UI adds the
-  // phases it shows and skips the blocked and the GPU ones.
-  std::ostringstream payload;
-  payload << rtt << "|" << rxPerSec << "|" << txPerSec << "|" << fps
-          << "|" << audioRateHz << "|" << audioLossBp
-          << "|" << perFrameZgxUs << "|" << perFrameDecodeUs << "|" << perFrameComposeUs
-          << "|" << perFramePresentUs << "|" << perFrameBytes << "|" << dutyPermille
-          << "|" << perFrameCommands << "|" << perFrameSyncUs
-          << "|" << perFramePresentWaitUs
-          << "|" << perFrameGpuCopyUs << "|" << perFrameGpuSrUs << "|" << perFrameGpuBlitUs;
-  Emit(SessionEvent::kMetrics, payload.str());
+  // Publish the window as a struct, not a string: ArkTS pulls it with
+  // sessionCounters() when it paints the row (see SessionCounters). No field is a
+  // pre-summed total - the reader adds the phases it shows.
+  SessionCounters sample;
+  sample.rttMs = rtt;
+  sample.rxBytesPerSec = rxPerSec;
+  sample.txBytesPerSec = txPerSec;
+  sample.fps = fps;
+  sample.audioRateHz = audioRateHz;
+  sample.audioLossBp = audioLossBp;
+  sample.zgxParseUs = perFrameZgxUs;
+  sample.decodeUs = perFrameDecodeUs;
+  sample.composeUs = perFrameComposeUs;
+  sample.presentUs = perFramePresentUs;
+  sample.bytesPerFrame = perFrameBytes;
+  sample.dutyPermille = dutyPermille;
+  sample.commandsPerFrame = perFrameCommands;
+  sample.syncUs = perFrameSyncUs;
+  sample.presentWaitUs = perFramePresentWaitUs;
+  sample.gpuCopyUs = perFrameGpuCopyUs;
+  sample.gpuSrUs = perFrameGpuSrUs;
+  sample.gpuBlitUs = perFrameGpuBlitUs;
+  {
+    std::lock_guard<std::mutex> lock(countersMutex_);
+    counters_ = sample;
+  }
+}
+
+SessionCounters Session::Counters() const {
+  std::lock_guard<std::mutex> lock(countersMutex_);
+  return counters_;
 }
 
 void Session::SetError(const std::string& error) {

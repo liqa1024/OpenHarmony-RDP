@@ -12,7 +12,7 @@ setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwa
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
-RdpEventCallback,
+RdpEventCallback, RdpCounters, sessionCounters,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
 } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -217,6 +217,19 @@ export class RdpNative {
     if (this.handle >= 0) {
       setSuppressedNative(this.handle, suppressed);
     }
+  }
+
+  /**
+   * The latest telemetry window of this session (see RdpCounters). Native keeps
+   * sampling once per second; the caller pulls when it wants to paint the row,
+   * so no per-second string crosses the boundary. An unknown handle yields an
+   * empty object, so the caller falls back to its current figures.
+   */
+  readCounters(): RdpCounters | undefined {
+    if (this.handle < 0) {
+      return undefined;
+    }
+    return sessionCounters(this.handle);
   }
 
   mouse(flags: number, x: number, y: number): void {
