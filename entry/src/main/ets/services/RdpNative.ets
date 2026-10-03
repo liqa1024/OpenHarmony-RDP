@@ -6,44 +6,28 @@
  * routed back to the owning instance.
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
-  onEvent, sendKey, sendMouse, sendTouch,
+  sendKey, sendMouse, sendTouch,
   sendUnicode, setClipboardHtmlRaw, setClipboardImageDib, setClipboardText, setRdpCursor, setSurface,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFileOffer, requestRemoteFileContents,
 cancelFileTransfer, sendLockState,
-RdpEventCallback, RdpEventPayload, RdpTelemetry, sessionTelemetry,
+RdpEventPayload, RdpTelemetry, sessionTelemetry,
 bufferRead, bufferRelease,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
 } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 import { RdpCounters, SessionTelemetry } from './SessionTelemetry';
+import { SessionEventHub } from './SessionEventHub';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpNative';
 
 export type RdpEventListener = (event: RdpEvent, payload: RdpEventPayload) => void;
 
-const instances: Map<number, RdpNative> = new Map<number, RdpNative>();
 const byKey: Map<string, RdpNative> = new Map<string, RdpNative>();
-let eventBridgeReady: boolean = false;
-
-function ensureEventBridge(): void {
-  if (eventBridgeReady) {
-    return;
-  }
-  eventBridgeReady = true;
-  const callback: RdpEventCallback = (handle: number, event: number,
-    payload: RdpEventPayload): void => {
-    const target: RdpNative | undefined = instances.get(handle);
-    if (target !== undefined) {
-      target.dispatch(event as RdpEvent, payload);
-    }
-  };
-  onEvent(callback);
-}
 
 export class RdpNative {
   private handle: number = -1;
@@ -177,7 +161,6 @@ export class RdpNative {
 
   setListener(listener: RdpEventListener): void {
     this.listener = listener;
-    ensureEventBridge();
   }
 
   clearListener(): void {
@@ -191,14 +174,24 @@ export class RdpNative {
     }
   }
 
+  /**
+   * The native session handle, so a caller can address the shared process-global
+   * registries (e.g. a background worker reading this session's buffers or
+   * issuing a file-content request). -1 before the session exists.
+   */
+  handleId(): number {
+    return this.handle;
+  }
+
   startSession(options: RdpConnectOptions): number {
     this.teardownHandle();
-    ensureEventBridge();
     this.handle = createSession();
     if (this.handle < 0) {
       return -1;
     }
-    instances.set(this.handle, this);
+    SessionEventHub.register(this.handle, (event: RdpEvent, payload: RdpEventPayload): void => {
+      this.dispatch(event, payload);
+    });
     const started: boolean = connect(this.handle, options);
     if (!started) {
       this.stopSession();
@@ -214,7 +207,7 @@ export class RdpNative {
     if (this.handle < 0) {
       return;
     }
-    instances.delete(this.handle);
+    SessionEventHub.unregister(this.handle);
     disconnect(this.handle);
     destroySession(this.handle);
     this.handle = -1;

@@ -23,7 +23,7 @@
 | `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
-| `pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪；**文件下载状态机**（原生只中继 `FILECONTENTS` 块） |
+| `pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪；转发下载事件、渲染进度（状态机在后台 worker，见 §4.4） |
 | `pages/EditConnectionPage.ets` | 新增/编辑连接（保存只写配置；密码在连接成功后自动保存；可折叠「高级设置」） |
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |
 | `services/ConnectionStore.ets` | 连接配置存储（preferences；稳定 id + `updatedAt`；`reorder` 持久化顺序） |
@@ -32,7 +32,12 @@
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
 | `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
-| `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；按 handle 路由原生事件，`findByKey` 复用 |
+| `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；`findByKey` 复用；把事件交给 `SessionEventHub` |
+| `services/SessionEventHub.ets` | 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
+| `services/BackgroundWorker.ets` | UI 线程侧的后台 worker 门面：按 id 匹配请求/应答、按 handle 路由事件（见 §4.4） |
+| `workers/background.worker.ets` | **后台 worker（进程一条）**：剪贴板编解码 + 下载状态机/文件 IO 都在其上（见 §4.4） |
+| `services/BackgroundProtocol.ets` | 后台 worker 的消息形状（请求/应答/事件，见 §4.4） |
+| `workers/FileDownloader.ets` | 远端文件下载状态机（worker 侧）：分片请求、沙箱写盘、进度/完成/失败事件（见 §4.4） |
 | `services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因 |
 | `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：版本门槛判断、材质复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
@@ -137,6 +142,32 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
 **服务端侧**：音频（rdpsnd）与输入（rdpei）是**独立虚拟通道**，图形流控（帧回执，MS-RDPEGFX 3.2.5.13）
 只作用于图形管线，服务端**不会因为等待客户端的帧而停发音频**；两边唯一共享的是 TCP 链路本身（全局带宽，
 与帧率无关）。
+
+### 4.4 ArkTS 侧线程模型（UI 线程 / 后台 worker / 音频 worker）
+
+并发只为**让 UI 线程不被重活堵住**；线程数按"互相独立、不可互相阻塞"的需要定，不按功能堆。原生侧只留被
+同步回调钉住的适配器（[§3.1](#31-边界判据什么必须留在原生)）。
+
+- **UI 线程**：界面、输入、事件路由；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS
+  看不到原生内存，与线程无关）。
+- **后台 worker（一条）**：非实时的长驻状态机与重活——剪贴板 DIB/RTF/HTML 编解码、文件下载状态机与写盘。
+  彼此可互相等待，共用一条即可。落地：`workers/background.worker.ets` + UI 门面 `services/BackgroundWorker.ets`
+  （消息形状 `services/BackgroundProtocol.ets`，下载状态机 `workers/FileDownloader.ets`）。
+- **音频 worker（一条，P2）**：`AudioRenderer` 回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频
+  卡顿且与处理绑定"（同 §4 的 drdynvc 教训）。
+- **TaskPool 非默认**：仅用于一次性、互相独立、纯函数的小任务。
+
+**事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。
+`services/SessionEventHub` 是其唯一订阅者，按 handle 路由给 `RdpNative`；需 worker 消费的事件由 UI 线程按 handle
+`postMessage` 转发（Worker 拿不到该 TSFN：回调只跑 UI 线程，且各 Worker 有独立 `napi_env`）。Worker 只回控制/进度。
+
+**Worker 可调用原生**：Worker 内 `import 'libhmrdp.so'` 加载同一份 `.so`，进程级句柄注册表跨运行时共享——UI
+线程 `createSession` 的 handle 可在 worker 直接用（读该会话原生缓冲）。前提：原生**不缓存 `napi_env`/
+`napi_value`**（唯一例外是绑 UI 线程的 TSFN）。
+
+**拷贝纪律**：跨线程 `ArrayBuffer` 默认**转移、零拷贝**（发送方 detach）；普通对象序列化拷贝、单次上限 16MB
+⇒ 大二进制走裸 `ArrayBuffer`，不放对象成员。除边界那次 `bufferRead` 外不为跨线程自加拷贝；`postMessage` 只
+承载控制/进度（二进制留原生按句柄读，见 [§3.1](#31-边界判据什么必须留在原生) 判据 3）。
 
 ## 5. 其它
 
