@@ -42,8 +42,9 @@ export interface RdpOptions {
  *  - ClipboardText: `text`.
  *  - ClipboardHtml: `dataHandle` (a raw CF_HTML; ArkTS parses it).
  *  - ClipboardRtf: `dataHandle` (a raw RTF payload; ArkTS converts it).
+ *  - RemoteFileListRaw: `dataHandle` (a raw FILEGROUPDESCRIPTORW; ArkTS parses
+ *    it and calls setRemoteFileList).
  *  - ClipboardImage: `imageHandle` (a raw CF_DIB; ArkTS decodes it).
- *  - ClipboardFileList: `fileCount` / `totalBytes` / `folderCount`.
  *  - FileTransferProgress: `direction` / `doneBytes` / `totalBytes` /
  *    `fileIndex` / `fileCount`.
  *  - ClipboardFilesReady: `paths` (absolute sandbox paths).
@@ -169,10 +170,29 @@ export const setClipboardHtmlRaw: (handle: number, cfHtml: ArrayBuffer,
 export const setClipboardImageDib: (handle: number, dib: ArrayBuffer) => boolean;
 
 /**
- * Pushes local files to the session (advertised as FileGroupDescriptorW +
- * FileContents). `paths` holds the absolute sandbox paths, one per line.
+ * Advertises a local file offer (FileGroupDescriptorW + FileContents).
+ * `descriptor` is a ready FILEGROUPDESCRIPTORW built by ArkTS
+ * (FileTransferCodec) and `paths` the absolute sandbox paths, one per line, the
+ * bytes are streamed from.
  */
-export const setClipboardFiles: (handle: number, paths: string) => boolean;
+export const setClipboardFileOffer: (handle: number, descriptor: ArrayBuffer,
+  paths: string) => boolean;
+
+/** One file the server advertised, parsed from FILEGROUPDESCRIPTORW by ArkTS. */
+export interface RemoteFileDescriptor {
+  name: string;
+  size: number;
+  sizeKnown: boolean;
+  isDirectory: boolean;
+}
+
+/**
+ * Replaces the native remote-file list with the descriptors ArkTS parsed from
+ * the server's FILEGROUPDESCRIPTORW (see the RemoteFileListRaw event). Native
+ * keeps the order (it is the FILECONTENTS listIndex) and streams from it.
+ */
+export const setRemoteFileList: (handle: number, files: RemoteFileDescriptor[]) =>
+  boolean;
 
 /**
  * Downloads the file list the server last advertised into `destDir`, which must

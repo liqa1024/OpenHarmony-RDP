@@ -8,7 +8,7 @@ import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
-import { RdpCounters, RdpEventPayload } from 'libhmrdp.so';
+import { RdpCounters, RdpEventPayload, RemoteFileDescriptor } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOptions,
   RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
@@ -23,6 +23,7 @@ import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PE
 import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 import { ClipboardCodec, DibImage } from '../utils/ClipboardCodec';
+import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -836,16 +837,8 @@ struct SessionPage {
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
       this.onClipboardImage(payload);
-    } else if (event === RdpEvent.ClipboardFileList) {
-      // The remote clipboard holds files and/or folders; the bytes are only
-      // downloaded when the user presses 复制.
-      this.remoteFileCount = payload.fileCount ?? 0;
-      this.remoteFolderCount = payload.folderCount ?? 0;
-      this.remoteClipboardText = '';
-      this.remoteClipboardHtml = '';
-      this.remoteClipboardPixelMap = undefined;
-      hilog.info(DOMAIN, TAG, 'remote clipboard files: %{public}d folders=%{public}d total=%{public}d',
-        this.remoteFileCount, this.remoteFolderCount, payload.totalBytes ?? 0);
+    } else if (event === RdpEvent.RemoteFileListRaw) {
+      this.onRemoteFileListRaw(payload);
     } else if (event === RdpEvent.FileTransferProgress) {
       this.onFileTransferProgress(payload);
     } else if (event === RdpEvent.ClipboardFilesReady) {
@@ -1146,6 +1139,47 @@ struct SessionPage {
     this.remoteFolderCount = 0;
   }
 
+  /**
+   * Parses the server's raw FILEGROUPDESCRIPTORW (FileTransferCodec) into the
+   * remote file list and hands the descriptors back to native, which streams
+   * the bytes on demand. The order is preserved (FILECONTENTS listIndex).
+   */
+  private onRemoteFileListRaw(payload: RdpEventPayload): void {
+    const dataHandle: number = payload.dataHandle ?? 0;
+    if (dataHandle <= 0) {
+      return;
+    }
+    const fgd: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
+    if (fgd === undefined) {
+      return;
+    }
+    const parsed: FileDescriptorInput[] = FileTransferCodec.parseFileGroupDescriptor(fgd);
+    const descriptors: RemoteFileDescriptor[] = [];
+    let fileCount: number = 0;
+    let folderCount: number = 0;
+    let totalBytes: number = 0;
+    for (const entry of parsed) {
+      descriptors.push({
+        name: entry.name, size: entry.size, sizeKnown: entry.sizeKnown,
+        isDirectory: entry.isDirectory
+      });
+      if (entry.isDirectory) {
+        folderCount++;
+      } else {
+        fileCount++;
+      }
+      totalBytes += entry.size;
+    }
+    this.native.applyRemoteFileList(descriptors);
+    this.remoteFileCount = fileCount;
+    this.remoteFolderCount = folderCount;
+    this.remoteClipboardText = '';
+    this.remoteClipboardHtml = '';
+    this.remoteClipboardPixelMap = undefined;
+    hilog.info(DOMAIN, TAG, 'remote clipboard files: %{public}d folders=%{public}d total=%{public}d',
+      fileCount, folderCount, totalBytes);
+  }
+
   /** Decodes a remote CF_DIB into a PixelMap (the DIB codec lives in ArkTS). */
   private onClipboardImage(payload: RdpEventPayload): void {
     const imageHandle: number = payload.imageHandle ?? 0;
@@ -1329,7 +1363,13 @@ struct SessionPage {
         // is pull-based, so the bytes move when the remote side pastes. That is
         // not a running transfer, so release the busy guard first.
         this.transferBusy = false;
-        this.native.pushClipboardFiles(paths);
+        const entries: FileDescriptorInput[] = [];
+        for (const path of paths) {
+          entries.push(FileDescriptorInput.of(SessionPage.baseName(path),
+            SessionPage.fileSizeOf(path)));
+        }
+        this.native.pushClipboardFileOffer(
+          FileTransferCodec.buildFileGroupDescriptor(entries), paths);
       })
       .catch((error: BusinessError) => {
         // getDataWithProgress rejects for a folder (directories are not
@@ -1538,6 +1578,21 @@ struct SessionPage {
         JSON.stringify(error));
     }
     return paths;
+  }
+
+  /** Basename of an absolute sandbox path (the file clipboard drops the dir). */
+  private static baseName(path: string): string {
+    const slash: number = path.lastIndexOf('/');
+    return slash < 0 ? path : path.substring(slash + 1);
+  }
+
+  /** Size of a sandbox file, or 0 when it cannot be stat'ed. */
+  private static fileSizeOf(path: string): number {
+    try {
+      return fileIo.statSync(path).size;
+    } catch (error) {
+      return 0;
+    }
   }
 
   /** Dispatches the local clipboard content by MIME, richest type first. */

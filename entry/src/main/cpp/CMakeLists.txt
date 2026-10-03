@@ -116,6 +116,7 @@ endforeach()
 add_library(hmrdp SHARED
     hmrdp_napi.cpp
     hmrdp_session.cpp
+    hmrdp_file_clipboard.cpp
     hmrdp_moonlight.cpp
     hmrdp_moonlight_http.cpp
     hmrdp_moonlight_cred.cpp

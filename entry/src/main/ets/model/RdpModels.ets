@@ -155,8 +155,8 @@ export enum RdpEvent {
   // libhmrdp.so), so nothing emits this any more. The id is kept only to preserve
   // the numbering of the events that follow it.
   Metrics = 11,
-  // Remote clipboard holds files/folders: payload
-  // "<fileCount>|<totalBytes>|<folderCount>".
+  // Reserved. The remote file list now arrives as RemoteFileListRaw (a raw
+  // FILEGROUPDESCRIPTORW) that ArkTS parses; this id is kept for numbering.
   ClipboardFileList = 12,
   // "<direction>|<done>|<total>|<fileIndex>|<fileCount>", direction 0 = remote ->
   // local, 1 = local -> remote.
@@ -169,8 +169,11 @@ export enum RdpEvent {
   FileTransferDone = 16,
   // 快捷键穿透: an intercepted key event, payload "<keyCode>|<down>".
   KeyIntercept = 17,
-  // RTF clipboard content already converted to HTML (native conversion for now).
-  ClipboardRtf = 18
+  // RTF clipboard content; payload is a raw RTF buffer the codec converts.
+  ClipboardRtf = 18,
+  // Raw FILEGROUPDESCRIPTORW (a native buffer handle); ArkTS parses it into the
+  // file list and hands the descriptors back via setRemoteFileList.
+  RemoteFileListRaw = 19
 }
 
 export class RdpConnectOptions implements RdpOptions {

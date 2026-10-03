@@ -22,6 +22,7 @@
 #include <freerdp/client/cliprdr.h>
 
 #include "hmrdp_audio.h"
+#include "hmrdp_file_clipboard.h"
 #include "hmrdp_frame_pipeline.h"
 #include "hmrdp_presenter.h"
 
@@ -63,8 +64,8 @@ enum class SessionEvent {
   // the SessionCounters struct and ArkTS pulls it with sessionCounters(), so this
   // id is kept only to preserve the numbering of the events that follow it.
   kMetrics = 11,
-  // Remote clipboard holds files: "<count>|<totalBytes>". The toolbar's 复制
-  // button downloads them into the sandbox on demand (PullRemoteFiles).
+  // Reserved. The remote file list now arrives as kRemoteFileListRaw; this id is
+  // kept only to preserve the numbering of the events that follow it.
   kClipboardFileList = 12,
   // Transfer progress for both directions:
   // "<direction>|<doneBytes>|<totalBytes>" with direction 0 = remote -> local,
@@ -83,6 +84,10 @@ enum class SessionEvent {
   // Rich Text Format clipboard payload, carried like kClipboardHtml (raw RTF in
   // the byte buffer). Kept a separate event so ArkTS can tell the two apart.
   kClipboardRtf = 18,
+  // Raw FILEGROUPDESCRIPTORW for a remote file clipboard, in the byte buffer.
+  // ArkTS parses it (FileTransferCodec) and hands the descriptor list back
+  // through SetRemoteFileList so native can stream the bytes on demand.
+  kRemoteFileListRaw = 19,
 };
 
 struct RdpOptions {
@@ -254,10 +259,17 @@ class Session : public std::enable_shared_from_this<Session> {
   // bytes. Safe to call from the UI thread.
   void SetLocalClipboardImageDib(const uint8_t* dib, size_t byteCount);
 
-  // Local files (absolute sandbox paths) pushed from ArkTS; advertised to the
-  // server as a FileGroupDescriptorW + FileContents clipboard. Safe to call from
-  // the UI thread.
-  void SetLocalClipboardFiles(const std::vector<std::string>& paths);
+  // Local files pushed from ArkTS. `descriptor` is a ready FILEGROUPDESCRIPTORW
+  // (built by ArkTS, FileTransferCodec) and `paths` are the absolute sandbox
+  // paths its bytes are streamed from; native only stores and serves both. Safe
+  // to call from the UI thread.
+  void SetLocalFileOffer(const uint8_t* descriptor, size_t descriptorLen,
+                         const std::vector<std::string>& paths);
+
+  // Replaces the remote file list with the descriptors ArkTS parsed from the
+  // server's FILEGROUPDESCRIPTORW. Index order matters: it is the listIndex in
+  // every FILECONTENTS request.
+  void SetRemoteFileList(std::vector<fileclip::FileInfo> files);
 
   // Downloads the file list the server last advertised into `destDir` (which
   // must already exist). Safe to call from the UI thread; progress arrives as
@@ -462,17 +474,6 @@ class Session : public std::enable_shared_from_this<Session> {
   enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3, kRtf = 4,
                              kFiles = 5 };
 
-  // A file advertised on the clipboard (either side). `size` is 0 when the
-  // sender did not include FD_FILESIZE; the size is then fetched on demand.
-  // Directories are advertised too (listIndex must stay aligned) but are
-  // skipped: the file clipboard cannot stream them.
-  struct ClipboardFileInfo {
-    std::string name;
-    uint64_t size = 0;
-    bool sizeKnown = false;
-    bool isDirectory = false;
-  };
-
   // Pushes the local FormatList for the current kind (no-op until the channel
   // is ready). Called after the clipboard state changes.
   void AdvertiseLocalClipboard();
@@ -511,10 +512,12 @@ class Session : public std::enable_shared_from_this<Session> {
   std::string localClipboardDib_;
   // Local file list (absolute sandbox paths) advertised for the file clipboard.
   std::vector<std::string> localClipboardFilePaths_;
+  // Ready FILEGROUPDESCRIPTORW for the advertised files (built by ArkTS).
+  std::string localClipboardFileDescriptor_;
   LocalClipKind localClipKind_ = LocalClipKind::kNone;
   // Remote file download state. `remoteFiles_` is the descriptor list the
   // server last advertised; the rest is the transfer in progress.
-  std::vector<ClipboardFileInfo> remoteFiles_;
+  std::vector<fileclip::FileInfo> remoteFiles_;
   bool remoteFilesActive_ = false;
   std::string remoteFilesDestDir_;
   std::vector<std::string> remoteFilesPaths_;

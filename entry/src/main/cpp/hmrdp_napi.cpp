@@ -165,6 +165,14 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
         setInt("dataHandle", g_buffers.Add(buffer));
       }
       break;
+    case static_cast<int>(SessionEvent::kRemoteFileListRaw):
+      // Raw FILEGROUPDESCRIPTORW in `bytes`; ArkTS parses it (FileTransferCodec).
+      if (!bytes.empty()) {
+        auto buffer = std::make_shared<NativeBuffer>();
+        buffer->bytes = bytes;
+        setInt("dataHandle", g_buffers.Add(buffer));
+      }
+      break;
     case static_cast<int>(SessionEvent::kCursorShape): {
       // header "<w>,<h>,<hotX>,<hotY>" in text, the BGRA bitmap in `bytes`.
       const std::vector<std::string> head = SplitOn(data, ',');
@@ -187,15 +195,6 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
         auto buffer = std::make_shared<NativeBuffer>();
         buffer->bytes = bytes;
         setInt("imageHandle", g_buffers.Add(buffer));
-      }
-      break;
-    }
-    case static_cast<int>(SessionEvent::kClipboardFileList): {
-      const std::vector<std::string> parts = SplitOn(data, '|');
-      if (parts.size() >= 3) {
-        setInt("fileCount", ParseInt64(parts[0]));
-        setInt("totalBytes", ParseInt64(parts[1]));
-        setInt("folderCount", ParseInt64(parts[2]));
       }
       break;
     }
@@ -446,6 +445,20 @@ bool GetBoolProperty(napi_env env, napi_value object, const char* name, bool fal
   }
   bool result = fallback;
   napi_get_value_bool(env, value, &result);
+  return result;
+}
+
+int64_t GetInt64Property(napi_env env, napi_value object, const char* name, int64_t fallback) {
+  napi_value value = nullptr;
+  if (napi_get_named_property(env, object, name, &value) != napi_ok || value == nullptr) {
+    return fallback;
+  }
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, value, &type) != napi_ok || type != napi_number) {
+    return fallback;
+  }
+  int64_t result = fallback;
+  napi_get_value_int64(env, value, &result);
   return result;
 }
 
@@ -958,16 +971,25 @@ bool ReadStringArg(napi_env env, napi_value value, std::string* out) {
   return true;
 }
 
-napi_value SetClipboardFiles(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
+// Advertises a local file offer: arg 1 is a ready FILEGROUPDESCRIPTORW
+// (ArrayBuffer, built by ArkTS) and arg 2 the absolute sandbox paths (one per
+// line) the bytes are streamed from.
+napi_value SetClipboardFileOffer(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int64_t handle = 0;
-  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  void* descriptorData = nullptr;
+  size_t descriptorLen = 0;
+  if (napi_get_arraybuffer_info(env, args[1], &descriptorData, &descriptorLen) != napi_ok ||
+      descriptorData == nullptr || descriptorLen == 0) {
     return CreateBool(env, false);
   }
   std::string text;
-  if (!ReadStringArg(env, args[1], &text)) {
+  if (!ReadStringArg(env, args[2], &text)) {
     return CreateBool(env, false);
   }
   // Absolute sandbox paths, one per line (they never contain a newline).
@@ -988,7 +1010,46 @@ napi_value SetClipboardFiles(napi_env env, napi_callback_info info) {
   if (session == nullptr || paths.empty()) {
     return CreateBool(env, false);
   }
-  session->SetLocalClipboardFiles(paths);
+  session->SetLocalFileOffer(static_cast<const uint8_t*>(descriptorData), descriptorLen,
+                             paths);
+  return CreateBool(env, true);
+}
+
+// Replaces the remote file list with the descriptors ArkTS parsed from the
+// server's FILEGROUPDESCRIPTORW (arg 1 is a RemoteFileDescriptor[]).
+napi_value SetRemoteFileList(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  bool isArray = false;
+  if (napi_is_array(env, args[1], &isArray) != napi_ok || !isArray) {
+    return CreateBool(env, false);
+  }
+  uint32_t length = 0;
+  napi_get_array_length(env, args[1], &length);
+  std::vector<hmrdp::fileclip::FileInfo> files;
+  files.reserve(length);
+  for (uint32_t i = 0; i < length; ++i) {
+    napi_value element = nullptr;
+    if (napi_get_element(env, args[1], i, &element) != napi_ok || element == nullptr) {
+      continue;
+    }
+    hmrdp::fileclip::FileInfo entry;
+    entry.name = GetStringProperty(env, element, "name");
+    entry.size = static_cast<uint64_t>(GetInt64Property(env, element, "size", 0));
+    entry.sizeKnown = GetBoolProperty(env, element, "sizeKnown", false);
+    entry.isDirectory = GetBoolProperty(env, element, "isDirectory", false);
+    files.push_back(std::move(entry));
+  }
+  std::shared_ptr<Session> session = FindSession(handle);
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  session->SetRemoteFileList(std::move(files));
   return CreateBool(env, true);
 }
 
@@ -1781,7 +1842,9 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setClipboardImageDib", nullptr, SetClipboardImageDib, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setClipboardFiles", nullptr, SetClipboardFiles, nullptr, nullptr, nullptr,
+      {"setClipboardFileOffer", nullptr, SetClipboardFileOffer, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setRemoteFileList", nullptr, SetRemoteFileList, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"pullClipboardFiles", nullptr, PullClipboardFiles, nullptr, nullptr, nullptr,
        napi_default, nullptr},

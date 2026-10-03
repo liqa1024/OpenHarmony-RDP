@@ -11,7 +11,8 @@ import { clearSurface, connect, createSession, destroySession, disconnect,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
-setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
+setClipboardFileOffer, setRemoteFileList, RemoteFileDescriptor,
+pullClipboardFiles, cancelFileTransfer, sendLockState,
 RdpEventCallback, RdpEventPayload, RdpCounters, sessionCounters,
 bufferRead, bufferRelease,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
@@ -334,10 +335,24 @@ export class RdpNative {
     }
   }
 
-  /** Pushes local files (absolute sandbox paths) to the remote session. */
-  pushClipboardFiles(paths: string[]): void {
+  /**
+   * Advertises a local file offer: `descriptor` is a ready FILEGROUPDESCRIPTORW
+   * (FileTransferCodec) and `paths` the absolute sandbox paths its bytes are
+   * streamed from.
+   */
+  pushClipboardFileOffer(descriptor: ArrayBuffer, paths: string[]): void {
     if (this.handle >= 0 && paths.length > 0) {
-      setClipboardFiles(this.handle, paths.join('\n'));
+      setClipboardFileOffer(this.handle, descriptor, paths.join('\n'));
+    }
+  }
+
+  /**
+   * Replaces the native remote-file list with the descriptors ArkTS parsed from
+   * the server's FILEGROUPDESCRIPTORW (see the RemoteFileListRaw event).
+   */
+  applyRemoteFileList(files: RemoteFileDescriptor[]): void {
+    if (this.handle >= 0) {
+      setRemoteFileList(this.handle, files);
     }
   }
 
