@@ -8,8 +8,8 @@
  * itself keeps working.
  */
 import {
-  isAudioSupported, moonlightVideoCodecSupport, superResolutionBackends,
-  superResolutionSupport, vulkanAccelSupport
+  isAudioSupported, moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict,
+  superResolutionBackends, superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
 /** Support state of one optional feature. */
@@ -53,7 +53,7 @@ export class DeviceCapabilities {
    */
   static hardwareAccel(): Capability {
     const capability: Capability = new Capability();
-    let verdict: string = '';
+    let verdict: RdpVerdict;
     try {
       verdict = vulkanAccelSupport();
     } catch (error) {
@@ -61,11 +61,11 @@ export class DeviceCapabilities {
       capability.reason = '无法检测本设备的图形加速能力，已关闭硬件加速';
       return capability;
     }
-    if (verdict === '1') {
+    if (verdict.supported) {
       return capability;
     }
     capability.supported = false;
-    capability.reason = DeviceCapabilities.hardwareAccelReason(verdict);
+    capability.reason = DeviceCapabilities.hardwareAccelReason(verdict.code);
     return capability;
   }
 
@@ -77,7 +77,7 @@ export class DeviceCapabilities {
    */
   static superResolution(): Capability {
     const capability: Capability = new Capability();
-    let verdict: string = '';
+    let verdict: RdpVerdict;
     try {
       verdict = superResolutionSupport();
     } catch (error) {
@@ -85,11 +85,11 @@ export class DeviceCapabilities {
       capability.reason = '无法检测本设备的超分辨率能力';
       return capability;
     }
-    if (verdict === '1') {
+    if (verdict.supported) {
       return capability;
     }
     capability.supported = false;
-    capability.reason = DeviceCapabilities.superResolutionReason(verdict);
+    capability.reason = DeviceCapabilities.superResolutionReason(verdict.code);
     return capability;
   }
 
@@ -113,18 +113,24 @@ export class DeviceCapabilities {
    * `superResolution()` carries the wording for the empty case.
    */
   static srBackends(): string[] {
-    let list: string = '';
+    let verdict: RdpSrBackends;
     try {
-      list = superResolutionBackends();
+      verdict = superResolutionBackends();
     } catch (error) {
       return [];
     }
-    return list.length === 0 ? [] : list.split(',');
+    const backends: string[] = [];
+    if (verdict.xengine) {
+      backends.push('xengine');
+    }
+    if (verdict.fsr) {
+      backends.push('fsr');
+    }
+    return backends;
   }
 
-  /** Wording for the native reason token (the native side only returns codes). */
-  private static superResolutionReason(verdict: string): string {
-    const code: string = verdict.startsWith('0|') ? verdict.substring(2) : '';
+  /** Wording for a native reason code (the native side only returns codes). */
+  private static superResolutionReason(code: string): string {
     if (code === 'emulator' || code === 'no-vulkan' || code === 'no-instance'
       || code === 'no-device' || code === 'no-host-memory' || code === 'no-surface') {
       return '超分辨率需要可用的硬件加速（Vulkan 上屏），本设备不满足';
@@ -138,9 +144,8 @@ export class DeviceCapabilities {
     return '本设备的超分辨率能力不足，超分辨率不可用';
   }
 
-  /** Wording for the native reason token (the native side only returns codes). */
-  private static hardwareAccelReason(verdict: string): string {
-    const code: string = verdict.startsWith('0|') ? verdict.substring(2) : '';
+  /** Wording for a native reason code (the native side only returns codes). */
+  private static hardwareAccelReason(code: string): string {
     if (code === 'emulator') {
       return '模拟器不提供可信的 Vulkan，硬件加速仅在真机可用';
     }

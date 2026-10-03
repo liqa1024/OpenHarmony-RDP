@@ -10,6 +10,7 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { RdpEventPayload } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOrigin, RdpEvent, SessionRequests } from '../model/RdpModels';
 import { CredentialStore } from './CredentialStore';
 import { RdpNative } from './RdpNative';
@@ -39,7 +40,7 @@ export enum ConnectionState {
 export type SessionStateListener = (connectionId: string, state: ConnectionState,
   message: string, origin: RdpConnectOrigin) => void;
 /** Raw native events that only drive the session window's UI effects. */
-export type SessionWindowEventListener = (event: RdpEvent, data: string) => void;
+export type SessionWindowEventListener = (event: RdpEvent, payload: RdpEventPayload) => void;
 /** The one lifecycle state the session window renders (from the manager). */
 export type SessionWindowStateListener = (state: ConnectionState, message: string) => void;
 export type SessionCloseListener = () => void;
@@ -142,8 +143,8 @@ export class SessionManager {
     SessionManager.entries.set(connectionId, entry);
     SessionManager.byKey.set(sessionKey, connectionId);
     const epoch: number = entry.epoch;
-    native.setListener((event: RdpEvent, data: string) => {
-      SessionManager.onNativeEvent(entry, epoch, event, data);
+    native.setListener((event: RdpEvent, payload: RdpEventPayload) => {
+      SessionManager.onNativeEvent(entry, epoch, event, payload);
     });
     SessionManager.notify(connectionId, ConnectionState.Connecting, '', request.origin);
     const handle: number = native.startSession(request.options);
@@ -194,8 +195,8 @@ export class SessionManager {
     }
     entry.epoch = SessionManager.nextEpoch();
     const epoch: number = entry.epoch;
-    entry.native.setListener((event: RdpEvent, data: string) => {
-      SessionManager.onNativeEvent(entry, epoch, event, data);
+    entry.native.setListener((event: RdpEvent, payload: RdpEventPayload) => {
+      SessionManager.onNativeEvent(entry, epoch, event, payload);
     });
     SessionManager.publish(entry, ConnectionState.Connecting, '');
     const handle: number = entry.native.startSession(entry.request.options);
@@ -279,7 +280,7 @@ export class SessionManager {
    * whose window was closed) is dropped instead of driving the current state.
    */
   private static onNativeEvent(entry: SessionEntry, epoch: number, event: RdpEvent,
-    data: string): void {
+    payload: RdpEventPayload): void {
     if (SessionManager.entries.get(entry.connectionId) !== entry || entry.epoch !== epoch) {
       return;
     }
@@ -305,7 +306,7 @@ export class SessionManager {
       // overwritten by "连接已断开". The entry is kept in Failed so the window's
       // 重试 (or a click on the list row) can start a fresh attempt.
       SessionManager.clearEntryTimeout(entry);
-      const message: string = SessionManager.describeError(data);
+      const message: string = SessionManager.describeError(payload);
       entry.native.stopSession();
       SessionManager.publish(entry, ConnectionState.Failed, message);
       return;
@@ -314,16 +315,16 @@ export class SessionManager {
       if (entry.state === ConnectionState.Connecting ||
         entry.state === ConnectionState.Connected) {
         SessionManager.clearEntryTimeout(entry);
-        const message: string = SessionManager.describeError(data, '连接已断开');
+        const message: string = SessionManager.describeError(payload, '连接已断开');
         entry.native.stopSession();
         SessionManager.publish(entry, ConnectionState.Idle, message);
       }
       return;
     }
-    // Everything else (FirstFrame / Resize / Metrics / clipboard / cursor) only
-    // drives the window's UI; the connection state stays with the manager.
+    // Everything else (FirstFrame / Resize / clipboard / cursor) only drives the
+    // window's UI; the connection state stays with the manager.
     if (eventListener !== undefined) {
-      eventListener(event, data);
+      eventListener(event, payload);
     }
   }
 
@@ -397,7 +398,7 @@ export class SessionManager {
   }
 
   /**
-   * Turns the native "<code>|<message>" payload into a user-facing reason.
+   * Turns a native error/disconnect payload into a user-facing reason.
    * `fallback` is what to say when the payload carries no reason at all, so the
    * same parser serves both a failed connect and a dropped session.
    *
@@ -405,13 +406,12 @@ export class SessionManager {
    * ErrorInfo PDU, e.g. "another connection took over"), 2 = ERRCONNECT (a local
    * connect failure). See the patch's error.h.
    */
-  static describeError(data: string, fallback: string = '连接失败'): string {
-    const separator: number = data.indexOf('|');
-    if (separator < 0) {
-      return data.length > 0 ? data : fallback;
+  static describeError(payload: RdpEventPayload, fallback: string = '连接失败'): string {
+    const raw: string = payload.message ?? '';
+    const code: number = payload.code ?? 0;
+    if (code === 0) {
+      return raw.length > 0 ? raw : fallback;
     }
-    const code: number = Number.parseInt(data.substring(0, separator), 10);
-    const raw: string = data.substring(separator + 1);
     const type: number = code & 0xFFFF;
     const errorClass: number = (code >> 16) & 0xFFFF;
     if (errorClass === 1) {

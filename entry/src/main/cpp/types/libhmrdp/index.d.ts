@@ -30,7 +30,47 @@ export interface RdpOptions {
   gatewayDomain: string;
 }
 
-export type RdpEventCallback = (handle: number, event: number, data: string) => void;
+/**
+ * One native session event's payload, as named fields. Every field is optional;
+ * a reader takes the ones its event carries (the `event` code discriminates).
+ * Native owns the encoding and hands over structured values, so the UI never
+ * re-parses a delimited string. Fields, by event:
+ *  - Connected / FirstFrame / CursorDefault / CursorHidden: none.
+ *  - Disconnected / Error: `code` (FreeRDP error, 0 = internal) + `message`.
+ *  - Resize: `width` + `height`.
+ *  - CursorShape: `width` / `height` / `hotX` / `hotY` + `image` (base64 BGRA).
+ *  - ClipboardText: `text`. ClipboardHtml: `html`.
+ *  - ClipboardImage: `width` / `height` + `image` (base64 BGRA).
+ *  - ClipboardFileList: `fileCount` / `totalBytes` / `folderCount`.
+ *  - FileTransferProgress: `direction` / `doneBytes` / `totalBytes` /
+ *    `fileIndex` / `fileCount`.
+ *  - ClipboardFilesReady: `paths` (absolute sandbox paths).
+ *  - FileTransferFailed: `reason`. FileTransferDone: `fileCount`.
+ *  - KeyIntercept: `keyCode` + `down`.
+ */
+export interface RdpEventPayload {
+  code?: number;
+  message?: string;
+  width?: number;
+  height?: number;
+  hotX?: number;
+  hotY?: number;
+  image?: string;
+  text?: string;
+  html?: string;
+  fileCount?: number;
+  folderCount?: number;
+  totalBytes?: number;
+  direction?: number;
+  doneBytes?: number;
+  fileIndex?: number;
+  paths?: string[];
+  reason?: string;
+  keyCode?: number;
+  down?: boolean;
+}
+
+export type RdpEventCallback = (handle: number, event: number, payload: RdpEventPayload) => void;
 
 /**
  * One telemetry window of a live session (the native SessionCounters). ArkTS
@@ -206,27 +246,40 @@ export const listReplays: () => string;
 export const vulkanInfo: () => string;
 
 /**
- * Whether frames can be presented through Vulkan on this device - the capability
- * behind the "硬件加速" setting. Returns "1", or "0|<code>" with a stable code:
- * `no-vulkan` / `no-instance` / `no-device` / `no-host-memory` / `no-surface` /
- * `emulator`. The UI layer maps the code to its own wording.
+ * Verdict of a capability probe: whether the feature is usable, plus a stable
+ * reason code when it is not ("" when supported). The UI owns the wording, so a
+ * new reason code does not need a native string change.
  */
-export const vulkanAccelSupport: () => string;
+export interface RdpVerdict {
+  supported: boolean;
+  code: string;
+}
+
+/**
+ * Whether frames can be presented through Vulkan on this device - the capability
+ * behind the "硬件加速" setting. `code` is a stable token: `no-vulkan` /
+ * `no-instance` / `no-device` / `no-host-memory` / `no-surface` / `emulator`.
+ */
+export const vulkanAccelSupport: () => RdpVerdict;
 
 /**
  * Whether this device can upscale a presented frame at all (at least one 超分
- * backend usable) - the capability behind the "超分" setting. Returns "1", or
- * "0|<code>" with a stable code: the `vulkanAccelSupport` codes when the Vulkan
- * presenter itself is unusable, else `no-xengine` (no usable backend). 超分 needs
- * the Vulkan presenter, so the caller must also check `vulkanAccelSupport`.
+ * backend usable) - the capability behind the "超分" setting. `code` is one of
+ * the `vulkanAccelSupport` codes when the Vulkan presenter itself is unusable,
+ * else `no-xengine` (no usable backend). 超分 needs the Vulkan presenter, so the
+ * caller must also check `vulkanAccelSupport`.
  */
-export const superResolutionSupport: () => string;
+export const superResolutionSupport: () => RdpVerdict;
+
 /**
- * Which 超分 backends this build and device can run, comma-separated:
- * "xengine" / "fsr" / "xengine,fsr", or "" when none. The UI greys out the ones
- * absent from the list.
+ * Which 超分 backends this build and device can run. The UI greys out the ones
+ * that are false.
  */
-export const superResolutionBackends: () => string;
+export interface RdpSrBackends {
+  xengine: boolean;
+  fsr: boolean;
+}
+export const superResolutionBackends: () => RdpSrBackends;
 
 /**
  * Whether the Moonlight (GameStream) client library is linked into this build.

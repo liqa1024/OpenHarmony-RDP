@@ -12,7 +12,7 @@ setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwa
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
-RdpEventCallback, RdpCounters, sessionCounters,
+RdpEventCallback, RdpEventPayload, RdpCounters, sessionCounters,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
 } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -21,7 +21,7 @@ import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpNative';
 
-export type RdpEventListener = (event: RdpEvent, data: string) => void;
+export type RdpEventListener = (event: RdpEvent, payload: RdpEventPayload) => void;
 
 const instances: Map<number, RdpNative> = new Map<number, RdpNative>();
 const byKey: Map<string, RdpNative> = new Map<string, RdpNative>();
@@ -32,10 +32,11 @@ function ensureEventBridge(): void {
     return;
   }
   eventBridgeReady = true;
-  const callback: RdpEventCallback = (handle: number, event: number, data: string): void => {
+  const callback: RdpEventCallback = (handle: number, event: number,
+    payload: RdpEventPayload): void => {
     const target: RdpNative | undefined = instances.get(handle);
     if (target !== undefined) {
-      target.dispatch(event as RdpEvent, data);
+      target.dispatch(event as RdpEvent, payload);
     }
   };
   onEvent(callback);
@@ -154,10 +155,10 @@ export class RdpNative {
     this.listener = undefined;
   }
 
-  dispatch(event: RdpEvent, data: string): void {
+  dispatch(event: RdpEvent, payload: RdpEventPayload): void {
     const current: RdpEventListener | undefined = this.listener;
     if (current !== undefined) {
-      current(event, data);
+      current(event, payload);
     }
   }
 

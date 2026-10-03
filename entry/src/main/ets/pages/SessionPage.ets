@@ -9,7 +9,7 @@ import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
-import { RdpCounters } from 'libhmrdp.so';
+import { RdpCounters, RdpEventPayload } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOptions,
   RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
@@ -712,8 +712,8 @@ struct SessionPage {
       (state: ConnectionState, message: string) => {
         this.applySessionState(state, message);
       },
-      (event: RdpEvent, data: string) => {
-        this.onRdpEvent(event, data);
+      (event: RdpEvent, payload: RdpEventPayload) => {
+        this.onRdpEvent(event, payload);
       },
       () => {
         this.terminateWindow();
@@ -806,68 +806,64 @@ struct SessionPage {
     }
   }
 
-  private onRdpEvent(event: RdpEvent, data: string): void {
+  private onRdpEvent(event: RdpEvent, payload: RdpEventPayload): void {
     if (event === RdpEvent.FirstFrame) {
       this.showOverlay = false;
       this.showToolbar = false;
     } else if (event === RdpEvent.Resize) {
-      const parts: string[] = data.split('x');
-      if (parts.length === 2) {
-        const width: number = Number.parseInt(parts[0], 10);
-        const height: number = Number.parseInt(parts[1], 10);
-        if (!Number.isNaN(width) && !Number.isNaN(height) && width > 0 && height > 0) {
-          this.desktopWidth = width;
-          this.desktopHeight = height;
-          // A new desktop size moves the fitted rect under any local zoom.
-          this.resetViewZoom();
-        }
+      const width: number = payload.width ?? 0;
+      const height: number = payload.height ?? 0;
+      if (width > 0 && height > 0) {
+        this.desktopWidth = width;
+        this.desktopHeight = height;
+        // A new desktop size moves the fitted rect under any local zoom.
+        this.resetViewZoom();
       }
     } else if (event === RdpEvent.ClipboardText) {
-      hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', data.length);
-      this.remoteClipboardText = data;
+      const text: string = payload.text ?? '';
+      hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', text.length);
+      this.remoteClipboardText = text;
       this.remoteClipboardHtml = '';
       this.remoteClipboardPixelMap = undefined;
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
     } else if (event === RdpEvent.ClipboardHtml) {
-      hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', data.length);
-      this.remoteClipboardHtml = data;
+      const html: string = payload.html ?? '';
+      hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', html.length);
+      this.remoteClipboardHtml = html;
       this.remoteClipboardText = '';
       this.remoteClipboardPixelMap = undefined;
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
     } else if (event === RdpEvent.ClipboardImage) {
-      hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}d chars', data.length);
+      hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}d bytes',
+        (payload.image ?? '').length);
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
-      this.onClipboardImage(data);
+      this.onClipboardImage(payload);
     } else if (event === RdpEvent.ClipboardFileList) {
-      // "<fileCount>|<totalBytes>|<folderCount>": the remote clipboard holds
-      // files and/or folders. The bytes are only downloaded when the user
-      // presses 复制.
-      const parts: string[] = data.split('|');
-      const count: number = parts.length > 0 ? Number.parseInt(parts[0], 10) : 0;
-      const total: number = parts.length > 1 ? Number.parseInt(parts[1], 10) : 0;
-      const folders: number = parts.length > 2 ? Number.parseInt(parts[2], 10) : 0;
-      this.remoteFileCount = Number.isNaN(count) ? 0 : count;
-      this.remoteFolderCount = Number.isNaN(folders) ? 0 : folders;
+      // The remote clipboard holds files and/or folders; the bytes are only
+      // downloaded when the user presses 复制.
+      this.remoteFileCount = payload.fileCount ?? 0;
+      this.remoteFolderCount = payload.folderCount ?? 0;
       this.remoteClipboardText = '';
       this.remoteClipboardHtml = '';
       this.remoteClipboardPixelMap = undefined;
       hilog.info(DOMAIN, TAG, 'remote clipboard files: %{public}d folders=%{public}d total=%{public}d',
-        this.remoteFileCount, this.remoteFolderCount, Number.isNaN(total) ? 0 : total);
+        this.remoteFileCount, this.remoteFolderCount, payload.totalBytes ?? 0);
     } else if (event === RdpEvent.FileTransferProgress) {
-      this.onFileTransferProgress(data);
+      this.onFileTransferProgress(payload);
     } else if (event === RdpEvent.ClipboardFilesReady) {
-      this.onClipboardFilesReady(data);
+      this.onClipboardFilesReady(payload);
     } else if (event === RdpEvent.FileTransferDone) {
       this.finishFileTransfer();
       this.toast('已发送文件到远端');
     } else if (event === RdpEvent.FileTransferFailed) {
       this.finishFileTransfer();
-      this.toast(data.length > 0 ? data : '文件传输失败');
+      const reason: string = payload.reason ?? '';
+      this.toast(reason.length > 0 ? reason : '文件传输失败');
     } else if (event === RdpEvent.CursorShape) {
-      this.onCursorShape(data);
+      this.onCursorShape(payload);
     } else if (event === RdpEvent.CursorDefault) {
       this.cursorHidden = false;
       this.cursorPixelMap = undefined;
@@ -876,7 +872,7 @@ struct SessionPage {
       this.cursorHidden = true;
       this.applyCursor();
     } else if (event === RdpEvent.KeyIntercept) {
-      this.handleInterceptedKey(data);
+      this.handleInterceptedKey(payload);
     }
   }
 
@@ -1075,23 +1071,16 @@ struct SessionPage {
   }
 
   /** Decodes a remote cursor bitmap and installs it as the system cursor. */
-  private onCursorShape(data: string): void {
+  private onCursorShape(payload: RdpEventPayload): void {
     if (!this.cursorSupported || !this.useRdpCursor) {
       return;
     }
-    const separator: number = data.indexOf('|');
-    if (separator <= 0) {
-      return;
-    }
-    const header: string[] = data.substring(0, separator).split(',');
-    if (header.length !== 4) {
-      return;
-    }
-    const width: number = Number.parseInt(header[0], 10);
-    const height: number = Number.parseInt(header[1], 10);
-    const hotX: number = Number.parseInt(header[2], 10);
-    const hotY: number = Number.parseInt(header[3], 10);
-    if (Number.isNaN(width) || Number.isNaN(height) || width <= 0 || height <= 0) {
+    const width: number = payload.width ?? 0;
+    const height: number = payload.height ?? 0;
+    const hotX: number = payload.hotX ?? 0;
+    const hotY: number = payload.hotY ?? 0;
+    const imageData: string = payload.image ?? '';
+    if (width <= 0 || height <= 0 || imageData.length === 0) {
       return;
     }
     // Native already downscales oversized cursors to <=256; this is only a
@@ -1104,7 +1093,7 @@ struct SessionPage {
     }
     let bytes: Uint8Array;
     try {
-      bytes = new util.Base64Helper().decodeSync(data.substring(separator + 1));
+      bytes = new util.Base64Helper().decodeSync(imageData);
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'decode cursor bitmap failed: %{public}s', JSON.stringify(error));
       return;
@@ -1125,24 +1114,17 @@ struct SessionPage {
     }
   }
 
-  /** Decodes a remote clipboard image ("<w>,<h>|<base64 BGRA>") into a PixelMap. */
-  private onClipboardImage(data: string): void {
-    const separator: number = data.indexOf('|');
-    if (separator <= 0) {
-      return;
-    }
-    const header: string[] = data.substring(0, separator).split(',');
-    if (header.length !== 2) {
-      return;
-    }
-    const width: number = Number.parseInt(header[0], 10);
-    const height: number = Number.parseInt(header[1], 10);
-    if (Number.isNaN(width) || Number.isNaN(height) || width <= 0 || height <= 0) {
+  /** Decodes a remote clipboard image into a PixelMap. */
+  private onClipboardImage(payload: RdpEventPayload): void {
+    const width: number = payload.width ?? 0;
+    const height: number = payload.height ?? 0;
+    const imageData: string = payload.image ?? '';
+    if (width <= 0 || height <= 0 || imageData.length === 0) {
       return;
     }
     let bytes: Uint8Array;
     try {
-      bytes = new util.Base64Helper().decodeSync(data.substring(separator + 1));
+      bytes = new util.Base64Helper().decodeSync(imageData);
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'decode clipboard image failed: %{public}s', JSON.stringify(error));
       return;
@@ -1340,22 +1322,13 @@ struct SessionPage {
     }
   }
 
-  /** Progress event: "<direction>|<done>|<total>|<fileIndex>|<fileCount>". */
-  private onFileTransferProgress(data: string): void {
-    const parts: string[] = data.split('|');
-    if (parts.length < 3) {
-      return;
-    }
-    const direction: number = Number.parseInt(parts[0], 10);
-    const done: number = Number.parseInt(parts[1], 10);
-    const total: number = Number.parseInt(parts[2], 10);
-    if (Number.isNaN(direction) || Number.isNaN(done) || Number.isNaN(total)) {
-      return;
-    }
-    const fileIndex: number = parts.length > 3 ? Number.parseInt(parts[3], 10) : 0;
-    const fileCount: number = parts.length > 4 ? Number.parseInt(parts[4], 10) : 0;
-    this.transferFileIndex = Number.isNaN(fileIndex) ? 0 : fileIndex;
-    this.transferFileCount = Number.isNaN(fileCount) ? 0 : fileCount;
+  /** File-transfer progress for the toolbar. */
+  private onFileTransferProgress(payload: RdpEventPayload): void {
+    const direction: number = payload.direction ?? 0;
+    const done: number = payload.doneBytes ?? 0;
+    const total: number = payload.totalBytes ?? 0;
+    this.transferFileIndex = payload.fileIndex ?? 0;
+    this.transferFileCount = payload.fileCount ?? 0;
     // An upload only advertises the list; native sends a 0% placeholder when
     // that happens. Keep the "waiting for the remote paste" hint then, and only
     // switch to the progress row once bytes actually move.
@@ -1381,15 +1354,10 @@ struct SessionPage {
     this.transferLastAt = now;
   }
 
-  /** Download finished: the payload is the sandbox paths, one per line. */
-  private onClipboardFilesReady(data: string): void {
+  /** Download finished: the payload carries the absolute sandbox paths. */
+  private onClipboardFilesReady(payload: RdpEventPayload): void {
     this.finishFileTransfer();
-    const paths: string[] = [];
-    for (const line of data.split('\n')) {
-      if (line.length > 0) {
-        paths.push(line);
-      }
-    }
+    const paths: string[] = payload.paths ?? [];
     if (paths.length === 0) {
       this.toast('远端文件为空');
       return;
@@ -2741,19 +2709,15 @@ struct SessionPage {
   }
 
   /**
-   * 快捷键穿透: an intercepted key ("<keyCode>|<down>"), mapped and accounted for
-   * like onKeyEvent so focus loss still sends the matching key-up.
+   * 快捷键穿透: an intercepted key, mapped and accounted for like onKeyEvent so
+   * focus loss still sends the matching key-up.
    */
-  private handleInterceptedKey(data: string): void {
-    const parts: string[] = data.split('|');
-    if (parts.length !== 2) {
+  private handleInterceptedKey(payload: RdpEventPayload): void {
+    const keyCode: number = payload.keyCode ?? -1;
+    if (keyCode < 0) {
       return;
     }
-    const keyCode: number = Number.parseInt(parts[0], 10);
-    if (Number.isNaN(keyCode)) {
-      return;
-    }
-    const down: boolean = parts[1] === '1';
+    const down: boolean = payload.down ?? false;
     const scan: RdpScanCode | undefined = KeyMapper.map(keyCode);
     if (scan === undefined) {
       return;

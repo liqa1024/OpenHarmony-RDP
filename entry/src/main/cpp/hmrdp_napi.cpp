@@ -70,6 +70,165 @@ struct EventPayload {
   std::string data;
 };
 
+std::vector<std::string> SplitOn(const std::string& text, char separator) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (true) {
+    const size_t pos = text.find(separator, start);
+    if (pos == std::string::npos) {
+      parts.push_back(text.substr(start));
+      return parts;
+    }
+    parts.push_back(text.substr(start, pos - start));
+    start = pos + 1;
+  }
+}
+
+int64_t ParseInt64(const std::string& text) {
+  return static_cast<int64_t>(std::strtoll(text.c_str(), nullptr, 10));
+}
+
+// Turns one event's native encoding into a typed object, so ArkTS reads named
+// fields instead of splitting "WxH" / "a|b|c" / a base64 header. This is
+// marshalling at the boundary, not protocol logic: the encoding stays owned by
+// the native side, which is the only side that knows it.
+napi_value MakeEventPayload(napi_env env, int event, const std::string& data) {
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  auto setInt = [env, obj](const char* name, int64_t value) {
+    napi_value v = nullptr;
+    napi_create_int64(env, value, &v);
+    napi_set_named_property(env, obj, name, v);
+  };
+  auto setStr = [env, obj](const char* name, const std::string& value) {
+    napi_value v = nullptr;
+    napi_create_string_utf8(env, value.c_str(), value.size(), &v);
+    napi_set_named_property(env, obj, name, v);
+  };
+  auto setBool = [env, obj](const char* name, bool value) {
+    napi_value v = nullptr;
+    napi_get_boolean(env, value, &v);
+    napi_set_named_property(env, obj, name, v);
+  };
+
+  switch (event) {
+    case static_cast<int>(SessionEvent::kError):
+    case static_cast<int>(SessionEvent::kDisconnected): {
+      // "<code>|<message>", or just "<message>" when code == 0.
+      const size_t bar = data.find('|');
+      if (bar == std::string::npos) {
+        setInt("code", 0);
+        setStr("message", data);
+      } else {
+        setInt("code", ParseInt64(data.substr(0, bar)));
+        setStr("message", data.substr(bar + 1));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kResize): {
+      const size_t x = data.find('x');
+      if (x != std::string::npos) {
+        setInt("width", ParseInt64(data.substr(0, x)));
+        setInt("height", ParseInt64(data.substr(x + 1)));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kClipboardText):
+      setStr("text", data);
+      break;
+    case static_cast<int>(SessionEvent::kClipboardHtml):
+      setStr("html", data);
+      break;
+    case static_cast<int>(SessionEvent::kCursorShape): {
+      // "<w>,<h>,<hotX>,<hotY>|<base64 BGRA>".
+      const size_t bar = data.find('|');
+      if (bar != std::string::npos) {
+        const std::vector<std::string> head = SplitOn(data.substr(0, bar), ',');
+        if (head.size() == 4) {
+          setInt("width", ParseInt64(head[0]));
+          setInt("height", ParseInt64(head[1]));
+          setInt("hotX", ParseInt64(head[2]));
+          setInt("hotY", ParseInt64(head[3]));
+        }
+        setStr("image", data.substr(bar + 1));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kClipboardImage): {
+      // "<w>,<h>|<base64 BGRA>".
+      const size_t bar = data.find('|');
+      if (bar != std::string::npos) {
+        const std::vector<std::string> head = SplitOn(data.substr(0, bar), ',');
+        if (head.size() == 2) {
+          setInt("width", ParseInt64(head[0]));
+          setInt("height", ParseInt64(head[1]));
+        }
+        setStr("image", data.substr(bar + 1));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kClipboardFileList): {
+      const std::vector<std::string> parts = SplitOn(data, '|');
+      if (parts.size() >= 3) {
+        setInt("fileCount", ParseInt64(parts[0]));
+        setInt("totalBytes", ParseInt64(parts[1]));
+        setInt("folderCount", ParseInt64(parts[2]));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kFileTransferProgress): {
+      const std::vector<std::string> parts = SplitOn(data, '|');
+      if (parts.size() >= 3) {
+        setInt("direction", ParseInt64(parts[0]));
+        setInt("doneBytes", ParseInt64(parts[1]));
+        setInt("totalBytes", ParseInt64(parts[2]));
+      }
+      if (parts.size() >= 4) {
+        setInt("fileIndex", ParseInt64(parts[3]));
+      }
+      if (parts.size() >= 5) {
+        setInt("fileCount", ParseInt64(parts[4]));
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kClipboardFilesReady): {
+      std::vector<std::string> paths;
+      for (const std::string& path : SplitOn(data, '\n')) {
+        if (!path.empty()) {
+          paths.push_back(path);
+        }
+      }
+      napi_value array = nullptr;
+      napi_create_array_with_length(env, paths.size(), &array);
+      for (size_t i = 0; i < paths.size(); ++i) {
+        napi_value v = nullptr;
+        napi_create_string_utf8(env, paths[i].c_str(), paths[i].size(), &v);
+        napi_set_element(env, array, static_cast<uint32_t>(i), v);
+      }
+      napi_set_named_property(env, obj, "paths", array);
+      break;
+    }
+    case static_cast<int>(SessionEvent::kFileTransferFailed):
+      setStr("reason", data);
+      break;
+    case static_cast<int>(SessionEvent::kFileTransferDone):
+      setInt("fileCount", ParseInt64(data));
+      break;
+    case static_cast<int>(SessionEvent::kKeyIntercept): {
+      const std::vector<std::string> parts = SplitOn(data, '|');
+      if (parts.size() >= 2) {
+        setInt("keyCode", ParseInt64(parts[0]));
+        setBool("down", ParseInt64(parts[1]) != 0);
+      }
+      break;
+    }
+    // kConnected / kFirstFrame / kCursorDefault / kCursorHidden carry no payload.
+    default:
+      break;
+  }
+  return obj;
+}
+
 void CallJsEvent(napi_env env, napi_value jsCallback, void*, void* data) {
   std::unique_ptr<EventPayload> payload(static_cast<EventPayload*>(data));
   if (env == nullptr || jsCallback == nullptr || payload == nullptr) {
@@ -77,11 +236,10 @@ void CallJsEvent(napi_env env, napi_value jsCallback, void*, void* data) {
   }
   napi_value handleValue = nullptr;
   napi_value eventValue = nullptr;
-  napi_value dataValue = nullptr;
   napi_create_int64(env, payload->handle, &handleValue);
   napi_create_int32(env, payload->event, &eventValue);
-  napi_create_string_utf8(env, payload->data.c_str(), NAPI_AUTO_LENGTH, &dataValue);
-  napi_value argv[3] = {handleValue, eventValue, dataValue};
+  napi_value payloadValue = MakeEventPayload(env, payload->event, payload->data);
+  napi_value argv[3] = {handleValue, eventValue, payloadValue};
   napi_value global = nullptr;
   napi_get_global(env, &global);
   napi_call_function(env, global, jsCallback, 3, argv, nullptr);
@@ -1113,55 +1271,57 @@ napi_value VulkanInfo(napi_env env, napi_callback_info) {
   return result;
 }
 
+// The shape every capability probe returns: {supported, code}. Only the stable
+// code crosses the boundary; the UI owns the wording, so a new reason does not
+// need a native string change.
+napi_value MakeVerdict(napi_env env, bool supported, const std::string& code) {
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_value supportedValue = nullptr;
+  napi_get_boolean(env, supported, &supportedValue);
+  napi_set_named_property(env, obj, "supported", supportedValue);
+  napi_value codeValue = nullptr;
+  napi_create_string_utf8(env, code.c_str(), code.size(), &codeValue);
+  napi_set_named_property(env, obj, "code", codeValue);
+  return obj;
+}
+
 // Whether frames can be presented through Vulkan on this device - the capability
 // behind the "硬件加速" setting. This is the *presenter* verdict: a Vulkan device
 // with host-visible memory for the frame buffer and a surface + swapchain to blit
-// to. Returns "1", or "0|<code>" with a stable code so the UI layer owns the
-// wording (see VulkanCapabilities::presenterUnsupportedCode).
+// to (see VulkanCapabilities::presenterUnsupportedCode for the code).
 napi_value VulkanAccelSupport(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
-  const std::string out =
-      caps.presenterSupported ? std::string("1") : ("0|" + caps.presenterUnsupportedCode);
-  HMRDP_LOGI("vulkan accel support: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
+  HMRDP_LOGI("vulkan accel support: supported=%{public}d code=%{public}s",
+             caps.presenterSupported ? 1 : 0, caps.presenterUnsupportedCode.c_str());
+  return MakeVerdict(env, caps.presenterSupported, caps.presenterUnsupportedCode);
 }
 
-// Whether the device can upscale a frame with XEngine's GPU spatial upscale -
-// the capability behind the "超分" setting. Returns "1", or "0|<code>" with a
-// stable code so the UI layer owns the wording: the presenter codes of
-// vulkanAccelSupport, or "no-xengine" / "no-extension" (see
-// VulkanCapabilities::srUnsupportedCode).
+// Whether the device can upscale a frame (at least one 超分 backend) - the
+// capability behind the "超分" setting. `code` is a presenter code or
+// "no-xengine" / "no-extension" (see VulkanCapabilities::srUnsupportedCode).
 napi_value SuperResolutionSupport(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
-  const std::string out =
-      caps.srSupported ? std::string("1") : ("0|" + caps.srUnsupportedCode);
-  HMRDP_LOGI("super resolution support: %{public}s", out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
+  HMRDP_LOGI("super resolution support: supported=%{public}d code=%{public}s",
+             caps.srSupported ? 1 : 0, caps.srUnsupportedCode.c_str());
+  return MakeVerdict(env, caps.srSupported, caps.srUnsupportedCode);
 }
 
-// Which 超分 backends this build and device can actually run, as a comma-separated
-// list: "xengine", "fsr", "xengine,fsr", or "" when none. The UI greys out the
-// missing ones; superResolutionSupport carries the reason when the list is empty.
+// Which 超分 backends this build and device can actually run. The UI greys out
+// the ones that are false; superResolutionSupport carries the reason.
 napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
-  std::string out;
-  if (caps.srXengineSupported) {
-    out = "xengine";
-  }
-  if (caps.srFsrSupported) {
-    if (!out.empty()) {
-      out += ",";
-    }
-    out += "fsr";
-  }
-  HMRDP_LOGI("super resolution backends: %{public}s", out.empty() ? "-" : out.c_str());
-  napi_value result = nullptr;
-  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
-  return result;
+  HMRDP_LOGI("super resolution backends: xengine=%{public}d fsr=%{public}d",
+             caps.srXengineSupported ? 1 : 0, caps.srFsrSupported ? 1 : 0);
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_value xengine = nullptr;
+  napi_get_boolean(env, caps.srXengineSupported, &xengine);
+  napi_set_named_property(env, obj, "xengine", xengine);
+  napi_value fsr = nullptr;
+  napi_get_boolean(env, caps.srFsrSupported, &fsr);
+  napi_set_named_property(env, obj, "fsr", fsr);
+  return obj;
 }
 
 // Whether the Moonlight (GameStream) client is linked into this build. Returns
