@@ -353,112 +353,6 @@ std::string BuildFileGroupDescriptor(const std::vector<std::string>& paths) {
   return out;
 }
 
-// ASCII case-insensitive search; the needles used here only contain letters and
-// punctuation whose bit 0x20 is already set, so ORing it is safe.
-size_t FindIgnoreCase(const std::string& haystack, const std::string& needle,
-                      size_t from = 0) {
-  if (needle.empty() || haystack.size() < needle.size()) {
-    return std::string::npos;
-  }
-  for (size_t i = from; i + needle.size() <= haystack.size(); ++i) {
-    size_t j = 0;
-    while (j < needle.size()) {
-      const char a = static_cast<char>(haystack[i + j] | 0x20);
-      const char b = static_cast<char>(needle[j] | 0x20);
-      if (a != b) {
-        break;
-      }
-      ++j;
-    }
-    if (j == needle.size()) {
-      return i;
-    }
-  }
-  return std::string::npos;
-}
-
-// Builds a CF_HTML payload around `input`: an ASCII header of byte offsets
-// followed by the HTML ("HTML Clipboard Format", MSDN). The offset fields are
-// fixed-width, so the header length is constant and offsets can be computed up
-// front. The HTML content itself is left untouched (only offsets/markers are
-// added): a full document is embedded as-is (keeping <head> styles), a bare
-// fragment is wrapped, and the fragment markers/offsets point at the copied
-// content, never at the wrapper.
-std::string BuildCfHtml(const std::string& input) {
-  static const char kStartFragment[] = "<!--StartFragment-->";
-  static const char kEndFragment[] = "<!--EndFragment-->";
-  const size_t startMarkerLen = std::strlen(kStartFragment);
-  const size_t headerLen = std::strlen("Version:0.9\r\n") +
-                           std::strlen("StartHTML:0000000000\r\n") +
-                           std::strlen("EndHTML:0000000000\r\n") +
-                           std::strlen("StartFragment:0000000000\r\n") +
-                           std::strlen("EndFragment:0000000000\r\n");
-
-  std::string document;
-  size_t fragmentOffset = 0;
-  size_t fragmentLength = 0;
-
-  const size_t existingStart = FindIgnoreCase(input, kStartFragment);
-  const size_t existingEnd = FindIgnoreCase(input, kEndFragment);
-  if (existingStart != std::string::npos && existingEnd > existingStart + startMarkerLen) {
-    // The source already carries fragment markers (Word/WPS exports do): keep the
-    // document intact and just point the offsets at the marked content, instead
-    // of inserting a second, confusing pair.
-    document = input;
-    fragmentOffset = existingStart + startMarkerLen;
-    fragmentLength = existingEnd - fragmentOffset;
-  } else {
-    const bool isDocument = FindIgnoreCase(input, "<html") != std::string::npos ||
-                            FindIgnoreCase(input, "<!doctype") != std::string::npos ||
-                            FindIgnoreCase(input, "<body") != std::string::npos;
-    if (isDocument) {
-      // Mark the body content as the fragment while keeping the whole document
-      // (so <head><style> is preserved).
-      const size_t bodyOpen = FindIgnoreCase(input, "<body");
-      size_t bodyInner = std::string::npos;
-      if (bodyOpen != std::string::npos) {
-        const size_t tagEnd = input.find('>', bodyOpen);
-        if (tagEnd != std::string::npos) {
-          bodyInner = tagEnd + 1;
-        }
-      }
-      const size_t bodyClose =
-          bodyInner != std::string::npos ? FindIgnoreCase(input, "</body>", bodyInner)
-                                         : std::string::npos;
-      if (bodyInner != std::string::npos && bodyClose != std::string::npos) {
-        const std::string fragment = input.substr(bodyInner, bodyClose - bodyInner);
-        document = input.substr(0, bodyInner) + kStartFragment + fragment +
-                   kEndFragment + input.substr(bodyClose);
-        fragmentOffset = bodyInner + startMarkerLen;
-        fragmentLength = fragment.size();
-      } else {
-        document = std::string(kStartFragment) + input + kEndFragment;
-        fragmentOffset = startMarkerLen;
-        fragmentLength = input.size();
-      }
-    } else {
-      const std::string bodyStart = std::string("<html><body>") + kStartFragment;
-      document = bodyStart + input + kEndFragment + "</body></html>";
-      fragmentOffset = bodyStart.size();
-      fragmentLength = input.size();
-    }
-  }
-
-  const size_t startHtml = headerLen;
-  const size_t endHtml = headerLen + document.size();
-  const size_t startFragment = headerLen + fragmentOffset;
-  const size_t endFragment = startFragment + fragmentLength;
-  char header[128] = {0};
-  std::snprintf(header, sizeof(header),
-                "Version:0.9\r\n"
-                "StartHTML:%010zu\r\n"
-                "EndHTML:%010zu\r\n"
-                "StartFragment:%010zu\r\n"
-                "EndFragment:%010zu\r\n",
-                startHtml, endHtml, startFragment, endFragment);
-  return std::string(header) + document;
-}
-
 // Extracts the HTML fragment from a CF_HTML payload. The marked fragment is
 // preferred (it is self-contained: inline styles + tags), then the
 // StartFragment/EndFragment offsets, then the whole StartHTML..EndHTML document,
@@ -852,47 +746,6 @@ std::string RtfToHtml(const uint8_t* data, size_t size) {
   closeRun();
   html += "</p>";
   return html;
-}
-
-// Minimal HTML -> plain text fallback for the CF_UNICODETEXT half of an HTML
-// push. Not a renderer: it only needs to be readable in a plain text target.
-std::string StripHtmlToText(const std::string& html) {
-  std::string out;
-  for (size_t i = 0; i < html.size(); ++i) {
-    if (html[i] != '<') {
-      out.push_back(html[i]);
-      continue;
-    }
-    const size_t close = html.find('>', i);
-    if (close == std::string::npos) {
-      break;
-    }
-    const std::string tag = html.substr(i + 1, close - i - 1);
-    const char first = tag.empty() ? '\0' : static_cast<char>(tag[0] | 0x20);
-    if (first == 'b' && tag.size() >= 2 && (tag[1] == 'r' || tag[1] == 'R')) {
-      out.push_back('\n');
-    } else if (first == 'p' || first == 'd' || first == 'l' || first == 't') {
-      out.push_back('\n');
-    }
-    i = close;
-  }
-  struct Entity {
-    const char* code;
-    char ch;
-  };
-  static const Entity kEntities[] = {
-      {"&amp;", '&'},   {"&lt;", '<'},   {"&gt;", '>'},
-      {"&quot;", '"'},  {"&#39;", '\''}, {"&nbsp;", ' '},
-  };
-  for (const Entity& entity : kEntities) {
-    const size_t len = std::strlen(entity.code);
-    size_t pos = 0;
-    while ((pos = out.find(entity.code, pos)) != std::string::npos) {
-      out.replace(pos, len, 1, entity.ch);
-      ++pos;
-    }
-  }
-  return out;
 }
 
 uint16_t ReadDibU16(const uint8_t* p) {
@@ -3377,30 +3230,34 @@ void Session::SetLocalClipboardText(const std::string& utf8) {
   AdvertiseLocalClipboard();
 }
 
-void Session::SetLocalClipboardHtml(const std::string& html) {
+void Session::SetLocalClipboardHtmlRaw(const uint8_t* cfHtml, size_t byteCount,
+                                       const std::string& plainText) {
   ContextGuard ctx(*this);
-  if (html.empty()) {
+  if (cfHtml == nullptr || byteCount == 0) {
     return;
   }
-  const std::string text = StripHtmlToText(html);
+  // The plain-text fallback is the CF_UNICODETEXT half of the same clipboard.
   size_t wcharCount = 0;
-  WCHAR* wide = ConvertUtf8ToWCharAlloc(text.c_str(), &wcharCount);
-  if (wide == nullptr) {
-    return;
-  }
+  WCHAR* wide = ConvertUtf8ToWCharAlloc(plainText.c_str(), &wcharCount);
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    localClipboardHtml_ = BuildCfHtml(html);
-    localClipboardUtf16FromHtml_.assign(reinterpret_cast<const char*>(wide),
-                                        (wcharCount + 1) * sizeof(WCHAR));
+    localClipboardHtml_.assign(reinterpret_cast<const char*>(cfHtml), byteCount);
+    if (wide != nullptr) {
+      localClipboardUtf16FromHtml_.assign(reinterpret_cast<const char*>(wide),
+                                          (wcharCount + 1) * sizeof(WCHAR));
+    } else {
+      localClipboardUtf16FromHtml_.clear();
+    }
     localClipboardUtf16_.clear();
     localClipboardValid_ = false;
     localClipboardDib_.clear();
     localClipKind_ = LocalClipKind::kHtml;
   }
-  free(wide);
-  HMRDP_LOGI("set local clipboard html: %{public}u bytes",
-             static_cast<unsigned>(html.size()));
+  if (wide != nullptr) {
+    free(wide);
+  }
+  HMRDP_LOGI("set local clipboard html: CF_HTML %{public}u bytes",
+             static_cast<unsigned>(byteCount));
   AdvertiseLocalClipboard();
 }
 

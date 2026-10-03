@@ -144,8 +144,13 @@ export const setShortcutPassthrough: (handle: number, enabled: boolean) => boole
 
 export const setClipboardText: (handle: number, text: string) => boolean;
 
-/** Pushes a local HTML fragment to the session (advertised as CF_HTML). */
-export const setClipboardHtml: (handle: number, html: string) => boolean;
+/**
+ * Pushes a local HTML clipboard to the session as a ready CF_HTML payload plus
+ * its plain-text fallback. ArkTS builds both (ClipboardCodec.buildCfHtml); the
+ * native side advertises CF_HTML and serves the fallback for CF_UNICODETEXT.
+ */
+export const setClipboardHtmlRaw: (handle: number, cfHtml: ArrayBuffer,
+  plainText: string) => boolean;
 
 /**
  * Pushes a local image to the session as a ready CF_DIB payload. ArkTS builds

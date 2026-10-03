@@ -1520,7 +1520,8 @@ struct SessionPage {
     SessionPage.findHtmlEntry(data)
       .then((html: string) => {
         if (html.length > 0) {
-          this.native.pushClipboardHtml(html);
+          const cfHtml: ArrayBuffer = ClipboardCodec.buildCfHtml(html);
+          this.native.pushClipboardHtmlRaw(cfHtml, ClipboardCodec.stripHtmlToText(html));
           this.toast('已发送富文本到远端');
           return;
         }

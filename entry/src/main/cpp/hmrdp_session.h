@@ -241,9 +241,11 @@ class Session : public std::enable_shared_from_this<Session> {
   // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
   // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);
-  // Local HTML clipboard (UTF-8 fragment) pushed from ArkTS; advertised as
-  // CF_HTML with a plain-text fallback so text-only targets still paste.
-  void SetLocalClipboardHtml(const std::string& html);
+  // Local HTML clipboard pushed from ArkTS as a ready CF_HTML payload plus its
+  // plain-text fallback. ArkTS builds both (ClipboardCodec.buildCfHtml); native
+  // advertises CF_HTML and serves the fallback for CF_UNICODETEXT.
+  void SetLocalClipboardHtmlRaw(const uint8_t* cfHtml, size_t byteCount,
+                                const std::string& plainText);
   // Local image clipboard pushed from ArkTS as a ready CF_DIB payload. ArkTS
   // builds the DIB (ClipboardCodec.buildDib); native only stores and serves the
   // bytes. Safe to call from the UI thread.

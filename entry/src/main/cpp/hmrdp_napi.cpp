@@ -886,26 +886,29 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value SetClipboardHtml(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
+// pushes a local HTML clipboard as a ready CF_HTML payload (arg 1, ArrayBuffer)
+// plus its plain-text fallback (arg 2, UTF-8 string). ArkTS built both.
+napi_value SetClipboardHtmlRaw(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int64_t handle = 0;
-  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateBool(env, false);
   }
-  size_t length = 0;
-  if (napi_get_value_string_utf8(env, args[1], nullptr, 0, &length) != napi_ok) {
+  void* cfHtmlData = nullptr;
+  size_t byteCount = 0;
+  if (napi_get_arraybuffer_info(env, args[1], &cfHtmlData, &byteCount) != napi_ok ||
+      cfHtmlData == nullptr || byteCount == 0) {
     return CreateBool(env, false);
   }
-  std::string html(length, '\0');
-  napi_get_value_string_utf8(env, args[1], html.data(), length + 1, &length);
-  html.resize(length);
+  const std::string plainText = GetStringArgument(env, args[2]);
   std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
-  session->SetLocalClipboardHtml(html);
+  session->SetLocalClipboardHtmlRaw(static_cast<const uint8_t*>(cfHtmlData), byteCount,
+                                    plainText);
   return CreateBool(env, true);
 }
 
@@ -1765,7 +1768,7 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setClipboardHtml", nullptr, SetClipboardHtml, nullptr, nullptr, nullptr,
+      {"setClipboardHtmlRaw", nullptr, SetClipboardHtmlRaw, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setClipboardImageDib", nullptr, SetClipboardImageDib, nullptr, nullptr, nullptr,
        napi_default, nullptr},

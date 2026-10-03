@@ -7,7 +7,7 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   onEvent, sendKey, sendMouse, sendTouch,
-  sendUnicode, setClipboardHtml, setClipboardImageDib, setClipboardText, setRdpCursor, setSurface,
+  sendUnicode, setClipboardHtmlRaw, setClipboardImageDib, setClipboardText, setRdpCursor, setSurface,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
@@ -314,10 +314,13 @@ export class RdpNative {
     }
   }
 
-  /** Pushes a local HTML fragment to the remote session (CF_HTML). */
-  pushClipboardHtml(html: string): void {
+  /**
+   * Pushes a local HTML clipboard as a ready CF_HTML payload plus its plain-text
+   * fallback (see ClipboardCodec.buildCfHtml); native only stores and serves it.
+   */
+  pushClipboardHtmlRaw(cfHtml: ArrayBuffer, plainText: string): void {
     if (this.handle >= 0) {
-      setClipboardHtml(this.handle, html);
+      setClipboardHtmlRaw(this.handle, cfHtml, plainText);
     }
   }
 
