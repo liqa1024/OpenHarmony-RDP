@@ -378,6 +378,11 @@ export interface MoonlightHttpOptions {
   contentType?: string;
   /** Overrides the stored per-host pin (hex DER), e.g. during pairing. */
   pinServerCertHex?: string;
+  /**
+   * Request timeout in ms (default 10000). The pairing `getservercert` step
+   * waits for the user to type the PIN on the host, so it passes a long value.
+   */
+  timeoutMs?: number;
 }
 
 export interface MoonlightHttpResult {

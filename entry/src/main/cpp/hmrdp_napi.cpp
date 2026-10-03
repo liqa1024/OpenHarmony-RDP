@@ -1536,6 +1536,9 @@ napi_value MoonlightHttpRequest(napi_env env, napi_callback_info info) {
   request.method = GetStringProperty(env, args[1], "method");
   request.body = GetStringProperty(env, args[1], "body");
   request.contentType = GetStringProperty(env, args[1], "contentType");
+  // The pairing getservercert step waits for the user to type the PIN on the
+  // host, so it needs a longer (caller-chosen) timeout than the default.
+  request.timeoutMs = GetIntProperty(env, args[1], "timeoutMs", request.timeoutMs);
   if (request.method.empty()) {
     request.method = "GET";
   }
