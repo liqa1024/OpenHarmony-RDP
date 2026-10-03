@@ -14,8 +14,12 @@ export class BackgroundOps {
   static readonly DECODE_DIB: string = 'decodeDib';
   static readonly DECODE_RTF: string = 'decodeRtf';
   static readonly DECODE_CF_HTML: string = 'decodeCfHtml';
-  static readonly BUILD_DIB: string = 'buildDib';
-  static readonly BUILD_CF_HTML: string = 'buildCfHtml';
+  // Local clipboard -> remote: encode and push natively, off the UI thread
+  // (fire-and-forget; the native store + advertise must not block the UI).
+  static readonly PUSH_TEXT: string = 'pushText';
+  static readonly PUSH_HTML: string = 'pushHtml';
+  // Encodes the image to CF_DIB and PNG and pushes both (PNG advertised first).
+  static readonly PUSH_IMAGE: string = 'pushImage';
   // File download (fire-and-forget events / commands; the worker answers with a
   // BackgroundEvent, not a reply).
   static readonly FILE_LIST: string = 'fileList';
@@ -45,6 +49,7 @@ export interface BackgroundRequest {
   dib?: ArrayBuffer;
   rtf?: ArrayBuffer;
   cfHtml?: ArrayBuffer;
+  text?: string;
   html?: string;
   pixels?: ArrayBuffer;
   width?: number;

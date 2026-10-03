@@ -51,6 +51,20 @@ class BackgroundWorkerImpl {
     };
     thread.onerror = (e: ErrorEvent): void => {
       hilog.error(DOMAIN, TAG, 'background worker error: %{public}s', e.message);
+      // Settle every outstanding request as a failure so no caller (and no
+      // toolbar spinner) waits forever on a worker that has gone away.
+      const ids: number[] = [];
+      this.pending.forEach((_sink: ResponseSink, id: number): void => {
+        ids.push(id);
+      });
+      for (const id of ids) {
+        const sink: ResponseSink | undefined = this.pending.get(id);
+        if (sink !== undefined) {
+          this.pending.delete(id);
+          const failed: BackgroundResponse = { id: id, ok: false };
+          sink(failed);
+        }
+      }
     };
     this.thread = thread;
     return thread;
@@ -118,26 +132,38 @@ class BackgroundWorkerImpl {
     return response.ok ? (response.text ?? '') : '';
   }
 
-  /** Builds a CF_DIB from local pixels (the pixels buffer is transferred). */
-  async buildDib(pixels: ArrayBuffer, width: number, height: number,
-    pixelFormat: number): Promise<ArrayBuffer | undefined> {
+  // --- local clipboard -> remote (encode + native push) --------------------
+
+  /** Pushes local text; the native store/advertise runs on the worker. */
+  async pushText(handle: number, text: string): Promise<boolean> {
     const request: BackgroundRequest = {
-      id: this.nextId, op: BackgroundOps.BUILD_DIB, pixels: pixels,
+      id: this.nextId, op: BackgroundOps.PUSH_TEXT, handle: handle, text: text
+    };
+    this.nextId++;
+    const response: BackgroundResponse = await this.send(request, []);
+    return response.ok;
+  }
+
+  /** Encodes local HTML and pushes it (CF_HTML + plain fallback). */
+  async pushHtml(handle: number, html: string): Promise<boolean> {
+    const request: BackgroundRequest = {
+      id: this.nextId, op: BackgroundOps.PUSH_HTML, handle: handle, html: html
+    };
+    this.nextId++;
+    const response: BackgroundResponse = await this.send(request, []);
+    return response.ok;
+  }
+
+  /** Encodes local pixels (transferred) to CF_DIB + PNG and pushes both. */
+  async pushImage(handle: number, pixels: ArrayBuffer, width: number, height: number,
+    pixelFormat: number): Promise<boolean> {
+    const request: BackgroundRequest = {
+      id: this.nextId, op: BackgroundOps.PUSH_IMAGE, handle: handle, pixels: pixels,
       width: width, height: height, pixelFormat: pixelFormat
     };
     this.nextId++;
     const response: BackgroundResponse = await this.send(request, [pixels]);
-    return response.ok ? response.buffer : undefined;
-  }
-
-  /** Wraps a local HTML string into a ready CF_HTML payload. */
-  async buildCfHtml(html: string): Promise<ArrayBuffer | undefined> {
-    const request: BackgroundRequest = {
-      id: this.nextId, op: BackgroundOps.BUILD_CF_HTML, html: html
-    };
-    this.nextId++;
-    const response: BackgroundResponse = await this.send(request, []);
-    return response.ok ? response.buffer : undefined;
+    return response.ok;
   }
 
   // --- file download (fire-and-forget) -------------------------------------

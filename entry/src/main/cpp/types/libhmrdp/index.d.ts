@@ -184,11 +184,13 @@ export const setClipboardHtmlRaw: (handle: number, cfHtml: ArrayBuffer,
   plainText: string) => boolean;
 
 /**
- * Pushes a local image to the session as a ready CF_DIB payload. ArkTS builds
- * the DIB from the PixelMap (ClipboardCodec.buildDib); the native side only
- * stores and serves the bytes, so the image codec lives on the ArkTS side.
+ * Pushes a local image to the session. `dib` is a ready CF_DIB
+ * (ClipboardCodec.buildDib); `png` is the same image as a registered "PNG"
+ * payload (may be empty). Native advertises PNG first when present and CF_DIB as
+ * fallback, then serves whichever format the server requests.
  */
-export const setClipboardImageDib: (handle: number, dib: ArrayBuffer) => boolean;
+export const setClipboardImage: (handle: number, dib: ArrayBuffer,
+  png: ArrayBuffer) => boolean;
 
 /**
  * Advertises a local file offer (FileGroupDescriptorW + FileContents).

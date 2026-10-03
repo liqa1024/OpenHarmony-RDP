@@ -25,7 +25,7 @@ import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PE
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
-import { ClipboardCodec, DibImage } from '../utils/ClipboardCodec';
+import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 
 const DOMAIN: number = 0xD001;
@@ -1635,19 +1635,10 @@ struct SessionPage {
     SessionPage.findHtmlEntry(data)
       .then((html: string) => {
         if (html.length > 0) {
-          BackgroundWorker.buildCfHtml(html)
-            .then((cfHtml: ArrayBuffer | undefined) => {
-              if (cfHtml === undefined) {
-                this.toast('提交本机富文本失败');
-                return;
-              }
-              this.native.pushClipboardHtmlRaw(cfHtml, ClipboardCodec.stripHtmlToText(html));
-              this.toast('已发送富文本到远端');
-            })
-            .catch((error: BusinessError) => {
-              hilog.warn(DOMAIN, TAG, 'build cf_html failed: %{public}s', JSON.stringify(error));
-              this.toast('提交本机富文本失败');
-            });
+          // Encode + native push on the worker (a large document must not block).
+          BackgroundWorker.pushHtml(this.native.handleId(), html).then((ok: boolean) => {
+            this.toast(ok ? '已放入远端剪贴板' : '提交本机富文本失败');
+          });
           return;
         }
         this.pushLocalText(data);
@@ -1687,11 +1678,18 @@ struct SessionPage {
       this.toast('本机剪贴板为空');
       return;
     }
-    this.native.setClipboard(text);
-    this.toast('已发送文本到远端');
+    BackgroundWorker.pushText(this.native.handleId(), text).then((ok: boolean) => {
+      // The clipboard is pull-based: advertise puts it on the remote clipboard
+      // (the remote can paste); the bytes move only when it pastes.
+      this.toast(ok ? '已放入远端剪贴板' : '提交本机文本失败');
+    });
   }
 
-  /** Local image -> remote. Reads the pixels and builds the CF_DIB here. */
+  /**
+   * Local image -> remote. The pixel read is a PixelMap API (UI thread), but the
+   * CF_DIB encode and the native push run on the worker so a large image cannot
+   * block the UI.
+   */
   private pushLocalImage(pixelMap: image.PixelMap): void {
     pixelMap.getImageInfo()
       .then((info: image.ImageInfo) => {
@@ -1704,20 +1702,17 @@ struct SessionPage {
         const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
         pixelMap.readPixelsToBuffer(buffer)
           .then(() => {
-            BackgroundWorker.buildDib(buffer, width, height, info.pixelFormat)
-              .then((dib: ArrayBuffer | undefined) => {
-                if (dib === undefined) {
-                  hilog.warn(DOMAIN, TAG, 'unsupported clipboard pixel format: %{public}d',
+            // `buffer` is transferred to the worker (zero-copy); it encodes both
+            // CF_DIB and PNG and pushes them.
+            BackgroundWorker.pushImage(this.native.handleId(), buffer, width, height,
+              info.pixelFormat).then((pushed: boolean) => {
+                if (!pushed) {
+                  hilog.warn(DOMAIN, TAG, 'unsupported clipboard pixel format or dead session: %{public}d',
                     info.pixelFormat);
                   this.toast('提交本机图片失败');
                   return;
                 }
-                this.native.pushClipboardDib(dib);
-                this.toast('已发送图片到远端');
-              })
-              .catch((error: BusinessError) => {
-                hilog.warn(DOMAIN, TAG, 'build dib failed: %{public}s', JSON.stringify(error));
-                this.toast('提交本机图片失败');
+                this.toast('已放入远端剪贴板');
               });
           })
           .catch((error: BusinessError) => {

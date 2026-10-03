@@ -150,7 +150,8 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
 
 - **UI 线程**：界面、输入、事件路由；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS
   看不到原生内存，与线程无关）。
-- **后台 worker（一条）**：非实时的长驻状态机与重活——剪贴板 DIB/RTF/HTML 编解码、文件下载状态机与写盘。
+- **后台 worker（一条）**：非实时的长驻状态机与重活——剪贴板 DIB/RTF/HTML 编解码、**本机剪贴板编码 + 原生推送**
+  （native 会把整块内容拷进自己的存储并立即 advertise，一次通道发送，不能占 UI 线程）、文件下载状态机与写盘。
   彼此可互相等待，共用一条即可。落地：`workers/background.worker.ets` + UI 门面 `services/BackgroundWorker.ets`
   （消息形状 `services/BackgroundProtocol.ets`，下载状态机 `workers/FileDownloader.ets`）。
 - **音频 worker（一条，P2）**：`AudioRenderer` 回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频

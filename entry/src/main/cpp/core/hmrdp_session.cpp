@@ -210,6 +210,12 @@ constexpr int kClipFiles = 5;
 constexpr UINT32 kHtmlFormatId = 0xC000;
 const char kHtmlFormatName[] = "HTML Format";
 
+// Client-side id/name for the registered "PNG" clipboard format. Windows offers
+// an image as CF_DIB and, when the client advertises it, this compressed form
+// (named "PNG"; the server maps it by name under CB_USE_LONG_FORMAT_NAMES).
+constexpr UINT32 kPngFormatId = 0xC003;
+const char kPngFormatName[] = "PNG";
+
 // FNV-1a over the cursor geometry and pixels, used to drop redundant updates.
 uint32_t CursorHash(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
                     const uint8_t* data, size_t len) {
@@ -610,7 +616,8 @@ UINT SendCapabilityFormatList(CliprdrClientContext* cliprdr) {
 
 // Advertises the concrete content of the local clipboard for `kind`. The
 // channel owns the ClientFormatList sender, so this only builds the list.
-UINT SendLocalFormatList(CliprdrClientContext* cliprdr, int kind) {
+UINT SendLocalFormatList(CliprdrClientContext* cliprdr, int kind, bool hasPng,
+                         bool hasDib) {
   if (cliprdr == nullptr || cliprdr->ClientFormatList == nullptr) {
     return CHANNEL_RC_OK;
   }
@@ -634,8 +641,17 @@ UINT SendLocalFormatList(CliprdrClientContext* cliprdr, int kind) {
     formats[count].formatName = const_cast<char*>(kFileContentsName);
     ++count;
   } else if (kind == kClipImage) {
-    formats[count].formatId = CF_DIB;
-    ++count;
+    // Offer the compressed PNG first when we have it; keep CF_DIB as a fallback
+    // for servers without PNG support (and for A/B comparison).
+    if (hasPng) {
+      formats[count].formatId = kPngFormatId;
+      formats[count].formatName = const_cast<char*>(kPngFormatName);
+      ++count;
+    }
+    if (hasDib) {
+      formats[count].formatId = CF_DIB;
+      ++count;
+    }
   } else {
     formats[count].formatId = CF_UNICODETEXT;
     ++count;
@@ -2188,6 +2204,8 @@ UINT Session::OnCliprdrServerFormatDataRequest(
       servedFileCount = localClipboardFilePaths_.size();
     } else if (id == kHtmlFormatId && localClipKind_ == LocalClipKind::kHtml) {
       payload.assign(localClipboardHtml_.begin(), localClipboardHtml_.end());
+    } else if (id == kPngFormatId && localClipKind_ == LocalClipKind::kImage) {
+      payload.assign(localClipboardPng_.begin(), localClipboardPng_.end());
     } else if (id == CF_DIB && localClipKind_ == LocalClipKind::kImage) {
       payload.assign(localClipboardDib_.begin(), localClipboardDib_.end());
     } else if (id == CF_UNICODETEXT) {
@@ -2298,7 +2316,14 @@ void Session::AdvertiseLocalClipboard() {
   if (cliprdr == nullptr || !clipboardReady_.load()) {
     return;
   }
-  SendLocalFormatList(cliprdr, static_cast<int>(localClipKind_));
+  bool hasPng = false;
+  bool hasDib = false;
+  {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    hasPng = !localClipboardPng_.empty();
+    hasDib = !localClipboardDib_.empty();
+  }
+  SendLocalFormatList(cliprdr, static_cast<int>(localClipKind_), hasPng, hasDib);
 }
 
 void Session::SetLocalClipboardText(const std::string& utf8) {
@@ -2318,6 +2343,7 @@ void Session::SetLocalClipboardText(const std::string& utf8) {
     localClipboardHtml_.clear();
     localClipboardUtf16FromHtml_.clear();
     localClipboardDib_.clear();
+    localClipboardPng_.clear();
     localClipKind_ = LocalClipKind::kText;
   }
   free(wide);
@@ -2347,6 +2373,7 @@ void Session::SetLocalClipboardHtmlRaw(const uint8_t* cfHtml, size_t byteCount,
     localClipboardUtf16_.clear();
     localClipboardValid_ = false;
     localClipboardDib_.clear();
+    localClipboardPng_.clear();
     localClipKind_ = LocalClipKind::kHtml;
   }
   if (wide != nullptr) {
@@ -2357,22 +2384,35 @@ void Session::SetLocalClipboardHtmlRaw(const uint8_t* cfHtml, size_t byteCount,
   AdvertiseLocalClipboard();
 }
 
-void Session::SetLocalClipboardImageDib(const uint8_t* dib, size_t byteCount) {
+void Session::SetLocalClipboardImage(const uint8_t* dib, size_t dibLen,
+                                     const uint8_t* png, size_t pngLen) {
   ContextGuard ctx(*this);
-  if (dib == nullptr || byteCount == 0) {
+  const bool hasDib = dib != nullptr && dibLen > 0;
+  const bool hasPng = png != nullptr && pngLen > 0;
+  if (!hasDib && !hasPng) {
     return;
   }
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    localClipboardDib_.assign(reinterpret_cast<const char*>(dib), byteCount);
+    if (hasDib) {
+      localClipboardDib_.assign(reinterpret_cast<const char*>(dib), dibLen);
+    } else {
+      localClipboardDib_.clear();
+    localClipboardPng_.clear();
+    }
+    if (hasPng) {
+      localClipboardPng_.assign(reinterpret_cast<const char*>(png), pngLen);
+    } else {
+      localClipboardPng_.clear();
+    }
     localClipboardUtf16_.clear();
     localClipboardValid_ = false;
     localClipboardHtml_.clear();
     localClipboardUtf16FromHtml_.clear();
     localClipKind_ = LocalClipKind::kImage;
   }
-  HMRDP_LOGI("set local clipboard image: CF_DIB %{public}u bytes",
-             static_cast<unsigned>(byteCount));
+  HMRDP_LOGI("set local clipboard image: CF_DIB %{public}u bytes, PNG %{public}u bytes",
+             static_cast<unsigned>(dibLen), static_cast<unsigned>(pngLen));
   AdvertiseLocalClipboard();
 }
 
@@ -2399,6 +2439,7 @@ void Session::SetLocalFileOffer(const uint8_t* descriptor, size_t descriptorLen,
     localClipboardHtml_.clear();
     localClipboardUtf16FromHtml_.clear();
     localClipboardDib_.clear();
+    localClipboardPng_.clear();
     localClipKind_ = LocalClipKind::kFiles;
     localTransferDone_ = 0;
     localTransferTotal_ = total;
@@ -2503,6 +2544,7 @@ void Session::WithdrawLocalFileClipboard() {
     localClipboardHtml_.clear();
     localClipboardUtf16FromHtml_.clear();
     localClipboardDib_.clear();
+    localClipboardPng_.clear();
     localClipKind_ = LocalClipKind::kText;
     withdrawn = true;
   }

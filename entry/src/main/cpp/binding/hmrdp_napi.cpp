@@ -938,25 +938,33 @@ napi_value SetClipboardHtmlRaw(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-napi_value SetClipboardImageDib(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
+// Local image clipboard: arg 1 is a ready CF_DIB, arg 2 the same image as a
+// registered "PNG" payload (may be an empty ArrayBuffer). Native advertises PNG
+// first when present and serves whichever format the server requests.
+napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int64_t handle = 0;
-  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateBool(env, false);
   }
   void* dibData = nullptr;
-  size_t byteCount = 0;
-  if (napi_get_arraybuffer_info(env, args[1], &dibData, &byteCount) != napi_ok ||
-      dibData == nullptr || byteCount == 0) {
+  size_t dibLen = 0;
+  if (napi_get_arraybuffer_info(env, args[1], &dibData, &dibLen) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  void* pngData = nullptr;
+  size_t pngLen = 0;
+  if (napi_get_arraybuffer_info(env, args[2], &pngData, &pngLen) != napi_ok) {
     return CreateBool(env, false);
   }
   std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
     return CreateBool(env, false);
   }
-  session->SetLocalClipboardImageDib(static_cast<const uint8_t*>(dibData), byteCount);
+  session->SetLocalClipboardImage(static_cast<const uint8_t*>(dibData), dibLen,
+                                  static_cast<const uint8_t*>(pngData), pngLen);
   return CreateBool(env, true);
 }
 
@@ -1820,7 +1828,7 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"setClipboardHtmlRaw", nullptr, SetClipboardHtmlRaw, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"setClipboardImageDib", nullptr, SetClipboardImageDib, nullptr, nullptr, nullptr,
+      {"setClipboardImage", nullptr, SetClipboardImage, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setClipboardFileOffer", nullptr, SetClipboardFileOffer, nullptr, nullptr, nullptr,
        napi_default, nullptr},

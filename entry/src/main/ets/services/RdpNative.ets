@@ -7,7 +7,7 @@
  */
 import { clearSurface, connect, createSession, destroySession, disconnect,
   sendKey, sendMouse, sendTouch,
-  sendUnicode, setClipboardHtmlRaw, setClipboardImageDib, setClipboardText, setRdpCursor, setSurface,
+  sendUnicode, setRdpCursor, setSurface,
 setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
@@ -312,37 +312,11 @@ export class RdpNative {
     return setShortcutPassthroughNative(this.handle, enabled);
   }
 
-  /** Pushes the local clipboard text (UTF-8) to the remote session. */
-  setClipboard(text: string): void {
-    if (this.handle >= 0) {
-      setClipboardText(this.handle, text);
-    }
-  }
-
-  /**
-   * Pushes a local HTML clipboard as a ready CF_HTML payload plus its plain-text
-   * fallback (see ClipboardCodec.buildCfHtml); native only stores and serves it.
-   */
-  pushClipboardHtmlRaw(cfHtml: ArrayBuffer, plainText: string): void {
-    if (this.handle >= 0) {
-      setClipboardHtmlRaw(this.handle, cfHtml, plainText);
-    }
-  }
-
-  /**
-   * Pushes a local image to the remote session. `dib` is a ready CF_DIB payload
-   * (see ClipboardCodec.buildDib); native only stores and serves it.
-   */
-  pushClipboardDib(dib: ArrayBuffer): void {
-    if (this.handle >= 0) {
-      setClipboardImageDib(this.handle, dib);
-    }
-  }
-
   /**
    * Advertises a local file offer: `descriptor` is a ready FILEGROUPDESCRIPTORW
    * (FileTransferCodec) and `paths` the absolute sandbox paths its bytes are
-   * streamed from.
+   * streamed from. Text / HTML / image pushes run on the background worker
+   * (BackgroundWorker) so the native store copy and advertise never block the UI.
    */
   pushClipboardFileOffer(descriptor: ArrayBuffer, paths: string[]): void {
     if (this.handle >= 0 && paths.length > 0) {

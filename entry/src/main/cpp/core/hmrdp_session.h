@@ -272,10 +272,13 @@ class Session : public std::enable_shared_from_this<Session> {
   // advertises CF_HTML and serves the fallback for CF_UNICODETEXT.
   void SetLocalClipboardHtmlRaw(const uint8_t* cfHtml, size_t byteCount,
                                 const std::string& plainText);
-  // Local image clipboard pushed from ArkTS as a ready CF_DIB payload. ArkTS
-  // builds the DIB (ClipboardCodec.buildDib); native only stores and serves the
-  // bytes. Safe to call from the UI thread.
-  void SetLocalClipboardImageDib(const uint8_t* dib, size_t byteCount);
+  // Local image clipboard pushed from ArkTS. `dib` is a ready CF_DIB
+  // (ClipboardCodec.buildDib); `png` is the same image as a registered "PNG"
+  // payload (built by the background worker) and may be empty. Native advertises
+  // PNG first when present and CF_DIB as fallback, then serves whichever the
+  // server requests. Safe to call from any thread.
+  void SetLocalClipboardImage(const uint8_t* dib, size_t dibLen,
+                              const uint8_t* png, size_t pngLen);
 
   // Local files pushed from ArkTS. `descriptor` is a ready FILEGROUPDESCRIPTORW
   // (built by ArkTS, FileTransferCodec) and `paths` are the absolute sandbox
@@ -517,6 +520,8 @@ class Session : public std::enable_shared_from_this<Session> {
   std::string localClipboardUtf16FromHtml_;
   // CF_DIB wire payload.
   std::string localClipboardDib_;
+  // Registered "PNG" wire payload of the same image (empty when not provided).
+  std::string localClipboardPng_;
   // Local file list (absolute sandbox paths) advertised for the file clipboard.
   std::vector<std::string> localClipboardFilePaths_;
   // Ready FILEGROUPDESCRIPTORW for the advertised files (built by ArkTS).
