@@ -13,6 +13,7 @@ setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFiles, pullClipboardFiles, cancelFileTransfer, sendLockState,
 RdpEventCallback, RdpEventPayload, RdpCounters, sessionCounters,
+bufferRead, bufferRelease,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
 } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -123,6 +124,23 @@ export class RdpNative {
   /** Stops every replay instance. */
   static stopAllReplayInstances(): void {
     stopAllReplays();
+  }
+
+  /**
+   * Reads a native byte buffer handed over by an event (a cursor / clipboard
+   * bitmap) as an ArrayBuffer copy, then releases the native buffer. The buffer
+   * is process-global and manually owned, so the release happens here even if
+   * the read fails. Returns undefined for an absent handle.
+   */
+  static readAndReleaseBuffer(handle: number): ArrayBuffer | undefined {
+    if (handle <= 0) {
+      return undefined;
+    }
+    try {
+      return bufferRead(handle);
+    } finally {
+      bufferRelease(handle);
+    }
   }
 
   static resizeReplayInstance(handle: number, width: number, height: number): void {

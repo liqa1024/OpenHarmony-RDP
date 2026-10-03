@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -64,10 +65,20 @@ napi_threadsafe_function g_eventTsfn = nullptr;
 // independent namespaces.
 HandleRegistry<hmrdp::GfxReplay> g_replays;
 
+// Byte buffers that travel to ArkTS by reference: a cursor / clipboard bitmap
+// stays native and ArkTS reads it through a handle when it builds a PixelMap,
+// then releases it (manual lifecycle - nothing here is GC-managed). This is what
+// keeps binary out of the event string and off base64.
+struct NativeBuffer {
+  std::vector<uint8_t> bytes;
+};
+HandleRegistry<NativeBuffer> g_buffers;
+
 struct EventPayload {
   int64_t handle;
   int event;
   std::string data;
+  std::vector<uint8_t> bytes;
 };
 
 std::vector<std::string> SplitOn(const std::string& text, char separator) {
@@ -92,7 +103,8 @@ int64_t ParseInt64(const std::string& text) {
 // fields instead of splitting "WxH" / "a|b|c" / a base64 header. This is
 // marshalling at the boundary, not protocol logic: the encoding stays owned by
 // the native side, which is the only side that knows it.
-napi_value MakeEventPayload(napi_env env, int event, const std::string& data) {
+napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
+                            const std::vector<uint8_t>& bytes) {
   napi_value obj = nullptr;
   napi_create_object(env, &obj);
   auto setInt = [env, obj](const char* name, int64_t value) {
@@ -140,30 +152,32 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data) {
       setStr("html", data);
       break;
     case static_cast<int>(SessionEvent::kCursorShape): {
-      // "<w>,<h>,<hotX>,<hotY>|<base64 BGRA>".
-      const size_t bar = data.find('|');
-      if (bar != std::string::npos) {
-        const std::vector<std::string> head = SplitOn(data.substr(0, bar), ',');
-        if (head.size() == 4) {
-          setInt("width", ParseInt64(head[0]));
-          setInt("height", ParseInt64(head[1]));
-          setInt("hotX", ParseInt64(head[2]));
-          setInt("hotY", ParseInt64(head[3]));
-        }
-        setStr("image", data.substr(bar + 1));
+      // header "<w>,<h>,<hotX>,<hotY>" in text, the BGRA bitmap in `bytes`.
+      const std::vector<std::string> head = SplitOn(data, ',');
+      if (head.size() == 4) {
+        setInt("width", ParseInt64(head[0]));
+        setInt("height", ParseInt64(head[1]));
+        setInt("hotX", ParseInt64(head[2]));
+        setInt("hotY", ParseInt64(head[3]));
+      }
+      if (!bytes.empty()) {
+        auto buffer = std::make_shared<NativeBuffer>();
+        buffer->bytes = bytes;
+        setInt("imageHandle", g_buffers.Add(buffer));
       }
       break;
     }
     case static_cast<int>(SessionEvent::kClipboardImage): {
-      // "<w>,<h>|<base64 BGRA>".
-      const size_t bar = data.find('|');
-      if (bar != std::string::npos) {
-        const std::vector<std::string> head = SplitOn(data.substr(0, bar), ',');
-        if (head.size() == 2) {
-          setInt("width", ParseInt64(head[0]));
-          setInt("height", ParseInt64(head[1]));
-        }
-        setStr("image", data.substr(bar + 1));
+      // header "<w>,<h>" in text, the BGRA bitmap in `bytes`.
+      const std::vector<std::string> head = SplitOn(data, ',');
+      if (head.size() == 2) {
+        setInt("width", ParseInt64(head[0]));
+        setInt("height", ParseInt64(head[1]));
+      }
+      if (!bytes.empty()) {
+        auto buffer = std::make_shared<NativeBuffer>();
+        buffer->bytes = bytes;
+        setInt("imageHandle", g_buffers.Add(buffer));
       }
       break;
     }
@@ -238,18 +252,19 @@ void CallJsEvent(napi_env env, napi_value jsCallback, void*, void* data) {
   napi_value eventValue = nullptr;
   napi_create_int64(env, payload->handle, &handleValue);
   napi_create_int32(env, payload->event, &eventValue);
-  napi_value payloadValue = MakeEventPayload(env, payload->event, payload->data);
+  napi_value payloadValue = MakeEventPayload(env, payload->event, payload->data, payload->bytes);
   napi_value argv[3] = {handleValue, eventValue, payloadValue};
   napi_value global = nullptr;
   napi_get_global(env, &global);
   napi_call_function(env, global, jsCallback, 3, argv, nullptr);
 }
 
-void OnSessionEvent(int64_t handle, SessionEvent event, const std::string& data) {
+void OnSessionEvent(int64_t handle, SessionEvent event, const std::string& data,
+                    const std::vector<uint8_t>& bytes) {
   if (g_eventTsfn == nullptr) {
     return;
   }
-  EventPayload* payload = new EventPayload{handle, static_cast<int>(event), data};
+  EventPayload* payload = new EventPayload{handle, static_cast<int>(event), data, bytes};
   const napi_status status =
       napi_call_threadsafe_function(g_eventTsfn, payload, napi_tsfn_nonblocking);
   if (status != napi_ok) {
@@ -284,7 +299,7 @@ void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
   }
   const std::string payload =
       std::to_string(keyCode) + "|" + (action == KEY_ACTION_DOWN ? "1" : "0");
-  OnSessionEvent(handle, SessionEvent::kKeyIntercept, payload);
+  OnSessionEvent(handle, SessionEvent::kKeyIntercept, payload, {});
 }
 
 // Copies the session's shared ownership out of the registry, so the caller keeps
@@ -482,8 +497,9 @@ napi_value CreateSession(napi_env env, napi_callback_info) {
   // Bind the handle into the callback so events can be routed to the owning
   // session window when several sessions run at once. No event can fire before
   // connect(), which the caller only issues after this returns.
-  session->SetEventFn([id](SessionEvent event, const std::string& data) {
-    OnSessionEvent(id, event, data);
+  session->SetEventFn([id](SessionEvent event, const std::string& data,
+                           const std::vector<uint8_t>& bytes) {
+    OnSessionEvent(id, event, data, bytes);
   });
   return CreateInt(env, id);
 }
@@ -1052,6 +1068,58 @@ napi_value GetSessionCounters(napi_env env, napi_callback_info info) {
   setInt("gpuSrUs", static_cast<int64_t>(counters.gpuSrUs));
   setInt("gpuBlitUs", static_cast<int64_t>(counters.gpuBlitUs));
   return result;
+}
+
+// --- native byte buffers (handed to ArkTS as a handle, manual lifecycle) -------
+// A cursor / clipboard bitmap stays native (g_buffers). ArkTS reads it once with
+// bufferRead() - a copy into a JS ArrayBuffer to build a PixelMap - and then
+// calls bufferRelease(). An unknown handle reads as an empty buffer / size 0.
+
+napi_value BufferSize(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateInt(env, 0);
+  }
+  const std::shared_ptr<NativeBuffer> buffer = g_buffers.Find(handle);
+  return CreateInt(env, buffer != nullptr ? static_cast<int64_t>(buffer->bytes.size()) : 0);
+}
+
+napi_value BufferRead(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  const std::shared_ptr<NativeBuffer> buffer = g_buffers.Find(handle);
+  if (buffer == nullptr) {
+    return CreateUndefined(env);
+  }
+  void* out = nullptr;
+  napi_value result = nullptr;
+  if (napi_create_arraybuffer(env, buffer->bytes.size(), &out, &result) != napi_ok ||
+      out == nullptr) {
+    return CreateUndefined(env);
+  }
+  if (!buffer->bytes.empty()) {
+    memcpy(out, buffer->bytes.data(), buffer->bytes.size());
+  }
+  return result;
+}
+
+napi_value BufferRelease(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc >= 1 && napi_get_value_int64(env, args[0], &handle) == napi_ok) {
+    g_buffers.Take(handle);
+  }
+  return CreateUndefined(env);
 }
 
 napi_value IsAudioSupported(napi_env env, napi_callback_info) {
@@ -1719,6 +1787,10 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"onEvent", nullptr, OnEvent, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"sessionCounters", nullptr, GetSessionCounters, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"bufferSize", nullptr, BufferSize, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"bufferRead", nullptr, BufferRead, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"bufferRelease", nullptr, BufferRelease, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
       {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setTouchHighRate", nullptr, SetTouchHighRate, nullptr, nullptr, nullptr,

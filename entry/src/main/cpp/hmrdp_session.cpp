@@ -187,42 +187,6 @@ void SetupFreeRdpLogging() {
   }
 }
 
-// Standard base64 (no line breaks). Cursor bitmaps are small, and base64 keeps
-// the Node-API event payload free of NUL bytes / invalid UTF-8 so it survives
-// napi_create_string_utf8 intact.
-std::string Base64Encode(const uint8_t* data, size_t len) {
-  static const char kTable[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve(((len + 2) / 3) * 4);
-  size_t i = 0;
-  while (i + 3 <= len) {
-    const uint32_t n = (static_cast<uint32_t>(data[i]) << 16) |
-                       (static_cast<uint32_t>(data[i + 1]) << 8) |
-                       static_cast<uint32_t>(data[i + 2]);
-    out.push_back(kTable[(n >> 18) & 0x3F]);
-    out.push_back(kTable[(n >> 12) & 0x3F]);
-    out.push_back(kTable[(n >> 6) & 0x3F]);
-    out.push_back(kTable[n & 0x3F]);
-    i += 3;
-  }
-  if (i + 1 == len) {
-    const uint32_t n = static_cast<uint32_t>(data[i]) << 16;
-    out.push_back(kTable[(n >> 18) & 0x3F]);
-    out.push_back(kTable[(n >> 12) & 0x3F]);
-    out.push_back('=');
-    out.push_back('=');
-  } else if (i + 2 == len) {
-    const uint32_t n = (static_cast<uint32_t>(data[i]) << 16) |
-                       (static_cast<uint32_t>(data[i + 1]) << 8);
-    out.push_back(kTable[(n >> 18) & 0x3F]);
-    out.push_back(kTable[(n >> 12) & 0x3F]);
-    out.push_back(kTable[(n >> 6) & 0x3F]);
-    out.push_back('=');
-  }
-  return out;
-}
-
 // Local clipboard content kinds; must match Session::LocalClipKind.
 constexpr int kClipNone = 0;
 constexpr int kClipText = 1;
@@ -2018,8 +1982,13 @@ Session::~Session() {
 }
 
 void Session::Emit(SessionEvent event, const std::string& data) {
+  Emit(event, data, {});
+}
+
+void Session::Emit(SessionEvent event, const std::string& data,
+                   const std::vector<uint8_t>& bytes) {
   if (eventFn_) {
-    eventFn_(event, data);
+    eventFn_(event, data, bytes);
   }
 }
 
@@ -2881,10 +2850,9 @@ void Session::HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX,
   }
   cursorHash_ = hash;
   cursorHashValid_ = true;
-  std::ostringstream payload;
-  payload << outW << ',' << outH << ',' << outHotX << ',' << outHotY << '|'
-          << Base64Encode(bgra.data(), bgra.size());
-  Emit(SessionEvent::kCursorShape, payload.str());
+  std::ostringstream header;
+  header << outW << ',' << outH << ',' << outHotX << ',' << outHotY;
+  Emit(SessionEvent::kCursorShape, header.str(), bgra);
 }
 
 void Session::HandlePointerDefault() {
@@ -3403,10 +3371,9 @@ UINT Session::OnCliprdrServerFormatDataResponse(
   } else if (kind == LocalClipKind::kImage) {
     DibImage image;
     if (ParseDibToBgra(data, size, &image)) {
-      std::ostringstream payload;
-      payload << image.width << ',' << image.height << '|'
-              << Base64Encode(image.bgra.data(), image.bgra.size());
-      Emit(SessionEvent::kClipboardImage, payload.str());
+      std::ostringstream header;
+      header << image.width << ',' << image.height;
+      Emit(SessionEvent::kClipboardImage, header.str(), image.bgra);
     } else {
       const uint32_t dibHeader = size >= 4 ? ReadDibU32(data) : 0;
       const uint16_t dibBpp = size >= 16 ? ReadDibU16(data + 14) : 0;

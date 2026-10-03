@@ -2,7 +2,6 @@
  * HmRdp - remote session page: XComponent surface + input forwarding.
  */
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
-import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { inputDevice, pointer } from '@kit.InputKit';
 import { matrix4, window } from '@kit.ArkUI';
@@ -836,8 +835,8 @@ struct SessionPage {
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
     } else if (event === RdpEvent.ClipboardImage) {
-      hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}d bytes',
-        (payload.image ?? '').length);
+      hilog.info(DOMAIN, TAG, 'remote clipboard image: %{public}dx%{public}d',
+        payload.width ?? 0, payload.height ?? 0);
       this.remoteFileCount = 0;
       this.remoteFolderCount = 0;
       this.onClipboardImage(payload);
@@ -1079,23 +1078,21 @@ struct SessionPage {
     const height: number = payload.height ?? 0;
     const hotX: number = payload.hotX ?? 0;
     const hotY: number = payload.hotY ?? 0;
-    const imageData: string = payload.image ?? '';
-    if (width <= 0 || height <= 0 || imageData.length === 0) {
+    const imageHandle: number = payload.imageHandle ?? 0;
+    if (width <= 0 || height <= 0 || imageHandle <= 0) {
       return;
     }
     // Native already downscales oversized cursors to <=256; this is only a
     // safety net should an out-of-range size ever reach the UI.
     if (width > 256 || height > 256) {
+      RdpNative.readAndReleaseBuffer(imageHandle);
       this.cursorHidden = false;
       this.cursorPixelMap = undefined;
       this.applyCursor();
       return;
     }
-    let bytes: Uint8Array;
-    try {
-      bytes = new util.Base64Helper().decodeSync(imageData);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'decode cursor bitmap failed: %{public}s', JSON.stringify(error));
+    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
+    if (bytes === undefined) {
       return;
     }
     const options: image.InitializationOptions = {
@@ -1104,7 +1101,7 @@ struct SessionPage {
       size: { width: width, height: height }
     };
     try {
-      this.cursorPixelMap = image.createPixelMapSync(bytes.buffer, options);
+      this.cursorPixelMap = image.createPixelMapSync(bytes, options);
       this.cursorHotX = Math.max(0, Math.min(hotX, width));
       this.cursorHotY = Math.max(0, Math.min(hotY, height));
       this.cursorHidden = false;
@@ -1118,15 +1115,12 @@ struct SessionPage {
   private onClipboardImage(payload: RdpEventPayload): void {
     const width: number = payload.width ?? 0;
     const height: number = payload.height ?? 0;
-    const imageData: string = payload.image ?? '';
-    if (width <= 0 || height <= 0 || imageData.length === 0) {
+    const imageHandle: number = payload.imageHandle ?? 0;
+    if (width <= 0 || height <= 0 || imageHandle <= 0) {
       return;
     }
-    let bytes: Uint8Array;
-    try {
-      bytes = new util.Base64Helper().decodeSync(imageData);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'decode clipboard image failed: %{public}s', JSON.stringify(error));
+    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
+    if (bytes === undefined) {
       return;
     }
     const options: image.InitializationOptions = {
@@ -1135,7 +1129,7 @@ struct SessionPage {
       size: { width: width, height: height }
     };
     try {
-      this.remoteClipboardPixelMap = image.createPixelMapSync(bytes.buffer, options);
+      this.remoteClipboardPixelMap = image.createPixelMapSync(bytes, options);
       this.remoteClipboardText = '';
       this.remoteClipboardHtml = '';
     } catch (error) {

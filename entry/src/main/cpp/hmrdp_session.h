@@ -48,13 +48,15 @@ enum class SessionEvent {
   kFirstFrame = 3,
   kClipboardText = 4,
   kResize = 5,
-  // Remote pointer updates. kCursorShape carries "<w>,<h>,<hotX>,<hotY>|<base64 BGRA>";
-  // the others carry no payload and ask the UI to restore/hide the system cursor.
+  // Remote pointer updates. kCursorShape carries the header "<w>,<h>,<hotX>,<hotY>"
+  // in `text` plus the BGRA bitmap in the event's byte buffer; the others carry no
+  // payload and ask the UI to restore/hide the system cursor.
   kCursorShape = 6,
   kCursorDefault = 7,
   kCursorHidden = 8,
   // Rich local clipboard payloads pulled from the server on demand. Html
-  // carries the HTML fragment; Image carries "<w>,<h>|<base64 BGRA>".
+  // carries the HTML fragment; Image carries the header "<w>,<h>" in `text` plus
+  // the BGRA bitmap in the event's byte buffer.
   kClipboardHtml = 9,
   kClipboardImage = 10,
   // Reserved. Telemetry is no longer emitted: EmitMetrics() stores the window in
@@ -141,7 +143,11 @@ struct SessionCounters {
 
 class Session : public std::enable_shared_from_this<Session> {
  public:
-  using EventFn = std::function<void(SessionEvent, const std::string&)>;
+  // Event payload: `text` holds the small textual fields, `bytes` the raw
+  // binary (cursor / clipboard bitmaps). Binary never travels as text - the
+  // translation layer hands ArkTS a native buffer handle instead (hmrdp_napi.cpp).
+  using EventFn =
+      std::function<void(SessionEvent, const std::string&, const std::vector<uint8_t>&)>;
 
   explicit Session();
   ~Session();
@@ -335,6 +341,7 @@ class Session : public std::enable_shared_from_this<Session> {
   void MarkDestroyed();
   void EventThread();
   void Emit(SessionEvent event, const std::string& data);
+  void Emit(SessionEvent event, const std::string& data, const std::vector<uint8_t>& bytes);
   // Sends a Client Synchronize PDU unconditionally (the caller decided the
   // server's toggle state is stale). SendLockState() is the deduplicated entry
   // point used by the input path.

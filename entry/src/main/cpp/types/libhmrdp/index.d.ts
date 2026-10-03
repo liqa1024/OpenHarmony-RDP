@@ -38,9 +38,9 @@ export interface RdpOptions {
  *  - Connected / FirstFrame / CursorDefault / CursorHidden: none.
  *  - Disconnected / Error: `code` (FreeRDP error, 0 = internal) + `message`.
  *  - Resize: `width` + `height`.
- *  - CursorShape: `width` / `height` / `hotX` / `hotY` + `image` (base64 BGRA).
+ *  - CursorShape: `width` / `height` / `hotX` / `hotY` + `imageHandle`.
  *  - ClipboardText: `text`. ClipboardHtml: `html`.
- *  - ClipboardImage: `width` / `height` + `image` (base64 BGRA).
+ *  - ClipboardImage: `width` / `height` + `imageHandle`.
  *  - ClipboardFileList: `fileCount` / `totalBytes` / `folderCount`.
  *  - FileTransferProgress: `direction` / `doneBytes` / `totalBytes` /
  *    `fileIndex` / `fileCount`.
@@ -55,7 +55,11 @@ export interface RdpEventPayload {
   height?: number;
   hotX?: number;
   hotY?: number;
-  image?: string;
+  /**
+   * Handle of a native byte buffer holding the raw BGRA bitmap (see the buffer
+   * functions). Read it with bufferRead(), then bufferRelease() it.
+   */
+  imageHandle?: number;
   text?: string;
   html?: string;
   fileCount?: number;
@@ -173,6 +177,17 @@ export const onEvent: (callback: RdpEventCallback) => void;
  * yields an empty object, so the caller keeps its current figures.
  */
 export const sessionCounters: (handle: number) => RdpCounters;
+
+/**
+ * Native byte buffer (a cursor / clipboard bitmap). The bytes stay native; ArkTS
+ * reads them once with bufferRead() and then releases the handle. An unknown
+ * handle reads as size 0 / an empty ArrayBuffer; bufferRelease is a no-op then.
+ */
+export const bufferSize: (handle: number) => number;
+/** A copy of the buffer's bytes as a JS ArrayBuffer; the handle stays valid. */
+export const bufferRead: (handle: number) => ArrayBuffer;
+/** Frees the native buffer. Call once after the bytes have been copied out. */
+export const bufferRelease: (handle: number) => void;
 
 /**
  * Whether this device provides an audio output. False means the native OHAudio
