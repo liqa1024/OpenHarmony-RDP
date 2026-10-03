@@ -251,7 +251,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
 
 ### 7.3 并行形态（固定）
 
-实现位置：app 侧 `entry/src/main/cpp/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；解码侧补丁
+实现位置：app 侧 `entry/src/main/cpp/engine/hmrdp_parallel.*`、`hmrdp_decode_tuning.*`；解码侧补丁
 `native/scripts/patch-steps/` 11、20、21、22、22b、23、25。补丁对 app 模块的绑定是**弱符号**：
 没有这些导出的构建自动退化为串行。宽度、任务划分、执行器都不是运行期开关。
 

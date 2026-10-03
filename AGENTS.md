@@ -95,7 +95,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 路径 | 作用 |
 |---|---|
 | `entry/src/main/ets/` | ArkUI 界面：`entryability/`、`sessionability/`、`pages/`、`services/`、`model/`、`utils/` |
-| `entry/src/main/cpp/` | 原生：FreeRDP 会话、Vulkan/GLES 呈现器、音频、Node-API 桥、dev 回放 |
+| `entry/src/main/cpp/` | 原生：`binding/`（Node-API 翻译层）+ `engine/`（FreeRDP 会话、gdi 帧管线、Vulkan/GLES 呈现器、音频、Moonlight 传输、dev 回放） |
 | `entry/src/main/resources/` | 主题色（`base|dark/element/color.json`）与图标 |
 | `native/scripts/` | 原生库源码构建与 FreeRDP 补丁 |
 | `entry/libs/<abi>/` | 本地构建的原生库（**gitignore，不入库**） |

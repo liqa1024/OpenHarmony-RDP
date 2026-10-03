@@ -57,7 +57,7 @@
 │  ConfigTransfer（配置导入/导出，密码不导出）                 │
 │  WindowController（窗口尺寸 / 拉起 / 全屏控制）              │
 ├─────────────────────────────────────────────────────────────┤
-│  Node-API Bridge  (entry/src/main/cpp/hmrdp_napi.cpp)       │
+│  Node-API Bridge  (entry/src/main/cpp/binding/hmrdp_napi.cpp)│
 ├─────────────────────────────────────────────────────────────┤
 │  Session wrapper  (hmrdp_session.cpp)                       │
 │  gdi desktop + presenters  (hmrdp_gfx_cpu / hmrdp_presenter)│

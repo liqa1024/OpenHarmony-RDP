@@ -44,24 +44,34 @@
 
 ## 3. 原生（`entry/src/main/cpp/`）
 
+源码按职责分两层（`CMakeLists.txt` 把两层都加入 include 路径，头文件名保持不前缀）：
+
+- **`binding/`** —— **Node-API 翻译层**：只做句柄/标量/小事件的编组与跨线程事件投递，不含业务逻辑；
+- **`engine/`** —— **原生引擎**：资源驱动与数字热路径（FreeRDP 宿主、gdi 帧管线、GPU 呈现、编解码、音频、Moonlight 传输），以及 FreeRDP 在自有线程上要求**同步返回**的回调适配。
+
 | 路径 | 职责 |
 |---|---|
-| `hmrdp_napi.cpp` | Node-API 接口 + XComponent surfaceId 绑定 + 各类查询/开关 |
-| `hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；画面由 gdi 出、经呈现器上屏 |
-| `hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
-| `hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
-| `hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
-| `hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
-| `hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
-| `hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
-| `hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`gfx-engine.md`](gfx-engine.md) §7.3） |
-| `hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
-| `hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
-| `hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
-| `hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
-| `shaders/present_quad.*` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入 |
-| `hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
-| `hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
+| `binding/hmrdp_napi.cpp` | Node-API 翻译层：类型化句柄注册表、结构化事件 + 计数拉取、位图缓冲句柄、各原语导出 |
+| `binding/handle_registry.h` | 类型化句柄注册表（单调不复用、按类型隔离、查找交出 `shared_ptr`） |
+| `engine/hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；画面由 gdi 出、经呈现器上屏 |
+| `engine/hmrdp_file_clipboard.{h,cpp}` | 文件剪贴板域：`FileInfo`、文件格式 id/名、`kFileChunkBytes`、路径/名称/大小工具 |
+| `engine/hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
+| `engine/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
+| `engine/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
+| `engine/hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES |
+| `engine/hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
+| `engine/hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
+| `engine/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`gfx-engine.md`](gfx-engine.md) §7.3） |
+| `engine/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`gfx-engine.md`](gfx-engine.md) §6） |
+| `engine/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
+| `engine/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
+| `engine/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
+| `engine/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针与解码桥、TLS/HTTP 原语、凭证（HUKS 信封）、配对加密原语 |
+| `engine/hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
+| `engine/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
+| `engine/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
+| `engine/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
+| `shaders/present_quad.*` + `cmake/EmbedSpirv.cmake` | GLSL → SPIR-V 的构建期编译/嵌入（仍在 `cpp/` 根） |
 
 ## 4. 线程模型与所有权（原生）
 

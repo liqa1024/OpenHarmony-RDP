@@ -47,8 +47,14 @@ endif()
 # serverinfo / pairing / the app list work before a stream is ever established.
 set(HMRDP_HAVE_MOONLIGHT_HTTP ${HMRDP_HAVE_OPENSSL_HEADERS})
 
+# engine/ holds the native resource drivers and hot paths (FreeRDP host, gdi
+# frame pipeline, GPU presenters, video/audio, Moonlight transport); binding/
+# holds the thin Node-API translation layer. Both are on the include path so the
+# headers keep their bare names.
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/binding
     ${FREERDP_ROOT}/include/freerdp3
     ${FREERDP_ROOT}/include/winpr3
 )
@@ -114,28 +120,28 @@ foreach(_shader IN LISTS HMRDP_SHADERS)
 endforeach()
 
 add_library(hmrdp SHARED
-    hmrdp_napi.cpp
-    hmrdp_session.cpp
-    hmrdp_file_clipboard.cpp
-    hmrdp_moonlight.cpp
-    hmrdp_moonlight_http.cpp
-    hmrdp_moonlight_cred.cpp
-    hmrdp_moonlight_pair.cpp
-    hmrdp_video_decoder.cpp
-    hmrdp_audio.cpp
-    hmrdp_gfx_capture.cpp
-    hmrdp_gfx_cpu.cpp
-    hmrdp_gfx_driver.cpp
-    hmrdp_gfx_work.cpp
-    hmrdp_decode_tuning.cpp
-    hmrdp_parallel.cpp
-    hmrdp_replay.cpp
-    hmrdp_frame_pipeline.cpp
-    hmrdp_presenter.cpp
-    hmrdp_gles_presenter.cpp
-    hmrdp_vk_context.cpp
-    hmrdp_vk_renderer.cpp
-    hmrdp_xeg.cpp
+    binding/hmrdp_napi.cpp
+    engine/hmrdp_session.cpp
+    engine/hmrdp_file_clipboard.cpp
+    engine/hmrdp_moonlight.cpp
+    engine/hmrdp_moonlight_http.cpp
+    engine/hmrdp_moonlight_cred.cpp
+    engine/hmrdp_moonlight_pair.cpp
+    engine/hmrdp_video_decoder.cpp
+    engine/hmrdp_audio.cpp
+    engine/hmrdp_gfx_capture.cpp
+    engine/hmrdp_gfx_cpu.cpp
+    engine/hmrdp_gfx_driver.cpp
+    engine/hmrdp_gfx_work.cpp
+    engine/hmrdp_decode_tuning.cpp
+    engine/hmrdp_parallel.cpp
+    engine/hmrdp_replay.cpp
+    engine/hmrdp_frame_pipeline.cpp
+    engine/hmrdp_presenter.cpp
+    engine/hmrdp_gles_presenter.cpp
+    engine/hmrdp_vk_context.cpp
+    engine/hmrdp_vk_renderer.cpp
+    engine/hmrdp_xeg.cpp
     ${HMRDP_SHADER_HEADERS}
 )
 

@@ -77,7 +77,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
     （例如 22b 重写了 21 插入的 chunk 回调），那一步再跑就会 `pattern not found`。要自检就重拉源码；
     只是**给已打过补丁的树补一个新步骤**时用 `patch-freerdp.ps1 -Only <NN>` 只跑那一步。
 - 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` / `$Patches` 传给步骤。
-- 只改应用层（`entry/src/main/cpp/*`、`.ets`）**不需要**重编 FreeRDP。
+- 只改应用层（`entry/src/main/cpp/{binding,engine}/*`、`.ets`）**不需要**重编 FreeRDP。
 
 ## 3. 补丁脚本在做什么（以及为什么必须保留）
 
