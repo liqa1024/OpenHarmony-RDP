@@ -3,7 +3,7 @@
 # Usage:  pwsh -File native/scripts/patch-freerdp.ps1 [-Source <path-to-FreeRDP>]
 #
 # The build pipeline expects the patched tree under native/third_party/FreeRDP
-# (see native/scripts/build-freerdp.ps1). native/scripts/fetch-sources.ps1
+# (see native/scripts/build-native.ps1). native/scripts/fetch-sources.ps1
 # downloads the pinned upstream release and runs this script over it.
 #
 # The steps are one file each under native/scripts/patch-steps/, applied in name

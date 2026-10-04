@@ -1,7 +1,14 @@
 #!/bin/bash
-# Cross-compile OpenSSL for HarmonyOS using the existing Windows OHOS NDK.
+# Configures OpenSSL for HarmonyOS using the existing Windows OHOS NDK.
 # Runs inside WSL (full perl + make + sh) but drives the Windows clang.exe,
 # so no Linux OHOS SDK download is required.
+#
+# Routine builds do NOT use this script: `perl Configure` output is frozen into
+# native/openssl-cmake/generated/ and rebuilt with CMake by
+# native/scripts/build-native.ps1 (no Perl/WSL). This script is only the
+# Configure step behind native/scripts/export-openssl-snapshot.ps1 -Configure,
+# i.e. it is run when the pinned OpenSSL version changes to refresh that
+# snapshot. It also leaves a normal Makefile build behind.
 #
 # Usage: build-openssl-wsl.sh <src> <build> <prefix> [arm64-v8a|x86_64|armeabi-v7a]
 set -e

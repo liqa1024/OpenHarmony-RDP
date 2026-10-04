@@ -17,7 +17,7 @@ set(FREERDP_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
 # OpenSSL headers, needed to compile the Moonlight HTTP/pairing layer (TLS,
 # RSA/AES/SHA, self-signed client certificate generation) and referenced by
 # moonlight-common-c's pairing AES. Only the headers are synced under
-# thirdparty/openssl/ by native/scripts/sync-openssl.ps1 (generated, gitignored):
+# thirdparty/openssl/ by native/scripts/build-native.ps1 (generated, gitignored):
 # the OpenSSL *code* is the copy FreeRDP already statically links into
 # libwinpr3.so and exports, so libhmrdp resolves SSL_* / EVP_* / X509_* against
 # winpr3 instead of carrying a duplicate OpenSSL in the process. See
@@ -33,7 +33,7 @@ if(EXISTS "${OPENSSL_ROOT}/include/openssl/ssl.h")
 endif()
 
 # Moonlight (GameStream) client library. Unlike FreeRDP it ships as *static*
-# archives (native/scripts/build-moonlight.ps1 collects them into
+# archives (native/scripts/build-native.ps1 collects them into
 # thirdparty/moonlight/, which is generated and gitignored). Its OpenSSL
 # references resolve against the same winpr3 OpenSSL as above.
 set(MOONLIGHT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/moonlight")
@@ -164,7 +164,7 @@ else()
     message(WARNING "HmRdp: XEngine headers not found under ${HMS_SYSROOT}; 超分 disabled")
 endif()
 
-# FreeRDP is built without library versioning (see native/scripts/build-freerdp.ps1
+# FreeRDP is built without library versioning (see native/scripts/build-native.ps1
 # + -DWITH_LIBRARY_VERSIONING=OFF), so each library is a single version-less
 # libX.so whose SONAME is also libX.so. Linking it records libX.so in DT_NEEDED,
 # matching the packaged files exactly (no libX.so.3 duplicate).
@@ -204,7 +204,7 @@ target_link_libraries(hmrdp
     ${FREERDP_LIBS}/libfreerdp-client3.so
 )
 
-# Moonlight static archives (built by native/scripts/build-moonlight.ps1) plus the
+# Moonlight static archives (built by native/scripts/build-native.ps1) plus the
 # OpenSSL headers the HTTP/pairing layer compiles against. OpenSSL *code* is not
 # linked here: it comes from libwinpr3.so above, which already statically carries
 # and exports it (see the OPENSSL_ROOT note near the top). Plain signature (no
@@ -223,14 +223,14 @@ if(HMRDP_HAVE_MOONLIGHT)
     )
     message(STATUS "HmRdp: Moonlight client linked from ${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}")
 else()
-    message(WARNING "HmRdp: Moonlight archives not found under ${MOONLIGHT_ROOT}; run native/scripts/build-moonlight.ps1 to enable Moonlight")
+    message(WARNING "HmRdp: Moonlight archives not found under ${MOONLIGHT_ROOT}; run native/scripts/build-native.ps1 to enable Moonlight")
 endif()
 
 if(HMRDP_HAVE_MOONLIGHT_HTTP)
     target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_MOONLIGHT_HTTP=1)
     message(STATUS "HmRdp: Moonlight HTTP/pairing layer enabled (OpenSSL headers at ${OPENSSL_ROOT})")
 else()
-    message(WARNING "HmRdp: OpenSSL headers not found under ${OPENSSL_ROOT}; run native/scripts/sync-openssl.ps1 to enable the Moonlight HTTP layer")
+    message(WARNING "HmRdp: OpenSSL headers not found under ${OPENSSL_ROOT}; run native/scripts/build-native.ps1 to enable the Moonlight HTTP layer")
 endif()
 
 # -Wno-unused-command-line-argument silences the OHOS toolchain passing

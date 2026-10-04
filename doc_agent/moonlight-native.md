@@ -16,21 +16,16 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
 - **依赖树**：它的 `enet` 与 `nanors` 是 **git submodule**，commit tarball 不含；`fetch-sources.ps1` 分别按
   commit 固定拉取后放进 `moonlight-common-c/{enet,nanors}`（它的 CMake 用 `add_subdirectory(enet)` 并在
   `nanors/rs.c` 处编译）。enet 上游恒为静态库。
-- **构建命令**（在 FreeRDP 那套之后）：
-
-  ```
-  native/scripts/fetch-sources.ps1     # 拉取并按 commit 固定；自动跑 patch-moonlight.ps1
-  native/scripts/build-moonlight.ps1   # Windows NDK 交叉编译，静态归档
-  ```
+- **构建**：随 `native/scripts/build-native.ps1` 的 moonlight 步一起（Windows NDK 交叉编译，静态归档）。
+  `fetch-sources.ps1` 负责按 commit 拉取并自动跑 `patch-moonlight.ps1`。
 
 - **静态链接，不单独打包**：与 FreeRDP 不同，它没有运行时加载插件、不需要导出符号，因此构建成静态库
   （`-DBUILD_SHARED_LIBS=OFF`），连同 enet、OpenSSL 的 `libcrypto.a` 一起链进 `libhmrdp.so`；
   `entry/libs/<abi>/` 里**不新增 `.so`**。两者都带 `-fPIC`。
-- **归档与头文件位置**：`build-moonlight.ps1` 不能依赖 `cmake --install`（上游 CMakeLists 不写 install 规则），
-  它把 `libmoonlight-common-c.a` / `libenet.a` / `libcrypto.a` 与公开头 `Limelight.h` 收集到
-  `native/install/<arch>/moonlight/`，再由 `sync-moonlight.ps1` 同步到
+- **归档与头文件位置**：上游 CMakeLists 不写 install 规则，构建步手工把 `libmoonlight-common-c.a` /
+  `libenet.a` 与公开头 `Limelight.h` 收集到 `native/install/<arch>/moonlight/`，再同步到
   `entry/src/main/cpp/thirdparty/moonlight/{include,lib/<abi>}/`（生成目录，**不入库**，与 FreeRDP 头文件同策）。
-  `sync-moonlight.ps1` 按 arch 只替换 `lib/<abi>`，两个 ABI 可共存。
+  同步按 arch 只替换 `lib/<abi>`，两个 ABI 可共存。
 - **OpenSSL 依赖**：只用 `libcrypto`（配对 AES），复用它已经静态构建的那一份；构建时显式传
   `OPENSSL_ROOT_DIR` / `OPENSSL_CRYPTO_LIBRARY` 等，使 `find_package(OpenSSL 1.0.2 REQUIRED)` 命中
   OHOS 版本而不是宿主。
@@ -127,7 +122,7 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - **不复用 `freerdp_http_request`**：它端口写死 443、走系统 CA、只发 form-urlencoded、没有客户端证书——
   本层需要可配端口（47989/47984）、自签名主机与 mTLS。FreeRDP gateway 的 `http.c` 是 `FREERDP_LOCAL`
   （未导出），同样不可用。
-- **OpenSSL 只同步头、不链库**：`native/scripts/sync-openssl.ps1` 只把本地 OpenSSL 构建的 `include/` 复制到
+- **OpenSSL 只同步头、不链库**：`build-native.ps1` 只把本地 OpenSSL 构建的 `include/` 复制到
   `thirdparty/openssl/include`。TLS / RSA / AES / SHA 的**代码**用 `libwinpr3.so` 已静态包含并导出的那一份
   （FreeRDP 把 OpenSSL 静态编进 winpr3，符号默认可见 ⇒ 导出；`nm -D libwinpr3.so` 可见 `SSL_*`/`EVP_*`/
   `X509_*`）。再链一份 `libssl.a`/`libcrypto.a` 只会让进程里多一份 OpenSSL、并让 HAP 变大——链接器在任何

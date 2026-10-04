@@ -208,4 +208,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "third-party sources are ready under $Third"
-Write-Host "next: native/scripts/build-zlib.ps1 / build-openssl-wsl.sh / build-freerdp.ps1 / build-moonlight.ps1"
+Write-Host "next: native/scripts/build-native.ps1 -Arch arm64-v8a"

@@ -116,31 +116,22 @@ devecocli run --device <serial>   # 编译 + 安装 + 启动
 
 ### 从源码重建原生库（可选）
 
-`entry/libs/` 已包含构建好的库；如需自行编译：
+原生依赖全部用 CMake + Windows OHOS NDK 构建（OpenSSL 也不例外，无需 WSL/Perl）：
 
 ```powershell
-# 1. 下载 FreeRDP 3.10.3 到 native/third_party/FreeRDP 并打补丁
-pwsh native/scripts/patch-freerdp.ps1
+# 1. 按固定版本拉取三方源码（tarball + SHA256）并自动打补丁
+pwsh native/scripts/fetch-sources.ps1
 
-# 2. 编译 zlib（静态库，被 FreeRDP 静态链入）
-pwsh native/scripts/build-zlib.ps1 -Arch arm64-v8a
-
-# 3. 编译 OpenSSL（在 WSL 中，用现有 Windows OHOS NDK 作为交叉编译器）
-wsl -d Ubuntu -e bash -lc 'bash native/scripts/build-openssl-wsl.sh \
-  <openssl-src> <build-dir> <install-dir> arm64-v8a'
-
-# 4. 编译 FreeRDP
-pwsh native/scripts/build-freerdp.ps1 -Arch arm64-v8a
-
-# 5. 把产物放到 entry/libs/<abi>/（该目录已 gitignore）
-copy native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/
+# 2. 编译全部原生依赖并同步到模块
+#    zlib -> openssl -> freerdp -> moonlight，随后写入
+#    entry/src/main/cpp/thirdparty/ 与 entry/libs/<abi>/
+pwsh native/scripts/build-native.ps1 -Arch arm64-v8a
 ```
 
-依赖：OpenSSL 3.0.15、zlib 1.3.1（均从源码编译，静态链接进 FreeRDP）。
+依赖：FreeRDP 3.10.3、OpenSSL 3.0.15、zlib 1.3.1、moonlight-common-c（均从源码编译）。
 
-> 换 ABI 只需把 `arm64-v8a` 换成 `x86_64`（模拟器）并把产物放到 `entry/libs/x86_64/`；
-> 三个脚本都接受 `-Arch`/架构参数，装到 `native/install/<abi>/`。
-> 脚本按顺序有依赖：zlib / OpenSSL 必须先于 FreeRDP。
+> 换 ABI：`-Arch x86_64`（模拟器）。只重建某一步：`-Only freerdp -Clean`。
+> 仅当更换 OpenSSL 版本时才需要 WSL 重出构建快照（`native/scripts/export-openssl-snapshot.ps1`）。
 
 ## 命名
 

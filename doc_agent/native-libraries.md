@@ -9,51 +9,66 @@
   `winpr/build-config.h`）与本地 git 版本，属本机环境信息。
 
 因此：**源码由脚本按固定版本拉取**（`native/scripts/fetch-sources.ps1`），构建产物放到
-`entry/libs/<abi>/`；应用编译用的 FreeRDP/winpr 头文件由 `build-freerdp.ps1` 在装完后调用
-`native/scripts/sync-freerdp-headers.ps1` 生成到 `entry/src/main/cpp/thirdparty/freerdp/`
-（同步时归一化掉构建机路径与本地 git 版本）。
+`entry/libs/<abi>/`；应用编译用的 FreeRDP/winpr 头文件由 `build-native.ps1` 同步生成到
+`entry/src/main/cpp/thirdparty/freerdp/`（同步时归一化掉构建机路径与本地 git 版本）。
 `entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接、按
 `thirdparty/freerdp/include/{freerdp3,winpr3}` 找头文件。
 
 **OpenSSL 只同步头，代码复用 winpr3 里那份**：Moonlight 的 HTTP/配对层（TLS、RSA/AES/SHA、自签名证书）
-需要 OpenSSL 头才能编译，由 `native/scripts/sync-openssl.ps1` 复制到
+需要 OpenSSL 头才能编译，由 `build-native.ps1` 复制到
 `entry/src/main/cpp/thirdparty/openssl/include`。但**不另外链 `libssl.a`/`libcrypto.a`**：FreeRDP 把
 OpenSSL 静态编进 `libwinpr3.so` 且符号默认可见（`nm -D libwinpr3.so` 可见 `SSL_*`/`EVP_*`/`X509_*`），
 `libhmrdp.so` 的引用就解析到它上面；再链一份只会让进程里多一份 OpenSSL、并让 HAP 变大，链接器在任何顺序下
 都先绑到 winpr3。`moonlight-common-c` 的配对 AES 同样落在这一份上，故 `thirdparty/moonlight/lib/` 不带
-`libcrypto.a`。（`build-openssl-wsl.sh` 仍产 `libssl.a`/`libcrypto.a` 供 `build-moonlight.ps1` 构建时使用。）
+`libcrypto.a`。（`build-native.ps1` 仍产 `libssl.a`/`libcrypto.a` 供 moonlight 构建时使用。）
 **这条依赖是"编进 winpr3 的第三方符号默认可见"这一构建事实**：若给 FreeRDP/OpenSSL 加了
 `-fvisibility=hidden` 或版本脚本，需回来改成显式提供 OpenSSL。
 
 ## 2. 构建流程
 
 ```
-native/scripts/fetch-sources.ps1     # 按固定版本拉取源码（tarball + SHA256 校验）并自动打补丁
-native/scripts/build-zlib.ps1        # zlib 静态库（Windows NDK）；FreeRDP 静态链入
-native/scripts/build-openssl-wsl.sh  # OpenSSL，在 WSL 中运行，驱动 Windows OHOS clang
-native/scripts/build-freerdp.ps1     # FreeRDP 的 CMake 构建（Windows NDK）
+native/scripts/fetch-sources.ps1   # 按固定版本拉取源码（tarball + SHA256 校验）并自动打补丁
+native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（单一入口，见下）
 ```
+
+- **单一入口 `build-native.ps1`**：按依赖顺序编 zlib → OpenSSL → FreeRDP → moonlight，全部用 CMake +
+  Windows OHOS NDK；随后把 FreeRDP/OpenSSL 头同步到 `entry/src/main/cpp/thirdparty/`、moonlight 归档同步
+  过去、FreeRDP `.so` 拷进 `entry/libs/<abi>/`。`-Arch`（默认 arm64-v8a；x86_64 为模拟器）、
+  `-Clean`、`-Only <步骤>`（只编某一步，依赖须已装；改 FreeRDP 补丁后就是 `-Only freerdp -Clean`）。
+- **OpenSSL 走 CMake、不进 WSL**：OpenSSL 3.x 没有 CMake 构建，源码树只有 Perl 模板（`*.h.in`）与
+  `build.info`，而 Windows 侧没有 Perl。做法是把 `perl Configure` 的输出**冻结**成一份快照
+  （`native/openssl-cmake/generated/`：生成的公开头 + provider 的 DER 生成物 + `sources.cmake` 源码清单），
+  再用 `native/openssl-cmake/CMakeLists.txt` 按生成的 Makefile 同等预算编译（同样的源集、宏、include 路径与
+  `libcrypto`/`libssl` 归档切分，`libdefault.a`/`liblegacy.a`/`libcommon.a` 的对象并入 libcrypto）。
+  - 只有换 OpenSSL 版本时用 `native/scripts/export-openssl-snapshot.ps1 -Configure` 重生成快照并入库
+    （内部跑 `build-openssl-wsl.sh` 的 `perl Configure` + `make`；随后 `export-snapshot.pl` 从 `configdata.pm`
+    取权威源码清单与生成物）。**改版本必须重出快照**，`sources.cmake` 与生成头随之更新。
+  - `include/openssl/configuration.h` 是唯一按 ABI 变化的生成头（`RC4_INT`），快照按 arch 分份
+    （`generated/arch/<arch>/`）；`crypto/buildinf.h` 含构建机路径/flag，由 CMake 写中性值，不入快照。
+  - 产物路径与头集与 WSL 版一致（`native/install/<arch>/openssl/{include,lib}`）；
+    `libcrypto.a`/`libssl.a` 的定义符号与 WSL 版逐符号一致。
+  - 归一化/加固差异：CMake 构建沿用 OHOS toolchain 默认（`-fstack-protector-strong -ffunction-sections`
+    等），故归档与 `libwinpr3.so` 比裸 `clang` 的 WSL 版略大；`buildinf.h` 与 `OPENSSLDIR` 等按中性值写。
 
 - 版本与校验和固定在 `fetch-sources.ps1`（FreeRDP 3.10.3 / zlib 1.3.1 / OpenSSL 3.0.15）。
   已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。zlib / OpenSSL 按发布版直接用。
   （`fetch-sources.ps1` 也拉取并按 commit 固定 moonlight-common-c，其构建与补丁见
   [`moonlight-native.md`](moonlight-native.md)，不在本文件内。）
 - `patch-freerdp.ps1` 也可单独重复跑（幂等）。
-- **改过补丁后必须用 `build-freerdp.ps1 -Clean`**：重新解包的源码树带着 tarball 里的旧 mtime，
+- **改过补丁后必须用 `build-native.ps1 -Only freerdp -Clean`**：重新解包的源码树带着 tarball 里的旧 mtime，
   ninja 会认为目标文件比源新而**整块跳过编译**——症状是构建"成功"、`-Clean` 之外只产出一两个
   `.so`，或者改动在 `.so` 里看不到（用 `nm`/字符串搜一下就知道）。`-Clean` 同时清安装前缀。
 - 补丁报错时会连**失败的正则片段**一起打出来（`patch-freerdp.ps1` 的 `Patch-Regex`），
   照它改锚点即可；锚点跨步骤咬合，改一个要顺带看后面哪一步还引用着它。
-- `build-freerdp.ps1` 装完后自动跑 `sync-freerdp-headers.ps1`，把应用编译要用的头文件刷新到
-  `entry/src/main/cpp/thirdparty/`（该目录**不入库**，见 §1）。
+- `build-native.ps1` 的 freerdp 步装完后自动把应用编译要用的头文件刷新到
+  `entry/src/main/cpp/thirdparty/`（该目录**不入库**，见 §1），并把 `.so` 拷进 `entry/libs/<abi>/`。
 
 改 FreeRDP（含改补丁脚本）后的**完整循环**：
 
 ```powershell
-./native/scripts/fetch-sources.ps1   # 首次/换版本；已有的树会跳过
+./native/scripts/fetch-sources.ps1                        # 首次/换版本；已有的树会跳过
 ./native/scripts/patch-freerdp.ps1
-./native/scripts/build-freerdp.ps1 -Arch arm64-v8a
-Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
+./native/scripts/build-native.ps1 -Only freerdp -Clean     # 重编 + 同步头 + 放回 .so
 # 然后 build_project（HAP 才会带上新的 .so）
 ```
 
@@ -230,7 +245,7 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   `-O2 -DNDEBUG`，**不随构建模式变**。打包时 hvigor 的 `DoNativeStrip` 会 strip 所有 `.so`，
   HAP 内不含调试信息。
 - FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（安装后由
-  `build-freerdp.ps1` / `sync-freerdp-headers.ps1` 自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
+  `build-native.ps1` 同步时自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
 
 ## 5. 音频：原生 sink + 交接环 / ArkTS 渲染器
 

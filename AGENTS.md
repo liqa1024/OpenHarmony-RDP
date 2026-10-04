@@ -53,7 +53,7 @@
 | ArkTS / ArkUI 规范与状态坑 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
 | 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
-| 原生库构建与补丁、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
+| 原生库构建与补丁（含 **OpenSSL CMake 快照**）、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁 / 并行形态（§7）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
 | 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | Moonlight（Sunshine）串流**前端**：协议建模、存储、连接列表/编辑页/设置页分栏、图标 | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
@@ -77,6 +77,7 @@ devecocli build --product emulator                 # 模拟器包（x86_64）
 devecocli run --device "<真机序列号>"              # 编译 + 签名 + 安装 + 启动
 devecocli run --product emulator --module entry@emulator --device "127.0.0.1:5555"
 native/scripts/fetch-sources.ps1                       # 按固定版本拉取三方源码 + 自动打补丁
+native/scripts/build-native.ps1 -Arch arm64-v8a        # 编全部原生依赖并同步到模块
 native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（不接触签名材料）
 ```
 
@@ -84,9 +85,9 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
   `.signing/signing-config.json`，由 `hvigorfile.ts` 注入。**切勿**提交 `*.p12`/`*.p7b`/`*.cer`/keystore。
 - **三方源码不入库**：`native/third_party/` 由 `fetch-sources.ps1` 按固定版本（tarball + SHA256）拉取。
   改 FreeRDP 一律写成 `patch-steps/` 里的补丁步骤（不要在 `third_party/` 里直接改），
-  再 `fetch-sources.ps1 -Force` + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`（该目录**不入库**），
-  最后 `build_project`。应用编译用的 FreeRDP/winpr 头文件在 `entry/src/main/cpp/thirdparty/`，
-  由 `build-freerdp.ps1` 调用 `sync-freerdp-headers.ps1` 生成（同样**不入库**）。
+  再 `fetch-sources.ps1 -Force` + `build-native.ps1 -Only freerdp -Clean`（重编并把 `.so` 放回
+  `entry/libs/<abi>/`），最后 `build_project`。应用编译用的 FreeRDP/winpr 头文件在
+  `entry/src/main/cpp/thirdparty/`，由 `build-native.ps1` 同步生成（同样**不入库**）。
   详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
 - 模拟器优先用于**与硬件加速无关**的功能/逻辑/UI 调试；**Vulkan（硬件加速）只在真机验证**。
 
@@ -97,7 +98,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | `entry/src/main/ets/` | ArkUI 界面：`entryability/`、`sessionability/`、`pages/`、`services/`、`model/`、`utils/` |
 | `entry/src/main/cpp/` | 原生：`binding/`（Node-API 翻译层）+ `core/`（FreeRDP 会话、gdi 帧管线、Vulkan/GLES 呈现器、音频、Moonlight 传输、dev 回放） |
 | `entry/src/main/resources/` | 主题色（`base|dark/element/color.json`）与图标 |
-| `native/scripts/` | 原生库源码构建与 FreeRDP 补丁 |
+| `native/scripts/` | 原生库构建（`build-native.ps1`）与 FreeRDP/Moonlight 补丁 |
 | `entry/libs/<abi>/` | 本地构建的原生库（**gitignore，不入库**） |
 | `doc_agent/` | 通用开发知识（见上） |
 
