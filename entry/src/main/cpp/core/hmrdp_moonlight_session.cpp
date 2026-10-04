@@ -11,8 +11,6 @@
 
 #include "hmrdp_log.h"
 
-#ifdef HMRDP_HAVE_MOONLIGHT
-
 #include <Limelight.h>
 
 #include "hmrdp_moonlight.h"
@@ -212,25 +210,3 @@ void MoonlightSessionScroll(int clicks) {
 }
 
 }  // namespace hmrdp
-
-#else  // !HMRDP_HAVE_MOONLIGHT
-
-namespace hmrdp {
-
-void MoonlightSessionSetWindow(void*) {}
-std::string MoonlightSessionStart(const MoonlightStreamConfig&, MoonlightSessionCallback) {
-  return "no-moonlight";
-}
-void MoonlightSessionStop() {}
-bool MoonlightSessionActive() {
-  return false;
-}
-void MoonlightSessionMouseMove(int, int) {}
-void MoonlightSessionMousePosition(int, int, int, int) {}
-void MoonlightSessionMouseButton(int, int) {}
-void MoonlightSessionKey(int, int, int) {}
-void MoonlightSessionScroll(int) {}
-
-}  // namespace hmrdp
-
-#endif

@@ -390,8 +390,8 @@ export interface RdpSrBackends {
 export const superResolutionBackends: () => RdpSrBackends;
 
 /**
- * Whether the Moonlight (GameStream) client library is linked into this build.
- * "1", or "0|<code>" (currently only `no-moonlight`).
+ * Always "1": the Moonlight (GameStream) client is a required build product, so
+ * this only asserts that its static archives really resolved into the module.
  */
 export const moonlightProbe: () => string;
 
@@ -400,7 +400,6 @@ export const moonlightProbe: () => string;
  * `preference` is an ML_CODEC_* value (default 0 = auto): auto sends every
  * codec the device can hardware-decode (or the software set when there is no
  * hardware decoder), a specific codec sends just that one when it is decodable.
- * 0 without a Moonlight client.
  */
 export const moonlightVideoFormats: (preference?: number) => number;
 

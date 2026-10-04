@@ -1434,9 +1434,9 @@ napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   return obj;
 }
 
-// Whether the Moonlight (GameStream) client is linked into this build. Returns
-// "1", or "0|<code>" with a stable code (see hmrdp_moonlight.h). M1 foundation
-// probe; the pairing / app list / session entry points land on top of it.
+// Link assertion for the Moonlight (GameStream) client, which is a required
+// build product: it always returns "1" and only fails to build/link when the
+// static archives are missing (see hmrdp_moonlight.h).
 napi_value MoonlightProbe(napi_env env, napi_callback_info) {
   const std::string out = hmrdp::MoonlightProbe();
   napi_value result = nullptr;
@@ -1445,7 +1445,7 @@ napi_value MoonlightProbe(napi_env env, napi_callback_info) {
 }
 
 // VIDEO_FORMAT_* bitmask to advertise to the host (codec negotiation), for the
-// given ML_CODEC_* preference (default auto). 0 without a Moonlight client.
+// given ML_CODEC_* preference (default auto).
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};

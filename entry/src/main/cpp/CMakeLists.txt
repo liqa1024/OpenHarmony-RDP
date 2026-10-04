@@ -14,38 +14,36 @@ endif()
 set(FREERDP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/freerdp")
 set(FREERDP_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
 
-# libhmrdp links its own OpenSSL static archive, needed only by
+# libhmrdp links its own OpenSSL static archive, needed by
 # moonlight-common-c's control-stream crypto (src/PlatformCrypto.c: AES/GCM +
 # RAND). native/scripts/build-native.ps1 syncs libcrypto.a under
 # thirdparty/openssl/lib/<abi>/ (generated, gitignored). It is linked before
 # FreeRDP's shared libraries and kept local with --exclude-libs, so
 # moonlight-common-c's EVP_* bind to this copy instead of the OpenSSL FreeRDP
 # statically links into libwinpr3.so (the reason Android links its own libcrypto
-# with -Wl,--exclude-libs,ALL). Absent (no native build) means the Moonlight
-# client is not linked either, so the build still succeeds - the same degrade
-# path FSR and XEngine use. See doc_agent/native-libraries.md.
+# with -Wl,--exclude-libs,ALL). See doc_agent/native-libraries.md.
 set(OPENSSL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openssl")
-set(HMRDP_OPENSSL_ARCHIVES "")
-if(EXISTS "${OPENSSL_ROOT}/lib/${OHOS_ARCH}/libcrypto.a")
-    set(HMRDP_OPENSSL_ARCHIVES "${OPENSSL_ROOT}/lib/${OHOS_ARCH}/libcrypto.a")
-endif()
+set(HMRDP_OPENSSL_ARCHIVES "${OPENSSL_ROOT}/lib/${OHOS_ARCH}/libcrypto.a")
 
-# Moonlight (GameStream) client library. Unlike FreeRDP it ships as *static*
-# archives (native/scripts/build-native.ps1 collects them into
-# thirdparty/moonlight/, which is generated and gitignored). Its OpenSSL
-# references resolve against libhmrdp's own archive above, not winpr3.
+# Moonlight (GameStream) client library. Like FreeRDP it is a build product of
+# native/scripts/build-native.ps1 (static archives under thirdparty/moonlight/,
+# generated and gitignored) and therefore a *required* input of the app build -
+# it is our own feature, not an optional platform capability. A missing archive
+# means the native build was not run, so fail the configure step with a clear
+# instruction instead of silently building a binary without the feature (the
+# same way a missing FreeRDP shared library fails the link).
 set(MOONLIGHT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/moonlight")
-set(HMRDP_HAVE_MOONLIGHT OFF)
-if(EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h" AND EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a")
-    set(HMRDP_HAVE_MOONLIGHT ON)
+if(NOT EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h"
+   OR NOT EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
+   OR NOT EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a"
+   OR NOT EXISTS "${HMRDP_OPENSSL_ARCHIVES}")
+    message(FATAL_ERROR
+        "HmRdp: Moonlight build products missing under ${MOONLIGHT_ROOT} for ${OHOS_ARCH} "
+        "(or ${HMRDP_OPENSSL_ARCHIVES}); run native/scripts/build-native.ps1 first")
 endif()
-
-set(HMRDP_MOONLIGHT_ARCHIVES "")
-if(HMRDP_HAVE_MOONLIGHT)
-    set(HMRDP_MOONLIGHT_ARCHIVES
-        "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
-        "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a")
-endif()
+set(HMRDP_MOONLIGHT_ARCHIVES
+    "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
+    "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a")
 
 # core/ holds the native resource drivers and hot paths (FreeRDP host, gdi
 # frame pipeline, GPU presenters, video/audio, Moonlight transport); binding/
@@ -152,13 +150,9 @@ target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 # libhmrdp's own OpenSSL (libcrypto.a) instead of the OpenSSL exported by
 # libwinpr3.so linked further below. --exclude-libs keeps the archive symbols
 # local so the two OpenSSL copies cannot interpose each other.
-if(HMRDP_MOONLIGHT_ARCHIVES)
-    target_link_libraries(hmrdp ${HMRDP_MOONLIGHT_ARCHIVES})
-endif()
-if(HMRDP_OPENSSL_ARCHIVES)
-    target_link_libraries(hmrdp ${HMRDP_OPENSSL_ARCHIVES})
-    target_link_options(hmrdp PRIVATE "LINKER:--exclude-libs,libcrypto.a")
-endif()
+target_link_libraries(hmrdp ${HMRDP_MOONLIGHT_ARCHIVES})
+target_link_libraries(hmrdp ${HMRDP_OPENSSL_ARCHIVES})
+target_link_options(hmrdp PRIVATE "LINKER:--exclude-libs,libcrypto.a")
 
 # 超分 needs XEngine's headers, which ship in the HMS sysroot (sibling of the
 # openharmony one the toolchain points at) - not in the plain NDK sysroot. The
@@ -215,13 +209,8 @@ target_link_libraries(hmrdp
     ${FREERDP_LIBS}/libfreerdp-client3.so
 )
 
-if(HMRDP_HAVE_MOONLIGHT)
-    target_include_directories(hmrdp PRIVATE "${MOONLIGHT_ROOT}/include")
-    target_compile_definitions(hmrdp PRIVATE HMRDP_HAVE_MOONLIGHT=1)
-    message(STATUS "HmRdp: Moonlight client linked from ${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}")
-else()
-    message(WARNING "HmRdp: Moonlight archives not found under ${MOONLIGHT_ROOT}; run native/scripts/build-native.ps1 to enable Moonlight")
-endif()
+target_include_directories(hmrdp PRIVATE "${MOONLIGHT_ROOT}/include")
+message(STATUS "HmRdp: Moonlight client linked from ${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}")
 
 # -Wno-unused-command-line-argument silences the OHOS toolchain passing
 # --gcc-toolchain to compile-only invocations (clang reports it as unused).

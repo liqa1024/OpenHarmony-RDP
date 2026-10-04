@@ -10,10 +10,9 @@
 
 namespace hmrdp {
 
-// "1" when this build has the Moonlight client linked, else "0|<code>" with a
-// stable code (the UI layer owns the wording), mirroring the capability probes
-// in hmrdp_vk_context. The code is "no-moonlight" when the archives were not
-// built into this module.
+// Always "1": the Moonlight client is a required build product (like FreeRDP),
+// so this only asserts that the static archives really resolved into the module
+// - an unresolved moonlight/enet/OpenSSL symbol fails the link, not this call.
 std::string MoonlightProbe();
 
 // Renderer context passed as LiStartConnection's renderContext. `window` is the

@@ -92,17 +92,19 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   `GetTransformMatrixV2` 的矩阵里、须与纹理坐标配合，还要处理跨线程 EGL，复杂度与故障面都不划算。
   Moonlight 的 letterbox 由直出的组件宽高比解决，超分则走 Vulkan 导入链路。
 
-## 3. 桥接层与降级
+## 3. 桥接层与接线
 
-- **降级式接线**：`entry/src/main/cpp/CMakeLists.txt` 只在
-  `thirdparty/moonlight/lib/<abi>/libmoonlight-common-c.a` 存在时才定义 `HMRDP_HAVE_MOONLIGHT` 并链接；
-  缺归档时 `hmrdp_moonlight.*` 编译成"不支持"，构建照常（同 FSR / XEngine 的降级写法）。因此未跑原生构建的
-  检出仍能 `build_project`。
+- **构建必备输入，不是平台能力**：`moonlight-common-c` 是**我们自己 vendor 的软件依赖**（随
+  `build-native.ps1` 按固定版本编出、链进 `libhmrdp.so`），和 FreeRDP 同类，**不是**设备/系统可能缺失的
+  平台能力。所以 `CMakeLists.txt` 检查归档（`libmoonlight-common-c.a` / `libenet.a`）与 `libcrypto.a` 是否
+  齐全，缺一即 `FATAL_ERROR` 并提示先跑 `build-native.ps1`，随后**无条件**链接、无条件定义头文件路径。
+  **不**照搬 FSR / XEngine「缺依赖就编成不支持、构建照常」的降级写法——那是"设备能力有无"的模型，套到自研
+  功能上会造出一个本不该存在的"无 Moonlight"产品态。
 - **静态库必须真被引用才算连上**：静态归档里没被引用的目标不会进 `.so`。`hmrdp_moonlight.cpp` 的探针
   真正调用一个 moonlight 入口（`LiInitializeStreamConfiguration`，纯字段初始化、不起线程/不建 socket），
   所以"符号已解析"由**链接器**保证：有未解析符号则模块链接失败。
-- **N-API 探针**：`moonlightProbe` 回 `"1"`，或未构建该库时回 `"0|no-moonlight"`（稳定原因码，中文文案归
-  UI 层，同 [`native-libraries.md`](native-libraries.md) §6 的能力探测模式）。
+- **N-API 探针**：`moonlightProbe` 恒回 `"1"`——它只是一个"归档确实解析进了模块"的链接断言，不是能力探测
+  （不用于 UI 置灰，也不该有"本设备不支持 Moonlight"这种状态）。
 - **解码桥**：`hmrdp_moonlight.cpp` 把 AVCodec 解码器接进 moonlight-common-c 的解码渲染回调
   （`DECODER_RENDERER_CALLBACKS`，见 `hmrdp_moonlight.h`）。`MoonlightVideoCallbacks()` 交回一张静态
   回调表供 `LiStartConnection` 使用；`MoonlightVideoContext`（经 `renderContext` 传入）带会话的
@@ -143,11 +145,12 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 
 ## 5. 范围与后续方向
 
-- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）、控制/配对层的协议事实（§4）。
+- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、桥接层与接线（§3，解码桥 + 串流会话桥）、
+  控制/配对层的协议事实（§4）。
 - 超分链路（buffer 模式 + Vulkan 导入 + 复用 `VkRenderer`）只在真机验证，属独立后续里程碑，复用约束见 §2
   「与 RDP 呈现器的复用口径」。
-- 主机发现、应用列表交互、串流会话建立（`LiStartConnection`）与输入接线不在本文件范围；**控制层（驱动
-  `serverinfo → pair → applist → launch`）、协议编排与 XML 解析在 ArkTS**，不在本文件范围。路线与阶段见
-  [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
+- 主机发现、应用列表交互不在本文件范围；**控制层（驱动 `serverinfo → pair → applist → launch`）、协议编排与
+  XML 解析在 ArkTS**（§4），会话的 ArkTS 接线（N-API / `MoonlightSessionBackend` / 会话窗口）与输入页路由
+  也不在本文件范围。路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
 - **改前必读**：会话侧接线要遵守既有的线程模型（动态通道分发线程只做轻活，帧重活走 sink 钩子），见
   [`architecture.md`](architecture.md) §4。

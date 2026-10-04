@@ -82,9 +82,10 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 
 - **前端**已就绪：协议建模、存储、导入导出、连接列表、编辑页、设置页分栏、图标。
 - **原生客户端库已接入**：moonlight-common-c（连同它的 enet / nanors 子模块）交叉编译为静态库并链进
-  `libhmrdp.so`；桥接层有一个连通性探针 `moonlightProbe`（返回 `"1"`，或在未构建该库时返回
-  `"0|no-moonlight"`），它真正调用一个 moonlight 入口点，因此"符号已解析"是被链接器保证的。
-  构建流程、静态链接约定与目录见 [`moonlight-native.md`](moonlight-native.md)。
+  `libhmrdp.so`。它是**构建必备输入**（同 FreeRDP，缺归档即构建失败），不是平台能力；`moonlightProbe`
+  恒回 `"1"`，仅作"归档确实解析进模块"的链接断言。原生**串流会话桥** `hmrdp_moonlight_session`
+  （`LiStartConnection` + 输入转发）也已落地。构建流程、静态链接约定与目录见
+  [`moonlight-native.md`](moonlight-native.md)。
 - **控制层已在 ArkTS 落地**：`ets/moonlight/` 下的 `MoonlightCrypto`（配对加密原语）、
   `MoonlightIdentity`（自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、
   `MoonlightClient`（编排 `serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。
