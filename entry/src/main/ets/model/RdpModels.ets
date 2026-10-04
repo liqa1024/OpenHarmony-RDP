@@ -254,6 +254,15 @@ export class PendingConnection {
   options: RdpConnectOptions = new RdpConnectOptions();
   connectionId: string = '';
   origin: RdpConnectOrigin = RdpConnectOrigin.List;
+  // Protocol of this launch (PROTOCOL_RDP / PROTOCOL_MOONLIGHT); decides which
+  // SessionBackend the manager builds.
+  protocol: number = PROTOCOL_RDP;
+  // The saved record a Moonlight launch resolves its stream settings from; RDP
+  // keeps everything it needs in `options`.
+  savedConnection: SavedConnection | undefined = undefined;
+  // Effective Moonlight stream settings (SettingsStore.resolveStream), used when
+  // the native Moonlight session is built.
+  stream: MoonlightProfile = new MoonlightProfile();
   // Invoked once when a session launched from the editor connects successfully.
   // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;

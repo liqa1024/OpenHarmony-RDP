@@ -157,30 +157,32 @@ struct Index {
   }
 
   private async startConnection(conn: SavedConnection): Promise<void> {
-    if (conn.isMoonlight()) {
-      // Moonlight's native client and its pairing / app-picker windows land in a
-      // later phase; until then the row must not fall through to the RDP path.
-      this.showToast('Moonlight 连接将在后续版本接入');
-      return;
-    }
     const options: RdpConnectOptions = conn.toOptions();
-    const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
-    options.width = profile.width;
-    options.height = profile.height;
-    options.scalePercent = profile.scalePercent;
-    options.srEnabled = profile.srEnabled;
-    options.srRatioPercent = profile.srRatioPercent;
-    options.srBackend = profile.srBackend;
-    const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
-    options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
-    options.ignoreCertificate = advanced.ignoreCertificate;
-    const password: string = await CredentialStore.loadPassword(conn.id);
-    options.password = password;
     const request: PendingConnection = new PendingConnection();
-    request.options = options;
     request.connectionId = conn.id;
     request.origin = RdpConnectOrigin.List;
     request.onConnected = undefined;
+    request.protocol = conn.protocol;
+    request.savedConnection = conn;
+    if (conn.isMoonlight()) {
+      // Moonlight carries its own stream profile; credentials and the RDP
+      // display / advanced resolution do not apply.
+      request.stream = SettingsStore.resolveStream(conn);
+      request.options = options;
+    } else {
+      const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
+      options.width = profile.width;
+      options.height = profile.height;
+      options.scalePercent = profile.scalePercent;
+      options.srEnabled = profile.srEnabled;
+      options.srRatioPercent = profile.srRatioPercent;
+      options.srBackend = profile.srBackend;
+      const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
+      options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
+      options.ignoreCertificate = advanced.ignoreCertificate;
+      options.password = await CredentialStore.loadPassword(conn.id);
+      request.options = options;
+    }
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
       SessionManager.connect(request, context as common.UIAbilityContext);

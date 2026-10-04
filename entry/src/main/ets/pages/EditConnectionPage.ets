@@ -441,6 +441,8 @@ struct EditConnectionPage {
     request.options = attempt;
     request.connectionId = id;
     request.origin = RdpConnectOrigin.Editor;
+    request.protocol = PROTOCOL_RDP;
+    request.savedConnection = conn;
     request.onConnected = () => {
       this.persist(conn);
       this.returnToList();

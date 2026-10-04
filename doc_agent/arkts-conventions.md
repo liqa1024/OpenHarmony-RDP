@@ -31,8 +31,8 @@
 
 ## 5. 与原生交互
 
-- 每个会话窗口一个 `RdpNative` 实例（独占原生 handle）；原生事件带 handle，按 handle 路由；
-  `findByKey` 按会话 key 复用实例。
+- 每个会话窗口一个会话后端 `SessionBackend`（RDP 实现 `RdpSessionBackend` 内部独占一个 `RdpNative` 实例与原生
+  handle）；原生事件带 handle，按 handle 路由；`SessionManager` 按 `sessionKey` 经 `SessionBackendRegistry` 关联窗口与后端。
 - 原生侧能力差异（音频、GPU 加速等）走 `services/DeviceCapabilities.ets` 的
   `Capability{supported, reason}`：UI 置灰 + 说明原因，不要静默失败（见
   [`native-libraries.md`](native-libraries.md) §6）。

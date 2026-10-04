@@ -10,10 +10,10 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RdpEventPayload } from 'libhmrdp.so';
-import { PendingConnection, RdpConnectOrigin, RdpEvent, SessionRequests } from '../model/RdpModels';
+import { PendingConnection, RdpConnectOrigin, SessionRequests } from '../model/RdpModels';
+import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { CredentialStore } from './CredentialStore';
-import { RdpNative } from './RdpNative';
+import { SessionBackend, SessionBackendFactory, SessionBackendRegistry } from './SessionBackend';
 import { WindowController } from './WindowController';
 
 const DOMAIN: number = 0xD003;
@@ -40,7 +40,7 @@ export enum ConnectionState {
 export type SessionStateListener = (connectionId: string, state: ConnectionState,
   message: string, origin: RdpConnectOrigin) => void;
 /** Raw native events that only drive the session window's UI effects. */
-export type SessionWindowEventListener = (event: RdpEvent, payload: RdpEventPayload) => void;
+export type SessionWindowEventListener = (signal: SessionSignal) => void;
 /** The one lifecycle state the session window renders (from the manager). */
 export type SessionWindowStateListener = (state: ConnectionState, message: string) => void;
 export type SessionCloseListener = () => void;
@@ -50,7 +50,7 @@ class SessionEntry {
   sessionKey: string = '';
   state: ConnectionState = ConnectionState.Idle;
   message: string = '';
-  native: RdpNative = new RdpNative();
+  backend: SessionBackend | undefined = undefined;
   request: PendingConnection = new PendingConnection();
   // The context the window is launched from; kept so a retry can reopen the
   // window (only needed while it is not open yet).
@@ -120,36 +120,44 @@ export class SessionManager {
     if (!SessionManager.acceptAttempt(connectionId, state)) {
       return;
     }
+    const backend: SessionBackend | undefined = SessionBackendFactory.create(request);
+    if (backend === undefined) {
+      // No backend for this protocol yet (e.g. Moonlight until its native
+      // session lands): report it instead of silently dropping the attempt.
+      SessionManager.notify(connectionId, ConnectionState.Failed,
+        '该协议的会话将在后续版本接入', request.origin);
+      return;
+    }
     if (existing !== undefined) {
       // Only reachable when the previous entry was already Idle/Failed, so its
-      // native session is gone or going away; stopSession() is idempotent and
+      // native session is gone or going away; backend.stop() is idempotent and
       // waits (bounded) for the teardown, so nothing leaks behind us.
-      existing.native.stopSession();
-      existing.native.clearListener();
+      if (existing.backend !== undefined) {
+        existing.backend.stop();
+      }
       SessionManager.cleanup(existing);
     }
     const sessionKey: string = SessionRequests.newKey();
     SessionRequests.put(sessionKey, request);
-    const native: RdpNative = new RdpNative();
-    RdpNative.register(sessionKey, native);
+    SessionBackendRegistry.register(sessionKey, backend);
     const entry: SessionEntry = new SessionEntry();
     entry.connectionId = connectionId;
     entry.sessionKey = sessionKey;
     entry.state = ConnectionState.Connecting;
-    entry.native = native;
+    entry.backend = backend;
     entry.request = request;
     entry.context = context;
     entry.epoch = SessionManager.nextEpoch();
     SessionManager.entries.set(connectionId, entry);
     SessionManager.byKey.set(sessionKey, connectionId);
     const epoch: number = entry.epoch;
-    native.setListener((event: RdpEvent, payload: RdpEventPayload) => {
-      SessionManager.onNativeEvent(entry, epoch, event, payload);
+    backend.setSignalListener((signal: SessionSignal): void => {
+      SessionManager.onSessionSignal(entry, epoch, signal);
     });
     SessionManager.notify(connectionId, ConnectionState.Connecting, '', request.origin);
-    const handle: number = native.startSession(request.options);
+    const handle: number = backend.start();
     if (handle < 0) {
-      native.clearListener();
+      backend.clearSignalListener();
       SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
       return;
     }
@@ -170,8 +178,9 @@ export class SessionManager {
     // the session is stopped, so a click during it is refused by the state, not
     // by luck.
     SessionManager.publish(entry, ConnectionState.Disconnecting, '');
-    entry.native.stopSession();
-    entry.native.clearListener();
+    if (entry.backend !== undefined) {
+      entry.backend.stop();
+    }
     SessionManager.cleanup(entry);
     SessionManager.notify(connectionId, ConnectionState.Idle, '', origin);
     if (closeCallback !== undefined) {
@@ -187,21 +196,22 @@ export class SessionManager {
    */
   static retry(connectionId: string): boolean {
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
-    if (entry === undefined) {
+    if (entry === undefined || entry.backend === undefined) {
       return false;
     }
     if (!SessionManager.acceptAttempt(connectionId, entry.state)) {
       return false;
     }
+    const backend: SessionBackend = entry.backend;
     entry.epoch = SessionManager.nextEpoch();
     const epoch: number = entry.epoch;
-    entry.native.setListener((event: RdpEvent, payload: RdpEventPayload) => {
-      SessionManager.onNativeEvent(entry, epoch, event, payload);
+    backend.setSignalListener((signal: SessionSignal): void => {
+      SessionManager.onSessionSignal(entry, epoch, signal);
     });
     SessionManager.publish(entry, ConnectionState.Connecting, '');
-    const handle: number = entry.native.startSession(entry.request.options);
+    const handle: number = backend.start();
     if (handle < 0) {
-      entry.native.clearListener();
+      backend.clearSignalListener();
       SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
       return false;
     }
@@ -243,11 +253,13 @@ export class SessionManager {
     if (entry !== undefined && entry.sessionKey === sessionKey) {
       origin = entry.request.origin;
       SessionManager.clearEntryTimeout(entry);
-      entry.native.stopSession();
-      entry.native.clearListener();
+      if (entry.backend !== undefined) {
+        entry.backend.stop();
+      }
       SessionManager.entries.delete(connectionId);
     }
     SessionManager.byKey.delete(sessionKey);
+    SessionBackendRegistry.unregister(sessionKey);
     SessionManager.notify(connectionId, ConnectionState.Idle, '', origin);
   }
 
@@ -275,12 +287,12 @@ export class SessionManager {
   }
 
   /**
-   * Applies one native event, but only when it still belongs to the entry's
+   * Applies one session signal, but only when it still belongs to the entry's
    * current attempt: a late event from a session that was already replaced (or
    * whose window was closed) is dropped instead of driving the current state.
    */
-  private static onNativeEvent(entry: SessionEntry, epoch: number, event: RdpEvent,
-    payload: RdpEventPayload): void {
+  private static onSessionSignal(entry: SessionEntry, epoch: number,
+    signal: SessionSignal): void {
     if (SessionManager.entries.get(entry.connectionId) !== entry || entry.epoch !== epoch) {
       return;
     }
@@ -288,7 +300,7 @@ export class SessionManager {
     const eventListener: SessionWindowEventListener | undefined =
       SessionManager.windowEventListeners.get(entry.sessionKey);
 
-    if (event === RdpEvent.Connected) {
+    if (signal.kind === SessionSignalKind.Connected) {
       SessionManager.clearEntryTimeout(entry);
       SessionManager.handleConnected(entry);
       SessionManager.publish(entry, ConnectionState.Connected, '');
@@ -300,23 +312,27 @@ export class SessionManager {
       }
       return;
     }
-    if (event === RdpEvent.Error) {
-      // A failed attempt is terminal: kError is the only terminal event it sends
-      // (the native side does not also send kDisconnected), so the reason is not
+    if (signal.kind === SessionSignalKind.Error) {
+      // A failed attempt is terminal: Error is the only terminal signal it sends
+      // (the native side does not also send Disconnected), so the reason is not
       // overwritten by "连接已断开". The entry is kept in Failed so the window's
       // 重试 (or a click on the list row) can start a fresh attempt.
       SessionManager.clearEntryTimeout(entry);
-      const message: string = SessionManager.describeError(payload);
-      entry.native.stopSession();
+      const message: string = SessionManager.describeError(signal.message, signal.code);
+      if (entry.backend !== undefined) {
+        entry.backend.stop();
+      }
       SessionManager.publish(entry, ConnectionState.Failed, message);
       return;
     }
-    if (event === RdpEvent.Disconnected) {
+    if (signal.kind === SessionSignalKind.Disconnected) {
       if (entry.state === ConnectionState.Connecting ||
         entry.state === ConnectionState.Connected) {
         SessionManager.clearEntryTimeout(entry);
-        const message: string = SessionManager.describeError(payload, '连接已断开');
-        entry.native.stopSession();
+        const message: string = SessionManager.describeError(signal.message, signal.code, '连接已断开');
+        if (entry.backend !== undefined) {
+          entry.backend.stop();
+        }
         SessionManager.publish(entry, ConnectionState.Idle, message);
       }
       return;
@@ -324,7 +340,7 @@ export class SessionManager {
     // Everything else (FirstFrame / Resize / clipboard / cursor) only drives the
     // window's UI; the connection state stays with the manager.
     if (eventListener !== undefined) {
-      eventListener(event, payload);
+      eventListener(signal);
     }
   }
 
@@ -350,6 +366,7 @@ export class SessionManager {
     SessionManager.clearEntryTimeout(entry);
     SessionManager.entries.delete(entry.connectionId);
     SessionManager.byKey.delete(entry.sessionKey);
+    SessionBackendRegistry.unregister(entry.sessionKey);
     SessionManager.windowEventListeners.delete(entry.sessionKey);
     SessionManager.windowStateListeners.delete(entry.sessionKey);
     SessionManager.closeListeners.delete(entry.sessionKey);
@@ -377,7 +394,9 @@ export class SessionManager {
       }
       // Keep the entry in Failed (not cleaned up) so the window's 重试 or a
       // click on the list row can start a fresh attempt.
-      entry.native.stopSession();
+      if (entry.backend !== undefined) {
+        entry.backend.stop();
+      }
       SessionManager.publish(entry, ConnectionState.Failed, '连接超时，请检查地址或网络');
     }, CONNECT_TIMEOUT_MS);
   }
@@ -398,17 +417,15 @@ export class SessionManager {
   }
 
   /**
-   * Turns a native error/disconnect payload into a user-facing reason.
-   * `fallback` is what to say when the payload carries no reason at all, so the
-   * same parser serves both a failed connect and a dropped session.
+   * Turns a native error/disconnect reason into a user-facing message.
+   * `fallback` is what to say when there is no reason at all, so the same parser
+   * serves both a failed connect and a dropped session.
    *
    * The code's high 16 bits are the FreeRDP error class: 1 = ERRINFO (the server's
    * ErrorInfo PDU, e.g. "another connection took over"), 2 = ERRCONNECT (a local
    * connect failure). See the patch's error.h.
    */
-  static describeError(payload: RdpEventPayload, fallback: string = '连接失败'): string {
-    const raw: string = payload.message ?? '';
-    const code: number = payload.code ?? 0;
+  static describeError(raw: string, code: number, fallback: string = '连接失败'): string {
     if (code === 0) {
       return raw.length > 0 ? raw : fallback;
     }

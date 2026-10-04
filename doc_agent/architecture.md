@@ -30,9 +30,10 @@
 | `services/CredentialStore.ets` | 密码存储（ASSET，按连接 id，**仅连接成功后写入**） |
 | `services/SettingsStore.ets` | 设置存储（preferences）+ 显示解析（`detectedDisplay`/`scalePresetForResolution`/`autoScalePercent`/`resolveDisplay`） |
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
-| `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排 |
+| `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排；按协议取 `SessionBackend`，自身不绑定协议 |
+| `services/SessionBackend.ets` | **协议无关的会话后端接口 + 工厂 + `sessionKey` 注册表**；RDP 实现 `RdpSessionBackend`（包一个 `RdpNative`），Moonlight 后端随原生会话接入 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
-| `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；`findByKey` 复用；把事件交给 `SessionEventHub` |
+| `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `SessionEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/SessionEventHub.ets` | 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
 | `services/BackgroundWorker.ets` | UI 线程侧的后台 worker 门面：按 id 匹配请求/应答、按 handle 路由事件（见 §4.4） |
 | `workers/background.worker.ets` | **后台 worker（进程一条）**：剪贴板编解码 + 下载状态机/文件 IO 都在其上（见 §4.4） |
@@ -44,6 +45,7 @@
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因 |
 | `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：版本门槛判断、材质复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
 | `utils/KeyMapper.ets` | 按键名映射（设置页按键框显示用） |
+| `model/SessionSignal.ets` | 协议无关的会话信号（生命周期 `Connected/Disconnected/Error` + 协议自带码的 `UiEvent`），manager 只消费 `kind` |
 | `model/RdpModels.ets` | 连接/设置的数据模型与默认值 |
 | `components/TextAction.ets` | 列表/菜单里的通用文本动作项 |
 | `entrybackupability/EntryBackupAbility.ets` | 系统备份/恢复 Ability |
@@ -85,7 +87,7 @@
 | `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
 | `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
-| `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针与解码桥、TLS/HTTP 原语、凭证（HUKS 信封）、配对加密原语 |
+| `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针与视频解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §4） |
 | `core/hmrdp_audio.{h,cpp}` | rdpsnd sink 的**有界 PCM 交接环**（渲染器与播放策略在 ArkTS，见 [`native-libraries.md`](native-libraries.md) §5） |
 | `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
 | `core/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |

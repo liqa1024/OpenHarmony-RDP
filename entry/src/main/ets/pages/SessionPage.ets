@@ -16,6 +16,8 @@ import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtoco
 import { AudioPlayer } from '../services/AudioPlayer';
 import { BackgroundWorker } from '../services/BackgroundWorker';
 import { RdpNative } from '../services/RdpNative';
+import { RdpSessionBackend, SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
+import { SessionSignal } from '../model/SessionSignal';
 import { RdpCounters } from '../services/SessionTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
@@ -745,11 +747,12 @@ struct SessionPage {
       this.options = request.options;
       this.connectionId = request.connectionId;
     }
-    const existing: RdpNative | undefined = RdpNative.findByKey(this.sessionKey);
-    if (existing !== undefined) {
-      this.native = existing;
+    const backend: SessionBackend | undefined = SessionBackendRegistry.find(this.sessionKey);
+    if (backend instanceof RdpSessionBackend) {
+      // Share the manager's native session instance: this window renders it, the
+      // manager owns its lifecycle.
+      this.native = backend.native;
     }
-    RdpNative.register(this.sessionKey, this.native);
     // Download progress/completion events come back from the background worker;
     // route them to this window (it filters by its own current handle).
     BackgroundWorker.registerSession(this.backgroundSink);
@@ -759,8 +762,8 @@ struct SessionPage {
       (state: ConnectionState, message: string) => {
         this.applySessionState(state, message);
       },
-      (event: RdpEvent, payload: RdpEventPayload) => {
-        this.onRdpEvent(event, payload);
+      (signal: SessionSignal) => {
+        this.onSessionSignal(signal);
       },
       () => {
         this.terminateWindow();
@@ -872,6 +875,15 @@ struct SessionPage {
     if (this.surfaceId.length > 0) {
       this.native.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
     }
+  }
+
+  /**
+   * The manager forwards the protocol-neutral signal; this RDP window reads its
+   * own event code and payload back out of the envelope.
+   */
+  private onSessionSignal(signal: SessionSignal): void {
+    const payload: RdpEventPayload = signal.payload as RdpEventPayload;
+    this.onRdpEvent(signal.eventCode as RdpEvent, payload);
   }
 
   private onRdpEvent(event: RdpEvent, payload: RdpEventPayload): void {

@@ -5,7 +5,8 @@
 - 每个会话在**独立的 `SessionAbility`** 主窗口中打开（`launchType: specified` + 唯一 `instanceKey`）。
   必须用独立 Ability 才能拿到完整标题栏（子窗没有最小化按钮）。
 - 每次连接生成 `sessionKey`；待连接参数放 `SessionRequests`，**Want 里只带 key（密码不进 Want）**。
-- **主窗口后台连接、成功后才开窗**；失败只报错、不开窗。每个会话独占一个 `RdpNative` 实例。
+- **主窗口后台连接、成功后才开窗**；失败只报错、不开窗。每个会话独占一个**会话后端**
+  （`SessionBackend`；RDP 实现 `RdpSessionBackend` 内部独占一个 `RdpNative` 实例）。
 - **关闭窗口即断连**：`SessionAbility.onWindowStageDestroy/onDestroy` → `SessionManager.release` +
   `SessionRequests.discard`。注意 `SessionPage.aboutToDisappear` 在窗口关闭时**不触发**，别依赖它断连。
 - 连接有**超时兜底**；错误/断开原因经 `SessionManager.describeError` 分类（原生格式 `<错误码>|<消息>`）。
@@ -19,6 +20,13 @@
   `Idle → Connecting → Connected → Disconnecting → Idle`，失败走 `Failed`。会话窗口只是**视图**——
   它不创建也不销毁原生会话，只订阅该状态（渲染浮层）与原生 UI 事件（首帧/分辨率/遥测/剪贴板/光标）；
   原生监听器由 manager 持有。列表与窗口因此不可能各持一份状态。
+  - **manager 不绑定具体协议**：它按 `PendingConnection.protocol` 向 `SessionBackendFactory` 取一个
+    `SessionBackend`（`services/SessionBackend.ets`），只消费协议无关的 `SessionSignal`（生命周期
+    `Connected/Disconnected/Error` + 协议自带码的 `UiEvent`，见 `model/SessionSignal.ets`）与协议无关的
+    输入动词（指针/触摸/按键/Unicode）。协议特定的会话窗口把 `UiEvent.eventCode` 当自己的事件码解释，
+    并向下转型到自己的后端取更多能力（RDP 用 `RdpSessionBackend.native`）。`SessionBackendRegistry`
+    按 `sessionKey` 关联窗口与其后端。**Moonlight 后端随原生 Moonlight 会话（`LiStartConnection`）接入**，
+    在那之前工厂对该协议返回"无后端"，manager 报 `Failed` 而不是静默丢弃。
   - 原生 `Session` 的生命周期也是**单向**的（`kIdle→kStarting→kConnected→kStopping→kDestroyed`，
     一次尝试一个对象、不复用）：只有 RDP 线程释放 FreeRDP context（`Teardown`），其它线程（输入/剪贴板/
     gdi 回调）须先 `AcquireContext()` 取租约、用完 `ReleaseContext()`，`Teardown` 等**在途租约归零**后

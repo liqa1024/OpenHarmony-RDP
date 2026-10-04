@@ -27,23 +27,11 @@ const TAG: string = 'HmRdpNative';
 
 export type RdpEventListener = (event: RdpEvent, payload: RdpEventPayload) => void;
 
-const byKey: Map<string, RdpNative> = new Map<string, RdpNative>();
-
 export class RdpNative {
   private handle: number = -1;
   private listener: RdpEventListener | undefined = undefined;
   // This session's telemetry aggregation (native sends raw readings only).
   private telemetry: SessionTelemetry = new SessionTelemetry();
-
-  /** Associates an instance with the window's session key for teardown. */
-  static register(key: string, native: RdpNative): void {
-    byKey.set(key, native);
-  }
-
-  /** Returns the instance registered for a session key, if any. */
-  static findByKey(key: string): RdpNative | undefined {
-    return byKey.get(key);
-  }
 
   /**
    * Process-global RDPEI pacing: forward touch contacts at the full input rate
