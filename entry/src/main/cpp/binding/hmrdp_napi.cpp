@@ -270,6 +270,24 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
       }
       break;
     }
+    case static_cast<int>(SessionEvent::kRemoteFormatList):
+      // "kind:id,kind:id" (one entry per kind); ArkTS picks one and asks for it
+      // with requestRemoteFormat().
+      setStr("formatCandidates", data);
+      break;
+    case static_cast<int>(SessionEvent::kRemoteFormatResponse): {
+      // "<kind>|<failed>"; the settle signal for the in-flight request.
+      const std::vector<std::string> parts = SplitOn(data, '|');
+      if (parts.size() >= 2) {
+        setInt("clipKind", ParseInt64(parts[0]));
+        setBool("failed", ParseInt64(parts[1]) != 0);
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kRemoteLockState):
+      // The server's KBD_SYNC_* bits; ArkTS decides whether to re-assert.
+      setInt("lockFlags", ParseInt64(data));
+      break;
     // kConnected / kFirstFrame / kCursorDefault / kCursorHidden carry no payload.
     default:
       break;
@@ -1229,6 +1247,47 @@ napi_value AudioFormat(napi_env env, napi_callback_info info) {
   return obj;
 }
 
+// Sends a clipboard data request for one format the ArkTS side chose (see
+// kRemoteFormatList); `kind` is echoed back on the response event.
+napi_value RequestRemoteFormat(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int64_t formatId = 0;
+  int64_t kind = 0;
+  if (argc < 3 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int64(env, args[1], &formatId) != napi_ok ||
+      napi_get_value_int64(env, args[2], &kind) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  const std::shared_ptr<Session> session = FindSession(handle);
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, session->RequestRemoteFormat(static_cast<uint32_t>(formatId),
+                                                      static_cast<uint32_t>(kind)));
+}
+
+// Unconditional Client Synchronize PDU for the toggle-key re-assert ArkTS decided
+// (the deduplicated sendLockState() is for the input path).
+napi_value SendSynchronize(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int64_t flags = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int64(env, args[1], &flags) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  const std::shared_ptr<Session> session = FindSession(handle);
+  if (session == nullptr) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, session->ReassertLockState(static_cast<uint32_t>(flags)));
+}
+
 napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1876,6 +1935,10 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr},
       {"sendLockState", nullptr, SendLockState, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"sendSynchronize", nullptr, SendSynchronize, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"requestRemoteFormat", nullptr, RequestRemoteFormat, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"setShortcutPassthrough", nullptr, SetShortcutPassthrough, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setClipboardText", nullptr, SetClipboardText, nullptr, nullptr, nullptr,

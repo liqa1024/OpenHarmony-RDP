@@ -12,7 +12,7 @@ setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwa
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFileOffer, requestRemoteFileContents,
-cancelFileTransfer, sendLockState,
+cancelFileTransfer, sendLockState, sendSynchronize, requestRemoteFormat,
 RdpEventPayload, RdpTelemetry, sessionTelemetry,
 bufferRead, bufferRelease,
 startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
@@ -292,6 +292,18 @@ export class RdpNative {
   }
 
   /**
+   * Re-asserts the local toggle keys with an unconditional Client Synchronize
+   * PDU (no dedup). Used when the server's RemoteLockState disagrees with the
+   * local keyboard; the decision (and its rate limit) is this side's.
+   */
+  reassertLockState(flags: number): boolean {
+    if (this.handle < 0) {
+      return false;
+    }
+    return sendSynchronize(this.handle, flags);
+  }
+
+  /**
    * Sends a Win/Meta key event. Used by the configurable "Win key substitute":
    * a normal key that reaches onKeyEvent is remapped to Win.
    */
@@ -336,6 +348,19 @@ export class RdpNative {
       return false;
     }
     return requestRemoteFileContents(this.handle, listIndex, sizeOnly, offset, length);
+  }
+
+  /**
+   * Requests one remote clipboard format ArkTS chose from a RemoteFormatList
+   * event (see the clipboard negotiation in SessionPage). The channel does not
+   * tag data responses, so ArkTS serialises these: only one may be in flight.
+   * Returns false when the channel is unavailable.
+   */
+  requestClipboardFormat(formatId: number, kind: number): boolean {
+    if (this.handle < 0) {
+      return false;
+    }
+    return requestRemoteFormat(this.handle, formatId, kind);
   }
 
   /**

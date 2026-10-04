@@ -100,6 +100,18 @@ enum class SessionEvent {
   // "<rate>|<channels>". ArkTS (re)builds its AudioRenderer from it; the PCM
   // itself stays native in the sink ring and is pulled with audioRead().
   kAudioFormat = 22,
+  // The server offered a clipboard format list. Payload is the supported
+  // candidates as "kind:id,kind:id" (one entry per kind); ArkTS owns which one to
+  // pull (priority / single-in-flight / deferred refresh) and asks through
+  // requestRemoteFormat(). Native keeps only the byte-level wire handling.
+  kRemoteFormatList = 23,
+  // One FORMAT_DATA_RESPONSE settled (whatever the outcome), payload
+  // "<kind>|<failed>": the flow signal ArkTS uses to issue a deferred request.
+  kRemoteFormatResponse = 24,
+  // The remote session's toggle-key state (Set Keyboard Indicators PDU), payload
+  // is the KBD_SYNC_* bits. ArkTS compares it with its own local state and asks
+  // for a re-assert through reassertLockState().
+  kRemoteLockState = 25,
 };
 
 struct RdpOptions {
@@ -246,9 +258,14 @@ class Session : public std::enable_shared_from_this<Session> {
   bool SendUnicode(uint16_t codepoint, bool down);
   // Tells the server which toggle keys (scroll/num/caps) the local HarmonyOS
   // keyboard has on (KBD_SYNC_* bits); the remote session follows the local one.
-  // The cached value is also what a server-side indicator change is corrected
-  // back to. Safe to call from the UI thread.
+  // Deduplicated against the last value sent, so the input path may call it on
+  // every key event. Safe to call from the UI thread.
   bool SendLockState(uint32_t flags);
+
+  // Sends a Client Synchronize PDU for `flags` unconditionally (no dedup). ArkTS
+  // uses it to put a server that disagrees back on the local state, after it has
+  // decided the re-assert itself (see kRemoteLockState). Safe from the UI thread.
+  bool ReassertLockState(uint32_t flags);
 
   // Client Suppress Output (MS-RDPBCGR). While suppressed the server stops
   // sending screen updates *and* the surface commands are dropped locally, so a
@@ -313,6 +330,12 @@ class Session : public std::enable_shared_from_this<Session> {
   // Downloads are cancelled entirely on the ArkTS side. Safe to call from the UI
   // thread.
   void CancelFileTransfer();
+
+  // Pulls one remote clipboard format the ArkTS side chose (see
+  // kRemoteFormatList). `kind` is echoed back on the response event, since the
+  // channel does not tag data responses with their format. Returns false when the
+  // channel is unavailable. Safe to call from the UI thread.
+  bool RequestRemoteFormat(uint32_t formatId, uint32_t kind);
 
   // Drops the advertised file clipboard by advertising an empty text clipboard,
   // so the server discards the file formats and a later paste on the remote side
@@ -491,14 +514,11 @@ class Session : public std::enable_shared_from_this<Session> {
   uint32_t cursorHash_ = 0;
   bool cursorHashValid_ = false;
   // Toggle keys of the local keyboard as last reported by ArkTS (KBD_SYNC_*
-  // bits). lockKnown_ stays false until the first key event hands us a state, so
-  // a remote indicator change is never "corrected" to a guess. lastRemoteLocks_
-  // dedupes repeated server values so a re-assert cannot ping-pong.
+  // bits). localLocksKnown_ stays false until the first key event hands us a
+  // state, so SendLockState() never re-sends a guess. The remote-side comparison
+  // and re-assert policy live in ArkTS (see kRemoteLockState / ReassertLockState).
   std::atomic<uint32_t> localLocks_{0};
   std::atomic<bool> localLocksKnown_{false};
-  std::atomic<uint32_t> lastRemoteLocks_{0};
-  std::atomic<bool> lastRemoteLocksValid_{false};
-  std::atomic<uint64_t> lastReassertMs_{0};
 
   // Clipboard redirection state. The local clipboard is kept in the exact wire
   // form of each format it can provide. Only one kind is owned at a time, so the
@@ -549,17 +569,12 @@ class Session : public std::enable_shared_from_this<Session> {
   // Local -> remote progress (bytes the server has pulled from us).
   uint64_t localTransferDone_ = 0;
   uint64_t localTransferTotal_ = 0;
-  // Format the server used for "HTML Format" in its latest FormatList, kept for
-  // bookkeeping; requests use the id that list carried.
-  UINT32 remoteHtmlFormatId_ = 0;
-  // Remote fetch serialisation. A data response carries no format id, so only
-  // one request may be in flight; a FormatList arriving meanwhile is remembered
-  // and fetched after the current response.
+  // Remote fetch: a data response carries no format id, so the kind of the
+  // request in flight is remembered here to tag the response event. Which format
+  // to ask for, and when (single in flight / deferred refresh), is decided by
+  // ArkTS (see kRemoteFormatList / RequestRemoteFormat).
   bool remoteRequestInFlight_ = false;
   LocalClipKind remoteRequestKind_ = LocalClipKind::kNone;
-  bool hasPendingRemoteRefresh_ = false;
-  LocalClipKind pendingRefreshKind_ = LocalClipKind::kNone;
-  UINT32 pendingRefreshFormatId_ = 0;
 };
 
 }  // namespace hmrdp

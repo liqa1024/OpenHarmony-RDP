@@ -197,7 +197,6 @@ void SetupFreeRdpLogging() {
 }
 
 // Local clipboard content kinds; must match Session::LocalClipKind.
-constexpr int kClipNone = 0;
 constexpr int kClipText = 1;
 constexpr int kClipHtml = 2;
 constexpr int kClipImage = 3;
@@ -1839,11 +1838,8 @@ void Session::HandlePostDisconnect() {
     cliprdr_ = nullptr;
     leasesCv_.wait(lock, [this] { return activeLeases_ == 0; });
   }
-  remoteHtmlFormatId_ = 0;
   remoteRequestInFlight_ = false;
   remoteRequestKind_ = LocalClipKind::kNone;
-  hasPendingRemoteRefresh_ = false;
-  pendingRefreshKind_ = LocalClipKind::kNone;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
     // The channel is gone: a pending download request can never be answered.
@@ -2004,33 +2000,17 @@ bool Session::SendLockState(uint32_t flags) {
   return SendSynchronize(locks);
 }
 
+bool Session::ReassertLockState(uint32_t flags) {
+  // Unconditional: ArkTS decided the server disagrees and must be put back on the
+  // local state, so the SendLockState() dedup is deliberately bypassed here.
+  return SendSynchronize(flags & kLockMask);
+}
+
 void Session::HandleRemoteLockState(uint32_t ledFlags) {
-  const uint32_t locks = ledFlags & kLockMask;
-  if (lastRemoteLocksValid_.load() && lastRemoteLocks_.load() == locks) {
-    return;
-  }
-  lastRemoteLocks_.store(locks);
-  lastRemoteLocksValid_.store(true);
-  if (!localLocksKnown_.load()) {
-    // No local state has been observed yet, so there is nothing to assert; the
-    // first key event reports one and aligns the session.
-    return;
-  }
-  const uint32_t local = localLocks_.load();
-  if (locks == local) {
-    return;
-  }
-  // The local state wins: put the server back on it. Rate-limited because the
-  // assertion and the server's report can trade places if the server keeps
-  // disagreeing.
-  const uint64_t now = NowMs();
-  if (now - lastReassertMs_.load() < 1000) {
-    return;
-  }
-  lastReassertMs_.store(now);
-  HMRDP_LOGI("remote lock keys %{public}u != local %{public}u, re-asserting local", locks,
-             local);
-  SendSynchronize(local);
+  // Native only relays the server's report: whether it disagrees with the local
+  // keyboard and should be corrected is ArkTS's decision (see kRemoteLockState /
+  // ReassertLockState). Dedup and rate-limit live there too.
+  Emit(SessionEvent::kRemoteLockState, std::to_string(ledFlags & kLockMask));
 }
 
 void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
@@ -2096,8 +2076,7 @@ UINT Session::OnCliprdrMonitorReady() {
 }
 
 UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
-  if (cliprdr_ == nullptr || formatList == nullptr ||
-      cliprdr_->ClientFormatDataRequest == nullptr) {
+  if (cliprdr_ == nullptr || formatList == nullptr) {
     return CHANNEL_RC_OK;
   }
   UINT32 dibId = 0;
@@ -2128,47 +2107,34 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
   // invalidate cached descriptors). ArkTS owns the download state machine, so it
   // is told about every change and aborts its own transfer if one is running.
   Emit(SessionEvent::kRemoteClipboardChanged, "");
-  // Pull the richest representation, in that order. A file copy is a list, so
-  // it is asked for first; the "richest single value" formats follow. Only one
-  // format is in flight at a time: the channel does not tag data responses with
-  // their format, so overlapping requests could not be told apart.
-  UINT32 requestId = 0;
-  int kind = kClipNone;
-  if (fileGroupId != 0) {
-    requestId = fileGroupId;
-    kind = kClipFiles;
-  } else if (dibId != 0) {
-    requestId = dibId;
-    kind = kClipImage;
-  } else if (dibV5Id != 0) {
-    requestId = dibV5Id;
-    kind = kClipImage;
-  } else if (htmlId != 0) {
-    requestId = htmlId;
-    kind = kClipHtml;
-  } else if (rtfId != 0) {
-    // Rich Text Format is the only structured format many Windows apps offer
-    // (Word/WPS often omit HTML); convert it to HTML for the local clipboard.
-    requestId = rtfId;
-    kind = kClipRtf;
-  } else if (textId != 0) {
-    requestId = textId;
-    kind = kClipText;
-  }
-  remoteHtmlFormatId_ = htmlId;
-  if (requestId == 0) {
+  // Hand the supported candidates to ArkTS, one per kind ("kind:id,kind:id"),
+  // which owns the choice: the pull priority, the single-in-flight rule and the
+  // deferred refresh after a newer list. Native knows the wire form (so DIB is
+  // preferred over DIBV5 here) but no longer picks.
+  std::string candidates;
+  auto addCandidate = [&candidates](int kind, UINT32 id) {
+    if (id == 0) {
+      return;
+    }
+    if (!candidates.empty()) {
+      candidates.push_back(',');
+    }
+    candidates += std::to_string(kind);
+    candidates.push_back(':');
+    candidates += std::to_string(id);
+  };
+  addCandidate(kClipFiles, fileGroupId);
+  addCandidate(kClipImage, dibId != 0 ? dibId : dibV5Id);
+  addCandidate(kClipHtml, htmlId);
+  addCandidate(kClipRtf, rtfId);
+  addCandidate(kClipText, textId);
+  if (candidates.empty()) {
     HMRDP_LOGI("cliprdr server format list: no supported format");
     return CHANNEL_RC_OK;
   }
-  if (remoteRequestInFlight_) {
-    // Keep only the newest change; it is fetched once the current response
-    // arrives (never overlap requests: responses are untagged).
-    hasPendingRemoteRefresh_ = true;
-    pendingRefreshKind_ = static_cast<LocalClipKind>(kind);
-    pendingRefreshFormatId_ = requestId;
-    return CHANNEL_RC_OK;
-  }
-  return SendRemoteDataRequest(requestId, static_cast<LocalClipKind>(kind));
+  HMRDP_LOGI("cliprdr server format list: candidates=%{public}s", candidates.c_str());
+  Emit(SessionEvent::kRemoteFormatList, candidates);
+  return CHANNEL_RC_OK;
 }
 
 UINT Session::SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind) {
@@ -2184,6 +2150,15 @@ UINT Session::SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind) {
   HMRDP_LOGI("cliprdr requesting remote format id=%{public}u kind=%{public}d", formatId,
              static_cast<int>(kind));
   return cliprdr_->ClientFormatDataRequest(cliprdr_, &request);
+}
+
+bool Session::RequestRemoteFormat(uint32_t formatId, uint32_t kind) {
+  // Keep the channel alive while the request is sent on this (UI) thread.
+  ContextGuard ctx(*this);
+  if (cliprdrLocked() == nullptr) {
+    return false;
+  }
+  return SendRemoteDataRequest(formatId, static_cast<LocalClipKind>(kind)) == CHANNEL_RC_OK;
 }
 
 UINT Session::OnCliprdrServerFormatDataRequest(
@@ -2312,11 +2287,11 @@ UINT Session::OnCliprdrServerFormatDataResponse(
     }
   }
 
-  // A newer clipboard change may have arrived while this request was in flight.
-  if (hasPendingRemoteRefresh_) {
-    hasPendingRemoteRefresh_ = false;
-    return SendRemoteDataRequest(pendingRefreshFormatId_, pendingRefreshKind_);
-  }
+  // Always settle, even for an empty/failed response, so ArkTS can issue the
+  // request it deferred while this one was in flight.
+  std::ostringstream settled;
+  settled << static_cast<int>(kind) << "|" << (failed ? 1 : 0);
+  Emit(SessionEvent::kRemoteFormatResponse, settled.str());
   return CHANNEL_RC_OK;
 }
 

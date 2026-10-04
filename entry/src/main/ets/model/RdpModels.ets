@@ -183,7 +183,16 @@ export enum RdpEvent {
   RemoteClipboardChanged = 21,
   // The session's audio format changed (first packet or a rate/channel switch):
   // audioRate / audioChannels name the PCM the ArkTS AudioRenderer must open.
-  AudioFormat = 22
+  AudioFormat = 22,
+  // The server offered a clipboard format list; formatCandidates carries the
+  // supported kinds (see RdpClipKind). ArkTS owns the pick and the request.
+  RemoteFormatList = 23,
+  // One clipboard data request settled (clipKind / failed): ArkTS issues whatever
+  // it deferred while the request was in flight.
+  RemoteFormatResponse = 24,
+  // The remote session's toggle-key state (lockFlags); ArkTS compares it with its
+  // own local state and re-asserts through RdpNative.reassertLockState.
+  RemoteLockState = 25
 }
 
 export class RdpConnectOptions implements RdpOptions {
@@ -304,6 +313,20 @@ export class RdpLockFlags {
   static readonly SCROLL: number = 0x01;
   static readonly NUM: number = 0x02;
   static readonly CAPS: number = 0x04;
+}
+
+/**
+ * Content kind of a clipboard format, mirroring the native Session::LocalClipKind.
+ * Native classifies the server's formats into these and reports the candidates;
+ * ArkTS picks which kind to pull and passes it back on the request.
+ */
+export class RdpClipKind {
+  static readonly NONE: number = 0;
+  static readonly TEXT: number = 1;
+  static readonly HTML: number = 2;
+  static readonly IMAGE: number = 3;
+  static readonly RTF: number = 4;
+  static readonly FILES: number = 5;
 }
 
 export class RdpTouchFlags {

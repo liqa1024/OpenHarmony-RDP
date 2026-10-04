@@ -10,7 +10,7 @@ import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOptions,
-  RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
+  RdpClipKind, RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
 import { AudioPlayer } from '../services/AudioPlayer';
@@ -208,6 +208,12 @@ class ForegroundStateCallback extends ApplicationStateChangeCallback {
   onApplicationBackground(): void {
     this.onAway();
   }
+}
+
+/** One clipboard candidate (kind + the server's format id) the page may pull. */
+class ClipPick {
+  kind: number = RdpClipKind.NONE;
+  id: number = 0;
 }
 
 @Entry({ useSharedStorage: true })
@@ -446,6 +452,21 @@ struct SessionPage {
   // Tracked here so the renderer is released with the right handle even after
   // the native session has already reset its own (-1).
   private audioHandle: number = -1;
+  // Local toggle-key state and the remote-side re-assert bookkeeping. The policy
+  // (dedup + 1s rate limit) lives here; native only relays the server's report
+  // and sends the PDU when asked (RdpNative.reassertLockState).
+  private localLockFlags: number = 0;
+  private localLockKnown: boolean = false;
+  private lastRemoteLocks: number = 0;
+  private lastRemoteLocksValid: boolean = false;
+  private lastReassertMs: number = 0;
+  // Clipboard negotiation (see onRemoteFormatList). Only one data request may be
+  // in flight; a newer format list is remembered and pulled once the current one
+  // settles (remote responses carry no format id).
+  private remoteFormatInFlight: boolean = false;
+  private remoteFormatPending: boolean = false;
+  private remotePendingId: number = 0;
+  private remotePendingKind: number = RdpClipKind.NONE;
   // Remote cursor shape, installed as the HarmonyOS system cursor. The server
   // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
   // re-installed when the window re-acquires the pointer. `cursorHidden` tracks
@@ -756,6 +777,11 @@ struct SessionPage {
       // reports its PCM format (AudioFormat event).
       this.audioHandle = this.native.handleId();
       AudioPlayer.start(this.audioHandle);
+      // A fresh session has no request in flight and has not reported its lock
+      // state yet.
+      this.resetClipboardNegotiation();
+      this.lastRemoteLocksValid = false;
+      this.lastReassertMs = 0;
     } else if (state === ConnectionState.Connecting) {
       this.statusText = '正在连接...';
       this.showOverlay = true;
@@ -763,6 +789,7 @@ struct SessionPage {
     } else if (state === ConnectionState.Disconnecting) {
       this.statusText = '正在断开...';
       this.stopAudio();
+      this.resetClipboardNegotiation();
     } else {
       // Failed / Idle (a dropped session): show the reason the manager classified
       // and offer 重试.
@@ -772,6 +799,7 @@ struct SessionPage {
       this.showToolbar = true;
       this.resetCursor();
       this.stopAudio();
+      this.resetClipboardNegotiation();
     }
     // A state change invalidates any pending reveal / hide.
     this.refreshToolbarAutoHide();
@@ -900,6 +928,12 @@ struct SessionPage {
     } else if (event === RdpEvent.AudioFormat) {
       AudioPlayer.onFormat(this.native.handleId(), payload.audioRate ?? 0,
         payload.audioChannels ?? 0);
+    } else if (event === RdpEvent.RemoteFormatList) {
+      this.onRemoteFormatList(payload);
+    } else if (event === RdpEvent.RemoteFormatResponse) {
+      this.onRemoteFormatResponse();
+    } else if (event === RdpEvent.RemoteLockState) {
+      this.onRemoteLockState(payload.lockFlags ?? 0);
     }
   }
 
@@ -1217,6 +1251,118 @@ struct SessionPage {
     this.remoteFileCount = 0;
     this.remoteFolderCount = 0;
     BackgroundWorker.postClipboardChanged(this.native.handleId());
+  }
+
+  /**
+   * The server offered clipboard formats: pick the richest one ourselves (the
+   * choice is policy, not wire handling) and pull it. If a request is already in
+   * flight the newest list wins and is pulled once the current response settles.
+   */
+  private onRemoteFormatList(payload: RdpEventPayload): void {
+    const pick: ClipPick | undefined =
+      SessionPage.pickRemoteFormat(payload.formatCandidates ?? '');
+    if (pick === undefined) {
+      return;
+    }
+    if (this.remoteFormatInFlight) {
+      this.remoteFormatPending = true;
+      this.remotePendingId = pick.id;
+      this.remotePendingKind = pick.kind;
+      return;
+    }
+    this.issueRemoteFormat(pick.id, pick.kind);
+  }
+
+  private issueRemoteFormat(id: number, kind: number): void {
+    this.remoteFormatInFlight = this.native.requestClipboardFormat(id, kind);
+  }
+
+  /** One data request settled: pull whatever was deferred while it ran. */
+  private onRemoteFormatResponse(): void {
+    this.remoteFormatInFlight = false;
+    if (this.remoteFormatPending) {
+      this.remoteFormatPending = false;
+      this.issueRemoteFormat(this.remotePendingId, this.remotePendingKind);
+    }
+  }
+
+  /**
+   * Picks one candidate from "kind:id,kind:id" by pull priority: files > image >
+   * HTML > RTF > text (mirrors the old native order). Native already chose the
+   * id within a kind (DIB before DIBV5), so the first candidate of a kind wins.
+   */
+  private static pickRemoteFormat(candidates: string): ClipPick | undefined {
+    let best: ClipPick | undefined = undefined;
+    let bestRank: number = 99;
+    for (const entry of candidates.split(',')) {
+      const bar: number = entry.indexOf(':');
+      if (bar <= 0) {
+        continue;
+      }
+      const kind: number = Number.parseInt(entry.substring(0, bar), 10);
+      const id: number = Number.parseInt(entry.substring(bar + 1), 10);
+      if (id <= 0) {
+        continue;
+      }
+      const rank: number = SessionPage.clipKindRank(kind);
+      if (rank < bestRank) {
+        bestRank = rank;
+        const pick: ClipPick = new ClipPick();
+        pick.kind = kind;
+        pick.id = id;
+        best = pick;
+      }
+    }
+    return best;
+  }
+
+  private static clipKindRank(kind: number): number {
+    if (kind === RdpClipKind.FILES) {
+      return 0;
+    }
+    if (kind === RdpClipKind.IMAGE) {
+      return 1;
+    }
+    if (kind === RdpClipKind.HTML) {
+      return 2;
+    }
+    if (kind === RdpClipKind.RTF) {
+      return 3;
+    }
+    if (kind === RdpClipKind.TEXT) {
+      return 4;
+    }
+    return 99;
+  }
+
+  /** Drops the in-flight/deferred clipboard request state (session changed). */
+  private resetClipboardNegotiation(): void {
+    this.remoteFormatInFlight = false;
+    this.remoteFormatPending = false;
+    this.remotePendingId = 0;
+    this.remotePendingKind = RdpClipKind.NONE;
+  }
+
+  /**
+   * The server reported its toggle-key state. Local wins: if we know the local
+   * state and it differs, re-assert it (rate-limited so a server that keeps
+   * disagreeing cannot make the two sides trade places forever).
+   */
+  private onRemoteLockState(lockFlags: number): void {
+    if (this.lastRemoteLocksValid && this.lastRemoteLocks === lockFlags) {
+      return;
+    }
+    this.lastRemoteLocks = lockFlags;
+    this.lastRemoteLocksValid = true;
+    if (!this.localLockKnown || lockFlags === this.localLockFlags) {
+      return;
+    }
+    const now: number = Date.now();
+    if (now - this.lastReassertMs < 1000) {
+      return;
+    }
+    this.lastReassertMs = now;
+    this.native.reassertLockState(this.localLockFlags);
   }
 
   /** Decodes a remote CF_DIB into a PixelMap (the DIB codec lives in ArkTS). */
@@ -3017,6 +3163,8 @@ struct SessionPage {
     if (caps) {
       flags |= RdpLockFlags.CAPS;
     }
+    this.localLockFlags = flags;
+    this.localLockKnown = true;
     this.native.lockState(flags);
   }
 

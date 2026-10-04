@@ -99,6 +99,15 @@ export interface RdpEventPayload {
   /** AudioFormat: the sample rate (Hz) and channel count the renderer must use. */
   audioRate?: number;
   audioChannels?: number;
+  /**
+   * RemoteFormatList: the supported clipboard candidates as "kind:id,kind:id"
+   * (one entry per kind). ArkTS picks one and calls requestRemoteFormat().
+   */
+  formatCandidates?: string;
+  /** RemoteFormatResponse: the kind of the request that settled. */
+  clipKind?: number;
+  /** RemoteLockState: the server's KBD_SYNC_* toggle-key bits. */
+  lockFlags?: number;
 }
 
 export type RdpEventCallback = (handle: number, event: number, payload: RdpEventPayload) => void;
@@ -169,6 +178,14 @@ export const sendUnicode: (handle: number, codepoint: number, down: boolean) => 
 export const sendLockState: (handle: number, flags: number) => boolean;
 
 /**
+ * Unconditional Client Synchronize PDU (no dedup). ArkTS uses it to put a server
+ * that disagrees with the local toggle keys back on the local state, after it
+ * decided the re-assert itself (see the RemoteLockState event / sendLockState for
+ * the deduplicated input-path send).
+ */
+export const sendSynchronize: (handle: number, flags: number) => boolean;
+
+/**
  * 快捷键穿透: route the system-intercepted key events (OH_Input_AddKeyEventInterceptor,
  * INTERCEPT_INPUT_EVENT ACL) to this session while enabled, so Win / Alt+Tab / Esc
  * reach the remote. Each arrives as a KeyIntercept event, payload "<keyCode>|<down>".
@@ -213,6 +230,16 @@ export const setClipboardFileOffer: (handle: number, descriptor: ArrayBuffer,
  */
 export const requestRemoteFileContents: (handle: number, listIndex: number,
   sizeOnly: boolean, offset: number, length: number) => boolean;
+
+/**
+ * Pulls one remote clipboard format, chosen by ArkTS from a RemoteFormatList
+ * event. `formatId` is the server's id for that format and `kind` the content
+ * kind (matching the RemoteFormatResponse event). The channel does not tag data
+ * responses with their format, so only one request may be in flight; ArkTS
+ * serialises them. Returns false when the channel is unavailable.
+ */
+export const requestRemoteFormat: (handle: number, formatId: number,
+  kind: number) => boolean;
 
 /**
  * Aborts an in-flight upload (drops partial state and stops serving the

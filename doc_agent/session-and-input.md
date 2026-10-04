@@ -174,9 +174,12 @@
   （`freerdp_input_send_synchronize_event`，位值与 `KBD_SYNC_*` 一致）。**非锁定键在转发前发**——这样该键的
   字符大小写已经正确，覆盖"焦点不在本窗口时本机锁定态被改"的情况；**锁定键本身在转发后发**——该键自己已经
   让远端翻转，先发会变成二次翻转。服务端的 `Set Keyboard Indicators` PDU（`update->SetKeyboardIndicators`）
-  报远端锁定态，其客户端默认实现是**把 PDU 原样回发**，必须接管；远端值与本机不一致时按本机重新下发
-  （1s 节流，避免与服务端来回拉锯）。三个锁定键（Caps 0x3A、Scroll 0x46、Num 0x45）与各自的小键盘扫描码
-  都要在 `KeyMapper` 里齐全，否则本机锁定键根本到不了远端。
+  报远端锁定态，其客户端默认实现是**把 PDU 原样回发**，必须接管。**原生只把这个报告转成 `RemoteLockState`
+  事件**（不做比对）；**与本地是否一致、要不要纠正由 ArkTS 决定**（`SessionPage.onRemoteLockState`：不一致
+  且距上次重发 ≥1s 时调 `reassertLockState` 发一次**无去重**的 Client Synchronize，避免与服务端来回拉锯）。
+  本机态由按键事件里的 `isCapsLockOn`/`isNumLockOn`/`isScrollLockOn` 记录（`localLockFlags`）。三个锁定键
+  （Caps 0x3A、Scroll 0x46、Num 0x45）与各自的小键盘扫描码都要在 `KeyMapper` 里齐全，否则本机锁定键根本
+  到不了远端。
 - **远端光标同步**（全局设置，默认开）：RDP 只传光标**位图**（系统指针仅 `SYSPTR_NULL`/`SPTR_DEFAULT`），
   所以照搬位图、**不做类型映射**；HarmonyOS 会把自定义位图缩放到固定的系统光标大小，故**无需**按
   画面/位图尺寸自行缩放。原生侧用 `graphics_register_pointer` 接管并按需缩放（预乘 alpha 面积平均），
@@ -294,6 +297,13 @@
 只从 `Client*` 读/发它需要的表示。当前支持 **纯文本 / 富文本（HTML）/ 图片 / 文件**；文件优先于
 图片 > HTML > RTF > 文本。两个按钮按缓存到的最丰富类型给差异化提示。
 
+**原生只搬字节，"选哪个"在 ArkTS**（[`architecture.md`](architecture.md) §3.1）：`FORMAT_LIST` 到达时原生
+按 wire 形式把受支持格式分类成候选（`kind:id`，同一 kind 只留一个，DIB 先于 DIBV5）并发 `RemoteFormatList`
+事件；**优先级、单在途、延迟刷新都在 ArkTS**（`SessionPage.onRemoteFormatList` 按上表优先级选一种，经
+`requestRemoteFormat` 下发）。数据响应不带格式 id ⇒ 同一时刻**只允许一个请求在途**；原生记下在途请求的
+kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/空/失败）作为"本次已结束"的信号，ArkTS
+据此取它在这期间记下的最新待刷新项。`FORMAT_DATA_REQUEST`（服务端拉本机内容）是**同步 serve**，仍在原生。
+
 ### 4.1 文件传输
 
 - 入口沿用两个按钮（不新增独立按钮）：远端剪贴板是文件列表时「复制」触发下载，本机剪贴板含文件 URI
@@ -362,10 +372,10 @@
   把该载荷交给通道仅数毫秒、RDP 线程在整段冻结里没有长阻塞，可见瓶颈在服务端、不在客户端发送。**解法是
   减小载荷**：同时广告压缩的注册格式 `PNG`（置于 `CF_DIB` 之前，服务端会拉 PNG），载荷通常小一个量级，
   冻结随之消失；`CF_DIB` 保留为服务端不支持 PNG 时的兜底。文件不受影响：字节走 `FILECONTENTS` 分块。
-- **远端格式协商**：`FORMAT_LIST` 按 `文件(FileGroupDescriptorW) > 图片(DIB/DIBV5) > HTML Format >
-  Rich Text Format > CF_UNICODETEXT` 优先级**选一种**请求。**数据响应不带格式 id** ⇒ 同一时刻
-  **只允许一个请求在途**，期间的新列表记为待刷新，响应回来再取；分派时**严格按请求时的 kind**，
-  绝不用二进制兜底当文本（DIB 头 `28 00 00 00` 按 UTF-16 会变成 `(`）。
+- **远端格式协商**：`FORMAT_LIST` 的候选分类在原生（wire 形式），`文件(FileGroupDescriptorW) > 图片(DIB/DIBV5)
+  > HTML Format > Rich Text Format > CF_UNICODETEXT` 的**优先级选择在 ArkTS**（见 §4 开头）。**数据响应不带
+  格式 id** ⇒ 同一时刻**只允许一个请求在途**，期间的新列表记为待刷新，`RemoteFormatResponse` 回来再取；
+  分派时**严格按请求时的 kind**，绝不用二进制兜底当文本（DIB 头 `28 00 00 00` 按 UTF-16 会变成 `(`）。
 - **本机 HTML 读取**：不能只看 `getPrimaryHtml()`（只读第一条记录，且富文本常把 `text/plain` 作主 MIME、
   HTML 作附加 Entry）。要**遍历记录**用 `record.getData('text/html')` 取，再回退文本；
   不要用 `getMimeTypes()` 做门控（它可能只列主类型）。
