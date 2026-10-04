@@ -12,8 +12,6 @@ import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { MoonlightClient } from '../moonlight/MoonlightClient';
-import { AppListResult, PairResult, ServerInfoResult } from '../moonlight/MoonlightModels';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -210,82 +208,6 @@ struct Index {
     this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
   }
 
-  /**
-   * Moonlight: probe the host and show its application list. The control layer
-   * is synchronous (native HTTP), so this blocks briefly; pairing itself is a
-   * separate step (the row's 连接 button offers it in a later phase).
-   */
-  private openAppPicker(conn: SavedConnection): void {
-    if (this.connState(conn.id) === ConnectionState.Connecting
-      || this.connState(conn.id) === ConnectionState.Connected) {
-      return;
-    }
-    const context: common.Context | undefined = this.getUIContext().getHostContext();
-    const dir: string = context !== undefined ? context.filesDir : '';
-    if (dir.length === 0) {
-      this.showToast('无法访问应用数据目录');
-      return;
-    }
-    this.showToast('正在读取应用列表…');
-    const info: ServerInfoResult = MoonlightClient.fetchServerInfo(dir, conn.host, conn.port);
-    if (!info.ok) {
-      this.showToast('无法连接主机：' + info.error);
-      return;
-    }
-    if (!info.info.paired) {
-      this.promptPair(conn, dir, info.info.httpsPort, info.info.majorVersion);
-      return;
-    }
-    const list: AppListResult = MoonlightClient.fetchAppList(dir, conn.host, info.info.httpsPort);
-    if (!list.ok) {
-      this.showToast('读取应用列表失败：' + list.error);
-      return;
-    }
-    const names: string[] = [];
-    for (const app of list.apps) {
-      names.push(app.name);
-    }
-    this.getUIContext().showAlertDialog({
-      title: '应用列表',
-      message: names.length > 0 ? names.join('\n') : '主机未提供应用',
-      systemMaterial: this.dialogMaterial,
-      confirm: {
-        value: '知道了',
-        action: () => {
-        }
-      }
-    });
-  }
-
-  /**
-   * Shows a fresh 4-digit code and, on confirm, runs the pairing handshake.
-   * Pairing blocks until the host user types the code, so the dialog stays up
-   * until then; the result is reported afterwards.
-   */
-  private promptPair(conn: SavedConnection, dir: string, httpsPort: number,
-    majorVersion: number): void {
-    const pin: string = `${Math.floor(Math.random() * 10)}${Math.floor(Math.random() * 10)}`
-      + `${Math.floor(Math.random() * 10)}${Math.floor(Math.random() * 10)}`;
-    this.getUIContext().showAlertDialog({
-      title: '与主机配对',
-      message: `请在主机（${conn.host}）上输入配对码：${pin}\n输入完成后点“开始配对”`,
-      systemMaterial: this.dialogMaterial,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '开始配对',
-        action: () => {
-          const result: PairResult =
-            MoonlightClient.pair(dir, conn.host, conn.port, httpsPort, majorVersion, pin);
-          this.showToast(result.ok ? '配对成功' : '配对失败：' + result.error);
-        }
-      }
-    });
-  }
-
   private openSettings(): void {
     this.getUIContext().getRouter().pushUrl({ url: 'pages/SettingsPage' })
       .catch((error: BusinessError) => {
@@ -360,14 +282,6 @@ struct Index {
         .onClick(() => {
           this.connect(conn);
         })
-      if (conn.isMoonlight()) {
-        MenuItem({ content: '选择应用' })
-          .enabled(this.connState(conn.id) !== ConnectionState.Connecting
-            && this.connState(conn.id) !== ConnectionState.Connected)
-          .onClick(() => {
-            this.openAppPicker(conn);
-          })
-      }
       MenuItem({ content: '编辑' })
         .onClick(() => {
           this.openEditor(conn.id, conn.protocol);
@@ -420,31 +334,6 @@ struct Index {
       .onClick(() => {
         this.openEditor(conn.id, conn.protocol);
       })
-
-      // Moonlight opens a host's default app from the round button and any
-      // other app from this one; RDP rows only have the round button.
-      if (conn.isMoonlight()) {
-        Row() {
-          Image($r('app.media.ic_apps'))
-            .width(20)
-            .height(20)
-            .draggable(false)
-        }
-        .width(36)
-        .height(36)
-        .borderRadius(18)
-        .backgroundColor($r('app.color.hover_bg'))
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .margin({ left: 8 })
-        .opacity(this.connState(conn.id) === ConnectionState.Connecting
-          || this.connState(conn.id) === ConnectionState.Connected ? 0.4 : 1.0)
-        .hoverEffect(HoverEffect.Scale)
-        .bindTips('选择应用', this.tipsOptions)
-        .onClick(() => {
-          this.openAppPicker(conn);
-        })
-      }
 
       Row() {
         if (this.connState(conn.id) === ConnectionState.Connecting) {

@@ -1,8 +1,8 @@
 # Moonlight 原生客户端
 
 本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与静态链接、视频解码与上屏、
-桥接层约定、HTTP 控制层、客户端身份与信任存储与配对加密原语，以及后续的串流会话与输入接线。**协议编排与
-全部 XML 解析在 ArkTS**（§4.2），不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
+桥接层约定，以及后续的串流会话与输入接线。**控制层（serverinfo / pair / applist / launch）、协议编排与全部
+XML 解析在 ArkTS**（§4），不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
 编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)；RDP 的
 FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（本文件不重复它）。
 
@@ -26,9 +26,9 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
   `libenet.a` 与公开头 `Limelight.h` 收集到 `native/install/<arch>/moonlight/`，再同步到
   `entry/src/main/cpp/thirdparty/moonlight/{include,lib/<abi>}/`（生成目录，**不入库**，与 FreeRDP 头文件同策）。
   同步按 arch 只替换 `lib/<abi>`，两个 ABI 可共存。
-- **OpenSSL 依赖**：只用 `libcrypto`（配对 AES），复用它已经静态构建的那一份；构建时显式传
-  `OPENSSL_ROOT_DIR` / `OPENSSL_CRYPTO_LIBRARY` 等，使 `find_package(OpenSSL 1.0.2 REQUIRED)` 命中
-  OHOS 版本而不是宿主。
+- **OpenSSL 依赖**：库自身用 OpenSSL 做 control stream 的 AES/GCM + 随机数（`PlatformCrypto.c`）；构建时
+  显式传 `OPENSSL_ROOT_DIR` / `OPENSSL_CRYPTO_LIBRARY` 等，使 `find_package(OpenSSL 1.0.2 REQUIRED)`
+  命中 OHOS 版本而不是宿主（宿主没有 OHOS 版）。
 - **平台层**：它自带 POSIX 平台实现（`Platform*.c`，`LC_POSIX` 分支），OHOS 直接可用；配置阶段的自检
   （`fcntl` / `ioctl` / `poll` / `getaddrinfo` / `gethostbyname_r` / `inet_pton` / `clock_gettime` 的
   `CLOCK_MONOTONIC`）全部命中。
@@ -114,78 +114,33 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
   - 输入积压超过阈值时回 `DR_NEED_IDR` 请主机补关键帧，避免无界排队。
 
-## 4. GameStream HTTP / 配对层
+## 4. 控制 / 配对层（ArkTS）
 
-- **一个原语**：`hmrdp_moonlight_http.{h,cpp}` 只做一件事——一次 HTTP/1.1 请求（TLS 或明文），返回**未解析的响应
-  体**。`/serverinfo`、`/pair`、`/applist`、`/launch`、`/resume` 都由它拼装。**请求编排与全部 XML 解析都在 ArkTS**
-  （`@ohos.xml`），原生不解析 XML，只提供"传输 + 证书/凭证 + 加密原语"——分层理由见 §4.2。
-- **不复用 `freerdp_http_request`**：它端口写死 443、走系统 CA、只发 form-urlencoded、没有客户端证书——
-  本层需要可配端口（47989/47984）、自签名主机与 mTLS。FreeRDP gateway 的 `http.c` 是 `FREERDP_LOCAL`
-  （未导出），同样不可用。
-- **OpenSSL 只同步头、不链库**：`build-native.ps1` 只把本地 OpenSSL 构建的 `include/` 复制到
-  `thirdparty/openssl/include`。TLS / RSA / AES / SHA 的**代码**用 `libwinpr3.so` 已静态包含并导出的那一份
-  （FreeRDP 把 OpenSSL 静态编进 winpr3，符号默认可见 ⇒ 导出；`nm -D libwinpr3.so` 可见 `SSL_*`/`EVP_*`/
-  `X509_*`）。再链一份 `libssl.a`/`libcrypto.a` 只会让进程里多一份 OpenSSL、并让 HAP 变大——链接器在任何
-  顺序下都先绑到 winpr3。`moonlight-common-c` 的配对 AES 也落在这份上，故 `thirdparty/moonlight/lib/` 不带
-  `libcrypto.a`。
-- **信任模型 = 证书 pin**：未配对时 `pinnedServerCertDer` 为空 ⇒ 接受任意主机证书（首触，与官方客户端一致）；
-  配对后存下**叶证书 DER**，之后每次请求要求逐字节一致。响应总是回报对端叶证书 DER（`serverCertDer`）供
-  存储。`SSL_CTX_set_cert_verify_callback` 替换默认链校验是**有意**的：主机自签名，信任靠 pin 而非 CA。
-- **mTLS**：已配对请求带客户端证书 + 私钥（PEM，`clientCertPem`/`clientKeyPem`）。
-- **帧**：请求带 `Connection: close`；响应按 `Content-Length`，否则按 chunked，再否则以对端关闭界定。每请求
-  一个新 `SSL_CTX` + socket，无进程级状态，可并发。
-- **错误用稳定码**（`response.error`，中文文案归 UI）：`no-http` / `request` / `resolve` / `connect` / `tls` /
-  `io` / `timeout` / `http`。
-- **能力探针**：`moonlightHttpProbe` 回 `"1"`，未构建该层时回 `"0|no-moonlight-http"`（同其它能力探测模式）。
+控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**
+（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）：传输与 mTLS / 证书 pin 用 `@ohos.net.http`，配对加密
+原语用 `cryptoFramework` 与 `@ohos.security.cert`，客户端身份（自签名 X.509 + HUKS 信封加密私钥）在 ArkTS
+组装；**原生不含这一层**。以下是与实现语言无关的协议事实：
 
-### 4.1 客户端身份与信任存储（`hmrdp_moonlight_cred.*`）
-
-- **客户端身份**：自签名 X.509，RSA-2048、`SHA256withRSA`、20 年、随机序列号、`CN=NVIDIA GameStream Client`
-  （与官方客户端一致；Sunshine 忽略 CN，GFE 需要它），证书输出为 **PEM 且 LF 换行**（CRLF 会被 PC 端拒收）。
-- **私钥落盘用 HUKS 信封加密**：HUKS 内生成一把**不可导出的 AES-256-GCM 密钥**（按别名），私钥 PKCS8 用它加密
-  后落 `client.key.enc`（`HMRDPML1` 魔数 + nonce + 密文 + GCM tag）；用时解密进内存再交 OpenSSL。证书是公开
-  数据，明文落盘。
-- **为什么不是 `certManager`「应用证书凭据」或 ASSET**：`certManager` 与 HUKS 的设计都是**私钥不可导出、只给
-  签名**，而配对后的 applist/launch 走 **HTTPS mTLS**，原生 OpenSSL 必须拿到私钥字节来签握手——直接冲突
-  （除非自写 OpenSSL provider，超出范围）。ASSET 容量 **≤ 1KB**，放不下 RSA-2048 的 PKCS8 私钥（≈1.2KB），
-  官方也明说超过 1KB 改用 HUKS 或加解密框架。⇒ 取"HUKS 包裹的可读私钥"这一折中，私钥静态加密、运行时可读。
-- **服务器证书 pin 按 host 存** `server_<key>.der`（DER，公开数据）。未配对接受任意主机证书，配对后逐字节
-  比对叶证书 DER（§4 信任模型）。
-- **目录**：`<dir>/moonlight/`，`dir` 是应用沙箱 files dir，由 ArkTS 传入。
-- **损坏判定**：读回时校验魔数与 GCM tag，任一不过即视为损坏——删除 HUKS 密钥、重建身份并**清空全部 pin**
-  （强制重新配对）。HUKS 密钥随应用卸载销毁，残留密文因此不可解密，走同一条重建路径。
-- **依赖**：链接 `libhuks_ndk.z.so`（设备核心安全服务）。
-- **能力探针/入口**：`moonlightCredentialProbe` / `moonlightEnsureCredential(dir)` / `moonlightClearCredential(dir)`。
-
-### 4.2 配对：原生加密原语 + ArkTS 编排
-
-- **分层与官方实现一致**：Qt 的 `NvHTTP::getXmlString` 用 `QXmlStreamReader`，Android 的 `NvHTTP.getXmlString`
-  用 `XmlPullParser`；**配对编排（`NvPairingManager` / `PairingManager`）与普通端点共用同一套 XML 解析器、同在一个
-  应用层**。本仓库照此办理：**配对编排与所有 XML 都在 ArkTS**，原生退为加密原语 + 通用 HTTP + 凭证/pin。**不在原生
-  手写标签扫描**——那是参考实现里不存在的方言；OHOS sysroot 也没有 expat/libxml，原生用"真解析器"还得新增三方依赖。
-- **时序**：**客户端生成并显示 4 位 PIN**，用户在**主机**上输入；`getservercert` 会等到主机端完成输入，故该步
-  **无读超时**（其余步骤 5s 量级），由 ArkTS 用长超时发起。
-- **步骤**（前四步走 **HTTP 47989**，最后一步走 **HTTPS 47984**）：
-  `getservercert` → `clientchallenge` → `serverchallengeresp` → `clientpairingsecret` → `pairchallenge`（HTTPS +
-  mTLS）。失败时 ArkTS 尽力 `/unpair` 清掉主机端半程状态。
-- **原生原语**（`hmrdp_moonlight_pair.*`，hex 进 hex 出）：`moonlightPairDeriveKey`
-  （`aesKey = SHA256/SHA1(salt‖pin)[0:16]`，主版本 < 7 用 SHA-1）、`moonlightAesEcb`（AES-128-ECB、零填充、无 IV）、
-  `moonlightPairChallengeResponse`（哈希补零到 32 再 AES-ECB）、`moonlightPairExpectedResponse`（PIN 校验哈希）、
-  `moonlightCertSignature`（证书的签名值字节）、`moonlightSignClientSecret`（`SHA256withRSA`）、
-  `moonlightVerifyServerSecret`、`moonlightRandomHex`。哈希里串入的是**证书签名值字节**（`X509_get0_signature` 的
-  ASN.1 BIT STRING 内容），不是公钥。
-- **HTTP 客户端**支持**明文 HTTP**（`useTls=false`，47989 的 serverinfo / pair / unpair）与 TLS（配对后端点）；明文
-  不带 pin、不带客户端证书，TLS 带存储的客户端证书并按 host pin（配对过程中可用 `pinServerCertHex` 覆盖）。
-- **结果判定在 ArkTS**：PIN 错、`<plaincert>` 为空（另一设备在配对）、验签失败（MITM）等；成功后调
-  `moonlightStorePinnedServerCert` 落 pin。
+- **信任模型 = 证书 pin**：未配对时接受任意主机证书（首触）；配对后存叶证书，之后逐字节一致。主机自签名，
+  信任靠 pin 而非 CA。
+- **端口**：serverinfo 与配对前三步走明文 **HTTP 47989**，`pairchallenge` 走 **HTTPS 47984**（mTLS）。
+- **配对时序**：客户端生成并显示 4 位 PIN，用户在主机输入；
+  `getservercert → clientchallenge → serverchallengeresp → clientpairingsecret → pairchallenge`。
+  `getservercert` 要等主机端输入完成，**无读超时**（其余 5s 量级）。
+- **客户端身份**：自签名 X.509，RSA-2048、`SHA256withRSA`、20 年、`CN=NVIDIA GameStream Client`；证书 PEM 用
+  LF 换行（CRLF 会被主机拒收）。私钥落盘用 HUKS 信封加密（不可导出的 AES-256-GCM 密钥），证书明文落盘。
+  不用 `certManager`/ASSET：前者私钥不可导出、无法用于 mTLS 握手，后者容量 ≤ 1KB 放不下 PKCS8 私钥。
+- **配对原语**（hex 进 hex 出）：`aesKey = SHA256/SHA1(salt || pin)[0:16]`（主版本 < 7 用 SHA-1）；
+  AES-128-ECB、零填充、无 IV；哈希里串入的是**证书签名值字节**（ASN.1 BIT STRING 内容），不是公钥。
+- **存储**：目录 `<dir>/moonlight/`（`dir` 为应用沙箱 files dir）；pin 按 host 存 `server_<key>.der`。
 
 ## 5. 范围与后续方向
 
-- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）、HTTP / 配对层（§4）。
+- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、解码桥与降级（§3）、控制/配对层的协议事实（§4）。
 - 超分链路（buffer 模式 + Vulkan 导入 + 复用 `VkRenderer`）只在真机验证，属独立后续里程碑，复用约束见 §2
   「与 RDP 呈现器的复用口径」。
-- 主机发现、应用列表交互、串流会话建立（`LiStartConnection`）与输入接线不在本文件范围；**协议编排（驱动
-  `serverinfo → pair → applist → launch`）与 XML 解析也在 ArkTS**，不在本文件范围。解码桥与原生控制层把两侧备好，
-  编排接上后即可跑。路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
+- 主机发现、应用列表交互、串流会话建立（`LiStartConnection`）与输入接线不在本文件范围；**控制层（驱动
+  `serverinfo → pair → applist → launch`）、协议编排与 XML 解析在 ArkTS**，不在本文件范围。路线与阶段见
+  [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
 - **改前必读**：会话侧接线要遵守既有的线程模型（动态通道分发线程只做轻活，帧重活走 sink 钩子），见
   [`architecture.md`](architecture.md) §4。

@@ -14,15 +14,15 @@
 `entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接、按
 `thirdparty/freerdp/include/{freerdp3,winpr3}` 找头文件。
 
-**OpenSSL 只同步头，代码复用 winpr3 里那份**：Moonlight 的 HTTP/配对层（TLS、RSA/AES/SHA、自签名证书）
-需要 OpenSSL 头才能编译，由 `build-native.ps1` 复制到
-`entry/src/main/cpp/thirdparty/openssl/include`。但**不另外链 `libssl.a`/`libcrypto.a`**：FreeRDP 把
-OpenSSL 静态编进 `libwinpr3.so` 且符号默认可见（`nm -D libwinpr3.so` 可见 `SSL_*`/`EVP_*`/`X509_*`），
-`libhmrdp.so` 的引用就解析到它上面；再链一份只会让进程里多一份 OpenSSL、并让 HAP 变大，链接器在任何顺序下
-都先绑到 winpr3。`moonlight-common-c` 的配对 AES 同样落在这一份上，故 `thirdparty/moonlight/lib/` 不带
-`libcrypto.a`。（`build-native.ps1` 仍产 `libssl.a`/`libcrypto.a` 供 moonlight 构建时使用。）
-**这条依赖是"编进 winpr3 的第三方符号默认可见"这一构建事实**：若给 FreeRDP/OpenSSL 加了
-`-fvisibility=hidden` 或版本脚本，需回来改成显式提供 OpenSSL。
+**OpenSSL 头 + `libcrypto.a` 同步到模块，`libhmrdp` 链自己那份**：`moonlight-common-c` 的 control stream
+（`PlatformCrypto.c`：AES/GCM + 随机数）用它。`build-native.ps1` 把 `include/` 与 `libcrypto.a` 同步到
+`entry/src/main/cpp/thirdparty/openssl/{include,lib/<abi>}/`，`CMakeLists.txt` 把它排在 FreeRDP 共享库**之前**
+链接，并用 `-Wl,--exclude-libs` 把归档符号本地化。这样 `libhmrdp.so` 的 `EVP_*` 绑定到自己这份、不外导，
+与 FreeRDP 静态编进 `libwinpr3.so` 的那份互不抢占（同安卓：应用自带 `libcrypto` 并 `--exclude-libs,ALL`，
+与系统 BoringSSL 并存）。
+**链接顺序是判据**：静态归档一旦排在 `libwinpr3.so` 之后，未解析的 `EVP_*` 会先被 winpr3 的导出满足，
+`libhmrdp` 的 OpenSSL 就分裂成两份。自检：`llvm-nm -D --undefined-only libhmrdp.so` 不应出现 `EVP_*`，
+`llvm-nm libhmrdp.so` 里它们应是本地符号（`t`）。
 
 ## 2. 构建流程
 
@@ -32,8 +32,8 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 ```
 
 - **单一入口 `build-native.ps1`**：按依赖顺序编 zlib → OpenSSL → FreeRDP → moonlight，全部用 CMake +
-  Windows OHOS NDK；随后把 FreeRDP/OpenSSL 头同步到 `entry/src/main/cpp/thirdparty/`、moonlight 归档同步
-  过去、FreeRDP `.so` 拷进 `entry/libs/<abi>/`。`-Arch`（默认 arm64-v8a；x86_64 为模拟器）、
+  Windows OHOS NDK；随后把 FreeRDP 头、OpenSSL 头 + `libcrypto.a`、moonlight 归档同步到
+  `entry/src/main/cpp/thirdparty/`、FreeRDP `.so` 拷进 `entry/libs/<abi>/`。`-Arch`（默认 arm64-v8a；x86_64 为模拟器）、
   `-Clean`、`-Only <步骤>`（只编某一步，依赖须已装；改 FreeRDP 补丁后就是 `-Only freerdp -Clean`）。
 - **OpenSSL 走 CMake、不进 WSL**：OpenSSL 3.x 没有 CMake 构建，源码树只有 Perl 模板（`*.h.in`）与
   `build.info`，而 Windows 侧没有 Perl。做法是把 `perl Configure` 的输出**冻结**成一份快照

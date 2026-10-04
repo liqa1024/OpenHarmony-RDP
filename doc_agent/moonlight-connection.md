@@ -85,14 +85,12 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   `libhmrdp.so`；桥接层有一个连通性探针 `moonlightProbe`（返回 `"1"`，或在未构建该库时返回
   `"0|no-moonlight"`），它真正调用一个 moonlight 入口点，因此"符号已解析"是被链接器保证的。
   构建流程、静态链接约定与目录见 [`moonlight-native.md`](moonlight-native.md)。
-- **原生控制层已就绪**：`hmrdp_moonlight_http.*`（明文 HTTP / TLS、证书 pin、mTLS、`Content-Length`/chunked）、
-  `hmrdp_moonlight_cred.*`（自签名客户端身份 + HUKS 信封加密私钥 + 按 host 的 pin）、`hmrdp_moonlight_pair.*`
-  （配对加密原语）；均经 NAPI 暴露（`moonlightHttpRequest` + 原语 + pin 存取）。见
-  [`moonlight-native.md`](moonlight-native.md) §4.1/§4.2。
-- **ArkTS 协议层已落地**（`ets/moonlight/`）：`MoonlightXml`（`@ohos.xml` 解析）、`MoonlightClient`
-  （`serverinfo → pair → applist`、`unpair`）；**配对编排与全部 XML 都在 ArkTS**，按官方 PairingManager 的算法
-  调用原生加密原语（见 [`moonlight-native.md`](moonlight-native.md) §4.2）。列表行的「应用」按钮据此拉取应用列表；
-  未配对时弹配对码并完成握手。原生 HTTP 是同步调用，这些方法会阻塞调用线程（长时 `getservercert` 尤其）。
-- **尚未接入**：串流会话（`LiStartConnection`）与输入接线、应用选择落库与自动连接、HTTP 调用的异步化
-  （worker / Promise）、主机发现与 HDR / YUV444 的协商暴露。
-- 本文件描述**已落地的前端约定、ArkTS 协议层与已就绪的原生基础**；原生侧的会话/输入/上屏约束在接入后再补进本文件。
+- **控制层尚未实现**：`serverinfo / pair / applist / launch` 一律在 **ArkTS** 落地（传输与 mTLS / 证书 pin 用
+  `@ohos.net.http`，配对加密用 `cryptoFramework`，见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 与
+  [`moonlight-native.md`](moonlight-native.md) §4）；无原生实现，也不保留半成品。列表行的应用选择入口随之下线，
+  待控制层接入后恢复。
+- **ArkTS 侧已有协议建模**（`ets/moonlight/`）：`MoonlightModels`（结果类型）与 `MoonlightXml`（`@ohos.xml`
+  响应解析），控制层实现时复用；当前没有调用方。
+- **尚未接入**：控制层（`serverinfo → pair → applist → launch`）、串流会话（`LiStartConnection`）与输入接线、
+  应用选择落库与自动连接、主机发现与 HDR / YUV444 的协商暴露。
+- 本文件描述**已落地的前端约定、ArkTS 协议建模与原生客户端库基础**；控制层与原生侧的会话/输入/上屏约束在接入后再补进本文件。

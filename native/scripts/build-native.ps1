@@ -147,8 +147,10 @@ function Build-OpenSsl {
   Sync-OpenSsl
 }
 
-# Only the headers are synced, never the archives: the app resolves SSL_*/EVP_*/
-# X509_* against the copy inside libwinpr3.so (see doc_agent/native-libraries.md).
+# libcrypto.a is what libhmrdp links for moonlight-common-c's control-stream
+# crypto; its own copy, not the one FreeRDP statically links into libwinpr3.so
+# (see doc_agent/native-libraries.md). Only the headers libhmrdp compiles against
+# are synced alongside it.
 function Sync-OpenSsl {
   $from = "$Install\openssl\include"
   $to = "$Thirdparty\openssl\include"
@@ -156,14 +158,15 @@ function Sync-OpenSsl {
 
   New-Item -ItemType Directory -Path $to -Force | Out-Null
   Copy-Item -Path "$from\*" -Destination $to -Recurse -Force
-  # Drop any lib/ an older sync left behind: the archives are not linked here and
-  # must not look like they are.
-  $stale = Join-Path (Split-Path -Parent $to) "lib"
-  if (Test-Path -LiteralPath $stale) { Remove-Item -Recurse -Force $stale }
+
+  # Archive is per-ABI; keep the other ABI already under thirdparty/openssl/lib.
+  $libTo = "$Thirdparty\openssl\lib\$Arch"
+  New-Item -ItemType Directory -Path $libTo -Force | Out-Null
+  Copy-Item -LiteralPath "$Install\openssl\lib\libcrypto.a" -Destination "$libTo\" -Force
 
   $now = Get-Date
-  Get-ChildItem -LiteralPath $to -Recurse -File | ForEach-Object { $_.LastWriteTime = $now }
-  Write-Host "=== OpenSSL headers synced to $to ==="
+  Get-ChildItem -LiteralPath "$Thirdparty\openssl" -Recurse -File | ForEach-Object { $_.LastWriteTime = $now }
+  Write-Host "=== OpenSSL headers + libcrypto.a synced to $Thirdparty\openssl ==="
 }
 
 # --- freerdp ----------------------------------------------------------------
@@ -308,8 +311,8 @@ function Sync-Moonlight {
   Copy-Item -LiteralPath "$from\lib\libmoonlight-common-c.a" -Destination "$to\lib\$Arch\" -Force
   Copy-Item -LiteralPath "$from\lib\libenet.a" -Destination "$to\lib\$Arch\" -Force
 
-  # drop any libcrypto.a an older sync left next to the archives: the module
-  # links the single copy inside libwinpr3.so instead.
+  # drop any libcrypto.a an older sync left next to the archives: OpenSSL now
+  # lives under thirdparty/openssl/lib and is linked from there.
   $stale = "$to\lib\$Arch\libcrypto.a"
   if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
 
