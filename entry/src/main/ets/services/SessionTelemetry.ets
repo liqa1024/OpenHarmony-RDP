@@ -117,9 +117,9 @@ export class SessionTelemetry {
   }
 
   /**
-   * The per-second `perf:` diagnostic line (doc_agent/session-and-input.md §3).
-   * It used to be emitted natively; it now comes from the same aggregation the
-   * toolbar uses, under the same domain / tag so existing greps are unchanged.
+   * The per-second `perf:` diagnostic line (doc_agent/session-and-input.md §3),
+   * emitted from the same aggregation the toolbar uses and under the native
+   * logger's domain / tag, so the existing `perf:` grep still finds it.
    */
   private log(counters: RdpCounters, raw: RdpTelemetry, seconds: number): void {
     const frames: number = raw.windowFrames;

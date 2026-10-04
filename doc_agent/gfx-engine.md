@@ -4,8 +4,8 @@
 dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构、量测纪律与并行形态（§7）。
 上屏这一段见 [`present-pipeline.md`](present-pipeline.md)。
 
-> **已移除**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与它的
-> 能力判定）和 H.264/AVC 支持，**不要复活**（理由见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
+> **不采用**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与其
+> 能力判定）和 H.264/AVC 支持都不要复活（理由见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
 > Vulkan / GLES 两套呈现器（§2）。
 
 ## 0. 管线框架
@@ -93,17 +93,17 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 device + host-visible 内存 + surface/swapchain，不需要 compute）。「硬件加速」开关只选上屏后端（关 =
 GLES 且不碰 Vulkan）。细节见 [`present-pipeline.md`](present-pipeline.md)。
 
-## 3. 已移除的方向（**不要在新代码里重新引入**）
+## 3. 不采用的方向（**不要在新代码里重新引入**）
 
 - **自研 GPU 解码/合成引擎**（Vulkan desktop engine、Progressive/ClearCodec compute 解码、表面合成、
-  `rfx_*.comp`、Progressive 容器解析器、引擎能力判定 / `engineSupported`、dev 回放的引擎路线）：
-  已整体删除。**不要再引入 compute 解码引擎或 GLES/EGL 引擎后端**。
-- 已移除的 H.264/AVC 支持：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
-  且命中硬解也无明显收益 ⇒ 整体砍掉，服务端改用其他码流。**不要再引入媒体库依赖**。
+  `rfx_*.comp`、Progressive 容器解析器、引擎能力判定 / `engineSupported`、dev 回放的引擎路线）**不采用**：
+  不要引入 compute 解码引擎或 GLES/EGL 引擎后端。
+- **H.264/AVC 支持不采用**：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
+  且命中硬解也无明显收益 ⇒ 服务端改用其他码流。**不要引入媒体库依赖**。
 
 ## 4. 呈现能力判定
 
-- 只有 `presenterSupported` 一个判定（不再是"解码/呈现两套"）。模拟器一律回落 GLES（与"Vulkan 只在
+- 呈现能力判定只有 `presenterSupported` 一个；不存在分开的"解码能力 / 呈现能力"两套判定。模拟器一律回落 GLES（与"Vulkan 只在
   真机验证"一致）；要让模拟器用 Vulkan，只需改 `FillPresenterVerdict()` 里那一处 ABI 分支。
 - Vulkan 面与判定口径见 [`native-libraries.md`](native-libraries.md) §6。
 

@@ -42,15 +42,23 @@ enum class SessionPhase {
   kDestroyed = 4,
 };
 
+// Event ids. Each event's payload is carried in Session::EventData: `values[]`
+// holds its integer fields (in the order documented below), `text` a textual
+// field, and binary always travels in the event's byte vector. The binding maps
+// them to the named JS fields (binding/hmrdp_napi.cpp) - no delimited string
+// encoding crosses the boundary.
 enum class SessionEvent {
   kConnected = 0,
+  // Disconnected / Error: values[0] = code (FreeRDP error class, 0 = internal),
+  // text = message.
   kDisconnected = 1,
   kError = 2,
   kFirstFrame = 3,
   kClipboardText = 4,
+  // values[0] = width, values[1] = height.
   kResize = 5,
-  // Remote pointer updates. kCursorShape carries the header "<w>,<h>,<hotX>,<hotY>"
-  // in `text` plus the BGRA bitmap in the event's byte buffer; the others carry no
+  // Remote pointer updates. kCursorShape carries values {width, height, hotX,
+  // hotY} plus the BGRA bitmap in the event's byte buffer; the others carry no
   // payload and ask the UI to restore/hide the system cursor.
   kCursorShape = 6,
   kCursorDefault = 7,
@@ -67,20 +75,19 @@ enum class SessionEvent {
   // Reserved. The remote file list now arrives as kRemoteFileListRaw; this id is
   // kept only to preserve the numbering of the events that follow it.
   kClipboardFileList = 12,
-  // Transfer progress for both directions:
-  // "<direction>|<doneBytes>|<totalBytes>" with direction 0 = remote -> local,
-  // 1 = local -> remote.
+  // Transfer progress for both directions: values {direction (0 = remote ->
+  // local, 1 = local -> remote), doneBytes, totalBytes, fileIndex, fileCount}.
   kFileTransferProgress = 13,
   // Reserved. Downloads are assembled in ArkTS, which knows its own destination
   // paths, so nothing emits this any more; the id is kept for numbering.
   kClipboardFilesReady = 14,
-  // A transfer stopped before completing; the payload is a human-readable reason.
+  // A transfer stopped before completing; `text` is a human-readable reason.
   kFileTransferFailed = 15,
-  // Upload finished: the server has pulled every advertised byte. Payload is
+  // Upload finished: the server has pulled every advertised byte. values[0] is
   // the number of files.
   kFileTransferDone = 16,
   // 快捷键穿透 (see SetShortcutPassthrough in hmrdp_napi.cpp): one intercepted
-  // key event, payload "<keyCode>|<down>" with the multimodal KeyCode and 1/0.
+  // key event, values {keyCode (multimodal KeyCode), down}.
   kKeyIntercept = 17,
   // Rich Text Format clipboard payload, carried like kClipboardHtml (raw RTF in
   // the byte buffer). Kept a separate event so ArkTS can tell the two apart.
@@ -89,28 +96,28 @@ enum class SessionEvent {
   // ArkTS parses it (FileTransferCodec) and owns the download from there.
   kRemoteFileListRaw = 19,
   // One FILECONTENTS response relayed to ArkTS, which owns the download state
-  // machine. Data string "<listIndex>|<isSize>|<sizeValue>|<failed>"; a range
-  // response carries its bytes in the byte buffer (empty for end-of-file), a
-  // size response carries `sizeValue` and no bytes.
+  // machine. Values {listIndex, isSize, sizeValue, failed}; a range response
+  // carries its bytes in the byte buffer (empty for end-of-file), a size response
+  // carries `sizeValue` and no bytes.
   kRemoteFileChunk = 20,
   // The server's clipboard changed (a FORMAT_LIST arrived). ArkTS aborts any
   // download it has running and refreshes its cached remote descriptors.
   kRemoteClipboardChanged = 21,
-  // The audio format changed (first packet, or a rate/channel switch): payload
-  // "<rate>|<channels>". ArkTS (re)builds its AudioRenderer from it; the PCM
-  // itself stays native in the sink ring and is pulled with audioRead().
+  // The audio format changed (first packet, or a rate/channel switch): values
+  // {rate, channels}. ArkTS (re)builds its AudioRenderer from it; the PCM itself
+  // stays native in the sink ring and is pulled with audioRead().
   kAudioFormat = 22,
-  // The server offered a clipboard format list. Payload is the supported
+  // The server offered a clipboard format list. `text` carries the supported
   // candidates as "kind:id,kind:id" (one entry per kind); ArkTS owns which one to
   // pull (priority / single-in-flight / deferred refresh) and asks through
   // requestRemoteFormat(). Native keeps only the byte-level wire handling.
   kRemoteFormatList = 23,
-  // One FORMAT_DATA_RESPONSE settled (whatever the outcome), payload
-  // "<kind>|<failed>": the flow signal ArkTS uses to issue a deferred request.
+  // One FORMAT_DATA_RESPONSE settled (whatever the outcome): values {kind,
+  // failed}. The flow signal ArkTS uses to issue a deferred request.
   kRemoteFormatResponse = 24,
-  // The remote session's toggle-key state (Set Keyboard Indicators PDU), payload
-  // is the KBD_SYNC_* bits. ArkTS compares it with its own local state and asks
-  // for a re-assert through reassertLockState().
+  // The remote session's toggle-key state (Set Keyboard Indicators PDU):
+  // values[0] is the KBD_SYNC_* bits. ArkTS compares it with its own local state
+  // and asks for a re-assert through reassertLockState().
   kRemoteLockState = 25,
 };
 
@@ -185,11 +192,20 @@ struct SessionTelemetry {
 
 class Session : public std::enable_shared_from_this<Session> {
  public:
-  // Event payload: `text` holds the small textual fields, `bytes` the raw
-  // binary (cursor / clipboard bitmaps). Binary never travels as text - the
-  // translation layer hands ArkTS a native buffer handle instead (hmrdp_napi.cpp).
+  // One event's payload, in typed form. Native fills only the fields its event
+  // defines (see SessionEvent); the binding maps them to the named JS fields, so
+  // neither side stringifies and re-parses a delimited encoding. `values` holds
+  // the event's integer fields in the order documented on the event; `text` its
+  // textual field (a message / reason / raw list), if any; binary always travels
+  // separately in the byte vector.
+  struct EventData {
+    int64_t values[5] = {0, 0, 0, 0, 0};
+    std::string text;
+  };
+
+  // Event payload: `data` holds the typed integer/text fields.
   using EventFn =
-      std::function<void(SessionEvent, const std::string&, const std::vector<uint8_t>&)>;
+      std::function<void(SessionEvent, const EventData&, const std::vector<uint8_t>&)>;
 
   explicit Session();
   ~Session();
@@ -413,8 +429,18 @@ class Session : public std::enable_shared_from_this<Session> {
   // to tear anything down.
   void MarkDestroyed();
   void EventThread();
-  void Emit(SessionEvent event, const std::string& data);
-  void Emit(SessionEvent event, const std::string& data, const std::vector<uint8_t>& bytes);
+  // Emit overloads, by payload shape. `EmitText`/`Emit` send a textual field,
+  // `EmitValues` the integer fields (in the event's documented order, optionally
+  // with a binary buffer), `EmitBytes` only a binary buffer, `EmitError` the
+  // "<code>|<message>" pair as typed fields.
+  void Emit(SessionEvent event);
+  void Emit(SessionEvent event, const std::string& text);
+  void EmitValues(SessionEvent event, std::initializer_list<int64_t> values);
+  void EmitValues(SessionEvent event, std::initializer_list<int64_t> values,
+                  const std::vector<uint8_t>& bytes);
+  void EmitBytes(SessionEvent event, const std::vector<uint8_t>& bytes);
+  void EmitError(SessionEvent event, uint32_t code, const std::string& message);
+  void Emit(SessionEvent event, const EventData& data, const std::vector<uint8_t>& bytes);
   // Sends a Client Synchronize PDU unconditionally (the caller decided the
   // server's toggle state is stale). SendLockState() is the deduplicated entry
   // point used by the input path.
@@ -485,6 +511,9 @@ class Session : public std::enable_shared_from_this<Session> {
   std::deque<std::vector<uint8_t>> gfxQueue_;
   std::atomic<bool> gfxWorkerRun_{false};
   std::atomic<size_t> gfxQueueBytes_{0};
+  // Latches after the queue crosses its defensive high-water mark so the warning
+  // is logged once per episode, not once per chunk.
+  std::atomic<bool> gfxQueueHighWaterWarned_{false};
   void* gfxWorkerContext_ = nullptr;
   // 超分辨率 magnification of the remote desktop (output ÷ session resolution).
   // The server sizes the pointer bitmap in *session* pixels, so the cursor is
@@ -508,11 +537,6 @@ class Session : public std::enable_shared_from_this<Session> {
   uint64_t lastOutBytes_ = 0;
   uint64_t lastFrameCount_ = 0;
   uint64_t telemetrySeq_ = 0;
-  // Hash of the last cursor bitmap sent to the UI; identical repeats (pointer
-  // cache hits) are dropped so the system cursor is only re-installed on an
-  // actual shape change.
-  uint32_t cursorHash_ = 0;
-  bool cursorHashValid_ = false;
   // Toggle keys of the local keyboard as last reported by ArkTS (KBD_SYNC_*
   // bits). localLocksKnown_ stays false until the first key event hands us a
   // state, so SendLockState() never re-sends a guess. The remote-side comparison

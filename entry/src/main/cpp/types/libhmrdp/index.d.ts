@@ -188,8 +188,8 @@ export const sendSynchronize: (handle: number, flags: number) => boolean;
 /**
  * 快捷键穿透: route the system-intercepted key events (OH_Input_AddKeyEventInterceptor,
  * INTERCEPT_INPUT_EVENT ACL) to this session while enabled, so Win / Alt+Tab / Esc
- * reach the remote. Each arrives as a KeyIntercept event, payload "<keyCode>|<down>".
- * Returns whether the state is in effect (false when registration failed).
+ * reach the remote. Each arrives as a KeyIntercept event carrying `keyCode` and
+ * `down`. Returns whether the state is in effect (false when registration failed).
  */
 export const setShortcutPassthrough: (handle: number, enabled: boolean) => boolean;
 

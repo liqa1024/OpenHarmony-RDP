@@ -2,11 +2,11 @@
  * HmRdp - the audio worker: one ArkTS AudioRenderer per live session.
  *
  * Native keeps the FreeRDP sink and its PCM handoff ring; this worker owns the
- * renderer, so decoding/playing no longer depends on OHAudio code inside
- * libhmrdp. Each renderer's writeData callback pulls from the ring by handle
- * (audioRead), which fills the buffer with queued audio plus silence on an
- * underrun - so the callback always reports a full, valid buffer and the
- * buffering policy stays in one place (the native sink).
+ * renderer, so the player does not depend on OHAudio code inside libhmrdp. Each
+ * renderer's writeData callback pulls from the ring by handle (audioRead), which
+ * fills the buffer with queued audio plus silence on an underrun - so the callback
+ * always reports a full, valid buffer and the buffering policy stays in one place
+ * (the native sink).
  *
  * Separate from the background worker on purpose: a realtime audio callback must
  * not queue behind a large image decode or a file write (doc_agent/architecture.md

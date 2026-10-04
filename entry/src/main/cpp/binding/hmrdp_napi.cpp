@@ -76,7 +76,7 @@ HandleRegistry<NativeBuffer> g_buffers;
 struct EventPayload {
   int64_t handle;
   int event;
-  std::string data;
+  Session::EventData data;
   std::vector<uint8_t> bytes;
 };
 
@@ -94,15 +94,11 @@ std::vector<std::string> SplitOn(const std::string& text, char separator) {
   }
 }
 
-int64_t ParseInt64(const std::string& text) {
-  return static_cast<int64_t>(std::strtoll(text.c_str(), nullptr, 10));
-}
-
-// Turns one event's native encoding into a typed object, so ArkTS reads named
-// fields instead of splitting "WxH" / "a|b|c" / a base64 header. This is
-// marshalling at the boundary, not protocol logic: the encoding stays owned by
-// the native side, which is the only side that knows it.
-napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
+// Turns one event's typed native payload into the JS object ArkTS reads. Native
+// fills named integer / text fields (Session::EventData), so neither side
+// stringifies and re-parses a delimited encoding; this is marshalling at the
+// boundary, not protocol logic.
+napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& payload,
                             const std::vector<uint8_t>& bytes) {
   napi_value obj = nullptr;
   napi_create_object(env, &obj);
@@ -121,118 +117,69 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
     napi_get_boolean(env, value, &v);
     napi_set_named_property(env, obj, name, v);
   };
+  auto value = [&payload](int index) {
+    return index >= 0 && index < 5 ? payload.values[index] : static_cast<int64_t>(0);
+  };
+  // Hands the binary half over as a native buffer handle (ArkTS reads it once
+  // with bufferRead(); nothing binary crosses as a string).
+  auto setBuffer = [&](const char* name) {
+    if (!bytes.empty()) {
+      auto buffer = std::make_shared<NativeBuffer>();
+      buffer->bytes = bytes;
+      setInt(name, g_buffers.Add(buffer));
+    }
+  };
 
   switch (event) {
     case static_cast<int>(SessionEvent::kError):
-    case static_cast<int>(SessionEvent::kDisconnected): {
-      // "<code>|<message>", or just "<message>" when code == 0.
-      const size_t bar = data.find('|');
-      if (bar == std::string::npos) {
-        setInt("code", 0);
-        setStr("message", data);
-      } else {
-        setInt("code", ParseInt64(data.substr(0, bar)));
-        setStr("message", data.substr(bar + 1));
-      }
+    case static_cast<int>(SessionEvent::kDisconnected):
+      setInt("code", value(0));
+      setStr("message", payload.text);
       break;
-    }
-    case static_cast<int>(SessionEvent::kResize): {
-      const size_t x = data.find('x');
-      if (x != std::string::npos) {
-        setInt("width", ParseInt64(data.substr(0, x)));
-        setInt("height", ParseInt64(data.substr(x + 1)));
-      }
+    case static_cast<int>(SessionEvent::kResize):
+      setInt("width", value(0));
+      setInt("height", value(1));
       break;
-    }
     case static_cast<int>(SessionEvent::kClipboardText):
-      setStr("text", data);
+      setStr("text", payload.text);
       break;
-    case static_cast<int>(SessionEvent::kClipboardHtml): {
-      // Raw CF_HTML in `bytes`; ArkTS parses it (ClipboardCodec.parseCfHtml).
-      if (!bytes.empty()) {
-        auto buffer = std::make_shared<NativeBuffer>();
-        buffer->bytes = bytes;
-        setInt("dataHandle", g_buffers.Add(buffer));
-      }
-      break;
-    }
+    case static_cast<int>(SessionEvent::kClipboardHtml):
     case static_cast<int>(SessionEvent::kClipboardRtf):
-      // Raw RTF in `bytes`; ArkTS converts it (ClipboardCodec.parseRtf).
-      if (!bytes.empty()) {
-        auto buffer = std::make_shared<NativeBuffer>();
-        buffer->bytes = bytes;
-        setInt("dataHandle", g_buffers.Add(buffer));
-      }
-      break;
     case static_cast<int>(SessionEvent::kRemoteFileListRaw):
-      // Raw FILEGROUPDESCRIPTORW in `bytes`; ArkTS parses it (FileTransferCodec).
-      if (!bytes.empty()) {
-        auto buffer = std::make_shared<NativeBuffer>();
-        buffer->bytes = bytes;
-        setInt("dataHandle", g_buffers.Add(buffer));
-      }
+      // Raw CF_HTML / RTF / FILEGROUPDESCRIPTORW; ArkTS parses it.
+      setBuffer("dataHandle");
       break;
-    case static_cast<int>(SessionEvent::kRemoteFileChunk): {
-      // "<listIndex>|<isSize>|<sizeValue>|<failed>"; a range response carries its
-      // bytes in `bytes` (absent for an end-of-file marker or a size response).
-      const std::vector<std::string> parts = SplitOn(data, '|');
-      if (parts.size() >= 4) {
-        setInt("listIndex", ParseInt64(parts[0]));
-        setBool("isSize", ParseInt64(parts[1]) != 0);
-        setInt("sizeValue", ParseInt64(parts[2]));
-        setBool("failed", ParseInt64(parts[3]) != 0);
-      }
-      if (!bytes.empty()) {
-        auto buffer = std::make_shared<NativeBuffer>();
-        buffer->bytes = bytes;
-        setInt("dataHandle", g_buffers.Add(buffer));
-      }
+    case static_cast<int>(SessionEvent::kRemoteFileChunk):
+      // listIndex / isSize / sizeValue / failed, plus the range bytes.
+      setInt("listIndex", value(0));
+      setBool("isSize", value(1) != 0);
+      setInt("sizeValue", value(2));
+      setBool("failed", value(3) != 0);
+      setBuffer("dataHandle");
       break;
-    }
-    // kRemoteClipboardChanged carries no payload.
-    case static_cast<int>(SessionEvent::kCursorShape): {
-      // header "<w>,<h>,<hotX>,<hotY>" in text, the BGRA bitmap in `bytes`.
-      const std::vector<std::string> head = SplitOn(data, ',');
-      if (head.size() == 4) {
-        setInt("width", ParseInt64(head[0]));
-        setInt("height", ParseInt64(head[1]));
-        setInt("hotX", ParseInt64(head[2]));
-        setInt("hotY", ParseInt64(head[3]));
-      }
-      if (!bytes.empty()) {
-        auto buffer = std::make_shared<NativeBuffer>();
-        buffer->bytes = bytes;
-        setInt("imageHandle", g_buffers.Add(buffer));
-      }
+    case static_cast<int>(SessionEvent::kCursorShape):
+      // width / height / hotX / hotY, plus the BGRA bitmap.
+      setInt("width", value(0));
+      setInt("height", value(1));
+      setInt("hotX", value(2));
+      setInt("hotY", value(3));
+      setBuffer("imageHandle");
       break;
-    }
-    case static_cast<int>(SessionEvent::kClipboardImage): {
-      // The raw CF_DIB travels in `bytes`; ArkTS decodes it (ClipboardCodec).
-      if (!bytes.empty()) {
-        auto buffer = std::make_shared<NativeBuffer>();
-        buffer->bytes = bytes;
-        setInt("imageHandle", g_buffers.Add(buffer));
-      }
+    case static_cast<int>(SessionEvent::kClipboardImage):
+      // Raw CF_DIB; ArkTS decodes it (ClipboardCodec).
+      setBuffer("imageHandle");
       break;
-    }
-    case static_cast<int>(SessionEvent::kFileTransferProgress): {
-      const std::vector<std::string> parts = SplitOn(data, '|');
-      if (parts.size() >= 3) {
-        setInt("direction", ParseInt64(parts[0]));
-        setInt("doneBytes", ParseInt64(parts[1]));
-        setInt("totalBytes", ParseInt64(parts[2]));
-      }
-      if (parts.size() >= 4) {
-        setInt("fileIndex", ParseInt64(parts[3]));
-      }
-      if (parts.size() >= 5) {
-        setInt("fileCount", ParseInt64(parts[4]));
-      }
+    case static_cast<int>(SessionEvent::kFileTransferProgress):
+      setInt("direction", value(0));
+      setInt("doneBytes", value(1));
+      setInt("totalBytes", value(2));
+      setInt("fileIndex", value(3));
+      setInt("fileCount", value(4));
       break;
-    }
     case static_cast<int>(SessionEvent::kClipboardFilesReady): {
+      // Reserved; `text` carries the paths, one per line.
       std::vector<std::string> paths;
-      for (const std::string& path : SplitOn(data, '\n')) {
+      for (const std::string& path : SplitOn(payload.text, '\n')) {
         if (!path.empty()) {
           paths.push_back(path);
         }
@@ -248,47 +195,32 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
       break;
     }
     case static_cast<int>(SessionEvent::kFileTransferFailed):
-      setStr("reason", data);
+      setStr("reason", payload.text);
       break;
     case static_cast<int>(SessionEvent::kFileTransferDone):
-      setInt("fileCount", ParseInt64(data));
+      setInt("fileCount", value(0));
       break;
-    case static_cast<int>(SessionEvent::kKeyIntercept): {
-      const std::vector<std::string> parts = SplitOn(data, '|');
-      if (parts.size() >= 2) {
-        setInt("keyCode", ParseInt64(parts[0]));
-        setBool("down", ParseInt64(parts[1]) != 0);
-      }
+    case static_cast<int>(SessionEvent::kKeyIntercept):
+      setInt("keyCode", value(0));
+      setBool("down", value(1) != 0);
       break;
-    }
-    case static_cast<int>(SessionEvent::kAudioFormat): {
-      // "<rate>|<channels>"; ArkTS (re)builds its AudioRenderer from it.
-      const std::vector<std::string> parts = SplitOn(data, '|');
-      if (parts.size() >= 2) {
-        setInt("audioRate", ParseInt64(parts[0]));
-        setInt("audioChannels", ParseInt64(parts[1]));
-      }
+    case static_cast<int>(SessionEvent::kAudioFormat):
+      setInt("audioRate", value(0));
+      setInt("audioChannels", value(1));
       break;
-    }
     case static_cast<int>(SessionEvent::kRemoteFormatList):
-      // "kind:id,kind:id" (one entry per kind); ArkTS picks one and asks for it
-      // with requestRemoteFormat().
-      setStr("formatCandidates", data);
+      // "kind:id,kind:id" (one entry per kind); ArkTS picks one and asks for it.
+      setStr("formatCandidates", payload.text);
       break;
-    case static_cast<int>(SessionEvent::kRemoteFormatResponse): {
-      // "<kind>|<failed>"; the settle signal for the in-flight request.
-      const std::vector<std::string> parts = SplitOn(data, '|');
-      if (parts.size() >= 2) {
-        setInt("clipKind", ParseInt64(parts[0]));
-        setBool("failed", ParseInt64(parts[1]) != 0);
-      }
+    case static_cast<int>(SessionEvent::kRemoteFormatResponse):
+      setInt("clipKind", value(0));
+      setBool("failed", value(1) != 0);
       break;
-    }
     case static_cast<int>(SessionEvent::kRemoteLockState):
-      // The server's KBD_SYNC_* bits; ArkTS decides whether to re-assert.
-      setInt("lockFlags", ParseInt64(data));
+      setInt("lockFlags", value(0));
       break;
-    // kConnected / kFirstFrame / kCursorDefault / kCursorHidden carry no payload.
+    // kConnected / kFirstFrame / kCursorDefault / kCursorHidden /
+    // kRemoteClipboardChanged carry no payload.
     default:
       break;
   }
@@ -311,7 +243,7 @@ void CallJsEvent(napi_env env, napi_value jsCallback, void*, void* data) {
   napi_call_function(env, global, jsCallback, 3, argv, nullptr);
 }
 
-void OnSessionEvent(int64_t handle, SessionEvent event, const std::string& data,
+void OnSessionEvent(int64_t handle, SessionEvent event, const Session::EventData& data,
                     const std::vector<uint8_t>& bytes) {
   if (g_eventTsfn == nullptr) {
     return;
@@ -349,9 +281,10 @@ void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
   if (handle <= 0) {
     return;
   }
-  const std::string payload =
-      std::to_string(keyCode) + "|" + (action == KEY_ACTION_DOWN ? "1" : "0");
-  OnSessionEvent(handle, SessionEvent::kKeyIntercept, payload, {});
+  Session::EventData data;
+  data.values[0] = keyCode;
+  data.values[1] = (action == KEY_ACTION_DOWN) ? 1 : 0;
+  OnSessionEvent(handle, SessionEvent::kKeyIntercept, data, {});
 }
 
 // Copies the session's shared ownership out of the registry, so the caller keeps
@@ -549,7 +482,7 @@ napi_value CreateSession(napi_env env, napi_callback_info) {
   // Bind the handle into the callback so events can be routed to the owning
   // session window when several sessions run at once. No event can fire before
   // connect(), which the caller only issues after this returns.
-  session->SetEventFn([id](SessionEvent event, const std::string& data,
+  session->SetEventFn([id](SessionEvent event, const Session::EventData& data,
                            const std::vector<uint8_t>& bytes) {
     OnSessionEvent(id, event, data, bytes);
   });

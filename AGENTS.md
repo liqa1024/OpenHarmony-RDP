@@ -59,7 +59,6 @@
 | Moonlight（Sunshine）串流**前端**：协议建模、存储、连接列表/编辑页/设置页分栏、图标 | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
 | Moonlight **原生侧**：客户端库构建与静态链接、视频解码与编解码协商、解码桥与降级、HTTP 控制层、客户端身份与信任存储、配对加密原语 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
 | Moonlight 接入路线图（未定项多，仅方向） | [`MOONLIGHT_PLAN.md`](MOONLIGHT_PLAN.md) |
-| 原生边界重构 / ArkTS 并发模型（执行计划） | [`REFACTOR_PLAN.md`](REFACTOR_PLAN.md) |
 
 ## 环境
 

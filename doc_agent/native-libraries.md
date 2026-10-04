@@ -196,11 +196,10 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
   `yCbCrToRGB` 与部分 primitives 由 FreeRDP 自己的实现接管；非抽取支的上游 NEON **不接**
   （16 位车道相加会回绕，不是舍入）。这类改动由**量级门禁**兜底，见
   [`gfx-engine.md`](gfx-engine.md) §7.1/§7.2。
-- **`state` 少一趟搬运（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化那趟改成
-  **`sign → buffer`**——原先是"就地改 `buffer` + 另拷一份到 `sign`"，于是每 tile/分量的那趟 8KB 搬运
-  整趟消失，两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"
-  的值，所以它那 64/81 个样本先拷过去、再就地移位。读数见
-  （`state` 绝对量 −5 成）。
+- **`state` 只搬一趟（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化只做
+  **`sign → buffer`**：没有"就地改 `buffer` + 另拷一份到 `sign`"的第二趟，每 tile/分量省掉 8KB 搬运，
+  两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"的值，
+  所以它那 64/81 个样本先拷过去、再就地移位。读数见（`state` 绝对量 −5 成）。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`

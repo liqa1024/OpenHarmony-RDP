@@ -150,10 +150,10 @@ export enum RdpEvent {
   // them. Text arrives already decoded on ClipboardText.
   ClipboardHtml = 9,
   ClipboardImage = 10,
-  // Reserved. Per-second telemetry no longer crosses the boundary as an event:
-  // raw readings are pulled with sessionTelemetry() and aggregated in ArkTS (see
-  // services/SessionTelemetry), so nothing emits this any more. The id is kept
-  // only to preserve the numbering of the events that follow it.
+  // Reserved. Per-second telemetry is not an event: raw readings are pulled with
+  // sessionTelemetry() and aggregated in ArkTS (see services/SessionTelemetry), so
+  // nothing emits this. The id is kept only to preserve the numbering of the
+  // events that follow it.
   Metrics = 11,
   // Reserved. The remote file list now arrives as RemoteFileListRaw (a raw
   // FILEGROUPDESCRIPTORW) that ArkTS parses; this id is kept for numbering.

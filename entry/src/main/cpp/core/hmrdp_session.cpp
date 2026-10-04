@@ -141,7 +141,6 @@ extern "C" void HmrdpThreadQoSHook(void) {
 namespace hmrdp {
 // The file-clipboard domain lives in its own unit (hmrdp_file_clipboard.*); pull
 // its names in so the session reads as a wire-up.
-using fileclip::BuildTransferProgress;
 using fileclip::FileSizeOfPath;
 using fileclip::kFileContentsId;
 using fileclip::kFileContentsName;
@@ -214,24 +213,6 @@ const char kHtmlFormatName[] = "HTML Format";
 // (named "PNG"; the server maps it by name under CB_USE_LONG_FORMAT_NAMES).
 constexpr UINT32 kPngFormatId = 0xC003;
 const char kPngFormatName[] = "PNG";
-
-// FNV-1a over the cursor geometry and pixels, used to drop redundant updates.
-uint32_t CursorHash(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
-                    const uint8_t* data, size_t len) {
-  uint32_t hash = 2166136261u;
-  const uint32_t header[4] = {width, height, hotX, hotY};
-  for (uint32_t value : header) {
-    for (int i = 0; i < 4; i++) {
-      hash ^= (value >> (i * 8)) & 0xFF;
-      hash *= 16777619u;
-    }
-  }
-  for (size_t i = 0; i < len; i++) {
-    hash ^= data[i];
-    hash *= 16777619u;
-  }
-  return hash;
-}
 
 // HarmonyOS custom cursors cap at 256x256 (see setCustomCursorSync). Larger RDP
 // cursors (large pointer, up to 384x384) are downscaled to fit instead of being
@@ -977,17 +958,8 @@ int SuperResolutionSessionSize(int output, int ratioPercent) {
   return even > 0 ? even : 2;
 }
 
-// Error events carry "<code>|<message>"; the code lets the UI distinguish an
-// authentication failure from a network problem. Internal errors use code 0.
-std::string EncodeError(uint32_t code, const std::string& message) {
-  if (code == 0) {
-    return message;
-  }
-  std::ostringstream out;
-  out << code << '|' << message;
-  return out.str();
-}
-
+// Error events carry a code (to distinguish an authentication failure from a
+// network problem) plus a message; internal errors use code 0.
 }  // namespace
 
 namespace {
@@ -1073,11 +1045,46 @@ Session::~Session() {
   Disconnect();
 }
 
-void Session::Emit(SessionEvent event, const std::string& data) {
+void Session::Emit(SessionEvent event) {
+  Emit(event, EventData{}, {});
+}
+
+void Session::Emit(SessionEvent event, const std::string& text) {
+  EventData data;
+  data.text = text;
   Emit(event, data, {});
 }
 
-void Session::Emit(SessionEvent event, const std::string& data,
+void Session::EmitValues(SessionEvent event, std::initializer_list<int64_t> values) {
+  EmitValues(event, values, {});
+}
+
+void Session::EmitValues(SessionEvent event, std::initializer_list<int64_t> values,
+                         const std::vector<uint8_t>& bytes) {
+  EventData data;
+  size_t index = 0;
+  for (int64_t value : values) {
+    if (index >= 5) {
+      break;
+    }
+    data.values[index] = value;
+    index++;
+  }
+  Emit(event, data, bytes);
+}
+
+void Session::EmitBytes(SessionEvent event, const std::vector<uint8_t>& bytes) {
+  Emit(event, EventData{}, bytes);
+}
+
+void Session::EmitError(SessionEvent event, uint32_t code, const std::string& message) {
+  EventData data;
+  data.values[0] = code;
+  data.text = message;
+  Emit(event, data, {});
+}
+
+void Session::Emit(SessionEvent event, const EventData& data,
                    const std::vector<uint8_t>& bytes) {
   if (eventFn_) {
     eventFn_(event, data, bytes);
@@ -1170,7 +1177,7 @@ void Session::SetError(const std::string& error) {
 void Session::SetError(uint32_t code, const std::string& error) {
   lastErrorCode_ = code;
   lastError_ = error;
-  Emit(SessionEvent::kError, EncodeError(code, error));
+  EmitError(SessionEvent::kError, code, error);
 }
 
 bool Session::Connect(const RdpOptions& options) {
@@ -1457,7 +1464,7 @@ void Session::EventThread() {
   // first; this is the only StopGfxWorker() call for a live session.
   StopGfxWorker();
   freerdp_disconnect(instance);
-  Emit(SessionEvent::kDisconnected, EncodeError(lastErrorCode_, lastError_));
+  EmitError(SessionEvent::kDisconnected, lastErrorCode_, lastError_);
   Teardown();
 }
 
@@ -1535,8 +1542,14 @@ void Session::Teardown() {
 }
 
 void Session::HandlePostConnect() {
-  Emit(SessionEvent::kConnected, "");
+  Emit(SessionEvent::kConnected);
 }
+
+// Defensive high-water mark for the GFX offload queue. The queue cannot be
+// capped by dropping (every chunk is part of the GFX stream and must reach the
+// parser), so crossing this only warns: it means the frame worker is far behind
+// and memory is growing, which is worth seeing rather than silently absorbing.
+constexpr size_t kGfxQueueHighWaterBytes = 64 * 1024 * 1024;
 
 void Session::HandleGfxData(const uint8_t* data, size_t size) {
   if (data == nullptr || size == 0) {
@@ -1561,6 +1574,10 @@ void Session::HandleGfxData(const uint8_t* data, size_t size) {
     }
   }
   if (queued) {
+    const size_t pending = gfxQueueBytes_.load();
+    if (pending >= kGfxQueueHighWaterBytes && !gfxQueueHighWaterWarned_.exchange(true)) {
+      HMRDP_LOGW("gfx queue over high-water: %{public}zu bytes pending", pending);
+    }
     gfxQueueCv_.notify_one();
     return;
   }
@@ -1595,6 +1612,10 @@ void Session::GfxWorkerLoop() {
       chunk = std::move(gfxQueue_.front());
       gfxQueue_.pop_front();
       gfxQueueBytes_.fetch_sub(chunk.size());
+    }
+    if (gfxQueueBytes_.load() < kGfxQueueHighWaterBytes) {
+      // Re-arm the high-water warning once the backlog has drained.
+      gfxQueueHighWaterWarned_.store(false);
     }
     auto* gfx = static_cast<RdpgfxClientContext*>(gfxWorkerContext_);
     if (gfx == nullptr) {
@@ -1722,7 +1743,7 @@ void Session::AfterPresent() {
 
   if (!firstFrameSent_) {
     firstFrameSent_ = true;
-    Emit(SessionEvent::kFirstFrame, "");
+    Emit(SessionEvent::kFirstFrame);
   }
 }
 
@@ -1734,9 +1755,7 @@ void Session::HandleDesktopResize() {
   rdpSettings* settings = ctx.instance()->context->settings;
   const UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
   const UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-  std::ostringstream payload;
-  payload << width << "x" << height;
-  Emit(SessionEvent::kResize, payload.str());
+  EmitValues(SessionEvent::kResize, {width, height});
 }
 
 void Session::HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
@@ -1804,25 +1823,17 @@ void Session::HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX,
     }
     bgra.swap(scaled);
   }
-  const uint32_t hash = CursorHash(outW, outH, outHotX, outHotY, bgra.data(), bgra.size());
-  if (cursorHashValid_ && hash == cursorHash_) {
-    return;
-  }
-  cursorHash_ = hash;
-  cursorHashValid_ = true;
-  std::ostringstream header;
-  header << outW << ',' << outH << ',' << outHotX << ',' << outHotY;
-  Emit(SessionEvent::kCursorShape, header.str(), bgra);
+  // Identical repeats (pointer cache hits) are dropped on the ArkTS side, so the
+  // bitmap is handed over on every shape the server sends.
+  EmitValues(SessionEvent::kCursorShape, {outW, outH, outHotX, outHotY}, bgra);
 }
 
 void Session::HandlePointerDefault() {
-  cursorHashValid_ = false;
-  Emit(SessionEvent::kCursorDefault, "");
+  Emit(SessionEvent::kCursorDefault);
 }
 
 void Session::HandlePointerHidden() {
-  cursorHashValid_ = false;
-  Emit(SessionEvent::kCursorHidden, "");
+  Emit(SessionEvent::kCursorHidden);
 }
 
 void Session::HandlePostDisconnect() {
@@ -1857,7 +1868,7 @@ int Session::OnAudioData(const void* data, size_t size, int sampleRate, int chan
   int rate = 0;
   int count = 0;
   if (audio_.TakeFormatChange(&rate, &count)) {
-    Emit(SessionEvent::kAudioFormat, std::to_string(rate) + "|" + std::to_string(count));
+    EmitValues(SessionEvent::kAudioFormat, {rate, count});
   }
   return latency;
 }
@@ -2010,7 +2021,7 @@ void Session::HandleRemoteLockState(uint32_t ledFlags) {
   // Native only relays the server's report: whether it disagrees with the local
   // keyboard and should be corrected is ArkTS's decision (see kRemoteLockState /
   // ReassertLockState). Dedup and rate-limit live there too.
-  Emit(SessionEvent::kRemoteLockState, std::to_string(ledFlags & kLockMask));
+  EmitValues(SessionEvent::kRemoteLockState, {ledFlags & kLockMask});
 }
 
 void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
@@ -2106,11 +2117,11 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
   // Any server clipboard change supersedes a download in progress (and may
   // invalidate cached descriptors). ArkTS owns the download state machine, so it
   // is told about every change and aborts its own transfer if one is running.
-  Emit(SessionEvent::kRemoteClipboardChanged, "");
+  Emit(SessionEvent::kRemoteClipboardChanged);
   // Hand the supported candidates to ArkTS, one per kind ("kind:id,kind:id"),
   // which owns the choice: the pull priority, the single-in-flight rule and the
-  // deferred refresh after a newer list. Native knows the wire form (so DIB is
-  // preferred over DIBV5 here) but no longer picks.
+  // deferred refresh after a newer list. Native owns the wire form (so it prefers
+  // DIB over DIBV5 here) and does not pick.
   std::string candidates;
   auto addCandidate = [&candidates](int kind, UINT32 id) {
     if (id == 0) {
@@ -2223,9 +2234,7 @@ UINT Session::OnCliprdrServerFormatDataRequest(
     }
     if (total == 0) {
       // All advertised files are empty, so there is nothing left to stream.
-      std::ostringstream donePayload;
-      donePayload << servedFileCount;
-      Emit(SessionEvent::kFileTransferDone, donePayload.str());
+      EmitValues(SessionEvent::kFileTransferDone, {static_cast<int64_t>(servedFileCount)});
       WithdrawLocalFileClipboard();
     }
   }
@@ -2257,19 +2266,19 @@ UINT Session::OnCliprdrServerFormatDataResponse(
     // Hand the raw FILEGROUPDESCRIPTORW to ArkTS, which owns the parse
     // (FileTransferCodec) and the whole download state machine.
     std::vector<uint8_t> descriptor(data, data + size);
-    Emit(SessionEvent::kRemoteFileListRaw, "", descriptor);
+    EmitBytes(SessionEvent::kRemoteFileListRaw, descriptor);
   } else if (kind == LocalClipKind::kImage) {
     // Hand the raw CF_DIB to ArkTS, which owns the DIB decode (ClipboardCodec).
     std::vector<uint8_t> dib(data, data + size);
-    Emit(SessionEvent::kClipboardImage, "", dib);
+    EmitBytes(SessionEvent::kClipboardImage, dib);
   } else if (kind == LocalClipKind::kHtml) {
     // Hand the raw CF_HTML to ArkTS, which owns the parse (ClipboardCodec).
     std::vector<uint8_t> html(data, data + size);
-    Emit(SessionEvent::kClipboardHtml, "", html);
+    EmitBytes(SessionEvent::kClipboardHtml, html);
   } else if (kind == LocalClipKind::kRtf) {
     // Hand the raw RTF to ArkTS, which converts it (ClipboardCodec.parseRtf).
     std::vector<uint8_t> rtf(data, data + size);
-    Emit(SessionEvent::kClipboardRtf, "", rtf);
+    EmitBytes(SessionEvent::kClipboardRtf, rtf);
   } else if (kind == LocalClipKind::kText && size >= sizeof(WCHAR)) {
     // CF_UNICODETEXT is a NUL-terminated UTF-16LE string; make sure the buffer
     // handed to the converter is terminated even if the server omitted the NUL.
@@ -2289,9 +2298,8 @@ UINT Session::OnCliprdrServerFormatDataResponse(
 
   // Always settle, even for an empty/failed response, so ArkTS can issue the
   // request it deferred while this one was in flight.
-  std::ostringstream settled;
-  settled << static_cast<int>(kind) << "|" << (failed ? 1 : 0);
-  Emit(SessionEvent::kRemoteFormatResponse, settled.str());
+  EmitValues(SessionEvent::kRemoteFormatResponse,
+             {static_cast<int64_t>(kind), failed ? 1 : 0});
   return CHANNEL_RC_OK;
 }
 
@@ -2435,8 +2443,8 @@ void Session::SetLocalFileOffer(const uint8_t* descriptor, size_t descriptorLen,
   AdvertiseLocalClipboard();
   // Tell the UI the size of the upload so it can show a progress bar before the
   // server starts pulling.
-  Emit(SessionEvent::kFileTransferProgress,
-       BuildTransferProgress(1, 0, total, 0, static_cast<uint32_t>(paths.size())));
+  EmitValues(SessionEvent::kFileTransferProgress,
+             {1, 0, static_cast<int64_t>(total), 0, static_cast<int64_t>(paths.size())});
 }
 
 bool Session::RequestRemoteFileContents(uint32_t listIndex, bool sizeOnly, uint64_t offset,
@@ -2556,35 +2564,30 @@ UINT Session::HandleRemoteFileContentsResponse(
     listIndex = pendingFileContentsIndex_;
     sizeOnly = pendingFileContentsSizeOnly_;
   }
-  // Meta "<listIndex>|<isSize>|<sizeValue>|<failed>"; a range response carries
-  // its bytes in the byte buffer (empty for an end-of-file marker).
-  std::ostringstream meta;
-  meta << listIndex << '|';
+  // Fields: listIndex, isSize, sizeValue, failed. A range response carries its
+  // bytes in the byte buffer (empty for an end-of-file marker).
   const bool failed = (response->common.msgFlags & CB_RESPONSE_FAIL) != 0;
   if (failed) {
-    meta << (sizeOnly ? 1 : 0) << "|0|1";
     HMRDP_LOGW("cliprdr file contents response failed: index=%{public}u", listIndex);
-    Emit(SessionEvent::kRemoteFileChunk, meta.str());
+    EmitValues(SessionEvent::kRemoteFileChunk, {listIndex, sizeOnly ? 1 : 0, 0, 1});
     return CHANNEL_RC_OK;
   }
   if (sizeOnly) {
     if (response->requestedData == nullptr || response->cbRequested != sizeof(uint64_t)) {
-      meta << "1|0|1";
-      Emit(SessionEvent::kRemoteFileChunk, meta.str());
+      EmitValues(SessionEvent::kRemoteFileChunk, {listIndex, 1, 0, 1});
       return CHANNEL_RC_OK;
     }
     uint64_t size = 0;
     memcpy(&size, response->requestedData, sizeof(size));
-    meta << "1|" << size << "|0";
-    Emit(SessionEvent::kRemoteFileChunk, meta.str());
+    EmitValues(SessionEvent::kRemoteFileChunk,
+               {listIndex, 1, static_cast<int64_t>(size), 0});
     return CHANNEL_RC_OK;
   }
   std::vector<uint8_t> data;
   if (response->requestedData != nullptr && response->cbRequested > 0) {
     data.assign(response->requestedData, response->requestedData + response->cbRequested);
   }
-  meta << "0|0|0";
-  Emit(SessionEvent::kRemoteFileChunk, meta.str(), data);
+  EmitValues(SessionEvent::kRemoteFileChunk, {listIndex, 0, 0, 0}, data);
   return CHANNEL_RC_OK;
 }
 UINT Session::HandleLocalFileContentsRequest(
@@ -2672,12 +2675,11 @@ UINT Session::HandleLocalFileContentsRequest(
     uploadDone = ok && (request->dwFlags & FILECONTENTS_RANGE) != 0 && done >= total;
   }
   const UINT rc = cliprdr_->ClientFileContentsResponse(cliprdr_, &response);
-  Emit(SessionEvent::kFileTransferProgress,
-       BuildTransferProgress(1, done, total, request->listIndex + 1, fileCount));
+  EmitValues(SessionEvent::kFileTransferProgress,
+             {1, static_cast<int64_t>(done), static_cast<int64_t>(total),
+              static_cast<int64_t>(request->listIndex) + 1, static_cast<int64_t>(fileCount)});
   if (uploadDone) {
-    std::ostringstream donePayload;
-    donePayload << fileCount;
-    Emit(SessionEvent::kFileTransferDone, donePayload.str());
+    EmitValues(SessionEvent::kFileTransferDone, {static_cast<int64_t>(fileCount)});
     // Every advertised byte is served, so the list has no reason to stay on the
     // clipboard: withdrawing it keeps a second paste on the remote side from
     // pulling the same files again (with no progress row to cancel).

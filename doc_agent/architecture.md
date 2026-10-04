@@ -60,7 +60,7 @@
 
 一个能力只有满足下面**任一条**才留在原生；不满足的一律属于 ArkTS（控制面、状态机、格式编解码、协议编排、遥测聚合）：
 
-1. **API 只存在于原生**：FreeRDP、Vulkan / `OHNativeWindow`、OHAudio、`OH_AVCodec`、ffrt、HUKS、OpenSSL、moonlight-common-c、XEngine。
+1. **API 只存在于原生**：FreeRDP、Vulkan / `OHNativeWindow`、`OH_AVCodec`、ffrt、HUKS、OpenSSL、moonlight-common-c、XEngine。
 2. **回调必须同步返回或绑定线程**：FreeRDP 在自有线程上要求同步返回的回调（gdi `BeginPaint`/`EndPaint`、cliprdr、rdpsnd、pointer、autodetect）；跨到 ArkTS 再返回既无法同步，也无法保证线程。
 3. **热数据路径的逐项穿越**：每帧 / 每音频样本一次 NAPI 调用会引入 JS 停顿与 GC。
 
@@ -125,7 +125,8 @@
 **规则**：drdynvc 分发线程是**所有动态通道的公共瓶颈**——帧流水线一旦内联在它上面，一个重帧就会把音频、
 输入一起挡住（表现为音频卡顿、且与帧率绑定）。因此帧重活必须通过 sink 钩子交到应用线程
 （`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`native-libraries.md`](native-libraries.md) §4）。
-新增/修改动态通道处理时按这条办。
+新增/修改动态通道处理时按这条办。sink→队列这一段只拷不阻塞（队列是**延迟缓冲、不是节流**）：它不按帧数设硬上限，
+只在越过防御性 high-water（64MB）时打一次警告——**不能靠丢弃来限流**，每个 chunk 都是 GFX 流的一部分，丢了会破坏解析。
 
 **分层原则**：真正的并发模型在 ArkTS 侧——页面/服务可按需为自己的缓冲、编排、状态机起独立线程；原生只保留
 **必须同步返回、或必须绑在库自有线程上**的适配器（文件上传 serve、rdpsnd sink、gdi / cliprdr / pointer
@@ -168,6 +169,8 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
 **事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。
 `services/SessionEventHub` 是其唯一订阅者，按 handle 路由给 `RdpNative`；需 worker 消费的事件由 UI 线程按 handle
 `postMessage` 转发（Worker 拿不到该 TSFN：回调只跑 UI 线程，且各 Worker 有独立 `napi_env`）。Worker 只回控制/进度。
+**事件载荷是类型化字段**：原生按 `Session::EventData`（整数槽 `values[]` + 文本 `text` + 二进制 byte 向量）产出，
+绑定层按事件映射成命名字段——跨边界不做 `a|b|c` 之类的字符串编组，因此两侧没有"同一套分隔约定"需要对齐。
 
 **Worker 可调用原生**：Worker 内 `import 'libhmrdp.so'` 加载同一份 `.so`，进程级句柄注册表跨运行时共享——UI
 线程 `createSession` 的 handle 可在 worker 直接用（读该会话原生缓冲）。前提：原生**不缓存 `napi_env`/

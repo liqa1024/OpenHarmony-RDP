@@ -316,7 +316,7 @@ struct SessionPage {
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
   // Active touch contacts, keyed by the ArkUI touch id. The value is the last
-  // remote point sent for that contact (used to drop no-op moves).
+  // remote point sent for that contact, so no-op moves can be dropped.
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
   // ArkUI touch id -> remote RDPEI contact id, kept separate so a contact can be
   // resumed after a Cancel even if ArkUI renumbers the finger.
@@ -475,6 +475,11 @@ struct SessionPage {
   private cursorHotX: number = 0;
   private cursorHotY: number = 0;
   private cursorHidden: boolean = false;
+  // Hash of the last installed cursor shape (geometry + pixels). Native hands
+  // over every shape the server sends; identical repeats (pointer cache hits)
+  // are dropped here so the system cursor is only re-installed on a real change.
+  private cursorShapeHash: number = 0;
+  private cursorShapeHashValid: boolean = false;
   // Set once a cursor API call fails, so we stop retrying on every update.
   private cursorSupported: boolean = true;
   // Global "使用RDP光标" setting; when off the session leaves the system cursor
@@ -919,9 +924,11 @@ struct SessionPage {
     } else if (event === RdpEvent.CursorDefault) {
       this.cursorHidden = false;
       this.cursorPixelMap = undefined;
+      this.cursorShapeHashValid = false;
       this.applyCursor();
     } else if (event === RdpEvent.CursorHidden) {
       this.cursorHidden = true;
+      this.cursorShapeHashValid = false;
       this.applyCursor();
     } else if (event === RdpEvent.KeyIntercept) {
       this.handleInterceptedKey(payload);
@@ -1133,28 +1140,34 @@ struct SessionPage {
 
   /** Decodes a remote cursor bitmap and installs it as the system cursor. */
   private onCursorShape(payload: RdpEventPayload): void {
-    if (!this.cursorSupported || !this.useRdpCursor) {
+    const imageHandle: number = payload.imageHandle ?? 0;
+    if (imageHandle <= 0) {
       return;
     }
+    // Always read (and release) the buffer, even when this session will not use
+    // it, so the native handle can never leak.
+    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
     const width: number = payload.width ?? 0;
     const height: number = payload.height ?? 0;
     const hotX: number = payload.hotX ?? 0;
     const hotY: number = payload.hotY ?? 0;
-    const imageHandle: number = payload.imageHandle ?? 0;
-    if (width <= 0 || height <= 0 || imageHandle <= 0) {
+    if (bytes === undefined || width <= 0 || height <= 0) {
+      return;
+    }
+    if (!this.cursorSupported || !this.useRdpCursor) {
       return;
     }
     // Native already downscales oversized cursors to <=256; this is only a
     // safety net should an out-of-range size ever reach the UI.
     if (width > 256 || height > 256) {
-      RdpNative.readAndReleaseBuffer(imageHandle);
       this.cursorHidden = false;
       this.cursorPixelMap = undefined;
+      this.cursorShapeHashValid = false;
       this.applyCursor();
       return;
     }
-    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
-    if (bytes === undefined) {
+    const hash: number = SessionPage.cursorHash(width, height, hotX, hotY, bytes);
+    if (this.cursorShapeHashValid && hash === this.cursorShapeHash) {
       return;
     }
     const options: image.InitializationOptions = {
@@ -1167,10 +1180,27 @@ struct SessionPage {
       this.cursorHotX = Math.max(0, Math.min(hotX, width));
       this.cursorHotY = Math.max(0, Math.min(hotY, height));
       this.cursorHidden = false;
+      this.cursorShapeHash = hash;
+      this.cursorShapeHashValid = true;
       this.applyCursor();
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'create cursor pixelmap failed: %{public}s', JSON.stringify(error));
     }
+  }
+
+  /** Dedup key over the cursor geometry and pixels (native sends every shape). */
+  private static cursorHash(width: number, height: number, hotX: number,
+    hotY: number, bytes: ArrayBuffer): number {
+    const view: Uint8Array = new Uint8Array(bytes);
+    let hash: number = 0;
+    hash = (hash * 31 + width) | 0;
+    hash = (hash * 31 + height) | 0;
+    hash = (hash * 31 + hotX) | 0;
+    hash = (hash * 31 + hotY) | 0;
+    for (let i = 0; i < view.length; i++) {
+      hash = (hash * 31 + view[i]) | 0;
+    }
+    return hash;
   }
 
   /** Decodes a raw CF_HTML payload (ClipboardCodec) into the remote HTML cache. */
@@ -1456,6 +1486,7 @@ struct SessionPage {
     this.cursorHidden = false;
     this.touchPinchCursor = false;
     this.cursorPixelMap = undefined;
+    this.cursorShapeHashValid = false;
     this.applyCursor();
   }
 
