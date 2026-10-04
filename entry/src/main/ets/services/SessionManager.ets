@@ -13,7 +13,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PendingConnection, RdpConnectOrigin, SessionRequests } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { CredentialStore } from './CredentialStore';
-import { SessionBackend, SessionBackendFactory, SessionBackendRegistry } from './SessionBackend';
+import { SessionBackend, SessionBackendRegistry } from './SessionBackend';
+import { SessionBackendFactory } from './SessionBackendFactory';
 import { WindowController } from './WindowController';
 
 const DOMAIN: number = 0xD003;
@@ -165,7 +166,9 @@ export class SessionManager {
     const handle: number = backend.start();
     if (handle < 0) {
       backend.clearSignalListener();
-      SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
+      if (entry.state === ConnectionState.Connecting) {
+        SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
+      }
       return;
     }
     SessionManager.armTimeout(entry);
@@ -187,7 +190,11 @@ export class SessionManager {
     const handle: number = entry.backend.start();
     if (handle < 0) {
       entry.backend.clearSignalListener();
-      SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
+      // A backend that failed synchronously already published its own reason via
+      // a signal; only fall back when it did not.
+      if (entry.state === ConnectionState.Connecting) {
+        SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
+      }
       return false;
     }
     SessionManager.armTimeout(entry);

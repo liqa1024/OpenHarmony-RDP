@@ -92,7 +92,10 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   无原生实现（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 与
   [`moonlight-native.md`](moonlight-native.md) §4）。**尚未接到 UI / 会话**：列表行的应用选择入口、配对界面
   与会话建立仍是后续里程碑。
-- **尚未接入**：Moonlight 会话窗口（负责绑定 surface + 启动 + 输入）与工厂放行、控制层编排
-  （`serverinfo → pair → applist → launch`，含首次配对的 PIN 窗口）、应用选择落库与自动连接、主机发现与
-  HDR / YUV444 的协商暴露。原生会话桥、N-API 出口与 `MoonlightSessionBackend` 均已就绪，但尚无 UI 调用方。
+- **会话窗口与后端已接入**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
+  `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`、`services/SessionBackendFactory.ets`
+  与 `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按协议路由到该页。**串流配置尚未接入**——它来自控制层
+  编排（`serverinfo → launch`），所以此刻连接会走到窗口后以"尚未配置串流参数"失败。
+- **尚未接入**：控制层编排（`serverinfo → pair → applist → launch`，含首次配对的 PIN 轻量弹窗）、应用选择
+  落库与自动连接、主机发现、音频（Opus）与 HDR / YUV444 的协商暴露。
 - 本文件描述**已落地的前端约定、ArkTS 协议建模与控制层**；原生侧的会话/输入/上屏约束在接入后再补进本文件。

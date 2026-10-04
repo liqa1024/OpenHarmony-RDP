@@ -23,7 +23,8 @@
 | `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
-| `pages/SessionPage.ets` | XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪；转发下载事件、渲染进度（状态机在后台 worker，见 §4.4） |
+| `pages/SessionPage.ets` | RDP 会话页：XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪；转发下载事件、渲染进度（状态机在后台 worker，见 §4.4） |
+| `pages/MoonlightSessionPage.ets` | Moonlight 会话页：XComponent 先绑 surface 再 `SessionManager.beginStream`（`LiStartConnection` 要渲染目标）、输入转后端具体动词、状态浮层 |
 | `pages/EditConnectionPage.ets` | 新增/编辑连接（保存只写配置；密码在连接成功后自动保存；可折叠「高级设置」） |
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |
 | `services/ConnectionStore.ets` | 连接配置存储（preferences；稳定 id + `updatedAt`；`reorder` 持久化顺序） |
@@ -31,7 +32,10 @@
 | `services/SettingsStore.ets` | 设置存储（preferences）+ 显示解析（`detectedDisplay`/`scalePresetForResolution`/`autoScalePercent`/`resolveDisplay`） |
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
 | `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排；按协议取 `SessionBackend`，自身不绑定协议 |
-| `services/SessionBackend.ets` | **协议无关的会话后端接口 + 工厂 + `sessionKey` 注册表**；RDP 实现 `RdpSessionBackend`（包一个 `RdpNative`），Moonlight 后端随原生会话接入 |
+| `services/SessionBackend.ets` | **协议无关的会话后端接口 + `sessionKey` 注册表**；RDP 实现 `RdpSessionBackend`（包一个 `RdpNative`） |
+| `services/SessionBackendFactory.ets` | 按 `PendingConnection.protocol` 选后端（RDP / Moonlight） |
+| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface，输入转 `LiSend*` |
+| `utils/MoonlightKeyMapper.ets` | HarmonyOS 键码 + 鼠标键 → Windows 虚拟键码与 Moonlight 的 modifier/button/action 常量 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `SessionEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/SessionEventHub.ets` | 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |

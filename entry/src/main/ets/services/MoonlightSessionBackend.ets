@@ -73,16 +73,16 @@ export class MoonlightSessionBackend implements SessionBackend {
   start(): number {
     const config: MoonlightSessionConfig | undefined = this.config;
     if (config === undefined) {
-      this.emit(ML_EVENT_STAGE_FAILED, 0, 'no-config');
+      this.emit(ML_EVENT_STAGE_FAILED, 0, '尚未配置串流参数（控制层未接入）');
       return -1;
     }
     if (!this.windowBound) {
-      this.emit(ML_EVENT_STAGE_FAILED, 0, 'no-window');
+      this.emit(ML_EVENT_STAGE_FAILED, 0, '会话窗口未就绪');
       return -1;
     }
     const error: string = moonlightSessionStart(config);
     if (error.length > 0) {
-      this.emit(ML_EVENT_STAGE_FAILED, 0, error);
+      this.emit(ML_EVENT_STAGE_FAILED, 0, `无法启动串流（${error}）`);
       return -1;
     }
     return 1;

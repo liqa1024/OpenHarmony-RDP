@@ -9,9 +9,7 @@
  * protocol-specific session window downcasts to its own backend for the rest.
  */
 import { RdpEventPayload } from 'libhmrdp.so';
-import {
-  PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnectOptions, RdpEvent
-} from '../model/RdpModels';
+import { PROTOCOL_RDP, RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { RdpNative } from './RdpNative';
 
@@ -159,17 +157,3 @@ export class RdpSessionBackend implements SessionBackend {
   }
 }
 
-/** Creates the backend for a connection, or undefined when the protocol has none. */
-export class SessionBackendFactory {
-  static create(request: PendingConnection): SessionBackend | undefined {
-    if (request.protocol === PROTOCOL_MOONLIGHT) {
-      // MoonlightSessionBackend is ready (see MoonlightSessionBackend.ets) but
-      // is not handed out until the Moonlight session window lands: the manager
-      // opens the window before start for it (requiresWindowAtStart), and the
-      // window is what binds the surface and calls SessionManager.beginStream.
-      // Returning it now would open an RDP page with nothing to start it.
-      return undefined;
-    }
-    return new RdpSessionBackend(request.options);
-  }
-}

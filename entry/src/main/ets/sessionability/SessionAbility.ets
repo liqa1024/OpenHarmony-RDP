@@ -9,7 +9,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { SessionRequests } from '../model/RdpModels';
+import { SessionRequests, PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -78,7 +78,12 @@ export default class SessionAbility extends UIAbility {
     }
     const storage: LocalStorage = new LocalStorage();
     storage.setOrCreate<string>('sessionKey', this.sessionKey);
-    windowStage.loadContent('pages/SessionPage', storage, (err) => {
+    // The protocol decides the session window: RDP's rich page, or the Moonlight
+    // page (surface first, then LiStartConnection).
+    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
+    const page: string = request !== undefined && request.protocol === PROTOCOL_MOONLIGHT
+      ? 'pages/MoonlightSessionPage' : 'pages/SessionPage';
+    windowStage.loadContent(page, storage, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, 'Failed to load the content. Cause: %{public}s',
           JSON.stringify(err));
