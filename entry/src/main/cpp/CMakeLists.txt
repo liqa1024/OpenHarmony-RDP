@@ -124,6 +124,7 @@ add_library(hmrdp SHARED
     core/hmrdp_session.cpp
     core/hmrdp_file_clipboard.cpp
     core/hmrdp_moonlight.cpp
+core/hmrdp_moonlight_session.cpp
     core/hmrdp_video_decoder.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
