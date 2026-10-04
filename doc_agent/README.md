@@ -34,7 +34,7 @@
 - [`settings-and-storage.md`](settings-and-storage.md) —— 设置与连接的存储模型、密码（ASSET）、导入/导出、
   **设置何时生效**与解析优先级。
 - [`native-libraries.md`](native-libraries.md) —— FreeRDP/OpenSSL/zlib 的源码构建与补丁、无版本号 SONAME、
-  为什么 `entry/libs/<abi>/` 不入库、音频（OHAudio）与能力探测（Capability）模式。
+  为什么 `entry/libs/<abi>/` 不入库、音频（原生 sink 交接环 / ArkTS 渲染器）与能力探测（Capability）模式。
 - [`gfx-engine.md`](gfx-engine.md) —— GFX 码流框架：管线与命令模型、会话侧接线、
   回放验证回路与**参考画面（golden reference）验收**、**CPU（gdi）链路的成本结构与账目口径 /
   判据与门禁 / 并行形态（§7）**。

@@ -96,6 +96,9 @@ export interface RdpEventPayload {
   sizeValue?: number;
   /** RemoteFileChunk: true when the server refused the request. */
   failed?: boolean;
+  /** AudioFormat: the sample rate (Hz) and channel count the renderer must use. */
+  audioRate?: number;
+  audioChannels?: number;
 }
 
 export type RdpEventCallback = (handle: number, event: number, payload: RdpEventPayload) => void;
@@ -237,10 +240,26 @@ export const bufferRead: (handle: number) => ArrayBuffer;
 export const bufferRelease: (handle: number) => void;
 
 /**
- * Whether this device provides an audio output. False means the native OHAudio
- * library is unavailable, so remote audio is disabled gracefully.
+ * Pulls PCM from the session's native audio ring into `dest`, the buffer the
+ * ArkTS AudioRenderer hands to its `writeData` callback on the audio worker.
+ * Fills every byte - queued audio plus silence on an underrun - so the callback
+ * can always report a full, valid buffer; returns the number of real bytes
+ * copied. Synchronous and allocation-free. An unknown handle reads as 0 and
+ * silences the buffer.
  */
-export const isAudioSupported: () => boolean;
+export const audioRead: (handle: number, dest: ArrayBuffer) => number;
+
+/** The session's current PCM format (0/0 before the first packet). */
+export interface RdpAudioFormat {
+  rate: number;
+  channels: number;
+}
+
+/**
+ * The session's current audio format, so a renderer that starts after the
+ * AudioFormat event can seed itself instead of staying silent.
+ */
+export const audioFormat: (handle: number) => RdpAudioFormat;
 
 /**
  * Process-global RDPEI frame pacing. When true, touch contacts are forwarded at

@@ -35,7 +35,6 @@
 namespace {
 
 using hmrdp::RdpOptions;
-using hmrdp::AudioOutput;
 using hmrdp::Session;
 using hmrdp::SessionEvent;
 using hmrdp::binding::HandleRegistry;
@@ -259,6 +258,15 @@ napi_value MakeEventPayload(napi_env env, int event, const std::string& data,
       if (parts.size() >= 2) {
         setInt("keyCode", ParseInt64(parts[0]));
         setBool("down", ParseInt64(parts[1]) != 0);
+      }
+      break;
+    }
+    case static_cast<int>(SessionEvent::kAudioFormat): {
+      // "<rate>|<channels>"; ArkTS (re)builds its AudioRenderer from it.
+      const std::vector<std::string> parts = SplitOn(data, '|');
+      if (parts.size() >= 2) {
+        setInt("audioRate", ParseInt64(parts[0]));
+        setInt("audioChannels", ParseInt64(parts[1]));
       }
       break;
     }
@@ -1171,8 +1179,54 @@ napi_value BufferRelease(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-napi_value IsAudioSupported(napi_env env, napi_callback_info) {
-  return CreateBool(env, AudioOutput::Supported());
+napi_value AudioRead(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  if (argc < 2 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
+    return CreateInt(env, 0);
+  }
+  void* data = nullptr;
+  size_t length = 0;
+  if (napi_get_arraybuffer_info(env, args[1], &data, &length) != napi_ok || data == nullptr) {
+    return CreateInt(env, 0);
+  }
+  const std::shared_ptr<Session> session = FindSession(handle);
+  if (session == nullptr) {
+    // The session is gone: keep the callback's buffer silent rather than letting
+    // a stale buffer be replayed.
+    std::memset(data, 0, length);
+    return CreateInt(env, 0);
+  }
+  return CreateInt(env, session->ReadAudio(static_cast<uint8_t*>(data), length));
+}
+
+// The session's current PCM format, so an AudioRenderer that starts after the
+// AudioFormat event can seed itself instead of staying silent. rate/channels are
+// 0 until the first packet.
+napi_value AudioFormat(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int rate = 0;
+  int channels = 0;
+  if (argc >= 1 && napi_get_value_int64(env, args[0], &handle) == napi_ok) {
+    const std::shared_ptr<Session> session = FindSession(handle);
+    if (session != nullptr) {
+      session->AudioFormat(&rate, &channels);
+    }
+  }
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_value rateValue = nullptr;
+  napi_create_int32(env, rate, &rateValue);
+  napi_set_named_property(env, obj, "rate", rateValue);
+  napi_value channelsValue = nullptr;
+  napi_create_int32(env, channels, &channelsValue);
+  napi_set_named_property(env, obj, "channels", channelsValue);
+  return obj;
 }
 
 napi_value SetTouchHighRate(napi_env env, napi_callback_info info) {
@@ -1843,7 +1897,9 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"bufferRead", nullptr, BufferRead, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"bufferRelease", nullptr, BufferRelease, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"isAudioSupported", nullptr, IsAudioSupported, nullptr, nullptr, nullptr,
+      {"audioRead", nullptr, AudioRead, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"audioFormat", nullptr, AudioFormat, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setTouchHighRate", nullptr, SetTouchHighRate, nullptr, nullptr, nullptr,
        napi_default, nullptr},

@@ -96,6 +96,10 @@ enum class SessionEvent {
   // The server's clipboard changed (a FORMAT_LIST arrived). ArkTS aborts any
   // download it has running and refreshes its cached remote descriptors.
   kRemoteClipboardChanged = 21,
+  // The audio format changed (first packet, or a rate/channel switch): payload
+  // "<rate>|<channels>". ArkTS (re)builds its AudioRenderer from it; the PCM
+  // itself stays native in the sink ring and is pulled with audioRead().
+  kAudioFormat = 22,
 };
 
 struct RdpOptions {
@@ -198,6 +202,15 @@ class Session : public std::enable_shared_from_this<Session> {
   // session's audio output. Returns the playback time queued after it, in ms,
   // which rdpsnd reports to the server in the Wave Confirm.
   int OnAudioData(const void* data, size_t size, int sampleRate, int channels);
+
+  // Internal: pulls PCM from the sink ring into an AudioRenderer's buffer (the
+  // ArkTS audio worker's writeData callback). Synchronous, fills the whole
+  // buffer (queued audio plus silence) and returns the real bytes copied.
+  int ReadAudio(uint8_t* dest, size_t size);
+
+  // Internal: the session's current PCM format (0/0 before the first packet), so
+  // a renderer that starts after the format event can seed itself.
+  void AudioFormat(int* sampleRate, int* channels);
 
   bool Connect(const RdpOptions& options);
   void Disconnect();
@@ -406,7 +419,7 @@ class Session : public std::enable_shared_from_this<Session> {
   // (doc_agent/architecture.md §4.1). The live frame work all runs on the
   // session's GFX worker thread (§4.2).
   FramePipeline pipeline_;
-  AudioOutput audio_;
+  AudioSink audio_;
   EventFn eventFn_;
   std::string lastError_;
   uint32_t lastErrorCode_ = 0;

@@ -180,7 +180,10 @@ export enum RdpEvent {
   RemoteFileChunk = 20,
   // The server's clipboard changed; ArkTS aborts a running download and refreshes
   // its cached remote descriptors.
-  RemoteClipboardChanged = 21
+  RemoteClipboardChanged = 21,
+  // The session's audio format changed (first packet or a rate/channel switch):
+  // audioRate / audioChannels name the PCM the ArkTS AudioRenderer must open.
+  AudioFormat = 22
 }
 
 export class RdpConnectOptions implements RdpOptions {

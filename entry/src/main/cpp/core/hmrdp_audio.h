@@ -1,10 +1,19 @@
 /*
  * HmRdp - HarmonyOS RDP client
- * PCM playback for the FreeRDP rdpsnd sink (OHAudio, dynamically loaded).
+ * PCM handoff ring for the FreeRDP rdpsnd sink (the renderer lives in ArkTS).
  *
- * libohaudio.so is resolved with dlopen/dlsym instead of being linked: a device
- * whose system image has no audio subsystem then simply reports unsupported and
- * the feature is disabled, instead of the whole app failing to load.
+ * FreeRDP decodes and forwards 16-bit PCM through a C sink callback that must
+ * return synchronously (the render latency the server puts in the Wave Confirm),
+ * so that adapter and its handoff ring stay native
+ * (doc_agent/architecture.md §3.1 criterion 2). The ring is the single owner of
+ * the client-side buffering policy - prebuffer, overflow drop, underrun silence,
+ * loss accounting - so the ArkTS AudioRenderer that pulls from it only has to
+ * service the callback. Policy and rationale: doc_agent/native-libraries.md §5.
+ *
+ * Pull model: the audio worker's writeData callback hands us a buffer; Read()
+ * fills it with queued audio plus silence (never refuses, so the callback can
+ * always report a full buffer). Write() runs on FreeRDP's rdpsnd playback
+ * thread. All state is guarded by `mutex_`; no long call is made under it.
  */
 #ifndef HMRDP_AUDIO_H
 #define HMRDP_AUDIO_H
@@ -16,101 +25,70 @@
 #include <mutex>
 #include <vector>
 
-#include <ohaudio/native_audiorenderer.h>
-#include <ohaudio/native_audiostream_base.h>
-
 namespace hmrdp {
 
-// Plays the 16-bit PCM stream produced by the rdpsnd sink. One instance per
-// session; the server's format is honoured and a change rebuilds the renderer.
-//
-// The single owner of client-side audio buffering (FreeRDP only decodes and
-// forwards, patch-steps/35): queue whole packets, express every watermark in
-// playback time, prebuffer a new bout, drop the oldest whole packet past
-// high-water. Policy and rationale: doc_agent/native-libraries.md §5. Write()
-// returns the queued playback time as the render latency rdpsnd reports in the
-// Wave Confirm.
-//
-// Locking: `mutex_` guards the queue and the renderer handle and is never held
-// across an OHAudio call (Stop/Release wait for the write callback, which takes
-// it); `lifecycle_` serialises open/close, taken only outside `mutex_`.
-class AudioOutput {
+class AudioSink {
  public:
-  // True when libohaudio.so and every required entry point are available.
-  static bool Supported();
+  AudioSink() = default;
+  ~AudioSink() = default;
 
-  AudioOutput() = default;
-  ~AudioOutput();
+  AudioSink(const AudioSink&) = delete;
+  AudioSink& operator=(const AudioSink&) = delete;
 
-  AudioOutput(const AudioOutput&) = delete;
-  AudioOutput& operator=(const AudioOutput&) = delete;
-
-  // Queues one decoded PCM packet. Called on FreeRDP's rdpsnd playback thread,
-  // never on the shared drdynvc dispatch thread, so opening a renderer here does
-  // not stall the other dynamic channels. Returns the playback time currently
-  // queued in ms (the render latency to report to the server), or 0 when nothing
-  // is queued / no renderer is open.
+  // Sink entry (rdpsnd playback thread). Queues one decoded PCM packet and
+  // returns the playback time currently queued in ms (the render latency for the
+  // Wave Confirm), or 0 when nothing is queued. A rate/channel change drops the
+  // old queue and flags a format change for TakeFormatChange().
   int Write(const void* data, size_t size, int sampleRate, int channels);
 
-  // Stops playback and frees the stream. Safe to call repeatedly.
-  void Close();
+  // Pull entry for the ArkTS AudioRenderer (audio worker thread). Copies up to
+  // `want` bytes of queued PCM into `dest`, filling the remainder with silence,
+  // and returns the number of real bytes copied. Never allocates; may span whole
+  // packets without ever splitting one on a drop boundary.
+  size_t Read(uint8_t* dest, size_t want);
 
-  // Drains the audio loss statistics since the previous call: bytes silence-
-  // filled on an underrun plus whole packets dropped on overflow, over the total
-  // bytes consumed while the stream is live. Returns the sample rate in Hz, or 0
-  // when no renderer is open. Underruns count only while packets are still
-  // arriving (see kLiveWindowUs): a short gap is a glitch, a longer one is the
-  // stream pausing and is not reported as loss.
+  // Consumes a pending format change (the rate/channels of the newest packet), so
+  // the session can ask ArkTS to (re)build its AudioRenderer. Returns false when
+  // the format has not changed since the previous call.
+  bool TakeFormatChange(int* sampleRate, int* channels);
+
+  // The current format (0/0 before the first packet), so a renderer that starts
+  // after the format event can seed itself instead of staying silent.
+  void Format(int* sampleRate, int* channels);
+
+  // Drains the loss statistics since the previous call: bytes silence-filled on
+  // an underrun plus whole packets dropped on overflow, over the bytes consumed
+  // while the stream is live. Returns the current sample rate, or 0 when no
+  // format is known. A short gap is a glitch; a longer one is the stream pausing
+  // and is not reported as loss (see kLiveWindowUs).
   int TakeLossStats(uint64_t* lostBytes, uint64_t* totalBytes);
+
+  // Drops the queue and forgets the format (session teardown).
+  void Reset();
 
  private:
   // One queued PCM packet. `offset` is how much has already been consumed, so a
-  // callback that asks for more than one packet can span packets without ever
-  // splitting one on a drop boundary.
+  // read that spans several packets never splits one on a drop boundary.
   struct Packet {
     std::vector<uint8_t> data;
     size_t offset = 0;
     size_t remaining() const { return data.size() - offset; }
   };
 
-  bool OpenRenderer(int sampleRate, int channels);
-  void StartRenderer();
-  // Detaches and releases the renderer without holding `mutex_`; the caller
-  // must hold `lifecycle_`.
-  void DetachAndReleaseLocked();
+  // Caller holds `mutex_`.
   void EnqueueLocked(const uint8_t* data, size_t size);
-  // Drops the oldest whole packets until the queue is at or below its high-water
-  // mark. Caller holds `mutex_`.
   void DropToHighWaterLocked();
-  // Playback time queued right now, in ms. Caller holds `mutex_`.
   int LatencyLocked() const;
 
-  // OHAudio callbacks, invoked on the audio thread.
-  static OH_AudioData_Callback_Result OnWrite(OH_AudioRenderer* renderer, void* userData,
-                                              void* buffer, int32_t size);
-  static void OnInterrupt(OH_AudioRenderer* renderer, void* userData,
-                          OH_AudioInterrupt_ForceType type, OH_AudioInterrupt_Hint hint);
-  static void OnError(OH_AudioRenderer* renderer, void* userData,
-                      OH_AudioStream_Result error);
-
-  std::mutex lifecycle_;
   std::mutex mutex_;
-  OH_AudioRenderer* renderer_ = nullptr;
   int rate_ = 0;
   int channels_ = 0;
-  // Set by OnError / OnInterrupt, consumed by the next Write on the playback
-  // thread.
-  std::atomic<bool> failed_{false};
-  std::atomic<bool> resumeRequested_{false};
+  // Set on a rate/channel change, consumed by TakeFormatChange().
+  bool formatChanged_ = false;
 
-  // Audio loss accounting: overflow drops are written on the playback thread,
-  // underrun silence on the audio thread; the metrics sampler drains both.
-  std::atomic<uint64_t> lostBytes_{0};
-  std::atomic<uint64_t> totalBytes_{0};
-
-  // Bounded jitter buffer of whole packets. All watermarks are derived from
-  // `bytesPerSec_` so they mean the same thing at any sample rate / channel
-  // count, and the oldest whole packets are dropped past `highWaterBytes_`.
+  // Bounded jitter buffer of whole packets. Watermarks derive from `bytesPerSec_`
+  // so they mean the same playback time at any format; the oldest whole packets
+  // are dropped past `highWaterBytes_`.
   std::deque<Packet> packets_;
   size_t bufferedBytes_ = 0;
   size_t bytesPerSec_ = 0;
@@ -123,6 +101,11 @@ class AudioOutput {
   // Arrival stamp of the newest packet; a gap longer than kIdleResetUs means a
   // new bout rather than network jitter.
   uint64_t lastPacketUs_ = 0;
+
+  // Loss accounting: overflow drops are written on the playback thread, underrun
+  // silence on the audio thread; the telemetry tick drains both.
+  std::atomic<uint64_t> lostBytes_{0};
+  std::atomic<uint64_t> totalBytes_{0};
 };
 
 }  // namespace hmrdp

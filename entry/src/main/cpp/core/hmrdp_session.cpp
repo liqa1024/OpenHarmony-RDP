@@ -51,9 +51,9 @@
 // The rdpsnd backend is replaced on OHOS (see native/patches/rdpsnd_opensles.c):
 // instead of opening an OpenSL ES device it hands decoded 16-bit PCM to a sink
 // registered through HmrdpSetAudioSink. The sink routes the buffer to the
-// owning Session, which plays it with OHAudio. It returns the render latency in
-// ms (the playback time queued after the packet), which rdpsnd puts into the
-// Wave Confirm sent back to the server.
+// owning Session's AudioSink ring, which the ArkTS AudioRenderer pulls from. It
+// returns the render latency in ms (the playback time queued after the packet),
+// which rdpsnd puts into the Wave Confirm sent back to the server.
 using HmrdpAudioSink = int (*)(void* context, const void* data, size_t size,
                                int sampleRate, int channels);
 
@@ -1300,15 +1300,11 @@ bool Session::Connect(const RdpOptions& options) {
   // Clipboard redirection is always on: text / HTML / image / file, triggered
   // manually from the toolbar (see OnCliprdrServerFormatList).
   freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, TRUE);
-  // Audio is only requested when the device actually provides an audio output;
-  // otherwise the channel is left off so an unsupported device degrades to a
-  // silent session instead of failing.
-  const bool audioSupported = AudioOutput::Supported();
-  if (options.enableAudio && !audioSupported) {
-    HMRDP_LOGW("audio: requested but unsupported on this device, disabling");
-  }
-  freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback,
-                            options.enableAudio && audioSupported);
+  // Audio playback is requested only when ArkTS asked for it (it owns the
+  // device probe and the AudioRenderer). The sink ring is native either way;
+  // without the channel no PCM ever arrives, so an unsupported device simply
+  // stays silent instead of failing.
+  freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, options.enableAudio);
   // GFX (RDPGFX) is mandatory: without it the session does not render at all.
   freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
   // H.264/AVC444 stay off: RemoteFX Progressive is the desktop codec this client
@@ -1529,7 +1525,7 @@ void Session::Teardown() {
     // The channel is gone; a pending download request can never be answered.
     fileContentsPending_ = false;
   }
-  audio_.Close();
+  audio_.Reset();
   // The desktop buffer dies with the presenter; the next connect re-attaches.
   pipeline_.host()->DetachDesktopBuffer();
   if (pipeline_.presenter() != nullptr) {
@@ -1861,7 +1857,21 @@ int Session::OnAudioData(const void* data, size_t size, int sampleRate, int chan
   if (data == nullptr || size == 0) {
     return 0;
   }
-  return audio_.Write(data, size, sampleRate, channels);
+  const int latency = audio_.Write(data, size, sampleRate, channels);
+  int rate = 0;
+  int count = 0;
+  if (audio_.TakeFormatChange(&rate, &count)) {
+    Emit(SessionEvent::kAudioFormat, std::to_string(rate) + "|" + std::to_string(count));
+  }
+  return latency;
+}
+
+int Session::ReadAudio(uint8_t* dest, size_t size) {
+  return static_cast<int>(audio_.Read(dest, size));
+}
+
+void Session::AudioFormat(int* sampleRate, int* channels) {
+  audio_.Format(sampleRate, channels);
 }
 
 bool Session::SendMouse(uint16_t flags, uint16_t x, uint16_t y) {

@@ -13,6 +13,7 @@ import { PendingConnection, RdpConnectOptions,
   RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
+import { AudioPlayer } from '../services/AudioPlayer';
 import { BackgroundWorker } from '../services/BackgroundWorker';
 import { RdpNative } from '../services/RdpNative';
 import { RdpCounters } from '../services/SessionTelemetry';
@@ -441,6 +442,10 @@ struct SessionPage {
     (event: BackgroundEvent): void => {
       this.onBackgroundEvent(event);
     };
+  // The native handle the audio worker is servicing (see services/AudioPlayer).
+  // Tracked here so the renderer is released with the right handle even after
+  // the native session has already reset its own (-1).
+  private audioHandle: number = -1;
   // Remote cursor shape, installed as the HarmonyOS system cursor. The server
   // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
   // re-installed when the window re-acquires the pointer. `cursorHidden` tracks
@@ -582,6 +587,7 @@ struct SessionPage {
 
   aboutToDisappear(): void {
     BackgroundWorker.unregisterSession(this.backgroundSink);
+    this.stopAudio();
     // Give the shell its shortcuts back before the session goes away.
     if (this.interceptActive) {
       this.native.setShortcutPassthrough(false);
@@ -746,12 +752,17 @@ struct SessionPage {
       this.showToolbar = false;
       // A fresh session starts unsuppressed; re-apply this window's visibility.
       this.native.setSuppressed(!this.windowVisible);
+      // Audio runs on its own worker; the renderer is built once the session
+      // reports its PCM format (AudioFormat event).
+      this.audioHandle = this.native.handleId();
+      AudioPlayer.start(this.audioHandle);
     } else if (state === ConnectionState.Connecting) {
       this.statusText = '正在连接...';
       this.showOverlay = true;
       this.showToolbar = true;
     } else if (state === ConnectionState.Disconnecting) {
       this.statusText = '正在断开...';
+      this.stopAudio();
     } else {
       // Failed / Idle (a dropped session): show the reason the manager classified
       // and offer 重试.
@@ -760,6 +771,7 @@ struct SessionPage {
       this.showOverlay = true;
       this.showToolbar = true;
       this.resetCursor();
+      this.stopAudio();
     }
     // A state change invalidates any pending reveal / hide.
     this.refreshToolbarAutoHide();
@@ -770,6 +782,14 @@ struct SessionPage {
       this.startMetricsTimer();
     } else {
       this.stopMetricsTimer();
+    }
+  }
+
+  /** Releases this window's audio renderer on the audio worker. */
+  private stopAudio(): void {
+    if (this.audioHandle > 0) {
+      AudioPlayer.stop(this.audioHandle);
+      this.audioHandle = -1;
     }
   }
 
@@ -877,6 +897,9 @@ struct SessionPage {
       this.applyCursor();
     } else if (event === RdpEvent.KeyIntercept) {
       this.handleInterceptedKey(payload);
+    } else if (event === RdpEvent.AudioFormat) {
+      AudioPlayer.onFormat(this.native.handleId(), payload.audioRate ?? 0,
+        payload.audioChannels ?? 0);
     }
   }
 
@@ -3187,6 +3210,7 @@ struct SessionPage {
     }
     this.closing = true;
     BackgroundWorker.unregisterSession(this.backgroundSink);
+    this.stopAudio();
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       return;

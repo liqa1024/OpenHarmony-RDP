@@ -38,6 +38,8 @@
 | `workers/background.worker.ets` | **后台 worker（进程一条）**：剪贴板编解码 + 下载状态机/文件 IO 都在其上（见 §4.4） |
 | `services/BackgroundProtocol.ets` | 后台 worker 的消息形状（请求/应答/事件，见 §4.4） |
 | `workers/FileDownloader.ets` | 远端文件下载状态机（worker 侧）：分片请求、沙箱写盘、进度/完成/失败事件（见 §4.4） |
+| `services/AudioPlayer.ets` | UI 线程侧音频 worker 门面：按 handle start/stop，并把 native 的 `AudioFormat` 事件转发给音频 worker |
+| `workers/audio.worker.ets` | **音频 worker（进程一条）**：每会话一个 ArkTS `AudioRenderer`，其 `writeData` 经 `audioRead` 从原生 sink 环拉 PCM（见 §4.4） |
 | `services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因 |
 | `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：版本门槛判断、材质复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
@@ -84,7 +86,7 @@
 | `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针与解码桥、TLS/HTTP 原语、凭证（HUKS 信封）、配对加密原语 |
-| `core/hmrdp_audio.{h,cpp}` | `dlopen` OHAudio 的 PCM 播放器（见 [`native-libraries.md`](native-libraries.md) §5） |
+| `core/hmrdp_audio.{h,cpp}` | rdpsnd sink 的**有界 PCM 交接环**（渲染器与播放策略在 ArkTS，见 [`native-libraries.md`](native-libraries.md) §5） |
 | `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
 | `core/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
 | `core/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
@@ -99,7 +101,7 @@
 
 | 归属 | 资源 | 生命周期 |
 |---|---|---|
-| **会话私有** | FreeRDP context 及其内部线程、会话控制线程、帧管线（presenter 及其自有 VkDevice/queue、gdi 桌面与 GdiFrameHost、GfxWorkMeter、解码执行器、GFX 工作线程、观察者）、AudioOutput | 随会话创建/销毁，**只在一处销毁** |
+| **会话私有** | FreeRDP context 及其内部线程、会话控制线程、帧管线（presenter 及其自有 VkDevice/queue、gdi 桌面与 GdiFrameHost、GfxWorkMeter、解码执行器、GFX 工作线程、观察者）、AudioSink | 随会话创建/销毁，**只在一处销毁** |
 | **进程共享、不可变** | VkInstance（+ 能力探测）、日志、`g_entryPoints`/addin 注册、只读用户设置 | 只建一次，进程存活期不销毁 |
 | **进程共享、按 context 路由** | audio sink、gfx raw capture、thread QoS applier | 一次性注册，调用时由 context 找到归属 |
 
@@ -116,8 +118,8 @@
 | drdynvc 分发线程 | FreeRDP 所有**动态通道**的分发：RDPGFX、rdpsnd（音频）、RDPEI（触屏/笔）、其它 DVC | **只准做轻活**（拆包 + 拷贝）；任何可能长时间占用的处理都必须交给应用线程。rdpsnd 在这里只重装 + 投递到它自己的队列 |
 | **GFX 工作线程**（会话自有） | 整条帧流水线：ZGX 解压、PDU 解析、解码、合成、上屏、帧回执 | 帧重活只在这里；drdynvc 线程注册 sink 后只把通道数据拷进来，工作线程用 `HmrdpGfxReplayRecv` 重新进入 |
 | **解码执行器**（会话自有 ffrt 队列） | progressive tile chunk 解码（每 region 若干任务） | 执行器随会话创建/销毁；解码入口以线程局部指针告知当前执行器，未设置则回退串行 |
-| **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioOutput` 的 jitter buffer | 不碰画面；缓冲/丢弃/预缓冲全在 sink 一处（见 [`native-libraries.md`](native-libraries.md) §5），抖动由 sink 深度兜住 |
-| OHAudio 回调线程 | 从 sink 队列取 PCM 上设备 | 系统管理 |
+| **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioSink` 的交接环 | 不碰画面；缓冲/丢弃/预缓冲全在环一处（见 [`native-libraries.md`](native-libraries.md) §5），抖动由环深度兜住；环的拉取在音频 worker（§4.4） |
+| **（原生无音频回调线程）** | 渲染器的拉取在 ArkTS 音频 worker（`AudioRenderer.writeData` → `audioRead`，§4.4）；原生侧只由 rdpsnd 播放线程往 sink 环写入 | — |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |
 
 **规则**：drdynvc 分发线程是**所有动态通道的公共瓶颈**——帧流水线一旦内联在它上面，一个重帧就会把音频、
@@ -154,8 +156,12 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
   （native 会把整块内容拷进自己的存储并立即 advertise，一次通道发送，不能占 UI 线程）、文件下载状态机与写盘。
   彼此可互相等待，共用一条即可。落地：`workers/background.worker.ets` + UI 门面 `services/BackgroundWorker.ets`
   （消息形状 `services/BackgroundProtocol.ets`，下载状态机 `workers/FileDownloader.ets`）。
-- **音频 worker（一条，P2）**：`AudioRenderer` 回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频
-  卡顿且与处理绑定"（同 §4 的 drdynvc 教训）。
+- **音频 worker（一条）**：ArkTS `AudioRenderer` 的回调需及时服务，**独占线程**；与后台 worker 共用会变成
+  "音频卡顿且与处理绑定"（同 §4 的 drdynvc 教训）。落地：`workers/audio.worker.ets` + UI 门面
+  `services/AudioPlayer.ets`（消息形状 `services/AudioProtocol.ets`）。native 只保留 sink 与其**有界 PCM
+  交接环**（`core/hmrdp_audio.*`）：渲染器的 `writeData` 用 `audioRead(handle, buf)` 拉取，格式变化由
+  `AudioFormat` 事件驱动（重新）建渲染器；设备能力探测在 `DeviceCapabilities.audio()`。详见
+  [`native-libraries.md`](native-libraries.md) §5。
 - **TaskPool 非默认**：仅用于一次性、互相独立、纯函数的小任务。
 
 **事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。
@@ -167,8 +173,9 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
 `napi_value`**（唯一例外是绑 UI 线程的 TSFN）。
 
 **拷贝纪律**：跨线程 `ArrayBuffer` 默认**转移、零拷贝**（发送方 detach）；普通对象序列化拷贝、单次上限 16MB
-⇒ 大二进制走裸 `ArrayBuffer`，不放对象成员。除边界那次 `bufferRead` 外不为跨线程自加拷贝；`postMessage` 只
-承载控制/进度（二进制留原生按句柄读，见 [§3.1](#31-边界判据什么必须留在原生) 判据 3）。
+⇒ 大二进制走裸 `ArrayBuffer`，不放对象成员。除了按句柄读原生缓冲的两次拉取（UI 线程的 `bufferRead`、
+音频 worker 的 `audioRead`）外不为跨线程自加拷贝；`postMessage` 只承载控制/进度（二进制留原生按句柄读，
+见 [§3.1](#31-边界判据什么必须留在原生) 判据 3）。
 
 ## 5. 其它
 

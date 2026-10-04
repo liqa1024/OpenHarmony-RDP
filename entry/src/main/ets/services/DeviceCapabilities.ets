@@ -7,8 +7,9 @@
  * runtime; the native layer additionally degrades gracefully so the session
  * itself keeps working.
  */
+import { audio } from '@kit.AudioKit';
 import {
-  isAudioSupported, moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict,
+  moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict,
   superResolutionBackends, superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
@@ -25,14 +26,16 @@ export const CODEC_SUPPORT_HARDWARE: number = 2;
 
 export class DeviceCapabilities {
   /**
-   * Remote audio playback. The native layer probes libohaudio.so with dlopen,
-   * so this is authoritative for the OHAudio-based player (no ArkTS audio API
-   * is used for playback).
+   * Remote audio playback. The player is the ArkTS AudioRenderer, so the probe
+   * asks the audio framework for an output device (synchronous routing query).
+   * False greys out 音频重定向; the session then simply stays silent.
    */
   static audio(): Capability {
     const capability: Capability = new Capability();
     try {
-      capability.supported = isAudioSupported();
+      const devices: audio.AudioDeviceDescriptors = audio.getAudioManager()
+        .getRoutingManager().getDevicesSync(audio.DeviceFlag.OUTPUT_DEVICES_FLAG);
+      capability.supported = devices.length > 0;
     } catch (error) {
       capability.supported = false;
     }

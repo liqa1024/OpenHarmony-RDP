@@ -98,9 +98,9 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 **音频后端替换**
 
 - OHOS 的 OpenSL ES 已废弃且开设备不稳定 ⇒ FreeRDP **只解码**，把 16-bit PCM 交给 `libhmrdp`
-  注册的 sink（见 §5）。
-- **客户端侧缓冲/丢弃只有 sink 一套策略**：`rdpsnd_main.c` 自带的 overrun 守卫（用墙钟反推设备积压，
-  阈值 ≈ 1 个包）看不到 sink 的真实队列，只会丢掉 sink 还能播的包 ⇒ 本后端下把它置为"从不判 overrun"
+  注册的 sink 及其交接环（见 §5）。
+- **客户端侧缓冲/丢弃只有交接环一套策略**：`rdpsnd_main.c` 自带的 overrun 守卫（用墙钟反推设备积压，
+  阈值 ≈ 1 个包）看不到环的真实深度，只会丢掉环还能播的包 ⇒ 本后端下把它置为"从不判 overrun"
   （patch step 35）。它不再做任何缓冲/节流决策，只解码 + 转发。要动这层先读 §5。
 
 **运行时行为钩子**（都用**弱符号**引用，未打补丁的 FreeRDP 上自动降级）
@@ -233,43 +233,43 @@ Copy-Item native/install/arm64-v8a/freerdp/lib/*.so entry/libs/arm64-v8a/ -Force
 - FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（安装后由
   `build-freerdp.ps1` / `sync-freerdp-headers.ps1` 自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
 
-## 5. 音频：FreeRDP 同步 sink，播放层可 ArkTS
+## 5. 音频：原生 sink + 交接环 / ArkTS 渲染器
 
-- **强制原生的只有 sink**：替换后的 rdpsnd 后端是一个注册进 FreeRDP 的 **C 函数指针**
+- **强制原生的只有 sink 与交接环**：替换后的 rdpsnd 后端是一个注册进 FreeRDP 的 **C 函数指针**
   （`HmrdpSetAudioSink`），在 FreeRDP 的 async 播放线程（`rdpsnd->async` 下的 `play_thread`）上被调用，
   且必须**同步返回**该包的渲染延迟（ms，进 Wave Confirm）——与文件上传 serve 同一类约束
-  （[`architecture.md`](architecture.md) §3.1 criterion 2）。故 sink 适配器与一个**交接缓冲**留在原生。
-- **播放 API 不是强制的**：`OH_AudioRenderer`（OHAudio）与 ArkTS `AudioRenderer`（`on('writeData')`）
-  是同一套音频框架的两条入口（同为 PCM S16LE 拉模型），等价。播放器与缓冲策略不属于"必须原生"之列，
-  可以放在 ArkTS，并跑在 **ArkTS 自己的线程**上。**不要**以"ArkTS 音频会触发 syscap 误报"或
-  "OpenSLES 已废弃"为由留在原生：前者在当前工具链不复现（引入 `@kit.AudioKit` 构建无 syscap 告警），
-  后者与 ArkTS `AudioRenderer` 无关（它并不走 OpenSLES）。
-- **音频走动态 rdpsnd**：现代 Windows 用**动态** rdpsnd（**不是**静态通道——只提供静态通道时现代服务端
-  会完全不出声，所以不能改成只走静态）。数据面在 FreeRDP 的 async 播放线程，drdynvc 分发线程只做重装 +
-  投递；画面在会话 GFX 工作线程 ⇒ 音频、输入、画面三条互不阻塞
-  （见 [`architecture.md`](architecture.md) §4），与播放层放在哪一侧无关。
-- **单一所有者**：FreeRDP 只解码 + 转发，**不做缓冲/丢弃/节流**；`rdpsnd_main.c` 的 generic overrun 守卫
-  对本后端被关掉（patch step 35）。"能否播放 / 丢谁 / 何时开始"只在缓冲那一处决定，不存在两层策略互相打架。
-- **缓冲语义**：解码后的 PCM 按**整包**入队，水位全部用**播放时长（ms）**表达（与格式无关的上界）。
-  新的一段音频先**预缓冲**到目标深度才开始播放（启动补的静音不计损失）；段内抖动**不**重新预缓冲。唯一
-  丢弃点是超过 high-water 时丢**最老的整包**（整包帧对齐，不撕样本，延迟有上界）；欠载补静音。丢帧统计
-  = 欠载补静音 + 整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
-- **真实渲染延迟回报**：sink 同步返回的不是常数，而是**当前排队的播放时长（ms）**（设备自缓冲时的标准
-  语义），服务端据此做 Wave Confirm——"按错误延迟猛灌再被本地丢"这条链因此消失。
-- **当前实现与锁纪律**：native `hmrdp_audio.cpp` 用 **`dlopen("libohaudio.so")` + `dlsym`** 建
-  `OH_AudioRenderer`（**不**链成 `DT_NEEDED`：缺库设备会加载即崩，dlopen 才能优雅降级为"无音频"），
-  `AudioOutput::Write` 即 sink 调用点，返回排队时长，并在原生侧实现上面的缓冲与 `OnWrite` 拉取。
-  **绝不持锁调用 `Start`/`Stop`/`Release`**：`OH_AudioRenderer_Release` 会等待 write 回调
-  （`JoinCallbackLoop`），而回调要用同一把 `mutex_` 取队列 ⇒ 持锁 Release 必死锁（表现为关闭会话后
-  `APP_INPUT_BLOCK` 卡死）。约定：`mutex_` 只保护队列/句柄、**不跨 OHAudio 调用持有**；`lifecycle_`
-  只在 `mutex_` 之外串行化 open/close；回调只碰 `mutex_`。
+  （[`architecture.md`](architecture.md) §3.1 判据 2）。sink 适配器与它写入的**有界 PCM 环**
+  （`AudioSink`，`core/hmrdp_audio.*`）因此留在原生；环的水位用**播放时长（ms）**表达，与格式无关。
+- **播放 API 归 ArkTS**：`OH_AudioRenderer`（OHAudio）与 ArkTS `AudioRenderer`（`on('writeData')`）
+  是同一套音频框架的两条入口（同为 PCM S16LE 拉模型），等价。渲染器与它的生命周期放在 ArkTS
+  （`workers/audio.worker.ets` + 门面 `services/AudioPlayer.ets`），跑在**音频独占 worker** 上
+  （[`architecture.md`](architecture.md) §4.4）；原生不再 `dlopen("libohaudio.so")`、不再建渲染器。
+- **能力探测在 ArkTS**：设备有无音频输出由 `DeviceCapabilities.audio()` 同步查询音频路由
+  （`getDevicesSync(OUTPUT_DEVICES_FLAG)`）判定，设置页据此置灰「音频重定向」；原生只按 ArkTS 传来的
+  `enableAudio` 决定是否开 `FreeRDP_AudioPlayback`。
+- **单一所有者（缓冲策略只在环里）**：FreeRDP 只解码 + 转发，**不做缓冲/丢弃/节流**；
+  `rdpsnd_main.c` 的 generic overrun 守卫对本后端被关掉（patch step 35）。sink 的 `Write` 按**整包**入队、
+  超 high-water 丢最老整包、返回当前排队时长（Wave Confirm 的真实渲染延迟）；渲染器的 `writeData`
+  回调用 `audioRead(handle, buf)` 把环里的 PCM 拉进设备缓冲，环**始终填满**（数据 + 欠载静音），
+  故回调总能报有效数据。新的一段音频先**预缓冲**到目标深度才开始出声（启动静音不计损失），段内抖动
+  **不**重新预缓冲；丢帧统计 = 欠载补静音 + 整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
+- **格式变化**：sink 检测到 rate/channels 变化时清空旧格式队列，并让会话发 `AudioFormat` 事件
+  （`kAudioFormat`）；ArkTS 据此（重新）建 `AudioRenderer`。渲染器晚于首个事件启动时，用
+  `audioFormat(handle)` 读当前格式自行补建，不依赖事件一定被捕获。
+- **线程与锁**：sink 回调在 FreeRDP 播放线程，环的读取在音频 worker，两者只共享环的锁——渲染器回调
+  不会被帧 / 剪贴板 / 文件的重活拖住（音频 worker 与后台 worker 分开的理由见
+  [`architecture.md`](architecture.md) §4.4）。`audioRead` 只在音频 worker 上调用。
+- **构建期 syscap 告警属预期**：`@kit.AudioKit` 的 `audio` API 标注为"非全设备支持"，引入后构建会打印
+  `The system capacity of this api 'audio' is not supported on all devices`（WARN，非 ERROR）。能力探测与
+  优雅降级（无输出设备 ⇒ 关「音频重定向」、不建渲染器）就是为这类设备准备的，不因该告警退回原生。
+
 
 ## 6. 设备能力探测（Capability 模式）
 
 新增**与设备相关**的特性时，不要只靠 syscap 告警，也不要在不支持时静默失败：
 
-- 原生侧优雅降级（探测失败 ⇒ 关掉对应 FreeRDP 特性，例如 `AudioOutput::Supported()` ⇒
-  关闭 `FreeRDP_AudioPlayback`）；
+- 原生侧优雅降级（探测失败 ⇒ 关掉对应 FreeRDP 特性，例如音频无输出设备时 ArkTS 传
+  `enableAudio = false` ⇒ 关闭 `FreeRDP_AudioPlayback`，会话静音而不失败）；
 - ArkTS 侧在 `services/DeviceCapabilities.ets` 暴露 `Capability{supported, reason}`；
 - UI 上**置灰**该开关并显示原因。
 
