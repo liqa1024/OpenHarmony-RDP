@@ -85,12 +85,12 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   `libhmrdp.so`；桥接层有一个连通性探针 `moonlightProbe`（返回 `"1"`，或在未构建该库时返回
   `"0|no-moonlight"`），它真正调用一个 moonlight 入口点，因此"符号已解析"是被链接器保证的。
   构建流程、静态链接约定与目录见 [`moonlight-native.md`](moonlight-native.md)。
-- **控制层尚未实现**：`serverinfo / pair / applist / launch` 一律在 **ArkTS** 落地（传输与 mTLS / 证书 pin 用
-  `@ohos.net.http`，配对加密用 `cryptoFramework`，见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 与
-  [`moonlight-native.md`](moonlight-native.md) §4）；无原生实现，也不保留半成品。列表行的应用选择入口随之下线，
-  待控制层接入后恢复。
-- **ArkTS 侧已有协议建模**（`ets/moonlight/`）：`MoonlightModels`（结果类型）与 `MoonlightXml`（`@ohos.xml`
-  响应解析），控制层实现时复用；当前没有调用方。
-- **尚未接入**：控制层（`serverinfo → pair → applist → launch`）、串流会话（`LiStartConnection`）与输入接线、
-  应用选择落库与自动连接、主机发现与 HDR / YUV444 的协商暴露。
-- 本文件描述**已落地的前端约定、ArkTS 协议建模与原生客户端库基础**；控制层与原生侧的会话/输入/上屏约束在接入后再补进本文件。
+- **控制层已在 ArkTS 落地**：`ets/moonlight/` 下的 `MoonlightCrypto`（配对加密原语）、
+  `MoonlightIdentity`（自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、
+  `MoonlightClient`（编排 `serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。
+  无原生实现（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 与
+  [`moonlight-native.md`](moonlight-native.md) §4）。**尚未接到 UI / 会话**：列表行的应用选择入口、配对界面
+  与会话建立仍是后续里程碑。
+- **尚未接入**：串流会话（`LiStartConnection`）与输入接线、应用选择落库与自动连接、主机发现与
+  HDR / YUV444 的协商暴露；控制层已可被调用但尚无 UI 调用方。
+- 本文件描述**已落地的前端约定、ArkTS 协议建模与控制层**；原生侧的会话/输入/上屏约束在接入后再补进本文件。

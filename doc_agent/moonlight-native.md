@@ -119,7 +119,9 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**
 （见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）：传输与 mTLS / 证书 pin 用 `@ohos.net.http`，配对加密
 原语用 `cryptoFramework` 与 `@ohos.security.cert`，客户端身份（自签名 X.509 + HUKS 信封加密私钥）在 ArkTS
-组装；**原生不含这一层**。以下是与实现语言无关的协议事实：
+组装；**原生不含这一层**。落地在 `ets/moonlight/`：`MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
+（身份与 pin 存储）、`MoonlightHttp`（传输）、`MoonlightClient`（编排），协议建模与响应解析见
+[`moonlight-connection.md`](moonlight-connection.md)。以下是与实现语言无关的协议事实：
 
 - **信任模型 = 证书 pin**：未配对时接受任意主机证书（首触）；配对后存叶证书，之后逐字节一致。主机自签名，
   信任靠 pin 而非 CA。

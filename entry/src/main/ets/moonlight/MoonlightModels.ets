@@ -52,3 +52,33 @@ export class PairResult {
   // "pin" / "mitm" / "already" / native error.
   error: string = '';
 }
+
+/** The parameters of one `/launch` request, from the resolved stream profile. */
+export class MoonlightLaunchOptions {
+  appId: number = 0;
+  width: number = 1920;
+  height: number = 1080;
+  fps: number = 60;
+  bitrateKbps: number = 20000;
+  audioConfig: number = 0;
+  hdr: boolean = false;
+  yuv444: boolean = false;
+  gamepad: boolean = true;
+  // 16 random bytes as hex (the stream's input AES key) and its id; the host
+  // echoes nothing, so the caller fills STREAM_CONFIGURATION from these.
+  rikeyHex: string = '';
+  rikeyId: number = 0;
+  localAudio: boolean = false;
+  surroundAudio: boolean = false;
+}
+
+/** Result of a `/launch` (or `/resume`) request. */
+export class LaunchResult {
+  ok: boolean = false;
+  error: string = '';
+  // RTSP session URL for LiStartConnection (`rtspSessionUrl`).
+  sessionUrl: string = '';
+  rikeyHex: string = '';
+  rikeyId: number = 0;
+  gameSession: string = '';
+}
