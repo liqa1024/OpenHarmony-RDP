@@ -422,3 +422,72 @@ export const moonlightVideoCodecSupport: (codec: number) => number;
  * codec) or "no-decoder|<mime>". The UI owns the wording.
  */
 export const moonlightVideoWarning: () => string;
+
+/** Session event ids (mirror hmrdp::MoonlightSessionEvent). */
+export const ML_EVENT_STARTED: number;
+export const ML_EVENT_TERMINATED: number;
+export const ML_EVENT_STAGE_STARTING: number;
+export const ML_EVENT_STAGE_COMPLETE: number;
+export const ML_EVENT_STAGE_FAILED: number;
+
+/** Everything LiStartConnection needs; assembled by the ArkTS control layer. */
+export interface MoonlightSessionConfig {
+  host: string;
+  serverInfoAppVersion: string;
+  serverInfoGfeVersion: string;
+  sessionUrl: string;
+  serverCodecModeSupport: number;
+  width: number;
+  height: number;
+  fps: number;
+  bitrateKbps: number;
+  packetSize: number;
+  streamingRemotely: boolean;
+  audioConfiguration: number;
+  supportedVideoFormats: number;
+  clientRefreshRateX100: number;
+  colorSpace: number;
+  colorRange: number;
+  encryptionFlags: number;
+  /** 16-byte remote-input AES key / IV as lowercase hex. */
+  remoteInputAesKeyHex: string;
+  remoteInputAesIvHex: string;
+}
+
+/**
+ * Registers the process-global session event listener; `event` is an
+ * ML_EVENT_* id, `value` the stage or error code, `text` the stage name.
+ */
+export const moonlightSetSessionListener: (listener: (event: number, value: number,
+  text: string) => void) => void;
+
+/** Binds the session window (before start); false when refused. */
+export const moonlightSessionSetSurface: (surfaceId: string, width: number,
+  height: number) => boolean;
+
+/** Releases the session window; call after moonlightSessionStop. */
+export const moonlightSessionClearSurface: () => void;
+
+/** Starts the session; "" on success, else "busy" / "config" / "thread". */
+export const moonlightSessionStart: (config: MoonlightSessionConfig) => string;
+
+/** Interrupts/stops the session and waits for its thread to finish. */
+export const moonlightSessionStop: () => void;
+
+export const moonlightSessionActive: () => boolean;
+
+/** Input: relative mouse move. */
+export const moonlightMouseMove: (deltaX: number, deltaY: number) => void;
+
+/** Input: absolute mouse position in a reference frame (touch/pointer mapping). */
+export const moonlightMousePosition: (x: number, y: number, refWidth: number,
+  refHeight: number) => void;
+
+/** Input: mouse button action / button (LiSendMouseButtonEvent constants). */
+export const moonlightMouseButton: (action: number, button: number) => void;
+
+/** Input: key code / action / modifiers (LiSendKeyboardEvent constants). */
+export const moonlightKey: (keyCode: number, action: number, modifiers: number) => void;
+
+/** Input: wheel clicks (LiSendScrollEvent). */
+export const moonlightScroll: (clicks: number) => void;

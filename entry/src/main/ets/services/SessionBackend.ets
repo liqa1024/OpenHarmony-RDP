@@ -30,6 +30,16 @@ export interface SessionBackend {
   stop(): void;
   /** Native session handle (-1 before start / after stop). */
   handleId(): number;
+  /**
+   * True when start() needs the session window with its surface already bound
+   * (Moonlight: LiStartConnection takes the render target). False for RDP, which
+   * starts window-less and binds the surface when the window opens.
+   */
+  requiresWindowAtStart(): boolean;
+  /** Binds the session window surface; false when it could not be created. */
+  bindSurface(surfaceId: string, width: number, height: number): boolean;
+  /** Detaches/releases the session window surface (after stop). */
+  clearSurface(): void;
   setSignalListener(listener: SessionSignalListener): void;
   clearSignalListener(): void;
   pointer(flags: number, x: number, y: number): void;
@@ -86,6 +96,19 @@ export class RdpSessionBackend implements SessionBackend {
     return this.native.handleId();
   }
 
+  requiresWindowAtStart(): boolean {
+    return false;
+  }
+
+  bindSurface(surfaceId: string, width: number, height: number): boolean {
+    this.native.bindSurface(surfaceId, width, height);
+    return true;
+  }
+
+  clearSurface(): void {
+    this.native.unbindSurface();
+  }
+
   setSignalListener(listener: SessionSignalListener): void {
     this.listener = listener;
   }
@@ -140,9 +163,11 @@ export class RdpSessionBackend implements SessionBackend {
 export class SessionBackendFactory {
   static create(request: PendingConnection): SessionBackend | undefined {
     if (request.protocol === PROTOCOL_MOONLIGHT) {
-      // The Moonlight backend lands with the native Moonlight session
-      // (LiStartConnection); the manager reports the gap instead of failing
-      // silently.
+      // MoonlightSessionBackend is ready (see MoonlightSessionBackend.ets) but
+      // is not handed out until the Moonlight session window lands: the manager
+      // opens the window before start for it (requiresWindowAtStart), and the
+      // window is what binds the surface and calls SessionManager.beginStream.
+      // Returning it now would open an RDP page with nothing to start it.
       return undefined;
     }
     return new RdpSessionBackend(request.options);

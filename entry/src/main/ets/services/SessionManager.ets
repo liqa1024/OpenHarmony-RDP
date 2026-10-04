@@ -155,6 +155,13 @@ export class SessionManager {
       SessionManager.onSessionSignal(entry, epoch, signal);
     });
     SessionManager.notify(connectionId, ConnectionState.Connecting, '', request.origin);
+    if (backend.requiresWindowAtStart()) {
+      // The session window is the render target: open it now, and start only
+      // once the page has bound its surface (SessionManager.beginStream).
+      SessionManager.openWindowForEntry(entry);
+      SessionManager.armTimeout(entry);
+      return;
+    }
     const handle: number = backend.start();
     if (handle < 0) {
       backend.clearSignalListener();
@@ -162,6 +169,29 @@ export class SessionManager {
       return;
     }
     SessionManager.armTimeout(entry);
+  }
+
+  /**
+   * Starts the stream of a backend that needs its window first (Moonlight),
+   * called by that session window once its surface is bound. Returns false when
+   * the attempt is no longer current.
+   */
+  static beginStream(connectionId: string): boolean {
+    const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
+    if (entry === undefined || entry.backend === undefined) {
+      return false;
+    }
+    if (entry.state !== ConnectionState.Connecting) {
+      return false;
+    }
+    const handle: number = entry.backend.start();
+    if (handle < 0) {
+      entry.backend.clearSignalListener();
+      SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
+      return false;
+    }
+    SessionManager.armTimeout(entry);
+    return true;
   }
 
   /** User-initiated disconnect from the list; also closes the session window. */
@@ -209,6 +239,11 @@ export class SessionManager {
       SessionManager.onSessionSignal(entry, epoch, signal);
     });
     SessionManager.publish(entry, ConnectionState.Connecting, '');
+    if (backend.requiresWindowAtStart()) {
+      // The window is still open with its surface bound (retry comes from that
+      // window), so start immediately.
+      return SessionManager.beginStream(connectionId);
+    }
     const handle: number = backend.start();
     if (handle < 0) {
       backend.clearSignalListener();
@@ -281,6 +316,17 @@ export class SessionManager {
     }
   }
 
+  /** Opens this entry's session window once (idempotent). */
+  private static openWindowForEntry(entry: SessionEntry): void {
+    if (entry.windowOpen) {
+      return;
+    }
+    entry.windowOpen = true;
+    if (entry.context !== undefined) {
+      WindowController.openSessionWindow(entry.context, entry.sessionKey);
+    }
+  }
+
   private static nextEpoch(): number {
     SessionManager.epochCounter++;
     return SessionManager.epochCounter;
@@ -304,12 +350,7 @@ export class SessionManager {
       SessionManager.clearEntryTimeout(entry);
       SessionManager.handleConnected(entry);
       SessionManager.publish(entry, ConnectionState.Connected, '');
-      if (!entry.windowOpen) {
-        entry.windowOpen = true;
-        if (entry.context !== undefined) {
-          WindowController.openSessionWindow(entry.context, entry.sessionKey);
-        }
-      }
+      SessionManager.openWindowForEntry(entry);
       return;
     }
     if (signal.kind === SessionSignalKind.Error) {

@@ -119,7 +119,10 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   moonlight-common-c 是**进程级单连接**，所以会话跑在自己的线程上、同一时刻只允许一个，并用连接监听回调
   上报开始 / 结束 / 阶段进度；视频回调取自解码桥，`renderContext` 是会话 XComponent 的 `OHNativeWindow`，
   音频暂以空渲染器关掉（Opus 渲染器未定，见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）；输入直接转
-  `LiSend*`（相对/绝对鼠标、按键、滚轮）。
+  `LiSend*`（相对/绝对鼠标、按键、滚轮）。N-API 出口：`moonlightSetSessionListener`（进程级事件回调
+  `(event, value, text)`）、`moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、
+  `moonlightMouse*` / `moonlightKey` / `moonlightScroll`；窗口是**进程级单个** `OHNativeWindow`，须在
+  `Start` 前绑定、`Stop` 后释放（`LiStartConnection` 的 `renderContext` 需要它）。
 
 ## 4. 控制 / 配对层（ArkTS）
 

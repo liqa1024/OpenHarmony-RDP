@@ -25,8 +25,11 @@
     `Connected/Disconnected/Error` + 协议自带码的 `UiEvent`，见 `model/SessionSignal.ets`）与协议无关的
     输入动词（指针/触摸/按键/Unicode）。协议特定的会话窗口把 `UiEvent.eventCode` 当自己的事件码解释，
     并向下转型到自己的后端取更多能力（RDP 用 `RdpSessionBackend.native`）。`SessionBackendRegistry`
-    按 `sessionKey` 关联窗口与其后端。**Moonlight 后端随原生 Moonlight 会话（`LiStartConnection`）接入**，
-    在那之前工厂对该协议返回"无后端"，manager 报 `Failed` 而不是静默丢弃。
+    按 `sessionKey` 关联窗口与其后端。后端可声明 **`requiresWindowAtStart()`**（Moonlight：
+    `LiStartConnection` 需要先有渲染目标）——此时 manager 先在 `Connecting` 就开窗，窗口绑好 XComponent
+    surface 后调 `SessionManager.beginStream` 才真正启动；RDP 为 false，维持"连上后才开窗"。**Moonlight
+    后端 `MoonlightSessionBackend` 已实现**，但要等 Moonlight 会话窗口（负责 `bindSurface` + `beginStream`）
+    落地后才能由工厂交出去。
   - 原生 `Session` 的生命周期也是**单向**的（`kIdle→kStarting→kConnected→kStopping→kDestroyed`，
     一次尝试一个对象、不复用）：只有 RDP 线程释放 FreeRDP context（`Teardown`），其它线程（输入/剪贴板/
     gdi 回调）须先 `AcquireContext()` 取租约、用完 `ReleaseContext()`，`Teardown` 等**在途租约归零**后

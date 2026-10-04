@@ -25,6 +25,7 @@
 #include "binding/handle_registry.h"
 #include "hmrdp_log.h"
 #include "hmrdp_moonlight.h"
+#include "hmrdp_moonlight_session.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_session.h"
 #include "hmrdp_vk_context.h"
@@ -381,6 +382,12 @@ napi_value CreateInt(napi_env env, int64_t value) {
 napi_value CreateBool(napi_env env, bool value) {
   napi_value result = nullptr;
   napi_get_boolean(env, value, &result);
+  return result;
+}
+
+napi_value CreateStringUtf8(napi_env env, const std::string& value) {
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, value.c_str(), value.size(), &result);
   return result;
 }
 
@@ -1490,6 +1497,247 @@ napi_value MoonlightVideoWarning(napi_env env, napi_callback_info) {
   return result;
 }
 
+// --- Moonlight streaming session ---------------------------------------
+//
+// The native session is process-global (moonlight-common-c carries one
+// connection), so there is one listener TSFN and one OHNativeWindow here rather
+// than a per-handle registry. Events are (event, value, text) - see
+// MoonlightSessionEvent; the ArkTS MoonlightSessionBackend maps them onto
+// SessionSignal.
+
+napi_threadsafe_function g_moonlightTsfn = nullptr;
+// Owned by this binding: created in SetSurface, destroyed in ClearSurface.
+OHNativeWindow* g_moonlightWindow = nullptr;
+
+struct MoonlightEventPayload {
+  int event = 0;
+  int value = 0;
+  std::string text;
+};
+
+void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data) {
+  std::unique_ptr<MoonlightEventPayload> payload(static_cast<MoonlightEventPayload*>(data));
+  if (env == nullptr || jsCallback == nullptr || payload == nullptr) {
+    return;
+  }
+  napi_value eventValue = nullptr;
+  napi_value valueValue = nullptr;
+  napi_value textValue = nullptr;
+  napi_create_int32(env, payload->event, &eventValue);
+  napi_create_int32(env, payload->value, &valueValue);
+  napi_create_string_utf8(env, payload->text.c_str(), payload->text.size(), &textValue);
+  napi_value argv[3] = {eventValue, valueValue, textValue};
+  napi_value global = nullptr;
+  napi_get_global(env, &global);
+  napi_call_function(env, global, jsCallback, 3, argv, nullptr);
+}
+
+// Runs on the Moonlight session thread; hops to the JS thread via the TSFN.
+void OnMoonlightSessionEvent(hmrdp::MoonlightSessionEvent event, int value, const char* text) {
+  if (g_moonlightTsfn == nullptr) {
+    return;
+  }
+  MoonlightEventPayload* payload = new MoonlightEventPayload();
+  payload->event = static_cast<int>(event);
+  payload->value = value;
+  payload->text = text != nullptr ? text : "";
+  const napi_status status =
+      napi_call_threadsafe_function(g_moonlightTsfn, payload, napi_tsfn_nonblocking);
+  if (status != napi_ok) {
+    delete payload;
+  }
+}
+
+bool HexToBytes(const std::string& hex, std::string* out) {
+  if (hex.size() % 2 != 0) {
+    return false;
+  }
+  out->clear();
+  out->reserve(hex.size() / 2);
+  auto nibble = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  for (size_t i = 0; i < hex.size(); i += 2) {
+    const int hi = nibble(hex[i]);
+    const int lo = nibble(hex[i + 1]);
+    if (hi < 0 || lo < 0) {
+      return false;
+    }
+    out->push_back(static_cast<char>((hi << 4) | lo));
+  }
+  return true;
+}
+
+// Registers the process-global session event listener (one per process).
+napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 1) {
+    return CreateUndefined(env);
+  }
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
+    return CreateUndefined(env);
+  }
+  if (g_moonlightTsfn != nullptr) {
+    napi_release_threadsafe_function(g_moonlightTsfn, napi_tsfn_release);
+    g_moonlightTsfn = nullptr;
+  }
+  napi_value resourceName = nullptr;
+  napi_create_string_utf8(env, "HmRdpMoonlightEvent", NAPI_AUTO_LENGTH, &resourceName);
+  napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr, nullptr,
+                                  nullptr, CallJsMoonlightEvent, &g_moonlightTsfn);
+  return CreateUndefined(env);
+}
+
+// Binds the session window. Must precede MoonlightSessionStart; a second call
+// while a session is active is refused (the decoder owns the window then).
+napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 1) {
+    return CreateBool(env, false);
+  }
+  const std::string surfaceId = GetStringArgument(env, args[0]);
+  const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
+  OHNativeWindow* window = nullptr;
+  if (OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window) != 0 || window == nullptr) {
+    HMRDP_LOGE("moonlight: CreateNativeWindowFromSurfaceId failed");
+    return CreateBool(env, false);
+  }
+  if (g_moonlightWindow != nullptr) {
+    if (hmrdp::MoonlightSessionActive()) {
+      OH_NativeWindow_DestroyNativeWindow(window);
+      return CreateBool(env, false);
+    }
+    OH_NativeWindow_DestroyNativeWindow(g_moonlightWindow);
+    g_moonlightWindow = nullptr;
+  }
+  g_moonlightWindow = window;
+  hmrdp::MoonlightSessionSetWindow(window);
+  return CreateBool(env, true);
+}
+
+// Detaches and releases the session window; call after MoonlightSessionStop.
+napi_value MoonlightSessionClearSurface(napi_env env, napi_callback_info) {
+  hmrdp::MoonlightSessionSetWindow(nullptr);
+  if (g_moonlightWindow != nullptr && !hmrdp::MoonlightSessionActive()) {
+    OH_NativeWindow_DestroyNativeWindow(g_moonlightWindow);
+    g_moonlightWindow = nullptr;
+  }
+  return CreateUndefined(env);
+}
+
+// Starts the session; returns "" on success or a stable error token
+// ("busy" / "config" / "thread").
+napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 1) {
+    return CreateStringUtf8(env, "config");
+  }
+  hmrdp::MoonlightStreamConfig config;
+  config.host = GetStringProperty(env, args[0], "host");
+  config.serverInfoAppVersion = GetStringProperty(env, args[0], "serverInfoAppVersion");
+  config.serverInfoGfeVersion = GetStringProperty(env, args[0], "serverInfoGfeVersion");
+  config.sessionUrl = GetStringProperty(env, args[0], "sessionUrl");
+  config.serverCodecModeSupport = GetIntProperty(env, args[0], "serverCodecModeSupport", 0);
+  config.width = GetIntProperty(env, args[0], "width", 1920);
+  config.height = GetIntProperty(env, args[0], "height", 1080);
+  config.fps = GetIntProperty(env, args[0], "fps", 60);
+  config.bitrateKbps = GetIntProperty(env, args[0], "bitrateKbps", 20000);
+  config.packetSize = GetIntProperty(env, args[0], "packetSize", 1024);
+  config.streamingRemotely = GetBoolProperty(env, args[0], "streamingRemotely", false);
+  config.audioConfiguration = GetIntProperty(env, args[0], "audioConfiguration", 0);
+  config.supportedVideoFormats = GetIntProperty(env, args[0], "supportedVideoFormats", 0);
+  config.clientRefreshRateX100 = GetIntProperty(env, args[0], "clientRefreshRateX100", 0);
+  config.colorSpace = GetIntProperty(env, args[0], "colorSpace", 0);
+  config.colorRange = GetIntProperty(env, args[0], "colorRange", 0);
+  config.encryptionFlags = GetIntProperty(env, args[0], "encryptionFlags", 0);
+  HexToBytes(GetStringProperty(env, args[0], "remoteInputAesKeyHex"), &config.remoteInputAesKey);
+  HexToBytes(GetStringProperty(env, args[0], "remoteInputAesIvHex"), &config.remoteInputAesIv);
+  return CreateStringUtf8(env, hmrdp::MoonlightSessionStart(config, &OnMoonlightSessionEvent));
+}
+
+napi_value MoonlightSessionStop(napi_env env, napi_callback_info) {
+  hmrdp::MoonlightSessionStop();
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionActive(napi_env env, napi_callback_info) {
+  return CreateBool(env, hmrdp::MoonlightSessionActive());
+}
+
+napi_value MoonlightSessionMouseMove(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t dx = 0;
+  int32_t dy = 0;
+  napi_get_value_int32(env, args[0], &dx);
+  napi_get_value_int32(env, args[1], &dy);
+  hmrdp::MoonlightSessionMouseMove(dx, dy);
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionMousePosition(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t x = 0;
+  int32_t y = 0;
+  int32_t refW = 0;
+  int32_t refH = 0;
+  napi_get_value_int32(env, args[0], &x);
+  napi_get_value_int32(env, args[1], &y);
+  napi_get_value_int32(env, args[2], &refW);
+  napi_get_value_int32(env, args[3], &refH);
+  hmrdp::MoonlightSessionMousePosition(x, y, refW, refH);
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionMouseButton(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t action = 0;
+  int32_t button = 0;
+  napi_get_value_int32(env, args[0], &action);
+  napi_get_value_int32(env, args[1], &button);
+  hmrdp::MoonlightSessionMouseButton(action, button);
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionKey(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t keyCode = 0;
+  int32_t action = 0;
+  int32_t modifiers = 0;
+  napi_get_value_int32(env, args[0], &keyCode);
+  napi_get_value_int32(env, args[1], &action);
+  napi_get_value_int32(env, args[2], &modifiers);
+  hmrdp::MoonlightSessionKey(keyCode, action, modifiers);
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionScroll(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t clicks = 0;
+  napi_get_value_int32(env, args[0], &clicks);
+  hmrdp::MoonlightSessionScroll(clicks);
+  return CreateUndefined(env);
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1597,6 +1845,28 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightVideoCodecSupport", nullptr, MoonlightVideoCodecSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightVideoWarning", nullptr, MoonlightVideoWarning, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightSetSessionListener", nullptr, MoonlightSetSessionListener, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightSessionSetSurface", nullptr, MoonlightSessionSetSurface, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightSessionClearSurface", nullptr, MoonlightSessionClearSurface, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightSessionStart", nullptr, MoonlightSessionStart, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightSessionStop", nullptr, MoonlightSessionStop, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightSessionActive", nullptr, MoonlightSessionActive, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightMouseMove", nullptr, MoonlightSessionMouseMove, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightMousePosition", nullptr, MoonlightSessionMousePosition, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightMouseButton", nullptr, MoonlightSessionMouseButton, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightKey", nullptr, MoonlightSessionKey, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"moonlightScroll", nullptr, MoonlightSessionScroll, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };
 
