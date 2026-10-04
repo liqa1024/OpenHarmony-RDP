@@ -1,7 +1,7 @@
 /*
  * HmRdp - shared ArkTS data model.
  */
-import { RdpOptions } from 'libhmrdp.so';
+import { MoonlightSessionConfig, RdpOptions } from 'libhmrdp.so';
 
 /**
  * 超分 backend ids. Plain numbers because they are persisted with the connection
@@ -131,6 +131,33 @@ export class MoonlightProfile {
   yuv444: boolean = false;
   audioConfig: number = ML_AUDIO_STEREO;
   gamepad: boolean = true;
+}
+
+/**
+ * The stream config the Moonlight control layer produces (serverinfo + /launch
+ * + the resolved profile) and hands to the native session. Implements the
+ * N-API interface so it can be passed straight to moonlightSessionStart.
+ */
+export class MoonlightStreamConfig implements MoonlightSessionConfig {
+  host: string = '';
+  serverInfoAppVersion: string = '';
+  serverInfoGfeVersion: string = '';
+  sessionUrl: string = '';
+  serverCodecModeSupport: number = 0;
+  width: number = 1920;
+  height: number = 1080;
+  fps: number = 60;
+  bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
+  packetSize: number = 1024;
+  streamingRemotely: boolean = false;
+  audioConfiguration: number = 0;
+  supportedVideoFormats: number = 0;
+  clientRefreshRateX100: number = 0;
+  colorSpace: number = 0;
+  colorRange: number = 0;
+  encryptionFlags: number = 0;
+  remoteInputAesKeyHex: string = '';
+  remoteInputAesIvHex: string = '';
 }
 
 export enum RdpEvent {
@@ -263,6 +290,9 @@ export class PendingConnection {
   // Effective Moonlight stream settings (SettingsStore.resolveStream), used when
   // the native Moonlight session is built.
   stream: MoonlightProfile = new MoonlightProfile();
+  // The assembled Moonlight stream config (serverinfo + /launch), consumed by the
+  // Moonlight backend. Undefined for RDP, and until the control layer has run.
+  moonlightConfig: MoonlightStreamConfig | undefined = undefined;
   // Invoked once when a session launched from the editor connects successfully.
   // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;

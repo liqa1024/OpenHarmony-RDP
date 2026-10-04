@@ -1674,6 +1674,11 @@ napi_value MoonlightSessionActive(napi_env env, napi_callback_info) {
   return CreateBool(env, hmrdp::MoonlightSessionActive());
 }
 
+// Sunshine extended launch/resume query parameters (owned by moonlight-common-c).
+napi_value MoonlightLaunchQueryParameters(napi_env env, napi_callback_info) {
+  return CreateStringUtf8(env, hmrdp::MoonlightLaunchQueryParameters());
+}
+
 napi_value MoonlightSessionMouseMove(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -1858,6 +1863,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightSessionActive", nullptr, MoonlightSessionActive, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"moonlightLaunchQueryParameters", nullptr, MoonlightLaunchQueryParameters, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
       {"moonlightMouseMove", nullptr, MoonlightSessionMouseMove, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightMousePosition", nullptr, MoonlightSessionMousePosition, nullptr, nullptr,

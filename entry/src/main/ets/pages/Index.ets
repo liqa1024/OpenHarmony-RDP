@@ -2,13 +2,16 @@
  * HmRdp - saved connections list (home page).
  */
 import { common } from '@kit.AbilityKit';
+import { display } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AdvancedProfile, DisplayProfile, EditConnectionParams, PendingConnection,
+import { AdvancedProfile, DisplayProfile, EditConnectionParams, ML_RES_FIXED,
+  MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
   RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
+import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -157,6 +160,10 @@ struct Index {
   }
 
   private async startConnection(conn: SavedConnection): Promise<void> {
+    if (conn.isMoonlight()) {
+      await this.startMoonlightConnection(conn);
+      return;
+    }
     const options: RdpConnectOptions = conn.toOptions();
     const request: PendingConnection = new PendingConnection();
     request.connectionId = conn.id;
@@ -164,28 +171,77 @@ struct Index {
     request.onConnected = undefined;
     request.protocol = conn.protocol;
     request.savedConnection = conn;
-    if (conn.isMoonlight()) {
-      // Moonlight carries its own stream profile; credentials and the RDP
-      // display / advanced resolution do not apply.
-      request.stream = SettingsStore.resolveStream(conn);
-      request.options = options;
-    } else {
-      const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
-      options.width = profile.width;
-      options.height = profile.height;
-      options.scalePercent = profile.scalePercent;
-      options.srEnabled = profile.srEnabled;
-      options.srRatioPercent = profile.srRatioPercent;
-      options.srBackend = profile.srBackend;
-      const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
-      options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
-      options.ignoreCertificate = advanced.ignoreCertificate;
-      options.password = await CredentialStore.loadPassword(conn.id);
-      request.options = options;
-    }
+    const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
+    options.width = profile.width;
+    options.height = profile.height;
+    options.scalePercent = profile.scalePercent;
+    options.srEnabled = profile.srEnabled;
+    options.srRatioPercent = profile.srRatioPercent;
+    options.srBackend = profile.srBackend;
+    const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
+    options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
+    options.ignoreCertificate = advanced.ignoreCertificate;
+    options.password = await CredentialStore.loadPassword(conn.id);
+    request.options = options;
     const context = this.getUIContext().getHostContext();
     if (context !== undefined) {
       SessionManager.connect(request, context as common.UIAbilityContext);
+    }
+  }
+
+  /**
+   * Moonlight: run the control pre-flight (serverinfo -> pair -> launch) with the
+   * PIN popup over this window, then hand the assembled config to the session.
+   */
+  private async startMoonlightConnection(conn: SavedConnection): Promise<void> {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
+    }
+    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
+    const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
+    const size: display.Display = display.getDefaultDisplaySync();
+    let width: number = conn.mlWidth;
+    let height: number = conn.mlHeight;
+    if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
+      width = size.width;
+      height = size.height;
+    }
+    const appId: number = conn.mlDefaultAppId.length > 0
+      ? Number.parseInt(conn.mlDefaultAppId, 10) : 0;
+    const appIdValue: number = Number.isNaN(appId) ? 0 : appId;
+    const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
+      conn.host, conn.port, stream, appIdValue, width, height,
+      (pin: string): Promise<boolean> => this.promptPairingPin(pin));
+    if (!result.ok) {
+      this.showConnectError(result.error);
+      return;
+    }
+    const request: PendingConnection = new PendingConnection();
+    request.connectionId = conn.id;
+    request.origin = RdpConnectOrigin.List;
+    request.protocol = PROTOCOL_MOONLIGHT;
+    request.savedConnection = conn;
+    request.stream = stream;
+    request.moonlightConfig = result.config;
+    SessionManager.connect(request, abilityContext);
+  }
+
+  /** The lightweight pairing popup: display the PIN, wait for the user. */
+  private async promptPairingPin(pin: string): Promise<boolean> {
+    try {
+      const response = await this.getUIContext().getPromptAction().showDialog({
+        title: '与主机配对',
+        message: `请在主机（Sunshine）上输入以下 PIN：\n\n${pin}`,
+        buttons: [
+          { text: '取消', color: '#666666' },
+          { text: '已输入', color: '#0A59F7' }
+        ]
+      });
+      return response.index === 1;
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
+      return false;
     }
   }
 

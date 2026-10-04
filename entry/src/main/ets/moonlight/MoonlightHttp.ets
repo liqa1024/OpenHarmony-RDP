@@ -53,8 +53,10 @@ export class MoonlightHttp {
     const request: http.HttpRequest = http.createHttp();
     try {
       const headers: Record<string, string> = { 'Content-Type': options.contentType };
+      const method: http.RequestMethod = options.method === 'POST'
+        ? http.RequestMethod.POST : http.RequestMethod.GET;
       const requestOptions: http.HttpRequestOptions = {
-        method: options.method,
+        method: method,
         connectTimeout: options.timeoutMs,
         readTimeout: options.timeoutMs,
         expectDataType: http.HttpDataType.STRING,

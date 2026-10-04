@@ -177,6 +177,11 @@ bool MoonlightSessionActive() {
   return g_active;
 }
 
+std::string MoonlightLaunchQueryParameters() {
+  const char* extra = LiGetLaunchUrlQueryParameters();
+  return extra != nullptr ? std::string(extra) : std::string();
+}
+
 void MoonlightSessionMouseMove(int deltaX, int deltaY) {
   if (g_connected) {
     LiSendMouseMoveEvent(static_cast<short>(deltaX), static_cast<short>(deltaY));

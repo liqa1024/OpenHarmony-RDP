@@ -2,6 +2,7 @@
  * HmRdp - add / edit a saved connection.
  */
 import { common } from '@kit.AbilityKit';
+import { display } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
@@ -17,6 +18,7 @@ import { CredentialStore } from '../services/CredentialStore';
 import { Capability, CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE,
   DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
+import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -497,13 +499,81 @@ struct EditConnectionPage {
     conn.mlGamepad = this.mlGamepad;
     conn.useGlobalStream = this.useGlobalStream;
     conn.updatedAt = Date.now();
-    if (!this.persist(conn)) {
+    if (!connect) {
+      if (!this.persist(conn)) {
+        return;
+      }
+      this.returnToList();
       return;
     }
-    if (connect) {
-      this.showToast('Moonlight 连接将在后续版本接入');
+    this.connectMoonlight(conn);
+  }
+
+  /**
+   * Moonlight: run the control pre-flight (serverinfo -> pair -> launch) with the
+   * PIN popup, then hand the assembled config to the session. The connection is
+   * persisted only on success, like RDP.
+   */
+  private async connectMoonlight(conn: SavedConnection): Promise<void> {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      this.errorMessage = '无法发起连接';
+      return;
     }
-    this.returnToList();
+    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
+    const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
+    const size: display.Display = display.getDefaultDisplaySync();
+    let width: number = conn.mlWidth;
+    let height: number = conn.mlHeight;
+    if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
+      width = size.width;
+      height = size.height;
+    }
+    const parsedAppId: number = conn.mlDefaultAppId.length > 0
+      ? Number.parseInt(conn.mlDefaultAppId, 10) : 0;
+    const appId: number = Number.isNaN(parsedAppId) ? 0 : parsedAppId;
+    this.errorMessage = '';
+    this.activeConnectionId = conn.id;
+    this.connecting = true;
+    const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
+      conn.host, conn.port, stream, appId, width, height,
+      (pin: string): Promise<boolean> => this.promptPairingPin(pin));
+    if (!result.ok) {
+      this.connecting = false;
+      this.errorMessage = result.error;
+      return;
+    }
+    const request: PendingConnection = new PendingConnection();
+    request.connectionId = conn.id;
+    request.origin = RdpConnectOrigin.Editor;
+    request.protocol = PROTOCOL_MOONLIGHT;
+    request.savedConnection = conn;
+    request.stream = stream;
+    request.moonlightConfig = result.config;
+    request.onConnected = () => {
+      conn.mlPaired = true;
+      this.persist(conn);
+      this.returnToList();
+    };
+    SessionManager.connect(request, abilityContext);
+  }
+
+  /** The lightweight pairing popup: display the PIN, wait for the user. */
+  private async promptPairingPin(pin: string): Promise<boolean> {
+    try {
+      const response = await this.getUIContext().getPromptAction().showDialog({
+        title: '与主机配对',
+        message: `请在主机（Sunshine）上输入以下 PIN：\n\n${pin}`,
+        buttons: [
+          { text: '取消', color: '#666666' },
+          { text: '已输入', color: '#0A59F7' }
+        ]
+      });
+      return response.index === 1;
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
+      return false;
+    }
   }
 
   private persist(conn: SavedConnection): boolean {

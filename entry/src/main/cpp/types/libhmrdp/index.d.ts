@@ -476,6 +476,9 @@ export const moonlightSessionStop: () => void;
 
 export const moonlightSessionActive: () => boolean;
 
+/** Sunshine extended query string to append to /launch and /resume. */
+export const moonlightLaunchQueryParameters: () => string;
+
 /** Input: relative mouse move. */
 export const moonlightMouseMove: (deltaX: number, deltaY: number) => void;
 

@@ -19,6 +19,8 @@ export class NvServerInfo {
   paired: boolean = false;
   // First component of appversion (the "generation"; >= 7 selects SHA-256).
   majorVersion: number = 0;
+  // The full appversion text, passed to SERVER_INFORMATION as-is.
+  appVersion: string = '';
   // Bitmask of codecs the host can encode (MS-RDPEGFX-style GameStream bits).
   serverCodecModeSupport: number = 0;
   currentGame: number = 0;

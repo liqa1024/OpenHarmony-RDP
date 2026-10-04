@@ -86,16 +86,19 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   恒回 `"1"`，仅作"归档确实解析进模块"的链接断言。原生**串流会话桥** `hmrdp_moonlight_session`
   （`LiStartConnection` + 输入转发）也已落地。构建流程、静态链接约定与目录见
   [`moonlight-native.md`](moonlight-native.md)。
-- **控制层已在 ArkTS 落地**：`ets/moonlight/` 下的 `MoonlightCrypto`（配对加密原语）、
-  `MoonlightIdentity`（自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、
-  `MoonlightClient`（编排 `serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。
-  无原生实现（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 与
-  [`moonlight-native.md`](moonlight-native.md) §4）。**尚未接到 UI / 会话**：列表行的应用选择入口、配对界面
-  与会话建立仍是后续里程碑。
+- **控制层已接入连接流程**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
+  （自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、`MoonlightClient`
+  （`serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。串流前的预检由
+  `services/MoonlightConnector.ets` 统一编排：`serverinfo →（未配对则先 `pair`）→ launch`，并装配原生串流配置。
+  列表与编辑页的「连接」都走它。
+- **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入），配对期间
+  不开任何会话窗口；确认后再 launch 并开会话（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 待定项）。
 - **会话窗口与后端已接入**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
-  `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`、`services/SessionBackendFactory.ets`
-  与 `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按协议路由到该页。**串流配置尚未接入**——它来自控制层
-  编排（`serverinfo → launch`），所以此刻连接会走到窗口后以"尚未配置串流参数"失败。
-- **尚未接入**：控制层编排（`serverinfo → pair → applist → launch`，含首次配对的 PIN 轻量弹窗）、应用选择
-  落库与自动连接、主机发现、音频（Opus）与 HDR / YUV444 的协商暴露。
+  `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（读
+  `PendingConnection.moonlightConfig`）、`services/SessionBackendFactory.ets` 与 `utils/MoonlightKeyMapper.ets`；
+  `SessionAbility` 按协议路由到该页。窗口是**先开窗再启动**（`requiresWindowAtStart`），因为 `LiStartConnection`
+  需要渲染目标。
+- **尚未接入**：应用选择界面（`applist` 解析已有，暂用 `mlDefaultAppId` / 桌面 `appid=0`）、应用选择落库与
+  自动连接、主机发现、音频（Opus，当前空渲染器关音频）与 HDR / YUV444 的协商暴露；端到端串流待连真
+  Sunshine 验证。
 - 本文件描述**已落地的前端约定、ArkTS 协议建模与控制层**；原生侧的会话/输入/上屏约束在接入后再补进本文件。

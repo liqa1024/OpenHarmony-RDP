@@ -18,7 +18,7 @@ import {
   moonlightSessionClearSurface, moonlightSessionSetSurface, moonlightSessionStart,
   moonlightSessionStop, moonlightSetSessionListener
 } from 'libhmrdp.so';
-import { PROTOCOL_MOONLIGHT } from '../model/RdpModels';
+import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
 
@@ -27,17 +27,15 @@ export class MoonlightSessionBackend implements SessionBackend {
   private config: MoonlightSessionConfig | undefined = undefined;
   private windowBound: boolean = false;
 
-  constructor() {
+  constructor(request: PendingConnection) {
+    // The control layer assembled the config before the connect; without one the
+    // session reports a clear failure instead of misbehaving.
+    this.config = request.moonlightConfig;
     // One process-global session at a time (moonlight-common-c is single
     // connection), so the listener is registered here rather than per stream.
     moonlightSetSessionListener((event: number, value: number, text: string): void => {
       this.emit(event, value, text);
     });
-  }
-
-  /** The stream config the control layer assembled (serverinfo + launch). */
-  setConfig(config: MoonlightSessionConfig): void {
-    this.config = config;
   }
 
   protocol(): number {

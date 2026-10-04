@@ -81,6 +81,12 @@ void MoonlightSessionStop();
 /** True between a successful start and its termination. */
 bool MoonlightSessionActive();
 
+/**
+ * The query string moonlight-common-c wants appended to /launch and /resume
+ * (Sunshine extended functionality); owned by the library, copied out here.
+ */
+std::string MoonlightLaunchQueryParameters();
+
 // Input (no-ops unless the session is active), mirroring the LiSend* entry points.
 void MoonlightSessionMouseMove(int deltaX, int deltaY);
 void MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referenceHeight);

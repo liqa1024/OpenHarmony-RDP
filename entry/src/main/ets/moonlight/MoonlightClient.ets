@@ -10,6 +10,7 @@
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
+import { moonlightLaunchQueryParameters } from 'libhmrdp.so';
 import { MoonlightCrypto } from './MoonlightCrypto';
 import { MoonlightCredential, MoonlightIdentity } from './MoonlightIdentity';
 import { MoonlightHttp, MoonlightHttpOptions, MoonlightHttpResult } from './MoonlightHttp';
@@ -55,8 +56,8 @@ export class MoonlightClient {
     info.gpuType = MoonlightXml.readOptional(body, 'gputype') ?? '';
     info.gfeVersion = MoonlightXml.readOptional(body, 'GfeVersion') ?? '';
     info.paired = (MoonlightXml.readOptional(body, 'PairStatus') ?? '0') === '1';
-    info.majorVersion = MoonlightClient.majorVersion(
-      MoonlightXml.readOptional(body, 'appversion') ?? '');
+    info.appVersion = MoonlightXml.readOptional(body, 'appversion') ?? '';
+    info.majorVersion = MoonlightClient.majorVersion(info.appVersion);
     info.serverCodecModeSupport = MoonlightXml.readNumber(body, 'ServerCodecModeSupport', 0);
     if (info.state.endsWith('_SERVER_BUSY')) {
       info.currentGame = MoonlightXml.readNumber(body, 'currentgame', 0);
@@ -110,7 +111,9 @@ export class MoonlightClient {
       + `&surroundaudio=${options.surroundAudio ? 1 : 0}`
       + `&gamepad=${options.gamepad ? 1 : 0}`
       + `&hdr=${options.hdr ? 1 : 0}`
-      + `&yuv444=${options.yuv444 ? 1 : 0}`;
+      + `&yuv444=${options.yuv444 ? 1 : 0}`
+      // Sunshine's extended parameters (owned by moonlight-common-c).
+      + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =
       MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin));
     if (outcome.body.length === 0) {
@@ -330,15 +333,14 @@ export class MoonlightClient {
    */
   private static async httpGet(dir: string, host: string, port: number, path: string,
     tls: boolean, pinDer?: Uint8Array, timeoutMs?: number): Promise<MoonlightHttpResult> {
-    const options: MoonlightHttpOptions = {
-      useTls: tls,
-      host: host,
-      port: port,
-      path: path,
-      method: 'GET',
-      pinnedServerCertDer: pinDer ?? new Uint8Array(0),
-      timeoutMs: timeoutMs ?? 10000
-    };
+    const options: MoonlightHttpOptions = new MoonlightHttpOptions();
+    options.useTls = tls;
+    options.host = host;
+    options.port = port;
+    options.path = path;
+    options.method = 'GET';
+    options.pinnedServerCertDer = pinDer ?? new Uint8Array(0);
+    options.timeoutMs = timeoutMs ?? 10000;
     if (!tls) {
       return MoonlightHttp.perform(options);
     }
