@@ -5,6 +5,7 @@
 #include "hmrdp_moonlight_session.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -19,6 +20,9 @@ namespace hmrdp {
 namespace {
 
 std::mutex g_mutex;
+// Guards the session thread's wait for stop/termination.
+std::mutex g_cvMutex;
+std::condition_variable g_cv;
 std::thread g_thread;
 std::atomic<bool> g_active{false};
 std::atomic<bool> g_connected{false};
@@ -37,29 +41,44 @@ void Emit(MoonlightSessionEvent event, int value, const char* text) {
 }
 
 void OnConnectionStarted() {
+  HMRDP_LOGI("moonlight session: connected");
   g_connected = true;
   Emit(MoonlightSessionEvent::kStarted, 0, "");
 }
 
 void OnConnectionTerminated(int errorCode) {
-  g_terminated = true;
+  HMRDP_LOGW("moonlight session: terminated (%{public}d)", errorCode);
+  g_connected = false;
+  {
+    // Set the flag and notify under the same mutex the session thread waits on,
+    // so the wakeup cannot be lost between its predicate check and its wait.
+    std::lock_guard<std::mutex> lock(g_cvMutex);
+    g_terminated = true;
+    g_cv.notify_all();
+  }
   Emit(MoonlightSessionEvent::kTerminated, errorCode, "");
 }
 
 void OnStageStarting(int stage) {
+  HMRDP_LOGI("moonlight session: stage start %{public}s", LiGetStageName(stage));
   Emit(MoonlightSessionEvent::kStageStarting, stage, LiGetStageName(stage));
 }
 
 void OnStageComplete(int stage) {
+  HMRDP_LOGI("moonlight session: stage done %{public}s", LiGetStageName(stage));
   Emit(MoonlightSessionEvent::kStageComplete, stage, LiGetStageName(stage));
 }
 
 void OnStageFailed(int stage, int errorCode) {
+  HMRDP_LOGE("moonlight session: stage failed %{public}s (%{public}d)",
+             LiGetStageName(stage), errorCode);
   Emit(MoonlightSessionEvent::kStageFailed, errorCode, LiGetStageName(stage));
 }
 
-// Runs on the session thread: fills the config structs, then blocks in
-// LiStartConnection until the stream ends (or the start fails).
+// Runs on the session thread: fills the config structs, calls LiStartConnection
+// (which returns once the streams are established, not when the session ends),
+// waits for stop/termination, then completes the lifecycle with LiStopConnection
+// on this same thread.
 void Run(const MoonlightStreamConfig& config) {
   SERVER_INFORMATION serverInfo;
   LiInitializeServerInformation(&serverInfo);
@@ -102,9 +121,25 @@ void Run(const MoonlightStreamConfig& config) {
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());
 
   // Audio is not wired yet: a null renderer disables the audio stream.
+  HMRDP_LOGI("moonlight session: LiStartConnection enter");
   const int result = LiStartConnection(&serverInfo, &stream, &listeners, video, nullptr,
                                        &g_context, 0, nullptr, 0);
-  if (result != 0 && !g_stopRequested && !g_terminated) {
+  HMRDP_LOGI("moonlight session: LiStartConnection returned %{public}d", result);
+  if (result == 0) {
+    // Established: the streams now run on moonlight's own threads. LiStartConnection
+    // does NOT block until the session ends - the session lives until we call
+    // LiStopConnection (which must run on this thread) or the host ends it. Wait
+    // here so Start/Stop stay paired on one thread and a second Start cannot run
+    // while this session is still alive.
+    {
+      std::unique_lock<std::mutex> lock(g_cvMutex);
+      g_cv.wait(lock, []() {
+        return g_stopRequested.load() || g_terminated.load();
+      });
+    }
+    LiStopConnection();
+    HMRDP_LOGI("moonlight session: LiStopConnection done");
+  } else if (!g_stopRequested && !g_terminated) {
     // A start failure that did not come through stageFailed.
     HMRDP_LOGW("moonlight session: LiStartConnection failed (%{public}d)", result);
     Emit(MoonlightSessionEvent::kTerminated, result, "");
@@ -126,6 +161,11 @@ std::string MoonlightSessionStart(const MoonlightStreamConfig& config,
   if (g_active) {
     return "busy";
   }
+  // A session that ended on its own leaves its thread joinable; assigning over a
+  // joinable std::thread calls std::terminate, so reap it first.
+  if (g_thread.joinable()) {
+    g_thread.join();
+  }
   if (config.host.empty() || config.remoteInputAesKey.size() != 16
       || config.remoteInputAesIv.size() != 16) {
     return "config";
@@ -144,8 +184,8 @@ std::string MoonlightSessionStart(const MoonlightStreamConfig& config,
     g_callback = nullptr;
     return "thread";
   }
-  HMRDP_LOGI("moonlight session: start %{public}s %dx%d @%{public}d", config.host.c_str(),
-             config.width, config.height, config.fps);
+  HMRDP_LOGI("moonlight session: start %{public}s %{public}dx%{public}d @%{public}d",
+             config.host.c_str(), config.width, config.height, config.fps);
   return std::string();
 }
 
@@ -153,20 +193,20 @@ void MoonlightSessionStop() {
   std::thread thread;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_active) {
-      return;
+    if (g_active) {
+      // Break a pending LiStartConnection; a no-op once established (the session
+      // thread then runs LiStopConnection itself).
+      LiInterruptConnection();
     }
-    g_stopRequested = true;
-    // Break a pending LiStartConnection; a no-op once connected.
-    LiInterruptConnection();
     thread = std::move(g_thread);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_cvMutex);
+    g_stopRequested = true;
+    g_cv.notify_all();
   }
   if (thread.joinable()) {
     thread.join();
-  }
-  if (g_connected) {
-    LiStopConnection();
-    g_connected = false;
   }
   g_active = false;
   g_callback = nullptr;

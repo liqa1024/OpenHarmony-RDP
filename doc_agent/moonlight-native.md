@@ -115,14 +115,18 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位留空：不改写参考帧，且**不开
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
   - 输入积压超过阈值时回 `DR_NEED_IDR` 请主机补关键帧，避免无界排队。
-- **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`——它阻塞到 RTSP 协商完成且
-  moonlight-common-c 是**进程级单连接**，所以会话跑在自己的线程上、同一时刻只允许一个，并用连接监听回调
-  上报开始 / 结束 / 阶段进度；视频回调取自解码桥，`renderContext` 是会话 XComponent 的 `OHNativeWindow`，
-  音频暂以空渲染器关掉（Opus 渲染器未定，见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）；输入直接转
-  `LiSend*`（相对/绝对鼠标、按键、滚轮）。N-API 出口：`moonlightSetSessionListener`（进程级事件回调
-  `(event, value, text)`）、`moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、
-  `moonlightMouse*` / `moonlightKey` / `moonlightScroll`；窗口是**进程级单个** `OHNativeWindow`，须在
-  `Start` 前绑定、`Stop` 后释放（`LiStartConnection` 的 `renderContext` 需要它）。
+- **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`。**`LiStartConnection` 在建流
+  完成后就返回**，会话此后跑在 moonlight 自己的线程上，直到 `LiStopConnection`——所以两者必须**在同一条会话
+  线程上成对调用**：会话线程执行 `LiStartConnection` → 等停止/被终止的通知 → 执行 `LiStopConnection`；
+  调用方（UI 线程）只置停止标志、发条件变量通知、`join`，绝不直接碰 moonlight 状态。`g_active` 覆盖整个
+  会话生命周期（含已建流阶段），用来**挡住并发的第二个会话**（moonlight-common-c 是进程级单连接，重入会把
+  它的全局状态搞坏，表现为 `VideoRecv`/`RtpvAddPacket` 崩溃）。视频回调取自解码桥，`renderContext` 是会话
+  XComponent 的 `OHNativeWindow`，音频暂以空渲染器关掉（Opus 渲染器未定，见
+  [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）；输入直接转 `LiSend*`（相对/绝对鼠标、按键、滚轮）。
+  N-API 出口：`moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
+  `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
+  `moonlightScroll`；窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
+  （`LiStartConnection` 的 `renderContext` 需要它）。
 
 ## 4. 控制 / 配对层（ArkTS）
 
@@ -137,15 +141,28 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - **信任模型 = 证书 pin**：未配对时接受任意主机证书（首触）；配对后存叶证书，之后逐字节一致。主机自签名，
   信任靠 pin 而非 CA。
 - **端口**：serverinfo 与配对前三步走明文 **HTTP 47989**，`pairchallenge` 走 **HTTPS 47984**（mTLS）。
-- **配对时序**：客户端生成并显示 4 位 PIN，用户在主机输入；
-  `getservercert → clientchallenge → serverchallengeresp → clientpairingsecret → pairchallenge`。
-  `getservercert` 要等主机端输入完成，**无读超时**（其余 5s 量级）。
+- **配对时序**：客户端先发起 `getservercert`——**主机正是收到它才挂起并提示输入 PIN**，所以客户端要
+  **先发请求、再显示 PIN**（两者并行，不是"先等用户输入再发"）；随后
+  `clientchallenge → serverchallengeresp → clientpairingsecret → pairchallenge`。
+  `getservercert` 要等主机端输入完成，**无读超时**（其余 5s 量级）。同一轮配对的
+  `uniqueid` 必须贯穿五步一致；本实现**每轮配对换一个新 `uniqueid`**——主机按它给挂起会话建索引
+  （Sunshine `map_id_sess`），复用旧 id 会得到 409 且不再弹 PIN。
 - **客户端身份**：自签名 X.509，RSA-2048、`SHA256withRSA`、20 年、`CN=NVIDIA GameStream Client`；证书 PEM 用
-  LF 换行（CRLF 会被主机拒收）。私钥落盘用 HUKS 信封加密（不可导出的 AES-256-GCM 密钥），证书明文落盘。
+  LF 换行（CRLF 会被主机拒收）。**上线的证书是 PEM 文本的 hex**（`clientcert` 参数、以及主机返回的
+  `plaincert`），主机按 PEM 解析（Sunshine `crypto::x509` 走 `PEM_read_bio_X509`）——把 DER 的 hex 当作
+  参数会配对失败。私钥落盘用 HUKS 信封加密（不可导出的 AES-256-GCM 密钥），证书明文落盘；
   不用 `certManager`/ASSET：前者私钥不可导出、无法用于 mTLS 握手，后者容量 ≤ 1KB 放不下 PKCS8 私钥。
-- **配对原语**（hex 进 hex 出）：`aesKey = SHA256/SHA1(salt || pin)[0:16]`（主版本 < 7 用 SHA-1）；
-  AES-128-ECB、零填充、无 IV；哈希里串入的是**证书签名值字节**（ASN.1 BIT STRING 内容），不是公钥。
+- **配对原语**（hex 进 hex 出）：`aesKey = SHA256(salt || pin)[0:16]`——**恒 SHA-256**（Sunshine 与
+  GFE 7+ 都如此；不要按版本回退 SHA-1）。AES-128-ECB、零填充、无 IV；哈希里串入的是**证书签名值字节**
+  （ASN.1 BIT STRING 内容），不是公钥。
 - **存储**：目录 `<dir>/moonlight/`（`dir` 为应用沙箱 files dir）；pin 按 host 存 `server_<key>.der`。
+- **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
+  分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
+  手柄掩码是 `gcmap`。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist` 选一个（优先名为 Desktop 的）。
+- **主机被占用**：`/launch` 会回 400 `An app is already running on this host`；客户端可 `GET /cancel`
+  （HTTPS + mTLS）结束在跑的应用后再试，`/resume` 则复用既有会话。
+- **明文 `serverinfo` 恒 `PairStatus=0`**：Sunshine 只在 HTTPS 请求里按 `uniqueid` 置 1，所以"是否已配对"
+  以本地存的 pin 为准（有 pin 即跳过配对），不能只信明文 serverinfo。
 
 ## 5. 范围与后续方向
 

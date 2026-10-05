@@ -423,13 +423,6 @@ export const moonlightVideoCodecSupport: (codec: number) => number;
  */
 export const moonlightVideoWarning: () => string;
 
-/** Session event ids (mirror hmrdp::MoonlightSessionEvent). */
-export const ML_EVENT_STARTED: number;
-export const ML_EVENT_TERMINATED: number;
-export const ML_EVENT_STAGE_STARTING: number;
-export const ML_EVENT_STAGE_COMPLETE: number;
-export const ML_EVENT_STAGE_FAILED: number;
-
 /** Everything LiStartConnection needs; assembled by the ArkTS control layer. */
 export interface MoonlightSessionConfig {
   host: string;

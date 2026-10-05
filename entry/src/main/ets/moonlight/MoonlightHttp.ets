@@ -10,6 +10,7 @@
  */
 import { http } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MoonlightIdentity } from './MoonlightIdentity';
 
 export class MoonlightHttpOptions {
@@ -94,13 +95,25 @@ export class MoonlightHttp {
       result.status = response.responseCode as number;
       const raw: string | Object | ArrayBuffer = response.result;
       result.body = typeof raw === 'string' ? raw : '';
+      if (result.status !== 200) {
+        hilog.warn(0xD001, 'HmRdpMoonlight', 'http %{public}s:%{public}d%{public}s status=%{public}d',
+          options.host, options.port, MoonlightHttp.endpoint(options.path), result.status);
+      }
       return result;
     } catch (error) {
       result.error = MoonlightHttp.errorToken(error as BusinessError);
+      hilog.error(0xD001, 'HmRdpMoonlight', 'http %{public}s:%{public}d%{public}s error=%{public}s',
+        options.host, options.port, MoonlightHttp.endpoint(options.path), result.error);
       return result;
     } finally {
       request.destroy();
     }
+  }
+
+  /** The path before the query string, for compact diagnostic logs. */
+  private static endpoint(path: string): string {
+    const index: number = path.indexOf('?');
+    return index >= 0 ? path.substring(0, index) : path;
   }
 
   private static errorToken(error: BusinessError): string {

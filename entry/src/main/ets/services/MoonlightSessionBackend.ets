@@ -12,15 +12,20 @@
  * across to LiStartConnection and maps native events onto SessionSignal.
  */
 import {
-  ML_EVENT_STARTED, ML_EVENT_STAGE_COMPLETE, ML_EVENT_STAGE_FAILED, ML_EVENT_STAGE_STARTING,
-  ML_EVENT_TERMINATED, MoonlightSessionConfig, moonlightKey, moonlightMouseButton,
-  moonlightMouseMove, moonlightMousePosition, moonlightScroll, moonlightSessionActive,
-  moonlightSessionClearSurface, moonlightSessionSetSurface, moonlightSessionStart,
-  moonlightSessionStop, moonlightSetSessionListener
+  MoonlightSessionConfig, moonlightKey, moonlightMouseButton, moonlightMouseMove,
+  moonlightMousePosition, moonlightScroll, moonlightSessionActive, moonlightSessionClearSurface,
+  moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener
 } from 'libhmrdp.so';
 import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
+
+/** Session event ids; mirror hmrdp::MoonlightSessionEvent (hmrdp_moonlight_session.h). */
+export const ML_EVENT_STARTED: number = 0;
+export const ML_EVENT_TERMINATED: number = 1;
+export const ML_EVENT_STAGE_STARTING: number = 2;
+export const ML_EVENT_STAGE_COMPLETE: number = 3;
+export const ML_EVENT_STAGE_FAILED: number = 4;
 
 export class MoonlightSessionBackend implements SessionBackend {
   private listener: SessionSignalListener | undefined = undefined;

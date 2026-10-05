@@ -582,7 +582,13 @@ export class MoonlightIdentity {
         encodingFormat: cert.EncodingFormat.FORMAT_DER
       };
       const x509: cert.X509Cert = await cert.createX509Cert(blob);
-      return x509.getPublicKey();
+      // The PubKey returned by the certificate is not accepted by
+      // createVerify().initSync (platform FAQ), so re-import it from its SPKI.
+      const spki: Uint8Array = x509.getPublicKey().getEncoded().data;
+      const keyData: cryptoFramework.DataBlob = { data: spki };
+      const pair: cryptoFramework.KeyPair =
+        cryptoFramework.createAsyKeyGenerator('RSA2048|PRIMES_2').convertKeySync(keyData, null);
+      return pair.pubKey;
     } catch (error) {
       return undefined;
     }

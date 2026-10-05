@@ -9,7 +9,7 @@
  * only the RTSP/stream client (LiStartConnection).
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { moonlightLaunchQueryParameters } from 'libhmrdp.so';
 import { MoonlightCrypto } from './MoonlightCrypto';
 import { MoonlightCredential, MoonlightIdentity } from './MoonlightIdentity';
@@ -107,10 +107,13 @@ export class MoonlightClient {
       + `&mode=${options.width}x${options.height}x${options.fps}`
       + `&rikey=${options.rikeyHex}`
       + `&rikeyid=${options.rikeyId}`
-      + `&localaudio=${options.localAudio ? 1 : 0}`
-      + `&surroundaudio=${options.surroundAudio ? 1 : 0}`
+      // Host-side parameter names (Sunshine nvhttp): localAudioPlayMode (not
+      // localaudio), hdrMode (not hdr), surroundAudioInfo (packed int).
+      + `&localAudioPlayMode=${options.localAudio ? 1 : 0}`
+      + `&surroundAudioInfo=196610`
       + `&gamepad=${options.gamepad ? 1 : 0}`
-      + `&hdr=${options.hdr ? 1 : 0}`
+      + `&gcmap=0`
+      + `&hdrMode=${options.hdr ? 1 : 0}`
       + `&yuv444=${options.yuv444 ? 1 : 0}`
       // Sunshine's extended parameters (owned by moonlight-common-c).
       + moonlightLaunchQueryParameters();
@@ -148,7 +151,7 @@ export class MoonlightClient {
       result.error = credential.error.length > 0 ? credential.error : 'no-cred';
       return result;
     }
-    const clientCertDer: Uint8Array | undefined = MoonlightClient.pemToDer(credential.certPem);
+    const clientCertDer: Uint8Array | undefined = MoonlightCrypto.pemToDer(credential.certPem);
     if (clientCertDer === undefined) {
       result.error = 'crypto';
       return result;
@@ -159,9 +162,17 @@ export class MoonlightClient {
       result.error = 'crypto';
       return result;
     }
+    // The host parses `clientcert` as PEM (Sunshine crypto::x509), so it is the
+    // hex of the PEM text, not of the DER.
+    const clientCertHex: string = MoonlightCrypto.toHex(MoonlightCrypto.utf8(credential.certPem));
+    // One uniqueid per pairing: Sunshine keys its pending session by it and
+    // answers a second getservercert with the same id 409 (no prompt).
+    const uniqueId: string = MoonlightCrypto.randomHex(16);
+    const uuid: string = MoonlightCrypto.randomHex(16);
 
     const salt: string = MoonlightCrypto.randomHex(16);
-    const aesKey: string | undefined = MoonlightClient.deriveKey(majorVersion, salt, pin);
+    // The AES key is SHA-256(salt || pin) (Sunshine / GFE 7+), never SHA-1.
+    const aesKey: string | undefined = MoonlightClient.deriveKey(salt, pin);
     if (aesKey === undefined) {
       result.error = 'crypto';
       return result;
@@ -169,7 +180,7 @@ export class MoonlightClient {
 
     // 1. getservercert (plain HTTP, long timeout: the host user types the PIN).
     const getCertPath: string = MoonlightClient.pairPath(
-      `phrase=getservercert&salt=${salt}&clientcert=${MoonlightCrypto.toHex(clientCertDer)}`);
+      `phrase=getservercert&salt=${salt}&clientcert=${clientCertHex}`, uniqueId, uuid);
     let outcome: HttpOutcome = MoonlightClient.bodyOrError(
       await MoonlightClient.httpGet(dir, host, httpPort, getCertPath, false, undefined,
         PAIR_CERT_TIMEOUT_MS));
@@ -182,10 +193,17 @@ export class MoonlightClient {
       return result;
     }
     const serverCertHex: string = MoonlightXml.read(outcome.body, 'plaincert');
-    const serverCertDer: Uint8Array | undefined = MoonlightCrypto.fromHex(serverCertHex);
-    if (serverCertDer === undefined || serverCertDer.length === 0) {
+    const serverCertBytes: Uint8Array | undefined = MoonlightCrypto.fromHex(serverCertHex);
+    if (serverCertBytes === undefined || serverCertBytes.length === 0) {
       // Another device is pairing with the host.
       result.error = 'already';
+      return result;
+    }
+    // plaincert is hex of the server certificate PEM; the crypto works on DER.
+    const serverCertDer: Uint8Array | undefined =
+      MoonlightCrypto.pemToDer(MoonlightCrypto.text(serverCertBytes));
+    if (serverCertDer === undefined) {
+      result.error = 'crypto';
       return result;
     }
     const serverCertSig: string | undefined =
@@ -203,7 +221,7 @@ export class MoonlightClient {
       return result;
     }
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpPort,
-      MoonlightClient.pairPath(`clientchallenge=${encryptedChallenge}`), false));
+      MoonlightClient.pairPath(`clientchallenge=${encryptedChallenge}`, uniqueId, uuid), false));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -214,7 +232,8 @@ export class MoonlightClient {
     }
     const encryptedResponse: string = MoonlightXml.read(outcome.body, 'challengeresponse');
     const decryptedResponse: string | undefined = MoonlightClient.aesDecryptHex(aesKey, encryptedResponse);
-    const hashLenHex: number = (majorVersion >= 7 ? 32 : 20) * 2;
+    // SHA-256 digest (32 bytes) then the 16-byte server challenge.
+    const hashLenHex: number = 64;
     if (decryptedResponse === undefined || decryptedResponse.length < hashLenHex + 32) {
       result.error = 'crypto';
       return result;
@@ -224,14 +243,14 @@ export class MoonlightClient {
 
     // 3. serverchallengeresp (plain HTTP).
     const clientSecret: string = MoonlightCrypto.randomHex(16);
-    const challengeResponse: string | undefined = MoonlightClient.challengeResponse(majorVersion,
+    const challengeResponse: string | undefined = MoonlightClient.challengeResponse(
       aesKey, serverChallenge, clientCertSig, clientSecret);
     if (challengeResponse === undefined) {
       result.error = 'crypto';
       return result;
     }
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpPort,
-      MoonlightClient.pairPath(`serverchallengeresp=${challengeResponse}`), false));
+      MoonlightClient.pairPath(`serverchallengeresp=${challengeResponse}`, uniqueId, uuid), false));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -255,7 +274,7 @@ export class MoonlightClient {
       result.error = 'mitm';
       return result;
     }
-    const expectedResponse: string | undefined = MoonlightClient.expectedResponse(majorVersion,
+    const expectedResponse: string | undefined = MoonlightClient.expectedResponse(
       randomChallenge, serverCertSig, serverSecret);
     if (expectedResponse !== serverResponse) {
       // The challenge response did not match: the PIN was wrong.
@@ -272,7 +291,7 @@ export class MoonlightClient {
     }
     const clientPairingSecret: string = clientSecret + clientSignature;
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpPort,
-      MoonlightClient.pairPath(`clientpairingsecret=${clientPairingSecret}`), false));
+      MoonlightClient.pairPath(`clientpairingsecret=${clientPairingSecret}`, uniqueId, uuid), false));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -284,7 +303,7 @@ export class MoonlightClient {
 
     // 5. pairchallenge (HTTPS; pin the certificate we just received).
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort,
-      MoonlightClient.pairPath('phrase=pairchallenge'), true, serverCertDer));
+      MoonlightClient.pairPath('phrase=pairchallenge', uniqueId, uuid), true, serverCertDer));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -308,6 +327,22 @@ export class MoonlightClient {
     return response.ok;
   }
 
+  /**
+   * Ends whatever the host is streaming (`/cancel`, HTTPS + mTLS). Used when a
+   * launch is refused because an app is already running.
+   */
+  static async cancel(dir: string, host: string, httpsPort: number): Promise<boolean> {
+    const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
+    if (pin === undefined) {
+      return false;
+    }
+    const path: string =
+      `/cancel?uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
+    const response: MoonlightHttpResult =
+      await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin);
+    return response.ok;
+  }
+
   private static majorVersion(appVersion: string): number {
     const parts: string[] = appVersion.split('.');
     if (parts.length === 0) {
@@ -317,9 +352,9 @@ export class MoonlightClient {
     return Number.isNaN(value) ? 0 : value;
   }
 
-  private static pairPath(arguments_: string): string {
+  private static pairPath(arguments_: string, uniqueId: string, uuid: string): string {
     return `/pair?devicename=roth&updateState=1&${arguments_}`
-      + `&uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
+      + `&uniqueid=${uniqueId}&uuid=${uuid}`;
   }
 
   private static uuid(): string {
@@ -381,16 +416,21 @@ export class MoonlightClient {
       outcome.error = 'http';
       return outcome;
     }
-    if (MoonlightXml.statusCode(body) !== 200) {
-      outcome.error = 'status';
+    const code: number = MoonlightXml.statusCode(body);
+    if (code !== 200) {
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'root status=%{public}d body=%{public}s',
+        code, body.substring(0, 240));
+      // The host is streaming something else (Sunshine: "An app is already
+      // running on this host"); the caller can /cancel and retry.
+      outcome.error = body.indexOf('already running') >= 0 ? 'busy' : 'status';
       return outcome;
     }
     outcome.body = body;
     return outcome;
   }
 
-  /** AES key = hash(salt || pin_utf8)[0:16]; SHA-256 for generation >= 7. */
-  private static deriveKey(majorVersion: number, saltHex: string, pin: string): string | undefined {
+  /** AES key = SHA-256(salt || pin_utf8)[0:16] (Sunshine / GFE 7+). */
+  private static deriveKey(saltHex: string, pin: string): string | undefined {
     const salt: Uint8Array | undefined = MoonlightCrypto.fromHex(saltHex);
     if (salt === undefined) {
       return undefined;
@@ -399,7 +439,7 @@ export class MoonlightClient {
     const material: Uint8Array = new Uint8Array(salt.length + pinBytes.length);
     material.set(salt, 0);
     material.set(pinBytes, salt.length);
-    const digest: Uint8Array | undefined = MoonlightCrypto.hash(majorVersion >= 7, material);
+    const digest: Uint8Array | undefined = MoonlightCrypto.hash(true, material);
     if (digest === undefined || digest.length < 16) {
       return undefined;
     }
@@ -426,8 +466,8 @@ export class MoonlightClient {
     return out === undefined ? undefined : MoonlightCrypto.toHex(out);
   }
 
-  /** hash(serverChallenge || clientCertSignature || clientSecret), padded to 32. */
-  private static challengeResponse(majorVersion: number, keyHex: string,
+  /** SHA-256(serverChallenge || clientCertSignature || clientSecret), padded to 32. */
+  private static challengeResponse(keyHex: string,
     serverChallengeHex: string, clientCertSignatureHex: string,
     clientSecretHex: string): string | undefined {
     const key: Uint8Array | undefined = MoonlightCrypto.fromHex(keyHex);
@@ -438,7 +478,7 @@ export class MoonlightClient {
       || secret === undefined) {
       return undefined;
     }
-    const digest: Uint8Array | undefined = MoonlightCrypto.hash(majorVersion >= 7,
+    const digest: Uint8Array | undefined = MoonlightCrypto.hash(true,
       MoonlightClient.concat([challenge, signature, secret]));
     if (digest === undefined) {
       return undefined;
@@ -449,8 +489,8 @@ export class MoonlightClient {
     return encrypted === undefined ? undefined : MoonlightCrypto.toHex(encrypted);
   }
 
-  /** hash(randomChallenge || serverCertSignature || serverSecret), hex. */
-  private static expectedResponse(majorVersion: number, randomChallengeHex: string,
+  /** SHA-256(randomChallenge || serverCertSignature || serverSecret), hex. */
+  private static expectedResponse(randomChallengeHex: string,
     serverCertSignatureHex: string, serverSecretHex: string): string | undefined {
     const challenge: Uint8Array | undefined = MoonlightCrypto.fromHex(randomChallengeHex);
     const signature: Uint8Array | undefined = MoonlightCrypto.fromHex(serverCertSignatureHex);
@@ -458,7 +498,7 @@ export class MoonlightClient {
     if (challenge === undefined || signature === undefined || secret === undefined) {
       return undefined;
     }
-    const digest: Uint8Array | undefined = MoonlightCrypto.hash(majorVersion >= 7,
+    const digest: Uint8Array | undefined = MoonlightCrypto.hash(true,
       MoonlightClient.concat([challenge, signature, secret]));
     return digest === undefined ? undefined : MoonlightCrypto.toHex(digest);
   }
@@ -484,31 +524,12 @@ export class MoonlightClient {
     const publicKey: cryptoFramework.PubKey | undefined =
       await MoonlightIdentity.serverPublicKey(serverCertDer);
     if (publicKey === undefined) {
+      hilog.error(0xD001, 'HmRdpMoonlight', 'server public key unavailable (cert parse failed)');
       return false;
     }
-    return MoonlightCrypto.verifySha256(publicKey, secret, signature);
-  }
-
-  /** Strips a PEM's armor and base64-decodes its DER body. */
-  private static pemToDer(pem: string): Uint8Array | undefined {
-    let body: string = '';
-    const lines: string[] = pem.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line: string = lines[i].trim();
-      if (line.length === 0 || line.startsWith('-----')) {
-        continue;
-      }
-      body += line;
-    }
-    if (body.length === 0) {
-      return undefined;
-    }
-    try {
-      const helper: util.Base64Helper = new util.Base64Helper();
-      return helper.decodeSync(body);
-    } catch (error) {
-      return undefined;
-    }
+    const ok: boolean = MoonlightCrypto.verifySha256(publicKey, secret, signature);
+    hilog.info(0xD001, 'HmRdpMoonlight', 'server secret verify: %{public}s', ok ? 'ok' : 'false');
+    return ok;
   }
 
   private static concat(parts: Uint8Array[]): Uint8Array {

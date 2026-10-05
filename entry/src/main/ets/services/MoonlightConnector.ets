@@ -9,6 +9,7 @@
  * See MOONLIGHT_PLAN.md / doc_agent/moonlight-native.md §4.
  */
 import { moonlightVideoFormats } from 'libhmrdp.so';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, MoonlightProfile, MoonlightStreamConfig
 } from '../model/RdpModels';
@@ -16,7 +17,8 @@ import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
 import {
-  LaunchResult, MoonlightLaunchOptions, NvServerInfo, PairResult, ServerInfoResult
+  AppListResult, LaunchResult, MoonlightLaunchOptions, NvApp, NvServerInfo, PairResult,
+  ServerInfoResult
 } from '../moonlight/MoonlightModels';
 
 /** `pin` is the 4-digit code to display; resolve true once the user entered it. */
@@ -46,30 +48,55 @@ export class MoonlightConnector {
     }
     const serverInfo: ServerInfoResult = await MoonlightClient.fetchServerInfo(filesDir, host, port);
     if (!serverInfo.ok) {
+      hilog.error(0xD001, 'HmRdpMoonlight', 'serverinfo failed: %{public}s', serverInfo.error);
       result.error = MoonlightConnector.describe(serverInfo.error);
       return result;
     }
     const info: NvServerInfo = serverInfo.info;
 
-    if (!info.paired) {
+    // Sunshine's plain-HTTP serverinfo always reports PairStatus=0, so a stored
+    // pin (from an earlier successful pairing) is what tells us we are paired
+    // and can skip the PIN round.
+    const paired: boolean = info.paired
+      || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
+    if (!paired) {
       const pin: string = MoonlightConnector.generatePin();
+      // The host only prompts for the PIN once our getservercert request is
+      // pending, so start the handshake first and show the PIN while it waits.
+      const pairing: Promise<PairResult> =
+        MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
       const confirmed: boolean = await pinProvider(pin);
       if (!confirmed) {
+        // The handshake keeps running and times out on its own; nothing to join.
         result.error = '已取消配对';
         return result;
       }
-      const pairResult: PairResult =
-        await MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
+      const pairResult: PairResult = await pairing;
       if (!pairResult.ok) {
+        hilog.error(0xD001, 'HmRdpMoonlight', 'pair failed: %{public}s', pairResult.error);
         result.error = MoonlightConnector.describe(pairResult.error);
         return result;
       }
     }
 
+    // No app chosen: pick one from the host's list (the app picker UI is a later
+    // milestone; this gets a stream up). Prefer an app named "Desktop".
+    let effectiveAppId: number = appId;
+    if (effectiveAppId <= 0) {
+      const apps: AppListResult = await MoonlightClient.fetchAppList(filesDir, host, info.httpsPort);
+      if (!apps.ok || apps.apps.length === 0) {
+        hilog.error(0xD001, 'HmRdpMoonlight', 'applist failed: %{public}s', apps.error);
+        result.error = '主机没有可启动的应用';
+        return result;
+      }
+      effectiveAppId = MoonlightConnector.pickApp(apps.apps);
+      hilog.info(0xD001, 'HmRdpMoonlight', 'auto app id=%{public}d', effectiveAppId);
+    }
+
     const rikeyHex: string = MoonlightCrypto.randomHex(16);
     const rikeyId: number = MoonlightConnector.randomKeyId();
     const options: MoonlightLaunchOptions = new MoonlightLaunchOptions();
-    options.appId = appId;
+    options.appId = effectiveAppId;
     options.width = width;
     options.height = height;
     options.fps = stream.fps;
@@ -80,9 +107,17 @@ export class MoonlightConnector {
     options.gamepad = stream.gamepad;
     options.rikeyHex = rikeyHex;
     options.rikeyId = rikeyId;
-    const launch: LaunchResult =
+    let launch: LaunchResult =
       await MoonlightClient.launch(filesDir, host, info.httpsPort, options);
+    if (!launch.ok && launch.error === 'busy') {
+      // The host is already streaming something: stop it and try once more, so a
+      // stale session never blocks a new connect (no manual host action).
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'host busy; cancelling and retrying launch');
+      await MoonlightClient.cancel(filesDir, host, info.httpsPort);
+      launch = await MoonlightClient.launch(filesDir, host, info.httpsPort, options);
+    }
     if (!launch.ok) {
+      hilog.error(0xD001, 'HmRdpMoonlight', 'launch failed: %{public}s', launch.error);
       result.error = MoonlightConnector.describe(launch.error);
       return result;
     }
@@ -118,6 +153,16 @@ export class MoonlightConnector {
     const value: number = Number.parseInt(hex, 16);
     const base: number = Number.isNaN(value) ? 0 : value;
     return (1000 + (base % 9000)).toString();
+  }
+
+  /** First app, preferring one named "Desktop" (Sunshine lists the desktop as an app). */
+  private static pickApp(apps: NvApp[]): number {
+    for (let i = 0; i < apps.length; i++) {
+      if (apps[i].name.toLowerCase() === 'desktop') {
+        return apps[i].id;
+      }
+    }
+    return apps[0].id;
   }
 
   private static randomKeyId(): number {
@@ -171,6 +216,9 @@ export class MoonlightConnector {
     }
     if (token === 'unpaired') {
       return '主机尚未配对';
+    }
+    if (token === 'busy') {
+      return '主机正在串流其他应用，请稍后重试';
     }
     if (token === 'dir' || token === 'huks' || token === 'corrupt' || token === 'write'
       || token === 'missing' || token === 'no-cred') {

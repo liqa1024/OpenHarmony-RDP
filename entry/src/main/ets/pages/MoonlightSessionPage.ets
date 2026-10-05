@@ -11,12 +11,13 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ML_EVENT_STAGE_COMPLETE, ML_EVENT_STAGE_STARTING } from 'libhmrdp.so';
 import { PendingConnection, SessionRequests } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
-import { MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
+import {
+  ML_EVENT_STAGE_COMPLETE, ML_EVENT_STAGE_STARTING, MoonlightSessionBackend
+} from '../services/MoonlightSessionBackend';
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 import { WindowController } from '../services/WindowController';
 
@@ -277,6 +278,23 @@ struct MoonlightSessionPage {
           this.componentWidth = this.lengthToNumber(newArea.width);
           this.componentHeight = this.lengthToNumber(newArea.height);
         })
+
+      if (this.state === ConnectionState.Connected) {
+        // Minimal control surface (a full toolbar/telemetry is a later polish
+        // milestone): a way to end the session, which also runs the stop path.
+        Column() {
+          Button('断开会话')
+            .onClick(() => {
+              this.disconnect();
+            })
+        }
+        .width('100%')
+        .height('100%')
+        .padding(16)
+        .alignItems(HorizontalAlign.End)
+        .justifyContent(FlexAlign.Start)
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
 
       if (this.state === ConnectionState.Connecting || this.state === ConnectionState.Disconnecting
         || this.state === ConnectionState.Failed || this.state === ConnectionState.Idle) {

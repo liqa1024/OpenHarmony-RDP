@@ -203,6 +203,27 @@ export class MoonlightCrypto {
     return value;
   }
 
+  /** Strips a PEM's armor and base64-decodes its DER body. */
+  static pemToDer(pem: string): Uint8Array | undefined {
+    let body: string = '';
+    const lines: string[] = pem.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0 || line.startsWith('-----')) {
+        continue;
+      }
+      body += line;
+    }
+    if (body.length === 0) {
+      return undefined;
+    }
+    try {
+      return new util.Base64Helper().decodeSync(body);
+    } catch (error) {
+      return undefined;
+    }
+  }
+
   private static nibble(code: number): number {
     if (code >= 0x30 && code <= 0x39) {
       return code - 0x30;
