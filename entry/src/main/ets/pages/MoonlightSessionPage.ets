@@ -19,6 +19,7 @@ import {
   ML_EVENT_STAGE_COMPLETE, ML_EVENT_STAGE_STARTING, MoonlightSessionBackend
 } from '../services/MoonlightSessionBackend';
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
+import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
 
 const DOMAIN: number = 0xD004;
@@ -197,6 +198,18 @@ struct MoonlightSessionPage {
     this.terminateWindow();
   }
 
+  /** The second disconnect mode: stop the host app (/cancel), then disconnect. */
+  private async closeAppAndDisconnect(): Promise<void> {
+    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
+    const context = this.getUIContext().getHostContext();
+    if (request !== undefined && request.savedConnection !== undefined && context !== undefined) {
+      const filesDir: string = (context as common.UIAbilityContext).filesDir;
+      await MoonlightClient.cancel(filesDir, request.savedConnection.host,
+        request.moonlightHttpsPort);
+    }
+    this.disconnect();
+  }
+
   private terminateWindow(): void {
     if (this.closing) {
       return;
@@ -283,10 +296,22 @@ struct MoonlightSessionPage {
         // Minimal control surface (a full toolbar/telemetry is a later polish
         // milestone): a way to end the session, which also runs the stop path.
         Column() {
-          Button('断开会话')
-            .onClick(() => {
-              this.disconnect();
-            })
+          Row({ space: 10 }) {
+            Button('断开')
+              .fontSize(14)
+              .backgroundColor($r('app.color.text_secondary'))
+              .bindTips('仅断开与主机的连接，主机上的应用保持运行')
+              .onClick(() => {
+                this.disconnect();
+              })
+            Button('关闭应用')
+              .fontSize(14)
+              .backgroundColor($r('app.color.danger'))
+              .bindTips('关闭主机上正在运行的应用，并断开连接')
+              .onClick(() => {
+                this.closeAppAndDisconnect();
+              })
+          }
         }
         .width('100%')
         .height('100%')

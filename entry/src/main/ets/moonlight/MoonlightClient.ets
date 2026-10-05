@@ -89,6 +89,23 @@ export class MoonlightClient {
   }
 
   /**
+   * One app's icon (`/appasset`, HTTPS + mTLS), or undefined when unavailable.
+   * The bytes are a PNG the caller decodes for display.
+   */
+  static async fetchAppAsset(dir: string, host: string, httpsPort: number,
+    appId: number): Promise<ArrayBuffer | undefined> {
+    const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
+    if (pin === undefined) {
+      return undefined;
+    }
+    const path: string = `/appasset?appid=${appId}&clientid=${MoonlightClient.UNIQUE_ID}`
+      + `&uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
+    const response: MoonlightHttpResult =
+      await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin, 10000, true);
+    return response.ok ? response.bodyBytes : undefined;
+  }
+
+  /**
    * Launches (or resumes) an application. The caller generates `rikeyHex` /
    * `rikeyId` and fills STREAM_CONFIGURATION from the result for
    * LiStartConnection.
@@ -367,7 +384,8 @@ export class MoonlightClient {
    * for the request and removed afterwards.
    */
   private static async httpGet(dir: string, host: string, port: number, path: string,
-    tls: boolean, pinDer?: Uint8Array, timeoutMs?: number): Promise<MoonlightHttpResult> {
+    tls: boolean, pinDer?: Uint8Array, timeoutMs?: number,
+    binary?: boolean): Promise<MoonlightHttpResult> {
     const options: MoonlightHttpOptions = new MoonlightHttpOptions();
     options.useTls = tls;
     options.host = host;
@@ -376,6 +394,7 @@ export class MoonlightClient {
     options.method = 'GET';
     options.pinnedServerCertDer = pinDer ?? new Uint8Array(0);
     options.timeoutMs = timeoutMs ?? 10000;
+    options.binary = binary ?? false;
     if (!tls) {
       return MoonlightHttp.perform(options);
     }

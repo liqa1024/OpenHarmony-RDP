@@ -28,6 +28,8 @@ export class MoonlightHttpOptions {
   certPath: string = '';
   keyPath: string = '';
   timeoutMs: number = 10000;
+  // Request a binary body (app icons) instead of a string.
+  binary: boolean = false;
 }
 
 export class MoonlightHttpResult {
@@ -36,6 +38,8 @@ export class MoonlightHttpResult {
   ok: boolean = false;
   status: number = 0;
   body: string = '';
+  // Binary body when the request asked for one (see MoonlightHttpOptions.binary).
+  bodyBytes: ArrayBuffer | undefined = undefined;
   // Stable error token when !ok: "request" / "resolve" / "connect" / "tls" /
   // "io" / "timeout" / "http" / "pin".
   error: string = '';
@@ -60,7 +64,8 @@ export class MoonlightHttp {
         method: method,
         connectTimeout: options.timeoutMs,
         readTimeout: options.timeoutMs,
-        expectDataType: http.HttpDataType.STRING,
+        expectDataType: options.binary ? http.HttpDataType.ARRAY_BUFFER
+                                       : http.HttpDataType.STRING,
         header: headers
       };
       if (options.body.length > 0) {
@@ -94,7 +99,13 @@ export class MoonlightHttp {
       result.ok = true;
       result.status = response.responseCode as number;
       const raw: string | Object | ArrayBuffer = response.result;
-      result.body = typeof raw === 'string' ? raw : '';
+      if (options.binary) {
+        if (raw instanceof ArrayBuffer) {
+          result.bodyBytes = raw;
+        }
+      } else {
+        result.body = typeof raw === 'string' ? raw : '';
+      }
       if (result.status !== 200) {
         hilog.warn(0xD001, 'HmRdpMoonlight', 'http %{public}s:%{public}d%{public}s status=%{public}d',
           options.host, options.port, MoonlightHttp.endpoint(options.path), result.status);

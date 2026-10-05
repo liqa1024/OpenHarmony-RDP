@@ -12,6 +12,7 @@ import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
+import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -224,6 +225,7 @@ struct Index {
     request.savedConnection = conn;
     request.stream = stream;
     request.moonlightConfig = result.config;
+    request.moonlightHttpsPort = result.httpsPort;
     SessionManager.connect(request, abilityContext);
   }
 
@@ -243,6 +245,21 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
       return false;
     }
+  }
+
+  /** The Moonlight app button is only usable when no attempt is in flight. */
+  private appButtonEnabled(conn: SavedConnection): boolean {
+    const state: ConnectionState = this.connState(conn.id);
+    return state === ConnectionState.Idle || state === ConnectionState.Failed;
+  }
+
+  private openMoonlightApps(conn: SavedConnection): void {
+    const params: MoonlightAppsParams = { connectionId: conn.id };
+    this.getUIContext().getRouter()
+      .pushUrl({ url: 'pages/MoonlightAppsPage', params: params })
+      .catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'open moonlight apps failed: %{public}s', JSON.stringify(error));
+      });
   }
 
   private openEditor(id: string, protocol: number): void {
@@ -392,6 +409,31 @@ struct Index {
       .onClick(() => {
         this.openEditor(conn.id, conn.protocol);
       })
+
+      if (conn.isMoonlight()) {
+        // App-management entry (left of connect): opens the main-window app page.
+        Row() {
+          Image($r('app.media.ic_apps'))
+            .width(20)
+            .height(20)
+            .draggable(false)
+        }
+        .width(44)
+        .height(44)
+        .borderRadius(22)
+        .backgroundColor($r('app.color.card_bg'))
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .margin({ left: 8 })
+        .hoverEffect(HoverEffect.Scale)
+        .opacity(this.appButtonEnabled(conn) ? 1 : 0.4)
+        .bindTips('应用', this.tipsOptions)
+        .onClick(() => {
+          if (this.appButtonEnabled(conn)) {
+            this.openMoonlightApps(conn);
+          }
+        })
+      }
 
       Row() {
         if (this.connState(conn.id) === ConnectionState.Connecting) {

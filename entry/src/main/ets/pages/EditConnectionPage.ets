@@ -265,21 +265,8 @@ struct EditConnectionPage {
     return Math.min(Math.max(this.parsedBitrate(), ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
   }
 
-  private defaultAppText(): string {
-    return this.mlDefaultAppName.length > 0 ? this.mlDefaultAppName : '桌面';
-  }
-
   private showToast(message: string): void {
     this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
-  }
-
-  /** Moonlight: pick the default app from the paired host. Added in a later phase. */
-  private chooseDefaultApp(): void {
-    if (!this.mlPaired) {
-      this.showToast('请先完成配对');
-      return;
-    }
-    this.showToast('应用列表将在后续版本提供');
   }
 
   private srSummary(profile: SrProfile): string {
@@ -894,29 +881,6 @@ struct EditConnectionPage {
       .width('100%')
       .margin({ bottom: 16 })
 
-      Row() {
-        Column() {
-          Text('默认应用').fontSize(14).fontColor($r('app.color.text_primary'))
-          Text(this.mlPaired
-            ? ('连接时打开：' + this.defaultAppText())
-            : '配对后可选择；未选择时打开主机的「桌面」')
-            .fontSize(11)
-            .fontColor($r('app.color.text_tertiary'))
-            .margin({ top: 2 })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        TextAction({
-          label: '选择',
-          muted: !this.mlPaired,
-          onTap: () => {
-            this.chooseDefaultApp();
-          }
-        })
-      }
-      .width('100%')
-      .padding({ top: 4, bottom: 16 })
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

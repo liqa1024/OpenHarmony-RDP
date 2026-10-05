@@ -3,6 +3,7 @@
     "pages/Index",
     "pages/SessionPage",
     "pages/MoonlightSessionPage",
+    "pages/MoonlightAppsPage",
     "pages/EditConnectionPage",
     "pages/SettingsPage",
     "pages/GfxReplayPage"

@@ -29,9 +29,68 @@ export class MoonlightConnectResult {
   // User-facing reason when !ok.
   error: string = '';
   config: MoonlightStreamConfig = new MoonlightStreamConfig();
+  // The host's HTTPS control port, kept for the session's /cancel.
+  httpsPort: number = 47984;
+}
+
+/** Result of probing a host for the app-management UI. */
+export class MoonlightAppsResult {
+  ok: boolean = false;
+  error: string = '';
+  apps: NvApp[] = [];
+  // App currently running on the host (0 = none), from /serverinfo.
+  currentGame: number = 0;
+  httpsPort: number = 47984;
 }
 
 export class MoonlightConnector {
+  /**
+   * Read-only probe for the app-management UI: ensure paired (PIN popup when
+   * needed), then read the host's app list and the running app. Does not launch.
+   */
+  static async probeApps(filesDir: string, host: string, port: number,
+    pinProvider: MoonlightPinProvider): Promise<MoonlightAppsResult> {
+    const result: MoonlightAppsResult = new MoonlightAppsResult();
+    const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
+    if (!credential.ok) {
+      result.error = MoonlightConnector.describe(credential.error);
+      return result;
+    }
+    const serverInfo: ServerInfoResult = await MoonlightClient.fetchServerInfo(filesDir, host, port);
+    if (!serverInfo.ok) {
+      result.error = MoonlightConnector.describe(serverInfo.error);
+      return result;
+    }
+    const info: NvServerInfo = serverInfo.info;
+    result.httpsPort = info.httpsPort;
+    result.currentGame = info.currentGame;
+    const paired: boolean = info.paired
+      || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
+    if (!paired) {
+      const pin: string = MoonlightConnector.generatePin();
+      const pairing: Promise<PairResult> =
+        MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
+      const confirmed: boolean = await pinProvider(pin);
+      if (!confirmed) {
+        result.error = '已取消配对';
+        return result;
+      }
+      const pairResult: PairResult = await pairing;
+      if (!pairResult.ok) {
+        result.error = MoonlightConnector.describe(pairResult.error);
+        return result;
+      }
+    }
+    const apps: AppListResult = await MoonlightClient.fetchAppList(filesDir, host, info.httpsPort);
+    if (!apps.ok) {
+      result.error = MoonlightConnector.describe(apps.error);
+      return result;
+    }
+    result.apps = apps.apps;
+    result.ok = true;
+    return result;
+  }
+
   /**
    * The whole pre-flight for one connection. `width`/`height` are the agreed
    * stream size (the caller resolves follow-window / follow-screen to real
@@ -143,6 +202,7 @@ export class MoonlightConnector {
     config.remoteInputAesKeyHex = rikeyHex;
     config.remoteInputAesIvHex = MoonlightConnector.ivHex(rikeyId);
     result.config = config;
+    result.httpsPort = info.httpsPort;
     result.ok = true;
     return result;
   }

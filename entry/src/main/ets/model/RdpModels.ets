@@ -293,6 +293,8 @@ export class PendingConnection {
   // The assembled Moonlight stream config (serverinfo + /launch), consumed by the
   // Moonlight backend. Undefined for RDP, and until the control layer has run.
   moonlightConfig: MoonlightStreamConfig | undefined = undefined;
+  // The host's HTTPS control port (for /cancel and other paired endpoints).
+  moonlightHttpsPort: number = 47984;
   // Invoked once when a session launched from the editor connects successfully.
   // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;
