@@ -12,6 +12,7 @@ import {
 } from '../model/RdpModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
+import { defaultDisplay } from '../utils/DisplayUtil';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSettings';
@@ -206,7 +207,7 @@ export class SettingsStore {
     settings.touchpadScrollSpeed = DEFAULT_SPEED_SCALE;
     settings.pinchZoomSpeed = DEFAULT_SPEED_SCALE;
     settings.pinchMode = PINCH_MODE_WHEEL;
-    const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
+    const disp: display.Display | undefined = defaultDisplay();
     if (disp !== undefined) {
       settings.mainWindowSizeEnabled = true;
       settings.mainWindowWidth = Math.round(disp.width * MAIN_WINDOW_RATIO);
@@ -437,7 +438,7 @@ export class SettingsStore {
    */
   static detectedDisplay(): DisplayProfile {
     const profile: DisplayProfile = new DisplayProfile();
-    const disp: display.Display | undefined = SettingsStore.displayOrUndefined();
+    const disp: display.Display | undefined = defaultDisplay();
     if (disp !== undefined && disp.width > 0 && disp.height > 0) {
       profile.width = disp.width;
       profile.height = disp.height;
@@ -762,14 +763,6 @@ export class SettingsStore {
     profile.sessionWidth = enabled ? SettingsStore.srSessionSize(width, sr.ratioPercent) : width;
     profile.sessionHeight = enabled ? SettingsStore.srSessionSize(height, sr.ratioPercent) : height;
     return profile;
-  }
-
-  private static displayOrUndefined(): display.Display | undefined {
-    try {
-      return display.getDefaultDisplaySync();
-    } catch (error) {
-      return undefined;
-    }
   }
 
   private static readNumber(store: preferences.Preferences, key: string,

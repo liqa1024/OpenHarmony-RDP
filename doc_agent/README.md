@@ -30,8 +30,9 @@
   真机与模拟器流程、`uitest`/`hdc` 的可靠用法、日志读取、**改动后必须跑的最小验证**。
 - [`architecture.md`](architecture.md) —— 应用结构：Ability / 页面 / 服务 / 原生模块职责表，连接与会话的数据流。
 - [`arkts-conventions.md`](arkts-conventions.md) —— 严格 ArkTS 规则、ArkUI 状态/`@Builder`/`ForEach`/路由/主题约定。
-- [`ui-design.md`](ui-design.md) —— 界面设计语言总纲：设计 token（颜色/尺寸/圆角/字号/阴影/动画）、沉浸材质表面清单、
-  布局模式（页头/卡片/表单/列表行/会话窗）、共享组件契约与复用判据、协议差异的呈现约定。
+- [`ui-design.md`](ui-design.md) —— 界面设计语言总纲：**设计原则**（按逻辑分类共享 / opt-in 可选能力 / 范围与扩展性）、
+  设计 token（颜色/尺寸/圆角/字号/阴影/动画）、沉浸材质表面清单、布局模式（页头/卡片/表单/列表行/会话窗）、
+  共享组件契约与共享工具、协议差异的呈现约定。
 - [`session-and-input.md`](session-and-input.md) —— 会话窗口模型、鼠标/键盘/触屏/触控板输入映射、工具栏与状态遥测、
   光标同步、剪贴板（手动触发）。
 - [`settings-and-storage.md`](settings-and-storage.md) —— 设置与连接的存储模型、密码（ASSET）、导入/导出、

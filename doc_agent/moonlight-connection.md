@@ -102,7 +102,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（读
   `PendingConnection.moonlightConfig`）、`services/SessionBackendFactory.ets` 与 `utils/MoonlightKeyMapper.ets`；
   `SessionAbility` 按协议路由到该页。窗口是**先开窗再启动**（`requiresWindowAtStart`），因为 `LiStartConnection`
-  需要渲染目标。
+  需要渲染目标。会话工具栏复用与 RDP 同一套 chrome 与自动隐藏判定（`components/SessionChrome`、
+  `services/ToolbarAutoHide`），支持全屏 / 最小化。
 - **尚未接入**：主机发现（先手动添加）、音频（Opus，当前空渲染器关音频）与 HDR / YUV444 的协商暴露；
   端到端串流待连真 Sunshine 验证。
 - 本文件描述**已落地的前端约定、ArkTS 协议建模与控制层**；原生侧（客户端库 / 解码 / 串流会话 / 输入）

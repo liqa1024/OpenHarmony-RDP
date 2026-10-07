@@ -11,6 +11,7 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { window } from '@kit.ArkUI';
 import { PendingConnection, SessionRequests } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
@@ -21,9 +22,13 @@ import {
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
+import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
+import { SettingsStore } from '../services/SettingsStore';
+import { lengthToNumber } from '../utils/UiUtil';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { StatusCard } from '../components/StatusCard';
-import { TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_ROW_HEIGHT, ToolbarChip } from '../components/SessionChrome';
+import { TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE,
+  TOOLBAR_ZONE_TRIGGER, ToolbarChip, ToolbarRevealHint } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
@@ -82,10 +87,42 @@ struct MoonlightSessionPage {
   // system without the material capability, which keeps the flat bar colour.
   private toolbarMaterial: AttributeModifier<RowAttribute> =
     new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
+  private sessionWindow: window.Window | undefined = undefined;
+  // The strip is `toolbarHeight` tall; the band that reveals it is much shorter.
+  private revealBand: number = 6;
+  private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
+  private hoverDelay: number = 700;
+  private hideDelay: number = 250;
+  // Cleared in aboutToDisappear so a hover-exit during teardown arms nothing.
+  private toolbarAutoHideArmed: boolean = true;
+  // Fullscreen auto-hide: same controller as the RDP page (services/ToolbarAutoHide);
+  // the page supplies live state and mirrors show/reveal back into @State.
+  private autoHideHost: ToolbarAutoHideHost = {
+    isArmed: () => this.toolbarAutoHideArmed,
+    isFullscreen: () => this.isFullscreen,
+    isConnected: () => this.state === ConnectionState.Connected,
+    isPinned: () => false,
+    hoverDelay: () => this.hoverDelay,
+    hideDelay: () => this.hideDelay,
+    show: () => this.showToolbar,
+    setShow: (show: boolean) => {
+      this.showToolbar = show;
+    },
+    revealFill: () => this.revealHintFill,
+    animateReveal: (fill: number, durationMs: number, curve: Curve) => {
+      this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
+        this.revealHintFill = fill;
+      });
+    }
+  };
+  private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
 
   @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接…';
   @State stageText: string = '';
+  @State showToolbar: boolean = true;
+  @State revealHintFill: number = 0;
+  @State isFullscreen: boolean = false;
 
   aboutToAppear(): void {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
@@ -99,6 +136,10 @@ struct MoonlightSessionPage {
     if (backend instanceof MoonlightSessionBackend) {
       this.backend = backend;
     }
+    const settings = SettingsStore.load();
+    this.hoverDelay = settings.mlToolbarHoverDelay;
+    this.hideDelay = settings.mlToolbarHideDelay;
+    this.loadSessionWindow();
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number): void => {
         this.onSurfaceCreated(surfaceId, width, height);
@@ -115,6 +156,10 @@ struct MoonlightSessionPage {
       (state: ConnectionState, message: string): void => {
         this.state = state;
         this.statusText = message;
+        // Windowed mode lays the strip out above the picture anyway; hiding it in
+        // fullscreen is what the auto-hide then manages.
+        this.showToolbar = state !== ConnectionState.Connected;
+        this.refreshToolbarAutoHide();
       },
       (signal: SessionSignal): void => {
         this.onSignal(signal);
@@ -122,6 +167,11 @@ struct MoonlightSessionPage {
       () => {
         this.terminateWindow();
       });
+  }
+
+  aboutToDisappear(): void {
+    this.toolbarAutoHideArmed = false;
+    this.toolbarAutoHide.dispose();
   }
 
   /** Binds the surface and starts the stream (once). */
@@ -144,18 +194,57 @@ struct MoonlightSessionPage {
     }
   }
 
-  private lengthToNumber(length: Length): number {
-    if (typeof length === 'number') {
-      return length;
+  /** Tracks the window's fullscreen state; drives the strip's auto-hide. */
+  private loadSessionWindow(): void {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
     }
-    if (typeof length === 'string') {
-      const value: number = Number.parseFloat(length);
-      return Number.isNaN(value) ? 0 : value;
+    WindowController.acquireWindow(context).then((win: window.Window | undefined) => {
+      if (win === undefined) {
+        return;
+      }
+      this.sessionWindow = win;
+      this.isFullscreen = WindowController.isFullscreen(win);
+      WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
+        this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
+        // The auto-hide only exists in fullscreen: drop or re-arm its timers.
+        this.refreshToolbarAutoHide();
+      });
+    });
+  }
+
+  private minimizeWindow(): void {
+    const win: window.Window | undefined = this.sessionWindow;
+    if (win === undefined) {
+      return;
     }
-    return 0;
+    WindowController.minimize(win);
+  }
+
+  private toggleFullscreen(): void {
+    const win: window.Window | undefined = this.sessionWindow;
+    if (win === undefined) {
+      return;
+    }
+    WindowController.toggleFullscreen(win, this.isFullscreen);
+  }
+
+  /** Reports which zone the pointer is in; zones come from the surface or the bar. */
+  private setToolbarPointerZone(zone: number): void {
+    this.toolbarAutoHide.setPointerZone(zone);
+  }
+
+  /** Re-evaluates the bar's auto-hide (delegates to the shared controller). */
+  private refreshToolbarAutoHide(): void {
+    this.toolbarAutoHide.refresh();
   }
 
   private handleMouse(event: MouseEvent): void {
+    // The top reveal band only matters in fullscreen; reporting it always keeps
+    // the decision in one place (the controller ignores it outside fullscreen).
+    this.setToolbarPointerZone(event.y < this.revealBand
+      ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     const backend: MoonlightSessionBackend | undefined = this.backend;
     if (backend === undefined) {
       return;
@@ -240,118 +329,168 @@ struct MoonlightSessionPage {
     });
   }
 
-  build() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      XComponent({
-        id: 'moonlightSurface',
-        type: XComponentType.SURFACE,
-        controller: this.controller
+  @Builder
+  sessionToolbar() {
+    Row() {
+      Text(this.hostLabel)
+        .fontSize(14)
+        .fontColor(TOOLBAR_FG)
+      Blank()
+      ToolbarChip({
+        label: this.isFullscreen ? '退出全屏' : '全屏',
+        onTap: () => {
+          this.toggleFullscreen();
+        }
       })
-        .width('100%')
-        .height('100%')
-        .backgroundColor('#000000')
-        .focusable(true)
-        .defaultFocus(true)
-        .onMouse((event: MouseEvent) => {
-          this.handleMouse(event);
-        })
-        .onAxisEvent((event: AxisEvent) => {
-          this.handleAxis(event);
-        })
-        .onKeyEvent((event: KeyEvent) => {
-          this.handleKey(event);
-        })
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-          this.componentWidth = this.lengthToNumber(newArea.width);
-          this.componentHeight = this.lengthToNumber(newArea.height);
-        })
-
-      if (this.state === ConnectionState.Connected) {
-        // Session toolbar in the same fixed-dark chrome as the RDP page; the
-        // full auto-hide / telemetry surface is a later milestone.
-        Row() {
-          Text(this.hostLabel)
-            .fontSize(14)
-            .fontColor(TOOLBAR_FG)
-          Blank()
-          ToolbarChip({
-            label: '断开',
-            onTap: () => {
-              this.disconnect();
-            }
-          })
-            .margin({ right: 8 })
-            .bindTips('仅断开与主机的连接，主机上的应用保持运行')
-          ToolbarChip({
-            label: '关闭应用',
-            chipBg: $r('app.color.danger'),
-            onTap: () => {
-              this.closeAppAndDisconnect();
-            }
-          })
-            .bindTips('关闭主机上正在运行的应用，并断开连接')
+        .margin({ right: 8 })
+      ToolbarChip({
+        label: '最小化',
+        onTap: () => {
+          this.minimizeWindow();
         }
-        .width('100%')
-        .height(TOOLBAR_ROW_HEIGHT)
-        .padding({ left: 16, right: 16 })
-        .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
-        .attributeModifier(this.toolbarMaterial)
-      }
+      })
+        .margin({ right: 8 })
+      ToolbarChip({
+        label: '断开',
+        onTap: () => {
+          this.disconnect();
+        }
+      })
+        .margin({ right: 8 })
+        .bindTips('仅断开与主机的连接，主机上的应用保持运行')
+      ToolbarChip({
+        label: '关闭应用',
+        chipBg: $r('app.color.danger'),
+        onTap: () => {
+          this.closeAppAndDisconnect();
+        }
+      })
+        .bindTips('关闭主机上正在运行的应用，并断开连接')
+    }
+    .width('100%')
+    .height(TOOLBAR_ROW_HEIGHT)
+    .padding({ left: 16, right: 16 })
+    .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
+    .attributeModifier(this.toolbarMaterial)
+    // In fullscreen the bar covers the surface, so only its own hover reports it.
+    .onHover((isHover: boolean) => {
+      this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
+    })
+    .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
+      .animation({ duration: 180, curve: Curve.EaseOut }))
+  }
 
-      if (this.state === ConnectionState.Connecting || this.state === ConnectionState.Disconnecting
-        || this.state === ConnectionState.Failed || this.state === ConnectionState.Idle) {
-        Column() {
-          if (this.state === ConnectionState.Connecting) {
-            StatusCard({
-              title: '正在连接',
-              subtitle: this.stageText.length > 0 ? this.stageText : this.statusText,
-              primary: '取消',
-              loading: true,
-              onPrimary: () => {
-                this.disconnect();
-              }
-            })
-          } else if (this.state === ConnectionState.Disconnecting) {
-            StatusCard({
-              title: '正在断开',
-              subtitle: this.statusText
-            })
-          } else if (this.state === ConnectionState.Failed) {
-            StatusCard({
-              title: '连接失败',
-              subtitle: this.statusText,
-              primary: '重试',
-              secondary: '返回',
-              icon: $r('app.media.ic_proto_moonlight'),
-              onPrimary: () => {
-                this.retry();
-              },
-              onSecondary: () => {
-                this.disconnect();
-              }
-            })
-          } else {
-            StatusCard({
-              title: '连接已断开',
-              subtitle: this.statusText,
-              primary: '重试',
-              secondary: '返回',
-              icon: $r('app.media.ic_proto_moonlight'),
-              onPrimary: () => {
-                this.retry();
-              },
-              onSecondary: () => {
-                this.disconnect();
-              }
-            })
+  /** True while the status overlay is up (anything but a live session). */
+  private overlayVisible(): boolean {
+    return this.state !== ConnectionState.Connected;
+  }
+
+  build() {
+    Column() {
+      // Windowed mode: the strip is laid out above the picture, so the image
+      // starts below it instead of under it.
+      if (!this.isFullscreen && !this.overlayVisible()) {
+        this.sessionToolbar()
+      }
+      Stack({ alignContent: Alignment.TopStart }) {
+        XComponent({
+          id: 'moonlightSurface',
+          type: XComponentType.SURFACE,
+          controller: this.controller
+        })
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#000000')
+          .focusable(true)
+          .defaultFocus(true)
+          .onMouse((event: MouseEvent) => {
+            this.handleMouse(event);
+          })
+          .onAxisEvent((event: AxisEvent) => {
+            this.handleAxis(event);
+          })
+          .onKeyEvent((event: KeyEvent) => {
+            this.handleKey(event);
+          })
+          .onAreaChange((oldArea: Area, newArea: Area) => {
+            this.componentWidth = lengthToNumber(newArea.width);
+            this.componentHeight = lengthToNumber(newArea.height);
+          })
+
+        // Fullscreen: the reveal hint hugs the top edge, behind the bar (which
+        // slides in over it).
+        if (this.isFullscreen && !this.overlayVisible()) {
+          Stack() {
+            ToolbarRevealHint({ fill: this.revealHintFill })
           }
+          .width('100%')
+          .height('100%')
+          .alignContent(Alignment.Top)
+          .hitTestBehavior(HitTestMode.None)
         }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#66000000')
+
+        // Fullscreen mode: the strip floats over the image and auto-hides.
+        if (this.isFullscreen && this.showToolbar && !this.overlayVisible()) {
+          this.sessionToolbar()
+        }
+
+        if (this.overlayVisible()) {
+          Column() {
+            if (this.state === ConnectionState.Connecting) {
+              StatusCard({
+                title: '正在连接',
+                subtitle: this.stageText.length > 0 ? this.stageText : this.statusText,
+                primary: '取消',
+                loading: true,
+                onPrimary: () => {
+                  this.disconnect();
+                }
+              })
+            } else if (this.state === ConnectionState.Disconnecting) {
+              StatusCard({
+                title: '正在断开',
+                subtitle: this.statusText
+              })
+            } else if (this.state === ConnectionState.Failed) {
+              StatusCard({
+                title: '连接失败',
+                subtitle: this.statusText,
+                primary: '重试',
+                secondary: '返回',
+                icon: $r('app.media.ic_proto_moonlight'),
+                onPrimary: () => {
+                  this.retry();
+                },
+                onSecondary: () => {
+                  this.disconnect();
+                }
+              })
+            } else {
+              StatusCard({
+                title: '连接已断开',
+                subtitle: this.statusText,
+                primary: '重试',
+                secondary: '返回',
+                icon: $r('app.media.ic_proto_moonlight'),
+                onPrimary: () => {
+                  this.retry();
+                },
+                onSecondary: () => {
+                  this.disconnect();
+                }
+              })
+            }
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+          .backgroundColor('#66000000')
+        }
       }
+      .width('100%')
+      .layoutWeight(1)
+      .clip(true)
     }
     .width('100%')
     .height('100%')

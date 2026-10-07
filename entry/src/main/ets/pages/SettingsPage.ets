@@ -7,8 +7,7 @@ import { DisplayProfile, ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, ML_BITRATE_D
   ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_RES_FOLLOW_WINDOW,
   PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
-import { Capability, CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE,
-  DeviceCapabilities } from '../services/DeviceCapabilities';
+import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
@@ -16,7 +15,9 @@ import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
-import { defaultDisplay } from '../utils/UiUtil';
+import { defaultDisplay } from '../utils/DisplayUtil';
+import { isScalePreset, MAX_DESKTOP_SIZE, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
+import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
@@ -24,10 +25,6 @@ import { MaterialCard } from '../components/MaterialCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
 import { SettingSliderRow } from '../components/SettingSliderRow';
 import { SettingToggleRow } from '../components/SettingToggleRow';
-
-// Remote desktop sizes are not limited to the local screen, so manual
-// resolution is capped only to a sane upper bound.
-const MAX_DESKTOP_SIZE: number = 16384;
 
 // @Builder parameters are only reactive when passed as a single object literal
 // (by reference); passing primitives by value would freeze the displayed value.
@@ -295,28 +292,19 @@ struct SettingsPage {
   }
 
   private parseSize(text: string, fallback: number, max: number): number {
-    const value: number = Number.parseInt(text, 10);
-    if (Number.isNaN(value) || value <= 0) {
-      return fallback;
-    }
-    return Math.min(value, max);
+    return parseSizeValue(text, fallback, max);
   }
 
   private parseScale(text: string, fallback: number): number {
-    const value: number = Number.parseInt(text, 10);
-    if (Number.isNaN(value) || value < 100) {
-      return fallback;
-    }
-    return Math.min(value, 500);
+    return parseScaleValue(text, fallback);
   }
 
   private parsedManualScale(): number {
-    const value: number = Number.parseInt(this.manualScaleText, 10);
-    return Number.isNaN(value) ? 0 : value;
+    return parsedTextValue(this.manualScaleText);
   }
 
   private isPresetScale(value: number): boolean {
-    return SCALE_PRESETS.indexOf(value) >= 0;
+    return isScalePreset(value);
   }
 
   private effectiveMlBitrate(): number {
@@ -760,26 +748,17 @@ struct SettingsPage {
   /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
    * best any codec offers. */
   private mlCodecSupportOf(codec: number): number {
-    if (codec === ML_CODEC_H264) {
-      return this.mlH264Support;
-    }
-    if (codec === ML_CODEC_HEVC) {
-      return this.mlHevcSupport;
-    }
-    if (codec === ML_CODEC_AV1) {
-      return this.mlAv1Support;
-    }
-    return Math.max(this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
+    return moonlightCodecSupport(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
   /** Whether a codec choice can run on this device (auto included). */
   private mlCodecUsable(codec: number): boolean {
-    return this.mlCodecSupportOf(codec) > CODEC_SUPPORT_NONE;
+    return moonlightCodecUsable(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
   /** Whether a codec choice would decode in software only. */
   private mlCodecSoftware(codec: number): boolean {
-    return this.mlCodecSupportOf(codec) === CODEC_SUPPORT_SOFTWARE;
+    return moonlightCodecSoftware(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
   /** Falls back to auto when the stored choice cannot run here. */

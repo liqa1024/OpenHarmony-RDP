@@ -24,6 +24,16 @@ export const TOOLBAR_TELEMETRY_HEIGHT: number = 24;
 export const METRIC_GOOD: string = '#4ADE80';
 export const METRIC_WARN: string = '#FBBF24';
 export const METRIC_BAD: string = '#F87171';
+// Fullscreen auto-hide: which zone the pointer is in (neither / the top reveal
+// band / the bar itself). The decision itself lives in services/ToolbarAutoHide.
+export const TOOLBAR_ZONE_NONE: number = 0;
+export const TOOLBAR_ZONE_TRIGGER: number = 1;
+export const TOOLBAR_ZONE_BAR: number = 2;
+// Reveal hint: a top-edge hairline whose fill grows over the dwell, so a hidden
+// bar is announced before it drops in.
+export const REVEAL_HINT_WIDTH: number = 96;
+export const REVEAL_HINT_HEIGHT: number = 3;
+export const REVEAL_HINT_FADE_MS: number = 140;
 
 /** A filled toolbar chip: optional leading icon + label. */
 @Component
@@ -124,5 +134,23 @@ export struct MetricItem {
       }
     }
     .margin({ left: this.leftGap })
+  }
+}
+
+/** Top-edge hairline that fills over the dwell before a hidden bar drops in. */
+@Component
+export struct ToolbarRevealHint {
+  @Prop fill: number = 0;
+
+  build() {
+    Row()
+      .width(REVEAL_HINT_WIDTH * this.fill)
+      .height(REVEAL_HINT_HEIGHT)
+      .borderRadius(REVEAL_HINT_HEIGHT / 2)
+      .backgroundColor(TOOLBAR_FG)
+      .opacity(this.fill)
+      // A hint only: the pointer events the reveal band and the bar depend on
+      // must pass straight through it.
+      .hitTestBehavior(HitTestMode.None)
   }
 }

@@ -51,7 +51,7 @@
 | 构建 / 运行 / 真机与模拟器 / uitest 技巧 / 最小验证 | [`build-and-verify.md`](doc_agent/build-and-verify.md) |
 | 应用结构（Ability / 页面 / 服务 / 原生模块职责表）+ **原生线程模型（§4）** | [`architecture.md`](doc_agent/architecture.md) |
 | ArkTS / ArkUI 规范与状态坑 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
-| UI 设计语言（token / 布局模式 / 组件契约 / 复用判据） | [`ui-design.md`](doc_agent/ui-design.md) |
+| UI 设计语言（设计原则 / token / 布局模式 / 组件契约 / 共享工具） | [`ui-design.md`](doc_agent/ui-design.md) |
 | 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建与补丁（含 **OpenSSL CMake 快照**）、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
@@ -116,7 +116,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、剪贴板 | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置项、连接存储、密码、导入导出 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 页面 / 状态刷新 / 路由 / 主题 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
-| 界面外观 / 设计 token / 抽共享 UI 组件 | [`ui-design.md`](doc_agent/ui-design.md) |
+| 界面外观 / 设计原则 / 抽共享单元 / 设计 token | [`ui-design.md`](doc_agent/ui-design.md) |
 | FreeRDP 补丁、音频、能力探测、构建选项 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | Moonlight 前端（列表、编辑页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
 | Moonlight 原生（客户端库构建/链接、解码、编解码协商、上屏、HTTP、凭证、配对原语） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |

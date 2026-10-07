@@ -14,15 +14,16 @@ import { AdvancedProfile, DisplayProfile, EditConnectionParams,
   SrProfile } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
-import { Capability, CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE,
-  DeviceCapabilities } from '../services/DeviceCapabilities';
+import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { defaultDisplay } from '../utils/UiUtil';
+import { defaultDisplay } from '../utils/DisplayUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
+import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
+import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
@@ -223,25 +224,19 @@ struct EditConnectionPage {
   }
 
   private parseSize(text: string, fallback: number): number {
-    const value: number = Number.parseInt(text, 10);
-    return Number.isNaN(value) || value <= 0 ? fallback : value;
+    return parseSizeValue(text, fallback);
   }
 
   private parseScale(text: string, fallback: number): number {
-    const value: number = Number.parseInt(text, 10);
-    if (Number.isNaN(value) || value < 100) {
-      return fallback;
-    }
-    return Math.min(value, 500);
+    return parseScaleValue(text, fallback);
   }
 
   private parsedScale(): number {
-    const value: number = Number.parseInt(this.scaleText, 10);
-    return Number.isNaN(value) ? 0 : value;
+    return parsedTextValue(this.scaleText);
   }
 
   private isPresetScale(value: number): boolean {
-    return SCALE_PRESETS.indexOf(value) >= 0;
+    return isScalePreset(value);
   }
 
   private onOff(value: boolean): string {
@@ -698,26 +693,17 @@ struct EditConnectionPage {
   /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
    * best any codec offers. */
   private mlCodecSupportOf(codec: number): number {
-    if (codec === ML_CODEC_H264) {
-      return this.mlH264Support;
-    }
-    if (codec === ML_CODEC_HEVC) {
-      return this.mlHevcSupport;
-    }
-    if (codec === ML_CODEC_AV1) {
-      return this.mlAv1Support;
-    }
-    return Math.max(this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
+    return moonlightCodecSupport(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
   /** Whether a codec choice can run on this device (auto included). */
   private mlCodecUsable(codec: number): boolean {
-    return this.mlCodecSupportOf(codec) > CODEC_SUPPORT_NONE;
+    return moonlightCodecUsable(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
   /** Whether a codec choice would decode in software only. */
   private mlCodecSoftware(codec: number): boolean {
-    return this.mlCodecSupportOf(codec) === CODEC_SUPPORT_SOFTWARE;
+    return moonlightCodecSoftware(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
   /** Falls back to auto when the stored choice cannot run here. */

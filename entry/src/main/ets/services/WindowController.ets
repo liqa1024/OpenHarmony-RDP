@@ -6,6 +6,7 @@ import { AbilityConstant, common, StartOptions, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppSettings, SettingsStore } from './SettingsStore';
+import { defaultDisplay } from '../utils/DisplayUtil';
 
 const DOMAIN: number = 0xD002;
 const TAG: string = 'HmRdpWindow';
@@ -240,8 +241,93 @@ export class WindowController {
     });
   }
 
+  // --- Session window runtime capabilities ------------------------------------
+  // The window features a session page may drive, classified together so both
+  // session pages share them. Each is opt-in: a page subscribes only to the
+  // events it reacts to, so nothing acquires a listener (or a side effect) it
+  // does not use.
+
+  /** The calling session's own window, or undefined when it cannot be obtained. */
+  static acquireWindow(context: common.Context): Promise<window.Window | undefined> {
+    return window.getLastWindow(context).catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
+      return undefined;
+    });
+  }
+
+  /** Whether the window is currently in fullscreen. */
+  static isFullscreen(win: window.Window): boolean {
+    try {
+      return win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'get window status failed: %{public}s', JSON.stringify(error));
+      return false;
+    }
+  }
+
+  /** Subscribes to fullscreen / minimize transitions (raw status). */
+  static watchStatusChange(win: window.Window,
+    onChange: (status: window.WindowStatusType) => void): void {
+    try {
+      win.on('windowStatusChange', onChange);
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'watch window status failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
+  /**
+   * Subscribes to window focus. HIDDEN is reported as unfocused too: to a remote
+   * session both mean the inputs it still sees as held must be let go.
+   */
+  static watchFocus(win: window.Window, onChange: (focused: boolean) => void): void {
+    win.on('windowEvent', (data: window.WindowEventType) => {
+      if (data === window.WindowEventType.WINDOW_ACTIVE) {
+        onChange(true);
+      } else if (data === window.WindowEventType.WINDOW_INACTIVE
+        || data === window.WindowEventType.WINDOW_HIDDEN) {
+        onChange(false);
+      }
+    });
+  }
+
+  /**
+   * Subscribes to the window being fully covered (a partly covered window still
+   * reports visible; see doc_agent/session-and-input.md §1.1).
+   */
+  static watchVisibility(win: window.Window, onChange: (visible: boolean) => void): void {
+    try {
+      win.on('windowVisibilityChange', onChange);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'watch window visibility failed: %{public}s',
+        JSON.stringify(error));
+    }
+  }
+
+  static minimize(win: window.Window): void {
+    win.minimize().catch((error: BusinessError) => {
+      hilog.error(DOMAIN, TAG, 'minimize failed: %{public}s', JSON.stringify(error));
+    });
+  }
+
+  /**
+   * Toggles immersive fullscreen. The system title bar and dock hover are
+   * disabled there so they do not cover the app's own auto-hide toolbar.
+   */
+  static toggleFullscreen(win: window.Window, isFullscreen: boolean): void {
+    if (isFullscreen) {
+      win.recover().catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'recover failed: %{public}s', JSON.stringify(error));
+      });
+      return;
+    }
+    win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
+      .catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'maximize failed: %{public}s', JSON.stringify(error));
+      });
+  }
+
   private static resizeAndCenter(win: window.Window, width: number, height: number): void {
-    const disp: display.Display | undefined = WindowController.displayOrUndefined();
+    const disp: display.Display | undefined = defaultDisplay();
     if (disp === undefined) {
       hilog.warn(DOMAIN, TAG, 'display unavailable, skip window resize');
       return;
@@ -257,13 +343,5 @@ export class WindowController {
     }).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'resize failed: %{public}s', JSON.stringify(error));
     });
-  }
-
-  private static displayOrUndefined(): display.Display | undefined {
-    try {
-      return display.getDefaultDisplaySync();
-    } catch (error) {
-      return undefined;
-    }
   }
 }

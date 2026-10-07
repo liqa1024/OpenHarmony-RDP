@@ -16,7 +16,7 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { SettingsStore } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { ConnectionRow } from '../components/ConnectionRow';
-import { defaultDisplay } from '../utils/UiUtil';
+import { defaultDisplay } from '../utils/DisplayUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 
 const DOMAIN: number = 0xD001;

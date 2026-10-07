@@ -27,13 +27,17 @@ import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/
 import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
+import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
+import { lengthToNumber, showToast } from '../utils/UiUtil';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 import { StatusCard } from '../components/StatusCard';
 import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
-  TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT, ToolbarChip } from '../components/SessionChrome';
+  TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
+  TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, ToolbarChip,
+  ToolbarRevealHint } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -104,16 +108,8 @@ const LOCAL_WARN_MS: number = 16;
 const LOCAL_BAD_MS: number = 33;
 
 // The session toolbar palette, geometry and shared chips live in
-// components/SessionChrome.ets (fixed dark chrome over the remote image).
-// Pointer zones for the fullscreen auto-hide (SessionPage.setToolbarPointerZone).
-const TOOLBAR_ZONE_NONE: number = 0;
-const TOOLBAR_ZONE_TRIGGER: number = 1;
-const TOOLBAR_ZONE_BAR: number = 2;
-// Reveal hint: a hairline at the top edge whose fill grows over the whole dwell,
-// so a hidden strip is announced before it drops in.
-const REVEAL_HINT_WIDTH: number = 96;
-const REVEAL_HINT_HEIGHT: number = 3;
-const REVEAL_HINT_FADE_MS: number = 140;
+// components/SessionChrome.ets (fixed dark chrome over the remote image); the
+// fullscreen auto-hide state machine lives in services/ToolbarAutoHide.ets.
 
 // Grace period before the "came back to the foreground" reconnect check. While
 // the app is away the system freezes and then aborts its sockets, but the native
@@ -281,11 +277,29 @@ struct SessionPage {
   private windowMinimized: boolean = false;
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
-  // Fullscreen auto-hide: the pointer zone, the reveal dwell and the hide delay
-  // (see refreshToolbarAutoHide). -1 = timer not running.
-  private pointerZone: number = TOOLBAR_ZONE_NONE;
-  private revealTimer: number = -1;
-  private hideTimer: number = -1;
+  // Fullscreen auto-hide: the state machine (pointer zone, reveal dwell, hide
+  // delay, pin-while-busy) lives in services/ToolbarAutoHide. The page supplies
+  // the live state it reads and mirrors `showToolbar` / `revealHintFill` back
+  // into @State via the host callbacks.
+  private autoHideHost: ToolbarAutoHideHost = {
+    isArmed: () => this.toolbarAutoHideArmed,
+    isFullscreen: () => this.isFullscreen,
+    isConnected: () => this.state === ConnectionState.Connected,
+    isPinned: () => this.transferActive || this.transferWaiting,
+    hoverDelay: () => this.hoverDelay,
+    hideDelay: () => this.hideDelay,
+    show: () => this.showToolbar,
+    setShow: (show: boolean) => {
+      this.showToolbar = show;
+    },
+    revealFill: () => this.revealHintFill,
+    animateReveal: (fill: number, durationMs: number, curve: Curve) => {
+      this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
+        this.revealHintFill = fill;
+      });
+    }
+  };
+  private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
   // Pulls the native telemetry window once per second while the session is
   // connected (see refreshCounters). -1 = timer not running.
   private metricsTimer: number = -1;
@@ -603,7 +617,7 @@ struct SessionPage {
       this.interceptActive = false;
     }
     this.toolbarAutoHideArmed = false;
-    this.clearToolbarTimers();
+    this.toolbarAutoHide.dispose();
     this.stopMetricsTimer();
     if (this.moveTimer !== -1) {
       clearTimeout(this.moveTimer);
@@ -2149,145 +2163,17 @@ struct SessionPage {
   }
 
   private toast(message: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({
-        message: message,
-        duration: 1500,
-        systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY)
-      });
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
-    }
+    showToast(this.getUIContext(), message, 1500);
   }
 
-  /** Reports which zone the pointer is in; zones come from the surface or the strip. */
+  /** Reports which zone the pointer is in; zones come from the surface or the bar. */
   private setToolbarPointerZone(zone: number): void {
-    if (this.pointerZone === zone) {
-      return;
-    }
-    this.pointerZone = zone;
-    this.refreshToolbarAutoHide();
+    this.toolbarAutoHide.setPointerZone(zone);
   }
 
-  /**
-   * The single place the toolbar's fullscreen visibility is decided: a hide is
-   * never pending while the pointer is on the strip, whatever triggered the call.
-   */
+  /** Re-evaluates the bar's auto-hide (delegates to the shared controller). */
   private refreshToolbarAutoHide(): void {
-    if (!this.toolbarAutoHideArmed) {
-      return;
-    }
-    // Nothing but a pending reveal keeps the hint up, so anything else retracts it.
-    if (!this.toolbarWillReveal()) {
-      this.hideRevealHint();
-    }
-    // Outside fullscreen the strip is either laid out above the picture
-    // (windowed mode) or covered by the status overlay, so it cannot auto-hide.
-    if (!this.isFullscreen || this.state !== ConnectionState.Connected) {
-      this.clearToolbarTimers();
-      return;
-    }
-    // A running or pending transfer pins the strip.
-    if (this.transferActive || this.transferWaiting) {
-      this.pinToolbar();
-      return;
-    }
-    if (this.pointerZone !== TOOLBAR_ZONE_NONE) {
-      this.cancelHideTimer();
-    }
-    if (this.toolbarWillReveal()) {
-      // Dwell in the top band reveals a hidden strip; leaving the band cancels
-      // the dwell (the gesture was a pass-by).
-      if (this.revealTimer === -1) {
-        this.revealTimer = setTimeout(() => {
-          this.revealTimer = -1;
-          this.showToolbar = true;
-          this.hideRevealHint();
-        }, this.hoverDelay);
-        this.showRevealHint(this.hoverDelay);
-      }
-      return;
-    }
-    this.cancelRevealTimer();
-    if (this.pointerZone === TOOLBAR_ZONE_NONE) {
-      this.scheduleToolbarHide();
-      return;
-    }
-    // Pointer on the strip itself: it stays up, whatever revealed it.
-    this.showToolbar = true;
-  }
-
-  /** True while the pointer dwells for a strip that is not up yet. */
-  private toolbarWillReveal(): boolean {
-    return this.isFullscreen
-      && this.state === ConnectionState.Connected
-      && !this.transferActive
-      && !this.transferWaiting
-      && this.pointerZone === TOOLBAR_ZONE_TRIGGER
-      && !this.showToolbar;
-  }
-
-  /** Fills the top-edge hint over `duration`, i.e. over the pending dwell. */
-  private showRevealHint(duration: number): void {
-    this.getUIContext().animateTo({ duration: duration, curve: Curve.Linear }, () => {
-      this.revealHintFill = 1;
-    });
-  }
-
-  /** Retracts the hint: the strip will not appear after all. */
-  private hideRevealHint(): void {
-    if (this.revealHintFill === 0) {
-      return;
-    }
-    this.getUIContext().animateTo({
-      duration: REVEAL_HINT_FADE_MS,
-      curve: Curve.FastOutSlowIn
-    }, () => {
-      this.revealHintFill = 0;
-    });
-  }
-
-  /** Pins the strip for as long as a transfer is running or pending. */
-  private pinToolbar(): void {
-    this.clearToolbarTimers();
-    if (!this.showToolbar) {
-      this.showToolbar = true;
-    }
-  }
-
-  private scheduleToolbarHide(): void {
-    if (this.showToolbar && this.hideTimer === -1) {
-      this.hideTimer = setTimeout(() => {
-        this.hideTimer = -1;
-        this.showToolbar = false;
-      }, this.hideDelay);
-    }
-  }
-
-  private clearToolbarTimers(): void {
-    this.cancelRevealTimer();
-    this.cancelHideTimer();
-  }
-
-  private cancelRevealTimer(): void {
-    if (this.revealTimer !== -1) {
-      clearTimeout(this.revealTimer);
-      this.revealTimer = -1;
-    }
-  }
-
-  private cancelHideTimer(): void {
-    if (this.hideTimer !== -1) {
-      clearTimeout(this.hideTimer);
-      this.hideTimer = -1;
-    }
-  }
-
-  private lengthToNumber(value: Length): number {
-    if (typeof value === 'number') {
-      return value as number;
-    }
-    return 0;
+    this.toolbarAutoHide.refresh();
   }
 
   /**
@@ -3249,41 +3135,31 @@ struct SessionPage {
     if (context === undefined) {
       return;
     }
-    window.getLastWindow(context).then((win: window.Window) => {
+    WindowController.acquireWindow(context).then((win: window.Window | undefined) => {
+      if (win === undefined) {
+        return;
+      }
       this.sessionWindow = win;
-      this.isFullscreen = win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
-      win.on('windowStatusChange', (status: window.WindowStatusType) => {
+      this.isFullscreen = WindowController.isFullscreen(win);
+      WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
         this.setWindowMinimized(status === window.WindowStatusType.MINIMIZE);
         // The auto-hide only exists in fullscreen: drop or re-arm its timers.
         this.refreshToolbarAutoHide();
       });
-      win.on('windowEvent', (data: window.WindowEventType) => {
-        // Focus/visibility events are not visibility sources; they only signal
-        // that the inputs the remote still sees as held must be let go. Focus
-        // also drives 快捷键穿透 (application-wide, so released on blur).
-        if (data === window.WindowEventType.WINDOW_ACTIVE) {
-          this.windowFocused = true;
-          this.updateShortcutPassthrough();
-        } else if (data === window.WindowEventType.WINDOW_INACTIVE
-          || data === window.WindowEventType.WINDOW_HIDDEN) {
-          this.windowFocused = false;
+      // Focus/visibility events are not visibility sources; they only signal that
+      // the inputs the remote still sees as held must be let go. Focus also
+      // drives 快捷键穿透 (application-wide, so released on blur).
+      WindowController.watchFocus(win, (focused: boolean) => {
+        this.windowFocused = focused;
+        if (!focused) {
           this.releaseAllInputs();
-          this.updateShortcutPassthrough();
         }
+        this.updateShortcutPassthrough();
       });
-      // Only a *fully* covered window reports false here; a partly covered one
-      // still reports true (doc_agent/session-and-input.md §1.1).
-      try {
-        win.on('windowVisibilityChange', (visible: boolean) => {
-          this.setWindowOnScreen(visible);
-        });
-      } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'on windowVisibilityChange failed: %{public}s',
-          JSON.stringify(error));
-      }
-    }).catch((error: BusinessError) => {
-      hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
+      WindowController.watchVisibility(win, (visible: boolean) => {
+        this.setWindowOnScreen(visible);
+      });
     });
   }
 
@@ -3344,9 +3220,7 @@ struct SessionPage {
     if (win === undefined) {
       return;
     }
-    win.minimize().catch((error: BusinessError) => {
-      hilog.error(DOMAIN, TAG, 'minimize failed: %{public}s', JSON.stringify(error));
-    });
+    WindowController.minimize(win);
   }
 
   private toggleFullscreen(): void {
@@ -3354,16 +3228,7 @@ struct SessionPage {
     if (win === undefined) {
       return;
     }
-    if (this.isFullscreen) {
-      win.recover().catch((error: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'recover failed: %{public}s', JSON.stringify(error));
-      });
-      return;
-    }
-    win.maximize(window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
-      .catch((error: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'maximize failed: %{public}s', JSON.stringify(error));
-      });
+    WindowController.toggleFullscreen(win, this.isFullscreen);
   }
 
   private disconnect(): void {
@@ -3412,24 +3277,6 @@ struct SessionPage {
     }
     const backend: string = this.options.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';
     return ' (' + backend + ' ' + srRatioLabel(this.options.srRatioPercent) + ')';
-  }
-
-  /**
-   * Hairline at the top edge that announces a hidden strip: it fills over the
-   * dwell (so the strip drops in when the fill completes) and retracts as soon
-   * as the pointer leaves the reveal band.
-   */
-  @Builder
-  toolbarRevealHint() {
-    Row()
-      .width(REVEAL_HINT_WIDTH * this.revealHintFill)
-      .height(REVEAL_HINT_HEIGHT)
-      .borderRadius(REVEAL_HINT_HEIGHT / 2)
-      .backgroundColor(TOOLBAR_FG)
-      .opacity(this.revealHintFill)
-      // A hint only: the pointer events the reveal band and the strip depend on
-      // must pass straight through it.
-      .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
@@ -3695,8 +3542,8 @@ struct SessionPage {
               this.handleKey(event);
             })
             .onAreaChange((oldArea: Area, newArea: Area) => {
-              const width: number = this.lengthToNumber(newArea.width);
-              const height: number = this.lengthToNumber(newArea.height);
+              const width: number = lengthToNumber(newArea.width);
+              const height: number = lengthToNumber(newArea.height);
               if (this.componentWidth !== width || this.componentHeight !== height) {
                 // The fitted rect changed under the zoom; re-fit rather than
                 // leave a stale transform (also the window-resize case).
@@ -3714,7 +3561,7 @@ struct SessionPage {
         // slides in over it).
         if (this.isFullscreen && !this.showOverlay) {
           Stack() {
-            this.toolbarRevealHint()
+            ToolbarRevealHint({ fill: this.revealHintFill })
           }
           .width('100%')
           .height('100%')

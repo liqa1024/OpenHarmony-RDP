@@ -19,7 +19,8 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { SettingsStore } from '../services/SettingsStore';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp } from '../moonlight/MoonlightModels';
-import { defaultDisplay, showToast } from '../utils/UiUtil';
+import { showToast } from '../utils/UiUtil';
+import { defaultDisplay } from '../utils/DisplayUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 
 const DOMAIN: number = 0xD001;

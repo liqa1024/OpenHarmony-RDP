@@ -1,12 +1,26 @@
 # UI 设计规范（视觉语言 / 布局模式 / 组件契约）
 
-本文件是 HmRdp 界面的**设计语言总纲**：设计 token、布局模式、组件契约与复用判据。
+本文件是 HmRdp 界面的**设计语言总纲**：设计原则、设计 token、布局模式、组件契约与共享工具。
 它只回答"界面长什么样、由哪些组件组合、参数怎么给"，**不描述行为与数据语义**：
 
 - 会话窗口 / 输入 / 工具栏行为与遥测口径 → [`session-and-input.md`](session-and-input.md)；
 - 设置项 / 连接存储 / 生效时机 → [`settings-and-storage.md`](settings-and-storage.md)；
 - Moonlight 协议差异（字段、分栏、图标语义） → [`moonlight-connection.md`](moonlight-connection.md)；
 - ArkTS / ArkUI 语法、状态刷新、主题资源规则、沉浸材质 API 与摆放机制 → [`arkts-conventions.md`](arkts-conventions.md)。
+
+## 设计原则（先读）
+
+规范思路先于下面的具体取值；凡"加共享单元 / 抽组件 / 新增控件"都按这几条办：
+
+1. **共享按逻辑分类，不按当下使用**：抽取边界是**逻辑类别**（同一类卡片 / 页头 / chip / 窗口能力 / 自动隐藏……），不是"当前哪一侧在用"。属同一逻辑类的能力**一并抽出**，即使暂时只有一侧使用——这正是保留扩展性的方式（另一侧要用时直接取用，而不是再抄一份）。有协议独有但同类的能力同样抽出，由页面选择用不用。
+2. **抽取必须是"可选能力"**：共享单元按需（opt-in）使用——不主动订阅事件、不申请能力，避免"为了通用"让窗口 / 页面背上用不到的行为。**范围可以大，但不能有未被调用的副作用。**
+3. **同类控件同形同参**：同一语义的 chip / 卡片 / 页头 / 状态卡只允许一种实现，差异用参数表达，不复制粘贴。
+4. **协议差异不复制界面**：优先"同一组件 + 协议参数"，其次才是协议各自的分支 builder；差异只体现在参数取值与图标资源上。
+5. **颜色只走 token**（会话工具栏的固定深色除外，见 §1.2）；不以硬编码 hex 表达主题语义。
+6. **尺寸 / 圆角 / 字号 / 阴影 / 动画收敛到常量或组件默认值**，不在页面里各写一份。
+7. **材质挂载遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：持续变化的内容不挂材质，无材质能力时外观不依赖材质。
+8. **依赖后端动词的动作按后端契约划分**：要调用会话后端独有动词的（文件传输 / 剪贴板 / 遥测），归属由后端契约决定，动词就绪后再进共享单元。
+9. **页面骨架统一**：页面按「页头 + 卡片」骨架组织，不另起一套页头 / 错误态 / 空态。
 
 ## 1. 设计 token
 
@@ -64,7 +78,7 @@
 | 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6` |
 | 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
 
-约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见 §4、§6）。
+约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见「设计原则」与 §4）。
 
 ## 2. 沉浸材质（系统材质）
 
@@ -127,14 +141,14 @@ Column(page_bg, 100%×100%)
 ### 3.6 会话窗口
 
 - 窗口模式：工具栏作为普通行布局在画面上方（渲染区自然扣除其高度）；全屏模式：工具栏浮在画面上，按指针分区自动隐藏 / 滑出（行为与判定见 [`session-and-input.md`](session-and-input.md) §3）。
+- 自动隐藏的**显隐判定**由 `services/ToolbarAutoHide` 独占（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议的会话页共用：页面提供实时状态（全屏 / 连接 / 钉住 / 延迟）并把结果（显示 / 揭示进度）镜像进自己的 `@State`，渲染与动效留在页面。
+- 会话窗口的**运行时能力**归 `services/WindowController`：取本会话窗口、全屏检测、最小化 / 全屏切换、焦点 / 可见性监听。它们与自动隐藏判定一样**按需（opt-in）**——页面只调用 / 订阅自己反应的部分，抽取本身不申请任何用不到的能力。
 - 状态遮罩：全屏居中、`#66000000` 底色上放状态卡；状态卡的图标 / 标题 / 副标题 / 按钮组合由连接状态驱动（§4）。
 - 工具栏结构：主行（会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
 
 ## 4. 组件契约
 
-`components/` 是共享 UI 组件的落位。组件按**参数 + 回调**复用，不按协议分叉；协议差异只体现在参数取值与图标资源上。
-
-共享范围是与协议、与会话后端**无关的 chrome**——固定深色、材质、chip、状态卡、列表行、表单控件；动作**依赖会话后端独有能力**的部分（文件传输、剪贴板、遥测、工具栏自动隐藏）留在会话页，不进组件库：组件只能复用两端都具备的能力。
+`components/`（组件）与 `services/`、`utils/`（行为与工具）承载共享单元；共享的边界与原则见「设计原则（先读）」，本节只列清单与契约。
 
 ### 4.1 组件清单
 
@@ -157,15 +171,15 @@ Column(page_bg, 100%×100%)
 约束：组件成员名**不得与通用属性同名**（`padding` / `enabled` 等会和 `CustomComponent` 基类冲突），故
 `MaterialCard` 用 `pad`、`ChoiceChip` 用 `chipEnabled`、`SettingToggleRow` / `SettingSliderRow` 用 `switchEnabled`。
 
-### 4.2 UI 工具方法
+### 4.2 共享工具（`utils/`）
 
-`utils/UiUtil.ets` / `utils/PairingPrompt.ets`：
-
-| 方法 | 说明 |
+| 文件 | 内容 |
 |---|---|
-| `defaultDisplay()` | 默认显示查询，容错返回 `undefined` |
-| `showToast(ui, message, durationMs?)` | Toast + `OVERLAY` 材质 |
-| `promptPairingPin(ui, pin)` | 配对 PIN 弹窗 |
+| `UiUtil.ets` | `showToast`（+`OVERLAY` 材质）、`lengthToNumber`（`Length` → vp 数值） |
+| `DisplayUtil.ets` | `defaultDisplay()`（容错查询默认显示，页面与服务共用） |
+| `ScaleParse.ets` | 手动分辨率 / 缩放文本解析：`parseSizeValue` / `parseScaleValue` / `parsedTextValue` / `isScalePreset`，及 `MAX_DESKTOP_SIZE` |
+| `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |
+| `PairingPrompt.ets` | `promptPairingPin(ui, pin)`（配对 PIN 弹窗） |
 
 ## 5. 协议差异的呈现约定
 
@@ -182,12 +196,3 @@ Moonlight 行有两个圆钮（**应用在连接左侧**），RDP 行只有连�
 ### 5.3 设置页分栏
 
 顶部 RDP / Moonlight 两个协议页签；**通用项（触控板、键盘、会话、窗口）在两个页签都出现，但每个协议各存一份值**——UI 是同一段代码，靠切换数据源复用。
-
-## 6. 复用判据（硬约束）
-
-1. **颜色只走 token**（会话工具栏除外，见 §1.2）；不以硬编码 hex 表达主题语义。
-2. **同类控件必须同形同参**：同一语义的 chip / 卡片 / 页头 / 状态卡只允许一种实现，参数化差异，不复制粘贴。
-3. **尺寸、圆角、字号、阴影、动画收敛到常量或组件默认值**，不在页面里各写一份。
-4. **材质挂载点遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：持续变化内容不挂材质。
-5. **页面骨架统一**：页面按「页头 + 卡片」骨架组织，不另起一套页头 / 错误态 / 空态。
-6. **协议差异不复制界面**：优先"同一组件 + 协议参数"，其次才是协议各自的分支 builder。
