@@ -57,7 +57,7 @@
 | GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁 / 并行形态（§7）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
 | 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | Moonlight（Sunshine）串流**前端**：协议建模、存储、连接列表/编辑页/设置页分栏、图标 | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
-| Moonlight **原生侧**：客户端库构建与静态链接、视频解码与编解码协商、解码桥与串流会话桥 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
+| Moonlight **原生侧**：客户端库构建与共享库链接、视频解码与编解码协商、解码桥与串流会话桥 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
 | Moonlight 接入路线图（未定项多，仅方向） | [`MOONLIGHT_PLAN.md`](MOONLIGHT_PLAN.md) |
 
 ## 环境
@@ -67,7 +67,8 @@
   （现为 `6.1.0(23)`，兼顾模拟器）；**未经确认不要擅自调整**。版本号写法、门槛与告警处理见
   [`doc_agent/build-and-verify.md`](doc_agent/build-and-verify.md) §6。
 - ABI：`arm64-v8a`（真机，product `default`）、`x86_64`（模拟器，product `emulator`）。
-- 宿主为 Windows；OpenSSL 在 WSL 中编译，驱动 Windows 版 OHOS NDK 的 `clang.exe`。
+- 宿主为 Windows；原生依赖全部用 CMake + Windows 版 OHOS NDK 构建（**日常构建不需要 WSL 与 Perl**）；
+  WSL 只在更换 OpenSSL 版本、重出 `perl Configure` 快照时才用到。
 
 ## 构建 / 运行（常用命令）
 
@@ -98,7 +99,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | `entry/src/main/ets/` | ArkUI 界面：`entryability/`、`sessionability/`、`pages/`、`services/`、`model/`、`utils/` |
 | `entry/src/main/cpp/` | 原生：`binding/`（Node-API 翻译层）+ `core/`（FreeRDP 会话、gdi 帧管线、Vulkan/GLES 呈现器、音频、Moonlight 传输、dev 回放） |
 | `entry/src/main/resources/` | 主题色（`base|dark/element/color.json`）与图标 |
-| `native/scripts/` | 原生库构建（`build-native.ps1`）与 FreeRDP/Moonlight 补丁 |
+| `native/scripts/` | 原生库构建（`build-native.ps1`）与 FreeRDP / Moonlight / zlib 补丁 |
 | `entry/libs/<abi>/` | 本地构建的原生库（**gitignore，不入库**） |
 | `doc_agent/` | 通用开发知识（见上） |
 

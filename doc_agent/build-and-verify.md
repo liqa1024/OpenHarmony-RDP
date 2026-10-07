@@ -131,4 +131,5 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
 - **`Currently module for 'libhmrdp.so' is not verified` 属误报**：本机 Node-API 库的类型验证告警
   （类型已由 `entry/src/main/cpp/types/libhmrdp/index.d.ts` 提供，引用处类型正常解析），源码侧无法消除，
   不必处理。
-- 宿主为 Windows；OpenSSL 在 WSL 内编译，驱动 Windows 版 OHOS NDK 的 `clang.exe`。
+- 宿主为 Windows；原生依赖全部用 CMake 驱动 Windows 版 OHOS NDK 的 `clang.exe` 构建，
+  **日常构建不涉及 WSL/Perl**（WSL 只在重出 OpenSSL 的 `perl Configure` 快照时用到）。

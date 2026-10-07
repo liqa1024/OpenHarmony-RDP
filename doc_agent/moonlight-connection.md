@@ -3,7 +3,7 @@
 本文件是 **Moonlight / Sunshine 串流**这条路的知识：协议建模、存储布局、连接列表与编辑/设置界面的约定、
 图标约束。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；差异集中在连接配置与串流参数。
 RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-storage.md`](settings-and-storage.md)、
-[`present-pipeline.md`](present-pipeline.md)。**原生侧**（客户端库构建与静态链接、桥接层、HTTP 控制层、客户端
+[`present-pipeline.md`](present-pipeline.md)。**原生侧**（客户端库构建与共享库链接、桥接层、HTTP 控制层、客户端
 身份与信任存储、配对加密原语，以及后续的会话 / 输入 / 上屏）见 [`moonlight-native.md`](moonlight-native.md)；
 **协议编排与 XML 解析在 ArkTS**（见其 §4.2）。
 
@@ -85,10 +85,11 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 ## 7. 当前实现边界
 
 - **前端**已就绪：协议建模、存储、导入导出、连接列表、编辑页、设置页分栏、图标。
-- **原生客户端库已接入**：moonlight-common-c（连同它的 enet / nanors 子模块）交叉编译为静态库并链进
-  `libhmrdp.so`。它是**构建必备输入**（同 FreeRDP，缺归档即构建失败），不是平台能力；`moonlightProbe`
-  恒回 `"1"`，仅作"归档确实解析进模块"的链接断言。原生**串流会话桥** `hmrdp_moonlight_session`
-  （`LiStartConnection` + 输入转发）也已落地。构建流程、静态链接约定与目录见
+- **原生客户端库已接入**：moonlight-common-c（连同它的 enet / nanors 子模块，后两者随本库静态编入）
+  交叉编译为共享库 `libmoonlight-common-c.so`，与其它依赖一起落在 `entry/libs/<abi>/` 并被 `libhmrdp.so`
+  链接。它是**构建必备输入**（同 FreeRDP，缺 `.so` 即构建失败），不是平台能力；`moonlightProbe`
+  恒回 `"1"`，仅作"库确实链上了"的链接断言。原生**串流会话桥** `hmrdp_moonlight_session`
+  （`LiStartConnection` + 输入转发）也已落地。构建流程、共享库约定与目录见
   [`moonlight-native.md`](moonlight-native.md)。
 - **控制层已接入连接流程**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
   （自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、`MoonlightClient`

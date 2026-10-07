@@ -9,41 +9,60 @@ if(NOT OHOS_ARCH)
     set(OHOS_ARCH arm64-v8a)
 endif()
 
-# FreeRDP headers bundled with the module, and the shared libraries that are
-# packaged into entry/libs/<abi>.
+# The module's own native code runs at -O2 in *both* build modes. The OHOS
+# toolchain's debug default (-O0 -g -fno-limit-debug-info, see ohos.toolchain.cmake)
+# produces frames and variables that do not reflect what actually executes, so it
+# has no debugging value for this codebase, and it ships noticeably more code.
+# Overriding the flags rather than CMAKE_BUILD_TYPE is what survives hvigor's own
+# -DCMAKE_BUILD_TYPE=Debug. -g is kept so a pre-strip stack is still symbolicable;
+# the module strips every shipped library, so it costs nothing in the HAP. NDEBUG
+# is deliberately absent in debug, so assert() still fires there.
+set(CMAKE_C_FLAGS_DEBUG "-O2 -g")
+set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
+
+# FreeRDP/winpr headers bundled with the module, and the directory holding every
+# shared library the module packages: FreeRDP, OpenSSL, zlib and Moonlight. All of
+# them are *shared* libraries produced by native/scripts/build-native.ps1
+# (generated, gitignored), so the app links them by full path and they end up in
+# DT_NEEDED instead of being folded into a copy per consumer - the reason
+# libcrypto/libssl used to exist three times (see doc_agent/native-libraries.md).
 set(FREERDP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/freerdp")
-set(FREERDP_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
+set(HMRDP_PREBUILT_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
 
-# libhmrdp links its own OpenSSL static archive, needed by
-# moonlight-common-c's control-stream crypto (src/PlatformCrypto.c: AES/GCM +
-# RAND). native/scripts/build-native.ps1 syncs libcrypto.a under
-# thirdparty/openssl/lib/<abi>/ (generated, gitignored). It is linked before
-# FreeRDP's shared libraries and kept local with --exclude-libs, so
-# moonlight-common-c's EVP_* bind to this copy instead of the OpenSSL FreeRDP
-# statically links into libwinpr3.so (the reason Android links its own libcrypto
-# with -Wl,--exclude-libs,ALL). See doc_agent/native-libraries.md.
-set(OPENSSL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/openssl")
-set(HMRDP_OPENSSL_ARCHIVES "${OPENSSL_ROOT}/lib/${OHOS_ARCH}/libcrypto.a")
-
-# Moonlight (GameStream) client library. Like FreeRDP it is a build product of
-# native/scripts/build-native.ps1 (static archives under thirdparty/moonlight/,
-# generated and gitignored) and therefore a *required* input of the app build -
-# it is our own feature, not an optional platform capability. A missing archive
-# means the native build was not run, so fail the configure step with a clear
-# instruction instead of silently building a binary without the feature (the
-# same way a missing FreeRDP shared library fails the link).
+# Moonlight (GameStream) client library: libmoonlight-common-c.so is a build
+# product of native/scripts/build-native.ps1 (enet/nanors are folded into it) and
+# therefore a *required* input of the app build - it is our own feature, not an
+# optional platform capability. A missing library means the native build was not
+# run, so fail the configure step with a clear instruction instead of silently
+# building a binary without the feature (the same way a missing FreeRDP library
+# fails the link).
 set(MOONLIGHT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/moonlight")
-if(NOT EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h"
-   OR NOT EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
-   OR NOT EXISTS "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a"
-   OR NOT EXISTS "${HMRDP_OPENSSL_ARCHIVES}")
+
+# Every library in this list is both packaged and linked: the list is what
+# "the native build ran" means for this module, and keeping it explicit avoids
+# depending on the linker following DT_NEEDED transitively to resolve
+# libmoonlight-common-c.so's own libcrypto reference.
+set(HMRDP_PREBUILT_LIB_NAMES
+    libcrypto.so
+    libssl.so
+    libz.so
+    libfreerdp3.so
+    libwinpr3.so
+    libfreerdp-client3.so
+    libmoonlight-common-c.so)
+foreach(_lib IN LISTS HMRDP_PREBUILT_LIB_NAMES)
+    if(NOT EXISTS "${HMRDP_PREBUILT_LIBS}/${_lib}")
+        message(FATAL_ERROR
+            "HmRdp: ${_lib} missing under ${HMRDP_PREBUILT_LIBS}; "
+            "run native/scripts/build-native.ps1 -Arch ${OHOS_ARCH} first")
+    endif()
+    list(APPEND HMRDP_PREBUILT_LIB_PATHS "${HMRDP_PREBUILT_LIBS}/${_lib}")
+endforeach()
+if(NOT EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h")
     message(FATAL_ERROR
-        "HmRdp: Moonlight build products missing under ${MOONLIGHT_ROOT} for ${OHOS_ARCH} "
-        "(or ${HMRDP_OPENSSL_ARCHIVES}); run native/scripts/build-native.ps1 first")
+        "HmRdp: Limelight.h missing under ${MOONLIGHT_ROOT}/include; "
+        "run native/scripts/build-native.ps1 first")
 endif()
-set(HMRDP_MOONLIGHT_ARCHIVES
-    "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libmoonlight-common-c.a"
-    "${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}/libenet.a")
 
 # core/ holds the native resource drivers and hot paths (FreeRDP host, gdi
 # frame pipeline, GPU presenters, video/audio, Moonlight transport); binding/
@@ -145,14 +164,11 @@ core/hmrdp_moonlight_session.cpp
 # outside the source tree, so include that directory.
 target_include_directories(hmrdp PRIVATE "${HMRDP_SHADER_OUT}")
 
-# Static archives go *before* FreeRDP's shared libraries on the link line: the
-# linker scans left to right, so moonlight-common-c's EVP_* references bind to
-# libhmrdp's own OpenSSL (libcrypto.a) instead of the OpenSSL exported by
-# libwinpr3.so linked further below. --exclude-libs keeps the archive symbols
-# local so the two OpenSSL copies cannot interpose each other.
-target_link_libraries(hmrdp ${HMRDP_MOONLIGHT_ARCHIVES})
-target_link_libraries(hmrdp ${HMRDP_OPENSSL_ARCHIVES})
-target_link_options(hmrdp PRIVATE "LINKER:--exclude-libs,libcrypto.a")
+# Dead-strip at link time: the compile side already emits -ffunction-sections /
+# -fdata-sections (OHOS toolchain default), so code and data libhmrdp does not
+# reach is dropped instead of shipped. .init_array - the Node-API constructor that
+# makes the module loadable - is KEEP-ed by the default linker script.
+target_link_options(hmrdp PRIVATE "LINKER:--gc-sections")
 
 # 超分 needs XEngine's headers, which ship in the HMS sysroot (sibling of the
 # openharmony one the toolchain points at) - not in the plain NDK sysroot. The
@@ -172,7 +188,8 @@ endif()
 # FreeRDP is built without library versioning (see native/scripts/build-native.ps1
 # + -DWITH_LIBRARY_VERSIONING=OFF), so each library is a single version-less
 # libX.so whose SONAME is also libX.so. Linking it records libX.so in DT_NEEDED,
-# matching the packaged files exactly (no libX.so.3 duplicate).
+# matching the packaged files exactly (no libX.so.3 duplicate). The OpenSSL
+# (libcrypto.so / libssl.so) and Moonlight libraries follow the same rule.
 #
 # libvulkan.so is deliberately NOT linked: it is dlopen()ed at runtime (see
 # hmrdp_vk_context.h) so a device without a usable Vulkan driver degrades to the
@@ -204,20 +221,18 @@ target_link_libraries(hmrdp
     libohinput.so
     EGL
     GLESv3
-    ${FREERDP_LIBS}/libfreerdp3.so
-    ${FREERDP_LIBS}/libwinpr3.so
-    ${FREERDP_LIBS}/libfreerdp-client3.so
+    # FreeRDP + OpenSSL + zlib + Moonlight, all shared and all shipped from
+    # entry/libs/<abi>/ (HMRDP_PREBUILT_LIB_PATHS above). OpenSSL appears exactly
+    # once, so there is no second copy for a symbol to bind to.
+    ${HMRDP_PREBUILT_LIB_PATHS}
 )
 
 target_include_directories(hmrdp PRIVATE "${MOONLIGHT_ROOT}/include")
-message(STATUS "HmRdp: Moonlight client linked from ${MOONLIGHT_ROOT}/lib/${OHOS_ARCH}")
+message(STATUS "HmRdp: third-party shared libraries linked from ${HMRDP_PREBUILT_LIBS}")
 
 # -Wno-unused-command-line-argument silences the OHOS toolchain passing
 # --gcc-toolchain to compile-only invocations (clang reports it as unused).
-# Do NOT hard-code an optimisation level here: the OHOS toolchain already picks
-# flags from CMAKE_BUILD_TYPE (debug -> -O0 -g, release -> -O2 -DNDEBUG, see
-# ohos.toolchain.cmake). A hard-coded -O2 would override the debug -O0 and make
-# native debugging harder.
+# The optimisation level is pinned at the top of this file (-O2 in every mode).
 target_compile_options(hmrdp PRIVATE -Wall -Wextra -fPIC
     -Wno-unused-command-line-argument)
 target_compile_definitions(hmrdp PRIVATE NAPI_VERSION=8 VK_USE_PLATFORM_OHOS=1)

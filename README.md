@@ -67,7 +67,7 @@
 │  PCM sink ring   (hmrdp_audio.cpp；播放器在 ArkTS)          │
 ├─────────────────────────────────────────────────────────────┤
 │  FreeRDP 3.10.3   libfreerdp3 / winpr3 / client3            │
-│  (entry/libs/<abi>, OpenSSL + zlib 静态链接)                  │
+│  (entry/libs/<abi>：依赖全部为共享库，含 OpenSSL / zlib)      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -76,7 +76,7 @@
 ```
 AppScope/                     应用级配置与图标
 entry/
-  libs/<abi>/                 FreeRDP 预编译动态库（arm64-v8a / x86_64）
+  libs/<abi>/                 预编译动态库（FreeRDP / OpenSSL / zlib / moonlight，arm64-v8a / x86_64）
   src/main/ets/               ArkTS 界面与业务
     entryability/             EntryAbility（主窗口）
     sessionability/           SessionAbility（独立会话窗口）

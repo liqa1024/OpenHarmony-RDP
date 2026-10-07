@@ -1,6 +1,6 @@
 # Moonlight 原生客户端
 
-本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与静态链接、视频解码与上屏、
+本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与共享库链接、视频解码与上屏、
 桥接层约定，以及后续的串流会话与输入接线。**控制层（serverinfo / pair / applist / launch）、协议编排与全部
 XML 解析在 ArkTS**（§4），不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
 编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)；RDP 的
@@ -15,25 +15,30 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
   `LiStartConnection`。上游**没有 release tag**，按 commit 固定。
 - **依赖树**：它的 `enet` 与 `nanors` 是 **git submodule**，commit tarball 不含；`fetch-sources.ps1` 分别按
   commit 固定拉取后放进 `moonlight-common-c/{enet,nanors}`（它的 CMake 用 `add_subdirectory(enet)` 并在
-  `nanors/rs.c` 处编译）。enet 上游恒为静态库。
-- **构建**：随 `native/scripts/build-native.ps1` 的 moonlight 步一起（Windows NDK 交叉编译，静态归档）。
+  `nanors/rs.c` 处编译）。
+- **构建**：随 `native/scripts/build-native.ps1` 的 moonlight 步一起（Windows NDK 交叉编译）。
   `fetch-sources.ps1` 负责按 commit 拉取并自动跑 `patch-moonlight.ps1`。
 
-- **静态链接，不单独打包**：与 FreeRDP 不同，它没有运行时加载插件、不需要导出符号，因此构建成静态库
-  （`-DBUILD_SHARED_LIBS=OFF`），连同 enet、OpenSSL 的 `libcrypto.a` 一起链进 `libhmrdp.so`；
-  `entry/libs/<abi>/` 里**不新增 `.so`**。两者都带 `-fPIC`。
-- **归档与头文件位置**：上游 CMakeLists 不写 install 规则，构建步手工把 `libmoonlight-common-c.a` /
-  `libenet.a` 与公开头 `Limelight.h` 收集到 `native/install/<arch>/moonlight/`，再同步到
-  `entry/src/main/cpp/thirdparty/moonlight/{include,lib/<abi>}/`（生成目录，**不入库**，与 FreeRDP 头文件同策）。
-  同步按 arch 只替换 `lib/<abi>`，两个 ABI 可共存。
+- **共享库，单独打包**：上游 CMakeLists **默认就是共享**（`BUILD_SHARED_LIBS` 未定义时自行置 ON），
+  `build-native.ps1` 不覆盖它 ⇒ 产出 `libmoonlight-common-c.so`，与其它独立依赖一样拷进
+  `entry/libs/<abi>/`，`libhmrdp.so` 按完整路径链它。
+  **`enet`（以及 `nanors`）不单独成库**：它们是本库的 submodule、属实现细节而非独立依赖，
+  `enet/CMakeLists.txt` 把 `add_library(enet STATIC)` 写死（命令行上的 `BUILD_SHARED_LIBS` 也到不了
+  `add_subdirectory(enet)`），于是照旧静态编进 `libmoonlight-common-c.so`——判据见
+  [`native-libraries.md`](native-libraries.md) §1。
+- **头文件位置**：上游 CMakeLists 不写 install 规则，构建步手工把公开头 `Limelight.h` 收集到
+  `native/install/<arch>/moonlight/`，再同步到 `entry/src/main/cpp/thirdparty/moonlight/include/`
+  （生成目录，**不入库**，与 FreeRDP 头文件同策）；`.so` 走统一的 `entry/libs/<abi>/` 出口，按 arch 各自一份。
 - **OpenSSL 依赖**：库自身用 OpenSSL 做 control stream 的 AES/GCM + 随机数（`PlatformCrypto.c`）；构建时
-  显式传 `OPENSSL_ROOT_DIR` / `OPENSSL_CRYPTO_LIBRARY` 等，使 `find_package(OpenSSL 1.0.2 REQUIRED)`
-  命中 OHOS 版本而不是宿主（宿主没有 OHOS 版）。
+  显式传 `OPENSSL_ROOT_DIR` / `OPENSSL_CRYPTO_LIBRARY` / `OPENSSL_SSL_LIBRARY` 并置
+  `OPENSSL_USE_STATIC_LIBS=OFF`，使 `find_package(OpenSSL 1.0.2 REQUIRED)` 命中 OHOS 的 `libcrypto.so`
+  而不是宿主（宿主没有 OHOS 版）。它与 FreeRDP 是 OpenSSL 的两个独立消费者，所以 OpenSSL 只以共享库存在
+  一份（见 [`native-libraries.md`](native-libraries.md) §1）。
 - **平台层**：它自带 POSIX 平台实现（`Platform*.c`，`LC_POSIX` 分支），OHOS 直接可用；配置阶段的自检
   （`fcntl` / `ioctl` / `poll` / `getaddrinfo` / `gethostbyname_r` / `inet_pton` / `clock_gettime` 的
   `CLOCK_MONOTONIC`）全部命中。
-- **补丁**：`patch-moonlight.ps1` 去掉上游在非 MSVC/MinGW 平台无条件加的 `-Werror`（它加在 `CMAKE_C_FLAGS`
-  之后，命令行关不掉）。warnings 仍可见，只是不再中断构建。
+- **补丁**（`patch-moonlight.ps1`，一步，幂等）：去掉上游在非 MSVC/MinGW 平台无条件加的 `-Werror`
+  （它加在 `CMAKE_C_FLAGS` 之后，命令行关不掉；warnings 仍可见，只是不再中断构建）。
 
 ## 2. 视频解码与上屏（双链路）
 
@@ -95,15 +100,16 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 ## 3. 桥接层与接线
 
 - **构建必备输入，不是平台能力**：`moonlight-common-c` 是**我们自己 vendor 的软件依赖**（随
-  `build-native.ps1` 按固定版本编出、链进 `libhmrdp.so`），和 FreeRDP 同类，**不是**设备/系统可能缺失的
-  平台能力。所以 `CMakeLists.txt` 检查归档（`libmoonlight-common-c.a` / `libenet.a`）与 `libcrypto.a` 是否
-  齐全，缺一即 `FATAL_ERROR` 并提示先跑 `build-native.ps1`，随后**无条件**链接、无条件定义头文件路径。
+  `build-native.ps1` 按固定版本编出、作为共享库链进 `libhmrdp.so`），和 FreeRDP 同类，**不是**设备/系统
+  可能缺失的平台能力。所以 `CMakeLists.txt` 逐个检查 `libmoonlight-common-c.so` /
+  `libcrypto.so` / `libssl.so`（连同 FreeRDP 与 zlib，共一份清单）是否都在 `entry/libs/<abi>/`，
+  缺一即 `FATAL_ERROR` 并提示先跑 `build-native.ps1`，随后**无条件**链接、无条件定义头文件路径。
   **不**照搬 FSR / XEngine「缺依赖就编成不支持、构建照常」的降级写法——那是"设备能力有无"的模型，套到自研
   功能上会造出一个本不该存在的"无 Moonlight"产品态。
-- **静态库必须真被引用才算连上**：静态归档里没被引用的目标不会进 `.so`。`hmrdp_moonlight.cpp` 的探针
-  真正调用一个 moonlight 入口（`LiInitializeStreamConfiguration`，纯字段初始化、不起线程/不建 socket），
-  所以"符号已解析"由**链接器**保证：有未解析符号则模块链接失败。
-- **N-API 探针**：`moonlightProbe` 恒回 `"1"`——它只是一个"归档确实解析进了模块"的链接断言，不是能力探测
+- **"符号已解析"由链接器保证**：`libhmrdp.so` 链 `libmoonlight-common-c.so` 且带 `-Wl,--no-undefined`，
+  有未解析符号则链接失败。`hmrdp_moonlight.cpp` 的探针仍真正调用一个 moonlight 入口
+  （`LiInitializeStreamConfiguration`，纯字段初始化、不起线程/不建 socket），把这条约束钉在调用点上。
+- **N-API 探针**：`moonlightProbe` 恒回 `"1"`——它只是一个"库确实链上了"的链接断言，不是能力探测
   （不用于 UI 置灰，也不该有"本设备不支持 Moonlight"这种状态）。
 - **解码桥**：`hmrdp_moonlight.cpp` 把 AVCodec 解码器接进 moonlight-common-c 的解码渲染回调
   （`DECODER_RENDERER_CALLBACKS`，见 `hmrdp_moonlight.h`）。`MoonlightVideoCallbacks()` 交回一张静态

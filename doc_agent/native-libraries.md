@@ -11,18 +11,22 @@
 因此：**源码由脚本按固定版本拉取**（`native/scripts/fetch-sources.ps1`），构建产物放到
 `entry/libs/<abi>/`；应用编译用的 FreeRDP/winpr 头文件由 `build-native.ps1` 同步生成到
 `entry/src/main/cpp/thirdparty/freerdp/`（同步时归一化掉构建机路径与本地 git 版本）。
-`entry/src/main/cpp/CMakeLists.txt` 按 `${FREERDP_LIBS}/libX.so` 完整路径链接、按
+`entry/src/main/cpp/CMakeLists.txt` 按 `${HMRDP_PREBUILT_LIBS}/libX.so` 完整路径链接、按
 `thirdparty/freerdp/include/{freerdp3,winpr3}` 找头文件。
 
-**OpenSSL 头 + `libcrypto.a` 同步到模块，`libhmrdp` 链自己那份**：`moonlight-common-c` 的 control stream
-（`PlatformCrypto.c`：AES/GCM + 随机数）用它。`build-native.ps1` 把 `include/` 与 `libcrypto.a` 同步到
-`entry/src/main/cpp/thirdparty/openssl/{include,lib/<abi>}/`，`CMakeLists.txt` 把它排在 FreeRDP 共享库**之前**
-链接，并用 `-Wl,--exclude-libs` 把归档符号本地化。这样 `libhmrdp.so` 的 `EVP_*` 绑定到自己这份、不外导，
-与 FreeRDP 静态编进 `libwinpr3.so` 的那份互不抢占（同安卓：应用自带 `libcrypto` 并 `--exclude-libs,ALL`，
-与系统 BoringSSL 并存）。
-**链接顺序是判据**：静态归档一旦排在 `libwinpr3.so` 之后，未解析的 `EVP_*` 会先被 winpr3 的导出满足，
-`libhmrdp` 的 OpenSSL 就分裂成两份。自检：`llvm-nm -D --undefined-only libhmrdp.so` 不应出现 `EVP_*`，
-`llvm-nm libhmrdp.so` 里它们应是本地符号（`t`）。
+**每个依赖只以共享库存在一份，统一落 `entry/libs/<abi>/`**：共享还是静态的判据是**同一进程里是否存在多个
+独立消费者**，不是"能不能共享"。`libcrypto`/`libssl` 的消费者有三个（`libwinpr3.so`、`libfreerdp3.so`、
+`libmoonlight-common-c.so`），各自静态就必然有三份副本，而且两份以上还会各自导出同名全局符号、在查找时
+互相抢占；zlib 只有一个消费者，同样打成共享库是为了口径统一——每个库都对应一个 `DT_NEEDED` 条目和一个
+打包文件，不出现"这份归谁"的问题。**判据落在"独立依赖"这一层**：`moonlight-common-c` 自己的 submodule
+（`enet`、`nanors`）不是独立依赖而是它的实现细节，照旧静态编进 `libmoonlight-common-c.so`，单独成 `.so`
+只会多一个 DSO 和一次加载、没有任何去重收益。
+`libhmrdp` 因此**不链任何静态归档**，也就不需要 `-Wl,--exclude-libs`，更不需要"静态归档必须排在
+`libwinpr3.so` 之前"这类链接顺序约束。
+**自检**：`llvm-nm -D --defined-only` 在 `libwinpr3.so` / `libfreerdp3.so` / `libhmrdp.so` /
+`libmoonlight-common-c.so` 里**不应出现**任何 `EVP_*` / `X509_*` / `OSSL_*` 定义符号（它们只应出现在
+`libcrypto.so`，`SSL_*` 只应在 `libssl.so`），同一量在 `libhmrdp.so` 上是 `U`；每个非平台 `DT_NEEDED`
+条目都必须能在 `entry/libs/<abi>/` 里找到同名文件。`--no-undefined` 已开，漏导出在链接期就会报错。
 
 ## 2. 构建流程
 
@@ -32,26 +36,50 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 ```
 
 - **单一入口 `build-native.ps1`**：按依赖顺序编 zlib → OpenSSL → FreeRDP → moonlight，全部用 CMake +
-  Windows OHOS NDK；随后把 FreeRDP 头、OpenSSL 头 + `libcrypto.a`、moonlight 归档同步到
-  `entry/src/main/cpp/thirdparty/`、FreeRDP `.so` 拷进 `entry/libs/<abi>/`。`-Arch`（默认 arm64-v8a；x86_64 为模拟器）、
+  Windows OHOS NDK；每一步的**共享库都拷进 `entry/libs/<abi>/`**（模块自动打包，应用按完整路径链接），
+  只把头文件同步到 `entry/src/main/cpp/thirdparty/`。`-Arch`（默认 arm64-v8a；x86_64 为模拟器）、
   `-Clean`、`-Only <步骤>`（只编某一步，依赖须已装；改 FreeRDP 补丁后就是 `-Only freerdp -Clean`）。
+  经 `pwsh -File` 调用时 `-Only` 收不到数组语法，多步要写成 `-Only @("zlib","freerdp")` 直接调脚本。
+- **优化级别一律 -O2**：`build-native.ps1` 用 `CMAKE_BUILD_TYPE=RelWithDebInfo`（与 `Release` 同码，
+  多一份打包前会被 strip 的 `-g`），OpenSSL 的 CMake 另把 `-O2` 钉死；`libhmrdp.so` 自身源码的 debug 档
+  也在 `CMakeLists.txt` 里覆盖成 `-O2 -g`——`-O0` 产物里行号与变量都不可信，对本工程没有调试价值。
+  于是 debug / release 的差别只剩 `-g`、`NDEBUG` 与导出面，代码体积不再随构建模式变。
 - **OpenSSL 走 CMake、不进 WSL**：OpenSSL 3.x 没有 CMake 构建，源码树只有 Perl 模板（`*.h.in`）与
   `build.info`，而 Windows 侧没有 Perl。做法是把 `perl Configure` 的输出**冻结**成一份快照
   （`native/openssl-cmake/generated/`：生成的公开头 + provider 的 DER 生成物 + `sources.cmake` 源码清单），
-  再用 `native/openssl-cmake/CMakeLists.txt` 按生成的 Makefile 同等预算编译（同样的源集、宏、include 路径与
-  `libcrypto`/`libssl` 归档切分，`libdefault.a`/`liblegacy.a`/`libcommon.a` 的对象并入 libcrypto）。
+  再用 `native/openssl-cmake/CMakeLists.txt` 按生成的 Makefile 同等预算编译成**两个共享库**
+  `libcrypto.so` / `libssl.so`（同样的源集、宏、include 路径；`libdefault` / `liblegacy` / `libcommon` 的
+  对象并入 libcrypto）。
+  - **共享化要补两类构件，都由 `CMakeLists.txt` 从源码树现读现生成**，不必重出快照、也不涉及 WSL/Perl：
+    - **导出表**：冻结的 Configure 是 `no-shared` 配置，没有生成 version script。这里解析
+      `util/libcrypto.num` / `util/libssl.num`（公开符号表，随 tarball）生成一个**匿名** version script
+      （`global:` 列表 + `local: *`，不带版本节点，与 FreeRDP 的无版本 SONAME 约定一致），并配
+      `-Wl,--undefined-version` 容忍按配置不存在的条目。**不要加 `-fvisibility=hidden`**：导出由 version
+      script 的 `global:` 名单决定，hidden 会把名单内的符号也变成本地，反而断掉 libssl → libcrypto。
+    - **libssl 的"共享专有源"**：共享构建下 OpenSSL 把 `crypto/packet.c`（WPACKET）、`record/tls_pad.c`、
+      `s3_cbc.c` 也编进 libssl（`ssl/build.info` 里的 `SHARED_SOURCE[../libssl]=`）；静态构建里它们只在
+      libcrypto。这些行同样现读，不硬编码，换版本时自动跟上。
+  - `libssl.so` 通过 `DT_NEEDED` 引 `libcrypto.so`。两个库都 `-O2` 钉死，且 `--gc-sections` 与 `local: *`
+    一起用——导出面收敛掉的代码是被真正回收，而不只是被隐藏。
   - 只有换 OpenSSL 版本时用 `native/scripts/export-openssl-snapshot.ps1 -Configure` 重生成快照并入库
     （内部跑 `build-openssl-wsl.sh` 的 `perl Configure` + `make`；随后 `export-snapshot.pl` 从 `configdata.pm`
     取权威源码清单与生成物）。**改版本必须重出快照**，`sources.cmake` 与生成头随之更新。
   - `include/openssl/configuration.h` 是唯一按 ABI 变化的生成头（`RC4_INT`），快照按 arch 分份
     （`generated/arch/<arch>/`）；`crypto/buildinf.h` 含构建机路径/flag，由 CMake 写中性值，不入快照。
-  - 产物路径与头集与 WSL 版一致（`native/install/<arch>/openssl/{include,lib}`）；
-    `libcrypto.a`/`libssl.a` 的定义符号与 WSL 版逐符号一致。
+  - 产物路径与 WSL 版一致（`native/install/<arch>/openssl/{include,lib}`，`lib` 下是 `.so`）。
+    **头文件不再同步进模块**：`entry/src/main/cpp/` 没有任何 `#include <openssl/...>`（OpenSSL 只被
+    FreeRDP 与 moonlight-common-c 这两个独立库使用），只有 `.so` 拷进 `entry/libs/<abi>/`。
   - 归一化/加固差异：CMake 构建沿用 OHOS toolchain 默认（`-fstack-protector-strong -ffunction-sections`
-    等），故归档与 `libwinpr3.so` 比裸 `clang` 的 WSL 版略大；`buildinf.h` 与 `OPENSSLDIR` 等按中性值写。
+    等）；`buildinf.h` 与 `OPENSSLDIR` 等按中性值写。
 
 - 版本与校验和固定在 `fetch-sources.ps1`（FreeRDP 3.10.3 / zlib 1.3.1 / OpenSSL 3.0.15）。
-  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑 `patch-freerdp.ps1`。zlib / OpenSSL 按发布版直接用。
+  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑三个补丁脚本（`patch-freerdp.ps1`、
+  `patch-moonlight.ps1`、`patch-zlib.ps1`）。FreeRDP 的补丁成体系地拆在 `patch-steps/`；moonlight 与
+  zlib 各只有一个入口脚本（见 §3 与 [`moonlight-native.md`](moonlight-native.md)）。
+- ⚠ **hvigor 不会清理"已不再产出"的原生库**：`entry/libs/<abi>/` 里删掉一个 `.so` 后，
+  `entry/build/<product>/intermediates/{cmake,libs,stripped_native_libs}/` 里的旧副本仍在，并会被打进
+  HAP（症状：包体不变、里面多一个不该存在的库）。改动**产出集合**（新增/移除/改名某个依赖）之后，
+  先删 `entry/build`——或至少上面三个 intermediates 目录——再打包。
   （`fetch-sources.ps1` 也拉取并按 commit 固定 moonlight-common-c，其构建与补丁见
   [`moonlight-native.md`](moonlight-native.md)，不在本文件内。）
 - `patch-freerdp.ps1` 也可单独重复跑（幂等）。
@@ -104,11 +132,15 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 **链接与符号**
 
 - client/common 编成**共享库**（默认静态会导出不出 NAPI 侧需要的符号）。
-- **无版本号 SONAME**：配合 `-DWITH_LIBRARY_VERSIONING=OFF` 产出**不带版本号的单一 `libX.so`**
-  （避免在 Windows 上实体化成 `libX.so.3` 的重复副本）；运行时 `DT_NEEDED` 也是 `libX.so`。
+- **无版本号 SONAME（所有库同一个口径）**：FreeRDP 配合 `-DWITH_LIBRARY_VERSIONING=OFF`；zlib 由
+  `patch-zlib.ps1` 去掉 `SOVERSION` 与 `VERSION`（CMake 从 `SOVERSION` 取 SONAME、缺省时退回 `VERSION`，
+  所以两个都得去）；OpenSSL 由 `native/openssl-cmake` 直接产出不带版本的 `libcrypto.so` / `libssl.so`。
+  **判据是 SONAME == 打包文件名**：`native/install/<arch>/*/lib` 里多出一个 `libX.so.1` 就说明版本号没去掉。
+  注意 version script 带来的**符号版本**（例如 zlib 的 `ZLIB_1.2.0`）与文件命名无关，不需要处理。
 - 上游在该库上开了 `-DOHOS_ALLOW_UNDEFINED_SYMBOLS=ON`，所以**导出符号打错/漏定义只有到设备 dlopen
   时才炸**（症状：`relocating failed: symbol not found` + `does not provide an export name …` +
   启动即退）——改完补丁用 `llvm-nm -D --undefined-only libwinpr3.so | findstr Hmrdp` 自检一遍。
+  `libhmrdp.so` 自己带 `-Wl,--no-undefined`，它的漏导出在链接期就会失败，不必等到设备。
 
 **音频后端替换**
 
@@ -234,16 +266,20 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   任何后端健全性检查失败（如音频设备打不开）都会闪退；关闭后退化为被 `NDEBUG` 禁用的 `assert()`，
   错误走正常降级分支。
 - `-DWITH_LIBRARY_VERSIONING=OFF`（见 §3）。
+- `-DOPENSSL_CRYPTO_LIBRARY` / `-DOPENSSL_SSL_LIBRARY` / `-DZLIB_LIBRARY` 指向 `native/install/<arch>/*/lib`
+  下的 `.so`，并置 `OPENSSL_USE_STATIC_LIBS=OFF`（moonlight 步同样如此）。winpr / freerdp / moonlight 都只是
+  这些库的**消费者**，静态会把同一份 OpenSSL 复制到每个 `.so` 里（见 §1）。
 - `-DWITH_SIMD=ON`：FreeRDP 使用**自己的 NEON 实现**（抽取支逆 DWT、量化移位、`yCbCrToRGB`、部分
   primitives），它们**不保证**与通用 C 逐位相同——抽取支 DWT 的 `(a+b+1)>>1` 在 16 位车道上会回绕，
   只是本工程码流上从未触发。所以"与 FreeRDP 逐像素一致"的口径改成**量级**：由参考对比的
   `rgbPx/maxDelta` 给，且只在**同一构建配置**下可比（详见
   [`gfx-engine.md`](gfx-engine.md) §7.1/§7.2）。**换这个开关必须重录参考画面**：
   `bad=0` 只表示"自那次重录起没有再变"。
-- 优化等级：`libhmrdp.so` 由 hvigor 按构建模式重编（debug → `-O0 -g`，release → `-O2 -DNDEBUG`），
-  **不要在 `CMakeLists.txt` 里写死 `-O2`**，否则会覆盖 debug 的 `-O0`。FreeRDP 预编译库固定
-  `-O2 -DNDEBUG`，**不随构建模式变**。打包时 hvigor 的 `DoNativeStrip` 会 strip 所有 `.so`，
-  HAP 内不含调试信息。
+- 优化等级：原生代码**一律 -O2**。预编译依赖由 `build-native.ps1` 以 `RelWithDebInfo` 构建（与 `Release`
+  同码，多一份打包前被 strip 的 `-g`）；`libhmrdp.so` 自身源码（由 hvigor 按构建模式重编）在
+  `CMakeLists.txt` 里把 debug 档覆盖成 `-O2 -g`——**`-O0` 不做保留**，它的行号与变量都不可信，对本工程
+  没有调试价值。判据：`entry/.cxx/**/debug/**/compile_commands.json` 里 `libhmrdp` 的编译命令应含 `-O2`
+  而不含 `-O0`。打包时 hvigor 的 `DoNativeStrip` 会 strip 所有 `.so`，HAP 内不含调试信息。
 - FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（安装后由
   `build-native.ps1` 同步时自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
 

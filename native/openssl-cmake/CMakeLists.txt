@@ -9,7 +9,7 @@ project(openssl_cmake C)
 #   * the Configure output is frozen once into generated/ (export-snapshot.pl),
 #     carrying the generated headers and the object -> source mapping, and
 #   * this script compiles that frozen set exactly like the generated Makefile
-#     did (same sources, defines, include paths and archive split).
+#     did (same sources, defines, include paths and library split).
 #
 # Re-generate the snapshot (native/scripts/export-openssl-snapshot.ps1) only when
 # the pinned OpenSSL version changes; day-to-day builds never touch WSL/Perl.
@@ -96,8 +96,78 @@ set(OSSL_INCLUDES
     "${OSSL_SRC}/providers/implementations/include"
 )
 
-add_library(crypto STATIC ${OSSL_CRYPTO_SRCS})
-add_library(ssl STATIC ${OSSL_SSL_SRCS})
+# --- export control ----------------------------------------------------------
+# OpenSSL ships its public symbol list with the source tree (util/*.num, one
+# `symbol  ordinal TAB version TAB EXIST::...` line each; mkdef.pl turns it into
+# the version script of a shared build). The frozen Configure output predates
+# this file and was configured no-shared, so it carries no *.ld template: derive
+# an *anonymous* version script here instead. Anonymous (no version node) means
+# consumers record no version requirement - the same version-less convention the
+# FreeRDP libraries use - and `local: *` keeps the ~9k non-API symbols out of the
+# dynamic symbol table. Do NOT add -fvisibility=hidden: the script's `global:`
+# list is what promotes a symbol, and hidden visibility would override it.
+function(hmrdp_write_export_map num_file out_file)
+    if(NOT EXISTS "${num_file}")
+        message(FATAL_ERROR "OpenSSL symbol list not found: ${num_file}")
+    endif()
+    file(STRINGS "${num_file}" _lines)
+    set(_syms "")
+    foreach(_line IN LISTS _lines)
+        if(_line MATCHES "^([A-Za-z_][A-Za-z0-9_]*)[ \t]+[0-9]+[ \t]+[0-9_]+[ \t]+EXIST::")
+            string(APPEND _syms "    ${CMAKE_MATCH_1};\n")
+        endif()
+    endforeach()
+    if(_syms STREQUAL "")
+        message(FATAL_ERROR "no symbols parsed from ${num_file}")
+    endif()
+    file(WRITE "${out_file}" "{\n  global:\n${_syms}  local: *;\n};\n")
+endfunction()
+
+set(OSSL_CRYPTO_MAP "${CMAKE_CURRENT_BINARY_DIR}/libcrypto.map")
+set(OSSL_SSL_MAP "${CMAKE_CURRENT_BINARY_DIR}/libssl.map")
+hmrdp_write_export_map("${OSSL_SRC}/util/libcrypto.num" "${OSSL_CRYPTO_MAP}")
+hmrdp_write_export_map("${OSSL_SRC}/util/libssl.num" "${OSSL_SSL_MAP}")
+
+# A shared build puts a few objects into libssl that a static one keeps only in
+# libcrypto: ssl/build.info declares them as `SHARED_SOURCE[../libssl]=...`
+# (crypto/packet.c - WPACKET - plus record/tls_pad.c and s3_cbc.c). The frozen
+# Configure snapshot came from a no-shared configuration, so it dropped that line
+# and libssl.so would reference WPACKET_* as undefined. Read the line off the
+# source tree rather than hard-coding the list, so an OpenSSL version bump stays
+# correct. Upstream also guards s3_cbc.c with `!disabled{deprecated-3.0}`; the
+# pinned Configure does not disable it, and the file compiles standalone either
+# way.
+file(STRINGS "${OSSL_SRC}/ssl/build.info" OSSL_SSL_SHARED_LINES
+     REGEX "SHARED_SOURCE\\[\\.\\./libssl\\]=")
+set(OSSL_SSL_SHARED_SRCS "")
+foreach(_line IN LISTS OSSL_SSL_SHARED_LINES)
+    string(REGEX REPLACE "^[^=]*=" "" _files "${_line}")
+    string(REPLACE " " ";" _files "${_files}")
+    foreach(_file IN LISTS _files)
+        if(NOT _file STREQUAL "")
+            # Entries are relative to ssl/ ("record/tls_pad.c") or reach back into
+            # crypto/ ("../crypto/packet.c"); both resolve against this prefix.
+            list(APPEND OSSL_SSL_SHARED_SRCS "${OSSL_SRC}/ssl/${_file}")
+        endif()
+    endforeach()
+endforeach()
+list(REMOVE_DUPLICATES OSSL_SSL_SHARED_SRCS)
+if(OSSL_SSL_SHARED_SRCS STREQUAL "")
+    message(FATAL_ERROR
+        "no SHARED_SOURCE[../libssl] entries in ${OSSL_SRC}/ssl/build.info; "
+        "libssl.so would miss the objects OpenSSL only shares in a shared build")
+endif()
+
+set(OSSL_SSL_ALL_SRCS ${OSSL_SSL_SRCS})
+foreach(_file IN LISTS OSSL_SSL_SHARED_SRCS)
+    if(NOT _file IN_LIST OSSL_SSL_ALL_SRCS)
+        list(APPEND OSSL_SSL_ALL_SRCS "${_file}")
+        message(STATUS "HmRdp: libssl +${_file}")
+    endif()
+endforeach()
+
+add_library(crypto SHARED ${OSSL_CRYPTO_SRCS})
+add_library(ssl SHARED ${OSSL_SSL_ALL_SRCS})
 
 target_include_directories(crypto PUBLIC ${OSSL_INCLUDES})
 target_include_directories(ssl PUBLIC ${OSSL_INCLUDES})
@@ -106,19 +176,41 @@ target_link_libraries(ssl PUBLIC crypto)
 target_compile_definitions(crypto PRIVATE ${OSSL_DEFINES} STATIC_LEGACY)
 target_compile_definitions(ssl PRIVATE ${OSSL_DEFINES})
 
-# -fPIC: the archives end up inside libwinpr3.so / libhmrdp.so. -pthread matches
-# the Configured OPENSSL_THREADS. --gcc-toolchain is passed by the OHOS toolchain
-# to compile-only invocations, which clang flags as unused.
-target_compile_options(crypto PRIVATE -fPIC -pthread -O2 -Wno-unused-command-line-argument)
-target_compile_options(ssl PRIVATE -fPIC -pthread -O2 -Wno-unused-command-line-argument)
+# -fPIC: shared objects on OHOS. -ffunction-sections/-fdata-sections + the
+# --gc-sections link option below are what make `local: *` actually drop code and
+# not just hide it. -pthread matches the Configured OPENSSL_THREADS. The
+# optimisation level is pinned (-O2) so the prebuilt libraries do not change with
+# the app build mode - same rule as the FreeRDP prebuilt libraries
+# (doc_agent/native-libraries.md). --gcc-toolchain is passed by the OHOS
+# toolchain to compile-only invocations, which clang flags as unused.
+foreach(_tgt crypto ssl)
+    target_compile_options(${_tgt} PRIVATE
+        -fPIC -pthread -O2 -ffunction-sections -fdata-sections
+        -Wno-unused-command-line-argument)
+endforeach()
 
-# Install the public header set (checked-in + generated) and the two archives,
-# matching the layout build-native.ps1 and the app module expect unchanged.
+# --undefined-version: util/*.num also lists symbols a different configuration
+# would drop (feature-gated algorithms), and older lld treats an unresolvable
+# name in a version script as an error. A symbol that a consumer really needs but
+# the map omitted is caught at the app link instead, which builds with
+# -Wl,--no-undefined (entry/src/main/cpp/CMakeLists.txt).
+target_link_options(crypto PRIVATE
+    "-Wl,--version-script=${OSSL_CRYPTO_MAP}"
+    "-Wl,--undefined-version"
+    "-Wl,--gc-sections")
+target_link_options(ssl PRIVATE
+    "-Wl,--version-script=${OSSL_SSL_MAP}"
+    "-Wl,--undefined-version"
+    "-Wl,--gc-sections")
+
+# Install the public header set (checked-in + generated) and the two shared
+# libraries, matching the layout build-native.ps1 and the app module expect
+# unchanged. LIBRARY (not ARCHIVE) is what installs a .so on OHOS/Linux.
 install(DIRECTORY "${OSSL_SRC}/include/openssl/" DESTINATION include/openssl
         FILES_MATCHING PATTERN "*.h")
 install(DIRECTORY "${OSSL_OVERLAY}/include/openssl/" DESTINATION include/openssl
         FILES_MATCHING PATTERN "*.h")
-install(TARGETS crypto ssl ARCHIVE DESTINATION lib)
+install(TARGETS crypto ssl LIBRARY DESTINATION lib)
 
 message(STATUS "HmRdp: OpenSSL (CMake) ${OHOS_ARCH}: ${CMAKE_CURRENT_SOURCE_DIR}")
 message(STATUS "HmRdp:   source ${OSSL_SRC}")

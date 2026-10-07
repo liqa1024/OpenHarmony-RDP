@@ -190,6 +190,6 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
 
 ## 5. 其它
 
-- `native/scripts/*` —— 原生库构建与 FreeRDP 补丁（见 [`native-libraries.md`](native-libraries.md)）。
-- `entry/libs/<abi>/` —— 本地构建的原生库（**不入库**）。
+- `native/scripts/*` —— 原生库构建与 FreeRDP / Moonlight / zlib 补丁（见 [`native-libraries.md`](native-libraries.md)）。
+- `entry/libs/<abi>/` —— 本地构建的**全部三方共享库**（FreeRDP / OpenSSL / zlib / moonlight，**不入库**）。
 - `resources/base|dark/` —— 主题色与图标。

@@ -9,11 +9,11 @@
 #   native/scripts/fetch-sources.ps1            # fetch what is missing, then patch
 #   native/scripts/fetch-sources.ps1 -Force     # re-download and re-extract everything
 #
-# FreeRDP (native/scripts/patch-freerdp.ps1) and moonlight-common-c
-# (native/scripts/patch-moonlight.ps1) are the only trees the patches touch;
-# everything else is used as released. The FreeRDP patch helpers match on
-# LF-normalized text, so the checkout style (LF from the tarball, CRLF from a
-# Windows checkout) does not matter.
+# FreeRDP (native/scripts/patch-freerdp.ps1), moonlight-common-c
+# (native/scripts/patch-moonlight.ps1) and zlib (native/scripts/patch-zlib.ps1)
+# are the only trees the patches touch; everything else is used as released. The
+# FreeRDP patch helpers match on LF-normalized text, so the checkout style (LF
+# from the tarball, CRLF from a Windows checkout) does not matter.
 param(
 	[switch]$Force
 )
@@ -198,7 +198,16 @@ if ($LASTEXITCODE -ne 0) {
 	throw "patch-freerdp.ps1 failed"
 }
 
-# Strip moonlight-common-c's -Werror (see patch-moonlight.ps1).
+# Make zlib's shared library version-less so its SONAME matches the file that
+# ships (see patch-zlib.ps1).
+$zlibSrc = Join-Path $Third "zlib-1.3.1"
+Write-Host "patching $zlibSrc"
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-zlib.ps1") -Source $zlibSrc
+if ($LASTEXITCODE -ne 0) {
+	throw "patch-zlib.ps1 failed"
+}
+
+# Strip moonlight-common-c's unconditional -Werror (see patch-moonlight.ps1).
 $mlSrc = Join-Path $Third "moonlight-common-c"
 Write-Host "patching $mlSrc"
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-moonlight.ps1") -Source $mlSrc

@@ -43,7 +43,7 @@
 - [`moonlight-connection.md`](moonlight-connection.md) —— Moonlight（Sunshine）串流连接的**前端**：协议建模与
   存储布局、连接列表与编辑页、设置页的协议分栏与「全局默认 + 会话覆盖」、图标约束、当前实现边界。
 - [`moonlight-native.md`](moonlight-native.md) —— Moonlight 的**原生侧**：客户端库 moonlight-common-c 的
-  拉取/补丁/静态构建与链接、视频解码与上屏、编解码协商、解码桥与串流会话桥，以及控制层（身份/信任存储、
+  拉取/补丁/共享库构建与链接、视频解码与上屏、编解码协商、解码桥与串流会话桥，以及控制层（身份/信任存储、
   配对加密原语、协议编排与 XML）为何全在 ArkTS（见文内 §4）。
 
 ## 维护约定

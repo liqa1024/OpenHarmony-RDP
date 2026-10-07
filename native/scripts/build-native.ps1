@@ -10,13 +10,18 @@
   doc_agent/native-libraries.md).
 
   Built in dependency order:
-    zlib      static archives; statically linked into FreeRDP / libhmrdp
-    openssl   static libcrypto.a / libssl.a (CMake + frozen Configure output)
-    freerdp   shared libX.so; statically links zlib + OpenSSL
-    moonlight static archives (moonlight-common-c + enet)
+    zlib      shared libz.so
+    openssl   shared libcrypto.so / libssl.so (CMake + frozen Configure output)
+    freerdp   shared libX.so; links zlib + OpenSSL dynamically
+    moonlight shared libmoonlight-common-c.so (enet/nanors fold into it)
 
-  Then synced next to the module (both gitignored, generated):
-    entry/src/main/cpp/thirdparty/{freerdp,openssl,moonlight}
+  Every independent dependency is a shared library and ships from
+  entry/libs/<abi>/, so a library with more than one consumer in the process
+  exists once instead of once per consumer (doc_agent/native-libraries.md); a
+  submodule that is only an implementation detail of its parent (moonlight's
+  enet/nanors) stays static inside that parent. Then synced next to the module
+  (all gitignored, generated):
+    entry/src/main/cpp/thirdparty/{freerdp,moonlight}/include
     entry/libs/<abi>/*.so
 
   Prerequisite: fetch-sources.ps1 (pinned sources + patches).
@@ -55,6 +60,9 @@ $Third = "$Native\third_party"
 $Install = "$Native\install\$Arch"
 $BuildRoot = "$Native\build"
 $Thirdparty = "$Repo\entry\src\main\cpp\thirdparty"
+# The module packages entry/libs/<abi>/ into the HAP and the app's CMakeLists
+# links every third-party library from there by full path.
+$Libs = "$Repo\entry\libs\$Arch"
 
 switch ($Arch) {
   "arm64-v8a"   { }
@@ -89,7 +97,12 @@ function Invoke-CMake {
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain",
     "-DCMAKE_MAKE_PROGRAM=$Ninja",
     "-DOHOS_ARCH=$Arch",
-    "-DCMAKE_BUILD_TYPE=Release"
+    # RelWithDebInfo, not Release: the code is identical (-O2 either way, and the
+    # optimisation level each project pins is what wins), but -g keeps native
+    # stack frames symbolicable. The module strips before packaging, so this costs
+    # nothing in the HAP. Minimum is -O2: -O0 output has no usable debug value
+    # here. See doc_agent/native-libraries.md.
+    "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
   )
   if ($Prefix) { $cfg += "-DCMAKE_INSTALL_PREFIX=$Prefix" }
   $cfg += $Options
@@ -121,17 +134,27 @@ function Replace-Line([string]$Path, [string]$Pattern, [string]$Replacement) {
   if ($new -ne $raw) { [System.IO.File]::WriteAllText($Path, $new) }
 }
 
+# Ships one shared library from a dependency's install prefix to
+# entry/libs/<abi>/. Copy by name so a stale file from an earlier build is always
+# replaced instead of accumulating.
+function Copy-PrebuiltLib([string]$From) {
+  if (-not (Test-Path -LiteralPath $From)) { throw "shared library not found: $From" }
+  New-Item -ItemType Directory -Path $Libs -Force | Out-Null
+  Copy-Item -LiteralPath $From -Destination $Libs -Force
+  Write-Host "  -> $(Split-Path -Leaf $From)"
+}
+
 # --- zlib -------------------------------------------------------------------
 function Build-Zlib {
   $src = "$Third\zlib-1.3.1"
   Assert-Found "$src\CMakeLists.txt" "zlib source (run fetch-sources.ps1)"
   Invoke-CMake -Name zlib -Src $src -Build "$BuildRoot\zlib-$Arch" -Prefix "$Install\zlib" -Options @(
-    # Static libz.a: FreeRDP links zlib statically, so it never ships. -fPIC is
-    # required because it ends up inside the shared libfreerdp3.so / libhmrdp.so.
-    "-DBUILD_SHARED_LIBS=OFF",
-    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+    # Shared libz.so, shipped from entry/libs/<abi>/ like every other dependency;
+    # FreeRDP records it in DT_NEEDED instead of folding a copy in.
+    "-DBUILD_SHARED_LIBS=ON",
     "-DZLIB_BUILD_EXAMPLES=OFF"
   )
+  Copy-PrebuiltLib "$Install\zlib\lib\libz.so"
   Write-Host "=== zlib ($Arch) installed to $Install\zlib ==="
 }
 
@@ -147,33 +170,31 @@ function Build-OpenSsl {
   Sync-OpenSsl
 }
 
-# libcrypto.a is what libhmrdp links for moonlight-common-c's control-stream
-# crypto; its own copy, not the one FreeRDP statically links into libwinpr3.so
-# (see doc_agent/native-libraries.md). Only the headers libhmrdp compiles against
-# are synced alongside it.
+# libcrypto.so / libssl.so are the single OpenSSL in the process: libwinpr3.so,
+# libfreerdp3.so and libmoonlight-common-c.so all record them in DT_NEEDED. No
+# consumer carries its own copy and no header set is synced next to the module
+# (nothing under entry/src/main/cpp includes <openssl/...>).
 function Sync-OpenSsl {
-  $from = "$Install\openssl\include"
-  $to = "$Thirdparty\openssl\include"
-  Assert-Found "$from\openssl\ssl.h" "OpenSSL install (build openssl first)"
+  $from = "$Install\openssl\lib"
+  Assert-Found "$from\libcrypto.so" "OpenSSL install (build openssl first)"
+  Assert-Found "$from\libssl.so" "OpenSSL install (build openssl first)"
 
-  New-Item -ItemType Directory -Path $to -Force | Out-Null
-  Copy-Item -Path "$from\*" -Destination $to -Recurse -Force
+  Copy-PrebuiltLib "$from\libcrypto.so"
+  Copy-PrebuiltLib "$from\libssl.so"
 
-  # Archive is per-ABI; keep the other ABI already under thirdparty/openssl/lib.
-  $libTo = "$Thirdparty\openssl\lib\$Arch"
-  New-Item -ItemType Directory -Path $libTo -Force | Out-Null
-  Copy-Item -LiteralPath "$Install\openssl\lib\libcrypto.a" -Destination "$libTo\" -Force
+  # Environments built before the shared switch kept headers + libcrypto.a here;
+  # nothing reads them any more.
+  $stale = "$Thirdparty\openssl"
+  if (Test-Path -LiteralPath $stale) { Remove-Item -Recurse -Force -LiteralPath $stale }
 
-  $now = Get-Date
-  Get-ChildItem -LiteralPath "$Thirdparty\openssl" -Recurse -File | ForEach-Object { $_.LastWriteTime = $now }
-  Write-Host "=== OpenSSL headers + libcrypto.a synced to $Thirdparty\openssl ==="
+  Write-Host "=== OpenSSL shared libraries copied to $Libs ==="
 }
 
 # --- freerdp ----------------------------------------------------------------
 function Build-FreeRdp {
   $src = "$Third\FreeRDP"
   Assert-Found "$src\CMakeLists.txt" "FreeRDP source (run fetch-sources.ps1)"
-  Assert-Found "$Install\openssl\lib\libcrypto.a" "OpenSSL (build openssl first)"
+  Assert-Found "$Install\openssl\lib\libcrypto.so" "OpenSSL (build openssl first)"
   $zlib = "$Install\zlib"
   $prefix = "$Install\freerdp"
 
@@ -187,12 +208,17 @@ function Build-FreeRdp {
     # off makes WINPR_ASSERT a plain assert(), disabled by NDEBUG, so FreeRDP's
     # error paths run instead of crashing.
     "-DWITH_VERBOSE_WINPR_ASSERT=OFF",
-    "-DZLIB_LIBRARY=$zlib\lib\libz.a",
+    "-DZLIB_LIBRARY=$zlib\lib\libz.so",
     "-DZLIB_INCLUDE_DIR=$zlib\include",
+    # OpenSSL and zlib are the shared libraries installed above; FreeRDP records
+    # them in DT_NEEDED instead of folding a private copy into libwinpr3.so /
+    # libfreerdp3.so (the reason those two used to export ~5900 OpenSSL symbols
+    # each and interpose on one another).
     "-DOPENSSL_ROOT_DIR=$Install\openssl",
     "-DOPENSSL_INCLUDE_DIR=$Install\openssl\include",
-    "-DOPENSSL_CRYPTO_LIBRARY=$Install\openssl\lib\libcrypto.a",
-    "-DOPENSSL_SSL_LIBRARY=$Install\openssl\lib\libssl.a",
+    "-DOPENSSL_CRYPTO_LIBRARY=$Install\openssl\lib\libcrypto.so",
+    "-DOPENSSL_SSL_LIBRARY=$Install\openssl\lib\libssl.so",
+    "-DOPENSSL_USE_STATIC_LIBS=OFF",
     "-DWITH_SERVER=OFF", "-DWITH_SAMPLE=OFF",
     "-DWITH_CLIENT=ON", "-DWITH_CLIENT_COMMON=ON", "-DWITH_CLIENT_INTERFACE=OFF",
     "-DWITH_PROXY=OFF", "-DWITH_SHADOW=OFF",
@@ -258,48 +284,51 @@ function Sync-FreeRdp {
 }
 
 function Copy-FreeRdpLibs {
-  $dst = "$Repo\entry\libs\$Arch"
-  New-Item -ItemType Directory -Path $dst -Force | Out-Null
-  Copy-Item -Path "$Install\freerdp\lib\*.so" -Destination $dst -Force
-  Write-Host "=== FreeRDP shared libraries copied to $dst ==="
+  Get-ChildItem -LiteralPath "$Install\freerdp\lib" -Filter *.so | ForEach-Object {
+    Copy-PrebuiltLib $_.FullName
+  }
+  Write-Host "=== FreeRDP shared libraries copied to $Libs ==="
 }
 
 # --- moonlight --------------------------------------------------------------
 function Build-Moonlight {
   $src = "$Third\moonlight-common-c"
   Assert-Found "$src\CMakeLists.txt" "moonlight-common-c source (run fetch-sources.ps1)"
-  Assert-Found "$Install\openssl\lib\libcrypto.a" "OpenSSL (build openssl first)"
+  Assert-Found "$Install\openssl\lib\libcrypto.so" "OpenSSL (build openssl first)"
   $build = "$BuildRoot\moonlight-$Arch"
   $out = "$Install\moonlight"
 
-  # The upstream CMakeLists has no install() rules, so the archives and header
-  # are collected by hand below.
+  # Upstream CMakeLists defaults to BUILD_SHARED_LIBS=ON (line ~26), so nothing is
+  # passed here: libmoonlight-common-c.so is what upstream means to build. enet is
+  # its own submodule, not a project-level dependency - it hard-codes
+  # add_library(enet STATIC) and stays that way, so it is folded into
+  # libmoonlight-common-c.so instead of shipping as a second library.
+  # There are no install() rules, so the artifact and header are collected by hand
+  # below.
   Invoke-CMake -Name moonlight -Src $src -Build $build -Options @(
     "-DOHOS_ALLOW_UNDEFINED_SYMBOLS=ON",
     "-DCMAKE_C_FLAGS=-O2 -DNDEBUG -D__OHOS__=1",
-    # Both the library and enet are PIC so the archives can go inside libhmrdp.so.
-    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-    "-DBUILD_SHARED_LIBS=OFF",
-    # find_package(OpenSSL 1.0.2 REQUIRED) needs the static crypto FreeRDP
-    # already uses; the paths bypass a system OpenSSL (there is none for OHOS).
+    # find_package(OpenSSL 1.0.2 REQUIRED) must resolve to the OHOS build, not a
+    # host OpenSSL (there is none for OHOS). The paths also keep it off the
+    # shared/static probe: libcrypto.so is the one OpenSSL in the process.
     "-DOPENSSL_ROOT_DIR=$Install\openssl",
     "-DOPENSSL_INCLUDE_DIR=$Install\openssl\include",
-    "-DOPENSSL_CRYPTO_LIBRARY=$Install\openssl\lib\libcrypto.a",
-    "-DOPENSSL_SSL_LIBRARY=$Install\openssl\lib\libssl.a",
-    "-DOPENSSL_USE_STATIC_LIBS=ON"
+    "-DOPENSSL_CRYPTO_LIBRARY=$Install\openssl\lib\libcrypto.so",
+    "-DOPENSSL_SSL_LIBRARY=$Install\openssl\lib\libssl.so",
+    "-DOPENSSL_USE_STATIC_LIBS=OFF"
   )
 
   if ($Clean -and (Test-Path $out)) { Remove-Item -Recurse -Force $out }
-  New-Item -ItemType Directory -Path "$out\lib" -Force | Out-Null
   New-Item -ItemType Directory -Path "$out\include" -Force | Out-Null
-  Copy-Item -LiteralPath "$build\libmoonlight-common-c.a" -Destination "$out\lib\" -Force
-  Copy-Item -LiteralPath "$build\enet\libenet.a" -Destination "$out\lib\" -Force
   Copy-Item -LiteralPath "$src\src\Limelight.h" -Destination "$out\include\" -Force
+
+  Copy-PrebuiltLib "$build\libmoonlight-common-c.so"
 
   Sync-Moonlight
 }
 
-# moonlight archives are per-ABI; keep the other ABI already under thirdparty/.
+# Only the public header is synced next to the module: the libraries ship from
+# entry/libs/<abi>/ like every other dependency.
 function Sync-Moonlight {
   $from = "$Install\moonlight"
   $to = "$Thirdparty\moonlight"
@@ -307,18 +336,14 @@ function Sync-Moonlight {
 
   New-Item -ItemType Directory -Path "$to\include" -Force | Out-Null
   Copy-Item -Path "$from\include\*" -Destination "$to\include" -Recurse -Force
-  New-Item -ItemType Directory -Path "$to\lib\$Arch" -Force | Out-Null
-  Copy-Item -LiteralPath "$from\lib\libmoonlight-common-c.a" -Destination "$to\lib\$Arch\" -Force
-  Copy-Item -LiteralPath "$from\lib\libenet.a" -Destination "$to\lib\$Arch\" -Force
 
-  # drop any libcrypto.a an older sync left next to the archives: OpenSSL now
-  # lives under thirdparty/openssl/lib and is linked from there.
-  $stale = "$to\lib\$Arch\libcrypto.a"
-  if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
+  # Environments built before the shared switch kept the archives here.
+  $stale = "$to\lib"
+  if (Test-Path -LiteralPath $stale) { Remove-Item -Recurse -Force -LiteralPath $stale }
 
   $now = Get-Date
   Get-ChildItem -LiteralPath $to -Recurse -File | ForEach-Object { $_.LastWriteTime = $now }
-  Write-Host "=== moonlight archives synced to $to ==="
+  Write-Host "=== moonlight headers synced to $to ==="
 }
 
 # --- run --------------------------------------------------------------------

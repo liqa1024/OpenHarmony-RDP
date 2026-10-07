@@ -1,4 +1,5 @@
-# Applies the HmRdp patches to the moonlight-common-c source tree.
+# Applies the HmRdp patch to the moonlight-common-c source tree: strip the
+# unconditional -Werror.
 #
 # The tree under native/third_party/ is gitignored and recreated by
 # fetch-sources.ps1, which calls this script after extraction. Like
