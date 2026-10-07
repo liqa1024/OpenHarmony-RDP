@@ -265,8 +265,20 @@ struct EditConnectionPage {
     return Math.min(Math.max(this.parsedBitrate(), ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
   }
 
+  private displayOrUndefined(): display.Display | undefined {
+    try {
+      return display.getDefaultDisplaySync();
+    } catch (error) {
+      return undefined;
+    }
+  }
+
   private showToast(message: string): void {
-    this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
+    }
   }
 
   private srSummary(profile: SrProfile): string {
@@ -509,12 +521,14 @@ struct EditConnectionPage {
     }
     const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
     const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
-    const size: display.Display = display.getDefaultDisplaySync();
     let width: number = conn.mlWidth;
     let height: number = conn.mlHeight;
     if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      width = size.width;
-      height = size.height;
+      const size: display.Display | undefined = this.displayOrUndefined();
+      if (size !== undefined) {
+        width = size.width;
+        height = size.height;
+      }
     }
     const parsedAppId: number = conn.mlDefaultAppId.length > 0
       ? Number.parseInt(conn.mlDefaultAppId, 10) : 0;

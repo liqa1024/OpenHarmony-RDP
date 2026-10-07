@@ -18,6 +18,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { huks } from '@kit.UniversalKeystoreKit';
 import { util } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
+import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { MoonlightCrypto } from './MoonlightCrypto';
 
 const CN: string = 'NVIDIA GameStream Client';
@@ -316,6 +317,7 @@ function readText(path: string): string | undefined {
   }
 }
 
+@SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class MoonlightIdentity {
   /** `<filesDir>/moonlight`, creating it when needed. */
   static rootDir(dir: string): string {
@@ -328,15 +330,17 @@ export class MoonlightIdentity {
    */
   static generateClientIdentity(): MoonlightClientIdentity | undefined {
     let keyPair: cryptoFramework.KeyPair;
+    let publicKeyInfo: Uint8Array = new Uint8Array(0);
+    let privateKey: Uint8Array = new Uint8Array(0);
     try {
       const generator: cryptoFramework.AsyKeyGenerator =
         cryptoFramework.createAsyKeyGenerator('RSA2048|PRIMES_2');
       keyPair = generator.generateKeyPairSync();
+      publicKeyInfo = keyPair.pubKey.getEncoded().data;
+      privateKey = keyPair.priKey.getEncoded().data;
     } catch (error) {
       return undefined;
     }
-    const publicKeyInfo: Uint8Array = keyPair.pubKey.getEncoded().data;
-    const privateKey: Uint8Array = keyPair.priKey.getEncoded().data;
     const serialSeed: string = MoonlightCrypto.randomHex(8);
     if (serialSeed.length === 0) {
       return undefined;

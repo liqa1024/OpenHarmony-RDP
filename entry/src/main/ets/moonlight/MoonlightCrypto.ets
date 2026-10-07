@@ -12,6 +12,7 @@
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
+import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 
 /** One DER TLV header and its value bounds within a certificate buffer. */
 class DerTlv {
@@ -52,6 +53,7 @@ function readTlv(data: Uint8Array, pos: number): DerTlv | undefined {
   return tlv;
 }
 
+@SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class MoonlightCrypto {
   /** Lowercase hex of `bytes`. */
   static toHex(bytes: Uint8Array): string {

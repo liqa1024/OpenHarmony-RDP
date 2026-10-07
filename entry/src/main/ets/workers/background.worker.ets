@@ -102,7 +102,10 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
   if (res.buffer !== undefined) {
     transfer.push(res.buffer);
   }
-  workerPort.postMessage(res, transfer);
+  try {
+    workerPort.postMessage(res, transfer);
+  } catch (error) {
+  }
 }
 
 /** File-download events/commands (fire-and-forget; answers are BackgroundEvents). */

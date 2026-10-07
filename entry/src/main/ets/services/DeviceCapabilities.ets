@@ -8,6 +8,7 @@
  * itself keeps working.
  */
 import { audio } from '@kit.AudioKit';
+import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import {
   moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict,
   superResolutionBackends, superResolutionSupport, vulkanAccelSupport
@@ -24,6 +25,7 @@ export const CODEC_SUPPORT_NONE: number = 0;
 export const CODEC_SUPPORT_SOFTWARE: number = 1;
 export const CODEC_SUPPORT_HARDWARE: number = 2;
 
+@SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class DeviceCapabilities {
   /**
    * Remote audio playback. The player is the ArkTS AudioRenderer, so the probe

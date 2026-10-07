@@ -5,7 +5,7 @@ import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { inputDevice, pointer } from '@kit.InputKit';
 import { matrix4, window } from '@kit.ArkUI';
-import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
+import { BusinessError, pasteboard, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
@@ -1550,6 +1550,7 @@ struct SessionPage {
   }
 
   /** Local clipboard -> remote for text / HTML / image (the non-file path). */
+  @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
   private submitPlainClipboard(): void {
     pasteboard.getSystemPasteboard().getData()
       .then((data: pasteboard.PasteData) => {
@@ -1567,6 +1568,7 @@ struct SessionPage {
    * manual URI handling is needed; the sandbox copies are then advertised to the
    * server, which pulls them over cliprdr.
    */
+  @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
   private submitClipboardFiles(): void {
     const dir: string | undefined = this.makeSandboxDir('rdp_outbox');
     if (dir === undefined) {

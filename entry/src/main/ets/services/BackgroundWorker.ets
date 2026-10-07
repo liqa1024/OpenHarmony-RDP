@@ -78,6 +78,16 @@ class BackgroundWorkerImpl {
     });
   }
 
+  /** Fire-and-forget post; a dead worker must not throw into the UI callback. */
+  private post(thread: worker.ThreadWorker, request: BackgroundRequest,
+    transfer: ArrayBuffer[]): void {
+    try {
+      thread.postMessage(request, transfer);
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'background worker post failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
   /** Registers a session window's worker-event sink (progress/completion). */
   registerSession(sink: EventSink): void {
     this.ensure();
@@ -173,7 +183,7 @@ class BackgroundWorkerImpl {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.FILE_LIST, handle: handle, data: descriptor
     };
-    this.ensure().postMessage(request, [descriptor]);
+    this.post(this.ensure(), request, [descriptor]);
   }
 
   /** Forwards one FILECONTENTS response (bytes stay native, read by handle). */
@@ -183,7 +193,7 @@ class BackgroundWorkerImpl {
       id: 0, op: BackgroundOps.FILE_CHUNK, handle: handle, listIndex: listIndex,
       isSize: isSize, sizeValue: sizeValue, failed: failed, dataHandle: dataHandle
     };
-    this.ensure().postMessage(request, []);
+    this.post(this.ensure(), request, []);
   }
 
   /** The server's clipboard list changed; abort any running download. */
@@ -191,7 +201,7 @@ class BackgroundWorkerImpl {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.CLIPBOARD_CHANGED, handle: handle
     };
-    this.ensure().postMessage(request, []);
+    this.post(this.ensure(), request, []);
   }
 
   /** Starts the download into a UI-created sandbox directory. */
@@ -199,7 +209,7 @@ class BackgroundWorkerImpl {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.START_DOWNLOAD, handle: handle, dir: dir
     };
-    this.ensure().postMessage(request, []);
+    this.post(this.ensure(), request, []);
   }
 
   /** Cancels the running download (partial copies are removed by the worker). */
@@ -207,7 +217,7 @@ class BackgroundWorkerImpl {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.CANCEL_DOWNLOAD, handle: handle
     };
-    this.ensure().postMessage(request, []);
+    this.post(this.ensure(), request, []);
   }
 }
 

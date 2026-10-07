@@ -15,7 +15,7 @@
  */
 import { MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { audio } from '@kit.AudioKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { audioFormat, audioRead, RdpAudioFormat } from 'libhmrdp.so';
 import { AudioOps, AudioMessage } from '../services/AudioProtocol';
@@ -47,41 +47,84 @@ function stateFor(handle: number): SessionAudio {
   return state;
 }
 
-/** Maps a PCM sample rate to the AudioKit enum (fallback: 48 kHz). */
-function sampleRateEnum(rate: number): audio.AudioSamplingRate {
-  if (rate === 8000) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_8000;
-  }
-  if (rate === 11025) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_11025;
-  }
-  if (rate === 16000) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_16000;
-  }
-  if (rate === 22050) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_22050;
-  }
-  if (rate === 24000) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_24000;
-  }
-  if (rate === 32000) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_32000;
-  }
-  if (rate === 44100) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_44100;
-  }
-  if (rate === 48000) {
+/**
+ * The AudioKit value / enum references, kept in one place so a single 多设备
+ * (syscap) suppression covers them. A device without an audio output is handled
+ * by the capability probe and the graceful degradation (DeviceCapabilities).
+ */
+@SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
+class AudioFormats {
+  /** Maps a PCM sample rate to the AudioKit enum (fallback: 48 kHz). */
+  static sampleRate(rate: number): audio.AudioSamplingRate {
+    if (rate === 8000) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_8000;
+    }
+    if (rate === 11025) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_11025;
+    }
+    if (rate === 16000) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_16000;
+    }
+    if (rate === 22050) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_22050;
+    }
+    if (rate === 24000) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_24000;
+    }
+    if (rate === 32000) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_32000;
+    }
+    if (rate === 44100) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_44100;
+    }
+    if (rate === 48000) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_48000;
+    }
+    if (rate === 96000) {
+      return audio.AudioSamplingRate.SAMPLE_RATE_96000;
+    }
     return audio.AudioSamplingRate.SAMPLE_RATE_48000;
   }
-  if (rate === 96000) {
-    return audio.AudioSamplingRate.SAMPLE_RATE_96000;
-  }
-  return audio.AudioSamplingRate.SAMPLE_RATE_48000;
-}
 
-/** Maps a channel count to the AudioKit enum (mono / stereo; fallback: stereo). */
-function channelEnum(channels: number): audio.AudioChannel {
-  return channels === 1 ? audio.AudioChannel.CHANNEL_1 : audio.AudioChannel.CHANNEL_2;
+  /** Maps a channel count to the AudioKit enum (mono / stereo; fallback: stereo). */
+  static channel(channels: number): audio.AudioChannel {
+    return channels === 1 ? audio.AudioChannel.CHANNEL_1 : audio.AudioChannel.CHANNEL_2;
+  }
+
+  /** The stream descriptor for a session's rate / channels. */
+  static streamInfo(rate: number, channels: number): audio.AudioStreamInfo {
+    const info: audio.AudioStreamInfo = {
+      samplingRate: AudioFormats.sampleRate(rate),
+      channels: AudioFormats.channel(channels),
+      sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
+      encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
+    };
+    return info;
+  }
+
+  /** The renderer descriptor (music usage, no flags). */
+  static rendererInfo(): audio.AudioRendererInfo {
+    const info: audio.AudioRendererInfo = {
+      usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
+      rendererFlags: 0
+    };
+    return info;
+  }
+
+  /** Opens the renderer for `options`. */
+  static create(options: audio.AudioRendererOptions): Promise<audio.AudioRenderer> {
+    return audio.createAudioRenderer(options);
+  }
+
+  /** The "buffer was filled" writeData callback result. */
+  static dataCallbackOk(): audio.AudioDataCallbackResult {
+    return audio.AudioDataCallbackResult.VALID;
+  }
+
+  /** Whether an interrupt event asks the renderer to resume. */
+  static isResume(event: audio.InterruptEvent): boolean {
+    return event.hintType === audio.InterruptHint.INTERRUPT_HINT_RESUME;
+  }
 }
 
 /** Releases the current renderer without waiting (the worker is not blocked). */
@@ -104,22 +147,12 @@ async function build(state: SessionAudio): Promise<void> {
     return;
   }
   const handle: number = state.handle;
-  const streamInfo: audio.AudioStreamInfo = {
-    samplingRate: sampleRateEnum(state.rate),
-    channels: channelEnum(state.channels),
-    sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
-    encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
-  };
-  const rendererInfo: audio.AudioRendererInfo = {
-    usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
-    rendererFlags: 0
-  };
   const options: audio.AudioRendererOptions = {
-    streamInfo: streamInfo,
-    rendererInfo: rendererInfo
+    streamInfo: AudioFormats.streamInfo(state.rate, state.channels),
+    rendererInfo: AudioFormats.rendererInfo()
   };
   try {
-    const renderer: audio.AudioRenderer = await audio.createAudioRenderer(options);
+    const renderer: audio.AudioRenderer = await AudioFormats.create(options);
     // A stop or a newer format may have landed while the renderer was opening.
     if (generation !== state.generation || !state.active) {
       renderer.release().catch((error: BusinessError): void => {});
@@ -130,12 +163,12 @@ async function build(state: SessionAudio): Promise<void> {
       // The native ring fills the whole buffer (audio + silence); the return
       // value is informational only.
       audioRead(handle, buffer);
-      return audio.AudioDataCallbackResult.VALID;
+      return AudioFormats.dataCallbackOk();
     });
     // Only a shared resume needs an explicit restart; forced pause/stop is done
     // by the system.
     renderer.on('audioInterrupt', (event: audio.InterruptEvent): void => {
-      if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_RESUME) {
+      if (AudioFormats.isResume(event)) {
         renderer.start().catch((error: BusinessError): void => {});
       }
     });

@@ -273,14 +273,18 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 - **线程与锁**：sink 回调在 FreeRDP 播放线程，环的读取在音频 worker，两者只共享环的锁——渲染器回调
   不会被帧 / 剪贴板 / 文件的重活拖住（音频 worker 与后台 worker 分开的理由见
   [`architecture.md`](architecture.md) §4.4）。`audioRead` 只在音频 worker 上调用。
-- **构建期 syscap 告警属预期**：`@kit.AudioKit` 的 `audio` API 标注为"非全设备支持"，引入后构建会打印
-  `The system capacity of this api 'audio' is not supported on all devices`（WARN，非 ERROR）。能力探测与
-  优雅降级（无输出设备 ⇒ 关「音频重定向」、不建渲染器）就是为这类设备准备的，不因该告警退回原生。
+- **构建期 syscap 告警用注解屏蔽**：`@kit.AudioKit` 的 `audio` API 标注为"非全设备支持"，引用其值/枚举会打印
+  `The system capacity of this api 'audio' is not supported on all devices`（WARN，非 ERROR）。该告警是工具误报
+  （API 的 `@syscap` 标注带版本区间，与设备能力集比对不上；`audio` 在目标设备类型上实际可用），用
+  `@SuppressWarnings({rules:[SuppressWarningsType.SYSCAP]})` 标注承载调用的**类**屏蔽（装饰器对类/方法生效，
+  不能标自由函数；见 [`build-and-verify.md`](build-and-verify.md) §6）。运行时仍靠能力探测与优雅降级
+  （无输出设备 ⇒ 关「音频重定向」、不建渲染器）兜底，不因该告警退回原生。
 
 
 ## 6. 设备能力探测（Capability 模式）
 
-新增**与设备相关**的特性时，不要只靠 syscap 告警，也不要在不支持时静默失败：
+新增**与设备相关**的特性时，不要拿 syscap 告警当能力判据（该告警已按 §5 用注解屏蔽，**不代表**设备一定支持），
+也不要在不支持时静默失败：
 
 - 原生侧优雅降级（探测失败 ⇒ 关掉对应 FreeRDP 特性，例如音频无输出设备时 ArkTS 传
   `enableAudio = false` ⇒ 关闭 `FreeRDP_AudioPlayback`，会话静音而不失败）；

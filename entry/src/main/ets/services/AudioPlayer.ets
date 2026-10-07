@@ -30,13 +30,22 @@ class AudioPlayerImpl {
     return thread;
   }
 
+  /** Posts to the worker; a dead worker must not throw into the caller. */
+  private post(thread: worker.ThreadWorker, message: AudioMessage, transfer: ArrayBuffer[]): void {
+    try {
+      thread.postMessage(message, transfer);
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'audio worker post failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
   /** Begins servicing a session's audio (no renderer until a format arrives). */
   start(handle: number): void {
     if (handle <= 0) {
       return;
     }
     const message: AudioMessage = { op: AudioOps.START, handle: handle };
-    this.ensure().postMessage(message, []);
+    this.post(this.ensure(), message, []);
   }
 
   /** Releases a session's renderer (disconnect / window close). */
@@ -46,7 +55,7 @@ class AudioPlayerImpl {
       return;
     }
     const message: AudioMessage = { op: AudioOps.STOP, handle: handle };
-    thread.postMessage(message, []);
+    this.post(thread, message, []);
   }
 
   /** Native reported the session's PCM format: build / rebuild the renderer. */
@@ -56,7 +65,7 @@ class AudioPlayerImpl {
     }
     const message: AudioMessage =
       { op: AudioOps.FORMAT, handle: handle, rate: rate, channels: channels };
-    this.ensure().postMessage(message, []);
+    this.post(this.ensure(), message, []);
   }
 }
 

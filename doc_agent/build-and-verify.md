@@ -122,4 +122,13 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
   "It is recommended to use apiAvailable to safeguard API compatibility" 告警。
   这类调用必须做运行时版本保护（见 [`arkts-conventions.md`](arkts-conventions.md) §6），
   否则在老系统上是**直接崩溃**而不是降级。
+- **ArkTS 编译告警按成因处理**（`build_project` 输出，WARN）：API 声明了 `@throws` 的调用若未用
+  `try/catch`（或 Promise 的 `.catch`）包住，会报 `Function may throw exceptions. Special handling is
+  required.`；多设备（syscap）/ 权限告警用
+  `@SuppressWarnings({rules: [SuppressWarningsType.SYSCAP | PERMISSION]})`（`@ohos.annotation`，API 23+；
+  装饰器对类 / 方法生效，**不能**标自由函数）标注承载调用的类或方法消除。两类告警的具体口径见
+  [`native-libraries.md`](native-libraries.md) §5、[`session-and-input.md`](session-and-input.md) §4。
+- **`Currently module for 'libhmrdp.so' is not verified` 属误报**：本机 Node-API 库的类型验证告警
+  （类型已由 `entry/src/main/cpp/types/libhmrdp/index.d.ts` 提供，引用处类型正常解析），源码侧无法消除，
+  不必处理。
 - 宿主为 Windows；OpenSSL 在 WSL 内编译，驱动 Windows 版 OHOS NDK 的 `clang.exe`。
