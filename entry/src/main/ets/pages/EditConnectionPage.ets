@@ -649,25 +649,6 @@ struct EditConnectionPage {
     })
   }
 
-  /** RDP / Moonlight tab in the header; locked (dimmed) while editing. */
-  @Builder
-  protocolTabs() {
-    ProtocolTabs({
-      protocol: this.protocol,
-      locked: this.editing,
-      onChange: (protocol: number) => {
-        // Move the port with the protocol, unless the user already typed one.
-        const untouched: boolean = this.port.length === 0
-          || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
-        this.protocol = protocol;
-        if (untouched) {
-          this.port = (protocol === PROTOCOL_MOONLIGHT
-            ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
-        }
-      }
-    })
-  }
-
   @Builder
   mlResModeChip(mode: number, label: string) {
     ChoiceChip({
@@ -988,9 +969,23 @@ struct EditConnectionPage {
         onLeft: () => {
           this.cancelConnect();
           this.returnToList();
-        },
-        trailing: this.protocolTabs
-      })
+        }
+      }) {
+        ProtocolTabs({
+          protocol: this.protocol,
+          locked: this.editing,
+          onChange: (protocol: number) => {
+            // Move the port with the protocol, unless the user already typed one.
+            const untouched: boolean = this.port.length === 0
+              || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
+            this.protocol = protocol;
+            if (untouched) {
+              this.port = (protocol === PROTOCOL_MOONLIGHT
+                ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
+            }
+          }
+        })
+      }
 
       Scroll() {
         Column() {

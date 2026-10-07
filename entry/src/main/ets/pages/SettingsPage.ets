@@ -815,17 +815,6 @@ struct SettingsPage {
     this.syncFromStore();
   }
 
-  /** RDP / Moonlight tab, shown inline in the page header. */
-  @Builder
-  protocolTabs() {
-    ProtocolTabs({
-      protocol: this.protocol,
-      onChange: (protocol: number) => {
-        this.switchProtocol(protocol);
-      }
-    })
-  }
-
   /** Moonlight tab: the global stream defaults, mirrored by the per-connection overrides. */
   @Builder
   moonlightStreamSection() {
@@ -1041,9 +1030,15 @@ struct SettingsPage {
         leftLabel: '返回',
         onLeft: () => {
           this.getUIContext().getRouter().back();
-        },
-        trailing: this.protocolTabs
-      })
+        }
+      }) {
+        ProtocolTabs({
+          protocol: this.protocol,
+          onChange: (protocol: number) => {
+            this.switchProtocol(protocol);
+          }
+        })
+      }
 
       Scroll() {
         Column() {
