@@ -2,7 +2,6 @@
  * HmRdp - saved connections list (home page).
  */
 import { common } from '@kit.AbilityKit';
-import { display } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AdvancedProfile, DisplayProfile, EditConnectionParams, ML_RES_FIXED,
@@ -15,7 +14,10 @@ import { MoonlightConnectResult, MoonlightConnector } from '../services/Moonligh
 import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { ConnectionRow } from '../components/ConnectionRow';
+import { defaultDisplay } from '../utils/UiUtil';
+import { promptPairingPin } from '../utils/PairingPrompt';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -36,16 +38,10 @@ struct Index {
   // tool, so it only exists while this is on.
   @State developerMode: boolean = false;
 
-  // Immersive system material (沉浸光感) for the connection cards and for the
-  // surfaces that pop over them. Every one of these falls back to the flat
-  // colours below on a system without the material capability.
-  private cardMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CARD));
-  // Tooltips, the right-click menu and the dialogs carry the material in their
-  // options object, which an older system simply ignores.
+  // Tooltips and the dialogs carry the immersive material in their options
+  // object, which an older system simply ignores. The connection card owns its
+  // own material inside the shared ConnectionRow component.
   private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private menuOptions: ContextMenuOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private dialogMaterial: SystemUiMaterial | undefined = SystemMaterial.of(MaterialSurface.OVERLAY);
 
@@ -113,21 +109,6 @@ struct Index {
   private connState(id: string): ConnectionState {
     const state: ConnectionState | undefined = this.statuses.get(id);
     return state === undefined ? ConnectionState.Idle : state;
-  }
-
-  /** Hover hint for the row's round action button. */
-  private connectTip(conn: SavedConnection): string {
-    const state: ConnectionState = this.connState(conn.id);
-    if (state === ConnectionState.Connecting) {
-      return '取消连接';
-    }
-    if (state === ConnectionState.Connected) {
-      return '断开连接';
-    }
-    if (state === ConnectionState.Disconnecting) {
-      return '正在断开';
-    }
-    return '连接';
   }
 
   private connect(conn: SavedConnection): void {
@@ -204,7 +185,7 @@ struct Index {
     let width: number = conn.mlWidth;
     let height: number = conn.mlHeight;
     if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      const size: display.Display | undefined = this.displayOrUndefined();
+      const size = defaultDisplay();
       if (size !== undefined) {
         width = size.width;
         height = size.height;
@@ -215,7 +196,7 @@ struct Index {
     const appIdValue: number = Number.isNaN(appId) ? 0 : appId;
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
       conn.host, conn.port, stream, appIdValue, width, height,
-      (pin: string): Promise<boolean> => this.promptPairingPin(pin));
+      (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
     if (!result.ok) {
       this.showConnectError(result.error);
       return;
@@ -229,24 +210,6 @@ struct Index {
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
     SessionManager.connect(request, abilityContext);
-  }
-
-  /** The lightweight pairing popup: display the PIN, wait for the user. */
-  private async promptPairingPin(pin: string): Promise<boolean> {
-    try {
-      const response = await this.getUIContext().getPromptAction().showDialog({
-        title: '与主机配对',
-        message: `请在主机（Sunshine）上输入以下 PIN：\n\n${pin}`,
-        buttons: [
-          { text: '取消', color: '#666666' },
-          { text: '已输入', color: '#0A59F7' }
-        ]
-      });
-      return response.index === 1;
-    } catch (error) {
-      hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
-      return false;
-    }
   }
 
   /** The Moonlight app button is only usable when no attempt is in flight. */
@@ -281,22 +244,6 @@ struct Index {
     this.openEditor('', SettingsStore.lastNewProtocol());
   }
 
-  private displayOrUndefined(): display.Display | undefined {
-    try {
-      return display.getDefaultDisplaySync();
-    } catch (error) {
-      return undefined;
-    }
-  }
-
-  private showToast(message: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
-    }
-  }
-
   private openSettings(): void {
     this.getUIContext().getRouter().pushUrl({ url: 'pages/SettingsPage' })
       .catch((error: BusinessError) => {
@@ -314,34 +261,6 @@ struct Index {
         hilog.error(DOMAIN, TAG, 'remove failed: %{public}s', JSON.stringify(error));
         this.refresh();
       });
-  }
-
-  /**
-   * List subtitle: the account, prefixed with the address when a custom name
-   * hides it. Empty when there is neither, so the row shows nothing extra.
-   */
-  private connectionSubtitle(conn: SavedConnection): string {
-    const target: string = `${conn.host}:${conn.port}`;
-    if (conn.isMoonlight()) {
-      // Moonlight has no account; the second line shows the app the connect
-      // button opens (the host desktop when none is chosen).
-      const appName: string = conn.mlDefaultAppName.length > 0 ? conn.mlDefaultAppName : '桌面';
-      return conn.name.length > 0 ? `${target} · ${appName}` : appName;
-    }
-    if (conn.name.length === 0) {
-      return conn.username;
-    }
-    return conn.username.length > 0 ? `${target} · ${conn.username}` : target;
-  }
-
-  /**
-   * Protocol badge icon shown on the row's leading tile: the original remote
-   * desktop (screen + signal) for RDP, the purple screen + crescent for
-   * Moonlight.
-   */
-  private protocolIcon(conn: SavedConnection): Resource {
-    return conn.isMoonlight() ? $r('app.media.ic_proto_moonlight')
-                              : $r('app.media.ic_remote_desktop');
   }
 
   private confirmDelete(conn: SavedConnection): void {
@@ -362,133 +281,6 @@ struct Index {
         }
       }
     });
-  }
-
-  @Builder
-  connectionMenu(conn: SavedConnection) {
-    Menu() {
-      MenuItem({ content: '连接' })
-        .onClick(() => {
-          this.connect(conn);
-        })
-      MenuItem({ content: '编辑' })
-        .onClick(() => {
-          this.openEditor(conn.id, conn.protocol);
-        })
-      MenuItem({ content: '删除' })
-        .contentFontColor($r('app.color.danger'))
-        .onClick(() => {
-          this.confirmDelete(conn);
-        })
-    }
-  }
-
-  @Builder
-  connectionRow(conn: SavedConnection) {
-    Row() {
-      Row() {
-        Image(this.protocolIcon(conn))
-          .width(40)
-          .height(40)
-          .borderRadius(10)
-          .draggable(false)
-        Column() {
-          Row() {
-            Text(conn.label())
-              .fontSize(15)
-              .fontColor($r('app.color.text_primary'))
-            if (this.connState(conn.id) === ConnectionState.Connected) {
-              Text('已连接')
-                .fontSize(10)
-                .fontColor($r('app.color.success'))
-                .backgroundColor($r('app.color.success_bg'))
-                .borderRadius(4)
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .margin({ left: 8 })
-            }
-          }
-          if (this.connectionSubtitle(conn).length > 0) {
-            Text(this.connectionSubtitle(conn))
-              .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
-              .margin({ top: 3 })
-          }
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-        .margin({ left: 12 })
-      }
-      .layoutWeight(1)
-      .bindTips('编辑连接', this.tipsOptions)
-      .onClick(() => {
-        this.openEditor(conn.id, conn.protocol);
-      })
-
-      if (conn.isMoonlight()) {
-        // App-management entry (left of connect): opens the main-window app page.
-        Row() {
-          Image($r('app.media.ic_apps'))
-            .width(20)
-            .height(20)
-            .draggable(false)
-        }
-        .width(44)
-        .height(44)
-        .borderRadius(22)
-        .backgroundColor($r('app.color.card_bg'))
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
-        .margin({ left: 8 })
-        .hoverEffect(HoverEffect.Scale)
-        .opacity(this.appButtonEnabled(conn) ? 1 : 0.4)
-        .bindTips('应用', this.tipsOptions)
-        .onClick(() => {
-          if (this.appButtonEnabled(conn)) {
-            this.openMoonlightApps(conn);
-          }
-        })
-      }
-
-      Row() {
-        if (this.connState(conn.id) === ConnectionState.Connecting) {
-          LoadingProgress()
-            .width(24)
-            .height(24)
-            .color('#FFFFFF')
-        } else if (this.connState(conn.id) === ConnectionState.Connected) {
-          Image($r('app.media.ic_disconnect'))
-            .width(22)
-            .height(22)
-            .draggable(false)
-        } else {
-          Image($r('app.media.ic_arrow_right'))
-            .width(20)
-            .height(20)
-            .draggable(false)
-        }
-      }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .backgroundColor(this.connState(conn.id) === ConnectionState.Connected
-        ? $r('app.color.danger') : $r('app.color.accent'))
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
-      .margin({ left: 8 })
-      .hoverEffect(HoverEffect.Scale)
-      .bindTips(this.connectTip(conn), this.tipsOptions)
-      .onClick(() => {
-        this.toggleConnection(conn);
-      })
-    }
-    .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .borderRadius(14)
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
-    .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
-    .clip(false)
-    .attributeModifier(this.cardMaterial)
-    .bindContextMenu(this.connectionMenu(conn), ResponseType.RightClick, this.menuOptions)
   }
 
   build() {
@@ -606,7 +398,23 @@ struct Index {
         List({ space: 6 }) {
           ForEach(this.connections, (conn: SavedConnection, index: number) => {
             ListItem() {
-              this.connectionRow(conn)
+              ConnectionRow({
+                conn: conn,
+                state: this.connState(conn.id),
+                appEnabled: this.appButtonEnabled(conn),
+                onEdit: () => {
+                  this.openEditor(conn.id, conn.protocol);
+                },
+                onToggleConnection: () => {
+                  this.toggleConnection(conn);
+                },
+                onOpenApps: () => {
+                  this.openMoonlightApps(conn);
+                },
+                onDelete: () => {
+                  this.confirmDelete(conn);
+                }
+              })
             }
             .margin({ left: 52, right: 52, top: 2, bottom: 2 })
             // Near the drag preview's scale, a higher z-index keeps the lifted

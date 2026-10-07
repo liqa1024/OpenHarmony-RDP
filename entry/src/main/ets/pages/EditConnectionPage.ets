@@ -2,7 +2,6 @@
  * HmRdp - add / edit a saved connection.
  */
 import { common } from '@kit.AbilityKit';
-import { display } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
@@ -21,8 +20,14 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { TextAction } from '../components/TextAction';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { defaultDisplay } from '../utils/UiUtil';
+import { promptPairingPin } from '../utils/PairingPrompt';
+import { ChoiceChip } from '../components/ChoiceChip';
+import { HeaderBar } from '../components/HeaderBar';
+import { MaterialCard } from '../components/MaterialCard';
+import { ProtocolTabs } from '../components/ProtocolTabs';
+import { SettingToggleRow } from '../components/SettingToggleRow';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
@@ -94,10 +99,6 @@ struct EditConnectionPage {
   private activeConnectionId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
-  // Immersive system material (沉浸光感) for the form card; a system without the
-  // material capability keeps the flat card colour below.
-  private cardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
 
   // Tracks this editor's own connection attempt. On failure the page stays put
   // so the typed password is preserved and can be corrected.
@@ -263,22 +264,6 @@ struct EditConnectionPage {
 
   private effectiveBitrate(): number {
     return Math.min(Math.max(this.parsedBitrate(), ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
-  }
-
-  private displayOrUndefined(): display.Display | undefined {
-    try {
-      return display.getDefaultDisplaySync();
-    } catch (error) {
-      return undefined;
-    }
-  }
-
-  private showToast(message: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
-    }
   }
 
   private srSummary(profile: SrProfile): string {
@@ -524,7 +509,7 @@ struct EditConnectionPage {
     let width: number = conn.mlWidth;
     let height: number = conn.mlHeight;
     if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      const size: display.Display | undefined = this.displayOrUndefined();
+      const size = defaultDisplay();
       if (size !== undefined) {
         width = size.width;
         height = size.height;
@@ -538,7 +523,7 @@ struct EditConnectionPage {
     this.connecting = true;
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
       conn.host, conn.port, stream, appId, width, height,
-      (pin: string): Promise<boolean> => this.promptPairingPin(pin));
+      (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
     if (!result.ok) {
       this.connecting = false;
       this.errorMessage = result.error;
@@ -557,24 +542,6 @@ struct EditConnectionPage {
       this.returnToList();
     };
     SessionManager.connect(request, abilityContext);
-  }
-
-  /** The lightweight pairing popup: display the PIN, wait for the user. */
-  private async promptPairingPin(pin: string): Promise<boolean> {
-    try {
-      const response = await this.getUIContext().getPromptAction().showDialog({
-        title: '与主机配对',
-        message: `请在主机（Sunshine）上输入以下 PIN：\n\n${pin}`,
-        buttons: [
-          { text: '取消', color: '#666666' },
-          { text: '已输入', color: '#0A59F7' }
-        ]
-      });
-      return response.index === 1;
-    } catch (error) {
-      hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
-      return false;
-    }
   }
 
   private persist(conn: SavedConnection): boolean {
@@ -652,130 +619,80 @@ struct EditConnectionPage {
 
   @Builder
   scaleChip(preset: number) {
-    Text(preset.toString() + '%')
-      .fontSize(13)
-      .fontColor(this.parsedScale() === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.parsedScale() === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: preset.toString() + '%',
+      selected: this.parsedScale() === preset,
+      onTap: () => {
         this.scaleText = preset.toString();
-      })
+      }
+    })
   }
 
   @Builder
   srRatioChip(preset: number) {
-    Text(srRatioLabel(preset))
-      .fontSize(13)
-      .fontColor(this.srRatioPercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.srRatioPercent === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: srRatioLabel(preset),
+      selected: this.srRatioPercent === preset,
+      onTap: () => {
         this.srRatioPercent = preset;
-      })
+      }
+    })
   }
 
   @Builder
   srChoiceChip(choice: number) {
-    Text(choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'))
-      .fontSize(13)
-      .fontColor(this.srChoice() === choice ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.srChoice() === choice
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .opacity(this.srChoiceUsable(choice) ? 1.0 : 0.4)
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        if (!this.srChoiceUsable(choice)) {
-          return;
-        }
+    ChoiceChip({
+      label: choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'),
+      selected: this.srChoice() === choice,
+      chipEnabled: this.srChoiceUsable(choice),
+      onTap: () => {
         this.srEnabled = choice !== 0;
         if (choice !== 0) {
           this.srBackend = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
         }
-      })
+      }
+    })
   }
 
   /** RDP / Moonlight tab in the header; locked (dimmed) while editing. */
   @Builder
-  protocolSegment() {
-    Row() {
-      this.protocolTab(PROTOCOL_RDP, 'RDP')
-      this.protocolTab(PROTOCOL_MOONLIGHT, 'Moonlight')
-    }
-  }
-
-  @Builder
-  protocolTab(protocol: number, label: string) {
-    Column() {
-      Text(label)
-        .fontSize(14)
-        .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
-        .fontColor(this.protocol === protocol
-          ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
-      Divider()
-        .strokeWidth(2)
-        .width(36)
-        .color(this.protocol === protocol ? $r('app.color.accent') : Color.Transparent)
-        .margin({ top: 5 })
-    }
-    .alignItems(HorizontalAlign.Center)
-    .padding({ left: 12, right: 12, top: 4 })
-    .opacity(this.editing && this.protocol !== protocol ? 0.4 : 1.0)
-    .onClick(() => {
-      if (this.editing || this.protocol === protocol) {
-        return;
-      }
-      // Move the port with the protocol, unless the user already typed one.
-      const untouched: boolean = this.port.length === 0
-        || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
-      this.protocol = protocol;
-      if (untouched) {
-        this.port = (protocol === PROTOCOL_MOONLIGHT
-          ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
+  protocolTabs() {
+    ProtocolTabs({
+      protocol: this.protocol,
+      locked: this.editing,
+      onChange: (protocol: number) => {
+        // Move the port with the protocol, unless the user already typed one.
+        const untouched: boolean = this.port.length === 0
+          || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
+        this.protocol = protocol;
+        if (untouched) {
+          this.port = (protocol === PROTOCOL_MOONLIGHT
+            ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
+        }
       }
     })
   }
 
   @Builder
   mlResModeChip(mode: number, label: string) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(this.mlResMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.mlResMode === mode
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: label,
+      selected: this.mlResMode === mode,
+      onTap: () => {
         this.mlResMode = mode;
-      })
+      }
+    })
   }
 
   @Builder
   mlFpsChip(preset: number) {
-    Text(preset.toString())
-      .fontSize(13)
-      .fontColor(this.mlFps === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.mlFps === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: preset.toString(),
+      selected: this.mlFps === preset,
+      onTap: () => {
         this.mlFps = preset;
-      })
+      }
+    })
   }
 
   /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
@@ -812,39 +729,25 @@ struct EditConnectionPage {
 
   @Builder
   mlCodecChip(codec: number, label: string) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(!this.mlCodecUsable(codec) ? $r('app.color.text_tertiary')
-        : (this.mlCodec === codec ? '#FFFFFF' : $r('app.color.text_secondary')))
-      .backgroundColor(this.mlCodec === codec
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .opacity(this.mlCodecUsable(codec) ? 1.0 : 0.4)
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(this.mlCodecUsable(codec) ? HoverEffect.Highlight : HoverEffect.None)
-      .onClick(() => {
-        if (!this.mlCodecUsable(codec)) {
-          return;
-        }
+    ChoiceChip({
+      label: label,
+      selected: this.mlCodec === codec,
+      chipEnabled: this.mlCodecUsable(codec),
+      onTap: () => {
         this.mlCodec = codec;
-      })
+      }
+    })
   }
 
   @Builder
   mlAudioChip(config: number, label: string) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(this.mlAudioConfig === config ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.mlAudioConfig === config
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: label,
+      selected: this.mlAudioConfig === config,
+      onTap: () => {
         this.mlAudioConfig = config;
-      })
+      }
+    })
   }
 
   @Builder
@@ -1079,67 +982,33 @@ struct EditConnectionPage {
   @Builder
   optionRow(title: string, subtitle: string, value: boolean,
     onToggle: (v: boolean) => void, enabled: boolean, disabledReason: string) {
-    Row() {
-      Column() {
-        Text(title)
-          .fontSize(14)
-          .fontColor(enabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
-        if (subtitle.length > 0) {
-          Text(subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
-            .margin({ top: 2 })
-        }
-        if (!enabled && disabledReason.length > 0) {
-          Text(disabledReason)
-            .fontSize(11)
-            .fontColor($r('app.color.danger'))
-            .margin({ top: 2 })
-        }
+    SettingToggleRow({
+      title: title,
+      subtitle: subtitle,
+      value: value,
+      switchEnabled: enabled,
+      disabledReason: disabledReason,
+      onToggle: (v: boolean) => {
+        onToggle(v);
       }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Toggle({ type: ToggleType.Switch, isOn: value })
-        .enabled(enabled)
-        .onChange((isOn: boolean) => {
-          if (!enabled) {
-            return;
-          }
-          onToggle(isOn);
-        })
-    }
-    .width('100%')
-    .height((subtitle.length > 0 ? 58 : 48) +
-      (!enabled && disabledReason.length > 0 ? 20 : 0))
+    })
   }
 
   build() {
     Column() {
-      Row() {
-        TextAction({
-          label: '取消',
-          onTap: () => {
-            this.cancelConnect();
-            this.returnToList();
-          }
-        })
-        Text(this.editing ? '编辑连接' : '新增连接')
-          .fontSize(17)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 16 })
-        Blank()
-        Row() {
-          this.protocolSegment()
-        }
-      }
-      .width('100%')
-      .padding({ left: 24, right: 24, top: 10, bottom: 8 })
-
-      Divider().color($r('app.color.divider'))
+      HeaderBar({
+        title: this.editing ? '编辑连接' : '新增连接',
+        leftLabel: '取消',
+        onLeft: () => {
+          this.cancelConnect();
+          this.returnToList();
+        },
+        trailing: this.protocolTabs
+      })
 
       Scroll() {
         Column() {
-          Column() {
+          MaterialCard({ pad: 28 }) {
             if (this.isMoonlight()) {
               this.moonlightForm()
             } else {
@@ -1564,14 +1433,6 @@ struct EditConnectionPage {
             }
             }
           }
-          .width('100%')
-          .constraintSize({ maxWidth: 720 })
-          .padding(28)
-          .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
-          .borderRadius(20)
-          .alignItems(HorizontalAlign.Start)
-          .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })
-          .attributeModifier(this.cardMaterial)
         }
         .width('100%')
         .padding({ top: 32, bottom: 32, left: 24, right: 24 })

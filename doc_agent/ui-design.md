@@ -39,7 +39,7 @@
 ### 1.2 会话工具栏固定深色调色板（**不随主题**）
 
 浮动在远端桌面画面上，背后颜色不可知，浅色 chrome 会随内容变得不可读，故整条工具栏固定深色。
-常量定义在 `pages/SessionPage.ets` 顶部，**不要改成 `$r('app.color.*')`**。
+常量定义在 `components/SessionChrome.ets`，**不要改成 `$r('app.color.*')`**。
 
 | 常量 | 值 | 用途 |
 |---|---|---|
@@ -118,7 +118,7 @@ Column(page_bg, 100%×100%)
 
 ### 3.5 列表行
 
-`Row`（圆角 14、`card_bg` / CARD 材质、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
+由 `ConnectionRow` 组件实现（§4.1）。`Row`（圆角 14、`card_bg` / CARD 材质、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
 
 - 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，`success` / `success_bg`）、副标题 `12` `text_tertiary`。
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
@@ -134,37 +134,38 @@ Column(page_bg, 100%×100%)
 
 `components/` 是共享 UI 组件的落位。组件按**参数 + 回调**复用，不按协议分叉；协议差异只体现在参数取值与图标资源上。
 
-### 4.1 现有组件
+共享范围是与协议、与会话后端**无关的 chrome**——固定深色、材质、chip、状态卡、列表行、表单控件；动作**依赖会话后端独有能力**的部分（文件传输、剪贴板、遥测、工具栏自动隐藏）留在会话页，不进组件库：组件只能复用两端都具备的能力。
 
-| 组件 | 文件 | 职责 |
-|---|---|---|
-| `TextAction` | `components/TextAction.ets` | 悬停 / 按下变色的纯文本动作（页头左动作等） |
+### 4.1 组件清单
 
-### 4.2 目标组件
+| 组件 | 文件 | 参数（要点） | 用途 |
+|---|---|---|---|
+| `TextAction` | `TextAction.ets` | `label, muted?, onTap` | 悬停 / 按下变色的纯文本动作 |
+| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, appEnabled?, onEdit, onToggleConnection, onOpenApps, onDelete` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
+| `StatusCard` | `StatusCard.ets` | `title, subtitle, primary?, secondary?, loading?, icon?, onPrimary, onSecondary` | 会话连接状态卡（RDP / Moonlight 共用） |
+| `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |
+| `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
+| `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影 |
+| `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（`scale / srRatio / srChoice / ml*` 共用） |
+| `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
+| `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
+| `ToolbarChip` | `SessionChrome.ets` | `label, chipBg?, fgColor?, icon?, hPad?, onTap` | 会话工具栏实心 chip |
+| `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |
+| `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?, tip?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项），`tip` 为空则不挂提示 |
+| （调色板常量） | `SessionChrome.ets` | `TOOLBAR_*` / `METRIC_*` | 固定深色工具栏调色板与几何 |
 
-| 组件 | 参数（要点） | 用途 / 当前重复点 |
-|---|---|---|
-| `StatusCard` | `title, subtitle, primary?, secondary?, loading?, icon?` | 连接状态卡；`SessionPage` 与 `MoonlightSessionPage` 各有一份 |
-| `HeaderBar` | `title, leftLabel, onLeft, trailing slot` | 页头；编辑 / 设置两页各有一份 |
-| `ProtocolTabs` | `protocol, onChange, locked?` | RDP / Moonlight 下划线页签；编辑 / 设置两页各有一份 |
-| `MaterialCard` | `slot, padding?` | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影；编辑 / 设置 / 列表同构 |
-| `ChoiceChip` | `label, selected, onTap, enabled?` | 选中态 chip；`scale / srRatio / srChoice / ml*` 各一套 |
-| `ChoiceChipGroup` | `options, value, onChange` | chip 组（`Flex` 换行）；各预设组 |
-| `SettingToggleRow` | `title, subtitle?, value, onChange, enabled?, disabledReason?` | 带开关的设置行；`optionRow` ↔ `toggleItem` |
-| `SettingSliderRow` | `title, value, min, max, step, unit, precision, onChange, enabled?` | 滑块行；设置页 |
-| `ToolbarChip` | `label, icon?, bg, onTap, tip?` | 会话工具栏实心 chip |
-| `OutlineChip` | `label, onTap` | 会话工具栏描边 chip（取消） |
-| `MetricItem` | `text, width, color, tip?` | 遥测字段；固定宽度排布 |
+约束：组件成员名**不得与通用属性同名**（`padding` / `enabled` 等会和 `CustomComponent` 基类冲突），故
+`MaterialCard` 用 `pad`、`ChoiceChip` 用 `chipEnabled`、`SettingToggleRow` / `SettingSliderRow` 用 `switchEnabled`。
 
-会话窗共用骨架（XComponent 绑定 + 状态遮罩 + `WindowController.closeSession`）作为 `SessionPage` / `MoonlightSessionPage` 的共享基座一并抽取。
+### 4.2 UI 工具方法
 
-### 4.3 UI 工具方法
+`utils/UiUtil.ets` / `utils/PairingPrompt.ets`：
 
-| 方法 | 现状重复点 |
+| 方法 | 说明 |
 |---|---|
-| `displayOrUndefined()`（默认显示查询，容错返回 `undefined`） | Index / 编辑 / 设置 / Moonlight 应用页 |
-| `toast(message)`（`showToast` + `OVERLAY` 材质） | Index / 编辑 / 会话页 / Moonlight 应用页 |
-| `promptPairingPin(pin)`（配对 PIN 弹窗，逐字相同） | Index / 编辑 / Moonlight 应用页 |
+| `defaultDisplay()` | 默认显示查询，容错返回 `undefined` |
+| `showToast(ui, message, durationMs?)` | Toast + `OVERLAY` 材质 |
+| `promptPairingPin(ui, pin)` | 配对 PIN 弹窗 |
 
 ## 5. 协议差异的呈现约定
 
@@ -188,5 +189,5 @@ Moonlight 行有两个圆钮（**应用在连接左侧**），RDP 行只有连�
 2. **同类控件必须同形同参**：同一语义的 chip / 卡片 / 页头 / 状态卡只允许一种实现，参数化差异，不复制粘贴。
 3. **尺寸、圆角、字号、阴影、动画收敛到常量或组件默认值**，不在页面里各写一份。
 4. **材质挂载点遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：持续变化内容不挂材质。
-5. **页面骨架统一**：任一新页面（如 Moonlight 应用页）也走「页头 + 卡片」骨架，不另起一套页头 / 错误态 / 空态。
+5. **页面骨架统一**：页面按「页头 + 卡片」骨架组织，不另起一套页头 / 错误态 / 空态。
 6. **协议差异不复制界面**：优先"同一组件 + 协议参数"，其次才是协议各自的分支 builder。

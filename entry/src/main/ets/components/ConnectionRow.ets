@@ -1,0 +1,184 @@
+/*
+ * HmRdp - saved-connection list row.
+ *
+ * The card row of the connection list: protocol tile, name (+ status badge),
+ * subtitle, an optional Moonlight "apps" button, the connect/disconnect round
+ * button, the right-click menu and the CARD material. The caller owns the
+ * connection state and the actions; the row only renders them.
+ */
+import { SavedConnection } from '../model/RdpModels';
+import { ConnectionState } from '../services/SessionManager';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+
+@Component
+export struct ConnectionRow {
+  conn: SavedConnection = new SavedConnection();
+  @Prop state: ConnectionState = ConnectionState.Idle;
+  @Prop appEnabled: boolean = true;
+  onEdit: () => void = () => {};
+  onToggleConnection: () => void = () => {};
+  onOpenApps: () => void = () => {};
+  onDelete: () => void = () => {};
+  private tipsOptions: TipsOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private menuOptions: ContextMenuOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private cardMaterial: AttributeModifier<RowAttribute> =
+    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+
+  private protocolIcon(): Resource {
+    return this.conn.isMoonlight() ? $r('app.media.ic_proto_moonlight')
+                                   : $r('app.media.ic_remote_desktop');
+  }
+
+  /** Moonlight shows the app it opens; RDP shows the account. */
+  private subtitle(): string {
+    const target: string = `${this.conn.host}:${this.conn.port}`;
+    if (this.conn.isMoonlight()) {
+      const appName: string = this.conn.mlDefaultAppName.length > 0 ? this.conn.mlDefaultAppName : '桌面';
+      return this.conn.name.length > 0 ? `${target} · ${appName}` : appName;
+    }
+    if (this.conn.name.length === 0) {
+      return this.conn.username;
+    }
+    return this.conn.username.length > 0 ? `${target} · ${this.conn.username}` : target;
+  }
+
+  private connectTip(): string {
+    if (this.state === ConnectionState.Connecting) {
+      return '取消连接';
+    }
+    if (this.state === ConnectionState.Connected) {
+      return '断开连接';
+    }
+    if (this.state === ConnectionState.Disconnecting) {
+      return '正在断开';
+    }
+    return '连接';
+  }
+
+  @Builder
+  menu() {
+    Menu() {
+      MenuItem({ content: '连接' })
+        .onClick(() => {
+          this.onToggleConnection();
+        })
+      MenuItem({ content: '编辑' })
+        .onClick(() => {
+          this.onEdit();
+        })
+      MenuItem({ content: '删除' })
+        .contentFontColor($r('app.color.danger'))
+        .onClick(() => {
+          this.onDelete();
+        })
+    }
+  }
+
+  build() {
+    Row() {
+      Row() {
+        Image(this.protocolIcon())
+          .width(40)
+          .height(40)
+          .borderRadius(10)
+          .draggable(false)
+        Column() {
+          Row() {
+            Text(this.conn.label())
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+            if (this.state === ConnectionState.Connected) {
+              Text('已连接')
+                .fontSize(10)
+                .fontColor($r('app.color.success'))
+                .backgroundColor($r('app.color.success_bg'))
+                .borderRadius(4)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .margin({ left: 8 })
+            }
+          }
+          if (this.subtitle().length > 0) {
+            Text(this.subtitle())
+              .fontSize(12)
+              .fontColor($r('app.color.text_tertiary'))
+              .margin({ top: 3 })
+          }
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        .margin({ left: 12 })
+      }
+      .layoutWeight(1)
+      .bindTips('编辑连接', this.tipsOptions)
+      .onClick(() => {
+        this.onEdit();
+      })
+
+      if (this.conn.isMoonlight()) {
+        Row() {
+          Image($r('app.media.ic_apps'))
+            .width(20)
+            .height(20)
+            .draggable(false)
+        }
+        .width(44)
+        .height(44)
+        .borderRadius(22)
+        .backgroundColor($r('app.color.card_bg'))
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .margin({ left: 8 })
+        .hoverEffect(HoverEffect.Scale)
+        .opacity(this.appEnabled ? 1 : 0.4)
+        .bindTips('应用', this.tipsOptions)
+        .onClick(() => {
+          if (this.appEnabled) {
+            this.onOpenApps();
+          }
+        })
+      }
+
+      Row() {
+        if (this.state === ConnectionState.Connecting) {
+          LoadingProgress()
+            .width(24)
+            .height(24)
+            .color('#FFFFFF')
+        } else if (this.state === ConnectionState.Connected) {
+          Image($r('app.media.ic_disconnect'))
+            .width(22)
+            .height(22)
+            .draggable(false)
+        } else {
+          Image($r('app.media.ic_arrow_right'))
+            .width(20)
+            .height(20)
+            .draggable(false)
+        }
+      }
+      .width(44)
+      .height(44)
+      .borderRadius(22)
+      .backgroundColor(this.state === ConnectionState.Connected
+        ? $r('app.color.danger') : $r('app.color.accent'))
+      .justifyContent(FlexAlign.Center)
+      .alignItems(VerticalAlign.Center)
+      .margin({ left: 8 })
+      .hoverEffect(HoverEffect.Scale)
+      .bindTips(this.connectTip(), this.tipsOptions)
+      .onClick(() => {
+        this.onToggleConnection();
+      })
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(14)
+    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
+    .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
+    .clip(false)
+    .attributeModifier(this.cardMaterial)
+    .bindContextMenu(this.menu(), ResponseType.RightClick, this.menuOptions)
+  }
+}

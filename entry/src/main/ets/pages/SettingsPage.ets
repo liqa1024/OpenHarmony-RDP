@@ -2,7 +2,6 @@
  * HmRdp - global settings.
  */
 import { common } from '@kit.AbilityKit';
-import { display } from '@kit.ArkUI';
 import { DisplayProfile, ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
   ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_RES_FOLLOW_WINDOW,
@@ -14,10 +13,17 @@ import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { KeyMapper } from '../utils/KeyMapper';
+import { defaultDisplay } from '../utils/UiUtil';
 import { TextAction } from '../components/TextAction';
+import { ChoiceChip } from '../components/ChoiceChip';
+import { HeaderBar } from '../components/HeaderBar';
+import { MaterialCard } from '../components/MaterialCard';
+import { ProtocolTabs } from '../components/ProtocolTabs';
+import { SettingSliderRow } from '../components/SettingSliderRow';
+import { SettingToggleRow } from '../components/SettingToggleRow';
 
 // Remote desktop sizes are not limited to the local screen, so manual
 // resolution is capped only to a sane upper bound.
@@ -130,11 +136,9 @@ struct SettingsPage {
   private defaultSessionHeight: number = 0;
   private detectedWidth: number = 0;
   private detectedHeight: number = 0;
-  // Immersive system material (沉浸光感) for the settings card and the two
-  // confirmation dialogs; both fall back to the flat colours below on a system
-  // without the material capability.
-  private cardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+  // Immersive system material (沉浸光感) for the confirmation dialogs; they fall
+  // back to the flat colours below on a system without the material capability.
+  // The settings card carries its own via the shared MaterialCard component.
   private dialogMaterial: SystemUiMaterial | undefined = SystemMaterial.of(MaterialSurface.OVERLAY);
 
   aboutToAppear(): void {
@@ -349,16 +353,8 @@ struct SettingsPage {
     return `${width} × ${height}`;
   }
 
-  private displayOrUndefined(): display.Display | undefined {
-    try {
-      return display.getDefaultDisplaySync();
-    } catch (error) {
-      return undefined;
-    }
-  }
-
   private persist(): void {
-    const disp: display.Display | undefined = this.displayOrUndefined();
+    const disp = defaultDisplay();
     const maxWidth: number = disp !== undefined ? disp.width : Number.MAX_SAFE_INTEGER;
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
     // Start from what is stored so the other protocol's copy is preserved.
@@ -690,19 +686,14 @@ struct SettingsPage {
 
   @Builder
   srRatioChip(preset: number) {
-    Text(srRatioLabel(preset))
-      .fontSize(13)
-      .fontColor(this.srRatioPercent === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.srRatioPercent === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: srRatioLabel(preset),
+      selected: this.srRatioPercent === preset,
+      onTap: () => {
         this.srRatioPercent = preset;
         this.persist();
-      })
+      }
+    })
   }
 
   /** The 超分 choice as one value: 0 = off, 1 = XEngine, 2 = FSR. */
@@ -728,60 +719,42 @@ struct SettingsPage {
 
   @Builder
   srChoiceChip(choice: number) {
-    Text(choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'))
-      .fontSize(13)
-      .fontColor(this.srChoice() === choice ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.srChoice() === choice
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .opacity(this.srChoiceUsable(choice) ? 1.0 : 0.4)
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        if (!this.srChoiceUsable(choice)) {
-          return;
-        }
+    ChoiceChip({
+      label: choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'),
+      selected: this.srChoice() === choice,
+      chipEnabled: this.srChoiceUsable(choice),
+      onTap: () => {
         this.srEnabled = choice !== 0;
         if (choice !== 0) {
           this.srBackend = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
         }
         this.persist();
-      })
+      }
+    })
   }
 
   @Builder
   scaleChip(preset: number) {
-    Text(preset.toString() + '%')
-      .fontSize(13)
-      .fontColor(this.parsedManualScale() === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.parsedManualScale() === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: preset.toString() + '%',
+      selected: this.parsedManualScale() === preset,
+      onTap: () => {
         this.manualScaleText = preset.toString();
         this.persist();
-      })
+      }
+    })
   }
 
   @Builder
   mlFpsChip(preset: number) {
-    Text(preset.toString())
-      .fontSize(13)
-      .fontColor(this.mlFps === preset ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.mlFps === preset
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: preset.toString(),
+      selected: this.mlFps === preset,
+      onTap: () => {
         this.mlFps = preset;
         this.persist();
-      })
+      }
+    })
   }
 
   /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
@@ -818,58 +791,39 @@ struct SettingsPage {
 
   @Builder
   mlCodecChip(codec: number, label: string) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(!this.mlCodecUsable(codec) ? $r('app.color.text_tertiary')
-        : (this.mlCodec === codec ? '#FFFFFF' : $r('app.color.text_secondary')))
-      .backgroundColor(this.mlCodec === codec
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .opacity(this.mlCodecUsable(codec) ? 1.0 : 0.4)
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(this.mlCodecUsable(codec) ? HoverEffect.Highlight : HoverEffect.None)
-      .onClick(() => {
-        if (!this.mlCodecUsable(codec)) {
-          return;
-        }
+    ChoiceChip({
+      label: label,
+      selected: this.mlCodec === codec,
+      chipEnabled: this.mlCodecUsable(codec),
+      onTap: () => {
         this.mlCodec = codec;
         this.persist();
-      })
+      }
+    })
   }
 
   @Builder
   mlResModeChip(mode: number, label: string) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(this.mlResMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.mlResMode === mode
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: label,
+      selected: this.mlResMode === mode,
+      onTap: () => {
         this.mlResMode = mode;
         this.persist();
-      })
+      }
+    })
   }
 
   @Builder
   mlAudioChip(config: number, label: string) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(this.mlAudioConfig === config ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.mlAudioConfig === config
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ right: 8, bottom: 8 })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
+    ChoiceChip({
+      label: label,
+      selected: this.mlAudioConfig === config,
+      onTap: () => {
         this.mlAudioConfig = config;
         this.persist();
-      })
+      }
+    })
   }
 
   /** Switches the protocol tab, saving the current one and loading the other. */
@@ -884,23 +838,12 @@ struct SettingsPage {
 
   /** RDP / Moonlight tab, shown inline in the page header. */
   @Builder
-  protocolTab(protocol: number, label: string) {
-    Column() {
-      Text(label)
-        .fontSize(14)
-        .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
-        .fontColor(this.protocol === protocol
-          ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
-      Divider()
-        .strokeWidth(2)
-        .width(36)
-        .color(this.protocol === protocol ? $r('app.color.accent') : Color.Transparent)
-        .margin({ top: 5 })
-    }
-    .alignItems(HorizontalAlign.Center)
-    .padding({ left: 12, right: 12, top: 4 })
-    .onClick(() => {
-      this.switchProtocol(protocol);
+  protocolTabs() {
+    ProtocolTabs({
+      protocol: this.protocol,
+      onChange: (protocol: number) => {
+        this.switchProtocol(protocol);
+      }
     })
   }
 
@@ -1081,107 +1024,51 @@ struct SettingsPage {
 
   @Builder
   toggleItem(item: ToggleItemConfig) {
-    Row() {
-      Column() {
-        Text(item.title)
-          .fontSize(14)
-          .fontColor(item.enabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
-        if (item.subtitle.length > 0) {
-          Text(item.subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
-            .margin({ top: 2 })
-        }
-        if (!item.enabled && item.disabledReason.length > 0) {
-          Text(item.disabledReason)
-            .fontSize(11)
-            .fontColor($r('app.color.danger'))
-            .margin({ top: 2 })
-        }
+    SettingToggleRow({
+      title: item.title,
+      subtitle: item.subtitle,
+      value: item.value,
+      switchEnabled: item.enabled,
+      disabledReason: item.disabledReason,
+      onToggle: (v: boolean) => {
+        item.onChange(v);
       }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Toggle({ type: ToggleType.Switch, isOn: item.value })
-        .selectedColor($r('app.color.accent'))
-        .enabled(item.enabled)
-        .onChange((isOn: boolean) => {
-          if (!item.enabled) {
-            return;
-          }
-          item.onChange(isOn);
-        })
-    }
-    .width('100%')
-    .height((item.subtitle.length > 0 ? 58 : 48) +
-      (!item.enabled && item.disabledReason.length > 0 ? 20 : 0))
+    })
   }
 
   @Builder
   sliderItem(item: SliderItemConfig) {
-    Column() {
-      Row() {
-        Column() {
-          Text(item.title).fontSize(14)
-            .fontColor(item.enabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
-          Text(item.subtitle).fontSize(11).fontColor($r('app.color.text_tertiary'))
-            .margin({ top: 2 })
-          if (!item.enabled && item.disabledReason.length > 0) {
-            Text(item.disabledReason).fontSize(11).fontColor($r('app.color.danger'))
-              .margin({ top: 2 })
-          }
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        Text(item.value.toFixed(item.precision) + item.unit)
-          .fontSize(14)
-          .fontColor(item.enabled ? $r('app.color.accent') : $r('app.color.text_tertiary'))
+    SettingSliderRow({
+      title: item.title,
+      subtitle: item.subtitle,
+      value: item.value,
+      min: item.min,
+      max: item.max,
+      step: item.step,
+      unit: item.unit,
+      precision: item.precision,
+      switchEnabled: item.enabled,
+      disabledReason: item.disabledReason,
+      onChange: (v: number) => {
+        item.onChange(v);
       }
-      .width('100%')
-
-      Slider({ value: item.value, min: item.min, max: item.max, step: item.step })
-        .enabled(item.enabled)
-        .width('100%')
-        .selectedColor(item.enabled ? $r('app.color.accent') : $r('app.color.text_tertiary'))
-        .trackColor(item.enabled ? $r('app.color.input_bg') : $r('app.color.divider'))
-        .blockColor(item.enabled ? $r('app.color.accent') : $r('app.color.text_tertiary'))
-        .margin({ top: 6 })
-        .onChange((newValue: number, mode: SliderChangeMode) => {
-          const factor: number = Math.pow(10, item.precision);
-          item.onChange(Math.round(newValue * factor) / factor);
-        })
-    }
-    .width('100%')
-    .padding({ top: 14, bottom: 14 })
+    })
   }
 
   build() {
     Column() {
-      Row() {
-        TextAction({
-          label: '返回',
-          onTap: () => {
-            this.getUIContext().getRouter().back();
-          }
-        })
-        Text('设置')
-          .fontSize(17)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 16 })
-        Blank()
-        Row() {
-          this.protocolTab(PROTOCOL_RDP, 'RDP')
-          this.protocolTab(PROTOCOL_MOONLIGHT, 'Moonlight')
-        }
-      }
-      .width('100%')
-      .padding({ left: 24, right: 24, top: 10, bottom: 8 })
-
-      Divider().color($r('app.color.divider'))
+      HeaderBar({
+        title: '设置',
+        leftLabel: '返回',
+        onLeft: () => {
+          this.getUIContext().getRouter().back();
+        },
+        trailing: this.protocolTabs
+      })
 
       Scroll() {
         Column() {
-          Column() {
+          MaterialCard({ pad: 24 }) {
             if (this.protocol === PROTOCOL_RDP) {
             Text('显示')
               .fontSize(13)
@@ -1992,14 +1879,6 @@ struct SettingsPage {
               })
             }
           }
-          .width('100%')
-          .constraintSize({ maxWidth: 720 })
-          .padding(24)
-          .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
-          .borderRadius(20)
-          .alignItems(HorizontalAlign.Start)
-          .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })
-          .attributeModifier(this.cardMaterial)
         }
         .width('100%')
         .padding({ top: 24, bottom: 32, left: 24, right: 24 })

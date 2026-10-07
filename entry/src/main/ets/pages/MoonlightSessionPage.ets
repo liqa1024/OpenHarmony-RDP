@@ -21,6 +21,9 @@ import {
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { StatusCard } from '../components/StatusCard';
+import { TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_ROW_HEIGHT, ToolbarChip } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
@@ -73,6 +76,12 @@ struct MoonlightSessionPage {
   private streamHeight: number = 1080;
   // Modifier state tracked from key events (Moonlight wants a modifier bitmask).
   private modifiers: number = 0;
+  // Session name shown on the toolbar (the saved connection's label).
+  private hostLabel: string = '';
+  // Fixed-dark toolbar material (see component/SessionChrome); a no-op on a
+  // system without the material capability, which keeps the flat bar colour.
+  private toolbarMaterial: AttributeModifier<RowAttribute> =
+    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
 
   @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接…';
@@ -82,6 +91,9 @@ struct MoonlightSessionPage {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     if (request !== undefined) {
       this.connectionId = request.connectionId;
+      if (request.savedConnection !== undefined) {
+        this.hostLabel = request.savedConnection.label();
+      }
     }
     const backend: SessionBackend | undefined = SessionBackendRegistry.find(this.sessionKey);
     if (backend instanceof MoonlightSessionBackend) {
@@ -228,46 +240,8 @@ struct MoonlightSessionPage {
     });
   }
 
-  @Builder
-  statusCard(title: string, subtitle: string, primary: string, secondary: string) {
-    Column() {
-      if (this.state === ConnectionState.Connecting) {
-        LoadingProgress().width(44).height(44).color($r('app.color.accent'))
-      }
-      Text(title)
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ top: 14 })
-      Text(subtitle)
-        .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ top: 8 })
-        .textAlign(TextAlign.Center)
-        .constraintSize({ maxWidth: 320 })
-      Row({ space: 12 }) {
-        if (primary.length > 0) {
-          Button(primary)
-            .onClick(() => {
-              this.retry();
-            })
-        }
-        if (secondary.length > 0) {
-          Button(secondary)
-            .onClick(() => {
-              this.disconnect();
-            })
-        }
-      }
-      .margin({ top: 18 })
-    }
-    .padding(24)
-    .backgroundColor($r('app.color.card_bg'))
-    .borderRadius(16)
-  }
-
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopStart }) {
       XComponent({
         id: 'moonlightSurface',
         type: XComponentType.SURFACE,
@@ -293,46 +267,83 @@ struct MoonlightSessionPage {
         })
 
       if (this.state === ConnectionState.Connected) {
-        // Minimal control surface (a full toolbar/telemetry is a later polish
-        // milestone): a way to end the session, which also runs the stop path.
-        Column() {
-          Row({ space: 10 }) {
-            Button('断开')
-              .fontSize(14)
-              .backgroundColor($r('app.color.text_secondary'))
-              .bindTips('仅断开与主机的连接，主机上的应用保持运行')
-              .onClick(() => {
-                this.disconnect();
-              })
-            Button('关闭应用')
-              .fontSize(14)
-              .backgroundColor($r('app.color.danger'))
-              .bindTips('关闭主机上正在运行的应用，并断开连接')
-              .onClick(() => {
-                this.closeAppAndDisconnect();
-              })
-          }
+        // Session toolbar in the same fixed-dark chrome as the RDP page; the
+        // full auto-hide / telemetry surface is a later milestone.
+        Row() {
+          Text(this.hostLabel)
+            .fontSize(14)
+            .fontColor(TOOLBAR_FG)
+          Blank()
+          ToolbarChip({
+            label: '断开',
+            onTap: () => {
+              this.disconnect();
+            }
+          })
+            .margin({ right: 8 })
+            .bindTips('仅断开与主机的连接，主机上的应用保持运行')
+          ToolbarChip({
+            label: '关闭应用',
+            chipBg: $r('app.color.danger'),
+            onTap: () => {
+              this.closeAppAndDisconnect();
+            }
+          })
+            .bindTips('关闭主机上正在运行的应用，并断开连接')
         }
         .width('100%')
-        .height('100%')
-        .padding(16)
-        .alignItems(HorizontalAlign.End)
-        .justifyContent(FlexAlign.Start)
-        .hitTestBehavior(HitTestMode.Transparent)
+        .height(TOOLBAR_ROW_HEIGHT)
+        .padding({ left: 16, right: 16 })
+        .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
+        .attributeModifier(this.toolbarMaterial)
       }
 
       if (this.state === ConnectionState.Connecting || this.state === ConnectionState.Disconnecting
         || this.state === ConnectionState.Failed || this.state === ConnectionState.Idle) {
         Column() {
           if (this.state === ConnectionState.Connecting) {
-            this.statusCard('正在连接', this.stageText.length > 0 ? this.stageText : this.statusText,
-              '取消', '')
+            StatusCard({
+              title: '正在连接',
+              subtitle: this.stageText.length > 0 ? this.stageText : this.statusText,
+              primary: '取消',
+              loading: true,
+              onPrimary: () => {
+                this.disconnect();
+              }
+            })
           } else if (this.state === ConnectionState.Disconnecting) {
-            this.statusCard('正在断开', this.statusText, '', '')
+            StatusCard({
+              title: '正在断开',
+              subtitle: this.statusText
+            })
           } else if (this.state === ConnectionState.Failed) {
-            this.statusCard('连接失败', this.statusText, '重试', '返回')
+            StatusCard({
+              title: '连接失败',
+              subtitle: this.statusText,
+              primary: '重试',
+              secondary: '返回',
+              icon: $r('app.media.ic_proto_moonlight'),
+              onPrimary: () => {
+                this.retry();
+              },
+              onSecondary: () => {
+                this.disconnect();
+              }
+            })
           } else {
-            this.statusCard('连接已断开', this.statusText, '重试', '返回')
+            StatusCard({
+              title: '连接已断开',
+              subtitle: this.statusText,
+              primary: '重试',
+              secondary: '返回',
+              icon: $r('app.media.ic_proto_moonlight'),
+              onPrimary: () => {
+                this.retry();
+              },
+              onSecondary: () => {
+                this.disconnect();
+              }
+            })
           }
         }
         .width('100%')

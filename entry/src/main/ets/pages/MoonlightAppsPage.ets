@@ -9,7 +9,6 @@
  * See doc_agent/moonlight-connection.md §4.
  */
 import { common } from '@kit.AbilityKit';
-import { display } from '@kit.ArkUI';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_RES_FIXED, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
@@ -20,6 +19,8 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { SettingsStore } from '../services/SettingsStore';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp } from '../moonlight/MoonlightModels';
+import { defaultDisplay, showToast } from '../utils/UiUtil';
+import { promptPairingPin } from '../utils/PairingPrompt';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMoonlightApps';
@@ -88,7 +89,7 @@ struct MoonlightAppsPage {
     this.loading = true;
     this.error = '';
     const result: MoonlightAppsResult = await MoonlightConnector.probeApps(this.filesDir(),
-      conn.host, conn.port, (pin: string): Promise<boolean> => this.promptPairingPin(pin));
+      conn.host, conn.port, (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
     this.loading = false;
     if (!result.ok) {
       this.error = result.error;
@@ -129,23 +130,6 @@ struct MoonlightAppsPage {
     }
   }
 
-  private async promptPairingPin(pin: string): Promise<boolean> {
-    try {
-      const response = await this.getUIContext().getPromptAction().showDialog({
-        title: '与主机配对',
-        message: `请在主机（Sunshine）上输入以下 PIN：\n\n${pin}`,
-        buttons: [
-          { text: '取消', color: '#666666' },
-          { text: '已输入', color: '#0A59F7' }
-        ]
-      });
-      return response.index === 1;
-    } catch (error) {
-      hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
-      return false;
-    }
-  }
-
   /** Connect to one app: same operation whether it is running or not. */
   private async connectApp(app: NvApp): Promise<void> {
     const conn: SavedConnection | undefined = this.conn;
@@ -158,7 +142,7 @@ struct MoonlightAppsPage {
     let width: number = conn.mlWidth;
     let height: number = conn.mlHeight;
     if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      const size: display.Display | undefined = this.displayOrUndefined();
+      const size = defaultDisplay();
       if (size !== undefined) {
         width = size.width;
         height = size.height;
@@ -167,7 +151,7 @@ struct MoonlightAppsPage {
     this.error = '';
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
       conn.host, conn.port, stream, app.id, width, height,
-      (pin: string): Promise<boolean> => this.promptPairingPin(pin));
+      (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
     if (!result.ok) {
       this.error = result.error;
       return;
@@ -189,7 +173,7 @@ struct MoonlightAppsPage {
       return;
     }
     await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
-    this.toast('已请求关闭主机应用');
+    showToast(this.getUIContext(), '已请求关闭主机应用');
     await this.refresh();
   }
 
@@ -202,23 +186,7 @@ struct MoonlightAppsPage {
     conn.mlDefaultAppName = app.name;
     conn.updatedAt = Date.now();
     ConnectionStore.save(conn);
-    this.toast(`默认应用已设为「${app.name}」`);
-  }
-
-  private displayOrUndefined(): display.Display | undefined {
-    try {
-      return display.getDefaultDisplaySync();
-    } catch (error) {
-      return undefined;
-    }
-  }
-
-  private toast(message: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
-    }
+    showToast(this.getUIContext(), `默认应用已设为「${app.name}」`);
   }
 
   private isRunning(app: NvApp): boolean {

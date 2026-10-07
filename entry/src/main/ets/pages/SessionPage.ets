@@ -30,6 +30,10 @@ import { WindowController } from '../services/WindowController';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
+import { StatusCard } from '../components/StatusCard';
+import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
+  TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
+  TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT, ToolbarChip } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -99,25 +103,8 @@ const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
 const LOCAL_BAD_MS: number = 33;
 
-// The toolbar floats over the remote desktop image, whose colours are unknown,
-// so its palette is deliberately *fixed dark* instead of following the app
-// theme: light chrome would be unreadable over an arbitrary remote screen, and
-// the bar reads as one consistent piece of chrome in both system light and dark
-// mode. The material behind it is pinned dark to match (see SystemMaterial).
-const TOOLBAR_BG: string = '#CC1A1A1A';
-const TOOLBAR_FG: string = '#FFFFFF';
-const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
-const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
-const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
-// Toolbar geometry: the main row is always there; developer mode appends the
-// telemetry line, so the auto-hide boundary has to grow with it.
-const TOOLBAR_ROW_HEIGHT: number = 48;
-const TOOLBAR_TELEMETRY_HEIGHT: number = 24;
-// Outline for secondary (a step below the filled chips) toolbar actions.
-const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
-// File-transfer progress fill: brighter than the chip tints so the bar reads at
-// a glance on the dark toolbar.
-const TOOLBAR_PROGRESS: string = '#5B9CF8';
+// The session toolbar palette, geometry and shared chips live in
+// components/SessionChrome.ets (fixed dark chrome over the remote image).
 // Pointer zones for the fullscreen auto-hide (SessionPage.setToolbarPointerZone).
 const TOOLBAR_ZONE_NONE: number = 0;
 const TOOLBAR_ZONE_TRIGGER: number = 1;
@@ -127,10 +114,6 @@ const TOOLBAR_ZONE_BAR: number = 2;
 const REVEAL_HINT_WIDTH: number = 96;
 const REVEAL_HINT_HEIGHT: number = 3;
 const REVEAL_HINT_FADE_MS: number = 140;
-// Telemetry threshold colours, tuned against the fixed dark bar.
-const METRIC_GOOD: string = '#4ADE80';
-const METRIC_WARN: string = '#FBBF24';
-const METRIC_BAD: string = '#F87171';
 
 // Grace period before the "came back to the foreground" reconnect check. While
 // the app is away the system freezes and then aborts its sockets, but the native
@@ -235,13 +218,11 @@ struct SessionPage {
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
-  // Immersive system material for the toolbar and the connection status card.
-  // Both are no-ops on a system without the material capability, in which case
-  // the flat background below is what shows.
+  // Immersive system material for the toolbar (the status card owns its own in
+  // the shared StatusCard component). A no-op on a system without the material
+  // capability, in which case the flat background below is what shows.
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
-  private statusCardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
   // Tooltip surfaces take the material through their options object; a system
   // without the capability ignores the field and keeps the default tooltip.
   private tipsOptions: TipsOptions =
@@ -3419,66 +3400,6 @@ struct SessionPage {
     });
   }
 
-  @Builder
-  statusCard(title: string, subtitle: string, primary: string, secondary: string) {
-    Column() {
-      if (this.state === ConnectionState.Connecting) {
-        LoadingProgress().width(44).height(44).color($r('app.color.accent'))
-      } else {
-        Image($r('app.media.ic_remote_desktop')).width(52).height(52)
-          .borderRadius(14)
-          .draggable(false)
-      }
-      Text(title)
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ top: 18 })
-      Text(subtitle)
-        .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ top: 8 })
-        .textAlign(TextAlign.Center)
-        .constraintSize({ maxWidth: 320 })
-      Row() {
-        Button(primary)
-          .height(42)
-          .fontSize(14)
-          .backgroundColor($r('app.color.accent'))
-          .borderRadius(10)
-          .onClick(() => {
-            if (this.state === ConnectionState.Connecting) {
-              this.disconnect();
-            } else {
-              this.retry();
-            }
-          })
-        // The secondary action is optional: "正在连接" only offers 取消, so an
-        // empty label must not render as a blank button next to it.
-        if (secondary.length > 0) {
-          Button(secondary)
-            .height(42)
-            .fontSize(14)
-            .fontColor($r('app.color.text_primary'))
-            .backgroundColor($r('app.color.input_bg'))
-            .borderRadius(10)
-            .margin({ left: 12 })
-            .onClick(() => {
-              this.disconnect();
-            })
-        }
-      }
-      .margin({ top: 24 })
-    }
-    .width(360)
-    .padding({ top: 32, bottom: 28, left: 28, right: 28 })
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
-    .borderRadius(20)
-    .shadow({ radius: 30, color: '#33000000', offsetX: 0, offsetY: 10 })
-    .attributeModifier(this.statusCardMaterial)
-    .alignItems(HorizontalAlign.Center)
-  }
-
   /**
    * Toolbar suffix for 超分辨率: the remote desktop shown next to the host is the
    * session (pre-upscale) size, so the backend and ratio say what it is scaled back
@@ -3536,17 +3457,13 @@ struct SessionPage {
             .fontColor(TOOLBAR_FG)
             .margin({ left: 6 })
             .maxLines(1)
-          Text('取消')
-            .fontSize(12)
-            .fontColor(TOOLBAR_FG_SECONDARY)
-            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-            .border({ width: 1, color: TOOLBAR_CHIP_BORDER })
-            .borderRadius(6)
-            .margin({ left: 8 })
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
+          OutlineChip({
+            label: '取消',
+            onTap: () => {
               this.abortFileTransfer();
-            })
+            }
+          })
+            .margin({ left: 8 })
         }
         .margin({ right: 12 })
       } else if (this.transferActive) {
@@ -3582,41 +3499,28 @@ struct SessionPage {
             .margin({ left: 8 })
           // Secondary action: outlined rather than filled, a step below the
           // clipboard / window chips.
-          Text('取消')
-            .fontSize(12)
-            .fontColor(TOOLBAR_FG_SECONDARY)
-            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-            .border({ width: 1, color: TOOLBAR_CHIP_BORDER })
-            .borderRadius(6)
-            .margin({ left: 8 })
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
+          OutlineChip({
+            label: '取消',
+            onTap: () => {
               this.cancelFileTransfer();
-            })
+            }
+          })
+            .margin({ left: 8 })
         }
         .margin({ right: 12 })
       }
       // Clipboard actions sit left of the window actions, tinted
       // differently and separated from them by a fixed gap.
-      Row() {
-        Image($r('sys.media.ohos_ic_public_copy'))
-          .width(16)
-          .height(16)
-          .fillColor(TOOLBAR_FG)
-          .draggable(false)
-        Text('复制')
-          .fontSize(13)
-          .fontColor(TOOLBAR_FG)
-          .margin({ left: 4 })
-      }
-      .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-      .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
-      .borderRadius(8)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.pullClipboard();
+      ToolbarChip({
+        label: '复制',
+        chipBg: TOOLBAR_ACCENT_CHIP_BG,
+        icon: $r('sys.media.ohos_ic_public_copy'),
+        hPad: 14,
+        onTap: () => {
+          this.pullClipboard();
+        }
       })
-      .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
+        .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
       // Local clipboard -> remote. Security control: clicking it grants a
       // one-time clipboard read without the READ_PASTEBOARD permission.
       Row() {
@@ -3637,38 +3541,27 @@ struct SessionPage {
       .margin({ left: 8 })
       .bindTips('把本机剪贴板发送到远端', this.tipsOptions)
       Row().width(16)
-      Text(this.isFullscreen ? '退出全屏' : '全屏')
-        .fontSize(13)
-        .fontColor(TOOLBAR_FG)
-        .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-        .backgroundColor(TOOLBAR_CHIP_BG)
-        .borderRadius(8)
-        .margin({ right: 8 })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
+      ToolbarChip({
+        label: this.isFullscreen ? '退出全屏' : '全屏',
+        onTap: () => {
           this.toggleFullscreen();
-        })
-      Text('最小化')
-        .fontSize(13)
-        .fontColor(TOOLBAR_FG)
-        .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-        .backgroundColor(TOOLBAR_CHIP_BG)
-        .borderRadius(8)
+        }
+      })
         .margin({ right: 8 })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
+      ToolbarChip({
+        label: '最小化',
+        onTap: () => {
           this.minimizeWindow();
-        })
-      Text('断开')
-        .fontSize(13)
-        .fontColor('#FFFFFF')
-        .padding({ left: 16, right: 16, top: 7, bottom: 7 })
-        .backgroundColor($r('app.color.danger'))
-        .borderRadius(8)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
+        }
+      })
+        .margin({ right: 8 })
+      ToolbarChip({
+        label: '断开',
+        chipBg: $r('app.color.danger'),
+        onTap: () => {
           this.disconnect();
-        })
+        }
+      })
     }
     .width('100%')
     .height(TOOLBAR_ROW_HEIGHT)
@@ -3709,50 +3602,47 @@ struct SessionPage {
   @Builder
   toolbarTelemetry() {
     Row() {
-      Text(this.rttLabel())
-        .fontSize(12)
-        .fontColor(this.thresholdColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS))
-        .width(METRIC_WIDTH_NETWORK)
-        .maxLines(1)
-      Text(this.localLabel())
-        .fontSize(12)
-        .fontColor(this.thresholdColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS))
-        .width(METRIC_WIDTH_LOCAL)
-        .margin({ left: METRIC_GAP_TIGHT })
-        .maxLines(1)
-        .bindTips(this.localTips(), this.tipsOptions)
-      Text(this.fpsLabel())
-        .fontSize(12)
-        .fontColor(TOOLBAR_FG_SECONDARY)
-        .width(METRIC_WIDTH_FPS)
-        .margin({ left: METRIC_GAP_GROUP })
-        .maxLines(1)
-      Text(this.cpuLabel())
-        .fontSize(12)
-        .fontColor(TOOLBAR_FG_SECONDARY)
-        .width(METRIC_WIDTH_CPU)
-        .margin({ left: METRIC_GAP_GROUP })
-        .maxLines(1)
-      Text(this.gpuLabel())
-        .fontSize(12)
-        .fontColor(TOOLBAR_FG_SECONDARY)
-        .width(METRIC_WIDTH_GPU)
-        .margin({ left: METRIC_GAP_GROUP })
-        .maxLines(1)
-        .bindTips(this.gpuTips(), this.tipsOptions)
+      MetricItem({
+        text: this.rttLabel(),
+        metricWidth: METRIC_WIDTH_NETWORK,
+        fgColor: this.thresholdColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS)
+      })
+      MetricItem({
+        text: this.localLabel(),
+        metricWidth: METRIC_WIDTH_LOCAL,
+        fgColor: this.thresholdColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS),
+        leftGap: METRIC_GAP_TIGHT,
+        tip: this.localTips()
+      })
+      MetricItem({
+        text: this.fpsLabel(),
+        metricWidth: METRIC_WIDTH_FPS,
+        leftGap: METRIC_GAP_GROUP
+      })
+      MetricItem({
+        text: this.cpuLabel(),
+        metricWidth: METRIC_WIDTH_CPU,
+        leftGap: METRIC_GAP_GROUP
+      })
+      MetricItem({
+        text: this.gpuLabel(),
+        metricWidth: METRIC_WIDTH_GPU,
+        leftGap: METRIC_GAP_GROUP,
+        tip: this.gpuTips()
+      })
       if (this.hasBandwidth()) {
-        Text(this.bandwidthLabel())
-          .fontSize(12)
-          .fontColor(TOOLBAR_FG_SECONDARY)
-          .margin({ left: METRIC_GAP_GROUP })
+        MetricItem({
+          text: this.bandwidthLabel(),
+          leftGap: METRIC_GAP_GROUP
+        })
       }
       if (this.metricsAudioRateHz > 0) {
-        Text(this.audioLabel())
-          .fontSize(12)
-          .fontColor(this.audioColor())
-          .width(METRIC_WIDTH_AUDIO)
-          .margin({ left: METRIC_GAP_GROUP })
-          .maxLines(1)
+        MetricItem({
+          text: this.audioLabel(),
+          metricWidth: METRIC_WIDTH_AUDIO,
+          fgColor: this.audioColor(),
+          leftGap: METRIC_GAP_GROUP
+        })
       }
     }
     .width('100%')
@@ -3840,13 +3730,48 @@ struct SessionPage {
       if (this.showOverlay) {
         Column() {
           if (this.state === ConnectionState.Connecting) {
-            this.statusCard('正在连接', this.options.targetLabel(), '取消', '')
+            StatusCard({
+              title: '正在连接',
+              subtitle: this.options.targetLabel(),
+              primary: '取消',
+              loading: true,
+              onPrimary: () => {
+                this.disconnect();
+              }
+            })
           } else if (this.state === ConnectionState.Disconnecting) {
-            this.statusCard('正在断开', this.statusText, '', '')
+            StatusCard({
+              title: '正在断开',
+              subtitle: this.statusText
+            })
           } else if (this.state === ConnectionState.Failed) {
-            this.statusCard('连接失败', this.statusText, '重试', '返回')
+            StatusCard({
+              title: '连接失败',
+              subtitle: this.statusText,
+              primary: '重试',
+              secondary: '返回',
+              icon: $r('app.media.ic_remote_desktop'),
+              onPrimary: () => {
+                this.retry();
+              },
+              onSecondary: () => {
+                this.disconnect();
+              }
+            })
           } else if (this.state === ConnectionState.Idle) {
-            this.statusCard('连接已断开', this.statusText, '重试', '返回')
+            StatusCard({
+              title: '连接已断开',
+              subtitle: this.statusText,
+              primary: '重试',
+              secondary: '返回',
+              icon: $r('app.media.ic_remote_desktop'),
+              onPrimary: () => {
+                this.retry();
+              },
+              onSecondary: () => {
+                this.disconnect();
+              }
+            })
           }
         }
         .width('100%')
