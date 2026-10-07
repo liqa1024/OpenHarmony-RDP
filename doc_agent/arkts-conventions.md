@@ -28,6 +28,7 @@
 - 主题色在 `resources/base|dark/element/color.json`，代码里用 `$r('app.color.*')`；深浅色跟随系统。
 - 需要**深色变体**的 SVG 图标放 `resources/dark/media/`（同名文件覆盖 base）。
 - 文案/尺寸尽量走资源与常量，不要在多个页面里各写一份。
+- 各 token 的**用途**、尺寸 / 圆角 / 字号取值与组件规范见 [`ui-design.md`](ui-design.md)；本节只讲资源与主题机制。
 
 ## 5. 与原生交互
 

@@ -1,0 +1,192 @@
+# UI 设计规范（视觉语言 / 布局模式 / 组件契约）
+
+本文件是 HmRdp 界面的**设计语言总纲**：设计 token、布局模式、组件契约与复用判据。
+它只回答"界面长什么样、由哪些组件组合、参数怎么给"，**不描述行为与数据语义**：
+
+- 会话窗口 / 输入 / 工具栏行为与遥测口径 → [`session-and-input.md`](session-and-input.md)；
+- 设置项 / 连接存储 / 生效时机 → [`settings-and-storage.md`](settings-and-storage.md)；
+- Moonlight 协议差异（字段、分栏、图标语义） → [`moonlight-connection.md`](moonlight-connection.md)；
+- ArkTS / ArkUI 语法、状态刷新、主题资源规则、沉浸材质 API 与摆放机制 → [`arkts-conventions.md`](arkts-conventions.md)。
+
+## 1. 设计 token
+
+### 1.1 颜色（主题色，跟随系统深浅色）
+
+来源 `resources/base|dark/element/color.json`，代码里一律 `$r('app.color.*')`。
+**主题色在浅色模式下是浅色的**，因此任何前景色都必须与之配对使用，不可写死。
+
+| token | 浅色 | 深色 | 用途 |
+|---|---|---|---|
+| `page_bg` | `#F2F3F5` | `#000000` | 页面底色 |
+| `card_bg` | `#FFFFFF` | `#1B1B1D` | 卡片 / 浮层 / 圆钮底 |
+| `input_bg` | `#F5F6F8` | `#26262A` | 输入框、次级按钮底、未选中 chip 底 |
+| `divider` | `#ECECEC` | `#2C2C2E` | 分隔线 |
+| `text_primary` | `#182431` | `#E8EAED` | 主文字、标题 |
+| `text_secondary` | `#6B7785` | `#A2A9B4` | 次级文字、分节小标题 |
+| `text_tertiary` | `#9AA4B0` | `#7C8592` | 三级文字、副标题、未选中项 |
+| `accent` | `#0A59F7` | `#4A8BFF` | 主色：选中态、主按钮、强调动作 |
+| `accent_hover` / `accent_press` | `#0743B8` / `#052C7A` | `#82B0FF` / `#B8D1FF` | 文本动作的悬停 / 按下态 |
+| `danger` | `#E84026` | `#F05A40` | 破坏性动作、已连接态圆钮 |
+| `success` / `success_bg` | `#2E9E5B` / `#E6F6EC` | `#4CC77A` / `#17301F` | 状态徽标（如「已连接」「运行中」） |
+| `hover_bg` | `#E7E9ED` | `#2E2E32` | 悬停底（图标按钮、chip） |
+
+约束：
+
+- 需要**深色变体**的 SVG 图标放 `resources/dark/media/`（同名覆盖 base）。
+- **除会话工具栏外不硬编码颜色**；`'#FFFFFF'`（选中 chip 文字）、`Color.Transparent`（未选中页签下划线）是唯一允许的例外。
+- 选中态 chip 固定用「`accent` 底 + `#FFFFFF` 字」，不随主题切换为别的组合。
+
+### 1.2 会话工具栏固定深色调色板（**不随主题**）
+
+浮动在远端桌面画面上，背后颜色不可知，浅色 chrome 会随内容变得不可读，故整条工具栏固定深色。
+常量定义在 `pages/SessionPage.ets` 顶部，**不要改成 `$r('app.color.*')`**。
+
+| 常量 | 值 | 用途 |
+|---|---|---|
+| `TOOLBAR_BG` | `#CC1A1A1A` | 工具栏底（无材质时的兜底） |
+| `TOOLBAR_FG` / `TOOLBAR_FG_SECONDARY` | `#FFFFFF` / `#B8BCC4` | 主 / 次文字与图标 |
+| `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底 |
+| `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底 |
+| `TOOLBAR_CHIP_BORDER` | `#59FFFFFF` | 描边（次级）chip 边框 |
+| `TOOLBAR_PROGRESS` | `#5B9CF8` | 传输进度条 |
+| `METRIC_GOOD` / `METRIC_WARN` / `METRIC_BAD` | `#4ADE80` / `#FBBF24` / `#F87171` | 遥测阈值着色 |
+
+### 1.3 尺寸 / 圆角 / 字号 / 阴影 / 动画
+
+| 类别 | 取值 |
+|---|---|
+| 卡片 | `maxWidth 720`、`padding` 编辑页 `28` / 设置页 `24`、圆角 `20` |
+| 圆角 | 输入框 `10`、按钮 `12`、chip `8`、描边 chip `6`、列表行 `14`、图标 tile `11`、FAB 圆形 `28` |
+| 字号 | 列表页标题 `20` Bold；页标题 / 状态卡标题 `17` Medium；行标题 `14`；分节小标题 `13`；副标题 `11`；chip `13`；遥测 `12`；徽标 `9–10` |
+| 行高 | 带副标题的设置行 `58`；纯开关行 `48`；会话工具栏主行 `48`、遥测行 `24` |
+| 按钮 | 编辑页高 `48` / 字号 `16`；设置页高 `44` / 字号 `15`；均 `radius 12` |
+| chip | `padding { left:14, right:14, top:6, bottom:6 }`、`margin { right:8, bottom:8 }` |
+| 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6` |
+| 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
+
+约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见 §4、§6）。
+
+## 2. 沉浸材质（系统材质）
+
+材质三表面与配色方向（挂载机制、版本门槛、`ImmersiveModifier` 写法见 [`arkts-conventions.md`](arkts-conventions.md) §6）：
+
+| 表面 | 挂载点 | 配色方向 |
+|---|---|---|
+| `CARD` | 列表 / 编辑 / 设置卡片 | 跟随系统深浅色；前景与兜底底色走 `$r()` |
+| `OVERLAY` | Toast、Tips、右键菜单、AlertDialog | 跟随系统（系统自带前景色） |
+| `FLOATING` | 会话工具栏、状态遮罩 | **固定深色，不跟随系统** |
+
+约束：
+
+- 材质对象**建一次复用**（改参数触发系统重算材质，每帧新建会持续重绘）。
+- 设了材质后背景要显式置 `Color.Transparent`，并与"不支持材质时回落兜底色"写在同一个三元表达式里。
+- 材质**绝不挂在持续变化的内容**（远端画面）上；避免大面积、嵌套、与 `backgroundBlurStyle` 叠加。
+- 无材质能力时所有表面退化为平色背景，**外观不得依赖材质存在**。
+
+## 3. 布局模式
+
+### 3.1 页面骨架
+
+列表 / 编辑 / 设置三页共用同一骨架：
+
+```
+Column(page_bg, 100%×100%)
+├─ 页头 HeaderBar（§3.2） + Divider
+└─ 内容区（Scroll → 宽 720 居中卡片，§3.3；列表页为 List）
+```
+
+### 3.2 页头 HeaderBar
+
+「左动作 + 中标题 + `Blank()` + 右侧 slot」，`.padding({ left:24, right:24, top:10, bottom:8 })`，下面一条 `Divider`。
+
+- 左动作：`TextAction`（hover / press 有强调色反馈，`components/TextAction.ets`）。
+- 标题：`17` Medium `text_primary`，`margin left 16`。
+- 右侧 slot：编辑 / 设置页放协议页签（§5.1）；列表页用图标按钮。
+- 列表页是变体：左侧 `app_icon`（44，圆角 11）+ `20` Bold 标题 + `12` 副标题，`padding top 20 / bottom 16`。
+
+### 3.3 卡片与表单分节
+
+- 卡片：`width 100%`、`constraintSize({ maxWidth:720 })`、圆角 20、`card_bg`（有材质时透明 + `CARD` 材质）、阴影、`padding`（编辑 28 / 设置 24）。
+- 分节小标题：`13` `text_secondary`，`margin bottom 4`。
+- 行：左列 `layoutWeight(1)`（标题 `14` `text_primary` + 副标题 `11` `text_tertiary`，`margin top 2`）+ 右侧控件；行间 `Divider`。
+- 控件列（§4）右对齐；带副标题行高 `58`，纯开关行 `48`。
+
+### 3.4 折叠区（高级设置）
+
+编辑页用折叠区承载「全局默认 + 单连接覆盖」。标题行左侧文案 + 右侧 `展开 / 收起`（`13` `accent`），整行 `.padding({ top:8, bottom:8 })`、`radius 8`、`HoverEffect.Highlight`。
+展开后是若干「使用会话独立 XX 设置」行：左标题 + 右侧 `Toggle`，跟随全局时下方给一行 `11` `text_tertiary` 的「全局：…」摘要。
+
+### 3.5 列表行
+
+`Row`（圆角 14、`card_bg` / CARD 材质、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
+
+- 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，`success` / `success_bg`）、副标题 `12` `text_tertiary`。
+- 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
+- 右键菜单（`Menu`）、拖拽排序（`List.onMove`）：`List` 本体保持全宽，左右内边距由 `ListItem` 的 `margin`（`left/right 52`）给。
+
+### 3.6 会话窗口
+
+- 窗口模式：工具栏作为普通行布局在画面上方（渲染区自然扣除其高度）；全屏模式：工具栏浮在画面上，按指针分区自动隐藏 / 滑出（行为与判定见 [`session-and-input.md`](session-and-input.md) §3）。
+- 状态遮罩：全屏居中、`#66000000` 底色上放状态卡；状态卡的图标 / 标题 / 副标题 / 按钮组合由连接状态驱动（§4）。
+- 工具栏结构：主行（会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
+
+## 4. 组件契约
+
+`components/` 是共享 UI 组件的落位。组件按**参数 + 回调**复用，不按协议分叉；协议差异只体现在参数取值与图标资源上。
+
+### 4.1 现有组件
+
+| 组件 | 文件 | 职责 |
+|---|---|---|
+| `TextAction` | `components/TextAction.ets` | 悬停 / 按下变色的纯文本动作（页头左动作等） |
+
+### 4.2 目标组件
+
+| 组件 | 参数（要点） | 用途 / 当前重复点 |
+|---|---|---|
+| `StatusCard` | `title, subtitle, primary?, secondary?, loading?, icon?` | 连接状态卡；`SessionPage` 与 `MoonlightSessionPage` 各有一份 |
+| `HeaderBar` | `title, leftLabel, onLeft, trailing slot` | 页头；编辑 / 设置两页各有一份 |
+| `ProtocolTabs` | `protocol, onChange, locked?` | RDP / Moonlight 下划线页签；编辑 / 设置两页各有一份 |
+| `MaterialCard` | `slot, padding?` | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影；编辑 / 设置 / 列表同构 |
+| `ChoiceChip` | `label, selected, onTap, enabled?` | 选中态 chip；`scale / srRatio / srChoice / ml*` 各一套 |
+| `ChoiceChipGroup` | `options, value, onChange` | chip 组（`Flex` 换行）；各预设组 |
+| `SettingToggleRow` | `title, subtitle?, value, onChange, enabled?, disabledReason?` | 带开关的设置行；`optionRow` ↔ `toggleItem` |
+| `SettingSliderRow` | `title, value, min, max, step, unit, precision, onChange, enabled?` | 滑块行；设置页 |
+| `ToolbarChip` | `label, icon?, bg, onTap, tip?` | 会话工具栏实心 chip |
+| `OutlineChip` | `label, onTap` | 会话工具栏描边 chip（取消） |
+| `MetricItem` | `text, width, color, tip?` | 遥测字段；固定宽度排布 |
+
+会话窗共用骨架（XComponent 绑定 + 状态遮罩 + `WindowController.closeSession`）作为 `SessionPage` / `MoonlightSessionPage` 的共享基座一并抽取。
+
+### 4.3 UI 工具方法
+
+| 方法 | 现状重复点 |
+|---|---|
+| `displayOrUndefined()`（默认显示查询，容错返回 `undefined`） | Index / 编辑 / 设置 / Moonlight 应用页 |
+| `toast(message)`（`showToast` + `OVERLAY` 材质） | Index / 编辑 / 会话页 / Moonlight 应用页 |
+| `promptPairingPin(pin)`（配对 PIN 弹窗，逐字相同） | Index / 编辑 / Moonlight 应用页 |
+
+## 5. 协议差异的呈现约定
+
+### 5.1 协议页签
+
+`Text`（`14`，选中 Medium `text_primary` / 未选中 Normal `text_tertiary`）+ 下方 `Divider`（`strokeWidth 2`、`width 36`、选中 `accent` / 未选中 `Transparent`），`padding { left:12, right:12, top:4 }`。
+编辑已有连接时对端页签置暗（`opacity 0.4`）且不可点；切换页签时端口随协议默认值切换。
+
+### 5.2 列表
+
+两种协议混排同一列表，靠引导 tile 图标区分；Moonlight 行的副标题显示默认应用名，RDP 显示账号。
+Moonlight 行有两个圆钮（**应用在连接左侧**），RDP 行只有连接钮。
+
+### 5.3 设置页分栏
+
+顶部 RDP / Moonlight 两个协议页签；**通用项（触控板、键盘、会话、窗口）在两个页签都出现，但每个协议各存一份值**——UI 是同一段代码，靠切换数据源复用。
+
+## 6. 复用判据（硬约束）
+
+1. **颜色只走 token**（会话工具栏除外，见 §1.2）；不以硬编码 hex 表达主题语义。
+2. **同类控件必须同形同参**：同一语义的 chip / 卡片 / 页头 / 状态卡只允许一种实现，参数化差异，不复制粘贴。
+3. **尺寸、圆角、字号、阴影、动画收敛到常量或组件默认值**，不在页面里各写一份。
+4. **材质挂载点遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：持续变化内容不挂材质。
+5. **页面骨架统一**：任一新页面（如 Moonlight 应用页）也走「页头 + 卡片」骨架，不另起一套页头 / 错误态 / 空态。
+6. **协议差异不复制界面**：优先"同一组件 + 协议参数"，其次才是协议各自的分支 builder。
