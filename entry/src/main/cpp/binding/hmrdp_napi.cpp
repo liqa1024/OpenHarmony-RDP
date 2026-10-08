@@ -79,20 +79,6 @@ struct EventPayload {
   std::vector<uint8_t> bytes;
 };
 
-std::vector<std::string> SplitOn(const std::string& text, char separator) {
-  std::vector<std::string> parts;
-  size_t start = 0;
-  while (true) {
-    const size_t pos = text.find(separator, start);
-    if (pos == std::string::npos) {
-      parts.push_back(text.substr(start));
-      return parts;
-    }
-    parts.push_back(text.substr(start, pos - start));
-    start = pos + 1;
-  }
-}
-
 // Turns one event's typed native payload into the JS object ArkTS reads. Native
 // fills named integer / text fields (Session::EventData), so neither side
 // stringifies and re-parses a delimited encoding; this is marshalling at the
@@ -175,24 +161,6 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
       setInt("fileIndex", value(3));
       setInt("fileCount", value(4));
       break;
-    case static_cast<int>(SessionEvent::kClipboardFilesReady): {
-      // Reserved; `text` carries the paths, one per line.
-      std::vector<std::string> paths;
-      for (const std::string& path : SplitOn(payload.text, '\n')) {
-        if (!path.empty()) {
-          paths.push_back(path);
-        }
-      }
-      napi_value array = nullptr;
-      napi_create_array_with_length(env, paths.size(), &array);
-      for (size_t i = 0; i < paths.size(); ++i) {
-        napi_value v = nullptr;
-        napi_create_string_utf8(env, paths[i].c_str(), paths[i].size(), &v);
-        napi_set_element(env, array, static_cast<uint32_t>(i), v);
-      }
-      napi_set_named_property(env, obj, "paths", array);
-      break;
-    }
     case static_cast<int>(SessionEvent::kFileTransferFailed):
       setStr("reason", payload.text);
       break;

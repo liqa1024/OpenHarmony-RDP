@@ -159,49 +159,39 @@ export enum RdpEvent {
   // them. Text arrives already decoded on ClipboardText.
   ClipboardHtml = 9,
   ClipboardImage = 10,
-  // Reserved. Per-second telemetry is not an event: raw readings are pulled with
-  // sessionTelemetry() and aggregated in ArkTS (see services/SessionTelemetry), so
-  // nothing emits this. The id is kept only to preserve the numbering of the
-  // events that follow it.
-  Metrics = 11,
-  // Reserved. The remote file list arrives as RemoteFileListRaw (a raw
-  // FILEGROUPDESCRIPTORW) that ArkTS parses; this id is kept for numbering.
-  ClipboardFileList = 12,
   // Upload/download progress: direction (0 = remote -> local, 1 = local -> remote)
   // plus done/total bytes and the file index/count.
-  FileTransferProgress = 13,
-  // Download finished: the absolute sandbox paths, one per line.
-  ClipboardFilesReady = 14,
+  FileTransferProgress = 11,
   // Transfer aborted before completing; payload is the reason.
-  FileTransferFailed = 15,
+  FileTransferFailed = 12,
   // Upload finished (every advertised byte served); payload is the file count.
-  FileTransferDone = 16,
+  FileTransferDone = 13,
   // 快捷键穿透: an intercepted key event (keyCode + down).
-  KeyIntercept = 17,
+  KeyIntercept = 14,
   // RTF clipboard content; payload is a raw RTF buffer the codec converts.
-  ClipboardRtf = 18,
+  ClipboardRtf = 15,
   // Raw FILEGROUPDESCRIPTORW (a native buffer handle); ArkTS parses it and owns
   // the download state machine (FileDownload).
-  RemoteFileListRaw = 19,
+  RemoteFileListRaw = 16,
   // One FILECONTENTS response relayed from native: listIndex / isSize /
   // sizeValue / failed, plus a data buffer handle for a range response. ArkTS
   // writes the bytes and issues the next request.
-  RemoteFileChunk = 20,
+  RemoteFileChunk = 17,
   // The server's clipboard changed; ArkTS aborts a running download and refreshes
   // its cached remote descriptors.
-  RemoteClipboardChanged = 21,
+  RemoteClipboardChanged = 18,
   // The session's audio format changed (first packet or a rate/channel switch):
   // audioRate / audioChannels name the PCM the ArkTS AudioRenderer must open.
-  AudioFormat = 22,
+  AudioFormat = 19,
   // The server offered a clipboard format list; formatCandidates carries the
   // supported kinds (see RdpClipKind). ArkTS owns the pick and the request.
-  RemoteFormatList = 23,
+  RemoteFormatList = 20,
   // One clipboard data request settled (clipKind / failed): ArkTS issues whatever
   // it deferred while the request was in flight.
-  RemoteFormatResponse = 24,
+  RemoteFormatResponse = 21,
   // The remote session's toggle-key state (lockFlags); ArkTS compares it with its
   // own local state and re-asserts through RdpNative.reassertLockState.
-  RemoteLockState = 25
+  RemoteLockState = 22
 }
 
 export class RdpConnectOptions implements RdpOptions {

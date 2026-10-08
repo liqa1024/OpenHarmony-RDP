@@ -5,7 +5,7 @@ dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构�
 上屏这一段见 [`present-pipeline.md`](present-pipeline.md)。
 
 > **不采用**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与其
-> 能力判定）和 H.264/AVC 支持都不要复活（理由见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
+> 能力判定）和 H.264/AVC 支持都不要复活（见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
 > Vulkan / GLES 两套呈现器（§2）。
 
 ## 0. 管线框架
@@ -48,7 +48,7 @@ dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构�
 - **渐进分块的顺序**：同一条消息内的分块**互不重叠、可任意顺序**；**跨消息的同一分块必须按序**
   （先粗后细在持久状态上累积）；与其他命令之间仍是全局按序。
 - 上述码流全部由 FreeRDP 自带实现处理（`WITH_SIMD` 等构建开关与补丁决定其内部实现，见
-  [`native-libraries.md`](native-libraries.md)）。本工程不再自研解码/合成。
+   [`native-libraries.md`](native-libraries.md)）。本工程不自研解码/合成。
 
 ### 0.4 从表面到屏幕（合成 / 脏区 / 上屏）
 
@@ -325,11 +325,11 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
 - **工作缓冲（scratch，补丁 20）**：per-context 一次性分配 `tileScratch` arena——64 个槽，
   每槽两块缓冲（系数工作缓冲 + 逆 DWT scratch，各 `(8192+32)×3` 字节）。chunk 回调把本任务的
   槽指针写进 `_Thread_local g_HmrdpTlsTileScratch`，tile 解码经 `hmrdp_tile_scratch()` 取用；
-  串行分支固定槽 0。tile 解码路径不再走 `bufferPool` 的 Take/Return。
+  串行分支固定槽 0。tile 解码路径不走 `bufferPool` 的 Take/Return。
 - **持久状态（补丁 22）**：每 tile 的三份跨消息常驻缓冲 `sign`/`current`/`data` 改为
   **surface 级连续 arena**（`HMRDP_TILE_ARENA` 编译开关）：tile-major 布局——一个 tile 的
   三份在同一段连续内存、段起点 64 字节对齐；arena 随 tile cache 增长整体重建并复制旧块
-  （预测器状态跨 resize 保留）；tile 结构不再拥有缓冲。首次绑定时显式清零
+  （预测器状态跨 resize 保留）；tile 结构不拥有缓冲。首次绑定时显式清零
   （`sign`/`current` 为 0、`data` 为 0xFF）。
 - **目标 surface**：tile 解码直接写入（见下）；多个 worker 写同一 surface 的不同行，互不重叠由
   划分保证（tile 互不重叠 + home 连续）。

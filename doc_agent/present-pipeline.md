@@ -113,16 +113,16 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   `present_quad.vert`。常量在 shader 内用 `FsrEasuCon`/`FsrRcasCon` 从普通 uniform 算，CPU 只传尺寸与锐度，
   **不需要 float→half 位打包**；RCAS 的锐度是「档数」（0 = 最锐）。头文件由 `fetch-sources.ps1` 固定版本拉取，
   缺树时 CMake 警告并只保留 XEngine。
-- **两张图**：输入仍是桌面图（`kPictureFormat` = `B8G8R8A8_UNORM`，会话分辨率），输出是新增的
+- **两张图**：输入是桌面图（`kPictureFormat` = `B8G8R8A8_UNORM`，会话分辨率），输出是
   **输出图**（同格式、`USAGE = COLOR_ATTACHMENT | SAMPLED`、device-local、输出分辨率）。通道序仍由
-  图像格式承担，shader 不做交换。letterbox 改成**采样输出图**，源尺寸取输出分辨率（再 fit 到窗口）。
+  图像格式承担，shader 不做交换。letterbox 采样的是**输出图**，源尺寸取输出分辨率（再 fit 到窗口）。
 - **屏障**：输出图每帧被整幅重写，所以进 pass 前用 `UNDEFINED → GENERAL`（丢弃旧内容，免去布局追踪），
-  出 pass 后用 `COLOR_ATTACHMENT_WRITE → SHADER_READ`；桌面图到上采样输入的依赖沿用原来那条
+  出 pass 后用 `COLOR_ATTACHMENT_WRITE → SHADER_READ`；桌面图到上采样输入的依赖走同一条
   `TRANSFER_WRITE → SHADER_READ` 屏障。
 - **生命周期**：上采样对象与输出图按「输入尺寸 + 输出尺寸」缓存，尺寸变了才重建；重建点放在
   **acquire 之前**（`EnsureDesktopImageLocked` 之后），这样重建里的 fence 等待不会与
   `AcquireFrameLocked`（它已 reset 本槽 fence）互锁。桌面图重建会一并拆掉超分辨率资源。
-- **失败就降级且不再重试**（`srFailed_` 锁存）：设备拒绝该尺寸/格式（或库缺失）时不进 pass，直接按桌面图
+- **失败就降级且不重试**（`srFailed_` 锁存）：设备拒绝该尺寸/格式（或库缺失）时不进 pass，直接按桌面图
   letterbox，会话照常可用。排查看 hilog 的 `xengine: spatial upscale` 与
   `vulkan presenter: super resolution`。
 

@@ -38,7 +38,7 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
   （`fcntl` / `ioctl` / `poll` / `getaddrinfo` / `gethostbyname_r` / `inet_pton` / `clock_gettime` 的
   `CLOCK_MONOTONIC`）全部命中。
 - **补丁**（`patch-moonlight.ps1`，一步，幂等）：去掉上游在非 MSVC/MinGW 平台无条件加的 `-Werror`
-  （它加在 `CMAKE_C_FLAGS` 之后，命令行关不掉；warnings 仍可见，只是不再中断构建）。
+  （它加在 `CMAKE_C_FLAGS` 之后，命令行关不掉；warnings 仍可见，只是不中断构建）。
 
 ## 2. 视频解码与上屏（双链路）
 
@@ -73,13 +73,13 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   编码分成**硬解 / 软解 / 无**，优先创建硬解，硬解缺失时才退到软解，`VideoDecoder::hardware()` 反映实际
   选择；完全没有解码器时起播同步失败并给出原因，绝不静默黑屏。
 - **编码协商（自动 + 手动偏好）**：支持的编码是 H.264 / HEVC / AV1（`video/avc` / `video/hevc` / `video/av1`）。
-  `MoonlightVideoFormats(preference)` 产出交给主机的 `supportedVideoFormats` 位图：
+  `moonlightVideoFormats(preference)` 产出交给主机的 `supportedVideoFormats` 位图：
   - **自动**（`ML_CODEC_AUTO`）：声明本机**所有能硬解的编码**（HEVC / AV1 / H.264），由主机按自身偏好
     （HEVC / AV1 优先于 H.264）选；只要存在任一硬解就不声明只能软解的编码，整机无硬解时才声明软解集合。
   - **手动**（连接编辑页 / 设置页的编码选择，默认自动、可会话独立覆盖）：只声明所选编码；该编码本机不能解
     时回落自动。选择项按 `moonlightVideoCodecSupport()`（硬解 / 软解 / 无）置灰不可选，仅软解时该组下方给
     红色小字提示无硬件解码支持，无任何解码器时提示无法串流。
-  协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）。`MoonlightVideoCodec()` 给出编码
+  协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）。`moonlightVideoCodec()` 给出编码
   标记（h264/hevc/av1），工具栏把它写进分辨率括号（`1920 x 1080 (HEVC)`；软解再加 CPU，如 `(HEVC, CPU)`）。
 
 ### 与 RDP 呈现器的复用口径
@@ -99,14 +99,14 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 
 ## 3. 桥接层与接线
 
-- **构建必备输入，不是平台能力**：`moonlight-common-c` 是**我们自己 vendor 的软件依赖**（随
+- **构建必备输入，不是平台能力**：`moonlight-common-c` 是**本工程 vendor 的软件依赖**（随
   `build-native.ps1` 按固定版本编出、作为共享库链进 `libhmrdp.so`），和 FreeRDP 同类，**不是**设备/系统
   可能缺失的平台能力。所以 `CMakeLists.txt` 逐个检查 `libmoonlight-common-c.so` /
   `libcrypto.so` / `libssl.so`（连同 FreeRDP 与 zlib，共一份清单）是否都在 `entry/libs/<abi>/`，
   缺一即 `FATAL_ERROR` 并提示先跑 `build-native.ps1`，随后**无条件**链接、无条件定义头文件路径。
   **不**照搬 FSR / XEngine「缺依赖就编成不支持、构建照常」的降级写法——那是"设备能力有无"的模型，套到自研
   功能上会造出一个本不该存在的"无 Moonlight"产品态。
-- **"符号已解析"由链接器保证**：`libhmrdp.so` 链 `libmoonlight-common-c.so` 且带 `-Wl,--no-undefined`，
+- **"符号已解析"由链接器保证**：`libhmrdp.so` 链 `libmoonlight-common-c.so`，且链接带 `-Wl,--no-undefined`（OHOS 工具链默认），
   有未解析符号则链接失败。`hmrdp_moonlight.cpp` 的探针仍真正调用一个 moonlight 入口
   （`LiInitializeStreamConfiguration`，纯字段初始化、不起线程/不建 socket），把这条约束钉在调用点上。
 - **N-API 探针**：`moonlightProbe` 恒回 `"1"`——它只是一个"库确实链上了"的链接断言，不是能力探测
@@ -152,7 +152,7 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   `clientchallenge → serverchallengeresp → clientpairingsecret → pairchallenge`。
   `getservercert` 要等主机端输入完成，**无读超时**（其余 5s 量级）。同一轮配对的
   `uniqueid` 必须贯穿五步一致；本实现**每轮配对换一个新 `uniqueid`**——主机按它给挂起会话建索引
-  （Sunshine `map_id_sess`），复用旧 id 会得到 409 且不再弹 PIN。
+  （Sunshine `map_id_sess`），复用旧 id 会得到 409 且主机不会再次弹出 PIN。
 - **客户端身份**：自签名 X.509，RSA-2048、`SHA256withRSA`、20 年、`CN=NVIDIA GameStream Client`；证书 PEM 用
   LF 换行（CRLF 会被主机拒收）。**上线的证书是 PEM 文本的 hex**（`clientcert` 参数、以及主机返回的
   `plaincert`），主机按 PEM 解析（Sunshine `crypto::x509` 走 `PEM_read_bio_X509`）——把 DER 的 hex 当作

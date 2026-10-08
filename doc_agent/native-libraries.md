@@ -26,7 +26,7 @@
 **自检**：`llvm-nm -D --defined-only` 在 `libwinpr3.so` / `libfreerdp3.so` / `libhmrdp.so` /
 `libmoonlight-common-c.so` 里**不应出现**任何 `EVP_*` / `X509_*` / `OSSL_*` 定义符号（它们只应出现在
 `libcrypto.so`，`SSL_*` 只应在 `libssl.so`），同一量在 `libhmrdp.so` 上是 `U`；每个非平台 `DT_NEEDED`
-条目都必须能在 `entry/libs/<abi>/` 里找到同名文件。`--no-undefined` 已开，漏导出在链接期就会报错。
+条目都必须能在 `entry/libs/<abi>/` 里找到同名文件。`--no-undefined` 已开（OHOS 工具链对共享库的默认），漏导出在链接期就会报错。
 
 ## 2. 构建流程
 
@@ -43,7 +43,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 - **优化级别一律 -O2**：`build-native.ps1` 用 `CMAKE_BUILD_TYPE=RelWithDebInfo`（与 `Release` 同码，
   多一份打包前会被 strip 的 `-g`），OpenSSL 的 CMake 另把 `-O2` 钉死；`libhmrdp.so` 自身源码的 debug 档
   也在 `CMakeLists.txt` 里覆盖成 `-O2 -g`——`-O0` 产物里行号与变量都不可信，对本工程没有调试价值。
-  于是 debug / release 的差别只剩 `-g`、`NDEBUG` 与导出面，代码体积不再随构建模式变。
+  于是 debug / release 的差别只剩 `-g`、`NDEBUG` 与导出面，代码体积不随构建模式变。
 - **OpenSSL 走 CMake、不进 WSL**：OpenSSL 3.x 没有 CMake 构建，源码树只有 Perl 模板（`*.h.in`）与
   `build.info`，而 Windows 侧没有 Perl。做法是把 `perl Configure` 的输出**冻结**成一份快照
   （`native/openssl-cmake/generated/`：生成的公开头 + provider 的 DER 生成物 + `sources.cmake` 源码清单），
@@ -67,7 +67,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   - `include/openssl/configuration.h` 是唯一按 ABI 变化的生成头（`RC4_INT`），快照按 arch 分份
     （`generated/arch/<arch>/`）；`crypto/buildinf.h` 含构建机路径/flag，由 CMake 写中性值，不入快照。
   - 产物路径与 WSL 版一致（`native/install/<arch>/openssl/{include,lib}`，`lib` 下是 `.so`）。
-    **头文件不再同步进模块**：`entry/src/main/cpp/` 没有任何 `#include <openssl/...>`（OpenSSL 只被
+    **头文件不同步进模块**：`entry/src/main/cpp/` 没有任何 `#include <openssl/...>`（OpenSSL 只被
     FreeRDP 与 moonlight-common-c 这两个独立库使用），只有 `.so` 拷进 `entry/libs/<abi>/`。
   - 归一化/加固差异：CMake 构建沿用 OHOS toolchain 默认（`-fstack-protector-strong -ffunction-sections`
     等）；`buildinf.h` 与 `OPENSSLDIR` 等按中性值写。
@@ -76,7 +76,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑三个补丁脚本（`patch-freerdp.ps1`、
   `patch-moonlight.ps1`、`patch-zlib.ps1`）。FreeRDP 的补丁成体系地拆在 `patch-steps/`；moonlight 与
   zlib 各只有一个入口脚本（见 §3 与 [`moonlight-native.md`](moonlight-native.md)）。
-- ⚠ **hvigor 不会清理"已不再产出"的原生库**：`entry/libs/<abi>/` 里删掉一个 `.so` 后，
+- ⚠ **hvigor 不会清理不再产出的原生库**：`entry/libs/<abi>/` 里删掉一个 `.so` 后，
   `entry/build/<product>/intermediates/{cmake,libs,stripped_native_libs}/` 里的旧副本仍在，并会被打进
   HAP（症状：包体不变、里面多一个不该存在的库）。改动**产出集合**（新增/移除/改名某个依赖）之后，
   先删 `entry/build`——或至少上面三个 intermediates 目录——再打包。
@@ -140,7 +140,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 - 上游在该库上开了 `-DOHOS_ALLOW_UNDEFINED_SYMBOLS=ON`，所以**导出符号打错/漏定义只有到设备 dlopen
   时才炸**（症状：`relocating failed: symbol not found` + `does not provide an export name …` +
   启动即退）——改完补丁用 `llvm-nm -D --undefined-only libwinpr3.so | findstr Hmrdp` 自检一遍。
-  `libhmrdp.so` 自己带 `-Wl,--no-undefined`，它的漏导出在链接期就会失败，不必等到设备。
+  `libhmrdp.so` 链接带 `-Wl,--no-undefined`（OHOS 工具链默认），它的漏导出在链接期就会失败，不必等到设备。
 
 **音频后端替换**
 
@@ -148,7 +148,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   注册的 sink 及其交接环（见 §5）。
 - **客户端侧缓冲/丢弃只有交接环一套策略**：`rdpsnd_main.c` 自带的 overrun 守卫（用墙钟反推设备积压，
   阈值 ≈ 1 个包）看不到环的真实深度，只会丢掉环还能播的包 ⇒ 本后端下把它置为"从不判 overrun"
-  （patch step 35）。它不再做任何缓冲/节流决策，只解码 + 转发。要动这层先读 §5。
+  （patch step 35）。它不做任何缓冲/节流决策，只解码 + 转发。要动这层先读 §5。
 
 **运行时行为钩子**（都用**弱符号**引用，未打补丁的 FreeRDP 上自动降级）
 
@@ -193,17 +193,18 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   分发线程，而整条帧流水线（ZGX 解压、PDU 解析、解码、合成、上屏、回执）原先都在这条线程上内联跑 ⇒
   一个重帧会把它后面排队的**音频/输入**一起挡住。补丁给 rdpgfx 数据入口加 sink 钩子：注册后把整块
   通道数据交给 app 并**立即返回**，app 在自己的线程上经 `HmrdpGfxReplayRecv`（离线回放同一入口）重新
-  进入 `rdpgfx_process_data`。于是 drdynvc 线程只剩"拆包 + 拷贝"，音频与输入不再被帧挡住。不注册 sink
+  进入 `rdpgfx_process_data`。于是 drdynvc 线程只剩"拆包 + 拷贝"，音频与输入不会被帧挡住。不注册 sink
   时行为不变；离线回放直接走 `rdpgfx_process_data`，绕过 sink。
   **生命周期**：worker 在 **`HmrdpPostConnect`**（连接建立后）才启动——连接过程中的失败会在
   `freerdp_connect` 内部拆通道，早启动会与 worker 抢 rdpgfx 插件的生命周期；停止则必须在
-  **`freerdp_disconnect` 之前** join（它释放该插件；offload 后 worker 与通道拆除不再同线程，必须先把
+  **`freerdp_disconnect` 之前** join（它释放该插件；offload 后 worker 与通道拆除不同线程，必须先把
   worker 停掉），随后才 `GfxWorkUninstall`。`Teardown`/`HmrdpPostDisconnect` 里各再兜一次。
-- **客户端侧带宽 / 帧回执 / QoS**：收窗口按 BDP 设置（`tcp.c`，连接前）；RDPGFX 的帧回执挪到
-  `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的每帧往返里）；app 注册的 **QoS** 钩子由
-  drdynvc 线程和 **GFX 工作线程**各自在入口调用一次（整条帧流水线现在在工作线程上）。解码的 tile
-   worker 不再来自 WinPR 池，它们的 QoS 由平台队列的任务属性给（见
-   [`gfx-engine.md`](gfx-engine.md) §7.3）。
+- **客户端侧带宽 / 帧回执 / QoS**：**不动接收窗口**——上游只保证 ≥32K、其余交给内核自适应，显式放大
+  `SO_RCVBUF` 会关掉自适应（实测同负载下到达速率约减半），所以接收窗口虽是高 RTT 链路的吞吐上限，
+  却无法在客户端侧修。RDPGFX 的帧回执挪到 `EndFrame` 回调**之前**（否则本地上屏延迟整个落在服务端的
+  每帧往返里）；app 注册的 **QoS** 钩子由 drdynvc 线程和 **GFX 工作线程**各自在入口调用一次（整条帧
+  流水线现在在工作线程上）。解码的 tile worker 不来自 WinPR 池，它们的 QoS 由平台队列的任务属性给
+  （见 [`gfx-engine.md`](gfx-engine.md) §7.3）。
 
 **正确性 / 一致性**
 
@@ -212,7 +213,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   客户端状态初值为 0，于是参考解码器的输出取决于堆里恰好有什么（对拍**不可复现**）。补丁在分配后
   `memset` 为 0。这条只让参考侧确定，不改协议语义。
 - **CPU（gdi）链路的 progressive 解码调优**：tile 任务**分片 + 共享计数器动态领取**（替代每 tile
-  一个线程池任务）、`update_tiles` **不再逐 tile 建 `REGION16`**（一次取裁剪表 + 普通求交 + per-tile
+  一个线程池任务）、`update_tiles` **不逐 tile 建 `REGION16`**（一次取裁剪表 + 普通求交 + per-tile
   stamp 去重）、`generic_image_copy_bgrx32_bgrx32` 的 keep-dst-alpha 拷贝改成**每像素一个掩码 32 位字**。
   三处都**不改变结果**（像素逐个相同、脏区面积相同）。整块按"一次性整体打补丁"设计：
   **改动它要从干净源码重打**。口径见 [`gfx-engine.md`](gfx-engine.md) §7.1。
@@ -220,13 +221,13 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   `HmrdpParallelAvailable/Run`（由 app 的 `hmrdp_parallel.*` 提供：并发队列 + `max_concurrency`
   = 宽度 − 1 + 任务属性 + 逐 handle 等待 + 调用线程自己跑一个 chunk）；没有这些导出时宽度读作 1 ⇒
   串行，**没有 WinPR 池兜底**。patch step 25 进一步在平台
-  执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不再为解码建 WinPR 池。见
+  执行器可用时把 `rfx.c` 的 `UseThreads` 置 FALSE，不为解码建 WinPR 池。见
   [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **tile 持久缓冲改成 surface 级 arena**：patch step 22 把 `sign`/`current`/`data` 由"每 tile 三次
   malloc"改成 surface 一整块、**按 tile 连续且 cache line 对齐**（缓冲内部的分量偏移不变，像素逐位相同；
   `HMRDP_TILE_ARENA` 是给 A/B 用的编译期开关）。见 [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **tile 工作集来自裁剪矩形、合成收进共用 helper**：patch step 22b 给 tile 记下解码它的帧
-  （`hmrdpFrameId`），`update_tiles` 由此只走**裁剪矩形覆盖到的 tile 范围**，不再每条消息重走整帧累积的
+  （`hmrdpFrameId`），`update_tiles` 由此只走**裁剪矩形覆盖到的 tile 范围**，不每条消息重走整帧累积的
   tile 列表；逐 tile 的裁剪求交 + 拷贝 + 脏区 span 记账收进 `hmrdp_composite_tile`，与 tile 解码侧的直写
   共用同一套几何。结果（tile 集合、裁剪、像素、脏区）不变。见 [`gfx-engine.md`](gfx-engine.md) §7.3。
 - **tile 合成（拷贝）移进并行段**：patch step 23 把目标缓冲与合并后的 clip 存进 codec context，tile 解码
@@ -246,11 +247,11 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 - **`state` 只搬一趟（逐位等价）**：RLGR 解码**直接写 `sign`**（持久"原始"系数状态），去量化只做
   **`sign → buffer`**：没有"就地改 `buffer` + 另拷一份到 `sign`"的第二趟，每 tile/分量省掉 8KB 搬运，
   两个缓冲最终内容不变（**逐位等价 ⇒ 参考对比直接复用**）。LL3 是例外：差分解码要看"移位前"的值，
-  所以它那 64/81 个样本先拷过去、再就地移位。`state` 绝对量约为原来的一半。
+  所以它那 64/81 个样本先拷过去、再就地移位。`state` 绝对量约为逐 tile 独立缓冲时的一半。
 - **桌面镜像 surface 直接合成进 primary 缓冲**：全屏 GFX 会话只有**一个** surface、映射到 `(0,0)`
   1:1、格式/行距与桌面相同 ⇒ 它就是桌面，`gdi_OutputUpdate` 的逐矩形 `freerdp_image_scale`
   只是白搬一遍（~1ms/帧量级）。这一步把这个 surface 的 `data` 直接指向 `gdi->primary_buffer`
-  （不再自己 malloc），解码器写的就是呈现器要上传的内存，拷贝消失。判定凭证是
+  （不自己 malloc），解码器写的就是呈现器要上传的内存，拷贝消失。判定凭证是
   `surface->data == gdi->primary_buffer`；不满足就退回原路径。
   **生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的 `DesktopResize` 会换掉
   primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，否则是"向已释放内存
@@ -293,7 +294,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
 - **播放 API 归 ArkTS**：`OH_AudioRenderer`（OHAudio）与 ArkTS `AudioRenderer`（`on('writeData')`）
   是同一套音频框架的两条入口（同为 PCM S16LE 拉模型），等价。渲染器与它的生命周期放在 ArkTS
   （`workers/audio.worker.ets` + 门面 `services/AudioPlayer.ets`），跑在**音频独占 worker** 上
-  （[`architecture.md`](architecture.md) §4.4）；原生不再 `dlopen("libohaudio.so")`、不再建渲染器。
+  （[`architecture.md`](architecture.md) §4.4）。
 - **能力探测在 ArkTS**：设备有无音频输出由 `DeviceCapabilities.audio()` 同步查询音频路由
   （`getDevicesSync(OUTPUT_DEVICES_FLAG)`）判定，设置页据此置灰「音频重定向」；原生只按 ArkTS 传来的
   `enableAudio` 决定是否开 `FreeRDP_AudioPlayback`。

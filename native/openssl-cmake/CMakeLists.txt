@@ -193,7 +193,7 @@ endforeach()
 # would drop (feature-gated algorithms), and older lld treats an unresolvable
 # name in a version script as an error. A symbol that a consumer really needs but
 # the map omitted is caught at the app link instead, which builds with
-# -Wl,--no-undefined (entry/src/main/cpp/CMakeLists.txt).
+# -Wl,--no-undefined (OHOS toolchain default for shared libraries).
 target_link_options(crypto PRIVATE
     "-Wl,--version-script=${OSSL_CRYPTO_MAP}"
     "-Wl,--undefined-version"

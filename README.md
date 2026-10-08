@@ -1,25 +1,37 @@
 # RDP 远程桌面
 
-面向 **鸿蒙 PC（2in1）** 的远程桌面（RDP）客户端，基于 **FreeRDP 3.10.3** 从源码交叉编译，
-使用 **ArkUI + Node-API + Vulkan** 实现原生渲染与输入转发。
+面向 **鸿蒙 PC（2in1）** 的远程桌面与云串流客户端，两条协议并列：
+
+- **RDP**：基于 **FreeRDP 3.10.3** 从源码交叉编译；
+- **Moonlight / Sunshine**：基于 `moonlight-common-c`。
+
+两协议**尽量共用**连接列表、会话外壳与输入分流；界面 ArkUI（ArkTS），原生经 Node-API 桥接。
+RDP 画面由 FreeRDP **gdi** 出、经呈现器上屏（**Vulkan 优先，GLES 兜底**）；Moonlight 默认解码
+**直出 surface**，仅超分链路复用 RDP 的 Vulkan 呈现器。
 
 ## 特性
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
-- **图形管道**：RDPGFX（RemoteFX / 渐进式）的解码由 FreeRDP 的 **gdi** 完成（ClearCodec 也在 CPU，
-  它不是自包含的），输出帧经呈现器上屏：**「硬件加速」**开（默认，设备支持时）用 **Vulkan**
-  （脏区上传 + letterbox quad，gdi 直接合成进呈现器缓冲），关或设备不支持时用 **GLES** 且完全不碰
-  Vulkan（给 Vulkan 不好用/模拟器兜底）
+- **图形管道**：RDPGFX（RemoteFX / 渐进式）与 ClearCodec 的解码由 FreeRDP 的 **gdi** 在 CPU 完成；
+  输出帧经呈现器上屏。**「硬件加速」**开（默认，设备支持时）用 **Vulkan**（脏区上传 + letterbox quad，
+  gdi 直接合成进呈现器缓冲），关或设备不支持时用 **GLES** 且完全不碰 Vulkan（给 Vulkan 不好用/模拟器兜底）。
+  「硬件加速」只选上屏后端，解码始终是 gdi
+- **超分辨率**（Vulkan 专有，平台称「超分」）：会话按「分辨率 ÷ 倍率」出画、本机再上采样回输出分辨率
+  （上采样器 **XEngine** 或 **FSR 1.0** 二选一，或关闭），省解码与带宽
+- **Moonlight / Sunshine 串流**：控制层（`serverinfo / pair / applist / launch / resume / cancel`）、
+  证书 pin、客户端身份（自签 X.509 + HUKS 信封私钥）与全部 XML 解析在 ArkTS；原生只做
+  `moonlight-common-c`（RTSP 协商 + control/audio/video 分帧）与 AVCodec **硬解直出** XComponent surface；
+  编码按本机解码能力协商 H.264 / HEVC / AV1（硬解优先、软解兜底）
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
-  压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）
-- **光标同步**：远端光标形状（文本、手型、窗口边缘缩放等）映射为鸿蒙系统光标，大光标自动缩放到 256；
-  全局设置「使用RDP光标」可关闭（默认开，重开会话生效）
+  压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）；Moonlight 输入转 `LiSend*`
+- **光标同步**：RDP 只传远端光标**位图**（不做形状类型映射），客户端照搬交系统光标；超分下按同一倍率
+  放大位图；全局设置「使用RDP光标」可关闭（默认开，重开会话生效）
 - **触控板**：双指滚动映射为高分辨率滚轮（含横向，速度可调）；双指捏合默认映射为 Ctrl+滚轮 缩放，
-  可开启「使用触摸模拟触控板捏合」改为在鼠标位置合成原生双指触摸（角度、初始距离可调，缩放 1:1）
+  可改为在鼠标位置合成原生双指触摸（角度、初始距离可调，缩放 1:1）
 - **音频**：rdpsnd 通道由 FreeRDP 解码，PCM 先进入原生交接环（`hmrdp_audio.cpp`，只做缓冲策略、
   同步回报渲染延迟），再由 ArkTS `AudioRenderer` 在**独立音频 worker** 上拉取播放；设备无音频能力时
   自动关闭，并在设置中置灰说明原因
-- **剪贴板（手动同步）**：cliprdr 通道已接入。同步**全程由工具栏「复制/粘贴」手动触发**，
+- **剪贴板（手动同步，恒开）**：cliprdr 通道已接入，不提供开关。同步**全程由工具栏「复制/粘贴」手动触发**，
   刻意不做自动同步——既能免申请剪贴板读取权限（粘贴用系统 `PasteButton` 临时授权），
   也让大数据量传输可控、两个方向逻辑一致。支持 **文本 / 富文本（HTML）/ 图片 / 文件**双向；
   远端只提供 RTF（Word 之类不显式给 HTML）时自动转成 HTML，尽量保留颜色、粗斜体、下划线、
@@ -27,7 +39,8 @@
 - **凭证安全存储**：密码经 HarmonyOS Asset Store Kit 密文存储（不落明文、不进日志），
   且**仅在连接验证成功后**才写入；连接配置与密码分离存储
 - **连接管理**：书签式列表、右键菜单（连接/编辑/删除）、一键直连；连接配置随时可存，
-  无密码也能保存；每个连接可选「高级设置」（独立分辨率/缩放、剪贴板、音频、证书校验等）
+  无密码也能保存；每个连接可选「高级设置」（独立分辨率/缩放、超分、音频、证书校验等；
+  Moonlight 另有独立串流设置）。列表与编辑页按 **RDP / Moonlight 两个协议页签**组织
 - **配置备份**：可将全局设置与全部连接导出为 JSON 文件，或从文件导入覆盖；
   密码保存在系统安全存储中，导出时跳过并提示，导入后需重新输入
 - **显示自适应**：默认自动取当前显示器分辨率并推荐 Windows 缩放档位
@@ -51,22 +64,27 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  ArkTS / ArkUI  (entry/src/main/ets)                        │
-│  Index · SessionPage · EditConnectionPage · SettingsPage    │
+│  Index · SessionPage · MoonlightSessionPage · MoonlightAppsPage │
+│  EditConnectionPage · SettingsPage                          │
 │  EntryAbility · SessionAbility（独立会话窗口）              │
+│  SessionManager · SessionBackend（协议无关会话抽象）        │
 │  ConnectionStore(preferences) · CredentialStore(ASSET)      │
 │  SettingsStore（设置 + 分辨率/缩放解析）                     │
 │  ConfigTransfer（配置导入/导出，密码不导出）                 │
 │  WindowController（窗口尺寸 / 拉起 / 全屏控制）              │
+│  moonlight/ 控制层（Client / Identity / Crypto / Http / Xml）│
 │  Workers：background（剪贴板编解码 / 文件下载）· audio（AudioRenderer）│
 ├─────────────────────────────────────────────────────────────┤
 │  Node-API Bridge  (entry/src/main/cpp/binding/hmrdp_napi.cpp)│
 ├─────────────────────────────────────────────────────────────┤
 │  Session wrapper  (hmrdp_session.cpp)                       │
-│  gdi desktop + presenters  (hmrdp_gfx_cpu / hmrdp_presenter)│
-│  Vulkan renderer + swapchain  (hmrdp_vk_renderer)           │
+│  gdi desktop + presenters  (hmrdp_gfx_cpu / hmrdp_presenter / hmrdp_gles_presenter)│
+│  Vulkan renderer + swapchain + 超分  (hmrdp_vk_renderer / hmrdp_xeg)│
+│  Moonlight session bridge  (hmrdp_moonlight_session / hmrdp_video_decoder)│
 │  PCM sink ring   (hmrdp_audio.cpp；播放器在 ArkTS)          │
 ├─────────────────────────────────────────────────────────────┤
 │  FreeRDP 3.10.3   libfreerdp3 / winpr3 / client3            │
+│  moonlight-common-c                                          │
 │  (entry/libs/<abi>：依赖全部为共享库，含 OpenSSL / zlib)      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -80,14 +98,15 @@ entry/
   src/main/ets/               ArkTS 界面与业务
     entryability/             EntryAbility（主窗口）
     sessionability/           SessionAbility（独立会话窗口）
-    pages/                    Index · SessionPage · EditConnectionPage · SettingsPage
-    services/                 存储（Connection/Credential/Settings/ConfigTransfer）· 会话编排（SessionManager · RdpNative · SessionEventHub）· 窗口（WindowController）· 能力探测（DeviceCapabilities）· 触控板/遥测 · worker 门面（BackgroundWorker · AudioPlayer）
+    pages/                    Index · SessionPage · MoonlightSessionPage · EditConnectionPage · SettingsPage · MoonlightAppsPage · GfxReplayPage
+    moonlight/                控制层（MoonlightClient / Identity / Crypto / Http / Xml / Models）
+    services/                 存储（Connection/Credential/Settings/ConfigTransfer）· 会话编排（SessionManager · SessionBackend · RdpNative · SessionEventHub）· 窗口（WindowController）· 能力探测（DeviceCapabilities）· 触控板/遥测 · worker 门面（BackgroundWorker · AudioPlayer）
     workers/                  background（剪贴板编解码 / 文件下载）· audio（AudioRenderer）
   src/main/cpp/               NAPI 桥接 + FreeRDP 会话封装 + gdi 帧管线 + Vulkan/GLES 上屏 + 音频交接环 + Moonlight 原生
-  src/main/cpp/thirdparty/    FreeRDP 头文件
+  src/main/cpp/thirdparty/    FreeRDP / moonlight 头文件（构建时生成，不入库）
   src/main/resources/         资源（含 dark 深色变体）
 native/
-  scripts/                    原生库从源码重建脚本
+  scripts/                    原生库从源码重建脚本与补丁步骤
   third_party/                下载的源码与构建产物（gitignore）
 ```
 
@@ -150,6 +169,7 @@ pwsh native/scripts/build-native.ps1 -Arch arm64-v8a
 | [FreeRDP](https://www.freerdp.com/) | 3.10.3 | Apache-2.0 |
 | [OpenSSL](https://www.openssl.org/) | 3.0.15 | Apache-2.0 |
 | [zlib](https://zlib.net/) | 1.3.1 | zlib |
+| [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) | 按 commit 固定 | GPL-3.0 |
 
 ## 许可证
 
@@ -164,4 +184,4 @@ Copyright (C) 2026 Qing'an Li
 详见 GNU 通用公共许可证。你应已随本程序收到一份 GNU 通用公共许可证副本，
 若没有请参见 <https://www.gnu.org/licenses/>。
 
-第三方组件（FreeRDP、OpenSSL、zlib）仍遵循各自的原始许可证，不受本项目授权变更影响。
+第三方组件（FreeRDP、OpenSSL、zlib、moonlight-common-c）仍遵循各自的原始许可证，不受本项目授权变更影响。

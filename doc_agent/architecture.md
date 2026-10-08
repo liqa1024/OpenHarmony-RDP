@@ -37,6 +37,7 @@
 | `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface，输入转 `LiSend*` |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供 |
 | `services/MdnsDiscovery.ets` | 通用 mDNS 主机发现：按 DNS-SD 服务类型发现并解析为 IP，去重成实时主机列表（`_nvstream._tcp` 即 Moonlight/Sunshine） |
+| `services/MoonlightHostState.ets` | 主机「在跑哪个应用」的单一权威（静态监听器；客户端动作乐观写入，主机探测收敛），列表行与应用页徽标都由它派生 |
 | `moonlight/MoonlightClient.ets` | Moonlight 控制层编排：`serverinfo → pair → applist → launch/resume`，并装配原生串流配置（见 [`moonlight-native.md`](moonlight-native.md) §4） |
 | `moonlight/MoonlightIdentity.ets` | 客户端身份（自签名 X.509）+ HUKS 信封私钥 + 逐主机 pin 存储 |
 | `moonlight/MoonlightCrypto.ets` | Moonlight 配对加密原语（AES-ECB、SHA、RSA 签验） |
@@ -45,6 +46,7 @@
 | `moonlight/MoonlightModels.ets` | Moonlight 协议数据模型（serverinfo/applist/pair 等） |
 | `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
 | `utils/MoonlightKeyMapper.ets` | HarmonyOS 键码 + 鼠标键 → Windows 虚拟键码与 Moonlight 的 modifier/button/action 常量 |
+| `utils/ConnectAction.ets` | 协议中立的连接动作判定（`connectActionFor` / `primaryConnectAction` / `connectActionLabel`），连接行与卡片共用 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `SessionEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/SessionEventHub.ets` | 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
@@ -191,8 +193,6 @@ worker 必须在此之前 join（否则解析进已释放插件）。拆除不�
   交接环**（`core/hmrdp_audio.*`）：渲染器的 `writeData` 用 `audioRead(handle, buf)` 拉取，格式变化由
   `AudioFormat` 事件驱动（重新）建渲染器；设备能力探测在 `DeviceCapabilities.audio()`。详见
   [`native-libraries.md`](native-libraries.md) §5。
-- **TaskPool 非默认**：仅用于一次性、互相独立、纯函数的小任务。
-
 **事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。
 `services/SessionEventHub` 是其唯一订阅者，按 handle 路由给 `RdpNative`；需 worker 消费的事件由 UI 线程按 handle
 `postMessage` 转发（Worker 拿不到该 TSFN：回调只跑 UI 线程，且各 Worker 有独立 `napi_env`）。Worker 只回控制/进度。

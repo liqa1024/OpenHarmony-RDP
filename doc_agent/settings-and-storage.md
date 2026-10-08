@@ -64,7 +64,7 @@
     XEngine 是平台空域超分（要设备特性），FSR 是呈现器自己跑的 FidelityFX Super Resolution 1.0
     （只要 Vulkan 上屏）。见 [`present-pipeline.md`](present-pipeline.md) §5。
   - **默认缩放随之换算**：自动档 = 分辨率档位 `÷ 倍率` 再吸附到档位（`SettingsStore.autoScalePercent`）；
-    会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持原来的物理大小。
+    会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持同样的物理大小。
   - **两个前提**：Vulkan 呈现器可用（即「硬件加速」开着），且**所选后端**可用（FSR 只要前者，XEngine
     还要设备报 `XEG_spatial_upscale`）。设置页按后端逐个**置灰**并显示原因；不满足时按关闭处理。
     `SettingsStore.resolveSr()` 是唯一的解析与兜底点（`srBackendUsable(backend)` 把能力与开关合起来判，

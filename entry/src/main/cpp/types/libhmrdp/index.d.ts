@@ -52,8 +52,6 @@ export interface RdpOptions {
  *  - ClipboardImage: `imageHandle` (a raw CF_DIB; ArkTS decodes it).
  *  - FileTransferProgress: `direction` / `doneBytes` / `totalBytes` /
  *    `fileIndex` / `fileCount`.
- *  - ClipboardFilesReady: reserved (downloads are assembled in ArkTS, which
- *    knows its own destination paths).
  *  - FileTransferFailed: `reason`. FileTransferDone: `fileCount`.
  *  - KeyIntercept: `keyCode` + `down`.
  */
@@ -84,7 +82,6 @@ export interface RdpEventPayload {
   direction?: number;
   doneBytes?: number;
   fileIndex?: number;
-  paths?: string[];
   reason?: string;
   keyCode?: number;
   down?: boolean;

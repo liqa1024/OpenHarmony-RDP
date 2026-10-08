@@ -68,57 +68,47 @@ enum class SessionEvent {
   // Image = CF_DIB); ArkTS owns the decode (ClipboardCodec).
   kClipboardHtml = 9,
   kClipboardImage = 10,
-  // Reserved. Telemetry is not emitted as an event: the session exposes raw
-  // readings through ReadTelemetry() / sessionTelemetry(), so this id is kept
-  // only to preserve the numbering of the events that follow it.
-  kMetrics = 11,
-  // Reserved. The remote file list now arrives as kRemoteFileListRaw; this id is
-  // kept only to preserve the numbering of the events that follow it.
-  kClipboardFileList = 12,
   // Transfer progress for both directions: values {direction (0 = remote ->
   // local, 1 = local -> remote), doneBytes, totalBytes, fileIndex, fileCount}.
-  kFileTransferProgress = 13,
-  // Reserved. Downloads are assembled in ArkTS, which knows its own destination
-  // paths, so nothing emits this any more; the id is kept for numbering.
-  kClipboardFilesReady = 14,
+  kFileTransferProgress = 11,
   // A transfer stopped before completing; `text` is a human-readable reason.
-  kFileTransferFailed = 15,
+  kFileTransferFailed = 12,
   // Upload finished: the server has pulled every advertised byte. values[0] is
   // the number of files.
-  kFileTransferDone = 16,
+  kFileTransferDone = 13,
   // 快捷键穿透 (see SetShortcutPassthrough in hmrdp_napi.cpp): one intercepted
   // key event, values {keyCode (multimodal KeyCode), down}.
-  kKeyIntercept = 17,
+  kKeyIntercept = 14,
   // Rich Text Format clipboard payload, carried like kClipboardHtml (raw RTF in
   // the byte buffer). Kept a separate event so ArkTS can tell the two apart.
-  kClipboardRtf = 18,
+  kClipboardRtf = 15,
   // Raw FILEGROUPDESCRIPTORW for a remote file clipboard, in the byte buffer.
   // ArkTS parses it (FileTransferCodec) and owns the download from there.
-  kRemoteFileListRaw = 19,
+  kRemoteFileListRaw = 16,
   // One FILECONTENTS response relayed to ArkTS, which owns the download state
   // machine. Values {listIndex, isSize, sizeValue, failed}; a range response
   // carries its bytes in the byte buffer (empty for end-of-file), a size response
   // carries `sizeValue` and no bytes.
-  kRemoteFileChunk = 20,
+  kRemoteFileChunk = 17,
   // The server's clipboard changed (a FORMAT_LIST arrived). ArkTS aborts any
   // download it has running and refreshes its cached remote descriptors.
-  kRemoteClipboardChanged = 21,
+  kRemoteClipboardChanged = 18,
   // The audio format changed (first packet, or a rate/channel switch): values
   // {rate, channels}. ArkTS (re)builds its AudioRenderer from it; the PCM itself
   // stays native in the sink ring and is pulled with audioRead().
-  kAudioFormat = 22,
+  kAudioFormat = 19,
   // The server offered a clipboard format list. `text` carries the supported
   // candidates as "kind:id,kind:id" (one entry per kind); ArkTS owns which one to
   // pull (priority / single-in-flight / deferred refresh) and asks through
   // requestRemoteFormat(). Native keeps only the byte-level wire handling.
-  kRemoteFormatList = 23,
+  kRemoteFormatList = 20,
   // One FORMAT_DATA_RESPONSE settled (whatever the outcome): values {kind,
   // failed}. The flow signal ArkTS uses to issue a deferred request.
-  kRemoteFormatResponse = 24,
+  kRemoteFormatResponse = 21,
   // The remote session's toggle-key state (Set Keyboard Indicators PDU):
   // values[0] is the KBD_SYNC_* bits. ArkTS compares it with its own local state
   // and asks for a re-assert through reassertLockState().
-  kRemoteLockState = 25,
+  kRemoteLockState = 22,
 };
 
 struct RdpOptions {
