@@ -18,7 +18,8 @@ import {
 } from 'libhmrdp.so';
 import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
-import { MoonlightConnectResult, MoonlightConnector } from './MoonlightConnector';
+import { MoonlightConnectResult, MoonlightConnector, MoonlightPinProvider } from './MoonlightConnector';
+import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
 
 /** Session event ids; mirror hmrdp::MoonlightSessionEvent (hmrdp_moonlight_session.h). */
@@ -69,10 +70,10 @@ export class MoonlightSessionBackend implements SessionBackend {
       this.emit(ML_EVENT_STAGE_FAILED, 0, '缺少连接参数');
       return false;
     }
-    const pinProvider: (pin: string) => Promise<boolean> =
+    const pinProvider: MoonlightPinProvider =
       request.moonlightPinProvider !== undefined
         ? request.moonlightPinProvider
-        : (): Promise<boolean> => Promise.resolve(false);
+        : (pin: string, pairing: Promise<PairResult>): Promise<boolean> => Promise.resolve(false);
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(request.filesDir,
       conn.host, conn.port, request.stream, request.moonlightAppId,
       request.stream.width, request.stream.height, pinProvider);

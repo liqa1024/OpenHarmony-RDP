@@ -18,7 +18,7 @@ import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
-import { NvApp } from '../moonlight/MoonlightModels';
+import { NvApp, PairResult } from '../moonlight/MoonlightModels';
 import { showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
@@ -26,6 +26,9 @@ import { HeaderBar } from '../components/HeaderBar';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMoonlightApps';
+// Moonlight's box art is 200x267 (see moonlight-qt AppView.qml): the icon tile
+// keeps that width:height so a fetched poster is not cropped by a wrong frame.
+const BOXART_ASPECT: number = 200 / 267;
 
 export interface MoonlightAppsParams {
   connectionId: string;
@@ -37,6 +40,9 @@ struct MoonlightAppsPage {
   @State apps: NvApp[] = [];
   @State currentGame: number = 0;
   @State loading: boolean = true;
+  // A refresh over an already-loaded list: only the FAB spins, the page keeps
+  // showing the current apps until the new result arrives.
+  @State refreshing: boolean = false;
   @State error: string = '';
   @State state: ConnectionState = ConnectionState.Idle;
   // The connection's default app id, mirrored into @State so the star repaints
@@ -46,6 +52,9 @@ struct MoonlightAppsPage {
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
   private conn: SavedConnection | undefined = undefined;
   private httpsPort: number = 47984;
+  // True once a list has been shown, so later refreshes keep the page instead of
+  // blanking it with the full-page spinner.
+  private hasLoaded: boolean = false;
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private cardMaterial: AttributeModifier<ColumnAttribute> =
@@ -101,15 +110,25 @@ struct MoonlightAppsPage {
     if (conn === undefined) {
       return;
     }
-    this.loading = true;
+    // Keep the current page on a re-refresh; only the first load takes the
+    // full-page spinner (there is nothing to preserve yet).
+    if (this.hasLoaded) {
+      this.refreshing = true;
+    } else {
+      this.loading = true;
+    }
     this.error = '';
     const result: MoonlightAppsResult = await MoonlightConnector.probeApps(this.filesDir(),
-      conn.host, conn.port, (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
+      conn.host, conn.port,
+      (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
+        promptPairingPin(this.getUIContext(), pin, pairing));
     this.loading = false;
+    this.refreshing = false;
     if (!result.ok) {
       this.error = result.error;
       return;
     }
+    this.hasLoaded = true;
     this.apps = result.apps;
     this.currentGame = result.currentGame;
     this.httpsPort = result.httpsPort;
@@ -318,8 +337,8 @@ struct MoonlightAppsPage {
               .objectFit(ImageFit.Cover)
               .draggable(false)
           } else {
-            // The host ships square art; the placeholder is centered with a
-            // little breathing room so a non-square icon still reads well.
+            // The host ships 200x267 box art; the placeholder is centered in the
+            // same frame so it reads as the same shape.
             Image($r('app.media.ic_apps'))
               .width(36)
               .height(36)
@@ -328,7 +347,7 @@ struct MoonlightAppsPage {
           }
         }
         .width('100%')
-        .aspectRatio(1)
+        .aspectRatio(BOXART_ASPECT)
         .borderRadius(14)
         .clip(true)
         .backgroundColor($r('app.color.input_bg'))
@@ -455,6 +474,7 @@ struct MoonlightAppsPage {
       FabButton({
         icon: $r('app.media.ic_refresh'),
         tip: '刷新',
+        loading: this.refreshing,
         onTap: () => {
           this.refresh();
         }

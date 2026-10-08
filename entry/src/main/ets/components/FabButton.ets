@@ -4,7 +4,9 @@
  * The bottom-right round action (new connection, refresh, ...): accent circle,
  * shared hover / press feedback and an OVERLAY-material tooltip. The caller
  * places it (e.g. via .margin) and owns the action, so the same control is used
- * wherever a page needs a floating primary action.
+ * wherever a page needs a floating primary action. While `loading` is set the
+ * icon itself is replaced by a spinner and taps are ignored, leaving the page
+ * behind it untouched.
  */
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
@@ -12,6 +14,7 @@ import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 export struct FabButton {
   @Prop icon: Resource = $r('app.media.ic_plus');
   @Prop tip: string = '';
+  @Prop loading: boolean = false;
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
@@ -20,10 +23,17 @@ export struct FabButton {
 
   build() {
     Row() {
-      Image(this.icon)
-        .width(24)
-        .height(24)
-        .draggable(false)
+      if (this.loading) {
+        LoadingProgress()
+          .width(24)
+          .height(24)
+          .color('#FFFFFF')
+      } else {
+        Image(this.icon)
+          .width(24)
+          .height(24)
+          .draggable(false)
+      }
     }
     .width(56)
     .height(56)
@@ -47,9 +57,11 @@ export struct FabButton {
         this.pressed = false;
       }
     })
-    .bindTips(this.tip, this.tipsOptions)
+    .bindTips(this.loading ? '' : this.tip, this.tipsOptions)
     .onClick(() => {
-      this.onTap();
+      if (!this.loading) {
+        this.onTap();
+      }
     })
   }
 }

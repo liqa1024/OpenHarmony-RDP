@@ -21,8 +21,13 @@ import {
   ServerInfoResult
 } from '../moonlight/MoonlightModels';
 
-/** `pin` is the 4-digit code to display; resolve true once the user entered it. */
-export type MoonlightPinProvider = (pin: string) => Promise<boolean>;
+/**
+ * Presents the 4-digit PIN and drives the wait for the host to enter it.
+ * `pairing` settles when the handshake finishes (success or failure), which is
+ * what closes the prompt; the returned promise is `false` only when the user
+ * cancels, `true` otherwise.
+ */
+export type MoonlightPinProvider = (pin: string, pairing: Promise<PairResult>) => Promise<boolean>;
 
 export class MoonlightConnectResult {
   ok: boolean = false;
@@ -41,6 +46,12 @@ export class MoonlightAppsResult {
   // App currently running on the host (0 = none), from /serverinfo.
   currentGame: number = 0;
   httpsPort: number = 47984;
+}
+
+/** Result of a pairing-only attempt (the editor's 配对 action). */
+export class MoonlightPairResult {
+  ok: boolean = false;
+  error: string = '';
 }
 
 export class MoonlightConnector {
@@ -70,8 +81,8 @@ export class MoonlightConnector {
       const pin: string = MoonlightConnector.generatePin();
       const pairing: Promise<PairResult> =
         MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
-      const confirmed: boolean = await pinProvider(pin);
-      if (!confirmed) {
+      const proceed: boolean = await pinProvider(pin, pairing);
+      if (!proceed) {
         result.error = '已取消配对';
         return result;
       }
@@ -87,6 +98,48 @@ export class MoonlightConnector {
       return result;
     }
     result.apps = apps.apps;
+    result.ok = true;
+    return result;
+  }
+
+  /**
+   * Pairs with the host only: serverinfo -> (pair), with the PIN popup when
+   * needed. No session is opened and the app list is not read - the editor's
+   * 配对 action; connecting a session is the list page's job.
+   */
+  static async pairOnly(filesDir: string, host: string, port: number,
+    pinProvider: MoonlightPinProvider): Promise<MoonlightPairResult> {
+    const result: MoonlightPairResult = new MoonlightPairResult();
+    const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
+    if (!credential.ok) {
+      result.error = MoonlightConnector.describe(credential.error);
+      return result;
+    }
+    const serverInfo: ServerInfoResult = await MoonlightClient.fetchServerInfo(filesDir, host, port);
+    if (!serverInfo.ok) {
+      result.error = MoonlightConnector.describe(serverInfo.error);
+      return result;
+    }
+    const info: NvServerInfo = serverInfo.info;
+    const paired: boolean = info.paired
+      || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
+    if (!paired) {
+      const pin: string = MoonlightConnector.generatePin();
+      // Start the handshake first: the host only prompts for the PIN once our
+      // getservercert request is pending. The prompt closes when it settles.
+      const pairing: Promise<PairResult> =
+        MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
+      const proceed: boolean = await pinProvider(pin, pairing);
+      if (!proceed) {
+        result.error = '已取消配对';
+        return result;
+      }
+      const pairResult: PairResult = await pairing;
+      if (!pairResult.ok) {
+        result.error = MoonlightConnector.describe(pairResult.error);
+        return result;
+      }
+    }
     result.ok = true;
     return result;
   }
@@ -124,8 +177,8 @@ export class MoonlightConnector {
       // pending, so start the handshake first and show the PIN while it waits.
       const pairing: Promise<PairResult> =
         MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
-      const confirmed: boolean = await pinProvider(pin);
-      if (!confirmed) {
+      const proceed: boolean = await pinProvider(pin, pairing);
+      if (!proceed) {
         // The handshake keeps running and times out on its own; nothing to join.
         result.error = '已取消配对';
         return result;

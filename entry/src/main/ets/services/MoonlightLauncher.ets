@@ -12,6 +12,7 @@ import { common } from '@kit.AbilityKit';
 import { UIContext } from '@kit.ArkUI';
 import { ML_RES_FIXED, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
   RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionManager } from './SessionManager';
 import { SettingsStore } from './SettingsStore';
 import { defaultDisplay } from '../utils/DisplayUtil';
@@ -46,7 +47,9 @@ export class MoonlightLauncher {
     request.stream = stream;
     request.filesDir = context.filesDir;
     request.moonlightAppId = appId > 0 ? appId : MoonlightLauncher.defaultAppId(conn);
-    request.moonlightPinProvider = (pin: string): Promise<boolean> => promptPairingPin(ui, pin);
+    request.moonlightPinProvider =
+      (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
+        promptPairingPin(ui, pin, pairing);
     request.onConnected = onConnected;
     SessionManager.connect(request, context);
   }

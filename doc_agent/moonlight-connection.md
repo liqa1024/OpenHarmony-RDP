@@ -61,6 +61,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   - 未运行的应用卡片点击 = **连接**；**当已有应用在跑时是「切换」**（卡片悬浮提示随之变化）——平台侧
     `launch` 遇主机 busy 会先 `/cancel` 再重试，切换可行，因此**不置灰**。会话在跑时切换会先断开当前会话再连新应用。
   - 卡片本身是应用图标（fetch 到的位图 `ImageFit.Cover` 居中裁切、占位用 `ic_apps` 居中）+ `CARD` 沉浸材质；
+    图标框按 Moonlight 标准 box art 的 **200:267** 宽高比（`moonlight-qt` 的 AppView 即此尺寸），
+    与取回的位图同形，`Cover` 不再因框形不符而裁切/偏移；
     「运行中」徽标压在图标左上角。
   - 卡片点击与卡片内的星标/动作钮互不串扰（各自的 `onClick` 命中自身）。
 - 行右键菜单对 Moonlight 追加「设为默认应用」；**默认应用只在列表/应用界面设置，编辑页不再有该字段**。
@@ -73,7 +75,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 - Moonlight 表单只保留连接必需字段：名称（可选）、主机名/IP、端口、默认应用；默认应用在未配对时不可选。
 - 画质项不放在主表单，而在**操作按钮下方的高级设置折叠区**里（与 RDP 一致）：一个
   「使用会话独立串流设置」开关，关闭时显示「全局：…」摘要，打开后才展开 §3 的覆盖项。
-- 底部操作按钮：**保存**（只落配置并返回）与**连接**同级；编辑时另有删除。
+- 底部操作按钮：**保存**与主操作同级，主操作对 Moonlight 是**「配对」**（编辑页只完成配对，不打开会话；
+  配对成功即保存并返回），**连接一律走列表页的连接钮**；RDP 的主操作仍是「连接」。**删除**（仅编辑已有连接时）
+  单独排在两钮**下一行**、占满整行，不再与它们并排。
 
 ## 5. 设置页的协议分栏
 
@@ -118,8 +122,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   列表行的加载态与 RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的
   「连接」统一经 `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后
   交给 manager。
-- **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入），配对期间
-  不开任何会话窗口；确认后再 launch 并开会话（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 待定项）。
+- **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入，四个数字居中放大），
+  配对期间不开任何会话窗口；**主机端输入完成即握手结束，弹窗自动关闭并继续**（无需手动确认），只有「取消」是用户动作；
+  配对完成后才 launch 并开会话（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 待定项）。
 - **会话窗口与后端已接入**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
   `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配
   `moonlightConfig`，`start()` 交给原生）、`services/SessionBackendFactory.ets` 与

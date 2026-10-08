@@ -14,14 +14,16 @@ import { AdvancedProfile, DisplayProfile, EditConnectionParams,
   SrProfile } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
+import { PairResult } from '../moonlight/MoonlightModels';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { MoonlightLauncher } from '../services/MoonlightLauncher';
+import { MoonlightConnector, MoonlightPairResult } from '../services/MoonlightConnector';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
-import { showConfirm } from '../utils/UiUtil';
+import { showConfirm, showToast } from '../utils/UiUtil';
+import { promptPairingPin } from '../utils/PairingPrompt';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
@@ -93,6 +95,9 @@ struct EditConnectionPage {
   @State editing: boolean = false;
   @State detectedText: string = '';
   @State connecting: boolean = false;
+  // Moonlight's 配对 runs in the editor and may show a PIN popup; a session is
+  // never opened here (the list page owns connect).
+  @State pairing: boolean = false;
   private connectionId: string = '';
   // Id of the in-flight attempt (may be a brand-new id for a new connection).
   private activeConnectionId: string = '';
@@ -440,9 +445,9 @@ struct EditConnectionPage {
   }
 
   /**
-   * Persists a Moonlight connection. Moonlight has no credentials to verify, so
-   * the connect button simply saves and, for now, says the stream client is not
-   * wired up yet (that arrives in a later phase).
+   * Persists a Moonlight connection. The editor's primary action pairs (see
+   * pairMoonlight); 保存 only stores the form. Connecting a stream is done from
+   * the list page.
    */
   private submitMoonlight(connect: boolean): void {
     const target: string = this.host.trim();
@@ -483,29 +488,43 @@ struct EditConnectionPage {
       this.returnToList();
       return;
     }
-    this.connectMoonlight(conn);
+    this.pairMoonlight(conn);
   }
 
   /**
-   * Moonlight: hand the connection to the shared launcher, which drives the
-   * control pre-flight (serverinfo -> pair -> launch) inside the manager's
-   * Connecting state (with the PIN popup). The connection is persisted only on
-   * success, like RDP; a failure arrives through the state listener above.
+   * Moonlight: the editor pairs only. It runs the control layer's pairing step
+   * (serverinfo -> pair, with the PIN popup when the host is not paired yet) and
+   * persists the connection once paired. Opening a stream session is the list
+   * page's connect button, never this page.
    */
-  private connectMoonlight(conn: SavedConnection): void {
+  private pairMoonlight(conn: SavedConnection): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
-      this.errorMessage = '无法发起连接';
+      this.errorMessage = '无法发起配对';
       return;
     }
     this.errorMessage = '';
-    this.activeConnectionId = conn.id;
-    this.connecting = true;
-    MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
-      RdpConnectOrigin.Editor, 0, () => {
+    this.pairing = true;
+    MoonlightConnector.pairOnly((context as common.UIAbilityContext).filesDir, conn.host, conn.port,
+      (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
+        promptPairingPin(this.getUIContext(), pin, pairing))
+      .then((result: MoonlightPairResult) => {
+        this.pairing = false;
+        if (!result.ok) {
+          this.errorMessage = result.error;
+          return;
+        }
         conn.mlPaired = true;
-        this.persist(conn);
-        this.returnToList();
+        this.mlPaired = true;
+        if (this.persist(conn)) {
+          showToast(this.getUIContext(), '配对成功');
+          this.returnToList();
+        }
+      })
+      .catch((error: BusinessError) => {
+        this.pairing = false;
+        this.errorMessage = '配对失败，请重试';
+        hilog.error(DOMAIN, TAG, 'pair failed: %{public}s', JSON.stringify(error));
       });
   }
 
@@ -527,6 +546,24 @@ struct EditConnectionPage {
       return;
     }
     SessionManager.disconnect(this.activeConnectionId);
+  }
+
+  /** True while the editor is doing something the form must not disturb. */
+  private busy(): boolean {
+    return this.connecting || this.pairing;
+  }
+
+  /** The primary button's label: Moonlight pairs, RDP connects (or cancels). */
+  private primaryLabel(): string {
+    if (this.isMoonlight()) {
+      return '配对';
+    }
+    return this.connecting ? '取消' : '连接';
+  }
+
+  /** Whether the primary button shows a spinner (RDP connect / Moonlight pair). */
+  private primaryBusy(): boolean {
+    return this.connecting || this.pairing;
   }
 
   private handleSave(): void {
@@ -1061,20 +1098,6 @@ struct EditConnectionPage {
             }
 
             Row() {
-              if (this.editing) {
-                Button('删除')
-                  .layoutWeight(1)
-                  .height(48)
-                  .fontSize(16)
-                  .fontColor($r('app.color.danger'))
-                  .backgroundColor($r('app.color.input_bg'))
-                  .borderRadius(12)
-                  .enabled(!this.connecting)
-                  .onClick(() => {
-                    this.deleteCurrent();
-                  })
-              }
-
               Button('保存')
                 .layoutWeight(1)
                 .height(48)
@@ -1082,25 +1105,24 @@ struct EditConnectionPage {
                 .fontColor($r('app.color.accent'))
                 .backgroundColor($r('app.color.input_bg'))
                 .borderRadius(12)
-                .margin({ left: this.editing ? 12 : 0 })
-                .enabled(!this.connecting)
+                .enabled(!this.busy())
                 .onClick(() => {
                   this.handleSave();
                 })
 
               Button() {
                 Row() {
-                  if (this.connecting) {
+                  if (this.primaryBusy()) {
                     LoadingProgress()
                       .width(18)
                       .height(18)
                       .color('#FFFFFF')
                   }
-                  Text(this.connecting ? '取消' : '连接')
+                  Text(this.primaryLabel())
                     .fontSize(16)
                     .fontWeight(FontWeight.Medium)
                     .fontColor('#FFFFFF')
-                    .margin({ left: this.connecting ? 8 : 0 })
+                    .margin({ left: this.primaryBusy() ? 8 : 0 })
                 }
                 .justifyContent(FlexAlign.Center)
                 .alignItems(VerticalAlign.Center)
@@ -1110,6 +1132,9 @@ struct EditConnectionPage {
               .backgroundColor($r('app.color.accent'))
               .borderRadius(12)
               .margin({ left: 12 })
+              // Pairing has no session to cancel, so it locks the button; an RDP
+              // connect stays tappable to cancel.
+              .enabled(!this.pairing)
               .onClick(() => {
                 if (this.connecting) {
                   this.cancelConnect();
@@ -1120,6 +1145,21 @@ struct EditConnectionPage {
             }
             .width('100%')
             .margin({ top: 20 })
+
+            if (this.editing) {
+              Button('删除')
+                .width('100%')
+                .height(48)
+                .fontSize(16)
+                .fontColor($r('app.color.danger'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(12)
+                .margin({ top: 12 })
+                .enabled(!this.busy())
+                .onClick(() => {
+                  this.deleteCurrent();
+                })
+            }
 
             if (this.isMoonlight()) {
               this.moonlightAdvanced()

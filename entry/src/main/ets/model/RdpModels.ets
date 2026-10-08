@@ -2,6 +2,7 @@
  * HmRdp - shared ArkTS data model.
  */
 import { MoonlightSessionConfig, RdpOptions } from 'libhmrdp.so';
+import { PairResult } from '../moonlight/MoonlightModels';
 
 /**
  * 超分 backend ids. Plain numbers because they are persisted with the connection
@@ -302,7 +303,10 @@ export class PendingConnection {
   // the request so the manager can run the pre-flight like any other protocol.
   filesDir: string = '';
   moonlightAppId: number = 0;
-  moonlightPinProvider: ((pin: string) => Promise<boolean>) | undefined = undefined;
+  // `pairing` settles when the handshake ends; the prompt closes itself then and
+  // the promise is false only when the user cancels.
+  moonlightPinProvider: ((pin: string, pairing: Promise<PairResult>) => Promise<boolean>)
+    | undefined = undefined;
   // Invoked once when a session launched from the editor connects successfully.
   // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;
