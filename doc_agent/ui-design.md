@@ -177,7 +177,7 @@ Column(page_bg, 100%×100%)
 | `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
 | `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影 |
 | `FabButton` | `FabButton.ets` | `icon, tip?, onTap` | 右下角悬浮圆形主操作（新建 / 刷新；accent 底 + 阴影 + hover/press 反馈 + `OVERLAY` 提示） |
-| `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 材质 + hover/press 缩放，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
+| `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, loading?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 材质 + hover/press 缩放，`loading` 时图标换成转圈并置忙，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
 | `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（`scale / srRatio / srChoice / ml*` 共用） |
 | `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |

@@ -23,6 +23,9 @@ export struct ControlDisc {
   @Prop glyph: number = 22;
   @Prop gap: number = 0;
   @Prop tip: string = '';
+  // In-flight: the icon is replaced by a spinner and taps are ignored, so the
+  // control reports its own busy state (the caller decides when it is loading).
+  @Prop loading: boolean = false;
   // Whether the disc plays an appear / disappear transition when it is inserted
   // or removed by the caller. Opt-in: an always-present disc (e.g. the poster's
   // star) must not pop again when its tile is recreated for another reason.
@@ -38,11 +41,18 @@ export struct ControlDisc {
 
   build() {
     Row() {
-      Image(this.icon)
-        .width(this.glyph)
-        .height(this.glyph)
-        .fillColor(this.iconColor)
-        .draggable(false)
+      if (this.loading) {
+        LoadingProgress()
+          .width(this.glyph)
+          .height(this.glyph)
+          .color(this.iconColor)
+      } else {
+        Image(this.icon)
+          .width(this.glyph)
+          .height(this.glyph)
+          .fillColor(this.iconColor)
+          .draggable(false)
+      }
     }
     .width(this.diameter)
     .height(this.diameter)
@@ -54,19 +64,25 @@ export struct ControlDisc {
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .margin({ right: this.gap })
-    .scale(hoverPressScale(this.hovered, this.pressed))
+    .scale(hoverPressScale(this.hovered && !this.loading, this.pressed && !this.loading))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .transition(this.animated ? popTransition() : TransitionEffect.IDENTITY)
     // Keep a tap on the disc off the poster underneath, so the tile's own click
     // does not also fire.
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .onHover((isHover: boolean) => {
+      if (this.loading) {
+        return;
+      }
       this.hovered = isHover;
       if (!isHover) {
         this.pressed = false;
       }
     })
     .onMouse((event: MouseEvent) => {
+      if (this.loading) {
+        return;
+      }
       if (event.action === MouseAction.Press) {
         this.pressed = true;
       } else if (event.action === MouseAction.Release) {
@@ -74,15 +90,20 @@ export struct ControlDisc {
       }
     })
     .onTouch((event: TouchEvent) => {
+      if (this.loading) {
+        return;
+      }
       if (event.type === TouchType.Down) {
         this.pressed = true;
       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.pressed = false;
       }
     })
-    .bindTips(this.tip, this.tipsOptions)
+    .bindTips(this.loading ? '' : this.tip, this.tipsOptions)
     .onClick(() => {
-      this.onTap();
+      if (!this.loading) {
+        this.onTap();
+      }
     })
   }
 }

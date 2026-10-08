@@ -61,10 +61,22 @@ struct MoonlightAppsPage {
   // aboutToAppear and onPageShow, and a page show can also arrive while the FAB's
   // refresh is still in flight.
   private probing: boolean = false;
+  // The app a connect is in flight for, set when the attempt starts and cleared
+  // once it settles. Set at launch (before the manager reports Connecting) so the
+  // card's loading state does not flash off during the Idle -> Connecting gap.
+  private pendingAppId: number = 0;
+  // Whether that attempt was a resume of an app that was *already* running: a
+  // resume keeps the card / badge as they are (only the pressed disc spins),
+  // while a fresh start shows the card loading until the session is up.
+  private pendingResume: boolean = false;
   private readonly stateListener: SessionStateListener =
     (connectionId: string, state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
         this.state = state;
+        if (state !== ConnectionState.Connecting) {
+          this.pendingAppId = 0;
+          this.pendingResume = false;
+        }
       }
     };
 
@@ -237,6 +249,34 @@ struct MoonlightAppsPage {
   }
 
   /**
+   * A *live* session, used to pick the action discs: Connected / Disconnecting
+   * only. Connecting is excluded so that, while the connection is in flight, the
+   * tile keeps the pre-session pair and its leading disc (恢复 / 连接) shows the
+   * loading spinner instead of flipping to 断开连接 before the session is up.
+   */
+  private sessionEstablished(): boolean {
+    return this.state === ConnectionState.Connected ||
+      this.state === ConnectionState.Disconnecting;
+  }
+
+  /** True while an in-flight connect targets this app. */
+  private isConnecting(app: NvApp): boolean {
+    return this.pendingAppId === app.id;
+  }
+
+  /**
+   * Whether to show the running badge / action discs. While a *fresh* start is
+   * loading they stay hidden until the session is actually up (only the card
+   * loads); a resume keeps them, since the app is already running on the host.
+   */
+  private displayRunning(app: NvApp): boolean {
+    if (this.isConnecting(app) && !this.pendingResume) {
+      return false;
+    }
+    return this.isRunning(app);
+  }
+
+  /**
    * Open one app: a card tap (or the running app's 连接). One connection supports
    * one session, so if one is already up it is dropped first and the new app
    * opened — this is the "switch app" action, with no dialog (the tooltip says
@@ -257,9 +297,13 @@ struct MoonlightAppsPage {
     }
     // A specific app id; the pre-flight runs inside the manager (Connecting).
     this.error = '';
+    // Record the attempt before it starts: a resume of an already-running app
+    // keeps its card / badge, a fresh start loads the card and defers the badge.
+    this.pendingAppId = app.id;
+    this.pendingResume = this.isRunning(app);
     // Mark the target as the running app right away (through the shared
     // authority): connecting starts it (and a switch stops the previous one), so
-    // its tile must show the 运行中 badge without waiting for the next probe.
+    // the host state is current as soon as the session comes up.
     MoonlightHostState.markLaunched(conn.id, app.id);
     MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
       RdpConnectOrigin.List, app.id);
@@ -403,8 +447,10 @@ struct MoonlightAppsPage {
                     app: app,
                     icon: this.iconMap.get(app.id),
                     isDefault: this.isDefault(app),
-                    isRunning: this.isRunning(app),
-                    hasSession: this.hasActiveSession(),
+                    isRunning: this.displayRunning(app),
+                    hasSession: this.sessionEstablished(),
+                    connecting: this.isConnecting(app),
+                    loading: this.isConnecting(app) && !this.pendingResume,
                     tip: this.appTip(app),
                     onOpen: () => {
                       this.openApp(app);

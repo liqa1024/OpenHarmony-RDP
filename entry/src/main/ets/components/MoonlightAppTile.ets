@@ -42,6 +42,17 @@ export struct MoonlightAppTile {
   @Prop isDefault: boolean = false;
   @Prop isRunning: boolean = false;
   @Prop hasSession: boolean = false;
+  // The in-flight connect splits into two independent signals so the two entry
+  // points read differently:
+  //   `loading`    — the *card* is the thing connecting: dim the poster under a
+  //                  spinner. Set when the app was not already running, i.e. a
+  //                  card tap (the running badge / discs stay hidden until the
+  //                  session is actually up).
+  //   `connecting` — the leading action disc (恢复 / 断开) is busy: only used for
+  //                  a resume, where the app is already running so the card and
+  //                  badge stay as they are and just the pressed disc spins.
+  @Prop loading: boolean = false;
+  @Prop connecting: boolean = false;
   @Prop tip: string = '';
   // The card's own hover / press state. A running app's card is not clickable
   // (it acts through its discs), so it never reacts — the handlers below are
@@ -55,6 +66,15 @@ export struct MoonlightAppTile {
   onCloseAppAndDisconnect: () => void = () => {};
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+
+  /**
+   * The card only reacts (hover / press / tap) when a tap would connect: not a
+   * running app (it acts through its discs) and not while the card itself is
+   * loading a fresh start.
+   */
+  private clickable(): boolean {
+    return !this.isRunning && !this.loading;
+  }
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
@@ -82,6 +102,26 @@ export struct MoonlightAppTile {
       .clip(true)
       .backgroundColor($r('app.color.input_bg'))
       .bindTips(this.tip, this.tipsOptions)
+
+      // Card connecting: dim the poster under a translucent scrim and spin on
+      // top. Drawn above the poster but below the star / action discs (hitTest
+      // None, so those stay usable) — this is the "big icon" loading the user
+      // sees after tapping the card.
+      if (this.loading) {
+        Column() {
+          LoadingProgress()
+            .width(32)
+            .height(32)
+            .color('#FFFFFF')
+        }
+        .width('100%')
+        .height('100%')
+        .borderRadius(TILE_RADIUS)
+        .backgroundColor('#66000000')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .hitTestBehavior(HitTestMode.None)
+      }
 
       // "运行中" badge at the poster's top-left. The @Builder-free Text carries
       // the appear / disappear transition, so a running app's badge pops in when
@@ -143,6 +183,7 @@ export struct MoonlightAppTile {
                 gap: 8,
                 tip: '断开连接',
                 animated: true,
+                loading: this.connecting,
                 onTap: () => {
                   this.onDisconnect();
                 }
@@ -168,6 +209,7 @@ export struct MoonlightAppTile {
                 gap: 8,
                 tip: connectActionLabel(ConnectAction.Resume),
                 animated: true,
+                loading: this.connecting,
                 onTap: () => {
                   this.onOpen();
                 }
@@ -203,12 +245,12 @@ export struct MoonlightAppTile {
     .height(TILE_HEIGHT)
     .margin({ right: 12, bottom: 16 })
     // The card itself gets the same hover / press feedback as its controls, but
-    // only while it is clickable: a running app acts through its discs, so its
-    // card must not react to hover or press (see doc_agent/moonlight-connection.md §4).
-    .scale(hoverPressScale(this.hovered && !this.isRunning, this.pressed && !this.isRunning))
+    // only while it is clickable (not a running app, not loading); see
+    // doc_agent/moonlight-connection.md §4.
+    .scale(hoverPressScale(this.hovered && this.clickable(), this.pressed && this.clickable()))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .onHover((isHover: boolean) => {
-      if (this.isRunning) {
+      if (!this.clickable()) {
         return;
       }
       this.hovered = isHover;
@@ -217,7 +259,7 @@ export struct MoonlightAppTile {
       }
     })
     .onMouse((event: MouseEvent) => {
-      if (this.isRunning) {
+      if (!this.clickable()) {
         return;
       }
       if (event.action === MouseAction.Press) {
@@ -227,9 +269,9 @@ export struct MoonlightAppTile {
       }
     })
     // A running app acts through its own discs; its card must not also react to a
-    // tap (and its tip is empty, so it has no tooltip either).
+    // tap. A loading card is likewise inert (the tap already started it).
     .onClick(() => {
-      if (!this.isRunning) {
+      if (this.clickable()) {
         this.onOpen();
       }
     })
