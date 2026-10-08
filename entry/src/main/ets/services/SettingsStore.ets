@@ -6,8 +6,8 @@ import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  AdvancedProfile, DisplayProfile, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO,
-  ML_RES_FOLLOW_WINDOW, MoonlightProfile, PROTOCOL_RDP, SavedConnection,
+  AdvancedProfile, DisplayProfile, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO,
+  ML_RES_FOLLOW_SCREEN, MoonlightProfile, PROTOCOL_RDP, SavedConnection,
   SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
 } from '../model/RdpModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
@@ -147,15 +147,10 @@ export class AppSettings {
   // pre-filled from an mDNS scan.
   mlFps: number = 60;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
-  mlHdr: boolean = false;
   mlCodec: number = ML_CODEC_AUTO;
-  mlAutoDiscover: boolean = true;
-  mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
-  mlYuv444: boolean = false;
-  mlAudioConfig: number = ML_AUDIO_STEREO;
-  mlGamepad: boolean = true;
   // Protocol the next new connection starts on (the last kind the user added).
   lastNewProtocol: number = PROTOCOL_RDP;
   // Moonlight's own copy of the shared interaction / window / session settings.
@@ -171,14 +166,12 @@ export class AppSettings {
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
   mlShortcutPassthrough: boolean = false;
-  mlMainWindowSizeEnabled: boolean = false;
-  mlMainWindowWidth: number = 0;
-  mlMainWindowHeight: number = 0;
+  // Session-window behavior is per protocol; the main window is a single,
+  // app-level surface shared by both protocols.
   mlSessionWindowSizeEnabled: boolean = false;
   mlSessionWindowWidth: number = 0;
   mlSessionWindowHeight: number = 0;
   mlSessionFullscreen: boolean = false;
-  mlAutoHideMainWindow: boolean = false;
 }
 
 export class SettingsStore {
@@ -215,9 +208,6 @@ export class SettingsStore {
       settings.sessionWindowSizeEnabled = true;
       settings.sessionWindowWidth = Math.round(disp.width * SESSION_WINDOW_RATIO);
       settings.sessionWindowHeight = Math.round(disp.height * SESSION_WINDOW_RATIO);
-      settings.mlMainWindowSizeEnabled = true;
-      settings.mlMainWindowWidth = settings.mainWindowWidth;
-      settings.mlMainWindowHeight = settings.mainWindowHeight;
       settings.mlSessionWindowSizeEnabled = true;
       settings.mlSessionWindowWidth = settings.sessionWindowWidth;
       settings.mlSessionWindowHeight = settings.sessionWindowHeight;
@@ -301,17 +291,10 @@ export class SettingsStore {
       settings.mlFps = SettingsStore.readNumber(store, 'mlFps', settings.mlFps);
       settings.mlBitrateKbps =
         SettingsStore.readNumber(store, 'mlBitrateKbps', settings.mlBitrateKbps);
-      settings.mlHdr = SettingsStore.readBoolean(store, 'mlHdr', settings.mlHdr);
       settings.mlCodec = SettingsStore.readNumber(store, 'mlCodec', settings.mlCodec);
-      settings.mlAutoDiscover =
-        SettingsStore.readBoolean(store, 'mlAutoDiscover', settings.mlAutoDiscover);
       settings.mlResMode = SettingsStore.readNumber(store, 'mlResMode', settings.mlResMode);
       settings.mlWidth = SettingsStore.readNumber(store, 'mlWidth', settings.mlWidth);
       settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
-      settings.mlYuv444 = SettingsStore.readBoolean(store, 'mlYuv444', settings.mlYuv444);
-      settings.mlAudioConfig =
-        SettingsStore.readNumber(store, 'mlAudioConfig', settings.mlAudioConfig);
-      settings.mlGamepad = SettingsStore.readBoolean(store, 'mlGamepad', settings.mlGamepad);
       settings.lastNewProtocol =
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
       settings.mlToolbarHoverDelay =
@@ -335,12 +318,6 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlWinKeySubstitute', settings.mlWinKeySubstitute);
       settings.mlShortcutPassthrough = SettingsStore.readBoolean(store,
         'mlShortcutPassthrough', settings.mlShortcutPassthrough);
-      settings.mlMainWindowSizeEnabled = SettingsStore.readBoolean(store,
-        'mlMainWindowSizeEnabled', settings.mlMainWindowSizeEnabled);
-      settings.mlMainWindowWidth =
-        SettingsStore.readNumber(store, 'mlMainWindowWidth', settings.mlMainWindowWidth);
-      settings.mlMainWindowHeight =
-        SettingsStore.readNumber(store, 'mlMainWindowHeight', settings.mlMainWindowHeight);
       settings.mlSessionWindowSizeEnabled = SettingsStore.readBoolean(store,
         'mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
       settings.mlSessionWindowWidth =
@@ -349,8 +326,6 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlSessionWindowHeight', settings.mlSessionWindowHeight);
       settings.mlSessionFullscreen =
         SettingsStore.readBoolean(store, 'mlSessionFullscreen', settings.mlSessionFullscreen);
-      settings.mlAutoHideMainWindow = SettingsStore.readBoolean(store,
-        'mlAutoHideMainWindow', settings.mlAutoHideMainWindow);
     }
     return settings;
   }
@@ -397,15 +372,10 @@ export class SettingsStore {
       store.putSync('gfxCapture', settings.gfxCapture);
       store.putSync('mlFps', settings.mlFps);
       store.putSync('mlBitrateKbps', settings.mlBitrateKbps);
-      store.putSync('mlHdr', settings.mlHdr);
       store.putSync('mlCodec', settings.mlCodec);
-      store.putSync('mlAutoDiscover', settings.mlAutoDiscover);
       store.putSync('mlResMode', settings.mlResMode);
       store.putSync('mlWidth', settings.mlWidth);
       store.putSync('mlHeight', settings.mlHeight);
-      store.putSync('mlYuv444', settings.mlYuv444);
-      store.putSync('mlAudioConfig', settings.mlAudioConfig);
-      store.putSync('mlGamepad', settings.mlGamepad);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
       store.putSync('mlToolbarHoverDelay', settings.mlToolbarHoverDelay);
       store.putSync('mlToolbarHideDelay', settings.mlToolbarHideDelay);
@@ -418,14 +388,10 @@ export class SettingsStore {
       store.putSync('mlReconnectOnForeground', settings.mlReconnectOnForeground);
       store.putSync('mlWinKeySubstitute', settings.mlWinKeySubstitute);
       store.putSync('mlShortcutPassthrough', settings.mlShortcutPassthrough);
-      store.putSync('mlMainWindowSizeEnabled', settings.mlMainWindowSizeEnabled);
-      store.putSync('mlMainWindowWidth', settings.mlMainWindowWidth);
-      store.putSync('mlMainWindowHeight', settings.mlMainWindowHeight);
       store.putSync('mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
       store.putSync('mlSessionWindowWidth', settings.mlSessionWindowWidth);
       store.putSync('mlSessionWindowHeight', settings.mlSessionWindowHeight);
       store.putSync('mlSessionFullscreen', settings.mlSessionFullscreen);
-      store.putSync('mlAutoHideMainWindow', settings.mlAutoHideMainWindow);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));
@@ -668,11 +634,7 @@ export class SettingsStore {
     profile.height = settings.mlHeight;
     profile.fps = settings.mlFps;
     profile.bitrateKbps = settings.mlBitrateKbps;
-    profile.hdr = settings.mlHdr;
     profile.codec = settings.mlCodec;
-    profile.yuv444 = settings.mlYuv444;
-    profile.audioConfig = settings.mlAudioConfig;
-    profile.gamepad = settings.mlGamepad;
     return profile;
   }
 
@@ -691,11 +653,7 @@ export class SettingsStore {
     profile.height = conn.mlHeight;
     profile.fps = conn.mlFps;
     profile.bitrateKbps = conn.mlBitrateKbps;
-    profile.hdr = conn.mlHdr;
     profile.codec = conn.mlCodec;
-    profile.yuv444 = conn.mlYuv444;
-    profile.audioConfig = conn.mlAudioConfig;
-    profile.gamepad = conn.mlGamepad;
     return profile;
   }
 

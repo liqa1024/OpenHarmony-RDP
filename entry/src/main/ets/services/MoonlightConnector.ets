@@ -11,9 +11,7 @@
 import { moonlightVideoFormats } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import {
-  ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, MoonlightProfile, MoonlightStreamConfig
-} from '../model/RdpModels';
+import { MoonlightProfile, MoonlightStreamConfig } from '../model/RdpModels';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
@@ -301,20 +299,26 @@ export class MoonlightConnector {
     options.height = height;
     options.fps = stream.fps;
     options.bitrateKbps = stream.bitrateKbps;
-    options.audioConfig = stream.audioConfig;
-    options.hdr = stream.hdr;
-    options.yuv444 = stream.yuv444;
-    options.gamepad = stream.gamepad;
     options.rikeyHex = rikeyHex;
     options.rikeyId = rikeyId;
-    let launch: LaunchResult =
-      await MoonlightClient.launch(filesDir, host, info.httpsPort, options);
-    if (!launch.ok && launch.error === 'busy') {
-      // The host is already streaming something: stop it and try once more, so a
-      // stale session never blocks a new connect (no manual host action).
-      hilog.warn(0xD001, 'HmRdpMoonlight', 'host busy; cancelling and retrying launch');
-      await MoonlightClient.cancel(filesDir, host, info.httpsPort);
+    // The host is running an app: resume it when it is the one we want, stop it
+    // first when it is a different one. A stale session never blocks a connect
+    // (no manual host action needed).
+    let launch: LaunchResult;
+    if (info.currentGame === effectiveAppId) {
+      launch = await MoonlightClient.resume(filesDir, host, info.httpsPort, options);
+    } else {
+      if (info.currentGame !== 0) {
+        await MoonlightClient.cancel(filesDir, host, info.httpsPort);
+      }
       launch = await MoonlightClient.launch(filesDir, host, info.httpsPort, options);
+      if (!launch.ok && launch.error === 'busy') {
+        // The host started something between the check and the launch: cancel
+        // and retry once.
+        hilog.warn(0xD001, 'HmRdpMoonlight', 'host busy; cancelling and retrying launch');
+        await MoonlightClient.cancel(filesDir, host, info.httpsPort);
+        launch = await MoonlightClient.launch(filesDir, host, info.httpsPort, options);
+      }
     }
     if (!launch.ok) {
       hilog.error(0xD001, 'HmRdpMoonlight', 'launch failed: %{public}s', launch.error);
@@ -334,7 +338,7 @@ export class MoonlightConnector {
     config.bitrateKbps = stream.bitrateKbps;
     config.packetSize = 1024;
     config.streamingRemotely = false;
-    config.audioConfiguration = MoonlightConnector.audioConfiguration(stream.audioConfig);
+    config.audioConfiguration = MoonlightConnector.AUDIO_CONFIGURATION_STEREO;
     config.supportedVideoFormats = moonlightVideoFormats(stream.codec);
     config.clientRefreshRateX100 = 0;
     config.colorSpace = 0;
@@ -384,19 +388,8 @@ export class MoonlightConnector {
     return MoonlightCrypto.toHex(iv);
   }
 
-  /** ML_AUDIO_* -> Moonlight AUDIO_CONFIGURATION_* (MAKE_AUDIO_CONFIGURATION). */
-  private static audioConfiguration(audioConfig: number): number {
-    if (audioConfig === ML_AUDIO_51) {
-      return 0x3F06CA;
-    }
-    if (audioConfig === ML_AUDIO_71) {
-      return 0x63F08CA;
-    }
-    if (audioConfig === ML_AUDIO_STEREO) {
-      return 0x302CA;
-    }
-    return 0x302CA;
-  }
+  /** Moonlight stereo AUDIO_CONFIGURATION_* (MAKE_AUDIO_CONFIGURATION). */
+  private static readonly AUDIO_CONFIGURATION_STEREO: number = 0x302CA;
 
   /** Turns a stable control-layer token into a user-facing reason. */
   private static describe(token: string): string {

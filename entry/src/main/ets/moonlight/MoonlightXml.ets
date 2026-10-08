@@ -108,8 +108,6 @@ export class MoonlightXml {
           app.name = info.getText();
         } else if (current === 'ID') {
           app.id = Number.parseInt(info.getText(), 10);
-        } else if (current === 'IsHdrSupported') {
-          app.hdr = info.getText() === '1';
         }
       }
       return true;

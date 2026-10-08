@@ -2,9 +2,9 @@
  * HmRdp - global settings.
  */
 import { common } from '@kit.AbilityKit';
-import { DisplayProfile, ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS,
+import { DisplayProfile, ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
-  ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_RES_FOLLOW_WINDOW,
+  ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
   PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -105,22 +105,17 @@ struct SettingsPage {
   // section is rendered once but backed by that protocol's own stored values.
   @State protocol: number = PROTOCOL_RDP;
   // Moonlight stream defaults; each connection can still override them.
-  @State mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
   @State mlWidthText: string = '';
   @State mlHeightText: string = '';
   @State mlFps: number = 60;
   @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
-  @State mlHdr: boolean = false;
   @State mlCodec: number = ML_CODEC_AUTO;
   // Per-codec decoder support (CODEC_SUPPORT_*) of this device, read once so
   // the chips can grey what cannot run and warn about software-only codecs.
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
-  @State mlYuv444: boolean = false;
-  @State mlAudioConfig: number = ML_AUDIO_STEREO;
-  @State mlGamepad: boolean = true;
-  @State mlAutoDiscover: boolean = true;
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -196,13 +191,8 @@ struct SettingsPage {
         ? settings.mlHeight : this.detectedHeight);
       this.mlFps = settings.mlFps;
       this.mlBitrateText = settings.mlBitrateKbps.toString();
-      this.mlHdr = settings.mlHdr;
       this.mlCodec = settings.mlCodec;
       this.clampMlCodec();
-      this.mlYuv444 = settings.mlYuv444;
-      this.mlAudioConfig = settings.mlAudioConfig;
-      this.mlGamepad = settings.mlGamepad;
-      this.mlAutoDiscover = settings.mlAutoDiscover;
     }
 
     // Shared interaction / window settings: the active protocol's own values.
@@ -251,16 +241,13 @@ struct SettingsPage {
       ? settings.reconnectOnForeground : settings.mlReconnectOnForeground;
     this.winKeySubstitute = rdp ? settings.winKeySubstitute : settings.mlWinKeySubstitute;
     this.shortcutPassthrough = rdp ? settings.shortcutPassthrough : settings.mlShortcutPassthrough;
-    this.mainSizeEnabled = rdp
-      ? settings.mainWindowSizeEnabled : settings.mlMainWindowSizeEnabled;
+    this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.sessionSizeEnabled = rdp
       ? settings.sessionWindowSizeEnabled : settings.mlSessionWindowSizeEnabled;
     this.sessionFullscreen = rdp ? settings.sessionFullscreen : settings.mlSessionFullscreen;
-    this.autoHideMainWindow = rdp ? settings.autoHideMainWindow : settings.mlAutoHideMainWindow;
-    this.mainWidthText = this.sizeText(rdp
-      ? settings.mainWindowWidth : settings.mlMainWindowWidth);
-    this.mainHeightText = this.sizeText(rdp
-      ? settings.mainWindowHeight : settings.mlMainWindowHeight);
+    this.autoHideMainWindow = settings.autoHideMainWindow;
+    this.mainWidthText = this.sizeText(settings.mainWindowWidth);
+    this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.sessionWidthText = this.sizeText(rdp
       ? settings.sessionWindowWidth : settings.mlSessionWindowWidth);
     this.sessionHeightText = this.sizeText(rdp
@@ -343,6 +330,14 @@ struct SettingsPage {
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
     // Start from what is stored so the other protocol's copy is preserved.
     const settings: AppSettings = SettingsStore.load();
+    // App-level surfaces shared by both protocols: the main window, its size and
+    // the auto-hide behaviour do not depend on the streaming protocol.
+    settings.autoHideMainWindow = this.autoHideMainWindow;
+    settings.mainWindowSizeEnabled = this.mainSizeEnabled;
+    settings.mainWindowWidth =
+      this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
+    settings.mainWindowHeight =
+      this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
     if (this.protocol === PROTOCOL_RDP) {
       settings.toolbarHoverDelay = this.hoverDelay;
       settings.toolbarHideDelay = this.hideDelay;
@@ -366,18 +361,12 @@ struct SettingsPage {
       settings.manualScalePercent =
         this.parseScale(this.manualScaleText, this.effectiveDefaultScale());
       settings.sessionFullscreen = this.sessionFullscreen;
-      settings.autoHideMainWindow = this.autoHideMainWindow;
       settings.enableAudio = this.enableAudio;
       settings.ignoreCertificate = this.ignoreCertificate;
       settings.hardwareAccel = this.hardwareAccel;
       settings.srEnabled = this.srEnabled && this.srSupported;
       settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
       settings.srBackend = this.srBackend;
-      settings.mainWindowSizeEnabled = this.mainSizeEnabled;
-      settings.mainWindowWidth =
-        this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
-      settings.mainWindowHeight =
-        this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
       settings.sessionWindowSizeEnabled = this.sessionSizeEnabled;
       settings.sessionWindowWidth =
         this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
@@ -391,12 +380,7 @@ struct SettingsPage {
         ? this.parseSize(this.mlHeightText, this.detectedHeight, MAX_DESKTOP_SIZE) : 0;
       settings.mlFps = this.mlFps;
       settings.mlBitrateKbps = this.effectiveMlBitrate();
-      settings.mlHdr = this.mlHdr;
       settings.mlCodec = this.mlCodec;
-      settings.mlYuv444 = this.mlYuv444;
-      settings.mlAudioConfig = this.mlAudioConfig;
-      settings.mlGamepad = this.mlGamepad;
-      settings.mlAutoDiscover = this.mlAutoDiscover;
       settings.mlToolbarHoverDelay = this.hoverDelay;
       settings.mlToolbarHideDelay = this.hideDelay;
       settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
@@ -408,18 +392,12 @@ struct SettingsPage {
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
-      settings.mlMainWindowSizeEnabled = this.mainSizeEnabled;
-      settings.mlMainWindowWidth =
-        this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
-      settings.mlMainWindowHeight =
-        this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
       settings.mlSessionWindowSizeEnabled = this.sessionSizeEnabled;
       settings.mlSessionWindowWidth =
         this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
       settings.mlSessionWindowHeight =
         this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
       settings.mlSessionFullscreen = this.sessionFullscreen;
-      settings.mlAutoHideMainWindow = this.autoHideMainWindow;
     }
     settings.developerMode = this.developerMode;
     settings.gfxCapture = this.gfxCapture;
@@ -467,13 +445,8 @@ struct SettingsPage {
       this.mlHeightText = this.sizeText(this.detectedHeight);
       this.mlFps = defaults.mlFps;
       this.mlBitrateText = defaults.mlBitrateKbps.toString();
-      this.mlHdr = defaults.mlHdr;
       this.mlCodec = defaults.mlCodec;
       this.clampMlCodec();
-      this.mlYuv444 = defaults.mlYuv444;
-      this.mlAudioConfig = defaults.mlAudioConfig;
-      this.mlGamepad = defaults.mlGamepad;
-      this.mlAutoDiscover = defaults.mlAutoDiscover;
     }
     this.developerMode = defaults.developerMode;
     this.gfxCapture = defaults.gfxCapture;
@@ -763,18 +736,6 @@ struct SettingsPage {
     })
   }
 
-  @Builder
-  mlAudioChip(config: number, label: string) {
-    ChoiceChip({
-      label: label,
-      selected: this.mlAudioConfig === config,
-      onTap: () => {
-        this.mlAudioConfig = config;
-        this.persist();
-      }
-    })
-  }
-
   /** Switches the protocol tab, saving the current one and loading the other. */
   private switchProtocol(protocol: number): void {
     if (this.protocol === protocol) {
@@ -802,10 +763,9 @@ struct SettingsPage {
 
       Column() {
         Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
-        Text('跟随会话窗口大小出画，或固定一个分辨率')
+        Text('跟随屏幕出画，或固定一个分辨率')
           .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
         Flex({ wrap: FlexWrap.Wrap }) {
-          this.mlResModeChip(ML_RES_FOLLOW_WINDOW, '跟随窗口')
           this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
           this.mlResModeChip(ML_RES_FIXED, '固定')
         }
@@ -868,20 +828,6 @@ struct SettingsPage {
 
       Divider().color($r('app.color.divider'))
 
-      this.toggleItem({
-        title: 'HDR',
-        subtitle: '主机与显示器都支持时输出 HDR',
-        value: this.mlHdr,
-        enabled: true,
-        disabledReason: '',
-        onChange: (v: boolean) => {
-          this.mlHdr = v;
-          this.persist();
-        }
-      })
-
-      Divider().color($r('app.color.divider'))
-
       Column() {
         Text('编码器').fontSize(14).fontColor($r('app.color.text_primary'))
         if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
@@ -900,61 +846,6 @@ struct SettingsPage {
         .width('100%').margin({ top: 8 })
       }
       .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
-
-      Divider().color($r('app.color.divider'))
-
-      this.toggleItem({
-        title: 'YUV 4:4:4',
-        subtitle: '色度不抽样，文字与彩色边缘更清晰，但更占带宽',
-        value: this.mlYuv444,
-        enabled: true,
-        disabledReason: '',
-        onChange: (v: boolean) => {
-          this.mlYuv444 = v;
-          this.persist();
-        }
-      })
-
-      Divider().color($r('app.color.divider'))
-
-      Column() {
-        Text('音频通道').fontSize(14).fontColor($r('app.color.text_primary'))
-        Flex({ wrap: FlexWrap.Wrap }) {
-          this.mlAudioChip(ML_AUDIO_STEREO, '立体声')
-          this.mlAudioChip(ML_AUDIO_51, '5.1')
-          this.mlAudioChip(ML_AUDIO_71, '7.1')
-        }
-        .width('100%').margin({ top: 8 })
-      }
-      .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
-
-      Divider().color($r('app.color.divider'))
-
-      this.toggleItem({
-        title: '手柄输入',
-        subtitle: '把连接的手柄转发给主机',
-        value: this.mlGamepad,
-        enabled: true,
-        disabledReason: '',
-        onChange: (v: boolean) => {
-          this.mlGamepad = v;
-          this.persist();
-        }
-      })
-
-      Divider().color($r('app.color.divider'))
-
-      this.toggleItem({
-        title: '自动发现主机',
-        subtitle: '在有局域网时自动扫描可用的 Sunshine 主机',
-        value: this.mlAutoDiscover,
-        enabled: true,
-        disabledReason: '',
-        onChange: (v: boolean) => {
-          this.mlAutoDiscover = v;
-          this.persist();
-        }
-      })
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

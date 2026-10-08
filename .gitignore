@@ -52,6 +52,12 @@
 /.signing/
 
 # ---------------------------------------------------------------------------
+# Reference checkouts kept out of the repository (e.g. the upstream Moonlight
+# Android client used as a behavioural reference). Local-only, never committed.
+# ---------------------------------------------------------------------------
+/.reference/
+
+# ---------------------------------------------------------------------------
 # OS / editor noise
 # ---------------------------------------------------------------------------
 .DS_Store

@@ -20,15 +20,16 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 - 连接记录仍是 `ConnectionStore` 的**位置分隔字段**（见 [`settings-and-storage.md`](settings-and-storage.md) §1）。
   协议与 Moonlight 字段**追加在记录尾部**：旧记录在该位置之前就结束，反序列化时回落默认值，
   因此新增字段不改变既有字段的位置，也不影响老记录。
-- 追加字段：`protocol`、`mlDefaultAppId`、`mlDefaultAppName`、`mlPaired`、`useGlobalStream`、
-  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlHdr`、`mlCodec`、`mlYuv444`、
-  `mlAudioConfig`、`mlGamepad`。
+- 追加字段：`protocol`、`mlDefaultAppId`、`mlDefaultAppName`、`mlHostId`、`useGlobalStream`、
+  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`。
+  （曾追加过的 `mlPaired` / `mlHdr` / `mlYuv444` / `mlAudioConfig` / `mlGamepad` 已退役：不再读写，
+  其**槽位按位置保留**，以免改动后续字段的位置。）
 - **地址与端口复用 RDP 的 `host` / `port`**：Moonlight 不用账号/域/网关/密码字段。端口默认值是
   Moonlight 的 `47989`（RDP 为 `3389`），由编辑页按协议给出，存储上仍是同一个 `port`。
-- `mlPaired` 只是 UI 用的**配对状态提示**：权威配对是原生客户端持有的证书，所以导入配置、主机重装等情况
-  下可能出现"标记已配对但实际未配对"，配对必须在连接时重新判定（不依赖该字段）。
+- **是否已配对以本地存的证书为准**：权威配对是客户端持有的证书，导入配置 / 主机重装等情况下的
+  "已配对"不可信，配对必须在连接时重新判定；连接记录不保存配对状态。
 - 全局默认值放 `AppSettings.ml*`（画质 + Moonlight 自己的一份通用设置，见 §5）；导出/导入
-  （`ConfigTransfer`）覆盖协议与全部 `ml*` 字段，旧配置文件缺这些字段时按 RDP 导入。
+  （`ConfigTransfer`）覆盖协议与 `ml*` 字段，旧配置文件缺这些字段时按 RDP 导入。
 
 ## 3. 会话独立覆盖（与 RDP 同构）
 
@@ -36,8 +37,7 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   `SavedConnection.useGlobalStream` 为真时跟随全局，为假时用本连接自己的 `ml*` 值。
 - 解析入口是 `SettingsStore.resolveStream(conn)`（全局默认见 `SettingsStore.globalStreamProfile()`），
   与 `resolveDisplay` / `resolveAdvanced` 并列。
-- 覆盖项：分辨率模式（跟随窗口 / 跟随屏幕 / 固定宽高）、帧率、码率、HDR、编码器、YUV444、
-  音频通道、手柄。
+- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率、编码器。
 - **保存时始终把当前编辑器里的独立值写回连接**（即使此刻跟随全局），便于随时切回，与 RDP 的单连接覆盖一致。
 
 ## 4. 连接列表与编辑页
@@ -47,8 +47,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 - 两种协议**混排在同一列表**，靠卡片图标区分（见 §6）。排序、状态、右键菜单、拖拽全部复用。
 - Moonlight 行有两个圆钮，**「应用」在「连接」左侧**：**连接** = 用默认应用直接连接/断开；**应用** = 进入
   **主窗口内的应用管理界面**（不是弹窗，主窗口内容切过去）。RDP 行只有连接钮。连接中/已连接的 Moonlight 行禁用应用钮。
-- **应用管理界面**：列主机应用、显示每个应用**是否在运行**、可**关闭**在跑的应用；点应用卡片即"连上并打开会话"
-  （应用已开 → 直接连；未开 → 开启并连，两种点击操作一致）。**默认应用**在卡片右上角的五角星上设置。
+  - **应用管理界面**：列主机应用、显示每个应用**是否在运行**、可**关闭**在跑的应用；点应用卡片即"连上并打开会话"
+    （应用已在运行且是同一个 → 恢复；否则开启并连）。**默认应用**在卡片右上角的五角星上设置。
   - **页头走共享的紧凑 `HeaderBar`**（返回 + 标题「应用」+ 右侧 slot），连接名/地址放**右上角**；**刷新不再用文字**，
     而是右下角的通用悬浮圆钮（`components/FabButton` + `ic_refresh`），与列表页的「新建」FAB 同形。
   - **卡片只保留图标语义，不要右键菜单**：右上角五角星（`ic_star`，默认时 `accent` 填充、否则 `text_tertiary`）
@@ -58,8 +58,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
     - **有会话**（`Connecting`/`Connected`/`Disconnecting`）：`ic_power`(text_secondary)「断开连接」+
       `ic_stop`(danger)「关闭应用并断开」（`/cancel` + `SessionManager.disconnect`）。
   - **无会话时按现有逻辑；有会话时同一套动作直接落到会话上**——「连接」即断开后重连，无需二次确认弹窗。
-  - 未运行的应用卡片点击 = **连接**；**当已有应用在跑时是「切换」**（卡片悬浮提示随之变化）——平台侧
-    `launch` 遇主机 busy 会先 `/cancel` 再重试，切换可行，因此**不置灰**。会话在跑时切换会先断开当前会话再连新应用。
+  - 未运行的应用卡片点击 = **连接**；**当已有应用在跑时是「切换」**（卡片悬浮提示随之变化），因此**不置灰**。
+    连接预检按主机当前运行的应用选择走法：**是同一个应用 → 恢复（`/resume`）**；**是别的应用 → 先结束再启动**。
+    会话在跑时切换会先断开当前会话再连新应用。这一走法在**既有的连接/切换/默认应用/重试入口**上收敛，不另设入口。
   - 卡片本身是应用图标（fetch 到的位图 `ImageFit.Cover` 居中裁切、占位用 `ic_apps` 居中）+ `CARD` 沉浸材质；
     图标框按 Moonlight 标准 box art 的 **200:267** 宽高比（`moonlight-qt` 的 AppView 即此尺寸），
     与取回的位图同形，`Cover` 不再因框形不符而裁切/偏移；
@@ -101,9 +102,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 
 - 设置页顶部是 **RDP / Moonlight 两个 tab**（下划线样式，与编辑页一致）。
 - RDP tab 放显示/连接特性；Moonlight tab 放串流默认值（§3 的全局默认部分）。
-- **通用项（触控板、键盘、会话、窗口）在两个 tab 都出现，但每个协议各存一份值**：RDP 用原有设置键，
-  Moonlight 用 `ml*` 副本（如 `mlTouchpadScrollSpeed`）。UI 是同一段代码，靠切换数据源复用，
-  不复制界面；切换 tab 时先保存当前协议再加载另一协议。
+- **通用项**：触控板 / 键盘 / 会话窗口的设置在两个 tab 都出现，**每个协议各存一份值**（RDP 用原有设置键，
+  Moonlight 用 `ml*` 副本，如 `mlTouchpadScrollSpeed`）；UI 是同一段代码，靠切换数据源复用，切换 tab 时
+  先保存当前协议再加载另一协议。**主窗口（大小、自动隐藏）是应用级、只存一份**，不随协议区分。
 - 应用级项（开发者选项、配置备份）**不随协议区分**，两个 tab 共享同一份。
 - 「恢复默认设置」是导入导出下方的红色按钮，**只重置当前协议**（先弹出确认），不影响另一协议与已保存连接。
 
@@ -151,7 +152,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化；连接中的
   状态卡带约 1000ms 显示阈值，避免"多闪一下"。**停止会话会释放原生窗口，所以窗口内「重试」先重新绑定仍存活的
   XComponent surface 再重启**（此时会话必然已不在活动态，原生允许再次绑定）。
-- **范围之外**：音频（Opus，当前空渲染器关音频）、HDR / YUV444 的协商暴露；端到端串流待连真 Sunshine 验证；
-  超分链路（buffer 模式 + Vulkan 导入）属独立里程碑，仅真机验证（见 [`moonlight-native.md`](moonlight-native.md) §2）。
+- **范围之外（待后续里程碑）**：音频（Opus，当前空渲染器关音频）；HDR、环绕、手柄输入等能力在就绪前**不在
+  界面暴露**；端到端串流待连真 Sunshine 验证；超分链路（buffer 模式 + Vulkan 导入）属独立里程碑，
+  仅真机验证（见 [`moonlight-native.md`](moonlight-native.md) §2）。
 - 本文件描述**前端约定、ArkTS 协议建模与控制层**；原生侧（客户端库 / 解码 / 串流会话 / 输入）
   见 [`moonlight-native.md`](moonlight-native.md)，两协议共用的界面组件与设计语言见 [`ui-design.md`](ui-design.md)。

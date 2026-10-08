@@ -27,8 +27,9 @@ export const PROTOCOL_MOONLIGHT: number = 1;
 export const ML_DEFAULT_PORT: number = 47989;
 
 /**
- * How a Moonlight stream picks its resolution: follow the session window,
- * follow the host display, or a fixed width/height stored on the connection.
+ * How a Moonlight stream picks its resolution: follow the host display, or a
+ * fixed width/height stored on the connection. ML_RES_FOLLOW_WINDOW is a retired
+ * value kept so older records still parse (it resolves like FOLLOW_SCREEN).
  */
 export const ML_RES_FOLLOW_WINDOW: number = 0;
 export const ML_RES_FOLLOW_SCREEN: number = 1;
@@ -39,11 +40,6 @@ export const ML_CODEC_AUTO: number = 0;
 export const ML_CODEC_H264: number = 1;
 export const ML_CODEC_HEVC: number = 2;
 export const ML_CODEC_AV1: number = 3;
-
-/** Moonlight audio channel layout. */
-export const ML_AUDIO_STEREO: number = 0;
-export const ML_AUDIO_51: number = 1;
-export const ML_AUDIO_71: number = 2;
 
 /** Offered Moonlight stream frame rates. */
 export const ML_FPS_PRESETS: number[] = [30, 60, 90, 120];
@@ -106,32 +102,17 @@ export class AdvancedProfile {
 }
 
 /**
- * One application a paired Moonlight host advertises. Produced by the Moonlight
- * client when the app picker opens; `id` is the host's own app identifier and
- * `hdr` whether the app can output HDR.
- */
-export class MoonlightApp {
-  id: string = '';
-  name: string = '';
-  hdr: boolean = false;
-}
-
-/**
  * Effective Moonlight stream settings for a connection: the global defaults
  * unless the connection opted into its own overrides (same shape as
  * DisplayProfile / AdvancedProfile for RDP).
  */
 export class MoonlightProfile {
-  resMode: number = ML_RES_FOLLOW_WINDOW;
+  resMode: number = ML_RES_FOLLOW_SCREEN;
   width: number = 0;
   height: number = 0;
   fps: number = 60;
   bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
-  hdr: boolean = false;
   codec: number = ML_CODEC_AUTO;
-  yuv444: boolean = false;
-  audioConfig: number = ML_AUDIO_STEREO;
-  gamepad: boolean = true;
 }
 
 /**
@@ -418,24 +399,15 @@ export class SavedConnection extends RdpConnectOptions {
   // uuid), so it is the key the connection-uniqueness check prefers. Filled on
   // the first successful serverinfo; empty until then.
   mlHostId: string = '';
-  // Last known pairing state; the authoritative pairing is the client certificate
-  // the native Moonlight client keeps, so this is only a hint for the UI. A
-  // connection can be unpaired even when this is true (host reinstalled, config
-  // imported), which is why pairing is re-checked on every connect.
-  mlPaired: boolean = false;
   // When true the connection follows the global Moonlight stream defaults; when
   // false its own ml* stream values win (same pattern as useGlobalDisplay).
   useGlobalStream: boolean = true;
-  mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
   mlFps: number = 60;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
-  mlHdr: boolean = false;
   mlCodec: number = ML_CODEC_AUTO;
-  mlYuv444: boolean = false;
-  mlAudioConfig: number = ML_AUDIO_STEREO;
-  mlGamepad: boolean = true;
 
   isMoonlight(): boolean {
     return this.protocol === PROTOCOL_MOONLIGHT;

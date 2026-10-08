@@ -97,40 +97,55 @@ export class MoonlightClient {
     if (pin === undefined) {
       return undefined;
     }
-    const path: string = `/appasset?appid=${appId}&clientid=${MoonlightClient.UNIQUE_ID}`
+    // Host-side asset request: AssetType=2 (box art) and AssetIdx=0 select the
+    // icon; the host ignores an unknown clientid, so it is not sent.
+    const path: string = `/appasset?appid=${appId}&AssetType=2&AssetIdx=0`
       + `&uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
     const response: MoonlightHttpResult =
       await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin, 10000, true);
     return response.ok ? response.bodyBytes : undefined;
   }
 
+  /** Launches an application on the host (`/launch`). */
+  static async launch(dir: string, host: string, httpsPort: number,
+    options: MoonlightLaunchOptions): Promise<LaunchResult> {
+    return MoonlightClient.startSession(dir, host, httpsPort, options, false);
+  }
+
+  /** Resumes the application the host is already running (`/resume`). */
+  static async resume(dir: string, host: string, httpsPort: number,
+    options: MoonlightLaunchOptions): Promise<LaunchResult> {
+    return MoonlightClient.startSession(dir, host, httpsPort, options, true);
+  }
+
   /**
-   * Launches (or resumes) an application. The caller generates `rikeyHex` /
+   * Starts or resumes an application. The caller generates `rikeyHex` /
    * `rikeyId` and fills STREAM_CONFIGURATION from the result for
    * LiStartConnection.
    */
-  static async launch(dir: string, host: string, httpsPort: number,
-    options: MoonlightLaunchOptions): Promise<LaunchResult> {
+  private static async startSession(dir: string, host: string, httpsPort: number,
+    options: MoonlightLaunchOptions, resume: boolean): Promise<LaunchResult> {
     const result: LaunchResult = new LaunchResult();
     const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
     if (pin === undefined) {
       result.error = 'unpaired';
       return result;
     }
-    const path: string = `/launch?uniqueid=${MoonlightClient.UNIQUE_ID}`
+    const verb: string = resume ? 'resume' : 'launch';
+    const path: string = `/${verb}?uniqueid=${MoonlightClient.UNIQUE_ID}`
       + `&uuid=${MoonlightClient.uuid()}`
       + `&appid=${options.appId}`
       + `&mode=${options.width}x${options.height}x${options.fps}`
       + `&rikey=${options.rikeyHex}`
       + `&rikeyid=${options.rikeyId}`
       // Host-side parameter names (Sunshine nvhttp): localAudioPlayMode (not
-      // localaudio), hdrMode (not hdr), surroundAudioInfo (packed int).
-      + `&localAudioPlayMode=${options.localAudio ? 1 : 0}`
-      + `&surroundAudioInfo=196610`
-      + `&gamepad=${options.gamepad ? 1 : 0}`
-      + `&gcmap=0`
-      + `&hdrMode=${options.hdr ? 1 : 0}`
-      + `&yuv444=${options.yuv444 ? 1 : 0}`
+      // localaudio), surroundAudioInfo (packed int). Audio is not wired yet, so
+      // the stream is negotiated as stereo with host-side playback off; no
+      // gamepad is forwarded yet, so the attached-controller mask is 0.
+      + '&localAudioPlayMode=0'
+      + '&surroundAudioInfo=196610'
+      + '&remoteControllersBitmap=0'
+      + '&gcmap=0'
       // Sunshine's extended parameters (owned by moonlight-common-c).
       + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =
@@ -148,7 +163,6 @@ export class MoonlightClient {
     result.sessionUrl = sessionUrl;
     result.rikeyHex = options.rikeyHex;
     result.rikeyId = options.rikeyId;
-    result.gameSession = MoonlightXml.readOptional(outcome.body, 'gamesession') ?? '';
     result.ok = true;
     return result;
   }

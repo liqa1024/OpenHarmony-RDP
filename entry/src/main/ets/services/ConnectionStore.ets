@@ -9,7 +9,7 @@ import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_WINDOW, PROTOCOL_RDP,
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP,
   SavedConnection, SR_BACKEND_XENGINE
 } from '../model/RdpModels';
 
@@ -193,20 +193,20 @@ export class ConnectionStore {
     parts.push(conn.protocol.toString());
     parts.push(ConnectionStore.encode(conn.mlDefaultAppId));
     parts.push(ConnectionStore.encode(conn.mlDefaultAppName));
-    parts.push(conn.mlPaired ? '1' : '0');
+    // Retired slot (was the UI-only pairing hint): written fixed so every stored
+    // record keeps its positional layout.
+    parts.push('0');
     parts.push(conn.mlResMode.toString());
     parts.push(conn.mlWidth.toString());
     parts.push(conn.mlHeight.toString());
     parts.push(conn.mlFps.toString());
     parts.push(conn.mlBitrateKbps.toString());
-    parts.push(conn.mlHdr ? '1' : '0');
+    parts.push('0'); // retired: HDR
     parts.push(conn.mlCodec.toString());
-    parts.push(conn.mlYuv444 ? '1' : '0');
-    parts.push(conn.mlAudioConfig.toString());
-    parts.push(conn.mlGamepad ? '1' : '0');
+    parts.push('0'); // retired: YUV 4:4:4
+    parts.push('0'); // retired: audio channels
+    parts.push('0'); // retired: gamepad
     parts.push(conn.useGlobalStream ? '1' : '0');
-    // The host's own id (serverinfo `uniqueid`); appended, so older records just
-    // stop before it and deserialize with an empty id.
     parts.push(ConnectionStore.encode(conn.mlHostId));
     return parts.join(FIELD_SEPARATOR);
   }
@@ -247,21 +247,17 @@ export class ConnectionStore {
       ? ConnectionStore.parseNumber(parts[27], PROTOCOL_RDP) : PROTOCOL_RDP;
     conn.mlDefaultAppId = parts.length > 28 ? ConnectionStore.decode(parts[28]) : '';
     conn.mlDefaultAppName = parts.length > 29 ? ConnectionStore.decode(parts[29]) : '';
-    conn.mlPaired = parts.length > 30 ? parts[30] === '1' : false;
+    // Slot 30 (was the pairing hint), 36 (HDR), 38 (YUV 4:4:4), 39 (audio
+    // channels) and 40 (gamepad) are retired: not read, kept only for layout.
     conn.mlResMode = parts.length > 31
-      ? ConnectionStore.parseNumber(parts[31], ML_RES_FOLLOW_WINDOW) : ML_RES_FOLLOW_WINDOW;
+      ? ConnectionStore.parseNumber(parts[31], ML_RES_FOLLOW_SCREEN) : ML_RES_FOLLOW_SCREEN;
     conn.mlWidth = parts.length > 32 ? ConnectionStore.parseNumber(parts[32], 0) : 0;
     conn.mlHeight = parts.length > 33 ? ConnectionStore.parseNumber(parts[33], 0) : 0;
     conn.mlFps = parts.length > 34 ? ConnectionStore.parsePositive(parts[34], 60) : 60;
     conn.mlBitrateKbps = parts.length > 35
       ? ConnectionStore.parsePositive(parts[35], ML_BITRATE_DEFAULT_KBPS) : ML_BITRATE_DEFAULT_KBPS;
-    conn.mlHdr = parts.length > 36 ? parts[36] === '1' : false;
     conn.mlCodec = parts.length > 37
       ? ConnectionStore.parseNumber(parts[37], ML_CODEC_AUTO) : ML_CODEC_AUTO;
-    conn.mlYuv444 = parts.length > 38 ? parts[38] === '1' : false;
-    conn.mlAudioConfig = parts.length > 39
-      ? ConnectionStore.parseNumber(parts[39], ML_AUDIO_STEREO) : ML_AUDIO_STEREO;
-    conn.mlGamepad = parts.length > 40 ? parts[40] === '1' : true;
     conn.useGlobalStream = parts.length > 41 ? parts[41] === '1' : true;
     conn.mlHostId = parts.length > 42 ? ConnectionStore.decode(parts[42]) : '';
     return conn;

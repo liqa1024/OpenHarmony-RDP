@@ -61,11 +61,20 @@ export default class SessionAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onWindowStageCreate');
+    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
+    const moonlight: boolean = request !== undefined && request.protocol === PROTOCOL_MOONLIGHT;
     const settings: AppSettings = SettingsStore.load();
-    if (!settings.sessionFullscreen) {
-      WindowController.applyWindowStageSize(windowStage,
-        settings.sessionWindowWidth, settings.sessionWindowHeight,
-        settings.sessionWindowSizeEnabled);
+    // Session-window behaviour is per protocol; the main window is app-level.
+    const fullscreen: boolean = moonlight ? settings.mlSessionFullscreen
+      : settings.sessionFullscreen;
+    const sizeEnabled: boolean = moonlight ? settings.mlSessionWindowSizeEnabled
+      : settings.sessionWindowSizeEnabled;
+    const width: number = moonlight ? settings.mlSessionWindowWidth
+      : settings.sessionWindowWidth;
+    const height: number = moonlight ? settings.mlSessionWindowHeight
+      : settings.sessionWindowHeight;
+    if (!fullscreen) {
+      WindowController.applyWindowStageSize(windowStage, width, height, sizeEnabled);
     }
     // Single-window mode: block the system close button so the main window can
     // be relaunched first (see WindowController.closeSession).
@@ -80,16 +89,14 @@ export default class SessionAbility extends UIAbility {
     storage.setOrCreate<string>('sessionKey', this.sessionKey);
     // The protocol decides the session window: RDP's rich page, or the Moonlight
     // page (surface first, then LiStartConnection).
-    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
-    const page: string = request !== undefined && request.protocol === PROTOCOL_MOONLIGHT
-      ? 'pages/MoonlightSessionPage' : 'pages/SessionPage';
+    const page: string = moonlight ? 'pages/MoonlightSessionPage' : 'pages/SessionPage';
     windowStage.loadContent(page, storage, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, 'Failed to load the content. Cause: %{public}s',
           JSON.stringify(err));
         return;
       }
-      WindowController.setupSessionWindow(windowStage, settings.sessionFullscreen);
+      WindowController.setupSessionWindow(windowStage, fullscreen);
       WindowController.onSessionWindowReady();
       hilog.info(DOMAIN, TAG, '%{public}s', 'Succeeded in loading the content.');
     });

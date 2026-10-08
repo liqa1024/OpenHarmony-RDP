@@ -12,7 +12,7 @@ import { fileIo, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import {
-  ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_WINDOW, PROTOCOL_RDP,
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP,
   SavedConnection, SR_BACKEND_XENGINE
 } from '../model/RdpModels';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
@@ -70,17 +70,12 @@ class ExportedConnection {
   mlDefaultAppName: string = '';
   // The host's own id (serverinfo `uniqueid`), the connection-uniqueness key.
   mlHostId: string = '';
-  mlPaired: boolean = false;
-  mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
   mlFps: number = 60;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
-  mlHdr: boolean = false;
   mlCodec: number = ML_CODEC_AUTO;
-  mlYuv444: boolean = false;
-  mlAudioConfig: number = ML_AUDIO_STEREO;
-  mlGamepad: boolean = true;
   useGlobalStream: boolean = true;
 
   static fromSaved(conn: SavedConnection): ExportedConnection {
@@ -110,17 +105,12 @@ class ExportedConnection {
     item.mlDefaultAppId = conn.mlDefaultAppId;
     item.mlDefaultAppName = conn.mlDefaultAppName;
     item.mlHostId = conn.mlHostId;
-    item.mlPaired = conn.mlPaired;
     item.mlResMode = conn.mlResMode;
     item.mlWidth = conn.mlWidth;
     item.mlHeight = conn.mlHeight;
     item.mlFps = conn.mlFps;
     item.mlBitrateKbps = conn.mlBitrateKbps;
-    item.mlHdr = conn.mlHdr;
     item.mlCodec = conn.mlCodec;
-    item.mlYuv444 = conn.mlYuv444;
-    item.mlAudioConfig = conn.mlAudioConfig;
-    item.mlGamepad = conn.mlGamepad;
     item.useGlobalStream = conn.useGlobalStream;
     return item;
   }
@@ -152,18 +142,13 @@ class ExportedConnection {
     item.mlDefaultAppId = ConfigTransfer.readString(rec, 'mlDefaultAppId', '');
     item.mlDefaultAppName = ConfigTransfer.readString(rec, 'mlDefaultAppName', '');
     item.mlHostId = ConfigTransfer.readString(rec, 'mlHostId', '');
-    item.mlPaired = ConfigTransfer.readBoolean(rec, 'mlPaired', false);
-    item.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', ML_RES_FOLLOW_WINDOW);
+    item.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', ML_RES_FOLLOW_SCREEN);
     item.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', 0);
     item.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', 0);
     item.mlFps = ConfigTransfer.readNumber(rec, 'mlFps', 60);
     item.mlBitrateKbps =
       ConfigTransfer.readNumber(rec, 'mlBitrateKbps', ML_BITRATE_DEFAULT_KBPS);
-    item.mlHdr = ConfigTransfer.readBoolean(rec, 'mlHdr', false);
     item.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', ML_CODEC_AUTO);
-    item.mlYuv444 = ConfigTransfer.readBoolean(rec, 'mlYuv444', false);
-    item.mlAudioConfig = ConfigTransfer.readNumber(rec, 'mlAudioConfig', ML_AUDIO_STEREO);
-    item.mlGamepad = ConfigTransfer.readBoolean(rec, 'mlGamepad', true);
     item.useGlobalStream = ConfigTransfer.readBoolean(rec, 'useGlobalStream', true);
     return item;
   }
@@ -195,17 +180,12 @@ class ExportedConnection {
     conn.mlDefaultAppId = this.mlDefaultAppId;
     conn.mlDefaultAppName = this.mlDefaultAppName;
     conn.mlHostId = this.mlHostId;
-    conn.mlPaired = this.mlPaired;
     conn.mlResMode = this.mlResMode;
     conn.mlWidth = this.mlWidth;
     conn.mlHeight = this.mlHeight;
     conn.mlFps = this.mlFps;
     conn.mlBitrateKbps = this.mlBitrateKbps;
-    conn.mlHdr = this.mlHdr;
     conn.mlCodec = this.mlCodec;
-    conn.mlYuv444 = this.mlYuv444;
-    conn.mlAudioConfig = this.mlAudioConfig;
-    conn.mlGamepad = this.mlGamepad;
     conn.useGlobalStream = this.useGlobalStream;
     conn.updatedAt = Date.now();
     return conn;
@@ -451,17 +431,10 @@ export class ConfigTransfer {
     settings.mlFps = ConfigTransfer.readNumber(rec, 'mlFps', settings.mlFps);
     settings.mlBitrateKbps =
       ConfigTransfer.readNumber(rec, 'mlBitrateKbps', settings.mlBitrateKbps);
-    settings.mlHdr = ConfigTransfer.readBoolean(rec, 'mlHdr', settings.mlHdr);
     settings.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', settings.mlCodec);
-    settings.mlAutoDiscover =
-      ConfigTransfer.readBoolean(rec, 'mlAutoDiscover', settings.mlAutoDiscover);
     settings.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', settings.mlResMode);
     settings.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', settings.mlWidth);
     settings.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', settings.mlHeight);
-    settings.mlYuv444 = ConfigTransfer.readBoolean(rec, 'mlYuv444', settings.mlYuv444);
-    settings.mlAudioConfig =
-      ConfigTransfer.readNumber(rec, 'mlAudioConfig', settings.mlAudioConfig);
-    settings.mlGamepad = ConfigTransfer.readBoolean(rec, 'mlGamepad', settings.mlGamepad);
     settings.lastNewProtocol =
       ConfigTransfer.readNumber(rec, 'lastNewProtocol', settings.lastNewProtocol);
     settings.mlToolbarHoverDelay =
@@ -485,12 +458,6 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'mlWinKeySubstitute', settings.mlWinKeySubstitute);
     settings.mlShortcutPassthrough = ConfigTransfer.readBoolean(rec,
       'mlShortcutPassthrough', settings.mlShortcutPassthrough);
-    settings.mlMainWindowSizeEnabled = ConfigTransfer.readBoolean(rec,
-      'mlMainWindowSizeEnabled', settings.mlMainWindowSizeEnabled);
-    settings.mlMainWindowWidth =
-      ConfigTransfer.readNumber(rec, 'mlMainWindowWidth', settings.mlMainWindowWidth);
-    settings.mlMainWindowHeight =
-      ConfigTransfer.readNumber(rec, 'mlMainWindowHeight', settings.mlMainWindowHeight);
     settings.mlSessionWindowSizeEnabled = ConfigTransfer.readBoolean(rec,
       'mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
     settings.mlSessionWindowWidth =
@@ -499,8 +466,6 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'mlSessionWindowHeight', settings.mlSessionWindowHeight);
     settings.mlSessionFullscreen =
       ConfigTransfer.readBoolean(rec, 'mlSessionFullscreen', settings.mlSessionFullscreen);
-    settings.mlAutoHideMainWindow = ConfigTransfer.readBoolean(rec,
-      'mlAutoHideMainWindow', settings.mlAutoHideMainWindow);
     return settings;
   }
 

@@ -6,9 +6,9 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { AdvancedProfile, DisplayProfile, EditConnectionParams,
-  ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
+  ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
-  ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_RES_FOLLOW_WINDOW,
+  ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
   MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnectOptions,
   RdpConnectOrigin, SavedConnection, SR_BACKEND_FSR, SR_BACKEND_XENGINE,
   SrProfile } from '../model/RdpModels';
@@ -77,19 +77,14 @@ struct EditConnectionPage {
   // (the segment is shown locked); a new one starts on what the caller passed.
   @State protocol: number = PROTOCOL_RDP;
   // --- Moonlight (Sunshine) stream settings. ---
-  @State mlPaired: boolean = false;
   @State mlDefaultAppId: string = '';
   @State mlDefaultAppName: string = '';
-  @State mlResMode: number = ML_RES_FOLLOW_WINDOW;
+  @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
   @State mlWidthText: string = '1920';
   @State mlHeightText: string = '1080';
   @State mlFps: number = 60;
   @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
-  @State mlHdr: boolean = false;
   @State mlCodec: number = ML_CODEC_AUTO;
-  @State mlYuv444: boolean = false;
-  @State mlAudioConfig: number = ML_AUDIO_STEREO;
-  @State mlGamepad: boolean = true;
   // Moonlight: follow the global stream defaults unless overridden here (same
   // pattern as the RDP display / 超分 / advanced groups).
   @State useGlobalStream: boolean = true;
@@ -163,7 +158,6 @@ struct EditConnectionPage {
     const mlDefaults: AppSettings = SettingsStore.load();
     this.mlFps = mlDefaults.mlFps;
     this.mlBitrateText = mlDefaults.mlBitrateKbps.toString();
-    this.mlHdr = mlDefaults.mlHdr;
     this.mlCodec = mlDefaults.mlCodec;
     this.clampMlCodec();
 
@@ -204,7 +198,6 @@ struct EditConnectionPage {
       this.srEnabled = conn.srEnabled;
       this.srRatioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
       this.srBackend = conn.srBackend;
-      this.mlPaired = conn.mlPaired;
       this.mlDefaultAppId = conn.mlDefaultAppId;
       this.mlDefaultAppName = conn.mlDefaultAppName;
       this.mlResMode = conn.mlResMode;
@@ -214,12 +207,8 @@ struct EditConnectionPage {
       }
       this.mlFps = conn.mlFps;
       this.mlBitrateText = conn.mlBitrateKbps.toString();
-      this.mlHdr = conn.mlHdr;
       this.mlCodec = conn.mlCodec;
       this.clampMlCodec();
-      this.mlYuv444 = conn.mlYuv444;
-      this.mlAudioConfig = conn.mlAudioConfig;
-      this.mlGamepad = conn.mlGamepad;
       this.useGlobalStream = conn.useGlobalStream;
     }
     CredentialStore.loadPassword(id)
@@ -302,17 +291,13 @@ struct EditConnectionPage {
   }
 
   private resModeLabel(mode: number): string {
-    if (mode === ML_RES_FIXED) {
-      return '固定';
-    }
-    return mode === ML_RES_FOLLOW_SCREEN ? '跟随屏幕' : '跟随窗口';
+    return mode === ML_RES_FIXED ? '固定' : '跟随屏幕';
   }
 
   private streamSummary(profile: MoonlightProfile): string {
     const res: string = profile.resMode === ML_RES_FIXED
       ? `${profile.width}×${profile.height}` : this.resModeLabel(profile.resMode);
-    return `${res} · ${profile.fps}fps · ${profile.bitrateKbps}kbps`
-      + (profile.hdr ? ' · HDR' : '');
+    return `${res} · ${profile.fps}fps · ${profile.bitrateKbps}kbps`;
   }
 
   /**
@@ -507,7 +492,6 @@ struct EditConnectionPage {
     conn.port = this.parseMoonlightPort();
     conn.name = this.name.trim();
     conn.mlHostId = hostChanged ? '' : this.originalMoonlightHostId;
-    conn.mlPaired = hostChanged ? false : this.mlPaired;
     conn.mlDefaultAppId = hostChanged ? '' : this.mlDefaultAppId;
     conn.mlDefaultAppName = hostChanged ? '' : this.mlDefaultAppName;
     conn.mlResMode = this.mlResMode;
@@ -517,11 +501,7 @@ struct EditConnectionPage {
       ? this.parseSize(this.mlHeightText, 1080) : 0;
     conn.mlFps = this.mlFps;
     conn.mlBitrateKbps = this.effectiveBitrate();
-    conn.mlHdr = this.mlHdr;
     conn.mlCodec = this.mlCodec;
-    conn.mlYuv444 = this.mlYuv444;
-    conn.mlAudioConfig = this.mlAudioConfig;
-    conn.mlGamepad = this.mlGamepad;
     conn.useGlobalStream = this.useGlobalStream;
     conn.updatedAt = Date.now();
     if (!connect) {
@@ -559,9 +539,7 @@ struct EditConnectionPage {
           this.errorMessage = result.error;
           return;
         }
-        conn.mlPaired = true;
         conn.mlHostId = result.hostId;
-        this.mlPaired = true;
         if (this.persist(conn)) {
           this.forgetReplacedHost(conn.host.trim());
           showToast(this.getUIContext(), '配对成功');
@@ -891,17 +869,6 @@ struct EditConnectionPage {
   }
 
   @Builder
-  mlAudioChip(config: number, label: string) {
-    ChoiceChip({
-      label: label,
-      selected: this.mlAudioConfig === config,
-      onTap: () => {
-        this.mlAudioConfig = config;
-      }
-    })
-  }
-
-  @Builder
   moonlightForm() {
     Column() {
       // Name and the host-search entry share one row: the search button sits by
@@ -1063,7 +1030,6 @@ struct EditConnectionPage {
           } else {
             Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 4 })
             Flex({ wrap: FlexWrap.Wrap }) {
-              this.mlResModeChip(ML_RES_FOLLOW_WINDOW, '跟随窗口')
               this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
               this.mlResModeChip(ML_RES_FIXED, '固定')
             }
@@ -1120,11 +1086,6 @@ struct EditConnectionPage {
             }
             .width('100%').alignItems(HorizontalAlign.Start).margin({ top: 4 })
 
-            this.optionRow('HDR', '主机与显示器都支持时输出 HDR', this.mlHdr,
-              (v: boolean) => {
-                this.mlHdr = v;
-              }, true, '')
-
             Text('编码器').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
             if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
               Text('本设备无可用视频解码器，无法串流')
@@ -1140,25 +1101,6 @@ struct EditConnectionPage {
               this.mlCodecChip(ML_CODEC_AV1, 'AV1')
             }
             .width('100%').margin({ top: 8 })
-
-            this.optionRow('YUV 4:4:4', '色度不抽样，文字与彩色边缘更清晰，但更占带宽',
-              this.mlYuv444, (v: boolean) => {
-                this.mlYuv444 = v;
-              }, true, '')
-
-            Text('音频通道').fontSize(14).fontColor($r('app.color.text_primary'))
-              .margin({ top: 8 })
-            Flex({ wrap: FlexWrap.Wrap }) {
-              this.mlAudioChip(ML_AUDIO_STEREO, '立体声')
-              this.mlAudioChip(ML_AUDIO_51, '5.1')
-              this.mlAudioChip(ML_AUDIO_71, '7.1')
-            }
-            .width('100%').margin({ top: 8 })
-
-            this.optionRow('手柄输入', '把连接的手柄转发给主机', this.mlGamepad,
-              (v: boolean) => {
-                this.mlGamepad = v;
-              }, true, '')
           }
         }
         .width('100%')

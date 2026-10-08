@@ -25,6 +25,10 @@ export class MdnsHost {
   name: string = '';
   address: string = '';
   port: number = 0;
+  // The raw mDNS instance name. It is the only identity the `serviceLost` event
+  // carries (the platform does not fill in the address on removal), so it is what
+  // a lost instance is matched against; `name` is only for display.
+  serviceKey: string = '';
 }
 
 export class MdnsDiscovery {
@@ -45,7 +49,7 @@ export class MdnsDiscovery {
         this.resolve(data);
       });
       this.service.on('serviceLost', (data: mdns.LocalServiceInfo): void => {
-        this.remove(MdnsDiscovery.displayName(data.serviceName));
+        this.remove(data.serviceName);
       });
       this.service.startSearchingMDNS();
     } catch (error) {
@@ -102,6 +106,10 @@ export class MdnsDiscovery {
           host.name = name;
           changed = true;
         }
+        if (host.serviceKey !== info.serviceName) {
+          host.serviceKey = info.serviceName;
+          changed = true;
+        }
         if (host.port !== port) {
           host.port = port;
           changed = true;
@@ -113,6 +121,7 @@ export class MdnsDiscovery {
       const host: MdnsHost = new MdnsHost();
       host.name = name;
       host.address = address;
+      host.serviceKey = info.serviceName;
       host.port = port;
       next.push(host);
       changed = true;
@@ -126,11 +135,12 @@ export class MdnsDiscovery {
     }
   }
 
-  private remove(name: string): void {
+  /** Removes the instance with this raw mDNS service name (see MdnsHost.serviceKey). */
+  private remove(serviceKey: string): void {
     const next: MdnsHost[] = [];
     let changed: boolean = false;
     for (let i = 0; i < this.hosts.length; i++) {
-      if (this.hosts[i].name === name) {
+      if (this.hosts[i].serviceKey === serviceKey) {
         changed = true;
         continue;
       }
