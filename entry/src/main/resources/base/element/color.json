@@ -67,6 +67,10 @@
     {
       "name": "hover_bg",
       "value": "#E7E9ED"
+    },
+    {
+      "name": "star_on",
+      "value": "#FFB300"
     }
   ]
 }

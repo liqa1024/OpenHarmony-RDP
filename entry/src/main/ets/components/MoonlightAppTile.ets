@@ -151,7 +151,7 @@ export struct MoonlightAppTile {
       Column() {
         ControlDisc({
           icon: $r('app.media.ic_star'),
-          iconColor: this.isDefault ? $r('app.color.accent') : $r('app.color.text_primary'),
+          iconColor: this.isDefault ? $r('app.color.star_on') : $r('app.color.text_primary'),
           diameter: STAR_CONTROL,
           glyph: STAR_SIZE,
           tip: '设为默认',

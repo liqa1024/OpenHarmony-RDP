@@ -48,6 +48,7 @@
 | `success` / `success_bg` | `#2E9E5B` / `#E6F6EC` | `#4CC77A` / `#17301F` | 状态徽标（如「已连接」「运行中」） |
 | `hover_bg` | `#E7E9ED` | `#2E2E32` | 悬停底（图标按钮、chip） |
 | `neutral` / `neutral_hover` | `#6E737B` / `#5A5F67` | `#4A4F57` / `#5A606A` | 实心中性动作钮（Moonlight 行的「应用」钮；与 accent / danger 并列为第三种动作色） |
+| `star_on` | `#FFB300` | `#FFCA28` | 五角星选中填充（应用页「设为默认」的星标；未选中用 `text_primary`） |
 
 约束：
 
