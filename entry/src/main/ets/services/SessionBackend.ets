@@ -22,6 +22,19 @@ export type SessionSignalListener = (signal: SessionSignal) => void;
  */
 export interface SessionBackend {
   protocol(): number;
+  /**
+   * True when this backend has asynchronous pre-flight work that must finish
+   * before the session can be started (Moonlight: serverinfo -> pair -> launch).
+   * The manager publishes Connecting first, then awaits prepare().
+   */
+  requiresPrepare(): boolean;
+  /**
+   * Optional async pre-flight, run while the connection is Connecting. Resolve
+   * true to let the manager continue (open the window / start); on failure emit
+   * an Error signal carrying the reason (the manager shows it) and resolve false.
+   * Backends without pre-flight work return an already-resolved true.
+   */
+  prepare(): Promise<boolean>;
   /** Creates the native session; returns its handle (>0) or -1. */
   start(): number;
   /** Tears the native session down and drops the listener (idempotent). */
@@ -76,6 +89,14 @@ export class RdpSessionBackend implements SessionBackend {
 
   protocol(): number {
     return PROTOCOL_RDP;
+  }
+
+  requiresPrepare(): boolean {
+    return false;
+  }
+
+  prepare(): Promise<boolean> {
+    return Promise.resolve(true);
   }
 
   start(): number {

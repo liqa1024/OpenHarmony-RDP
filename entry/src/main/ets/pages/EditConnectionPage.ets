@@ -16,12 +16,10 @@ import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
+import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { defaultDisplay } from '../utils/DisplayUtil';
-import { promptPairingPin } from '../utils/PairingPrompt';
 import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { ChoiceChip } from '../components/ChoiceChip';
@@ -489,54 +487,26 @@ struct EditConnectionPage {
   }
 
   /**
-   * Moonlight: run the control pre-flight (serverinfo -> pair -> launch) with the
-   * PIN popup, then hand the assembled config to the session. The connection is
-   * persisted only on success, like RDP.
+   * Moonlight: hand the connection to the shared launcher, which drives the
+   * control pre-flight (serverinfo -> pair -> launch) inside the manager's
+   * Connecting state (with the PIN popup). The connection is persisted only on
+   * success, like RDP; a failure arrives through the state listener above.
    */
-  private async connectMoonlight(conn: SavedConnection): Promise<void> {
+  private connectMoonlight(conn: SavedConnection): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       this.errorMessage = '无法发起连接';
       return;
     }
-    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
-    let width: number = conn.mlWidth;
-    let height: number = conn.mlHeight;
-    if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      const size = defaultDisplay();
-      if (size !== undefined) {
-        width = size.width;
-        height = size.height;
-      }
-    }
-    const parsedAppId: number = conn.mlDefaultAppId.length > 0
-      ? Number.parseInt(conn.mlDefaultAppId, 10) : 0;
-    const appId: number = Number.isNaN(parsedAppId) ? 0 : parsedAppId;
     this.errorMessage = '';
     this.activeConnectionId = conn.id;
     this.connecting = true;
-    const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
-      conn.host, conn.port, stream, appId, width, height,
-      (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
-    if (!result.ok) {
-      this.connecting = false;
-      this.errorMessage = result.error;
-      return;
-    }
-    const request: PendingConnection = new PendingConnection();
-    request.connectionId = conn.id;
-    request.origin = RdpConnectOrigin.Editor;
-    request.protocol = PROTOCOL_MOONLIGHT;
-    request.savedConnection = conn;
-    request.stream = stream;
-    request.moonlightConfig = result.config;
-    request.onConnected = () => {
-      conn.mlPaired = true;
-      this.persist(conn);
-      this.returnToList();
-    };
-    SessionManager.connect(request, abilityContext);
+    MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
+      RdpConnectOrigin.Editor, 0, () => {
+        conn.mlPaired = true;
+        this.persist(conn);
+        this.returnToList();
+      });
   }
 
   private persist(conn: SavedConnection): boolean {

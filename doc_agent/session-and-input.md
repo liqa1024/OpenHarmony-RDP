@@ -25,11 +25,16 @@
     `Connected/Disconnected/Error` + 协议自带码的 `UiEvent`，见 `model/SessionSignal.ets`）与协议无关的
     输入动词（指针/触摸/按键/Unicode）。协议特定的会话窗口把 `UiEvent.eventCode` 当自己的事件码解释，
     并向下转型到自己的后端取更多能力（RDP 用 `RdpSessionBackend.native`）。`SessionBackendRegistry`
-    按 `sessionKey` 关联窗口与其后端。后端可声明 **`requiresWindowAtStart()`**（Moonlight：
-    `LiStartConnection` 需要先有渲染目标）——此时 manager 先在 `Connecting` 就开窗，窗口绑好 XComponent
-    surface 后调 `SessionManager.beginStream` 才真正启动；RDP 为 false，维持"连上后才开窗"。**Moonlight
-    后端 `MoonlightSessionBackend` 已实现**，但要等 Moonlight 会话窗口（负责 `bindSurface` + `beginStream`）
-    落地后才能由工厂交出去。
+    按 `sessionKey` 关联窗口与其后端。
+  - **连接过程两端同形：先发布 `Connecting`，再做异步预检**。`connect`/`retry` 一律**先发布 `Connecting`**
+    再交给后端——列表行因此立刻进入加载态，与协议无关。后端可声明 **`requiresPrepare()`** 并在
+    `prepare(): Promise<boolean>` 里做异步预检（Moonlight：`serverinfo → pair → launch`，配对 PIN 弹窗在此
+    弹出）；预检期间 `Connecting` 已成立，所以不会出现"先无反馈、窗口里才闪一下加载"的断档。预检失败由
+    后端发 `Error` 信号（文案即连接失败原因），窗口不开；预检**不挂连接超时**（配对要等用户输入），超时只在
+    真正开始启动后才计。
+  - 后端另可声明 **`requiresWindowAtStart()`**（Moonlight：`LiStartConnection` 需要先有渲染目标）——预检
+    通过后 manager 才开窗，窗口绑好 XComponent surface 后调 `SessionManager.beginStream` 真正启动；RDP
+    为 false，维持"连上后才开窗"。Moonlight 会话窗口与后端 `MoonlightSessionBackend` 均已落地。
   - 原生 `Session` 的生命周期也是**单向**的（`kIdle→kStarting→kConnected→kStopping→kDestroyed`，
     一次尝试一个对象、不复用）：只有 RDP 线程释放 FreeRDP context（`Teardown`），其它线程（输入/剪贴板/
     gdi 回调）须先 `AcquireContext()` 取租约、用完 `ReleaseContext()`，`Teardown` 等**在途租约归零**后

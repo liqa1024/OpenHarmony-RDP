@@ -126,7 +126,10 @@ export struct ConnectionRow {
         .width(44)
         .height(44)
         .borderRadius(22)
-        .backgroundColor($r('app.color.card_bg'))
+        // A distinct secondary-button surface: the row card background would
+        // leave the icon floating with no button of its own (the "应用" glyph is
+        // theme-aware, see resources/dark/media/ic_apps.svg).
+        .backgroundColor($r('app.color.input_bg'))
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .margin({ left: 8 })

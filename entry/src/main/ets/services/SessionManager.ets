@@ -156,11 +156,62 @@ export class SessionManager {
       SessionManager.onSessionSignal(entry, epoch, signal);
     });
     SessionManager.notify(connectionId, ConnectionState.Connecting, '', request.origin);
+    SessionManager.launch(entry, epoch);
+  }
+
+  /**
+   * Runs a backend's optional async pre-flight, then proceeds. The entry and its
+   * epoch are re-checked after the await so a disconnect or a newer attempt
+   * cannot be driven by a stale pre-flight result.
+   */
+  private static launch(entry: SessionEntry, epoch: number): void {
+    const backend: SessionBackend | undefined = entry.backend;
+    if (backend === undefined) {
+      return;
+    }
+    if (!backend.requiresPrepare()) {
+      SessionManager.proceed(entry, epoch);
+      return;
+    }
+    backend.prepare().then((ok: boolean): void => {
+      if (SessionManager.entries.get(entry.connectionId) !== entry || entry.epoch !== epoch) {
+        return;
+      }
+      if (!ok || entry.state !== ConnectionState.Connecting) {
+        // A failed pre-flight already published its own Error signal.
+        return;
+      }
+      SessionManager.proceed(entry, epoch);
+    }).catch((error: BusinessError): void => {
+      hilog.error(DOMAIN, TAG, 'prepare failed: %{public}s', JSON.stringify(error));
+      if (SessionManager.entries.get(entry.connectionId) !== entry || entry.epoch !== epoch) {
+        return;
+      }
+      if (entry.state === ConnectionState.Connecting) {
+        if (entry.backend !== undefined) {
+          entry.backend.stop();
+        }
+        SessionManager.publish(entry, ConnectionState.Failed, '连接失败');
+      }
+    });
+  }
+
+  /** Opens the window (first attempt) or starts the native session, per backend. */
+  private static proceed(entry: SessionEntry, epoch: number): void {
+    const backend: SessionBackend | undefined = entry.backend;
+    if (backend === undefined || entry.epoch !== epoch) {
+      return;
+    }
     if (backend.requiresWindowAtStart()) {
-      // The session window is the render target: open it now, and start only
-      // once the page has bound its surface (SessionManager.beginStream).
-      SessionManager.openWindowForEntry(entry);
-      SessionManager.armTimeout(entry);
+      if (!entry.windowOpen) {
+        // The session window is the render target: open it now, and start only
+        // once the page has bound its surface (SessionManager.beginStream).
+        SessionManager.openWindowForEntry(entry);
+        SessionManager.armTimeout(entry);
+        return;
+      }
+      // The window is still open with its surface bound (retry comes from it).
+      SessionManager.beginStream(entry.connectionId);
       return;
     }
     const handle: number = backend.start();
@@ -246,18 +297,7 @@ export class SessionManager {
       SessionManager.onSessionSignal(entry, epoch, signal);
     });
     SessionManager.publish(entry, ConnectionState.Connecting, '');
-    if (backend.requiresWindowAtStart()) {
-      // The window is still open with its surface bound (retry comes from that
-      // window), so start immediately.
-      return SessionManager.beginStream(connectionId);
-    }
-    const handle: number = backend.start();
-    if (handle < 0) {
-      backend.clearSignalListener();
-      SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
-      return false;
-    }
-    SessionManager.armTimeout(entry);
+    SessionManager.launch(entry, epoch);
     return true;
   }
 

@@ -11,16 +11,14 @@
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ML_RES_FIXED, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
-import { MoonlightAppsResult, MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
+import { MoonlightAppsResult, MoonlightConnector } from '../services/MoonlightConnector';
+import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { SettingsStore } from '../services/SettingsStore';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp } from '../moonlight/MoonlightModels';
 import { showToast } from '../utils/UiUtil';
-import { defaultDisplay } from '../utils/DisplayUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 
 const DOMAIN: number = 0xD001;
@@ -132,40 +130,16 @@ struct MoonlightAppsPage {
   }
 
   /** Connect to one app: same operation whether it is running or not. */
-  private async connectApp(app: NvApp): Promise<void> {
+  private connectApp(app: NvApp): void {
     const conn: SavedConnection | undefined = this.conn;
     const context = this.getUIContext().getHostContext();
     if (conn === undefined || context === undefined) {
       return;
     }
-    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
-    let width: number = conn.mlWidth;
-    let height: number = conn.mlHeight;
-    if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      const size = defaultDisplay();
-      if (size !== undefined) {
-        width = size.width;
-        height = size.height;
-      }
-    }
+    // A specific app id; the pre-flight runs inside the manager (Connecting).
     this.error = '';
-    const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
-      conn.host, conn.port, stream, app.id, width, height,
-      (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
-    if (!result.ok) {
-      this.error = result.error;
-      return;
-    }
-    const request: PendingConnection = new PendingConnection();
-    request.connectionId = conn.id;
-    request.origin = RdpConnectOrigin.List;
-    request.protocol = PROTOCOL_MOONLIGHT;
-    request.savedConnection = conn;
-    request.stream = stream;
-    request.moonlightConfig = result.config;
-    request.moonlightHttpsPort = result.httpsPort;
-    SessionManager.connect(request, abilityContext);
+    MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
+      RdpConnectOrigin.List, app.id);
   }
 
   private async closeApp(): Promise<void> {

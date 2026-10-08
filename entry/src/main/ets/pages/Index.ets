@@ -4,20 +4,18 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AdvancedProfile, DisplayProfile, EditConnectionParams, ML_RES_FIXED,
-  MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
-  RdpConnectOptions, RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile, EditConnectionParams,
+  PendingConnection, RdpConnectOptions,
+  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
-import { MoonlightConnectResult, MoonlightConnector } from '../services/MoonlightConnector';
+import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { ConnectionRow } from '../components/ConnectionRow';
-import { defaultDisplay } from '../utils/DisplayUtil';
-import { promptPairingPin } from '../utils/PairingPrompt';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -142,8 +140,15 @@ struct Index {
   }
 
   private async startConnection(conn: SavedConnection): Promise<void> {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
+    }
     if (conn.isMoonlight()) {
-      await this.startMoonlightConnection(conn);
+      // The manager drives the control-layer pre-flight (serverinfo -> pair ->
+      // launch) while Connecting; see MoonlightLauncher.
+      MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
+        RdpConnectOrigin.List);
       return;
     }
     const options: RdpConnectOptions = conn.toOptions();
@@ -165,51 +170,7 @@ struct Index {
     options.ignoreCertificate = advanced.ignoreCertificate;
     options.password = await CredentialStore.loadPassword(conn.id);
     request.options = options;
-    const context = this.getUIContext().getHostContext();
-    if (context !== undefined) {
-      SessionManager.connect(request, context as common.UIAbilityContext);
-    }
-  }
-
-  /**
-   * Moonlight: run the control pre-flight (serverinfo -> pair -> launch) with the
-   * PIN popup over this window, then hand the assembled config to the session.
-   */
-  private async startMoonlightConnection(conn: SavedConnection): Promise<void> {
-    const context = this.getUIContext().getHostContext();
-    if (context === undefined) {
-      return;
-    }
-    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
-    let width: number = conn.mlWidth;
-    let height: number = conn.mlHeight;
-    if (stream.resMode !== ML_RES_FIXED || width <= 0 || height <= 0) {
-      const size = defaultDisplay();
-      if (size !== undefined) {
-        width = size.width;
-        height = size.height;
-      }
-    }
-    const appId: number = conn.mlDefaultAppId.length > 0
-      ? Number.parseInt(conn.mlDefaultAppId, 10) : 0;
-    const appIdValue: number = Number.isNaN(appId) ? 0 : appId;
-    const result: MoonlightConnectResult = await MoonlightConnector.prepare(abilityContext.filesDir,
-      conn.host, conn.port, stream, appIdValue, width, height,
-      (pin: string): Promise<boolean> => promptPairingPin(this.getUIContext(), pin));
-    if (!result.ok) {
-      this.showConnectError(result.error);
-      return;
-    }
-    const request: PendingConnection = new PendingConnection();
-    request.connectionId = conn.id;
-    request.origin = RdpConnectOrigin.List;
-    request.protocol = PROTOCOL_MOONLIGHT;
-    request.savedConnection = conn;
-    request.stream = stream;
-    request.moonlightConfig = result.config;
-    request.moonlightHttpsPort = result.httpsPort;
-    SessionManager.connect(request, abilityContext);
+    SessionManager.connect(request, context as common.UIAbilityContext);
   }
 
   /** The Moonlight app button is only usable when no attempt is in flight. */

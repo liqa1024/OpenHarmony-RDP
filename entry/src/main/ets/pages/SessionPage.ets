@@ -36,7 +36,7 @@ import { StatusCard } from '../components/StatusCard';
 import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
   TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
-  TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, ToolbarChip,
+  TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
   ToolbarRevealHint } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
@@ -3282,12 +3282,10 @@ struct SessionPage {
   @Builder
   sessionToolbarMainRow() {
     Row() {
-      Text(this.options.displayName())
-        .fontSize(14)
-        .fontColor(TOOLBAR_FG)
-      Text('  ' + this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator())
-        .fontSize(12)
-        .fontColor(TOOLBAR_FG_SECONDARY)
+      SessionTitle({
+        name: this.options.displayName(),
+        detail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator()
+      })
       Blank()
       // File transfer progress: an inline bar next to the clipboard actions,
       // with a cancel affordance while a download is running.

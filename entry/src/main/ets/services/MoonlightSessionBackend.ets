@@ -7,9 +7,9 @@
  * manager opens the window first, the page binds its XComponent surface, and
  * only then does the manager call start() (via SessionManager.beginStream).
  *
- * The stream config (host, /launch result, resolved profile) is supplied by the
- * control layer once it has run serverinfo -> launch; the backend carries it
- * across to LiStartConnection and maps native events onto SessionSignal.
+ * The manager drives the control layer's pre-flight (serverinfo -> pair ->
+ * launch) through prepare(); that assembles the stream config, which start()
+ * then carries across to LiStartConnection. Native events map onto SessionSignal.
  */
 import {
   MoonlightSessionConfig, moonlightKey, moonlightMouseButton, moonlightMouseMove,
@@ -18,6 +18,7 @@ import {
 } from 'libhmrdp.so';
 import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
+import { MoonlightConnectResult, MoonlightConnector } from './MoonlightConnector';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
 
 /** Session event ids; mirror hmrdp::MoonlightSessionEvent (hmrdp_moonlight_session.h). */
@@ -29,13 +30,14 @@ export const ML_EVENT_STAGE_FAILED: number = 4;
 
 export class MoonlightSessionBackend implements SessionBackend {
   private listener: SessionSignalListener | undefined = undefined;
+  private request: PendingConnection;
   private config: MoonlightSessionConfig | undefined = undefined;
   private windowBound: boolean = false;
 
   constructor(request: PendingConnection) {
-    // The control layer assembled the config before the connect; without one the
-    // session reports a clear failure instead of misbehaving.
-    this.config = request.moonlightConfig;
+    // The manager drives the control-layer pre-flight through prepare(); the
+    // request carries everything it needs (host, stream, files dir, PIN popup).
+    this.request = request;
     // One process-global session at a time (moonlight-common-c is single
     // connection), so the listener is registered here rather than per stream.
     moonlightSetSessionListener((event: number, value: number, text: string): void => {
@@ -45,6 +47,43 @@ export class MoonlightSessionBackend implements SessionBackend {
 
   protocol(): number {
     return PROTOCOL_MOONLIGHT;
+  }
+
+  /**
+   * The control layer (serverinfo -> pair -> launch) is async and must run
+   * before the window can open, so the manager awaits it as part of Connecting.
+   */
+  requiresPrepare(): boolean {
+    return true;
+  }
+
+  /**
+   * Runs the Moonlight pre-flight and assembles the native stream config. The
+   * manager has already published Connecting, so a failure here is reported as
+   * an Error signal (its reason becomes the connection error message).
+   */
+  async prepare(): Promise<boolean> {
+    const request: PendingConnection = this.request;
+    const conn = request.savedConnection;
+    if (conn === undefined || request.filesDir.length === 0) {
+      this.emit(ML_EVENT_STAGE_FAILED, 0, '缺少连接参数');
+      return false;
+    }
+    const pinProvider: (pin: string) => Promise<boolean> =
+      request.moonlightPinProvider !== undefined
+        ? request.moonlightPinProvider
+        : (): Promise<boolean> => Promise.resolve(false);
+    const result: MoonlightConnectResult = await MoonlightConnector.prepare(request.filesDir,
+      conn.host, conn.port, request.stream, request.moonlightAppId,
+      request.stream.width, request.stream.height, pinProvider);
+    if (!result.ok) {
+      this.emit(ML_EVENT_STAGE_FAILED, 0, result.error);
+      return false;
+    }
+    this.config = result.config;
+    request.moonlightConfig = result.config;
+    request.moonlightHttpsPort = result.httpsPort;
+    return true;
   }
 
   /**
@@ -76,7 +115,7 @@ export class MoonlightSessionBackend implements SessionBackend {
   start(): number {
     const config: MoonlightSessionConfig | undefined = this.config;
     if (config === undefined) {
-      this.emit(ML_EVENT_STAGE_FAILED, 0, '尚未配置串流参数（控制层未接入）');
+      this.emit(ML_EVENT_STAGE_FAILED, 0, '尚未配置串流参数');
       return -1;
     }
     if (!this.windowBound) {

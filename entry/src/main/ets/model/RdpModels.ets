@@ -291,10 +291,18 @@ export class PendingConnection {
   // the native Moonlight session is built.
   stream: MoonlightProfile = new MoonlightProfile();
   // The assembled Moonlight stream config (serverinfo + /launch), consumed by the
-  // Moonlight backend. Undefined for RDP, and until the control layer has run.
+  // Moonlight backend. The manager drives the backend's pre-flight, which fills
+  // this in; undefined until that pre-flight succeeds.
   moonlightConfig: MoonlightStreamConfig | undefined = undefined;
   // The host's HTTPS control port (for /cancel and other paired endpoints).
   moonlightHttpsPort: number = 47984;
+  // Moonlight pre-flight inputs (see SessionBackend.prepare): the sandbox files
+  // dir the control layer reads/writes, the app to launch (0 = resolve from
+  // savedConnection / host default), and the pairing-PIN popup provider. Kept on
+  // the request so the manager can run the pre-flight like any other protocol.
+  filesDir: string = '';
+  moonlightAppId: number = 0;
+  moonlightPinProvider: ((pin: string) => Promise<boolean>) | undefined = undefined;
   // Invoked once when a session launched from the editor connects successfully.
   // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;
@@ -328,6 +336,7 @@ export class SessionRequests {
       request.options.password = '';
       request.options.gatewayPassword = '';
       request.onConnected = undefined;
+      request.moonlightPinProvider = undefined;
       SessionRequests.entries.delete(key);
     }
   }

@@ -144,7 +144,13 @@ Column(page_bg, 100%×100%)
 - 自动隐藏的**显隐判定**由 `services/ToolbarAutoHide` 独占（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议的会话页共用：页面提供实时状态（全屏 / 连接 / 钉住 / 延迟）并把结果（显示 / 揭示进度）镜像进自己的 `@State`，渲染与动效留在页面。
 - 会话窗口的**运行时能力**归 `services/WindowController`：取本会话窗口、全屏检测、最小化 / 全屏切换、焦点 / 可见性监听。它们与自动隐藏判定一样**按需（opt-in）**——页面只调用 / 订阅自己反应的部分，抽取本身不申请任何用不到的能力。
 - 状态遮罩：全屏居中、`#66000000` 底色上放状态卡；状态卡的图标 / 标题 / 副标题 / 按钮组合由连接状态驱动（§4）。
+  **「正在连接」卡带显示阈值**（约 1000ms）：Moonlight 的会话窗在串流起来之前就开着，若卡立即出现只会一闪而过，
+  故连接态的卡等这段阈值、仍未起来才显示；失败 / 断开 / 正在断开一律立即显示。RDP 窗口只在连上后才开，因此
+  天然不出现连接卡。连接卡的副标题与 RDP 同形（连接目标 `targetLabel`），协议阶段文案不进卡片。
 - 工具栏结构：主行（会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
+- 主行左侧的「名称 + 分辨率」是同形的一段，由 `SessionTitle`（§4.1）渲染：名称 `14` 前景色，后面跟 `12`
+  次级色的「宽 × 高」；协议差异只体现在分辨率后的**括号后缀**——RDP 是超分（`srIndicator`），Moonlight 是
+  协商到的解码格式（`moonlightDecodeIndicator`，如 ` (H.264, CPU)`，软件解码才带 `, CPU`）。
 
 ## 4. 组件契约
 
@@ -164,6 +170,7 @@ Column(page_bg, 100%×100%)
 | `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
 | `ToolbarChip` | `SessionChrome.ets` | `label, chipBg?, fgColor?, icon?, hPad?, onTap` | 会话工具栏实心 chip |
+| `SessionTitle` | `SessionChrome.ets` | `name, detail` | 工具栏左侧「名称 + 分辨率」标题（RDP / Moonlight 共用，差异只在 `detail` 后缀） |
 | `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |
 | `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?, tip?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项），`tip` 为空则不挂提示 |
 | （调色板常量） | `SessionChrome.ets` | `TOOLBAR_*` / `METRIC_*` | 固定深色工具栏调色板与几何 |

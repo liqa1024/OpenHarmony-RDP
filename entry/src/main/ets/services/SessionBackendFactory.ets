@@ -11,8 +11,8 @@ import { MoonlightSessionBackend } from './MoonlightSessionBackend';
 export class SessionBackendFactory {
   static create(request: PendingConnection): SessionBackend | undefined {
     if (request.protocol === PROTOCOL_MOONLIGHT) {
-      // The control layer ran serverinfo -> (pair) -> launch and put the stream
-      // config on the request; the session window binds the surface.
+      // The backend runs the control layer's pre-flight (serverinfo -> pair ->
+      // launch) through prepare(); the session window binds the surface.
       return new MoonlightSessionBackend(request);
     }
     return new RdpSessionBackend(request.options);

@@ -80,7 +80,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 - Moonlight 卡片用 `ic_proto_moonlight`：紫色底 + 白色显示器轮廓 + **纯白 8 分格圆盘**，
   再用一枚偏移圆形成缺口（新月）。缺口与分割线用 `userSpaceOnUse` 的线性渐变填充，
   按用户坐标取色，因此与背景渐变**零色差、无接缝**（不需要 mask，也不必用黑底或灰阶）。
-- Moonlight 行的「应用」按钮用网格图标（`ic_apps`），深色描边画在浅色底上才可见。
+- Moonlight 行的「应用」按钮用网格图标（`ic_apps`）：它**随主题**（`resources/dark/media/` 同名覆盖为浅色描边）
+  画在**次级按钮底**（`input_bg`）上，深浅色都有对比度。不要让它与卡片同底——那样看不出是按钮，且暗色下
+  深色描边整片消失。
 
 ## 7. 当前实现边界
 
@@ -94,16 +96,22 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 - **控制层已接入连接流程**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
   （自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、`MoonlightClient`
   （`serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。串流前的预检由
-  `services/MoonlightConnector.ets` 统一编排：`serverinfo →（未配对则先 `pair`）→ launch`，并装配原生串流配置。
-  列表与编辑页的「连接」都走它。
+  `services/MoonlightConnector.ets` 编排（`serverinfo →`（未配对则先 `pair`）`→ launch`，并装配原生串流配置）；
+  它现在由 `MoonlightSessionBackend.prepare()` 在 `SessionManager` 已经发布的 `Connecting` 状态下驱动，因此
+  列表行的加载态与 RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的
+  「连接」统一经 `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后
+  交给 manager。
 - **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入），配对期间
   不开任何会话窗口；确认后再 launch 并开会话（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 待定项）。
 - **会话窗口与后端已接入**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
-  `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（读
-  `PendingConnection.moonlightConfig`）、`services/SessionBackendFactory.ets` 与 `utils/MoonlightKeyMapper.ets`；
-  `SessionAbility` 按协议路由到该页。窗口是**先开窗再启动**（`requiresWindowAtStart`），因为 `LiStartConnection`
-  需要渲染目标。会话工具栏复用与 RDP 同一套 chrome 与自动隐藏判定（`components/SessionChrome`、
-  `services/ToolbarAutoHide`），支持全屏 / 最小化。
+  `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配
+  `moonlightConfig`，`start()` 交给原生）、`services/SessionBackendFactory.ets` 与
+  `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按协议路由到该页。窗口在**预检通过后**打开、绑好 surface 再
+  启动（`requiresWindowAtStart`，因为 `LiStartConnection` 需要渲染目标）。工具栏与 RDP 同形：标题用共享的
+  `SessionTitle`（名称 + 分辨率 + 括号里的**协商解码格式**，见 [`ui-design.md`](ui-design.md) §3.6），复用同一套
+  chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化；连接中的
+  状态卡带约 1000ms 显示阈值，避免"多闪一下"。**停止会话会释放原生窗口，所以窗口内「重试」先重新绑定仍存活的
+  XComponent surface 再重启**（此时会话必然已不在活动态，原生允许再次绑定）。
 - **尚未接入**：主机发现（先手动添加）、音频（Opus，当前空渲染器关音频）与 HDR / YUV444 的协商暴露；
   端到端串流待连真 Sunshine 验证。
 - 本文件描述**已落地的前端约定、ArkTS 协议建模与控制层**；原生侧（客户端库 / 解码 / 串流会话 / 输入）

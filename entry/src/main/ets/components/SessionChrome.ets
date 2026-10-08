@@ -71,6 +71,29 @@ export struct ToolbarChip {
   }
 }
 
+/**
+ * The toolbar's leading title: the connection name (14, full foreground) plus a
+ * secondary detail (12, dimmed) such as "1920 × 1080 (…)". Shared by both
+ * session pages so the name / resolution format cannot drift between protocols;
+ * the detail string itself (resolution + protocol suffix) stays with the page.
+ */
+@Component
+export struct SessionTitle {
+  @Prop name: string = '';
+  @Prop detail: string = '';
+
+  build() {
+    Row() {
+      Text(this.name)
+        .fontSize(14)
+        .fontColor(TOOLBAR_FG)
+      Text('  ' + this.detail)
+        .fontSize(12)
+        .fontColor(TOOLBAR_FG_SECONDARY)
+    }
+  }
+}
+
 /** An outlined (one step below filled) toolbar action, e.g. "取消". */
 @Component
 export struct OutlineChip {
