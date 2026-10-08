@@ -140,6 +140,7 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   encryptionFlags: number = 0;
   remoteInputAesKeyHex: string = '';
   remoteInputAesIvHex: string = '';
+  localCursorMode: boolean = false;
 }
 
 export enum RdpEvent {

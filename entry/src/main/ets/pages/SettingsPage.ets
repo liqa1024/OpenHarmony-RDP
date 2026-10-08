@@ -9,7 +9,8 @@ import { DisplayProfile, ML_BITRATE_DEFAULT_KBPS,
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
+  ML_CURSOR_OFF, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
@@ -111,7 +112,7 @@ struct SettingsPage {
   @State mlFps: number = 60;
   @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
   @State mlCodec: number = ML_CODEC_AUTO;
-  @State mlHideLocalCursor: boolean = true;
+  @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   // Per-codec decoder support (CODEC_SUPPORT_*) of this device, read once so
   // the chips can grey what cannot run and warn about software-only codecs.
   private mlH264Support: number = CODEC_SUPPORT_NONE;
@@ -193,7 +194,7 @@ struct SettingsPage {
       this.mlFps = settings.mlFps;
       this.mlBitrateText = settings.mlBitrateKbps.toString();
       this.mlCodec = settings.mlCodec;
-      this.mlHideLocalCursor = settings.mlHideLocalCursor;
+      this.mlCursorMode = settings.mlCursorMode;
       this.clampMlCodec();
     }
 
@@ -391,7 +392,7 @@ struct SettingsPage {
       settings.mlTouchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
       settings.mlPinchTouchAngle = this.pinchTouchAngle;
       settings.mlPinchTouchDistance = this.pinchTouchDistance;
-      settings.mlHideLocalCursor = this.mlHideLocalCursor;
+      settings.mlCursorMode = this.mlCursorMode;
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
@@ -449,7 +450,7 @@ struct SettingsPage {
       this.mlFps = defaults.mlFps;
       this.mlBitrateText = defaults.mlBitrateKbps.toString();
       this.mlCodec = defaults.mlCodec;
-      this.mlHideLocalCursor = defaults.mlHideLocalCursor;
+      this.mlCursorMode = defaults.mlCursorMode;
       this.clampMlCodec();
     }
     this.developerMode = defaults.developerMode;
@@ -740,6 +741,29 @@ struct SettingsPage {
     })
   }
 
+  @Builder
+  mlCursorModeChip(mode: number, label: string) {
+    ChoiceChip({
+      label: label,
+      selected: this.mlCursorMode === mode,
+      onTap: () => {
+        this.mlCursorMode = mode;
+        this.persist();
+      }
+    })
+  }
+
+  /** One-line explanation of the selected Moonlight cursor mode. */
+  private cursorModeDescription(): string {
+    if (this.mlCursorMode === ML_CURSOR_OFF) {
+      return '不处理光标：画面里是主机画的光标，本机也画一个（可能双重）';
+    }
+    if (this.mlCursorMode === ML_CURSOR_HIDE_HOST) {
+      return '主机不画光标，本机按主机形状绘制（顺滑、无双重）';
+    }
+    return '隐藏本机系统光标，只显示画面里主机画的光标';
+  }
+
   /** Switches the protocol tab, saving the current one and loading the other. */
   private switchProtocol(protocol: number): void {
     if (this.protocol === protocol) {
@@ -748,6 +772,48 @@ struct SettingsPage {
     this.persist();
     this.protocol = protocol;
     this.syncFromStore();
+  }
+
+  /**
+   * Moonlight 显示: the stream resolution, next to the cursor mode (mirrors the
+   * RDP 显示 section, which also holds 分辨率).
+   */
+  @Builder
+  mlResolutionSection() {
+    Column() {
+      Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+      Text('跟随屏幕出画，或固定一个分辨率')
+        .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
+        this.mlResModeChip(ML_RES_FIXED, '固定')
+      }
+      .width('100%').margin({ top: 8 })
+
+      if (this.mlResMode === ML_RES_FIXED) {
+        Row() {
+          TextInput({ placeholder: '1920', text: this.mlWidthText })
+            .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+            .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+            .onChange((value: string) => {
+              this.mlWidthText = value;
+              this.persist();
+            })
+          Text('×')
+            .fontSize(14).fontColor($r('app.color.text_tertiary'))
+            .margin({ left: 10, right: 10 })
+          TextInput({ placeholder: '1080', text: this.mlHeightText })
+            .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+            .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+            .onChange((value: string) => {
+              this.mlHeightText = value;
+              this.persist();
+            })
+        }
+        .width('100%').margin({ top: 10 })
+      }
+    }
+    .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
   }
 
   /** Moonlight tab: the global stream defaults, mirrored by the per-connection overrides. */
@@ -764,43 +830,6 @@ struct SettingsPage {
         .fontColor($r('app.color.text_tertiary'))
         .width('100%')
         .margin({ bottom: 8 })
-
-      Column() {
-        Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
-        Text('跟随屏幕出画，或固定一个分辨率')
-          .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-        Flex({ wrap: FlexWrap.Wrap }) {
-          this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
-          this.mlResModeChip(ML_RES_FIXED, '固定')
-        }
-        .width('100%').margin({ top: 8 })
-
-        if (this.mlResMode === ML_RES_FIXED) {
-          Row() {
-            TextInput({ placeholder: '1920', text: this.mlWidthText })
-              .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
-              .backgroundColor($r('app.color.input_bg')).borderRadius(10)
-              .onChange((value: string) => {
-                this.mlWidthText = value;
-                this.persist();
-              })
-            Text('×')
-              .fontSize(14).fontColor($r('app.color.text_tertiary'))
-              .margin({ left: 10, right: 10 })
-            TextInput({ placeholder: '1080', text: this.mlHeightText })
-              .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
-              .backgroundColor($r('app.color.input_bg')).borderRadius(10)
-              .onChange((value: string) => {
-                this.mlHeightText = value;
-                this.persist();
-              })
-          }
-          .width('100%').margin({ top: 10 })
-        }
-      }
-      .width('100%').padding({ top: 8, bottom: 14 }).alignItems(HorizontalAlign.Start)
-
-      Divider().color($r('app.color.divider'))
 
       Column() {
         Text('帧率').fontSize(14).fontColor($r('app.color.text_primary'))
@@ -1044,17 +1073,37 @@ struct SettingsPage {
                 .fontColor($r('app.color.text_secondary'))
                 .margin({ bottom: 4 })
 
-              this.toggleItem({
-                title: '隐藏系统光标',
-                subtitle: '光标由主机画在画面里，隐藏系统光标避免双重光标；指针移到工具栏时仍会显示',
-                value: this.mlHideLocalCursor,
-                enabled: true,
-                disabledReason: '',
-                onChange: (v: boolean) => {
-                  this.mlHideLocalCursor = v;
-                  this.persist();
+              Column() {
+                Text('光标模式')
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                Text(this.cursorModeDescription())
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+                // Red caveat above the options, like the RDP 超分辨率 row.
+                if (this.mlCursorMode === ML_CURSOR_HIDE_HOST) {
+                  Text('此功能仅在基地版 Sunshine（foundation-sunshine）有效；其它主机会回退为「关闭」')
+                    .fontSize(11)
+                    .fontColor($r('app.color.danger'))
+                    .margin({ top: 2 })
                 }
-              })
+
+                Row() {
+                  this.mlCursorModeChip(ML_CURSOR_OFF, '关闭')
+                  this.mlCursorModeChip(ML_CURSOR_HIDE_SYSTEM, '隐藏系统光标')
+                  this.mlCursorModeChip(ML_CURSOR_HIDE_HOST, '隐藏主机光标')
+                }
+                .width('100%')
+                .margin({ top: 10, bottom: 6 })
+              }
+              .width('100%')
+              .padding({ top: 10, bottom: 14 })
+              .alignItems(HorizontalAlign.Start)
+
+              Divider().color($r('app.color.divider'))
+
+              this.mlResolutionSection()
 
               Divider().color($r('app.color.divider'))
 

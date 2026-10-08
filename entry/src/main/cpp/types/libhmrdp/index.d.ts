@@ -442,14 +442,36 @@ export interface MoonlightSessionConfig {
   /** 16-byte remote-input AES key / IV as lowercase hex. */
   remoteInputAesKeyHex: string;
   remoteInputAesIvHex: string;
+  /**
+   * Request foundation-sunshine local cursor mode: the host stops compositing
+   * the pointer into the video and forwards it on the cursor channel instead.
+   * A no-op when the host does not advertise the capability.
+   */
+  localCursorMode?: boolean;
+}
+
+/**
+ * Extra fields carried alongside the event tuple. Only the local cursor event
+ * (ML_EVENT_CURSOR_SHAPE) fills them; `imageHandle` is a native BGRA buffer to
+ * read with bufferRead() and release with bufferRelease().
+ */
+export interface MoonlightEventExtra {
+  width?: number;
+  height?: number;
+  hotX?: number;
+  hotY?: number;
+  visible?: boolean;
+  hasShape?: boolean;
+  imageHandle?: number;
 }
 
 /**
  * Registers the process-global session event listener; `event` is an
- * ML_EVENT_* id, `value` the stage or error code, `text` the stage name.
+ * ML_EVENT_* id, `value` the stage or error code, `text` the stage name, `extra`
+ * the cursor geometry/bitmap for ML_EVENT_CURSOR_SHAPE.
  */
 export const moonlightSetSessionListener: (listener: (event: number, value: number,
-  text: string) => void) => void;
+  text: string, extra: MoonlightEventExtra) => void) => void;
 
 /** Binds the session window (before start); false when refused. */
 export const moonlightSessionSetSurface: (surfaceId: string, width: number,

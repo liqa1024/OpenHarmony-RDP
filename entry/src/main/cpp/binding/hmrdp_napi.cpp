@@ -1482,6 +1482,15 @@ struct MoonlightEventPayload {
   int event = 0;
   int value = 0;
   std::string text;
+  // Local cursor mode (kCursorShape) extra: geometry + an optional BGRA bitmap
+  // that travels as a g_buffers handle in the 4th (object) argument.
+  int width = 0;
+  int height = 0;
+  int hotX = 0;
+  int hotY = 0;
+  bool visible = false;
+  bool hasShape = false;
+  std::vector<uint8_t> bytes;
 };
 
 void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data) {
@@ -1495,10 +1504,58 @@ void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data
   napi_create_int32(env, payload->event, &eventValue);
   napi_create_int32(env, payload->value, &valueValue);
   napi_create_string_utf8(env, payload->text.c_str(), payload->text.size(), &textValue);
-  napi_value argv[3] = {eventValue, valueValue, textValue};
+  // Extra object: always present (empty for lifecycle events), so the ArkTS
+  // listener can read cursor geometry without changing the event tuple.
+  napi_value extra = nullptr;
+  napi_create_object(env, &extra);
+  auto setInt = [env, extra](const char* name, int64_t v) {
+    napi_value value = nullptr;
+    napi_create_int64(env, v, &value);
+    napi_set_named_property(env, extra, name, value);
+  };
+  auto setBool = [env, extra](const char* name, bool v) {
+    napi_value value = nullptr;
+    napi_get_boolean(env, v, &value);
+    napi_set_named_property(env, extra, name, value);
+  };
+  setInt("width", payload->width);
+  setInt("height", payload->height);
+  setInt("hotX", payload->hotX);
+  setInt("hotY", payload->hotY);
+  setBool("visible", payload->visible);
+  setBool("hasShape", payload->hasShape);
+  if (!payload->bytes.empty()) {
+    auto buffer = std::make_shared<NativeBuffer>();
+    buffer->bytes = payload->bytes;
+    setInt("imageHandle", g_buffers.Add(buffer));
+  }
+  napi_value argv[4] = {eventValue, valueValue, textValue, extra};
   napi_value global = nullptr;
   napi_get_global(env, &global);
-  napi_call_function(env, global, jsCallback, 3, argv, nullptr);
+  napi_call_function(env, global, jsCallback, 4, argv, nullptr);
+}
+
+// Runs on the control-stream thread; hops to the JS thread via the TSFN.
+void OnMoonlightCursor(const hmrdp::MoonlightCursorShape& shape) {
+  if (g_moonlightTsfn == nullptr) {
+    return;
+  }
+  MoonlightEventPayload* payload = new MoonlightEventPayload();
+  payload->event = static_cast<int>(hmrdp::MoonlightSessionEvent::kCursorShape);
+  payload->visible = shape.visible;
+  payload->hasShape = shape.hasShape;
+  payload->width = shape.width;
+  payload->height = shape.height;
+  payload->hotX = shape.hotspotX;
+  payload->hotY = shape.hotspotY;
+  if (shape.hasShape && shape.bgra != nullptr && shape.size > 0) {
+    payload->bytes.assign(shape.bgra, shape.bgra + shape.size);
+  }
+  const napi_status status =
+      napi_call_threadsafe_function(g_moonlightTsfn, payload, napi_tsfn_nonblocking);
+  if (status != napi_ok) {
+    delete payload;
+  }
 }
 
 // Runs on the Moonlight session thread; hops to the JS thread via the TSFN.
@@ -1560,6 +1617,7 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
   napi_create_string_utf8(env, "HmRdpMoonlightEvent", NAPI_AUTO_LENGTH, &resourceName);
   napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr, nullptr,
                                   nullptr, CallJsMoonlightEvent, &g_moonlightTsfn);
+  hmrdp::MoonlightSessionSetCursorCallback(&OnMoonlightCursor);
   return CreateUndefined(env);
 }
 
@@ -1629,6 +1687,7 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.colorSpace = GetIntProperty(env, args[0], "colorSpace", 0);
   config.colorRange = GetIntProperty(env, args[0], "colorRange", 0);
   config.encryptionFlags = GetIntProperty(env, args[0], "encryptionFlags", 0);
+  config.localCursorMode = GetBoolProperty(env, args[0], "localCursorMode", false);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesKeyHex"), &config.remoteInputAesKey);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesIvHex"), &config.remoteInputAesIv);
   return CreateStringUtf8(env, hmrdp::MoonlightSessionStart(config, &OnMoonlightSessionEvent));

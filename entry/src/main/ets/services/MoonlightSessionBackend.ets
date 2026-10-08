@@ -12,10 +12,13 @@
  * then carries across to LiStartConnection. Native events map onto SessionSignal.
  */
 import {
-  MoonlightSessionConfig, moonlightKey, moonlightMouseButton, moonlightMouseMove,
+  MoonlightEventExtra, MoonlightSessionConfig, bufferRelease,
+  moonlightKey, moonlightMouseButton, moonlightMouseMove,
   moonlightMousePosition, moonlightScroll, moonlightSessionActive, moonlightSessionClearSurface,
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener
 } from 'libhmrdp.so';
+import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
+import { RdpNative } from './RdpNative';
 import { PendingConnection, PROTOCOL_MOONLIGHT, SavedConnection } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionStore } from './ConnectionStore';
@@ -31,9 +34,28 @@ export const ML_EVENT_TERMINATED: number = 1;
 export const ML_EVENT_STAGE_STARTING: number = 2;
 export const ML_EVENT_STAGE_COMPLETE: number = 3;
 export const ML_EVENT_STAGE_FAILED: number = 4;
+export const ML_EVENT_CURSOR_SHAPE: number = 5;
+
+/**
+ * One local-cursor update from the host (foundation-sunshine cursor channel).
+ * `bgra` is present only when `hasShape` is set; otherwise it is a visibility
+ * change.
+ */
+export class MlCursorShape {
+  visible: boolean = false;
+  hasShape: boolean = false;
+  width: number = 0;
+  height: number = 0;
+  hotX: number = 0;
+  hotY: number = 0;
+  bgra: ArrayBuffer | undefined = undefined;
+}
+
+export type MlCursorListener = (shape: MlCursorShape) => void;
 
 export class MoonlightSessionBackend implements SessionBackend {
   private listener: SessionSignalListener | undefined = undefined;
+  private cursorListener: MlCursorListener | undefined = undefined;
   private request: PendingConnection;
   private config: MoonlightSessionConfig | undefined = undefined;
   private windowBound: boolean = false;
@@ -44,9 +66,48 @@ export class MoonlightSessionBackend implements SessionBackend {
     this.request = request;
     // One process-global session at a time (moonlight-common-c is single
     // connection), so the listener is registered here rather than per stream.
-    moonlightSetSessionListener((event: number, value: number, text: string): void => {
-      this.emit(event, value, text);
+    moonlightSetSessionListener((event: number, value: number, text: string,
+      extra: MoonlightEventExtra): void => {
+      this.onNativeEvent(event, value, text, extra);
     });
+  }
+
+  /** The session window subscribes here to install the host cursor shape. */
+  setCursorListener(listener: MlCursorListener): void {
+    this.cursorListener = listener;
+  }
+
+  clearCursorListener(): void {
+    this.cursorListener = undefined;
+  }
+
+  /** Routes one native event: the cursor shape goes to its own listener. */
+  private onNativeEvent(event: number, value: number, text: string,
+    extra: MoonlightEventExtra): void {
+    if (event === ML_EVENT_CURSOR_SHAPE) {
+      const handle: number = extra.imageHandle ?? 0;
+      const listener: MlCursorListener | undefined = this.cursorListener;
+      if (listener === undefined) {
+        // No consumer: still release the native buffer so the handle cannot leak.
+        if (handle > 0) {
+          bufferRelease(handle);
+        }
+        return;
+      }
+      const shape: MlCursorShape = new MlCursorShape();
+      shape.visible = extra.visible ?? true;
+      shape.hasShape = extra.hasShape ?? false;
+      shape.width = extra.width ?? 0;
+      shape.height = extra.height ?? 0;
+      shape.hotX = extra.hotX ?? 0;
+      shape.hotY = extra.hotY ?? 0;
+      if (handle > 0) {
+        shape.bgra = RdpNative.readAndReleaseBuffer(handle);
+      }
+      listener(shape);
+      return;
+    }
+    this.emit(event, value, text);
   }
 
   protocol(): number {
@@ -149,6 +210,9 @@ export class MoonlightSessionBackend implements SessionBackend {
       this.emit(ML_EVENT_STAGE_FAILED, 0, '会话窗口未就绪');
       return -1;
     }
+    // Cursor mode is read per session. HIDE_HOST asks the host for local cursor
+    // mode; it is a no-op unless the host is a foundation-sunshine build.
+    config.localCursorMode = SettingsStore.load().mlCursorMode === ML_CURSOR_HIDE_HOST;
     const error: string = moonlightSessionStart(config);
     if (error.length > 0) {
       this.emit(ML_EVENT_STAGE_FAILED, 0, `无法启动串流（${error}）`);

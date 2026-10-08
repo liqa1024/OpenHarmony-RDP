@@ -452,8 +452,7 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'mlPinchTouchAngle', settings.mlPinchTouchAngle);
     settings.mlPinchTouchDistance =
       ConfigTransfer.readNumber(rec, 'mlPinchTouchDistance', settings.mlPinchTouchDistance);
-    settings.mlHideLocalCursor = ConfigTransfer.readBoolean(rec,
-      'mlHideLocalCursor', settings.mlHideLocalCursor);
+    settings.mlCursorMode = ConfigTransfer.readNumber(rec, 'mlCursorMode', settings.mlCursorMode);
     settings.mlReconnectOnForeground = ConfigTransfer.readBoolean(rec,
       'mlReconnectOnForeground', settings.mlReconnectOnForeground);
     settings.mlWinKeySubstitute =

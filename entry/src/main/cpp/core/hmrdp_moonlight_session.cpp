@@ -29,6 +29,7 @@ std::atomic<bool> g_connected{false};
 std::atomic<bool> g_terminated{false};
 std::atomic<bool> g_stopRequested{false};
 MoonlightSessionCallback g_callback = nullptr;
+std::atomic<MoonlightCursorCallback> g_cursorCallback{nullptr};
 // The window the decode bridge renders into; owned by the ArkTS page, only
 // borrowed for the life of the stream.
 MoonlightVideoContext g_context;
@@ -75,6 +76,28 @@ void OnStageFailed(int stage, int errorCode) {
   Emit(MoonlightSessionEvent::kStageFailed, errorCode, LiGetStageName(stage));
 }
 
+// Runs on the control-stream thread: forward the host pointer to the registered
+// cursor listener (the N-API bridge hops it to the JS thread).
+void OnCursorUpdate(bool visible, bool hasShape, uint32_t shapeId, uint16_t width,
+                    uint16_t height, int16_t hotspotX, int16_t hotspotY,
+                    const uint8_t* bgra, uint32_t size) {
+  const MoonlightCursorCallback callback = g_cursorCallback.load();
+  if (callback == nullptr) {
+    return;
+  }
+  MoonlightCursorShape shape;
+  shape.visible = visible;
+  shape.hasShape = hasShape;
+  shape.shapeId = shapeId;
+  shape.width = width;
+  shape.height = height;
+  shape.hotspotX = hotspotX;
+  shape.hotspotY = hotspotY;
+  shape.bgra = bgra;
+  shape.size = size;
+  callback(shape);
+}
+
 // Runs on the session thread: fills the config structs, calls LiStartConnection
 // (which returns once the streams are established, not when the session ends),
 // waits for stop/termination, then completes the lifecycle with LiStopConnection
@@ -116,6 +139,7 @@ void Run(const MoonlightStreamConfig& config) {
   listeners.stageFailed = OnStageFailed;
   listeners.connectionStarted = OnConnectionStarted;
   listeners.connectionTerminated = OnConnectionTerminated;
+  listeners.cursorUpdate = OnCursorUpdate;
 
   PDECODER_RENDERER_CALLBACKS video =
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());
@@ -126,6 +150,13 @@ void Run(const MoonlightStreamConfig& config) {
                                        &g_context, 0, nullptr, 0);
   HMRDP_LOGI("moonlight session: LiStartConnection returned %{public}d", result);
   if (result == 0) {
+    // Local cursor mode: ask the host to stop compositing the pointer into the
+    // video and forward it on the cursor channel instead. A no-op unless the
+    // host advertised the capability (foundation-sunshine) and the control
+    // stream is encrypted v2.
+    if (config.localCursorMode) {
+      LiSetLocalCursorMode(true);
+    }
     // Established: the streams now run on moonlight's own threads. LiStartConnection
     // does NOT block until the session ends - the session lives until we call
     // LiStopConnection (which must run on this thread) or the host ends it. Wait
@@ -153,6 +184,10 @@ void Run(const MoonlightStreamConfig& config) {
 void MoonlightSessionSetWindow(void* window) {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_context.window = window;
+}
+
+void MoonlightSessionSetCursorCallback(MoonlightCursorCallback callback) {
+  g_cursorCallback.store(callback);
 }
 
 std::string MoonlightSessionStart(const MoonlightStreamConfig& config,

@@ -134,6 +134,30 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   `moonlightScroll`；窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
 
+### 3.1 本地光标模式（基地版 Sunshine 的光标通道）
+
+- **基线**：Moonlight 协议**没有光标通道**——`STREAM_CONFIGURATION` 无光标字段、库无光标回调，主机
+  （GFE / 原版 Sunshine）把光标直接合成进编码画面。标准客户端（moonlight-android）因此只是隐藏本机
+  指针、显示画面里的主机光标。
+- **foundation-sunshine 的光标扩展**（HmRdp 已适配；改动写进 `native/scripts/patch-moonlight.ps1`）：
+  - **能力广告**：RTSP DESCRIBE 的 `a=x-ss-general.featureFlags` 置位 `cursor_shape = 0x40`（仅当主机有
+    光标生产者：Windows `ddx`/`vdd` 捕获）。客户端库已解析该值（`SunshineFeatureFlags`），无需新握手。
+  - **功能握手（客户端→主机）**：控制流消息 `0x5509`，payload 恰 4 字节 `[version=1, mode(0关/1开), 0, 0]`。
+    仅在被**加密控制流 v2**（`controlProtocolType == 13`）接受；客户端用 `corever=1` 协商 v2。
+  - **主机→客户端**：同 `0x5509`，28 字节 LE 头 + BGRA 分片（每片 ≤60000B）：
+    `u8 version, u8 flags(0x01 shape / 0x02 visible), u16 header_size=28, u32 shape_id, u16 w, u16 h,
+    i16 hotx, i16 hoty, u32 total_size, u32 offset, u16 chunk_size, u16 reserved` + 片字节。
+  - 启用后主机**不再把光标画进画面**，改为在 `shape_id` 变化时发一次形状（可能分片）、在可见性变化时发更新。
+- **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` / `LiGetLocalCursorModeSupported` /
+  `LiSetLocalCursorMode`，给 `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记、幂等）；`hmrdp_moonlight_session.*`
+  把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；`hmrdp_napi.cpp` 把形状经 `g_buffers`
+  句柄送到 ArkTS（事件第 4 个对象参数）；会话页用 `createPixelMapSync` + `setCustomCursorSync` 装成系统光标
+  （按几何+像素哈希去重）。设置项是 `mlCursorMode` 三选一（见
+  [`moonlight-connection.md`](moonlight-connection.md) §5）。
+- **回退**：主机未广告 `cursor_shape` 时 `LiSetLocalCursorMode` 是 no-op，客户端收不到形状 ⇒ 系统光标保持
+  默认（等于「关闭」）。
+- **验证**：需一台跑 foundation-sunshine 的主机（真机）。
+
 ## 4. 控制 / 配对层（ArkTS）
 
 控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**

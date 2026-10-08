@@ -30,10 +30,34 @@ enum class MoonlightSessionEvent : int {
   kStageComplete = 3,
   // Setup failed; value = errorCode, text = LiGetStageName(stage).
   kStageFailed = 4,
+  // Local cursor mode update (foundation-sunshine cursor extension): the host
+  // renders the pointer as a separate channel instead of compositing it into the
+  // video. Carried on the cursor callback, not the session callback.
+  kCursorShape = 5,
 };
 
 /** Called from the session's own thread; must not block. */
 using MoonlightSessionCallback = void (*)(MoonlightSessionEvent event, int value, const char* text);
+
+/**
+ * One local-cursor update. When `hasShape` is set, `bgra` is `width*height*4`
+ * bytes and only valid during the call; otherwise it is a visibility-only change
+ * (show/hide) with no geometry.
+ */
+struct MoonlightCursorShape {
+  bool visible = false;
+  bool hasShape = false;
+  uint32_t shapeId = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
+  int16_t hotspotX = 0;
+  int16_t hotspotY = 0;
+  const uint8_t* bgra = nullptr;
+  uint32_t size = 0;
+};
+
+/** Called from the control-stream thread; must not block. */
+using MoonlightCursorCallback = void (*)(const MoonlightCursorShape& shape);
 
 /** Everything LiStartConnection needs, assembled by the ArkTS control layer. */
 struct MoonlightStreamConfig {
@@ -58,7 +82,17 @@ struct MoonlightStreamConfig {
   // 16-byte remote-input AES key and IV (key + rikeyid-derived IV from /launch).
   std::string remoteInputAesKey;
   std::string remoteInputAesIv;
+
+  // Request foundation-sunshine local cursor mode when the host advertises it
+  // (see doc_agent/moonlight-native.md). Off keeps the host-composited cursor.
+  bool localCursorMode = false;
 };
+
+/**
+ * Registers the process-global local-cursor listener (foundation-sunshine cursor
+ * extension). A null callback disables delivery. Safe to call before a session.
+ */
+void MoonlightSessionSetCursorCallback(MoonlightCursorCallback callback);
 
 /**
  * Sets the OHNativeWindow the decoder renders into; must be called before
