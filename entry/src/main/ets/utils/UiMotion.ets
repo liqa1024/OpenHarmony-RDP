@@ -29,8 +29,8 @@ export function hoverPressScale(hovered: boolean, pressed: boolean): ScaleOption
   return options;
 }
 
-const MOTION_APPEAR_MS: number = 180;
-const MOTION_DISAPPEAR_MS: number = 140;
+const MOTION_APPEAR_MS: number = 300;
+const MOTION_DISAPPEAR_MS: number = 240;
 // Scale a control grows from (appear) / shrinks to (disappear): a small "pop"
 // that reads as the control being added to / taken off the surface.
 const MOTION_POP_SCALE: number = 0.6;

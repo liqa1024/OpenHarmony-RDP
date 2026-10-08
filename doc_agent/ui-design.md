@@ -81,7 +81,7 @@
 | 按钮 | 编辑页高 `48` / 字号 `16`；设置页高 `44` / 字号 `15`；均 `radius 12` |
 | chip | `padding { left:14, right:14, top:6, bottom:6 }`、`margin { right:8, bottom:8 }` |
 | 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6` |
-| 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
+| 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；控件出现 / 消失 `300 / 240ms`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
 
 约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见「设计原则」与 §4）。
 **`shadow()` 的 `radius` / `offsetX` / `offsetY` 单位是 px**（其余尺寸属性多为 vp），写数值前用 `UIContext.vp2px` 换算，
