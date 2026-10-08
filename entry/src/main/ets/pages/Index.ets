@@ -485,7 +485,7 @@ struct Index {
                 }
               })
             }
-            .margin({ left: 52, right: 52, top: 2, bottom: 2 })
+            .margin({ left: 64, right: 88, top: 2, bottom: 2 })
             // Near the drag preview's scale, a higher z-index keeps the lifted
             // card above its neighbours instead of being covered at the sides.
             .zIndex(index === this.draggingIndex ? 1 : 0)
