@@ -11,6 +11,7 @@ import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { ConnectAction, connectActionFor, connectActionLabel, primaryConnectAction }
   from '../utils/ConnectAction';
+import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 
 @Component
 export struct ConnectionRow {
@@ -22,6 +23,11 @@ export struct ConnectionRow {
   // passes 0/0: it has no host-side session, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
+  // The "应用" button's own hover / press state, so it animates like the other
+  // round controls (utils/UiMotion) instead of relying on the flat built-in
+  // HoverEffect.
+  @State appHovered: boolean = false;
+  @State appPressed: boolean = false;
   onEdit: () => void = () => {};
   onToggleConnection: () => void = () => {};
   onOpenApps: () => void = () => {};
@@ -192,12 +198,27 @@ export struct ConnectionRow {
         .borderRadius(22)
         // A distinct secondary-button surface: the row card background would
         // leave the icon floating with no button of its own (the "应用" glyph is
-        // theme-aware, see resources/dark/media/ic_apps.svg).
-        .backgroundColor($r('app.color.input_bg'))
+        // theme-aware, see resources/dark/media/ic_apps.svg). Hover lifts the
+        // surface and the press sinks the button, both through utils/UiMotion.
+        .backgroundColor(this.appHovered ? $r('app.color.hover_bg') : $r('app.color.input_bg'))
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .margin({ left: 8 })
-        .hoverEffect(HoverEffect.Scale)
+        .scale(hoverPressScale(this.appHovered, this.appPressed))
+        .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
+        .onHover((isHover: boolean) => {
+          this.appHovered = isHover;
+          if (!isHover) {
+            this.appPressed = false;
+          }
+        })
+        .onMouse((event: MouseEvent) => {
+          if (event.action === MouseAction.Press) {
+            this.appPressed = true;
+          } else if (event.action === MouseAction.Release) {
+            this.appPressed = false;
+          }
+        })
         .bindTips('应用', this.tipsOptions)
         .onClick(() => {
           this.onOpenApps();

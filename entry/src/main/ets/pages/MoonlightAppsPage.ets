@@ -306,12 +306,13 @@ struct MoonlightAppsPage {
   /**
    * The poster is the tile and carries no name, so the tooltip both names the
    * app and says what a click does: "切换到" when another app is running, else
-   * "连接到". A running app has its own action discs and its card no longer
-   * reacts, so its tip is empty (no tooltip).
+   * "连接到". A running app's card does not react (its actions are the bottom
+   * discs), so its tip is just the app name — still the only place the name is
+   * shown.
    */
   private appTip(app: NvApp): string {
     if (this.isRunning(app)) {
-      return '';
+      return app.name;
     }
     const action: ConnectAction =
       connectActionFor(ConnectionState.Idle, this.currentGame, app.id);
@@ -344,10 +345,13 @@ struct MoonlightAppsPage {
    * The tile only needs a new ForEach key when its identity data changes: the
    * loaded icon, which @Prop cannot carry (its PixelMap does not survive the
    * deep copy), so the tile is recreated with the new bitmap. Everything else
-   * reactive (default / running / session) updates in place through @Prop.
+   * reactive (default / running / session) updates in place through @Prop. The
+   * key is per-tile (presence of *this* icon), not the map size: a size-based
+   * key would recreate every tile on each icon arrival, which also replays the
+   * controls' appear transitions on unrelated tiles.
    */
   private tileKey(app: NvApp): string {
-    return `${app.id}#${this.iconMap.size}`;
+    return `${app.id}#${this.iconMap.has(app.id) ? 1 : 0}`;
   }
 
   build() {

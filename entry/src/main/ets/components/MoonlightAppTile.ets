@@ -4,7 +4,8 @@
  * The poster is the tile (no card / frame wrapper): the name lives in the hover
  * tip, the set-as-default star sits at the top-right, the "运行中" badge at the
  * top-left and the running app's actions at the bottom-centre, all over the art
- * on a round immersive-material control.
+ * on a round immersive-material control (components/ControlDisc, which owns the
+ * hover / press / appear / disappear motion).
  *
  * It is a component, not a page @Builder, so the reactive flags (@Prop) really
  * refresh inside the page's ForEach: a @Builder with by-value params never
@@ -14,9 +15,11 @@
  * bumps the ForEach key once the bitmap has loaded.
  */
 import { image } from '@kit.ImageKit';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { NvApp } from '../moonlight/MoonlightModels';
 import { ConnectAction, connectActionLabel } from '../utils/ConnectAction';
+import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
+import { ControlDisc } from './ControlDisc';
 
 // Moonlight's box art is 200x267 (see moonlight-qt AppView.qml): the tile keeps
 // that width:height so a fetched poster is not cropped by a wrong frame.
@@ -32,22 +35,6 @@ const STAR_SIZE: number = 18;
 const ACTION_CONTROL: number = 36;
 const ACTION_SIZE: number = 22;
 
-/**
- * A control disc's parameters. Passed as a single object literal so the builder
- * gets it *by reference*: a @Builder with by-value params never re-renders, even
- * when the component around it does (official @Builder FAQ) — which is exactly
- * what froze the default star's colour. See doc_agent/arkts-conventions.md §2.
- */
-interface ControlDiscOptions {
-  icon: Resource;
-  color: ResourceColor;
-  diameter: number;
-  glyph: number;
-  gap: number;
-  tip: string;
-  action: () => void;
-}
-
 @Component
 export struct MoonlightAppTile {
   app: NvApp = new NvApp();
@@ -56,81 +43,18 @@ export struct MoonlightAppTile {
   @Prop isRunning: boolean = false;
   @Prop hasSession: boolean = false;
   @Prop tip: string = '';
+  // The card's own hover / press state. A running app's card is not clickable
+  // (it acts through its discs), so it never reacts — the handlers below are
+  // gated on !isRunning and the scale falls back to 1 while running.
+  @State hovered: boolean = false;
+  @State pressed: boolean = false;
   onOpen: () => void = () => {};
   onSetDefault: () => void = () => {};
   onDisconnect: () => void = () => {};
   onCloseApp: () => void = () => {};
   onCloseAppAndDisconnect: () => void = () => {};
-
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private controlMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CONTROL),
-      BlurStyle.COMPONENT_THIN);
-
-  /**
-   * A round on-poster control: a THIN immersive-material disc, flat frosted where
-   * the system has no material. BLOCK_HIERARCHY keeps a tap off the poster
-   * underneath, so the tile's own click does not also fire.
-   */
-  @Builder
-  controlDisc(options: ControlDiscOptions) {
-    Row() {
-      Image(options.icon)
-        .width(options.glyph)
-        .height(options.glyph)
-        .fillColor(options.color)
-        .draggable(false)
-    }
-    .width(options.diameter)
-    .height(options.diameter)
-    .borderRadius(options.diameter / 2)
-    // Explicit transparent background, like the connection rows: the material is
-    // the surface (an opaque background would cover it).
-    .backgroundColor(Color.Transparent)
-    // Material when the system has it, otherwise a component-level frosted style
-    // — both live in the modifier so the fallback blur is never set alongside
-    // the material (it would sit above and hide it).
-    .attributeModifier(this.controlMaterial)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(VerticalAlign.Center)
-    .margin({ right: options.gap })
-    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-    .bindTips(options.tip, this.tipsOptions)
-    .onClick(() => {
-      options.action();
-    })
-  }
-
-  /** One icon action overlaid on the running app's poster. */
-  @Builder
-  tileAction(icon: Resource, color: ResourceColor, tip: string, gap: number, action: () => void) {
-    this.controlDisc({
-      icon: icon,
-      color: color,
-      diameter: ACTION_CONTROL,
-      glyph: ACTION_SIZE,
-      gap: gap,
-      tip: tip,
-      action: action
-    })
-  }
-
-  /** The set-as-default star, top-right on the poster. */
-  @Builder
-  starControl() {
-    this.controlDisc({
-      icon: $r('app.media.ic_star'),
-      color: this.isDefault ? $r('app.color.accent') : $r('app.color.text_primary'),
-      diameter: STAR_CONTROL,
-      glyph: STAR_SIZE,
-      gap: 0,
-      tip: '设为默认',
-      action: (): void => {
-        this.onSetDefault();
-      }
-    })
-  }
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
@@ -159,27 +83,41 @@ export struct MoonlightAppTile {
       .backgroundColor($r('app.color.input_bg'))
       .bindTips(this.tip, this.tipsOptions)
 
-      // "运行中" badge at the poster's top-left.
-      if (this.isRunning) {
-        Column() {
+      // "运行中" badge at the poster's top-left. The @Builder-free Text carries
+      // the appear / disappear transition, so a running app's badge pops in when
+      // it starts and fades out when it stops.
+      Column() {
+        if (this.isRunning) {
           Text('运行中')
             .fontSize(9)
             .fontColor('#FFFFFF')
             .backgroundColor($r('app.color.success'))
             .borderRadius(4)
             .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+            .transition(fadeTransition())
         }
-        .width('100%')
-        .height('100%')
-        .padding(6)
-        .justifyContent(FlexAlign.Start)
-        .alignItems(HorizontalAlign.Start)
-        .hitTestBehavior(HitTestMode.None)
       }
+      .width('100%')
+      .height('100%')
+      .padding(6)
+      .justifyContent(FlexAlign.Start)
+      .alignItems(HorizontalAlign.Start)
+      .hitTestBehavior(HitTestMode.None)
 
-      // Default star at the poster's top-right.
+      // Default star at the poster's top-right. Always present, so its @Prop
+      // colour refreshes in place (the by-value @Builder that used to freeze it
+      // is gone).
       Column() {
-        this.starControl()
+        ControlDisc({
+          icon: $r('app.media.ic_star'),
+          iconColor: this.isDefault ? $r('app.color.accent') : $r('app.color.text_primary'),
+          diameter: STAR_CONTROL,
+          glyph: STAR_SIZE,
+          tip: '设为默认',
+          onTap: () => {
+            this.onSetDefault();
+          }
+        })
       }
       .width('100%')
       .height('100%')
@@ -191,41 +129,72 @@ export struct MoonlightAppTile {
       // Bottom-center (running app only): two actions selected by whether a
       // session is already up — [恢复 / 断开] then [关闭]. The app is already
       // running on the host, so 恢复 resumes it (`/resume`) instead of starting
-      // it again.
-      if (this.isRunning) {
-        Column() {
+      // it again. The row fades as a whole, and each disc pops in its own
+      // transition; switching session state swaps the first disc in place.
+      Column() {
+        if (this.isRunning) {
           Row() {
             if (this.hasSession) {
-              this.tileAction($r('app.media.ic_disconnect'), $r('app.color.text_primary'), '断开连接', 8,
-                (): void => {
+              ControlDisc({
+                icon: $r('app.media.ic_disconnect'),
+                iconColor: $r('app.color.text_primary'),
+                diameter: ACTION_CONTROL,
+                glyph: ACTION_SIZE,
+                gap: 8,
+                tip: '断开连接',
+                animated: true,
+                onTap: () => {
                   this.onDisconnect();
-                })
+                }
+              })
 
-              this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用并断开', 0,
-                (): void => {
+              ControlDisc({
+                icon: $r('app.media.ic_stop'),
+                iconColor: $r('app.color.danger'),
+                diameter: ACTION_CONTROL,
+                glyph: ACTION_SIZE,
+                tip: '关闭应用并断开',
+                animated: true,
+                onTap: () => {
                   this.onCloseAppAndDisconnect();
-                })
+                }
+              })
             } else {
-              this.tileAction($r('app.media.ic_play'), $r('app.color.accent'),
-                connectActionLabel(ConnectAction.Resume), 8,
-                (): void => {
+              ControlDisc({
+                icon: $r('app.media.ic_play'),
+                iconColor: $r('app.color.accent'),
+                diameter: ACTION_CONTROL,
+                glyph: ACTION_SIZE,
+                gap: 8,
+                tip: connectActionLabel(ConnectAction.Resume),
+                animated: true,
+                onTap: () => {
                   this.onOpen();
-                })
+                }
+              })
 
-              this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用', 0,
-                (): void => {
+              ControlDisc({
+                icon: $r('app.media.ic_stop'),
+                iconColor: $r('app.color.danger'),
+                diameter: ACTION_CONTROL,
+                glyph: ACTION_SIZE,
+                tip: '关闭应用',
+                animated: true,
+                onTap: () => {
                   this.onCloseApp();
-                })
+                }
+              })
             }
           }
+          .transition(fadeTransition())
         }
-        .width('100%')
-        .height('100%')
-        .padding({ bottom: 6 })
-        .justifyContent(FlexAlign.End)
-        .alignItems(HorizontalAlign.Center)
-        .hitTestBehavior(HitTestMode.None)
       }
+      .width('100%')
+      .height('100%')
+      .padding({ bottom: 6 })
+      .justifyContent(FlexAlign.End)
+      .alignItems(HorizontalAlign.Center)
+      .hitTestBehavior(HitTestMode.None)
     }
     // Explicit size: the full-size overlay columns use height('100%'), and without
     // a definite Stack height they would expand the Stack (a Stack sizes to its
@@ -233,6 +202,30 @@ export struct MoonlightAppTile {
     .width(TILE_WIDTH)
     .height(TILE_HEIGHT)
     .margin({ right: 12, bottom: 16 })
+    // The card itself gets the same hover / press feedback as its controls, but
+    // only while it is clickable: a running app acts through its discs, so its
+    // card must not react to hover or press (see doc_agent/moonlight-connection.md §4).
+    .scale(hoverPressScale(this.hovered && !this.isRunning, this.pressed && !this.isRunning))
+    .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
+    .onHover((isHover: boolean) => {
+      if (this.isRunning) {
+        return;
+      }
+      this.hovered = isHover;
+      if (!isHover) {
+        this.pressed = false;
+      }
+    })
+    .onMouse((event: MouseEvent) => {
+      if (this.isRunning) {
+        return;
+      }
+      if (event.action === MouseAction.Press) {
+        this.pressed = true;
+      } else if (event.action === MouseAction.Release) {
+        this.pressed = false;
+      }
+    })
     // A running app acts through its own discs; its card must not also react to a
     // tap (and its tip is empty, so it has no tooltip either).
     .onClick(() => {

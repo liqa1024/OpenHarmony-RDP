@@ -9,6 +9,7 @@
  * behind it untouched.
  */
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 
 @Component
 export struct FabButton {
@@ -41,12 +42,9 @@ export struct FabButton {
     .backgroundColor($r('app.color.accent'))
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
-    .scale({
-      x: this.pressed ? 0.9 : (this.hovered ? 1.06 : 1.0),
-      y: this.pressed ? 0.9 : (this.hovered ? 1.06 : 1.0)
-    })
+    .scale(hoverPressScale(this.hovered, this.pressed))
     .shadow({ radius: 18, color: '#33000000', offsetX: 0, offsetY: 6 })
-    .animation({ duration: 140, curve: Curve.FastOutSlowIn })
+    .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .onHover((isHover: boolean) => {
       this.hovered = isHover;
     })

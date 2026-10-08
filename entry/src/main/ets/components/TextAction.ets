@@ -8,6 +8,8 @@
  * is intentionally not used: it draws a background box, which fits box-shaped
  * buttons but not a bare text action.
  */
+import { MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
+
 @Component
 export struct TextAction {
   @Prop label: string = '';
@@ -38,7 +40,7 @@ export struct TextAction {
       .padding(this.muted
         ? { left: 8, right: 8, top: 6, bottom: 6 }
         : { top: 8, bottom: 8 })
-      .animation({ duration: 120, curve: Curve.FastOutSlowIn })
+      .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
       .hoverEffect(HoverEffect.None)
       .onHover((isHover: boolean) => {
         this.hovered = isHover;

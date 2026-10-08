@@ -85,6 +85,9 @@
 约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见「设计原则」与 §4）。
 **`shadow()` 的 `radius` / `offsetX` / `offsetY` 单位是 px**（其余尺寸属性多为 vp），写数值前用 `UIContext.vp2px` 换算，
 否则在高密度屏上会小到看不见。
+**交互动效收敛到 `utils/UiMotion`**：控件各自持有 hover / press 状态（ArkUI 无共享的声明式 hover 效果），
+但缩放目标、时长 / 曲线与出现 / 消失转场都从那里取（`hoverPressScale` / `popTransition` / `fadeTransition`），
+避免同一控件在不同页面里手感不一致。出现 / 消失是**组件转场**（`if` 增删子树触发），转场自带动画参数，无需 `animateTo`。
 
 ## 2. 沉浸材质（系统材质）
 
@@ -174,6 +177,7 @@ Column(page_bg, 100%×100%)
 | `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
 | `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影 |
 | `FabButton` | `FabButton.ets` | `icon, tip?, onTap` | 右下角悬浮圆形主操作（新建 / 刷新；accent 底 + 阴影 + hover/press 反馈 + `OVERLAY` 提示） |
+| `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 材质 + hover/press 缩放，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
 | `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（`scale / srRatio / srChoice / ml*` 共用） |
 | `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
@@ -196,6 +200,7 @@ Column(page_bg, 100%×100%)
 | `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |
 | `PairingPrompt.ets` | `promptPairingPin(ui, pin, pairing)`（配对 PIN 弹窗：四位数字居中放大；`pairing` 握手结束后自动关闭，返回值仅在用户取消时为 `false`） |
 | `HostSearchPrompt.ets` | `showHostPicker(ui, hosts, title, addedAddresses)`（主机选择弹窗：只渲染**已搜到**的 mDNS 主机列表，`addedAddresses` 里的（已保存）主机置灰不可选，选中一行返回该主机，取消返回 `undefined`；搜索本身由页面跑，见下条约束） |
+| `UiMotion.ets` | 交互动效 token 与工厂：`MOTION_HOVER_SCALE` / `MOTION_PRESS_SCALE` / `MOTION_HOVER_PRESS_MS` / `MOTION_CURVE`，`hoverPressScale(hovered, pressed)` 与转场工厂 `popTransition()` / `fadeTransition()` |
 
 约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
 两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；
