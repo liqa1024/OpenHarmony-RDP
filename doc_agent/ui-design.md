@@ -21,6 +21,10 @@
 7. **材质挂载遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：持续变化的内容不挂材质，无材质能力时外观不依赖材质。
 8. **依赖后端动词的动作按后端契约划分**：要调用会话后端独有动词的（文件传输 / 剪贴板 / 遥测），归属由后端契约决定，动词就绪后再进共享单元。
 9. **页面骨架统一**：页面按「页头 + 卡片」骨架组织，不另起一套页头 / 错误态 / 空态。
+10. **交互按桌面光标（2in1/PC）适配，而非触屏**：目标设备以光标操作为主。触屏上"多点一下"无所谓，但光标下
+    每弹一个新窗口都要求用户**移动并重新定位鼠标**——这是实打实的操作成本。因此**能用就地反馈就不新开弹窗**：
+    异步加载态归触发控件本身、结果用 `showToast` 就地反馈；**只有需要用户从中做选择时**才弹列表 / 对话框，
+    并尽量贴近触发点以减少鼠标行程。触屏友好的"分步弹窗流程"在光标下要按鼠标行程重新评估。
 
 ## 1. 设计 token
 
@@ -188,10 +192,16 @@ Column(page_bg, 100%×100%)
 | `ScaleParse.ets` | 手动分辨率 / 缩放文本解析：`parseSizeValue` / `parseScaleValue` / `parsedTextValue` / `isScalePreset`，及 `MAX_DESKTOP_SIZE` |
 | `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |
 | `PairingPrompt.ets` | `promptPairingPin(ui, pin, pairing)`（配对 PIN 弹窗：四位数字居中放大；`pairing` 握手结束后自动关闭，返回值仅在用户取消时为 `false`） |
+| `HostSearchPrompt.ets` | `showHostPicker(ui, hosts, title)`（主机选择弹窗：只渲染**已搜到**的 mDNS 主机列表，选中一行返回该主机，取消返回 `undefined`；搜索本身由页面跑，见下条约束） |
 
 约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
 两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；
 单按钮提示用 `showNotice`。材质（`OVERLAY`）与兜底都由工具负责，页面只给文案与回调。
+
+约束：**异步操作的加载态归属触发控件，不单独弹一个"转圈"弹窗**（依据设计原则 §10：光标操作下弹窗要重新定位鼠标）——
+就地把它自己的图标换成 `LoadingProgress`（图标本身即状态，参照连接钮 / 刷新 FAB；图标位较小时在原有图标上叠加），
+期间禁用该控件的点击；耗时结果用 `showToast` 就地反馈（如"未发现主机，请确认…"）。**只有需要用户从中选择时才弹列表**，
+且弹窗只承载结果、不承载加载态。
 
 ## 5. 协议差异的呈现约定
 

@@ -24,15 +24,22 @@ import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from 
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
+import { showHostPicker } from '../utils/HostSearchPrompt';
+import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
 import { SettingToggleRow } from '../components/SettingToggleRow';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
 const RDP_DEFAULT_PORT: number = 3389;
+// The DNS-SD service type Sunshine / GameStream hosts advertise (mDNS search).
+const MOONLIGHT_SERVICE_TYPE: string = '_nvstream._tcp';
+// How long the mDNS search runs before it reports "nothing found".
+const HOST_SEARCH_MS: number = 3000;
 
 @Entry
 @Component
@@ -101,6 +108,14 @@ struct EditConnectionPage {
   private connectionId: string = '';
   // Id of the in-flight attempt (may be a brand-new id for a new connection).
   private activeConnectionId: string = '';
+  private tipsOptions: TipsOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  // mDNS host search: the search button shows the spinner itself while running
+  // (no loading dialog); results open a picker, an empty result is a toast.
+  @State searching: boolean = false;
+  private discovery: MdnsDiscovery = new MdnsDiscovery();
+  private searchTimer: number = -1;
+  private discovered: MdnsHost[] = [];
   private storedPassword: string = '';
   private returned: boolean = false;
 
@@ -211,6 +226,11 @@ struct EditConnectionPage {
 
   aboutToDisappear(): void {
     SessionManager.unsubscribe(this.sessionListener);
+    if (this.searchTimer >= 0) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = -1;
+    }
+    this.discovery.stop();
   }
 
   onBackPress(): boolean {
@@ -528,6 +548,62 @@ struct EditConnectionPage {
       });
   }
 
+  /**
+   * Search the LAN (mDNS) for hosts. The search button carries the loading
+   * state itself; when the window closes the results open a picker, or an empty
+   * result is reported with a toast. Filling is host always, name only when the
+   * field is still empty so a typed name is never overwritten.
+   */
+  private openHostSearch(): void {
+    if (this.searching) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
+    }
+    this.searching = true;
+    this.discovered = [];
+    this.discovery.start(context as common.UIAbilityContext, MOONLIGHT_SERVICE_TYPE,
+      (hosts: MdnsHost[]): void => {
+        this.discovered = hosts;
+      });
+    this.searchTimer = setTimeout((): void => {
+      this.finishHostSearch();
+    }, HOST_SEARCH_MS);
+  }
+
+  private finishHostSearch(): void {
+    if (this.searchTimer >= 0) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = -1;
+    }
+    this.discovery.stop();
+    this.searching = false;
+    const hosts: MdnsHost[] = this.discovered;
+    this.discovered = [];
+    if (hosts.length === 0) {
+      showToast(this.getUIContext(), '未发现主机，请确认主机已开启且与本机在同一局域网');
+      return;
+    }
+    showHostPicker(this.getUIContext(), hosts, '选择主机')
+      .then((host: MdnsHost | undefined) => {
+        if (host === undefined) {
+          return;
+        }
+        this.host = host.address;
+        if (host.port > 0) {
+          this.port = host.port.toString();
+        }
+        if (this.name.length === 0 && host.name.length > 0) {
+          this.name = host.name;
+        }
+      })
+      .catch((error: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'host picker failed: %{public}s', JSON.stringify(error));
+      });
+  }
+
   private persist(conn: SavedConnection): boolean {
     try {
       ConnectionStore.save(conn);
@@ -718,16 +794,55 @@ struct EditConnectionPage {
   @Builder
   moonlightForm() {
     Column() {
-      this.fieldLabel('名称（可选）')
-      TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
-        .width('100%')
+      // Name and the host-search entry share one row: the search button sits by
+      // the (narrower) name box, aligned with the input rather than the label.
+      Row() {
+        Column() {
+          this.fieldLabel('名称（可选）')
+          TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
+            .width('100%')
+            .height(46)
+            .borderRadius(10)
+            .backgroundColor($r('app.color.input_bg'))
+            .onChange((value: string) => {
+              this.name = value;
+            })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+
+        Row() {
+          if (this.searching) {
+            // The control carries its own progress: no loading dialog.
+            LoadingProgress()
+              .width(20)
+              .height(20)
+              .color($r('app.color.accent'))
+          } else {
+            Image($r('app.media.ic_search'))
+              .width(20)
+              .height(20)
+              .fillColor($r('app.color.accent'))
+              .draggable(false)
+          }
+        }
+        .width(46)
         .height(46)
         .borderRadius(10)
         .backgroundColor($r('app.color.input_bg'))
-        .margin({ bottom: 16 })
-        .onChange((value: string) => {
-          this.name = value;
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .margin({ left: 12 })
+        .hoverEffect(HoverEffect.Highlight)
+        .opacity(this.searching ? 0.7 : 1)
+        .bindTips(this.searching ? '正在搜索…' : '自动搜索局域网主机', this.tipsOptions)
+        .onClick(() => {
+          this.openHostSearch();
         })
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Bottom)
+      .margin({ bottom: 16 })
 
       Row() {
         Column() {

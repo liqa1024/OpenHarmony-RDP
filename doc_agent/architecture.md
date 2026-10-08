@@ -36,6 +36,7 @@
 | `services/SessionBackendFactory.ets` | 按 `PendingConnection.protocol` 选后端（RDP / Moonlight） |
 | `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface，输入转 `LiSend*` |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供 |
+| `services/MdnsDiscovery.ets` | 通用 mDNS 主机发现：按 DNS-SD 服务类型发现并解析为 IP，去重成实时主机列表（`_nvstream._tcp` 即 Moonlight/Sunshine） |
 | `utils/MoonlightKeyMapper.ets` | HarmonyOS 键码 + 鼠标键 → Windows 虚拟键码与 Moonlight 的 modifier/button/action 常量 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `SessionEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
