@@ -9,12 +9,19 @@
 import { SavedConnection } from '../model/RdpModels';
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { ConnectAction, connectActionFor, connectActionLabel } from '../utils/ConnectAction';
 
 @Component
 export struct ConnectionRow {
   conn: SavedConnection = new SavedConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
   @Prop appEnabled: boolean = true;
+  // Host-side target the row's connect would act on: `hostTargetId` is what the
+  // host currently has open (0 = none / unknown), `targetId` is what this row
+  // would open (0 = the connection default, which cannot be resolved here). RDP
+  // passes 0/0: it has no host-side session, so it never resumes.
+  @Prop hostTargetId: number = 0;
+  @Prop targetId: number = 0;
   onEdit: () => void = () => {};
   onToggleConnection: () => void = () => {};
   onOpenApps: () => void = () => {};
@@ -44,23 +51,18 @@ export struct ConnectionRow {
     return this.conn.username.length > 0 ? `${target} · ${this.conn.username}` : target;
   }
 
+  private action(): ConnectAction {
+    return connectActionFor(this.state, this.hostTargetId, this.targetId);
+  }
+
   private connectTip(): string {
-    if (this.state === ConnectionState.Connecting) {
-      return '取消连接';
-    }
-    if (this.state === ConnectionState.Connected) {
-      return '断开连接';
-    }
-    if (this.state === ConnectionState.Disconnecting) {
-      return '正在断开';
-    }
-    return '连接';
+    return connectActionLabel(this.action());
   }
 
   @Builder
   menu() {
     Menu() {
-      MenuItem({ content: '连接' })
+      MenuItem({ content: this.connectTip() })
         .onClick(() => {
           this.onToggleConnection();
         })
@@ -91,6 +93,16 @@ export struct ConnectionRow {
               .fontColor($r('app.color.text_primary'))
             if (this.state === ConnectionState.Connected) {
               Text('已连接')
+                .fontSize(10)
+                .fontColor($r('app.color.success'))
+                .backgroundColor($r('app.color.success_bg'))
+                .borderRadius(4)
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .margin({ left: 8 })
+            } else if (this.action() === ConnectAction.Resume) {
+              // The host is already running the app this row would open, so the
+              // button resumes it (`/resume`). Same badge style as 已连接.
+              Text('运行中')
                 .fontSize(10)
                 .fontColor($r('app.color.success'))
                 .backgroundColor($r('app.color.success_bg'))

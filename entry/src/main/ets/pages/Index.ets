@@ -12,6 +12,8 @@ import { CredentialStore } from '../services/CredentialStore';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { MoonlightConnector } from '../services/MoonlightConnector';
+import { MoonlightClient } from '../moonlight/MoonlightClient';
+import { ServerInfoResult } from '../moonlight/MoonlightModels';
 import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
@@ -28,6 +30,10 @@ const TAG: string = 'HmRdpIndex';
 struct Index {
   @State connections: SavedConnection[] = [];
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
+  // Host-side target per connection: what the host currently has open (0 = none /
+  // unknown). Only Moonlight has one (its running app id); RDP stays 0. Refreshed
+  // on page show so the row can show 恢复 / 运行中.
+  @State hostTargets: Map<string, number> = new Map<string, number>();
   // Index of the item being drag-reordered; -1 when idle. Used only to lift the
   // dragged item above its siblings.
   @State draggingIndex: number = -1;
@@ -77,6 +83,56 @@ struct Index {
   private refresh(): void {
     this.connections = ConnectionStore.list();
     this.developerMode = SettingsStore.load().developerMode;
+    this.probeHosts();
+  }
+
+  /**
+   * Best-effort host-state probe for the homepage: for each Moonlight connection
+   * read the host's running app (plain `serverinfo`, no pairing, no polling), so
+   * the row can show 恢复 / 运行中. Refreshed whenever the page shows; a host that
+   * is offline simply keeps 0 (the row stays 连接).
+   */
+  private probeHosts(): void {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
+    }
+    const filesDir: string = (context as common.UIAbilityContext).filesDir;
+    for (const conn of this.connections) {
+      if (conn.isMoonlight()) {
+        this.probeHost(filesDir, conn);
+      }
+    }
+  }
+
+  private probeHost(filesDir: string, conn: SavedConnection): void {
+    MoonlightClient.fetchServerInfo(filesDir, conn.host, conn.port)
+      .then((result: ServerInfoResult): void => {
+        const next: Map<string, number> = new Map<string, number>(this.hostTargets);
+        next.set(conn.id, result.ok ? result.info.currentGame : 0);
+        this.hostTargets = next;
+      })
+      .catch((error: BusinessError): void => {
+        hilog.warn(DOMAIN, TAG, 'host probe failed: %{public}s', JSON.stringify(error));
+      });
+  }
+
+  /** What the host currently has open for this connection (0 = RDP / unknown / none). */
+  private hostTargetId(conn: SavedConnection): number {
+    if (!conn.isMoonlight()) {
+      return 0;
+    }
+    const value: number | undefined = this.hostTargets.get(conn.id);
+    return value === undefined ? 0 : value;
+  }
+
+  /** What the row's connect would open: the stored default (0 = host default). */
+  private targetId(conn: SavedConnection): number {
+    if (!conn.isMoonlight() || conn.mlDefaultAppId.length === 0) {
+      return 0;
+    }
+    const parsed: number = Number.parseInt(conn.mlDefaultAppId, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
   }
 
   private persistOrder(): void {
@@ -355,6 +411,8 @@ struct Index {
                 conn: conn,
                 state: this.connState(conn.id),
                 appEnabled: this.appButtonEnabled(conn),
+                hostTargetId: this.hostTargetId(conn),
+                targetId: this.targetId(conn),
                 onEdit: () => {
                   this.openEditor(conn.id, conn.protocol);
                 },

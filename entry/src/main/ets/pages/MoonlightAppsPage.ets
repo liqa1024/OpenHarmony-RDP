@@ -19,6 +19,7 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { MoonlightAppTile } from '../components/MoonlightAppTile';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp, PairResult } from '../moonlight/MoonlightModels';
+import { ConnectAction, connectActionFor } from '../utils/ConnectAction';
 import { showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
@@ -260,7 +261,10 @@ struct MoonlightAppsPage {
     if (this.isRunning(app)) {
       return '';
     }
-    return this.currentGame !== 0 ? `切换到「${app.name}」` : `连接到「${app.name}」`;
+    const action: ConnectAction =
+      connectActionFor(ConnectionState.Idle, this.currentGame, app.id);
+    return action === ConnectAction.Switch ? `切换到「${app.name}」`
+                                           : `连接到「${app.name}」`;
   }
 
   private setDefault(app: NvApp): void {

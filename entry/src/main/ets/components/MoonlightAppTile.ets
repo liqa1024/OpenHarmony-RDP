@@ -16,6 +16,7 @@
 import { image } from '@kit.ImageKit';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { NvApp } from '../moonlight/MoonlightModels';
+import { ConnectAction, connectActionLabel } from '../utils/ConnectAction';
 
 // Moonlight's box art is 200x267 (see moonlight-qt AppView.qml): the tile keeps
 // that width:height so a fetched poster is not cropped by a wrong frame.
@@ -188,7 +189,9 @@ export struct MoonlightAppTile {
       .hitTestBehavior(HitTestMode.None)
 
       // Bottom-center (running app only): two actions selected by whether a
-      // session is already up — [连接 / 断开] then [关闭].
+      // session is already up — [恢复 / 断开] then [关闭]. The app is already
+      // running on the host, so 恢复 resumes it (`/resume`) instead of starting
+      // it again.
       if (this.isRunning) {
         Column() {
           Row() {
@@ -203,7 +206,8 @@ export struct MoonlightAppTile {
                   this.onCloseAppAndDisconnect();
                 })
             } else {
-              this.tileAction($r('app.media.ic_play'), $r('app.color.accent'), '连接', 8,
+              this.tileAction($r('app.media.ic_play'), $r('app.color.accent'),
+                connectActionLabel(ConnectAction.Resume), 8,
                 (): void => {
                   this.onOpen();
                 })
