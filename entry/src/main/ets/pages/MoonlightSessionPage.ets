@@ -10,6 +10,7 @@
  */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { pointer } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { PendingConnection, SessionRequests } from '../model/RdpModels';
@@ -92,6 +93,13 @@ struct MoonlightSessionPage {
   private streamHeight: number = 1080;
   // Modifier state tracked from key events (Moonlight wants a modifier bitmask).
   private modifiers: number = 0;
+  // The host bakes its cursor into the video, so the local system cursor would
+  // double it. With this on, the system cursor is hidden while the pointer is
+  // over the picture (the host's cursor is the only one); it stays visible over
+  // the local toolbar and whenever the stream is not up. Global setting
+  // mlHideLocalCursor; read once per session (a change applies to new sessions).
+  private hideLocalCursor: boolean = true;
+  private localCursorHidden: boolean = false;
   // Toolbar title: the connection's display name (name or host, same as RDP) and
   // the target label the connecting card shows.
   private hostLabel: string = '';
@@ -163,6 +171,7 @@ struct MoonlightSessionPage {
     const settings = SettingsStore.load();
     this.hoverDelay = settings.mlToolbarHoverDelay;
     this.hideDelay = settings.mlToolbarHideDelay;
+    this.hideLocalCursor = settings.mlHideLocalCursor;
     this.loadSessionWindow();
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number): void => {
@@ -194,6 +203,8 @@ struct MoonlightSessionPage {
   }
 
   aboutToDisappear(): void {
+    // The system cursor is process-wide: never leave it hidden for the next page.
+    this.setLocalCursorHidden(false);
     this.toolbarAutoHideArmed = false;
     this.toolbarAutoHide.dispose();
     if (this.overlayTimer !== -1) {
@@ -230,6 +241,10 @@ struct MoonlightSessionPage {
     // Windowed mode lays the strip out above the picture anyway; hiding it in
     // fullscreen is what the auto-hide then manages.
     this.showToolbar = state !== ConnectionState.Connected;
+    // Not streaming: the system cursor must come back (it is process-wide).
+    if (state !== ConnectionState.Connected) {
+      this.setLocalCursorHidden(false);
+    }
     this.updateConnectOverlay();
     this.refreshToolbarAutoHide();
   }
@@ -301,11 +316,37 @@ struct MoonlightSessionPage {
     this.toolbarAutoHide.refresh();
   }
 
+  /**
+   * Hides / restores the HarmonyOS system cursor over the Moonlight picture. The
+   * host draws its own cursor into the video, so the system cursor would double
+   * it; with the setting on, the system cursor is hidden while the pointer is
+   * over the picture and the stream is up, leaving the host's cursor alone.
+   * setPointerVisible is process-wide, so it is always restored off the picture,
+   * on disconnect and on teardown.
+   */
+  private setLocalCursorHidden(hidden: boolean): void {
+    const shouldHide: boolean = hidden && this.hideLocalCursor
+      && this.state === ConnectionState.Connected;
+    if (this.localCursorHidden === shouldHide) {
+      return;
+    }
+    try {
+      pointer.setPointerVisibleSync(!shouldHide);
+      this.localCursorHidden = shouldHide;
+    } catch (error) {
+      // A device without a mouse throws here: stop trying and leave it alone.
+      this.hideLocalCursor = false;
+      hilog.warn(DOMAIN, TAG, 'set pointer visibility failed: %{public}s', JSON.stringify(error));
+    }
+  }
+
   private handleMouse(event: MouseEvent): void {
     // The top reveal band only matters in fullscreen; reporting it always keeps
     // the decision in one place (the controller ignores it outside fullscreen).
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
+    // Over the picture: hide the system cursor so only the host's shows.
+    this.setLocalCursorHidden(true);
     const backend: MoonlightSessionBackend | undefined = this.backend;
     if (backend === undefined) {
       return;
@@ -389,6 +430,8 @@ struct MoonlightSessionPage {
   }
 
   private terminateWindow(): void {
+    // Restore before the window goes away (setPointerVisible is process-wide).
+    this.setLocalCursorHidden(false);
     if (this.closing) {
       return;
     }
@@ -490,6 +533,11 @@ struct MoonlightSessionPage {
           .defaultFocus(true)
           .onMouse((event: MouseEvent) => {
             this.handleMouse(event);
+          })
+          .onHover((isHover: boolean) => {
+            // The system cursor follows the pointer: hidden over the picture,
+            // shown again as soon as it leaves (toolbar / outside the window).
+            this.setLocalCursorHidden(isHover);
           })
           .onAxisEvent((event: AxisEvent) => {
             this.handleAxis(event);

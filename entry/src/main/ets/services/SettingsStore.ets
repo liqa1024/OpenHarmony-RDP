@@ -163,6 +163,10 @@ export class AppSettings {
   mlPinchMode: number = PINCH_MODE_WHEEL;
   mlPinchTouchAngle: number = 30;
   mlPinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
+  // The host bakes its cursor into the Moonlight video, so the local system
+  // cursor would double it; on hides the system cursor while the pointer is over
+  // the picture, leaving the host's cursor as the only one.
+  mlHideLocalCursor: boolean = true;
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
   mlShortcutPassthrough: boolean = false;
@@ -312,6 +316,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlPinchTouchAngle', settings.mlPinchTouchAngle);
       settings.mlPinchTouchDistance =
         SettingsStore.readNumber(store, 'mlPinchTouchDistance', settings.mlPinchTouchDistance);
+      settings.mlHideLocalCursor = SettingsStore.readBoolean(store,
+        'mlHideLocalCursor', settings.mlHideLocalCursor);
       settings.mlReconnectOnForeground = SettingsStore.readBoolean(store,
         'mlReconnectOnForeground', settings.mlReconnectOnForeground);
       settings.mlWinKeySubstitute =
@@ -385,6 +391,7 @@ export class SettingsStore {
       store.putSync('mlPinchMode', settings.mlPinchMode);
       store.putSync('mlPinchTouchAngle', settings.mlPinchTouchAngle);
       store.putSync('mlPinchTouchDistance', settings.mlPinchTouchDistance);
+      store.putSync('mlHideLocalCursor', settings.mlHideLocalCursor);
       store.putSync('mlReconnectOnForeground', settings.mlReconnectOnForeground);
       store.putSync('mlWinKeySubstitute', settings.mlWinKeySubstitute);
       store.putSync('mlShortcutPassthrough', settings.mlShortcutPassthrough);

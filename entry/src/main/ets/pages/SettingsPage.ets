@@ -111,6 +111,7 @@ struct SettingsPage {
   @State mlFps: number = 60;
   @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
   @State mlCodec: number = ML_CODEC_AUTO;
+  @State mlHideLocalCursor: boolean = true;
   // Per-codec decoder support (CODEC_SUPPORT_*) of this device, read once so
   // the chips can grey what cannot run and warn about software-only codecs.
   private mlH264Support: number = CODEC_SUPPORT_NONE;
@@ -192,6 +193,7 @@ struct SettingsPage {
       this.mlFps = settings.mlFps;
       this.mlBitrateText = settings.mlBitrateKbps.toString();
       this.mlCodec = settings.mlCodec;
+      this.mlHideLocalCursor = settings.mlHideLocalCursor;
       this.clampMlCodec();
     }
 
@@ -389,6 +391,7 @@ struct SettingsPage {
       settings.mlTouchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
       settings.mlPinchTouchAngle = this.pinchTouchAngle;
       settings.mlPinchTouchDistance = this.pinchTouchDistance;
+      settings.mlHideLocalCursor = this.mlHideLocalCursor;
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
@@ -446,6 +449,7 @@ struct SettingsPage {
       this.mlFps = defaults.mlFps;
       this.mlBitrateText = defaults.mlBitrateKbps.toString();
       this.mlCodec = defaults.mlCodec;
+      this.mlHideLocalCursor = defaults.mlHideLocalCursor;
       this.clampMlCodec();
     }
     this.developerMode = defaults.developerMode;
@@ -1035,6 +1039,25 @@ struct SettingsPage {
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
             } else {
+              Text('显示')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+                .margin({ bottom: 4 })
+
+              this.toggleItem({
+                title: '隐藏系统光标',
+                subtitle: '光标由主机画在画面里，隐藏系统光标避免双重光标；指针移到工具栏时仍会显示',
+                value: this.mlHideLocalCursor,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: boolean) => {
+                  this.mlHideLocalCursor = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
               this.moonlightStreamSection()
             }
 
