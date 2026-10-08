@@ -54,8 +54,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   - **卡片只保留图标语义，不要右键菜单**：图标右上角的五角星（`ic_star`，默认时 `accent` 填充、否则 `text_primary`）
     设默认；**只有正在运行的应用**才在图标底排居中叠两个动作圆钮，且**按是否已有会话切换形态**（靠悬浮提示说明，
     这里不弹窗）：
-    - **无会话**：`ic_play`(accent)「连接」+ `ic_stop`(danger)「关闭应用」。
-    - **有会话**（`Connecting`/`Connected`/`Disconnecting`）：`ic_power`(text_primary)「断开连接」+
+    - **无会话**：`ic_play`(accent)「恢复」+ `ic_stop`(danger)「关闭应用」。
+    - **有会话**（`Connecting`/`Connected`/`Disconnecting`）：`ic_disconnect`(text_primary)「断开连接」+
       `ic_stop`(danger)「关闭应用并断开」（`/cancel` + `SessionManager.disconnect`）。
   - **无会话时按现有逻辑；有会话时同一套动作直接落到会话上**——「连接」即断开后重连，无需二次确认弹窗。
   - 未运行的应用卡片点击 = **连接**；**当已有应用在跑时是「切换」**（卡片悬浮提示随之变化），因此**不置灰**。
@@ -122,6 +122,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 
 ## 6. 图标约定
 
+- **连接动作图标**：连接与恢复共用 `ic_play`（仅悬停提示区分）；主界面 Moonlight 主按钮的「终止」
+  （关闭会话窗口 + 关闭主机应用）用 `ic_stop`，RDP 的「断开连接」（仅断本地会话）用 `ic_power`；
+  应用页的「断开连接」用 `ic_disconnect`（断链）。四者都是纯 `fill` 路径，由页面按状态着色。
 - **ArkUI 的 SVG 渲染不绘制 `<text>` 元素**：图标里的字符必须转成矢量路径（描边或填充），
   写 `<text>` 在网页预览能看到、在上屏里不会出现。
 - RDP 卡片用原有「显示器 + 信号」图标（`ic_remote_desktop`）。
@@ -137,10 +140,19 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   stop 圆角方 `28×28`、power 用 `viewBox="-4 -4 32 32"` 把原 18 单位的图形缩到约 `27px`。
 - **纯三角按「重心」居中，不是包围盒居中**：`ic_play` 的包围盒中心在三角形重心右侧，按包围盒居中会显得
   偏左；取顶点 `M15 10 L43 24 L15 38 Z`，让**质心**落在 `viewBox` 中心（三角质心在底边上方 `宽/3` 处）。
+- **`ic_disconnect` 画成「断链」**：两个**开口**的圆角矩形链环，两环**成一夹角**（约 15~20°）而**不是共线**——
+  共线摆成一条直线读不出「断开」；断口处用**两根短杠**表示链条断面，左上再放 3 根火花。
+  环孔靠子路径反向绕线（`fill` 非零环绕）形成，整枚仍是**纯 `fill` 单路径**。它是对角线形、密度低，
+  图形占 `viewBox` **约 73%**（大于 play/stop/power 的 58%）才与它们等观。
+- **`ic_disconnect` 的线宽与圆角照 tile 的可读性定，不照抄参考图的细线**：tile 上的动作图标只有
+  `ACTION_SIZE`（22vp），细线在那一档只剩约 1px、整枚读成灰糊；要加粗到**与未选中星标的实心同量级的视觉重量**，
+  圆角也随线宽一起放大（圆角外径约为线宽的 1.5~2 倍），开口端停在圆角切点即可——不必为了多留一小段直端
+  而把断口挤到中间两根短杠上（两者本就只隔几像素）。同一份几何换到别处更大的尺寸也照样成立。
 - **连接 / 断开 / 关闭复用同一套填充图标**（`ic_play` / `ic_power` / `ic_stop`）：主窗口的连接钮和
   应用 tile 用同一套——连接钮画在**实心 accent / danger** 上，用 `fillColor('#FFFFFF')`（实心底上的白属
   允许的例外）；tile 画在材质圆盘上，按状态给 accent / text_primary / danger。不要再为同一语义另画一套
-  描边图标（曾有的 `ic_disconnect` / `ic_arrow_right` 已并入本套并删除）。
+  描边图标（曾有的描边版 `ic_disconnect` / `ic_arrow_right` 已删除；现行的 `ic_disconnect` 是纯 `fill` 断链，
+  与上条同一处理）。
 - **需要运行时换色的图标用 `fill` 画，不要用 `stroke`**：`Image.fillColor` 只覆盖 SVG 的**填充**，对描边无效。
   故星标 / 连接 / 断开 / 关闭（`ic_star` / `ic_play` / `ic_power` / `ic_stop`）一律纯 `fill` 路径，由页面按状态给
   accent / text_primary / danger；`ic_refresh` 画在 accent 圆钮上，直接用白色 `fill`。`ic_apps` 这类固定描边

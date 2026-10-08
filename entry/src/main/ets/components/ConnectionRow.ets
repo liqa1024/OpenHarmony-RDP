@@ -9,7 +9,8 @@
 import { SavedConnection } from '../model/RdpModels';
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { ConnectAction, connectActionFor, connectActionLabel } from '../utils/ConnectAction';
+import { ConnectAction, connectActionFor, connectActionLabel, primaryConnectAction }
+  from '../utils/ConnectAction';
 
 @Component
 export struct ConnectionRow {
@@ -25,6 +26,7 @@ export struct ConnectionRow {
   onEdit: () => void = () => {};
   onToggleConnection: () => void = () => {};
   onOpenApps: () => void = () => {};
+  onTerminate: () => void = () => {};
   onDelete: () => void = () => {};
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
@@ -55,17 +57,68 @@ export struct ConnectionRow {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);
   }
 
+  /**
+   * The button's action. Moonlight collapses resume/switch/disconnect into 终止
+   * (closing its session stops the host app); RDP keeps 断开连接.
+   */
+  private primary(): ConnectAction {
+    return primaryConnectAction(this.action(), this.conn.isMoonlight());
+  }
+
   private connectTip(): string {
-    return connectActionLabel(this.action());
+    return connectActionLabel(this.primary());
+  }
+
+  /** The button click: 终止 asks the host to stop its app, else toggle the session. */
+  private primaryTap(): void {
+    if (this.primary() === ConnectAction.Terminate) {
+      this.onTerminate();
+    } else {
+      this.onToggleConnection();
+    }
   }
 
   @Builder
   menu() {
     Menu() {
-      MenuItem({ content: this.connectTip() })
-        .onClick(() => {
-          this.onToggleConnection();
-        })
+      if (this.conn.isMoonlight()) {
+        // The button never resumes, so 恢复 / 切换 / 连接 are offered here.
+        if (this.action() === ConnectAction.Cancel) {
+          MenuItem({ content: '取消连接' })
+            .onClick(() => {
+              this.onToggleConnection();
+            })
+        } else if (this.action() === ConnectAction.Connect) {
+          MenuItem({ content: '连接' })
+            .onClick(() => {
+              this.onToggleConnection();
+            })
+        } else if (this.action() === ConnectAction.Resume) {
+          MenuItem({ content: '恢复' })
+            .onClick(() => {
+              this.onToggleConnection();
+            })
+        } else if (this.action() === ConnectAction.Switch) {
+          MenuItem({ content: '切换' })
+            .onClick(() => {
+              this.onToggleConnection();
+            })
+        }
+        // 终止 needs something running on the host to stop.
+        if (this.hostTargetId !== 0) {
+          MenuItem({ content: '终止' })
+            .contentFontColor($r('app.color.danger'))
+            .onClick(() => {
+              this.onTerminate();
+            })
+        }
+      } else {
+        // RDP keeps its dynamic 连接 / 断开连接 / 取消连接.
+        MenuItem({ content: this.connectTip() })
+          .onClick(() => {
+            this.onToggleConnection();
+          })
+      }
       MenuItem({ content: '编辑' })
         .onClick(() => {
           this.onEdit();
@@ -161,9 +214,15 @@ export struct ConnectionRow {
             .width(24)
             .height(24)
             .color('#FFFFFF')
-        } else if (this.state === ConnectionState.Connected) {
-          // Same filled glyph set as the app tiles (white on the solid accent /
-          // danger button); see doc_agent/moonlight-connection.md §6.
+        } else if (this.primary() === ConnectAction.Terminate) {
+          // 终止: stop the host's running app and close the session.
+          Image($r('app.media.ic_stop'))
+            .width(22)
+            .height(22)
+            .fillColor('#FFFFFF')
+            .draggable(false)
+        } else if (this.primary() === ConnectAction.Disconnect) {
+          // RDP 断开连接 (local session only; no host-side app).
           Image($r('app.media.ic_power'))
             .width(22)
             .height(22)
@@ -180,7 +239,8 @@ export struct ConnectionRow {
       .width(44)
       .height(44)
       .borderRadius(22)
-      .backgroundColor(this.state === ConnectionState.Connected
+      .backgroundColor(this.primary() === ConnectAction.Terminate
+        || this.primary() === ConnectAction.Disconnect
         ? $r('app.color.danger') : $r('app.color.accent'))
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
@@ -188,7 +248,7 @@ export struct ConnectionRow {
       .hoverEffect(HoverEffect.Scale)
       .bindTips(this.connectTip(), this.tipsOptions)
       .onClick(() => {
-        this.onToggleConnection();
+        this.primaryTap();
       })
     }
     .width('100%')

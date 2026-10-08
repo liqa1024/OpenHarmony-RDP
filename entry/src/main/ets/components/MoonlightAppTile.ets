@@ -196,7 +196,7 @@ export struct MoonlightAppTile {
         Column() {
           Row() {
             if (this.hasSession) {
-              this.tileAction($r('app.media.ic_power'), $r('app.color.text_primary'), '断开连接', 8,
+              this.tileAction($r('app.media.ic_disconnect'), $r('app.color.text_primary'), '断开连接', 8,
                 (): void => {
                   this.onDisconnect();
                 })

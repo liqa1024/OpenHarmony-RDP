@@ -20,7 +20,7 @@ import { SettingsStore } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { ConnectionRow } from '../components/ConnectionRow';
 import { FabButton } from '../components/FabButton';
-import { showConfirm, showNotice } from '../utils/UiUtil';
+import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -34,6 +34,9 @@ struct Index {
   // unknown). Only Moonlight has one (its running app id); RDP stays 0. Refreshed
   // on page show so the row can show 恢复 / 运行中.
   @State hostTargets: Map<string, number> = new Map<string, number>();
+  // The host's HTTPS control port per connection (from the same probe), kept so
+  // the context menu's 终止 can call `/cancel`.
+  @State hostHttpsPorts: Map<string, number> = new Map<string, number>();
   // Index of the item being drag-reordered; -1 when idle. Used only to lift the
   // dragged item above its siblings.
   @State draggingIndex: number = -1;
@@ -108,12 +111,40 @@ struct Index {
   private probeHost(filesDir: string, conn: SavedConnection): void {
     MoonlightClient.fetchServerInfo(filesDir, conn.host, conn.port)
       .then((result: ServerInfoResult): void => {
-        const next: Map<string, number> = new Map<string, number>(this.hostTargets);
-        next.set(conn.id, result.ok ? result.info.currentGame : 0);
-        this.hostTargets = next;
+        const targets: Map<string, number> = new Map<string, number>(this.hostTargets);
+        targets.set(conn.id, result.ok ? result.info.currentGame : 0);
+        this.hostTargets = targets;
+        const ports: Map<string, number> = new Map<string, number>(this.hostHttpsPorts);
+        ports.set(conn.id, result.ok ? result.info.httpsPort : 0);
+        this.hostHttpsPorts = ports;
       })
       .catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'host probe failed: %{public}s', JSON.stringify(error));
+      });
+  }
+
+  /**
+   * 终止: ask the host to stop the app it is running (`/cancel`, HTTPS + mTLS),
+   * then drop a local session if one exists and refresh the host state.
+   */
+  private terminateHostApp(conn: SavedConnection): void {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      return;
+    }
+    const filesDir: string = (context as common.UIAbilityContext).filesDir;
+    const known: number | undefined = this.hostHttpsPorts.get(conn.id);
+    const httpsPort: number = known === undefined || known === 0 ? 47984 : known;
+    MoonlightClient.cancel(filesDir, conn.host, httpsPort)
+      .then((ok: boolean): void => {
+        showToast(this.getUIContext(), ok ? '已请求终止主机应用' : '终止主机应用失败');
+        if (this.connState(conn.id) !== ConnectionState.Idle) {
+          SessionManager.disconnect(conn.id);
+        }
+        this.probeHost(filesDir, conn);
+      })
+      .catch((error: BusinessError): void => {
+        hilog.warn(DOMAIN, TAG, 'terminate host app failed: %{public}s', JSON.stringify(error));
       });
   }
 
@@ -421,6 +452,9 @@ struct Index {
                 },
                 onOpenApps: () => {
                   this.openMoonlightApps(conn);
+                },
+                onTerminate: () => {
+                  this.terminateHostApp(conn);
                 },
                 onDelete: () => {
                   this.confirmDelete(conn);
