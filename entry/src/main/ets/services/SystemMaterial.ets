@@ -22,7 +22,9 @@ export enum MaterialSurface {
   /** Cards and other regular content containers. */
   CARD,
   /** Menus, tips and toasts, which have to obscure what is behind them. */
-  OVERLAY
+  OVERLAY,
+  /** Small floating controls laid over a picture (e.g. the app-poster actions). */
+  CONTROL
 }
 
 function probe(): boolean {
@@ -66,6 +68,12 @@ function build(surface: MaterialSurface): uiMaterial.Material | undefined {
       applyShadow = false;
     } else if (surface === MaterialSurface.OVERLAY) {
       style = uiMaterial.ImmersiveStyle.THICK;
+    } else if (surface === MaterialSurface.CONTROL) {
+      // Small floating controls over a picture: the official guide recommends
+      // THIN / ULTRA_THIN for floating buttons. No materialColor: the material
+      // follows the system and its own frosted layer supplies the contrast; a
+      // tint would only flatten it.
+      style = uiMaterial.ImmersiveStyle.THIN;
     } else {
       // The session toolbar floats over the remote desktop image, whose colours
       // are unknown, so it stays dark chrome in both system light and dark mode
@@ -86,6 +94,7 @@ function build(surface: MaterialSurface): uiMaterial.Material | undefined {
 let floating: uiMaterial.Material | undefined = undefined;
 let card: uiMaterial.Material | undefined = undefined;
 let overlay: uiMaterial.Material | undefined = undefined;
+let control: uiMaterial.Material | undefined = undefined;
 
 export class SystemMaterial {
   /** Whether this system renders immersive system material at all. */
@@ -115,6 +124,12 @@ export class SystemMaterial {
       }
       return overlay;
     }
+    if (surface === MaterialSurface.CONTROL) {
+      if (control === undefined) {
+        control = build(surface);
+      }
+      return control;
+    }
     if (floating === undefined) {
       floating = build(surface);
     }
@@ -127,18 +142,27 @@ export class SystemMaterial {
  * attribute only exists from API 26, so it is reached through a modifier rather
  * than written inline: an unimplemented attribute would abort the build of the
  * component it is written on.
+ *
+ * `fallbackBlur` is the flat-path substitute on systems without a material: a
+ * component-level frosted style. It is applied *only* when there is no material,
+ * because backgroundBlurStyle sits above the material layer and would hide it
+ * (see the immersive-light-sense FAQ) — setting it to BlurStyle.NONE is not
+ * enough, it must not be set at all.
  */
 export class ImmersiveModifier<T extends CommonMethod<T>> implements AttributeModifier<T> {
   private readonly material: uiMaterial.Material | undefined;
+  private readonly fallbackBlur: BlurStyle | undefined;
 
-  constructor(material: uiMaterial.Material | undefined) {
+  constructor(material: uiMaterial.Material | undefined, fallbackBlur?: BlurStyle) {
     this.material = material;
+    this.fallbackBlur = fallbackBlur;
   }
 
   applyNormalAttribute(instance: T): void {
-    // A material only exists when the system has the capability, so this is the
-    // fallback path and the attribute is never reached there.
     if (this.material === undefined) {
+      if (this.fallbackBlur !== undefined) {
+        instance.backgroundBlurStyle(this.fallbackBlur);
+      }
       return;
     }
     if (deviceInfo.apiAvailable('26.0.0')) {

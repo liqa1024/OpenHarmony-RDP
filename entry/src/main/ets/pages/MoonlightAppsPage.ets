@@ -29,6 +29,17 @@ const TAG: string = 'HmRdpMoonlightApps';
 // Moonlight's box art is 200x267 (see moonlight-qt AppView.qml): the icon tile
 // keeps that width:height so a fetched poster is not cropped by a wrong frame.
 const BOXART_ASPECT: number = 200 / 267;
+// The tile is the poster itself (no card / frame wrapper). Its box-art width.
+const TILE_WIDTH: number = 108;
+const TILE_HEIGHT: number = TILE_WIDTH / BOXART_ASPECT;
+const TILE_RADIUS: number = 14;
+// On-poster controls sit on a THIN immersive-material disc (fallback: a flat
+// input_bg disc). The star's disc stays small; the running app's action discs
+// are bigger so they are easier to hit.
+const STAR_CONTROL: number = 28;
+const STAR_SIZE: number = 18;
+const ACTION_CONTROL: number = 36;
+const ACTION_SIZE: number = 22;
 
 export interface MoonlightAppsParams {
   connectionId: string;
@@ -57,8 +68,9 @@ struct MoonlightAppsPage {
   private hasLoaded: boolean = false;
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private cardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+  private controlMaterial: AttributeModifier<RowAttribute> =
+    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CONTROL),
+      BlurStyle.COMPONENT_THIN);
   private readonly stateListener: SessionStateListener =
     (connectionId: string, state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
@@ -253,12 +265,16 @@ struct MoonlightAppsPage {
     await this.refresh();
   }
 
-  /** Card tooltip: a non-running app means "连接", or "切换" when one is running. */
+  /**
+   * The poster is the tile and carries no name, so the tooltip both names the
+   * app and says what a click does: "切换到" when another app is running, else
+   * "连接到".
+   */
   private appTip(app: NvApp): string {
     if (this.isRunning(app)) {
-      return '连接';
+      return `连接到「${app.name}」`;
     }
-    return this.currentGame !== 0 ? '切换到此应用' : '连接';
+    return this.currentGame !== 0 ? `切换到「${app.name}」` : `连接到「${app.name}」`;
   }
 
   private setDefault(app: NvApp): void {
@@ -282,137 +298,162 @@ struct MoonlightAppsPage {
     return this.defaultAppId === app.id.toString();
   }
 
-  /** One round icon action shown for the running app (connect / 断开 / 关闭). */
+  /**
+   * A round on-poster control: a THIN immersive-material disc, flat input_bg
+   * where the system has no material. BLOCK_HIERARCHY keeps a tap off the poster
+   * underneath, so the tile's own click does not also fire.
+   */
   @Builder
-  tileAction(icon: Resource, color: ResourceColor, tip: string, gap: number, action: () => void) {
+  controlDisc(icon: Resource, color: ResourceColor, disc: number, glyph: number,
+    gap: number, tip: string, action: () => void) {
     Row() {
       Image(icon)
-        .width(18)
-        .height(18)
+        .width(glyph)
+        .height(glyph)
         .fillColor(color)
         .draggable(false)
     }
-    .width(32)
-    .height(32)
-    .borderRadius(16)
-    .backgroundColor($r('app.color.input_bg'))
+    .width(disc)
+    .height(disc)
+    .borderRadius(disc / 2)
+    // Explicit transparent background, like the connection rows: the material is
+    // the surface (an opaque background would cover it).
+    .backgroundColor(Color.Transparent)
+    // Material when the system has it, otherwise a component-level frosted style
+    // — both live in the modifier so the fallback blur is never set alongside
+    // the material (it would sit above and hide it).
+    .attributeModifier(this.controlMaterial)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .margin({ right: gap })
-    .hoverEffect(HoverEffect.Highlight)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .bindTips(tip, this.tipsOptions)
     .onClick(() => {
       action();
     })
   }
 
-  /** Square tile: name on top, the app icon, then (when running) the actions. */
+  /** One icon action overlaid on the running app's poster. */
+  @Builder
+  tileAction(icon: Resource, color: ResourceColor, tip: string, gap: number, action: () => void) {
+    this.controlDisc(icon, color, ACTION_CONTROL, ACTION_SIZE, gap, tip, action)
+  }
+
+  /** The set-as-default star, top-right on the poster. */
+  @Builder
+  starControl(app: NvApp) {
+    this.controlDisc($r('app.media.ic_star'),
+      this.isDefault(app) ? $r('app.color.accent') : $r('app.color.text_primary'),
+      STAR_CONTROL, STAR_SIZE, 0, '设为默认',
+      (): void => {
+        this.setDefault(app);
+      })
+  }
+
+  /**
+   * The tile is the box art itself: no card / frame wrapper around it and no
+   * name row. The name lives in the hover tip; the default star sits at the
+   * poster's top-right and the running app's actions at its bottom-center, both
+   * overlaid on the art.
+   */
   @Builder
   appTile(app: NvApp) {
-    Column() {
-      // Name on top, with the set-as-default star at the card's top-right. It
-      // sits on the card surface (not over the icon), so it needs no scrim.
-      Stack({ alignContent: Alignment.End }) {
-        Text(app.name)
-          .fontSize(13)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .padding({ left: 26, right: 26 })
-
-        Image($r('app.media.ic_star'))
-          .width(18)
-          .height(18)
-          .fillColor(this.isDefault(app)
-            ? $r('app.color.accent') : $r('app.color.text_tertiary'))
-          .draggable(false)
-          .bindTips('设为默认', this.tipsOptions)
-          .onClick(() => {
-            this.setDefault(app);
-          })
+    Stack({ alignContent: Alignment.Center }) {
+      // The poster frame: radius / clip / placeholder only. The "连接 / 切换"
+      // tip lives here (on the whole tile the star / action tips would also
+      // fire, since nested bindTips are not suppressed by the inner one).
+      Stack({ alignContent: Alignment.Center }) {
+        if (this.iconMap.get(app.id) !== undefined) {
+          Image(this.iconMap.get(app.id) as image.PixelMap)
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Cover)
+            .draggable(false)
+        } else {
+          Image($r('app.media.ic_apps'))
+            .width(36)
+            .height(36)
+            .objectFit(ImageFit.Contain)
+            .draggable(false)
+        }
       }
       .width('100%')
-      .height(24)
+      .height('100%')
+      .borderRadius(TILE_RADIUS)
+      .clip(true)
+      .backgroundColor($r('app.color.input_bg'))
+      .bindTips(this.appTip(app), this.tipsOptions)
 
-      Stack({ alignContent: Alignment.TopStart }) {
-        Stack({ alignContent: Alignment.Center }) {
-          if (this.iconMap.get(app.id) !== undefined) {
-            Image(this.iconMap.get(app.id) as image.PixelMap)
-              .width('100%')
-              .height('100%')
-              .objectFit(ImageFit.Cover)
-              .draggable(false)
-          } else {
-            // The host ships 200x267 box art; the placeholder is centered in the
-            // same frame so it reads as the same shape.
-            Image($r('app.media.ic_apps'))
-              .width(36)
-              .height(36)
-              .objectFit(ImageFit.Contain)
-              .draggable(false)
-          }
-        }
-        .width('100%')
-        .aspectRatio(BOXART_ASPECT)
-        .borderRadius(14)
-        .clip(true)
-        .backgroundColor($r('app.color.input_bg'))
-        // The card's "连接 / 切换" hint lives on the icon only: on the whole card
-        // it would also fire while hovering the star / action buttons (nested
-        // bindTips are not suppressed by the inner one).
-        .bindTips(this.appTip(app), this.tipsOptions)
-
-        if (this.isRunning(app)) {
+      // "运行中" badge at the poster's top-left.
+      if (this.isRunning(app)) {
+        Column() {
           Text('运行中')
             .fontSize(9)
             .fontColor('#FFFFFF')
             .backgroundColor($r('app.color.success'))
             .borderRadius(4)
             .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-            .margin({ left: 6, top: 6 })
         }
+        .width('100%')
+        .height('100%')
+        .padding(6)
+        .justifyContent(FlexAlign.Start)
+        .alignItems(HorizontalAlign.Start)
+        .hitTestBehavior(HitTestMode.None)
+      }
+
+      // Default star at the poster's top-right.
+      Column() {
+        this.starControl(app)
       }
       .width('100%')
-      .margin({ top: 4 })
+      .height('100%')
+      .padding(5)
+      .justifyContent(FlexAlign.Start)
+      .alignItems(HorizontalAlign.End)
+      .hitTestBehavior(HitTestMode.None)
 
-      // The running app gets two explicit actions on one row, selected by whether
-      // a session is already up: [连接 / 断开] then [关闭].
+      // Bottom-center (running app only): two actions selected by whether a
+      // session is already up — [连接 / 断开] then [关闭].
       if (this.isRunning(app)) {
-        Row() {
-          if (this.hasActiveSession()) {
-            this.tileAction($r('app.media.ic_power'), $r('app.color.text_secondary'),
-              '断开连接', 10,
-              (): void => {
-                this.disconnectSession();
-              })
+        Column() {
+          Row() {
+            if (this.hasActiveSession()) {
+              this.tileAction($r('app.media.ic_power'), $r('app.color.text_primary'), '断开连接', 8,
+                (): void => {
+                  this.disconnectSession();
+                })
 
-            this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用并断开', 0,
-              (): void => {
-                this.closeAppAndDisconnect();
-              })
-          } else {
-            this.tileAction($r('app.media.ic_play'), $r('app.color.accent'), '连接', 10,
-              (): void => {
-                this.openApp(app);
-              })
+              this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用并断开', 0,
+                (): void => {
+                  this.closeAppAndDisconnect();
+                })
+            } else {
+              this.tileAction($r('app.media.ic_play'), $r('app.color.accent'), '连接', 8,
+                (): void => {
+                  this.openApp(app);
+                })
 
-            this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用', 0,
-              (): void => {
-                this.closeApp();
-              })
+              this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用', 0,
+                (): void => {
+                  this.closeApp();
+                })
+            }
           }
         }
-        .margin({ top: 8 })
+        .width('100%')
+        .height('100%')
+        .padding({ bottom: 6 })
+        .justifyContent(FlexAlign.End)
+        .alignItems(HorizontalAlign.Center)
+        .hitTestBehavior(HitTestMode.None)
       }
     }
-    .width(124)
-    .padding(8)
-    .borderRadius(16)
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
-    .attributeModifier(this.cardMaterial)
-    .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
+    // Explicit size: the full-size overlay columns below use height('100%'), and
+    // without a definite Stack height they would expand the Stack (a Stack sizes
+    // to its largest child).
+    .width(TILE_WIDTH)
+    .height(TILE_HEIGHT)
     .margin({ right: 12, bottom: 16 })
     .onClick(() => {
       this.openApp(app);

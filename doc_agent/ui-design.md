@@ -51,7 +51,7 @@
 约束：
 
 - 需要**深色变体**的 SVG 图标放 `resources/dark/media/`（同名覆盖 base）。
-- **除会话工具栏外不硬编码颜色**；`'#FFFFFF'`（选中 chip 文字）、`Color.Transparent`（未选中页签下划线）是唯一允许的例外。
+- **除会话工具栏外不硬编码颜色**；`'#FFFFFF'`（选中 chip 文字、叠在 poster 上的徽标 / 图标）、`Color.Transparent`（未选中页签下划线）是允许的例外。
 - 选中态 chip 固定用「`accent` 底 + `#FFFFFF` 字」，不随主题切换为别的组合。
 
 ### 1.2 会话工具栏固定深色调色板（**不随主题**）
@@ -83,6 +83,8 @@
 | 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
 
 约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见「设计原则」与 §4）。
+**`shadow()` 的 `radius` / `offsetX` / `offsetY` 单位是 px**（其余尺寸属性多为 vp），写数值前用 `UIContext.vp2px` 换算，
+否则在高密度屏上会小到看不见。
 
 ## 2. 沉浸材质（系统材质）
 
@@ -93,6 +95,7 @@
 | `CARD` | 列表 / 编辑 / 设置卡片 | 跟随系统深浅色；前景与兜底底色走 `$r()` |
 | `OVERLAY` | Toast、Tips、右键菜单、AlertDialog | 跟随系统（系统自带前景色） |
 | `FLOATING` | 会话工具栏、状态遮罩 | **固定深色，不跟随系统** |
+| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 跟随系统；`THIN`，不加赋色 |
 
 约束：
 
