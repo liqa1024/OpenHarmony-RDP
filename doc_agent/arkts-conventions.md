@@ -17,9 +17,19 @@
   `Child({ content: () => { this.someBuilder(); } })`（箭头 `this` 绑定父组件）；或**尾随闭包**
   `Child({ ... }) { ... }`（内容按 `@Builder` 传给唯一的 `@BuilderParam`，`this` 绑定父组件）——尾随闭包要求
   子组件**有且仅有一个无参 `@BuilderParam`，且该组件不挂通用属性**。否则把内容做成独立子组件 / 显式参数。
-- **`ForEach` 的 key 必须随内容变化**：否则列表项会被复用、`onClick` 闭包仍持有旧对象，
-  UI 与连接动作会用到过期数据。本项目统一用 `${conn.id}#${conn.updatedAt}` 作 key
-  （`updatedAt` 每次保存都刷新，就是为了让 key 变化）。
+- **`ForEach` 项里渲染会变的状态，正解是「子组件 + `@Prop`」，不是堆 key**：列表项写成**自定义组件**，
+  把会变的状态用 `@Prop` 传入——父组件重渲染时 `@Prop` 会**在原地更新**（`ConnectionRow` 的 `state`
+  就是这样驱动连接钮的加载态）。**不要**用页面 `@Builder` 内联整个列表项：`@Builder` 按值传参不刷新
+  （见下条），项会被冻住（点星标、连上会话、图标到位全都不动）。
+- key **只需随「身份数据」变化**：本项目统一用 `${conn.id}#${conn.updatedAt}`（`updatedAt` 每次保存都刷新）。
+  应用管理页的 tile（`components/MoonlightAppTile`）因 **图标位图 `PixelMap` 无法走 `@Prop`**（`@Prop`
+  深拷贝会丢 NAPI 复杂类型的类型），图标走**普通字段**、key 用 `${app.id}#${iconMap.size}`，只在图标
+  到位时重建该 tile；默认 / 正在运行 / 会话态一律走 `@Prop`。
+- **`@Builder` 按值传参不会刷新**（官方 FAQ：私有/全局 Builder 按值传递的参数改变都不刷新 UI）——
+  **这条在自定义组件内部同样成立**：组件因 `@Prop` 重渲染时，`build()` 里的 `if` 条件会重算（所以
+  「按钮出现」正常），但经按值 `@Builder` 传下去的属性（如星标颜色）依旧不刷新。要动态刷新只有：
+  传**单个对象字面量**（按引用——单参、必须是对象字面量、类型已声明，条件苛刻；应用管理页的
+  `controlDisc` 即此写法），或改用「按回调传参」，或**包一层自定义组件**（`ChoiceChip` 随选中态刷新）。
 - **`JSON.parse` 反序列化**：`as` 只影响编译期，**不会**转换成员类型，也**不会**恢复类默认值。
   统一 `JSON.parse(text) as Record<string, Object>` 再逐字段读取（见 `ConfigTransfer.readSettings`）；
   不要直接 `as` 成业务类后依赖其字段类型或默认值。

@@ -72,6 +72,11 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
     材质，故不与材质层冲突）；图形色走主题 token 随深浅色。**星标的圆比动作钮小**（星标 `28` / 图形 `18`，
     动作钮 `36` / 图形 `22`）。
   - 卡片点击与卡片内的星标/动作钮互不串扰（各自的 `onClick` 命中自身）。
+  - **tile 是自定义组件 `components/MoonlightAppTile`（不是页面 `@Builder`）**：默认 / 正在运行 / 会话态
+    用 `@Prop` 传入，父页面重渲染时在原地更新；图标位图因 `PixelMap` 不能过 `@Prop`，走普通字段 + key
+    `${app.id}#${iconMap.size}`（原因见 [`arkts-conventions.md`](arkts-conventions.md) §2）。
+  - **连接即在 UI 上标记为「运行」**：`launch` 时把 `currentGame` 置为目标应用（连接会启动它、切换会先停旧的一个），
+    好让该 tile 立刻出「运行中」徽标与连接态动作钮，不必等下一次刷新。
 - 行右键菜单对 Moonlight 追加「设为默认应用」；**默认应用只在列表/应用界面设置，编辑页不再有该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
 
