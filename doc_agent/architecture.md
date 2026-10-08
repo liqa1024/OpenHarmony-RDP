@@ -37,6 +37,13 @@
 | `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface，输入转 `LiSend*` |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供 |
 | `services/MdnsDiscovery.ets` | 通用 mDNS 主机发现：按 DNS-SD 服务类型发现并解析为 IP，去重成实时主机列表（`_nvstream._tcp` 即 Moonlight/Sunshine） |
+| `moonlight/MoonlightClient.ets` | Moonlight 控制层编排：`serverinfo → pair → applist → launch/resume`，并装配原生串流配置（见 [`moonlight-native.md`](moonlight-native.md) §4） |
+| `moonlight/MoonlightIdentity.ets` | 客户端身份（自签名 X.509）+ HUKS 信封私钥 + 逐主机 pin 存储 |
+| `moonlight/MoonlightCrypto.ets` | Moonlight 配对加密原语（AES-ECB、SHA、RSA 签验） |
+| `moonlight/MoonlightHttp.ets` | Moonlight HTTP/HTTPS（mTLS、证书 pin）传输（`@ohos.net.http`） |
+| `moonlight/MoonlightXml.ets` | Moonlight 控制端点响应的 XML 解析 |
+| `moonlight/MoonlightModels.ets` | Moonlight 协议数据模型（serverinfo/applist/pair 等） |
+| `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
 | `utils/MoonlightKeyMapper.ets` | HarmonyOS 键码 + 鼠标键 → Windows 虚拟键码与 Moonlight 的 modifier/button/action 常量 |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `SessionEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
@@ -46,16 +53,28 @@
 | `services/BackgroundProtocol.ets` | 后台 worker 的消息形状（请求/应答/事件，见 §4.4） |
 | `workers/FileDownloader.ets` | 远端文件下载状态机（worker 侧）：分片请求、沙箱写盘、进度/完成/失败事件（见 §4.4） |
 | `services/AudioPlayer.ets` | UI 线程侧音频 worker 门面：按 handle start/stop，并把 native 的 `AudioFormat` 事件转发给音频 worker |
+| `services/AudioProtocol.ets` | 音频 worker 的消息形状（请求/应答/事件） |
 | `workers/audio.worker.ets` | **音频 worker（进程一条）**：每会话一个 ArkTS `AudioRenderer`，其 `writeData` 经 `audioRead` 从原生 sink 环拉 PCM（见 §4.4） |
 | `services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因 |
 | `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：版本门槛判断、材质复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
+| `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议会话页共用（见 [`session-and-input.md`](session-and-input.md) §3） |
+| `services/SessionTelemetry.ets` | 工具栏遥测的 ArkTS 聚合：把原生原始样本换算成速率与每帧均值（口径见 [`gfx-engine.md`](gfx-engine.md) §7.1） |
 | `utils/KeyMapper.ets` | 按键名映射（设置页按键框显示用） |
+| `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/HTML/CfHTML 解析与组装），跑在后台 worker |
+| `utils/FileTransferCodec.ets` | 文件剪贴板线格式编解码（`FileGroupDescriptorW` 等） |
+| `utils/UiUtil.ets` | `showToast` / `showConfirm` / `showNotice` / `lengthToNumber` 等共享 UI 工具 |
+| `utils/DisplayUtil.ets` | `defaultDisplay()`：容错查询默认显示 |
+| `utils/ScaleParse.ets` | 手动分辨率 / 缩放文本解析与 `MAX_DESKTOP_SIZE` |
+| `utils/MoonlightCodec.ets` | Moonlight 编码器能力分类（硬解 / 软解 / 无） |
+| `utils/PairingPrompt.ets` | Moonlight 配对 PIN 弹窗（四位数字居中放大，握手结束自动关闭） |
+| `utils/HostSearchPrompt.ets` | mDNS 主机选择弹窗（只渲染已搜到的主机，已添加的置灰） |
 | `model/SessionSignal.ets` | 协议无关的会话信号（生命周期 `Connected/Disconnected/Error` + 协议自带码的 `UiEvent`），manager 只消费 `kind` |
 | `model/RdpModels.ets` | 连接/设置的数据模型与默认值 |
-| `components/TextAction.ets` | 列表/菜单里的通用文本动作项 |
+| `components/*.ets` | 共享 UI 组件（`TextAction` / `ConnectionRow` / `StatusCard` / `HeaderBar` / `ProtocolTabs` / `MaterialCard` / `FabButton` / `ChoiceChip` / `SettingToggleRow` / `SettingSliderRow` / `SessionChrome`）；清单与参数契约见 [`ui-design.md`](ui-design.md) §4.1 |
 | `entrybackupability/EntryBackupAbility.ets` | 系统备份/恢复 Ability |
 | `pages/GfxReplayPage.ets` | dev 页：码流回放测试（路线选择、统计显示），见 [`gfx-engine.md`](gfx-engine.md) §6 |
+| `pages/MoonlightAppsPage.ets` | 主窗口内的 Moonlight 应用管理页：应用列表 / 运行状态 / 启停 / 默认应用（星标）/ 远程图标 |
 
 ## 3. 原生（`entry/src/main/cpp/`）
 
@@ -132,7 +151,7 @@
 
 **规则**：drdynvc 分发线程是**所有动态通道的公共瓶颈**——帧流水线一旦内联在它上面，一个重帧就会把音频、
 输入一起挡住（表现为音频卡顿、且与帧率绑定）。因此帧重活必须通过 sink 钩子交到应用线程
-（`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`native-libraries.md`](native-libraries.md) §4）。
+（`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`native-libraries.md`](native-libraries.md) §3）。
 新增/修改动态通道处理时按这条办。sink→队列这一段只拷不阻塞（队列是**延迟缓冲、不是节流**）：它不按帧数设硬上限，
 只在越过防御性 high-water（64MB）时打一次警告——**不能靠丢弃来限流**，每个 chunk 都是 GFX 流的一部分，丢了会破坏解析。
 

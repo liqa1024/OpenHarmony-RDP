@@ -14,12 +14,12 @@
 #        (HarmonyOS QoS levels) for the whole frame pipeline it carries: ZGX
 #        decode, PDU parse, image decode, composite, present and acknowledge.
 #        The decode's tile workers get their QoS from the platform queue's task
-#        attribute instead (hmrdp_parallel.*), so the WinPR pool no longer
-#        participates and its fan-out cap is gone.
+#        attribute instead (hmrdp_parallel.*), so the WinPR pool takes no part and
+#        its fan-out cap does not apply.
 # (a) receive window: deliberately NOT patched. Asking for a larger SO_RCVBUF
-#     explicitly disables the kernel's receive-buffer auto-tuning; on the test
-#     device that dropped the measured arrival rate from ~1.28 MB/s to ~0.58 MB/s
-#     (same content and same client work, RTT unchanged/better), i.e. upstream's
+#     explicitly disables the kernel's receive-buffer auto-tuning; measurement
+#     showed it cut the arrival rate to roughly half on the same content and
+#     client work, i.e. upstream's
 #     "at least 32 K plus auto-tuning" is the better behaviour here. The receive
 #     window is still what caps a high-RTT link, but it cannot be fixed from the
 #     client side on this platform.

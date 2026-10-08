@@ -2,8 +2,8 @@
  * HmRdp - settings row with a switch.
  *
  * "title (+ subtitle, + disabled reason) + Toggle" on one line. Shared by the
- * editor's advanced section and the settings page, replacing the near-identical
- * optionRow / toggleItem builders both used to carry.
+ * editor's advanced section and the settings page, so both pages share one row
+ * shape instead of near-identical private builders.
  */
 @Component
 export struct SettingToggleRow {

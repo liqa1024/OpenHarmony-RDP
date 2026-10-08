@@ -4,16 +4,16 @@
 项目定位、环境、最常用的构建/验证命令，以及**硬规则**。
 通用开发知识（协议约束、平台踩坑、验证方法）在 **[`doc_agent/`](doc_agent/README.md)**，按主题分类。
 
-- 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 目标：HarmonyOS 6.1.0（API 23）
+- 应用名：**RDP 远程桌面** · Bundle：`com.lixa.hmrdp` · 系统：最低兼容 `6.1.0(23)`，`targetSdkVersion` `26.0.0`
 - RDP 引擎：[FreeRDP](https://github.com/FreeRDP/FreeRDP)（源码交叉编译到 `aarch64-linux-ohos` /
   `x86_64-linux-ohos`）；界面 ArkTS/ArkUI，输入经 Node-API 桥接转发；
   **画面由 FreeRDP gdi 出、经呈现器上屏：Vulkan 优先，Vulkan 不能上屏时回落 GLES**
   （`hmrdp_presenter.h`）。「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan，给 Vulkan
   不好用/模拟器兜底），按**呈现能力**置灰（见 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §1）。
-  **超分辨率**（平台文档称「超分」，Vulkan 专有）让会话按「分辨率 ÷ 倍率」出画、本机用 XEngine
-  空域上采样还原到输出分辨率
-  （见 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §4.5）。
-  自研的 GPU 解码/合成引擎已移除（见 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §3）。
+  **超分辨率**（平台文档称「超分」，Vulkan 专有）让会话按「分辨率 ÷ 倍率」出画、本机再上采样回输出分辨率，
+  上采样器两选一：**XEngine**（平台空域超分）或 **FSR 1.0**（呈现器自带）
+  （见 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §5）。
+  解码/合成只有 FreeRDP gdi 一条路，自研 GPU 引擎**不采用**（见 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §3）。
 
 ## AI 助手约定（硬规则）
 
@@ -23,7 +23,8 @@
   要恢复文件就**直接编辑文件内容**，不要用 git 改工作区或历史。
 - **实机操作默认禁止，需明确授权，且是最后手段**——唯一例外是 **Vulkan / 硬件加速（上屏）**：
   它们**只在真机上验证**（模拟器的 Vulkan 实现会按标准接口谎报能力，因此**不在支持范围内**），
-  这部分由 AI 按 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §5/§6 的循环自动执行。
+  这部分由 AI 按 [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §6（验证回路）与
+  [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §8 自动执行。
   其余情况下**不要动辄"退回真机"**（上真机麻烦且危险），也**不要把结论甩给真机**。
   签名与安装由用户完成（**仓库不含任何签名材料**），AI 只做无破坏性动作（push 样本 / 启动 / 读日志）。
 - **排查顺序**：先怀疑**代码 / 构建 / 数据** → 再怀疑**模拟器自身状态**（跑过重型 GL/GPU 压测后先冷启动）
@@ -52,13 +53,13 @@
 | 应用结构（Ability / 页面 / 服务 / 原生模块职责表）+ **原生线程模型（§4）** | [`architecture.md`](doc_agent/architecture.md) |
 | ArkTS / ArkUI 规范与状态坑 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
 | UI 设计语言（设计原则 / token / 布局模式 / 组件契约 / 共享工具） | [`ui-design.md`](doc_agent/ui-design.md) |
-| 会话窗口、输入映射、工具栏与遥测、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
+| 会话窗口、输入映射、工具栏与遥测、光标同步、剪贴板（手动） | [`session-and-input.md`](doc_agent/session-and-input.md) |
 | 设置 / 连接 / 密码（ASSET）/ 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
-| 原生库构建与补丁（含 **OpenSSL CMake 快照**）、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
+| 原生库构建与补丁（含 **OpenSSL CMake 快照**）、**无版本号 SONAME / 产物不入库**、音频与能力探测 | [`native-libraries.md`](doc_agent/native-libraries.md) |
 | GFX 码流框架 / 会话侧接线 / 回放验证回路与**参考画面验收** / **CPU（gdi）链路的判据与账目口径 / 参考画面门禁 / 并行形态（§7）**（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
+| 上屏（present）管线：一套实现、Vulkan/GLES 两个后端、零拷贝桌面缓冲、**超分辨率（Vulkan 专有，XEngine/FSR）** | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
 | Moonlight（Sunshine）串流**前端**：协议建模、存储、连接列表/编辑页/设置页分栏、图标 | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
-| Moonlight **原生侧**：客户端库构建与共享库链接、视频解码与编解码协商、解码桥与串流会话桥 | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
+| Moonlight **原生侧**：客户端库构建与共享库链接、视频解码与编解码协商、解码桥与串流会话桥（**控制层全在 ArkTS**） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
 | Moonlight 接入路线图（未定项多，仅方向） | [`MOONLIGHT_PLAN.md`](MOONLIGHT_PLAN.md) |
 
 ## 环境

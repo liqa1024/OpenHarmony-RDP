@@ -57,7 +57,7 @@ async function encodePng(pixels: ArrayBuffer, width: number, height: number,
  * Clipboard requests: decode a remote payload, or encode a local one and push it
  * natively. The push must run here, not on the UI thread: the native store copy
  * (a whole image) and the advertise (a channel send on the calling thread) can
- * block, and a large image was the worst case on a slow link.
+ * block, and a whole-screen image makes that cost visible.
  */
 async function handleRequest(req: BackgroundRequest): Promise<void> {
   const res: BackgroundResponse = { id: req.id, ok: false };

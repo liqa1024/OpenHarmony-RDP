@@ -7,7 +7,7 @@ import { PairResult } from '../moonlight/MoonlightModels';
 /**
  * 超分 backend ids. Plain numbers because they are persisted with the connection
  * and cross the N-API boundary as an int; the native side maps 0/1 to
- * SuperResolutionBackend (see doc_agent/present-pipeline.md §4.5).
+ * SuperResolutionBackend (see doc_agent/present-pipeline.md §5).
  *  - XENGINE: the platform's GPU spatial upscale (needs the device feature).
  *  - FSR: the presenter's own FidelityFX Super Resolution 1.0 (Vulkan only).
  */
@@ -168,8 +168,8 @@ export enum RdpEvent {
   FirstFrame = 3,
   ClipboardText = 4,
   Resize = 5,
-  // Remote cursor: Shape carries "<w>,<h>,<hotX>,<hotY>|<base64 BGRA>", while
-  // Default/Hidden carry no payload.
+  // Remote cursor: Shape carries the bitmap size/hotspot fields plus a native
+  // buffer handle; Default/Hidden carry no payload.
   CursorShape = 6,
   CursorDefault = 7,
   CursorHidden = 8,
@@ -183,11 +183,11 @@ export enum RdpEvent {
   // nothing emits this. The id is kept only to preserve the numbering of the
   // events that follow it.
   Metrics = 11,
-  // Reserved. The remote file list now arrives as RemoteFileListRaw (a raw
+  // Reserved. The remote file list arrives as RemoteFileListRaw (a raw
   // FILEGROUPDESCRIPTORW) that ArkTS parses; this id is kept for numbering.
   ClipboardFileList = 12,
-  // "<direction>|<done>|<total>|<fileIndex>|<fileCount>", direction 0 = remote ->
-  // local, 1 = local -> remote.
+  // Upload/download progress: direction (0 = remote -> local, 1 = local -> remote)
+  // plus done/total bytes and the file index/count.
   FileTransferProgress = 13,
   // Download finished: the absolute sandbox paths, one per line.
   ClipboardFilesReady = 14,
@@ -195,7 +195,7 @@ export enum RdpEvent {
   FileTransferFailed = 15,
   // Upload finished (every advertised byte served); payload is the file count.
   FileTransferDone = 16,
-  // 快捷键穿透: an intercepted key event, payload "<keyCode>|<down>".
+  // 快捷键穿透: an intercepted key event (keyCode + down).
   KeyIntercept = 17,
   // RTF clipboard content; payload is a raw RTF buffer the codec converts.
   ClipboardRtf = 18,

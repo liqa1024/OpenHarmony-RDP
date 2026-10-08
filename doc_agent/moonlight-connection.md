@@ -5,7 +5,7 @@
 RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-storage.md`](settings-and-storage.md)、
 [`present-pipeline.md`](present-pipeline.md)。**原生侧**（客户端库构建与共享库链接、桥接层、HTTP 控制层、客户端
 身份与信任存储、配对加密原语，以及后续的会话 / 输入 / 上屏）见 [`moonlight-native.md`](moonlight-native.md)；
-**协议编排与 XML 解析在 ArkTS**（见其 §4.2）。
+**协议编排与 XML 解析在 ArkTS**（见其 §4）。
 
 ## 1. 协议建模
 
@@ -123,27 +123,26 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   accent / text_secondary / danger；`ic_refresh` 画在 accent 圆钮上，直接用白色 `fill`。`ic_apps` 这类固定描边
   图标只能靠 `resources/dark/media/` 的深色变体随主题。
 
-## 7. 当前实现边界
+## 7. 实现边界
 
-- **前端**已就绪：协议建模、存储、导入导出、连接列表、编辑页、设置页分栏、图标。
-- **原生客户端库已接入**：moonlight-common-c（连同它的 enet / nanors 子模块，后两者随本库静态编入）
+- **前端**：协议建模、存储、导入导出、连接列表、编辑页、设置页分栏、图标。
+- **原生客户端库**：moonlight-common-c（连同它的 enet / nanors 子模块，后两者随本库静态编入）
   交叉编译为共享库 `libmoonlight-common-c.so`，与其它依赖一起落在 `entry/libs/<abi>/` 并被 `libhmrdp.so`
   链接。它是**构建必备输入**（同 FreeRDP，缺 `.so` 即构建失败），不是平台能力；`moonlightProbe`
   恒回 `"1"`，仅作"库确实链上了"的链接断言。原生**串流会话桥** `hmrdp_moonlight_session`
-  （`LiStartConnection` + 输入转发）也已落地。构建流程、共享库约定与目录见
-  [`moonlight-native.md`](moonlight-native.md)。
-- **控制层已接入连接流程**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
+  （`LiStartConnection` + 输入转发）见 [`moonlight-native.md`](moonlight-native.md)。
+- **控制层**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
   （自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、`MoonlightClient`
   （`serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。串流前的预检由
-  `services/MoonlightConnector.ets` 编排（`serverinfo →`（未配对则先 `pair`）`→ launch`，并装配原生串流配置）；
-  它现在由 `MoonlightSessionBackend.prepare()` 在 `SessionManager` 已经发布的 `Connecting` 状态下驱动，因此
-  列表行的加载态与 RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的
+  `services/MoonlightConnector.ets` 编排（`serverinfo →`（未配对则先 `pair`）`→ launch`，并装配原生串流配置），
+  由 `MoonlightSessionBackend.prepare()` 在 `SessionManager` 已发布的 `Connecting` 状态下驱动，故列表行加载态与
+  RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的
   「连接」统一经 `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后
   交给 manager。
 - **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入，四个数字居中放大），
   配对期间不开任何会话窗口；**主机端输入完成即握手结束，弹窗自动关闭并继续**（无需手动确认），只有「取消」是用户动作；
   配对完成后才 launch 并开会话（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 待定项）。
-- **会话窗口与后端已接入**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
+- **会话窗口与后端**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
   `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配
   `moonlightConfig`，`start()` 交给原生）、`services/SessionBackendFactory.ets` 与
   `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按协议路由到该页。窗口在**预检通过后**打开、绑好 surface 再
@@ -152,7 +151,7 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化；连接中的
   状态卡带约 1000ms 显示阈值，避免"多闪一下"。**停止会话会释放原生窗口，所以窗口内「重试」先重新绑定仍存活的
   XComponent surface 再重启**（此时会话必然已不在活动态，原生允许再次绑定）。
-- **尚未接入**：主机发现（先手动添加）、音频（Opus，当前空渲染器关音频）与 HDR / YUV444 的协商暴露；
-  端到端串流待连真 Sunshine 验证。
-- 本文件描述**已落地的前端约定、ArkTS 协议建模与控制层**；原生侧（客户端库 / 解码 / 串流会话 / 输入）
+- **范围之外**：音频（Opus，当前空渲染器关音频）、HDR / YUV444 的协商暴露；端到端串流待连真 Sunshine 验证；
+  超分链路（buffer 模式 + Vulkan 导入）属独立里程碑，仅真机验证（见 [`moonlight-native.md`](moonlight-native.md) §2）。
+- 本文件描述**前端约定、ArkTS 协议建模与控制层**；原生侧（客户端库 / 解码 / 串流会话 / 输入）
   见 [`moonlight-native.md`](moonlight-native.md)，两协议共用的界面组件与设计语言见 [`ui-design.md`](ui-design.md)。

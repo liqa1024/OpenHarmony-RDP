@@ -1314,7 +1314,8 @@ bool Session::Connect(const RdpOptions& options) {
   // GFX (RDPGFX) is mandatory: without it the session does not render at all.
   freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
   // H.264/AVC444 stay off: RemoteFX Progressive is the desktop codec this client
-  // uses, and AVC444 is a niche path with no benefit here without a GPU decoder.
+  // uses, and H.264/AVC444 are niche opt-ins with no benefit here
+  // (see doc_agent/gfx-engine.md §3).
   freerdp_settings_set_bool(settings, FreeRDP_GfxH264, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);
@@ -1556,8 +1557,8 @@ void Session::HandleGfxData(const uint8_t* data, size_t size) {
     return;
   }
   // The raw chunk arrived, still ZGX-compressed and before PDU parse: stamp it on
-  // this session's own meter so `zgx+parse` is measured from the same point the
-  // capture hook used to (the hook has no context to find the meter with).
+  // this session's own meter so `zgx+parse` starts at the same point as the
+  // capture (the capture hook has no context to find the meter with).
   pipeline_.meter()->OnChunk(static_cast<uint32_t>(size));
   // The drdynvc dispatch thread must never be blocked: it carries every dynamic
   // channel, so waiting here for the frame worker to drain would hold audio and

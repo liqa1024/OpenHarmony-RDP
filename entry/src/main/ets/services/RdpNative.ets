@@ -64,23 +64,15 @@ export class RdpNative {
   }
 
   /**
-   * Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-   * Decoding is FreeRDP's gdi pipeline; the presenter is the one the
-   * "硬件加速" setting selects.
-   * `realtime`: play the capture at its recorded arrival times (the live session's
-   * own cadence) instead of the unthrottled fast mode - the mode to use when the
-   * question is "can the client carry the *real* load". Captures recorded before
-   * arrival times were stored fall back to the unpaced mode and say so in the
-   * stats line (`mode=fast(untimed)`).
-   * `refMode`: golden reference - 0 = off (perf run), 1 = record this run as the
-   * reference, 2 = check against the stored one.
-   */
-  /**
    * Dev/test: start one replay instance on `surfaceId`; returns its handle (>0)
    * or -1. Instances are independent (each owns its own frame pipeline), so
-   * several can run at once - the multi-session regression vehicle.
-   * `realtime`: play the capture at its recorded arrival times instead of the
-   * unthrottled fast mode. `refMode`: 0 = off, 1 = record, 2 = compare.
+   * several can run at once - the multi-session regression vehicle. Decoding is
+   * FreeRDP's gdi pipeline and the presenter is the one the "硬件加速" setting
+   * selects.
+   * `realtime`: play at the capture's recorded arrival times instead of the
+   * unthrottled fast mode (a capture without arrival times falls back to fast and
+   * reports `mode=fast(untimed)`). `refMode`: golden reference - 0 = off (perf
+   * run), 1 = record this run as the reference, 2 = check against the stored one.
    */
   static startReplayInstance(surfaceId: string, surfaceW: number, surfaceH: number,
     gfxPath: string, realtime: boolean, refMode: number): number {

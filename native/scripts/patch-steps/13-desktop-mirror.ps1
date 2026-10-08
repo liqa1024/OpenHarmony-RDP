@@ -3,11 +3,11 @@
 #     A full-screen GFX session has exactly one surface, mapped to the output at
 #     (0,0) with no scaling, whose format and row pitch equal gdi's primary buffer.
 #     That surface *is* the desktop, so gdi_OutputUpdate's per-rect
-#     freerdp_image_scale() into the primary just moves ~20MB/frame from one buffer
-#     to another - measured 1.3ms/frame and 41MB of DRAM traffic per frame on a
-#     3120x2080 stream (doc_agent/cpu-path.md §4). With this step the surface is
+#     freerdp_image_scale() into the primary just moves tens of MB/frame from one
+#     buffer to another - a ms-order whole-frame copy plus comparable DRAM traffic
+#     (doc_agent/gfx-engine.md §7.1). With this step the surface is
 #     given the primary buffer instead, so the decoder writes the very pixels the
-#     presenter uploads and the copy disappears (cpu-path.md §4).
+#     presenter uploads and the copy disappears.
 #
 #     The sharing test is `surface->data == gdi->primary_buffer`. It stays valid
 #     because the only path that replaces the primary buffer (gdi_ResetGraphics ->
@@ -15,7 +15,7 @@
 #     surface *before* the old buffer goes away, and DeleteSurface never frees a
 #     shared one. Anything that does not hold exactly - a second surface, an
 #     offset or scaled mapping, a different format/pitch - falls back to the plain
-#     copy, so the worst case is the behaviour we had before.
+#     copy, so the fallback is the plain copy.
 $gdiGfxC = "$Source\libfreerdp\gdi\gfx.c"
 
 $shareHelpers = @'

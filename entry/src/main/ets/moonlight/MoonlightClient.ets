@@ -4,9 +4,8 @@
  * Drives serverinfo -> pair -> applist -> launch against the host over the
  * transport in MoonlightHttp, using the crypto in MoonlightCrypto and the client
  * identity in MoonlightIdentity; all XML is parsed here (MoonlightXml). This
- * mirrors Moonlight's Android PairingManager / NvHTTP and replaces the old
- * native control layer (doc_agent/moonlight-native.md §4). The native side keeps
- * only the RTSP/stream client (LiStartConnection).
+ * mirrors Moonlight's Android PairingManager / NvHTTP (doc_agent/moonlight-native.md
+ * §4). The native side keeps only the RTSP/stream client (LiStartConnection).
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';

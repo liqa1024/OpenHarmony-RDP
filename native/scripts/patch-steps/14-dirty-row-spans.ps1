@@ -4,11 +4,11 @@
 #     `update_tiles` calls region16_union_rect() once per decoded tile, into the
 #     surface's persistent invalidRegion. The union is O(region) and the region
 #     grows all frame (to roughly one band per tile), so a full-screen frame is
-#     O(n^2) - measured 6.4ms/frame of *serial* RDP-thread time, ~30% of a frame on
-#     the video sample, for ~1330 tiles. Measured detail: the per-message region is
-#     essentially one rect per tile, so there is nothing to merge per message
-#     (doc_agent/cpu-path.md §8) - the cost is the union itself, not the rect
-#     count.
+#     O(n^2) - a ms-order, sizeable fraction of the frame of *serial* RDP-thread
+#     time on a full-screen frame (thousands of tiles). Detail: the per-message
+#     region is essentially one rect per tile, so there is nothing to merge per
+#     message (doc_agent/gfx-engine.md §7.1) - the cost is the union itself, not
+#     the rect count.
 #
 #     So the decoder stops touching the region16 per tile: it keeps one min/max
 #     span per *tile row* (O(1) per tile, no allocation, no growth) and the

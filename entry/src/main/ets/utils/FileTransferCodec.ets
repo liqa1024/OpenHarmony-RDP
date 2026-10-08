@@ -77,7 +77,7 @@ export class FileTransferCodec {
   /**
    * Serialises a FILEGROUPDESCRIPTORW: a u32 count followed by `count` fixed
    * 592-byte FILEDESCRIPTORW entries (name as UTF-16LE, size split into two
-   * u32). Byte-for-byte the native builder it replaces.
+   * u32). Wire layout: doc_agent/session-and-input.md §4.1.
    */
   static buildFileGroupDescriptor(entries: FileDescriptorInput[]): ArrayBuffer {
     const count: number = entries.length;
@@ -104,8 +104,7 @@ export class FileTransferCodec {
   /**
    * Parses a FILEGROUPDESCRIPTORW into descriptors (name sanitized, size split
    * from the two u32 parts). Returns an empty list for a malformed payload.
-   * Mirrors the native parser it replaces; the order is preserved because it is
-   * the FILECONTENTS listIndex.
+   * The order is preserved because it is the FILECONTENTS listIndex.
    */
   static parseFileGroupDescriptor(fgd: ArrayBuffer): FileDescriptorInput[] {
     const result: FileDescriptorInput[] = [];

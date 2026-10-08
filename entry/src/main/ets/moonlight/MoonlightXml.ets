@@ -3,7 +3,7 @@
  *
  * All GameStream XML is parsed here with the platform parser (`@ohos.xml`), the
  * same way the official clients keep the protocol and its XML in one layer
- * (doc_agent/moonlight-native.md §4.2). The native side returns raw HTTP bodies.
+ * (doc_agent/moonlight-native.md §4). The native side returns raw HTTP bodies.
  */
 import { util, xml } from '@kit.ArkTS';
 import { NvApp } from './MoonlightModels';

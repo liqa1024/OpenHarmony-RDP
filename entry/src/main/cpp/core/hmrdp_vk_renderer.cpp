@@ -1994,7 +1994,7 @@ bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
   api.GetBufferMemoryRequirements(device, desktopBuffer_, &req);
   // Cached first (the CPU side writes 20+ MB/frame into it and reads it back for
   // the destination-dependent primitives), then coherent - see
-  // doc_agent/gfx-engine.md §1. A non-coherent type is flushed per dirty rect
+  // doc_agent/present-pipeline.md §4. A non-coherent type is flushed per dirty rect
   // before the copy below.
   uint32_t typeIndex = context.FindMemoryType(
       req.memoryTypeBits,

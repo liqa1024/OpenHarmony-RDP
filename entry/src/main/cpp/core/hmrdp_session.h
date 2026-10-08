@@ -493,14 +493,12 @@ class Session : public std::enable_shared_from_this<Session> {
   std::condition_variable destroyedCv_;
   bool destroyed_ = false;
   bool firstFrameSent_ = false;
-  // Frames drawn since the last metrics sample (incremented in HandleEndPaint,
+  // Frames drawn since the last telemetry sample (incremented in HandleEndPaint,
   // drained on the event thread).
   std::atomic<uint32_t> frameCount_{0};
-  // Per-frame client work for the live telemetry: the capture hook and the
-  // wrapped GFX callbacks feed it while this session is connected, and the event
-  // thread drains one window per second (see hmrdp_gfx_work.h for what each
-  // phase covers - the same meter, fed through the same hooks, is used by the
-  // offline replay so the two figures are comparable). It lives in pipeline_.
+  // GFX capture/replay context bound while this session is connected (used by
+  // HandleGfxData; the per-frame work meter lives in pipeline_, see
+  // hmrdp_gfx_work.h).
   void* gfxContext_ = nullptr;
   // GFX offload worker and its queue (see HandleGfxData). gfxWorkerContext_ is
   // captured at start and used only while a lease is held, so teardown cannot

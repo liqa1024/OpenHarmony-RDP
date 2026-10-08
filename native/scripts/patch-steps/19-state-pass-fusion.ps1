@@ -1,10 +1,8 @@
 # 19) HmRdp: one fewer 8 KB pass per decoded tile/component.
 #
-#     (Step 18 was a NEON version of the DIFFERENCE saturating add; it changed
-#     nothing on either sample and was dropped - that loop is bound by the bytes it
-#     moves (working buffer + persistent `current`), not by the per-element clamp,
-#     so it is not worth a divergence from upstream. See
-#     doc_agent/native-libraries.md §3.)
+#     (A NEON version of the DIFFERENCE saturating add is not worth it: that loop
+#     is bound by the bytes it moves (working buffer + persistent `current`), not
+#     by the per-element clamp, so it would only add a divergence from upstream.)
 #
 #     `sign` is the persistent "raw" coefficient state and `current` the
 #     dequantised one; both are written on every decode. The upstream flow is
@@ -14,8 +12,8 @@
 #     i.e. the raw coefficients are written twice and read once more than needed.
 #     Letting RLGR decode straight into `sign` and making the dequantising pass
 #     read `sign` and write `buffer` removes that whole copy: the same values end
-#     up in the same two buffers (the pass that used to be in place now reads the
-#     same bytes from the other buffer), so this is a bit-exact change and the
+#     up in the same two buffers (the pass reads the same bytes from the other
+#     buffer), so this is a bit-exact change and the
 #     golden reference stays valid (doc_agent/gfx-engine.md §7.2).
 #
 #     LL3 keeps its in-place shape: the differential decode has to see the

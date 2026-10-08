@@ -1,7 +1,7 @@
 # 11) HmRdp: the decode width comes from the app; the serial/parallel choice
 #     follows it.
 #
-#     背景：多核执行器已统一到平台的 ffrt 并发队列（hmrdp_parallel.*，见 step 21）。
+#     背景：多核执行器统一到平台的 ffrt 并发队列（hmrdp_parallel.*，见 step 21）。
 #     并行宽度是 app 的一个进程级值，app 通过 `HmrdpDecodeWidth()` 暴露；解码器只
 #     需要据此在"接收线程串行"与"提交平台队列"之间选择。这里不再有任何 WinPR 池
 #     相关接线（宽度不再是"池的 worker 数"）。

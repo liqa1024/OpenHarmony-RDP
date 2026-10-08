@@ -78,8 +78,7 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 - FreeRDP 的 RDPGFX 回调必须接上 `freerdp_client_OnChannelConnectedEventHandler`（绑到
   `ChannelConnected`/`ChannelDisconnected`），否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
-- 画面由 gdi 出、经呈现器上屏；会话遥测的四个工作相位见
-  [`session-and-input.md`](session-and-input.md) §3。
+- 画面由 gdi 出、经呈现器上屏；遥测四相与账目口径见本文件 §7.1。
 - 采集点在 `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册（见
   [`native-libraries.md`](native-libraries.md) §3）。
 - 帧流水线（解压/解析/解码/合成/上屏/回执）跑在**会话自己的 GFX 工作线程**上，不在 drdynvc 分发线程：
@@ -233,9 +232,8 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
 
 ### 7.2 正确性门禁：参考画面
 
-- **门禁 = 参考画面（golden reference）**，两份基线录像各一套：先 `参考:导出` 记下
-  `hmrdp_ref_<captureTag>.{hash,bmp}`，之后每轮 `参考:对比` 报 `bad=0`。参考文件名带**录制内容指纹**，
-  换一份录像必然缺参考、必须重新导出——这就是"同名文件的不同录制不能互相背书"的机器保证。
+- **门禁 = 参考画面（golden reference）**，两份基线录像各一套（录制与文件命名见 §6）：每轮 `参考:对比`
+  报 `bad=0`。参考文件名带**录制内容指纹**，换一份录像必然缺参考、必须重新导出。
   - ⚠ **它是"输出不变"的门禁，不是"与旧解码器逐位一致"**：解码侧允许**舍入级**改动（`WITH_SIMD` 这类
     SIMD 实现不保证与通用 C 逐位相同），但**必须把差异量出来**：系数/像素最大偏差 **1 量级**、差异像素
     占比**千分之几** = 舍入，可以收；**成百上千** = 实现不同（16 位回绕、饱和当回绕、错索引），必须改回去。

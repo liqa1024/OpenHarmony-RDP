@@ -1325,8 +1325,8 @@ struct SessionPage {
 
   /**
    * Picks one candidate from "kind:id,kind:id" by pull priority: files > image >
-   * HTML > RTF > text (mirrors the old native order). Native already chose the
-   * id within a kind (DIB before DIBV5), so the first candidate of a kind wins.
+   * HTML > RTF > text. Native already chose the id within a kind (DIB before
+   * DIBV5), so the first candidate of a kind wins.
    */
   private static pickRemoteFormat(candidates: string): ClipPick | undefined {
     let best: ClipPick | undefined = undefined;
@@ -2023,8 +2023,8 @@ struct SessionPage {
   /**
    * Background-worker events for this session's download (the worker facade
    * routes every event to every window; ignore other windows' handles). The
-   * worker owns the state machine, so these replace the old inline
-   * progress/finish/abort handlers.
+   * worker owns the state machine; these handlers only render its progress /
+   * finish / abort events.
    */
   private onBackgroundEvent(event: BackgroundEvent): void {
     if (event.handle !== this.native.handleId()) {
@@ -3280,10 +3280,9 @@ struct SessionPage {
         detail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator()
       })
       Blank()
-      // File transfer progress: an inline bar next to the clipboard actions,
-      // with a cancel affordance while a download is running.
-      // File transfer row: an upload first shows a short "paste on the remote"
-      // hint in this same place, then turns into the progress row.
+      // File transfer row (next to the clipboard actions): a download shows an
+      // inline progress bar with a cancel affordance; an upload first shows a
+      // short "paste on the remote" hint here, then turns into the progress row.
       if (this.transferWaiting) {
         Row() {
           LoadingProgress()

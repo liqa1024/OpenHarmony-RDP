@@ -10,8 +10,8 @@
  *
  * The certificate framework has no self-signed X.509 generation API, so the DER
  * is assembled here (the same position BouncyCastle occupies in the Android
- * client). Native no longer stores any of this (doc_agent/moonlight-native.md
- * §4). See MOONLIGHT_PLAN.md "HTTP 层的落地口径".
+ * client); the native side stores none of this (doc_agent/moonlight-native.md §4).
+ * See MOONLIGHT_PLAN.md "HTTP 层的落地口径".
  */
 import { cert } from '@kit.DeviceCertificateKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
@@ -145,7 +145,7 @@ function pemEncode(label: string, der: Uint8Array): string {
   return `-----BEGIN ${label}-----\n${body}-----END ${label}-----\n`;
 }
 
-/** Replaces the unsafe characters of a host key with '_' (as the native did). */
+/** Replaces the unsafe characters of a host key with '_'. */
 function hostFileName(hostKey: string): string {
   // Hostnames are case-insensitive and a trailing dot is the DNS root: fold both
   // so the pin key matches the connection-uniqueness key (see RdpModels.mlHostId).

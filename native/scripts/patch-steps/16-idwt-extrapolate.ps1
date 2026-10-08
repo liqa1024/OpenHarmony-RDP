@@ -3,8 +3,8 @@
 #
 #     `rfx_dwt_2d_extrapolate_decode` (below) is what a region with the
 #     RFX_DWT_REDUCE_EXTRAPOLATE flag decodes with, and every tile of a
-#     full-screen Progressive stream carries that flag (measured: the
-#     non-extrapolated rfx_dwt_2d_decode() is never entered on a video capture).
+#     full-screen Progressive stream carries that flag (on a Progressive capture
+#     the non-extrapolated rfx_dwt_2d_decode() is never entered).
 #     It walks the bands with a recurrence in the *inner* loop:
 #
 #       X2 = L0 - (H0 + H1) / 2;   X1 = (X0 + X2) / 2 + 2 * H0;   X0 = X2;

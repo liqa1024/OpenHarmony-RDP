@@ -34,7 +34,7 @@
     真正开始启动后才计。
   - 后端另可声明 **`requiresWindowAtStart()`**（Moonlight：`LiStartConnection` 需要先有渲染目标）——预检
     通过后 manager 才开窗，窗口绑好 XComponent surface 后调 `SessionManager.beginStream` 真正启动；RDP
-    为 false，维持"连上后才开窗"。Moonlight 会话窗口与后端 `MoonlightSessionBackend` 均已落地。
+    为 false，维持"连上后才开窗"。Moonlight 会话窗口与后端 `MoonlightSessionBackend` 同此模型。
   - 原生 `Session` 的生命周期也是**单向**的（`kIdle→kStarting→kConnected→kStopping→kDestroyed`，
     一次尝试一个对象、不复用）：只有 RDP 线程释放 FreeRDP context（`Teardown`），其它线程（输入/剪贴板/
     gdi 回调）须先 `AcquireContext()` 取租约、用完 `ReleaseContext()`，`Teardown` 等**在途租约归零**后
@@ -246,17 +246,10 @@
   该窗口的收发/帧增量与工作/音频/GPU 子项，源在采样时清零；采样留在 RDP 线程，故不会与管线拆除竞争），
   **聚合在 ArkTS**（`services/SessionTelemetry`）：它把样本按自身窗口时长/帧数换算成速率与每帧均值，
   原生不产任何展示用速率。字段：
-  - **本机**（µs/帧）= 展示端把四个**工作**相位相加：
-    `zgx+parse`（chunk 到达 → 该帧第一条命令，即 ZGX 解压 + RDPGFX PDU 解析）+
-    `decode`（包裹的 `SurfaceCommand`，含 progressive 自己的重复合成 `update_tiles`）+
-    `compose`（`gdi_EndFrame` 的 surface→primary 合成，**再减去 present、该帧的 `sync` 等待与回放节拍
-    睡眠**——这三样都在 `EndFrame` 窗口里但不是合成）+
-    `present`（`PresentGdiFrame`，Vulkan/GLES 呈现器）。
-  - **`sync` / `presentWait`（阻塞子项，都不在 `本机` 里）**：`sync` = 等 GPU 放开本帧要写的桌面缓冲
-    （CPU 路线把 gdi 主缓冲直接放在呈现器内存里，上一帧必须先读完）；`presentWait` = `present` 那一段里
-    等显示端（Vulkan 的 acquire+fence；GLES 的 `eglSwapBuffers`）。两者都是显示/GPU 侧反压、不是处理，
-    故单列；**帧整段墙钟 = 四相之和 + `sync` + `presentWait`**（回放再加节拍睡眠）。定义与自检
-    （`本机 + sync ≈ 1/fps`）见 [`gfx-engine.md`](gfx-engine.md) §7.1。
+  - **本机**（µs/帧）= 四个**工作**相位之和（`zgx+parse` / `decode` / `compose` / `present`）；**`sync` /
+    `presentWait` 是阻塞子项**（分别等 GPU 放开主缓冲、等显示端），单列、都不入 `本机`。相位语义、
+    `compose` 与 `present` 的划分、墙钟公式（`本机 + sync + presentWait`）与自检（`本机 + sync ≈ 1/fps`）
+    见 [`gfx-engine.md`](gfx-engine.md) §7.1。
   - **节拍睡眠（`pace`）是唯一直接剔除的一项**：回放的人为节流不是客户端工作。
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值
     （只有服务端注册该回调），故连接时给 `context->autodetect` 自行注册回调捕获。

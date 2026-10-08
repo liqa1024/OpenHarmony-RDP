@@ -23,12 +23,14 @@
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
 | 改 Moonlight 前端（协议建模 / 存储 / 列表 / 编辑页 / 设置分栏） | [`moonlight-connection.md`](moonlight-connection.md) |
 | 改 Moonlight 原生（客户端库构建 / 解码 / 协商 / 上屏 / HTTP / 凭证 / 配对原语） | [`moonlight-native.md`](moonlight-native.md) |
+| Moonlight 接入路线图（未定项多，仅方向） | [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) |
 
 ## 文档清单
 
 - [`build-and-verify.md`](build-and-verify.md) —— 构建产物（product/ABI）、签名（材料不入库）、
   真机与模拟器流程、`uitest`/`hdc` 的可靠用法、日志读取、**改动后必须跑的最小验证**。
-- [`architecture.md`](architecture.md) —— 应用结构：Ability / 页面 / 服务 / 原生模块职责表，连接与会话的数据流。
+- [`architecture.md`](architecture.md) —— 应用结构：Ability / 页面 / 服务 / 原生模块职责表，连接与会话的数据流，
+  **原生线程模型（§4）**。
 - [`arkts-conventions.md`](arkts-conventions.md) —— 严格 ArkTS 规则、ArkUI 状态/`@Builder`/`ForEach`/路由/主题约定。
 - [`ui-design.md`](ui-design.md) —— 界面设计语言总纲：**设计原则**（按逻辑分类共享 / opt-in 可选能力 / 范围与扩展性）、
   设计 token（颜色/尺寸/圆角/字号/阴影/动画）、沉浸材质表面清单、布局模式（页头/卡片/表单/列表行/会话窗）、
@@ -43,12 +45,13 @@
   回放验证回路与**参考画面（golden reference）验收**、**CPU（gdi）链路的成本结构与账目口径 /
   判据与门禁 / 并行形态（§7）**。
 - [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
-  后端、脏区上传与零拷贝桌面缓冲的定型约束、present 账目与探针。
+  后端、脏区上传与零拷贝桌面缓冲的定型约束、**超分辨率（Vulkan 专有，XEngine/FSR）**、present 账目与探针。
 - [`moonlight-connection.md`](moonlight-connection.md) —— Moonlight（Sunshine）串流连接的**前端**：协议建模与
   存储布局、连接列表与编辑页、设置页的协议分栏与「全局默认 + 会话覆盖」、图标约束、当前实现边界。
 - [`moonlight-native.md`](moonlight-native.md) —— Moonlight 的**原生侧**：客户端库 moonlight-common-c 的
   拉取/补丁/共享库构建与链接、视频解码与上屏、编解码协商、解码桥与串流会话桥，以及控制层（身份/信任存储、
   配对加密原语、协议编排与 XML）为何全在 ArkTS（见文内 §4）。
+- [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) —— Moonlight 接入路线图（阶段与未定项；前端 / 原生约定见上面两份文件）。
 
 ## 维护约定
 

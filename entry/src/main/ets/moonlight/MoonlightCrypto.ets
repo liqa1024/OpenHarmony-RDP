@@ -6,9 +6,8 @@
  * nvpairingmanager (Qt): the salt+PIN derive an AES-128-ECB key, the handshake
  * carries hash-then-AES-ECB messages, and RSA signs/verifies the secrets.
  * Certificate signatures (the ASN.1 BIT STRING contents) are what the hashes
- * embed. Native no longer provides any of this (doc_agent/moonlight-native.md
- * §4). All byte strings cross the public API as lowercase hex, as the old native
- * primitive did.
+ * embed (doc_agent/moonlight-native.md §4). All byte strings cross the public API
+ * as lowercase hex.
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';

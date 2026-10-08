@@ -62,7 +62,7 @@
   - **是三选一而不是开关**：关闭 / `XEngine` / `FSR`（`SR_BACKEND_XENGINE` / `SR_BACKEND_FSR`，持久化成
     0/1 并在连接记录尾部占一个字段）。两者都是「会话小、本机放大」，差别只在**用哪个上采样器**：
     XEngine 是平台空域超分（要设备特性），FSR 是呈现器自己跑的 FidelityFX Super Resolution 1.0
-    （只要 Vulkan 上屏）。见 [`present-pipeline.md`](present-pipeline.md) §4.5。
+    （只要 Vulkan 上屏）。见 [`present-pipeline.md`](present-pipeline.md) §5。
   - **默认缩放随之换算**：自动档 = 分辨率档位 `÷ 倍率` 再吸附到档位（`SettingsStore.autoScalePercent`）；
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持原来的物理大小。
   - **两个前提**：Vulkan 呈现器可用（即「硬件加速」开着），且**所选后端**可用（FSR 只要前者，XEngine

@@ -5,7 +5,7 @@ GFX 协议框架与 CPU（gdi）链路的成本结构见 [`gfx-engine.md`](gfx-e
 [`build-and-verify.md`](build-and-verify.md)。
 
 > **范围**：解码与合成走 FreeRDP gdi（live 与回放同一条路），本文件只讲把它出好的桌面帧送上屏。
-> 自研 GPU 解码/合成引擎已移除（见 [`gfx-engine.md`](gfx-engine.md) §3）。
+> 自研 GPU 解码/合成引擎**不采用**（见 [`gfx-engine.md`](gfx-engine.md) §3）。
 
 ## 1. 一套实现、两个后端
 
@@ -36,8 +36,8 @@ device（[`architecture.md`](architecture.md) §4.1）。
   各一个（不是按帧槽）——它必须等对应图像被再次 acquire 后才能复用。
 - **CPU 不做任何像素变换**：通道交换、缩放、letterbox 一律在 GPU 侧，上传只做行拷贝。
 - **纹理/桌面图重建后首帧强制整幅**，否则其余部分会留空。
-- **`presentWait` = 等显示端**：`present` 那一段里 `vkAcquireNextImageKHR`/fence（GLES 是
-  `eglSwapBuffers`）的阻塞。`present` 只记录制/上传/提交，两者相加才是 present 的整段墙钟。
+- **`presentWait` = 等显示端**：`present` 里 `vkAcquireNextImageKHR`/fence（GLES 是 `eglSwapBuffers`）的阻塞。
+  **单列、不入 `本机`**（定义与自检见 [`gfx-engine.md`](gfx-engine.md) §7.1）。
 
 ## 3. 脏区形状与上传
 
@@ -45,9 +45,9 @@ device（[`architecture.md`](architecture.md) §4.1）。
   staging 路径把脏矩形拷进 staging 再上传。
 - **上传逐条矩形还是包围盒**（由 `usesDesktopBuffer()` 分流，**不是可独立调的旋钮**）：
   - **零拷贝（Vulkan）恒发合并 box**：CPU 侧成本在**条数**（每条 = 一个 copy region + 一次 flush），
-    box 恒一条；按 CPU 侧 `present` 量过，box ≤ 逐条（碎片样本 −17%）。
-  - **staging（GLES）恒走逐条矩形**：成本在**字节**，box 会多搬数倍；逐条实测把 host→device 字节
-    降七成以上、上屏耗时降三成。
+    box 恒一条，`present` 成本 ≤ 逐条（碎片样本更明显）。
+  - **staging（GLES）恒走逐条矩形**：成本在**字节**，box 会多搬数倍；逐条把 host→device 字节降到
+    一个量级以下、上屏耗时降约三分之一。
   - 两者都按"一次上传 + 多个拷贝区域 + **仍然只画一次 letterbox quad**"实现，**不要**为每个矩形各走一次
     present（那会把整屏 letterbox 画 N 遍）。
 - **矩形上限**：单次 present 最多 `kMaxPresentRects` 条逐条矩形（`hmrdp_gfx_cpu.cpp`，与呈现器内部的
@@ -93,7 +93,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
     就是这么做）；live 靠 FreeRDP 在 `OnClose` 里先 `free_surfaces`。
   - 全在 `libfreerdp/gdi/gfx.c` 内部，**不动头文件也不动 app**，因此对任何呈现器都成立。
 
-## 4.5 超分辨率（Vulkan 专有）
+## 5. 超分辨率（Vulkan 专有）
 
 超分辨率（平台文档称「超分」）让会话按**更低的「会话分辨率」**取流，本机再把每帧上采样回设置里的
 **「输出分辨率」**：省的是解码与带宽（服务端少出像素），换来的是边缘更锐的本地放大。倍率与默认缩放见
@@ -126,7 +126,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   letterbox，会话照常可用。排查看 hilog 的 `xengine: spatial upscale` 与
   `vulkan presenter: super resolution`。
 
-## 5. swapchain 的尺寸与重建（Vulkan）
+## 6. swapchain 的尺寸与重建（Vulkan）
 
 - 尺寸以 `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` 的 `currentExtent` 为准，只有在它是 `UINT32_MAX`
   时才用窗口尺寸 clamp。
@@ -141,7 +141,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 - **尺寸没变不重建**：`ResizeSurface` 收到与当前相同的尺寸直接返回；重复事件置脏只会白白拆建一次
   swapchain，观感是一次重拟合。
 
-## 6. 账目与探针
+## 7. 账目与探针
 
 - **`present=`**：绝大部分是**固定的 Vulkan 调用**（acquire / 录制 / submit / present），不是能删的活；
   `flush` 只有 µs 级。`presentWait`（阻塞）单列，见 §2。
@@ -154,15 +154,15 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   要省它只能按 **swapchain 图像**各维护"已写入的增量"。没有 damage-rect 接口可用
   （`vkQueuePresentKHR` 不给，`VK_KHR_incremental_present` 不在设备能力表里且只是提示）；
   **不要**改用 `OH_NativeWindow_*` / `FlushBuffer(..., Region)`。
-  - **多大**：GPU 时间戳实测 ~1ms/帧、**与脏区无关**（碎片样本同样）；`copy`（脏区字节）另算。
-    ⚠ 由 `sync` 墙钟反推的"GPU 十毫秒级"**已证伪**（那是排队）。
+  - **多大**：GPU 时间戳在整屏帧上是 ~1ms 量级、**与脏区无关**（碎片样本同样）；`copy`（脏区字节）另算。
+    ⚠ 由 `sync` 墙钟反推的"GPU 十毫秒级"**不成立**：那是排队，不是 GPU 工作。
   - **为什么不做**：这 ~1ms 被 CPU 侧更大的工作量藏住，而实现它要 per-image damage 账，
     且**`bad=0` 覆盖不到呈现器**（compare 路线不 present）⇒ 没有自动化正确性门禁。判据是"降成本、fps 够用"。
 - **零拷贝下 `copy` 与帧序是耦合的**：它读的就是本帧要写的那块内存，所以排在**本帧第一次写之前**
   （`sync`）。脏区字节大时它直接进帧墙钟。判据：**`sync` 与 `uploaded` 同步起落**就是这一项，
   而不是"合成贵"。
 
-## 7. 操作与踩坑
+## 8. 操作与踩坑
 
 - **构建/安装/运行**与 **dev 页驱动**：见 [`build-and-verify.md`](build-and-verify.md) §4/§5.1。
   dev 页「路线」只切 CPU / 硬件加速（上屏后端），「参考」切 关/导出/对比，**每次点击都会重启回放**。

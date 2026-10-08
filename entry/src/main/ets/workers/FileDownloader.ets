@@ -6,11 +6,10 @@
  * handle (process-global, shared with the worker) plus scalar fields; this class
  * owns the descriptor list, offset/size bookkeeping, the sandbox file handles and
  * the one-request-in-flight sequencing, and reports progress/completion/failure
- * back to the UI through `emit`. Behaviour mirrors the state machine it replaces
- * (doc_agent/session-and-input.md §4.1): files stream into a per-transfer sandbox
- * directory, a missing descriptor size is resolved with a SIZE request first, and
- * a list that advertises any folder is refused whole (folders are unsupported in
- * both directions).
+ * back to the UI through `emit`. Files stream into a per-transfer sandbox directory,
+ * a missing descriptor size is resolved with a SIZE request first, and a list that
+ * advertises any folder is refused whole (folders are unsupported in both directions;
+ * doc_agent/session-and-input.md §4.1).
  */
 import { fileIo } from '@kit.CoreFileKit';
 import { bufferRead, bufferRelease, requestRemoteFileContents } from 'libhmrdp.so';

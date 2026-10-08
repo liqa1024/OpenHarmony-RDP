@@ -2,7 +2,7 @@
  * HmRdp - Moonlight (GameStream) protocol models.
  *
  * Plain data the ArkTS control layer produces from the host's XML responses; the
- * native side never parses XML (doc_agent/moonlight-native.md §4.2).
+ * native side never parses XML (doc_agent/moonlight-native.md §4).
  */
 
 /** Fields of one `/serverinfo` response that the client uses. */

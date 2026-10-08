@@ -4,7 +4,8 @@
  *
  * Rendering surfaces are bound through the ArkUI XComponent surface id:
  * ArkTS forwards onSurfaceCreated/Changed/Destroyed to this module, which
- * turns the surface id into an OHNativeWindow consumed by the Vulkan presenter.
+ * turns the surface id into an OHNativeWindow consumed by the presenter (Vulkan,
+ * or the GLES fallback when Vulkan cannot present).
  */
 #include <multimodalinput/oh_input_manager.h>
 #include <native_buffer/native_buffer.h>

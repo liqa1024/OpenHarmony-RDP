@@ -2,14 +2,14 @@
  * HmRdp - the per-desktop frame pipeline (doc_agent/architecture.md §4.1).
  *
  * Owns everything one desktop needs to turn decoded pixels into a presented
- * picture, and nothing else: the presenter (and with it the GPU device it will
- * own in later steps), the frame work meter and the gdi frame host. A live
+ * picture, and nothing else: the presenter (and with it its own GPU device), the
+ * frame work meter and the gdi frame host. A live
  * session and an offline replay both build exactly this object, so neither of
  * them reaches for a process-global for these - the ownership contract is what
  * keeps concurrent sessions from stepping on each other.
  *
- * The decode executor and the GFX offload worker move in here next (see the
- * plan); until then they stay with their current owner.
+ * The decode executor is owned here too; the GFX offload worker and its queue
+ * stay with the session that owns them (see hmrdp_session.h).
  */
 #ifndef HMRDP_FRAME_PIPELINE_H
 #define HMRDP_FRAME_PIPELINE_H

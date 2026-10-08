@@ -2,9 +2,9 @@
 #    `progressive_tile_new` fills `tile->data` with 0xFF but takes `sign`/`current`
 #    straight from malloc, and a DIFFERENCE (or UPGRADE) pass *reads* them before
 #    writing. The encoder assumes zero initial state, so leaving the heap contents
-#    there makes the reference decoder's output depend on unrelated allocations -
-#    which is exactly a divergence against an engine that zero-initialises its own
-#    equivalent buffers (and it is not reproducible across processes).
+#    there makes the reference decoder's output depend on unrelated heap contents
+#    instead of the zero initial state the encoder assumes (and it is not
+#    reproducible across processes).
 Patch-File "$Source\libfreerdp\codec\progressive.c" @{
   @'
 	size_t signLen = (8192ULL + 32ULL) * 3ULL;

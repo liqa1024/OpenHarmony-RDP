@@ -97,7 +97,7 @@ native/
 
 - DevEco Studio（含 HarmonyOS SDK / NDK）
 - `DEVECO_HOME` 指向 DevEco Studio 安装目录
-- 目标设备/模拟器：HarmonyOS 6.1.0（API 23）
+- 目标设备/模拟器：最低 HarmonyOS 6.1.0（API 23）；`targetSdkVersion` 26.0.0
 
 ### 构建应用
 
@@ -139,7 +139,8 @@ pwsh native/scripts/build-native.ps1 -Arch arm64-v8a
 |---|---|
 | 应用名称 | RDP 远程桌面 |
 | Bundle 名称 | `com.lixa.hmrdp` |
-| 兼容版本 | HarmonyOS 6.1.0（API 23） |
+| 兼容版本 | HarmonyOS 6.1.0（API 23）（最低可安装） |
+| 目标版本 | HarmonyOS 26.0.0（`targetSdkVersion`） |
 | 支持 ABI | arm64-v8a（真机）、x86_64（模拟器） |
 
 ## 第三方

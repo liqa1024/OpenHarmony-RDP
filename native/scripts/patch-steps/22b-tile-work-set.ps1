@@ -1,7 +1,7 @@
 # 22b) HmRdp: the tile work set comes from the clip rects, and the per-tile
 #      composite is one helper both paths share.
 #
-#      背景（doc_agent/gfx-engine.md §7.3）：update_tiles 原先走整帧累积的
+#      背景（doc_agent/gfx-engine.md §7.3）：update_tiles 走整帧累积的
 #      updatedTileIndices（一条消息一次解码 ⇒ 同一 tile 一帧内出现多次，整条列表
 #      每条消息都要重走），并且内联做 region16 求交 + 像素拷贝。这一步把工作集改成
 #      "裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile"（hmrdpFrameId），把逐 tile
@@ -20,7 +20,7 @@ $progWorkTileNew = "`tUINT32 updateStamp;`n" +
 "`t * ""the tiles decoded in the current frame, clipped to this message's rects"";`n" +
 "`t * the upstream per-frame list is one entry per decode and gets re-walked in`n" +
 "`t * full for every message of the frame, which costs far more than the copies`n" +
-"`t * (see the patch note in native/scripts/patch-freerdp.ps1 step 20). A clip`n" +
+"`t * (upstream re-walks the whole list per message). A clip`n" +
 "`t * rect names the tile range it can reach, and this id tells the tiles in that`n" +
 "`t * range that have pixels for the frame. */`n" +
 "`tUINT32 hmrdpFrameId;`n`tUINT16 yLen;"
@@ -30,7 +30,7 @@ Patch-Block $progWorkH $progWorkTileAnchor $progWorkTileNew 'hmrdpFrameId'
 $progWorkAddAnchor = "`t`tsurface->updatedTileIndices[surface->numUpdatedTiles++] = (UINT32)zIdx;`n`t}"
 $progWorkAddNew = "`t`tsurface->updatedTileIndices[surface->numUpdatedTiles++] = (UINT32)zIdx;`n" +
 "`t`t/* HmRdp: remember the frame, so update_tiles can find this tile from the`n" +
-"`t`t * clip rects instead of walking the list (step 20). */`n" +
+"`t`t * clip rects instead of walking the list. */`n" +
 "`t`tt->hmrdpFrameId = surface->frameId;`n`t}"
 Patch-Block $progWorkC $progWorkAddAnchor $progWorkAddNew 't->hmrdpFrameId = surface->frameId;'
 
@@ -155,7 +155,7 @@ static INLINE BOOL update_tiles(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
 
 	/*
 	 * HmRdp: walk the tiles the clipping rects can reach, not the frame's whole
-	 * tile list (see the patch note in native/scripts/patch-freerdp.ps1 step 20).
+	 * tile list.
 	 * The work set is the same - tiles decoded in this frame, clipped to this
 	 * message's rects - and so is the result; the list walk below stays as the
 	 * fallback for a tile that has no frame id yet.

@@ -3,9 +3,9 @@
  *
  * The native clipboard channel only moves bytes; the format encoders/decoders
  * live here. This keeps protocol/format logic on the ArkTS side and the native
- * side a thin transport (doc_agent/architecture.md). Migrated so far: the
- * CF_DIB encoder (local image) and the CF_HTML encoder + plain-text fallback
- * (local HTML).
+ * side a thin transport (doc_agent/architecture.md): the local-side encoders
+ * (CF_DIB for images, CF_HTML + plain-text fallback for HTML) and the remote-side
+ * decoders (CF_DIB, CF_HTML, RTF).
  */
 import { util } from '@kit.ArkTS';
 
@@ -42,7 +42,7 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 /**
  * ASCII case-insensitive search over UTF-8 bytes; the needles used here only
  * contain letters and punctuation whose bit 0x20 is already set, so ORing it is
- * safe. Mirrors the native FindIgnoreCase it replaces.
+ * safe.
  */
 function findIgnoreCase(haystack: Uint8Array, needle: Uint8Array, from: number = 0): number {
   if (needle.length === 0 || haystack.length < needle.length) {
@@ -299,7 +299,7 @@ export class ClipboardCodec {
    * Serialises a HarmonyOS PixelMap buffer (top-down, `pixelFormat`) into a
    * CF_DIB payload: a 40-byte BITMAPINFOHEADER (BI_RGB, 32bpp) followed by
    * bottom-up BGRA rows. Returns undefined for an unsupported format or a short
-   * buffer, matching the native encoder it replaces.
+   * buffer.
    */
   static buildDib(pixels: ArrayBuffer, width: number, height: number,
     pixelFormat: number): ArrayBuffer | undefined {
@@ -435,9 +435,8 @@ export class ClipboardCodec {
 
   /**
    * Minimal HTML -> plain text fallback for the CF_UNICODETEXT half of an HTML
-   * push. Not a renderer: it only needs to be readable in a plain text target.
-   * Mirrors the native StripHtmlToText it replaces (tag names map to newlines,
-   * then the common entities are unescaped).
+   * push. Not a renderer: it only needs to be readable in a plain text target
+   * (tag names map to newlines, then the common entities are unescaped).
    */
   static stripHtmlToText(html: string): string {
     let out: string = '';
@@ -472,8 +471,7 @@ export class ClipboardCodec {
    * Parses a CF_DIB into top-down BGRA. Handles the layouts Windows actually
    * sends: BITMAPINFOHEADER / V4 / V5 headers, 16/24/32bpp, BI_RGB and
    * BI_BITFIELDS (channel masks; BGRX default for 32bpp BI_RGB). Returns
-   * undefined for an unsupported or truncated payload. Mirrors the native
-   * ParseDibToBgra it replaces.
+   * undefined for an unsupported or truncated payload.
    */
   static parseDib(dib: ArrayBuffer): DibImage | undefined {
     const size: number = dib.byteLength;
@@ -591,8 +589,7 @@ export class ClipboardCodec {
    * Extracts the HTML fragment from a CF_HTML payload. Preference order: the
    * marked fragment (self-contained: inline styles + tags), then the
    * StartFragment/EndFragment offsets, then the whole StartHTML..EndHTML
-   * document, then the raw payload decoded as UTF-8. Mirrors the native
-   * ParseCfHtml it replaces.
+   * document, then the raw payload decoded as UTF-8.
    */
   static parseCfHtml(cfHtml: ArrayBuffer): string {
     const bytes: Uint8Array = new Uint8Array(cfHtml);

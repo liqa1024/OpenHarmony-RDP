@@ -3,8 +3,8 @@
  *
  * Its one job: put a BGRA desktop frame on the XComponent surface, with the
  * letterbox done by the GPU. It exists for devices whose Vulkan cannot present
- * (in practice the emulator), so it is deliberately small: no engine, no share
- * group and no present-on-change logic.
+ * (in practice the emulator), so it is deliberately small: no compute path and
+ * no present-on-change logic.
  *
  * Per frame: upload only the dirty rectangle into a desktop-sized RGBA texture
  * (ES3 + GL_UNPACK_ROW_LENGTH, because the source rows are pitched at the full

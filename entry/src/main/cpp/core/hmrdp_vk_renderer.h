@@ -40,8 +40,8 @@ class VkRenderer : public FramePresenter {
   void DestroySurface() override;
 
   // Creates the swapchain and presents one black frame, so the surface shows
-  // something before the first real frame. Also pins the image format the engine
-  // (and the CPU frame upload) must be created with.
+  // something before the first real frame. Also pins the picture format the
+  // desktop / SR images must be created with.
   bool Prepare() override;
   // Presents one CPU (gdi) frame: the dirty regions are uploaded into a persistent
   // desktop image (packed into the per-slot staging buffer, one copy region each)
@@ -110,11 +110,11 @@ class VkRenderer : public FramePresenter {
   // the upload, the 超分辨率 upscale and the letterbox, reported to the telemetry
   // (TakeGpuTimings) and logged every 30 frames. Absent on a device without
   // timestamp support, which leaves the figures at zero
-  // (doc_agent/present-pipeline.md §6).
+  // (doc_agent/present-pipeline.md §7).
   bool EnsurePresentTimerLocked();
   void CollectPresentTimerLocked(uint32_t slot);
-  // Points the given frame slot's descriptor at the picture view (the CPU frames'
-  // desktop image or the engine's composed screen image).
+  // Points the given frame slot's descriptor at the picture view (the desktop
+  // image, or the SR output image when 超分辨率 is on).
   void UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view);
   void RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
                                uint32_t imageIndex);
