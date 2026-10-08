@@ -2,7 +2,8 @@
  * HmRdp - shared page-level UI helpers.
  *
  * Small, page-agnostic helpers every page would otherwise re-declare: a themed
- * toast and a Length-to-number conversion. They carry no page state.
+ * toast, the two alert-dialog shapes (confirm / notice) and a Length-to-number
+ * conversion. They carry no page state.
  */
 import { UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -21,6 +22,62 @@ export function showToast(ui: UIContext, message: string, durationMs: number = 2
     });
   } catch (error) {
     hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
+  }
+}
+
+/** A two-button confirmation: a no-op cancel on the left, the action on the right. */
+export interface ConfirmDialogOptions {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  /** Left button label; defaults to "取消". Its action is always a no-op. */
+  cancelLabel?: string;
+  /** Renders the confirm button in the danger colour (default: accent). */
+  danger?: boolean;
+  onConfirm: () => void;
+}
+
+/** Confirmation dialog with the overlay material (see ConfirmDialogOptions). */
+export function showConfirm(ui: UIContext, options: ConfirmDialogOptions): void {
+  try {
+    ui.showAlertDialog({
+      title: options.title,
+      message: options.message,
+      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+      primaryButton: {
+        value: options.cancelLabel !== undefined ? options.cancelLabel : '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: options.confirmLabel,
+        fontColor: options.danger === true ? $r('app.color.danger') : $r('app.color.accent'),
+        action: () => {
+          options.onConfirm();
+        }
+      }
+    });
+  } catch (error) {
+    hilog.warn(DOMAIN, TAG, 'show confirm failed: %{public}s', JSON.stringify(error));
+  }
+}
+
+/** Single-button notice ("知道了") with the overlay material. */
+export function showNotice(ui: UIContext, title: string, message: string,
+  confirmLabel: string = '知道了'): void {
+  try {
+    ui.showAlertDialog({
+      title: title,
+      message: message,
+      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+      confirm: {
+        value: confirmLabel,
+        action: () => {
+        }
+      }
+    });
+  } catch (error) {
+    hilog.warn(DOMAIN, TAG, 'show notice failed: %{public}s', JSON.stringify(error));
   }
 }
 

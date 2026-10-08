@@ -166,6 +166,7 @@ Column(page_bg, 100%×100%)
 | `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |
 | `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
 | `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影 |
+| `FabButton` | `FabButton.ets` | `icon, tip?, onTap` | 右下角悬浮圆形主操作（新建 / 刷新；accent 底 + 阴影 + hover/press 反馈 + `OVERLAY` 提示） |
 | `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（`scale / srRatio / srChoice / ml*` 共用） |
 | `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
@@ -182,11 +183,15 @@ Column(page_bg, 100%×100%)
 
 | 文件 | 内容 |
 |---|---|
-| `UiUtil.ets` | `showToast`（+`OVERLAY` 材质）、`lengthToNumber`（`Length` → vp 数值） |
+| `UiUtil.ets` | `showToast`（+`OVERLAY` 材质）、`lengthToNumber`（`Length` → vp 数值）、`showConfirm` / `showNotice`（统一的确认 / 提示弹窗，见下） |
 | `DisplayUtil.ets` | `defaultDisplay()`（容错查询默认显示，页面与服务共用） |
 | `ScaleParse.ets` | 手动分辨率 / 缩放文本解析：`parseSizeValue` / `parseScaleValue` / `parsedTextValue` / `isScalePreset`，及 `MAX_DESKTOP_SIZE` |
 | `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |
 | `PairingPrompt.ets` | `promptPairingPin(ui, pin)`（配对 PIN 弹窗） |
+
+约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
+两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；
+单按钮提示用 `showNotice`。材质（`OVERLAY`）与兜底都由工具负责，页面只给文案与回调。
 
 ## 5. 协议差异的呈现约定
 

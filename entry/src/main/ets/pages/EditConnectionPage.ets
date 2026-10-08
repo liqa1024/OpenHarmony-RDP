@@ -19,9 +19,9 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
+import { showConfirm } from '../utils/UiUtil';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
@@ -531,21 +531,12 @@ struct EditConnectionPage {
 
   private handleSave(): void {
     if (this.password.length > 0 && this.password !== this.storedPassword) {
-      this.getUIContext().showAlertDialog({
-      title: '密码不会被保存',
-      message: '连接验证正确性后会自动保存密码。',
-      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
-      primaryButton: {
-          value: '取消',
-          action: () => {
-          }
-        },
-        secondaryButton: {
-          value: '继续保存',
-          fontColor: $r('app.color.accent'),
-          action: () => {
-            this.submit(false);
-          }
+      showConfirm(this.getUIContext(), {
+        title: '密码不会被保存',
+        message: '连接验证正确性后会自动保存密码。',
+        confirmLabel: '继续保存',
+        onConfirm: () => {
+          this.submit(false);
         }
       });
       return;

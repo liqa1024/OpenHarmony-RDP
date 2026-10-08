@@ -28,7 +28,7 @@ import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PE
   MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
-import { lengthToNumber, showToast } from '../utils/UiUtil';
+import { lengthToNumber, showConfirm, showToast } from '../utils/UiUtil';
 import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
@@ -1702,21 +1702,14 @@ struct SessionPage {
       // Aborting an upload leaves the remote clipboard listing files it can no
       // longer read, so its paste reports a protocol error. That is harmless
       // but worth warning about first.
-      this.getUIContext().showAlertDialog({
+      showConfirm(this.getUIContext(), {
         title: '取消文件传输',
         message: '文件仍在发送。取消后远端粘贴会提示错误，已传部分也会作废。是否继续取消？',
-        systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
-        primaryButton: {
-          value: '继续传输',
-          action: () => {
-          }
-        },
-        secondaryButton: {
-          value: '取消传输',
-          fontColor: $r('app.color.danger'),
-          action: () => {
-            this.abortFileTransfer();
-          }
+        cancelLabel: '继续传输',
+        confirmLabel: '取消传输',
+        danger: true,
+        onConfirm: () => {
+          this.abortFileTransfer();
         }
       });
       return;

@@ -16,6 +16,8 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { SettingsStore } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { ConnectionRow } from '../components/ConnectionRow';
+import { FabButton } from '../components/FabButton';
+import { showConfirm, showNotice } from '../utils/UiUtil';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -30,18 +32,15 @@ struct Index {
   @State draggingIndex: number = -1;
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
-  @State fabHovered: boolean = false;
-  @State fabPressed: boolean = false;
   // Developer options (SettingsStore.developerMode): the replay entry is a dev
   // tool, so it only exists while this is on.
   @State developerMode: boolean = false;
 
-  // Tooltips and the dialogs carry the immersive material in their options
-  // object, which an older system simply ignores. The connection card owns its
-  // own material inside the shared ConnectionRow component.
+  // Tooltips carry the immersive material in their options object, which an
+  // older system simply ignores. The connection card owns its own material
+  // inside the shared ConnectionRow component.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private dialogMaterial: SystemUiMaterial | undefined = SystemMaterial.of(MaterialSurface.OVERLAY);
 
   private sessionListener: SessionStateListener = (connectionId: string,
     state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
@@ -127,16 +126,7 @@ struct Index {
   }
 
   private showConnectError(message: string): void {
-    this.getUIContext().showAlertDialog({
-      title: '连接失败',
-      message: message,
-      systemMaterial: this.dialogMaterial,
-      confirm: {
-        value: '知道了',
-        action: () => {
-        }
-      }
-    });
+    showNotice(this.getUIContext(), '连接失败', message);
   }
 
   private async startConnection(conn: SavedConnection): Promise<void> {
@@ -225,21 +215,13 @@ struct Index {
   }
 
   private confirmDelete(conn: SavedConnection): void {
-    this.getUIContext().showAlertDialog({
+    showConfirm(this.getUIContext(), {
       title: '删除连接',
       message: `确定要删除「${conn.label()}」？该操作无法撤销。`,
-      systemMaterial: this.dialogMaterial,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '删除',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          this.remove(conn);
-        }
+      confirmLabel: '删除',
+      danger: true,
+      onConfirm: () => {
+        this.remove(conn);
       }
     });
   }
@@ -405,39 +387,14 @@ struct Index {
       .width('100%')
       .height('100%')
 
-      Row() {
-        Image($r('app.media.ic_plus'))
-          .width(24)
-          .height(24)
-          .draggable(false)
-      }
-      .width(56)
-      .height(56)
-      .borderRadius(28)
-      .backgroundColor($r('app.color.accent'))
-      .justifyContent(FlexAlign.Center)
-      .alignItems(VerticalAlign.Center)
-      .scale({
-        x: this.fabPressed ? 0.9 : (this.fabHovered ? 1.06 : 1.0),
-        y: this.fabPressed ? 0.9 : (this.fabHovered ? 1.06 : 1.0)
-      })
-      .shadow({ radius: 18, color: '#33000000', offsetX: 0, offsetY: 6 })
-      .animation({ duration: 140, curve: Curve.FastOutSlowIn })
-      .margin({ right: 24, bottom: 24 })
-      .onHover((isHover: boolean) => {
-        this.fabHovered = isHover;
-      })
-      .onMouse((event: MouseEvent) => {
-        if (event.action === MouseAction.Press) {
-          this.fabPressed = true;
-        } else if (event.action === MouseAction.Release) {
-          this.fabPressed = false;
+      FabButton({
+        icon: $r('app.media.ic_plus'),
+        tip: '新建连接',
+        onTap: () => {
+          this.openNewConnection();
         }
       })
-      .bindTips('新建连接', this.tipsOptions)
-      .onClick(() => {
-        this.openNewConnection();
-      })
+        .margin({ right: 24, bottom: 24 })
     }
     .width('100%')
     .height('100%')

@@ -215,8 +215,9 @@ export class MoonlightConnector {
     return (1000 + (base % 9000)).toString();
   }
 
-  /** First app, preferring one named "Desktop" (Sunshine lists the desktop as an app). */
-  private static pickApp(apps: NvApp[]): number {
+  /** First app, preferring one named "Desktop" (Sunshine lists the desktop as an app).
+   *  Also the effective default when a connection has no explicit default set. */
+  static pickApp(apps: NvApp[]): number {
     for (let i = 0; i < apps.length; i++) {
       if (apps[i].name.toLowerCase() === 'desktop') {
         return apps[i].id;

@@ -12,8 +12,8 @@ import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
+import { showConfirm } from '../utils/UiUtil';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
 import { isScalePreset, MAX_DESKTOP_SIZE, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
@@ -133,10 +133,6 @@ struct SettingsPage {
   private defaultSessionHeight: number = 0;
   private detectedWidth: number = 0;
   private detectedHeight: number = 0;
-  // Immersive system material (沉浸光感) for the confirmation dialogs; they fall
-  // back to the flat colours below on a system without the material capability.
-  // The settings card carries its own via the shared MaterialCard component.
-  private dialogMaterial: SystemUiMaterial | undefined = SystemMaterial.of(MaterialSurface.OVERLAY);
 
   aboutToAppear(): void {
     this.mlH264Support = DeviceCapabilities.codecSupport(ML_CODEC_H264);
@@ -438,21 +434,13 @@ struct SettingsPage {
 
   private confirmReset(): void {
     const label: string = this.protocol === PROTOCOL_MOONLIGHT ? 'Moonlight' : 'RDP';
-    this.getUIContext().showAlertDialog({
+    showConfirm(this.getUIContext(), {
       title: '恢复默认设置',
       message: `确定要把 ${label} 的设置恢复为默认值？该协议当前的自定义设置会丢失。`,
-      systemMaterial: this.dialogMaterial,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '恢复默认',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          this.resetDefaults();
-        }
+      confirmLabel: '恢复默认',
+      danger: true,
+      onConfirm: () => {
+        this.resetDefaults();
       }
     });
   }
@@ -496,21 +484,12 @@ struct SettingsPage {
   }
 
   private confirmExport(): void {
-    this.getUIContext().showAlertDialog({
+    showConfirm(this.getUIContext(), {
       title: '导出配置',
       message: '将导出全局设置和全部连接。密码保存在系统安全存储中，出于安全考虑不会导出。',
-      systemMaterial: this.dialogMaterial,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '导出',
-        fontColor: $r('app.color.accent'),
-        action: () => {
-          this.handleExport();
-        }
+      confirmLabel: '导出',
+      onConfirm: () => {
+        this.handleExport();
       }
     });
   }
@@ -533,21 +512,12 @@ struct SettingsPage {
   }
 
   private confirmImport(): void {
-    this.getUIContext().showAlertDialog({
+    showConfirm(this.getUIContext(), {
       title: '导入配置',
       message: '导入会应用全局设置，并按连接 ID 覆盖或新增连接。密码不会被导入，需重新输入。是否继续？',
-      systemMaterial: this.dialogMaterial,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '导入',
-        fontColor: $r('app.color.accent'),
-        action: () => {
-          this.handleImport();
-        }
+      confirmLabel: '导入',
+      onConfirm: () => {
+        this.handleImport();
       }
     });
   }

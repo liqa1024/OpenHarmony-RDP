@@ -2,11 +2,11 @@
  * HmRdp - Moonlight application management (main-window page).
  *
  * The app layer for a Moonlight host: it lists the host's applications, shows
- * which one is running, and lets the user connect (the click always ends in a
- * session: start the app if needed, else connect directly), stop the running
- * app, or set the connection's default app. Reached from the Moonlight row's
- * app button; the pairing PIN stays a lightweight popup over the main window.
- * See doc_agent/moonlight-connection.md §4.
+ * which one is running, and lets the user connect (a card tap always ends in a
+ * session: start the app if needed, else connect directly), set the connection's
+ * default app (the star), or stop the running app. Reached from the Moonlight
+ * row's app button; the pairing PIN stays a lightweight popup over the main
+ * window. See doc_agent/moonlight-connection.md §4.
  */
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
@@ -16,10 +16,13 @@ import { ConnectionStore } from '../services/ConnectionStore';
 import { MoonlightAppsResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
+import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp } from '../moonlight/MoonlightModels';
 import { showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
+import { FabButton } from '../components/FabButton';
+import { HeaderBar } from '../components/HeaderBar';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMoonlightApps';
@@ -36,10 +39,17 @@ struct MoonlightAppsPage {
   @State loading: boolean = true;
   @State error: string = '';
   @State state: ConnectionState = ConnectionState.Idle;
+  // The connection's default app id, mirrored into @State so the star repaints
+  // when it is set (the saved record itself is not observable).
+  @State defaultAppId: string = '';
   // App icons fetched from the host (/appasset), keyed by app id.
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
   private conn: SavedConnection | undefined = undefined;
   private httpsPort: number = 47984;
+  private tipsOptions: TipsOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private cardMaterial: AttributeModifier<ColumnAttribute> =
+    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
   private readonly stateListener: SessionStateListener =
     (connectionId: string, state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
@@ -56,6 +66,7 @@ struct MoonlightAppsPage {
     SessionManager.subscribe(this.stateListener);
     if (this.conn !== undefined) {
       this.state = SessionManager.stateOf(this.conn.id);
+      this.defaultAppId = this.conn.mlDefaultAppId;
       this.refresh();
     } else {
       this.loading = false;
@@ -80,6 +91,11 @@ struct MoonlightAppsPage {
     return this.conn !== undefined ? this.conn.port : 47989;
   }
 
+  /** The connection's name or "host:port", shown at the header's right edge. */
+  private label(): string {
+    return this.conn !== undefined ? this.conn.label() : '';
+  }
+
   private async refresh(): Promise<void> {
     const conn: SavedConnection | undefined = this.conn;
     if (conn === undefined) {
@@ -97,7 +113,27 @@ struct MoonlightAppsPage {
     this.apps = result.apps;
     this.currentGame = result.currentGame;
     this.httpsPort = result.httpsPort;
+    this.defaultAppId = this.resolveDefaultAppId(result.apps);
     this.loadIcons();
+  }
+
+  /**
+   * The star marks the app a connect would open: the connection's explicit
+   * default when it still exists, else the host default (@see pickApp). Without
+   * this fallback an unset default shows no star even though connecting opens an
+   * app.
+   */
+  private resolveDefaultAppId(apps: NvApp[]): string {
+    const stored: string = this.conn !== undefined ? this.conn.mlDefaultAppId : '';
+    if (apps.length === 0) {
+      return stored;
+    }
+    for (let i = 0; i < apps.length; i++) {
+      if (apps[i].id.toString() === stored) {
+        return stored;
+      }
+    }
+    return MoonlightConnector.pickApp(apps).toString();
   }
 
   /** Fetches and decodes each app's icon; failures just keep the placeholder. */
@@ -129,8 +165,26 @@ struct MoonlightAppsPage {
     }
   }
 
-  /** Connect to one app: same operation whether it is running or not. */
-  private connectApp(app: NvApp): void {
+  /** True while this connection already has a session (multi-open is not allowed). */
+  private hasActiveSession(): boolean {
+    return this.state === ConnectionState.Connecting || this.state === ConnectionState.Connected ||
+      this.state === ConnectionState.Disconnecting;
+  }
+
+  /**
+   * Open one app: a card tap (or the running app's 连接). One connection supports
+   * one session, so if one is already up it is dropped first and the new app
+   * opened — this is the "switch app" action, with no dialog (the tooltip says
+   * what the tap does).
+   */
+  private openApp(app: NvApp): void {
+    if (this.hasActiveSession() && this.conn !== undefined) {
+      SessionManager.disconnect(this.conn.id);
+    }
+    this.launch(app);
+  }
+
+  private launch(app: NvApp): void {
     const conn: SavedConnection | undefined = this.conn;
     const context = this.getUIContext().getHostContext();
     if (conn === undefined || context === undefined) {
@@ -142,6 +196,15 @@ struct MoonlightAppsPage {
       RdpConnectOrigin.List, app.id);
   }
 
+  /** Ends the session but leaves the host app running. */
+  private disconnectSession(): void {
+    const conn: SavedConnection | undefined = this.conn;
+    if (conn !== undefined) {
+      SessionManager.disconnect(conn.id);
+    }
+  }
+
+  /** 中断: ask the host to stop its running app, then refresh the list. */
   private async closeApp(): Promise<void> {
     const conn: SavedConnection | undefined = this.conn;
     if (conn === undefined) {
@@ -150,6 +213,25 @@ struct MoonlightAppsPage {
     await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
     showToast(this.getUIContext(), '已请求关闭主机应用');
     await this.refresh();
+  }
+
+  private async closeAppAndDisconnect(): Promise<void> {
+    const conn: SavedConnection | undefined = this.conn;
+    if (conn === undefined) {
+      return;
+    }
+    await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
+    SessionManager.disconnect(conn.id);
+    showToast(this.getUIContext(), '已关闭主机应用并断开连接');
+    await this.refresh();
+  }
+
+  /** Card tooltip: a non-running app means "连接", or "切换" when one is running. */
+  private appTip(app: NvApp): string {
+    if (this.isRunning(app)) {
+      return '连接';
+    }
+    return this.currentGame !== 0 ? '切换到此应用' : '连接';
   }
 
   private setDefault(app: NvApp): void {
@@ -161,6 +243,7 @@ struct MoonlightAppsPage {
     conn.mlDefaultAppName = app.name;
     conn.updatedAt = Date.now();
     ConnectionStore.save(conn);
+    this.defaultAppId = conn.mlDefaultAppId;
     showToast(this.getUIContext(), `默认应用已设为「${app.name}」`);
   }
 
@@ -169,47 +252,91 @@ struct MoonlightAppsPage {
   }
 
   private isDefault(app: NvApp): boolean {
-    return this.conn !== undefined && this.conn.mlDefaultAppId === app.id.toString();
+    return this.defaultAppId === app.id.toString();
   }
 
+  /** One round icon action shown for the running app (connect / 断开 / 关闭). */
   @Builder
-  appMenu(app: NvApp) {
-    Menu() {
-      MenuItem({ content: '连接' })
-        .enabled(this.state === ConnectionState.Idle || this.state === ConnectionState.Failed)
-        .onClick(() => {
-          this.connectApp(app);
-        })
-      MenuItem({ content: '设为默认' })
-        .onClick(() => {
-          this.setDefault(app);
-        })
-      if (this.isRunning(app)) {
-        MenuItem({ content: '关闭应用' })
-          .onClick(() => {
-            this.closeApp();
-          })
-      }
+  tileAction(icon: Resource, color: ResourceColor, tip: string, gap: number, action: () => void) {
+    Row() {
+      Image(icon)
+        .width(18)
+        .height(18)
+        .fillColor(color)
+        .draggable(false)
     }
+    .width(32)
+    .height(32)
+    .borderRadius(16)
+    .backgroundColor($r('app.color.input_bg'))
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .margin({ right: gap })
+    .hoverEffect(HoverEffect.Highlight)
+    .bindTips(tip, this.tipsOptions)
+    .onClick(() => {
+      action();
+    })
   }
 
-  /** Square tile: the Moonlight host ships square app icons. Tap = connect. */
+  /** Square tile: name on top, the app icon, then (when running) the actions. */
   @Builder
   appTile(app: NvApp) {
     Column() {
-      Stack({ alignContent: Alignment.TopEnd }) {
-        if (this.iconMap.get(app.id) !== undefined) {
-          Image(this.iconMap.get(app.id) as image.PixelMap)
-            .width('100%')
-            .height('100%')
-            .objectFit(ImageFit.Cover)
-            .borderRadius(14)
-        } else {
-          Image($r('app.media.ic_apps'))
-            .width(40)
-            .height(40)
-            .objectFit(ImageFit.Contain)
+      // Name on top, with the set-as-default star at the card's top-right. It
+      // sits on the card surface (not over the icon), so it needs no scrim.
+      Stack({ alignContent: Alignment.End }) {
+        Text(app.name)
+          .fontSize(13)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ left: 26, right: 26 })
+
+        Image($r('app.media.ic_star'))
+          .width(18)
+          .height(18)
+          .fillColor(this.isDefault(app)
+            ? $r('app.color.accent') : $r('app.color.text_tertiary'))
+          .draggable(false)
+          .bindTips('设为默认', this.tipsOptions)
+          .onClick(() => {
+            this.setDefault(app);
+          })
+      }
+      .width('100%')
+      .height(24)
+
+      Stack({ alignContent: Alignment.TopStart }) {
+        Stack({ alignContent: Alignment.Center }) {
+          if (this.iconMap.get(app.id) !== undefined) {
+            Image(this.iconMap.get(app.id) as image.PixelMap)
+              .width('100%')
+              .height('100%')
+              .objectFit(ImageFit.Cover)
+              .draggable(false)
+          } else {
+            // The host ships square art; the placeholder is centered with a
+            // little breathing room so a non-square icon still reads well.
+            Image($r('app.media.ic_apps'))
+              .width(36)
+              .height(36)
+              .objectFit(ImageFit.Contain)
+              .draggable(false)
+          }
         }
+        .width('100%')
+        .aspectRatio(1)
+        .borderRadius(14)
+        .clip(true)
+        .backgroundColor($r('app.color.input_bg'))
+        // The card's "连接 / 切换" hint lives on the icon only: on the whole card
+        // it would also fire while hovering the star / action buttons (nested
+        // bindTips are not suppressed by the inner one).
+        .bindTips(this.appTip(app), this.tipsOptions)
+
         if (this.isRunning(app)) {
           Text('运行中')
             .fontSize(9)
@@ -217,119 +344,122 @@ struct MoonlightAppsPage {
             .backgroundColor($r('app.color.success'))
             .borderRadius(4)
             .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-            .margin(6)
+            .margin({ left: 6, top: 6 })
         }
       }
       .width('100%')
-      .aspectRatio(1)
-      .borderRadius(14)
-      .backgroundColor($r('app.color.card_bg'))
-      .clip(true)
+      .margin({ top: 4 })
 
-      Text(app.name)
-        .fontSize(13)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      // The running app gets two explicit actions on one row, selected by whether
+      // a session is already up: [连接 / 断开] then [关闭].
+      if (this.isRunning(app)) {
+        Row() {
+          if (this.hasActiveSession()) {
+            this.tileAction($r('app.media.ic_power'), $r('app.color.text_secondary'),
+              '断开连接', 10,
+              (): void => {
+                this.disconnectSession();
+              })
+
+            this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用并断开', 0,
+              (): void => {
+                this.closeAppAndDisconnect();
+              })
+          } else {
+            this.tileAction($r('app.media.ic_play'), $r('app.color.accent'), '连接', 10,
+              (): void => {
+                this.openApp(app);
+              })
+
+            this.tileAction($r('app.media.ic_stop'), $r('app.color.danger'), '关闭应用', 0,
+              (): void => {
+                this.closeApp();
+              })
+          }
+        }
         .margin({ top: 8 })
-
-      if (this.isDefault(app)) {
-        Text('默认')
-          .fontSize(10)
-          .fontColor($r('app.color.accent'))
-          .margin({ top: 2 })
       }
     }
-    .width(116)
+    .width(124)
+    .padding(8)
+    .borderRadius(16)
+    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
+    .attributeModifier(this.cardMaterial)
+    .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
     .margin({ right: 12, bottom: 16 })
     .onClick(() => {
-      this.connectApp(app);
+      this.openApp(app);
     })
-    .bindContextMenu(this.appMenu(app), ResponseType.RightClick)
-  }
-
-  @Builder
-  header() {
-    Row() {
-      Text('应用')
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-      Text('刷新')
-        .fontSize(14)
-        .fontColor($r('app.color.accent'))
-        .onClick(() => {
-          this.refresh();
-        })
-    }
-    .width('100%')
-    .padding({ left: 4, right: 4, top: 8, bottom: 8 })
   }
 
   build() {
-    Column() {
-      Row() {
-        Text('返回')
-          .fontSize(14)
-          .fontColor($r('app.color.accent'))
-          .onClick(() => {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      Column() {
+        HeaderBar({
+          title: '应用',
+          leftLabel: '返回',
+          onLeft: () => {
             this.getUIContext().getRouter().back();
-          })
-        Column() {
-          Text(this.host())
-            .fontSize(17)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
+          }
+        }) {
+          Text(this.label())
+            .fontSize(13)
+            .fontColor($r('app.color.text_tertiary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .constraintSize({ maxWidth: 320 })
         }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Center)
-        Text('')
-          .fontSize(14)
-          .width(32)
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 10, bottom: 10 })
 
-      if (this.loading) {
-        Column() {
-          LoadingProgress().width(40).height(40).color($r('app.color.accent'))
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else if (this.error.length > 0) {
-        Column() {
-          Text(this.error)
-            .fontSize(14)
-            .fontColor($r('app.color.text_secondary'))
-            .textAlign(TextAlign.Center)
-            .margin({ bottom: 12 })
-          Button('重试')
-            .onClick(() => {
-              this.refresh();
-            })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else {
-        Scroll() {
+        if (this.loading) {
           Column() {
-            this.header()
-            Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-              ForEach(this.apps, (app: NvApp) => {
-                this.appTile(app)
-              }, (app: NvApp) => app.id.toString())
-            }
-            .width('100%')
+            LoadingProgress().width(40).height(40).color($r('app.color.accent'))
           }
           .width('100%')
-          .padding({ left: 12, right: 12, bottom: 24 })
+          .layoutWeight(1)
+          .justifyContent(FlexAlign.Center)
+        } else if (this.error.length > 0) {
+          Column() {
+            Text(this.error)
+              .fontSize(14)
+              .fontColor($r('app.color.text_secondary'))
+              .textAlign(TextAlign.Center)
+              .margin({ bottom: 12 })
+            Button('重试')
+              .onClick(() => {
+                this.refresh();
+              })
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .justifyContent(FlexAlign.Center)
+        } else {
+          Scroll() {
+            Column() {
+              Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+                ForEach(this.apps, (app: NvApp) => {
+                  this.appTile(app)
+                }, (app: NvApp) => app.id.toString())
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .padding({ left: 12, right: 12, top: 16, bottom: 96 })
+          }
+          .layoutWeight(1)
+          .align(Alignment.Top)
         }
-        .layoutWeight(1)
-        .align(Alignment.Top)
       }
+      .width('100%')
+      .height('100%')
+
+      FabButton({
+        icon: $r('app.media.ic_refresh'),
+        tip: '刷新',
+        onTap: () => {
+          this.refresh();
+        }
+      })
+        .margin({ right: 24, bottom: 24 })
     }
     .width('100%')
     .height('100%')
