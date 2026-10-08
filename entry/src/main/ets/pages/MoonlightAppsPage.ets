@@ -15,6 +15,8 @@ import { RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { MoonlightAppsResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
+import { HOST_REPROBE_DELAY_MS, MoonlightHostState, HostTargetListener }
+  from '../services/MoonlightHostState';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { MoonlightAppTile } from '../components/MoonlightAppTile';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
@@ -36,6 +38,8 @@ export interface MoonlightAppsParams {
 @Component
 struct MoonlightAppsPage {
   @State apps: NvApp[] = [];
+  // The host's running app, mirrored from MoonlightHostState (the shared
+  // authority) so this page and the list never disagree; never written directly.
   @State currentGame: number = 0;
   @State loading: boolean = true;
   // A refresh over an already-loaded list: only the FAB spins, the page keeps
@@ -53,10 +57,24 @@ struct MoonlightAppsPage {
   // True once a list has been shown, so later refreshes keep the page instead of
   // blanking it with the full-page spinner.
   private hasLoaded: boolean = false;
+  // Coalesces overlapping probes: the first appearance refreshes from both
+  // aboutToAppear and onPageShow, and a page show can also arrive while the FAB's
+  // refresh is still in flight.
+  private probing: boolean = false;
   private readonly stateListener: SessionStateListener =
     (connectionId: string, state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
         this.state = state;
+      }
+    };
+
+  // Mirrors MoonlightHostState into the running badge: the authority pushes every
+  // change (client action or host probe), so returning from a session shows the
+  // host's actual state instead of the last tapped app.
+  private readonly hostStateListener: HostTargetListener =
+    (connectionId: string, currentGame: number): void => {
+      if (this.conn !== undefined && connectionId === this.conn.id) {
+        this.currentGame = currentGame;
       }
     };
 
@@ -67,8 +85,10 @@ struct MoonlightAppsPage {
       this.conn = ConnectionStore.get(params.connectionId);
     }
     SessionManager.subscribe(this.stateListener);
+    MoonlightHostState.subscribe(this.hostStateListener);
     if (this.conn !== undefined) {
       this.state = SessionManager.stateOf(this.conn.id);
+      this.currentGame = MoonlightHostState.targetOf(this.conn.id);
       this.defaultAppId = this.conn.mlDefaultAppId;
       this.refresh();
     } else {
@@ -79,6 +99,20 @@ struct MoonlightAppsPage {
 
   aboutToDisappear(): void {
     SessionManager.unsubscribe(this.stateListener);
+    MoonlightHostState.unsubscribe(this.hostStateListener);
+  }
+
+  /**
+   * Re-reads the host state whenever the page shows again (same contract as the
+   * list page): a session opened from here runs in its own window, so returning
+   * to this page must not keep a stale "running" app. This is the shared, cheap
+   * target probe; the app list itself is only re-read on the first load / FAB.
+   */
+  onPageShow(): void {
+    const conn: SavedConnection | undefined = this.conn;
+    if (conn !== undefined && this.hasLoaded) {
+      MoonlightHostState.refresh(conn, this.filesDir());
+    }
   }
 
   private filesDir(): string {
@@ -100,10 +134,14 @@ struct MoonlightAppsPage {
   }
 
   private async refresh(): Promise<void> {
+    if (this.probing) {
+      return;
+    }
     const conn: SavedConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }
+    this.probing = true;
     // Keep the current page on a re-refresh; only the first load takes the
     // full-page spinner (there is nothing to preserve yet).
     if (this.hasLoaded) {
@@ -112,30 +150,36 @@ struct MoonlightAppsPage {
       this.loading = true;
     }
     this.error = '';
-    const result: MoonlightAppsResult = await MoonlightConnector.probeApps(this.filesDir(),
-      conn.host, conn.port,
-      (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
-        promptPairingPin(this.getUIContext(), pin, pairing),
-      conn.mlHostId);
-    this.loading = false;
-    this.refreshing = false;
-    if (!result.ok) {
-      this.error = result.error;
-      return;
+    try {
+      const result: MoonlightAppsResult = await MoonlightConnector.probeApps(this.filesDir(),
+        conn.host, conn.port,
+        (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
+          promptPairingPin(this.getUIContext(), pin, pairing),
+        conn.mlHostId);
+      if (!result.ok) {
+        this.error = result.error;
+        return;
+      }
+      this.hasLoaded = true;
+      this.apps = result.apps;
+      this.httpsPort = result.httpsPort;
+      // Feed the host's own answer into the shared authority: it overwrites the
+      // optimistic value a connect wrote, and the listener pushes it back here.
+      MoonlightHostState.setProbed(conn.id, result.currentGame, result.httpsPort);
+      // Record the host's own id for the connection-uniqueness check (only when
+      // it changed, so a plain refresh does not write the store every time).
+      if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
+        conn.mlHostId = result.hostId;
+        conn.updatedAt = Date.now();
+        ConnectionStore.save(conn);
+      }
+      this.defaultAppId = this.resolveDefaultAppId(result.apps);
+      this.loadIcons();
+    } finally {
+      this.loading = false;
+      this.refreshing = false;
+      this.probing = false;
     }
-    this.hasLoaded = true;
-    this.apps = result.apps;
-    this.currentGame = result.currentGame;
-    this.httpsPort = result.httpsPort;
-    // Record the host's own id for the connection-uniqueness check (only when it
-    // changed, so a plain refresh does not write the store every time).
-    if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
-      conn.mlHostId = result.hostId;
-      conn.updatedAt = Date.now();
-      ConnectionStore.save(conn);
-    }
-    this.defaultAppId = this.resolveDefaultAppId(result.apps);
-    this.loadIcons();
   }
 
   /**
@@ -213,10 +257,10 @@ struct MoonlightAppsPage {
     }
     // A specific app id; the pre-flight runs inside the manager (Connecting).
     this.error = '';
-    // Mark the target as the running app right away: connecting starts it (and a
-    // switch stops the previous one), so its tile must show the 运行中 badge and
-    // the session actions without waiting for the next list refresh.
-    this.currentGame = app.id;
+    // Mark the target as the running app right away (through the shared
+    // authority): connecting starts it (and a switch stops the previous one), so
+    // its tile must show the 运行中 badge without waiting for the next probe.
+    MoonlightHostState.markLaunched(conn.id, app.id);
     MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
       RdpConnectOrigin.List, app.id);
   }
@@ -229,15 +273,20 @@ struct MoonlightAppsPage {
     }
   }
 
-  /** 中断: ask the host to stop its running app, then refresh the list. */
+  /** 中断: ask the host to stop its running app; the shared target clears on success. */
   private async closeApp(): Promise<void> {
     const conn: SavedConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }
-    await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
-    showToast(this.getUIContext(), '已请求关闭主机应用');
-    await this.refresh();
+    const ok: boolean = await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
+    showToast(this.getUIContext(), ok ? '已请求关闭主机应用' : '关闭主机应用失败');
+    if (ok) {
+      // The client knows the app is gone; clear it now (both surfaces agree) and
+      // reconcile with the host once the cancel has settled.
+      MoonlightHostState.markStopped(conn.id);
+      MoonlightHostState.refreshAfter(conn, this.filesDir(), HOST_REPROBE_DELAY_MS);
+    }
   }
 
   private async closeAppAndDisconnect(): Promise<void> {
@@ -245,10 +294,13 @@ struct MoonlightAppsPage {
     if (conn === undefined) {
       return;
     }
-    await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
+    const ok: boolean = await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
+    if (ok) {
+      MoonlightHostState.markStopped(conn.id);
+      MoonlightHostState.refreshAfter(conn, this.filesDir(), HOST_REPROBE_DELAY_MS);
+    }
     SessionManager.disconnect(conn.id);
-    showToast(this.getUIContext(), '已关闭主机应用并断开连接');
-    await this.refresh();
+    showToast(this.getUIContext(), ok ? '已关闭主机应用并断开连接' : '已断开连接');
   }
 
   /**

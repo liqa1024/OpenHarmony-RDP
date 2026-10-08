@@ -21,6 +21,7 @@ import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionStore } from './ConnectionStore';
 import { MoonlightConnectResult, MoonlightConnector, MoonlightHostPolicy,
   MoonlightPinProvider } from './MoonlightConnector';
+import { MoonlightHostState } from './MoonlightHostState';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
 
@@ -89,12 +90,19 @@ export class MoonlightSessionBackend implements SessionBackend {
       conn.host, conn.port, request.stream, request.moonlightAppId,
       request.stream.width, request.stream.height, pinProvider, policy);
     if (!result.ok) {
+      // A failed pre-flight may have relied on a launch that did not happen; let
+      // the next probe settle the host target instead of trusting the optimistic
+      // value a caller wrote before this ran.
+      MoonlightHostState.refresh(conn, request.filesDir);
       this.emit(ML_EVENT_STAGE_FAILED, 0, result.error);
       return false;
     }
     this.config = result.config;
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
+    // The host now runs the launched app (or the auto-picked default); this is
+    // the authoritative target for both the list row and the app page.
+    MoonlightHostState.markLaunched(conn.id, result.effectiveAppId);
     // Learn the host's own id for the connection-uniqueness check (only when it
     // changed, so a normal connect does not write the store).
     if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {

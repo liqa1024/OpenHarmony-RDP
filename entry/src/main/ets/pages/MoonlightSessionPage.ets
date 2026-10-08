@@ -15,6 +15,7 @@ import { window } from '@kit.ArkUI';
 import { PendingConnection, SessionRequests } from '../model/RdpModels';
 import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
+import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
@@ -375,8 +376,14 @@ struct MoonlightSessionPage {
     const context = this.getUIContext().getHostContext();
     if (request !== undefined && request.savedConnection !== undefined && context !== undefined) {
       const filesDir: string = (context as common.UIAbilityContext).filesDir;
-      await MoonlightClient.cancel(filesDir, request.savedConnection.host,
+      const ok: boolean = await MoonlightClient.cancel(filesDir, request.savedConnection.host,
         request.moonlightHttpsPort);
+      if (ok) {
+        // Clear the shared host target now: the app page / list must not flip to
+        // 恢复 (as if the app were still running) when this window closes.
+        MoonlightHostState.markStopped(request.savedConnection.id);
+        MoonlightHostState.refreshAfter(request.savedConnection, filesDir, HOST_REPROBE_DELAY_MS);
+      }
     }
     this.disconnect();
   }

@@ -37,6 +37,10 @@ export class MoonlightConnectResult {
   httpsPort: number = 47984;
   // The host's own id (serverinfo `uniqueid`).
   hostId: string = '';
+  // The app actually launched on the host: the requested id, or the one picked
+  // when the request asked for the host default (0). Feeds MoonlightHostState's
+  // optimistic running target so both entry points mark the same app.
+  effectiveAppId: number = 0;
 }
 
 /** Result of probing a host for the app-management UI. */
@@ -348,6 +352,7 @@ export class MoonlightConnector {
     config.remoteInputAesIvHex = MoonlightConnector.ivHex(rikeyId);
     result.config = config;
     result.httpsPort = info.httpsPort;
+    result.effectiveAppId = effectiveAppId;
     result.ok = true;
     return result;
   }

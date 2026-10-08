@@ -13,7 +13,8 @@ import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
 import { MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
-import { ServerInfoResult } from '../moonlight/MoonlightModels';
+import { HOST_REPROBE_DELAY_MS, MoonlightHostState, HostTargetListener }
+  from '../services/MoonlightHostState';
 import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
@@ -30,13 +31,11 @@ const TAG: string = 'HmRdpIndex';
 struct Index {
   @State connections: SavedConnection[] = [];
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
-  // Host-side target per connection: what the host currently has open (0 = none /
-  // unknown). Only Moonlight has one (its running app id); RDP stays 0. Refreshed
-  // on page show so the row can show 恢复 / 运行中.
+  // Host-side target per connection, mirrored from MoonlightHostState so the row
+  // (恢复 / 运行中 / 终止) repaints: what the host currently has open (0 = none /
+  // unknown). Only Moonlight has one; RDP stays 0. The app page reads the same
+  // authority, so both surfaces agree.
   @State hostTargets: Map<string, number> = new Map<string, number>();
-  // The host's HTTPS control port per connection (from the same probe), kept so
-  // the context menu's 终止 can call `/cancel`.
-  @State hostHttpsPorts: Map<string, number> = new Map<string, number>();
   // Index of the item being drag-reordered; -1 when idle. Used only to lift the
   // dragged item above its siblings.
   @State draggingIndex: number = -1;
@@ -70,13 +69,28 @@ struct Index {
     }
   };
 
+  // Mirrors MoonlightHostState into the row map: the authority pushes every
+  // change (client action or host probe), so the row is correct without probing.
+  private hostStateListener: HostTargetListener =
+    (connectionId: string, currentGame: number): void => {
+      const next: Map<string, number> = new Map<string, number>(this.hostTargets);
+      if (currentGame === 0) {
+        next.delete(connectionId);
+      } else {
+        next.set(connectionId, currentGame);
+      }
+      this.hostTargets = next;
+    };
+
   aboutToAppear(): void {
     SessionManager.subscribe(this.sessionListener);
+    MoonlightHostState.subscribe(this.hostStateListener);
     this.refresh();
   }
 
   aboutToDisappear(): void {
     SessionManager.unsubscribe(this.sessionListener);
+    MoonlightHostState.unsubscribe(this.hostStateListener);
   }
 
   onPageShow(): void {
@@ -86,14 +100,47 @@ struct Index {
   private refresh(): void {
     this.connections = ConnectionStore.list();
     this.developerMode = SettingsStore.load().developerMode;
+    this.syncStatuses();
+    this.syncHostTargets();
     this.probeHosts();
   }
 
   /**
-   * Best-effort host-state probe for the homepage: for each Moonlight connection
-   * read the host's running app (plain `serverinfo`, no pairing, no polling), so
-   * the row can show 恢复 / 运行中. Refreshed whenever the page shows; a host that
-   * is offline simply keeps 0 (the row stays 连接).
+   * Reconciles the badge map with the authority (SessionManager) on every show,
+   * instead of trusting only the listener pushes: a state that changed while this
+   * page was hidden must render immediately when it comes back.
+   */
+  private syncStatuses(): void {
+    const next: Map<string, ConnectionState> = new Map<string, ConnectionState>();
+    for (const conn of this.connections) {
+      const state: ConnectionState = SessionManager.stateOf(conn.id);
+      if (state !== ConnectionState.Idle) {
+        next.set(conn.id, state);
+      }
+    }
+    this.statuses = next;
+  }
+
+  /** Seeds the row map from the authority, so a show renders the current value. */
+  private syncHostTargets(): void {
+    const next: Map<string, number> = new Map<string, number>();
+    for (const conn of this.connections) {
+      if (!conn.isMoonlight()) {
+        continue;
+      }
+      const target: number = MoonlightHostState.targetOf(conn.id);
+      if (target !== 0) {
+        next.set(conn.id, target);
+      }
+    }
+    this.hostTargets = next;
+  }
+
+  /**
+   * Best-effort host-state refresh for the homepage: for each Moonlight
+   * connection ask the shared authority to probe the host's running app (plain
+   * `serverinfo`, no pairing, no polling), so the row can show 恢复 / 运行中. A
+   * host that is offline keeps its last known value.
    */
   private probeHosts(): void {
     const context = this.getUIContext().getHostContext();
@@ -101,31 +148,13 @@ struct Index {
       return;
     }
     const filesDir: string = (context as common.UIAbilityContext).filesDir;
-    for (const conn of this.connections) {
-      if (conn.isMoonlight()) {
-        this.probeHost(filesDir, conn);
-      }
-    }
-  }
-
-  private probeHost(filesDir: string, conn: SavedConnection): void {
-    MoonlightClient.fetchServerInfo(filesDir, conn.host, conn.port)
-      .then((result: ServerInfoResult): void => {
-        const targets: Map<string, number> = new Map<string, number>(this.hostTargets);
-        targets.set(conn.id, result.ok ? result.info.currentGame : 0);
-        this.hostTargets = targets;
-        const ports: Map<string, number> = new Map<string, number>(this.hostHttpsPorts);
-        ports.set(conn.id, result.ok ? result.info.httpsPort : 0);
-        this.hostHttpsPorts = ports;
-      })
-      .catch((error: BusinessError): void => {
-        hilog.warn(DOMAIN, TAG, 'host probe failed: %{public}s', JSON.stringify(error));
-      });
+    MoonlightHostState.refreshAll(this.connections, filesDir);
   }
 
   /**
    * 终止: ask the host to stop the app it is running (`/cancel`, HTTPS + mTLS),
-   * then drop a local session if one exists and refresh the host state.
+   * then drop a local session if one exists. A successful cancel clears the shared
+   * host target immediately (both surfaces agree without waiting for a probe).
    */
   private terminateHostApp(conn: SavedConnection): void {
     const context = this.getUIContext().getHostContext();
@@ -133,15 +162,17 @@ struct Index {
       return;
     }
     const filesDir: string = (context as common.UIAbilityContext).filesDir;
-    const known: number | undefined = this.hostHttpsPorts.get(conn.id);
-    const httpsPort: number = known === undefined || known === 0 ? 47984 : known;
+    const httpsPort: number = MoonlightHostState.httpsPortOf(conn.id);
     MoonlightClient.cancel(filesDir, conn.host, httpsPort)
       .then((ok: boolean): void => {
         showToast(this.getUIContext(), ok ? '已请求终止主机应用' : '终止主机应用失败');
+        if (ok) {
+          MoonlightHostState.markStopped(conn.id);
+          MoonlightHostState.refreshAfter(conn, filesDir, HOST_REPROBE_DELAY_MS);
+        }
         if (this.connState(conn.id) !== ConnectionState.Idle) {
           SessionManager.disconnect(conn.id);
         }
-        this.probeHost(filesDir, conn);
       })
       .catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'terminate host app failed: %{public}s', JSON.stringify(error));
@@ -249,12 +280,6 @@ struct Index {
     options.password = await CredentialStore.loadPassword(conn.id);
     request.options = options;
     SessionManager.connect(request, context as common.UIAbilityContext);
-  }
-
-  /** The Moonlight app button is only usable when no attempt is in flight. */
-  private appButtonEnabled(conn: SavedConnection): boolean {
-    const state: ConnectionState = this.connState(conn.id);
-    return state === ConnectionState.Idle || state === ConnectionState.Failed;
   }
 
   private openMoonlightApps(conn: SavedConnection): void {
@@ -441,7 +466,6 @@ struct Index {
               ConnectionRow({
                 conn: conn,
                 state: this.connState(conn.id),
-                appEnabled: this.appButtonEnabled(conn),
                 hostTargetId: this.hostTargetId(conn),
                 targetId: this.targetId(conn),
                 onEdit: () => {

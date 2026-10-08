@@ -16,7 +16,6 @@ import { ConnectAction, connectActionFor, connectActionLabel, primaryConnectActi
 export struct ConnectionRow {
   conn: SavedConnection = new SavedConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
-  @Prop appEnabled: boolean = true;
   // Host-side target the row's connect would act on: `hostTargetId` is what the
   // host currently has open (0 = none / unknown), `targetId` is what this row
   // would open (0 = the connection default, which cannot be resolved here). RDP
@@ -199,12 +198,9 @@ export struct ConnectionRow {
         .alignItems(VerticalAlign.Center)
         .margin({ left: 8 })
         .hoverEffect(HoverEffect.Scale)
-        .opacity(this.appEnabled ? 1 : 0.4)
         .bindTips('应用', this.tipsOptions)
         .onClick(() => {
-          if (this.appEnabled) {
-            this.onOpenApps();
-          }
+          this.onOpenApps();
         })
       }
 

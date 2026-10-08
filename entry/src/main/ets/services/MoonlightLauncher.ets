@@ -13,6 +13,7 @@ import { UIContext } from '@kit.ArkUI';
 import { ML_RES_FIXED, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
   RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
 import { PairResult } from '../moonlight/MoonlightModels';
+import { MoonlightHostState } from './MoonlightHostState';
 import { SessionManager } from './SessionManager';
 import { SettingsStore } from './SettingsStore';
 import { defaultDisplay } from '../utils/DisplayUtil';
@@ -51,6 +52,10 @@ export class MoonlightLauncher {
       (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
         promptPairingPin(ui, pin, pairing);
     request.onConnected = onConnected;
+    // Mark the target the UI already knows (a specific app, or a stored default):
+    // the connecting badge can show immediately; the backend corrects it with the
+    // host's own answer once the pre-flight picks the app.
+    MoonlightHostState.markLaunched(conn.id, request.moonlightAppId);
     SessionManager.connect(request, context);
   }
 
