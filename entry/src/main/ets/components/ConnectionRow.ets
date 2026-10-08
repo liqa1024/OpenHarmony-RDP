@@ -191,16 +191,17 @@ export struct ConnectionRow {
           Image($r('app.media.ic_apps'))
             .width(20)
             .height(20)
+            .fillColor('#FFFFFF')
             .draggable(false)
         }
         .width(44)
         .height(44)
         .borderRadius(22)
-        // A distinct secondary-button surface: the row card background would
-        // leave the icon floating with no button of its own (the "应用" glyph is
-        // theme-aware, see resources/dark/media/ic_apps.svg). Hover lifts the
-        // surface and the press sinks the button, both through utils/UiMotion.
-        .backgroundColor(this.appHovered ? $r('app.color.hover_bg') : $r('app.color.input_bg'))
+        // Solid neutral (Moonlight's dark-chrome grey): the same filled round
+        // style as the connect button, but a third colour so it does not compete
+        // with the accent connect nor clash with the red danger state. Hover
+        // lifts the surface and the press sinks the button, both via UiMotion.
+        .backgroundColor(this.appHovered ? $r('app.color.neutral_hover') : $r('app.color.neutral'))
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .margin({ left: 8 })

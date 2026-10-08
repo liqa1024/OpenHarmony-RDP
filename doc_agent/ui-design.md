@@ -47,6 +47,7 @@
 | `danger` | `#E84026` | `#F05A40` | 破坏性动作、已连接态圆钮 |
 | `success` / `success_bg` | `#2E9E5B` / `#E6F6EC` | `#4CC77A` / `#17301F` | 状态徽标（如「已连接」「运行中」） |
 | `hover_bg` | `#E7E9ED` | `#2E2E32` | 悬停底（图标按钮、chip） |
+| `neutral` / `neutral_hover` | `#6E737B` / `#5A5F67` | `#4A4F57` / `#5A606A` | 实心中性动作钮（Moonlight 行的「应用」钮；与 accent / danger 并列为第三种动作色） |
 
 约束：
 

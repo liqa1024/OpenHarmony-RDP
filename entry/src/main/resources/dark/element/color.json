@@ -45,6 +45,14 @@
       "value": "#B8D1FF"
     },
     {
+      "name": "neutral",
+      "value": "#4A4F57"
+    },
+    {
+      "name": "neutral_hover",
+      "value": "#5A606A"
+    },
+    {
       "name": "danger",
       "value": "#F05A40"
     },

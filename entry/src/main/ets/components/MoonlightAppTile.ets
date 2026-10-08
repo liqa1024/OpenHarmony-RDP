@@ -92,6 +92,7 @@ export struct MoonlightAppTile {
           Image($r('app.media.ic_apps'))
             .width(36)
             .height(36)
+            .fillColor($r('app.color.text_secondary'))
             .objectFit(ImageFit.Contain)
             .draggable(false)
         }

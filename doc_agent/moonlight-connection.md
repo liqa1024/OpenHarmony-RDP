@@ -155,9 +155,10 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
 - Moonlight 卡片用 `ic_proto_moonlight`：紫色底 + 白色显示器轮廓 + **纯白 8 分格圆盘**，
   再用一枚偏移圆形成缺口（新月）。缺口与分割线用 `userSpaceOnUse` 的线性渐变填充，
   按用户坐标取色，因此与背景渐变**零色差、无接缝**（不需要 mask，也不必用黑底或灰阶）。
-- Moonlight 行的「应用」按钮用网格图标（`ic_apps`）：它**随主题**（`resources/dark/media/` 同名覆盖为浅色描边）
-  画在**次级按钮底**（`input_bg`）上，深浅色都有对比度。不要让它与卡片同底——那样看不出是按钮，且暗色下
-  深色描边整片消失。
+- Moonlight 行的「应用」按钮用网格图标（`ic_apps`）：该图标是**纯 `fill` 单路径**（四枚圆角方环，`evenodd`
+  挖孔），画在**实心中性钮**（`neutral`，hover `neutral_hover`）上用白色 `fillColor`——实心钮风格与连接钮
+  一致，但取**第三种颜色**（中性灰、Moonlight 的深色 chrome 调），既不与 accent（连接）抢、也不与 danger
+  （终止）撞，更不与紫色的协议图标撞色。它**不**画在卡片同底上——那样看不出是按钮。
 - **并列的图标要归一化「图形占 viewBox 的比例」，而不是在代码里各给一个尺寸**：同一个 `Image` 尺寸下，
   实际视觉大小由图形在 `viewBox` 里的占比决定。`ic_play` / `ic_stop` / `ic_power` 统一让图形占
   `viewBox` 约 58% 且居中：play 三角 `28×28`、stop 圆角方 `28×28`、power 用 `viewBox="-4 -4 32 32"`
@@ -177,9 +178,9 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   允许的例外）；tile 画在材质圆盘上，按状态给 accent / text_primary / danger。**不要为同一语义另画一套
   描边图标**；`ic_disconnect` 是纯 `fill` 断链，与上条同一处理。
 - **需要运行时换色的图标用 `fill` 画，不要用 `stroke`**：`Image.fillColor` 只覆盖 SVG 的**填充**，对描边无效。
-  故星标 / 连接 / 断开 / 关闭（`ic_star` / `ic_play` / `ic_power` / `ic_stop`）一律纯 `fill` 路径，由页面按状态给
-  accent / text_primary / danger；`ic_refresh` 画在 accent 圆钮上，直接用白色 `fill`。`ic_apps` 这类固定描边
-  图标只能靠 `resources/dark/media/` 的深色变体随主题。
+  故星标 / 连接 / 断开 / 关闭 / 应用（`ic_star` / `ic_play` / `ic_power` / `ic_stop` / `ic_apps`）一律纯 `fill`
+  路径，由页面按状态给 accent / text_primary / danger / 白；`ic_refresh` 画在 accent 圆钮上，直接用白色 `fill`。
+  需要随主题（且不换色）的描边图标才靠 `resources/dark/media/` 的深色变体。
 
 ## 7. 实现边界
 
