@@ -229,8 +229,12 @@ export struct MoonlightAppTile {
     .width(TILE_WIDTH)
     .height(TILE_HEIGHT)
     .margin({ right: 12, bottom: 16 })
+    // A running app acts through its own discs; its card must not also react to a
+    // tap (and its tip is empty, so it has no tooltip either).
     .onClick(() => {
-      this.onOpen();
+      if (!this.isRunning) {
+        this.onOpen();
+      }
     })
   }
 }

@@ -150,14 +150,18 @@ export struct ConnectionRow {
             .height(24)
             .color('#FFFFFF')
         } else if (this.state === ConnectionState.Connected) {
-          Image($r('app.media.ic_disconnect'))
+          // Same filled glyph set as the app tiles (white on the solid accent /
+          // danger button); see doc_agent/moonlight-connection.md §6.
+          Image($r('app.media.ic_power'))
             .width(22)
             .height(22)
+            .fillColor('#FFFFFF')
             .draggable(false)
         } else {
-          Image($r('app.media.ic_arrow_right'))
-            .width(20)
-            .height(20)
+          Image($r('app.media.ic_play'))
+            .width(22)
+            .height(22)
+            .fillColor('#FFFFFF')
             .draggable(false)
         }
       }

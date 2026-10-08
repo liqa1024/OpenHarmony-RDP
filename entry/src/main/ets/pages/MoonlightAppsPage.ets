@@ -253,11 +253,12 @@ struct MoonlightAppsPage {
   /**
    * The poster is the tile and carries no name, so the tooltip both names the
    * app and says what a click does: "切换到" when another app is running, else
-   * "连接到".
+   * "连接到". A running app has its own action discs and its card no longer
+   * reacts, so its tip is empty (no tooltip).
    */
   private appTip(app: NvApp): string {
     if (this.isRunning(app)) {
-      return `连接到「${app.name}」`;
+      return '';
     }
     return this.currentGame !== 0 ? `切换到「${app.name}」` : `连接到「${app.name}」`;
   }
