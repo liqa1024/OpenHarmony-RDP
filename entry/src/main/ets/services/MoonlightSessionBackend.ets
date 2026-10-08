@@ -16,9 +16,11 @@ import {
   moonlightMousePosition, moonlightScroll, moonlightSessionActive, moonlightSessionClearSurface,
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener
 } from 'libhmrdp.so';
-import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
+import { PendingConnection, PROTOCOL_MOONLIGHT, SavedConnection } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
-import { MoonlightConnectResult, MoonlightConnector, MoonlightPinProvider } from './MoonlightConnector';
+import { ConnectionStore } from './ConnectionStore';
+import { MoonlightConnectResult, MoonlightConnector, MoonlightHostPolicy,
+  MoonlightPinProvider } from './MoonlightConnector';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
 
@@ -74,9 +76,18 @@ export class MoonlightSessionBackend implements SessionBackend {
       request.moonlightPinProvider !== undefined
         ? request.moonlightPinProvider
         : (pin: string, pairing: Promise<PairResult>): Promise<boolean> => Promise.resolve(false);
+    const policy: MoonlightHostPolicy = new MoonlightHostPolicy();
+    policy.expectedId = conn.mlHostId;
+    const connections: SavedConnection[] = ConnectionStore.list();
+    for (let i = 0; i < connections.length; i++) {
+      const other: SavedConnection = connections[i];
+      if (other.isMoonlight() && other.id !== conn.id && other.mlHostId.length > 0) {
+        policy.knownIds.push(other.mlHostId);
+      }
+    }
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(request.filesDir,
       conn.host, conn.port, request.stream, request.moonlightAppId,
-      request.stream.width, request.stream.height, pinProvider);
+      request.stream.width, request.stream.height, pinProvider, policy);
     if (!result.ok) {
       this.emit(ML_EVENT_STAGE_FAILED, 0, result.error);
       return false;
@@ -84,6 +95,13 @@ export class MoonlightSessionBackend implements SessionBackend {
     this.config = result.config;
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
+    // Learn the host's own id for the connection-uniqueness check (only when it
+    // changed, so a normal connect does not write the store).
+    if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
+      conn.mlHostId = result.hostId;
+      conn.updatedAt = Date.now();
+      ConnectionStore.save(conn);
+    }
     return true;
   }
 

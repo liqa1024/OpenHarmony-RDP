@@ -121,7 +121,8 @@ struct MoonlightAppsPage {
     const result: MoonlightAppsResult = await MoonlightConnector.probeApps(this.filesDir(),
       conn.host, conn.port,
       (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
-        promptPairingPin(this.getUIContext(), pin, pairing));
+        promptPairingPin(this.getUIContext(), pin, pairing),
+      conn.mlHostId);
     this.loading = false;
     this.refreshing = false;
     if (!result.ok) {
@@ -132,6 +133,13 @@ struct MoonlightAppsPage {
     this.apps = result.apps;
     this.currentGame = result.currentGame;
     this.httpsPort = result.httpsPort;
+    // Record the host's own id for the connection-uniqueness check (only when it
+    // changed, so a plain refresh does not write the store every time).
+    if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
+      conn.mlHostId = result.hostId;
+      conn.updatedAt = Date.now();
+      ConnectionStore.save(conn);
+    }
     this.defaultAppId = this.resolveDefaultAppId(result.apps);
     this.loadIcons();
   }

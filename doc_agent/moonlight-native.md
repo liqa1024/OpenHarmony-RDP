@@ -161,7 +161,12 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - **配对原语**（hex 进 hex 出）：`aesKey = SHA256(salt || pin)[0:16]`——**恒 SHA-256**（Sunshine 与
   GFE 7+ 都如此；不要按版本回退 SHA-1）。AES-128-ECB、零填充、无 IV；哈希里串入的是**证书签名值字节**
   （ASN.1 BIT STRING 内容），不是公钥。
-- **存储**：目录 `<dir>/moonlight/`（`dir` 为应用沙箱 files dir）；pin 按 host 存 `server_<key>.der`。
+- **存储**：目录 `<dir>/moonlight/`（`dir` 为应用沙箱 files dir）；pin 按 **host** 存 `server_<key>.der`
+  （客户端身份 `client.crt` / `client.key.enc` 全局一份），host key 归一化（小写、去尾点）后定位文件。
+  主机身份（用于去重）不是地址，而是 serverinfo 的 **`uniqueid`**（即 Moonlight 的 `NvComputer::uuid`）——
+  同一台机器写成 IP / 主机名会得到不同 pin，所以上层按 `uniqueid` 去重；主机应答了**不同的 `uniqueid`**（重装 / 换机）
+  时旧 pin 判为失效并清除、重新配对；删除连接 / 改主机时也清掉该主机的 pin（见
+  [`moonlight-connection.md`](moonlight-connection.md) §4）。
 - **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
   分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
   手柄掩码是 `gcmap`。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist` 选一个（优先名为 Desktop 的）。

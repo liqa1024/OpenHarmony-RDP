@@ -147,12 +147,18 @@ function pemEncode(label: string, der: Uint8Array): string {
 
 /** Replaces the unsafe characters of a host key with '_' (as the native did). */
 function hostFileName(hostKey: string): string {
+  // Hostnames are case-insensitive and a trailing dot is the DNS root: fold both
+  // so the pin key matches the connection-uniqueness key (see RdpModels.mlHostId).
+  let key: string = hostKey.trim().toLowerCase();
+  if (key.endsWith('.')) {
+    key = key.substring(0, key.length - 1);
+  }
   let name: string = '';
-  for (let i = 0; i < hostKey.length; i++) {
-    const code: number = hostKey.charCodeAt(i);
+  for (let i = 0; i < key.length; i++) {
+    const code: number = key.charCodeAt(i);
     const safe: boolean = (code >= 0x61 && code <= 0x7a) || (code >= 0x41 && code <= 0x5a)
       || (code >= 0x30 && code <= 0x39) || code === 0x2e || code === 0x2d || code === 0x5f;
-    name += safe ? hostKey.charAt(i) : '_';
+    name += safe ? key.charAt(i) : '_';
   }
   if (name.length === 0) {
     name = 'default';

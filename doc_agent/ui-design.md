@@ -192,7 +192,7 @@ Column(page_bg, 100%×100%)
 | `ScaleParse.ets` | 手动分辨率 / 缩放文本解析：`parseSizeValue` / `parseScaleValue` / `parsedTextValue` / `isScalePreset`，及 `MAX_DESKTOP_SIZE` |
 | `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |
 | `PairingPrompt.ets` | `promptPairingPin(ui, pin, pairing)`（配对 PIN 弹窗：四位数字居中放大；`pairing` 握手结束后自动关闭，返回值仅在用户取消时为 `false`） |
-| `HostSearchPrompt.ets` | `showHostPicker(ui, hosts, title)`（主机选择弹窗：只渲染**已搜到**的 mDNS 主机列表，选中一行返回该主机，取消返回 `undefined`；搜索本身由页面跑，见下条约束） |
+| `HostSearchPrompt.ets` | `showHostPicker(ui, hosts, title, addedAddresses)`（主机选择弹窗：只渲染**已搜到**的 mDNS 主机列表，`addedAddresses` 里的（已保存）主机置灰不可选，选中一行返回该主机，取消返回 `undefined`；搜索本身由页面跑，见下条约束） |
 
 约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
 两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；

@@ -413,6 +413,11 @@ export class SavedConnection extends RdpConnectOptions {
   // desktop. The app picker connects to another app once without changing it.
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
+  // The host's own identity from `/serverinfo` (`uniqueid`). Unlike the address
+  // the user typed, this is what Moonlight uses to tell hosts apart (NvComputer
+  // uuid), so it is the key the connection-uniqueness check prefers. Filled on
+  // the first successful serverinfo; empty until then.
+  mlHostId: string = '';
   // Last known pairing state; the authoritative pairing is the client certificate
   // the native Moonlight client keeps, so this is only a hint for the UI. A
   // connection can be unpaired even when this is true (host reinstalled, config

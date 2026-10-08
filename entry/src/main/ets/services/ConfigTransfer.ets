@@ -68,6 +68,8 @@ class ExportedConnection {
   protocol: number = PROTOCOL_RDP;
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
+  // The host's own id (serverinfo `uniqueid`), the connection-uniqueness key.
+  mlHostId: string = '';
   mlPaired: boolean = false;
   mlResMode: number = ML_RES_FOLLOW_WINDOW;
   mlWidth: number = 0;
@@ -107,6 +109,7 @@ class ExportedConnection {
     item.protocol = conn.protocol;
     item.mlDefaultAppId = conn.mlDefaultAppId;
     item.mlDefaultAppName = conn.mlDefaultAppName;
+    item.mlHostId = conn.mlHostId;
     item.mlPaired = conn.mlPaired;
     item.mlResMode = conn.mlResMode;
     item.mlWidth = conn.mlWidth;
@@ -148,6 +151,7 @@ class ExportedConnection {
     item.protocol = ConfigTransfer.readNumber(rec, 'protocol', PROTOCOL_RDP);
     item.mlDefaultAppId = ConfigTransfer.readString(rec, 'mlDefaultAppId', '');
     item.mlDefaultAppName = ConfigTransfer.readString(rec, 'mlDefaultAppName', '');
+    item.mlHostId = ConfigTransfer.readString(rec, 'mlHostId', '');
     item.mlPaired = ConfigTransfer.readBoolean(rec, 'mlPaired', false);
     item.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', ML_RES_FOLLOW_WINDOW);
     item.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', 0);
@@ -190,6 +194,7 @@ class ExportedConnection {
     conn.protocol = this.protocol;
     conn.mlDefaultAppId = this.mlDefaultAppId;
     conn.mlDefaultAppName = this.mlDefaultAppName;
+    conn.mlHostId = this.mlHostId;
     conn.mlPaired = this.mlPaired;
     conn.mlResMode = this.mlResMode;
     conn.mlWidth = this.mlWidth;

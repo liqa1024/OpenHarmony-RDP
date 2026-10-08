@@ -17,6 +17,9 @@ const TAG: string = 'HmRdpHostPicker';
 
 class HostPickerParams {
   hosts: MdnsHost[] = [];
+  // Lower-cased addresses already saved as connections: shown greyed and not
+  // selectable (one host can only hold one pairing, see moonlight-connection.md).
+  addedAddresses: string[] = [];
   title: string = '选择主机';
   onPick: (host: MdnsHost) => void = (): void => {};
   onCancel: () => void = (): void => {};
@@ -26,13 +29,22 @@ class HostPickerParams {
 struct HostPickerContent {
   params: HostPickerParams = new HostPickerParams();
 
+  private isAdded(host: MdnsHost): boolean {
+    let address: string = host.address.trim().toLowerCase();
+    while (address.endsWith('.')) {
+      address = address.substring(0, address.length - 1);
+    }
+    return this.params.addedAddresses.indexOf(address) >= 0;
+  }
+
   @Builder
   hostRow(host: MdnsHost) {
     Row() {
       Column() {
         Text(host.name.length > 0 ? host.name : host.address)
           .fontSize(15)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.isAdded(host)
+            ? $r('app.color.text_tertiary') : $r('app.color.text_primary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
@@ -44,14 +56,27 @@ struct HostPickerContent {
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
+
+      if (this.isAdded(host)) {
+        Text('已添加')
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+          .backgroundColor($r('app.color.card_bg'))
+          .borderRadius(4)
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .margin({ left: 8 })
+      }
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(10)
     .backgroundColor($r('app.color.input_bg'))
-    .hoverEffect(HoverEffect.Highlight)
+    .opacity(this.isAdded(host) ? 0.5 : 1)
+    .hoverEffect(this.isAdded(host) ? HoverEffect.None : HoverEffect.Highlight)
     .onClick(() => {
-      this.params.onPick(host);
+      if (!this.isAdded(host)) {
+        this.params.onPick(host);
+      }
     })
   }
 
@@ -102,10 +127,11 @@ function hostPickerContent(params: HostPickerParams) {
 
 /**
  * Shows `hosts` for the user to pick; resolves the picked host or `undefined`
- * on cancel. `title` labels the dialog.
+ * on cancel. `title` labels the dialog; `addedAddresses` (lower-cased) are
+ * already-saved hosts, shown greyed and not selectable.
  */
-export async function showHostPicker(ui: UIContext, hosts: MdnsHost[],
-  title: string): Promise<MdnsHost | undefined> {
+export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: string,
+  addedAddresses: string[]): Promise<MdnsHost | undefined> {
   return new Promise<MdnsHost | undefined>(
     (resolve: (value: MdnsHost | undefined) => void) => {
       let settled: boolean = false;
@@ -113,6 +139,7 @@ export async function showHostPicker(ui: UIContext, hosts: MdnsHost[],
       const params: HostPickerParams = new HostPickerParams();
       params.hosts = hosts;
       params.title = title;
+      params.addedAddresses = addedAddresses;
       const contentNode: ComponentContent<HostPickerParams> =
         new ComponentContent(ui, wrapBuilder(hostPickerContent), params);
 

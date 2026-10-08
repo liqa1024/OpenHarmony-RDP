@@ -9,6 +9,7 @@
  * See MOONLIGHT_PLAN.md / doc_agent/moonlight-native.md §4.
  */
 import { moonlightVideoFormats } from 'libhmrdp.so';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   ML_AUDIO_51, ML_AUDIO_71, ML_AUDIO_STEREO, MoonlightProfile, MoonlightStreamConfig
@@ -36,6 +37,8 @@ export class MoonlightConnectResult {
   config: MoonlightStreamConfig = new MoonlightStreamConfig();
   // The host's HTTPS control port, kept for the session's /cancel.
   httpsPort: number = 47984;
+  // The host's own id (serverinfo `uniqueid`).
+  hostId: string = '';
 }
 
 /** Result of probing a host for the app-management UI. */
@@ -46,21 +49,41 @@ export class MoonlightAppsResult {
   // App currently running on the host (0 = none), from /serverinfo.
   currentGame: number = 0;
   httpsPort: number = 47984;
+  // The host's own id (serverinfo `uniqueid`), the connection-uniqueness key.
+  hostId: string = '';
 }
 
 /** Result of a pairing-only attempt (the editor's 配对 action). */
 export class MoonlightPairResult {
   ok: boolean = false;
   error: string = '';
+  // The host's own id (serverinfo `uniqueid`); stored on the connection.
+  hostId: string = '';
+}
+
+/**
+ * Cross-connection host-identity policy for a pre-flight. The host's identity
+ * (`uniqueid`) is only known once serverinfo answers, so the uniqueness check and
+ * the stale-pairing invalidation both happen here, on the connection that already
+ * carries its own id.
+ */
+export class MoonlightHostPolicy {
+  // Other connections' host ids: a host matching one of these is a duplicate.
+  knownIds: string[] = [];
+  // This connection's stored host id; a different server id means the stored
+  // pairing (and pin) belongs to a different install and is stale.
+  expectedId: string = '';
 }
 
 export class MoonlightConnector {
   /**
    * Read-only probe for the app-management UI: ensure paired (PIN popup when
    * needed), then read the host's app list and the running app. Does not launch.
+   * `expectedHostId` is the connection's stored id, so a host that comes back as
+   * a different install has its stale pin dropped and is paired afresh.
    */
   static async probeApps(filesDir: string, host: string, port: number,
-    pinProvider: MoonlightPinProvider): Promise<MoonlightAppsResult> {
+    pinProvider: MoonlightPinProvider, expectedHostId: string): Promise<MoonlightAppsResult> {
     const result: MoonlightAppsResult = new MoonlightAppsResult();
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
     if (!credential.ok) {
@@ -75,6 +98,8 @@ export class MoonlightConnector {
     const info: NvServerInfo = serverInfo.info;
     result.httpsPort = info.httpsPort;
     result.currentGame = info.currentGame;
+    result.hostId = info.uniqueId;
+    MoonlightConnector.invalidateStalePin(filesDir, host, expectedHostId, info.uniqueId);
     const paired: boolean = info.paired
       || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
     if (!paired) {
@@ -108,7 +133,7 @@ export class MoonlightConnector {
    * 配对 action; connecting a session is the list page's job.
    */
   static async pairOnly(filesDir: string, host: string, port: number,
-    pinProvider: MoonlightPinProvider): Promise<MoonlightPairResult> {
+    pinProvider: MoonlightPinProvider, policy: MoonlightHostPolicy): Promise<MoonlightPairResult> {
     const result: MoonlightPairResult = new MoonlightPairResult();
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
     if (!credential.ok) {
@@ -121,6 +146,13 @@ export class MoonlightConnector {
       return result;
     }
     const info: NvServerInfo = serverInfo.info;
+    result.hostId = info.uniqueId;
+    const policyError: string =
+      MoonlightConnector.applyHostPolicy(filesDir, host, info.uniqueId, policy);
+    if (policyError.length > 0) {
+      result.error = policyError;
+      return result;
+    }
     const paired: boolean = info.paired
       || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
     if (!paired) {
@@ -145,13 +177,61 @@ export class MoonlightConnector {
   }
 
   /**
+   * Forgets a host pairing. The local pinned certificate is dropped right away
+   * (so the next connect must pair again - that is the isolation the connection
+   * delete relies on) and the host is asked to drop this client best-effort; an
+   * offline host must not block the local cleanup.
+   */
+  static forgetHost(filesDir: string, host: string, port: number): void {
+    const target: string = host.trim();
+    if (target.length === 0) {
+      return;
+    }
+    MoonlightIdentity.clearPinnedServerCert(filesDir, target);
+    MoonlightClient.unpair(filesDir, target, port)
+      .catch((error: BusinessError): void => {
+        hilog.warn(0xD001, 'HmRdpMoonlight', 'unpair %{public}s failed: %{public}s',
+          target, JSON.stringify(error));
+      });
+  }
+
+  /**
+   * Applies the host-identity policy once serverinfo has named the host. Returns
+   * a user-facing error when the host duplicates another connection, and drops a
+   * stale pin when the host answered as a different install than the one this
+   * connection was paired with; `''` means the pre-flight may continue.
+   */
+  private static applyHostPolicy(filesDir: string, host: string, hostId: string,
+    policy: MoonlightHostPolicy): string {
+    if (hostId.length > 0 && policy.knownIds.indexOf(hostId) >= 0) {
+      return '该主机已存在另一条 Moonlight 连接，请删除重复的连接后重试';
+    }
+    MoonlightConnector.invalidateStalePin(filesDir, host, policy.expectedId, hostId);
+    return '';
+  }
+
+  /**
+   * Drops the pinned certificate when the host answered as a different install
+   * than the one the connection was paired with: the old pin would otherwise
+   * make the next mTLS request fail instead of re-pairing.
+   */
+  private static invalidateStalePin(filesDir: string, host: string, expectedId: string,
+    hostId: string): void {
+    if (expectedId.length > 0 && hostId.length > 0 && expectedId !== hostId) {
+      hilog.info(0xD001, 'HmRdpMoonlight', 'host %{public}s identity changed; dropping stale pin',
+        host);
+      MoonlightIdentity.clearPinnedServerCert(filesDir, host);
+    }
+  }
+
+  /**
    * The whole pre-flight for one connection. `width`/`height` are the agreed
    * stream size (the caller resolves follow-window / follow-screen to real
    * pixels). Returns the config the session backend feeds to LiStartConnection.
    */
   static async prepare(filesDir: string, host: string, port: number, stream: MoonlightProfile,
     appId: number, width: number, height: number,
-    pinProvider: MoonlightPinProvider): Promise<MoonlightConnectResult> {
+    pinProvider: MoonlightPinProvider, policy: MoonlightHostPolicy): Promise<MoonlightConnectResult> {
     const result: MoonlightConnectResult = new MoonlightConnectResult();
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
     if (!credential.ok) {
@@ -165,6 +245,14 @@ export class MoonlightConnector {
       return result;
     }
     const info: NvServerInfo = serverInfo.info;
+    result.hostId = info.uniqueId;
+    const policyError: string =
+      MoonlightConnector.applyHostPolicy(filesDir, host, info.uniqueId, policy);
+    if (policyError.length > 0) {
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'host policy rejected %{public}s', host);
+      result.error = policyError;
+      return result;
+    }
 
     // Sunshine's plain-HTTP serverinfo always reports PairStatus=0, so a stored
     // pin (from an earlier successful pairing) is what tells us we are paired

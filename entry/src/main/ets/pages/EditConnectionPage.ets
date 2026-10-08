@@ -17,7 +17,7 @@ import { CredentialStore } from '../services/CredentialStore';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { MoonlightConnector, MoonlightPairResult } from '../services/MoonlightConnector';
+import { MoonlightConnector, MoonlightHostPolicy, MoonlightPairResult } from '../services/MoonlightConnector';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
@@ -116,6 +116,12 @@ struct EditConnectionPage {
   private discovery: MdnsDiscovery = new MdnsDiscovery();
   private searchTimer: number = -1;
   private discovered: MdnsHost[] = [];
+  // The host of the Moonlight connection being edited, so a changed host can be
+  // unpaired (the pairing is per host, not per connection).
+  private originalMoonlightHost: string = '';
+  // Its stored host identity (`mlHostId`): carried over on save, dropped when the
+  // host changes (the id, pairing and default app all belonged to the old host).
+  private originalMoonlightHostId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
 
@@ -178,6 +184,8 @@ struct EditConnectionPage {
       this.protocol = conn.protocol;
       this.name = conn.name;
       this.host = conn.host;
+      this.originalMoonlightHost = conn.host;
+      this.originalMoonlightHostId = conn.mlHostId;
       this.port = conn.port.toString();
       this.username = conn.username;
       this.domain = conn.domain;
@@ -475,7 +483,21 @@ struct EditConnectionPage {
       this.errorMessage = '请输入主机名或 IP 地址';
       return;
     }
+    // Address pre-screen (cheap, and consistent with the picker's "already
+    // added" marking): never start a pair/connect for an address already in use.
+    // The authoritative check is the host's own id, learned in the pre-flight
+    // (MoonlightHostPolicy) - it catches the same host under a different address.
+    if (this.conflictingMoonlightHost(target) !== undefined) {
+      this.errorMessage = '该主机地址已添加，同一主机只能有一个 Moonlight 连接';
+      return;
+    }
     this.errorMessage = '';
+    // The host's identity (`mlHostId`) is only learned from serverinfo, so a
+    // save-only edit carries over the id it already had; a changed host drops it
+    // (the id, pairing and default app all belonged to the old host). Duplicate
+    // detection happens where the id is learned - at pair / connect time.
+    const hostChanged: boolean = this.editing
+      && this.normalizeHost(target) !== this.normalizeHost(this.originalMoonlightHost);
     const id: string = this.connectionId.length > 0
       ? this.connectionId : util.generateRandomUUID(true);
     const conn: SavedConnection = new SavedConnection();
@@ -484,9 +506,10 @@ struct EditConnectionPage {
     conn.host = target;
     conn.port = this.parseMoonlightPort();
     conn.name = this.name.trim();
-    conn.mlPaired = this.mlPaired;
-    conn.mlDefaultAppId = this.mlDefaultAppId;
-    conn.mlDefaultAppName = this.mlDefaultAppName;
+    conn.mlHostId = hostChanged ? '' : this.originalMoonlightHostId;
+    conn.mlPaired = hostChanged ? false : this.mlPaired;
+    conn.mlDefaultAppId = hostChanged ? '' : this.mlDefaultAppId;
+    conn.mlDefaultAppName = hostChanged ? '' : this.mlDefaultAppName;
     conn.mlResMode = this.mlResMode;
     conn.mlWidth = this.mlResMode === ML_RES_FIXED
       ? this.parseSize(this.mlWidthText, 1920) : 0;
@@ -505,6 +528,7 @@ struct EditConnectionPage {
       if (!this.persist(conn)) {
         return;
       }
+      this.forgetReplacedHost(target);
       this.returnToList();
       return;
     }
@@ -527,7 +551,8 @@ struct EditConnectionPage {
     this.pairing = true;
     MoonlightConnector.pairOnly((context as common.UIAbilityContext).filesDir, conn.host, conn.port,
       (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
-        promptPairingPin(this.getUIContext(), pin, pairing))
+        promptPairingPin(this.getUIContext(), pin, pairing),
+      this.moonlightHostPolicy())
       .then((result: MoonlightPairResult) => {
         this.pairing = false;
         if (!result.ok) {
@@ -535,8 +560,10 @@ struct EditConnectionPage {
           return;
         }
         conn.mlPaired = true;
+        conn.mlHostId = result.hostId;
         this.mlPaired = true;
         if (this.persist(conn)) {
+          this.forgetReplacedHost(conn.host.trim());
           showToast(this.getUIContext(), '配对成功');
           this.returnToList();
         }
@@ -586,7 +613,7 @@ struct EditConnectionPage {
       showToast(this.getUIContext(), '未发现主机，请确认主机已开启且与本机在同一局域网');
       return;
     }
-    showHostPicker(this.getUIContext(), hosts, '选择主机')
+    showHostPicker(this.getUIContext(), hosts, '选择主机', this.addedMoonlightAddresses())
       .then((host: MdnsHost | undefined) => {
         if (host === undefined) {
           return;
@@ -602,6 +629,84 @@ struct EditConnectionPage {
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'host picker failed: %{public}s', JSON.stringify(error));
       });
+  }
+
+  /** Host identity for string comparison: case- and trailing-dot-insensitive. */
+  private normalizeHost(host: string): string {
+    let value: string = host.trim().toLowerCase();
+    while (value.endsWith('.')) {
+      value = value.substring(0, value.length - 1);
+    }
+    return value;
+  }
+
+  /** This connection's stored id plus the other connections' ids, for pairing. */
+  private moonlightHostPolicy(): MoonlightHostPolicy {
+    const policy: MoonlightHostPolicy = new MoonlightHostPolicy();
+    policy.expectedId = this.originalMoonlightHostId;
+    const all: SavedConnection[] = ConnectionStore.list();
+    for (let i = 0; i < all.length; i++) {
+      const conn: SavedConnection = all[i];
+      if (conn.isMoonlight() && conn.id !== this.connectionId && conn.mlHostId.length > 0) {
+        policy.knownIds.push(conn.mlHostId);
+      }
+    }
+    return policy;
+  }
+
+  /**
+   * Address pre-screen: a saved Moonlight connection whose normalized address
+   * matches (excluding self), or undefined. Cheap, and consistent with the
+   * picker's "already added" marking; the authoritative check is the host's own
+   * id (`mlHostId`), applied once serverinfo names it.
+   */
+  private conflictingMoonlightHost(host: string): string | undefined {
+    const target: string = this.normalizeHost(host);
+    const all: SavedConnection[] = ConnectionStore.list();
+    for (let i = 0; i < all.length; i++) {
+      const conn: SavedConnection = all[i];
+      if (!conn.isMoonlight() || conn.id === this.connectionId) {
+        continue;
+      }
+      if (this.normalizeHost(conn.host) === target) {
+        return conn.label();
+      }
+    }
+    return undefined;
+  }
+
+  /** Normalized hosts already saved as Moonlight connections (picker greys them). */
+  private addedMoonlightAddresses(): string[] {
+    const result: string[] = [];
+    const all: SavedConnection[] = ConnectionStore.list();
+    for (let i = 0; i < all.length; i++) {
+      const conn: SavedConnection = all[i];
+      if (conn.isMoonlight()) {
+        result.push(this.normalizeHost(conn.host));
+      }
+    }
+    return result;
+  }
+
+  /** Drops the pairing for `host` (local pin now, host best-effort). */
+  private forgetPairing(host: string): void {
+    const context = this.getUIContext().getHostContext();
+    if (context === undefined || host.trim().length === 0) {
+      return;
+    }
+    MoonlightConnector.forgetHost((context as common.UIAbilityContext).filesDir,
+      host, this.parseMoonlightPort());
+  }
+
+  /** When the edited connection's host changed, unpair the old host. */
+  private forgetReplacedHost(newHost: string): void {
+    const old: string = this.originalMoonlightHost.trim();
+    if (old.length === 0 || this.normalizeHost(old) === this.normalizeHost(newHost)) {
+      return;
+    }
+    this.forgetPairing(old);
+    this.originalMoonlightHost = newHost.trim();
+    this.originalMoonlightHostId = '';
   }
 
   private persist(conn: SavedConnection): boolean {
@@ -674,6 +779,11 @@ struct EditConnectionPage {
       CredentialStore.removePassword(this.connectionId).catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'remove password failed: %{public}s', JSON.stringify(error));
       });
+      if (this.isMoonlight()) {
+        // Drop the host pairing with the connection: the pairing is per host, so
+        // leaving it behind would let a re-add skip the PIN round.
+        this.forgetPairing(this.host);
+      }
     }
     this.returnToList();
   }

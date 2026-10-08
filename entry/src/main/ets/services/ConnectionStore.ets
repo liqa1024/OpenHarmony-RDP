@@ -205,6 +205,9 @@ export class ConnectionStore {
     parts.push(conn.mlAudioConfig.toString());
     parts.push(conn.mlGamepad ? '1' : '0');
     parts.push(conn.useGlobalStream ? '1' : '0');
+    // The host's own id (serverinfo `uniqueid`); appended, so older records just
+    // stop before it and deserialize with an empty id.
+    parts.push(ConnectionStore.encode(conn.mlHostId));
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -260,6 +263,7 @@ export class ConnectionStore {
       ? ConnectionStore.parseNumber(parts[39], ML_AUDIO_STEREO) : ML_AUDIO_STEREO;
     conn.mlGamepad = parts.length > 40 ? parts[40] === '1' : true;
     conn.useGlobalStream = parts.length > 41 ? parts[41] === '1' : true;
+    conn.mlHostId = parts.length > 42 ? ConnectionStore.decode(parts[42]) : '';
     return conn;
   }
 

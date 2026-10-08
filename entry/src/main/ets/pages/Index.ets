@@ -11,6 +11,7 @@ import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
+import { MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
@@ -204,6 +205,15 @@ struct Index {
 
   private remove(conn: SavedConnection): void {
     ConnectionStore.remove(conn.id);
+    if (conn.isMoonlight()) {
+      // Drop the host pairing with the connection, or a later re-add would skip
+      // the PIN round (the pairing is per host, not per connection).
+      const hostContext = this.getUIContext().getHostContext();
+      if (hostContext !== undefined) {
+        MoonlightConnector.forgetHost((hostContext as common.UIAbilityContext).filesDir,
+          conn.host, conn.port);
+      }
+    }
     CredentialStore.removePassword(conn.id)
       .then(() => {
         this.refresh();
