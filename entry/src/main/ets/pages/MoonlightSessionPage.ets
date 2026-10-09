@@ -7,9 +7,10 @@ import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
-import { MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
+import { ML_HOST_FEATURE_TOUCH, MoonlightInputSink,
+  MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
+import { InputAction, InputButton, SessionInput } from '../services/SessionInput';
 import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
-import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
@@ -65,6 +66,8 @@ struct MoonlightSessionPage {
   @LocalStorageLink('sessionKey') sessionKey: string = '';
   private controller: MlSurfaceController = new MlSurfaceController();
   private backend: MoonlightSessionBackend | undefined = undefined;
+  private sink: MoonlightInputSink | undefined = undefined;
+  private input: SessionInput | undefined = undefined;
   private connectionId: string = '';
   private started: boolean = false;
   private closing: boolean = false;
@@ -79,7 +82,6 @@ struct MoonlightSessionPage {
   // the request (the 1080p default only covers a request that predates it).
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
-  private modifiers: number = 0;
   // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
   // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
@@ -151,6 +153,13 @@ struct MoonlightSessionPage {
       this.backend.setCursorListener((update: RemoteCursorUpdate): void => {
         this.cursor.applyUpdate(update);
       });
+      const sink: MoonlightInputSink = new MoonlightInputSink(this.backend);
+      sink.setReferenceSize(this.streamWidth, this.streamHeight);
+      this.sink = sink;
+      const input: SessionInput = new SessionInput(sink);
+      input.setWinKeySubstitute(settings.mlWinKeySubstitute);
+      input.setPointerSpace(this.streamWidth, this.streamHeight);
+      this.input = input;
     }
     this.loadSessionWindow();
     this.controller.setCallbacks(
@@ -183,6 +192,7 @@ struct MoonlightSessionPage {
   aboutToDisappear(): void {
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.setLocalCursorHidden(false);
+    this.input?.releaseAll();
     this.backend?.clearCursorListener();
     this.cursor.setWindow(undefined);
     this.cursor.reset();
@@ -220,6 +230,11 @@ struct MoonlightSessionPage {
     // Not streaming: the process-wide system cursor must come back.
     if (state !== ConnectionState.Connected) {
       this.setLocalCursorHidden(false);
+    }
+    if (state === ConnectionState.Connected) {
+      // Touchscreen goes out as native host touch only when the host advertises it.
+      const features: number = this.backend !== undefined ? this.backend.hostFeatureFlags() : 0;
+      this.input?.setTouchEnabled((features & ML_HOST_FEATURE_TOUCH) !== 0);
     }
     this.updateConnectOverlay();
     this.refreshToolbarAutoHide();
@@ -296,24 +311,54 @@ struct MoonlightSessionPage {
     this.cursor.setLocalHidden(shouldHide);
   }
 
+  private mapPoint(x: number, y: number): number[] {
+    if (this.componentWidth <= 0 || this.componentHeight <= 0) {
+      return [0, 0];
+    }
+    const remoteX: number = Math.round(x / this.componentWidth * this.streamWidth);
+    const remoteY: number = Math.round(y / this.componentHeight * this.streamHeight);
+    return [remoteX, remoteY];
+  }
+
   private handleMouse(event: MouseEvent): void {
+    const input: SessionInput | undefined = this.input;
+    // A touchscreen can also emit compatibility mouse events; when native touch is on, those are owned by handleTouch.
+    if (input !== undefined && input.isTouchEnabled() && event.source === SourceType.TouchScreen) {
+      return;
+    }
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     this.setLocalCursorHidden(true);
-    const backend: MoonlightSessionBackend | undefined = this.backend;
-    if (backend === undefined) {
+    if (input === undefined) {
       return;
     }
-    if (this.componentWidth > 0 && this.componentHeight > 0) {
-      const x: number = Math.round(event.x / this.componentWidth * this.streamWidth);
-      const y: number = Math.round(event.y / this.componentHeight * this.streamHeight);
-      backend.mousePosition(x, y, this.streamWidth, this.streamHeight);
-    }
+    const point: number[] = this.mapPoint(event.x, event.y);
     if (event.action === MouseAction.Press || event.action === MouseAction.Release) {
       const action: number = event.action === MouseAction.Press
-        ? MlVirtualKey.ACTION_PRESS : MlVirtualKey.ACTION_RELEASE;
-      backend.mouseButton(action, MlVirtualKey.buttonFor(event.button));
+        ? InputAction.PRESS : InputAction.RELEASE;
+      input.handleButton(action, MoonlightSessionPage.buttonFor(event.button), point[0], point[1]);
+      return;
     }
+    if (event.action === MouseAction.Move) {
+      input.handleMove(point[0], point[1]);
+    }
+  }
+
+  private handleTouch(event: TouchEvent): void {
+    this.input?.handleTouch(event, (x: number, y: number): number[] => this.mapPoint(x, y));
+  }
+
+  private static buttonFor(button: MouseButton): number {
+    if (button === MouseButton.Left) {
+      return InputButton.LEFT;
+    }
+    if (button === MouseButton.Middle) {
+      return InputButton.MIDDLE;
+    }
+    if (button === MouseButton.Right) {
+      return InputButton.RIGHT;
+    }
+    return 0;
   }
 
   private handleAxis(event: AxisEvent): void {
@@ -324,20 +369,7 @@ struct MoonlightSessionPage {
   }
 
   private handleKey(event: KeyEvent): void {
-    const backend: MoonlightSessionBackend | undefined = this.backend;
-    if (backend === undefined) {
-      return;
-    }
-    const vk: number = MlVirtualKey.map(event.keyCode);
-    if (vk < 0) {
-      return;
-    }
-    const down: boolean = event.type === KeyType.Down;
-    const modifier: number = MlVirtualKey.modifierFor(vk);
-    if (modifier !== 0) {
-      this.modifiers = down ? (this.modifiers | modifier) : (this.modifiers & ~modifier);
-    }
-    backend.keyVirtual(vk, down, this.modifiers);
+    this.input?.handleKey(event);
   }
 
   private retry(): void {
@@ -481,6 +513,9 @@ struct MoonlightSessionPage {
           .onMouse((event: MouseEvent) => {
             this.handleMouse(event);
           })
+          .onTouch((event: TouchEvent) => {
+            this.handleTouch(event);
+          })
           .onHover((isHover: boolean) => {
             this.setLocalCursorHidden(isHover);
             if (isHover) {
@@ -494,6 +529,10 @@ struct MoonlightSessionPage {
           })
           .onKeyEvent((event: KeyEvent) => {
             this.handleKey(event);
+          })
+          .onBlur(() => {
+            // Keys/buttons held when focus leaves would never get their Up event.
+            this.input?.releaseAll();
           })
           .onAreaChange((oldArea: Area, newArea: Area) => {
             this.componentWidth = lengthToNumber(newArea.width);

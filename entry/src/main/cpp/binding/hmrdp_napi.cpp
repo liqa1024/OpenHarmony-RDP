@@ -1655,6 +1655,64 @@ napi_value MoonlightSessionScroll(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
+napi_value MoonlightSessionTouch(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t eventType = 0;
+  int32_t pointerId = 0;
+  double x = 0;
+  double y = 0;
+  double pressure = 0;
+  napi_get_value_int32(env, args[0], &eventType);
+  napi_get_value_int32(env, args[1], &pointerId);
+  napi_get_value_double(env, args[2], &x);
+  napi_get_value_double(env, args[3], &y);
+  napi_get_value_double(env, args[4], &pressure);
+  hmrdp::MoonlightSessionTouch(eventType, pointerId, static_cast<float>(x),
+                               static_cast<float>(y), static_cast<float>(pressure));
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionHighResScroll(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t amount = 0;
+  napi_get_value_int32(env, args[0], &amount);
+  hmrdp::MoonlightSessionHighResScroll(amount);
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionHighResHScroll(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t amount = 0;
+  napi_get_value_int32(env, args[0], &amount);
+  hmrdp::MoonlightSessionHighResHScroll(amount);
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionText(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  size_t length = 0;
+  if (napi_get_value_string_utf8(env, args[0], nullptr, 0, &length) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  std::string text;
+  text.resize(length + 1);
+  napi_get_value_string_utf8(env, args[0], text.data(), length + 1, &length);
+  hmrdp::MoonlightSessionText(text.c_str(), static_cast<int>(length));
+  return CreateUndefined(env);
+}
+
+napi_value MoonlightSessionHostFeatures(napi_env env, napi_callback_info) {
+  return CreateInt(env, hmrdp::MoonlightSessionHostFeatureFlags());
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1789,6 +1847,16 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr},
       {"moonlightScroll", nullptr, MoonlightSessionScroll, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"moonlightTouch", nullptr, MoonlightSessionTouch, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightHighResScroll", nullptr, MoonlightSessionHighResScroll, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightHighResHScroll", nullptr, MoonlightSessionHighResHScroll, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightText", nullptr, MoonlightSessionText, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightHostFeatures", nullptr, MoonlightSessionHostFeatures, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
   };
 
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

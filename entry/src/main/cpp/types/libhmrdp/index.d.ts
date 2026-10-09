@@ -525,3 +525,19 @@ export const moonlightKey: (keyCode: number, action: number, modifiers: number) 
 
 /** Input: wheel clicks (LiSendScrollEvent). */
 export const moonlightScroll: (clicks: number) => void;
+
+/** Input: native touchscreen event (LI_TOUCH_EVENT_*), x/y normalized 0..1, pressure 0..1. */
+export const moonlightTouch: (eventType: number, pointerId: number, x: number, y: number,
+  pressure: number) => void;
+
+/** Input: high-resolution vertical wheel in WHEEL_DELTA (120) units. */
+export const moonlightHighResScroll: (amount: number) => void;
+
+/** Input: high-resolution horizontal wheel in WHEEL_DELTA (120) units. */
+export const moonlightHighResHScroll: (amount: number) => void;
+
+/** Input: composed text sent as one UTF-8 string (LiSendUtf8TextEvent). */
+export const moonlightText: (text: string) => void;
+
+/** LI_FF_* host feature bits (0 before a session is established). */
+export const moonlightHostFeatures: () => number;

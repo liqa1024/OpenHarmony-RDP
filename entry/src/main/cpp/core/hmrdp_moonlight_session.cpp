@@ -273,4 +273,33 @@ void MoonlightSessionScroll(int clicks) {
   }
 }
 
+void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure) {
+  if (g_connected) {
+    LiSendTouchEvent(static_cast<uint8_t>(eventType), static_cast<uint32_t>(pointerId),
+                     x, y, pressure, 0.0f, 0.0f, LI_ROT_UNKNOWN);
+  }
+}
+
+void MoonlightSessionHighResScroll(int amount) {
+  if (g_connected) {
+    LiSendHighResScrollEvent(static_cast<short>(amount));
+  }
+}
+
+void MoonlightSessionHighResHScroll(int amount) {
+  if (g_connected) {
+    LiSendHighResHScrollEvent(static_cast<short>(amount));
+  }
+}
+
+void MoonlightSessionText(const char* text, int length) {
+  if (g_connected && text != nullptr && length > 0) {
+    LiSendUtf8TextEvent(text, static_cast<unsigned int>(length));
+  }
+}
+
+int MoonlightSessionHostFeatureFlags() {
+  return g_connected ? static_cast<int>(LiGetHostFeatureFlags()) : 0;
+}
+
 }  // namespace hmrdp

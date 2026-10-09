@@ -91,6 +91,16 @@ void MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referen
 void MoonlightSessionMouseButton(int action, int button);
 void MoonlightSessionKey(int keyCode, int action, int modifiers);
 void MoonlightSessionScroll(int clicks);
+// Native touchscreen: x/y are normalized 0..1 over the stream area, pressure 0..1
+// (0 = unknown). eventType is a LI_TOUCH_EVENT_* constant.
+void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure);
+// High-resolution wheel, in WHEEL_DELTA (120) units; vertical and horizontal.
+void MoonlightSessionHighResScroll(int amount);
+void MoonlightSessionHighResHScroll(int amount);
+// Composed text (IME / non-US layout) sent as one UTF-8 string.
+void MoonlightSessionText(const char* text, int length);
+// LI_FF_* bits the host advertised; 0 before a session is established.
+int MoonlightSessionHostFeatureFlags();
 
 }  // namespace hmrdp
 
