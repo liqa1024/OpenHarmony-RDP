@@ -634,7 +634,7 @@ struct SessionPage {
     }
     this.releaseAllInputs();
     this.cursor.setWindow(undefined);
-    this.cursor.restoreVisibility();
+    this.cursor.reset();
     // The manager owns the session: this window never stops it (that would race
     // the window-close teardown). SessionAbility.release() is the one place.
     this.options.password = '';

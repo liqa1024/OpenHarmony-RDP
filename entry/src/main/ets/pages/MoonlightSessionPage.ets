@@ -10,7 +10,6 @@
  */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { pointer } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { PendingConnection, SessionRequests } from '../model/RdpModels';
@@ -25,7 +24,7 @@ import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
-import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, ML_CURSOR_OFF,
+import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
   SettingsStore } from '../services/SettingsStore';
 import { lengthToNumber } from '../utils/UiUtil';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -103,7 +102,6 @@ struct MoonlightSessionPage {
   //  - HIDE_HOST (foundation-sunshine): the host forwards the pointer and the
   //    shape below is installed as the system cursor.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
-  private localCursorHidden: boolean = false;
   // Host cursor installed as the system cursor (HIDE_HOST). All policy lives
   // in the shared installer (services/RemoteCursor.ets); this page only gates
   // it with the mode and forwards updates.
@@ -224,6 +222,7 @@ struct MoonlightSessionPage {
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.setLocalCursorHidden(false);
     this.backend?.clearCursorListener();
+    this.cursor.setWindow(undefined);
     this.cursor.reset();
     this.toolbarAutoHideArmed = false;
     this.toolbarAutoHide.dispose();
@@ -340,24 +339,14 @@ struct MoonlightSessionPage {
   /**
    * HIDE_SYSTEM only: hides the HarmonyOS system cursor while the pointer is
    * over the picture and the stream is up, so the host cursor baked into the
-   * video is the only one. setPointerVisible is process-wide, so it is always
-   * restored off the picture, on disconnect and on teardown. The other modes
-   * (OFF / HIDE_HOST) never hide the system cursor here.
+   * video is the only one. The installer owns the process-global switch and
+   * hands it back off the picture, on disconnect, on losing focus and on
+   * teardown. The other modes (OFF / HIDE_HOST) never hide it here.
    */
   private setLocalCursorHidden(hidden: boolean): void {
     const shouldHide: boolean = hidden && this.cursorMode === ML_CURSOR_HIDE_SYSTEM
       && this.state === ConnectionState.Connected;
-    if (this.localCursorHidden === shouldHide) {
-      return;
-    }
-    try {
-      pointer.setPointerVisibleSync(!shouldHide);
-      this.localCursorHidden = shouldHide;
-    } catch (error) {
-      // A device without a mouse throws here: stop trying and leave it alone.
-      this.cursorMode = ML_CURSOR_OFF;
-      hilog.warn(DOMAIN, TAG, 'set pointer visibility failed: %{public}s', JSON.stringify(error));
-    }
+    this.cursor.setLocalHidden(shouldHide);
   }
 
   private handleMouse(event: MouseEvent): void {
@@ -453,6 +442,7 @@ struct MoonlightSessionPage {
     // Restore before the window goes away (setPointerVisible is process-wide).
     this.setLocalCursorHidden(false);
     this.backend?.clearCursorListener();
+    this.cursor.setWindow(undefined);
     this.cursor.reset();
     if (this.closing) {
       return;
