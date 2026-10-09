@@ -92,16 +92,18 @@
   - **卡片本身也有同一套 hover / press 缩放**，但**只在卡片可点时**（未运行的应用卡片）：正在运行的应用卡片
     不响应点击，因此也不给 hover / press 动效（判定与「不给悬浮提示」同一口径）。
   - **"主机在跑哪个应用"由 `services/MoonlightHostState` 单一权威持有**（仿 `SessionManager` 的静态监听器：
-    `targetOf` / `httpsPortOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的「运行中」徽标都从
-    它派生，两者任何时刻都一致；**会话态本身仍在 `SessionManager`**，不混进来。
-    - **乐观写入**（本客户端动作、结果已知就立即回写）：连接 / 启动 → `markLaunched(id, appId)`
-      （`MoonlightLauncher.connect` 对具体应用先写，后端 `prepare` 再用主机实际启动的 `effectiveAppId` 修正；
-      默认应用由此补上）；`/cancel` 成功 → `markStopped(id)`（会话窗口「关闭应用」、应用页两个关闭动作、
-      列表页「终止」三处共用，立即清 0，两界面同时一致，不会等探测）。
-    - **主机探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），
-      列表页与应用页各自在 `onPageShow` 触发；应用页的完整探测 `probeApps` 也回填 `setProbed`。
-      乐观值随后被主机的实际值覆盖；**探测失败保留上次值**，网络抖动不把状态翻回去。
-    - 客户端 `/cancel` 后另有一次短延迟复探（`refreshAfter`）兜底，处理客户端判断与主机实际不一致的情况。
+    `targetOf` / `httpsPortOf` / `reachableOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的
+    「运行中」徽标都从它派生，两者任何时刻都一致；**会话态本身仍在 `SessionManager`**，不混进来。
+    - **写入**：`markLaunched(id, appId)` 只由后端 `prepare` 成功后调用（用主机实际启动的 `effectiveAppId`，默认应用
+      由此补上）——**不在连接发起时乐观写**，否则一次失败的连接会留下幻影「运行中」；`/cancel` 成功 → `markStopped(id)`
+      （会话窗口「关闭应用」、应用页两个关闭动作、列表页「终止」三处共用）。
+    - **可达性（在线 / 离线）**：`serverinfo` 探测失败即标记不可达，**不可达时 `targetOf` 一律报 0**（`currentGame`
+      保留、主机回来即恢复），故恢复 / 终止与「运行中」徽标在离线时都不出现；主机侧动作（终止 / 关闭应用）前先查
+      `reachableOf`，不可达只提示「主机离线」。同 moonlight-android 的 `ComputerDetails.State` + `runningGameId`
+      （值保留、只在 ONLINE 时用）。
+    - **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页与应用页各自
+      在 `onPageShow` 触发；应用页的 `probeApps` 也回填 `setProbed`。客户端 `/cancel` 后另有短延迟复探
+      （`refreshAfter`）兜底。
 - 行右键菜单对 Moonlight 追加「设为默认应用」；**默认应用只在列表/应用界面设置，编辑页无该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
 
@@ -239,6 +241,9 @@
      `utils/ConnectAction.ets`（协议中立），连接行与卡片共用。主页主按钮对 Moonlight 统一为「终止」
      （关闭会话 + 关闭主机应用 = `/cancel` + 断开），**按钮上不出现「恢复」**（恢复在右键菜单）；
      应用页保留「恢复」按钮，其「断开连接」用专用断链图标（`ic_disconnect`）。
+   - **「有应用在跑」只看 `hostTargetId`**：`hostTargetId ≠ 0` 即「恢复」（默认应用不同才「切换」），**不要求本连接
+     配了默认应用**（`targetId` 只分恢复 / 切换，可为 0）。两界面必须同判——连接行传的是本连接默认应用（可能 0），
+     应用页传的是具体 app id（恒 > 0），拿 `targetId > 0` 当门槛就会让连接行把运行中误判成「未运行」。
    - **RDP 不存在恢复态**：会话关闭即完全断开，`hostTargetId` 恒为 0，主按钮保持「断开连接」。
    - 任何触发"打开 / 恢复某应用"的 UI（含任何新增的显式入口）都必须经这个预检；
      **不要在预检之外直接打 `/launch` / `/resume`**。

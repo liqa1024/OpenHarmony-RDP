@@ -228,7 +228,6 @@ struct MoonlightAppsPage {
     this.error = '';
     this.pendingAppId = app.id;
     this.pendingResume = this.isRunning(app);
-    MoonlightHostState.markLaunched(conn.id, app.id);
     MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
       RdpConnectOrigin.List, app.id);
   }
@@ -246,10 +245,12 @@ struct MoonlightAppsPage {
       return;
     }
     const ok: boolean = await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
-    showToast(this.getUIContext(), ok ? '已请求关闭主机应用' : '关闭主机应用失败');
+    showToast(this.getUIContext(), ok ? '已请求关闭主机应用' : '主机离线，无法关闭应用');
     if (ok) {
       MoonlightHostState.markStopped(conn.id);
       MoonlightHostState.refreshAfter(conn, this.filesDir(), HOST_REPROBE_DELAY_MS);
+    } else {
+      MoonlightHostState.refresh(conn, this.filesDir());
     }
   }
 
@@ -264,7 +265,7 @@ struct MoonlightAppsPage {
       MoonlightHostState.refreshAfter(conn, this.filesDir(), HOST_REPROBE_DELAY_MS);
     }
     SessionManager.disconnect(conn.id);
-    showToast(this.getUIContext(), ok ? '已关闭主机应用并断开连接' : '已断开连接');
+    showToast(this.getUIContext(), ok ? '已关闭主机应用并断开连接' : '主机离线，已断开连接');
   }
 
   private appTip(app: NvApp): string {

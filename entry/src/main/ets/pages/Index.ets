@@ -130,13 +130,19 @@ struct Index {
       return;
     }
     const filesDir: string = (context as common.UIAbilityContext).filesDir;
+    if (!MoonlightHostState.reachableOf(conn.id)) {
+      showToast(this.getUIContext(), '主机离线，无法终止主机应用');
+      return;
+    }
     const httpsPort: number = MoonlightHostState.httpsPortOf(conn.id);
     MoonlightClient.cancel(filesDir, conn.host, httpsPort)
       .then((ok: boolean): void => {
-        showToast(this.getUIContext(), ok ? '已请求终止主机应用' : '终止主机应用失败');
+        showToast(this.getUIContext(), ok ? '已请求终止主机应用' : '主机离线，无法终止主机应用');
         if (ok) {
           MoonlightHostState.markStopped(conn.id);
           MoonlightHostState.refreshAfter(conn, filesDir, HOST_REPROBE_DELAY_MS);
+        } else {
+          MoonlightHostState.refresh(conn, filesDir);
         }
         if (this.connState(conn.id) !== ConnectionState.Idle) {
           SessionManager.disconnect(conn.id);
@@ -144,6 +150,7 @@ struct Index {
       })
       .catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'terminate host app failed: %{public}s', JSON.stringify(error));
+        MoonlightHostState.refresh(conn, filesDir);
       });
   }
 
@@ -156,11 +163,7 @@ struct Index {
   }
 
   private targetId(conn: SavedConnection): number {
-    if (!conn.isMoonlight() || conn.mlDefaultAppId.length === 0) {
-      return 0;
-    }
-    const parsed: number = Number.parseInt(conn.mlDefaultAppId, 10);
-    return Number.isNaN(parsed) ? 0 : parsed;
+    return conn.isMoonlight() ? conn.mlDefaultAppIdValue() : 0;
   }
 
   private persistOrder(): void {

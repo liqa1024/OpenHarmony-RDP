@@ -16,7 +16,8 @@ export type HostTargetListener = (connectionId: string, currentGame: number) => 
 class HostTarget {
   currentGame: number = 0;
   httpsPort: number = DEFAULT_HTTPS_PORT;
-  probed: boolean = false;
+  // Unreachable hosts report no running app, so the row never offers resume / terminate.
+  reachable: boolean = false;
 }
 
 export class MoonlightHostState {
@@ -37,7 +38,12 @@ export class MoonlightHostState {
 
   static targetOf(connectionId: string): number {
     const target: HostTarget | undefined = MoonlightHostState.targets.get(connectionId);
-    return target === undefined ? 0 : target.currentGame;
+    return target === undefined || !target.reachable ? 0 : target.currentGame;
+  }
+
+  static reachableOf(connectionId: string): boolean {
+    const target: HostTarget | undefined = MoonlightHostState.targets.get(connectionId);
+    return target !== undefined && target.reachable;
   }
 
   static httpsPortOf(connectionId: string): number {
@@ -45,29 +51,37 @@ export class MoonlightHostState {
     return target === undefined ? DEFAULT_HTTPS_PORT : target.httpsPort;
   }
 
+  // Only after the host really started / resumed the app (no optimistic write).
   static markLaunched(connectionId: string, appId: number): void {
     if (appId <= 0) {
       return;
     }
     const target: HostTarget = MoonlightHostState.ensure(connectionId);
     target.currentGame = appId;
-    MoonlightHostState.notify(connectionId, target.currentGame);
+    target.reachable = true;
+    MoonlightHostState.notify(connectionId);
   }
 
   static markStopped(connectionId: string): void {
     const target: HostTarget = MoonlightHostState.ensure(connectionId);
     target.currentGame = 0;
-    MoonlightHostState.notify(connectionId, target.currentGame);
+    MoonlightHostState.notify(connectionId);
   }
 
   static setProbed(connectionId: string, currentGame: number, httpsPort: number): void {
     const target: HostTarget = MoonlightHostState.ensure(connectionId);
-    target.probed = true;
     target.currentGame = currentGame;
     if (httpsPort > 0) {
       target.httpsPort = httpsPort;
     }
-    MoonlightHostState.notify(connectionId, target.currentGame);
+    target.reachable = true;
+    MoonlightHostState.notify(connectionId);
+  }
+
+  private static markUnreachable(connectionId: string): void {
+    const target: HostTarget = MoonlightHostState.ensure(connectionId);
+    target.reachable = false;
+    MoonlightHostState.notify(connectionId);
   }
 
   static refresh(conn: SavedConnection, filesDir: string): void {
@@ -83,6 +97,7 @@ export class MoonlightHostState {
         MoonlightHostState.probing.set(conn.id, false);
         if (!result.ok) {
           hilog.warn(DOMAIN, TAG, 'host target probe failed for %{public}s', conn.id);
+          MoonlightHostState.markUnreachable(conn.id);
           return;
         }
         MoonlightHostState.setProbed(conn.id, result.info.currentGame, result.info.httpsPort);
@@ -90,6 +105,7 @@ export class MoonlightHostState {
       .catch((error: BusinessError): void => {
         MoonlightHostState.probing.set(conn.id, false);
         hilog.warn(DOMAIN, TAG, 'host target probe error: %{public}s', JSON.stringify(error));
+        MoonlightHostState.markUnreachable(conn.id);
       });
   }
 
@@ -114,7 +130,8 @@ export class MoonlightHostState {
     return target;
   }
 
-  private static notify(connectionId: string, currentGame: number): void {
+  private static notify(connectionId: string): void {
+    const currentGame: number = MoonlightHostState.targetOf(connectionId);
     const listeners: HostTargetListener[] = MoonlightHostState.listeners.slice();
     for (let i = 0; i < listeners.length; i++) {
       listeners[i](connectionId, currentGame);

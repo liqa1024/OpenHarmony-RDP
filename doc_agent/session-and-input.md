@@ -35,8 +35,8 @@
     再交给后端——列表行因此立刻进入加载态，与协议无关。后端可声明 **`requiresPrepare()`** 并在
     `prepare(): Promise<boolean>` 里做异步预检（Moonlight：`serverinfo → pair → launch`，配对 PIN 弹窗在此
     弹出）；预检期间 `Connecting` 已成立，所以不会出现"先无反馈、窗口里才闪一下加载"的断档。预检失败由
-    后端发 `Error` 信号（文案即连接失败原因），窗口不开；预检**不挂连接超时**（配对要等用户输入），超时只在
-    真正开始启动后才计。
+    后端发 `Error` 信号（文案即连接失败原因），窗口不开；`prepare()` 返回 `false` 而未发信号时由 manager 兜底
+    （发布 `Failed`、停后端）。预检**不挂连接超时**（配对要等用户输入），超时只在真正开始启动后才计。
   - 后端另可声明 **`requiresWindowAtStart()`**（Moonlight：`LiStartConnection` 需要先有渲染目标）——预检
     通过后 manager 才开窗，窗口绑好 XComponent surface 后调 `SessionManager.beginStream` 真正启动；RDP
     为 false，维持"连上后才开窗"。Moonlight 会话窗口与后端 `MoonlightSessionBackend` 同此模型。

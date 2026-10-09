@@ -267,6 +267,14 @@ export class SavedConnection extends RdpConnectOptions {
     return this.name.length > 0 ? this.name : `${this.host}:${this.port}`;
   }
 
+  mlDefaultAppIdValue(): number {
+    if (this.mlDefaultAppId.length === 0) {
+      return 0;
+    }
+    const parsed: number = Number.parseInt(this.mlDefaultAppId, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
   static fromOptions(id: string, options: RdpConnectOptions): SavedConnection {
     const conn: SavedConnection = new SavedConnection();
     conn.id = id;

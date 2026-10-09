@@ -10,7 +10,7 @@ export struct ConnectionRow {
   conn: SavedConnection = new SavedConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
   // `hostTargetId` is what the host currently has open (0 = none / unknown),
-  // `targetId` is what this row would open (0 = the connection default). RDP
+  // `targetId` is this connection's default app id (0 = none configured). RDP
   // passes 0/0: it has no host-side session, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
@@ -72,42 +72,44 @@ export struct ConnectionRow {
   @Builder
   menu() {
     Menu() {
-      if (this.conn.isMoonlight()) {
-        // The button never resumes, so 恢复 / 切换 / 连接 are offered here.
-        if (this.action() === ConnectAction.Cancel) {
-          MenuItem({ content: '取消连接' })
-            .onClick(() => {
-              this.onToggleConnection();
-            })
-        } else if (this.action() === ConnectAction.Connect) {
-          MenuItem({ content: '连接' })
-            .onClick(() => {
-              this.onToggleConnection();
-            })
-        } else if (this.action() === ConnectAction.Resume) {
-          MenuItem({ content: '恢复' })
-            .onClick(() => {
-              this.onToggleConnection();
-            })
-        } else if (this.action() === ConnectAction.Switch) {
-          MenuItem({ content: '切换' })
+      // Grouping draws one separator between the session actions and 编辑 / 删除.
+      MenuItemGroup() {
+        if (this.conn.isMoonlight()) {
+          // The button never resumes, so 恢复 / 切换 / 连接 are offered here.
+          if (this.action() === ConnectAction.Cancel) {
+            MenuItem({ content: '取消连接' })
+              .onClick(() => {
+                this.onToggleConnection();
+              })
+          } else if (this.action() === ConnectAction.Connect) {
+            MenuItem({ content: '连接' })
+              .onClick(() => {
+                this.onToggleConnection();
+              })
+          } else if (this.action() === ConnectAction.Resume) {
+            MenuItem({ content: '恢复' })
+              .onClick(() => {
+                this.onToggleConnection();
+              })
+          } else if (this.action() === ConnectAction.Switch) {
+            MenuItem({ content: '切换' })
+              .onClick(() => {
+                this.onToggleConnection();
+              })
+          }
+          // 终止 needs something running on the host to stop.
+          if (this.hostTargetId !== 0) {
+            MenuItem({ content: '终止' })
+              .onClick(() => {
+                this.onTerminate();
+              })
+          }
+        } else {
+          MenuItem({ content: this.connectTip() })
             .onClick(() => {
               this.onToggleConnection();
             })
         }
-        // 终止 needs something running on the host to stop.
-        if (this.hostTargetId !== 0) {
-          MenuItem({ content: '终止' })
-            .contentFontColor($r('app.color.danger'))
-            .onClick(() => {
-              this.onTerminate();
-            })
-        }
-      } else {
-        MenuItem({ content: this.connectTip() })
-          .onClick(() => {
-            this.onToggleConnection();
-          })
       }
       MenuItem({ content: '编辑' })
         .onClick(() => {

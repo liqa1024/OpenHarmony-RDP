@@ -21,8 +21,10 @@ export function connectActionFor(state: ConnectionState, hostTargetId: number,
   if (state === ConnectionState.Disconnecting) {
     return ConnectAction.Busy;
   }
-  if (hostTargetId !== 0 && targetId > 0) {
-    return hostTargetId === targetId ? ConnectAction.Resume : ConnectAction.Switch;
+  // targetId (0 = no default app) only separates resume from switch.
+  if (hostTargetId !== 0) {
+    return targetId > 0 && hostTargetId !== targetId
+      ? ConnectAction.Switch : ConnectAction.Resume;
   }
   return ConnectAction.Connect;
 }

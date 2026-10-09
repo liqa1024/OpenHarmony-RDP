@@ -157,6 +157,8 @@ Column(page_bg, 100%×100%)
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
 - 右键菜单（`Menu`）、拖拽排序（`List.onMove`）：`List` 本体保持全宽，左右内边距由 `ListItem` 的 `margin` 给，
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
+  菜单项分两组：会话动作（连接 / 恢复 / 切换 / 断开 / 终止）用 `MenuItemGroup` 包住，与 `编辑` / `删除` 之间由
+  分组分隔线隔开；仅 `删除` 用 `danger`，其余项保持默认前景色。
 
 ### 3.6 会话窗口
 

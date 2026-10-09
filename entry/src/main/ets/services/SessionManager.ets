@@ -136,7 +136,16 @@ export class SessionManager {
       if (SessionManager.entries.get(entry.connectionId) !== entry || entry.epoch !== epoch) {
         return;
       }
-      if (!ok || entry.state !== ConnectionState.Connecting) {
+      if (entry.state !== ConnectionState.Connecting) {
+        return;
+      }
+      if (!ok) {
+        // A backend that reports failure without signalling would otherwise leave
+        // the row stuck in Connecting.
+        if (entry.backend !== undefined) {
+          entry.backend.stop();
+        }
+        SessionManager.publish(entry, ConnectionState.Failed, '连接失败');
         return;
       }
       SessionManager.proceed(entry, epoch);
