@@ -23,7 +23,7 @@ import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
-import { ProtocolTabs } from '../components/ProtocolTabs';
+import { ProtocolTabs, TAB_COMMON } from '../components/ProtocolTabs';
 import { SettingSliderRow } from '../components/SettingSliderRow';
 import { SettingToggleRow } from '../components/SettingToggleRow';
 
@@ -102,8 +102,9 @@ struct SettingsPage {
   @State developerMode: boolean = false;
   // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State gfxCapture: boolean = false;
-  // Active protocol tab. The shared (touchpad / keyboard / window / session)
-  // section is rendered once but backed by that protocol's own stored values.
+  // Active settings tab: PROTOCOL_RDP, PROTOCOL_MOONLIGHT or TAB_COMMON. The
+  // protocol tabs render the shared interaction section from that protocol's own
+  // stored values; the common tab holds the app-level (window / developer) items.
   @State protocol: number = PROTOCOL_RDP;
   // Moonlight stream defaults; each connection can still override them.
   @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
@@ -161,8 +162,12 @@ struct SettingsPage {
     this.srSupported = srCapability.supported;
     this.srReason = srCapability.reason;
 
+    // App-level surfaces: window sizing, the developer section and its tools are
+    // the same on every tab, so they load regardless of the active one.
+    this.applyWindowSettings(settings);
+    this.applyDeveloperSettings(settings);
+
     if (this.protocol === PROTOCOL_RDP) {
-      this.touchHighRate = settings.touchHighRate;
       this.useRdpCursor = settings.useRdpCursor;
       RdpNative.applyRdpCursor(this.useRdpCursor);
       this.resolutionAuto = settings.resolutionAuto;
@@ -186,7 +191,8 @@ struct SettingsPage {
         ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
       this.ignoreCertificate = settings.ignoreCertificate;
       RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
-    } else {
+      this.applyInteraction(settings, true);
+    } else if (this.protocol === PROTOCOL_MOONLIGHT) {
       this.mlResMode = settings.mlResMode;
       this.mlWidthText = this.sizeText(settings.mlWidth > 0 ? settings.mlWidth : this.detectedWidth);
       this.mlHeightText = this.sizeText(settings.mlHeight > 0
@@ -196,15 +202,8 @@ struct SettingsPage {
       this.mlCodec = settings.mlCodec;
       this.mlCursorMode = settings.mlCursorMode;
       this.clampMlCodec();
+      this.applyInteraction(settings, false);
     }
-
-    // Shared interaction / window settings: the active protocol's own values.
-    this.applyCommon(settings, this.protocol === PROTOCOL_RDP);
-
-    this.developerMode = settings.developerMode;
-    // With developer options off, the dev-only tools are not shown and must not
-    // keep running: a capture left on from a previous session is switched off.
-    this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
 
     if (this.protocol === PROTOCOL_RDP) {
       if (!this.audioSupported && settings.enableAudio) {
@@ -225,14 +224,35 @@ struct SettingsPage {
     this.applyGfxCaptureSetting();
   }
 
+  /** Loads the app-level window settings (a single value, shared by both protocols). */
+  private applyWindowSettings(settings: AppSettings): void {
+    this.mainSizeEnabled = settings.mainWindowSizeEnabled;
+    this.mainWidthText = this.sizeText(settings.mainWindowWidth);
+    this.mainHeightText = this.sizeText(settings.mainWindowHeight);
+    this.autoHideMainWindow = settings.autoHideMainWindow;
+    this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
+    this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
+    this.sessionHeightText = this.sizeText(settings.sessionWindowHeight);
+    this.sessionFullscreen = settings.sessionFullscreen;
+  }
+
+  /** Loads the app-level developer section (gate, its tools and the toolbar delays). */
+  private applyDeveloperSettings(settings: AppSettings): void {
+    this.developerMode = settings.developerMode;
+    // With developer options off, the dev-only tools are not shown and must not
+    // keep running: a capture left on from a previous session is switched off.
+    this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
+    this.touchHighRate = settings.touchHighRate;
+    this.hoverDelay = settings.toolbarHoverDelay;
+    this.hideDelay = settings.toolbarHideDelay;
+  }
+
   /**
-   * Loads the shared (touchpad / keyboard / window / session) settings into the
-   * page state, from the RDP copy or the Moonlight copy. The two protocols keep
+   * Loads the shared interaction settings (touchpad / keyboard / foreground
+   * reconnect) from the RDP copy or the Moonlight copy. The two protocols keep
    * separate values; only this UI code is shared.
    */
-  private applyCommon(settings: AppSettings, rdp: boolean): void {
-    this.hoverDelay = rdp ? settings.toolbarHoverDelay : settings.mlToolbarHoverDelay;
-    this.hideDelay = rdp ? settings.toolbarHideDelay : settings.mlToolbarHideDelay;
+  private applyInteraction(settings: AppSettings, rdp: boolean): void {
     this.touchpadScrollSpeed = rdp ? settings.touchpadScrollSpeed : settings.mlTouchpadScrollSpeed;
     this.pinchZoomSpeed = rdp ? settings.pinchZoomSpeed : settings.mlPinchZoomSpeed;
     this.touchpadMiddleDoubleTap = rdp
@@ -244,17 +264,6 @@ struct SettingsPage {
       ? settings.reconnectOnForeground : settings.mlReconnectOnForeground;
     this.winKeySubstitute = rdp ? settings.winKeySubstitute : settings.mlWinKeySubstitute;
     this.shortcutPassthrough = rdp ? settings.shortcutPassthrough : settings.mlShortcutPassthrough;
-    this.mainSizeEnabled = settings.mainWindowSizeEnabled;
-    this.sessionSizeEnabled = rdp
-      ? settings.sessionWindowSizeEnabled : settings.mlSessionWindowSizeEnabled;
-    this.sessionFullscreen = rdp ? settings.sessionFullscreen : settings.mlSessionFullscreen;
-    this.autoHideMainWindow = settings.autoHideMainWindow;
-    this.mainWidthText = this.sizeText(settings.mainWindowWidth);
-    this.mainHeightText = this.sizeText(settings.mainWindowHeight);
-    this.sessionWidthText = this.sizeText(rdp
-      ? settings.sessionWindowWidth : settings.mlSessionWindowWidth);
-    this.sessionHeightText = this.sizeText(rdp
-      ? settings.sessionWindowHeight : settings.mlSessionWindowHeight);
   }
 
   // Applies the dev capture toggle immediately (before the next session) so the
@@ -331,26 +340,34 @@ struct SettingsPage {
     const disp = defaultDisplay();
     const maxWidth: number = disp !== undefined ? disp.width : Number.MAX_SAFE_INTEGER;
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
-    // Start from what is stored so the other protocol's copy is preserved.
+    // Start from what is stored so the other scopes are preserved.
     const settings: AppSettings = SettingsStore.load();
-    // App-level surfaces shared by both protocols: the main window, its size and
-    // the auto-hide behaviour do not depend on the streaming protocol.
+    // App-level surfaces shared by every tab: the main / session window sizing,
+    // the auto-hide behaviour and the developer section with its tools.
     settings.autoHideMainWindow = this.autoHideMainWindow;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
     settings.mainWindowHeight =
       this.parseSize(this.mainHeightText, this.defaultMainHeight, maxHeight);
+    settings.sessionWindowSizeEnabled = this.sessionSizeEnabled;
+    settings.sessionWindowWidth =
+      this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
+    settings.sessionWindowHeight =
+      this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
+    settings.sessionFullscreen = this.sessionFullscreen;
+    settings.developerMode = this.developerMode;
+    settings.gfxCapture = this.gfxCapture;
+    settings.touchHighRate = this.touchHighRate;
+    settings.toolbarHoverDelay = this.hoverDelay;
+    settings.toolbarHideDelay = this.hideDelay;
     if (this.protocol === PROTOCOL_RDP) {
-      settings.toolbarHoverDelay = this.hoverDelay;
-      settings.toolbarHideDelay = this.hideDelay;
       settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
       settings.pinchZoomSpeed = this.pinchZoomSpeed;
       settings.pinchMode = this.pinchMode;
       settings.touchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
       settings.pinchTouchAngle = this.pinchTouchAngle;
       settings.pinchTouchDistance = this.pinchTouchDistance;
-      settings.touchHighRate = this.touchHighRate;
       settings.useRdpCursor = this.useRdpCursor;
       settings.reconnectOnForeground = this.reconnectOnForeground;
       settings.winKeySubstitute = this.winKeySubstitute;
@@ -363,19 +380,13 @@ struct SettingsPage {
       settings.scaleAuto = this.scaleAuto;
       settings.manualScalePercent =
         this.parseScale(this.manualScaleText, this.effectiveDefaultScale());
-      settings.sessionFullscreen = this.sessionFullscreen;
       settings.enableAudio = this.enableAudio;
       settings.ignoreCertificate = this.ignoreCertificate;
       settings.hardwareAccel = this.hardwareAccel;
       settings.srEnabled = this.srEnabled && this.srSupported;
       settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
       settings.srBackend = this.srBackend;
-      settings.sessionWindowSizeEnabled = this.sessionSizeEnabled;
-      settings.sessionWindowWidth =
-        this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
-      settings.sessionWindowHeight =
-        this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
-    } else {
+    } else if (this.protocol === PROTOCOL_MOONLIGHT) {
       settings.mlResMode = this.mlResMode;
       settings.mlWidth = this.mlResMode === ML_RES_FIXED
         ? this.parseSize(this.mlWidthText, this.detectedWidth, MAX_DESKTOP_SIZE) : 0;
@@ -384,8 +395,6 @@ struct SettingsPage {
       settings.mlFps = this.mlFps;
       settings.mlBitrateKbps = this.effectiveMlBitrate();
       settings.mlCodec = this.mlCodec;
-      settings.mlToolbarHoverDelay = this.hoverDelay;
-      settings.mlToolbarHideDelay = this.hideDelay;
       settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
       settings.mlPinchZoomSpeed = this.pinchZoomSpeed;
       settings.mlPinchMode = this.pinchMode;
@@ -396,15 +405,7 @@ struct SettingsPage {
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
-      settings.mlSessionWindowSizeEnabled = this.sessionSizeEnabled;
-      settings.mlSessionWindowWidth =
-        this.parseSize(this.sessionWidthText, this.defaultSessionWidth, maxWidth);
-      settings.mlSessionWindowHeight =
-        this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
-      settings.mlSessionFullscreen = this.sessionFullscreen;
     }
-    settings.developerMode = this.developerMode;
-    settings.gfxCapture = this.gfxCapture;
     SettingsStore.save(settings);
     // Apply immediately so a toggle takes effect for sessions opened next,
     // without waiting for an app restart.
@@ -415,10 +416,10 @@ struct SettingsPage {
   }
 
   private confirmReset(): void {
-    const label: string = this.protocol === PROTOCOL_MOONLIGHT ? 'Moonlight' : 'RDP';
     showConfirm(this.getUIContext(), {
       title: '恢复默认设置',
-      message: `确定要把 ${label} 的设置恢复为默认值？该协议当前的自定义设置会丢失。`,
+      message: '确定要把全部设置（RDP、Moonlight 与通用）恢复为默认值？各处的自定义设置都会丢失，'
+        + '已保存的连接不受影响。',
       confirmLabel: '恢复默认',
       danger: true,
       onConfirm: () => {
@@ -427,38 +428,23 @@ struct SettingsPage {
     });
   }
 
+  /**
+   * Resets everything: both protocol scopes and the common scope are written
+   * straight from the defaults, then the page reloads. Saving the whole default
+   * object avoids going through `persist()`, which only writes the active tab.
+   */
   private resetDefaults(): void {
     const defaults: AppSettings = SettingsStore.defaults();
-    if (this.protocol === PROTOCOL_RDP) {
-      this.touchHighRate = defaults.touchHighRate;
-      this.useRdpCursor = defaults.useRdpCursor;
-      this.resolutionAuto = true;
-      this.manualWidthText = this.sizeText(this.detectedWidth);
-      this.manualHeightText = this.sizeText(this.detectedHeight);
-      this.scaleAuto = true;
-      this.enableAudio = this.audioSupported ? defaults.enableAudio : false;
-      this.ignoreCertificate = defaults.ignoreCertificate;
-      this.hardwareAccel = defaults.hardwareAccel;
-      this.srEnabled = defaults.srEnabled;
-      this.srRatioPercent = defaults.srRatioPercent;
-      this.srBackend = defaults.srBackend;
-      this.manualScaleText = this.effectiveDefaultScale().toString();
-    } else {
-      this.mlResMode = defaults.mlResMode;
-      this.mlWidthText = this.sizeText(this.detectedWidth);
-      this.mlHeightText = this.sizeText(this.detectedHeight);
-      this.mlFps = defaults.mlFps;
-      this.mlBitrateText = defaults.mlBitrateKbps.toString();
-      this.mlCodec = defaults.mlCodec;
-      this.mlCursorMode = defaults.mlCursorMode;
-      this.clampMlCodec();
+    // Match the greyed-out rows on a device that cannot provide the feature, so
+    // the stored value never asks for what is unavailable here.
+    if (!this.audioSupported) {
+      defaults.enableAudio = false;
     }
-    this.developerMode = defaults.developerMode;
-    this.gfxCapture = defaults.gfxCapture;
-    this.applyCommon(defaults, this.protocol === PROTOCOL_RDP);
-    this.persist();
-    // A reset turns developer options off: stop a capture that was running.
-    this.applyGfxCaptureSetting();
+    if (!this.hardwareAccelSupported) {
+      defaults.hardwareAccel = false;
+    }
+    SettingsStore.save(defaults);
+    this.syncFromStore();
   }
 
   private confirmExport(): void {
@@ -928,6 +914,7 @@ struct SettingsPage {
       }) {
         ProtocolTabs({
           protocol: this.protocol,
+          showCommon: true,
           onChange: (protocol: number) => {
             this.switchProtocol(protocol);
           }
@@ -1067,7 +1054,7 @@ struct SettingsPage {
               }
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
-            } else {
+            } else if (this.protocol === PROTOCOL_MOONLIGHT) {
               Text('显示')
                 .fontSize(13)
                 .fontColor($r('app.color.text_secondary'))
@@ -1110,6 +1097,7 @@ struct SettingsPage {
               this.moonlightStreamSection()
             }
 
+            if (this.protocol !== TAB_COMMON) {
             Divider().color($r('app.color.divider'))
 
             Text('触控板')
@@ -1437,7 +1425,9 @@ struct SettingsPage {
               }
             })
             }
+            }
 
+            if (this.protocol === TAB_COMMON) {
             Divider().color($r('app.color.divider'))
 
             Text('窗口')
@@ -1675,10 +1665,14 @@ struct SettingsPage {
               .width('100%')
               .margin({ top: 10 })
             }
+            }
 
-            Text('仅重置当前协议（'
-              + (this.protocol === PROTOCOL_MOONLIGHT ? 'Moonlight' : 'RDP')
-              + '）的设置，不影响另一协议与已保存的连接。')
+            // "恢复默认设置" lives only in the 通用 tab; it resets everything
+            // (both protocols and the common scope).
+            if (this.protocol === TAB_COMMON) {
+            Divider().color($r('app.color.divider'))
+
+            Text('恢复全部设置（RDP / Moonlight / 通用）为默认值，不影响已保存的连接。')
               .fontSize(11)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
@@ -1694,12 +1688,48 @@ struct SettingsPage {
               .onClick(() => {
                 this.confirmReset();
               })
+            }
+
+            // RDP's own developer tools. The gate lives in the 通用 tab, but the
+            // tools it reveals are RDP-specific, so they appear at the bottom of
+            // the RDP tab (not in 通用).
+            if (this.protocol === PROTOCOL_RDP && this.developerMode) {
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
+              title: '抓取 GFX 码流（测试）',
+              subtitle: '抓取会话的原始 GFX 通道码流（hmrdp_gfx.bin），供开发/回放使用',
+              value: this.gfxCapture,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.gfxCapture = v;
+                this.persist();
+                this.applyGfxCaptureSetting();
+              }
+            })
 
             Divider().color($r('app.color.divider'))
 
             this.toggleItem({
+              title: '触屏高刷新率（实验）',
+              subtitle: '把 RDPEI 50Hz 合帧提高到 125Hz 上报触点；可能增加带宽',
+              value: this.touchHighRate,
+              enabled: true,
+              disabledReason: '',
+              onChange: (v: boolean) => {
+                this.touchHighRate = v;
+                this.persist();
+              }
+            })
+            }
+
+            if (this.protocol === TAB_COMMON) {
+            Divider().color($r('app.color.divider'))
+
+            this.toggleItem({
               title: '开发者选项',
-              subtitle: '显示码流抓取、工具栏性能信息与下面这些实验/调参项',
+              subtitle: '显示工具栏性能信息，并揭示各协议下的实验 / 调参项',
               value: this.developerMode,
               enabled: true,
               disabledReason: '',
@@ -1718,35 +1748,6 @@ struct SettingsPage {
             })
 
             if (this.developerMode) {
-              Divider().color($r('app.color.divider'))
-
-              this.toggleItem({
-                title: '抓取 GFX 码流（测试）',
-                subtitle: '抓取会话的原始 GFX 通道码流（hmrdp_gfx.bin），供开发/回放使用',
-                value: this.gfxCapture,
-                enabled: true,
-                disabledReason: '',
-                onChange: (v: boolean) => {
-                  this.gfxCapture = v;
-                  this.persist();
-                  this.applyGfxCaptureSetting();
-                }
-              })
-
-              Divider().color($r('app.color.divider'))
-
-              this.toggleItem({
-                title: '触屏高刷新率（实验）',
-                subtitle: '把 RDPEI 50Hz 合帧提高到 125Hz 上报触点；可能增加带宽',
-                value: this.touchHighRate,
-                enabled: true,
-                disabledReason: '',
-                onChange: (v: boolean) => {
-                  this.touchHighRate = v;
-                  this.persist();
-                }
-              })
-
               Divider().color($r('app.color.divider'))
 
               this.sliderItem({
@@ -1784,6 +1785,7 @@ struct SettingsPage {
                   this.persist();
                 }
               })
+            }
             }
           }
         }

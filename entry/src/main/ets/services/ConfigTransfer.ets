@@ -437,10 +437,6 @@ export class ConfigTransfer {
     settings.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', settings.mlHeight);
     settings.lastNewProtocol =
       ConfigTransfer.readNumber(rec, 'lastNewProtocol', settings.lastNewProtocol);
-    settings.mlToolbarHoverDelay =
-      ConfigTransfer.readNumber(rec, 'mlToolbarHoverDelay', settings.mlToolbarHoverDelay);
-    settings.mlToolbarHideDelay =
-      ConfigTransfer.readNumber(rec, 'mlToolbarHideDelay', settings.mlToolbarHideDelay);
     settings.mlTouchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
     settings.mlPinchZoomSpeed =
@@ -459,14 +455,6 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'mlWinKeySubstitute', settings.mlWinKeySubstitute);
     settings.mlShortcutPassthrough = ConfigTransfer.readBoolean(rec,
       'mlShortcutPassthrough', settings.mlShortcutPassthrough);
-    settings.mlSessionWindowSizeEnabled = ConfigTransfer.readBoolean(rec,
-      'mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
-    settings.mlSessionWindowWidth =
-      ConfigTransfer.readNumber(rec, 'mlSessionWindowWidth', settings.mlSessionWindowWidth);
-    settings.mlSessionWindowHeight =
-      ConfigTransfer.readNumber(rec, 'mlSessionWindowHeight', settings.mlSessionWindowHeight);
-    settings.mlSessionFullscreen =
-      ConfigTransfer.readBoolean(rec, 'mlSessionFullscreen', settings.mlSessionFullscreen);
     return settings;
   }
 

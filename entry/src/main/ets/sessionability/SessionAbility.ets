@@ -64,15 +64,11 @@ export default class SessionAbility extends UIAbility {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     const moonlight: boolean = request !== undefined && request.protocol === PROTOCOL_MOONLIGHT;
     const settings: AppSettings = SettingsStore.load();
-    // Session-window behaviour is per protocol; the main window is app-level.
-    const fullscreen: boolean = moonlight ? settings.mlSessionFullscreen
-      : settings.sessionFullscreen;
-    const sizeEnabled: boolean = moonlight ? settings.mlSessionWindowSizeEnabled
-      : settings.sessionWindowSizeEnabled;
-    const width: number = moonlight ? settings.mlSessionWindowWidth
-      : settings.sessionWindowWidth;
-    const height: number = moonlight ? settings.mlSessionWindowHeight
-      : settings.sessionWindowHeight;
+    // The session window is the same app-level surface for both protocols.
+    const fullscreen: boolean = settings.sessionFullscreen;
+    const sizeEnabled: boolean = settings.sessionWindowSizeEnabled;
+    const width: number = settings.sessionWindowWidth;
+    const height: number = settings.sessionWindowHeight;
     if (!fullscreen) {
       WindowController.applyWindowStageSize(windowStage, width, height, sizeEnabled);
     }

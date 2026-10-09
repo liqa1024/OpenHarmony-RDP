@@ -166,10 +166,10 @@ export class AppSettings {
   mlHeight: number = 0;
   // Protocol the next new connection starts on (the last kind the user added).
   lastNewProtocol: number = PROTOCOL_RDP;
-  // Moonlight's own copy of the shared interaction / window / session settings.
-  // The two protocols keep separate values; only the settings UI code is shared.
-  mlToolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
-  mlToolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
+  // Moonlight's own copy of the shared interaction settings (touchpad / pinch /
+  // keyboard / foreground reconnect). The two protocols keep separate values;
+  // only the settings UI code is shared. Window sizing, the toolbar delays and
+  // the developer options are app-level (a single value), not per protocol.
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   mlPinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   mlTouchpadMiddleDoubleTap: boolean = false;
@@ -183,12 +183,6 @@ export class AppSettings {
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
   mlShortcutPassthrough: boolean = false;
-  // Session-window behavior is per protocol; the main window is a single,
-  // app-level surface shared by both protocols.
-  mlSessionWindowSizeEnabled: boolean = false;
-  mlSessionWindowWidth: number = 0;
-  mlSessionWindowHeight: number = 0;
-  mlSessionFullscreen: boolean = false;
 }
 
 export class SettingsStore {
@@ -225,9 +219,6 @@ export class SettingsStore {
       settings.sessionWindowSizeEnabled = true;
       settings.sessionWindowWidth = Math.round(disp.width * SESSION_WINDOW_RATIO);
       settings.sessionWindowHeight = Math.round(disp.height * SESSION_WINDOW_RATIO);
-      settings.mlSessionWindowSizeEnabled = true;
-      settings.mlSessionWindowWidth = settings.sessionWindowWidth;
-      settings.mlSessionWindowHeight = settings.sessionWindowHeight;
     }
     return settings;
   }
@@ -314,10 +305,6 @@ export class SettingsStore {
       settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
       settings.lastNewProtocol =
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
-      settings.mlToolbarHoverDelay =
-        SettingsStore.readNumber(store, 'mlToolbarHoverDelay', settings.mlToolbarHoverDelay);
-      settings.mlToolbarHideDelay =
-        SettingsStore.readNumber(store, 'mlToolbarHideDelay', settings.mlToolbarHideDelay);
       settings.mlTouchpadScrollSpeed = SettingsStore.readNumber(store, 'mlTouchpadScrollSpeed',
         settings.mlTouchpadScrollSpeed);
       settings.mlPinchZoomSpeed =
@@ -337,14 +324,6 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlWinKeySubstitute', settings.mlWinKeySubstitute);
       settings.mlShortcutPassthrough = SettingsStore.readBoolean(store,
         'mlShortcutPassthrough', settings.mlShortcutPassthrough);
-      settings.mlSessionWindowSizeEnabled = SettingsStore.readBoolean(store,
-        'mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
-      settings.mlSessionWindowWidth =
-        SettingsStore.readNumber(store, 'mlSessionWindowWidth', settings.mlSessionWindowWidth);
-      settings.mlSessionWindowHeight =
-        SettingsStore.readNumber(store, 'mlSessionWindowHeight', settings.mlSessionWindowHeight);
-      settings.mlSessionFullscreen =
-        SettingsStore.readBoolean(store, 'mlSessionFullscreen', settings.mlSessionFullscreen);
     }
     return settings;
   }
@@ -396,8 +375,6 @@ export class SettingsStore {
       store.putSync('mlWidth', settings.mlWidth);
       store.putSync('mlHeight', settings.mlHeight);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
-      store.putSync('mlToolbarHoverDelay', settings.mlToolbarHoverDelay);
-      store.putSync('mlToolbarHideDelay', settings.mlToolbarHideDelay);
       store.putSync('mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
       store.putSync('mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       store.putSync('mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
@@ -408,10 +385,6 @@ export class SettingsStore {
       store.putSync('mlReconnectOnForeground', settings.mlReconnectOnForeground);
       store.putSync('mlWinKeySubstitute', settings.mlWinKeySubstitute);
       store.putSync('mlShortcutPassthrough', settings.mlShortcutPassthrough);
-      store.putSync('mlSessionWindowSizeEnabled', settings.mlSessionWindowSizeEnabled);
-      store.putSync('mlSessionWindowWidth', settings.mlSessionWindowWidth);
-      store.putSync('mlSessionWindowHeight', settings.mlSessionWindowHeight);
-      store.putSync('mlSessionFullscreen', settings.mlSessionFullscreen);
       store.flush();
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));

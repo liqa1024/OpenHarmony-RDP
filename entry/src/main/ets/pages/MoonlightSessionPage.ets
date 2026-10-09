@@ -179,8 +179,9 @@ struct MoonlightSessionPage {
       this.backend = backend;
     }
     const settings = SettingsStore.load();
-    this.hoverDelay = settings.mlToolbarHoverDelay;
-    this.hideDelay = settings.mlToolbarHideDelay;
+    // The toolbar and its auto-hide delays are app-level, shared with RDP.
+    this.hoverDelay = settings.toolbarHoverDelay;
+    this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
     // Only the local-cursor mode consumes the host cursor channel; the other
     // modes leave the buffer to be released by the backend.
