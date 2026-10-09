@@ -1,11 +1,10 @@
 # Moonlight（云串流）连接
 
-本文件是 **Moonlight / Sunshine 串流**这条路的知识：协议建模、存储布局、连接列表与编辑/设置界面的约定、
-图标约束。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；差异集中在连接配置与串流参数。
-RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-storage.md`](settings-and-storage.md)、
-[`present-pipeline.md`](present-pipeline.md)。**原生侧**（客户端库构建与共享库链接、桥接层、HTTP 控制层、客户端
-身份与信任存储、配对加密原语，以及后续的会话 / 输入 / 上屏）见 [`moonlight-native.md`](moonlight-native.md)；
-**协议编排与 XML 解析在 ArkTS**（见其 §4）。
+本文件是 **Moonlight / Sunshine 串流**这条路的**前端知识**：协议建模、存储布局、连接列表与编辑/设置界面的
+约定、图标约束。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；差异集中在连接配置与
+串流参数。**原生侧**（客户端库构建与共享库链接、桥接层、视频解码与上屏、控制/配对层协议事实）见
+[`moonlight-native.md`](moonlight-native.md)；RDP 侧的存储、显示、超分见
+[`settings-and-storage.md`](settings-and-storage.md)、[`present-pipeline.md`](present-pipeline.md)。
 
 ## 1. 协议建模
 
@@ -147,8 +146,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   配置备份、开发者选项的**总开关**（连同工具栏触发 / 隐藏延迟这类协议无关的调参）。这些项**只存一份**，
   不随协议区分。
 - **开发者选项里协议专属的工具落到对应协议 tab 底部**：总开关在「通用」，开启后 RDP 专属的工具
-  （抓取 GFX 码流、触屏高刷新率）出现在 **RDP tab 的最下方**，不在「通用」里混排；将来新增 Moonlight
-  专属工具时按同一规则挂到 Moonlight tab。
+  （抓取 GFX 码流、触屏高刷新率）出现在 **RDP tab 的最下方**，不在「通用」里混排；Moonlight 专属工具按同一规则
+  挂到 Moonlight tab。
 - **边界按「是否硬性通用」划，不按功能名相近**：窗口类（主 / 会话窗口尺寸、全屏）与开发者选项是
   **应用级单份**，`SessionAbility` 建会话窗口时两协议取同一份；而显示分辨率、缩放、串流参数
   （帧率 / 码率 / 编码器）与触控板 / 键盘 / 前台重连属**流与交互层面，按协议各存一份**——两协议各有一套，
@@ -162,7 +161,8 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
     光标（顺滑、无双重）。**只有基地版 Sunshine（foundation-sunshine）成立**，其它主机静默回退为「关闭」。
     设置页检测不到主机版本，所以该选项下**恒显示红字警告**（"仅在基地版 Sunshine 有效"）。
   - `setPointerVisibleSync` 是**进程级**，断开 / 退页必须恢复，否则主窗口也没有光标。协议细节见
-    [`moonlight-native.md`](moonlight-native.md) §3.1。
+    [`moonlight-native.md`](moonlight-native.md) §3.1；安装器、去重与可见性归属见
+    [`session-and-input.md`](session-and-input.md) §2。
 
 ## 6. 图标约定
 
@@ -195,8 +195,7 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   图形占 `viewBox` **约 73%**（大于 play/stop/power 的 58%）才与它们等观。
 - **`ic_disconnect` 的线宽与圆角照 tile 的可读性定，不照抄参考图的细线**：tile 上的动作图标只有
   `ACTION_SIZE`（22vp），细线在那一档只剩约 1px、整枚读成灰糊；要加粗到**与未选中星标的实心同量级的视觉重量**，
-  圆角也随线宽一起放大（圆角外径约为线宽的 1.5~2 倍），开口端停在圆角切点即可——不必为了多留一小段直端
-  而把断口挤到中间两根短杠上（两者本就只隔几像素）。同一份几何换到别处更大的尺寸也照样成立。
+  圆角也随线宽一起放大（圆角外径约为线宽的 1.5~2 倍），开口端停在圆角切点即可。
 - **连接 / 断开 / 关闭复用同一套填充图标**（`ic_play` / `ic_power` / `ic_stop`）：主窗口的连接钮和
   应用 tile 用同一套——连接钮画在**实心 accent / danger** 上，用 `fillColor('#FFFFFF')`（实心底上的白属
   允许的例外）；tile 画在材质圆盘上，按状态给 accent / text_primary / danger。**不要为同一语义另画一套
@@ -206,25 +205,19 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   路径，由页面按状态给 accent / text_primary / danger / 白；`ic_refresh` 画在 accent 圆钮上，直接用白色 `fill`。
   需要随主题（且不换色）的描边图标才靠 `resources/dark/media/` 的深色变体。
 
-## 7. 实现边界
+## 7. 实现边界与不得回退的约定
 
 - **前端**：协议建模、存储、导入导出、连接列表、编辑页、设置页分栏、图标。
-- **原生客户端库**：moonlight-common-c（连同它的 enet / nanors 子模块，后两者随本库静态编入）
-  交叉编译为共享库 `libmoonlight-common-c.so`，与其它依赖一起落在 `entry/libs/<abi>/` 并被 `libhmrdp.so`
-  链接。它是**构建必备输入**（同 FreeRDP，缺 `.so` 即构建失败），不是平台能力；`moonlightProbe`
-  恒回 `"1"`，仅作"库确实链上了"的链接断言。原生**串流会话桥** `hmrdp_moonlight_session`
-  （`LiStartConnection` + 输入转发）见 [`moonlight-native.md`](moonlight-native.md)。
 - **控制层**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
   （自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、`MoonlightClient`
   （`serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。串流前的预检由
   `services/MoonlightConnector.ets` 编排（`serverinfo →`（未配对则先 `pair`）`→ launch`，并装配原生串流配置），
   由 `MoonlightSessionBackend.prepare()` 在 `SessionManager` 已发布的 `Connecting` 状态下驱动，故列表行加载态与
-  RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的
-  「连接」统一经 `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后
-  交给 manager。
+  RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的「连接」统一经
+  `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后交给 manager。
 - **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入，四个数字居中放大），
   配对期间不开任何会话窗口；**主机端输入完成即握手结束，弹窗自动关闭并继续**（无需手动确认），只有「取消」是用户动作；
-  配对完成后才 launch 并开会话（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) 待定项）。
+  配对完成后才 launch 并开会话。
 - **会话窗口与后端**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
   `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配
   `moonlightConfig`，`start()` 交给原生）、`services/SessionBackendFactory.ets` 与
@@ -234,8 +227,30 @@ RDP 侧的存储、显示、超分等不在本文件内，见 [`settings-and-sto
   chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化；连接中的
   状态卡带约 1000ms 显示阈值，避免"多闪一下"。**停止会话会释放原生窗口，所以窗口内「重试」先重新绑定仍存活的
   XComponent surface 再重启**（此时会话必然已不在活动态，原生允许再次绑定）。
-- **范围之外（待后续里程碑）**：音频（Opus，当前空渲染器关音频）；HDR、环绕、手柄输入等能力在就绪前**不在
-  界面暴露**；端到端串流待连真 Sunshine 验证；超分链路（buffer 模式 + Vulkan 导入）属独立里程碑，
-  仅真机验证（见 [`moonlight-native.md`](moonlight-native.md) §2）。
-- 本文件描述**前端约定、ArkTS 协议建模与控制层**；原生侧（客户端库 / 解码 / 串流会话 / 输入）
-  见 [`moonlight-native.md`](moonlight-native.md)，两协议共用的界面组件与设计语言见 [`ui-design.md`](ui-design.md)。
+
+**不得回退的约定**（实现新功能时必须遵守，避免把缺陷保留下来又在别处塞新内容）：
+
+1. **连接存储是位置分隔、只追加**：退役字段按位置保留槽位，新增字段只追加尾部（见 §2）。**禁止删除或重排
+   既有槽位**，否则老记录错位。
+2. **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
+   不要在别处塞新内容而让 Moonlight 那份成为摆设。
+3. **连接动作（连接 / 恢复 / 切换 / 终止 / 断开）只有一个走法入口与一处判定**：
+   - 走法统一经预检（`MoonlightConnector.prepare`）选择 `/resume` 或 `/launch`；判定集中在
+     `utils/ConnectAction.ets`（协议中立），连接行与卡片共用。主页主按钮对 Moonlight 统一为「终止」
+     （关闭会话 + 关闭主机应用 = `/cancel` + 断开），**按钮上不出现「恢复」**（恢复在右键菜单）；
+     应用页保留「恢复」按钮，其「断开连接」用专用断链图标（`ic_disconnect`）。
+   - **RDP 不存在恢复态**：会话关闭即完全断开，`hostTargetId` 恒为 0，主按钮保持「断开连接」。
+   - 任何触发"打开 / 恢复某应用"的 UI（含任何新增的显式入口）都必须经这个预检；
+     **不要在预检之外直接打 `/launch` / `/resume`**。
+4. **未接通的能力不得在 UI 暴露**：画质 / 输入开关必须"链路已通，或有能力探测并置灰说明"才可见；
+   不接受"有开关但没效果"。
+5. **控制端点使用主机标准参数名**（`/launch` 的 `rikey` / `gcmap` / `localAudioPlayMode` / `surroundAudioInfo`，
+   `/appasset` 的 `AssetType`；见 [`moonlight-native.md`](moonlight-native.md) §4）。改动前先核对标准客户端
+   （Moonlight Android / Sunshine）。
+6. **Moonlight 是进程级单会话**：moonlight-common-c 一次只允许一个连接（见
+   [`moonlight-native.md`](moonlight-native.md) §3）；任何"多开 / 并发"设想必须先解决这个前提。
+7. **上屏语义与 RDP 不同**：默认解码**直出 surface**、不经呈现器；只有超分链路复用 RDP 的 Vulkan 呈现器
+   （见 [`moonlight-native.md`](moonlight-native.md) §2）。
+8. **主机身份与信任**：去重按 `serverinfo` 的 `uniqueid`（不是地址）；pin 按 host 归一化；主机应答
+   不同 `uniqueid`（重装 / 换机）视为失效、重新配对（见 [`moonlight-native.md`](moonlight-native.md) §4）。
+9. **原生线程模型**：帧重活不得放在动态通道分发线程上（见 [`architecture.md`](architecture.md) §4）。

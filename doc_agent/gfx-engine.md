@@ -48,7 +48,7 @@ dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构�
 - **渐进分块的顺序**：同一条消息内的分块**互不重叠、可任意顺序**；**跨消息的同一分块必须按序**
   （先粗后细在持久状态上累积）；与其他命令之间仍是全局按序。
 - 上述码流全部由 FreeRDP 自带实现处理（`WITH_SIMD` 等构建开关与补丁决定其内部实现，见
-   [`native-libraries.md`](native-libraries.md)）。本工程不自研解码/合成。
+  [`native-libraries.md`](native-libraries.md)）。本工程不自研解码/合成。
 
 ### 0.4 从表面到屏幕（合成 / 脏区 / 上屏）
 
@@ -81,16 +81,14 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - 画面由 gdi 出、经呈现器上屏；遥测四相与账目口径见本文件 §7.1。
 - 采集点在 `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册（见
   [`native-libraries.md`](native-libraries.md) §3）。
-- 帧流水线（解压/解析/解码/合成/上屏/回执）跑在**会话自己的 GFX 工作线程**上，不在 drdynvc 分发线程：
-  后者承载全部动态通道，帧处理内联会把排在后面的音频与输入一起挡住。接线（sink 钩子、
-  `HmrdpGfxReplayRecv`、QoS）见 [`native-libraries.md`](native-libraries.md) §3 与
-  [`architecture.md`](architecture.md) §4。
+- 帧流水线（解压/解析/解码/合成/上屏/回执）跑在**会话自己的 GFX 工作线程**上（理由与线程模型见
+  [`architecture.md`](architecture.md) §4）。接线（sink 钩子、`HmrdpGfxReplayRecv`、QoS）见
+  [`native-libraries.md`](native-libraries.md) §3。
 
 ## 2. 上屏（present）
 
-上屏一套实现、两个后端：**Vulkan 优先，不能上屏时回落 GLES**，判据是**呈现能力**（`presenterSupported`：
-device + host-visible 内存 + surface/swapchain，不需要 compute）。「硬件加速」开关只选上屏后端（关 =
-GLES 且不碰 Vulkan）。细节见 [`present-pipeline.md`](present-pipeline.md)。
+桌面帧的上屏走 [`present-pipeline.md`](present-pipeline.md)（一套实现、Vulkan/GLES 两个后端，「硬件加速」
+开关只选上屏后端；判据见 §4）。本文件只涉及帧的**产出与合成**。
 
 ## 3. 不采用的方向（**不要在新代码里重新引入**）
 
@@ -100,10 +98,13 @@ GLES 且不碰 Vulkan）。细节见 [`present-pipeline.md`](present-pipeline.md
 - **H.264/AVC 支持不采用**：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
   且命中硬解也无明显收益 ⇒ 服务端改用其他码流。**不要引入媒体库依赖**。
 
+解码始终是 FreeRDP 的 gdi 软解（上屏后端的选择见 [`present-pipeline.md`](present-pipeline.md) §1）。
+
 ## 4. 呈现能力判定
 
-- 呈现能力判定只有 `presenterSupported` 一个；不存在分开的"解码能力 / 呈现能力"两套判定。模拟器一律回落 GLES（与"Vulkan 只在
-  真机验证"一致）；要让模拟器用 Vulkan，只需改 `FillPresenterVerdict()` 里那一处 ABI 分支。
+- 呈现能力判定只有 `presenterSupported` 一个；不存在分开的"解码能力 / 呈现能力"两套判定。模拟器一律
+  回落 GLES（与"Vulkan 只在真机验证"一致）；要让模拟器用 Vulkan，只需改 `FillPresenterVerdict()` 里
+  那一处 ABI 分支。
 - Vulkan 面与判定口径见 [`native-libraries.md`](native-libraries.md) §6。
 
 ## 5. 量测纪律（回放）
@@ -212,7 +213,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   | `run … threads=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、**整轮进程 CPU 时间**与本轮拿到的 SoC 频率档（`cpu=` 只在同一档下可比） |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
-  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md)） |
+  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md) §7） |
   | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6/§7.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
@@ -317,8 +318,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   最后一个块被慢线程攥住的时间越短，但共享游标上的原子操作越多（判据见下）。
   **调用线程也是这些 home 之一的所有者**，所以快的那一侧自然会多领。
 - **不变约束**：一个 tile 仍由单次 `progressive_process_tiles_tile_work_callback` 独占解码；
-  划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素
-  等价）。
+  划分只决定 tile 由哪个任务、按什么顺序处理（同一条 region 的 tile 互不重叠，任意顺序像素等价）。
 
 **内存归属**
 

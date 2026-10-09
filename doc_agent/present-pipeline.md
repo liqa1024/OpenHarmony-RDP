@@ -72,7 +72,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   桌面的命令之前**（GFX 帧边界与表面命令，以及 SolidFill / SurfaceToSurface / 缓存 / ResetGraphics 这类
   结构命令——**帧外**同样会来表面命令），挂在 `GfxWorkSetFrameBeginHook`；等待按"提交"去重
   （`desktopBufferFencePending_`）⇒ **每个 present 只真等一次**。
-  它在 gfx-engine §7.1 里记为 `sync`（`BeginDesktopBufferWrite`）：**等 GPU 放开主缓冲**。
+  它在 [`gfx-engine.md`](gfx-engine.md) §7.1 里记为 `sync`（`BeginDesktopBufferWrite`）：**等 GPU 放开主缓冲**。
   ⚠ 等待缺失的后果是**上屏画面混两帧**，且**只在帧背靠背时**出现；`bad=0` 与它无关。
 - **内存类型 `HOST_CACHED` 优先**；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
   驱动调用；cache flush 只写回脏行，多出来的干净行免费）。
@@ -97,8 +97,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 
 超分辨率（平台文档称「超分」）让会话按**更低的「会话分辨率」**取流，本机再把每帧上采样回设置里的
 **「输出分辨率」**：省的是解码与带宽（服务端少出像素），换来的是边缘更锐的本地放大。倍率与默认缩放见
-[`settings-and-storage.md`](settings-and-storage.md) §2；能力判定见
-[`native-libraries.md`](native-libraries.md) §6。
+[`settings-and-storage.md`](settings-and-storage.md) §2；能力判定见 [`native-libraries.md`](native-libraries.md) §6。
 
 - **只有 Vulkan 呈现器有**：GLES 是兼容兜底，不做同样功能（`SetSuperResolution()` 的默认实现是空操作，
   只有 `VkRenderer` 覆盖它）。因此超分辨率要求「硬件加速」开着，否则会话侧根本不会降分辨率。
@@ -168,9 +167,9 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   dev 页「路线」只切 CPU / 硬件加速（上屏后端），「参考」切 关/导出/对比，**每次点击都会重启回放**。
 - **样本**：设备侧读应用 filesDir 下的固定文件名，用 `hdc file send` **覆盖**（`hdc` 不能在该目录新建）；
   本地副本放 gitignore 目录留档。**换样本后记得还原**。
-- **判定"跑完"**：轮询回放 stats 文本里的 `(running=0)`（不要固定 sleep）。
-- **长期保留的账**：回放 stats 的 `present=` 行与 `upload=` 行
-  （`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
+- **判定"跑完"、驱动与多轮测量**：见 [`gfx-engine.md`](gfx-engine.md) §5 与
+  [`build-and-verify.md`](build-and-verify.md) §5.2。
+- **长期保留的账**：回放 stats 的 `present=` 行与 `upload=` 行（`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
 - **日志**：hilog domain `0xD001`；**每个格式说明符都要写 `%{public}`**，否则打印 `<private>`。
 - **坑（改这块前看一遍）**：
   - **在被测路径里加读回探针会扰动测量**（额外提交/等待会改变失败形状）——定位要用不进入被测路径的

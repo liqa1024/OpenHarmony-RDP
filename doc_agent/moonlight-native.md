@@ -1,8 +1,8 @@
 # Moonlight 原生客户端
 
 本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与共享库链接、视频解码与上屏、
-桥接层约定，以及后续的串流会话与输入接线。**控制层（serverinfo / pair / applist / launch）、协议编排与全部
-XML 解析在 ArkTS**（§4），不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
+桥接层约定、串流会话与输入接线，以及控制 / 配对层的协议事实（§4）。**控制层（serverinfo / pair / applist /
+launch）、协议编排与全部 XML 解析在 ArkTS**，不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
 编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)；RDP 的
 FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（本文件不重复它）。
 
@@ -18,7 +18,6 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
   `nanors/rs.c` 处编译）。
 - **构建**：随 `native/scripts/build-native.ps1` 的 moonlight 步一起（Windows NDK 交叉编译）。
   `fetch-sources.ps1` 负责按 commit 拉取并自动跑 `patch-moonlight.ps1`。
-
 - **共享库，单独打包**：上游 CMakeLists **默认就是共享**（`BUILD_SHARED_LIBS` 未定义时自行置 ON），
   `build-native.ps1` 不覆盖它 ⇒ 产出 `libmoonlight-common-c.so`，与其它独立依赖一样拷进
   `entry/libs/<abi>/`，`libhmrdp.so` 按完整路径链它。
@@ -44,10 +43,11 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
 
 Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选择——是显式模式，不是"先试一条再回退另一条"。
 解码用 HarmonyOS AVCodec（`OH_VideoDecoder_*`，库 `libnative_media_vdec.so` / `libnative_media_core.so` /
-`libnative_media_codecbase.so`）；`hmrdp_video_decoder` 一个实例包一个硬件解码器，输入是 **Annex-B 字节流**；**一次 Submit 必须是一个完整的访问单元
-（一帧的全部 slice + 其前置 SPS/PPS/SEI）**——AVCodec 的硬性约束是「同一帧的多个 slice 需一次送入解码器」，
-把一帧拆到多次 Push 会被当作损坏输入，解出来的画面即花屏/错乱。Moonlight 的拆包器本就把一帧的所有
-NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满足这个约束。`video/avc` = H.264，`video/hevc` = HEVC。
+`libnative_media_codecbase.so`）；`hmrdp_video_decoder` 一个实例包一个硬件解码器，输入是 **Annex-B 字节流**；
+**一次 Submit 必须是一个完整的访问单元（一帧的全部 slice + 其前置 SPS/PPS/SEI）**——AVCodec 的硬性约束是
+「同一帧的多个 slice 需一次送入解码器」，把一帧拆到多次 Push 会被当作损坏输入，解出来的画面即花屏/错乱。
+Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满足这个约束。
+`video/avc` = H.264，`video/hevc` = HEVC。
 
 - **默认：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
@@ -55,8 +55,7 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   最优，全屏原生比例时可能命中硬件直通/overlay。
 - **超分：buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。`OH_AVBuffer`（底层 `OH_NativeBuffer`，NV12）经
   `VK_OHOS_external_memory`（`vulkan_ohos.h`）导入为 `VkImage`，YUV→RGB 在 shader 里做，之后接
-  `VkRenderer` 既有的 letterbox / 超分 / swapchain。此链路**只在真机验证**（Vulkan 呈现本就真机），是
-  **独立后续里程碑**。
+  `VkRenderer` 既有的 letterbox / 超分 / swapchain。此链路**只在真机验证**（Vulkan 呈现本就真机）。
 - **解码器一处两类输出**（`VideoOutputMode`）：surface 给直出，buffer 给超分。喂入、回调派发、生命周期、
   背压队列共享，差异只在输出回调与是否 `SetSurface`——不是两份解码逻辑。
 - **送显与控速**：surface 模式每帧 `RenderOutputBuffer`（丢弃用 `FreeOutputBuffer`）；要控速/音画同步用
@@ -87,7 +86,7 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - RDP 的 `FramePipeline` / `GdiFrameHost` / `PresentGdiFrame` / 零拷贝桌面缓冲都是 **gdi（CPU 帧）专属**，
   不套给 Moonlight。
 - `FramePresenter`（surface / swapchain / letterbox / 超分）是唯一可复用的图形核心，**只被超分链路复用**：
-  届时以 buffer-only 形式加回视频输入，且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。直出链路
+  以 buffer-only 形式接入视频输入，且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。直出链路
   **完全不经 presenter**，与 RDP 互不影响。
 
 ### 不采用的方向
@@ -96,18 +95,19 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   整帧 GPU pass（letterbox / YUV→RGB），换来的是一条并非必需的 present 通道；且外部纹理的朝向/裁剪在
   `GetTransformMatrixV2` 的矩阵里、须与纹理坐标配合，还要处理跨线程 EGL，复杂度与故障面都不划算。
   Moonlight 的 letterbox 由直出的组件宽高比解决，超分则走 Vulkan 导入链路。
+- **YUV 4:4:4 不做**：解码与上屏按 4:2:0 处理。
 
 ## 3. 桥接层与接线
 
 - **构建必备输入，不是平台能力**：`moonlight-common-c` 是**本工程 vendor 的软件依赖**（随
   `build-native.ps1` 按固定版本编出、作为共享库链进 `libhmrdp.so`），和 FreeRDP 同类，**不是**设备/系统
-  可能缺失的平台能力。所以 `CMakeLists.txt` 逐个检查 `libmoonlight-common-c.so` /
-  `libcrypto.so` / `libssl.so`（连同 FreeRDP 与 zlib，共一份清单）是否都在 `entry/libs/<abi>/`，
-  缺一即 `FATAL_ERROR` 并提示先跑 `build-native.ps1`，随后**无条件**链接、无条件定义头文件路径。
+  可能缺失的平台能力。所以 `CMakeLists.txt` 逐个检查 `libmoonlight-common-c.so` / `libcrypto.so` /
+  `libssl.so`（连同 FreeRDP 与 zlib，共一份清单）是否都在 `entry/libs/<abi>/`，缺一即 `FATAL_ERROR` 并提示
+  先跑 `build-native.ps1`，随后**无条件**链接、无条件定义头文件路径。
   **不**照搬 FSR / XEngine「缺依赖就编成不支持、构建照常」的降级写法——那是"设备能力有无"的模型，套到自研
   功能上会造出一个本不该存在的"无 Moonlight"产品态。
-- **"符号已解析"由链接器保证**：`libhmrdp.so` 链 `libmoonlight-common-c.so`，且链接带 `-Wl,--no-undefined`（OHOS 工具链默认），
-  有未解析符号则链接失败。`hmrdp_moonlight.cpp` 的探针仍真正调用一个 moonlight 入口
+- **"符号已解析"由链接器保证**：`libhmrdp.so` 链 `libmoonlight-common-c.so`，且链接带 `-Wl,--no-undefined`
+  （OHOS 工具链默认），有未解析符号则链接失败。`hmrdp_moonlight.cpp` 的探针仍真正调用一个 moonlight 入口
   （`LiInitializeStreamConfiguration`，纯字段初始化、不起线程/不建 socket），把这条约束钉在调用点上。
 - **N-API 探针**：`moonlightProbe` 恒回 `"1"`——它只是一个"库确实链上了"的链接断言，不是能力探测
   （不用于 UI 置灰，也不该有"本设备不支持 Moonlight"这种状态）。
@@ -127,9 +127,8 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   调用方（UI 线程）只置停止标志、发条件变量通知、`join`，绝不直接碰 moonlight 状态。`g_active` 覆盖整个
   会话生命周期（含已建流阶段），用来**挡住并发的第二个会话**（moonlight-common-c 是进程级单连接，重入会把
   它的全局状态搞坏，表现为 `VideoRecv`/`RtpvAddPacket` 崩溃）。视频回调取自解码桥，`renderContext` 是会话
-  XComponent 的 `OHNativeWindow`，音频暂以空渲染器关掉（Opus 渲染器未定，见
-  [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）；输入直接转 `LiSend*`（相对/绝对鼠标、按键、滚轮）。
-  N-API 出口：`moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
+  XComponent 的 `OHNativeWindow`，音频以空渲染器关闭（不播放）；输入直接转 `LiSend*`（相对/绝对
+  鼠标、按键、滚轮）。N-API 出口：`moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll`；窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
@@ -158,12 +157,11 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
     协议是纯**推送**模型：客户端不能拉取，首个形状到来之前本机只有默认箭头；因此客户端把光标通道当
     **状态**维护（形状只发一次也要一直生效），并在窗口绑定 / 指针重进等时机重放（见
     [`session-and-input.md`](session-and-input.md) §2「重放点」）。
-- **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` /
-  `LiSetLocalCursorMode`，给 `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记；enable 幂等，重复发送安全）；
-  `hmrdp_moonlight_session.*`
-  把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；`hmrdp_napi.cpp` 把形状（含 `shapeId`）
-  经 `g_buffers` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新交给两协议共用的安装器
-  `services/RemoteCursor.ets`（去重键 = `shapeId` + 几何，倍率恒 1，见
+- **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` / `LiSetLocalCursorMode`，给
+  `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记；enable 幂等，重复发送安全）；
+  `hmrdp_moonlight_session.*` 把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；
+  `hmrdp_napi.cpp` 把形状（含 `shapeId`）经 `g_buffers` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新
+  交给两协议共用的安装器 `services/RemoteCursor.ets`（去重键 = `shapeId` + 几何，倍率恒 1，见
   [`session-and-input.md`](session-and-input.md) §2「远端光标同步」）。设置项是 `mlCursorMode` 三选一（见
   [`moonlight-connection.md`](moonlight-connection.md) §5）。
 - **回退**：主机拒绝 enable（非 Sunshine、非加密控制流 v2、或 enable 时仍无 producer，如 WGC 捕获）时
@@ -175,13 +173,13 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 
 ## 4. 控制 / 配对层（ArkTS）
 
-控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**
-（见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)）：传输与 mTLS / 证书 pin 用 `@ohos.net.http`，配对加密
-原语用 `cryptoFramework` 与 `@ohos.security.cert`，客户端身份（自签名 X.509 + HUKS 信封加密私钥）在 ArkTS
-组装；**原生不含这一层**。落地在 `ets/moonlight/`：`MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
-（身份与 pin 存储）、`MoonlightHttp`（传输）、`MoonlightClient`（编排），串流前预检由
-`services/MoonlightConnector` 调用（`serverinfo → pair → launch`，PIN 由调用方弹窗提供），协议建模与响应解析见
-[`moonlight-connection.md`](moonlight-connection.md)。以下是与实现语言无关的协议事实：
+控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**：
+传输与 mTLS / 证书 pin 用 `@ohos.net.http`，配对加密原语用 `cryptoFramework` 与 `@ohos.security.cert`，
+客户端身份（自签名 X.509 + HUKS 信封加密私钥）在 ArkTS 组装；**原生不含这一层**。落地在 `ets/moonlight/`：
+`MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`（身份与 pin 存储）、`MoonlightHttp`（传输）、
+`MoonlightClient`（编排），串流前预检由 `services/MoonlightConnector` 调用（`serverinfo → pair → launch`，
+PIN 由调用方弹窗提供），协议建模与响应解析见 [`moonlight-connection.md`](moonlight-connection.md)。
+以下是与实现语言无关的协议事实：
 
 - **信任模型 = 证书 pin**：未配对时接受任意主机证书（首触）；配对后存叶证书，之后逐字节一致。主机自签名，
   信任靠 pin 而非 CA。
@@ -203,8 +201,8 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - **存储**：目录 `<dir>/moonlight/`（`dir` 为应用沙箱 files dir）；pin 按 **host** 存 `server_<key>.der`
   （客户端身份 `client.crt` / `client.key.enc` 全局一份），host key 归一化（小写、去尾点）后定位文件。
   主机身份（用于去重）不是地址，而是 serverinfo 的 **`uniqueid`**（即 Moonlight 的 `NvComputer::uuid`）——
-  同一台机器写成 IP / 主机名会得到不同 pin，所以上层按 `uniqueid` 去重；主机应答了**不同的 `uniqueid`**（重装 / 换机）
-  时旧 pin 判为失效并清除、重新配对；删除连接 / 改主机时也清掉该主机的 pin（见
+  同一台机器写成 IP / 主机名会得到不同 pin，所以上层按 `uniqueid` 去重；主机应答了**不同的 `uniqueid`**
+  （重装 / 换机）时旧 pin 判为失效并清除、重新配对；删除连接 / 改主机时也清掉该主机的 pin（见
   [`moonlight-connection.md`](moonlight-connection.md) §4）。
 - **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
   分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
@@ -214,14 +212,11 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
 - **明文 `serverinfo` 恒 `PairStatus=0`**：Sunshine 只在 HTTPS 请求里按 `uniqueid` 置 1，所以"是否已配对"
   以本地存的 pin 为准（有 pin 即跳过配对），不能只信明文 serverinfo。
 
-## 5. 范围与后续方向
+## 5. 范围
 
-- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、桥接层与接线（§3，解码桥 + 串流会话桥）、
-  控制/配对层的协议事实（§4）。
-- 超分链路（buffer 模式 + Vulkan 导入 + 复用 `VkRenderer`）只在真机验证，属独立后续里程碑，复用约束见 §2
-  「与 RDP 呈现器的复用口径」。
+- 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、桥接层与接线（§3，解码桥 + 串流会话桥 +
+  本地光标模式）、控制/配对层的协议事实（§4）。
 - 主机发现、应用列表交互不在本文件范围；**控制层（驱动 `serverinfo → pair → applist → launch`）、协议编排与
   XML 解析在 ArkTS**（§4），会话的 ArkTS 接线（N-API / `MoonlightSessionBackend` / 会话窗口）与输入页路由
-  也不在本文件范围。路线与阶段见 [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
-- **改前必读**：会话侧接线要遵守既有的线程模型（动态通道分发线程只做轻活，帧重活走 sink 钩子），见
-  [`architecture.md`](architecture.md) §4。
+  也不在本文件范围。
+- **改前必读**：会话侧接线要遵守既有的线程模型，见 [`architecture.md`](architecture.md) §4。

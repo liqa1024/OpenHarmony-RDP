@@ -29,7 +29,7 @@ $dwtC = "$Source\libfreerdp\codec\rfx_dwt.c"
 $dwtNew = @'
 /*
  * HmRdp: bit-exact restructure of the inverse DWT (see the patch note in
- * native/scripts/patch-freerdp.ps1 step 15, doc_agent/gfx-engine.md §7.1). The
+ * native/scripts/patch-freerdp.ps1 step 15, doc_agent/gfx-engine.md §7.2). The
  * upstream scalar version follows verbatim: it is the fallback for the sizes and
  * targets the vector path does not cover.
  */

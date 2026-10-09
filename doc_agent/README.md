@@ -1,62 +1,61 @@
 # 开发知识库（doc_agent）
 
 本目录存放**通用开发知识**：架构、协议/算法约束、平台行为、验证方法。面向所有贡献者与 AI 助手，
-与具体开发机、具体设备、具体样本无关。
+与具体开发机、具体设备、具体样本无关。它描述**系统现在是什么样**（结论 + 依据 + 判据 + 约束），
+不记录排查过程、日期、机器/设备信息，也不放计划（计划不入库）。
 
-> 入口：仓库根目录的 [`AGENTS.md`](../AGENTS.md)（概览 + 硬规则 + 文档索引）。
-> 本目录只写**长期结论**：结论 + 依据（协议 / FreeRDP 源码 / 实测）+ 约束（改谁会影响谁），
-> 不记录排查过程、日期与机器/设备信息。
+> 入口：仓库根 [`AGENTS.md`](../AGENTS.md)（定位 + 硬规则 + 文档地图 + 环境/命令）。
+
+## 一个事实只有一个家（写文档前先看）
+
+**这是本仓库文档最重要的规则。** 每个事实只在一处展开，其余地方只放一句指针（「见 X」）。
+改文档前先在图里找到该事实**已经**的家，改写那一处，不要在新地方另写一份。
+
+| 主题 | 家 |
+|---|---|
+| 应用结构（Ability / 页面 / 服务 / 原生模块职责表）、数据流、**边界判据（什么必须留在原生）**、原生线程与所有权、拆除顺序、ArkTS 线程模型 | [`architecture.md`](architecture.md) |
+| 构建产物与 ABI、签名（材料不入库）、真机与模拟器流程、`uitest`/`hdc` 可靠用法、日志、**改动后必须跑的最小验证**、环境与 SDK 口径 | [`build-and-verify.md`](build-and-verify.md) |
+| 严格 ArkTS 规则、ArkUI 状态刷新坑、路由、主题/资源机制、沉浸材质（系统材质）API 与摆放机制 | [`arkts-conventions.md`](arkts-conventions.md) |
+| 界面设计语言：设计原则、设计 token、布局模式、组件契约、共享工具、协议差异的呈现约定 | [`ui-design.md`](ui-design.md) |
+| 会话窗口模型与连接状态机、窗口尺寸/全屏/可见性、自动隐藏主窗口、输入分流（鼠标/键盘/触屏/触控板）、远端光标同步、会话工具栏与状态遥测 | [`session-and-input.md`](session-and-input.md) |
+| 剪贴板（**手动触发**）与文件传输：线格式、原生/ArkTS 分工、实现坑 | [`clipboard.md`](clipboard.md) |
+| 存储分工、密码（ASSET / 系统保险箱）、设置模型（全局默认 + 单连接覆盖）、导入/导出、**设置生效时机** | [`settings-and-storage.md`](settings-and-storage.md) |
+| 三方库的源码构建与补丁体系、无版本号 SONAME、产物为何不入库、关键编译选项、音频（原生 sink + 交接环 / ArkTS 渲染器）、**设备能力探测（Capability 模式）**、Vulkan 面 | [`native-libraries.md`](native-libraries.md) |
+| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、呈现能力判定、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`gfx-engine.md`](gfx-engine.md) |
+| 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个后端、脏区上传、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**、swapchain 重建 | [`present-pipeline.md`](present-pipeline.md) |
+| Moonlight 前端：协议建模、存储布局、连接列表 / 编辑页 / 应用管理页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
+| Moonlight 原生：客户端库构建与共享库链接、视频解码与上屏、编解码协商、桥接与串流会话、控制/配对层协议事实 | [`moonlight-native.md`](moonlight-native.md) |
+
+**跨主题、只有一个家的事实**（别在别处重写）：
+
+- **硬件加速开关只选上屏后端，解码始终是 gdi** → [`present-pipeline.md`](present-pipeline.md) §1（设置意义见 [`settings-and-storage.md`](settings-and-storage.md)）。
+- **自研 GPU 解码/合成引擎不采用** → [`gfx-engine.md`](gfx-engine.md) 的「不采用的方向」。
+- **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
+- **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`native-libraries.md`](native-libraries.md) 的能力探测。
+- **剪贴板只手动同步、不做自动监听** → [`clipboard.md`](clipboard.md)。
 
 ## 阅读顺序
 
 | 目标 | 先读 |
 |---|---|
 | 首次上手 / 搭环境 / 跑起来 | [`build-and-verify.md`](build-and-verify.md) |
-| 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
-| 改 GFX / 解码 / 回放 | [`gfx-engine.md`](gfx-engine.md) |
-| 改上屏（present）管线 | [`present-pipeline.md`](present-pipeline.md) |
-| 改 CPU（gdi）链路的解码 / 并行 / 成本 / 量测口径 | [`gfx-engine.md`](gfx-engine.md) §7（**先读这一节**） |
+| 了解整体结构 / 线程模型 | [`architecture.md`](architecture.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改界面外观 / 抽共享 UI 组件 | [`ui-design.md`](ui-design.md) |
-| 改会话窗口 / 输入 / 工具栏 / 遥测 | [`session-and-input.md`](session-and-input.md) |
-| 改通道线程 / 音频不被帧挡住 | [`architecture.md`](architecture.md) §4（线程模型） |
+| 改会话窗口 / 输入 / 工具栏 / 遥测 / 光标 | [`session-and-input.md`](session-and-input.md) |
+| 改剪贴板 / 文件传输 | [`clipboard.md`](clipboard.md) |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
-| 改 Moonlight 前端（协议建模 / 存储 / 列表 / 编辑页 / 设置分栏） | [`moonlight-connection.md`](moonlight-connection.md) |
-| 改 Moonlight 原生（客户端库构建 / 解码 / 协商 / 上屏 / HTTP / 凭证 / 配对原语） | [`moonlight-native.md`](moonlight-native.md) |
-| Moonlight 接入路线图（未定项多，仅方向） | [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) |
+| 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
+| 改 GFX / 解码 / 回放 | [`gfx-engine.md`](gfx-engine.md)（**CPU 链路先读 §7**） |
+| 改上屏（present）/ 超分 | [`present-pipeline.md`](present-pipeline.md) |
+| 改 Moonlight 前端（列表 / 编辑页 / 设置分栏 / 图标） | [`moonlight-connection.md`](moonlight-connection.md) |
+| 改 Moonlight 原生（客户端库 / 解码 / 协商 / 上屏 / 配对原语） | [`moonlight-native.md`](moonlight-native.md) |
 
-## 文档清单
+## 写作约定
 
-- [`build-and-verify.md`](build-and-verify.md) —— 构建产物（product/ABI）、签名（材料不入库）、
-  真机与模拟器流程、`uitest`/`hdc` 的可靠用法、日志读取、**改动后必须跑的最小验证**。
-- [`architecture.md`](architecture.md) —— 应用结构：Ability / 页面 / 服务 / 原生模块职责表，连接与会话的数据流，
-  **原生线程模型（§4）**。
-- [`arkts-conventions.md`](arkts-conventions.md) —— 严格 ArkTS 规则、ArkUI 状态/`@Builder`/`ForEach`/路由/主题约定。
-- [`ui-design.md`](ui-design.md) —— 界面设计语言总纲：**设计原则**（按逻辑分类共享 / opt-in 可选能力 / 范围与扩展性）、
-  设计 token（颜色/尺寸/圆角/字号/阴影/动画）、沉浸材质表面清单、布局模式（页头/卡片/表单/列表行/会话窗）、
-  共享组件契约与共享工具、协议差异的呈现约定。
-- [`session-and-input.md`](session-and-input.md) —— 会话窗口模型、鼠标/键盘/触屏/触控板输入映射、工具栏与状态遥测、
-  光标同步、剪贴板（手动触发）。
-- [`settings-and-storage.md`](settings-and-storage.md) —— 设置与连接的存储模型、密码（ASSET）、导入/导出、
-  **设置何时生效**与解析优先级。
-- [`native-libraries.md`](native-libraries.md) —— FreeRDP/OpenSSL/zlib 的源码构建与补丁、无版本号 SONAME、
-  为什么 `entry/libs/<abi>/` 不入库、音频（原生 sink 交接环 / ArkTS 渲染器）与能力探测（Capability）模式。
-- [`gfx-engine.md`](gfx-engine.md) —— GFX 码流框架：管线与命令模型、会话侧接线、
-  回放验证回路与**参考画面（golden reference）验收**、**CPU（gdi）链路的成本结构与账目口径 /
-  判据与门禁 / 并行形态（§7）**。
-- [`present-pipeline.md`](present-pipeline.md) —— 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个
-  后端、脏区上传与零拷贝桌面缓冲的定型约束、**超分辨率（Vulkan 专有，XEngine/FSR）**、present 账目与探针。
-- [`moonlight-connection.md`](moonlight-connection.md) —— Moonlight（Sunshine）串流连接的**前端**：协议建模与
-  存储布局、连接列表与编辑页、设置页的协议分栏与「全局默认 + 会话覆盖」、图标约束、当前实现边界。
-- [`moonlight-native.md`](moonlight-native.md) —— Moonlight 的**原生侧**：客户端库 moonlight-common-c 的
-  拉取/补丁/共享库构建与链接、视频解码与上屏、编解码协商、解码桥与串流会话桥，以及控制层（身份/信任存储、
-  配对加密原语、协议编排与 XML）为何全在 ArkTS（见文内 §4）。
-- [`../MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md) —— Moonlight 接入路线图（阶段与未定项；前端 / 原生约定见上面两份文件）。
-
-## 维护约定
-
-- 新增结论先判断主题归属，写进对应文件；**不要**新建按时间顺序的排查记录。
-- 只保留结论、依据与约束。一次性实验、失败尝试不保留；若某方案被否证且看起来仍然诱人，
-  以「该方向不成立 + 原因」的形式写进对应主题。
-- 涉及平台行为的条目注明**适用面**（如"仅真机"、"模拟器不参与"），避免后人误用。
-- 优先给**量级、比例与判据**，而非不可复现的逐帧数字；数字只在作为阈值或门槛时保留。
+- **只写结论、依据、判据与约束。** 一次性实验、失败尝试、排查过程不保留。某方向被否证且看起来仍然诱人时，
+  以「该方向不成立 + 原因」的形式写进对应主题的「不采用」处，避免后人复活它。
+- **优先给量级、比例与判据**，而非不可复现的逐帧数字；数字只在作为阈值或门槛时保留。
+- **注明适用面**（如「仅真机」「模拟器不参与」「仅在已打补丁的构建上」），避免后人误用。
+- **改了被代码引用的章节要同步引用**：代码/脚本注释里有 `doc_agent/<file>.md §N` 形式的锚点
+  （多为 `gfx-engine.md §7.x`、`architecture.md §4.x`、`native-libraries.md §3`），移动或重排章节时一并更新。

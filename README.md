@@ -25,7 +25,7 @@ RDP 画面由 FreeRDP **gdi** 出、经呈现器上屏（**Vulkan 优先，GLES 
 - **输入**：鼠标（移动/左中右键/滚轮）、键盘（扫描码 + Unicode）、触屏（RDPEI 原生触屏转发，含接触
   压力；可选「高刷新率」解除 FreeRDP 的 50Hz 帧合并）；Moonlight 输入转 `LiSend*`
 - **光标同步**：RDP 只传远端光标**位图**（不做形状类型映射），客户端照搬交系统光标；超分下按同一倍率
-  放大位图；全局设置「使用RDP光标」可关闭（默认开，重开会话生效）
+  放大位图；全局设置「使用RDP光标」可关闭（默认开，重开会话生效）。Moonlight 另有「光标模式」三选一
 - **触控板**：双指滚动映射为高分辨率滚轮（含横向，速度可调）；双指捏合默认映射为 Ctrl+滚轮 缩放，
   可改为在鼠标位置合成原生双指触摸（角度、初始距离可调，缩放 1:1）
 - **音频**：rdpsnd 通道由 FreeRDP 解码，PCM 先进入原生交接环（`hmrdp_audio.cpp`，只做缓冲策略、
@@ -108,6 +108,7 @@ entry/
 native/
   scripts/                    原生库从源码重建脚本与补丁步骤
   third_party/                下载的源码与构建产物（gitignore）
+doc_agent/                    通用开发知识（面向贡献者与 AI 助手，见 doc_agent/README.md）
 ```
 
 ## 构建
@@ -151,6 +152,7 @@ pwsh native/scripts/build-native.ps1 -Arch arm64-v8a
 
 > 换 ABI：`-Arch x86_64`（模拟器）。只重建某一步：`-Only freerdp -Clean`。
 > 仅当更换 OpenSSL 版本时才需要 WSL 重出构建快照（`native/scripts/export-openssl-snapshot.ps1`）。
+> 细节与判据见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
 
 ## 命名
 

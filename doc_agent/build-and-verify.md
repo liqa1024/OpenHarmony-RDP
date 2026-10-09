@@ -18,17 +18,16 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 
 - product → target 的映射在工程级 `build-profile.json5`（`app.products` + `modules[].targets[].applyToProducts`）。
 - `devecocli run` 需显式带 target（否则按模块默认 target 找产物会报 `Build metadata not found`）。
-- ABI/库过滤在 `entry/build-profile.json5` 的 `targets[].config.buildOption`：覆盖
-  `externalNativeOptions.abiFilters` 与 `nativeLib.filter.excludes`。注意 `abiFilters` **只影响 CMake
-  编译**的 ABI，**不过滤**本地放在 `entry/libs/<abi>/*.so` 的库，所以必须用
-  `nativeLib.filter.excludes` 排除另一 ABI 的 `libs/<abi>`。
+- ABI/库过滤在 `entry/build-profile.json5` 的 `targets[].config.buildOption`：覆盖 `externalNativeOptions.abiFilters`
+  与 `nativeLib.filter.excludes`。注意 `abiFilters` **只影响 CMake 编译**的 ABI，**不过滤**本地放在
+  `entry/libs/<abi>/*.so` 的库，所以必须用 `nativeLib.filter.excludes` 排除另一 ABI 的 `libs/<abi>`。
 
 ## 2. 签名（材料不进仓库）
 
 `build-profile.json5` 的 `signingConfigs` **恒为 `[]`**；签名配置放仓库外，由 hvigor 注入：
 
-- `.signing/signing-config.json`（已 gitignore）放本机签名配置（DevEco 自动签名产生的 `type` +
-  `material`，口令是 DevEco 的密文，只有 hvigor 能解）；
+- `.signing/signing-config.json`（已 gitignore）放本机签名配置（DevEco 自动签名产生的 `type` + `material`，
+  口令是 DevEco 的密文，只有 hvigor 能解）；
 - 工程级 `hvigorfile.ts` 通过 `config.ohos.overrides.signingConfig` 注入；文件不存在时自动跳过，
   构建仍可用（只出未签名 HAP）。
 
@@ -115,9 +114,8 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
 - **SDK 版本口径**：`targetSdkVersion` 决定"能编译哪些 API"，`compatibleSdkVersion` 决定"能装到多老的系统"。
   工程取 `targetSdkVersion` = `26.0.0`、`compatibleSdkVersion` = `6.1.0(23)`：新版 ArkUI 能力（如沉浸光感）
   可以编译，同时保留 API 23 设备/模拟器的安装与运行。**任何一方的数值未经确认不要擅自调整**。
-- **版本号写法在 API 26 处换过一次**：API 26 之前写 `M.S.F(API)`（如 `6.1.0(23)`），
-  API 26 起写纯 `M.S.F`（如 `26.0.0`）。写成 `26.0.0(26)` 会被 hvigor 拒绝
-  （`api version parameter is illegal`）。
+- **版本号写法在 API 26 处换过一次**：API 26 之前写 `M.S.F(API)`（如 `6.1.0(23)`），API 26 起写纯 `M.S.F`
+  （如 `26.0.0`）。写成 `26.0.0(26)` 会被 hvigor 拒绝（`api version parameter is illegal`）。
 - **`compatibleSdkVersion` 低于所用 API 的 `since` 时**：编译器对每次调用报
   "It is recommended to use apiAvailable to safeguard API compatibility" 告警。
   这类调用必须做运行时版本保护（见 [`arkts-conventions.md`](arkts-conventions.md) §6），
@@ -127,7 +125,7 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
   required.`；多设备（syscap）/ 权限告警用
   `@SuppressWarnings({rules: [SuppressWarningsType.SYSCAP | PERMISSION]})`（`@ohos.annotation`，API 23+；
   装饰器对类 / 方法生效，**不能**标自由函数）标注承载调用的类或方法消除。两类告警的具体口径见
-  [`native-libraries.md`](native-libraries.md) §5、[`session-and-input.md`](session-and-input.md) §4。
+  [`native-libraries.md`](native-libraries.md) §5、[`clipboard.md`](clipboard.md)。
 - **`Currently module for 'libhmrdp.so' is not verified` 属误报**：本机 Node-API 库的类型验证告警
   （类型已由 `entry/src/main/cpp/types/libhmrdp/index.d.ts` 提供，引用处类型正常解析），源码侧无法消除，
   不必处理。
