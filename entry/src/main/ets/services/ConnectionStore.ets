@@ -208,6 +208,11 @@ export class ConnectionStore {
     parts.push('0'); // retired: gamepad
     parts.push(conn.useGlobalStream ? '1' : '0');
     parts.push(ConnectionStore.encode(conn.mlHostId));
+    // Per-connection display override sub-modes (自动 resolution / scale), appended
+    // after the Moonlight tail; older records stop before this block and keep
+    // using their stored width / height / scalePercent.
+    parts.push(conn.resolutionAuto ? '1' : '0');
+    parts.push(conn.scaleAuto ? '1' : '0');
     return parts.join(FIELD_SEPARATOR);
   }
 
@@ -260,6 +265,8 @@ export class ConnectionStore {
       ? ConnectionStore.parseNumber(parts[37], ML_CODEC_AUTO) : ML_CODEC_AUTO;
     conn.useGlobalStream = parts.length > 41 ? parts[41] === '1' : true;
     conn.mlHostId = parts.length > 42 ? ConnectionStore.decode(parts[42]) : '';
+    conn.resolutionAuto = parts.length > 43 ? parts[43] === '1' : false;
+    conn.scaleAuto = parts.length > 44 ? parts[44] === '1' : false;
     return conn;
   }
 

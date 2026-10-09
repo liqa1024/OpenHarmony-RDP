@@ -60,6 +60,10 @@ class ExportedConnection {
   useGlobalDisplay: boolean = true;
   useGlobalAdvanced: boolean = true;
   useGlobalSr: boolean = true;
+  // Per-connection display override sub-modes (自动 resolution / scale). Files
+  // written before these flags existed carry none, so they import with them off.
+  resolutionAuto: boolean = false;
+  scaleAuto: boolean = false;
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
   srBackend: number = SR_BACKEND_XENGINE;
@@ -98,6 +102,8 @@ class ExportedConnection {
     item.useGlobalDisplay = conn.useGlobalDisplay;
     item.useGlobalAdvanced = conn.useGlobalAdvanced;
     item.useGlobalSr = conn.useGlobalSr;
+    item.resolutionAuto = conn.resolutionAuto;
+    item.scaleAuto = conn.scaleAuto;
     item.srEnabled = conn.srEnabled;
     item.srRatioPercent = conn.srRatioPercent;
     item.srBackend = conn.srBackend;
@@ -135,6 +141,8 @@ class ExportedConnection {
     item.useGlobalDisplay = ConfigTransfer.readBoolean(rec, 'useGlobalDisplay', true);
     item.useGlobalAdvanced = ConfigTransfer.readBoolean(rec, 'useGlobalAdvanced', true);
     item.useGlobalSr = ConfigTransfer.readBoolean(rec, 'useGlobalSr', true);
+    item.resolutionAuto = ConfigTransfer.readBoolean(rec, 'resolutionAuto', false);
+    item.scaleAuto = ConfigTransfer.readBoolean(rec, 'scaleAuto', false);
     item.srEnabled = ConfigTransfer.readBoolean(rec, 'srEnabled', false);
     item.srRatioPercent = ConfigTransfer.readNumber(rec, 'srRatioPercent', 0);
     item.srBackend = ConfigTransfer.readNumber(rec, 'srBackend', SR_BACKEND_XENGINE);
@@ -173,6 +181,8 @@ class ExportedConnection {
     conn.useGlobalDisplay = this.useGlobalDisplay;
     conn.useGlobalAdvanced = this.useGlobalAdvanced;
     conn.useGlobalSr = this.useGlobalSr;
+    conn.resolutionAuto = this.resolutionAuto;
+    conn.scaleAuto = this.scaleAuto;
     conn.srEnabled = this.srEnabled;
     conn.srRatioPercent = this.srRatioPercent;
     conn.srBackend = this.srBackend;

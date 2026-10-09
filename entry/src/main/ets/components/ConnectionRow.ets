@@ -189,8 +189,8 @@ export struct ConnectionRow {
       if (this.conn.isMoonlight()) {
         Row() {
           Image($r('app.media.ic_apps'))
-            .width(20)
-            .height(20)
+            .width(24)
+            .height(24)
             .fillColor('#FFFFFF')
             .draggable(false)
         }
@@ -242,8 +242,8 @@ export struct ConnectionRow {
         } else if (this.primary() === ConnectAction.Disconnect) {
           // RDP 断开连接 (local session only; no host-side app).
           Image($r('app.media.ic_power'))
-            .width(22)
-            .height(22)
+            .width(28)
+            .height(28)
             .fillColor('#FFFFFF')
             .draggable(false)
         } else {

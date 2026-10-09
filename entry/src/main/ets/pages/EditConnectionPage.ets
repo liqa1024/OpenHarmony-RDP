@@ -59,6 +59,12 @@ struct EditConnectionPage {
   @State desktopHeightText: string = '1080';
   @State scaleText: string = '100';
   @State useGlobalDisplay: boolean = true;
+  // Per-connection display override sub-modes, only used when useGlobalDisplay is
+  // false: 自动 resolution follows the current screen, 自动 scale derives from the
+  // resolved resolution. They start on 自动 for a fresh override; an existing
+  // override loads its own flags.
+  @State displayResolutionAuto: boolean = true;
+  @State displayScaleAuto: boolean = true;
   @State advancedExpanded: boolean = false;
   @State useGlobalAdvanced: boolean = true;
   @State audioSupported: boolean = true;
@@ -184,6 +190,10 @@ struct EditConnectionPage {
       this.username = conn.username;
       this.domain = conn.domain;
       this.useGlobalDisplay = conn.useGlobalDisplay;
+      if (!conn.useGlobalDisplay) {
+        this.displayResolutionAuto = conn.resolutionAuto;
+        this.displayScaleAuto = conn.scaleAuto;
+      }
       if (conn.width > 0 && conn.height > 0) {
         this.desktopWidthText = conn.width.toString();
         this.desktopHeightText = conn.height.toString();
@@ -348,8 +358,9 @@ struct EditConnectionPage {
    * The scale 自动 would resolve to for what this editor connects with: the
    * requested (output) resolution alone decides it (see
    * `SettingsStore.autoScalePercent`), with this connection's 超分. The global
-   * resolution answers when the connection follows the global display, its own
-   * width/height otherwise.
+   * resolution answers when the connection follows the global display; with an
+   * override it is the detected screen (自动 resolution) or the typed width /
+   * height.
    */
   private suggestedScale(): number {
     const sr: SrProfile = this.resolvedSr();
@@ -357,8 +368,16 @@ struct EditConnectionPage {
     let width: number = fallback.width;
     let height: number = fallback.height;
     if (!this.useGlobalDisplay) {
-      width = this.parseSize(this.desktopWidthText, fallback.width);
-      height = this.parseSize(this.desktopHeightText, fallback.height);
+      if (this.displayResolutionAuto) {
+        const screen: DisplayProfile = SettingsStore.detectedDisplay();
+        if (screen.valid()) {
+          width = screen.width;
+          height = screen.height;
+        }
+      } else {
+        width = this.parseSize(this.desktopWidthText, fallback.width);
+        height = this.parseSize(this.desktopHeightText, fallback.height);
+      }
     }
     return SettingsStore.autoScalePercent(width, height, sr.enabled, sr.ratioPercent);
   }
@@ -377,19 +396,31 @@ struct EditConnectionPage {
     }
     this.errorMessage = '';
     const global: DisplayProfile = SettingsStore.globalDisplayProfile();
+    const sr: SrProfile = this.resolvedSr();
     const options: RdpConnectOptions =
       RdpConnectOptions.of(target, this.parsePort(), this.username.trim(), this.password,
         this.domain.trim());
     options.name = this.name.trim();
-    options.width = this.useGlobalDisplay
-      ? global.width : this.parseSize(this.desktopWidthText, global.width);
-    options.height = this.useGlobalDisplay
-      ? global.height : this.parseSize(this.desktopHeightText, global.height);
-    options.scalePercent = this.useGlobalDisplay
-      ? global.scalePercent : this.parseScale(this.scaleText, this.suggestedScale());
+    if (this.useGlobalDisplay) {
+      options.width = global.width;
+      options.height = global.height;
+      options.scalePercent = global.scalePercent;
+    } else {
+      const screen: DisplayProfile = SettingsStore.detectedDisplay();
+      if (this.displayResolutionAuto && screen.valid()) {
+        options.width = screen.width;
+        options.height = screen.height;
+      } else {
+        options.width = this.parseSize(this.desktopWidthText, global.width);
+        options.height = this.parseSize(this.desktopHeightText, global.height);
+      }
+      options.scalePercent = this.displayScaleAuto
+        ? SettingsStore.autoScalePercent(options.width, options.height,
+          sr.enabled && sr.ratioPercent > 100, sr.ratioPercent)
+        : this.parseScale(this.scaleText, this.suggestedScale());
+    }
     options.enableAudio = this.enableAudio;
     options.ignoreCertificate = this.ignoreCertificate;
-    const sr: SrProfile = this.resolvedSr();
     options.srEnabled = sr.enabled;
     options.srRatioPercent = sr.ratioPercent;
     options.srBackend = sr.backend;
@@ -417,6 +448,8 @@ struct EditConnectionPage {
       ? this.connectionId : util.generateRandomUUID(true);
     const conn: SavedConnection = SavedConnection.fromOptions(id, options);
     conn.useGlobalDisplay = this.useGlobalDisplay;
+    conn.resolutionAuto = !this.useGlobalDisplay && this.displayResolutionAuto;
+    conn.scaleAuto = !this.useGlobalDisplay && this.displayScaleAuto;
     conn.useGlobalAdvanced = this.useGlobalAdvanced;
     conn.useGlobalSr = this.useGlobalSr;
     conn.updatedAt = Date.now();
@@ -781,6 +814,30 @@ struct EditConnectionPage {
       selected: this.parsedScale() === preset,
       onTap: () => {
         this.scaleText = preset.toString();
+      }
+    })
+  }
+
+  /** One choice of the per-connection 分辨率 mode (自动 / 手动). */
+  @Builder
+  displayResModeChip(label: string, auto: boolean) {
+    ChoiceChip({
+      label: label,
+      selected: this.displayResolutionAuto === auto,
+      onTap: () => {
+        this.displayResolutionAuto = auto;
+      }
+    })
+  }
+
+  /** One choice of the per-connection 缩放比例 mode (自动 / 手动). */
+  @Builder
+  displayScaleModeChip(label: string, auto: boolean) {
+    ChoiceChip({
+      label: label,
+      selected: this.displayScaleAuto === auto,
+      onTap: () => {
+        this.displayScaleAuto = auto;
       }
     })
   }
@@ -1398,47 +1455,98 @@ struct EditConnectionPage {
                 } else {
                   Row() {
                     Column() {
-                      this.fieldLabel('分辨率宽度')
-                      TextInput({ placeholder: '1920', text: this.desktopWidthText })
-                        .width('100%')
-                        .height(46)
-                        .borderRadius(10)
-                        .backgroundColor($r('app.color.input_bg'))
-                        .type(InputType.Number)
-                        .onChange((value: string) => {
-                          this.desktopWidthText = value;
-                        })
+                      Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+                      Text('自动跟随当前屏幕，或固定一个分辨率')
+                        .fontSize(11)
+                        .fontColor($r('app.color.text_tertiary'))
+                        .margin({ top: 2 })
                     }
-                    .layoutWeight(1)
                     .alignItems(HorizontalAlign.Start)
+                    .layoutWeight(1)
 
-                    Column() {
-                      this.fieldLabel('分辨率高度')
-                      TextInput({ placeholder: '1080', text: this.desktopHeightText })
-                        .width('100%')
-                        .height(46)
-                        .borderRadius(10)
-                        .backgroundColor($r('app.color.input_bg'))
-                        .type(InputType.Number)
-                        .onChange((value: string) => {
-                          this.desktopHeightText = value;
-                        })
+                    Row() {
+                      this.displayResModeChip('自动', true)
+                      this.displayResModeChip('手动', false)
                     }
-                    .layoutWeight(1)
-                    .margin({ left: 16 })
-                    .alignItems(HorizontalAlign.Start)
                   }
                   .width('100%')
                   .margin({ top: 12 })
 
-                  Text('自动检测：' + this.detectedText)
-                    .fontSize(11)
-                    .fontColor($r('app.color.text_tertiary'))
-                    .width('100%')
-                    .margin({ top: 6 })
+                  if (this.displayResolutionAuto) {
+                    Text('自动检测：' + this.detectedText)
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .width('100%')
+                      .margin({ top: 6 })
+                  } else {
+                    Row() {
+                      Column() {
+                        this.fieldLabel('分辨率宽度')
+                        TextInput({ placeholder: '1920', text: this.desktopWidthText })
+                          .width('100%')
+                          .height(46)
+                          .borderRadius(10)
+                          .backgroundColor($r('app.color.input_bg'))
+                          .type(InputType.Number)
+                          .onChange((value: string) => {
+                            this.desktopWidthText = value;
+                          })
+                      }
+                      .layoutWeight(1)
+                      .alignItems(HorizontalAlign.Start)
 
-                  Column() {
-                    this.fieldLabel('缩放比例')
+                      Column() {
+                        this.fieldLabel('分辨率高度')
+                        TextInput({ placeholder: '1080', text: this.desktopHeightText })
+                          .width('100%')
+                          .height(46)
+                          .borderRadius(10)
+                          .backgroundColor($r('app.color.input_bg'))
+                          .type(InputType.Number)
+                          .onChange((value: string) => {
+                            this.desktopHeightText = value;
+                          })
+                      }
+                      .layoutWeight(1)
+                      .margin({ left: 16 })
+                      .alignItems(HorizontalAlign.Start)
+                    }
+                    .width('100%')
+                    .margin({ top: 12 })
+
+                    Text('自动检测：' + this.detectedText)
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .width('100%')
+                      .margin({ top: 6 })
+                  }
+
+                  Row() {
+                    Column() {
+                      Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
+                      Text('自动按分辨率推荐，或固定一个比例')
+                        .fontSize(11)
+                        .fontColor($r('app.color.text_tertiary'))
+                        .margin({ top: 2 })
+                    }
+                    .alignItems(HorizontalAlign.Start)
+                    .layoutWeight(1)
+
+                    Row() {
+                      this.displayScaleModeChip('自动', true)
+                      this.displayScaleModeChip('手动', false)
+                    }
+                  }
+                  .width('100%')
+                  .margin({ top: 16 })
+
+                  if (this.displayScaleAuto) {
+                    Text('推荐 ' + this.suggestedScale() + '%')
+                      .fontSize(11)
+                      .fontColor($r('app.color.text_tertiary'))
+                      .width('100%')
+                      .margin({ top: 6 })
+                  } else {
                     Flex({ wrap: FlexWrap.Wrap }) {
                       ForEach(SCALE_PRESETS, (preset: number) => {
                         this.scaleChip(preset)
@@ -1469,9 +1577,6 @@ struct EditConnectionPage {
                         .margin({ top: 4 })
                     }
                   }
-                  .width('100%')
-                  .margin({ top: 16 })
-                  .alignItems(HorizontalAlign.Start)
                 }
 
                 Divider()

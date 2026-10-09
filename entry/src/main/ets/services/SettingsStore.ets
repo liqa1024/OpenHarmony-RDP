@@ -580,6 +580,11 @@ export class SettingsStore {
    * Effective display profile for a connection: global settings unless the
    * connection opted into a per-connection override. `width`/`height` are the
    * output resolution and `sessionWidth`/`sessionHeight` what the server renders.
+   *
+   * In the override, resolution and scale each have an explicit 自动 mode: 自动
+   * resolution follows the current screen, 自动 scale is derived from the resolved
+   * resolution. Only when a mode is off do the stored values win. (Older records
+   * carry neither flag, so they stay on their stored values.)
    */
   static resolveDisplay(conn: SavedConnection): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
@@ -588,15 +593,30 @@ export class SettingsStore {
     if (conn.useGlobalDisplay) {
       return global;
     }
-    const hasOwnSize: boolean = conn.width > 0 && conn.height > 0;
-    const width: number = hasOwnSize ? conn.width : global.width;
-    const height: number = hasOwnSize ? conn.height : global.height;
-    // A connection with no scale of its own auto-resolves from *its own*
-    // resolution, not the global one: the two can differ.
-    const scale: number = conn.scalePercent > 0 ? conn.scalePercent
-      : SettingsStore.autoScalePercent(width, height,
-        sr.enabled && sr.ratioPercent > 100, sr.ratioPercent);
-    return SettingsStore.makeProfile(width, height, global.detected, scale, sr);
+    let width: number = 0;
+    let height: number = 0;
+    let detected: boolean = global.detected;
+    if (conn.resolutionAuto) {
+      const screen: DisplayProfile = SettingsStore.detectedDisplay();
+      if (screen.valid()) {
+        width = screen.width;
+        height = screen.height;
+        detected = true;
+      } else {
+        width = global.width;
+        height = global.height;
+      }
+    } else {
+      const hasOwnSize: boolean = conn.width > 0 && conn.height > 0;
+      width = hasOwnSize ? conn.width : global.width;
+      height = hasOwnSize ? conn.height : global.height;
+    }
+    // 自动 scale resolves from *this connection's* resolution, not the global one
+    // (the two can differ); a stored value is used when 自动 is off.
+    const autoScale: number = SettingsStore.autoScalePercent(width, height,
+      sr.enabled && sr.ratioPercent > 100, sr.ratioPercent);
+    const scale: number = conn.scaleAuto || conn.scalePercent <= 0 ? autoScale : conn.scalePercent;
+    return SettingsStore.makeProfile(width, height, detected, scale, sr);
   }
 
   /** Global advanced (protocol feature) defaults shared by every connection. */

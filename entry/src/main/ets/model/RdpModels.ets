@@ -377,6 +377,13 @@ export class SavedConnection extends RdpConnectOptions {
   // group so a LAN connection can stay native-resolution while the same machine's
   // gateway (frp) connection turns 超分 on.
   useGlobalSr: boolean = true;
+  // Per-connection display override sub-modes, only meaningful when
+  // useGlobalDisplay is false: `resolutionAuto` follows the current screen
+  // resolution, and `scaleAuto` derives the scale from that resolution. False
+  // means the stored width / height and scalePercent are used as they are (the
+  // behaviour of records written before these flags existed).
+  resolutionAuto: boolean = false;
+  scaleAuto: boolean = false;
 
   // Protocol this record connects with (PROTOCOL_RDP / PROTOCOL_MOONLIGHT).
   protocol: number = PROTOCOL_RDP;
