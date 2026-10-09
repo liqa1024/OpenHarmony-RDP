@@ -10,7 +10,6 @@
  */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { image } from '@kit.ImageKit';
 import { pointer } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
@@ -19,7 +18,8 @@ import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
-import { MlCursorShape, MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
+import { MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
+import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
@@ -104,12 +104,10 @@ struct MoonlightSessionPage {
   //    shape below is installed as the system cursor.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   private localCursorHidden: boolean = false;
-  // Host cursor shape installed as the system cursor (HIDE_HOST).
-  private cursorPixelMap: image.PixelMap | undefined = undefined;
-  private cursorHotX: number = 0;
-  private cursorHotY: number = 0;
-  private cursorShapeHash: number = 0;
-  private cursorShapeHashValid: boolean = false;
+  // Host cursor installed as the system cursor (HIDE_HOST). All policy lives
+  // in the shared installer (services/RemoteCursor.ets); this page only gates
+  // it with the mode and forwards updates.
+  private cursor: RemoteCursor = new RemoteCursor();
   // Toolbar title: the connection's display name (name or host, same as RDP) and
   // the target label the connecting card shows.
   private hostLabel: string = '';
@@ -183,11 +181,13 @@ struct MoonlightSessionPage {
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
-    // Only the local-cursor mode consumes the host cursor channel; the other
-    // modes leave the buffer to be released by the backend.
-    if (this.cursorMode === ML_CURSOR_HIDE_HOST && this.backend !== undefined) {
-      this.backend.setCursorListener((shape: MlCursorShape): void => {
-        this.onCursorShape(shape);
+    // Only the local-cursor mode installs host shapes; in the other modes the
+    // channel never opens (the backend only asks for it in HIDE_HOST), so the
+    // listener simply never fires.
+    this.cursor.setEnabled(this.cursorMode === ML_CURSOR_HIDE_HOST);
+    if (this.backend !== undefined) {
+      this.backend.setCursorListener((update: RemoteCursorUpdate): void => {
+        this.cursor.applyUpdate(update);
       });
     }
     this.loadSessionWindow();
@@ -224,7 +224,7 @@ struct MoonlightSessionPage {
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.setLocalCursorHidden(false);
     this.backend?.clearCursorListener();
-    this.resetHostCursor();
+    this.cursor.reset();
     this.toolbarAutoHideArmed = false;
     this.toolbarAutoHide.dispose();
     if (this.overlayTimer !== -1) {
@@ -301,6 +301,7 @@ struct MoonlightSessionPage {
         return;
       }
       this.sessionWindow = win;
+      this.cursor.setWindow(win);
       this.isFullscreen = WindowController.isFullscreen(win);
       WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
@@ -357,81 +358,6 @@ struct MoonlightSessionPage {
       this.cursorMode = ML_CURSOR_OFF;
       hilog.warn(DOMAIN, TAG, 'set pointer visibility failed: %{public}s', JSON.stringify(error));
     }
-  }
-
-  /**
-   * Installs a host cursor update (HIDE_HOST, foundation-sunshine local cursor
-   * mode) as the system cursor: a visibility-only change shows/hides the default
-   * pointer, a shape change rebuilds the PixelMap and installs it.
-   */
-  private onCursorShape(shape: MlCursorShape): void {
-    if (this.cursorMode !== ML_CURSOR_HIDE_HOST) {
-      return;
-    }
-    const win: window.Window | undefined = this.sessionWindow;
-    if (win === undefined) {
-      return;
-    }
-    try {
-      if (!shape.hasShape) {
-        pointer.setPointerVisibleSync(shape.visible);
-        return;
-      }
-      const bytes: ArrayBuffer | undefined = shape.bgra;
-      if (bytes === undefined || shape.width <= 0 || shape.height <= 0
-        || shape.width > 256 || shape.height > 256) {
-        return;
-      }
-      const hash: number = MoonlightSessionPage.cursorHash(shape.width, shape.height,
-        shape.hotX, shape.hotY, bytes);
-      if (this.cursorShapeHashValid && hash === this.cursorShapeHash) {
-        return;
-      }
-      const options: image.InitializationOptions = {
-        editable: false,
-        pixelFormat: image.PixelMapFormat.BGRA_8888,
-        size: { width: shape.width, height: shape.height }
-      };
-      this.cursorPixelMap = image.createPixelMapSync(bytes, options);
-      this.cursorHotX = Math.max(0, Math.min(shape.hotX, shape.width));
-      this.cursorHotY = Math.max(0, Math.min(shape.hotY, shape.height));
-      this.cursorShapeHash = hash;
-      this.cursorShapeHashValid = true;
-      const windowId: number = win.getWindowProperties().id;
-      pointer.setPointerVisibleSync(true);
-      pointer.setCustomCursorSync(windowId, this.cursorPixelMap, this.cursorHotX, this.cursorHotY);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'install host cursor failed: %{public}s', JSON.stringify(error));
-    }
-  }
-
-  /** Drops the host cursor shape and restores the system pointer on teardown. */
-  private resetHostCursor(): void {
-    this.cursorPixelMap = undefined;
-    this.cursorShapeHashValid = false;
-    this.cursorShapeHash = 0;
-    if (this.cursorMode === ML_CURSOR_HIDE_HOST) {
-      try {
-        pointer.setPointerVisibleSync(true);
-      } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'restore cursor failed: %{public}s', JSON.stringify(error));
-      }
-    }
-  }
-
-  /** Dedup key over the cursor geometry and pixels (host resends a shape id). */
-  private static cursorHash(width: number, height: number, hotX: number,
-    hotY: number, bytes: ArrayBuffer): number {
-    const view: Uint8Array = new Uint8Array(bytes);
-    let hash: number = 0;
-    hash = (hash * 31 + width) | 0;
-    hash = (hash * 31 + height) | 0;
-    hash = (hash * 31 + hotX) | 0;
-    hash = (hash * 31 + hotY) | 0;
-    for (let i = 0; i < view.length; i++) {
-      hash = (hash * 31 + view[i]) | 0;
-    }
-    return hash;
   }
 
   private handleMouse(event: MouseEvent): void {
@@ -527,7 +453,7 @@ struct MoonlightSessionPage {
     // Restore before the window goes away (setPointerVisible is process-wide).
     this.setLocalCursorHidden(false);
     this.backend?.clearCursorListener();
-    this.resetHostCursor();
+    this.cursor.reset();
     if (this.closing) {
       return;
     }

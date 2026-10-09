@@ -3,7 +3,7 @@
  */
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
-import { inputDevice, pointer } from '@kit.InputKit';
+import { inputDevice } from '@kit.InputKit';
 import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
@@ -16,6 +16,7 @@ import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtoco
 import { AudioPlayer } from '../services/AudioPlayer';
 import { BackgroundWorker } from '../services/BackgroundWorker';
 import { RdpNative } from '../services/RdpNative';
+import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
 import { RdpSessionBackend, SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { SessionSignal } from '../model/SessionSignal';
 import { RdpCounters } from '../services/SessionTelemetry';
@@ -373,11 +374,10 @@ struct SessionPage {
   private pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   private touchPinchActive: boolean = false;
   // While a synthetic-touch pinch is running the OS hides the mouse pointer (a
-  // touch is in progress), which would leave the user with no aim point. With the
-  // RDP cursor on, the system cursor is swapped to a native hand for the duration
-  // so the pinch anchor stays visible: open hand while spreading (zoom in), grab
-  // hand while closing (zoom out).
-  private touchPinchCursor: boolean = false;
+  // touch is in progress), which would leave the user with no aim point. The
+  // cursor installer swaps in a native hand for the duration (open hand while
+  // spreading / grab while closing); this field is the hysteresis memory for
+  // the direction.
   private touchPinchZoomIn: boolean = true;
   private touchPinchAnchor: number[] = [0, 0];
   private touchPinchHalf: number = MIN_PINCH_HALF;
@@ -464,24 +464,12 @@ struct SessionPage {
   private remoteFormatPending: boolean = false;
   private remotePendingId: number = 0;
   private remotePendingKind: number = RdpClipKind.NONE;
-  // Remote cursor shape, installed as the HarmonyOS system cursor. The server
-  // sends the full bitmap + hot spot; we keep the last PixelMap so it can be
-  // re-installed when the window re-acquires the pointer. `cursorHidden` tracks
-  // the server's SYSPTR_NULL (e.g. a full-screen video hides the cursor).
-  private cursorPixelMap: image.PixelMap | undefined = undefined;
-  private cursorHotX: number = 0;
-  private cursorHotY: number = 0;
-  private cursorHidden: boolean = false;
-  // Hash of the last installed cursor shape (geometry + pixels). Native hands
-  // over every shape the server sends; identical repeats (pointer cache hits)
-  // are dropped here so the system cursor is only re-installed on a real change.
-  private cursorShapeHash: number = 0;
-  private cursorShapeHashValid: boolean = false;
-  // Set once a cursor API call fails, so we stop retrying on every update.
-  private cursorSupported: boolean = true;
-  // Global "使用RDP光标" setting; when off the session leaves the system cursor
-  // alone and the native side ignores RDP pointer updates entirely.
-  private useRdpCursor: boolean = true;
+  // Remote cursor, installed as the HarmonyOS system cursor. All policy
+  // (scaling, dedup, pinch override, capability probing) lives in the shared
+  // installer (services/RemoteCursor.ets); this page only maps RDP events
+  // onto it. The "使用RDP光标" setting gates it via setEnabled (and natively
+  // via applyRdpCursor, which stops the pointer updates entirely).
+  private cursor: RemoteCursor = new RemoteCursor();
   // Global "回到前台自动重连" setting, plus the state of the check it arms: a
   // window that comes back to a session the system already dropped reconnects
   // without waiting for the user to press 重试.
@@ -562,7 +550,7 @@ struct SessionPage {
     RdpNative.applyGfxCapture(settings.gfxCapture, filesDir);
     hilog.info(DOMAIN, TAG, 'gfx capture=%{public}d dir=%{public}s', settings.gfxCapture ? 1 : 0,
       filesDir);
-    this.useRdpCursor = settings.useRdpCursor;
+    this.cursor.setEnabled(settings.useRdpCursor);
     this.reconnectOnForeground = settings.reconnectOnForeground;
     this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
@@ -645,7 +633,8 @@ struct SessionPage {
       }
     }
     this.releaseAllInputs();
-    this.restoreCursor();
+    this.cursor.setWindow(undefined);
+    this.cursor.restoreVisibility();
     // The manager owns the session: this window never stops it (that would race
     // the window-close teardown). SessionAbility.release() is the one place.
     this.options.password = '';
@@ -800,7 +789,7 @@ struct SessionPage {
         : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
       this.showOverlay = true;
       this.showToolbar = true;
-      this.resetCursor();
+      this.cursor.reset();
       this.stopAudio();
       this.resetClipboardNegotiation();
     }
@@ -929,14 +918,12 @@ struct SessionPage {
     } else if (event === RdpEvent.CursorShape) {
       this.onCursorShape(payload);
     } else if (event === RdpEvent.CursorDefault) {
-      this.cursorHidden = false;
-      this.cursorPixelMap = undefined;
-      this.cursorShapeHashValid = false;
-      this.applyCursor();
+      this.cursor.applyDefault();
     } else if (event === RdpEvent.CursorHidden) {
-      this.cursorHidden = true;
-      this.cursorShapeHashValid = false;
-      this.applyCursor();
+      const update: RemoteCursorUpdate = new RemoteCursorUpdate();
+      update.hasShape = false;
+      update.visible = false;
+      this.cursor.applyUpdate(update);
     } else if (event === RdpEvent.KeyIntercept) {
       this.handleInterceptedKey(payload);
     } else if (event === RdpEvent.AudioFormat) {
@@ -1145,69 +1132,21 @@ struct SessionPage {
     return parts.join('  ');
   }
 
-  /** Decodes a remote cursor bitmap and installs it as the system cursor. */
+  /** Maps a decoded RDP cursor shape onto the shared installer. */
   private onCursorShape(payload: RdpEventPayload): void {
-    const imageHandle: number = payload.imageHandle ?? 0;
-    if (imageHandle <= 0) {
-      return;
-    }
-    // Always read (and release) the buffer, even when this session will not use
-    // it, so the native handle can never leak.
-    const bytes: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
-    const width: number = payload.width ?? 0;
-    const height: number = payload.height ?? 0;
-    const hotX: number = payload.hotX ?? 0;
-    const hotY: number = payload.hotY ?? 0;
-    if (bytes === undefined || width <= 0 || height <= 0) {
-      return;
-    }
-    if (!this.cursorSupported || !this.useRdpCursor) {
-      return;
-    }
-    // Native already downscales oversized cursors to <=256; this is only a
-    // safety net should an out-of-range size ever reach the UI.
-    if (width > 256 || height > 256) {
-      this.cursorHidden = false;
-      this.cursorPixelMap = undefined;
-      this.cursorShapeHashValid = false;
-      this.applyCursor();
-      return;
-    }
-    const hash: number = SessionPage.cursorHash(width, height, hotX, hotY, bytes);
-    if (this.cursorShapeHashValid && hash === this.cursorShapeHash) {
-      return;
-    }
-    const options: image.InitializationOptions = {
-      editable: false,
-      pixelFormat: image.PixelMapFormat.BGRA_8888,
-      size: { width: width, height: height }
-    };
-    try {
-      this.cursorPixelMap = image.createPixelMapSync(bytes, options);
-      this.cursorHotX = Math.max(0, Math.min(hotX, width));
-      this.cursorHotY = Math.max(0, Math.min(hotY, height));
-      this.cursorHidden = false;
-      this.cursorShapeHash = hash;
-      this.cursorShapeHashValid = true;
-      this.applyCursor();
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'create cursor pixelmap failed: %{public}s', JSON.stringify(error));
-    }
-  }
-
-  /** Dedup key over the cursor geometry and pixels (native sends every shape). */
-  private static cursorHash(width: number, height: number, hotX: number,
-    hotY: number, bytes: ArrayBuffer): number {
-    const view: Uint8Array = new Uint8Array(bytes);
-    let hash: number = 0;
-    hash = (hash * 31 + width) | 0;
-    hash = (hash * 31 + height) | 0;
-    hash = (hash * 31 + hotX) | 0;
-    hash = (hash * 31 + hotY) | 0;
-    for (let i = 0; i < view.length; i++) {
-      hash = (hash * 31 + view[i]) | 0;
-    }
-    return hash;
+    const update: RemoteCursorUpdate = new RemoteCursorUpdate();
+    update.hasShape = true;
+    // RDP has no standalone "show" event (only SetNull hides): a shape or the
+    // default arriving *is* the show.
+    update.visible = true;
+    update.shapeKey = payload.shapeHash ?? 0;
+    update.magnification = (payload.magnificationMilli ?? 1000) / 1000;
+    update.width = payload.width ?? 0;
+    update.height = payload.height ?? 0;
+    update.hotX = payload.hotX ?? 0;
+    update.hotY = payload.hotY ?? 0;
+    update.imageHandle = payload.imageHandle ?? 0;
+    this.cursor.applyUpdate(update);
   }
 
   /** Decodes a raw CF_HTML payload (ClipboardCodec) into the remote HTML cache. */
@@ -1435,76 +1374,6 @@ struct SessionPage {
       .catch((error: BusinessError) => {
         hilog.warn(DOMAIN, TAG, 'decode dib failed: %{public}s', JSON.stringify(error));
       });
-  }
-
-  /** Pushes the current cursor state onto this window's system cursor. */
-  private applyCursor(): void {
-    if (!this.cursorSupported || !this.useRdpCursor) {
-      return;
-    }
-    const win: window.Window | undefined = this.sessionWindow;
-    if (win === undefined) {
-      return;
-    }
-    try {
-      const windowId: number = win.getWindowProperties().id;
-      if (windowId < 0) {
-        return;
-      }
-      if (this.touchPinchCursor) {
-        // Locator for the synthetic touch pinch: touch activity hides the pointer,
-        // and the remote cursor bitmap would not be shown either, so a built-in
-        // hand keeps the anchor visible and shows the gesture direction -
-        // spreading (zoom in) is the open hand, closing (zoom out) the grab hand.
-        pointer.setPointerVisibleSync(true);
-        // A style the device does not implement must not take the whole cursor
-        // path down (the outer catch disables it for the session), so fall back to
-        // the plain arrow locally.
-        try {
-          pointer.setPointerStyleSync(windowId, this.touchPinchZoomIn
-            ? pointer.PointerStyle.HAND_OPEN
-            : pointer.PointerStyle.HAND_GRABBING);
-        } catch (styleError) {
-          pointer.setPointerStyleSync(windowId, pointer.PointerStyle.DEFAULT);
-        }
-        return;
-      }
-      if (this.cursorHidden) {
-        pointer.setPointerVisibleSync(false);
-        return;
-      }
-      pointer.setPointerVisibleSync(true);
-      const pixelMap: image.PixelMap | undefined = this.cursorPixelMap;
-      if (pixelMap !== undefined) {
-        pointer.setCustomCursorSync(windowId, pixelMap, this.cursorHotX, this.cursorHotY);
-      } else {
-        pointer.setPointerStyleSync(windowId, pointer.PointerStyle.DEFAULT);
-      }
-    } catch (error) {
-      // Capability probing: on a device without a mouse the call throws, so
-      // stop trying and leave the system cursor alone.
-      this.cursorSupported = false;
-      hilog.warn(DOMAIN, TAG, 'set cursor failed: %{public}s', JSON.stringify(error));
-    }
-  }
-
-  /** Restores the default arrow after the session stops driving the cursor. */
-  private resetCursor(): void {
-    this.cursorHidden = false;
-    this.touchPinchCursor = false;
-    this.cursorPixelMap = undefined;
-    this.cursorShapeHashValid = false;
-    this.applyCursor();
-  }
-
-  /** Restores cursor visibility; setPointerVisible is process-wide. */
-  private restoreCursor(): void {
-    this.cursorPixelMap = undefined;
-    try {
-      pointer.setPointerVisibleSync(true);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'restore cursor failed: %{public}s', JSON.stringify(error));
-    }
   }
 
   /**
@@ -2851,12 +2720,11 @@ struct SessionPage {
     // Keep an aim point while the synthetic contacts are down (the OS hides the
     // pointer during touch) - only meaningful with the RDP cursor on. Start on the
     // open hand and let the direction pick between the two.
-    this.touchPinchCursor = true;
     this.touchPinchZoomIn = true;
     // axisPinch is already relative to the gesture start (1.0); apply the
     // initial sample so a late first event does not drop the first movement.
     this.updateTouchPinch(scale);
-    this.applyCursor();
+    this.cursor.setPinchOverride(true, this.touchPinchZoomIn);
     this.sendTouchPinchContacts(RdpTouchFlags.DOWN);
     // Let the DOWN frame flush before the first MOTION can overwrite it.
     this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
@@ -2878,7 +2746,7 @@ struct SessionPage {
       ? true : (ratio < 1 - PINCH_CURSOR_HYSTERESIS ? false : this.touchPinchZoomIn);
     if (zoomIn !== this.touchPinchZoomIn) {
       this.touchPinchZoomIn = zoomIn;
-      this.applyCursor();
+      this.cursor.setPinchOverride(true, zoomIn);
     }
   }
 
@@ -2904,8 +2772,7 @@ struct SessionPage {
     }
     this.touchPinchActive = false;
     this.sendTouchPinchContacts(RdpTouchFlags.UP);
-    this.touchPinchCursor = false;
-    this.applyCursor();
+    this.cursor.setPinchOverride(false, this.touchPinchZoomIn);
   }
 
   private setPinchCtrl(down: boolean): void {
@@ -3133,6 +3000,7 @@ struct SessionPage {
         return;
       }
       this.sessionWindow = win;
+      this.cursor.setWindow(win);
       this.isFullscreen = WindowController.isFullscreen(win);
       WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
@@ -3516,7 +3384,7 @@ struct SessionPage {
               // The system may drop a custom cursor when the pointer leaves and
               // re-enters the window, so re-install the last known shape.
               if (isHover) {
-                this.applyCursor();
+                this.cursor.reapply();
               }
             })
             .onBlur(() => {

@@ -61,6 +61,7 @@
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因 |
 | `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：版本门槛判断、材质复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
 | `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议会话页共用（见 [`session-and-input.md`](session-and-input.md) §3） |
+| `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用：形状去重（内容键 + 几何 + 倍率）、目标尺寸策略（桌面倍率 + 256 系统上限）、热点换算、PixelMap 与系统光标安装、捏合定位光标、能力探测；缩放走原生 `scaleBgraBitmap` 句柄原语（见 [`session-and-input.md`](session-and-input.md) §2） |
 | `services/SessionTelemetry.ets` | 工具栏遥测的 ArkTS 聚合：把原生原始样本换算成速率与每帧均值（口径见 [`gfx-engine.md`](gfx-engine.md) §7.1） |
 | `utils/KeyMapper.ets` | 按键名映射（设置页按键框显示用） |
 | `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/HTML/CfHTML 解析与组装），跑在后台 worker |
@@ -101,7 +102,8 @@
 |---|---|
 | `binding/hmrdp_napi.cpp` | Node-API 翻译层：类型化句柄注册表、结构化事件 + 计数拉取、位图缓冲句柄、各原语导出 |
 | `binding/handle_registry.h` | 类型化句柄注册表（单调不复用、按类型隔离、查找交出 `shared_ptr`） |
-| `core/hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图、会话遥测；画面由 gdi 出、经呈现器上屏 |
+| `core/hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图解码（xor/and 掩码→BGRA，缩放策略在 ArkTS）、会话遥测；画面由 gdi 出、经呈现器上屏 |
+| `core/hmrdp_bitmap.{h,cpp}` | 协议无关 BGRA 位图原语：预乘 alpha 面积平均缩小 / Lanczos3+锐化放大（`scaleBgraBitmap` 句柄进句柄出）+ FNV 内容哈希（光标去重键）；策略在 ArkTS `RemoteCursor` |
 | `core/hmrdp_file_clipboard.{h,cpp}` | 文件剪贴板域：文件格式 id/名、上传进度载荷与文件大小工具（供上传 serve 用；下载状态机在 ArkTS） |
 | `core/hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
 | `core/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |

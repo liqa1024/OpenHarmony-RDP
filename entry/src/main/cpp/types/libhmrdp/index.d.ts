@@ -38,7 +38,10 @@ export interface RdpOptions {
  *  - Connected / FirstFrame / CursorDefault / CursorHidden: none.
  *  - Disconnected / Error: `code` (FreeRDP error, 0 = internal) + `message`.
  *  - Resize: `width` + `height`.
- *  - CursorShape: `width` / `height` / `hotX` / `hotY` + `imageHandle`.
+ *  - CursorShape: `width` / `height` / `hotX` / `hotY` (all as decoded),
+ *    `magnificationMilli` (desktop magnification × 1000), `shapeHash` (content
+ *    key for dedup) + `imageHandle`. Scaling policy and dedup live in ArkTS
+ *    (services/RemoteCursor.ets).
  *  - ClipboardText: `text`.
  *  - ClipboardHtml: `dataHandle` (a raw CF_HTML; ArkTS parses it).
  *  - ClipboardRtf: `dataHandle` (a raw RTF payload; ArkTS converts it).
@@ -62,6 +65,10 @@ export interface RdpEventPayload {
   height?: number;
   hotX?: number;
   hotY?: number;
+  /** CursorShape: the desktop magnification × 1000 the bitmap is sized against. */
+  magnificationMilli?: number;
+  /** CursorShape: native content hash of the bitmap (dedup key). */
+  shapeHash?: number;
   /**
    * Handle of a native byte buffer for the event's image: raw BGRA for a cursor
    * shape, raw CF_DIB for a clipboard image. Read it with bufferRead(), then
@@ -264,6 +271,16 @@ export const bufferRead: (handle: number) => ArrayBuffer;
 export const bufferRelease: (handle: number) => void;
 
 /**
+ * Resamples one native BGRA buffer handle-to-handle (premultiplied area
+ * average downscale / Lanczos3 + `sharpen` upscale; the bitmap never crosses
+ * to ArkTS for the transform). The source handle is consumed either way;
+ * returns the new handle, or 0 when the input was unusable. The target size
+ * and sharpen strength are the caller's policy (services/RemoteCursor.ets).
+ */
+export const scaleBgraBitmap: (handle: number, srcW: number, srcH: number,
+  dstW: number, dstH: number, sharpen: number) => number;
+
+/**
  * Pulls PCM from the session's native audio ring into `dest`, the buffer the
  * ArkTS AudioRenderer hands to its `writeData` callback on the audio worker.
  * Fills every byte - queued audio plus silence on an underrun - so the callback
@@ -460,6 +477,8 @@ export interface MoonlightEventExtra {
   height?: number;
   hotX?: number;
   hotY?: number;
+  /** The host-assigned shape identity (protocol-native dedup key). */
+  shapeId?: number;
   visible?: boolean;
   hasShape?: boolean;
   imageHandle?: number;

@@ -150,9 +150,10 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   - 启用后主机**不再把光标画进画面**，改为在 `shape_id` 变化时发一次形状（可能分片）、在可见性变化时发更新。
 - **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` / `LiGetLocalCursorModeSupported` /
   `LiSetLocalCursorMode`，给 `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记、幂等）；`hmrdp_moonlight_session.*`
-  把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；`hmrdp_napi.cpp` 把形状经 `g_buffers`
-  句柄送到 ArkTS（事件第 4 个对象参数）；会话页用 `createPixelMapSync` + `setCustomCursorSync` 装成系统光标
-  （按几何+像素哈希去重）。设置项是 `mlCursorMode` 三选一（见
+  把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；`hmrdp_napi.cpp` 把形状（含 `shapeId`）
+  经 `g_buffers` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新交给两协议共用的安装器
+  `services/RemoteCursor.ets`（去重键 = `shapeId` + 几何，倍率恒 1，见
+  [`session-and-input.md`](session-and-input.md) §2「远端光标同步」）。设置项是 `mlCursorMode` 三选一（见
   [`moonlight-connection.md`](moonlight-connection.md) §5）。
 - **回退**：主机未广告 `cursor_shape` 时 `LiSetLocalCursorMode` 是 no-op，客户端收不到形状 ⇒ 系统光标保持
   默认（等于「关闭」）。

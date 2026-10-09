@@ -58,8 +58,9 @@ enum class SessionEvent {
   // values[0] = width, values[1] = height.
   kResize = 5,
   // Remote pointer updates. kCursorShape carries values {width, height, hotX,
-  // hotY} plus the BGRA bitmap in the event's byte buffer; the others carry no
-  // payload and ask the UI to restore/hide the system cursor.
+  // hotY, magnificationMilli, contentHash} plus the BGRA bitmap as decoded
+  // (scaling policy and dedup are ArkTS, services/RemoteCursor.ets); the
+  // others carry no payload and ask the UI to restore/hide the system cursor.
   kCursorShape = 6,
   kCursorDefault = 7,
   kCursorHidden = 8,
@@ -189,7 +190,8 @@ class Session : public std::enable_shared_from_this<Session> {
   // textual field (a message / reason / raw list), if any; binary always travels
   // separately in the byte vector.
   struct EventData {
-    int64_t values[5] = {0, 0, 0, 0, 0};
+    static constexpr size_t kMaxValues = 8;
+    int64_t values[kMaxValues] = {0};
     std::string text;
   };
 
@@ -504,10 +506,11 @@ class Session : public std::enable_shared_from_this<Session> {
   std::atomic<bool> gfxQueueHighWaterWarned_{false};
   void* gfxWorkerContext_ = nullptr;
   // 超分辨率 magnification of the remote desktop (output ÷ session resolution).
-  // The server sizes the pointer bitmap in *session* pixels, so the cursor is
-  // magnified by the same factor - the CPU resample in UpscaleBgra - to stay in
-  // step with the upscaled picture; 1.0 without it. Written at connect, read on
-  // the RDP thread.
+  // The server sizes the pointer bitmap in *session* pixels, so the cursor
+  // bitmap is reported with this factor and ArkTS magnifies it by the same
+  // factor the desktop is upscaled by (hmrdp_bitmap kernels via
+  // scaleBgraBitmap); 1.0 without it. Written at connect, read on the RDP
+  // thread.
   double desktopMagnification_ = 1.0;
   // Server-reported network characteristics from the autodetect channel.
   std::atomic<uint32_t> netCharBaseRtt_{0};

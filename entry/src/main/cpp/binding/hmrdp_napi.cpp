@@ -25,6 +25,7 @@
 
 #include "binding/handle_registry.h"
 #include "hmrdp_log.h"
+#include "hmrdp_bitmap.h"
 #include "hmrdp_moonlight.h"
 #include "hmrdp_moonlight_session.h"
 #include "hmrdp_replay.h"
@@ -103,7 +104,9 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
     napi_set_named_property(env, obj, name, v);
   };
   auto value = [&payload](int index) {
-    return index >= 0 && index < 5 ? payload.values[index] : static_cast<int64_t>(0);
+    return index >= 0 && index < static_cast<int>(Session::EventData::kMaxValues)
+               ? payload.values[index]
+               : static_cast<int64_t>(0);
   };
   // Hands the binary half over as a native buffer handle (ArkTS reads it once
   // with bufferRead(); nothing binary crosses as a string).
@@ -143,11 +146,15 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
       setBuffer("dataHandle");
       break;
     case static_cast<int>(SessionEvent::kCursorShape):
-      // width / height / hotX / hotY, plus the BGRA bitmap.
+      // width / height / hotX / hotY as decoded, plus the desktop magnification
+      // (milli) and a content hash so ArkTS owns scaling policy and dedup; the
+      // BGRA bitmap travels as a buffer handle.
       setInt("width", value(0));
       setInt("height", value(1));
       setInt("hotX", value(2));
       setInt("hotY", value(3));
+      setInt("magnificationMilli", value(4));
+      setInt("shapeHash", value(5));
       setBuffer("imageHandle");
       break;
     case static_cast<int>(SessionEvent::kClipboardImage):
@@ -1053,6 +1060,49 @@ napi_value BufferRelease(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
+// scaleBgraBitmap(handle, srcW, srcH, dstW, dstH, sharpen) -> new handle.
+// Resamples one g_buffers BGRA bitmap handle-to-handle (the bitmap never
+// crosses to ArkTS for the transform itself). The source handle is consumed
+// either way; 0 means the input was unusable. Downscales by premultiplied
+// area average, upscales by premultiplied Lanczos3 + optional sharpen
+// (hmrdp_bitmap); which one and how much is the caller's policy.
+napi_value ScaleBgraBitmap(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int64_t handle = 0;
+  int64_t srcW = 0;
+  int64_t srcH = 0;
+  int64_t dstW = 0;
+  int64_t dstH = 0;
+  double sharpen = 0.0;
+  if (argc < 6 || napi_get_value_int64(env, args[0], &handle) != napi_ok ||
+      napi_get_value_int64(env, args[1], &srcW) != napi_ok ||
+      napi_get_value_int64(env, args[2], &srcH) != napi_ok ||
+      napi_get_value_int64(env, args[3], &dstW) != napi_ok ||
+      napi_get_value_int64(env, args[4], &dstH) != napi_ok ||
+      napi_get_value_double(env, args[5], &sharpen) != napi_ok) {
+    return CreateInt(env, 0);
+  }
+  const std::shared_ptr<NativeBuffer> src = g_buffers.Take(handle);
+  if (src == nullptr || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 ||
+      src->bytes.size() != static_cast<size_t>(srcW) * static_cast<size_t>(srcH) * 4) {
+    return CreateInt(env, 0);
+  }
+  auto dst = std::make_shared<NativeBuffer>();
+  const uint32_t srcSide = static_cast<uint32_t>(srcW > srcH ? srcW : srcH);
+  const uint32_t dstSide = static_cast<uint32_t>(dstW > dstH ? dstW : dstH);
+  if (dstSide <= srcSide) {
+    hmrdp::DownscaleBgra(src->bytes, static_cast<uint32_t>(srcW), static_cast<uint32_t>(srcH),
+                         static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH), &dst->bytes);
+  } else {
+    hmrdp::UpscaleBgra(src->bytes, static_cast<uint32_t>(srcW), static_cast<uint32_t>(srcH),
+                       static_cast<uint32_t>(dstW), static_cast<uint32_t>(dstH),
+                       static_cast<float>(sharpen), &dst->bytes);
+  }
+  return CreateInt(env, g_buffers.Add(dst));
+}
+
 napi_value AudioRead(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -1482,12 +1532,14 @@ struct MoonlightEventPayload {
   int event = 0;
   int value = 0;
   std::string text;
-  // Local cursor mode (kCursorShape) extra: geometry + an optional BGRA bitmap
-  // that travels as a g_buffers handle in the 4th (object) argument.
+  // Local cursor mode (kCursorShape) extra: geometry + the host's shape id
+  // (protocol-native dedup key) + an optional BGRA bitmap that travels as a
+  // g_buffers handle in the 4th (object) argument.
   int width = 0;
   int height = 0;
   int hotX = 0;
   int hotY = 0;
+  int64_t shapeId = 0;
   bool visible = false;
   bool hasShape = false;
   std::vector<uint8_t> bytes;
@@ -1522,6 +1574,7 @@ void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data
   setInt("height", payload->height);
   setInt("hotX", payload->hotX);
   setInt("hotY", payload->hotY);
+  setInt("shapeId", payload->shapeId);
   setBool("visible", payload->visible);
   setBool("hasShape", payload->hasShape);
   if (!payload->bytes.empty()) {
@@ -1544,6 +1597,7 @@ void OnMoonlightCursor(const hmrdp::MoonlightCursorShape& shape) {
   payload->event = static_cast<int>(hmrdp::MoonlightSessionEvent::kCursorShape);
   payload->visible = shape.visible;
   payload->hasShape = shape.hasShape;
+  payload->shapeId = shape.shapeId;
   payload->width = shape.width;
   payload->height = shape.height;
   payload->hotX = shape.hotspotX;
@@ -1842,6 +1896,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"bufferSize", nullptr, BufferSize, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"bufferRead", nullptr, BufferRead, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"bufferRelease", nullptr, BufferRelease, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"scaleBgraBitmap", nullptr, ScaleBgraBitmap, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"audioRead", nullptr, AudioRead, nullptr, nullptr, nullptr,
        napi_default, nullptr},

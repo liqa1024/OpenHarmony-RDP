@@ -139,6 +139,7 @@ endforeach()
 add_library(hmrdp SHARED
     binding/hmrdp_napi.cpp
     core/hmrdp_session.cpp
+    core/hmrdp_bitmap.cpp
     core/hmrdp_file_clipboard.cpp
     core/hmrdp_moonlight.cpp
 core/hmrdp_moonlight_session.cpp

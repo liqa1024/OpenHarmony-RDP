@@ -18,7 +18,7 @@ import {
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener
 } from 'libhmrdp.so';
 import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
-import { RdpNative } from './RdpNative';
+import { RemoteCursorUpdate } from './RemoteCursor';
 import { PendingConnection, PROTOCOL_MOONLIGHT, SavedConnection } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionStore } from './ConnectionStore';
@@ -37,21 +37,12 @@ export const ML_EVENT_STAGE_FAILED: number = 4;
 export const ML_EVENT_CURSOR_SHAPE: number = 5;
 
 /**
- * One local-cursor update from the host (foundation-sunshine cursor channel).
- * `bgra` is present only when `hasShape` is set; otherwise it is a visibility
- * change.
+ * Local-cursor updates (foundation-sunshine cursor channel) are forwarded as
+ * the protocol-neutral RemoteCursorUpdate: the host's shape id is the dedup
+ * key, the magnification is 1 (the host sizes the bitmap itself), and the
+ * BGRA bitmap stays a native buffer handle for the installer to consume.
  */
-export class MlCursorShape {
-  visible: boolean = false;
-  hasShape: boolean = false;
-  width: number = 0;
-  height: number = 0;
-  hotX: number = 0;
-  hotY: number = 0;
-  bgra: ArrayBuffer | undefined = undefined;
-}
-
-export type MlCursorListener = (shape: MlCursorShape) => void;
+export type MlCursorListener = (update: RemoteCursorUpdate) => void;
 
 export class MoonlightSessionBackend implements SessionBackend {
   private listener: SessionSignalListener | undefined = undefined;
@@ -94,17 +85,16 @@ export class MoonlightSessionBackend implements SessionBackend {
         }
         return;
       }
-      const shape: MlCursorShape = new MlCursorShape();
-      shape.visible = extra.visible ?? true;
-      shape.hasShape = extra.hasShape ?? false;
-      shape.width = extra.width ?? 0;
-      shape.height = extra.height ?? 0;
-      shape.hotX = extra.hotX ?? 0;
-      shape.hotY = extra.hotY ?? 0;
-      if (handle > 0) {
-        shape.bgra = RdpNative.readAndReleaseBuffer(handle);
-      }
-      listener(shape);
+      const update: RemoteCursorUpdate = new RemoteCursorUpdate();
+      update.visible = extra.visible ?? true;
+      update.hasShape = extra.hasShape ?? false;
+      update.shapeKey = extra.shapeId ?? 0;
+      update.width = extra.width ?? 0;
+      update.height = extra.height ?? 0;
+      update.hotX = extra.hotX ?? 0;
+      update.hotY = extra.hotY ?? 0;
+      update.imageHandle = handle;
+      listener(update);
       return;
     }
     this.emit(event, value, text);
