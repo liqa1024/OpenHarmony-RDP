@@ -30,6 +30,9 @@ struct Index {
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
   @State hostTargets: Map<string, number> = new Map<string, number>();
   @State draggingIndex: number = -1;
+  // Which row's menu is open; menuSeq changes so a repeat request still re-opens it.
+  @State menuConnectionId: string = '';
+  @State menuSeq: number = 0;
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
   @State developerMode: boolean = false;
@@ -164,6 +167,19 @@ struct Index {
 
   private targetId(conn: SavedConnection): number {
     return conn.isMoonlight() ? conn.mlDefaultAppIdValue() : 0;
+  }
+
+  private openRowMenu(connectionId: string): void {
+    this.menuConnectionId = connectionId;
+    this.menuSeq = this.menuSeq + 1;
+  }
+
+  private closeRowMenu(): void {
+    this.menuConnectionId = '';
+  }
+
+  private menuRequestFor(conn: SavedConnection): number {
+    return this.menuConnectionId === conn.id ? this.menuSeq : 0;
   }
 
   private persistOrder(): void {
@@ -424,6 +440,10 @@ struct Index {
                 state: this.connState(conn.id),
                 hostTargetId: this.hostTargetId(conn),
                 targetId: this.targetId(conn),
+                menuRequest: this.menuRequestFor(conn),
+                onRequestMenu: () => {
+                  this.openRowMenu(conn.id);
+                },
                 onEdit: () => {
                   this.openEditor(conn.id, conn.protocol);
                 },
@@ -448,8 +468,16 @@ struct Index {
             .onMove((from: number, to: number) => {
               this.moveConnection(from, to);
             }, {
+              // The drag callbacks also drive the menu (both share the long press).
+              onLongPress: (index: number) => {
+                const row: SavedConnection | undefined = this.connections[index];
+                if (row !== undefined) {
+                  this.openRowMenu(row.id);
+                }
+              },
               onDragStart: (index: number) => {
                 this.draggingIndex = index;
+                this.closeRowMenu();
               },
               onDrop: (index: number) => {
                 this.draggingIndex = -1;

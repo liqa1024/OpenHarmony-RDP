@@ -160,6 +160,9 @@ Column(page_bg, 100%×100%)
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
   菜单项分两组：会话动作（连接 / 恢复 / 切换 / 断开 / 终止）用 `MenuItemGroup` 包住，与 `编辑` / `删除` 之间由
   分组分隔线隔开；仅 `删除` 用 `danger`，其余项保持默认前景色。
+- **菜单触发**：程序化 `bindContextMenu(isShown, …)`——`ResponseType` 只能二选一（右键 / 长按），而菜单要同时吃两者。
+  触屏长按由 `List.onMove` 的拖拽回调驱动（`onLongPress` 开、`onDragStart` 关），右键由行的 `onMouse` 触发。
+  该形式**不按被绑组件定位**，位置只能由 `ContextMenuOptions.offset` 给触发点的窗口坐标。
 
 ### 3.6 会话窗口
 

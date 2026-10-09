@@ -14,18 +14,23 @@ export struct ConnectionRow {
   // passes 0/0: it has no host-side session, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
+  // Page-controlled: >0 opens this row's menu, 0 closes it.
+  @Prop @Watch('onMenuRequest') menuRequest: number = 0;
   // ArkUI has no shared declarative hover/press effect, so the button keeps its
   // own state and animates via utils/UiMotion.
   @State appHovered: boolean = false;
   @State appPressed: boolean = false;
+  @State menuShown: boolean = false;
+  // Trigger point (window coords) the menu is placed at.
+  @State menuWinX: number = 0;
+  @State menuWinY: number = 0;
   onEdit: () => void = () => {};
   onToggleConnection: () => void = () => {};
   onOpenApps: () => void = () => {};
   onTerminate: () => void = () => {};
   onDelete: () => void = () => {};
+  onRequestMenu: () => void = () => {};
   private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private menuOptions: ContextMenuOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private cardMaterial: AttributeModifier<RowAttribute> =
     new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CARD));
@@ -66,6 +71,32 @@ export struct ConnectionRow {
       this.onTerminate();
     } else {
       this.onToggleConnection();
+    }
+  }
+
+  // false first re-arms the menu after a dismiss left the flag set.
+  private onMenuRequest(): void {
+    if (this.menuRequest > 0) {
+      this.menuShown = false;
+      this.menuShown = true;
+    } else {
+      this.menuShown = false;
+    }
+  }
+
+  private menuOptions(): ContextMenuOptions {
+    const options: ContextMenuOptions = {
+      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+      placement: Placement.BottomRight,
+      offset: { x: this.menuWinX, y: this.menuWinY }
+    };
+    return options;
+  }
+
+  private onRowTouch(event: TouchEvent): void {
+    if (event.type === TouchType.Down && event.touches.length > 0) {
+      this.menuWinX = event.touches[0].windowX;
+      this.menuWinY = event.touches[0].windowY;
     }
   }
 
@@ -250,6 +281,12 @@ export struct ConnectionRow {
       .onClick(() => {
         this.primaryTap();
       })
+
+      // The isShown menu ignores this node's position; the point comes from `offset`.
+      Row()
+        .width(0)
+        .height(0)
+        .bindContextMenu(this.menuShown, this.menu(), this.menuOptions())
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
@@ -258,6 +295,15 @@ export struct ConnectionRow {
     .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
     .clip(false)
     .attributeModifier(this.cardMaterial)
-    .bindContextMenu(this.menu(), ResponseType.RightClick, this.menuOptions)
+    .onMouse((event: MouseEvent) => {
+      if (event.button === MouseButton.Right && event.action === MouseAction.Press) {
+        this.menuWinX = event.windowX;
+        this.menuWinY = event.windowY;
+        this.onRequestMenu();
+      }
+    })
+    .onTouch((event: TouchEvent) => {
+      this.onRowTouch(event);
+    })
   }
 }
