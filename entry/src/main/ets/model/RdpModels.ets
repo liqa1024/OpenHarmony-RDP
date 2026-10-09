@@ -150,8 +150,9 @@ export enum RdpEvent {
   FirstFrame = 3,
   ClipboardText = 4,
   Resize = 5,
-  // Remote cursor: Shape carries the bitmap size/hotspot fields plus a native
-  // buffer handle; Default/Hidden carry no payload.
+  // Remote cursor: Shape carries the decoded bitmap geometry/hotspot, the
+  // desktop magnification and a content hash (dedup key) plus a native buffer
+  // handle; Default/Hidden carry no payload.
   CursorShape = 6,
   CursorDefault = 7,
   CursorHidden = 8,

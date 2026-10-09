@@ -745,7 +745,7 @@ struct SettingsPage {
       return '不处理光标：画面里是主机画的光标，本机也画一个（可能双重）';
     }
     if (this.mlCursorMode === ML_CURSOR_HIDE_HOST) {
-      return '主机不画光标，本机按主机形状绘制（顺滑、无双重）';
+      return '主机光标形状实时同步为本机系统光标（顺滑、无双重）';
     }
     return '隐藏本机系统光标，只显示画面里主机画的光标';
   }
@@ -1079,7 +1079,7 @@ struct SettingsPage {
                 Row() {
                   this.mlCursorModeChip(ML_CURSOR_OFF, '关闭')
                   this.mlCursorModeChip(ML_CURSOR_HIDE_SYSTEM, '隐藏系统光标')
-                  this.mlCursorModeChip(ML_CURSOR_HIDE_HOST, '隐藏主机光标')
+                  this.mlCursorModeChip(ML_CURSOR_HIDE_HOST, '同步系统光标')
                 }
                 .width('100%')
                 .margin({ top: 10, bottom: 6 })

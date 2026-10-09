@@ -560,6 +560,12 @@ struct MoonlightSessionPage {
             // The system cursor follows the pointer: hidden over the picture,
             // shown again as soon as it leaves (toolbar / outside the window).
             this.setLocalCursorHidden(isHover);
+            if (isHover) {
+              // The system may drop a custom cursor when the pointer re-enters
+              // the window, and the host only sends a shape on change (never a
+              // resend) - re-install the kept state, same as the RDP page.
+              this.cursor.reapply();
+            }
           })
           .onAxisEvent((event: AxisEvent) => {
             this.handleAxis(event);

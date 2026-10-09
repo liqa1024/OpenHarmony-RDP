@@ -141,22 +141,36 @@ NAL 交给一次回调（见 §3 的解码桥），所以产品链路天生满�
   指针、显示画面里的主机光标。
 - **foundation-sunshine 的光标扩展**（HmRdp 已适配；改动写进 `native/scripts/patch-moonlight.ps1`）：
   - **能力广告**：RTSP DESCRIBE 的 `a=x-ss-general.featureFlags` 置位 `cursor_shape = 0x40`（仅当主机有
-    光标生产者：Windows `ddx`/`vdd` 捕获）。客户端库已解析该值（`SunshineFeatureFlags`），无需新握手。
+    光标生产者：Windows `ddx`/`vdd` 捕获）。客户端库已解析该值（`SunshineFeatureFlags`）。广告按
+    **DESCRIBE 时刻**的 producer 存在性给出，而 producer 随**首条流**的显示捕获创建（`display_base.cpp`
+    里置位）——**主机启动后的首连该位恒缺席**，此刻主机其实已能接受 enable（见下）。
   - **功能握手（客户端→主机）**：控制流消息 `0x5509`，payload 恰 4 字节 `[version=1, mode(0关/1开), 0, 0]`。
     仅在被**加密控制流 v2**（`controlProtocolType == 13`）接受；客户端用 `corever=1` 协商 v2。
+    **客户端不按广告位过滤 enable**（广告位对首连是陈旧的，见上；只按 `IS_SUNSHINE` + 加密 v2 发送），
+    因为主机在 enable 时会以「加密控制流 + producer 可用」**再校验**，拒绝则静默忽略——回退由此保证。
+    enable 是**一次性握手**：协议无 ACK、无重传，丢包会让整段会话静默失去光标通道，故必须
+    `ENET_PACKET_FLAG_RELIABLE` 发送（上游连周期 ping 都用可靠发送）。enable 被接受后，主机侧按
+    latest-value 桥（`cursor_channel`）把当前形状随下一次发布送达，客户端无需拉取。
   - **主机→客户端**：同 `0x5509`，28 字节 LE 头 + BGRA 分片（每片 ≤60000B）：
     `u8 version, u8 flags(0x01 shape / 0x02 visible), u16 header_size=28, u32 shape_id, u16 w, u16 h,
     i16 hotx, i16 hoty, u32 total_size, u32 offset, u16 chunk_size, u16 reserved` + 片字节。
   - 启用后主机**不再把光标画进画面**，改为在 `shape_id` 变化时发一次形状（可能分片）、在可见性变化时发更新。
-- **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` / `LiGetLocalCursorModeSupported` /
-  `LiSetLocalCursorMode`，给 `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记、幂等）；`hmrdp_moonlight_session.*`
+    协议是纯**推送**模型：客户端不能拉取，首个形状到来之前本机只有默认箭头；因此客户端把光标通道当
+    **状态**维护（形状只发一次也要一直生效），并在窗口绑定 / 指针重进等时机重放（见
+    [`session-and-input.md`](session-and-input.md) §2「重放点」）。
+- **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` /
+  `LiSetLocalCursorMode`，给 `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记；enable 幂等，重复发送安全）；
+  `hmrdp_moonlight_session.*`
   把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；`hmrdp_napi.cpp` 把形状（含 `shapeId`）
   经 `g_buffers` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新交给两协议共用的安装器
   `services/RemoteCursor.ets`（去重键 = `shapeId` + 几何，倍率恒 1，见
   [`session-and-input.md`](session-and-input.md) §2「远端光标同步」）。设置项是 `mlCursorMode` 三选一（见
   [`moonlight-connection.md`](moonlight-connection.md) §5）。
-- **回退**：主机未广告 `cursor_shape` 时 `LiSetLocalCursorMode` 是 no-op，客户端收不到形状 ⇒ 系统光标保持
-  默认（等于「关闭」）。
+- **回退**：主机拒绝 enable（非 Sunshine、非加密控制流 v2、或 enable 时仍无 producer，如 WGC 捕获）时
+  静默忽略，客户端收不到形状 ⇒ 系统光标保持默认（等于「关闭」）。
+- **对原版 Sunshine 的兼容性**：其控制流分发对未注册类型只做 debug 日志后丢弃（`stream.cpp`
+  `control_server_t::call`），所以向原版主机发 enable 是无害 no-op（收不到形状即回退）；GFE 由
+  `IS_SUNSHINE()` 挡住不发。客户端改动不引入任何协议层面的兼容风险。
 - **验证**：需一台跑 foundation-sunshine 的主机（真机）。
 
 ## 4. 控制 / 配对层（ArkTS）

@@ -69,9 +69,47 @@ export class RemoteCursor {
   private pinchActive: boolean = false;
   private pinchZoomIn: boolean = true;
 
+  /**
+   * Binds the session window and pushes the current state onto it. Binding is
+   * one of the replay points that keep the invariant: the window arrives
+   * asynchronously while shape events can land earlier (their state is kept
+   * regardless), and neither protocol guarantees a resend - Moonlight sends a
+   * shape only when its id changes - so readiness must re-apply, not wait.
+   *
+   * Also subscribes to window activation: activation is another point where
+   * the window's custom cursor can be dropped, and its timing is independent
+   * of pointer hover (a hover-driven re-apply can land before the activation
+   * reset and lose), so activation must re-push the state too. A protocol
+   * that never resends the unchanged shape (Moonlight) has no other recovery.
+   */
   setWindow(win: window.Window | undefined): void {
+    const previous: window.Window | undefined = this.sessionWindow;
+    if (previous !== undefined && previous !== win) {
+      try {
+        previous.off('windowEvent', this.windowEventCallback);
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'unwatch windowEvent failed: %{public}s', JSON.stringify(error));
+      }
+    }
     this.sessionWindow = win;
+    if (win !== undefined && win !== previous) {
+      try {
+        win.on('windowEvent', this.windowEventCallback);
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'watch windowEvent failed: %{public}s', JSON.stringify(error));
+      }
+    }
+    this.apply();
   }
+
+  /** Re-pushes the cursor state when the window activates / unhides. */
+  private windowEventCallback: (event: window.WindowEventType) => void =
+    (event: window.WindowEventType): void => {
+      if (event === window.WindowEventType.WINDOW_ACTIVE
+        || event === window.WindowEventType.WINDOW_SHOWN) {
+        this.apply();
+      }
+    };
 
   /** Off: the remote stops driving the cursor (state cleared, nothing applied). */
   setEnabled(enabled: boolean): void {
