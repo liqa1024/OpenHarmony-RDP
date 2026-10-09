@@ -71,6 +71,7 @@
 | `TOOLBAR_FG` / `TOOLBAR_FG_SECONDARY` | `#FFFFFF` / `#B8BCC4` | 主 / 次文字与图标 |
 | `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底 |
 | `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底 |
+| `TOOLBAR_NEUTRAL_CHIP_BG` | `#6E737B` | 非破坏性的会话退出 chip（Moonlight「断开」）：实心中性灰（同 `neutral`），与半透明白的普通 chip、`danger` 红都能分开 |
 | `TOOLBAR_CHIP_BORDER` | `#59FFFFFF` | 描边（次级）chip 边框 |
 | `TOOLBAR_PROGRESS` | `#5B9CF8` | 传输进度条 |
 | `METRIC_GOOD` / `METRIC_WARN` / `METRIC_BAD` | `#4ADE80` / `#FBBF24` / `#F87171` | 遥测阈值着色 |
@@ -170,6 +171,9 @@ Column(page_bg, 100%×100%)
   故连接态的卡等这段阈值、仍未起来才显示；失败 / 断开 / 正在断开一律立即显示。RDP 窗口只在连上后才开，因此
   天然不出现连接卡。连接卡的副标题与 RDP 同形（连接目标 `targetLabel`），协议阶段文案不进卡片。
 - 工具栏结构：主行（会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
+- **会话结束 chip 的着色**：RDP 只有「断开」→ `danger`（与主界面断开钮同色）；Moonlight 有「断开」与「关闭应用」
+  两个结束动作，用第三种色把非破坏性的「断开」分出来——`TOOLBAR_NEUTRAL_CHIP_BG`（实心中性灰），更破坏性的
+  「关闭应用」保持 `danger`。
 - 主行左侧的「名称 + 分辨率」是同形的一段，由 `SessionTitle`（§4.1）渲染：名称 `14` 前景色，后面跟 `12`
   次级色的「宽 × 高」；协议差异只体现在分辨率后的**括号后缀**——RDP 是超分（`srIndicator`），Moonlight 是
   协商到的解码格式（`moonlightDecodeIndicator`，如 ` (H.264, CPU)`，软件解码才带 `, CPU`）。

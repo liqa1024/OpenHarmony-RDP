@@ -19,8 +19,9 @@ import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
 import { lengthToNumber } from '../utils/UiUtil';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { StatusCard } from '../components/StatusCard';
-import { TOOLBAR_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE,
-  TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip, ToolbarRevealHint } from '../components/SessionChrome';
+import { TOOLBAR_BG, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR,
+  TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
+  ToolbarRevealHint } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
@@ -425,6 +426,7 @@ struct MoonlightSessionPage {
         .margin({ right: 8 })
       ToolbarChip({
         label: '断开',
+        chipBg: TOOLBAR_NEUTRAL_CHIP_BG,
         onTap: () => {
           this.disconnect();
         }

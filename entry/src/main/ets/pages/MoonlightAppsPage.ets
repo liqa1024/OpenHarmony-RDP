@@ -380,7 +380,7 @@ struct MoonlightAppsPage {
               .width('100%')
             }
             .width('100%')
-            .padding({ left: 12, right: 88, top: 16, bottom: 96 })
+            .padding({ left: 24, right: 88, top: 16, bottom: 16 })
           }
           .layoutWeight(1)
           .align(Alignment.Top)

@@ -7,6 +7,7 @@ export const TOOLBAR_FG: string = '#FFFFFF';
 export const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
 export const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
 export const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
+export const TOOLBAR_NEUTRAL_CHIP_BG: string = '#6E737B';
 export const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
 export const TOOLBAR_PROGRESS: string = '#5B9CF8';
 export const TOOLBAR_ROW_HEIGHT: number = 48;
