@@ -1,11 +1,3 @@
-/*
- * HmRdp - presenter backend selection (see hmrdp_presenter.h).
- *
- * The choice is made from the *presenter* verdict of the cached Vulkan probe
- * (VulkanCapabilities::presenterSupported): presenting a frame needs a device
- * that can blit to the XComponent surface plus host-visible memory for the frame
- * buffer. A device that cannot present at all falls back to GLES.
- */
 #include "hmrdp_presenter.h"
 
 #include <atomic>
@@ -18,7 +10,6 @@
 namespace hmrdp {
 
 namespace {
-// The "硬件加速" setting (see the header). Read when a presenter is created.
 std::atomic<bool> g_hardwareAccel{true};
 }  // namespace
 

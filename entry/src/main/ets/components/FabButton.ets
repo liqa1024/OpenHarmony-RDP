@@ -1,13 +1,3 @@
-/*
- * HmRdp - floating circular action button.
- *
- * The bottom-right round action (new connection, refresh, ...): accent circle,
- * shared hover / press feedback and an OVERLAY-material tooltip. The caller
- * places it (e.g. via .margin) and owns the action, so the same control is used
- * wherever a page needs a floating primary action. While `loading` is set the
- * icon itself is replaced by a spinner and taps are ignored, leaving the page
- * behind it untouched.
- */
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 

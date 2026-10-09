@@ -1,9 +1,3 @@
-/*
- * HmRdp - settings row with a slider.
- *
- * "title (+ subtitle + disabled reason) + value text" above a Slider, with the
- * value rounded to `precision` decimal places. Shared by the settings page.
- */
 @Component
 export struct SettingSliderRow {
   @Prop title: string = '';

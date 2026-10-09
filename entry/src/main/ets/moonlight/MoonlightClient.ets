@@ -1,12 +1,3 @@
-/*
- * HmRdp - Moonlight (GameStream) control layer (ArkTS side).
- *
- * Drives serverinfo -> pair -> applist -> launch against the host over the
- * transport in MoonlightHttp, using the crypto in MoonlightCrypto and the client
- * identity in MoonlightIdentity; all XML is parsed here (MoonlightXml). This
- * mirrors Moonlight's Android PairingManager / NvHTTP (doc_agent/moonlight-native.md
- * §4). The native side keeps only the RTSP/stream client (LiStartConnection).
- */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { moonlightLaunchQueryParameters } from 'libhmrdp.so';
@@ -23,7 +14,6 @@ const DEFAULT_HTTPS_PORT: number = 47984;
 // Long timeout for getservercert: the host user must type the PIN first.
 const PAIR_CERT_TIMEOUT_MS: number = 300000;
 
-/** An HTTP body plus a stable error token when it could not be used. */
 class HttpOutcome {
   body: string = '';
   error: string = '';
@@ -33,7 +23,6 @@ export class MoonlightClient {
   // Shared with other Moonlight clients so games started elsewhere can be quit.
   static readonly UNIQUE_ID: string = '0123456789ABCDEF';
 
-  /** One `/serverinfo` probe over plain HTTP. */
   static async fetchServerInfo(dir: string, host: string, port: number): Promise<ServerInfoResult> {
     const result: ServerInfoResult = new ServerInfoResult();
     const path: string =
@@ -66,7 +55,6 @@ export class MoonlightClient {
     return result;
   }
 
-  /** The host's application list over TLS (requires a paired credential + pin). */
   static async fetchAppList(dir: string, host: string, httpsPort: number): Promise<AppListResult> {
     const result: AppListResult = new AppListResult();
     const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
@@ -87,18 +75,14 @@ export class MoonlightClient {
     return result;
   }
 
-  /**
-   * One app's icon (`/appasset`, HTTPS + mTLS), or undefined when unavailable.
-   * The bytes are a PNG the caller decodes for display.
-   */
   static async fetchAppAsset(dir: string, host: string, httpsPort: number,
     appId: number): Promise<ArrayBuffer | undefined> {
     const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
     if (pin === undefined) {
       return undefined;
     }
-    // Host-side asset request: AssetType=2 (box art) and AssetIdx=0 select the
-    // icon; the host ignores an unknown clientid, so it is not sent.
+    // AssetType=2 / AssetIdx=0 select the box art; the host ignores an unknown
+    // clientid, so it is not sent.
     const path: string = `/appasset?appid=${appId}&AssetType=2&AssetIdx=0`
       + `&uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
     const response: MoonlightHttpResult =
@@ -106,23 +90,16 @@ export class MoonlightClient {
     return response.ok ? response.bodyBytes : undefined;
   }
 
-  /** Launches an application on the host (`/launch`). */
   static async launch(dir: string, host: string, httpsPort: number,
     options: MoonlightLaunchOptions): Promise<LaunchResult> {
     return MoonlightClient.startSession(dir, host, httpsPort, options, false);
   }
 
-  /** Resumes the application the host is already running (`/resume`). */
   static async resume(dir: string, host: string, httpsPort: number,
     options: MoonlightLaunchOptions): Promise<LaunchResult> {
     return MoonlightClient.startSession(dir, host, httpsPort, options, true);
   }
 
-  /**
-   * Starts or resumes an application. The caller generates `rikeyHex` /
-   * `rikeyId` and fills STREAM_CONFIGURATION from the result for
-   * LiStartConnection.
-   */
   private static async startSession(dir: string, host: string, httpsPort: number,
     options: MoonlightLaunchOptions, resume: boolean): Promise<LaunchResult> {
     const result: LaunchResult = new LaunchResult();
@@ -138,15 +115,13 @@ export class MoonlightClient {
       + `&mode=${options.width}x${options.height}x${options.fps}`
       + `&rikey=${options.rikeyHex}`
       + `&rikeyid=${options.rikeyId}`
-      // Host-side parameter names (Sunshine nvhttp): localAudioPlayMode (not
-      // localaudio), surroundAudioInfo (packed int). Audio is not wired yet, so
-      // the stream is negotiated as stereo with host-side playback off; no
-      // gamepad is forwarded yet, so the attached-controller mask is 0.
+      // Sunshine nvhttp parameter names: localAudioPlayMode (not localaudio),
+      // surroundAudioInfo (packed int). Audio/gamepad are not wired yet:
+      // stereo with host playback off, controller mask 0.
       + '&localAudioPlayMode=0'
       + '&surroundAudioInfo=196610'
       + '&remoteControllersBitmap=0'
       + '&gcmap=0'
-      // Sunshine's extended parameters (owned by moonlight-common-c).
       + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =
       MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin));
@@ -167,12 +142,6 @@ export class MoonlightClient {
     return result;
   }
 
-  /**
-   * Pairs with the host using `pin` (shown to the user, typed on the host).
-   * Ports: getservercert / clientchallenge / serverchallengeresp /
-   * clientpairingsecret go over plain HTTP, pairchallenge over HTTPS; the
-   * server certificate from getservercert is pinned on success.
-   */
   static async pair(dir: string, host: string, httpPort: number, httpsPort: number,
     majorVersion: number, pin: string): Promise<PairResult> {
     const result: PairResult = new PairResult();
@@ -208,7 +177,6 @@ export class MoonlightClient {
       return result;
     }
 
-    // 1. getservercert (plain HTTP, long timeout: the host user types the PIN).
     const getCertPath: string = MoonlightClient.pairPath(
       `phrase=getservercert&salt=${salt}&clientcert=${clientCertHex}`, uniqueId, uuid);
     let outcome: HttpOutcome = MoonlightClient.bodyOrError(
@@ -225,7 +193,6 @@ export class MoonlightClient {
     const serverCertHex: string = MoonlightXml.read(outcome.body, 'plaincert');
     const serverCertBytes: Uint8Array | undefined = MoonlightCrypto.fromHex(serverCertHex);
     if (serverCertBytes === undefined || serverCertBytes.length === 0) {
-      // Another device is pairing with the host.
       result.error = 'already';
       return result;
     }
@@ -243,7 +210,6 @@ export class MoonlightClient {
       return result;
     }
 
-    // 2. clientchallenge (plain HTTP).
     const randomChallenge: string = MoonlightCrypto.randomHex(16);
     const encryptedChallenge: string | undefined = MoonlightClient.aesEncryptHex(aesKey, randomChallenge);
     if (encryptedChallenge === undefined) {
@@ -271,7 +237,6 @@ export class MoonlightClient {
     const serverResponse: string = decryptedResponse.substring(0, hashLenHex);
     const serverChallenge: string = decryptedResponse.substring(hashLenHex, hashLenHex + 32);
 
-    // 3. serverchallengeresp (plain HTTP).
     const clientSecret: string = MoonlightCrypto.randomHex(16);
     const challengeResponse: string | undefined = MoonlightClient.challengeResponse(
       aesKey, serverChallenge, clientCertSig, clientSecret);
@@ -299,20 +264,16 @@ export class MoonlightClient {
     const verified: boolean = await MoonlightClient.verifyServerSecret(serverCertDer,
       serverSecret, serverSignature);
     if (!verified) {
-      // The server secret did not verify against its certificate: MITM or a bad
-      // host certificate.
       result.error = 'mitm';
       return result;
     }
     const expectedResponse: string | undefined = MoonlightClient.expectedResponse(
       randomChallenge, serverCertSig, serverSecret);
     if (expectedResponse !== serverResponse) {
-      // The challenge response did not match: the PIN was wrong.
       result.error = 'pin';
       return result;
     }
 
-    // 4. clientpairingsecret (plain HTTP).
     const clientSignature: string | undefined =
       MoonlightClient.signClientSecret(credential, clientSecret);
     if (clientSignature === undefined) {
@@ -331,7 +292,6 @@ export class MoonlightClient {
       return result;
     }
 
-    // 5. pairchallenge (HTTPS; pin the certificate we just received).
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort,
       MoonlightClient.pairPath('phrase=pairchallenge', uniqueId, uuid), true, serverCertDer));
     if (outcome.body.length === 0) {
@@ -348,7 +308,6 @@ export class MoonlightClient {
     return result;
   }
 
-  /** Removes the host pairing (`/unpair`) and drops the stored pin. */
   static async unpair(dir: string, host: string, port: number): Promise<boolean> {
     const path: string =
       `/unpair?uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
@@ -357,10 +316,6 @@ export class MoonlightClient {
     return response.ok;
   }
 
-  /**
-   * Ends whatever the host is streaming (`/cancel`, HTTPS + mTLS). Used when a
-   * launch is refused because an app is already running.
-   */
   static async cancel(dir: string, host: string, httpsPort: number): Promise<boolean> {
     const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
     if (pin === undefined) {
@@ -391,11 +346,6 @@ export class MoonlightClient {
     return MoonlightCrypto.randomHex(16);
   }
 
-  /**
-   * One request. TLS requests carry the client certificate (mutual TLS) and are
-   * pinned to `pinDer`; the decrypted private key is written to a temporary PEM
-   * for the request and removed afterwards.
-   */
   private static async httpGet(dir: string, host: string, port: number, path: string,
     tls: boolean, pinDer?: Uint8Array, timeoutMs?: number,
     binary?: boolean): Promise<MoonlightHttpResult> {
@@ -432,11 +382,8 @@ export class MoonlightClient {
     }
   }
 
-  /**
-   * Returns the response body, or an empty body with a stable error token. A
-   * 4xx/5xx is reported by the `<root status_code>` inside the body, so only
-   * transport failures and non-200 root statuses fail here.
-   */
+  // A host 4xx/5xx is reported by the body's <root status_code>, so only
+  // transport failures and non-200 root statuses fail here.
   private static bodyOrError(response: MoonlightHttpResult): HttpOutcome {
     const outcome: HttpOutcome = new HttpOutcome();
     if (!response.ok) {
@@ -452,8 +399,6 @@ export class MoonlightClient {
     if (code !== 200) {
       hilog.warn(0xD001, 'HmRdpMoonlight', 'root status=%{public}d body=%{public}s',
         code, body.substring(0, 240));
-      // The host is streaming something else (Sunshine: "An app is already
-      // running on this host"); the caller can /cancel and retry.
       outcome.error = body.indexOf('already running') >= 0 ? 'busy' : 'status';
       return outcome;
     }
@@ -461,7 +406,6 @@ export class MoonlightClient {
     return outcome;
   }
 
-  /** AES key = SHA-256(salt || pin_utf8)[0:16] (Sunshine / GFE 7+). */
   private static deriveKey(saltHex: string, pin: string): string | undefined {
     const salt: Uint8Array | undefined = MoonlightCrypto.fromHex(saltHex);
     if (salt === undefined) {
@@ -498,7 +442,6 @@ export class MoonlightClient {
     return out === undefined ? undefined : MoonlightCrypto.toHex(out);
   }
 
-  /** SHA-256(serverChallenge || clientCertSignature || clientSecret), padded to 32. */
   private static challengeResponse(keyHex: string,
     serverChallengeHex: string, clientCertSignatureHex: string,
     clientSecretHex: string): string | undefined {
@@ -521,7 +464,6 @@ export class MoonlightClient {
     return encrypted === undefined ? undefined : MoonlightCrypto.toHex(encrypted);
   }
 
-  /** SHA-256(randomChallenge || serverCertSignature || serverSecret), hex. */
   private static expectedResponse(randomChallengeHex: string,
     serverCertSignatureHex: string, serverSecretHex: string): string | undefined {
     const challenge: Uint8Array | undefined = MoonlightCrypto.fromHex(randomChallengeHex);

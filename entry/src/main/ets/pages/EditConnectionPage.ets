@@ -1,6 +1,3 @@
-/*
- * HmRdp - add / edit a saved connection.
- */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -36,9 +33,7 @@ import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
 const RDP_DEFAULT_PORT: number = 3389;
-// The DNS-SD service type Sunshine / GameStream hosts advertise (mDNS search).
 const MOONLIGHT_SERVICE_TYPE: string = '_nvstream._tcp';
-// How long the mDNS search runs before it reports "nothing found".
 const HOST_SEARCH_MS: number = 3000;
 
 @Entry
@@ -49,20 +44,14 @@ struct EditConnectionPage {
   @State port: string = '3389';
   @State username: string = '';
   @State password: string = '';
-  // Password Vault (see doc_agent/settings-and-storage.md §1.1): the field types
-  // below make the pair a login form the system can fill. The app never asks the
-  // vault to save, so this only has to be taken away when the page is left — a
-  // form that is gone must not offer itself on the way out.
+  // Password Vault (doc_agent/settings-and-storage.md §1.1): the field types make
+  // the pair a login form the system can fill, so autoFill must be cleared on leave.
   @State autoFill: boolean = true;
   @State domain: string = '';
   @State desktopWidthText: string = '1920';
   @State desktopHeightText: string = '1080';
   @State scaleText: string = '100';
   @State useGlobalDisplay: boolean = true;
-  // Per-connection display override sub-modes, only used when useGlobalDisplay is
-  // false: 自动 resolution follows the current screen, 自动 scale derives from the
-  // resolved resolution. They start on 自动 for a fresh override; an existing
-  // override loads its own flags.
   @State displayResolutionAuto: boolean = true;
   @State displayScaleAuto: boolean = true;
   @State advancedExpanded: boolean = false;
@@ -71,18 +60,14 @@ struct EditConnectionPage {
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State ignoreCertificate: boolean = true;
-  // 超分: kept out of the display group on purpose - a LAN connection can follow
-  // the (off) global default while the same host reached through a gateway wants
-  // the bandwidth saving, and vice versa.
+  // 超分 stays a separate group from display on purpose: following the off global
+  // default and wanting per-connection bandwidth saving can both be true.
   @State useGlobalSr: boolean = true;
   @State srEnabled: boolean = false;
   @State srRatioPercent: number = SR_RATIO_PRESETS[0];
   @State srBackend: number = SR_BACKEND_XENGINE;
   @State srUsable: boolean = false;
-  // Protocol this editor is for. An existing connection keeps its own protocol
-  // (the segment is shown locked); a new one starts on what the caller passed.
   @State protocol: number = PROTOCOL_RDP;
-  // --- Moonlight (Sunshine) stream settings. ---
   @State mlDefaultAppId: string = '';
   @State mlDefaultAppName: string = '';
   @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
@@ -91,11 +76,7 @@ struct EditConnectionPage {
   @State mlFps: number = 60;
   @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
   @State mlCodec: number = ML_CODEC_AUTO;
-  // Moonlight: follow the global stream defaults unless overridden here (same
-  // pattern as the RDP display / 超分 / advanced groups).
   @State useGlobalStream: boolean = true;
-  // Per-codec decoder support (CODEC_SUPPORT_*) of this device, read once so
-  // the chips can grey what cannot run and warn about software-only codecs.
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
@@ -103,31 +84,20 @@ struct EditConnectionPage {
   @State editing: boolean = false;
   @State detectedText: string = '';
   @State connecting: boolean = false;
-  // Moonlight's 配对 runs in the editor and may show a PIN popup; a session is
-  // never opened here (the list page owns connect).
   @State pairing: boolean = false;
   private connectionId: string = '';
-  // Id of the in-flight attempt (may be a brand-new id for a new connection).
   private activeConnectionId: string = '';
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  // mDNS host search: the search button shows the spinner itself while running
-  // (no loading dialog); results open a picker, an empty result is a toast.
   @State searching: boolean = false;
   private discovery: MdnsDiscovery = new MdnsDiscovery();
   private searchTimer: number = -1;
   private discovered: MdnsHost[] = [];
-  // The host of the Moonlight connection being edited, so a changed host can be
-  // unpaired (the pairing is per host, not per connection).
   private originalMoonlightHost: string = '';
-  // Its stored host identity (`mlHostId`): carried over on save, dropped when the
-  // host changes (the id, pairing and default app all belonged to the old host).
   private originalMoonlightHostId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
 
-  // Tracks this editor's own connection attempt. On failure the page stays put
-  // so the typed password is preserved and can be corrected.
   private sessionListener: SessionStateListener = (connectionId: string,
     state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
     if (origin !== RdpConnectOrigin.Editor || connectionId !== this.activeConnectionId) {
@@ -159,8 +129,6 @@ struct EditConnectionPage {
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
     this.scaleText = this.suggestedScale().toString();
-    // Moonlight stream defaults for a new connection, straight from the global
-    // settings; an existing connection overrides them below.
     const mlDefaults: AppSettings = SettingsStore.load();
     this.mlFps = mlDefaults.mlFps;
     this.mlBitrateText = mlDefaults.mlBitrateKbps.toString();
@@ -241,8 +209,6 @@ struct EditConnectionPage {
   }
 
   onBackPress(): boolean {
-    // Leaving while connecting cancels the attempt instead of letting it run
-    // against a destroyed page.
     this.cancelConnect();
     this.autoFill = false;
     return false;
@@ -310,12 +276,6 @@ struct EditConnectionPage {
     return `${res} · ${profile.fps}fps · ${profile.bitrateKbps}kbps`;
   }
 
-  /**
-   * 超分 in effect for this connection (the global defaults when it follows them,
-   * its own values otherwise). Forced off where the device or the 硬件加速
-   * setting cannot back it, so no attempt asks for a lower session resolution
-   * than the presenter can upscale back.
-   */
   private resolvedSr(): SrProfile {
     const sr: SrProfile = new SrProfile();
     if (this.useGlobalSr) {
@@ -334,7 +294,6 @@ struct EditConnectionPage {
     return sr;
   }
 
-  /** The 超分 choice as one value: 0 = off, 1 = XEngine, 2 = FSR. */
   private srChoice(): number {
     if (!this.srEnabled) {
       return 0;
@@ -342,7 +301,6 @@ struct EditConnectionPage {
     return this.srBackend === SR_BACKEND_FSR ? 2 : 1;
   }
 
-  /** Whether a 超分 choice can be picked here (超分 rides the Vulkan presenter). */
   private srChoiceUsable(choice: number): boolean {
     if (choice === 0) {
       return true;
@@ -354,14 +312,6 @@ struct EditConnectionPage {
     return DeviceCapabilities.srBackends().indexOf(token) >= 0;
   }
 
-  /**
-   * The scale 自动 would resolve to for what this editor connects with: the
-   * requested (output) resolution alone decides it (see
-   * `SettingsStore.autoScalePercent`), with this connection's 超分. The global
-   * resolution answers when the connection follows the global display; with an
-   * override it is the detected screen (自动 resolution) or the typed width /
-   * height.
-   */
   private suggestedScale(): number {
     const sr: SrProfile = this.resolvedSr();
     const fallback: DisplayProfile = SettingsStore.globalDisplayProfile();
@@ -382,12 +332,6 @@ struct EditConnectionPage {
     return SettingsStore.autoScalePercent(width, height, sr.enabled, sr.ratioPercent);
   }
 
-  /**
-   * Builds the options for a connection attempt or for persistence.
-   * `applyGlobalAdvanced` is true only for the live attempt: it substitutes the
-   * global advanced defaults when the connection is set to follow them, while
-   * the connection's own stored values are still persisted for later editing.
-   */
   private buildOptions(applyGlobalAdvanced: boolean): RdpConnectOptions | undefined {
     const target: string = this.host.trim();
     if (target.length === 0) {
@@ -460,8 +404,6 @@ struct EditConnectionPage {
       this.returnToList();
       return;
     }
-    // Connect first; the configuration is persisted only on success so a failed
-    // attempt never creates or modifies a saved connection.
     const attempt: RdpConnectOptions | undefined = this.buildOptions(true);
     if (attempt === undefined) {
       return;
@@ -486,34 +428,19 @@ struct EditConnectionPage {
     this.errorMessage = '';
     this.connecting = true;
     SessionManager.connect(request, context as common.UIAbilityContext);
-    // Stay on the editor while connecting: on failure the typed password is
-    // preserved so the user can correct it; on success onConnected returns.
   }
 
-  /**
-   * Persists a Moonlight connection. The editor's primary action pairs (see
-   * pairMoonlight); 保存 only stores the form. Connecting a stream is done from
-   * the list page.
-   */
   private submitMoonlight(connect: boolean): void {
     const target: string = this.host.trim();
     if (target.length === 0) {
       this.errorMessage = '请输入主机名或 IP 地址';
       return;
     }
-    // Address pre-screen (cheap, and consistent with the picker's "already
-    // added" marking): never start a pair/connect for an address already in use.
-    // The authoritative check is the host's own id, learned in the pre-flight
-    // (MoonlightHostPolicy) - it catches the same host under a different address.
     if (this.conflictingMoonlightHost(target) !== undefined) {
       this.errorMessage = '该主机地址已添加，同一主机只能有一个 Moonlight 连接';
       return;
     }
     this.errorMessage = '';
-    // The host's identity (`mlHostId`) is only learned from serverinfo, so a
-    // save-only edit carries over the id it already had; a changed host drops it
-    // (the id, pairing and default app all belonged to the old host). Duplicate
-    // detection happens where the id is learned - at pair / connect time.
     const hostChanged: boolean = this.editing
       && this.normalizeHost(target) !== this.normalizeHost(this.originalMoonlightHost);
     const id: string = this.connectionId.length > 0
@@ -548,12 +475,6 @@ struct EditConnectionPage {
     this.pairMoonlight(conn);
   }
 
-  /**
-   * Moonlight: the editor pairs only. It runs the control layer's pairing step
-   * (serverinfo -> pair, with the PIN popup when the host is not paired yet) and
-   * persists the connection once paired. Opening a stream session is the list
-   * page's connect button, never this page.
-   */
   private pairMoonlight(conn: SavedConnection): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
@@ -586,12 +507,6 @@ struct EditConnectionPage {
       });
   }
 
-  /**
-   * Search the LAN (mDNS) for hosts. The search button carries the loading
-   * state itself; when the window closes the results open a picker, or an empty
-   * result is reported with a toast. Filling is host always, name only when the
-   * field is still empty so a typed name is never overwritten.
-   */
   private openHostSearch(): void {
     if (this.searching) {
       return;
@@ -642,7 +557,6 @@ struct EditConnectionPage {
       });
   }
 
-  /** Host identity for string comparison: case- and trailing-dot-insensitive. */
   private normalizeHost(host: string): string {
     let value: string = host.trim().toLowerCase();
     while (value.endsWith('.')) {
@@ -651,7 +565,6 @@ struct EditConnectionPage {
     return value;
   }
 
-  /** This connection's stored id plus the other connections' ids, for pairing. */
   private moonlightHostPolicy(): MoonlightHostPolicy {
     const policy: MoonlightHostPolicy = new MoonlightHostPolicy();
     policy.expectedId = this.originalMoonlightHostId;
@@ -665,12 +578,6 @@ struct EditConnectionPage {
     return policy;
   }
 
-  /**
-   * Address pre-screen: a saved Moonlight connection whose normalized address
-   * matches (excluding self), or undefined. Cheap, and consistent with the
-   * picker's "already added" marking; the authoritative check is the host's own
-   * id (`mlHostId`), applied once serverinfo names it.
-   */
   private conflictingMoonlightHost(host: string): string | undefined {
     const target: string = this.normalizeHost(host);
     const all: SavedConnection[] = ConnectionStore.list();
@@ -686,7 +593,6 @@ struct EditConnectionPage {
     return undefined;
   }
 
-  /** Normalized hosts already saved as Moonlight connections (picker greys them). */
   private addedMoonlightAddresses(): string[] {
     const result: string[] = [];
     const all: SavedConnection[] = ConnectionStore.list();
@@ -699,7 +605,6 @@ struct EditConnectionPage {
     return result;
   }
 
-  /** Drops the pairing for `host` (local pin now, host best-effort). */
   private forgetPairing(host: string): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined || host.trim().length === 0) {
@@ -709,7 +614,6 @@ struct EditConnectionPage {
       host, this.parseMoonlightPort());
   }
 
-  /** When the edited connection's host changed, unpair the old host. */
   private forgetReplacedHost(newHost: string): void {
     const old: string = this.originalMoonlightHost.trim();
     if (old.length === 0 || this.normalizeHost(old) === this.normalizeHost(newHost)) {
@@ -723,7 +627,6 @@ struct EditConnectionPage {
   private persist(conn: SavedConnection): boolean {
     try {
       ConnectionStore.save(conn);
-      // Remember the protocol so the next new connection starts on this kind.
       SettingsStore.rememberNewProtocol(conn.protocol);
       return true;
     } catch (error) {
@@ -740,12 +643,10 @@ struct EditConnectionPage {
     SessionManager.disconnect(this.activeConnectionId);
   }
 
-  /** True while the editor is doing something the form must not disturb. */
   private busy(): boolean {
     return this.connecting || this.pairing;
   }
 
-  /** The primary button's label: Moonlight pairs, RDP connects (or cancels). */
   private primaryLabel(): string {
     if (this.isMoonlight()) {
       return '配对';
@@ -753,7 +654,6 @@ struct EditConnectionPage {
     return this.connecting ? '取消' : '连接';
   }
 
-  /** Whether the primary button shows a spinner (RDP connect / Moonlight pair). */
   private primaryBusy(): boolean {
     return this.connecting || this.pairing;
   }
@@ -778,8 +678,6 @@ struct EditConnectionPage {
       return;
     }
     this.returned = true;
-    // The page is done: it is no longer a form anything can be filled into, and
-    // an unverified password is left nothing to be offered from.
     this.autoFill = false;
     this.getUIContext().getRouter().back();
   }
@@ -791,8 +689,6 @@ struct EditConnectionPage {
         hilog.error(DOMAIN, TAG, 'remove password failed: %{public}s', JSON.stringify(error));
       });
       if (this.isMoonlight()) {
-        // Drop the host pairing with the connection: the pairing is per host, so
-        // leaving it behind would let a re-add skip the PIN round.
         this.forgetPairing(this.host);
       }
     }
@@ -818,7 +714,6 @@ struct EditConnectionPage {
     })
   }
 
-  /** One choice of the per-connection 分辨率 mode (自动 / 手动). */
   @Builder
   displayResModeChip(label: string, auto: boolean) {
     ChoiceChip({
@@ -830,7 +725,6 @@ struct EditConnectionPage {
     })
   }
 
-  /** One choice of the per-connection 缩放比例 mode (自动 / 手动). */
   @Builder
   displayScaleModeChip(label: string, auto: boolean) {
     ChoiceChip({
@@ -890,23 +784,18 @@ struct EditConnectionPage {
     })
   }
 
-  /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
-   * best any codec offers. */
   private mlCodecSupportOf(codec: number): number {
     return moonlightCodecSupport(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
-  /** Whether a codec choice can run on this device (auto included). */
   private mlCodecUsable(codec: number): boolean {
     return moonlightCodecUsable(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
-  /** Whether a codec choice would decode in software only. */
   private mlCodecSoftware(codec: number): boolean {
     return moonlightCodecSoftware(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
-  /** Falls back to auto when the stored choice cannot run here. */
   private clampMlCodec(): void {
     if (!this.mlCodecUsable(this.mlCodec)) {
       this.mlCodec = ML_CODEC_AUTO;
@@ -928,8 +817,6 @@ struct EditConnectionPage {
   @Builder
   moonlightForm() {
     Column() {
-      // Name and the host-search entry share one row: the search button sits by
-      // the (narrower) name box, aligned with the input rather than the label.
       Row() {
         Column() {
           this.fieldLabel('名称（可选）')
@@ -947,7 +834,6 @@ struct EditConnectionPage {
 
         Row() {
           if (this.searching) {
-            // The control carries its own progress: no loading dialog.
             LoadingProgress()
               .width(20)
               .height(20)
@@ -1017,7 +903,6 @@ struct EditConnectionPage {
     .alignItems(HorizontalAlign.Start)
   }
 
-  /** Moonlight's advanced overrides, shown below the action buttons like RDP's. */
   @Builder
   moonlightAdvanced() {
     Column() {
@@ -1197,7 +1082,6 @@ struct EditConnectionPage {
           protocol: this.protocol,
           locked: this.editing,
           onChange: (protocol: number) => {
-            // Move the port with the protocol, unless the user already typed one.
             const untouched: boolean = this.port.length === 0
               || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
             this.protocol = protocol;
@@ -1356,8 +1240,6 @@ struct EditConnectionPage {
               .backgroundColor($r('app.color.accent'))
               .borderRadius(12)
               .margin({ left: 12 })
-              // Pairing has no session to cancel, so it locks the button; an RDP
-              // connect stays tappable to cancel.
               .enabled(!this.pairing)
               .onClick(() => {
                 if (this.connecting) {
@@ -1624,8 +1506,6 @@ struct EditConnectionPage {
                   Text('会话按输出分辨率÷倍率取流，本机上采样回输出分辨率')
                     .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
 
-                  // 超分 is a three-way choice: off, XEngine, or the presenter's own
-                  // FSR; a backend this build/device cannot run is dimmed.
                   Flex({ wrap: FlexWrap.Wrap }) {
                     this.srChoiceChip(0)
                     this.srChoiceChip(1)

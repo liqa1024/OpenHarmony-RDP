@@ -1,6 +1,3 @@
-/*
- * HmRdp - window sizing and session window launch.
- */
 import { display, window } from '@kit.ArkUI';
 import { AbilityConstant, common, StartOptions, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -16,10 +13,6 @@ const ENTRY_ABILITY: string = 'EntryAbility';
 
 export class WindowController {
   private static stage: window.WindowStage | undefined = undefined;
-  // Single-window mode ("auto hide main window"): the session still runs in its
-  // own SessionAbility window, but the main window is terminated so only the
-  // session is visible. Only one session is supported in this mode, so a single
-  // flag and a single pending context are enough.
   private static mainHidden: boolean = false;
   private static mainContext: common.UIAbilityContext | undefined = undefined;
   private static pendingSessionContext: common.UIAbilityContext | undefined = undefined;
@@ -68,12 +61,6 @@ export class WindowController {
     WindowController.resizeAndCenter(mainWindow, width, height);
   }
 
-  /**
-   * Opens the RDP session in an independent main window (SessionAbility) so it
-   * gets a standard title bar with minimize / maximize / close buttons. In
-   * single-window mode the main window is then terminated so the session window
-   * is the only visible window; only one session is supported there.
-   */
   static openSessionWindow(context: common.UIAbilityContext, sessionKey: string): void {
     const settings: AppSettings = SettingsStore.load();
     const singleWindow: boolean = settings.autoHideMainWindow;
@@ -114,11 +101,6 @@ export class WindowController {
     }
   }
 
-  /**
-   * Called by the session window once its content is loaded. In single-window
-   * mode this is when the main window is terminated: the session ability is now
-   * registered, so the process survives and only the session stays visible.
-   */
   static onSessionWindowReady(): void {
     if (!WindowController.mainHidden) {
       return;
@@ -134,15 +116,8 @@ export class WindowController {
     });
   }
 
-  /**
-   * Called when a session window is about to close. In single-window mode the
-   * main window was terminated, so relaunch it first and terminate this session
-   * afterwards (onMainWindowReady). Returns true when the caller must defer
-   * closing the session window.
-   */
   static closeSession(context: common.UIAbilityContext): boolean {
     if (WindowController.pendingSessionContext !== undefined) {
-      // Already relaunching the main window for this session.
       return true;
     }
     if (!WindowController.mainHidden) {
@@ -168,7 +143,6 @@ export class WindowController {
     return true;
   }
 
-  /** Called by the main EntryAbility once it is created and registered. */
   static onMainWindowReady(): void {
     if (WindowController.pendingTimerId !== -1) {
       clearTimeout(WindowController.pendingTimerId);
@@ -191,11 +165,6 @@ export class WindowController {
     });
   }
 
-  /**
-   * Session windows always maximize to immersive fullscreen; the system title
-   * bar and dock hover are disabled there so they do not cover the app's own
-   * auto-hide toolbar (which carries the minimize / restore buttons instead).
-   */
   static setupSessionWindow(stage: window.WindowStage, fullscreenDefault: boolean): void {
     let win: window.Window | undefined = undefined;
     try {
@@ -211,8 +180,7 @@ export class WindowController {
     try {
       mainWindow.on('windowStatusChange', (status: window.WindowStatusType) => {
         if (status === window.WindowStatusType.MAXIMIZE) {
-          // The system maximize button only maximizes; promote it to immersive
-          // fullscreen so the session always fills the whole screen.
+          // The system maximize button only maximizes; promote it to immersive fullscreen.
           mainWindow.maximize(
             window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
             .catch((error: BusinessError) => {
@@ -241,13 +209,6 @@ export class WindowController {
     });
   }
 
-  // --- Session window runtime capabilities ------------------------------------
-  // The window features a session page may drive, classified together so both
-  // session pages share them. Each is opt-in: a page subscribes only to the
-  // events it reacts to, so nothing acquires a listener (or a side effect) it
-  // does not use.
-
-  /** The calling session's own window, or undefined when it cannot be obtained. */
   static acquireWindow(context: common.Context): Promise<window.Window | undefined> {
     return window.getLastWindow(context).catch((error: BusinessError) => {
       hilog.error(DOMAIN, TAG, 'getLastWindow failed: %{public}s', JSON.stringify(error));
@@ -255,7 +216,6 @@ export class WindowController {
     });
   }
 
-  /** Whether the window is currently in fullscreen. */
   static isFullscreen(win: window.Window): boolean {
     try {
       return win.getWindowStatus() === window.WindowStatusType.FULL_SCREEN;
@@ -265,7 +225,6 @@ export class WindowController {
     }
   }
 
-  /** Subscribes to fullscreen / minimize transitions (raw status). */
   static watchStatusChange(win: window.Window,
     onChange: (status: window.WindowStatusType) => void): void {
     try {
@@ -275,10 +234,7 @@ export class WindowController {
     }
   }
 
-  /**
-   * Subscribes to window focus. HIDDEN is reported as unfocused too: to a remote
-   * session both mean the inputs it still sees as held must be let go.
-   */
+  // HIDDEN counts as unfocused too: a hidden session must release the inputs it still sees as held.
   static watchFocus(win: window.Window, onChange: (focused: boolean) => void): void {
     win.on('windowEvent', (data: window.WindowEventType) => {
       if (data === window.WindowEventType.WINDOW_ACTIVE) {
@@ -290,10 +246,8 @@ export class WindowController {
     });
   }
 
-  /**
-   * Subscribes to the window being fully covered (a partly covered window still
-   * reports visible; see doc_agent/session-and-input.md §1.1).
-   */
+  // Only fully covered counts: a partly covered window still reports visible
+  // (doc_agent/session-and-input.md §1.1).
   static watchVisibility(win: window.Window, onChange: (visible: boolean) => void): void {
     try {
       win.on('windowVisibilityChange', onChange);
@@ -309,10 +263,6 @@ export class WindowController {
     });
   }
 
-  /**
-   * Toggles immersive fullscreen. The system title bar and dock hover are
-   * disabled there so they do not cover the app's own auto-hide toolbar.
-   */
   static toggleFullscreen(win: window.Window, isFullscreen: boolean): void {
     if (isFullscreen) {
       win.recover().catch((error: BusinessError) => {

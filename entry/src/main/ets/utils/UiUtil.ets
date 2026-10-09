@@ -1,10 +1,3 @@
-/*
- * HmRdp - shared page-level UI helpers.
- *
- * Small, page-agnostic helpers every page would otherwise re-declare: a themed
- * toast, the two alert-dialog shapes (confirm / notice) and a Length-to-number
- * conversion. They carry no page state.
- */
 import { UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -12,7 +5,6 @@ import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpUi';
 
-/** Toast carrying the overlay material on systems that support one. */
 export function showToast(ui: UIContext, message: string, durationMs: number = 2000): void {
   try {
     ui.getPromptAction().showToast({
@@ -25,19 +17,15 @@ export function showToast(ui: UIContext, message: string, durationMs: number = 2
   }
 }
 
-/** A two-button confirmation: a no-op cancel on the left, the action on the right. */
 export interface ConfirmDialogOptions {
   title: string;
   message: string;
   confirmLabel: string;
-  /** Left button label; defaults to "取消". Its action is always a no-op. */
   cancelLabel?: string;
-  /** Renders the confirm button in the danger colour (default: accent). */
   danger?: boolean;
   onConfirm: () => void;
 }
 
-/** Confirmation dialog with the overlay material (see ConfirmDialogOptions). */
 export function showConfirm(ui: UIContext, options: ConfirmDialogOptions): void {
   try {
     ui.showAlertDialog({
@@ -62,7 +50,6 @@ export function showConfirm(ui: UIContext, options: ConfirmDialogOptions): void 
   }
 }
 
-/** Single-button notice ("知道了") with the overlay material. */
 export function showNotice(ui: UIContext, title: string, message: string,
   confirmLabel: string = '知道了'): void {
   try {
@@ -81,7 +68,6 @@ export function showNotice(ui: UIContext, title: string, message: string,
   }
 }
 
-/** A Length (number | string | Resource) as a vp number; 0 when not numeric. */
 export function lengthToNumber(value: Length): number {
   if (typeof value === 'number') {
     return value;

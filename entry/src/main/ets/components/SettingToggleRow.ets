@@ -1,17 +1,8 @@
-/*
- * HmRdp - settings row with a switch.
- *
- * "title (+ subtitle, + disabled reason) + Toggle" on one line. Shared by the
- * editor's advanced section and the settings page, so both pages share one row
- * shape instead of near-identical private builders.
- */
 @Component
 export struct SettingToggleRow {
   @Prop title: string = '';
   @Prop subtitle: string = '';
   @Prop value: boolean = false;
-  // A feature the device does not provide shows greyed out with `disabledReason`
-  // instead of an active switch.
   @Prop switchEnabled: boolean = true;
   @Prop disabledReason: string = '';
   onToggle: (v: boolean) => void = (v: boolean) => {};

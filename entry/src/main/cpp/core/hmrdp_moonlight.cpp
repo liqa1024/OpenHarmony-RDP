@@ -1,7 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * Moonlight (GameStream) client wrapper - see hmrdp_moonlight.h.
- */
 #include "hmrdp_moonlight.h"
 
 #include <cstddef>
@@ -18,9 +14,6 @@
 namespace hmrdp {
 
 std::string MoonlightProbe() {
-  // Touch a real entry point (a pure field initializer: no sockets, threads or
-  // global state). It is what proves the static archives actually resolved - an
-  // unresolved moonlight/enet/OpenSSL symbol fails the module link, not this call.
   STREAM_CONFIGURATION config = {};
   LiInitializeStreamConfiguration(&config);
   HMRDP_LOGI("moonlight probe: client linked (config %dx%d)", config.width, config.height);
@@ -29,9 +22,8 @@ std::string MoonlightProbe() {
 
 namespace {
 
-// Cap on bytes handed to the decoder but not yet consumed. Moonlight runs
-// submitDecodeUnit on its own decoder thread (CAPABILITY_DIRECT_SUBMIT is left
-// off), so asking for a keyframe here is safe and keeps the queue bounded.
+// Cap on decoder input backlog; a keyframe request past it is safe because
+// submits run on Moonlight's own decoder thread.
 constexpr size_t kMaxPendingBytes = 4u * 1024u * 1024u;
 
 std::string MimeForVideoFormat(int videoFormat) {
@@ -47,7 +39,6 @@ std::string MimeForVideoFormat(int videoFormat) {
   return std::string();
 }
 
-// UI-facing token for a codec MIME (see MoonlightVideoCodec).
 std::string CodecTokenForMime(const std::string& mime) {
   if (mime == "video/avc") {
     return "h264";
@@ -81,8 +72,6 @@ class MoonlightVideoRenderer {
       HMRDP_LOGE("moonlight video: unsupported format 0x%{public}x", videoFormat);
       return -1;
     }
-    // The host should only have picked a codec we advertised, so a missing
-    // decoder here means it ignored the capability set.
     const DecoderSupport support = VideoDecoderSupport(mime);
     if (support == DecoderSupport::kNone) {
       HMRDP_LOGE("moonlight video: no decoder for %{public}s", mime.c_str());
@@ -93,8 +82,6 @@ class MoonlightVideoRenderer {
     std::lock_guard<std::mutex> lock(mutex_);
     warning_.clear();
     if (support == DecoderSupport::kSoftware) {
-      // The negotiated codec has no hardware decoder on this device: usable but
-      // slow. The UI turns this into "let the host pick another encoder".
       warning_ = "software-decode|" + mime;
       HMRDP_LOGW("moonlight video: software decode for %{public}s", mime.c_str());
     }
@@ -154,9 +141,8 @@ class MoonlightVideoRenderer {
       HMRDP_LOGW("moonlight video: input backlog, requesting keyframe");
       return DR_NEED_IDR;
     }
-    // One decode unit is one access unit - Moonlight's depacketizer already
-    // grouped a frame's slices - and its buffer chain is Annex-B, so a flat copy
-    // is exactly the single push the decoder requires.
+    // One decode unit is one Annex-B access unit, so a flat copy is the single
+    // push the decoder requires.
     buffer_.clear();
     for (const LENTRY* entry = decodeUnit->bufferList; entry != nullptr; entry = entry->next) {
       buffer_.insert(buffer_.end(), entry->data, entry->data + entry->length);
@@ -208,9 +194,8 @@ int VideoSubmit(PDECODE_UNIT decodeUnit) {
   return MoonlightVideoRenderer::Instance().Submit(decodeUnit);
 }
 
-// Zero capabilities: the decoder does not patch reference frames, and leaving
-// CAPABILITY_DIRECT_SUBMIT unset keeps submitDecodeUnit on Moonlight's own
-// decoder thread instead of the RTP receive thread.
+// CAPABILITY_DIRECT_SUBMIT stays unset, keeping submitDecodeUnit on Moonlight's
+// own decoder thread instead of the RTP receive thread.
 DECODER_RENDERER_CALLBACKS g_videoCallbacks = {
     VideoSetup, VideoStart, VideoStop, VideoCleanup, VideoSubmit, 0,
 };
@@ -237,7 +222,6 @@ int MoonlightVideoFormats(MoonlightVideoPreference preference) {
     HMRDP_LOGW("moonlight video: preferred codec has no decoder, using auto");
   }
 
-  // Auto: the hardware set, or the software set when there is no hardware decoder.
   const int hardware = (avc == DecoderSupport::kHardware ? VIDEO_FORMAT_H264 : 0) |
                        (hevc == DecoderSupport::kHardware ? VIDEO_FORMAT_H265 : 0) |
                        (av1 == DecoderSupport::kHardware ? VIDEO_FORMAT_AV1_MAIN8 : 0);

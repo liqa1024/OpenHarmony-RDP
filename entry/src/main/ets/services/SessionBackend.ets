@@ -1,13 +1,3 @@
-/*
- * HmRdp - protocol-neutral session backend.
- *
- * SessionManager is the single lifecycle authority, but it must not know which
- * native client it drives. A SessionBackend is the seam: RDP is the first
- * implementation (RdpSessionBackend, over RdpNative); a Moonlight backend plugs
- * in with the native Moonlight session without touching the manager. The manager
- * only sees lifecycle signals and the protocol-neutral input verbs; a
- * protocol-specific session window downcasts to its own backend for the rest.
- */
 import { RdpEventPayload } from 'libhmrdp.so';
 import { PROTOCOL_RDP, RdpConnectOptions, RdpEvent } from '../model/RdpModels';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
@@ -15,41 +5,16 @@ import { RdpNative } from './RdpNative';
 
 export type SessionSignalListener = (signal: SessionSignal) => void;
 
-/**
- * What SessionManager needs from one session, independent of its protocol. The
- * input verbs are the protocol-neutral core; a session window that needs more
- * (clipboard, cursor, telemetry) downcasts to its own backend.
- */
 export interface SessionBackend {
   protocol(): number;
-  /**
-   * True when this backend has asynchronous pre-flight work that must finish
-   * before the session can be started (Moonlight: serverinfo -> pair -> launch).
-   * The manager publishes Connecting first, then awaits prepare().
-   */
   requiresPrepare(): boolean;
-  /**
-   * Optional async pre-flight, run while the connection is Connecting. Resolve
-   * true to let the manager continue (open the window / start); on failure emit
-   * an Error signal carrying the reason (the manager shows it) and resolve false.
-   * Backends without pre-flight work return an already-resolved true.
-   */
   prepare(): Promise<boolean>;
-  /** Creates the native session; returns its handle (>0) or -1. */
   start(): number;
-  /** Tears the native session down and drops the listener (idempotent). */
   stop(): void;
-  /** Native session handle (-1 before start / after stop). */
   handleId(): number;
-  /**
-   * True when start() needs the session window with its surface already bound
-   * (Moonlight: LiStartConnection takes the render target). False for RDP, which
-   * starts window-less and binds the surface when the window opens.
-   */
+  // Moonlight needs the window surface at start: LiStartConnection takes the render target.
   requiresWindowAtStart(): boolean;
-  /** Binds the session window surface; false when it could not be created. */
   bindSurface(surfaceId: string, width: number, height: number): boolean;
-  /** Detaches/releases the session window surface (after stop). */
   clearSurface(): void;
   setSignalListener(listener: SessionSignalListener): void;
   clearSignalListener(): void;
@@ -59,7 +24,6 @@ export interface SessionBackend {
   unicode(codepoint: number, down: boolean): void;
 }
 
-/** Maps a session key to the backend that owns it (one per open window). */
 export class SessionBackendRegistry {
   private static byKey: Map<string, SessionBackend> = new Map<string, SessionBackend>();
 
@@ -76,7 +40,6 @@ export class SessionBackendRegistry {
   }
 }
 
-/** The RDP session backend: wraps one RdpNative instance. */
 export class RdpSessionBackend implements SessionBackend {
   // RDP-only operations the session window still calls directly.
   readonly native: RdpNative = new RdpNative();
@@ -152,7 +115,6 @@ export class RdpSessionBackend implements SessionBackend {
     this.native.unicode(codepoint, down);
   }
 
-  /** Maps an RDP native event onto the protocol-neutral envelope. */
   private emit(event: RdpEvent, payload: RdpEventPayload): void {
     const listener: SessionSignalListener | undefined = this.listener;
     if (listener === undefined) {

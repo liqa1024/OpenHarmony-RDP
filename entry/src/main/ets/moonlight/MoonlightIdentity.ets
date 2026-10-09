@@ -1,18 +1,3 @@
-/*
- * HmRdp - Moonlight client identity and trust storage (ArkTS side).
- *
- * Holds the self-signed GameStream client certificate/private key and the
- * per-host pinned server certificates, all under <filesDir>/moonlight/:
- *   client.crt      self-signed client certificate, PEM (public, LF endings)
- *   client.key.enc  PKCS8 private key, AES-256-GCM under a non-exportable HUKS
- *                   key: "HMRDPML1" (8) | nonce (12) | ciphertext + tag (16)
- *   server_<key>.der  pinned server certificate per host, DER (public)
- *
- * The certificate framework has no self-signed X.509 generation API, so the DER
- * is assembled here (the same position BouncyCastle occupies in the Android
- * client); the native side stores none of this (doc_agent/moonlight-native.md §4).
- * See MOONLIGHT_PLAN.md "HTTP 层的落地口径".
- */
 import { cert } from '@kit.DeviceCertificateKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { huks } from '@kit.UniversalKeystoreKit';
@@ -26,8 +11,7 @@ const CLIENT_CERT_FILE: string = 'client.crt';
 const CLIENT_KEY_FILE: string = 'client.key.enc';
 const PIN_PREFIX: string = 'server_';
 const PIN_SUFFIX: string = '.der';
-// HUKS wrapping key: non-exportable, so the AES key never leaves the secure
-// environment; only this alias crosses back into the app.
+// HUKS wrapping key: non-exportable, so the AES key never leaves the secure environment.
 const HUKS_ALIAS: string = 'hmrdp_moonlight_cred_v1';
 const NONCE_SIZE: number = 12;
 const TAG_SIZE: number = 16;
@@ -37,26 +21,17 @@ function aadBytes(): Uint8Array {
   return MoonlightCrypto.utf8('HmRdpMoonlightCredV1');
 }
 
-/** A freshly generated client identity: PEM (public) + PKCS8 DER (private). */
 export class MoonlightClientIdentity {
   certPem: string = '';
   keyPkcs8Der: Uint8Array = new Uint8Array(0);
 }
 
-/**
- * The stored client credential. `keyPkcs8Der` is decrypted into memory for the
- * caller and never written in the clear.
- */
 export class MoonlightCredential {
   ok: boolean = false;
   certPem: string = '';
   keyPkcs8Der: Uint8Array = new Uint8Array(0);
-  // Stable code when !ok: "dir" / "huks" / "corrupt" / "write" / "crypto" /
-  // "missing".
   error: string = '';
 }
-
-// --- minimal DER writer (self-signed X.509 assembly) ------------------------
 
 function concat(parts: Uint8Array[]): Uint8Array {
   let length: number = 0;
@@ -145,10 +120,9 @@ function pemEncode(label: string, der: Uint8Array): string {
   return `-----BEGIN ${label}-----\n${body}-----END ${label}-----\n`;
 }
 
-/** Replaces the unsafe characters of a host key with '_'. */
 function hostFileName(hostKey: string): string {
   // Hostnames are case-insensitive and a trailing dot is the DNS root: fold both
-  // so the pin key matches the connection-uniqueness key (see RdpModels.mlHostId).
+  // so the pin key matches the connection-uniqueness key (RdpModels.mlHostId).
   let key: string = hostKey.trim().toLowerCase();
   if (key.endsWith('.')) {
     key = key.substring(0, key.length - 1);
@@ -165,8 +139,6 @@ function hostFileName(hostKey: string): string {
   }
   return PIN_PREFIX + name + PIN_SUFFIX;
 }
-
-// --- HUKS AES-256-GCM envelope ----------------------------------------------
 
 function baseProperties(keySize: number, purpose: number): huks.HuksParam[] {
   const properties: huks.HuksParam[] = [
@@ -235,8 +207,6 @@ async function huksDecrypt(nonce: Uint8Array, wrapped: Uint8Array): Promise<Uint
     return undefined;
   }
 }
-
-// --- file helpers -----------------------------------------------------------
 
 function ensureDir(path: string): boolean {
   try {
@@ -325,15 +295,10 @@ function readText(path: string): string | undefined {
 
 @SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class MoonlightIdentity {
-  /** `<filesDir>/moonlight`, creating it when needed. */
   static rootDir(dir: string): string {
     return dir + '/moonlight';
   }
 
-  /**
-   * Generates a self-signed GameStream client identity: RSA-2048, SHA256,
-   * 20-year validity, random serial, CN=NVIDIA GameStream Client.
-   */
   static generateClientIdentity(): MoonlightClientIdentity | undefined {
     let keyPair: cryptoFramework.KeyPair;
     let publicKeyInfo: Uint8Array = new Uint8Array(0);
@@ -382,10 +347,6 @@ export class MoonlightIdentity {
     return identity;
   }
 
-  /**
-   * Ensures `<dir>/moonlight` has a client credential, creating the identity and
-   * its HUKS wrapping key on first use, and returns it.
-   */
   static async ensureCredential(dir: string): Promise<MoonlightCredential> {
     const root: string = MoonlightIdentity.rootDir(dir);
     if (!ensureDir(root)) {
@@ -446,7 +407,6 @@ export class MoonlightIdentity {
     return MoonlightIdentity.loadCredential(dir);
   }
 
-  /** Loads the credential without generating one. */
   static async loadCredential(dir: string): Promise<MoonlightCredential> {
     const result: MoonlightCredential = new MoonlightCredential();
     const root: string = MoonlightIdentity.rootDir(dir);
@@ -470,7 +430,6 @@ export class MoonlightIdentity {
     try {
       const exists: boolean = await huks.isKeyItemExist(HUKS_ALIAS, { properties: [] });
       if (!exists) {
-        // The wrapping key is gone (fresh install / cleared keystore).
         result.error = 'corrupt';
         return result;
       }
@@ -491,7 +450,6 @@ export class MoonlightIdentity {
     return result;
   }
 
-  /** Deletes the client credential, its HUKS key and every pinned certificate. */
   static async clearCredential(dir: string): Promise<boolean> {
     const root: string = MoonlightIdentity.rootDir(dir);
     try {
@@ -510,7 +468,6 @@ export class MoonlightIdentity {
     return true;
   }
 
-  /** The pinned server certificate (DER) for one host, or undefined. */
   static loadPinnedServerCert(dir: string, hostKey: string): Uint8Array | undefined {
     return readBytes(MoonlightIdentity.rootDir(dir) + '/' + hostFileName(hostKey));
   }
@@ -535,16 +492,10 @@ export class MoonlightIdentity {
     }
   }
 
-  /** Path of the stored client certificate PEM (mTLS `certPath`). */
   static clientCertPath(dir: string): string {
     return MoonlightIdentity.rootDir(dir) + '/' + CLIENT_CERT_FILE;
   }
 
-  /**
-   * Writes the decrypted private key as a temporary PKCS8 PEM for a mutual-TLS
-   * request and returns its path; the caller must delete it afterwards
-   * (`removeClientKeyPem`). The key is otherwise kept HUKS-encrypted only.
-   */
   static writeClientKeyPem(dir: string, credential: MoonlightCredential): string | undefined {
     if (!credential.ok || credential.keyPkcs8Der.length === 0) {
       return undefined;
@@ -554,7 +505,6 @@ export class MoonlightIdentity {
     return writeBytes(path, MoonlightCrypto.utf8(pem)) ? path : undefined;
   }
 
-  /** Removes the temporary private-key PEM written for a mutual-TLS request. */
   static removeClientKeyPem(dir: string): void {
     try {
       fileIo.unlinkSync(MoonlightIdentity.rootDir(dir) + '/client.key.pem');
@@ -562,10 +512,6 @@ export class MoonlightIdentity {
     }
   }
 
-  /**
-   * base64(SHA-256(SPKI DER)) of a server certificate, for `certificatePinning`.
-   * Returns undefined when the certificate cannot be parsed.
-   */
   static async serverPublicKeyHash(certDer: Uint8Array): Promise<string | undefined> {
     try {
       const blob: cert.EncodingBlob = {
@@ -584,7 +530,6 @@ export class MoonlightIdentity {
     }
   }
 
-  /** The public key of a DER certificate, for verifying the server secret. */
   static async serverPublicKey(certDer: Uint8Array): Promise<cryptoFramework.PubKey | undefined> {
     try {
       const blob: cert.EncodingBlob = {

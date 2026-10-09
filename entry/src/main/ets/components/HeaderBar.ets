@@ -1,10 +1,3 @@
-/*
- * HmRdp - page header bar.
- *
- * "left action + title + Blank + trailing slot" with a divider under it, the
- * header shared by the editor and the settings page. The trailing slot carries
- * the protocol tabs (or any other page-specific action); the caller owns both.
- */
 import { TextAction } from './TextAction';
 
 @Component

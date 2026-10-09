@@ -1,6 +1,3 @@
-/*
- * HmRdp - global settings.
- */
 import { common } from '@kit.AbilityKit';
 import { DisplayProfile, ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
@@ -37,9 +34,7 @@ class SliderItemConfig {
   max: number = 100;
   step: number = 1;
   unit: string = '';
-  // Decimal places used to display the value and to snap slider output.
   precision: number = 0;
-  // A disabled slider is shown greyed out with a reason below the subtitle.
   enabled: boolean = true;
   disabledReason: string = '';
   onChange: (v: number) => void = (v: number) => {};
@@ -51,8 +46,6 @@ class ToggleItemConfig {
   title: string = '';
   subtitle: string = '';
   value: boolean = false;
-  // A device that does not provide the feature shows the row greyed out with
-  // `disabledReason` instead of an active switch.
   enabled: boolean = true;
   disabledReason: string = '';
   onChange: (v: boolean) => void = (v: boolean) => {};
@@ -97,16 +90,9 @@ struct SettingsPage {
   @State srBackend: number = SR_BACKEND_XENGINE;
   @State srSupported: boolean = true;
   private srReason: string = '';
-  // Developer options: reveals the dev-only tools below (and the replay entry /
-  // toolbar telemetry elsewhere). Off for a normal install.
   @State developerMode: boolean = false;
-  // Dev-only RemoteFX stream capture (doc_agent/gfx-engine.md §6).
   @State gfxCapture: boolean = false;
-  // Active settings tab: PROTOCOL_RDP, PROTOCOL_MOONLIGHT or TAB_COMMON. The
-  // protocol tabs render the shared interaction section from that protocol's own
-  // stored values; the common tab holds the app-level (window / developer) items.
   @State protocol: number = PROTOCOL_RDP;
-  // Moonlight stream defaults; each connection can still override them.
   @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
   @State mlWidthText: string = '';
   @State mlHeightText: string = '';
@@ -114,8 +100,6 @@ struct SettingsPage {
   @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
-  // Per-codec decoder support (CODEC_SUPPORT_*) of this device, read once so
-  // the chips can grey what cannot run and warn about software-only codecs.
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
@@ -149,7 +133,6 @@ struct SettingsPage {
     this.syncFromStore();
   }
 
-  /** Pulls the persisted settings back into the page state (also after import). */
   private syncFromStore(): void {
     const settings: AppSettings = SettingsStore.load();
     const audioCapability: Capability = DeviceCapabilities.audio();
@@ -162,8 +145,6 @@ struct SettingsPage {
     this.srSupported = srCapability.supported;
     this.srReason = srCapability.reason;
 
-    // App-level surfaces: window sizing, the developer section and its tools are
-    // the same on every tab, so they load regardless of the active one.
     this.applyWindowSettings(settings);
     this.applyDeveloperSettings(settings);
 
@@ -174,15 +155,8 @@ struct SettingsPage {
       this.manualWidthText = this.sizeText(settings.manualWidth);
       this.manualHeightText = this.sizeText(settings.manualHeight);
       this.scaleAuto = settings.scaleAuto;
-      // An unsupported device never requests audio; drop a previously stored
-      // "on" value so the setting matches the greyed-out switch.
       this.enableAudio = this.audioSupported ? settings.enableAudio : false;
-      // An unsupported device cannot present through Vulkan; force the value off so
-      // the setting matches the greyed-out switch.
       this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
-      // 超分 rides on the Vulkan presenter, so it is only offered where both the
-      // device and the 硬件加速 setting allow it; a stored "on" value that no longer
-      // can apply is dropped, exactly like the audio / hardware-acceleration rows.
       this.srEnabled = (this.hardwareAccelSupported && this.srSupported)
         ? settings.srEnabled : false;
       this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
@@ -219,12 +193,9 @@ struct SettingsPage {
     if (!this.developerMode && settings.gfxCapture) {
       this.persist();
     }
-    // Keep the native capture in step with what the page now shows: with developer
-    // options off it must not be running, whatever the stored value was.
     this.applyGfxCaptureSetting();
   }
 
-  /** Loads the app-level window settings (a single value, shared by both protocols). */
   private applyWindowSettings(settings: AppSettings): void {
     this.mainSizeEnabled = settings.mainWindowSizeEnabled;
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
@@ -236,22 +207,14 @@ struct SettingsPage {
     this.sessionFullscreen = settings.sessionFullscreen;
   }
 
-  /** Loads the app-level developer section (gate, its tools and the toolbar delays). */
   private applyDeveloperSettings(settings: AppSettings): void {
     this.developerMode = settings.developerMode;
-    // With developer options off, the dev-only tools are not shown and must not
-    // keep running: a capture left on from a previous session is switched off.
     this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
     this.touchHighRate = settings.touchHighRate;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
   }
 
-  /**
-   * Loads the shared interaction settings (touchpad / keyboard / foreground
-   * reconnect) from the RDP copy or the Moonlight copy. The two protocols keep
-   * separate values; only this UI code is shared.
-   */
   private applyInteraction(settings: AppSettings, rdp: boolean): void {
     this.touchpadScrollSpeed = rdp ? settings.touchpadScrollSpeed : settings.mlTouchpadScrollSpeed;
     this.pinchZoomSpeed = rdp ? settings.pinchZoomSpeed : settings.mlPinchZoomSpeed;
@@ -266,9 +229,6 @@ struct SettingsPage {
     this.shortcutPassthrough = rdp ? settings.shortcutPassthrough : settings.mlShortcutPassthrough;
   }
 
-  // Applies the dev capture toggle immediately (before the next session) so the
-  // cmd stream is captured from the first frame; a no-op when the value is
-  // unchanged on the native side.
   private applyGfxCaptureSetting(): void {
     let dir: string = '';
     try {
@@ -310,13 +270,11 @@ struct SettingsPage {
     return Math.min(Math.max(value, ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
   }
 
-  /** The preset a 自动 缩放 resolves to right now (it follows 分辨率 and 超分 ratio). */
   private effectiveDefaultScale(): number {
     return SettingsStore.autoScalePercent(this.outputWidth(), this.outputHeight(),
       this.srEnabled, this.srRatioPercent);
   }
 
-  /** Output resolution the page would use, i.e. what 分辨率 resolves to. */
   private outputWidth(): number {
     return this.resolutionAuto
       ? this.detectedWidth
@@ -329,7 +287,6 @@ struct SettingsPage {
       : this.parseSize(this.manualHeightText, this.detectedHeight, MAX_DESKTOP_SIZE);
   }
 
-  /** Session (pre-超分) resolution the server would be asked to render. */
   private sessionSizeText(): string {
     const width: number = SettingsStore.srSessionSize(this.outputWidth(), this.srRatioPercent);
     const height: number = SettingsStore.srSessionSize(this.outputHeight(), this.srRatioPercent);
@@ -340,10 +297,7 @@ struct SettingsPage {
     const disp = defaultDisplay();
     const maxWidth: number = disp !== undefined ? disp.width : Number.MAX_SAFE_INTEGER;
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
-    // Start from what is stored so the other scopes are preserved.
     const settings: AppSettings = SettingsStore.load();
-    // App-level surfaces shared by every tab: the main / session window sizing,
-    // the auto-hide behaviour and the developer section with its tools.
     settings.autoHideMainWindow = this.autoHideMainWindow;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
@@ -407,8 +361,6 @@ struct SettingsPage {
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
     }
     SettingsStore.save(settings);
-    // Apply immediately so a toggle takes effect for sessions opened next,
-    // without waiting for an app restart.
     if (this.protocol === PROTOCOL_RDP) {
       RdpNative.applyRdpCursor(this.useRdpCursor);
       RdpNative.applyHardwareAccel(this.hardwareAccel);
@@ -428,15 +380,8 @@ struct SettingsPage {
     });
   }
 
-  /**
-   * Resets everything: both protocol scopes and the common scope are written
-   * straight from the defaults, then the page reloads. Saving the whole default
-   * object avoids going through `persist()`, which only writes the active tab.
-   */
   private resetDefaults(): void {
     const defaults: AppSettings = SettingsStore.defaults();
-    // Match the greyed-out rows on a device that cannot provide the feature, so
-    // the stored value never asks for what is unavailable here.
     if (!this.audioSupported) {
       defaults.enableAudio = false;
     }
@@ -506,13 +451,11 @@ struct SettingsPage {
     }
   }
 
-  // Win key substitute: the user presses the key to use instead of Win.
   private beginWinCapture(): void {
     this.winSubstituteCapturing = true;
     try {
       this.getUIContext().getFocusController().requestFocus('winSubstituteCapture');
     } catch (error) {
-      // Best effort; clicking the control already focused it.
     }
   }
 
@@ -520,7 +463,6 @@ struct SettingsPage {
     if (!this.winSubstituteCapturing || event.type !== KeyType.Down) {
       return;
     }
-    // Escape cancels the capture without changing the binding.
     if (event.keyCode === 2070) {
       this.winSubstituteCapturing = false;
       return;
@@ -577,7 +519,6 @@ struct SettingsPage {
       })
   }
 
-  /** One choice of the touchpad pinch mode; the accent marks the active one. */
   @Builder
   pinchModeChip(mode: number, label: string) {
     Text(label)
@@ -595,7 +536,6 @@ struct SettingsPage {
       })
   }
 
-  /** One-line explanation of the selected touchpad pinch mode. */
   private pinchModeDescription(): string {
     if (this.pinchMode === PINCH_MODE_TOUCH) {
       return '在鼠标位置合成两个原生触点，远端像真实双指一样缩放';
@@ -618,7 +558,6 @@ struct SettingsPage {
     })
   }
 
-  /** The 超分 choice as one value: 0 = off, 1 = XEngine, 2 = FSR. */
   private srChoice(): number {
     if (!this.srEnabled) {
       return 0;
@@ -626,7 +565,6 @@ struct SettingsPage {
     return this.srBackend === SR_BACKEND_FSR ? 2 : 1;
   }
 
-  /** Whether a 超分 choice can be picked here (超分 rides the Vulkan presenter). */
   private srChoiceUsable(choice: number): boolean {
     if (choice === 0) {
       return true;
@@ -679,23 +617,18 @@ struct SettingsPage {
     })
   }
 
-  /** Decoder support (CODEC_SUPPORT_*) of an ML_CODEC_* choice; auto takes the
-   * best any codec offers. */
   private mlCodecSupportOf(codec: number): number {
     return moonlightCodecSupport(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
-  /** Whether a codec choice can run on this device (auto included). */
   private mlCodecUsable(codec: number): boolean {
     return moonlightCodecUsable(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
-  /** Whether a codec choice would decode in software only. */
   private mlCodecSoftware(codec: number): boolean {
     return moonlightCodecSoftware(codec, this.mlH264Support, this.mlHevcSupport, this.mlAv1Support);
   }
 
-  /** Falls back to auto when the stored choice cannot run here. */
   private clampMlCodec(): void {
     if (!this.mlCodecUsable(this.mlCodec)) {
       this.mlCodec = ML_CODEC_AUTO;
@@ -739,7 +672,6 @@ struct SettingsPage {
     })
   }
 
-  /** One-line explanation of the selected Moonlight cursor mode. */
   private cursorModeDescription(): string {
     if (this.mlCursorMode === ML_CURSOR_OFF) {
       return '不处理光标：画面里是主机画的光标，本机也画一个（可能双重）';
@@ -750,7 +682,6 @@ struct SettingsPage {
     return '隐藏本机系统光标，只显示画面里主机画的光标';
   }
 
-  /** Switches the protocol tab, saving the current one and loading the other. */
   private switchProtocol(protocol: number): void {
     if (this.protocol === protocol) {
       return;
@@ -760,10 +691,6 @@ struct SettingsPage {
     this.syncFromStore();
   }
 
-  /**
-   * Moonlight 显示: the stream resolution, next to the cursor mode (mirrors the
-   * RDP 显示 section, which also holds 分辨率).
-   */
   @Builder
   mlResolutionSection() {
     Column() {
@@ -802,7 +729,6 @@ struct SettingsPage {
     .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
   }
 
-  /** Moonlight tab: the global stream defaults, mirrored by the per-connection overrides. */
   @Builder
   moonlightStreamSection() {
     Column() {
@@ -1068,7 +994,6 @@ struct SettingsPage {
                   .fontSize(11)
                   .fontColor($r('app.color.text_tertiary'))
                   .margin({ top: 2 })
-                // Red caveat above the options, like the RDP 超分辨率 row.
                 if (this.mlCursorMode === ML_CURSOR_HIDE_HOST) {
                   Text('此功能仅在基地版 Sunshine（foundation-sunshine）有效；其它主机会回退为「关闭」')
                     .fontSize(11)
@@ -1354,8 +1279,6 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            // The ratio lives in the same section as the switch: turning 超分辨率
-            // on only adds a row of presets below the switch, not a new block.
             Column() {
               Row() {
                 Column() {
@@ -1385,9 +1308,6 @@ struct SettingsPage {
               }
               .width('100%')
 
-              // 超分 is a three-way choice: off, the platform's XEngine, or the
-              // presenter's own FSR. A backend this build/device cannot run is
-              // dimmed and unselectable.
               Flex({ wrap: FlexWrap.Wrap }) {
                 this.srChoiceChip(0)
                 this.srChoiceChip(1)
@@ -1667,8 +1587,6 @@ struct SettingsPage {
             }
             }
 
-            // "恢复默认设置" lives only in the 通用 tab; it resets everything
-            // (both protocols and the common scope).
             if (this.protocol === TAB_COMMON) {
             Divider().color($r('app.color.divider'))
 
@@ -1690,9 +1608,6 @@ struct SettingsPage {
               })
             }
 
-            // RDP's own developer tools. The gate lives in the 通用 tab, but the
-            // tools it reveals are RDP-specific, so they appear at the bottom of
-            // the RDP tab (not in 通用).
             if (this.protocol === PROTOCOL_RDP && this.developerMode) {
             Divider().color($r('app.color.divider'))
 
@@ -1735,8 +1650,6 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.developerMode = v;
-                // Turning the gate off also stops the tools it revealed, so a
-                // capture cannot keep running invisibly.
                 if (!v && this.gfxCapture) {
                   this.gfxCapture = false;
                   this.persist();

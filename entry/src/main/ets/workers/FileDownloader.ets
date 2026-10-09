@@ -1,16 +1,3 @@
-/*
- * HmRdp - remote-file download state machine, worker side.
- *
- * Runs on the single background worker so the UI thread never does the per-chunk
- * file IO. The native side only relays each FILECONTENTS response as a buffer
- * handle (process-global, shared with the worker) plus scalar fields; this class
- * owns the descriptor list, offset/size bookkeeping, the sandbox file handles and
- * the one-request-in-flight sequencing, and reports progress/completion/failure
- * back to the UI through `emit`. Files stream into a per-transfer sandbox directory,
- * a missing descriptor size is resolved with a SIZE request first, and a list that
- * advertises any folder is refused whole (folders are unsupported in both directions;
- * doc_agent/session-and-input.md §4.1).
- */
 import { fileIo } from '@kit.CoreFileKit';
 import { bufferRead, bufferRelease, requestRemoteFileContents } from 'libhmrdp.so';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
@@ -48,7 +35,6 @@ export class FileDownloader {
     return found;
   }
 
-  /** Parses a raw FILEGROUPDESCRIPTORW (a transferred copy) and caches it. */
   onFileList(handle: number, descriptor: ArrayBuffer): void {
     const state: DownloadState = this.state(handle);
     state.files = FileTransferCodec.parseFileGroupDescriptor(descriptor);
@@ -70,7 +56,6 @@ export class FileDownloader {
     this.emit(event);
   }
 
-  /** One FILECONTENTS response relayed by native. */
   onChunk(request: BackgroundRequest): void {
     const handle: number = request.handle ?? 0;
     const dataHandle: number = request.dataHandle ?? 0;
@@ -132,7 +117,7 @@ export class FileDownloader {
     this.next(handle);
   }
 
-  /** The server's clipboard changed: an in-flight download can never finish. */
+  // Server clipboard changed: an in-flight download can never finish.
   onClipboardChanged(handle: number): void {
     const state: DownloadState = this.state(handle);
     if (state.active) {
@@ -140,7 +125,6 @@ export class FileDownloader {
     }
   }
 
-  /** Starts a download into the given (UI-created) sandbox directory. */
   start(handle: number, dir: string): void {
     const state: DownloadState = this.state(handle);
     if (state.active) {
@@ -150,7 +134,7 @@ export class FileDownloader {
       this.fail(handle, '没有可下载的文件');
       return;
     }
-    // Folders are not supported in either direction: a list that advertises any
+    // Folders are unsupported in both directions: a list that advertises any
     // directory is refused whole.
     for (const file of state.files) {
       if (file.isDirectory) {
@@ -175,7 +159,6 @@ export class FileDownloader {
     this.next(handle);
   }
 
-  /** User cancelled the download; clean partials and report it as a failure. */
   cancel(handle: number): void {
     const state: DownloadState = this.state(handle);
     if (state.active) {
@@ -183,11 +166,8 @@ export class FileDownloader {
     }
   }
 
-  /**
-   * Drives the download: skip directories, resolve a missing size with a SIZE
-   * request, then pull the next RANGE. One request is in flight at a time (the
-   * response carries no listIndex, so native tags it from the pending request).
-   */
+  // One request is in flight at a time: the response carries no listIndex, so
+  // native tags it from the pending request.
   private next(handle: number): void {
     const state: DownloadState = this.state(handle);
     for (;;) {
@@ -263,7 +243,6 @@ export class FileDownloader {
     this.emit(event);
   }
 
-  /** Aborts the download and removes this transfer's partial copies. */
   private abort(handle: number, reason: string): void {
     const state: DownloadState = this.state(handle);
     this.closeFile(state);

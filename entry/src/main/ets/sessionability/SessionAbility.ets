@@ -1,11 +1,3 @@
-/*
- * HmRdp - UIAbility hosting an independent RDP session window.
- *
- * Launched via startAbility with a unique instanceKey so every connection gets
- * its own main window (standard title bar, movable / resizable). The launch
- * request is identified by `sessionKey`, which lets several sessions coexist
- * and lets each window tear down only its own native session.
- */
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
@@ -28,17 +20,12 @@ export default class SessionAbility extends UIAbility {
   }
 
   onDestroy(): void {
-    // Final safety net: if the window is closed before the page lifecycle runs,
-    // tear down the native session here so the RDP connection never outlives
-    // its window. releaseSession() only affects this window's session.
+    // Final safety net: the RDP connection must never outlive its window, even
+    // if it is closed before the page lifecycle runs.
     this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onDestroy');
   }
 
-  /**
-   * Mirrors the toolbar "断开" action: stop this window's FreeRDP session, drop
-   * its event listener and scrub the transient credentials held by its request.
-   */
   private releaseSession(): void {
     if (this.sessionKey.length === 0) {
       return;
@@ -64,7 +51,7 @@ export default class SessionAbility extends UIAbility {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     const moonlight: boolean = request !== undefined && request.protocol === PROTOCOL_MOONLIGHT;
     const settings: AppSettings = SettingsStore.load();
-    // The session window is the same app-level surface for both protocols.
+    // Both protocols share the same app-level session window surface.
     const fullscreen: boolean = settings.sessionFullscreen;
     const sizeEnabled: boolean = settings.sessionWindowSizeEnabled;
     const width: number = settings.sessionWindowWidth;
@@ -83,8 +70,6 @@ export default class SessionAbility extends UIAbility {
     }
     const storage: LocalStorage = new LocalStorage();
     storage.setOrCreate<string>('sessionKey', this.sessionKey);
-    // The protocol decides the session window: RDP's rich page, or the Moonlight
-    // page (surface first, then LiStartConnection).
     const page: string = moonlight ? 'pages/MoonlightSessionPage' : 'pages/SessionPage';
     windowStage.loadContent(page, storage, (err) => {
       if (err.code) {
@@ -98,18 +83,14 @@ export default class SessionAbility extends UIAbility {
     });
   }
 
-  /**
-   * Intercepts dock/tray close as well as the title-bar close so the main window
-   * is relaunched before this session ability goes away in single-window mode.
-   */
+  // Intercepts dock/tray close as well as the title-bar close so the main
+  // window is relaunched before this ability goes away in single-window mode.
   onPrepareToTerminate(): boolean {
     return WindowController.closeSession(this.context);
   }
 
   onWindowStageDestroy(): void {
-    // Closing the session window (title-bar X / Alt+F4) must disconnect the RDP
-    // session exactly like the toolbar button. This runs even when the page
-    // never receives aboutToDisappear().
+    // Runs even when the page never receives aboutToDisappear().
     this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onWindowStageDestroy');
   }

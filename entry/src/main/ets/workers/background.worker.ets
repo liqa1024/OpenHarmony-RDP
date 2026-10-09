@@ -1,17 +1,3 @@
-/*
- * HmRdp - the single background worker.
- *
- * Non-realtime work that would otherwise block the UI thread runs here: the
- * clipboard DIB/RTF/HTML/PNG codecs, the local clipboard encode + native push,
- * and the file-download state machine. It is deliberately not the audio thread -
- * a realtime audio renderer callback must not queue behind a large image decode,
- * a file write, or a clipboard channel send, so audio gets its own worker (see
- * doc_agent/architecture.md §4.4).
- *
- * Correlated requests (id > 0) are the clipboard codec / push calls; id 0 is a
- * fire-and-forget event/command (file download). Binary payloads travel through
- * the postMessage transfer list, so neither the input nor the result is copied.
- */
 import { MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { setClipboardHtmlRaw, setClipboardImage, setClipboardText } from 'libhmrdp.so';
@@ -25,11 +11,8 @@ const downloads: FileDownloader = new FileDownloader((event: BackgroundEvent): v
   workerPort.postMessage(event, []);
 });
 
-/**
- * Encodes the same pixels to a registered "PNG" payload. Best-effort: any
- * failure (or a device without the encoder in this context) just means the push
- * falls back to CF_DIB alone.
- */
+// Best-effort: any failure (or a device without the encoder in this context)
+// just means the push falls back to CF_DIB alone.
 async function encodePng(pixels: ArrayBuffer, width: number, height: number,
   pixelFormat: number): Promise<ArrayBuffer | undefined> {
   if (width <= 0 || height <= 0) {
@@ -53,12 +36,9 @@ async function encodePng(pixels: ArrayBuffer, width: number, height: number,
   }
 }
 
-/**
- * Clipboard requests: decode a remote payload, or encode a local one and push it
- * natively. The push must run here, not on the UI thread: the native store copy
- * (a whole image) and the advertise (a channel send on the calling thread) can
- * block, and a whole-screen image makes that cost visible.
- */
+// The push must run here, not on the UI thread: the native store copy (a whole
+// image) and the advertise (a channel send on the calling thread) can block,
+// and a whole-screen image makes that cost visible.
 async function handleRequest(req: BackgroundRequest): Promise<void> {
   const res: BackgroundResponse = { id: req.id, ok: false };
   const handle: number = req.handle ?? 0;
@@ -108,7 +88,6 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
   }
 }
 
-/** File-download events/commands (fire-and-forget; answers are BackgroundEvents). */
 function handleEvent(req: BackgroundRequest): void {
   const handle: number = req.handle ?? 0;
   if (req.op === BackgroundOps.FILE_LIST && req.data !== undefined) {

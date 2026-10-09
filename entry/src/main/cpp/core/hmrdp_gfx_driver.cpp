@@ -1,6 +1,3 @@
-/*
- * HmRdp - recorded RDPGFX channel replay pump (see hmrdp_gfx_driver.h).
- */
 #include "hmrdp_gfx_driver.h"
 
 #include <atomic>
@@ -53,26 +50,22 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
   const uint8_t* data = nullptr;
   uint32_t size = 0;
   while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
-    // Realtime mode: wait for this record's original arrival time *before* the
-    // record is fed, so the whole read/decode/present chain runs on the cadence
-    // the live session saw. Kept outside the parse timing below (it is playback
-    // throttling, not client work).
+    // Realtime mode: wait for this record's original arrival time *before* it is
+    // fed, so the whole chain runs on the cadence the live session saw. Kept
+    // outside the parse timing below (it is playback throttling, not client work).
     if (paced) {
       pace(capture.timestampUs());
     }
     // Same arrival stamp the live sink takes, so the "本机" phases are measured the
-    // same way on both sides (see hmrdp_gfx_work.h). The meter comes from this
-    // replay's own GFX context, not a process-global slot.
+    // same way on both sides. The meter comes from this replay's own GFX context,
+    // not a process-global slot.
     if (GfxWorkMeter* meter = GfxWorkMeterFor(gfx)) {
       meter->OnChunk(size);
     }
-    // Dev (perf): the ZGFX + RDPGFX PDU parse is a per-record cost the replay
-    // always pays, so it is timed here rather than inside the decoder.
-    //
-    // The gdi decode *and* the present (with its playback sleep) also happen
-    // inside this call, so the deliberate pacing is subtracted back out: without
-    // that, `parse=` would report most of the run's wall time and could exceed
-    // `feed=` (which is defined as compute only).
+    // Dev (perf): the ZGFX + RDPGFX PDU parse is timed here rather than inside
+    // the decoder. The gdi decode *and* the present (with its playback sleep)
+    // also happen inside this call, so the deliberate pacing is subtracted back
+    // out.
     const uint64_t paceBefore = paceAccum ? paceAccum() : 0;
     const int64_t recvStart = ParseNowUs();
     HmrdpGfxReplayRecv(gfx, data, size);

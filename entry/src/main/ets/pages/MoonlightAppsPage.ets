@@ -1,13 +1,3 @@
-/*
- * HmRdp - Moonlight application management (main-window page).
- *
- * The app layer for a Moonlight host: it lists the host's applications, shows
- * which one is running, and lets the user connect (a card tap always ends in a
- * session: start the app if needed, else connect directly), set the connection's
- * default app (the star), or stop the running app. Reached from the Moonlight
- * row's app button; the pairing PIN stays a lightweight popup over the main
- * window. See doc_agent/moonlight-connection.md §4.
- */
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -38,36 +28,18 @@ export interface MoonlightAppsParams {
 @Component
 struct MoonlightAppsPage {
   @State apps: NvApp[] = [];
-  // The host's running app, mirrored from MoonlightHostState (the shared
-  // authority) so this page and the list never disagree; never written directly.
   @State currentGame: number = 0;
   @State loading: boolean = true;
-  // A refresh over an already-loaded list: only the FAB spins, the page keeps
-  // showing the current apps until the new result arrives.
   @State refreshing: boolean = false;
   @State error: string = '';
   @State state: ConnectionState = ConnectionState.Idle;
-  // The connection's default app id, mirrored into @State so the star repaints
-  // when it is set (the saved record itself is not observable).
   @State defaultAppId: string = '';
-  // App icons fetched from the host (/appasset), keyed by app id.
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
   private conn: SavedConnection | undefined = undefined;
   private httpsPort: number = 47984;
-  // True once a list has been shown, so later refreshes keep the page instead of
-  // blanking it with the full-page spinner.
   private hasLoaded: boolean = false;
-  // Coalesces overlapping probes: the first appearance refreshes from both
-  // aboutToAppear and onPageShow, and a page show can also arrive while the FAB's
-  // refresh is still in flight.
   private probing: boolean = false;
-  // The app a connect is in flight for, set when the attempt starts and cleared
-  // once it settles. Set at launch (before the manager reports Connecting) so the
-  // card's loading state does not flash off during the Idle -> Connecting gap.
   private pendingAppId: number = 0;
-  // Whether that attempt was a resume of an app that was *already* running: a
-  // resume keeps the card / badge as they are (only the pressed disc spins),
-  // while a fresh start shows the card loading until the session is up.
   private pendingResume: boolean = false;
   private readonly stateListener: SessionStateListener =
     (connectionId: string, state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
@@ -80,9 +52,6 @@ struct MoonlightAppsPage {
       }
     };
 
-  // Mirrors MoonlightHostState into the running badge: the authority pushes every
-  // change (client action or host probe), so returning from a session shows the
-  // host's actual state instead of the last tapped app.
   private readonly hostStateListener: HostTargetListener =
     (connectionId: string, currentGame: number): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
@@ -114,12 +83,6 @@ struct MoonlightAppsPage {
     MoonlightHostState.unsubscribe(this.hostStateListener);
   }
 
-  /**
-   * Re-reads the host state whenever the page shows again (same contract as the
-   * list page): a session opened from here runs in its own window, so returning
-   * to this page must not keep a stale "running" app. This is the shared, cheap
-   * target probe; the app list itself is only re-read on the first load / FAB.
-   */
   onPageShow(): void {
     const conn: SavedConnection | undefined = this.conn;
     if (conn !== undefined && this.hasLoaded) {
@@ -140,7 +103,6 @@ struct MoonlightAppsPage {
     return this.conn !== undefined ? this.conn.port : 47989;
   }
 
-  /** The connection's name or "host:port", shown at the header's right edge. */
   private label(): string {
     return this.conn !== undefined ? this.conn.label() : '';
   }
@@ -154,8 +116,6 @@ struct MoonlightAppsPage {
       return;
     }
     this.probing = true;
-    // Keep the current page on a re-refresh; only the first load takes the
-    // full-page spinner (there is nothing to preserve yet).
     if (this.hasLoaded) {
       this.refreshing = true;
     } else {
@@ -175,11 +135,7 @@ struct MoonlightAppsPage {
       this.hasLoaded = true;
       this.apps = result.apps;
       this.httpsPort = result.httpsPort;
-      // Feed the host's own answer into the shared authority: it overwrites the
-      // optimistic value a connect wrote, and the listener pushes it back here.
       MoonlightHostState.setProbed(conn.id, result.currentGame, result.httpsPort);
-      // Record the host's own id for the connection-uniqueness check (only when
-      // it changed, so a plain refresh does not write the store every time).
       if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
         conn.mlHostId = result.hostId;
         conn.updatedAt = Date.now();
@@ -194,12 +150,6 @@ struct MoonlightAppsPage {
     }
   }
 
-  /**
-   * The star marks the app a connect would open: the connection's explicit
-   * default when it still exists, else the host default (@see pickApp). Without
-   * this fallback an unset default shows no star even though connecting opens an
-   * app.
-   */
   private resolveDefaultAppId(apps: NvApp[]): string {
     const stored: string = this.conn !== undefined ? this.conn.mlDefaultAppId : '';
     if (apps.length === 0) {
@@ -213,7 +163,6 @@ struct MoonlightAppsPage {
     return MoonlightConnector.pickApp(apps).toString();
   }
 
-  /** Fetches and decodes each app's icon; failures just keep the placeholder. */
   private async loadIcons(): Promise<void> {
     const conn: SavedConnection | undefined = this.conn;
     if (conn === undefined) {
@@ -242,33 +191,20 @@ struct MoonlightAppsPage {
     }
   }
 
-  /** True while this connection already has a session (multi-open is not allowed). */
   private hasActiveSession(): boolean {
     return this.state === ConnectionState.Connecting || this.state === ConnectionState.Connected ||
       this.state === ConnectionState.Disconnecting;
   }
 
-  /**
-   * A *live* session, used to pick the action discs: Connected / Disconnecting
-   * only. Connecting is excluded so that, while the connection is in flight, the
-   * tile keeps the pre-session pair and its leading disc (恢复 / 连接) shows the
-   * loading spinner instead of flipping to 断开连接 before the session is up.
-   */
   private sessionEstablished(): boolean {
     return this.state === ConnectionState.Connected ||
       this.state === ConnectionState.Disconnecting;
   }
 
-  /** True while an in-flight connect targets this app. */
   private isConnecting(app: NvApp): boolean {
     return this.pendingAppId === app.id;
   }
 
-  /**
-   * Whether to show the running badge / action discs. While a *fresh* start is
-   * loading they stay hidden until the session is actually up (only the card
-   * loads); a resume keeps them, since the app is already running on the host.
-   */
   private displayRunning(app: NvApp): boolean {
     if (this.isConnecting(app) && !this.pendingResume) {
       return false;
@@ -276,12 +212,6 @@ struct MoonlightAppsPage {
     return this.isRunning(app);
   }
 
-  /**
-   * Open one app: a card tap (or the running app's 连接). One connection supports
-   * one session, so if one is already up it is dropped first and the new app
-   * opened — this is the "switch app" action, with no dialog (the tooltip says
-   * what the tap does).
-   */
   private openApp(app: NvApp): void {
     if (this.hasActiveSession() && this.conn !== undefined) {
       SessionManager.disconnect(this.conn.id);
@@ -295,21 +225,14 @@ struct MoonlightAppsPage {
     if (conn === undefined || context === undefined) {
       return;
     }
-    // A specific app id; the pre-flight runs inside the manager (Connecting).
     this.error = '';
-    // Record the attempt before it starts: a resume of an already-running app
-    // keeps its card / badge, a fresh start loads the card and defers the badge.
     this.pendingAppId = app.id;
     this.pendingResume = this.isRunning(app);
-    // Mark the target as the running app right away (through the shared
-    // authority): connecting starts it (and a switch stops the previous one), so
-    // the host state is current as soon as the session comes up.
     MoonlightHostState.markLaunched(conn.id, app.id);
     MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
       RdpConnectOrigin.List, app.id);
   }
 
-  /** Ends the session but leaves the host app running. */
   private disconnectSession(): void {
     const conn: SavedConnection | undefined = this.conn;
     if (conn !== undefined) {
@@ -317,7 +240,6 @@ struct MoonlightAppsPage {
     }
   }
 
-  /** 中断: ask the host to stop its running app; the shared target clears on success. */
   private async closeApp(): Promise<void> {
     const conn: SavedConnection | undefined = this.conn;
     if (conn === undefined) {
@@ -326,8 +248,6 @@ struct MoonlightAppsPage {
     const ok: boolean = await MoonlightClient.cancel(this.filesDir(), conn.host, this.httpsPort);
     showToast(this.getUIContext(), ok ? '已请求关闭主机应用' : '关闭主机应用失败');
     if (ok) {
-      // The client knows the app is gone; clear it now (both surfaces agree) and
-      // reconcile with the host once the cancel has settled.
       MoonlightHostState.markStopped(conn.id);
       MoonlightHostState.refreshAfter(conn, this.filesDir(), HOST_REPROBE_DELAY_MS);
     }
@@ -347,13 +267,6 @@ struct MoonlightAppsPage {
     showToast(this.getUIContext(), ok ? '已关闭主机应用并断开连接' : '已断开连接');
   }
 
-  /**
-   * The poster is the tile and carries no name, so the tooltip both names the
-   * app and says what a click does: "切换到" when another app is running, else
-   * "连接到". A running app's card does not react (its actions are the bottom
-   * discs), so its tip is just the app name — still the only place the name is
-   * shown.
-   */
   private appTip(app: NvApp): string {
     if (this.isRunning(app)) {
       return app.name;
@@ -385,15 +298,8 @@ struct MoonlightAppsPage {
     return this.defaultAppId === app.id.toString();
   }
 
-  /**
-   * The tile only needs a new ForEach key when its identity data changes: the
-   * loaded icon, which @Prop cannot carry (its PixelMap does not survive the
-   * deep copy), so the tile is recreated with the new bitmap. Everything else
-   * reactive (default / running / session) updates in place through @Prop. The
-   * key is per-tile (presence of *this* icon), not the map size: a size-based
-   * key would recreate every tile on each icon arrival, which also replays the
-   * controls' appear transitions on unrelated tiles.
-   */
+  // @Prop cannot carry the PixelMap (it does not survive the deep copy), so the tile key
+  // carries the icon's per-app presence to recreate the tile only when its icon arrives.
   private tileKey(app: NvApp): string {
     return `${app.id}#${this.iconMap.has(app.id) ? 1 : 0}`;
   }

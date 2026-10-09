@@ -1,6 +1,3 @@
-/*
- * HmRdp - GLES/EGL fallback presenter (see hmrdp_gles_presenter.h).
- */
 #include "hmrdp_gles_presenter.h"
 
 #include <chrono>
@@ -92,8 +89,8 @@ void GlesPresenter::SetSurface(void* nativeWindow, int width, int height) {
 void GlesPresenter::ResizeSurface(int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
   // Only record the size: the viewport is re-derived from the real surface on
-  // every present, so doing GL here (on whichever thread calls resize) would only
-  // make the context current off the present path for nothing.
+  // every present, so doing GL here would only make the context current off the
+  // present path for nothing.
   surfaceWidth_ = width;
   surfaceHeight_ = height;
 }
@@ -395,7 +392,7 @@ bool GlesPresenter::PresentBgra(const uint8_t* data, int srcStride, int desktopW
   UpdateViewport();
   DrawQuad(texture_);
   // A buffer swap can block on the compositor: that is display backpressure, not
-  // client work, so it is accumulated separately (hmrdp_presenter.h).
+  // client work, so it is accumulated separately.
   const uint64_t swapStartUs = NowUs();
   eglSwapBuffers(display_, surface_);
   presentWaitUs_ += NowUs() - swapStartUs;

@@ -1,11 +1,3 @@
-/*
- * HmRdp - selected/unselected choice chip.
- *
- * The one chip shape used by every preset group (scale / super-resolution /
- * Moonlight stream options / pinch mode): accent + white text when selected,
- * muted on the input background otherwise. The caller owns the selection state
- * and the options; this only renders one choice.
- */
 @Component
 export struct ChoiceChip {
   @Prop label: string = '';

@@ -1,12 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * Node-API bridge between ArkTS and the FreeRDP session wrapper.
- *
- * Rendering surfaces are bound through the ArkUI XComponent surface id:
- * ArkTS forwards onSurfaceCreated/Changed/Destroyed to this module, which
- * turns the surface id into an OHNativeWindow consumed by the presenter (Vulkan,
- * or the GLES fallback when Vulkan cannot present).
- */
 #include <multimodalinput/oh_input_manager.h>
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
@@ -39,35 +30,15 @@ using hmrdp::Session;
 using hmrdp::SessionEvent;
 using hmrdp::binding::HandleRegistry;
 
-// Sessions live behind typed handles (see binding/handle_registry.h): the object
-// stays here, ArkTS only keeps the integer returned by createSession(). This
-// registry's id space is independent of the replay registry, so a session handle
-// can never be resolved as a replay.
 HandleRegistry<Session> g_sessions;
-// Each session owns exactly one OHNativeWindow, keyed by session handle, so
-// multiple concurrent sessions never share surface state.
 std::mutex g_windowMutex;
 std::map<int64_t, OHNativeWindow*> g_windows;
-// How long destroySession() waits for the RDP thread to finish tearing the
-// session down before returning. The teardown is normally immediate; exceeding
-// this only means the caller stopped waiting - the object is still owned by the
-// RDP thread, which frees it when it can, so this can never become a
-// use-after-free.
 constexpr uint32_t kTeardownTimeoutMs = 2000;
 
 napi_threadsafe_function g_eventTsfn = nullptr;
 
-// Dev/test replay instances, keyed by their own handle. Each instance owns its
-// own frame pipeline, so several can run concurrently without an RDP server -
-// that is the multi-session regression vehicle (doc_agent/gfx-engine.md §6).
-// A separate registry from g_sessions: a replay handle and a session handle are
-// independent namespaces.
 HandleRegistry<hmrdp::GfxReplay> g_replays;
 
-// Byte buffers that travel to ArkTS by reference: a cursor / clipboard bitmap
-// stays native and ArkTS reads it through a handle when it builds a PixelMap,
-// then releases it (manual lifecycle - nothing here is GC-managed). This is what
-// keeps binary out of the event string and off base64.
 struct NativeBuffer {
   std::vector<uint8_t> bytes;
 };
@@ -80,10 +51,6 @@ struct EventPayload {
   std::vector<uint8_t> bytes;
 };
 
-// Turns one event's typed native payload into the JS object ArkTS reads. Native
-// fills named integer / text fields (Session::EventData), so neither side
-// stringifies and re-parses a delimited encoding; this is marshalling at the
-// boundary, not protocol logic.
 napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& payload,
                             const std::vector<uint8_t>& bytes) {
   napi_value obj = nullptr;
@@ -108,8 +75,6 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
                ? payload.values[index]
                : static_cast<int64_t>(0);
   };
-  // Hands the binary half over as a native buffer handle (ArkTS reads it once
-  // with bufferRead(); nothing binary crosses as a string).
   auto setBuffer = [&](const char* name) {
     if (!bytes.empty()) {
       auto buffer = std::make_shared<NativeBuffer>();
@@ -134,11 +99,9 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
     case static_cast<int>(SessionEvent::kClipboardHtml):
     case static_cast<int>(SessionEvent::kClipboardRtf):
     case static_cast<int>(SessionEvent::kRemoteFileListRaw):
-      // Raw CF_HTML / RTF / FILEGROUPDESCRIPTORW; ArkTS parses it.
       setBuffer("dataHandle");
       break;
     case static_cast<int>(SessionEvent::kRemoteFileChunk):
-      // listIndex / isSize / sizeValue / failed, plus the range bytes.
       setInt("listIndex", value(0));
       setBool("isSize", value(1) != 0);
       setInt("sizeValue", value(2));
@@ -146,9 +109,6 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
       setBuffer("dataHandle");
       break;
     case static_cast<int>(SessionEvent::kCursorShape):
-      // width / height / hotX / hotY as decoded, plus the desktop magnification
-      // (milli) and a content hash so ArkTS owns scaling policy and dedup; the
-      // BGRA bitmap travels as a buffer handle.
       setInt("width", value(0));
       setInt("height", value(1));
       setInt("hotX", value(2));
@@ -158,7 +118,6 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
       setBuffer("imageHandle");
       break;
     case static_cast<int>(SessionEvent::kClipboardImage):
-      // Raw CF_DIB; ArkTS decodes it (ClipboardCodec).
       setBuffer("imageHandle");
       break;
     case static_cast<int>(SessionEvent::kFileTransferProgress):
@@ -183,7 +142,6 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
       setInt("audioChannels", value(1));
       break;
     case static_cast<int>(SessionEvent::kRemoteFormatList):
-      // "kind:id,kind:id" (one entry per kind); ArkTS picks one and asks for it.
       setStr("formatCandidates", payload.text);
       break;
     case static_cast<int>(SessionEvent::kRemoteFormatResponse):
@@ -193,8 +151,6 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
     case static_cast<int>(SessionEvent::kRemoteLockState):
       setInt("lockFlags", value(0));
       break;
-    // kConnected / kFirstFrame / kCursorDefault / kCursorHidden /
-    // kRemoteClipboardChanged carry no payload.
     default:
       break;
   }
@@ -230,10 +186,9 @@ void OnSessionEvent(int64_t handle, SessionEvent event, const Session::EventData
   }
 }
 
-// 快捷键穿透: process-global key event interceptor. HarmonyOS allows one per
-// process and delivers to it only while this application is focused (exactly
-// when a session should own the keyboard). `g_interceptHandle` names the session
-// the events belong to, so a background session never gets another's keys.
+// 快捷键穿透: HarmonyOS allows one process-global key interceptor, delivered only
+// while this app is focused. g_interceptHandle names the owning session, so a
+// background session never gets another's keys.
 std::mutex g_interceptMutex;
 int64_t g_interceptHandle = 0;
 bool g_interceptActive = false;
@@ -261,9 +216,6 @@ void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
   OnSessionEvent(handle, SessionEvent::kKeyIntercept, data, {});
 }
 
-// Copies the session's shared ownership out of the registry, so the caller keeps
-// it alive for as long as it needs it even if DestroySession() removes the entry
-// (or the RDP thread tears the session down) in the meantime.
 std::shared_ptr<Session> FindSession(int64_t handle) {
   return g_sessions.Find(handle);
 }
@@ -280,7 +232,6 @@ void DestroyWindow(int64_t handle) {
   g_windows.erase(it);
 }
 
-// Best-effort scrub of a transient credential buffer.
 void SecureErase(std::string& value) {
   if (!value.empty()) {
     volatile char* data = &value[0];
@@ -373,13 +324,10 @@ napi_value CreateUndefined(napi_env env) {
   return result;
 }
 
-// The window buffer is CPU-accessible by default: good for compatibility, but
-// the CPU path costs energy while the GPU path does not (HarmonyOS FAQ "如何主动
-// 关闭CPU访问窗口缓冲区数据降低功耗"). This client never reads the buffer from the
-// CPU - the Vulkan presenter hands its swapchain images to the compositor and the
-// GLES fallback only writes - so the read bits are dropped and the platform picks
-// the cheaper access mode. CPU_WRITE stays: the GLES fallback requests buffers
-// through OH_NativeWindow and writes them.
+// The window buffer is CPU-accessible by default, but the CPU read path costs
+// energy (HarmonyOS FAQ "如何主动关闭CPU访问窗口缓冲区数据降低功耗"). This client never
+// reads it from the CPU, so the read bits are dropped; CPU_WRITE stays for the
+// GLES fallback, which writes through OH_NativeWindow.
 void PreferGpuWindowBuffer(OHNativeWindow* window) {
   if (window == nullptr) {
     return;
@@ -404,14 +352,9 @@ void PreferGpuWindowBuffer(OHNativeWindow* window) {
              static_cast<unsigned long long>(reduced));
 }
 
-// --- NAPI methods ---------------------------------------------------------
-
 napi_value CreateSession(napi_env env, napi_callback_info) {
   auto session = std::make_shared<Session>();
   const int64_t id = g_sessions.Add(session);
-  // Bind the handle into the callback so events can be routed to the owning
-  // session window when several sessions run at once. No event can fire before
-  // connect(), which the caller only issues after this returns.
   session->SetEventFn([id](SessionEvent event, const Session::EventData& data,
                            const std::vector<uint8_t>& bytes) {
     OnSessionEvent(id, event, data, bytes);
@@ -433,11 +376,6 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
   }
   bool destroyed = true;
   if (session) {
-    // Signal the RDP thread to stop. It holds its own reference and performs the
-    // teardown itself (Session::Teardown), so dropping our reference below never
-    // frees the FreeRDP context while that thread is still using it. Then wait
-    // (bounded) for the teardown to finish: a caller that is about to reconnect
-    // gets a session that is really gone rather than one still tearing down.
     session->Disconnect();
     destroyed = session->WaitDestroyed(kTeardownTimeoutMs);
     if (!destroyed) {
@@ -446,12 +384,6 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
     }
   }
   if (destroyed) {
-    // The presenter has released the surface (Teardown) or the session never had
-    // one, so the window can be destroyed. SetSurface for this handle already
-    // stops finding a session, so no new window can be attached in between.
-    // When the teardown did not finish in time the window is deliberately left
-    // alone: the presenter still points at it, and leaking a handle is strictly
-    // safer than freeing it under a live presenter.
     DestroyWindow(handle);
   }
   return CreateUndefined(env);
@@ -477,7 +409,6 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.ignoreCertificate = GetBoolProperty(env, args[1], "ignoreCertificate", true);
   options.enableAudio = GetBoolProperty(env, args[1], "enableAudio", true);
   options.srEnabled = GetBoolProperty(env, args[1], "srEnabled", false);
-  // 0 = XEngine (the platform upscaler), 1 = the presenter's own FSR.
   options.srBackend = GetIntProperty(env, args[1], "srBackend", 0) == 1
                           ? hmrdp::SuperResolutionBackend::kFsr
                           : hmrdp::SuperResolutionBackend::kXengine;
@@ -736,10 +667,8 @@ napi_value SetShortcutPassthrough(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[1], &enabled) != napi_ok) {
     return CreateBool(env, false);
   }
-  // Decide under the lock, but register / unregister outside it: the callback
-  // takes the same mutex, and a re-entrant call from the input service into it
-  // (which the API does not promise never to make) would deadlock otherwise. The
-  // callers are all on the JS thread, so there is no competing add/remove.
+  // Register/unregister outside the lock: the callback takes the same mutex, so a
+  // re-entrant call would deadlock.
   bool callAdd = false;
   bool callRemove = false;
   {
@@ -748,8 +677,6 @@ napi_value SetShortcutPassthrough(napi_env env, napi_callback_info info) {
       g_interceptHandle = handle;
       callAdd = !g_interceptActive;
     } else if (g_interceptHandle == handle || handle <= 0) {
-      // Only the session that owns the interceptor may release it, so a stale
-      // blur from another window cannot take it from the focused one.
       callRemove = g_interceptActive;
       g_interceptHandle = 0;
     }
@@ -772,8 +699,6 @@ napi_value SetShortcutPassthrough(napi_env env, napi_callback_info info) {
     g_interceptActive = false;
     return CreateBool(env, true);
   }
-  // Nothing to do (already in the requested state, or the enable carried no
-  // usable handle): report what is actually in effect.
   std::lock_guard<std::mutex> lock(g_interceptMutex);
   return CreateBool(env, g_interceptActive);
 }
@@ -801,8 +726,6 @@ napi_value SetClipboardText(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// pushes a local HTML clipboard as a ready CF_HTML payload (arg 1, ArrayBuffer)
-// plus its plain-text fallback (arg 2, UTF-8 string). ArkTS built both.
 napi_value SetClipboardHtmlRaw(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value args[3] = {nullptr, nullptr, nullptr};
@@ -827,9 +750,6 @@ napi_value SetClipboardHtmlRaw(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// Local image clipboard: arg 1 is a ready CF_DIB, arg 2 the same image as a
-// registered "PNG" payload (may be an empty ArrayBuffer). Native advertises PNG
-// first when present and serves whichever format the server requests.
 napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value args[3] = {nullptr, nullptr, nullptr};
@@ -857,7 +777,6 @@ napi_value SetClipboardImage(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// Reads a UTF-8 string argument (the helper the clipboard setters share).
 bool ReadStringArg(napi_env env, napi_value value, std::string* out) {
   if (out == nullptr) {
     return false;
@@ -872,9 +791,6 @@ bool ReadStringArg(napi_env env, napi_value value, std::string* out) {
   return true;
 }
 
-// Advertises a local file offer: arg 1 is a ready FILEGROUPDESCRIPTORW
-// (ArrayBuffer, built by ArkTS) and arg 2 the absolute sandbox paths (one per
-// line) the bytes are streamed from.
 napi_value SetClipboardFileOffer(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value args[3] = {nullptr, nullptr, nullptr};
@@ -893,7 +809,6 @@ napi_value SetClipboardFileOffer(napi_env env, napi_callback_info info) {
   if (!ReadStringArg(env, args[2], &text)) {
     return CreateBool(env, false);
   }
-  // Absolute sandbox paths, one per line (they never contain a newline).
   std::vector<std::string> paths;
   size_t start = 0;
   while (start < text.size()) {
@@ -916,8 +831,6 @@ napi_value SetClipboardFileOffer(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// One step of the ArkTS-driven file download: ask the server for a file's size
-// (sizeOnly) or a byte range. The response arrives as a RemoteFileChunk event.
 napi_value RequestRemoteFileContents(napi_env env, napi_callback_info info) {
   size_t argc = 5;
   napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -960,10 +873,6 @@ napi_value CancelFileTransfer(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// The raw telemetry reading of a session (see SessionTelemetry). ArkTS pulls it
-// at its own cadence and computes the displayed rates itself, so the native side
-// neither aggregates nor assembles a per-second string. An unknown handle yields
-// the zeroed shape (rttMs = -1) and the caller keeps its current figures.
 napi_value GetSessionTelemetry(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -975,8 +884,6 @@ napi_value GetSessionTelemetry(napi_env env, napi_callback_info info) {
     return result;
   }
   std::shared_ptr<Session> session = FindSession(handle);
-  // Always populate every field, so a stale handle yields the same shape with
-  // defaults rather than an object ArkTS would read as undefined.
   const hmrdp::SessionTelemetry telemetry =
       session != nullptr ? session->ReadTelemetry() : hmrdp::SessionTelemetry();
   auto setInt = [env, result](const char* name, int64_t value) {
@@ -1007,11 +914,6 @@ napi_value GetSessionTelemetry(napi_env env, napi_callback_info info) {
   setInt("gpuBlitUs", static_cast<int64_t>(telemetry.gpuBlitUs));
   return result;
 }
-
-// --- native byte buffers (handed to ArkTS as a handle, manual lifecycle) -------
-// A cursor / clipboard bitmap stays native (g_buffers). ArkTS reads it once with
-// bufferRead() - a copy into a JS ArrayBuffer to build a PixelMap - and then
-// calls bufferRelease(). An unknown handle reads as an empty buffer / size 0.
 
 napi_value BufferSize(napi_env env, napi_callback_info info) {
   size_t argc = 1;
@@ -1060,12 +962,6 @@ napi_value BufferRelease(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-// scaleBgraBitmap(handle, srcW, srcH, dstW, dstH, sharpen) -> new handle.
-// Resamples one g_buffers BGRA bitmap handle-to-handle (the bitmap never
-// crosses to ArkTS for the transform itself). The source handle is consumed
-// either way; 0 means the input was unusable. Downscales by premultiplied
-// area average, upscales by premultiplied Lanczos3 + optional sharpen
-// (hmrdp_bitmap); which one and how much is the caller's policy.
 napi_value ScaleBgraBitmap(napi_env env, napi_callback_info info) {
   size_t argc = 6;
   napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -1118,17 +1014,12 @@ napi_value AudioRead(napi_env env, napi_callback_info info) {
   }
   const std::shared_ptr<Session> session = FindSession(handle);
   if (session == nullptr) {
-    // The session is gone: keep the callback's buffer silent rather than letting
-    // a stale buffer be replayed.
     std::memset(data, 0, length);
     return CreateInt(env, 0);
   }
   return CreateInt(env, session->ReadAudio(static_cast<uint8_t*>(data), length));
 }
 
-// The session's current PCM format, so an AudioRenderer that starts after the
-// AudioFormat event can seed itself instead of staying silent. rate/channels are
-// 0 until the first packet.
 napi_value AudioFormat(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1153,8 +1044,6 @@ napi_value AudioFormat(napi_env env, napi_callback_info info) {
   return obj;
 }
 
-// Sends a clipboard data request for one format the ArkTS side chose (see
-// kRemoteFormatList); `kind` is echoed back on the response event.
 napi_value RequestRemoteFormat(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value args[3] = {nullptr, nullptr, nullptr};
@@ -1175,8 +1064,6 @@ napi_value RequestRemoteFormat(napi_env env, napi_callback_info info) {
                                                       static_cast<uint32_t>(kind)));
 }
 
-// Unconditional Client Synchronize PDU for the toggle-key re-assert ArkTS decided
-// (the deduplicated sendLockState() is for the input path).
 napi_value SendSynchronize(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -1262,8 +1149,6 @@ std::string GetStringArg(napi_env env, napi_value v) {
   return s;
 }
 
-// Dev/test: replay a recorded hmrdp_gfx.bin capture straight to the screen.
-// One instance per `surfaceId`; the returned handle owns it until stopReplay.
 napi_value StartReplay(napi_env env, napi_callback_info info) {
   size_t argc = 6;
   napi_value args[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
@@ -1276,14 +1161,10 @@ napi_value StartReplay(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &surfaceW);
     napi_get_value_int32(env, args[2], &surfaceH);
     const std::string gfxPath = GetStringArg(env, args[3]);
-    // Realtime playback: pace by the capture's own arrival times (the default
-    // fast mode is unthrottled). Ignored for captures that carry no timing.
     int32_t realtime = 0;
     if (argc >= 5) {
       napi_get_value_int32(env, args[4], &realtime);
     }
-    // Golden-reference mode (see GfxReplayRefMode): 0 = off (perf run),
-    // 1 = write the reference, 2 = check against the stored one.
     int32_t refMode = 0;
     if (argc >= 6) {
       napi_get_value_int32(env, args[5], &refMode);
@@ -1379,9 +1260,6 @@ napi_value ReplayStats(napi_env env, napi_callback_info info) {
   return result;
 }
 
-// One compact line per live instance, for the dev harness and for an agent: the
-// per-instance figures must stay independent, which is exactly what a
-// multi-instance regression reads.
 napi_value ListReplays(napi_env env, napi_callback_info info) {
   (void)info;
   std::vector<std::pair<int64_t, std::shared_ptr<hmrdp::GfxReplay>>> replays =
@@ -1396,8 +1274,6 @@ napi_value ListReplays(napi_env env, napi_callback_info info) {
   return result;
 }
 
-// Dev/test: the capability report - loader/device versions, the
-// migration-relevant extensions, memory types and queue families.
 napi_value VulkanInfo(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   HMRDP_LOGI("vulkan caps: %{public}s", caps.Describe().c_str());
@@ -1407,9 +1283,6 @@ napi_value VulkanInfo(napi_env env, napi_callback_info) {
   return result;
 }
 
-// The shape every capability probe returns: {supported, code}. Only the stable
-// code crosses the boundary; the UI owns the wording, so a new reason does not
-// need a native string change.
 napi_value MakeVerdict(napi_env env, bool supported, const std::string& code) {
   napi_value obj = nullptr;
   napi_create_object(env, &obj);
@@ -1422,10 +1295,6 @@ napi_value MakeVerdict(napi_env env, bool supported, const std::string& code) {
   return obj;
 }
 
-// Whether frames can be presented through Vulkan on this device - the capability
-// behind the "硬件加速" setting. This is the *presenter* verdict: a Vulkan device
-// with host-visible memory for the frame buffer and a surface + swapchain to blit
-// to (see VulkanCapabilities::presenterUnsupportedCode for the code).
 napi_value VulkanAccelSupport(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   HMRDP_LOGI("vulkan accel support: supported=%{public}d code=%{public}s",
@@ -1433,9 +1302,6 @@ napi_value VulkanAccelSupport(napi_env env, napi_callback_info) {
   return MakeVerdict(env, caps.presenterSupported, caps.presenterUnsupportedCode);
 }
 
-// Whether the device can upscale a frame (at least one 超分 backend) - the
-// capability behind the "超分" setting. `code` is a presenter code or
-// "no-xengine" / "no-extension" (see VulkanCapabilities::srUnsupportedCode).
 napi_value SuperResolutionSupport(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   HMRDP_LOGI("super resolution support: supported=%{public}d code=%{public}s",
@@ -1443,8 +1309,6 @@ napi_value SuperResolutionSupport(napi_env env, napi_callback_info) {
   return MakeVerdict(env, caps.srSupported, caps.srUnsupportedCode);
 }
 
-// Which 超分 backends this build and device can actually run. The UI greys out
-// the ones that are false; superResolutionSupport carries the reason.
 napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   HMRDP_LOGI("super resolution backends: xengine=%{public}d fsr=%{public}d",
@@ -1460,9 +1324,6 @@ napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   return obj;
 }
 
-// Link assertion for the Moonlight (GameStream) client, which is a required
-// build product: it always returns "1" and only fails to build/link when the
-// static archives are missing (see hmrdp_moonlight.h).
 napi_value MoonlightProbe(napi_env env, napi_callback_info) {
   const std::string out = hmrdp::MoonlightProbe();
   napi_value result = nullptr;
@@ -1470,8 +1331,6 @@ napi_value MoonlightProbe(napi_env env, napi_callback_info) {
   return result;
 }
 
-// VIDEO_FORMAT_* bitmask to advertise to the host (codec negotiation), for the
-// given ML_CODEC_* preference (default auto).
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1485,8 +1344,6 @@ napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
   return CreateInt(env, hmrdp::MoonlightVideoFormats(value));
 }
 
-// Decoder support for one ML_CODEC_* value: 0 none, 1 software, 2 hardware. The
-// settings UI greys unsupported codecs and warns on software-only ones.
 napi_value MoonlightVideoCodecSupport(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1498,8 +1355,6 @@ napi_value MoonlightVideoCodecSupport(napi_env env, napi_callback_info info) {
   return CreateInt(env, hmrdp::MoonlightVideoCodecSupport(codec));
 }
 
-// The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream
-// starts. The session toolbar shows it next to the resolution.
 napi_value MoonlightVideoCodec(napi_env env, napi_callback_info) {
   const std::string out = hmrdp::MoonlightVideoCodec();
   napi_value result = nullptr;
@@ -1507,8 +1362,6 @@ napi_value MoonlightVideoCodec(napi_env env, napi_callback_info) {
   return result;
 }
 
-// Stable code for a decode-path warning ("software-decode|<mime>" /
-// "no-decoder|<mime>"), or "" when nothing is wrong. The UI owns the wording.
 napi_value MoonlightVideoWarning(napi_env env, napi_callback_info) {
   const std::string out = hmrdp::MoonlightVideoWarning();
   napi_value result = nullptr;
@@ -1516,25 +1369,13 @@ napi_value MoonlightVideoWarning(napi_env env, napi_callback_info) {
   return result;
 }
 
-// --- Moonlight streaming session ---------------------------------------
-//
-// The native session is process-global (moonlight-common-c carries one
-// connection), so there is one listener TSFN and one OHNativeWindow here rather
-// than a per-handle registry. Events are (event, value, text) - see
-// MoonlightSessionEvent; the ArkTS MoonlightSessionBackend maps them onto
-// SessionSignal.
-
 napi_threadsafe_function g_moonlightTsfn = nullptr;
-// Owned by this binding: created in SetSurface, destroyed in ClearSurface.
 OHNativeWindow* g_moonlightWindow = nullptr;
 
 struct MoonlightEventPayload {
   int event = 0;
   int value = 0;
   std::string text;
-  // Local cursor mode (kCursorShape) extra: geometry + the host's shape id
-  // (protocol-native dedup key) + an optional BGRA bitmap that travels as a
-  // g_buffers handle in the 4th (object) argument.
   int width = 0;
   int height = 0;
   int hotX = 0;
@@ -1556,8 +1397,6 @@ void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data
   napi_create_int32(env, payload->event, &eventValue);
   napi_create_int32(env, payload->value, &valueValue);
   napi_create_string_utf8(env, payload->text.c_str(), payload->text.size(), &textValue);
-  // Extra object: always present (empty for lifecycle events), so the ArkTS
-  // listener can read cursor geometry without changing the event tuple.
   napi_value extra = nullptr;
   napi_create_object(env, &extra);
   auto setInt = [env, extra](const char* name, int64_t v) {
@@ -1588,7 +1427,6 @@ void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data
   napi_call_function(env, global, jsCallback, 4, argv, nullptr);
 }
 
-// Runs on the control-stream thread; hops to the JS thread via the TSFN.
 void OnMoonlightCursor(const hmrdp::MoonlightCursorShape& shape) {
   if (g_moonlightTsfn == nullptr) {
     return;
@@ -1612,7 +1450,6 @@ void OnMoonlightCursor(const hmrdp::MoonlightCursorShape& shape) {
   }
 }
 
-// Runs on the Moonlight session thread; hops to the JS thread via the TSFN.
 void OnMoonlightSessionEvent(hmrdp::MoonlightSessionEvent event, int value, const char* text) {
   if (g_moonlightTsfn == nullptr) {
     return;
@@ -1651,7 +1488,6 @@ bool HexToBytes(const std::string& hex, std::string* out) {
   return true;
 }
 
-// Registers the process-global session event listener (one per process).
 napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1675,8 +1511,6 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-// Binds the session window. Must precede MoonlightSessionStart; a second call
-// while a session is active is refused (the decoder owns the window then).
 napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value args[3] = {nullptr, nullptr, nullptr};
@@ -1704,7 +1538,6 @@ napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
-// Detaches and releases the session window; call after MoonlightSessionStop.
 napi_value MoonlightSessionClearSurface(napi_env env, napi_callback_info) {
   hmrdp::MoonlightSessionSetWindow(nullptr);
   if (g_moonlightWindow != nullptr && !hmrdp::MoonlightSessionActive()) {
@@ -1714,8 +1547,6 @@ napi_value MoonlightSessionClearSurface(napi_env env, napi_callback_info) {
   return CreateUndefined(env);
 }
 
-// Starts the session; returns "" on success or a stable error token
-// ("busy" / "config" / "thread").
 napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1756,7 +1587,6 @@ napi_value MoonlightSessionActive(napi_env env, napi_callback_info) {
   return CreateBool(env, hmrdp::MoonlightSessionActive());
 }
 
-// Sunshine extended launch/resume query parameters (owned by moonlight-common-c).
 napi_value MoonlightLaunchQueryParameters(napi_env env, napi_callback_info) {
   return CreateStringUtf8(env, hmrdp::MoonlightLaunchQueryParameters());
 }
@@ -1960,7 +1790,6 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightScroll", nullptr, MoonlightSessionScroll, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };
-
 
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
   return exports;

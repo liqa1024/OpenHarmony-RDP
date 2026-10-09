@@ -28,12 +28,6 @@
 
 namespace hmrdp {
 
-// Explicit lifecycle of one connection attempt. A Session object is created per
-// attempt and never reused, so the phases only ever move forward:
-//   kIdle -> kStarting -> kConnected -> kStopping -> kDestroyed
-// and a failed attempt goes kStarting -> kStopping -> kDestroyed (its terminal
-// event is a single kError). Every transition is validated; an illegal one is
-// logged and refused instead of silently corrupting the lifecycle.
 enum class SessionPhase {
   kIdle = 0,
   kStarting = 1,
@@ -42,73 +36,29 @@ enum class SessionPhase {
   kDestroyed = 4,
 };
 
-// Event ids. Each event's payload is carried in Session::EventData: `values[]`
-// holds its integer fields (in the order documented below), `text` a textual
-// field, and binary always travels in the event's byte vector. The binding maps
-// them to the named JS fields (binding/hmrdp_napi.cpp) - no delimited string
-// encoding crosses the boundary.
 enum class SessionEvent {
   kConnected = 0,
-  // Disconnected / Error: values[0] = code (FreeRDP error class, 0 = internal),
-  // text = message.
   kDisconnected = 1,
   kError = 2,
   kFirstFrame = 3,
   kClipboardText = 4,
-  // values[0] = width, values[1] = height.
   kResize = 5,
-  // Remote pointer updates. kCursorShape carries values {width, height, hotX,
-  // hotY, magnificationMilli, contentHash} plus the BGRA bitmap as decoded
-  // (scaling policy and dedup are ArkTS, services/RemoteCursor.ets); the
-  // others carry no payload and ask the UI to restore/hide the system cursor.
   kCursorShape = 6,
   kCursorDefault = 7,
   kCursorHidden = 8,
-  // Rich local clipboard payloads pulled from the server on demand. Both hand
-  // ArkTS the raw wire payload in the event's byte buffer (Html = CF_HTML,
-  // Image = CF_DIB); ArkTS owns the decode (ClipboardCodec).
   kClipboardHtml = 9,
   kClipboardImage = 10,
-  // Transfer progress for both directions: values {direction (0 = remote ->
-  // local, 1 = local -> remote), doneBytes, totalBytes, fileIndex, fileCount}.
   kFileTransferProgress = 11,
-  // A transfer stopped before completing; `text` is a human-readable reason.
   kFileTransferFailed = 12,
-  // Upload finished: the server has pulled every advertised byte. values[0] is
-  // the number of files.
   kFileTransferDone = 13,
-  // 快捷键穿透 (see SetShortcutPassthrough in hmrdp_napi.cpp): one intercepted
-  // key event, values {keyCode (multimodal KeyCode), down}.
   kKeyIntercept = 14,
-  // Rich Text Format clipboard payload, carried like kClipboardHtml (raw RTF in
-  // the byte buffer). Kept a separate event so ArkTS can tell the two apart.
   kClipboardRtf = 15,
-  // Raw FILEGROUPDESCRIPTORW for a remote file clipboard, in the byte buffer.
-  // ArkTS parses it (FileTransferCodec) and owns the download from there.
   kRemoteFileListRaw = 16,
-  // One FILECONTENTS response relayed to ArkTS, which owns the download state
-  // machine. Values {listIndex, isSize, sizeValue, failed}; a range response
-  // carries its bytes in the byte buffer (empty for end-of-file), a size response
-  // carries `sizeValue` and no bytes.
   kRemoteFileChunk = 17,
-  // The server's clipboard changed (a FORMAT_LIST arrived). ArkTS aborts any
-  // download it has running and refreshes its cached remote descriptors.
   kRemoteClipboardChanged = 18,
-  // The audio format changed (first packet, or a rate/channel switch): values
-  // {rate, channels}. ArkTS (re)builds its AudioRenderer from it; the PCM itself
-  // stays native in the sink ring and is pulled with audioRead().
   kAudioFormat = 19,
-  // The server offered a clipboard format list. `text` carries the supported
-  // candidates as "kind:id,kind:id" (one entry per kind); ArkTS owns which one to
-  // pull (priority / single-in-flight / deferred refresh) and asks through
-  // requestRemoteFormat(). Native keeps only the byte-level wire handling.
   kRemoteFormatList = 20,
-  // One FORMAT_DATA_RESPONSE settled (whatever the outcome): values {kind,
-  // failed}. The flow signal ArkTS uses to issue a deferred request.
   kRemoteFormatResponse = 21,
-  // The remote session's toggle-key state (Set Keyboard Indicators PDU):
-  // values[0] is the KBD_SYNC_* bits. ArkTS compares it with its own local state
-  // and asks for a re-assert through reassertLockState().
   kRemoteLockState = 22,
 };
 
@@ -120,18 +70,10 @@ struct RdpOptions {
   std::string domain;
   int width = 1920;
   int height = 1080;
-  // Remote desktop DPI scale factor as a percentage (100 = 100%). Zero leaves
-  // the FreeRDP default untouched.
   int scalePercent = 0;
   bool ignoreCertificate = true;
   bool enableAudio = true;
-  // 超分: `width`/`height` are the *output* resolution. When this is on the
-  // session asks the server for output ÷ srRatioPercent and the Vulkan presenter
-  // upscales each frame back to the output resolution (no-op on the GLES
-  // presenter). See SettingsStore.defaultScalePercent for the matching scale.
   bool srEnabled = false;
-  // Which upscaler runs when `srEnabled` is on: the platform's XEngine, or the
-  // presenter's own FSR (see hmrdp_presenter.h). Ignored when 超分 is off.
   SuperResolutionBackend srBackend = SuperResolutionBackend::kXengine;
   int srRatioPercent = 0;
   std::string gatewayHost;
@@ -141,27 +83,13 @@ struct RdpOptions {
   std::string gatewayDomain;
 };
 
-// One raw telemetry sample: the figures the RDP-thread tick (~1s) read off the
-// session, with none of the displayed rates computed. Transport / frame counts
-// are the window's deltas, the work / audio / GPU fields are the window's sums
-// (the sources drain on the tick), and `rttMs` is the server-reported value.
-// ArkTS pulls it with sessionTelemetry() and turns it into the toolbar figures
-// (rates, per-frame averages, duty, loss rate) itself, so no per-second string
-// crosses the boundary and the presentation arithmetic stays on the UI side
-// (doc_agent/architecture.md §3.1). The tick keeps the drain on the RDP thread,
-// where teardown also runs, so a UI pull never races the pipeline's lifetime.
 struct SessionTelemetry {
-  // Monotonic sample id: a reader that sees the same id twice is holding the
-  // same window and must not fold it into its rolling figures a second time.
   uint64_t sampleSeq = 0;
-  // Window length (ms) and the transport / frame deltas over it.
   uint64_t windowElapsedMs = 0;
   uint64_t rxBytesWindow = 0;
   uint64_t txBytesWindow = 0;
   uint64_t framesWindow = 0;
-  // Server-reported average RTT in ms, -1 until the server reports it.
   int32_t rttMs = -1;
-  // Work over the window. Per-frame figures are value / windowFrames.
   uint64_t windowFrames = 0;
   uint64_t zgxParseUs = 0;
   uint64_t decodeUs = 0;
@@ -171,8 +99,6 @@ struct SessionTelemetry {
   uint64_t syncUs = 0;
   uint64_t windowBytes = 0;
   uint64_t windowCommands = 0;
-  // Audio over the window: output rate in Hz (0 when nothing is playing) and the
-  // lost/total byte counts. The reader derives "playing" / loss rate itself.
   int32_t audioRateHz = 0;
   uint64_t audioLostBytes = 0;
   uint64_t audioTotalBytes = 0;
@@ -183,19 +109,12 @@ struct SessionTelemetry {
 
 class Session : public std::enable_shared_from_this<Session> {
  public:
-  // One event's payload, in typed form. Native fills only the fields its event
-  // defines (see SessionEvent); the binding maps them to the named JS fields, so
-  // neither side stringifies and re-parses a delimited encoding. `values` holds
-  // the event's integer fields in the order documented on the event; `text` its
-  // textual field (a message / reason / raw list), if any; binary always travels
-  // separately in the byte vector.
   struct EventData {
     static constexpr size_t kMaxValues = 8;
     int64_t values[kMaxValues] = {0};
     std::string text;
   };
 
-  // Event payload: `data` holds the typed integer/text fields.
   using EventFn =
       std::function<void(SessionEvent, const EventData&, const std::vector<uint8_t>&)>;
 
@@ -205,47 +124,25 @@ class Session : public std::enable_shared_from_this<Session> {
   Session(const Session&) = delete;
   Session& operator=(const Session&) = delete;
 
-  // The presenter the ArkTS surface lifecycle drives (setSurface/updateSurface/
-  // clearSurface): Vulkan when it can present, GLES otherwise (hmrdp_presenter.h).
   FramePresenter* presenter() { return pipeline_.presenter(); }
-  // This session's frame work meter, installed on its GFX context so the wrapped
-  // callbacks feed it (hmrdp_gfx_work.h). Per session, never a global slot.
   GfxWorkMeter* workMeter() { return pipeline_.meter(); }
 
-  // The latest raw telemetry sample (see SessionTelemetry), refreshed by the RDP
-  // thread's tick; safe to call from the UI thread (it only copies the sample).
   SessionTelemetry ReadTelemetry();
 
   void SetEventFn(EventFn fn) { eventFn_ = std::move(fn); }
 
-  // Internal: forwards a PCM buffer produced by the rdpsnd backend to the
-  // session's audio output. Returns the playback time queued after it, in ms,
-  // which rdpsnd reports to the server in the Wave Confirm.
   int OnAudioData(const void* data, size_t size, int sampleRate, int channels);
 
-  // Internal: pulls PCM from the sink ring into an AudioRenderer's buffer (the
-  // ArkTS audio worker's writeData callback). Synchronous, fills the whole
-  // buffer (queued audio plus silence) and returns the real bytes copied.
   int ReadAudio(uint8_t* dest, size_t size);
 
-  // Internal: the session's current PCM format (0/0 before the first packet), so
-  // a renderer that starts after the format event can seed itself.
   void AudioFormat(int* sampleRate, int* channels);
 
   bool Connect(const RdpOptions& options);
   void Disconnect();
 
-  // The FreeRDP context and the cliprdr channel outlive neither each other nor
-  // the RDP thread that owns them. Any other thread (UI input, clipboard, the
-  // gdi callbacks) must take a lease for the whole time it touches either:
-  //   ContextLease lease = AcquireContext();
-  //   if (!lease.valid()) return;
-  //   ... use lease.instance / lease.cliprdr ...
-  //   ReleaseContext();
-  // Teardown() (the RDP thread) stops handing out leases, waits for the
-  // outstanding ones to be returned and only then frees, so a lease can never
-  // point at freed memory. The wait is bounded: a stuck lease holder delays the
-  // free but never turns it into a use-after-free.
+  // The FreeRDP context and cliprdr channel are freed only by Teardown() (RDP
+  // thread); any other thread must hold a ContextLease while it touches either,
+  // or it risks a use-after-free.
   struct ContextLease {
     freerdp* instance = nullptr;
     CliprdrClientContext* cliprdr = nullptr;
@@ -254,177 +151,78 @@ class Session : public std::enable_shared_from_this<Session> {
   ContextLease AcquireContext();
   void ReleaseContext();
 
-  // Blocks until the RDP thread has freed the context and marked the session
-  // kDestroyed (or the timeout elapses). Returns true when it is really gone.
-  // A timeout is not a failure of the object's lifetime - the RDP thread still
-  // owns and will eventually free it - it only means the caller stopped waiting.
   bool WaitDestroyed(uint32_t timeoutMs);
 
   bool SendMouse(uint16_t flags, uint16_t x, uint16_t y);
   bool SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32_t x, int32_t y);
   bool SendKey(uint8_t scancode, bool down, bool extended);
   bool SendUnicode(uint16_t codepoint, bool down);
-  // Tells the server which toggle keys (scroll/num/caps) the local HarmonyOS
-  // keyboard has on (KBD_SYNC_* bits); the remote session follows the local one.
-  // Deduplicated against the last value sent, so the input path may call it on
-  // every key event. Safe to call from the UI thread.
   bool SendLockState(uint32_t flags);
 
-  // Sends a Client Synchronize PDU for `flags` unconditionally (no dedup). ArkTS
-  // uses it to put a server that disagrees back on the local state, after it has
-  // decided the re-assert itself (see kRemoteLockState). Safe from the UI thread.
   bool ReassertLockState(uint32_t flags);
 
-  // Client Suppress Output (MS-RDPBCGR). While suppressed the server stops
-  // sending screen updates *and* the surface commands are dropped locally, so a
-  // hidden (minimized / fully occluded) window no longer decodes or presents;
-  // the server repaints when output resumes. Safe to call from the UI thread.
   bool SetSuppressed(bool suppressed);
 
-  // Process-global RDPEI frame pacing. When enabled, touch contacts are sent at
-  // the full input rate instead of the upstream ~20ms (50Hz) coalescing. No-op
-  // unless FreeRDP was built with the rdpei interval patch
-  // (native/scripts/patch-freerdp.ps1).
   static void SetTouchHighRate(bool enabled);
 
-  // Process-global toggle for remote cursor handling. When disabled, RDP
-  // pointer updates are ignored entirely so the HarmonyOS default cursor is kept.
-  // Applied when a session connects.
   static void SetRdpCursor(bool enabled);
 
-  // Process-global "硬件加速" preference: present frames through Vulkan (on) or
-  // stay on the GLES presenter with no Vulkan in the session (off). Applies from
-  // the next presenter on, so the pre-connect call is what a session sees
-  // (hmrdp_presenter.h). Decoding itself is always FreeRDP's gdi path.
   static void SetHardwareAccel(bool enabled);
 
-  // Dev-only capture of the raw (still ZGX-compressed) GFX channel stream, written
-  // to `dir` as hmrdp_gfx.bin (see doc_agent/gfx-engine.md §6).
   static void SetGfxCapture(bool enabled, const std::string& dir);
 
-  // Local clipboard text (UTF-8) pushed from ArkTS; advertised to the server as
-  // CF_UNICODETEXT. Safe to call from the UI thread.
   void SetLocalClipboardText(const std::string& utf8);
-  // Local HTML clipboard pushed from ArkTS as a ready CF_HTML payload plus its
-  // plain-text fallback. ArkTS builds both (ClipboardCodec.buildCfHtml); native
-  // advertises CF_HTML and serves the fallback for CF_UNICODETEXT.
   void SetLocalClipboardHtmlRaw(const uint8_t* cfHtml, size_t byteCount,
                                 const std::string& plainText);
-  // Local image clipboard pushed from ArkTS. `dib` is a ready CF_DIB
-  // (ClipboardCodec.buildDib); `png` is the same image as a registered "PNG"
-  // payload (built by the background worker) and may be empty. Native advertises
-  // PNG first when present and CF_DIB as fallback, then serves whichever the
-  // server requests. Safe to call from any thread.
   void SetLocalClipboardImage(const uint8_t* dib, size_t dibLen,
                               const uint8_t* png, size_t pngLen);
 
-  // Local files pushed from ArkTS. `descriptor` is a ready FILEGROUPDESCRIPTORW
-  // (built by ArkTS, FileTransferCodec) and `paths` are the absolute sandbox
-  // paths its bytes are streamed from; native only stores and serves both. Safe
-  // to call from the UI thread.
   void SetLocalFileOffer(const uint8_t* descriptor, size_t descriptorLen,
                          const std::vector<std::string>& paths);
 
-  // One step of the ArkTS-driven download (it owns the state machine; native
-  // only relays bytes and sends requests). Sends a FILECONTENTS request for
-  // `listIndex`: FILECONTENTS_SIZE when `sizeOnly`, else FILECONTENTS_RANGE from
-  // `offset` for `length` bytes. Returns false when the channel is unavailable or
-  // a request is already in flight. Safe to call from the UI thread.
   bool RequestRemoteFileContents(uint32_t listIndex, bool sizeOnly, uint64_t offset,
                                  uint32_t length);
 
-  // Aborts an in-flight upload: partial state is dropped and the advertised file
-  // list stops being served (a clean withdrawal when nothing was pulled yet).
-  // Downloads are cancelled entirely on the ArkTS side. Safe to call from the UI
-  // thread.
   void CancelFileTransfer();
 
-  // Pulls one remote clipboard format the ArkTS side chose (see
-  // kRemoteFormatList). `kind` is echoed back on the response event, since the
-  // channel does not tag data responses with their format. Returns false when the
-  // channel is unavailable. Safe to call from the UI thread.
   bool RequestRemoteFormat(uint32_t formatId, uint32_t kind);
 
-  // Drops the advertised file clipboard by advertising an empty text clipboard,
-  // so the server discards the file formats and a later paste on the remote side
-  // finds nothing instead of pulling the same files a second time. Uploads call
-  // this once every advertised byte has been served (see HandleLocalFileContents-
-  // Request); it is the withdrawal an upload cancelled before any byte was pulled
-  // performs. No-op unless the local clipboard is currently a file list.
   void WithdrawLocalFileClipboard();
 
-  // Internal callbacks used by the FreeRDP glue. The FreeRDP instance itself is
-  // only reachable through AcquireContext() (see above), never as a raw accessor.
   void HandlePostConnect();
-  // Runs on the RDP thread when its connect/loop has ended: frees the FreeRDP
-  // context and the resources only this session used. The UI thread never frees
-  // them - it only signals through Disconnect() - so nothing is freed while the
-  // RDP thread may still be using it.
   void Teardown();
-  // Both wait for the GPU to release the desktop buffer this frame writes into
-  // (which may be the presenter's own buffer, see AttachPresenterDesktopBuffer);
-  // the wait is idempotent per frame, so whichever runs first is the one that
-  // waits:
-  //   * HandleFrameBegin at the GFX START_FRAME (before this frame's writes),
-  //   * HandleBeginPaint at gdi's BeginPaint (before the compose).
   void HandleFrameBegin();
   void HandleBeginPaint();
   void HandleEndPaint();
   void HandleDesktopResize();
   void HandlePostDisconnect();
   void HandleCliprdrConnected(CliprdrClientContext* cliprdr);
-  // Called by the cliprdr glue: serve the peer's request for one of the files we
-  // advertised (upload), and relay one chunk of a file we requested (download)
-  // to ArkTS, which owns the download state machine.
   UINT HandleLocalFileContentsRequest(const CLIPRDR_FILE_CONTENTS_REQUEST* request);
   UINT HandleRemoteFileContentsResponse(const CLIPRDR_FILE_CONTENTS_RESPONSE* response);
-  // Pushed by the autodetect callback with the server-reported network
-  // characteristics (0 = not reported yet). FreeRDP's client does not store
-  // these itself, so the values are captured here.
   void OnNetworkCharacteristics(uint32_t baseRtt, uint32_t averageRtt, uint32_t bandwidth);
-  // The GFX channel context whose decode callback libhmrdp wrapped, so it can be
-  // unregistered on disconnect. Stored as void* to keep the header light.
   void SetGfxContext(void* gfx);
   void* gfxContext() const { return gfxContext_; }
-  // GFX data offload lifecycle (see GfxWorkSetDataSinkHook): started when the
-  // live GFX channel connects and stopped before the context is freed. The sink
-  // calls HandleGfxData on the drdynvc thread.
   void StartGfxWorker(void* gfx);
   void StopGfxWorker();
   void HandleGfxData(const uint8_t* data, size_t size);
 
-  // Remote pointer (cursor) updates. The server sends the cursor as a bitmap
-  // plus hot spot; the UI converts it into a HarmonyOS system cursor. Returning
-  // to the default system cursor / hiding it is signalled separately.
   void HandlePointerShape(uint32_t width, uint32_t height, uint32_t hotX, uint32_t hotY,
                           uint32_t xorBpp, const uint8_t* xorMask, uint32_t xorLen,
                           const uint8_t* andMask, uint32_t andLen);
   void HandlePointerDefault();
   void HandlePointerHidden();
-  // The server's Set Keyboard Indicators PDU reports the remote session's lock
-  // keys. The local state is authoritative: a remote value that disagrees is
-  // corrected by re-sending the local one (see SendLockState).
   void HandleRemoteLockState(uint32_t ledFlags);
 
-  // Clipboard channel callbacks (invoked on the RDP thread).
   UINT OnCliprdrMonitorReady();
   UINT OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList);
   UINT OnCliprdrServerFormatDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request);
   UINT OnCliprdrServerFormatDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response);
-  // `code` is a FreeRDP error code (FREERDP_ERROR_*) or 0 for internal errors.
   void SetError(const std::string& error);
   void SetError(uint32_t code, const std::string& error);
 
  private:
-  // Marks the terminal phase and wakes WaitDestroyed(). Called by Teardown() (RDP
-  // thread) and by Connect()'s pre-thread failure paths, which have no RDP thread
-  // to tear anything down.
   void MarkDestroyed();
   void EventThread();
-  // Emit overloads, by payload shape. `EmitText`/`Emit` send a textual field,
-  // `EmitValues` the integer fields (in the event's documented order, optionally
-  // with a binary buffer), `EmitBytes` only a binary buffer, `EmitError` the
-  // "<code>|<message>" pair as typed fields.
   void Emit(SessionEvent event);
   void Emit(SessionEvent event, const std::string& text);
   void EmitValues(SessionEvent event, std::initializer_list<int64_t> values);
@@ -433,161 +231,91 @@ class Session : public std::enable_shared_from_this<Session> {
   void EmitBytes(SessionEvent event, const std::vector<uint8_t>& bytes);
   void EmitError(SessionEvent event, uint32_t code, const std::string& message);
   void Emit(SessionEvent event, const EventData& data, const std::vector<uint8_t>& bytes);
-  // Sends a Client Synchronize PDU unconditionally (the caller decided the
-  // server's toggle state is stale). SendLockState() is the deduplicated entry
-  // point used by the input path.
   bool SendSynchronize(uint32_t flags);
-  // Frame telemetry shared by every present path. The present's own meter phases
-  // are fed by the shared frame host (hmrdp_gfx_cpu.h), so this only does the
-  // per-frame bookkeeping.
   void AfterPresent();
-  // One telemetry tick (~1s, RDP thread): reads the transport/frame deltas, drains
-  // the work meter / audio / GPU sources and stores the raw sample for
-  // ReadTelemetry(). Kept on the RDP thread so the drain never races teardown.
   void SampleTelemetry();
 
-  // GFX data offload (see GfxWorkSetDataSinkHook). Every dynamic channel shares
-  // the drdynvc dispatch thread, so running the frame pipeline there (ZGX
-  // decompress, decode, composite, present) holds audio and input back behind a
-  // heavy frame. HandleGfxData runs on that thread and only copies the chunk;
-  // GfxWorkerLoop processes it here, on this session's own thread, through the
-  // same replay entry the offline CPU route uses (HmrdpGfxReplayRecv).
+  // Every dynamic channel shares the drdynvc dispatch thread, so the frame
+  // pipeline must run on this session's own worker thread (GfxWorkerLoop), not
+  // inline in HandleGfxData, or a heavy frame blocks audio and input.
   void GfxWorkerLoop();
 
   freerdp* instance_ = nullptr;
-  // The session's frame pipeline: presenter (Vulkan by default, GLES fallback),
-  // gdi frame host and work meter, all owned by this session
-  // (doc_agent/architecture.md §4.1). The live frame work all runs on the
-  // session's GFX worker thread (§4.2).
   FramePipeline pipeline_;
   AudioSink audio_;
   EventFn eventFn_;
   std::string lastError_;
   uint32_t lastErrorCode_ = 0;
 
-  // Forward-only lifecycle of this attempt (SessionPhase). Connect() is the only
-  // kIdle -> kStarting transition; Teardown() is the only one into kDestroyed.
   std::atomic<SessionPhase> phase_{SessionPhase::kIdle};
   std::atomic<bool> stopRequested_{false};
   std::atomic<bool> clipboardReady_{false};
-  // Context lifetime. lifecycleMutex_ guards instance_, cliprdr_, activeLeases_
-  // and tearingDown_; leasesCv_ is waited on (under that mutex) by Teardown()
-  // until the outstanding leases are returned, so the context (and the channel,
-  // which dies with it) is never freed under a user. Disconnect() (UI thread)
-  // only signals; Teardown() (RDP thread) is the sole freer.
   std::mutex lifecycleMutex_;
   std::condition_variable leasesCv_;
   int activeLeases_ = 0;
   bool tearingDown_ = false;
-  // Publishes the fully-freed state to WaitDestroyed() without reusing
-  // lifecycleMutex_ (that one may be held by a lease holder during teardown).
   std::mutex destroyedMutex_;
   std::condition_variable destroyedCv_;
   bool destroyed_ = false;
   bool firstFrameSent_ = false;
-  // Frames drawn since the last telemetry sample (incremented in HandleEndPaint,
-  // drained on the event thread).
   std::atomic<uint32_t> frameCount_{0};
-  // GFX capture/replay context bound while this session is connected (used by
-  // HandleGfxData; the per-frame work meter lives in pipeline_, see
-  // hmrdp_gfx_work.h).
   void* gfxContext_ = nullptr;
-  // GFX offload worker and its queue (see HandleGfxData). gfxWorkerContext_ is
-  // captured at start and used only while a lease is held, so teardown cannot
-  // free it under a send.
   std::thread gfxWorkerThread_;
   std::mutex gfxQueueMutex_;
   std::condition_variable gfxQueueCv_;
   std::deque<std::vector<uint8_t>> gfxQueue_;
   std::atomic<bool> gfxWorkerRun_{false};
   std::atomic<size_t> gfxQueueBytes_{0};
-  // Latches after the queue crosses its defensive high-water mark so the warning
-  // is logged once per episode, not once per chunk.
   std::atomic<bool> gfxQueueHighWaterWarned_{false};
   void* gfxWorkerContext_ = nullptr;
-  // 超分辨率 magnification of the remote desktop (output ÷ session resolution).
-  // The server sizes the pointer bitmap in *session* pixels, so the cursor
-  // bitmap is reported with this factor and ArkTS magnifies it by the same
-  // factor the desktop is upscaled by (hmrdp_bitmap kernels via
-  // scaleBgraBitmap); 1.0 without it. Written at connect, read on the RDP
-  // thread.
+  // 超分: the server sizes the pointer bitmap in *session* pixels, so the
+  // cursor bitmap is reported enlarged by this factor and ArkTS scales it by
+  // the same amount the desktop is upscaled by (1.0 without 超分).
   double desktopMagnification_ = 1.0;
-  // Server-reported network characteristics from the autodetect channel.
   std::atomic<uint32_t> netCharBaseRtt_{0};
   std::atomic<uint32_t> netCharAverageRtt_{0};
   std::atomic<uint32_t> netCharBandwidth_{0};
-  // Latest raw telemetry sample, written by the RDP-thread tick and copied by
-  // ReadTelemetry() (any thread).
   mutable std::mutex telemetryMutex_;
   SessionTelemetry telemetry_;
-  // Telemetry sample cadence and the cumulative baselines the tick differences.
-  // Cleared on connect so a reconnect re-establishes them.
   bool metricsStarted_ = false;
   uint64_t lastMetricsTick_ = 0;
   uint64_t lastInBytes_ = 0;
   uint64_t lastOutBytes_ = 0;
   uint64_t lastFrameCount_ = 0;
   uint64_t telemetrySeq_ = 0;
-  // Toggle keys of the local keyboard as last reported by ArkTS (KBD_SYNC_*
-  // bits). localLocksKnown_ stays false until the first key event hands us a
-  // state, so SendLockState() never re-sends a guess. The remote-side comparison
-  // and re-assert policy live in ArkTS (see kRemoteLockState / ReassertLockState).
   std::atomic<uint32_t> localLocks_{0};
   std::atomic<bool> localLocksKnown_{false};
 
-  // Clipboard redirection state. The local clipboard is kept in the exact wire
-  // form of each format it can provide. Only one kind is owned at a time, so the
-  // server only ever requests formats we can answer.
   enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3, kRtf = 4,
                              kFiles = 5 };
 
-  // Pushes the local FormatList for the current kind (no-op until the channel
-  // is ready). Called after the clipboard state changes.
   void AdvertiseLocalClipboard();
 
-  // Synchronized snapshot of the cliprdr channel. A caller that is not the RDP
-  // thread must hold a ContextLease for as long as it uses the returned channel:
-  // the lease is what stops teardown from freeing it mid-use.
   CliprdrClientContext* cliprdrLocked() {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     return cliprdr_;
   }
 
-  // Issues a clipboard data request to the server and marks it in flight. Data
-  // responses carry no format id, so at most one request may be outstanding;
-  // anything newer is deferred (see OnCliprdrServerFormatList).
+  // Data responses carry no format id, so at most one request may be in
+  // flight; anything newer is deferred.
   UINT SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind);
 
   CliprdrClientContext* cliprdr_ = nullptr;
   std::mutex clipboardMutex_;
-  // NUL-terminated UTF-16LE (CF_UNICODETEXT wire form).
   std::string localClipboardUtf16_;
   bool localClipboardValid_ = false;
-  // CF_HTML wire payload, plus its UTF-16LE plain-text fallback.
   std::string localClipboardHtml_;
   std::string localClipboardUtf16FromHtml_;
-  // CF_DIB wire payload.
   std::string localClipboardDib_;
-  // Registered "PNG" wire payload of the same image (empty when not provided).
   std::string localClipboardPng_;
-  // Local file list (absolute sandbox paths) advertised for the file clipboard.
   std::vector<std::string> localClipboardFilePaths_;
-  // Ready FILEGROUPDESCRIPTORW for the advertised files (built by ArkTS).
   std::string localClipboardFileDescriptor_;
   LocalClipKind localClipKind_ = LocalClipKind::kNone;
-  // The FILECONTENTS request whose response is awaited (ArkTS serialises them):
-  // its listIndex and whether it was a SIZE request (to interpret the 8-byte
-  // response). Guarded by clipboardMutex_.
   bool fileContentsPending_ = false;
   uint32_t pendingFileContentsIndex_ = 0;
   bool pendingFileContentsSizeOnly_ = false;
-  // Local -> remote progress (bytes the server has pulled from us).
   uint64_t localTransferDone_ = 0;
   uint64_t localTransferTotal_ = 0;
-  // Remote fetch: a data response carries no format id, so the kind of the
-  // request in flight is remembered here to tag the response event. Which format
-  // to ask for, and when (single in flight / deferred refresh), is decided by
-  // ArkTS (see kRemoteFormatList / RequestRemoteFormat).
   bool remoteRequestInFlight_ = false;
   LocalClipKind remoteRequestKind_ = LocalClipKind::kNone;
 };

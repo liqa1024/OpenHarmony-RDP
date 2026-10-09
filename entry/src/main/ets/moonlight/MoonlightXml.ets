@@ -1,10 +1,3 @@
-/*
- * HmRdp - Moonlight XML parsing (ArkTS side).
- *
- * All GameStream XML is parsed here with the platform parser (`@ohos.xml`), the
- * same way the official clients keep the protocol and its XML in one layer
- * (doc_agent/moonlight-native.md §4). The native side returns raw HTTP bodies.
- */
 import { util, xml } from '@kit.ArkTS';
 import { NvApp } from './MoonlightModels';
 
@@ -22,10 +15,7 @@ function parse(xmlText: string, tokenCallback: (eventType: xml.EventType,
 }
 
 export class MoonlightXml {
-  /**
-   * The `<root status_code="...">` value, or -1 when absent. GFE can return
-   * 0xFFFFFFFF, which is parsed as a plain (possibly negative) integer.
-   */
+  // GFE can return 0xFFFFFFFF as status_code, parsed as a plain (possibly negative) integer.
   static statusCode(xmlText: string): number {
     const bytes: Uint8Array = new util.TextEncoder().encodeInto(xmlText);
     const parser: xml.XmlPullParser =
@@ -47,7 +37,6 @@ export class MoonlightXml {
     return code;
   }
 
-  /** The text of the first `tag`, or "" when the tag is absent or empty. */
   static read(xmlText: string, tag: string): string {
     let current: string = '';
     let value: string = '';
@@ -63,7 +52,6 @@ export class MoonlightXml {
     return value;
   }
 
-  /** The text of `tag`, or undefined when the tag is absent. */
   static readOptional(xmlText: string, tag: string): string | undefined {
     let current: string = '';
     let value: string | undefined = undefined;
@@ -79,7 +67,6 @@ export class MoonlightXml {
     return value;
   }
 
-  /** Parses `tag` as a base-10 number, or `fallback` when absent/malformed. */
   static readNumber(xmlText: string, tag: string, fallback: number): number {
     const raw: string = MoonlightXml.read(xmlText, tag);
     if (raw.length === 0) {
@@ -89,7 +76,6 @@ export class MoonlightXml {
     return Number.isNaN(value) ? fallback : value;
   }
 
-  /** Parses every `<App>` of an `/applist` response. */
   static parseAppList(xmlText: string): NvApp[] {
     const apps: NvApp[] = [];
     let current: string = '';

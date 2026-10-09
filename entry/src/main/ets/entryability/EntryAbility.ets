@@ -44,18 +44,16 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
     WindowController.init(windowStage);
     const settings: AppSettings = SettingsStore.load();
-    // Apply the process-global cursor switch before any session can connect
-    // (sessions are opened from the list page, not from this ability).
+    // The cursor switch is process-global and must be applied before any
+    // session can connect.
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     // Dev capture: configure before any session can connect so the RDPGFX
-    // command stream (ResetGraphics/CreateSurface included) is captured from the
-    // first frame. Re-applying the same value later is a native no-op. Gated on
-    // developer options so a stale stored value cannot start a capture while the
-    // tools are hidden.
+    // command stream is captured from the first frame. Gated on developer
+    // options so a stale stored value cannot start a capture while the tools
+    // are hidden.
     RdpNative.applyGfxCapture(settings.developerMode && settings.gfxCapture, this.context.filesDir);
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);
@@ -70,20 +68,17 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
-    // Main window is destroyed, release UI related resources. The list page's
-    // aboutToDisappear() does not run on window close, so drop its state
-    // listener here to avoid notifying a destroyed component.
+    // The list page's aboutToDisappear() does not run on window close, so drop
+    // its state listener here to avoid notifying a destroyed component.
     SessionManager.clearStateListeners();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
   onForeground(): void {
-    // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
   }
 
   onBackground(): void {
-    // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 }

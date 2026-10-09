@@ -1,6 +1,3 @@
-/*
- * HmRdp - raw RDPGFX channel capture (see hmrdp_gfx_capture.h).
- */
 #include "hmrdp_gfx_capture.h"
 
 #include <atomic>
@@ -27,9 +24,8 @@ uint64_t g_logMs = 0;
 constexpr uint64_t kMaxBytes = 512ull * 1024 * 1024;
 constexpr uint64_t kLogIntervalMs = 5 * 1000;
 
-// File magic of the timestamped layout (version 1). Its first four bytes decode
-// to a u32 far above any chunk length a version 0 file could carry (the capture
-// stops at kMaxBytes), so sniffing the magic cannot mistake the two layouts.
+// Its first four bytes decode to a u32 far above any chunk length a version 0
+// file could carry, so sniffing the magic cannot mistake the two layouts.
 constexpr uint8_t kMagic[8] = {'H', 'M', 'R', 'G', 'P', 'G', 'X', '1'};
 constexpr size_t kHeaderSize = sizeof(kMagic);
 
@@ -39,8 +35,8 @@ uint64_t NowMs() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-// Monotonic microseconds. Arrival times only ever need to be comparable to each
-// other within one capture, so a steady clock is enough (and it cannot jump).
+// A steady clock is enough: arrival times only need to be comparable within one
+// capture, and it cannot jump.
 uint64_t NowUs() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(

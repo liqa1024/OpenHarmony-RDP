@@ -1,6 +1,3 @@
-/*
- * HmRdp - offline FreeRDP CPU (gdi) desktop (see hmrdp_gfx_cpu.h).
- */
 #include "hmrdp_gfx_cpu.h"
 
 #include <chrono>
@@ -27,10 +24,8 @@ int64_t NowUs() {
       .count();
 }
 
-// The offline context carries a back-pointer to its desktop (same trick as the
-// live HmrdpContext), so the gdi update hooks can find the owner. `context` must
-// stay first: freerdp_context_new() allocates instance->ContextSize bytes and
-// everything else casts the resulting rdpContext* straight back.
+// freerdp_context_new() allocates instance->ContextSize bytes and callers cast the
+// resulting rdpContext* straight back, so `context` must stay first.
 struct CpuContext {
   rdpContext context;
   GfxCpuDesktop* owner;
@@ -40,9 +35,8 @@ CpuContext* CpuOf(rdpContext* context) {
   return reinterpret_cast<CpuContext*>(context);
 }
 
-// The default BeginPaint/EndPaint registered by update_register_client_callbacks
-// build and send fastpath orders over a transport that does not exist offline,
-// so both are replaced (the live session replaces them too).
+// The default BeginPaint/EndPaint build fastpath orders over a transport that does not
+// exist offline, so both are replaced.
 BOOL CpuBeginPaint(rdpContext* context) {
   if (context != nullptr) {
     CpuContext* ctx = CpuOf(context);
@@ -73,15 +67,10 @@ BOOL CpuDesktopResize(rdpContext* context) {
   return TRUE;
 }
 
-// Kills every surface through the RDPGFX interface while the gdi binding is still
-// valid. The context's own teardown (rdpgfx_client_context_free -> free_surfaces)
-// walks them through DeleteSurface too, but by then
-// gdi_graphics_pipeline_uninit() has already cleared context->custom, and
-// gdi_DeleteSurface reads gdi from there. Without it a desktop-mirror surface
-// cannot tell that its buffer is gdi's primary (the sharing test is
-// `surface->data == gdi->primary_buffer`, doc_agent/present-pipeline.md §4) and would
-// free memory it does not own - on the zero-copy path that is the presenter's
-// host-visible buffer, i.e. an invalid free.
+// Kill surfaces while the gdi binding is still valid: the context's own teardown runs after
+// gdi_graphics_pipeline_uninit() cleared context->custom, and a mirrored surface can then
+// no longer tell its buffer is gdi's primary and would free memory it does not own - on the
+// zero-copy path the presenter's buffer.
 void DestroyGfxSurfaces(RdpgfxClientContext* context) {
   if (context == nullptr || context->GetSurfaceIds == nullptr ||
       context->DeleteSurface == nullptr) {
@@ -124,17 +113,10 @@ void GfxCpuDesktop::SetMeter(GfxWorkMeter* meter) {
   host_.SetMeter(meter);
 }
 
-// ---- the shared CPU (gdi) frame host --------------------------------------
-// One implementation of the zero-copy wait and the present, driven by both the
-// live session and this offline desktop (see hmrdp_gfx_cpu.h).
-
 void GdiFrameHost::OnFrameBegin() {
-  // The frame's first pixel write is about to happen: when gdi composes into the
-  // presenter's desktop buffer (the zero-copy path), the GPU must be done copying
-  // the previous frame out of it, or this frame's decode overwrites bytes that
-  // copy has not read yet and the upload becomes a mix of two frames. This is the
-  // point that protects the in-place decode writes; OnBeginPaint only covers the
-  // compose, and is a no-op once this one has waited.
+  // First pixel write of the frame: on the zero-copy path the GPU must be done copying
+  // the previous frame out of the presenter's buffer, or this frame's decode overwrites
+  // bytes that copy has not read yet (a mix of two frames).
   if (!desktopAttached_ || presenter_ == nullptr) {
     return;
   }
@@ -142,19 +124,14 @@ void GdiFrameHost::OnFrameBegin() {
   presenter_->BeginDesktopBufferWrite();
   const uint64_t waitedUs = static_cast<uint64_t>(NowUs()) - startUs;
   if (meter_ != nullptr) {
-    // Blocked time, reported as its own phase so a slow present pipeline cannot
-    // be mistaken for an expensive compose ...
+    // Blocked time: reported as `sync` and handed out of the pending `zgx+parse`
+    // window, so 本机 never counts it twice.
     meter_->OnPresentSync(waitedUs);
-    // ... and handed out of the pending `zgx+parse` window this hook sits in, or
-    // `本机` would count it twice (hmrdp_gfx_work.h).
     meter_->OnBlockedBeforeFrameWork(waitedUs);
   }
 }
 
 void GdiFrameHost::OnBeginPaint() {
-  // gdi is about to compose this frame into the primary buffer (the mirrored
-  // surface's pixels are already there); the same wait as OnFrameBegin, and free
-  // when that one already drained the previous frame's copy.
   if (!desktopAttached_ || presenter_ == nullptr) {
     return;
   }
@@ -172,23 +149,17 @@ bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInf
   if (gdi == nullptr || presenter_ == nullptr) {
     return false;
   }
-  // The owner's per-frame hook (the replay's run cap / pending resize / energy
-  // sample) may veto this frame; the live session installs none.
   if (prePresentFn_ && !prePresentFn_(gdi)) {
     return false;
   }
-  // Move gdi onto the presenter's buffer if that has not happened yet (zero-copy
-  // present, a no-op once attached), then hand the dirty region over.
   if (!desktopAttached_) {
     desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_);
   }
   const uint64_t startUs = static_cast<uint64_t>(NowUs());
   const bool presented = PresentGdiFrame(gdi, presenter_, info);
   const uint64_t spanUs = static_cast<uint64_t>(NowUs()) - startUs;
-  // Split the present into work (record/upload/submit) and the blocked part (the
-  // presenter waited for the display). Only the work half goes into the meter's
-  // `present`; the wait is its own blocked sub-item, so a reader summing the work
-  // phases does not charge display backpressure to the client (hmrdp_gfx_work.h).
+  // Only the work half goes into `present`; the display-blocked part is its own blocked
+  // sub-item.
   const uint64_t waitUs = presenter_->TakePresentWaitUs();
   const uint64_t presentWorkUs = spanUs > waitUs ? spanUs - waitUs : 0;
   if (meter_ != nullptr) {
@@ -198,8 +169,8 @@ bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInf
   if (presentUs != nullptr) {
     *presentUs = spanUs;
   }
-  // The owner accounts for the frame even when the presenter had nothing to draw
-  // (the replay tells skips from failures); the live session ignores those.
+  // The owner accounts for the frame even when nothing was drawn (the replay tells skips
+  // from failures).
   if (presentedFn_) {
     presentedFn_(presented, spanUs, info != nullptr ? *info : PresentUploadInfo{});
   }
@@ -242,9 +213,8 @@ bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail
   freerdp_settings_set_uint32(settings, FreeRDP_OsMajorType, OSMAJORTYPE_UNIX);
   freerdp_settings_set_uint32(settings, FreeRDP_OsMinorType, OSMINORTYPE_NATIVE_XSERVER);
 
-  // gdi_ResetGraphics calls freerdp_client_codecs_reset(context->codecs, ...),
-  // which the connection layer would normally have created (rdp_client_reset_
-  // codecs in core/connection.c). Build the equivalent here.
+  // gdi_ResetGraphics calls freerdp_client_codecs_reset(context->codecs, ...), which the
+  // connection layer would normally have created; build the equivalent here.
   const UINT32 threading = freerdp_settings_get_uint32(settings, FreeRDP_ThreadingFlags);
   context->codecs = freerdp_client_codecs_new(threading);
   if (context->codecs == nullptr) {
@@ -266,10 +236,8 @@ bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail
   if (HmrdpGfxReplayNewWithContext == nullptr || HmrdpGfxReplayFreeWithContext == nullptr) {
     return fail("FreeRDP was not built with the HmRdp replay-context patch");
   }
-  // The RDPGFX context (FreeRDP's own ZGX + PDU parsing) is bound to this
-  // desktop's real rdpContext, so gfx->rdpcontext carries the actual
-  // settings/update instead of a bare settings-only stand-in; the stock gdi
-  // pipeline is then attached to it.
+  // Bind RDPGFX to this desktop's real rdpContext so gfx->rdpcontext carries the actual
+  // settings/update, then attach the stock gdi pipeline.
   gfx_ = HmrdpGfxReplayNewWithContext(context);
   if (gfx_ == nullptr) {
     return fail("HmrdpGfxReplayNewWithContext failed");
@@ -300,7 +268,6 @@ void GfxCpuDesktop::Shutdown() {
     freerdp_free(instance_);
     instance_ = nullptr;
   }
-  // gdi is gone, so the presenter's buffer is free to drop (it owns it).
   if (host_.desktopAttached() && presenter_ != nullptr) {
     presenter_->ReleaseDesktopBuffer();
   }
@@ -313,8 +280,6 @@ void GfxCpuDesktop::Shutdown() {
 }
 
 void GfxCpuDesktop::OnFrameBegin() {
-  // The zero-copy wait and its `sync` accounting live in the shared host, so this
-  // route and a live session report it from exactly the same point (GdiFrameHost).
   host_.OnFrameBegin();
 }
 
@@ -323,11 +288,8 @@ void GfxCpuDesktop::OnBeginPaint() {
 }
 
 void GfxCpuDesktop::OnEndPaint() {
-  // gdi_resize_ex() calls update_end_paint() while the primary buffer is being
-  // rebuilt; that is not a decoded frame, so it must not present. Otherwise this
-  // runs the same chain the live session's EndPaint runs: the shared host does
-  // Attach -> PresentGdiFrame and calls the replay's observers (which live installs
-  // as none / telemetry instead).
+  // gdi_resize_ex() calls update_end_paint() while the primary buffer is rebuilt, which
+  // is not a decoded frame and must not present.
   if (resizing_) {
     return;
   }
@@ -369,8 +331,6 @@ bool GfxCpuDesktop::Resize(int width, int height) {
   const bool ok =
       gdi_resize(instance_->context->gdi, static_cast<UINT32>(width), static_cast<UINT32>(height));
   resizing_ = false;
-  // gdi_resize() built a gdi-owned buffer again; the next EndPaint moves the new
-  // desktop back onto the presenter's buffer (sized to the new geometry).
   host_.DetachDesktopBuffer();
   const int64_t dt = std::chrono::duration_cast<std::chrono::microseconds>(
                          std::chrono::steady_clock::now().time_since_epoch())
@@ -384,20 +344,14 @@ bool GfxCpuDesktop::Resize(int width, int height) {
 
 namespace {
 
-// Upper bound on the rects handed to one present (matches the presenter's own
-// cap). gdi can accumulate more (gdi_InvalidateRegion grows its list by
-// doubling); past this the merged box is used instead, so neither the command
-// list nor the copy-region array can grow with the stream.
+// Past this the merged box is used instead, so neither the command list nor the
+// copy-region array can grow with the stream.
 constexpr int kMaxPresentRects = 256;
 
-// gdi's local framebuffer is always BGRA32 here, so its row pitch is width * 4
-// and the presenter's desktop buffer uses the very same packing.
 constexpr int kGdiBytesPerPixel = 4;
 
-// Moves gdi's primary buffer onto `buffer` (geometry unchanged) *without* going
-// through gdi_resize_ex: that calls update_end_paint() again from inside a frame
-// and unbalances update->mux. A buffer gdi allocated itself is released through
-// its own free hook, so it cannot leak.
+// Swaps gdi's primary buffer *without* gdi_resize_ex: that calls update_end_paint() again
+// from inside a frame and unbalances update->mux.
 void SwapGdiPrimaryBuffer(rdpGdi* gdi, uint8_t* buffer, int stride) {
   gdiBitmap* primary = gdi->primary;
   if (primary != nullptr && primary->bitmap != nullptr) {
@@ -413,7 +367,6 @@ void SwapGdiPrimaryBuffer(rdpGdi* gdi, uint8_t* buffer, int stride) {
   gdi->primary_buffer = buffer;
 }
 
-// Clips one gdi rect to the desktop; returns false when nothing remains.
 bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, int h,
                      PresentRect* out) {
   if (w <= 0 || h <= 0) {
@@ -450,8 +403,7 @@ bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int widt
   uint8_t* buffer =
       presenter != nullptr ? presenter->AcquireDesktopBuffer(width, height, &stride) : nullptr;
   if (buffer != nullptr && stride > 0) {
-    // gdi does not initialise a caller-provided buffer (its own
-    // gdi_CreateCompatibleBitmap is what fills 0xFF); the presenter filled it.
+    // gdi does not initialise a caller-provided buffer; the presenter filled it.
     return gdi_init_ex(instance, PIXEL_FORMAT_BGRA32, static_cast<UINT32>(stride), buffer, nullptr);
   }
   return gdi_init(instance, PIXEL_FORMAT_BGRA32);
@@ -469,8 +421,7 @@ bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter) {
   }
   if (gdi->primary_buffer != buffer) {
     // Carry the composed desktop over: gdi's primitives read the destination
-    // (memblt / srcalpha / cache restore), so swapping in the presenter's fresh
-    // 0xFF buffer would change later frames' pixels.
+    // (memblt / srcalpha / cache restore).
     const size_t rowBytes = static_cast<size_t>(gdi->width) * kGdiBytesPerPixel;
     for (int y = 0; y < gdi->height; ++y) {
       std::memcpy(buffer + static_cast<size_t>(y) * static_cast<size_t>(stride),
@@ -506,27 +457,15 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
   const bool haveBox = ClipPresentRect(desktopWidth, desktopHeight, hwnd->invalid->x,
                                        hwnd->invalid->y, hwnd->invalid->w, hwnd->invalid->h,
                                        &box);
-  // The region is consumed either way: FreeRDP set it up for exactly this frame
-  // (the next begin_paint resets it).
+  // The region is consumed either way: FreeRDP set it up for exactly this frame.
   hwnd->invalid->null = TRUE;
 
   const int64_t boxArea = haveBox ? static_cast<int64_t>(box.width) * box.height : 0;
   PresentRect rects[kMaxPresentRects];
 
-  // Which dirty shape to hand over depends on what the presenter does with it:
-  //
-  //  - zero-copy (`gdi` composes into the presenter's own buffer, see
-  //    FramePresenter::AcquireDesktopBuffer): the pixels are already where the GPU
-  //    reads them, so a rect costs a copy region plus a cache flush and the
-  //    *count* is what the frame pays for. The merged box is a single region
-  //    bounded by one screen read, so it is used unconditionally.
-  //  - staging (`cinvalid` rects are memcpy'd into a staging buffer first): the
-  //    cost is the bytes, and the box can be several times the changed pixels, so
-  //    the rect list is used while it is bounded.
-  //
-  // `hwnd->invalid` is the merged bounding box of the frame's dirty regions while
-  // `hwnd->cinvalid`/`ninvalid` hold the individual rects (libfreerdp/gdi/region.c
-  // gdi_InvalidateRegion).
+  // Zero-copy (gdi composes into the presenter's own buffer): a rect costs a copy region
+  // plus a cache flush, so the merged box is used unconditionally. Staging: the cost is
+  // the bytes, so the rect list is used while it is bounded.
   const bool zeroCopy = presenter->usesDesktopBuffer();
   int rectCount = 0;
   int64_t rectArea = 0;
@@ -546,9 +485,7 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
       rects[rectCount++] = clipped;
     }
   }
-  // A single rect *is* the box, and past the cap the box is the only bounded
-  // option (a video frame can carry thousands of rects, which cannot become that
-  // many copy regions).
+  // A single rect *is* the box, and past the cap the box is the only bounded option.
   const bool useRects = !zeroCopy && rectCount >= 2 && !tooManyRects && haveBox;
 
   if (info != nullptr) {

@@ -1,7 +1,3 @@
-/*
- * HmRdp - maps HarmonyOS multimodal key codes to RDP (PS/2 set 1) scancodes.
- */
-
 export class RdpScanCode {
   scancode: number = 0;
   extended: boolean = false;
@@ -105,7 +101,6 @@ export class KeyMapper {
     }
   }
 
-  /** Human-readable name of a multimodal KeyCode, for display in settings. */
   static describe(keyCode: number): string {
     if (keyCode >= KEYCODE_0 && keyCode <= KEYCODE_9) {
       return (keyCode - KEYCODE_0).toString();

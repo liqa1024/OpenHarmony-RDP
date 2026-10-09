@@ -1,13 +1,3 @@
-/*
- * HmRdp - per-session telemetry aggregation (ArkTS side).
- *
- * Native exposes only raw samples (RdpTelemetry): one window's transport /
- * frame deltas and drained work / audio / GPU sums. This aggregator turns them
- * into the toolbar's display figures (rates, per-frame averages, duty, loss
- * rate) and owns the short audio-loss window. Keeping the arithmetic here is
- * what lets native stay a plain data source and never know what the toolbar
- * shows (doc_agent/architecture.md §3.1).
- */
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpTelemetry } from 'libhmrdp.so';
 
@@ -15,10 +5,8 @@ import { RdpTelemetry } from 'libhmrdp.so';
 // aggregated line.
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpNative';
-// The audio-loss rolling window, in samples (roughly one per second).
 const AUDIO_WINDOW: number = 5;
 
-/** One computed telemetry window: exactly the figures the toolbar shows. */
 export class RdpCounters {
   rttMs: number = -1;
   rxBytesPerSec: number = 0;
@@ -40,12 +28,6 @@ export class RdpCounters {
   gpuBlitUs: number = 0;
 }
 
-/**
- * Turns the raw SessionTelemetry samples of one session into display windows.
- * The window deltas / sums are normalized by the sample's own `windowElapsedMs`
- * and `windowFrames`, so the figures do not depend on how often the caller
- * pulls. One instance per session.
- */
 export class SessionTelemetry {
   private hasSeq: boolean = false;
   private lastSeq: number = 0;
@@ -53,11 +35,6 @@ export class SessionTelemetry {
   private audioTotal: number[] = new Array<number>(AUDIO_WINDOW).fill(0);
   private audioIndex: number = 0;
 
-  /**
-   * One display window from one raw sample. Returns undefined for the very first
-   * sample (no window yet: windowElapsedMs is 0) and for a sample the caller
-   * already consumed, so the toolbar keeps its current figures either way.
-   */
   sample(raw: RdpTelemetry): RdpCounters | undefined {
     if (raw.windowElapsedMs === 0) {
       return undefined;
@@ -116,11 +93,6 @@ export class SessionTelemetry {
     }
   }
 
-  /**
-   * The per-second `perf:` diagnostic line (doc_agent/session-and-input.md §3),
-   * emitted from the same aggregation the toolbar uses and under the native
-   * logger's domain / tag, so the existing `perf:` grep still finds it.
-   */
   private log(counters: RdpCounters, raw: RdpTelemetry, seconds: number): void {
     const frames: number = raw.windowFrames;
     if (frames === 0) {

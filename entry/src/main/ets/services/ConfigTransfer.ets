@@ -1,11 +1,3 @@
-/*
- * HmRdp - configuration backup: import / export of global settings and every
- * saved connection through a user-selected file.
- *
- * Passwords are stored separately in the ASSET store (CredentialStore) and are
- * deliberately excluded from the exported file; the UI tells the user that
- * passwords must be entered again after an import.
- */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
@@ -24,10 +16,8 @@ const TAG: string = 'HmRdpConfig';
 const FILE_KIND: string = 'hmrdp-config';
 const FILE_VERSION: number = 1;
 const DEFAULT_FILE_NAME: string = 'hmrdp-config.json';
-// Raised by the picker when the user closes the dialog without choosing.
 const ERROR_USER_CANCEL: number = 13900042;
 
-/** Outcome of an export / import attempt, ready to be shown in the UI. */
 export class ConfigTransferResult {
   success: boolean = false;
   cancelled: boolean = false;
@@ -35,16 +25,12 @@ export class ConfigTransferResult {
   connectionCount: number = 0;
 }
 
-/**
- * Connection fields written to the file. Kept separate from SavedConnection so
- * the exported JSON never contains the inherited password / gatewayPassword
- * fields and has a stable, explicit schema.
- */
+// Separate from SavedConnection so the export never carries the password fields
+// and has a stable, explicit schema.
 class ExportedConnection {
   id: string = '';
   host: string = '';
   port: number = 3389;
-  // Optional custom name; absent in files written before it existed.
   name: string = '';
   username: string = '';
   domain: string = '';
@@ -60,19 +46,14 @@ class ExportedConnection {
   useGlobalDisplay: boolean = true;
   useGlobalAdvanced: boolean = true;
   useGlobalSr: boolean = true;
-  // Per-connection display override sub-modes (自动 resolution / scale). Files
-  // written before these flags existed carry none, so they import with them off.
   resolutionAuto: boolean = false;
   scaleAuto: boolean = false;
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
   srBackend: number = SR_BACKEND_XENGINE;
-  // Protocol and the Moonlight stream settings. Files written before Moonlight
-  // support carry none of these, so they import as plain RDP connections.
   protocol: number = PROTOCOL_RDP;
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
-  // The host's own id (serverinfo `uniqueid`), the connection-uniqueness key.
   mlHostId: string = '';
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
@@ -202,7 +183,6 @@ class ExportedConnection {
   }
 }
 
-/** Top-level structure of the exported JSON file. */
 class ConfigFile {
   kind: string = FILE_KIND;
   version: number = FILE_VERSION;
@@ -416,8 +396,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'scaleAuto', settings.scaleAuto);
     settings.manualScalePercent =
       ConfigTransfer.readNumber(rec, 'manualScalePercent', settings.manualScalePercent);
-    // Take the file's value, then clamp device-dependent settings to what this
-    // machine supports (see doc_agent/settings-and-storage.md §3).
+    // Clamp device-dependent settings to what this machine supports
+    // (doc_agent/settings-and-storage.md §3).
     settings.enableAudio =
       ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio)
       && DeviceCapabilities.audio().supported;

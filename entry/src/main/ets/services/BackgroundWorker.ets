@@ -1,12 +1,3 @@
-/*
- * HmRdp - UI-thread facade for the single background worker.
- *
- * Owns the worker instance, matches each reply to its request by id, and routes
- * the worker's unsolicited events to the session window that owns the handle.
- * Binary payloads are always passed through the transfer list (zero-copy), so
- * callers must not touch a buffer after the call. See doc_agent/architecture.md
- * §4.4 and services/BackgroundProtocol.
- */
 import { ErrorEvent, MessageEvents, worker } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BackgroundOps, BackgroundEvent, BackgroundRequest, BackgroundResponse } from './BackgroundProtocol';
@@ -22,11 +13,10 @@ class BackgroundWorkerImpl {
   private thread: worker.ThreadWorker | undefined = undefined;
   private nextId: number = 1;
   private pending: Map<number, ResponseSink> = new Map<number, ResponseSink>();
-  // Every session window registers; each sink filters the events by its own
-  // current handle, so a retry (which changes the handle) needs no re-register.
+  // Each sink filters events by its own current handle, so a retry (which
+  // changes the handle) needs no re-register.
   private eventSinks: EventSink[] = [];
 
-  /** Lazily starts the one worker this process uses for background work. */
   private ensure(): worker.ThreadWorker {
     let existing: worker.ThreadWorker | undefined = this.thread;
     if (existing !== undefined) {
@@ -78,7 +68,7 @@ class BackgroundWorkerImpl {
     });
   }
 
-  /** Fire-and-forget post; a dead worker must not throw into the UI callback. */
+  // A dead worker must not throw into the UI callback.
   private post(thread: worker.ThreadWorker, request: BackgroundRequest,
     transfer: ArrayBuffer[]): void {
     try {
@@ -88,7 +78,6 @@ class BackgroundWorkerImpl {
     }
   }
 
-  /** Registers a session window's worker-event sink (progress/completion). */
   registerSession(sink: EventSink): void {
     this.ensure();
     if (this.eventSinks.indexOf(sink) < 0) {
@@ -103,9 +92,6 @@ class BackgroundWorkerImpl {
     }
   }
 
-  // --- clipboard codecs (request/reply) ------------------------------------
-
-  /** Decodes a remote CF_DIB to top-down BGRA (the input buffer is transferred). */
   async decodeDib(dib: ArrayBuffer): Promise<DibImage | undefined> {
     const request: BackgroundRequest = {
       id: this.nextId, op: BackgroundOps.DECODE_DIB, dib: dib
@@ -122,7 +108,6 @@ class BackgroundWorkerImpl {
     return image;
   }
 
-  /** Converts a remote RTF payload to an HTML fragment. */
   async decodeRtf(rtf: ArrayBuffer): Promise<string> {
     const request: BackgroundRequest = {
       id: this.nextId, op: BackgroundOps.DECODE_RTF, rtf: rtf
@@ -132,7 +117,6 @@ class BackgroundWorkerImpl {
     return response.ok ? (response.text ?? '') : '';
   }
 
-  /** Extracts the HTML fragment from a remote CF_HTML payload. */
   async decodeCfHtml(cfHtml: ArrayBuffer): Promise<string> {
     const request: BackgroundRequest = {
       id: this.nextId, op: BackgroundOps.DECODE_CF_HTML, cfHtml: cfHtml
@@ -142,9 +126,6 @@ class BackgroundWorkerImpl {
     return response.ok ? (response.text ?? '') : '';
   }
 
-  // --- local clipboard -> remote (encode + native push) --------------------
-
-  /** Pushes local text; the native store/advertise runs on the worker. */
   async pushText(handle: number, text: string): Promise<boolean> {
     const request: BackgroundRequest = {
       id: this.nextId, op: BackgroundOps.PUSH_TEXT, handle: handle, text: text
@@ -154,7 +135,6 @@ class BackgroundWorkerImpl {
     return response.ok;
   }
 
-  /** Encodes local HTML and pushes it (CF_HTML + plain fallback). */
   async pushHtml(handle: number, html: string): Promise<boolean> {
     const request: BackgroundRequest = {
       id: this.nextId, op: BackgroundOps.PUSH_HTML, handle: handle, html: html
@@ -164,7 +144,6 @@ class BackgroundWorkerImpl {
     return response.ok;
   }
 
-  /** Encodes local pixels (transferred) to CF_DIB + PNG and pushes both. */
   async pushImage(handle: number, pixels: ArrayBuffer, width: number, height: number,
     pixelFormat: number): Promise<boolean> {
     const request: BackgroundRequest = {
@@ -176,9 +155,6 @@ class BackgroundWorkerImpl {
     return response.ok;
   }
 
-  // --- file download (fire-and-forget) -------------------------------------
-
-  /** Forwards the server's raw FILEGROUPDESCRIPTORW (buffer transferred). */
   postFileList(handle: number, descriptor: ArrayBuffer): void {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.FILE_LIST, handle: handle, data: descriptor
@@ -186,7 +162,6 @@ class BackgroundWorkerImpl {
     this.post(this.ensure(), request, [descriptor]);
   }
 
-  /** Forwards one FILECONTENTS response (bytes stay native, read by handle). */
   postFileChunk(handle: number, listIndex: number, isSize: boolean, sizeValue: number,
     failed: boolean, dataHandle: number): void {
     const request: BackgroundRequest = {
@@ -196,7 +171,6 @@ class BackgroundWorkerImpl {
     this.post(this.ensure(), request, []);
   }
 
-  /** The server's clipboard list changed; abort any running download. */
   postClipboardChanged(handle: number): void {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.CLIPBOARD_CHANGED, handle: handle
@@ -204,7 +178,6 @@ class BackgroundWorkerImpl {
     this.post(this.ensure(), request, []);
   }
 
-  /** Starts the download into a UI-created sandbox directory. */
   startDownload(handle: number, dir: string): void {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.START_DOWNLOAD, handle: handle, dir: dir
@@ -212,7 +185,6 @@ class BackgroundWorkerImpl {
     this.post(this.ensure(), request, []);
   }
 
-  /** Cancels the running download (partial copies are removed by the worker). */
   cancelDownload(handle: number): void {
     const request: BackgroundRequest = {
       id: 0, op: BackgroundOps.CANCEL_DOWNLOAD, handle: handle

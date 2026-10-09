@@ -1,7 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * Protocol-agnostic BGRA bitmap kernels and content hashing.
- */
 #include "hmrdp_bitmap.h"
 
 #include <algorithm>
@@ -69,9 +65,8 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-// Lanczos window (a = 3). Sharper than a bilinear or bicubic tap at the small
-// magnifications 超分 uses (output ÷ session), which is the whole point of
-// going through a real resample rather than a stretch.
+// Lanczos window (a = 3): sharper than bilinear or bicubic at the small
+// magnifications 超分 uses.
 double Lanczos3Weight(double x) {
   const double ax = x < 0.0 ? -x : x;
   if (ax < 1e-9) {
@@ -84,10 +79,8 @@ double Lanczos3Weight(double x) {
   return (std::sin(px) / px) * (std::sin(px / 3.0) / (px / 3.0));
 }
 
-// One separable Lanczos pass over RGBA float samples that are already
-// premultiplied. `horizontal` picks which axis is resampled; the other keeps
-// its extent. Source samples outside the bitmap mirror the edge, so the
-// outermost pixels are not pulled towards black.
+// One separable Lanczos pass over premultiplied RGBA; source samples outside the
+// bitmap mirror the edge, so the outermost pixels are not pulled towards black.
 void ResampleLanczos3Pass(const std::vector<float>& src, int srcW, int srcH, int outW, int outH,
                           bool horizontal, std::vector<float>* dst) {
   dst->assign(static_cast<size_t>(outW) * outH * 4, 0.0f);
@@ -95,8 +88,8 @@ void ResampleLanczos3Pass(const std::vector<float>& src, int srcW, int srcH, int
   const int outLen = horizontal ? outW : outH;
   const int otherLen = horizontal ? outH : outW;
   const double scale = static_cast<double>(inLen) / outLen;
-  // Widening the kernel while downscaling is what keeps a shrink from aliasing;
-  // for a magnification it stays at the base support.
+  // Widening the kernel while downscaling keeps a shrink from aliasing; a
+  // magnification stays at the base support.
   const double filterScale = scale > 1.0 ? scale : 1.0;
   for (int line = 0; line < otherLen; ++line) {
     for (int i = 0; i < outLen; ++i) {
@@ -132,10 +125,8 @@ void ResampleLanczos3Pass(const std::vector<float>& src, int srcW, int srcH, int
   }
 }
 
-// Contrast-adaptive sharpening on the premultiplied colour: a 5-tap unsharp
-// mask clamped to the local min/max, so an edge is accentuated but can never
-// overshoot into a halo. The alpha channel is left alone - sharpening it
-// would only ruffle the outline.
+// Contrast-adaptive 5-tap unsharp mask clamped to the local min/max, so an edge
+// is accentuated but cannot overshoot; alpha is left alone.
 void SharpenPremul(std::vector<float>* image, int width, int height, float strength) {
   const std::vector<float> src = *image;
   auto at = [&](int x, int y, int c) -> float {
@@ -169,13 +160,9 @@ void SharpenPremul(std::vector<float>* image, int width, int height, float stren
 
 }  // namespace
 
-// A genuine resample of the bitmap, not a stretch. Everything happens on the
-// *premultiplied* bitmap - the source's transparent surround is RGB 0, and any
-// linear filter run on straight-alpha colour mixes that black into the shape's
-// edges (the classic dark fringe); premultiplied, the blend stays physically
-// correct, and un-premultiplying at the end restores the straight alpha the
-// system cursor expects. Lanczos3 recovers the sharpness the reduced source
-// scale cost, and the contrast-adaptive sharpen puts the edge back.
+// A genuine resample, done on the premultiplied bitmap: filtering straight-alpha
+// colour mixes the transparent surround (RGB 0) into the edges as dark fringes.
+// Un-premultiplying at the end restores the straight alpha the cursor expects.
 void UpscaleBgra(const std::vector<uint8_t>& src, uint32_t srcW, uint32_t srcH,
                  uint32_t dstW, uint32_t dstH, float sharpen, std::vector<uint8_t>* dst) {
   const size_t srcPixels = static_cast<size_t>(srcW) * srcH;

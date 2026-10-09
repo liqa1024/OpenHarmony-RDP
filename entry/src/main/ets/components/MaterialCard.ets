@@ -1,10 +1,3 @@
-/*
- * HmRdp - wide content card.
- *
- * The 720-wide card that wraps every settings/editor form: immersive CARD
- * material with a flat fallback, radius 20 and its own shadow. The caller only
- * supplies the content and (optionally) the padding.
- */
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 @Component

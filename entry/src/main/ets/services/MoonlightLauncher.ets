@@ -1,13 +1,3 @@
-/*
- * HmRdp - starts a Moonlight session from a saved connection.
- *
- * Builds the launch request (resolved stream profile + real pixel size, the app
- * to open, the sandbox files dir and the PIN popup provider) and hands it to the
- * manager, which runs the control layer's pre-flight (serverinfo -> pair ->
- * launch) through the backend's prepare() while the connection is still
- * Connecting. Shared by the list, the editor and the app-management page so the
- * request shape exists once.
- */
 import { common } from '@kit.AbilityKit';
 import { UIContext } from '@kit.ArkUI';
 import { ML_RES_FIXED, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
@@ -20,12 +10,6 @@ import { defaultDisplay } from '../utils/DisplayUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 
 export class MoonlightLauncher {
-  /**
-   * Starts a Moonlight connection. `appId` 0 opens the connection's default app
-   * (or the host default); a non-zero id opens that specific app. `ui` owns the
-   * PIN popup, `context` supplies the sandbox files dir, and `onConnected` (if
-   * given) persists the connection once a session is up.
-   */
   static connect(ui: UIContext, context: common.UIAbilityContext, conn: SavedConnection,
     origin: RdpConnectOrigin, appId: number = 0, onConnected?: () => void): void {
     const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
@@ -52,14 +36,12 @@ export class MoonlightLauncher {
       (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
         promptPairingPin(ui, pin, pairing);
     request.onConnected = onConnected;
-    // Mark the target the UI already knows (a specific app, or a stored default):
-    // the connecting badge can show immediately; the backend corrects it with the
-    // host's own answer once the pre-flight picks the app.
+    // Mark the known target so the connecting badge shows immediately; the
+    // backend corrects it once the pre-flight picks the app.
     MoonlightHostState.markLaunched(conn.id, request.moonlightAppId);
     SessionManager.connect(request, context);
   }
 
-  /** The connection's stored default app id (0 = the host default). */
   private static defaultAppId(conn: SavedConnection): number {
     if (conn.mlDefaultAppId.length === 0) {
       return 0;

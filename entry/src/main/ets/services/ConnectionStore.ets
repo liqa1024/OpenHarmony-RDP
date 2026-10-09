@@ -1,10 +1,3 @@
-/*
- * HmRdp - saved connection metadata (non-sensitive) backed by preferences.
- *
- * Passwords are never stored here. Each connection is identified by a stable
- * UUID so renaming host/port does not invalidate the record; the password is
- * kept separately in CredentialStore (ASSET) and only after a verified login.
- */
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -112,7 +105,6 @@ export class ConnectionStore {
     }
   }
 
-  /** Persists a new display order; unknown ids are dropped, missing ones kept. */
   static reorder(ids: string[]): void {
     const store: preferences.Preferences | undefined = ConnectionStore.store;
     if (store === undefined) {
@@ -185,11 +177,10 @@ export class ConnectionStore {
     parts.push(conn.srEnabled ? '1' : '0');
     parts.push(conn.srRatioPercent.toString());
     parts.push(conn.srBackend.toString());
-    // Appended after the retired/growing tail: older records simply stop before
-    // it, so the positional layout of every existing field stays put.
+    // Everything below is an appended tail: older records simply stop before it,
+    // so the positional layout of every existing field stays put.
     parts.push(ConnectionStore.encode(conn.name));
-    // Protocol and the Moonlight stream settings, appended the same way; an
-    // older record stops before this block and deserializes as plain RDP.
+    // An older record stops before this block and deserializes as plain RDP.
     parts.push(conn.protocol.toString());
     parts.push(ConnectionStore.encode(conn.mlDefaultAppId));
     parts.push(ConnectionStore.encode(conn.mlDefaultAppName));
@@ -208,9 +199,6 @@ export class ConnectionStore {
     parts.push('0'); // retired: gamepad
     parts.push(conn.useGlobalStream ? '1' : '0');
     parts.push(ConnectionStore.encode(conn.mlHostId));
-    // Per-connection display override sub-modes (自动 resolution / scale), appended
-    // after the Moonlight tail; older records stop before this block and keep
-    // using their stored width / height / scalePercent.
     parts.push(conn.resolutionAuto ? '1' : '0');
     parts.push(conn.scaleAuto ? '1' : '0');
     return parts.join(FIELD_SEPARATOR);

@@ -1,7 +1,3 @@
-/*
- * HmRdp - Vulkan context: loader, capability probe and the process-wide
- * instance/device. See hmrdp_vk_context.h.
- */
 #include "hmrdp_vk_context.h"
 
 #include <dlfcn.h>
@@ -167,7 +163,6 @@ VulkanCapabilities ProbeVulkan() {
     return caps;
   }
 
-  // Report the device the renderer would actually pick: best device type first.
   VkPhysicalDevice best = VK_NULL_HANDLE;
   uint32_t bestScore = 0;
   for (VkPhysicalDevice device : devices) {
@@ -272,7 +267,6 @@ VulkanCapabilities ProbeVulkan() {
     }
   }
 
-  // Filtered summary: the full device list is far too long for the dev panel.
   char summary[256];
   std::snprintf(summary, sizeof(summary),
                 "swapchain=%d timeline=%d extMem=%d extMemFd=%d ohosExtMem=%d xeg=%d (of %u)",
@@ -381,7 +375,6 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdResetQueryPool = ResolveDevice<PFN_vkCmdResetQueryPool>(gdpa, gipa, device, instance, "vkCmdResetQueryPool");
   CmdWriteTimestamp = ResolveDevice<PFN_vkCmdWriteTimestamp>(gdpa, gipa, device, instance, "vkCmdWriteTimestamp");
   GetQueryPoolResults = ResolveDevice<PFN_vkGetQueryPoolResults>(gdpa, gipa, device, instance, "vkGetQueryPoolResults");
-  // Presenter pipeline: shader modules, descriptors and the letterbox quad.
   CreateShaderModule = ResolveDevice<PFN_vkCreateShaderModule>(gdpa, gipa, device, instance, "vkCreateShaderModule");
   DestroyShaderModule = ResolveDevice<PFN_vkDestroyShaderModule>(gdpa, gipa, device, instance, "vkDestroyShaderModule");
   CreateDescriptorSetLayout = ResolveDevice<PFN_vkCreateDescriptorSetLayout>(gdpa, gipa, device, instance, "vkCreateDescriptorSetLayout");
@@ -472,9 +465,6 @@ std::string VkResultName(int32_t result) {
 
 namespace {
 
-// Derives the presenter verdict from the probed facts. Kept separate from
-// ProbeVulkan() so every early return (no loader / no device) still gets one, and
-// so there is exactly one place that decides what "supported" means.
 void FillPresenterVerdict(VulkanCapabilities* caps) {
   if (caps == nullptr) {
     return;
@@ -496,7 +486,6 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
   } else if (!caps->deviceFound) {
     caps->presenterUnsupportedCode = "no-device";
   } else if (!caps->memHostVisible) {
-    // Host-visible memory for the frame buffer.
     caps->presenterUnsupportedCode = "no-host-memory";
   } else if (!caps->extOhosSurface || !caps->extKhrSwapchain) {
     caps->presenterUnsupportedCode = "no-surface";
@@ -508,9 +497,6 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
              caps->presenterSupported ? 1 : 0,
              caps->presenterUnsupportedCode.empty() ? "-" : caps->presenterUnsupportedCode.c_str());
 
-  // 超分 verdicts: both backends upscale into a presenter image, so the presenter
-  // verdict is the prerequisite for either. Past that, FSR is a build question
-  // (its shaders ship in the .so) and XEngine needs the device feature.
   caps->srFsrSupported = false;
   caps->srXengineSupported = false;
   caps->srXengineUnsupportedCode.clear();
@@ -746,7 +732,6 @@ bool VkDeviceContext::PickPhysicalDevice(VkSurfaceKHR surface) {
       if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
         continue;
       }
-      // The family must be able to present to the surface the caller brought.
       VkBool32 present = VK_FALSE;
       if (api.GetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present) != VK_SUCCESS) {
         continue;
@@ -793,8 +778,6 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   const VkInstance instance = this->instance();
   VkApi& shared = GetVkApi();
   if (device_ != VK_NULL_HANDLE) {
-    // The device may have been created for an earlier surface. If its queue
-    // family cannot present to this one, rebuild with a family that can.
     VkBool32 present = VK_FALSE;
     if (shared.GetPhysicalDeviceSurfaceSupportKHR != nullptr &&
         shared.GetPhysicalDeviceSurfaceSupportKHR(physical_, queueFamily_, surface, &present) ==
@@ -843,9 +826,6 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
     return false;
   }
   device_ = device;
-  // This device's own command table: the shared global + instance entries plus
-  // the device entries resolved here, so a call can never reach another device's
-  // function pointers.
   api_ = shared;
   if (!api_.LoadDevice(device_, instance)) {
     error_ = "device entry points missing";

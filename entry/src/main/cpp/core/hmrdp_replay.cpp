@@ -1,12 +1,3 @@
-/*
- * HmRdp - dev-only recorded-RDP replay (doc_agent/gfx-engine.md §6).
- *
- * Present-on-screen consumer of the shared replay driver: the capture is read,
- * decompressed and parsed by hmrdp_gfx_driver.cpp (FreeRDP's own ZGX + RDPGFX
- * parsing), FreeRDP's gdi pipeline decodes it, and the composed desktop is
- * uploaded through the presenter on every EndFrame. Correctness is checked
- * against a stored golden reference (GfxReplayRefMode).
- */
 #include "hmrdp_replay.h"
 
 #include <native_window/external_window.h>
@@ -34,20 +25,10 @@ namespace hmrdp {
 namespace {
 
 constexpr int kLogEvery = 120;
-constexpr int64_t kMaxRunUs = 120ll * 1000000ll;  // safety cap, fast mode
-// In realtime mode the run lasts as long as the recording did (plus whatever the
-// client fell behind), so the cap has to be much higher to avoid cutting a long
-// capture short.
+constexpr int64_t kMaxRunUs = 120ll * 1000000ll;
 constexpr int64_t kMaxRealtimeRunUs = 900ll * 1000000ll;
 constexpr int kStartWaitUs = 3000000;
 
-
-// --- golden reference (GfxReplayRefMode) -----------------------------------
-// Fingerprint of a capture file: its size plus the first and last 256KB. Names the
-// reference files (`hmrdp_ref_<tag>.hash/.bmp` next to the capture), so a
-// reference recorded from a *different* recording can never be picked up silently
-// - the device file name is always hmrdp_gfx.bin, and doc_agent/gfx-engine.md §6
-// requires every capture to be verified on its own.
 std::string CaptureTag(const std::string& capturePath) {
   FILE* f = std::fopen(capturePath.c_str(), "rb");
   if (f == nullptr) {
@@ -74,7 +55,6 @@ std::string CaptureTag(const std::string& capturePath) {
   return std::string(out);
 }
 
-// Sibling of the capture.
 std::string RefSibling(const std::string& capturePath, const std::string& name) {
   const size_t slash = capturePath.find_last_of("/\\");
   const std::string dir =
@@ -82,16 +62,11 @@ std::string RefSibling(const std::string& capturePath, const std::string& name) 
   return dir + name;
 }
 
-// One 64-bit hash over a composed frame's pixels (rows are hashed without the
-// stride padding; the geometry is folded in so a resize cannot hash equal). Runs
-// once per frame in the reference modes only - it is a correctness tool, not part
-// of any measured phase.
 uint64_t HashFrame(const uint8_t* data, int stride, int width, int height) {
-  // FNV-1a with four independent lanes: the plain scalar chain is dependency-bound
-  // (one multiply per word, ~3-4 cycles each), which at this platform's low clock
-  // costs several ms for a whole-screen frame. Four lanes hide that latency. Any
-  // stable hash does - it is only ever compared against itself - so this needs no
-  // particular strength, just determinism.
+  // Four independent FNV-1a lanes: the scalar chain is dependency-bound on the one
+  // multiply per word and costs several ms per whole-screen frame at this clock;
+  // the lanes hide that latency. Any stable hash would do - it is only ever
+  // compared against itself.
   uint64_t h[4] = {1469598103934665603ull, 1099511628211ull, 0x9e3779b97f4a7c15ull,
                    0xc2b2ae3d27d4eb4full};
   h[0] ^= static_cast<uint64_t>(static_cast<uint32_t>(width)) * 0x9e3779b97f4a7c15ull;
@@ -119,8 +94,6 @@ uint64_t HashFrame(const uint8_t* data, int stride, int width, int height) {
   return h[0] ^ (h[1] * 0x9e3779b97f4a7c15ull) ^ (h[2] * 0xc2b2ae3d27d4eb4full) ^ h[3];
 }
 
-// 32bpp BI_RGB BMP: viewable everywhere (Windows included) and trivial to write,
-// so the reference picture needs no image codec in the app.
 bool WriteBmp(const std::string& path, const uint8_t* data, int stride, int width, int height) {
   if (data == nullptr || width <= 0 || height <= 0) {
     return false;
@@ -134,11 +107,11 @@ bool WriteBmp(const std::string& path, const uint8_t* data, int stride, int widt
   auto put32 = [&header](size_t off, uint32_t v) { std::memcpy(header + off, &v, 4); };
   put32(2, fileBytes);
   put32(10, 54u);
-  put32(14, 40u);                                   // BITMAPINFOHEADER
+  put32(14, 40u);
   put32(18, static_cast<uint32_t>(width));
-  put32(22, static_cast<uint32_t>(height));         // positive: rows bottom-up
-  put32(26, 1u);                                    // planes
-  put32(28, 32u);                                   // bits per pixel
+  put32(22, static_cast<uint32_t>(height));
+  put32(26, 1u);
+  put32(28, 32u);
   put32(34, imageBytes);
   FILE* f = std::fopen(path.c_str(), "wb");
   if (f == nullptr) {
@@ -153,7 +126,6 @@ bool WriteBmp(const std::string& path, const uint8_t* data, int stride, int widt
   return ok;
 }
 
-// Reads a 32bpp BI_RGB BMP into a top-down BGRA buffer (row pitch = width * 4).
 bool ReadBmp(const std::string& path, std::vector<uint8_t>* out, int* width, int* height) {
   FILE* f = std::fopen(path.c_str(), "rb");
   if (f == nullptr) {
@@ -194,8 +166,6 @@ bool ReadBmp(const std::string& path, std::vector<uint8_t>* out, int* width, int
   return true;
 }
 
-// Header of hmrdp_ref.hash: magic + geometry + the frame the image came from +
-// the frame count, then the per-frame hashes.
 constexpr char kRefMagic[8] = {'H', 'M', 'R', 'D', 'R', 'E', 'F', '1'};
 
 int64_t NowUs() {
@@ -204,9 +174,6 @@ int64_t NowUs() {
       .count();
 }
 
-// Process CPU time (all threads), the energy proxy: a run that gets no faster
-// while burning more CPU is the wrong side of the efficiency curve. Zero when the
-// platform does not provide it.
 int64_t ProcessCpuUs() {
   struct timespec ts = {};
   if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) != 0) {
@@ -232,9 +199,8 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     }
     return false;
   }
-  // The realtime mode needs the arrival times recorded in the capture; an older
-  // (version 0) file has none, so fall back to the unpaced fast mode and say so -
-  // the run is then labelled fast(untimed), not realtime.
+  // An older (version 0) capture has no arrival times, so realtime falls back to
+  // the unpaced fast mode (labelled fast(untimed)).
   const bool effectiveRealtime = realtime && GfxCaptureHasTimestamps(gfxPath);
   if (realtime && !effectiveRealtime) {
     HMRDP_LOGW("gfx replay: capture has no arrival times, realtime mode unavailable");
@@ -273,8 +239,6 @@ bool GfxReplay::Start(void* nativeWindow, int surfaceW, int surfaceH,
     refFirstBad_.store(-1);
     refNote_.clear();
     refMode_.store(static_cast<int>(refMode));
-    // This run's number, so a driver can wait for *this* run's end instead of
-    // guessing from a state line that looks the same for every round.
     runId_.fetch_add(1);
     aborted_.store(false);
     refTag_ = CaptureTag(gfxPath);
@@ -363,15 +327,8 @@ void GfxReplay::Stop() {
 }
 
 std::string GfxReplay::StatsLines() {
-  // Freeze the clock once the replay has ended: the UI keeps polling every
-  // second, and a growing denominator would make fps/feed decay on a paused
-  // (finished) replay.
   const int64_t stopUs = endUs_.load();
   const int64_t nowUs = stopUs != 0 ? stopUs : NowUs();
-  // fps is the **playback** rate: measured from the first presented frame (see
-  // MarkFrameEnd) to the end, so the run's start-up (core/presenter init, waiting
-  // for the first frame) does not dilute it. MarkFrameEnd counts one frame per
-  // presented frame, hence `presents - 1` periods.
   const uint64_t presents = presents_.load();
   const int64_t firstFrameEndUs = firstFrameEndUs_.load();
   const int64_t elapsedUs = firstFrameEndUs != 0
@@ -390,17 +347,11 @@ std::string GfxReplay::StatsLines() {
     err = lastError_;
   }
   const uint64_t pace = paceUs_.load();
-  // "feed" = compute time, excluding the deliberate playback throttling (only the
-  // realtime cadence sleeps). Once the pump has returned its exact figure is used;
-  // while still running the wall clock minus the paced sleep is a good live
-  // approximation.
   const uint64_t elapsed = elapsedUs > 0 ? static_cast<uint64_t>(elapsedUs) : 0;
   const uint64_t measuredPump = pumpUs_.load();
   uint64_t pumpUs = measuredPump > 0
                         ? (measuredPump > pace ? measuredPump - pace : 0)
                         : (elapsed > pace ? elapsed - pace : 0);
-  // Exclude the run's start-up (presenter init, first frame wait) so `feed`
-  // is the playback's own compute, comparable between runs.
   const int64_t firstFrameEnd = firstFrameEndUs_.load();
   const int64_t pumpStart = pumpStartUs_.load();
   if (firstFrameEnd != 0 && pumpStart != 0 && firstFrameEnd > pumpStart &&
@@ -408,21 +359,10 @@ std::string GfxReplay::StatsLines() {
     pumpUs -= static_cast<uint64_t>(firstFrameEnd - pumpStart);
   }
 
-  // mode=realtime replays the capture's own arrival times; mode=fast is *not
-  // throttled at all* - the pump runs flat out, i.e. a pure throughput figure and
-  // not the live cadence (doc_agent/gfx-engine.md §7.1).
-  // `lag` is only meaningful in realtime mode: the worst lateness behind the
-  // recorded schedule, i.e. how much of the live load the client could not absorb.
-  // "fast(untimed)" = realtime was requested but the capture carries no arrival
-  // times, so the unpaced fast mode ran instead (kept distinct in the label: two
-  // runs that differ in mode are not comparable).
   const char* modeName = realtimeActive_.load() != 0
                              ? "realtime"
                              : (realtimeRequested_.load() != 0 ? "fast(untimed)" : "fast");
   const unsigned long long frames = static_cast<unsigned long long>(frames_.load());
-  // The state and the run number come first, so a test driver can (a) wait for
-  // the round it just started to reach "finished" and (b) be sure the figures
-  // below are that round's - polling the figures alone cannot tell them apart.
   const char* stateName = running_.load() ? "running" : (aborted_.load() ? "aborted" : "finished");
   char head[420];
   std::snprintf(head, sizeof(head),
@@ -439,10 +379,6 @@ std::string GfxReplay::StatsLines() {
                 running_.load() ? 1 : 0);
   std::string out(head);
 
-  // The run's total process CPU time: the frame time above says how fast the
-  // replay went, this says what it cost. `cpuKHz` is the SoC clock the run
-  // actually got - the playback rate decides the band, so two runs are only
-  // comparable at the same value (doc_agent/gfx-engine.md §7.1).
   const int64_t cpuStart = cpuStartUs_.load();
   const int64_t cpuEnd = cpuEndUs_.load();
   if (cpuStart != 0 && cpuEnd > cpuStart) {
@@ -455,9 +391,6 @@ std::string GfxReplay::StatsLines() {
     out += run;
   }
 
-  // How many bytes actually left the CPU, versus what the merged bounding box
-  // would have cost for the same run. `rectlist=used/total presents` and
-  // `truncated` say whether the rect path was exercised or fell back.
   const uint64_t uploadBoxBytes = uploadBoxBytes_.load();
   if (uploadBoxBytes > 0) {
     const double mb = 1.0 / (1024.0 * 1024.0);
@@ -474,12 +407,6 @@ std::string GfxReplay::StatsLines() {
     out += up;
   }
 
-  // Per-frame client work, measured exactly like the live session's phases
-  // (hmrdp_gfx_work.h): same hooks, same sub-items, same denominator, so a live
-  // session's phase figures can be checked against a replay of the same stream.
-  // Whole-run totals, not a per-second window. The meter keeps no aggregate, so
-  // the per-frame work sum is added here (the four work phases; `sync` stays out,
-  // it is blocked time).
   const GfxWorkMeter::Sample work = pipeline_.meter()->Peek();
   if (work.frames > 0) {
     const uint64_t frames = work.frames;
@@ -503,9 +430,6 @@ std::string GfxReplay::StatsLines() {
                   static_cast<unsigned long long>(work.bytes / frames / 1024));
     out += wl;
 
-    // Non-pixel GFX commands, per frame: they sit inside `zgx+parse` (a
-    // CreateSurface / ResetGraphics 0xFF-fills a whole surface), so read this
-    // line before reading that phase.
     const uint64_t* su = work.setupUs;
     const uint64_t* sc = work.setupCount;
     if (work.SetupUs() > 0) {
@@ -539,9 +463,6 @@ std::string GfxReplay::StatsLines() {
 
   }
 
-  // Golden-reference gate (see GfxReplayRefMode). The hashes are the
-  // pass/fail; the pixel numbers come from the single frame the stored image was
-  // taken from, i.e. they only say *how* it failed, not where every frame differs.
   const int refMode = refMode_.load();
   if (refMode != 0) {
     char rf[320];
@@ -576,8 +497,6 @@ std::string GfxReplay::StatsLines() {
 }
 
 std::string GfxReplay::Stats() {
-  // Single-line form for logging: the multi-line panel text with the newlines
-  // flattened, so one hilog record carries the whole summary.
   std::string s = StatsLines();
   for (char& c : s) {
     if (c == '\n') {
@@ -592,18 +511,10 @@ void GfxReplay::RecordPresent(uint64_t micros) {
 }
 
 void GfxReplay::MarkFrameEnd(bool presented) {
-  // Cadence bookkeeping only: the fast mode never sleeps, and the realtime mode's
-  // cadence comes from the capture (PaceRecord), so nothing is throttled here
-  // (doc_agent/gfx-engine.md §7.1).
-  //
-  // Only frames that produced a picture mark the origin: the stream carries many
-  // frame markers with no drawable update (management/ack frames, off-screen
-  // surfaces), and those must not be mistaken for the first played frame.
   if (!presented) {
     return;
   }
   if (firstFrameEndUs_.load() == 0) {
-    // fps is measured from here, so the run's start-up is not counted as playback.
     firstFrameEndUs_.store(static_cast<int64_t>(NowUs()));
   }
 }
@@ -611,8 +522,6 @@ void GfxReplay::MarkFrameEnd(bool presented) {
 void GfxReplay::PaceRecord(uint64_t timestampUs) {
   const int64_t now = static_cast<int64_t>(NowUs());
   if (recordBaseUs_ == 0) {
-    // First record defines the schedule origin: everything else is measured as an
-    // offset from it, so the run's start-up is not replayed as a stall.
     recordBaseUs_ = timestampUs;
     recordWallBaseUs_ = now;
     return;
@@ -620,9 +529,8 @@ void GfxReplay::PaceRecord(uint64_t timestampUs) {
   const int64_t target =
       recordWallBaseUs_ + static_cast<int64_t>(timestampUs - recordBaseUs_);
   if (target > now) {
-    // Sleep in slices so a long gap in the recording (an idle stretch, a paused
-    // session) cannot make Stop() - and therefore a route switch on the dev page -
-    // wait for the whole gap before the pump notices it must stop.
+    // Sleep in slices so a long gap in the recording cannot make Stop() wait for
+    // the whole gap before the pump notices it must stop.
     constexpr int64_t kSliceUs = 20000;
     const int64_t start = static_cast<int64_t>(NowUs());
     while (running_.load() && static_cast<int64_t>(NowUs()) < target) {
@@ -633,10 +541,6 @@ void GfxReplay::PaceRecord(uint64_t timestampUs) {
     paceUs_.fetch_add(static_cast<uint64_t>(static_cast<int64_t>(NowUs()) - start));
     return;
   }
-  // Already behind the recorded schedule: never catch up (that would compress the
-  // following gaps and report a cadence the client never actually ran at). Only
-  // remember the excursion, which is the honest "cannot keep up with the live
-  // load" number.
   const uint64_t behind = static_cast<uint64_t>(now - target);
   if (behind > realtimeLagUs_.load()) {
     realtimeLagUs_.store(behind);
@@ -650,18 +554,9 @@ void GfxReplay::Run() {
 }
 
 void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
-  // FreeRDP's own gdi pipeline handles the decoding (clear/progressive/...),
-  // exactly like a live session. Only the destination changes: gdi's primary
-  // buffer is composed straight into the presenter's desktop buffer when it can
-  // hand one over.
   pipeline_.presenter()->Prepare();
   GfxCpuDesktop cpu;
-  // gdi composes straight into the presenter's desktop buffer when it can hand one
-  // over (the presenter is up by now, so it does): the present then costs a copy
-  // of the dirty rects out of memory gdi already wrote, with no frame copy at all.
   cpu.SetPresenter(pipeline_.presenter());
-  // The frame host reports its `sync` blocked time to this run's own meter, not
-  // to whatever meter a live session may have published (hmrdp_gfx_cpu.h).
   cpu.SetMeter(pipeline_.meter());
   std::string error;
   if (!cpu.Init(surfaceW_, surfaceH_, &error)) {
@@ -669,31 +564,19 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
     lastError_ = error;
     return;
   }
-  // The same EndPaint chain a live session runs: the shared host attaches, waits,
-  // presents, and calls these two observers. They are the replay-only part (run
-  // cap / resize / energy before, stats / cadence / reference after).
   cpu.SetPrePresentFn([this](rdpGdi*) { return OnCpuFramePre(); });
   cpu.SetPresentedFn(
       [this, &cpu](bool presented, uint64_t presentUs, const PresentUploadInfo& upload) {
         OnCpuFramePresent(&cpu, presented, presentUs, upload);
       });
 
-  // Measure this run on this instance's own meter (same hooks, same phases as a
-  // live session feeds), so its per-frame figures can be put next to a live
-  // session's without either touching the other's.
   pipeline_.meter()->Reset();
-  // The wrappers are also where the frame-begin wait lives
-  // (GfxWorkSetFrameBeginHook), and gdi writes the presenter's desktop buffer in
-  // place, so skipping them would bring back the two-frames-in-one-upload race
-  // this replay is often run to catch.
   GfxWorkInstall(cpu.gfx(), pipeline_.meter());
   GfxWorkSetFrameBeginHook(cpu.gfx(), [&cpu]() { cpu.OnFrameBegin(); });
 
   hmrdp::GfxDumpSetReplaying(true);
   hmrdp::GfxReplayResetParseUs();
 
-  // Pump start and CPU-time origin: `feed` subtracts the run's start-up from this
-  // stamp, and `cpu=` is measured between the two ProcessCpuUs() readings.
   const int64_t pumpStart = NowUs();
   pumpStartUs_.store(pumpStart);
   cpuStartUs_.store(ProcessCpuUs());
@@ -706,7 +589,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   bool aborted = false;
   bool ok = false;
   {
-    // The tile decode of this replay's frames runs on this instance's own queue.
     DecodeExecutorScope decodeScope(pipeline_.executor());
     ok = GfxReplayPump(gfxPath, cpu.gfx(), &running_, &error, pace, paceAccum, &aborted);
   }
@@ -717,10 +599,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
              static_cast<unsigned long long>(pumpUs_.load() / 1000),
              static_cast<unsigned long long>(paceUs_.load() / 1000));
 
-  // Record the reference before the desktop is torn down: the buffer still holds
-  // the last composed frame (the one the hash list's last entry describes). A run
-  // that was cut short is not written: its hash list covers only part of the
-  // capture, and storing it would replace a good reference with a partial one.
   if (refMode_.load() == static_cast<int>(GfxReplayRefMode::kExport) && !aborted_.load()) {
     RefWrite(gfxPath, &cpu);
   }
@@ -737,8 +615,6 @@ void GfxReplay::RunCpuReplay(const std::string& gfxPath) {
   HMRDP_LOGI("gfx replay: finished (cpu): %{public}s", Stats().c_str());
 }
 
-// ---- golden reference (see GfxReplayRefMode) ------------------------------
-
 bool GfxReplay::RefLoad(const std::string& capturePath) {
   const std::string hashPath = RefSibling(capturePath, "hmrdp_ref_" + refTag_ + ".hash");
   FILE* f = std::fopen(hashPath.c_str(), "rb");
@@ -747,7 +623,7 @@ bool GfxReplay::RefLoad(const std::string& capturePath) {
     return false;
   }
   char magic[8] = {0};
-  uint32_t geom[4] = {0, 0, 0, 0};  // width, height, imageFrame, frameCount
+  uint32_t geom[4] = {0, 0, 0, 0};
   bool ok = std::fread(magic, 1, sizeof(magic), f) == sizeof(magic) &&
             std::memcmp(magic, kRefMagic, sizeof(kRefMagic)) == 0 &&
             std::fread(geom, 1, sizeof(geom), f) == sizeof(geom) && geom[3] > 0u &&
@@ -764,8 +640,6 @@ bool GfxReplay::RefLoad(const std::string& capturePath) {
   }
   refFrames_.store(refHashes_.size());
   refImageFrame_ = static_cast<int64_t>(geom[2]);
-  // The image is optional: the per-frame hashes are the gate, the image exists so
-  // a failure can be looked at (and for the pixel-level numbers on its frame).
   if (!ReadBmp(RefSibling(capturePath, "hmrdp_ref_" + refTag_ + ".bmp"), &refImage_, &refImageW_, &refImageH_)) {
     refNote_ = "no reference image (hash-only check)";
   }
@@ -787,7 +661,6 @@ void GfxReplay::RefWrite(const std::string& capturePath, GfxCpuDesktop* cpu) {
     HMRDP_LOGW("gfx replay: cannot write %{public}s", hashPath.c_str());
     return;
   }
-  // The image is the last composed frame, i.e. the hash list's last entry.
   const uint32_t geom[4] = {static_cast<uint32_t>(gdi->width),
                             static_cast<uint32_t>(gdi->height),
                             static_cast<uint32_t>(refHashes_.size() - 1u),
@@ -822,7 +695,7 @@ void GfxReplay::RefCompareImage(const uint8_t* data, int stride, int width, int 
     const uint8_t* cur = data + static_cast<size_t>(y) * static_cast<size_t>(stride);
     const uint8_t* ref = refImage_.data() + static_cast<size_t>(y) * rowBytes;
     for (int x = 0; x < width; ++x) {
-      const uint8_t* a = cur + static_cast<size_t>(x) * 4u;  // BGRA
+      const uint8_t* a = cur + static_cast<size_t>(x) * 4u;
       const uint8_t* b = ref + static_cast<size_t>(x) * 4u;
       const int dR = std::abs(static_cast<int>(a[2]) - static_cast<int>(b[2]));
       const int dG = std::abs(static_cast<int>(a[1]) - static_cast<int>(b[1]));
@@ -880,14 +753,10 @@ void GfxReplay::RefCollectFrame(GfxCpuDesktop* cpu) {
   const int width = static_cast<int>(gdi->width);
   const int height = static_cast<int>(gdi->height);
   const int stride = static_cast<int>(gdi->stride);
-  // This runs inside gdi's EndFrame (OnCpuFrame is called from its EndPaint hook),
-  // so the time it takes is charged to the `compose` phase: it is reported
-  // separately in the reference line so a reference run is never mistaken for a
-  // performance run.
+  // Inside gdi's EndFrame, so its time lands in `compose` - reported separately so
+  // a reference run is never read as a performance run.
   const int64_t hashStart = NowUs();
   const uint64_t hash = HashFrame(gdi->primary_buffer, stride, width, height);
-  // `frames_` was already incremented for this frame by the caller, so the index
-  // is frames - 1: the same numbering the reference file was written with.
   const int64_t index = static_cast<int64_t>(frames_.load()) - 1;
   refHashUs_.fetch_add(static_cast<uint64_t>(NowUs() - hashStart));
   if (mode == static_cast<int>(GfxReplayRefMode::kExport)) {
@@ -900,13 +769,11 @@ void GfxReplay::RefCollectFrame(GfxCpuDesktop* cpu) {
     if (refHashes_[static_cast<size_t>(index)] != hash) {
       if (refBad_.fetch_add(1) == 0) {
         refFirstBad_.store(index);
-        // Dump the frame that failed so it can be looked at next to the reference.
         WriteBmp(RefSibling(gfxPath_, "hmrdp_ref_" + refTag_ + "_fail.bmp"), gdi->primary_buffer, stride, width,
                  height);
       }
     }
   } else {
-    // This run produced more frames than the reference recorded.
     refBad_.fetch_add(1);
   }
   if (index == refImageFrame_) {
@@ -915,8 +782,6 @@ void GfxReplay::RefCollectFrame(GfxCpuDesktop* cpu) {
 }
 
 bool GfxReplay::OnCpuFramePre() {
-  // Runs inside the shared frame host's chain, before the present: a run that hit
-  // its cap stops here without presenting or accounting for one more frame.
   const int64_t nowUs = static_cast<int64_t>(NowUs());
   const int64_t capUs = realtimeActive_.load() != 0 ? kMaxRealtimeRunUs : kMaxRunUs;
   if (nowUs - startUs_.load() > capUs) {
@@ -935,11 +800,6 @@ bool GfxReplay::OnCpuFramePre() {
 
 void GfxReplay::OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t presentUs,
                                   const PresentUploadInfo& upload) {
-  // The present (its work and blocked halves), the zero-copy `sync` and the
-  // phases are all measured once, in the shared GdiFrameHost the live session also
-  // uses; this only dispatches the same figure to the replay's own report line
-  // (the route-agnostic `present=`, which is the whole present span). No timing is
-  // duplicated here (hmrdp_gfx_cpu.h).
   RecordPresent(presentUs);
   uploadBytes_.fetch_add(static_cast<uint64_t>(upload.uploadedBytes));
   uploadBoxBytes_.fetch_add(static_cast<uint64_t>(upload.boxBytes));
@@ -962,14 +822,9 @@ void GfxReplay::OnCpuFramePresent(GfxCpuDesktop* cpu, bool presented, uint64_t p
   if ((frames_.load() % static_cast<uint64_t>(kLogEvery)) == 0) {
     HMRDP_LOGI("gfx replay: %{public}s", Stats().c_str());
   }
-  // No throttle runs inside EndFrame (the replay's only pace is in GfxReplayPump,
-  // already excluded from `feed`); this keeps the meter from charging a deliberate
-  // in-EndFrame sleep to `compose` (hmrdp_gfx_work.h).
   const int64_t paceStart = NowUs();
   MarkFrameEnd(presented);
   pipeline_.meter()->OnPace(static_cast<uint64_t>(NowUs() - paceStart));
-  // Golden-reference bookkeeping, last so it cannot land in any measured phase
-  // (`present` was measured above; the hash is not present work).
   RefCollectFrame(cpu);
 }
 

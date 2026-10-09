@@ -1,17 +1,3 @@
-/*
- * HmRdp - Vulkan presenter for one XComponent surface.
- *
- * instance -> device -> VkSurfaceKHR -> swapchain, plus the letterboxed blit of a
- * source picture onto the swapchain:
- *
- *  - PresentBgra: a CPU (gdi) frame - only the dirty rectangle is copied once
- *    into a host-visible staging buffer and uploaded into a persistent desktop
- *    image, then the GPU blits it. The CPU never writes display memory, which is
- *    what the backend does differently from a native-window presenter.
- *
- * This class is the default FramePresenter backend; the GLES one is the
- * compatibility fallback (hmrdp_gles_presenter.h).
- */
 #ifndef HMRDP_VK_RENDERER_H
 #define HMRDP_VK_RENDERER_H
 
@@ -34,126 +20,63 @@ class VkRenderer : public FramePresenter {
   VkRenderer(const VkRenderer&) = delete;
   VkRenderer& operator=(const VkRenderer&) = delete;
 
-  // Called from the ArkUI (main) thread when the XComponent surface changes.
   void SetSurface(void* nativeWindow, int width, int height) override;
   void ResizeSurface(int width, int height) override;
   void DestroySurface() override;
 
-  // Creates the swapchain and presents one black frame, so the surface shows
-  // something before the first real frame. Also pins the picture format the
-  // desktop / SR images must be created with.
   bool Prepare() override;
-  // Presents one CPU (gdi) frame: the dirty regions are uploaded into a persistent
-  // desktop image (packed into the per-slot staging buffer, one copy region each)
-  // and the image is sampled letterboxed. See hmrdp_presenter.h.
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
                    const PresentRect* rects, int rectCount) override;
-  // Swapchain image format (VK_FORMAT_UNDEFINED until a swapchain exists).
   VkFormat format() const;
 
-  // Zero-copy desktop buffer (doc_agent/present-pipeline.md §4): the host-visible,
-  // persistently mapped memory gdi composes the desktop into. PresentBgra then
-  // recognises its own buffer and records the dirty rects straight out of it, so
-  // no per-frame copy of the frame happens at all. Needs the device (created with
-  // the surface), hence the "retry every frame" contract in hmrdp_presenter.h.
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
   void BeginDesktopBufferWrite() override;
   void ReleaseDesktopBuffer() override;
   bool usesDesktopBuffer() const override;
-  // 超分: upscale the decoded desktop into an output-sized image and letterbox
-  // *that* (see hmrdp_presenter.h). `backend` selects XEngine or FSR; the request
-  // is stored here and the resources are (re)created on the next frame, because
-  // the device and the desktop size only exist once a surface is up. No-op when
-  // the device cannot do it, which leaves the plain desktop letterbox in place.
   void SetSuperResolution(bool enabled, SuperResolutionBackend backend, int outputWidth,
                           int outputHeight) override;
-  // Blocked part of the presents since the last call: the fence wait +
-  // vkAcquireNextImageKHR in AcquireFrameLocked (waiting for a swapchain image is
-  // display backpressure, not client work). See hmrdp_presenter.h.
   uint64_t TakePresentWaitUs() override;
-  // GPU time of the presents since the last call, split into upload / 超分辨率
-  // upscale / letterbox (see hmrdp_presenter.h). Drains the window; zeros until the
-  // device's timestamp queries come up.
   void TakeGpuTimings(uint64_t* copyUs, uint64_t* srUs, uint64_t* blitUs) override;
 
   void Reset() override;
 
   bool ready() const;
   std::string lastError() const;
-  // Swapchain facts for the dev panel / logs.
   std::string Describe() const;
 
  private:
   static constexpr uint32_t kFramesInFlight = 2;
 
-  // All of these expect mutex_ to be held.
   bool EnsureSwapchainLocked();
   bool CreateSwapchainLocked();
   void DestroySwapchainLocked();
   void DestroyFrameResourcesLocked();
-  // Clears the swapchain image to one colour and presents it (Prepare's body);
-  // re-creates the swapchain when it is out of date.
   bool PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b);
-  // Acquires the swapchain image after waiting for this frame slot's fence, and
-  // resets that fence. `retry` is set when the swapchain was out of date and the
-  // caller must rebuild it and call again.
   bool AcquireFrameLocked(uint32_t* imageIndex, bool* retry);
-  // Ends `cmd`, submits it with this frame slot's fence and presents the image.
   bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex);
-  // The one present draw: the picture (whatever producer filled the source image)
-  // is sampled and written to the swapchain image with the letterbox done by the
-  // viewport, i.e. no CPU-side pixel transform. The pipeline depends on the render
-  // pass, so it is (re)created when that changes and reused across resizes.
   bool EnsurePresentPipelineLocked();
   void DestroyPresentPipelineLocked();
-  // GPU accounting of the present submission, from the device's timestamp queries:
-  // the upload, the 超分辨率 upscale and the letterbox, reported to the telemetry
-  // (TakeGpuTimings) and logged every 30 frames. Absent on a device without
-  // timestamp support, which leaves the figures at zero
-  // (doc_agent/present-pipeline.md §7).
   bool EnsurePresentTimerLocked();
   void CollectPresentTimerLocked(uint32_t slot);
-  // Points the given frame slot's descriptor at the picture view (the desktop
-  // image, or the SR output image when 超分辨率 is on).
   void UpdatePresentDescriptorLocked(uint32_t slot, VkImageView view);
   void RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int srcHeight,
                                uint32_t imageIndex);
-  // CPU-frame path: keeps the persistent desktop image and the per-slot staging
-  // buffers, and records one dirty-rect upload.
   bool EnsureDesktopImageLocked(int width, int height);
   void DestroyDesktopImageLocked();
   bool EnsureStageLocked(size_t bytes);
   void DestroyStageLocked();
-  // The gdi desktop buffer (see AcquireDesktopBuffer). Created once per desktop
-  // size and kept until ReleaseDesktopBuffer/reset.
   bool CreateDesktopBufferLocked(int width, int height);
   void DestroyDesktopBufferLocked();
 
-  // 超分: keeps the upscale object (XEngine) or FSR pipeline and the output image
-  // the present draw samples instead of the desktop image. (Re)created whenever
-  // the session desktop size changes; `srFailed_` latches a failure so a device
-  // that rejects the configuration is not retried on every frame.
   bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight);
-  // The two implementations behind EnsureSuperResolutionLocked: XEngine's own
-  // object, or the FSR pipeline (EASU into an intermediate image, RCAS into
-  // `srImage_`). Both leave the letterbox draw sampling `srImageView_`.
   bool EnsureXengineLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
   bool EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
-  // Records whichever upscale `srBackend_` selected into the frame's command
-  // buffer, including the barriers around it. False when nothing could be recorded.
   bool RecordSuperResolutionLocked(VkCommandBuffer cmd);
   void DestroySuperResolutionLocked();
-  // The FSR-only resources (render pass, pipelines, descriptors, intermediate
-  // image). `srImage_`/`srImageView_` belong to the shared state above and survive
-  // a backend switch.
   void DestroyFsrLocked();
 
-  // Mutable because the const inspectors (ready/lastError/Describe) lock it too.
   mutable std::mutex mutex_;
 
-  // This presenter's own Vulkan device + queue, created from the shared instance
-  // on first use and destroyed with the presenter (or on Reset). Never shared
-  // between sessions (doc_agent/architecture.md §4.1).
   VkDeviceContext vk_;
 
   void* pendingWindow_ = nullptr;
@@ -165,13 +88,7 @@ class VkRenderer : public FramePresenter {
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
   VkFormat format_ = VK_FORMAT_UNDEFINED;
   VkExtent2D extent_ = {0, 0};
-  // The render pass only depends on the format, so it outlives a swapchain
-  // rebuild (a resize is not a format change); this records what it was built
-  // for, so it is only rebuilt when that actually changes.
   VkFormat renderPassFormat_ = VK_FORMAT_UNDEFINED;
-  // Present draw resources (CPU frames). The sampler, descriptor set layout and
-  // pipeline layout are format-independent; the pipeline itself is rebuilt only
-  // when the swapchain format changes.
   VkSampler sampler_ = VK_NULL_HANDLE;
   VkImageView desktopImageView_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout presentSetLayout_ = VK_NULL_HANDLE;
@@ -190,8 +107,6 @@ class VkRenderer : public FramePresenter {
   std::vector<VkSemaphore> renderFinished_;
   VkRenderPass renderPass_ = VK_NULL_HANDLE;
 
-  // GPU accounting (see EnsurePresentTimerLocked): one timestamp pair per frame,
-  // split at the 超分辨率 pass so copy / sr / blit are attributable.
   static constexpr uint32_t kPresentTimestampsPerSlot = 4;
   VkQueryPool presentTimer_[kFramesInFlight] = {};
   double presentNsPerTick_ = 0.0;
@@ -199,8 +114,6 @@ class VkRenderer : public FramePresenter {
   uint64_t presentTimerSrNs_ = 0;
   uint64_t presentTimerBlitNs_ = 0;
   uint64_t presentTimerFrames_ = 0;
-  // The same three figures for the telemetry window (TakeGpuTimings drains these;
-  // the probe above keeps its own 30-frame window for the log).
   uint64_t gpuWindowCopyNs_ = 0;
   uint64_t gpuWindowSrNs_ = 0;
   uint64_t gpuWindowBlitNs_ = 0;
@@ -210,33 +123,22 @@ class VkRenderer : public FramePresenter {
   VkSemaphore imageAvailable_[kFramesInFlight] = {};
   VkFence inFlight_[kFramesInFlight] = {};
   uint32_t frameIndex_ = 0;
-  // Presents reached the screen since construction. Logged periodically so a
-  // long real-device run is verifiable from hilog alone (no UI needed).
   uint64_t presentCount_ = 0;
-  // Blocked part (fence wait + acquire) of the presents since the last
-  // TakePresentWaitUs. Guarded by mutex_ like the rest of the present state.
   uint64_t presentWaitUs_ = 0;
 
-  // CPU frame path: the accumulated desktop picture the dirty rects are uploaded
-  // into. It is kept in VK_IMAGE_LAYOUT_GENERAL for its whole life, so no layout
-  // tracking is needed (the blit reads it in GENERAL).
   VkImage desktopImage_ = VK_NULL_HANDLE;
   VkDeviceMemory desktopImageMemory_ = VK_NULL_HANDLE;
   VkFormat desktopImageFormat_ = VK_FORMAT_UNDEFINED;
   int desktopImageWidth_ = 0;
   int desktopImageHeight_ = 0;
   bool desktopImageFullUpload_ = true;
-  // One host-visible staging buffer per frame in flight, so a frame's upload can
-  // never race the copy of the frame that is still executing.
+  // One staging buffer per frame in flight so an upload cannot race the previous
+  // frame's copy.
   VkBuffer stageBuffers_[kFramesInFlight] = {};
   VkDeviceMemory stageMemories_[kFramesInFlight] = {};
   void* stageMapped_[kFramesInFlight] = {};
   size_t stageCapacities_[kFramesInFlight] = {};
 
-  // Zero-copy desktop buffer: gdi composes into this memory, so the present is
-  // only a buffer->desktopImage copy. `desktopBufferFence_` is the fence of the
-  // newest submission that read it; the next frame's CPU writes have to wait it
-  // (its fence is normally long signalled - a frame's decode sits between them).
   VkBuffer desktopBuffer_ = VK_NULL_HANDLE;
   VkDeviceMemory desktopBufferMemory_ = VK_NULL_HANDLE;
   void* desktopBufferMapped_ = nullptr;
@@ -251,8 +153,6 @@ class VkRenderer : public FramePresenter {
   std::string error_;
   std::string info_;
 
-  // 超分 state (see SetSuperResolution). `srRequested_`/`srOutput*` come from the
-  // connect options; the rest is built on demand once the device is up.
   bool srRequested_ = false;
   SuperResolutionBackend srBackend_ = SuperResolutionBackend::kXengine;
   int srOutputWidth_ = 0;
@@ -267,10 +167,6 @@ class VkRenderer : public FramePresenter {
   int srInputWidth_ = 0;
   int srInputHeight_ = 0;
 
-  // FSR backend (see EnsureFsrLocked). EASU reads the desktop image and writes the
-  // intermediate, RCAS reads that and writes `srImage_`; one render pass covers
-  // both because both targets are kPictureFormat. The whole set is rebuilt with the
-  // desktop image, so its descriptors never outlive the views they bind.
   VkRenderPass fsrRenderPass_ = VK_NULL_HANDLE;
   VkSampler fsrSampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout fsrSetLayout_ = VK_NULL_HANDLE;
@@ -285,9 +181,6 @@ class VkRenderer : public FramePresenter {
   VkImageView fsrEasuImageView_ = VK_NULL_HANDLE;
   VkFramebuffer fsrEasuFramebuffer_ = VK_NULL_HANDLE;
   VkFramebuffer fsrRcasFramebuffer_ = VK_NULL_HANDLE;
-  // One uniform block per pass: the passes build their own FSR constants from these
-  // plain floats (FsrEasuCon/FsrRcasCon run in the shader), so nothing here needs
-  // the half-float packing the CPU-side constant setup would.
   static constexpr size_t kFsrParamsBytes = 16 * sizeof(float);
   VkBuffer fsrEasuParams_ = VK_NULL_HANDLE;
   VkDeviceMemory fsrEasuParamsMemory_ = VK_NULL_HANDLE;

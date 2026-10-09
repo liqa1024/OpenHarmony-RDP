@@ -1,6 +1,3 @@
-/*
- * HmRdp - Progressive tile decode width (see hmrdp_decode_tuning.h).
- */
 #include "hmrdp_decode_tuning.h"
 
 #include <algorithm>
@@ -11,15 +8,13 @@
 namespace hmrdp {
 namespace {
 
-// Automatic ceiling. The platform queue honours the requested width, so the
-// width is the whole machine; the cap only keeps a very wide machine from
-// handing the queue more tasks than one region can use.
+// Automatic ceiling: the platform queue honours the width, so the cap only keeps
+// a very wide machine from queuing more tasks than one region can use.
 constexpr int kAutoCap = 16;
 constexpr int kMinWorkers = 1;
 
-// Reads cpuinfo_max_freq once: the count of CPUs at (nearly) the top frequency,
-// i.e. the performance cluster. Returns 0 when the device does not expose it
-// (the app sandbox may deny /sys, and a homogeneous SoC has one value for all).
+// Reads cpuinfo_max_freq per CPU to find the performance cluster; returns 0 when
+// /sys is denied (sandbox) or the SoC is homogeneous.
 int ProbePerfCores(int cores) {
   if (cores <= 0) {
     return 0;
@@ -45,7 +40,6 @@ int ProbePerfCores(int cores) {
     values[count++] = khz;
     maxKhz = std::max(maxKhz, khz);
   }
-  // Fewer samples than CPUs means the probe is not describing this device.
   if (count == 0 || maxKhz <= 0 || count < cores) {
     return 0;
   }
@@ -55,7 +49,6 @@ int ProbePerfCores(int cores) {
       ++perf;
     }
   }
-  // All cores at the same frequency is a homogeneous SoC: no cluster to prefer.
   if (perf == count) {
     return 0;
   }
@@ -70,16 +63,11 @@ int DecodeCpuCount() {
 }
 
 int DecodeThreads() {
-  // The whole machine, capped only by kAutoCap. The decode wall scales with the
-  // width, and the calling thread takes one chunk of it (see hmrdp_parallel.*),
-  // so the queue is asked for the remaining width-1 workers.
   const int cores = DecodeCpuCount();
   return std::max(kMinWorkers, std::min(cores, kAutoCap));
 }
 
 std::string CpuFreqInfo() {
-  // Same sysfs shape as ProbePerfCores: the app sandbox usually allows it, and a
-  // device that does not expose it simply reports nothing.
   const int cores = DecodeCpuCount();
   long lo = -1;
   long hi = 0;

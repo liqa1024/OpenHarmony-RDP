@@ -1,15 +1,5 @@
-/*
- * HmRdp - clipboard wire-format codecs (ArkTS side).
- *
- * The native clipboard channel only moves bytes; the format encoders/decoders
- * live here. This keeps protocol/format logic on the ArkTS side and the native
- * side a thin transport (doc_agent/architecture.md): the local-side encoders
- * (CF_DIB for images, CF_HTML + plain-text fallback for HTML) and the remote-side
- * decoders (CF_DIB, CF_HTML, RTF).
- */
 import { util } from '@kit.ArkTS';
 
-/** HarmonyOS image.PixelMapFormat values the clipboard image path handles. */
 const PIXEL_FORMAT_ARGB_8888: number = 1;
 const PIXEL_FORMAT_RGBA_8888: number = 3;
 const PIXEL_FORMAT_BGRA_8888: number = 4;
@@ -39,11 +29,8 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-/**
- * ASCII case-insensitive search over UTF-8 bytes; the needles used here only
- * contain letters and punctuation whose bit 0x20 is already set, so ORing it is
- * safe.
- */
+// ASCII case-insensitive byte search; the needles used here only contain bytes
+// whose bit 0x20 is already set, so ORing it in is safe.
 function findIgnoreCase(haystack: Uint8Array, needle: Uint8Array, from: number = 0): number {
   if (needle.length === 0 || haystack.length < needle.length) {
     return -1;
@@ -72,12 +59,10 @@ function indexOfByte(haystack: Uint8Array, byte: number, from: number): number {
   return -1;
 }
 
-/** Zero-pads a non-negative offset to the CF_HTML fixed 10-digit field. */
 function pad10(value: number): string {
   return value.toString().padStart(10, '0');
 }
 
-/** Scales a channel extracted with `mask` from `value` up to 8 bits. */
 function scaleMask(value: number, mask: number): number {
   if (mask === 0) {
     return 255;
@@ -104,7 +89,6 @@ function scaleMask(value: number, mask: number): number {
   return Math.floor((raw * 255 + Math.floor(maxValue / 2)) / maxValue) & 0xFF;
 }
 
-/** Decoded CF_DIB: top-down BGRA pixels plus their dimensions. */
 export class DibImage {
   width: number = 0;
   height: number = 0;
@@ -127,7 +111,6 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): n
   return -1;
 }
 
-/** Reads a fixed-width decimal field ("Key:0000001234") from a byte header. */
 function readOffset(header: Uint8Array, key: string): number {
   const keyBytes: Uint8Array = utf8(key);
   const pos: number = indexOfBytes(header, keyBytes, 0);
@@ -187,7 +170,6 @@ function rtfColorHex(r: number, g: number, b: number): string {
   return '#' + byteHex(r) + byteHex(g) + byteHex(b);
 }
 
-/** Run formatting of the RTF group currently open. */
 class RtfRunStyle {
   bold: boolean = false;
   italic: boolean = false;
@@ -242,7 +224,6 @@ function rtfStyleToCss(style: RtfRunStyle, colors: string[]): string {
   return css;
 }
 
-/** Parses the RTF color table; index 0 means "auto" (no explicit color). */
 function parseRtfColorTable(bytes: Uint8Array): string[] {
   const colors: string[] = [];
   const pos: number = indexOfBytes(bytes, utf8('\\colortbl'), 0);
@@ -295,12 +276,6 @@ function parseRtfColorTable(bytes: Uint8Array): string[] {
 }
 
 export class ClipboardCodec {
-  /**
-   * Serialises a HarmonyOS PixelMap buffer (top-down, `pixelFormat`) into a
-   * CF_DIB payload: a 40-byte BITMAPINFOHEADER (BI_RGB, 32bpp) followed by
-   * bottom-up BGRA rows. Returns undefined for an unsupported format or a short
-   * buffer.
-   */
   static buildDib(pixels: ArrayBuffer, width: number, height: number,
     pixelFormat: number): ArrayBuffer | undefined {
     if (width <= 0 || height <= 0) {
@@ -358,14 +333,6 @@ export class ClipboardCodec {
     return dib;
   }
 
-  /**
-   * Builds a CF_HTML payload around `input` ("HTML Clipboard Format", MSDN): an
-   * ASCII header of byte offsets followed by the document. The offsets are
-   * UTF-8 byte counts, so all work happens on bytes. A document is kept whole
-   * (fragment markers point inside <body>), a bare fragment is wrapped, and an
-   * input that already carries markers keeps them. Byte-for-byte the payload the
-   * native encoder produced.
-   */
   static buildCfHtml(input: string): ArrayBuffer {
     const inputBytes: Uint8Array = utf8(input);
     const startMarker: Uint8Array = utf8(HTML_START_FRAGMENT);
@@ -433,11 +400,6 @@ export class ClipboardCodec {
     return full.buffer as ArrayBuffer;
   }
 
-  /**
-   * Minimal HTML -> plain text fallback for the CF_UNICODETEXT half of an HTML
-   * push. Not a renderer: it only needs to be readable in a plain text target
-   * (tag names map to newlines, then the common entities are unescaped).
-   */
   static stripHtmlToText(html: string): string {
     let out: string = '';
     for (let i = 0; i < html.length; i++) {
@@ -467,12 +429,6 @@ export class ClipboardCodec {
     return out;
   }
 
-  /**
-   * Parses a CF_DIB into top-down BGRA. Handles the layouts Windows actually
-   * sends: BITMAPINFOHEADER / V4 / V5 headers, 16/24/32bpp, BI_RGB and
-   * BI_BITFIELDS (channel masks; BGRX default for 32bpp BI_RGB). Returns
-   * undefined for an unsupported or truncated payload.
-   */
   static parseDib(dib: ArrayBuffer): DibImage | undefined {
     const size: number = dib.byteLength;
     if (size < 40) {
@@ -585,12 +541,6 @@ export class ClipboardCodec {
     return out;
   }
 
-  /**
-   * Extracts the HTML fragment from a CF_HTML payload. Preference order: the
-   * marked fragment (self-contained: inline styles + tags), then the
-   * StartFragment/EndFragment offsets, then the whole StartHTML..EndHTML
-   * document, then the raw payload decoded as UTF-8.
-   */
   static parseCfHtml(cfHtml: ArrayBuffer): string {
     const bytes: Uint8Array = new Uint8Array(cfHtml);
     const startMarker: Uint8Array = utf8(HTML_START_FRAGMENT);
@@ -616,13 +566,6 @@ export class ClipboardCodec {
     return decodeUtf8(bytes);
   }
 
-  /**
-   * Converts a CF_RTF payload into a simple HTML fragment. Many Windows apps
-   * only offer RTF (no HTML) for rich text, so this keeps the local clipboard
-   * rich. Operates on the raw bytes (mirroring the native RtfToHtml it
-   * replaces): control words map to bold/italic/underline/strike/color/size,
-   * destinations are skipped, and `\uN` / `\'XX` are UTF-8 encoded.
-   */
   static parseRtf(rtf: ArrayBuffer): string {
     const bytes: Uint8Array = new Uint8Array(rtf);
     const len: number = bytes.length;

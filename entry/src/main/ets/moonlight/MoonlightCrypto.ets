@@ -1,19 +1,7 @@
-/*
- * HmRdp - Moonlight (GameStream) pairing crypto primitives (ArkTS side).
- *
- * The pairing orchestration and all protocol XML live in ArkTS; this file is the
- * crypto it calls, matching Moonlight's PairingManager (Android) /
- * nvpairingmanager (Qt): the salt+PIN derive an AES-128-ECB key, the handshake
- * carries hash-then-AES-ECB messages, and RSA signs/verifies the secrets.
- * Certificate signatures (the ASN.1 BIT STRING contents) are what the hashes
- * embed (doc_agent/moonlight-native.md §4). All byte strings cross the public API
- * as lowercase hex.
- */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
 import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 
-/** One DER TLV header and its value bounds within a certificate buffer. */
 class DerTlv {
   tag: number = 0;
   valueStart: number = 0;
@@ -21,7 +9,7 @@ class DerTlv {
   next: number = 0;
 }
 
-/** Minimal DER length/value reader: enough to walk the X.509 outer structure. */
+// Minimal DER reader: only enough to walk the X.509 outer structure.
 function readTlv(data: Uint8Array, pos: number): DerTlv | undefined {
   if (pos + 2 > data.length) {
     return undefined;
@@ -54,7 +42,6 @@ function readTlv(data: Uint8Array, pos: number): DerTlv | undefined {
 
 @SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class MoonlightCrypto {
-  /** Lowercase hex of `bytes`. */
   static toHex(bytes: Uint8Array): string {
     let out: string = '';
     for (let i = 0; i < bytes.length; i++) {
@@ -64,7 +51,6 @@ export class MoonlightCrypto {
     return out;
   }
 
-  /** Decodes lowercase/uppercase hex, or undefined on a malformed string. */
   static fromHex(hex: string): Uint8Array | undefined {
     if (hex.length % 2 !== 0) {
       return undefined;
@@ -81,17 +67,15 @@ export class MoonlightCrypto {
     return out;
   }
 
-  /** UTF-8 bytes of `text` (used for the PIN and for PEM-to-hex conversion). */
   static utf8(text: string): Uint8Array {
     return new util.TextEncoder().encodeInto(text);
   }
 
-  /** UTF-8 text of `bytes` (used for PEM bodies). */
   static text(bytes: Uint8Array): string {
     return new util.TextDecoder().decodeToString(bytes);
   }
 
-  /** SHA-256 (32 bytes) or SHA-1 (20 bytes), matching the server generation. */
+  // SHA-256 or SHA-1, matching the server generation.
   static hash(sha256: boolean, data: Uint8Array): Uint8Array | undefined {
     try {
       const md: cryptoFramework.Md = cryptoFramework.createMd(sha256 ? 'SHA256' : 'SHA1');
@@ -102,10 +86,8 @@ export class MoonlightCrypto {
     }
   }
 
-  /**
-   * AES-128-ECB with no padding; `data` is zero-padded up to a whole block,
-   * exactly as the Android and Qt clients use the raw block cipher.
-   */
+  // AES-128-ECB, no padding; `data` is zero-padded up to a whole block, exactly
+  // as the Android and Qt clients use the raw block cipher.
   static aesEcb(encrypt: boolean, key: Uint8Array, data: Uint8Array): Uint8Array | undefined {
     if (key.length !== 16 || data.length === 0) {
       return undefined;
@@ -125,7 +107,6 @@ export class MoonlightCrypto {
     }
   }
 
-  /** `length` random bytes as hex (clamped to 1..256). */
   static randomHex(length: number): string {
     if (length < 1 || length > 256) {
       return '';
@@ -138,7 +119,6 @@ export class MoonlightCrypto {
     }
   }
 
-  /** SHA256withRSA signature of `data` with a PKCS8 DER private key. */
   static signSha256(priKeyPkcs8Der: Uint8Array, data: Uint8Array): Uint8Array | undefined {
     try {
       const generator: cryptoFramework.AsyKeyGenerator =
@@ -153,7 +133,6 @@ export class MoonlightCrypto {
     }
   }
 
-  /** SHA256withRSA verification of `signature` over `data` with a public key. */
   static verifySha256(pubKey: cryptoFramework.PubKey, data: Uint8Array,
     signature: Uint8Array): boolean {
     try {
@@ -165,18 +144,14 @@ export class MoonlightCrypto {
     }
   }
 
-  /**
-   * The raw signature bytes (ASN.1 BIT STRING contents) of a DER certificate,
-   * as lowercase hex.
-   * `Certificate ::= SEQUENCE { tbs, signatureAlgorithm, signatureValue }`, so
-   * the signature is the third child of the outer SEQUENCE.
-   */
   static certSignatureToHex(certDer: Uint8Array): string | undefined {
     const signature: Uint8Array | undefined = MoonlightCrypto.certSignature(certDer);
     return signature === undefined ? undefined : MoonlightCrypto.toHex(signature);
   }
 
-  /** The raw signature bytes (ASN.1 BIT STRING contents) of a DER certificate. */
+  // Raw signature bytes (ASN.1 BIT STRING contents) of a DER certificate:
+  // `Certificate ::= SEQUENCE { tbs, signatureAlgorithm, signatureValue }`, so
+  // the signature is the third child of the outer SEQUENCE.
   static certSignature(certDer: Uint8Array): Uint8Array | undefined {
     const outer: DerTlv | undefined = readTlv(certDer, 0);
     if (outer === undefined || outer.tag !== 0x30) {
@@ -198,13 +173,12 @@ export class MoonlightCrypto {
     return certDer.slice(signature.valueStart + 1, signature.valueEnd);
   }
 
-  /** Wraps bytes as a cryptoFramework DataBlob (typed literal for ArkTS). */
+  // ArkTS: DataBlob must be built as a typed literal.
   static blob(data: Uint8Array): cryptoFramework.DataBlob {
     const value: cryptoFramework.DataBlob = { data: data };
     return value;
   }
 
-  /** Strips a PEM's armor and base64-decodes its DER body. */
   static pemToDer(pem: string): Uint8Array | undefined {
     let body: string = '';
     const lines: string[] = pem.split('\n');

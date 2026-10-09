@@ -1,13 +1,3 @@
-/*
- * HmRdp - Moonlight (GameStream) control transport (ArkTS side).
- *
- * One HTTP/1.1 request is the primitive the whole GameStream control surface is
- * built from (/serverinfo, /pair, /applist, /launch, /resume). The control port
- * is configurable (plain 47989, TLS 47984), the host is self-signed, and paired
- * requests need a client certificate (mutual TLS): all three are @ohos.net.http
- * options here. The response body is returned raw and parsed by the caller
- * (MoonlightXml). See MOONLIGHT_PLAN.md "HTTP 层的落地口径".
- */
 import { http } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -21,32 +11,24 @@ export class MoonlightHttpOptions {
   body: string = '';
   contentType: string = 'application/xml';
   useTls: boolean = false;
-  // Pinned server leaf certificate (DER). Empty means first contact: any
-  // certificate is accepted; non-empty locks the peer's public key.
+  // Empty = first contact (accept any cert); non-empty pins the peer's public key.
   pinnedServerCertDer: Uint8Array = new Uint8Array(0);
-  // Mutual TLS: both are required together, and only on paired requests.
   certPath: string = '';
   keyPath: string = '';
   timeoutMs: number = 10000;
-  // Request a binary body (app icons) instead of a string.
   binary: boolean = false;
 }
 
 export class MoonlightHttpResult {
-  // True when transport and HTTP framing succeeded; a 4xx/5xx is still ok (the
-  // caller reads the status from the body's <root status_code>).
+  // A 4xx/5xx still counts as ok; the caller reads the body's <root status_code>.
   ok: boolean = false;
   status: number = 0;
   body: string = '';
-  // Binary body when the request asked for one (see MoonlightHttpOptions.binary).
   bodyBytes: ArrayBuffer | undefined = undefined;
-  // Stable error token when !ok: "request" / "resolve" / "connect" / "tls" /
-  // "io" / "timeout" / "http" / "pin".
   error: string = '';
 }
 
 export class MoonlightHttp {
-  /** Performs one request; blocking on the caller's async continuation. */
   static async perform(options: MoonlightHttpOptions): Promise<MoonlightHttpResult> {
     const result: MoonlightHttpResult = new MoonlightHttpResult();
     if (options.host.length === 0) {
@@ -121,7 +103,6 @@ export class MoonlightHttp {
     }
   }
 
-  /** The path before the query string, for compact diagnostic logs. */
   private static endpoint(path: string): string {
     const index: number = path.indexOf('?');
     return index >= 0 ? path.substring(0, index) : path;

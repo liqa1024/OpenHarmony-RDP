@@ -1,13 +1,3 @@
-/*
- * HmRdp - Moonlight pairing prompt.
- *
- * The pairing PIN is a lightweight popup over the calling window: the client
- * generated the PIN and the user types it on the host (Sunshine). The host
- * entering the PIN is the confirmation, so the dialog closes on its own once the
- * pairing handshake settles — no manual confirm button. Only cancellation is a
- * user action. Shared by every entry point that can start a pairing (the list,
- * the editor and the app page).
- */
 import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -16,7 +6,6 @@ import { PairResult } from '../moonlight/MoonlightModels';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpPairing';
 
-/** Content of the pairing dialog: the four PIN digits and the cancel action. */
 class PairingDialogParams {
   digits: string[] = [];
   onCancel: () => void = (): void => {};
@@ -77,10 +66,6 @@ function pairingDialogContent(params: PairingDialogParams) {
   .borderRadius(20)
 }
 
-/**
- * Shows the PIN and resolves once the wait ends: `false` when the user cancels,
- * `true` when the pairing handshake settles (the dialog then closes itself).
- */
 export async function promptPairingPin(ui: UIContext, pin: string,
   pairing: Promise<PairResult>): Promise<boolean> {
   return new Promise<boolean>((resolve: (value: boolean) => void) => {
@@ -127,9 +112,7 @@ export async function promptPairingPin(ui: UIContext, pin: string,
         hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
         finish(false);
       });
-    // Auto-dismiss as soon as the handshake settles: the host entering the PIN
-    // is the confirmation. A failure also closes the dialog and is reported by
-    // the awaited PairResult afterwards.
+    // Auto-dismiss when the handshake settles: the host entering the PIN is the confirmation.
     pairing.then(() => {
       finish(true);
     }, () => {

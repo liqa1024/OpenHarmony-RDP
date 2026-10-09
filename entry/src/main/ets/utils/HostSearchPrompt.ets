@@ -1,12 +1,3 @@
-/*
- * HmRdp - host picker dialog.
- *
- * A modal list of already-discovered hosts (see services/MdnsDiscovery). The
- * caller runs the search and only opens this once it has candidates, so the
- * dialog never carries a loading state - progress lives on the trigger control
- * itself (see ui-design.md §4.2). Picking a row returns that host; cancelling
- * returns `undefined`.
- */
 import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -17,8 +8,7 @@ const TAG: string = 'HmRdpHostPicker';
 
 class HostPickerParams {
   hosts: MdnsHost[] = [];
-  // Lower-cased addresses already saved as connections: shown greyed and not
-  // selectable (one host can only hold one pairing, see moonlight-connection.md).
+  // Already-saved hosts show greyed and unselectable: one host holds only one pairing.
   addedAddresses: string[] = [];
   title: string = '选择主机';
   onPick: (host: MdnsHost) => void = (): void => {};
@@ -125,11 +115,6 @@ function hostPickerContent(params: HostPickerParams) {
   HostPickerContent({ params: params })
 }
 
-/**
- * Shows `hosts` for the user to pick; resolves the picked host or `undefined`
- * on cancel. `title` labels the dialog; `addedAddresses` (lower-cased) are
- * already-saved hosts, shown greyed and not selectable.
- */
 export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: string,
   addedAddresses: string[]): Promise<MdnsHost | undefined> {
   return new Promise<MdnsHost | undefined>(

@@ -1,11 +1,3 @@
-/*
- * HmRdp - saved-connection list row.
- *
- * The card row of the connection list: protocol tile, name (+ status badge),
- * subtitle, an optional Moonlight "apps" button, the connect/disconnect round
- * button, the right-click menu and the CARD material. The caller owns the
- * connection state and the actions; the row only renders them.
- */
 import { SavedConnection } from '../model/RdpModels';
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -17,15 +9,13 @@ import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/U
 export struct ConnectionRow {
   conn: SavedConnection = new SavedConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
-  // Host-side target the row's connect would act on: `hostTargetId` is what the
-  // host currently has open (0 = none / unknown), `targetId` is what this row
-  // would open (0 = the connection default, which cannot be resolved here). RDP
+  // `hostTargetId` is what the host currently has open (0 = none / unknown),
+  // `targetId` is what this row would open (0 = the connection default). RDP
   // passes 0/0: it has no host-side session, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
-  // The "应用" button's own hover / press state, so it animates like the other
-  // round controls (utils/UiMotion) instead of relying on the flat built-in
-  // HoverEffect.
+  // ArkUI has no shared declarative hover/press effect, so the button keeps its
+  // own state and animates via utils/UiMotion.
   @State appHovered: boolean = false;
   @State appPressed: boolean = false;
   onEdit: () => void = () => {};
@@ -45,7 +35,6 @@ export struct ConnectionRow {
                                    : $r('app.media.ic_remote_desktop');
   }
 
-  /** Moonlight shows the app it opens; RDP shows the account. */
   private subtitle(): string {
     const target: string = `${this.conn.host}:${this.conn.port}`;
     if (this.conn.isMoonlight()) {
@@ -62,10 +51,8 @@ export struct ConnectionRow {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);
   }
 
-  /**
-   * The button's action. Moonlight collapses resume/switch/disconnect into 终止
-   * (closing its session stops the host app); RDP keeps 断开连接.
-   */
+  // Moonlight collapses resume/switch/disconnect into 终止 (closing its session
+  // stops the host app); RDP keeps 断开连接.
   private primary(): ConnectAction {
     return primaryConnectAction(this.action(), this.conn.isMoonlight());
   }
@@ -74,7 +61,6 @@ export struct ConnectionRow {
     return connectActionLabel(this.primary());
   }
 
-  /** The button click: 终止 asks the host to stop its app, else toggle the session. */
   private primaryTap(): void {
     if (this.primary() === ConnectAction.Terminate) {
       this.onTerminate();
@@ -118,7 +104,6 @@ export struct ConnectionRow {
             })
         }
       } else {
-        // RDP keeps its dynamic 连接 / 断开连接 / 取消连接.
         MenuItem({ content: this.connectTip() })
           .onClick(() => {
             this.onToggleConnection();
@@ -158,8 +143,7 @@ export struct ConnectionRow {
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
             } else if (this.action() === ConnectAction.Resume) {
-              // The host is already running the app this row would open, so the
-              // button resumes it (`/resume`). Same badge style as 已连接.
+              // The host is already running the app this row would open.
               Text('运行中')
                 .fontSize(10)
                 .fontColor($r('app.color.success'))
@@ -197,10 +181,8 @@ export struct ConnectionRow {
         .width(44)
         .height(44)
         .borderRadius(22)
-        // Solid neutral (Moonlight's dark-chrome grey): the same filled round
-        // style as the connect button, but a third colour so it does not compete
-        // with the accent connect nor clash with the red danger state. Hover
-        // lifts the surface and the press sinks the button, both via UiMotion.
+        // Neutral third colour: must not compete with the accent connect button
+        // nor clash with the red danger state.
         .backgroundColor(this.appHovered ? $r('app.color.neutral_hover') : $r('app.color.neutral'))
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
@@ -233,14 +215,12 @@ export struct ConnectionRow {
             .height(24)
             .color('#FFFFFF')
         } else if (this.primary() === ConnectAction.Terminate) {
-          // 终止: stop the host's running app and close the session.
           Image($r('app.media.ic_stop'))
             .width(22)
             .height(22)
             .fillColor('#FFFFFF')
             .draggable(false)
         } else if (this.primary() === ConnectAction.Disconnect) {
-          // RDP 断开连接 (local session only; no host-side app).
           Image($r('app.media.ic_power'))
             .width(28)
             .height(28)

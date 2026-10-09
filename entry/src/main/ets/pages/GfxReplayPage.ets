@@ -1,16 +1,3 @@
-/*
- * HmRdp - dev/test replay page (doc_agent/gfx-engine.md §6).
- *
- * Hosts up to MAX_SLOTS independent XComponent surfaces and runs one replay
- * instance per surface, all from the same recorded hmrdp_gfx.bin capture. Each
- * instance owns its own frame pipeline, so this page is the on-device vehicle
- * for the multi-session regression: no RDP session, no network, no server.
- *
- * The capture is not shipped in the HAP - `hdc file send` it into the app
- * filesDir as hmrdp_gfx.bin before opening this page. The per-instance figures
- * are polled from the native side and also logged, so a run can be judged from
- * hilog alone.
- */
 import { RdpNative } from '../services/RdpNative';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
@@ -22,23 +9,18 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
 
-// 「路线」 = which presentation line the gdi decode runs through:
-//   CPU      - the GLES presenter (no Vulkan at all)
-//   硬件加速  - the Vulkan presenter
+// 「路线」: CPU = the GLES presenter (no Vulkan at all), 硬件加速 = the Vulkan presenter.
 const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
 
-// 「参考」 = golden-reference gate (doc_agent/gfx-engine.md §7.2).
 const REF_OFF: number = 0;
 const REF_EXPORT: number = 1;
 const REF_COMPARE: number = 2;
 const REF_LABEL: string[] = ['关', '导出', '对比'];
 
-// Concurrent replay instances the page can host (and the max button value).
 const MAX_SLOTS: number = 4;
 
-// One replay slot: the surface it is bound to and the native instance handle.
 class ReplaySlot {
   readonly index: number;
   surfaceId: string = '';
@@ -86,16 +68,11 @@ class ReplaySurfaceController extends XComponentController {
 @Component
 struct GfxReplayPage {
   @State status: string = '等待 surface...';
-  // Presentation line (see LINE_LABEL): CPU (GLES) or 硬件加速 (Vulkan).
   @State line: number = LINE_ACCEL;
-  // Golden-reference mode (see REF_LABEL).
   @State refMode: number = REF_OFF;
-  // Playback clock: false = not throttled (throughput), true = the capture's own
-  // arrival times (the cadence the live session ran at).
+  // false = not throttled (throughput), true = the capture's own arrival times.
   @State replayRealtime: boolean = false;
-  // How many concurrent replay instances this page runs.
   @State slotCount: number = 3;
-  // Whether this device can run the Vulkan presenter at all.
   @State hardwareAccelSupported: boolean = true;
   @State showStats: boolean = true;
   private slots: ReplaySlot[] = [];
@@ -132,9 +109,8 @@ struct GfxReplayPage {
     this.applyFullScreen(false);
   }
 
-  // Every slot keeps its controller for the page's lifetime, so a slot count
-  // change only mounts/unmounts surfaces; the controllers (and the handles bound
-  // to them) stay addressable.
+  // Controllers live for the page's lifetime, so a slot count change only
+  // mounts/unmounts surfaces; the handles bound to them stay addressable.
   private buildSlots(): void {
     this.slots = [];
     this.controllers = [];
@@ -201,8 +177,8 @@ struct GfxReplayPage {
     hilog.info(DOMAIN, TAG, 'slot %{public}d handle=%{public}d', slot.index, slot.handle);
   }
 
-  // Restarts every active slot: the presenter is created per instance, so a
-  // restart is what makes a route/reference/clock change take effect.
+  // The presenter is created per instance, so a restart is what makes a
+  // route/reference/clock change take effect.
   private restartAll(): void {
     RdpNative.stopAllReplayInstances();
     for (let i = 0; i < this.slotCount; i++) {

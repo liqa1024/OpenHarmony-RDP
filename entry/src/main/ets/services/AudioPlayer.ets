@@ -1,10 +1,3 @@
-/*
- * HmRdp - UI-thread facade for the audio worker.
- *
- * Owns the one audio worker this process uses and forwards control to it. The
- * worker holds the ArkTS AudioRenderer and pulls PCM from the native sink ring;
- * this facade never touches the renderer. See doc_agent/architecture.md §4.4.
- */
 import { ErrorEvent, worker } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AudioOps, AudioMessage } from './AudioProtocol';
@@ -15,7 +8,6 @@ const TAG: string = 'HmRdpAudio';
 class AudioPlayerImpl {
   private thread: worker.ThreadWorker | undefined = undefined;
 
-  /** Lazily starts the audio worker (realtime work needs its own thread). */
   private ensure(): worker.ThreadWorker {
     const existing: worker.ThreadWorker | undefined = this.thread;
     if (existing !== undefined) {
@@ -30,7 +22,7 @@ class AudioPlayerImpl {
     return thread;
   }
 
-  /** Posts to the worker; a dead worker must not throw into the caller. */
+  // A dead worker must not throw into the caller.
   private post(thread: worker.ThreadWorker, message: AudioMessage, transfer: ArrayBuffer[]): void {
     try {
       thread.postMessage(message, transfer);
@@ -39,7 +31,6 @@ class AudioPlayerImpl {
     }
   }
 
-  /** Begins servicing a session's audio (no renderer until a format arrives). */
   start(handle: number): void {
     if (handle <= 0) {
       return;
@@ -48,7 +39,6 @@ class AudioPlayerImpl {
     this.post(this.ensure(), message, []);
   }
 
-  /** Releases a session's renderer (disconnect / window close). */
   stop(handle: number): void {
     const thread: worker.ThreadWorker | undefined = this.thread;
     if (handle <= 0 || thread === undefined) {
@@ -58,7 +48,6 @@ class AudioPlayerImpl {
     this.post(thread, message, []);
   }
 
-  /** Native reported the session's PCM format: build / rebuild the renderer. */
   onFormat(handle: number, rate: number, channels: number): void {
     if (handle <= 0 || rate <= 0 || channels <= 0) {
       return;

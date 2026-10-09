@@ -1,22 +1,11 @@
-/*
- * HmRdp - session connection status card.
- *
- * The modal card shown over the remote image while a session is connecting,
- * disconnecting, failed or idle. Shared by the RDP and Moonlight session pages
- * so both offer the same card, buttons and material; each page passes its own
- * labels and handlers, and an optional leading icon.
- */
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 @Component
 export struct StatusCard {
   @Prop title: string = '';
   @Prop subtitle: string = '';
-  // Button labels: an empty one renders no button (e.g. "connecting" offers only
-  // the primary cancel).
   @Prop primary: string = '';
   @Prop secondary: string = '';
-  // A spinner replaces the icon while a connection attempt is in flight.
   @Prop loading: boolean = false;
   @Prop icon: Resource | undefined = undefined;
   onPrimary: () => void = () => {};

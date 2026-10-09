@@ -1,6 +1,3 @@
-/*
- * HmRdp - per-frame client work meter (see hmrdp_gfx_work.h).
- */
 #include "hmrdp_gfx_work.h"
 
 #include <chrono>
@@ -11,9 +8,8 @@
 
 #include "hmrdp_log.h"
 
-// Defined by the patched rdpgfx client (native/scripts/patch-steps/
-// 33-rdpgfx-data-sink.ps1). Weak so a stock FreeRDP still links; the data is then
-// always processed inline and nothing can be offloaded.
+// Defined by the patched rdpgfx client, weak so a stock FreeRDP still links (the chunk is
+// then processed inline and nothing can be offloaded).
 extern "C" void HmrdpSetGfxDataSink(
     BOOL (*fn)(RdpgfxClientContext*, const BYTE*, UINT32)) __attribute__((weak));
 
@@ -26,8 +22,6 @@ uint64_t NowUs() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-// Callbacks this translation unit replaced, per GFX context, so they can be put
-// back (a context may outlive the session/replay that installed them).
 struct GfxOriginals {
   pcRdpgfxStartFrame StartFrame = nullptr;
   pcRdpgfxSurfaceCommand SurfaceCommand = nullptr;
@@ -46,12 +40,9 @@ struct GfxOriginals {
 
 std::mutex g_installMutex;
 std::unordered_map<RdpgfxClientContext*, GfxOriginals> g_originals;
-// The meter each installed context feeds, stored with the originals so a wrapper
-// reads it straight from the context it was called on (no global slot). Guarded
-// by g_installMutex like g_originals.
+// The meter each installed context feeds, kept per context (no process-global slot).
 std::unordered_map<RdpgfxClientContext*, GfxWorkMeter*> g_meters;
 
-// Returns the original callback stored for `gfx` (nullptr when not installed).
 template <typename Fn>
 Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
   std::lock_guard<std::mutex> lock(g_installMutex);
@@ -62,32 +53,22 @@ Fn GfxOriginal(RdpgfxClientContext* gfx, Fn GfxOriginals::*member) {
   return it->second.*member;
 }
 
-// Returns the meter installed for `gfx` (nullptr when not installed).
 GfxWorkMeter* GfxMeterFor(RdpgfxClientContext* gfx) {
   std::lock_guard<std::mutex> lock(g_installMutex);
   const auto it = g_meters.find(gfx);
   return it == g_meters.end() ? nullptr : it->second;
 }
 
-// The frame-begin hooks (see GfxWorkSetFrameBeginHook): one per GFX context, so a
-// live session and an offline replay each keep their own and neither can clear
-// the other's. The offline CPU desktop plays the same role here as a live
-// session, just on a session-less context.
 std::mutex g_frameBeginMutex;
 std::unordered_map<RdpgfxClientContext*, std::function<void()>> g_frameBeginHooks;
 
-// The data-sink hooks (see GfxWorkSetDataSinkHook): when a context has one, the
-// raw GFX chunk is handed to it instead of being processed on the drdynvc thread.
 std::mutex g_dataSinkMutex;
 std::unordered_map<RdpgfxClientContext*, std::function<void(const uint8_t*, size_t)>>
     g_dataSinkHooks;
 
-// Runs that context's hook, when one is installed. Called before *every* command
-// that can write the desktop, not only at START_FRAME: the wire carries surface
-// commands outside a GFX frame too (the RDPGFX stream does not have to bracket
-// every update), and those write the same buffer. The cost per call is a mutex plus
-// a bool test inside the presenter - the wait itself happens once per present,
-// because the presenter clears its pending flag when it waits.
+// Runs the hook before *every* command that can write the desktop, not only at
+// START_FRAME: surface commands outside a GFX frame write the same buffer. Cost is a mutex
+// plus a bool test; the wait itself happens once per present.
 void RunFrameBeginHook(RdpgfxClientContext* gfx) {
   std::function<void()> hook;
   {
@@ -103,23 +84,20 @@ void RunFrameBeginHook(RdpgfxClientContext* gfx) {
 }
 
 UINT MeterStartFrame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* startFrame) {
-  // Earliest point of the frame: the previous frame's read of the desktop buffer
-  // has to drain before this frame writes it (see GfxWorkSetFrameBeginHook).
   RunFrameBeginHook(gfx);
   const pcRdpgfxStartFrame original = GfxOriginal(gfx, &GfxOriginals::StartFrame);
   return original != nullptr ? original(gfx, startFrame) : CHANNEL_RC_OK;
 }
 
 UINT MeterSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
-  // This is the command that writes the desktop: wait here (see RunFrameBeginHook)
-  // so a mid-frame or out-of-frame message cannot overwrite the buffer the previous
-  // present's GPU copy is still reading.
+  // The command that writes the desktop: wait so a mid-frame or out-of-frame message
+  // cannot overwrite the buffer the previous present's GPU copy is still reading.
   RunFrameBeginHook(gfx);
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
   GfxWorkMeter* meter = GfxMeterFor(gfx);
   if (meter != nullptr) {
-    // First command of the chunk this came from: the time since it arrived is
-    // the ZGX decompress + PDU parse share of this frame.
+    // First command of the chunk: the time since it arrived is the ZGX decompress + PDU
+    // parse share.
     meter->AccountChunkPrefix();
   }
   const uint64_t start = NowUs();
@@ -134,8 +112,6 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
   const pcRdpgfxEndFrame original = GfxOriginal(gfx, &GfxOriginals::EndFrame);
   GfxWorkMeter* meter = GfxMeterFor(gfx);
   const uint64_t start = NowUs();
-  // The original is gdi_EndFrame: it composites every mapped surface into the
-  // primary buffer and, through the update pipeline, presents.
   const UINT rc = original != nullptr ? original(gfx, endFrame) : CHANNEL_RC_OK;
   if (meter != nullptr) {
     meter->OnFrameEnd(NowUs() - start);
@@ -143,10 +119,8 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
   return rc;
 }
 
-// The non-pixel commands: timed and counted per kind so the `zgx+parse` bucket
-// (everything up to the first SurfaceCommand of a chunk) can be split into
-// "decompress+parse" and "surface lifecycle" (a CreateSurface/ResetGraphics
-// 0xFF-fills a whole surface, which is a per-frame-sized memset).
+// The non-pixel commands, timed/counted per kind so the `zgx+parse` bucket can be split into
+// "decompress+parse" and "surface lifecycle".
 #define HMRDP_SETUP_WRAPPER(NAME, FIELD, KIND)                                          \
   UINT Meter##NAME(RdpgfxClientContext* gfx, const FIELD* pdu) {                        \
     /* Some of these write the desktop (SolidFill / SurfaceToSurface / cache         \
@@ -196,8 +170,8 @@ HMRDP_SETUP_WRAPPER(EvictCacheEntry, RDPGFX_EVICT_CACHE_ENTRY_PDU, GfxSetupKind:
 }  // namespace
 
 void GfxWorkMeter::OnChunk(uint32_t bytes) {
-  // A chunk is parsed (and its commands decoded) to completion before the next
-  // one arrives, so a single pending stamp is enough.
+  // A chunk is parsed to completion before the next arrives, so a single pending stamp is
+  // enough.
   chunkPending_ = true;
   chunkArrivalUs_ = NowUs();
   frameBytes_ += bytes;
@@ -213,8 +187,8 @@ void GfxWorkMeter::AccountChunkPrefix() {
 
 void GfxWorkMeter::OnBlockedBeforeFrameWork(uint64_t micros) {
   if (chunkPending_) {
-    // Shift the pending chunk's stamp past the wait, so the prefix this frame's
-    // first command closes holds the parse share only (see the header).
+    // Shift the pending chunk's stamp past the wait, so the prefix this frame's first
+    // command closes holds the parse share only.
     chunkArrivalUs_ += micros;
   }
 }
@@ -255,13 +229,9 @@ void GfxWorkMeter::OnFrameEnd(uint64_t endFrameMicros) {
   const uint64_t present = framePresentUs_;
   const uint64_t presentWait = framePresentWaitUs_;
   const uint64_t sync = frameSyncUs_;
-  // Everything the EndFrame span holds *besides* the composition: the present, the
-  // wait for the GPU to release the buffer this frame writes into, and the
-  // playback throttling. Only the last is not client work at all - the replay
-  // sleeps between presented frames, and because the presenter runs inside gdi's
-  // EndFrame that sleep would otherwise land in `compose`. The sync wait is client
-  // cost but not composition, so it gets its own phase instead of hiding in
-  // `compose`.
+  // Everything the EndFrame span holds besides the composition (present, GPU sync wait,
+  // playback pacing). Only the pacing is not client work - it would otherwise land in
+  // `compose`. The sync wait is client cost but not composition, so it gets its own phase.
   const uint64_t notCompose = present + presentWait + sync + framePaceUs_;
   const uint64_t compose = endFrameMicros > notCompose ? endFrameMicros - notCompose : 0;
   windowFrames_.fetch_add(1);
@@ -352,9 +322,8 @@ GfxWorkMeter* GfxWorkMeterFor(RdpgfxClientContext* gfx) {
   return GfxMeterFor(gfx);
 }
 
-// Registered with FreeRDP: hands the raw GFX chunk to the owning context's data
-// sink when it has one (returns TRUE = the sink took it), so FreeRDP does not
-// process it on the drdynvc thread. Runs on the drdynvc thread.
+// Registered with FreeRDP: hands the raw GFX chunk to the owning context's data sink when it
+// has one, so FreeRDP does not process it on the drdynvc thread. Runs on the drdynvc thread.
 extern "C" BOOL HmrdpGfxDataSink(RdpgfxClientContext* gfx, const BYTE* data, UINT32 size) {
   if (gfx == nullptr || data == nullptr || size == 0) {
     return FALSE;
@@ -378,9 +347,8 @@ void GfxWorkInstall(RdpgfxClientContext* gfx, GfxWorkMeter* meter) {
   if (gfx == nullptr) {
     return;
   }
-  // Register the global data sink once: it dispatches per context and returns
-  // FALSE for a context with no sink, so the offline replay (which installs work
-  // wrappers too) is unaffected.
+  // Register the global data sink once: it dispatches per context and returns FALSE for a
+  // context with no sink, so the offline replay is unaffected.
   if (HmrdpSetGfxDataSink != nullptr) {
     HmrdpSetGfxDataSink(&HmrdpGfxDataSink);
   }
@@ -402,7 +370,6 @@ void GfxWorkInstall(RdpgfxClientContext* gfx, GfxWorkMeter* meter) {
   if (gfx->EndFrame != nullptr) {
     gfx->EndFrame = MeterEndFrame;
   }
-  // The non-pixel commands, so their time stops hiding in `zgx+parse`.
   orig.ResetGraphics = gfx->ResetGraphics;
   if (gfx->ResetGraphics != nullptr) {
     gfx->ResetGraphics = MeterResetGraphics;
@@ -454,8 +421,8 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
   if (it == g_originals.end()) {
     return;
   }
-  // Restore what this TU replaced: leaving the wrappers installed would make the
-  // context call into a meter that is going away.
+  // Restore what this TU replaced: leaving the wrappers installed would make the context
+  // call into a meter that is going away.
   if (gfx->StartFrame == &MeterStartFrame) {
     gfx->StartFrame = it->second.StartFrame;
   }
@@ -497,9 +464,8 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
   }
   g_originals.erase(it);
   g_meters.erase(gfx);
-  // The context's frame-begin hook belongs to its owner; never let a torn-down
-  // context keep one (a stale entry would also be looked up again if a new
-  // context reuses the address).
+  // The context's frame-begin/data-sink hooks belong to its owner; a stale entry would also
+  // be looked up again if a new context reuses the address.
   {
     std::lock_guard<std::mutex> hookLock(g_frameBeginMutex);
     g_frameBeginHooks.erase(gfx);

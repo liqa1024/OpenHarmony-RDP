@@ -1,12 +1,3 @@
-/*
- * HmRdp - runtime device capability probes.
- *
- * Some features depend on the device's system image rather than on the remote
- * server (remote audio needs an audio output). When a capability is missing the
- * feature is disabled in the UI with an explanation instead of failing later at
- * runtime; the native layer additionally degrades gracefully so the session
- * itself keeps working.
- */
 import { audio } from '@kit.AudioKit';
 import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import {
@@ -14,24 +5,18 @@ import {
   superResolutionBackends, superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
-/** Support state of one optional feature. */
 export class Capability {
   supported: boolean = true;
   reason: string = '';
 }
 
-/** Decoder support level of one Moonlight codec (mirrors the native enum). */
+// Mirrors the native codec-support enum.
 export const CODEC_SUPPORT_NONE: number = 0;
 export const CODEC_SUPPORT_SOFTWARE: number = 1;
 export const CODEC_SUPPORT_HARDWARE: number = 2;
 
 @SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 export class DeviceCapabilities {
-  /**
-   * Remote audio playback. The player is the ArkTS AudioRenderer, so the probe
-   * asks the audio framework for an output device (synchronous routing query).
-   * False greys out 音频重定向; the session then simply stays silent.
-   */
   static audio(): Capability {
     const capability: Capability = new Capability();
     try {
@@ -47,15 +32,7 @@ export class DeviceCapabilities {
     return capability;
   }
 
-  /**
-   * GPU (Vulkan) acceleration of the frame presentation. The native layer
-   * answers with what the *presenter* actually needs - a Vulkan device,
-   * host-visible memory for the frame buffer and a surface + swapchain to blit
-   * to (no compute queue) - plus the emulator carve-out (Vulkan acceleration is
-   * real-device-only, and the emulator reports capabilities it does not honour).
-   * When this is false the session runs on the GLES presenter and Vulkan is not
-   * touched at all.
-   */
+  // Real-device-only: the emulator reports Vulkan capabilities it does not honour (native verdict).
   static hardwareAccel(): Capability {
     const capability: Capability = new Capability();
     let verdict: RdpVerdict;
@@ -74,12 +51,6 @@ export class DeviceCapabilities {
     return capability;
   }
 
-  /**
-   * GPU super-resolution (超分) of the presented frame: the session renders at a
-   * lower resolution and the Vulkan presenter upscales it back with XEngine or
-   * FSR. Needs the Vulkan presenter to be usable at all, so it is a
-   * real-device-only capability like 硬件加速.
-   */
   static superResolution(): Capability {
     const capability: Capability = new Capability();
     let verdict: RdpVerdict;
@@ -98,11 +69,6 @@ export class DeviceCapabilities {
     return capability;
   }
 
-  /**
-   * Decoder support for one ML_CODEC_* value: CODEC_SUPPORT_NONE (the machine
-   * cannot decode it), _SOFTWARE (software decoder only) or _HARDWARE. The
-   * settings UI greys what is unsupported and warns about software-only codecs.
-   */
   static codecSupport(codec: number): number {
     try {
       return moonlightVideoCodecSupport(codec);
@@ -111,12 +77,6 @@ export class DeviceCapabilities {
     }
   }
 
-  /**
-   * Which 超分 backends this build and device can actually run: "xengine", "fsr"
-   * or both, in that order; empty when none. 超分 rides the Vulkan presenter, so
-   * this is empty wherever 硬件加速 is unavailable (the emulator included).
-   * `superResolution()` carries the wording for the empty case.
-   */
   static srBackends(): string[] {
     let verdict: RdpSrBackends;
     try {
@@ -134,7 +94,7 @@ export class DeviceCapabilities {
     return backends;
   }
 
-  /** Wording for a native reason code (the native side only returns codes). */
+  // The native side only returns reason codes; the wording lives here.
   private static superResolutionReason(code: string): string {
     if (code === 'emulator' || code === 'no-vulkan' || code === 'no-instance'
       || code === 'no-device' || code === 'no-host-memory' || code === 'no-surface') {
@@ -149,7 +109,7 @@ export class DeviceCapabilities {
     return '本设备的超分辨率能力不足，超分辨率不可用';
   }
 
-  /** Wording for a native reason code (the native side only returns codes). */
+  // The native side only returns reason codes; the wording lives here.
   private static hardwareAccelReason(code: string): string {
     if (code === 'emulator') {
       return '模拟器不提供可信的 Vulkan，硬件加速仅在真机可用';

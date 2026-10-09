@@ -1,6 +1,3 @@
-/*
- * HmRdp - saved connections list (home page).
- */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -31,23 +28,13 @@ const TAG: string = 'HmRdpIndex';
 struct Index {
   @State connections: SavedConnection[] = [];
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
-  // Host-side target per connection, mirrored from MoonlightHostState so the row
-  // (恢复 / 运行中 / 终止) repaints: what the host currently has open (0 = none /
-  // unknown). Only Moonlight has one; RDP stays 0. The app page reads the same
-  // authority, so both surfaces agree.
   @State hostTargets: Map<string, number> = new Map<string, number>();
-  // Index of the item being drag-reordered; -1 when idle. Used only to lift the
-  // dragged item above its siblings.
   @State draggingIndex: number = -1;
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
-  // Developer options (SettingsStore.developerMode): the replay entry is a dev
-  // tool, so it only exists while this is on.
   @State developerMode: boolean = false;
 
-  // Tooltips carry the immersive material in their options object, which an
-  // older system simply ignores. The connection card owns its own material
-  // inside the shared ConnectionRow component.
+  // Older systems simply ignore the material in the tips options.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
 
@@ -69,8 +56,6 @@ struct Index {
     }
   };
 
-  // Mirrors MoonlightHostState into the row map: the authority pushes every
-  // change (client action or host probe), so the row is correct without probing.
   private hostStateListener: HostTargetListener =
     (connectionId: string, currentGame: number): void => {
       const next: Map<string, number> = new Map<string, number>(this.hostTargets);
@@ -105,11 +90,6 @@ struct Index {
     this.probeHosts();
   }
 
-  /**
-   * Reconciles the badge map with the authority (SessionManager) on every show,
-   * instead of trusting only the listener pushes: a state that changed while this
-   * page was hidden must render immediately when it comes back.
-   */
   private syncStatuses(): void {
     const next: Map<string, ConnectionState> = new Map<string, ConnectionState>();
     for (const conn of this.connections) {
@@ -121,7 +101,6 @@ struct Index {
     this.statuses = next;
   }
 
-  /** Seeds the row map from the authority, so a show renders the current value. */
   private syncHostTargets(): void {
     const next: Map<string, number> = new Map<string, number>();
     for (const conn of this.connections) {
@@ -136,12 +115,6 @@ struct Index {
     this.hostTargets = next;
   }
 
-  /**
-   * Best-effort host-state refresh for the homepage: for each Moonlight
-   * connection ask the shared authority to probe the host's running app (plain
-   * `serverinfo`, no pairing, no polling), so the row can show 恢复 / 运行中. A
-   * host that is offline keeps its last known value.
-   */
   private probeHosts(): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
@@ -151,11 +124,6 @@ struct Index {
     MoonlightHostState.refreshAll(this.connections, filesDir);
   }
 
-  /**
-   * 终止: ask the host to stop the app it is running (`/cancel`, HTTPS + mTLS),
-   * then drop a local session if one exists. A successful cancel clears the shared
-   * host target immediately (both surfaces agree without waiting for a probe).
-   */
   private terminateHostApp(conn: SavedConnection): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
@@ -179,7 +147,6 @@ struct Index {
       });
   }
 
-  /** What the host currently has open for this connection (0 = RDP / unknown / none). */
   private hostTargetId(conn: SavedConnection): number {
     if (!conn.isMoonlight()) {
       return 0;
@@ -188,7 +155,6 @@ struct Index {
     return value === undefined ? 0 : value;
   }
 
-  /** What the row's connect would open: the stored default (0 = host default). */
   private targetId(conn: SavedConnection): number {
     if (!conn.isMoonlight() || conn.mlDefaultAppId.length === 0) {
       return 0;
@@ -205,10 +171,7 @@ struct Index {
     ConnectionStore.reorder(ids);
   }
 
-  /**
-   * Applies a drag reorder from the list's onMove callback. The array is mutated
-   * in place so the settling animation stays continuous, then persisted.
-   */
+  // Mutated in place so the settling animation stays continuous.
   private moveConnection(from: number, to: number): void {
     if (from === to || from < 0 || to < 0
       || from >= this.connections.length || to >= this.connections.length) {
@@ -238,7 +201,6 @@ struct Index {
       return;
     }
     if (state === ConnectionState.Disconnecting) {
-      // The teardown is in flight: a new attempt is refused until it finishes.
       return;
     }
     this.connect(conn);
@@ -254,8 +216,6 @@ struct Index {
       return;
     }
     if (conn.isMoonlight()) {
-      // The manager drives the control-layer pre-flight (serverinfo -> pair ->
-      // launch) while Connecting; see MoonlightLauncher.
       MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
         RdpConnectOrigin.List);
       return;
@@ -300,10 +260,6 @@ struct Index {
       });
   }
 
-  /**
-   * Opens the editor for a new connection. The protocol is picked inside the
-   * editor itself, so this just defaults to the last one the user added.
-   */
   private openNewConnection(): void {
     this.openEditor('', SettingsStore.lastNewProtocol());
   }
@@ -318,8 +274,7 @@ struct Index {
   private remove(conn: SavedConnection): void {
     ConnectionStore.remove(conn.id);
     if (conn.isMoonlight()) {
-      // Drop the host pairing with the connection, or a later re-add would skip
-      // the PIN round (the pairing is per host, not per connection).
+      // Pairing is per host: dropping it here keeps a later re-add from skipping the PIN round.
       const hostContext = this.getUIContext().getHostContext();
       if (hostContext !== undefined) {
         MoonlightConnector.forgetHost((hostContext as common.UIAbilityContext).filesDir,
@@ -372,8 +327,6 @@ struct Index {
 
         Blank()
 
-        // Dev-only entry (doc_agent/gfx-engine.md §6): recorded RDP replay page.
-        // Only present while developer options are on.
         if (this.developerMode) {
           Text('回放测试')
             .fontSize(12)
@@ -486,8 +439,7 @@ struct Index {
               })
             }
             .margin({ left: 64, right: 88, top: 2, bottom: 2 })
-            // Near the drag preview's scale, a higher z-index keeps the lifted
-            // card above its neighbours instead of being covered at the sides.
+            // The scaled drag preview would be covered by its siblings without this.
             .zIndex(index === this.draggingIndex ? 1 : 0)
           }, (conn: SavedConnection) => `${conn.id}#${conn.updatedAt}`)
             .onMove((from: number, to: number) => {
@@ -503,9 +455,7 @@ struct Index {
         }
         .layoutWeight(1)
         .width('100%')
-        // Keep the list full-width so its clip area is as wide as possible; the
-        // card's side insets come from the ListItem margins instead. The list
-        // still clips vertically, which hints the drag position at the edges.
+        // Full-width so the clip area stays wide; the side insets live on the ListItem margins.
         .padding({ left: 0, right: 0, top: 12, bottom: 20 })
         .scrollBar(BarState.Auto)
       }

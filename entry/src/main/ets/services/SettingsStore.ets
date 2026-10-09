@@ -1,6 +1,3 @@
-/*
- * HmRdp - application preferences (non-sensitive settings).
- */
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
@@ -20,30 +17,16 @@ const TAG: string = 'HmRdpSettings';
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
 
-// How a touchpad two-finger pinch is handled (AppSettings.pinchMode):
-//  - WHEEL: map it onto Ctrl+wheel, so the remote application zooms itself;
-//  - TOUCH: synthesise two native touch contacts at the pointer;
-//  - ZOOM:  scale the picture locally with no traffic to the remote at all.
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
 export const PINCH_MODE_ZOOM: number = 2;
 
-// Moonlight cursor mode (AppSettings.mlCursorMode). The host normally
-// composites its pointer into the video, so the local system cursor would double
-// it:
-//  - OFF:         leave both cursors alone (double cursor);
-//  - HIDE_SYSTEM: hide the HarmonyOS system cursor, rely on the host cursor in
-//                 the video (works with any host);
-//  - HIDE_HOST:   local cursor mode: the host stops compositing the pointer and
-//                 forwards it, and the client draws it as the system cursor
-//                 (foundation-sunshine only; falls back to OFF otherwise).
+// Moonlight 主机通常把指针合成进视频，本地系统光标会重影；HIDE_HOST 的本机光标
+// 模式需要 foundation-sunshine，否则回退 OFF。
 export const ML_CURSOR_OFF: number = 0;
 export const ML_CURSOR_HIDE_SYSTEM: number = 1;
 export const ML_CURSOR_HIDE_HOST: number = 2;
-// Initial separation of the two synthetic touch-pinch contacts, as a percentage
-// of the smaller desktop side (window-relative, not a fixed resolution) at 1.0x
-// gesture ratio. Shared so the settings placeholder and the session's own
-// fallback cannot drift from the stored default.
+// 共享默认值（占桌面短边百分比），让设置占位与会话侧兜底不会与存储默认脱节。
 export const DEFAULT_PINCH_TOUCH_DISTANCE: number = 8;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;
@@ -54,20 +37,13 @@ const FALLBACK_HEIGHT: number = 1080;
 // cause rendering problems, so the scale is always snapped to one of these.
 export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 
-// Longest remote desktop side that maps to 100% in the automatic scale. The
-// factor grows linearly from there (see `scalePresetForResolution`); 1600 sits
-// between a 1280 desktop (where 1080p would already ask 150%) and a 1920 one
-// (where 1440p would stay at 125%), so common desktops land on the middle
-// presets instead of the extremes.
+// 自动缩放中映射到 100% 的桌面最长边；1600 让常见桌面落在中间档位而非两端。
 export const AUTO_SCALE_BASE: number = 1600;
 
-// 超分辨率倍率 (output ÷ session) presets in percent. The platform *recommends*
-// up to 1.5× for its GPU spatial upscale; larger ratios save more bandwidth but
-// the sharper edges of a text-heavy desktop start to ring, so those presets are
-// labelled as such in the UI. There is no hard API limit on the ratio.
+// 超分倍率档位（百分比）。平台对 GPU 空域超分*推荐*不超过 1.5×；更大倍率省带宽
+// 但文字边缘开始振铃（UI 已标注），API 本身无硬上限。
 export const SR_RATIO_PRESETS: number[] = [125, 150, 175, 200];
 
-/** Label shown for an SR_RATIO_PRESETS entry ("1.25x"), and in the toolbar. */
 export function srRatioLabel(preset: number): string {
   if (preset % 100 === 0) {
     return `${preset / 100}x`;
@@ -86,36 +62,20 @@ export class AppSettings {
   // 触控板双指双击发送鼠标中键（单次双指轻触仍是右键）。双指轻触要等一个双击窗口
   // 才能确定不是双击，所以开启后右键有约 300ms 判定延迟；默认关＝无延迟。
   touchpadMiddleDoubleTap: boolean = false;
-  // How the touchpad two-finger pinch is handled: Ctrl+wheel (default), a
-  // synthetic native two-finger touch pinch, or a local picture zoom that sends
-  // nothing to the remote (PINCH_MODE_*, see above).
   pinchMode: number = PINCH_MODE_WHEEL;
-  // Tilt (degrees) of the synthetic contact pair for touch pinch: positive is
-  // clockwise on screen (left hand), negative flips it (right hand, e.g. -30).
-  // ArkUI cannot report the real finger angle, so this stands in for the hand.
+  // 合成触点对的倾角（度）：ArkUI 报不出真实手指角度，用此值代替手的朝向。
   pinchTouchAngle: number = 30;
-  // Initial separation of the two synthetic touch-pinch contacts, as a
-  // percentage of the smaller desktop side (window-relative, not a fixed
-  // resolution) at 1.0x gesture ratio.
   pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
-  // Forward RDPEI touch at the high refresh rate (8ms) instead of FreeRDP's
-  // default ~20ms (50Hz) coalescing. Off keeps the default behaviour.
+  // 以 8ms 高刷新率转发 RDPEI 触摸，替代 FreeRDP 默认 ~20ms（50Hz）的合并。
   touchHighRate: boolean = false;
-  // When true the remote cursor shape is mapped onto the HarmonyOS system
-  // cursor. Turn off to fall back to the plain default cursor.
   useRdpCursor: boolean = true;
-  // When true a session window that comes back to the foreground and finds its
-  // session already dropped reconnects on its own, instead of waiting for the
-  // user to press 重试. A system that freezes and then aborts the app's sockets
-  // while it is away leaves a session that looks connected but no longer is, so
-  // this is a safety net for coming back, not a keep-alive.
+  // 回到前台发现会话已掉线时自动重连：系统可能在后台冻结并掐断 socket，会话看似
+  // 在线实则已死；这是回前台的兜底，不是保活。
   reconnectOnForeground: boolean = false;
-  // KeyCode remapped to Win/Meta for the remote session (0 = disabled). Lets
-  // Win combinations work even though the shell keeps the real Win key.
+  // 映射为远端 Win/Meta 的 KeyCode（0 = 禁用）：shell 占着真 Win 键，用替身让 Win 组合键可用。
   winKeySubstitute: number = 0;
-  // 快捷键穿透: while a session window is focused, take the keyboard over so
-  // Win / Alt+Tab / Esc reach the remote (ACL INTERCEPT_INPUT_EVENT). Off by
-  // default, as it also suppresses the local system shortcuts.
+  // 快捷键穿透：会话窗口聚焦时接管键盘让 Win / Alt+Tab / Esc 直达远端
+  // （ACL INTERCEPT_INPUT_EVENT）；会同时压制本机系统快捷键，故默认关。
   shortcutPassthrough: boolean = false;
   mainWindowSizeEnabled: boolean = false;
   mainWindowWidth: number = 0;
@@ -124,61 +84,38 @@ export class AppSettings {
   sessionWindowWidth: number = 0;
   sessionWindowHeight: number = 0;
   sessionFullscreen: boolean = false;
-  // When true the main window is minimized while a session window is open and
-  // restored once the last session window closes.
   autoHideMainWindow: boolean = false;
-  // Global display defaults: automatic resolution / scaling by default, with an
-  // optional manual override shared by every connection.
   resolutionAuto: boolean = true;
   manualWidth: number = 0;
   manualHeight: number = 0;
   scaleAuto: boolean = true;
   manualScalePercent: number = 100;
-  // Global advanced (protocol feature) defaults. Connections follow these
-  // unless they opt into their own overrides in the editor.
   enableAudio: boolean = true;
   ignoreCertificate: boolean = true;
-  // 超分 (global default; per-connection override in the editor). The resolution
-  // setting is the *output* resolution, the session renders at output ÷ ratio and
-  // the Vulkan presenter upscales it back. Off by default: it changes what the
-  // server is asked to render, so it is opt-in.
+  // 超分：会话按输出÷倍率出画、Vulkan 呈现器上采样回来；会改变请求给服务器的
+  // 分辨率，故默认关（opt-in）。
   srEnabled: boolean = false;
   srRatioPercent: number = SR_RATIO_PRESETS[0];
-  // Which upscaler the global 超分 default uses (SR_BACKEND_XENGINE / _FSR).
   srBackend: number = SR_BACKEND_XENGINE;
-  // Present frames through Vulkan; off keeps the session on the GLES presenter
-  // with no Vulkan at all (see doc_agent/settings-and-storage.md §2).
+  // 关 = 只用 GLES 呈现器、完全不碰 Vulkan（见 doc_agent/settings-and-storage.md §2）。
   hardwareAccel: boolean = true;
-  // Developer options: reveals the dev-only tools (recorded-stream replay entry,
-  // GFX stream capture) and the session toolbar's performance telemetry. Off for a
-  // normal install; nothing dev-only is reachable until it is turned on.
   developerMode: boolean = false;
-  // Dev-only capture of the raw GFX channel stream (doc_agent/gfx-engine.md §6).
   gfxCapture: boolean = false;
-  // Moonlight stream defaults for new connections (each connection may override
-  // them in its own editor). Auto-discovery decides whether the host field is
-  // pre-filled from an mDNS scan.
   mlFps: number = 60;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
-  // Protocol the next new connection starts on (the last kind the user added).
   lastNewProtocol: number = PROTOCOL_RDP;
-  // Moonlight's own copy of the shared interaction settings (touchpad / pinch /
-  // keyboard / foreground reconnect). The two protocols keep separate values;
-  // only the settings UI code is shared. Window sizing, the toolbar delays and
-  // the developer options are app-level (a single value), not per protocol.
+  // Moonlight 自有一份交互设置（触控板/捏合/键盘/前台重连）：两协议各存各的值，
+  // 只共享设置 UI 代码；窗口尺寸、工具栏延迟与开发者选项是应用级单一值。
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   mlPinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   mlTouchpadMiddleDoubleTap: boolean = false;
   mlPinchMode: number = PINCH_MODE_WHEEL;
   mlPinchTouchAngle: number = 30;
   mlPinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
-  // Moonlight cursor handling (ML_CURSOR_*): the host normally bakes its cursor
-  // into the video, so the local system cursor would double it. Default hides
-  // the system cursor; HIDE_HOST uses foundation-sunshine local cursor mode.
   mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
@@ -199,11 +136,7 @@ export class SettingsStore {
     }
   }
 
-  /**
-   * Default window sizes derived from the current screen resolution instead of
-   * hard-coded pixel values. If the screen cannot be queried, window resizing
-   * is disabled rather than falling back to a made-up resolution.
-   */
+  // 屏幕取不到时禁用窗口尺寸调整，而不是回退到一个编造的分辨率。
   static defaults(): AppSettings {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = DEFAULT_TOOLBAR_HOVER_DELAY;
@@ -235,8 +168,7 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.pinchZoomSpeed =
         SettingsStore.readNumber(store, 'pinchZoomSpeed', settings.pinchZoomSpeed);
-      // The old two-way `pinchAsTouch` boolean maps onto the three-way mode, so a
-      // stored value from before the third option is not lost.
+      // 旧的两档 pinchAsTouch 布尔映射到三档模式，避免丢掉存量设置。
       const legacyPinchTouch: boolean = SettingsStore.readBoolean(store, 'pinchAsTouch', false);
       settings.touchpadMiddleDoubleTap = SettingsStore.readBoolean(store,
         'touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
@@ -391,10 +323,6 @@ export class SettingsStore {
     }
   }
 
-  /**
-   * Current monitor resolution, used as the automatic session size. Returns an
-   * invalid profile when the display cannot be queried so callers can decide.
-   */
   static detectedDisplay(): DisplayProfile {
     const profile: DisplayProfile = new DisplayProfile();
     const disp: display.Display | undefined = defaultDisplay();
@@ -406,21 +334,12 @@ export class SettingsStore {
     return profile;
   }
 
-  /**
-   * Automatic display-scale preset for a desktop resolution: the desktop's
-   * longest side over `AUTO_SCALE_BASE`, snapped to the nearest Windows preset.
-   * Only the remote resolution decides it - this device's own screen and density
-   * never enter - so the same resolution scales identically on any machine. The
-   * longest side drives it, so portrait and ultrawide desktops land on their
-   * resolution's tier, and the whole preset ladder gets used: 1600 -> 100%,
-   * 1920 -> 125%, 2560 -> 150%, 2880 -> 175%, 3200 -> 200%, 3840 -> 225%.
-   */
+  // 只看远端分辨率（本机屏幕与密度不参与），同一分辨率在任何机器上缩放一致。
   static scalePresetForResolution(width: number, height: number): number {
     const longest: number = Math.max(width, height);
     return SettingsStore.nearestScalePreset(Math.round(longest * 100 / AUTO_SCALE_BASE));
   }
 
-  /** Snaps an arbitrary percentage to the nearest supported Windows preset. */
   static nearestScalePreset(percent: number): number {
     let best: number = SCALE_PRESETS[0];
     let bestDiff: number = Math.abs(percent - best);
@@ -434,7 +353,6 @@ export class SettingsStore {
     return best;
   }
 
-  /** Snaps an arbitrary upscale ratio to the nearest offered preset. */
   static snapSrRatioPreset(percent: number): number {
     let best: number = SR_RATIO_PRESETS[0];
     let bestDiff: number = Math.abs(percent - best);
@@ -448,11 +366,7 @@ export class SettingsStore {
     return best;
   }
 
-  /**
-   * Session (pre-super-resolution) size for an output size: the size the server
-   * is asked to render, so the presenter can upscale it back. Rounded to an even
-   * number of pixels (odd desktop sizes render badly on some servers).
-   */
+  // 取偶数像素：奇数桌面尺寸在部分服务器上渲染异常。
   static srSessionSize(output: number, ratioPercent: number): number {
     if (output <= 0 || ratioPercent <= 100) {
       return output;
@@ -462,16 +376,8 @@ export class SettingsStore {
     return even > 0 ? even : 2;
   }
 
-  /**
-   * Automatic DPI scale for a session, derived from the *requested* (output)
-   * resolution alone: Windows' typical preset for that resolution class (see
-   * `scalePresetForResolution`). This device's screen does not participate, so
-   * the same remote resolution scales the same way everywhere.
-   *
-   * With 超分 the server renders the session at output ÷ ratio and the presenter
-   * upscales it back, so the factor shrinks by the same ratio to keep the remote
-   * UI the same physical size (and never drops below the first Windows preset).
-   */
+  // 超分时会话按输出÷倍率渲染再上采样回来，缩放因子同步除以倍率，保持远端 UI
+  // 物理大小不变（且不低于第一个 Windows 档位）。
   static autoScalePercent(outputWidth: number, outputHeight: number,
     srEnabled: boolean, ratioPercent: number): number {
     if (outputWidth <= 0 || outputHeight <= 0) {
@@ -484,7 +390,6 @@ export class SettingsStore {
     return SettingsStore.nearestScalePreset(Math.round(base * 100 / ratioPercent));
   }
 
-  /** Global 超分 defaults. */
   static globalSrProfile(): SrProfile {
     const settings: AppSettings = SettingsStore.load();
     const profile: SrProfile = new SrProfile();
@@ -494,12 +399,7 @@ export class SettingsStore {
     return SettingsStore.gateSr(profile);
   }
 
-  /**
-   * Effective 超分 for a connection: the global defaults unless the connection
-   * opted into its own. Forced off (or moved to the other backend) where the device
-   * cannot do it, so the session never negotiates a lower resolution it cannot
-   * upscale back.
-   */
+  // 设备做不了时强制关（或换到另一后端）：绝不协商出一个无法上采样回去的更低会话分辨率。
   static resolveSr(conn: SavedConnection): SrProfile {
     const settings: AppSettings = SettingsStore.load();
     const profile: SrProfile = new SrProfile();
@@ -517,10 +417,8 @@ export class SettingsStore {
 
   private static gateSr(profile: SrProfile): SrProfile {
     if (profile.enabled && !SettingsStore.srBackendUsable(profile.backend)) {
-      // The chosen backend is not available here (a different device, 硬件加速 off,
-      // or a build without it): use the other one when that works, otherwise turn
-      // 超分 off rather than negotiate a lower session resolution that cannot be
-      // upscaled back.
+      // 所选后端在此不可用（换了设备、硬件加速关闭或构建不含）：优先换另一后端，
+      // 都不行就关超分，而不是协商一个无法上采样回去的低会话分辨率。
       const other: number = profile.backend === SR_BACKEND_XENGINE ? SR_BACKEND_FSR
                                                                    : SR_BACKEND_XENGINE;
       if (SettingsStore.srBackendUsable(other)) {
@@ -535,25 +433,18 @@ export class SettingsStore {
     return profile;
   }
 
-  /** A backend id as the token the native capability probe reports. */
+  // 原生能力探测回报的 backend token。
   private static srBackendToken(backend: number): string {
     return backend === SR_BACKEND_FSR ? 'fsr' : 'xengine';
   }
 
-  /**
-   * Whether one 超分 backend can be used right now. 超分 rides the Vulkan
-   * presenter, so 硬件加速 has to be allowed; on top of that the build/device must
-   * offer that backend. FSR needs nothing beyond the presenter, XEngine also needs
-   * the device's XEG_spatial_upscale feature.
-   */
+  // 超分依附 Vulkan 呈现器，故需硬件加速可用；FSR 别无要求，XEngine 还需设备的
+  // XEG_spatial_upscale 特性。
   static srBackendUsable(backend: number): boolean {
     return SettingsStore.srBackendUsableFor(SettingsStore.load(), backend);
   }
 
-  /**
-   * Same, against an explicit settings object. The config import validates the
-   * incoming file before it is saved, so it cannot use the stored value.
-   */
+  // 配置导入在保存前校验文件，拿不到已存值，故要显式传入 settings。
   static srBackendUsableFor(settings: AppSettings, backend: number): boolean {
     if (!settings.hardwareAccel || !DeviceCapabilities.hardwareAccel().supported) {
       return false;
@@ -561,31 +452,17 @@ export class SettingsStore {
     return DeviceCapabilities.srBackends().indexOf(SettingsStore.srBackendToken(backend)) >= 0;
   }
 
-  /** Whether any 超分 backend can be used right now. */
   static superResolutionUsable(): boolean {
     return SettingsStore.srBackendUsable(SR_BACKEND_XENGINE)
       || SettingsStore.srBackendUsable(SR_BACKEND_FSR);
   }
 
-  /**
-   * Global display profile (auto detected resolution / recommended scale, or the
-   * manual values when the user has overridden them), with the global 超分.
-   */
   static globalDisplayProfile(): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
     return SettingsStore.profileFor(settings, SettingsStore.globalSrProfile());
   }
 
-  /**
-   * Effective display profile for a connection: global settings unless the
-   * connection opted into a per-connection override. `width`/`height` are the
-   * output resolution and `sessionWidth`/`sessionHeight` what the server renders.
-   *
-   * In the override, resolution and scale each have an explicit 自动 mode: 自动
-   * resolution follows the current screen, 自动 scale is derived from the resolved
-   * resolution. Only when a mode is off do the stored values win. (Older records
-   * carry neither flag, so they stay on their stored values.)
-   */
+  // 覆盖模式下分辨率与缩放各有「自动」；旧记录没有这两个标志位，停留在其存储值上。
   static resolveDisplay(conn: SavedConnection): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
     const sr: SrProfile = SettingsStore.resolveSr(conn);
@@ -611,23 +488,17 @@ export class SettingsStore {
       width = hasOwnSize ? conn.width : global.width;
       height = hasOwnSize ? conn.height : global.height;
     }
-    // 自动 scale resolves from *this connection's* resolution, not the global one
-    // (the two can differ); a stored value is used when 自动 is off.
+    // 自动缩放按*本连接*的分辨率推导（与全局的可能不同）。
     const autoScale: number = SettingsStore.autoScalePercent(width, height,
       sr.enabled && sr.ratioPercent > 100, sr.ratioPercent);
     const scale: number = conn.scaleAuto || conn.scalePercent <= 0 ? autoScale : conn.scalePercent;
     return SettingsStore.makeProfile(width, height, detected, scale, sr);
   }
 
-  /** Global advanced (protocol feature) defaults shared by every connection. */
   static globalAdvancedProfile(): AdvancedProfile {
     return SettingsStore.advancedFor(SettingsStore.load());
   }
 
-  /**
-   * Effective advanced profile for a connection: global settings unless the
-   * connection opted into its own overrides.
-   */
   static resolveAdvanced(conn: SavedConnection): AdvancedProfile {
     if (conn.useGlobalAdvanced) {
       return SettingsStore.globalAdvancedProfile();
@@ -638,7 +509,6 @@ export class SettingsStore {
     return profile;
   }
 
-  /** Global Moonlight stream defaults shared by new connections. */
   static globalStreamProfile(): MoonlightProfile {
     const settings: AppSettings = SettingsStore.load();
     const profile: MoonlightProfile = new MoonlightProfile();
@@ -651,11 +521,6 @@ export class SettingsStore {
     return profile;
   }
 
-  /**
-   * Effective Moonlight stream profile for a connection: the global defaults
-   * unless the connection opted into its own overrides (same pattern as
-   * `resolveDisplay` / `resolveAdvanced`).
-   */
   static resolveStream(conn: SavedConnection): MoonlightProfile {
     if (conn.useGlobalStream) {
       return SettingsStore.globalStreamProfile();
@@ -670,12 +535,10 @@ export class SettingsStore {
     return profile;
   }
 
-  /** Protocol a new connection should start on (the last one the user added). */
   static lastNewProtocol(): number {
     return SettingsStore.load().lastNewProtocol;
   }
 
-  /** Remembers the protocol of the connection just added. */
   static rememberNewProtocol(protocol: number): void {
     const settings: AppSettings = SettingsStore.load();
     settings.lastNewProtocol = protocol;
@@ -715,11 +578,6 @@ export class SettingsStore {
     return SettingsStore.makeProfile(width, height, detected, scale, sr);
   }
 
-  /**
-   * Assembles a profile from the output size, its DPI scale and the 超分 choice:
-   * the session size (what the server renders) and the SR fields follow from the
-   * output size and the ratio.
-   */
   private static makeProfile(width: number, height: number, detected: boolean,
     scalePercent: number, sr: SrProfile): DisplayProfile {
     const profile: DisplayProfile = new DisplayProfile();

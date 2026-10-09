@@ -1,7 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * PCM handoff ring for the FreeRDP rdpsnd sink (the renderer lives in ArkTS).
- */
 #include "hmrdp_audio.h"
 
 #include <algorithm>
@@ -15,15 +11,14 @@ namespace {
 
 // Prebuffer before playback starts, and the hard latency bound above which the
 // oldest whole packets are dropped. Both in playback ms, so the bound does not
-// change with the format. The prebuffer rides out delivery jitter; the high
-// water caps how far latency may grow when the server (or its clock) runs ahead.
+// change with the format.
 constexpr size_t kTargetLatencyMs = 120;
 constexpr size_t kHighWaterLatencyMs = 300;
-// A gap longer than this is a new bout of audio (the server paused), not jitter,
-// so the prebuffer runs again; an ordinary jitter gap does not re-prime.
+// A gap longer than this is a new bout of audio, not jitter, so the prebuffer
+// runs again.
 constexpr uint64_t kIdleResetUs = 1000 * 1000;
-// Underruns count as loss only while packets are still arriving. A gap longer
-// than this is the stream pausing rather than a glitch, so it stops contributing.
+// Underruns count as loss only while packets are still arriving; a longer gap is
+// the stream pausing rather than a glitch.
 constexpr uint64_t kLiveWindowUs = 500 * 1000;
 
 uint64_t AudioNowUs() {
@@ -42,9 +37,7 @@ int AudioSink::Write(const void* data, size_t size, int sampleRate, int channels
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (rate_ != sampleRate || channels_ != channels) {
-    // A new format: the queued packets belong to the previous stream, so drop
-    // them rather than play a mismatched format. ArkTS rebuilds its renderer from
-    // the change flagged here.
+    // A new format: drop the queued packets rather than play a mismatched format.
     packets_.clear();
     bufferedBytes_ = 0;
     primed_ = false;
@@ -77,9 +70,8 @@ size_t AudioSink::Read(uint8_t* dest, size_t want) {
         primed_ = true;
       }
       if (primed_) {
-        // Live = playback started and packets are still (or were just) arriving.
-        // Deliberately keyed on arrival, not delivery: when delivery stalls, that
-        // is exactly what has to be reported.
+        // Live is keyed on arrival, not delivery: when delivery stalls, that is
+        // exactly what has to be reported.
         live = lastPacketUs_ != 0 && (now - lastPacketUs_ < kLiveWindowUs);
         while (copied < want && !packets_.empty()) {
           Packet& packet = packets_.front();
@@ -94,7 +86,7 @@ size_t AudioSink::Read(uint8_t* dest, size_t want) {
         }
       }
       // Not primed yet: leave the buffer silent so the device stays fed while the
-      // queue fills. A stream start, not a dropped stream, so not counted.
+      // queue fills; a stream start, not a dropped stream, so not counted.
     }
   }
   if (copied < want) {
@@ -168,9 +160,8 @@ void AudioSink::EnqueueLocked(const uint8_t* data, size_t size) {
     return;
   }
   const uint64_t now = AudioNowUs();
-  // A packet after a long idle gap starts a new bout: prebuffer it again. A
-  // short gap is jitter and must not re-prime (that would add silence of its
-  // own).
+  // A packet after a long idle gap starts a new bout: prebuffer it again. A short
+  // gap is jitter and must not re-prime.
   if (lastPacketUs_ != 0 && now - lastPacketUs_ > kIdleResetUs) {
     primed_ = false;
   }
@@ -184,9 +175,9 @@ void AudioSink::EnqueueLocked(const uint8_t* data, size_t size) {
 }
 
 void AudioSink::DropToHighWaterLocked() {
-  // Drop the oldest whole packets, never a partial one: trimming a packet to the
-  // byte would break 16-bit sample alignment and click. Keep at least the newest
-  // packet so a single oversized packet is still played rather than discarded.
+  // Drop the oldest whole packets, never a partial one: trimming a packet would
+  // break 16-bit sample alignment and click. Keep at least the newest packet so a
+  // single oversized packet is still played.
   while (bufferedBytes_ > highWaterBytes_ && packets_.size() > 1) {
     const size_t dropped = packets_.front().remaining();
     packets_.pop_front();

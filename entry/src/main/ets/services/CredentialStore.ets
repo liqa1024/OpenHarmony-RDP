@@ -1,11 +1,3 @@
-/*
- * HmRdp - password storage backed by HarmonyOS Asset Store Kit.
- *
- * Each password is stored as an ASSET secret keyed by the connection's stable
- * id. Passwords are only written after a session has connected successfully,
- * so an unverified (possibly wrong) password is never persisted. Connection
- * metadata lives in ConnectionStore and is independent of the password.
- */
 import { asset } from '@kit.AssetStoreKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';

@@ -1,11 +1,3 @@
-/*
- * HmRdp - recorded RDPGFX channel replay pump (doc_agent/gfx-engine.md §6).
- *
- * Feeds one raw hmrdp_gfx.bin capture back through FreeRDP's own ZGX + RDPGFX
- * parsing. The live session and the offline replay share this read-decompress-
- * parse loop; the caller only chooses what a frame means (present it, account for
- * it, ...).
- */
 #ifndef HMRDP_GFX_DRIVER_H
 #define HMRDP_GFX_DRIVER_H
 
@@ -17,13 +9,11 @@
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/rdpgfx.h>
 
-// Provided by the patched rdpgfx client (native/scripts/patch-freerdp.ps1).
-// Weak so the app still links against stock FreeRDP, where the replay reports
-// "unavailable" instead of crashing.
-//
+// Provided by the patched rdpgfx client. Weak so the app still links against
+// stock FreeRDP, where the replay reports "unavailable" instead of crashing.
 // New/FreeWithContext build the offline RDPGFX context bound to a caller-owned
-// rdpContext (the CPU/gdi replay route, so gfx->rdpcontext carries the real
-// settings); the caller keeps ownership of that context.
+// rdpContext (so gfx->rdpcontext carries the real settings); the caller keeps
+// ownership of that context.
 extern "C" RdpgfxClientContext* HmrdpGfxReplayNewWithContext(rdpContext* rcontext)
     __attribute__((weak));
 extern "C" void HmrdpGfxReplayFreeWithContext(RdpgfxClientContext* context)
@@ -34,32 +24,27 @@ extern "C" UINT HmrdpGfxReplayRecv(RdpgfxClientContext* context, const BYTE* dat
 namespace hmrdp {
 
 // Optional per-record pacing hook for the "realtime" replay mode: called with a
-// record's recorded arrival time (monotonic microseconds) right before that
-// record is fed, so the caller can sleep until the original cadence is reached.
-// The call is made outside the pump's own timing, and is skipped entirely when
-// the capture carries no arrival times (version 0 files).
+// record's arrival time right before that record is fed, so the caller can sleep
+// until the original cadence is reached. Skipped when the capture carries no
+// arrival times (version 0 files).
 using ReplayPaceFn = std::function<void(uint64_t timestampUs)>;
 // Returns the deliberate pacing sleep accumulated so far: the frame is presented
-// (and paced) inside the recv call, so the raw recv time would otherwise count the
-// throttling as parse work.
+// (and paced) inside the recv call, so the raw recv time would otherwise count
+// the throttling as parse work.
 using ReplayPaceAccumFn = std::function<uint64_t()>;
 
-// Feeds every raw chunk of one hmrdp_gfx.bin capture into an already-built
-// RDPGFX context (FreeRDP does the ZGX + PDU parsing). `stop` may be null;
-// `pace`/`paceAccum` may be empty. Returns false and fills `error` (when
-// non-null) on failure - in particular when FreeRDP was built without the HmRdp
-// GFX capture patch.
-//
+// Feeds every raw chunk of one capture into an already-built RDPGFX context.
+// `stop` may be null; `pace`/`paceAccum` may be empty. Returns false and fills
+// `error` on failure.
 // `aborted` (optional) reports whether the pump was stopped before the capture
-// was exhausted: a run that was cut short is not a measurement, and the reference
-// export must not be written from it.
+// was exhausted: a run cut short is not a measurement.
 bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
                    const std::atomic<bool>* stop, std::string* error,
                    const ReplayPaceFn& pace, const ReplayPaceAccumFn& paceAccum,
                    bool* aborted = nullptr);
 
-// Accumulated ZGFX + RDPGFX PDU parse time during a replay (measured in the pump,
-// before any backend sees the command), to separate parse from decode.
+// Accumulated ZGFX + RDPGFX PDU parse time during a replay, to separate parse
+// from decode.
 void GfxReplayResetParseUs();
 void GfxReplayAddParseUs(uint64_t micros);
 uint64_t GfxReplayParseUs();

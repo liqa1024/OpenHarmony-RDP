@@ -1,11 +1,3 @@
-/*
- * HmRdp - maps HarmonyOS multimodal key codes and mouse buttons to the values
- * Moonlight's LiSend* entry points expect. Unlike RDP (PS/2 set 1 scancodes),
- * Moonlight takes Windows virtual-key codes and its own modifier / button
- * constants (Limelight.h), so this is a separate table from KeyMapper.
- */
-
-/** Windows virtual-key + Moonlight modifier/button/action constants. */
 export class MlVirtualKey {
   static readonly ACTION_PRESS: number = 0x07;
   static readonly ACTION_RELEASE: number = 0x08;
@@ -19,7 +11,6 @@ export class MlVirtualKey {
   static readonly MODIFIER_ALT: number = 0x04;
   static readonly MODIFIER_META: number = 0x08;
 
-  /** ArkUI MouseButton -> Moonlight BUTTON_*. */
   static buttonFor(button: MouseButton): number {
     if (button === MouseButton.Left) {
       return MlVirtualKey.BUTTON_LEFT;
@@ -33,7 +24,6 @@ export class MlVirtualKey {
     return 0;
   }
 
-  /** Modifier bit for a VK that is itself a modifier key, else 0. */
   static modifierFor(vk: number): number {
     if (vk === 0x10) {
       return MlVirtualKey.MODIFIER_SHIFT;
@@ -50,7 +40,6 @@ export class MlVirtualKey {
     return 0;
   }
 
-  /** HarmonyOS key code -> Windows VK, or -1 when unmapped. */
   static map(keyCode: number): number {
     if (keyCode >= 2000 && keyCode <= 2009) {
       return 0x30 + (keyCode - 2000);

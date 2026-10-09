@@ -1,17 +1,3 @@
-/*
- * HmRdp - round icon control laid over a surface (e.g. a Moonlight app poster).
- *
- * A single reusable control: an icon on a round THIN immersive-material disc
- * (flat frosted where the system has no material), with cursor-hover and press
- * feedback and an appear / disappear transition. It is a component, not a page
- * @Builder, so each disc keeps its own hover / press state (several discs share
- * one tile) and its inputs refresh in place through @Prop.
- *
- * Motion comes from utils/UiMotion so it matches the other controls; the blur
- * fallback lives in the material modifier so it is never set alongside the
- * material (it would sit above and hide it) — see doc_agent/arkts-conventions.md
- * §6.
- */
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition } from '../utils/UiMotion';
 
@@ -23,12 +9,7 @@ export struct ControlDisc {
   @Prop glyph: number = 22;
   @Prop gap: number = 0;
   @Prop tip: string = '';
-  // In-flight: the icon is replaced by a spinner and taps are ignored, so the
-  // control reports its own busy state (the caller decides when it is loading).
   @Prop loading: boolean = false;
-  // Whether the disc plays an appear / disappear transition when it is inserted
-  // or removed by the caller. Opt-in: an always-present disc (e.g. the poster's
-  // star) must not pop again when its tile is recreated for another reason.
   @Prop animated: boolean = false;
   onTap: () => void = () => {};
   @State hovered: boolean = false;
@@ -57,8 +38,7 @@ export struct ControlDisc {
     .width(this.diameter)
     .height(this.diameter)
     .borderRadius(this.diameter / 2)
-    // Explicit transparent background: the material is the surface (an opaque
-    // background would cover it).
+    // Transparent: an opaque background would cover the material surface.
     .backgroundColor(Color.Transparent)
     .attributeModifier(this.controlMaterial)
     .justifyContent(FlexAlign.Center)
@@ -67,8 +47,7 @@ export struct ControlDisc {
     .scale(hoverPressScale(this.hovered && !this.loading, this.pressed && !this.loading))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .transition(this.animated ? popTransition() : TransitionEffect.IDENTITY)
-    // Keep a tap on the disc off the poster underneath, so the tile's own click
-    // does not also fire.
+    // Keep taps off the poster underneath, so the tile's own click does not fire.
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .onHover((isHover: boolean) => {
       if (this.loading) {

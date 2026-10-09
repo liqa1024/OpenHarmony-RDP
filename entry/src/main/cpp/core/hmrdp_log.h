@@ -1,7 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * Small hilog wrapper shared by the native sources.
- */
 #ifndef HMRDP_LOG_H
 #define HMRDP_LOG_H
 

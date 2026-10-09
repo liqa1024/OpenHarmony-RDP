@@ -1,19 +1,10 @@
-/*
- * HmRdp - hover / press reactive plain text action.
- *
- * ArkUI has no declarative "text colour on hover / press" effect; the official
- * pattern is state-driven styling (see the ArkUI PC hover FAQ). The colour is
- * therefore driven by @State and animated with .animation(), and press is
- * tracked from onMouse (PC) plus onTouch (touch input). HoverEffect.Highlight
- * is intentionally not used: it draws a background box, which fits box-shaped
- * buttons but not a bare text action.
- */
+// ArkUI has no declarative text colour on hover / press, so the colour is
+// @State-driven; HoverEffect.Highlight is not used (it draws a background box).
 import { MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 
 @Component
 export struct TextAction {
   @Prop label: string = '';
-  // Low-emphasis tone (tertiary text) for actions such as the Win-key "clear".
   @Prop muted: boolean = false;
   onTap: () => void = () => {};
 

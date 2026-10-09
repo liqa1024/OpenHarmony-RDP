@@ -1,6 +1,3 @@
-/*
- * HmRdp - AVCodec video decoder (see hmrdp_video_decoder.h).
- */
 #include "hmrdp_video_decoder.h"
 
 #include <chrono>
@@ -21,8 +18,8 @@ namespace hmrdp {
 
 namespace {
 
-// Best decoder the platform offers for `mime`, hardware first. A null
-// capability with `hardware == false` means the platform has no decoder.
+// Hardware first; a null capability with `hardware == false` means the platform
+// has no decoder.
 struct PickedCapability {
   OH_AVCapability* capability = nullptr;
   bool hardware = false;
@@ -127,17 +124,17 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
     Stop();
     return false;
   }
-  // Only width/height are required; the decoder uses them to preallocate for the
-  // stream (the real picture size still comes from onStreamChanged). Frame rate
-  // is not a decoder Configure key, so it is not set here.
+  // Only width/height are required; they preallocate for the stream (the real
+  // picture size still comes from onStreamChanged). Frame rate is not a decoder
+  // Configure key.
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
-  // Moonlight is interactive: ask for the low-latency path when the platform has
-  // it (silently ignored otherwise, per the SDK).
+  // Ask for the low-latency path when the platform has it (silently ignored
+  // otherwise, per the SDK).
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
   if (mode_ == VideoOutputMode::kBuffer) {
     // Surface mode converts to the window's format itself; only buffer mode picks
-    // a pixel format, and NV12 (semi-planar) is what the Vulkan importer expects.
+    // a pixel format, and NV12 is what the Vulkan importer expects.
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
   }
   const OH_AVErrCode configured = OH_VideoDecoder_Configure(codec_, format);
@@ -344,8 +341,7 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   const int height = height_.load();
   if (mode_ == VideoOutputMode::kSurface) {
     // Display pacing: schedule each frame against steady_clock so the decoder
-    // controls the cadence (the documented RenderOutputBufferAtTime use); with no
-    // frame rate, present as soon as decoded.
+    // controls the cadence; with no frame rate, present as soon as decoded.
     if (fps_ > 0) {
       const int64_t nowNs = static_cast<int64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(

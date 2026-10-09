@@ -1,17 +1,3 @@
-/*
- * HmRdp - local host discovery over mDNS.
- *
- * One protocol-neutral wrapper around @ohos.net.mdns: given a DNS-SD service
- * type it resolves every found instance to its IP and keeps a de-duplicated,
- * live list of candidates. Which service type belongs to which protocol is the
- * caller's business (Sunshine / GameStream advertise `_nvstream._tcp`), so the
- * same search UI serves anything that advertises on the LAN. The caller owns the
- * lifetime (start when the search UI opens, stop when it closes).
- *
- * Note this only finds hosts that advertise the queried service type: a Windows
- * RDP server does not advertise one, so the same wrapper cannot discover it
- * without a different mechanism (WSD / SSDP / NetBIOS).
- */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { mdns } from '@kit.NetworkKit';
@@ -20,14 +6,12 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMdns';
 
-/** One discovered host: a display name and the address to connect to. */
 export class MdnsHost {
   name: string = '';
   address: string = '';
   port: number = 0;
-  // The raw mDNS instance name. It is the only identity the `serviceLost` event
-  // carries (the platform does not fill in the address on removal), so it is what
-  // a lost instance is matched against; `name` is only for display.
+  // `serviceLost` carries only the raw instance name (no address), so a lost
+  // instance is matched against it.
   serviceKey: string = '';
 }
 
@@ -37,7 +21,6 @@ export class MdnsDiscovery {
   private hosts: MdnsHost[] = [];
   private onUpdate: (hosts: MdnsHost[]) => void = (): void => {};
 
-  /** Starts the search for `serviceType`; `onUpdate` gets the full list. */
   start(context: common.UIAbilityContext, serviceType: string,
     onUpdate: (hosts: MdnsHost[]) => void): void {
     this.stop();
@@ -72,7 +55,6 @@ export class MdnsDiscovery {
     }
   }
 
-  /** Each found instance resolves asynchronously to its address. */
   private resolve(data: mdns.LocalServiceInfo): void {
     const context: common.UIAbilityContext | undefined = this.context;
     if (context === undefined) {
@@ -135,7 +117,6 @@ export class MdnsDiscovery {
     }
   }
 
-  /** Removes the instance with this raw mDNS service name (see MdnsHost.serviceKey). */
   private remove(serviceKey: string): void {
     const next: MdnsHost[] = [];
     let changed: boolean = false;
@@ -152,7 +133,7 @@ export class MdnsDiscovery {
     }
   }
 
-  /** mDNS instance names look like "Sunshine" or "PC._nvstream._tcp.local"; keep the label. */
+  // Instance names look like "Sunshine" or "PC._nvstream._tcp.local"; keep the first label.
   private static displayName(serviceName: string): string {
     let name: string = serviceName;
     const dot: number = name.indexOf('.');

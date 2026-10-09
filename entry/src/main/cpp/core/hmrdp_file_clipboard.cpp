@@ -1,6 +1,3 @@
-/*
- * HmRdp - file-clipboard domain (native side). See hmrdp_file_clipboard.h.
- */
 #include "hmrdp_file_clipboard.h"
 
 #include <sys/stat.h>

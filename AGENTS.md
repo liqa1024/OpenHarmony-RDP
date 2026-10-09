@@ -34,6 +34,8 @@
   绑定）。帧重活必须走 **sink 钩子**（`HmrdpSetGfxDataSink`）交到会话 **GFX 工作线程**上跑。线程模型与
   判据见 [`doc_agent/architecture.md`](doc_agent/architecture.md) §4。
 - **改完必须自检**：改 `.ets` 先 `arkts_check`，再 `build_project`；**任务结束前 `build_project` 必须通过**。
+- **注释从简**：代码自解释，不写复述类/文档类注释（职责与用法归 [`doc_agent/`](doc_agent/README.md)），不留注释掉的死代码。
+  只保留 TODO/FIXME、非显而易见的平台/协议/线程规避与性能取舍，且压缩到一两句。
 - **文档维护**：不要把排查过程、日期、机器/设备型号写进仓库文档。新增结论请写进
   [`doc_agent/`](doc_agent/README.md) 对应的主题文件。
 - **`doc_agent/` 是通用知识库，不是记录**（**最容易偏离，写文档前先看这条**）：

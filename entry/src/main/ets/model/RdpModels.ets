@@ -1,74 +1,37 @@
-/*
- * HmRdp - shared ArkTS data model.
- */
 import { MoonlightSessionConfig, RdpOptions } from 'libhmrdp.so';
 import { PairResult } from '../moonlight/MoonlightModels';
 
-/**
- * 超分 backend ids. Plain numbers because they are persisted with the connection
- * and cross the N-API boundary as an int; the native side maps 0/1 to
- * SuperResolutionBackend (see doc_agent/present-pipeline.md §5).
- *  - XENGINE: the platform's GPU spatial upscale (needs the device feature).
- *  - FSR: the presenter's own FidelityFX Super Resolution 1.0 (Vulkan only).
- */
 export const SR_BACKEND_XENGINE: number = 0;
 export const SR_BACKEND_FSR: number = 1;
 
-/**
- * The wire protocol a saved connection uses. The connection list holds both
- * kinds and picks the editor form, the card icon and the session toolbar from
- * this value; RDP remains the default so every existing record stays an RDP
- * connection.
- */
 export const PROTOCOL_RDP: number = 0;
 export const PROTOCOL_MOONLIGHT: number = 1;
 
-/** Moonlight (Sunshine / GameStream) default control port. */
 export const ML_DEFAULT_PORT: number = 47989;
 
-/**
- * How a Moonlight stream picks its resolution: follow the host display, or a
- * fixed width/height stored on the connection. ML_RES_FOLLOW_WINDOW is a retired
- * value kept so older records still parse (it resolves like FOLLOW_SCREEN).
- */
+// ML_RES_FOLLOW_WINDOW 是退役值，保留仅让旧记录能解析（按 FOLLOW_SCREEN 处理）。
 export const ML_RES_FOLLOW_WINDOW: number = 0;
 export const ML_RES_FOLLOW_SCREEN: number = 1;
 export const ML_RES_FIXED: number = 2;
 
-/** Preferred video codec for a Moonlight stream (0 = let the host decide). */
 export const ML_CODEC_AUTO: number = 0;
 export const ML_CODEC_H264: number = 1;
 export const ML_CODEC_HEVC: number = 2;
 export const ML_CODEC_AV1: number = 3;
 
-/** Offered Moonlight stream frame rates. */
 export const ML_FPS_PRESETS: number[] = [30, 60, 90, 120];
-/** Moonlight stream bitrate bounds in kbps. */
 export const ML_BITRATE_MIN_KBPS: number = 1000;
 export const ML_BITRATE_MAX_KBPS: number = 200000;
 export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
 
-/**
- * Effective display settings for a session: the output resolution, the session
- * (pre-super-resolution) resolution derived from it, and the DPI scale factor
- * (percentage) requested from the server.
- */
 export class DisplayProfile {
-  // Output (post-super-resolution) resolution: the user's setting or the current
-  // display, and what the native side is given as width/height.
   width: number = 0;
   height: number = 0;
-  // Session (pre-super-resolution) resolution: with 超分 on it is the output
-  // divided by the ratio, and that is what the server is asked to render.
   sessionWidth: number = 0;
   sessionHeight: number = 0;
-  // DPI scale factor of the *session* (pre-super-resolution) desktop.
   scalePercent: number = 100;
-  // 超分: the session renders at output ÷ ratio and the presenter upscales it
-  // back to the output resolution on the GPU.
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
-  // Which upscaler runs (see SR_BACKEND_*). Ignored when srEnabled is false.
   srBackend: number = SR_BACKEND_XENGINE;
   detected: boolean = false;
 
@@ -77,35 +40,17 @@ export class DisplayProfile {
   }
 }
 
-/**
- * Effective super-resolution defaults for a connection: whether the session
- * resolution is reduced and upscaled locally, and by how much. Resolved from the
- * global defaults unless a connection opted into its own overrides.
- */
 export class SrProfile {
   enabled: boolean = false;
-  // Upscale ratio in percent (125 = 1.25×). Values <= 100 mean "no upscale".
   ratioPercent: number = 0;
   backend: number = SR_BACKEND_XENGINE;
 }
 
-/**
- * Effective per-connection protocol features (audio / certificate handling).
- * Resolved from the global defaults unless a connection opts into its own
- * overrides. Clipboard redirection and the GFX pipeline are not toggles: the
- * manual 复制/粘贴 toolbar actions are always available and the session always
- * uses RDPGFX.
- */
 export class AdvancedProfile {
   enableAudio: boolean = true;
   ignoreCertificate: boolean = true;
 }
 
-/**
- * Effective Moonlight stream settings for a connection: the global defaults
- * unless the connection opted into its own overrides (same shape as
- * DisplayProfile / AdvancedProfile for RDP).
- */
 export class MoonlightProfile {
   resMode: number = ML_RES_FOLLOW_SCREEN;
   width: number = 0;
@@ -115,11 +60,6 @@ export class MoonlightProfile {
   codec: number = ML_CODEC_AUTO;
 }
 
-/**
- * The stream config the Moonlight control layer produces (serverinfo + /launch
- * + the resolved profile) and hands to the native session. Implements the
- * N-API interface so it can be passed straight to moonlightSessionStart.
- */
 export class MoonlightStreamConfig implements MoonlightSessionConfig {
   host: string = '';
   serverInfoAppVersion: string = '';
@@ -150,57 +90,28 @@ export enum RdpEvent {
   FirstFrame = 3,
   ClipboardText = 4,
   Resize = 5,
-  // Remote cursor: Shape carries the decoded bitmap geometry/hotspot, the
-  // desktop magnification and a content hash (dedup key) plus a native buffer
-  // handle; Default/Hidden carry no payload.
   CursorShape = 6,
   CursorDefault = 7,
   CursorHidden = 8,
-  // Rich remote clipboard payloads. Html carries a raw CF_HTML payload and
-  // Image a raw CF_DIB (both as a native buffer handle); ClipboardCodec decodes
-  // them. Text arrives already decoded on ClipboardText.
   ClipboardHtml = 9,
   ClipboardImage = 10,
-  // Upload/download progress: direction (0 = remote -> local, 1 = local -> remote)
-  // plus done/total bytes and the file index/count.
   FileTransferProgress = 11,
-  // Transfer aborted before completing; payload is the reason.
   FileTransferFailed = 12,
-  // Upload finished (every advertised byte served); payload is the file count.
   FileTransferDone = 13,
-  // 快捷键穿透: an intercepted key event (keyCode + down).
   KeyIntercept = 14,
-  // RTF clipboard content; payload is a raw RTF buffer the codec converts.
   ClipboardRtf = 15,
-  // Raw FILEGROUPDESCRIPTORW (a native buffer handle); ArkTS parses it and owns
-  // the download state machine (FileDownload).
   RemoteFileListRaw = 16,
-  // One FILECONTENTS response relayed from native: listIndex / isSize /
-  // sizeValue / failed, plus a data buffer handle for a range response. ArkTS
-  // writes the bytes and issues the next request.
   RemoteFileChunk = 17,
-  // The server's clipboard changed; ArkTS aborts a running download and refreshes
-  // its cached remote descriptors.
   RemoteClipboardChanged = 18,
-  // The session's audio format changed (first packet or a rate/channel switch):
-  // audioRate / audioChannels name the PCM the ArkTS AudioRenderer must open.
   AudioFormat = 19,
-  // The server offered a clipboard format list; formatCandidates carries the
-  // supported kinds (see RdpClipKind). ArkTS owns the pick and the request.
   RemoteFormatList = 20,
-  // One clipboard data request settled (clipKind / failed): ArkTS issues whatever
-  // it deferred while the request was in flight.
   RemoteFormatResponse = 21,
-  // The remote session's toggle-key state (lockFlags); ArkTS compares it with its
-  // own local state and re-asserts through RdpNative.reassertLockState.
   RemoteLockState = 22
 }
 
 export class RdpConnectOptions implements RdpOptions {
   host: string = '';
   port: number = 3389;
-  // Optional user-set name for this target. Empty means "no custom name", and
-  // every display falls back to host / host:port.
   name: string = '';
   username: string = '';
   password: string = '';
@@ -210,12 +121,8 @@ export class RdpConnectOptions implements RdpOptions {
   scalePercent: number = 0;
   ignoreCertificate: boolean = true;
   enableAudio: boolean = true;
-  // 超分: width/height are the *output* resolution; when this is on the native
-  // side asks the server for output ÷ srRatioPercent and upscales each frame
-  // back to the output resolution on the GPU (Vulkan presenter only).
   srEnabled: boolean = false;
   srRatioPercent: number = 0;
-  // Which upscaler runs: SR_BACKEND_XENGINE or SR_BACKEND_FSR.
   srBackend: number = SR_BACKEND_XENGINE;
   gatewayHost: string = '';
   gatewayPort: number = 443;
@@ -234,12 +141,10 @@ export class RdpConnectOptions implements RdpOptions {
     return options;
   }
 
-  /** Name to show for this target: the custom name when set, else the host. */
   displayName(): string {
     return this.name.length > 0 ? this.name : this.host;
   }
 
-  /** "name · host:port" when a custom name is set, else just "host:port". */
   targetLabel(): string {
     const target: string = `${this.host}:${this.port}`;
     return this.name.length > 0 ? `${this.name} · ${target}` : target;
@@ -255,40 +160,18 @@ export class PendingConnection {
   options: RdpConnectOptions = new RdpConnectOptions();
   connectionId: string = '';
   origin: RdpConnectOrigin = RdpConnectOrigin.List;
-  // Protocol of this launch (PROTOCOL_RDP / PROTOCOL_MOONLIGHT); decides which
-  // SessionBackend the manager builds.
   protocol: number = PROTOCOL_RDP;
-  // The saved record a Moonlight launch resolves its stream settings from; RDP
-  // keeps everything it needs in `options`.
   savedConnection: SavedConnection | undefined = undefined;
-  // Effective Moonlight stream settings (SettingsStore.resolveStream), used when
-  // the native Moonlight session is built.
   stream: MoonlightProfile = new MoonlightProfile();
-  // The assembled Moonlight stream config (serverinfo + /launch), consumed by the
-  // Moonlight backend. The manager drives the backend's pre-flight, which fills
-  // this in; undefined until that pre-flight succeeds.
   moonlightConfig: MoonlightStreamConfig | undefined = undefined;
-  // The host's HTTPS control port (for /cancel and other paired endpoints).
   moonlightHttpsPort: number = 47984;
-  // Moonlight pre-flight inputs (see SessionBackend.prepare): the sandbox files
-  // dir the control layer reads/writes, the app to launch (0 = resolve from
-  // savedConnection / host default), and the pairing-PIN popup provider. Kept on
-  // the request so the manager can run the pre-flight like any other protocol.
   filesDir: string = '';
   moonlightAppId: number = 0;
-  // `pairing` settles when the handshake ends; the prompt closes itself then and
-  // the promise is false only when the user cancels.
   moonlightPinProvider: ((pin: string, pairing: Promise<PairResult>) => Promise<boolean>)
     | undefined = undefined;
-  // Invoked once when a session launched from the editor connects successfully.
-  // Cleared afterwards so it never fires twice or leaks across launches.
   onConnected: (() => void) | undefined = undefined;
 }
 
-/**
- * Launch requests are keyed by a per-window key that travels through the Want,
- * so concurrent session launches never overwrite each other.
- */
 export class SessionRequests {
   private static entries: Map<string, PendingConnection> = new Map<string, PendingConnection>();
   private static counter: number = 0;
@@ -306,7 +189,6 @@ export class SessionRequests {
     return SessionRequests.entries.get(key);
   }
 
-  /** Scrubs the transient credentials and drops the request for a session. */
   static discard(key: string): void {
     const request: PendingConnection | undefined = SessionRequests.entries.get(key);
     if (request !== undefined) {
@@ -330,23 +212,13 @@ export class RdpPointerFlags {
   static readonly HWHEEL: number = 0x0400;
 }
 
-/**
- * Toggle-key bits of the RDP synchronize/indicator PDUs (KBD_SYNC_*). They are
- * the same values in both directions: a Client Synchronize PDU tells the server
- * which lock keys the local keyboard has on, and the server's Set Keyboard
- * Indicators PDU reports the remote session's state.
- */
+// KBD_SYNC_*，双向同值：客户端 Synchronize PDU 上报本机锁定键，服务器的 Set Keyboard Indicators PDU 回报远端状态。
 export class RdpLockFlags {
   static readonly SCROLL: number = 0x01;
   static readonly NUM: number = 0x02;
   static readonly CAPS: number = 0x04;
 }
 
-/**
- * Content kind of a clipboard format, mirroring the native Session::LocalClipKind.
- * Native classifies the server's formats into these and reports the candidates;
- * ArkTS picks which kind to pull and passes it back on the request.
- */
 export class RdpClipKind {
   static readonly NONE: number = 0;
   static readonly TEXT: number = 1;
@@ -367,39 +239,18 @@ export class RdpTouchFlags {
 export class SavedConnection extends RdpConnectOptions {
   id: string = '';
   updatedAt: number = 0;
-  // When true the connection follows the global display settings and ignores
-  // width / height / scalePercent; when false the stored values are used.
   useGlobalDisplay: boolean = true;
-  // When true the connection follows the global advanced settings (audio /
-  // certificate); when false its own stored values win.
   useGlobalAdvanced: boolean = true;
-  // When true the connection follows the global super-resolution settings; when
-  // false its own srEnabled / srRatioPercent win. Kept separate from the display
-  // group so a LAN connection can stay native-resolution while the same machine's
-  // gateway (frp) connection turns 超分 on.
   useGlobalSr: boolean = true;
-  // Per-connection display override sub-modes, only meaningful when
-  // useGlobalDisplay is false: `resolutionAuto` follows the current screen
-  // resolution, and `scaleAuto` derives the scale from that resolution. False
-  // means the stored width / height and scalePercent are used as they are (the
-  // behaviour of records written before these flags existed).
+  // 仅 useGlobalDisplay 为 false 时有意义；两个标志都为 false = 照用存储值（旧记录即如此）。
   resolutionAuto: boolean = false;
   scaleAuto: boolean = false;
 
-  // Protocol this record connects with (PROTOCOL_RDP / PROTOCOL_MOONLIGHT).
   protocol: number = PROTOCOL_RDP;
-  // --- Moonlight (Sunshine) stream settings. ---
-  // Default application the row's connect button opens; empty means the host's
-  // desktop. The app picker connects to another app once without changing it.
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
-  // The host's own identity from `/serverinfo` (`uniqueid`). Unlike the address
-  // the user typed, this is what Moonlight uses to tell hosts apart (NvComputer
-  // uuid), so it is the key the connection-uniqueness check prefers. Filled on
-  // the first successful serverinfo; empty until then.
+  // 主机自身身份（/serverinfo 的 uniqueid）：Moonlight 以此区分主机，故为唯一性检查的首选键；首次 serverinfo 成功后填入，此前为空。
   mlHostId: string = '';
-  // When true the connection follows the global Moonlight stream defaults; when
-  // false its own ml* stream values win (same pattern as useGlobalDisplay).
   useGlobalStream: boolean = true;
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
@@ -462,8 +313,7 @@ export class SavedConnection extends RdpConnectOptions {
 
 export interface EditConnectionParams {
   id: string;
-  // Protocol a brand-new connection starts on (PROTOCOL_RDP / PROTOCOL_MOONLIGHT).
-  // Ignored when `id` names an existing connection, whose own protocol wins.
+  // id 指向已有连接时忽略（已有连接以自己的协议为准）。
   protocol: number;
 }
 

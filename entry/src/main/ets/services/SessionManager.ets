@@ -1,12 +1,3 @@
-/*
- * HmRdp - owns background RDP connections started from the connection list.
- *
- * The single authority for a connection's lifecycle: it creates and destroys the
- * native session, owns the native event listener and publishes the one state the
- * list and the session window both render from. The session window never starts or
- * stops a session itself. The state machine and the "one attempt = one epoch" rule
- * are in doc_agent/session-and-input.md §1.
- */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -19,30 +10,20 @@ import { WindowController } from './WindowController';
 
 const DOMAIN: number = 0xD003;
 const TAG: string = 'HmRdpSessionManager';
-// Safety net for connection attempts that never report a terminal event (an
-// unreachable host or a stalled handshake would otherwise spin forever).
 const CONNECT_TIMEOUT_MS: number = 30000;
-// Minimum spacing between two attempts for one connection, so a hammered retry
-// button (or a double tap on the list) cannot become a connect/logon storm. This
-// is a secondary guard: the real gate is that the previous native session has been
-// fully destroyed (RdpNative.stopSession waits for that).
 const MIN_ATTEMPT_INTERVAL_MS: number = 1500;
 
 export enum ConnectionState {
   Idle = 0,
   Connecting = 1,
   Connected = 2,
-  // The native session is being torn down; no new attempt may start until it is
-  // gone (which stopSession() has already waited for by the time we leave it).
   Disconnecting = 3,
   Failed = 4
 }
 
 export type SessionStateListener = (connectionId: string, state: ConnectionState,
   message: string, origin: RdpConnectOrigin) => void;
-/** Raw native events that only drive the session window's UI effects. */
 export type SessionWindowEventListener = (signal: SessionSignal) => void;
-/** The one lifecycle state the session window renders (from the manager). */
 export type SessionWindowStateListener = (state: ConnectionState, message: string) => void;
 export type SessionCloseListener = () => void;
 
@@ -53,11 +34,7 @@ class SessionEntry {
   message: string = '';
   backend: SessionBackend | undefined = undefined;
   request: PendingConnection = new PendingConnection();
-  // The context the window is launched from; kept so a retry can reopen the
-  // window (only needed while it is not open yet).
   context: common.UIAbilityContext | undefined = undefined;
-  // Bumped on every attempt for this connection. Events carry the epoch of the
-  // attempt that produced them and are dropped once it is stale.
   epoch: number = 0;
   windowOpen: boolean = false;
   timeoutId: number = -1;
@@ -67,9 +44,6 @@ export class SessionManager {
   private static entries: Map<string, SessionEntry> = new Map<string, SessionEntry>();
   private static byKey: Map<string, string> = new Map<string, string>();
   private static stateListeners: SessionStateListener[] = [];
-  // Start time of the last connect attempt per connection. Kept outside the
-  // entries because a failed attempt deletes its entry, while the pacing has to
-  // outlive it. Bounded by the number of connections (one number each).
   private static lastAttemptAt: Map<string, number> = new Map<string, number>();
   private static epochCounter: number = 0;
   private static windowEventListeners: Map<string, SessionWindowEventListener> =
@@ -104,15 +78,10 @@ export class SessionManager {
     }
   }
 
-  /** Drops every listener; the main window calls this on window destroy. */
   static clearStateListeners(): void {
     SessionManager.stateListeners = [];
   }
 
-  /**
-   * Starts a background connection. The session window is opened only after the
-   * connection succeeds; failures are reported through the state listeners.
-   */
   static connect(request: PendingConnection, context: common.UIAbilityContext): void {
     const connectionId: string = request.connectionId;
     const existing: SessionEntry | undefined = SessionManager.entries.get(connectionId);
@@ -123,16 +92,11 @@ export class SessionManager {
     }
     const backend: SessionBackend | undefined = SessionBackendFactory.create(request);
     if (backend === undefined) {
-      // No backend for this protocol yet (e.g. Moonlight until its native
-      // session lands): report it instead of silently dropping the attempt.
       SessionManager.notify(connectionId, ConnectionState.Failed,
         '该协议的会话将在后续版本接入', request.origin);
       return;
     }
     if (existing !== undefined) {
-      // Only reachable when the previous entry was already Idle/Failed, so its
-      // native session is gone or going away; backend.stop() is idempotent and
-      // waits (bounded) for the teardown, so nothing leaks behind us.
       if (existing.backend !== undefined) {
         existing.backend.stop();
       }
@@ -159,11 +123,6 @@ export class SessionManager {
     SessionManager.launch(entry, epoch);
   }
 
-  /**
-   * Runs a backend's optional async pre-flight, then proceeds. The entry and its
-   * epoch are re-checked after the await so a disconnect or a newer attempt
-   * cannot be driven by a stale pre-flight result.
-   */
   private static launch(entry: SessionEntry, epoch: number): void {
     const backend: SessionBackend | undefined = entry.backend;
     if (backend === undefined) {
@@ -178,7 +137,6 @@ export class SessionManager {
         return;
       }
       if (!ok || entry.state !== ConnectionState.Connecting) {
-        // A failed pre-flight already published its own Error signal.
         return;
       }
       SessionManager.proceed(entry, epoch);
@@ -196,7 +154,6 @@ export class SessionManager {
     });
   }
 
-  /** Opens the window (first attempt) or starts the native session, per backend. */
   private static proceed(entry: SessionEntry, epoch: number): void {
     const backend: SessionBackend | undefined = entry.backend;
     if (backend === undefined || entry.epoch !== epoch) {
@@ -204,13 +161,10 @@ export class SessionManager {
     }
     if (backend.requiresWindowAtStart()) {
       if (!entry.windowOpen) {
-        // The session window is the render target: open it now, and start only
-        // once the page has bound its surface (SessionManager.beginStream).
         SessionManager.openWindowForEntry(entry);
         SessionManager.armTimeout(entry);
         return;
       }
-      // The window is still open with its surface bound (retry comes from it).
       SessionManager.beginStream(entry.connectionId);
       return;
     }
@@ -225,11 +179,6 @@ export class SessionManager {
     SessionManager.armTimeout(entry);
   }
 
-  /**
-   * Starts the stream of a backend that needs its window first (Moonlight),
-   * called by that session window once its surface is bound. Returns false when
-   * the attempt is no longer current.
-   */
   static beginStream(connectionId: string): boolean {
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
     if (entry === undefined || entry.backend === undefined) {
@@ -241,8 +190,6 @@ export class SessionManager {
     const handle: number = entry.backend.start();
     if (handle < 0) {
       entry.backend.clearSignalListener();
-      // A backend that failed synchronously already published its own reason via
-      // a signal; only fall back when it did not.
       if (entry.state === ConnectionState.Connecting) {
         SessionManager.publish(entry, ConnectionState.Failed, '无法创建会话');
       }
@@ -252,7 +199,6 @@ export class SessionManager {
     return true;
   }
 
-  /** User-initiated disconnect from the list; also closes the session window. */
   static disconnect(connectionId: string): void {
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
     if (entry === undefined || entry.state === ConnectionState.Disconnecting) {
@@ -262,9 +208,6 @@ export class SessionManager {
       SessionManager.closeListeners.get(entry.sessionKey);
     const origin: RdpConnectOrigin = entry.request.origin;
     SessionManager.clearEntryTimeout(entry);
-    // Tell every listener (and the window) that a teardown is in flight before
-    // the session is stopped, so a click during it is refused by the state, not
-    // by luck.
     SessionManager.publish(entry, ConnectionState.Disconnecting, '');
     if (entry.backend !== undefined) {
       entry.backend.stop();
@@ -276,12 +219,6 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Retries a dropped session from inside the session window. Returns false when
-   * the attempt was refused because one is already running / tearing down or the
-   * last one is too recent, so the caller does not show progress for an attempt
-   * that never started.
-   */
   static retry(connectionId: string): boolean {
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
     if (entry === undefined || entry.backend === undefined) {
@@ -301,12 +238,6 @@ export class SessionManager {
     return true;
   }
 
-  /**
-   * Decides whether a new connect attempt may start now, and books it. Refused
-   * while an attempt is in flight or still tearing down (replacing a running one
-   * only ever adds a second), and inside MIN_ATTEMPT_INTERVAL_MS of the previous
-   * one.
-   */
   private static acceptAttempt(connectionId: string, state: ConnectionState): boolean {
     if (state === ConnectionState.Connecting || state === ConnectionState.Connected ||
       state === ConnectionState.Disconnecting) {
@@ -321,7 +252,6 @@ export class SessionManager {
     return true;
   }
 
-  /** Called when the session window is destroyed: tear down only its session. */
   static release(sessionKey: string): void {
     SessionManager.windowEventListeners.delete(sessionKey);
     SessionManager.windowStateListeners.delete(sessionKey);
@@ -345,10 +275,6 @@ export class SessionManager {
     SessionManager.notify(connectionId, ConnectionState.Idle, '', origin);
   }
 
-  /**
-   * Session window subscribes to the manager: the lifecycle state it renders, the
-   * raw native events that only drive UI effects, and the close callback.
-   */
   static attachWindow(sessionKey: string, onState: SessionWindowStateListener,
     onEvent: SessionWindowEventListener, onClose: SessionCloseListener): void {
     SessionManager.windowStateListeners.set(sessionKey, onState);
@@ -363,7 +289,6 @@ export class SessionManager {
     }
   }
 
-  /** Opens this entry's session window once (idempotent). */
   private static openWindowForEntry(entry: SessionEntry): void {
     if (entry.windowOpen) {
       return;
@@ -379,17 +304,11 @@ export class SessionManager {
     return SessionManager.epochCounter;
   }
 
-  /**
-   * Applies one session signal, but only when it still belongs to the entry's
-   * current attempt: a late event from a session that was already replaced (or
-   * whose window was closed) is dropped instead of driving the current state.
-   */
   private static onSessionSignal(entry: SessionEntry, epoch: number,
     signal: SessionSignal): void {
     if (SessionManager.entries.get(entry.connectionId) !== entry || entry.epoch !== epoch) {
       return;
     }
-    // Captured before any cleanup below removes them from the maps.
     const eventListener: SessionWindowEventListener | undefined =
       SessionManager.windowEventListeners.get(entry.sessionKey);
 
@@ -401,10 +320,6 @@ export class SessionManager {
       return;
     }
     if (signal.kind === SessionSignalKind.Error) {
-      // A failed attempt is terminal: Error is the only terminal signal it sends
-      // (the native side does not also send Disconnected), so the reason is not
-      // overwritten by "连接已断开". The entry is kept in Failed so the window's
-      // 重试 (or a click on the list row) can start a fresh attempt.
       SessionManager.clearEntryTimeout(entry);
       const message: string = SessionManager.describeError(signal.message, signal.code);
       if (entry.backend !== undefined) {
@@ -425,8 +340,6 @@ export class SessionManager {
       }
       return;
     }
-    // Everything else (FirstFrame / Resize / clipboard / cursor) only drives the
-    // window's UI; the connection state stays with the manager.
     if (eventListener !== undefined) {
       eventListener(signal);
     }
@@ -460,7 +373,6 @@ export class SessionManager {
     SessionManager.closeListeners.delete(entry.sessionKey);
   }
 
-  /** Sets the entry state and publishes it to both the list and the window. */
   private static publish(entry: SessionEntry, state: ConnectionState, message: string): void {
     entry.state = state;
     entry.message = message;
@@ -480,8 +392,6 @@ export class SessionManager {
         entry.state !== ConnectionState.Connecting) {
         return;
       }
-      // Keep the entry in Failed (not cleaned up) so the window's 重试 or a
-      // click on the list row can start a fresh attempt.
       if (entry.backend !== undefined) {
         entry.backend.stop();
       }
@@ -504,15 +414,8 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Turns a native error/disconnect reason into a user-facing message.
-   * `fallback` is what to say when there is no reason at all, so the same parser
-   * serves both a failed connect and a dropped session.
-   *
-   * The code's high 16 bits are the FreeRDP error class: 1 = ERRINFO (the server's
-   * ErrorInfo PDU, e.g. "another connection took over"), 2 = ERRCONNECT (a local
-   * connect failure). See the patch's error.h.
-   */
+  // The code's high 16 bits are the FreeRDP error class: 1 = ERRINFO (server
+  // ErrorInfo PDU), 2 = ERRCONNECT (local connect failure); see the patch's error.h.
   static describeError(raw: string, code: number, fallback: string = '连接失败'): string {
     if (code === 0) {
       return raw.length > 0 ? raw : fallback;
@@ -528,11 +431,6 @@ export class SessionManager {
     return raw.length > 0 ? raw : fallback;
   }
 
-  /**
-   * The server's reason for ending the session (ERRINFO_*, see the FreeRDP
-   * error.h). These are what the disconnect overlay must distinguish: taken over
-   * by another connection, logged off, idle timeout, a server-side crash, ...
-   */
   private static disconnectErrorText(type: number, raw: string, fallback: string): string {
     if (type === 0x01) {
       return '远端服务结束了会话';

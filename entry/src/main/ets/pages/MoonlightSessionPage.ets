@@ -1,13 +1,3 @@
-/*
- * HmRdp - Moonlight (GameStream) session window.
- *
- * The protocol-specific sibling of SessionPage: it binds the XComponent surface
- * and only then asks SessionManager to start the native Moonlight session
- * (LiStartConnection takes the render target, so the window must exist first),
- * forwards input through the MoonlightSessionBackend's concrete verbs, and
- * renders the session state published by the manager. See
- * doc_agent/moonlight-native.md §3 and session-and-input.md §1.
- */
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -35,10 +25,8 @@ import { TOOLBAR_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE,
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
 
-// The session window opens while the stream is still Connecting (LiStartConnection
-// needs the render target). A connecting-status card that appeared immediately
-// would flash; like RDP, whose window only opens once the session is up, the card
-// is held back this long and only shown if the stream has not come up by then.
+// The window opens while still Connecting (LiStartConnection needs the render
+// target); hold the connecting card back this long so a fast start does not flash.
 const CONNECT_OVERLAY_DELAY_MS: number = 1000;
 
 class MlSurfaceController extends XComponentController {
@@ -79,51 +67,34 @@ struct MoonlightSessionPage {
   private connectionId: string = '';
   private started: boolean = false;
   private closing: boolean = false;
-  // The bound XComponent surface. Kept so a retry can re-bind it: stopping a
-  // session releases the native window, but this surface stays alive.
+  // Kept so a retry can re-bind it: stopping a session releases the native
+  // window, but this surface stays alive.
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
-  // Component size in vp (for mapping pointer coords to the stream frame).
   private componentWidth: number = 0;
   private componentHeight: number = 0;
-  // The reference frame absolute mouse positions are expressed in. It is the
-  // resolved stream size carried on the request (see MoonlightLauncher); the
-  // 1080p default only covers a request that predates that resolution.
+  // Reference frame for absolute mouse positions: the resolved stream size from
+  // the request (the 1080p default only covers a request that predates it).
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
-  // Modifier state tracked from key events (Moonlight wants a modifier bitmask).
   private modifiers: number = 0;
-  // Moonlight cursor handling (ML_CURSOR_*), read once per session:
-  //  - OFF / HIDE_HOST: the system cursor is never hidden;
-  //  - HIDE_SYSTEM: it is hidden while the pointer is over the picture (the
-  //    host's cursor baked into the video is the only one), and shown back over
-  //    the toolbar / when the stream is not up;
-  //  - HIDE_HOST (foundation-sunshine): the host forwards the pointer and the
-  //    shape below is installed as the system cursor.
+  // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
+  // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
-  // Host cursor installed as the system cursor (HIDE_HOST). All policy lives
-  // in the shared installer (services/RemoteCursor.ets); this page only gates
-  // it with the mode and forwards updates.
   private cursor: RemoteCursor = new RemoteCursor();
-  // Toolbar title: the connection's display name (name or host, same as RDP) and
-  // the target label the connecting card shows.
   private hostLabel: string = '';
   private targetLabel: string = '';
-  // Fixed-dark toolbar material (see component/SessionChrome); a no-op on a
-  // system without the material capability, which keeps the flat bar colour.
+  // Fixed-dark toolbar material; a no-op without the material capability, which
+  // keeps the flat bar colour.
   private toolbarMaterial: AttributeModifier<RowAttribute> =
     new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private sessionWindow: window.Window | undefined = undefined;
-  // The strip is `toolbarHeight` tall; the band that reveals it is much shorter.
   private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 700;
   private hideDelay: number = 250;
-  // Cleared in aboutToDisappear so a hover-exit during teardown arms nothing.
   private toolbarAutoHideArmed: boolean = true;
-  // Fullscreen auto-hide: same controller as the RDP page (services/ToolbarAutoHide);
-  // the page supplies live state and mirrors show/reveal back into @State.
   private autoHideHost: ToolbarAutoHideHost = {
     isArmed: () => this.toolbarAutoHideArmed,
     isFullscreen: () => this.isFullscreen,
@@ -143,14 +114,10 @@ struct MoonlightSessionPage {
     }
   };
   private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
-  // Pending "show the connecting card" timer (see CONNECT_OVERLAY_DELAY_MS); -1
-  // when not running.
   private overlayTimer: number = -1;
 
   @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接…';
-  // Whether the connecting card has passed its delay and may be shown (failed /
-  // disconnected states show immediately).
   @State connectOverlayVisible: boolean = false;
   @State showToolbar: boolean = true;
   @State revealHintFill: number = 0;
@@ -175,13 +142,9 @@ struct MoonlightSessionPage {
       this.backend = backend;
     }
     const settings = SettingsStore.load();
-    // The toolbar and its auto-hide delays are app-level, shared with RDP.
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
-    // Only the local-cursor mode installs host shapes; in the other modes the
-    // channel never opens (the backend only asks for it in HIDE_HOST), so the
-    // listener simply never fires.
     this.cursor.setEnabled(this.cursorMode === ML_CURSOR_HIDE_HOST);
     if (this.backend !== undefined) {
       this.backend.setCursorListener((update: RemoteCursorUpdate): void => {
@@ -194,9 +157,8 @@ struct MoonlightSessionPage {
         this.onSurfaceCreated(surfaceId, width, height);
       },
       (surfaceId: string, width: number, height: number): void => {
-        // The surface id is stable across resizes; the bound OHNativeWindow
-        // stays valid, so nothing to redo here (onSurfaceCreated rebinds). The
-        // size is kept for a later retry re-bind.
+        // The surface id is stable across resizes, so the bound OHNativeWindow
+        // stays valid; only the size is kept for a retry re-bind.
         this.surfaceWidth = width;
         this.surfaceHeight = height;
         hilog.info(DOMAIN, TAG, 'surface changed %{public}dx%{public}d', width, height);
@@ -214,7 +176,6 @@ struct MoonlightSessionPage {
       () => {
         this.terminateWindow();
       });
-    // Arm the connecting delay for the state the window opened in (Connecting).
     this.updateConnectOverlay();
   }
 
@@ -232,7 +193,6 @@ struct MoonlightSessionPage {
     }
   }
 
-  /** Binds the surface and starts the stream (once). */
   private onSurfaceCreated(surfaceId: string, width: number, height: number): void {
     this.surfaceId = surfaceId;
     this.surfaceWidth = width;
@@ -249,18 +209,14 @@ struct MoonlightSessionPage {
     SessionManager.beginStream(this.connectionId);
   }
 
-  /** Moonlight's stage events are not shown: the card keeps RDP's format. */
   private onSignal(signal: SessionSignal): void {
   }
 
-  /** Renders one manager state, holding back the connecting card (see the const). */
   private applyState(state: ConnectionState, message: string): void {
     this.state = state;
     this.statusText = message;
-    // Windowed mode lays the strip out above the picture anyway; hiding it in
-    // fullscreen is what the auto-hide then manages.
     this.showToolbar = state !== ConnectionState.Connected;
-    // Not streaming: the system cursor must come back (it is process-wide).
+    // Not streaming: the process-wide system cursor must come back.
     if (state !== ConnectionState.Connected) {
       this.setLocalCursorHidden(false);
     }
@@ -268,7 +224,6 @@ struct MoonlightSessionPage {
     this.refreshToolbarAutoHide();
   }
 
-  /** Arms / clears the "show the connecting card" delay. */
   private updateConnectOverlay(): void {
     if (this.state === ConnectionState.Connecting) {
       if (this.connectOverlayVisible || this.overlayTimer !== -1) {
@@ -289,7 +244,6 @@ struct MoonlightSessionPage {
     this.connectOverlayVisible = false;
   }
 
-  /** Tracks the window's fullscreen state; drives the strip's auto-hide. */
   private loadSessionWindow(): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
@@ -304,7 +258,6 @@ struct MoonlightSessionPage {
       this.isFullscreen = WindowController.isFullscreen(win);
       WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
-        // The auto-hide only exists in fullscreen: drop or re-arm its timers.
         this.refreshToolbarAutoHide();
       });
     });
@@ -326,23 +279,16 @@ struct MoonlightSessionPage {
     WindowController.toggleFullscreen(win, this.isFullscreen);
   }
 
-  /** Reports which zone the pointer is in; zones come from the surface or the bar. */
   private setToolbarPointerZone(zone: number): void {
     this.toolbarAutoHide.setPointerZone(zone);
   }
 
-  /** Re-evaluates the bar's auto-hide (delegates to the shared controller). */
   private refreshToolbarAutoHide(): void {
     this.toolbarAutoHide.refresh();
   }
 
-  /**
-   * HIDE_SYSTEM only: hides the HarmonyOS system cursor while the pointer is
-   * over the picture and the stream is up, so the host cursor baked into the
-   * video is the only one. The installer owns the process-global switch and
-   * hands it back off the picture, on disconnect, on losing focus and on
-   * teardown. The other modes (OFF / HIDE_HOST) never hide it here.
-   */
+  // HIDE_SYSTEM only: the installer owns the process-global cursor switch and
+  // restores it off the picture / on disconnect / on teardown.
   private setLocalCursorHidden(hidden: boolean): void {
     const shouldHide: boolean = hidden && this.cursorMode === ML_CURSOR_HIDE_SYSTEM
       && this.state === ConnectionState.Connected;
@@ -350,11 +296,8 @@ struct MoonlightSessionPage {
   }
 
   private handleMouse(event: MouseEvent): void {
-    // The top reveal band only matters in fullscreen; reporting it always keeps
-    // the decision in one place (the controller ignores it outside fullscreen).
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
-    // Over the picture: hide the system cursor so only the host's shows.
     this.setLocalCursorHidden(true);
     const backend: MoonlightSessionBackend | undefined = this.backend;
     if (backend === undefined) {
@@ -400,11 +343,9 @@ struct MoonlightSessionPage {
     if (this.connectionId.length === 0) {
       return;
     }
-    // Stopping a session released its native window (the retry only shows in a
-    // Failed/Idle state, i.e. after that stop), so re-bind the XComponent surface
-    // — it is still alive — to give the restarted stream a render target again.
-    // A second bind while a session is active is refused natively; the manager's
-    // state guard keeps retry out of that case.
+    // A stopped session released its native window, so re-bind the still-alive
+    // surface for the restarted stream; a second bind while active is refused
+    // natively (the manager's state guard keeps retry out of that case).
     const backend: MoonlightSessionBackend | undefined = this.backend;
     if (backend !== undefined && this.surfaceId.length > 0) {
       backend.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
@@ -420,7 +361,6 @@ struct MoonlightSessionPage {
     this.terminateWindow();
   }
 
-  /** The second disconnect mode: stop the host app (/cancel), then disconnect. */
   private async closeAppAndDisconnect(): Promise<void> {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     const context = this.getUIContext().getHostContext();
@@ -429,8 +369,8 @@ struct MoonlightSessionPage {
       const ok: boolean = await MoonlightClient.cancel(filesDir, request.savedConnection.host,
         request.moonlightHttpsPort);
       if (ok) {
-        // Clear the shared host target now: the app page / list must not flip to
-        // 恢复 (as if the app were still running) when this window closes.
+        // Clear the shared host target now, or the list would flip to 恢复 when
+        // this window closes.
         MoonlightHostState.markStopped(request.savedConnection.id);
         MoonlightHostState.refreshAfter(request.savedConnection, filesDir, HOST_REPROBE_DELAY_MS);
       }
@@ -513,11 +453,6 @@ struct MoonlightSessionPage {
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }
 
-  /**
-   * True while the dark status overlay is up. A connecting attempt only shows it
-   * after CONNECT_OVERLAY_DELAY_MS (so a fast start is not a flash); failed /
-   * disconnecting / dropped states show it immediately.
-   */
   private overlayVisible(): boolean {
     if (this.state === ConnectionState.Connecting) {
       return this.connectOverlayVisible;
@@ -527,8 +462,6 @@ struct MoonlightSessionPage {
 
   build() {
     Column() {
-      // Windowed mode: the strip is laid out above the picture, so the image
-      // starts below it instead of under it. It belongs to a live session only.
       if (!this.isFullscreen && this.state === ConnectionState.Connected) {
         this.sessionToolbar()
       }
@@ -547,13 +480,10 @@ struct MoonlightSessionPage {
             this.handleMouse(event);
           })
           .onHover((isHover: boolean) => {
-            // The system cursor follows the pointer: hidden over the picture,
-            // shown again as soon as it leaves (toolbar / outside the window).
             this.setLocalCursorHidden(isHover);
             if (isHover) {
-              // The system may drop a custom cursor when the pointer re-enters
-              // the window, and the host only sends a shape on change (never a
-              // resend) - re-install the kept state, same as the RDP page.
+              // The system may drop a custom cursor when the pointer re-enters,
+              // and the host only sends a shape on change, so re-install it.
               this.cursor.reapply();
             }
           })
@@ -568,8 +498,6 @@ struct MoonlightSessionPage {
             this.componentHeight = lengthToNumber(newArea.height);
           })
 
-        // Fullscreen: the reveal hint hugs the top edge, behind the bar (which
-        // slides in over it).
         if (this.isFullscreen && this.state === ConnectionState.Connected) {
           Stack() {
             ToolbarRevealHint({ fill: this.revealHintFill })
@@ -580,7 +508,6 @@ struct MoonlightSessionPage {
           .hitTestBehavior(HitTestMode.None)
         }
 
-        // Fullscreen mode: the strip floats over the image and auto-hides.
         if (this.isFullscreen && this.showToolbar && this.state === ConnectionState.Connected) {
           this.sessionToolbar()
         }

@@ -1,18 +1,3 @@
-/*
- * HmRdp - the audio worker: one ArkTS AudioRenderer per live session.
- *
- * Native keeps the FreeRDP sink and its PCM handoff ring; this worker owns the
- * renderer, so the player does not depend on OHAudio code inside libhmrdp. Each
- * renderer's writeData callback pulls from the ring by handle (audioRead), which
- * fills the buffer with queued audio plus silence on an underrun - so the callback
- * always reports a full, valid buffer and the buffering policy stays in one place
- * (the native sink).
- *
- * Separate from the background worker on purpose: a realtime audio callback must
- * not queue behind a large image decode or a file write (doc_agent/architecture.md
- * §4.4). Correlated renderer state is keyed by session handle, so several
- * sessions share this one worker without interfering.
- */
 import { MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { audio } from '@kit.AudioKit';
 import { BusinessError, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
@@ -25,7 +10,7 @@ const TAG: string = 'HmRdpAudio';
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
 
-/** Per-session renderer state. `generation` invalidates an in-flight rebuild. */
+// generation invalidates an in-flight rebuild.
 class SessionAudio {
   handle: number = 0;
   active: boolean = false;
@@ -47,14 +32,9 @@ function stateFor(handle: number): SessionAudio {
   return state;
 }
 
-/**
- * The AudioKit value / enum references, kept in one place so a single 多设备
- * (syscap) suppression covers them. A device without an audio output is handled
- * by the capability probe and the graceful degradation (DeviceCapabilities).
- */
+// AudioKit references in one place so a single 多设备 (syscap) suppression covers them all.
 @SuppressWarnings({ rules: [SuppressWarningsType.SYSCAP] })
 class AudioFormats {
-  /** Maps a PCM sample rate to the AudioKit enum (fallback: 48 kHz). */
   static sampleRate(rate: number): audio.AudioSamplingRate {
     if (rate === 8000) {
       return audio.AudioSamplingRate.SAMPLE_RATE_8000;
@@ -86,12 +66,10 @@ class AudioFormats {
     return audio.AudioSamplingRate.SAMPLE_RATE_48000;
   }
 
-  /** Maps a channel count to the AudioKit enum (mono / stereo; fallback: stereo). */
   static channel(channels: number): audio.AudioChannel {
     return channels === 1 ? audio.AudioChannel.CHANNEL_1 : audio.AudioChannel.CHANNEL_2;
   }
 
-  /** The stream descriptor for a session's rate / channels. */
   static streamInfo(rate: number, channels: number): audio.AudioStreamInfo {
     const info: audio.AudioStreamInfo = {
       samplingRate: AudioFormats.sampleRate(rate),
@@ -102,7 +80,6 @@ class AudioFormats {
     return info;
   }
 
-  /** The renderer descriptor (music usage, no flags). */
   static rendererInfo(): audio.AudioRendererInfo {
     const info: audio.AudioRendererInfo = {
       usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
@@ -111,23 +88,19 @@ class AudioFormats {
     return info;
   }
 
-  /** Opens the renderer for `options`. */
   static create(options: audio.AudioRendererOptions): Promise<audio.AudioRenderer> {
     return audio.createAudioRenderer(options);
   }
 
-  /** The "buffer was filled" writeData callback result. */
   static dataCallbackOk(): audio.AudioDataCallbackResult {
     return audio.AudioDataCallbackResult.VALID;
   }
 
-  /** Whether an interrupt event asks the renderer to resume. */
   static isResume(event: audio.InterruptEvent): boolean {
     return event.hintType === audio.InterruptHint.INTERRUPT_HINT_RESUME;
   }
 }
 
-/** Releases the current renderer without waiting (the worker is not blocked). */
 function releaseRenderer(state: SessionAudio): void {
   const renderer: audio.AudioRenderer | undefined = state.renderer;
   state.renderer = undefined;
@@ -138,7 +111,6 @@ function releaseRenderer(state: SessionAudio): void {
   }
 }
 
-/** (Re)builds the renderer for a session's current rate/channels. */
 async function build(state: SessionAudio): Promise<void> {
   state.generation++;
   const generation: number = state.generation;
@@ -160,8 +132,7 @@ async function build(state: SessionAudio): Promise<void> {
     }
     state.renderer = renderer;
     renderer.on('writeData', (buffer: ArrayBuffer): audio.AudioDataCallbackResult => {
-      // The native ring fills the whole buffer (audio + silence); the return
-      // value is informational only.
+      // The native ring fills the whole buffer (audio + silence), so the result is always VALID.
       audioRead(handle, buffer);
       return AudioFormats.dataCallbackOk();
     });
@@ -190,8 +161,7 @@ workerPort.onmessage = (e: MessageEvents): void => {
   if (message.op === AudioOps.START) {
     state.active = true;
     // The format event may have fired before this window attached (or before the
-    // worker existed), so seed from the session's current format instead of
-    // waiting for the next change.
+    // worker existed), so seed from the current format instead of waiting.
     if (state.rate <= 0 || state.channels <= 0) {
       const current: RdpAudioFormat = audioFormat(handle);
       if (current.rate > 0 && current.channels > 0) {

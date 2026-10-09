@@ -1,6 +1,3 @@
-/*
- * HmRdp - remote session page: XComponent surface + input forwarding.
- */
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { inputDevice } from '@kit.InputKit';
@@ -43,101 +40,59 @@ import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
 
-// Synthetic touch pinch geometry. The initial finger separation is a percentage
-// of the smaller desktop side (window-relative, never a fixed resolution); the
-// value itself is settings.pinchTouchDistance, so only the clamp is local.
 const MIN_PINCH_DISTANCE_PERCENT: number = 1;
 const MAX_PINCH_DISTANCE_PERCENT: number = 20;
 const MIN_PINCH_HALF: number = 8;
-// axisPinch is a distance ratio relative to the gesture start; clamp it so a
-// bad sample can never explode or collapse the synthetic finger separation.
+// axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot explode or collapse the separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
-// Ceiling of the direct (local) picture zoom; 1.0 is the fitted view.
 const MIN_VIEW_SCALE: number = 1;
 const MAX_VIEW_SCALE: number = 8;
-// A pinch released below this scale snaps back to exactly 100% (VIEW_SNAP_MS).
 const VIEW_SNAP_SCALE: number = 1.08;
 const VIEW_SNAP_MS: number = 180;
-// Telemetry pull cadence; one sample per second, matching the native window.
 const METRICS_INTERVAL_MS: number = 1000;
-// Pan per mouse wheel notch (vp); the touchpad scroll pans 1:1 instead.
 const PAN_WHEEL_STEP: number = 64;
-// External RDPEI ids for the synthetic pinch contacts; real screen touches use
-// touch.id + 1 (1..11), so these never collide.
+// External RDPEI ids for the synthetic pinch contacts; real screen touches use touch.id + 1, so these never collide.
 const PINCH_TOUCH_ID_A: number = 20;
 const PINCH_TOUCH_ID_B: number = 21;
-// The synthetic pinch's first MOTION must not reach the native RDPEI layer
-// before its DOWN frame has been flushed: FreeRDP coalesces touch frames at
-// 50Hz by default (HmrdpSetTouchFrameInterval(20)), so a MOTION inside that
-// window overwrites the unsent DOWN and the remote never engages the contacts.
-// This margin decouples the app from the coalescing interval (a touch pinch uses
-// the high-rate option, whose interval is below this margin) and is far below the
-// time Windows needs to recognise a pinch.
+// FreeRDP coalesces touch frames, so the first MOTION must not reach RDPEI before its DOWN flush or it overwrites the unsent DOWN.
 const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
-// Direction dead zone for the pinch locator cursor: the gesture ratio must move
-// this far past 1.0 before the open/grab hand flips, so a jitter around the start
-// does not make the cursor flicker between the two.
+// Dead zone before the pinch locator cursor flips open/grab hand, so jitter does not flicker it.
 const PINCH_CURSOR_HYSTERESIS: number = 0.02;
 
 // Toolbar throughput below this is idle/keep-alive noise, so it is not shown.
 const MIN_BANDWIDTH_BYTES: number = 1024;
 
-// Fixed widths for the toolbar telemetry so a changing number never reflows the
-// items after it. Sized close to the common maximum so the unused space inside
-// a box stays small and the gaps are governed by the margins below.
+// Fixed widths so a changing number never reflows the items after it.
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_LOCAL: number = 74;
 const METRIC_WIDTH_FPS: number = 48;
 const METRIC_WIDTH_AUDIO: number = 86;
-// Process CPU usage (%) and this client's own GPU time per frame (ms).
 const METRIC_WIDTH_CPU: number = 60;
 const METRIC_WIDTH_GPU: number = 76;
-// Two gap sizes: the network/local pair sits one character apart, the rest
-// share a wider gap.
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
 
-// Latency colour thresholds. The network RTT is allowed to be fairly high
-// before it warns (it is dominated by distance), while the local per-frame work
-// is held to a much tighter budget because it is entirely under our control:
-// over WARN_MS the client cannot reach 60 fps and over BAD_MS it cannot reach
-// 30 fps, whatever the network delivers.
+// Latency colour thresholds: network RTT warns late (dominated by distance); local per-frame work over WARN misses 60 fps, over BAD even 30 fps.
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
 const LOCAL_BAD_MS: number = 33;
 
-// The session toolbar palette, geometry and shared chips live in
-// components/SessionChrome.ets (fixed dark chrome over the remote image); the
-// fullscreen auto-hide state machine lives in services/ToolbarAutoHide.ets.
-
-// Grace period before the "came back to the foreground" reconnect check. While
-// the app is away the system freezes and then aborts its sockets, but the native
-// read loop only notices that once it runs again, i.e. just after the window is
-// back. One delayed check therefore covers both orders: a session already
-// reported down while we were away is still down by the time it runs.
+// While the app is away the system freezes and aborts its sockets, but the read loop only notices once the window is back, so the reconnect check waits a grace period.
 const FOREGROUND_RECONNECT_GRACE_MS: number = 400;
 
-// A TouchType.Cancel does not always mean the finger lifted (a move can be
-// interrupted). The contact is held instead, and a following Down within this
-// distance of its last position is treated as the same finger resuming. Only if
-// no such event arrives within CANCEL_HOLD_MS is the contact really released.
+// A TouchType.Cancel does not always mean the finger lifted: a Down within this distance of its last position resumes the contact instead of lifting and re-pressing.
 const CANCEL_RESUME_RATIO: number = 0.02;
 const CANCEL_RESUME_MIN_DISTANCE: number = 16;
 const CANCEL_RESUME_MAX_DISTANCE: number = 64;
 const CANCEL_HOLD_MS: number = 400;
 
-// Upper bound on how often a pointer move is forwarded (125Hz). It is the pacing
-// of the input the remote receives, not a display rate: mouse and touchpad events
-// arrive far faster than any pointer needs to move, and each forwarded move is a
-// separate input PDU.
+// Each forwarded move is a separate input PDU, so pointer moves are rate-limited.
 const MOUSE_MOVE_MIN_INTERVAL_MS: number = 8;
 
 // 触控板双指双击 -> 中键的判定窗口：单次双指轻触要等这么久没有第二次才按右键发出。
 const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
-
-
 
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -168,11 +123,6 @@ class RdpSurfaceController extends XComponentController {
   }
 }
 
-/**
- * Routes the process-level foreground transitions to the page. Only an actual
- * round trip matters: the reconnect decision is made on the way back, never on
- * the way out.
- */
 class ForegroundStateCallback extends ApplicationStateChangeCallback {
   private onAway: () => void;
   private onReturn: () => void;
@@ -192,7 +142,6 @@ class ForegroundStateCallback extends ApplicationStateChangeCallback {
   }
 }
 
-/** One clipboard candidate (kind + the server's format id) the page may pull. */
 class ClipPick {
   kind: number = RdpClipKind.NONE;
   id: number = 0;
@@ -201,27 +150,21 @@ class ClipPick {
 @Entry({ useSharedStorage: true })
 @Component
 struct SessionPage {
-  // The manager is the authority; this only mirrors what it publishes.
   @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接...';
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
-  // Fill of the top-edge reveal hint (0..1): shows the dwell, never decides it.
   @State revealHintFill: number = 0;
   @State isFullscreen: boolean = false;
-  // Identifies this window's launch request, injected by SessionAbility.
   @LocalStorageLink('sessionKey') sessionKey: string = '';
 
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
-  // Immersive system material for the toolbar (the status card owns its own in
-  // the shared StatusCard component). A no-op on a system without the material
-  // capability, in which case the flat background below is what shows.
+  // No-op without the material capability, where the flat background shows.
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
-  // Tooltip surfaces take the material through their options object; a system
-  // without the capability ignores the field and keeps the default tooltip.
+  // A system without the material capability ignores this field and keeps the default tooltip.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private closing: boolean = false;
@@ -230,58 +173,34 @@ struct SessionPage {
   private componentHeight: number = 0;
   private desktopWidth: number = 1920;
   private desktopHeight: number = 1080;
-  // Live session telemetry pushed once per second by the native side. @State so
-  // the toolbar refreshes on every sample.
   @State metricsRtt: number = -1;
   @State metricsRx: number = 0;
   @State metricsTx: number = 0;
   @State metricsFps: number = 0;
-  // Per-frame work phase by phase, in microseconds: ZGX decompress + RDPGFX parse,
-  // decode, gdi compose, present. The toolbar's "本机" is their sum (see localUs()):
-  // the native side sends no pre-summed total, and blocked time (the GPU `sync`)
-  // is a separate field that is deliberately not summed in.
   @State metricsZgxUs: number = 0;
   @State metricsDecodeUs: number = 0;
   @State metricsComposeUs: number = 0;
   @State metricsPresentUs: number = 0;
-  // Of `presentUs`, the part the presenter spent blocked on the display
-  // (swapchain acquire / buffer swap). Blocked, so it is not in the 本机 sum; it
-  // is only shown as a hint in the tooltip.
   @State metricsPresentWaitUs: number = 0;
   @State metricsBytesPerFrame: number = 0;
   @State metricsDutyPermille: number = 0;
   @State metricsCmdsPerFrame: number = 0;
-  // GPU time of the presented frame in microseconds, split into the dirty-rect
-  // upload, the 超分辨率 upscale and the clear + letterbox quad. Zero on a backend
-  // that cannot measure it (the GLES fallback). This is the client's *own* GPU work,
-  // not the GPU's total load - no public API exposes that to an app.
+  // The client's own GPU work; no public API exposes the GPU's total load to an app.
   @State metricsGpuCopyUs: number = 0;
   @State metricsGpuSrUs: number = 0;
   @State metricsGpuBlitUs: number = 0;
-  // Process CPU usage in percent, or -1 when the device cannot report it
-  // (hidebug). Sampled once per telemetry window - see sampleCpuUsage().
   @State metricsCpuPercent: number = -1;
-  // Developer options (SettingsStore.developerMode): the toolbar's performance
-  // telemetry is a dev tool, so it is only shown while this is on.
   @State developerMode: boolean = false;
-  // Audio sample rate (Hz) and recent glitch rate in basis points (0.01%);
-  // -1 when audio is not playing.
   @State metricsAudioRateHz: number = -1;
   @State metricsAudioLossBp: number = -1;
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
-  // windowVisible = windowOnScreen && !windowMinimized (see
-  // doc_agent/session-and-input.md §1.1). While it is false, surface sizes the
-  // system reports are held until it is back, and the server's output is suppressed.
+  // While false, surface sizes the system reports are held until it is back, and the server's output is suppressed.
   private windowOnScreen: boolean = true;
   private windowMinimized: boolean = false;
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
-  // Fullscreen auto-hide: the state machine (pointer zone, reveal dwell, hide
-  // delay, pin-while-busy) lives in services/ToolbarAutoHide. The page supplies
-  // the live state it reads and mirrors `showToolbar` / `revealHintFill` back
-  // into @State via the host callbacks.
   private autoHideHost: ToolbarAutoHideHost = {
     isArmed: () => this.toolbarAutoHideArmed,
     isFullscreen: () => this.isFullscreen,
@@ -301,190 +220,111 @@ struct SessionPage {
     }
   };
   private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
-  // Pulls the native telemetry window once per second while the session is
-  // connected (see refreshCounters). -1 = timer not running.
   private metricsTimer: number = -1;
-  // Cleared in aboutToDisappear so a hover-exit during teardown arms nothing.
   private toolbarAutoHideArmed: boolean = true;
   private moveTimer: number = -1;
-  // The strip is `toolbarHeight` tall; the band that reveals it is much shorter,
-  // so a pass-by along the top edge does not.
   private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
-  // Active touch contacts, keyed by the ArkUI touch id. The value is the last
-  // remote point sent for that contact, so no-op moves can be dropped.
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
-  // ArkUI touch id -> remote RDPEI contact id, kept separate so a contact can be
-  // resumed after a Cancel even if ArkUI renumbers the finger.
+  // Kept separate from touchPoints so a contact can be resumed after a Cancel even if ArkUI renumbers the finger.
   private touchContactIds: Map<number, number> = new Map<number, number>();
-  // Contacts whose Cancel arrived but that may still be down (see CANCEL_*).
   private pendingCancelIds: number[] = [];
   private cancelTimers: Map<number, number> = new Map<number, number>();
-  // Touchpad scroll: ArkUI reports raw finger displacement (vp); the mapper
-  // converts it into high-resolution RDP wheel chunks.
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
   private wheelChunks: WheelChunk[] = [];
-  // Latest pointer position waiting to be sent, and when a MOVE was last sent
-  // (see MOUSE_MOVE_MIN_INTERVAL_MS). -1 means nothing is pending.
   private pendingMoveX: number = -1;
   private pendingMoveY: number = -1;
   private lastMoveSentAt: number = 0;
-  // Input the remote still sees as held, so a lost Up (focus left the window)
-  // can be flushed. Keys are keyed by remote identity, not by ArkUI key code.
   private heldScanKeys: Map<string, RdpScanCode> = new Map<string, RdpScanCode>();
   private heldUnicodeKeys: Set<number> = new Set<number>();
   private heldButtons: Set<number> = new Set<number>();
   private lastPointerX: number = 0;
   private lastPointerY: number = 0;
-  // 触控板中键手势: a touchpad two-finger tap is a right click, but it may be the
-  // first half of a double tap that means middle, so while the setting is on the
-  // single click is held back for TOUCHPAD_DOUBLE_TAP_MS.
   private touchpadMiddleDoubleTap: boolean = false;
   private touchpadClickPending: boolean = false;
   private touchpadClickTimer: number = -1;
   private touchpadClickX: number = 0;
   private touchpadClickY: number = 0;
-  // The second tap of a double was consumed, so its Release is swallowed too.
   private touchpadMiddleSwallow: boolean = false;
-  // deviceId -> whether that input device is a touchpad (see isTouchpadDevice).
   private touchpadDevices: Map<number, boolean> = new Map<number, boolean>();
   private deviceChangeListener: (data: inputDevice.DeviceListener) => void =
     (data: inputDevice.DeviceListener) => {
       this.touchpadDevices.clear();
     };
-  // Touchpad pinch state: axisPinch is the ratio of the current two-finger
-  // distance to the distance when the pinch started (starts at 1).
   private pinchScale: number = 0;
   private pinchAccum: number = 0;
-  // The gesture (and its synthetic contacts / held Ctrl) lasts from the first PINCH
-  // axis event until the OS sends the real AxisAction.END, i.e. the fingers are
-  // actually lifted. No timers: a stationary hold keeps it alive instead of lifting
-  // the contacts into a fake click.
+  // No timers: a stationary hold must not lift the contacts into a fake click.
   private pinchActive: boolean = false;
   private pinchCtrlDown: boolean = false;
   private pinchZoomSpeed: number = 1;
   private readonly ctrlScancode: number = 0x1D;
-  // How a touchpad two-finger pinch is handled, as the two flags the gesture
-  // branches on: a synthetic native two-finger touch, or a local picture zoom.
-  // (Ctrl+wheel, the default, is neither.)
   private pinchAsTouch: boolean = false;
   private pinchDirect: boolean = false;
   private pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   private touchPinchActive: boolean = false;
-  // While a synthetic-touch pinch is running the OS hides the mouse pointer (a
-  // touch is in progress), which would leave the user with no aim point. The
-  // cursor installer swaps in a native hand for the duration (open hand while
-  // spreading / grab while closing); this field is the hysteresis memory for
-  // the direction.
+  // The OS hides the pointer while a synthetic touch is down; the cursor installer swaps in a native hand, this is the direction hysteresis.
   private touchPinchZoomIn: boolean = true;
   private touchPinchAnchor: number[] = [0, 0];
   private touchPinchHalf: number = MIN_PINCH_HALF;
   private touchPinchLastHalf: number = MIN_PINCH_HALF;
-  // Earliest time a MOTION may be forwarded after the synthetic DOWN (see
-  // PINCH_TOUCH_DOWN_FLUSH_MS); 0 while no touch pinch is active.
   private touchPinchMotionAt: number = 0;
-  // Orientation of the synthetic contact pair (degrees, clockwise on screen).
-  // ArkUI cannot report the real finger angle, so the pair is tilted by this
-  // configured amount; the unit vector is cached when a pinch starts.
+  // ArkUI cannot report the real finger angle, so the pair is tilted by this configured amount.
   private touchPinchAngle: number = 30;
   private touchPinchUnitX: number = 1;
   private touchPinchUnitY: number = 0;
-  // Direct (local) picture zoom: the transform on the XComponent wrapper plus the
-  // state behind it (1.0 = fitted view). Kept as numbers so a later pinch can
-  // anchor on where the picture currently is (see the direct-zoom methods).
   @State private viewMatrix: Matrix4Transit = matrix4.identity();
   private viewScale: number = 1;
   private viewTransX: number = 0;
   private viewTransY: number = 0;
-  // Pinch-start snapshot: the anchor under the cursor and the screen offset that
-  // keeps it there; only the scale changes during the gesture.
   private viewPinchAnchorX: number = 0;
   private viewPinchAnchorY: number = 0;
   private viewPinchPanX: number = 0;
   private viewPinchPanY: number = 0;
   private viewPinchBaseScale: number = 1;
   private sessionWindow: window.Window | undefined = undefined;
-  // Clipboard redirection is manual, driven by the toolbar. The remote
-  // clipboard is cached when the server offers it; "复制" pulls it to the local
-  // clipboard and "粘贴" (system paste control, no READ_PASTEBOARD) pushes the
-  // local clipboard to the remote.
-  // Latest rich payload pulled from the remote. Only one is populated at a time
-  // (native requests the richest supported format per remote copy), so "复制"
-  // can pick by presence alone.
   private remoteClipboardText: string = '';
   private remoteClipboardHtml: string = '';
   private remoteClipboardPixelMap: image.PixelMap | undefined = undefined;
-  // Remote clipboard file list (names/sizes only; the bytes are pulled on
-  // demand when the user presses 复制). `remoteFolderCount` counts advertised
-  // directories, which the file clipboard cannot stream.
   private remoteFileCount: number = 0;
   private remoteFolderCount: number = 0;
   private pasteboardBusy: boolean = false;
-  // File transfer progress shown in the toolbar: 0 = remote -> local,
-  // 1 = local -> remote.
   @State private transferActive: boolean = false;
-  // An upload is advertised but the remote has not pasted yet: show the hint in
-  // place of the progress row instead of a toast.
   @State private transferWaiting: boolean = false;
   @State private transferPercent: number = 0;
   @State private transferText: string = '';
   @State private transferSpeed: string = '';
-  // Current file position for a multi-file transfer ("2/5").
   @State private transferFileIndex: number = 0;
   @State private transferFileCount: number = 0;
   private transferDirection: number = 0;
   private transferBusy: boolean = false;
   private transferLastDone: number = 0;
   private transferLastAt: number = 0;
-  // The file descriptors and the download state machine live on the background
-  // worker (services/BackgroundWorker); this window only keeps the last counts
-  // for the toolbar hints and forwards the native events by handle.
   private backgroundSink: (event: BackgroundEvent) => void =
     (event: BackgroundEvent): void => {
       this.onBackgroundEvent(event);
     };
-  // The native handle the audio worker is servicing (see services/AudioPlayer).
-  // Tracked here so the renderer is released with the right handle even after
-  // the native session has already reset its own (-1).
   private audioHandle: number = -1;
-  // Local toggle-key state and the remote-side re-assert bookkeeping. The policy
-  // (dedup + 1s rate limit) lives here; native only relays the server's report
-  // and sends the PDU when asked (RdpNative.reassertLockState).
   private localLockFlags: number = 0;
   private localLockKnown: boolean = false;
   private lastRemoteLocks: number = 0;
   private lastRemoteLocksValid: boolean = false;
   private lastReassertMs: number = 0;
-  // Clipboard negotiation (see onRemoteFormatList). Only one data request may be
-  // in flight; a newer format list is remembered and pulled once the current one
-  // settles (remote responses carry no format id).
+  // Only one data request may be in flight; a newer list is pulled once the current one settles (remote responses carry no format id).
   private remoteFormatInFlight: boolean = false;
   private remoteFormatPending: boolean = false;
   private remotePendingId: number = 0;
   private remotePendingKind: number = RdpClipKind.NONE;
-  // Remote cursor, installed as the HarmonyOS system cursor. All policy
-  // (scaling, dedup, pinch override, capability probing) lives in the shared
-  // installer (services/RemoteCursor.ets); this page only maps RDP events
-  // onto it. The "使用RDP光标" setting gates it via setEnabled (and natively
-  // via applyRdpCursor, which stops the pointer updates entirely).
   private cursor: RemoteCursor = new RemoteCursor();
-  // Global "回到前台自动重连" setting, plus the state of the check it arms: a
-  // window that comes back to a session the system already dropped reconnects
-  // without waiting for the user to press 重试.
   private reconnectOnForeground: boolean = false;
-  // True between leaving the foreground and the reconnect check that follows the
-  // return. A drop while the user is actually watching the window is left to the
-  // manual 重试 button: turning that into an automatic retry loop is a different
-  // (and unwanted) behaviour.
+  // A drop while the user is watching is left to the manual 重试 button, not turned into an automatic retry loop.
   private awayFromForeground: boolean = false;
   private reconnectTimer: number = -1;
   private appContext: common.ApplicationContext | undefined = undefined;
   private appStateCallback: ForegroundStateCallback | undefined = undefined;
 
-  // The system paste control grants a one-time clipboard read without the
-  // READ_PASTEBOARD permission; on success we push the text to the remote.
+  // The system paste control grants a one-time clipboard read without the READ_PASTEBOARD permission.
   private pasteButtonCallback: PasteButtonCallback =
     (event: ClickEvent, result: PasteButtonOnClickResult): void => {
       if (result === PasteButtonOnClickResult.SUCCESS) {
@@ -494,25 +334,18 @@ struct SessionPage {
       hilog.warn(DOMAIN, TAG, 'paste authorization failed');
       this.toast('未获得剪贴板授权');
     };
-  // KeyCode the user remapped to Win/Meta for the remote (0 = disabled). Lets
-  // Win combinations work even though the shell keeps the real Win key.
   private winKeySubstitute: number = 0;
-  // 快捷键穿透 (ACL INTERCEPT_INPUT_EVENT): route this window's intercepted keys
-  // to the remote (see updateShortcutPassthrough).
   private shortcutPassthrough: boolean = false;
-  // Whether the native interceptor is registered for this session; a denied
-  // permission leaves it false and the ordinary onKeyEvent path in charge.
+  // A denied permission leaves it false and the ordinary onKeyEvent path in charge.
   private interceptActive: boolean = false;
-  // Focus of this window; the interceptor is released when another window
-  // (settings, main list) becomes the active one.
+  // The interceptor is released when another window (settings, main list) becomes the active one.
   private windowFocused: boolean = true;
 
   aboutToAppear(): void {
     this.resolveRequest();
     const settings: AppSettings = SettingsStore.load();
     this.developerMode = settings.developerMode;
-    // Developer mode adds the telemetry line, so the toolbar is taller and the
-    // fullscreen auto-hide boundary must follow.
+    // Developer mode adds the telemetry line, so the toolbar is taller.
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
       : TOOLBAR_ROW_HEIGHT;
@@ -533,9 +366,7 @@ struct SessionPage {
     this.touchPinchAngle = settings.pinchTouchAngle;
     this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
-    // Never ask for Vulkan presentation on a device that cannot do it (the
-    // settings page already forces the stored value off; this covers a config
-    // imported from another device).
+    // Never ask for Vulkan presentation on a device that cannot do it (covers a config imported from another device).
     RdpNative.applyHardwareAccel(settings.hardwareAccel
       && DeviceCapabilities.hardwareAccel().supported);
     let filesDir: string = '';
@@ -556,9 +387,7 @@ struct SessionPage {
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     this.winKeySubstitute = settings.winKeySubstitute;
     this.shortcutPassthrough = settings.shortcutPassthrough;
-    // With 超分辨率 the server renders the session (pre-upscale) size, not the
-    // configured output size; the Resize event corrects this if the desktop turns
-    // out different from what was asked for.
+    // With 超分辨率 the server renders the session (pre-upscale) size, not the configured output size; the Resize event corrects a mismatch.
     this.desktopWidth = SettingsStore.srSessionSize(this.options.width,
       this.options.srEnabled ? this.options.srRatioPercent : 0);
     this.desktopHeight = SettingsStore.srSessionSize(this.options.height,
@@ -583,11 +412,6 @@ struct SessionPage {
         this.native.unbindSurface();
       }
     );
-    // The manager owns the session and its native listener; this window only
-    // mirrors the manager's state and renders the live session. If the session
-    // dropped between "connected" and this window loading, the manager is the one
-    // that already recorded it, so the drop is shown instead of silently
-    // reconnecting.
     this.applySessionState(SessionManager.stateOf(this.connectionId),
       SessionManager.messageOf(this.connectionId));
     if (this.state === ConnectionState.Connected) {
@@ -599,7 +423,6 @@ struct SessionPage {
   aboutToDisappear(): void {
     BackgroundWorker.unregisterSession(this.backgroundSink);
     this.stopAudio();
-    // Give the shell its shortcuts back before the session goes away.
     if (this.interceptActive) {
       this.native.setShortcutPassthrough(false);
       this.interceptActive = false;
@@ -635,8 +458,6 @@ struct SessionPage {
     this.releaseAllInputs();
     this.cursor.setWindow(undefined);
     this.cursor.reset();
-    // The manager owns the session: this window never stops it (that would race
-    // the window-close teardown). SessionAbility.release() is the one place.
     this.options.password = '';
     this.options.gatewayPassword = '';
   }
@@ -649,13 +470,6 @@ struct SessionPage {
     this.awayFromForeground = true;
   }
 
-  /**
-   * Watches the process-level foreground transitions in addition to the page
-   * lifecycle, so leaving and returning is noticed even where the system drives
-   * only one of the two. Registered unconditionally: the callbacks re-read the
-   * setting, so toggling it while a session is open takes effect without
-   * reopening the window.
-   */
   private watchApplicationState(): void {
     if (this.appStateCallback !== undefined) {
       return;
@@ -695,12 +509,6 @@ struct SessionPage {
     }
   }
 
-  /**
-   * Arms the one reconnect attempt that covers coming back to a session the
-   * system dropped while the app was away. Only a session that is actually down
-   * is picked up - a deliberate 断开 or 返回 leaves the page in another state and
-   * must not be undone by an automatic retry.
-   */
   private scheduleForegroundReconnect(): void {
     if (!this.awayFromForeground || !this.reconnectOnForeground) {
       return;
@@ -710,8 +518,7 @@ struct SessionPage {
     }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = -1;
-      // Cleared even when nothing is reconnected: the flag means "we are away",
-      // and running this check is exactly what makes it stale.
+      // The flag means "we are away"; running this check is what makes it stale.
       const wasAway: boolean = this.awayFromForeground;
       this.awayFromForeground = false;
       if (wasAway &&
@@ -721,10 +528,6 @@ struct SessionPage {
     }, FOREGROUND_RECONNECT_GRACE_MS);
   }
 
-  /**
-   * Resolves this window's launch request by its session key and registers the
-   * native session instance so the ability can tear down exactly this one.
-   */
   private resolveRequest(): void {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     if (request !== undefined) {
@@ -733,15 +536,9 @@ struct SessionPage {
     }
     const backend: SessionBackend | undefined = SessionBackendRegistry.find(this.sessionKey);
     if (backend instanceof RdpSessionBackend) {
-      // Share the manager's native session instance: this window renders it, the
-      // manager owns its lifecycle.
       this.native = backend.native;
     }
-    // Download progress/completion events come back from the background worker;
-    // route them to this window (it filters by its own current handle).
     BackgroundWorker.registerSession(this.backgroundSink);
-    // The manager owns the session: it publishes the lifecycle state and forwards
-    // the UI-effect events. This window only renders what it is given.
     SessionManager.attachWindow(this.sessionKey,
       (state: ConnectionState, message: string) => {
         this.applySessionState(state, message);
@@ -754,23 +551,14 @@ struct SessionPage {
       });
   }
 
-  /**
-   * Renders the manager's state. Everything about "is this session up / why did it
-   * fail" comes from here, so the list and this window can never disagree.
-   */
   private applySessionState(state: ConnectionState, message: string): void {
     this.state = state;
     if (state === ConnectionState.Connected) {
       this.statusText = '已连接';
       this.showToolbar = false;
-      // A fresh session starts unsuppressed; re-apply this window's visibility.
       this.native.setSuppressed(!this.windowVisible);
-      // Audio runs on its own worker; the renderer is built once the session
-      // reports its PCM format (AudioFormat event).
       this.audioHandle = this.native.handleId();
       AudioPlayer.start(this.audioHandle);
-      // A fresh session has no request in flight and has not reported its lock
-      // state yet.
       this.resetClipboardNegotiation();
       this.lastRemoteLocksValid = false;
       this.lastReassertMs = 0;
@@ -783,8 +571,6 @@ struct SessionPage {
       this.stopAudio();
       this.resetClipboardNegotiation();
     } else {
-      // Failed / Idle (a dropped session): show the reason the manager classified
-      // and offer 重试.
       this.statusText = message.length > 0 ? message
         : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
       this.showOverlay = true;
@@ -793,11 +579,8 @@ struct SessionPage {
       this.stopAudio();
       this.resetClipboardNegotiation();
     }
-    // A state change invalidates any pending reveal / hide.
     this.refreshToolbarAutoHide();
-    // 快捷键穿透 only makes sense on a live session.
     this.updateShortcutPassthrough();
-    // Telemetry is only meaningful while connected, and it is pulled, not pushed.
     if (state === ConnectionState.Connected) {
       this.startMetricsTimer();
     } else {
@@ -805,7 +588,6 @@ struct SessionPage {
     }
   }
 
-  /** Releases this window's audio renderer on the audio worker. */
   private stopAudio(): void {
     if (this.audioHandle > 0) {
       AudioPlayer.stop(this.audioHandle);
@@ -830,7 +612,6 @@ struct SessionPage {
     this.metricsTimer = -1;
   }
 
-  /** Reads the native telemetry window and paints it (see applyCounters). */
   private refreshCounters(): void {
     const counters: RdpCounters | undefined = this.native.readCounters();
     if (counters !== undefined) {
@@ -839,9 +620,7 @@ struct SessionPage {
   }
 
   private retry(): void {
-    // An attempt is a full negotiation plus a logon, so a retry that lands while
-    // one is already on its way (or still tearing down) is dropped instead of
-    // tearing the session down and starting a second one.
+    // A retry landing while one is already in flight (or tearing down) is dropped.
     if (this.state === ConnectionState.Connecting ||
       this.state === ConnectionState.Disconnecting) {
       return;
@@ -849,9 +628,6 @@ struct SessionPage {
     if (this.connectionId.length === 0) {
       return;
     }
-    // The manager refuses an attempt that is too soon after the last one; the
-    // page only shows progress for an attempt that was really started (the
-    // Connecting state is published by the manager).
     if (!SessionManager.retry(this.connectionId)) {
       return;
     }
@@ -861,10 +637,6 @@ struct SessionPage {
     }
   }
 
-  /**
-   * The manager forwards the protocol-neutral signal; this RDP window reads its
-   * own event code and payload back out of the envelope.
-   */
   private onSessionSignal(signal: SessionSignal): void {
     const payload: RdpEventPayload = signal.payload as RdpEventPayload;
     this.onRdpEvent(signal.eventCode as RdpEvent, payload);
@@ -880,7 +652,6 @@ struct SessionPage {
       if (width > 0 && height > 0) {
         this.desktopWidth = width;
         this.desktopHeight = height;
-        // A new desktop size moves the fitted rect under any local zoom.
         this.resetViewZoom();
       }
     } else if (event === RdpEvent.ClipboardText) {
@@ -938,14 +709,6 @@ struct SessionPage {
     }
   }
 
-  /**
-   * Paints one telemetry window pulled from the native side (see RdpCounters).
-   * rtt/rx/tx/fps/audio drive the toolbar row; the four work phase fields are
-   * summed into "本机" (see localUs); `syncUs`/`presentWaitUs` are blocked and stay
-   * out of it, and the three GPU figures feed the GPU label/tooltip. There is no
-   * pre-summed total and no string parsing here - native stores the struct and
-   * this reader takes the fields it shows.
-   */
   private applyCounters(counters: RdpCounters): void {
     this.metricsRtt = counters.rttMs;
     this.metricsRx = counters.rxBytesPerSec;
@@ -967,13 +730,7 @@ struct SessionPage {
     this.sampleCpuUsage();
   }
 
-  /**
-   * Process CPU usage for the telemetry row. hidebug documents its interfaces as
-   * comparatively expensive and meant for debugging, so it is called here - once per
-   * metrics window - and the row itself only exists while developer options are on.
-   * A device without the capability (or a failing call) leaves the figure at -1 and
-   * the row shows "CPU --".
-   */
+  // hidebug is comparatively expensive and meant for debugging, so it is called once per metrics window.
   private sampleCpuUsage(): void {
     try {
       const usage: number = hidebug.getCpuUsage();
@@ -983,12 +740,10 @@ struct SessionPage {
     }
   }
 
-  /** "网络 28ms", or "网络 --" until the server reports network stats. */
   private rttLabel(): string {
     return this.metricsRtt < 0 ? '网络 --' : '网络 ' + this.metricsRtt + 'ms';
   }
 
-  /** Green / amber / red vs. the given warn/bad thresholds (ms). */
   private thresholdColor(ms: number, warnMs: number, badMs: number): string {
     if (ms < 0) {
       return TOOLBAR_FG_SECONDARY;
@@ -1002,22 +757,11 @@ struct SessionPage {
     return METRIC_BAD;
   }
 
-  /**
-   * The four per-frame work phases summed (ZGX decompress + parse, decode,
-   * compose, present), in microseconds. The native side sends no total; this sum
-   * is the reader's choice - blocked time (`sync`, and anything the native side
-   * reports as its own blocked field) is deliberately not added in.
-   */
   private localUs(): number {
     return this.metricsZgxUs + this.metricsDecodeUs + this.metricsComposeUs +
       this.metricsPresentUs;
   }
 
-  /**
-   * "本机" in ms, or -1 when no frame ended in the window (no phase reported).
-   * Reported to the ones place like the other latency figures so the row stays
-   * comparable.
-   */
   private localMs(): number {
     const us: number = this.localUs();
     return us > 0 ? us / 1000 : -1;
@@ -1032,22 +776,14 @@ struct SessionPage {
     return Math.round(us / 1000);
   }
 
-  /** One-decimal ms, for the GPU figures which are a few ms at most. */
   private usToMsTenth(us: number): string {
     return (us / 1000).toFixed(1);
   }
 
-  /** "CPU 42%", or "CPU --" when the device cannot report process CPU usage. */
   private cpuLabel(): string {
     return this.metricsCpuPercent < 0 ? 'CPU --' : 'CPU ' + this.metricsCpuPercent + '%';
   }
 
-  /**
-   * "GPU 3.2ms": the GPU time one presented frame costs us - upload + 超分辨率
-   * upscale + letterbox. Not a utilization percentage, because the platform exposes
-   * no per-process GPU load to an app; it is the figure that answers "what does 超分
-   * add", with the split in the tooltip.
-   */
   private gpuLabel(): string {
     const total: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
     return total > 0 ? 'GPU ' + this.usToMsTenth(total) + 'ms' : 'GPU --';
@@ -1065,7 +801,6 @@ struct SessionPage {
       + '\n这是本机自己的 GPU 工作量，不是 GPU 整机占用率（平台未开放该接口）';
   }
 
-  /** "本机" tooltip: the per-frame breakdown, every figure to the ones place. */
   private localTips(): string {
     return '解压+解析 ' + this.usToMs(this.metricsZgxUs) + 'ms' +
       ' / 解码 ' + this.usToMs(this.metricsDecodeUs) + 'ms' +
@@ -1079,18 +814,15 @@ struct SessionPage {
       '，本机工时占帧周期 ' + Math.round(this.metricsDutyPermille / 10) + '%';
   }
 
-  /** "FPS <app>": the client's own present rate. */
   private fpsLabel(): string {
     return 'FPS ' + this.metricsFps;
   }
 
-  /** Audio sample rate and recent glitch rate, e.g. "音频 48k 0.05%". */
   private audioLabel(): string {
     return '音频 ' + Math.round(this.metricsAudioRateHz / 1000) + 'k ' +
       (this.metricsAudioLossBp / 100).toFixed(2) + '%';
   }
 
-  /** Any recent glitch is worth flagging: 0 green, <=0.5% amber, else red. */
   private audioColor(): string {
     if (this.metricsAudioLossBp < 0) {
       return TOOLBAR_FG_SECONDARY;
@@ -1104,7 +836,6 @@ struct SessionPage {
     return METRIC_BAD;
   }
 
-  /** Compact byte/s label for the toolbar. */
   private formatRate(bytesPerSec: number): string {
     if (bytesPerSec >= 1024 * 1024) {
       return (bytesPerSec / (1024 * 1024)).toFixed(1) + 'MB/s';
@@ -1115,12 +846,10 @@ struct SessionPage {
     return bytesPerSec + 'B/s';
   }
 
-  /** True when either direction carries meaningful (non-idle) traffic. */
   private hasBandwidth(): boolean {
     return this.metricsRx >= MIN_BANDWIDTH_BYTES || this.metricsTx >= MIN_BANDWIDTH_BYTES;
   }
 
-  /** Per-direction throughput label, dropping directions below the threshold. */
   private bandwidthLabel(): string {
     const parts: string[] = [];
     if (this.metricsRx >= MIN_BANDWIDTH_BYTES) {
@@ -1132,12 +861,10 @@ struct SessionPage {
     return parts.join('  ');
   }
 
-  /** Maps a decoded RDP cursor shape onto the shared installer. */
   private onCursorShape(payload: RdpEventPayload): void {
     const update: RemoteCursorUpdate = new RemoteCursorUpdate();
     update.hasShape = true;
-    // RDP has no standalone "show" event (only SetNull hides): a shape or the
-    // default arriving *is* the show.
+    // RDP has no standalone "show" event; a shape or the default arriving *is* the show.
     update.visible = true;
     update.shapeKey = payload.shapeHash ?? 0;
     update.magnification = (payload.magnificationMilli ?? 1000) / 1000;
@@ -1149,7 +876,6 @@ struct SessionPage {
     this.cursor.applyUpdate(update);
   }
 
-  /** Decodes a raw CF_HTML payload (ClipboardCodec) into the remote HTML cache. */
   private onRemoteClipboardHtml(payload: RdpEventPayload): void {
     const dataHandle: number = payload.dataHandle ?? 0;
     if (dataHandle <= 0) {
@@ -1169,7 +895,6 @@ struct SessionPage {
       });
   }
 
-  /** Converts a raw RTF payload (ClipboardCodec) into the remote HTML cache. */
   private onRemoteClipboardRtf(payload: RdpEventPayload): void {
     const dataHandle: number = payload.dataHandle ?? 0;
     if (dataHandle <= 0) {
@@ -1189,7 +914,6 @@ struct SessionPage {
       });
   }
 
-  /** Caches remote HTML as the active remote clipboard content. */
   private setRemoteHtml(html: string): void {
     this.remoteClipboardHtml = html;
     this.remoteClipboardText = '';
@@ -1198,12 +922,6 @@ struct SessionPage {
     this.remoteFolderCount = 0;
   }
 
-  /**
-   * The server's raw FILEGROUPDESCRIPTORW: the background worker owns the file
-   * list (FileTransferCodec) and the download state machine, so the bytes are
-   * handed over (transferred, zero-copy); the counts come back as a worker event
-   * (fileListSummary). Only the mandatory native->ArkTS copy happens here.
-   */
   private onRemoteFileListRaw(payload: RdpEventPayload): void {
     const dataHandle: number = payload.dataHandle ?? 0;
     if (dataHandle <= 0) {
@@ -1219,21 +937,12 @@ struct SessionPage {
     BackgroundWorker.postFileList(this.native.handleId(), fgd);
   }
 
-  /**
-   * The server's clipboard changed: drop the cached counts and let the worker
-   * abort any download in flight (it owns the state machine now).
-   */
   private onRemoteClipboardChanged(): void {
     this.remoteFileCount = 0;
     this.remoteFolderCount = 0;
     BackgroundWorker.postClipboardChanged(this.native.handleId());
   }
 
-  /**
-   * The server offered clipboard formats: pick the richest one ourselves (the
-   * choice is policy, not wire handling) and pull it. If a request is already in
-   * flight the newest list wins and is pulled once the current response settles.
-   */
   private onRemoteFormatList(payload: RdpEventPayload): void {
     const pick: ClipPick | undefined =
       SessionPage.pickRemoteFormat(payload.formatCandidates ?? '');
@@ -1253,7 +962,6 @@ struct SessionPage {
     this.remoteFormatInFlight = this.native.requestClipboardFormat(id, kind);
   }
 
-  /** One data request settled: pull whatever was deferred while it ran. */
   private onRemoteFormatResponse(): void {
     this.remoteFormatInFlight = false;
     if (this.remoteFormatPending) {
@@ -1262,11 +970,6 @@ struct SessionPage {
     }
   }
 
-  /**
-   * Picks one candidate from "kind:id,kind:id" by pull priority: files > image >
-   * HTML > RTF > text. Native already chose the id within a kind (DIB before
-   * DIBV5), so the first candidate of a kind wins.
-   */
   private static pickRemoteFormat(candidates: string): ClipPick | undefined {
     let best: ClipPick | undefined = undefined;
     let bestRank: number = 99;
@@ -1311,7 +1014,6 @@ struct SessionPage {
     return 99;
   }
 
-  /** Drops the in-flight/deferred clipboard request state (session changed). */
   private resetClipboardNegotiation(): void {
     this.remoteFormatInFlight = false;
     this.remoteFormatPending = false;
@@ -1319,11 +1021,6 @@ struct SessionPage {
     this.remotePendingKind = RdpClipKind.NONE;
   }
 
-  /**
-   * The server reported its toggle-key state. Local wins: if we know the local
-   * state and it differs, re-assert it (rate-limited so a server that keeps
-   * disagreeing cannot make the two sides trade places forever).
-   */
   private onRemoteLockState(lockFlags: number): void {
     if (this.lastRemoteLocksValid && this.lastRemoteLocks === lockFlags) {
       return;
@@ -1341,7 +1038,6 @@ struct SessionPage {
     this.native.reassertLockState(this.localLockFlags);
   }
 
-  /** Decodes a remote CF_DIB into a PixelMap (the DIB codec lives in ArkTS). */
   private onClipboardImage(payload: RdpEventPayload): void {
     const imageHandle: number = payload.imageHandle ?? 0;
     if (imageHandle <= 0) {
@@ -1376,12 +1072,7 @@ struct SessionPage {
       });
   }
 
-  /**
-   * One file transfer at a time. A second 复制 / 粘贴 while one is running (or
-   * while an upload is still waiting for the remote paste) would interleave two
-   * state machines in one progress row - and, for uploads, invalidate the file
-   * list the server is already pulling - so both entries share this gate.
-   */
+  // One transfer at a time: a second would interleave two state machines in one progress row.
   private fileTransferBlocking(): boolean {
     return this.transferBusy || this.transferActive || this.transferWaiting;
   }
@@ -1390,16 +1081,13 @@ struct SessionPage {
     this.toast('正在传输文件，请先取消或等待完成');
   }
 
-  /** Local clipboard -> remote, invoked by the toolbar's system paste button. */
   private submitClipboard(): void {
     if (this.fileTransferBlocking()) {
       this.rejectConcurrentTransfer();
       return;
     }
     const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
-    // A URI record means the clipboard may hold files; the metadata check needs
-    // no permission and routes to the file path below. Non-file URIs (web
-    // links) produce no files there and fall back to plain text.
+    // A URI record means the clipboard may hold files; the metadata check needs no permission.
     let hasFiles: boolean = false;
     try {
       hasFiles = board.hasDataType(pasteboard.MIMETYPE_TEXT_URI);
@@ -1413,7 +1101,6 @@ struct SessionPage {
     this.submitPlainClipboard();
   }
 
-  /** Local clipboard -> remote for text / HTML / image (the non-file path). */
   @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
   private submitPlainClipboard(): void {
     pasteboard.getSystemPasteboard().getData()
@@ -1426,12 +1113,7 @@ struct SessionPage {
       });
   }
 
-  /**
-   * Local clipboard files -> remote. The system copies the clipboard files into
-   * our sandbox (`getDataWithProgress`), so no READ_PASTEBOARD permission and no
-   * manual URI handling is needed; the sandbox copies are then advertised to the
-   * server, which pulls them over cliprdr.
-   */
+  // The system copies the clipboard files into our sandbox, so no READ_PASTEBOARD permission is needed.
   @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
   private submitClipboardFiles(): void {
     const dir: string | undefined = this.makeSandboxDir('rdp_outbox');
@@ -1450,18 +1132,14 @@ struct SessionPage {
         if (paths.length === 0) {
           this.transferBusy = false;
           if (SessionPage.clipboardUriIsFile(data)) {
-            // getDataWithProgress cannot copy folders, so a file URI that
-            // produced nothing is a folder.
+            // getDataWithProgress cannot copy folders, so a file URI that produced nothing is a folder.
             this.toast('不支持文件夹传输');
             return;
           }
-          // A web link or other non-file URI: paste it as text.
           this.submitPlainClipboard();
           return;
         }
-        // The button only advertises the files on the remote clipboard: cliprdr
-        // is pull-based, so the bytes move when the remote side pastes. That is
-        // not a running transfer, so release the busy guard first.
+        // cliprdr is pull-based: the button only advertises the files, so release the busy guard.
         this.transferBusy = false;
         const entries: FileDescriptorInput[] = [];
         for (const path of paths) {
@@ -1472,8 +1150,6 @@ struct SessionPage {
           FileTransferCodec.buildFileGroupDescriptor(entries), paths);
       })
       .catch((error: BusinessError) => {
-        // getDataWithProgress rejects for a folder (directories are not
-        // supported by the system file-copy path).
         this.transferBusy = false;
         hilog.warn(DOMAIN, TAG, 'read clipboard files failed: %{public}s',
           JSON.stringify(error));
@@ -1481,7 +1157,6 @@ struct SessionPage {
       });
   }
 
-  /** True when the clipboard's URI is a file/folder rather than a web link. */
   private static clipboardUriIsFile(data: pasteboard.PasteData): boolean {
     try {
       const uri: string = data.getPrimaryUri();
@@ -1494,16 +1169,13 @@ struct SessionPage {
     }
   }
 
-  /** File-transfer progress for the toolbar. */
   private onFileTransferProgress(payload: RdpEventPayload): void {
     const direction: number = payload.direction ?? 0;
     const done: number = payload.doneBytes ?? 0;
     const total: number = payload.totalBytes ?? 0;
     this.transferFileIndex = payload.fileIndex ?? 0;
     this.transferFileCount = payload.fileCount ?? 0;
-    // An upload only advertises the list; native sends a 0% placeholder when
-    // that happens. Keep the "waiting for the remote paste" hint then, and only
-    // switch to the progress row once bytes actually move.
+    // An upload only advertises the list (native sends a 0% placeholder); keep the "waiting for the remote paste" hint until bytes move.
     if (direction === 1 && done === 0) {
       this.transferWaiting = true;
       this.refreshToolbarAutoHide();
@@ -1526,10 +1198,6 @@ struct SessionPage {
     this.transferLastAt = now;
   }
 
-  /**
-   * Writes the finished download's sandbox files to the system clipboard as file
-   * URIs, so any app can paste them.
-   */
   private writeDownloadedFiles(paths: string[]): void {
     if (paths.length === 0) {
       this.toast('远端文件为空');
@@ -1562,15 +1230,12 @@ struct SessionPage {
     this.transferFileCount = 0;
     this.transferLastDone = 0;
     this.transferLastAt = 0;
-    // Resumes the normal auto-hide (unless the pointer is still on the strip).
     this.refreshToolbarAutoHide();
   }
 
   private cancelFileTransfer(): void {
     if (this.transferDirection === 1) {
-      // Aborting an upload leaves the remote clipboard listing files it can no
-      // longer read, so its paste reports a protocol error. That is harmless
-      // but worth warning about first.
+      // Aborting an upload leaves the remote clipboard listing unreadable files, so warn first.
       showConfirm(this.getUIContext(), {
         title: '取消文件传输',
         message: '文件仍在发送。取消后远端粘贴会提示错误，已传部分也会作废。是否继续取消？',
@@ -1583,9 +1248,6 @@ struct SessionPage {
       });
       return;
     }
-    // Downloads are safe to stop: we are the side pulling the bytes, and the
-    // state machine (with its partial-file cleanup) is on the background worker,
-    // which reports the cancellation back as a downloadFailed event.
     BackgroundWorker.cancelDownload(this.native.handleId());
   }
 
@@ -1595,7 +1257,6 @@ struct SessionPage {
     this.toast('已取消文件传输');
   }
 
-  /** Creates (and returns) a per-transfer directory under the app sandbox. */
   private makeSandboxDir(name: string): string | undefined {
     let filesDir: string = '';
     try {
@@ -1625,18 +1286,13 @@ struct SessionPage {
     return dir;
   }
 
-  /**
-   * Every transfer gets a fresh timestamped directory and the clipboard only
-   * ever references the newest one, so the previous directory is unreachable
-   * (its URIs were replaced by this transfer). Without this the sandbox would
-   * grow by one directory per transfer, forever.
-   */
+  // The clipboard only references the newest transfer directory, so the previous one is purged.
   private static purgeStaleTransferDirs(root: string, keep: string): void {
     let names: string[] = [];
     try {
       names = fileIo.listFileSync(root);
     } catch (error) {
-      return;  // Root absent or unreadable: nothing to purge.
+      return;
     }
     for (const name of names) {
       if (name === keep) {
@@ -1644,13 +1300,11 @@ struct SessionPage {
       }
       const path: string = `${root}/${name}`;
       try {
-        // Unlink the contents first so this works whether or not rmdirSync
-        // removes a non-empty directory.
+        // Unlink contents first, in case rmdirSync does not remove a non-empty directory.
         for (const child of fileIo.listFileSync(path)) {
           try {
             fileIo.unlinkSync(`${path}/${child}`);
           } catch (error) {
-            // Already gone, or not a plain file: leave it to rmdirSync.
           }
         }
         fileIo.rmdirSync(path);
@@ -1674,13 +1328,11 @@ struct SessionPage {
     return paths;
   }
 
-  /** Basename of an absolute sandbox path (the file clipboard drops the dir). */
   private static baseName(path: string): string {
     const slash: number = path.lastIndexOf('/');
     return slash < 0 ? path : path.substring(slash + 1);
   }
 
-  /** Size of a sandbox file, or 0 when it cannot be stat'ed. */
   private static fileSizeOf(path: string): number {
     try {
       return fileIo.statSync(path).size;
@@ -1689,10 +1341,8 @@ struct SessionPage {
     }
   }
 
-  /** Dispatches the local clipboard content by MIME, richest type first. */
   private pushLocalPasteData(data: pasteboard.PasteData): void {
-    // Do NOT gate on getMimeTypes(): it may only list a record's default MIME,
-    // while the HTML lives in a non-default Entry of the same record.
+    // Do NOT gate on getMimeTypes(): it may only list a record's default MIME, while HTML lives in a non-default Entry.
     let pixelMap: image.PixelMap | undefined = undefined;
     try {
       pixelMap = data.getPrimaryPixelMap();
@@ -1706,7 +1356,7 @@ struct SessionPage {
     SessionPage.findHtmlEntry(data)
       .then((html: string) => {
         if (html.length > 0) {
-          // Encode + native push on the worker (a large document must not block).
+          // Encode + native push on the worker so a large document cannot block.
           BackgroundWorker.pushHtml(this.native.handleId(), html).then((ok: boolean) => {
             this.toast(ok ? '已放入远端剪贴板' : '提交本机富文本失败');
           });
@@ -1720,7 +1370,6 @@ struct SessionPage {
       });
   }
 
-  /** Scans every record for a HTML entry (the record's default MIME may differ). */
   private static async findHtmlEntry(data: pasteboard.PasteData): Promise<string> {
     const count: number = data.getRecordCount();
     for (let i = 0; i < count; i++) {
@@ -1732,7 +1381,6 @@ struct SessionPage {
           return value;
         }
       } catch (error) {
-        // No record / no HTML entry here; try the next one.
       }
     }
     return '';
@@ -1750,17 +1398,12 @@ struct SessionPage {
       return;
     }
     BackgroundWorker.pushText(this.native.handleId(), text).then((ok: boolean) => {
-      // The clipboard is pull-based: advertise puts it on the remote clipboard
-      // (the remote can paste); the bytes move only when it pastes.
+      // The clipboard is pull-based: advertise puts it on the remote; the bytes move only when the remote pastes.
       this.toast(ok ? '已放入远端剪贴板' : '提交本机文本失败');
     });
   }
 
-  /**
-   * Local image -> remote. The pixel read is a PixelMap API (UI thread), but the
-   * CF_DIB encode and the native push run on the worker so a large image cannot
-   * block the UI.
-   */
+  // The pixel read is a PixelMap API (UI thread); CF_DIB encode and native push run on the worker.
   private pushLocalImage(pixelMap: image.PixelMap): void {
     pixelMap.getImageInfo()
       .then((info: image.ImageInfo) => {
@@ -1773,8 +1416,7 @@ struct SessionPage {
         const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
         pixelMap.readPixelsToBuffer(buffer)
           .then(() => {
-            // `buffer` is transferred to the worker (zero-copy); it encodes both
-            // CF_DIB and PNG and pushes them.
+            // `buffer` is transferred to the worker (zero-copy); it encodes CF_DIB and PNG.
             BackgroundWorker.pushImage(this.native.handleId(), buffer, width, height,
               info.pixelFormat).then((pushed: boolean) => {
                 if (!pushed) {
@@ -1797,7 +1439,6 @@ struct SessionPage {
       });
   }
 
-  /** Remote clipboard -> local, invoked by the toolbar's pull button. */
   private pullClipboard(): void {
     if (this.pasteboardBusy) {
       return;
@@ -1807,8 +1448,7 @@ struct SessionPage {
       return;
     }
     if (this.remoteFolderCount > 0) {
-      // Folders are unsupported in both directions, so a list that contains any
-      // directory is refused whole rather than partially downloaded.
+      // Folders are unsupported, so a list with any directory is refused whole.
       this.toast('不支持文件夹传输');
       return;
     }
@@ -1823,16 +1463,13 @@ struct SessionPage {
       return;
     }
     if (this.remoteClipboardHtml.length > 0) {
-      // Remote HTML is usually a bare fragment; wrap it so the local pasteboard
-      // always holds a well-formed document.
+      // Remote HTML is usually a bare fragment; wrap it into a well-formed document.
       const htmlDoc: string = SessionPage.ensureHtmlDocument(this.remoteClipboardHtml);
       const data: pasteboard.PasteData =
         pasteboard.createData(pasteboard.MIMETYPE_TEXT_HTML, htmlDoc);
       const plain: string = SessionPage.htmlToPlainText(htmlDoc);
       if (plain.length > 0) {
-        // Same Record, extra Entry: one content fragment in two formats (the
-        // clipboard model requires this instead of two separate Records, or
-        // targets treat them as two independent items and pick plain text).
+        // Same Record, extra Entry: one fragment in two formats, so targets do not treat them as separate items.
         try {
           const record: pasteboard.PasteDataRecord = data.getRecord(0);
           record.addEntry(pasteboard.MIMETYPE_TEXT_PLAIN, plain);
@@ -1852,12 +1489,6 @@ struct SessionPage {
     this.toast('远端剪贴板为空');
   }
 
-  /**
-   * Remote files -> local. The download state machine and its file IO run on the
-   * background worker; this window only creates the per-transfer sandbox
-   * directory (it owns the app context) and hands the worker the session handle
-   * and the directory. Progress/completion arrive as worker events.
-   */
   private startFileDownload(): void {
     if (this.fileTransferBlocking()) {
       this.rejectConcurrentTransfer();
@@ -1882,19 +1513,12 @@ struct SessionPage {
     BackgroundWorker.startDownload(this.native.handleId(), dir);
   }
 
-  /** One FILECONTENTS response: forward it (bytes stay native) to the worker. */
   private onRemoteFileChunk(payload: RdpEventPayload): void {
     BackgroundWorker.postFileChunk(this.native.handleId(),
       payload.listIndex ?? 0, payload.isSize ?? false, payload.sizeValue ?? 0,
       payload.failed ?? false, payload.dataHandle ?? 0);
   }
 
-  /**
-   * Background-worker events for this session's download (the worker facade
-   * routes every event to every window; ignore other windows' handles). The
-   * worker owns the state machine; these handlers only render its progress /
-   * finish / abort events.
-   */
   private onBackgroundEvent(event: BackgroundEvent): void {
     if (event.handle !== this.native.handleId()) {
       return;
@@ -1919,7 +1543,6 @@ struct SessionPage {
     }
   }
 
-  /** Paints the toolbar progress row from a worker progress event. */
   private applyDownloadProgress(event: BackgroundEvent): void {
     const done: number = event.doneBytes ?? 0;
     const total: number = event.totalBytes ?? 0;
@@ -1956,11 +1579,7 @@ struct SessionPage {
       });
   }
 
-  /**
-   * Rough HTML -> plain text fallback so a text target still pastes something.
-   * Skips <head>/<style>/<script>/comments so CSS text never leaks into the
-   * plain-text entry, and turns block tags into line breaks.
-   */
+  // Skips <head>/<style>/<script>/comments so CSS never leaks into plain text; block tags become line breaks.
   private static htmlToPlainText(html: string): string {
     const lower: string = html.toLowerCase();
     let out: string = '';
@@ -2007,7 +1626,6 @@ struct SessionPage {
     return SessionPage.decodeHtmlEntities(out).trim();
   }
 
-  /** Wraps a bare HTML fragment into a minimal document when needed. */
   private static ensureHtmlDocument(html: string): string {
     if (html.toLowerCase().indexOf('<html') >= 0) {
       return html;
@@ -2028,21 +1646,14 @@ struct SessionPage {
     showToast(this.getUIContext(), message, 1500);
   }
 
-  /** Reports which zone the pointer is in; zones come from the surface or the bar. */
   private setToolbarPointerZone(zone: number): void {
     this.toolbarAutoHide.setPointerZone(zone);
   }
 
-  /** Re-evaluates the bar's auto-hide (delegates to the shared controller). */
   private refreshToolbarAutoHide(): void {
     this.toolbarAutoHide.refresh();
   }
 
-  /**
-   * The fitted (letterboxed) rectangle of the desktop inside the component, in
-   * vp: `[x, y, width, height]`. It is the mapping both the pointer translation
-   * and the direct picture zoom are built on, so they cannot drift apart.
-   */
   private baseViewRect(): number[] {
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
     const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
@@ -2071,23 +1682,11 @@ struct SessionPage {
     return [remoteX, remoteY];
   }
 
-  /**
-   * 触控板: whether an event came from a touchpad. A touchpad's own gestures
-   * (two-finger scroll / pinch) carry SourceTool.TOUCHPAD. A touchpad *tap*,
-   * however, is delivered as a standard mouse button event and loses that tag
-   * (sourceTool MOUSE, exactly like a real mouse), so the event's originating
-   * input device is the fallback. sourceTool is checked first, so the
-   * high-frequency touchpad scroll never pays for the device lookup.
-   */
+  // A touchpad tap loses the TOUCHPAD tag, so the originating device is the fallback; sourceTool is checked first to keep scroll cheap.
   private isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
     return sourceTool === SourceTool.TOUCHPAD || this.isTouchpadDevice(deviceId);
   }
 
-  /**
-   * Whether the input device with this id is a touchpad, from inputDevice's
-   * device sources ('touchpad'). Cached per device id; ids can change on replug,
-   * so the cache is dropped on a device change.
-   */
   private isTouchpadDevice(deviceId: number | undefined): boolean {
     if (deviceId === undefined || deviceId <= 0) {
       return false;
@@ -2109,14 +1708,10 @@ struct SessionPage {
   }
 
   private handleMouse(event: MouseEvent): void {
-    // A touchscreen can also emit compatibility mouse events; those are owned by
-    // handleTouch. Forward only real mouse / touchpad mouse input here so the
-    // remote never sees two input streams for one finger (which shows up as
-    // stray clicks during a drag).
+    // A touchscreen can also emit compatibility mouse events (owned by handleTouch); forward only real mouse here.
     if (event.source === SourceType.TouchScreen) {
       return;
     }
-    // The strip itself is never reported here: its own hover does that.
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     const point: number[] = this.mapPointer(event.x, event.y);
@@ -2130,8 +1725,6 @@ struct SessionPage {
     } else if (event.button === MouseButton.Middle) {
       button = RdpPointerFlags.BUTTON3;
     }
-    // 触控板中键手势: take over touchpad right clicks while the setting is on so a
-    // two-finger double tap can become middle; real mice are untouched.
     if (this.touchpadMiddleDoubleTap && event.button === MouseButton.Right
       && this.isTouchpad(event.deviceId, event.sourceTool)) {
       this.lastPointerX = remoteX;
@@ -2157,16 +1750,9 @@ struct SessionPage {
     }
   }
 
-  /**
-   * 触控板中键手势: a two-finger tap is a right click and two of them in a row
-   * mean middle. A single one is only known to be single once the window passes,
-   * so it is held back; each click is sent as one whole press+release, so
-   * nothing can stick if focus is lost while one is pending.
-   */
   private handleTouchpadRight(action: MouseAction, x: number, y: number): void {
     if (action === MouseAction.Press) {
       if (this.touchpadClickPending) {
-        // Second tap inside the window: the double is confirmed -> middle.
         this.cancelTouchpadClickTimer();
         this.touchpadClickPending = false;
         this.touchpadMiddleSwallow = true;
@@ -2218,15 +1804,7 @@ struct SessionPage {
     this.touchpadMiddleSwallow = false;
   }
 
-  /**
-   * Coalesces pointer moves: `onMouse` fires at the device polling rate, and
-   * every event would otherwise become its own FastPath input PDU. A faster link
-   * means less backpressure, so an uncapped stream of moves is exactly the input
-   * load the remote has to absorb. At most one MOVE per
-   * MOUSE_MOVE_MIN_INTERVAL_MS is sent; the newest position is always kept and a
-   * trailing flush is scheduled, so the pointer never stops short of where it
-   * really is.
-   */
+  // Coalesces moves: every event would otherwise become its own FastPath input PDU. At most one MOVE per MOUSE_MOVE_MIN_INTERVAL_MS, with a trailing flush so the pointer never stops short.
   private queueMouseMove(x: number, y: number): void {
     this.pendingMoveX = x;
     this.pendingMoveY = y;
@@ -2241,7 +1819,6 @@ struct SessionPage {
     }
   }
 
-  /** Sends the pending move, if any. Called before any non-move pointer event. */
   private flushMouseMove(): void {
     if (this.moveTimer !== -1) {
       clearTimeout(this.moveTimer);
@@ -2259,8 +1836,7 @@ struct SessionPage {
   }
 
   private handleTouch(event: TouchEvent): void {
-    // Only forward real touchscreen input; system-converted mouse touches are
-    // handled by handleMouse so mouse stays mouse and touch stays touch.
+    // Only forward real touchscreen input; system-converted mouse touches are handled by handleMouse.
     if (event.source !== SourceType.TouchScreen) {
       return;
     }
@@ -2284,13 +1860,11 @@ struct SessionPage {
   }
 
   private onTouchDown(id: number, point: number[], pressure: number, pressureFlag: number): void {
-    // A Down for a contact that is still tracked is a retransmission: keep it.
+    // A Down for a contact already tracked is a retransmission.
     if (this.touchContactIds.has(id)) {
       return;
     }
-    // A held Cancel resumed near its last position means the same finger is
-    // still down: keep the remote contact and just move it, instead of lifting
-    // and re-pressing (which the remote sees as a click).
+    // A held Cancel resumed near its last position means the same finger is still down: move it instead of lifting and re-pressing.
     const resumed: number = this.findResumableCancel(point);
     if (resumed >= 0) {
       const rdpId: number | undefined = this.touchContactIds.get(resumed);
@@ -2305,7 +1879,6 @@ struct SessionPage {
         point[0], point[1]);
       return;
     }
-    // A genuinely new finger: any held Cancel is now a real release.
     this.finalizeAllCancels();
     const rdpId: number = id + 1;
     this.touchPoints.set(id, point);
@@ -2318,7 +1891,6 @@ struct SessionPage {
     if (rdpId === undefined) {
       return;
     }
-    // A Move for a held Cancel means the finger resumed without a fresh Down.
     if (this.isPendingCancel(id)) {
       this.clearCancelTimer(id);
       this.removePendingCancel(id);
@@ -2347,8 +1919,7 @@ struct SessionPage {
     if (!this.touchContactIds.has(id) || this.isPendingCancel(id)) {
       return;
     }
-    // Hold the contact: the finger is often still down. CANCEL_HOLD_MS is only
-    // a safety release for a Cancel that never resumes.
+    // The finger is often still down; CANCEL_HOLD_MS is only a safety release for a Cancel that never resumes.
     this.touchPoints.set(id, point);
     this.pendingCancelIds.push(id);
     const timer: number = setTimeout(() => {
@@ -2358,7 +1929,6 @@ struct SessionPage {
     this.cancelTimers.set(id, timer);
   }
 
-  /** Nearest held Cancel within the resume distance, or -1. */
   private findResumableCancel(point: number[]): number {
     const minDim: number = Math.min(this.desktopWidth, this.desktopHeight);
     const limit: number = Math.max(CANCEL_RESUME_MIN_DISTANCE,
@@ -2422,10 +1992,7 @@ struct SessionPage {
     }
   }
 
-  /**
-   * ArkUI reports contact pressure in [0, 65535); RDPEI expects [0, 1024].
-   * Zero means the device did not report pressure, so it is not forwarded.
-   */
+  // ArkUI pressure is [0, 65535), RDPEI expects [0, 1024]; zero means the device did not report it.
   private mapPressure(pressure: number | undefined): number {
     if (pressure === undefined || pressure <= 0) {
       return 0;
@@ -2456,8 +2023,6 @@ struct SessionPage {
       if (isPinch) {
         this.updatePinch(event);
       }
-      // Scroll axes produced by the same two fingers are suppressed while the
-      // pinch is active, so zoom never mixes with scroll.
       return;
     }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
@@ -2471,9 +2036,6 @@ struct SessionPage {
     if (vertical === 0 && horizontal === 0) {
       return;
     }
-    // Zoom mode: while the picture is magnified, a scroll pans it locally and
-    // nothing reaches the remote; at 100% the normal scroll returns. Touchpad
-    // displacement is in vp (1:1), a wheel reports notches (fixed step).
     if (this.pinchDirect && this.viewScale > MIN_VIEW_SCALE) {
       if (this.isTouchpad(event.deviceId, event.sourceTool)) {
         this.panView(-horizontal, -vertical);
@@ -2486,7 +2048,6 @@ struct SessionPage {
     if (this.isTouchpad(event.deviceId, event.sourceTool)) {
       this.handleTouchpadScroll(vertical, horizontal, point);
     } else if (vertical !== 0) {
-      // Mouse wheel: forward/up is negative on the vertical axis.
       this.sendWheel(vertical < 0, point);
     }
   }
@@ -2516,7 +2077,6 @@ struct SessionPage {
 
   private updatePinch(event: AxisEvent): void {
     const scale: number = this.pinchScaleValue(event);
-    // Enter pinch mode the moment a pinch is detected (no threshold/gating).
     if (!this.pinchActive) {
       this.pinchActive = true;
       this.pinchAccum = 0;
@@ -2525,7 +2085,6 @@ struct SessionPage {
       } else if (this.pinchAsTouch) {
         this.beginTouchPinch(event, scale);
       } else {
-        // Ctrl goes down immediately and the current distance is the baseline.
         this.pinchScale = scale > 0 ? scale : 0;
         this.setPinchCtrl(true);
       }
@@ -2540,24 +2099,17 @@ struct SessionPage {
     }
     if (this.pinchAsTouch) {
       this.updateTouchPinch(scale);
-      // Skip the MOTIONs that would otherwise let FreeRDP's 50Hz RDPEI
-      // coalescing overwrite the unsent DOWN; the distance is still tracked
-      // above, so the first forwarded MOTION carries the current gesture.
+      // Skip MOTIONs that would let FreeRDP's 50Hz RDPEI coalescing overwrite the unsent DOWN; the distance is still tracked above.
       if (Date.now() >= this.touchPinchMotionAt) {
         this.sendTouchPinchContacts(RdpTouchFlags.MOTION);
       }
       return;
     }
     if (this.pinchScale <= 0) {
-      // The first event carried no usable distance; establish the baseline now.
       this.pinchScale = scale;
       return;
     }
-    // Linear distance mapping. axisPinch is the ratio of the current distance to
-    // the initial one, so (scale - previous) is directly proportional to the
-    // distance the fingers moved. The step is derived from the configured zoom
-    // speed: one notch per 1 / (baseNotchesPerUnit * speed) of that ratio, so a
-    // larger speed emits more notches for the same pinch (faster zoom).
+    // axisPinch is the ratio to the initial distance; the notch step derives from the configured zoom speed, so a larger speed emits more notches.
     this.pinchAccum += scale - this.pinchScale;
     this.pinchScale = scale;
     const notchesPerUnit: number = DEFAULT_PINCH_NOTCHES_PER_UNIT * this.pinchZoomSpeed;
@@ -2576,12 +2128,6 @@ struct SessionPage {
     }
   }
 
-  /**
-   * Direct-zoom pinch start: anchor on the point under the cursor (the desktop
-   * pixel there must not move) and let the gesture ratio only change the scale.
-   * The cursor is the anchor, 100% the floor, and the pan is clamped to cover the
-   * viewport (centred once the picture is smaller) - the automatic alignment.
-   */
   private beginViewPinch(event: AxisEvent, scale: number): void {
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
     const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
@@ -2590,8 +2136,6 @@ struct SessionPage {
     this.viewPinchAnchorX = Math.max(0, Math.min(compWidth, event.x));
     this.viewPinchAnchorY = Math.max(0, Math.min(compHeight, event.y));
     this.viewPinchBaseScale = this.viewScale;
-    // The anchor's current screen position is C + s0*(A - C) + T0; the gesture
-    // keeps exactly that, so the constant pan below is its offset from A.
     this.viewPinchPanX = cx + this.viewScale * (this.viewPinchAnchorX - cx) + this.viewTransX
       - this.viewPinchAnchorX;
     this.viewPinchPanY = cy + this.viewScale * (this.viewPinchAnchorY - cy) + this.viewTransY
@@ -2599,10 +2143,6 @@ struct SessionPage {
     this.updateViewPinch(scale > 0 ? scale : 1);
   }
 
-  /**
-   * Applies the gesture ratio on top of the scale the pinch started at (axisPinch
-   * is already relative to the start), clamped to the allowed zoom range.
-   */
   private updateViewPinch(scale: number): void {
     const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO,
       scale > 0 ? scale : 1));
@@ -2611,7 +2151,6 @@ struct SessionPage {
     this.applyViewZoom(clamped);
   }
 
-  /** Rebuilds the transform for `scale`, keeping the pinch anchor in place. */
   private applyViewZoom(scale: number): void {
     const rect: number[] = this.baseViewRect();
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
@@ -2632,7 +2171,6 @@ struct SessionPage {
     this.commitViewMatrix();
   }
 
-  /** Pans the magnified picture by a screen shift (vp), clamped like the zoom. */
   private panView(dx: number, dy: number): void {
     const rect: number[] = this.baseViewRect();
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
@@ -2651,10 +2189,6 @@ struct SessionPage {
     this.commitViewMatrix();
   }
 
-  /**
-   * Covers the viewport while the picture is larger than it, and centres it once
-   * it is smaller - this is also what aligns the view back to 100%.
-   */
   private clampViewEdge(position: number, viewport: number, content: number): number {
     if (content >= viewport) {
       return Math.max(viewport - content, Math.min(0, position));
@@ -2662,7 +2196,6 @@ struct SessionPage {
     return (viewport - content) / 2;
   }
 
-  /** The transform ArkUI applies: scale about the component centre + px shift. */
   private commitViewMatrix(): void {
     const pxPerVp: number = this.getUIContext().vp2px(1);
     this.viewMatrix = matrix4.init([
@@ -2673,7 +2206,6 @@ struct SessionPage {
     ]);
   }
 
-  /** Drops the local zoom back to the fitted (100%) view. */
   private resetViewZoom(): void {
     if (this.viewScale === MIN_VIEW_SCALE && this.viewTransX === 0 && this.viewTransY === 0) {
       return;
@@ -2684,7 +2216,6 @@ struct SessionPage {
     this.viewMatrix = matrix4.identity();
   }
 
-  /** Snaps a pinch that ended just above 100% smoothly back to exactly 100%. */
   private snapViewZoom(): void {
     if (!this.pinchDirect || this.viewScale <= MIN_VIEW_SCALE
       || this.viewScale >= VIEW_SNAP_SCALE) {
@@ -2698,11 +2229,6 @@ struct SessionPage {
     });
   }
 
-  /**
-   * Touch-pinch mode: place two virtual contacts symmetrically around the
-   * pointer and move them apart/together with the gesture ratio, so the remote
-   * sees a real two-finger pinch at the cursor (better in touch-aware apps).
-   */
   private beginTouchPinch(event: AxisEvent, scale: number): void {
     const minDim: number = Math.min(this.desktopWidth, this.desktopHeight);
     const percent: number = Math.max(MIN_PINCH_DISTANCE_PERCENT,
@@ -2710,19 +2236,14 @@ struct SessionPage {
     this.touchPinchAnchor = this.mapPointer(event.x, event.y);
     this.touchPinchHalf = Math.max(MIN_PINCH_HALF, Math.round(minDim * percent / 100));
     this.touchPinchLastHalf = this.touchPinchHalf;
-    // The pair is tilted by the configured angle (positive = clockwise on
-    // screen). ArkUI reports no finger angle, so this stands in for the hand.
+    // The pair is tilted by the configured angle; ArkUI reports no finger angle, so this stands in for the hand.
     const angle: number = Math.max(-180, Math.min(180, this.touchPinchAngle));
     const radians: number = angle * Math.PI / 180;
     this.touchPinchUnitX = Math.cos(radians);
     this.touchPinchUnitY = Math.sin(radians);
     this.touchPinchActive = true;
-    // Keep an aim point while the synthetic contacts are down (the OS hides the
-    // pointer during touch) - only meaningful with the RDP cursor on. Start on the
-    // open hand and let the direction pick between the two.
+    // Keep an aim point while the synthetic contacts are down (the OS hides the pointer during touch).
     this.touchPinchZoomIn = true;
-    // axisPinch is already relative to the gesture start (1.0); apply the
-    // initial sample so a late first event does not drop the first movement.
     this.updateTouchPinch(scale);
     this.cursor.setPinchOverride(true, this.touchPinchZoomIn);
     this.sendTouchPinchContacts(RdpTouchFlags.DOWN);
@@ -2730,18 +2251,11 @@ struct SessionPage {
     this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
   }
 
-  /**
-   * Maps the gesture distance ratio straight onto the synthetic finger
-   * separation (a true 1:1 pinch; the zoom speed setting does not apply here),
-   * so the remote scale matches the gesture exactly.
-   */
   private updateTouchPinch(scale: number): void {
     const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO, scale));
     this.touchPinchLastHalf =
       Math.max(MIN_PINCH_HALF, Math.round(this.touchPinchHalf * ratio));
-    // Flip the locator between open (spreading, zoom in) and grab (closing, zoom
-    // out) hand only past the dead zone, and only when it actually changes - a
-    // per-motion pointer-style call would be a syscall per axis event.
+    // Flip the locator only past the dead zone and only when it changes: a per-motion pointer-style call would be a syscall per axis event.
     const zoomIn: boolean = ratio > 1 + PINCH_CURSOR_HYSTERESIS
       ? true : (ratio < 1 - PINCH_CURSOR_HYSTERESIS ? false : this.touchPinchZoomIn);
     if (zoomIn !== this.touchPinchZoomIn) {
@@ -2755,7 +2269,6 @@ struct SessionPage {
     const half: number = this.touchPinchLastHalf;
     const dx: number = half * this.touchPinchUnitX;
     const dy: number = half * this.touchPinchUnitY;
-    // Keep both contacts inside the remote desktop.
     const maxX: number = Math.max(0, this.desktopWidth - 1);
     const maxY: number = Math.max(0, this.desktopHeight - 1);
     const x1: number = Math.max(0, Math.min(maxX, Math.round(point[0] + dx)));
@@ -2797,8 +2310,6 @@ struct SessionPage {
   }
 
   private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
-    // The mapper turns the raw displacement into one or more high-resolution
-    // RDP wheel chunks (9-bit wheel field, 120 == one detent).
     this.wheelChunks.length = 0;
     this.touchpadWheel.map(vertical, horizontal, this.wheelChunks);
     for (let i = 0; i < this.wheelChunks.length; i++) {
@@ -2807,9 +2318,7 @@ struct SessionPage {
   }
 
   private sendWheelChunk(chunk: WheelChunk, point: number[]): void {
-    // Negative rotation is 9-bit two's complement with the sign bit OR'd in:
-    // magnitude m -> WHEEL_NEGATIVE | (0x100 - m). A detent of 120 encodes to
-    // 0x88, identical to what the RDP/FreeRDP clients emit.
+    // Negative rotation is 9-bit two's complement: magnitude m -> WHEEL_NEGATIVE | (0x100 - m).
     let flags: number = chunk.horizontal ? RdpPointerFlags.HWHEEL : RdpPointerFlags.WHEEL;
     flags |= chunk.negative
       ? RdpPointerFlags.WHEEL_NEGATIVE | (0x100 - chunk.rotation)
@@ -2817,7 +2326,6 @@ struct SessionPage {
     this.native.mouse(flags, point[0], point[1]);
   }
 
-  /** A real mouse wheel already reports notches, so forward one full detent. */
   private sendWheel(up: boolean, point: number[]): void {
     const chunk: WheelChunk = new WheelChunk();
     chunk.horizontal = false;
@@ -2826,11 +2334,6 @@ struct SessionPage {
     this.sendWheelChunk(chunk, point);
   }
 
-  /**
-   * 快捷键穿透: register/release the interceptor. It may only be held while this
-   * window is the active one and the session is live, because the interceptor
-   * sees the whole application's keys.
-   */
   private updateShortcutPassthrough(): void {
     const wanted: boolean = this.shortcutPassthrough
       && this.state === ConnectionState.Connected
@@ -2839,8 +2342,7 @@ struct SessionPage {
       return;
     }
     if (wanted) {
-      // Keep the real registration result: a denied ACL permission leaves this
-      // false and the ordinary onKeyEvent path stays in charge.
+      // Keep the real registration result: a denied ACL permission leaves this false.
       this.interceptActive = this.native.setShortcutPassthrough(true);
     } else {
       this.native.setShortcutPassthrough(false);
@@ -2848,10 +2350,6 @@ struct SessionPage {
     }
   }
 
-  /**
-   * 快捷键穿透: an intercepted key, mapped and accounted for like onKeyEvent so
-   * focus loss still sends the matching key-up.
-   */
   private handleInterceptedKey(payload: RdpEventPayload): void {
     const keyCode: number = payload.keyCode ?? -1;
     if (keyCode < 0) {
@@ -2873,15 +2371,11 @@ struct SessionPage {
       return;
     }
     const down: boolean = event.type === KeyType.Down;
-    // The real Win key is owned by the system, so it is never forwarded;
-    // Win for the remote is produced by the configurable substitute key.
+    // The real Win key is owned by the system; Win for the remote comes from the substitute key.
     if (event.keyCode === 2076 || event.keyCode === 2077) {
       return;
     }
-    // The remote session follows the local toggle keys. A non-lock key may carry
-    // a change made while another window had focus, so it is synced before the
-    // key itself - the character then gets the right case; a lock key is synced
-    // after it, because that key press toggles the remote on its own.
+    // A non-lock key is synced before itself so the character gets the right case; a lock key after, since its press toggles the remote.
     const lockKey: boolean = event.keyCode === 2074 || event.keyCode === 2075
       || event.keyCode === 2102;
     if (!lockKey) {
@@ -2912,12 +2406,7 @@ struct SessionPage {
     }
   }
 
-  /**
-   * Reports the local toggle-key state to the remote so the session follows
-   * HarmonyOS. The states are only exposed from API 19; when the device does not
-   * provide them nothing is known and the remote keeps its own state. The native
-   * side drops a value the server was already sent, so this is safe per event.
-   */
+  // The lock states are only exposed from API 19; when absent the remote keeps its own state.
   private syncLocalLocks(event: KeyEvent): void {
     const caps: boolean | undefined = event.isCapsLockOn;
     const num: boolean | undefined = event.isNumLockOn;
@@ -2980,7 +2469,6 @@ struct SessionPage {
     this.heldButtons.clear();
   }
 
-  /** Releases every input the remote still sees as down (focus left the window). */
   private releaseAllInputs(): void {
     this.releaseAllKeys();
     this.releaseAllButtons();
@@ -3005,12 +2493,9 @@ struct SessionPage {
       WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
         this.setWindowMinimized(status === window.WindowStatusType.MINIMIZE);
-        // The auto-hide only exists in fullscreen: drop or re-arm its timers.
         this.refreshToolbarAutoHide();
       });
-      // Focus/visibility events are not visibility sources; they only signal that
-      // the inputs the remote still sees as held must be let go. Focus also
-      // drives 快捷键穿透 (application-wide, so released on blur).
+      // Focus/visibility events only signal that held inputs must be released; focus also drives 快捷键穿透.
       WindowController.watchFocus(win, (focused: boolean) => {
         this.windowFocused = focused;
         if (!focused) {
@@ -3040,7 +2525,6 @@ struct SessionPage {
     this.syncWindowVisible();
   }
 
-  /** Recomputes windowVisible and syncs the held surface size + suppression. */
   private syncWindowVisible(): void {
     const visible: boolean = this.windowOnScreen && !this.windowMinimized;
     if (this.windowVisible === visible) {
@@ -3053,7 +2537,6 @@ struct SessionPage {
     this.native.setSuppressed(!visible);
   }
 
-  /** Applies a surface size as the letterbox target; unchanged sizes are dropped. */
   private applySurfaceSize(width: number, height: number): void {
     if (width <= 0 || height <= 0 || this.surfaceId.length === 0) {
       return;
@@ -3066,7 +2549,6 @@ struct SessionPage {
     this.native.resizeSurface(width, height);
   }
 
-  /** Re-measures the surface once the window is visible again. */
   private flushPendingSurfaceSize(): void {
     if (!this.pendingSurfaceResize) {
       return;
@@ -3094,8 +2576,6 @@ struct SessionPage {
 
   private disconnect(): void {
     if (this.connectionId.length > 0) {
-      // The manager stops the session and invokes our close callback, which
-      // terminates this window; the list row goes back to idle.
       SessionManager.disconnect(this.connectionId);
       return;
     }
@@ -3116,8 +2596,7 @@ struct SessionPage {
       return;
     }
     const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    // Single-window mode: this session hid the main window, so the controller
-    // relaunches the main window first and terminates this one afterwards.
+    // Single-window mode: the controller relaunches the main window first, then terminates this one.
     if (WindowController.closeSession(abilityContext)) {
       return;
     }
@@ -3126,12 +2605,6 @@ struct SessionPage {
     });
   }
 
-  /**
-   * Toolbar suffix for 超分辨率: the remote desktop shown next to the host is the
-   * session (pre-upscale) size, so the backend and ratio say what it is scaled back
-   * up to with (and that the session is not actually running at the configured
-   * output size). Short on purpose, e.g. " (FSR 1.5x)".
-   */
   private srIndicator(): string {
     if (!this.options.srEnabled || this.options.srRatioPercent <= 100) {
       return '';
@@ -3148,9 +2621,6 @@ struct SessionPage {
         detail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator()
       })
       Blank()
-      // File transfer row (next to the clipboard actions): a download shows an
-      // inline progress bar with a cancel affordance; an upload first shows a
-      // short "paste on the remote" hint here, then turns into the progress row.
       if (this.transferWaiting) {
         Row() {
           LoadingProgress()
@@ -3178,8 +2648,6 @@ struct SessionPage {
             .fontColor(TOOLBAR_FG)
             .maxLines(1)
           if (this.transferFileCount > 1 && this.transferFileIndex > 0) {
-            // Multi-file transfers: which file is moving, so the bar is not the
-            // only cue that the whole list is progressing.
             Text(`${this.transferFileIndex}/${this.transferFileCount}`)
               .fontSize(12)
               .fontColor(TOOLBAR_FG)
@@ -3202,8 +2670,6 @@ struct SessionPage {
             .width(140)
             .color(TOOLBAR_PROGRESS)
             .margin({ left: 8 })
-          // Secondary action: outlined rather than filled, a step below the
-          // clipboard / window chips.
           OutlineChip({
             label: '取消',
             onTap: () => {
@@ -3214,8 +2680,6 @@ struct SessionPage {
         }
         .margin({ right: 12 })
       }
-      // Clipboard actions sit left of the window actions, tinted
-      // differently and separated from them by a fixed gap.
       ToolbarChip({
         label: '复制',
         chipBg: TOOLBAR_ACCENT_CHIP_BG,
@@ -3226,8 +2690,7 @@ struct SessionPage {
         }
       })
         .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
-      // Local clipboard -> remote. Security control: clicking it grants a
-      // one-time clipboard read without the READ_PASTEBOARD permission.
+      // Clicking grants a one-time clipboard read without the READ_PASTEBOARD permission.
       Row() {
         PasteButton({
           icon: PasteIconStyle.LINES,
@@ -3277,8 +2740,6 @@ struct SessionPage {
   sessionToolbar() {
     Column() {
       this.sessionToolbarMainRow()
-      // Developer telemetry gets its own line so the main row keeps exactly the
-      // same layout as a normal (non-developer) session.
       if (this.state === ConnectionState.Connected && this.developerMode) {
         this.toolbarTelemetry()
       }
@@ -3286,8 +2747,7 @@ struct SessionPage {
     .width('100%')
     .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
-    // In fullscreen the strip covers the surface, so only its own hover can
-    // report that the pointer is on it.
+    // In fullscreen the strip covers the surface, so only its own hover reports the pointer.
     .onHover((isHover: boolean) => {
       this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
     })
@@ -3295,15 +2755,7 @@ struct SessionPage {
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }
 
-  /**
-   * Developer-only telemetry (network / 本机 / FPS / CPU / GPU / bandwidth /
-   * audio), on its own toolbar line. Hidden unless developer options are on.
-   *
-   * The fixed fields come first; the two that can disappear follow in reverse
-   * order of how often they show - bandwidth (any traffic) before audio (only
-   * while playing) - so a field that comes and goes never shifts one that shows
-   * up more often, and 网络/本机/FPS/CPU/GPU never move at all.
-   */
+  // Developer-only telemetry line. The two fields that can disappear follow in reverse order of how often they show, so a changing field never shifts a stable one.
   @Builder
   toolbarTelemetry() {
     Row() {
@@ -3357,15 +2809,11 @@ struct SessionPage {
 
   build() {
     Column() {
-      // Windowed mode: the toolbar is always visible and laid out above the
-      // remote image, so the picture starts below it instead of under it.
       if (!this.isFullscreen && !this.showOverlay) {
         this.sessionToolbar()
       }
       Stack({ alignContent: Alignment.TopStart }) {
-        // The picture lives in its own layer so the direct pinch mode can scale
-        // it locally (applyViewZoom); the Stack below clips it, so a magnified
-        // picture cannot spill over the toolbar or past the window.
+        // The picture lives in its own layer so direct pinch can scale it locally; the Stack clips it.
         Column() {
           XComponent({
             id: 'rdpSurface',
@@ -3381,8 +2829,7 @@ struct SessionPage {
               this.handleMouse(event);
             })
             .onHover((isHover: boolean) => {
-              // The system may drop a custom cursor when the pointer leaves and
-              // re-enters the window, so re-install the last known shape.
+              // The system may drop a custom cursor when the pointer leaves and re-enters, so re-install the last shape.
               if (isHover) {
                 this.cursor.reapply();
               }
@@ -3403,8 +2850,6 @@ struct SessionPage {
               const width: number = lengthToNumber(newArea.width);
               const height: number = lengthToNumber(newArea.height);
               if (this.componentWidth !== width || this.componentHeight !== height) {
-                // The fitted rect changed under the zoom; re-fit rather than
-                // leave a stale transform (also the window-resize case).
                 this.resetViewZoom();
               }
               this.componentWidth = width;
@@ -3415,8 +2860,6 @@ struct SessionPage {
         .height('100%')
         .transform(this.viewMatrix)
 
-        // Fullscreen: the reveal hint hugs the top edge, behind the strip (which
-        // slides in over it).
         if (this.isFullscreen && !this.showOverlay) {
           Stack() {
             ToolbarRevealHint({ fill: this.revealHintFill })
@@ -3427,7 +2870,6 @@ struct SessionPage {
           .hitTestBehavior(HitTestMode.None)
         }
 
-        // Fullscreen mode: the toolbar floats over the image and auto-hides.
         if (this.isFullscreen && this.showToolbar && !this.showOverlay) {
           this.sessionToolbar()
         }

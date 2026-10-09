@@ -1,17 +1,3 @@
-/*
- * HmRdp - GLES/EGL fallback presenter for CPU (gdi) frames.
- *
- * Its one job: put a BGRA desktop frame on the XComponent surface, with the
- * letterbox done by the GPU. It exists for devices whose Vulkan cannot present
- * (in practice the emulator), so it is deliberately small: no compute path and
- * no present-on-change logic.
- *
- * Per frame: upload only the dirty rectangle into a desktop-sized RGBA texture
- * (ES3 + GL_UNPACK_ROW_LENGTH, because the source rows are pitched at the full
- * desktop stride), then clear the surface and draw one letterboxed quad (the
- * BGRA->RGBA swizzle is in the fragment shader) and eglSwapBuffers. The frame is
- * therefore handed over once, to the driver; the CPU never writes display memory.
- */
 #ifndef HMRDP_GLES_PRESENTER_H
 #define HMRDP_GLES_PRESENTER_H
 
@@ -40,8 +26,7 @@ class GlesPresenter : public FramePresenter {
                    const PresentRect* rects, int rectCount) override;
   void Reset() override;
   // Blocked part of the presents since the last call: the time eglSwapBuffers
-  // spent waiting for the display (it can block on the compositor/vsync). See
-  // hmrdp_presenter.h.
+  // spent waiting for the display (it can block on the compositor/vsync).
   uint64_t TakePresentWaitUs() override;
 
  private:

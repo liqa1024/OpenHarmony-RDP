@@ -1,6 +1,3 @@
-/*
- * HmRdp - XEngine (超分) bridge, see hmrdp_xeg.h.
- */
 #include "hmrdp_xeg.h"
 
 #include <dlfcn.h>
