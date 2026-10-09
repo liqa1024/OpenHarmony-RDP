@@ -207,6 +207,11 @@ PIN 由调用方弹窗提供），协议建模与响应解析见 [`moonlight-con
 - **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
   分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
   手柄掩码是 `gcmap`。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist` 选一个（优先名为 Desktop 的）。
+- **客户端名称 `clientname`**：Sunshine 定义并实际消费的参数，`/pair`(getservercert) 与 `/launch`、`/resume`
+  都读取（缺省 `Named Zako` / `unknown`），配对名进 Web UI 与 `root.pairname`；foundation-sunshine 还用
+  `launch_session->client_name` 做客户端标识、按名查 VDD 物理尺寸，动态码率 API 亦按它路由（必填）。官方
+  客户端只发硬编码 `devicename=roth`（Sunshine 不读）；本实现发 `deviceInfo.marketName`（空则 `productModel`，
+  再空回退 `roth`）。
 - **主机被占用**：`/launch` 会回 400 `An app is already running on this host`；客户端可 `GET /cancel`
   （HTTPS + mTLS）结束在跑的应用后再试，`/resume` 则复用既有会话。
 - **明文 `serverinfo` 恒 `PairStatus=0`**：Sunshine 只在 HTTPS 请求里按 `uniqueid` 置 1，所以"是否已配对"

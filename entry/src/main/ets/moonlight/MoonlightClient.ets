@@ -1,3 +1,4 @@
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { moonlightLaunchQueryParameters } from 'libhmrdp.so';
@@ -111,6 +112,7 @@ export class MoonlightClient {
     const verb: string = resume ? 'resume' : 'launch';
     const path: string = `/${verb}?uniqueid=${MoonlightClient.UNIQUE_ID}`
       + `&uuid=${MoonlightClient.uuid()}`
+      + `&clientname=${MoonlightClient.clientName()}`
       + `&appid=${options.appId}`
       + `&mode=${options.width}x${options.height}x${options.fps}`
       + `&rikey=${options.rikeyHex}`
@@ -338,8 +340,20 @@ export class MoonlightClient {
   }
 
   private static pairPath(arguments_: string, uniqueId: string, uuid: string): string {
-    return `/pair?devicename=roth&updateState=1&${arguments_}`
-      + `&uniqueid=${uniqueId}&uuid=${uuid}`;
+    return `/pair?devicename=roth&updateState=1&clientname=${MoonlightClient.clientName()}`
+      + `&${arguments_}&uniqueid=${uniqueId}&uuid=${uuid}`;
+  }
+
+  private static clientName(): string {
+    let name: string = deviceInfo.marketName;
+    if (name.length === 0) {
+      name = deviceInfo.productModel;
+    }
+    if (name.length === 0) {
+      // Fallback: the value other clients send as `devicename`.
+      name = 'roth';
+    }
+    return encodeURIComponent(name);
   }
 
   private static uuid(): string {
