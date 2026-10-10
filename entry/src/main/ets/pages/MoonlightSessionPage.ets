@@ -11,6 +11,7 @@ import { ML_HOST_FEATURE_TOUCH, ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSi
 import { SessionInput } from '../services/SessionInput';
 import { RemoteCursor } from '../services/RemoteCursor';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
+import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
@@ -39,6 +40,7 @@ struct MoonlightSessionPage {
   @LocalStorageLink('sessionKey') sessionKey: string = '';
   private controller: SessionSurfaceController = new SessionSurfaceController();
   private shell: SessionShellController | undefined = undefined;
+  private foreground: ForegroundReconnect | undefined = undefined;
   private connectionId: string = '';
   private started: boolean = false;
   private surfaceId: string = '';
@@ -98,6 +100,15 @@ struct MoonlightSessionPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
     this.developerMode = settings.developerMode;
+
+    const foregroundHost: ForegroundReconnectHost = {
+      context: (): common.Context | undefined => this.getUIContext().getHostContext(),
+      state: (): ConnectionState => this.state,
+      reconnect: (): void => {
+        this.shell?.retry();
+      }
+    };
+    this.foreground = new ForegroundReconnect(foregroundHost, settings.mlReconnectOnForeground);
 
     const host: SessionShellHost = {
       ui: (): UIContext => this.getUIContext(),
@@ -183,6 +194,14 @@ struct MoonlightSessionPage {
   aboutToDisappear(): void {
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.shell?.release();
+  }
+
+  onPageShow(): void {
+    this.foreground?.onPageShow();
+  }
+
+  onPageHide(): void {
+    this.foreground?.onPageHide();
   }
 
   private backend(): MoonlightSessionBackend | undefined {
@@ -277,6 +296,8 @@ struct MoonlightSessionPage {
     const backend: MoonlightSessionBackend | undefined = this.backend();
     backend?.clearKeyInterceptListener();
     backend?.clearCursorListener();
+    this.foreground?.release();
+    this.foreground = undefined;
     if (this.probeTimer !== -1) {
       clearTimeout(this.probeTimer);
       this.probeTimer = -1;

@@ -87,11 +87,13 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   **在 entry 被清理后仍然保留**。RDP 侧的 native 终结细节见 [`rdp-session.md`](rdp-session.md)。
 - **失败保留 entry 并只有一个终态事件**：连接失败（含超时）置 `Failed` 且不删 entry，窗口「重试」与
   列表再次点击据此发起新尝试；失败只产生错误终态（不另发断开），失败原因不会被"连接已断开"覆盖。
-- **回到前台自动重连**（全局设置 `reconnectOnForeground`，默认关）：会话窗口从后台回来时若发现会话已断，
-  自动重连一次，省去手点「重试」。它**不是保活**，只兜"回来时已经断了"这一次：应用退到后台后，
-  系统会先冻结网络资源（约 2s）、随后释放并 abort socket（约 12s），而官方对终端类会话
-  （SSH/Mosh/SFTP）的判定是**不属于合法的高优先级后台服务**，普通三方应用无法用长时任务撑住这种
-  "网络空载 / 低频心跳"（见 [`settings-and-storage.md`](settings-and-storage.md) §2）。
+- **回到前台自动重连**（协议级设置，RDP `reconnectOnForeground` / Moonlight `mlReconnectOnForeground`，
+  默认关）：会话窗口从后台回来时若发现会话已断，自动重连一次，省去手点「重试」。它**不是保活**，
+  只兜"回来时已经断了"这一次：应用退到后台后，系统会先冻结网络资源（约 2s）、随后释放并 abort socket
+  （约 12s），而官方对终端类会话（SSH/Mosh/SFTP）的判定是**不属于合法的高优先级后台服务**，普通三方应用
+  无法用长时任务撑住这种"网络空载 / 低频心跳"（见 [`settings-and-storage.md`](settings-and-storage.md) §2）。
+  两协议共用 `services/ForegroundReconnect`（每个会话页一个实例，构造即注册应用前后台监听），设置项在
+  两协议 tab 的「会话」节各存一份（见 [`moonlight-connection.md`](moonlight-connection.md) §5）。
   - 触发条件是**真的离开过**（`onPageHide` 或 `onApplicationBackground` 置位），回来后**延迟一个宽限期**
     才判定：原生读线程要恢复运行之后才会把断开事件报上来，立刻判定会读到还没更新的状态。
   - 只接管 `Idle`（已断） / `Failed`。用户主动断开/返回不在此列；前台正常使用中掉线也仍走手动「重试」，
@@ -281,7 +283,8 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 ## 11. 共享单元（指针）
 
 `model/SessionSignal`（协议无关信号）、`services/ToolbarAutoHide`（工具栏自动隐藏判定）、
-`services/RemoteCursor`（远端光标安装器）、`components/SessionChrome`（会话 chrome 常量与组件）、
+`services/RemoteCursor`（远端光标安装器）、`services/ForegroundReconnect`（回到前台自动重连）、
+`components/SessionChrome`（会话 chrome 常量与组件）、
 `utils/UiMotion`（hover/press 动效）——均为两协议共用。
 
 ## 12. 命名与边界约定

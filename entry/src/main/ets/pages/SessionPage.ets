@@ -1,4 +1,4 @@
-import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { matrix4 } from '@kit.ArkUI';
 import { BusinessError, pasteboard, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
@@ -19,6 +19,7 @@ import { SessionSignal } from '../model/SessionSignal';
 import { RdpCounters } from '../services/RdpTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
+import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
 import { AppSettings, PINCH_MODE_ZOOM,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -65,28 +66,6 @@ const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
 const LOCAL_BAD_MS: number = 33;
-
-// While the app is away the system freezes and aborts its sockets, but the read loop only notices once the window is back, so the reconnect check waits a grace period.
-const FOREGROUND_RECONNECT_GRACE_MS: number = 400;
-
-class ForegroundStateCallback extends ApplicationStateChangeCallback {
-  private onAway: () => void;
-  private onReturn: () => void;
-
-  constructor(onAway: () => void, onReturn: () => void) {
-    super();
-    this.onAway = onAway;
-    this.onReturn = onReturn;
-  }
-
-  onApplicationForeground(): void {
-    this.onReturn();
-  }
-
-  onApplicationBackground(): void {
-    this.onAway();
-  }
-}
 
 class ClipPick {
   kind: number = RdpClipKind.NONE;
@@ -195,12 +174,7 @@ struct SessionPage {
   private remotePendingId: number = 0;
   private remotePendingKind: number = RdpClipKind.NONE;
   private cursor: RemoteCursor = new RemoteCursor();
-  private reconnectOnForeground: boolean = false;
-  // A drop while the user is watching is left to the manual 重试 button, not turned into an automatic retry loop.
-  private awayFromForeground: boolean = false;
-  private reconnectTimer: number = -1;
-  private appContext: common.ApplicationContext | undefined = undefined;
-  private appStateCallback: ForegroundStateCallback | undefined = undefined;
+  private foreground: ForegroundReconnect | undefined = undefined;
 
   // The system paste control grants a one-time clipboard read without the READ_PASTEBOARD permission.
   private pasteButtonCallback: PasteButtonCallback =
@@ -240,8 +214,14 @@ struct SessionPage {
     RdpNative.applyGfxCapture(settings.gfxCapture, filesDir);
     hilog.info(DOMAIN, TAG, 'gfx capture=%{public}d dir=%{public}s', settings.gfxCapture ? 1 : 0,
       filesDir);
-    this.reconnectOnForeground = settings.reconnectOnForeground;
-    this.watchApplicationState();
+    const foregroundHost: ForegroundReconnectHost = {
+      context: (): common.Context | undefined => this.getUIContext().getHostContext(),
+      state: (): ConnectionState => this.state,
+      reconnect: (): void => {
+        this.shell?.retry();
+      }
+    };
+    this.foreground = new ForegroundReconnect(foregroundHost, settings.reconnectOnForeground);
     RdpNative.applyRdpCursor(settings.useRdpCursor);
     // With 超分辨率 the server renders the session (pre-upscale) size, not the configured output size; the Resize event corrects a mismatch.
     this.desktopWidth = SettingsStore.srSessionSize(this.options.width,
@@ -346,69 +326,11 @@ struct SessionPage {
   }
 
   onPageShow(): void {
-    this.scheduleForegroundReconnect();
+    this.foreground?.onPageShow();
   }
 
   onPageHide(): void {
-    this.awayFromForeground = true;
-  }
-
-  private watchApplicationState(): void {
-    if (this.appStateCallback !== undefined) {
-      return;
-    }
-    try {
-      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
-      if (ctx === undefined) {
-        return;
-      }
-      const application: common.ApplicationContext = ctx.getApplicationContext();
-      const callback: ForegroundStateCallback = new ForegroundStateCallback(() => {
-        this.awayFromForeground = true;
-      }, () => {
-        this.scheduleForegroundReconnect();
-      });
-      application.on('applicationStateChange', callback);
-      this.appContext = application;
-      this.appStateCallback = callback;
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'watch application state failed: %{public}s', JSON.stringify(error));
-    }
-  }
-
-  private unwatchApplicationState(): void {
-    const application: common.ApplicationContext | undefined = this.appContext;
-    const callback: ForegroundStateCallback | undefined = this.appStateCallback;
-    this.appContext = undefined;
-    this.appStateCallback = undefined;
-    if (application === undefined || callback === undefined) {
-      return;
-    }
-    try {
-      application.off('applicationStateChange', callback);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'unwatch application state failed: %{public}s',
-        JSON.stringify(error));
-    }
-  }
-
-  private scheduleForegroundReconnect(): void {
-    if (!this.awayFromForeground || !this.reconnectOnForeground) {
-      return;
-    }
-    if (this.reconnectTimer !== -1) {
-      clearTimeout(this.reconnectTimer);
-    }
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = -1;
-      // The flag means "we are away"; running this check is what makes it stale.
-      const wasAway: boolean = this.awayFromForeground;
-      this.awayFromForeground = false;
-      if (wasAway &&
-        (this.state === ConnectionState.Idle || this.state === ConnectionState.Failed)) {
-        this.shell?.retry();
-      }
-    }, FOREGROUND_RECONNECT_GRACE_MS);
+    this.foreground?.onPageHide();
   }
 
   private resolveRequest(): void {
@@ -480,11 +402,8 @@ struct SessionPage {
     BackgroundWorker.unregisterSession(this.backgroundSink);
     this.stopAudio();
     this.stopMetricsTimer();
-    if (this.reconnectTimer !== -1) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = -1;
-    }
-    this.unwatchApplicationState();
+    this.foreground?.release();
+    this.foreground = undefined;
     this.endDirectZoom();
     this.options.password = '';
     this.options.gatewayPassword = '';
