@@ -221,6 +221,10 @@ struct SettingsPage {
     this.touchpadMiddleDoubleTap = rdp
       ? settings.touchpadMiddleDoubleTap : settings.mlTouchpadMiddleDoubleTap;
     this.pinchMode = rdp ? settings.pinchMode : settings.mlPinchMode;
+    // Direct zoom drives the RDP presenter's view transform; Moonlight has no such view.
+    if (!rdp && this.pinchMode === PINCH_MODE_ZOOM) {
+      this.pinchMode = PINCH_MODE_WHEEL;
+    }
     this.pinchTouchAngle = rdp ? settings.pinchTouchAngle : settings.mlPinchTouchAngle;
     this.pinchTouchDistance = rdp ? settings.pinchTouchDistance : settings.mlPinchTouchDistance;
     this.reconnectOnForeground = rdp
@@ -1058,7 +1062,9 @@ struct SettingsPage {
             Row() {
               this.pinchModeChip(PINCH_MODE_WHEEL, 'Ctrl 滚轮')
               this.pinchModeChip(PINCH_MODE_TOUCH, '触摸模拟')
-              this.pinchModeChip(PINCH_MODE_ZOOM, '直接缩放')
+              if (this.protocol === PROTOCOL_RDP) {
+                this.pinchModeChip(PINCH_MODE_ZOOM, '直接缩放')
+              }
             }
             .width('100%')
             .margin({ top: 10, bottom: 6 })

@@ -9,14 +9,14 @@ import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/Moonlight
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { ML_HOST_FEATURE_TOUCH, MoonlightInputSink,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
-import { InputAction, InputButton, SessionInput } from '../services/SessionInput';
+import { SessionInput } from '../services/SessionInput';
 import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
 import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
-import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
-  SettingsStore } from '../services/SettingsStore';
+import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
+  PINCH_MODE_ZOOM, SettingsStore } from '../services/SettingsStore';
 import { lengthToNumber } from '../utils/UiUtil';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { StatusCard } from '../components/StatusCard';
@@ -73,6 +73,7 @@ struct MoonlightSessionPage {
   private shortcutPassthrough: boolean = false;
   private windowFocused: boolean = true;
   private interceptActive: boolean = false;
+  private mlPinchMode: number = PINCH_MODE_WHEEL;
   // Kept so a retry can re-bind it: stopping a session releases the native
   // window, but this surface stays alive.
   private surfaceId: string = '';
@@ -164,7 +165,17 @@ struct MoonlightSessionPage {
       const input: SessionInput = new SessionInput(sink);
       input.setWinKeySubstitute(settings.mlWinKeySubstitute);
       input.setPointerSpace(this.streamWidth, this.streamHeight);
+      input.setPointMapper((x: number, y: number): number[] => this.mapPoint(x, y));
+      input.setTouchpadScrollSpeed(settings.mlTouchpadScrollSpeed);
+      input.setTouchpadMiddleDoubleTap(settings.mlTouchpadMiddleDoubleTap);
+      input.setPinchZoomSpeed(settings.mlPinchZoomSpeed);
+      input.setPinchTouchDistance(settings.mlPinchTouchDistance);
+      input.setPinchTouchAngle(settings.mlPinchTouchAngle);
+      input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
+        this.cursor.setPinchOverride(active, zoomIn);
+      });
       this.input = input;
+      this.mlPinchMode = settings.mlPinchMode;
     }
     this.loadSessionWindow();
     this.controller.setCallbacks(
@@ -198,6 +209,7 @@ struct MoonlightSessionPage {
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.setLocalCursorHidden(false);
     this.input?.releaseAll();
+    this.input?.dispose();
     if (this.interceptActive) {
       this.backend?.setShortcutPassthrough(false);
       this.interceptActive = false;
@@ -244,11 +256,24 @@ struct MoonlightSessionPage {
     }
     if (state === ConnectionState.Connected) {
       const features: number = this.backend !== undefined ? this.backend.hostFeatureFlags() : 0;
-      this.input?.setTouchEnabled((features & ML_HOST_FEATURE_TOUCH) !== 0);
+      const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
+      this.input?.setTouchEnabled(touchSupported);
+      this.input?.setPinchMode(this.effectivePinchMode(touchSupported));
     }
     this.updateConnectOverlay();
     this.refreshToolbarAutoHide();
     this.updateShortcutPassthrough();
+  }
+
+  // Direct zoom is a client-view feature (RDP presenter only); touch-simulate needs host touch.
+  private effectivePinchMode(touchSupported: boolean): number {
+    if (this.mlPinchMode === PINCH_MODE_ZOOM) {
+      return PINCH_MODE_WHEEL;
+    }
+    if (this.mlPinchMode === PINCH_MODE_TOUCH && !touchSupported) {
+      return PINCH_MODE_WHEEL;
+    }
+    return this.mlPinchMode;
   }
 
   private updateShortcutPassthrough(): void {
@@ -361,51 +386,18 @@ struct MoonlightSessionPage {
   }
 
   private handleMouse(event: MouseEvent): void {
-    const input: SessionInput | undefined = this.input;
-    // A touchscreen can also emit compatibility mouse events; when native touch is on, those are owned by handleTouch.
-    if (input !== undefined && input.isTouchEnabled() && event.source === SourceType.TouchScreen) {
-      return;
-    }
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     this.setLocalCursorHidden(true);
-    if (input === undefined) {
-      return;
-    }
-    const point: number[] = this.mapPoint(event.x, event.y);
-    if (event.action === MouseAction.Press || event.action === MouseAction.Release) {
-      const action: number = event.action === MouseAction.Press
-        ? InputAction.PRESS : InputAction.RELEASE;
-      input.handleButton(action, MoonlightSessionPage.buttonFor(event.button), point[0], point[1]);
-      return;
-    }
-    if (event.action === MouseAction.Move) {
-      input.handleMove(point[0], point[1]);
-    }
-  }
-
-  private handleTouch(event: TouchEvent): void {
-    this.input?.handleTouch(event, (x: number, y: number): number[] => this.mapPoint(x, y));
-  }
-
-  private static buttonFor(button: MouseButton): number {
-    if (button === MouseButton.Left) {
-      return InputButton.LEFT;
-    }
-    if (button === MouseButton.Middle) {
-      return InputButton.MIDDLE;
-    }
-    if (button === MouseButton.Right) {
-      return InputButton.RIGHT;
-    }
-    return 0;
+    this.input?.handleMouseEvent(event);
   }
 
   private handleAxis(event: AxisEvent): void {
-    const direction: number = Math.sign(event.axisVertical ?? 0);
-    if (direction !== 0) {
-      this.backend?.scroll(direction > 0 ? 1 : -1);
-    }
+    this.input?.handleAxis(event);
+  }
+
+  private handleTouch(event: TouchEvent): void {
+    this.input?.handleTouch(event);
   }
 
   private handleKey(event: KeyEvent): void {

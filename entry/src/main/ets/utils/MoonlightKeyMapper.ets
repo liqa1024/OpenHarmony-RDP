@@ -14,13 +14,13 @@ export class MlVirtualKey {
   static readonly MODIFIER_EXTENDED: number = 0x10;
 
   static modifierFor(vk: number): number {
-    if (vk === 0x10) {
+    if (vk === 0x10 || vk === 0xA0 || vk === 0xA1) {
       return MlVirtualKey.MODIFIER_SHIFT;
     }
-    if (vk === 0x11) {
+    if (vk === 0x11 || vk === 0xA2 || vk === 0xA3) {
       return MlVirtualKey.MODIFIER_CTRL;
     }
-    if (vk === 0x12) {
+    if (vk === 0x12 || vk === 0xA4 || vk === 0xA5) {
       return MlVirtualKey.MODIFIER_ALT;
     }
     if (vk === 0x5B || vk === 0x5C) {

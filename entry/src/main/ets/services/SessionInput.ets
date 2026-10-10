@@ -1,5 +1,10 @@
+import { inputDevice } from '@kit.InputKit';
 import { KeyMapping, KeyMapper } from '../utils/KeyMapper';
 import { RdpLockFlags } from '../model/RdpModels';
+import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE,
+  TouchpadWheelMapper, WheelChunk, WHEEL_DETENT } from './TouchpadWheel';
+import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
+  PINCH_MODE_ZOOM } from './SettingsStore';
 
 export class InputButton {
   static readonly LEFT: number = 1;
@@ -19,7 +24,27 @@ export class TouchPhase {
   static readonly UP: number = 2;
   static readonly MOVE: number = 3;
   static readonly CANCEL: number = 4;
-  static readonly CANCEL_ALL: number = 5;
+}
+
+// One contact of a native precision-touchpad frame; x/y normalized over the
+// physical surface. HarmonyOS exposes no touchpad contacts, so these are synthesized.
+export class TouchpadContact {
+  phase: number = TouchPhase.MOVE;
+  pointerId: number = 0;
+  x: number = 0;
+  y: number = 0;
+  pressure: number = 0;
+
+  static of(phase: number, pointerId: number, x: number, y: number,
+    pressure: number): TouchpadContact {
+    const contact: TouchpadContact = new TouchpadContact();
+    contact.phase = phase;
+    contact.pointerId = pointerId;
+    contact.x = x;
+    contact.y = y;
+    contact.pressure = pressure;
+    return contact;
+  }
 }
 
 export interface InputSink {
@@ -30,6 +55,13 @@ export interface InputSink {
   pointerMove(x: number, y: number): void;
   button(action: number, button: number, x: number, y: number): void;
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void;
+  // Native precision-touchpad frame (foundation-sunshine extension): normalized
+  // contacts over the physical surface (empty = all lifted); the frame carries the
+  // pad's physical size in millimetres so the host can inject a real PT_TOUCHPAD.
+  touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
+    heightMm: number): void;
+  // Wheel deltas in WHEEL_DELTA (120) units; vertical positive is up, horizontal positive is left.
+  scroll(vertical: number, horizontal: number): void;
 }
 
 // Each forwarded move is a separate input message, so absolute moves are rate-limited.
@@ -40,6 +72,34 @@ const CANCEL_RESUME_RATIO: number = 0.02;
 const CANCEL_RESUME_MIN_DISTANCE: number = 16;
 const CANCEL_RESUME_MAX_DISTANCE: number = 64;
 const CANCEL_HOLD_MS: number = 400;
+
+// 触控板双指双击 -> 中键的判定窗口：单次双指轻触要等这么久没有第二次才按右键发出。
+const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
+
+const MIN_PINCH_DISTANCE_PERCENT: number = 1;
+const MAX_PINCH_DISTANCE_PERCENT: number = 20;
+const MIN_PINCH_HALF: number = 8;
+// Synthetic-touchpad contact separation, as a fraction of the pad surface.
+const MIN_PINCH_FRAC: number = 0.02;
+const MAX_PINCH_FRAC: number = 0.3;
+// Stand-in physical pad size for a synthesized precision touchpad (no device value on HarmonyOS).
+const TOUCHPAD_WIDTH_MM: number = 100;
+const TOUCHPAD_HEIGHT_MM: number = 70;
+// axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot explode or collapse the separation.
+const MIN_PINCH_RATIO: number = 0.05;
+const MAX_PINCH_RATIO: number = 20;
+// External touch ids for the synthetic pinch contacts; screen touches use id + 1, so these never collide.
+const PINCH_TOUCH_ID_A: number = 20;
+const PINCH_TOUCH_ID_B: number = 21;
+// FreeRDP coalesces touch frames, so the first MOTION must not reach RDPEI before its DOWN flush or it overwrites the unsent DOWN.
+const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
+// Dead zone before the pinch locator cursor flips open/grab hand, so jitter does not flicker it.
+const PINCH_CURSOR_HYSTERESIS: number = 0.02;
+
+const PINCH_CTRL: KeyMapping = KeyMapping.of(0x1D, 0xA2, false, 0);
+
+export type PointMapper = (x: number, y: number) => number[];
+export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
 
 export class SessionInput {
   private sink: InputSink;
@@ -57,15 +117,63 @@ export class SessionInput {
   // Pointer space in remote desktop/stream pixels, used for touch clamping and cancel resume.
   private pointerWidth: number = 0;
   private pointerHeight: number = 0;
+  private pointMapper: PointMapper = (x: number, y: number): number[] => [x, y];
   private touchEnabled: boolean = false;
+  // Host advertises the foundation-sunshine native touchpad extension.
+  private nativeTouchpad: boolean = false;
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
   // Kept separate from touchPoints so a contact can be resumed after a Cancel even if the UI renumbers the finger.
   private touchContactIds: Map<number, number> = new Map<number, number>();
   private pendingCancelIds: number[] = [];
   private cancelTimers: Map<number, number> = new Map<number, number>();
+  private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
+  private wheelChunks: WheelChunk[] = [];
+  private touchpadMiddleDoubleTap: boolean = false;
+  private touchpadClickPending: boolean = false;
+  private touchpadClickTimer: number = -1;
+  private touchpadClickX: number = 0;
+  private touchpadClickY: number = 0;
+  private touchpadMiddleSwallow: boolean = false;
+  private touchpadDevices: Map<number, boolean> = new Map<number, boolean>();
+  private pinchMode: number = PINCH_MODE_WHEEL;
+  private pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
+  private pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
+  private pinchTouchAngle: number = 30;
+  private pinchActive: boolean = false;
+  private pinchScale: number = 0;
+  private pinchAccum: number = 0;
+  private pinchCtrlDown: boolean = false;
+  private touchPinchActive: boolean = false;
+  private touchPinchZoomIn: boolean = true;
+  private touchPinchAnchor: number[] = [0, 0];
+  private touchPinchHalf: number = MIN_PINCH_HALF;
+  private touchPinchHalfMin: number = MIN_PINCH_HALF;
+  private touchPinchLastHalf: number = MIN_PINCH_HALF;
+  private touchPinchMotionAt: number = 0;
+  private touchPinchUnitX: number = 1;
+  private touchPinchUnitY: number = 0;
+  private pinchCursorHandler: PinchCursorHandler | undefined = undefined;
+  private deviceChangeListener: (data: inputDevice.DeviceListener) => void =
+    (data: inputDevice.DeviceListener) => {
+      this.touchpadDevices.clear();
+    };
 
   constructor(sink: InputSink) {
     this.sink = sink;
+    try {
+      // Device IDs can change on replug, so drop the touchpad cache on a change.
+      inputDevice.on('change', this.deviceChangeListener);
+    } catch (error) {
+    }
+  }
+
+  dispose(): void {
+    try {
+      inputDevice.off('change', this.deviceChangeListener);
+    } catch (error) {
+    }
+    this.endPinch();
+    this.clearTouchpadClick();
   }
 
   setWinKeySubstitute(keyCode: number): void {
@@ -77,12 +185,44 @@ export class SessionInput {
     this.pointerHeight = height;
   }
 
+  setPointMapper(mapper: PointMapper): void {
+    this.pointMapper = mapper;
+  }
+
   setTouchEnabled(enabled: boolean): void {
     this.touchEnabled = enabled;
   }
 
-  isTouchEnabled(): boolean {
-    return this.touchEnabled;
+  setNativeTouchpad(enabled: boolean): void {
+    this.nativeTouchpad = enabled;
+  }
+
+  setTouchpadScrollSpeed(scale: number): void {
+    this.touchpadWheel.setSpeed(scale);
+  }
+
+  setTouchpadMiddleDoubleTap(enabled: boolean): void {
+    this.touchpadMiddleDoubleTap = enabled;
+  }
+
+  setPinchMode(mode: number): void {
+    this.pinchMode = mode;
+  }
+
+  setPinchZoomSpeed(speed: number): void {
+    this.pinchZoomSpeed = Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, speed));
+  }
+
+  setPinchTouchDistance(percent: number): void {
+    this.pinchTouchDistance = percent;
+  }
+
+  setPinchTouchAngle(degrees: number): void {
+    this.pinchTouchAngle = degrees;
+  }
+
+  setPinchCursorHandler(handler: PinchCursorHandler): void {
+    this.pinchCursorHandler = handler;
   }
 
   // While a system key interceptor owns the keyboard, onKeyEvent must not also forward.
@@ -137,44 +277,66 @@ export class SessionInput {
     this.sink.key(mapping, down);
   }
 
-  handleMove(x: number, y: number): void {
-    this.lastPointerX = x;
-    this.lastPointerY = y;
-    this.pendingMoveX = x;
-    this.pendingMoveY = y;
-    const elapsed: number = Date.now() - this.lastMoveSentAt;
-    if (elapsed >= MOUSE_MOVE_MIN_INTERVAL_MS) {
-      this.flushMove();
-    } else if (this.moveTimer === -1) {
-      this.moveTimer = setTimeout(() => {
-        this.moveTimer = -1;
-        this.flushMove();
-      }, MOUSE_MOVE_MIN_INTERVAL_MS - elapsed);
+  // A touchscreen can also emit compatibility mouse events; those go through handleTouch instead.
+  handleMouseEvent(event: MouseEvent): void {
+    if (this.touchEnabled && event.source === SourceType.TouchScreen) {
+      return;
+    }
+    const point: number[] = this.pointMapper(event.x, event.y);
+    if (this.touchpadMiddleDoubleTap && event.button === MouseButton.Right
+      && this.isTouchpad(event.deviceId, event.sourceTool)) {
+      this.handleTouchpadRight(event.action, point[0], point[1]);
+      return;
+    }
+    if (event.action === MouseAction.Press) {
+      this.handleButton(InputAction.PRESS, SessionInput.buttonFor(event.button), point[0], point[1]);
+    } else if (event.action === MouseAction.Release) {
+      this.handleButton(InputAction.RELEASE, SessionInput.buttonFor(event.button), point[0], point[1]);
+    } else if (event.action === MouseAction.Move) {
+      this.handleMove(point[0], point[1]);
     }
   }
 
-  handleButton(action: number, button: number, x: number, y: number): void {
-    this.lastPointerX = x;
-    this.lastPointerY = y;
-    // Any button event flushes the pending move first, or the click lands on a stale position.
-    this.flushMove();
-    this.sink.button(action, button, x, y);
-    if (action === InputAction.PRESS) {
-      this.heldButtons.add(button);
-    } else {
-      this.heldButtons.delete(button);
+  handleAxis(event: AxisEvent): void {
+    const isPinch: boolean = SessionInput.isPinchEvent(event);
+    if (isPinch || this.pinchActive) {
+      // The gesture ends only on the real AxisAction.END (fingers lifted).
+      if (event.action === AxisAction.END) {
+        this.endPinch();
+        return;
+      }
+      if (isPinch) {
+        this.updatePinch(event);
+      }
+      return;
+    }
+    if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
+      return;
+    }
+    if (event.action === AxisAction.BEGIN) {
+      this.touchpadWheel.reset();
+    }
+    const vertical: number = event.axisVertical ?? 0;
+    const horizontal: number = event.axisHorizontal ?? 0;
+    if (vertical === 0 && horizontal === 0) {
+      return;
+    }
+    if (this.isTouchpad(event.deviceId, event.sourceTool)) {
+      this.handleTouchpadScroll(vertical, horizontal);
+    } else if (vertical !== 0) {
+      this.sink.scroll(vertical < 0 ? WHEEL_DETENT : -WHEEL_DETENT, 0);
     }
   }
 
-  // Only real touchscreen input reaches here; converted mouse touches go through handleMove/handleButton.
-  handleTouch(event: TouchEvent, mapPoint: (x: number, y: number) => number[]): void {
+  // Only real touchscreen input reaches here; converted mouse touches go through handleMouseEvent.
+  handleTouch(event: TouchEvent): void {
     if (!this.touchEnabled || event.source !== SourceType.TouchScreen) {
       return;
     }
     const changed: TouchObject[] = event.changedTouches;
     for (let i = 0; i < changed.length; i++) {
       const touch: TouchObject = changed[i];
-      const point: number[] = mapPoint(touch.x, touch.y);
+      const point: number[] = this.pointMapper(touch.x, touch.y);
       const pressure: number = SessionInput.normalizePressure(touch.pressure);
       if (touch.type === TouchType.Down) {
         this.onTouchDown(touch.id, point, pressure);
@@ -208,6 +370,317 @@ export class SessionInput {
     });
     this.heldButtons.clear();
     this.releaseAllTouches();
+    this.endPinch();
+    // Don't let a pending 中键 candidate fire into a window that lost focus.
+    this.clearTouchpadClick();
+  }
+
+  private handleButton(action: number, button: number, x: number, y: number): void {
+    this.lastPointerX = x;
+    this.lastPointerY = y;
+    // Any button event flushes the pending move first, or the click lands on a stale position.
+    this.flushMove();
+    this.sink.button(action, button, x, y);
+    if (action === InputAction.PRESS) {
+      this.heldButtons.add(button);
+    } else {
+      this.heldButtons.delete(button);
+    }
+  }
+
+  private handleMove(x: number, y: number): void {
+    this.lastPointerX = x;
+    this.lastPointerY = y;
+    this.pendingMoveX = x;
+    this.pendingMoveY = y;
+    const elapsed: number = Date.now() - this.lastMoveSentAt;
+    if (elapsed >= MOUSE_MOVE_MIN_INTERVAL_MS) {
+      this.flushMove();
+    } else if (this.moveTimer === -1) {
+      this.moveTimer = setTimeout(() => {
+        this.moveTimer = -1;
+        this.flushMove();
+      }, MOUSE_MOVE_MIN_INTERVAL_MS - elapsed);
+    }
+  }
+
+  private handleTouchpadRight(action: MouseAction, x: number, y: number): void {
+    this.lastPointerX = x;
+    this.lastPointerY = y;
+    if (action === MouseAction.Press) {
+      if (this.touchpadClickPending) {
+        this.cancelTouchpadClickTimer();
+        this.touchpadClickPending = false;
+        this.touchpadMiddleSwallow = true;
+        this.sendSyntheticClick(InputButton.MIDDLE, x, y);
+        return;
+      }
+      this.touchpadClickPending = true;
+      this.touchpadClickX = x;
+      this.touchpadClickY = y;
+      return;
+    }
+    if (action !== MouseAction.Release) {
+      return;
+    }
+    if (this.touchpadMiddleSwallow) {
+      this.touchpadMiddleSwallow = false;
+      return;
+    }
+    if (this.touchpadClickPending && this.touchpadClickTimer === -1) {
+      this.touchpadClickTimer = setTimeout(() => {
+        this.touchpadClickTimer = -1;
+        if (!this.touchpadClickPending) {
+          return;
+        }
+        this.touchpadClickPending = false;
+        this.sendSyntheticClick(InputButton.RIGHT, this.touchpadClickX, this.touchpadClickY);
+      }, TOUCHPAD_DOUBLE_TAP_MS);
+    }
+  }
+
+  /** One whole click as press + release, so the remote never keeps a button down. */
+  private sendSyntheticClick(button: number, x: number, y: number): void {
+    this.handleButton(InputAction.PRESS, button, x, y);
+    this.handleButton(InputAction.RELEASE, button, x, y);
+  }
+
+  private cancelTouchpadClickTimer(): void {
+    if (this.touchpadClickTimer !== -1) {
+      clearTimeout(this.touchpadClickTimer);
+      this.touchpadClickTimer = -1;
+    }
+  }
+
+  private clearTouchpadClick(): void {
+    this.cancelTouchpadClickTimer();
+    this.touchpadClickPending = false;
+    this.touchpadMiddleSwallow = false;
+  }
+
+  private handleTouchpadScroll(vertical: number, horizontal: number): void {
+    this.wheelChunks.length = 0;
+    this.touchpadWheel.map(vertical, horizontal, this.wheelChunks);
+    let wheelV: number = 0;
+    let wheelH: number = 0;
+    for (let i = 0; i < this.wheelChunks.length; i++) {
+      const chunk: WheelChunk = this.wheelChunks[i];
+      const amount: number = chunk.negative ? -chunk.rotation : chunk.rotation;
+      if (chunk.horizontal) {
+        wheelH += amount;
+      } else {
+        wheelV += amount;
+      }
+    }
+    if (wheelV !== 0 || wheelH !== 0) {
+      this.sink.scroll(wheelV, wheelH);
+    }
+  }
+
+  private static isPinchEvent(event: AxisEvent): boolean {
+    if ((event.axisPinch ?? 0) > 0) {
+      return true;
+    }
+    try {
+      return event.hasAxis(AxisType.PINCH_AXIS);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private static pinchScaleValue(event: AxisEvent): number {
+    const direct: number = event.axisPinch ?? 0;
+    if (direct > 0) {
+      return direct;
+    }
+    try {
+      return event.getPinchAxisScaleValue();
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  private updatePinch(event: AxisEvent): void {
+    const scale: number = SessionInput.pinchScaleValue(event);
+    if (!this.pinchActive) {
+      this.pinchActive = true;
+      this.pinchAccum = 0;
+      if (this.useTouchPinch()) {
+        this.beginTouchPinch(event, scale);
+      } else if (this.pinchMode !== PINCH_MODE_ZOOM) {
+        this.pinchScale = scale > 0 ? scale : 0;
+        this.setPinchCtrl(true);
+      }
+      return;
+    }
+    if (scale <= 0) {
+      return;
+    }
+    if (this.useTouchPinch()) {
+      this.updateTouchPinch(scale);
+      // Skip MOTIONs that would let FreeRDP's 50Hz RDPEI coalescing overwrite the unsent DOWN; the distance is still tracked above.
+      if (Date.now() >= this.touchPinchMotionAt) {
+        this.sendTouchPinchContacts(TouchPhase.MOVE);
+      }
+      return;
+    }
+    if (this.pinchMode === PINCH_MODE_ZOOM) {
+      return;
+    }
+    if (this.pinchScale <= 0) {
+      this.pinchScale = scale;
+      return;
+    }
+    // axisPinch is the ratio to the initial distance; the notch step derives from the configured zoom speed, so a larger speed emits more notches.
+    this.pinchAccum += scale - this.pinchScale;
+    this.pinchScale = scale;
+    const notchesPerUnit: number = DEFAULT_PINCH_NOTCHES_PER_UNIT * this.pinchZoomSpeed;
+    const step: number = notchesPerUnit > 0 ? 1 / notchesPerUnit : 0;
+    if (step <= 0) {
+      return;
+    }
+    while (this.pinchAccum >= step) {
+      this.pinchAccum -= step;
+      this.sink.scroll(WHEEL_DETENT, 0);
+    }
+    while (this.pinchAccum <= -step) {
+      this.pinchAccum += step;
+      this.sink.scroll(-WHEEL_DETENT, 0);
+    }
+  }
+
+  private beginTouchPinch(event: AxisEvent, scale: number): void {
+    const percent: number = Math.max(MIN_PINCH_DISTANCE_PERCENT,
+      Math.min(MAX_PINCH_DISTANCE_PERCENT, this.pinchTouchDistance));
+    if (this.nativeTouchpad) {
+      // HarmonyOS reports no pad position, so the pair is centered and its separation is a fraction of the pad.
+      this.touchPinchAnchor = [0.5, 0.5];
+      this.touchPinchHalfMin = MIN_PINCH_FRAC;
+      this.touchPinchHalf = Math.max(MIN_PINCH_FRAC, Math.min(MAX_PINCH_FRAC, percent / 100));
+    } else {
+      const minDim: number = Math.min(this.pointerWidth, this.pointerHeight);
+      this.touchPinchAnchor = this.pointMapper(event.x, event.y);
+      this.touchPinchHalfMin = MIN_PINCH_HALF;
+      this.touchPinchHalf = Math.max(MIN_PINCH_HALF, Math.round(minDim * percent / 100));
+    }
+    this.touchPinchLastHalf = this.touchPinchHalf;
+    // The pair is tilted by the configured angle; ArkUI reports no finger angle, so this stands in for the hand.
+    const angle: number = Math.max(-180, Math.min(180, this.pinchTouchAngle));
+    const radians: number = angle * Math.PI / 180;
+    this.touchPinchUnitX = Math.cos(radians);
+    this.touchPinchUnitY = Math.sin(radians);
+    this.touchPinchActive = true;
+    this.touchPinchZoomIn = true;
+    this.updateTouchPinch(scale);
+    const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
+    if (handler !== undefined) {
+      handler(true, this.touchPinchZoomIn);
+    }
+    this.sendTouchPinchContacts(TouchPhase.DOWN);
+    // Let the DOWN frame flush before the first MOTION can overwrite it.
+    this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
+  }
+
+  private updateTouchPinch(scale: number): void {
+    const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO, scale));
+    this.touchPinchLastHalf =
+      Math.max(this.touchPinchHalfMin, this.touchPinchHalf * ratio);
+    // Flip the locator only past the dead zone and only when it changes: a per-motion pointer-style call would be a syscall per axis event.
+    const zoomIn: boolean = ratio > 1 + PINCH_CURSOR_HYSTERESIS
+      ? true : (ratio < 1 - PINCH_CURSOR_HYSTERESIS ? false : this.touchPinchZoomIn);
+    if (zoomIn !== this.touchPinchZoomIn) {
+      this.touchPinchZoomIn = zoomIn;
+      const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
+      if (handler !== undefined) {
+        handler(true, zoomIn);
+      }
+    }
+  }
+
+  private sendTouchPinchContacts(phase: number): void {
+    const point: number[] = this.touchPinchAnchor;
+    const half: number = this.touchPinchLastHalf;
+    const dx: number = half * this.touchPinchUnitX;
+    const dy: number = half * this.touchPinchUnitY;
+    if (this.nativeTouchpad) {
+      const contacts: TouchpadContact[] = [
+        TouchpadContact.of(phase, PINCH_TOUCH_ID_A, SessionInput.clamp01(point[0] + dx),
+          SessionInput.clamp01(point[1] + dy), 0),
+        TouchpadContact.of(phase, PINCH_TOUCH_ID_B, SessionInput.clamp01(point[0] - dx),
+          SessionInput.clamp01(point[1] - dy), 0)
+      ];
+      this.sink.touchpadFrame(contacts, 0, TOUCHPAD_WIDTH_MM, TOUCHPAD_HEIGHT_MM);
+      return;
+    }
+    const maxX: number = Math.max(0, this.pointerWidth - 1);
+    const maxY: number = Math.max(0, this.pointerHeight - 1);
+    const x1: number = Math.max(0, Math.min(maxX, Math.round(point[0] + dx)));
+    const y1: number = Math.max(0, Math.min(maxY, Math.round(point[1] + dy)));
+    const x2: number = Math.max(0, Math.min(maxX, Math.round(point[0] - dx)));
+    const y2: number = Math.max(0, Math.min(maxY, Math.round(point[1] - dy)));
+    this.sink.touch(phase, PINCH_TOUCH_ID_A, x1, y1, 0);
+    this.sink.touch(phase, PINCH_TOUCH_ID_B, x2, y2, 0);
+  }
+
+  private static clamp01(value: number): number {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  private useTouchPinch(): boolean {
+    return this.pinchMode === PINCH_MODE_TOUCH || this.nativeTouchpad;
+  }
+
+  private endTouchPinch(): void {
+    if (!this.touchPinchActive) {
+      return;
+    }
+    this.touchPinchActive = false;
+    this.sendTouchPinchContacts(TouchPhase.UP);
+    const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
+    if (handler !== undefined) {
+      handler(false, this.touchPinchZoomIn);
+    }
+  }
+
+  private setPinchCtrl(down: boolean): void {
+    if (this.pinchCtrlDown === down) {
+      return;
+    }
+    this.pinchCtrlDown = down;
+    this.sink.key(PINCH_CTRL, down);
+  }
+
+  private endPinch(): void {
+    this.endTouchPinch();
+    this.pinchActive = false;
+    this.pinchScale = 0;
+    this.pinchAccum = 0;
+    this.touchPinchMotionAt = 0;
+    // Release unconditionally: the final event may not carry the pinch axis, so pinchActive can already be false while Ctrl is still logically held.
+    this.setPinchCtrl(false);
+  }
+
+  // A touchpad tap loses the TOUCHPAD tag, so the originating device is the fallback; sourceTool is checked first to keep scroll cheap.
+  private isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
+    return sourceTool === SourceTool.TOUCHPAD || this.isTouchpadDevice(deviceId);
+  }
+
+  private isTouchpadDevice(deviceId: number | undefined): boolean {
+    if (deviceId === undefined || deviceId <= 0) {
+      return false;
+    }
+    const cached: boolean | undefined = this.touchpadDevices.get(deviceId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    try {
+      const info: inputDevice.InputDeviceData = inputDevice.getDeviceInfoSync(deviceId);
+      const touchpad: boolean = info.sources.indexOf('touchpad') >= 0;
+      this.touchpadDevices.set(deviceId, touchpad);
+      return touchpad;
+    } catch (error) {
+    }
+    return false;
   }
 
   private onTouchDown(id: number, point: number[], pressure: number): void {
@@ -344,9 +817,14 @@ export class SessionInput {
 
   private releaseAllTouches(): void {
     this.finalizeAllCancels();
-    if (this.touchContactIds.size > 0) {
-      this.sink.touch(TouchPhase.CANCEL_ALL, 0, 0, 0, 0);
-    }
+    // Lift every tracked contact individually; a protocol-specific "all gone" primitive
+    // would leave RDP with stuck fingers.
+    this.touchContactIds.forEach((pointerId: number, id: number) => {
+      const point: number[] | undefined = this.touchPoints.get(id);
+      if (point !== undefined) {
+        this.sink.touch(TouchPhase.UP, pointerId, point[0], point[1], 0);
+      }
+    });
     this.touchPoints.clear();
     this.touchContactIds.clear();
   }
@@ -357,6 +835,19 @@ export class SessionInput {
       return 0;
     }
     return Math.min(1, pressure / 65535);
+  }
+
+  private static buttonFor(button: MouseButton): number {
+    if (button === MouseButton.Left) {
+      return InputButton.LEFT;
+    }
+    if (button === MouseButton.Middle) {
+      return InputButton.MIDDLE;
+    }
+    if (button === MouseButton.Right) {
+      return InputButton.RIGHT;
+    }
+    return 0;
   }
 
   private flushMove(): void {

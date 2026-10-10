@@ -71,10 +71,10 @@ export class KeyMapper {
       case 2015: return KeyMapping.of(0x4D, 0x27, true, 0); // right
       case 2043: return KeyMapping.of(0x33, 0xBC, false, 0); // comma
       case 2044: return KeyMapping.of(0x34, 0xBE, false, 0); // period
-      case 2045: return KeyMapping.of(0x38, 0x12, false, 0); // alt left
-      case 2046: return KeyMapping.of(0x38, 0x12, true, 0); // alt right
-      case 2047: return KeyMapping.of(0x2A, 0x10, false, 0); // shift left
-      case 2048: return KeyMapping.of(0x36, 0x10, false, 0); // shift right
+      case 2045: return KeyMapping.of(0x38, 0xA4, false, 0); // alt left
+      case 2046: return KeyMapping.of(0x38, 0xA5, true, 0); // alt right
+      case 2047: return KeyMapping.of(0x2A, 0xA0, false, 0); // shift left
+      case 2048: return KeyMapping.of(0x36, 0xA1, false, 0); // shift right
       case 2049: return KeyMapping.of(0x0F, 0x09, false, 0); // tab
       case 2050: return KeyMapping.of(0x39, 0x20, false, 0); // space
       case 2054: return KeyMapping.of(0x1C, 0x0D, false, 0); // enter
@@ -93,8 +93,8 @@ export class KeyMapper {
       case 2069: return KeyMapping.of(0x51, 0x22, true, 0); // page down
       case 2070: return KeyMapping.of(0x01, 0x1B, false, 0); // escape
       case 2071: return KeyMapping.of(0x53, 0x2E, true, 0); // forward delete
-      case 2072: return KeyMapping.of(0x1D, 0x11, false, 0); // ctrl left
-      case 2073: return KeyMapping.of(0x1D, 0x11, true, 0); // ctrl right
+      case 2072: return KeyMapping.of(0x1D, 0xA2, false, 0); // ctrl left
+      case 2073: return KeyMapping.of(0x1D, 0xA3, true, 0); // ctrl right
       case 2074: return KeyMapping.of(0x3A, 0x14, false, RdpLockFlags.CAPS); // caps lock
       case 2075: return KeyMapping.of(0x46, 0x91, false, RdpLockFlags.SCROLL); // scroll lock
       case 2076: return KeyMapping.of(0x5B, 0x5B, true, 0); // meta left

@@ -2,7 +2,7 @@ import {
   MoonlightEventExtra, MoonlightSessionConfig, bufferRelease,
   moonlightHighResHScroll, moonlightHighResScroll, moonlightHostFeatures,
   moonlightKey, moonlightMouseButton, moonlightMouseMove,
-  moonlightMousePosition, moonlightScroll, moonlightSessionActive, moonlightSessionClearSurface,
+  moonlightMousePosition, moonlightSessionActive, moonlightSessionClearSurface,
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener,
   moonlightSetShortcutPassthrough, moonlightText, moonlightTouch
 } from 'libhmrdp.so';
@@ -16,7 +16,7 @@ import { MoonlightConnectResult, MoonlightConnector, MoonlightHostPolicy,
 import { MoonlightHostState } from './MoonlightHostState';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
-import { InputAction, InputButton, InputSink, TouchPhase } from './SessionInput';
+import { InputAction, InputButton, InputSink, TouchpadContact, TouchPhase } from './SessionInput';
 import { KeyMapping } from '../utils/KeyMapper';
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 
@@ -248,10 +248,6 @@ export class MoonlightSessionBackend implements SessionBackend {
     moonlightKey(vk, down ? 1 : 0, modifiers);
   }
 
-  scroll(clicks: number): void {
-    moonlightScroll(clicks);
-  }
-
   private emit(event: number, value: number, text: string): void {
     const listener: SessionSignalListener | undefined = this.listener;
     if (listener === undefined) {
@@ -281,7 +277,9 @@ const ML_VK_META: number = 0x5B;
 
 export class MoonlightInputSink implements InputSink {
   private backend: MoonlightSessionBackend;
-  private modifiers: number = 0;
+  // Left/right modifiers share a bit but are distinct VKs, so the byte is derived
+  // from the set of keys currently down, not from a per-key toggle.
+  private heldModifiers: Set<number> = new Set<number>();
   private referenceWidth: number = 1920;
   private referenceHeight: number = 1080;
 
@@ -299,11 +297,8 @@ export class MoonlightInputSink implements InputSink {
     if (mapping.vk <= 0) {
       return;
     }
-    const mod: number = MlVirtualKey.modifierFor(mapping.vk);
-    if (mod !== 0) {
-      this.modifiers = down ? (this.modifiers | mod) : (this.modifiers & ~mod);
-    }
-    let modifiers: number = this.modifiers;
+    this.trackModifier(mapping.vk, down);
+    let modifiers: number = this.modifierByte();
     if (mapping.extended) {
       modifiers |= MlVirtualKey.MODIFIER_EXTENDED;
     }
@@ -311,9 +306,27 @@ export class MoonlightInputSink implements InputSink {
   }
 
   metaKey(down: boolean): void {
-    const mod: number = MlVirtualKey.MODIFIER_META;
-    this.modifiers = down ? (this.modifiers | mod) : (this.modifiers & ~mod);
-    this.backend.keyVirtual(ML_VK_META, down, this.modifiers | MlVirtualKey.MODIFIER_EXTENDED);
+    this.trackModifier(ML_VK_META, down);
+    this.backend.keyVirtual(ML_VK_META, down, this.modifierByte() | MlVirtualKey.MODIFIER_EXTENDED);
+  }
+
+  private trackModifier(vk: number, down: boolean): void {
+    if (MlVirtualKey.modifierFor(vk) === 0) {
+      return;
+    }
+    if (down) {
+      this.heldModifiers.add(vk);
+    } else {
+      this.heldModifiers.delete(vk);
+    }
+  }
+
+  private modifierByte(): number {
+    let modifiers: number = 0;
+    this.heldModifiers.forEach((vk: number) => {
+      modifiers |= MlVirtualKey.modifierFor(vk);
+    });
+    return modifiers;
   }
 
   unicode(code: number, down: boolean): void {
@@ -335,6 +348,21 @@ export class MoonlightInputSink implements InputSink {
     const normalizedY: number = this.referenceHeight > 0 ? y / this.referenceHeight : 0;
     moonlightTouch(MoonlightInputSink.mlTouchEvent(phase), pointerId, normalizedX, normalizedY,
       pressure);
+  }
+
+  scroll(vertical: number, horizontal: number): void {
+    if (vertical !== 0) {
+      moonlightHighResScroll(MoonlightInputSink.clampShort(vertical));
+    }
+    if (horizontal !== 0) {
+      moonlightHighResHScroll(MoonlightInputSink.clampShort(horizontal));
+    }
+  }
+
+  touchpadFrame(_contacts: TouchpadContact[], _buttonState: number, _widthMm: number,
+    _heightMm: number): void {
+    // TODO(native touchpad): send a precision-touchpad frame once the vendored
+    // moonlight-common-c is patched with the foundation-sunshine SS_TOUCHPAD extension.
   }
 
   button(action: number, button: number, x: number, y: number): void {
@@ -374,12 +402,13 @@ export class MoonlightInputSink implements InputSink {
     if (phase === TouchPhase.UP) {
       return 0x02; // LI_TOUCH_EVENT_UP
     }
-    if (phase === TouchPhase.MOVE) {
-      return 0x03; // LI_TOUCH_EVENT_MOVE
-    }
     if (phase === TouchPhase.CANCEL) {
       return 0x04; // LI_TOUCH_EVENT_CANCEL
     }
-    return 0x07; // TouchPhase.CANCEL_ALL -> LI_TOUCH_EVENT_CANCEL_ALL
+    return 0x03; // LI_TOUCH_EVENT_MOVE
+  }
+
+  private static clampShort(value: number): number {
+    return Math.max(-32768, Math.min(32767, Math.round(value)));
   }
 }
