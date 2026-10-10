@@ -116,6 +116,7 @@ export class SessionInput {
   private winKeySubstitute: number = 0;
   private interceptActive: boolean = false;
   private heldKeys: Map<string, KeyMapping> = new Map<string, KeyMapping>();
+  private heldUnicode: Set<number> = new Set<number>();
   private heldMeta: boolean = false;
   private heldButtons: Set<number> = new Set<number>();
   private lastPointerX: number = 0;
@@ -278,8 +279,17 @@ export class SessionInput {
     if (text.length === 1) {
       const code: number = text.charCodeAt(0);
       if (code >= 0x20) {
+        this.trackUnicodeKey(code, down);
         this.sink.unicode(code, down);
       }
+    }
+  }
+
+  private trackUnicodeKey(code: number, down: boolean): void {
+    if (down) {
+      this.heldUnicode.add(code);
+    } else {
+      this.heldUnicode.delete(code);
     }
   }
 
@@ -378,6 +388,10 @@ export class SessionInput {
       this.sink.key(mapping, false);
     });
     this.heldKeys.clear();
+    this.heldUnicode.forEach((code: number) => {
+      this.sink.unicode(code, false);
+    });
+    this.heldUnicode.clear();
     if (this.heldMeta) {
       this.sink.metaKey(false);
       this.heldMeta = false;
