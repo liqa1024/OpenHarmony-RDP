@@ -4,7 +4,7 @@ import {
   moonlightKey, moonlightMouseButton, moonlightMouseMove,
   moonlightMousePosition, moonlightScroll, moonlightSessionActive, moonlightSessionClearSurface,
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener,
-  moonlightText, moonlightTouch
+  moonlightSetShortcutPassthrough, moonlightText, moonlightTouch
 } from 'libhmrdp.so';
 import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
 import { RemoteCursorUpdate } from './RemoteCursor';
@@ -26,15 +26,21 @@ export const ML_EVENT_STAGE_STARTING: number = 2;
 export const ML_EVENT_STAGE_COMPLETE: number = 3;
 export const ML_EVENT_STAGE_FAILED: number = 4;
 export const ML_EVENT_CURSOR_SHAPE: number = 5;
+// Shortcut passthrough: a system-intercepted key, down/up carry the keyCode in value.
+export const ML_EVENT_KEY_INTERCEPT_DOWN: number = 6;
+export const ML_EVENT_KEY_INTERCEPT_UP: number = 7;
 
 // LiGetHostFeatureFlags bits we consume.
 export const ML_HOST_FEATURE_TOUCH: number = 0x01;
+
+export type MlKeyInterceptListener = (keyCode: number, down: boolean) => void;
 
 export type MlCursorListener = (update: RemoteCursorUpdate) => void;
 
 export class MoonlightSessionBackend implements SessionBackend {
   private listener: SessionSignalListener | undefined = undefined;
   private cursorListener: MlCursorListener | undefined = undefined;
+  private keyInterceptListener: MlKeyInterceptListener | undefined = undefined;
   private request: PendingConnection;
   private config: MoonlightSessionConfig | undefined = undefined;
   private windowBound: boolean = false;
@@ -56,8 +62,28 @@ export class MoonlightSessionBackend implements SessionBackend {
     this.cursorListener = undefined;
   }
 
+  setKeyInterceptListener(listener: MlKeyInterceptListener): void {
+    this.keyInterceptListener = listener;
+  }
+
+  clearKeyInterceptListener(): void {
+    this.keyInterceptListener = undefined;
+  }
+
+  // Returns whether the requested state is in effect (ACL may refuse).
+  setShortcutPassthrough(enabled: boolean): boolean {
+    return moonlightSetShortcutPassthrough(enabled);
+  }
+
   private onNativeEvent(event: number, value: number, text: string,
     extra: MoonlightEventExtra): void {
+    if (event === ML_EVENT_KEY_INTERCEPT_DOWN || event === ML_EVENT_KEY_INTERCEPT_UP) {
+      const listener: MlKeyInterceptListener | undefined = this.keyInterceptListener;
+      if (listener !== undefined) {
+        listener(value, event === ML_EVENT_KEY_INTERCEPT_DOWN);
+      }
+      return;
+    }
     if (event === ML_EVENT_CURSOR_SHAPE) {
       const handle: number = extra.imageHandle ?? 0;
       const listener: MlCursorListener | undefined = this.cursorListener;
@@ -250,11 +276,9 @@ export class MoonlightSessionBackend implements SessionBackend {
   }
 }
 
-// Windows VK for the Meta/Win key (used by the Win-key substitute).
+// Windows VK for the Meta/Win key.
 const ML_VK_META: number = 0x5B;
 
-// Moonlight landing of the protocol-neutral input verbs: VK codes plus a running
-// modifier byte, absolute pointer position, and button events.
 export class MoonlightInputSink implements InputSink {
   private backend: MoonlightSessionBackend;
   private modifiers: number = 0;
@@ -293,14 +317,13 @@ export class MoonlightInputSink implements InputSink {
   }
 
   unicode(code: number, down: boolean): void {
-    // Composed text goes out as one UTF-8 string on the key-down edge.
     if (down && code > 0) {
       moonlightText(String.fromCharCode(code));
     }
   }
 
   lockState(_flags: number): void {
-    // Moonlight has no client lock-state PDU; the host tracks its own lock state.
+    // No lock-state PDU on Moonlight; the host tracks its own lock state.
   }
 
   pointerMove(x: number, y: number): void {

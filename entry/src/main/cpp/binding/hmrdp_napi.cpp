@@ -7,10 +7,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -187,10 +189,12 @@ void OnSessionEvent(int64_t handle, SessionEvent event, const Session::EventData
 }
 
 // 快捷键穿透: HarmonyOS allows one process-global key interceptor, delivered only
-// while this app is focused. g_interceptHandle names the owning session, so a
-// background session never gets another's keys.
+// while this app is focused. Ownership follows the focused session; the token-keyed
+// registry keeps this generic, so the interceptor never branches on protocol.
+using InterceptSink = std::function<void(int32_t keyCode, bool down)>;
 std::mutex g_interceptMutex;
-int64_t g_interceptHandle = 0;
+std::unordered_map<int64_t, InterceptSink> g_interceptSinks;
+int64_t g_interceptOwner = 0;
 bool g_interceptActive = false;
 
 void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
@@ -202,18 +206,77 @@ void OnInterceptedKeyEvent(const Input_KeyEvent* keyEvent) {
     return;
   }
   const int32_t keyCode = OH_Input_GetKeyEventKeyCode(keyEvent);
-  int64_t handle = 0;
+  InterceptSink sink;
   {
     std::lock_guard<std::mutex> lock(g_interceptMutex);
-    handle = g_interceptHandle;
+    const auto it = g_interceptSinks.find(g_interceptOwner);
+    if (it != g_interceptSinks.end()) {
+      sink = it->second;
+    }
   }
-  if (handle <= 0) {
-    return;
+  if (sink) {
+    sink(keyCode, action == KEY_ACTION_DOWN);
   }
-  Session::EventData data;
-  data.values[0] = keyCode;
-  data.values[1] = (action == KEY_ACTION_DOWN) ? 1 : 0;
-  OnSessionEvent(handle, SessionEvent::kKeyIntercept, data, {});
+}
+
+void RegisterInterceptSink(int64_t token, InterceptSink sink) {
+  std::lock_guard<std::mutex> lock(g_interceptMutex);
+  g_interceptSinks[token] = std::move(sink);
+}
+
+// Releasing a sink that owns the interceptor must also release the OS registration.
+void UnregisterInterceptSink(int64_t token) {
+  bool removeInterceptor = false;
+  {
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    g_interceptSinks.erase(token);
+    if (g_interceptOwner == token) {
+      g_interceptOwner = 0;
+      removeInterceptor = g_interceptActive;
+    }
+  }
+  if (removeInterceptor) {
+    OH_Input_RemoveKeyEventInterceptor();
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    g_interceptActive = false;
+  }
+}
+
+// Only the focused session becomes the owner; releasing another token's ownership
+// is a no-op, so a focus handoff is order-independent.
+bool SetInterceptOwner(int64_t token, bool enabled) {
+  bool callAdd = false;
+  bool callRemove = false;
+  {
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    if (enabled && token != 0) {
+      g_interceptOwner = token;
+      callAdd = !g_interceptActive;
+    } else if (g_interceptOwner == token) {
+      g_interceptOwner = 0;
+      callRemove = g_interceptActive;
+    }
+  }
+
+  if (callAdd) {
+    const Input_Result ret = OH_Input_AddKeyEventInterceptor(OnInterceptedKeyEvent, nullptr);
+    const bool ok = ret == INPUT_SUCCESS || ret == INPUT_REPEAT_INTERCEPTOR;
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    g_interceptActive = ok;
+    if (!ok) {
+      g_interceptOwner = 0;
+      HMRDP_LOGW("key interceptor add failed: %{public}d", static_cast<int32_t>(ret));
+    }
+    return ok;
+  }
+  if (callRemove) {
+    OH_Input_RemoveKeyEventInterceptor();
+    std::lock_guard<std::mutex> lock(g_interceptMutex);
+    g_interceptActive = false;
+    return true;
+  }
+  std::lock_guard<std::mutex> lock(g_interceptMutex);
+  return g_interceptActive;
 }
 
 std::shared_ptr<Session> FindSession(int64_t handle) {
@@ -359,6 +422,13 @@ napi_value CreateSession(napi_env env, napi_callback_info) {
                            const std::vector<uint8_t>& bytes) {
     OnSessionEvent(id, event, data, bytes);
   });
+  // Delivered only while this session is the focused interceptor owner.
+  RegisterInterceptSink(id, [id](int32_t keyCode, bool down) {
+    Session::EventData data;
+    data.values[0] = keyCode;
+    data.values[1] = down ? 1 : 0;
+    OnSessionEvent(id, SessionEvent::kKeyIntercept, data, {});
+  });
   return CreateInt(env, id);
 }
 
@@ -370,6 +440,7 @@ napi_value DestroySession(napi_env env, napi_callback_info info) {
   if (argc < 1 || napi_get_value_int64(env, args[0], &handle) != napi_ok) {
     return CreateUndefined(env);
   }
+  UnregisterInterceptSink(handle);
   std::shared_ptr<Session> session = g_sessions.Take(handle);
   if (session == nullptr) {
     return CreateUndefined(env);
@@ -667,40 +738,7 @@ napi_value SetShortcutPassthrough(napi_env env, napi_callback_info info) {
       napi_get_value_bool(env, args[1], &enabled) != napi_ok) {
     return CreateBool(env, false);
   }
-  // Register/unregister outside the lock: the callback takes the same mutex, so a
-  // re-entrant call would deadlock.
-  bool callAdd = false;
-  bool callRemove = false;
-  {
-    std::lock_guard<std::mutex> lock(g_interceptMutex);
-    if (enabled && handle > 0) {
-      g_interceptHandle = handle;
-      callAdd = !g_interceptActive;
-    } else if (g_interceptHandle == handle || handle <= 0) {
-      callRemove = g_interceptActive;
-      g_interceptHandle = 0;
-    }
-  }
-
-  if (callAdd) {
-    const Input_Result ret = OH_Input_AddKeyEventInterceptor(OnInterceptedKeyEvent, nullptr);
-    const bool ok = ret == INPUT_SUCCESS || ret == INPUT_REPEAT_INTERCEPTOR;
-    std::lock_guard<std::mutex> lock(g_interceptMutex);
-    g_interceptActive = ok;
-    if (!ok) {
-      g_interceptHandle = 0;
-      HMRDP_LOGW("key interceptor add failed: %{public}d", static_cast<int32_t>(ret));
-    }
-    return CreateBool(env, ok);
-  }
-  if (callRemove) {
-    OH_Input_RemoveKeyEventInterceptor();
-    std::lock_guard<std::mutex> lock(g_interceptMutex);
-    g_interceptActive = false;
-    return CreateBool(env, true);
-  }
-  std::lock_guard<std::mutex> lock(g_interceptMutex);
-  return CreateBool(env, g_interceptActive);
+  return CreateBool(env, SetInterceptOwner(handle, enabled));
 }
 
 napi_value SetClipboardText(napi_env env, napi_callback_info info) {
@@ -1372,6 +1410,9 @@ napi_value MoonlightVideoWarning(napi_env env, napi_callback_info) {
 napi_threadsafe_function g_moonlightTsfn = nullptr;
 OHNativeWindow* g_moonlightWindow = nullptr;
 
+// Negative, so it never collides with the positive RDP session handles used as tokens.
+constexpr int64_t kMoonlightInterceptToken = -1;
+
 struct MoonlightEventPayload {
   int event = 0;
   int value = 0;
@@ -1500,6 +1541,7 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
     return CreateUndefined(env);
   }
   if (g_moonlightTsfn != nullptr) {
+    UnregisterInterceptSink(kMoonlightInterceptToken);
     napi_release_threadsafe_function(g_moonlightTsfn, napi_tsfn_release);
     g_moonlightTsfn = nullptr;
   }
@@ -1508,7 +1550,25 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
   napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr, nullptr,
                                   nullptr, CallJsMoonlightEvent, &g_moonlightTsfn);
   hmrdp::MoonlightSessionSetCursorCallback(&OnMoonlightCursor);
+  // Delivered only while Moonlight is the focused interceptor owner.
+  RegisterInterceptSink(kMoonlightInterceptToken, [](int32_t keyCode, bool down) {
+    OnMoonlightSessionEvent(down ? hmrdp::MoonlightSessionEvent::kKeyInterceptDown
+                                 : hmrdp::MoonlightSessionEvent::kKeyInterceptUp,
+                            keyCode, "");
+  });
   return CreateUndefined(env);
+}
+
+// 快捷键穿透 for a Moonlight session; returns whether the requested state is in effect.
+napi_value MoonlightSetShortcutPassthrough(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  bool enabled = false;
+  if (argc < 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  return CreateBool(env, SetInterceptOwner(kMoonlightInterceptToken, enabled));
 }
 
 napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
@@ -1857,6 +1917,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightHostFeatures", nullptr, MoonlightSessionHostFeatures, nullptr, nullptr,
        nullptr, napi_default, nullptr},
+      {"moonlightSetShortcutPassthrough", nullptr, MoonlightSetShortcutPassthrough, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
   };
 
   napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

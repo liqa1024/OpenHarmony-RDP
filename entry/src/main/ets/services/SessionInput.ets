@@ -1,7 +1,6 @@
 import { KeyMapping, KeyMapper } from '../utils/KeyMapper';
 import { RdpLockFlags } from '../model/RdpModels';
 
-// Abstract pointer button ids shared by both protocols.
 export class InputButton {
   static readonly LEFT: number = 1;
   static readonly MIDDLE: number = 2;
@@ -15,7 +14,6 @@ export class InputAction {
   static readonly RELEASE: number = 2;
 }
 
-// Protocol-neutral touch transition; each sink maps it to its own event constants.
 export class TouchPhase {
   static readonly DOWN: number = 1;
   static readonly UP: number = 2;
@@ -24,21 +22,13 @@ export class TouchPhase {
   static readonly CANCEL_ALL: number = 5;
 }
 
-// Protocol-facing verbs; each session backend implements this over its own transport.
 export interface InputSink {
-  // mapping carries both scancode (RDP) and vk (Moonlight); extended is shared.
   key(mapping: KeyMapping, down: boolean): void;
-  // Windows/Meta key, used by the Win-key substitute.
   metaKey(down: boolean): void;
-  // A composed character's code point (IME / layout fallback).
   unicode(code: number, down: boolean): void;
-  // Mirror the local lock state; RDP sends Client Synchronize, Moonlight is a no-op.
   lockState(flags: number): void;
-  // Absolute pointer position in the pointer space set by the page.
   pointerMove(x: number, y: number): void;
-  // One button transition at the given position.
   button(action: number, button: number, x: number, y: number): void;
-  // One touch transition; x/y are in the pointer space, pressure is 0..1 (0 = unknown).
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void;
 }
 
@@ -51,9 +41,6 @@ const CANCEL_RESUME_MIN_DISTANCE: number = 16;
 const CANCEL_RESUME_MAX_DISTANCE: number = 64;
 const CANCEL_HOLD_MS: number = 400;
 
-// Protocol-neutral input pipeline: source classification, key/button accounting,
-// move coalescing, lock ordering, touch contacts and release-all. Touchpad/axis
-// landing on top of the same state.
 export class SessionInput {
   private sink: InputSink;
   private winKeySubstitute: number = 0;
@@ -67,10 +54,9 @@ export class SessionInput {
   private pendingMoveY: number = -1;
   private lastMoveSentAt: number = 0;
   private moveTimer: number = -1;
-  // Pointer space (remote desktop/stream pixels) used for touch clamping and cancel resume.
+  // Pointer space in remote desktop/stream pixels, used for touch clamping and cancel resume.
   private pointerWidth: number = 0;
   private pointerHeight: number = 0;
-  // Touchscreen-as-native-touch is only enabled when the host advertises it.
   private touchEnabled: boolean = false;
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
   // Kept separate from touchPoints so a contact can be resumed after a Cancel even if the UI renumbers the finger.
@@ -95,8 +81,6 @@ export class SessionInput {
     this.touchEnabled = enabled;
   }
 
-  // True while touchscreen input is routed to native host touch, so the same
-  // touch must not also be processed as its compatibility mouse events.
   isTouchEnabled(): boolean {
     return this.touchEnabled;
   }
@@ -141,6 +125,16 @@ export class SessionInput {
         this.sink.unicode(code, down);
       }
     }
+  }
+
+  // A key delivered by the system key interceptor; unlike handleKey it forwards the real Win key.
+  handleInterceptedKey(keyCode: number, down: boolean): void {
+    const mapping: KeyMapping | undefined = KeyMapper.mapFull(keyCode);
+    if (mapping === undefined) {
+      return;
+    }
+    this.trackKey(keyCode, mapping, down);
+    this.sink.key(mapping, down);
   }
 
   handleMove(x: number, y: number): void {
@@ -351,7 +345,6 @@ export class SessionInput {
   private releaseAllTouches(): void {
     this.finalizeAllCancels();
     if (this.touchContactIds.size > 0) {
-      // One cancel-all is the protocol's own "all contacts gone" signal.
       this.sink.touch(TouchPhase.CANCEL_ALL, 0, 0, 0, 0);
     }
     this.touchPoints.clear();

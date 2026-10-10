@@ -541,3 +541,6 @@ export const moonlightText: (text: string) => void;
 
 /** LI_FF_* host feature bits (0 before a session is established). */
 export const moonlightHostFeatures: () => number;
+
+/** Shortcut passthrough for Moonlight; returns the requested state in effect. */
+export const moonlightSetShortcutPassthrough: (enabled: boolean) => boolean;

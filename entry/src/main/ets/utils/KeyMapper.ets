@@ -1,6 +1,5 @@
 import { RdpLockFlags } from '../model/RdpModels';
 
-// RDP-only view: PS/2 set-1 scancode plus the 0xE0 extended flag.
 export class RdpScanCode {
   scancode: number = 0;
   extended: boolean = false;
@@ -13,12 +12,11 @@ export class RdpScanCode {
   }
 }
 
-// One physical key described once for every protocol: RDP sends scancode+extended,
-// Moonlight sends vk+extended; lock is the remote lock flag a lock key toggles.
 export class KeyMapping {
   scancode: number = 0;
   vk: number = 0;
   extended: boolean = false;
+  // RdpLockFlags value the key toggles (0 = not a lock key).
   lock: number = 0;
 
   static of(scancode: number, vk: number, extended: boolean, lock: number): KeyMapping {
@@ -49,7 +47,6 @@ const VK_A: number = 0x41;
 const VK_F1: number = 0x70;
 const VK_NUMPAD0: number = 0x60;
 
-// A single source of truth for both protocols: one row per HarmonyOS keyCode.
 export class KeyMapper {
   private static lookup(keyCode: number): KeyMapping | undefined {
     if (keyCode >= KEYCODE_0 && keyCode <= KEYCODE_9) {
@@ -112,7 +109,7 @@ export class KeyMapper {
       case 2116: return KeyMapping.of(0x4E, 0x6B, false, 0); // numpad add
       case 2117: return KeyMapping.of(0x53, 0x6E, false, 0); // numpad dot
       case 2119: return KeyMapping.of(0x1C, 0x0D, true, 0); // numpad enter
-      // Numpad equals (scancode 0x59) has no standard Windows VK; RDP only.
+      // Numpad equals (scancode 0x59) has no standard Windows VK.
       case 2120: return KeyMapping.of(0x59, 0, false, 0);
       default: return undefined;
     }

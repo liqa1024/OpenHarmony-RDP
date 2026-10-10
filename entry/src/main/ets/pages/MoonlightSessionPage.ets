@@ -66,11 +66,13 @@ struct MoonlightSessionPage {
   @LocalStorageLink('sessionKey') sessionKey: string = '';
   private controller: MlSurfaceController = new MlSurfaceController();
   private backend: MoonlightSessionBackend | undefined = undefined;
-  private sink: MoonlightInputSink | undefined = undefined;
   private input: SessionInput | undefined = undefined;
   private connectionId: string = '';
   private started: boolean = false;
   private closing: boolean = false;
+  private shortcutPassthrough: boolean = false;
+  private windowFocused: boolean = true;
+  private interceptActive: boolean = false;
   // Kept so a retry can re-bind it: stopping a session releases the native
   // window, but this surface stays alive.
   private surfaceId: string = '';
@@ -149,13 +151,16 @@ struct MoonlightSessionPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
     this.cursor.setEnabled(this.cursorMode === ML_CURSOR_HIDE_HOST);
+    this.shortcutPassthrough = settings.mlShortcutPassthrough;
     if (this.backend !== undefined) {
       this.backend.setCursorListener((update: RemoteCursorUpdate): void => {
         this.cursor.applyUpdate(update);
       });
+      this.backend.setKeyInterceptListener((keyCode: number, down: boolean): void => {
+        this.input?.handleInterceptedKey(keyCode, down);
+      });
       const sink: MoonlightInputSink = new MoonlightInputSink(this.backend);
       sink.setReferenceSize(this.streamWidth, this.streamHeight);
-      this.sink = sink;
       const input: SessionInput = new SessionInput(sink);
       input.setWinKeySubstitute(settings.mlWinKeySubstitute);
       input.setPointerSpace(this.streamWidth, this.streamHeight);
@@ -193,6 +198,12 @@ struct MoonlightSessionPage {
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.setLocalCursorHidden(false);
     this.input?.releaseAll();
+    if (this.interceptActive) {
+      this.backend?.setShortcutPassthrough(false);
+      this.interceptActive = false;
+      this.input?.setInterceptActive(false);
+    }
+    this.backend?.clearKeyInterceptListener();
     this.backend?.clearCursorListener();
     this.cursor.setWindow(undefined);
     this.cursor.reset();
@@ -232,12 +243,33 @@ struct MoonlightSessionPage {
       this.setLocalCursorHidden(false);
     }
     if (state === ConnectionState.Connected) {
-      // Touchscreen goes out as native host touch only when the host advertises it.
       const features: number = this.backend !== undefined ? this.backend.hostFeatureFlags() : 0;
       this.input?.setTouchEnabled((features & ML_HOST_FEATURE_TOUCH) !== 0);
     }
     this.updateConnectOverlay();
     this.refreshToolbarAutoHide();
+    this.updateShortcutPassthrough();
+  }
+
+  private updateShortcutPassthrough(): void {
+    const backend: MoonlightSessionBackend | undefined = this.backend;
+    if (backend === undefined) {
+      return;
+    }
+    const wanted: boolean = this.shortcutPassthrough
+      && this.state === ConnectionState.Connected
+      && this.windowFocused;
+    if (wanted === this.interceptActive) {
+      return;
+    }
+    if (wanted) {
+      // Keep the real registration result: a denied ACL permission leaves this false.
+      this.interceptActive = backend.setShortcutPassthrough(true);
+    } else {
+      backend.setShortcutPassthrough(false);
+      this.interceptActive = false;
+    }
+    this.input?.setInterceptActive(this.interceptActive);
   }
 
   private updateConnectOverlay(): void {
@@ -275,6 +307,14 @@ struct MoonlightSessionPage {
       WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
         this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
         this.refreshToolbarAutoHide();
+      });
+      // Focus drives shortcut-passthrough ownership: only the focused session may hold the process-global key interceptor.
+      WindowController.watchFocus(win, (focused: boolean) => {
+        this.windowFocused = focused;
+        if (!focused) {
+          this.input?.releaseAll();
+        }
+        this.updateShortcutPassthrough();
       });
     });
   }

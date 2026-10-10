@@ -16,6 +16,10 @@ enum class MoonlightSessionEvent : int {
   // separate channel instead of compositing it into the video. Carried on the
   // cursor callback, not the session callback.
   kCursorShape = 5,
+  // Shortcut passthrough: a system-intercepted key, delivered as two event codes
+  // so `value` stays the keyCode.
+  kKeyInterceptDown = 6,
+  kKeyInterceptUp = 7,
 };
 
 // Called from the session's own thread; must not block.
