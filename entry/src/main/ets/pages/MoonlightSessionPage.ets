@@ -339,12 +339,27 @@ struct MoonlightSessionPage {
     this.shell?.remoteCursor().setLocalHidden(shouldHide);
   }
 
-  private mapPoint(x: number, y: number): number[] {
-    if (this.componentWidth <= 0 || this.componentHeight <= 0) {
-      return [0, 0];
+  private viewRect(): number[] {
+    const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
+    const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
+    const streamAspect: number = this.streamWidth / this.streamHeight;
+    const compAspect: number = compWidth / compHeight;
+    if (streamAspect > compAspect) {
+      const viewHeight: number = compWidth / streamAspect;
+      return [0, (compHeight - viewHeight) / 2, compWidth, viewHeight];
     }
-    const remoteX: number = Math.round(x / this.componentWidth * this.streamWidth);
-    const remoteY: number = Math.round(y / this.componentHeight * this.streamHeight);
+    const viewWidth: number = compHeight * streamAspect;
+    return [(compWidth - viewWidth) / 2, 0, viewWidth, compHeight];
+  }
+
+  private mapPoint(x: number, y: number): number[] {
+    const rect: number[] = this.viewRect();
+    const normalizedX: number = (x - rect[0]) / rect[2];
+    const normalizedY: number = (y - rect[1]) / rect[3];
+    const clampedX: number = Math.min(1, Math.max(0, normalizedX));
+    const clampedY: number = Math.min(1, Math.max(0, normalizedY));
+    const remoteX: number = Math.round(clampedX * (this.streamWidth - 1));
+    const remoteY: number = Math.round(clampedY * (this.streamHeight - 1));
     return [remoteX, remoteY];
   }
 

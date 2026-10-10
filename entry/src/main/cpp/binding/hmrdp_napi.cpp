@@ -1585,6 +1585,10 @@ napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
     HMRDP_LOGE("moonlight: CreateNativeWindowFromSurfaceId failed");
     return CreateBool(env, false);
   }
+  // Default window scaling stretches the picture; SCALE_FIT keeps the video aspect.
+  if (OH_NativeWindow_NativeWindowSetScalingModeV2(window, OH_SCALING_MODE_SCALE_FIT_V2) != 0) {
+    HMRDP_LOGW("moonlight: set scaling mode failed");
+  }
   if (g_moonlightWindow != nullptr) {
     if (hmrdp::MoonlightSessionActive()) {
       OH_NativeWindow_DestroyNativeWindow(window);
