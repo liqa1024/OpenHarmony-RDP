@@ -350,7 +350,7 @@ export class MoonlightInputSink implements InputSink {
       pressure);
   }
 
-  scroll(vertical: number, horizontal: number): void {
+  scroll(vertical: number, horizontal: number, _x: number, _y: number): void {
     if (vertical !== 0) {
       moonlightHighResScroll(MoonlightInputSink.clampShort(vertical));
     }

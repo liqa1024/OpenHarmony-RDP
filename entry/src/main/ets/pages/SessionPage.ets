@@ -1,33 +1,31 @@
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
-import { inputDevice } from '@kit.InputKit';
 import { matrix4, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
 import { PendingConnection, RdpConnectOptions,
-  RdpClipKind, RdpEvent, RdpLockFlags, RdpPointerFlags, RdpTouchFlags, SessionRequests,
+  RdpClipKind, RdpEvent, SessionRequests,
   SR_BACKEND_FSR } from '../model/RdpModels';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { BackgroundWorker } from '../services/BackgroundWorker';
 import { RdpNative } from '../services/RdpNative';
 import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
-import { RdpSessionBackend, SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
+import { RdpInputSink, RdpSessionBackend, SessionBackend,
+  SessionBackendRegistry } from '../services/SessionBackend';
+import { SessionInput } from '../services/SessionInput';
 import { SessionSignal } from '../model/SessionSignal';
 import { RdpCounters } from '../services/SessionTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_ZOOM,
+import { AppSettings, PINCH_MODE_ZOOM,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, DEFAULT_PINCH_NOTCHES_PER_UNIT,
-  MIN_SPEED_SCALE, MAX_SPEED_SCALE } from '../services/TouchpadWheel';
 import { WindowController } from '../services/WindowController';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
 import { lengthToNumber, showConfirm, showToast } from '../utils/UiUtil';
-import { KeyMapper, RdpScanCode } from '../utils/KeyMapper';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 import { StatusCard } from '../components/StatusCard';
@@ -40,9 +38,6 @@ import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
 
-const MIN_PINCH_DISTANCE_PERCENT: number = 1;
-const MAX_PINCH_DISTANCE_PERCENT: number = 20;
-const MIN_PINCH_HALF: number = 8;
 // axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot explode or collapse the separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
@@ -52,13 +47,6 @@ const VIEW_SNAP_SCALE: number = 1.08;
 const VIEW_SNAP_MS: number = 180;
 const METRICS_INTERVAL_MS: number = 1000;
 const PAN_WHEEL_STEP: number = 64;
-// External RDPEI ids for the synthetic pinch contacts; real screen touches use touch.id + 1, so these never collide.
-const PINCH_TOUCH_ID_A: number = 20;
-const PINCH_TOUCH_ID_B: number = 21;
-// FreeRDP coalesces touch frames, so the first MOTION must not reach RDPEI before its DOWN flush or it overwrites the unsent DOWN.
-const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
-// Dead zone before the pinch locator cursor flips open/grab hand, so jitter does not flicker it.
-const PINCH_CURSOR_HYSTERESIS: number = 0.02;
 
 // Toolbar throughput below this is idle/keep-alive noise, so it is not shown.
 const MIN_BANDWIDTH_BYTES: number = 1024;
@@ -81,18 +69,6 @@ const LOCAL_BAD_MS: number = 33;
 
 // While the app is away the system freezes and aborts its sockets, but the read loop only notices once the window is back, so the reconnect check waits a grace period.
 const FOREGROUND_RECONNECT_GRACE_MS: number = 400;
-
-// A TouchType.Cancel does not always mean the finger lifted: a Down within this distance of its last position resumes the contact instead of lifting and re-pressing.
-const CANCEL_RESUME_RATIO: number = 0.02;
-const CANCEL_RESUME_MIN_DISTANCE: number = 16;
-const CANCEL_RESUME_MAX_DISTANCE: number = 64;
-const CANCEL_HOLD_MS: number = 400;
-
-// Each forwarded move is a separate input PDU, so pointer moves are rate-limited.
-const MOUSE_MOVE_MIN_INTERVAL_MS: number = 8;
-
-// 触控板双指双击 -> 中键的判定窗口：单次双指轻触要等这么久没有第二次才按右键发出。
-const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
 
 class RdpSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -222,58 +198,15 @@ struct SessionPage {
   private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
   private metricsTimer: number = -1;
   private toolbarAutoHideArmed: boolean = true;
-  private moveTimer: number = -1;
   private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
-  private touchPoints: Map<number, number[]> = new Map<number, number[]>();
-  // Kept separate from touchPoints so a contact can be resumed after a Cancel even if ArkUI renumbers the finger.
-  private touchContactIds: Map<number, number> = new Map<number, number>();
-  private pendingCancelIds: number[] = [];
-  private cancelTimers: Map<number, number> = new Map<number, number>();
-  private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
-  private wheelChunks: WheelChunk[] = [];
-  private pendingMoveX: number = -1;
-  private pendingMoveY: number = -1;
-  private lastMoveSentAt: number = 0;
-  private heldScanKeys: Map<string, RdpScanCode> = new Map<string, RdpScanCode>();
-  private heldUnicodeKeys: Set<number> = new Set<number>();
-  private heldButtons: Set<number> = new Set<number>();
-  private lastPointerX: number = 0;
-  private lastPointerY: number = 0;
-  private touchpadMiddleDoubleTap: boolean = false;
-  private touchpadClickPending: boolean = false;
-  private touchpadClickTimer: number = -1;
-  private touchpadClickX: number = 0;
-  private touchpadClickY: number = 0;
-  private touchpadMiddleSwallow: boolean = false;
-  private touchpadDevices: Map<number, boolean> = new Map<number, boolean>();
-  private deviceChangeListener: (data: inputDevice.DeviceListener) => void =
-    (data: inputDevice.DeviceListener) => {
-      this.touchpadDevices.clear();
-    };
-  private pinchScale: number = 0;
-  private pinchAccum: number = 0;
-  // No timers: a stationary hold must not lift the contacts into a fake click.
-  private pinchActive: boolean = false;
-  private pinchCtrlDown: boolean = false;
-  private pinchZoomSpeed: number = 1;
-  private readonly ctrlScancode: number = 0x1D;
-  private pinchAsTouch: boolean = false;
+  private sink: RdpInputSink | undefined = undefined;
+  private input: SessionInput | undefined = undefined;
+  // Direct-zoom mode keeps the client-side view transform in this page.
   private pinchDirect: boolean = false;
-  private pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
-  private touchPinchActive: boolean = false;
-  // The OS hides the pointer while a synthetic touch is down; the cursor installer swaps in a native hand, this is the direction hysteresis.
-  private touchPinchZoomIn: boolean = true;
-  private touchPinchAnchor: number[] = [0, 0];
-  private touchPinchHalf: number = MIN_PINCH_HALF;
-  private touchPinchLastHalf: number = MIN_PINCH_HALF;
-  private touchPinchMotionAt: number = 0;
-  // ArkUI cannot report the real finger angle, so the pair is tilted by this configured amount.
-  private touchPinchAngle: number = 30;
-  private touchPinchUnitX: number = 1;
-  private touchPinchUnitY: number = 0;
+  private directZoomActive: boolean = false;
   @State private viewMatrix: Matrix4Transit = matrix4.identity();
   private viewScale: number = 1;
   private viewTransX: number = 0;
@@ -306,8 +239,6 @@ struct SessionPage {
       this.onBackgroundEvent(event);
     };
   private audioHandle: number = -1;
-  private localLockFlags: number = 0;
-  private localLockKnown: boolean = false;
   private lastRemoteLocks: number = 0;
   private lastRemoteLocksValid: boolean = false;
   private lastReassertMs: number = 0;
@@ -334,7 +265,6 @@ struct SessionPage {
       hilog.warn(DOMAIN, TAG, 'paste authorization failed');
       this.toast('未获得剪贴板授权');
     };
-  private winKeySubstitute: number = 0;
   private shortcutPassthrough: boolean = false;
   // A denied permission leaves it false and the ordinary onKeyEvent path in charge.
   private interceptActive: boolean = false;
@@ -351,20 +281,7 @@ struct SessionPage {
       : TOOLBAR_ROW_HEIGHT;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
-    this.touchpadWheel.setSpeed(settings.touchpadScrollSpeed);
-    this.touchpadMiddleDoubleTap = settings.touchpadMiddleDoubleTap;
-    try {
-      // Device IDs can change on replug, so drop the touchpad cache on a change.
-      inputDevice.on('change', this.deviceChangeListener);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'inputDevice.on change failed: %{public}s', JSON.stringify(error));
-    }
-    this.pinchZoomSpeed =
-      Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, settings.pinchZoomSpeed));
-    this.pinchAsTouch = settings.pinchMode === PINCH_MODE_TOUCH;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
-    this.touchPinchAngle = settings.pinchTouchAngle;
-    this.pinchTouchDistance = settings.pinchTouchDistance;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
     // Never ask for Vulkan presentation on a device that cannot do it (covers a config imported from another device).
     RdpNative.applyHardwareAccel(settings.hardwareAccel
@@ -385,13 +302,29 @@ struct SessionPage {
     this.reconnectOnForeground = settings.reconnectOnForeground;
     this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
-    this.winKeySubstitute = settings.winKeySubstitute;
     this.shortcutPassthrough = settings.shortcutPassthrough;
     // With 超分辨率 the server renders the session (pre-upscale) size, not the configured output size; the Resize event corrects a mismatch.
     this.desktopWidth = SettingsStore.srSessionSize(this.options.width,
       this.options.srEnabled ? this.options.srRatioPercent : 0);
     this.desktopHeight = SettingsStore.srSessionSize(this.options.height,
       this.options.srEnabled ? this.options.srRatioPercent : 0);
+    const sink: RdpInputSink = new RdpInputSink(this.native);
+    this.sink = sink;
+    const input: SessionInput = new SessionInput(sink);
+    input.setWinKeySubstitute(settings.winKeySubstitute);
+    input.setPointerSpace(this.desktopWidth, this.desktopHeight);
+    input.setPointMapper((x: number, y: number): number[] => this.mapPointer(x, y));
+    input.setTouchEnabled(true);
+    input.setTouchpadScrollSpeed(settings.touchpadScrollSpeed);
+    input.setTouchpadMiddleDoubleTap(settings.touchpadMiddleDoubleTap);
+    input.setPinchMode(settings.pinchMode);
+    input.setPinchZoomSpeed(settings.pinchZoomSpeed);
+    input.setPinchTouchDistance(settings.pinchTouchDistance);
+    input.setPinchTouchAngle(settings.pinchTouchAngle);
+    input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
+      this.cursor.setPinchOverride(active, zoomIn);
+    });
+    this.input = input;
     this.loadSessionWindow();
     this.controller.setCallbacks(
       (surfaceId: string, width: number, height: number) => {
@@ -430,20 +363,11 @@ struct SessionPage {
     this.toolbarAutoHideArmed = false;
     this.toolbarAutoHide.dispose();
     this.stopMetricsTimer();
-    if (this.moveTimer !== -1) {
-      clearTimeout(this.moveTimer);
-      this.moveTimer = -1;
-    }
     if (this.reconnectTimer !== -1) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = -1;
     }
     this.unwatchApplicationState();
-    try {
-      inputDevice.off('change', this.deviceChangeListener);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'inputDevice.off change failed: %{public}s', JSON.stringify(error));
-    }
     const win: window.Window | undefined = this.sessionWindow;
     this.sessionWindow = undefined;
     if (win !== undefined) {
@@ -456,6 +380,7 @@ struct SessionPage {
       }
     }
     this.releaseAllInputs();
+    this.input?.dispose();
     this.cursor.setWindow(undefined);
     this.cursor.reset();
     this.options.password = '';
@@ -1027,7 +952,8 @@ struct SessionPage {
     }
     this.lastRemoteLocks = lockFlags;
     this.lastRemoteLocksValid = true;
-    if (!this.localLockKnown || lockFlags === this.localLockFlags) {
+    const sink: RdpInputSink | undefined = this.sink;
+    if (sink === undefined || !sink.hasLockState() || lockFlags === sink.lastLockFlags()) {
       return;
     }
     const now: number = Date.now();
@@ -1035,7 +961,7 @@ struct SessionPage {
       return;
     }
     this.lastReassertMs = now;
-    this.native.reassertLockState(this.localLockFlags);
+    this.native.reassertLockState(sink.lastLockFlags());
   }
 
   private onClipboardImage(payload: RdpEventPayload): void {
@@ -1682,450 +1608,65 @@ struct SessionPage {
     return [remoteX, remoteY];
   }
 
-  // A touchpad tap loses the TOUCHPAD tag, so the originating device is the fallback; sourceTool is checked first to keep scroll cheap.
-  private isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
-    return sourceTool === SourceTool.TOUCHPAD || this.isTouchpadDevice(deviceId);
-  }
-
-  private isTouchpadDevice(deviceId: number | undefined): boolean {
-    if (deviceId === undefined || deviceId <= 0) {
-      return false;
-    }
-    const cached: boolean | undefined = this.touchpadDevices.get(deviceId);
-    if (cached !== undefined) {
-      return cached;
-    }
-    try {
-      const info: inputDevice.InputDeviceData = inputDevice.getDeviceInfoSync(deviceId);
-      const touchpad: boolean = info.sources.indexOf('touchpad') >= 0;
-      this.touchpadDevices.set(deviceId, touchpad);
-      return touchpad;
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'getDeviceInfo(%{public}d) failed: %{public}s', deviceId,
-        JSON.stringify(error));
-    }
-    return false;
-  }
-
   private handleMouse(event: MouseEvent): void {
-    // A touchscreen can also emit compatibility mouse events (owned by handleTouch); forward only real mouse here.
-    if (event.source === SourceType.TouchScreen) {
-      return;
-    }
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
-    const point: number[] = this.mapPointer(event.x, event.y);
-    const remoteX: number = point[0];
-    const remoteY: number = point[1];
-    let button: number = 0;
-    if (event.button === MouseButton.Left) {
-      button = RdpPointerFlags.BUTTON1;
-    } else if (event.button === MouseButton.Right) {
-      button = RdpPointerFlags.BUTTON2;
-    } else if (event.button === MouseButton.Middle) {
-      button = RdpPointerFlags.BUTTON3;
-    }
-    if (this.touchpadMiddleDoubleTap && event.button === MouseButton.Right
-      && this.isTouchpad(event.deviceId, event.sourceTool)) {
-      this.lastPointerX = remoteX;
-      this.lastPointerY = remoteY;
-      this.handleTouchpadRight(event.action, remoteX, remoteY);
-      return;
-    }
-    this.lastPointerX = remoteX;
-    this.lastPointerY = remoteY;
-    if (event.action === MouseAction.Press) {
-      this.flushMouseMove();
-      this.native.mouse(RdpPointerFlags.MOVE, remoteX, remoteY);
-      this.native.mouse(button | RdpPointerFlags.DOWN, remoteX, remoteY);
-      if (button !== 0) {
-        this.heldButtons.add(button);
-      }
-    } else if (event.action === MouseAction.Release) {
-      this.flushMouseMove();
-      this.native.mouse(button, remoteX, remoteY);
-      this.heldButtons.delete(button);
-    } else if (event.action === MouseAction.Move) {
-      this.queueMouseMove(remoteX, remoteY);
-    }
-  }
-
-  private handleTouchpadRight(action: MouseAction, x: number, y: number): void {
-    if (action === MouseAction.Press) {
-      if (this.touchpadClickPending) {
-        this.cancelTouchpadClickTimer();
-        this.touchpadClickPending = false;
-        this.touchpadMiddleSwallow = true;
-        this.sendSyntheticClick(RdpPointerFlags.BUTTON3, x, y);
-        return;
-      }
-      this.touchpadClickPending = true;
-      this.touchpadClickX = x;
-      this.touchpadClickY = y;
-      return;
-    }
-    if (action !== MouseAction.Release) {
-      return;
-    }
-    if (this.touchpadMiddleSwallow) {
-      this.touchpadMiddleSwallow = false;
-      return;
-    }
-    if (this.touchpadClickPending && this.touchpadClickTimer === -1) {
-      this.touchpadClickTimer = setTimeout(() => {
-        this.touchpadClickTimer = -1;
-        if (!this.touchpadClickPending) {
-          return;
-        }
-        this.touchpadClickPending = false;
-        this.sendSyntheticClick(RdpPointerFlags.BUTTON2, this.touchpadClickX, this.touchpadClickY);
-      }, TOUCHPAD_DOUBLE_TAP_MS);
-    }
-  }
-
-  /** One whole click as press + release, so the remote never keeps a button down. */
-  private sendSyntheticClick(button: number, x: number, y: number): void {
-    this.flushMouseMove();
-    this.native.mouse(RdpPointerFlags.MOVE, x, y);
-    this.native.mouse(button | RdpPointerFlags.DOWN, x, y);
-    this.native.mouse(button, x, y);
-  }
-
-  private cancelTouchpadClickTimer(): void {
-    if (this.touchpadClickTimer !== -1) {
-      clearTimeout(this.touchpadClickTimer);
-      this.touchpadClickTimer = -1;
-    }
-  }
-
-  private clearTouchpadClick(): void {
-    this.cancelTouchpadClickTimer();
-    this.touchpadClickPending = false;
-    this.touchpadMiddleSwallow = false;
-  }
-
-  // Coalesces moves: every event would otherwise become its own FastPath input PDU. At most one MOVE per MOUSE_MOVE_MIN_INTERVAL_MS, with a trailing flush so the pointer never stops short.
-  private queueMouseMove(x: number, y: number): void {
-    this.pendingMoveX = x;
-    this.pendingMoveY = y;
-    const elapsed: number = Date.now() - this.lastMoveSentAt;
-    if (elapsed >= MOUSE_MOVE_MIN_INTERVAL_MS) {
-      this.flushMouseMove();
-    } else if (this.moveTimer === -1) {
-      this.moveTimer = setTimeout(() => {
-        this.moveTimer = -1;
-        this.flushMouseMove();
-      }, MOUSE_MOVE_MIN_INTERVAL_MS - elapsed);
-    }
-  }
-
-  private flushMouseMove(): void {
-    if (this.moveTimer !== -1) {
-      clearTimeout(this.moveTimer);
-      this.moveTimer = -1;
-    }
-    if (this.pendingMoveX < 0) {
-      return;
-    }
-    const x: number = this.pendingMoveX;
-    const y: number = this.pendingMoveY;
-    this.pendingMoveX = -1;
-    this.pendingMoveY = -1;
-    this.lastMoveSentAt = Date.now();
-    this.native.mouse(RdpPointerFlags.MOVE, x, y);
+    this.input?.handleMouseEvent(event);
   }
 
   private handleTouch(event: TouchEvent): void {
-    // Only forward real touchscreen input; system-converted mouse touches are handled by handleMouse.
-    if (event.source !== SourceType.TouchScreen) {
-      return;
-    }
-    const changed: TouchObject[] = event.changedTouches;
-    for (let i = 0; i < changed.length; i++) {
-      const touch: TouchObject = changed[i];
-      const point: number[] = this.mapPointer(touch.x, touch.y);
-      const type: TouchType = touch.type;
-      const pressure: number = this.mapPressure(touch.pressure);
-      const pressureFlag: number = pressure > 0 ? RdpTouchFlags.HAS_PRESSURE : 0;
-      if (type === TouchType.Down) {
-        this.onTouchDown(touch.id, point, pressure, pressureFlag);
-      } else if (type === TouchType.Move) {
-        this.onTouchMove(touch.id, point, pressure, pressureFlag);
-      } else if (type === TouchType.Up) {
-        this.onTouchUp(touch.id, point, pressure, pressureFlag);
-      } else if (type === TouchType.Cancel) {
-        this.onTouchCancel(touch.id, point);
-      }
-    }
-  }
-
-  private onTouchDown(id: number, point: number[], pressure: number, pressureFlag: number): void {
-    // A Down for a contact already tracked is a retransmission.
-    if (this.touchContactIds.has(id)) {
-      return;
-    }
-    // A held Cancel resumed near its last position means the same finger is still down: move it instead of lifting and re-pressing.
-    const resumed: number = this.findResumableCancel(point);
-    if (resumed >= 0) {
-      const rdpId: number | undefined = this.touchContactIds.get(resumed);
-      const resumedId: number = rdpId !== undefined ? rdpId : resumed + 1;
-      this.clearCancelTimer(resumed);
-      this.removePendingCancel(resumed);
-      this.touchPoints.delete(resumed);
-      this.touchContactIds.delete(resumed);
-      this.touchPoints.set(id, point);
-      this.touchContactIds.set(id, resumedId);
-      this.native.touch(RdpTouchFlags.MOTION | pressureFlag, resumedId, pressure,
-        point[0], point[1]);
-      return;
-    }
-    this.finalizeAllCancels();
-    const rdpId: number = id + 1;
-    this.touchPoints.set(id, point);
-    this.touchContactIds.set(id, rdpId);
-    this.native.touch(RdpTouchFlags.DOWN | pressureFlag, rdpId, pressure, point[0], point[1]);
-  }
-
-  private onTouchMove(id: number, point: number[], pressure: number, pressureFlag: number): void {
-    const rdpId: number | undefined = this.touchContactIds.get(id);
-    if (rdpId === undefined) {
-      return;
-    }
-    if (this.isPendingCancel(id)) {
-      this.clearCancelTimer(id);
-      this.removePendingCancel(id);
-    }
-    const last: number[] | undefined = this.touchPoints.get(id);
-    if (last !== undefined && last[0] === point[0] && last[1] === point[1]) {
-      return;
-    }
-    this.touchPoints.set(id, point);
-    this.native.touch(RdpTouchFlags.MOTION | pressureFlag, rdpId, pressure, point[0], point[1]);
-  }
-
-  private onTouchUp(id: number, point: number[], pressure: number, pressureFlag: number): void {
-    const rdpId: number | undefined = this.touchContactIds.get(id);
-    if (rdpId === undefined) {
-      return;
-    }
-    this.clearCancelTimer(id);
-    this.removePendingCancel(id);
-    this.touchPoints.delete(id);
-    this.touchContactIds.delete(id);
-    this.native.touch(RdpTouchFlags.UP | pressureFlag, rdpId, pressure, point[0], point[1]);
-  }
-
-  private onTouchCancel(id: number, point: number[]): void {
-    if (!this.touchContactIds.has(id) || this.isPendingCancel(id)) {
-      return;
-    }
-    // The finger is often still down; CANCEL_HOLD_MS is only a safety release for a Cancel that never resumes.
-    this.touchPoints.set(id, point);
-    this.pendingCancelIds.push(id);
-    const timer: number = setTimeout(() => {
-      this.cancelTimers.delete(id);
-      this.finalizeCancel(id);
-    }, CANCEL_HOLD_MS);
-    this.cancelTimers.set(id, timer);
-  }
-
-  private findResumableCancel(point: number[]): number {
-    const minDim: number = Math.min(this.desktopWidth, this.desktopHeight);
-    const limit: number = Math.max(CANCEL_RESUME_MIN_DISTANCE,
-      Math.min(CANCEL_RESUME_MAX_DISTANCE, Math.round(minDim * CANCEL_RESUME_RATIO)));
-    const limitSq: number = limit * limit;
-    let best: number = -1;
-    let bestDist: number = limitSq;
-    for (let i = 0; i < this.pendingCancelIds.length; i++) {
-      const id: number = this.pendingCancelIds[i];
-      const last: number[] | undefined = this.touchPoints.get(id);
-      if (last === undefined) {
-        continue;
-      }
-      const dx: number = last[0] - point[0];
-      const dy: number = last[1] - point[1];
-      const dist: number = dx * dx + dy * dy;
-      if (dist <= bestDist) {
-        bestDist = dist;
-        best = id;
-      }
-    }
-    return best;
-  }
-
-  private isPendingCancel(id: number): boolean {
-    return this.pendingCancelIds.indexOf(id) >= 0;
-  }
-
-  private removePendingCancel(id: number): void {
-    const index: number = this.pendingCancelIds.indexOf(id);
-    if (index >= 0) {
-      this.pendingCancelIds.splice(index, 1);
-    }
-  }
-
-  private clearCancelTimer(id: number): void {
-    const timer: number | undefined = this.cancelTimers.get(id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.cancelTimers.delete(id);
-    }
-  }
-
-  private finalizeCancel(id: number): void {
-    this.clearCancelTimer(id);
-    this.removePendingCancel(id);
-    const rdpId: number | undefined = this.touchContactIds.get(id);
-    const point: number[] | undefined = this.touchPoints.get(id);
-    this.touchPoints.delete(id);
-    this.touchContactIds.delete(id);
-    if (rdpId !== undefined && point !== undefined) {
-      this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
-    }
-  }
-
-  private finalizeAllCancels(): void {
-    // Copy first: finalizeCancel mutates the list.
-    const ids: number[] = this.pendingCancelIds.slice();
-    for (let i = 0; i < ids.length; i++) {
-      this.finalizeCancel(ids[i]);
-    }
-  }
-
-  // ArkUI pressure is [0, 65535), RDPEI expects [0, 1024]; zero means the device did not report it.
-  private mapPressure(pressure: number | undefined): number {
-    if (pressure === undefined || pressure <= 0) {
-      return 0;
-    }
-    return Math.max(1, Math.min(1024, Math.round(pressure / 65535 * 1024)));
-  }
-
-  private releaseAllTouches(): void {
-    this.finalizeAllCancels();
-    this.touchContactIds.forEach((rdpId: number, id: number) => {
-      const point: number[] | undefined = this.touchPoints.get(id);
-      if (point !== undefined) {
-        this.native.touch(RdpTouchFlags.UP, rdpId, 0, point[0], point[1]);
-      }
-    });
-    this.touchPoints.clear();
-    this.touchContactIds.clear();
+    this.input?.handleTouch(event);
   }
 
   private handleAxis(event: AxisEvent): void {
-    const isPinch: boolean = this.isPinchEvent(event);
-    if (isPinch || this.pinchActive) {
-      // The gesture ends only on the real AxisAction.END (fingers lifted).
+    // Direct zoom is a client-view transform that stays in this page; everything
+    // else is delegated to the shared input pipeline.
+    if (this.pinchDirect) {
+      this.handleDirectZoom(event);
+      return;
+    }
+    this.input?.handleAxis(event);
+  }
+
+  private handleDirectZoom(event: AxisEvent): void {
+    const isPinch: boolean = SessionInput.isPinchEvent(event);
+    if (isPinch || this.directZoomActive) {
       if (event.action === AxisAction.END) {
-        this.endPinch();
+        this.endDirectZoom();
         return;
       }
-      if (isPinch) {
-        this.updatePinch(event);
+      if (!isPinch) {
+        return;
+      }
+      const scale: number = SessionInput.pinchScaleValue(event);
+      if (!this.directZoomActive) {
+        this.directZoomActive = true;
+        this.beginViewPinch(event, scale);
+        return;
+      }
+      if (scale > 0) {
+        this.updateViewPinch(scale);
       }
       return;
     }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
       return;
     }
-    if (event.action === AxisAction.BEGIN) {
-      this.touchpadWheel.reset();
+    if (this.viewScale <= MIN_VIEW_SCALE) {
+      return;
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
-    if (vertical === 0 && horizontal === 0) {
-      return;
-    }
-    if (this.pinchDirect && this.viewScale > MIN_VIEW_SCALE) {
-      if (this.isTouchpad(event.deviceId, event.sourceTool)) {
-        this.panView(-horizontal, -vertical);
-      } else {
-        this.panView(0, -vertical * PAN_WHEEL_STEP);
-      }
-      return;
-    }
-    const point: number[] = this.mapPointer(event.x, event.y);
-    if (this.isTouchpad(event.deviceId, event.sourceTool)) {
-      this.handleTouchpadScroll(vertical, horizontal, point);
+    if (event.sourceTool === SourceTool.TOUCHPAD) {
+      this.panView(-horizontal, -vertical);
     } else if (vertical !== 0) {
-      this.sendWheel(vertical < 0, point);
+      this.panView(0, -vertical * PAN_WHEEL_STEP);
     }
   }
 
-  private isPinchEvent(event: AxisEvent): boolean {
-    if ((event.axisPinch ?? 0) > 0) {
-      return true;
-    }
-    try {
-      return event.hasAxis(AxisType.PINCH_AXIS);
-    } catch (error) {
-      return false;
-    }
-  }
-
-  private pinchScaleValue(event: AxisEvent): number {
-    const direct: number = event.axisPinch ?? 0;
-    if (direct > 0) {
-      return direct;
-    }
-    try {
-      return event.getPinchAxisScaleValue();
-    } catch (error) {
-      return 0;
-    }
-  }
-
-  private updatePinch(event: AxisEvent): void {
-    const scale: number = this.pinchScaleValue(event);
-    if (!this.pinchActive) {
-      this.pinchActive = true;
-      this.pinchAccum = 0;
-      if (this.pinchDirect) {
-        this.beginViewPinch(event, scale);
-      } else if (this.pinchAsTouch) {
-        this.beginTouchPinch(event, scale);
-      } else {
-        this.pinchScale = scale > 0 ? scale : 0;
-        this.setPinchCtrl(true);
-      }
-      return;
-    }
-    if (scale <= 0) {
-      return;
-    }
-    if (this.pinchDirect) {
-      this.updateViewPinch(scale);
-      return;
-    }
-    if (this.pinchAsTouch) {
-      this.updateTouchPinch(scale);
-      // Skip MOTIONs that would let FreeRDP's 50Hz RDPEI coalescing overwrite the unsent DOWN; the distance is still tracked above.
-      if (Date.now() >= this.touchPinchMotionAt) {
-        this.sendTouchPinchContacts(RdpTouchFlags.MOTION);
-      }
-      return;
-    }
-    if (this.pinchScale <= 0) {
-      this.pinchScale = scale;
-      return;
-    }
-    // axisPinch is the ratio to the initial distance; the notch step derives from the configured zoom speed, so a larger speed emits more notches.
-    this.pinchAccum += scale - this.pinchScale;
-    this.pinchScale = scale;
-    const notchesPerUnit: number = DEFAULT_PINCH_NOTCHES_PER_UNIT * this.pinchZoomSpeed;
-    const step: number = notchesPerUnit > 0 ? 1 / notchesPerUnit : 0;
-    if (step <= 0) {
-      return;
-    }
-    const point: number[] = this.mapPointer(event.x, event.y);
-    while (this.pinchAccum >= step) {
-      this.pinchAccum -= step;
-      this.sendWheel(true, point);
-    }
-    while (this.pinchAccum <= -step) {
-      this.pinchAccum += step;
-      this.sendWheel(false, point);
-    }
+  private endDirectZoom(): void {
+    this.directZoomActive = false;
+    this.snapViewZoom();
   }
 
   private beginViewPinch(event: AxisEvent, scale: number): void {
@@ -2229,111 +1770,6 @@ struct SessionPage {
     });
   }
 
-  private beginTouchPinch(event: AxisEvent, scale: number): void {
-    const minDim: number = Math.min(this.desktopWidth, this.desktopHeight);
-    const percent: number = Math.max(MIN_PINCH_DISTANCE_PERCENT,
-      Math.min(MAX_PINCH_DISTANCE_PERCENT, this.pinchTouchDistance));
-    this.touchPinchAnchor = this.mapPointer(event.x, event.y);
-    this.touchPinchHalf = Math.max(MIN_PINCH_HALF, Math.round(minDim * percent / 100));
-    this.touchPinchLastHalf = this.touchPinchHalf;
-    // The pair is tilted by the configured angle; ArkUI reports no finger angle, so this stands in for the hand.
-    const angle: number = Math.max(-180, Math.min(180, this.touchPinchAngle));
-    const radians: number = angle * Math.PI / 180;
-    this.touchPinchUnitX = Math.cos(radians);
-    this.touchPinchUnitY = Math.sin(radians);
-    this.touchPinchActive = true;
-    // Keep an aim point while the synthetic contacts are down (the OS hides the pointer during touch).
-    this.touchPinchZoomIn = true;
-    this.updateTouchPinch(scale);
-    this.cursor.setPinchOverride(true, this.touchPinchZoomIn);
-    this.sendTouchPinchContacts(RdpTouchFlags.DOWN);
-    // Let the DOWN frame flush before the first MOTION can overwrite it.
-    this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
-  }
-
-  private updateTouchPinch(scale: number): void {
-    const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO, scale));
-    this.touchPinchLastHalf =
-      Math.max(MIN_PINCH_HALF, Math.round(this.touchPinchHalf * ratio));
-    // Flip the locator only past the dead zone and only when it changes: a per-motion pointer-style call would be a syscall per axis event.
-    const zoomIn: boolean = ratio > 1 + PINCH_CURSOR_HYSTERESIS
-      ? true : (ratio < 1 - PINCH_CURSOR_HYSTERESIS ? false : this.touchPinchZoomIn);
-    if (zoomIn !== this.touchPinchZoomIn) {
-      this.touchPinchZoomIn = zoomIn;
-      this.cursor.setPinchOverride(true, zoomIn);
-    }
-  }
-
-  private sendTouchPinchContacts(flags: number): void {
-    const point: number[] = this.touchPinchAnchor;
-    const half: number = this.touchPinchLastHalf;
-    const dx: number = half * this.touchPinchUnitX;
-    const dy: number = half * this.touchPinchUnitY;
-    const maxX: number = Math.max(0, this.desktopWidth - 1);
-    const maxY: number = Math.max(0, this.desktopHeight - 1);
-    const x1: number = Math.max(0, Math.min(maxX, Math.round(point[0] + dx)));
-    const y1: number = Math.max(0, Math.min(maxY, Math.round(point[1] + dy)));
-    const x2: number = Math.max(0, Math.min(maxX, Math.round(point[0] - dx)));
-    const y2: number = Math.max(0, Math.min(maxY, Math.round(point[1] - dy)));
-    this.native.touch(flags, PINCH_TOUCH_ID_A, 0, x1, y1);
-    this.native.touch(flags, PINCH_TOUCH_ID_B, 0, x2, y2);
-  }
-
-  private endTouchPinch(): void {
-    if (!this.touchPinchActive) {
-      return;
-    }
-    this.touchPinchActive = false;
-    this.sendTouchPinchContacts(RdpTouchFlags.UP);
-    this.cursor.setPinchOverride(false, this.touchPinchZoomIn);
-  }
-
-  private setPinchCtrl(down: boolean): void {
-    if (this.pinchCtrlDown === down) {
-      return;
-    }
-    this.pinchCtrlDown = down;
-    this.native.key(this.ctrlScancode, down, false);
-  }
-
-  private endPinch(): void {
-    this.endTouchPinch();
-    this.pinchActive = false;
-    this.pinchScale = 0;
-    this.pinchAccum = 0;
-    this.touchPinchMotionAt = 0;
-    // Release unconditionally: the final event may not carry the pinch axis, so
-    // pinchActive can already be false while Ctrl is still logically held.
-    this.setPinchCtrl(false);
-    // Direct mode: a pinch that stopped just above 100% settles back to it.
-    this.snapViewZoom();
-  }
-
-  private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
-    this.wheelChunks.length = 0;
-    this.touchpadWheel.map(vertical, horizontal, this.wheelChunks);
-    for (let i = 0; i < this.wheelChunks.length; i++) {
-      this.sendWheelChunk(this.wheelChunks[i], point);
-    }
-  }
-
-  private sendWheelChunk(chunk: WheelChunk, point: number[]): void {
-    // Negative rotation is 9-bit two's complement: magnitude m -> WHEEL_NEGATIVE | (0x100 - m).
-    let flags: number = chunk.horizontal ? RdpPointerFlags.HWHEEL : RdpPointerFlags.WHEEL;
-    flags |= chunk.negative
-      ? RdpPointerFlags.WHEEL_NEGATIVE | (0x100 - chunk.rotation)
-      : chunk.rotation;
-    this.native.mouse(flags, point[0], point[1]);
-  }
-
-  private sendWheel(up: boolean, point: number[]): void {
-    const chunk: WheelChunk = new WheelChunk();
-    chunk.horizontal = false;
-    chunk.negative = !up;
-    chunk.rotation = WHEEL_DETENT;
-    this.sendWheelChunk(chunk, point);
-  }
-
   private updateShortcutPassthrough(): void {
     const wanted: boolean = this.shortcutPassthrough
       && this.state === ConnectionState.Connected
@@ -2348,134 +1784,23 @@ struct SessionPage {
       this.native.setShortcutPassthrough(false);
       this.interceptActive = false;
     }
+    this.input?.setInterceptActive(this.interceptActive);
   }
 
   private handleInterceptedKey(payload: RdpEventPayload): void {
     const keyCode: number = payload.keyCode ?? -1;
-    if (keyCode < 0) {
-      return;
+    if (keyCode >= 0) {
+      this.input?.handleInterceptedKey(keyCode, payload.down ?? false);
     }
-    const down: boolean = payload.down ?? false;
-    const scan: RdpScanCode | undefined = KeyMapper.map(keyCode);
-    if (scan === undefined) {
-      return;
-    }
-    this.trackScanKey('s' + scan.scancode + (scan.extended ? 'e' : ''), scan.scancode,
-      scan.extended, down);
-    this.native.key(scan.scancode, down, scan.extended);
   }
 
   private handleKey(event: KeyEvent): void {
-    // The interceptor already forwarded and swallowed this key; don't send twice.
-    if (this.interceptActive) {
-      return;
-    }
-    const down: boolean = event.type === KeyType.Down;
-    // The real Win key is owned by the system; Win for the remote comes from the substitute key.
-    if (event.keyCode === 2076 || event.keyCode === 2077) {
-      return;
-    }
-    // A non-lock key is synced before itself so the character gets the right case; a lock key after, since its press toggles the remote.
-    const lockKey: boolean = event.keyCode === 2074 || event.keyCode === 2075
-      || event.keyCode === 2102;
-    if (!lockKey) {
-      this.syncLocalLocks(event);
-    }
-    if (this.winKeySubstitute !== 0 && event.keyCode === this.winKeySubstitute) {
-      this.trackScanKey('win', 0x5B, true, down);
-      this.native.winKey(down);
-      return;
-    }
-    const scan: RdpScanCode | undefined = KeyMapper.map(event.keyCode);
-    if (scan !== undefined) {
-      this.trackScanKey('s' + scan.scancode + (scan.extended ? 'e' : ''), scan.scancode,
-        scan.extended, down);
-      this.native.key(scan.scancode, down, scan.extended);
-      if (lockKey) {
-        this.syncLocalLocks(event);
-      }
-      return;
-    }
-    const text: string = event.keyText;
-    if (text.length === 1) {
-      const code: number = text.charCodeAt(0);
-      if (code >= 0x20) {
-        this.trackUnicodeKey(code, down);
-        this.native.unicode(code, down);
-      }
-    }
-  }
-
-  // The lock states are only exposed from API 19; when absent the remote keeps its own state.
-  private syncLocalLocks(event: KeyEvent): void {
-    const caps: boolean | undefined = event.isCapsLockOn;
-    const num: boolean | undefined = event.isNumLockOn;
-    const scroll: boolean | undefined = event.isScrollLockOn;
-    if (caps === undefined || num === undefined || scroll === undefined) {
-      return;
-    }
-    let flags: number = 0;
-    if (scroll) {
-      flags |= RdpLockFlags.SCROLL;
-    }
-    if (num) {
-      flags |= RdpLockFlags.NUM;
-    }
-    if (caps) {
-      flags |= RdpLockFlags.CAPS;
-    }
-    this.localLockFlags = flags;
-    this.localLockKnown = true;
-    this.native.lockState(flags);
-  }
-
-  private trackScanKey(key: string, scancode: number, extended: boolean, down: boolean): void {
-    if (down) {
-      if (!this.heldScanKeys.has(key)) {
-        this.heldScanKeys.set(key, RdpScanCode.of(scancode, extended));
-      }
-    } else {
-      this.heldScanKeys.delete(key);
-    }
-  }
-
-  private trackUnicodeKey(code: number, down: boolean): void {
-    if (down) {
-      this.heldUnicodeKeys.add(code);
-    } else {
-      this.heldUnicodeKeys.delete(code);
-    }
-  }
-
-  private releaseAllKeys(): void {
-    this.heldScanKeys.forEach((key: RdpScanCode) => {
-      this.native.key(key.scancode, false, key.extended);
-    });
-    this.heldScanKeys.clear();
-    this.heldUnicodeKeys.forEach((code: number) => {
-      this.native.unicode(code, false);
-    });
-    this.heldUnicodeKeys.clear();
-  }
-
-  private releaseAllButtons(): void {
-    if (this.heldButtons.size === 0) {
-      return;
-    }
-    this.flushMouseMove();
-    this.heldButtons.forEach((button: number) => {
-      this.native.mouse(button, this.lastPointerX, this.lastPointerY);
-    });
-    this.heldButtons.clear();
+    this.input?.handleKey(event);
   }
 
   private releaseAllInputs(): void {
-    this.releaseAllKeys();
-    this.releaseAllButtons();
-    this.releaseAllTouches();
-    this.endPinch();
-    // Don't let a pending 中键 candidate fire into a window that lost focus.
-    this.clearTouchpadClick();
+    this.input?.releaseAll();
+    this.endDirectZoom();
   }
 
   private loadSessionWindow(): void {

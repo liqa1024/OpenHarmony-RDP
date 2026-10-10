@@ -61,7 +61,8 @@ export interface InputSink {
   touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
     heightMm: number): void;
   // Wheel deltas in WHEEL_DELTA (120) units; vertical positive is up, horizontal positive is left.
-  scroll(vertical: number, horizontal: number): void;
+  // x/y are the pointer position in the pointer space (protocols that carry it on the wheel event).
+  scroll(vertical: number, horizontal: number, x: number, y: number): void;
 }
 
 // Each forwarded move is a separate input message, so absolute moves are rate-limited.
@@ -322,9 +323,10 @@ export class SessionInput {
       return;
     }
     if (this.isTouchpad(event.deviceId, event.sourceTool)) {
-      this.handleTouchpadScroll(vertical, horizontal);
+      this.handleTouchpadScroll(vertical, horizontal, this.pointMapper(event.x, event.y));
     } else if (vertical !== 0) {
-      this.sink.scroll(vertical < 0 ? WHEEL_DETENT : -WHEEL_DETENT, 0);
+      const point: number[] = this.pointMapper(event.x, event.y);
+      this.sink.scroll(vertical < 0 ? WHEEL_DETENT : -WHEEL_DETENT, 0, point[0], point[1]);
     }
   }
 
@@ -458,7 +460,7 @@ export class SessionInput {
     this.touchpadMiddleSwallow = false;
   }
 
-  private handleTouchpadScroll(vertical: number, horizontal: number): void {
+  private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
     this.wheelChunks.length = 0;
     this.touchpadWheel.map(vertical, horizontal, this.wheelChunks);
     let wheelV: number = 0;
@@ -473,11 +475,11 @@ export class SessionInput {
       }
     }
     if (wheelV !== 0 || wheelH !== 0) {
-      this.sink.scroll(wheelV, wheelH);
+      this.sink.scroll(wheelV, wheelH, point[0], point[1]);
     }
   }
 
-  private static isPinchEvent(event: AxisEvent): boolean {
+  static isPinchEvent(event: AxisEvent): boolean {
     if ((event.axisPinch ?? 0) > 0) {
       return true;
     }
@@ -488,7 +490,7 @@ export class SessionInput {
     }
   }
 
-  private static pinchScaleValue(event: AxisEvent): number {
+  static pinchScaleValue(event: AxisEvent): number {
     const direct: number = event.axisPinch ?? 0;
     if (direct > 0) {
       return direct;
@@ -539,13 +541,14 @@ export class SessionInput {
     if (step <= 0) {
       return;
     }
+    const point: number[] = this.pointMapper(event.x, event.y);
     while (this.pinchAccum >= step) {
       this.pinchAccum -= step;
-      this.sink.scroll(WHEEL_DETENT, 0);
+      this.sink.scroll(WHEEL_DETENT, 0, point[0], point[1]);
     }
     while (this.pinchAccum <= -step) {
       this.pinchAccum += step;
-      this.sink.scroll(-WHEEL_DETENT, 0);
+      this.sink.scroll(-WHEEL_DETENT, 0, point[0], point[1]);
     }
   }
 
