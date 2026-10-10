@@ -236,6 +236,10 @@
    既有槽位**，否则老记录错位。
 2. **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
    不要在别处塞新内容而让 Moonlight 那份成为摆设。
+   - 输入类 `ml*` 已消费：光标模式、Win 键替代、快捷键穿透、触控板滚动速度 / 双指双击中键、
+     捏合模式与参数（三档里的「直接缩放」在 Moonlight 设置里不暴露）。**前台重连
+     （`mlReconnectOnForeground`）尚未消费**（属会话 / 后续项）。输入策略与两协议 sink 见
+     [`session-and-input.md`](session-and-input.md) §2。
 3. **连接动作（连接 / 恢复 / 切换 / 终止 / 断开）只有一个走法入口与一处判定**：
    - 走法统一经预检（`MoonlightConnector.prepare`）选择 `/resume` 或 `/launch`；判定集中在
      `utils/ConnectAction.ets`（协议中立），连接行与卡片共用。主页主按钮对 Moonlight 统一为「终止」

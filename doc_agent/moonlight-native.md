@@ -127,10 +127,14 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   调用方（UI 线程）只置停止标志、发条件变量通知、`join`，绝不直接碰 moonlight 状态。`g_active` 覆盖整个
   会话生命周期（含已建流阶段），用来**挡住并发的第二个会话**（moonlight-common-c 是进程级单连接，重入会把
   它的全局状态搞坏，表现为 `VideoRecv`/`RtpvAddPacket` 崩溃）。视频回调取自解码桥，`renderContext` 是会话
-  XComponent 的 `OHNativeWindow`，音频以空渲染器关闭（不播放）；输入直接转 `LiSend*`（相对/绝对
-  鼠标、按键、滚轮）。N-API 出口：`moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
+  XComponent 的 `OHNativeWindow`，音频以空渲染器关闭（不播放）；输入由 `MoonlightInputSink` 落 `LiSend*`
+  （相对/绝对鼠标、按键、UTF-8 文本、高分辨率滚轮、触屏触点、原生触控板接入点），策略在共用
+  `SessionInput`（见 [`session-and-input.md`](session-and-input.md) §2）。N-API 出口：
+  `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
-  `moonlightScroll`；窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
+  `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
+  `moonlightText` / `moonlightHostFeatures` / `moonlightSetShortcutPassthrough`；窗口是**进程级单个**
+  `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
 
 ### 3.1 本地光标模式（基地版 Sunshine 的光标通道）

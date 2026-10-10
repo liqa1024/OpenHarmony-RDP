@@ -23,8 +23,8 @@
 | `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
-| `pages/SessionPage.ets` | RDP 会话页：XComponent 画面、鼠标/键盘/触屏/触控板输入、浮层、工具栏、全屏状态跟踪；转发下载事件、渲染进度（下载状态机在后台 worker，见 §4.4） |
-| `pages/MoonlightSessionPage.ets` | Moonlight 会话页：XComponent 先绑 surface 再 `SessionManager.beginStream`（`LiStartConnection` 要渲染目标）、输入转后端具体动词、状态浮层 |
+| `pages/SessionPage.ets` | RDP 会话页：XComponent 画面、浮层、工具栏、全屏状态跟踪、RDP 直达缩放的视图矩阵；**输入事件交给 `SessionInput`**；转发下载事件、渲染进度（下载状态机在后台 worker，见 §4.4） |
+| `pages/MoonlightSessionPage.ets` | Moonlight 会话页：XComponent 先绑 surface 再 `SessionManager.beginStream`（`LiStartConnection` 要渲染目标）；**输入事件交给 `SessionInput`**；状态浮层 |
 | `pages/MoonlightAppsPage.ets` | 主窗口内的 Moonlight 应用管理页：应用列表 / 运行状态 / 启停 / 默认应用（星标）/ 远程图标 |
 | `pages/EditConnectionPage.ets` | 新增/编辑连接（保存只写配置；密码在连接成功后自动保存；可折叠「高级设置」） |
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |
@@ -34,11 +34,12 @@
 | `services/SettingsStore.ets` | 设置存储（preferences）+ 显示/超分/串流解析（`detectedDisplay` / `scalePresetForResolution` / `autoScalePercent` / `resolveDisplay` / `resolveAdvanced` / `resolveSr` / `resolveStream`） |
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
 | `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排；按协议取 `SessionBackend`，自身不绑定协议（状态机见 [`session-and-input.md`](session-and-input.md) §1） |
-| `services/SessionBackend.ets` | **协议无关的会话后端接口 + `sessionKey` 注册表**；RDP 实现 `RdpSessionBackend`（包一个 `RdpNative`） |
+| `services/SessionBackend.ets` | **协议无关的会话后端接口 + `sessionKey` 注册表**；RDP 实现 `RdpSessionBackend`（包一个 `RdpNative`）与 `RdpInputSink`（输入动词落 RDP） |
 | `services/SessionBackendFactory.ets` | 按 `PendingConnection.protocol` 选后端（RDP / Moonlight） |
+| `services/SessionInput.ets` | **两协议共用的输入内核 + `InputSink` 接口**：来源识别、移动合帧、按键/按钮记账、失焦全量释放、锁键顺序、Win 替代、穿透路由、触控板滚动与中键、捏合（Ctrl+滚轮 / 触摸模拟 / 原生触控板）、触屏状态机（见 [`session-and-input.md`](session-and-input.md) §2） |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `SessionEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/SessionEventHub.ets` | 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
-| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface，输入转 `LiSend*` |
+| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入由 `MoonlightInputSink` 落 `LiSend*`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 原生触控板接入点） |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供；失效 pin 清理 |
 | `services/MoonlightHostState.ets` | 主机「在跑哪个应用」的单一权威（静态监听器；客户端动作乐观写入，主机探测收敛），列表行与应用页徽标都由它派生 |
 | `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
@@ -64,8 +65,8 @@
 | `moonlight/MoonlightXml.ets` | Moonlight 控制端点响应的 XML 解析 |
 | `moonlight/MoonlightModels.ets` | Moonlight 协议数据模型（serverinfo/applist/pair 等） |
 | `utils/ConnectAction.ets` | 协议中立的连接动作判定（`connectActionFor` / `primaryConnectAction` / `connectActionLabel`），连接行与卡片共用 |
-| `utils/KeyMapper.ets` | 按键名映射（设置页按键框显示用）；锁定键扫描码见 [`session-and-input.md`](session-and-input.md) §2 |
-| `utils/MoonlightKeyMapper.ets` | HarmonyOS 键码 + 鼠标键 → Windows 虚拟键码与 Moonlight 的 modifier/button/action 常量 |
+| `utils/KeyMapper.ets` | **两协议共用的单键表**：一次给出 RDP 的 `scancode`+`extended` 与 Moonlight 的 `vk`+`extended`（及 lock 位）；`describe` 供设置页按键框显示（见 [`session-and-input.md`](session-and-input.md) §2） |
+| `utils/MoonlightKeyMapper.ets` | Moonlight 输入常量（`LiSend*` 的按键/按钮/action、modifier 位、`MODIFIER_EXTENDED`）与 VK→modifier 判定 |
 | `utils/MoonlightCodec.ets` | Moonlight 编码器能力分类（硬解 / 软解 / 无） |
 | `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/HTML/CfHTML 解析与组装），跑在后台 worker |
 | `utils/FileTransferCodec.ets` | 文件剪贴板线格式编解码（`FileGroupDescriptorW` 等） |

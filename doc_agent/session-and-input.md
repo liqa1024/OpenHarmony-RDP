@@ -99,6 +99,20 @@
 
 ## 2. 输入分流
 
+**分层**：输入的**策略**（来源识别、移动合帧、按键/按钮记账、失焦全量释放、锁键顺序、Win 键替代、
+穿透路由、触控板滚动与中键合成、捏合、触屏状态机）集中在协议中立的 `services/SessionInput.ets`，
+由 `InputSink` 接口下发（`key/metaKey/unicode/lockState/pointerMove/button/touch/touchpadFrame/scroll`）。
+两协议各一个 sink 落地动词：**`RdpInputSink`**（`SessionBackend.ets`：PS/2 scancode、`PTR_FLAGS`、RDPEI 触点、
+9bit 滚轮分片、Client Synchronize）与 **`MoonlightInputSink`**（`MoonlightSessionBackend.ets`：Windows VK、
+`LiSend*`）。会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置（指针映射、指针空间、各项设置与能力），
+**不自持输入机制**；**RDP 专有的"直接缩放"（本机画面矩阵）留在会话页**，由 `SessionInput` 之外的
+`handleAxis` 分支处理，其余轴事件才委托给共用件。
+
+**键表单表**：`utils/KeyMapper.ets` 用一张表同时给出 RDP 的 `scancode`+`extended` 与 Moonlight 的 `vk`+`extended`
+（及 lock 位），避免两协议键表漂移；`mapFull` 供 sink 取用，`map` 只回 `scancode`（RDP 侧兼容）。
+**左右修饰键区分**：协议与主机都区分左右（`VK_LSHIFT/RSHIFT` 等）；表发左右专用 VK，修饰位按
+**当前按下的修饰键集合**求值（不是按单个 VK 翻转），所以"按住左右 Shift 松一个"不会清掉 Shift 位。
+
 **鼠标 → `onMouse`；真触屏 → `onTouch`（RDPEI）；滚轮/触控板 → `onAxisEvent`。**
 
 **输入来源识别（触控板 vs 鼠标）**：判据分两档，原因是触控板的两类事件上报方式不同：
@@ -172,12 +186,14 @@
   **右键**延迟一个双击窗口发出：窗口内出现第二次双指轻触就改发**中键**（单次仍发右键），因此右键有约
   300ms 判定延迟；关闭则无延迟直发。合成点击一律按**一次按下＋抬起**整发（不会卡键）。
   只对触控板来源生效（判定见上「输入来源识别」），真鼠标右键不受影响。
-- **自定义 Win 键映射**（全局设置，0＝关闭）：在 `SessionPage.handleKey` 里把指定 `keyCode` 改发 Meta。
+- **自定义 Win 键映射**（全局设置，0＝关闭）：在 `SessionInput.handleKey` 里把指定 `keyCode` 改发 Meta。
   **真实 Win 键不转发**，避免"远端+本机"双重映射。
 - **快捷键穿透**（全局设置 `shortcutPassthrough`，默认关）：系统级按键拦截
   （`OH_Input_AddKeyEventInterceptor`，需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）接管键盘，
-  让 Win / Alt+Tab / Esc 这些本会被 shell 吃掉的键也到远端。拦截事件按**本会话**路由，走与 `handleKey`
-  相同的映射与记账通路；拦截期间 `handleKey` 不参与，避免双发。（与"自定义 Win 键映射"不同，穿透下
+  让 Win / Alt+Tab / Esc 这些本会被 shell 吃掉的键也到远端。拦截事件按**本会话**路由到
+  `SessionInput.handleInterceptedKey`（映射与记账同 `handleKey`，但**不跳过真实 Win**）；
+  拦截期间 `handleKey` 不参与，避免双发。**归属按获焦窗口**：进程级单拦截器，只有获焦会话持有，
+  切窗/失活即释放（见 §1 的窗口焦点与 `WindowController`）。（与"自定义 Win 键映射"不同，穿透下
   **真实 Win 键会被转发**。）
   - 拦截是**进程级、且只在应用获焦时投递**，故只在**本会话窗口活动**且会话 `Connected` 时注册；其他窗口
     （设置页 / 主列表）变为活动、或本页离开即释放，否则那些窗口的键盘也会被吞掉。
@@ -240,6 +256,12 @@
     无法稳妥处理。**预乘 alpha 是必须的**：透明区 RGB 是 0，直接对直通 alpha 彩色做线性滤波会把
     黑混进边缘（黑边）。**256 系统上限**：放大后超限就退回面积平均缩小（热点随之缩放）；任何协议
     的源位图超过 256 同样缩小而非丢弃。
+
+- **捏合与触控板的协议归属**：上面三档捏合（Ctrl+滚轮 / 触摸模拟 / 直接缩放）与触控板双指滚动、
+  双指双击→中键都在 `SessionInput`，**两协议共享**；只有"直接缩放"改本机画面矩阵、属 RDP 呈现器专有，
+  Moonlight 不暴露。**"原生触控板"是另一个终点**：`InputSink.touchpadFrame(contacts, buttonState, wMm, hMm)`
+  表达它，仅 foundation-sunshine 主机有（`SS_TOUCHPAD` 扩展）；基础协议（含 Moonlight、RDP）都没有，
+  故只能落到 Ctrl+滚轮或触点模拟。客户端接入方式见 [`MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
 
 ## 3. 工具栏与状态遥测
 
