@@ -1,7 +1,7 @@
 # 剪贴板与文件传输（**手动触发**）
 
 本文件覆盖剪贴板的**线格式、原生/ArkTS 分工、文件传输流程与实现坑**。它只描述剪贴板这条通道；
-工具栏按钮的显示与自动隐藏见 [`session-and-input.md`](session-and-input.md) §3，原生边界判据见
+工具栏按钮的显示与自动隐藏见 [`session-layer.md`](session-layer.md) §9，原生边界判据见
 [`architecture.md`](architecture.md) §3.1。
 
 ## 1. 设计原则：只手动同步

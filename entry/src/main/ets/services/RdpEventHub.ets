@@ -1,18 +1,18 @@
 import { onEvent, RdpEventCallback, RdpEventPayload } from 'libhmrdp.so';
 import { RdpEvent } from '../model/RdpModels';
 
-export type SessionEventHandler = (event: RdpEvent, payload: RdpEventPayload) => void;
+export type RdpEventHandler = (event: RdpEvent, payload: RdpEventPayload) => void;
 
-class SessionEventHubImpl {
-  private handlers: Map<number, SessionEventHandler> = new Map<number, SessionEventHandler>();
+class RdpEventHubImpl {
+  private handlers: Map<number, RdpEventHandler> = new Map<number, RdpEventHandler>();
   private subscribed: boolean = false;
 
-  register(handle: number, handler: SessionEventHandler): void {
+  register(handle: number, handler: RdpEventHandler): void {
     if (!this.subscribed) {
       this.subscribed = true;
       const callback: RdpEventCallback = (handle: number, event: number,
         payload: RdpEventPayload): void => {
-        const target: SessionEventHandler | undefined = this.handlers.get(handle);
+        const target: RdpEventHandler | undefined = this.handlers.get(handle);
         if (target !== undefined) {
           target(event as RdpEvent, payload);
         }
@@ -27,4 +27,4 @@ class SessionEventHubImpl {
   }
 }
 
-export const SessionEventHub: SessionEventHubImpl = new SessionEventHubImpl();
+export const RdpEventHub: RdpEventHubImpl = new RdpEventHubImpl();

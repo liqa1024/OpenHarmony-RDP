@@ -4,12 +4,13 @@
 约定、图标约束。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；差异集中在连接配置与
 串流参数。**原生侧**（客户端库构建与共享库链接、桥接层、视频解码与上屏、控制/配对层协议事实）见
 [`moonlight-native.md`](moonlight-native.md)；RDP 侧的存储、显示、超分见
-[`settings-and-storage.md`](settings-and-storage.md)、[`present-pipeline.md`](present-pipeline.md)。
+[`settings-and-storage.md`](settings-and-storage.md)、[`rdp-present.md`](rdp-present.md)。
 
 ## 1. 协议建模
 
 - 一条连接用 `SavedConnection.protocol` 区分协议：`0` = RDP（`PROTOCOL_RDP`），`1` = Moonlight
-  （`PROTOCOL_MOONLIGHT`）；缺省即 RDP，所以历史记录天然是 RDP。
+  （`PROTOCOL_MOONLIGHT`）；缺省即 RDP，所以历史记录天然是 RDP。协议行为由连接子类承载
+  （`RdpConnection` / `MoonlightConnection`，见 [`session-layer.md`](session-layer.md) §1）。
 - 新建连接的默认协议是**上一次添加的协议**（`AppSettings.lastNewProtocol`，每次保存连接时更新）；
   新建流程直接以该协议打开编辑页。
 - **协议只在新建时可选**：编辑已有连接时协议锁定，避免改协议后与已存字段语义冲突。
@@ -164,7 +165,7 @@
     设置页检测不到主机版本，所以该选项下**恒显示红字警告**（"仅在基地版 Sunshine 有效"）。
   - `setPointerVisibleSync` 是**进程级**，断开 / 退页必须恢复，否则主窗口也没有光标。协议细节见
     [`moonlight-native.md`](moonlight-native.md) §3.1；安装器、去重与可见性归属见
-    [`session-and-input.md`](session-and-input.md) §2。
+    [`session-layer.md`](session-layer.md) §10。
 
 ## 6. 图标约定
 
@@ -215,7 +216,7 @@
   （`serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。串流前的预检由
   `services/MoonlightConnector.ets` 编排（`serverinfo →`（未配对则先 `pair`）`→ launch`，并装配原生串流配置），
   由 `MoonlightSessionBackend.prepare()` 在 `SessionManager` 已发布的 `Connecting` 状态下驱动，故列表行加载态与
-  RDP 一致（见 [`session-and-input.md`](session-and-input.md) §1）。列表 / 编辑页 / 应用管理页的「连接」统一经
+  RDP 一致（见 [`session-layer.md`](session-layer.md) §5）。列表 / 编辑页 / 应用管理页的「连接」统一经
   `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后交给 manager。
 - **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入，四个数字居中放大），
   配对期间不开任何会话窗口；**主机端输入完成即握手结束，弹窗自动关闭并继续**（无需手动确认），只有「取消」是用户动作；
@@ -223,7 +224,9 @@
 - **会话窗口与后端**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
   `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配
   `moonlightConfig`，`start()` 交给原生）、`services/SessionBackendFactory.ets` 与
-  `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按协议路由到该页。窗口在**预检通过后**打开、绑好 surface 再
+  `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按 `SessionBackend.pageRoute()` 路由到该页（不判断协议），
+  窗口外壳复用共享的 `services/SessionShellController`（见 [`session-layer.md`](session-layer.md) §4）。
+  窗口在**预检通过后**打开、绑好 surface 再
   启动（`requiresWindowAtStart`，因为 `LiStartConnection` 需要渲染目标）。工具栏与 RDP 同形：标题用共享的
   `SessionTitle`（名称 + 分辨率 + 括号里的**协商解码格式**，见 [`ui-design.md`](ui-design.md) §3.6），复用同一套
   chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化；连接中的
@@ -238,7 +241,9 @@
    不要在别处塞新内容而让 Moonlight 那份成为摆设。
 3. **连接动作（连接 / 恢复 / 切换 / 终止 / 断开）只有一个走法入口与一处判定**：
    - 走法统一经预检（`MoonlightConnector.prepare`）选择 `/resume` 或 `/launch`；判定集中在
-     `utils/ConnectAction.ets`（协议中立），连接行与卡片共用。主页主按钮对 Moonlight 统一为「终止」
+     `utils/ConnectAction.ets` 的 `connectActionFor`（协议中立），连接行与卡片共用；主连接动作与
+     行菜单的协议差异落在连接模型的子类（`RdpConnection` / `MoonlightConnection`，见
+     [`architecture.md`](architecture.md) §2）。主页主按钮对 Moonlight 统一为「终止」
      （关闭会话 + 关闭主机应用 = `/cancel` + 断开），**按钮上不出现「恢复」**（恢复在右键菜单）；
      应用页保留「恢复」按钮，其「断开连接」用专用断链图标（`ic_disconnect`）。
    - **「有应用在跑」只看 `hostTargetId`**：`hostTargetId ≠ 0` 即「恢复」（默认应用不同才「切换」），**不要求本连接

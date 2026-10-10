@@ -1,14 +1,10 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AdvancedProfile, DisplayProfile, EditConnectionParams,
-  PendingConnection, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { ConnectOrigin, EditConnectionParams, SavedConnection } from '../model/Connections';
+import { ConnectionLauncher } from '../services/ConnectionLauncher';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
-import { DeviceCapabilities } from '../services/DeviceCapabilities';
-import { MoonlightLauncher } from '../services/MoonlightLauncher';
-import { MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState, HostTargetListener }
   from '../services/MoonlightHostState';
@@ -42,7 +38,7 @@ struct Index {
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
 
   private sessionListener: SessionStateListener = (connectionId: string,
-    state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
+    state: ConnectionState, message: string, origin: ConnectOrigin): void => {
     const next: Map<string, ConnectionState> = new Map<string, ConnectionState>();
     this.statuses.forEach((value: ConnectionState, key: string) => {
       next.set(key, value);
@@ -54,7 +50,7 @@ struct Index {
     }
     this.statuses = next;
     // Editor-originated failures are reported on the edit page instead.
-    if (state === ConnectionState.Failed && origin === RdpConnectOrigin.List) {
+    if (state === ConnectionState.Failed && origin === ConnectOrigin.List) {
       this.showConnectError(message);
     }
   };
@@ -107,9 +103,6 @@ struct Index {
   private syncHostTargets(): void {
     const next: Map<string, number> = new Map<string, number>();
     for (const conn of this.connections) {
-      if (!conn.isMoonlight()) {
-        continue;
-      }
       const target: number = MoonlightHostState.targetOf(conn.id);
       if (target !== 0) {
         next.set(conn.id, target);
@@ -158,15 +151,11 @@ struct Index {
   }
 
   private hostTargetId(conn: SavedConnection): number {
-    if (!conn.isMoonlight()) {
-      return 0;
-    }
-    const value: number | undefined = this.hostTargets.get(conn.id);
-    return value === undefined ? 0 : value;
+    return conn.hostTargetId(this.hostTargets);
   }
 
   private targetId(conn: SavedConnection): number {
-    return conn.isMoonlight() ? conn.mlDefaultAppIdValue() : 0;
+    return conn.defaultTargetId();
   }
 
   private openRowMenu(connectionId: string): void {
@@ -229,36 +218,13 @@ struct Index {
     showNotice(this.getUIContext(), '连接失败', message);
   }
 
-  private async startConnection(conn: SavedConnection): Promise<void> {
+  private startConnection(conn: SavedConnection): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       return;
     }
-    if (conn.isMoonlight()) {
-      MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
-        RdpConnectOrigin.List);
-      return;
-    }
-    const options: RdpConnectOptions = conn.toOptions();
-    const request: PendingConnection = new PendingConnection();
-    request.connectionId = conn.id;
-    request.origin = RdpConnectOrigin.List;
-    request.onConnected = undefined;
-    request.protocol = conn.protocol;
-    request.savedConnection = conn;
-    const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
-    options.width = profile.width;
-    options.height = profile.height;
-    options.scalePercent = profile.scalePercent;
-    options.srEnabled = profile.srEnabled;
-    options.srRatioPercent = profile.srRatioPercent;
-    options.srBackend = profile.srBackend;
-    const advanced: AdvancedProfile = SettingsStore.resolveAdvanced(conn);
-    options.enableAudio = advanced.enableAudio && DeviceCapabilities.audio().supported;
-    options.ignoreCertificate = advanced.ignoreCertificate;
-    options.password = await CredentialStore.loadPassword(conn.id);
-    request.options = options;
-    SessionManager.connect(request, context as common.UIAbilityContext);
+    ConnectionLauncher.start(this.getUIContext(), context as common.UIAbilityContext, conn,
+      ConnectOrigin.List);
   }
 
   private openMoonlightApps(conn: SavedConnection): void {
@@ -292,13 +258,10 @@ struct Index {
 
   private remove(conn: SavedConnection): void {
     ConnectionStore.remove(conn.id);
-    if (conn.isMoonlight()) {
+    const hostContext = this.getUIContext().getHostContext();
+    if (hostContext !== undefined) {
       // Pairing is per host: dropping it here keeps a later re-add from skipping the PIN round.
-      const hostContext = this.getUIContext().getHostContext();
-      if (hostContext !== undefined) {
-        MoonlightConnector.forgetHost((hostContext as common.UIAbilityContext).filesDir,
-          conn.host, conn.port);
-      }
+      ConnectionLauncher.afterDelete(conn, (hostContext as common.UIAbilityContext).filesDir);
     }
     CredentialStore.removePassword(conn.id)
       .then(() => {

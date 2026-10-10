@@ -1,7 +1,7 @@
 # 25) HmRdp: do not create the WinPR pool when the platform queue is the decode
 #     executor.
 #
-#     背景（doc_agent/gfx-engine.md §7.3）：progressive tile 解码统一由 ffrt 并发
+#     背景（doc_agent/rdp-gfx.md §7.3）：progressive tile 解码统一由 ffrt 并发
 #     队列执行（hmrdp_parallel.*，step 21），FreeRDP 自己的 WinPR 池在这条链路上已
 #     无消费者。若仍按 `UseThreads` 建池，池会在每个 codec 上下文里常驻一组最小线程
 #     （按核数），纯粹浪费。这一步在平台执行器可用时把 `UseThreads` 置 FALSE，于是

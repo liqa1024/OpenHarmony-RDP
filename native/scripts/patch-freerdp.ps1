@@ -9,7 +9,7 @@
 # The steps are one file each under native/scripts/patch-steps/, applied in name
 # order; the numeric prefix is the step number the patched sources refer to in
 # their comments (8 appears twice, 18 was tried and dropped again - see
-# doc_agent/native-libraries.md). Every step must be idempotent: it carries a
+# doc_agent/native-build.md). Every step must be idempotent: it carries a
 # marker string and skips itself when the tree already has that change, so the
 # script can be re-run over a tree that is already patched.
 #

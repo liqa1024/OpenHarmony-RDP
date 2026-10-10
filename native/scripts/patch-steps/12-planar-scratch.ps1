@@ -6,7 +6,7 @@
 #     order of 100 MB of calloc/zeroing per call, and one ResetGraphics reaches it
 #     once per codec set (the rdp context's and the GFX context's) - a 100 ms-order
 #     stall per event, for a codec this client never uses (Progressive / ClearCodec
-#     / uncompressed only). See doc_agent/gfx-engine.md §7.1.
+#     / uncompressed only). See doc_agent/rdp-gfx.md §7.1.
 #
 #     The buffers are per-message working memory (written before read), so when
 #     the geometry did not change there is nothing to do. `planes[0] != NULL`
@@ -22,7 +22,7 @@ Patch-Regex $planarC '\tcontext->bgr = FALSE;\n\tcontext->maxWidth = PLANAR_ALIG
 	 * unconditionally, which is on the order of 100 MB of calloc + zeroing per
 	 * call; a single ResetGraphics reaches this once per codec set
 	 * (two sets exist) and cost 100 ms-order per event, for a codec this client
-	 * never uses (see doc_agent/gfx-engine.md §7.1). `planes[0] != NULL`
+	 * never uses (see doc_agent/rdp-gfx.md §7.1). `planes[0] != NULL`
 	 * means the previous call allocated them, so a failure still falls through. */
 	{
 		const UINT32 newWidth = PLANAR_ALIGN(width, 4);

@@ -1,4 +1,4 @@
-import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/RdpModels';
+import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 
 // Deliberately not a protocol id (those are 0 / 1), so callers can tell "common" apart.
 export const TAB_COMMON: number = 2;

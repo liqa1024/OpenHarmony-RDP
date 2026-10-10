@@ -1,5 +1,5 @@
 import { moonlightVideoCodec, moonlightVideoWarning } from 'libhmrdp.so';
-import { ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC } from '../model/RdpModels';
+import { ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC } from '../model/Connections';
 import { CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE } from '../services/DeviceCapabilities';
 
 export function moonlightCodecSupport(codec: number, h264: number, hevc: number,

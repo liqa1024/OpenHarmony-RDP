@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { UIContext } from '@kit.ArkUI';
-import { ML_RES_FIXED, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
-  RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { ML_RES_FIXED, MoonlightConnection, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
+  ConnectOrigin } from '../model/Connections';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionManager } from './SessionManager';
 import { SettingsStore } from './SettingsStore';
@@ -9,8 +9,8 @@ import { defaultDisplay } from '../utils/DisplayUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 
 export class MoonlightLauncher {
-  static connect(ui: UIContext, context: common.UIAbilityContext, conn: SavedConnection,
-    origin: RdpConnectOrigin, appId: number = 0, onConnected?: () => void): void {
+  static connect(ui: UIContext, context: common.UIAbilityContext, conn: MoonlightConnection,
+    origin: ConnectOrigin, appId: number = 0, onConnected?: () => void): void {
     const stream: MoonlightProfile = SettingsStore.resolveStream(conn);
     let width: number = conn.mlWidth;
     let height: number = conn.mlHeight;

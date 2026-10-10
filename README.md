@@ -100,7 +100,7 @@ entry/
     sessionability/           SessionAbility（独立会话窗口）
     pages/                    Index · SessionPage · MoonlightSessionPage · EditConnectionPage · SettingsPage · MoonlightAppsPage · GfxReplayPage
     moonlight/                控制层（MoonlightClient / Identity / Crypto / Http / Xml / Models）
-    services/                 存储（Connection/Credential/Settings/ConfigTransfer）· 会话编排（SessionManager · SessionBackend · RdpNative · SessionEventHub）· 窗口（WindowController）· 能力探测（DeviceCapabilities）· 触控板/遥测 · worker 门面（BackgroundWorker · AudioPlayer）
+    services/                 存储（Connection/Credential/Settings/ConfigTransfer）· 会话编排（SessionManager · SessionBackend · RdpNative · RdpEventHub）· 窗口（WindowController）· 能力探测（DeviceCapabilities）· 触控板/遥测 · worker 门面（BackgroundWorker · AudioPlayer）
     workers/                  background（剪贴板编解码 / 文件下载）· audio（AudioRenderer）
   src/main/cpp/               NAPI 桥接 + FreeRDP 会话封装 + gdi 帧管线 + Vulkan/GLES 上屏 + 音频交接环 + Moonlight 原生
   src/main/cpp/thirdparty/    FreeRDP / moonlight 头文件（构建时生成，不入库）
@@ -152,7 +152,7 @@ pwsh native/scripts/build-native.ps1 -Arch arm64-v8a
 
 > 换 ABI：`-Arch x86_64`（模拟器）。只重建某一步：`-Only freerdp -Clean`。
 > 仅当更换 OpenSSL 版本时才需要 WSL 重出构建快照（`native/scripts/export-openssl-snapshot.ps1`）。
-> 细节与判据见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
+> 细节与判据见 [`doc_agent/native-build.md`](doc_agent/native-build.md)。
 
 ## 命名
 

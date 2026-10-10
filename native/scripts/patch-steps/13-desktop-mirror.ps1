@@ -5,7 +5,7 @@
 #     That surface *is* the desktop, so gdi_OutputUpdate's per-rect
 #     freerdp_image_scale() into the primary just moves tens of MB/frame from one
 #     buffer to another - a ms-order whole-frame copy plus comparable DRAM traffic
-#     (doc_agent/gfx-engine.md §7.1). With this step the surface is
+#     (doc_agent/rdp-gfx.md §7.1). With this step the surface is
 #     given the primary buffer instead, so the decoder writes the very pixels the
 #     presenter uploads and the copy disappears.
 #

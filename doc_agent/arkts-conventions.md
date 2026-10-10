@@ -35,7 +35,7 @@
 ## 3. 路由
 
 - 路由参数必须是**具名接口**（如 `EditConnectionParams`），通过 `this.getUIContext().getRouter()` 传递。
-- 页面间不传密码等敏感值：会话窗口只传**会话 key**（见 [`session-and-input.md`](session-and-input.md) §1）。
+- 页面间不传密码等敏感值：会话窗口只传**会话 key**（见 [`session-layer.md`](session-layer.md) §5）。
 
 ## 4. 主题与资源
 
@@ -48,9 +48,13 @@
 
 - 每个会话窗口一个会话后端 `SessionBackend`（RDP 实现 `RdpSessionBackend` 内部独占一个 `RdpNative` 实例与
   原生 handle）；原生事件带 handle，按 handle 路由；`SessionManager` 按 `sessionKey` 经 `SessionBackendRegistry`
-  关联窗口与后端。
+  关联窗口与后端。两个会话页共用 `services/SessionShellController`（协议无关外壳）与
+  `services/SessionViewDelegate`（协议钩子）。
+- **两协议的通用 / 抽象层不得出现协议判断**：连接行为放 `SavedConnection` 多态子类（`RdpConnection` /
+  `MoonlightConnection`），连接发起分发放 `services/ConnectionLauncher`，会话外壳差异经 `SessionViewDelegate`
+  注入。`if (protocol === …)` / `isMoonlight()` / 协议布尔标志只允许出现在协议专属类与唯一组合入口（工厂）。
 - 原生侧能力差异（音频、GPU 加速等）走 `services/DeviceCapabilities.ets` 的 `Capability{supported, reason}`：
-  UI 置灰 + 说明原因，不要静默失败（见 [`native-libraries.md`](native-libraries.md) §6）。
+  UI 置灰 + 说明原因，不要静默失败（见 [`rdp-native.md`](rdp-native.md) §6）。
 - 设置项、连接字段、原生开关三者的对应关系见 [`settings-and-storage.md`](settings-and-storage.md)。
 
 ## 6. 沉浸光感（系统材质）

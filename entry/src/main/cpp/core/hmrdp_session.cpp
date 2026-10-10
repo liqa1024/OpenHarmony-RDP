@@ -1016,7 +1016,7 @@ bool Session::Connect(const RdpOptions& options) {
   // GFX (RDPGFX) is mandatory: without it the session does not render at all.
   freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
   // RemoteFX Progressive is the desktop codec; H.264/AVC444 stay off
-  // (see doc_agent/gfx-engine.md §3).
+  // (see doc_agent/rdp-gfx.md §3).
   freerdp_settings_set_bool(settings, FreeRDP_GfxH264, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
   freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);

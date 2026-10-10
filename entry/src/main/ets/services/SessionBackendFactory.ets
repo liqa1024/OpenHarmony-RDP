@@ -1,5 +1,6 @@
-import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
-import { RdpSessionBackend, SessionBackend } from './SessionBackend';
+import { PendingConnection, PROTOCOL_MOONLIGHT } from '../model/Connections';
+import { RdpSessionBackend } from './RdpSessionBackend';
+import { SessionBackend } from './SessionBackend';
 import { MoonlightSessionBackend } from './MoonlightSessionBackend';
 
 // Kept out of SessionBackend.ets so the backends and the interface avoid an import cycle.

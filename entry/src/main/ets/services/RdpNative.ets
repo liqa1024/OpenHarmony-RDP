@@ -12,8 +12,8 @@ startReplay, stopReplay, stopAllReplays, resizeReplay, replayStats, listReplays
 } from 'libhmrdp.so';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpConnectOptions, RdpEvent } from '../model/RdpModels';
-import { RdpCounters, SessionTelemetry } from './SessionTelemetry';
-import { SessionEventHub } from './SessionEventHub';
+import { RdpCounters, RdpTelemetryAggregator } from './RdpTelemetry';
+import { RdpEventHub } from './RdpEventHub';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpNative';
@@ -23,7 +23,7 @@ export type RdpEventListener = (event: RdpEvent, payload: RdpEventPayload) => vo
 export class RdpNative {
   private handle: number = -1;
   private listener: RdpEventListener | undefined = undefined;
-  private telemetry: SessionTelemetry = new SessionTelemetry();
+  private telemetry: RdpTelemetryAggregator = new RdpTelemetryAggregator();
 
   // No-op unless the linked FreeRDP carries the rdpei interval patch.
   static applyTouchHighRate(enabled: boolean): void {
@@ -121,7 +121,7 @@ export class RdpNative {
     if (this.handle < 0) {
       return -1;
     }
-    SessionEventHub.register(this.handle, (event: RdpEvent, payload: RdpEventPayload): void => {
+    RdpEventHub.register(this.handle, (event: RdpEvent, payload: RdpEventPayload): void => {
       this.dispatch(event, payload);
     });
     const started: boolean = connect(this.handle, options);
@@ -139,7 +139,7 @@ export class RdpNative {
     if (this.handle < 0) {
       return;
     }
-    SessionEventHub.unregister(this.handle);
+    RdpEventHub.unregister(this.handle);
     disconnect(this.handle);
     destroySession(this.handle);
     this.handle = -1;

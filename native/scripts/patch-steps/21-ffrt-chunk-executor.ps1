@@ -1,6 +1,6 @@
 # 21) HmRdp: run the tile-decode chunks on the platform task queue (ffrt).
 #
-#     动机（doc_agent/gfx-engine.md §7.3）：现在这套并行用的是 FreeRDP
+#     动机（doc_agent/rdp-gfx.md §7.3）：现在这套并行用的是 FreeRDP
 #     自己的 WinPR 池——每个 codec 上下文自带一组线程、每个 chunk 一个 work item
 #     进带锁队列、等待走池级全局计数。实测它的代价是"把同一份解码放大成约 4.6 倍
 #     CPU"（整轮进程 CPU 约 3 倍、帧墙钟只降 1.5 倍），而且请求 2/4/8 个 worker
@@ -12,7 +12,7 @@
 #
 #     绑定方式是**弱符号**：`HmrdpDecodeWidth` / `HmrdpParallelAvailable` /
 #     `HmrdpParallelRun` 由 app（hmrdp_parallel.*）提供，未打过补丁的 FreeRDP 或
-#     没有该模块的构建自动走原来的串行分支（native-libraries.md §3 的既有约定）。
+#     没有该模块的构建自动走原来的串行分支（rdp-native.md §3 的既有约定）。
 #
 #     整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
 $progParC = "$Source\libfreerdp\codec\progressive.c"

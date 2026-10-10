@@ -1,7 +1,8 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-import { SessionRequests, PendingConnection, PROTOCOL_MOONLIGHT } from '../model/RdpModels';
+import { SessionRequests } from '../model/Connections';
+import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
@@ -48,8 +49,8 @@ export default class SessionAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onWindowStageCreate');
-    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
-    const moonlight: boolean = request !== undefined && request.protocol === PROTOCOL_MOONLIGHT;
+    const backend: SessionBackend | undefined = SessionBackendRegistry.find(this.sessionKey);
+    const page: string = backend !== undefined ? backend.pageRoute() : 'pages/SessionPage';
     const settings: AppSettings = SettingsStore.load();
     // Both protocols share the same app-level session window surface.
     const fullscreen: boolean = settings.sessionFullscreen;
@@ -70,7 +71,6 @@ export default class SessionAbility extends UIAbility {
     }
     const storage: LocalStorage = new LocalStorage();
     storage.setOrCreate<string>('sessionKey', this.sessionKey);
-    const page: string = moonlight ? 'pages/MoonlightSessionPage' : 'pages/SessionPage';
     windowStage.loadContent(page, storage, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, 'Failed to load the content. Cause: %{public}s',

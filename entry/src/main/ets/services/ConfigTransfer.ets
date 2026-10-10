@@ -3,10 +3,11 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
+import { SR_BACKEND_XENGINE } from '../model/RdpModels';
 import {
-  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP,
-  SavedConnection, SR_BACKEND_XENGINE
-} from '../model/RdpModels';
+  ConnectionExport, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP,
+  SavedConnection
+} from '../model/Connections';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -25,85 +26,19 @@ export class ConfigTransferResult {
   connectionCount: number = 0;
 }
 
-// Separate from SavedConnection so the export never carries the password fields
-// and has a stable, explicit schema.
-class ExportedConnection {
-  id: string = '';
-  host: string = '';
-  port: number = 3389;
-  name: string = '';
-  username: string = '';
-  domain: string = '';
-  width: number = 0;
-  height: number = 0;
-  scalePercent: number = 0;
-  ignoreCertificate: boolean = true;
-  enableAudio: boolean = true;
-  gatewayHost: string = '';
-  gatewayPort: number = 443;
-  gatewayUsername: string = '';
-  gatewayDomain: string = '';
-  useGlobalDisplay: boolean = true;
-  useGlobalAdvanced: boolean = true;
-  useGlobalSr: boolean = true;
-  resolutionAuto: boolean = false;
-  scaleAuto: boolean = false;
-  srEnabled: boolean = false;
-  srRatioPercent: number = 0;
-  srBackend: number = SR_BACKEND_XENGINE;
-  protocol: number = PROTOCOL_RDP;
-  mlDefaultAppId: string = '';
-  mlDefaultAppName: string = '';
-  mlHostId: string = '';
-  mlResMode: number = ML_RES_FOLLOW_SCREEN;
-  mlWidth: number = 0;
-  mlHeight: number = 0;
-  mlFps: number = 60;
-  mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
-  mlCodec: number = ML_CODEC_AUTO;
-  useGlobalStream: boolean = true;
 
-  static fromSaved(conn: SavedConnection): ExportedConnection {
-    const item: ExportedConnection = new ExportedConnection();
-    item.id = conn.id;
-    item.host = conn.host;
-    item.port = conn.port;
-    item.name = conn.name;
-    item.username = conn.username;
-    item.domain = conn.domain;
-    item.width = conn.width;
-    item.height = conn.height;
-    item.scalePercent = conn.scalePercent;
-    item.ignoreCertificate = conn.ignoreCertificate;
-    item.enableAudio = conn.enableAudio;
-    item.gatewayHost = conn.gatewayHost;
-    item.gatewayPort = conn.gatewayPort;
-    item.gatewayUsername = conn.gatewayUsername;
-    item.gatewayDomain = conn.gatewayDomain;
-    item.useGlobalDisplay = conn.useGlobalDisplay;
-    item.useGlobalAdvanced = conn.useGlobalAdvanced;
-    item.useGlobalSr = conn.useGlobalSr;
-    item.resolutionAuto = conn.resolutionAuto;
-    item.scaleAuto = conn.scaleAuto;
-    item.srEnabled = conn.srEnabled;
-    item.srRatioPercent = conn.srRatioPercent;
-    item.srBackend = conn.srBackend;
-    item.protocol = conn.protocol;
-    item.mlDefaultAppId = conn.mlDefaultAppId;
-    item.mlDefaultAppName = conn.mlDefaultAppName;
-    item.mlHostId = conn.mlHostId;
-    item.mlResMode = conn.mlResMode;
-    item.mlWidth = conn.mlWidth;
-    item.mlHeight = conn.mlHeight;
-    item.mlFps = conn.mlFps;
-    item.mlBitrateKbps = conn.mlBitrateKbps;
-    item.mlCodec = conn.mlCodec;
-    item.useGlobalStream = conn.useGlobalStream;
-    return item;
-  }
+class ConfigFile {
+  kind: string = FILE_KIND;
+  version: number = FILE_VERSION;
+  exportedAt: number = 0;
+  settings: AppSettings = new AppSettings();
+  connections: ConnectionExport[] = [];
+}
 
-  static fromRecord(rec: Record<string, Object>): ExportedConnection {
-    const item: ExportedConnection = new ExportedConnection();
+export class ConfigTransfer {
+  // Flat JSON record -> model export shape (password-free).
+  static parseExport(rec: Record<string, Object>): ConnectionExport {
+    const item: ConnectionExport = new ConnectionExport();
     item.id = ConfigTransfer.readString(rec, 'id', '');
     item.host = ConfigTransfer.readString(rec, 'host', '');
     item.port = ConfigTransfer.readNumber(rec, 'port', 3389);
@@ -135,63 +70,12 @@ class ExportedConnection {
     item.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', 0);
     item.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', 0);
     item.mlFps = ConfigTransfer.readNumber(rec, 'mlFps', 60);
-    item.mlBitrateKbps =
-      ConfigTransfer.readNumber(rec, 'mlBitrateKbps', ML_BITRATE_DEFAULT_KBPS);
+    item.mlBitrateKbps = ConfigTransfer.readNumber(rec, 'mlBitrateKbps', ML_BITRATE_DEFAULT_KBPS);
     item.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', ML_CODEC_AUTO);
     item.useGlobalStream = ConfigTransfer.readBoolean(rec, 'useGlobalStream', true);
     return item;
   }
 
-  toSaved(): SavedConnection {
-    const conn: SavedConnection = new SavedConnection();
-    conn.id = this.id.length > 0 ? this.id : util.generateRandomUUID(true);
-    conn.host = this.host;
-    conn.port = this.port > 0 ? this.port : 3389;
-    conn.name = this.name;
-    conn.username = this.username;
-    conn.domain = this.domain;
-    conn.width = this.width;
-    conn.height = this.height;
-    conn.scalePercent = this.scalePercent;
-    conn.ignoreCertificate = this.ignoreCertificate;
-    conn.enableAudio = this.enableAudio;
-    conn.gatewayHost = this.gatewayHost;
-    conn.gatewayPort = this.gatewayPort > 0 ? this.gatewayPort : 443;
-    conn.gatewayUsername = this.gatewayUsername;
-    conn.gatewayDomain = this.gatewayDomain;
-    conn.useGlobalDisplay = this.useGlobalDisplay;
-    conn.useGlobalAdvanced = this.useGlobalAdvanced;
-    conn.useGlobalSr = this.useGlobalSr;
-    conn.resolutionAuto = this.resolutionAuto;
-    conn.scaleAuto = this.scaleAuto;
-    conn.srEnabled = this.srEnabled;
-    conn.srRatioPercent = this.srRatioPercent;
-    conn.srBackend = this.srBackend;
-    conn.protocol = this.protocol;
-    conn.mlDefaultAppId = this.mlDefaultAppId;
-    conn.mlDefaultAppName = this.mlDefaultAppName;
-    conn.mlHostId = this.mlHostId;
-    conn.mlResMode = this.mlResMode;
-    conn.mlWidth = this.mlWidth;
-    conn.mlHeight = this.mlHeight;
-    conn.mlFps = this.mlFps;
-    conn.mlBitrateKbps = this.mlBitrateKbps;
-    conn.mlCodec = this.mlCodec;
-    conn.useGlobalStream = this.useGlobalStream;
-    conn.updatedAt = Date.now();
-    return conn;
-  }
-}
-
-class ConfigFile {
-  kind: string = FILE_KIND;
-  version: number = FILE_VERSION;
-  exportedAt: number = 0;
-  settings: AppSettings = new AppSettings();
-  connections: ExportedConnection[] = [];
-}
-
-export class ConfigTransfer {
   static async exportToFile(context: common.UIAbilityContext): Promise<ConfigTransferResult> {
     const result: ConfigTransferResult = new ConfigTransferResult();
     try {
@@ -199,9 +83,9 @@ export class ConfigTransfer {
       config.exportedAt = Date.now();
       config.settings = SettingsStore.load();
       const saved: SavedConnection[] = ConnectionStore.list();
-      const exported: ExportedConnection[] = [];
+      const exported: ConnectionExport[] = [];
       for (const conn of saved) {
-        exported.push(ExportedConnection.fromSaved(conn));
+        exported.push(conn.toExport());
       }
       config.connections = exported;
       const text: string = JSON.stringify(config);
@@ -268,7 +152,8 @@ export class ConfigTransfer {
         const items: Array<Object> = raw as Array<Object>;
         for (const item of items) {
           const rec: Record<string, Object> = item as Record<string, Object>;
-          const conn: SavedConnection = ExportedConnection.fromRecord(rec).toSaved();
+          const conn: SavedConnection =
+            SavedConnection.fromExport(ConfigTransfer.parseExport(rec));
           if (conn.host.length === 0) {
             continue;
           }

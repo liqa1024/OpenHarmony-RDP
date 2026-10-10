@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { PendingConnection, RdpConnectOrigin, SessionRequests } from '../model/RdpModels';
+import { ConnectOrigin, PendingConnection, SessionRequests } from '../model/Connections';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { CredentialStore } from './CredentialStore';
 import { SessionBackend, SessionBackendRegistry } from './SessionBackend';
@@ -22,7 +22,7 @@ export enum ConnectionState {
 }
 
 export type SessionStateListener = (connectionId: string, state: ConnectionState,
-  message: string, origin: RdpConnectOrigin) => void;
+  message: string, origin: ConnectOrigin) => void;
 export type SessionWindowEventListener = (signal: SessionSignal) => void;
 export type SessionWindowStateListener = (state: ConnectionState, message: string) => void;
 export type SessionCloseListener = () => void;
@@ -215,7 +215,7 @@ export class SessionManager {
     }
     const closeCallback: SessionCloseListener | undefined =
       SessionManager.closeListeners.get(entry.sessionKey);
-    const origin: RdpConnectOrigin = entry.request.origin;
+    const origin: ConnectOrigin = entry.request.origin;
     SessionManager.clearEntryTimeout(entry);
     SessionManager.publish(entry, ConnectionState.Disconnecting, '');
     if (entry.backend !== undefined) {
@@ -270,7 +270,7 @@ export class SessionManager {
       return;
     }
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
-    let origin: RdpConnectOrigin = RdpConnectOrigin.List;
+    let origin: ConnectOrigin = ConnectOrigin.List;
     if (entry !== undefined && entry.sessionKey === sessionKey) {
       origin = entry.request.origin;
       SessionManager.clearEntryTimeout(entry);
@@ -355,7 +355,7 @@ export class SessionManager {
   }
 
   private static handleConnected(entry: SessionEntry): void {
-    if (entry.request.origin !== RdpConnectOrigin.Editor) {
+    if (entry.request.origin !== ConnectOrigin.Editor) {
       return;
     }
     const connectionId: string = entry.connectionId;
@@ -416,7 +416,7 @@ export class SessionManager {
   }
 
   private static notify(connectionId: string, state: ConnectionState, message: string,
-    origin: RdpConnectOrigin): void {
+    origin: ConnectOrigin): void {
     const listeners: SessionStateListener[] = SessionManager.stateListeners.slice();
     for (let i = 0; i < listeners.length; i++) {
       listeners[i](connectionId, state, message, origin);

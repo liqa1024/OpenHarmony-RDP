@@ -28,7 +28,7 @@ export class RdpCounters {
   gpuBlitUs: number = 0;
 }
 
-export class SessionTelemetry {
+export class RdpTelemetryAggregator {
   private hasSeq: boolean = false;
   private lastSeq: number = 0;
   private audioLost: number[] = new Array<number>(AUDIO_WINDOW).fill(0);

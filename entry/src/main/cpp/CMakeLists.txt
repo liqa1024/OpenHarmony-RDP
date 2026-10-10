@@ -25,7 +25,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
 # them are *shared* libraries produced by native/scripts/build-native.ps1
 # (generated, gitignored), so the app links them by full path and they end up in
 # DT_NEEDED instead of being folded into a copy per consumer - the reason
-# libcrypto/libssl used to exist three times (see doc_agent/native-libraries.md).
+# libcrypto/libssl used to exist three times (see doc_agent/native-build.md).
 set(FREERDP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/freerdp")
 set(HMRDP_PREBUILT_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}")
 

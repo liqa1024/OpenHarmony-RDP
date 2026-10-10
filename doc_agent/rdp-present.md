@@ -1,11 +1,11 @@
 # 上屏管线（present）
 
 本文件是**上屏这一段**（从「本帧要显示哪些像素」到「swapchain / `vkQueuePresentKHR`」）的口径与交接。
-GFX 协议框架与 CPU（gdi）链路的成本结构见 [`gfx-engine.md`](gfx-engine.md)；构建与验证见
+GFX 协议框架与 CPU（gdi）链路的成本结构见 [`rdp-gfx.md`](rdp-gfx.md)；构建与验证见
 [`build-and-verify.md`](build-and-verify.md)。
 
 > **范围**：解码与合成走 FreeRDP gdi（live 与回放同一条路），本文件只讲把它出好的桌面帧送上屏。
-> 自研 GPU 解码/合成引擎**不采用**（见 [`gfx-engine.md`](gfx-engine.md) §3）。
+> 自研 GPU 解码/合成引擎**不采用**（见 [`rdp-gfx.md`](rdp-gfx.md) §3）。
 
 ## 1. 一套实现、两个后端
 
@@ -18,7 +18,7 @@ GFX 协议框架与 CPU（gdi）链路的成本结构见 [`gfx-engine.md`](gfx-e
   传进桌面尺寸纹理，letterbox 由 shader 的 swizzle + letterbox viewport 完成。
 
 「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan），**不是**解码后端（解码始终是 gdi）。
-判据与 Vulkan 能力见 [`native-libraries.md`](native-libraries.md) §6。
+判据与 Vulkan 能力见 [`rdp-native.md`](rdp-native.md) §6。
 
 **GPU 归属**：进程只共享不可变的 `VkInstance`；**每个 presenter 自带 `VkDevice` + queue**（GLES 同理，
 只共享 EGL display，context/surface 每实例独立），所以多会话不会共用一条提交队列、也不会互相拆
@@ -37,7 +37,7 @@ device（[`architecture.md`](architecture.md) §4.1）。
 - **CPU 不做任何像素变换**：通道交换、缩放、letterbox 一律在 GPU 侧，上传只做行拷贝。
 - **纹理/桌面图重建后首帧强制整幅**，否则其余部分会留空。
 - **`presentWait` = 等显示端**：`present` 里 `vkAcquireNextImageKHR`/fence（GLES 是 `eglSwapBuffers`）的阻塞。
-  **单列、不入 `本机`**（定义与自检见 [`gfx-engine.md`](gfx-engine.md) §7.1）。
+  **单列、不入 `本机`**（定义与自检见 [`rdp-gfx.md`](rdp-gfx.md) §7.1）。
 
 ## 3. 脏区形状与上传
 
@@ -72,7 +72,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   桌面的命令之前**（GFX 帧边界与表面命令，以及 SolidFill / SurfaceToSurface / 缓存 / ResetGraphics 这类
   结构命令——**帧外**同样会来表面命令），挂在 `GfxWorkSetFrameBeginHook`；等待按"提交"去重
   （`desktopBufferFencePending_`）⇒ **每个 present 只真等一次**。
-  它在 [`gfx-engine.md`](gfx-engine.md) §7.1 里记为 `sync`（`BeginDesktopBufferWrite`）：**等 GPU 放开主缓冲**。
+  它在 [`rdp-gfx.md`](rdp-gfx.md) §7.1 里记为 `sync`（`BeginDesktopBufferWrite`）：**等 GPU 放开主缓冲**。
   ⚠ 等待缺失的后果是**上屏画面混两帧**，且**只在帧背靠背时**出现；`bad=0` 与它无关。
 - **内存类型 `HOST_CACHED` 优先**；非连贯时要 flush，**按脏区合并成一个区间刷**（逐条刷会变成每帧上百次
   驱动调用；cache flush 只写回脏行，多出来的干净行免费）。
@@ -97,7 +97,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 
 超分辨率（平台文档称「超分」）让会话按**更低的「会话分辨率」**取流，本机再把每帧上采样回设置里的
 **「输出分辨率」**：省的是解码与带宽（服务端少出像素），换来的是边缘更锐的本地放大。倍率与默认缩放见
-[`settings-and-storage.md`](settings-and-storage.md) §2；能力判定见 [`native-libraries.md`](native-libraries.md) §6。
+[`settings-and-storage.md`](settings-and-storage.md) §2；能力判定见 [`rdp-native.md`](rdp-native.md) §6。
 
 - **只有 Vulkan 呈现器有**：GLES 是兼容兜底，不做同样功能（`SetSuperResolution()` 的默认实现是空操作，
   只有 `VkRenderer` 覆盖它）。因此超分辨率要求「硬件加速」开着，否则会话侧根本不会降分辨率。
@@ -146,8 +146,8 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   `flush` 只有 µs 级。`presentWait`（阻塞）单列，见 §2。
 - **GPU 侧另算**：时间戳查询（每槽 4 个）把一次提交切成 **`copy`（脏区字节 buffer→image）/
   `sr`（超分辨率上采样 pass）/ `blit`（clear 整张 + letterbox quad）**三段；超分辨率关闭时 `sr` 落在
-  屏障之后、自然接近 0。三个数进遥测（`gpuCopyUs`/`gpuSrUs`/`gpuBlitUs`，见
-  [`session-and-input.md`](session-and-input.md) §3），另有一条 30 帧一打的 hilog。
+  屏障之后、自然接近 0。  三个数进遥测（`gpuCopyUs`/`gpuSrUs`/`gpuBlitUs`，见
+  [`rdp-session.md`](rdp-session.md) §5），另有一条 30 帧一打的 hilog。
   **它们只是"本机这一帧让 GPU 干了多久"**：GPU 整机占用率没有对三方应用开放的接口。
   **`blit` 与脏区无关**：swapchain 图像是轮转的（内容在两次呈现之间未定义）⇒ 每帧整幅是默认正确做法；
   要省它只能按 **swapchain 图像**各维护"已写入的增量"。没有 damage-rect 接口可用
@@ -167,7 +167,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
   dev 页「路线」只切 CPU / 硬件加速（上屏后端），「参考」切 关/导出/对比，**每次点击都会重启回放**。
 - **样本**：设备侧读应用 filesDir 下的固定文件名，用 `hdc file send` **覆盖**（`hdc` 不能在该目录新建）；
   本地副本放 gitignore 目录留档。**换样本后记得还原**。
-- **判定"跑完"、驱动与多轮测量**：见 [`gfx-engine.md`](gfx-engine.md) §5 与
+- **判定"跑完"、驱动与多轮测量**：见 [`rdp-gfx.md`](rdp-gfx.md) §5 与
   [`build-and-verify.md`](build-and-verify.md) §5.2。
 - **长期保留的账**：回放 stats 的 `present=` 行与 `upload=` 行（`uploaded=` / `box=` / `rectlist=` / `truncated=`）。
 - **日志**：hilog domain `0xD001`；**每个格式说明符都要写 `%{public}`**，否则打印 `<private>`。

@@ -1,10 +1,7 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import {
-  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP,
-  SavedConnection, SR_BACKEND_XENGINE
-} from '../model/RdpModels';
+import { PROTOCOL_RDP, SavedConnection } from '../model/Connections';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpConnections';
@@ -146,62 +143,7 @@ export class ConnectionStore {
   }
 
   private static serialize(conn: SavedConnection): string {
-    const parts: string[] = [];
-    parts.push(ConnectionStore.encode(conn.host));
-    parts.push(conn.port.toString());
-    parts.push(ConnectionStore.encode(conn.username));
-    parts.push(ConnectionStore.encode(conn.domain));
-    parts.push(conn.width.toString());
-    parts.push(conn.height.toString());
-    // Retired slots are written as fixed values so the positional layout (and with
-    // it every stored record) stays stable: 6 colorDepth = 32, 8 clipboard = on
-    // (always on), 10 gfx = on (GFX is mandatory), 11 h264 = off, 12 remoteFx = on,
-    // 13 performanceFlags = 0 (unused). Only 7 (certificate) and 9 (audio) are live.
-    parts.push('32');
-    parts.push(conn.ignoreCertificate ? '1' : '0');
-    parts.push('1');
-    parts.push(conn.enableAudio ? '1' : '0');
-    parts.push('1');
-    parts.push('0');
-    parts.push('1');
-    parts.push('0');
-    parts.push(ConnectionStore.encode(conn.gatewayHost));
-    parts.push(conn.gatewayPort.toString());
-    parts.push(ConnectionStore.encode(conn.gatewayUsername));
-    parts.push(ConnectionStore.encode(conn.gatewayDomain));
-    parts.push(conn.updatedAt.toString());
-    parts.push(conn.useGlobalDisplay ? '1' : '0');
-    parts.push(conn.scalePercent.toString());
-    parts.push(conn.useGlobalAdvanced ? '1' : '0');
-    parts.push(conn.useGlobalSr ? '1' : '0');
-    parts.push(conn.srEnabled ? '1' : '0');
-    parts.push(conn.srRatioPercent.toString());
-    parts.push(conn.srBackend.toString());
-    // Everything below is an appended tail: older records simply stop before it,
-    // so the positional layout of every existing field stays put.
-    parts.push(ConnectionStore.encode(conn.name));
-    // An older record stops before this block and deserializes as plain RDP.
-    parts.push(conn.protocol.toString());
-    parts.push(ConnectionStore.encode(conn.mlDefaultAppId));
-    parts.push(ConnectionStore.encode(conn.mlDefaultAppName));
-    // Retired slot (was the UI-only pairing hint): written fixed so every stored
-    // record keeps its positional layout.
-    parts.push('0');
-    parts.push(conn.mlResMode.toString());
-    parts.push(conn.mlWidth.toString());
-    parts.push(conn.mlHeight.toString());
-    parts.push(conn.mlFps.toString());
-    parts.push(conn.mlBitrateKbps.toString());
-    parts.push('0'); // retired: HDR
-    parts.push(conn.mlCodec.toString());
-    parts.push('0'); // retired: YUV 4:4:4
-    parts.push('0'); // retired: audio channels
-    parts.push('0'); // retired: gamepad
-    parts.push(conn.useGlobalStream ? '1' : '0');
-    parts.push(ConnectionStore.encode(conn.mlHostId));
-    parts.push(conn.resolutionAuto ? '1' : '0');
-    parts.push(conn.scaleAuto ? '1' : '0');
-    return parts.join(FIELD_SEPARATOR);
+    return conn.toRecord().join(FIELD_SEPARATOR);
   }
 
   private static deserialize(id: string, text: string): SavedConnection | undefined {
@@ -209,79 +151,17 @@ export class ConnectionStore {
     if (parts.length < LEGACY_FIELD_COUNT) {
       return undefined;
     }
-    const conn: SavedConnection = new SavedConnection();
-    conn.id = id;
-    conn.host = ConnectionStore.decode(parts[0]);
-    conn.port = ConnectionStore.parsePositive(parts[1], 3389);
-    conn.username = ConnectionStore.decode(parts[2]);
-    conn.domain = ConnectionStore.decode(parts[3]);
-    conn.width = ConnectionStore.parsePositive(parts[4], 1920);
-    conn.height = ConnectionStore.parsePositive(parts[5], 1080);
-    // Slots 6 (colorDepth), 8 (clipboard), 10 (gfx), 11 (h264), 12 (remoteFx) and
-    // 13 (performanceFlags) are retired: their values are fixed, so they are left
-    // in the layout for older records but not read. Only 7 and 9 are live.
-    conn.ignoreCertificate = parts[7] === '1';
-    conn.enableAudio = parts[9] === '1';
-    conn.gatewayHost = ConnectionStore.decode(parts[14]);
-    conn.gatewayPort = ConnectionStore.parsePositive(parts[15], 443);
-    conn.gatewayUsername = ConnectionStore.decode(parts[16]);
-    conn.gatewayDomain = ConnectionStore.decode(parts[17]);
-    conn.updatedAt = ConnectionStore.parseNumber(parts[18], 0);
-    conn.useGlobalDisplay = parts.length > 19 ? parts[19] === '1' : true;
-    conn.scalePercent = parts.length > 20 ? ConnectionStore.parseNumber(parts[20], 0) : 0;
-    conn.useGlobalAdvanced = parts.length > 21 ? parts[21] === '1' : true;
-    conn.useGlobalSr = parts.length > 22 ? parts[22] === '1' : true;
-    conn.srEnabled = parts.length > 23 ? parts[23] === '1' : false;
-    conn.srRatioPercent = parts.length > 24 ? ConnectionStore.parseNumber(parts[24], 0) : 0;
-    conn.srBackend = parts.length > 25
-      ? ConnectionStore.parseNumber(parts[25], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
-    conn.name = parts.length > 26 ? ConnectionStore.decode(parts[26]) : '';
-    conn.protocol = parts.length > 27
+    const protocol: number = parts.length > 27
       ? ConnectionStore.parseNumber(parts[27], PROTOCOL_RDP) : PROTOCOL_RDP;
-    conn.mlDefaultAppId = parts.length > 28 ? ConnectionStore.decode(parts[28]) : '';
-    conn.mlDefaultAppName = parts.length > 29 ? ConnectionStore.decode(parts[29]) : '';
-    // Slot 30 (was the pairing hint), 36 (HDR), 38 (YUV 4:4:4), 39 (audio
-    // channels) and 40 (gamepad) are retired: not read, kept only for layout.
-    conn.mlResMode = parts.length > 31
-      ? ConnectionStore.parseNumber(parts[31], ML_RES_FOLLOW_SCREEN) : ML_RES_FOLLOW_SCREEN;
-    conn.mlWidth = parts.length > 32 ? ConnectionStore.parseNumber(parts[32], 0) : 0;
-    conn.mlHeight = parts.length > 33 ? ConnectionStore.parseNumber(parts[33], 0) : 0;
-    conn.mlFps = parts.length > 34 ? ConnectionStore.parsePositive(parts[34], 60) : 60;
-    conn.mlBitrateKbps = parts.length > 35
-      ? ConnectionStore.parsePositive(parts[35], ML_BITRATE_DEFAULT_KBPS) : ML_BITRATE_DEFAULT_KBPS;
-    conn.mlCodec = parts.length > 37
-      ? ConnectionStore.parseNumber(parts[37], ML_CODEC_AUTO) : ML_CODEC_AUTO;
-    conn.useGlobalStream = parts.length > 41 ? parts[41] === '1' : true;
-    conn.mlHostId = parts.length > 42 ? ConnectionStore.decode(parts[42]) : '';
-    conn.resolutionAuto = parts.length > 43 ? parts[43] === '1' : false;
-    conn.scaleAuto = parts.length > 44 ? parts[44] === '1' : false;
+    const conn: SavedConnection = SavedConnection.create(protocol);
+    conn.id = id;
+    conn.readRecord(parts);
     return conn;
-  }
-
-  private static encode(text: string): string {
-    try {
-      return encodeURIComponent(text);
-    } catch (error) {
-      return text;
-    }
-  }
-
-  private static decode(text: string): string {
-    try {
-      return decodeURIComponent(text);
-    } catch (error) {
-      return text;
-    }
   }
 
   private static parseNumber(text: string, fallback: number): number {
     const value: number = Number.parseInt(text, 10);
     return Number.isNaN(value) ? fallback : value;
-  }
-
-  private static parsePositive(text: string, fallback: number): number {
-    const value: number = Number.parseInt(text, 10);
-    return Number.isNaN(value) || value <= 0 ? fallback : value;
   }
 
   private static readString(store: preferences.Preferences, key: string,

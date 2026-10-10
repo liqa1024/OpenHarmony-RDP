@@ -12,7 +12,7 @@
 - **密码绝不落明文、不进日志、不经命令行传递**：原生侧用 `freerdp_settings_set_string` 设
   `FreeRDP_Password` / `FreeRDP_GatewayPassword`。
 - preferences 的字符串字段**先 `encodeURIComponent` 再拼接**，否则控制字符会损坏文件。
-- 连接可带一个**可选自定义名**（`SavedConnection.name`，继承自 `RdpConnectOptions.name`）：非空时
+- 连接可带一个**可选自定义名**（`SavedConnection.name`）：非空时
   列表主标题、删除确认与会话窗口标题都用它（`label()` / `displayName()`），空则回落到 `host:port`。
   它只是显示名，**不参与任何连接参数**；随连接一起持久化（记录尾部追加一个字段，旧记录缺该字段即
   视为空）并随导入导出搬运。
@@ -63,7 +63,7 @@
   - **是三选一而不是开关**：关闭 / `XEngine` / `FSR`（`SR_BACKEND_XENGINE` / `SR_BACKEND_FSR`，持久化成
     0/1 并在连接记录尾部占一个字段）。两者都是「会话小、本机放大」，差别只在**用哪个上采样器**：
     XEngine 是平台空域超分（要设备特性），FSR 是呈现器自己跑的 FidelityFX Super Resolution 1.0
-    （只要 Vulkan 上屏）。见 [`present-pipeline.md`](present-pipeline.md) §5。
+    （只要 Vulkan 上屏）。见 [`rdp-present.md`](rdp-present.md) §5。
   - **默认缩放随之换算**：自动档 = 分辨率档位 `÷ 倍率` 再吸附到档位（`SettingsStore.autoScalePercent`）；
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持同样的物理大小。
   - **两个前提**：Vulkan 呈现器可用（即「硬件加速」开着），且**所选后端**可用（FSR 只要前者，XEngine
@@ -75,13 +75,13 @@
   `useGlobalAdvanced` 标志（**默认跟随全局**）。连接前用 `SettingsStore.resolveAdvanced(conn)` 解析。
   编辑页打开「使用会话独立高级设置」后才用本连接的独立开关；**保存时仍持久化独立值**，便于随时切回。
 - **剪贴板恒开**：不提供任何开关（全局或单连接）；原生无条件置 `FreeRDP_RedirectClipboard`。
-  工具栏的「复制/粘贴」手动触发，见 [`clipboard.md`](clipboard.md)。
+  工具栏的「复制/粘贴」手动触发，见 [`rdp-clipboard.md`](rdp-clipboard.md)。
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置
   `FreeRDP_SupportGraphicsPipeline`。
 - **硬件加速**（`hardwareAccel`，进程级）：只选上屏后端（开 = Vulkan、关 = GLES 且不碰 Vulkan），
-  与解码无关（语义见 [`present-pipeline.md`](present-pipeline.md) §1）。存在这个开关是因为 Vulkan 支持
+  与解码无关（语义见 [`rdp-present.md`](rdp-present.md) §1）。存在这个开关是因为 Vulkan 支持
   参差不齐的设备（模拟器完全不可用），关掉它就能在"Vulkan 不好用"的机器上照常跑。判据用**呈现判定**
-  （不需要 compute，见 [`native-libraries.md`](native-libraries.md) §6）：不支持时设置页置灰并显示原因，
+  （不需要 compute，见 [`rdp-native.md`](rdp-native.md) §6）：不支持时设置页置灰并显示原因，
   把已存的值纠正为关；支持时默认开（新装/未改过设置即为开）。dev 回放页也有同一个开关
   （`路线:CPU/硬件加速`），改它等于改这个设置并重启回放——两个后端可以在同一份录像上当场 A/B。
 - **回到前台自动重连**（`reconnectOnForeground`，进程级，默认关）：会话窗口从后台回到前台时，
@@ -89,10 +89,10 @@
   再释放并 abort socket（约 12s），且官方判定终端类会话（SSH/Mosh/SFTP）不属于合法的高优先级后台服务，
   普通三方应用无法用长时任务撑住"网络空载 / 低频心跳"；官方给同类应用的建议架构就是**客户端前台重连**。
   因此这里只兜"回来时发现已经断了"，不与后台管控对抗。行为与触发条件见
-  [`session-and-input.md`](session-and-input.md) §1。
+  [`session-layer.md`](session-layer.md) §5。
 - **快捷键穿透**（`shortcutPassthrough`，进程级，默认关）：会话窗口聚焦时用系统按键拦截把 Win / Alt+Tab /
   Esc 等发给远端（需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）。按会话窗口焦点实时注册/释放，
-  行为与代价见 [`session-and-input.md`](session-and-input.md) §2。
+  行为与代价见 [`session-layer.md`](session-layer.md) §8。
 - **开发者选项**（`developerMode`，进程级，默认关）：dev/实验功能的**总开关**。关着时以下入口都不存在：
   首页的「回放测试」；设置页的「抓取 GFX 码流（测试）」「触屏高刷新率（实验）」「工具栏触发停留时间」
   「工具栏隐藏延迟」；以及会话工具栏的性能遥测（网络 / 本机 / FPS / 带宽 / 音频）。关掉它还**一并关闭**

@@ -247,7 +247,7 @@ export class WindowController {
   }
 
   // Only fully covered counts: a partly covered window still reports visible
-  // (doc_agent/session-and-input.md §1.1).
+  // (doc_agent/session-layer.md §6).
   static watchVisibility(win: window.Window, onChange: (visible: boolean) => void): void {
     try {
       win.on('windowVisibilityChange', onChange);

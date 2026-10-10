@@ -1945,7 +1945,7 @@ bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
   VkMemoryRequirements req{};
   api.GetBufferMemoryRequirements(device, desktopBuffer_, &req);
   // Cached first (the CPU writes 20+ MB/frame and reads it back), then coherent -
-  // see doc_agent/present-pipeline.md §4. A non-coherent type is flushed per rect.
+  // see doc_agent/rdp-present.md §4. A non-coherent type is flushed per rect.
   uint32_t typeIndex = context.FindMemoryType(
       req.memoryTypeBits,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -2121,7 +2121,7 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     }
     // When gdi composed into our desktop buffer (AcquireDesktopBuffer), the rects
     // are read in place at the desktop row pitch and no CPU copy happens
-    // (doc_agent/present-pipeline.md §4). Otherwise they are staged first.
+    // (doc_agent/rdp-present.md §4). Otherwise they are staged first.
     const bool direct =
         data == static_cast<const uint8_t*>(desktopBufferMapped_) && srcStride == desktopBufferStride_ &&
         desktopBuffer_ != VK_NULL_HANDLE && desktopWidth == desktopBufferWidth_ &&

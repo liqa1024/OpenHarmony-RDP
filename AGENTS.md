@@ -18,7 +18,7 @@
   要恢复文件就**直接编辑文件内容**。
 - **实机操作默认禁止，需明确授权，且是最后手段**——唯一例外是 **Vulkan / 硬件加速（上屏）**：
   它们**只在真机上验证**（模拟器的 Vulkan 会按标准接口谎报能力，不在支持范围内），由 AI 按
-  [`doc_agent/gfx-engine.md`](doc_agent/gfx-engine.md) §6 与 [`doc_agent/present-pipeline.md`](doc_agent/present-pipeline.md) §8 自动执行。
+  [`doc_agent/rdp-gfx.md`](doc_agent/rdp-gfx.md) §6 与 [`doc_agent/rdp-present.md`](doc_agent/rdp-present.md) §8 自动执行。
   其余情况下**不要动辄"退回真机"**，也**不要把结论甩给真机**。
   签名与安装由用户完成（**仓库不含任何签名材料**），AI 只做无破坏性动作（push 样本 / 启动 / 读日志）。
 - **排查顺序**：代码 / 构建 / 数据 → 模拟器自身状态（跑过重型 GL/GPU 压测后先冷启动）→ 真机（且需授权）。
@@ -58,7 +58,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
   由 `hvigorfile.ts` 注入。**切勿**提交 `*.p12`/`*.p7b`/`*.cer`/keystore。
 - **改 FreeRDP 一律写成 `patch-steps/` 补丁步骤**（不要在 `third_party/` 里直接改），再
   `fetch-sources.ps1 -Force` + `build-native.ps1 -Only freerdp -Clean`，最后 `build_project`。
-  详见 [`doc_agent/native-libraries.md`](doc_agent/native-libraries.md)。
+  详见 [`doc_agent/native-build.md`](doc_agent/native-build.md)。
 - 模拟器优先用于**与硬件加速无关**的功能/逻辑/UI 调试；**Vulkan（硬件加速）只在真机验证**。
 
 ## 目录速览
@@ -82,12 +82,14 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 构建 / 运行 / 真机与模拟器 / uitest 技巧 / 最小验证 | [`build-and-verify.md`](doc_agent/build-and-verify.md) |
 | 页面 / 状态刷新 / 路由 / 主题 / 沉浸材质机制 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
 | 界面外观 / 设计原则 / 抽共享单元 / 设计 token / 组件契约 | [`ui-design.md`](doc_agent/ui-design.md) |
-| 输入（鼠标/触屏/触控板/键盘）、会话窗口、工具栏、遥测、光标 | [`session-and-input.md`](doc_agent/session-and-input.md) |
-| 剪贴板（手动）/ 文件传输 | [`clipboard.md`](doc_agent/clipboard.md) |
+| 两协议共享的会话/连接层（连接模型多态、连接发起、后端、会话外壳、输入内核、会话窗口/输入/工具栏/光标行为、命名边界） | [`session-layer.md`](doc_agent/session-layer.md) |
+| RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](doc_agent/rdp-session.md) |
+| 剪贴板（手动）/ 文件传输 | [`rdp-clipboard.md`](doc_agent/rdp-clipboard.md) |
 | 设置项 / 连接存储 / 密码 / 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
-| FreeRDP 补丁 / 音频 / 能力探测 / 构建选项 | [`native-libraries.md`](doc_agent/native-libraries.md) |
-| GFX 码流框架 / 会话侧接线 / 回放与参考画面验收（**改前必读**） | [`gfx-engine.md`](doc_agent/gfx-engine.md) |
-| CPU（gdi）链路的判据、账目口径、门禁、并行形态 | [`gfx-engine.md`](doc_agent/gfx-engine.md) §7 |
-| 上屏（present）：Vulkan/GLES 后端、脏区上传、零拷贝、超分、swapchain 重建 | [`present-pipeline.md`](doc_agent/present-pipeline.md) |
+| 原生库构建体系（拉取 / 单一入口 / 依赖布局 / 补丁系统 / OpenSSL CMake） | [`native-build.md`](doc_agent/native-build.md) |
+| RDP 原生（FreeRDP 补丁内容 / 音频 / 能力探测 / 编译选项） | [`rdp-native.md`](doc_agent/rdp-native.md) |
+| GFX 码流框架 / 会话侧接线 / 回放与参考画面验收（**改前必读**） | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) |
+| CPU（gdi）链路的判据、账目口径、门禁、并行形态 | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) §7 |
+| 上屏（present）：Vulkan/GLES 后端、脏区上传、零拷贝、超分、swapchain 重建 | [`rdp-present.md`](doc_agent/rdp-present.md) |
 | Moonlight 前端（协议建模、存储、列表/编辑页/应用页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
 | Moonlight 原生（客户端库构建/链接、解码、编解码协商、上屏、HTTP、凭证、配对原语） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |

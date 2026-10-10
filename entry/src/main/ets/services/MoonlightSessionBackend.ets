@@ -8,7 +8,8 @@ import {
 } from 'libhmrdp.so';
 import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
 import { RemoteCursorUpdate } from './RemoteCursor';
-import { PendingConnection, PROTOCOL_MOONLIGHT, SavedConnection } from '../model/RdpModels';
+import { MoonlightConnection, PendingConnection, SavedConnection }
+  from '../model/Connections';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionStore } from './ConnectionStore';
 import { MoonlightConnectResult, MoonlightConnector, MoonlightHostPolicy,
@@ -109,8 +110,8 @@ export class MoonlightSessionBackend implements SessionBackend {
     this.emit(event, value, text);
   }
 
-  protocol(): number {
-    return PROTOCOL_MOONLIGHT;
+  pageRoute(): string {
+    return 'pages/MoonlightSessionPage';
   }
 
   requiresPrepare(): boolean {
@@ -119,11 +120,12 @@ export class MoonlightSessionBackend implements SessionBackend {
 
   async prepare(): Promise<boolean> {
     const request: PendingConnection = this.request;
-    const conn = request.savedConnection;
-    if (conn === undefined || request.filesDir.length === 0) {
+    const saved = request.savedConnection;
+    if (!(saved instanceof MoonlightConnection) || request.filesDir.length === 0) {
       this.emit(ML_EVENT_STAGE_FAILED, 0, '缺少连接参数');
       return false;
     }
+    const conn: MoonlightConnection = saved;
     const pinProvider: MoonlightPinProvider =
       request.moonlightPinProvider !== undefined
         ? request.moonlightPinProvider
@@ -133,7 +135,8 @@ export class MoonlightSessionBackend implements SessionBackend {
     const connections: SavedConnection[] = ConnectionStore.list();
     for (let i = 0; i < connections.length; i++) {
       const other: SavedConnection = connections[i];
-      if (other.isMoonlight() && other.id !== conn.id && other.mlHostId.length > 0) {
+      if (other instanceof MoonlightConnection && other.id !== conn.id
+        && other.mlHostId.length > 0) {
         policy.knownIds.push(other.mlHostId);
       }
     }

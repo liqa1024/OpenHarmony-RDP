@@ -5,7 +5,7 @@
 #    re-runs FreeRDP's own ZGFX + PDU parsing offline for the same stream;
 #    HmrdpGfxReplayNewWithContext/FreeWithContext additionally bind the plugin to
 #    a caller-owned rdpContext, which the CPU/gdi replay route uses (see
-#    doc_agent/gfx-engine.md §6). NOTE: applied as one block - a tree with the old step 7 must be
+#    doc_agent/rdp-gfx.md §6). NOTE: applied as one block - a tree with the old step 7 must be
 #    re-patched from a clean source, not incrementally.
 $rdpgfxMain = "$Source\channels\rdpgfx\client\rdpgfx_main.c"
 if (-not (Test-Path -LiteralPath $rdpgfxMain)) {

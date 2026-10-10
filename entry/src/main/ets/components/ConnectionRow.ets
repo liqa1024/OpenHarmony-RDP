@@ -1,13 +1,13 @@
-import { SavedConnection } from '../model/RdpModels';
+import { ConnectAction, connectActionLabel, RdpConnection, RowMenuAction, RowMenuEntry,
+  SavedConnection } from '../model/Connections';
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { ConnectAction, connectActionFor, connectActionLabel, primaryConnectAction }
-  from '../utils/ConnectAction';
+import { connectActionFor } from '../utils/ConnectAction';
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 
 @Component
 export struct ConnectionRow {
-  conn: SavedConnection = new SavedConnection();
+  conn: SavedConnection = new RdpConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
   // `hostTargetId` is what the host currently has open (0 = none / unknown),
   // `targetId` is this connection's default app id (0 = none configured). RDP
@@ -35,31 +35,12 @@ export struct ConnectionRow {
   private cardMaterial: AttributeModifier<RowAttribute> =
     new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CARD));
 
-  private protocolIcon(): Resource {
-    return this.conn.isMoonlight() ? $r('app.media.ic_proto_moonlight')
-                                   : $r('app.media.ic_remote_desktop');
-  }
-
-  private subtitle(): string {
-    const target: string = `${this.conn.host}:${this.conn.port}`;
-    if (this.conn.isMoonlight()) {
-      const appName: string = this.conn.mlDefaultAppName.length > 0 ? this.conn.mlDefaultAppName : '桌面';
-      return this.conn.name.length > 0 ? `${target} · ${appName}` : appName;
-    }
-    if (this.conn.name.length === 0) {
-      return this.conn.username;
-    }
-    return this.conn.username.length > 0 ? `${target} · ${this.conn.username}` : target;
-  }
-
   private action(): ConnectAction {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);
   }
 
-  // Moonlight collapses resume/switch/disconnect into 终止 (closing its session
-  // stops the host app); RDP keeps 断开连接.
   private primary(): ConnectAction {
-    return primaryConnectAction(this.action(), this.conn.isMoonlight());
+    return this.conn.primaryAction(this.action());
   }
 
   private connectTip(): string {
@@ -100,64 +81,39 @@ export struct ConnectionRow {
     }
   }
 
+  private onMenuEntry(entry: RowMenuEntry): void {
+    if (entry.action === RowMenuAction.Toggle) {
+      this.onToggleConnection();
+    } else if (entry.action === RowMenuAction.Terminate) {
+      this.onTerminate();
+    } else if (entry.action === RowMenuAction.Edit) {
+      this.onEdit();
+    } else if (entry.action === RowMenuAction.Delete) {
+      this.onDelete();
+    }
+  }
+
   @Builder
   menu() {
     Menu() {
       // Grouping draws one separator between the session actions and 编辑 / 删除.
       MenuItemGroup() {
-        if (this.conn.isMoonlight()) {
-          // The button never resumes, so 恢复 / 切换 / 连接 are offered here.
-          if (this.action() === ConnectAction.Cancel) {
-            MenuItem({ content: '取消连接' })
-              .onClick(() => {
-                this.onToggleConnection();
-              })
-          } else if (this.action() === ConnectAction.Connect) {
-            MenuItem({ content: '连接' })
-              .onClick(() => {
-                this.onToggleConnection();
-              })
-          } else if (this.action() === ConnectAction.Resume) {
-            MenuItem({ content: '恢复' })
-              .onClick(() => {
-                this.onToggleConnection();
-              })
-          } else if (this.action() === ConnectAction.Switch) {
-            MenuItem({ content: '切换' })
-              .onClick(() => {
-                this.onToggleConnection();
-              })
-          }
-          // 终止 needs something running on the host to stop.
-          if (this.hostTargetId !== 0) {
-            MenuItem({ content: '终止' })
-              .onClick(() => {
-                this.onTerminate();
-              })
-          }
-        } else {
-          MenuItem({ content: this.connectTip() })
+        ForEach(this.conn.menuEntries(this.action(), this.hostTargetId), (entry: RowMenuEntry) => {
+          MenuItem({ content: entry.content })
+            .contentFontColor(entry.action === RowMenuAction.Delete
+              ? $r('app.color.danger') : $r('app.color.text_primary'))
             .onClick(() => {
-              this.onToggleConnection();
+              this.onMenuEntry(entry);
             })
-        }
+        }, (entry: RowMenuEntry) => `${entry.action}#${entry.content}`)
       }
-      MenuItem({ content: '编辑' })
-        .onClick(() => {
-          this.onEdit();
-        })
-      MenuItem({ content: '删除' })
-        .contentFontColor($r('app.color.danger'))
-        .onClick(() => {
-          this.onDelete();
-        })
     }
   }
 
   build() {
     Row() {
       Row() {
-        Image(this.protocolIcon())
+        Image(this.conn.protocolIcon())
           .width(40)
           .height(40)
           .borderRadius(10)
@@ -186,8 +142,8 @@ export struct ConnectionRow {
                 .margin({ left: 8 })
             }
           }
-          if (this.subtitle().length > 0) {
-            Text(this.subtitle())
+          if (this.conn.subtitle().length > 0) {
+            Text(this.conn.subtitle())
               .fontSize(12)
               .fontColor($r('app.color.text_tertiary'))
               .margin({ top: 3 })
@@ -203,7 +159,7 @@ export struct ConnectionRow {
         this.onEdit();
       })
 
-      if (this.conn.isMoonlight()) {
+      if (this.conn.showsAppsButton()) {
         Row() {
           Image($r('app.media.ic_apps'))
             .width(24)

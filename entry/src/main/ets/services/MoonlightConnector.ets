@@ -1,7 +1,7 @@
 import { moonlightVideoFormats } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MoonlightProfile, MoonlightStreamConfig } from '../model/RdpModels';
+import { MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';

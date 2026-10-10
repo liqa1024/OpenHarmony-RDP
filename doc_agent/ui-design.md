@@ -3,8 +3,8 @@
 本文件是界面的**设计语言总纲**：设计原则、设计 token、布局模式、组件契约与共享工具。
 它只回答"界面长什么样、由哪些组件组合、参数怎么给"，**不描述行为与数据语义**：
 
-- 会话窗口 / 输入 / 工具栏行为与遥测口径 → [`session-and-input.md`](session-and-input.md)；
-- 剪贴板与文件传输 → [`clipboard.md`](clipboard.md)；
+- 会话窗口 / 输入 / 工具栏行为 → [`session-layer.md`](session-layer.md)；RDP 会话 / 遥测 → [`rdp-session.md`](rdp-session.md)；
+- 剪贴板与文件传输 → [`rdp-clipboard.md`](rdp-clipboard.md)；
 - 设置项 / 连接存储 / 生效时机 → [`settings-and-storage.md`](settings-and-storage.md)；
 - Moonlight 协议差异（字段、分栏、图标语义） → [`moonlight-connection.md`](moonlight-connection.md)；
 - ArkTS / ArkUI 语法、状态刷新、主题资源规则、沉浸材质 API 与摆放机制 → [`arkts-conventions.md`](arkts-conventions.md)。
@@ -166,7 +166,7 @@ Column(page_bg, 100%×100%)
 
 ### 3.6 会话窗口
 
-- 窗口模式：工具栏作为普通行布局在画面上方（渲染区自然扣除其高度）；全屏模式：工具栏浮在画面上，按指针分区自动隐藏 / 滑出（行为与判定见 [`session-and-input.md`](session-and-input.md) §3）。
+- 窗口模式：工具栏作为普通行布局在画面上方（渲染区自然扣除其高度）；全屏模式：工具栏浮在画面上，按指针分区自动隐藏 / 滑出（行为与判定见 [`session-layer.md`](session-layer.md) §9）。
 - 自动隐藏的**显隐判定**由 `services/ToolbarAutoHide` 独占，两协议的会话页共用：页面提供实时状态（全屏 / 连接 / 钉住 / 延迟）并把结果（显示 / 揭示进度）镜像进自己的 `@State`，渲染与动效留在页面。
 - 会话窗口的**运行时能力**归 `services/WindowController`：取本会话窗口、全屏检测、最小化 / 全屏切换、焦点 / 可见性监听。它们与自动隐藏判定一样**按需（opt-in）**——页面只调用 / 订阅自己反应的部分，抽取本身不申请任何用不到的能力。
 - 状态遮罩：全屏居中、`#66000000` 底色上放状态卡；状态卡的图标 / 标题 / 副标题 / 按钮组合由连接状态驱动（§4）。

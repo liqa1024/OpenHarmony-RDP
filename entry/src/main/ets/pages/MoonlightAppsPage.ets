@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RdpConnectOrigin, SavedConnection } from '../model/RdpModels';
+import { ConnectAction, ConnectOrigin, MoonlightConnection } from '../model/Connections';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { MoonlightAppsResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
@@ -11,7 +11,7 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { MoonlightAppTile } from '../components/MoonlightAppTile';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp, PairResult } from '../moonlight/MoonlightModels';
-import { ConnectAction, connectActionFor } from '../utils/ConnectAction';
+import { connectActionFor } from '../utils/ConnectAction';
 import { showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
@@ -35,14 +35,14 @@ struct MoonlightAppsPage {
   @State state: ConnectionState = ConnectionState.Idle;
   @State defaultAppId: string = '';
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
-  private conn: SavedConnection | undefined = undefined;
+  private conn: MoonlightConnection | undefined = undefined;
   private httpsPort: number = 47984;
   private hasLoaded: boolean = false;
   private probing: boolean = false;
   private pendingAppId: number = 0;
   private pendingResume: boolean = false;
   private readonly stateListener: SessionStateListener =
-    (connectionId: string, state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
+    (connectionId: string, state: ConnectionState, message: string, origin: ConnectOrigin): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
         this.state = state;
         if (state !== ConnectionState.Connecting) {
@@ -63,7 +63,8 @@ struct MoonlightAppsPage {
     const params: MoonlightAppsParams | undefined =
       this.getUIContext().getRouter().getParams() as MoonlightAppsParams;
     if (params !== undefined) {
-      this.conn = ConnectionStore.get(params.connectionId);
+      const loaded = ConnectionStore.get(params.connectionId);
+      this.conn = loaded instanceof MoonlightConnection ? loaded : undefined;
     }
     SessionManager.subscribe(this.stateListener);
     MoonlightHostState.subscribe(this.hostStateListener);
@@ -84,7 +85,7 @@ struct MoonlightAppsPage {
   }
 
   onPageShow(): void {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn !== undefined && this.hasLoaded) {
       MoonlightHostState.refresh(conn, this.filesDir());
     }
@@ -111,7 +112,7 @@ struct MoonlightAppsPage {
     if (this.probing) {
       return;
     }
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }
@@ -164,7 +165,7 @@ struct MoonlightAppsPage {
   }
 
   private async loadIcons(): Promise<void> {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }
@@ -220,7 +221,7 @@ struct MoonlightAppsPage {
   }
 
   private launch(app: NvApp): void {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     const context = this.getUIContext().getHostContext();
     if (conn === undefined || context === undefined) {
       return;
@@ -229,18 +230,18 @@ struct MoonlightAppsPage {
     this.pendingAppId = app.id;
     this.pendingResume = this.isRunning(app);
     MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
-      RdpConnectOrigin.List, app.id);
+      ConnectOrigin.List, app.id);
   }
 
   private disconnectSession(): void {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn !== undefined) {
       SessionManager.disconnect(conn.id);
     }
   }
 
   private async closeApp(): Promise<void> {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }
@@ -255,7 +256,7 @@ struct MoonlightAppsPage {
   }
 
   private async closeAppAndDisconnect(): Promise<void> {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }
@@ -279,7 +280,7 @@ struct MoonlightAppsPage {
   }
 
   private setDefault(app: NvApp): void {
-    const conn: SavedConnection | undefined = this.conn;
+    const conn: MoonlightConnection | undefined = this.conn;
     if (conn === undefined) {
       return;
     }

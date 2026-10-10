@@ -71,7 +71,7 @@ include("${OSSL_SNAPSHOT}/sources.cmake")
 # fixed -DNDEBUG / OPENSSL_BUILDING_OPENSSL from Configure), minus anything that
 # would leak a build-machine path. Optimisation is pinned (-O2) so the prebuilt
 # archives do not change with the app build mode - same rule as the FreeRDP
-# prebuilt libraries (doc_agent/native-libraries.md).
+# prebuilt libraries (doc_agent/native-build.md).
 set(OSSL_DEFINES
     OPENSSL_BUILDING_OPENSSL
     OPENSSL_USE_NODELETE
@@ -181,7 +181,7 @@ target_compile_definitions(ssl PRIVATE ${OSSL_DEFINES})
 # not just hide it. -pthread matches the Configured OPENSSL_THREADS. The
 # optimisation level is pinned (-O2) so the prebuilt libraries do not change with
 # the app build mode - same rule as the FreeRDP prebuilt libraries
-# (doc_agent/native-libraries.md). --gcc-toolchain is passed by the OHOS
+# (doc_agent/native-build.md). --gcc-toolchain is passed by the OHOS
 # toolchain to compile-only invocations, which clang flags as unused.
 foreach(_tgt crypto ssl)
     target_compile_options(${_tgt} PRIVATE

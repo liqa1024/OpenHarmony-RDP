@@ -4,7 +4,7 @@
 桥接层约定、串流会话与输入接线，以及控制 / 配对层的协议事实（§4）。**控制层（serverinfo / pair / applist /
 launch）、协议编排与全部 XML 解析在 ArkTS**，不在本文件范围。**前端**侧（协议建模、存储布局、连接列表与
 编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)；RDP 的
-FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（本文件不重复它）。
+FreeRDP/OpenSSL/zlib 的构建体系见 [`native-build.md`](native-build.md)（本文件不重复它）。
 
 ## 1. 客户端库（moonlight-common-c）的构建与链接
 
@@ -24,7 +24,7 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
   **`enet`（以及 `nanors`）不单独成库**：它们是本库的 submodule、属实现细节而非独立依赖，
   `enet/CMakeLists.txt` 把 `add_library(enet STATIC)` 写死（命令行上的 `BUILD_SHARED_LIBS` 也到不了
   `add_subdirectory(enet)`），于是照旧静态编进 `libmoonlight-common-c.so`——判据见
-  [`native-libraries.md`](native-libraries.md) §1。
+  [`native-build.md`](native-build.md) §1。
 - **头文件位置**：上游 CMakeLists 不写 install 规则，构建步手工把公开头 `Limelight.h` 收集到
   `native/install/<arch>/moonlight/`，再同步到 `entry/src/main/cpp/thirdparty/moonlight/include/`
   （生成目录，**不入库**，与 FreeRDP 头文件同策）；`.so` 走统一的 `entry/libs/<abi>/` 出口，按 arch 各自一份。
@@ -32,7 +32,7 @@ FreeRDP/OpenSSL/zlib 构建见 [`native-libraries.md`](native-libraries.md)（�
   显式传 `OPENSSL_ROOT_DIR` / `OPENSSL_CRYPTO_LIBRARY` / `OPENSSL_SSL_LIBRARY` 并置
   `OPENSSL_USE_STATIC_LIBS=OFF`，使 `find_package(OpenSSL 1.0.2 REQUIRED)` 命中 OHOS 的 `libcrypto.so`
   而不是宿主（宿主没有 OHOS 版）。它与 FreeRDP 是 OpenSSL 的两个独立消费者，所以 OpenSSL 只以共享库存在
-  一份（见 [`native-libraries.md`](native-libraries.md) §1）。
+  一份（见 [`native-build.md`](native-build.md) §1）。
 - **平台层**：它自带 POSIX 平台实现（`Platform*.c`，`LC_POSIX` 分支），OHOS 直接可用；配置阶段的自检
   （`fcntl` / `ioctl` / `poll` / `getaddrinfo` / `gethostbyname_r` / `inet_pton` / `clock_gettime` 的
   `CLOCK_MONOTONIC`）全部命中。
@@ -129,7 +129,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   它的全局状态搞坏，表现为 `VideoRecv`/`RtpvAddPacket` 崩溃）。视频回调取自解码桥，`renderContext` 是会话
   XComponent 的 `OHNativeWindow`，音频以空渲染器关闭（不播放）；输入由 `MoonlightInputSink` 落 `LiSend*`
   （相对/绝对鼠标、按键、UTF-8 文本、高分辨率滚轮、触屏触点、原生触控板接入点），策略在共用
-  `SessionInput`（见 [`session-and-input.md`](session-and-input.md) §2）。N-API 出口：
+  `SessionInput`（见 [`session-layer.md`](session-layer.md) §8）。N-API 出口：
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
@@ -160,13 +160,13 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   - 启用后主机**不再把光标画进画面**，改为在 `shape_id` 变化时发一次形状（可能分片）、在可见性变化时发更新。
     协议是纯**推送**模型：客户端不能拉取，首个形状到来之前本机只有默认箭头；因此客户端把光标通道当
     **状态**维护（形状只发一次也要一直生效），并在窗口绑定 / 指针重进等时机重放（见
-    [`session-and-input.md`](session-and-input.md) §2「重放点」）。
+    [`session-layer.md`](session-layer.md) §10「重放点」）。
 - **客户端实现分层**：补丁给 `Limelight.h` 加 `ConnListenerCursorUpdate` / `LiSetLocalCursorMode`，给
   `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记；enable 幂等，重复发送安全）；
   `hmrdp_moonlight_session.*` 把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；
   `hmrdp_napi.cpp` 把形状（含 `shapeId`）经 `g_buffers` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新
   交给两协议共用的安装器 `services/RemoteCursor.ets`（去重键 = `shapeId` + 几何，倍率恒 1，见
-  [`session-and-input.md`](session-and-input.md) §2「远端光标同步」）。设置项是 `mlCursorMode` 三选一（见
+  [`session-layer.md`](session-layer.md) §10「远端光标同步」）。设置项是 `mlCursorMode` 三选一（见
   [`moonlight-connection.md`](moonlight-connection.md) §5）。
 - **回退**：主机拒绝 enable（非 Sunshine、非加密控制流 v2、或 enable 时仍无 producer，如 WGC 捕获）时
   静默忽略，客户端收不到形状 ⇒ 系统光标保持默认（等于「关闭」）。
@@ -177,7 +177,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
 
 ### 3.2 原生触控板（基地版 Sunshine 的 precision touchpad 扩展）
 
-> 归属见 [`session-and-input.md`](session-and-input.md) §2；这里是原生侧事实与接入。
+> 归属见 [`session-layer.md`](session-layer.md) §8；这里是原生侧事实与接入。
 
 - **基线**：Moonlight 协议**没有**触控板通道；标准做法是把触控板翻译成滚轮 / 高分辨率滚轮 + 鼠标
   （`LiSendHighResScrollEvent` 即为此）。

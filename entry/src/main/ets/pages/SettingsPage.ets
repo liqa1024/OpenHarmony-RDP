@@ -1,8 +1,9 @@
 import { common } from '@kit.AbilityKit';
-import { DisplayProfile, ML_BITRATE_DEFAULT_KBPS,
+import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
+import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
   ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
-  PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
+  PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';

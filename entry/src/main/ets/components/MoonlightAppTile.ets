@@ -5,7 +5,7 @@
 import { image } from '@kit.ImageKit';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { NvApp } from '../moonlight/MoonlightModels';
-import { ConnectAction, connectActionLabel } from '../utils/ConnectAction';
+import { ConnectAction, connectActionLabel } from '../model/Connections';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { ControlDisc } from './ControlDisc';
 

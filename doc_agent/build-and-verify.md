@@ -40,8 +40,8 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 |---|---|
 | 任何 `.ets` | 先 `arkts_check <文件>`（快），再 `build_project` |
 | 任何 `.cpp/.h/.vert/.frag` | `build_project`（任务结束前必须通过） |
-| 改 FreeRDP 源码/补丁 | 见 [`native-libraries.md`](native-libraries.md)：重打补丁 + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`，再 `build_project` |
-| 改 GFX / 解码 / 回放 | 见 [`gfx-engine.md`](gfx-engine.md) §6 的**回放验证回路**（回放 + `bad=0`；Vulkan 上屏只在真机） |
+| 改 FreeRDP 源码/补丁 | 见 [`native-build.md`](native-build.md)（构建 / 补丁体系）与 [`rdp-native.md`](rdp-native.md) §3（补丁内容）：重打补丁 + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`，再 `build_project` |
+| 改 GFX / 解码 / 回放 | 见 [`rdp-gfx.md`](rdp-gfx.md) §6 的**回放验证回路**（回放 + `bad=0`；Vulkan 上屏只在真机） |
 | 改输入 / 会话窗口 | 模拟器（2in1）上手工走一遍；光标同步、真机 GPU 相关例外见对应文档 |
 
 - **验证纪律**：先怀疑**代码 / 构建 / 数据** → 再怀疑**模拟器自身状态**（跑过重型 GL/GPU 压测后先冷启动）
@@ -105,7 +105,7 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
 - 脚本用坐标点击 ⇒ 窗口必须在最前（脚本先 `aa start`）；点击没生效会直接报
   `did not start a new run`，而不是干等到超时。
 - 参考的本地副本在 `.cache/hmrdp_ref_<captureTag>.{hash,bmp}`（不入库）；**解码侧改动后要重录**，
-  判据见 [`gfx-engine.md`](gfx-engine.md) §7.1/§7.2。
+  判据见 [`rdp-gfx.md`](rdp-gfx.md) §7.1/§7.2。
 
 ## 6. 环境
 
@@ -125,7 +125,7 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
   required.`；多设备（syscap）/ 权限告警用
   `@SuppressWarnings({rules: [SuppressWarningsType.SYSCAP | PERMISSION]})`（`@ohos.annotation`，API 23+；
   装饰器对类 / 方法生效，**不能**标自由函数）标注承载调用的类或方法消除。两类告警的具体口径见
-  [`native-libraries.md`](native-libraries.md) §5、[`clipboard.md`](clipboard.md)。
+  [`rdp-native.md`](rdp-native.md) §5、[`rdp-clipboard.md`](rdp-clipboard.md)。
 - **`Currently module for 'libhmrdp.so' is not verified` 属误报**：本机 Node-API 库的类型验证告警
   （类型已由 `entry/src/main/cpp/types/libhmrdp/index.d.ts` 提供，引用处类型正常解析），源码侧无法消除，
   不必处理。

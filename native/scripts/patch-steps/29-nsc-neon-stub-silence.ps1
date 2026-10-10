@@ -1,5 +1,5 @@
 # 29) HmRdp: drop the upstream NSC NEON "TODO: Implement ..." warning
-#     (doc_agent/native-libraries.md §3). The stub only corresponds to the
+#     (doc_agent/rdp-native.md §3). The stub only corresponds to the
 #     encode side and a client decodes only, so it stays an empty no-op.
 $nscNeonC = "$Source\libfreerdp\codec\neon\nsc_neon.c"
 

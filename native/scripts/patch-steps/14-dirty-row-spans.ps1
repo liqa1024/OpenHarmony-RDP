@@ -7,7 +7,7 @@
 #     O(n^2) - a ms-order, sizeable fraction of the frame of *serial* RDP-thread
 #     time on a full-screen frame (thousands of tiles). Detail: the per-message
 #     region is essentially one rect per tile, so there is nothing to merge per
-#     message (doc_agent/gfx-engine.md §7.1) - the cost is the union itself, not
+#     message (doc_agent/rdp-gfx.md §7.1) - the cost is the union itself, not
 #     the rect count.
 #
 #     So the decoder stops touching the region16 per tile: it keeps one min/max

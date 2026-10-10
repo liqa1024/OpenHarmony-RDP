@@ -4,7 +4,7 @@
 # single version-less libz.so whose SONAME is also libz.so. FreeRDP is built the
 # same way (patch-steps/05-unversioned-sonames.ps1), and a version-less SONAME is
 # what makes DT_NEEDED match the packaged file exactly instead of shipping
-# libz.so.1 next to a libz.so copy (see doc_agent/native-libraries.md).
+# libz.so.1 next to a libz.so copy (see doc_agent/native-build.md).
 #
 # The tree under native/third_party/ is gitignored and recreated by
 # fetch-sources.ps1, which calls this script after extraction. Like

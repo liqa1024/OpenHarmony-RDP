@@ -1,30 +1,29 @@
 import { common, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
-import { matrix4, window } from '@kit.ArkUI';
+import { matrix4 } from '@kit.ArkUI';
 import { BusinessError, pasteboard, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
-import { PendingConnection, RdpConnectOptions,
-  RdpClipKind, RdpEvent, SessionRequests,
-  SR_BACKEND_FSR } from '../model/RdpModels';
+import { RdpConnectOptions, RdpClipKind, RdpEvent, SR_BACKEND_FSR } from '../model/RdpModels';
+import { PendingConnection, SessionRequests } from '../model/Connections';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { BackgroundWorker } from '../services/BackgroundWorker';
 import { RdpNative } from '../services/RdpNative';
 import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
-import { RdpInputSink, RdpSessionBackend, SessionBackend,
-  SessionBackendRegistry } from '../services/SessionBackend';
+import { RdpInputSink, RdpSessionBackend } from '../services/RdpSessionBackend';
+import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { SessionInput } from '../services/SessionInput';
 import { SessionSignal } from '../model/SessionSignal';
-import { RdpCounters } from '../services/SessionTelemetry';
+import { RdpCounters } from '../services/RdpTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { AppSettings, PINCH_MODE_ZOOM,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { WindowController } from '../services/WindowController';
-import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
+import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
+import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { lengthToNumber, showConfirm, showToast } from '../utils/UiUtil';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
@@ -70,35 +69,6 @@ const LOCAL_BAD_MS: number = 33;
 // While the app is away the system freezes and aborts its sockets, but the read loop only notices once the window is back, so the reconnect check waits a grace period.
 const FOREGROUND_RECONNECT_GRACE_MS: number = 400;
 
-class RdpSurfaceController extends XComponentController {
-  private createdCb: (surfaceId: string, width: number, height: number) => void =
-    (surfaceId: string, width: number, height: number) => {};
-  private changedCb: (surfaceId: string, width: number, height: number) => void =
-    (surfaceId: string, width: number, height: number) => {};
-  private destroyedCb: (surfaceId: string) => void = (surfaceId: string) => {};
-
-  setCallbacks(created: (surfaceId: string, width: number, height: number) => void,
-    changed: (surfaceId: string, width: number, height: number) => void,
-    destroyed: (surfaceId: string) => void): void {
-    this.createdCb = created;
-    this.changedCb = changed;
-    this.destroyedCb = destroyed;
-  }
-
-  onSurfaceCreated(surfaceId: string): void {
-    const rect: SurfaceRect = this.getXComponentSurfaceRect();
-    this.createdCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
-  }
-
-  onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
-    this.changedCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
-  }
-
-  onSurfaceDestroyed(surfaceId: string): void {
-    this.destroyedCb(surfaceId);
-  }
-}
-
 class ForegroundStateCallback extends ApplicationStateChangeCallback {
   private onAway: () => void;
   private onReturn: () => void;
@@ -143,8 +113,8 @@ struct SessionPage {
   // A system without the material capability ignores this field and keeps the default tooltip.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private closing: boolean = false;
-  private controller: RdpSurfaceController = new RdpSurfaceController();
+  private controller: SessionSurfaceController = new SessionSurfaceController();
+  private shell: SessionShellController | undefined = undefined;
   private componentWidth: number = 0;
   private componentHeight: number = 0;
   private desktopWidth: number = 1920;
@@ -173,31 +143,9 @@ struct SessionPage {
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
   // While false, surface sizes the system reports are held until it is back, and the server's output is suppressed.
-  private windowOnScreen: boolean = true;
-  private windowMinimized: boolean = false;
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
-  private autoHideHost: ToolbarAutoHideHost = {
-    isArmed: () => this.toolbarAutoHideArmed,
-    isFullscreen: () => this.isFullscreen,
-    isConnected: () => this.state === ConnectionState.Connected,
-    isPinned: () => this.transferActive || this.transferWaiting,
-    hoverDelay: () => this.hoverDelay,
-    hideDelay: () => this.hideDelay,
-    show: () => this.showToolbar,
-    setShow: (show: boolean) => {
-      this.showToolbar = show;
-    },
-    revealFill: () => this.revealHintFill,
-    animateReveal: (fill: number, durationMs: number, curve: Curve) => {
-      this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
-        this.revealHintFill = fill;
-      });
-    }
-  };
-  private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
   private metricsTimer: number = -1;
-  private toolbarAutoHideArmed: boolean = true;
   private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
@@ -216,7 +164,6 @@ struct SessionPage {
   private viewPinchPanX: number = 0;
   private viewPinchPanY: number = 0;
   private viewPinchBaseScale: number = 1;
-  private sessionWindow: window.Window | undefined = undefined;
   private remoteClipboardText: string = '';
   private remoteClipboardHtml: string = '';
   private remoteClipboardPixelMap: image.PixelMap | undefined = undefined;
@@ -265,11 +212,6 @@ struct SessionPage {
       hilog.warn(DOMAIN, TAG, 'paste authorization failed');
       this.toast('未获得剪贴板授权');
     };
-  private shortcutPassthrough: boolean = false;
-  // A denied permission leaves it false and the ordinary onKeyEvent path in charge.
-  private interceptActive: boolean = false;
-  // The interceptor is released when another window (settings, main list) becomes the active one.
-  private windowFocused: boolean = true;
 
   aboutToAppear(): void {
     this.resolveRequest();
@@ -298,42 +240,67 @@ struct SessionPage {
     RdpNative.applyGfxCapture(settings.gfxCapture, filesDir);
     hilog.info(DOMAIN, TAG, 'gfx capture=%{public}d dir=%{public}s', settings.gfxCapture ? 1 : 0,
       filesDir);
-    this.cursor.setEnabled(settings.useRdpCursor);
     this.reconnectOnForeground = settings.reconnectOnForeground;
     this.watchApplicationState();
     RdpNative.applyRdpCursor(settings.useRdpCursor);
-    this.shortcutPassthrough = settings.shortcutPassthrough;
     // With 超分辨率 the server renders the session (pre-upscale) size, not the configured output size; the Resize event corrects a mismatch.
     this.desktopWidth = SettingsStore.srSessionSize(this.options.width,
       this.options.srEnabled ? this.options.srRatioPercent : 0);
     this.desktopHeight = SettingsStore.srSessionSize(this.options.height,
       this.options.srEnabled ? this.options.srRatioPercent : 0);
-    const sink: RdpInputSink = new RdpInputSink(this.native);
-    this.sink = sink;
-    const input: SessionInput = new SessionInput(sink);
-    input.setWinKeySubstitute(settings.winKeySubstitute);
-    input.setPointerSpace(this.desktopWidth, this.desktopHeight);
-    input.setPointMapper((x: number, y: number): number[] => this.mapPointer(x, y));
-    input.setTouchEnabled(true);
-    input.setTouchpadScrollSpeed(settings.touchpadScrollSpeed);
-    input.setTouchpadMiddleDoubleTap(settings.touchpadMiddleDoubleTap);
-    input.setPinchMode(settings.pinchMode);
-    input.setPinchZoomSpeed(settings.pinchZoomSpeed);
-    input.setPinchTouchDistance(settings.pinchTouchDistance);
-    input.setPinchTouchAngle(settings.pinchTouchAngle);
-    input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
-      this.cursor.setPinchOverride(active, zoomIn);
-    });
-    this.input = input;
-    this.loadSessionWindow();
-    this.controller.setCallbacks(
-      (surfaceId: string, width: number, height: number) => {
+    const host: SessionShellHost = {
+      ui: (): UIContext => this.getUIContext(),
+      setState: (state: ConnectionState): void => {
+        this.state = state;
+      },
+      setStatusText: (text: string): void => {
+        this.statusText = text;
+      },
+      setOverlayVisible: (visible: boolean): void => {
+        this.showOverlay = visible;
+      },
+      setToolbarVisible: (visible: boolean): void => {
+        this.showToolbar = visible;
+      },
+      setFullscreen: (fullscreen: boolean): void => {
+        this.isFullscreen = fullscreen;
+      },
+      setRevealFill: (fill: number): void => {
+        this.revealHintFill = fill;
+      },
+      isFullscreen: (): boolean => this.isFullscreen,
+      isToolbarVisible: (): boolean => this.showToolbar,
+      revealFill: (): number => this.revealHintFill,
+      toolbarHeight: (): number => this.toolbarHeight,
+      hoverDelay: (): number => this.hoverDelay,
+      hideDelay: (): number => this.hideDelay,
+      animateReveal: (fill: number, durationMs: number, curve: Curve): void => {
+        this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
+          this.revealHintFill = fill;
+        });
+      }
+    };
+    const hooks: SessionShellHooks = {
+      overlayDelayMs: (): number => 0,
+      isPinned: (): boolean => this.transferActive || this.transferWaiting,
+      makeInput: (backend: SessionBackend | undefined, load: AppSettings): SessionInput | undefined =>
+        this.makeInput(load),
+      configureCursor: (cursor: RemoteCursor, load: AppSettings): void => {
+        cursor.setEnabled(load.useRdpCursor);
+      },
+      onStateChanged: (state: ConnectionState, message: string): void => {
+        this.onStateChanged(state, message);
+      },
+      onSignal: (signal: SessionSignal): void => {
+        this.onSessionSignal(signal);
+      },
+      onSurfaceCreated: (surfaceId: string, width: number, height: number): void => {
         this.surfaceId = surfaceId;
         this.surfaceWidth = width;
         this.surfaceHeight = height;
         this.native.bindSurface(surfaceId, width, height);
       },
-      (surfaceId: string, width: number, height: number) => {
+      onSurfaceChanged: (width: number, height: number): void => {
         // Hidden: hold the size and re-measure once the window is visible.
         if (!this.windowVisible) {
           this.pendingSurfaceResize = true;
@@ -341,50 +308,41 @@ struct SessionPage {
         }
         this.applySurfaceSize(width, height);
       },
-      (surfaceId: string) => {
+      onSurfaceDestroyed: (): void => {
         this.native.unbindSurface();
+      },
+      onWindowVisible: (visible: boolean): void => {
+        this.windowVisible = visible;
+        if (visible) {
+          this.flushPendingSurfaceSize();
+        }
+        this.native.setSuppressed(!visible);
+      },
+      consumesAxis: (event: AxisEvent): boolean => false,
+      onReleaseInputs: (): void => {
+        this.endDirectZoom();
+      },
+      onBeforeRetry: (): void => {
+        if (this.surfaceId.length > 0) {
+          this.native.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
+        }
+      },
+      onDisconnectFallback: (): void => {
+        this.native.stopSession();
+        this.native.clearListener();
+      },
+      onRelease: (): void => {
+        this.releaseProtocol();
       }
-    );
-    this.applySessionState(SessionManager.stateOf(this.connectionId),
-      SessionManager.messageOf(this.connectionId));
-    if (this.state === ConnectionState.Connected) {
-      this.showOverlay = false;
-      this.showToolbar = false;
-    }
+    };
+    const shell: SessionShellController =
+      new SessionShellController(this.sessionKey, host, hooks, this.controller, this.cursor);
+    this.shell = shell;
+    shell.attach(settings.shortcutPassthrough);
   }
 
   aboutToDisappear(): void {
-    BackgroundWorker.unregisterSession(this.backgroundSink);
-    this.stopAudio();
-    if (this.interceptActive) {
-      this.native.setShortcutPassthrough(false);
-      this.interceptActive = false;
-    }
-    this.toolbarAutoHideArmed = false;
-    this.toolbarAutoHide.dispose();
-    this.stopMetricsTimer();
-    if (this.reconnectTimer !== -1) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = -1;
-    }
-    this.unwatchApplicationState();
-    const win: window.Window | undefined = this.sessionWindow;
-    this.sessionWindow = undefined;
-    if (win !== undefined) {
-      try {
-        win.off('windowEvent');
-        win.off('windowStatusChange');
-        win.off('windowVisibilityChange');
-      } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'off windowEvent failed: %{public}s', JSON.stringify(error));
-      }
-    }
-    this.releaseAllInputs();
-    this.input?.dispose();
-    this.cursor.setWindow(undefined);
-    this.cursor.reset();
-    this.options.password = '';
-    this.options.gatewayPassword = '';
+    this.shell?.release();
   }
 
   onPageShow(): void {
@@ -448,7 +406,7 @@ struct SessionPage {
       this.awayFromForeground = false;
       if (wasAway &&
         (this.state === ConnectionState.Idle || this.state === ConnectionState.Failed)) {
-        this.retry();
+        this.shell?.retry();
       }
     }, FOREGROUND_RECONNECT_GRACE_MS);
   }
@@ -464,53 +422,72 @@ struct SessionPage {
       this.native = backend.native;
     }
     BackgroundWorker.registerSession(this.backgroundSink);
-    SessionManager.attachWindow(this.sessionKey,
-      (state: ConnectionState, message: string) => {
-        this.applySessionState(state, message);
-      },
-      (signal: SessionSignal) => {
-        this.onSessionSignal(signal);
-      },
-      () => {
-        this.terminateWindow();
-      });
   }
 
-  private applySessionState(state: ConnectionState, message: string): void {
-    this.state = state;
+  private onStateChanged(state: ConnectionState, message: string): void {
     if (state === ConnectionState.Connected) {
       this.statusText = '已连接';
-      this.showToolbar = false;
       this.native.setSuppressed(!this.windowVisible);
       this.audioHandle = this.native.handleId();
       AudioPlayer.start(this.audioHandle);
       this.resetClipboardNegotiation();
       this.lastRemoteLocksValid = false;
       this.lastReassertMs = 0;
-    } else if (state === ConnectionState.Connecting) {
+      this.startMetricsTimer();
+      return;
+    }
+    if (state === ConnectionState.Connecting) {
       this.statusText = '正在连接...';
-      this.showOverlay = true;
-      this.showToolbar = true;
-    } else if (state === ConnectionState.Disconnecting) {
+      return;
+    }
+    if (state === ConnectionState.Disconnecting) {
       this.statusText = '正在断开...';
       this.stopAudio();
       this.resetClipboardNegotiation();
-    } else {
-      this.statusText = message.length > 0 ? message
-        : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
-      this.showOverlay = true;
-      this.showToolbar = true;
-      this.cursor.reset();
-      this.stopAudio();
-      this.resetClipboardNegotiation();
-    }
-    this.refreshToolbarAutoHide();
-    this.updateShortcutPassthrough();
-    if (state === ConnectionState.Connected) {
-      this.startMetricsTimer();
-    } else {
       this.stopMetricsTimer();
+      return;
     }
+    this.statusText = message.length > 0 ? message
+      : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
+    this.cursor.reset();
+    this.stopAudio();
+    this.resetClipboardNegotiation();
+    this.stopMetricsTimer();
+  }
+
+  private makeInput(settings: AppSettings): SessionInput {
+    const sink: RdpInputSink = new RdpInputSink(this.native);
+    this.sink = sink;
+    const input: SessionInput = new SessionInput(sink);
+    this.input = input;
+    input.setWinKeySubstitute(settings.winKeySubstitute);
+    input.setPointerSpace(this.desktopWidth, this.desktopHeight);
+    input.setPointMapper((x: number, y: number): number[] => this.mapPointer(x, y));
+    input.setTouchEnabled(true);
+    input.setTouchpadScrollSpeed(settings.touchpadScrollSpeed);
+    input.setTouchpadMiddleDoubleTap(settings.touchpadMiddleDoubleTap);
+    input.setPinchMode(settings.pinchMode);
+    input.setPinchZoomSpeed(settings.pinchZoomSpeed);
+    input.setPinchTouchDistance(settings.pinchTouchDistance);
+    input.setPinchTouchAngle(settings.pinchTouchAngle);
+    input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
+      this.cursor.setPinchOverride(active, zoomIn);
+    });
+    return input;
+  }
+
+  private releaseProtocol(): void {
+    BackgroundWorker.unregisterSession(this.backgroundSink);
+    this.stopAudio();
+    this.stopMetricsTimer();
+    if (this.reconnectTimer !== -1) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = -1;
+    }
+    this.unwatchApplicationState();
+    this.endDirectZoom();
+    this.options.password = '';
+    this.options.gatewayPassword = '';
   }
 
   private stopAudio(): void {
@@ -541,24 +518,6 @@ struct SessionPage {
     const counters: RdpCounters | undefined = this.native.readCounters();
     if (counters !== undefined) {
       this.applyCounters(counters);
-    }
-  }
-
-  private retry(): void {
-    // A retry landing while one is already in flight (or tearing down) is dropped.
-    if (this.state === ConnectionState.Connecting ||
-      this.state === ConnectionState.Disconnecting) {
-      return;
-    }
-    if (this.connectionId.length === 0) {
-      return;
-    }
-    if (!SessionManager.retry(this.connectionId)) {
-      return;
-    }
-    // Re-bind the surface: stopping a session destroyed its native window.
-    if (this.surfaceId.length > 0) {
-      this.native.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
     }
   }
 
@@ -1574,11 +1533,11 @@ struct SessionPage {
   }
 
   private setToolbarPointerZone(zone: number): void {
-    this.toolbarAutoHide.setPointerZone(zone);
+    this.shell?.setPointerZone(zone);
   }
 
   private refreshToolbarAutoHide(): void {
-    this.toolbarAutoHide.refresh();
+    this.shell?.refreshAutoHide();
   }
 
   private baseViewRect(): number[] {
@@ -1612,11 +1571,11 @@ struct SessionPage {
   private handleMouse(event: MouseEvent): void {
     this.setToolbarPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
-    this.input?.handleMouseEvent(event);
+    this.shell?.routeMouse(event);
   }
 
   private handleTouch(event: TouchEvent): void {
-    this.input?.handleTouch(event);
+    this.shell?.routeTouch(event);
   }
 
   private handleAxis(event: AxisEvent): void {
@@ -1654,7 +1613,7 @@ struct SessionPage {
         return;
       }
     }
-    this.input?.handleAxis(event);
+    this.shell?.routeAxis(event);
   }
 
   private endDirectZoom(): void {
@@ -1763,23 +1722,6 @@ struct SessionPage {
     });
   }
 
-  private updateShortcutPassthrough(): void {
-    const wanted: boolean = this.shortcutPassthrough
-      && this.state === ConnectionState.Connected
-      && this.windowFocused;
-    if (wanted === this.interceptActive) {
-      return;
-    }
-    if (wanted) {
-      // Keep the real registration result: a denied ACL permission leaves this false.
-      this.interceptActive = this.native.setShortcutPassthrough(true);
-    } else {
-      this.native.setShortcutPassthrough(false);
-      this.interceptActive = false;
-    }
-    this.input?.setInterceptActive(this.interceptActive);
-  }
-
   private handleInterceptedKey(payload: RdpEventPayload): void {
     const keyCode: number = payload.keyCode ?? -1;
     if (keyCode >= 0) {
@@ -1788,71 +1730,12 @@ struct SessionPage {
   }
 
   private handleKey(event: KeyEvent): void {
-    this.input?.handleKey(event);
+    this.shell?.routeKey(event);
   }
 
   private releaseAllInputs(): void {
     this.input?.releaseAll();
     this.endDirectZoom();
-  }
-
-  private loadSessionWindow(): void {
-    const context = this.getUIContext().getHostContext();
-    if (context === undefined) {
-      return;
-    }
-    WindowController.acquireWindow(context).then((win: window.Window | undefined) => {
-      if (win === undefined) {
-        return;
-      }
-      this.sessionWindow = win;
-      this.cursor.setWindow(win);
-      this.isFullscreen = WindowController.isFullscreen(win);
-      WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
-        this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
-        this.setWindowMinimized(status === window.WindowStatusType.MINIMIZE);
-        this.refreshToolbarAutoHide();
-      });
-      // Focus/visibility events only signal that held inputs must be released; focus also drives 快捷键穿透.
-      WindowController.watchFocus(win, (focused: boolean) => {
-        this.windowFocused = focused;
-        if (!focused) {
-          this.releaseAllInputs();
-        }
-        this.updateShortcutPassthrough();
-      });
-      WindowController.watchVisibility(win, (visible: boolean) => {
-        this.setWindowOnScreen(visible);
-      });
-    });
-  }
-
-  private setWindowOnScreen(onScreen: boolean): void {
-    if (this.windowOnScreen === onScreen) {
-      return;
-    }
-    this.windowOnScreen = onScreen;
-    this.syncWindowVisible();
-  }
-
-  private setWindowMinimized(minimized: boolean): void {
-    if (this.windowMinimized === minimized) {
-      return;
-    }
-    this.windowMinimized = minimized;
-    this.syncWindowVisible();
-  }
-
-  private syncWindowVisible(): void {
-    const visible: boolean = this.windowOnScreen && !this.windowMinimized;
-    if (this.windowVisible === visible) {
-      return;
-    }
-    this.windowVisible = visible;
-    if (visible) {
-      this.flushPendingSurfaceSize();
-    }
-    this.native.setSuppressed(!visible);
   }
 
   private applySurfaceSize(width: number, height: number): void {
@@ -1874,53 +1757,6 @@ struct SessionPage {
     this.pendingSurfaceResize = false;
     const rect: SurfaceRect = this.controller.getXComponentSurfaceRect();
     this.applySurfaceSize(rect.surfaceWidth, rect.surfaceHeight);
-  }
-
-  private minimizeWindow(): void {
-    const win: window.Window | undefined = this.sessionWindow;
-    if (win === undefined) {
-      return;
-    }
-    WindowController.minimize(win);
-  }
-
-  private toggleFullscreen(): void {
-    const win: window.Window | undefined = this.sessionWindow;
-    if (win === undefined) {
-      return;
-    }
-    WindowController.toggleFullscreen(win, this.isFullscreen);
-  }
-
-  private disconnect(): void {
-    if (this.connectionId.length > 0) {
-      SessionManager.disconnect(this.connectionId);
-      return;
-    }
-    this.native.stopSession();
-    this.native.clearListener();
-    this.terminateWindow();
-  }
-
-  private terminateWindow(): void {
-    if (this.closing) {
-      return;
-    }
-    this.closing = true;
-    BackgroundWorker.unregisterSession(this.backgroundSink);
-    this.stopAudio();
-    const context = this.getUIContext().getHostContext();
-    if (context === undefined) {
-      return;
-    }
-    const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    // Single-window mode: the controller relaunches the main window first, then terminates this one.
-    if (WindowController.closeSession(abilityContext)) {
-      return;
-    }
-    abilityContext.terminateSelf().catch((error: BusinessError) => {
-      hilog.error(DOMAIN, TAG, 'terminate session failed: %{public}s', JSON.stringify(error));
-    });
   }
 
   private srIndicator(): string {
@@ -2030,14 +1866,14 @@ struct SessionPage {
       ToolbarChip({
         label: this.isFullscreen ? '退出全屏' : '全屏',
         onTap: () => {
-          this.toggleFullscreen();
+          this.shell?.toggleFullscreen();
         }
       })
         .margin({ right: 8 })
       ToolbarChip({
         label: '最小化',
         onTap: () => {
-          this.minimizeWindow();
+          this.shell?.minimize();
         }
       })
         .margin({ right: 8 })
@@ -2045,7 +1881,7 @@ struct SessionPage {
         label: '断开',
         chipBg: $r('app.color.danger'),
         onTap: () => {
-          this.disconnect();
+          this.shell?.disconnect();
         }
       })
     }
@@ -2201,7 +2037,7 @@ struct SessionPage {
               primary: '取消',
               loading: true,
               onPrimary: () => {
-                this.disconnect();
+                this.shell?.disconnect();
               }
             })
           } else if (this.state === ConnectionState.Disconnecting) {
@@ -2217,10 +2053,10 @@ struct SessionPage {
               secondary: '返回',
               icon: $r('app.media.ic_remote_desktop'),
               onPrimary: () => {
-                this.retry();
+                this.shell?.retry();
               },
               onSecondary: () => {
-                this.disconnect();
+                this.shell?.disconnect();
               }
             })
           } else if (this.state === ConnectionState.Idle) {
@@ -2231,10 +2067,10 @@ struct SessionPage {
               secondary: '返回',
               icon: $r('app.media.ic_remote_desktop'),
               onPrimary: () => {
-                this.retry();
+                this.shell?.retry();
               },
               onSecondary: () => {
-                this.disconnect();
+                this.shell?.disconnect();
               }
             })
           }

@@ -17,22 +17,24 @@
 | 构建产物与 ABI、签名（材料不入库）、真机与模拟器流程、`uitest`/`hdc` 可靠用法、日志、**改动后必须跑的最小验证**、环境与 SDK 口径 | [`build-and-verify.md`](build-and-verify.md) |
 | 严格 ArkTS 规则、ArkUI 状态刷新坑、路由、主题/资源机制、沉浸材质（系统材质）API 与摆放机制 | [`arkts-conventions.md`](arkts-conventions.md) |
 | 界面设计语言：设计原则、设计 token、布局模式、组件契约、共享工具、协议差异的呈现约定 | [`ui-design.md`](ui-design.md) |
-| 会话窗口模型与连接状态机、窗口尺寸/全屏/可见性、自动隐藏主窗口、输入分流（鼠标/键盘/触屏/触控板）、远端光标同步、会话工具栏与状态遥测 | [`session-and-input.md`](session-and-input.md) |
-| 剪贴板（**手动触发**）与文件传输：线格式、原生/ArkTS 分工、实现坑 | [`clipboard.md`](clipboard.md) |
+| **两协议共享的会话 / 连接层**：连接模型多态、连接发起分发、会话后端契约、会话窗口外壳、共享输入内核、会话窗口 / 输入 / 工具栏 / 光标共享行为、通用层命名与边界约定 | [`session-layer.md`](session-layer.md) |
+| RDP 会话：连接错误分类、原生会话生命周期、不可见抑制、RDP 输入落地（RDPEI / 高刷 / 直达缩放 / 锁键）、工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
+| 剪贴板（**手动触发**）与文件传输：线格式、原生/ArkTS 分工、实现坑 | [`rdp-clipboard.md`](rdp-clipboard.md) |
 | 存储分工、密码（ASSET / 系统保险箱）、设置模型（全局默认 + 单连接覆盖）、导入/导出、**设置生效时机** | [`settings-and-storage.md`](settings-and-storage.md) |
-| 三方库的源码构建与补丁体系、无版本号 SONAME、产物为何不入库、关键编译选项、音频（原生 sink + 交接环 / ArkTS 渲染器）、**设备能力探测（Capability 模式）**、Vulkan 面 | [`native-libraries.md`](native-libraries.md) |
-| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、呈现能力判定、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`gfx-engine.md`](gfx-engine.md) |
-| 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个后端、脏区上传、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**、swapchain 重建 | [`present-pipeline.md`](present-pipeline.md) |
+| 原生库构建体系：产物为何不入库、单一构建入口、依赖布局与自检、**补丁体系**、OpenSSL CMake、无版本号 SONAME | [`native-build.md`](native-build.md) |
+| RDP 原生：FreeRDP 补丁内容与编译选项、音频（原生 sink + 交接环 / ArkTS 渲染器）、**设备能力探测（Capability 模式）** | [`rdp-native.md`](rdp-native.md) |
+| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、呈现能力判定、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
+| 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个后端、脏区上传、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**、swapchain 重建 | [`rdp-present.md`](rdp-present.md) |
 | Moonlight 前端：协议建模、存储布局、连接列表 / 编辑页 / 应用管理页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
 | Moonlight 原生：客户端库构建与共享库链接、视频解码与上屏、编解码协商、桥接与串流会话、控制/配对层协议事实 | [`moonlight-native.md`](moonlight-native.md) |
 
 **跨主题、只有一个家的事实**（别在别处重写）：
 
-- **硬件加速开关只选上屏后端，解码始终是 gdi** → [`present-pipeline.md`](present-pipeline.md) §1（设置意义见 [`settings-and-storage.md`](settings-and-storage.md)）。
-- **自研 GPU 解码/合成引擎不采用** → [`gfx-engine.md`](gfx-engine.md) 的「不采用的方向」。
+- **硬件加速开关只选上屏后端，解码始终是 gdi** → [`rdp-present.md`](rdp-present.md) §1（设置意义见 [`settings-and-storage.md`](settings-and-storage.md)）。
+- **自研 GPU 解码/合成引擎不采用** → [`rdp-gfx.md`](rdp-gfx.md) 的「不采用的方向」。
 - **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
-- **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`native-libraries.md`](native-libraries.md) 的能力探测。
-- **剪贴板只手动同步、不做自动监听** → [`clipboard.md`](clipboard.md)。
+- **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`rdp-native.md`](rdp-native.md) 的能力探测。
+- **剪贴板只手动同步、不做自动监听** → [`rdp-clipboard.md`](rdp-clipboard.md)。
 
 ## 阅读顺序
 
@@ -42,12 +44,14 @@
 | 了解整体结构 / 线程模型 | [`architecture.md`](architecture.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改界面外观 / 抽共享 UI 组件 | [`ui-design.md`](ui-design.md) |
-| 改会话窗口 / 输入 / 工具栏 / 遥测 / 光标 | [`session-and-input.md`](session-and-input.md) |
-| 改剪贴板 / 文件传输 | [`clipboard.md`](clipboard.md) |
+| 改两协议通用层（连接模型 / 后端 / 会话外壳 / 输入内核 / 会话窗口行为 / 工具栏 / 光标） | [`session-layer.md`](session-layer.md) |
+| 改 RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
+| 改剪贴板 / 文件传输 | [`rdp-clipboard.md`](rdp-clipboard.md) |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
-| 改原生库（FreeRDP / OpenSSL / 音频） | [`native-libraries.md`](native-libraries.md) |
-| 改 GFX / 解码 / 回放 | [`gfx-engine.md`](gfx-engine.md)（**CPU 链路先读 §7**） |
-| 改上屏（present）/ 超分 | [`present-pipeline.md`](present-pipeline.md) |
+| 改原生库构建 / 补丁体系（FreeRDP / OpenSSL / zlib / moonlight） | [`native-build.md`](native-build.md) |
+| 改 RDP 原生（补丁内容 / 音频 / 能力） | [`rdp-native.md`](rdp-native.md) |
+| 改 GFX / 解码 / 回放 | [`rdp-gfx.md`](rdp-gfx.md)（**CPU 链路先读 §7**） |
+| 改上屏（present）/ 超分 | [`rdp-present.md`](rdp-present.md) |
 | 改 Moonlight 前端（列表 / 编辑页 / 设置分栏 / 图标） | [`moonlight-connection.md`](moonlight-connection.md) |
 | 改 Moonlight 原生（客户端库 / 解码 / 协商 / 上屏 / 配对原语） | [`moonlight-native.md`](moonlight-native.md) |
 
@@ -58,4 +62,4 @@
 - **优先给量级、比例与判据**，而非不可复现的逐帧数字；数字只在作为阈值或门槛时保留。
 - **注明适用面**（如「仅真机」「模拟器不参与」「仅在已打补丁的构建上」），避免后人误用。
 - **改了被代码引用的章节要同步引用**：代码/脚本注释里有 `doc_agent/<file>.md §N` 形式的锚点
-  （多为 `gfx-engine.md §7.x`、`architecture.md §4.x`、`native-libraries.md §3`），移动或重排章节时一并更新。
+  （多为 `rdp-gfx.md §7.x`、`architecture.md §4.x`、`rdp-native.md §3`），移动或重排章节时一并更新。

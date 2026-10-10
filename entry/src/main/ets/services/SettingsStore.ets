@@ -3,10 +3,12 @@ import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  AdvancedProfile, DisplayProfile, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO,
-  ML_RES_FOLLOW_SCREEN, MoonlightProfile, PROTOCOL_RDP, SavedConnection,
-  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
+  AdvancedProfile, DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
 } from '../model/RdpModels';
+import {
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, MoonlightConnection, MoonlightProfile,
+  PROTOCOL_RDP, RdpConnection
+} from '../model/Connections';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
 import { defaultDisplay } from '../utils/DisplayUtil';
@@ -402,7 +404,7 @@ export class SettingsStore {
   }
 
   // 设备做不了时强制关（或换到另一后端）：绝不协商出一个无法上采样回去的更低会话分辨率。
-  static resolveSr(conn: SavedConnection): SrProfile {
+  static resolveSr(conn: RdpConnection): SrProfile {
     const settings: AppSettings = SettingsStore.load();
     const profile: SrProfile = new SrProfile();
     if (conn.useGlobalSr) {
@@ -465,7 +467,7 @@ export class SettingsStore {
   }
 
   // 覆盖模式下分辨率与缩放各有「自动」；旧记录没有这两个标志位，停留在其存储值上。
-  static resolveDisplay(conn: SavedConnection): DisplayProfile {
+  static resolveDisplay(conn: RdpConnection): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
     const sr: SrProfile = SettingsStore.resolveSr(conn);
     const global: DisplayProfile = SettingsStore.profileFor(settings, sr);
@@ -501,7 +503,7 @@ export class SettingsStore {
     return SettingsStore.advancedFor(SettingsStore.load());
   }
 
-  static resolveAdvanced(conn: SavedConnection): AdvancedProfile {
+  static resolveAdvanced(conn: RdpConnection): AdvancedProfile {
     if (conn.useGlobalAdvanced) {
       return SettingsStore.globalAdvancedProfile();
     }
@@ -523,7 +525,7 @@ export class SettingsStore {
     return profile;
   }
 
-  static resolveStream(conn: SavedConnection): MoonlightProfile {
+  static resolveStream(conn: MoonlightConnection): MoonlightProfile {
     if (conn.useGlobalStream) {
       return SettingsStore.globalStreamProfile();
     }

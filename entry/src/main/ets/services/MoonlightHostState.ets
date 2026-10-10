@@ -1,6 +1,6 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { SavedConnection } from '../model/RdpModels';
+import { MoonlightConnection, SavedConnection } from '../model/Connections';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ServerInfoResult } from '../moonlight/MoonlightModels';
 
@@ -85,7 +85,7 @@ export class MoonlightHostState {
   }
 
   static refresh(conn: SavedConnection, filesDir: string): void {
-    if (!conn.isMoonlight() || filesDir.length === 0) {
+    if (!(conn instanceof MoonlightConnection) || filesDir.length === 0) {
       return;
     }
     if (MoonlightHostState.probing.get(conn.id) === true) {

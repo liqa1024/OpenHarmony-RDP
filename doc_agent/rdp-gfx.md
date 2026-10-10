@@ -2,7 +2,7 @@
 
 本文件是**改 GFX 相关代码前必读**的口径文档。范围：GFX 通道的压缩与命令模型、会话侧的接线约束、
 dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构、量测纪律与并行形态（§7）。
-上屏这一段见 [`present-pipeline.md`](present-pipeline.md)。
+上屏这一段见 [`rdp-present.md`](rdp-present.md)。
 
 > **不采用**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与其
 > 能力判定）和 H.264/AVC 支持都不要复活（见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
@@ -48,7 +48,7 @@ dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构�
 - **渐进分块的顺序**：同一条消息内的分块**互不重叠、可任意顺序**；**跨消息的同一分块必须按序**
   （先粗后细在持久状态上累积）；与其他命令之间仍是全局按序。
 - 上述码流全部由 FreeRDP 自带实现处理（`WITH_SIMD` 等构建开关与补丁决定其内部实现，见
-  [`native-libraries.md`](native-libraries.md)）。本工程不自研解码/合成。
+  [`rdp-native.md`](rdp-native.md)）。本工程不自研解码/合成。
 
 ### 0.4 从表面到屏幕（合成 / 脏区 / 上屏）
 
@@ -80,14 +80,14 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
   `ChannelConnected`/`ChannelDisconnected`），否则 `gdi_graphics_pipeline_init` 不执行、画面全黑。
 - 画面由 gdi 出、经呈现器上屏；遥测四相与账目口径见本文件 §7.1。
 - 采集点在 `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册（见
-  [`native-libraries.md`](native-libraries.md) §3）。
+  [`rdp-native.md`](rdp-native.md) §3）。
 - 帧流水线（解压/解析/解码/合成/上屏/回执）跑在**会话自己的 GFX 工作线程**上（理由与线程模型见
   [`architecture.md`](architecture.md) §4）。接线（sink 钩子、`HmrdpGfxReplayRecv`、QoS）见
-  [`native-libraries.md`](native-libraries.md) §3。
+  [`rdp-native.md`](rdp-native.md) §3。
 
 ## 2. 上屏（present）
 
-桌面帧的上屏走 [`present-pipeline.md`](present-pipeline.md)（一套实现、Vulkan/GLES 两个后端，「硬件加速」
+桌面帧的上屏走 [`rdp-present.md`](rdp-present.md)（一套实现、Vulkan/GLES 两个后端，「硬件加速」
 开关只选上屏后端；判据见 §4）。本文件只涉及帧的**产出与合成**。
 
 ## 3. 不采用的方向（**不要在新代码里重新引入**）
@@ -98,14 +98,14 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - **H.264/AVC 支持不采用**：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
   且命中硬解也无明显收益 ⇒ 服务端改用其他码流。**不要引入媒体库依赖**。
 
-解码始终是 FreeRDP 的 gdi 软解（上屏后端的选择见 [`present-pipeline.md`](present-pipeline.md) §1）。
+解码始终是 FreeRDP 的 gdi 软解（上屏后端的选择见 [`rdp-present.md`](rdp-present.md) §1）。
 
 ## 4. 呈现能力判定
 
 - 呈现能力判定只有 `presenterSupported` 一个；不存在分开的"解码能力 / 呈现能力"两套判定。模拟器一律
   回落 GLES（与"Vulkan 只在真机验证"一致）；要让模拟器用 Vulkan，只需改 `FillPresenterVerdict()` 里
   那一处 ABI 分支。
-- Vulkan 面与判定口径见 [`native-libraries.md`](native-libraries.md) §6。
+- Vulkan 面与判定口径见 [`rdp-native.md`](rdp-native.md) §6。
 
 ## 5. 量测纪律（回放）
 
@@ -170,7 +170,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   脏矩形是 region16 合并出来的**粗超集**——同一帧可能只有一条跨越整个屏幕的 rect——所以"参考覆盖了、
   这边没覆盖"在**像素完全一致**的帧上也会大量出现。判定/定位只能靠**像素值**。
 - **采集内容与格式**：单文件存的是**服务端在 GFX 通道上、ZGFX 之前**的原始字节，采集点在
-  `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册（见 [`native-libraries.md`](native-libraries.md) §3）。
+  `zgfx_decompress` 之前，由 FreeRDP 补丁以运行期回调注册（见 [`rdp-native.md`](rdp-native.md) §3）。
   两种布局：
   - **v1（当前）**：文件头 = 8 字节 magic，之后每条 = `u32 长度` + `u64 到达时刻(µs)` + 原始字节。
     到达时刻由 app 侧在回调里取（宿主单调时钟），**不需要改 FreeRDP 补丁**。
@@ -184,7 +184,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   载荷优先用 FreeRDP 自带编码器生成；边界要覆盖**尺寸非 64 倍数**、纯色/渐变/UI 文本/alpha。
   ClearCodec 只有解码（运行时必须支持）没有编码器 ⇒ 只能用真实捕获；`CAPROGRESSIVE_V2` 双方都未实现
   ⇒ 对齐"检测到即不支持"。
-- 采集与回放需要**打过补丁并重编的 FreeRDP**（见 [`native-libraries.md`](native-libraries.md) §2/§3）。
+- 采集与回放需要**打过补丁并重编的 FreeRDP**（见 [`native-build.md`](native-build.md) §2/§3）。
 
 ## 7. CPU（gdi）链路：判据、门禁与并行形态
 
@@ -213,11 +213,11 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   | `run … threads=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、**整轮进程 CPU 时间**与本轮拿到的 SoC 频率档（`cpu=` 只在同一档下可比） |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
-  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present-pipeline.md`](present-pipeline.md) §7） |
+  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`rdp-present.md`](rdp-present.md) §7） |
   | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6/§7.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
-  **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`present-pipeline.md`](present-pipeline.md) §4）。
+  **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`rdp-present.md`](rdp-present.md) §4）。
 - **`presentWait` = 等显示端**：`present` 那一段里 `vkAcquireNextImageKHR`/fence（GLES 是
   `eglSwapBuffers`）的阻塞。`present` 只记录制/上传/提交，两者相加才是 present 的整段墙钟。
 - 两者都是**阻塞**不是处理 ⇒ 单列、都不进 `本机`；**帧的整段墙钟 = `本机` + `sync` + `presentWait`**
@@ -246,7 +246,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   - 参考模式**不是性能模式**：每帧对整个桌面做一次哈希（`hashMs=`），这段时间落在 `EndFrame` 里、会算进
     `compose` ⇒ 读性能数字请用 `参考:关` 那一轮。
 - **`bad=0` 覆盖不到的顺序约束**：上屏侧的帧序/等待（零拷贝单缓冲）不属于像素内容，
-  判定只能靠机制 + 计数器（见 [`present-pipeline.md`](present-pipeline.md) §4）。
+  判定只能靠机制 + 计数器（见 [`rdp-present.md`](rdp-present.md) §4）。
 
 ### 7.3 并行形态（固定）
 

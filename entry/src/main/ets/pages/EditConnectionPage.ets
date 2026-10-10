@@ -2,13 +2,14 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { AdvancedProfile, DisplayProfile, EditConnectionParams,
+import { AdvancedProfile, DisplayProfile, RdpConnectOptions,
+  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile } from '../model/RdpModels';
+import { ConnectOrigin, EditConnectionParams,
   ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
   ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
-  MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnectOptions,
-  RdpConnectOrigin, SavedConnection, SR_BACKEND_FSR, SR_BACKEND_XENGINE,
-  SrProfile } from '../model/RdpModels';
+  MoonlightConnection, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
+  RdpConnection, SavedConnection } from '../model/Connections';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { PairResult } from '../moonlight/MoonlightModels';
@@ -99,8 +100,8 @@ struct EditConnectionPage {
   private returned: boolean = false;
 
   private sessionListener: SessionStateListener = (connectionId: string,
-    state: ConnectionState, message: string, origin: RdpConnectOrigin): void => {
-    if (origin !== RdpConnectOrigin.Editor || connectionId !== this.activeConnectionId) {
+    state: ConnectionState, message: string, origin: ConnectOrigin): void => {
+    if (origin !== ConnectOrigin.Editor || connectionId !== this.activeConnectionId) {
       return;
     }
     if (state === ConnectionState.Connecting) {
@@ -153,41 +154,44 @@ struct EditConnectionPage {
       this.name = conn.name;
       this.host = conn.host;
       this.originalMoonlightHost = conn.host;
-      this.originalMoonlightHostId = conn.mlHostId;
       this.port = conn.port.toString();
-      this.username = conn.username;
-      this.domain = conn.domain;
-      this.useGlobalDisplay = conn.useGlobalDisplay;
-      if (!conn.useGlobalDisplay) {
-        this.displayResolutionAuto = conn.resolutionAuto;
-        this.displayScaleAuto = conn.scaleAuto;
+      if (conn instanceof RdpConnection) {
+        this.username = conn.username;
+        this.domain = conn.domain;
+        this.useGlobalDisplay = conn.useGlobalDisplay;
+        if (!conn.useGlobalDisplay) {
+          this.displayResolutionAuto = conn.resolutionAuto;
+          this.displayScaleAuto = conn.scaleAuto;
+        }
+        if (conn.width > 0 && conn.height > 0) {
+          this.desktopWidthText = conn.width.toString();
+          this.desktopHeightText = conn.height.toString();
+        }
+        if (conn.scalePercent > 0) {
+          this.scaleText = conn.scalePercent.toString();
+        }
+        this.enableAudio = this.audioSupported && conn.enableAudio;
+        this.ignoreCertificate = conn.ignoreCertificate;
+        this.useGlobalAdvanced = conn.useGlobalAdvanced;
+        this.useGlobalSr = conn.useGlobalSr;
+        this.srEnabled = conn.srEnabled;
+        this.srRatioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
+        this.srBackend = conn.srBackend;
+      } else if (conn instanceof MoonlightConnection) {
+        this.originalMoonlightHostId = conn.mlHostId;
+        this.mlDefaultAppId = conn.mlDefaultAppId;
+        this.mlDefaultAppName = conn.mlDefaultAppName;
+        this.mlResMode = conn.mlResMode;
+        if (conn.mlWidth > 0 && conn.mlHeight > 0) {
+          this.mlWidthText = conn.mlWidth.toString();
+          this.mlHeightText = conn.mlHeight.toString();
+        }
+        this.mlFps = conn.mlFps;
+        this.mlBitrateText = conn.mlBitrateKbps.toString();
+        this.mlCodec = conn.mlCodec;
+        this.useGlobalStream = conn.useGlobalStream;
       }
-      if (conn.width > 0 && conn.height > 0) {
-        this.desktopWidthText = conn.width.toString();
-        this.desktopHeightText = conn.height.toString();
-      }
-      if (conn.scalePercent > 0) {
-        this.scaleText = conn.scalePercent.toString();
-      }
-      this.enableAudio = this.audioSupported && conn.enableAudio;
-      this.ignoreCertificate = conn.ignoreCertificate;
-      this.useGlobalAdvanced = conn.useGlobalAdvanced;
-      this.useGlobalSr = conn.useGlobalSr;
-      this.srEnabled = conn.srEnabled;
-      this.srRatioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
-      this.srBackend = conn.srBackend;
-      this.mlDefaultAppId = conn.mlDefaultAppId;
-      this.mlDefaultAppName = conn.mlDefaultAppName;
-      this.mlResMode = conn.mlResMode;
-      if (conn.mlWidth > 0 && conn.mlHeight > 0) {
-        this.mlWidthText = conn.mlWidth.toString();
-        this.mlHeightText = conn.mlHeight.toString();
-      }
-      this.mlFps = conn.mlFps;
-      this.mlBitrateText = conn.mlBitrateKbps.toString();
-      this.mlCodec = conn.mlCodec;
       this.clampMlCodec();
-      this.useGlobalStream = conn.useGlobalStream;
     }
     CredentialStore.loadPassword(id)
       .then((password: string) => {
@@ -390,7 +394,7 @@ struct EditConnectionPage {
     }
     const id: string = this.connectionId.length > 0
       ? this.connectionId : util.generateRandomUUID(true);
-    const conn: SavedConnection = SavedConnection.fromOptions(id, options);
+    const conn: RdpConnection = RdpConnection.fromOptions(id, options);
     conn.useGlobalDisplay = this.useGlobalDisplay;
     conn.resolutionAuto = !this.useGlobalDisplay && this.displayResolutionAuto;
     conn.scaleAuto = !this.useGlobalDisplay && this.displayScaleAuto;
@@ -412,7 +416,7 @@ struct EditConnectionPage {
     const request: PendingConnection = new PendingConnection();
     request.options = attempt;
     request.connectionId = id;
-    request.origin = RdpConnectOrigin.Editor;
+    request.origin = ConnectOrigin.Editor;
     request.protocol = PROTOCOL_RDP;
     request.savedConnection = conn;
     request.onConnected = () => {
@@ -445,7 +449,7 @@ struct EditConnectionPage {
       && this.normalizeHost(target) !== this.normalizeHost(this.originalMoonlightHost);
     const id: string = this.connectionId.length > 0
       ? this.connectionId : util.generateRandomUUID(true);
-    const conn: SavedConnection = new SavedConnection();
+    const conn: MoonlightConnection = new MoonlightConnection();
     conn.id = id;
     conn.protocol = PROTOCOL_MOONLIGHT;
     conn.host = target;
@@ -475,7 +479,7 @@ struct EditConnectionPage {
     this.pairMoonlight(conn);
   }
 
-  private pairMoonlight(conn: SavedConnection): void {
+  private pairMoonlight(conn: MoonlightConnection): void {
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       this.errorMessage = '无法发起配对';
@@ -571,7 +575,8 @@ struct EditConnectionPage {
     const all: SavedConnection[] = ConnectionStore.list();
     for (let i = 0; i < all.length; i++) {
       const conn: SavedConnection = all[i];
-      if (conn.isMoonlight() && conn.id !== this.connectionId && conn.mlHostId.length > 0) {
+      if (conn instanceof MoonlightConnection && conn.id !== this.connectionId
+        && conn.mlHostId.length > 0) {
         policy.knownIds.push(conn.mlHostId);
       }
     }
@@ -583,7 +588,7 @@ struct EditConnectionPage {
     const all: SavedConnection[] = ConnectionStore.list();
     for (let i = 0; i < all.length; i++) {
       const conn: SavedConnection = all[i];
-      if (!conn.isMoonlight() || conn.id === this.connectionId) {
+      if (!(conn instanceof MoonlightConnection) || conn.id === this.connectionId) {
         continue;
       }
       if (this.normalizeHost(conn.host) === target) {
@@ -598,7 +603,7 @@ struct EditConnectionPage {
     const all: SavedConnection[] = ConnectionStore.list();
     for (let i = 0; i < all.length; i++) {
       const conn: SavedConnection = all[i];
-      if (conn.isMoonlight()) {
+      if (conn instanceof MoonlightConnection) {
         result.push(this.normalizeHost(conn.host));
       }
     }

@@ -1,22 +1,21 @@
-import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
-import { PendingConnection, SessionRequests } from '../model/RdpModels';
+import { common } from '@kit.AbilityKit';
+import { PendingConnection, SessionRequests } from '../model/Connections';
 import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
-import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
+import { SessionBackend } from '../services/SessionBackend';
 import { ML_HOST_FEATURE_TOUCH, ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { SessionInput } from '../services/SessionInput';
-import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
+import { RemoteCursor } from '../services/RemoteCursor';
+import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
+import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
-import { WindowController } from '../services/WindowController';
-import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
-  PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, SettingsStore } from '../services/SettingsStore';
+  PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, SettingsStore } from '../services/SettingsStore';
 import { lengthToNumber } from '../utils/UiUtil';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { StatusCard } from '../components/StatusCard';
@@ -34,55 +33,14 @@ const CONNECT_OVERLAY_DELAY_MS: number = 1000;
 // The pinch emits frames far faster than the UI needs; the debug overlay is sampled.
 const PINCH_PROBE_PUBLISH_MS: number = 50;
 
-class MlSurfaceController extends XComponentController {
-  private createdCb: (surfaceId: string, width: number, height: number) => void =
-    (surfaceId: string, width: number, height: number) => {};
-  private changedCb: (surfaceId: string, width: number, height: number) => void =
-    (surfaceId: string, width: number, height: number) => {};
-  private destroyedCb: (surfaceId: string) => void = (surfaceId: string) => {};
-
-  setCallbacks(created: (surfaceId: string, width: number, height: number) => void,
-    changed: (surfaceId: string, width: number, height: number) => void,
-    destroyed: (surfaceId: string) => void): void {
-    this.createdCb = created;
-    this.changedCb = changed;
-    this.destroyedCb = destroyed;
-  }
-
-  onSurfaceCreated(surfaceId: string): void {
-    const rect: SurfaceRect = this.getXComponentSurfaceRect();
-    this.createdCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
-  }
-
-  onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
-    this.changedCb(surfaceId, rect.surfaceWidth, rect.surfaceHeight);
-  }
-
-  onSurfaceDestroyed(surfaceId: string): void {
-    this.destroyedCb(surfaceId);
-  }
-}
-
 @Entry({ useSharedStorage: true })
 @Component
 struct MoonlightSessionPage {
   @LocalStorageLink('sessionKey') sessionKey: string = '';
-  private controller: MlSurfaceController = new MlSurfaceController();
-  private backend: MoonlightSessionBackend | undefined = undefined;
-  private input: SessionInput | undefined = undefined;
+  private controller: SessionSurfaceController = new SessionSurfaceController();
+  private shell: SessionShellController | undefined = undefined;
   private connectionId: string = '';
   private started: boolean = false;
-  private closing: boolean = false;
-  private shortcutPassthrough: boolean = false;
-  private windowFocused: boolean = true;
-  private interceptActive: boolean = false;
-  private mlPinchMode: number = PINCH_MODE_WHEEL;
-  private developerMode: boolean = false;
-  private probeTimer: number = -1;
-  private probeLiveActive: boolean = false;
-  private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
-  // Kept so a retry can re-bind it: stopping a session releases the native
-  // window, but this surface stays alive.
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -95,39 +53,19 @@ struct MoonlightSessionPage {
   // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
   // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
-  private cursor: RemoteCursor = new RemoteCursor();
   private hostLabel: string = '';
   private targetLabel: string = '';
-  // Fixed-dark toolbar material; a no-op without the material capability, which
-  // keeps the flat bar colour.
+  private mlPinchMode: number = PINCH_MODE_WHEEL;
+  private developerMode: boolean = false;
+  private probeTimer: number = -1;
+  private probeLiveActive: boolean = false;
+  private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
   private toolbarMaterial: AttributeModifier<RowAttribute> =
     new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
-  private sessionWindow: window.Window | undefined = undefined;
   private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 700;
   private hideDelay: number = 250;
-  private toolbarAutoHideArmed: boolean = true;
-  private autoHideHost: ToolbarAutoHideHost = {
-    isArmed: () => this.toolbarAutoHideArmed,
-    isFullscreen: () => this.isFullscreen,
-    isConnected: () => this.state === ConnectionState.Connected,
-    isPinned: () => false,
-    hoverDelay: () => this.hoverDelay,
-    hideDelay: () => this.hideDelay,
-    show: () => this.showToolbar,
-    setShow: (show: boolean) => {
-      this.showToolbar = show;
-    },
-    revealFill: () => this.revealHintFill,
-    animateReveal: (fill: number, durationMs: number, curve: Curve) => {
-      this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
-        this.revealHintFill = fill;
-      });
-    }
-  };
-  private toolbarAutoHide: ToolbarAutoHide = new ToolbarAutoHide(this.autoHideHost);
-  private overlayTimer: number = -1;
 
   @State state: ConnectionState = ConnectionState.Connecting;
   @State statusText: string = '正在连接…';
@@ -155,138 +93,151 @@ struct MoonlightSessionPage {
         this.streamHeight = request.stream.height;
       }
     }
-    const backend: SessionBackend | undefined = SessionBackendRegistry.find(this.sessionKey);
-    if (backend instanceof MoonlightSessionBackend) {
-      this.backend = backend;
-    }
-    const settings = SettingsStore.load();
+    const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
-    this.cursor.setEnabled(this.cursorMode === ML_CURSOR_HIDE_HOST);
-    this.shortcutPassthrough = settings.mlShortcutPassthrough;
     this.developerMode = settings.developerMode;
-    if (this.backend !== undefined) {
-      this.backend.setCursorListener((update: RemoteCursorUpdate): void => {
-        this.cursor.applyUpdate(update);
-      });
-      this.backend.setKeyInterceptListener((keyCode: number, down: boolean): void => {
-        this.input?.handleInterceptedKey(keyCode, down);
-      });
-      const sink: MoonlightInputSink = new MoonlightInputSink(this.backend);
-      sink.setReferenceSize(this.streamWidth, this.streamHeight);
-      const input: SessionInput = new SessionInput(sink);
-      input.setWinKeySubstitute(settings.mlWinKeySubstitute);
-      input.setPointerSpace(this.streamWidth, this.streamHeight);
-      input.setPointMapper((x: number, y: number): number[] => this.mapPoint(x, y));
-      input.setTouchpadScrollSpeed(settings.mlTouchpadScrollSpeed);
-      input.setTouchpadMiddleDoubleTap(settings.mlTouchpadMiddleDoubleTap);
-      input.setPinchZoomSpeed(settings.mlPinchZoomSpeed);
-      input.setPinchTouchDistance(settings.mlPinchTouchDistance);
-      input.setPinchTouchAngle(settings.mlPinchTouchAngle);
-      input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
-        this.cursor.setPinchOverride(active, zoomIn);
-      });
-      if (this.developerMode) {
-        input.setPinchProbeHandler((active: boolean, p1x: number, p1y: number, p2x: number,
-          p2y: number): void => {
-          this.onPinchProbe(active, p1x, p1y, p2x, p2y);
+
+    const host: SessionShellHost = {
+      ui: (): UIContext => this.getUIContext(),
+      setState: (state: ConnectionState): void => {
+        this.state = state;
+      },
+      setStatusText: (text: string): void => {
+        this.statusText = text;
+      },
+      setOverlayVisible: (visible: boolean): void => {
+        this.connectOverlayVisible = visible;
+      },
+      setToolbarVisible: (visible: boolean): void => {
+        this.showToolbar = visible;
+      },
+      setFullscreen: (fullscreen: boolean): void => {
+        this.isFullscreen = fullscreen;
+      },
+      setRevealFill: (fill: number): void => {
+        this.revealHintFill = fill;
+      },
+      isFullscreen: (): boolean => this.isFullscreen,
+      isToolbarVisible: (): boolean => this.showToolbar,
+      revealFill: (): number => this.revealHintFill,
+      toolbarHeight: (): number => this.toolbarHeight,
+      hoverDelay: (): number => this.hoverDelay,
+      hideDelay: (): number => this.hideDelay,
+      animateReveal: (fill: number, durationMs: number, curve: Curve): void => {
+        this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
+          this.revealHintFill = fill;
         });
       }
-      this.input = input;
-      this.mlPinchMode = settings.mlPinchMode;
-    }
-    this.loadSessionWindow();
-    this.controller.setCallbacks(
-      (surfaceId: string, width: number, height: number): void => {
+    };
+    const hooks: SessionShellHooks = {
+      overlayDelayMs: (): number => CONNECT_OVERLAY_DELAY_MS,
+      isPinned: (): boolean => false,
+      makeInput: (backend: SessionBackend | undefined, load: AppSettings): SessionInput | undefined =>
+        this.makeInput(backend, load),
+      configureCursor: (cursor: RemoteCursor, load: AppSettings): void => {
+        cursor.setEnabled(load.mlCursorMode === ML_CURSOR_HIDE_HOST);
+      },
+      onStateChanged: (state: ConnectionState, message: string): void => {
+        this.onStateChanged(state, message);
+      },
+      onSignal: (signal: SessionSignal): void => {
+      },
+      onSurfaceCreated: (surfaceId: string, width: number, height: number): void => {
         this.onSurfaceCreated(surfaceId, width, height);
       },
-      (surfaceId: string, width: number, height: number): void => {
+      onSurfaceChanged: (width: number, height: number): void => {
         // The surface id is stable across resizes, so the bound OHNativeWindow
         // stays valid; only the size is kept for a retry re-bind.
         this.surfaceWidth = width;
         this.surfaceHeight = height;
         hilog.info(DOMAIN, TAG, 'surface changed %{public}dx%{public}d', width, height);
       },
-      (surfaceId: string): void => {
-        this.backend?.clearSurface();
-      });
-    SessionManager.attachWindow(this.sessionKey,
-      (state: ConnectionState, message: string): void => {
-        this.applyState(state, message);
+      onSurfaceDestroyed: (): void => {
+        this.backend()?.clearSurface();
       },
-      (signal: SessionSignal): void => {
-        this.onSignal(signal);
+      onWindowVisible: (visible: boolean): void => {
       },
-      () => {
-        this.terminateWindow();
-      });
-    this.updateConnectOverlay();
+      consumesAxis: (event: AxisEvent): boolean => false,
+      onReleaseInputs: (): void => {
+      },
+      onBeforeRetry: (): void => {
+        const backend: MoonlightSessionBackend | undefined = this.backend();
+        if (backend !== undefined && this.surfaceId.length > 0) {
+          backend.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
+        }
+      },
+      onDisconnectFallback: (): void => {
+      },
+      onRelease: (): void => {
+        this.onRelease();
+      }
+    };
+    const shell: SessionShellController =
+      new SessionShellController(this.sessionKey, host, hooks, this.controller);
+    this.shell = shell;
+    shell.attach(settings.mlShortcutPassthrough);
   }
 
   aboutToDisappear(): void {
     // The system cursor is process-wide: never leave it hidden for the next page.
-    this.setLocalCursorHidden(false);
-    this.input?.releaseAll();
-    this.input?.dispose();
-    if (this.interceptActive) {
-      this.backend?.setShortcutPassthrough(false);
-      this.interceptActive = false;
-      this.input?.setInterceptActive(false);
-    }
-    this.backend?.clearKeyInterceptListener();
-    this.backend?.clearCursorListener();
-    this.cursor.setWindow(undefined);
-    this.cursor.reset();
-    this.toolbarAutoHideArmed = false;
-    this.toolbarAutoHide.dispose();
-    if (this.overlayTimer !== -1) {
-      clearTimeout(this.overlayTimer);
-      this.overlayTimer = -1;
-    }
-    if (this.probeTimer !== -1) {
-      clearTimeout(this.probeTimer);
-      this.probeTimer = -1;
-    }
+    this.shell?.release();
   }
 
-  private onSurfaceCreated(surfaceId: string, width: number, height: number): void {
-    this.surfaceId = surfaceId;
-    this.surfaceWidth = width;
-    this.surfaceHeight = height;
-    const backend: MoonlightSessionBackend | undefined = this.backend;
-    if (backend === undefined || this.started) {
-      return;
-    }
-    if (!backend.bindSurface(surfaceId, width, height)) {
-      hilog.error(DOMAIN, TAG, 'bind surface failed');
-      return;
-    }
-    this.started = true;
-    SessionManager.beginStream(this.connectionId);
+  private backend(): MoonlightSessionBackend | undefined {
+    const backend: SessionBackend | undefined = this.shell?.sessionBackend();
+    return backend instanceof MoonlightSessionBackend ? backend : undefined;
   }
 
-  private onSignal(signal: SessionSignal): void {
+  private makeInput(backend: SessionBackend | undefined, settings: AppSettings): SessionInput | undefined {
+    if (!(backend instanceof MoonlightSessionBackend)) {
+      return undefined;
+    }
+    backend.setCursorListener((update): void => {
+      this.shell?.remoteCursor().applyUpdate(update);
+    });
+    backend.setKeyInterceptListener((keyCode: number, down: boolean): void => {
+      const input: SessionInput | undefined = this.shell?.sessionInput();
+      input?.handleInterceptedKey(keyCode, down);
+    });
+    const sink: MoonlightInputSink = new MoonlightInputSink(backend);
+    sink.setReferenceSize(this.streamWidth, this.streamHeight);
+    const input: SessionInput = new SessionInput(sink);
+    input.setWinKeySubstitute(settings.mlWinKeySubstitute);
+    input.setPointerSpace(this.streamWidth, this.streamHeight);
+    input.setPointMapper((x: number, y: number): number[] => this.mapPoint(x, y));
+    input.setTouchpadScrollSpeed(settings.mlTouchpadScrollSpeed);
+    input.setTouchpadMiddleDoubleTap(settings.mlTouchpadMiddleDoubleTap);
+    input.setPinchZoomSpeed(settings.mlPinchZoomSpeed);
+    input.setPinchTouchDistance(settings.mlPinchTouchDistance);
+    input.setPinchTouchAngle(settings.mlPinchTouchAngle);
+    input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
+      this.shell?.remoteCursor().setPinchOverride(active, zoomIn);
+    });
+    if (this.developerMode) {
+      input.setPinchProbeHandler((active: boolean, p1x: number, p1y: number, p2x: number,
+        p2y: number): void => {
+        this.onPinchProbe(active, p1x, p1y, p2x, p2y);
+      });
+    }
+    this.mlPinchMode = settings.mlPinchMode;
+    return input;
   }
 
-  private applyState(state: ConnectionState, message: string): void {
-    this.state = state;
-    this.statusText = message;
-    this.showToolbar = state !== ConnectionState.Connected;
-    // Not streaming: the process-wide system cursor must come back.
-    if (state !== ConnectionState.Connected) {
-      this.setLocalCursorHidden(false);
-    }
+  private onStateChanged(state: ConnectionState, message: string): void {
     if (state === ConnectionState.Connected) {
-      const features: number = this.backend !== undefined ? this.backend.hostFeatureFlags() : 0;
+      const backend: MoonlightSessionBackend | undefined = this.backend();
+      const features: number = backend !== undefined ? backend.hostFeatureFlags() : 0;
       const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
       const nativeTouchpadSupported: boolean = (features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0;
-      this.input?.setTouchEnabled(touchSupported);
-      this.input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
+      const input: SessionInput | undefined = this.shell?.sessionInput();
+      input?.setTouchEnabled(touchSupported);
+      input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
+      return;
     }
-    this.updateConnectOverlay();
-    this.refreshToolbarAutoHide();
-    this.updateShortcutPassthrough();
+    // Not streaming: the process-wide system cursor must come back.
+    this.setLocalCursorHidden(false);
   }
 
   // Direct zoom is RDP-presenter only; touch-simulate needs host touch; native touchpad needs the
@@ -302,6 +253,34 @@ struct MoonlightSessionPage {
       return PINCH_MODE_WHEEL;
     }
     return this.mlPinchMode;
+  }
+
+  private onSurfaceCreated(surfaceId: string, width: number, height: number): void {
+    this.surfaceId = surfaceId;
+    this.surfaceWidth = width;
+    this.surfaceHeight = height;
+    const backend: MoonlightSessionBackend | undefined = this.backend();
+    if (backend === undefined || this.started) {
+      return;
+    }
+    if (!backend.bindSurface(surfaceId, width, height)) {
+      hilog.error(DOMAIN, TAG, 'bind surface failed');
+      return;
+    }
+    this.started = true;
+    SessionManager.beginStream(this.connectionId);
+  }
+
+  private onRelease(): void {
+    // Restore before the window goes away (setPointerVisible is process-wide).
+    this.setLocalCursorHidden(false);
+    const backend: MoonlightSessionBackend | undefined = this.backend();
+    backend?.clearKeyInterceptListener();
+    backend?.clearCursorListener();
+    if (this.probeTimer !== -1) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = -1;
+    }
   }
 
   private onPinchProbe(active: boolean, p1x: number, p1y: number, p2x: number, p2y: number): void {
@@ -331,104 +310,12 @@ struct MoonlightSessionPage {
     this.probeP2Y = this.probeLive[3];
   }
 
-  private updateShortcutPassthrough(): void {
-    const backend: MoonlightSessionBackend | undefined = this.backend;
-    if (backend === undefined) {
-      return;
-    }
-    const wanted: boolean = this.shortcutPassthrough
-      && this.state === ConnectionState.Connected
-      && this.windowFocused;
-    if (wanted === this.interceptActive) {
-      return;
-    }
-    if (wanted) {
-      // Keep the real registration result: a denied ACL permission leaves this false.
-      this.interceptActive = backend.setShortcutPassthrough(true);
-    } else {
-      backend.setShortcutPassthrough(false);
-      this.interceptActive = false;
-    }
-    this.input?.setInterceptActive(this.interceptActive);
-  }
-
-  private updateConnectOverlay(): void {
-    if (this.state === ConnectionState.Connecting) {
-      if (this.connectOverlayVisible || this.overlayTimer !== -1) {
-        return;
-      }
-      this.overlayTimer = setTimeout(() => {
-        this.overlayTimer = -1;
-        if (this.state === ConnectionState.Connecting) {
-          this.connectOverlayVisible = true;
-        }
-      }, CONNECT_OVERLAY_DELAY_MS);
-      return;
-    }
-    if (this.overlayTimer !== -1) {
-      clearTimeout(this.overlayTimer);
-      this.overlayTimer = -1;
-    }
-    this.connectOverlayVisible = false;
-  }
-
-  private loadSessionWindow(): void {
-    const context = this.getUIContext().getHostContext();
-    if (context === undefined) {
-      return;
-    }
-    WindowController.acquireWindow(context).then((win: window.Window | undefined) => {
-      if (win === undefined) {
-        return;
-      }
-      this.sessionWindow = win;
-      this.cursor.setWindow(win);
-      this.isFullscreen = WindowController.isFullscreen(win);
-      WindowController.watchStatusChange(win, (status: window.WindowStatusType) => {
-        this.isFullscreen = status === window.WindowStatusType.FULL_SCREEN;
-        this.refreshToolbarAutoHide();
-      });
-      // Focus drives shortcut-passthrough ownership: only the focused session may hold the process-global key interceptor.
-      WindowController.watchFocus(win, (focused: boolean) => {
-        this.windowFocused = focused;
-        if (!focused) {
-          this.input?.releaseAll();
-        }
-        this.updateShortcutPassthrough();
-      });
-    });
-  }
-
-  private minimizeWindow(): void {
-    const win: window.Window | undefined = this.sessionWindow;
-    if (win === undefined) {
-      return;
-    }
-    WindowController.minimize(win);
-  }
-
-  private toggleFullscreen(): void {
-    const win: window.Window | undefined = this.sessionWindow;
-    if (win === undefined) {
-      return;
-    }
-    WindowController.toggleFullscreen(win, this.isFullscreen);
-  }
-
-  private setToolbarPointerZone(zone: number): void {
-    this.toolbarAutoHide.setPointerZone(zone);
-  }
-
-  private refreshToolbarAutoHide(): void {
-    this.toolbarAutoHide.refresh();
-  }
-
   // HIDE_SYSTEM only: the installer owns the process-global cursor switch and
   // restores it off the picture / on disconnect / on teardown.
   private setLocalCursorHidden(hidden: boolean): void {
     const shouldHide: boolean = hidden && this.cursorMode === ML_CURSOR_HIDE_SYSTEM
       && this.state === ConnectionState.Connected;
-    this.cursor.setLocalHidden(shouldHide);
+    this.shell?.remoteCursor().setLocalHidden(shouldHide);
   }
 
   private mapPoint(x: number, y: number): number[] {
@@ -441,41 +328,31 @@ struct MoonlightSessionPage {
   }
 
   private handleMouse(event: MouseEvent): void {
-    this.setToolbarPointerZone(event.y < this.revealBand
+    this.shell?.setPointerZone(event.y < this.revealBand
       ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     this.setLocalCursorHidden(true);
-    this.input?.handleMouseEvent(event);
+    this.shell?.routeMouse(event);
   }
 
   private handleAxis(event: AxisEvent): void {
-    this.input?.handleAxis(event);
+    this.shell?.routeAxis(event);
   }
 
   private handleTouch(event: TouchEvent): void {
-    this.input?.handleTouch(event);
+    this.shell?.routeTouch(event);
   }
 
   private handleKey(event: KeyEvent): void {
-    this.input?.handleKey(event);
+    this.shell?.routeKey(event);
   }
 
   private retry(): void {
-    if (this.connectionId.length === 0) {
-      return;
-    }
-    // A stopped session released its native window, so re-bind the still-alive
-    // surface for the restarted stream; a second bind while active is refused
-    // natively (the manager's state guard keeps retry out of that case).
-    const backend: MoonlightSessionBackend | undefined = this.backend;
-    if (backend !== undefined && this.surfaceId.length > 0) {
-      backend.bindSurface(this.surfaceId, this.surfaceWidth, this.surfaceHeight);
-    }
-    SessionManager.retry(this.connectionId);
+    this.shell?.retry();
   }
 
   private disconnect(): void {
-    if (this.connectionId.length > 0) {
-      SessionManager.disconnect(this.connectionId);
+    if (this.shell !== undefined) {
+      this.shell.disconnect();
       return;
     }
     this.terminateWindow();
@@ -499,24 +376,12 @@ struct MoonlightSessionPage {
   }
 
   private terminateWindow(): void {
-    // Restore before the window goes away (setPointerVisible is process-wide).
-    this.setLocalCursorHidden(false);
-    this.backend?.clearCursorListener();
-    this.cursor.setWindow(undefined);
-    this.cursor.reset();
-    if (this.closing) {
-      return;
-    }
-    this.closing = true;
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       return;
     }
     const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    if (WindowController.closeSession(abilityContext)) {
-      return;
-    }
-    abilityContext.terminateSelf().catch((error: BusinessError) => {
+    abilityContext.terminateSelf().catch((error: BusinessError): void => {
       hilog.error(DOMAIN, TAG, 'terminate session failed: %{public}s', JSON.stringify(error));
     });
   }
@@ -532,14 +397,14 @@ struct MoonlightSessionPage {
       ToolbarChip({
         label: this.isFullscreen ? '退出全屏' : '全屏',
         onTap: () => {
-          this.toggleFullscreen();
+          this.shell?.toggleFullscreen();
         }
       })
         .margin({ right: 8 })
       ToolbarChip({
         label: '最小化',
         onTap: () => {
-          this.minimizeWindow();
+          this.shell?.minimize();
         }
       })
         .margin({ right: 8 })
@@ -568,7 +433,7 @@ struct MoonlightSessionPage {
     .attributeModifier(this.toolbarMaterial)
     // In fullscreen the bar covers the surface, so only its own hover reports it.
     .onHover((isHover: boolean) => {
-      this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
+      this.shell?.setPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
     })
     .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
@@ -608,7 +473,7 @@ struct MoonlightSessionPage {
             if (isHover) {
               // The system may drop a custom cursor when the pointer re-enters,
               // and the host only sends a shape on change, so re-install it.
-              this.cursor.reapply();
+              this.shell?.remoteCursor().reapply();
             }
           })
           .onAxisEvent((event: AxisEvent) => {
@@ -619,7 +484,8 @@ struct MoonlightSessionPage {
           })
           .onBlur(() => {
             // Keys/buttons held when focus leaves would never get their Up event.
-            this.input?.releaseAll();
+            const input: SessionInput | undefined = this.shell?.sessionInput();
+            input?.releaseAll();
           })
           .onAreaChange((oldArea: Area, newArea: Area) => {
             this.componentWidth = lengthToNumber(newArea.width);

@@ -7,7 +7,7 @@
   Single entry point for the native build. All steps are CMake against the
   Windows OHOS NDK - OpenSSL included: its `perl Configure` output is frozen
   under native/openssl-cmake/generated/, so no WSL/Perl is involved (see
-  doc_agent/native-libraries.md).
+  doc_agent/native-build.md).
 
   Built in dependency order:
     zlib      shared libz.so
@@ -17,7 +17,7 @@
 
   Every independent dependency is a shared library and ships from
   entry/libs/<abi>/, so a library with more than one consumer in the process
-  exists once instead of once per consumer (doc_agent/native-libraries.md); a
+  exists once instead of once per consumer (doc_agent/native-build.md); a
   submodule that is only an implementation detail of its parent (moonlight's
   enet/nanors) stays static inside that parent. Then synced next to the module
   (all gitignored, generated):
@@ -101,7 +101,7 @@ function Invoke-CMake {
     # optimisation level each project pins is what wins), but -g keeps native
     # stack frames symbolicable. The module strips before packaging, so this costs
     # nothing in the HAP. Minimum is -O2: -O0 output has no usable debug value
-    # here. See doc_agent/native-libraries.md.
+    # here. See doc_agent/native-build.md.
     "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
   )
   if ($Prefix) { $cfg += "-DCMAKE_INSTALL_PREFIX=$Prefix" }
@@ -242,7 +242,7 @@ function Build-FreeRdp {
     # WITH_SIMD=ON brings in FreeRDP's own SSE/NEON implementations (the
     # Progressive decode's inverse DWT, YCbCr->RGB, YCoCg, the SSE3/NEON
     # primitives). Those are not required to be bit-identical to the generic C
-    # code, so the correctness criterion is a measured one (gfx-engine.md
+    # code, so the correctness criterion is a measured one (rdp-gfx.md
     # §7.1/§7.2). Changing this switch invalidates the recorded reference frames.
     "-DWITH_SIMD=ON", "-DWITH_AAD=OFF", "-DWITH_SMARTCARD=OFF",
     "-DWITH_KEYBOARD_LAYOUT_FROM_FILE=OFF",
