@@ -1834,6 +1834,33 @@ napi_value MoonlightSessionHostFeatures(napi_env env, napi_callback_info) {
   return CreateInt(env, hmrdp::MoonlightSessionHostFeatureFlags());
 }
 
+napi_value MoonlightGetTelemetry(napi_env env, napi_callback_info) {
+  const hmrdp::MoonlightTelemetry telemetry = hmrdp::MoonlightReadTelemetry();
+  napi_value result = nullptr;
+  napi_create_object(env, &result);
+  auto setInt = [env, result](const char* name, int64_t value) {
+    napi_value v = nullptr;
+    napi_create_int64(env, value, &v);
+    napi_set_named_property(env, result, name, v);
+  };
+  setInt("frames", static_cast<int64_t>(telemetry.frames));
+  setInt("bytes", static_cast<int64_t>(telemetry.bytes));
+  setInt("hostLatencyTenthMs", static_cast<int64_t>(telemetry.hostLatencyTenthMs));
+  setInt("hostLatencyFrames", static_cast<int64_t>(telemetry.hostLatencyFrames));
+  setInt("decodeRoundTripUs", static_cast<int64_t>(telemetry.decodeRoundTripUs));
+  setInt("decodeRoundTripFrames", static_cast<int64_t>(telemetry.decodeRoundTripFrames));
+  setInt("pendingVideoFrames", telemetry.pendingVideoFrames);
+  setInt("rttMs", telemetry.rttMs);
+  setInt("rttVarianceMs", telemetry.rttVarianceMs);
+  setInt("packetVideo", telemetry.packetVideo);
+  setInt("packetFec", telemetry.packetFec);
+  setInt("packetFecRecovered", telemetry.packetFecRecovered);
+  setInt("packetFecFailed", telemetry.packetFecFailed);
+  setInt("packetOos", telemetry.packetOos);
+  setInt("packetInvalid", telemetry.packetInvalid);
+  return result;
+}
+
 napi_value OnEvent(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1980,6 +2007,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"moonlightHostFeatures", nullptr, MoonlightSessionHostFeatures, nullptr, nullptr,
        nullptr, napi_default, nullptr},
+      {"moonlightTelemetry", nullptr, MoonlightGetTelemetry, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"moonlightSetShortcutPassthrough", nullptr, MoonlightSetShortcutPassthrough, nullptr,
        nullptr, nullptr, napi_default, nullptr},
   };

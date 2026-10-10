@@ -56,6 +56,7 @@
 | `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议会话页共用 |
 | `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用（去重、目标尺寸、热点、安装、捏合定位光标、可见性归属），见 [`session-layer.md`](session-layer.md) §10 |
 | `services/RdpTelemetry.ets` | 工具栏遥测的 ArkTS 聚合：把原生原始样本换算成速率与每帧均值（口径见 [`rdp-session.md`](rdp-session.md) §5） |
+| `services/MoonlightTelemetry.ets` | Moonlight 工具栏遥测的 ArkTS 聚合：把原生累计样本差分/求均成速率与每帧均值（字段与口径见 [`moonlight-connection.md`](moonlight-connection.md) §7，原生采样见 [`moonlight-native.md`](moonlight-native.md) §3） |
 | `services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射 |
 | `services/BackgroundWorker.ets` | UI 线程侧的后台 worker 门面：按 id 匹配请求/应答、按 handle 路由事件（见 §4.4） |
 | `services/BackgroundProtocol.ets` | 后台 worker 的消息形状（请求/应答/事件，见 §4.4） |

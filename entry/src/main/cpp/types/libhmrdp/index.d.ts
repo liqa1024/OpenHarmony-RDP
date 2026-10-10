@@ -550,3 +550,41 @@ export const moonlightHostFeatures: () => number;
 
 /** Shortcut passthrough for Moonlight; returns the requested state in effect. */
 export const moonlightSetShortcutPassthrough: (enabled: boolean) => boolean;
+
+/**
+ * One raw telemetry sample of a live Moonlight session. Counters are cumulative:
+ * the caller diffs consecutive samples into rates (frames/s, bitrate) and
+ * divides the sums by their frame counts for per-frame means (host encode,
+ * local decode round trip). RTT and packet counters are read from the library
+ * at sample time.
+ */
+export interface MoonlightTelemetry {
+  /** Decoded frames submitted to the decoder, cumulative. */
+  frames: number;
+  /** Encoded video payload bytes (sum of decoded-unit lengths), cumulative. */
+  bytes: number;
+  /** Sum of host frame processing latency over frames that carried it (1/10 ms). */
+  hostLatencyTenthMs: number;
+  /** Number of frames whose host provided a processing latency. */
+  hostLatencyFrames: number;
+  /** Sum of local decode round-trip (submit to decoded output), microseconds. */
+  decodeRoundTripUs: number;
+  /** Number of frames paired into the decode round-trip sum. */
+  decodeRoundTripFrames: number;
+  /** Video frames waiting to be decoded right now. */
+  pendingVideoFrames: number;
+  /** Estimated RTT in ms, or -1 when unavailable. */
+  rttMs: number;
+  /** RTT variance (jitter) in ms, or -1 when unavailable. */
+  rttVarianceMs: number;
+  /** Cumulative RTP video packet counts for loss/FEC accounting. */
+  packetVideo: number;
+  packetFec: number;
+  packetFecRecovered: number;
+  packetFecFailed: number;
+  packetOos: number;
+  packetInvalid: number;
+}
+
+/** Raw telemetry sample of the single process-global Moonlight session. */
+export const moonlightTelemetry: () => MoonlightTelemetry;

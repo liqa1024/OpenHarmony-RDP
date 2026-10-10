@@ -1,6 +1,7 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
+import { moonlightTelemetry, MoonlightTelemetry } from 'libhmrdp.so';
 import { PendingConnection, SessionRequests } from '../model/Connections';
 import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
@@ -22,9 +23,11 @@ import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PinchProbeOverlay } from '../components/PinchProbeOverlay';
-import { TOOLBAR_BG, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR,
-  TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarRevealHint } from '../components/SessionChrome';
+import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/MoonlightTelemetry';
+import { TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
+  TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
+  TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
+  metricColor } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
@@ -34,6 +37,22 @@ const TAG: string = 'HmRdpMoonlightPage';
 const CONNECT_OVERLAY_DELAY_MS: number = 1000;
 // The pinch emits frames far faster than the UI needs; the debug overlay is sampled.
 const PINCH_PROBE_PUBLISH_MS: number = 50;
+
+const METRICS_INTERVAL_MS: number = 1000;
+// Fixed widths so a changing digit count never reflows the fields after it.
+const METRIC_WIDTH_NETWORK: number = 66;
+const METRIC_WIDTH_HOST: number = 62;
+const METRIC_WIDTH_LOCAL: number = 66;
+const METRIC_WIDTH_FPS: number = 62;
+const METRIC_WIDTH_BITRATE: number = 132;
+const METRIC_GAP_TIGHT: number = 6;
+const METRIC_GAP_GROUP: number = 8;
+// Latency colour thresholds: network RTT warns late (distance-dominated); local
+// decode over WARN misses 60 fps, over BAD even 30 fps.
+const NETWORK_WARN_MS: number = 100;
+const NETWORK_BAD_MS: number = 200;
+const LOCAL_WARN_MS: number = 16;
+const LOCAL_BAD_MS: number = 33;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -63,8 +82,8 @@ struct MoonlightSessionPage {
   private probeTimer: number = -1;
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
-  private toolbarMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
+  private toolbarMaterial: AttributeModifier<ColumnAttribute> =
+    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private revealBand: number = 6;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 700;
@@ -81,6 +100,20 @@ struct MoonlightSessionPage {
   @State probeP1Y: number = 0.5;
   @State probeP2X: number = 0.5;
   @State probeP2Y: number = 0.5;
+  @State metricsRtt: number = -1;
+  @State metricsJitter: number = -1;
+  @State metricsHostMs: number = -1;
+  @State metricsDecodeMs: number = -1;
+  @State metricsFps: number = 0;
+  @State metricsBytesPerSec: number = 0;
+  @State metricsPending: number = 0;
+  @State metricsLossBp: number = -1;
+  // Stream target from the launch request, for the current/target readouts.
+  private targetFps: number = 0;
+  private targetBitrateKbps: number = 0;
+  private metricsTimer: number = -1;
+  private metricsLastAt: number = 0;
+  private telemetry: MoonlightTelemetryAggregator = new MoonlightTelemetryAggregator();
 
   aboutToAppear(): void {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
@@ -95,12 +128,21 @@ struct MoonlightSessionPage {
         this.streamWidth = request.stream.width;
         this.streamHeight = request.stream.height;
       }
+      const config = request.moonlightConfig;
+      if (config !== undefined) {
+        this.targetFps = config.fps;
+        this.targetBitrateKbps = config.bitrateKbps;
+      }
     }
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
     this.developerMode = settings.developerMode;
+    // Developer mode adds the telemetry line, so the toolbar is taller.
+    this.toolbarHeight = this.developerMode
+      ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
+      : TOOLBAR_ROW_HEIGHT;
 
     const foregroundHost: ForegroundReconnectHost = {
       context: (): common.Context | undefined => this.getUIContext().getHostContext(),
@@ -254,10 +296,102 @@ struct MoonlightSessionPage {
       const input: SessionInput | undefined = this.shell?.sessionInput();
       input?.setTouchEnabled(touchSupported);
       input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
+      this.startMetricsTimer();
       return;
     }
     // Not streaming: the process-wide system cursor must come back.
+    this.stopMetricsTimer();
     this.setLocalCursorHidden(false);
+  }
+
+  private startMetricsTimer(): void {
+    if (this.metricsTimer !== -1 || !this.developerMode) {
+      return;
+    }
+    this.metricsLastAt = Date.now();
+    this.metricsTimer = setInterval(() => {
+      this.refreshMetrics();
+    }, METRICS_INTERVAL_MS);
+  }
+
+  private stopMetricsTimer(): void {
+    if (this.metricsTimer === -1) {
+      return;
+    }
+    clearInterval(this.metricsTimer);
+    this.metricsTimer = -1;
+  }
+
+  private refreshMetrics(): void {
+    const now: number = Date.now();
+    const windowMs: number = this.metricsLastAt > 0 ? now - this.metricsLastAt : METRICS_INTERVAL_MS;
+    this.metricsLastAt = now;
+    const raw: MoonlightTelemetry = moonlightTelemetry();
+    const counters: MoonlightCounters = this.telemetry.sample(raw, windowMs);
+    this.metricsRtt = counters.rttMs;
+    this.metricsJitter = counters.rttVarianceMs;
+    this.metricsHostMs = counters.hostLatencyMs;
+    this.metricsDecodeMs = counters.decodeMs;
+    this.metricsFps = counters.fps;
+    this.metricsBytesPerSec = counters.bytesPerSec;
+    this.metricsPending = counters.pendingVideoFrames;
+    this.metricsLossBp = counters.lossBp;
+  }
+
+  private rttLabel(): string {
+    return this.metricsRtt < 0 ? '网络 --' : '网络 ' + this.metricsRtt + 'ms';
+  }
+
+  private rttTips(): string {
+    const jitter: string = this.metricsJitter < 0 ? '--' : this.metricsJitter + 'ms';
+    const loss: string = this.metricsLossBp < 0 ? '--'
+      : (this.metricsLossBp / 100).toFixed(2) + '%';
+    return 'RTT 抖动 ' + jitter + ' · 视频丢包 ' + loss
+      + '\n丢包 = FEC 恢复失败 + 乱序 + 损坏 / 总包';
+  }
+
+  private hostEncodeLabel(): string {
+    return this.metricsHostMs < 0 ? '主机 --' : '主机 ' + Math.round(this.metricsHostMs) + 'ms';
+  }
+
+  private localLabel(): string {
+    return this.metricsDecodeMs < 0 ? '本机 --' : '本机 ' + Math.round(this.metricsDecodeMs) + 'ms';
+  }
+
+  private localTips(): string {
+    return '本机解码往返（提交→解码出帧）/帧'
+      + '\n在途待解码 ' + this.metricsPending + ' 帧';
+  }
+
+  private fpsLabel(): string {
+    return this.targetFps > 0
+      ? 'FPS ' + this.metricsFps + '/' + this.targetFps
+      : 'FPS ' + this.metricsFps;
+  }
+
+  private bitrateLabel(): string {
+    const currentKbps: number = this.metricsBytesPerSec * 8 / 1000;
+    if (this.targetBitrateKbps >= 1000) {
+      return '码率 ' + (currentKbps / 1000).toFixed(1) + '/'
+        + (this.targetBitrateKbps / 1000).toFixed(1) + 'Mbps';
+    }
+    return '码率 ' + Math.round(currentKbps) + '/' + Math.round(this.targetBitrateKbps) + 'kbps';
+  }
+
+  private telemetryFields(): TelemetryField[] {
+    const fields: TelemetryField[] = [];
+    fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
+      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), this.rttTips(), 0));
+    fields.push(new TelemetryField(this.hostEncodeLabel(), METRIC_WIDTH_HOST,
+      metricColor(this.metricsHostMs, LOCAL_WARN_MS, LOCAL_BAD_MS), '', METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
+      metricColor(this.metricsDecodeMs, LOCAL_WARN_MS, LOCAL_BAD_MS), this.localTips(),
+      METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS,
+      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE,
+      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+    return fields;
   }
 
   // Direct zoom is RDP-presenter only; touch-simulate needs host touch; native touchpad needs the
@@ -299,6 +433,7 @@ struct MoonlightSessionPage {
     backend?.clearCursorListener();
     this.foreground?.release();
     this.foreground = undefined;
+    this.stopMetricsTimer();
     if (this.probeTimer !== -1) {
       clearTimeout(this.probeTimer);
       this.probeTimer = -1;
@@ -408,47 +543,53 @@ struct MoonlightSessionPage {
 
   @Builder
   sessionToolbar() {
-    Row() {
-      SessionTitle({
-        name: this.hostLabel,
-        detail: this.streamWidth + ' × ' + this.streamHeight + moonlightDecodeIndicator()
-      })
-      Blank()
-      ToolbarChip({
-        label: this.isFullscreen ? '退出全屏' : '全屏',
-        onTap: () => {
-          this.shell?.toggleFullscreen();
-        }
-      })
-        .margin({ right: 8 })
-      ToolbarChip({
-        label: '最小化',
-        onTap: () => {
-          this.shell?.minimize();
-        }
-      })
-        .margin({ right: 8 })
-      ToolbarChip({
-        label: '断开',
-        chipBg: TOOLBAR_NEUTRAL_CHIP_BG,
-        onTap: () => {
-          this.disconnect();
-        }
-      })
-        .margin({ right: 8 })
-        .bindTips('仅断开与主机的连接，主机上的应用保持运行')
-      ToolbarChip({
-        label: '关闭应用',
-        chipBg: $r('app.color.danger'),
-        onTap: () => {
-          this.closeAppAndDisconnect();
-        }
-      })
-        .bindTips('关闭主机上正在运行的应用，并断开连接')
+    Column() {
+      Row() {
+        SessionTitle({
+          name: this.hostLabel,
+          detail: this.streamWidth + ' × ' + this.streamHeight + moonlightDecodeIndicator()
+        })
+        Blank()
+        ToolbarChip({
+          label: this.isFullscreen ? '退出全屏' : '全屏',
+          onTap: () => {
+            this.shell?.toggleFullscreen();
+          }
+        })
+          .margin({ right: 8 })
+        ToolbarChip({
+          label: '最小化',
+          onTap: () => {
+            this.shell?.minimize();
+          }
+        })
+          .margin({ right: 8 })
+        ToolbarChip({
+          label: '断开',
+          chipBg: TOOLBAR_NEUTRAL_CHIP_BG,
+          onTap: () => {
+            this.disconnect();
+          }
+        })
+          .margin({ right: 8 })
+          .bindTips('仅断开与主机的连接，主机上的应用保持运行')
+        ToolbarChip({
+          label: '关闭应用',
+          chipBg: $r('app.color.danger'),
+          onTap: () => {
+            this.closeAppAndDisconnect();
+          }
+        })
+          .bindTips('关闭主机上正在运行的应用，并断开连接')
+      }
+      .width('100%')
+      .height(TOOLBAR_ROW_HEIGHT)
+      .padding({ left: 16, right: 16 })
+      if (this.state === ConnectionState.Connected && this.developerMode) {
+        TelemetryRow({ fields: this.telemetryFields() })
+      }
     }
     .width('100%')
-    .height(TOOLBAR_ROW_HEIGHT)
-    .padding({ left: 16, right: 16 })
     .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
     // In fullscreen the bar covers the surface, so only its own hover reports it.

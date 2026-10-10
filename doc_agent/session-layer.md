@@ -230,7 +230,9 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   **开发者选项**里调）；窗口模式**始终显示**，且作为普通行布局在远程画面**上方**（渲染区自然扣除工具栏高度、
   不被覆盖，指针映射仍以 XComponent 局部坐标为准）。开发者选项开启时，遥测另起**第二行**，主行布局与
   非开发者模式**完全一致**（工具栏变高，`toolbarHeight` 随之增长，全屏自动隐藏的判定边界跟着用这个值）。
-  RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-session.md)。
+  遥测行由共享的 `TelemetryRow`（`components/SessionChrome`）渲染，页面只产出协议专属的 `TelemetryField[]`；
+  RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-session.md) §5，Moonlight 见
+  [`moonlight-connection.md`](moonlight-connection.md) §7。
 - **自动隐藏的判定口径**：全屏下只看**指针在哪一格**——顶部触发带（贴顶一条窄带，停留 `hoverDelay` 才
   滑出）、工具栏自身、其余画面；**指针在工具栏上 ⇒ 保持显示，且不允许任何隐藏定时器在跑**，在画面里 ⇒
   起 `hideDelay` 收起。指针格由**画面顶部的专用窄条**（`SessionPicture` 的 reveal 条：只在全屏且工具栏
@@ -285,7 +287,7 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 
 `model/SessionSignal`（协议无关信号）、`services/ToolbarAutoHide`（工具栏自动隐藏判定）、
 `services/RemoteCursor`（远端光标安装器）、`services/ForegroundReconnect`（回到前台自动重连）、
-`components/SessionChrome`（会话 chrome 常量与组件）、
+`components/SessionChrome`（会话 chrome 常量与组件，含共享遥测行 `TelemetryRow` / `TelemetryField` / 阈值着色 `metricColor`）、
 `utils/UiMotion`（hover/press 动效）——均为两协议共用。
 
 ## 12. 命名与边界约定

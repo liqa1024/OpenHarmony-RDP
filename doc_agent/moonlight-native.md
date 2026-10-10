@@ -143,9 +143,17 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
-  `moonlightTouchpad` / `moonlightText` / `moonlightHostFeatures` / `moonlightSetShortcutPassthrough`；
+  `moonlightTouchpad` / `moonlightText` / `moonlightHostFeatures` / `moonlightTelemetry` /
+  `moonlightSetShortcutPassthrough`；
   窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
+- **遥测采样**：解码桥按帧累加**累计计数**（解码单元数、编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
+  本机解码往返之和 / 帧数——最后一项在 `submitDecodeUnit` 记提交时刻、在解码输出回调按 `pts` 配对求差），
+  `moonlightTelemetry()` 被调用时再读入瞬时 / 库侧读数（`LiGetEstimatedRttInfo` 的 RTT 与抖动、
+  `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`）。**原生不产速率**：速率与每帧均值在 ArkTS
+  （`services/MoonlightTelemetry`）按相邻样本差分 / 求均得到（字段与口径见
+  [`moonlight-connection.md`](moonlight-connection.md) §7）。计数在每次会话 `start` 时清零，会话重启后
+  ArkTS 检测到计数回落即重新基准化。
 
 ### 3.1 本地光标模式（基地版 Sunshine 的光标通道）
 

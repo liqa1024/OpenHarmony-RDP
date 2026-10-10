@@ -206,6 +206,8 @@ Column(page_bg, 100%×100%)
 | `SessionTitle` | `SessionChrome.ets` | `name, detail` | 工具栏左侧「名称 + 分辨率」标题（RDP / Moonlight 共用，差异只在 `detail` 后缀） |
 | `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |
 | `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?, tip?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项），`tip` 为空则不挂提示 |
+| `TelemetryRow` | `SessionChrome.ets` | `fields: TelemetryField[]` | 开发者遥测行（RDP / Moonlight 共用）：页面交字段数组，行按 `TOOLBAR_TELEMETRY_HEIGHT` 渲染 |
+| `TelemetryField` | `SessionChrome.ets` | `text, width, color, tip, gap` | 遥测行的一个字段（`width` 0 = 内容宽）；`metricColor` 给延迟阈值着色 |
 | （调色板常量） | `SessionChrome.ets` | `TOOLBAR_*` / `METRIC_*` | 固定深色工具栏调色板与几何 |
 
 约束：组件成员名**不得与通用属性同名**（`padding` / `enabled` 等会和 `CustomComponent` 基类冲突），故

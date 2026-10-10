@@ -1,9 +1,12 @@
 #include "hmrdp_moonlight.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Limelight.h>
@@ -25,6 +28,15 @@ namespace {
 // Cap on decoder input backlog; a keyframe request past it is safe because
 // submits run on Moonlight's own decoder thread.
 constexpr size_t kMaxPendingBytes = 4u * 1024u * 1024u;
+
+// Stale submit timestamps are dropped past this many outstanding frames, so a
+// decoder that drops or reorders cannot grow the pairing map without bound.
+constexpr size_t kMaxPendingSubmitTimes = 240;
+
+int64_t NowNs() {
+  return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 std::string MimeForVideoFormat(int videoFormat) {
   if ((videoFormat & VIDEO_FORMAT_MASK_H264) != 0) {
@@ -106,14 +118,32 @@ class MoonlightVideoRenderer {
     return warning_;
   }
 
+  // Cumulative counters only; the caller diffs them into rates.
+  MoonlightTelemetry Telemetry() {
+    MoonlightTelemetry telemetry;
+    telemetry.frames = statFrames_.load();
+    telemetry.bytes = statBytes_.load();
+    telemetry.hostLatencyTenthMs = statHostLatencySum_.load();
+    telemetry.hostLatencyFrames = statHostLatencyCount_.load();
+    telemetry.decodeRoundTripUs = statDecodeRtSumUs_.load();
+    telemetry.decodeRoundTripFrames = statDecodeRtCount_.load();
+    return telemetry;
+  }
+
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (window_ == nullptr || mime_.empty()) {
       HMRDP_LOGE("moonlight video: start needs a surface and a setup codec");
       return;
     }
+    ResetStats();
+    // The frame callback pairs each decoded output with its submit time; surface
+    // mode otherwise has no per-frame hook.
+    VideoDecoder::FrameReadyFn onFrame = [this](int, int, int64_t ptsUs) {
+      NoteDecoded(ptsUs);
+    };
     if (!decoder_.Start(mime_, VideoOutputMode::kSurface, window_, width_, height_, redrawRate_,
-                        nullptr, nullptr)) {
+                        onFrame, nullptr)) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",
                  decoder_.lastError().c_str());
       return;
@@ -150,14 +180,63 @@ class MoonlightVideoRenderer {
     if (buffer_.empty()) {
       return DR_OK;
     }
+    const int64_t submitNs = NowNs();
     if (!decoder_.Submit(buffer_.data(), buffer_.size(),
                          static_cast<int64_t>(decodeUnit->presentationTimeUs))) {
       return DR_NEED_IDR;
+    }
+    statFrames_.fetch_add(1, std::memory_order_relaxed);
+    if (decodeUnit->fullLength > 0) {
+      statBytes_.fetch_add(static_cast<uint64_t>(decodeUnit->fullLength),
+                           std::memory_order_relaxed);
+    }
+    if (decodeUnit->frameHostProcessingLatency > 0) {
+      statHostLatencySum_.fetch_add(decodeUnit->frameHostProcessingLatency,
+                                    std::memory_order_relaxed);
+      statHostLatencyCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+    {
+      std::lock_guard<std::mutex> lock(submitMutex_);
+      if (submitNsByPts_.size() >= kMaxPendingSubmitTimes) {
+        submitNsByPts_.clear();
+      }
+      submitNsByPts_[static_cast<int64_t>(decodeUnit->presentationTimeUs)] = submitNs;
     }
     return DR_OK;
   }
 
  private:
+  void ResetStats() {
+    statFrames_.store(0);
+    statBytes_.store(0);
+    statHostLatencySum_.store(0);
+    statHostLatencyCount_.store(0);
+    statDecodeRtSumUs_.store(0);
+    statDecodeRtCount_.store(0);
+    std::lock_guard<std::mutex> lock(submitMutex_);
+    submitNsByPts_.clear();
+  }
+
+  // Runs on the codec callback thread; pairs with the submit time recorded in
+  // Submit() by presentation time.
+  void NoteDecoded(int64_t ptsUs) {
+    int64_t submitNs = 0;
+    {
+      std::lock_guard<std::mutex> lock(submitMutex_);
+      const auto it = submitNsByPts_.find(ptsUs);
+      if (it == submitNsByPts_.end()) {
+        return;
+      }
+      submitNs = it->second;
+      submitNsByPts_.erase(it);
+    }
+    const int64_t deltaUs = (NowNs() - submitNs) / 1000;
+    if (deltaUs >= 0) {
+      statDecodeRtSumUs_.fetch_add(static_cast<uint64_t>(deltaUs), std::memory_order_relaxed);
+      statDecodeRtCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
   std::mutex mutex_;
   VideoDecoder decoder_;
   std::string mime_;
@@ -169,6 +248,15 @@ class MoonlightVideoRenderer {
   void* window_ = nullptr;
   bool running_ = false;
   std::vector<uint8_t> buffer_;
+
+  std::atomic<uint64_t> statFrames_{0};
+  std::atomic<uint64_t> statBytes_{0};
+  std::atomic<uint64_t> statHostLatencySum_{0};
+  std::atomic<uint64_t> statHostLatencyCount_{0};
+  std::atomic<uint64_t> statDecodeRtSumUs_{0};
+  std::atomic<uint64_t> statDecodeRtCount_{0};
+  std::mutex submitMutex_;
+  std::unordered_map<int64_t, int64_t> submitNsByPts_;
 };
 
 int VideoSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
@@ -201,6 +289,27 @@ DECODER_RENDERER_CALLBACKS g_videoCallbacks = {
 };
 
 }  // namespace
+
+MoonlightTelemetry MoonlightReadTelemetry() {
+  MoonlightTelemetry telemetry = MoonlightVideoRenderer::Instance().Telemetry();
+  uint32_t rtt = 0;
+  uint32_t variance = 0;
+  if (LiGetEstimatedRttInfo(&rtt, &variance)) {
+    telemetry.rttMs = static_cast<int32_t>(rtt);
+    telemetry.rttVarianceMs = static_cast<int32_t>(variance);
+  }
+  const RTP_VIDEO_STATS* stats = LiGetRTPVideoStats();
+  if (stats != nullptr) {
+    telemetry.packetVideo = stats->packetCountVideo;
+    telemetry.packetFec = stats->packetCountFec;
+    telemetry.packetFecRecovered = stats->packetCountFecRecovered;
+    telemetry.packetFecFailed = stats->packetCountFecFailed;
+    telemetry.packetOos = stats->packetCountOOS;
+    telemetry.packetInvalid = stats->packetCountInvalid;
+  }
+  telemetry.pendingVideoFrames = LiGetPendingVideoFrames();
+  return telemetry;
+}
 
 int MoonlightVideoFormats(MoonlightVideoPreference preference) {
   const DecoderSupport avc = VideoDecoderSupport("video/avc");

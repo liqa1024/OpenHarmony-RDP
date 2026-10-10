@@ -31,11 +31,11 @@ import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
-import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
+import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
   TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarRevealHint } from '../components/SessionChrome';
+  ToolbarRevealHint, TelemetryField, TelemetryRow, metricColor } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -548,19 +548,6 @@ struct SessionPage {
 
   private rttLabel(): string {
     return this.metricsRtt < 0 ? '网络 --' : '网络 ' + this.metricsRtt + 'ms';
-  }
-
-  private thresholdColor(ms: number, warnMs: number, badMs: number): string {
-    if (ms < 0) {
-      return TOOLBAR_FG_SECONDARY;
-    }
-    if (ms <= warnMs) {
-      return METRIC_GOOD;
-    }
-    if (ms <= badMs) {
-      return METRIC_WARN;
-    }
-    return METRIC_BAD;
   }
 
   private localUs(): number {
@@ -1806,53 +1793,31 @@ struct SessionPage {
   // Developer-only telemetry line. The two fields that can disappear follow in reverse order of how often they show, so a changing field never shifts a stable one.
   @Builder
   toolbarTelemetry() {
-    Row() {
-      MetricItem({
-        text: this.rttLabel(),
-        metricWidth: METRIC_WIDTH_NETWORK,
-        fgColor: this.thresholdColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS)
-      })
-      MetricItem({
-        text: this.localLabel(),
-        metricWidth: METRIC_WIDTH_LOCAL,
-        fgColor: this.thresholdColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS),
-        leftGap: METRIC_GAP_TIGHT,
-        tip: this.localTips()
-      })
-      MetricItem({
-        text: this.fpsLabel(),
-        metricWidth: METRIC_WIDTH_FPS,
-        leftGap: METRIC_GAP_GROUP
-      })
-      MetricItem({
-        text: this.cpuLabel(),
-        metricWidth: METRIC_WIDTH_CPU,
-        leftGap: METRIC_GAP_GROUP
-      })
-      MetricItem({
-        text: this.gpuLabel(),
-        metricWidth: METRIC_WIDTH_GPU,
-        leftGap: METRIC_GAP_GROUP,
-        tip: this.gpuTips()
-      })
-      if (this.hasBandwidth()) {
-        MetricItem({
-          text: this.bandwidthLabel(),
-          leftGap: METRIC_GAP_GROUP
-        })
-      }
-      if (this.metricsAudioRateHz > 0) {
-        MetricItem({
-          text: this.audioLabel(),
-          metricWidth: METRIC_WIDTH_AUDIO,
-          fgColor: this.audioColor(),
-          leftGap: METRIC_GAP_GROUP
-        })
-      }
+    TelemetryRow({ fields: this.telemetryFields() })
+  }
+
+  private telemetryFields(): TelemetryField[] {
+    const fields: TelemetryField[] = [];
+    fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
+      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), '', 0));
+    fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
+      metricColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS), this.localTips(),
+      METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS,
+      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.cpuLabel(), METRIC_WIDTH_CPU,
+      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU,
+      TOOLBAR_FG_SECONDARY, this.gpuTips(), METRIC_GAP_GROUP));
+    if (this.hasBandwidth()) {
+      fields.push(new TelemetryField(this.bandwidthLabel(), 0,
+        TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
     }
-    .width('100%')
-    .height(TOOLBAR_TELEMETRY_HEIGHT)
-    .padding({ left: 16, right: 16 })
+    if (this.metricsAudioRateHz > 0) {
+      fields.push(new TelemetryField(this.audioLabel(), METRIC_WIDTH_AUDIO,
+        this.audioColor(), '', METRIC_GAP_GROUP));
+    }
+    return fields;
   }
 
   build() {

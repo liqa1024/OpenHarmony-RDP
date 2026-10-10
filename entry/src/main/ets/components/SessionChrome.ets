@@ -150,3 +150,59 @@ export struct ToolbarRevealHint {
       .hitTestBehavior(HitTestMode.None)
   }
 }
+
+// One telemetry field of the developer row; `width` 0 means content width (for
+// variable-length text like the RDP bandwidth field).
+export class TelemetryField {
+  text: string;
+  width: number;
+  color: string;
+  tip: string;
+  gap: number;
+
+  constructor(text: string, width: number, color: string, tip: string, gap: number) {
+    this.text = text;
+    this.width = width;
+    this.color = color;
+    this.tip = tip;
+    this.gap = gap;
+  }
+}
+
+// Latency colour by threshold; negative means "no reading yet".
+export function metricColor(value: number, warnMs: number, badMs: number): string {
+  if (value < 0) {
+    return TOOLBAR_FG_SECONDARY;
+  }
+  if (value <= warnMs) {
+    return METRIC_GOOD;
+  }
+  if (value <= badMs) {
+    return METRIC_WARN;
+  }
+  return METRIC_BAD;
+}
+
+// Developer-only telemetry line, shared by both protocol pages: the page builds
+// the protocol-specific fields, this renders them at a fixed height.
+@Component
+export struct TelemetryRow {
+  @Prop fields: TelemetryField[] = [];
+
+  build() {
+    Row() {
+      ForEach(this.fields, (field: TelemetryField) => {
+        MetricItem({
+          text: field.text,
+          metricWidth: field.width,
+          fgColor: field.color,
+          leftGap: field.gap,
+          tip: field.tip
+        })
+      }, (field: TelemetryField, index: number) => index.toString() + '-' + field.text)
+    }
+    .width('100%')
+    .height(TOOLBAR_TELEMETRY_HEIGHT)
+    .padding({ left: 16, right: 16 })
+  }
+}
