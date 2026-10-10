@@ -63,8 +63,8 @@ export class AppSettings {
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
-  // 触控板双指双击发送鼠标中键（单次双指轻触仍是右键）。双指轻触要等一个双击窗口
-  // 才能确定不是双击，所以开启后右键有约 300ms 判定延迟；默认关＝无延迟。
+  // 触控板双指双击发送鼠标中键（单次双指轻触仍是右键）。双击窗口从第一次轻触的按下起算，
+  // 所以单次右键的判定延迟约 300ms；按下后按住不放则判为实体右键（拖动），立即按下、不受此延迟。
   touchpadMiddleDoubleTap: boolean = false;
   pinchMode: number = PINCH_MODE_WHEEL;
   // 合成触点对的倾角（度）：ArkUI 报不出真实手指角度，用此值代替手的朝向。

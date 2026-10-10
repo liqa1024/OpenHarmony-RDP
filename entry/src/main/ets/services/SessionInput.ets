@@ -5,6 +5,7 @@ import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, M
   TouchpadWheelMapper, WheelChunk, WHEEL_DETENT } from './TouchpadWheel';
 import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM } from './SettingsStore';
+import { TouchpadTapFilter, TouchpadTapTarget } from './TouchpadTapFilter';
 
 export class InputButton {
   static readonly LEFT: number = 1;
@@ -74,8 +75,12 @@ const CANCEL_RESUME_MIN_DISTANCE: number = 16;
 const CANCEL_RESUME_MAX_DISTANCE: number = 64;
 const CANCEL_HOLD_MS: number = 400;
 
-// 触控板双指双击 -> 中键的判定窗口：单次双指轻触要等这么久没有第二次才按右键发出。
+// 触控板双指双击 -> 中键：从第一次轻触的按下起算的双击窗口。
 const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
+// 轻触与实体右键的分界；系统双指轻触的按下-抬起远小于此值。
+const TOUCHPAD_PRESS_HOLD_MS: number = 30;
+// 判定为拖动的最小位移（远端指针空间 px）。
+const TOUCHPAD_MOVE_SLOP: number = 8;
 
 const MIN_PINCH_DISTANCE_PERCENT: number = 1;
 const MAX_PINCH_DISTANCE_PERCENT: number = 20;
@@ -111,7 +116,7 @@ export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
 export type PinchProbeHandler =
   (active: boolean, p1x: number, p1y: number, p2x: number, p2y: number) => void;
 
-export class SessionInput {
+export class SessionInput implements TouchpadTapTarget {
   private sink: InputSink;
   private winKeySubstitute: number = 0;
   private interceptActive: boolean = false;
@@ -138,11 +143,7 @@ export class SessionInput {
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
   private wheelChunks: WheelChunk[] = [];
   private touchpadMiddleDoubleTap: boolean = false;
-  private touchpadClickPending: boolean = false;
-  private touchpadClickTimer: number = -1;
-  private touchpadClickX: number = 0;
-  private touchpadClickY: number = 0;
-  private touchpadMiddleSwallow: boolean = false;
+  private touchpadTap: TouchpadTapFilter;
   private touchpadDevices: Map<number, boolean> = new Map<number, boolean>();
   private pinchMode: number = PINCH_MODE_WHEEL;
   private pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
@@ -170,11 +171,30 @@ export class SessionInput {
 
   constructor(sink: InputSink) {
     this.sink = sink;
+    this.touchpadTap = new TouchpadTapFilter(this, TOUCHPAD_DOUBLE_TAP_MS,
+      TOUCHPAD_PRESS_HOLD_MS, TOUCHPAD_MOVE_SLOP);
     try {
       // Device IDs can change on replug, so drop the touchpad cache on a change.
       inputDevice.on('change', this.deviceChangeListener);
     } catch (error) {
     }
+  }
+
+  // TouchpadTapTarget
+  rightDown(x: number, y: number): void {
+    this.handleButton(InputAction.PRESS, InputButton.RIGHT, x, y);
+  }
+
+  rightUp(x: number, y: number): void {
+    this.handleButton(InputAction.RELEASE, InputButton.RIGHT, x, y);
+  }
+
+  clickRight(x: number, y: number): void {
+    this.sendSyntheticClick(InputButton.RIGHT, x, y);
+  }
+
+  clickMiddle(x: number, y: number): void {
+    this.sendSyntheticClick(InputButton.MIDDLE, x, y);
   }
 
   dispose(): void {
@@ -183,7 +203,7 @@ export class SessionInput {
     } catch (error) {
     }
     this.endPinch();
-    this.clearTouchpadClick();
+    this.touchpadTap.reset();
   }
 
   setWinKeySubstitute(keyCode: number): void {
@@ -209,6 +229,9 @@ export class SessionInput {
 
   setTouchpadMiddleDoubleTap(enabled: boolean): void {
     this.touchpadMiddleDoubleTap = enabled;
+    if (!enabled) {
+      this.touchpadTap.reset();
+    }
   }
 
   setPinchMode(mode: number): void {
@@ -309,10 +332,21 @@ export class SessionInput {
       return;
     }
     const point: number[] = this.pointMapper(event.x, event.y);
-    if (this.touchpadMiddleDoubleTap && event.button === MouseButton.Right
-      && this.isTouchpad(event.deviceId, event.sourceTool)) {
-      this.handleTouchpadRight(event.action, point[0], point[1]);
-      return;
+    if (this.touchpadMiddleDoubleTap && this.isTouchpad(event.deviceId, event.sourceTool)) {
+      if (event.action === MouseAction.Move) {
+        this.touchpadTap.observeMove(point[0], point[1]);
+      } else if (event.action === MouseAction.CANCEL) {
+        this.touchpadTap.cancel(point[0], point[1]);
+      } else if (event.button === MouseButton.Right) {
+        if (event.action === MouseAction.Press) {
+          this.touchpadTap.press(point[0], point[1]);
+          return;
+        }
+        if (event.action === MouseAction.Release) {
+          this.touchpadTap.release(point[0], point[1]);
+          return;
+        }
+      }
     }
     if (event.action === MouseAction.Press) {
       this.handleButton(InputAction.PRESS, SessionInput.buttonFor(event.button), point[0], point[1]);
@@ -403,7 +437,7 @@ export class SessionInput {
     this.releaseAllTouches();
     this.endPinch();
     // Don't let a pending 中键 candidate fire into a window that lost focus.
-    this.clearTouchpadClick();
+    this.touchpadTap.reset();
   }
 
   private handleButton(action: number, button: number, x: number, y: number): void {
@@ -435,58 +469,10 @@ export class SessionInput {
     }
   }
 
-  private handleTouchpadRight(action: MouseAction, x: number, y: number): void {
-    this.lastPointerX = x;
-    this.lastPointerY = y;
-    if (action === MouseAction.Press) {
-      if (this.touchpadClickPending) {
-        this.cancelTouchpadClickTimer();
-        this.touchpadClickPending = false;
-        this.touchpadMiddleSwallow = true;
-        this.sendSyntheticClick(InputButton.MIDDLE, x, y);
-        return;
-      }
-      this.touchpadClickPending = true;
-      this.touchpadClickX = x;
-      this.touchpadClickY = y;
-      return;
-    }
-    if (action !== MouseAction.Release) {
-      return;
-    }
-    if (this.touchpadMiddleSwallow) {
-      this.touchpadMiddleSwallow = false;
-      return;
-    }
-    if (this.touchpadClickPending && this.touchpadClickTimer === -1) {
-      this.touchpadClickTimer = setTimeout(() => {
-        this.touchpadClickTimer = -1;
-        if (!this.touchpadClickPending) {
-          return;
-        }
-        this.touchpadClickPending = false;
-        this.sendSyntheticClick(InputButton.RIGHT, this.touchpadClickX, this.touchpadClickY);
-      }, TOUCHPAD_DOUBLE_TAP_MS);
-    }
-  }
-
   /** One whole click as press + release, so the remote never keeps a button down. */
   private sendSyntheticClick(button: number, x: number, y: number): void {
     this.handleButton(InputAction.PRESS, button, x, y);
     this.handleButton(InputAction.RELEASE, button, x, y);
-  }
-
-  private cancelTouchpadClickTimer(): void {
-    if (this.touchpadClickTimer !== -1) {
-      clearTimeout(this.touchpadClickTimer);
-      this.touchpadClickTimer = -1;
-    }
-  }
-
-  private clearTouchpadClick(): void {
-    this.cancelTouchpadClickTimer();
-    this.touchpadClickPending = false;
-    this.touchpadMiddleSwallow = false;
   }
 
   private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {

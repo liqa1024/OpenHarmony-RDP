@@ -1150,7 +1150,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '双指双击发送中键',
-              subtitle: '触控板双指连续轻触两次发送鼠标中键；开启后双指轻触的右键会有约 300ms 判定延迟',
+              subtitle: '触控板双指连续轻触两次发送鼠标中键；开启后双指轻触的右键会有约 300ms 判定延迟，按住右键（拖动）不受影响',
               value: this.touchpadMiddleDoubleTap,
               enabled: true,
               disabledReason: '',
