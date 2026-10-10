@@ -3,6 +3,9 @@
 #   2) add the foundation-sunshine "local cursor mode" client side:
 #      ConnListenerCursorUpdate + LiGetLocalCursorModeSupported /
 #      LiSetLocalCursorMode and the 0x5509 control-stream message.
+#   3) add the foundation-sunshine native precision touchpad client side:
+#      LiSendTouchpadEvent / LiSendTouchpadFrameEvent + the 0x55000009 /
+#      0x5500000A input packets, gated on the host featureFlags bits 0x10 / 0x20.
 #
 # The tree under native/third_party/ is gitignored and recreated by
 # fetch-sources.ps1, which calls this script after extraction. Like
@@ -248,6 +251,277 @@ else {
 
 	[System.IO.File]::WriteAllText($ControlStream, $cRaw)
 	Write-Host "moonlight: added local cursor message handling to ControlStream.c"
+}
+
+# 3) Native precision touchpad (foundation-sunshine extension). Adds
+#    LiSendTouchpadEvent / LiSendTouchpadFrameEvent and the 0x55000009 /
+#    0x5500000A input packets, gated on the host featureFlags bits 0x10 / 0x20
+#    (x-ss-general.featureFlags, already parsed into SunshineFeatureFlags).
+#    Stock Sunshine and GFE never advertise those bits, so the client never sends
+#    these packets to them - the LiSend* entry points return LI_ERR_UNSUPPORTED.
+$InputHeader = Join-Path $MlSrc "Input.h"
+$InputStream = Join-Path $MlSrc "InputStream.c"
+if (-not (Test-Path -LiteralPath $InputHeader) -or -not (Test-Path -LiteralPath $InputStream)) {
+	throw "moonlight-common-c src missing Input.h / InputStream.c under $MlSrc"
+}
+
+# --- Limelight.h: feature bits + API ------------------------------------------
+$hRaw = [System.IO.File]::ReadAllText($Limelight)
+if ($hRaw.Contains("HMRDP_TOUCHPAD")) {
+	Write-Host "moonlight: Limelight.h touchpad patch already applied (skipped)"
+}
+else {
+	$heol = if ($hRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$anchorFF = "#define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported"
+	if (-not $hRaw.Contains($anchorFF)) { throw "moonlight: LI_FF anchor missing in Limelight.h" }
+	$hRaw = $hRaw.Replace($anchorFF, $anchorFF + $heol +
+		"#define LI_FF_TOUCHPAD_EVENTS         0x10 // LiSendTouchpadEvent() supported // HMRDP_TOUCHPAD" + $heol +
+		"#define LI_FF_TOUCHPAD_FRAME_EVENTS   0x20 // LiSendTouchpadFrameEvent() supported // HMRDP_TOUCHPAD")
+
+	$anchorTouch = @(
+		"int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y, float pressureOrDistance,",
+		"                     float contactAreaMajor, float contactAreaMinor, uint16_t rotation);"
+	) -join $heol
+	if (-not $hRaw.Contains($anchorTouch)) { throw "moonlight: LiSendTouchEvent anchor missing in Limelight.h" }
+	$decls = @(
+		$anchorTouch,
+		"",
+		"// HMRDP_TOUCHPAD: foundation-sunshine native precision touchpad extension.",
+		"#define LI_TOUCHPAD_BUTTON_PRIMARY 0x01",
+		"int LiSendTouchpadEvent(uint8_t eventType, uint32_t pointerId, float x, float y, float pressure,",
+		"                        float contactAreaMajor, float contactAreaMinor, uint16_t rotation,",
+		"                        uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState);",
+		"int LiSendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventTypes, const uint32_t* pointerIds,",
+		"                             const float* x, const float* y, const float* pressure, uint16_t rotation,",
+		"                             uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState);"
+	) -join $heol
+	$hRaw = $hRaw.Replace($anchorTouch, $decls)
+
+	[System.IO.File]::WriteAllText($Limelight, $hRaw)
+	Write-Host "moonlight: added native touchpad API to Limelight.h"
+}
+
+# --- Input.h: packet layouts --------------------------------------------------
+$ihRaw = [System.IO.File]::ReadAllText($InputHeader)
+if ($ihRaw.Contains("HMRDP_TOUCHPAD")) {
+	Write-Host "moonlight: Input.h touchpad patch already applied (skipped)"
+}
+else {
+	$ieol = if ($ihRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+	$anchorPen = "} SS_PEN_PACKET, *PSS_PEN_PACKET;"
+	if (-not $ihRaw.Contains($anchorPen)) { throw "moonlight: SS_PEN_PACKET anchor missing in Input.h" }
+	$structs = @(
+		$anchorPen,
+		"",
+		"// HMRDP_TOUCHPAD: foundation-sunshine native precision touchpad (x/y over the",
+		"// physical pad surface, deviceWidthMm/HeightMm = physical size).",
+		"#define SS_TOUCHPAD_MAGIC 0x55000009",
+		"#define SS_TOUCHPAD_BUTTON_PRIMARY 0x01",
+		"typedef struct _SS_TOUCHPAD_PACKET {",
+		"    NV_INPUT_HEADER header;",
+		"    uint8_t eventType;",
+		"    uint8_t buttonState;",
+		"    uint16_t rotation;",
+		"    uint32_t pointerId;",
+		"    uint16_t deviceWidthMm;",
+		"    uint16_t deviceHeightMm;",
+		"    netfloat x;",
+		"    netfloat y;",
+		"    netfloat pressure;",
+		"    netfloat contactAreaMajor;",
+		"    netfloat contactAreaMinor;",
+		"} SS_TOUCHPAD_PACKET, *PSS_TOUCHPAD_PACKET;",
+		"",
+		"#define SS_TOUCHPAD_FRAME_MAGIC 0x5500000A",
+		"#define SS_TOUCHPAD_FRAME_MAX_CONTACTS 5",
+		"typedef struct _SS_TOUCHPAD_FRAME_CONTACT {",
+		"    uint8_t eventType;",
+		"    uint8_t zero[1]; // Alignment/reserved",
+		"    uint16_t pressure;",
+		"    uint32_t pointerId;",
+		"    uint16_t x;",
+		"    uint16_t y;",
+		"} SS_TOUCHPAD_FRAME_CONTACT, *PSS_TOUCHPAD_FRAME_CONTACT;",
+		"",
+		"typedef struct _SS_TOUCHPAD_FRAME_PACKET {",
+		"    NV_INPUT_HEADER header;",
+		"    uint8_t contactCount;",
+		"    uint8_t buttonState;",
+		"    uint16_t rotation;",
+		"    uint16_t deviceWidthMm;",
+		"    uint16_t deviceHeightMm;",
+		"    SS_TOUCHPAD_FRAME_CONTACT contacts[SS_TOUCHPAD_FRAME_MAX_CONTACTS];",
+		"} SS_TOUCHPAD_FRAME_PACKET, *PSS_TOUCHPAD_FRAME_PACKET;"
+	) -join $ieol
+	$ihRaw = $ihRaw.Replace($anchorPen, $structs)
+	[System.IO.File]::WriteAllText($InputHeader, $ihRaw)
+	Write-Host "moonlight: added touchpad packets to Input.h"
+}
+
+# --- InputStream.c: union, state, send ----------------------------------------
+$icRaw = [System.IO.File]::ReadAllText($InputStream)
+if ($icRaw.Contains("HMRDP_TOUCHPAD")) {
+	Write-Host "moonlight: InputStream.c touchpad patch already applied (skipped)"
+}
+else {
+	$ieol = if ($icRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$anchorUnion = "        SS_TOUCH_PACKET touch;" + $ieol + "        SS_PEN_PACKET pen;"
+	if (-not $icRaw.Contains($anchorUnion)) { throw "moonlight: SS_TOUCH_PACKET union anchor missing" }
+	$icRaw = $icRaw.Replace($anchorUnion,
+		"        SS_TOUCH_PACKET touch;" + $ieol +
+		"        SS_TOUCHPAD_PACKET touchpad; // HMRDP_TOUCHPAD" + $ieol +
+		"        SS_TOUCHPAD_FRAME_PACKET touchpadFrame; // HMRDP_TOUCHPAD" + $ieol +
+		"        SS_PEN_PACKET pen;")
+
+	$anchorStatic = "static uint8_t currentPenButtonState;"
+	if (-not $icRaw.Contains($anchorStatic)) { throw "moonlight: currentPenButtonState anchor missing" }
+	$icRaw = $icRaw.Replace($anchorStatic,
+		$anchorStatic + $ieol + "static uint8_t currentTouchpadButtonState; // HMRDP_TOUCHPAD")
+
+	$anchorDefine = "#define TOUCH_EVENT_IS_BATCHABLE(x) ((x) == LI_TOUCH_EVENT_HOVER || (x) == LI_TOUCH_EVENT_MOVE)"
+	if (-not $icRaw.Contains($anchorDefine)) { throw "moonlight: TOUCH_EVENT_IS_BATCHABLE anchor missing" }
+	$icRaw = $icRaw.Replace($anchorDefine,
+		$anchorDefine + $ieol + "#define TOUCHPAD_FLUSH_INTERVAL_MS 1 // HMRDP_TOUCHPAD")
+
+	$anchorInit = "    currentPenButtonState = 0;"
+	if (-not $icRaw.Contains($anchorInit)) { throw "moonlight: currentPenButtonState init anchor missing" }
+	$icRaw = $icRaw.Replace($anchorInit,
+		$anchorInit + $ieol + "    currentTouchpadButtonState = 0; // HMRDP_TOUCHPAD")
+
+	$anchorTime = "    uint64_t lastPenPacketTime = 0;"
+	if (-not $icRaw.Contains($anchorTime)) { throw "moonlight: lastPenPacketTime anchor missing" }
+	$icRaw = $icRaw.Replace($anchorTime,
+		$anchorTime + $ieol + "    uint64_t lastTouchpadFlushTime = 0; // HMRDP_TOUCHPAD")
+
+	# Pace touchpad frames: allow newer move-only frames to replace a queued one.
+	$anchorSend = @(
+		"        // Encrypt and send the input packet",
+		"        if (!sendInputPacket(holder, LbqGetItemCount(&packetQueue) > 0)) {"
+	) -join $ieol
+	if (-not $icRaw.Contains($anchorSend)) { throw "moonlight: input send anchor missing" }
+	$sendBlock = @(
+		"        bool moreData = LbqGetItemCount(&packetQueue) > 0; // HMRDP_TOUCHPAD",
+		"        if (holder->packet.header.magic == LE32(SS_TOUCHPAD_FRAME_MAGIC) && holder->enetPacketFlags == 0) {",
+		"            uint64_t now = PltGetMillis();",
+		"            if (moreData && now >= lastTouchpadFlushTime + TOUCHPAD_FLUSH_INTERVAL_MS) {",
+		"                moreData = false;",
+		"            }",
+		"            if (!moreData) {",
+		"                lastTouchpadFlushTime = now;",
+		"            }",
+		"}",
+		"",
+		"        // Encrypt and send the input packet",
+		"        if (!sendInputPacket(holder, moreData)) {"
+	) -join $ieol
+	$icRaw = $icRaw.Replace($anchorSend, $sendBlock)
+
+	# Public API appended at EOF (floatToNetfloat / freePacketHolder / queues are in scope).
+	$api = @(
+		"",
+		"// HMRDP_TOUCHPAD: foundation-sunshine native precision touchpad.",
+		"static uint16_t mlNormalizedToUint16(float in) {",
+		"    if (in < 0.0f) { in = 0.0f; } else if (in > 1.0f) { in = 1.0f; }",
+		"    return (uint16_t)(in * 65535.0f + 0.5f);",
+		"}",
+		"",
+		"int LiSendTouchpadEvent(uint8_t eventType, uint32_t pointerId, float x, float y, float pressure,",
+		"                        float contactAreaMajor, float contactAreaMinor, uint16_t rotation,",
+		"                        uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState) {",
+		"    PPACKET_HOLDER holder;",
+		"    int err;",
+		"    if (!initialized) {",
+		"        return -2;",
+		"    }",
+		"    if (!(SunshineFeatureFlags & LI_FF_TOUCHPAD_EVENTS)) {",
+		"        return LI_ERR_UNSUPPORTED;",
+		"    }",
+		"    holder = allocatePacketHolder(0);",
+		"    if (holder == NULL) {",
+		"        return -1;",
+		"    }",
+		"    holder->channelId = CTRL_CHANNEL_TOUCH;",
+		"    holder->enetPacketFlags = (TOUCH_EVENT_IS_BATCHABLE(eventType) && !(buttonState ^ currentTouchpadButtonState)) ? 0 : ENET_PACKET_FLAG_RELIABLE;",
+		"    currentTouchpadButtonState = buttonState;",
+		"    holder->packet.touchpad.header.size = BE32(sizeof(SS_TOUCHPAD_PACKET) - sizeof(uint32_t));",
+		"    holder->packet.touchpad.header.magic = LE32(SS_TOUCHPAD_MAGIC);",
+		"    holder->packet.touchpad.eventType = eventType;",
+		"    holder->packet.touchpad.buttonState = buttonState;",
+		"    holder->packet.touchpad.rotation = LE16(rotation);",
+		"    holder->packet.touchpad.pointerId = LE32(pointerId);",
+		"    holder->packet.touchpad.deviceWidthMm = LE16(deviceWidthMm);",
+		"    holder->packet.touchpad.deviceHeightMm = LE16(deviceHeightMm);",
+		"    floatToNetfloat(x, holder->packet.touchpad.x);",
+		"    floatToNetfloat(y, holder->packet.touchpad.y);",
+		"    floatToNetfloat(pressure, holder->packet.touchpad.pressure);",
+		"    floatToNetfloat(contactAreaMajor, holder->packet.touchpad.contactAreaMajor);",
+		"    floatToNetfloat(contactAreaMinor, holder->packet.touchpad.contactAreaMinor);",
+		"    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);",
+		"    if (err != LBQ_SUCCESS) {",
+		"        LC_ASSERT(err == LBQ_BOUND_EXCEEDED);",
+		"        Limelog(""Input queue reached maximum size limit\n"");",
+		"        freePacketHolder(holder);",
+		"    }",
+		"    return err;",
+		"}",
+		"",
+		"int LiSendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventTypes, const uint32_t* pointerIds,",
+		"                             const float* x, const float* y, const float* pressure, uint16_t rotation,",
+		"                             uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState) {",
+		"    PPACKET_HOLDER holder;",
+		"    int err;",
+		"    bool batchable = true;",
+		"    uint8_t i;",
+		"    if (!initialized) {",
+		"        return -2;",
+		"    }",
+		"    if (!(SunshineFeatureFlags & LI_FF_TOUCHPAD_FRAME_EVENTS)) {",
+		"        return LI_ERR_UNSUPPORTED;",
+		"    }",
+		"    if (contactCount > SS_TOUCHPAD_FRAME_MAX_CONTACTS ||",
+		"        (contactCount > 0 && (eventTypes == NULL || pointerIds == NULL || x == NULL || y == NULL || pressure == NULL))) {",
+		"        return -3;",
+		"    }",
+		"    holder = allocatePacketHolder(0);",
+		"    if (holder == NULL) {",
+		"        return -1;",
+		"    }",
+		"    holder->channelId = CTRL_CHANNEL_TOUCH;",
+		"    holder->packet.touchpadFrame.header.size = BE32(sizeof(SS_TOUCHPAD_FRAME_PACKET) - sizeof(uint32_t));",
+		"    holder->packet.touchpadFrame.header.magic = LE32(SS_TOUCHPAD_FRAME_MAGIC);",
+		"    holder->packet.touchpadFrame.contactCount = contactCount;",
+		"    holder->packet.touchpadFrame.buttonState = buttonState;",
+		"    holder->packet.touchpadFrame.rotation = LE16(rotation);",
+		"    holder->packet.touchpadFrame.deviceWidthMm = LE16(deviceWidthMm);",
+		"    holder->packet.touchpadFrame.deviceHeightMm = LE16(deviceHeightMm);",
+		"    memset(holder->packet.touchpadFrame.contacts, 0, sizeof(holder->packet.touchpadFrame.contacts));",
+		"    for (i = 0; i < contactCount; i++) {",
+		"        holder->packet.touchpadFrame.contacts[i].eventType = eventTypes[i];",
+		"        holder->packet.touchpadFrame.contacts[i].pointerId = LE32(pointerIds[i]);",
+		"        holder->packet.touchpadFrame.contacts[i].x = LE16(mlNormalizedToUint16(x[i]));",
+		"        holder->packet.touchpadFrame.contacts[i].y = LE16(mlNormalizedToUint16(y[i]));",
+		"        holder->packet.touchpadFrame.contacts[i].pressure = LE16(mlNormalizedToUint16(pressure[i]));",
+		"        if (!TOUCH_EVENT_IS_BATCHABLE(eventTypes[i])) {",
+		"            batchable = false;",
+		"        }",
+		"    }",
+		"    holder->enetPacketFlags = (batchable && !(buttonState ^ currentTouchpadButtonState)) ? 0 : ENET_PACKET_FLAG_RELIABLE;",
+		"    currentTouchpadButtonState = buttonState;",
+		"    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);",
+		"    if (err != LBQ_SUCCESS) {",
+		"        LC_ASSERT(err == LBQ_BOUND_EXCEEDED);",
+		"        Limelog(""Input queue reached maximum size limit\n"");",
+		"        freePacketHolder(holder);",
+		"    }",
+		"    return err;",
+		"}"
+	) -join $ieol
+	$icRaw = $icRaw.TrimEnd() + $ieol + $api + $ieol
+
+	[System.IO.File]::WriteAllText($InputStream, $icRaw)
+	Write-Host "moonlight: added native touchpad send + packets to InputStream.c"
 }
 
 Write-Host "=== moonlight-common-c patches applied ==="

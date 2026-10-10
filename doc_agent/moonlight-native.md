@@ -133,8 +133,8 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
-  `moonlightText` / `moonlightHostFeatures` / `moonlightSetShortcutPassthrough`；窗口是**进程级单个**
-  `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
+  `moonlightTouchpad` / `moonlightText` / `moonlightHostFeatures` / `moonlightSetShortcutPassthrough`；
+  窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
 
 ### 3.1 本地光标模式（基地版 Sunshine 的光标通道）
@@ -175,8 +175,25 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   `IS_SUNSHINE()` 挡住不发。客户端改动不引入任何协议层面的兼容风险。
 - **验证**：需一台跑 foundation-sunshine 的主机（真机）。
 
-## 4. 控制 / 配对层（ArkTS）
+### 3.2 原生触控板（基地版 Sunshine 的 precision touchpad 扩展）
 
+> 归属见 [`session-and-input.md`](session-and-input.md) §2；这里是原生侧事实与接入。
+
+- **基线**：Moonlight 协议**没有**触控板通道；标准做法是把触控板翻译成滚轮 / 高分辨率滚轮 + 鼠标
+  （`LiSendHighResScrollEvent` 即为此）。
+- **foundation-sunshine 的触控板扩展**（HmRdp 已适配；改动写进 `native/scripts/patch-moonlight.ps1`
+  第 3 步，**不引 fork**）：
+  - 输入流包 `0x55000009`（单触点）/ `0x5500000A`（整帧 ≤5 触点）；x/y 是**物理触控板表面**的归一化坐标，
+    帧带 `deviceWidthMm/HeightMm` 与 `buttonState`；主机用 Windows 合成指针 `PT_TOUCHPAD`
+    （`CreateSyntheticPointerDevice2`，Win11）注入，**捏合 / 滚动交给系统手势引擎原生处理**。
+  - 能力位 `LI_FF_TOUCHPAD_EVENTS = 0x10` / `LI_FF_TOUCHPAD_FRAME_EVENTS = 0x20`，随 SDP
+    `x-ss-general.featureFlags` 到达（`LiGetHostFeatureFlags`）。
+  - `LiSendTouchpadEvent` / `LiSendTouchpadFrameEvent` 在能力位缺席时返回 `LI_ERR_UNSUPPORTED`，
+    所以**一般 Sunshine / GFE 不受影响**（不会收到未知包）。
+- **接线**：`SessionInput` 的捏合在主机广告帧能力时走 `InputSink.touchpadFrame`（合成两个触点——鸿蒙
+  不向应用暴露触控板真实触点），否则回落 Ctrl+滚轮 / 触点模拟；N-API 出口 `moonlightTouchpad`。
+
+## 4. 控制 / 配对层（ArkTS）
 控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**：
 传输与 mTLS / 证书 pin 用 `@ohos.net.http`，配对加密原语用 `cryptoFramework` 与 `@ohos.security.cert`，
 客户端身份（自签名 X.509 + HUKS 信封加密私钥）在 ArkTS 组装；**原生不含这一层**。落地在 `ets/moonlight/`：

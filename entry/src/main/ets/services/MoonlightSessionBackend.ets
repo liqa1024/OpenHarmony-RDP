@@ -4,7 +4,7 @@ import {
   moonlightKey, moonlightMouseButton, moonlightMouseMove,
   moonlightMousePosition, moonlightSessionActive, moonlightSessionClearSurface,
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener,
-  moonlightSetShortcutPassthrough, moonlightText, moonlightTouch
+  moonlightSetShortcutPassthrough, moonlightText, moonlightTouch, moonlightTouchpad
 } from 'libhmrdp.so';
 import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
 import { RemoteCursorUpdate } from './RemoteCursor';
@@ -32,6 +32,7 @@ export const ML_EVENT_KEY_INTERCEPT_UP: number = 7;
 
 // LiGetHostFeatureFlags bits we consume.
 export const ML_HOST_FEATURE_TOUCH: number = 0x01;
+export const ML_HOST_FEATURE_TOUCHPAD_FRAME: number = 0x20;
 
 export type MlKeyInterceptListener = (keyCode: number, down: boolean) => void;
 
@@ -359,10 +360,26 @@ export class MoonlightInputSink implements InputSink {
     }
   }
 
-  touchpadFrame(_contacts: TouchpadContact[], _buttonState: number, _widthMm: number,
-    _heightMm: number): void {
-    // TODO(native touchpad): send a precision-touchpad frame once the vendored
-    // moonlight-common-c is patched with the foundation-sunshine SS_TOUCHPAD extension.
+  touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
+    heightMm: number): void {
+    // Hosts that do not advertise the extension ignore the packet (LiSend returns unsupported).
+    if (contacts.length === 0) {
+      return;
+    }
+    const types: number[] = [];
+    const ids: number[] = [];
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const ps: number[] = [];
+    for (let i = 0; i < contacts.length; i++) {
+      const contact: TouchpadContact = contacts[i];
+      types.push(MoonlightInputSink.mlTouchEvent(contact.phase));
+      ids.push(contact.pointerId);
+      xs.push(contact.x);
+      ys.push(contact.y);
+      ps.push(contact.pressure);
+    }
+    moonlightTouchpad(types, ids, xs, ys, ps, widthMm, heightMm, buttonState);
   }
 
   button(action: number, button: number, x: number, y: number): void {

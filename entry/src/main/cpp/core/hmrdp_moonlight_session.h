@@ -98,6 +98,12 @@ void MoonlightSessionScroll(int clicks);
 // Native touchscreen: x/y are normalized 0..1 over the stream area, pressure 0..1
 // (0 = unknown). eventType is a LI_TOUCH_EVENT_* constant.
 void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure);
+// Native precision touchpad (foundation-sunshine extension): contacts normalized
+// over the physical pad surface, widthMm/heightMm its physical size. No-op unless
+// the host advertised the touchpad feature flag.
+void MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
+                                   const uint32_t* pointerIds, const float* x, const float* y,
+                                   const float* pressure, int widthMm, int heightMm, int buttonState);
 // High-resolution wheel, in WHEEL_DELTA (120) units; vertical and horizontal.
 void MoonlightSessionHighResScroll(int amount);
 void MoonlightSessionHighResHScroll(int amount);

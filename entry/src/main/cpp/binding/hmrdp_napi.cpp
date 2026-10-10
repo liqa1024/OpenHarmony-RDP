@@ -1734,6 +1734,63 @@ napi_value MoonlightSessionTouch(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
+// eventTypes / pointerIds / x / y / pressure are parallel arrays; width/height are
+// millimetres and buttonState a LI_TOUCHPAD_BUTTON_* mask.
+napi_value MoonlightSessionTouchpadFrame(napi_env env, napi_callback_info info) {
+  constexpr uint32_t kMaxContacts = 5;
+  size_t argc = 8;
+  napi_value args[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 8) {
+    return CreateUndefined(env);
+  }
+  int32_t widthMm = 0;
+  int32_t heightMm = 0;
+  int32_t buttonState = 0;
+  napi_get_value_int32(env, args[5], &widthMm);
+  napi_get_value_int32(env, args[6], &heightMm);
+  napi_get_value_int32(env, args[7], &buttonState);
+
+  uint32_t count = 0;
+  if (napi_get_array_length(env, args[0], &count) != napi_ok) {
+    return CreateUndefined(env);
+  }
+  if (count > kMaxContacts) {
+    count = kMaxContacts;
+  }
+  uint8_t eventTypes[kMaxContacts] = {0};
+  uint32_t pointerIds[kMaxContacts] = {0};
+  float x[kMaxContacts] = {0};
+  float y[kMaxContacts] = {0};
+  float pressure[kMaxContacts] = {0};
+  for (uint32_t i = 0; i < count; i++) {
+    napi_value element = nullptr;
+    int32_t type = 0;
+    uint32_t id = 0;
+    double px = 0;
+    double py = 0;
+    double p = 0;
+    napi_get_element(env, args[0], i, &element);
+    napi_get_value_int32(env, element, &type);
+    napi_get_element(env, args[1], i, &element);
+    napi_get_value_uint32(env, element, &id);
+    napi_get_element(env, args[2], i, &element);
+    napi_get_value_double(env, element, &px);
+    napi_get_element(env, args[3], i, &element);
+    napi_get_value_double(env, element, &py);
+    napi_get_element(env, args[4], i, &element);
+    napi_get_value_double(env, element, &p);
+    eventTypes[i] = static_cast<uint8_t>(type);
+    pointerIds[i] = id;
+    x[i] = static_cast<float>(px);
+    y[i] = static_cast<float>(py);
+    pressure[i] = static_cast<float>(p);
+  }
+  hmrdp::MoonlightSessionTouchpadFrame(static_cast<int>(count), eventTypes, pointerIds, x, y,
+                                       pressure, widthMm, heightMm, buttonState);
+  return CreateUndefined(env);
+}
+
 napi_value MoonlightSessionHighResScroll(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1908,6 +1965,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightScroll", nullptr, MoonlightSessionScroll, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightTouch", nullptr, MoonlightSessionTouch, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightTouchpad", nullptr, MoonlightSessionTouchpadFrame, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightHighResScroll", nullptr, MoonlightSessionHighResScroll, nullptr, nullptr,
        nullptr, napi_default, nullptr},

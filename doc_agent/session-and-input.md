@@ -261,7 +261,8 @@
   双指双击→中键都在 `SessionInput`，**两协议共享**；只有"直接缩放"改本机画面矩阵、属 RDP 呈现器专有，
   Moonlight 不暴露。**"原生触控板"是另一个终点**：`InputSink.touchpadFrame(contacts, buttonState, wMm, hMm)`
   表达它，仅 foundation-sunshine 主机有（`SS_TOUCHPAD` 扩展）；基础协议（含 Moonlight、RDP）都没有，
-  故只能落到 Ctrl+滚轮或触点模拟。客户端接入方式见 [`MOONLIGHT_PLAN.md`](../MOONLIGHT_PLAN.md)。
+  故只能落到 Ctrl+滚轮或触点模拟。客户端接入（自 patch common-c + 能力门控）见
+  [`moonlight-native.md`](moonlight-native.md) §3.2。
 
 ## 3. 工具栏与状态遥测
 

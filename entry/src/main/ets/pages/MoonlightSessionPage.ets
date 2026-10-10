@@ -7,7 +7,7 @@ import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
-import { ML_HOST_FEATURE_TOUCH, MoonlightInputSink,
+import { ML_HOST_FEATURE_TOUCH, ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { SessionInput } from '../services/SessionInput';
 import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
@@ -258,6 +258,8 @@ struct MoonlightSessionPage {
       const features: number = this.backend !== undefined ? this.backend.hostFeatureFlags() : 0;
       const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
       this.input?.setTouchEnabled(touchSupported);
+      // Native precision touchpad wins for pinch when the host advertises it.
+      this.input?.setNativeTouchpad((features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0);
       this.input?.setPinchMode(this.effectivePinchMode(touchSupported));
     }
     this.updateConnectOverlay();

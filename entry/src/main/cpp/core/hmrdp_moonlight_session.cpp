@@ -15,6 +15,9 @@
 namespace hmrdp {
 namespace {
 
+// Must match SS_TOUCHPAD_FRAME_MAX_CONTACTS in the patched moonlight-common-c.
+constexpr int kMaxTouchpadContacts = 5;
+
 std::mutex g_mutex;
 std::mutex g_cvMutex;
 std::condition_variable g_cv;
@@ -278,6 +281,19 @@ void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float
     LiSendTouchEvent(static_cast<uint8_t>(eventType), static_cast<uint32_t>(pointerId),
                      x, y, pressure, 0.0f, 0.0f, LI_ROT_UNKNOWN);
   }
+}
+
+void MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
+                                   const uint32_t* pointerIds, const float* x, const float* y,
+                                   const float* pressure, int widthMm, int heightMm, int buttonState) {
+  if (!g_connected || contactCount <= 0 || contactCount > kMaxTouchpadContacts) {
+    return;
+  }
+  // LiSendTouchpadFrameEvent itself returns LI_ERR_UNSUPPORTED unless the host
+  // advertised the extension, so stock Sunshine / GFE simply ignore this.
+  LiSendTouchpadFrameEvent(static_cast<uint8_t>(contactCount), eventTypes, pointerIds, x, y, pressure,
+                           LI_ROT_UNKNOWN, static_cast<uint16_t>(widthMm),
+                           static_cast<uint16_t>(heightMm), static_cast<uint8_t>(buttonState));
 }
 
 void MoonlightSessionHighResScroll(int amount) {

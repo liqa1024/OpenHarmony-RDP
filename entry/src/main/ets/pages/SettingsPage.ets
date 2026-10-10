@@ -1221,24 +1221,26 @@ struct SettingsPage {
               }
             })
 
-            Divider().color($r('app.color.divider'))
+            if (this.protocol === PROTOCOL_RDP) {
+              Divider().color($r('app.color.divider'))
 
-            Text('会话')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-              .margin({ bottom: 4 })
+              Text('会话')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+                .margin({ bottom: 4 })
 
-            this.toggleItem({
-              title: '回到前台自动重连',
-              subtitle: '切到后台再回来时，若会话已被系统断开则自动重连，不必手动点「重试」',
-              value: this.reconnectOnForeground,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.reconnectOnForeground = v;
-                this.persist();
-              }
-            })
+              this.toggleItem({
+                title: '回到前台自动重连',
+                subtitle: '切到后台再回来时，若会话已被系统断开则自动重连，不必手动点「重试」',
+                value: this.reconnectOnForeground,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: boolean) => {
+                  this.reconnectOnForeground = v;
+                  this.persist();
+                }
+              })
+            }
 
             if (this.protocol === PROTOCOL_RDP) {
             Divider().color($r('app.color.divider'))

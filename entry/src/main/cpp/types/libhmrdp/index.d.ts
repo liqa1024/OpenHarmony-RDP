@@ -530,6 +530,11 @@ export const moonlightScroll: (clicks: number) => void;
 export const moonlightTouch: (eventType: number, pointerId: number, x: number, y: number,
   pressure: number) => void;
 
+/** Input: native precision-touchpad frame (foundation-sunshine); parallel contact arrays. */
+export const moonlightTouchpad: (eventTypes: number[], pointerIds: number[], x: number[],
+  y: number[], pressure: number[], widthMm: number, heightMm: number,
+  buttonState: number) => void;
+
 /** Input: high-resolution vertical wheel in WHEEL_DELTA (120) units. */
 export const moonlightHighResScroll: (amount: number) => void;
 
