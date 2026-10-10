@@ -449,7 +449,8 @@ export interface MoonlightSessionConfig {
   fps: number;
   bitrateKbps: number;
   packetSize: number;
-  streamingRemotely: boolean;
+  /** STREAM_CFG_*: 0 local, 1 remote, 2 auto. */
+  streamingRemotely: number;
   audioConfiguration: number;
   supportedVideoFormats: number;
   clientRefreshRateX100: number;

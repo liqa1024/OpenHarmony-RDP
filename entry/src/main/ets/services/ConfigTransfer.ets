@@ -5,8 +5,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { SR_BACKEND_XENGINE } from '../model/RdpModels';
 import {
-  ConnectionExport, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP,
-  SavedConnection
+  ConnectionExport, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709,
+  ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP, SavedConnection
 } from '../model/Connections';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
@@ -70,8 +70,10 @@ export class ConfigTransfer {
     item.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', 0);
     item.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', 0);
     item.mlFps = ConfigTransfer.readNumber(rec, 'mlFps', 60);
+    item.mlBitrateAuto = ConfigTransfer.readBoolean(rec, 'mlBitrateAuto', true);
     item.mlBitrateKbps = ConfigTransfer.readNumber(rec, 'mlBitrateKbps', ML_BITRATE_DEFAULT_KBPS);
     item.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', ML_CODEC_AUTO);
+    item.mlColorSpace = ConfigTransfer.readNumber(rec, 'mlColorSpace', ML_COLORSPACE_REC709);
     item.useGlobalStream = ConfigTransfer.readBoolean(rec, 'useGlobalStream', true);
     return item;
   }
@@ -304,9 +306,11 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'developerMode', settings.developerMode);
     settings.gfxCapture = ConfigTransfer.readBoolean(rec, 'gfxCapture', settings.gfxCapture);
     settings.mlFps = ConfigTransfer.readNumber(rec, 'mlFps', settings.mlFps);
+    settings.mlBitrateAuto = ConfigTransfer.readBoolean(rec, 'mlBitrateAuto', settings.mlBitrateAuto);
     settings.mlBitrateKbps =
       ConfigTransfer.readNumber(rec, 'mlBitrateKbps', settings.mlBitrateKbps);
     settings.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', settings.mlCodec);
+    settings.mlColorSpace = ConfigTransfer.readNumber(rec, 'mlColorSpace', settings.mlColorSpace);
     settings.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', settings.mlResMode);
     settings.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', settings.mlWidth);
     settings.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', settings.mlHeight);

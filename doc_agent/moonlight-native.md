@@ -80,6 +80,12 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
     红色小字提示无硬件解码支持，无任何解码器时提示无法串流。
   协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）。`moonlightVideoCodec()` 给出编码
   标记（h264/hevc/av1），工具栏把它写进分辨率括号（`1920 x 1080 (HEVC)`；软解再加 CPU，如 `(HEVC, CPU)`）。
+- **其余 `STREAM_CONFIGURATION` 字段的落点**：`colorSpace` / `colorRange` 合成 SDP
+  `x-nv-video[0].encoderCscMode`（`(space<<1)|range`）交主机做编码 CSC——SDR 取 Rec709 + limited，
+  `0` 是 Rec601（HD 下偏色）；`streamingRemotely` 用 `STREAM_CFG_AUTO`（由库按 RFC1918 判本地/远程，
+  影响带宽/音频/QoS 广告与包大小）；`bitrate` 经 `x-ml-video.configuredBitrateKbps` 交 Sunshine 反推实际编码码率。
+  分辨率/帧率走 `clientViewportWd/Ht` 与 `maxFPS`，`clientRefreshRateX100` 仅用于 NTSC 分数帧率
+  （落在请求帧率 ±2% 内才生效，否则为 0）。
 
 ### 与 RDP 呈现器的复用口径
 

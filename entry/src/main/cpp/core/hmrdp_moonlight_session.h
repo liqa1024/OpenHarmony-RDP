@@ -54,7 +54,8 @@ struct MoonlightStreamConfig {
   int fps = 60;
   int bitrateKbps = 20000;
   int packetSize = 1024;
-  bool streamingRemotely = false;
+  // STREAM_CFG_* (0 local, 1 remote, 2 auto).
+  int streamingRemotely = 2;
   int audioConfiguration = 0;
   int supportedVideoFormats = 0;
   int clientRefreshRateX100 = 0;

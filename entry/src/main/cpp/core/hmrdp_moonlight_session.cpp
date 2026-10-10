@@ -112,7 +112,7 @@ void Run(const MoonlightStreamConfig& config) {
   stream.fps = config.fps;
   stream.bitrate = config.bitrateKbps;
   stream.packetSize = config.packetSize;
-  stream.streamingRemotely = config.streamingRemotely ? STREAM_CFG_REMOTE : STREAM_CFG_LOCAL;
+  stream.streamingRemotely = config.streamingRemotely;
   stream.audioConfiguration = config.audioConfiguration;
   stream.supportedVideoFormats = config.supportedVideoFormats;
   stream.clientRefreshRateX100 = config.clientRefreshRateX100;

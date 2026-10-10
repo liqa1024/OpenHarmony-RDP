@@ -56,9 +56,18 @@ export const ML_CODEC_HEVC: number = 2;
 export const ML_CODEC_AV1: number = 3;
 
 export const ML_FPS_PRESETS: number[] = [30, 60, 90, 120];
+export const ML_FPS_MIN: number = 10;
+export const ML_FPS_MAX: number = 240;
 export const ML_BITRATE_MIN_KBPS: number = 1000;
 export const ML_BITRATE_MAX_KBPS: number = 200000;
 export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
+
+// SDR color space, sent as encoderCscMode = (space<<1)|range.
+export const ML_COLORSPACE_REC601: number = 0;
+export const ML_COLORSPACE_REC709: number = 1;
+export const ML_COLOR_RANGE_LIMITED: number = 0;
+// STREAM_CFG_* for STREAM_CONFIGURATION.streamingRemotely; AUTO uses the RFC1918 heuristic.
+export const ML_STREAM_CFG_AUTO: number = 2;
 
 // Position-separated record length; slots are fixed and append-only (see
 // settings-and-storage.md §1). Shared slots are written by the base, each
@@ -96,8 +105,10 @@ export class MoonlightProfile {
   width: number = 0;
   height: number = 0;
   fps: number = 60;
+  bitrateAuto: boolean = true;
   bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   codec: number = ML_CODEC_AUTO;
+  colorSpace: number = ML_COLORSPACE_REC709;
 }
 
 export class MoonlightStreamConfig implements MoonlightSessionConfig {
@@ -111,7 +122,7 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   fps: number = 60;
   bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   packetSize: number = 1024;
-  streamingRemotely: boolean = false;
+  streamingRemotely: number = ML_STREAM_CFG_AUTO;
   audioConfiguration: number = 0;
   supportedVideoFormats: number = 0;
   clientRefreshRateX100: number = 0;
@@ -231,8 +242,10 @@ export class ConnectionExport {
   mlWidth: number = 0;
   mlHeight: number = 0;
   mlFps: number = 60;
+  mlBitrateAuto: boolean = true;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
+  mlColorSpace: number = ML_COLORSPACE_REC709;
   useGlobalStream: boolean = true;
 }
 
@@ -541,8 +554,10 @@ export class MoonlightConnection extends SavedConnection {
   mlWidth: number = 0;
   mlHeight: number = 0;
   mlFps: number = 60;
+  mlBitrateAuto: boolean = true;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
+  mlColorSpace: number = ML_COLORSPACE_REC709;
 
   protected defaultPort(): number {
     return ML_DEFAULT_PORT;
@@ -617,6 +632,8 @@ export class MoonlightConnection extends SavedConnection {
     slots[37] = this.mlCodec.toString();
     slots[41] = this.useGlobalStream ? '1' : '0';
     slots[42] = encodeField(this.mlHostId);
+    slots[43] = this.mlBitrateAuto ? '1' : '0';
+    slots[44] = this.mlColorSpace.toString();
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -633,6 +650,9 @@ export class MoonlightConnection extends SavedConnection {
       ? parseFieldNumber(parts[37], ML_CODEC_AUTO) : ML_CODEC_AUTO;
     this.useGlobalStream = parts.length > 41 ? parts[41] === '1' : true;
     this.mlHostId = parts.length > 42 ? decodeField(parts[42]) : '';
+    this.mlBitrateAuto = parts.length > 43 ? parts[43] !== '0' : true;
+    this.mlColorSpace = parts.length > 44
+      ? parseFieldNumber(parts[44], ML_COLORSPACE_REC709) : ML_COLORSPACE_REC709;
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -643,8 +663,10 @@ export class MoonlightConnection extends SavedConnection {
     item.mlWidth = this.mlWidth;
     item.mlHeight = this.mlHeight;
     item.mlFps = this.mlFps;
+    item.mlBitrateAuto = this.mlBitrateAuto;
     item.mlBitrateKbps = this.mlBitrateKbps;
     item.mlCodec = this.mlCodec;
+    item.mlColorSpace = this.mlColorSpace;
     item.useGlobalStream = this.useGlobalStream;
   }
 
@@ -656,8 +678,10 @@ export class MoonlightConnection extends SavedConnection {
     this.mlWidth = item.mlWidth;
     this.mlHeight = item.mlHeight;
     this.mlFps = item.mlFps;
+    this.mlBitrateAuto = item.mlBitrateAuto;
     this.mlBitrateKbps = item.mlBitrateKbps;
     this.mlCodec = item.mlCodec;
+    this.mlColorSpace = item.mlColorSpace;
     this.useGlobalStream = item.useGlobalStream;
   }
 }

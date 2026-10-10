@@ -6,8 +6,8 @@ import {
   AdvancedProfile, DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
 } from '../model/RdpModels';
 import {
-  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_RES_FOLLOW_SCREEN, MoonlightConnection, MoonlightProfile,
-  PROTOCOL_RDP, RdpConnection
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_RES_FOLLOW_SCREEN,
+  MoonlightConnection, MoonlightProfile, PROTOCOL_RDP, RdpConnection
 } from '../model/Connections';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -106,8 +106,10 @@ export class AppSettings {
   developerMode: boolean = false;
   gfxCapture: boolean = false;
   mlFps: number = 60;
+  mlBitrateAuto: boolean = true;
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
+  mlColorSpace: number = ML_COLORSPACE_REC709;
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
@@ -235,7 +237,11 @@ export class SettingsStore {
       settings.mlFps = SettingsStore.readNumber(store, 'mlFps', settings.mlFps);
       settings.mlBitrateKbps =
         SettingsStore.readNumber(store, 'mlBitrateKbps', settings.mlBitrateKbps);
+      settings.mlBitrateAuto =
+        SettingsStore.readBoolean(store, 'mlBitrateAuto', settings.mlBitrateAuto);
       settings.mlCodec = SettingsStore.readNumber(store, 'mlCodec', settings.mlCodec);
+      settings.mlColorSpace =
+        SettingsStore.readNumber(store, 'mlColorSpace', settings.mlColorSpace);
       settings.mlResMode = SettingsStore.readNumber(store, 'mlResMode', settings.mlResMode);
       settings.mlWidth = SettingsStore.readNumber(store, 'mlWidth', settings.mlWidth);
       settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
@@ -306,7 +312,9 @@ export class SettingsStore {
       store.putSync('gfxCapture', settings.gfxCapture);
       store.putSync('mlFps', settings.mlFps);
       store.putSync('mlBitrateKbps', settings.mlBitrateKbps);
+      store.putSync('mlBitrateAuto', settings.mlBitrateAuto);
       store.putSync('mlCodec', settings.mlCodec);
+      store.putSync('mlColorSpace', settings.mlColorSpace);
       store.putSync('mlResMode', settings.mlResMode);
       store.putSync('mlWidth', settings.mlWidth);
       store.putSync('mlHeight', settings.mlHeight);
@@ -520,8 +528,10 @@ export class SettingsStore {
     profile.width = settings.mlWidth;
     profile.height = settings.mlHeight;
     profile.fps = settings.mlFps;
+    profile.bitrateAuto = settings.mlBitrateAuto;
     profile.bitrateKbps = settings.mlBitrateKbps;
     profile.codec = settings.mlCodec;
+    profile.colorSpace = settings.mlColorSpace;
     return profile;
   }
 
@@ -534,8 +544,10 @@ export class SettingsStore {
     profile.width = conn.mlWidth;
     profile.height = conn.mlHeight;
     profile.fps = conn.mlFps;
+    profile.bitrateAuto = conn.mlBitrateAuto;
     profile.bitrateKbps = conn.mlBitrateKbps;
     profile.codec = conn.mlCodec;
+    profile.colorSpace = conn.mlColorSpace;
     return profile;
   }
 

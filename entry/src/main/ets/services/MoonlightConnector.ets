@@ -1,7 +1,9 @@
 import { moonlightVideoFormats } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
+import { ML_COLOR_RANGE_LIMITED, ML_STREAM_CFG_AUTO, MoonlightProfile,
+  MoonlightStreamConfig } from '../model/Connections';
+import { recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
@@ -227,11 +229,16 @@ export class MoonlightConnector {
     const rikeyHex: string = MoonlightCrypto.randomHex(16);
     const rikeyId: number = MoonlightConnector.randomKeyId();
     const options: MoonlightLaunchOptions = new MoonlightLaunchOptions();
+    // The stream resolution is final here (follow-screen already resolved), so the
+    // auto bitrate is computed against the size that will actually be sent.
+    const effectiveBitrateKbps: number = stream.bitrateAuto
+      ? recommendedBitrateKbps(width, height, stream.fps, stream.codec)
+      : stream.bitrateKbps;
     options.appId = effectiveAppId;
     options.width = width;
     options.height = height;
     options.fps = stream.fps;
-    options.bitrateKbps = stream.bitrateKbps;
+    options.bitrateKbps = effectiveBitrateKbps;
     options.rikeyHex = rikeyHex;
     options.rikeyId = rikeyId;
     let launch: LaunchResult;
@@ -264,14 +271,16 @@ export class MoonlightConnector {
     config.width = width;
     config.height = height;
     config.fps = stream.fps;
-    config.bitrateKbps = stream.bitrateKbps;
+    config.bitrateKbps = effectiveBitrateKbps;
     config.packetSize = 1024;
-    config.streamingRemotely = false;
+    // Let the client library decide local vs remote (RFC1918 heuristic) instead of
+    // forcing LOCAL; it drives bitrate/audio/QoS advertisement and packet size.
+    config.streamingRemotely = ML_STREAM_CFG_AUTO;
     config.audioConfiguration = MoonlightConnector.AUDIO_CONFIGURATION_STEREO;
     config.supportedVideoFormats = moonlightVideoFormats(stream.codec);
     config.clientRefreshRateX100 = 0;
-    config.colorSpace = 0;
-    config.colorRange = 0;
+    config.colorSpace = stream.colorSpace;
+    config.colorRange = ML_COLOR_RANGE_LIMITED;
     config.encryptionFlags = 0;
     config.remoteInputAesKeyHex = rikeyHex;
     config.remoteInputAesIvHex = MoonlightConnector.ivHex(rikeyId);

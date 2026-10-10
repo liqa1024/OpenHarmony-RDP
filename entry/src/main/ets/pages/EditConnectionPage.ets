@@ -7,6 +7,7 @@ import { AdvancedProfile, DisplayProfile, RdpConnectOptions,
 import { ConnectOrigin, EditConnectionParams,
   ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
+  ML_COLORSPACE_REC601, ML_COLORSPACE_REC709,
   ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
   MoonlightConnection, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
   RdpConnection, SavedConnection } from '../model/Connections';
@@ -20,6 +21,7 @@ import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
+import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { showHostPicker } from '../utils/HostSearchPrompt';
@@ -75,7 +77,11 @@ struct EditConnectionPage {
   @State mlWidthText: string = '1920';
   @State mlHeightText: string = '1080';
   @State mlFps: number = 60;
-  @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
+  @State mlFpsText: string = '60';
+  @State mlFpsCustom: boolean = false;
+  @State mlBitrateAuto: boolean = true;
+  @State mlBitrateText: string = kbpsToMbps(ML_BITRATE_DEFAULT_KBPS).toString();
+  @State mlColorSpace: number = ML_COLORSPACE_REC709;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State useGlobalStream: boolean = true;
   private mlH264Support: number = CODEC_SUPPORT_NONE;
@@ -98,6 +104,8 @@ struct EditConnectionPage {
   private originalMoonlightHostId: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
+  private detectedWidth: number = 1920;
+  private detectedHeight: number = 1080;
 
   private sessionListener: SessionStateListener = (connectionId: string,
     state: ConnectionState, message: string, origin: ConnectOrigin): void => {
@@ -126,13 +134,19 @@ struct EditConnectionPage {
     const detected: DisplayProfile = SettingsStore.detectedDisplay();
     this.detectedText = detected.valid()
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
+    this.detectedWidth = detected.valid() ? detected.width : 1920;
+    this.detectedHeight = detected.valid() ? detected.height : 1080;
     this.srUsable = SettingsStore.superResolutionUsable();
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
     this.scaleText = this.suggestedScale().toString();
     const mlDefaults: AppSettings = SettingsStore.load();
     this.mlFps = mlDefaults.mlFps;
-    this.mlBitrateText = mlDefaults.mlBitrateKbps.toString();
+    this.mlFpsText = mlDefaults.mlFps.toString();
+    this.mlFpsCustom = ML_FPS_PRESETS.indexOf(mlDefaults.mlFps) < 0;
+    this.mlBitrateAuto = mlDefaults.mlBitrateAuto;
+    this.mlBitrateText = kbpsToMbps(mlDefaults.mlBitrateKbps).toString();
+    this.mlColorSpace = mlDefaults.mlColorSpace;
     this.mlCodec = mlDefaults.mlCodec;
     this.clampMlCodec();
 
@@ -187,7 +201,11 @@ struct EditConnectionPage {
           this.mlHeightText = conn.mlHeight.toString();
         }
         this.mlFps = conn.mlFps;
-        this.mlBitrateText = conn.mlBitrateKbps.toString();
+        this.mlFpsText = conn.mlFps.toString();
+        this.mlFpsCustom = ML_FPS_PRESETS.indexOf(conn.mlFps) < 0;
+        this.mlBitrateAuto = conn.mlBitrateAuto;
+        this.mlBitrateText = kbpsToMbps(conn.mlBitrateKbps).toString();
+        this.mlColorSpace = conn.mlColorSpace;
         this.mlCodec = conn.mlCodec;
         this.useGlobalStream = conn.useGlobalStream;
       }
@@ -252,13 +270,26 @@ struct EditConnectionPage {
     return Number.isNaN(value) || value <= 0 ? ML_DEFAULT_PORT : value;
   }
 
-  private parsedBitrate(): number {
-    const value: number = Number.parseInt(this.mlBitrateText, 10);
-    return Number.isNaN(value) ? ML_BITRATE_DEFAULT_KBPS : value;
+  // 码率输入以 Mbps 计，存储仍是 kbps。
+  private effectiveBitrate(): number {
+    const mbps: number = Number.parseFloat(this.mlBitrateText);
+    const kbps: number = Number.isNaN(mbps) ? ML_BITRATE_DEFAULT_KBPS : mbpsToKbps(mbps);
+    return Math.min(Math.max(kbps, ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
   }
 
-  private effectiveBitrate(): number {
-    return Math.min(Math.max(this.parsedBitrate(), ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
+  private mlPreviewWidth(): number {
+    return this.mlResMode === ML_RES_FIXED
+      ? this.parseSize(this.mlWidthText, this.detectedWidth) : this.detectedWidth;
+  }
+
+  private mlPreviewHeight(): number {
+    return this.mlResMode === ML_RES_FIXED
+      ? this.parseSize(this.mlHeightText, this.detectedHeight) : this.detectedHeight;
+  }
+
+  private mlAutoBitrateKbps(): number {
+    return recommendedBitrateKbps(this.mlPreviewWidth(), this.mlPreviewHeight(), this.mlFps,
+      this.mlCodec);
   }
 
   private srSummary(profile: SrProfile): string {
@@ -271,13 +302,15 @@ struct EditConnectionPage {
   }
 
   private resModeLabel(mode: number): string {
-    return mode === ML_RES_FIXED ? '固定' : '跟随屏幕';
+    return mode === ML_RES_FIXED ? '手动' : '自动';
   }
 
   private streamSummary(profile: MoonlightProfile): string {
     const res: string = profile.resMode === ML_RES_FIXED
       ? `${profile.width}×${profile.height}` : this.resModeLabel(profile.resMode);
-    return `${res} · ${profile.fps}fps · ${profile.bitrateKbps}kbps`;
+    const bitrate: string = profile.bitrateAuto
+      ? '自动' : `${kbpsToMbps(profile.bitrateKbps)}Mbps`;
+    return `${res} · ${profile.fps}fps · ${bitrate}`;
   }
 
   private resolvedSr(): SrProfile {
@@ -464,7 +497,9 @@ struct EditConnectionPage {
     conn.mlHeight = this.mlResMode === ML_RES_FIXED
       ? this.parseSize(this.mlHeightText, 1080) : 0;
     conn.mlFps = this.mlFps;
+    conn.mlBitrateAuto = this.mlBitrateAuto;
     conn.mlBitrateKbps = this.effectiveBitrate();
+    conn.mlColorSpace = this.mlColorSpace;
     conn.mlCodec = this.mlCodec;
     conn.useGlobalStream = this.useGlobalStream;
     conn.updatedAt = Date.now();
@@ -768,25 +803,75 @@ struct EditConnectionPage {
   }
 
   @Builder
-  mlResModeChip(mode: number, label: string) {
-    ChoiceChip({
-      label: label,
-      selected: this.mlResMode === mode,
-      onTap: () => {
+  mlResModeChip(mode: number, label: string, leftMargin: number) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlResMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlResMode === mode
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
         this.mlResMode = mode;
-      }
-    })
+      })
   }
 
   @Builder
   mlFpsChip(preset: number) {
     ChoiceChip({
       label: preset.toString(),
-      selected: this.mlFps === preset,
+      selected: !this.mlFpsCustom && this.mlFps === preset,
       onTap: () => {
+        this.mlFpsCustom = false;
         this.mlFps = preset;
+        this.mlFpsText = preset.toString();
       }
     })
+  }
+
+  @Builder
+  mlFpsCustomChip() {
+    ChoiceChip({
+      label: '自定义',
+      selected: this.mlFpsCustom,
+      onTap: () => {
+        this.mlFpsCustom = true;
+      }
+    })
+  }
+
+  private syncFpsText(): void {
+    const value: number = Number.parseInt(this.mlFpsText, 10);
+    this.mlFps = clampFps(Number.isNaN(value) ? this.mlFps : value);
+  }
+
+  @Builder
+  mlColorSpaceChip(space: number, label: string) {
+    ChoiceChip({
+      label: label,
+      selected: this.mlColorSpace === space,
+      onTap: () => {
+        this.mlColorSpace = space;
+      }
+    })
+  }
+
+  @Builder
+  mlBitrateModeChip(label: string, auto: boolean, leftMargin: number) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlBitrateAuto === auto ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlBitrateAuto === auto
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlBitrateAuto = auto;
+      })
   }
 
   private mlCodecSupportOf(codec: number): number {
@@ -975,17 +1060,30 @@ struct EditConnectionPage {
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
           } else {
-            Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 4 })
-            Flex({ wrap: FlexWrap.Wrap }) {
-              this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
-              this.mlResModeChip(ML_RES_FIXED, '固定')
-            }
-            .width('100%').margin({ top: 8 })
+            Row() {
+              Column() {
+                Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text('自动跟随当前屏幕，或固定一个分辨率')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
 
-            if (this.mlResMode === ML_RES_FIXED) {
+              Row() {
+                this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '自动', 0)
+                this.mlResModeChip(ML_RES_FIXED, '手动', 8)
+              }
+            }
+            .width('100%').margin({ top: 12 })
+
+            if (this.mlResMode === ML_RES_FOLLOW_SCREEN) {
+              Text('自动检测：' + this.detectedText)
+                .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                .width('100%').margin({ top: 6 })
+            } else {
               Row() {
                 Column() {
-                  this.fieldLabel('宽度')
+                  this.fieldLabel('分辨率宽度')
                   TextInput({ placeholder: '1920', text: this.mlWidthText })
                     .width('100%').height(46).borderRadius(10)
                     .backgroundColor($r('app.color.input_bg'))
@@ -997,7 +1095,7 @@ struct EditConnectionPage {
                 .layoutWeight(1).alignItems(HorizontalAlign.Start)
 
                 Column() {
-                  this.fieldLabel('高度')
+                  this.fieldLabel('分辨率高度')
                   TextInput({ placeholder: '1080', text: this.mlHeightText })
                     .width('100%').height(46).borderRadius(10)
                     .backgroundColor($r('app.color.input_bg'))
@@ -1008,30 +1106,74 @@ struct EditConnectionPage {
                 }
                 .layoutWeight(1).margin({ left: 16 }).alignItems(HorizontalAlign.Start)
               }
-              .width('100%').margin({ bottom: 8 })
+              .width('100%').margin({ top: 12 })
+
+              Text('自动检测：' + this.detectedText)
+                .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                .width('100%').margin({ top: 6 })
             }
 
-            Text('帧率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
+            Text('帧率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 12 })
+            Text('默认 60，可选档位或自定义')
+              .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(ML_FPS_PRESETS, (preset: number) => {
                 this.mlFpsChip(preset)
               }, (preset: number) => preset.toString())
+              this.mlFpsCustomChip()
             }
             .width('100%').margin({ top: 8 })
 
-            Column() {
-              this.fieldLabel('码率 (kbps)')
-              TextInput({ placeholder: '20000', text: this.mlBitrateText })
-                .width('100%').height(46).borderRadius(10)
-                .backgroundColor($r('app.color.input_bg'))
-                .type(InputType.Number)
-                .onChange((value: string) => {
-                  this.mlBitrateText = value;
-                })
-              Text('建议 ' + ML_BITRATE_MIN_KBPS + ' – ' + ML_BITRATE_MAX_KBPS + ' kbps')
-                .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 4 })
+            if (this.mlFpsCustom) {
+              Row() {
+                TextInput({ placeholder: '60', text: this.mlFpsText })
+                  .width(140).height(46).borderRadius(10)
+                  .backgroundColor($r('app.color.input_bg'))
+                  .type(InputType.Number)
+                  .onChange((value: string) => {
+                    this.mlFpsText = value;
+                    this.syncFpsText();
+                  })
+                Text('fps')
+                  .fontSize(14).fontColor($r('app.color.text_tertiary')).margin({ left: 10 })
+              }
+              .width('100%').margin({ top: 4 })
             }
-            .width('100%').alignItems(HorizontalAlign.Start).margin({ top: 4 })
+
+            Row() {
+              Column() {
+                Text('码率').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text('自动按分辨率与帧率计算，或手动指定')
+                  .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Row() {
+                this.mlBitrateModeChip('自动', true, 0)
+                this.mlBitrateModeChip('手动', false, 8)
+              }
+            }
+            .width('100%').margin({ top: 12 })
+
+            if (this.mlBitrateAuto) {
+              Text('自动：约 ' + kbpsToMbps(this.mlAutoBitrateKbps()) + ' Mbps')
+                .fontSize(11).fontColor($r('app.color.text_tertiary'))
+                .width('100%').margin({ top: 6 })
+            } else {
+              Row() {
+                TextInput({ placeholder: '20', text: this.mlBitrateText })
+                  .width(140).height(46).borderRadius(10)
+                  .backgroundColor($r('app.color.input_bg'))
+                  .type(InputType.Number)
+                  .onChange((value: string) => {
+                    this.mlBitrateText = value;
+                  })
+                Text('Mbps')
+                  .fontSize(14).fontColor($r('app.color.text_tertiary')).margin({ left: 10 })
+              }
+              .width('100%').margin({ top: 6 })
+            }
 
             Text('编码器').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
             if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
@@ -1046,6 +1188,13 @@ struct EditConnectionPage {
               this.mlCodecChip(ML_CODEC_H264, 'H.264')
               this.mlCodecChip(ML_CODEC_HEVC, 'HEVC')
               this.mlCodecChip(ML_CODEC_AV1, 'AV1')
+            }
+            .width('100%').margin({ top: 8 })
+
+            Text('色彩空间').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 8 })
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709')
+              this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601')
             }
             .width('100%').margin({ top: 8 })
           }

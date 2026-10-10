@@ -2,8 +2,8 @@ import { common } from '@kit.AbilityKit';
 import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/RdpModels';
 import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
-  ML_CODEC_HEVC, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
-  PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
+  ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_FPS_PRESETS, ML_RES_FIXED,
+  ML_RES_FOLLOW_SCREEN, PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
@@ -17,6 +17,7 @@ import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
 import { isScalePreset, MAX_DESKTOP_SIZE, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
+import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
@@ -98,7 +99,11 @@ struct SettingsPage {
   @State mlWidthText: string = '';
   @State mlHeightText: string = '';
   @State mlFps: number = 60;
-  @State mlBitrateText: string = ML_BITRATE_DEFAULT_KBPS.toString();
+  @State mlFpsText: string = '60';
+  @State mlFpsCustom: boolean = false;
+  @State mlBitrateAuto: boolean = true;
+  @State mlBitrateText: string = kbpsToMbps(ML_BITRATE_DEFAULT_KBPS).toString();
+  @State mlColorSpace: number = ML_COLORSPACE_REC709;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   private mlH264Support: number = CODEC_SUPPORT_NONE;
@@ -173,7 +178,11 @@ struct SettingsPage {
       this.mlHeightText = this.sizeText(settings.mlHeight > 0
         ? settings.mlHeight : this.detectedHeight);
       this.mlFps = settings.mlFps;
-      this.mlBitrateText = settings.mlBitrateKbps.toString();
+      this.mlFpsText = settings.mlFps.toString();
+      this.mlFpsCustom = ML_FPS_PRESETS.indexOf(settings.mlFps) < 0;
+      this.mlBitrateAuto = settings.mlBitrateAuto;
+      this.mlBitrateText = kbpsToMbps(settings.mlBitrateKbps).toString();
+      this.mlColorSpace = settings.mlColorSpace;
       this.mlCodec = settings.mlCodec;
       this.mlCursorMode = settings.mlCursorMode;
       this.clampMlCodec();
@@ -272,11 +281,24 @@ struct SettingsPage {
   }
 
   private effectiveMlBitrate(): number {
-    const value: number = Number.parseInt(this.mlBitrateText, 10);
-    if (Number.isNaN(value)) {
-      return ML_BITRATE_DEFAULT_KBPS;
-    }
-    return Math.min(Math.max(value, ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
+    const mbps: number = Number.parseFloat(this.mlBitrateText);
+    const kbps: number = Number.isNaN(mbps) ? ML_BITRATE_DEFAULT_KBPS : mbpsToKbps(mbps);
+    return Math.min(Math.max(kbps, ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
+  }
+
+  private mlPreviewWidth(): number {
+    return this.mlResMode === ML_RES_FIXED
+      ? this.parseSize(this.mlWidthText, this.detectedWidth, MAX_DESKTOP_SIZE) : this.detectedWidth;
+  }
+
+  private mlPreviewHeight(): number {
+    return this.mlResMode === ML_RES_FIXED
+      ? this.parseSize(this.mlHeightText, this.detectedHeight, MAX_DESKTOP_SIZE) : this.detectedHeight;
+  }
+
+  private mlAutoBitrateKbps(): number {
+    return recommendedBitrateKbps(this.mlPreviewWidth(), this.mlPreviewHeight(), this.mlFps,
+      this.mlCodec);
   }
 
   private effectiveDefaultScale(): number {
@@ -356,7 +378,9 @@ struct SettingsPage {
       settings.mlHeight = this.mlResMode === ML_RES_FIXED
         ? this.parseSize(this.mlHeightText, this.detectedHeight, MAX_DESKTOP_SIZE) : 0;
       settings.mlFps = this.mlFps;
+      settings.mlBitrateAuto = this.mlBitrateAuto;
       settings.mlBitrateKbps = this.effectiveMlBitrate();
+      settings.mlColorSpace = this.mlColorSpace;
       settings.mlCodec = this.mlCodec;
       settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
       settings.mlPinchZoomSpeed = this.pinchZoomSpeed;
@@ -621,12 +645,60 @@ struct SettingsPage {
   mlFpsChip(preset: number) {
     ChoiceChip({
       label: preset.toString(),
-      selected: this.mlFps === preset,
+      selected: !this.mlFpsCustom && this.mlFps === preset,
       onTap: () => {
+        this.mlFpsCustom = false;
         this.mlFps = preset;
+        this.mlFpsText = preset.toString();
         this.persist();
       }
     })
+  }
+
+  @Builder
+  mlFpsCustomChip() {
+    ChoiceChip({
+      label: '自定义',
+      selected: this.mlFpsCustom,
+      onTap: () => {
+        this.mlFpsCustom = true;
+        this.persist();
+      }
+    })
+  }
+
+  private syncFpsText(): void {
+    const value: number = Number.parseInt(this.mlFpsText, 10);
+    this.mlFps = clampFps(Number.isNaN(value) ? this.mlFps : value);
+  }
+
+  @Builder
+  mlColorSpaceChip(space: number, label: string) {
+    ChoiceChip({
+      label: label,
+      selected: this.mlColorSpace === space,
+      onTap: () => {
+        this.mlColorSpace = space;
+        this.persist();
+      }
+    })
+  }
+
+  @Builder
+  mlBitrateModeChip(label: string, auto: boolean, leftMargin: number) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlBitrateAuto === auto ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlBitrateAuto === auto
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.mlBitrateAuto = auto;
+        this.persist();
+      })
   }
 
   private mlCodecSupportOf(codec: number): number {
@@ -661,15 +733,20 @@ struct SettingsPage {
   }
 
   @Builder
-  mlResModeChip(mode: number, label: string) {
-    ChoiceChip({
-      label: label,
-      selected: this.mlResMode === mode,
-      onTap: () => {
+  mlResModeChip(mode: number, label: string, leftMargin: number) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.mlResMode === mode ? '#FFFFFF' : $r('app.color.text_secondary'))
+      .backgroundColor(this.mlResMode === mode
+        ? $r('app.color.accent') : $r('app.color.input_bg'))
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
         this.mlResMode = mode;
         this.persist();
-      }
-    })
+      })
   }
 
   @Builder
@@ -706,16 +783,27 @@ struct SettingsPage {
   @Builder
   mlResolutionSection() {
     Column() {
-      Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
-      Text('跟随屏幕出画，或固定一个分辨率')
-        .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-      Flex({ wrap: FlexWrap.Wrap }) {
-        this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '跟随屏幕')
-        this.mlResModeChip(ML_RES_FIXED, '固定')
-      }
-      .width('100%').margin({ top: 8 })
+      Row() {
+        Column() {
+          Text('分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+          Text('自动使用当前显示器的分辨率')
+            .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
 
-      if (this.mlResMode === ML_RES_FIXED) {
+        Row() {
+          this.mlResModeChip(ML_RES_FOLLOW_SCREEN, '自动', 0)
+          this.mlResModeChip(ML_RES_FIXED, '手动', 8)
+        }
+      }
+      .width('100%')
+
+      if (this.mlResMode === ML_RES_FOLLOW_SCREEN) {
+        Text('自动检测：' + this.detectedText)
+          .fontSize(11).fontColor($r('app.color.text_tertiary'))
+          .width('100%').margin({ top: 10 })
+      } else {
         Row() {
           TextInput({ placeholder: '1920', text: this.mlWidthText })
             .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
@@ -736,6 +824,10 @@ struct SettingsPage {
             })
         }
         .width('100%').margin({ top: 10 })
+
+        Text('自动检测：' + this.detectedText + '，可参考输入')
+          .fontSize(11).fontColor($r('app.color.text_tertiary'))
+          .width('100%').margin({ top: 6 })
       }
     }
     .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
@@ -757,29 +849,73 @@ struct SettingsPage {
 
       Column() {
         Text('帧率').fontSize(14).fontColor($r('app.color.text_primary'))
+        Text('默认 60，可选档位或自定义')
+          .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(ML_FPS_PRESETS, (preset: number) => {
             this.mlFpsChip(preset)
           }, (preset: number) => preset.toString())
+          this.mlFpsCustomChip()
         }
         .width('100%').margin({ top: 8 })
+
+        if (this.mlFpsCustom) {
+          Row() {
+            TextInput({ placeholder: '60', text: this.mlFpsText })
+              .type(InputType.Number).fontSize(14).height(40).width(140)
+              .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+              .onChange((value: string) => {
+                this.mlFpsText = value;
+                this.syncFpsText();
+                this.persist();
+              })
+            Text('fps')
+              .fontSize(14).fontColor($r('app.color.text_tertiary'))
+              .margin({ left: 10 })
+          }
+          .width('100%').margin({ top: 4 })
+        }
       }
       .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
 
       Divider().color($r('app.color.divider'))
 
       Column() {
-        Text('码率 (kbps)').fontSize(14).fontColor($r('app.color.text_primary'))
-        Text('越高画质越好、越占带宽；建议 '
-          + ML_BITRATE_MIN_KBPS + ' – ' + ML_BITRATE_MAX_KBPS)
-          .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-        TextInput({ placeholder: '20000', text: this.mlBitrateText })
-          .type(InputType.Number).fontSize(14).height(40)
-          .backgroundColor($r('app.color.input_bg')).borderRadius(10).margin({ top: 8 })
-          .onChange((value: string) => {
-            this.mlBitrateText = value;
-            this.persist();
-          })
+        Row() {
+          Column() {
+            Text('码率').fontSize(14).fontColor($r('app.color.text_primary'))
+            Text('自动按分辨率与帧率计算，或手动指定')
+              .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+
+          Row() {
+            this.mlBitrateModeChip('自动', true, 0)
+            this.mlBitrateModeChip('手动', false, 8)
+          }
+        }
+        .width('100%')
+
+        if (this.mlBitrateAuto) {
+          Text('自动：约 ' + kbpsToMbps(this.mlAutoBitrateKbps()) + ' Mbps')
+            .fontSize(11).fontColor($r('app.color.text_tertiary'))
+            .width('100%').margin({ top: 10 })
+        } else {
+          Row() {
+            TextInput({ placeholder: '20', text: this.mlBitrateText })
+              .type(InputType.Number).fontSize(14).height(40).width(140)
+              .backgroundColor($r('app.color.input_bg')).borderRadius(10)
+              .onChange((value: string) => {
+                this.mlBitrateText = value;
+                this.persist();
+              })
+            Text('Mbps')
+              .fontSize(14).fontColor($r('app.color.text_tertiary'))
+              .margin({ left: 10 })
+          }
+          .width('100%').margin({ top: 10 })
+        }
       }
       .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
@@ -799,6 +935,18 @@ struct SettingsPage {
           this.mlCodecChip(ML_CODEC_H264, 'H.264')
           this.mlCodecChip(ML_CODEC_HEVC, 'HEVC')
           this.mlCodecChip(ML_CODEC_AV1, 'AV1')
+        }
+        .width('100%').margin({ top: 8 })
+      }
+      .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+
+      Divider().color($r('app.color.divider'))
+
+      Column() {
+        Text('色彩空间').fontSize(14).fontColor($r('app.color.text_primary'))
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709')
+          this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601')
         }
         .width('100%').margin({ top: 8 })
       }

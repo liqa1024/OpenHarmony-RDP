@@ -1625,7 +1625,7 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.fps = GetIntProperty(env, args[0], "fps", 60);
   config.bitrateKbps = GetIntProperty(env, args[0], "bitrateKbps", 20000);
   config.packetSize = GetIntProperty(env, args[0], "packetSize", 1024);
-  config.streamingRemotely = GetBoolProperty(env, args[0], "streamingRemotely", false);
+    config.streamingRemotely = GetIntProperty(env, args[0], "streamingRemotely", 2);
   config.audioConfiguration = GetIntProperty(env, args[0], "audioConfiguration", 0);
   config.supportedVideoFormats = GetIntProperty(env, args[0], "supportedVideoFormats", 0);
   config.clientRefreshRateX100 = GetIntProperty(env, args[0], "clientRefreshRateX100", 0);

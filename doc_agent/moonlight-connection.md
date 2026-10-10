@@ -21,7 +21,7 @@
   协议与 Moonlight 字段**追加在记录尾部**：旧记录在该位置之前就结束，反序列化时回落默认值，
   因此新增字段不改变既有字段的位置，也不影响老记录。
 - 追加字段：`protocol`、`mlDefaultAppId`、`mlDefaultAppName`、`mlHostId`、`useGlobalStream`、
-  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`。
+  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`。
   （退役字段**按位置保留槽位**、不读写，以免改动后续字段的位置。）
 - **地址与端口复用 RDP 的 `host` / `port`**：Moonlight 不用账号/域/网关/密码字段。端口默认值是
   Moonlight 的 `47989`（RDP 为 `3389`），由编辑页按协议给出，存储上仍是同一个 `port`。
@@ -36,7 +36,11 @@
   `SavedConnection.useGlobalStream` 为真时跟随全局，为假时用本连接自己的 `ml*` 值。
 - 解析入口是 `SettingsStore.resolveStream(conn)`（全局默认见 `SettingsStore.globalStreamProfile()`），
   与 `resolveDisplay` / `resolveAdvanced` 并列。
-- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率、编码器。
+- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩空间（SDR：Rec709 / Rec601）。
+- **码率与帧率的取值口径**：帧率默认 60，档位（30/60/90/120）+ 自定义输入（`mlFps`，`utils/MoonlightQuality.clampFps`）。
+  码率照 RDP 分辨率/缩放的「自动 / 手动」写法——**自动**（`mlBitrateAuto`）按 `分辨率 × 帧率 × 编码` 换算（`recommendedBitrateKbps`，
+  bits-per-pixel 启发式），**手动**用 `mlBitrateKbps`；**UI 一律以 Mbps 显示与输入、存储仍是 kbps**（`kbpsToMbps` / `mbpsToKbps`）。
+  自动值在连接时按**最终解析出的分辨率**（跟随屏幕已解析）计算，见 `MoonlightConnector`。
 - **保存时始终把当前编辑器里的独立值写回连接**（即使此刻跟随全局），便于随时切回，与 RDP 的单连接覆盖一致。
 
 ## 4. 连接列表与编辑页
@@ -141,7 +145,8 @@
 
 - 设置页顶部是 **通用 / RDP / Moonlight 三个 tab**（下划线样式；编辑页仍只有两个协议 tab）。「通用」在最左。
 - **协议 tab（RDP / Moonlight）** 与 RDP 对齐：「显示」在最上（RDP：使用RDP光标 + 分辨率 + 缩放；
-  Moonlight：光标模式 + 分辨率），Moonlight 的「串流」段（帧率 / 码率 / 编码器）承载 §3 的其余全局默认；
+  Moonlight：光标模式 + 分辨率），Moonlight 的「串流」段（帧率 + 自定义输入 / 码率自动或手动 / 编码器 /
+  色彩空间）承载 §3 的其余全局默认；
   其后是共用节（触控板 / 键盘 / 会话）。这些共用节在两个协议 tab 都出现，**每个协议各存一份值**
   （RDP 用原有设置键，Moonlight 用 `ml*` 副本，如 `mlTouchpadScrollSpeed`）；UI 是同一段代码，靠切换
   数据源复用，切换 tab 时先保存当前 tab 再加载目标 tab。
