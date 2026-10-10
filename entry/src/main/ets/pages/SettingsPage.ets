@@ -7,7 +7,7 @@ import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
-  ML_CURSOR_OFF, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
+  ML_CURSOR_OFF, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
@@ -223,6 +223,10 @@ struct SettingsPage {
     this.pinchMode = rdp ? settings.pinchMode : settings.mlPinchMode;
     // Direct zoom drives the RDP presenter's view transform; Moonlight has no such view.
     if (!rdp && this.pinchMode === PINCH_MODE_ZOOM) {
+      this.pinchMode = PINCH_MODE_WHEEL;
+    }
+    // Native touchpad forwarding is a Moonlight-only target.
+    if (rdp && this.pinchMode === PINCH_MODE_NATIVE) {
       this.pinchMode = PINCH_MODE_WHEEL;
     }
     this.pinchTouchAngle = rdp ? settings.pinchTouchAngle : settings.mlPinchTouchAngle;
@@ -546,6 +550,9 @@ struct SettingsPage {
     }
     if (this.pinchMode === PINCH_MODE_ZOOM) {
       return '只在本机放大画面，不向远端发送数据；以光标为中心，最小 100%';
+    }
+    if (this.pinchMode === PINCH_MODE_NATIVE) {
+      return '转发为宿主原生触控板手势，由 Windows 系统处理捏合；仅基地版 Sunshine 支持';
     }
     return '映射为 Ctrl+滚轮，由远端应用自行缩放（会触发远端重绘）';
   }
@@ -1058,12 +1065,20 @@ struct SettingsPage {
               .fontSize(11)
               .fontColor($r('app.color.text_tertiary'))
               .margin({ top: 2 })
+            if (this.pinchMode === PINCH_MODE_NATIVE) {
+              Text('此功能仅在基地版 Sunshine（foundation-sunshine）有效；其它主机会回退为「Ctrl 滚轮」')
+                .fontSize(11)
+                .fontColor($r('app.color.danger'))
+                .margin({ top: 2 })
+            }
 
             Row() {
               this.pinchModeChip(PINCH_MODE_WHEEL, 'Ctrl 滚轮')
               this.pinchModeChip(PINCH_MODE_TOUCH, '触摸模拟')
               if (this.protocol === PROTOCOL_RDP) {
                 this.pinchModeChip(PINCH_MODE_ZOOM, '直接缩放')
+              } else {
+                this.pinchModeChip(PINCH_MODE_NATIVE, '原生转发')
               }
             }
             .width('100%')

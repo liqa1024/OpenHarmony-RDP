@@ -577,6 +577,7 @@ struct SessionPage {
       if (width > 0 && height > 0) {
         this.desktopWidth = width;
         this.desktopHeight = height;
+        this.input?.setPointerSpace(width, height);
         this.resetViewZoom();
       }
     } else if (event === RdpEvent.ClipboardText) {
@@ -1619,49 +1620,41 @@ struct SessionPage {
   }
 
   private handleAxis(event: AxisEvent): void {
-    // Direct zoom is a client-view transform that stays in this page; everything
-    // else is delegated to the shared input pipeline.
+    // Direct zoom is a client-view transform that stays in this page. It only owns the pinch
+    // (view zoom) and, while zoomed, the pan; every other axis event falls through to the
+    // shared input pipeline (touchpad scroll / wheel).
     if (this.pinchDirect) {
-      this.handleDirectZoom(event);
-      return;
+      const isPinch: boolean = SessionInput.isPinchEvent(event);
+      if (isPinch || this.directZoomActive) {
+        if (event.action === AxisAction.END) {
+          this.endDirectZoom();
+          return;
+        }
+        if (isPinch) {
+          const scale: number = SessionInput.pinchScaleValue(event);
+          if (!this.directZoomActive) {
+            this.directZoomActive = true;
+            this.beginViewPinch(event, scale);
+          } else if (scale > 0) {
+            this.updateViewPinch(scale);
+          }
+        }
+        return;
+      }
+      const scrolling: boolean = event.action === AxisAction.BEGIN
+        || event.action === AxisAction.UPDATE;
+      if (this.viewScale > MIN_VIEW_SCALE && scrolling) {
+        const vertical: number = event.axisVertical ?? 0;
+        const horizontal: number = event.axisHorizontal ?? 0;
+        if (this.input?.isTouchpad(event.deviceId, event.sourceTool) ?? false) {
+          this.panView(-horizontal, -vertical);
+        } else if (vertical !== 0) {
+          this.panView(0, -vertical * PAN_WHEEL_STEP);
+        }
+        return;
+      }
     }
     this.input?.handleAxis(event);
-  }
-
-  private handleDirectZoom(event: AxisEvent): void {
-    const isPinch: boolean = SessionInput.isPinchEvent(event);
-    if (isPinch || this.directZoomActive) {
-      if (event.action === AxisAction.END) {
-        this.endDirectZoom();
-        return;
-      }
-      if (!isPinch) {
-        return;
-      }
-      const scale: number = SessionInput.pinchScaleValue(event);
-      if (!this.directZoomActive) {
-        this.directZoomActive = true;
-        this.beginViewPinch(event, scale);
-        return;
-      }
-      if (scale > 0) {
-        this.updateViewPinch(scale);
-      }
-      return;
-    }
-    if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
-      return;
-    }
-    if (this.viewScale <= MIN_VIEW_SCALE) {
-      return;
-    }
-    const vertical: number = event.axisVertical ?? 0;
-    const horizontal: number = event.axisHorizontal ?? 0;
-    if (event.sourceTool === SourceTool.TOUCHPAD) {
-      this.panView(-horizontal, -vertical);
-    } else if (vertical !== 0) {
-      this.panView(0, -vertical * PAN_WHEEL_STEP);
-    }
   }
 
   private endDirectZoom(): void {

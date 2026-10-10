@@ -246,7 +246,7 @@ export class MoonlightSessionBackend implements SessionBackend {
 
   // Moonlight takes Windows virtual-key codes, not PS/2 scancodes.
   keyVirtual(vk: number, down: boolean, modifiers: number): void {
-    moonlightKey(vk, down ? 1 : 0, modifiers);
+    moonlightKey(vk, down ? MlVirtualKey.KEY_DOWN : MlVirtualKey.KEY_UP, modifiers);
   }
 
   private emit(event: number, value: number, text: string): void {

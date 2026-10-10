@@ -15,11 +15,12 @@ import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { WindowController } from '../services/WindowController';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from '../services/ToolbarAutoHide';
-import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
-  PINCH_MODE_ZOOM, SettingsStore } from '../services/SettingsStore';
+import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
+  PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, SettingsStore } from '../services/SettingsStore';
 import { lengthToNumber } from '../utils/UiUtil';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { StatusCard } from '../components/StatusCard';
+import { PinchProbeOverlay } from '../components/PinchProbeOverlay';
 import { TOOLBAR_BG, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR,
   TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
   ToolbarRevealHint } from '../components/SessionChrome';
@@ -30,6 +31,8 @@ const TAG: string = 'HmRdpMoonlightPage';
 // The window opens while still Connecting (LiStartConnection needs the render
 // target); hold the connecting card back this long so a fast start does not flash.
 const CONNECT_OVERLAY_DELAY_MS: number = 1000;
+// The pinch emits frames far faster than the UI needs; the debug overlay is sampled.
+const PINCH_PROBE_PUBLISH_MS: number = 50;
 
 class MlSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
@@ -74,6 +77,10 @@ struct MoonlightSessionPage {
   private windowFocused: boolean = true;
   private interceptActive: boolean = false;
   private mlPinchMode: number = PINCH_MODE_WHEEL;
+  private developerMode: boolean = false;
+  private probeTimer: number = -1;
+  private probeLiveActive: boolean = false;
+  private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
   // Kept so a retry can re-bind it: stopping a session releases the native
   // window, but this surface stays alive.
   private surfaceId: string = '';
@@ -128,6 +135,11 @@ struct MoonlightSessionPage {
   @State showToolbar: boolean = true;
   @State revealHintFill: number = 0;
   @State isFullscreen: boolean = false;
+  @State probeActive: boolean = false;
+  @State probeP1X: number = 0.5;
+  @State probeP1Y: number = 0.5;
+  @State probeP2X: number = 0.5;
+  @State probeP2Y: number = 0.5;
 
   aboutToAppear(): void {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
@@ -153,6 +165,7 @@ struct MoonlightSessionPage {
     this.cursorMode = settings.mlCursorMode;
     this.cursor.setEnabled(this.cursorMode === ML_CURSOR_HIDE_HOST);
     this.shortcutPassthrough = settings.mlShortcutPassthrough;
+    this.developerMode = settings.developerMode;
     if (this.backend !== undefined) {
       this.backend.setCursorListener((update: RemoteCursorUpdate): void => {
         this.cursor.applyUpdate(update);
@@ -174,6 +187,12 @@ struct MoonlightSessionPage {
       input.setPinchCursorHandler((active: boolean, zoomIn: boolean): void => {
         this.cursor.setPinchOverride(active, zoomIn);
       });
+      if (this.developerMode) {
+        input.setPinchProbeHandler((active: boolean, p1x: number, p1y: number, p2x: number,
+          p2y: number): void => {
+          this.onPinchProbe(active, p1x, p1y, p2x, p2y);
+        });
+      }
       this.input = input;
       this.mlPinchMode = settings.mlPinchMode;
     }
@@ -225,6 +244,10 @@ struct MoonlightSessionPage {
       clearTimeout(this.overlayTimer);
       this.overlayTimer = -1;
     }
+    if (this.probeTimer !== -1) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = -1;
+    }
   }
 
   private onSurfaceCreated(surfaceId: string, width: number, height: number): void {
@@ -257,25 +280,55 @@ struct MoonlightSessionPage {
     if (state === ConnectionState.Connected) {
       const features: number = this.backend !== undefined ? this.backend.hostFeatureFlags() : 0;
       const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
+      const nativeTouchpadSupported: boolean = (features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0;
       this.input?.setTouchEnabled(touchSupported);
-      // Native precision touchpad wins for pinch when the host advertises it.
-      this.input?.setNativeTouchpad((features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0);
-      this.input?.setPinchMode(this.effectivePinchMode(touchSupported));
+      this.input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
     }
     this.updateConnectOverlay();
     this.refreshToolbarAutoHide();
     this.updateShortcutPassthrough();
   }
 
-  // Direct zoom is a client-view feature (RDP presenter only); touch-simulate needs host touch.
-  private effectivePinchMode(touchSupported: boolean): number {
+  // Direct zoom is RDP-presenter only; touch-simulate needs host touch; native touchpad needs the
+  // foundation-sunshine capability. Unsupported choices fall back to Ctrl+wheel.
+  private effectivePinchMode(touchSupported: boolean, nativeTouchpadSupported: boolean): number {
     if (this.mlPinchMode === PINCH_MODE_ZOOM) {
       return PINCH_MODE_WHEEL;
+    }
+    if (this.mlPinchMode === PINCH_MODE_NATIVE) {
+      return nativeTouchpadSupported ? PINCH_MODE_NATIVE : PINCH_MODE_WHEEL;
     }
     if (this.mlPinchMode === PINCH_MODE_TOUCH && !touchSupported) {
       return PINCH_MODE_WHEEL;
     }
     return this.mlPinchMode;
+  }
+
+  private onPinchProbe(active: boolean, p1x: number, p1y: number, p2x: number, p2y: number): void {
+    this.probeLiveActive = active;
+    this.probeLive = [p1x, p1y, p2x, p2y];
+    if (!active) {
+      if (this.probeTimer !== -1) {
+        clearTimeout(this.probeTimer);
+        this.probeTimer = -1;
+      }
+      this.publishProbe();
+      return;
+    }
+    if (this.probeTimer === -1) {
+      this.probeTimer = setTimeout(() => {
+        this.probeTimer = -1;
+        this.publishProbe();
+      }, PINCH_PROBE_PUBLISH_MS);
+    }
+  }
+
+  private publishProbe(): void {
+    this.probeActive = this.probeLiveActive;
+    this.probeP1X = this.probeLive[0];
+    this.probeP1Y = this.probeLive[1];
+    this.probeP2X = this.probeLive[2];
+    this.probeP2Y = this.probeLive[3];
   }
 
   private updateShortcutPassthrough(): void {
@@ -572,6 +625,24 @@ struct MoonlightSessionPage {
             this.componentWidth = lengthToNumber(newArea.width);
             this.componentHeight = lengthToNumber(newArea.height);
           })
+
+        if (this.developerMode) {
+          Column() {
+            PinchProbeOverlay({
+              active: this.probeActive,
+              p1x: this.probeP1X,
+              p1y: this.probeP1Y,
+              p2x: this.probeP2X,
+              p2y: this.probeP2Y
+            })
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.End)
+          .alignItems(HorizontalAlign.Start)
+          .padding({ left: 12, bottom: 12 })
+          .hitTestBehavior(HitTestMode.None)
+        }
 
         if (this.isFullscreen && this.state === ConnectionState.Connected) {
           Stack() {

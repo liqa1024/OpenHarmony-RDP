@@ -6,6 +6,9 @@ export class MlVirtualKey {
   static readonly BUTTON_RIGHT: number = 0x03;
   static readonly BUTTON_X1: number = 0x04;
   static readonly BUTTON_X2: number = 0x05;
+  // LiSendKeyboardEvent action values; the host reads them as the packet magic.
+  static readonly KEY_DOWN: number = 0x03;
+  static readonly KEY_UP: number = 0x04;
   static readonly MODIFIER_SHIFT: number = 0x01;
   static readonly MODIFIER_CTRL: number = 0x02;
   static readonly MODIFIER_ALT: number = 0x04;

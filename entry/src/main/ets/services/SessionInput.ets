@@ -3,7 +3,7 @@ import { KeyMapping, KeyMapper } from '../utils/KeyMapper';
 import { RdpLockFlags } from '../model/RdpModels';
 import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE,
   TouchpadWheelMapper, WheelChunk, WHEEL_DETENT } from './TouchpadWheel';
-import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
+import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM } from './SettingsStore';
 
 export class InputButton {
@@ -80,9 +80,14 @@ const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
 const MIN_PINCH_DISTANCE_PERCENT: number = 1;
 const MAX_PINCH_DISTANCE_PERCENT: number = 20;
 const MIN_PINCH_HALF: number = 8;
-// Synthetic-touchpad contact separation, as a fraction of the pad surface.
+// Native-touchpad contact separation floor, as a fraction of the pad surface.
 const MIN_PINCH_FRAC: number = 0.02;
-const MAX_PINCH_FRAC: number = 0.3;
+// Native-touchpad base half-separation, as a percent of the pad width (so the initial
+// separation is ~2.5x the shared touch-mode default). Fixed: it is a property of the pad.
+const NATIVE_PINCH_BASE_PERCENT: number = 20;
+// The native pair lies along the pad diagonal (45 deg in the normalized pad square, which
+// maps to the physical corner-to-corner direction), maximizing the usable separation length.
+const NATIVE_PINCH_ANGLE_DEG: number = 45;
 // Stand-in physical pad size for a synthesized precision touchpad (no device value on HarmonyOS).
 const TOUCHPAD_WIDTH_MM: number = 100;
 const TOUCHPAD_HEIGHT_MM: number = 70;
@@ -101,6 +106,10 @@ const PINCH_CTRL: KeyMapping = KeyMapping.of(0x1D, 0xA2, false, 0);
 
 export type PointMapper = (x: number, y: number) => number[];
 export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
+// Debug probe: reports the synthesized pinch contacts, normalized to the channel surface
+// (remote screen for the touch channel, pad surface for the native-touchpad channel).
+export type PinchProbeHandler =
+  (active: boolean, p1x: number, p1y: number, p2x: number, p2y: number) => void;
 
 export class SessionInput {
   private sink: InputSink;
@@ -120,8 +129,6 @@ export class SessionInput {
   private pointerHeight: number = 0;
   private pointMapper: PointMapper = (x: number, y: number): number[] => [x, y];
   private touchEnabled: boolean = false;
-  // Host advertises the foundation-sunshine native touchpad extension.
-  private nativeTouchpad: boolean = false;
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
   // Kept separate from touchPoints so a contact can be resumed after a Cancel even if the UI renumbers the finger.
   private touchContactIds: Map<number, number> = new Map<number, number>();
@@ -154,6 +161,7 @@ export class SessionInput {
   private touchPinchUnitX: number = 1;
   private touchPinchUnitY: number = 0;
   private pinchCursorHandler: PinchCursorHandler | undefined = undefined;
+  private pinchProbeHandler: PinchProbeHandler | undefined = undefined;
   private deviceChangeListener: (data: inputDevice.DeviceListener) => void =
     (data: inputDevice.DeviceListener) => {
       this.touchpadDevices.clear();
@@ -194,10 +202,6 @@ export class SessionInput {
     this.touchEnabled = enabled;
   }
 
-  setNativeTouchpad(enabled: boolean): void {
-    this.nativeTouchpad = enabled;
-  }
-
   setTouchpadScrollSpeed(scale: number): void {
     this.touchpadWheel.setSpeed(scale);
   }
@@ -224,6 +228,17 @@ export class SessionInput {
 
   setPinchCursorHandler(handler: PinchCursorHandler): void {
     this.pinchCursorHandler = handler;
+  }
+
+  setPinchProbeHandler(handler: PinchProbeHandler): void {
+    this.pinchProbeHandler = handler;
+  }
+
+  private probePinch(active: boolean, p1x: number, p1y: number, p2x: number, p2y: number): void {
+    const handler: PinchProbeHandler | undefined = this.pinchProbeHandler;
+    if (handler !== undefined) {
+      handler(active, p1x, p1y, p2x, p2y);
+    }
   }
 
   // While a system key interceptor owns the keyboard, onKeyEvent must not also forward.
@@ -553,30 +568,44 @@ export class SessionInput {
   }
 
   private beginTouchPinch(event: AxisEvent, scale: number): void {
-    const percent: number = Math.max(MIN_PINCH_DISTANCE_PERCENT,
-      Math.min(MAX_PINCH_DISTANCE_PERCENT, this.pinchTouchDistance));
-    if (this.nativeTouchpad) {
-      // HarmonyOS reports no pad position, so the pair is centered and its separation is a fraction of the pad.
+    // The pair is synthesized the same way in both channels: a base separation that is a
+    // percent of that channel's surface, scaled by the pinch ratio. Only the `× ratio` step is
+    // shared; the base itself is deliberately different per channel (screen vs pad), as are
+    // the surface, floor, anchor and tilt.
+    let percent: number;
+    let angleDeg: number;
+    let surface: number;
+    if (this.pinchMode === PINCH_MODE_NATIVE) {
+      // No pad position from HarmonyOS: the pair is centered on the pad (surface = 1.0), and
+      // the base separation is a fixed fraction of the pad width - it must be wide enough for
+      // Windows to classify the gesture and to leave room to pinch in. It is laid along the
+      // pad diagonal, where the usable separation is longest.
       this.touchPinchAnchor = [0.5, 0.5];
       this.touchPinchHalfMin = MIN_PINCH_FRAC;
-      this.touchPinchHalf = Math.max(MIN_PINCH_FRAC, Math.min(MAX_PINCH_FRAC, percent / 100));
+      surface = 1;
+      percent = NATIVE_PINCH_BASE_PERCENT;
+      angleDeg = NATIVE_PINCH_ANGLE_DEG;
     } else {
-      const minDim: number = Math.min(this.pointerWidth, this.pointerHeight);
       this.touchPinchAnchor = this.pointMapper(event.x, event.y);
       this.touchPinchHalfMin = MIN_PINCH_HALF;
-      this.touchPinchHalf = Math.max(MIN_PINCH_HALF, Math.round(minDim * percent / 100));
+      surface = Math.min(this.pointerWidth, this.pointerHeight);
+      percent = Math.max(MIN_PINCH_DISTANCE_PERCENT,
+        Math.min(MAX_PINCH_DISTANCE_PERCENT, this.pinchTouchDistance));
+      angleDeg = this.pinchTouchAngle;
     }
+    this.touchPinchHalf = Math.max(this.touchPinchHalfMin, surface * percent / 100);
     this.touchPinchLastHalf = this.touchPinchHalf;
-    // The pair is tilted by the configured angle; ArkUI reports no finger angle, so this stands in for the hand.
-    const angle: number = Math.max(-180, Math.min(180, this.pinchTouchAngle));
-    const radians: number = angle * Math.PI / 180;
+    // ArkUI reports no finger angle, so a configured (or fixed) tilt stands in for the hand.
+    const radians: number = Math.max(-180, Math.min(180, angleDeg)) * Math.PI / 180;
     this.touchPinchUnitX = Math.cos(radians);
     this.touchPinchUnitY = Math.sin(radians);
     this.touchPinchActive = true;
     this.touchPinchZoomIn = true;
     this.updateTouchPinch(scale);
     const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
-    if (handler !== undefined) {
+    // The locator hand is only for the synthetic-touch path (the OS hides the pointer
+    // while a screen touch is down); native touchpad pinch never touches the screen.
+    if (handler !== undefined && this.pinchMode === PINCH_MODE_TOUCH) {
       handler(true, this.touchPinchZoomIn);
     }
     this.sendTouchPinchContacts(TouchPhase.DOWN);
@@ -594,7 +623,7 @@ export class SessionInput {
     if (zoomIn !== this.touchPinchZoomIn) {
       this.touchPinchZoomIn = zoomIn;
       const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
-      if (handler !== undefined) {
+      if (handler !== undefined && this.pinchMode === PINCH_MODE_TOUCH) {
         handler(true, zoomIn);
       }
     }
@@ -605,14 +634,17 @@ export class SessionInput {
     const half: number = this.touchPinchLastHalf;
     const dx: number = half * this.touchPinchUnitX;
     const dy: number = half * this.touchPinchUnitY;
-    if (this.nativeTouchpad) {
+    if (this.pinchMode === PINCH_MODE_NATIVE) {
+      const x1: number = SessionInput.clamp01(point[0] + dx);
+      const y1: number = SessionInput.clamp01(point[1] + dy);
+      const x2: number = SessionInput.clamp01(point[0] - dx);
+      const y2: number = SessionInput.clamp01(point[1] - dy);
       const contacts: TouchpadContact[] = [
-        TouchpadContact.of(phase, PINCH_TOUCH_ID_A, SessionInput.clamp01(point[0] + dx),
-          SessionInput.clamp01(point[1] + dy), 0),
-        TouchpadContact.of(phase, PINCH_TOUCH_ID_B, SessionInput.clamp01(point[0] - dx),
-          SessionInput.clamp01(point[1] - dy), 0)
+        TouchpadContact.of(phase, PINCH_TOUCH_ID_A, x1, y1, 0),
+        TouchpadContact.of(phase, PINCH_TOUCH_ID_B, x2, y2, 0)
       ];
       this.sink.touchpadFrame(contacts, 0, TOUCHPAD_WIDTH_MM, TOUCHPAD_HEIGHT_MM);
+      this.probePinch(true, x1, y1, x2, y2);
       return;
     }
     const maxX: number = Math.max(0, this.pointerWidth - 1);
@@ -623,6 +655,9 @@ export class SessionInput {
     const y2: number = Math.max(0, Math.min(maxY, Math.round(point[1] - dy)));
     this.sink.touch(phase, PINCH_TOUCH_ID_A, x1, y1, 0);
     this.sink.touch(phase, PINCH_TOUCH_ID_B, x2, y2, 0);
+    const pw: number = this.pointerWidth > 0 ? this.pointerWidth : 1;
+    const ph: number = this.pointerHeight > 0 ? this.pointerHeight : 1;
+    this.probePinch(true, x1 / pw, y1 / ph, x2 / pw, y2 / ph);
   }
 
   private static clamp01(value: number): number {
@@ -630,7 +665,7 @@ export class SessionInput {
   }
 
   private useTouchPinch(): boolean {
-    return this.pinchMode === PINCH_MODE_TOUCH || this.nativeTouchpad;
+    return this.pinchMode === PINCH_MODE_TOUCH || this.pinchMode === PINCH_MODE_NATIVE;
   }
 
   private endTouchPinch(): void {
@@ -639,8 +674,9 @@ export class SessionInput {
     }
     this.touchPinchActive = false;
     this.sendTouchPinchContacts(TouchPhase.UP);
+    this.probePinch(false, 0, 0, 0, 0);
     const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
-    if (handler !== undefined) {
+    if (handler !== undefined && this.pinchMode === PINCH_MODE_TOUCH) {
       handler(false, this.touchPinchZoomIn);
     }
   }
@@ -664,7 +700,7 @@ export class SessionInput {
   }
 
   // A touchpad tap loses the TOUCHPAD tag, so the originating device is the fallback; sourceTool is checked first to keep scroll cheap.
-  private isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
+  isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
     return sourceTool === SourceTool.TOUCHPAD || this.isTouchpadDevice(deviceId);
   }
 

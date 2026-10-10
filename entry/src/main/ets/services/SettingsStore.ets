@@ -20,6 +20,8 @@ const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
 export const PINCH_MODE_ZOOM: number = 2;
+// Moonlight only: forward to the host's native precision touchpad (foundation-sunshine).
+export const PINCH_MODE_NATIVE: number = 3;
 
 // Moonlight 主机通常把指针合成进视频，本地系统光标会重影；HIDE_HOST 的本机光标
 // 模式需要 foundation-sunshine，否则回退 OFF。

@@ -257,12 +257,12 @@
     黑混进边缘（黑边）。**256 系统上限**：放大后超限就退回面积平均缩小（热点随之缩放）；任何协议
     的源位图超过 256 同样缩小而非丢弃。
 
-- **捏合与触控板的协议归属**：上面三档捏合（Ctrl+滚轮 / 触摸模拟 / 直接缩放）与触控板双指滚动、
-  双指双击→中键都在 `SessionInput`，**两协议共享**；只有"直接缩放"改本机画面矩阵、属 RDP 呈现器专有，
-  Moonlight 不暴露。**"原生触控板"是另一个终点**：`InputSink.touchpadFrame(contacts, buttonState, wMm, hMm)`
-  表达它，仅 foundation-sunshine 主机有（`SS_TOUCHPAD` 扩展）；基础协议（含 Moonlight、RDP）都没有，
-  故只能落到 Ctrl+滚轮或触点模拟。客户端接入（自 patch common-c + 能力门控）见
-  [`moonlight-native.md`](moonlight-native.md) §3.2。
+- **捏合与触控板的协议归属**：捏合（各三档）与触控板双指滚动、双指双击→中键都在 `SessionInput`，**两协议共享**。
+  **RDP**：Ctrl+滚轮 / 触摸模拟（RDPEI 触点）/ 直接缩放（本机画面矩阵，RDP 呈现器专有，Moonlight 不暴露）。
+  **Moonlight**：Ctrl+滚轮 / 触摸模拟（`LiSendTouchEvent`）/ **原生转发**——`InputSink.touchpadFrame`
+  把（合成的）触点交给主机的**原生 precision touchpad**（`SS_TOUCHPAD` 扩展，仅 foundation-sunshine + Win11），
+  捏合由 Windows 手势引擎处理；主机未广告该能力时回退 Ctrl+滚轮。**鸿蒙不向应用暴露触控板触点**，故三个模式
+  都是合成触点。客户端接入（自 patch common-c + 能力门控）见 [`moonlight-native.md`](moonlight-native.md) §3.2。
 
 ## 3. 工具栏与状态遥测
 

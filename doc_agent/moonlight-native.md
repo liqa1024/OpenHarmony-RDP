@@ -190,8 +190,9 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
     `x-ss-general.featureFlags` 到达（`LiGetHostFeatureFlags`）。
   - `LiSendTouchpadEvent` / `LiSendTouchpadFrameEvent` 在能力位缺席时返回 `LI_ERR_UNSUPPORTED`，
     所以**一般 Sunshine / GFE 不受影响**（不会收到未知包）。
-- **接线**：`SessionInput` 的捏合在主机广告帧能力时走 `InputSink.touchpadFrame`（合成两个触点——鸿蒙
-  不向应用暴露触控板真实触点），否则回落 Ctrl+滚轮 / 触点模拟；N-API 出口 `moonlightTouchpad`。
+- **接线**：Moonlight 的捏合模式可选「原生转发」；选中且主机广告帧能力时，`SessionInput` 走
+  `InputSink.touchpadFrame`（合成两个触点——鸿蒙不向应用暴露触控板真实触点），否则与「Ctrl+滚轮 / 触摸模拟」
+  一样回退。N-API 出口 `moonlightTouchpad`。
 
 ## 4. 控制 / 配对层（ArkTS）
 控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**：
