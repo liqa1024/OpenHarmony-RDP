@@ -167,6 +167,7 @@ Column(page_bg, 100%×100%)
 ### 3.6 会话窗口
 
 - 窗口模式：工具栏作为普通行布局在画面上方（渲染区自然扣除其高度）；全屏模式：工具栏浮在画面上，按指针分区自动隐藏 / 滑出（行为与判定见 [`session-layer.md`](session-layer.md) §9）。
+- 画面由 `SessionPicture`（§4.1）承载：surface 按内容比例居中留边，两协议共用（RDP 取桌面 / 输出分辨率，Moonlight 取流分辨率）；窗口拖拽时由合成器按比例缩放，不依赖重绘。留边区域不接收指针，输入 / 焦点在 XComponent 上。
 - 自动隐藏的**显隐判定**由 `services/ToolbarAutoHide` 独占，两协议的会话页共用：页面提供实时状态（全屏 / 连接 / 钉住 / 延迟）并把结果（显示 / 揭示进度）镜像进自己的 `@State`，渲染与动效留在页面。
 - 会话窗口的**运行时能力**归 `services/WindowController`：取本会话窗口、全屏检测、最小化 / 全屏切换、焦点 / 可见性监听。它们与自动隐藏判定一样**按需（opt-in）**——页面只调用 / 订阅自己反应的部分，抽取本身不申请任何用不到的能力。
 - 状态遮罩：全屏居中、`#66000000` 底色上放状态卡；状态卡的图标 / 标题 / 副标题 / 按钮组合由连接状态驱动（§4）。
@@ -191,6 +192,7 @@ Column(page_bg, 100%×100%)
 |---|---|---|---|
 | `TextAction` | `TextAction.ets` | `label, muted?, onTap` | 悬停 / 按下变色的纯文本动作 |
 | `ConnectionRow` | `ConnectionRow.ets` | `conn, state, appEnabled?, onEdit, onToggleConnection, onOpenApps, onDelete` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
+| `SessionPicture` | `SessionPicture.ets` | `xComponentId, pictureController, contentWidth, contentHeight, revealBand, onPointerMouse/Touch/Hover/Axis, onSurfaceKey/Blur, onPictureArea, onRevealZone` | 会话画面（RDP / Moonlight 共用）：SURFACE 组件按内容比例居中留边，输入 / 焦点留在 XComponent 上；全屏时另给顶部 reveal 窄条 |
 | `StatusCard` | `StatusCard.ets` | `title, subtitle, primary?, secondary?, loading?, icon?, onPrimary, onSecondary` | 会话连接状态卡（RDP / Moonlight 共用） |
 | `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |
 | `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
@@ -214,6 +216,7 @@ Column(page_bg, 100%×100%)
 | 文件 | 内容 |
 |---|---|
 | `UiUtil.ets` | `showToast`（+`OVERLAY` 材质）、`lengthToNumber`（`Length` → vp 数值）、`showConfirm` / `showNotice`（统一的确认 / 提示弹窗，见下） |
+| `PictureFit.ets` | 画面居中留边与映射：`fitPictureRect`（容器内按内容比例的居中矩形）、`mapPicturePoint`（画面局部坐标 → 远端像素，含夹取）；`SessionPicture` 与两个会话页共用 |
 | `DisplayUtil.ets` | `defaultDisplay()`（容错查询默认显示，页面与服务共用） |
 | `ScaleParse.ets` | 手动分辨率 / 缩放文本解析：`parseSizeValue` / `parseScaleValue` / `parsedTextValue` / `isScalePreset`，及 `MAX_DESKTOP_SIZE` |
 | `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |

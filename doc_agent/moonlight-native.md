@@ -51,11 +51,12 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
 
 - **默认：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
-  合成 pass；letterbox 由**窗口缩放模式**承担——绑定 surface 时设
-  `OH_NativeWindow_NativeWindowSetScalingModeV2(window, OH_SCALING_MODE_SCALE_FIT_V2)`，按视频比例缩放、
-  非原生比例留边（不设则默认拉伸填满）。组件始终保持**全窗口尺寸**，故指针/焦点与全屏工具栏唤出不受留边影响；
-  指针映射按该 fit 矩形做换算（与 RDP `SessionPage` 的 `baseViewRect` 同口径），不是简单的整组件归一化。
-  这是平台文档推荐的视频播放方式，延迟/功耗最优，全屏原生比例时可能命中硬件直通/overlay。
+  合成 pass；留边由**画面组件几何**承担——会话页用 `components/SessionPicture` 把 surface 约束成**流分辨率
+  比例并居中**（与 RDP 同一套 `utils/PictureFit`），组件比例恒等于内容比例，合成器在窗口拖拽时只做等比缩放，
+  **无需重绘**。窗口另设 `OH_NativeWindow_NativeWindowSetScalingModeV2(window, OH_SCALING_MODE_SCALE_FIT_V2)`
+  （不设则默认拉伸填满），兜住协商流分辨率与请求值不一致的情形。留边区域**不接收指针**：输入/焦点在 XComponent
+  上，事件坐标即画面局部坐标，映射是整画面归一化。这是平台文档推荐的视频播放方式，延迟/功耗最优，全屏原生
+  比例时可能命中硬件直通/overlay。
 - **超分：buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。`OH_AVBuffer`（底层 `OH_NativeBuffer`，NV12）经
   `VK_OHOS_external_memory`（`vulkan_ohos.h`）导入为 `VkImage`，YUV→RGB 在 shader 里做，之后接
   `VkRenderer` 既有的 letterbox / 超分 / swapchain。此链路**只在真机验证**（Vulkan 呈现本就真机）。
@@ -70,7 +71,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
 - **解码器配置口径**：Configure 的宽高是**解码器实例的最大分辨率**（SDK 据此分配资源），**不是**上屏尺寸：
   不要拿窗口/surface 尺寸当提示（会为远小于它的码流过度分配），会话侧按协商的流分辨率设。buffer 模式另设
   `AV_PIXEL_FORMAT_NV12`。**实际可见尺寸**由 `onStreamChanged` 的 `OH_MD_KEY_VIDEO_PIC_WIDTH/HEIGHT` 给出，
-  只作解码器的可见尺寸参考；它**不**改组件几何（直出的 letterbox 由窗口缩放模式决定，与组件尺寸无关）。
+  只作解码器的可见尺寸参考；它**不**改组件几何（组件比例取请求的流分辨率，见上条）。
 - **硬解优先，软解兜底，无解器报错**：`VideoDecoderSupport()`（`OH_AVCodec_GetCapabilityByCategory`）把每种
   编码分成**硬解 / 软解 / 无**，优先创建硬解，硬解缺失时才退到软解，`VideoDecoder::hardware()` 反映实际
   选择；完全没有解码器时起播同步失败并给出原因，绝不静默黑屏。

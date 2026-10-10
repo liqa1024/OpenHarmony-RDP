@@ -17,8 +17,9 @@ import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, SettingsStore } from '../services/SettingsStore';
-import { lengthToNumber } from '../utils/UiUtil';
+import { mapPicturePoint } from '../utils/PictureFit';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PinchProbeOverlay } from '../components/PinchProbeOverlay';
 import { TOOLBAR_BG, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_ZONE_BAR,
@@ -339,33 +340,16 @@ struct MoonlightSessionPage {
     this.shell?.remoteCursor().setLocalHidden(shouldHide);
   }
 
-  private viewRect(): number[] {
-    const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
-    const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
-    const streamAspect: number = this.streamWidth / this.streamHeight;
-    const compAspect: number = compWidth / compHeight;
-    if (streamAspect > compAspect) {
-      const viewHeight: number = compWidth / streamAspect;
-      return [0, (compHeight - viewHeight) / 2, compWidth, viewHeight];
-    }
-    const viewWidth: number = compHeight * streamAspect;
-    return [(compWidth - viewWidth) / 2, 0, viewWidth, compHeight];
+  private mapPoint(x: number, y: number): number[] {
+    return mapPicturePoint(x, y, this.componentWidth, this.componentHeight,
+      this.streamWidth, this.streamHeight);
   }
 
-  private mapPoint(x: number, y: number): number[] {
-    const rect: number[] = this.viewRect();
-    const normalizedX: number = (x - rect[0]) / rect[2];
-    const normalizedY: number = (y - rect[1]) / rect[3];
-    const clampedX: number = Math.min(1, Math.max(0, normalizedX));
-    const clampedY: number = Math.min(1, Math.max(0, normalizedY));
-    const remoteX: number = Math.round(clampedX * (this.streamWidth - 1));
-    const remoteY: number = Math.round(clampedY * (this.streamHeight - 1));
-    return [remoteX, remoteY];
+  private onRevealZone(inBand: boolean): void {
+    this.shell?.setPointerZone(inBand ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
   }
 
   private handleMouse(event: MouseEvent): void {
-    this.shell?.setPointerZone(event.y < this.revealBand
-      ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     this.setLocalCursorHidden(true);
     this.shell?.routeMouse(event);
   }
@@ -488,45 +472,45 @@ struct MoonlightSessionPage {
         this.sessionToolbar()
       }
       Stack({ alignContent: Alignment.TopStart }) {
-        XComponent({
-          id: 'moonlightSurface',
-          type: XComponentType.SURFACE,
-          controller: this.controller
-        })
-          .width('100%')
-          .height('100%')
-          .backgroundColor('#000000')
-          .focusable(true)
-          .defaultFocus(true)
-          .onMouse((event: MouseEvent) => {
+        SessionPicture({
+          xComponentId: 'moonlightSurface',
+          pictureController: this.controller,
+          contentWidth: this.streamWidth,
+          contentHeight: this.streamHeight,
+          revealBand: (this.isFullscreen && !this.showToolbar) ? this.revealBand : 0,
+          onPointerMouse: (event: MouseEvent) => {
             this.handleMouse(event);
-          })
-          .onTouch((event: TouchEvent) => {
+          },
+          onPointerTouch: (event: TouchEvent) => {
             this.handleTouch(event);
-          })
-          .onHover((isHover: boolean) => {
+          },
+          onPointerHover: (isHover: boolean) => {
             this.setLocalCursorHidden(isHover);
             if (isHover) {
               // The system may drop a custom cursor when the pointer re-enters,
               // and the host only sends a shape on change, so re-install it.
               this.shell?.remoteCursor().reapply();
             }
-          })
-          .onAxisEvent((event: AxisEvent) => {
+          },
+          onPointerAxis: (event: AxisEvent) => {
             this.handleAxis(event);
-          })
-          .onKeyEvent((event: KeyEvent) => {
+          },
+          onSurfaceKey: (event: KeyEvent) => {
             this.handleKey(event);
-          })
-          .onBlur(() => {
+          },
+          onSurfaceBlur: () => {
             // Keys/buttons held when focus leaves would never get their Up event.
             const input: SessionInput | undefined = this.shell?.sessionInput();
             input?.releaseAll();
-          })
-          .onAreaChange((oldArea: Area, newArea: Area) => {
-            this.componentWidth = lengthToNumber(newArea.width);
-            this.componentHeight = lengthToNumber(newArea.height);
-          })
+          },
+          onPictureArea: (width: number, height: number) => {
+            this.componentWidth = width;
+            this.componentHeight = height;
+          },
+          onRevealZone: (inBand: boolean) => {
+            this.onRevealZone(inBand);
+          }
+        })
 
         if (this.developerMode) {
           Column() {

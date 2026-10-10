@@ -23,8 +23,8 @@
 | `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
 | `sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
-| `pages/SessionPage.ets` | RDP 会话页：XComponent 画面、协议专属浮层/工具栏、RDP 直达缩放的视图矩阵；窗口外壳（窗口/光标/工具栏自动隐藏/输入接线/遮罩）复用 `SessionShellController`；**输入事件交给 `SessionInput`**；转发下载事件、渲染进度（下载状态机在后台 worker，见 §4.4） |
-| `pages/MoonlightSessionPage.ets` | Moonlight 会话页：XComponent 先绑 surface 再 `SessionManager.beginStream`（`LiStartConnection` 要渲染目标）；窗口外壳复用 `SessionShellController`；**输入事件交给 `SessionInput`**；状态浮层 |
+| `pages/SessionPage.ets` | RDP 会话页：画面（`SessionPicture`）、协议专属浮层/工具栏、RDP 直达缩放的视图矩阵；窗口外壳（窗口/光标/工具栏自动隐藏/输入接线/遮罩）复用 `SessionShellController`；**输入事件交给 `SessionInput`**；转发下载事件、渲染进度（下载状态机在后台 worker，见 §4.4） |
+| `pages/MoonlightSessionPage.ets` | Moonlight 会话页：画面（`SessionPicture`）先绑 surface 再 `SessionManager.beginStream`（`LiStartConnection` 要渲染目标）；窗口外壳复用 `SessionShellController`；**输入事件交给 `SessionInput`**；状态浮层 |
 | `pages/MoonlightAppsPage.ets` | 主窗口内的 Moonlight 应用管理页：应用列表 / 运行状态 / 启停 / 默认应用（星标）/ 远程图标 |
 | `pages/EditConnectionPage.ets` | 新增/编辑连接（保存只写配置；密码在连接成功后自动保存；可折叠「高级设置」） |
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |

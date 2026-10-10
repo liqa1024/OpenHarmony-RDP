@@ -26,6 +26,9 @@ device（[`architecture.md`](architecture.md) §4.1）。
 
 ## 2. 帧到屏的路径
 
+- **会话 surface 就是内容比例**：会话页用 `components/SessionPicture` 把 surface 约束成桌面/输出分辨率比例
+  并居中，所以这里对会话的 letterbox 恒为恒等（等比例时 `offX/offY=0`、不额外做事）。这段等比代码是给
+  **回放页**（`GfxReplayPage`）留的——它把抓帧塞进任意比例的格子，依赖呈现器按比例 fit。
 - **picture 图**：FreeRDP 的 BGRA 字节序，格式恒为 `B8G8R8A8_UNORM`（`kPictureFormat`）。
   **通道序由图像格式承担**，shader 不做 R/B 交换；两者只由 quad 采样。
 - **上屏**：采样 picture 的 letterbox quad（viewport 做 letterbox），写入 swapchain 图像，再

@@ -25,9 +25,11 @@ import { AppSettings, PINCH_MODE_ZOOM,
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
-import { lengthToNumber, showConfirm, showToast } from '../utils/UiUtil';
+import { showConfirm, showToast } from '../utils/UiUtil';
+import { mapPicturePoint } from '../utils/PictureFit';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
+import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, MetricItem, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
@@ -96,8 +98,8 @@ struct SessionPage {
   private shell: SessionShellController | undefined = undefined;
   private componentWidth: number = 0;
   private componentHeight: number = 0;
-  private desktopWidth: number = 1920;
-  private desktopHeight: number = 1080;
+  @State desktopWidth: number = 1920;
+  @State desktopHeight: number = 1080;
   @State metricsRtt: number = -1;
   @State metricsRx: number = 0;
   @State metricsTx: number = 0;
@@ -1459,37 +1461,16 @@ struct SessionPage {
     this.shell?.refreshAutoHide();
   }
 
-  private baseViewRect(): number[] {
-    const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
-    const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
-    const desktopAspect: number = this.desktopWidth / this.desktopHeight;
-    const compAspect: number = compWidth / compHeight;
-    if (desktopAspect > compAspect) {
-      const viewHeight: number = compWidth / desktopAspect;
-      return [0, (compHeight - viewHeight) / 2, compWidth, viewHeight];
-    }
-    const viewWidth: number = compHeight * desktopAspect;
-    return [(compWidth - viewWidth) / 2, 0, viewWidth, compHeight];
+  private onRevealZone(inBand: boolean): void {
+    this.setToolbarPointerZone(inBand ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
   }
 
   private mapPointer(x: number, y: number): number[] {
-    const rect: number[] = this.baseViewRect();
-    const viewX: number = rect[0];
-    const viewY: number = rect[1];
-    const viewWidth: number = rect[2];
-    const viewHeight: number = rect[3];
-    const normalizedX: number = (x - viewX) / viewWidth;
-    const normalizedY: number = (y - viewY) / viewHeight;
-    const clampedX: number = Math.min(1, Math.max(0, normalizedX));
-    const clampedY: number = Math.min(1, Math.max(0, normalizedY));
-    const remoteX: number = Math.round(clampedX * (this.desktopWidth - 1));
-    const remoteY: number = Math.round(clampedY * (this.desktopHeight - 1));
-    return [remoteX, remoteY];
+    return mapPicturePoint(x, y, this.componentWidth, this.componentHeight,
+      this.desktopWidth, this.desktopHeight);
   }
 
   private handleMouse(event: MouseEvent): void {
-    this.setToolbarPointerZone(event.y < this.revealBand
-      ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
     this.shell?.routeMouse(event);
   }
 
@@ -1564,17 +1545,14 @@ struct SessionPage {
   }
 
   private applyViewZoom(scale: number): void {
-    const rect: number[] = this.baseViewRect();
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
     const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
     const cx: number = compWidth / 2;
     const cy: number = compHeight / 2;
-    const unclampedX: number = this.viewPinchAnchorX +
-      scale * (rect[0] - this.viewPinchAnchorX) + this.viewPinchPanX;
-    const unclampedY: number = this.viewPinchAnchorY +
-      scale * (rect[1] - this.viewPinchAnchorY) + this.viewPinchPanY;
-    const left: number = this.clampViewEdge(unclampedX, compWidth, rect[2] * scale);
-    const top: number = this.clampViewEdge(unclampedY, compHeight, rect[3] * scale);
+    const unclampedX: number = (1 - scale) * this.viewPinchAnchorX + this.viewPinchPanX;
+    const unclampedY: number = (1 - scale) * this.viewPinchAnchorY + this.viewPinchPanY;
+    const left: number = this.clampViewEdge(unclampedX, compWidth, compWidth * scale);
+    const top: number = this.clampViewEdge(unclampedY, compHeight, compHeight * scale);
     const panX: number = this.viewPinchPanX + (left - unclampedX);
     const panY: number = this.viewPinchPanY + (top - unclampedY);
     this.viewScale = scale;
@@ -1584,20 +1562,17 @@ struct SessionPage {
   }
 
   private panView(dx: number, dy: number): void {
-    const rect: number[] = this.baseViewRect();
     const compWidth: number = this.componentWidth > 0 ? this.componentWidth : 1;
     const compHeight: number = this.componentHeight > 0 ? this.componentHeight : 1;
     const cx: number = compWidth / 2;
     const cy: number = compHeight / 2;
     const scale: number = this.viewScale;
-    const width: number = rect[2] * scale;
-    const height: number = rect[3] * scale;
     const left: number = this.clampViewEdge(
-      cx + scale * (rect[0] - cx) + this.viewTransX + dx, compWidth, width);
+      (1 - scale) * cx + this.viewTransX + dx, compWidth, compWidth * scale);
     const top: number = this.clampViewEdge(
-      cy + scale * (rect[1] - cy) + this.viewTransY + dy, compHeight, height);
-    this.viewTransX = left - cx - scale * (rect[0] - cx);
-    this.viewTransY = top - cy - scale * (rect[1] - cy);
+      (1 - scale) * cy + this.viewTransY + dy, compHeight, compHeight * scale);
+    this.viewTransX = left - (1 - scale) * cx;
+    this.viewTransY = top - (1 - scale) * cy;
     this.commitViewMatrix();
   }
 
@@ -1888,46 +1863,45 @@ struct SessionPage {
       Stack({ alignContent: Alignment.TopStart }) {
         // The picture lives in its own layer so direct pinch can scale it locally; the Stack clips it.
         Column() {
-          XComponent({
-            id: 'rdpSurface',
-            type: XComponentType.SURFACE,
-            controller: this.controller
-          })
-            .width('100%')
-            .height('100%')
-            .backgroundColor('#000000')
-            .focusable(true)
-            .defaultFocus(true)
-            .onMouse((event: MouseEvent) => {
+          SessionPicture({
+            xComponentId: 'rdpSurface',
+            pictureController: this.controller,
+            contentWidth: this.desktopWidth,
+            contentHeight: this.desktopHeight,
+            revealBand: (this.isFullscreen && !this.showOverlay && !this.showToolbar)
+              ? this.revealBand : 0,
+            onPointerMouse: (event: MouseEvent) => {
               this.handleMouse(event);
-            })
-            .onHover((isHover: boolean) => {
+            },
+            onPointerHover: (isHover: boolean) => {
               // The system may drop a custom cursor when the pointer leaves and re-enters, so re-install the last shape.
               if (isHover) {
                 this.cursor.reapply();
               }
-            })
-            .onBlur(() => {
+            },
+            onSurfaceBlur: () => {
               this.releaseAllInputs();
-            })
-            .onTouch((event: TouchEvent) => {
+            },
+            onPointerTouch: (event: TouchEvent) => {
               this.handleTouch(event);
-            })
-            .onAxisEvent((event: AxisEvent) => {
+            },
+            onPointerAxis: (event: AxisEvent) => {
               this.handleAxis(event);
-            })
-            .onKeyEvent((event: KeyEvent) => {
+            },
+            onSurfaceKey: (event: KeyEvent) => {
               this.handleKey(event);
-            })
-            .onAreaChange((oldArea: Area, newArea: Area) => {
-              const width: number = lengthToNumber(newArea.width);
-              const height: number = lengthToNumber(newArea.height);
+            },
+            onPictureArea: (width: number, height: number) => {
               if (this.componentWidth !== width || this.componentHeight !== height) {
                 this.resetViewZoom();
               }
               this.componentWidth = width;
               this.componentHeight = height;
-            })
+            },
+            onRevealZone: (inBand: boolean) => {
+              this.onRevealZone(inBand);
+            }
+          })
         }
         .width('100%')
         .height('100%')
