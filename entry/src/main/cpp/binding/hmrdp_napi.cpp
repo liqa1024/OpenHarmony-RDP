@@ -1370,16 +1370,20 @@ napi_value MoonlightProbe(napi_env env, napi_callback_info) {
 }
 
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1] = {nullptr};
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  int32_t preference = 0;
+  int32_t choice = 0;
   if (argc >= 1) {
-    napi_get_value_int32(env, args[0], &preference);
+    napi_get_value_int32(env, args[0], &choice);
   }
-  const hmrdp::MoonlightVideoPreference value =
-      static_cast<hmrdp::MoonlightVideoPreference>(preference);
-  return CreateInt(env, hmrdp::MoonlightVideoFormats(value));
+  int32_t codecModes = 0;
+  if (argc >= 2) {
+    napi_get_value_int32(env, args[1], &codecModes);
+  }
+  const hmrdp::MoonlightVideoCodecChoice value =
+      static_cast<hmrdp::MoonlightVideoCodecChoice>(choice);
+  return CreateInt(env, hmrdp::MoonlightVideoFormats(value, codecModes));
 }
 
 napi_value MoonlightVideoCodecSupport(napi_env env, napi_callback_info info) {

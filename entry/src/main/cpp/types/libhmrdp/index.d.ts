@@ -410,12 +410,11 @@ export const superResolutionBackends: () => RdpSrBackends;
 export const moonlightProbe: () => string;
 
 /**
- * Bitmask of the Moonlight VIDEO_FORMAT_* codecs to advertise for negotiation.
- * `preference` is an ML_CODEC_* value (default 0 = auto): auto sends every
- * codec the device can hardware-decode (or the software set when there is no
- * hardware decoder), a specific codec sends just that one when it is decodable.
+ * The single Moonlight VIDEO_FORMAT_* the session will use; 0 when the device
+ * and host share no codec. `choice` is an ML_CODEC_* value (0 = auto) and
+ * `serverCodecModeSupport` the host's SCM_* mask.
  */
-export const moonlightVideoFormats: (preference?: number) => number;
+export const moonlightVideoFormats: (choice: number, serverCodecModeSupport: number) => number;
 
 /**
  * The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream

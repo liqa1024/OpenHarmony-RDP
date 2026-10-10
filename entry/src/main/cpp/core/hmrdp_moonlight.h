@@ -39,14 +39,18 @@ struct MoonlightVideoContext {
   void* window = nullptr;
 };
 
-enum class MoonlightVideoPreference : int {
+// kAuto lets the client pick the best codec both sides support; the rest force
+// one codec (the per-connection manual override). Mirrors ML_CODEC_*.
+enum class MoonlightVideoCodecChoice : int {
   kAuto = 0,
   kH264 = 1,
   kHevc = 2,
   kAv1 = 3,
 };
 
-int MoonlightVideoFormats(MoonlightVideoPreference preference = MoonlightVideoPreference::kAuto);
+// Returns the single VIDEO_FORMAT_* the session will use; 0 = the device and
+// host share no codec.
+int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport);
 
 int MoonlightVideoCodecSupport(int codec);
 

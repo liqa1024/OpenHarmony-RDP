@@ -33,6 +33,9 @@ constexpr size_t kMaxPendingBytes = 4u * 1024u * 1024u;
 // decoder that drops or reorders cannot grow the pairing map without bound.
 constexpr size_t kMaxPendingSubmitTimes = 240;
 
+// The codec the client decided for this session (0 = none); Setup enforces it.
+std::atomic<int> g_decidedVideoFormat{0};
+
 int64_t NowNs() {
   return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -79,6 +82,14 @@ class MoonlightVideoRenderer {
   }
 
   int Setup(int videoFormat, int width, int height, int redrawRate) {
+    const int decided = g_decidedVideoFormat.load();
+    if (decided != 0 && videoFormat != decided) {
+      HMRDP_LOGE("moonlight video: host negotiated 0x%{public}x, client chose 0x%{public}x",
+                 videoFormat, decided);
+      std::lock_guard<std::mutex> lock(mutex_);
+      warning_ = "codec-mismatch|" + std::to_string(videoFormat);
+      return -1;
+    }
     const std::string mime = MimeForVideoFormat(videoFormat);
     if (mime.empty()) {
       HMRDP_LOGE("moonlight video: unsupported format 0x%{public}x", videoFormat);
@@ -311,47 +322,60 @@ MoonlightTelemetry MoonlightReadTelemetry() {
   return telemetry;
 }
 
-int MoonlightVideoFormats(MoonlightVideoPreference preference) {
+int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport) {
   const DecoderSupport avc = VideoDecoderSupport("video/avc");
   const DecoderSupport hevc = VideoDecoderSupport("video/hevc");
   const DecoderSupport av1 = VideoDecoderSupport("video/av1");
 
-  if (preference != MoonlightVideoPreference::kAuto) {
-    const bool supported =
-        (preference == MoonlightVideoPreference::kH264 && avc != DecoderSupport::kNone) ||
-        (preference == MoonlightVideoPreference::kHevc && hevc != DecoderSupport::kNone) ||
-        (preference == MoonlightVideoPreference::kAv1 && av1 != DecoderSupport::kNone);
-    if (supported) {
-      if (preference == MoonlightVideoPreference::kH264) {
-        return VIDEO_FORMAT_H264;
-      }
-      return preference == MoonlightVideoPreference::kHevc ? VIDEO_FORMAT_H265
-                                                           : VIDEO_FORMAT_AV1_MAIN8;
+  // H.264 needs no host check (the library falls back to it unconditionally);
+  // AV1 / HEVC need the host's SCM_* family, gated the same as its DESCRIBE ad.
+  const bool hostHevc = (serverCodecModeSupport & SCM_MASK_HEVC) != 0;
+  const bool hostAv1 = (serverCodecModeSupport & SCM_MASK_AV1) != 0;
+
+  int decided = 0;
+  if (choice != MoonlightVideoCodecChoice::kAuto) {
+    if (choice == MoonlightVideoCodecChoice::kH264) {
+      decided = avc != DecoderSupport::kNone ? VIDEO_FORMAT_H264 : 0;
+    } else if (choice == MoonlightVideoCodecChoice::kHevc) {
+      decided = (hevc != DecoderSupport::kNone && hostHevc) ? VIDEO_FORMAT_H265 : 0;
+    } else if (choice == MoonlightVideoCodecChoice::kAv1) {
+      decided = (av1 != DecoderSupport::kNone && hostAv1) ? VIDEO_FORMAT_AV1_MAIN8 : 0;
     }
-    HMRDP_LOGW("moonlight video: preferred codec has no decoder, using auto");
+    if (decided == 0) {
+      HMRDP_LOGW("moonlight video: forced codec %{public}d unusable here",
+                 static_cast<int>(choice));
+    }
+  } else {
+    // Hardware tier first (more modern wins), then software.
+    if (av1 == DecoderSupport::kHardware && hostAv1) {
+      decided = VIDEO_FORMAT_AV1_MAIN8;
+    } else if (hevc == DecoderSupport::kHardware && hostHevc) {
+      decided = VIDEO_FORMAT_H265;
+    } else if (avc == DecoderSupport::kHardware) {
+      decided = VIDEO_FORMAT_H264;
+    } else if (av1 == DecoderSupport::kSoftware && hostAv1) {
+      decided = VIDEO_FORMAT_AV1_MAIN8;
+    } else if (hevc == DecoderSupport::kSoftware && hostHevc) {
+      decided = VIDEO_FORMAT_H265;
+    } else if (avc == DecoderSupport::kSoftware) {
+      decided = VIDEO_FORMAT_H264;
+    }
   }
 
-  const int hardware = (avc == DecoderSupport::kHardware ? VIDEO_FORMAT_H264 : 0) |
-                       (hevc == DecoderSupport::kHardware ? VIDEO_FORMAT_H265 : 0) |
-                       (av1 == DecoderSupport::kHardware ? VIDEO_FORMAT_AV1_MAIN8 : 0);
-  if (hardware != 0) {
-    return hardware;
-  }
-  return (avc == DecoderSupport::kSoftware ? VIDEO_FORMAT_H264 : 0) |
-         (hevc == DecoderSupport::kSoftware ? VIDEO_FORMAT_H265 : 0) |
-         (av1 == DecoderSupport::kSoftware ? VIDEO_FORMAT_AV1_MAIN8 : 0);
+  g_decidedVideoFormat.store(decided);
+  return decided;
 }
 
 int MoonlightVideoCodecSupport(int codec) {
   const char* mime = nullptr;
-  switch (static_cast<MoonlightVideoPreference>(codec)) {
-    case MoonlightVideoPreference::kH264:
+  switch (static_cast<MoonlightVideoCodecChoice>(codec)) {
+    case MoonlightVideoCodecChoice::kH264:
       mime = "video/avc";
       break;
-    case MoonlightVideoPreference::kHevc:
+    case MoonlightVideoCodecChoice::kHevc:
       mime = "video/hevc";
       break;
-    case MoonlightVideoPreference::kAv1:
+    case MoonlightVideoCodecChoice::kAv1:
       mime = "video/av1";
       break;
     default:

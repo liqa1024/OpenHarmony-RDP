@@ -190,6 +190,14 @@ export class MoonlightConnector {
       return result;
     }
 
+    // No shared codec: fail here, not via the library's silent H.264 fallback.
+    const videoFormats: number = moonlightVideoFormats(stream.codec, info.serverCodecModeSupport);
+    if (videoFormats === 0) {
+      hilog.error(0xD001, 'HmRdpMoonlight', 'no shared video codec with %{public}s', host);
+      result.error = '本机与主机没有共同支持的编码，无法串流';
+      return result;
+    }
+
     // Sunshine's plain-HTTP serverinfo always reports PairStatus=0; a stored pin
     // from an earlier pairing is what proves we are paired.
     const paired: boolean = info.paired
@@ -277,7 +285,7 @@ export class MoonlightConnector {
     // forcing LOCAL; it drives bitrate/audio/QoS advertisement and packet size.
     config.streamingRemotely = ML_STREAM_CFG_AUTO;
     config.audioConfiguration = MoonlightConnector.AUDIO_CONFIGURATION_STEREO;
-    config.supportedVideoFormats = moonlightVideoFormats(stream.codec);
+    config.supportedVideoFormats = videoFormats;
     config.clientRefreshRateX100 = 0;
     config.colorSpace = stream.colorSpace;
     config.colorRange = ML_COLOR_RANGE_LIMITED;
