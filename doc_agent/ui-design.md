@@ -193,7 +193,7 @@ Column(page_bg, 100%×100%)
 | 组件 | 文件 | 参数（要点） | 用途 |
 |---|---|---|---|
 | `TextAction` | `TextAction.ets` | `label, muted?, onTap` | 悬停 / 按下变色的纯文本动作 |
-| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, hostTargetId, targetId, menuRequest, onEdit / onToggleConnection / onOpenApps / onTerminate / onDelete / onRequestMenu / onPressRelease` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
+| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, hostTargetId, targetId, menuRequest, onEdit / onToggleConnection / onOpenApps / onTerminate / onRefresh / onDelete / onRequestMenu / onPressRelease` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
 | `SessionPicture` | `SessionPicture.ets` | `xComponentId, pictureController, contentWidth, contentHeight, revealBand, onPointerMouse/Touch/Hover/Axis, onSurfaceKey/Blur, onPictureArea, onRevealZone` | 会话画面（RDP / Moonlight 共用）：SURFACE 组件按内容比例居中留边，输入 / 焦点留在 XComponent 上；全屏时另给顶部 reveal 窄条 |
 | `StatusCard` | `StatusCard.ets` | `title, subtitle, primary?, secondary?, loading?, icon?, onPrimary, onSecondary` | 会话连接状态卡（RDP / Moonlight 共用） |
 | `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |

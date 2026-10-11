@@ -112,21 +112,24 @@ struct Index {
     this.hostTargets = next;
   }
 
-  private probeHosts(): void {
+  private filesDir(): string {
     const context = this.getUIContext().getHostContext();
-    if (context === undefined) {
-      return;
-    }
-    const filesDir: string = (context as common.UIAbilityContext).filesDir;
-    MoonlightHostState.refreshAll(this.connections, filesDir);
+    return context === undefined ? '' : (context as common.UIAbilityContext).filesDir;
+  }
+
+  private probeHosts(): void {
+    MoonlightHostState.refreshAll(this.connections, this.filesDir());
+  }
+
+  private refreshHostState(conn: SavedConnection): void {
+    MoonlightHostState.refresh(conn, this.filesDir());
   }
 
   private terminateHostApp(conn: SavedConnection): void {
-    const context = this.getUIContext().getHostContext();
-    if (context === undefined) {
+    const filesDir: string = this.filesDir();
+    if (filesDir.length === 0) {
       return;
     }
-    const filesDir: string = (context as common.UIAbilityContext).filesDir;
     if (!MoonlightHostState.reachableOf(conn.id)) {
       showToast(this.getUIContext(), '主机离线，无法终止主机应用');
       return;
@@ -434,6 +437,9 @@ struct Index {
                 },
                 onTerminate: () => {
                   this.terminateHostApp(conn);
+                },
+                onRefresh: () => {
+                  this.refreshHostState(conn);
                 },
                 onDelete: () => {
                   this.confirmDelete(conn);

@@ -189,6 +189,7 @@ export class RowMenuAction {
   static readonly Terminate: number = 1;
   static readonly Edit: number = 2;
   static readonly Delete: number = 3;
+  static readonly Refresh: number = 4;
 }
 
 // One connection-row menu entry as data, so the shared row renders it without
@@ -608,6 +609,7 @@ export class MoonlightConnection extends SavedConnection {
     if (hostTargetId !== 0) {
       entries.push(RowMenuEntry.of(RowMenuAction.Terminate, '终止'));
     }
+    entries.push(RowMenuEntry.of(RowMenuAction.Refresh, '刷新'));
     entries.push(RowMenuEntry.of(RowMenuAction.Edit, '编辑'));
     entries.push(RowMenuEntry.of(RowMenuAction.Delete, '删除'));
     return entries;

@@ -106,10 +106,10 @@
       保留、主机回来即恢复），故恢复 / 终止与「运行中」徽标在离线时都不出现；主机侧动作（终止 / 关闭应用）前先查
       `reachableOf`，不可达只提示「主机离线」。同 moonlight-android 的 `ComputerDetails.State` + `runningGameId`
       （值保留、只在 ONLINE 时用）。
-    - **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页与应用页各自
-      在 `onPageShow` 触发；应用页的 `probeApps` 也回填 `setProbed`。客户端 `/cancel` 后另有短延迟复探
-      （`refreshAfter`）兜底。
-- 行右键菜单对 Moonlight 追加「设为默认应用」；**默认应用只在列表/应用界面设置，编辑页无该字段**。
+    - **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页（`onPageShow`、
+      行右键菜单「刷新」）与应用页（`onPageShow`）各自触发；应用页的 `probeApps` 也回填 `setProbed`。客户端 `/cancel`
+      后另有短延迟复探（`refreshAfter`）兜底。
+- 行右键菜单对 Moonlight 追加「刷新」；**默认应用只在应用页的星标上设置，编辑页无该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
 
 **编辑页**

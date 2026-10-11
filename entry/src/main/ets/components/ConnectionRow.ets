@@ -29,6 +29,7 @@ export struct ConnectionRow {
   onOpenApps: () => void = () => {};
   onTerminate: () => void = () => {};
   onDelete: () => void = () => {};
+  onRefresh: () => void = () => {};
   onRequestMenu: () => void = () => {};
   onPressRelease: () => void = () => {};
   private tipsOptions: TipsOptions =
@@ -94,6 +95,8 @@ export struct ConnectionRow {
       this.onToggleConnection();
     } else if (entry.action === RowMenuAction.Terminate) {
       this.onTerminate();
+    } else if (entry.action === RowMenuAction.Refresh) {
+      this.onRefresh();
     } else if (entry.action === RowMenuAction.Edit) {
       this.onEdit();
     } else if (entry.action === RowMenuAction.Delete) {
