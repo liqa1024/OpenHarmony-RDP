@@ -20,7 +20,7 @@
 
 | 路径 | 职责 |
 |---|---|
-| `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表 |
+| `entryability/EntryAbility.ets` | 主窗口 Ability：初始化设置与连接存储、按默认尺寸创建主窗口、加载连接列表；关闭时若有会话窗口先弹窗确认再断开并关闭（见 [`session-layer.md`](session-layer.md) §7） |
 | `sessionability/SessionAbility.ets` | 独立会话窗口 Ability：按默认尺寸（或全屏）创建窗口、加载会话页；单窗口模式下拦截关闭以先恢复主窗口 |
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
 | `pages/SessionPage.ets` | RDP 会话页：画面（`SessionPicture`）、协议专属浮层/工具栏、RDP 直达缩放的视图矩阵；窗口外壳（窗口/光标/工具栏自动隐藏/输入接线/遮罩）复用 `SessionShellController`；**输入事件交给 `SessionInput`**；转发下载事件、渲染进度（下载状态机在后台 worker，见 §4.4） |

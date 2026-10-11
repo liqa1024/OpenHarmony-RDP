@@ -116,11 +116,18 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 - **RDP 可见性还会主动抑制服务端输出**（MS-RDPBCGR Client Suppress Output），见
   [`rdp-session.md`](rdp-session.md)；Moonlight 不做。
 
-## 7. 自动隐藏主窗口（单窗口模式，共享）
+## 7. 主窗口关闭行为（共享）
 
-全局设置 `autoHideMainWindow`（默认关）：开启后仍**新建** `SessionAbility`，但**销毁主 `EntryAbility`**
-以真正隐藏（没有 hide API；`minimize()` 仍留在 Dock）。按**单会话**设计，故 `WindowController` 只用
-`mainHidden` 布尔量、不跟踪会话集合。
+**默认（多窗口，`autoHideMainWindow` 关）**：关闭主窗口时若仍有**会话窗口在运行**，先弹窗确认，确认后
+**断开并关闭全部会话**（含尚在连接、还没有窗口的会话），再退出主窗口；无会话窗口则直接关闭、不弹窗。
+判据是**已打开的会话窗口**（`SessionManager` 按 `sessionKey` 登记），不是会话条目（失败条目会保留、
+连接中的会话尚无窗口）。拦截用 `UIAbility.onPrepareToTerminate`：**仅 2in1 生效**，需
+`ohos.permission.PREPARE_APP_TERMINATE`；主窗口若注册 `windowStage.on('windowStageClose')` 该回调即失效。
+主窗口最小化时先 `restore()` 再弹窗。
+
+**自动隐藏主窗口（单窗口模式）**：全局设置 `autoHideMainWindow`（默认关）开启后仍**新建** `SessionAbility`，
+但**销毁主 `EntryAbility`** 以真正隐藏（没有 hide API；`minimize()` 仍留在 Dock）。按**单会话**设计，故
+`WindowController` 只用 `mainHidden` 布尔量、不跟踪会话集合。
 
 - **进程内最后一个 UIAbility 被销毁 ⇒ 进程退出**：必须等会话窗加载完成后再 `terminateSelf()` 主窗口，
   否则会把整个应用杀掉。

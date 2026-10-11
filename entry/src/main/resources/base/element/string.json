@@ -23,6 +23,10 @@
     {
       "name": "permission_intercept_input_reason",
       "value": "会话窗口聚焦时接管键盘，把 Win、Alt+Tab 等快捷键发送到远端桌面（快捷键穿透）"
+    },
+    {
+      "name": "permission_prepare_terminate_reason",
+      "value": "关闭主窗口前，若仍有会话窗口在运行则先弹窗确认"
     }
   ]
 }

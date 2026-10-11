@@ -41,6 +41,16 @@
           ],
           "when": "inuse"
         }
+      },
+      {
+        "name": "ohos.permission.PREPARE_APP_TERMINATE",
+        "reason": "$string:permission_prepare_terminate_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
     "abilities": [

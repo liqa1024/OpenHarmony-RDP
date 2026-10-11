@@ -225,6 +225,15 @@ export class WindowController {
     }
   }
 
+  static isMinimized(win: window.Window): boolean {
+    try {
+      return win.getWindowStatus() === window.WindowStatusType.MINIMIZE;
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'get window status failed: %{public}s', JSON.stringify(error));
+      return false;
+    }
+  }
+
   static watchStatusChange(win: window.Window,
     onChange: (status: window.WindowStatusType) => void): void {
     try {

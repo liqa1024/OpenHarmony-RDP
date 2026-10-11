@@ -52,6 +52,8 @@ export class SessionManager {
     new Map<string, SessionWindowStateListener>();
   private static closeListeners: Map<string, SessionCloseListener> =
     new Map<string, SessionCloseListener>();
+  // sessionKeys of currently open session windows (doc_agent/session-layer.md §7).
+  private static windowKeys: Set<string> = new Set<string>();
 
   static stateOf(connectionId: string): ConnectionState {
     const entry: SessionEntry | undefined = SessionManager.entries.get(connectionId);
@@ -265,6 +267,7 @@ export class SessionManager {
     SessionManager.windowEventListeners.delete(sessionKey);
     SessionManager.windowStateListeners.delete(sessionKey);
     SessionManager.closeListeners.delete(sessionKey);
+    SessionManager.windowKeys.delete(sessionKey);
     const connectionId: string | undefined = SessionManager.byKey.get(sessionKey);
     if (connectionId === undefined) {
       return;
@@ -296,6 +299,27 @@ export class SessionManager {
         entry.windowOpen = true;
       }
     }
+  }
+
+  static registerWindow(sessionKey: string): void {
+    if (sessionKey.length > 0) {
+      SessionManager.windowKeys.add(sessionKey);
+    }
+  }
+
+  static hasSessionWindow(): boolean {
+    return SessionManager.windowKeys.size > 0;
+  }
+
+  static closeAllSessions(): void {
+    const ids: string[] = [];
+    SessionManager.entries.forEach((entry: SessionEntry): void => {
+      ids.push(entry.connectionId);
+    });
+    for (let i = 0; i < ids.length; i++) {
+      SessionManager.disconnect(ids[i]);
+    }
+    SessionManager.windowKeys.clear();
   }
 
   private static openWindowForEntry(entry: SessionEntry): void {

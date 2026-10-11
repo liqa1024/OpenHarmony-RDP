@@ -14,17 +14,21 @@
  */
 
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
+import { UIContext, window } from '@kit.ArkUI';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
 import { WindowController } from '../services/WindowController';
+import { showConfirm } from '../utils/UiUtil';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
+  private mainWindowStage: window.WindowStage | undefined = undefined;
+  private allowingTerminate: boolean = false;
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
@@ -45,6 +49,7 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+    this.mainWindowStage = windowStage;
     WindowController.init(windowStage);
     const settings: AppSettings = SettingsStore.load();
     // The cursor switch is process-global and must be applied before any
@@ -64,6 +69,74 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+    });
+  }
+
+  onPrepareToTerminate(): boolean {
+    if (this.allowingTerminate || SettingsStore.load().autoHideMainWindow) {
+      return false;
+    }
+    if (!SessionManager.hasSessionWindow()) {
+      return false;
+    }
+    const stage: window.WindowStage | undefined = this.mainWindowStage;
+    if (stage === undefined) {
+      return false;
+    }
+    let mainWindow: window.Window | undefined = undefined;
+    try {
+      mainWindow = stage.getMainWindowSync();
+    } catch (error) {
+      hilog.error(DOMAIN, 'testTag', 'get main window failed: %{public}s',
+        JSON.stringify(error));
+      return false;
+    }
+    if (mainWindow === undefined) {
+      return false;
+    }
+    if (WindowController.isMinimized(mainWindow)) {
+      mainWindow.restore().then(() => {
+        this.promptCloseMainWindow();
+      }).catch((error: BusinessError) => {
+        hilog.error(DOMAIN, 'testTag', 'restore main window failed: %{public}s',
+          JSON.stringify(error));
+        this.promptCloseMainWindow();
+      });
+    } else {
+      this.promptCloseMainWindow();
+    }
+    return true;
+  }
+
+  private promptCloseMainWindow(): void {
+    const stage: window.WindowStage | undefined = this.mainWindowStage;
+    if (stage === undefined) {
+      return;
+    }
+    let ui: UIContext | undefined = undefined;
+    try {
+      ui = stage.getMainWindowSync().getUIContext();
+    } catch (error) {
+      hilog.error(DOMAIN, 'testTag', 'get main window UIContext failed: %{public}s',
+        JSON.stringify(error));
+      return;
+    }
+    if (ui === undefined) {
+      return;
+    }
+    showConfirm(ui, {
+      title: '关闭主窗口',
+      message: '还有会话正在运行，关闭主窗口将断开并关闭这些会话。',
+      confirmLabel: '断开并关闭',
+      danger: true,
+      onConfirm: (): void => {
+        this.allowingTerminate = true;
+        SessionManager.closeAllSessions();
+        this.context.terminateSelf().catch((error: BusinessError) => {
+          hilog.error(DOMAIN, 'testTag', 'terminate main window failed: %{public}s',
+            JSON.stringify(error));
+        });
+      }
     });
   }
 

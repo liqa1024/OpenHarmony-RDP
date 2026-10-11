@@ -16,6 +16,7 @@ export default class SessionAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SettingsStore.init(this.context);
     this.sessionKey = SessionAbility.readSessionKey(want);
+    SessionManager.registerWindow(this.sessionKey);
     hilog.info(DOMAIN, TAG, '%{public}s key=%{public}s', 'SessionAbility onCreate',
       this.sessionKey);
   }
