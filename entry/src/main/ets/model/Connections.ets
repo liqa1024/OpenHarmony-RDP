@@ -40,6 +40,14 @@ export function connectActionLabel(action: ConnectAction): string {
   return '连接';
 }
 
+// Host reachability as shown on a row; Offline means unreachable, not a confirmed
+// power-off (only the streaming service can be probed).
+export enum HostPower {
+  Unknown = 0,
+  Online = 1,
+  Offline = 2
+}
+
 export const PROTOCOL_RDP: number = 0;
 export const PROTOCOL_MOONLIGHT: number = 1;
 
@@ -72,7 +80,7 @@ export const ML_STREAM_CFG_AUTO: number = 2;
 // Position-separated record length; slots are fixed and append-only (see
 // settings-and-storage.md §1). Shared slots are written by the base, each
 // protocol's slots by its subclass.
-const RECORD_LENGTH: number = 45;
+const RECORD_LENGTH: number = 46;
 
 function encodeField(text: string): string {
   try {
@@ -190,6 +198,7 @@ export class RowMenuAction {
   static readonly Edit: number = 2;
   static readonly Delete: number = 3;
   static readonly Refresh: number = 4;
+  static readonly Wake: number = 5;
 }
 
 // One connection-row menu entry as data, so the shared row renders it without
@@ -243,6 +252,8 @@ export class ConnectionExport {
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
   mlHostId: string = '';
+  // Host NIC MAC (serverinfo), the wake-on-LAN target; empty until a probe succeeds.
+  mlMac: string = '';
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
@@ -281,7 +292,13 @@ export abstract class SavedConnection {
   abstract showsAppsButton(): boolean;
   abstract hostTargetId(targets: Map<string, number>): number;
   abstract defaultTargetId(): number;
-  abstract menuEntries(action: ConnectAction, hostTargetId: number): RowMenuEntry[];
+  abstract menuEntries(action: ConnectAction, hostTargetId: number,
+    power: HostPower): RowMenuEntry[];
+
+  // Only a protocol with a stored host MAC can wake.
+  supportsWake(): boolean {
+    return false;
+  }
 
   protected defaultPort(): number {
     return RDP_DEFAULT_PORT;
@@ -413,7 +430,7 @@ export class RdpConnection extends SavedConnection {
     return 0;
   }
 
-  menuEntries(action: ConnectAction, _hostTargetId: number): RowMenuEntry[] {
+  menuEntries(action: ConnectAction, _hostTargetId: number, _power: HostPower): RowMenuEntry[] {
     return [
       RowMenuEntry.of(RowMenuAction.Toggle, connectActionLabel(action)),
       RowMenuEntry.of(RowMenuAction.Edit, '编辑'),
@@ -559,6 +576,8 @@ export class MoonlightConnection extends SavedConnection {
   mlDefaultAppName: string = '';
   // 主机自身身份（/serverinfo 的 uniqueid）：Moonlight 以此区分主机，故为唯一性检查的首选键；首次 serverinfo 成功后填入，此前为空。
   mlHostId: string = '';
+  // 主机网卡 MAC（serverinfo）：唤醒魔术包的唯一目标，探测成功时落库，此前为空。
+  mlMac: string = '';
   useGlobalStream: boolean = true;
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
@@ -604,8 +623,22 @@ export class MoonlightConnection extends SavedConnection {
     return this.mlDefaultAppIdValue();
   }
 
-  menuEntries(action: ConnectAction, hostTargetId: number): RowMenuEntry[] {
+  supportsWake(): boolean {
+    return this.mlMac.length > 0;
+  }
+
+  menuEntries(action: ConnectAction, hostTargetId: number, power: HostPower): RowMenuEntry[] {
     const entries: RowMenuEntry[] = [];
+    // Not reachable: no connect-style action (刷新 doubles as the probe when unknown).
+    if (power !== HostPower.Online) {
+      if (power === HostPower.Offline && this.supportsWake()) {
+        entries.push(RowMenuEntry.of(RowMenuAction.Wake, '唤醒'));
+      }
+      entries.push(RowMenuEntry.of(RowMenuAction.Refresh, '刷新'));
+      entries.push(RowMenuEntry.of(RowMenuAction.Edit, '编辑'));
+      entries.push(RowMenuEntry.of(RowMenuAction.Delete, '删除'));
+      return entries;
+    }
     if (action === ConnectAction.Cancel) {
       entries.push(RowMenuEntry.of(RowMenuAction.Toggle, '取消连接'));
     } else if (action === ConnectAction.Connect) {
@@ -645,6 +678,7 @@ export class MoonlightConnection extends SavedConnection {
     slots[42] = encodeField(this.mlHostId);
     slots[43] = this.mlBitrateAuto ? '1' : '0';
     slots[44] = this.mlColorSpace.toString();
+    slots[45] = encodeField(this.mlMac);
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -664,6 +698,7 @@ export class MoonlightConnection extends SavedConnection {
     this.mlBitrateAuto = parts.length > 43 ? parts[43] !== '0' : true;
     this.mlColorSpace = parts.length > 44
       ? parseFieldNumber(parts[44], ML_COLORSPACE_REC709) : ML_COLORSPACE_REC709;
+    this.mlMac = parts.length > 45 ? decodeField(parts[45]) : '';
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -678,6 +713,7 @@ export class MoonlightConnection extends SavedConnection {
     item.mlBitrateKbps = this.mlBitrateKbps;
     item.mlCodec = this.mlCodec;
     item.mlColorSpace = this.mlColorSpace;
+    item.mlMac = this.mlMac;
     item.useGlobalStream = this.useGlobalStream;
   }
 
@@ -693,6 +729,7 @@ export class MoonlightConnection extends SavedConnection {
     this.mlBitrateKbps = item.mlBitrateKbps;
     this.mlCodec = item.mlCodec;
     this.mlColorSpace = item.mlColorSpace;
+    this.mlMac = item.mlMac;
     this.useGlobalStream = item.useGlobalStream;
   }
 }

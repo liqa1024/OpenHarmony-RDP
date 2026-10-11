@@ -1,4 +1,4 @@
-import { ConnectAction, connectActionLabel, RdpConnection, RowMenuAction, RowMenuEntry,
+import { ConnectAction, connectActionLabel, HostPower, RdpConnection, RowMenuAction, RowMenuEntry,
   SavedConnection } from '../model/Connections';
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
@@ -14,6 +14,10 @@ export struct ConnectionRow {
   // passes 0/0: it has no host-side session, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
+  // Host reachability (Moonlight only; RDP stays Online).
+  @Prop power: HostPower = HostPower.Online;
+  // A wake watch is running: spinner shown, a tap cancels the watch.
+  @Prop waking: boolean = false;
   // Page-controlled: >0 opens this row's menu, 0 closes it.
   @Prop @Watch('onMenuRequest') menuRequest: number = 0;
   // ArkUI has no shared declarative hover/press effect, so the button keeps its
@@ -30,6 +34,7 @@ export struct ConnectionRow {
   onTerminate: () => void = () => {};
   onDelete: () => void = () => {};
   onRefresh: () => void = () => {};
+  onWake: () => void = () => {};
   onRequestMenu: () => void = () => {};
   onPressRelease: () => void = () => {};
   private tipsOptions: TipsOptions =
@@ -49,7 +54,48 @@ export struct ConnectionRow {
     return connectActionLabel(this.primary());
   }
 
+  // Not reachable and no live session: dimmed icon, no apps button, refresh / wake slot.
+  private hostDown(): boolean {
+    return this.state === ConnectionState.Idle && this.power !== HostPower.Online;
+  }
+
+  private wakeDisabled(): boolean {
+    return this.hostDown() && this.power === HostPower.Offline && !this.conn.supportsWake();
+  }
+
+  private actionTip(): string {
+    if (this.hostDown()) {
+      if (this.waking) {
+        return '取消状态检测';
+      }
+      if (this.power === HostPower.Unknown) {
+        return '刷新主机状态';
+      }
+      return this.conn.supportsWake() ? '唤醒主机' : '未获取到主机 MAC，无法唤醒';
+    }
+    return this.connectTip();
+  }
+
+  private actionBackground(): Resource {
+    if (!this.hostDown()) {
+      return this.primary() === ConnectAction.Terminate
+        || this.primary() === ConnectAction.Disconnect
+        ? $r('app.color.danger') : $r('app.color.accent');
+    }
+    return this.wakeDisabled() ? $r('app.color.neutral') : $r('app.color.accent');
+  }
+
   private primaryTap(): void {
+    if (this.hostDown()) {
+      if (this.waking) {
+        this.onWake();
+      } else if (this.power === HostPower.Unknown) {
+        this.onRefresh();
+      } else if (this.conn.supportsWake()) {
+        this.onWake();
+      }
+      return;
+    }
     if (this.primary() === ConnectAction.Terminate) {
       this.onTerminate();
     } else {
@@ -97,6 +143,8 @@ export struct ConnectionRow {
       this.onTerminate();
     } else if (entry.action === RowMenuAction.Refresh) {
       this.onRefresh();
+    } else if (entry.action === RowMenuAction.Wake) {
+      this.onWake();
     } else if (entry.action === RowMenuAction.Edit) {
       this.onEdit();
     } else if (entry.action === RowMenuAction.Delete) {
@@ -105,7 +153,7 @@ export struct ConnectionRow {
   }
 
   private menuGroup(session: boolean): RowMenuEntry[] {
-    return this.conn.menuEntries(this.action(), this.hostTargetId)
+    return this.conn.menuEntries(this.action(), this.hostTargetId, this.power)
       .filter((entry: RowMenuEntry) => entry.sessionAction === session);
   }
 
@@ -143,6 +191,8 @@ export struct ConnectionRow {
           .width(40)
           .height(40)
           .borderRadius(10)
+          .opacity(this.hostDown() ? 0.45 : 1.0)
+          .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
           .draggable(false)
         Column() {
           Row() {
@@ -185,7 +235,7 @@ export struct ConnectionRow {
         this.onEdit();
       })
 
-      if (this.conn.showsAppsButton()) {
+      if (this.conn.showsAppsButton() && !this.hostDown()) {
         Row() {
           Image($r('app.media.ic_apps'))
             .width(24)
@@ -229,6 +279,23 @@ export struct ConnectionRow {
             .width(24)
             .height(24)
             .color('#FFFFFF')
+        } else if (this.hostDown() && this.waking) {
+          LoadingProgress()
+            .width(24)
+            .height(24)
+            .color('#FFFFFF')
+        } else if (this.hostDown() && this.power === HostPower.Unknown) {
+          Image($r('app.media.ic_refresh'))
+            .width(24)
+            .height(24)
+            .fillColor('#FFFFFF')
+            .draggable(false)
+        } else if (this.hostDown()) {
+          Image($r('app.media.ic_power'))
+            .width(28)
+            .height(28)
+            .fillColor('#FFFFFF')
+            .draggable(false)
         } else if (this.primary() === ConnectAction.Terminate) {
           Image($r('app.media.ic_stop'))
             .width(22)
@@ -252,14 +319,13 @@ export struct ConnectionRow {
       .width(44)
       .height(44)
       .borderRadius(22)
-      .backgroundColor(this.primary() === ConnectAction.Terminate
-        || this.primary() === ConnectAction.Disconnect
-        ? $r('app.color.danger') : $r('app.color.accent'))
+      .backgroundColor(this.actionBackground())
+      .opacity(this.wakeDisabled() ? 0.5 : 1.0)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
-      .hoverEffect(HoverEffect.Scale)
-      .bindTips(this.connectTip(), this.tipsOptions)
+      .hoverEffect(this.wakeDisabled() ? HoverEffect.None : HoverEffect.Scale)
+      .bindTips(this.actionTip(), this.tipsOptions)
       .onClick(() => {
         this.primaryTap();
       })

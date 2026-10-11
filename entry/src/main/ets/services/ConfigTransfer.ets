@@ -66,6 +66,7 @@ export class ConfigTransfer {
     item.mlDefaultAppId = ConfigTransfer.readString(rec, 'mlDefaultAppId', '');
     item.mlDefaultAppName = ConfigTransfer.readString(rec, 'mlDefaultAppName', '');
     item.mlHostId = ConfigTransfer.readString(rec, 'mlHostId', '');
+    item.mlMac = ConfigTransfer.readString(rec, 'mlMac', '');
     item.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', ML_RES_FOLLOW_SCREEN);
     item.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', 0);
     item.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', 0);

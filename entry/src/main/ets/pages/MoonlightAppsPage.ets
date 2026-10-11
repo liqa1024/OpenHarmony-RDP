@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConnectAction, ConnectOrigin, MoonlightConnection } from '../model/Connections';
+import { ConnectAction, ConnectOrigin, HostPower, MoonlightConnection } from '../model/Connections';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { MoonlightAppsResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
@@ -53,7 +53,7 @@ struct MoonlightAppsPage {
     };
 
   private readonly hostStateListener: HostTargetListener =
-    (connectionId: string, currentGame: number): void => {
+    (connectionId: string, currentGame: number, _power: HostPower): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
         this.currentGame = currentGame;
       }

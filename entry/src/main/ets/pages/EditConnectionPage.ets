@@ -103,6 +103,7 @@ struct EditConnectionPage {
   private discovered: MdnsHost[] = [];
   private originalMoonlightHost: string = '';
   private originalMoonlightHostId: string = '';
+  private originalMoonlightMac: string = '';
   private storedPassword: string = '';
   private returned: boolean = false;
   private detectedWidth: number = 1920;
@@ -194,6 +195,7 @@ struct EditConnectionPage {
         this.srBackend = conn.srBackend;
       } else if (conn instanceof MoonlightConnection) {
         this.originalMoonlightHostId = conn.mlHostId;
+        this.originalMoonlightMac = conn.mlMac;
         this.mlDefaultAppId = conn.mlDefaultAppId;
         this.mlDefaultAppName = conn.mlDefaultAppName;
         this.mlResMode = conn.mlResMode;
@@ -491,6 +493,7 @@ struct EditConnectionPage {
     conn.port = this.parseMoonlightPort();
     conn.name = this.name.trim();
     conn.mlHostId = hostChanged ? '' : this.originalMoonlightHostId;
+    conn.mlMac = hostChanged ? '' : this.originalMoonlightMac;
     conn.mlDefaultAppId = hostChanged ? '' : this.mlDefaultAppId;
     conn.mlDefaultAppName = hostChanged ? '' : this.mlDefaultAppName;
     conn.mlResMode = this.mlResMode;
@@ -667,6 +670,7 @@ struct EditConnectionPage {
     this.forgetPairing(old);
     this.originalMoonlightHost = newHost.trim();
     this.originalMoonlightHostId = '';
+    this.originalMoonlightMac = '';
   }
 
   private persist(conn: SavedConnection): boolean {

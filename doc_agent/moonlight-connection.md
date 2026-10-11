@@ -21,8 +21,10 @@
   协议与 Moonlight 字段**追加在记录尾部**：旧记录在该位置之前就结束，反序列化时回落默认值，
   因此新增字段不改变既有字段的位置，也不影响老记录。
 - 追加字段：`protocol`、`mlDefaultAppId`、`mlDefaultAppName`、`mlHostId`、`useGlobalStream`、
-  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`。
+  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlMac`。
   （退役字段**按位置保留槽位**、不读写，以免改动后续字段的位置。）
+- `mlMac` 是主机网卡 MAC（`serverinfo` 的 `mac`），**唯一**来自探测的主机地址，是唤醒魔术包的目标；
+  探测成功时落库（见 §4 的主机三态），此前为空。它属于旧主机，**改主机时一并清空**（与 `mlHostId` 同策）。
 - **地址与端口复用 RDP 的 `host` / `port`**：Moonlight 不用账号/域/网关/密码字段。端口默认值是
   Moonlight 的 `47989`（RDP 为 `3389`），由编辑页按协议给出，存储上仍是同一个 `port`。
 - **是否已配对以本地存的证书为准**：权威配对是客户端持有的证书，导入配置 / 主机重装等情况下的
@@ -96,20 +98,29 @@
     会话态切换时第一个动作钮在**原地换出 / 换入**。
   - **卡片本身也有同一套 hover / press 缩放**，但**只在卡片可点时**（未运行的应用卡片）：正在运行的应用卡片
     不响应点击，因此也不给 hover / press 动效（判定与「不给悬浮提示」同一口径）。
-  - **"主机在跑哪个应用"由 `services/MoonlightHostState` 单一权威持有**（仿 `SessionManager` 的静态监听器：
-    `targetOf` / `httpsPortOf` / `reachableOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的
+   - **"主机在跑哪个应用"由 `services/MoonlightHostState` 单一权威持有**（仿 `SessionManager` 的静态监听器：
+     `targetOf` / `powerOf` / `httpsPortOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的
     「运行中」徽标都从它派生，两者任何时刻都一致；**会话态本身仍在 `SessionManager`**，不混进来。
     - **写入**：`markLaunched(id, appId)` 只由后端 `prepare` 成功后调用（用主机实际启动的 `effectiveAppId`，默认应用
       由此补上）——**不在连接发起时乐观写**，否则一次失败的连接会留下幻影「运行中」；`/cancel` 成功 → `markStopped(id)`
       （会话窗口「关闭应用」、应用页两个关闭动作、列表页「终止」三处共用）。
-    - **可达性（在线 / 离线）**：`serverinfo` 探测失败即标记不可达，**不可达时 `targetOf` 一律报 0**（`currentGame`
-      保留、主机回来即恢复），故恢复 / 终止与「运行中」徽标在离线时都不出现；主机侧动作（终止 / 关闭应用）前先查
-      `reachableOf`，不可达只提示「主机离线」。同 moonlight-android 的 `ComputerDetails.State` + `runningGameId`
-      （值保留、只在 ONLINE 时用）。
+     - **可达性三态（在线 / 未知 / 离线）**：`powerOf(id)` 给出 `HostPower`——探测成功 = 在线、失败 = 离线、本会话尚无
+       结果 = 未知。**不可达时 `targetOf` 一律报 0**（`currentGame` 保留、主机回来即恢复），故恢复 / 终止与「运行中」徽标
+       在离线时都不出现；主机侧动作（终止 / 关闭应用）前先查 `reachableOf`，不可达只提示「主机离线」。同 moonlight-android
+       的 `ComputerDetails.State` + `runningGameId`。**可达性是"服务能否探到"，不等于电源状态**（关机 / 休眠 / 服务未起 /
+       网络问题 / 跨网段都不可达），故离线图标表达"连不上"、不宣称"已关机"。
+     - **行外观按三态**（仅 Moonlight 行；RDP 无探测、恒按在线）：未知与离线都**左图标置灰 + 隐藏「应用」钮**，动作位是
+       **刷新**（未知）与**唤醒**（离线）；在线保持原有连接 / 运行中 / 终止。右键菜单同步去掉连接类项。**有会话时不受影响**
+       （会话态优先）。外观见 [`ui-design.md`](ui-design.md) §3.5。
+     - **唤醒（Wake-on-LAN）**：显式手点、**绝不自动**。主机 MAC 编魔术包（6×`0xFF` + MAC×16）经 UDP **广播**
+       （`255.255.255.255`，端口 `9` / `7`）发出（`services/WakeOnLan`），成功仅代表已发送、**不保证唤醒**。发送后进入
+       **开机检测**：每 `2s` 探测、`120s` 超时，期间动作位显示**加载**；在线即结束，超时提示未上线；**期间再点一次只取消
+       检测**（不重新发包）。**只有已存 mac 才能唤醒**（`supportsWake`），无 mac 时唤醒钮置灰而非隐藏。
     - **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页（`onPageShow`、
       行右键菜单「刷新」）、应用页（`onPageShow`）与会话页进入 `Idle`/`Failed`（弹出重连卡，含主机断连与连接超时）
       时各触发**一次**；应用页的 `probeApps` 也回填 `setProbed`。只有 `/cancel` 这类"动作已发完、主机异步停应用"
-      另有短延迟复探（`refreshAfter`）兜底，其余不叠延迟探测；预检失败由 `prepare` 的 `!ok` 分支单探。
+       另有短延迟复探（`refreshAfter`）兜底，其余不叠延迟探测；预检失败由 `prepare` 的 `!ok` 分支单探。
+       探测成功时顺带回填 `mlMac`（见 §2）。**不做周期轮询**——手动刷新 / 页面进入即兜底，避免后台常驻探测。
 - 行右键菜单对 Moonlight 追加「刷新」；**默认应用只在应用页的星标上设置，编辑页无该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
 
@@ -178,6 +189,9 @@
 - **连接动作图标**：连接与恢复共用 `ic_play`（仅悬停提示区分）；主界面 Moonlight 主按钮的「终止」
   （关闭会话窗口 + 关闭主机应用）用 `ic_stop`，RDP 的「断开连接」（仅断本地会话）用 `ic_power`；
   应用页的「断开连接」用 `ic_disconnect`（断链）。四者都是纯 `fill` 路径，由页面按状态着色。
+  **离线行的「唤醒」钮复用 `ic_power`**（电源语义）但画在 **accent** 上、不用 danger——红底像"关机/破坏"动作；
+  不可唤醒（无 mac）时画在 neutral 上并降不透明度（见 §4）。**未知态的「刷新」钮**用 `ic_refresh`，与列表页的
+  刷新 FAB 同款（accent 圆钮 + 白色 `fill`）。
 - **ArkUI 的 SVG 渲染不绘制 `<text>` 元素**：图标里的字符必须转成矢量路径（描边或填充），
   写 `<text>` 在网页预览能看到、在上屏里不会出现。
 - RDP 卡片用原有「显示器 + 信号」图标（`ic_remote_desktop`）。

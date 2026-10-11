@@ -1,6 +1,7 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MoonlightConnection, SavedConnection } from '../model/Connections';
+import { HostPower, MoonlightConnection, SavedConnection } from '../model/Connections';
+import { ConnectionStore } from './ConnectionStore';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ServerInfoResult } from '../moonlight/MoonlightModels';
 
@@ -11,13 +12,14 @@ const DEFAULT_HTTPS_PORT: number = 47984;
 // so a probe fired immediately can still see the old app.
 export const HOST_REPROBE_DELAY_MS: number = 1500;
 
-export type HostTargetListener = (connectionId: string, currentGame: number) => void;
+export type HostTargetListener =
+  (connectionId: string, currentGame: number, power: HostPower) => void;
 
 class HostTarget {
   currentGame: number = 0;
   httpsPort: number = DEFAULT_HTTPS_PORT;
-  // Unreachable hosts report no running app, so the row never offers resume / terminate.
-  reachable: boolean = false;
+  // Unknown until a probe returns; Offline reports no running app (row offers wake).
+  power: HostPower = HostPower.Unknown;
 }
 
 export class MoonlightHostState {
@@ -38,12 +40,16 @@ export class MoonlightHostState {
 
   static targetOf(connectionId: string): number {
     const target: HostTarget | undefined = MoonlightHostState.targets.get(connectionId);
-    return target === undefined || !target.reachable ? 0 : target.currentGame;
+    return target === undefined || target.power !== HostPower.Online ? 0 : target.currentGame;
   }
 
   static reachableOf(connectionId: string): boolean {
+    return MoonlightHostState.powerOf(connectionId) === HostPower.Online;
+  }
+
+  static powerOf(connectionId: string): HostPower {
     const target: HostTarget | undefined = MoonlightHostState.targets.get(connectionId);
-    return target !== undefined && target.reachable;
+    return target === undefined ? HostPower.Unknown : target.power;
   }
 
   static httpsPortOf(connectionId: string): number {
@@ -58,7 +64,7 @@ export class MoonlightHostState {
     }
     const target: HostTarget = MoonlightHostState.ensure(connectionId);
     target.currentGame = appId;
-    target.reachable = true;
+    target.power = HostPower.Online;
     MoonlightHostState.notify(connectionId);
   }
 
@@ -74,13 +80,13 @@ export class MoonlightHostState {
     if (httpsPort > 0) {
       target.httpsPort = httpsPort;
     }
-    target.reachable = true;
+    target.power = HostPower.Online;
     MoonlightHostState.notify(connectionId);
   }
 
   private static markUnreachable(connectionId: string): void {
     const target: HostTarget = MoonlightHostState.ensure(connectionId);
-    target.reachable = false;
+    target.power = HostPower.Offline;
     MoonlightHostState.notify(connectionId);
   }
 
@@ -101,6 +107,7 @@ export class MoonlightHostState {
           return;
         }
         MoonlightHostState.setProbed(conn.id, result.info.currentGame, result.info.httpsPort);
+        MoonlightHostState.captureMac(conn, result.info.mac);
       })
       .catch((error: BusinessError): void => {
         MoonlightHostState.probing.set(conn.id, false);
@@ -121,6 +128,16 @@ export class MoonlightHostState {
     }, delayMs);
   }
 
+  // The MAC only comes from serverinfo, so persist it here on probe success.
+  private static captureMac(conn: SavedConnection, mac: string): void {
+    if (!(conn instanceof MoonlightConnection) || mac.length === 0 || conn.mlMac === mac) {
+      return;
+    }
+    conn.mlMac = mac;
+    conn.updatedAt = Date.now();
+    ConnectionStore.save(conn);
+  }
+
   private static ensure(connectionId: string): HostTarget {
     let target: HostTarget | undefined = MoonlightHostState.targets.get(connectionId);
     if (target === undefined) {
@@ -132,9 +149,10 @@ export class MoonlightHostState {
 
   private static notify(connectionId: string): void {
     const currentGame: number = MoonlightHostState.targetOf(connectionId);
+    const power: HostPower = MoonlightHostState.powerOf(connectionId);
     const listeners: HostTargetListener[] = MoonlightHostState.listeners.slice();
     for (let i = 0; i < listeners.length; i++) {
-      listeners[i](connectionId, currentGame);
+      listeners[i](connectionId, currentGame, power);
     }
   }
 }

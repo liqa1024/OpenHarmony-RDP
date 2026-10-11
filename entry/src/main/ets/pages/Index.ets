@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConnectOrigin, EditConnectionParams, SavedConnection } from '../model/Connections';
+import { ConnectOrigin, EditConnectionParams, HostPower, MoonlightConnection,
+  SavedConnection } from '../model/Connections';
 import { ConnectionLauncher } from '../services/ConnectionLauncher';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
@@ -12,12 +13,16 @@ import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { WakeOnLan } from '../services/WakeOnLan';
 import { ConnectionRow } from '../components/ConnectionRow';
 import { FabButton } from '../components/FabButton';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
+// Wake watch after the magic packet: poll every 2s up to 120s; a second tap cancels it.
+const WAKE_POLL_INTERVAL_MS: number = 2000;
+const WAKE_WATCH_TIMEOUT_MS: number = 120000;
 
 @Entry
 @Component
@@ -25,6 +30,10 @@ struct Index {
   @State connections: SavedConnection[] = [];
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
   @State hostTargets: Map<string, number> = new Map<string, number>();
+  @State hostPowers: Map<string, HostPower> = new Map<string, HostPower>();
+  // Connections with a wake watch running (their row shows a loading action).
+  @State wakingHosts: Map<string, boolean> = new Map<string, boolean>();
+  private wakeTimers: Map<string, number> = new Map<string, number>();
   @State draggingIndex: number = -1;
   // Which row's menu is open; menuSeq changes so a repeat request still re-opens it.
   @State menuConnectionId: string = '';
@@ -57,7 +66,7 @@ struct Index {
   };
 
   private hostStateListener: HostTargetListener =
-    (connectionId: string, currentGame: number): void => {
+    (connectionId: string, currentGame: number, power: HostPower): void => {
       const next: Map<string, number> = new Map<string, number>(this.hostTargets);
       if (currentGame === 0) {
         next.delete(connectionId);
@@ -65,6 +74,14 @@ struct Index {
         next.set(connectionId, currentGame);
       }
       this.hostTargets = next;
+      const nextPowers: Map<string, HostPower> = new Map<string, HostPower>(this.hostPowers);
+      nextPowers.set(connectionId, power);
+      this.hostPowers = nextPowers;
+      // Watched host came up: end the watch.
+      if (power === HostPower.Online && this.wakingHosts.get(connectionId) === true) {
+        this.stopWakeWatch(connectionId);
+        showToast(this.getUIContext(), '主机已上线');
+      }
     };
 
   aboutToAppear(): void {
@@ -76,6 +93,7 @@ struct Index {
   aboutToDisappear(): void {
     SessionManager.unsubscribe(this.sessionListener);
     MoonlightHostState.unsubscribe(this.hostStateListener);
+    this.clearWakeWatches();
   }
 
   onPageShow(): void {
@@ -87,6 +105,7 @@ struct Index {
     this.developerMode = SettingsStore.load().developerMode;
     this.syncStatuses();
     this.syncHostTargets();
+    this.syncHostPowers();
     this.probeHosts();
   }
 
@@ -112,6 +131,29 @@ struct Index {
     this.hostTargets = next;
   }
 
+  // Only Moonlight has a probe; RDP rows stay Online (no dim / refresh / wake).
+  private syncHostPowers(): void {
+    const next: Map<string, HostPower> = new Map<string, HostPower>();
+    for (const conn of this.connections) {
+      if (conn instanceof MoonlightConnection) {
+        next.set(conn.id, MoonlightHostState.powerOf(conn.id));
+      }
+    }
+    this.hostPowers = next;
+  }
+
+  private powerFor(conn: SavedConnection): HostPower {
+    if (!(conn instanceof MoonlightConnection)) {
+      return HostPower.Online;
+    }
+    const power: HostPower | undefined = this.hostPowers.get(conn.id);
+    return power === undefined ? HostPower.Unknown : power;
+  }
+
+  private wakingFor(conn: SavedConnection): boolean {
+    return this.wakingHosts.get(conn.id) === true;
+  }
+
   private filesDir(): string {
     const context = this.getUIContext().getHostContext();
     return context === undefined ? '' : (context as common.UIAbilityContext).filesDir;
@@ -123,6 +165,79 @@ struct Index {
 
   private refreshHostState(conn: SavedConnection): void {
     MoonlightHostState.refresh(conn, this.filesDir());
+  }
+
+  // A second tap cancels the watch only (the packet is already out).
+  private toggleWake(conn: SavedConnection): void {
+    if (this.wakingHosts.get(conn.id) === true) {
+      this.stopWakeWatch(conn.id);
+      showToast(this.getUIContext(), '已取消状态检测（唤醒包已发送）');
+      return;
+    }
+    if (!(conn instanceof MoonlightConnection) || !conn.supportsWake()) {
+      showToast(this.getUIContext(), '未获取到主机 MAC，无法唤醒');
+      return;
+    }
+    const filesDir: string = this.filesDir();
+    WakeOnLan.wake(conn.mlMac)
+      .then((ok: boolean): void => {
+        if (!ok) {
+          showToast(this.getUIContext(), '唤醒包发送失败');
+          return;
+        }
+        showToast(this.getUIContext(), '已发送唤醒包，正在检测主机…');
+        this.startWakeWatch(conn, filesDir);
+      })
+      .catch((error: BusinessError): void => {
+        hilog.warn(DOMAIN, TAG, 'wake failed: %{public}s', JSON.stringify(error));
+        showToast(this.getUIContext(), '唤醒包发送失败');
+      });
+  }
+
+  private startWakeWatch(conn: SavedConnection, filesDir: string): void {
+    this.stopWakeWatch(conn.id);
+    let elapsed: number = 0;
+    const timer: number = setInterval((): void => {
+      elapsed += WAKE_POLL_INTERVAL_MS;
+      if (elapsed >= WAKE_WATCH_TIMEOUT_MS) {
+        this.stopWakeWatch(conn.id);
+        showToast(this.getUIContext(), '未检测到主机上线');
+        return;
+      }
+      MoonlightHostState.refresh(conn, filesDir);
+    }, WAKE_POLL_INTERVAL_MS);
+    this.wakeTimers.set(conn.id, timer);
+    this.setWaking(conn.id, true);
+  }
+
+  private stopWakeWatch(connectionId: string): void {
+    const timer: number | undefined = this.wakeTimers.get(connectionId);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      this.wakeTimers.delete(connectionId);
+    }
+    this.setWaking(connectionId, false);
+  }
+
+  private clearWakeWatches(): void {
+    this.wakeTimers.forEach((timer: number): void => {
+      clearInterval(timer);
+    });
+    this.wakeTimers.clear();
+    this.wakingHosts = new Map<string, boolean>();
+  }
+
+  private setWaking(connectionId: string, waking: boolean): void {
+    if ((this.wakingHosts.get(connectionId) === true) === waking) {
+      return;
+    }
+    const next: Map<string, boolean> = new Map<string, boolean>(this.wakingHosts);
+    if (waking) {
+      next.set(connectionId, true);
+    } else {
+      next.delete(connectionId);
+    }
+    this.wakingHosts = next;
   }
 
   private terminateHostApp(conn: SavedConnection): void {
@@ -274,6 +389,7 @@ struct Index {
 
   private remove(conn: SavedConnection): void {
     ConnectionStore.remove(conn.id);
+    this.stopWakeWatch(conn.id);
     const hostContext = this.getUIContext().getHostContext();
     if (hostContext !== undefined) {
       // Pairing is per host: dropping it here keeps a later re-add from skipping the PIN round.
@@ -419,6 +535,8 @@ struct Index {
                 state: this.connState(conn.id),
                 hostTargetId: this.hostTargetId(conn),
                 targetId: this.targetId(conn),
+                power: this.powerFor(conn),
+                waking: this.wakingFor(conn),
                 menuRequest: this.menuRequestFor(conn),
                 onRequestMenu: () => {
                   this.openRowMenu(conn.id);
@@ -440,6 +558,9 @@ struct Index {
                 },
                 onRefresh: () => {
                   this.refreshHostState(conn);
+                },
+                onWake: () => {
+                  this.toggleWake(conn);
                 },
                 onDelete: () => {
                   this.confirmDelete(conn);
