@@ -4,6 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_COLOR_RANGE_LIMITED, ML_STREAM_CFG_AUTO, MoonlightProfile,
   MoonlightStreamConfig } from '../model/Connections';
 import { recommendedBitrateKbps } from '../utils/MoonlightQuality';
+import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
@@ -38,8 +39,13 @@ export class MoonlightPairResult {
   hostId: string = '';
 }
 
+export class MoonlightKnownHost {
+  hostId: string = '';
+  host: string = '';
+}
+
 export class MoonlightHostPolicy {
-  knownIds: string[] = [];
+  known: MoonlightKnownHost[] = [];
   expectedId: string = '';
 }
 
@@ -148,8 +154,12 @@ export class MoonlightConnector {
 
   private static applyHostPolicy(filesDir: string, host: string, hostId: string,
     policy: MoonlightHostPolicy): string {
-    if (hostId.length > 0 && policy.knownIds.indexOf(hostId) >= 0) {
-      return '该主机已存在另一条 Moonlight 连接，请删除重复的连接后重试';
+    if (hostId.length > 0) {
+      for (let i = 0; i < policy.known.length; i++) {
+        if (policy.known[i].hostId === hostId) {
+          return `主机 ${policy.known[i].host} 已存在另一条 Moonlight 连接，请先删除该连接`;
+        }
+      }
     }
     MoonlightConnector.invalidateStalePin(filesDir, host, policy.expectedId, hostId);
     return '';
@@ -194,7 +204,8 @@ export class MoonlightConnector {
     const videoFormats: number = moonlightVideoFormats(stream.codec, info.serverCodecModeSupport);
     if (videoFormats === 0) {
       hilog.error(0xD001, 'HmRdpMoonlight', 'no shared video codec with %{public}s', host);
-      result.error = '本机与主机没有共同支持的编码，无法串流';
+      result.error = '本机与主机没有共同支持的视频编码（主机支持 '
+        + moonlightHostCodecNames(info.serverCodecModeSupport) + '）';
       return result;
     }
 

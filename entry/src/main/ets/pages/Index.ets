@@ -131,13 +131,13 @@ struct Index {
       return;
     }
     if (!MoonlightHostState.reachableOf(conn.id)) {
-      showToast(this.getUIContext(), '主机离线，无法终止主机应用');
+      showToast(this.getUIContext(), '无法终止主机应用：主机离线');
       return;
     }
     const httpsPort: number = MoonlightHostState.httpsPortOf(conn.id);
     MoonlightClient.cancel(filesDir, conn.host, httpsPort)
       .then((ok: boolean): void => {
-        showToast(this.getUIContext(), ok ? '已请求终止主机应用' : '主机离线，无法终止主机应用');
+        showToast(this.getUIContext(), ok ? '已请求终止主机应用' : '无法终止主机应用：主机离线');
         if (ok) {
           MoonlightHostState.markStopped(conn.id);
           MoonlightHostState.refreshAfter(conn, filesDir, HOST_REPROBE_DELAY_MS);
@@ -292,7 +292,7 @@ struct Index {
   private confirmDelete(conn: SavedConnection): void {
     showConfirm(this.getUIContext(), {
       title: '删除连接',
-      message: `确定要删除「${conn.label()}」？该操作无法撤销。`,
+      message: `将删除「${conn.label()}」，该操作无法撤销。是否继续？`,
       confirmLabel: '删除',
       danger: true,
       onConfirm: () => {

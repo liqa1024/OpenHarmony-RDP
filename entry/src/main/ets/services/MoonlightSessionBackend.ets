@@ -13,7 +13,7 @@ import { MoonlightConnection, PendingConnection, SavedConnection }
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionStore } from './ConnectionStore';
 import { MoonlightConnectResult, MoonlightConnector, MoonlightHostPolicy,
-  MoonlightPinProvider } from './MoonlightConnector';
+  MoonlightKnownHost, MoonlightPinProvider } from './MoonlightConnector';
 import { MoonlightHostState } from './MoonlightHostState';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
@@ -151,7 +151,10 @@ export class MoonlightSessionBackend implements SessionBackend {
       const other: SavedConnection = connections[i];
       if (other instanceof MoonlightConnection && other.id !== conn.id
         && other.mlHostId.length > 0) {
-        policy.knownIds.push(other.mlHostId);
+        const known: MoonlightKnownHost = new MoonlightKnownHost();
+        known.hostId = other.mlHostId;
+        known.host = other.host;
+        policy.known.push(known);
       }
     }
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(request.filesDir,

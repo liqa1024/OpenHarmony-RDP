@@ -16,7 +16,8 @@ import { CredentialStore } from '../services/CredentialStore';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
-import { MoonlightConnector, MoonlightHostPolicy, MoonlightPairResult } from '../services/MoonlightConnector';
+import { MoonlightConnector, MoonlightHostPolicy, MoonlightKnownHost, MoonlightPairResult }
+  from '../services/MoonlightConnector';
 import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
 import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
@@ -473,8 +474,9 @@ struct EditConnectionPage {
       this.errorMessage = '请输入主机名或 IP 地址';
       return;
     }
-    if (this.conflictingMoonlightHost(target) !== undefined) {
-      this.errorMessage = '该主机地址已添加，同一主机只能有一个 Moonlight 连接';
+    const conflict: string | undefined = this.conflictingMoonlightHost(target);
+    if (conflict !== undefined) {
+      this.errorMessage = `主机 ${conflict} 已添加，请先删除该连接`;
       return;
     }
     this.errorMessage = '';
@@ -575,7 +577,7 @@ struct EditConnectionPage {
     const hosts: MdnsHost[] = this.discovered;
     this.discovered = [];
     if (hosts.length === 0) {
-      showToast(this.getUIContext(), '未发现主机，请确认主机已开启且与本机在同一局域网');
+      showToast(this.getUIContext(), '未发现主机，请确认主机已通电并与本机在同一局域网');
       return;
     }
     showHostPicker(this.getUIContext(), hosts, '选择主机', this.addedMoonlightAddresses())
@@ -612,7 +614,10 @@ struct EditConnectionPage {
       const conn: SavedConnection = all[i];
       if (conn instanceof MoonlightConnection && conn.id !== this.connectionId
         && conn.mlHostId.length > 0) {
-        policy.knownIds.push(conn.mlHostId);
+        const known: MoonlightKnownHost = new MoonlightKnownHost();
+        known.hostId = conn.mlHostId;
+        known.host = conn.host;
+        policy.known.push(known);
       }
     }
     return policy;
@@ -627,7 +632,7 @@ struct EditConnectionPage {
         continue;
       }
       if (this.normalizeHost(conn.host) === target) {
-        return conn.label();
+        return conn.host;
       }
     }
     return undefined;
@@ -702,7 +707,7 @@ struct EditConnectionPage {
     if (this.password.length > 0 && this.password !== this.storedPassword) {
       showConfirm(this.getUIContext(), {
         title: '密码不会被保存',
-        message: '连接验证正确性后会自动保存密码。',
+        message: '连接验证成功后才会保存密码。是否继续保存连接？',
         confirmLabel: '继续保存',
         onConfirm: () => {
           this.submit(false);

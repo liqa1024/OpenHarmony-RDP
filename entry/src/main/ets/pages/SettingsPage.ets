@@ -403,8 +403,8 @@ struct SettingsPage {
   private confirmReset(): void {
     showConfirm(this.getUIContext(), {
       title: '恢复默认设置',
-      message: '确定要把全部设置（RDP、Moonlight 与通用）恢复为默认值？各处的自定义设置都会丢失，'
-        + '已保存的连接不受影响。',
+      message: '将全部设置（RDP、Moonlight 与通用）恢复为默认值，自定义设置会丢失，'
+        + '已保存的连接不受影响。是否继续？',
       confirmLabel: '恢复默认',
       danger: true,
       onConfirm: () => {
@@ -428,7 +428,7 @@ struct SettingsPage {
   private confirmExport(): void {
     showConfirm(this.getUIContext(), {
       title: '导出配置',
-      message: '将导出全局设置和全部连接。密码保存在系统安全存储中，出于安全考虑不会导出。',
+      message: '将导出全局设置与全部连接；密码保存在系统安全存储中，不会导出。是否继续？',
       confirmLabel: '导出',
       onConfirm: () => {
         this.handleExport();
@@ -456,7 +456,7 @@ struct SettingsPage {
   private confirmImport(): void {
     showConfirm(this.getUIContext(), {
       title: '导入配置',
-      message: '导入会应用全局设置，并按连接 ID 覆盖或新增连接。密码不会被导入，需重新输入。是否继续？',
+      message: '将应用全局设置，并按连接 ID 覆盖或新增连接；密码需重新输入。是否继续？',
       confirmLabel: '导入',
       onConfirm: () => {
         this.handleImport();
