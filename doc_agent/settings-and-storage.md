@@ -100,6 +100,9 @@
   [`moonlight-connection.md`](moonlight-connection.md) §7）。关掉它还**一并关闭**
   已开着的抓取，避免"入口被隐藏、后台还在跑"。它与其余设置一样随导入导出搬运（文件里是什么就还原什么）；
   抓取本身仍只在开发者选项开着时运行。
+- **设置页记忆停留分栏**（`lastSettingsTab`）：设置页三栏（通用 / RDP / Moonlight）进入时回到上次
+  停留的一栏；从未记录（`-1`）时落在「通用」。它只决定设置页的初始焦点，与各栏内容无关，
+  随导入导出搬运（同 `lastNewProtocol`）。
 
 ## 3. 导入 / 导出（`ConfigTransfer`）
 

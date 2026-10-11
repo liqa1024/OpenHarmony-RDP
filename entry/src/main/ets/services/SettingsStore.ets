@@ -114,6 +114,9 @@ export class AppSettings {
   mlWidth: number = 0;
   mlHeight: number = 0;
   lastNewProtocol: number = PROTOCOL_RDP;
+  // Settings page tab the user last stayed on (TAB_COMMON / PROTOCOL_RDP /
+  // PROTOCOL_MOONLIGHT); -1 = never recorded, so the page opens on 通用.
+  lastSettingsTab: number = -1;
   // Moonlight 自有一份交互设置（触控板/捏合/键盘/前台重连）：两协议各存各的值，
   // 只共享设置 UI 代码；窗口尺寸、工具栏延迟与开发者选项是应用级单一值。
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
@@ -247,6 +250,8 @@ export class SettingsStore {
       settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
       settings.lastNewProtocol =
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
+      settings.lastSettingsTab =
+        SettingsStore.readNumber(store, 'lastSettingsTab', settings.lastSettingsTab);
       settings.mlTouchpadScrollSpeed = SettingsStore.readNumber(store, 'mlTouchpadScrollSpeed',
         settings.mlTouchpadScrollSpeed);
       settings.mlPinchZoomSpeed =
@@ -319,6 +324,7 @@ export class SettingsStore {
       store.putSync('mlWidth', settings.mlWidth);
       store.putSync('mlHeight', settings.mlHeight);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
+      store.putSync('lastSettingsTab', settings.lastSettingsTab);
       store.putSync('mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
       store.putSync('mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       store.putSync('mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
@@ -558,6 +564,16 @@ export class SettingsStore {
   static rememberNewProtocol(protocol: number): void {
     const settings: AppSettings = SettingsStore.load();
     settings.lastNewProtocol = protocol;
+    SettingsStore.save(settings);
+  }
+
+  static lastSettingsTab(): number {
+    return SettingsStore.load().lastSettingsTab;
+  }
+
+  static rememberSettingsTab(tab: number): void {
+    const settings: AppSettings = SettingsStore.load();
+    settings.lastSettingsTab = tab;
     SettingsStore.save(settings);
   }
 

@@ -316,6 +316,8 @@ export class ConfigTransfer {
     settings.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', settings.mlHeight);
     settings.lastNewProtocol =
       ConfigTransfer.readNumber(rec, 'lastNewProtocol', settings.lastNewProtocol);
+    settings.lastSettingsTab =
+      ConfigTransfer.readNumber(rec, 'lastSettingsTab', settings.lastSettingsTab);
     settings.mlTouchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
     settings.mlPinchZoomSpeed =

@@ -136,6 +136,8 @@ struct SettingsPage {
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
     this.detectedWidth = detected.width;
     this.detectedHeight = detected.height;
+    const savedTab: number = SettingsStore.lastSettingsTab();
+    this.protocol = savedTab >= 0 ? savedTab : TAB_COMMON;
     this.syncFromStore();
   }
 
@@ -777,6 +779,7 @@ struct SettingsPage {
     }
     this.persist();
     this.protocol = protocol;
+    SettingsStore.rememberSettingsTab(protocol);
     this.syncFromStore();
   }
 
