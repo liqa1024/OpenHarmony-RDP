@@ -140,6 +140,7 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   remoteInputAesKeyHex: string = '';
   remoteInputAesIvHex: string = '';
   localCursorMode: boolean = false;
+  enableAudio: boolean = true;
 }
 
 export enum ConnectOrigin {

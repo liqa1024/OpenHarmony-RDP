@@ -13,16 +13,18 @@
 
 因此：**源码由脚本按固定版本拉取**（`native/scripts/fetch-sources.ps1`），构建产物放到 `entry/libs/<abi>/`；
 应用编译用的 FreeRDP/winpr 头文件由 `build-native.ps1` 同步生成到 `entry/src/main/cpp/thirdparty/freerdp/`
-（同步时归一化掉构建机路径与本地 git 版本）。`entry/src/main/cpp/CMakeLists.txt` 按
+（同步时归一化掉构建机路径与本地 git 版本）；Moonlight 的 `Limelight.h` 与 opus 头同步到
+`thirdparty/{moonlight,opus}/`。`entry/src/main/cpp/CMakeLists.txt` 按
 `${HMRDP_PREBUILT_LIBS}/libX.so` 完整路径链接、按 `thirdparty/freerdp/include/{freerdp3,winpr3}` 找头文件。
 
 **每个依赖只以共享库存在一份，统一落 `entry/libs/<abi>/`**：共享还是静态的判据是**同一进程里是否存在多个
 独立消费者**，不是"能不能共享"。`libcrypto`/`libssl` 的消费者有三个（`libwinpr3.so`、`libfreerdp3.so`、
 `libmoonlight-common-c.so`），各自静态就必然有三份副本，而且两份以上还会各自导出同名全局符号、在查找时
-互相抢占；zlib 只有一个消费者，同样打成共享库是为了口径统一——每个库都对应一个 `DT_NEEDED` 条目和一个
-打包文件，不出现"这份归谁"的问题。**判据落在"独立依赖"这一层**：`moonlight-common-c` 自己的 submodule
+互相抢占；zlib 与 opus 各只有一个消费者，同样打成共享库是为了口径统一——每个库都对应一个 `DT_NEEDED` 条目
+和一个打包文件，不出现"这份归谁"的问题。**判据落在"独立依赖"这一层**：`moonlight-common-c` 自己的 submodule
 （`enet`、`nanors`）不是独立依赖而是它的实现细节，照旧静态编进 `libmoonlight-common-c.so`，单独成 `.so`
-只会多一个 DSO 和一次加载、没有任何去重收益。
+只会多一个 DSO 和一次加载、没有任何去重收益。opus（`libopus.so`）是 Moonlight 音频解码的独立依赖，消费者是
+`libhmrdp.so`（moonlight-common-c 只分帧、不解码，不消耗 opus；见 [`moonlight-native.md`](moonlight-native.md) §3.3）。
 `libhmrdp` 因此**不链任何静态归档**，也就不需要 `-Wl,--exclude-libs`，更不需要"静态归档必须排在
 `libwinpr3.so` 之前"这类链接顺序约束。
 
@@ -39,7 +41,7 @@ native/scripts/fetch-sources.ps1   # 按固定版本拉取源码（tarball + SHA
 native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（单一入口，见下）
 ```
 
-- **单一入口 `build-native.ps1`**：按依赖顺序编 zlib → OpenSSL → FreeRDP → moonlight，全部用 CMake +
+- **单一入口 `build-native.ps1`**：按依赖顺序编 zlib → OpenSSL → opus → FreeRDP → moonlight，全部用 CMake +
   Windows OHOS NDK；每一步的**共享库都拷进 `entry/libs/<abi>/`**（模块自动打包，应用按完整路径链接），
   只把头文件同步到 `entry/src/main/cpp/thirdparty/`。`-Arch`（默认 arm64-v8a；x86_64 为模拟器）、
   `-Clean`、`-Only <步骤>`（只编某一步，依赖须已装；改 FreeRDP 补丁后就是 `-Only freerdp -Clean`）。
@@ -75,10 +77,11 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
     FreeRDP 与 moonlight-common-c 这两个独立库使用），只有 `.so` 拷进 `entry/libs/<abi>/`。
   - 归一化/加固差异：CMake 构建沿用 OHOS toolchain 默认（`-fstack-protector-strong -ffunction-sections`
     等）；`buildinf.h` 与 `OPENSSLDIR` 等按中性值写。
-- 版本与校验和固定在 `fetch-sources.ps1`（FreeRDP 3.10.3 / zlib 1.3.1 / OpenSSL 3.0.15）。
-  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑三个补丁脚本（`patch-freerdp.ps1`、
-  `patch-moonlight.ps1`、`patch-zlib.ps1`）。FreeRDP 的补丁成体系地拆在 `patch-steps/`；moonlight 与 zlib
-  各只有一个入口脚本（见 [`rdp-native.md`](rdp-native.md) §3 与 [`moonlight-native.md`](moonlight-native.md)）。
+- 版本与校验和固定在 `fetch-sources.ps1`（FreeRDP 3.10.3 / zlib 1.3.1 / OpenSSL 3.0.15 / opus 1.5.2）。
+  已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑补丁脚本（`patch-freerdp.ps1`、
+  `patch-moonlight.ps1`、`patch-zlib.ps1`、`patch-opus.ps1`）。FreeRDP 的补丁成体系地拆在 `patch-steps/`；
+  moonlight、zlib 与 opus 各只有一个入口脚本（见 [`rdp-native.md`](rdp-native.md) §3、
+  [`moonlight-native.md`](moonlight-native.md) §3.3）。
 - ⚠ **hvigor 不会清理不再产出的原生库**：`entry/libs/<abi>/` 里删掉一个 `.so` 后，
   `entry/build/<product>/intermediates/{cmake,libs,stripped_native_libs}/` 里的旧副本仍在，并会被打进
   HAP（症状：包体不变、里面多一个不该存在的库）。改动**产出集合**（新增/移除/改名某个依赖）之后，

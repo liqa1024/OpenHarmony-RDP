@@ -394,6 +394,9 @@ struct SettingsPage {
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
+      // Audio is one global switch shared by both protocols (see the Moonlight
+      // audio toggle), so it is persisted from this branch too.
+      settings.enableAudio = this.enableAudio;
     }
     SettingsStore.save(settings);
     if (this.protocol === PROTOCOL_RDP) {
@@ -1183,6 +1186,22 @@ struct SettingsPage {
               Divider().color($r('app.color.divider'))
 
               this.moonlightStreamSection()
+
+              Divider().color($r('app.color.divider'))
+
+              // One global audio switch shared with RDP (persisted from either
+              // protocol branch); gates the Moonlight Opus audio stream.
+              this.toggleItem({
+                title: '音频',
+                subtitle: '播放主机的声音；关闭则音频留在主机本地播放',
+                value: this.enableAudio,
+                enabled: this.audioSupported,
+                disabledReason: this.audioDisabledReason,
+                onChange: (v: boolean) => {
+                  this.enableAudio = v;
+                  this.persist();
+                }
+              })
             }
 
             if (this.protocol !== TAB_COMMON) {

@@ -21,8 +21,8 @@ set(CMAKE_C_FLAGS_DEBUG "-O2 -g")
 set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
 
 # FreeRDP/winpr headers bundled with the module, and the directory holding every
-# shared library the module packages: FreeRDP, OpenSSL, zlib and Moonlight. All of
-# them are *shared* libraries produced by native/scripts/build-native.ps1
+# shared library the module packages: FreeRDP, OpenSSL, zlib, opus and Moonlight.
+# All of them are *shared* libraries produced by native/scripts/build-native.ps1
 # (generated, gitignored), so the app links them by full path and they end up in
 # DT_NEEDED instead of being folded into a copy per consumer - the reason
 # libcrypto/libssl used to exist three times (see doc_agent/native-build.md).
@@ -38,6 +38,12 @@ set(HMRDP_PREBUILT_LIBS "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}"
 # fails the link).
 set(MOONLIGHT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/moonlight")
 
+# Opus: the Moonlight audio path decodes the host's Opus multistream packets with
+# this library (moonlight-common-c only frames Opus, it does not decode). Same
+# rule as the other dependencies: shared, shipped from entry/libs/<abi>/, and a
+# required input - the app does not build a Moonlight without audio.
+set(OPUS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/opus")
+
 # Every library in this list is both packaged and linked: the list is what
 # "the native build ran" means for this module, and keeping it explicit avoids
 # depending on the linker following DT_NEEDED transitively to resolve
@@ -49,7 +55,8 @@ set(HMRDP_PREBUILT_LIB_NAMES
     libfreerdp3.so
     libwinpr3.so
     libfreerdp-client3.so
-    libmoonlight-common-c.so)
+    libmoonlight-common-c.so
+    libopus.so)
 foreach(_lib IN LISTS HMRDP_PREBUILT_LIB_NAMES)
     if(NOT EXISTS "${HMRDP_PREBUILT_LIBS}/${_lib}")
         message(FATAL_ERROR
@@ -63,6 +70,11 @@ if(NOT EXISTS "${MOONLIGHT_ROOT}/include/Limelight.h")
         "HmRdp: Limelight.h missing under ${MOONLIGHT_ROOT}/include; "
         "run native/scripts/build-native.ps1 first")
 endif()
+if(NOT EXISTS "${OPUS_ROOT}/include/opus/opus_multistream.h")
+    message(FATAL_ERROR
+        "HmRdp: opus_multistream.h missing under ${OPUS_ROOT}/include; "
+        "run native/scripts/build-native.ps1 first")
+endif()
 
 # core/ holds the native resource drivers and hot paths (FreeRDP host, gdi
 # frame pipeline, GPU presenters, video/audio, Moonlight transport); binding/
@@ -74,6 +86,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/binding
     ${FREERDP_ROOT}/include/freerdp3
     ${FREERDP_ROOT}/include/winpr3
+    ${OPUS_ROOT}/include
 )
 
 # --- SPIR-V shaders -----------------------------------------------------------
@@ -143,6 +156,7 @@ add_library(hmrdp SHARED
     core/hmrdp_file_clipboard.cpp
     core/hmrdp_moonlight.cpp
 core/hmrdp_moonlight_session.cpp
+    core/hmrdp_moonlight_audio.cpp
     core/hmrdp_video_decoder.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
@@ -190,7 +204,7 @@ endif()
 # + -DWITH_LIBRARY_VERSIONING=OFF), so each library is a single version-less
 # libX.so whose SONAME is also libX.so. Linking it records libX.so in DT_NEEDED,
 # matching the packaged files exactly (no libX.so.3 duplicate). The OpenSSL
-# (libcrypto.so / libssl.so) and Moonlight libraries follow the same rule.
+# (libcrypto.so / libssl.so), opus and Moonlight libraries follow the same rule.
 #
 # libvulkan.so is deliberately NOT linked: it is dlopen()ed at runtime (see
 # hmrdp_vk_context.h) so a device without a usable Vulkan driver degrades to the

@@ -144,7 +144,8 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   调用方（UI 线程）只置停止标志、发条件变量通知、`join`，绝不直接碰 moonlight 状态。`g_active` 覆盖整个
   会话生命周期（含已建流阶段），用来**挡住并发的第二个会话**（moonlight-common-c 是进程级单连接，重入会把
   它的全局状态搞坏，表现为 `VideoRecv`/`RtpvAddPacket` 崩溃）。视频回调取自解码桥，`renderContext` 是会话
-  XComponent 的 `OHNativeWindow`，音频以空渲染器关闭（不播放）；输入由 `MoonlightInputSink` 落 `LiSend*`
+  XComponent 的 `OHNativeWindow`，音频回调取自音频桥（见 §3.3；`enableAudio` 关闭时为空渲染器，静音）；
+  输入由 `MoonlightInputSink` 落 `LiSend*`
   （相对/绝对鼠标、按键、UTF-8 文本、高分辨率滚轮、触屏触点、原生触控板接入点），策略在共用
   `SessionInput`（见 [`session-layer.md`](session-layer.md) §8）。N-API 出口：
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
@@ -219,6 +220,29 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 §3 
   `InputSink.touchpadFrame`（合成两个触点——鸿蒙不向应用暴露触控板真实触点），否则与「Ctrl+滚轮 / 触摸模拟」
   一样回退。N-API 出口 `moonlightTouchpad`。
 
+### 3.3 音频（Opus 解码 → 交接环 → ArkTS 渲染器）
+
+- **协议形态**：Sunshine / GFE 的音频是 **Opus 多流**（配置为 `MAKE_AUDIO_CONFIGURATION(channelCount, channelMask)`，
+  如 `AUDIO_CONFIGURATION_STEREO`），`moonlight-common-c` 只分帧、**不解码**：`AUDIO_RENDERER_CALLBACKS.decodeAndPlaySample`
+  交来的是**明文** Opus 包（解密在库内完成）。解码器因此由客户端提供：仓库固定 **libopus**（`opus_multistream_decoder`），
+  随 `build-native.ps1` 编成共享 `libopus.so`（无版本号 SONAME），由 `libhmrdp` 链接（依赖清单见
+  [`native-build.md`](native-build.md)）。
+- **解码桥**：`core/hmrdp_moonlight_audio.*` 把 libopus 接进 `AUDIO_RENDERER_CALLBACKS`——`init` 按
+  `OPUS_MULTISTREAM_CONFIGURATION`（`sampleRate/channelCount/streams/coupledStreams/mapping`）建多流解码器，分辨率不写死；
+  `decodeAndPlaySample` 解出 **PCM S16LE** 写入与 RDP **同一个** `AudioSink` 交接环（`core/hmrdp_audio.*`）；
+  `start`/`stop`/`cleanup` 驱动生命周期。能力位留空：**不开 `CAPABILITY_DIRECT_SUBMIT`**，解码跑在 moonlight 自己的
+  `AudioDecoderThread` 上，不占 RTP 接收线程（与视频桥同理）。
+- **与 RDP 共用播放链路**：环与 ArkTS 渲染器（`workers/audio.worker.ets` + 门面 `services/AudioPlayer.ets`）是 RDP 音频那一套；
+  环本就**格式无关**（水位按 `rate × channels × 2` 算），立体声与环绕都不必改环。ArkTS 侧按**音源**分流到各协议的原生读口
+  （RDP `audioRead(handle,…)` / Moonlight `moonlightAudioRead`，后者无 handle——环是进程级单个）。
+- **格式时序**：音频格式在 `init` 时确定（Opus 恒 48kHz，声道由协商定），且 `init`（在 `startAudioStream` 内）在
+  `connectionStarted` **之前**执行 ⇒ ArkTS 收到会话 `kStarted` 时 `moonlightAudioFormat()` 已可读，**无需音频格式事件**
+  （RDP 因 rdpsnd 格式可变才需要 `AudioFormat` 事件；Moonlight 不会中途重配）。
+- **开关与协商落点**：`MoonlightStreamConfig.enableAudio` 关闭时 `Run()` 传空 `arCallbacks`（库回落假渲染器 ⇒ 静音）；
+  `/launch` 的 `localAudioPlayMode` 随之取 0（音频送客户端）/ 1（主机本地播放）。`surroundAudioInfo` 与
+  `STREAM_CONFIGURATION.audioConfiguration` 当前为立体声；环绕是后续扩展（鸿蒙 ArkTS 与原生 OHAudio 两侧的高声道布局接口均已具备）。
+- **A/V 同步不在范围**：音频环独立播放，与其解码时间轴无耦合。
+
 ## 4. 控制 / 配对层（ArkTS）
 控制层（`/serverinfo`、`/pair`、`/applist`、`/launch` / `/resume`）、配对编排与全部 XML 解析都在 **ArkTS**：
 传输与 mTLS / 证书 pin 用 `@ohos.net.http`，配对加密原语用 `cryptoFramework` 与 `@ohos.security.cert`，
@@ -267,7 +291,7 @@ PIN 由调用方弹窗提供），协议建模与响应解析见 [`moonlight-con
 ## 5. 范围
 
 - 本文件覆盖：客户端库的构建与链接（§1）、视频解码与协商（§2）、桥接层与接线（§3，解码桥 + 串流会话桥 +
-  本地光标模式）、控制/配对层的协议事实（§4）。
+  本地光标模式 + 原生触控板 + 音频）、控制/配对层的协议事实（§4）。
 - 主机发现、应用列表交互不在本文件范围；**控制层（驱动 `serverinfo → pair → applist → launch`）、协议编排与
   XML 解析在 ArkTS**（§4），会话的 ArkTS 接线（N-API / `MoonlightSessionBackend` / 会话窗口）与输入页路由
   也不在本文件范围。

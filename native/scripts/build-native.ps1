@@ -12,6 +12,7 @@
   Built in dependency order:
     zlib      shared libz.so
     openssl   shared libcrypto.so / libssl.so (CMake + frozen Configure output)
+    opus      shared libopus.so (Moonlight audio decode, linked by libhmrdp)
     freerdp   shared libX.so; links zlib + OpenSSL dynamically
     moonlight shared libmoonlight-common-c.so (enet/nanors fold into it)
 
@@ -21,7 +22,7 @@
   submodule that is only an implementation detail of its parent (moonlight's
   enet/nanors) stays static inside that parent. Then synced next to the module
   (all gitignored, generated):
-    entry/src/main/cpp/thirdparty/{freerdp,moonlight}/include
+    entry/src/main/cpp/thirdparty/{freerdp,moonlight,opus}/include
     entry/libs/<abi>/*.so
 
   Prerequisite: fetch-sources.ps1 (pinned sources + patches).
@@ -44,8 +45,8 @@
 param(
   [string]$Arch = "arm64-v8a",
   [switch]$Clean,
-  [ValidateSet("zlib", "openssl", "freerdp", "moonlight")]
-  [string[]]$Only = @("zlib", "openssl", "freerdp", "moonlight")
+  [ValidateSet("zlib", "openssl", "opus", "freerdp", "moonlight")]
+  [string[]]$Only = @("zlib", "openssl", "opus", "freerdp", "moonlight")
 )
 $ErrorActionPreference = "Stop"
 
@@ -188,6 +189,36 @@ function Sync-OpenSsl {
   if (Test-Path -LiteralPath $stale) { Remove-Item -Recurse -Force -LiteralPath $stale }
 
   Write-Host "=== OpenSSL shared libraries copied to $Libs ==="
+}
+
+# --- opus -------------------------------------------------------------------
+function Build-Opus {
+  $src = "$Third\opus-1.5.2"
+  Assert-Found "$src\CMakeLists.txt" "opus source (run fetch-sources.ps1)"
+  Invoke-CMake -Name opus -Src $src -Build "$BuildRoot\opus-$Arch" -Prefix "$Install\opus" -Options @(
+    # Shared libopus.so shipped from entry/libs/<abi>/; libhmrdp links it for the
+    # Moonlight audio decode. patch-opus.ps1 has already made its SONAME
+    # version-less, so the file that ships is exactly libopus.so.
+    "-DBUILD_SHARED_LIBS=ON",
+    "-DOPUS_BUILD_SHARED_LIBRARY=ON",
+    "-DOPUS_BUILD_PROGRAMS=OFF",
+    "-DOPUS_BUILD_TESTING=OFF"
+  )
+  Copy-PrebuiltLib "$Install\opus\lib\libopus.so"
+  Sync-Opus
+}
+
+function Sync-Opus {
+  $from = "$Install\opus\include\opus"
+  $to = "$Thirdparty\opus\include\opus"
+  Assert-Found "$from\opus_multistream.h" "opus install headers (build opus first)"
+
+  New-Item -ItemType Directory -Path $to -Force | Out-Null
+  Copy-Item -Path "$from\*" -Destination $to -Recurse -Force
+
+  $now = Get-Date
+  Get-ChildItem -LiteralPath $to -Recurse -File | ForEach-Object { $_.LastWriteTime = $now }
+  Write-Host "=== opus headers synced to $Thirdparty\opus\include\opus ==="
 }
 
 # --- freerdp ----------------------------------------------------------------
@@ -349,6 +380,7 @@ function Sync-Moonlight {
 # --- run --------------------------------------------------------------------
 if ($Only -contains "zlib")      { Build-Zlib }
 if ($Only -contains "openssl")   { Build-OpenSsl }
+if ($Only -contains "opus")      { Build-Opus }
 if ($Only -contains "freerdp")   { Build-FreeRdp }
 if ($Only -contains "moonlight") { Build-Moonlight }
 

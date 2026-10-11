@@ -69,6 +69,10 @@ struct MoonlightStreamConfig {
   // Request foundation-sunshine local cursor mode when the host advertises it;
   // off keeps the host-composited cursor.
   bool localCursorMode = false;
+
+  // Play the host's audio on this device. False leaves the library's audio
+  // renderer unset (silent); the host then plays locally (localAudioPlayMode).
+  bool enableAudio = true;
 };
 
 // Null disables delivery; safe to call before a session.

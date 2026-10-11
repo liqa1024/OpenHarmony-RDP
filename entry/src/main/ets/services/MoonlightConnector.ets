@@ -177,7 +177,8 @@ export class MoonlightConnector {
 
   static async prepare(filesDir: string, host: string, port: number, stream: MoonlightProfile,
     appId: number, width: number, height: number,
-    pinProvider: MoonlightPinProvider, policy: MoonlightHostPolicy): Promise<MoonlightConnectResult> {
+    pinProvider: MoonlightPinProvider, policy: MoonlightHostPolicy,
+    audioEnabled: boolean): Promise<MoonlightConnectResult> {
     const result: MoonlightConnectResult = new MoonlightConnectResult();
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
     if (!credential.ok) {
@@ -260,6 +261,9 @@ export class MoonlightConnector {
     options.bitrateKbps = effectiveBitrateKbps;
     options.rikeyHex = rikeyHex;
     options.rikeyId = rikeyId;
+    // Host-side local playback mirrors client playback: with client audio on the
+    // host stays silent and streams; off it plays locally.
+    options.audioEnabled = audioEnabled;
     let launch: LaunchResult;
     if (info.currentGame === effectiveAppId) {
       launch = await MoonlightClient.resume(filesDir, host, info.httpsPort, options);
@@ -303,6 +307,7 @@ export class MoonlightConnector {
     config.encryptionFlags = 0;
     config.remoteInputAesKeyHex = rikeyHex;
     config.remoteInputAesIvHex = MoonlightConnector.ivHex(rikeyId);
+    config.enableAudio = audioEnabled;
     result.config = config;
     result.httpsPort = info.httpsPort;
     result.effectiveAppId = effectiveAppId;

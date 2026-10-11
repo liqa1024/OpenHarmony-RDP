@@ -45,6 +45,8 @@ export class MoonlightLaunchOptions {
   bitrateKbps: number = 20000;
   rikeyHex: string = '';
   rikeyId: number = 0;
+  // Client audio on: host plays locally off. Drives the /launch localAudioPlayMode.
+  audioEnabled: boolean = true;
 }
 
 export class LaunchResult {

@@ -118,9 +118,10 @@ export class MoonlightClient {
       + `&rikey=${options.rikeyHex}`
       + `&rikeyid=${options.rikeyId}`
       // Sunshine nvhttp parameter names: localAudioPlayMode (not localaudio),
-      // surroundAudioInfo (packed int). Audio/gamepad are not wired yet:
-      // stereo with host playback off, controller mask 0.
-      + '&localAudioPlayMode=0'
+      // surroundAudioInfo (packed int). Audio goes to the client (0) when client
+      // playback is on, else the host plays locally (1). Gamepad not wired yet:
+      // controller mask 0.
+      + `&localAudioPlayMode=${options.audioEnabled ? 0 : 1}`
       + '&surroundAudioInfo=196610'
       + '&remoteControllersBitmap=0'
       + '&gcmap=0'

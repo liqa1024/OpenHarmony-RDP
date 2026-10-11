@@ -20,6 +20,7 @@
 #include "hmrdp_log.h"
 #include "hmrdp_bitmap.h"
 #include "hmrdp_moonlight.h"
+#include "hmrdp_moonlight_audio.h"
 #include "hmrdp_moonlight_session.h"
 #include "hmrdp_replay.h"
 #include "hmrdp_session.h"
@@ -1641,6 +1642,7 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.colorRange = GetIntProperty(env, args[0], "colorRange", 0);
   config.encryptionFlags = GetIntProperty(env, args[0], "encryptionFlags", 0);
   config.localCursorMode = GetBoolProperty(env, args[0], "localCursorMode", false);
+  config.enableAudio = GetBoolProperty(env, args[0], "enableAudio", true);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesKeyHex"), &config.remoteInputAesKey);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesIvHex"), &config.remoteInputAesIv);
   return CreateStringUtf8(env, hmrdp::MoonlightSessionStart(config, &OnMoonlightSessionEvent));
@@ -1653,6 +1655,35 @@ napi_value MoonlightSessionStop(napi_env env, napi_callback_info) {
 
 napi_value MoonlightSessionActive(napi_env env, napi_callback_info) {
   return CreateBool(env, hmrdp::MoonlightSessionActive());
+}
+
+napi_value MoonlightAudioRead(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  void* data = nullptr;
+  size_t length = 0;
+  if (argc < 1 || napi_get_arraybuffer_info(env, args[0], &data, &length) != napi_ok ||
+      data == nullptr) {
+    return CreateInt(env, 0);
+  }
+  return CreateInt(env, hmrdp::MoonlightAudioRead(static_cast<uint8_t*>(data), length));
+}
+
+napi_value MoonlightAudioFormat(napi_env env, napi_callback_info info) {
+  (void)info;
+  int rate = 0;
+  int channels = 0;
+  hmrdp::MoonlightAudioFormat(&rate, &channels);
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_value rateValue = nullptr;
+  napi_create_int32(env, rate, &rateValue);
+  napi_set_named_property(env, obj, "rate", rateValue);
+  napi_value channelsValue = nullptr;
+  napi_create_int32(env, channels, &channelsValue);
+  napi_set_named_property(env, obj, "channels", channelsValue);
+  return obj;
 }
 
 napi_value MoonlightLaunchQueryParameters(napi_env env, napi_callback_info) {
@@ -1986,6 +2017,10 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightSessionStop", nullptr, MoonlightSessionStop, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightSessionActive", nullptr, MoonlightSessionActive, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightAudioRead", nullptr, MoonlightAudioRead, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightAudioFormat", nullptr, MoonlightAudioFormat, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightLaunchQueryParameters", nullptr, MoonlightLaunchQueryParameters, nullptr, nullptr,
        nullptr, napi_default, nullptr},

@@ -24,6 +24,7 @@ import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PinchProbeOverlay } from '../components/PinchProbeOverlay';
 import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/MoonlightTelemetry';
+import { AudioPlayer } from '../services/AudioPlayer';
 import { TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
@@ -63,6 +64,7 @@ struct MoonlightSessionPage {
   private foreground: ForegroundReconnect | undefined = undefined;
   private connectionId: string = '';
   private started: boolean = false;
+  private audioStarted: boolean = false;
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -235,6 +237,7 @@ struct MoonlightSessionPage {
   }
 
   aboutToDisappear(): void {
+    this.stopAudio();
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.shell?.release();
   }
@@ -297,13 +300,32 @@ struct MoonlightSessionPage {
       input?.setTouchEnabled(touchSupported);
       input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
       this.startMetricsTimer();
+      this.startAudio();
       return;
     }
     // Not streaming: the process-wide system cursor must come back.
+    this.stopAudio();
     this.stopMetricsTimer();
     this.setLocalCursorHidden(false);
     if (state === ConnectionState.Idle || state === ConnectionState.Failed) {
       this.refreshHostState();
+    }
+  }
+
+  // The native config gate (enableAudio + output device) decides whether any
+  // audio flows; a disabled stream never reports a format, so the worker builds
+  // no renderer and this is a harmless no-op.
+  private startAudio(): void {
+    if (!this.audioStarted) {
+      this.audioStarted = true;
+      AudioPlayer.startMoonlight();
+    }
+  }
+
+  private stopAudio(): void {
+    if (this.audioStarted) {
+      this.audioStarted = false;
+      AudioPlayer.stopMoonlight();
     }
   }
 

@@ -51,6 +51,19 @@ $Deps = @(
 		Sha256      = "23C666D0EDF20F14249B3D8F0368ACAEE9AB585B09E1DE82107C66E1F3EC9533"
 		Patch       = $false
 	},
+	# Opus (Xiph/BSD): the multistream decoder the Moonlight audio path uses.
+	# Moonlight / Sunshine send Opus, moonlight-common-c only frames it, so the
+	# client decodes it here (see doc_agent/moonlight-native.md). Built as a
+	# shared libopus.so like every other dependency; patch-opus.ps1 (called at the
+	# bottom) makes its SONAME version-less.
+	[pscustomobject]@{
+		Name        = "opus"
+		Dir         = "opus-1.5.2"
+		ArchiveRoot = "opus-1.5.2"
+		Url         = "https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz"
+		Sha256      = "65C1D2F78B9F2FB20082C38CBE47C951AD5839345876E46941612EE87F9A7CE1"
+		Patch       = $false
+	},
 	# FSR 1.0 (MIT): the EASU/RCAS shader headers the Vulkan presenter #includes.
 	# Header-only, so nothing is built from it - the app's CMake finds the tree at
 	# native/third_party/fidelityfx-fsr-1.0.2 and embeds the compiled SPIR-V.
@@ -205,6 +218,15 @@ Write-Host "patching $zlibSrc"
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-zlib.ps1") -Source $zlibSrc
 if ($LASTEXITCODE -ne 0) {
 	throw "patch-zlib.ps1 failed"
+}
+
+# Make opus's shared library version-less so its SONAME matches the file that
+# ships (see patch-opus.ps1).
+$opusSrc = Join-Path $Third "opus-1.5.2"
+Write-Host "patching $opusSrc"
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-opus.ps1") -Source $opusSrc
+if ($LASTEXITCODE -ne 0) {
+	throw "patch-opus.ps1 failed"
 }
 
 # Strip moonlight-common-c's unconditional -Werror (see patch-moonlight.ps1).

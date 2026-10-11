@@ -2,8 +2,9 @@ import { MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { audio } from '@kit.AudioKit';
 import { BusinessError, SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { audioFormat, audioRead, RdpAudioFormat } from 'libhmrdp.so';
-import { AudioOps, AudioMessage } from '../services/AudioProtocol';
+import { audioFormat, audioRead, moonlightAudioFormat, moonlightAudioRead,
+  RdpAudioFormat } from 'libhmrdp.so';
+import { AudioOps, AudioMessage, AudioSource } from '../services/AudioProtocol';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpAudio';
@@ -13,6 +14,7 @@ const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
 // generation invalidates an in-flight rebuild.
 class SessionAudio {
   handle: number = 0;
+  source: number = AudioSource.RDP;
   active: boolean = false;
   rate: number = 0;
   channels: number = 0;
@@ -22,12 +24,15 @@ class SessionAudio {
 
 const sessions: Map<number, SessionAudio> = new Map<number, SessionAudio>();
 
-function stateFor(handle: number): SessionAudio {
-  let state: SessionAudio | undefined = sessions.get(handle);
+// The Moonlight ring is process-global, so it has one fixed session key.
+const MOONLIGHT_KEY: number = -1;
+
+function stateFor(key: number): SessionAudio {
+  let state: SessionAudio | undefined = sessions.get(key);
   if (state === undefined) {
     state = new SessionAudio();
-    state.handle = handle;
-    sessions.set(handle, state);
+    state.handle = key;
+    sessions.set(key, state);
   }
   return state;
 }
@@ -67,15 +72,50 @@ class AudioFormats {
   }
 
   static channel(channels: number): audio.AudioChannel {
-    return channels === 1 ? audio.AudioChannel.CHANNEL_1 : audio.AudioChannel.CHANNEL_2;
+    if (channels === 1) {
+      return audio.AudioChannel.CHANNEL_1;
+    }
+    if (channels === 3) {
+      return audio.AudioChannel.CHANNEL_3;
+    }
+    if (channels === 4) {
+      return audio.AudioChannel.CHANNEL_4;
+    }
+    if (channels === 5) {
+      return audio.AudioChannel.CHANNEL_5;
+    }
+    if (channels === 6) {
+      return audio.AudioChannel.CHANNEL_6;
+    }
+    if (channels === 7) {
+      return audio.AudioChannel.CHANNEL_7;
+    }
+    if (channels === 8) {
+      return audio.AudioChannel.CHANNEL_8;
+    }
+    return audio.AudioChannel.CHANNEL_2;
+  }
+
+  // Surround speaker layout; mono/stereo leave it unset so the 2-channel path is
+  // unchanged. Only 5.1 / 7.1 are mapped yet.
+  static channelLayout(channels: number): audio.AudioChannelLayout | undefined {
+    if (channels === 6) {
+      return audio.AudioChannelLayout.CH_LAYOUT_5POINT1;
+    }
+    if (channels === 8) {
+      return audio.AudioChannelLayout.CH_LAYOUT_7POINT1;
+    }
+    return undefined;
   }
 
   static streamInfo(rate: number, channels: number): audio.AudioStreamInfo {
+    const layout: audio.AudioChannelLayout | undefined = AudioFormats.channelLayout(channels);
     const info: audio.AudioStreamInfo = {
       samplingRate: AudioFormats.sampleRate(rate),
       channels: AudioFormats.channel(channels),
       sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
-      encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW
+      encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW,
+      channelLayout: layout
     };
     return info;
   }
@@ -119,6 +159,7 @@ async function build(state: SessionAudio): Promise<void> {
     return;
   }
   const handle: number = state.handle;
+  const source: number = state.source;
   const options: audio.AudioRendererOptions = {
     streamInfo: AudioFormats.streamInfo(state.rate, state.channels),
     rendererInfo: AudioFormats.rendererInfo()
@@ -133,7 +174,11 @@ async function build(state: SessionAudio): Promise<void> {
     state.renderer = renderer;
     renderer.on('writeData', (buffer: ArrayBuffer): audio.AudioDataCallbackResult => {
       // The native ring fills the whole buffer (audio + silence), so the result is always VALID.
-      audioRead(handle, buffer);
+      if (source === AudioSource.MOONLIGHT) {
+        moonlightAudioRead(buffer);
+      } else {
+        audioRead(handle, buffer);
+      }
       return AudioFormats.dataCallbackOk();
     });
     // Only a shared resume needs an explicit restart; forced pause/stop is done
@@ -153,17 +198,23 @@ async function build(state: SessionAudio): Promise<void> {
 
 workerPort.onmessage = (e: MessageEvents): void => {
   const message: AudioMessage = e.data as AudioMessage;
+  const source: number = message.source ?? AudioSource.RDP;
   const handle: number = message.handle;
-  if (handle <= 0) {
+  if (source === AudioSource.RDP && handle <= 0) {
     return;
   }
-  const state: SessionAudio = stateFor(handle);
+  const key: number = source === AudioSource.MOONLIGHT ? MOONLIGHT_KEY : handle;
+  const state: SessionAudio = stateFor(key);
+  state.source = source;
+  state.handle = handle;
   if (message.op === AudioOps.START) {
     state.active = true;
-    // The format event may have fired before this window attached (or before the
-    // worker existed), so seed from the current format instead of waiting.
+    // Seed the format from the current native format. Moonlight's is the Opus
+    // decoder config (known from init, before the session reports connected); RDP
+    // may not have sent a packet yet, so its FORMAT event can still arrive later.
     if (state.rate <= 0 || state.channels <= 0) {
-      const current: RdpAudioFormat = audioFormat(handle);
+      const current: RdpAudioFormat = source === AudioSource.MOONLIGHT
+        ? moonlightAudioFormat() : audioFormat(handle);
       if (current.rate > 0 && current.channels > 0) {
         state.rate = current.rate;
         state.channels = current.channels;
@@ -176,7 +227,7 @@ workerPort.onmessage = (e: MessageEvents): void => {
     state.active = false;
     state.generation++;
     releaseRenderer(state);
-    sessions.delete(handle);
+    sessions.delete(key);
   } else if (message.op === AudioOps.FORMAT) {
     const rate: number = message.rate ?? 0;
     const channels: number = message.channels ?? 0;

@@ -11,6 +11,7 @@
 #include <Limelight.h>
 
 #include "hmrdp_moonlight.h"
+#include "hmrdp_moonlight_audio.h"
 
 namespace hmrdp {
 namespace {
@@ -137,10 +138,14 @@ void Run(const MoonlightStreamConfig& config) {
 
   PDECODER_RENDERER_CALLBACKS video =
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());
+  // A null audio renderer leaves the library's audio callbacks as no-ops (fake
+  // renderer); the ring then never receives a format, so ArkTS builds nothing.
+  PAUDIO_RENDERER_CALLBACKS audio =
+      config.enableAudio ? static_cast<PAUDIO_RENDERER_CALLBACKS>(MoonlightAudioCallbacks())
+                         : nullptr;
 
-  // Audio is not wired yet: a null renderer disables the audio stream.
   HMRDP_LOGI("moonlight session: LiStartConnection enter");
-  const int result = LiStartConnection(&serverInfo, &stream, &listeners, video, nullptr,
+  const int result = LiStartConnection(&serverInfo, &stream, &listeners, video, audio,
                                        &g_context, 0, nullptr, 0);
   HMRDP_LOGI("moonlight session: LiStartConnection returned %{public}d", result);
   if (result == 0) {
@@ -198,6 +203,8 @@ std::string MoonlightSessionStart(const MoonlightStreamConfig& config,
   g_connected = false;
   g_terminated = false;
   g_active = true;
+  // Never carry samples or a format across sessions.
+  MoonlightAudioReset();
   try {
     g_thread = std::thread([config]() {
       Run(config);
@@ -232,6 +239,7 @@ void MoonlightSessionStop() {
   }
   g_active = false;
   g_callback = nullptr;
+  MoonlightAudioReset();
   HMRDP_LOGI("moonlight session: stopped");
 }
 

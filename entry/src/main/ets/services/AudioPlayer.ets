@@ -1,6 +1,6 @@
 import { ErrorEvent, worker } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AudioOps, AudioMessage } from './AudioProtocol';
+import { AudioOps, AudioMessage, AudioSource } from './AudioProtocol';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpAudio';
@@ -55,6 +55,21 @@ class AudioPlayerImpl {
     const message: AudioMessage =
       { op: AudioOps.FORMAT, handle: handle, rate: rate, channels: channels };
     this.post(this.ensure(), message, []);
+  }
+
+  // Moonlight audio is a single process-global ring, so it carries no handle.
+  startMoonlight(): void {
+    const message: AudioMessage = { op: AudioOps.START, source: AudioSource.MOONLIGHT, handle: 0 };
+    this.post(this.ensure(), message, []);
+  }
+
+  stopMoonlight(): void {
+    const thread: worker.ThreadWorker | undefined = this.thread;
+    if (thread === undefined) {
+      return;
+    }
+    const message: AudioMessage = { op: AudioOps.STOP, source: AudioSource.MOONLIGHT, handle: 0 };
+    this.post(thread, message, []);
   }
 }
 

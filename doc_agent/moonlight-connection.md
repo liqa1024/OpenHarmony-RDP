@@ -183,6 +183,10 @@
   - `setPointerVisibleSync` 是**进程级**，断开 / 退页必须恢复，否则主窗口也没有光标。协议细节见
     [`moonlight-native.md`](moonlight-native.md) §3.1；安装器、去重与可见性归属见
     [`session-layer.md`](session-layer.md) §10。
+- **音频开关两协议共用一份**：`AppSettings.enableAudio`（RDP tab「连接特性·音频重定向」的同一全局值）同时是 Moonlight 的
+  音频主开关，Moonlight tab 的「音频」拨钮编辑的是这同一个键（两个 tab 都持久化同一份值）；叠加 `DeviceCapabilities.audio()`
+  置灰（无输出设备即关）。它派生 `MoonlightStreamConfig.enableAudio` 与 `/launch` 的 `localAudioPlayMode`
+  （开=0 音频送客户端 / 关=1 主机本地播放），见 [`moonlight-native.md`](moonlight-native.md) §3.3。
 
 ## 6. 图标约定
 
@@ -264,7 +268,8 @@
   - **FPS** = 当前解码帧率 / 请求帧率；**码率** = 当前视频载荷码率（Σ 帧字节 ÷ 窗口）/ 配置码率。两处都用
     `当前/目标` 写法，目标是发起时请求的 `fps` / `bitrateKbps`；码率单位只出现一次、两数共用
     （`数字/数字 单位`，≥1Mbps 用 `Mbps` 否则 `kbps`）。
-  - **不做** GPU（默认直出 surface，无本机 GPU 上屏工时）、CPU（全硬件解码）、音频（音频流未接线）。
+  - **不做** GPU（默认直出 surface，无本机 GPU 上屏工时）、CPU（全硬件解码）；音频已接线但**不进遥测**
+    （无音频丢帧指标）。
     原生只产**累计计数与瞬时读数**，速率与每帧均值在 ArkTS（`services/MoonlightTelemetry`）聚合；
     采样源与累加点见 [`moonlight-native.md`](moonlight-native.md) §3。
 

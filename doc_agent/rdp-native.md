@@ -198,6 +198,10 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
   `@SuppressWarnings({rules:[SuppressWarningsType.SYSCAP]})` 标注承载调用的**类**屏蔽（装饰器对类/方法生效，
   不能标自由函数；见 [`build-and-verify.md`](build-and-verify.md) §6）。运行时仍靠能力探测与优雅降级
   （无输出设备 ⇒ 关「音频重定向」、不建渲染器）兜底，不因该告警退回原生。
+- **Moonlight 复用同一套环与渲染器**：交接环、`workers/audio.worker.ets`、`services/AudioPlayer.ets` 是两协议共用的播放链路，
+  环本就格式无关（水位按播放时长算）。差异只在**原生解码**：RDP 由 FreeRDP 解出 PCM，Moonlight 由 `core/hmrdp_moonlight_audio.*`
+  用 libopus 解 Opus 多流后写入同一个环（见 [`moonlight-native.md`](moonlight-native.md) §3.3）。ArkTS 侧按**音源**分流到
+  `audioRead` / `moonlightAudioRead` 两个原生读口。
 
 ## 6. 设备能力探测（Capability 模式）
 

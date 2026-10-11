@@ -465,6 +465,11 @@ export interface MoonlightSessionConfig {
    * A no-op when the host does not advertise the capability.
    */
   localCursorMode?: boolean;
+  /**
+   * Play the host's Opus audio on this device. False (or no output device)
+   * leaves the native audio renderer unset so the stream stays silent.
+   */
+  enableAudio?: boolean;
 }
 
 /**
@@ -506,6 +511,21 @@ export const moonlightSessionStart: (config: MoonlightSessionConfig) => string;
 export const moonlightSessionStop: () => void;
 
 export const moonlightSessionActive: () => boolean;
+
+/**
+ * Pulls decoded PCM from the Moonlight session's native audio ring into `dest`,
+ * the buffer the ArkTS AudioRenderer hands to its `writeData` callback on the
+ * audio worker. Fills every byte (queued audio plus silence on an underrun) and
+ * returns the number of real bytes copied.
+ */
+export const moonlightAudioRead: (dest: ArrayBuffer) => number;
+
+/**
+ * The Moonlight session's decoded PCM format (0/0 before the stream negotiates
+ * audio, i.e. when audio is disabled). Known from the Opus decoder config, so a
+ * renderer can seed itself even while the host is still silent.
+ */
+export const moonlightAudioFormat: () => RdpAudioFormat;
 
 /** Sunshine extended query string to append to /launch and /resume. */
 export const moonlightLaunchQueryParameters: () => string;
