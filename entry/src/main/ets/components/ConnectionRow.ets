@@ -161,8 +161,8 @@ export struct ConnectionRow {
               // The host is already running the app this row would open.
               Text('运行中')
                 .fontSize(10)
-                .fontColor($r('app.color.success'))
-                .backgroundColor($r('app.color.success_bg'))
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.accent_bg'))
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })

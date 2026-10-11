@@ -95,7 +95,7 @@ export struct MoonlightAppTile {
           Text('运行中')
             .fontSize(9)
             .fontColor('#FFFFFF')
-            .backgroundColor($r('app.color.success'))
+            .backgroundColor($r('app.color.accent'))
             .borderRadius(4)
             .padding({ left: 5, right: 5, top: 1, bottom: 1 })
             .transition(fadeTransition())

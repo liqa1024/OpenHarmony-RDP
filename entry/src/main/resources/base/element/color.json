@@ -45,6 +45,10 @@
       "value": "#052C7A"
     },
     {
+      "name": "accent_bg",
+      "value": "#E6EEFF"
+    },
+    {
       "name": "neutral",
       "value": "#6E737B"
     },

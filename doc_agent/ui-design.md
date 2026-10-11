@@ -48,8 +48,9 @@
 | `text_tertiary` | `#9AA4B0` | `#7C8592` | 三级文字、副标题、未选中项 |
 | `accent` | `#0A59F7` | `#4A8BFF` | 主色：选中态、主按钮、强调动作 |
 | `accent_hover` / `accent_press` | `#0743B8` / `#052C7A` | `#82B0FF` / `#B8D1FF` | 文本动作的悬停 / 按下态 |
+| `accent_bg` | `#E6EEFF` | `#12233F` | 信息态徽标底（「运行中」） |
 | `danger` | `#E84026` | `#F05A40` | 破坏性动作、已连接态圆钮 |
-| `success` / `success_bg` | `#2E9E5B` / `#E6F6EC` | `#4CC77A` / `#17301F` | 状态徽标（如「已连接」「运行中」） |
+| `success` / `success_bg` | `#2E9E5B` / `#E6F6EC` | `#4CC77A` / `#17301F` | 「已连接」状态徽标 |
 | `hover_bg` | `#E7E9ED` | `#2E2E32` | 悬停底（图标按钮、chip） |
 | `neutral` / `neutral_hover` | `#6E737B` / `#5A5F67` | `#4A4F57` / `#5A606A` | 实心中性动作钮（Moonlight 行的「应用」钮；与 accent / danger 并列为第三种动作色） |
 | `star_on` | `#FFB300` | `#FFCA28` | 五角星选中填充（应用页「设为默认」的星标；未选中用 `text_primary`） |
@@ -154,7 +155,7 @@ Column(page_bg, 100%×100%)
 
 由 `ConnectionRow` 组件实现（§4.1）。`Row`（圆角 14、`card_bg` / CARD 材质、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
 
-- 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，`success` / `success_bg`）、副标题 `12` `text_tertiary`。
+- 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，「已连接」用 `success` / `success_bg`，「运行中」用 `accent` / `accent_bg`）、副标题 `12` `text_tertiary`。
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
 - 右键菜单（`Menu`）、拖拽排序（`List.onMove`）：`List` 本体保持全宽，左右内边距由 `ListItem` 的 `margin` 给，
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
