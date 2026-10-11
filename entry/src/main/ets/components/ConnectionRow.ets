@@ -296,16 +296,11 @@ export struct ConnectionRow {
             .height(28)
             .fillColor('#FFFFFF')
             .draggable(false)
-        } else if (this.primary() === ConnectAction.Terminate) {
+        } else if (this.primary() === ConnectAction.Terminate
+          || this.primary() === ConnectAction.Disconnect) {
           Image($r('app.media.ic_stop'))
             .width(22)
             .height(22)
-            .fillColor('#FFFFFF')
-            .draggable(false)
-        } else if (this.primary() === ConnectAction.Disconnect) {
-          Image($r('app.media.ic_power'))
-            .width(28)
-            .height(28)
             .fillColor('#FFFFFF')
             .draggable(false)
         } else {
