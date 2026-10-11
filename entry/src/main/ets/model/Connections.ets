@@ -1,6 +1,6 @@
 import { MoonlightSessionConfig } from 'libhmrdp.so';
 import { PairResult } from '../moonlight/MoonlightModels';
-import { RdpConnectOptions, SR_BACKEND_XENGINE } from './RdpModels';
+import { RDP_DEFAULT_PORT, RdpConnectOptions, SR_BACKEND_XENGINE } from './RdpModels';
 
 // Shared connection / session-request model, independent of the protocol. The
 // abstract base holds only what both protocols share; RDP-only and Moonlight-only
@@ -284,11 +284,16 @@ export abstract class SavedConnection {
   abstract menuEntries(action: ConnectAction, hostTargetId: number): RowMenuEntry[];
 
   protected defaultPort(): number {
-    return 3389;
+    return RDP_DEFAULT_PORT;
+  }
+
+  // 显示用连接目标：默认端口不落进文案，避免 "host:3389" 这类冗余。
+  protected hostEndpoint(): string {
+    return this.port === this.defaultPort() ? this.host : `${this.host}:${this.port}`;
   }
 
   label(): string {
-    return this.name.length > 0 ? this.name : `${this.host}:${this.port}`;
+    return this.name.length > 0 ? this.name : this.hostEndpoint();
   }
 
   displayName(): string {
@@ -296,7 +301,7 @@ export abstract class SavedConnection {
   }
 
   targetLabel(): string {
-    const target: string = `${this.host}:${this.port}`;
+    const target: string = this.hostEndpoint();
     return this.name.length > 0 ? `${this.name} · ${target}` : target;
   }
 
@@ -377,7 +382,7 @@ export class RdpConnection extends SavedConnection {
   scaleAuto: boolean = false;
 
   protected defaultPort(): number {
-    return 3389;
+    return RDP_DEFAULT_PORT;
   }
 
   protocolIcon(): Resource {
@@ -385,7 +390,7 @@ export class RdpConnection extends SavedConnection {
   }
 
   subtitle(): string {
-    const target: string = `${this.host}:${this.port}`;
+    const target: string = this.hostEndpoint();
     if (this.name.length === 0) {
       return this.username;
     }
@@ -573,7 +578,7 @@ export class MoonlightConnection extends SavedConnection {
   }
 
   subtitle(): string {
-    const target: string = `${this.host}:${this.port}`;
+    const target: string = this.hostEndpoint();
     const appName: string = this.mlDefaultAppName.length > 0 ? this.mlDefaultAppName : '桌面';
     return this.name.length > 0 ? `${target} · ${appName}` : appName;
   }

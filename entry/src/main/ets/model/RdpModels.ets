@@ -7,6 +7,8 @@ import { RdpOptions } from 'libhmrdp.so';
 export const SR_BACKEND_XENGINE: number = 0;
 export const SR_BACKEND_FSR: number = 1;
 
+export const RDP_DEFAULT_PORT: number = 3389;
+
 export class DisplayProfile {
   width: number = 0;
   height: number = 0;
@@ -62,7 +64,7 @@ export enum RdpEvent {
 
 export class RdpConnectOptions implements RdpOptions {
   host: string = '';
-  port: number = 3389;
+  port: number = RDP_DEFAULT_PORT;
   name: string = '';
   username: string = '';
   password: string = '';
@@ -97,7 +99,7 @@ export class RdpConnectOptions implements RdpOptions {
   }
 
   targetLabel(): string {
-    const target: string = `${this.host}:${this.port}`;
+    const target: string = this.port === RDP_DEFAULT_PORT ? this.host : `${this.host}:${this.port}`;
     return this.name.length > 0 ? `${this.name} · ${target}` : target;
   }
 }
