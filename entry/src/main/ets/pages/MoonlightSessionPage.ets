@@ -302,6 +302,19 @@ struct MoonlightSessionPage {
     // Not streaming: the process-wide system cursor must come back.
     this.stopMetricsTimer();
     this.setLocalCursorHidden(false);
+    if (state === ConnectionState.Idle || state === ConnectionState.Failed) {
+      this.refreshHostState();
+    }
+  }
+
+  private refreshHostState(): void {
+    const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
+    const context = this.getUIContext().getHostContext();
+    if (request === undefined || request.savedConnection === undefined || context === undefined) {
+      return;
+    }
+    MoonlightHostState.refresh(request.savedConnection,
+      (context as common.UIAbilityContext).filesDir);
   }
 
   private startMetricsTimer(): void {

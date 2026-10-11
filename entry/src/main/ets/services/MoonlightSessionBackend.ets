@@ -107,21 +107,7 @@ export class MoonlightSessionBackend implements SessionBackend {
       listener(update);
       return;
     }
-    // A host-side end (app closed, session dropped) changes what the host is
-    // running, so re-probe instead of leaving the stale target until a manual 刷新.
-    if (event === ML_EVENT_TERMINATED || event === ML_EVENT_STAGE_FAILED) {
-      this.refreshHostState();
-    }
     this.emit(event, value, text);
-  }
-
-  private refreshHostState(): void {
-    const request: PendingConnection = this.request;
-    const conn: SavedConnection | undefined = request.savedConnection;
-    if (conn === undefined || request.filesDir.length === 0) {
-      return;
-    }
-    MoonlightHostState.refresh(conn, request.filesDir);
   }
 
   pageRoute(): string {

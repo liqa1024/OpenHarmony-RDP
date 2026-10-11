@@ -107,13 +107,9 @@
       `reachableOf`，不可达只提示「主机离线」。同 moonlight-android 的 `ComputerDetails.State` + `runningGameId`
       （值保留、只在 ONLINE 时用）。
     - **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页（`onPageShow`、
-      行右键菜单「刷新」）与应用页（`onPageShow`）各自触发；应用页的 `probeApps` 也回填 `setProbed`。客户端 `/cancel`
-      后另有短延迟复探（`refreshAfter`）兜底。
-    - **会话终结 / 预检失败也主动复探**：会话侧收到原生 `kTerminated`/`kStageFailed`（主机侧关闭应用、串流被掐断等，
-      即「主机状态应当已改变」）时，由 `MoonlightSessionBackend` 触发**一次** `refresh`，不依赖手动刷新，也不依赖
-      主页面回列表时重探（会话窗口与主窗口分属不同 window，主页面不一定会再 `show`）。终结事件在主机**已结束**会话
-      之后才到达，主机状态此刻已反映出来，故只需即时一次；`refreshAfter` 只用于 `/cancel` 这类"动作发完、主机异步
-      停应用"的场景，不与之叠加。探测结果经订阅回填列表行与应用页，两侧任何时刻一致。
+      行右键菜单「刷新」）、应用页（`onPageShow`）与会话页进入 `Idle`/`Failed`（弹出重连卡，含主机断连与连接超时）
+      时各触发**一次**；应用页的 `probeApps` 也回填 `setProbed`。只有 `/cancel` 这类"动作已发完、主机异步停应用"
+      另有短延迟复探（`refreshAfter`）兜底，其余不叠延迟探测；预检失败由 `prepare` 的 `!ok` 分支单探。
 - 行右键菜单对 Moonlight 追加「刷新」；**默认应用只在应用页的星标上设置，编辑页无该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
 
