@@ -197,11 +197,15 @@ export class RowMenuAction {
 export class RowMenuEntry {
   action: number = RowMenuAction.Toggle;
   content: string = '';
+  // Session actions and row actions (编辑 / 删除) render as separate menu groups,
+  // so the boundary between them draws the separator.
+  sessionAction: boolean = true;
 
   static of(action: number, content: string): RowMenuEntry {
     const entry: RowMenuEntry = new RowMenuEntry();
     entry.action = action;
     entry.content = content;
+    entry.sessionAction = action !== RowMenuAction.Edit && action !== RowMenuAction.Delete;
     return entry;
   }
 }

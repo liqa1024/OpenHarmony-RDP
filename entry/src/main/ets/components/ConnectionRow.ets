@@ -104,18 +104,33 @@ export struct ConnectionRow {
     }
   }
 
+  private menuGroup(session: boolean): RowMenuEntry[] {
+    return this.conn.menuEntries(this.action(), this.hostTargetId)
+      .filter((entry: RowMenuEntry) => entry.sessionAction === session);
+  }
+
+  @Builder
+  menuItem(entry: RowMenuEntry) {
+    MenuItem({ content: entry.content })
+      .contentFontColor(entry.action === RowMenuAction.Delete
+        ? $r('app.color.danger') : $r('app.color.text_primary'))
+      .onClick(() => {
+        this.onMenuEntry(entry);
+      })
+  }
+
   @Builder
   menu() {
     Menu() {
-      // Grouping draws one separator between the session actions and 编辑 / 删除.
+      // Two groups draw the separator between the session actions and 编辑 / 删除.
       MenuItemGroup() {
-        ForEach(this.conn.menuEntries(this.action(), this.hostTargetId), (entry: RowMenuEntry) => {
-          MenuItem({ content: entry.content })
-            .contentFontColor(entry.action === RowMenuAction.Delete
-              ? $r('app.color.danger') : $r('app.color.text_primary'))
-            .onClick(() => {
-              this.onMenuEntry(entry);
-            })
+        ForEach(this.menuGroup(true), (entry: RowMenuEntry) => {
+          this.menuItem(entry)
+        }, (entry: RowMenuEntry) => `${entry.action}#${entry.content}`)
+      }
+      MenuItemGroup() {
+        ForEach(this.menuGroup(false), (entry: RowMenuEntry) => {
+          this.menuItem(entry)
         }, (entry: RowMenuEntry) => `${entry.action}#${entry.content}`)
       }
     }

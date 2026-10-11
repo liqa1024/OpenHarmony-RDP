@@ -158,8 +158,9 @@ Column(page_bg, 100%×100%)
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
 - 右键菜单（`Menu`）、拖拽排序（`List.onMove`）：`List` 本体保持全宽，左右内边距由 `ListItem` 的 `margin` 给，
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
-  菜单项分两组：会话动作（连接 / 恢复 / 切换 / 断开 / 终止）用 `MenuItemGroup` 包住，与 `编辑` / `删除` 之间由
-  分组分隔线隔开；仅 `删除` 用 `danger`，其余项保持默认前景色。
+  菜单项分两组，各由一个 `MenuItemGroup` 承载：会话动作（连接 / 恢复 / 切换 / 断开 / 终止 / 刷新）在前，
+  `编辑` / `删除` 在后，两组之间由分组分隔线隔开；分组归属由连接模型的 `RowMenuEntry.sessionAction` 给出。
+  仅 `删除` 用 `danger`，其余项保持默认前景色。
 - **菜单触发**：程序化 `bindContextMenu(isShown, …)`（`ResponseType` 二选一，右键 / 长按不能同吃）。鼠标由行的
   `onMouse`（右键按下）触发；触屏长按与排序拖拽共用同一次按压——`List.onMove` 的 `onLongPress` 只**武装**待开行、
   `onDragStart`（进入跟手拖动）**取消**，行 `onTouch` 抬起时才打开：**长按不拖动＝抬起弹菜单，长按拖动换序＝不弹**。
