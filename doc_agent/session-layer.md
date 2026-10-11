@@ -80,11 +80,15 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   列表与窗口因此不可能各持一份状态。
 - **一次尝试 = 一个全新原生会话 + 一个 epoch**：`connect`/`retry` 都作废上一个 epoch，事件的 epoch
   不是当前值即被丢弃，所以被替换或已关闭会话的迟到事件不会驱动当前会话。
-- **进行中的尝试拒绝新尝试**：`Connecting`/`Connected`/`Disconnecting` 一律拒绝新尝试（不拆旧会话），
-  一次尝试 = 一次完整协商 + 远端一次登录，另一端是**断开**（远端会话保留为已断开，不注销），
+- **进行中的尝试拒绝新尝试**：**同一个连接**处于 `Connecting`/`Connected`/`Disconnecting` 时一律拒绝新尝试
+  （不拆旧会话），一次尝试 = 一次完整协商 + 远端一次登录，另一端是**断开**（远端会话保留为已断开，不注销），
   所以连点"重试"或双击列表**不会变成连接/登录风暴**。`MIN_ATTEMPT_INTERVAL_MS` 只是次级保护
   （被拒绝的重试不返回成功，调用方不得据此切"正在连接"状态）；节流按 `connectionId` 记账、
   **在 entry 被清理后仍然保留**。RDP 侧的 native 终结细节见 [`rdp-session.md`](rdp-session.md)。
+- **同一时刻只有一条连接在协商**：新尝试（`connect`/`retry`）先**取消其他仍处于 `Connecting` 的尝试**
+  （停后端、发布 `Idle`，已开窗的随之关窗）再启动自己；`Connected` 的会话不取消（多会话并存仍合法）。
+  依据：会话后端可能持有**进程级**原生状态（Moonlight 的 `g_active` / 进程级事件回调与 surface，见
+  [`moonlight-native.md`](moonlight-native.md) §3），并发协商会互相覆盖，故取消须早于**新后端的构造**。
 - **失败保留 entry 并只有一个终态事件**：连接失败（含超时）置 `Failed` 且不删 entry，窗口「重试」与
   列表再次点击据此发起新尝试；失败只产生错误终态（不另发断开），失败原因不会被"连接已断开"覆盖。
 - **回到前台自动重连**（协议级设置，RDP `reconnectOnForeground` / Moonlight `mlReconnectOnForeground`，

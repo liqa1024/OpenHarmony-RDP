@@ -92,6 +92,7 @@ export class SessionManager {
     if (!SessionManager.acceptAttempt(connectionId, state)) {
       return;
     }
+    SessionManager.cancelOtherAttempts(connectionId);
     const backend: SessionBackend | undefined = SessionBackendFactory.create(request);
     if (backend === undefined) {
       SessionManager.notify(connectionId, ConnectionState.Failed,
@@ -238,6 +239,7 @@ export class SessionManager {
     if (!SessionManager.acceptAttempt(connectionId, entry.state)) {
       return false;
     }
+    SessionManager.cancelOtherAttempts(connectionId);
     const backend: SessionBackend = entry.backend;
     entry.epoch = SessionManager.nextEpoch();
     const epoch: number = entry.epoch;
@@ -247,6 +249,19 @@ export class SessionManager {
     SessionManager.publish(entry, ConnectionState.Connecting, '');
     SessionManager.launch(entry, epoch);
     return true;
+  }
+
+  private static cancelOtherAttempts(keepConnectionId: string): void {
+    const ids: string[] = [];
+    SessionManager.entries.forEach((entry: SessionEntry): void => {
+      if (entry.connectionId !== keepConnectionId
+        && entry.state === ConnectionState.Connecting) {
+        ids.push(entry.connectionId);
+      }
+    });
+    for (let i = 0; i < ids.length; i++) {
+      SessionManager.disconnect(ids[i]);
+    }
   }
 
   private static acceptAttempt(connectionId: string, state: ConnectionState): boolean {
