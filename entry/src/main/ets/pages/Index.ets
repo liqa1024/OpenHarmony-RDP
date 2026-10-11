@@ -29,6 +29,7 @@ struct Index {
   // Which row's menu is open; menuSeq changes so a repeat request still re-opens it.
   @State menuConnectionId: string = '';
   @State menuSeq: number = 0;
+  private armedMenuId: string = '';
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
   @State developerMode: boolean = false;
@@ -165,6 +166,18 @@ struct Index {
 
   private closeRowMenu(): void {
     this.menuConnectionId = '';
+  }
+
+  private armRowMenu(index: number): void {
+    const row: SavedConnection | undefined = this.connections[index];
+    this.armedMenuId = row === undefined ? '' : row.id;
+  }
+
+  private releaseRowMenu(): void {
+    if (this.armedMenuId.length > 0) {
+      this.openRowMenu(this.armedMenuId);
+      this.armedMenuId = '';
+    }
   }
 
   private menuRequestFor(conn: SavedConnection): number {
@@ -407,6 +420,9 @@ struct Index {
                 onRequestMenu: () => {
                   this.openRowMenu(conn.id);
                 },
+                onPressRelease: () => {
+                  this.releaseRowMenu();
+                },
                 onEdit: () => {
                   this.openEditor(conn.id, conn.protocol);
                 },
@@ -431,14 +447,11 @@ struct Index {
             .onMove((from: number, to: number) => {
               this.moveConnection(from, to);
             }, {
-              // The drag callbacks also drive the menu (both share the long press).
               onLongPress: (index: number) => {
-                const row: SavedConnection | undefined = this.connections[index];
-                if (row !== undefined) {
-                  this.openRowMenu(row.id);
-                }
+                this.armRowMenu(index);
               },
               onDragStart: (index: number) => {
+                this.armedMenuId = '';
                 this.draggingIndex = index;
                 this.closeRowMenu();
               },
@@ -452,6 +465,14 @@ struct Index {
         // Full-width so the clip area stays wide; the side insets live on the ListItem margins.
         .padding({ left: 0, right: 0, top: 12, bottom: 20 })
         .scrollBar(BarState.Auto)
+        // Fallback release point, and a fresh press drops any stale arm.
+        .onTouch((event: TouchEvent) => {
+          if (event.type === TouchType.Down) {
+            this.armedMenuId = '';
+          } else if (event.type === TouchType.Up) {
+            this.releaseRowMenu();
+          }
+        })
       }
       }
       .width('100%')

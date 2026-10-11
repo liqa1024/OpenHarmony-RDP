@@ -30,6 +30,7 @@ export struct ConnectionRow {
   onTerminate: () => void = () => {};
   onDelete: () => void = () => {};
   onRequestMenu: () => void = () => {};
+  onPressRelease: () => void = () => {};
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private cardMaterial: AttributeModifier<RowAttribute> =
@@ -69,7 +70,12 @@ export struct ConnectionRow {
     const options: ContextMenuOptions = {
       systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
       placement: Placement.BottomRight,
-      offset: { x: this.menuWinX, y: this.menuWinY }
+      offset: { x: this.menuWinX, y: this.menuWinY },
+      modalMode: ModalMode.TARGET_WINDOW,
+      // Must clear the latch, or a re-render reopens the dismissed menu.
+      aboutToDisappear: () => {
+        this.menuShown = false;
+      }
     };
     return options;
   }
@@ -78,6 +84,8 @@ export struct ConnectionRow {
     if (event.type === TouchType.Down && event.touches.length > 0) {
       this.menuWinX = event.touches[0].windowX;
       this.menuWinY = event.touches[0].windowY;
+    } else if (event.type === TouchType.Up) {
+      this.onPressRelease();
     }
   }
 

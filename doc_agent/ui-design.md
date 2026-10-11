@@ -160,9 +160,11 @@ Column(page_bg, 100%×100%)
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
   菜单项分两组：会话动作（连接 / 恢复 / 切换 / 断开 / 终止）用 `MenuItemGroup` 包住，与 `编辑` / `删除` 之间由
   分组分隔线隔开；仅 `删除` 用 `danger`，其余项保持默认前景色。
-- **菜单触发**：程序化 `bindContextMenu(isShown, …)`——`ResponseType` 只能二选一（右键 / 长按），而菜单要同时吃两者。
-  触屏长按由 `List.onMove` 的拖拽回调驱动（`onLongPress` 开、`onDragStart` 关），右键由行的 `onMouse` 触发。
-  该形式**不按被绑组件定位**，位置只能由 `ContextMenuOptions.offset` 给触发点的窗口坐标。
+- **菜单触发**：程序化 `bindContextMenu(isShown, …)`（`ResponseType` 二选一，右键 / 长按不能同吃）。鼠标由行的
+  `onMouse`（右键按下）触发；触屏长按与排序拖拽共用同一次按压——`List.onMove` 的 `onLongPress` 只**武装**待开行、
+  `onDragStart`（进入跟手拖动）**取消**，行 `onTouch` 抬起时才打开：**长按不拖动＝抬起弹菜单，长按拖动换序＝不弹**。
+  该形式**不按被绑组件定位**，位置只能由 `ContextMenuOptions.offset` 给窗口坐标；`aboutToDisappear` 必须复位 `isShown`
+  （否则残留 `true`，下次重渲染会重弹），`modalMode: ModalMode.TARGET_WINDOW` 让菜单外点击只关闭、不穿透到底下的行。
 
 ### 3.6 会话窗口
 
@@ -191,7 +193,7 @@ Column(page_bg, 100%×100%)
 | 组件 | 文件 | 参数（要点） | 用途 |
 |---|---|---|---|
 | `TextAction` | `TextAction.ets` | `label, muted?, onTap` | 悬停 / 按下变色的纯文本动作 |
-| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, appEnabled?, onEdit, onToggleConnection, onOpenApps, onDelete` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
+| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, hostTargetId, targetId, menuRequest, onEdit / onToggleConnection / onOpenApps / onTerminate / onDelete / onRequestMenu / onPressRelease` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
 | `SessionPicture` | `SessionPicture.ets` | `xComponentId, pictureController, contentWidth, contentHeight, revealBand, onPointerMouse/Touch/Hover/Axis, onSurfaceKey/Blur, onPictureArea, onRevealZone` | 会话画面（RDP / Moonlight 共用）：SURFACE 组件按内容比例居中留边，输入 / 焦点留在 XComponent 上；全屏时另给顶部 reveal 窄条 |
 | `StatusCard` | `StatusCard.ets` | `title, subtitle, primary?, secondary?, loading?, icon?, onPrimary, onSecondary` | 会话连接状态卡（RDP / Moonlight 共用） |
 | `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |
