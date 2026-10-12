@@ -1,6 +1,6 @@
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { socket } from '@kit.NetworkKit';
+import { connection, socket } from '@kit.NetworkKit';
 import { HostPower, MoonlightConnection, SavedConnection } from '../model/Connections';
 import { ConnectionStore } from './ConnectionStore';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
@@ -12,10 +12,12 @@ const DEFAULT_HTTPS_PORT: number = 47984;
 // Grace before a post-action re-probe: /cancel stops the host app asynchronously,
 // so a probe fired immediately can still see the old app.
 export const HOST_REPROBE_DELAY_MS: number = 1500;
-// A running Windows keeps these listening, so a hit means "host on, streaming service
-// down" and rules wake out. Only consulted after the service probe fails ambiguously.
-const OS_PROBE_PORTS: number[] = [445, 3389];
-const OS_PROBE_TIMEOUT_MS: number = 1200;
+// Ports a running Windows keeps listening: an answer means the OS is up.
+const OS_PROBE_PORTS: number[] = [445, 135, 3389];
+const OS_PROBE_TIMEOUT_MS: number = 800;
+const ICMP_PROBE_SECONDS: number = 1;
+const ICMP_MIN_API_VERSION: number = 26;
+const SERVICE_PROBE_TIMEOUT_MS: number = 3000;
 
 export type HostTargetListener =
   (connectionId: string, currentGame: number, power: HostPower, probing: boolean) => void;
@@ -114,50 +116,84 @@ export class MoonlightHostState {
     }
     MoonlightHostState.probing.set(conn.id, true);
     MoonlightHostState.notify(conn.id);
-    MoonlightClient.fetchServerInfo(filesDir, conn.host, conn.port)
-      .then((result: ServerInfoResult): void => {
-        if (!result.ok) {
-          hilog.warn(DOMAIN, TAG, 'host target probe failed for %{public}s', conn.id);
-          MoonlightHostState.settleUnreachable(conn, result.error);
-          return;
-        }
-        MoonlightHostState.endProbe(conn.id);
-        MoonlightHostState.setProbed(conn.id, result.info.currentGame, result.info.httpsPort);
-        MoonlightHostState.captureMac(conn, result.info.mac);
-      })
-      .catch((error: BusinessError): void => {
-        hilog.warn(DOMAIN, TAG, 'host target probe error: %{public}s', JSON.stringify(error));
-        MoonlightHostState.settleUnreachable(conn, 'request');
-      });
+    MoonlightHostState.probe(conn, filesDir);
   }
 
-  // A silent host (timeout) is the powered-off / absent case and stays ambiguous
-  // otherwise, so the OS probe decides: an answer means the service alone is down.
-  private static settleUnreachable(conn: MoonlightConnection, error: string): void {
-    if (error === 'timeout') {
+  private static async probe(conn: MoonlightConnection, filesDir: string): Promise<void> {
+    const info: Promise<ServerInfoResult> =
+      MoonlightClient.fetchServerInfo(filesDir, conn.host, conn.port, SERVICE_PROBE_TIMEOUT_MS);
+    info.catch((): void => {
+    });
+    let osUp: boolean = false;
+    try {
+      osUp = await MoonlightHostState.osAlive(conn.host);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'os probe error for %{public}s: %{public}s',
+        conn.id, JSON.stringify(error));
+    }
+    if (!osUp) {
+      hilog.info(DOMAIN, TAG, 'host %{public}s silent: offline', conn.host);
       MoonlightHostState.endProbe(conn.id);
       MoonlightHostState.markUnreachable(conn.id);
       return;
     }
-    MoonlightHostState.osAlive(conn.host)
-      .then((alive: boolean): void => {
-        MoonlightHostState.endProbe(conn.id);
-        if (alive) {
-          MoonlightHostState.markNoService(conn.id);
-        } else {
-          MoonlightHostState.markUnreachable(conn.id);
-        }
-      })
-      .catch((): void => {
-        MoonlightHostState.endProbe(conn.id);
-        MoonlightHostState.markUnreachable(conn.id);
-      });
+    try {
+      const result: ServerInfoResult = await info;
+      MoonlightHostState.endProbe(conn.id);
+      if (!result.ok) {
+        hilog.info(DOMAIN, TAG, 'host %{public}s up, service did not answer: no service',
+          conn.host);
+        MoonlightHostState.markNoService(conn.id);
+        return;
+      }
+      MoonlightHostState.setProbed(conn.id, result.info.currentGame, result.info.httpsPort);
+      MoonlightHostState.captureMac(conn, result.info.mac);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'service probe error for %{public}s: %{public}s',
+        conn.id, JSON.stringify(error));
+      MoonlightHostState.endProbe(conn.id);
+      MoonlightHostState.markNoService(conn.id);
+    }
   }
 
-  private static async osAlive(host: string): Promise<boolean> {
-    for (let i = 0; i < OS_PROBE_PORTS.length; i++) {
-      if (await MoonlightHostState.portOpen(host, OS_PROBE_PORTS[i])) {
-        return true;
+  // True as soon as any signal answers; false only once they all fail together.
+  private static osAlive(host: string): Promise<boolean> {
+    return new Promise<boolean>((resolve: (value: boolean) => void) => {
+      let pending: number = OS_PROBE_PORTS.length + 1;
+      const settle = (alive: boolean): void => {
+        if (alive) {
+          resolve(true);
+          return;
+        }
+        pending -= 1;
+        if (pending === 0) {
+          resolve(false);
+        }
+      };
+      MoonlightHostState.icmpAlive(host)
+        .then((alive: boolean): void => settle(alive))
+        .catch((): void => settle(false));
+      for (let i = 0; i < OS_PROBE_PORTS.length; i++) {
+        MoonlightHostState.portOpen(host, OS_PROBE_PORTS[i])
+          .then((open: boolean): void => settle(open))
+          .catch((): void => settle(false));
+      }
+    });
+  }
+
+  private static async icmpAlive(host: string): Promise<boolean> {
+    // Since 26.0.0, newer than compatibleSdkVersion: same two-step gate as SystemMaterial.
+    if (deviceInfo.sdkApiVersion < ICMP_MIN_API_VERSION) {
+      return false;
+    }
+    if (deviceInfo.apiAvailable('26.0.0')) {
+      try {
+        const result: connection.ProbeResultInfo =
+          await connection.queryProbeResult(host, ICMP_PROBE_SECONDS);
+        return result.lossRate < 100;
+      } catch (error) {
+        hilog.debug(DOMAIN, TAG, 'icmp probe %{public}s failed: %{public}s',
+          host, JSON.stringify(error));
       }
     }
     return false;

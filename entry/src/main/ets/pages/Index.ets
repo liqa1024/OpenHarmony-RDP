@@ -211,7 +211,6 @@ struct Index {
       return;
     }
     const target: MoonlightConnection = conn;
-    // First wake shows the setup guide once; the packet goes out after acknowledgement.
     if (SettingsStore.load().wolHelpShown) {
       this.sendWake(target);
       return;

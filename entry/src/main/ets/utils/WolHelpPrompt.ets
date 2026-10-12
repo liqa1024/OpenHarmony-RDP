@@ -75,7 +75,6 @@ function openHelpLink(ui: UIContext): void {
   });
 }
 
-// Resolves once the user acknowledges; the caller then proceeds with the wake.
 export function promptWolHelp(ui: UIContext): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
     let closed: boolean = false;

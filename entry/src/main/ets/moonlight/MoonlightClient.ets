@@ -24,12 +24,14 @@ export class MoonlightClient {
   // Shared with other Moonlight clients so games started elsewhere can be quit.
   static readonly UNIQUE_ID: string = '0123456789ABCDEF';
 
-  static async fetchServerInfo(dir: string, host: string, port: number): Promise<ServerInfoResult> {
+  static async fetchServerInfo(dir: string, host: string, port: number,
+    timeoutMs?: number): Promise<ServerInfoResult> {
     const result: ServerInfoResult = new ServerInfoResult();
     const path: string =
       `/serverinfo?uniqueid=${MoonlightClient.UNIQUE_ID}&uuid=${MoonlightClient.uuid()}`;
     const outcome: HttpOutcome =
-      MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, port, path, false));
+      MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, port, path, false,
+        undefined, timeoutMs));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
