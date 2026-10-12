@@ -26,7 +26,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlMac`。
   （退役字段**按位置保留槽位**、不读写，以免改动后续字段的位置。）
 - `mlMac` 是主机网卡 MAC（`serverinfo` 的 `mac`），**唯一**来自探测的主机地址，是唤醒魔术包的目标；
-  探测成功时落库（见 [`moonlight-apps.md`](moonlight-apps.md) §2 的主机三态），此前为空。它属于旧主机，
+  探测成功时落库（见 [`moonlight-apps.md`](moonlight-apps.md) §2 的主机四态），此前为空。它属于旧主机，
   **改主机时一并清空**（与 `mlHostId` 同策）。
 - **地址与端口复用 RDP 的 `host` / `port`**：Moonlight 不用账号/域/网关/密码字段。端口默认值是
   Moonlight 的 `47989`（RDP 为 `3389`），由编辑页按协议给出，存储上仍是同一个 `port`。
@@ -60,7 +60,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - 连接钮的加载态归触发控件本身（与刷新 FAB 同一逻辑，见 [`ui-design.md`](ui-design.md) §4.2）。
 - 行右键菜单对 Moonlight 追加「刷新」；**默认应用只在应用页的星标上设置，编辑页无该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
-- **行外观按可达性三态**（未知 / 离线改画刷新 / 唤醒钮，仅 Moonlight；判据与三态见
+- **行外观按可达性四态**（未知 / 服务未起画刷新钮、离线画唤醒钮，仅 Moonlight；判据与四态见
   [`moonlight-apps.md`](moonlight-apps.md) §2，外观见 [`ui-design.md`](ui-design.md) §3.5）。
 
 **编辑页**
@@ -136,7 +136,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   三者都是纯 `fill` 路径，由页面按状态着色。
   **`ic_power` 只作离线行的「唤醒」钮**（电源语义），画在 **accent** 上、不用 danger——红底像"关机/破坏"动作；
   不可唤醒（无 mac）时画在 neutral 上并降不透明度（见 [`moonlight-apps.md`](moonlight-apps.md) §2）。**未知态的
-  「刷新」钮**用 `ic_refresh`，与列表页的刷新 FAB 同款（accent 圆钮 + 白色 `fill`）。
+  「刷新」钮**（未知 / 服务未起）用 `ic_refresh`，与列表页的刷新 FAB 同款（accent 圆钮 + 白色 `fill`）。
 - **ArkUI 的 SVG 渲染不绘制 `<text>` 元素**：图标里的字符必须转成矢量路径（描边或填充），
   写 `<text>` 在网页预览能看到、在上屏里不会出现。
 - RDP 卡片用原有「显示器 + 信号」图标（`ic_remote_desktop`）。

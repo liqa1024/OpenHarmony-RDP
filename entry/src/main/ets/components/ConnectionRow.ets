@@ -73,6 +73,9 @@ export struct ConnectionRow {
       if (this.probing && this.power === HostPower.Unknown) {
         return '正在检测主机状态';
       }
+      if (this.power === HostPower.NoService) {
+        return '主机已开机，请检查 Sunshine 是否运行';
+      }
       if (this.power === HostPower.Unknown) {
         return '刷新主机状态';
       }
@@ -94,7 +97,7 @@ export struct ConnectionRow {
     if (this.hostDown()) {
       if (this.waking) {
         this.onWake();
-      } else if (this.power === HostPower.Unknown) {
+      } else if (this.power === HostPower.Unknown || this.power === HostPower.NoService) {
         this.onRefresh();
       } else if (this.conn.supportsWake()) {
         this.onWake();
@@ -289,12 +292,14 @@ export struct ConnectionRow {
             .width(24)
             .height(24)
             .color('#FFFFFF')
-        } else if (this.hostDown() && this.power === HostPower.Unknown && this.probing) {
+        } else if (this.hostDown() && this.probing
+          && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
           LoadingProgress()
             .width(24)
             .height(24)
             .color('#FFFFFF')
-        } else if (this.hostDown() && this.power === HostPower.Unknown) {
+        } else if (this.hostDown()
+          && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
           Image($r('app.media.ic_refresh'))
             .width(24)
             .height(24)

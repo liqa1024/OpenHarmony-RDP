@@ -26,7 +26,7 @@
 | GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
 | 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个后端、脏区上传、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**、swapchain 重建 | [`rdp-present.md`](rdp-present.md) |
 | Moonlight 连接前端：协议建模、存储布局、连接列表 / 编辑页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
-| Moonlight 主机与应用：主机发现与可达性三态、唤醒（WoL）、应用管理页、连接动作走法 | [`moonlight-apps.md`](moonlight-apps.md) |
+| Moonlight 主机与应用：主机发现与可达性四态、唤醒（WoL）、应用管理页、连接动作走法 | [`moonlight-apps.md`](moonlight-apps.md) |
 | Moonlight 会话：会话窗口 / 后端接线、输入落地、工具栏遥测 | [`moonlight-session.md`](moonlight-session.md) |
 | Moonlight 控制 / 配对层（ArkTS）：控制端点、配对时序与身份、证书 pin、标准参数名 | [`moonlight-control.md`](moonlight-control.md) |
 | Moonlight 视频：解码（AVCodec）、两条上屏链路、编解码协商、`STREAM_CONFIGURATION` 落点 | [`moonlight-video.md`](moonlight-video.md) |

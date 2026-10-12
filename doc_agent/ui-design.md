@@ -157,11 +157,12 @@ Column(page_bg, 100%×100%)
 
 - 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，「已连接」用 `success` / `success_bg`，「运行中」用 `accent` / `accent_bg`）、副标题 `12` `text_tertiary`。
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
-- **主机不可达时（仅 Moonlight 行；未知 / 离线两态）**：协议图标降不透明度（`0.45`）、隐藏应用钮，动作钮改为
-  「刷新」（未知，`ic_refresh`）/「唤醒」（离线，`ic_power` 画在 `accent` 上；无 mac 时 neutral 底 + `0.5` 不透明度且不可点）；
-  **未知态**探测在途时该钮换 `LoadingProgress`（含页面进入的自动兜底），**离线态唤醒钮不随探测变化**；
-  唤醒后的**开机检测期间**同样换 `LoadingProgress`（同「连接中」，再点取消检测）。
-  判据与三态见 [`moonlight-apps.md`](moonlight-apps.md) §2。
+- **主机不可达时（仅 Moonlight 行；未知 / 离线 / 服务未起三态）**：协议图标降不透明度（`0.45`）、隐藏应用钮，动作钮改为
+  「刷新」（未知 / 服务未起，`ic_refresh`）/「唤醒」（离线，`ic_power` 画在 `accent` 上；无 mac 时 neutral 底 + `0.5` 不透明度且不可点）；
+  **刷新钮**探测在途时换 `LoadingProgress`（含页面进入的自动兜底），**唤醒钮不随探测变化**；
+  唤醒后的**开机检测期间**同样换 `LoadingProgress`（同「连接中」，再点取消检测）。服务未起的悬停提示为
+  「主机已开机，请检查 Sunshine 是否运行」。
+  判据与四态见 [`moonlight-apps.md`](moonlight-apps.md) §2。
 - 右键菜单（`Menu`）、拖拽排序（`List.onMove`）：`List` 本体保持全宽，左右内边距由 `ListItem` 的 `margin` 给，
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
   菜单项分两组，各由一个 `MenuItemGroup` 承载：会话动作（连接 / 恢复 / 切换 / 断开 / 终止 / 刷新）在前，

@@ -40,12 +40,15 @@ export function connectActionLabel(action: ConnectAction): string {
   return '连接';
 }
 
-// Host reachability as shown on a row; Offline means unreachable, not a confirmed
-// power-off (only the streaming service can be probed).
+// Host reachability as shown on a row: Online = the streaming service answers;
+// Offline = nothing answers (likely powered off / unreachable); NoService = the OS
+// answers but the streaming service does not (wake would be pointless).
 export enum HostPower {
   Unknown = 0,
   Online = 1,
-  Offline = 2
+  Offline = 2,
+  // Host OS is up but has no answer from the streaming service: wake would be pointless.
+  NoService = 3
 }
 
 export const PROTOCOL_RDP: number = 0;
