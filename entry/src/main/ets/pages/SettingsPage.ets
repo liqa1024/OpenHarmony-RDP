@@ -1190,36 +1190,6 @@ struct SettingsPage {
               Divider().color($r('app.color.divider'))
 
               this.moonlightStreamSection()
-
-              Divider().color($r('app.color.divider'))
-
-              // One global audio switch shared with RDP (persisted from either
-              // protocol branch); gates the Moonlight Opus audio stream.
-              this.toggleItem({
-                title: '音频',
-                subtitle: '播放主机的声音；关闭则音频留在主机本地播放',
-                value: this.enableAudio,
-                enabled: this.audioSupported,
-                disabledReason: this.audioDisabledReason,
-                onChange: (v: boolean) => {
-                  this.enableAudio = v;
-                  this.persist();
-                }
-              })
-
-              // Moonlight-only; the system falls back to the normal path when
-              // FAST is unavailable.
-              this.toggleItem({
-                title: '低延迟音频',
-                subtitle: '用系统低时延通路播放主机声音；关闭则与 RDP 走同一条播放链路',
-                value: this.mlLowLatencyAudio,
-                enabled: this.audioSupported,
-                disabledReason: this.audioDisabledReason,
-                onChange: (v: boolean) => {
-                  this.mlLowLatencyAudio = v;
-                  this.persist();
-                }
-              })
             }
 
             if (this.protocol !== TAB_COMMON) {
@@ -1554,6 +1524,45 @@ struct SettingsPage {
                 this.persist();
               }
             })
+            } else if (this.protocol === PROTOCOL_MOONLIGHT) {
+            Divider().color($r('app.color.divider'))
+
+            Text('连接特性')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            // One global audio switch shared with RDP (persisted from either
+            // protocol branch); gates the Moonlight Opus audio stream.
+            this.toggleItem({
+              title: '音频重定向',
+              subtitle: '播放主机的声音；关闭则音频留在主机本地播放',
+              value: this.enableAudio,
+              enabled: this.audioSupported,
+              disabledReason: this.audioDisabledReason,
+              onChange: (v: boolean) => {
+                this.enableAudio = v;
+                this.persist();
+              }
+            })
+
+            // Only meaningful while audio is redirected; the system falls back
+            // to the normal path when FAST is unavailable.
+            if (this.enableAudio) {
+              Divider().color($r('app.color.divider'))
+
+              this.toggleItem({
+                title: '低延迟音频',
+                subtitle: '用系统低时延通路播放主机声音；关闭则与 RDP 走同一条播放链路',
+                value: this.mlLowLatencyAudio,
+                enabled: this.audioSupported,
+                disabledReason: this.audioDisabledReason,
+                onChange: (v: boolean) => {
+                  this.mlLowLatencyAudio = v;
+                  this.persist();
+                }
+              })
+            }
             }
             }
 
@@ -1800,11 +1809,16 @@ struct SettingsPage {
             if (this.protocol === TAB_COMMON) {
             Divider().color($r('app.color.divider'))
 
+            Text('重置')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ top: 4, bottom: 4 })
+
             Text('恢复全部设置（RDP / Moonlight / 通用）为默认值，不影响已保存的连接。')
               .fontSize(11)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
-              .margin({ top: 20, bottom: 10 })
+              .margin({ bottom: 10 })
 
             Button('恢复默认设置')
               .width('100%')
@@ -1820,6 +1834,11 @@ struct SettingsPage {
 
             if (this.protocol === PROTOCOL_RDP && this.developerMode) {
             Divider().color($r('app.color.divider'))
+
+            Text('开发者')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
 
             this.toggleItem({
               title: '抓取 GFX 码流（测试）',

@@ -123,12 +123,12 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
     [`moonlight-native.md`](moonlight-native.md) §2.1；安装器、去重与可见性归属见
     [`session-layer.md`](session-layer.md) §10。
 - **音频开关两协议共用一份**：`AppSettings.enableAudio`（RDP tab「连接特性·音频重定向」的同一全局值）同时是 Moonlight 的
-  音频主开关，Moonlight tab 的「音频」拨钮编辑的是这同一个键（两个 tab 都持久化同一份值）；叠加 `DeviceCapabilities.audio()`
+  音频主开关，Moonlight tab 的「音频重定向」拨钮编辑的是这同一个键（两个 tab 都持久化同一份值）；叠加 `DeviceCapabilities.audio()`
   置灰（无输出设备即关）。它派生 `MoonlightStreamConfig.enableAudio` 与 `/launch` 的 `localAudioPlayMode`
   （开=0 音频送客户端 / 关=1 主机本地播放），见 [`moonlight-native.md`](moonlight-native.md) §2.3。
-- **低延迟音频开关（Moonlight tab，`mlLowLatencyAudio`，默认开）**：Moonlight 独有的第二项音频设置，紧挨「音频」拨钮；
-  开 = 原生 OHAudio FAST 通路，关 = 与 RDP 同一条 ArkTS 播放链路。存储与置灰见
-  [`settings-and-storage.md`](settings-and-storage.md) §2，机制见 [`moonlight-native.md`](moonlight-native.md) §2.3。
+- **低延迟音频开关（Moonlight tab，`mlLowLatencyAudio`，默认开）**：与「音频重定向」同在 Moonlight tab 末尾的「连接特性」分节，
+  **仅在其开启时显示**（音频关时无从谈低延迟）。开 = 原生 OHAudio FAST 通路，关 = 与 RDP 同一条 ArkTS 播放链路。
+  存储与置灰见 [`settings-and-storage.md`](settings-and-storage.md) §2，机制见 [`moonlight-native.md`](moonlight-native.md) §2.3。
 - **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
   不要在别处塞新内容而让 Moonlight 那份成为摆设。
 
