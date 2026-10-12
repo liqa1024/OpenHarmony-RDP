@@ -91,7 +91,11 @@ export struct ConnectionRow {
         || this.primary() === ConnectAction.Disconnect
         ? $r('app.color.danger') : $r('app.color.accent');
     }
-    return this.wakeDisabled() ? $r('app.color.neutral') : $r('app.color.accent');
+    if (this.wakeDisabled()) {
+      return $r('app.color.neutral');
+    }
+    return this.power === HostPower.Offline
+      ? $r('app.color.success') : $r('app.color.accent');
   }
 
   private primaryTap(): void {
