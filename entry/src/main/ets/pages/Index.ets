@@ -33,6 +33,8 @@ struct Index {
   @State hostPowers: Map<string, HostPower> = new Map<string, HostPower>();
   // Connections with a wake watch running (their row shows a loading action).
   @State wakingHosts: Map<string, boolean> = new Map<string, boolean>();
+  // Connections with an in-flight host probe (their row shows a loading action).
+  @State probingHosts: Map<string, boolean> = new Map<string, boolean>();
   private wakeTimers: Map<string, number> = new Map<string, number>();
   @State draggingIndex: number = -1;
   // Which row's menu is open; menuSeq changes so a repeat request still re-opens it.
@@ -66,7 +68,7 @@ struct Index {
   };
 
   private hostStateListener: HostTargetListener =
-    (connectionId: string, currentGame: number, power: HostPower): void => {
+    (connectionId: string, currentGame: number, power: HostPower, probing: boolean): void => {
       const next: Map<string, number> = new Map<string, number>(this.hostTargets);
       if (currentGame === 0) {
         next.delete(connectionId);
@@ -77,6 +79,7 @@ struct Index {
       const nextPowers: Map<string, HostPower> = new Map<string, HostPower>(this.hostPowers);
       nextPowers.set(connectionId, power);
       this.hostPowers = nextPowers;
+      this.setProbing(connectionId, probing);
       // Watched host came up: end the watch.
       if (power === HostPower.Online && this.wakingHosts.get(connectionId) === true) {
         this.stopWakeWatch(connectionId);
@@ -106,6 +109,7 @@ struct Index {
     this.syncStatuses();
     this.syncHostTargets();
     this.syncHostPowers();
+    this.syncHostProbing();
     this.probeHosts();
   }
 
@@ -150,6 +154,33 @@ struct Index {
     return power === undefined ? HostPower.Unknown : power;
   }
 
+  private syncHostProbing(): void {
+    const next: Map<string, boolean> = new Map<string, boolean>();
+    for (const conn of this.connections) {
+      if (conn instanceof MoonlightConnection && MoonlightHostState.probingOf(conn.id)) {
+        next.set(conn.id, true);
+      }
+    }
+    this.probingHosts = next;
+  }
+
+  private probingFor(conn: SavedConnection): boolean {
+    return this.probingHosts.get(conn.id) === true;
+  }
+
+  private setProbing(connectionId: string, probing: boolean): void {
+    if ((this.probingHosts.get(connectionId) === true) === probing) {
+      return;
+    }
+    const next: Map<string, boolean> = new Map<string, boolean>(this.probingHosts);
+    if (probing) {
+      next.set(connectionId, true);
+    } else {
+      next.delete(connectionId);
+    }
+    this.probingHosts = next;
+  }
+
   private wakingFor(conn: SavedConnection): boolean {
     return this.wakingHosts.get(conn.id) === true;
   }
@@ -171,7 +202,7 @@ struct Index {
   private toggleWake(conn: SavedConnection): void {
     if (this.wakingHosts.get(conn.id) === true) {
       this.stopWakeWatch(conn.id);
-      showToast(this.getUIContext(), '已取消状态检测（唤醒包已发送）');
+      showToast(this.getUIContext(), '已取消状态检测');
       return;
     }
     if (!(conn instanceof MoonlightConnection) || !conn.supportsWake()) {
@@ -185,7 +216,7 @@ struct Index {
           showToast(this.getUIContext(), '唤醒包发送失败');
           return;
         }
-        showToast(this.getUIContext(), '已发送唤醒包，正在检测主机…');
+        showToast(this.getUIContext(), '尝试唤醒主机');
         this.startWakeWatch(conn, filesDir);
       })
       .catch((error: BusinessError): void => {
@@ -537,6 +568,7 @@ struct Index {
                 targetId: this.targetId(conn),
                 power: this.powerFor(conn),
                 waking: this.wakingFor(conn),
+                probing: this.probingFor(conn),
                 menuRequest: this.menuRequestFor(conn),
                 onRequestMenu: () => {
                   this.openRowMenu(conn.id);

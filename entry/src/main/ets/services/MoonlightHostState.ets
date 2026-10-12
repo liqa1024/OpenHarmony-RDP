@@ -13,7 +13,7 @@ const DEFAULT_HTTPS_PORT: number = 47984;
 export const HOST_REPROBE_DELAY_MS: number = 1500;
 
 export type HostTargetListener =
-  (connectionId: string, currentGame: number, power: HostPower) => void;
+  (connectionId: string, currentGame: number, power: HostPower, probing: boolean) => void;
 
 class HostTarget {
   currentGame: number = 0;
@@ -57,6 +57,10 @@ export class MoonlightHostState {
     return target === undefined ? DEFAULT_HTTPS_PORT : target.httpsPort;
   }
 
+  static probingOf(connectionId: string): boolean {
+    return MoonlightHostState.probing.get(connectionId) === true;
+  }
+
   // Only after the host really started / resumed the app (no optimistic write).
   static markLaunched(connectionId: string, appId: number): void {
     if (appId <= 0) {
@@ -98,6 +102,7 @@ export class MoonlightHostState {
       return;
     }
     MoonlightHostState.probing.set(conn.id, true);
+    MoonlightHostState.notify(conn.id);
     MoonlightClient.fetchServerInfo(filesDir, conn.host, conn.port)
       .then((result: ServerInfoResult): void => {
         MoonlightHostState.probing.set(conn.id, false);
@@ -150,9 +155,10 @@ export class MoonlightHostState {
   private static notify(connectionId: string): void {
     const currentGame: number = MoonlightHostState.targetOf(connectionId);
     const power: HostPower = MoonlightHostState.powerOf(connectionId);
+    const probing: boolean = MoonlightHostState.probingOf(connectionId);
     const listeners: HostTargetListener[] = MoonlightHostState.listeners.slice();
     for (let i = 0; i < listeners.length; i++) {
-      listeners[i](connectionId, currentGame, power);
+      listeners[i](connectionId, currentGame, power, probing);
     }
   }
 }

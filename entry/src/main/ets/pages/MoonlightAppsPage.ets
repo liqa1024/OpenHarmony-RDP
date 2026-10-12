@@ -53,7 +53,7 @@ struct MoonlightAppsPage {
     };
 
   private readonly hostStateListener: HostTargetListener =
-    (connectionId: string, currentGame: number, _power: HostPower): void => {
+    (connectionId: string, currentGame: number, _power: HostPower, _probing: boolean): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
         this.currentGame = currentGame;
       }

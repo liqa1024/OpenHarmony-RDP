@@ -59,7 +59,7 @@
 ## 2. 主机与应用运行态（`MoonlightHostState`）
 
 - **"主机在跑哪个应用"由 `services/MoonlightHostState` 单一权威持有**（仿 `SessionManager` 的静态监听器：
-  `targetOf` / `powerOf` / `httpsPortOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的
+  `targetOf` / `powerOf` / `httpsPortOf` / `probingOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的
   「运行中」徽标都从它派生，两者任何时刻都一致；**会话态本身仍在 `SessionManager`**，不混进来。
 - **写入**：`markLaunched(id, appId)` 只由后端 `prepare` 成功后调用（用主机实际启动的 `effectiveAppId`，默认应用
   由此补上）——**不在连接发起时乐观写**，否则一次失败的连接会留下幻影「运行中」；`/cancel` 成功 → `markStopped(id)`
@@ -76,7 +76,8 @@
   （`255.255.255.255`，端口 `9` / `7`）发出（`services/WakeOnLan`），成功仅代表已发送、**不保证唤醒**。发送后进入
   **开机检测**：每 `2s` 探测、`120s` 超时，期间动作位显示**加载**；在线即结束，超时提示未上线；**期间再点一次只取消
   检测**（不重新发包）。**只有已存 mac 才能唤醒**（`supportsWake`），无 mac 时唤醒钮置灰而非隐藏。
-- **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页（`onPageShow`、
+- **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测，起止经监听器广播
+  `probing` 标志，行据此派生加载态），列表页（`onPageShow`、
   行右键菜单「刷新」）、应用页（`onPageShow`）与会话页进入 `Idle`/`Failed`（弹出重连卡，含主机断连与连接超时）
   时各触发**一次**；应用页的 `probeApps` 也回填 `setProbed`。只有 `/cancel` 这类"动作已发完、主机异步停应用"
   另有短延迟复探（`refreshAfter`）兜底，其余不叠延迟探测；预检失败由 `prepare` 的 `!ok` 分支单探。

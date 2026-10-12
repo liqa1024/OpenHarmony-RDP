@@ -18,6 +18,8 @@ export struct ConnectionRow {
   @Prop power: HostPower = HostPower.Online;
   // A wake watch is running: spinner shown, a tap cancels the watch.
   @Prop waking: boolean = false;
+  // A host probe is in flight (unknown-state refresh slot shows a spinner).
+  @Prop probing: boolean = false;
   // Page-controlled: >0 opens this row's menu, 0 closes it.
   @Prop @Watch('onMenuRequest') menuRequest: number = 0;
   // ArkUI has no shared declarative hover/press effect, so the button keeps its
@@ -67,6 +69,9 @@ export struct ConnectionRow {
     if (this.hostDown()) {
       if (this.waking) {
         return '取消状态检测';
+      }
+      if (this.probing && this.power === HostPower.Unknown) {
+        return '正在检测主机状态';
       }
       if (this.power === HostPower.Unknown) {
         return '刷新主机状态';
@@ -280,6 +285,11 @@ export struct ConnectionRow {
             .height(24)
             .color('#FFFFFF')
         } else if (this.hostDown() && this.waking) {
+          LoadingProgress()
+            .width(24)
+            .height(24)
+            .color('#FFFFFF')
+        } else if (this.hostDown() && this.power === HostPower.Unknown && this.probing) {
           LoadingProgress()
             .width(24)
             .height(24)
