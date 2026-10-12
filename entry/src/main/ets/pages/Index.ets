@@ -17,6 +17,7 @@ import { WakeOnLan } from '../services/WakeOnLan';
 import { ConnectionRow } from '../components/ConnectionRow';
 import { FabButton } from '../components/FabButton';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
+import { promptWolHelp } from '../utils/WolHelpPrompt';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
@@ -209,6 +210,19 @@ struct Index {
       showToast(this.getUIContext(), '未获取到主机 MAC，无法唤醒');
       return;
     }
+    const target: MoonlightConnection = conn;
+    // First wake shows the setup guide once; the packet goes out after acknowledgement.
+    if (SettingsStore.load().wolHelpShown) {
+      this.sendWake(target);
+      return;
+    }
+    promptWolHelp(this.getUIContext()).then((): void => {
+      SettingsStore.rememberWolHelpShown();
+      this.sendWake(target);
+    });
+  }
+
+  private sendWake(conn: MoonlightConnection): void {
     const filesDir: string = this.filesDir();
     WakeOnLan.wake(conn.mlMac)
       .then((ok: boolean): void => {

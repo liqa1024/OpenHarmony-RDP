@@ -117,6 +117,8 @@ export class AppSettings {
   // Settings page tab the user last stayed on (TAB_COMMON / PROTOCOL_RDP /
   // PROTOCOL_MOONLIGHT); -1 = never recorded, so the page opens on 通用.
   lastSettingsTab: number = -1;
+  // 首次点「唤醒主机」时的 WoL 设置引导只弹一次。
+  wolHelpShown: boolean = false;
   // Moonlight 自有一份交互设置（触控板/捏合/键盘/前台重连）：两协议各存各的值，
   // 只共享设置 UI 代码；窗口尺寸、工具栏延迟与开发者选项是应用级单一值。
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
@@ -252,6 +254,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
       settings.lastSettingsTab =
         SettingsStore.readNumber(store, 'lastSettingsTab', settings.lastSettingsTab);
+      settings.wolHelpShown =
+        SettingsStore.readBoolean(store, 'wolHelpShown', settings.wolHelpShown);
       settings.mlTouchpadScrollSpeed = SettingsStore.readNumber(store, 'mlTouchpadScrollSpeed',
         settings.mlTouchpadScrollSpeed);
       settings.mlPinchZoomSpeed =
@@ -325,6 +329,7 @@ export class SettingsStore {
       store.putSync('mlHeight', settings.mlHeight);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
       store.putSync('lastSettingsTab', settings.lastSettingsTab);
+      store.putSync('wolHelpShown', settings.wolHelpShown);
       store.putSync('mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
       store.putSync('mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       store.putSync('mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
@@ -574,6 +579,12 @@ export class SettingsStore {
   static rememberSettingsTab(tab: number): void {
     const settings: AppSettings = SettingsStore.load();
     settings.lastSettingsTab = tab;
+    SettingsStore.save(settings);
+  }
+
+  static rememberWolHelpShown(): void {
+    const settings: AppSettings = SettingsStore.load();
+    settings.wolHelpShown = true;
     SettingsStore.save(settings);
   }
 

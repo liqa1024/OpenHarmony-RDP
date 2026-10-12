@@ -234,11 +234,13 @@ Column(page_bg, 100%×100%)
 | `MoonlightCodec.ets` | 编码器能力分类：`moonlightCodecSupport` / `moonlightCodecUsable` / `moonlightCodecSoftware` |
 | `PairingPrompt.ets` | `promptPairingPin(ui, pin, pairing)`（配对 PIN 弹窗：四位数字居中放大；`pairing` 握手结束后自动关闭，返回值仅在用户取消时为 `false`） |
 | `HostSearchPrompt.ets` | `showHostPicker(ui, hosts, title, addedAddresses)`（主机选择弹窗：只渲染**已搜到**的 mDNS 主机列表，`addedAddresses` 里的（已保存）主机置灰不可选，选中一行返回该主机，取消返回 `undefined`；搜索本身由页面跑，见下条约束） |
+| `WolHelpPrompt.ets` | `promptWolHelp(ui)`（首次唤醒的 WoL 设置引导：自定义弹窗 + 可点教程链接，点「知道了」后 resolve；行为与一次性标记见 [`moonlight-apps.md`](moonlight-apps.md) §2） |
 | `UiMotion.ets` | 交互动效 token 与工厂：`MOTION_HOVER_SCALE` / `MOTION_PRESS_SCALE` / `MOTION_HOVER_PRESS_MS` / `MOTION_CURVE`，`hoverPressScale(hovered, pressed)` 与转场工厂 `popTransition()` / `fadeTransition()` |
 
 约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
 两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；
 单按钮提示用 `showNotice`。材质（`OVERLAY`）与兜底都由工具负责，页面只给文案与回调。
+带可点链接等自定义内容的引导（如 `WolHelpPrompt`）走 `ComponentContent` + `openCustomDialog`，不进这条。
 
 约束：**异步操作的加载态归属触发控件，不单独弹一个"转圈"弹窗**（依据设计原则 §10：光标操作下弹窗要重新定位鼠标）——
 就地把它自己的图标换成 `LoadingProgress`（图标本身即状态，参照连接钮 / 刷新 FAB；图标位较小时在原有图标上叠加），
