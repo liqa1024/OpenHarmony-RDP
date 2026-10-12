@@ -29,6 +29,7 @@ std::atomic<bool> g_terminated{false};
 std::atomic<bool> g_stopRequested{false};
 MoonlightSessionCallback g_callback = nullptr;
 std::atomic<MoonlightCursorCallback> g_cursorCallback{nullptr};
+std::atomic<MoonlightClipboardCallback> g_clipboardCallback{nullptr};
 // Window the decode bridge renders into; owned by the ArkTS page, borrowed here.
 MoonlightVideoContext g_context;
 
@@ -95,6 +96,15 @@ void OnCursorUpdate(bool visible, bool hasShape, uint32_t shapeId, uint16_t widt
   callback(shape);
 }
 
+// Control-stream thread; the N-API bridge copies the frame and hops it to JS.
+void OnClipboardData(const char* data, int length) {
+  const MoonlightClipboardCallback callback = g_clipboardCallback.load();
+  if (callback == nullptr || data == nullptr || length <= 0) {
+    return;
+  }
+  callback(reinterpret_cast<const uint8_t*>(data), length);
+}
+
 // LiStartConnection returns once the streams are established, not when the
 // session ends.
 void Run(const MoonlightStreamConfig& config) {
@@ -135,6 +145,7 @@ void Run(const MoonlightStreamConfig& config) {
   listeners.connectionStarted = OnConnectionStarted;
   listeners.connectionTerminated = OnConnectionTerminated;
   listeners.cursorUpdate = OnCursorUpdate;
+  listeners.clipboardData = OnClipboardData;
 
   PDECODER_RENDERER_CALLBACKS video =
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());
@@ -187,6 +198,17 @@ void MoonlightSessionSetWindow(void* window) {
 
 void MoonlightSessionSetCursorCallback(MoonlightCursorCallback callback) {
   g_cursorCallback.store(callback);
+}
+
+void MoonlightSessionSetClipboardCallback(MoonlightClipboardCallback callback) {
+  g_clipboardCallback.store(callback);
+}
+
+int MoonlightSessionSendClipboard(const void* data, int length) {
+  if (!g_active.load()) {
+    return -3;
+  }
+  return LiSendClipboardData(data, length);
 }
 
 std::string MoonlightSessionStart(const MoonlightStreamConfig& config,

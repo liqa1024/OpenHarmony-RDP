@@ -1,6 +1,6 @@
 import { ErrorEvent, MessageEvents, worker } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { BackgroundOps, BackgroundEvent, BackgroundRequest, BackgroundResponse } from './BackgroundProtocol';
+import { BackgroundOps, BackgroundEvent, BackgroundRequest, BackgroundResponse, DecodedImage } from './BackgroundProtocol';
 import { DibImage } from '../utils/ClipboardCodec';
 
 const DOMAIN: number = 0xD001;
@@ -124,6 +124,38 @@ class BackgroundWorkerImpl {
     this.nextId++;
     const response: BackgroundResponse = await this.send(request, [cfHtml]);
     return response.ok ? (response.text ?? '') : '';
+  }
+
+  // `pixels` is transferred to the worker; the caller must not reuse it.
+  async encodePng(pixels: ArrayBuffer, width: number, height: number,
+    pixelFormat: number): Promise<ArrayBuffer | undefined> {
+    const request: BackgroundRequest = {
+      id: this.nextId, op: BackgroundOps.ENCODE_PNG, pixels: pixels,
+      width: width, height: height, pixelFormat: pixelFormat
+    };
+    this.nextId++;
+    const response: BackgroundResponse = await this.send(request, [pixels]);
+    if (!response.ok || response.buffer === undefined) {
+      return undefined;
+    }
+    return response.buffer;
+  }
+
+  async decodePng(png: ArrayBuffer): Promise<DecodedImage | undefined> {
+    const request: BackgroundRequest = {
+      id: this.nextId, op: BackgroundOps.DECODE_PNG, png: png
+    };
+    this.nextId++;
+    const response: BackgroundResponse = await this.send(request, [png]);
+    if (!response.ok || response.buffer === undefined) {
+      return undefined;
+    }
+    const decoded: DecodedImage = new DecodedImage();
+    decoded.width = response.width ?? 0;
+    decoded.height = response.height ?? 0;
+    decoded.pixelFormat = response.pixelFormat ?? 0;
+    decoded.bgra = response.buffer;
+    return decoded;
   }
 
   async pushText(handle: number, text: string): Promise<boolean> {

@@ -60,6 +60,8 @@ enum class SessionEvent {
   kRemoteFormatList = 20,
   kRemoteFormatResponse = 21,
   kRemoteLockState = 22,
+  // Remote clipboard image received as PNG (distinct kind so it decodes as PNG, not DIB).
+  kClipboardImagePng = 23,
 };
 
 struct RdpOptions {
@@ -287,7 +289,7 @@ class Session : public std::enable_shared_from_this<Session> {
   std::atomic<bool> localLocksKnown_{false};
 
   enum class LocalClipKind { kNone = 0, kText = 1, kHtml = 2, kImage = 3, kRtf = 4,
-                             kFiles = 5 };
+                             kFiles = 5, kImagePng = 6 };
 
   void AdvertiseLocalClipboard();
 

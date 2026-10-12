@@ -1,7 +1,7 @@
 # Moonlight 原生客户端
 
 本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与共享库链接、桥接层与串流会话、
-以及三个原生扩展（本地光标模式、原生触控板、音频）。**视频解码、上屏与编解码协商**见
+以及四个原生扩展（本地光标模式、原生触控板、音频、剪贴板）。**视频解码、上屏与编解码协商**见
 [`moonlight-video.md`](moonlight-video.md)；**控制 / 配对层（ArkTS）**见 [`moonlight-control.md`](moonlight-control.md)；
 **前端**（协议建模、存储、连接列表与编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)，
 **主机与应用**见 [`moonlight-apps.md`](moonlight-apps.md)，**会话窗口与遥测**见 [`moonlight-session.md`](moonlight-session.md)；
@@ -179,9 +179,23 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `STREAM_CONFIGURATION.audioConfiguration` 当前为立体声；环绕是后续扩展（鸿蒙 ArkTS 与原生 OHAudio 两侧的高声道布局接口均已具备）。
 - **A/V 同步不在范围**：音频环独立播放，与其解码时间轴无耦合。
 
+### 2.4 剪贴板（基地版 Sunshine 的 0x5508 扩展）
+
+> 归属见 [`moonlight-clipboard.md`](moonlight-clipboard.md)；这里只记原生侧事实与接入。
+
+- **补丁**（`patch-moonlight.ps1` 第 4 步）：`Limelight.h` 加 `ConnListenerClipboardData` 回调、`LiSendClipboardData`
+  与 `LI_CLIPBOARD_KIND_*`、能力位常量 `LI_FF_CLIPBOARD_TEXT 0x04 / LI_FF_CLIPBOARD_IMAGE 0x08`；`ControlStream.c`
+  加 `0x5508` 接收分发（控制流线程**同步**回调）与发送 `LiSendClipboardData`（返回 0/-1/-2/-3/-4），并把控制流发送的
+  载荷长度由 `short` 放宽为 `int`、加密明文缓冲超 256 字节改堆分配——否则 64KB 级剪贴板帧会越界失败。
+- **外壳与出口**：事件码 `MoonlightSessionEvent::kClipboardData`；`MoonlightSessionSetClipboardCallback`
+  （控制流线程，回调只拷贝、不得阻塞）与 `MoonlightSessionSendClipboard`；N-API 出口 `moonlightSendClipboardData(ArrayBuffer)`，
+  入站经 `dataHandle` 缓冲（`bufferRead`/`bufferRelease`）以 `ML_EVENT_CLIPBOARD` 送到 ArkTS。
+- **门禁**：接收回调随 `moonlightSetSessionListener` 注册；发送在库内只要求 Sunshine + 加密控制流 v2
+  （`0x5508` 只在 v2 表里）。能力位经 `moonlightHostFeatures()` 读，用来决定工具栏入口显隐。
+
 ## 3. 范围
 
-- 本文件覆盖：客户端库的构建与链接（§1）、桥接层与接线（§2，解码桥 + 串流会话桥 + 本地光标模式 + 原生触控板 + 音频）。
+- 本文件覆盖：客户端库的构建与链接（§1）、桥接层与接线（§2，解码桥 + 串流会话桥 + 本地光标模式 + 原生触控板 + 音频 + 剪贴板）。
 - **不在本文件范围**：视频解码与协商（[`moonlight-video.md`](moonlight-video.md)）、控制/配对层
   （[`moonlight-control.md`](moonlight-control.md)）、主机发现与应用列表交互（[`moonlight-apps.md`](moonlight-apps.md)）、
   会话的 ArkTS 接线与输入页路由（[`moonlight-session.md`](moonlight-session.md)）。

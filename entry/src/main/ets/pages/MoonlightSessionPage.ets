@@ -7,7 +7,8 @@ import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
 import { SessionBackend } from '../services/SessionBackend';
-import { ML_HOST_FEATURE_TOUCH, ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
+import { ML_HOST_FEATURE_CLIPBOARD_IMAGE, ML_HOST_FEATURE_CLIPBOARD_TEXT, ML_HOST_FEATURE_TOUCH,
+  ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { SessionInput } from '../services/SessionInput';
 import { RemoteCursor } from '../services/RemoteCursor';
@@ -25,7 +26,10 @@ import { StatusCard } from '../components/StatusCard';
 import { PinchProbeOverlay } from '../components/PinchProbeOverlay';
 import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/MoonlightTelemetry';
 import { AudioPlayer } from '../services/AudioPlayer';
-import { TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
+import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
+import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
+import { showToast } from '../utils/UiUtil';
+import { ClipboardButtons, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
   metricColor } from '../components/SessionChrome';
@@ -123,6 +127,20 @@ struct MoonlightSessionPage {
   private metricsTimer: number = -1;
   private metricsLastAt: number = 0;
   private telemetry: MoonlightTelemetryAggregator = new MoonlightTelemetryAggregator();
+  private mlClipboard: MoonlightClipboardBridge | undefined = undefined;
+  private clipboard: ClipboardController | undefined = undefined;
+  @State clipboardAvailable: boolean = false;
+
+  // The system paste control grants a one-time clipboard read without the READ_PASTEBOARD permission.
+  private pasteButtonCallback: PasteButtonCallback =
+    (event: ClickEvent, result: PasteButtonOnClickResult): void => {
+      if (result === PasteButtonOnClickResult.SUCCESS) {
+        this.clipboard?.pasteLocalToRemote();
+        return;
+      }
+      hilog.warn(DOMAIN, TAG, 'paste authorization failed');
+      this.toast('未获得剪贴板授权');
+    };
 
   aboutToAppear(): void {
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
@@ -142,6 +160,12 @@ struct MoonlightSessionPage {
         this.targetFps = config.fps;
         this.targetBitrateKbps = config.bitrateKbps;
       }
+    }
+    if (request !== undefined) {
+      const clipHost: string = request.savedConnection !== undefined ? request.savedConnection.host : '';
+      this.mlClipboard = new MoonlightClipboardBridge(clipHost, request.moonlightHttpsPort,
+        request.filesDir);
+      this.clipboard = new ClipboardController(this.mlClipboard, this.makeClipboardHost());
     }
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
@@ -246,6 +270,7 @@ struct MoonlightSessionPage {
 
   aboutToDisappear(): void {
     this.stopAudio();
+    this.backend()?.clearClipboardListener();
     // The system cursor is process-wide: never leave it hidden for the next page.
     this.shell?.release();
   }
@@ -263,6 +288,32 @@ struct MoonlightSessionPage {
     return backend instanceof MoonlightSessionBackend ? backend : undefined;
   }
 
+  private toast(message: string): void {
+    showToast(this.getUIContext(), message, 1500);
+  }
+
+  // No file transfer in Moonlight, so the transfer hooks are inert.
+  private makeClipboardHost(): ClipboardControllerHost {
+    const clipboardHost: ClipboardControllerHost = {
+      toast: (message: string): void => {
+        this.toast(message);
+      },
+      confirmCancelUpload: (onConfirm: () => void): void => {
+        onConfirm();
+      },
+      setTransferProgress: (direction: number, percent: number, text: string,
+        speedBytesPerSecond: number, fileIndex: number, fileCount: number): void => {
+      },
+      setTransferWaiting: (direction: number, fileIndex: number, fileCount: number): void => {
+      },
+      clearTransfer: (): void => {
+      },
+      onRemoteChanged: (): void => {
+      }
+    };
+    return clipboardHost;
+  }
+
   private makeInput(backend: SessionBackend | undefined, settings: AppSettings): SessionInput | undefined {
     if (!(backend instanceof MoonlightSessionBackend)) {
       return undefined;
@@ -273,6 +324,9 @@ struct MoonlightSessionPage {
     backend.setKeyInterceptListener((keyCode: number, down: boolean): void => {
       const input: SessionInput | undefined = this.shell?.sessionInput();
       input?.handleInterceptedKey(keyCode, down);
+    });
+    backend.setClipboardListener((bytes: ArrayBuffer): void => {
+      this.mlClipboard?.onIncoming(bytes);
     });
     const sink: MoonlightInputSink = new MoonlightInputSink(backend);
     sink.setReferenceSize(this.streamWidth, this.streamHeight);
@@ -304,6 +358,9 @@ struct MoonlightSessionPage {
       const features: number = backend !== undefined ? backend.hostFeatureFlags() : 0;
       const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
       const nativeTouchpadSupported: boolean = (features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0;
+      // Only when the host advertises it (foundation-sunshine with its GUI agent alive).
+      this.clipboardAvailable =
+        (features & (ML_HOST_FEATURE_CLIPBOARD_TEXT | ML_HOST_FEATURE_CLIPBOARD_IMAGE)) !== 0;
       const input: SessionInput | undefined = this.shell?.sessionInput();
       input?.setTouchEnabled(touchSupported);
       input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
@@ -314,6 +371,7 @@ struct MoonlightSessionPage {
     // Not streaming: the process-wide system cursor must come back.
     this.stopAudio();
     this.stopMetricsTimer();
+    this.clipboardAvailable = false;
     this.setLocalCursorHidden(false);
     if (state === ConnectionState.Idle || state === ConnectionState.Failed) {
       this.refreshHostState();
@@ -605,6 +663,15 @@ struct MoonlightSessionPage {
           detail: this.streamWidth + ' × ' + this.streamHeight + moonlightDecodeIndicator()
         })
         Blank()
+        if (this.state === ConnectionState.Connected && this.clipboardAvailable) {
+          ClipboardButtons({
+            onCopy: (): void => {
+              this.clipboard?.copyRemoteToLocal();
+            },
+            pasteCallback: this.pasteButtonCallback
+          })
+          Row().width(16)
+        }
         ToolbarChip({
           label: this.isFullscreen ? '退出全屏' : '全屏',
           onTap: () => {

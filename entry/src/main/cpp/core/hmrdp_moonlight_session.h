@@ -20,6 +20,8 @@ enum class MoonlightSessionEvent : int {
   // so `value` stays the keyCode.
   kKeyInterceptDown = 6,
   kKeyInterceptUp = 7,
+  // Clipboard frame event code (delivered on the clipboard callback).
+  kClipboardData = 8,
 };
 
 // Called from the session's own thread; must not block.
@@ -41,6 +43,9 @@ struct MoonlightCursorShape {
 
 // Called from the control-stream thread; must not block.
 using MoonlightCursorCallback = void (*)(const MoonlightCursorShape& shape);
+
+// Called from the control-stream thread; the callee must not block it.
+using MoonlightClipboardCallback = void (*)(const uint8_t* data, int length);
 
 struct MoonlightStreamConfig {
   std::string host;
@@ -80,6 +85,12 @@ struct MoonlightStreamConfig {
 
 // Null disables delivery; safe to call before a session.
 void MoonlightSessionSetCursorCallback(MoonlightCursorCallback callback);
+
+// Null disables delivery; safe to call before a session.
+void MoonlightSessionSetClipboardCallback(MoonlightClipboardCallback callback);
+
+// Send an opaque clipboard frame to the host; returns LiSendClipboardData's code.
+int MoonlightSessionSendClipboard(const void* data, int length);
 
 // Must be called before MoonlightSessionStart; passed to LiStartConnection as
 // the render context.

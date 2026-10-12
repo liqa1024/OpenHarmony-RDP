@@ -9,7 +9,11 @@ export class MoonlightHttpOptions {
   port: number = 47989;
   path: string = '/';
   body: string = '';
+  // Binary request body (takes precedence over `body` when set).
+  bodyBytes: ArrayBuffer | undefined = undefined;
   contentType: string = 'application/xml';
+  // Extra request header used by the clipboard blob upload.
+  xClipboardMime: string = '';
   useTls: boolean = false;
   // Empty = first contact (accept any cert); non-empty pins the peer's public key.
   pinnedServerCertDer: Uint8Array = new Uint8Array(0);
@@ -40,6 +44,9 @@ export class MoonlightHttp {
     const request: http.HttpRequest = http.createHttp();
     try {
       const headers: Record<string, string> = { 'Content-Type': options.contentType };
+      if (options.xClipboardMime.length > 0) {
+        headers['X-Clipboard-Mime'] = options.xClipboardMime;
+      }
       const method: http.RequestMethod = options.method === 'POST'
         ? http.RequestMethod.POST : http.RequestMethod.GET;
       const requestOptions: http.HttpRequestOptions = {
@@ -50,7 +57,9 @@ export class MoonlightHttp {
                                        : http.HttpDataType.STRING,
         header: headers
       };
-      if (options.body.length > 0) {
+      if (options.bodyBytes !== undefined) {
+        requestOptions.extraData = options.bodyBytes;
+      } else if (options.body.length > 0) {
         requestOptions.extraData = options.body;
       }
       if (options.useTls) {

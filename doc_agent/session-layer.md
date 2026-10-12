@@ -300,7 +300,10 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
 
 `model/SessionSignal`（协议无关信号）、`services/ToolbarAutoHide`（工具栏自动隐藏判定）、
 `services/RemoteCursor`（远端光标安装器）、`services/ForegroundReconnect`（回到前台自动重连）、
-`components/SessionChrome`（会话 chrome 常量与组件，含共享遥测行 `TelemetryRow` / `TelemetryField` / 阈值着色 `metricColor`）、
+`services/ClipboardController` + `services/ClipboardBridge` + `utils/LocalPasteboard`
+（协议中立的手动剪贴板：远端缓存 / 复制粘贴语义 / 本机读写；见 [`rdp-clipboard.md`](rdp-clipboard.md) §0）、
+`components/SessionChrome`（会话 chrome 常量与组件，含共享遥测行 `TelemetryRow` / `TelemetryField` / 阈值着色 `metricColor`
+与共享复制/粘贴按钮 `ClipboardButtons` / 传输进度行 `ClipboardTransferStatus`）、
 `utils/UiMotion`（hover/press 动效）——均为两协议共用。
 
 ## 12. 命名与边界约定

@@ -19,6 +19,8 @@
 - 工具栏与 RDP 同形：标题用共享的 `SessionTitle`（名称 + 分辨率 + 括号里的**协商解码格式**，见
   [`ui-design.md`](ui-design.md) §3.6），复用同一套 chrome 与自动隐藏判定（`components/SessionChrome`、
   `services/ToolbarAutoHide`），支持全屏 / 最小化。
+- **剪贴板入口**：主机广告剪贴板能力位且已连接时，工具栏插入共享的 `ClipboardButtons`（复制 / 系统 `PasteButton` 粘贴）；
+  非基地版主机（无能力位）不显示入口。协议与语义见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
 - **停止会话会释放原生窗口**，所以窗口内「重试」先重新绑定仍存活的 XComponent surface 再重启（此时会话必然
   已不在活动态，原生允许再次绑定）。
 - 输入落地：共享策略在 [`session-layer.md`](session-layer.md) §8，原生出口见

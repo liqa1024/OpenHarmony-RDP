@@ -8,6 +8,8 @@ import { RdpEventPayload } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpClipKind, RdpEvent, SR_BACKEND_FSR } from '../model/RdpModels';
 import { PendingConnection, SessionRequests } from '../model/Connections';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
+import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
+import { RdpClipboardBridge } from '../services/RdpClipboardBridge';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { BackgroundWorker } from '../services/BackgroundWorker';
 import { RdpNative } from '../services/RdpNative';
@@ -35,7 +37,8 @@ import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
   TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarRevealHint, TelemetryField, TelemetryRow, metricColor } from '../components/SessionChrome';
+  ToolbarRevealHint, TelemetryField, TelemetryRow, metricColor,
+  ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -68,11 +71,6 @@ const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
 const LOCAL_BAD_MS: number = 33;
-
-class ClipPick {
-  kind: number = RdpClipKind.NONE;
-  id: number = 0;
-}
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -145,12 +143,9 @@ struct SessionPage {
   private viewPinchPanX: number = 0;
   private viewPinchPanY: number = 0;
   private viewPinchBaseScale: number = 1;
-  private remoteClipboardText: string = '';
-  private remoteClipboardHtml: string = '';
-  private remoteClipboardPixelMap: image.PixelMap | undefined = undefined;
-  private remoteFileCount: number = 0;
-  private remoteFolderCount: number = 0;
-  private pasteboardBusy: boolean = false;
+  private filesDir: string = '';
+  private rdpClipboard: RdpClipboardBridge | undefined = undefined;
+  private clipboard: ClipboardController | undefined = undefined;
   @State private transferActive: boolean = false;
   @State private transferWaiting: boolean = false;
   @State private transferPercent: number = 0;
@@ -158,13 +153,9 @@ struct SessionPage {
   @State private transferSpeed: string = '';
   @State private transferFileIndex: number = 0;
   @State private transferFileCount: number = 0;
-  private transferDirection: number = 0;
-  private transferBusy: boolean = false;
-  private transferLastDone: number = 0;
-  private transferLastAt: number = 0;
   private backgroundSink: (event: BackgroundEvent) => void =
     (event: BackgroundEvent): void => {
-      this.onBackgroundEvent(event);
+      this.rdpClipboard?.onBackgroundEvent(event);
     };
   private audioHandle: number = -1;
   private lastRemoteLocks: number = 0;
@@ -182,7 +173,7 @@ struct SessionPage {
   private pasteButtonCallback: PasteButtonCallback =
     (event: ClickEvent, result: PasteButtonOnClickResult): void => {
       if (result === PasteButtonOnClickResult.SUCCESS) {
-        this.submitClipboard();
+        this.clipboard?.pasteLocalToRemote();
         return;
       }
       hilog.warn(DOMAIN, TAG, 'paste authorization failed');
@@ -216,6 +207,9 @@ struct SessionPage {
     RdpNative.applyGfxCapture(settings.gfxCapture, filesDir);
     hilog.info(DOMAIN, TAG, 'gfx capture=%{public}d dir=%{public}s', settings.gfxCapture ? 1 : 0,
       filesDir);
+    this.filesDir = filesDir;
+    this.rdpClipboard = new RdpClipboardBridge(this.native, filesDir);
+    this.clipboard = new ClipboardController(this.rdpClipboard, this.makeClipboardHost());
     const foregroundHost: ForegroundReconnectHost = {
       context: (): common.Context | undefined => this.getUIContext().getHostContext(),
       state: (): ConnectionState => this.state,
@@ -264,7 +258,7 @@ struct SessionPage {
     };
     const hooks: SessionShellHooks = {
       overlayDelayMs: (): number => 0,
-      isPinned: (): boolean => this.transferActive || this.transferWaiting,
+      isPinned: (): boolean => this.clipboard?.isTransferBlocking() ?? false,
       makeInput: (backend: SessionBackend | undefined, load: AppSettings): SessionInput | undefined =>
         this.makeInput(load),
       configureCursor: (cursor: RemoteCursor, load: AppSettings): void => {
@@ -354,7 +348,7 @@ struct SessionPage {
       this.native.setSuppressed(!this.windowVisible);
       this.audioHandle = this.native.handleId();
       AudioPlayer.start(this.audioHandle);
-      this.resetClipboardNegotiation();
+      this.rdpClipboard?.reset();
       this.lastRemoteLocksValid = false;
       this.lastReassertMs = 0;
       this.startMetricsTimer();
@@ -367,7 +361,7 @@ struct SessionPage {
     if (state === ConnectionState.Disconnecting) {
       this.statusText = '正在断开...';
       this.stopAudio();
-      this.resetClipboardNegotiation();
+      this.rdpClipboard?.reset();
       this.stopMetricsTimer();
       return;
     }
@@ -375,7 +369,7 @@ struct SessionPage {
       : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
     this.cursor.reset();
     this.stopAudio();
-    this.resetClipboardNegotiation();
+    this.rdpClipboard?.reset();
     this.stopMetricsTimer();
   }
 
@@ -448,6 +442,9 @@ struct SessionPage {
   }
 
   private onRdpEvent(event: RdpEvent, payload: RdpEventPayload): void {
+    if (this.rdpClipboard?.handleEvent(event, payload) === true) {
+      return;
+    }
     if (event === RdpEvent.FirstFrame) {
       this.showOverlay = false;
       this.showToolbar = false;
@@ -460,38 +457,6 @@ struct SessionPage {
         this.input?.setPointerSpace(width, height);
         this.resetViewZoom();
       }
-    } else if (event === RdpEvent.ClipboardText) {
-      const text: string = payload.text ?? '';
-      hilog.info(DOMAIN, TAG, 'remote clipboard text: %{public}d chars', text.length);
-      this.remoteClipboardText = text;
-      this.remoteClipboardHtml = '';
-      this.remoteClipboardPixelMap = undefined;
-      this.remoteFileCount = 0;
-      this.remoteFolderCount = 0;
-    } else if (event === RdpEvent.ClipboardHtml) {
-      this.onRemoteClipboardHtml(payload);
-    } else if (event === RdpEvent.ClipboardRtf) {
-      this.onRemoteClipboardRtf(payload);
-    } else if (event === RdpEvent.ClipboardImage) {
-      hilog.info(DOMAIN, TAG, 'remote clipboard image (raw DIB)');
-      this.remoteFileCount = 0;
-      this.remoteFolderCount = 0;
-      this.onClipboardImage(payload);
-    } else if (event === RdpEvent.RemoteFileListRaw) {
-      this.onRemoteFileListRaw(payload);
-    } else if (event === RdpEvent.RemoteFileChunk) {
-      this.onRemoteFileChunk(payload);
-    } else if (event === RdpEvent.RemoteClipboardChanged) {
-      this.onRemoteClipboardChanged();
-    } else if (event === RdpEvent.FileTransferProgress) {
-      this.onFileTransferProgress(payload);
-    } else if (event === RdpEvent.FileTransferDone) {
-      this.finishFileTransfer();
-      this.toast('已发送文件到远端');
-    } else if (event === RdpEvent.FileTransferFailed) {
-      this.finishFileTransfer();
-      const reason: string = payload.reason ?? '';
-      this.toast(reason.length > 0 ? reason : '文件传输失败');
     } else if (event === RdpEvent.CursorShape) {
       this.onCursorShape(payload);
     } else if (event === RdpEvent.CursorDefault) {
@@ -506,10 +471,6 @@ struct SessionPage {
     } else if (event === RdpEvent.AudioFormat) {
       AudioPlayer.onFormat(this.native.handleId(), payload.audioRate ?? 0,
         payload.audioChannels ?? 0);
-    } else if (event === RdpEvent.RemoteFormatList) {
-      this.onRemoteFormatList(payload);
-    } else if (event === RdpEvent.RemoteFormatResponse) {
-      this.onRemoteFormatResponse();
     } else if (event === RdpEvent.RemoteLockState) {
       this.onRemoteLockState(payload.lockFlags ?? 0);
     }
@@ -669,151 +630,6 @@ struct SessionPage {
     this.cursor.applyUpdate(update);
   }
 
-  private onRemoteClipboardHtml(payload: RdpEventPayload): void {
-    const dataHandle: number = payload.dataHandle ?? 0;
-    if (dataHandle <= 0) {
-      return;
-    }
-    const cfHtml: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
-    if (cfHtml === undefined) {
-      return;
-    }
-    BackgroundWorker.decodeCfHtml(cfHtml)
-      .then((html: string) => {
-        hilog.info(DOMAIN, TAG, 'remote clipboard html: %{public}d chars', html.length);
-        this.setRemoteHtml(html);
-      })
-      .catch((error: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'decode cf_html failed: %{public}s', JSON.stringify(error));
-      });
-  }
-
-  private onRemoteClipboardRtf(payload: RdpEventPayload): void {
-    const dataHandle: number = payload.dataHandle ?? 0;
-    if (dataHandle <= 0) {
-      return;
-    }
-    const rtf: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
-    if (rtf === undefined) {
-      return;
-    }
-    BackgroundWorker.decodeRtf(rtf)
-      .then((html: string) => {
-        hilog.info(DOMAIN, TAG, 'remote clipboard rtf->html: %{public}d chars', html.length);
-        this.setRemoteHtml(html);
-      })
-      .catch((error: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'decode rtf failed: %{public}s', JSON.stringify(error));
-      });
-  }
-
-  private setRemoteHtml(html: string): void {
-    this.remoteClipboardHtml = html;
-    this.remoteClipboardText = '';
-    this.remoteClipboardPixelMap = undefined;
-    this.remoteFileCount = 0;
-    this.remoteFolderCount = 0;
-  }
-
-  private onRemoteFileListRaw(payload: RdpEventPayload): void {
-    const dataHandle: number = payload.dataHandle ?? 0;
-    if (dataHandle <= 0) {
-      return;
-    }
-    const fgd: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(dataHandle);
-    if (fgd === undefined) {
-      return;
-    }
-    this.remoteClipboardText = '';
-    this.remoteClipboardHtml = '';
-    this.remoteClipboardPixelMap = undefined;
-    BackgroundWorker.postFileList(this.native.handleId(), fgd);
-  }
-
-  private onRemoteClipboardChanged(): void {
-    this.remoteFileCount = 0;
-    this.remoteFolderCount = 0;
-    BackgroundWorker.postClipboardChanged(this.native.handleId());
-  }
-
-  private onRemoteFormatList(payload: RdpEventPayload): void {
-    const pick: ClipPick | undefined =
-      SessionPage.pickRemoteFormat(payload.formatCandidates ?? '');
-    if (pick === undefined) {
-      return;
-    }
-    if (this.remoteFormatInFlight) {
-      this.remoteFormatPending = true;
-      this.remotePendingId = pick.id;
-      this.remotePendingKind = pick.kind;
-      return;
-    }
-    this.issueRemoteFormat(pick.id, pick.kind);
-  }
-
-  private issueRemoteFormat(id: number, kind: number): void {
-    this.remoteFormatInFlight = this.native.requestClipboardFormat(id, kind);
-  }
-
-  private onRemoteFormatResponse(): void {
-    this.remoteFormatInFlight = false;
-    if (this.remoteFormatPending) {
-      this.remoteFormatPending = false;
-      this.issueRemoteFormat(this.remotePendingId, this.remotePendingKind);
-    }
-  }
-
-  private static pickRemoteFormat(candidates: string): ClipPick | undefined {
-    let best: ClipPick | undefined = undefined;
-    let bestRank: number = 99;
-    for (const entry of candidates.split(',')) {
-      const bar: number = entry.indexOf(':');
-      if (bar <= 0) {
-        continue;
-      }
-      const kind: number = Number.parseInt(entry.substring(0, bar), 10);
-      const id: number = Number.parseInt(entry.substring(bar + 1), 10);
-      if (id <= 0) {
-        continue;
-      }
-      const rank: number = SessionPage.clipKindRank(kind);
-      if (rank < bestRank) {
-        bestRank = rank;
-        const pick: ClipPick = new ClipPick();
-        pick.kind = kind;
-        pick.id = id;
-        best = pick;
-      }
-    }
-    return best;
-  }
-
-  private static clipKindRank(kind: number): number {
-    if (kind === RdpClipKind.FILES) {
-      return 0;
-    }
-    if (kind === RdpClipKind.IMAGE) {
-      return 1;
-    }
-    if (kind === RdpClipKind.HTML) {
-      return 2;
-    }
-    if (kind === RdpClipKind.RTF) {
-      return 3;
-    }
-    if (kind === RdpClipKind.TEXT) {
-      return 4;
-    }
-    return 99;
-  }
-
-  private resetClipboardNegotiation(): void {
-    this.remoteFormatInFlight = false;
-    this.remoteFormatPending = false;
-    this.remotePendingId = 0;
-    this.remotePendingKind = RdpClipKind.NONE;
-  }
-
   private onRemoteLockState(lockFlags: number): void {
     if (this.lastRemoteLocksValid && this.lastRemoteLocks === lockFlags) {
       return;
@@ -832,612 +648,59 @@ struct SessionPage {
     this.native.reassertLockState(sink.lastLockFlags());
   }
 
-  private onClipboardImage(payload: RdpEventPayload): void {
-    const imageHandle: number = payload.imageHandle ?? 0;
-    if (imageHandle <= 0) {
-      return;
-    }
-    const dib: ArrayBuffer | undefined = RdpNative.readAndReleaseBuffer(imageHandle);
-    if (dib === undefined) {
-      return;
-    }
-    BackgroundWorker.decodeDib(dib)
-      .then((parsed: DibImage | undefined) => {
-        if (parsed === undefined || parsed.width <= 0 || parsed.height <= 0) {
-          hilog.warn(DOMAIN, TAG, 'unsupported remote DIB');
-          return;
-        }
-        const options: image.InitializationOptions = {
-          editable: false,
-          pixelFormat: image.PixelMapFormat.BGRA_8888,
-          size: { width: parsed.width, height: parsed.height }
-        };
-        try {
-          this.remoteClipboardPixelMap = image.createPixelMapSync(parsed.bgra, options);
-          this.remoteClipboardText = '';
-          this.remoteClipboardHtml = '';
-        } catch (error) {
-          hilog.warn(DOMAIN, TAG, 'create clipboard pixelmap failed: %{public}s',
-            JSON.stringify(error));
-        }
-      })
-      .catch((error: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'decode dib failed: %{public}s', JSON.stringify(error));
-      });
-  }
-
-  // One transfer at a time: a second would interleave two state machines in one progress row.
-  private fileTransferBlocking(): boolean {
-    return this.transferBusy || this.transferActive || this.transferWaiting;
-  }
-
-  private rejectConcurrentTransfer(): void {
-    this.toast('正在传输文件，请先取消或等待完成');
-  }
-
-  private submitClipboard(): void {
-    if (this.fileTransferBlocking()) {
-      this.rejectConcurrentTransfer();
-      return;
-    }
-    const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
-    // A URI record means the clipboard may hold files; the metadata check needs no permission.
-    let hasFiles: boolean = false;
-    try {
-      hasFiles = board.hasDataType(pasteboard.MIMETYPE_TEXT_URI);
-    } catch (error) {
-      hasFiles = false;
-    }
-    if (hasFiles) {
-      this.submitClipboardFiles();
-      return;
-    }
-    this.submitPlainClipboard();
-  }
-
-  @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
-  private submitPlainClipboard(): void {
-    pasteboard.getSystemPasteboard().getData()
-      .then((data: pasteboard.PasteData) => {
-        this.pushLocalPasteData(data);
-      })
-      .catch((error: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'read pasteboard failed: %{public}s', JSON.stringify(error));
-        this.toast('读取本机剪贴板失败');
-      });
-  }
-
-  // The system copies the clipboard files into our sandbox, so no READ_PASTEBOARD permission is needed.
-  @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
-  private submitClipboardFiles(): void {
-    const dir: string | undefined = this.makeSandboxDir('rdp_outbox');
-    if (dir === undefined) {
-      return;
-    }
-    this.transferBusy = true;
-    const params: pasteboard.GetDataParams = {
-      destUri: fileUri.getUriFromPath(dir),
-      fileConflictOptions: pasteboard.FileConflictOptions.OVERWRITE,
-      progressIndicator: pasteboard.ProgressIndicator.DEFAULT
-    };
-    pasteboard.getSystemPasteboard().getDataWithProgress(params)
-      .then((data: pasteboard.PasteData) => {
-        const paths: string[] = SessionPage.listFiles(dir);
-        if (paths.length === 0) {
-          this.transferBusy = false;
-          if (SessionPage.clipboardUriIsFile(data)) {
-            // getDataWithProgress cannot copy folders, so a file URI that produced nothing is a folder.
-            this.toast('不支持文件夹传输');
-            return;
-          }
-          this.submitPlainClipboard();
-          return;
-        }
-        // cliprdr is pull-based: the button only advertises the files, so release the busy guard.
-        this.transferBusy = false;
-        const entries: FileDescriptorInput[] = [];
-        for (const path of paths) {
-          entries.push(FileDescriptorInput.of(SessionPage.baseName(path),
-            SessionPage.fileSizeOf(path)));
-        }
-        this.native.pushClipboardFileOffer(
-          FileTransferCodec.buildFileGroupDescriptor(entries), paths);
-      })
-      .catch((error: BusinessError) => {
-        this.transferBusy = false;
-        hilog.warn(DOMAIN, TAG, 'read clipboard files failed: %{public}s',
-          JSON.stringify(error));
-        this.toast('不支持文件夹传输');
-      });
-  }
-
-  private static clipboardUriIsFile(data: pasteboard.PasteData): boolean {
-    try {
-      const uri: string = data.getPrimaryUri();
-      if (uri.length === 0) {
-        return false;
-      }
-      return !uri.startsWith('http://') && !uri.startsWith('https://');
-    } catch (error) {
-      return false;
-    }
-  }
-
-  private onFileTransferProgress(payload: RdpEventPayload): void {
-    const direction: number = payload.direction ?? 0;
-    const done: number = payload.doneBytes ?? 0;
-    const total: number = payload.totalBytes ?? 0;
-    this.transferFileIndex = payload.fileIndex ?? 0;
-    this.transferFileCount = payload.fileCount ?? 0;
-    // An upload only advertises the list (native sends a 0% placeholder); keep the "waiting for the remote paste" hint until bytes move.
-    if (direction === 1 && done === 0) {
-      this.transferWaiting = true;
-      this.refreshToolbarAutoHide();
-      return;
-    }
-    this.transferWaiting = false;
-    this.transferBusy = true;
-    this.transferActive = true;
-    this.transferDirection = direction;
-    this.refreshToolbarAutoHide();
-    this.transferPercent = total > 0 ? Math.min(100, Math.floor(done * 100 / total)) : 0;
-    this.transferText = direction === 0 ? '正在接收文件…' : '正在发送文件…';
-    const now: number = Date.now();
-    if (this.transferLastAt > 0 && now > this.transferLastAt && done >= this.transferLastDone) {
-      const bytesPerSecond: number =
-        (done - this.transferLastDone) * 1000 / (now - this.transferLastAt);
-      this.transferSpeed = bytesPerSecond > 0 ? this.formatRate(bytesPerSecond) : '';
-    }
-    this.transferLastDone = done;
-    this.transferLastAt = now;
-  }
-
-  private writeDownloadedFiles(paths: string[]): void {
-    if (paths.length === 0) {
-      this.toast('远端文件为空');
-      return;
-    }
-    try {
-      const pasteData: pasteboard.PasteData = pasteboard.createData(
-        pasteboard.MIMETYPE_TEXT_URI, fileUri.getUriFromPath(paths[0]));
-      for (let i = 1; i < paths.length; i++) {
-        pasteData.addRecord(pasteboard.MIMETYPE_TEXT_URI, fileUri.getUriFromPath(paths[i]));
-      }
-      const label: string = paths.length > 1 ? ` ${paths.length} 个文件` : '文件';
-      this.writeLocalPasteData(pasteData, label);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'build file pasteboard failed: %{public}s',
-        JSON.stringify(error));
-      this.toast('写入剪贴板失败');
-    }
-  }
-
-  private finishFileTransfer(): void {
-    this.transferBusy = false;
-    this.transferActive = false;
-    this.transferWaiting = false;
-    this.transferDirection = 0;
-    this.transferPercent = 0;
-    this.transferText = '';
-    this.transferSpeed = '';
-    this.transferFileIndex = 0;
-    this.transferFileCount = 0;
-    this.transferLastDone = 0;
-    this.transferLastAt = 0;
-    this.refreshToolbarAutoHide();
-  }
-
-  private cancelFileTransfer(): void {
-    if (this.transferDirection === 1) {
-      // Aborting an upload leaves the remote clipboard listing unreadable files, so warn first.
-      showConfirm(this.getUIContext(), {
-        title: '取消文件传输',
-        message: '文件仍在发送。取消后远端粘贴会提示错误，已传部分也会作废。是否继续取消？',
-        cancelLabel: '继续传输',
-        confirmLabel: '取消传输',
-        danger: true,
-        onConfirm: () => {
-          this.abortFileTransfer();
-        }
-      });
-      return;
-    }
-    BackgroundWorker.cancelDownload(this.native.handleId());
-  }
-
-  private abortFileTransfer(): void {
-    this.native.cancelFileTransfer();
-    this.finishFileTransfer();
-    this.toast('已取消文件传输');
-  }
-
-  private makeSandboxDir(name: string): string | undefined {
-    let filesDir: string = '';
-    try {
-      const ctx: common.Context | undefined = this.getUIContext().getHostContext();
-      if (ctx !== undefined) {
-        filesDir = ctx.filesDir;
-      }
-    } catch (error) {
-      filesDir = '';
-    }
-    if (filesDir.length === 0) {
-      this.toast('无法访问应用目录');
-      return undefined;
-    }
-    const stamp: string = `${Date.now()}`;
-    const root: string = `${filesDir}/${name}`;
-    const dir: string = `${root}/${stamp}`;
-    try {
-      fileIo.mkdirSync(dir, true);
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'mkdir %{public}s failed: %{public}s', dir,
-        JSON.stringify(error));
-      this.toast('无法创建文件目录');
-      return undefined;
-    }
-    SessionPage.purgeStaleTransferDirs(root, stamp);
-    return dir;
-  }
-
-  // The clipboard only references the newest transfer directory, so the previous one is purged.
-  private static purgeStaleTransferDirs(root: string, keep: string): void {
-    let names: string[] = [];
-    try {
-      names = fileIo.listFileSync(root);
-    } catch (error) {
-      return;
-    }
-    for (const name of names) {
-      if (name === keep) {
-        continue;
-      }
-      const path: string = `${root}/${name}`;
-      try {
-        // Unlink contents first, in case rmdirSync does not remove a non-empty directory.
-        for (const child of fileIo.listFileSync(path)) {
-          try {
-            fileIo.unlinkSync(`${path}/${child}`);
-          } catch (error) {
-          }
-        }
-        fileIo.rmdirSync(path);
-      } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'purge %{public}s failed: %{public}s', path,
-          JSON.stringify(error));
-      }
-    }
-  }
-
-  private static listFiles(dir: string): string[] {
-    const paths: string[] = [];
-    try {
-      for (const name of fileIo.listFileSync(dir)) {
-        paths.push(`${dir}/${name}`);
-      }
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'list %{public}s failed: %{public}s', dir,
-        JSON.stringify(error));
-    }
-    return paths;
-  }
-
-  private static baseName(path: string): string {
-    const slash: number = path.lastIndexOf('/');
-    return slash < 0 ? path : path.substring(slash + 1);
-  }
-
-  private static fileSizeOf(path: string): number {
-    try {
-      return fileIo.statSync(path).size;
-    } catch (error) {
-      return 0;
-    }
-  }
-
-  private pushLocalPasteData(data: pasteboard.PasteData): void {
-    // Do NOT gate on getMimeTypes(): it may only list a record's default MIME, while HTML lives in a non-default Entry.
-    let pixelMap: image.PixelMap | undefined = undefined;
-    try {
-      pixelMap = data.getPrimaryPixelMap();
-    } catch (error) {
-      pixelMap = undefined;
-    }
-    if (pixelMap !== undefined) {
-      this.pushLocalImage(pixelMap);
-      return;
-    }
-    SessionPage.findHtmlEntry(data)
-      .then((html: string) => {
-        if (html.length > 0) {
-          // Encode + native push on the worker so a large document cannot block.
-          BackgroundWorker.pushHtml(this.native.handleId(), html).then((ok: boolean) => {
-            this.toast(ok ? '已放入远端剪贴板' : '提交本机富文本失败');
-          });
-          return;
-        }
-        this.pushLocalText(data);
-      })
-      .catch((error: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'read html entry failed: %{public}s', JSON.stringify(error));
-        this.pushLocalText(data);
-      });
-  }
-
-  private static async findHtmlEntry(data: pasteboard.PasteData): Promise<string> {
-    const count: number = data.getRecordCount();
-    for (let i = 0; i < count; i++) {
-      try {
-        const record: pasteboard.PasteDataRecord = data.getRecord(i);
-        const value: pasteboard.ValueType =
-          await record.getData(pasteboard.MIMETYPE_TEXT_HTML);
-        if (typeof value === 'string' && value.length > 0) {
-          return value;
-        }
-      } catch (error) {
-      }
-    }
-    return '';
-  }
-
-  private pushLocalText(data: pasteboard.PasteData): void {
-    let text: string = '';
-    try {
-      text = data.getPrimaryText();
-    } catch (error) {
-      text = '';
-    }
-    if (text.length === 0) {
-      this.toast('本机剪贴板为空');
-      return;
-    }
-    BackgroundWorker.pushText(this.native.handleId(), text).then((ok: boolean) => {
-      // The clipboard is pull-based: advertise puts it on the remote; the bytes move only when the remote pastes.
-      this.toast(ok ? '已放入远端剪贴板' : '提交本机文本失败');
-    });
-  }
-
-  // The pixel read is a PixelMap API (UI thread); CF_DIB encode and native push run on the worker.
-  private pushLocalImage(pixelMap: image.PixelMap): void {
-    pixelMap.getImageInfo()
-      .then((info: image.ImageInfo) => {
-        const width: number = info.size.width;
-        const height: number = info.size.height;
-        if (width <= 0 || height <= 0) {
-          this.toast('本机图片为空');
-          return;
-        }
-        const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
-        pixelMap.readPixelsToBuffer(buffer)
-          .then(() => {
-            // `buffer` is transferred to the worker (zero-copy); it encodes CF_DIB and PNG.
-            BackgroundWorker.pushImage(this.native.handleId(), buffer, width, height,
-              info.pixelFormat).then((pushed: boolean) => {
-                if (!pushed) {
-                  hilog.warn(DOMAIN, TAG, 'unsupported clipboard pixel format or dead session: %{public}d',
-                    info.pixelFormat);
-                  this.toast('提交本机图片失败');
-                  return;
-                }
-                this.toast('已放入远端剪贴板');
-              });
-          })
-          .catch((error: BusinessError) => {
-            hilog.warn(DOMAIN, TAG, 'read image pixels failed: %{public}s', JSON.stringify(error));
-            this.toast('提交本机图片失败');
-          });
-      })
-      .catch((error: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'get image info failed: %{public}s', JSON.stringify(error));
-        this.toast('提交本机图片失败');
-      });
-  }
-
-  private pullClipboard(): void {
-    if (this.pasteboardBusy) {
-      return;
-    }
-    if (this.fileTransferBlocking()) {
-      this.rejectConcurrentTransfer();
-      return;
-    }
-    if (this.remoteFolderCount > 0) {
-      // Folders are unsupported, so a list with any directory is refused whole.
-      this.toast('不支持文件夹传输');
-      return;
-    }
-    if (this.remoteFileCount > 0) {
-      this.startFileDownload();
-      return;
-    }
-    const pixelMap: image.PixelMap | undefined = this.remoteClipboardPixelMap;
-    if (pixelMap !== undefined) {
-      this.writeLocalPasteData(
-        pasteboard.createData(pasteboard.MIMETYPE_PIXELMAP, pixelMap), '图片');
-      return;
-    }
-    if (this.remoteClipboardHtml.length > 0) {
-      // Remote HTML is usually a bare fragment; wrap it into a well-formed document.
-      const htmlDoc: string = SessionPage.ensureHtmlDocument(this.remoteClipboardHtml);
-      const data: pasteboard.PasteData =
-        pasteboard.createData(pasteboard.MIMETYPE_TEXT_HTML, htmlDoc);
-      const plain: string = SessionPage.htmlToPlainText(htmlDoc);
-      if (plain.length > 0) {
-        // Same Record, extra Entry: one fragment in two formats, so targets do not treat them as separate items.
-        try {
-          const record: pasteboard.PasteDataRecord = data.getRecord(0);
-          record.addEntry(pasteboard.MIMETYPE_TEXT_PLAIN, plain);
-        } catch (error) {
-          hilog.warn(DOMAIN, TAG, 'add plain entry failed: %{public}s', JSON.stringify(error));
-        }
-      }
-      this.writeLocalPasteData(data, '富文本');
-      return;
-    }
-    if (this.remoteClipboardText.length > 0) {
-      this.writeLocalPasteData(
-        pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.remoteClipboardText),
-        '文本');
-      return;
-    }
-    this.toast('远端剪贴板为空');
-  }
-
-  private startFileDownload(): void {
-    if (this.fileTransferBlocking()) {
-      this.rejectConcurrentTransfer();
-      return;
-    }
-    const dir: string | undefined = this.makeSandboxDir('rdp_inbox');
-    if (dir === undefined) {
-      return;
-    }
-    this.transferBusy = true;
-    this.transferActive = true;
-    this.transferWaiting = false;
-    this.transferDirection = 0;
-    this.transferPercent = 0;
-    this.transferText = '正在接收文件…';
-    this.transferSpeed = '';
-    this.transferFileIndex = 0;
-    this.transferFileCount = this.remoteFileCount;
-    this.transferLastDone = 0;
-    this.transferLastAt = 0;
-    this.refreshToolbarAutoHide();
-    BackgroundWorker.startDownload(this.native.handleId(), dir);
-  }
-
-  private onRemoteFileChunk(payload: RdpEventPayload): void {
-    BackgroundWorker.postFileChunk(this.native.handleId(),
-      payload.listIndex ?? 0, payload.isSize ?? false, payload.sizeValue ?? 0,
-      payload.failed ?? false, payload.dataHandle ?? 0);
-  }
-
-  private onBackgroundEvent(event: BackgroundEvent): void {
-    if (event.handle !== this.native.handleId()) {
-      return;
-    }
-    if (event.op === BackgroundEvents.FILE_LIST_SUMMARY) {
-      this.remoteFileCount = event.fileCount ?? 0;
-      this.remoteFolderCount = event.folderCount ?? 0;
-      hilog.info(DOMAIN, TAG,
-        'remote clipboard files: %{public}d folders=%{public}d total=%{public}d',
-        this.remoteFileCount, this.remoteFolderCount, event.totalBytes ?? 0);
-    } else if (event.op === BackgroundEvents.DOWNLOAD_PROGRESS) {
-      this.applyDownloadProgress(event);
-    } else if (event.op === BackgroundEvents.DOWNLOAD_DONE) {
-      const paths: string[] = event.paths ?? [];
-      this.finishFileTransfer();
-      hilog.info(DOMAIN, TAG, 'download complete: %{public}d file(s)', paths.length);
-      this.writeDownloadedFiles(paths);
-    } else if (event.op === BackgroundEvents.DOWNLOAD_FAILED) {
-      const reason: string = event.reason ?? '';
-      this.finishFileTransfer();
-      this.toast(reason.length > 0 ? reason : '文件传输失败');
-    }
-  }
-
-  private applyDownloadProgress(event: BackgroundEvent): void {
-    const done: number = event.doneBytes ?? 0;
-    const total: number = event.totalBytes ?? 0;
-    this.transferWaiting = false;
-    this.transferBusy = true;
-    this.transferActive = true;
-    this.transferDirection = 0;
-    this.transferFileIndex = event.fileIndex ?? 0;
-    this.transferFileCount = event.fileCount ?? 0;
-    this.transferPercent = total > 0 ? Math.min(100, Math.floor(done * 100 / total)) : 0;
-    this.transferText = '正在接收文件…';
-    const now: number = Date.now();
-    if (this.transferLastAt > 0 && now > this.transferLastAt && done >= this.transferLastDone) {
-      const bytesPerSecond: number =
-        (done - this.transferLastDone) * 1000 / (now - this.transferLastAt);
-      this.transferSpeed = bytesPerSecond > 0 ? this.formatRate(bytesPerSecond) : '';
-    }
-    this.transferLastDone = done;
-    this.transferLastAt = now;
-    this.refreshToolbarAutoHide();
-  }
-
-  private writeLocalPasteData(data: pasteboard.PasteData, label: string): void {
-    this.pasteboardBusy = true;
-    pasteboard.getSystemPasteboard().setData(data)
-      .then(() => {
-        this.pasteboardBusy = false;
-        this.toast('已复制' + label + '到本机');
-      })
-      .catch((error: BusinessError) => {
-        this.pasteboardBusy = false;
-        hilog.warn(DOMAIN, TAG, 'write pasteboard failed: %{public}s', JSON.stringify(error));
-        this.toast('写入本机剪贴板失败');
-      });
-  }
-
-  // Skips <head>/<style>/<script>/comments so CSS never leaks into plain text; block tags become line breaks.
-  private static htmlToPlainText(html: string): string {
-    const lower: string = html.toLowerCase();
-    let out: string = '';
-    let i: number = 0;
-    while (i < html.length) {
-      const lt: number = html.indexOf('<', i);
-      if (lt < 0) {
-        out += html.substring(i);
-        break;
-      }
-      out += html.substring(i, lt);
-      const gt: number = html.indexOf('>', lt);
-      if (gt < 0) {
-        break;
-      }
-      const tag: string = lower.substring(lt + 1, gt).trim();
-      let skipUntil: string = '';
-      if (tag.startsWith('script')) {
-        skipUntil = '</script';
-      } else if (tag.startsWith('style')) {
-        skipUntil = '</style';
-      } else if (tag.startsWith('head')) {
-        skipUntil = '</head';
-      } else if (tag.startsWith('!--')) {
-        skipUntil = '-->';
-      }
-      if (skipUntil.length > 0) {
-        const close: number = lower.indexOf(skipUntil, gt + 1);
-        if (close < 0) {
-          break;
-        }
-        const closeGt: number = html.indexOf('>', close);
-        i = closeGt < 0 ? html.length : closeGt + 1;
-        continue;
-      }
-      if (tag.startsWith('br') || tag.startsWith('p') || tag.startsWith('/p') ||
-        tag.startsWith('div') || tag.startsWith('/div') || tag.startsWith('li') ||
-        tag.startsWith('tr') || tag.startsWith('h1') || tag.startsWith('h2') ||
-        tag.startsWith('h3')) {
-        out += '\n';
-      }
-      i = gt + 1;
-    }
-    return SessionPage.decodeHtmlEntities(out).trim();
-  }
-
-  private static ensureHtmlDocument(html: string): string {
-    if (html.toLowerCase().indexOf('<html') >= 0) {
-      return html;
-    }
-    return '<html><body>' + html + '</body></html>';
-  }
-
-  private static decodeHtmlEntities(text: string): string {
-    return text.split('&nbsp;').join(' ')
-      .split('&amp;').join('&')
-      .split('&lt;').join('<')
-      .split('&gt;').join('>')
-      .split('&quot;').join('"')
-      .split('&#39;').join('\'');
-  }
-
   private toast(message: string): void {
     showToast(this.getUIContext(), message, 1500);
+  }
+
+  private makeClipboardHost(): ClipboardControllerHost {
+    const host: ClipboardControllerHost = {
+      toast: (message: string): void => {
+        this.toast(message);
+      },
+      confirmCancelUpload: (onConfirm: () => void): void => {
+        showConfirm(this.getUIContext(), {
+          title: '取消文件传输',
+          message: '文件仍在发送。取消后远端粘贴会提示错误，已传部分也会作废。是否继续取消？',
+          cancelLabel: '继续传输',
+          confirmLabel: '取消传输',
+          danger: true,
+          onConfirm: (): void => {
+            onConfirm();
+          }
+        });
+      },
+      setTransferProgress: (direction: number, percent: number, text: string,
+        speedBytesPerSecond: number, fileIndex: number, fileCount: number): void => {
+        this.transferActive = true;
+        this.transferWaiting = false;
+        this.transferPercent = percent;
+        this.transferText = text;
+        this.transferSpeed = speedBytesPerSecond > 0 ? this.formatRate(speedBytesPerSecond) : '';
+        this.transferFileIndex = fileIndex;
+        this.transferFileCount = fileCount;
+        this.refreshToolbarAutoHide();
+      },
+      setTransferWaiting: (direction: number, fileIndex: number, fileCount: number): void => {
+        this.transferActive = false;
+        this.transferWaiting = true;
+        this.transferFileIndex = fileIndex;
+        this.transferFileCount = fileCount;
+        this.refreshToolbarAutoHide();
+      },
+      clearTransfer: (): void => {
+        this.transferActive = false;
+        this.transferWaiting = false;
+        this.transferPercent = 0;
+        this.transferText = '';
+        this.transferSpeed = '';
+        this.transferFileIndex = 0;
+        this.transferFileCount = 0;
+        this.refreshToolbarAutoHide();
+      },
+      onRemoteChanged: (): void => {
+      }
+    };
+    return host;
   }
 
   private setToolbarPointerZone(zone: number): void {
@@ -1656,93 +919,25 @@ struct SessionPage {
         detail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator()
       })
       Blank()
-      if (this.transferWaiting) {
-        Row() {
-          LoadingProgress()
-            .width(14)
-            .height(14)
-            .color(TOOLBAR_FG)
-          Text('在远端粘贴开始传输')
-            .fontSize(12)
-            .fontColor(TOOLBAR_FG)
-            .margin({ left: 6 })
-            .maxLines(1)
-          OutlineChip({
-            label: '取消',
-            onTap: () => {
-              this.abortFileTransfer();
-            }
-          })
-            .margin({ left: 8 })
-        }
-        .margin({ right: 12 })
-      } else if (this.transferActive) {
-        Row() {
-          Text(this.transferText)
-            .fontSize(12)
-            .fontColor(TOOLBAR_FG)
-            .maxLines(1)
-          if (this.transferFileCount > 1 && this.transferFileIndex > 0) {
-            Text(`${this.transferFileIndex}/${this.transferFileCount}`)
-              .fontSize(12)
-              .fontColor(TOOLBAR_FG)
-              .margin({ left: 6 })
-              .maxLines(1)
+      if (this.transferWaiting || this.transferActive) {
+        ClipboardTransferStatus({
+          waiting: this.transferWaiting,
+          percent: this.transferPercent,
+          text: this.transferText,
+          speed: this.transferSpeed,
+          fileIndex: this.transferFileIndex,
+          fileCount: this.transferFileCount,
+          onCancel: (): void => {
+            this.clipboard?.cancelTransfer();
           }
-          Text(`${this.transferPercent}%`)
-            .fontSize(12)
-            .fontColor(TOOLBAR_FG)
-            .margin({ left: 6 })
-            .maxLines(1)
-          if (this.transferSpeed.length > 0) {
-            Text(this.transferSpeed)
-              .fontSize(12)
-              .fontColor(TOOLBAR_FG)
-              .margin({ left: 6 })
-              .maxLines(1)
-          }
-          Progress({ value: this.transferPercent, total: 100, type: ProgressType.Linear })
-            .width(140)
-            .color(TOOLBAR_PROGRESS)
-            .margin({ left: 8 })
-          OutlineChip({
-            label: '取消',
-            onTap: () => {
-              this.cancelFileTransfer();
-            }
-          })
-            .margin({ left: 8 })
-        }
-        .margin({ right: 12 })
-      }
-      ToolbarChip({
-        label: '复制',
-        chipBg: TOOLBAR_ACCENT_CHIP_BG,
-        icon: $r('sys.media.ohos_ic_public_copy'),
-        hPad: 14,
-        onTap: () => {
-          this.pullClipboard();
-        }
-      })
-        .bindTips('从远端复制到本机剪贴板', this.tipsOptions)
-      // Clicking grants a one-time clipboard read without the READ_PASTEBOARD permission.
-      Row() {
-        PasteButton({
-          icon: PasteIconStyle.LINES,
-          text: PasteDescription.PASTE,
-          buttonType: ButtonType.Normal
         })
-          .iconSize(16)
-          .iconColor(TOOLBAR_FG)
-          .fontSize(13)
-          .fontColor(TOOLBAR_FG)
-          .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
-          .borderRadius(8)
-          .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-          .onClick(this.pasteButtonCallback)
       }
-      .margin({ left: 8 })
-      .bindTips('把本机剪贴板发送到远端', this.tipsOptions)
+      ClipboardButtons({
+        onCopy: (): void => {
+          this.clipboard?.copyRemoteToLocal();
+        },
+        pasteCallback: this.pasteButtonCallback
+      })
       Row().width(16)
       ToolbarChip({
         label: this.isFullscreen ? '退出全屏' : '全屏',

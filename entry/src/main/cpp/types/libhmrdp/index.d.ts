@@ -492,6 +492,11 @@ export interface MoonlightEventExtra {
   visible?: boolean;
   hasShape?: boolean;
   imageHandle?: number;
+  /**
+   * Clipboard frame bytes (ML_EVENT_CLIPBOARD): read with bufferRead() and
+   * release with bufferRelease(), same as imageHandle.
+   */
+  dataHandle?: number;
 }
 
 /**
@@ -568,6 +573,13 @@ export const moonlightHighResHScroll: (amount: number) => void;
 
 /** Input: composed text sent as one UTF-8 string (LiSendUtf8TextEvent). */
 export const moonlightText: (text: string) => void;
+
+/**
+ * Sends an opaque clipboard v1 wire frame (control message 0x5508). Returns
+ * LiSendClipboardData's code: 0 ok, -1 invalid/oversized, -2 unsupported,
+ * -3 not connected, -4 send failed.
+ */
+export const moonlightSendClipboardData: (data: ArrayBuffer) => number;
 
 /** LI_FF_* host feature bits (0 before a session is established). */
 export const moonlightHostFeatures: () => number;

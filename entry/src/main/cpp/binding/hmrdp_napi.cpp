@@ -121,6 +121,7 @@ napi_value MakeEventPayload(napi_env env, int event, const Session::EventData& p
       setBuffer("imageHandle");
       break;
     case static_cast<int>(SessionEvent::kClipboardImage):
+    case static_cast<int>(SessionEvent::kClipboardImagePng):
       setBuffer("imageHandle");
       break;
     case static_cast<int>(SessionEvent::kFileTransferProgress):
@@ -1429,6 +1430,8 @@ struct MoonlightEventPayload {
   int64_t shapeId = 0;
   bool visible = false;
   bool hasShape = false;
+  // Bytes carried as a clipboard frame handle instead of an image handle.
+  bool isClipboard = false;
   std::vector<uint8_t> bytes;
 };
 
@@ -1465,7 +1468,7 @@ void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data
   if (!payload->bytes.empty()) {
     auto buffer = std::make_shared<NativeBuffer>();
     buffer->bytes = payload->bytes;
-    setInt("imageHandle", g_buffers.Add(buffer));
+    setInt(payload->isClipboard ? "dataHandle" : "imageHandle", g_buffers.Add(buffer));
   }
   napi_value argv[4] = {eventValue, valueValue, textValue, extra};
   napi_value global = nullptr;
@@ -1488,6 +1491,23 @@ void OnMoonlightCursor(const hmrdp::MoonlightCursorShape& shape) {
   payload->hotY = shape.hotspotY;
   if (shape.hasShape && shape.bgra != nullptr && shape.size > 0) {
     payload->bytes.assign(shape.bgra, shape.bgra + shape.size);
+  }
+  const napi_status status =
+      napi_call_threadsafe_function(g_moonlightTsfn, payload, napi_tsfn_nonblocking);
+  if (status != napi_ok) {
+    delete payload;
+  }
+}
+
+void OnMoonlightClipboard(const uint8_t* data, int length) {
+  if (g_moonlightTsfn == nullptr) {
+    return;
+  }
+  MoonlightEventPayload* payload = new MoonlightEventPayload();
+  payload->event = static_cast<int>(hmrdp::MoonlightSessionEvent::kClipboardData);
+  payload->isClipboard = true;
+  if (data != nullptr && length > 0) {
+    payload->bytes.assign(data, data + length);
   }
   const napi_status status =
       napi_call_threadsafe_function(g_moonlightTsfn, payload, napi_tsfn_nonblocking);
@@ -1555,6 +1575,7 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
   napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr, nullptr,
                                   nullptr, CallJsMoonlightEvent, &g_moonlightTsfn);
   hmrdp::MoonlightSessionSetCursorCallback(&OnMoonlightCursor);
+  hmrdp::MoonlightSessionSetClipboardCallback(&OnMoonlightClipboard);
   // Delivered only while Moonlight is the focused interceptor owner.
   RegisterInterceptSink(kMoonlightInterceptToken, [](int32_t keyCode, bool down) {
     OnMoonlightSessionEvent(down ? hmrdp::MoonlightSessionEvent::kKeyInterceptDown
@@ -1562,6 +1583,39 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
                             keyCode, "");
   });
   return CreateUndefined(env);
+}
+
+// Send an opaque clipboard frame to the host.
+napi_value MoonlightSendClipboard(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc < 1) {
+    return CreateInt(env, -1);
+  }
+  void* data = nullptr;
+  size_t length = 0;
+  if (napi_get_arraybuffer_info(env, args[0], &data, &length) != napi_ok) {
+    // Also accept a TypedArray view (e.g. Uint8Array) over an ArrayBuffer.
+    bool isTypedArray = false;
+    napi_is_typedarray(env, args[0], &isTypedArray);
+    if (!isTypedArray) {
+      return CreateInt(env, -1);
+    }
+    napi_typedarray_type type;
+    size_t offset = 0;
+    size_t count = 0;
+    napi_value buffer = nullptr;
+    if (napi_get_typedarray_info(env, args[0], &type, &count, &data, &buffer, &offset) != napi_ok ||
+        data == nullptr) {
+      return CreateInt(env, -1);
+    }
+    length = count;
+  }
+  if (data == nullptr || length == 0) {
+    return CreateInt(env, -1);
+  }
+  return CreateInt(env, hmrdp::MoonlightSessionSendClipboard(data, static_cast<int>(length)));
 }
 
 // 快捷键穿透 for a Moonlight session; returns whether the requested state is in effect.
@@ -2045,6 +2099,8 @@ static napi_value Init(napi_env env, napi_value exports) {
        nullptr, napi_default, nullptr},
       {"moonlightText", nullptr, MoonlightSessionText, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"moonlightSendClipboardData", nullptr, MoonlightSendClipboard, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
       {"moonlightHostFeatures", nullptr, MoonlightSessionHostFeatures, nullptr, nullptr,
        nullptr, napi_default, nullptr},
       {"moonlightTelemetry", nullptr, MoonlightGetTelemetry, nullptr, nullptr, nullptr,

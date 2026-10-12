@@ -172,6 +172,7 @@ constexpr int kClipHtml = 2;
 constexpr int kClipImage = 3;
 constexpr int kClipRtf = 4;
 constexpr int kClipFiles = 5;
+constexpr int kClipImagePng = 6;
 
 // Registered ids start at 0xC000 (WinPR convention); CB_USE_LONG_FORMAT_NAMES maps by name.
 constexpr UINT32 kHtmlFormatId = 0xC000;
@@ -1668,6 +1669,7 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
   }
   UINT32 dibId = 0;
   UINT32 dibV5Id = 0;
+  UINT32 pngId = 0;
   UINT32 textId = 0;
   UINT32 htmlId = 0;
   UINT32 rtfId = 0;
@@ -1682,6 +1684,8 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
     } else if (format.formatName != nullptr &&
                strcmp(format.formatName, "Rich Text Format") == 0) {
       rtfId = format.formatId;
+    } else if (format.formatName != nullptr && strcmp(format.formatName, kPngFormatName) == 0) {
+      pngId = format.formatId;
     } else if (format.formatId == CF_DIB) {
       dibId = format.formatId;
     } else if (format.formatId == CF_DIBV5) {
@@ -1709,6 +1713,8 @@ UINT Session::OnCliprdrServerFormatList(const CLIPRDR_FORMAT_LIST* formatList) {
   };
   addCandidate(kClipFiles, fileGroupId);
   addCandidate(kClipImage, dibId != 0 ? dibId : dibV5Id);
+  // Image fallback: ArkTS ranks DIB ahead, but a PNG-only server still works.
+  addCandidate(kClipImagePng, pngId);
   addCandidate(kClipHtml, htmlId);
   addCandidate(kClipRtf, rtfId);
   addCandidate(kClipText, textId);
@@ -1834,6 +1840,9 @@ UINT Session::OnCliprdrServerFormatDataResponse(
   } else if (kind == LocalClipKind::kImage) {
     std::vector<uint8_t> dib(data, data + size);
     EmitBytes(SessionEvent::kClipboardImage, dib);
+  } else if (kind == LocalClipKind::kImagePng) {
+    std::vector<uint8_t> png(data, data + size);
+    EmitBytes(SessionEvent::kClipboardImagePng, png);
   } else if (kind == LocalClipKind::kHtml) {
     std::vector<uint8_t> html(data, data + size);
     EmitBytes(SessionEvent::kClipboardHtml, html);

@@ -19,7 +19,7 @@
 | 界面设计语言：设计原则、设计 token、布局模式、组件契约、共享工具、协议差异的呈现约定 | [`ui-design.md`](ui-design.md) |
 | **两协议共享的会话 / 连接层**：连接模型多态、连接发起分发、会话后端契约、会话窗口外壳、共享输入内核、会话窗口 / 输入 / 工具栏 / 光标共享行为、通用层命名与边界约定 | [`session-layer.md`](session-layer.md) |
 | RDP 会话：连接错误分类、原生会话生命周期、不可见抑制、RDP 输入落地（RDPEI / 高刷 / 直达缩放 / 锁键）、工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
-| 剪贴板（**手动触发**）与文件传输：线格式、原生/ArkTS 分工、实现坑 | [`rdp-clipboard.md`](rdp-clipboard.md) |
+| **剪贴板（手动触发，两协议共享抽象）**与文件传输：共享控制器/桥/本机读写叶子、RDP 线格式、接收 PNG、实现坑 | [`rdp-clipboard.md`](rdp-clipboard.md) |
 | 存储分工、密码（ASSET / 系统保险箱）、设置模型（全局默认 + 单连接覆盖）、导入/导出、**设置生效时机** | [`settings-and-storage.md`](settings-and-storage.md) |
 | 原生库构建体系：产物为何不入库、单一构建入口、依赖布局与自检、**补丁体系**、OpenSSL CMake、无版本号 SONAME | [`native-build.md`](native-build.md) |
 | RDP 原生：FreeRDP 补丁内容与编译选项、音频（原生 sink + 交接环 / ArkTS 渲染器）、**设备能力探测（Capability 模式）** | [`rdp-native.md`](rdp-native.md) |
@@ -31,6 +31,7 @@
 | Moonlight 控制 / 配对层（ArkTS）：控制端点、配对时序与身份、证书 pin、标准参数名 | [`moonlight-control.md`](moonlight-control.md) |
 | Moonlight 视频：解码（AVCodec）、两条上屏链路、编解码协商、`STREAM_CONFIGURATION` 落点 | [`moonlight-video.md`](moonlight-video.md) |
 | Moonlight 原生：客户端库构建与共享库链接、桥接层、本地光标 / 原生触控板 / 音频扩展 | [`moonlight-native.md`](moonlight-native.md) |
+| Moonlight 剪贴板（基地版 0x5508 扩展，手动触发）：协议形态、主机能力边界、原生/ArkTS 分工 | [`moonlight-clipboard.md`](moonlight-clipboard.md) |
 
 **跨主题、只有一个家的事实**（别在别处重写）：
 
@@ -39,6 +40,7 @@
 - **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
 - **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`rdp-native.md`](rdp-native.md) 的能力探测。
 - **剪贴板只手动同步、不做自动监听** → [`rdp-clipboard.md`](rdp-clipboard.md)。
+- **剪贴板抽象（`ClipboardController` + `ClipboardBridge` + `LocalPasteboard`）两协议共用**：RDP 全能力（文本/HTML/图片/文件），Moonlight 仅文本 + 图片 → [`rdp-clipboard.md`](rdp-clipboard.md) §0；Moonlight 协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
 - **Moonlight 默认解码直出 surface、不经呈现器；只有超分链路复用 RDP 的 Vulkan 呈现器** → [`moonlight-video.md`](moonlight-video.md) §2/§5。
 - **Moonlight 是进程级单会话**（`moonlight-common-c` 一次只允许一个连接）→ [`moonlight-native.md`](moonlight-native.md) §2。
 - **Moonlight 主机身份 = serverinfo `uniqueid`（去重）/ pin 按 host 归一化** → [`moonlight-control.md`](moonlight-control.md) §2。
@@ -65,6 +67,7 @@
 | 改 Moonlight 控制 / 配对 | [`moonlight-control.md`](moonlight-control.md) |
 | 改 Moonlight 视频（解码 / 上屏 / 协商） | [`moonlight-video.md`](moonlight-video.md) |
 | 改 Moonlight 原生（客户端库 / 桥接 / 光标 / 触控板 / 音频） | [`moonlight-native.md`](moonlight-native.md) |
+| 改 Moonlight 剪贴板 | [`moonlight-clipboard.md`](moonlight-clipboard.md) |
 
 ## 写作约定
 

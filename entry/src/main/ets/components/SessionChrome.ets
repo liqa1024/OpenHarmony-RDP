@@ -206,3 +206,109 @@ export struct TelemetryRow {
     .padding({ left: 16, right: 16 })
   }
 }
+
+@Component
+export struct ClipboardTransferStatus {
+  @Prop waiting: boolean = false;
+  @Prop percent: number = 0;
+  @Prop text: string = '';
+  @Prop speed: string = '';
+  @Prop fileIndex: number = 0;
+  @Prop fileCount: number = 0;
+  onCancel: () => void = () => {};
+
+  build() {
+    Row() {
+      if (this.waiting) {
+        LoadingProgress()
+          .width(14)
+          .height(14)
+          .color(TOOLBAR_FG)
+        Text('在远端粘贴开始传输')
+          .fontSize(12)
+          .fontColor(TOOLBAR_FG)
+          .margin({ left: 6 })
+          .maxLines(1)
+      } else {
+        Text(this.text)
+          .fontSize(12)
+          .fontColor(TOOLBAR_FG)
+          .maxLines(1)
+        if (this.fileCount > 1 && this.fileIndex > 0) {
+          Text(`${this.fileIndex}/${this.fileCount}`)
+            .fontSize(12)
+            .fontColor(TOOLBAR_FG)
+            .margin({ left: 6 })
+            .maxLines(1)
+        }
+        Text(`${this.percent}%`)
+          .fontSize(12)
+          .fontColor(TOOLBAR_FG)
+          .margin({ left: 6 })
+          .maxLines(1)
+        if (this.speed.length > 0) {
+          Text(this.speed)
+            .fontSize(12)
+            .fontColor(TOOLBAR_FG)
+            .margin({ left: 6 })
+            .maxLines(1)
+        }
+        Progress({ value: this.percent, total: 100, type: ProgressType.Linear })
+          .width(140)
+          .color(TOOLBAR_PROGRESS)
+          .margin({ left: 8 })
+      }
+      OutlineChip({
+        label: '取消',
+        onTap: () => {
+          this.onCancel();
+        }
+      })
+        .margin({ left: 8 })
+    }
+    .margin({ right: 12 })
+  }
+}
+
+// The paste side is a system PasteButton: clicking it grants a one-time read
+// without the READ_PASTEBOARD permission.
+@Component
+export struct ClipboardButtons {
+  onCopy: () => void = () => {};
+  pasteCallback: PasteButtonCallback = () => {};
+  @Prop copyTip: string = '从远端复制到本机剪贴板';
+  @Prop pasteTip: string = '把本机剪贴板发送到远端';
+  private tipsOptions: TipsOptions = { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+
+  build() {
+    Row() {
+      ToolbarChip({
+        label: '复制',
+        chipBg: TOOLBAR_ACCENT_CHIP_BG,
+        icon: $r('sys.media.ohos_ic_public_copy'),
+        hPad: 14,
+        onTap: () => {
+          this.onCopy();
+        }
+      })
+        .bindTips(this.copyTip, this.tipsOptions)
+      Row() {
+        PasteButton({
+          icon: PasteIconStyle.LINES,
+          text: PasteDescription.PASTE,
+          buttonType: ButtonType.Normal
+        })
+          .iconSize(16)
+          .iconColor(TOOLBAR_FG)
+          .fontSize(13)
+          .fontColor(TOOLBAR_FG)
+          .backgroundColor(TOOLBAR_ACCENT_CHIP_BG)
+          .borderRadius(8)
+          .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+          .onClick(this.pasteCallback)
+      }
+      .margin({ left: 8 })
+      .bindTips(this.pasteTip, this.tipsOptions)
+    }
+  }
+}

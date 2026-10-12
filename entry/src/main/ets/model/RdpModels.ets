@@ -59,7 +59,9 @@ export enum RdpEvent {
   AudioFormat = 19,
   RemoteFormatList = 20,
   RemoteFormatResponse = 21,
-  RemoteLockState = 22
+  RemoteLockState = 22,
+  // Remote clipboard image received as PNG (registered "PNG" format).
+  ClipboardImagePng = 23
 }
 
 export class RdpConnectOptions implements RdpOptions {
@@ -129,6 +131,8 @@ export class RdpClipKind {
   static readonly IMAGE: number = 3;
   static readonly RTF: number = 4;
   static readonly FILES: number = 5;
+  // Must match Session::LocalClipKind::kImagePng.
+  static readonly PNG: number = 6;
 }
 
 export class RdpTouchFlags {

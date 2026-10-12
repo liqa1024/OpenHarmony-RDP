@@ -62,3 +62,7 @@
   （HTTPS + mTLS）结束在跑的应用后再试，`/resume` 则复用既有会话。
 - **明文 `serverinfo` 恒 `PairStatus=0`**：Sunshine 只在 HTTPS 请求里按 `uniqueid` 置 1，所以"是否已配对"
   以本地存的 pin 为准（有 pin 即跳过配对），不能只信明文 serverinfo。
+- **剪贴板 blob 端点（基地版扩展）**：`POST /api/v1/clipboard/blob`（raw bytes + `X-Clipboard-Mime`，回 `{id,size,expires_in}`）
+  与 `GET /api/v1/clipboard/blob/<id>`（raw bytes，`Content-Type` 回带 mime），走与 `applist`/`launch` 同一套
+  HTTPS + mTLS + 证书 pin（端口取 serverinfo 的 `HttpsPort`，默认 47984）。`MoonlightHttp` 增加了二进制请求体支持，
+  `MoonlightClient` 提供 `getClipboardBlob` / `postClipboardBlob`；用途见 [`moonlight-clipboard.md`](moonlight-clipboard.md) §5。

@@ -4,6 +4,22 @@
 工具栏按钮的显示与自动隐藏见 [`session-layer.md`](session-layer.md) §9，原生边界判据见
 [`architecture.md`](architecture.md) §3.1。
 
+## 0. 两协议共享的剪贴板抽象
+
+剪贴板的手动读写机制是**协议中立**的，抽在 `services/` 与 `utils/`，RDP 与 Moonlight 共用一份：
+
+- `services/ClipboardController`：**手动语义与编排**——远端条目缓存、`复制`（写本机）、`粘贴`（读本机后交给桥），
+  以及文件传输的单传输约束、进度、取消、沙箱目录保留策略。它只驱动 `bridge.capabilities()` 为真的路径。
+- `services/ClipboardBridge`：协议缝。`capabilities()` 声明本协议能带哪些内容（`text/html/image/files`）；`sendItem`
+  由桥按自身能力择一发送；`remoteItem` 交回缓存的远端内容；传输状态经 sink 回调上抛给控制器。
+- `utils/LocalPasteboard`：本机系统剪贴板读写（文本 / HTML Entry / 图片 / 文件 URI）与 HTML 文本工具，协议无关。
+- 图片中立表示 = `image.PixelMap`；`PixelMap↔PNG` 编解码是共享 worker op（`ENCODE_PNG`/`DECODE_PNG`）。
+- 共享 UI：`components/SessionChrome` 的 `ClipboardButtons` / `ClipboardTransferStatus`，两协议工具栏复用。
+
+**能力降级**：RDP 桥声明全能力（文本/HTML/图片/文件），协议机制（cliprdr 协商、DIB/CF_HTML/RTF 线格式、文件流、
+沙箱目录命名）留在 `services/RdpClipboardBridge`；Moonlight 桥只声明 `text + image`（见
+[`moonlight-clipboard.md`](moonlight-clipboard.md)），文件/富文本分支永不被触及。
+
 ## 1. 设计原则：只手动同步
 
 **同步在设计上就是用户手动触发的**：工具栏「复制」（远端→本机）与「粘贴」（本机→远端），
@@ -25,6 +41,10 @@
 原生覆写 cliprdr 的 `Server*` 回调与 `MonitorReady`，只从 `Client*` 读/发它需要的表示。
 当前支持 **纯文本 / 富文本（HTML）/ 图片 / 文件**；优先级 **文件 > 图片 > HTML > RTF > 文本**。
 两个按钮按缓存到的最丰富类型给差异化提示。
+
+**接收端的图片有两种 wire 形式**：DIB/DIBV5 与注册格式 `PNG`。原生 `OnCliprdrServerFormatList` 按格式名认这两种，
+候选里 DIB 排在 PNG 之前（图片层内 **DIB 优先、PNG 兜底**）；客户端只提供 PNG 时也能「复制」到图片——
+PNG 走新事件 `kClipboardImagePng`，ArkTS 用共享 `DECODE_PNG` 解码（与 Moonlight 同一条图片路径）。
 
 **原生只搬字节，"选哪个"在 ArkTS**（[`architecture.md`](architecture.md) §3.1）：`FORMAT_LIST` 到达时原生
 按 wire 形式把受支持格式分类成候选（`kind:id`，同一 kind 只留一个，DIB 先于 DIBV5）并发 `RemoteFormatList`

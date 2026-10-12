@@ -1,8 +1,8 @@
 import {
-  MoonlightEventExtra, MoonlightSessionConfig, bufferRelease,
+  MoonlightEventExtra, MoonlightSessionConfig, bufferRead, bufferRelease,
   moonlightHighResHScroll, moonlightHighResScroll, moonlightHostFeatures,
   moonlightKey, moonlightMouseButton, moonlightMouseMove,
-  moonlightMousePosition, moonlightSessionActive, moonlightSessionClearSurface,
+  moonlightMousePosition, moonlightSendClipboardData, moonlightSessionActive, moonlightSessionClearSurface,
   moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener,
   moonlightSetShortcutPassthrough, moonlightText, moonlightTouch, moonlightTouchpad
 } from 'libhmrdp.so';
@@ -31,19 +31,28 @@ export const ML_EVENT_CURSOR_SHAPE: number = 5;
 // Shortcut passthrough: a system-intercepted key, down/up carry the keyCode in value.
 export const ML_EVENT_KEY_INTERCEPT_DOWN: number = 6;
 export const ML_EVENT_KEY_INTERCEPT_UP: number = 7;
+// Foundation-sunshine clipboard sync frame (opaque v1 wire bytes).
+export const ML_EVENT_CLIPBOARD: number = 8;
 
 // LiGetHostFeatureFlags bits we consume.
 export const ML_HOST_FEATURE_TOUCH: number = 0x01;
 export const ML_HOST_FEATURE_TOUCHPAD_FRAME: number = 0x20;
+// foundation-sunshine clipboard capabilities (advertised only with its GUI agent alive).
+export const ML_HOST_FEATURE_CLIPBOARD_TEXT: number = 0x04;
+export const ML_HOST_FEATURE_CLIPBOARD_IMAGE: number = 0x08;
 
 export type MlKeyInterceptListener = (keyCode: number, down: boolean) => void;
 
 export type MlCursorListener = (update: RemoteCursorUpdate) => void;
 
+// Opaque clipboard wire frame; the bridge parses it.
+export type MlClipboardListener = (bytes: ArrayBuffer) => void;
+
 export class MoonlightSessionBackend implements SessionBackend {
   private listener: SessionSignalListener | undefined = undefined;
   private cursorListener: MlCursorListener | undefined = undefined;
   private keyInterceptListener: MlKeyInterceptListener | undefined = undefined;
+  private clipboardListener: MlClipboardListener | undefined = undefined;
   private request: PendingConnection;
   private config: MoonlightSessionConfig | undefined = undefined;
   private windowBound: boolean = false;
@@ -71,6 +80,18 @@ export class MoonlightSessionBackend implements SessionBackend {
 
   clearKeyInterceptListener(): void {
     this.keyInterceptListener = undefined;
+  }
+
+  setClipboardListener(listener: MlClipboardListener): void {
+    this.clipboardListener = listener;
+  }
+
+  clearClipboardListener(): void {
+    this.clipboardListener = undefined;
+  }
+
+  sendClipboardData(bytes: ArrayBuffer): number {
+    return moonlightSendClipboardData(bytes);
   }
 
   // Returns whether the requested state is in effect (ACL may refuse).
@@ -106,6 +127,19 @@ export class MoonlightSessionBackend implements SessionBackend {
       update.hotY = extra.hotY ?? 0;
       update.imageHandle = handle;
       listener(update);
+      return;
+    }
+    if (event === ML_EVENT_CLIPBOARD) {
+      const handle: number = extra.dataHandle ?? 0;
+      if (handle <= 0) {
+        return;
+      }
+      const bytes: ArrayBuffer = bufferRead(handle);
+      bufferRelease(handle);
+      const listener: MlClipboardListener | undefined = this.clipboardListener;
+      if (listener !== undefined && bytes.byteLength > 0) {
+        listener(bytes);
+      }
       return;
     }
     this.emit(event, value, text);

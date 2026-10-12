@@ -378,6 +378,12 @@ export class MoonlightClient {
     if (!tls) {
       return MoonlightHttp.perform(options);
     }
+    return MoonlightClient.performWithCredential(dir, options);
+  }
+
+  // HTTPS with the paired identity (mTLS) + pinned cert; the key PEM lives only for the request.
+  private static async performWithCredential(dir: string,
+    options: MoonlightHttpOptions): Promise<MoonlightHttpResult> {
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(dir);
     if (!credential.ok) {
       const failed: MoonlightHttpResult = new MoonlightHttpResult();
@@ -397,6 +403,69 @@ export class MoonlightClient {
     } finally {
       MoonlightIdentity.removeClientKeyPem(dir);
     }
+  }
+
+  static async getClipboardBlob(dir: string, host: string, httpsPort: number,
+    id: string): Promise<ArrayBuffer | undefined> {
+    const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
+    if (pin === undefined || id.length === 0) {
+      return undefined;
+    }
+    const path: string = `/api/v1/clipboard/blob/${id}`;
+    const response: MoonlightHttpResult =
+      await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin, 30000, true);
+    if (!response.ok || response.status !== 200 || response.bodyBytes === undefined) {
+      return undefined;
+    }
+    return response.bodyBytes;
+  }
+
+  static async postClipboardBlob(dir: string, host: string, httpsPort: number,
+    bytes: ArrayBuffer, mime: string): Promise<string | undefined> {
+    const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
+    if (pin === undefined) {
+      return undefined;
+    }
+    const options: MoonlightHttpOptions = new MoonlightHttpOptions();
+    options.useTls = true;
+    options.host = host;
+    options.port = httpsPort;
+    options.path = '/api/v1/clipboard/blob';
+    options.method = 'POST';
+    options.contentType = 'application/octet-stream';
+    options.xClipboardMime = mime;
+    options.bodyBytes = bytes;
+    options.pinnedServerCertDer = pin;
+    options.timeoutMs = 30000;
+    const response: MoonlightHttpResult =
+      await MoonlightClient.performWithCredential(dir, options);
+    if (!response.ok || response.status !== 200) {
+      return undefined;
+    }
+    return MoonlightClient.readJsonId(response.body);
+  }
+
+  // Avoids a generic JSON parse (ArkTS has no untyped object access).
+  private static readJsonId(body: string): string | undefined {
+    const key: string = '"id"';
+    const at: number = body.indexOf(key);
+    if (at < 0) {
+      return undefined;
+    }
+    const colon: number = body.indexOf(':', at + key.length);
+    if (colon < 0) {
+      return undefined;
+    }
+    const open: number = body.indexOf('"', colon + 1);
+    if (open < 0) {
+      return undefined;
+    }
+    const close: number = body.indexOf('"', open + 1);
+    if (close < 0) {
+      return undefined;
+    }
+    const id: string = body.substring(open + 1, close);
+    return id.length > 0 ? id : undefined;
   }
 
   // A host 4xx/5xx is reported by the body's <root status_code>, so only

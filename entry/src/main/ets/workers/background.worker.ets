@@ -2,7 +2,7 @@ import { MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { setClipboardHtmlRaw, setClipboardImage, setClipboardText } from 'libhmrdp.so';
 import { ClipboardCodec, DibImage } from '../utils/ClipboardCodec';
-import { BackgroundOps, BackgroundEvent, BackgroundRequest, BackgroundResponse } from '../services/BackgroundProtocol';
+import { BackgroundOps, BackgroundEvent, BackgroundRequest, BackgroundResponse, DecodedImage } from '../services/BackgroundProtocol';
 import { FileDownloader } from './FileDownloader';
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
@@ -36,6 +36,34 @@ async function encodePng(pixels: ArrayBuffer, width: number, height: number,
   }
 }
 
+// Runs on the worker so a large decode never stalls the UI thread.
+async function decodePng(png: ArrayBuffer): Promise<DecodedImage | undefined> {
+  try {
+    const source: image.ImageSource = image.createImageSource(png);
+    const info: image.ImageInfo = await source.getImageInfo();
+    const width: number = info.size.width;
+    const height: number = info.size.height;
+    if (width <= 0 || height <= 0) {
+      source.release();
+      return undefined;
+    }
+    const options: image.DecodingOptions = { editable: false };
+    const bitmap: image.PixelMap = await source.createPixelMap(options);
+    source.release();
+    const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
+    await bitmap.readPixelsToBuffer(buffer);
+    const decoded: DecodedImage = new DecodedImage();
+    decoded.width = width;
+    decoded.height = height;
+    decoded.pixelFormat = info.pixelFormat;
+    decoded.bgra = buffer;
+    bitmap.release();
+    return decoded;
+  } catch (err) {
+    return undefined;
+  }
+}
+
 // The push must run here, not on the UI thread: the native store copy (a whole
 // image) and the advertise (a channel send on the calling thread) can block,
 // and a whole-screen image makes that cost visible.
@@ -57,6 +85,22 @@ async function handleRequest(req: BackgroundRequest): Promise<void> {
     } else if (req.op === BackgroundOps.DECODE_CF_HTML && req.cfHtml !== undefined) {
       res.ok = true;
       res.text = ClipboardCodec.parseCfHtml(req.cfHtml);
+    } else if (req.op === BackgroundOps.ENCODE_PNG && req.pixels !== undefined) {
+      const png: ArrayBuffer | undefined = await encodePng(req.pixels, req.width ?? 0,
+        req.height ?? 0, req.pixelFormat ?? 0);
+      if (png !== undefined && png.byteLength > 0) {
+        res.ok = true;
+        res.buffer = png;
+      }
+    } else if (req.op === BackgroundOps.DECODE_PNG && req.png !== undefined) {
+      const decoded: DecodedImage | undefined = await decodePng(req.png);
+      if (decoded !== undefined) {
+        res.ok = true;
+        res.width = decoded.width;
+        res.height = decoded.height;
+        res.pixelFormat = decoded.pixelFormat;
+        res.buffer = decoded.bgra;
+      }
     } else if (req.op === BackgroundOps.PUSH_TEXT && req.text !== undefined) {
       // The native store + advertise is what makes the remote able to paste, so
       // the reply carries its success (a dead session must not report "sent").

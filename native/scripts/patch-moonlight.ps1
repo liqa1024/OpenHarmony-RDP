@@ -524,4 +524,205 @@ else {
 	Write-Host "moonlight: added native touchpad send + packets to InputStream.c"
 }
 
+# 4) Clipboard sync (foundation-sunshine extension, control message 0x5508):
+#    receive dispatch + callback, LiSendClipboardData, capability bits. Also
+#    widens the control sender to carry 64 KiB frames (stock code uses a `short`
+#    payload length and a 256-byte plaintext buffer).
+$Limelight = Join-Path $MlSrc "Limelight.h"
+$ControlStream = Join-Path $MlSrc "ControlStream.c"
+
+# --- Limelight.h -------------------------------------------------------------
+$hRaw = [System.IO.File]::ReadAllText($Limelight)
+if ($hRaw.Contains("HMRDP_CLIPBOARD")) {
+	Write-Host "moonlight: Limelight.h clipboard patch already applied (skipped)"
+}
+else {
+	$heol = if ($hRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$cbType = "typedef void(*ConnListenerClipboardData)(const char* data, int length); // HMRDP_CLIPBOARD"
+	$anchorStruct = "typedef struct _CONNECTION_LISTENER_CALLBACKS {"
+	if (-not $hRaw.Contains($anchorStruct)) { throw "moonlight: CONNECTION_LISTENER_CALLBACKS anchor missing" }
+	$hRaw = $hRaw.Replace($anchorStruct, $cbType + $heol + $heol + $anchorStruct)
+
+	$anchorField = "    ConnListenerCursorUpdate cursorUpdate; // HMRDP_CURSOR"
+	if (-not $hRaw.Contains($anchorField)) { throw "moonlight: cursorUpdate field anchor missing" }
+	$hRaw = $hRaw.Replace($anchorField, $anchorField + $heol +
+		"    ConnListenerClipboardData clipboardData; // HMRDP_CLIPBOARD")
+
+	$anchorProto = "void LiSetLocalCursorMode(bool enabled);"
+	if (-not $hRaw.Contains($anchorProto)) { throw "moonlight: LiSetLocalCursorMode anchor missing" }
+	$proto = @(
+		$anchorProto,
+		"",
+		"// HMRDP_CLIPBOARD: foundation-sunshine clipboard sync (control message 0x5508).",
+		"// `payload` is an opaque v1 wire frame forwarded verbatim by the host.",
+		"// Returns 0 on success, -1 invalid/oversized, -2 unsupported, -3 not connected, -4 send failed.",
+		"#define LI_CLIPBOARD_KIND_TEXT 1",
+		"#define LI_CLIPBOARD_KIND_PNG  2",
+		"#define LI_CLIPBOARD_KIND_REF  3",
+		"int LiSendClipboardData(const void* payload, int length);"
+	) -join $heol
+	$hRaw = $hRaw.Replace($anchorProto, $proto)
+
+	$anchorFF = "#define LI_FF_TOUCHPAD_FRAME_EVENTS   0x20 // LiSendTouchpadFrameEvent() supported // HMRDP_TOUCHPAD"
+	if (-not $hRaw.Contains($anchorFF)) { throw "moonlight: LI_FF touchpad anchor missing" }
+	$hRaw = $hRaw.Replace($anchorFF, $anchorFF + $heol +
+		"#define LI_FF_CLIPBOARD_TEXT  0x04 // Clipboard text sync // HMRDP_CLIPBOARD" + $heol +
+		"#define LI_FF_CLIPBOARD_IMAGE 0x08 // Clipboard image sync // HMRDP_CLIPBOARD")
+
+	[System.IO.File]::WriteAllText($Limelight, $hRaw)
+	Write-Host "moonlight: added clipboard API/feature bits to Limelight.h"
+}
+
+# --- ControlStream.c ---------------------------------------------------------
+$cRaw = [System.IO.File]::ReadAllText($ControlStream)
+if ($cRaw.Contains("HMRDP_CLIPBOARD")) {
+	Write-Host "moonlight: ControlStream.c clipboard patch already applied (skipped)"
+}
+else {
+	$ceol = if ($cRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	# Widen the payload length on every control sender so a 64 KiB frame fits.
+	$cRaw = $cRaw.Replace("short ptype, short paylen", "short ptype, int paylen")
+
+	$oldDecl = @(
+		"        PNVCTL_ENCRYPTED_PACKET_HEADER encPacket;",
+		"        PNVCTL_ENET_PACKET_HEADER_V2 packet;",
+		"        char tempBuffer[256];"
+	) -join $ceol
+	$newDecl = @(
+		"        PNVCTL_ENCRYPTED_PACKET_HEADER encPacket;",
+		"        PNVCTL_ENET_PACKET_HEADER_V2 packet;",
+		"        char tempBufferStack[256]; // HMRDP_CLIPBOARD",
+		"        char* tempBuffer = tempBufferStack; // HMRDP_CLIPBOARD",
+		"        const size_t plaintextLen = sizeof(*packet) + (size_t)paylen; // HMRDP_CLIPBOARD"
+	) -join $ceol
+	if (-not $cRaw.Contains($oldDecl)) { throw "moonlight: ControlStream tempBuffer anchor missing" }
+	$cRaw = $cRaw.Replace($oldDecl, $newDecl)
+
+	$oldCreate = @(
+		"        enetPacket = enet_packet_create(NULL,",
+		"                                        sizeof(*encPacket) + AES_GCM_TAG_LENGTH + sizeof(*packet) + paylen,",
+		"                                        flags);",
+		"        if (enetPacket == NULL) {",
+		"            return false;",
+		"        }"
+	) -join $ceol
+	$newCreate = @(
+		"        // HMRDP_CLIPBOARD: clipboard frames can be far larger than the stack buffer.",
+		"        if (plaintextLen > sizeof(tempBufferStack)) {",
+		"            tempBuffer = (char*)malloc(plaintextLen);",
+		"            if (tempBuffer == NULL) {",
+		"                return false;",
+		"            }",
+		"        }",
+		"",
+		"        enetPacket = enet_packet_create(NULL,",
+		"                                        sizeof(*encPacket) + AES_GCM_TAG_LENGTH + plaintextLen,",
+		"                                        flags);",
+		"        if (enetPacket == NULL) {",
+		"            if (tempBuffer != tempBufferStack) {",
+		"                free(tempBuffer);",
+		"            }",
+		"            return false;",
+		"        }"
+	) -join $ceol
+	if (-not $cRaw.Contains($oldCreate)) { throw "moonlight: ControlStream packet-create anchor missing" }
+	$cRaw = $cRaw.Replace($oldCreate, $newCreate)
+
+	$oldLen = "        encPacket->length = sizeof(encPacket->seq) + AES_GCM_TAG_LENGTH + sizeof(*packet) + paylen;"
+	$newLen = "        encPacket->length = (unsigned short)(sizeof(encPacket->seq) + AES_GCM_TAG_LENGTH + plaintextLen); // HMRDP_CLIPBOARD"
+	if (-not $cRaw.Contains($oldLen)) { throw "moonlight: ControlStream length anchor missing" }
+	$cRaw = $cRaw.Replace($oldLen, $newLen)
+
+	$oldFill = @(
+		"        LC_ASSERT(sizeof(*packet) + paylen < sizeof(tempBuffer));",
+		"        packet = (PNVCTL_ENET_PACKET_HEADER_V2)tempBuffer;",
+		"        packet->type = ptype;",
+		"        packet->payloadLength = paylen;",
+		"        memcpy(&packet[1], payload, paylen);"
+	) -join $ceol
+	$newFill = @(
+		"        packet = (PNVCTL_ENET_PACKET_HEADER_V2)tempBuffer; // HMRDP_CLIPBOARD",
+		"        packet->type = ptype;",
+		"        packet->payloadLength = (unsigned short)paylen; // HMRDP_CLIPBOARD",
+		"        memcpy(&packet[1], payload, (size_t)paylen); // HMRDP_CLIPBOARD"
+	) -join $ceol
+	if (-not $cRaw.Contains($oldFill)) { throw "moonlight: ControlStream plaintext fill anchor missing" }
+	$cRaw = $cRaw.Replace($oldFill, $newFill)
+
+	$oldFail = @(
+		"        if (!encryptControlMessage(encPacket, packet)) {",
+		"            Limelog(""Failed to encrypt control stream message\n"");",
+		"            enet_packet_destroy(enetPacket);",
+		"            PltUnlockMutex(&enetMutex);",
+		"            return false;",
+		"        }"
+	) -join $ceol
+	$newFail = @(
+		"        if (!encryptControlMessage(encPacket, packet)) {",
+		"            Limelog(""Failed to encrypt control stream message\n"");",
+		"            enet_packet_destroy(enetPacket);",
+		"            if (tempBuffer != tempBufferStack) { // HMRDP_CLIPBOARD",
+		"                free(tempBuffer);",
+		"            }",
+		"            PltUnlockMutex(&enetMutex);",
+		"            return false;",
+		"        }",
+		"        if (tempBuffer != tempBufferStack) { // HMRDP_CLIPBOARD",
+		"            free(tempBuffer);",
+		"        }"
+	) -join $ceol
+	if (-not $cRaw.Contains($oldFail)) { throw "moonlight: ControlStream encrypt anchor missing" }
+	$cRaw = $cRaw.Replace($oldFail, $newFail)
+
+	# Message constant + receive dispatch (before the cursor branch).
+	$anchorConst = "#define ML_CURSOR_HEADER_SIZE 28"
+	if (-not $cRaw.Contains($anchorConst)) { throw "moonlight: cursor header-size anchor missing" }
+	$cRaw = $cRaw.Replace($anchorConst,
+		$anchorConst + $ceol + "#define ML_CLIPBOARD_CTRL_TYPE 0x5508 // HMRDP_CLIPBOARD")
+
+	$anchorDispatch = "            else if (ctlHdr->type == ML_CURSOR_CTRL_TYPE) { // HMRDP_CURSOR"
+	if (-not $cRaw.Contains($anchorDispatch)) { throw "moonlight: cursor dispatch anchor missing" }
+	$clipDispatch = @(
+		"            else if (ctlHdr->type == ML_CLIPBOARD_CTRL_TYPE) { // HMRDP_CLIPBOARD",
+		"                // Opaque v1 frame; the client must not block this thread.",
+		"                const char* clipPayload = (const char*)(ctlHdr + 1);",
+		"                int clipLen = packetLength - (int)sizeof(*ctlHdr);",
+		"                if (ListenerCallbacks.clipboardData != NULL && clipLen > 0) {",
+		"                    ListenerCallbacks.clipboardData(clipPayload, clipLen);",
+		"                }",
+		"            }",
+		$anchorDispatch
+	) -join $ceol
+	$cRaw = $cRaw.Replace($anchorDispatch, $clipDispatch)
+
+	# Sender at EOF (sendMessageAndForget is in scope there).
+	$api = @(
+		"",
+		"// HMRDP_CLIPBOARD: foundation-sunshine clipboard sync (control message 0x5508).",
+		"int LiSendClipboardData(const void* payload, int length) {",
+		"    // 65511 leaves room for the 24-byte encrypted control-frame overhead.",
+		"    if (payload == NULL || length <= 0 || length > 65511) {",
+		"        return -1;",
+		"    }",
+		"    if (!IS_SUNSHINE() || !encryptedControlStream) {",
+		"        return -2;",
+		"    }",
+		"    if (peer == NULL || peer->state != ENET_PEER_STATE_CONNECTED) {",
+		"        return -3;",
+		"    }",
+		"    if (!sendMessageAndForget(ML_CLIPBOARD_CTRL_TYPE, length, payload,",
+		"                              CTRL_CHANNEL_GENERIC, ENET_PACKET_FLAG_RELIABLE, false)) {",
+		"        return -4;",
+		"    }",
+		"    return 0;",
+		"}"
+	) -join $ceol
+	$cRaw = $cRaw.TrimEnd() + $ceol + $api + $ceol
+
+	[System.IO.File]::WriteAllText($ControlStream, $cRaw)
+	Write-Host "moonlight: added clipboard message handling to ControlStream.c"
+}
+
 Write-Host "=== moonlight-common-c patches applied ==="
