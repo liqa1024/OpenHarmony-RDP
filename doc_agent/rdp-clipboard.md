@@ -20,6 +20,11 @@
 沙箱目录命名）留在 `services/RdpClipboardBridge`；Moonlight 桥只声明 `text + image`（见
 [`moonlight-clipboard.md`](moonlight-clipboard.md)），文件/富文本分支永不被触及。
 
+**用户文案**：共享在 `model/ClipboardModels.ets` 的 `ClipboardText`，遵循 [`ui-design.md`](ui-design.md) §4.3
+（结论 + 具体对象、失败用「无法 X：原因」、不加句末标点）。**动词与工具栏按钮一致**（粘贴 = 本机→远端，复制 = 远端→本机），
+且**必须点名内容类型**（文本 / 富文本 / 图片 / 文件）——如「已粘贴图片到远端」「无法粘贴图片到远端」「已复制 3 个文件到本机」。
+两协议读同一份，避免各写一套。
+
 ## 1. 设计原则：只手动同步
 
 **同步在设计上就是用户手动触发的**：工具栏「复制」（远端→本机）与「粘贴」（本机→远端），

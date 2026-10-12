@@ -2,7 +2,7 @@ import { pasteboard, SuppressWarnings, SuppressWarningsType } from '@kit.BasicSe
 import { image } from '@kit.ImageKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ClipboardItem, LocalReadResult } from '../model/ClipboardModels';
+import { ClipboardItem, ClipboardText, LocalReadResult } from '../model/ClipboardModels';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpClipboard';
@@ -183,16 +183,16 @@ export class LocalPasteboard {
       hilog.warn(DOMAIN, TAG, 'build pasteboard failed: %{public}s', JSON.stringify(error));
     }
     if (data === undefined) {
-      host.toast('写入本机剪贴板失败');
+      host.toast(ClipboardText.copyFailed(label));
       return false;
     }
     try {
       await pasteboard.getSystemPasteboard().setData(data);
-      host.toast('已复制' + label + '到本机');
+      host.toast(ClipboardText.copied(label));
       return true;
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'write pasteboard failed: %{public}s', JSON.stringify(error));
-      host.toast('写入本机剪贴板失败');
+      host.toast(ClipboardText.copyFailed(label));
       return false;
     }
   }

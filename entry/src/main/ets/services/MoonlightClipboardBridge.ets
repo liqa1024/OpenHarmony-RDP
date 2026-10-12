@@ -3,7 +3,7 @@ import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { moonlightSendClipboardData } from 'libhmrdp.so';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
-import { ClipboardCapabilities, ClipboardItem } from '../model/ClipboardModels';
+import { ClipboardCapabilities, ClipboardItem, ClipboardText } from '../model/ClipboardModels';
 import { ClipboardBridge, ClipboardBridgeSink } from './ClipboardBridge';
 import { BackgroundWorker } from './BackgroundWorker';
 
@@ -186,7 +186,7 @@ export class MoonlightClipboardBridge implements ClipboardBridge {
       const width: number = info.size.width;
       const height: number = info.size.height;
       if (width <= 0 || height <= 0) {
-        this.message('本机图片为空');
+        this.message(ClipboardText.LOCAL_EMPTY);
         return;
       }
       const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
@@ -194,47 +194,50 @@ export class MoonlightClipboardBridge implements ClipboardBridge {
       const png: ArrayBuffer | undefined =
         await BackgroundWorker.encodePng(buffer, width, height, info.pixelFormat);
       if (png === undefined || png.byteLength === 0) {
-        this.message('提交本机图片失败');
+        this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
         return;
       }
-      await this.sendPayload(KIND_PNG, png, MIME_PNG);
+      await this.sendPayload(ClipboardText.IMAGE, KIND_PNG, png, MIME_PNG);
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'send image failed: %{public}s', JSON.stringify(error));
-      this.message('提交本机图片失败');
+      this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
     }
   }
 
   private async sendText(text: string): Promise<void> {
     const bytes: ArrayBuffer = MoonlightClipboardBridge.encodeUtf8(text);
-    await this.sendPayload(KIND_TEXT, bytes, MIME_TEXT);
+    await this.sendPayload(ClipboardText.TEXT, KIND_TEXT, bytes, MIME_TEXT);
   }
 
-  private async sendPayload(kind: number, payload: ArrayBuffer, mime: string): Promise<void> {
+  private async sendPayload(type: string, kind: number, payload: ArrayBuffer,
+    mime: string): Promise<void> {
     const token: number = MoonlightClipboardBridge.newToken();
     this.rememberToken(token);
     if (payload.byteLength <= INLINE_THRESHOLD) {
-      this.sendFrame(kind, token, payload);
+      this.sendFrame(type, kind, token, payload);
       return;
     }
     const id: string | undefined =
       await MoonlightClient.postClipboardBlob(this.filesDir, this.host, this.httpsPort, payload, mime);
     if (id === undefined) {
-      this.message('提交本机剪贴板失败');
+      this.message(ClipboardText.pasteFailed(type));
       return;
     }
     const json: string = `{"id":"${id}","mime":"${mime}","size":${payload.byteLength}}`;
-    this.sendFrame(KIND_REF, token, MoonlightClipboardBridge.encodeUtf8(json));
+    this.sendFrame(type, KIND_REF, token, MoonlightClipboardBridge.encodeUtf8(json));
   }
 
-  private sendFrame(kind: number, token: number, payload: ArrayBuffer): void {
+  private sendFrame(type: string, kind: number, token: number, payload: ArrayBuffer): void {
     const frame: ArrayBuffer = MoonlightClipboardBridge.buildFrame(kind, token, payload);
     const code: number = moonlightSendClipboardData(frame);
     if (code === 0) {
-      this.message('已放入远端剪贴板');
+      this.message(ClipboardText.pasted(type));
       return;
     }
     hilog.warn(DOMAIN, TAG, 'send clipboard frame failed: %{public}d', code);
-    this.message(code === -2 ? '远端不支持剪贴板同步' : '提交本机剪贴板失败');
+    this.message(code === -2
+      ? ClipboardText.pasteFailedReason(type, ClipboardText.REMOTE_UNSUPPORTED)
+      : ClipboardText.pasteFailed(type));
   }
 
   private notify(): void {

@@ -277,7 +277,7 @@ export struct ClipboardButtons {
   onCopy: () => void = () => {};
   pasteCallback: PasteButtonCallback = () => {};
   @Prop copyTip: string = '从远端复制到本机剪贴板';
-  @Prop pasteTip: string = '把本机剪贴板发送到远端';
+  @Prop pasteTip: string = '把本机剪贴板粘贴到远端';
   private tipsOptions: TipsOptions = { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
 
   build() {

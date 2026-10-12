@@ -1,5 +1,5 @@
-import { ClipboardCapabilities, ClipboardItem, ClipboardTransferDirection,
-  LocalReadResult } from '../model/ClipboardModels';
+import { ClipboardCapabilities, ClipboardItem, ClipboardText,
+  ClipboardTransferDirection, LocalReadResult } from '../model/ClipboardModels';
 import { ClipboardBridge, ClipboardBridgeSink } from './ClipboardBridge';
 import { LocalPasteboard, LocalPasteboardHost, LocalReadOptions } from '../utils/LocalPasteboard';
 
@@ -17,10 +17,10 @@ export interface ClipboardControllerHost {
 }
 
 const MSG_BUSY: string = '正在传输文件，请先取消或等待完成';
-const MSG_EMPTY_REMOTE: string = '远端剪贴板为空';
-const MSG_EMPTY_LOCAL: string = '本机剪贴板为空';
+const MSG_EMPTY_REMOTE: string = ClipboardText.REMOTE_EMPTY;
+const MSG_EMPTY_LOCAL: string = ClipboardText.LOCAL_EMPTY;
 const MSG_FOLDER: string = '不支持文件夹传输';
-const MSG_READ_FAILED: string = '读取本机剪贴板失败';
+const MSG_READ_FAILED: string = '无法读取本机剪贴板';
 
 // Manual clipboard flow shared by both protocols: the remote content is applied
 // only on demand and the local content is read only on demand.
@@ -168,7 +168,7 @@ export class ClipboardController implements ClipboardBridgeSink, LocalPasteboard
 
   onTransferFailed(reason: string): void {
     this.clearTransfer();
-    this.host.toast(reason.length > 0 ? reason : '文件传输失败');
+    this.host.toast(reason.length > 0 ? reason : '无法传输文件');
   }
 
   onDownloadedFiles(paths: string[]): void {
@@ -179,7 +179,7 @@ export class ClipboardController implements ClipboardBridgeSink, LocalPasteboard
     }
     const item: ClipboardItem = new ClipboardItem();
     item.files = paths;
-    const label: string = paths.length > 1 ? ` ${paths.length} 个文件` : '文件';
+    const label: string = paths.length > 1 ? ` ${paths.length} 个文件` : ClipboardText.FILE;
     this.pasteboardBusy = true;
     LocalPasteboard.write(item, label, this).then((_ok: boolean): void => {
       this.pasteboardBusy = false;
@@ -196,14 +196,14 @@ export class ClipboardController implements ClipboardBridgeSink, LocalPasteboard
 
   private static copyLabel(item: ClipboardItem): string {
     if (item.hasImage()) {
-      return '图片';
+      return ClipboardText.IMAGE;
     }
     if (item.hasFiles()) {
-      return '文件';
+      return ClipboardText.FILE;
     }
     if (item.hasHtml()) {
-      return '富文本';
+      return ClipboardText.HTML;
     }
-    return '文本';
+    return ClipboardText.TEXT;
   }
 }

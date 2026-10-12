@@ -4,7 +4,8 @@ import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
 import { RdpClipKind, RdpEvent } from '../model/RdpModels';
-import { ClipboardCapabilities, ClipboardItem, ClipboardTransferDirection } from '../model/ClipboardModels';
+import { ClipboardCapabilities, ClipboardItem, ClipboardText,
+  ClipboardTransferDirection } from '../model/ClipboardModels';
 import { ClipboardBridge, ClipboardBridgeSink } from './ClipboardBridge';
 import { BackgroundEvent, BackgroundEvents, DecodedImage } from './BackgroundProtocol';
 import { BackgroundWorker } from './BackgroundWorker';
@@ -107,14 +108,16 @@ export class RdpClipboardBridge implements ClipboardBridge {
     if (item.hasHtml()) {
       BackgroundWorker.pushHtml(this.native.handleId(), item.html)
         .then((ok: boolean): void => {
-          this.message(ok ? '已放入远端剪贴板' : '提交本机富文本失败');
+          this.message(ok ? ClipboardText.pasted(ClipboardText.HTML)
+                          : ClipboardText.pasteFailed(ClipboardText.HTML));
         });
       return;
     }
     if (item.hasText()) {
       BackgroundWorker.pushText(this.native.handleId(), item.text)
         .then((ok: boolean): void => {
-          this.message(ok ? '已放入远端剪贴板' : '提交本机文本失败');
+          this.message(ok ? ClipboardText.pasted(ClipboardText.TEXT)
+                          : ClipboardText.pasteFailed(ClipboardText.TEXT));
         });
     }
   }
@@ -217,7 +220,7 @@ export class RdpClipboardBridge implements ClipboardBridge {
       if (this.sink !== undefined) {
         this.sink.onTransferDone();
       }
-      this.message('已发送文件到远端');
+      this.message(ClipboardText.pasted(ClipboardText.FILE));
       return true;
     } else if (event === RdpEvent.FileTransferFailed) {
       this.transferRunning = false;
@@ -493,7 +496,7 @@ export class RdpClipboardBridge implements ClipboardBridge {
         const width: number = info.size.width;
         const height: number = info.size.height;
         if (width <= 0 || height <= 0) {
-          this.message('本机图片为空');
+          this.message(ClipboardText.LOCAL_EMPTY);
           return;
         }
         const buffer: ArrayBuffer = new ArrayBuffer(width * height * 4);
@@ -505,20 +508,20 @@ export class RdpClipboardBridge implements ClipboardBridge {
                 if (!pushed) {
                   hilog.warn(DOMAIN, TAG, 'unsupported clipboard pixel format or dead session: %{public}d',
                     info.pixelFormat);
-                  this.message('提交本机图片失败');
+                  this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
                   return;
                 }
-                this.message('已放入远端剪贴板');
+                this.message(ClipboardText.pasted(ClipboardText.IMAGE));
               });
           })
           .catch((error: BusinessError): void => {
             hilog.warn(DOMAIN, TAG, 'read image pixels failed: %{public}s', JSON.stringify(error));
-            this.message('提交本机图片失败');
+            this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
           });
       })
       .catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'get image info failed: %{public}s', JSON.stringify(error));
-        this.message('提交本机图片失败');
+        this.message(ClipboardText.pasteFailed(ClipboardText.IMAGE));
       });
   }
 
