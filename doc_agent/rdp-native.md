@@ -186,6 +186,8 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
   回调用 `audioRead(handle, buf)` 把环里的 PCM 拉进设备缓冲，环**始终填满**（数据 + 欠载静音），
   故回调总能报有效数据。新的一段音频先**预缓冲**到目标深度才开始出声（启动静音不计损失），段内抖动
   **不**重新预缓冲；丢帧统计 = 欠载补静音 + 整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
+  环的**延迟预算**（目标深度 + high-water，`SetLatencyBudget`）是**实例参数**，默认 120/300ms：RDP 用默认值；
+  Moonlight 的低延迟路径设成由设备回调周期派生的小值（见 [`moonlight-native.md`](moonlight-native.md) §2.3）。
 - **格式变化**：sink 检测到 rate/channels 变化时清空旧格式队列，并让会话发 `AudioFormat` 事件
   （`kAudioFormat`）；ArkTS 据此（重新）建 `AudioRenderer`。渲染器晚于首个事件启动时，用
   `audioFormat(handle)` 读当前格式自行补建，不依赖事件一定被捕获。

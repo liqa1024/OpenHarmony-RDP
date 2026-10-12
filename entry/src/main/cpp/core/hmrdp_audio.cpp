@@ -9,11 +9,6 @@
 namespace hmrdp {
 namespace {
 
-// Prebuffer before playback starts, and the hard latency bound above which the
-// oldest whole packets are dropped. Both in playback ms, so the bound does not
-// change with the format.
-constexpr size_t kTargetLatencyMs = 120;
-constexpr size_t kHighWaterLatencyMs = 300;
 // A gap longer than this is a new bout of audio, not jitter, so the prebuffer
 // runs again.
 constexpr uint64_t kIdleResetUs = 1000 * 1000;
@@ -46,8 +41,7 @@ int AudioSink::Write(const void* data, size_t size, int sampleRate, int channels
     channels_ = channels;
     bytesPerSec_ = static_cast<size_t>(sampleRate) * static_cast<size_t>(channels) *
                    sizeof(int16_t);
-    targetBytes_ = bytesPerSec_ * kTargetLatencyMs / 1000;
-    highWaterBytes_ = bytesPerSec_ * kHighWaterLatencyMs / 1000;
+    ApplyBudgetLocked();
     formatChanged_ = true;
     HMRDP_LOGI("audio: format rate=%{public}d channels=%{public}d", sampleRate, channels);
   }
@@ -153,6 +147,24 @@ void AudioSink::Reset() {
   formatChanged_ = false;
   lostBytes_.store(0);
   totalBytes_.store(0);
+}
+
+void AudioSink::SetLatencyBudget(int targetMs, int highWaterMs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  targetLatencyMs_ = targetMs > 0 ? targetMs : 0;
+  // Never let the drop bound fall below the prefill, or every write would trim
+  // back to the target.
+  const int minHighWater = targetLatencyMs_ > 0 ? targetLatencyMs_ : 1;
+  highWaterLatencyMs_ = highWaterMs > minHighWater ? highWaterMs : minHighWater;
+  ApplyBudgetLocked();
+}
+
+void AudioSink::ApplyBudgetLocked() {
+  if (bytesPerSec_ == 0) {
+    return;
+  }
+  targetBytes_ = bytesPerSec_ * static_cast<size_t>(targetLatencyMs_) / 1000;
+  highWaterBytes_ = bytesPerSec_ * static_cast<size_t>(highWaterLatencyMs_) / 1000;
 }
 
 void AudioSink::EnqueueLocked(const uint8_t* data, size_t size) {

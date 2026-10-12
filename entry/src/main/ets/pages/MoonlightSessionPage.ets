@@ -77,6 +77,8 @@ struct MoonlightSessionPage {
   // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
   // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
+  // When true the native renderer plays, so this page starts no ArkTS renderer.
+  private lowLatencyAudio: boolean = true;
   private hostLabel: string = '';
   private targetLabel: string = '';
   private mlPinchMode: number = PINCH_MODE_WHEEL;
@@ -141,6 +143,7 @@ struct MoonlightSessionPage {
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.cursorMode = settings.mlCursorMode;
+    this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
     // Developer mode adds the telemetry line, so the toolbar is taller.
     this.toolbarHeight = this.developerMode
@@ -317,7 +320,7 @@ struct MoonlightSessionPage {
   // audio flows; a disabled stream never reports a format, so the worker builds
   // no renderer and this is a harmless no-op.
   private startAudio(): void {
-    if (!this.audioStarted) {
+    if (!this.lowLatencyAudio && !this.audioStarted) {
       this.audioStarted = true;
       AudioPlayer.startMoonlight();
     }

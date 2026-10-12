@@ -1643,6 +1643,7 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.encryptionFlags = GetIntProperty(env, args[0], "encryptionFlags", 0);
   config.localCursorMode = GetBoolProperty(env, args[0], "localCursorMode", false);
   config.enableAudio = GetBoolProperty(env, args[0], "enableAudio", true);
+  config.lowLatencyAudio = GetBoolProperty(env, args[0], "lowLatencyAudio", true);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesKeyHex"), &config.remoteInputAesKey);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesIvHex"), &config.remoteInputAesIv);
   return CreateStringUtf8(env, hmrdp::MoonlightSessionStart(config, &OnMoonlightSessionEvent));

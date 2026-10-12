@@ -470,6 +470,11 @@ export interface MoonlightSessionConfig {
    * leaves the native audio renderer unset so the stream stays silent.
    */
   enableAudio?: boolean;
+  /**
+   * Play audio through the native OHAudio low-latency path instead of the ArkTS
+   * renderer. Only meaningful when enableAudio is true.
+   */
+  lowLatencyAudio?: boolean;
 }
 
 /**

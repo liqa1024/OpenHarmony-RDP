@@ -106,6 +106,7 @@ struct SettingsPage {
   @State mlColorSpace: number = ML_COLORSPACE_REC709;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
+  @State mlLowLatencyAudio: boolean = true;
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
@@ -187,6 +188,7 @@ struct SettingsPage {
       this.mlColorSpace = settings.mlColorSpace;
       this.mlCodec = settings.mlCodec;
       this.mlCursorMode = settings.mlCursorMode;
+      this.mlLowLatencyAudio = this.audioSupported ? settings.mlLowLatencyAudio : false;
       this.clampMlCodec();
       this.applyInteraction(settings, false);
     }
@@ -391,6 +393,7 @@ struct SettingsPage {
       settings.mlPinchTouchAngle = this.pinchTouchAngle;
       settings.mlPinchTouchDistance = this.pinchTouchDistance;
       settings.mlCursorMode = this.mlCursorMode;
+      settings.mlLowLatencyAudio = this.mlLowLatencyAudio && this.audioSupported;
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
       settings.mlShortcutPassthrough = this.shortcutPassthrough;
@@ -422,6 +425,7 @@ struct SettingsPage {
     const defaults: AppSettings = SettingsStore.defaults();
     if (!this.audioSupported) {
       defaults.enableAudio = false;
+      defaults.mlLowLatencyAudio = false;
     }
     if (!this.hardwareAccelSupported) {
       defaults.hardwareAccel = false;
@@ -1199,6 +1203,20 @@ struct SettingsPage {
                 disabledReason: this.audioDisabledReason,
                 onChange: (v: boolean) => {
                   this.enableAudio = v;
+                  this.persist();
+                }
+              })
+
+              // Moonlight-only; the system falls back to the normal path when
+              // FAST is unavailable.
+              this.toggleItem({
+                title: '低延迟音频',
+                subtitle: '用系统低时延通路播放主机声音；关闭则与 RDP 走同一条播放链路',
+                value: this.mlLowLatencyAudio,
+                enabled: this.audioSupported,
+                disabledReason: this.audioDisabledReason,
+                onChange: (v: boolean) => {
+                  this.mlLowLatencyAudio = v;
                   this.persist();
                 }
               })

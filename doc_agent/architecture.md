@@ -128,7 +128,8 @@
 | `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针、视频解码桥、音频 Opus 解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §2.3 / [`moonlight-control.md`](moonlight-control.md) §1） |
-| `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；渲染器与播放策略在 ArkTS，见 [`rdp-native.md`](rdp-native.md) §5） |
+| `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`rdp-native.md`](rdp-native.md) §5） |
+| `core/hmrdp_oh_audio.{h,cpp}` | **原生 OHAudio 输出**（Moonlight 低延迟模式）：`OH_AudioRenderer` FAST + 音频工作组，写回调直接拉交接环（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
 | `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
 | `core/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
 | `core/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |
@@ -160,7 +161,8 @@
 | **解码执行器**（会话自有 ffrt 队列） | progressive tile chunk 解码（每 region 若干任务） | 执行器随会话创建/销毁；解码入口以线程局部指针告知当前执行器，未设置则回退串行 |
 | **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioSink` 的交接环 | 不碰画面；缓冲/丢弃/预缓冲全在环一处（见 [`rdp-native.md`](rdp-native.md) §5） |
 | **Moonlight 音频解码线程**（library `AudioDecoderThread`） | `decodeAndPlaySample`：Opus 多流解码 → 交给**同一个** `AudioSink` 交接环 | 不设 `CAPABILITY_DIRECT_SUBMIT`，故不占 RTP 接收线程；缓冲/预缓冲同样全在环一处（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
-| **（两协议皆无独立音频回调线程）** | 渲染器的拉取在 ArkTS 音频 worker（`AudioRenderer.writeData` → `audioRead`/`moonlightAudioRead`，§4.4）；原生侧只由上面两条线程往 sink 环写入 | — |
+| **OHAudio 回调线程**（Moonlight 低延迟模式，系统侧） | `OH_AudioRenderer` 的写回调直接从 `AudioSink` 环拉 PCM（`core/hmrdp_oh_audio.*`，见 [`moonlight-native.md`](moonlight-native.md) §2.3） | 回调内只做环的 `Read`（锁极短），**禁止**耗时操作与音频流控调用 |
+| **（默认音频渲染在 ArkTS 音频 worker）** | 其余情况（RDP、Moonlight 关低延迟）渲染器的拉取在 ArkTS 音频 worker（`AudioRenderer.writeData` → `audioRead`/`moonlightAudioRead`，§4.4）；原生侧只由上面两条线程往 sink 环写入 | — |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |
 
 **规则**：drdynvc 分发线程是**所有动态通道的公共瓶颈**——帧流水线一旦内联在它上面，一个重帧就会把音频、输入一起挡住（表现为音频卡顿、且与帧率绑定）。因此帧重活必须通过 sink 钩子交到应用线程（`HmrdpSetGfxDataSink` → 会话 GFX 工作线程，见 [`rdp-native.md`](rdp-native.md) §3）。新增/修改动态通道处理时按这条办。sink→队列这一段只拷不阻塞（队列是**延迟缓冲、不是节流**）：它不按帧数设硬上限，只在越过防御性 high-water（64MB）时打一次警告——**不能靠丢弃来限流**，每个 chunk 都是 GFX 流的一部分，丢了会破坏解析。

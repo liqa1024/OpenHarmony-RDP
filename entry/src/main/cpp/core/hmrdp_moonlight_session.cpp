@@ -138,8 +138,10 @@ void Run(const MoonlightStreamConfig& config) {
 
   PDECODER_RENDERER_CALLBACKS video =
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());
+  // Decide the audio consumer before the callbacks are wired.
+  MoonlightAudioSetLowLatency(config.enableAudio && config.lowLatencyAudio);
   // A null audio renderer leaves the library's audio callbacks as no-ops (fake
-  // renderer); the ring then never receives a format, so ArkTS builds nothing.
+  // renderer); the ring then never receives a format, so nothing plays.
   PAUDIO_RENDERER_CALLBACKS audio =
       config.enableAudio ? static_cast<PAUDIO_RENDERER_CALLBACKS>(MoonlightAudioCallbacks())
                          : nullptr;

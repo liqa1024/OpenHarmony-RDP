@@ -148,7 +148,7 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `InputSink.touchpadFrame`（合成两个触点——鸿蒙不向应用暴露触控板真实触点），否则与「Ctrl+滚轮 / 触摸模拟」
   一样回退。N-API 出口 `moonlightTouchpad`。
 
-### 2.3 音频（Opus 解码 → 交接环 → ArkTS 渲染器）
+### 2.3 音频（Opus 解码 → 交接环 → ArkTS 渲染器 / 原生 OHAudio 低延迟）
 
 - **协议形态**：Sunshine / GFE 的音频是 **Opus 多流**（配置为 `MAKE_AUDIO_CONFIGURATION(channelCount, channelMask)`，
   如 `AUDIO_CONFIGURATION_STEREO`），`moonlight-common-c` 只分帧、**不解码**：`AUDIO_RENDERER_CALLBACKS.decodeAndPlaySample`
@@ -163,6 +163,13 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
 - **与 RDP 共用播放链路**：环与 ArkTS 渲染器（`workers/audio.worker.ets` + 门面 `services/AudioPlayer.ets`）是 RDP 音频那一套；
   环本就**格式无关**（水位按 `rate × channels × 2` 算），立体声与环绕都不必改环。ArkTS 侧按**音源**分流到各协议的原生读口
   （RDP `audioRead(handle,…)` / Moonlight `moonlightAudioRead`，后者无 handle——环是进程级单个）。
+- **低延迟模式（原生 OHAudio，可选、默认开）**：`mlLowLatencyAudio` 为真时音频不走 ArkTS 渲染器，改由
+  `core/hmrdp_oh_audio.*` 建原生 `OH_AudioRenderer`（`AUDIOSTREAM_USAGE_GAME` + `AUDIOSTREAM_LATENCY_MODE_FAST`），
+  写回调直接从同一个 `AudioSink` 环拉；环深度由设备回调周期派生（`OH_AudioRenderer_GetFrameSizeInCallback`，
+  口径见 [`rdp-native.md`](rdp-native.md) §5）。库的 `AudioDecoderThread`（环的生产者）接入**音频工作组**
+  （`AddCurrentThread` + 每帧 `Start/Stop`）保证及时供数——FAST 用小缓冲，供数不及时即补静音帧（杂音）。
+  关时回到 ArkTS 渲染器那条链路。FAST 在设备/格式/资源不满足或有更高优先级流时由系统**回落普通通路**
+  （`OH_AudioRenderer_GetFastStatus` 记录，不据此失败）；`enableAudio` 关时两条路都不建。
 - **格式时序**：音频格式在 `init` 时确定（Opus 恒 48kHz，声道由协商定），且 `init`（在 `startAudioStream` 内）在
   `connectionStarted` **之前**执行 ⇒ ArkTS 收到会话 `kStarted` 时 `moonlightAudioFormat()` 已可读，**无需音频格式事件**
   （RDP 因 rdpsnd 格式可变才需要 `AudioFormat` 事件；Moonlight 不会中途重配）。

@@ -331,6 +331,9 @@ export class ConfigTransfer {
     settings.mlPinchTouchDistance =
       ConfigTransfer.readNumber(rec, 'mlPinchTouchDistance', settings.mlPinchTouchDistance);
     settings.mlCursorMode = ConfigTransfer.readNumber(rec, 'mlCursorMode', settings.mlCursorMode);
+    // No output device ⇒ no playback to make low-latency (like enableAudio).
+    settings.mlLowLatencyAudio = ConfigTransfer.readBoolean(rec, 'mlLowLatencyAudio',
+      settings.mlLowLatencyAudio) && DeviceCapabilities.audio().supported;
     settings.mlReconnectOnForeground = ConfigTransfer.readBoolean(rec,
       'mlReconnectOnForeground', settings.mlReconnectOnForeground);
     settings.mlWinKeySubstitute =

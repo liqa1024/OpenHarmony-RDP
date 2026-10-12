@@ -128,6 +128,8 @@ export class AppSettings {
   mlPinchTouchAngle: number = 30;
   mlPinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
+  // Moonlight: native OHAudio low-latency playback vs the shared ArkTS renderer.
+  mlLowLatencyAudio: boolean = true;
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
   mlShortcutPassthrough: boolean = false;
@@ -269,6 +271,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlPinchTouchDistance', settings.mlPinchTouchDistance);
       settings.mlCursorMode =
         SettingsStore.readNumber(store, 'mlCursorMode', settings.mlCursorMode);
+      settings.mlLowLatencyAudio = SettingsStore.readBoolean(store, 'mlLowLatencyAudio',
+        settings.mlLowLatencyAudio);
       settings.mlReconnectOnForeground = SettingsStore.readBoolean(store,
         'mlReconnectOnForeground', settings.mlReconnectOnForeground);
       settings.mlWinKeySubstitute =
@@ -337,6 +341,7 @@ export class SettingsStore {
       store.putSync('mlPinchTouchAngle', settings.mlPinchTouchAngle);
       store.putSync('mlPinchTouchDistance', settings.mlPinchTouchDistance);
       store.putSync('mlCursorMode', settings.mlCursorMode);
+      store.putSync('mlLowLatencyAudio', settings.mlLowLatencyAudio);
       store.putSync('mlReconnectOnForeground', settings.mlReconnectOnForeground);
       store.putSync('mlWinKeySubstitute', settings.mlWinKeySubstitute);
       store.putSync('mlShortcutPassthrough', settings.mlShortcutPassthrough);

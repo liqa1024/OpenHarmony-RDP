@@ -196,7 +196,10 @@ export class MoonlightSessionBackend implements SessionBackend {
       return -1;
     }
     // HIDE_HOST is a no-op unless the host is a foundation-sunshine build.
-    config.localCursorMode = SettingsStore.load().mlCursorMode === ML_CURSOR_HIDE_HOST;
+    const settings = SettingsStore.load();
+    config.localCursorMode = settings.mlCursorMode === ML_CURSOR_HIDE_HOST;
+    // The page reads the same setting to decide whether to start its renderer.
+    config.lowLatencyAudio = settings.mlLowLatencyAudio;
     const error: string = moonlightSessionStart(config);
     if (error.length > 0) {
       this.emit(ML_EVENT_STAGE_FAILED, 0, `无法启动串流（${error}）`);

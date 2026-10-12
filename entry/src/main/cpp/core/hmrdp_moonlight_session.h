@@ -73,6 +73,9 @@ struct MoonlightStreamConfig {
   // Play the host's audio on this device. False leaves the library's audio
   // renderer unset (silent); the host then plays locally (localAudioPlayMode).
   bool enableAudio = true;
+
+  // Native OHAudio low-latency path instead of the ArkTS renderer.
+  bool lowLatencyAudio = true;
 };
 
 // Null disables delivery; safe to call before a session.

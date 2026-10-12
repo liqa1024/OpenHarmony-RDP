@@ -1,5 +1,6 @@
 #include "hmrdp_moonlight_audio.h"
 
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -8,6 +9,7 @@
 
 #include "hmrdp_audio.h"
 #include "hmrdp_log.h"
+#include "hmrdp_oh_audio.h"
 
 namespace hmrdp {
 namespace {
@@ -49,42 +51,71 @@ class MoonlightAudioRenderer {
     return 0;
   }
 
+  void SetLowLatency(bool enabled) {
+    lowLatency_.store(enabled);
+  }
+
   void Start() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    running_ = true;
+    int rate = 0;
+    int channels = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_ = true;
+      rate = sampleRate_;
+      channels = channels_;
+    }
+    // Low-latency: the native renderer pulls the ring, so ArkTS starts nothing.
+    if (lowLatency_.load() && rate > 0 && channels > 0) {
+      OhAudioStart(&ring_, rate, channels);
+    }
   }
 
   void Stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    running_ = false;
-    ring_.Reset();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_ = false;
+      ring_.Reset();
+    }
+    OhAudioStop();
   }
 
   void Cleanup() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    running_ = false;
-    DestroyLocked();
-    ring_.Reset();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_ = false;
+      DestroyLocked();
+      ring_.Reset();
+    }
+    OhAudioStop();
   }
 
   void Decode(const char* data, int length) {
     if (data == nullptr || length <= 0) {
       return;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!running_ || decoder_ == nullptr || pcm_.empty()) {
-      return;
+    // On the library's AudioDecoderThread (the ring's producer); the workgroup
+    // gets it scheduled in time for the fast path's small buffer.
+    const bool nativeOutput = lowLatency_.load();
+    if (nativeOutput) {
+      OhAudioWorkgroupBegin();
     }
-    const int decoded = opus_multistream_decode(decoder_,
-        reinterpret_cast<const unsigned char*>(data), length, pcm_.data(), samplesPerFrame_, 0);
-    // A damaged or lost packet decodes to a negative code; the decoder's own
-    // concealment keeps the timeline, so there is simply nothing to queue.
-    if (decoded <= 0) {
-      return;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (running_ && decoder_ != nullptr && !pcm_.empty()) {
+        const int decoded = opus_multistream_decode(decoder_,
+            reinterpret_cast<const unsigned char*>(data), length, pcm_.data(), samplesPerFrame_, 0);
+        // A damaged or lost packet decodes to a negative code; the decoder's own
+        // concealment keeps the timeline, so there is simply nothing to queue.
+        if (decoded > 0) {
+          const size_t bytes =
+              static_cast<size_t>(decoded) * static_cast<size_t>(channels_) * sizeof(int16_t);
+          ring_.Write(pcm_.data(), bytes, sampleRate_, channels_);
+        }
+      }
     }
-    const size_t bytes =
-        static_cast<size_t>(decoded) * static_cast<size_t>(channels_) * sizeof(int16_t);
-    ring_.Write(pcm_.data(), bytes, sampleRate_, channels_);
+    if (nativeOutput) {
+      OhAudioWorkgroupEnd();
+    }
   }
 
   size_t Read(uint8_t* dest, size_t size) {
@@ -102,10 +133,13 @@ class MoonlightAudioRenderer {
   }
 
   void Reset() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    running_ = false;
-    DestroyLocked();
-    ring_.Reset();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_ = false;
+      DestroyLocked();
+      ring_.Reset();
+    }
+    OhAudioStop();
   }
 
  private:
@@ -127,6 +161,8 @@ class MoonlightAudioRenderer {
   int samplesPerFrame_ = 0;
   std::vector<int16_t> pcm_;
   bool running_ = false;
+  // True when the native OHAudio renderer owns playback (read on the decode thread).
+  std::atomic<bool> lowLatency_{false};
   AudioSink ring_;
 };
 
@@ -176,6 +212,10 @@ void MoonlightAudioFormat(int* sampleRate, int* channels) {
 
 void MoonlightAudioReset() {
   MoonlightAudioRenderer::Instance().Reset();
+}
+
+void MoonlightAudioSetLowLatency(bool enabled) {
+  MoonlightAudioRenderer::Instance().SetLowLatency(enabled);
 }
 
 }  // namespace hmrdp

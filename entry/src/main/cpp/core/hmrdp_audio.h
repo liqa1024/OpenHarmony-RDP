@@ -40,6 +40,12 @@ class AudioSink {
 
   void Reset();
 
+  // Latency budget in playback ms (prefill target + drop bound); the default is
+  // the RDP jitter buffer, the Moonlight low-latency path overrides it.
+  static constexpr int kDefaultTargetLatencyMs = 120;
+  static constexpr int kDefaultHighWaterLatencyMs = 300;
+  void SetLatencyBudget(int targetMs, int highWaterMs);
+
  private:
   // `offset` is how much has been consumed, so a read spanning several packets
   // never splits one on a drop boundary.
@@ -53,11 +59,14 @@ class AudioSink {
   void EnqueueLocked(const uint8_t* data, size_t size);
   void DropToHighWaterLocked();
   int LatencyLocked() const;
+  void ApplyBudgetLocked();
 
   std::mutex mutex_;
   int rate_ = 0;
   int channels_ = 0;
   bool formatChanged_ = false;
+  int targetLatencyMs_ = kDefaultTargetLatencyMs;
+  int highWaterLatencyMs_ = kDefaultHighWaterLatencyMs;
 
   // Bounded jitter buffer of whole packets; watermarks derive from `bytesPerSec_`
   // so they mean the same playback time at any format.

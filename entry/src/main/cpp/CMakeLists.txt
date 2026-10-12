@@ -157,6 +157,7 @@ add_library(hmrdp SHARED
     core/hmrdp_moonlight.cpp
 core/hmrdp_moonlight_session.cpp
     core/hmrdp_moonlight_audio.cpp
+    core/hmrdp_oh_audio.cpp
     core/hmrdp_video_decoder.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
@@ -227,6 +228,8 @@ target_link_libraries(hmrdp
     hilog_ndk.z
     ffrt.z
     native_window
+    # OHAudio: the Moonlight low-latency playback path (FAST + audio workgroup).
+    ohaudio
     native_media_vdec
     native_media_core
     native_media_codecbase

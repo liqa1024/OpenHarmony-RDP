@@ -76,6 +76,8 @@
 - **高级连接特性（音频、忽略证书…）**：默认值放全局 `AppSettings`；单连接保存自己的值 +
   `useGlobalAdvanced` 标志（**默认跟随全局**）。连接前用 `SettingsStore.resolveAdvanced(conn)` 解析。
   编辑页打开「使用会话独立高级设置」后才用本连接的独立开关；**保存时仍持久化独立值**，便于随时切回。
+- **低延迟音频（Moonlight 专属，`mlLowLatencyAudio`，默认开）**：**全局一份、不做单连接覆盖**（与「音频」开关
+  同理）；无音频输出设备时置灰并把已存值纠正为关。语义与回落见 [`moonlight-native.md`](moonlight-native.md) §2.3。
 - **剪贴板恒开**：不提供任何开关（全局或单连接）；原生无条件置 `FreeRDP_RedirectClipboard`。
   工具栏的「复制/粘贴」手动触发，见 [`rdp-clipboard.md`](rdp-clipboard.md)。
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置

@@ -23,6 +23,8 @@
   已不在活动态，原生允许再次绑定）。
 - 输入落地：共享策略在 [`session-layer.md`](session-layer.md) §8，原生出口见
   [`moonlight-native.md`](moonlight-native.md) §2。
+- **音频启动按模式分流**：连接后 `startAudio()` 读 `mlLowLatencyAudio`——为真时原生 OHAudio 接管播放，本页
+  **不**启动 ArkTS 音频 worker 的渲染器（否则双份播放）。机制见 [`moonlight-native.md`](moonlight-native.md) §2.3。
 
 ## 2. 开发者工具栏遥测
 

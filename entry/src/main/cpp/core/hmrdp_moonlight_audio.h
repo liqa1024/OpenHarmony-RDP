@@ -7,9 +7,13 @@
 namespace hmrdp {
 
 // AUDIO_RENDERER_CALLBACKS table for LiStartConnection: Opus multistream decode
-// into the shared AudioSink ring, which the ArkTS audio worker pulls from. Null
-// disables the audio stream. Same shape as MoonlightVideoCallbacks().
+// into the shared AudioSink ring. Null disables the audio stream. Same shape as
+// MoonlightVideoCallbacks().
 void* MoonlightAudioCallbacks();
+
+// true: a native OHAudio renderer (FAST + audio workgroup) pulls the ring
+// itself; false: the ArkTS audio worker does. Set before the session starts.
+void MoonlightAudioSetLowLatency(bool enabled);
 
 // Pull entry for the ArkTS audio worker: copies the current-format PCM into dest,
 // silence-fills an underrun, and returns the real byte count.
