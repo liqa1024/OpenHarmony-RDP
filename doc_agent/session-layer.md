@@ -193,7 +193,10 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。
 - **触控板双指滚动**（`sourceTool === TOUCHPAD`）：`axisVertical/Horizontal` 是本次事件的 **vp 位移**
-  而非轮齿 ⇒ `services/TouchpadWheel.ets` 按 `120/16vp × 速度倍率` 累加成高分辨率轮转量。
+  而非轮齿 ⇒ `services/TouchpadWheel.ets` 按 `120/(3行×16px) × 速度倍率` 累加成高分辨率轮转量。
+  口径是 **「1 vp 位移 = 1 远端 px」**：Windows 默认 1 齿滚 3 行（`SPI_GETWHEELSCROLLLINES`）、
+  默认 UI 行高约 16px，故 1 齿对应 48vp；该比例是**内容口径**，与窗口/画面尺寸无关——缩小窗口
+  不应改变手感，故不按画面缩放折算。远端为非常规行高/每齿行数属用户或应用有意设置，不探测、不纠正。
   设置「滚动速度」只缩放轮转量、不改变发射粒度。
 - **触控板捏合**（设置「触控板两指捏合模式」，三选一）：
   - **Ctrl+滚轮**（默认）：按 `1/(20×速度)` 线性映射为 **Ctrl+滚轮**（「缩放速度」），由远端应用自己缩放。

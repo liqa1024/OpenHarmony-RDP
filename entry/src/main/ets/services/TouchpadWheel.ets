@@ -2,8 +2,13 @@
 export const WHEEL_DETENT: number = 120;
 // Largest rotation a single RDP pointer event can carry (9-bit wheel field).
 const WHEEL_MAX_CHUNK: number = 0xFF;
-// Finger travel (vp) that maps to one full detent at 1.0x speed.
-export const VP_PER_DETENT: number = 16;
+// Windows scrolls three lines per wheel detent by default (SPI_GETWHEELSCROLLLINES),
+// each line ~16 px in the default UI font.
+const SCROLL_LINES_PER_DETENT: number = 3;
+const LINE_PX: number = 16;
+// Finger travel (vp) that maps to one full detent at 1.0x speed; 1 vp == 1 remote px,
+// so a detent (3 lines x 16 px) needs 48 vp. Independent of window/stream size.
+export const VP_PER_DETENT: number = SCROLL_LINES_PER_DETENT * LINE_PX;
 
 export const MIN_SPEED_SCALE: number = 0.2;
 export const MAX_SPEED_SCALE: number = 4;
