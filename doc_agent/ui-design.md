@@ -160,7 +160,7 @@ Column(page_bg, 100%×100%)
 - **主机不可达时（仅 Moonlight 行；未知 / 离线两态）**：协议图标降不透明度（`0.45`）、隐藏应用钮，动作钮改为
   「刷新」（未知，`ic_refresh`）/「唤醒」（离线，`ic_power` 画在 `accent` 上；无 mac 时 neutral 底 + `0.5` 不透明度且不可点）；
   唤醒后的**开机检测期间**该钮显示 `LoadingProgress`（同「连接中」，再点取消检测）。
-  判据与三态见 [`moonlight-connection.md`](moonlight-connection.md) §4。
+  判据与三态见 [`moonlight-apps.md`](moonlight-apps.md) §2。
 - 右键菜单（`Menu`）、拖拽排序（`List.onMove`）：`List` 本体保持全宽，左右内边距由 `ListItem` 的 `margin` 给，
   左 `64` / 右 `88`——右侧多留，为右下角 `FabButton`（`56` + 右 / 下 `24`）预留横向净空，卡片右缘不得压在 FAB 之下。
   菜单项分两组，各由一个 `MenuItemGroup` 承载：会话动作（连接 / 恢复 / 切换 / 断开 / 终止 / 刷新）在前，

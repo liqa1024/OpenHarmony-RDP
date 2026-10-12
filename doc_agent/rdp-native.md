@@ -200,7 +200,7 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
   （无输出设备 ⇒ 关「音频重定向」、不建渲染器）兜底，不因该告警退回原生。
 - **Moonlight 复用同一套环与渲染器**：交接环、`workers/audio.worker.ets`、`services/AudioPlayer.ets` 是两协议共用的播放链路，
   环本就格式无关（水位按播放时长算）。差异只在**原生解码**：RDP 由 FreeRDP 解出 PCM，Moonlight 由 `core/hmrdp_moonlight_audio.*`
-  用 libopus 解 Opus 多流后写入同一个环（见 [`moonlight-native.md`](moonlight-native.md) §3.3）。ArkTS 侧按**音源**分流到
+   用 libopus 解 Opus 多流后写入同一个环（见 [`moonlight-native.md`](moonlight-native.md) §2.3）。ArkTS 侧按**音源**分流到
   `audioRead` / `moonlightAudioRead` 两个原生读口。
 
 ## 6. 设备能力探测（Capability 模式）
@@ -225,6 +225,8 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
 | **超分：FSR**（`srFsrSupported`） | 超分后端之一 | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
 | **超分：XEngine**（`srXengineSupported`） | 超分后端之一 | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
 
+- 呈现能力判定**只有 `presenterSupported` 一个**：不存在分开的"解码能力 / 呈现能力"两套判定（解码始终是
+  FreeRDP gdi，见 [`rdp-gfx.md`](rdp-gfx.md)）。模拟器（x86_64）一律回落 GLES（见下）。
 - 两个超分后端共用「呈现判定」这一前提（上采样渲染进的都是呈现器的图），但门槛不同：**FSR 只多要构建里
   有它的 shader，XEngine 还要设备特性**。所以 `srSupported` 是「至少一个后端可用」，真机 Vulkan 而无
   XEngine 扩展的设备仍然能用 FSR。

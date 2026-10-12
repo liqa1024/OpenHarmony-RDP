@@ -129,4 +129,4 @@ FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX
   （带宽 - 有流量就显示 → 音频 - 播放时才显示）**：条件项越靠后，它出现/消失时能影响到的字段就越少
   （带宽的文字还随速率变宽，本身不定宽）。
 - 遥测行本身由共享的 `TelemetryRow`（`components/SessionChrome`）渲染，页面只产出 `TelemetryField[]`；
-  协议差异只在字段集合与各自口径（Moonlight 的字段与口径见 [`moonlight-connection.md`](moonlight-connection.md) §7）。
+   协议差异只在字段集合与各自口径（Moonlight 的字段与口径见 [`moonlight-session.md`](moonlight-session.md) §2）。

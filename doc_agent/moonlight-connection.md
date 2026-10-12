@@ -1,10 +1,12 @@
 # Moonlight（云串流）连接
 
-本文件是 **Moonlight / Sunshine 串流**这条路的**前端知识**：协议建模、存储布局、连接列表与编辑/设置界面的
-约定、图标约束。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；差异集中在连接配置与
-串流参数。**原生侧**（客户端库构建与共享库链接、桥接层、视频解码与上屏、控制/配对层协议事实）见
-[`moonlight-native.md`](moonlight-native.md)；RDP 侧的存储、显示、超分见
-[`settings-and-storage.md`](settings-and-storage.md)、[`rdp-present.md`](rdp-present.md)。
+本文件是 **Moonlight / Sunshine 串流**这条路的**前端连接与界面**知识：协议建模、存储布局、会话独立覆盖、
+连接列表与编辑页、设置页分栏、图标约定。它与 RDP 那条路**并列**，共享连接列表、会话外壳、输入与上屏管线；
+差异集中在连接配置与串流参数。**原生侧**（客户端库构建与共享库链接、桥接层、解码/上屏/协商、控制/配对层）
+见 [`moonlight-native.md`](moonlight-native.md)、[`moonlight-video.md`](moonlight-video.md)、
+[`moonlight-control.md`](moonlight-control.md)；**主机与应用**（发现 / 运行态 / 唤醒 / 应用管理页）见
+[`moonlight-apps.md`](moonlight-apps.md)；**会话窗口与遥测**见 [`moonlight-session.md`](moonlight-session.md)；
+RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-storage.md)、[`rdp-present.md`](rdp-present.md)。
 
 ## 1. 协议建模
 
@@ -24,7 +26,8 @@
   `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlMac`。
   （退役字段**按位置保留槽位**、不读写，以免改动后续字段的位置。）
 - `mlMac` 是主机网卡 MAC（`serverinfo` 的 `mac`），**唯一**来自探测的主机地址，是唤醒魔术包的目标；
-  探测成功时落库（见 §4 的主机三态），此前为空。它属于旧主机，**改主机时一并清空**（与 `mlHostId` 同策）。
+  探测成功时落库（见 [`moonlight-apps.md`](moonlight-apps.md) §2 的主机三态），此前为空。它属于旧主机，
+  **改主机时一并清空**（与 `mlHostId` 同策）。
 - **地址与端口复用 RDP 的 `host` / `port`**：Moonlight 不用账号/域/网关/密码字段。端口默认值是
   Moonlight 的 `47989`（RDP 为 `3389`），由编辑页按协议给出，存储上仍是同一个 `port`。
 - **是否已配对以本地存的证书为准**：权威配对是客户端持有的证书，导入配置 / 主机重装等情况下的
@@ -52,77 +55,13 @@
 - 两种协议**混排在同一列表**，靠卡片图标区分（见 §6）。排序、状态、右键菜单、拖拽全部复用。
 - Moonlight 行有两个圆钮，**「应用」在「连接」左侧**：**连接** = 用默认应用直接连接/断开；**应用** = 进入
   **主窗口内的应用管理界面**（不是弹窗，主窗口内容切过去）。RDP 行只有连接钮。**应用钮不随会话态禁用**：
-  应用管理界面自己处理"已有会话"（有会话时动作落到会话上，见下），会话运行中进入它是正常操作。
-  - **应用管理界面**：列主机应用、显示每个应用**是否在运行**、可**关闭**在跑的应用；点应用卡片即"连上并打开会话"
-    （应用已在运行且是同一个 → 恢复；否则开启并连）。**默认应用**在图标右上角的五角星上设置。
-  - **页头走共享的紧凑 `HeaderBar`**（返回 + 标题「应用」+ 右侧 slot），连接名/地址放**右上角**；**刷新用右下角的
-    通用悬浮圆钮**（`components/FabButton` + `ic_refresh`），与列表页的「新建」FAB 同形。应用网格内容区左 `24`（与页头对齐）、
-    右 `88`（为 FAB 让出横向走廊，`56` + 右 `24` = `80` < `88`，故上下不必再留净空），最右列与最下排都不压到该 FAB。
-  - **卡片只保留图标语义，不要右键菜单**：图标右上角的五角星（`ic_star`，默认时 `star_on` 填充、否则 `text_primary`）
-    设默认；**只有正在运行的应用**才在图标底排居中叠两个动作圆钮，且**按是否已有会话切换形态**（靠悬浮提示说明，
-    这里不弹窗）：
-    - **无会话**：`ic_play`(accent)「恢复」+ `ic_stop`(danger)「关闭应用」。
-    - **有会话**（`Connected`/`Disconnecting`）：`ic_disconnect`(text_primary)「断开连接」+
-      `ic_stop`(danger)「关闭应用并断开」（`/cancel` + `SessionManager.disconnect`）。
-  - **连接中（`Connecting`）就地显示加载，但两个入口表现不同**（都以「该应用是否本来就在运行」区分）：
-    - **点大图标（卡片）连接**（应用本来没运行）：poster 上盖一层半透明遮罩（图标变暗）+ 居中转圈，
-      **「运行中」徽标与动作钮等会话真正建立（`Connected`）后才出现**——加载期间卡片不可点、无 hover。
-    - **点「恢复」圆钮**（应用本来就在运行）：卡片与徽标保持不变（卡片此时也不可点），只有被按的那个圆钮
-      图标换成转圈并置忙。此时动作钮仍是**无会话**那一套，因为会话还没真正建立。
-    实现上「在飞的连接目标 / 是否本是运行」记在页面（连接在 `Idle → Connecting` 之前的间隙也要先置忙，
-    否则加载态会闪一下），动作钮的**有无会话**形态只认 `Connected` / `Disconnecting`。
-    加载态归触发控件本身，与连接钮 / 刷新 FAB 同一逻辑（见 [`ui-design.md`](ui-design.md) §4.2）。
-  - **无会话时按现有逻辑；有会话时同一套动作直接落到会话上**——「连接」即断开后重连，无需二次确认弹窗。
-  - 未运行的应用卡片点击 = **连接**；**当已有应用在跑时是「切换」**（卡片悬浮提示随之变化），因此**不置灰**。
-    **正在运行的应用卡片本身不响应点击**（动作只走它底排那两个圆钮），避免「点图标」与「点连接钮」两种走法打架；
-    它的悬浮提示只显示**应用名**（不带动作，因为卡片名只在这里出现，见下）。
-    连接预检按主机当前运行的应用选择走法：**是同一个应用 → 恢复（`/resume`）**；**是别的应用 → 先结束再启动**。
-    会话在跑时切换会先断开当前会话再连新应用。这一走法在**既有的连接/切换/默认应用/重试入口**上收敛，不另设入口。
-  - 卡片就是 poster 本身，**没有外框 / 卡片底**：只有一层按 Moonlight 标准 box art 的 **200:267** 宽高比
-    （`moonlight-qt` 的 AppView 即此尺寸）圆角裁切位图（fetch 到的位图 `ImageFit.Cover`、占位用 `ic_apps` 居中），
-    与取回的位图同形，`Cover` 只做同形裁切、不偏移。
-  - **名称不上图，只在悬浮提示里**：提示为 `连接到「名称」`，已有应用在跑时改为 `切换到「名称」`；
-    正在运行的应用卡片不点击，其提示就只给**名称**本身。卡片本身只承载图标语义。
-  - 图标元素全部叠在 poster 上（系统材质不挂在 poster 上）：**右上角**星标设默认、**左上角**「运行中」徽标、
-    **底排居中**动作圆钮。叠在图片上的控件（星标 / 动作钮）各用一个**圆形底**承载对比度：优先 `CONTROL`
-    沉浸材质（`THIN`，跟随系统、不加赋色，材质自身那层磨砂就够分开 poster 底色）；系统没有材质能力时
-    回落组件级磨砂 `backgroundBlurStyle(BlurStyle.COMPONENT_THIN)`（API 11+，与材质同款观感；此时不用
-    材质，故不与材质层冲突）；图形色走主题 token 随深浅色。**星标的圆比动作钮小**（星标 `28` / 图形 `18`，
-    动作钮 `36` / 图形 `22`）。
-  - 卡片点击与卡片内的星标/动作钮互不串扰（各自的 `onClick` 命中自身）。
-  - **tile 是自定义组件 `components/MoonlightAppTile`（不是页面 `@Builder`）**：默认 / 正在运行 / 会话态
-    用 `@Prop` 传入，父页面重渲染时在原地更新；图标位图因 `PixelMap` 不能过 `@Prop`，走普通字段 + key
-    `${app.id}#${该 tile 自己的图标是否已就绪}`（按 tile 而非图标表 size，原因见 [`arkts-conventions.md`](arkts-conventions.md) §2）。
-  - tile 上的星标与动作钮是共享组件 `components/ControlDisc`（每个 disc 各自持有 hover / press 状态）：
-    光标悬停放大、按下缩小（`utils/UiMotion`），运行中徽标与动作钮**出现 / 消失带转场**（`if` 增删子树触发），
-    会话态切换时第一个动作钮在**原地换出 / 换入**。
-  - **卡片本身也有同一套 hover / press 缩放**，但**只在卡片可点时**（未运行的应用卡片）：正在运行的应用卡片
-    不响应点击，因此也不给 hover / press 动效（判定与「不给悬浮提示」同一口径）。
-   - **"主机在跑哪个应用"由 `services/MoonlightHostState` 单一权威持有**（仿 `SessionManager` 的静态监听器：
-     `targetOf` / `powerOf` / `httpsPortOf` / `subscribe`）。列表页的行状态（恢复 / 运行中 / 终止）与应用页的
-    「运行中」徽标都从它派生，两者任何时刻都一致；**会话态本身仍在 `SessionManager`**，不混进来。
-    - **写入**：`markLaunched(id, appId)` 只由后端 `prepare` 成功后调用（用主机实际启动的 `effectiveAppId`，默认应用
-      由此补上）——**不在连接发起时乐观写**，否则一次失败的连接会留下幻影「运行中」；`/cancel` 成功 → `markStopped(id)`
-      （会话窗口「关闭应用」、应用页两个关闭动作、列表页「终止」三处共用）。
-     - **可达性三态（在线 / 未知 / 离线）**：`powerOf(id)` 给出 `HostPower`——探测成功 = 在线、失败 = 离线、本会话尚无
-       结果 = 未知。**不可达时 `targetOf` 一律报 0**（`currentGame` 保留、主机回来即恢复），故恢复 / 终止与「运行中」徽标
-       在离线时都不出现；主机侧动作（终止 / 关闭应用）前先查 `reachableOf`，不可达只提示「主机离线」。同 moonlight-android
-       的 `ComputerDetails.State` + `runningGameId`。**可达性是"服务能否探到"，不等于电源状态**（关机 / 休眠 / 服务未起 /
-       网络问题 / 跨网段都不可达），故离线图标表达"连不上"、不宣称"已关机"。
-     - **行外观按三态**（仅 Moonlight 行；RDP 无探测、恒按在线）：未知与离线都**左图标置灰 + 隐藏「应用」钮**，动作位是
-       **刷新**（未知）与**唤醒**（离线）；在线保持原有连接 / 运行中 / 终止。右键菜单同步去掉连接类项。**有会话时不受影响**
-       （会话态优先）。外观见 [`ui-design.md`](ui-design.md) §3.5。
-     - **唤醒（Wake-on-LAN）**：显式手点、**绝不自动**。主机 MAC 编魔术包（6×`0xFF` + MAC×16）经 UDP **广播**
-       （`255.255.255.255`，端口 `9` / `7`）发出（`services/WakeOnLan`），成功仅代表已发送、**不保证唤醒**。发送后进入
-       **开机检测**：每 `2s` 探测、`120s` 超时，期间动作位显示**加载**；在线即结束，超时提示未上线；**期间再点一次只取消
-       检测**（不重新发包）。**只有已存 mac 才能唤醒**（`supportsWake`），无 mac 时唤醒钮置灰而非隐藏。
-    - **探测收敛外部变化**：`refresh` 只做 `serverinfo` 轻探测（服务内合并同一连接的重复探测），列表页（`onPageShow`、
-      行右键菜单「刷新」）、应用页（`onPageShow`）与会话页进入 `Idle`/`Failed`（弹出重连卡，含主机断连与连接超时）
-      时各触发**一次**；应用页的 `probeApps` 也回填 `setProbed`。只有 `/cancel` 这类"动作已发完、主机异步停应用"
-       另有短延迟复探（`refreshAfter`）兜底，其余不叠延迟探测；预检失败由 `prepare` 的 `!ok` 分支单探。
-       探测成功时顺带回填 `mlMac`（见 §2）。**不做周期轮询**——手动刷新 / 页面进入即兜底，避免后台常驻探测。
+  应用管理界面自己处理"已有会话"（有会话时动作落到会话上），会话运行中进入它是正常操作——界面细节见
+  [`moonlight-apps.md`](moonlight-apps.md) §1。
+- 连接钮的加载态归触发控件本身（与刷新 FAB 同一逻辑，见 [`ui-design.md`](ui-design.md) §4.2）。
 - 行右键菜单对 Moonlight 追加「刷新」；**默认应用只在应用页的星标上设置，编辑页无该字段**。
 - 副标题：Moonlight 显示默认应用名（未选择时显示「桌面」），RDP 显示账号。
+- **行外观按可达性三态**（未知 / 离线改画刷新 / 唤醒钮，仅 Moonlight；判据与三态见
+  [`moonlight-apps.md`](moonlight-apps.md) §2，外观见 [`ui-design.md`](ui-design.md) §3.5）。
 
 **编辑页**
 
@@ -181,12 +120,14 @@
     光标（顺滑、无双重）。**只有基地版 Sunshine（foundation-sunshine）成立**，其它主机静默回退为「关闭」。
     设置页检测不到主机版本，所以该选项下**恒显示红字警告**（"仅在基地版 Sunshine 有效"）。
   - `setPointerVisibleSync` 是**进程级**，断开 / 退页必须恢复，否则主窗口也没有光标。协议细节见
-    [`moonlight-native.md`](moonlight-native.md) §3.1；安装器、去重与可见性归属见
+    [`moonlight-native.md`](moonlight-native.md) §2.1；安装器、去重与可见性归属见
     [`session-layer.md`](session-layer.md) §10。
 - **音频开关两协议共用一份**：`AppSettings.enableAudio`（RDP tab「连接特性·音频重定向」的同一全局值）同时是 Moonlight 的
   音频主开关，Moonlight tab 的「音频」拨钮编辑的是这同一个键（两个 tab 都持久化同一份值）；叠加 `DeviceCapabilities.audio()`
   置灰（无输出设备即关）。它派生 `MoonlightStreamConfig.enableAudio` 与 `/launch` 的 `localAudioPlayMode`
-  （开=0 音频送客户端 / 关=1 主机本地播放），见 [`moonlight-native.md`](moonlight-native.md) §3.3。
+  （开=0 音频送客户端 / 关=1 主机本地播放），见 [`moonlight-native.md`](moonlight-native.md) §2.3。
+- **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
+  不要在别处塞新内容而让 Moonlight 那份成为摆设。
 
 ## 6. 图标约定
 
@@ -194,8 +135,8 @@
   「断开连接」（RDP，仅断本地会话）统一用 `ic_stop`**；应用页的「断开连接」用 `ic_disconnect`（断链）。
   三者都是纯 `fill` 路径，由页面按状态着色。
   **`ic_power` 只作离线行的「唤醒」钮**（电源语义），画在 **accent** 上、不用 danger——红底像"关机/破坏"动作；
-  不可唤醒（无 mac）时画在 neutral 上并降不透明度（见 §4）。**未知态的「刷新」钮**用 `ic_refresh`，与列表页的
-  刷新 FAB 同款（accent 圆钮 + 白色 `fill`）。
+  不可唤醒（无 mac）时画在 neutral 上并降不透明度（见 [`moonlight-apps.md`](moonlight-apps.md) §2）。**未知态的
+  「刷新」钮**用 `ic_refresh`，与列表页的刷新 FAB 同款（accent 圆钮 + 白色 `fill`）。
 - **ArkUI 的 SVG 渲染不绘制 `<text>` 元素**：图标里的字符必须转成矢量路径（描边或填充），
   写 `<text>` 在网页预览能看到、在上屏里不会出现。
 - RDP 卡片用原有「显示器 + 信号」图标（`ic_remote_desktop`）。
@@ -230,76 +171,3 @@
   故星标 / 连接 / 断开·关闭 / 唤醒 / 应用（`ic_star` / `ic_play` / `ic_stop` / `ic_power` / `ic_apps`）一律纯 `fill`
   路径，由页面按状态给 accent / text_primary / danger / 白；`ic_refresh` 画在 accent 圆钮上，直接用白色 `fill`。
   需要随主题（且不换色）的描边图标才靠 `resources/dark/media/` 的深色变体。
-
-## 7. 实现边界与不得回退的约定
-
-- **前端**：协议建模、存储、导入导出、连接列表、编辑页、设置页分栏、图标。
-- **控制层**：`ets/moonlight/` 的 `MoonlightCrypto`（配对加密原语）、`MoonlightIdentity`
-  （自签名 X.509 + HUKS 信封私钥 + 逐主机 pin）、`MoonlightHttp`（`@ohos.net.http` 传输）、`MoonlightClient`
-  （`serverinfo → pair → applist → launch`）与 `MoonlightXml` / `MoonlightModels`。串流前的预检由
-  `services/MoonlightConnector.ets` 编排（`serverinfo →`（未配对则先 `pair`）`→ launch`，并装配原生串流配置），
-  由 `MoonlightSessionBackend.prepare()` 在 `SessionManager` 已发布的 `Connecting` 状态下驱动，故列表行加载态与
-  RDP 一致（见 [`session-layer.md`](session-layer.md) §5）。列表 / 编辑页 / 应用管理页的「连接」统一经
-  `services/MoonlightLauncher.ets` 构造请求（解析分辨率、应用 id、`filesDir` 与配对 PIN 弹窗）后交给 manager。
-- **配对 = 依赖主窗口的轻量弹窗**：客户端生成 4 位 PIN，弹窗只**显示** PIN（用户在主机上输入，四个数字居中放大），
-  配对期间不开任何会话窗口；**主机端输入完成即握手结束，弹窗自动关闭并继续**（无需手动确认），只有「取消」是用户动作；
-  配对完成后才 launch 并开会话。
-- **会话窗口与后端**：`pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再
-  `SessionManager.beginStream` 启动）、`services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配
-  `moonlightConfig`，`start()` 交给原生）、`services/SessionBackendFactory.ets` 与
-  `utils/MoonlightKeyMapper.ets`；`SessionAbility` 按 `SessionBackend.pageRoute()` 路由到该页（不判断协议），
-  窗口外壳复用共享的 `services/SessionShellController`（见 [`session-layer.md`](session-layer.md) §4）。
-  窗口在**预检通过后**打开、绑好 surface 再
-  启动（`requiresWindowAtStart`，因为 `LiStartConnection` 需要渲染目标）。工具栏与 RDP 同形：标题用共享的
-  `SessionTitle`（名称 + 分辨率 + 括号里的**协商解码格式**，见 [`ui-design.md`](ui-design.md) §3.6），复用同一套
-  chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化；连接中的
-  状态卡带约 1000ms 显示阈值，避免"多闪一下"。**停止会话会释放原生窗口，所以窗口内「重试」先重新绑定仍存活的
-  XComponent surface 再重启**（此时会话必然已不在活动态，原生允许再次绑定）。
-- **开发者工具栏遥测**（开发者选项开启且会话已连接时另起第二行，行由共享的 `TelemetryRow` 渲染）：字段固定为
-  **网络 / 主机 / 本机 / FPS / 码率**，全部定宽，口径如下。
-  - **网络** = `LiGetEstimatedRttInfo` 的 RTT（着色阈值同 RDP）；悬停提示给**抖动**（第二返回值）与**视频丢包率**
-    （`LiGetRTPVideoStats` 的 FEC 恢复失败 + 乱序 + 损坏 ÷ 总包）。
-  - **主机** = 主机帧处理耗时（Sunshine 在帧头携带的 `frameHostProcessingLatency`，单位 1/10ms，取窗口内均值）；
-    主机不提供该值（GFE / 重复帧）时显示 `主机 --`；着色与「本机」同一套阈值。
-  - **本机** = 本机解码往返（该帧从提交解码到解码出帧的墙钟，按 `pts` 配对后取窗口均值）——与 RDP 的「本机」
-    同为**每帧本机耗时**、子项不同（RDP 是四相之和，此处是单相）；悬停提示给在途待解码帧数
-    （`LiGetPendingVideoFrames`）以解释往返为何变大。
-  - **FPS** = 当前解码帧率 / 请求帧率；**码率** = 当前视频载荷码率（Σ 帧字节 ÷ 窗口）/ 配置码率。两处都用
-    `当前/目标` 写法，目标是发起时请求的 `fps` / `bitrateKbps`；码率单位只出现一次、两数共用
-    （`数字/数字 单位`，≥1Mbps 用 `Mbps` 否则 `kbps`）。
-  - **不做** GPU（默认直出 surface，无本机 GPU 上屏工时）、CPU（全硬件解码）；音频已接线但**不进遥测**
-    （无音频丢帧指标）。
-    原生只产**累计计数与瞬时读数**，速率与每帧均值在 ArkTS（`services/MoonlightTelemetry`）聚合；
-    采样源与累加点见 [`moonlight-native.md`](moonlight-native.md) §3。
-
-**不得回退的约定**（实现新功能时必须遵守，避免把缺陷保留下来又在别处塞新内容）：
-
-1. **连接存储是位置分隔、只追加**：退役字段按位置保留槽位，新增字段只追加尾部（见 §2）。**禁止删除或重排
-   既有槽位**，否则老记录错位。
-2. **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
-   不要在别处塞新内容而让 Moonlight 那份成为摆设。
-3. **连接动作（连接 / 恢复 / 切换 / 终止 / 断开）只有一个走法入口与一处判定**：
-   - 走法统一经预检（`MoonlightConnector.prepare`）选择 `/resume` 或 `/launch`；判定集中在
-     `utils/ConnectAction.ets` 的 `connectActionFor`（协议中立），连接行与卡片共用；主连接动作与
-     行菜单的协议差异落在连接模型的子类（`RdpConnection` / `MoonlightConnection`，见
-     [`architecture.md`](architecture.md) §2）。主页主按钮对 Moonlight 统一为「终止」
-     （关闭会话 + 关闭主机应用 = `/cancel` + 断开），**按钮上不出现「恢复」**（恢复在右键菜单）；
-     应用页保留「恢复」按钮，其「断开连接」用专用断链图标（`ic_disconnect`）。
-   - **「有应用在跑」只看 `hostTargetId`**：`hostTargetId ≠ 0` 即「恢复」（默认应用不同才「切换」），**不要求本连接
-     配了默认应用**（`targetId` 只分恢复 / 切换，可为 0）。两界面必须同判——连接行传的是本连接默认应用（可能 0），
-     应用页传的是具体 app id（恒 > 0），拿 `targetId > 0` 当门槛就会让连接行把运行中误判成「未运行」。
-   - **RDP 不存在恢复态**：会话关闭即完全断开，`hostTargetId` 恒为 0，主按钮保持「断开连接」。
-   - 任何触发"打开 / 恢复某应用"的 UI（含任何新增的显式入口）都必须经这个预检；
-     **不要在预检之外直接打 `/launch` / `/resume`**。
-4. **未接通的能力不得在 UI 暴露**：画质 / 输入开关必须"链路已通，或有能力探测并置灰说明"才可见；
-   不接受"有开关但没效果"。
-5. **控制端点使用主机标准参数名**（`/launch` 的 `rikey` / `gcmap` / `localAudioPlayMode` / `surroundAudioInfo`，
-   `/appasset` 的 `AssetType`；见 [`moonlight-native.md`](moonlight-native.md) §4）。改动前先核对标准客户端
-   （Moonlight Android / Sunshine）。
-6. **Moonlight 是进程级单会话**：moonlight-common-c 一次只允许一个连接（见
-   [`moonlight-native.md`](moonlight-native.md) §3）；任何"多开 / 并发"设想必须先解决这个前提。
-7. **上屏语义与 RDP 不同**：默认解码**直出 surface**、不经呈现器；只有超分链路复用 RDP 的 Vulkan 呈现器
-   （见 [`moonlight-native.md`](moonlight-native.md) §2）。
-8. **主机身份与信任**：去重按 `serverinfo` 的 `uniqueid`（不是地址）；pin 按 host 归一化；主机应答
-   不同 `uniqueid`（重装 / 换机）视为失效、重新配对（见 [`moonlight-native.md`](moonlight-native.md) §4）。
-9. **原生线程模型**：帧重活不得放在动态通道分发线程上（见 [`architecture.md`](architecture.md) §4）。

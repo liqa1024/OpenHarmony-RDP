@@ -1,0 +1,46 @@
+# Moonlight 会话（窗口接线 / 工具栏遥测）
+
+本文件是 Moonlight 路的会话窗口接线与工具栏遥测的家——与 [`rdp-session.md`](rdp-session.md) 平行。
+两协议共享的会话模型 / 状态机 / 窗口与全屏 / 自动隐藏 / 输入策略 / 工具栏外壳 / 光标安装器见
+[`session-layer.md`](session-layer.md)；连接与编辑页见 [`moonlight-connection.md`](moonlight-connection.md)；
+主机与应用（运行态 / 关闭应用）见 [`moonlight-apps.md`](moonlight-apps.md)；控制/配对见
+[`moonlight-control.md`](moonlight-control.md)；解码与解码格式见 [`moonlight-video.md`](moonlight-video.md)；
+原生桥接见 [`moonlight-native.md`](moonlight-native.md)。
+
+## 1. 会话窗口与后端
+
+- `pages/MoonlightSessionPage.ets`（XComponent 先绑 surface，再 `SessionManager.beginStream` 启动）、
+  `services/MoonlightSessionBackend.ets`（`prepare()` 跑控制层预检并装配 `moonlightConfig`，`start()` 交给
+  原生）、`services/SessionBackendFactory.ets` 与 `utils/MoonlightKeyMapper.ets`。
+- `SessionAbility` 按 `SessionBackend.pageRoute()` 路由到该页（**不判断协议**），窗口外壳复用共享的
+  `services/SessionShellController`（见 [`session-layer.md`](session-layer.md) §4）。
+- 窗口在**预检通过后**打开、绑好 surface 再启动（`requiresWindowAtStart`，因为 `LiStartConnection` 需要渲染
+  目标）。连接中的状态卡带约 1000ms 显示阈值，避免"多闪一下"。
+- 工具栏与 RDP 同形：标题用共享的 `SessionTitle`（名称 + 分辨率 + 括号里的**协商解码格式**，见
+  [`ui-design.md`](ui-design.md) §3.6），复用同一套 chrome 与自动隐藏判定（`components/SessionChrome`、
+  `services/ToolbarAutoHide`），支持全屏 / 最小化。
+- **停止会话会释放原生窗口**，所以窗口内「重试」先重新绑定仍存活的 XComponent surface 再重启（此时会话必然
+  已不在活动态，原生允许再次绑定）。
+- 输入落地：共享策略在 [`session-layer.md`](session-layer.md) §8，原生出口见
+  [`moonlight-native.md`](moonlight-native.md) §2。
+
+## 2. 开发者工具栏遥测
+
+开发者选项开启且会话已连接时另起第二行，行由共享的 `TelemetryRow` 渲染。字段固定为
+**网络 / 主机 / 本机 / FPS / 码率**，全部定宽，口径如下。
+
+- **网络** = `LiGetEstimatedRttInfo` 的 RTT（着色阈值同 RDP）；悬停提示给**抖动**（第二返回值）与**视频丢包率**
+  （`LiGetRTPVideoStats` 的 FEC 恢复失败 + 乱序 + 损坏 ÷ 总包）。
+- **主机** = 主机帧处理耗时（Sunshine 在帧头携带的 `frameHostProcessingLatency`，单位 1/10ms，取窗口内均值）；
+  主机不提供该值（GFE / 重复帧）时显示 `主机 --`；着色与「本机」同一套阈值。
+- **本机** = 本机解码往返（该帧从提交解码到解码出帧的墙钟，按 `pts` 配对后取窗口均值）——与 RDP 的「本机」
+  同为**每帧本机耗时**、子项不同（RDP 是四相之和，此处是单相）；悬停提示给在途待解码帧数
+  （`LiGetPendingVideoFrames`）以解释往返为何变大。
+- **FPS** = 当前解码帧率 / 请求帧率；**码率** = 当前视频载荷码率（Σ 帧字节 ÷ 窗口）/ 配置码率。两处都用
+  `当前/目标` 写法，目标是发起时请求的 `fps` / `bitrateKbps`；码率单位只出现一次、两数共用
+  （`数字/数字 单位`，≥1Mbps 用 `Mbps` 否则 `kbps`）。
+- **不做** GPU（默认直出 surface，无本机 GPU 上屏工时）、CPU（全硬件解码）；音频已接线但**不进遥测**
+  （无音频丢帧指标）。
+
+原生只产**累计计数与瞬时读数**，速率与每帧均值在 ArkTS（`services/MoonlightTelemetry`）聚合；
+采样源与累加点见 [`moonlight-native.md`](moonlight-native.md) §2。

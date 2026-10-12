@@ -24,7 +24,7 @@
 和一个打包文件，不出现"这份归谁"的问题。**判据落在"独立依赖"这一层**：`moonlight-common-c` 自己的 submodule
 （`enet`、`nanors`）不是独立依赖而是它的实现细节，照旧静态编进 `libmoonlight-common-c.so`，单独成 `.so`
 只会多一个 DSO 和一次加载、没有任何去重收益。opus（`libopus.so`）是 Moonlight 音频解码的独立依赖，消费者是
-`libhmrdp.so`（moonlight-common-c 只分帧、不解码，不消耗 opus；见 [`moonlight-native.md`](moonlight-native.md) §3.3）。
+`libhmrdp.so`（moonlight-common-c 只分帧、不解码，不消耗 opus；见 [`moonlight-native.md`](moonlight-native.md) §2.3）。
 `libhmrdp` 因此**不链任何静态归档**，也就不需要 `-Wl,--exclude-libs`，更不需要"静态归档必须排在
 `libwinpr3.so` 之前"这类链接顺序约束。
 
@@ -81,7 +81,7 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   已存在的树直接跳过，`-Force` 才重拉；拉取后自动跑补丁脚本（`patch-freerdp.ps1`、
   `patch-moonlight.ps1`、`patch-zlib.ps1`、`patch-opus.ps1`）。FreeRDP 的补丁成体系地拆在 `patch-steps/`；
   moonlight、zlib 与 opus 各只有一个入口脚本（见 [`rdp-native.md`](rdp-native.md) §3、
-  [`moonlight-native.md`](moonlight-native.md) §3.3）。
+  [`moonlight-native.md`](moonlight-native.md) §2.3）。
 - ⚠ **hvigor 不会清理不再产出的原生库**：`entry/libs/<abi>/` 里删掉一个 `.so` 后，
   `entry/build/<product>/intermediates/{cmake,libs,stripped_native_libs}/` 里的旧副本仍在，并会被打进
   HAP（症状：包体不变、里面多一个不该存在的库）。改动**产出集合**（新增/移除/改名某个依赖）之后，

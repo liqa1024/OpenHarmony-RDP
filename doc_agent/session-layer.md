@@ -6,7 +6,9 @@
 协议专属内容不在这里：RDP 会话 / 输入 / 遥测见 [`rdp-session.md`](rdp-session.md)，RDP FreeRDP / 音频 /
 能力见 [`rdp-native.md`](rdp-native.md)，GFX 见 [`rdp-gfx.md`](rdp-gfx.md)，上屏见
 [`rdp-present.md`](rdp-present.md)，剪贴板见 [`rdp-clipboard.md`](rdp-clipboard.md)；
-Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight-native.md`](moonlight-native.md)；
+Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight-apps.md`](moonlight-apps.md) /
+[`moonlight-session.md`](moonlight-session.md) / [`moonlight-control.md`](moonlight-control.md) /
+[`moonlight-video.md`](moonlight-video.md) / [`moonlight-native.md`](moonlight-native.md)；
 职责表与线程模型见 [`architecture.md`](architecture.md)。
 
 ## 1. 连接模型：抽象基类 + 协议子类
@@ -88,7 +90,7 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 - **同一时刻只有一条连接在协商**：新尝试（`connect`/`retry`）先**取消其他仍处于 `Connecting` 的尝试**
   （停后端、发布 `Idle`，已开窗的随之关窗）再启动自己；`Connected` 的会话不取消（多会话并存仍合法）。
   依据：会话后端可能持有**进程级**原生状态（Moonlight 的 `g_active` / 进程级事件回调与 surface，见
-  [`moonlight-native.md`](moonlight-native.md) §3），并发协商会互相覆盖，故取消须早于**新后端的构造**。
+  [`moonlight-native.md`](moonlight-native.md) §2），并发协商会互相覆盖，故取消须早于**新后端的构造**。
 - **失败保留 entry 并只有一个终态事件**：连接失败（含超时）置 `Failed` 且不删 entry，窗口「重试」与
   列表再次点击据此发起新尝试；失败只产生错误终态（不另发断开），失败原因不会被"连接已断开"覆盖。
 - **回到前台自动重连**（协议级设置，RDP `reconnectOnForeground` / Moonlight `mlReconnectOnForeground`，
@@ -242,8 +244,8 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   不被覆盖，指针映射仍以 XComponent 局部坐标为准）。开发者选项开启时，遥测另起**第二行**，主行布局与
   非开发者模式**完全一致**（工具栏变高，`toolbarHeight` 随之增长，全屏自动隐藏的判定边界跟着用这个值）。
   遥测行由共享的 `TelemetryRow`（`components/SessionChrome`）渲染，页面只产出协议专属的 `TelemetryField[]`；
-  RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-session.md) §5，Moonlight 见
-  [`moonlight-connection.md`](moonlight-connection.md) §7。
+RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-session.md) §5，Moonlight 见
+   [`moonlight-session.md`](moonlight-session.md) §2。
 - **自动隐藏的判定口径**：全屏下只看**指针在哪一格**——顶部触发带（贴顶一条窄带，停留 `hoverDelay` 才
   滑出）、工具栏自身、其余画面；**指针在工具栏上 ⇒ 保持显示，且不允许任何隐藏定时器在跑**，在画面里 ⇒
   起 `hideDelay` 收起。指针格由**画面顶部的专用窄条**（`SessionPicture` 的 reveal 条：只在全屏且工具栏

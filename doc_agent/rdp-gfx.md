@@ -102,10 +102,8 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ## 4. 呈现能力判定
 
-- 呈现能力判定只有 `presenterSupported` 一个；不存在分开的"解码能力 / 呈现能力"两套判定。模拟器一律
-  回落 GLES（与"Vulkan 只在真机验证"一致）；要让模拟器用 Vulkan，只需改 `FillPresenterVerdict()` 里
-  那一处 ABI 分支。
-- Vulkan 面与判定口径见 [`rdp-native.md`](rdp-native.md) §6。
+见 [`rdp-native.md`](rdp-native.md) §6（单一 `presenterSupported` 判定、Vulkan 面、模拟器回落）与
+[`rdp-present.md`](rdp-present.md) §1（上屏后端的选择）。
 
 ## 5. 量测纪律（回放）
 

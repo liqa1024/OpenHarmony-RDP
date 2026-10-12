@@ -99,7 +99,7 @@
   首页的「回放测试」；设置页的「抓取 GFX 码流（测试）」「触屏高刷新率（实验）」「工具栏触发停留时间」
   「工具栏隐藏延迟」；以及两协议会话工具栏的性能遥测（RDP：网络 / 本机 / FPS / 带宽 / 音频 / CPU / GPU；
   Moonlight：网络 / 主机 / 本机 / FPS / 码率；口径分别见 [`rdp-session.md`](rdp-session.md) §5 与
-  [`moonlight-connection.md`](moonlight-connection.md) §7）。关掉它还**一并关闭**
+  [`moonlight-session.md`](moonlight-session.md) §2）。关掉它还**一并关闭**
   已开着的抓取，避免"入口被隐藏、后台还在跑"。它与其余设置一样随导入导出搬运（文件里是什么就还原什么）；
   抓取本身仍只在开发者选项开着时运行。
 - **设置页记忆停留分栏**（`lastSettingsTab`）：设置页三栏（通用 / RDP / Moonlight）进入时回到上次

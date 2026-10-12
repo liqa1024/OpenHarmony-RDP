@@ -91,5 +91,9 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | GFX 码流框架 / 会话侧接线 / 回放与参考画面验收（**改前必读**） | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) |
 | CPU（gdi）链路的判据、账目口径、门禁、并行形态 | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) §7 |
 | 上屏（present）：Vulkan/GLES 后端、脏区上传、零拷贝、超分、swapchain 重建 | [`rdp-present.md`](doc_agent/rdp-present.md) |
-| Moonlight 前端（协议建模、存储、列表/编辑页/应用页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
-| Moonlight 原生（客户端库构建/链接、解码、编解码协商、上屏、HTTP、凭证、配对原语） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |
+| Moonlight 连接前端（协议建模、存储、列表 / 编辑页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
+| Moonlight 主机与应用（发现 / 运行态 / 唤醒 / 应用管理页 / 连接动作走法） | [`moonlight-apps.md`](doc_agent/moonlight-apps.md) |
+| Moonlight 会话（窗口接线 / 工具栏遥测） | [`moonlight-session.md`](doc_agent/moonlight-session.md) |
+| Moonlight 控制 / 配对层（控制端点、配对时序与身份、证书 pin） | [`moonlight-control.md`](doc_agent/moonlight-control.md) |
+| Moonlight 视频（解码 / 上屏 / 编解码协商） | [`moonlight-video.md`](doc_agent/moonlight-video.md) |
+| Moonlight 原生（客户端库构建/链接、桥接、光标 / 触控板 / 音频扩展） | [`moonlight-native.md`](doc_agent/moonlight-native.md) |

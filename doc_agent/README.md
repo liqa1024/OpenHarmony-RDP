@@ -23,10 +23,14 @@
 | 存储分工、密码（ASSET / 系统保险箱）、设置模型（全局默认 + 单连接覆盖）、导入/导出、**设置生效时机** | [`settings-and-storage.md`](settings-and-storage.md) |
 | 原生库构建体系：产物为何不入库、单一构建入口、依赖布局与自检、**补丁体系**、OpenSSL CMake、无版本号 SONAME | [`native-build.md`](native-build.md) |
 | RDP 原生：FreeRDP 补丁内容与编译选项、音频（原生 sink + 交接环 / ArkTS 渲染器）、**设备能力探测（Capability 模式）** | [`rdp-native.md`](rdp-native.md) |
-| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、呈现能力判定、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
+| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
 | 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个后端、脏区上传、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**、swapchain 重建 | [`rdp-present.md`](rdp-present.md) |
-| Moonlight 前端：协议建模、存储布局、连接列表 / 编辑页 / 应用管理页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
-| Moonlight 原生：客户端库构建与共享库链接、视频解码与上屏、编解码协商、桥接与串流会话、控制/配对层协议事实 | [`moonlight-native.md`](moonlight-native.md) |
+| Moonlight 连接前端：协议建模、存储布局、连接列表 / 编辑页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
+| Moonlight 主机与应用：主机发现与可达性三态、唤醒（WoL）、应用管理页、连接动作走法 | [`moonlight-apps.md`](moonlight-apps.md) |
+| Moonlight 会话：会话窗口 / 后端接线、输入落地、工具栏遥测 | [`moonlight-session.md`](moonlight-session.md) |
+| Moonlight 控制 / 配对层（ArkTS）：控制端点、配对时序与身份、证书 pin、标准参数名 | [`moonlight-control.md`](moonlight-control.md) |
+| Moonlight 视频：解码（AVCodec）、两条上屏链路、编解码协商、`STREAM_CONFIGURATION` 落点 | [`moonlight-video.md`](moonlight-video.md) |
+| Moonlight 原生：客户端库构建与共享库链接、桥接层、本地光标 / 原生触控板 / 音频扩展 | [`moonlight-native.md`](moonlight-native.md) |
 
 **跨主题、只有一个家的事实**（别在别处重写）：
 
@@ -35,6 +39,9 @@
 - **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
 - **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`rdp-native.md`](rdp-native.md) 的能力探测。
 - **剪贴板只手动同步、不做自动监听** → [`rdp-clipboard.md`](rdp-clipboard.md)。
+- **Moonlight 默认解码直出 surface、不经呈现器；只有超分链路复用 RDP 的 Vulkan 呈现器** → [`moonlight-video.md`](moonlight-video.md) §2/§5。
+- **Moonlight 是进程级单会话**（`moonlight-common-c` 一次只允许一个连接）→ [`moonlight-native.md`](moonlight-native.md) §2。
+- **Moonlight 主机身份 = serverinfo `uniqueid`（去重）/ pin 按 host 归一化** → [`moonlight-control.md`](moonlight-control.md) §2。
 
 ## 阅读顺序
 
@@ -53,7 +60,11 @@
 | 改 GFX / 解码 / 回放 | [`rdp-gfx.md`](rdp-gfx.md)（**CPU 链路先读 §7**） |
 | 改上屏（present）/ 超分 | [`rdp-present.md`](rdp-present.md) |
 | 改 Moonlight 前端（列表 / 编辑页 / 设置分栏 / 图标） | [`moonlight-connection.md`](moonlight-connection.md) |
-| 改 Moonlight 原生（客户端库 / 解码 / 协商 / 上屏 / 配对原语） | [`moonlight-native.md`](moonlight-native.md) |
+| 改 Moonlight 主机与应用（发现 / 运行态 / 唤醒 / 应用页） | [`moonlight-apps.md`](moonlight-apps.md) |
+| 改 Moonlight 会话 / 遥测 | [`moonlight-session.md`](moonlight-session.md) |
+| 改 Moonlight 控制 / 配对 | [`moonlight-control.md`](moonlight-control.md) |
+| 改 Moonlight 视频（解码 / 上屏 / 协商） | [`moonlight-video.md`](moonlight-video.md) |
+| 改 Moonlight 原生（客户端库 / 桥接 / 光标 / 触控板 / 音频） | [`moonlight-native.md`](moonlight-native.md) |
 
 ## 写作约定
 
