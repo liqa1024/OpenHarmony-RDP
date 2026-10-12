@@ -12,7 +12,9 @@ export class MoonlightCounters {
   bytesPerSec: number = 0;
   // Host frame processing latency, ms (per-frame mean; -1 when the host omits it).
   hostLatencyMs: number = -1;
-  // Local decode round trip, ms (per-frame mean; -1 with no paired frame yet).
+  // Submit -> decoded output round trip, ms (per-frame mean; -1 with no paired
+  // frame yet). Includes codec queue and output-buffer wait, so it bounds the
+  // pure decode cost rather than equal to it.
   decodeMs: number = -1;
   pendingVideoFrames: number = 0;
   // Loss basis points: (FEC failed + out-of-order + invalid) / (video + FEC).

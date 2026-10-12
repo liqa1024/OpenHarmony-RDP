@@ -48,12 +48,16 @@ const METRIC_WIDTH_FPS: number = 62;
 const METRIC_WIDTH_BITRATE: number = 132;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
-// Latency colour thresholds: network RTT warns late (distance-dominated); local
-// decode over WARN misses 60 fps, over BAD even 30 fps.
+// Latency colour thresholds: network RTT warns late (distance-dominated). The
+// two local readings are submit->decoded-output round trips, so they carry codec
+// queue and output-buffer wait on top of the decode cost (see moonlight-video.md
+// §1); colour only past a multiple of the frame period, i.e. when the decoder is
+// clearly over its budget rather than when the round trip includes normal wait.
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
-const LOCAL_WARN_MS: number = 16;
-const LOCAL_BAD_MS: number = 33;
+const LOCAL_FALLBACK_FPS: number = 60;
+const LOCAL_WARN_PERIODS: number = 2;
+const LOCAL_BAD_PERIODS: number = 3;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -398,8 +402,20 @@ struct MoonlightSessionPage {
   }
 
   private localTips(): string {
-    return '本机解码往返（提交→解码出帧）/帧'
-      + '\n在途待解码 ' + this.metricsPending + ' 帧';
+    return '本机解码往返（提交→解码出帧）/帧，含排队与输出缓冲等待'
+      + '\n健康读数接近解码耗时，积压时被放大；在途待解码 ' + this.metricsPending + ' 帧';
+  }
+
+  private localFrameFps(): number {
+    return this.targetFps > 0 ? this.targetFps : LOCAL_FALLBACK_FPS;
+  }
+
+  private localWarnMs(): number {
+    return LOCAL_WARN_PERIODS * 1000 / this.localFrameFps();
+  }
+
+  private localBadMs(): number {
+    return LOCAL_BAD_PERIODS * 1000 / this.localFrameFps();
   }
 
   private fpsLabel(): string {
@@ -422,9 +438,9 @@ struct MoonlightSessionPage {
     fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
       metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), this.rttTips(), 0));
     fields.push(new TelemetryField(this.hostEncodeLabel(), METRIC_WIDTH_HOST,
-      metricColor(this.metricsHostMs, LOCAL_WARN_MS, LOCAL_BAD_MS), '', METRIC_GAP_TIGHT));
+      metricColor(this.metricsHostMs, this.localWarnMs(), this.localBadMs()), '', METRIC_GAP_TIGHT));
     fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
-      metricColor(this.metricsDecodeMs, LOCAL_WARN_MS, LOCAL_BAD_MS), this.localTips(),
+      metricColor(this.metricsDecodeMs, this.localWarnMs(), this.localBadMs()), this.localTips(),
       METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS,
       TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
