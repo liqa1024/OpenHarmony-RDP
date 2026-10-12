@@ -192,12 +192,20 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     不消失的触点视觉。应用侧只需保证 Down/Up 成对、**不给同一手指重复下发 DOWN**；合并后的合法性由
     协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。
+- **鼠标滚轮**（非触控板的轴事件）：轴值是**角度**，与触控板**同一条累加路径**——按 ArkUI 自己的换算折成
+  px 后交给同一 `TouchpadWheelMapper`：1 度 → `LINE_HEIGHT_DESKTOP/MOUSE_WHEEL_DEGREES`（=21/15）vp，
+  再 `× dipScale` 折成 px（ArkUI 的 `Dimension.ConvertToPx()`；本端取 `defaultDisplay().densityPixels`，
+  见 `SessionInput.pxPerVp()`）。故与触控板同口径（1 px = 1 远端 px）且**保留高分辨率**（亚齿/多齿不丢）。
+  **不读 `scrollStep`**：本机每齿行数已折在轴值里（MMI `rows × libinput` 每齿），故本机调快则远端同步变快。
+  滚轮用独立 mapper，不受「触控板滚动速度」设置影响。
 - **触控板双指滚动**（`sourceTool === TOUCHPAD`）：`axisVertical/Horizontal` 是本次事件的 **vp 位移**
   而非轮齿 ⇒ `services/TouchpadWheel.ets` 按 `120/(3行×16px) × 速度倍率` 累加成高分辨率轮转量。
   口径是 **「1 vp 位移 = 1 远端 px」**：Windows 默认 1 齿滚 3 行（`SPI_GETWHEELSCROLLLINES`）、
   默认 UI 行高约 16px，故 1 齿对应 48vp；该比例是**内容口径**，与窗口/画面尺寸无关——缩小窗口
   不应改变手感，故不按画面缩放折算。远端为非常规行高/每齿行数属用户或应用有意设置，不探测、不纠正。
-  设置「滚动速度」只缩放轮转量、不改变发射粒度。
+  设置「滚动速度」只缩放轮转量、不改变发射粒度。**注意原生触控板的轴值在 MMI 侧先过一条按滑动速度分段的
+  「加速曲线」**（`service/mouse_event_normalize` → Rust `get_axis_gain_touchpad`，非捕获模式直接以曲线值替换
+  轴值），故**原生触控板滚动是非线性的**（滚轮轴值无此加速）——线性映射只能对齐某一速度档。
 - **触控板捏合**（设置「触控板两指捏合模式」，三选一）：
   - **Ctrl+滚轮**（默认）：按 `1/(20×速度)` 线性映射为 **Ctrl+滚轮**（「缩放速度」），由远端应用自己缩放。
   - **触摸模拟**：在鼠标位置**合成两个原生触点**做真实双指缩放——距离 1:1、初始间距取窗口较短边的百分比

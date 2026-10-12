@@ -2,10 +2,11 @@ import { inputDevice } from '@kit.InputKit';
 import { KeyMapping, KeyMapper } from '../utils/KeyMapper';
 import { RdpLockFlags } from '../model/RdpModels';
 import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE,
-  TouchpadWheelMapper, WheelChunk, WHEEL_DETENT } from './TouchpadWheel';
+  TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, WHEEL_VP_PER_DEGREE } from './TouchpadWheel';
 import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM } from './SettingsStore';
 import { TouchpadTapFilter, TouchpadTapTarget } from './TouchpadTapFilter';
+import { defaultDisplay } from '../utils/DisplayUtil';
 
 export class InputButton {
   static readonly LEFT: number = 1;
@@ -141,6 +142,9 @@ export class SessionInput implements TouchpadTapTarget {
   private pendingCancelIds: number[] = [];
   private cancelTimers: Map<number, number> = new Map<number, number>();
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
+  // Mouse wheel keeps its own mapper: it is not the touchpad, so the touchpad speed setting does not apply.
+  private wheelMapper: TouchpadWheelMapper = new TouchpadWheelMapper();
+  private wheelPxPerVp: number = 0;
   private wheelChunks: WheelChunk[] = [];
   private touchpadMiddleDoubleTap: boolean = false;
   private touchpadTap: TouchpadTapFilter;
@@ -375,6 +379,7 @@ export class SessionInput implements TouchpadTapTarget {
     }
     if (event.action === AxisAction.BEGIN) {
       this.touchpadWheel.reset();
+      this.wheelMapper.reset();
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
@@ -382,10 +387,15 @@ export class SessionInput implements TouchpadTapTarget {
       return;
     }
     if (this.isTouchpad(event.deviceId, event.sourceTool)) {
-      this.handleTouchpadScroll(vertical, horizontal, this.pointMapper(event.x, event.y));
-    } else if (vertical !== 0) {
-      const point: number[] = this.pointMapper(event.x, event.y);
-      this.sink.scroll(vertical < 0 ? WHEEL_DETENT : -WHEEL_DETENT, 0, point[0], point[1]);
+      this.handleWheelScroll(this.touchpadWheel, vertical, horizontal, this.pointMapper(event.x, event.y));
+    } else {
+      // Wheel axis is in degrees; ArkUI turns one degree into LINE_HEIGHT_DESKTOP / MOUSE_WHEEL_DEGREES
+      // vp and then that vp into px (x density), so fold both in to share the touchpad's px口径 and
+      // keep high-resolution deltas. The host wheel-speed setting rides in the axis value, so
+      // scrollStep is not read; the remote follows it implicitly.
+      const scale: number = WHEEL_VP_PER_DEGREE * this.pxPerVp();
+      this.handleWheelScroll(this.wheelMapper, vertical * scale, horizontal * scale,
+        this.pointMapper(event.x, event.y));
     }
   }
 
@@ -475,9 +485,18 @@ export class SessionInput implements TouchpadTapTarget {
     this.handleButton(InputAction.RELEASE, button, x, y);
   }
 
-  private handleTouchpadScroll(vertical: number, horizontal: number, point: number[]): void {
+  private pxPerVp(): number {
+    if (this.wheelPxPerVp <= 0) {
+      const disp = defaultDisplay();
+      this.wheelPxPerVp = disp !== undefined && disp.densityPixels > 0 ? disp.densityPixels : 1;
+    }
+    return this.wheelPxPerVp;
+  }
+
+  private handleWheelScroll(mapper: TouchpadWheelMapper, vertical: number, horizontal: number,
+    point: number[]): void {
     this.wheelChunks.length = 0;
-    this.touchpadWheel.map(vertical, horizontal, this.wheelChunks);
+    mapper.map(vertical, horizontal, this.wheelChunks);
     let wheelV: number = 0;
     let wheelH: number = 0;
     for (let i = 0; i < this.wheelChunks.length; i++) {
