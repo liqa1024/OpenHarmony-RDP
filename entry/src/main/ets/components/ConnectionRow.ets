@@ -3,7 +3,8 @@ import { ConnectAction, connectActionLabel, HostPower, RdpConnection, RowMenuAct
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { connectActionFor } from '../utils/ConnectAction';
-import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
+import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition }
+  from '../utils/UiMotion';
 
 @Component
 export struct ConnectionRow {
@@ -215,6 +216,7 @@ export struct ConnectionRow {
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
+                .transition(fadeTransition())
             } else if (this.action() === ConnectAction.Resume) {
               // The host is already running the app this row would open.
               Text('运行中')
@@ -224,6 +226,7 @@ export struct ConnectionRow {
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
+                .transition(fadeTransition())
             }
           }
           if (this.conn.subtitle().length > 0) {
@@ -262,6 +265,7 @@ export struct ConnectionRow {
         .margin({ left: 8 })
         .scale(hoverPressScale(this.appHovered, this.appPressed))
         .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
+        .transition(popTransition())
         .onHover((isHover: boolean) => {
           this.appHovered = isHover;
           if (!isHover) {
@@ -287,17 +291,20 @@ export struct ConnectionRow {
             .width(24)
             .height(24)
             .color('#FFFFFF')
+            .transition(TransitionEffect.IDENTITY)
         } else if (this.hostDown() && this.waking) {
           LoadingProgress()
             .width(24)
             .height(24)
             .color('#FFFFFF')
+            .transition(TransitionEffect.IDENTITY)
         } else if (this.hostDown() && this.probing
           && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
           LoadingProgress()
             .width(24)
             .height(24)
             .color('#FFFFFF')
+            .transition(TransitionEffect.IDENTITY)
         } else if (this.hostDown()
           && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
           Image($r('app.media.ic_refresh'))
@@ -305,12 +312,14 @@ export struct ConnectionRow {
             .height(24)
             .fillColor('#FFFFFF')
             .draggable(false)
+            .transition(fadeTransition())
         } else if (this.hostDown()) {
           Image($r('app.media.ic_power'))
             .width(28)
             .height(28)
             .fillColor('#FFFFFF')
             .draggable(false)
+            .transition(fadeTransition())
         } else if (this.primary() === ConnectAction.Terminate
           || this.primary() === ConnectAction.Disconnect) {
           Image($r('app.media.ic_stop'))
@@ -318,12 +327,14 @@ export struct ConnectionRow {
             .height(22)
             .fillColor('#FFFFFF')
             .draggable(false)
+            .transition(fadeTransition())
         } else {
           Image($r('app.media.ic_play'))
             .width(22)
             .height(22)
             .fillColor('#FFFFFF')
             .draggable(false)
+            .transition(fadeTransition())
         }
       }
       .width(44)
