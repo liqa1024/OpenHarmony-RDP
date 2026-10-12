@@ -98,6 +98,7 @@ struct MoonlightSessionPage {
   @State revealHintFill: number = 0;
   @State isFullscreen: boolean = false;
   @State probeActive: boolean = false;
+  @State probeNearPointer: boolean = false;
   @State probeP1X: number = 0.5;
   @State probeP1Y: number = 0.5;
   @State probeP2X: number = 0.5;
@@ -691,11 +692,13 @@ struct MoonlightSessionPage {
         if (this.developerMode) {
           Column() {
             PinchProbeOverlay({
-              active: this.probeActive,
               p1x: this.probeP1X,
               p1y: this.probeP1Y,
               p2x: this.probeP2X,
-              p2y: this.probeP2Y
+              p2y: this.probeP2Y,
+              onHoverChange: (hover: boolean): void => {
+                this.probeNearPointer = hover;
+              }
             })
           }
           .width('100%')
@@ -704,6 +707,8 @@ struct MoonlightSessionPage {
           .alignItems(HorizontalAlign.Start)
           .padding({ left: 12, bottom: 12 })
           .hitTestBehavior(HitTestMode.None)
+          // Marks a live pinch only; yields to the pointer so it never sits under the cursor.
+          .opacity(this.probeActive && !this.probeNearPointer ? 1 : 0)
         }
 
         if (this.isFullscreen && this.state === ConnectionState.Connected) {

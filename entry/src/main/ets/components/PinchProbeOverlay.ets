@@ -4,13 +4,14 @@ const PROBE_DOT: number = 10;
 
 // Debug overlay: draws the synthesized pinch contacts (normalized to their channel
 // surface) on a small virtual touchpad so the simulation can be inspected visually.
+// Transparent hit test only to report pointer proximity; it never consumes input.
 @Component
 export struct PinchProbeOverlay {
-  @Prop active: boolean = false;
   @Prop p1x: number = 0.5;
   @Prop p1y: number = 0.5;
   @Prop p2x: number = 0.5;
   @Prop p2y: number = 0.5;
+  onHoverChange: (hover: boolean) => void = (): void => {};
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -36,6 +37,9 @@ export struct PinchProbeOverlay {
     }
     .width(PROBE_WIDTH)
     .height(PROBE_HEIGHT)
-    .opacity(this.active ? 1 : 0.35)
+    .hitTestBehavior(HitTestMode.Transparent)
+    .onHover((isHover: boolean) => {
+      this.onHoverChange(isHover);
+    })
   }
 }
