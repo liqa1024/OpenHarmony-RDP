@@ -164,6 +164,10 @@ void Run(const MoonlightStreamConfig& config) {
         return g_stopRequested.load() || g_terminated.load();
       });
     }
+    // Ordering matters: disable while the control stream is still up.
+    if (config.localCursorMode) {
+      LiSetLocalCursorMode(false);
+    }
     LiStopConnection();
     HMRDP_LOGI("moonlight session: LiStopConnection done");
   } else if (!g_stopRequested && !g_terminated) {
