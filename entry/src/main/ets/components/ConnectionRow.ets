@@ -105,7 +105,7 @@ export struct ConnectionRow {
       return $r('app.color.neutral');
     }
     return this.power === HostPower.Offline
-      ? $r('app.color.success') : $r('app.color.accent');
+      ? $r('app.color.wake') : $r('app.color.accent');
   }
 
   private primaryTap(): void {

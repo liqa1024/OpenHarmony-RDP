@@ -69,6 +69,10 @@
       "value": "#E6F6EC"
     },
     {
+      "name": "wake",
+      "value": "#2E9E5B"
+    },
+    {
       "name": "hover_bg",
       "value": "#E7E9ED"
     },

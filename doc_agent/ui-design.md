@@ -51,14 +51,16 @@
 | `accent_bg` | `#E6EEFF` | `#12233F` | 信息态徽标底（「运行中」） |
 | `danger` | `#E84026` | `#F05A40` | 破坏性动作、已连接态圆钮 |
 | `success` / `success_bg` | `#2E9E5B` / `#E6F6EC` | `#4CC77A` / `#17301F` | 「已连接」状态徽标 |
+| `wake` | `#2E9E5B` | `#2FA05C` | 离线行「唤醒」钮底（深绿） |
 | `hover_bg` | `#E7E9ED` | `#2E2E32` | 悬停底（图标按钮、chip） |
-| `neutral` / `neutral_hover` | `#6E737B` / `#5A5F67` | `#4A4F57` / `#5A606A` | 实心中性动作钮（Moonlight 行的「应用」钮；与 accent / danger 并列为第三种动作色） |
+| `neutral` / `neutral_hover` | `#6E737B` / `#5A5F67` | `#8A8F98` / `#9298A2` | 实心中性动作钮（Moonlight 行的「应用」钮；与 accent / danger 并列为第三种动作色） |
 | `star_on` | `#FFB300` | `#FFCA28` | 五角星选中填充（应用页「设为默认」的星标；未选中用 `text_primary`） |
 
 约束：
 
 - 需要**深色变体**的 SVG 图标放 `resources/dark/media/`（同名覆盖 base）。
 - **除会话工具栏外不硬编码颜色**；`'#FFFFFF'`（选中 chip 文字、叠在 poster 上的徽标 / 图标）、`Color.Transparent`（未选中页签下划线）是允许的例外。
+- **实心动作钮（`accent` / `danger` / `neutral` / `wake`，白图标）的深色版统一落在「白字对比 ≈3.3」这条带**：深底上不需要更高对比，各钮视觉轻重才一致。故 `wake` 深色取**同带深绿**（不照字体色那样大幅提亮），`neutral` 深色比浅色**更浅**（灰钮不反向做暗）。
 - 选中态 chip 固定用「`accent` 底 + `#FFFFFF` 字」，不随主题切换为别的组合。
 
 ### 1.2 会话工具栏固定深色调色板（**不随主题**）
@@ -158,7 +160,7 @@ Column(page_bg, 100%×100%)
 - 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，「已连接」用 `success` / `success_bg`，「运行中」用 `accent` / `accent_bg`）、副标题 `12` `text_tertiary`。
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
 - **主机不可达时（仅 Moonlight 行；未知 / 离线 / 服务未起三态）**：协议图标降不透明度（`0.45`）、隐藏应用钮，动作钮改为
-  「刷新」（未知 / 服务未起，`ic_refresh`）/「唤醒」（离线，`ic_power` 画在 `accent` 上；**无 mac 或本机不在主机网段**时
+  「刷新」（未知 / 服务未起，`ic_refresh`）/「唤醒」（离线，`ic_power` 画在 `wake`（深绿）上；**无 mac 或本机不在主机网段**时
   neutral 底 + `0.5` 不透明度且不可点）；
   **刷新钮**探测在途时换 `LoadingProgress`（含页面进入的自动兜底），**唤醒钮**不换加载态（其置灰与否随探测出的网段更新）；
   唤醒后的**开机检测期间**同样换 `LoadingProgress`（同「连接中」，再点取消检测）。服务未起的悬停提示为

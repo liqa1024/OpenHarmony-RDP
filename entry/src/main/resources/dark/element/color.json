@@ -50,11 +50,11 @@
     },
     {
       "name": "neutral",
-      "value": "#4A4F57"
+      "value": "#8A8F98"
     },
     {
       "name": "neutral_hover",
-      "value": "#5A606A"
+      "value": "#9298A2"
     },
     {
       "name": "danger",
@@ -67,6 +67,10 @@
     {
       "name": "success_bg",
       "value": "#17301F"
+    },
+    {
+      "name": "wake",
+      "value": "#2FA05C"
     },
     {
       "name": "hover_bg",
