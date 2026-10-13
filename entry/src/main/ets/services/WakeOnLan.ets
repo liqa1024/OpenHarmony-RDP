@@ -26,6 +26,11 @@ export class WakeSendResult {
 
 class HostNetScan {
   handle: connection.NetHandle | undefined = undefined;
+  // The network list was readable; without this a "no match" cannot be told from
+  // an API failure.
+  listOk: boolean = false;
+  // The list had at least one connected network; an empty list means no network.
+  sawNetwork: boolean = false;
   // At least one local IPv4 was readable, so "no match" means off-LAN, not "unknown".
   inspected: boolean = false;
 }
@@ -68,7 +73,13 @@ export class WakeOnLan {
     if (scan.handle !== undefined) {
       return WakeReachability.SameLan;
     }
-    return scan.inspected ? WakeReachability.OffLan : WakeReachability.Unknown;
+    if (!scan.listOk) {
+      return WakeReachability.Unknown;
+    }
+    if (scan.inspected || !scan.sawNetwork) {
+      return WakeReachability.OffLan;
+    }
+    return WakeReachability.Unknown;
   }
 
   // True only means the datagrams were sent; the host may still ignore them.
@@ -109,12 +120,23 @@ export class WakeOnLan {
 
   private static async scanHostNet(host: string): Promise<HostNetScan> {
     const scan: HostNetScan = new HostNetScan();
+    let nets: connection.NetHandle[] = [];
+    try {
+      nets = await connection.getAllNets();
+    } catch (error) {
+      hilog.debug(DOMAIN, TAG, 'list nets failed: %{public}s', JSON.stringify(error));
+      return scan;
+    }
+    scan.listOk = true;
+    scan.sawNetwork = nets.length > 0;
+    if (!scan.sawNetwork) {
+      return scan;
+    }
     const hostIp: number = await WakeOnLan.resolveIpv4(host);
     if (hostIp < 0) {
       return scan;
     }
     try {
-      const nets: connection.NetHandle[] = await connection.getAllNets();
       for (let i = 0; i < nets.length; i++) {
         const props: connection.ConnectionProperties =
           await connection.getConnectionProperties(nets[i]);
