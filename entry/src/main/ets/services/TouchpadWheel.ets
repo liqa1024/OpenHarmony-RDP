@@ -11,6 +11,13 @@ const SCROLL_CALIBRATION: number = 4;
 // degree -> vp step, which the mapper's vp口径 then shares unchanged).
 export const WHEEL_VP_PER_DEGREE: number = 21 / 15;
 
+// Two-finger travel the host's precision touchpad needs per remote notch. The mm -> scroll gain is
+// Windows-side (PT curve plus the host's scroll/scale settings), so this is measured end to end
+// (~4.8 mm/notch) rather than derived; see doc_agent/session-layer.md §8.
+const TOUCHPAD_PAN_MM_PER_DETENT: number = 4.8;
+export const TOUCHPAD_PAN_MM_PER_AXIS_PX: number =
+  TOUCHPAD_PAN_MM_PER_DETENT / (REMOTE_PX_PER_DETENT * SCROLL_CALIBRATION);
+
 export const MIN_SPEED_SCALE: number = 0.2;
 export const MAX_SPEED_SCALE: number = 4;
 export const DEFAULT_SPEED_SCALE: number = 1;

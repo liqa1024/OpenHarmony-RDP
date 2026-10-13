@@ -29,7 +29,7 @@ import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/Moo
 import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
-import { showToast } from '../utils/UiUtil';
+import { showNotice, showToast } from '../utils/UiUtil';
 import { ClipboardButtons, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
@@ -97,6 +97,9 @@ struct MoonlightSessionPage {
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
+  private touchpadAlwaysEngine: boolean = false;
+  private nativeTouchpadSupported: boolean = false;
+  private vmouseHintShown: boolean = false;
   private enginePointerX: number = 0;
   private enginePointerY: number = 0;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
@@ -176,6 +179,8 @@ struct MoonlightSessionPage {
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
     this.scrollEngine = !settings.scrollEngineFallback;
+    this.touchpadAlwaysEngine = settings.mlTouchpadScrollAlwaysEngine;
+    this.vmouseHintShown = settings.mlVmouseHintShown;
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
       : TOOLBAR_ROW_HEIGHT;
@@ -368,6 +373,9 @@ struct MoonlightSessionPage {
       const input: SessionInput | undefined = this.shell?.sessionInput();
       input?.setTouchEnabled(touchSupported);
       input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
+      this.nativeTouchpadSupported = nativeTouchpadSupported;
+      input?.setTouchpadPanEnabled(!this.touchpadAlwaysEngine && nativeTouchpadSupported);
+      this.suggestVmouseOff(nativeTouchpadSupported);
       this.startMetricsTimer();
       this.startAudio();
       return;
@@ -524,6 +532,19 @@ struct MoonlightSessionPage {
       return PINCH_MODE_WHEEL;
     }
     return this.mlPinchMode;
+  }
+
+  // 0x20 is the only base-version marker a client can read; whether the host's virtual mouse driver is
+  // on cannot be probed (see doc_agent/moonlight-native.md §2.2), hence a one-time suggestion.
+  private suggestVmouseOff(nativeTouchpadSupported: boolean): void {
+    if (!nativeTouchpadSupported || this.vmouseHintShown) {
+      return;
+    }
+    this.vmouseHintShown = true;
+    SettingsStore.rememberVmouseHintShown();
+    showNotice(this.getUIContext(), '触控板滚动建议',
+      '主机若开启「虚拟鼠标驱动」，触控板滚动会被整成整齿。\n'
+        + '建议在主机 GUI 关闭它（或把鼠标模式设为 SendInput），再到设置里开启「总是使用系统滑动组件」。');
   }
 
   private onSurfaceCreated(surfaceId: string, width: number, height: number): void {

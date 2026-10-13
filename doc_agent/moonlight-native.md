@@ -148,6 +148,18 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
 - **接线**：Moonlight 的捏合模式可选「原生转发」；选中且主机广告帧能力时，`SessionInput` 走
   `InputSink.touchpadFrame`（合成两个触点——鸿蒙不向应用暴露触控板真实触点），否则与「Ctrl+滚轮 / 触摸模拟」
   一样回退。N-API 出口 `moonlightTouchpad`。
+- **触控板双指滚动默认走这条触点通道**：协议里**没有**"触控板滚动包"（滚动只有滚轮 `SCROLL_MAGIC*` /
+  `SS_HSCROLL_MAGIC`，触控板只有本扩展的触点包），所以在广告 `LI_FF_TOUCHPAD_FRAME_EVENTS(0x20)` 的主机上，
+  双指滚动被合成成一对平行平移的触点，物理交给 Windows 原生触控板；「总是使用系统滑动组件」
+  （`mlTouchpadScrollAlwaysEngine`，默认关）或主机无该能力位时，回退为系统滚动组件 + 滚轮通道。
+  等效速度靠一个平移比例常量标定（轴值已含本机加速曲线，故链路是「MMI 曲线 → Windows 原生触控板」两层），
+  方向 / 行程 / 惯性属真机判据。
+- **滚轮落点上限（主机侧，客户端不可探测）**：基地版的「虚拟鼠标驱动」（GUI「输入驱动管理」，`virtual_mouse`，默认启用）
+  经 ZakoVirtualMouse HID 注入鼠标，而该驱动的 Wheel 只有 `-127..127`（整齿）⇒ 亚齿量在主机侧被按 120 累加成整齿
+  （`platform/windows/input.cpp` 的 `scroll()` / `hscroll()`）；`high_resolution_scrolling`（默认 enabled）在 HID 通路下
+  只决定"谁在累加"，不改变终点粒度，只有「鼠标模式 = SendInput」或关掉该驱动才透传亚齿。**一般 Sunshine / GFE 没有
+  这条通路**（平台能力位只有 pen/touch 与 controller touch，滚轮直发 SendInput）⇒ 与 RDP 同构：滚动只有滚轮一条通道，
+  鼠标滚轮与触控板滚动不可区分。该开关在 serverinfo / SDP / launch 中都无字段，客户端只能按标记位（如 `0x20`）首次给一次建议。
 
 ### 2.3 音频（Opus 解码 → 交接环 → ArkTS 渲染器 / 原生 OHAudio 低延迟）
 

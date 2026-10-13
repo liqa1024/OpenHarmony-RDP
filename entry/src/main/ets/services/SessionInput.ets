@@ -2,8 +2,8 @@ import { inputDevice } from '@kit.InputKit';
 import { KeyMapping, KeyMapper } from '../utils/KeyMapper';
 import { RdpLockFlags } from '../model/RdpModels';
 import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE,
-  MAX_SPEED_SCALE, MIN_SPEED_SCALE, TouchpadWheelMapper, WheelChunk, WHEEL_DETENT,
-  WHEEL_VP_PER_DEGREE } from './TouchpadWheel';
+  MAX_SPEED_SCALE, MIN_SPEED_SCALE, TOUCHPAD_PAN_MM_PER_AXIS_PX, TouchpadWheelMapper, WheelChunk,
+  WHEEL_DETENT, WHEEL_VP_PER_DEGREE } from './TouchpadWheel';
 import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM } from './SettingsStore';
 import { TouchpadTapFilter, TouchpadTapTarget } from './TouchpadTapFilter';
@@ -89,6 +89,13 @@ const NATIVE_PINCH_BASE_PERCENT: number = 20;
 const NATIVE_PINCH_ANGLE_DEG: number = 45;
 const TOUCHPAD_WIDTH_MM: number = 100;
 const TOUCHPAD_HEIGHT_MM: number = 70;
+// Host precision-touchpad pan: the pair re-touches at the middle when the declared pad runs out.
+const TOUCHPAD_PAN_FINGER_MM: number = 25;
+const TOUCHPAD_PAN_SAFE_HALF: number = 0.35;
+const TOUCHPAD_PAN_END_GRACE_MS: number = 60;
+const TOUCHPAD_PAN_CENTER: number = 0.5;
+const TOUCHPAD_PAN_ID_A: number = 30;
+const TOUCHPAD_PAN_ID_B: number = 31;
 // axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot explode or collapse the separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
@@ -136,6 +143,11 @@ export class SessionInput implements TouchpadTapTarget {
   private wheelPxPerVp: number = 0;
   private wheelChunks: WheelChunk[] = [];
   private touchpadMiddleDoubleTap: boolean = false;
+  private touchpadPan: boolean = false;
+  private panActive: boolean = false;
+  private panX: number = TOUCHPAD_PAN_CENTER;
+  private panY: number = TOUCHPAD_PAN_CENTER;
+  private panEndTimer: number = -1;
   private touchpadTap: TouchpadTapFilter;
   private touchpadDevices: Map<number, boolean> = new Map<number, boolean>();
   private pinchMode: number = PINCH_MODE_WHEEL;
@@ -194,6 +206,7 @@ export class SessionInput implements TouchpadTapTarget {
       inputDevice.off('change', this.deviceChangeListener);
     } catch (error) {
     }
+    this.endTouchpadPan();
     this.endPinch();
     this.touchpadTap.reset();
   }
@@ -350,6 +363,9 @@ export class SessionInput implements TouchpadTapTarget {
   handleAxis(event: AxisEvent): void {
     const isPinch: boolean = SessionInput.isPinchEvent(event);
     if (isPinch || this.pinchActive) {
+      if (isPinch) {
+        this.endTouchpadPan();
+      }
       if (event.action === AxisAction.END) {
         this.endPinch();
         return;
@@ -360,7 +376,11 @@ export class SessionInput implements TouchpadTapTarget {
       return;
     }
     const touchpad: boolean = this.isTouchpad(event.deviceId, event.sourceTool);
+    const panning: boolean = this.touchpadPan && touchpad;
     if (event.action === AxisAction.END || event.action === AxisAction.CANCEL) {
+      if (panning) {
+        this.scheduleTouchpadPanEnd();
+      }
       return;
     }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
@@ -369,6 +389,7 @@ export class SessionInput implements TouchpadTapTarget {
     if (event.action === AxisAction.BEGIN) {
       this.touchpadWheel.reset();
       this.wheelMapper.reset();
+      this.cancelTouchpadPanEnd();
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
@@ -376,6 +397,10 @@ export class SessionInput implements TouchpadTapTarget {
       return;
     }
     const point: number[] = this.pointMapper(event.x, event.y);
+    if (panning) {
+      this.handleTouchpadPan(vertical, horizontal);
+      return;
+    }
     if (touchpad) {
       // Touchpad axis is content px; the mapper is vp, so fold the density in here.
       const pxPerVp: number = this.pxPerVp();
@@ -395,10 +420,11 @@ export class SessionInput implements TouchpadTapTarget {
   }
 
   // Per frame, on input state the next event refreshes — never latched to a gesture, which the engine
-  // can end silently (see doc_agent/session-layer.md §8). A direct touch contact or a pinch owns the
-  // frames instead.
+  // can end silently (see doc_agent/session-layer.md §8). A direct touch contact, a pinch, or a
+  // touchpad gesture the pan channel took over owns the frames instead.
   engineAcceptsFrame(): boolean {
-    return !(this.touchContactAt > this.engineAxisAt) && !this.pinchActive;
+    return !(this.touchContactAt > this.engineAxisAt) && !this.pinchActive
+      && !(this.touchpadPan && this.engineTouchpad);
   }
 
   // The overlay reports (x, y) in vp, one component per axis overlay; the mapper takes (vertical,
@@ -412,9 +438,20 @@ export class SessionInput implements TouchpadTapTarget {
     this.engineEnabled = enabled;
   }
 
-  // The engine owns the wheel/touchpad axes while it is mounted; pinch keeps to the shared pipeline.
+  // Touchpad scroll rides the host's precision-touchpad channel when the host advertises it.
+  setTouchpadPanEnabled(enabled: boolean): void {
+    this.touchpadPan = enabled;
+    if (!enabled) {
+      this.endTouchpadPan();
+    }
+  }
+
+  // The engine owns the wheel axis; a pan-mode touchpad gesture and pinch keep to the shared pipeline.
   consumesAxis(event: AxisEvent): boolean {
     if (!this.engineEnabled || SessionInput.isPinchEvent(event)) {
+      return false;
+    }
+    if (this.touchpadPan && this.isTouchpad(event.deviceId, event.sourceTool)) {
       return false;
     }
     return (event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0;
@@ -476,6 +513,7 @@ export class SessionInput implements TouchpadTapTarget {
     });
     this.heldButtons.clear();
     this.releaseAllTouches();
+    this.endTouchpadPan();
     this.endPinch();
     this.touchpadTap.reset();
   }
@@ -520,6 +558,72 @@ export class SessionInput implements TouchpadTapTarget {
       this.wheelPxPerVp = disp !== undefined && disp.densityPixels > 0 ? disp.densityPixels : 1;
     }
     return this.wheelPxPerVp;
+  }
+
+  // Sign pair verified on device; flip both together if a host scrolls the wrong way.
+  private handleTouchpadPan(vertical: number, horizontal: number): void {
+    this.cancelTouchpadPanEnd();
+    if (!this.panActive) {
+      this.panX = TOUCHPAD_PAN_CENTER;
+      this.panY = TOUCHPAD_PAN_CENTER;
+      this.panActive = true;
+      this.sendTouchpadPanFrame(TouchPhase.DOWN);
+    }
+    const nextX: number = this.panX - horizontal * TOUCHPAD_PAN_MM_PER_AXIS_PX / TOUCHPAD_WIDTH_MM;
+    const nextY: number = this.panY - vertical * TOUCHPAD_PAN_MM_PER_AXIS_PX / TOUCHPAD_HEIGHT_MM;
+    if (Math.abs(nextX - TOUCHPAD_PAN_CENTER) > TOUCHPAD_PAN_SAFE_HALF
+      || Math.abs(nextY - TOUCHPAD_PAN_CENTER) > TOUCHPAD_PAN_SAFE_HALF) {
+      this.sendTouchpadPanFrame(TouchPhase.UP);
+      this.panX = TOUCHPAD_PAN_CENTER;
+      this.panY = TOUCHPAD_PAN_CENTER;
+      this.sendTouchpadPanFrame(TouchPhase.DOWN);
+      return;
+    }
+    this.panX = nextX;
+    this.panY = nextY;
+    this.sendTouchpadPanFrame(TouchPhase.MOVE);
+  }
+
+  private sendTouchpadPanFrame(phase: number): void {
+    const halfX: number = TOUCHPAD_PAN_FINGER_MM / 2 / TOUCHPAD_WIDTH_MM;
+    const x1: number = SessionInput.clamp01(this.panX - halfX);
+    const x2: number = SessionInput.clamp01(this.panX + halfX);
+    const contacts: TouchpadContact[] = [
+      TouchpadContact.of(phase, TOUCHPAD_PAN_ID_A, x1, this.panY, 0),
+      TouchpadContact.of(phase, TOUCHPAD_PAN_ID_B, x2, this.panY, 0)
+    ];
+    this.sink.touchpadFrame(contacts, 0, TOUCHPAD_WIDTH_MM, TOUCHPAD_HEIGHT_MM);
+    // The dev overlay draws whatever contact pair the channel just synthesized, pan included.
+    this.probePinch(phase !== TouchPhase.UP, x1, this.panY, x2, this.panY);
+  }
+
+  // A flapping begin/end stream must not lift the fingers between events, so the lift waits out a
+  // short grace the next axis event cancels.
+  private scheduleTouchpadPanEnd(): void {
+    if (!this.panActive || this.panEndTimer !== -1) {
+      return;
+    }
+    this.panEndTimer = setTimeout(() => {
+      this.panEndTimer = -1;
+      this.endTouchpadPan();
+    }, TOUCHPAD_PAN_END_GRACE_MS);
+  }
+
+  private cancelTouchpadPanEnd(): void {
+    if (this.panEndTimer !== -1) {
+      clearTimeout(this.panEndTimer);
+      this.panEndTimer = -1;
+    }
+  }
+
+  private endTouchpadPan(): void {
+    this.cancelTouchpadPanEnd();
+    if (!this.panActive) {
+      return;
+    }
+    this.panActive = false;
+    this.sendTouchpadPanFrame(TouchPhase.UP);
+    this.probePinch(false, 0, 0, 0, 0);
   }
 
   private handleWheelScroll(mapper: TouchpadWheelMapper, vertical: number, horizontal: number,

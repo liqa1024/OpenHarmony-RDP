@@ -323,6 +323,8 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'lastSettingsTab', settings.lastSettingsTab);
     settings.mlTouchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
+    settings.mlTouchpadScrollAlwaysEngine = ConfigTransfer.readBoolean(rec,
+      'mlTouchpadScrollAlwaysEngine', settings.mlTouchpadScrollAlwaysEngine);
     settings.mlPinchZoomSpeed =
       ConfigTransfer.readNumber(rec, 'mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
     settings.mlTouchpadMiddleDoubleTap = ConfigTransfer.readBoolean(rec,
