@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <!-- userSpaceOnUse: the carve and the sector lines sample the exact background
-         colour at their own position, so there is no seam against the gradient. -->
+    <!-- userSpaceOnUse: the sector lines sample the exact background colour at their
+         own position, so there is no seam against the gradient. -->
     <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="358" y2="1024">
       <stop offset="0" stop-color="#8B5CF6"/>
       <stop offset="1" stop-color="#6D28D9"/>
@@ -14,8 +14,7 @@
     <path d="M554 715 L554 802"/>
     <path d="M362 802 L662 802"/>
   </g>
-  <!-- Monochrome Moonlight mark: a white disc split into eight sectors, carved by
-       an offset disc into a crescent. -->
+  <!-- Monochrome Moonlight mark: a white disc split into eight sectors. -->
   <g fill="#FFFFFF">
     <path d="M512 472 L512 337 A135 135 0 0 1 607.5 376.5 Z"/>
     <path d="M512 472 L607.5 376.5 A135 135 0 0 1 647 472 Z"/>
@@ -32,5 +31,4 @@
     <path d="M416.5 376.5 L607.5 567.5"/>
     <path d="M416.5 567.5 L607.5 376.5"/>
   </g>
-  <circle cx="588" cy="396" r="88" fill="url(#bg)"/>
 </svg>

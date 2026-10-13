@@ -144,8 +144,8 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   写 `<text>` 在网页预览能看到、在上屏里不会出现。
 - RDP 卡片用原有「显示器 + 信号」图标（`ic_remote_desktop`）。
 - Moonlight 卡片用 `ic_proto_moonlight`：紫色底 + 白色显示器轮廓 + **纯白 8 分格圆盘**，
-  再用一枚偏移圆形成缺口（新月）。缺口与分割线用 `userSpaceOnUse` 的线性渐变填充，
-  按用户坐标取色，因此与背景渐变**零色差、无接缝**（不需要 mask，也不必用黑底或灰阶）。
+  分割线用 `userSpaceOnUse` 的线性渐变填充，按用户坐标取色，因此与背景渐变**零色差、无接缝**
+  （不需要 mask，也不必用黑底或灰阶）。
 - Moonlight 行的「应用」按钮用网格图标（`ic_apps`）：该图标是**纯 `fill` 单路径**（四枚圆角方环，`evenodd`
   挖孔），画在**实心中性钮**（`neutral`，hover `neutral_hover`）上用白色 `fillColor`——实心钮风格与连接钮
   一致，但取**第三种颜色**（中性灰、Moonlight 的深色 chrome 调），既不与 accent（连接）抢、也不与 danger
