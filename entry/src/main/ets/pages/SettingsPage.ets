@@ -64,7 +64,7 @@ struct SettingsPage {
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchMode: number = PINCH_MODE_WHEEL;
   @State touchpadMiddleDoubleTap: boolean = false;
-  @State useSystemScrollEngine: boolean = false;
+  @State scrollEngineFallback: boolean = false;
   @State pinchTouchAngle: number = 30;
   @State pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   @State touchHighRate: boolean = false;
@@ -228,6 +228,7 @@ struct SettingsPage {
     this.developerMode = settings.developerMode;
     this.gfxCapture = this.developerMode ? settings.gfxCapture : false;
     this.touchHighRate = settings.touchHighRate;
+    this.scrollEngineFallback = settings.scrollEngineFallback;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.triggerWidthPercent = settings.toolbarTriggerWidthPercent;
@@ -238,8 +239,6 @@ struct SettingsPage {
     this.pinchZoomSpeed = rdp ? settings.pinchZoomSpeed : settings.mlPinchZoomSpeed;
     this.touchpadMiddleDoubleTap = rdp
       ? settings.touchpadMiddleDoubleTap : settings.mlTouchpadMiddleDoubleTap;
-    this.useSystemScrollEngine = rdp
-      ? settings.useSystemScrollEngine : settings.mlUseSystemScrollEngine;
     this.pinchMode = rdp ? settings.pinchMode : settings.mlPinchMode;
     // Direct zoom drives the RDP presenter's view transform; Moonlight has no such view.
     if (!rdp && this.pinchMode === PINCH_MODE_ZOOM) {
@@ -354,6 +353,7 @@ struct SettingsPage {
     settings.developerMode = this.developerMode;
     settings.gfxCapture = this.gfxCapture;
     settings.touchHighRate = this.touchHighRate;
+    settings.scrollEngineFallback = this.scrollEngineFallback;
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
     settings.toolbarTriggerWidthPercent = this.triggerWidthPercent;
@@ -362,7 +362,6 @@ struct SettingsPage {
       settings.pinchZoomSpeed = this.pinchZoomSpeed;
       settings.pinchMode = this.pinchMode;
       settings.touchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
-      settings.useSystemScrollEngine = this.useSystemScrollEngine;
       settings.pinchTouchAngle = this.pinchTouchAngle;
       settings.pinchTouchDistance = this.pinchTouchDistance;
       settings.useRdpCursor = this.useRdpCursor;
@@ -398,7 +397,6 @@ struct SettingsPage {
       settings.mlPinchZoomSpeed = this.pinchZoomSpeed;
       settings.mlPinchMode = this.pinchMode;
       settings.mlTouchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
-      settings.mlUseSystemScrollEngine = this.useSystemScrollEngine;
       settings.mlPinchTouchAngle = this.pinchTouchAngle;
       settings.mlPinchTouchDistance = this.pinchTouchDistance;
       settings.mlCursorMode = this.mlCursorMode;
@@ -1209,20 +1207,6 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
-            this.toggleItem({
-              title: '使用系统滚动引擎',
-              subtitle: '开启后触控板双指滚动与鼠标滚轮的跟手滚动、惯性抛滑、打断全部交给系统滚动组件（与系统原生应用一致）；关闭则使用内置直译映射，无惯性',
-              value: this.useSystemScrollEngine,
-              enabled: true,
-              disabledReason: '',
-              onChange: (v: boolean) => {
-                this.useSystemScrollEngine = v;
-                this.persist();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
-
             this.sliderItem({
               title: '滚动速度',
               subtitle: '触控板双指滑动速度，1.0× 为基准',
@@ -1912,6 +1896,21 @@ struct SettingsPage {
             })
 
             if (this.developerMode) {
+              Divider().color($r('app.color.divider'))
+
+              this.toggleItem({
+                title: '滚动：回退直译映射',
+                subtitle: '默认由系统滚动组件负责触控板与滚轮的跟手滚动、惯性抛滑与打断（两协议、全部轴向）。'
+                  + '仅当需要逐齿精确滚动（特殊操作）时回退：改由内置映射直译，无惯性',
+                value: this.scrollEngineFallback,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: boolean) => {
+                  this.scrollEngineFallback = v;
+                  this.persist();
+                }
+              })
+
               Divider().color($r('app.color.divider'))
 
               this.sliderItem({

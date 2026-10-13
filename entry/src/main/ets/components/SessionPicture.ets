@@ -1,9 +1,6 @@
 import { lengthToNumber } from '../utils/UiUtil';
 import { fitPictureRect } from '../utils/PictureFit';
-
-// The overlay pins its offset (the fake content stays put); the scrollable range spans both sides so
-// the framework can report each frame's delta without clamping it.
-const ENGINE_FRAME_HEADROOM_VP: number = 2000;
+import { Scroll2D } from './Scroll2D';
 
 // The session picture surface: a SURFACE XComponent centred at the content aspect
 // ratio; input stays on the XComponent, so its coordinates are picture-local.
@@ -17,7 +14,8 @@ export struct SessionPicture {
   // Percent of the picture width the reveal band spans, centred; the ends stay
   // inert so a pointer brushing an edge or corner does not arm the toolbar.
   @Prop revealBandWidth: number = 100;
-  // System scroll engine: the transparent overlay below owns touchpad/wheel scroll inertia.
+  // System scroll engine: the transparent Scroll2D overlay below owns wheel/touchpad scrolling on
+  // both axes (see Scroll2D for why it must be two single-axis scrollers, and how they co-capture).
   engineScroll: boolean = false;
   onPointerMouse: (event: MouseEvent) => void = (event: MouseEvent) => {};
   onPointerTouch: (event: TouchEvent) => void = (event: TouchEvent) => {};
@@ -27,8 +25,7 @@ export struct SessionPicture {
   onSurfaceBlur: () => void = () => {};
   onPictureArea: (width: number, height: number) => void = (width: number, height: number) => {};
   onRevealZone: (inBand: boolean) => void = (inBand: boolean) => {};
-  onEngineScroll: (vertical: number, fromTouchpad: boolean) => void =
-    (vertical: number, fromTouchpad: boolean) => {};
+  onEngineScroll: (dx: number, dy: number) => void = (dx: number, dy: number) => {};
   private containerWidth: number = 0;
   private containerHeight: number = 0;
   @State private pictureWidth: number = 0;
@@ -82,29 +79,13 @@ export struct SessionPicture {
             })
 
           if (this.engineScroll) {
-            // Vertical only (Scroll is single-axis); Transparent keeps mouse/touch/keyboard on the
-            // XComponent, and scrollBar must be Off (Scroll defaults to Auto).
-            Scroll() {
-              Column()
-                .width(1)
-                .height(this.pictureHeight + ENGINE_FRAME_HEADROOM_VP * 2)
-            }
-              .scrollable(ScrollDirection.Vertical)
-              .scrollBar(BarState.Off)
-              .focusable(false)
-              .initialOffset({ xOffset: 0, yOffset: ENGINE_FRAME_HEADROOM_VP })
-              .width(this.pictureWidth)
-              .height(this.pictureHeight)
-              .hitTestBehavior(HitTestMode.Transparent)
-              .onWillScroll((xOffset: number, yOffset: number, scrollState: ScrollState,
-                scrollSource: ScrollSource) => {
-                // yOffset is in vp and same-signed as a touchpad axisVertical (xOffset stays 0).
-                const pinned: OffsetResult = { xOffset: 0, yOffset: 0 };
-                // Drag/fling is the touchpad (scaled by 「滚动速度」); the wheel is OTHER_USER_INPUT.
-                this.onEngineScroll(yOffset, scrollSource === ScrollSource.DRAG
-                  || scrollSource === ScrollSource.FLING);
-                return pinned;
-              })
+            Scroll2D({
+              viewWidth: this.pictureWidth,
+              viewHeight: this.pictureHeight,
+              onScroll: (dx: number, dy: number) => {
+                this.onEngineScroll(dx, dy);
+              }
+            })
           }
         }
       }
@@ -115,6 +96,8 @@ export struct SessionPicture {
         Row()
           .width(`${this.revealBandWidth}%`)
           .height(this.revealBand)
+          // A sensor for the toolbar zone: it must not block the picture (scroll / pointer) underneath.
+          .hitTestBehavior(HitTestMode.Transparent)
           .onHover((isHover: boolean) => {
             this.onRevealZone(isHover);
           })

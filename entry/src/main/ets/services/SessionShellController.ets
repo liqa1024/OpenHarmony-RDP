@@ -192,6 +192,8 @@ export class SessionShellController {
   }
 
   routeAxis(event: AxisEvent): void {
+    // The engine's frames have no source of their own, so note the raw event before either route.
+    this.input?.noteAxisEvent(event);
     if (this.hooks.consumesAxis(event)) {
       return;
     }

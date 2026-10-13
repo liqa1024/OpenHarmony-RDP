@@ -150,8 +150,9 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 （`MoonlightSessionBackend.ets`）——RDP 的落地细节见 [`rdp-session.md`](rdp-session.md)，Moonlight 见
 [`moonlight-native.md`](moonlight-native.md)。会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置
 （指针映射、指针空间、各项设置与能力），**不自持输入机制**。
-**唯一例外是「使用系统滚动引擎」**（见本节末）：那时竖直滚动轴事件由会话页挂的透明滚动组件消费，
-它把逐帧增量交回 `SessionInput.handleEngineScroll`，policy 仍然只有一份。
+**唯一的例外入口是轴向滚动**（见本节末）：滚动轴事件（触控板双指与鼠标滚轮，两个轴向）由 `SessionPicture`
+里挂的 `Scroll2D`（`components/Scroll2D.ets`）的两个透明单轴 `Scroll` 叠层消费，它把逐帧增量交回
+`SessionInput.handleEngineScroll`，policy 仍然只有一份。
 
 **键表单表**：`utils/KeyMapper.ets` 用一张表同时给出 RDP 的 `scancode`+`extended` 与 Moonlight 的
 `vk`+`extended`（及 lock 位），避免两协议键表漂移；`mapFull` 供 sink 取用，`map` 只回 `scancode`（RDP 侧兼容）。
@@ -194,51 +195,62 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     不消失的触点视觉。应用侧只需保证 Down/Up 成对、**不给同一手指重复下发 DOWN**；合并后的合法性由
     协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。
-- **鼠标滚轮**（非触控板的轴事件，**直译模式**路径；开了系统滚动引擎则与触控板一样交给引擎，见下）：
-  轴值是**角度**，与触控板**同一条累加路径**——按 ArkUI 自己的换算落到 vp 后交给同一
-  `TouchpadWheelMapper`：1 度 → `LINE_HEIGHT_DESKTOP/MOUSE_WHEEL_DEGREES`（=21/15）vp
-  （`AxisEvent::ConvertToOffset` 对 `SourceTool::MOUSE` 就是这个换算，`event_constants.h` 给出
-  `MOUSE_WHEEL_DEGREES = 15` / `LINE_HEIGHT_DESKTOP = 21vp`），本机再 `× WHEEL_VP_PER_DEGREE` 落到同一
-  口径。故与触控板同口径（**vp**），**亚齿/多齿都按增量发**（保留高分辨率）。本机每齿行数已折在轴值里
-  （MMI `rows × libinput` 每齿），`scrollStep` 因此冗余；本机调快则远端同步变快。滚轮用独立 mapper，
-  保持原速。
-- **触控板双指滚动**（`sourceTool === TOUCHPAD`）：轴值是本次事件的**位移像素**（`px`；原生轴值
-  在 MMI 侧已先过一条按滑动速度分段的加速曲线，我们读到的就是**加速后**的值，按原样使用）。映射前
-  **折成 vp**（`÷ pxPerVp`）与滚轮/引擎统一口径。滚动有**两种模式**，由按协议各存一份的
-  「使用系统滚动引擎」决定（默认关）：
-  - **关（默认，直译）**：`TouchpadWheel.ets` 按
-    `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp × 速度倍率` 把 vp 位移累加成高分辨率
-    轮转量，**无惯性**。口径与窗口/画面尺寸无关（缩小窗口手感不变）；远端行高/每齿行数取用户或应用的
-    设置，按原样透传。「滚动速度」只缩放轮转量，发射粒度不变。
-  - **开（系统滚动引擎）**：竖直轴事件交给 `SessionPicture` 里一个**透明的原生 `Scroll`**，跟手滚动、
-    加速、**惯性抛滑与打断**全由系统负责；我们只看 `onWillScroll` 的逐帧偏移（**vp**，正是 mapper 口径），
-    直接走**同一条** `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp` 映射。两模式共用同一个
-    常数与口径，同速是构造保证。约束：
-    - `onWillScroll` 的签名是 **`(xOffset, yOffset, scrollState, scrollSource) => void | OffsetResult`**
-      （`scroll.d.ts`，**四个**参数，`xOffset/yOffset` 是本帧**按轴拆开**的 vp 位移）。竖直叠层只用
-      `yOffset`；它与 `axisVertical` **同号**（已实测），所以直接喂同一条映射。
-    - **滚轮与触控板分流**：`scrollSource` 为 `DRAG`/`FLING` 的走触控板（吃「滚动速度」），滚轮是
-      `OTHER_USER_INPUT`，与直译路径一致保持原速。
-    - 组件自身偏移**钉住**（返回 `OffsetResult{xOffset:0,yOffset:0}`，假内容静止）。`initialOffset` 取
-      `ENGINE_FRAME_HEADROOM_VP`、假内容高 `视口 + 2×余量`，让**可滚范围**在两侧都有空间：框架会先把
-      本帧增量按可滚范围**钳制**再上报，两侧留量才能两个方向都拿到完整增量。
-    - `HitTestMode.Transparent` 是命门——轴事件归它，**鼠标 / 触摸 / 键盘 / 焦点归 XComponent**；
-      `enableScrollWithMouse` 取默认关，鼠标左键拖动留给 XComponent，远端拖选可用。
-    - **只做竖直轴**：`Scroll` 是**单轴**滚动组件，取远端最常用的竖直方向，水平手势走直译路径；
-      `scrollBar(Off)` 显式关（`Scroll` 默认是 Auto，会画出滚动条）。
-    - 引擎开着时 `consumesAxis` 吞掉**非捏合**的滚动轴事件（捏合归 `SessionInput`），单份处理；
-      RDP **直接缩放**在 `viewScale > 1` 时滚动是画面平移，此时让给会话页做平移。
-    - **口径是 vp**：三条输入（直译触控板、直译滚轮、引擎的触控板+滚轮）都先落到**本机内容 vp**，再经
-      `TouchpadWheelMapper` 折成轮转量，三条路**共用同一条**
-      `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp × 速度倍率`，改它 = 等比改"远端滚动
-      总幅度"（方向、惯性曲线、发射粒度、捏合、按键各自独立）。
-    - **两个量分开**：`REMOTE_PX_PER_DETENT`（=48）是**名义锚点**（远端每齿标称内容量：`3 行 × 16px`）；
-      `SCROLL_CALIBRATION`（=4）是**端到端标定倍数**（实测定值）。分开后名义常数保持字面含义、标定倍数
-      独立可调；有效"每齿内容量" = 48 × 4 = 192。
-    - **本机换算与远端口径分列**：`pxPerVp`（本机 px↔vp）把各路输入统一到 vp 口径——触控板 `÷`，引擎与
-      滚轮（ArkUI 的 `21/15` 已是 vp）按原值进入。手感由上面两个常数决定。
-  - **为何借道**：ArkUI 的滚动惯性只在 `List`/`Grid`/`Scroll`/`WaterFlow` 内部的 `Scrollable` 私有 tick
-    里（速度估计、摩擦动画、连续拖拽增益、打断），借官方组件即可拿到完整滚动物理。
+- **轴向滚动（触控板双指 + 鼠标滚轮，两个轴向）默认全部交给系统滚动引擎**：`SessionPicture` 挂的 `Scroll2D`（`components/Scroll2D.ets`）在 XComponent
+  上叠**两个透明的单轴原生 `Scroll`（一竖一横）**，跟手、加速、**惯性抛滑与打断**全由系统负责（ArkUI 的滚动惯性
+  只在 `List`/`Grid`/`Scroll`/`WaterFlow` 内部的 `Scrollable` 私有 tick 里：速度估计、摩擦动画、连续拖拽增益、打断，
+  借官方组件才拿得到完整滚动物理）；我们只看 `onWillScroll` 的逐帧偏移（**vp**，正是 mapper 口径），按
+  `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp × 速度倍率` 折成轮转量交给 sink
+  （RDP 直接缩放中则落到本机画面平移，见下）。三条输入（直译触控板 / 直译滚轮 / 引擎）共用这一条口径，
+  **改它 = 等比改"远端滚动总幅度"**（方向、惯性曲线、发射粒度、捏合、按键各自独立）。
+  - **必须是一轴一个组件**（不能用单件 `ScrollDirection.FREE` 的 2D 版）：滑行的"打断"由单轴滚动件自己做——
+    **任何新的触控板手势一开始就把正在跑的滑行停掉**（`Scrollable::HandleDragStart` 对 `SourceTool::TOUCHPAD`
+    调 `HandleTouchDown`，后者明确 "If animation still runs, first stop it"），2D free 不停滑行（它只在收到真正的
+    touch Down 时停，触控板两指按住那条路给不到应用），而框架内部状态无从从应用侧干预。
+  - **两轴用并行桥而不是互斥裁判**：斜向手势要两个轴一起消费，而不同节点的识别器默认互斥。两个叠层各自
+    `.shouldBuiltInRecognizerParallelWith(...)`（文档「手势拦截增强」，同一套机制也用于嵌套滚动），在响应链里
+    按 `.id()` 认出对方的 `PAN_GESTURE` 并返回它即建并行桥（认不到就返回 `current` 自身，等于不建桥——
+    返回 `undefined` 不在类型里）。**轴事件也走这条**：`EventManager::TouchTest(AxisEvent)` 会用合成的 TouchEvent
+    跑完整的触摸测试，所以桥对触控板/滚轮手势同样成立。
+  - **只服务触控板滚动与鼠标滚轮**：`handleTouch` 给**直接触摸接触**记时（`TouchType.Down`，`touchEnabled` 关着
+    也记），接触落在某次手势之后即整体丢弃其帧——叠层自身仍会被手指拖（偏移钉住，无可见效果），但**一个字节
+    都不会进远端**，触屏只有自己的路径。**不要在命中测试上拦**：`onTouchIntercept` 返回 `HitTestMode.None` 会把
+    节点自身的命中模式一起改掉，轴事件的 `AxisTest` 随后也跳过它，滚动整条失效；`HitTestMode.Transparent` 保证
+    鼠标 / 键盘 / 焦点仍归 XComponent（鼠标左键拖动留给远端拖选）。
+  - **位置与来源都取原始轴事件**：引擎的帧不带位置，来源也不另立一套——轴事件先记账（`noteAxisEvent`：指针位置 +
+    触控板/滚轮分类，后者决定吃不吃「滚动速度」）。单轴件的 `scrollSource` 本可给出同样的分流（触控板是
+    `DRAG`/`FLING`、滚轮是 `OTHER_USER_INPUT`，最初的单轴实现正是这么写的），两条路都通，实现只留一条。
+  - **两轴各自成对、与同名 `axis*` 分量同号**（实机确认），喂 mapper 按 `(vertical, horizontal)` 落位——**这一层
+    最容易串轴**。**Shift 的横向语义有两个执行者，别弄混**：`ConvertToOffset` 的 Shift 改写**只在鼠标分支**，
+    所以 **Shift+滚轮**由框架改写成横轴（实测转横滚；回退路径不改写，按纵向轮 + Shift 修饰键发出）；
+    **触控板不吃这个改写**，"Shift+触控板竖滑 → 横滚"是**远端应用**按 Windows 约定自己做的（我们只发纵向轮 +
+    Shift 键态）。直接缩放中的平移是本机的、没有这个约定，所以竖滑就是竖移（Shift+滚轮则仍是框架改写的横轴，
+    表现为横移）——这是两种模式的固有差异，不是漏改。**未经 Shift 的鼠标滚轮要留一分怀疑**：框架把它换算成
+    `Offset(-verticalAxis, -verticalAxis)`（纵向值同时进了两个分量），单轴件按方向过滤只会清掉"非本轴"的那一半，
+    所以竖直滚轮可能让**水平件**也出一帧假横滚（是否复现取决于设备侧的"异向手势"标志，待实测）。
+  - **同一手势的两轴是否都生效，由接收端应用决定，不是客户端能保证的**：客户端把有位移的轴各自成帧、两轴都交给
+    sink（RDP 为 `WHEEL`/`HWHEEL` 两条独立 PDU，见 [`rdp-session.md`](rdp-session.md)），但目标应用对同一次手势内
+    换轴 / 两轴并发的处理并不一致——有的按先出现的方向**锁轴**（本次手势内另一轴的 wheel 被丢弃），有的两轴都收；
+    `Shift` 是否被当横轴也随应用而异（见上）。**不能用某个应用的行为判定客户端有没有丢轴**，也不能只凭日志下结论；
+    判据是同一手势、同一链路下**换应用对照**的端到端实测。本机（鸿蒙侧）应用同样存在这种不一致。
+  - **偏移钉住**（两个叠层的 `onWillScroll` 都返回 `{xOffset:0, yOffset:0}`，假内容静止），**各自**在主轴方向比视口大
+    `2 × ENGINE_FRAME_HEADROOM_VP` 以保证可滚范围非退化；`scrollBar(Off)` 显式关（默认 Auto 会画滚动条）。
+  - **逐帧判定，不做手势级锁定**：`consumesAxis` 吞掉滚动轴事件（两协议共用），例外只有**捏合**（归
+    `SessionInput`）。增量由 `engineAcceptsFrame` 逐帧判归属（直接触摸接触之后的、捏合中的帧都不归引擎），
+    会话页再逐帧定去向（RDP 直接缩放 `viewScale > 1` 且非捏合中 → `panView`，同一套引擎物理；否则远端）。
+    **判据只许用"下一次输入就会刷新"的状态**（触屏时间戳、捏合标志、来源分类）：框架何时算一次手势结束
+    并不总是可观测，跨手势状态会永久卡住。代价是中途才出现的捏合、缩放到 1.0 后的惯性尾巴按逐帧语义可能漏
+    （都要重新接触手指，框架在接触时会先掐断惯性）。
+  - **回退＝直译**（开发者选项，全局 `scrollEngineFallback`，默认关＝引擎开）：同一个 mapper 直接累加 vp 位移、
+    **无惯性**，供逐齿精确滚动的特殊操作；口径与窗口/画面尺寸无关（缩小窗口手感不变），远端行高/每齿行数原样
+    透传，「滚动速度」只缩放轮转量、发射粒度不变。
+  - **轴值单位**：滚轮是**角度**（1 度 → `LINE_HEIGHT_DESKTOP/MOUSE_WHEEL_DEGREES` = 21/15 vp；`event_constants.h`
+    给 `MOUSE_WHEEL_DEGREES = 15` / `LINE_HEIGHT_DESKTOP = 21vp`，本机再 `× WHEEL_VP_PER_DEGREE` 落同一口径），
+    本机每齿行数（MMI `rows × libinput`）已折在轴值里，`scrollStep` 冗余、本机调快则远端同步变快，**亚齿/多齿
+    都按增量发**（保留高分辨率），滚轮用独立 mapper 保持原速；触控板是**位移像素**（`sourceTool === TOUCHPAD`，
+    MMI 侧已过一条按速度分段的加速曲线，读到的是加速后的值），直译路径先 `÷ pxPerVp` 统一到 vp。
+  - **两个量分开**：`REMOTE_PX_PER_DETENT`（=48）是**名义锚点**（远端每齿标称内容量：`3 行 × 16px`）；
+    `SCROLL_CALIBRATION`（=4）是**端到端标定倍数**（实测定值）。分开后名义常数保持字面含义、标定倍数独立可调；
+    有效"每齿内容量" = 48 × 4 = 192。`pxPerVp` 只做本机 px↔vp 折算（触控板 `÷`，引擎与滚轮按原值进入）。
 - **触控板捏合**（设置「触控板两指捏合模式」，三选一）：
   - **Ctrl+滚轮**（默认）：按 `1/(20×速度)` 线性映射为 **Ctrl+滚轮**（「缩放速度」），由远端应用自己缩放。
   - **触摸模拟**：在鼠标位置**合成两个原生触点**做真实双指缩放——距离 1:1、初始间距取窗口较短边的百分比
@@ -295,7 +307,8 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
   滑出）、工具栏自身、其余画面；**指针在工具栏上 ⇒ 保持显示，且不允许任何隐藏定时器在跑**，在画面里 ⇒
   起 `hideDelay` 收起。指针格由**画面顶部居中的专用窄条**（`SessionPicture` 的 reveal 条：只在全屏且工具栏
   隐藏时存在，宽度占画面宽度的百分比——`revealBandWidth`，两端留空不参与检测以免贴边 / 角落误触，
-  悬停上报 `TOOLBAR_ZONE_TRIGGER`、移出上报 `NONE`）与**工具栏自身**（悬停上报 `TOOLBAR_ZONE_BAR`）
+  悬停上报 `TOOLBAR_ZONE_TRIGGER`、移出上报 `NONE`；它是**传感器**，透明命中、不遮挡画面，
+  否则那一条带内的滚动与悬停都会失效）与**工具栏自身**（悬停上报 `TOOLBAR_ZONE_BAR`）
   共同上报同一格（`TOOLBAR_ZONE_*`）：全屏下工具栏盖住二者，指针在工具栏上时都收不到事件。所有触发
   （指针移动 / 悬停、传输起止、全屏切换、会话状态变化）只重新求值这一次判定，不各自管定时器，
   过期定时器因此不会把工具栏从指针底下收走。

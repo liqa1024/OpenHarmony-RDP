@@ -129,6 +129,10 @@ export class SessionInput implements TouchpadTapTarget {
   private cancelTimers: Map<number, number> = new Map<number, number>();
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
   private wheelMapper: TouchpadWheelMapper = new TouchpadWheelMapper();
+  private engineEnabled: boolean = false;
+  private engineTouchpad: boolean = false;
+  private engineAxisAt: number = 0;
+  private touchContactAt: number = 0;
   private wheelPxPerVp: number = 0;
   private wheelChunks: WheelChunk[] = [];
   private touchpadMiddleDoubleTap: boolean = false;
@@ -384,18 +388,54 @@ export class SessionInput implements TouchpadTapTarget {
     }
   }
 
-  // System scroll engine mode: the overlay reports each frame's offset in vp, the mapper's own unit,
-  // so it feeds straight in.
-  handleEngineScroll(vertical: number, x: number, y: number, fromTouchpad: boolean): void {
-    this.handleWheelScroll(fromTouchpad ? this.touchpadWheel : this.wheelMapper,
-      vertical, 0, [x, y]);
+  // Frames carry neither position nor source: the wheel/touchpad split comes from the raw axis events.
+  noteAxisEvent(event: AxisEvent): void {
+    this.engineTouchpad = this.isTouchpad(event.deviceId, event.sourceTool);
+    this.engineAxisAt = Date.now();
+  }
+
+  // Per frame, on input state the next event refreshes — never latched to a gesture, which the engine
+  // can end silently (see doc_agent/session-layer.md §8). A direct touch contact or a pinch owns the
+  // frames instead.
+  engineAcceptsFrame(): boolean {
+    return !(this.touchContactAt > this.engineAxisAt) && !this.pinchActive;
+  }
+
+  // The overlay reports (x, y) in vp, one component per axis overlay; the mapper takes (vertical,
+  // horizontal).
+  handleEngineScroll(dx: number, dy: number, x: number, y: number): void {
+    this.handleWheelScroll(this.engineTouchpad ? this.touchpadWheel : this.wheelMapper,
+      dy, dx, [x, y]);
+  }
+
+  setEngineEnabled(enabled: boolean): void {
+    this.engineEnabled = enabled;
+  }
+
+  // The engine owns the wheel/touchpad axes while it is mounted; pinch keeps to the shared pipeline.
+  consumesAxis(event: AxisEvent): boolean {
+    if (!this.engineEnabled || SessionInput.isPinchEvent(event)) {
+      return false;
+    }
+    return (event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0;
   }
 
   handleTouch(event: TouchEvent): void {
-    if (!this.touchEnabled || event.source !== SourceType.TouchScreen) {
+    if (event.source !== SourceType.TouchScreen) {
       return;
     }
     const changed: TouchObject[] = event.changedTouches;
+    for (let i = 0; i < changed.length; i++) {
+      if (changed[i].type === TouchType.Down) {
+        // A direct contact (finger / pen) owns whatever scroll gesture follows it, whatever the
+        // touch path then does with it — the engine must not take that gesture.
+        this.touchContactAt = Date.now();
+        break;
+      }
+    }
+    if (!this.touchEnabled) {
+      return;
+    }
     for (let i = 0; i < changed.length; i++) {
       const touch: TouchObject = changed[i];
       const point: number[] = this.pointMapper(touch.x, touch.y);

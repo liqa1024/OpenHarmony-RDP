@@ -96,7 +96,7 @@ struct MoonlightSessionPage {
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
-  private systemScrollEngine: boolean = false;
+  private scrollEngine: boolean = true;
   private enginePointerX: number = 0;
   private enginePointerY: number = 0;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
@@ -175,7 +175,7 @@ struct MoonlightSessionPage {
     this.cursorMode = settings.mlCursorMode;
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
-    this.systemScrollEngine = settings.mlUseSystemScrollEngine;
+    this.scrollEngine = !settings.scrollEngineFallback;
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
       : TOOLBAR_ROW_HEIGHT;
@@ -249,9 +249,8 @@ struct MoonlightSessionPage {
       },
       onWindowVisible: (visible: boolean): void => {
       },
-      consumesAxis: (event: AxisEvent): boolean => this.systemScrollEngine
-        && !SessionInput.isPinchEvent(event)
-        && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0),
+      consumesAxis: (event: AxisEvent): boolean =>
+        this.shell?.sessionInput()?.consumesAxis(event) ?? false,
       onReleaseInputs: (): void => {
       },
       onBeforeRetry: (): void => {
@@ -335,6 +334,7 @@ struct MoonlightSessionPage {
     const sink: MoonlightInputSink = new MoonlightInputSink(backend);
     sink.setReferenceSize(this.streamWidth, this.streamHeight);
     const input: SessionInput = new SessionInput(sink);
+    input.setEngineEnabled(this.scrollEngine);
     input.setWinKeySubstitute(settings.mlWinKeySubstitute);
     input.setPointerSpace(this.streamWidth, this.streamHeight);
     input.setPointMapper((x: number, y: number): number[] => this.mapPoint(x, y));
@@ -607,7 +607,7 @@ struct MoonlightSessionPage {
   }
 
   private handleAxis(event: AxisEvent): void {
-    if (this.systemScrollEngine && !SessionInput.isPinchEvent(event)
+    if (this.scrollEngine && !SessionInput.isPinchEvent(event)
       && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0)) {
       // The engine's offsets carry no position, so remember the pointer for its wheel events.
       const point: number[] = this.mapPoint(event.x, event.y);
@@ -617,9 +617,12 @@ struct MoonlightSessionPage {
     this.shell?.routeAxis(event);
   }
 
-  private handleEngineScroll(vertical: number, fromTouchpad: boolean): void {
-    this.shell?.sessionInput()?.handleEngineScroll(vertical, this.enginePointerX,
-      this.enginePointerY, fromTouchpad);
+  private handleEngineScroll(dx: number, dy: number): void {
+    const input: SessionInput | undefined = this.shell?.sessionInput();
+    if (!(input?.engineAcceptsFrame() ?? false)) {
+      return;
+    }
+    input?.handleEngineScroll(dx, dy, this.enginePointerX, this.enginePointerY);
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -775,9 +778,9 @@ struct MoonlightSessionPage {
           onPointerAxis: (event: AxisEvent) => {
             this.handleAxis(event);
           },
-          engineScroll: this.systemScrollEngine,
-          onEngineScroll: (vertical: number, fromTouchpad: boolean) => {
-            this.handleEngineScroll(vertical, fromTouchpad);
+          engineScroll: this.scrollEngine,
+          onEngineScroll: (dx: number, dy: number) => {
+            this.handleEngineScroll(dx, dy);
           },
           onSurfaceKey: (event: KeyEvent) => {
             this.handleKey(event);
