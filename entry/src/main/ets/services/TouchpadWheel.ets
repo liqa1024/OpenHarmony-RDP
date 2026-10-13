@@ -3,15 +3,24 @@ export const WHEEL_DETENT: number = 120;
 // Largest rotation a single RDP pointer event can carry (9-bit wheel field).
 const WHEEL_MAX_CHUNK: number = 0xFF;
 // Windows scrolls three lines per wheel detent by default (SPI_GETWHEELSCROLLLINES),
-// each line ~16 px in the default UI font.
+// each line ~16 px -> nominal 48 px per detent.
 const SCROLL_LINES_PER_DETENT: number = 3;
 const LINE_PX: number = 16;
-// Finger travel (vp) that maps to one full detent at 1.0x speed; 1 vp == 1 remote px,
-// so a detent (3 lines x 16 px) needs 48 vp. Independent of window/stream size.
-export const VP_PER_DETENT: number = SCROLL_LINES_PER_DETENT * LINE_PX;
+// Finger travel (same unit as the touchpad axis) that spans one remote detent at 1.0x speed.
+// The nominal 48 ran ~4x the native touchpad speed measured against a HarmonyOS app, so the
+// default detent is calibrated 4x.
+const DETENT_CALIBRATION: number = 4;
+export const VP_PER_DETENT: number = SCROLL_LINES_PER_DETENT * LINE_PX * DETENT_CALIBRATION;
 // Mouse-wheel axis is in degrees; ArkUI maps one degree to LINE_HEIGHT_DESKTOP /
 // MOUSE_WHEEL_DEGREES (21/15) vp, so the wheel shares the touchpad's vp -> rotation口径.
 export const WHEEL_VP_PER_DEGREE: number = 21 / 15;
+// Touchpad fling after the fingers lift, mirroring ArkUI Scrollable (API>=13 defaults):
+// distance = velocity * NEW_VELOCITY_SCALE / (friction * |FRICTION_SCALE|), decaying as a
+// critically damped spring (response = 2*PI / (friction * |FRICTION_SCALE|)).
+export const FLING_VELOCITY_SCALE: number = 1.5;
+export const FLING_FRICTION: number = 0.75;
+export const FLING_FRICTION_SCALE: number = 4.2;
+export const FLING_MIN_VELOCITY: number = 240;
 
 export const MIN_SPEED_SCALE: number = 0.2;
 export const MAX_SPEED_SCALE: number = 4;

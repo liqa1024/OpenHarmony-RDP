@@ -198,14 +198,19 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   见 `SessionInput.pxPerVp()`）。故与触控板同口径（1 px = 1 远端 px）且**保留高分辨率**（亚齿/多齿不丢）。
   **不读 `scrollStep`**：本机每齿行数已折在轴值里（MMI `rows × libinput` 每齿），故本机调快则远端同步变快。
   滚轮用独立 mapper，不受「触控板滚动速度」设置影响。
-- **触控板双指滚动**（`sourceTool === TOUCHPAD`）：`axisVertical/Horizontal` 是本次事件的 **vp 位移**
-  而非轮齿 ⇒ `services/TouchpadWheel.ets` 按 `120/(3行×16px) × 速度倍率` 累加成高分辨率轮转量。
-  口径是 **「1 vp 位移 = 1 远端 px」**：Windows 默认 1 齿滚 3 行（`SPI_GETWHEELSCROLLLINES`）、
-  默认 UI 行高约 16px，故 1 齿对应 48vp；该比例是**内容口径**，与窗口/画面尺寸无关——缩小窗口
-  不应改变手感，故不按画面缩放折算。远端为非常规行高/每齿行数属用户或应用有意设置，不探测、不纠正。
-  设置「滚动速度」只缩放轮转量、不改变发射粒度。**注意原生触控板的轴值在 MMI 侧先过一条按滑动速度分段的
-  「加速曲线」**（`service/mouse_event_normalize` → Rust `get_axis_gain_touchpad`，非捕获模式直接以曲线值替换
-  轴值），故**原生触控板滚动是非线性的**（滚轮轴值无此加速）——线性映射只能对齐某一速度档。
+- **触控板双指滚动**（`sourceTool === TOUCHPAD`）：`axisVertical/Horizontal` 是本次事件的**位移**
+  （与 ArkUI 内容位移同单位）⇒ `services/TouchpadWheel.ets` 按 `120 / VP_PER_DETENT × 速度倍率`
+  累加成高分辨率轮转量。口径是**内容口径**（与窗口/画面尺寸无关，缩小窗口不改变手感，故不按画面缩放
+  折算）：`VP_PER_DETENT` = 远端每齿的内容量，标称 `3 行 × 16px = 48`（Windows 默认
+  `SPI_GETWHEELSCROLLLINES=3`），再按实测标定为 **192**（对鸿蒙原生约 4× 偏快）；远端为非常规行高/每齿
+  行数属用户或应用有意设置，不探测、不纠正。设置「滚动速度」只缩放轮转量、不改变发射粒度。
+  **原生轴值在 MMI 侧已先过一条按滑动速度分段的「加速曲线」**（`service/mouse_event_normalize` → Rust
+  `get_axis_gain_touchpad`，非捕获模式直接以曲线值替换轴值）——我们读到的是**加速后**的轴值，故与原生
+  一样天然非线性，**无需复刻曲线**。
+- **触控板抛滑**（抬手后惯性）：原生 `Scrollable` 只对**触控板**轴手势 fling（`IsMouseWheelScroll` 排除
+  `TOUCHPAD`，滚轮不 fling）。`SessionInput` 按原生模型补一段：短窗口估速 → `距离 = 速度 × 1.5 / (friction
+  × |FRICTION_SCALE|)`，按**临界阻尼弹簧** `x(t) = 1 − (1+ωt)e^{−ωt}`（`ω = friction × |FRICTION_SCALE|`）
+  逐帧发轮转量；低于阈值（240）不发。常量取自 ArkUI（`FLING_*`）。
 - **触控板捏合**（设置「触控板两指捏合模式」，三选一）：
   - **Ctrl+滚轮**（默认）：按 `1/(20×速度)` 线性映射为 **Ctrl+滚轮**（「缩放速度」），由远端应用自己缩放。
   - **触摸模拟**：在鼠标位置**合成两个原生触点**做真实双指缩放——距离 1:1、初始间距取窗口较短边的百分比

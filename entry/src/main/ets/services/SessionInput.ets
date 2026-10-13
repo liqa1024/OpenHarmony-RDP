@@ -1,8 +1,9 @@
 import { inputDevice } from '@kit.InputKit';
 import { KeyMapping, KeyMapper } from '../utils/KeyMapper';
 import { RdpLockFlags } from '../model/RdpModels';
-import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE,
-  TouchpadWheelMapper, WheelChunk, WHEEL_DETENT, WHEEL_VP_PER_DEGREE } from './TouchpadWheel';
+import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, FLING_FRICTION, FLING_FRICTION_SCALE,
+  FLING_MIN_VELOCITY, FLING_VELOCITY_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE, TouchpadWheelMapper,
+  WheelChunk, WHEEL_DETENT, WHEEL_VP_PER_DEGREE } from './TouchpadWheel';
 import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM } from './SettingsStore';
 import { TouchpadTapFilter, TouchpadTapTarget } from './TouchpadTapFilter';
@@ -83,6 +84,26 @@ const TOUCHPAD_PRESS_HOLD_MS: number = 30;
 // 判定为拖动的最小位移（远端指针空间 px）。
 const TOUCHPAD_MOVE_SLOP: number = 8;
 
+// Touchpad fling: estimate velocity over a short sample window, then emit extra wheel rotation
+// with the ArkUI decay. The window/tick are estimator parameters; distance/decay are native's.
+const AXIS_VELOCITY_WINDOW_MS: number = 100;
+const FLING_TICK_MS: number = 16;
+const FLING_STOP_PX: number = 0.5;
+const FLING_MAX_SECONDS: number = 3;
+
+// One touchpad-axis sample (cumulative travel vs time) for the fling velocity estimate.
+class AxisSample {
+  t: number = 0;
+  v: number = 0;
+  h: number = 0;
+
+  constructor(t: number, v: number, h: number) {
+    this.t = t;
+    this.v = v;
+    this.h = h;
+  }
+}
+
 const MIN_PINCH_DISTANCE_PERCENT: number = 1;
 const MAX_PINCH_DISTANCE_PERCENT: number = 20;
 const MIN_PINCH_HALF: number = 8;
@@ -145,6 +166,18 @@ export class SessionInput implements TouchpadTapTarget {
   // Mouse wheel keeps its own mapper: it is not the touchpad, so the touchpad speed setting does not apply.
   private wheelMapper: TouchpadWheelMapper = new TouchpadWheelMapper();
   private wheelPxPerVp: number = 0;
+  private axisSamples: AxisSample[] = [];
+  private axisAccumV: number = 0;
+  private axisAccumH: number = 0;
+  private flingTimer: number = -1;
+  private flingOmega: number = 0;
+  private flingTotalV: number = 0;
+  private flingTotalH: number = 0;
+  private flingEmittedV: number = 0;
+  private flingEmittedH: number = 0;
+  private flingStartAt: number = 0;
+  private flingX: number = 0;
+  private flingY: number = 0;
   private wheelChunks: WheelChunk[] = [];
   private touchpadMiddleDoubleTap: boolean = false;
   private touchpadTap: TouchpadTapFilter;
@@ -374,28 +407,44 @@ export class SessionInput implements TouchpadTapTarget {
       }
       return;
     }
+    const touchpad: boolean = this.isTouchpad(event.deviceId, event.sourceTool);
+    if (event.action === AxisAction.END || event.action === AxisAction.CANCEL) {
+      // Touchpad flicks coast on after the fingers lift (native Scrollable flings); the mouse
+      // wheel does not (IsMouseWheelScroll excludes TOUCHPAD).
+      if (touchpad && event.action === AxisAction.END) {
+        this.startFling();
+      }
+      return;
+    }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
       return;
     }
     if (event.action === AxisAction.BEGIN) {
+      this.cancelFling();
       this.touchpadWheel.reset();
       this.wheelMapper.reset();
+      this.axisSamples.length = 0;
+      this.axisAccumV = 0;
+      this.axisAccumH = 0;
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
     if (vertical === 0 && horizontal === 0) {
       return;
     }
-    if (this.isTouchpad(event.deviceId, event.sourceTool)) {
-      this.handleWheelScroll(this.touchpadWheel, vertical, horizontal, this.pointMapper(event.x, event.y));
+    const point: number[] = this.pointMapper(event.x, event.y);
+    if (touchpad) {
+      this.trackAxisVelocity(vertical, horizontal);
+      this.flingX = point[0];
+      this.flingY = point[1];
+      this.handleWheelScroll(this.touchpadWheel, vertical, horizontal, point);
     } else {
       // Wheel axis is in degrees; ArkUI turns one degree into LINE_HEIGHT_DESKTOP / MOUSE_WHEEL_DEGREES
       // vp and then that vp into px (x density), so fold both in to share the touchpad's px口径 and
       // keep high-resolution deltas. The host wheel-speed setting rides in the axis value, so
       // scrollStep is not read; the remote follows it implicitly.
       const scale: number = WHEEL_VP_PER_DEGREE * this.pxPerVp();
-      this.handleWheelScroll(this.wheelMapper, vertical * scale, horizontal * scale,
-        this.pointMapper(event.x, event.y));
+      this.handleWheelScroll(this.wheelMapper, vertical * scale, horizontal * scale, point);
     }
   }
 
@@ -446,6 +495,7 @@ export class SessionInput implements TouchpadTapTarget {
     this.heldButtons.clear();
     this.releaseAllTouches();
     this.endPinch();
+    this.cancelFling();
     // Don't let a pending 中键 candidate fire into a window that lost focus.
     this.touchpadTap.reset();
   }
@@ -483,6 +533,78 @@ export class SessionInput implements TouchpadTapTarget {
   private sendSyntheticClick(button: number, x: number, y: number): void {
     this.handleButton(InputAction.PRESS, button, x, y);
     this.handleButton(InputAction.RELEASE, button, x, y);
+  }
+
+  private trackAxisVelocity(vertical: number, horizontal: number): void {
+    const now: number = Date.now();
+    this.axisAccumV += vertical;
+    this.axisAccumH += horizontal;
+    this.axisSamples.push(new AxisSample(now, this.axisAccumV, this.axisAccumH));
+    while (this.axisSamples.length > 1 && now - this.axisSamples[0].t > AXIS_VELOCITY_WINDOW_MS) {
+      this.axisSamples.shift();
+    }
+  }
+
+  private startFling(): void {
+    this.cancelFling();
+    const count: number = this.axisSamples.length;
+    if (count < 2) {
+      return;
+    }
+    const first: AxisSample = this.axisSamples[0];
+    const last: AxisSample = this.axisSamples[count - 1];
+    const dt: number = (last.t - first.t) / 1000;
+    if (dt <= 0) {
+      return;
+    }
+    const velV: number = (last.v - first.v) / dt;
+    const velH: number = (last.h - first.h) / dt;
+    if (Math.sqrt(velV * velV + velH * velH) < FLING_MIN_VELOCITY) {
+      return;
+    }
+    this.flingOmega = FLING_FRICTION * FLING_FRICTION_SCALE;
+    const travel: number = FLING_VELOCITY_SCALE / this.flingOmega;
+    this.flingTotalV = velV * travel;
+    this.flingTotalH = velH * travel;
+    this.flingStartAt = Date.now();
+    this.scheduleFlingTick();
+  }
+
+  private scheduleFlingTick(): void {
+    this.flingTimer = setTimeout(() => {
+      this.flingTimer = -1;
+      this.tickFling();
+    }, FLING_TICK_MS);
+  }
+
+  private tickFling(): void {
+    const t: number = (Date.now() - this.flingStartAt) / 1000;
+    const done: number = 1 - (1 + this.flingOmega * t) * Math.exp(-this.flingOmega * t);
+    const reachedV: number = this.flingTotalV * done;
+    const reachedH: number = this.flingTotalH * done;
+    const dv: number = reachedV - this.flingEmittedV;
+    const dh: number = reachedH - this.flingEmittedH;
+    this.flingEmittedV = reachedV;
+    this.flingEmittedH = reachedH;
+    if (dv !== 0 || dh !== 0) {
+      this.handleWheelScroll(this.touchpadWheel, dv, dh, [this.flingX, this.flingY]);
+    }
+    const remain: number = Math.abs(this.flingTotalV - reachedV) + Math.abs(this.flingTotalH - reachedH);
+    if (remain < FLING_STOP_PX || t > FLING_MAX_SECONDS) {
+      return;
+    }
+    this.scheduleFlingTick();
+  }
+
+  private cancelFling(): void {
+    if (this.flingTimer !== -1) {
+      clearTimeout(this.flingTimer);
+      this.flingTimer = -1;
+    }
+    this.flingTotalV = 0;
+    this.flingTotalH = 0;
+    this.flingEmittedV = 0;
+    this.flingEmittedH = 0;
   }
 
   private pxPerVp(): number {
