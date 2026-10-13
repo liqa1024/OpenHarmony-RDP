@@ -185,7 +185,6 @@ struct SessionPage {
     this.resolveRequest();
     const settings: AppSettings = SettingsStore.load();
     this.developerMode = settings.developerMode;
-    // Developer mode adds the telemetry line, so the toolbar is taller.
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
       : TOOLBAR_ROW_HEIGHT;
@@ -731,9 +730,8 @@ struct SessionPage {
   }
 
   private handleAxis(event: AxisEvent): void {
-    // Direct zoom is a client-view transform that stays in this page. It only owns the pinch
-    // (view zoom) and, while zoomed, the pan; every other axis event falls through to the
-    // shared input pipeline (touchpad scroll / wheel).
+    // Direct zoom is a client-view transform kept in this page: it owns the pinch and,
+    // while zoomed, the pan; every other axis event falls through to the shared pipeline.
     if (this.pinchDirect) {
       const isPinch: boolean = SessionInput.isPinchEvent(event);
       if (isPinch || this.directZoomActive) {

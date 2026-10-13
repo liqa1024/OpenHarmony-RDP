@@ -3,7 +3,6 @@ import { ClipboardCapabilities, ClipboardItem, ClipboardText,
 import { ClipboardBridge, ClipboardBridgeSink } from './ClipboardBridge';
 import { LocalPasteboard, LocalPasteboardHost, LocalReadOptions } from '../utils/LocalPasteboard';
 
-// Function-typed properties so a page can supply a closure object.
 export interface ClipboardControllerHost {
   toast: (message: string) => void;
   // Show the "cancel upload?" confirmation and invoke `onConfirm` only if the
@@ -22,8 +21,6 @@ const MSG_EMPTY_LOCAL: string = ClipboardText.LOCAL_EMPTY;
 const MSG_FOLDER: string = '不支持文件夹传输';
 const MSG_READ_FAILED: string = '无法读取本机剪贴板';
 
-// Manual clipboard flow shared by both protocols: the remote content is applied
-// only on demand and the local content is read only on demand.
 export class ClipboardController implements ClipboardBridgeSink, LocalPasteboardHost {
   private bridge: ClipboardBridge;
   private host: ClipboardControllerHost;
@@ -92,8 +89,6 @@ export class ClipboardController implements ClipboardBridgeSink, LocalPasteboard
     const options: LocalReadOptions = new LocalReadOptions();
     options.allowFiles = this.caps.files;
     options.allowHtml = this.caps.html;
-    // Only stage a sandbox directory when the clipboard actually holds files,
-    // so a plain text paste does not create an empty transfer bucket.
     options.fileDir = this.caps.files && LocalPasteboard.hasFileUri() ? this.bridge.localStageDir() : '';
     const result: LocalReadResult = await LocalPasteboard.read(options);
     if (result.failed) {

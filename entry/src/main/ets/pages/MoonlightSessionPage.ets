@@ -53,11 +53,8 @@ const METRIC_WIDTH_FPS: number = 62;
 const METRIC_WIDTH_BITRATE: number = 132;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
-// Latency colour thresholds: network RTT warns late (distance-dominated). The
-// two local readings are submit->decoded-output round trips, so they carry codec
-// queue and output-buffer wait on top of the decode cost (see moonlight-video.md
-// §1); colour only past a multiple of the frame period, i.e. when the decoder is
-// clearly over its budget rather than when the round trip includes normal wait.
+// Latency colour thresholds: network RTT warns late (distance-dominated). The two
+// local readings include codec/output-buffer wait, so colour only past a multiple of the frame period.
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
@@ -123,7 +120,6 @@ struct MoonlightSessionPage {
   @State metricsBytesPerSec: number = 0;
   @State metricsPending: number = 0;
   @State metricsLossBp: number = -1;
-  // Stream target from the launch request, for the current/target readouts.
   private targetFps: number = 0;
   private targetBitrateKbps: number = 0;
   private metricsTimer: number = -1;
@@ -176,7 +172,6 @@ struct MoonlightSessionPage {
     this.cursorMode = settings.mlCursorMode;
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
-    // Developer mode adds the telemetry line, so the toolbar is taller.
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
       : TOOLBAR_ROW_HEIGHT;

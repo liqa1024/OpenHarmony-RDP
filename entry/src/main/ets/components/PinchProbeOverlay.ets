@@ -2,9 +2,8 @@ const PROBE_WIDTH: number = 180;
 const PROBE_HEIGHT: number = 120;
 const PROBE_DOT: number = 10;
 
-// Debug overlay: draws the synthesized pinch contacts (normalized to their channel
-// surface) on a small virtual touchpad so the simulation can be inspected visually.
-// Transparent hit test only to report pointer proximity; it never consumes input.
+// Debug overlay drawing the synthesized pinch contacts (normalized to their channel
+// surface); transparent hit test only reports pointer proximity, never consumes input.
 @Component
 export struct PinchProbeOverlay {
   @Prop p1x: number = 0.5;

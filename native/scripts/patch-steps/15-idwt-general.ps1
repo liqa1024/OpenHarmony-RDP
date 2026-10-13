@@ -1,38 +1,8 @@
-# 15) HmRdp: bit-exact inverse DWT (doc_agent/rdp-gfx.md §7.2 (single-core C1)).
-#
-#     The progressive decode spends about half of its tile cost in the inverse
-#     DWT, and the upstream block is pure scalar int16 lifting. The rewrite below
-#     changes only how the same arithmetic is organised, so the output is
-#     byte-for-byte identical to the original (kept verbatim as the scalar
-#     reference):
-#
-#       - the horizontal and the vertical pass are each split into their even- and
-#         odd-sample halves - which is what the original already is: an odd sample
-#         (2n+1) only ever reads the even samples next to it, never another odd
-#         one, so nothing here is a new dependency;
-#       - the vertical pass walks rows (x innermost) instead of columns, so every
-#         access is contiguous;
-#       - on AArch64 the inner loops work on eight samples at a time with the NEON
-#         halving adds: VRHADD is (a + b + 1) >> 1 and VHADD is (a + b) >> 1, both
-#         with the sum evaluated in full precision - exactly the `int` arithmetic
-#         of the C code. The left shift and the final store keep the same INT16
-#         truncation, so nothing saturates or rounds differently. (The upstream
-#         NEON variant in codec/neon/rfx_neon.c does NOT have this property: it
-#         adds in 16-bit lanes and wraps, which is why it stays disabled with
-#         -DWITH_SIMD=OFF and is not what this step turns on.)
-#
-#     `subband_width` is 8, 16 or 32 for every caller, i.e. always a multiple of
-#     the vector width; anything else, and every non-AArch64 target (the emulator
-#     build), runs the scalar reference unchanged.
-#
+# 15) Bit-exact restructure of the inverse DWT (same arithmetic, byte-identical output); on AArch64
+#     the inner loops use NEON halving adds, else the scalar reference runs.
 $dwtC = "$Source\libfreerdp\codec\rfx_dwt.c"
 $dwtNew = @'
-/*
- * HmRdp: bit-exact restructure of the inverse DWT (see the patch note in
- * native/scripts/patch-freerdp.ps1 step 15, doc_agent/rdp-gfx.md §7.2). The
- * upstream scalar version follows verbatim: it is the fallback for the sizes and
- * targets the vector path does not cover.
- */
+/* HmRdp: bit-exact restructure of the inverse DWT; the upstream scalar version follows as the fallback. */
 #define HMRDP_DWT_SUBBAND_MAX 64
 
 static INLINE void hmrdp_dwt_2d_decode_block_scalar(INT16* WINPR_RESTRICT buffer,
@@ -121,10 +91,7 @@ static INLINE void hmrdp_dwt_2d_decode_block_scalar(INT16* WINPR_RESTRICT buffer
 
 #define HMRDP_DWT_LANES 8
 
-/* One row of the horizontal pass: the even samples into a scratch row, then the
- * odd ones, which are written together with their even neighbour (vst2q stores
- * the pair interleaved, i.e. dst[2n] / dst[2n+1] exactly as the scalar code
- * writes them). */
+/* HmRdp: one row of the horizontal pass; vst2q stores the interleaved even/odd pair as the scalar code writes it. */
 static INLINE void hmrdp_dwt_2d_decode_h_row(const INT16* WINPR_RESTRICT l,
                                              const INT16* WINPR_RESTRICT h,
                                              INT16* WINPR_RESTRICT dst, size_t subband_width)
@@ -173,9 +140,7 @@ static INLINE void hmrdp_dwt_2d_decode_h_row(const INT16* WINPR_RESTRICT l,
 	}
 }
 
-/* Vertical pass, one row at a time: the even output rows first (each reads the
- * two high-band rows around it), then the odd rows (each reads the two even rows
- * around it, both of which are already final). */
+/* HmRdp: vertical pass; even output rows first, then odd rows from the already-final even ones. */
 static INLINE void hmrdp_dwt_2d_decode_v(const INT16* WINPR_RESTRICT l,
                                          const INT16* WINPR_RESTRICT h,
                                          INT16* WINPR_RESTRICT dst, size_t subband_width)

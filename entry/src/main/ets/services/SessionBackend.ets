@@ -6,14 +6,12 @@ export type SessionSignalListener = (signal: SessionSignal) => void;
 // session shell) only sees this interface; the RDP / Moonlight implementations
 // live in their own files (RdpSessionBackend.ets / MoonlightSessionBackend.ets).
 export interface SessionBackend {
-  // The session page this backend is rendered by; shared code routes on it instead of the protocol.
   pageRoute(): string;
   requiresPrepare(): boolean;
   prepare(): Promise<boolean>;
   start(): number;
   stop(): void;
   handleId(): number;
-  // Moonlight needs the window surface at start: LiStartConnection takes the render target.
   requiresWindowAtStart(): boolean;
   bindSurface(surfaceId: string, width: number, height: number): boolean;
   clearSurface(): void;

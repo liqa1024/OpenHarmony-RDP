@@ -1,8 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpTelemetry } from 'libhmrdp.so';
 
-// Same domain / tag as the native logger, so a `perf:` grep still finds the
-// aggregated line.
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpNative';
 const AUDIO_WINDOW: number = 5;

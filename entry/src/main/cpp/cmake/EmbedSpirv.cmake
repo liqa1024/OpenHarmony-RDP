@@ -1,20 +1,5 @@
-# Build-time helper: compile one GLSL shader to SPIR-V and emit a C++ header that
-# embeds the words.
-#
-# Run as a script, driven by CMakeLists.txt:
-#   cmake -DHMRDP_GLSLANG=<glslang_validator> \
-#         -DHMRDP_SRC=<shader.vert|.frag> \
-#         -DHMRDP_OUT=<generated header> \
-#         -DHMRDP_SYMBOL=<C++ symbol> \
-#         [-DHMRDP_INCLUDE=<dir>] \
-#         -P cmake/EmbedSpirv.cmake
-#
-# HMRDP_INCLUDE is optional and only needed by a shader that #includes a header
-# (the FSR passes pull in the vendored ffx_fsr1.h).
-#
-# Embedding (rather than shipping .spv files next to the .so) keeps the runtime
-# free of file IO and makes "SPIR-V travels with the HAP" automatic: the words are
-# part of libhmrdp.so, so packaging cannot silently miss them.
+# Build-time helper: compile one GLSL shader to SPIR-V and emit a C++ header embedding the words
+# (run with -P, driven by CMakeLists.txt). HMRDP_INCLUDE is optional (the FSR passes include ffx_fsr1.h).
 
 foreach(required HMRDP_GLSLANG HMRDP_SRC HMRDP_OUT HMRDP_SYMBOL)
   if(NOT DEFINED ${required})
@@ -30,8 +15,7 @@ get_filename_component(_outDir "${HMRDP_OUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${_outDir}")
 
 set(_spv "${HMRDP_OUT}.spv")
-# The include flag has to be a single token with no space ("-I<dir>"), and an
-# unquoted empty variable expands to no argument at all.
+# The include flag must be a single token ("-I<dir>"); an unquoted empty variable expands to nothing.
 set(_include "")
 if(DEFINED HMRDP_INCLUDE AND NOT "${HMRDP_INCLUDE}" STREQUAL "")
   set(_include "-I${HMRDP_INCLUDE}")
@@ -46,11 +30,8 @@ if(NOT _rc EQUAL 0)
           "EmbedSpirv: glslang_validator failed (${_rc}) for ${HMRDP_SRC}\n${_stdout}\n${_stderr}")
 endif()
 
-# SPIR-V is a stream of 32-bit words. `file(READ ... HEX)` yields the file's bytes
-# in file order, i.e. little-endian byte order on disk, so each 4-byte group has
-# to be reversed to get the numeric word value a uint32_t array must hold
-# (otherwise the SPIR-V magic comes out as 0x03022307 instead of 0x07230203 and
-# vkCreateShaderModule rejects the module).
+# file(READ ... HEX) yields bytes in order; each 4-byte group is reversed to the numeric word value
+# (little-endian on disk), or the SPIR-V magic comes out wrong and the driver rejects the module.
 file(READ "${_spv}" _hex HEX)
 string(LENGTH "${_hex}" _hexLength)
 math(EXPR _wordCount "${_hexLength} / 8")

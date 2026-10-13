@@ -1,7 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * FreeRDP client session wrapper.
- */
 #ifndef HMRDP_SESSION_H
 #define HMRDP_SESSION_H
 
@@ -60,7 +56,7 @@ enum class SessionEvent {
   kRemoteFormatList = 20,
   kRemoteFormatResponse = 21,
   kRemoteLockState = 22,
-  // Remote clipboard image received as PNG (distinct kind so it decodes as PNG, not DIB).
+  // Distinct kind so the image decodes as PNG, not DIB.
   kClipboardImagePng = 23,
 };
 
@@ -142,9 +138,8 @@ class Session : public std::enable_shared_from_this<Session> {
   bool Connect(const RdpOptions& options);
   void Disconnect();
 
-  // The FreeRDP context and cliprdr channel are freed only by Teardown() (RDP
-  // thread); any other thread must hold a ContextLease while it touches either,
-  // or it risks a use-after-free.
+  // The FreeRDP context and cliprdr channel are freed only by Teardown() (RDP thread); any other
+  // thread must hold a ContextLease while touching either, or risk a use-after-free.
   struct ContextLease {
     freerdp* instance = nullptr;
     CliprdrClientContext* cliprdr = nullptr;
@@ -237,9 +232,8 @@ class Session : public std::enable_shared_from_this<Session> {
   void AfterPresent();
   void SampleTelemetry();
 
-  // Every dynamic channel shares the drdynvc dispatch thread, so the frame
-  // pipeline must run on this session's own worker thread (GfxWorkerLoop), not
-  // inline in HandleGfxData, or a heavy frame blocks audio and input.
+  // Every dynamic channel shares the drdynvc dispatch thread, so the frame pipeline must run on
+  // this session's worker thread, not inline in HandleGfxData, or a heavy frame blocks audio and input.
   void GfxWorkerLoop();
 
   freerdp* instance_ = nullptr;
@@ -270,9 +264,8 @@ class Session : public std::enable_shared_from_this<Session> {
   std::atomic<size_t> gfxQueueBytes_{0};
   std::atomic<bool> gfxQueueHighWaterWarned_{false};
   void* gfxWorkerContext_ = nullptr;
-  // 超分: the server sizes the pointer bitmap in *session* pixels, so the
-  // cursor bitmap is reported enlarged by this factor and ArkTS scales it by
-  // the same amount the desktop is upscaled by (1.0 without 超分).
+  // 超分: the server sizes the pointer bitmap in session pixels, so it is reported enlarged by this
+  // factor and ArkTS scales it by the desktop's upscale amount (1.0 without 超分).
   double desktopMagnification_ = 1.0;
   std::atomic<uint32_t> netCharBaseRtt_{0};
   std::atomic<uint32_t> netCharAverageRtt_{0};
@@ -298,8 +291,7 @@ class Session : public std::enable_shared_from_this<Session> {
     return cliprdr_;
   }
 
-  // Data responses carry no format id, so at most one request may be in
-  // flight; anything newer is deferred.
+  // Data responses carry no format id, so at most one request may be in flight; newer ones are deferred.
   UINT SendRemoteDataRequest(UINT32 formatId, LocalClipKind kind);
 
   CliprdrClientContext* cliprdr_ = nullptr;
@@ -322,6 +314,6 @@ class Session : public std::enable_shared_from_this<Session> {
   LocalClipKind remoteRequestKind_ = LocalClipKind::kNone;
 };
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_SESSION_H
+#endif

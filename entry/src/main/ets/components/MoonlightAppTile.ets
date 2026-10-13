@@ -1,7 +1,5 @@
-// A component (not a page @Builder) so the @Prop flags refresh inside the
-// page's ForEach: a @Builder with by-value params never re-renders. The icon
-// PixelMap does not survive @Prop's deep copy, so it is a plain field and the
-// caller bumps the ForEach key once the bitmap has loaded.
+// A component (not a @Builder) so @Prop flags refresh inside ForEach; the icon
+// PixelMap does not survive @Prop's deep copy, so it is a plain keyed field.
 import { image } from '@kit.ImageKit';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { NvApp } from '../moonlight/MoonlightModels';
@@ -28,8 +26,7 @@ export struct MoonlightAppTile {
   @Prop isRunning: boolean = false;
   @Prop hasSession: boolean = false;
   // The in-flight connect splits into two signals: `loading` dims the poster
-  // under a spinner for a fresh start (card tap); `connecting` spins only the
-  // leading action disc for a resume, where the app is already running.
+  // under a spinner for a fresh start; `connecting` spins only the action disc.
   @Prop loading: boolean = false;
   @Prop connecting: boolean = false;
   @Prop tip: string = '';
@@ -108,8 +105,7 @@ export struct MoonlightAppTile {
       .alignItems(HorizontalAlign.Start)
       .hitTestBehavior(HitTestMode.None)
 
-      // Always mounted so its @Prop colour refreshes in place (a by-value
-      // @Builder would freeze it).
+      // Always mounted so its @Prop colour refreshes in place (a by-value @Builder would freeze it).
       Column() {
         ControlDisc({
           icon: $r('app.media.ic_star'),

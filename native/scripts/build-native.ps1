@@ -1,47 +1,5 @@
-<#
-.SYNOPSIS
-  Builds every OHOS native dependency from the pinned sources and syncs what the
-  app module consumes.
-
-.DESCRIPTION
-  Single entry point for the native build. All steps are CMake against the
-  Windows OHOS NDK - OpenSSL included: its `perl Configure` output is frozen
-  under native/openssl-cmake/generated/, so no WSL/Perl is involved (see
-  doc_agent/native-build.md).
-
-  Built in dependency order:
-    zlib      shared libz.so
-    openssl   shared libcrypto.so / libssl.so (CMake + frozen Configure output)
-    opus      shared libopus.so (Moonlight audio decode, linked by libhmrdp)
-    freerdp   shared libX.so; links zlib + OpenSSL dynamically
-    moonlight shared libmoonlight-common-c.so (enet/nanors fold into it)
-
-  Every independent dependency is a shared library and ships from
-  entry/libs/<abi>/, so a library with more than one consumer in the process
-  exists once instead of once per consumer (doc_agent/native-build.md); a
-  submodule that is only an implementation detail of its parent (moonlight's
-  enet/nanors) stays static inside that parent. Then synced next to the module
-  (all gitignored, generated):
-    entry/src/main/cpp/thirdparty/{freerdp,moonlight,opus}/include
-    entry/libs/<abi>/*.so
-
-  Prerequisite: fetch-sources.ps1 (pinned sources + patches).
-
-.PARAMETER Arch
-  arm64-v8a (default, device) or x86_64 (emulator).
-
-.PARAMETER Clean
-  Remove the build dir and install prefix of every step being built.
-
-.PARAMETER Only
-  Build only these steps. Dependencies are NOT pulled in automatically, so the
-  prerequisites must already be installed.
-
-.EXAMPLE
-  native/scripts/build-native.ps1
-  native/scripts/build-native.ps1 -Arch x86_64
-  native/scripts/build-native.ps1 -Only freerdp -Clean      # FreeRDP patch loop
-#>
+# Builds every pinned OHOS native dependency (zlib/openssl/opus/freerdp/moonlight)
+# with the Windows OHOS NDK and syncs what entry/ consumes; run fetch-sources.ps1 first.
 param(
   [string]$Arch = "arm64-v8a",
   [switch]$Clean,
@@ -50,7 +8,6 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-# --- shared setup -----------------------------------------------------------
 $Native = Split-Path -Parent $PSScriptRoot
 $Repo = Split-Path -Parent $Native
 $Deveco = if ($env:DEVECO_HOME) { $env:DEVECO_HOME } else { "C:\Program Files\Huawei\DevEco Studio" }
@@ -61,8 +18,6 @@ $Third = "$Native\third_party"
 $Install = "$Native\install\$Arch"
 $BuildRoot = "$Native\build"
 $Thirdparty = "$Repo\entry\src\main\cpp\thirdparty"
-# The module packages entry/libs/<abi>/ into the HAP and the app's CMakeLists
-# links every third-party library from there by full path.
 $Libs = "$Repo\entry\libs\$Arch"
 
 switch ($Arch) {
@@ -77,7 +32,6 @@ $Triple = switch ($Arch) {
   "x86_64"      { "x86_64-linux-ohos" }
 }
 
-# --- helpers ----------------------------------------------------------------
 function Assert-Found([string]$Path, [string]$What) {
   if (-not (Test-Path -LiteralPath $Path)) { throw "$What not found: $Path" }
 }
@@ -98,11 +52,7 @@ function Invoke-CMake {
     "-DCMAKE_TOOLCHAIN_FILE=$Toolchain",
     "-DCMAKE_MAKE_PROGRAM=$Ninja",
     "-DOHOS_ARCH=$Arch",
-    # RelWithDebInfo, not Release: the code is identical (-O2 either way, and the
-    # optimisation level each project pins is what wins), but -g keeps native
-    # stack frames symbolicable. The module strips before packaging, so this costs
-    # nothing in the HAP. Minimum is -O2: -O0 output has no usable debug value
-    # here. See doc_agent/native-build.md.
+    # RelWithDebInfo: -g keeps native stack frames symbolicable; -O2 is pinned per project.
     "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
   )
   if ($Prefix) { $cfg += "-DCMAKE_INSTALL_PREFIX=$Prefix" }
@@ -118,8 +68,7 @@ function Invoke-CMake {
   }
 }
 
-# Mirror a directory, then make the copies look new: the module build tracks
-# header changes by mtime.
+# Mirror a dir, then bump mtimes: the module build tracks header changes by mtime.
 function Copy-Tree([string]$From, [string]$To) {
   if (Test-Path -LiteralPath $To) { Remove-Item -Recurse -Force -LiteralPath $To }
   New-Item -ItemType Directory -Path $To -Force | Out-Null
@@ -135,9 +84,7 @@ function Replace-Line([string]$Path, [string]$Pattern, [string]$Replacement) {
   if ($new -ne $raw) { [System.IO.File]::WriteAllText($Path, $new) }
 }
 
-# Ships one shared library from a dependency's install prefix to
-# entry/libs/<abi>/. Copy by name so a stale file from an earlier build is always
-# replaced instead of accumulating.
+# Ships one shared library to entry/libs/<abi>/ by name so stale files are replaced.
 function Copy-PrebuiltLib([string]$From) {
   if (-not (Test-Path -LiteralPath $From)) { throw "shared library not found: $From" }
   New-Item -ItemType Directory -Path $Libs -Force | Out-Null
@@ -145,13 +92,11 @@ function Copy-PrebuiltLib([string]$From) {
   Write-Host "  -> $(Split-Path -Leaf $From)"
 }
 
-# --- zlib -------------------------------------------------------------------
 function Build-Zlib {
   $src = "$Third\zlib-1.3.1"
   Assert-Found "$src\CMakeLists.txt" "zlib source (run fetch-sources.ps1)"
   Invoke-CMake -Name zlib -Src $src -Build "$BuildRoot\zlib-$Arch" -Prefix "$Install\zlib" -Options @(
-    # Shared libz.so, shipped from entry/libs/<abi>/ like every other dependency;
-    # FreeRDP records it in DT_NEEDED instead of folding a copy in.
+    # Shared libz.so in entry/libs/<abi>/; FreeRDP records it in DT_NEEDED.
     "-DBUILD_SHARED_LIBS=ON",
     "-DZLIB_BUILD_EXAMPLES=OFF"
   )
@@ -159,7 +104,6 @@ function Build-Zlib {
   Write-Host "=== zlib ($Arch) installed to $Install\zlib ==="
 }
 
-# --- openssl ----------------------------------------------------------------
 function Build-OpenSsl {
   $src = "$Native\openssl-cmake"
   Assert-Found "$Third\openssl-3.0.15\Configure" "OpenSSL source (run fetch-sources.ps1)"
@@ -171,10 +115,8 @@ function Build-OpenSsl {
   Sync-OpenSsl
 }
 
-# libcrypto.so / libssl.so are the single OpenSSL in the process: libwinpr3.so,
-# libfreerdp3.so and libmoonlight-common-c.so all record them in DT_NEEDED. No
-# consumer carries its own copy and no header set is synced next to the module
-# (nothing under entry/src/main/cpp includes <openssl/...>).
+# libcrypto.so / libssl.so are the single OpenSSL in the process (DT_NEEDED by
+# libwinpr3/libfreerdp3/libmoonlight-common-c); no headers are synced.
 function Sync-OpenSsl {
   $from = "$Install\openssl\lib"
   Assert-Found "$from\libcrypto.so" "OpenSSL install (build openssl first)"
@@ -183,22 +125,18 @@ function Sync-OpenSsl {
   Copy-PrebuiltLib "$from\libcrypto.so"
   Copy-PrebuiltLib "$from\libssl.so"
 
-  # Environments built before the shared switch kept headers + libcrypto.a here;
-  # nothing reads them any more.
   $stale = "$Thirdparty\openssl"
   if (Test-Path -LiteralPath $stale) { Remove-Item -Recurse -Force -LiteralPath $stale }
 
   Write-Host "=== OpenSSL shared libraries copied to $Libs ==="
 }
 
-# --- opus -------------------------------------------------------------------
 function Build-Opus {
   $src = "$Third\opus-1.5.2"
   Assert-Found "$src\CMakeLists.txt" "opus source (run fetch-sources.ps1)"
   Invoke-CMake -Name opus -Src $src -Build "$BuildRoot\opus-$Arch" -Prefix "$Install\opus" -Options @(
-    # Shared libopus.so shipped from entry/libs/<abi>/; libhmrdp links it for the
-    # Moonlight audio decode. patch-opus.ps1 has already made its SONAME
-    # version-less, so the file that ships is exactly libopus.so.
+    # Shared libopus.so in entry/libs/<abi>/ for the Moonlight audio decode;
+    # patch-opus.ps1 makes its SONAME version-less.
     "-DBUILD_SHARED_LIBS=ON",
     "-DOPUS_BUILD_SHARED_LIBRARY=ON",
     "-DOPUS_BUILD_PROGRAMS=OFF",
@@ -221,7 +159,6 @@ function Sync-Opus {
   Write-Host "=== opus headers synced to $Thirdparty\opus\include\opus ==="
 }
 
-# --- freerdp ----------------------------------------------------------------
 function Build-FreeRdp {
   $src = "$Third\FreeRDP"
   Assert-Found "$src\CMakeLists.txt" "FreeRDP source (run fetch-sources.ps1)"
@@ -233,18 +170,13 @@ function Build-FreeRdp {
     "-DOHOS_ALLOW_UNDEFINED_SYMBOLS=ON",
     "-DCMAKE_C_FLAGS=-O2 -DNDEBUG -D__OHOS__=1",
     "-DCMAKE_CXX_FLAGS=-O2 -DNDEBUG -D__OHOS__=1",
-    # WINPR_ASSERT must never abort the host app: with the default (ON) any
-    # internal FreeRDP sanity check (e.g. the audio backend failing to open a
-    # device on OHOS) calls abort() and takes the whole process down. Turning it
-    # off makes WINPR_ASSERT a plain assert(), disabled by NDEBUG, so FreeRDP's
-    # error paths run instead of crashing.
+    # WINPR_ASSERT must never abort the host app (default ON calls abort() on any
+    # internal sanity check); OFF makes it a plain assert(), disabled by NDEBUG.
     "-DWITH_VERBOSE_WINPR_ASSERT=OFF",
     "-DZLIB_LIBRARY=$zlib\lib\libz.so",
     "-DZLIB_INCLUDE_DIR=$zlib\include",
-    # OpenSSL and zlib are the shared libraries installed above; FreeRDP records
-    # them in DT_NEEDED instead of folding a private copy into libwinpr3.so /
-    # libfreerdp3.so (the reason those two used to export ~5900 OpenSSL symbols
-    # each and interpose on one another).
+    # OpenSSL/zlib are the shared libs above; FreeRDP records them in DT_NEEDED
+    # instead of folding private copies into libwinpr3/libfreerdp3.
     "-DOPENSSL_ROOT_DIR=$Install\openssl",
     "-DOPENSSL_INCLUDE_DIR=$Install\openssl\include",
     "-DOPENSSL_CRYPTO_LIBRARY=$Install\openssl\lib\libcrypto.so",
@@ -270,11 +202,8 @@ function Build-FreeRdp {
     "-DWITH_CHANNELS=ON", "-DWITH_CLIENT_CHANNELS=ON", "-DBUILTIN_CHANNELS=ON",
     "-DWITH_CAIRO=OFF", "-DWITH_SDL_IMAGE_DIALOGS=OFF", "-DWITH_WEBVIEW=OFF",
     "-DWITH_PLATFORM_SERVER=OFF", "-DWITH_PROGRESS_BAR=OFF",
-    # WITH_SIMD=ON brings in FreeRDP's own SSE/NEON implementations (the
-    # Progressive decode's inverse DWT, YCbCr->RGB, YCoCg, the SSE3/NEON
-    # primitives). Those are not required to be bit-identical to the generic C
-    # code, so the correctness criterion is a measured one (rdp-gfx.md
-    # §7.1/§7.2). Changing this switch invalidates the recorded reference frames.
+    # WITH_SIMD=ON brings FreeRDP's SSE/NEON primitives (inverse DWT, YCbCr->RGB,
+    # YCoCg); not bit-identical to generic C, so correctness is measured (rdp-gfx.md).
     "-DWITH_SIMD=ON", "-DWITH_AAD=OFF", "-DWITH_SMARTCARD=OFF",
     "-DWITH_KEYBOARD_LAYOUT_FROM_FILE=OFF",
     "-DCHANNEL_AUDIN=ON", "-DCHANNEL_ENCOMSP=OFF", "-DCHANNEL_RAIL=OFF", "-DCHANNEL_REMDESK=OFF",
@@ -283,9 +212,8 @@ function Build-FreeRdp {
     "-DCHANNEL_DRDYNVC=ON", "-DCHANNEL_DISP=ON", "-DCHANNEL_RDPGFX=ON", "-DCHANNEL_RDPEI=ON",
     "-DCHANNEL_GEOMETRY=OFF", "-DCHANNEL_VIDEO=OFF",
     "-DWITH_WINPR_TOOLS=OFF", "-DWITH_BINARY_VERSIONING=OFF", "-DCMAKE_SKIP_INSTALL_RPATH=ON",
-    # A single version-less libX.so (SONAME libX.so) instead of libX.so.3; the
-    # OHOS patch to cmake/AddTargetWithResourceFile.cmake keeps the "lib" prefix
-    # and sets the SONAME on non-Windows.
+    # One version-less libX.so (SONAME libX.so): AddTargetWithResourceFile.cmake
+    # keeps the "lib" prefix and sets the SONAME on non-Windows.
     "-DWITH_LIBRARY_VERSIONING=OFF",
     "-DWITH_ABSOLUTE_PLUGIN_LOAD_PATHS=OFF",
     "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF"
@@ -301,8 +229,7 @@ function Sync-FreeRdp {
   Assert-Found $from "FreeRDP install headers (build freerdp first)"
 
   Copy-Tree $from $to
-  # Normalize the values CMake bakes into the generated headers: the module must
-  # carry no build-machine paths or local git revision.
+  # Strip build-machine paths / git revision from the generated headers.
   Replace-Line (Join-Path $to "winpr3\winpr\build-config.h") `
     '(?m)^#define WINPR_INSTALL_PREFIX .*$' '#define WINPR_INSTALL_PREFIX "freerdp"'
   Replace-Line (Join-Path $to "winpr3\winpr\build-config.h") `
@@ -321,7 +248,6 @@ function Copy-FreeRdpLibs {
   Write-Host "=== FreeRDP shared libraries copied to $Libs ==="
 }
 
-# --- moonlight --------------------------------------------------------------
 function Build-Moonlight {
   $src = "$Third\moonlight-common-c"
   Assert-Found "$src\CMakeLists.txt" "moonlight-common-c source (run fetch-sources.ps1)"
@@ -329,19 +255,13 @@ function Build-Moonlight {
   $build = "$BuildRoot\moonlight-$Arch"
   $out = "$Install\moonlight"
 
-  # Upstream CMakeLists defaults to BUILD_SHARED_LIBS=ON (line ~26), so nothing is
-  # passed here: libmoonlight-common-c.so is what upstream means to build. enet is
-  # its own submodule, not a project-level dependency - it hard-codes
-  # add_library(enet STATIC) and stays that way, so it is folded into
-  # libmoonlight-common-c.so instead of shipping as a second library.
-  # There are no install() rules, so the artifact and header are collected by hand
-  # below.
+  # Upstream defaults to BUILD_SHARED_LIBS=ON (libmoonlight-common-c.so); enet is a
+  # static submodule folded in. No install() rules, so artifact/header are collected by hand.
   Invoke-CMake -Name moonlight -Src $src -Build $build -Options @(
     "-DOHOS_ALLOW_UNDEFINED_SYMBOLS=ON",
     "-DCMAKE_C_FLAGS=-O2 -DNDEBUG -D__OHOS__=1",
     # find_package(OpenSSL 1.0.2 REQUIRED) must resolve to the OHOS build, not a
-    # host OpenSSL (there is none for OHOS). The paths also keep it off the
-    # shared/static probe: libcrypto.so is the one OpenSSL in the process.
+    # host OpenSSL; libcrypto.so is the one OpenSSL in the process.
     "-DOPENSSL_ROOT_DIR=$Install\openssl",
     "-DOPENSSL_INCLUDE_DIR=$Install\openssl\include",
     "-DOPENSSL_CRYPTO_LIBRARY=$Install\openssl\lib\libcrypto.so",
@@ -358,8 +278,7 @@ function Build-Moonlight {
   Sync-Moonlight
 }
 
-# Only the public header is synced next to the module: the libraries ship from
-# entry/libs/<abi>/ like every other dependency.
+# Only the public header is synced next to the module; libraries ship from entry/libs/<abi>/.
 function Sync-Moonlight {
   $from = "$Install\moonlight"
   $to = "$Thirdparty\moonlight"
@@ -368,7 +287,6 @@ function Sync-Moonlight {
   New-Item -ItemType Directory -Path "$to\include" -Force | Out-Null
   Copy-Item -Path "$from\include\*" -Destination "$to\include" -Recurse -Force
 
-  # Environments built before the shared switch kept the archives here.
   $stale = "$to\lib"
   if (Test-Path -LiteralPath $stale) { Remove-Item -Recurse -Force -LiteralPath $stale }
 
@@ -377,7 +295,6 @@ function Sync-Moonlight {
   Write-Host "=== moonlight headers synced to $to ==="
 }
 
-# --- run --------------------------------------------------------------------
 if ($Only -contains "zlib")      { Build-Zlib }
 if ($Only -contains "openssl")   { Build-OpenSsl }
 if ($Only -contains "opus")      { Build-Opus }

@@ -160,9 +160,8 @@ void SharpenPremul(std::vector<float>* image, int width, int height, float stren
 
 }  // namespace
 
-// A genuine resample, done on the premultiplied bitmap: filtering straight-alpha
-// colour mixes the transparent surround (RGB 0) into the edges as dark fringes.
-// Un-premultiplying at the end restores the straight alpha the cursor expects.
+// A genuine resample on the premultiplied bitmap: filtering straight-alpha colour
+// mixes the transparent surround into dark edge fringes; unpremultiplying restores it.
 void UpscaleBgra(const std::vector<uint8_t>& src, uint32_t srcW, uint32_t srcH,
                  uint32_t dstW, uint32_t dstH, float sharpen, std::vector<uint8_t>* dst) {
   const size_t srcPixels = static_cast<size_t>(srcW) * srcH;

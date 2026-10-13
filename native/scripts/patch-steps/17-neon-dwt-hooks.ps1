@@ -1,15 +1,5 @@
-# 17) HmRdp: the NEON inverse DWT hooks (doc_agent/rdp-native.md §3).
-#
-#     The extrapolated (reduced) DWT is the one a Progressive region actually
-#     runs, so -DWITH_SIMD=ON wires the NEON entry point into it; its arithmetic
-#     is the upstream NEON one and the difference it makes is a rounding-level
-#     one (doc_agent/rdp-gfx.md §7.2).
-#
-#     The *non-extrapolated* NEON DWT stays switched off: it does the same
-#     `vaddq_s16` on two neighbours, so it wraps for large coefficients - not a
-#     rounding difference - and this variant never runs on Progressive content,
-#     i.e. there is no measurement to weigh it with. The bit-exact implementation
-#     from step 15 stays in that slot.
+# 17) Wire the NEON extrapolated inverse DWT entry point in (WITH_SIMD=ON); the non-extrapolated
+#     NEON DWT stays off (wraps on large coefficients, never runs on Progressive content).
 $neonC = "$Source\libfreerdp\codec\neon\rfx_neon.c"
 
 $neonInitOld = @'
@@ -19,11 +9,8 @@ $neonInitOld = @'
 '@
 $neonInitNew = @'
 		context->quantization_decode = rfx_quantization_decode_NEON;
-		/* HmRdp: the non-extrapolated DWT keeps the bit-exact implementation
-		 * (codec/rfx_dwt.c, step 15). The NEON one above adds two int16
-		 * neighbours in 16-bit lanes and wraps when they do not fit, which is
-		 * not a rounding difference; and this variant never runs on Progressive
-		 * content, so there is no measurement to weigh it with. */
+		/* HmRdp: the non-extrapolated DWT keeps the bit-exact implementation (codec/rfx_dwt.c,
+		 * step 15); the NEON one wraps on large coefficients and never runs on Progressive content. */
 		WINPR_UNUSED(rfx_dwt_2d_decode_NEON);
 		context->dwt_2d_extrapolate_decode = rfx_dwt_2d_extrapolate_decode_neon;
 '@

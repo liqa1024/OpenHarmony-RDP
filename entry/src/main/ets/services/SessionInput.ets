@@ -29,8 +29,6 @@ export class TouchPhase {
   static readonly CANCEL: number = 4;
 }
 
-// One contact of a native precision-touchpad frame; x/y normalized over the
-// physical surface. HarmonyOS exposes no touchpad contacts, so these are synthesized.
 export class TouchpadContact {
   phase: number = TouchPhase.MOVE;
   pointerId: number = 0;
@@ -77,11 +75,8 @@ const CANCEL_RESUME_MIN_DISTANCE: number = 16;
 const CANCEL_RESUME_MAX_DISTANCE: number = 64;
 const CANCEL_HOLD_MS: number = 400;
 
-// 触控板双指双击 -> 中键：从第一次轻触的按下起算的双击窗口。
 const TOUCHPAD_DOUBLE_TAP_MS: number = 300;
-// 轻触与实体右键的分界；系统双指轻触的按下-抬起远小于此值。
 const TOUCHPAD_PRESS_HOLD_MS: number = 30;
-// 判定为拖动的最小位移（远端指针空间 px）。
 const TOUCHPAD_MOVE_SLOP: number = 8;
 
 // Touchpad fling: estimate velocity over a short sample window, then emit extra wheel rotation
@@ -91,7 +86,6 @@ const FLING_TICK_MS: number = 16;
 const FLING_STOP_PX: number = 0.5;
 const FLING_MAX_SECONDS: number = 3;
 
-// One touchpad-axis sample (cumulative travel vs time) for the fling velocity estimate.
 class AxisSample {
   t: number = 0;
   v: number = 0;
@@ -107,34 +101,26 @@ class AxisSample {
 const MIN_PINCH_DISTANCE_PERCENT: number = 1;
 const MAX_PINCH_DISTANCE_PERCENT: number = 20;
 const MIN_PINCH_HALF: number = 8;
-// Native-touchpad contact separation floor, as a fraction of the pad surface.
 const MIN_PINCH_FRAC: number = 0.02;
-// Native-touchpad base half-separation, as a percent of the pad width (so the initial
-// separation is ~2.5x the shared touch-mode default). Fixed: it is a property of the pad.
 const NATIVE_PINCH_BASE_PERCENT: number = 20;
 // The native pair lies along the pad diagonal (45 deg in the normalized pad square, which
 // maps to the physical corner-to-corner direction), maximizing the usable separation length.
 const NATIVE_PINCH_ANGLE_DEG: number = 45;
-// Stand-in physical pad size for a synthesized precision touchpad (no device value on HarmonyOS).
 const TOUCHPAD_WIDTH_MM: number = 100;
 const TOUCHPAD_HEIGHT_MM: number = 70;
 // axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot explode or collapse the separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
-// External touch ids for the synthetic pinch contacts; screen touches use id + 1, so these never collide.
 const PINCH_TOUCH_ID_A: number = 20;
 const PINCH_TOUCH_ID_B: number = 21;
 // FreeRDP coalesces touch frames, so the first MOTION must not reach RDPEI before its DOWN flush or it overwrites the unsent DOWN.
 const PINCH_TOUCH_DOWN_FLUSH_MS: number = 30;
-// Dead zone before the pinch locator cursor flips open/grab hand, so jitter does not flicker it.
 const PINCH_CURSOR_HYSTERESIS: number = 0.02;
 
 const PINCH_CTRL: KeyMapping = KeyMapping.of(0x1D, 0xA2, false, 0);
 
 export type PointMapper = (x: number, y: number) => number[];
 export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
-// Debug probe: reports the synthesized pinch contacts, normalized to the channel surface
-// (remote screen for the touch channel, pad surface for the native-touchpad channel).
 export type PinchProbeHandler =
   (active: boolean, p1x: number, p1y: number, p2x: number, p2y: number) => void;
 
@@ -152,18 +138,15 @@ export class SessionInput implements TouchpadTapTarget {
   private pendingMoveY: number = -1;
   private lastMoveSentAt: number = 0;
   private moveTimer: number = -1;
-  // Pointer space in remote desktop/stream pixels, used for touch clamping and cancel resume.
   private pointerWidth: number = 0;
   private pointerHeight: number = 0;
   private pointMapper: PointMapper = (x: number, y: number): number[] => [x, y];
   private touchEnabled: boolean = false;
   private touchPoints: Map<number, number[]> = new Map<number, number[]>();
-  // Kept separate from touchPoints so a contact can be resumed after a Cancel even if the UI renumbers the finger.
   private touchContactIds: Map<number, number> = new Map<number, number>();
   private pendingCancelIds: number[] = [];
   private cancelTimers: Map<number, number> = new Map<number, number>();
   private touchpadWheel: TouchpadWheelMapper = new TouchpadWheelMapper();
-  // Mouse wheel keeps its own mapper: it is not the touchpad, so the touchpad speed setting does not apply.
   private wheelMapper: TouchpadWheelMapper = new TouchpadWheelMapper();
   private wheelPxPerVp: number = 0;
   private axisSamples: AxisSample[] = [];
@@ -217,7 +200,6 @@ export class SessionInput implements TouchpadTapTarget {
     }
   }
 
-  // TouchpadTapTarget
   rightDown(x: number, y: number): void {
     this.handleButton(InputAction.PRESS, InputButton.RIGHT, x, y);
   }
@@ -302,7 +284,6 @@ export class SessionInput implements TouchpadTapTarget {
     }
   }
 
-  // While a system key interceptor owns the keyboard, onKeyEvent must not also forward.
   setInterceptActive(active: boolean): void {
     this.interceptActive = active;
   }
@@ -363,7 +344,6 @@ export class SessionInput implements TouchpadTapTarget {
     this.sink.key(mapping, down);
   }
 
-  // A touchscreen can also emit compatibility mouse events; those go through handleTouch instead.
   handleMouseEvent(event: MouseEvent): void {
     if (this.touchEnabled && event.source === SourceType.TouchScreen) {
       return;
@@ -397,7 +377,6 @@ export class SessionInput implements TouchpadTapTarget {
   handleAxis(event: AxisEvent): void {
     const isPinch: boolean = SessionInput.isPinchEvent(event);
     if (isPinch || this.pinchActive) {
-      // The gesture ends only on the real AxisAction.END (fingers lifted).
       if (event.action === AxisAction.END) {
         this.endPinch();
         return;
@@ -448,7 +427,6 @@ export class SessionInput implements TouchpadTapTarget {
     }
   }
 
-  // Only real touchscreen input reaches here; converted mouse touches go through handleMouseEvent.
   handleTouch(event: TouchEvent): void {
     if (!this.touchEnabled || event.source !== SourceType.TouchScreen) {
       return;
@@ -496,14 +474,12 @@ export class SessionInput implements TouchpadTapTarget {
     this.releaseAllTouches();
     this.endPinch();
     this.cancelFling();
-    // Don't let a pending 中键 candidate fire into a window that lost focus.
     this.touchpadTap.reset();
   }
 
   private handleButton(action: number, button: number, x: number, y: number): void {
     this.lastPointerX = x;
     this.lastPointerY = y;
-    // Any button event flushes the pending move first, or the click lands on a stale position.
     this.flushMove();
     this.sink.button(action, button, x, y);
     if (action === InputAction.PRESS) {
@@ -676,7 +652,6 @@ export class SessionInput implements TouchpadTapTarget {
     }
     if (this.useTouchPinch()) {
       this.updateTouchPinch(scale);
-      // Skip MOTIONs that would let FreeRDP's 50Hz RDPEI coalescing overwrite the unsent DOWN; the distance is still tracked above.
       if (Date.now() >= this.touchPinchMotionAt) {
         this.sendTouchPinchContacts(TouchPhase.MOVE);
       }
@@ -689,7 +664,6 @@ export class SessionInput implements TouchpadTapTarget {
       this.pinchScale = scale;
       return;
     }
-    // axisPinch is the ratio to the initial distance; the notch step derives from the configured zoom speed, so a larger speed emits more notches.
     this.pinchAccum += scale - this.pinchScale;
     this.pinchScale = scale;
     const notchesPerUnit: number = DEFAULT_PINCH_NOTCHES_PER_UNIT * this.pinchZoomSpeed;
@@ -709,18 +683,10 @@ export class SessionInput implements TouchpadTapTarget {
   }
 
   private beginTouchPinch(event: AxisEvent, scale: number): void {
-    // The pair is synthesized the same way in both channels: a base separation that is a
-    // percent of that channel's surface, scaled by the pinch ratio. Only the `× ratio` step is
-    // shared; the base itself is deliberately different per channel (screen vs pad), as are
-    // the surface, floor, anchor and tilt.
     let percent: number;
     let angleDeg: number;
     let surface: number;
     if (this.pinchMode === PINCH_MODE_NATIVE) {
-      // No pad position from HarmonyOS: the pair is centered on the pad (surface = 1.0), and
-      // the base separation is a fixed fraction of the pad width - it must be wide enough for
-      // Windows to classify the gesture and to leave room to pinch in. It is laid along the
-      // pad diagonal, where the usable separation is longest.
       this.touchPinchAnchor = [0.5, 0.5];
       this.touchPinchHalfMin = MIN_PINCH_FRAC;
       surface = 1;
@@ -736,7 +702,6 @@ export class SessionInput implements TouchpadTapTarget {
     }
     this.touchPinchHalf = Math.max(this.touchPinchHalfMin, surface * percent / 100);
     this.touchPinchLastHalf = this.touchPinchHalf;
-    // ArkUI reports no finger angle, so a configured (or fixed) tilt stands in for the hand.
     const radians: number = Math.max(-180, Math.min(180, angleDeg)) * Math.PI / 180;
     this.touchPinchUnitX = Math.cos(radians);
     this.touchPinchUnitY = Math.sin(radians);
@@ -744,13 +709,10 @@ export class SessionInput implements TouchpadTapTarget {
     this.touchPinchZoomIn = true;
     this.updateTouchPinch(scale);
     const handler: PinchCursorHandler | undefined = this.pinchCursorHandler;
-    // The locator hand is only for the synthetic-touch path (the OS hides the pointer
-    // while a screen touch is down); native touchpad pinch never touches the screen.
     if (handler !== undefined && this.pinchMode === PINCH_MODE_TOUCH) {
       handler(true, this.touchPinchZoomIn);
     }
     this.sendTouchPinchContacts(TouchPhase.DOWN);
-    // Let the DOWN frame flush before the first MOTION can overwrite it.
     this.touchPinchMotionAt = Date.now() + PINCH_TOUCH_DOWN_FLUSH_MS;
   }
 
@@ -758,7 +720,6 @@ export class SessionInput implements TouchpadTapTarget {
     const ratio: number = Math.max(MIN_PINCH_RATIO, Math.min(MAX_PINCH_RATIO, scale));
     this.touchPinchLastHalf =
       Math.max(this.touchPinchHalfMin, this.touchPinchHalf * ratio);
-    // Flip the locator only past the dead zone and only when it changes: a per-motion pointer-style call would be a syscall per axis event.
     const zoomIn: boolean = ratio > 1 + PINCH_CURSOR_HYSTERESIS
       ? true : (ratio < 1 - PINCH_CURSOR_HYSTERESIS ? false : this.touchPinchZoomIn);
     if (zoomIn !== this.touchPinchZoomIn) {
@@ -836,11 +797,9 @@ export class SessionInput implements TouchpadTapTarget {
     this.pinchScale = 0;
     this.pinchAccum = 0;
     this.touchPinchMotionAt = 0;
-    // Release unconditionally: the final event may not carry the pinch axis, so pinchActive can already be false while Ctrl is still logically held.
     this.setPinchCtrl(false);
   }
 
-  // A touchpad tap loses the TOUCHPAD tag, so the originating device is the fallback; sourceTool is checked first to keep scroll cheap.
   isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
     return sourceTool === SourceTool.TOUCHPAD || this.isTouchpadDevice(deviceId);
   }
@@ -864,11 +823,9 @@ export class SessionInput implements TouchpadTapTarget {
   }
 
   private onTouchDown(id: number, point: number[], pressure: number): void {
-    // A Down for a contact already tracked is a retransmission.
     if (this.touchContactIds.has(id)) {
       return;
     }
-    // A held Cancel resumed near its last position means the same finger is still down: move it instead of lifting and re-pressing.
     const resumed: number = this.findResumableCancel(point);
     if (resumed >= 0) {
       const known: number | undefined = this.touchContactIds.get(resumed);
@@ -922,7 +879,6 @@ export class SessionInput implements TouchpadTapTarget {
     if (!this.touchContactIds.has(id) || this.isPendingCancel(id)) {
       return;
     }
-    // The finger is often still down; CANCEL_HOLD_MS is only a safety release for a Cancel that never resumes.
     this.touchPoints.set(id, point);
     this.pendingCancelIds.push(id);
     const timer: number = setTimeout(() => {
@@ -988,7 +944,6 @@ export class SessionInput implements TouchpadTapTarget {
   }
 
   private finalizeAllCancels(): void {
-    // Copy first: finalizeCancel mutates the list.
     const ids: number[] = this.pendingCancelIds.slice();
     for (let i = 0; i < ids.length; i++) {
       this.finalizeCancel(ids[i]);
@@ -1009,7 +964,6 @@ export class SessionInput implements TouchpadTapTarget {
     this.touchContactIds.clear();
   }
 
-  // ArkUI pressure is [0, 65535); shared form is 0..1, where zero means the device did not report it.
   private static normalizePressure(pressure: number | undefined): number {
     if (pressure === undefined || pressure <= 0) {
       return 0;
@@ -1061,7 +1015,6 @@ export class SessionInput implements TouchpadTapTarget {
     this.heldMeta = down;
   }
 
-  // The lock states are only exposed from API 19; when absent the remote keeps its own state.
   private syncLocalLocks(event: KeyEvent): void {
     const caps: boolean | undefined = event.isCapsLockOn;
     const num: boolean | undefined = event.isNumLockOn;

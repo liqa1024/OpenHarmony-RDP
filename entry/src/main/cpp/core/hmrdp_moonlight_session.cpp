@@ -149,7 +149,6 @@ void Run(const MoonlightStreamConfig& config) {
 
   PDECODER_RENDERER_CALLBACKS video =
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());
-  // Decide the audio consumer before the callbacks are wired.
   MoonlightAudioSetLowLatency(config.enableAudio && config.lowLatencyAudio);
   // A null audio renderer leaves the library's audio callbacks as no-ops (fake
   // renderer); the ring then never receives a format, so nothing plays.
@@ -231,7 +230,6 @@ std::string MoonlightSessionStart(const MoonlightStreamConfig& config,
   g_connected = false;
   g_terminated = false;
   g_active = true;
-  // Never carry samples or a format across sessions.
   MoonlightAudioReset();
   try {
     g_thread = std::thread([config]() {

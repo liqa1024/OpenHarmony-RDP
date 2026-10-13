@@ -1,5 +1,4 @@
-# 3) OpenSLES: OHOS ships the standard OpenSLES 1.0.1 headers, not the Android
-#    extensions, so map the Android-only identifiers to the standard ones.
+# 3) OHOS ships standard OpenSLES 1.0.1, not the Android extensions; map the Android-only identifiers.
 $sl = @{
   '#include <SLES/OpenSLES_Android.h>'               = '#include <SLES/OpenSLES.h>'
   '#include <SLES/OpenSLES_AndroidConfiguration.h>'  = '#include <SLES/OpenSLES.h>'

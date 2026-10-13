@@ -1,18 +1,6 @@
 /*
- * HmRdp - HarmonyOS rdpsnd backend that forwards PCM to the application layer.
- *
- * OHOS only implements the deprecated OpenSL ES path and the native playback
- * proved fragile, so instead of opening an audio device inside FreeRDP the
- * decoded PCM is handed to a sink registered by libhmrdp, which plays it with
- * OHAudio.
- *
- * The sink is the single owner of client-side buffering: rdpsnd_main.c's
- * generic overrun guard is neutralised for this backend (patch step 35), and
- * Play answers with the sink's queued render latency so the Wave Confirm the
- * server receives is truthful.
- *
- * The subsystem entry keeps the upstream "opensles" name so rdpsnd_main.c loads
- * it without any further FreeRDP changes.
+ * HmRdp - HarmonyOS rdpsnd backend: hands decoded PCM to a sink registered by libhmrdp
+ * (HmrdpSetAudioSink) instead of opening an audio device; the sink owns all client-side buffering.
  */
 #include <freerdp/config.h>
 
@@ -47,8 +35,7 @@ static BOOL rdpsnd_hmrdp_format_supported(rdpsndDevicePlugin* device, const AUDI
 	WINPR_ASSERT(device);
 	WINPR_ASSERT(format);
 
-	// Only advertise 16-bit PCM so the server either sends it directly or
-	// FreeRDP decodes compressed formats to 16-bit before calling Play.
+	// Only advertise 16-bit PCM: FreeRDP decodes anything else to 16-bit before Play.
 	if (format->wFormatTag != WAVE_FORMAT_PCM)
 		return FALSE;
 	if (format->cbSize != 0)
@@ -85,10 +72,7 @@ static UINT rdpsnd_hmrdp_play(rdpsndDevicePlugin* device, const BYTE* data, size
 	{
 		rdpContext* context = freerdp_rdpsnd_get_context(device->rdpsnd);
 
-		/* The sink keeps the only client-side buffer and answers with the
-		 * playback time it now holds, in ms. rdpsnd adds this to the Wave
-		 * Confirm timestamp, which is how the server learns the real render
-		 * latency (see rdpsnd_treat_wave). */
+		/* The sink answers with the playback time it now holds (ms); rdpsnd adds it to the Wave Confirm. */
 		latency = (UINT)g_audioSink(context, data, size, (int)plugin->rate, (int)plugin->channels);
 	}
 	return latency;

@@ -63,10 +63,8 @@ std::string RefSibling(const std::string& capturePath, const std::string& name) 
 }
 
 uint64_t HashFrame(const uint8_t* data, int stride, int width, int height) {
-  // Four independent FNV-1a lanes: the scalar chain is dependency-bound on the one
-  // multiply per word and costs several ms per whole-screen frame at this clock;
-  // the lanes hide that latency. Any stable hash would do - it is only ever
-  // compared against itself.
+  // Four independent FNV-1a lanes hide the one-multiply-per-word dependency latency of a
+  // scalar chain; any stable hash would do (it is only ever compared against itself).
   uint64_t h[4] = {1469598103934665603ull, 1099511628211ull, 0x9e3779b97f4a7c15ull,
                    0xc2b2ae3d27d4eb4full};
   h[0] ^= static_cast<uint64_t>(static_cast<uint32_t>(width)) * 0x9e3779b97f4a7c15ull;

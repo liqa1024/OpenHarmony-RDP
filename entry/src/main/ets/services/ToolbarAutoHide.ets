@@ -38,7 +38,6 @@ export class ToolbarAutoHide {
     if (!this.willReveal()) {
       this.hideRevealHint();
     }
-    // Outside fullscreen the bar sits above the picture or under the status overlay: no auto-hide.
     if (!this.host.isFullscreen() || !this.host.isConnected()) {
       this.clearTimers();
       return;

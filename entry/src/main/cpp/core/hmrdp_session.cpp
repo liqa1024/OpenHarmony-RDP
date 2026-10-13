@@ -1,7 +1,3 @@
-/*
- * HmRdp - HarmonyOS RDP client
- * FreeRDP client session implementation.
- */
 #include "hmrdp_session.h"
 
 #include <algorithm>
@@ -121,8 +117,6 @@ using fileclip::kFileGroupDescriptorName;
 
 namespace {
 
-// Whether remote cursor updates drive the HarmonyOS system cursor; global because
-// it is a user setting, read when a session connects.
 std::atomic<bool> g_useRdpCursor{true};
 
 uint64_t NowMs() {
@@ -182,7 +176,6 @@ const char kHtmlFormatName[] = "HTML Format";
 constexpr UINT32 kPngFormatId = 0xC003;
 const char kPngFormatName[] = "PNG";
 
-// Hard cap on the source cursor size; larger is treated as corrupt and dropped.
 constexpr uint32_t kMaxCursorSourceSide = 1024;
 
 typedef struct {
@@ -555,7 +548,6 @@ BOOL HmrdpPostConnect(freerdp* instance) {
   context->update->EndPaint = HmrdpEndPaint;
   context->update->DesktopResize = HmrdpDesktopResize;
   context->update->PlaySound = HmrdpPlaySound;
-  // Consume the server's lock-key indicator updates instead of echoing them back.
   context->update->SetKeyboardIndicators = HmrdpSetKeyboardIndicators;
 
   // Take over cursor handling so the remote pointer shape drives the HarmonyOS
@@ -702,8 +694,6 @@ class ContextGuard {
 
 Session::ContextLease Session::AcquireContext() {
   std::lock_guard<std::mutex> lock(lifecycleMutex_);
-  // A lease is only handed out for a live instance; once teardown has started or
-  // the instance is gone, callers get an invalid lease and must do nothing.
   if (instance_ == nullptr || tearingDown_) {
     return ContextLease{};
   }
@@ -737,7 +727,6 @@ bool Session::WaitDestroyed(uint32_t timeoutMs) {
 }
 
 Session::Session() {
-  // Account for a frame that actually reached the surface (telemetry / first frame).
   pipeline_.host()->SetPresentedFn(
       [this](bool presented, uint64_t, const PresentUploadInfo&) {
         if (presented) {
@@ -1009,7 +998,6 @@ bool Session::Connect(const RdpOptions& options) {
   if (!options.ignoreCertificate) {
     freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, TRUE);
   }
-  // Clipboard redirection is always on, triggered manually from the toolbar.
   freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, TRUE);
   // Without the channel no PCM ever arrives, so an unsupported device stays silent
   // rather than failing.
@@ -1025,7 +1013,6 @@ bool Session::Connect(const RdpOptions& options) {
   freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
   // RDPEI (touch/pen) channel, so ArkUI touch events forward as native remote touch.
   freerdp_settings_set_bool(settings, FreeRDP_MultiTouchInput, TRUE);
-  // The UI only offers the fixed Windows presets, so the value passes through as-is.
   if (options.scalePercent > 0) {
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor,
                                 static_cast<UINT32>(options.scalePercent));
@@ -1069,7 +1056,6 @@ void Session::EventThread() {
     MarkDestroyed();
     return;
   }
-  // Mark this thread like the frame pipeline (HarmonyOS QoS).
   HmrdpThreadQoSHook();
   const BOOL ok = freerdp_connect(instance);
   if (!ok) {
@@ -1175,8 +1161,7 @@ void Session::Disconnect() {
 
 void Session::Teardown() {
   // Sole owner of the context: stops handing out leases, waits for the outstanding
-  // ones, then frees, so no other thread holds it when it goes away
-  // (doc_agent/architecture.md §4.3).
+  // ones, then frees, so no other thread holds it (doc_agent/architecture.md §4.3).
   freerdp* instance = nullptr;
   {
     std::unique_lock<std::mutex> lock(lifecycleMutex_);
@@ -1200,7 +1185,6 @@ void Session::Teardown() {
   clipboardReady_ = false;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    // The channel is gone, so a pending download request can never be answered.
     fileContentsPending_ = false;
   }
   audio_.Reset();
@@ -1448,7 +1432,6 @@ void Session::HandlePostDisconnect() {
   remoteRequestKind_ = LocalClipKind::kNone;
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
-    // The channel is gone: a pending download request can never be answered.
     fileContentsPending_ = false;
   }
   hmrdp::GfxDumpFlush();
@@ -1518,8 +1501,6 @@ bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32
 
 void Session::SetTouchHighRate(bool enabled) {
   if (HmrdpSetTouchFrameInterval != nullptr) {
-    // Lower value = higher rate; the high-rate option uses 8ms (125Hz) rather than
-    // 0, which would let the network alone bound a drag.
     HmrdpSetTouchFrameInterval(enabled ? kTouchFrameIntervalHighRateMs
                                        : kTouchFrameIntervalDefaultMs);
   }
@@ -1612,7 +1593,6 @@ void Session::HandleCliprdrConnected(CliprdrClientContext* cliprdr) {
     return;
   }
   {
-    // Refuse to publish if teardown has already begun.
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     if (tearingDown_) {
       return;
@@ -1642,8 +1622,7 @@ UINT Session::OnCliprdrMonitorReady() {
   generalCapabilitySet.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
   generalCapabilitySet.version = CB_CAPS_VERSION_2;
   // Deliberately NOT asking for CB_CAN_LOCK_CLIPDATA: once locking is negotiated
-  // every file-contents request must echo the server's clipDataId or fail; FreeRDP's
-  // own file-transfer client leaves the same bit unset.
+  // every file-contents request must echo the server's clipDataId or fail.
   generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES |
                                       CB_STREAM_FILECLIP_ENABLED |
                                       CB_FILECLIP_NO_FILE_PATHS |
@@ -2077,7 +2056,6 @@ void Session::CancelFileTransfer() {
     }
   }
   if (!pulled) {
-    // Nothing pulled yet (or the transfer already finished), so withdraw cleanly.
     WithdrawLocalFileClipboard();
   }
 }
@@ -2119,7 +2097,6 @@ UINT Session::HandleRemoteFileContentsResponse(
   {
     std::lock_guard<std::mutex> lock(clipboardMutex_);
     if (!fileContentsPending_) {
-      // No request outstanding: ignore a stray/duplicate response.
       return CHANNEL_RC_OK;
     }
     fileContentsPending_ = false;

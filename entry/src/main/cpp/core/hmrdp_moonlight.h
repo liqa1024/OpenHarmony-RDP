@@ -8,18 +8,13 @@ namespace hmrdp {
 
 std::string MoonlightProbe();
 
-// Raw cumulative telemetry of the live Moonlight session. The ArkTS side diffs
-// the counters into rates (fps / bitrate) and per-frame means (host encode and
-// local decode); nothing here is a display rate. RTT and packet counters are
-// read from the library at sample time, the rest is accumulated in the decode
-// bridge.
+// Raw cumulative telemetry; ArkTS diffs the counters into rates and per-frame means (nothing here
+// is a display rate). RTT/packet counters come from the library at sample time, the rest from the decode bridge.
 struct MoonlightTelemetry {
   uint64_t frames = 0;
   uint64_t bytes = 0;
-  // Sum / count over frames whose host provided a frame processing latency.
   uint64_t hostLatencyTenthMs = 0;
   uint64_t hostLatencyFrames = 0;
-  // Sum (us) / count over frames paired from submit to decoded output.
   uint64_t decodeRoundTripUs = 0;
   uint64_t decodeRoundTripFrames = 0;
   int32_t pendingVideoFrames = 0;
@@ -39,8 +34,7 @@ struct MoonlightVideoContext {
   void* window = nullptr;
 };
 
-// kAuto lets the client pick the best codec both sides support; the rest force
-// one codec (the per-connection manual override). Mirrors ML_CODEC_*.
+// kAuto picks the best shared codec, the rest force one; mirrors ML_CODEC_*.
 enum class MoonlightVideoCodecChoice : int {
   kAuto = 0,
   kH264 = 1,
@@ -48,8 +42,7 @@ enum class MoonlightVideoCodecChoice : int {
   kAv1 = 3,
 };
 
-// Returns the single VIDEO_FORMAT_* the session will use; 0 = the device and
-// host share no codec.
+// Single VIDEO_FORMAT_* the session will use; 0 = no shared codec.
 int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport);
 
 int MoonlightVideoCodecSupport(int codec);
@@ -60,6 +53,6 @@ std::string MoonlightVideoWarning();
 
 void* MoonlightVideoCallbacks();
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_MOONLIGHT_H
+#endif

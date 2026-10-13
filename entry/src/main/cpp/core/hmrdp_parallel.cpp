@@ -10,8 +10,6 @@
 
 namespace {
 
-// The platform queue is the decode's executor: FFRT is the platform's own task
-// runtime, so its scheduling, QoS and core placement follow the system.
 constexpr int kUsePlatformExecutor = 1;
 
 // Upper bound on the tasks one call accepts; a larger request falls back to the
@@ -24,17 +22,12 @@ constexpr const char* kTaskName = "hmrdp-chunk";
 // keeps it on the performance cores rather than the default core class.
 constexpr ffrt_qos_t kTaskQos = ffrt_qos_user_initiated;
 
-// One chunk. FFRT hands a task a single void*, so the callback gets the chunk's
-// function, context and index through this.
 struct Item {
   void (*fn)(void*, unsigned int);
   void* ctx;
   unsigned int index;
 };
 
-// The executor the calling thread's decoder work belongs to, set by
-// DecodeExecutorScope around the decode entry. Null outside any pipeline, which
-// makes HmrdpParallelRun fall back to running inline.
 thread_local hmrdp::DecodeExecutor* g_currentExecutor = nullptr;
 
 void Thunk(void* arg) {
@@ -68,22 +61,15 @@ int DecodeExecutor::Run(unsigned int tasks, void (*fn)(void*, unsigned int), voi
   }
   const int width = hmrdp::DecodeThreads();
   if (tasks == 1 || width <= 1) {
-    // One callback is not worth a queue round trip, and width 1 has no second
-    // thread to hand anything to.
     for (unsigned int i = 0; i < tasks; ++i) {
       fn(ctx, i);
     }
     return 0;
   }
 
-  // Caller participation: the calling thread runs one chunk while the queue runs
-  // the rest, so the region uses `width` threads and the queue only has to offer
-  // `width - 1` workers.
   const int queueConcurrency = width - 1;
   std::lock_guard<std::mutex> lock(mutex_);
   if (queue_ == nullptr || concurrency_ != queueConcurrency) {
-    // (Re)create the queue when its concurrency limit changes. A previous call
-    // has already waited for its own tasks, so nothing is in flight.
     if (queue_ != nullptr) {
       ffrt_queue_destroy(static_cast<ffrt_queue_t>(queue_));
       queue_ = nullptr;
@@ -116,8 +102,6 @@ int DecodeExecutor::Run(unsigned int tasks, void (*fn)(void*, unsigned int), voi
   // after the tasks finished, so they outlive the tasks.
   Item items[kMaxParallelTasks];
   ffrt_task_handle_t handles[kMaxParallelTasks];
-  // Any caller index works (the homes are equal sized); the first one keeps the
-  // submitted chunks' indices contiguous.
   const unsigned int callerIndex = 0;
   for (unsigned int i = 0; i < tasks; ++i) {
     items[i].fn = fn;
@@ -129,15 +113,11 @@ int DecodeExecutor::Run(unsigned int tasks, void (*fn)(void*, unsigned int), voi
     }
     handles[i] = ffrt_queue_submit_h_f(queue, Thunk, &items[i], &taskAttr);
     if (handles[i] == nullptr) {
-      // A chunk that could not be queued must still run: doing it here keeps the
-      // region all-or-nothing.
       Thunk(&items[i]);
     }
   }
   ffrt_task_attr_destroy(&taskAttr);
 
-  // The caller's chunk runs after the submissions (workers already busy) and
-  // before the barrier.
   Thunk(&items[callerIndex]);
 
   // Barrier for exactly our tasks: wait each handle, so the wall is the slowest
@@ -166,9 +146,7 @@ extern "C" int HmrdpParallelAvailable(void) {
   return kUsePlatformExecutor;
 }
 
-// The decode width, read by the patched decoder to decide between the serial
-// branch and the platform queue. Resolved on demand, so a machine that comes up
-// with a different core count needs no re-arming.
+// Read by the patched decoder to choose between the serial branch and the platform queue.
 extern "C" unsigned int HmrdpDecodeWidth(void) {
   return static_cast<unsigned int>(hmrdp::DecodeThreads());
 }
@@ -184,7 +162,6 @@ extern "C" int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned i
   if (executor != nullptr) {
     return executor->Run(tasks, fn, ctx);
   }
-  // No pipeline bound on this thread: decode the whole region here.
   for (unsigned int i = 0; i < tasks; ++i) {
     fn(ctx, i);
   }

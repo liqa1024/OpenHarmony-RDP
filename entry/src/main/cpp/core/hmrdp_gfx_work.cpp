@@ -40,7 +40,6 @@ struct GfxOriginals {
 
 std::mutex g_installMutex;
 std::unordered_map<RdpgfxClientContext*, GfxOriginals> g_originals;
-// The meter each installed context feeds, kept per context (no process-global slot).
 std::unordered_map<RdpgfxClientContext*, GfxWorkMeter*> g_meters;
 
 template <typename Fn>
@@ -66,9 +65,7 @@ std::mutex g_dataSinkMutex;
 std::unordered_map<RdpgfxClientContext*, std::function<void(const uint8_t*, size_t)>>
     g_dataSinkHooks;
 
-// Runs the hook before *every* command that can write the desktop, not only at
-// START_FRAME: surface commands outside a GFX frame write the same buffer. Cost is a mutex
-// plus a bool test; the wait itself happens once per present.
+// Runs before every command that can write the desktop, not only START_FRAME: out-of-frame surface commands write the same buffer.
 void RunFrameBeginHook(RdpgfxClientContext* gfx) {
   std::function<void()> hook;
   {
@@ -96,8 +93,6 @@ UINT MeterSurfaceCommand(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND*
   const pcRdpgfxSurfaceCommand original = GfxOriginal(gfx, &GfxOriginals::SurfaceCommand);
   GfxWorkMeter* meter = GfxMeterFor(gfx);
   if (meter != nullptr) {
-    // First command of the chunk: the time since it arrived is the ZGX decompress + PDU
-    // parse share.
     meter->AccountChunkPrefix();
   }
   const uint64_t start = NowUs();
@@ -119,8 +114,6 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
   return rc;
 }
 
-// The non-pixel commands, timed/counted per kind so the `zgx+parse` bucket can be split into
-// "decompress+parse" and "surface lifecycle".
 #define HMRDP_SETUP_WRAPPER(NAME, FIELD, KIND)                                          \
   UINT Meter##NAME(RdpgfxClientContext* gfx, const FIELD* pdu) {                        \
     /* Some of these write the desktop (SolidFill / SurfaceToSurface / cache         \
@@ -133,9 +126,6 @@ UINT MeterEndFrame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* endFram
     if (GfxWorkMeter* meter = GfxMeterFor(gfx)) {                                      \
       meter->OnSetup(KIND, dt);                                                         \
     }                                                                                   \
-    /* A structural command this slow (>= 20ms: a mode change - buffer + swapchain    \
-     * rebuild, whole-surface 0xFF fill) is a visible hitch, so it is worth its own     \
-     * log line instead of hiding in an average. */                                     \
     if (dt > 20000) {                                                                   \
       if (KIND == GfxSetupKind::kReset) {                                               \
         UINT16 count = 0;                                                               \
@@ -170,8 +160,6 @@ HMRDP_SETUP_WRAPPER(EvictCacheEntry, RDPGFX_EVICT_CACHE_ENTRY_PDU, GfxSetupKind:
 }  // namespace
 
 void GfxWorkMeter::OnChunk(uint32_t bytes) {
-  // A chunk is parsed to completion before the next arrives, so a single pending stamp is
-  // enough.
   chunkPending_ = true;
   chunkArrivalUs_ = NowUs();
   frameBytes_ += bytes;
@@ -187,8 +175,6 @@ void GfxWorkMeter::AccountChunkPrefix() {
 
 void GfxWorkMeter::OnBlockedBeforeFrameWork(uint64_t micros) {
   if (chunkPending_) {
-    // Shift the pending chunk's stamp past the wait, so the prefix this frame's first
-    // command closes holds the parse share only.
     chunkArrivalUs_ += micros;
   }
 }
@@ -224,14 +210,12 @@ void GfxWorkMeter::OnPace(uint64_t micros) {
 }
 
 void GfxWorkMeter::OnFrameEnd(uint64_t endFrameMicros) {
-  // A frame that carried no surface command still paid for its chunk.
   AccountChunkPrefix();
   const uint64_t present = framePresentUs_;
   const uint64_t presentWait = framePresentWaitUs_;
   const uint64_t sync = frameSyncUs_;
-  // Everything the EndFrame span holds besides the composition (present, GPU sync wait,
-  // playback pacing). Only the pacing is not client work - it would otherwise land in
-  // `compose`. The sync wait is client cost but not composition, so it gets its own phase.
+  // The EndFrame span holds present, sync wait and pacing besides composition; the
+  // pacing is not client work and the sync wait is not composition - each its own phase.
   const uint64_t notCompose = present + presentWait + sync + framePaceUs_;
   const uint64_t compose = endFrameMicros > notCompose ? endFrameMicros - notCompose : 0;
   windowFrames_.fetch_add(1);
@@ -347,8 +331,6 @@ void GfxWorkInstall(RdpgfxClientContext* gfx, GfxWorkMeter* meter) {
   if (gfx == nullptr) {
     return;
   }
-  // Register the global data sink once: it dispatches per context and returns FALSE for a
-  // context with no sink, so the offline replay is unaffected.
   if (HmrdpSetGfxDataSink != nullptr) {
     HmrdpSetGfxDataSink(&HmrdpGfxDataSink);
   }
@@ -421,8 +403,6 @@ void GfxWorkUninstall(RdpgfxClientContext* gfx) {
   if (it == g_originals.end()) {
     return;
   }
-  // Restore what this TU replaced: leaving the wrappers installed would make the context
-  // call into a meter that is going away.
   if (gfx->StartFrame == &MeterStartFrame) {
     gfx->StartFrame = it->second.StartFrame;
   }

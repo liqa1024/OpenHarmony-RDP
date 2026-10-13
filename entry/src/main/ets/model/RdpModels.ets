@@ -1,9 +1,5 @@
 import { RdpOptions } from 'libhmrdp.so';
 
-// RDP-specific model: wire primitives, the native options struct, the RDP
-// display / super-resolution / advanced profiles. The shared connection record
-// and its protocol subclasses live in Connections.ets.
-
 export const SR_BACKEND_XENGINE: number = 0;
 export const SR_BACKEND_FSR: number = 1;
 

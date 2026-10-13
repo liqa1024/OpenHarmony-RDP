@@ -346,7 +346,6 @@ int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeS
                  static_cast<int>(choice));
     }
   } else {
-    // Hardware tier first (more modern wins), then software.
     if (av1 == DecoderSupport::kHardware && hostAv1) {
       decided = VIDEO_FORMAT_AV1_MAIN8;
     } else if (hevc == DecoderSupport::kHardware && hostHevc) {

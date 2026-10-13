@@ -1,36 +1,16 @@
-# Applies the HarmonyOS/musl compatibility patches to a FreeRDP source tree.
-#
-# Usage:  pwsh -File native/scripts/patch-freerdp.ps1 [-Source <path-to-FreeRDP>]
-#
-# The build pipeline expects the patched tree under native/third_party/FreeRDP
-# (see native/scripts/build-native.ps1). native/scripts/fetch-sources.ps1
-# downloads the pinned upstream release and runs this script over it.
-#
-# The steps are one file each under native/scripts/patch-steps/, applied in name
-# order; the numeric prefix is the step number the patched sources refer to in
-# their comments (8 appears twice, 18 was tried and dropped again - see
-# doc_agent/native-build.md). Every step must be idempotent: it carries a
-# marker string and skips itself when the tree already has that change, so the
-# script can be re-run over a tree that is already patched.
-#
-# All text handling is line-ending agnostic: upstream tarballs are LF while a
-# Windows checkout is CRLF, and the anchors/replacements below are authored with
-# one style only. Matching happens on LF-normalized text, and the file's own
-# style is restored on write.
+# Applies the HarmonyOS/musl compatibility patches to a FreeRDP tree. Steps are one
+# file each under patch-steps/, in name order, idempotent via a marker string; text
+# matching is LF-normalized and the file's own line endings are restored on write.
 param(
 	[string]$Source = "$PSScriptRoot\..\third_party\FreeRDP",
 	[switch]$Trace,
-	# Applies only the step whose file name starts with this prefix, e.g.
-	# `-Only 26` for a step added after a tree was already patched (a full run
-	# re-checks every step, and a step whose marker does not cover everything it
-	# inserts would be re-applied).
+	# Applies only the step whose file name starts with this prefix, e.g. -Only 26.
 	[string]$Only = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-# Data files the steps copy over the tree (backend sources, cmake helpers).
-# `$Patches` is the historical name a few steps use; both point at the same dir.
+# Data files the steps copy over the tree; $Patches is the same dir under a historical name.
 $PatchData = "$PSScriptRoot\..\patches"
 $Patches = $PatchData
 
@@ -62,9 +42,7 @@ function Write-SourceText {
 	[System.IO.File]::WriteAllText($Path, $out)
 }
 
-# Literal replacements, without an anchor: any key that is not in the file is
-# silently ignored (several steps apply the same map to files where only some
-# identifiers exist).
+# Literal replacements without an anchor: keys absent from the file are ignored.
 function Patch-File {
 	param([string]$Path, [hashtable]$Replacements)
 	$f = Read-SourceText -Path $Path
@@ -75,8 +53,7 @@ function Patch-File {
 	Write-SourceText -Path $Path -LfText $text -Crlf $f.Crlf
 }
 
-# Replaces a whole block of text: `Old` has to be found verbatim, `Marker` is what
-# makes the step a no-op on an already patched tree.
+# Replaces a whole block verbatim; Marker makes the step a no-op on a patched tree.
 function Patch-Block {
 	param([string]$Path, [string]$Old, [string]$New, [string]$Marker)
 	$f = Read-SourceText -Path $Path
@@ -93,15 +70,12 @@ function Patch-Block {
 	Write-Host "HmRdp tuning patch applied to $(Split-Path -Leaf $Path)"
 }
 
-# Tabs <n> <line> builds one C line with <n> tab indents; the line is passed as a
-# literal (single-quoted) string, so C quotes need no PowerShell escaping.
+# Builds one C line with <n> tab indents; line is a literal so C quotes need no escaping.
 function Tabs([int]$count, [string]$line) {
 	return ("`t" * $count) + $line
 }
 
-# Regular-expression variant of Patch-Block, for the steps whose anchor has to
-# absorb whatever version of the region is in the tree (see the step comments).
-# By default only the first match is replaced; -All replaces every match.
+# Regex variant of Patch-Block; replaces the first match, or every match with -All.
 function Patch-Regex {
 	param([string]$Path, [string]$Pattern, [string]$Replacement, [string]$Marker, [switch]$All)
 	$f = Read-SourceText -Path $Path
@@ -131,8 +105,7 @@ function Patch-Regex-All {
 	Patch-Regex -Path $Path -Pattern $Pattern -Replacement $Replacement -Marker $Marker -All
 }
 
-# Copies one of the data files under native/patches/ over the tree, keeping the
-# destination file's own line-ending style.
+# Copies a native/patches/ data file over the tree, keeping the destination's EOL style.
 function Copy-PatchData {
 	param([string]$From, [string]$To)
 	if (-not (Test-Path -LiteralPath $From)) {
@@ -146,10 +119,7 @@ function Copy-PatchData {
 	Write-SourceText -Path $To -LfText $content -Crlf $crlf
 }
 
-# Apply every step in name order. Each one reports itself ("applied" / "already
-# applied"), so a run over an already patched tree should print one line per step
-# and nothing else. A failure names the step it came from (the helpers above are
-# shared, so the throw site alone would not).
+# Apply every step in name order; a failure is re-thrown with the step name.
 $steps = Get-ChildItem -LiteralPath "$PSScriptRoot\patch-steps" -Filter *.ps1 | Sort-Object Name
 if ($Only -ne "") {
 	$steps = @($steps | Where-Object { $_.Name.StartsWith($Only) })

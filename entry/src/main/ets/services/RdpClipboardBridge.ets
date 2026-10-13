@@ -21,8 +21,6 @@ class ClipPick {
   id: number = 0;
 }
 
-// RDP (cliprdr) transport: wire formats, format negotiation and the file stream.
-// Inbound is pull-based: a FORMAT_LIST triggers a request for the best format.
 export class RdpClipboardBridge implements ClipboardBridge {
   private native: RdpNative;
   private filesDir: string;
@@ -168,7 +166,6 @@ export class RdpClipboardBridge implements ClipboardBridge {
     this.notifyRemote();
   }
 
-  // Returns true when the event belongs to the clipboard channel.
   handleEvent(event: RdpEvent, payload: RdpEventPayload): boolean {
     if (event === RdpEvent.ClipboardText) {
       const text: string = payload.text ?? '';
@@ -544,7 +541,6 @@ export class RdpClipboardBridge implements ClipboardBridge {
     return dir;
   }
 
-  // The clipboard only references the newest transfer directory, so the previous one is purged.
   private static purgeStaleTransferDirs(root: string, keep: string): void {
     let names: string[] = [];
     try {
@@ -558,7 +554,6 @@ export class RdpClipboardBridge implements ClipboardBridge {
       }
       const path: string = `${root}/${name}`;
       try {
-        // Unlink contents first, in case rmdirSync does not remove a non-empty directory.
         for (const child of fileIo.listFileSync(path)) {
           try {
             fileIo.unlinkSync(`${path}/${child}`);

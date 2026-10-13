@@ -28,14 +28,14 @@ class FramePipeline {
                           int outputHeight);
 
  private:
-  // Declaration order is construction order and must match the initializer list:
-  // the host is wired to the presenter and the meter as it is built.
+  // Declaration order is construction order and must match the initializer list: the host is
+  // wired to the presenter and the meter as it is built.
   std::unique_ptr<FramePresenter> presenter_;
   std::unique_ptr<GdiFrameHost> host_;
   GfxWorkMeter meter_;
   DecodeExecutor executor_;
 };
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_FRAME_PIPELINE_H
+#endif

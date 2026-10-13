@@ -47,9 +47,7 @@ export class LocalReadResult {
   failed: boolean = false;
 }
 
-// User-facing clipboard messages, shared so both protocols read identically.
-// The verb matches the toolbar button: 粘贴 (local -> remote) / 复制 (remote -> local).
-// Convention: conclusion + concrete object, no trailing punctuation (ui-design.md §4.3).
+// Verb matches the toolbar button: 粘贴 = local -> remote, 复制 = remote -> local.
 export class ClipboardText {
   static readonly TEXT: string = '文本';
   static readonly HTML: string = '富文本';

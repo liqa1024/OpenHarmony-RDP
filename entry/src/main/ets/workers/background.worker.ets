@@ -64,9 +64,8 @@ async function decodePng(png: ArrayBuffer): Promise<DecodedImage | undefined> {
   }
 }
 
-// The push must run here, not on the UI thread: the native store copy (a whole
-// image) and the advertise (a channel send on the calling thread) can block,
-// and a whole-screen image makes that cost visible.
+// The push must run here, not on the UI thread: the native store copy and the
+// advertise (a channel send) can both block on a whole-screen image.
 async function handleRequest(req: BackgroundRequest): Promise<void> {
   const res: BackgroundResponse = { id: req.id, ok: false };
   const handle: number = req.handle ?? 0;

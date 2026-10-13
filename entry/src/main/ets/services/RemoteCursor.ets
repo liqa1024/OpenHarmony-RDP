@@ -10,7 +10,6 @@ const TAG: string = 'RemoteCursor';
 
 // HarmonyOS custom cursors cap at 256x256 (see setCustomCursorSync); larger shapes are scaled down, never dropped.
 const MAX_CURSOR_SIDE: number = 256;
-// 源尺寸 sanity 上限，超出视为损坏；Moonlight 路径在原生侧没有同样上限，故在此把守。
 const MAX_CURSOR_SOURCE_SIDE: number = 1024;
 // 仅放大时加锐（5-tap mask 单位）；缩小不锐化。
 const UPSCALE_SHARPNESS: number = 0.8;
@@ -30,7 +29,6 @@ export class RemoteCursorUpdate {
 
 // setPointerVisibleSync 是进程级开关，只归当前活动窗口持有；失活时归还并丢弃本页临时隐藏，否则切走后主窗口光标仍被藏着。
 export class RemoteCursor {
-  // 远端驱动开关；关掉后进程级可见性开关仍会被页面本地隐藏（Moonlight HIDE_SYSTEM）驱动，二者独立。
   private enabled: boolean = true;
   private supported: boolean = true;
   private sessionWindow: window.Window | undefined = undefined;
@@ -46,7 +44,6 @@ export class RemoteCursor {
   private pinchActive: boolean = false;
   private pinchZoomIn: boolean = true;
 
-  // 开关同一时刻至多归一个窗口持有；新窗口激活可能先于旧窗口失活到达，故 owner 只能由持有者自己清除。
   private static visibilityOwner: RemoteCursor | undefined = undefined;
 
   // 窗口异步到达而形状事件可能更早（两协议都不保证重发），故绑定与激活都必须重放当前状态；失活同时负责释放进程级可见性开关。
@@ -84,7 +81,6 @@ export class RemoteCursor {
       if (event === window.WindowEventType.WINDOW_INACTIVE
         || event === window.WindowEventType.WINDOW_HIDDEN
         || event === window.WindowEventType.WINDOW_DESTROYED) {
-        // 本地隐藏是窗口活跃的临时态故丢弃；远端的隐藏属于会话故保留。
         this.localHidden = false;
         this.release();
       }
@@ -95,7 +91,6 @@ export class RemoteCursor {
     this.apply();
   }
 
-  // 只有当前持有者可归还：失活晚于新窗口认领到达的旧窗口不得覆盖新窗口状态。
   private release(): void {
     if (RemoteCursor.visibilityOwner !== this) {
       return;
@@ -138,7 +133,6 @@ export class RemoteCursor {
     this.apply();
   }
 
-  // 不变式：系统光标始终等于最新送达的（形状, 可见性）；去重只是该不变式上的纯优化，每条路径都要消费 update 的 buffer 句柄。
   applyUpdate(update: RemoteCursorUpdate): void {
     const handle: number = update.imageHandle;
     if (!this.enabled) {
@@ -259,7 +253,6 @@ export class RemoteCursor {
     if (win === undefined) {
       return;
     }
-    // Only the active window drives the (process-global) system cursor; an inactive one keeps its state and re-pushes it on activation.
     if (!this.isOwner()) {
       return;
     }

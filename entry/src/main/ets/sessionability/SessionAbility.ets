@@ -53,7 +53,6 @@ export default class SessionAbility extends UIAbility {
     const backend: SessionBackend | undefined = SessionBackendRegistry.find(this.sessionKey);
     const page: string = backend !== undefined ? backend.pageRoute() : 'pages/SessionPage';
     const settings: AppSettings = SettingsStore.load();
-    // Both protocols share the same app-level session window surface.
     const fullscreen: boolean = settings.sessionFullscreen;
     const sizeEnabled: boolean = settings.sessionWindowSizeEnabled;
     const width: number = settings.sessionWindowWidth;

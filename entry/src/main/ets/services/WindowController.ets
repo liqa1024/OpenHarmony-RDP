@@ -180,7 +180,6 @@ export class WindowController {
     try {
       mainWindow.on('windowStatusChange', (status: window.WindowStatusType) => {
         if (status === window.WindowStatusType.MAXIMIZE) {
-          // The system maximize button only maximizes; promote it to immersive fullscreen.
           mainWindow.maximize(
             window.MaximizePresentation.ENTER_IMMERSIVE_DISABLE_TITLE_AND_DOCK_HOVER)
             .catch((error: BusinessError) => {

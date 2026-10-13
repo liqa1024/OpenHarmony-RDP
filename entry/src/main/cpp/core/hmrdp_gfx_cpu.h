@@ -33,13 +33,12 @@ class GdiFrameHost {
   void SetPresenter(FramePresenter* presenter) { presenter_ = presenter; }
   void SetPrePresentFn(PrePresentFn fn) { prePresentFn_ = std::move(fn); }
   void SetPresentedFn(PresentedFn fn) { presentedFn_ = std::move(fn); }
-  // The meter is per context, never a process-global slot: a replay running next to a
-  // live session must not feed the session's meter.
+  // Per context, never process-global: a replay next to a live session must not feed the
+  // session's meter.
   void SetMeter(GfxWorkMeter* meter) { meter_ = meter; }
 
-  // Idempotent per frame: the presenter drains its pending wait on the first call, and
-  // the blocked time is reported as `sync`, out of the pending `zgx+parse` window, so it
-  // is never counted twice.
+  // Idempotent per frame: the first call drains the presenter's pending wait, reported as
+  // `sync` outside the pending `zgx+parse` window so it is never counted twice.
   void OnFrameBegin();
   void OnBeginPaint();
 
@@ -74,10 +73,8 @@ class GfxCpuDesktop {
   RdpgfxClientContext* gfx() const { return gfx_; }
   rdpGdi* gdi() const;
 
-  // Both run *before* this frame can write the desktop, and the wait is idempotent per
-  // frame: OnFrameBegin at the RDPGFX START_FRAME (the decode writes), OnBeginPaint at
-  // update->BeginPaint, which FreeRDP calls after the frame's decode (the compose
-  // writes). Whichever runs first waits.
+  // Both run before this frame can write the desktop and the wait is idempotent per frame:
+  // OnFrameBegin at RDPGFX START_FRAME, OnBeginPaint at update->BeginPaint (after decode); whichever runs first waits.
   void OnFrameBegin();
   void OnBeginPaint();
   void OnEndPaint();
@@ -103,6 +100,6 @@ bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter);
 bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter,
                      PresentUploadInfo* info = nullptr);
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_GFX_CPU_H
+#endif

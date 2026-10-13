@@ -20,7 +20,6 @@ export enum WakeReachability {
 
 export class WakeSendResult {
   sent: boolean = false;
-  // The socket was pinned to the host's LAN; otherwise it used the default route.
   bound: boolean = false;
   ports: number[] = [];
 }
@@ -32,7 +31,6 @@ class HostNetScan {
 }
 
 export class WakeOnLan {
-  // Accepts "AA:BB:CC:DD:EE:FF" with any separator (or none).
   private static parseMac(mac: string): number[] {
     const hex: string = mac.replace(new RegExp('[^0-9a-fA-F]', 'g'), '');
     if (hex.length !== 12) {
@@ -109,7 +107,6 @@ export class WakeOnLan {
     }
   }
 
-  // Finds the connected net whose link address shares the host's subnet, if any.
   private static async scanHostNet(host: string): Promise<HostNetScan> {
     const scan: HostNetScan = new HostNetScan();
     const hostIp: number = await WakeOnLan.resolveIpv4(host);
@@ -162,7 +159,6 @@ export class WakeOnLan {
     return -1;
   }
 
-  // Returns the IPv4 literal as an unsigned 32-bit number, or -1 if not IPv4.
   private static ipv4ToInt(text: string): number {
     const parts: string[] = text.split('.');
     if (parts.length !== 4) {

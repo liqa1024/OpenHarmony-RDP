@@ -1,17 +1,5 @@
-# Applies the HmRdp patch to the zlib source tree.
-#
-# One step: drop the SOVERSION/VERSION properties so the shared library is a
-# single version-less libz.so whose SONAME is also libz.so. FreeRDP is built the
-# same way (patch-steps/05-unversioned-sonames.ps1), and a version-less SONAME is
-# what makes DT_NEEDED match the packaged file exactly instead of shipping
-# libz.so.1 next to a libz.so copy (see doc_agent/native-build.md).
-#
-# The tree under native/third_party/ is gitignored and recreated by
-# fetch-sources.ps1, which calls this script after extraction. Like
-# patch-freerdp.ps1 it is idempotent: an already-patched tree reports the step as
-# skipped instead of failing.
-#
-#   native/scripts/patch-zlib.ps1 [-Source <tree>]
+# Makes zlib's shared library version-less (same SONAME/file) so DT_NEEDED matches
+# the packaged file; idempotent.
 param(
 	[string]$Source = ""
 )
@@ -28,12 +16,10 @@ if (-not (Test-Path -LiteralPath $CMake)) {
 	throw "zlib CMakeLists not found: $CMake"
 }
 
-# Read raw and write back with the file's own line endings preserved: the
-# replacements below are single lines, so LF (tarball) and CRLF both work.
+# Read raw / write back unchanged: single-line replacements are EOL-agnostic.
 $raw = [System.IO.File]::ReadAllText($CMake)
 
-# Drop both properties: CMake derives the SONAME from SOVERSION, or from VERSION
-# when SOVERSION is absent, so removing only one still yields a versioned name.
+# Drop both: CMake derives the SONAME from VERSION when SOVERSION is absent.
 if ($raw -notmatch [regex]::Escape("SOVERSION 1")) {
 	Write-Host "zlib: already version-less (skipped)"
 }

@@ -32,7 +32,6 @@ int AudioSink::Write(const void* data, size_t size, int sampleRate, int channels
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (rate_ != sampleRate || channels_ != channels) {
-    // A new format: drop the queued packets rather than play a mismatched format.
     packets_.clear();
     bufferedBytes_ = 0;
     primed_ = false;
@@ -172,8 +171,6 @@ void AudioSink::EnqueueLocked(const uint8_t* data, size_t size) {
     return;
   }
   const uint64_t now = AudioNowUs();
-  // A packet after a long idle gap starts a new bout: prebuffer it again. A short
-  // gap is jitter and must not re-prime.
   if (lastPacketUs_ != 0 && now - lastPacketUs_ > kIdleResetUs) {
     primed_ = false;
   }
@@ -187,9 +184,8 @@ void AudioSink::EnqueueLocked(const uint8_t* data, size_t size) {
 }
 
 void AudioSink::DropToHighWaterLocked() {
-  // Drop the oldest whole packets, never a partial one: trimming a packet would
-  // break 16-bit sample alignment and click. Keep at least the newest packet so a
-  // single oversized packet is still played.
+  // Drop the oldest whole packets, never a partial one: trimming breaks 16-bit
+  // sample alignment; keep at least the newest so a lone oversized packet still plays.
   while (bufferedBytes_ > highWaterBytes_ && packets_.size() > 1) {
     const size_t dropped = packets_.front().remaining();
     packets_.pop_front();

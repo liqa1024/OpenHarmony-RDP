@@ -36,7 +36,6 @@ class ConfigFile {
 }
 
 export class ConfigTransfer {
-  // Flat JSON record -> model export shape (password-free).
   static parseExport(rec: Record<string, Object>): ConnectionExport {
     const item: ConnectionExport = new ConnectionExport();
     item.id = ConfigTransfer.readString(rec, 'id', '');
@@ -287,8 +286,6 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'scaleAuto', settings.scaleAuto);
     settings.manualScalePercent =
       ConfigTransfer.readNumber(rec, 'manualScalePercent', settings.manualScalePercent);
-    // Clamp device-dependent settings to what this machine supports
-    // (doc_agent/settings-and-storage.md §3).
     settings.enableAudio =
       ConfigTransfer.readBoolean(rec, 'enableAudio', settings.enableAudio)
       && DeviceCapabilities.audio().supported;

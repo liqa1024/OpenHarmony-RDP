@@ -1449,9 +1449,8 @@ struct SettingsPage {
             this.toggleItem({
               title: '硬件加速',
               subtitle: '用 Vulkan 把画面贴到窗口；关闭则完全不用 Vulkan（GLES 上屏，兼容性优先）',
-              // Locked on devices whose Vulkan cannot present a frame; the
-              // session then runs on the GLES presenter either way (see
-              // DeviceCapabilities.hardwareAccel).
+              // Locked on devices whose Vulkan cannot present a frame; the session
+              // runs on the GLES presenter either way.
               value: this.hardwareAccel,
               enabled: this.hardwareAccelSupported,
               disabledReason: this.hardwareAccelSupported ? '' : this.hardwareAccelReason,

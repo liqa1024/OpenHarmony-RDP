@@ -48,8 +48,7 @@ struct EditConnectionPage {
   @State port: string = '3389';
   @State username: string = '';
   @State password: string = '';
-  // Password Vault (doc_agent/settings-and-storage.md §1.1): the field types make
-  // the pair a login form the system can fill, so autoFill must be cleared on leave.
+  // Cleared on leave so the system does not auto-fill this pair as a login form.
   @State autoFill: boolean = true;
   @State domain: string = '';
   @State desktopWidthText: string = '1920';
@@ -64,8 +63,6 @@ struct EditConnectionPage {
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State ignoreCertificate: boolean = true;
-  // 超分 stays a separate group from display on purpose: following the off global
-  // default and wanting per-connection bandwidth saving can both be true.
   @State useGlobalSr: boolean = true;
   @State srEnabled: boolean = false;
   @State srRatioPercent: number = SR_RATIO_PRESETS[0];
@@ -273,7 +270,6 @@ struct EditConnectionPage {
     return Number.isNaN(value) || value <= 0 ? ML_DEFAULT_PORT : value;
   }
 
-  // 码率输入以 Mbps 计，存储仍是 kbps。
   private effectiveBitrate(): number {
     const mbps: number = Number.parseFloat(this.mlBitrateText);
     const kbps: number = Number.isNaN(mbps) ? ML_BITRATE_DEFAULT_KBPS : mbpsToKbps(mbps);

@@ -62,9 +62,8 @@ export class LocalPasteboard {
     return result;
   }
 
-  // The system copies the clipboard files into our sandbox, so no READ_PASTEBOARD
-  // permission is needed. A file URI that produced nothing is a folder, which
-  // getDataWithProgress cannot copy.
+  // The system copies clipboard files into our sandbox (no READ_PASTEBOARD permission);
+  // a file URI that produced nothing is a folder, which getDataWithProgress cannot copy.
   @SuppressWarnings({ rules: [SuppressWarningsType.PERMISSION] })
   private static async readFiles(dir: string): Promise<FileReadResult> {
     const result: FileReadResult = new FileReadResult();
@@ -197,8 +196,6 @@ export class LocalPasteboard {
     }
   }
 
-  // Skips <head>/<style>/<script>/comments so CSS never leaks into plain text;
-  // block tags become line breaks.
   static htmlToPlainText(html: string): string {
     const lower: string = html.toLowerCase();
     let out: string = '';

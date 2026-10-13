@@ -1,21 +1,5 @@
-# 14) HmRdp: record the dirty area as one span per tile row instead of one
-#     region16 union per tile.
-#
-#     `update_tiles` calls region16_union_rect() once per decoded tile, into the
-#     surface's persistent invalidRegion. The union is O(region) and the region
-#     grows all frame (to roughly one band per tile), so a full-screen frame is
-#     O(n^2) - a ms-order, sizeable fraction of the frame of *serial* RDP-thread
-#     time on a full-screen frame (thousands of tiles). Detail: the per-message
-#     region is essentially one rect per tile, so there is nothing to merge per
-#     message (doc_agent/rdp-gfx.md §7.1) - the cost is the union itself, not
-#     the rect count.
-#
-#     So the decoder stops touching the region16 per tile: it keeps one min/max
-#     span per *tile row* (O(1) per tile, no allocation, no growth) and the
-#     consumer folds those spans into the region once, in ~gridHeight cheap unions,
-#     right before it reads the region. The covered area can only grow to whole
-#     tiles, and the region's shape was never part of the semantics - only its area
-#     is, and the extra pixels are the surface's own (already correct) content.
+# 14) Record the dirty area as one [left,right) span per tile row instead of a region16 union per
+#     tile (the union is O(region) against a region that grows all frame); the composer folds them in once.
 $progRowsH = "$Source\libfreerdp\codec\progressive.h"
 $progRowsC = "$Source\libfreerdp\codec\progressive.c"
 $progRowsApi = "$Source\include\freerdp\codec\progressive.h"
@@ -28,9 +12,7 @@ $progStampAnchor = @'
 Patch-Block $progRowsH $progStampAnchor (@'
 	/* HmRdp: monotonic stamp handed out by each update_tiles() pass. */
 	UINT32 updateStamp;
-	/* HmRdp: the frame's dirty area as one [left,right) span of tile *columns* per
-	 * tile row (see HmrdpProgressiveFlushDirty). Recording a span is O(1); the
-	 * region16 union this replaces is O(region) and runs once per tile. */
+	/* HmRdp: dirty area as one [left,right) span of tile columns per tile row (see HmrdpProgressiveFlushDirty). */
 	UINT16* hmrdpDirtyLeft;
 	UINT16* hmrdpDirtyRight;
 	UINT32 hmrdpDirtyRows;
@@ -62,9 +44,7 @@ Patch-Block $progRowsC @'
 		return NULL;
 	}
 
-	/* HmRdp: one dirty span per tile row. Sized from the tile grid (which can have
-	 * one row/column more than the surface needs); a failure just leaves the rows
-	 * at 0, and update_tiles falls back to the region16 path. */
+	/* HmRdp: one dirty span per tile row (sized from the tile grid); allocation failure falls back to region16. */
 	surface->hmrdpDirtyRows = surface->gridHeight;
 	surface->hmrdpDirtyLeft =
 	    (UINT16*)winpr_aligned_malloc(surface->hmrdpDirtyRows * sizeof(UINT16), 32);
@@ -92,11 +72,7 @@ Patch-Block $progRowsC @'
 			if (invalidRegion)
 				region16_union_rect(invalidRegion, invalidRegion, &common);
 '@ @'
-			/* HmRdp: O(1) damage bookkeeping instead of a region16 union (which is
-			 * O(region), once per tile, against a region that grows all frame). The
-			 * span covers whole tiles, i.e. a superset of what was copied - the
-			 * extra pixels are the surface's own content, and the consumer clips the
-			 * result to the surface. */
+			/* HmRdp: O(1) damage bookkeeping instead of a region16 union (O(region) per tile); the span covers whole tiles and the consumer clips. */
 			if (invalidRegion && (surface->hmrdpDirtyRows > 0) && (nXDst == 0) && (nYDst == 0))
 			{
 				const UINT32 row = tile->yIdx;
@@ -113,13 +89,9 @@ Patch-Block $progRowsC @'
 				region16_union_rect(invalidRegion, invalidRegion, &common);
 '@ 'O(1) damage bookkeeping instead of a region16 union'
 
-# The flush the consumer calls: fold the spans into the region, then forget them.
 $flushFn = @'
 
-/* HmRdp: fold the frame's dirty tile-row spans into `out` (one rect per row that
- * has any tile) and reset them. Called by the composer right before it reads the
- * region, so the decoder never has to touch the region16 per tile - see
- * update_tiles. */
+/* HmRdp: fold the dirty tile-row spans into `out` (one rect per dirty row) and reset them. */
 FREERDP_API BOOL HmrdpProgressiveFlushDirty(PROGRESSIVE_CONTEXT* progressive, UINT16 surfaceId,
                                             REGION16* out)
 {
@@ -155,26 +127,19 @@ $progRowsAppendOld = 'INT32 progressive_decompress(PROGRESSIVE_CONTEXT* WINPR_RE
 Patch-Block $progRowsC $progRowsAppendOld ($flushFn + $progRowsAppendOld) 'HmrdpProgressiveFlushDirty'
 
 $progFlushDecl = @'
-/* HmRdp: fold the progressive decoder's dirty tile-row spans into `out` (one cheap
- * union per dirty row, instead of one O(region) union per decoded tile). The
- * composer calls this right before it reads the surface's invalid region. */
+/* HmRdp: fold the progressive decoder's dirty tile-row spans into `out` (one union per dirty row). */
 FREERDP_API BOOL HmrdpProgressiveFlushDirty(PROGRESSIVE_CONTEXT* progressive, UINT16 surfaceId,
                                             REGION16* out);
 
 
 '@
-# The declaration below is indented with a tab inside `extern "C" {`; consume it
-# (the inserted comment starts at column 0, like the tree) and re-add the
-# declaration after the new block.
+# The anchor is tab-indented inside extern "C"; consume the tab and re-add it with the block.
 $progFlushAnchor = "`tFREERDP_API INT32 progressive_decompress("
 Patch-Block $progRowsApi $progFlushAnchor `
   ($progFlushDecl + $progFlushAnchor.TrimStart("`t")) 'HmrdpProgressiveFlushDirty'
 
-# ... and the composer folds them in before it clips/reads the region.
 $gdiFlushCall = @'
-	/* HmRdp: the progressive decoder records its damage as per-tile-row spans (see
-	 * HmrdpProgressiveFlushDirty), so fold them into the region here - one cheap
-	 * union per dirty row instead of one per tile inside the decode loop. */
+	/* HmRdp: fold the decoder's per-tile-row damage spans into the region (one union per dirty row). */
 	if (surface->codecs != NULL && surface->codecs->progressive != NULL)
 		HmrdpProgressiveFlushDirty(surface->codecs->progressive, surface->surfaceId,
 		                           &(surface->invalidRegion));

@@ -149,9 +149,8 @@ export class MoonlightCrypto {
     return signature === undefined ? undefined : MoonlightCrypto.toHex(signature);
   }
 
-  // Raw signature bytes (ASN.1 BIT STRING contents) of a DER certificate:
-  // `Certificate ::= SEQUENCE { tbs, signatureAlgorithm, signatureValue }`, so
-  // the signature is the third child of the outer SEQUENCE.
+  // Raw signature bytes (ASN.1 BIT STRING) = third child of the outer SEQUENCE:
+  // `Certificate ::= SEQUENCE { tbs, signatureAlgorithm, signatureValue }`.
   static certSignature(certDer: Uint8Array): Uint8Array | undefined {
     const outer: DerTlv | undefined = readTlv(certDer, 0);
     if (outer === undefined || outer.tag !== 0x30) {

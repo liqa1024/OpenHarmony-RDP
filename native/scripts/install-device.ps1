@@ -1,24 +1,5 @@
-#
-# HmRdp - 把**已签名**的 HAP 部署到真机（或模拟器）并启动。
-#
-# 为什么不需要在这里签名（重要，别再加回来）：
-#   * 签名由 **hvigor** 在 `devecocli build` 阶段完成。工程级 `build-profile.json5` 的
-#     `signingConfigs` 恒为 `[]`（不提交任何签名信息）；本机签名配置放在仓库外的
-#     `.signing/signing-config.json`，由 `hvigorfile.ts` 通过
-#     `config.ohos.overrides.signingConfig` 注入（官方《动态修改编译配置》方式）。
-#   * DevEco「自动签名」写进 build-profile.json5 的 storePassword/keyPassword 是**密文**，
-#     只有 DevEco/hvigor 能解；外部工具（hap-sign-tool）需要**明文**口令，因此**不在此处签名**。
-#   * 于是仓库里永远没有签名路径/口令，别人 clone 后只是构建出未签名 HAP。
-#
-# 产物：entry/build/<product>/outputs/<product>/entry-<product>-signed.hap
-#       （没有签名配置时退化为 -unsigned.hap，模拟器可直接安装）
-#
-# 用法：
-#   devecocli build                                     # 真机用默认 product=default（arm64）
-#   native/scripts/install-device.ps1 -Device "<真机序列号>"
-#   native/scripts/install-device.ps1 -Device "<序列号>" -Uninstall -NoLaunch
-#   不传 -Device 时：自动挑选**唯一**的物理设备（排除 127.0.0.1:* / emulator-*）。
-#
+# 把已签名 HAP 部署到真机并启动。签名由 hvigor 在 build 阶段完成（配置在仓库外
+# .signing/，经 hvigorfile.ts 注入），本脚本只安装启动、不接触签名材料。
 param(
   [string]$Device = "",
   [string]$Product = "default",

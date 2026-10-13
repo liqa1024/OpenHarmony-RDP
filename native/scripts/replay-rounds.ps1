@@ -1,38 +1,5 @@
-<#
-.SYNOPSIS
-  Standard multi-round replay measurement on the dev page.
-
-.DESCRIPTION
-  The page reports its state first in every stats text:
-
-      state=running|finished|aborted  run=<n>  route=...  ...
-
-  so a round can be driven deterministically:
-
-    * a click is only sent once the previous round has reached
-      state=finished/aborted (clicking a disabled-mid-run control would cut that
-      round short, and an aborted round is not a measurement);
-    * the wait is for *this* round's number - the figures of two rounds look
-      identical otherwise, which is exactly how a measurement gets attributed to
-      the wrong round;
-    * `state=aborted` is reported, not silently treated as a result.
-
-  Per round the script:
-    1. sets the requested modes (参考/节拍/路线) by clicking the control
-       until its label matches; each intermediate click starts a short run, and
-       the script waits for it to finish before the next click;
-    2. optionally pushes the capture and/or the golden reference into the app's
-       files dir (the reference is passed by tag; the local copies live in
-       .cache/hmrdp_ref_<tag>.{hash,bmp});
-    3. clicks 重新回放, waits for that run to finish, and appends the full stats
-       text to the output file;
-    4. prints a one-line summary per round.
-
-.EXAMPLE
-  native/scripts/replay-rounds.ps1 -Capture .cache/hmrdp_gfx_video.bin `
-      -RefTag fefd78fd -Rounds "参考:关","参考:对比","参考:关","参考:对比" `
-      -Out .cache/rounds-video.txt
-#>
+# Standard multi-round replay measurement on the dev page: drive the mode controls
+# and 重新回放 by uitest clicks, waiting for this round's run number before reading stats.
 param(
   [string]$Device = "",
   [string[]]$Rounds = @("参考:关"),
@@ -44,7 +11,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# --- device / app files dir -------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($Device)) {
   $targets = @(& hdc list targets 2>$null | Where-Object { $_ -match "\S" -and $_ -notmatch "\[Empty\]" })
   $physical = @($targets | Where-Object { $_ -notmatch "^127\.0\.0\.1:" -and $_ -notmatch "^emulator-" })
@@ -61,7 +27,6 @@ function Get-Layout {
   return (Get-Content -Raw $LayoutLocal | ConvertFrom-Json)
 }
 
-# All text nodes, plus the bounds of the ones that are clickable controls.
 function Read-Screen {
   $j = Get-Layout
   $texts = New-Object System.Collections.ArrayList
@@ -102,9 +67,7 @@ function Wait-RunEnd {
 function Get-Center {
   param([string]$Bounds)
   if ($Bounds -match "^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$") {
-    # Arithmetic, not string concatenation: PowerShell's `+` glues strings
-    # together, so "2793" + "2952" would become 27932952 and the click would go
-    # somewhere far off-screen (silently - no click, no error).
+    # Cast to int: PowerShell's + would concatenate the bounds strings into a wrong coordinate.
     $x = [int]([int]$Matches[1] + [int]$Matches[3]) / 2
     $y = [int]([int]$Matches[2] + [int]$Matches[4]) / 2
     return @([int]$x, [int]$y)
@@ -112,7 +75,7 @@ function Get-Center {
   throw "cannot parse bounds: $Bounds"
 }
 
-# Clicks a control and does not wait for a run (navigation only).
+# Clicks a control without waiting for a run (navigation only).
 function Click-Plain {
   param([string]$Label)
   $screen = Read-Screen
@@ -124,7 +87,6 @@ function Click-Plain {
   & hdc -t $Device shell "uitest uiInput click $($c[0]) $($c[1])" | Out-Null
 }
 
-# Clicks the control labelled `Label` and waits for the run that click started.
 function Click-Control {
   param([string]$Label)
   $screen = Read-Screen
@@ -137,9 +99,7 @@ function Click-Control {
   & hdc -t $Device shell "uitest uiInput click $($c[0]) $($c[1])" | Out-Null
   Start-Sleep -Milliseconds 800
   $beforeRun = $(if ($null -eq $before) { -1 } else { $before.run })
-  # A click that did not register (window not in front, control disabled, wrong
-  # coordinates) looks exactly like a slow run from here, so say so right away
-  # instead of sitting in the long wait below.
+  # A click that did not register looks like a slow run, so fail fast instead of waiting.
   $deadline = (Get-Date).AddSeconds(15)
   while ((Get-Date) -lt $deadline) {
     $after = Get-RunState (Read-Screen)
@@ -152,9 +112,7 @@ function Click-Control {
   throw "clicking '$Label' at ($($c[0]),$($c[1])) did not start a new run (still run=$beforeRun)"
 }
 
-# Cycles a control (参考/节拍/路线) until its label reads `Target`. Only the
-# controls whose value is a state (not a radio row) are here; the decode width
-# and its tile decomposition are not settings any more.
+# Cycles a control (参考/节拍/路线) until its label reads Target.
 $CYCLES = @{
   "参考" = @("关", "导出", "对比")
   "节拍" = @("跑满", "实时")
@@ -184,14 +142,12 @@ function Push-File {
   Write-Host "  pushed $Name ($((Get-Item -LiteralPath $Local).Length) bytes)"
 }
 
-# --- rounds -----------------------------------------------------------------
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $outPath = if ([System.IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $repo $Out }
 "" | Set-Content -LiteralPath $outPath -Encoding utf8
 
-# Bring the app to the front and make sure the dev page is the visible one:
-# `uitest uiInput click` goes to whatever window is on top, so a restored window
-# that is not in front would silently swallow every click.
+# Bring the app to front: uitest clicks go to the top window, so a backgrounded page
+# would silently swallow them.
 & hdc -t $Device shell "aa start -a EntryAbility -b com.lixa.hmrdp" | Out-Null
 Start-Sleep -Seconds 4
 $screen = Read-Screen
@@ -204,7 +160,6 @@ if (-not $screen.controls.ContainsKey("重新回放")) {
   }
 }
 
-# Make sure no round is running.
 $s = Wait-RunEnd -After -1 -Why "initial"
 Write-Host "page is up (state=$($s.state) run=$($s.run)); writing $outPath"
 

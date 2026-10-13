@@ -55,10 +55,8 @@ export default class EntryAbility extends UIAbility {
     // The cursor switch is process-global and must be applied before any
     // session can connect.
     RdpNative.applyRdpCursor(settings.useRdpCursor);
-    // Dev capture: configure before any session can connect so the RDPGFX
-    // command stream is captured from the first frame. Gated on developer
-    // options so a stale stored value cannot start a capture while the tools
-    // are hidden.
+    // Configure before any session connects so the RDPGFX stream is captured from
+    // the first frame; gated on developer options so a stale value cannot start it.
     RdpNative.applyGfxCapture(settings.developerMode && settings.gfxCapture, this.context.filesDir);
     WindowController.applyMainWindowSize(settings.mainWindowWidth, settings.mainWindowHeight,
       settings.mainWindowSizeEnabled);

@@ -209,9 +209,8 @@ workerPort.onmessage = (e: MessageEvents): void => {
   state.handle = handle;
   if (message.op === AudioOps.START) {
     state.active = true;
-    // Seed the format from the current native format. Moonlight's is the Opus
-    // decoder config (known from init, before the session reports connected); RDP
-    // may not have sent a packet yet, so its FORMAT event can still arrive later.
+    // Seed the format from native state: Moonlight's is known at init; RDP may
+    // not have sent a packet yet, so its FORMAT event can still arrive later.
     if (state.rate <= 0 || state.channels <= 0) {
       const current: RdpAudioFormat = source === AudioSource.MOONLIGHT
         ? moonlightAudioFormat() : audioFormat(handle);

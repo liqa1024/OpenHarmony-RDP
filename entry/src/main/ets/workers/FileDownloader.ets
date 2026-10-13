@@ -253,7 +253,6 @@ export class FileDownloader {
       try {
         fileIo.unlinkSync(path);
       } catch (error) {
-        // Already gone or never created: nothing to clean.
       }
     }
     state.active = false;
@@ -271,7 +270,6 @@ export class FileDownloader {
       try {
         fileIo.closeSync(state.file);
       } catch (error) {
-        // Nothing useful to do; the transfer is ending anyway.
       }
       state.file = undefined;
     }

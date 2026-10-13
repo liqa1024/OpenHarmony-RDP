@@ -32,11 +32,8 @@ struct Index {
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
   @State hostTargets: Map<string, number> = new Map<string, number>();
   @State hostPowers: Map<string, HostPower> = new Map<string, HostPower>();
-  // Whether this client is on each offline host's LAN (wake send path).
   @State hostWake: Map<string, WakeReachability> = new Map<string, WakeReachability>();
-  // Connections with a wake watch running (their row shows a loading action).
   @State wakingHosts: Map<string, boolean> = new Map<string, boolean>();
-  // Connections with an in-flight host probe (their row shows a loading action).
   @State probingHosts: Map<string, boolean> = new Map<string, boolean>();
   private wakeTimers: Map<string, number> = new Map<string, number>();
   @State draggingIndex: number = -1;

@@ -117,4 +117,4 @@ class GfxReplay {
 
 }  // namespace hmrdp
 
-#endif  // HMRDP_REPLAY_H
+#endif

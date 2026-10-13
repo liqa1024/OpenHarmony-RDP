@@ -35,8 +35,6 @@ uint64_t NowMs() {
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-// A steady clock is enough: arrival times only need to be comparable within one
-// capture, and it cannot jump.
 uint64_t NowUs() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(

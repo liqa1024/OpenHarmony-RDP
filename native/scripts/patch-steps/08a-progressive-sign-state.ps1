@@ -1,10 +1,5 @@
-# 8) Progressive: the per-(tile,component) predictor state must start defined.
-#    `progressive_tile_new` fills `tile->data` with 0xFF but takes `sign`/`current`
-#    straight from malloc, and a DIFFERENCE (or UPGRADE) pass *reads* them before
-#    writing. The encoder assumes zero initial state, so leaving the heap contents
-#    there makes the reference decoder's output depend on unrelated heap contents
-#    instead of the zero initial state the encoder assumes (and it is not
-#    reproducible across processes).
+# 8) Progressive predictor state must start defined: tile_new fills data with 0xFF but
+#    takes sign/current from malloc, and a DIFFERENCE/UPGRADE pass reads them before writing.
 Patch-File "$Source\libfreerdp\codec\progressive.c" @{
   @'
 	size_t signLen = (8192ULL + 32ULL) * 3ULL;

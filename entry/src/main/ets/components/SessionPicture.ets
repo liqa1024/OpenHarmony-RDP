@@ -1,10 +1,8 @@
 import { lengthToNumber } from '../utils/UiUtil';
 import { fitPictureRect } from '../utils/PictureFit';
 
-// The session picture surface: a SURFACE XComponent laid out centred at the content
-// aspect ratio, so the compositor scales it proportionally on a window resize. The
-// black bars it leaves are inert; input stays on the XComponent, whose coordinates
-// are therefore picture-local. In fullscreen a top strip reports the toolbar reveal zone.
+// The session picture surface: a SURFACE XComponent centred at the content aspect
+// ratio; input stays on the XComponent, so its coordinates are picture-local.
 @Component
 export struct SessionPicture {
   xComponentId: string = '';

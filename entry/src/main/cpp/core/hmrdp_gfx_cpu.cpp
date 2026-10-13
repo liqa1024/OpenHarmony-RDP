@@ -67,10 +67,8 @@ BOOL CpuDesktopResize(rdpContext* context) {
   return TRUE;
 }
 
-// Kill surfaces while the gdi binding is still valid: the context's own teardown runs after
-// gdi_graphics_pipeline_uninit() cleared context->custom, and a mirrored surface can then
-// no longer tell its buffer is gdi's primary and would free memory it does not own - on the
-// zero-copy path the presenter's buffer.
+// Kill surfaces while the gdi binding is still valid: after gdi_graphics_pipeline_uninit() a
+// mirrored surface cannot tell its buffer is gdi's primary and frees memory it does not own.
 void DestroyGfxSurfaces(RdpgfxClientContext* context) {
   if (context == nullptr || context->GetSurfaceIds == nullptr ||
       context->DeleteSurface == nullptr) {
@@ -114,9 +112,8 @@ void GfxCpuDesktop::SetMeter(GfxWorkMeter* meter) {
 }
 
 void GdiFrameHost::OnFrameBegin() {
-  // First pixel write of the frame: on the zero-copy path the GPU must be done copying
-  // the previous frame out of the presenter's buffer, or this frame's decode overwrites
-  // bytes that copy has not read yet (a mix of two frames).
+  // First pixel write of the frame: on the zero-copy path the GPU must be done copying the
+  // previous frame out of the presenter's buffer, or this decode overwrites unread bytes.
   if (!desktopAttached_ || presenter_ == nullptr) {
     return;
   }
@@ -169,8 +166,6 @@ bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInf
   if (presentUs != nullptr) {
     *presentUs = spanUs;
   }
-  // The owner accounts for the frame even when nothing was drawn (the replay tells skips
-  // from failures).
   if (presentedFn_) {
     presentedFn_(presented, spanUs, info != nullptr ? *info : PresentUploadInfo{});
   }
@@ -236,8 +231,6 @@ bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail
   if (HmrdpGfxReplayNewWithContext == nullptr || HmrdpGfxReplayFreeWithContext == nullptr) {
     return fail("FreeRDP was not built with the HmRdp replay-context patch");
   }
-  // Bind RDPGFX to this desktop's real rdpContext so gfx->rdpcontext carries the actual
-  // settings/update, then attach the stock gdi pipeline.
   gfx_ = HmrdpGfxReplayNewWithContext(context);
   if (gfx_ == nullptr) {
     return fail("HmrdpGfxReplayNewWithContext failed");
@@ -272,7 +265,6 @@ void GfxCpuDesktop::Shutdown() {
     presenter_->ReleaseDesktopBuffer();
   }
   host_.DetachDesktopBuffer();
-  // The observers capture the replay's stack state; drop them with the context.
   host_.SetPrePresentFn(nullptr);
   host_.SetPresentedFn(nullptr);
   width_ = 0;
@@ -463,9 +455,8 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
   const int64_t boxArea = haveBox ? static_cast<int64_t>(box.width) * box.height : 0;
   PresentRect rects[kMaxPresentRects];
 
-  // Zero-copy (gdi composes into the presenter's own buffer): a rect costs a copy region
-  // plus a cache flush, so the merged box is used unconditionally. Staging: the cost is
-  // the bytes, so the rect list is used while it is bounded.
+  // Zero-copy: a rect costs a copy region plus a cache flush, so the merged box is used
+  // unconditionally. Staging: cost is the bytes, so the rect list is used while bounded.
   const bool zeroCopy = presenter->usesDesktopBuffer();
   int rectCount = 0;
   int64_t rectArea = 0;
@@ -485,7 +476,6 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
       rects[rectCount++] = clipped;
     }
   }
-  // A single rect *is* the box, and past the cap the box is the only bounded option.
   const bool useRects = !zeroCopy && rectCount >= 2 && !tooManyRects && haveBox;
 
   if (info != nullptr) {

@@ -7,7 +7,6 @@ import { SessionBackend, SessionSignalListener } from './SessionBackend';
 import { InputAction, InputButton, InputSink, TouchpadContact, TouchPhase } from './SessionInput';
 
 export class RdpSessionBackend implements SessionBackend {
-  // RDP-only operations the session window still calls directly.
   readonly native: RdpNative = new RdpNative();
   private listener: SessionSignalListener | undefined = undefined;
   private options: RdpConnectOptions;
@@ -117,7 +116,6 @@ const RDP_WHEEL_MAX_CHUNK: number = 0xFF;
 // flags, RDPEI touches, and 9-bit wheel chunks. RDP has no native touchpad endpoint.
 export class RdpInputSink implements InputSink {
   private native: RdpNative;
-  // RDP wheel events carry a position; the last pointer position stands in.
   private lastX: number = 0;
   private lastY: number = 0;
   private lockFlags: number = 0;
@@ -127,7 +125,6 @@ export class RdpInputSink implements InputSink {
     this.native = native;
   }
 
-  // The page reasserts the local lock state on a remote mismatch, so it needs the last value.
   lastLockFlags(): number {
     return this.lockFlags;
   }

@@ -1,18 +1,5 @@
-# Applies the HmRdp patches to the moonlight-common-c source tree:
-#   1) strip the unconditional -Werror (CMakeLists.txt);
-#   2) add the foundation-sunshine "local cursor mode" client side:
-#      ConnListenerCursorUpdate + LiGetLocalCursorModeSupported /
-#      LiSetLocalCursorMode and the 0x5509 control-stream message.
-#   3) add the foundation-sunshine native precision touchpad client side:
-#      LiSendTouchpadEvent / LiSendTouchpadFrameEvent + the 0x55000009 /
-#      0x5500000A input packets, gated on the host featureFlags bits 0x10 / 0x20.
-#
-# The tree under native/third_party/ is gitignored and recreated by
-# fetch-sources.ps1, which calls this script after extraction. Like
-# patch-freerdp.ps1 it is idempotent: an already-patched tree reports the step
-# as skipped instead of failing.
-#
-#   native/scripts/patch-moonlight.ps1 [-Source <tree>]
+# Applies the HmRdp patches to moonlight-common-c: strip -Werror; add the
+# foundation-sunshine local cursor mode (0x5509) and native precision touchpad (0x55000009/0x5500000A).
 param(
 	[string]$Source = ""
 )
@@ -29,15 +16,10 @@ if (-not (Test-Path -LiteralPath $CMake)) {
 	throw "moonlight-common-c CMakeLists not found: $CMake"
 }
 
-# Read raw and write back with the file's own line endings preserved: a plain
-# string replace does not touch them, so LF (tarball) and CRLF (checkout) both work.
+# Read raw / write back preserving the file's own EOL; a plain replace does not touch them.
 $raw = [System.IO.File]::ReadAllText($CMake)
 
-# 1) Drop the unconditional -Werror the upstream CMakeLists adds on non-MSVC /
-#    non-MinGW platforms. The OHOS clang does not carry the warning set upstream
-#    CI does, and -Werror is added *after* CMAKE_C_FLAGS so it cannot be turned
-#    off from the command line. Warnings stay visible; they just do not fail the
-#    build.
+# Drop the unconditional -Werror (added after CMAKE_C_FLAGS, so it cannot be unset from the command line).
 if ($raw -notmatch [regex]::Escape(" -Werror)")) {
 	Write-Host "moonlight: -Werror already stripped (skipped)"
 }
@@ -50,13 +32,8 @@ else {
 	Write-Host "moonlight: stripped -Werror from CMakeLists.txt"
 }
 
-# 2) Local cursor mode. foundation-sunshine advertises a cursor_shape capability
-#    bit in the RTSP DESCRIBE featureFlags and, once the client asks for local
-#    cursor mode over the control stream, stops compositing the pointer into the
-#    video and forwards the pointer (shape bitmap + visibility) on an extension
-#    control message instead. The client installs the shape as the OS cursor, so
-#    there is exactly one, locally-rendered cursor. All additions are wrapped in
-#    HMRDP markers so the step is idempotent.
+# Local cursor mode: ask the host to forward the pointer (shape bitmap + visibility) on a
+# control message instead of compositing it into the video.
 function Set-PatchedFile {
 	param([string]$Path, [string]$Eol, [string]$PatchedContent)
 
@@ -74,7 +51,6 @@ if (-not (Test-Path -LiteralPath $Limelight) -or -not (Test-Path -LiteralPath $C
 	throw "moonlight-common-c src missing Limelight.h / ControlStream.c under $MlSrc"
 }
 
-# --- Limelight.h -------------------------------------------------------------
 $hRaw = [System.IO.File]::ReadAllText($Limelight)
 if ($hRaw.Contains("HMRDP_CURSOR")) {
 	Write-Host "moonlight: Limelight.h cursor patch already applied (skipped)"
@@ -103,8 +79,6 @@ else {
 		"void LiInitializeConnectionCallbacks(PCONNECTION_LISTENER_CALLBACKS clCallbacks);",
 		"",
 		"// HMRDP_CURSOR: foundation-sunshine local cursor mode.",
-		"// Ask the host to stop compositing the pointer into the video and forward it",
-		"// through ConnListenerCursorUpdate instead. Call after LiStartConnection().",
 		"void LiSetLocalCursorMode(bool enabled);"
 	) -join $heol
 	$hRaw = $hRaw.Replace($anchorInit, $proto)
@@ -113,7 +87,6 @@ else {
 	Write-Host "moonlight: added local cursor callback/API to Limelight.h"
 }
 
-# --- ControlStream.c ---------------------------------------------------------
 $cRaw = [System.IO.File]::ReadAllText($ControlStream)
 if ($cRaw.Contains("HMRDP_CURSOR")) {
 	Write-Host "moonlight: ControlStream.c cursor patch already applied (skipped)"
@@ -121,8 +94,7 @@ if ($cRaw.Contains("HMRDP_CURSOR")) {
 else {
 	$ceol = if ($cRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
 
-	# Receive-side helper: parse the 28-byte header + BGRA chunks, reassemble a
-	# shape, and deliver it (or a visibility-only update) to the listener.
+	# Receive-side helper for the 0x5509 message.
 	$helper = @(
 		"// HMRDP_CURSOR: foundation-sunshine local cursor mode (control message 0x5509).",
 		"#define ML_CURSOR_CTRL_TYPE 0x5509",
@@ -210,7 +182,6 @@ else {
 	if (-not $cRaw.Contains($anchorReceive)) { throw "moonlight: controlReceiveThreadFunc anchor missing" }
 	$cRaw = $cRaw.Replace($anchorReceive, $helper + $ceol + $anchorReceive)
 
-	# Dispatch the extension message on the receive thread.
 	$anchorDispatch = "            else if (ctlHdr->type == packetTypes[IDX_TERMINATION]) {"
 	if (-not $cRaw.Contains($anchorDispatch)) { throw "moonlight: termination dispatch anchor missing" }
 	$dispatch = @(
@@ -221,28 +192,21 @@ else {
 	) -join $ceol
 	$cRaw = $cRaw.Replace($anchorDispatch, $dispatch)
 
-	# Public API at the end of the file (after sendMessageAndForget is defined).
+	# Appended at EOF: needs sendMessageAndForget in scope.
 	$api = @(
 		"",
 		"// HMRDP_CURSOR: foundation-sunshine local cursor mode.",
 		"void LiSetLocalCursorMode(bool enabled) {",
 		"    unsigned char payload[4];",
-		"    // Gated on a stable host identity + the encrypted v2 control stream",
-		"    // only. The host re-validates at enable time (encrypted control and an",
-		"    // available cursor producer, which exists once the stream is up) and",
-		"    // silently ignores the request otherwise - that is the fallback.",
+		"    // Host re-validates and silently ignores otherwise (that is the fallback).",
 		"    if (!IS_SUNSHINE() || !encryptedControlStream) {",
 		"        return;",
 		"    }",
 		"    payload[0] = 1; // cursor protocol version",
-		"    payload[1] = enabled ? 1 : 0; // 1 = local cursor mode on",
+		"    payload[1] = enabled ? 1 : 0;",
 		"    payload[2] = 0;",
 		"    payload[3] = 0;",
-		"    // The enable is a one-shot handshake for the whole connection and the",
-		"    // protocol has no ACK or retransmit: an unreliable send that is lost",
-		"    // silently disables the cursor channel for the session's lifetime, so",
-		"    // it goes reliable (ENet retransmits until ACKed), same as the",
-		"    // periodic ping upstream already sends reliably.",
+		"    // One-shot handshake with no ACK: send reliably so a lost packet cannot disable it for the session.",
 		"    sendMessageAndForget(ML_CURSOR_CTRL_TYPE, (int)sizeof(payload), payload,",
 		"                         CTRL_CHANNEL_GENERIC, ENET_PACKET_FLAG_RELIABLE, false);",
 		"}"
@@ -253,19 +217,14 @@ else {
 	Write-Host "moonlight: added local cursor message handling to ControlStream.c"
 }
 
-# 3) Native precision touchpad (foundation-sunshine extension). Adds
-#    LiSendTouchpadEvent / LiSendTouchpadFrameEvent and the 0x55000009 /
-#    0x5500000A input packets, gated on the host featureFlags bits 0x10 / 0x20
-#    (x-ss-general.featureFlags, already parsed into SunshineFeatureFlags).
-#    Stock Sunshine and GFE never advertise those bits, so the client never sends
-#    these packets to them - the LiSend* entry points return LI_ERR_UNSUPPORTED.
+# Native precision touchpad: LiSendTouchpadEvent/FrameEvent + 0x55000009/0x5500000A packets,
+# gated on featureFlags 0x10/0x20 (stock Sunshine/GFE never set them).
 $InputHeader = Join-Path $MlSrc "Input.h"
 $InputStream = Join-Path $MlSrc "InputStream.c"
 if (-not (Test-Path -LiteralPath $InputHeader) -or -not (Test-Path -LiteralPath $InputStream)) {
 	throw "moonlight-common-c src missing Input.h / InputStream.c under $MlSrc"
 }
 
-# --- Limelight.h: feature bits + API ------------------------------------------
 $hRaw = [System.IO.File]::ReadAllText($Limelight)
 if ($hRaw.Contains("HMRDP_TOUCHPAD")) {
 	Write-Host "moonlight: Limelight.h touchpad patch already applied (skipped)"
@@ -302,7 +261,6 @@ else {
 	Write-Host "moonlight: added native touchpad API to Limelight.h"
 }
 
-# --- Input.h: packet layouts --------------------------------------------------
 $ihRaw = [System.IO.File]::ReadAllText($InputHeader)
 if ($ihRaw.Contains("HMRDP_TOUCHPAD")) {
 	Write-Host "moonlight: Input.h touchpad patch already applied (skipped)"
@@ -359,7 +317,6 @@ else {
 	Write-Host "moonlight: added touchpad packets to Input.h"
 }
 
-# --- InputStream.c: union, state, send ----------------------------------------
 $icRaw = [System.IO.File]::ReadAllText($InputStream)
 if ($icRaw.Contains("HMRDP_TOUCHPAD")) {
 	Write-Host "moonlight: InputStream.c touchpad patch already applied (skipped)"
@@ -395,7 +352,7 @@ else {
 	$icRaw = $icRaw.Replace($anchorTime,
 		$anchorTime + $ieol + "    uint64_t lastTouchpadFlushTime = 0; // HMRDP_TOUCHPAD")
 
-	# Pace touchpad frames: allow newer move-only frames to replace a queued one.
+	# Pace touchpad frames: newer move-only frames may replace a queued one.
 	$anchorSend = @(
 		"        // Encrypt and send the input packet",
 		"        if (!sendInputPacket(holder, LbqGetItemCount(&packetQueue) > 0)) {"
@@ -418,7 +375,7 @@ else {
 	) -join $ieol
 	$icRaw = $icRaw.Replace($anchorSend, $sendBlock)
 
-	# Public API appended at EOF (floatToNetfloat / freePacketHolder / queues are in scope).
+	# Appended at EOF: floatToNetfloat / freePacketHolder / queues are in scope.
 	$api = @(
 		"",
 		"// HMRDP_TOUCHPAD: foundation-sunshine native precision touchpad.",
@@ -524,14 +481,11 @@ else {
 	Write-Host "moonlight: added native touchpad send + packets to InputStream.c"
 }
 
-# 4) Clipboard sync (foundation-sunshine extension, control message 0x5508):
-#    receive dispatch + callback, LiSendClipboardData, capability bits. Also
-#    widens the control sender to carry 64 KiB frames (stock code uses a `short`
-#    payload length and a 256-byte plaintext buffer).
+# Clipboard sync (control message 0x5508): receive dispatch + callback, LiSendClipboardData,
+# capability bits; widens the control sender for 64 KiB frames.
 $Limelight = Join-Path $MlSrc "Limelight.h"
 $ControlStream = Join-Path $MlSrc "ControlStream.c"
 
-# --- Limelight.h -------------------------------------------------------------
 $hRaw = [System.IO.File]::ReadAllText($Limelight)
 if ($hRaw.Contains("HMRDP_CLIPBOARD")) {
 	Write-Host "moonlight: Limelight.h clipboard patch already applied (skipped)"
@@ -555,7 +509,6 @@ else {
 		$anchorProto,
 		"",
 		"// HMRDP_CLIPBOARD: foundation-sunshine clipboard sync (control message 0x5508).",
-		"// `payload` is an opaque v1 wire frame forwarded verbatim by the host.",
 		"// Returns 0 on success, -1 invalid/oversized, -2 unsupported, -3 not connected, -4 send failed.",
 		"#define LI_CLIPBOARD_KIND_TEXT 1",
 		"#define LI_CLIPBOARD_KIND_PNG  2",
@@ -574,7 +527,6 @@ else {
 	Write-Host "moonlight: added clipboard API/feature bits to Limelight.h"
 }
 
-# --- ControlStream.c ---------------------------------------------------------
 $cRaw = [System.IO.File]::ReadAllText($ControlStream)
 if ($cRaw.Contains("HMRDP_CLIPBOARD")) {
 	Write-Host "moonlight: ControlStream.c clipboard patch already applied (skipped)"
@@ -676,7 +628,6 @@ else {
 	if (-not $cRaw.Contains($oldFail)) { throw "moonlight: ControlStream encrypt anchor missing" }
 	$cRaw = $cRaw.Replace($oldFail, $newFail)
 
-	# Message constant + receive dispatch (before the cursor branch).
 	$anchorConst = "#define ML_CURSOR_HEADER_SIZE 28"
 	if (-not $cRaw.Contains($anchorConst)) { throw "moonlight: cursor header-size anchor missing" }
 	$cRaw = $cRaw.Replace($anchorConst,
@@ -697,7 +648,7 @@ else {
 	) -join $ceol
 	$cRaw = $cRaw.Replace($anchorDispatch, $clipDispatch)
 
-	# Sender at EOF (sendMessageAndForget is in scope there).
+	# Appended at EOF: sendMessageAndForget is in scope.
 	$api = @(
 		"",
 		"// HMRDP_CLIPBOARD: foundation-sunshine clipboard sync (control message 0x5508).",

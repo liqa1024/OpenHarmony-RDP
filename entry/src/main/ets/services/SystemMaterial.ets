@@ -1,4 +1,3 @@
-// uiMaterial (API 26) is newer than the declared compatibleSdkVersion, so the capability is probed before the module is touched; a material resamples what is behind it every frame, so it must never sit on continuously changing content (the remote desktop image).
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { uiMaterial } from '@kit.ArkUI';
 
@@ -32,7 +31,6 @@ function probe(): boolean {
 
 const SUPPORTED: boolean = probe();
 
-// Built once per surface and reused: the system recomputes a material whenever its parameters change, so rebuilding per render would keep the layer dirty.
 function build(surface: MaterialSurface): uiMaterial.Material | undefined {
   if (!SUPPORTED) {
     return undefined;

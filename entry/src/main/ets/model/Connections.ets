@@ -2,12 +2,6 @@ import { MoonlightSessionConfig } from 'libhmrdp.so';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { RDP_DEFAULT_PORT, RdpConnectOptions, SR_BACKEND_XENGINE } from './RdpModels';
 
-// Shared connection / session-request model, independent of the protocol. The
-// abstract base holds only what both protocols share; RDP-only and Moonlight-only
-// fields live on their subclasses, and each subclass owns its slice of the
-// position-separated record / export so the codec services stay protocol-neutral.
-
-// Connection action vocabulary plus its display labels.
 export enum ConnectAction {
   Connect = 0,
   Resume = 1,
@@ -40,14 +34,12 @@ export function connectActionLabel(action: ConnectAction): string {
   return '连接';
 }
 
-// Host reachability as shown on a row: Online = the streaming service answers;
-// Offline = nothing answers (likely powered off / unreachable); NoService = the OS
-// answers but the streaming service does not (wake would be pointless).
+// Host reachability on a row: Online = streaming service answers; Offline = nothing;
+// NoService = OS answers but the streaming service does not (wake pointless).
 export enum HostPower {
   Unknown = 0,
   Online = 1,
   Offline = 2,
-  // Host OS is up but has no answer from the streaming service: wake would be pointless.
   NoService = 3
 }
 
@@ -80,9 +72,7 @@ export const ML_COLOR_RANGE_LIMITED: number = 0;
 // STREAM_CFG_* for STREAM_CONFIGURATION.streamingRemotely; AUTO uses the RFC1918 heuristic.
 export const ML_STREAM_CFG_AUTO: number = 2;
 
-// Position-separated record length; slots are fixed and append-only (see
-// settings-and-storage.md §1). Shared slots are written by the base, each
-// protocol's slots by its subclass.
+// Fixed append-only slot count (see settings-and-storage.md §1).
 const RECORD_LENGTH: number = 46;
 
 function encodeField(text: string): string {
@@ -206,8 +196,6 @@ export class RowMenuAction {
   static readonly Wake: number = 5;
 }
 
-// One connection-row menu entry as data, so the shared row renders it without
-// knowing the protocol; the page maps `action` back to its callbacks.
 export class RowMenuEntry {
   action: number = RowMenuAction.Toggle;
   content: string = '';
@@ -224,16 +212,12 @@ export class RowMenuEntry {
   }
 }
 
-// Flat, password-free shape used by config export/import. Kept on the model side
-// so the (de)serialization stays polymorphic and the transfer service stays
-// protocol-neutral.
 export class ConnectionExport {
   id: string = '';
   host: string = '';
   port: number = 0;
   name: string = '';
   protocol: number = PROTOCOL_RDP;
-  // RDP-only.
   username: string = '';
   domain: string = '';
   width: number = 0;
@@ -253,11 +237,9 @@ export class ConnectionExport {
   useGlobalSr: boolean = true;
   resolutionAuto: boolean = false;
   scaleAuto: boolean = false;
-  // Moonlight-only.
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
   mlHostId: string = '';
-  // Host NIC MAC (serverinfo), the wake-on-LAN target; empty until a probe succeeds.
   mlMac: string = '';
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
@@ -270,8 +252,6 @@ export class ConnectionExport {
   useGlobalStream: boolean = true;
 }
 
-// Shared abstract base: only the fields both protocols share. Each protocol
-// subclass owns its own fields and its own slice of the record / export.
 export abstract class SavedConnection {
   id: string = '';
   updatedAt: number = 0;
@@ -327,8 +307,6 @@ export abstract class SavedConnection {
     return this.name.length > 0 ? `${this.name} · ${target}` : target;
   }
 
-  // Position-separated record codec: shared + retired slots here, protocol slots
-  // in the subclass override. The storage service stays protocol-neutral.
   toRecord(): string[] {
     const slots: string[] = new Array<string>(RECORD_LENGTH).fill('');
     slots[0] = encodeField(this.host);

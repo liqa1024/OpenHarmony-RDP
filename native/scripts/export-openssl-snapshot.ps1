@@ -1,16 +1,5 @@
-# Regenerates the frozen `perl Configure` output that native/openssl-cmake uses
-# to build OpenSSL without WSL/Perl (native/openssl-cmake/export-snapshot.pl).
-#
-# Only needed when the pinned OpenSSL version changes (fetch-sources.ps1) or the
-# Configure options change. Day-to-day builds use build-native.ps1 and never run
-# this.
-#
-#   native/scripts/export-openssl-snapshot.ps1                 # reuse the existing configured trees
-#   native/scripts/export-openssl-snapshot.ps1 -Configure      # (re)run Configure in WSL first
-#   native/scripts/export-openssl-snapshot.ps1 -Arch arm64-v8a
-#
-# The configured trees live under native/build/openssl-<arch>/openssl (produced
-# by build-openssl-wsl.sh).
+# Regenerates the frozen `perl Configure` output native/openssl-cmake builds from
+# (export-snapshot.pl); only needed when the pinned OpenSSL version or options change.
 param(
   [string[]]$Arch = @("arm64-v8a", "x86_64"),
   [switch]$Configure

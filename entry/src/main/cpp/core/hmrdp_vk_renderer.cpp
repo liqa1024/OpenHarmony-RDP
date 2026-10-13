@@ -1,6 +1,3 @@
-/*
- * HmRdp - Vulkan presenter implementation. See hmrdp_vk_renderer.h.
- */
 #include "hmrdp_vk_renderer.h"
 
 #include <algorithm>
@@ -46,9 +43,8 @@ std::string FormatName(VkFormat format) {
   return "VkFormat(" + std::to_string(static_cast<int>(format)) + ")";
 }
 
-// Prefer BGRA8 (FreeRDP's byte order, so no CPU swizzle is needed), then RGBA8;
-// colour space is irrelevant (the shader swizzles). A lone VK_FORMAT_UNDEFINED
-// entry means "any" and resolves to BGRA8.
+// Prefer BGRA8 (FreeRDP's byte order, no CPU swizzle), then RGBA8. A lone
+// VK_FORMAT_UNDEFINED entry means "any" and resolves to BGRA8.
 VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
   if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
     VkSurfaceFormatKHR picked{};
@@ -86,9 +82,6 @@ VkCompositeAlphaFlagBitsKHR PickCompositeAlpha(VkCompositeAlphaFlagsKHR supporte
 // input collapses into its bounding box, so the copy-region array cannot overflow.
 constexpr int kMaxUploadRects = 256;
 
-// The one picture format the presenter hands over: FreeRDP's byte order, so the
-// quad's sampling does the channel conversion (no shader swizzle, independent of
-// the swapchain format).
 constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
 
 // 超分: sharpening handed to XEngine's spatial upscale, documented range [0.0, 1.0];
@@ -101,9 +94,6 @@ constexpr float kSrSharpness = 0.2f;
 constexpr float kFsrSharpnessStops = 0.2f;
 #endif
 
-// Clips the caller's rects to the desktop, dropping the empty ones. When the
-// input exceeds `capacity` the union bounding box is returned instead, so pixels
-// are never dropped - only uploaded in one bigger piece.
 int ClipUploadRects(const PresentRect* rects, int count, int desktopWidth, int desktopHeight,
                     PresentRect* out, int capacity) {
   auto clip = [desktopWidth, desktopHeight](PresentRect r) {
@@ -319,7 +309,6 @@ VkRenderer::~VkRenderer() {
 void VkRenderer::SetSurface(void* nativeWindow, int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (pendingWindow_ != nativeWindow) {
-    // A new native window means the old VkSurfaceKHR is unusable.
     DestroySwapchainLocked();
     vk_.DestroySurface(surface_);
     surface_ = VK_NULL_HANDLE;
@@ -332,7 +321,6 @@ void VkRenderer::SetSurface(void* nativeWindow, int width, int height) {
 
 void VkRenderer::ResizeSurface(int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
-  // Same size: nothing to rebuild; a repeated event must not churn the swapchain.
   if (width == surfaceWidth_ && height == surfaceHeight_) {
     return;
   }
@@ -359,13 +347,10 @@ bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
   VkApi& api = vk_.api();
   VkDeviceContext& context = vk_;
 
-  // Two attempts: a surface that went out of date is rebuilt once, then retried.
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!EnsureSwapchainLocked()) {
       return false;
     }
-    // The device is created by EnsureSwapchainLocked (a queue family is only
-    // choosable once the surface exists), so it must be read after it.
     const VkDevice device = context.device();
     if (device == VK_NULL_HANDLE) {
       error_ = "Vulkan device not available";
@@ -397,8 +382,6 @@ bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     api.BeginCommandBuffer(cmd, &beginInfo);
 
-    // The bring-up frame draws nothing: the render pass attachment's clear lights
-    // the surface, so no pipeline or shader is needed.
     VkClearValue clearValue{};
     clearValue.color.float32[0] = static_cast<float>(r) / 255.0f;
     clearValue.color.float32[1] = static_cast<float>(g) / 255.0f;
@@ -463,7 +446,6 @@ bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
       return false;
     }
     ++presentCount_;
-    // Periodic heartbeat: proves continuous acquire/present on a real-device run.
     if (presentCount_ <= 3 || presentCount_ % 30 == 0) {
       HMRDP_LOGI("vulkan present #%{public}u image=%{public}u %{public}ux%{public}u",
                  static_cast<unsigned>(presentCount_), imageIndex, extent_.width,
@@ -558,7 +540,6 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
     return false;
   }
   ++presentCount_;
-  // Periodic heartbeat: proves continuous acquire/present on a real-device run.
   if (presentCount_ <= 3 || presentCount_ % 30 == 0) {
     HMRDP_LOGI("vulkan present #%{public}u image=%{public}u %{public}ux%{public}u",
                static_cast<unsigned>(presentCount_), imageIndex, extent_.width,
@@ -587,8 +568,6 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
   if (sampler_ == VK_NULL_HANDLE) {
     VkSamplerCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    // 1:1 when the sizes match and scaled otherwise; LINEAR matches the GLES
-    // presenter's texture filtering.
     info.magFilter = VK_FILTER_LINEAR;
     info.minFilter = VK_FILTER_LINEAR;
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -706,8 +685,6 @@ bool VkRenderer::EnsurePresentPipelineLocked() {
   inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
   inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-  // The letterbox rect depends on the frame's dimensions, so viewport/scissor are
-  // dynamic state (the role glViewport plays in the GLES presenter).
   VkPipelineViewportStateCreateInfo viewportState{};
   viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
   viewportState.viewportCount = 1;
@@ -1067,9 +1044,8 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
     DestroyDesktopImageLocked();
     return false;
   }
-  // Every frame slot's descriptor must point at the new view, and frames still
-  // referencing the old image must drain first (a rare resize path; the fences are
-  // created signaled, so waiting here is safe).
+  // Every slot's descriptor points at the new view and frames still referencing the old
+  // image must drain first (fences are created signaled, so waiting here is safe).
   api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     UpdatePresentDescriptorLocked(i, desktopImageView_);
@@ -1113,7 +1089,6 @@ void VkRenderer::SetSuperResolution(bool enabled, SuperResolutionBackend backend
   srOutputWidth_ = outputWidth > 0 ? outputWidth : 0;
   srOutputHeight_ = outputHeight > 0 ? outputHeight : 0;
   if (changed) {
-    // A new request starts clean, including a failure latched for a previous config.
     srFailed_ = false;
     DestroySuperResolutionLocked();
   }
@@ -1130,8 +1105,6 @@ bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight) {
   const int outputWidth = srOutputWidth_ > 0 ? srOutputWidth_ : inputWidth;
   const int outputHeight = srOutputHeight_ > 0 ? srOutputHeight_ : inputHeight;
   if (outputWidth <= inputWidth || outputHeight <= inputHeight) {
-    // Nothing to upscale (bad ratio or the desktop grew): letterbox the desktop as
-    // if 超分 were off.
     return false;
   }
   if (srBackend_ == SuperResolutionBackend::kFsr) {
@@ -1240,7 +1213,6 @@ bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int output
   outputExtent.width = static_cast<uint32_t>(outputWidth);
   outputExtent.height = static_cast<uint32_t>(outputHeight);
   if (!srUpscale_.Create(device, kPictureFormat, inputExtent, outputExtent, kSrSharpness)) {
-    // The device refused the configuration: present the plain desktop, don't retry.
     HMRDP_LOGW("vulkan presenter: super resolution unavailable, presenting the desktop as-is");
     srFailed_ = true;
     DestroySuperResolutionLocked();
@@ -1286,7 +1258,6 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidt
   (void)inputHeight;
   (void)outputWidth;
   (void)outputHeight;
-  // No vendored headers: latch like any other refusal, so the session letterboxes.
   srFailed_ = true;
   HMRDP_LOGW("vulkan presenter: this build has no FSR shaders"
              " (run native/scripts/fetch-sources.ps1)");
@@ -1335,8 +1306,6 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidt
     return fail("FSR: EASU image view failed");
   }
 
-  // One render pass serves both passes: both targets are kPictureFormat and fully
-  // overwritten, so nothing has to be loaded.
   {
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = kPictureFormat;
@@ -1686,8 +1655,6 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
   subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   subresource.levelCount = 1;
   subresource.layerCount = 1;
-  // Both paths hand the letterbox the same thing: `srImage_` in GENERAL, written by
-  // the upscale and read by the present draw.
   const auto targetToSampled = [&](VkImage image) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1730,8 +1697,6 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
       fsrEasuFramebuffer_ == VK_NULL_HANDLE || fsrRcasFramebuffer_ == VK_NULL_HANDLE) {
     return false;
   }
-  // Both passes cover their whole target: viewport is the output size, no letterbox
-  // scissor (that is the present quad's job).
   const VkExtent2D extent{static_cast<uint32_t>(srImageWidth_),
                           static_cast<uint32_t>(srImageHeight_)};
   VkViewport viewport{};
@@ -1750,7 +1715,6 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
     begin.framebuffer = framebuffer;
     begin.renderArea.offset = {0, 0};
     begin.renderArea.extent = extent;
-    // loadOp is DONT_CARE: the fullscreen triangle writes every pixel.
     api.CmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
     api.CmdSetViewport(cmd, 0, 1, &viewport);
     api.CmdSetScissor(cmd, 0, 1, &scissor);
@@ -1927,8 +1891,6 @@ bool VkRenderer::CreateDesktopBufferLocked(int width, int height) {
   desktopBufferFencePending_ = false;
   DestroyDesktopBufferLocked();
 
-  // gdi's stride is `width * 4`; the same packing keeps the caller's rect arithmetic
-  // (and the copy regions' row length) unchanged.
   const int stride = width * 4;
   const size_t bytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
 
@@ -2082,9 +2044,6 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     // 超分: build the upscale target before acquiring the swapchain image, so the
     // rare (re)creation can drain frames still reading the old one.
     const bool srActive = EnsureSuperResolutionLocked(desktopWidth, desktopHeight);
-    // Clip the caller's rects to the desktop (they can exceed it after a resize)
-    // and drop the empty ones. On a fresh image the whole desktop is uploaded
-    // instead, since anything less would leave the rest undefined.
     PresentRect upload[kMaxUploadRects];
     int uploadCount = 0;
     if (desktopImageFullUpload_) {
@@ -2119,9 +2078,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     if (timers) {
       CollectPresentTimerLocked(slot);
     }
-    // When gdi composed into our desktop buffer (AcquireDesktopBuffer), the rects
-    // are read in place at the desktop row pitch and no CPU copy happens
-    // (doc_agent/rdp-present.md §4). Otherwise they are staged first.
+    // When gdi composed into our desktop buffer the rects are read in place at the desktop
+    // row pitch (no CPU copy); otherwise they are staged first.
     const bool direct =
         data == static_cast<const uint8_t*>(desktopBufferMapped_) && srcStride == desktopBufferStride_ &&
         desktopBuffer_ != VK_NULL_HANDLE && desktopWidth == desktopBufferWidth_ &&
@@ -2162,9 +2120,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
         }
       }
     } else {
-      // This slot's fence was just waited and it has not been re-submitted, so its
-      // staging buffer is free. Uploads are packed back to back, each keeping its
-      // own row pitch.
+      // This slot's fence was just waited and it has not been re-submitted, so its staging
+      // buffer is free; uploads are packed back to back, each keeping its own row pitch.
       size_t stageBytes = 0;
       for (int i = 0; i < uploadCount; ++i) {
         stageBytes += static_cast<size_t>(upload[i].width) * 4u *
@@ -2286,14 +2243,10 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     }
 
     if (timers) {
-      // Splits upload from 超分辨率 upscale so the upscale's cost is attributable;
-      // the barrier between the two makes this reading meaningful.
       api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                             presentTimer_[slot], 2);
     }
 
-    // 超分 makes the letterbox source the upscaled image, laid out at output
-    // resolution (the letterbox still fits it to the window).
     UpdatePresentDescriptorLocked(frameIndex_, srActive ? srImageView_ : desktopImageView_);
     RecordPresentQuadLocked(cmd, srActive ? srImageWidth_ : desktopWidth,
                             srActive ? srImageHeight_ : desktopHeight, imageIndex);
@@ -2332,8 +2285,6 @@ void VkRenderer::Reset() {
   DestroyFrameResourcesLocked();
   vk_.DestroySurface(surface_);
   surface_ = VK_NULL_HANDLE;
-  // Drop this presenter's device too; the next Prepare recreates it from the shared
-  // instance when a surface is bound again.
   vk_.Destroy();
   pendingWindow_ = nullptr;
   surfaceDirty_ = true;
@@ -2649,8 +2600,6 @@ void VkRenderer::DestroySwapchainLocked() {
   const VkDevice device = context.device();
 
   if (swapchain_ != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
-    // Re-creation is rare, so a full idle wait is the simple correct answer to
-    // "nothing may still reference these objects".
     if (api.DeviceWaitIdle != nullptr) {
       api.DeviceWaitIdle(device);
     }

@@ -183,8 +183,6 @@ export function metricColor(value: number, warnMs: number, badMs: number): strin
   return METRIC_BAD;
 }
 
-// Developer-only telemetry line, shared by both protocol pages: the page builds
-// the protocol-specific fields, this renders them at a fixed height.
 @Component
 export struct TelemetryRow {
   @Prop fields: TelemetryField[] = [];

@@ -26,7 +26,6 @@ export type HostTargetListener =
 class HostTarget {
   currentGame: number = 0;
   httpsPort: number = DEFAULT_HTTPS_PORT;
-  // Unknown until a probe returns; Offline reports no running app (row offers wake).
   power: HostPower = HostPower.Unknown;
   // Only meaningful while Offline: whether this client is on the host's LAN.
   wake: WakeReachability = WakeReachability.Unknown;
@@ -76,7 +75,6 @@ export class MoonlightHostState {
     return target === undefined ? WakeReachability.Unknown : target.wake;
   }
 
-  // Only after the host really started / resumed the app (no optimistic write).
   static markLaunched(connectionId: string, appId: number): void {
     if (appId <= 0) {
       return;

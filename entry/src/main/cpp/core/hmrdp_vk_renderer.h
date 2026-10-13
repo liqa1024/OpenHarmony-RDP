@@ -94,16 +94,14 @@ class VkRenderer : public FramePresenter {
   VkDescriptorSetLayout presentSetLayout_ = VK_NULL_HANDLE;
   VkPipelineLayout presentPipelineLayout_ = VK_NULL_HANDLE;
   VkDescriptorPool presentPool_ = VK_NULL_HANDLE;
-  // One set per frame in flight: a set may not be rewritten while a frame that
-  // bound it is still in flight.
+  // One set per frame in flight: a set may not be rewritten while a frame that bound it is in flight.
   VkDescriptorSet presentSets_[kFramesInFlight] = {};
   VkPipeline presentPipeline_ = VK_NULL_HANDLE;
   VkFormat presentPipelineFormat_ = VK_FORMAT_UNDEFINED;
   std::vector<VkImage> images_;
   std::vector<VkImageView> views_;
   std::vector<VkFramebuffer> framebuffers_;
-  // One per swapchain image: a signal semaphore must not be reused until the
-  // image it presented has been re-acquired.
+  // One per swapchain image: a signal semaphore must not be reused until its image is re-acquired.
   std::vector<VkSemaphore> renderFinished_;
   VkRenderPass renderPass_ = VK_NULL_HANDLE;
 
@@ -132,8 +130,7 @@ class VkRenderer : public FramePresenter {
   int desktopImageWidth_ = 0;
   int desktopImageHeight_ = 0;
   bool desktopImageFullUpload_ = true;
-  // One staging buffer per frame in flight so an upload cannot race the previous
-  // frame's copy.
+  // One per frame in flight so an upload cannot race the previous frame's copy.
   VkBuffer stageBuffers_[kFramesInFlight] = {};
   VkDeviceMemory stageMemories_[kFramesInFlight] = {};
   void* stageMapped_[kFramesInFlight] = {};
@@ -191,6 +188,6 @@ class VkRenderer : public FramePresenter {
   bool fsrParamsCoherent_ = false;
 };
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_VK_RENDERER_H
+#endif

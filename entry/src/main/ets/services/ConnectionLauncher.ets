@@ -6,8 +6,6 @@ import { MoonlightConnector } from './MoonlightConnector';
 import { MoonlightLauncher } from './MoonlightLauncher';
 import { RdpLauncher } from './RdpLauncher';
 
-// The single place that dispatches a saved connection to its protocol launch path,
-// so pages and services never test the protocol themselves.
 export class ConnectionLauncher {
   static start(ui: UIContext, context: common.UIAbilityContext, conn: SavedConnection,
     origin: ConnectOrigin, appId: number = 0, onConnected?: () => void): void {

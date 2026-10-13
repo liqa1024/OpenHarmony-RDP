@@ -1,6 +1,5 @@
-// ArkUI has no shared declarative hover / press effect: each component keeps
-// its own @State and reads its numeric targets and transition effects from
-// here, so the feel does not drift between controls.
+// ArkUI has no shared declarative hover / press effect: each component keeps its
+// own @State and reads its numeric targets and transitions from here.
 
 export const MOTION_HOVER_SCALE: number = 1.06;
 export const MOTION_PRESS_SCALE: number = 0.9;

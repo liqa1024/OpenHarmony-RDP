@@ -1,6 +1,5 @@
-# 29) HmRdp: drop the upstream NSC NEON "TODO: Implement ..." warning
-#     (doc_agent/rdp-native.md §3). The stub only corresponds to the
-#     encode side and a client decodes only, so it stays an empty no-op.
+# 29) Drop the upstream NSC NEON "TODO: Implement ..." warning: the stub is encode-side only
+#     and the client decodes only, so it stays an empty no-op.
 $nscNeonC = "$Source\libfreerdp\codec\neon\nsc_neon.c"
 
 $nscNeonOld = @'
@@ -10,9 +9,7 @@ $nscNeonOld = @'
 	WLog_WARN(TAG, "TODO: Implement neon optimized version of this function");
 '@
 $nscNeonNew = @'
-	/* HmRdp: nothing to wire in here. The upstream NEON file only ever carried
-	 * the encode-side optimization (cf. codec/sse/nsc_sse2.c) and a client only
-	 * decodes, so the stub stays empty - without the upstream TODO warning. */
+	/* HmRdp: nothing to wire in here; the NEON stub is encode-side only and the client only decodes. */
 	WINPR_UNUSED(context);
 '@
 Patch-Block $nscNeonC $nscNeonOld $nscNeonNew 'HmRdp: nothing to wire in here'

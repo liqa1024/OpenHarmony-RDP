@@ -1,11 +1,6 @@
 /*
  * HmRdp - HarmonyOS OpenSL ES audio output backend for FreeRDP's rdpsnd.
- *
- * See rdpsnd_opensl_io.h for why the OH buffer queue is used instead of the
- * standard one. The player pulls data: the OH callback hands us a buffer to
- * fill, and android_AudioOut only appends PCM into a bounded ring buffer that
- * the callback drains. All access to the ring is serialized by a lock because
- * the two sides run on different threads.
+ * The OH player pulls data; android_AudioOut appends PCM into a locked ring the callback drains.
  */
 #include <winpr/assert.h>
 #include <winpr/crt.h>
@@ -13,8 +8,7 @@
 #include "rdpsnd_main.h"
 #include "opensl_io.h"
 
-// Keep at most ~1s of 48kHz stereo 16-bit audio; drop the oldest data if the
-// server outruns playback so latency never grows without bound.
+// Cap the ring at ~1s of 48kHz stereo; drop oldest when the server outruns playback.
 #define HMRDP_PCM_RING_CAPACITY (512 * 1024)
 
 static void bqPlayerCallback(SLOHBufferQueueItf bq, void* context, SLuint32 size);
@@ -94,8 +88,7 @@ static SLresult openSLPlayOpen(OPENSL_STREAM* p)
 	const SLDataLocator_OutputMix loc_outmix = { SL_DATALOCATOR_OUTPUTMIX, p->outputMixObject };
 	SLDataSink audioSnk = { (void*)&loc_outmix, NULL };
 
-	// OHOS only supports the OH buffer queue, PLAY and VOLUME interfaces. Do
-	// not request any interface at creation time; fetch them below instead.
+	// OHOS only supports the OH buffer queue, PLAY and VOLUME; fetch interfaces after creation.
 	result = (*p->engineEngine)
 	             ->CreateAudioPlayer(p->engineEngine, &(p->bqPlayerObject), &audioSrc, &audioSnk,
 	                                 0, NULL, NULL);
@@ -203,8 +196,7 @@ void android_CloseAudioDevice(OPENSL_STREAM* p)
 	free(p);
 }
 
-// Invoked on the audio thread when the player needs more data. Copy whatever
-// PCM is pending (padding with silence on underrun) into the OH buffer.
+// Audio-thread callback: copy pending PCM (silence on underrun) into the OH buffer.
 static void bqPlayerCallback(SLOHBufferQueueItf bq, void* context, SLuint32 size)
 {
 	OPENSL_STREAM* p = (OPENSL_STREAM*)context;

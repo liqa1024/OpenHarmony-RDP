@@ -69,7 +69,6 @@ export class MoonlightClipboardBridge implements ClipboardBridge {
   }
 
   localStageDir(): string {
-    // Files are unsupported; no sandbox staging directory is ever needed.
     return '';
   }
 
@@ -118,7 +117,6 @@ export class MoonlightClipboardBridge implements ClipboardBridge {
       return;
     }
     if (frame.token !== 0 && this.isRecentToken(frame.token)) {
-      // Our own frame echoed back (or a duplicate); ignore it.
       return;
     }
     this.busy = true;

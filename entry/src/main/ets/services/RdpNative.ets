@@ -25,12 +25,10 @@ export class RdpNative {
   private listener: RdpEventListener | undefined = undefined;
   private telemetry: RdpTelemetryAggregator = new RdpTelemetryAggregator();
 
-  // No-op unless the linked FreeRDP carries the rdpei interval patch.
   static applyTouchHighRate(enabled: boolean): void {
     setTouchHighRate(enabled);
   }
 
-  // Read at connect time, so it applies to sessions opened afterwards.
   static applyRdpCursor(enabled: boolean): void {
     setRdpCursor(enabled);
   }
@@ -61,8 +59,6 @@ export class RdpNative {
     stopAllReplays();
   }
 
-  // The buffer is process-global and manually owned, so release happens here
-  // even if the read fails.
   static readAndReleaseBuffer(handle: number): ArrayBuffer | undefined {
     if (handle <= 0) {
       return undefined;
@@ -241,8 +237,6 @@ export class RdpNative {
     return requestRemoteFileContents(this.handle, listIndex, sizeOnly, offset, length);
   }
 
-  // The channel does not tag data responses, so ArkTS serialises these: only
-  // one may be in flight.
   requestClipboardFormat(formatId: number, kind: number): boolean {
     if (this.handle < 0) {
       return false;

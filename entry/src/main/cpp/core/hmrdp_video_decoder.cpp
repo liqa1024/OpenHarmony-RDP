@@ -125,8 +125,7 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
     return false;
   }
   // Only width/height are required; they preallocate for the stream (the real
-  // picture size still comes from onStreamChanged). Frame rate is not a decoder
-  // Configure key.
+  // picture size still comes from onStreamChanged). Frame rate is not a Configure key.
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
   // Ask for the low-latency path when the platform has it (silently ignored

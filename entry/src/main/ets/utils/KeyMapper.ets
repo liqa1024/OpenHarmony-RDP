@@ -65,50 +65,50 @@ export class KeyMapper {
       return KeyMapping.of(NUMPAD_SCAN[n], VK_NUMPAD0 + n, false, 0);
     }
     switch (keyCode) {
-      case 2012: return KeyMapping.of(0x48, 0x26, true, 0); // up
-      case 2013: return KeyMapping.of(0x50, 0x28, true, 0); // down
-      case 2014: return KeyMapping.of(0x4B, 0x25, true, 0); // left
-      case 2015: return KeyMapping.of(0x4D, 0x27, true, 0); // right
-      case 2043: return KeyMapping.of(0x33, 0xBC, false, 0); // comma
-      case 2044: return KeyMapping.of(0x34, 0xBE, false, 0); // period
-      case 2045: return KeyMapping.of(0x38, 0xA4, false, 0); // alt left
-      case 2046: return KeyMapping.of(0x38, 0xA5, true, 0); // alt right
-      case 2047: return KeyMapping.of(0x2A, 0xA0, false, 0); // shift left
-      case 2048: return KeyMapping.of(0x36, 0xA1, false, 0); // shift right
-      case 2049: return KeyMapping.of(0x0F, 0x09, false, 0); // tab
-      case 2050: return KeyMapping.of(0x39, 0x20, false, 0); // space
-      case 2054: return KeyMapping.of(0x1C, 0x0D, false, 0); // enter
-      case 2055: return KeyMapping.of(0x0E, 0x08, false, 0); // backspace
-      case 2056: return KeyMapping.of(0x29, 0xC0, false, 0); // grave
-      case 2057: return KeyMapping.of(0x0C, 0xBD, false, 0); // minus
-      case 2058: return KeyMapping.of(0x0D, 0xBB, false, 0); // equals
-      case 2059: return KeyMapping.of(0x1A, 0xDB, false, 0); // left bracket
-      case 2060: return KeyMapping.of(0x1B, 0xDD, false, 0); // right bracket
-      case 2061: return KeyMapping.of(0x2B, 0xDC, false, 0); // backslash
-      case 2062: return KeyMapping.of(0x27, 0xBA, false, 0); // semicolon
-      case 2063: return KeyMapping.of(0x28, 0xDE, false, 0); // apostrophe
-      case 2064: return KeyMapping.of(0x35, 0xBF, false, 0); // slash
-      case 2067: return KeyMapping.of(0x5D, 0x5D, true, 0); // menu
-      case 2068: return KeyMapping.of(0x49, 0x21, true, 0); // page up
-      case 2069: return KeyMapping.of(0x51, 0x22, true, 0); // page down
-      case 2070: return KeyMapping.of(0x01, 0x1B, false, 0); // escape
-      case 2071: return KeyMapping.of(0x53, 0x2E, true, 0); // forward delete
-      case 2072: return KeyMapping.of(0x1D, 0xA2, false, 0); // ctrl left
-      case 2073: return KeyMapping.of(0x1D, 0xA3, true, 0); // ctrl right
-      case 2074: return KeyMapping.of(0x3A, 0x14, false, RdpLockFlags.CAPS); // caps lock
-      case 2075: return KeyMapping.of(0x46, 0x91, false, RdpLockFlags.SCROLL); // scroll lock
-      case 2076: return KeyMapping.of(0x5B, 0x5B, true, 0); // meta left
-      case 2077: return KeyMapping.of(0x5C, 0x5C, true, 0); // meta right
-      case 2081: return KeyMapping.of(0x47, 0x24, true, 0); // home
-      case 2082: return KeyMapping.of(0x4F, 0x23, true, 0); // end
-      case 2083: return KeyMapping.of(0x52, 0x2D, true, 0); // insert
-      case 2102: return KeyMapping.of(0x45, 0x90, false, RdpLockFlags.NUM); // num lock
-      case 2113: return KeyMapping.of(0x35, 0x6F, true, 0); // numpad divide
-      case 2114: return KeyMapping.of(0x37, 0x6A, false, 0); // numpad multiply
-      case 2115: return KeyMapping.of(0x4A, 0x6D, false, 0); // numpad subtract
-      case 2116: return KeyMapping.of(0x4E, 0x6B, false, 0); // numpad add
-      case 2117: return KeyMapping.of(0x53, 0x6E, false, 0); // numpad dot
-      case 2119: return KeyMapping.of(0x1C, 0x0D, true, 0); // numpad enter
+      case 2012: return KeyMapping.of(0x48, 0x26, true, 0);
+      case 2013: return KeyMapping.of(0x50, 0x28, true, 0);
+      case 2014: return KeyMapping.of(0x4B, 0x25, true, 0);
+      case 2015: return KeyMapping.of(0x4D, 0x27, true, 0);
+      case 2043: return KeyMapping.of(0x33, 0xBC, false, 0);
+      case 2044: return KeyMapping.of(0x34, 0xBE, false, 0);
+      case 2045: return KeyMapping.of(0x38, 0xA4, false, 0);
+      case 2046: return KeyMapping.of(0x38, 0xA5, true, 0);
+      case 2047: return KeyMapping.of(0x2A, 0xA0, false, 0);
+      case 2048: return KeyMapping.of(0x36, 0xA1, false, 0);
+      case 2049: return KeyMapping.of(0x0F, 0x09, false, 0);
+      case 2050: return KeyMapping.of(0x39, 0x20, false, 0);
+      case 2054: return KeyMapping.of(0x1C, 0x0D, false, 0);
+      case 2055: return KeyMapping.of(0x0E, 0x08, false, 0);
+      case 2056: return KeyMapping.of(0x29, 0xC0, false, 0);
+      case 2057: return KeyMapping.of(0x0C, 0xBD, false, 0);
+      case 2058: return KeyMapping.of(0x0D, 0xBB, false, 0);
+      case 2059: return KeyMapping.of(0x1A, 0xDB, false, 0);
+      case 2060: return KeyMapping.of(0x1B, 0xDD, false, 0);
+      case 2061: return KeyMapping.of(0x2B, 0xDC, false, 0);
+      case 2062: return KeyMapping.of(0x27, 0xBA, false, 0);
+      case 2063: return KeyMapping.of(0x28, 0xDE, false, 0);
+      case 2064: return KeyMapping.of(0x35, 0xBF, false, 0);
+      case 2067: return KeyMapping.of(0x5D, 0x5D, true, 0);
+      case 2068: return KeyMapping.of(0x49, 0x21, true, 0);
+      case 2069: return KeyMapping.of(0x51, 0x22, true, 0);
+      case 2070: return KeyMapping.of(0x01, 0x1B, false, 0);
+      case 2071: return KeyMapping.of(0x53, 0x2E, true, 0);
+      case 2072: return KeyMapping.of(0x1D, 0xA2, false, 0);
+      case 2073: return KeyMapping.of(0x1D, 0xA3, true, 0);
+      case 2074: return KeyMapping.of(0x3A, 0x14, false, RdpLockFlags.CAPS);
+      case 2075: return KeyMapping.of(0x46, 0x91, false, RdpLockFlags.SCROLL);
+      case 2076: return KeyMapping.of(0x5B, 0x5B, true, 0);
+      case 2077: return KeyMapping.of(0x5C, 0x5C, true, 0);
+      case 2081: return KeyMapping.of(0x47, 0x24, true, 0);
+      case 2082: return KeyMapping.of(0x4F, 0x23, true, 0);
+      case 2083: return KeyMapping.of(0x52, 0x2D, true, 0);
+      case 2102: return KeyMapping.of(0x45, 0x90, false, RdpLockFlags.NUM);
+      case 2113: return KeyMapping.of(0x35, 0x6F, true, 0);
+      case 2114: return KeyMapping.of(0x37, 0x6A, false, 0);
+      case 2115: return KeyMapping.of(0x4A, 0x6D, false, 0);
+      case 2116: return KeyMapping.of(0x4E, 0x6B, false, 0);
+      case 2117: return KeyMapping.of(0x53, 0x6E, false, 0);
+      case 2119: return KeyMapping.of(0x1C, 0x0D, true, 0);
       // Numpad equals (scancode 0x59) has no standard Windows VK.
       case 2120: return KeyMapping.of(0x59, 0, false, 0);
       default: return undefined;

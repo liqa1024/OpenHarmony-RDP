@@ -1,29 +1,8 @@
-# 19) HmRdp: one fewer 8 KB pass per decoded tile/component.
-#
-#     (A NEON version of the DIFFERENCE saturating add is not worth it: that loop
-#     is bound by the bytes it moves (working buffer + persistent `current`), not
-#     by the per-element clamp, so it would only add a divergence from upstream.)
-#
-#     `sign` is the persistent "raw" coefficient state and `current` the
-#     dequantised one; both are written on every decode. The upstream flow is
-#
-#       RLGR -> buffer (raw) ; copy buffer -> sign ; dequant buffer in place
-#
-#     i.e. the raw coefficients are written twice and read once more than needed.
-#     Letting RLGR decode straight into `sign` and making the dequantising pass
-#     read `sign` and write `buffer` removes that whole copy: the same values end
-#     up in the same two buffers (the pass reads the same bytes from the other
-#     buffer), so this is a bit-exact change and the
-#     golden reference stays valid (doc_agent/rdp-gfx.md §7.2).
-#
-#     LL3 keeps its in-place shape: the differential decode has to see the
-#     un-shifted values, so those 64/81 samples are copied over first.
+# 19) One fewer 8KB pass per decoded tile/component: RLGR decodes straight into `sign` and the
+#     dequantise pass reads `sign`/writes `buffer`, removing the copy (bit-exact; LL3 stays in place).
 $progStateC = "$Source\libfreerdp\codec\progressive.c"
 $progStateNew = @'
-/* HmRdp: shift one subband from a separate source into the working buffer. The
- * in-place primitive leaves the values untouched for shift 0 and for shift >= 16
- * (reporting the latter as an error), so those two cases are a copy here - the
- * caller ignores the return value and relies on the "unchanged" behaviour. */
+/* HmRdp: shift one subband from src into dst; the in-place primitive no-ops for shift 0 or >=16, so those copy. */
 static INLINE void progressive_rfx_decode_block_copy(const primitives_t* prims,
                                                      const INT16* WINPR_RESTRICT src,
                                                      INT16* WINPR_RESTRICT dst, UINT32 length,
@@ -38,8 +17,7 @@ static INLINE void progressive_rfx_decode_block_copy(const primitives_t* prims,
 	prims->lShiftC_16s(src, shift, dst, length);
 }
 
-/* The in-place variant stays: the LL3 subband is dequantised after its
- * differential decode, which needs the un-shifted values in `buffer`. */
+/* HmRdp: in-place variant stays: LL3 is dequantised after its differential decode. */
 static INLINE void progressive_rfx_decode_block(const primitives_t* prims,
                                                 INT16* WINPR_RESTRICT buffer, UINT32 length,
                                                 UINT32 shift)
@@ -59,10 +37,7 @@ static INLINE int progressive_rfx_decode_component(
 	int status = 0;
 	const primitives_t* prims = primitives_get();
 
-	/* HmRdp: the raw coefficients go straight into `sign` - the buffer that keeps
-	 * them anyway - so the pass below can dequantise sign -> buffer and the copy
-	 * that used to move them over is gone (see the patch note in
-	 * native/scripts/patch-freerdp.ps1 step 19). */
+	/* HmRdp: raw coefficients go straight into `sign`, so the pass below dequantises sign -> buffer (copy gone). */
 	status = progressive->rfx_context->rlgr_decode(RLGR1, data, length, sign, 4096);
 
 	if (status < 0)

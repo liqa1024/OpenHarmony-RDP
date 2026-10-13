@@ -15,7 +15,6 @@ import { WindowController } from './WindowController';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSessionShell';
 
-// The surface callbacks both session pages used to duplicate.
 export class SessionSurfaceController extends XComponentController {
   private createdCb: (surfaceId: string, width: number, height: number) => void =
     (surfaceId: string, width: number, height: number) => {};
@@ -45,9 +44,6 @@ export class SessionSurfaceController extends XComponentController {
   }
 }
 
-// Protocol-neutral session shell: owns the window lifecycle, cursor installer,
-// toolbar auto-hide, input pipeline, overlay timing, shortcut interceptor and the
-// surface plumbing. Protocol specifics come in through SessionShellHooks.
 export class SessionShellController {
   private sessionKey: string;
   private host: SessionShellHost;
@@ -381,7 +377,6 @@ export class SessionShellController {
       return;
     }
     const abilityContext: common.UIAbilityContext = context as common.UIAbilityContext;
-    // Single-window mode: the controller relaunches the main window first, then terminates this one.
     if (WindowController.closeSession(abilityContext)) {
       return;
     }

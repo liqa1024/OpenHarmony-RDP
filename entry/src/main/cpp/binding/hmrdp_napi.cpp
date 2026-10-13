@@ -190,9 +190,8 @@ void OnSessionEvent(int64_t handle, SessionEvent event, const Session::EventData
   }
 }
 
-// 快捷键穿透: HarmonyOS allows one process-global key interceptor, delivered only
-// while this app is focused. Ownership follows the focused session; the token-keyed
-// registry keeps this generic, so the interceptor never branches on protocol.
+// 快捷键穿透: one process-global key interceptor, delivered only while this app is
+// focused. Ownership follows the focused session; the token-keyed registry keeps it generic.
 using InterceptSink = std::function<void(int32_t keyCode, bool down)>;
 std::mutex g_interceptMutex;
 std::unordered_map<int64_t, InterceptSink> g_interceptSinks;
@@ -389,10 +388,8 @@ napi_value CreateUndefined(napi_env env) {
   return result;
 }
 
-// The window buffer is CPU-accessible by default, but the CPU read path costs
-// energy (HarmonyOS FAQ "如何主动关闭CPU访问窗口缓冲区数据降低功耗"). This client never
-// reads it from the CPU, so the read bits are dropped; CPU_WRITE stays for the
-// GLES fallback, which writes through OH_NativeWindow.
+// The window buffer is CPU-accessible by default, but CPU reads cost energy, and this
+// client never reads it, so the read bits are dropped; CPU_WRITE stays for the GLES fallback.
 void PreferGpuWindowBuffer(OHNativeWindow* window) {
   if (window == nullptr) {
     return;
@@ -726,10 +723,8 @@ napi_value SendLockState(napi_env env, napi_callback_info info) {
   return CreateBool(env, session->SendLockState(static_cast<uint32_t>(flags)));
 }
 
-// 快捷键穿透: route intercepted keys to `handle` (0/enabled=false releases the
-// interceptor). Returns whether the requested state is in effect; a registration
-// failure (e.g. the ACL permission is missing) returns false, and the caller then
-// keeps the ordinary key path instead of dropping the keyboard.
+// 快捷键穿透: route intercepted keys to `handle` (0/enabled=false releases). Returns
+// whether the state is in effect; a registration failure (e.g. missing ACL) returns false.
 napi_value SetShortcutPassthrough(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -1585,7 +1580,6 @@ napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info) {
   return CreateUndefined(env);
 }
 
-// Send an opaque clipboard frame to the host.
 napi_value MoonlightSendClipboard(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};

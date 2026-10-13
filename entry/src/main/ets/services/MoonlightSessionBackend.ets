@@ -34,7 +34,6 @@ export const ML_EVENT_KEY_INTERCEPT_UP: number = 7;
 // Foundation-sunshine clipboard sync frame (opaque v1 wire bytes).
 export const ML_EVENT_CLIPBOARD: number = 8;
 
-// LiGetHostFeatureFlags bits we consume.
 export const ML_HOST_FEATURE_TOUCH: number = 0x01;
 export const ML_HOST_FEATURE_TOUCHPAD_FRAME: number = 0x20;
 // foundation-sunshine clipboard capabilities (advertised only with its GUI agent alive).
@@ -45,7 +44,6 @@ export type MlKeyInterceptListener = (keyCode: number, down: boolean) => void;
 
 export type MlCursorListener = (update: RemoteCursorUpdate) => void;
 
-// Opaque clipboard wire frame; the bridge parses it.
 export type MlClipboardListener = (bytes: ArrayBuffer) => void;
 
 export class MoonlightSessionBackend implements SessionBackend {
@@ -232,7 +230,6 @@ export class MoonlightSessionBackend implements SessionBackend {
     // HIDE_HOST is a no-op unless the host is a foundation-sunshine build.
     const settings = SettingsStore.load();
     config.localCursorMode = settings.mlCursorMode === ML_CURSOR_HIDE_HOST;
-    // The page reads the same setting to decide whether to start its renderer.
     config.lowLatencyAudio = settings.mlLowLatencyAudio;
     const error: string = moonlightSessionStart(config);
     if (error.length > 0) {
@@ -339,7 +336,6 @@ export class MoonlightInputSink implements InputSink {
   }
 
   key(mapping: KeyMapping, down: boolean): void {
-    // 0 means this key has no Windows VK on the Moonlight side.
     if (mapping.vk <= 0) {
       return;
     }

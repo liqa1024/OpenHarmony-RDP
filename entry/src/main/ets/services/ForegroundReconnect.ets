@@ -9,7 +9,6 @@ const TAG: string = 'HmRdpForegroundReconnect';
 // reconnect check waits a grace period after the window is back.
 const GRACE_MS: number = 400;
 
-// Function-typed members so each session page can supply a typed object literal.
 export interface ForegroundReconnectHost {
   context: () => common.Context | undefined;
   state: () => ConnectionState;
@@ -35,9 +34,6 @@ class ForegroundStateCallback extends ApplicationStateChangeCallback {
   }
 }
 
-// Shared 回到前台自动重连: not keep-alive, only covers "already dropped while we
-// were away" once. Only takes over Idle/Failed so a mid-session drop still needs
-// the manual 重试. See doc_agent/session-layer.md §5.
 export class ForegroundReconnect {
   private host: ForegroundReconnectHost;
   private enabled: boolean;

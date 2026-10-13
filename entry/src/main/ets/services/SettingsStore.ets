@@ -18,36 +18,26 @@ const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
-// 顶部触发带占屏宽的百分比：居中一条，两端不触发（贴边/角落易误触）。
 export const DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT: number = 50;
 
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
 export const PINCH_MODE_ZOOM: number = 2;
-// Moonlight only: forward to the host's native precision touchpad (foundation-sunshine).
 export const PINCH_MODE_NATIVE: number = 3;
 
-// Moonlight 主机通常把指针合成进视频，本地系统光标会重影；HIDE_HOST 的本机光标
-// 模式需要 foundation-sunshine，否则回退 OFF。
 export const ML_CURSOR_OFF: number = 0;
 export const ML_CURSOR_HIDE_SYSTEM: number = 1;
 export const ML_CURSOR_HIDE_HOST: number = 2;
-// 共享默认值（占桌面短边百分比），让设置占位与会话侧兜底不会与存储默认脱节。
 export const DEFAULT_PINCH_TOUCH_DISTANCE: number = 8;
 const MAIN_WINDOW_RATIO: number = 0.45;
 const SESSION_WINDOW_RATIO: number = 0.67;
 const FALLBACK_WIDTH: number = 1920;
 const FALLBACK_HEIGHT: number = 1080;
 
-// Windows only applies a fixed set of DPI scaling presets; other values can
-// cause rendering problems, so the scale is always snapped to one of these.
 export const SCALE_PRESETS: number[] = [100, 125, 150, 175, 200, 225];
 
-// 自动缩放中映射到 100% 的桌面最长边；1600 让常见桌面落在中间档位而非两端。
 export const AUTO_SCALE_BASE: number = 1600;
 
-// 超分倍率档位（百分比）。平台对 GPU 空域超分*推荐*不超过 1.5×；更大倍率省带宽
-// 但文字边缘开始振铃（UI 已标注），API 本身无硬上限。
 export const SR_RATIO_PRESETS: number[] = [125, 150, 175, 200];
 
 export function srRatioLabel(preset: number): string {
@@ -66,23 +56,14 @@ export class AppSettings {
   toolbarTriggerWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
-  // 触控板双指双击发送鼠标中键（单次双指轻触仍是右键）。双击窗口从第一次轻触的按下起算，
-  // 所以单次右键的判定延迟约 300ms；按下后按住不放则判为实体右键（拖动），立即按下、不受此延迟。
   touchpadMiddleDoubleTap: boolean = false;
   pinchMode: number = PINCH_MODE_WHEEL;
-  // 合成触点对的倾角（度）：ArkUI 报不出真实手指角度，用此值代替手的朝向。
   pinchTouchAngle: number = 30;
   pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
-  // 以 8ms 高刷新率转发 RDPEI 触摸，替代 FreeRDP 默认 ~20ms（50Hz）的合并。
   touchHighRate: boolean = false;
   useRdpCursor: boolean = true;
-  // 回到前台发现会话已掉线时自动重连：系统可能在后台冻结并掐断 socket，会话看似
-  // 在线实则已死；这是回前台的兜底，不是保活。
   reconnectOnForeground: boolean = false;
-  // 映射为远端 Win/Meta 的 KeyCode（0 = 禁用）：shell 占着真 Win 键，用替身让 Win 组合键可用。
   winKeySubstitute: number = 0;
-  // 快捷键穿透：会话窗口聚焦时接管键盘让 Win / Alt+Tab / Esc 直达远端
-  // （ACL INTERCEPT_INPUT_EVENT）；会同时压制本机系统快捷键，故默认关。
   shortcutPassthrough: boolean = false;
   mainWindowSizeEnabled: boolean = false;
   mainWindowWidth: number = 0;
@@ -99,12 +80,9 @@ export class AppSettings {
   manualScalePercent: number = 100;
   enableAudio: boolean = true;
   ignoreCertificate: boolean = true;
-  // 超分：会话按输出÷倍率出画、Vulkan 呈现器上采样回来；会改变请求给服务器的
-  // 分辨率，故默认关（opt-in）。
   srEnabled: boolean = false;
   srRatioPercent: number = SR_RATIO_PRESETS[0];
   srBackend: number = SR_BACKEND_XENGINE;
-  // 关 = 只用 GLES 呈现器、完全不碰 Vulkan（见 doc_agent/settings-and-storage.md §2）。
   hardwareAccel: boolean = true;
   developerMode: boolean = false;
   gfxCapture: boolean = false;
@@ -117,13 +95,8 @@ export class AppSettings {
   mlWidth: number = 0;
   mlHeight: number = 0;
   lastNewProtocol: number = PROTOCOL_RDP;
-  // Settings page tab the user last stayed on (TAB_COMMON / PROTOCOL_RDP /
-  // PROTOCOL_MOONLIGHT); -1 = never recorded, so the page opens on 通用.
   lastSettingsTab: number = -1;
-  // 首次点「唤醒主机」时的 WoL 设置引导只弹一次。
   wolHelpShown: boolean = false;
-  // Moonlight 自有一份交互设置（触控板/捏合/键盘/前台重连）：两协议各存各的值，
-  // 只共享设置 UI 代码；窗口尺寸、工具栏延迟与开发者选项是应用级单一值。
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   mlPinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   mlTouchpadMiddleDoubleTap: boolean = false;
@@ -131,7 +104,6 @@ export class AppSettings {
   mlPinchTouchAngle: number = 30;
   mlPinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
   mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
-  // Moonlight: native OHAudio low-latency playback vs the shared ArkTS renderer.
   mlLowLatencyAudio: boolean = true;
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
@@ -152,7 +124,6 @@ export class SettingsStore {
     }
   }
 
-  // 屏幕取不到时禁用窗口尺寸调整，而不是回退到一个编造的分辨率。
   static defaults(): AppSettings {
     const settings: AppSettings = new AppSettings();
     settings.toolbarHoverDelay = DEFAULT_TOOLBAR_HOVER_DELAY;
@@ -187,7 +158,6 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.pinchZoomSpeed =
         SettingsStore.readNumber(store, 'pinchZoomSpeed', settings.pinchZoomSpeed);
-      // 旧的两档 pinchAsTouch 布尔映射到三档模式，避免丢掉存量设置。
       const legacyPinchTouch: boolean = SettingsStore.readBoolean(store, 'pinchAsTouch', false);
       settings.touchpadMiddleDoubleTap = SettingsStore.readBoolean(store,
         'touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
@@ -369,7 +339,6 @@ export class SettingsStore {
     return profile;
   }
 
-  // 只看远端分辨率（本机屏幕与密度不参与），同一分辨率在任何机器上缩放一致。
   static scalePresetForResolution(width: number, height: number): number {
     const longest: number = Math.max(width, height);
     return SettingsStore.nearestScalePreset(Math.round(longest * 100 / AUTO_SCALE_BASE));
@@ -401,7 +370,6 @@ export class SettingsStore {
     return best;
   }
 
-  // 取偶数像素：奇数桌面尺寸在部分服务器上渲染异常。
   static srSessionSize(output: number, ratioPercent: number): number {
     if (output <= 0 || ratioPercent <= 100) {
       return output;
@@ -411,8 +379,6 @@ export class SettingsStore {
     return even > 0 ? even : 2;
   }
 
-  // 超分时会话按输出÷倍率渲染再上采样回来，缩放因子同步除以倍率，保持远端 UI
-  // 物理大小不变（且不低于第一个 Windows 档位）。
   static autoScalePercent(outputWidth: number, outputHeight: number,
     srEnabled: boolean, ratioPercent: number): number {
     if (outputWidth <= 0 || outputHeight <= 0) {
@@ -434,7 +400,6 @@ export class SettingsStore {
     return SettingsStore.gateSr(profile);
   }
 
-  // 设备做不了时强制关（或换到另一后端）：绝不协商出一个无法上采样回去的更低会话分辨率。
   static resolveSr(conn: RdpConnection): SrProfile {
     const settings: AppSettings = SettingsStore.load();
     const profile: SrProfile = new SrProfile();
@@ -452,8 +417,6 @@ export class SettingsStore {
 
   private static gateSr(profile: SrProfile): SrProfile {
     if (profile.enabled && !SettingsStore.srBackendUsable(profile.backend)) {
-      // 所选后端在此不可用（换了设备、硬件加速关闭或构建不含）：优先换另一后端，
-      // 都不行就关超分，而不是协商一个无法上采样回去的低会话分辨率。
       const other: number = profile.backend === SR_BACKEND_XENGINE ? SR_BACKEND_FSR
                                                                    : SR_BACKEND_XENGINE;
       if (SettingsStore.srBackendUsable(other)) {
@@ -468,18 +431,14 @@ export class SettingsStore {
     return profile;
   }
 
-  // 原生能力探测回报的 backend token。
   private static srBackendToken(backend: number): string {
     return backend === SR_BACKEND_FSR ? 'fsr' : 'xengine';
   }
 
-  // 超分依附 Vulkan 呈现器，故需硬件加速可用；FSR 别无要求，XEngine 还需设备的
-  // XEG_spatial_upscale 特性。
   static srBackendUsable(backend: number): boolean {
     return SettingsStore.srBackendUsableFor(SettingsStore.load(), backend);
   }
 
-  // 配置导入在保存前校验文件，拿不到已存值，故要显式传入 settings。
   static srBackendUsableFor(settings: AppSettings, backend: number): boolean {
     if (!settings.hardwareAccel || !DeviceCapabilities.hardwareAccel().supported) {
       return false;
@@ -497,7 +456,6 @@ export class SettingsStore {
     return SettingsStore.profileFor(settings, SettingsStore.globalSrProfile());
   }
 
-  // 覆盖模式下分辨率与缩放各有「自动」；旧记录没有这两个标志位，停留在其存储值上。
   static resolveDisplay(conn: RdpConnection): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
     const sr: SrProfile = SettingsStore.resolveSr(conn);
@@ -523,7 +481,6 @@ export class SettingsStore {
       width = hasOwnSize ? conn.width : global.width;
       height = hasOwnSize ? conn.height : global.height;
     }
-    // 自动缩放按*本连接*的分辨率推导（与全局的可能不同）。
     const autoScale: number = SettingsStore.autoScalePercent(width, height,
       sr.enabled && sr.ratioPercent > 100, sr.ratioPercent);
     const scale: number = conn.scaleAuto || conn.scalePercent <= 0 ? autoScale : conn.scalePercent;

@@ -1,5 +1,3 @@
-// 触控板「双指轻触＝右键」与「按压/按住右键」在 ArkUI 事件里不可区分（见 doc_agent/session-layer.md §8），
-// 中键靠延迟右键一个双击窗口合成；按下→抬起时长把轻触与实体右键（拖动）分开。
 export interface TouchpadTapTarget {
   rightDown(x: number, y: number): void;
   rightUp(x: number, y: number): void;

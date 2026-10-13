@@ -15,8 +15,7 @@ namespace hmrdp {
 namespace {
 
 // Process-global: moonlight-common-c runs one connection at a time and its audio
-// callbacks carry no per-call user data, the same reason the video renderer is a
-// singleton. The ring is owned here; ArkTS only pulls from it.
+// callbacks carry no per-call user data. The ring is owned here; ArkTS only pulls from it.
 class MoonlightAudioRenderer {
  public:
   static MoonlightAudioRenderer& Instance() {

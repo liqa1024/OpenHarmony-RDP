@@ -1,48 +1,22 @@
-# 22b) HmRdp: the tile work set comes from the clip rects, and the per-tile
-#      composite is one helper both paths share.
-#
-#      背景（doc_agent/rdp-gfx.md §7.3）：update_tiles 走整帧累积的
-#      updatedTileIndices（一条消息一次解码 ⇒ 同一 tile 一帧内出现多次，整条列表
-#      每条消息都要重走），并且内联做 region16 求交 + 像素拷贝。这一步把工作集改成
-#      "裁剪矩形覆盖到的 tile 范围 ∩ 本帧解码过的 tile"（hmrdpFrameId），把逐 tile
-#      的裁剪求交 + 拷贝 + 脏区 span 记账收进 hmrdp_composite_tile，供 update_tiles
-#      与 tile 解码侧的直写共用（step 23 的 hmrdp_tile_copy_now 与它同一套几何）。
-#
-#      结果不变：同一批 tile、同样的裁剪、同样的像素与脏区，只是遍历范围与调用
-#      组织不同。整块按"一次性整体打补丁"设计：改动它要从干净源码重打。
+# 22b) Tile work set comes from the clip rects ∩ tiles decoded this frame (hmrdpFrameId), with the
+#      per-tile composite folded into a shared helper; same tiles/pixels as before.
 $progWorkH = "$Source\libfreerdp\codec\progressive.h"
 $progWorkC = "$Source\libfreerdp\codec\progressive.c"
 
-# (a) the tile remembers the frame it was last decoded in.
 $progWorkTileAnchor = "`tUINT32 updateStamp;`n`tUINT16 yLen;"
 $progWorkTileNew = "`tUINT32 updateStamp;`n" +
-"`t/* HmRdp: the frame this tile was last decoded in. update_tiles' work set is`n" +
-"`t * ""the tiles decoded in the current frame, clipped to this message's rects"";`n" +
-"`t * the upstream per-frame list is one entry per decode and gets re-walked in`n" +
-"`t * full for every message of the frame, which costs far more than the copies`n" +
-"`t * (upstream re-walks the whole list per message). A clip`n" +
-"`t * rect names the tile range it can reach, and this id tells the tiles in that`n" +
-"`t * range that have pixels for the frame. */`n" +
+"`t/* HmRdp: the frame this tile was last decoded in. update_tiles finds work from the clip rect ranges instead of the per-frame list. */`n" +
 "`tUINT32 hmrdpFrameId;`n`tUINT16 yLen;"
 Patch-Block $progWorkH $progWorkTileAnchor $progWorkTileNew 'hmrdpFrameId'
 
-# (b) remember it when the tile joins the frame's update list.
 $progWorkAddAnchor = "`t`tsurface->updatedTileIndices[surface->numUpdatedTiles++] = (UINT32)zIdx;`n`t}"
 $progWorkAddNew = "`t`tsurface->updatedTileIndices[surface->numUpdatedTiles++] = (UINT32)zIdx;`n" +
-"`t`t/* HmRdp: remember the frame, so update_tiles can find this tile from the`n" +
-"`t`t * clip rects instead of walking the list. */`n" +
+"`t`t/* HmRdp: remember the frame so update_tiles can find this tile from the clip rects. */`n" +
 "`t`tt->hmrdpFrameId = surface->frameId;`n`t}"
 Patch-Block $progWorkC $progWorkAddAnchor $progWorkAddNew 't->hmrdpFrameId = surface->frameId;'
 
-# (c) insert the shared composite helper and rewrite update_tiles to walk the
-#     clipping rects' tile ranges instead of the whole per-frame list.
 $progWorkHelper = @'
-/*
- * HmRdp: composite one tile against one clipping rect (both in destination
- * coordinates). Returns -1 for the geometry guards the original treats as a hard
- * failure, 1 when the copy itself failed (the original breaks that tile's clip
- * loop and continues with the next tile), 0 otherwise.
- */
+/* HmRdp: composite one tile against one clip rect (destination coords); returns -1 hard failure, 1 copy failed, 0 ok. */
 static INLINE int hmrdp_composite_tile(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
                                        PROGRESSIVE_SURFACE_CONTEXT* WINPR_RESTRICT surface,
                                        RFX_PROGRESSIVE_TILE* WINPR_RESTRICT tile,
@@ -63,8 +37,7 @@ static INLINE int hmrdp_composite_tile(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progr
 	updateRect.right = (UINT16)(updateRect.left + 64);
 	updateRect.bottom = (UINT16)(updateRect.top + 64);
 
-	/* region16_rects() returns the region's bands ordered by top, so everything
-	 * past the tile cannot intersect it. */
+	/* Bands are top-ordered, so anything past the tile cannot intersect. */
 	if (clip->top >= updateRect.bottom)
 		return 0;
 	if (clip->bottom <= updateRect.top)
@@ -89,11 +62,7 @@ static INLINE int hmrdp_composite_tile(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progr
 	                                   nYSrc, NULL, FREERDP_KEEP_DST_ALPHA))
 		return 1;
 
-	/* HmRdp: O(1) damage bookkeeping instead of a region16 union (which is
-	 * O(region), once per tile, against a region that grows all frame). The span
-	 * covers whole tiles, i.e. a superset of what was copied - the extra pixels
-	 * are the surface's own content, and the consumer clips the result to the
-	 * surface. */
+	/* HmRdp: O(1) damage bookkeeping instead of a region16 union (O(region) per tile); the span covers whole tiles. */
 	if (invalidRegion && (surface->hmrdpDirtyRows > 0) && (nXDst == 0) && (nYDst == 0))
 	{
 		const UINT32 row = tile->yIdx;
@@ -134,32 +103,12 @@ static INLINE BOOL update_tiles(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
 		region16_union_rect(&clippingRects, &clippingRects, &clippingRect);
 	}
 
-	/*
-	 * HmRdp: the per-tile clipping used to go through region16
-	 * (region16_init/intersect_rect/rects/uninit), i.e. two allocations and a
-	 * free per visited tile, on the order of a thousand times per full-screen
-	 * frame. The result is the same set of pixels - clippingRects is a canonical
-	 * region, so its rect list is already non-overlapping - and reading that list
-	 * once and intersecting with plain arithmetic (with the same ordered early
-	 * exit region16_intersect_rect() takes) removes the allocator from the hot
-	 * path without changing which pixels are written.
-	 *
-	 * The stamp keeps each tile visited at most once per pass: the per-frame
-	 * list gets one entry per *decode*, so a tile refined by a later message of
-	 * the same frame appears several times, and every occurrence used to copy the
-	 * same (already final) tile data to the same place.
-	 */
+	/* HmRdp: clip via the region's already-non-overlapping rect list instead of a per-tile region16. */
 	const UINT32 stamp = ++surface->updateStamp;
 	UINT32 nbClipping = 0;
 	const RECTANGLE_16* clippingList = region16_rects(&clippingRects, &nbClipping);
 
-	/*
-	 * HmRdp: walk the tiles the clipping rects can reach, not the frame's whole
-	 * tile list.
-	 * The work set is the same - tiles decoded in this frame, clipped to this
-	 * message's rects - and so is the result; the list walk below stays as the
-	 * fallback for a tile that has no frame id yet.
-	 */
+	/* HmRdp: walk only the tiles the clip rects can reach (tiles decoded this frame); same work set as the list walk. */
 	for (UINT32 j = 0; j < nbClipping; j++)
 	{
 		const RECTANGLE_16* clip = &clippingList[j];
@@ -218,14 +167,12 @@ static INLINE BOOL update_tiles(PROGRESSIVE_CONTEXT* WINPR_RESTRICT progressive,
 				                            nDstStep, nXDst, nYDst, invalidRegion);
 				if (cres < 0)
 				{
-					/* The geometry guards the original bails out on, without
-					 * touching rc. */
+					/* Geometry guard: the original bails out without touching rc. */
 					goto fail;
 				}
 				if (cres > 0)
 				{
-					/* The copy failed: the original stops this tile's clip loop
-					 * and carries on with the next tile. */
+					/* Copy failed: stop this tile's clip loop, continue with the next tile. */
 					rc = FALSE;
 					break;
 				}

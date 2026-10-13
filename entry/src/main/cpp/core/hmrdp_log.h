@@ -13,4 +13,4 @@
 #define HMRDP_LOGE(...) \
   OH_LOG_Print(LOG_APP, LOG_ERROR, HMRDP_LOG_DOMAIN, HMRDP_LOG_TAG, __VA_ARGS__)
 
-#endif  // HMRDP_LOG_H
+#endif

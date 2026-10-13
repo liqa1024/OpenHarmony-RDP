@@ -26,9 +26,8 @@ Fn Resolve(PFN_vkGetInstanceProcAddr gipa, VkInstance instance, const char* name
   return reinterpret_cast<Fn>(gipa(instance, name));
 }
 
-// Device commands are resolved through vkGetDeviceProcAddr first (cheaper
-// dispatch), falling back to vkGetInstanceProcAddr for entries the driver only
-// exposes at instance level.
+// Device commands go through vkGetDeviceProcAddr first (cheaper dispatch), falling back to
+// vkGetInstanceProcAddr for entries the driver only exposes at instance level.
 template <typename Fn>
 Fn ResolveDevice(PFN_vkGetDeviceProcAddr gdpa, PFN_vkGetInstanceProcAddr gipa,
                  VkDevice device, VkInstance instance, const char* name) {
@@ -310,8 +309,6 @@ bool VkApi::LoadInstance(VkInstance instance) {
   DestroySurfaceKHR = Resolve<PFN_vkDestroySurfaceKHR>(gipa, instance, "vkDestroySurfaceKHR");
   CreateSurfaceOHOS = Resolve<PFN_vkCreateSurfaceOHOS>(gipa, instance, "vkCreateSurfaceOHOS");
 
-  // Only the core set is required; the surface/swapchain entries are reported by
-  // their callers so a partially supported driver still yields a useful probe.
   return CreateDevice != nullptr && EnumeratePhysicalDevices != nullptr &&
          GetPhysicalDeviceProperties != nullptr && GetPhysicalDeviceQueueFamilyProperties != nullptr &&
          GetPhysicalDeviceMemoryProperties != nullptr &&
@@ -390,8 +387,6 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdBindPipeline = ResolveDevice<PFN_vkCmdBindPipeline>(gdpa, gipa, device, instance, "vkCmdBindPipeline");
   CmdBindDescriptorSets = ResolveDevice<PFN_vkCmdBindDescriptorSets>(gdpa, gipa, device, instance, "vkCmdBindDescriptorSets");
 
-  // Graphics: the presenter draws its letterboxed picture with one quad, so these
-  // are resolved the same opportunistic way (they are core Vulkan 1.0).
   CreateGraphicsPipelines = ResolveDevice<PFN_vkCreateGraphicsPipelines>(gdpa, gipa, device, instance, "vkCreateGraphicsPipelines");
   CreateSampler = ResolveDevice<PFN_vkCreateSampler>(gdpa, gipa, device, instance, "vkCreateSampler");
   DestroySampler = ResolveDevice<PFN_vkDestroySampler>(gdpa, gipa, device, instance, "vkDestroySampler");
@@ -472,10 +467,8 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
   caps->presenterSupported = false;
   caps->presenterUnsupportedCode.clear();
 
-  // Vulkan acceleration is a real-device-only feature (see AGENTS.md): the
-  // emulator reports standard Vulkan capabilities it does not honour, so probing
-  // cannot exclude it. The emulator package is the x86_64 build (product
-  // `emulator`), which makes the target ABI the reliable signal.
+  // Vulkan acceleration is real-device-only: the emulator reports standard capabilities it
+  // does not honour, so the x86_64 emulator ABI (not probing) is the reliable exclusion.
 #if defined(__x86_64__)
   caps->presenterUnsupportedCode = "emulator";
 #else
@@ -627,8 +620,6 @@ bool VkInstanceContext::EnsureInstance() {
   appInfo.applicationVersion = VK_MAKE_API_VERSION(0, 1, 0, 0);
   appInfo.pEngineName = "HmRdp";
   appInfo.engineVersion = VK_MAKE_API_VERSION(0, 1, 0, 0);
-  // Request 1.0: universally supported. Anything newer is enabled through
-  // extensions so a device whose driver is older than its loader still works.
   appInfo.apiVersion = VK_API_VERSION_1_0;
 
   VkInstanceCreateInfo createInfo{};

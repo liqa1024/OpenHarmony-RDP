@@ -1,12 +1,5 @@
-# 7) HmRdp GFX raw capture + offline replay hooks. The raw (still ZGFX-compressed)
-#    channel bytes the server sent are handed to libhmrdp through a runtime
-#    callback registered by libhmrdp (a DVC plugin loads before the NAPI module,
-#    so a weak symbol in libfreerdp would not resolve). A small replay entry
-#    re-runs FreeRDP's own ZGFX + PDU parsing offline for the same stream;
-#    HmrdpGfxReplayNewWithContext/FreeWithContext additionally bind the plugin to
-#    a caller-owned rdpContext, which the CPU/gdi replay route uses (see
-#    doc_agent/rdp-gfx.md §6). NOTE: applied as one block - a tree with the old step 7 must be
-#    re-patched from a clean source, not incrementally.
+# 7) GFX raw capture + offline replay hooks via a runtime callback (a DVC plugin loads
+#    before the NAPI module, so a weak symbol would not resolve). Applied as one block.
 $rdpgfxMain = "$Source\channels\rdpgfx\client\rdpgfx_main.c"
 if (-not (Test-Path -LiteralPath $rdpgfxMain)) {
   throw "file not found: $rdpgfxMain"
@@ -15,7 +8,6 @@ if ([System.IO.File]::ReadAllText($rdpgfxMain).Contains('HmrdpSetGfxRawCapture')
   Write-Host "HmRdp GFX capture/replay patch already applied"
 } else {
   $gfxHelpers = @'
-/* ---- HmRdp: raw GFX capture + offline replay hooks ---------------------- */
 static void (*g_HmrdpGfxRawCapture)(const BYTE* data, UINT32 size) = NULL;
 
 FREERDP_API void HmrdpSetGfxRawCapture(void (*fn)(const BYTE* data, UINT32 size))
@@ -33,7 +25,6 @@ static int HmrdpGfxRawCapture(ZGFX_CONTEXT* zgfx, const BYTE* data, UINT32 size,
 
 '@
   $gfxReplay = @'
-/* ---- HmRdp offline replay ----------------------------------------------- */
 
 FREERDP_API RdpgfxClientContext* HmrdpGfxReplayNew(void)
 {
@@ -81,11 +72,7 @@ FREERDP_API void HmrdpGfxReplayFree(RdpgfxClientContext* context)
 	free(gfx);
 }
 
-/* Same as HmrdpGfxReplayNew(), but binds the plugin to a caller-owned
- * rdpContext (libhmrdp's offline gdi context) instead of allocating a bare
- * settings-only one, so gfx->rdpcontext carries the real settings/update.
- * The caller keeps ownership of rcontext; free the context with
- * HmrdpGfxReplayFreeWithContext(). */
+/* Like HmrdpGfxReplayNew() but binds a caller-owned rcontext (caller keeps ownership). */
 FREERDP_API RdpgfxClientContext* HmrdpGfxReplayNewWithContext(rdpContext* rcontext)
 {
 	RDPGFX_PLUGIN* gfx = NULL;

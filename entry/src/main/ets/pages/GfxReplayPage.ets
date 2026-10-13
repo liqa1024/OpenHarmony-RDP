@@ -70,7 +70,6 @@ struct GfxReplayPage {
   @State status: string = '等待 surface...';
   @State line: number = LINE_ACCEL;
   @State refMode: number = REF_OFF;
-  // false = not throttled (throughput), true = the capture's own arrival times.
   @State replayRealtime: boolean = false;
   @State slotCount: number = 3;
   @State hardwareAccelSupported: boolean = true;

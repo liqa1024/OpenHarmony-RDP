@@ -1,19 +1,5 @@
-# Fetches the pinned third-party sources into native/third_party and applies the
-# HmRdp patches.
-#
-# The source trees (and the downloaded archives) live under native/third_party/,
-# which is gitignored: this script is what recreates them. Everything is pinned
-# to an exact upstream release plus its SHA-256, so the same inputs always give
-# the same tree.
-#
-#   native/scripts/fetch-sources.ps1            # fetch what is missing, then patch
-#   native/scripts/fetch-sources.ps1 -Force     # re-download and re-extract everything
-#
-# FreeRDP (native/scripts/patch-freerdp.ps1), moonlight-common-c
-# (native/scripts/patch-moonlight.ps1) and zlib (native/scripts/patch-zlib.ps1)
-# are the only trees the patches touch; everything else is used as released. The
-# FreeRDP patch helpers match on LF-normalized text, so the checkout style (LF
-# from the tarball, CRLF from a Windows checkout) does not matter.
+# Fetches the pinned third-party sources into native/third_party (gitignored) and
+# applies the HmRdp patches; run with -Force to re-download and re-extract everything.
 param(
 	[switch]$Force
 )
@@ -24,8 +10,7 @@ $Native = Split-Path -Parent $PSScriptRoot
 $Third = Join-Path $Native "third_party"
 $Dl = Join-Path $Third "dl"
 
-# Pinned releases. Url + Sha256 are the official artifacts; ArchiveRoot is the
-# top-level directory the archive extracts to (FreeRDP's does not match Dir).
+# Pinned releases; ArchiveRoot is the archive's top-level dir (FreeRDP's differs from Dir).
 $Deps = @(
 	[pscustomobject]@{
 		Name        = "FreeRDP"
@@ -51,11 +36,7 @@ $Deps = @(
 		Sha256      = "23C666D0EDF20F14249B3D8F0368ACAEE9AB585B09E1DE82107C66E1F3EC9533"
 		Patch       = $false
 	},
-	# Opus (Xiph/BSD): the multistream decoder the Moonlight audio path uses.
-	# Moonlight / Sunshine send Opus, moonlight-common-c only frames it, so the
-	# client decodes it here (see doc_agent/moonlight-native.md). Built as a
-	# shared libopus.so like every other dependency; patch-opus.ps1 (called at the
-	# bottom) makes its SONAME version-less.
+	# Opus: the multistream decoder the Moonlight audio path uses (moonlight-common-c only frames it).
 	[pscustomobject]@{
 		Name        = "opus"
 		Dir         = "opus-1.5.2"
@@ -64,9 +45,7 @@ $Deps = @(
 		Sha256      = "65C1D2F78B9F2FB20082C38CBE47C951AD5839345876E46941612EE87F9A7CE1"
 		Patch       = $false
 	},
-	# FSR 1.0 (MIT): the EASU/RCAS shader headers the Vulkan presenter #includes.
-	# Header-only, so nothing is built from it - the app's CMake finds the tree at
-	# native/third_party/fidelityfx-fsr-1.0.2 and embeds the compiled SPIR-V.
+	# FSR 1.0 (MIT): EASU/RCAS shader headers the Vulkan presenter #includes; header-only.
 	[pscustomobject]@{
 		Name        = "FidelityFX-FSR"
 		Dir         = "fidelityfx-fsr-1.0.2"
@@ -75,11 +54,8 @@ $Deps = @(
 		Sha256      = "92EE8F9630364EC3AD7FC16AF5A990601EBF18142571527ED672B79B79D04ACD"
 		Patch       = $false
 	},
-	# Moonlight (GameStream) client core: RTSP session negotiation and the
-	# control/audio/video stream framing. The HTTPS serverinfo / pairing / app
-	# list / launch layer is the client's, not this library's. It has no release
-	# tags, so it is pinned to an exact commit. Its two submodules (enet, nanors)
-	# are pinned separately below - a commit tarball leaves those directories empty.
+	# Moonlight (GameStream) core: RTSP negotiation + control/audio/video framing;
+	# pinned to a commit (no release tags), submodules (enet, nanors) pinned separately.
 	[pscustomobject]@{
 		Name        = "moonlight-common-c"
 		Dir         = "moonlight-common-c"
@@ -90,9 +66,7 @@ $Deps = @(
 	}
 )
 
-# Submodules that must live inside the moonlight-common-c tree (its CMakeLists
-# does add_subdirectory(enet) and compiles nanors/rs.c), so they cannot use the
-# flat $Deps loop above. StampFile is what says "this tree is already in place".
+# Submodules that must live inside the moonlight-common-c tree; StampFile marks one as present.
 $MlTree = Join-Path $Third "moonlight-common-c"
 $Submodules = @(
 	[pscustomobject]@{
@@ -114,7 +88,6 @@ $Submodules = @(
 New-Item -ItemType Directory -Path $Third -Force | Out-Null
 New-Item -ItemType Directory -Path $Dl -Force | Out-Null
 
-# Downloads (when needed) and verifies the pinned archive for one dependency.
 function Get-PinnedArchive {
 	param($Dep)
 	$tgz = Join-Path $Dl ([System.IO.Path]::GetFileName($Dep.Url))
@@ -170,7 +143,6 @@ foreach ($dep in $Deps) {
 	Write-Host "$($dep.Name): extracted to $target ($($dep.Dir))"
 }
 
-# Place the moonlight-common-c submodules where its CMakeLists expects them.
 if (Test-Path -LiteralPath $MlTree) {
 	foreach ($sub in $Submodules) {
 		$dst = Join-Path $MlTree $sub.Name
@@ -200,9 +172,7 @@ else {
 	throw "moonlight-common-c tree missing: $MlTree (fetch it before its submodules)"
 }
 
-# Apply the FreeRDP patches last: the script is idempotent and reports each step
-# it skipped ("already applied"), which is the self-check for an already-patched
-# tree.
+# Applied last; each step reports skips, the self-check for an already-patched tree.
 $freerdp = $Deps | Where-Object { $_.Patch } | Select-Object -First 1
 $freerdpSrc = Join-Path $Third $freerdp.Dir
 Write-Host "applying patches to $freerdpSrc"
@@ -211,8 +181,7 @@ if ($LASTEXITCODE -ne 0) {
 	throw "patch-freerdp.ps1 failed"
 }
 
-# Make zlib's shared library version-less so its SONAME matches the file that
-# ships (see patch-zlib.ps1).
+# Make zlib's .so version-less so its SONAME matches the shipped file.
 $zlibSrc = Join-Path $Third "zlib-1.3.1"
 Write-Host "patching $zlibSrc"
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-zlib.ps1") -Source $zlibSrc
@@ -220,8 +189,7 @@ if ($LASTEXITCODE -ne 0) {
 	throw "patch-zlib.ps1 failed"
 }
 
-# Make opus's shared library version-less so its SONAME matches the file that
-# ships (see patch-opus.ps1).
+# Make opus's .so version-less so its SONAME matches the shipped file.
 $opusSrc = Join-Path $Third "opus-1.5.2"
 Write-Host "patching $opusSrc"
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-opus.ps1") -Source $opusSrc

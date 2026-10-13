@@ -1,18 +1,10 @@
-// Microsoft/FreeRDP wheel rotation unit: 120 == one wheel detent.
 export const WHEEL_DETENT: number = 120;
 // Largest rotation a single RDP pointer event can carry (9-bit wheel field).
 const WHEEL_MAX_CHUNK: number = 0xFF;
-// Windows scrolls three lines per wheel detent by default (SPI_GETWHEELSCROLLLINES),
-// each line ~16 px -> nominal 48 px per detent.
 const SCROLL_LINES_PER_DETENT: number = 3;
 const LINE_PX: number = 16;
-// Finger travel (same unit as the touchpad axis) that spans one remote detent at 1.0x speed.
-// The nominal 48 ran ~4x the native touchpad speed measured against a HarmonyOS app, so the
-// default detent is calibrated 4x.
 const DETENT_CALIBRATION: number = 4;
 export const VP_PER_DETENT: number = SCROLL_LINES_PER_DETENT * LINE_PX * DETENT_CALIBRATION;
-// Mouse-wheel axis is in degrees; ArkUI maps one degree to LINE_HEIGHT_DESKTOP /
-// MOUSE_WHEEL_DEGREES (21/15) vp, so the wheel shares the touchpad's vp -> rotation口径.
 export const WHEEL_VP_PER_DEGREE: number = 21 / 15;
 // Touchpad fling after the fingers lift, mirroring ArkUI Scrollable (API>=13 defaults):
 // distance = velocity * NEW_VELOCITY_SCALE / (friction * |FRICTION_SCALE|), decaying as a
@@ -25,7 +17,6 @@ export const FLING_MIN_VELOCITY: number = 240;
 export const MIN_SPEED_SCALE: number = 0.2;
 export const MAX_SPEED_SCALE: number = 4;
 export const DEFAULT_SPEED_SCALE: number = 1;
-// Pinch detents per unit change of the two-finger distance ratio at 1.0x speed.
 export const DEFAULT_PINCH_NOTCHES_PER_UNIT: number = 20;
 
 export class WheelChunk {
@@ -50,8 +41,6 @@ export class TouchpadWheelMapper {
 
   map(vertical: number, horizontal: number, out: WheelChunk[]): void {
     const rotationPerVp: number = (WHEEL_DETENT / VP_PER_DETENT) * this.speedScale;
-    // Natural scrolling, RDP wheel signs: axisVertical+ (up) maps to a negative
-    // vertical wheel, axisHorizontal+ (left) to a positive horizontal wheel.
     this.accumY += (-vertical) * rotationPerVp;
     this.accumX += horizontal * rotationPerVp;
     this.accumY = TouchpadWheelMapper.drain(false, this.accumY, out);

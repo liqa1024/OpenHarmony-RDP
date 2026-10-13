@@ -12,23 +12,20 @@ enum class MoonlightSessionEvent : int {
   kStageStarting = 2,
   kStageComplete = 3,
   kStageFailed = 4,
-  // Foundation-sunshine cursor extension: the host renders the pointer on a
-  // separate channel instead of compositing it into the video. Carried on the
-  // cursor callback, not the session callback.
+  // Foundation-sunshine cursor extension: host renders the pointer on a separate channel,
+  // carried on the cursor callback (not the session callback).
   kCursorShape = 5,
-  // Shortcut passthrough: a system-intercepted key, delivered as two event codes
-  // so `value` stays the keyCode.
+  // Shortcut passthrough: a system-intercepted key as two event codes so `value` stays the keyCode.
   kKeyInterceptDown = 6,
   kKeyInterceptUp = 7,
-  // Clipboard frame event code (delivered on the clipboard callback).
   kClipboardData = 8,
 };
 
 // Called from the session's own thread; must not block.
 using MoonlightSessionCallback = void (*)(MoonlightSessionEvent event, int value, const char* text);
 
-// When hasShape is set, bgra is width*height*4 bytes and only valid during the
-// call; otherwise it is a visibility-only (show/hide) change with no geometry.
+// When hasShape is set, bgra is width*height*4 and valid only during the call; otherwise a
+// visibility-only change with no geometry.
 struct MoonlightCursorShape {
   bool visible = false;
   bool hasShape = false;
@@ -71,15 +68,13 @@ struct MoonlightStreamConfig {
   std::string remoteInputAesKey;
   std::string remoteInputAesIv;
 
-  // Request foundation-sunshine local cursor mode when the host advertises it;
-  // off keeps the host-composited cursor.
+  // Request foundation-sunshine local cursor mode when the host advertises it; off keeps the
+  // host-composited cursor.
   bool localCursorMode = false;
 
-  // Play the host's audio on this device. False leaves the library's audio
-  // renderer unset (silent); the host then plays locally (localAudioPlayMode).
+  // False leaves the library's audio renderer unset (silent) so the host plays locally (localAudioPlayMode).
   bool enableAudio = true;
 
-  // Native OHAudio low-latency path instead of the ArkTS renderer.
   bool lowLatencyAudio = true;
 };
 
@@ -92,8 +87,7 @@ void MoonlightSessionSetClipboardCallback(MoonlightClipboardCallback callback);
 // Send an opaque clipboard frame to the host; returns LiSendClipboardData's code.
 int MoonlightSessionSendClipboard(const void* data, int length);
 
-// Must be called before MoonlightSessionStart; passed to LiStartConnection as
-// the render context.
+// Must be called before MoonlightSessionStart; passed to LiStartConnection as the render context.
 void MoonlightSessionSetWindow(void* window);
 
 // Empty string on success, else a stable token ("busy" / "config" / "thread").
@@ -104,8 +98,7 @@ void MoonlightSessionStop();
 
 bool MoonlightSessionActive();
 
-// The query string common-c wants appended to /launch and /resume; owned by the
-// library, copied out here.
+// The query string common-c wants appended to /launch and /resume; owned by the library, copied out here.
 std::string MoonlightLaunchQueryParameters();
 
 // No-ops unless the session is active, mirroring the LiSend* entry points.
@@ -114,12 +107,11 @@ void MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referen
 void MoonlightSessionMouseButton(int action, int button);
 void MoonlightSessionKey(int keyCode, int action, int modifiers);
 void MoonlightSessionScroll(int clicks);
-// Native touchscreen: x/y are normalized 0..1 over the stream area, pressure 0..1
-// (0 = unknown). eventType is a LI_TOUCH_EVENT_* constant.
+// Native touchscreen: x/y normalized 0..1 over the stream area, pressure 0..1 (0 = unknown);
+// eventType is a LI_TOUCH_EVENT_* constant.
 void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure);
-// Native precision touchpad (foundation-sunshine extension): contacts normalized
-// over the physical pad surface, widthMm/heightMm its physical size. No-op unless
-// the host advertised the touchpad feature flag.
+// Native precision touchpad (foundation-sunshine extension): contacts normalized over the physical
+// pad surface, widthMm/heightMm its size; no-op unless the host advertised the touchpad feature flag.
 void MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
                                    const uint32_t* pointerIds, const float* x, const float* y,
                                    const float* pressure, int widthMm, int heightMm, int buttonState);
@@ -131,6 +123,6 @@ void MoonlightSessionText(const char* text, int length);
 // LI_FF_* bits the host advertised; 0 before a session is established.
 int MoonlightSessionHostFeatureFlags();
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_MOONLIGHT_SESSION_H
+#endif

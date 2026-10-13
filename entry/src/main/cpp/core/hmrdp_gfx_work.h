@@ -51,8 +51,8 @@ class GfxWorkMeter {
   void OnSetup(GfxSetupKind kind, uint64_t micros);
   void OnPresent(uint64_t micros);
   void OnPresentWait(uint64_t micros);
-  // A blocked wait inside the window AccountChunkPrefix() charges to `zgx+parse` is
-  // removed from the pending prefix, or the prefix would count it twice.
+  // Removes a blocked wait charged to `zgx+parse` by AccountChunkPrefix(), which would otherwise
+  // count it twice.
   void OnBlockedBeforeFrameWork(uint64_t micros);
   void OnPresentSync(uint64_t micros);
   void OnPace(uint64_t micros);
@@ -92,19 +92,15 @@ void GfxWorkInstall(RdpgfxClientContext* gfx, GfxWorkMeter* meter);
 void GfxWorkUninstall(RdpgfxClientContext* gfx);
 GfxWorkMeter* GfxWorkMeterFor(RdpgfxClientContext* gfx);
 
-// Run at every RDPGFX START_FRAME, i.e. *before* that frame's surface commands write any
-// pixel. `update->BeginPaint` is too late: FreeRDP calls it from `gdi_OutputUpdate` after
-// the frame has already written the buffer. Keyed by the GFX context, so a replay next to
-// a live session cannot clear the session's wait.
+// Run at every RDPGFX START_FRAME, before the frame's surface commands write pixels; update->BeginPaint is too
+// late (FreeRDP calls it after the buffer write). Keyed by the GFX context, so a replay cannot clear a live session's wait.
 void GfxWorkSetFrameBeginHook(RdpgfxClientContext* gfx, std::function<void()> hook);
 
-// Takes ownership of the raw RDPGFX channel chunk: while set, FreeRDP hands the chunk over
-// instead of processing it inline on the drdynvc thread (which every dynamic channel -
-// audio and input included - shares), and the owner must re-enter through
-// HmrdpGfxReplayRecv on the thread of its choice.
+// Takes ownership of the raw RDPGFX chunk: while set, FreeRDP hands it over instead of processing it inline on the
+// drdynvc thread (shared by all dynamic channels); the owner must re-enter via HmrdpGfxReplayRecv on a chosen thread.
 void GfxWorkSetDataSinkHook(RdpgfxClientContext* gfx,
                             std::function<void(const uint8_t*, size_t)> hook);
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_GFX_WORK_H
+#endif

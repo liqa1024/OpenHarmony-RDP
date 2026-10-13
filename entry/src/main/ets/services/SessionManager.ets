@@ -52,7 +52,6 @@ export class SessionManager {
     new Map<string, SessionWindowStateListener>();
   private static closeListeners: Map<string, SessionCloseListener> =
     new Map<string, SessionCloseListener>();
-  // sessionKeys of currently open session windows (doc_agent/session-layer.md §7).
   private static windowKeys: Set<string> = new Set<string>();
 
   static stateOf(connectionId: string): ConnectionState {
@@ -143,8 +142,6 @@ export class SessionManager {
         return;
       }
       if (!ok) {
-        // A backend that reports failure without signalling would otherwise leave
-        // the row stuck in Connecting.
         if (entry.backend !== undefined) {
           entry.backend.stop();
         }

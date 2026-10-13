@@ -81,11 +81,7 @@ macro(AddTargetWithResourceFile nameAndTarget is_exe version sources)
     elseif(WIN32)
       set_target_properties(${target} PROPERTIES PREFIX "")
     else()
-      # HmRdp: WITH_LIBRARY_VERSIONING=OFF drops the libX.so.3 suffix, but upstream
-      # then also removes the "lib" prefix (Windows-oriented) and sets no SONAME.
-      # On OHOS/Linux keep the lib prefix and the "<name><major>" output name
-      # (libfreerdp3.so) and emit an explicit SONAME so dependents record a stable,
-      # version-less DT_NEEDED entry instead of an absolute build path.
+      # HmRdp: WITH_LIBRARY_VERSIONING=OFF must still keep the "lib" prefix and set an explicit SONAME (upstream drops both on non-Windows).
       set(OUTPUT_FILENAME "${name}${RC_VERSION_MAJOR}")
       target_link_options(${target} PRIVATE
         "-Wl,-soname,${CMAKE_SHARED_LIBRARY_PREFIX}${OUTPUT_FILENAME}${CMAKE_SHARED_LIBRARY_SUFFIX}")

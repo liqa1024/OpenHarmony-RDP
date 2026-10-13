@@ -88,9 +88,6 @@ void GlesPresenter::SetSurface(void* nativeWindow, int width, int height) {
 
 void GlesPresenter::ResizeSurface(int width, int height) {
   std::lock_guard<std::mutex> lock(mutex_);
-  // Only record the size: the viewport is re-derived from the real surface on
-  // every present, so doing GL here would only make the context current off the
-  // present path for nothing.
   surfaceWidth_ = width;
   surfaceHeight_ = height;
 }
@@ -232,7 +229,6 @@ void GlesPresenter::DestroyContext() {
     eglDestroySurface(display_, surface_);
     surface_ = EGL_NO_SURFACE;
   }
-  // The display is process-wide; never terminate it here.
   display_ = EGL_NO_DISPLAY;
   textureWidth_ = 0;
   textureHeight_ = 0;
@@ -337,24 +333,18 @@ bool GlesPresenter::PresentBgra(const uint8_t* data, int srcStride, int desktopW
     return false;
   }
 
-  // Row pitch of the source frame; usually desktopWidth*4, but honour the
-  // server's stride in case it pads rows.
   const int pitch = srcStride > 0 ? srcStride : desktopWidth * 4;
 
   glBindTexture(GL_TEXTURE_2D, texture_);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-  // The source is a sub-rectangle of a buffer whose rows are pitched at the full
-  // desktop stride; GL_UNPACK_ROW_LENGTH makes glTexSubImage2D honour that pitch
-  // instead of assuming the upload width (without it rows skew and the picture
-  // tears).
+  // The source is a sub-rectangle of a full-stride buffer; GL_UNPACK_ROW_LENGTH makes
+  // glTexSubImage2D honour that pitch instead of assuming the upload width (rows tear otherwise).
   glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / 4);
   glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
   glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
 
   int uploaded = 0;
   if (forceFullUpload_) {
-    // The texture was just (re)created and starts empty, so the whole desktop has
-    // to be covered: anything less would leave the rest undefined.
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, desktopWidth, desktopHeight, GL_RGBA,
                     GL_UNSIGNED_BYTE, data);
     uploaded = 1;

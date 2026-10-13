@@ -11,18 +11,14 @@ import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, p
 export struct ConnectionRow {
   conn: SavedConnection = new RdpConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
-  // `hostTargetId` is what the host currently has open (0 = none / unknown),
-  // `targetId` is this connection's default app id (0 = none configured). RDP
-  // passes 0/0: it has no host-side session, so it never resumes.
+  // `hostTargetId` is the host's open app id (0 = none), `targetId` this
+  // connection's default app id (0 = none); RDP passes 0/0, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
   // Host reachability (Moonlight only; RDP stays Online).
   @Prop power: HostPower = HostPower.Online;
-  // Whether this client is on the offline host's LAN (wake send path).
   @Prop wakeReachability: WakeReachability = WakeReachability.Unknown;
-  // A wake watch is running: spinner shown, a tap cancels the watch.
   @Prop waking: boolean = false;
-  // A host probe is in flight (unknown-state refresh slot shows a spinner).
   @Prop probing: boolean = false;
   // Page-controlled: >0 opens this row's menu, 0 closes it.
   @Prop @Watch('onMenuRequest') menuRequest: number = 0;
@@ -31,7 +27,6 @@ export struct ConnectionRow {
   @State appHovered: boolean = false;
   @State appPressed: boolean = false;
   @State menuShown: boolean = false;
-  // Trigger point (window coords) the menu is placed at.
   @State menuWinX: number = 0;
   @State menuWinY: number = 0;
   onEdit: () => void = () => {};
@@ -60,7 +55,6 @@ export struct ConnectionRow {
     return connectActionLabel(this.primary());
   }
 
-  // Not reachable and no live session: dimmed icon, no apps button, refresh / wake slot.
   private hostDown(): boolean {
     return this.state === ConnectionState.Idle && this.power !== HostPower.Online;
   }
@@ -69,7 +63,6 @@ export struct ConnectionRow {
     if (!this.hostDown() || this.power !== HostPower.Offline) {
       return false;
     }
-    // No stored MAC, or this client is not on the host's LAN: the packet cannot land.
     return !this.conn.supportsWake() || this.wakeReachability === WakeReachability.OffLan;
   }
 
@@ -271,8 +264,6 @@ export struct ConnectionRow {
         .width(44)
         .height(44)
         .borderRadius(22)
-        // Neutral third colour: must not compete with the accent connect button
-        // nor clash with the red danger state.
         .backgroundColor(this.appHovered ? $r('app.color.neutral_hover') : $r('app.color.neutral'))
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)

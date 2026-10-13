@@ -1,6 +1,5 @@
-// libvulkan.so is loaded with dlopen (not linked) so a device without a usable
-// Vulkan driver degrades to gdi instead of failing to load the app; every
-// command is fetched at runtime via vkGetInstanceProcAddr / vkGetDeviceProcAddr.
+// libvulkan.so is dlopen()ed (not linked) so a device without a usable driver degrades to gdi instead
+// of failing to load; every command is fetched at runtime via vkGetInstanceProcAddr / vkGetDeviceProcAddr.
 #ifndef HMRDP_VK_CONTEXT_H
 #define HMRDP_VK_CONTEXT_H
 
@@ -240,6 +239,6 @@ class VkDeviceContext {
   std::string error_;
 };
 
-}  // namespace hmrdp
+}
 
-#endif  // HMRDP_VK_CONTEXT_H
+#endif

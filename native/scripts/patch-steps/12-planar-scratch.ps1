@@ -1,29 +1,11 @@
-# 12) HmRdp: do not re-allocate the PLANAR codec's scratch on every ResetGraphics.
-#
-#     `freerdp_bitmap_planar_context_reset` unconditionally (re)allocates and
-#     zeroes four buffers sized from the desktop: planesBuffer x4, pTempData x6,
-#     deltaPlanesBuffer x4, rlePlanesBuffer x4. On a large desktop that is on the
-#     order of 100 MB of calloc/zeroing per call, and one ResetGraphics reaches it
-#     once per codec set (the rdp context's and the GFX context's) - a 100 ms-order
-#     stall per event, for a codec this client never uses (Progressive / ClearCodec
-#     / uncompressed only). See doc_agent/rdp-gfx.md §7.1.
-#
-#     The buffers are per-message working memory (written before read), so when
-#     the geometry did not change there is nothing to do. `planes[0] != NULL`
-#     witnesses that the previous call allocated them, so a failed allocation
-#     still falls through to the real path.
+# 12) Don't re-allocate planar's scratch buffers on every ResetGraphics: they are per-message
+#     working memory, so unchanged geometry skips the ~100MB calloc+zeroing (planes[0]!=NULL witnesses allocation).
 $planarC = "$Source\libfreerdp\codec\planar.c"
 Patch-Regex $planarC '\tcontext->bgr = FALSE;\n\tcontext->maxWidth = PLANAR_ALIGN\(width, 4\);\n' (@'
 	context->bgr = FALSE;
 
-	/* HmRdp: the four scratch buffers below are per-message working memory - their
-	 * content is written before it is read - so when the geometry did not change
-	 * they neither have to be re-allocated nor re-zeroed. Upstream does both
-	 * unconditionally, which is on the order of 100 MB of calloc + zeroing per
-	 * call; a single ResetGraphics reaches this once per codec set
-	 * (two sets exist) and cost 100 ms-order per event, for a codec this client
-	 * never uses (see doc_agent/rdp-gfx.md §7.1). `planes[0] != NULL`
-	 * means the previous call allocated them, so a failure still falls through. */
+	/* HmRdp: the four scratch buffers below are per-message working memory (written before read),
+	 * so unchanged geometry skips the ~100MB calloc+zeroing; planes[0]!=NULL means allocated. */
 	{
 		const UINT32 newWidth = PLANAR_ALIGN(width, 4);
 		const UINT32 newHeight = PLANAR_ALIGN(height, 4);

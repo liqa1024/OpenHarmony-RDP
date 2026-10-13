@@ -7,29 +7,23 @@ extern "C" {
 
 int HmrdpParallelAvailable(void);
 
-// The decode width (>= 1). The patched decoder reads this to choose between its
-// serial branch and the platform queue; resolved on demand, so a machine with a
-// different core count needs no re-arming.
+// Decode width (>= 1). The patched decoder reads this to pick its serial branch vs the platform
+// queue; resolved on demand, so a different core count needs no re-arming.
 unsigned int HmrdpDecodeWidth(void);
 
-// Runs fn(ctx, i) for i in [0, tasks) and returns once all have finished. The
-// calling thread runs one chunk itself and the queue runs the rest, so the queue
-// only needs width-1 workers. fn must not block a worker with a non-FFRT lock.
-// Returns 0 on success; non-zero means the caller must fall back to its own
-// executor. fn is a plain function pointer because the caller is C.
+// Runs fn(ctx, i) for i in [0, tasks); the calling thread runs one chunk and the queue the rest (width-1 workers).
+// fn must not block a worker with a non-FFRT lock; non-zero means the caller must fall back to its own executor.
 int HmrdpParallelRun(unsigned int tasks, void (*fn)(void*, unsigned int), void* ctx);
 
 #ifdef __cplusplus
-}  // extern "C"
+}
 
 #include <mutex>
 
 namespace hmrdp {
 
-// One pipeline's decode executor: its own FFRT concurrent queue, so two sessions
-// decoding at once never share - and never destroy - each other's queue. The
-// queue's maximum concurrency is the decode width minus one, because the calling
-// thread runs one chunk itself.
+// One pipeline's own FFRT concurrent queue, so two sessions decoding at once never share/destroy
+// each other's queue; max concurrency is the decode width minus one (the caller runs one chunk).
 class DecodeExecutor {
  public:
   DecodeExecutor();
@@ -45,10 +39,8 @@ class DecodeExecutor {
   int concurrency_ = 0;
 };
 
-// Binds `executor` as the current one for the calling thread until the scope
-// ends, so the weakly-linked HmrdpParallelRun - called inline by the patched
-// decoder - resolves this pipeline's queue instead of a process-global one. The
-// previous binding is restored, so nesting is safe.
+// Binds `executor` as current for the calling thread until scope end, so the weakly-linked
+// HmrdpParallelRun (called inline by the patched decoder) resolves this pipeline's queue (previous binding restored).
 class DecodeExecutorScope {
  public:
   explicit DecodeExecutorScope(DecodeExecutor* executor);
@@ -60,7 +52,7 @@ class DecodeExecutorScope {
   DecodeExecutor* previous_ = nullptr;
 };
 
-}  // namespace hmrdp
-#endif  // __cplusplus
+}
+#endif
 
-#endif  // HMRDP_PARALLEL_H
+#endif

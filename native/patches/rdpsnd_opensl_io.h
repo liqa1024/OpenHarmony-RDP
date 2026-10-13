@@ -1,12 +1,6 @@
 /*
  * HmRdp - HarmonyOS OpenSL ES audio output backend for FreeRDP's rdpsnd.
- *
- * OHOS ships an OpenSL ES 1.0.1 implementation that only exposes the
- * OH-specific buffer queue (SL_IID_OH_BUFFERQUEUE); the standard
- * SL_IID_BUFFERQUEUE used by upstream FreeRDP is not implemented, so
- * CreateAudioPlayer succeeds but no interface can be obtained and playback is
- * silent. This header mirrors the upstream API but swaps the buffer queue type
- * for the OH one.
+ * OHOS exposes only SL_IID_OH_BUFFERQUEUE; the standard SL_IID_BUFFERQUEUE is unimplemented (silent), so swap the type.
  */
 #ifndef FREERDP_CHANNEL_RDPSND_CLIENT_OPENSL_IO_H
 #define FREERDP_CHANNEL_RDPSND_CLIENT_OPENSL_IO_H
@@ -25,14 +19,11 @@ extern "C"
 
 	typedef struct
 	{
-		// engine interfaces
 		SLObjectItf engineObject;
 		SLEngineItf engineEngine;
 
-		// output mix interfaces
 		SLObjectItf outputMixObject;
 
-		// buffer queue player interfaces
 		SLObjectItf bqPlayerObject;
 		SLPlayItf bqPlayerPlay;
 		SLVolumeItf bqPlayerVolume;
@@ -42,8 +33,7 @@ extern "C"
 		unsigned int sr;
 		unsigned int queuesize;
 
-		// Pending PCM data (16-bit interleaved) waiting for the audio thread to
-		// pull it through the OH buffer queue callback.
+		// Pending 16-bit interleaved PCM awaiting the audio callback.
 		BYTE* pending;
 		size_t pendingCapacity;
 		size_t pendingHead;

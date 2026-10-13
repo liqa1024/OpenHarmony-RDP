@@ -50,22 +50,18 @@ bool GfxReplayPump(const std::string& path, RdpgfxClientContext* gfx,
   const uint8_t* data = nullptr;
   uint32_t size = 0;
   while ((stop == nullptr || stop->load()) && capture.Next(&data, &size)) {
-    // Realtime mode: wait for this record's original arrival time *before* it is
-    // fed, so the whole chain runs on the cadence the live session saw. Kept
-    // outside the parse timing below (it is playback throttling, not client work).
+    // Realtime mode: wait for this record's original arrival time before feeding,
+    // so the chain runs on the live cadence (excluded from the parse timing below).
     if (paced) {
       pace(capture.timestampUs());
     }
-    // Same arrival stamp the live sink takes, so the "本机" phases are measured the
-    // same way on both sides. The meter comes from this replay's own GFX context,
-    // not a process-global slot.
+    // Same arrival stamp the live sink takes, so the "本机" phases measure the same
+    // on both sides; the meter is this replay's own, not a process-global slot.
     if (GfxWorkMeter* meter = GfxWorkMeterFor(gfx)) {
       meter->OnChunk(size);
     }
-    // Dev (perf): the ZGFX + RDPGFX PDU parse is timed here rather than inside
-    // the decoder. The gdi decode *and* the present (with its playback sleep)
-    // also happen inside this call, so the deliberate pacing is subtracted back
-    // out.
+    // Dev (perf): the ZGFX + RDPGFX parse is timed here; the gdi decode and present
+    // (with their playback sleep) also run inside, so the pacing is subtracted back out.
     const uint64_t paceBefore = paceAccum ? paceAccum() : 0;
     const int64_t recvStart = ParseNowUs();
     HmrdpGfxReplayRecv(gfx, data, size);
