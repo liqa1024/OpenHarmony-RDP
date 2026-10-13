@@ -262,10 +262,11 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   遥测行由共享的 `TelemetryRow`（`components/SessionChrome`）渲染，页面只产出协议专属的 `TelemetryField[]`；
 RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-session.md) §5，Moonlight 见
    [`moonlight-session.md`](moonlight-session.md) §2。
-- **自动隐藏的判定口径**：全屏下只看**指针在哪一格**——顶部触发带（贴顶一条窄带，停留 `hoverDelay` 才
+- **自动隐藏的判定口径**：全屏下只看**指针在哪一格**——顶部触发带（贴顶一条**居中**窄带，停留 `hoverDelay` 才
   滑出）、工具栏自身、其余画面；**指针在工具栏上 ⇒ 保持显示，且不允许任何隐藏定时器在跑**，在画面里 ⇒
-  起 `hideDelay` 收起。指针格由**画面顶部的专用窄条**（`SessionPicture` 的 reveal 条：只在全屏且工具栏
-  隐藏时存在，悬停上报 `TOOLBAR_ZONE_TRIGGER`、移出上报 `NONE`）与**工具栏自身**（悬停上报 `TOOLBAR_ZONE_BAR`）
+  起 `hideDelay` 收起。指针格由**画面顶部居中的专用窄条**（`SessionPicture` 的 reveal 条：只在全屏且工具栏
+  隐藏时存在，宽度占画面宽度的百分比——`revealBandWidth`，两端留空不参与检测以免贴边 / 角落误触，
+  悬停上报 `TOOLBAR_ZONE_TRIGGER`、移出上报 `NONE`）与**工具栏自身**（悬停上报 `TOOLBAR_ZONE_BAR`）
   共同上报同一格（`TOOLBAR_ZONE_*`）：全屏下工具栏盖住二者，指针在工具栏上时都收不到事件。所有触发
   （指针移动 / 悬停、传输起止、全屏切换、会话状态变化）只重新求值这一次判定，不各自管定时器，
   过期定时器因此不会把工具栏从指针底下收走。

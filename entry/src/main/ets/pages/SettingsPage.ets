@@ -7,7 +7,8 @@ import { ML_BITRATE_DEFAULT_KBPS,
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
+import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
+  ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
   ML_CURSOR_OFF, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
@@ -58,6 +59,7 @@ class ToggleItemConfig {
 struct SettingsPage {
   @State hoverDelay: number = 700;
   @State hideDelay: number = 250;
+  @State triggerWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchMode: number = PINCH_MODE_WHEEL;
@@ -227,6 +229,7 @@ struct SettingsPage {
     this.touchHighRate = settings.touchHighRate;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
+    this.triggerWidthPercent = settings.toolbarTriggerWidthPercent;
   }
 
   private applyInteraction(settings: AppSettings, rdp: boolean): void {
@@ -350,6 +353,7 @@ struct SettingsPage {
     settings.touchHighRate = this.touchHighRate;
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
+    settings.toolbarTriggerWidthPercent = this.triggerWidthPercent;
     if (this.protocol === PROTOCOL_RDP) {
       settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
       settings.pinchZoomSpeed = this.pinchZoomSpeed;
@@ -1905,6 +1909,25 @@ struct SettingsPage {
                 disabledReason: '',
                 onChange: (v: number) => {
                   this.hoverDelay = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '工具栏触发区域宽度',
+                subtitle: '屏幕顶部中间多宽的一条带触发工具栏，两端（贴边 / 角落）不触发，避免误触',
+                value: this.triggerWidthPercent,
+                min: 10,
+                max: 100,
+                step: 10,
+                unit: ' %',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.triggerWidthPercent = v;
                   this.persist();
                 }
               })

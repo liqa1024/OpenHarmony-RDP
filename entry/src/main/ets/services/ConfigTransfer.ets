@@ -234,6 +234,9 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'toolbarHoverDelay', settings.toolbarHoverDelay);
     settings.toolbarHideDelay =
       ConfigTransfer.readNumber(rec, 'toolbarHideDelay', settings.toolbarHideDelay);
+    settings.toolbarTriggerWidthPercent =
+      ConfigTransfer.readNumber(rec, 'toolbarTriggerWidthPercent',
+        settings.toolbarTriggerWidthPercent);
     settings.touchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
     settings.pinchZoomSpeed =

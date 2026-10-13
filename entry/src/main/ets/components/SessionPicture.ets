@@ -12,6 +12,9 @@ export struct SessionPicture {
   @Prop @Watch('refit') contentWidth: number = 0;
   @Prop @Watch('refit') contentHeight: number = 0;
   @Prop revealBand: number = 0;
+  // Percent of the picture width the reveal band spans, centred; the ends stay
+  // inert so a pointer brushing an edge or corner does not arm the toolbar.
+  @Prop revealBandWidth: number = 100;
   onPointerMouse: (event: MouseEvent) => void = (event: MouseEvent) => {};
   onPointerTouch: (event: TouchEvent) => void = (event: TouchEvent) => {};
   onPointerHover: (isHover: boolean) => void = (isHover: boolean) => {};
@@ -78,7 +81,7 @@ export struct SessionPicture {
 
       if (this.revealBand > 0) {
         Row()
-          .width('100%')
+          .width(`${this.revealBandWidth}%`)
           .height(this.revealBand)
           .onHover((isHover: boolean) => {
             this.onRevealZone(isHover);

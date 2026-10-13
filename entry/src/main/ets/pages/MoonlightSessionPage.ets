@@ -18,7 +18,8 @@ import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDele
 import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
-  PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, SettingsStore } from '../services/SettingsStore';
+  PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
+  SettingsStore } from '../services/SettingsStore';
 import { mapPicturePoint } from '../utils/PictureFit';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
@@ -97,6 +98,7 @@ struct MoonlightSessionPage {
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private revealBand: number = 6;
+  private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 700;
   private hideDelay: number = 250;
@@ -170,6 +172,7 @@ struct MoonlightSessionPage {
     const settings: AppSettings = SettingsStore.load();
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
+    this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
     this.cursorMode = settings.mlCursorMode;
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
@@ -741,6 +744,7 @@ struct MoonlightSessionPage {
           contentWidth: this.streamWidth,
           contentHeight: this.streamHeight,
           revealBand: (this.isFullscreen && !this.showToolbar) ? this.revealBand : 0,
+          revealBandWidth: this.revealWidthPercent,
           onPointerMouse: (event: MouseEvent) => {
             this.handleMouse(event);
           },

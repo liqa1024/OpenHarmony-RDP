@@ -22,7 +22,7 @@ import { RdpCounters } from '../services/RdpTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
-import { AppSettings, PINCH_MODE_ZOOM,
+import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, PINCH_MODE_ZOOM,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
@@ -126,6 +126,7 @@ struct SessionPage {
   private pendingSurfaceResize: boolean = false;
   private metricsTimer: number = -1;
   private revealBand: number = 6;
+  private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
@@ -190,6 +191,7 @@ struct SessionPage {
       : TOOLBAR_ROW_HEIGHT;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
+    this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
     // Never ask for Vulkan presentation on a device that cannot do it (covers a config imported from another device).
@@ -1030,6 +1032,7 @@ struct SessionPage {
             contentHeight: this.desktopHeight,
             revealBand: (this.isFullscreen && !this.showOverlay && !this.showToolbar)
               ? this.revealBand : 0,
+            revealBandWidth: this.revealWidthPercent,
             onPointerMouse: (event: MouseEvent) => {
               this.handleMouse(event);
             },

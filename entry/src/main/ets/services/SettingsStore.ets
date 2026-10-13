@@ -18,6 +18,8 @@ const TAG: string = 'HmRdpSettings';
 
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
+// 顶部触发带占屏宽的百分比：居中一条，两端不触发（贴边/角落易误触）。
+export const DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT: number = 50;
 
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
@@ -61,6 +63,7 @@ export function srRatioLabel(preset: number): string {
 export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
+  toolbarTriggerWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   // 触控板双指双击发送鼠标中键（单次双指轻触仍是右键）。双击窗口从第一次轻触的按下起算，
@@ -177,6 +180,9 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'toolbarHoverDelay', settings.toolbarHoverDelay);
       settings.toolbarHideDelay =
         SettingsStore.readNumber(store, 'toolbarHideDelay', settings.toolbarHideDelay);
+      settings.toolbarTriggerWidthPercent =
+        SettingsStore.readNumber(store, 'toolbarTriggerWidthPercent',
+          settings.toolbarTriggerWidthPercent);
       settings.touchpadScrollSpeed =
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.pinchZoomSpeed =
@@ -291,6 +297,7 @@ export class SettingsStore {
     try {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
+      store.putSync('toolbarTriggerWidthPercent', settings.toolbarTriggerWidthPercent);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
       store.putSync('touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
