@@ -5,6 +5,7 @@ import { HostPower, MoonlightConnection, SavedConnection } from '../model/Connec
 import { ConnectionStore } from './ConnectionStore';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ServerInfoResult } from '../moonlight/MoonlightModels';
+import { WakeOnLan, WakeReachability } from './WakeOnLan';
 
 const DOMAIN: number = 0xD005;
 const TAG: string = 'HmRdpMlHostState';
@@ -27,6 +28,8 @@ class HostTarget {
   httpsPort: number = DEFAULT_HTTPS_PORT;
   // Unknown until a probe returns; Offline reports no running app (row offers wake).
   power: HostPower = HostPower.Unknown;
+  // Only meaningful while Offline: whether this client is on the host's LAN.
+  wake: WakeReachability = WakeReachability.Unknown;
 }
 
 export class MoonlightHostState {
@@ -68,6 +71,11 @@ export class MoonlightHostState {
     return MoonlightHostState.probing.get(connectionId) === true;
   }
 
+  static wakeReachabilityOf(connectionId: string): WakeReachability {
+    const target: HostTarget | undefined = MoonlightHostState.targets.get(connectionId);
+    return target === undefined ? WakeReachability.Unknown : target.wake;
+  }
+
   // Only after the host really started / resumed the app (no optimistic write).
   static markLaunched(connectionId: string, appId: number): void {
     if (appId <= 0) {
@@ -107,6 +115,12 @@ export class MoonlightHostState {
     MoonlightHostState.notify(connectionId);
   }
 
+  // Sets the field without notifying: the caller's state change does the broadcast.
+  private static setWake(connectionId: string, reach: WakeReachability): void {
+    const target: HostTarget = MoonlightHostState.ensure(connectionId);
+    target.wake = reach;
+  }
+
   static refresh(conn: SavedConnection, filesDir: string): void {
     if (!(conn instanceof MoonlightConnection) || filesDir.length === 0) {
       return;
@@ -133,6 +147,10 @@ export class MoonlightHostState {
     }
     if (!osUp) {
       hilog.info(DOMAIN, TAG, 'host %{public}s silent: offline', conn.host);
+      // Silence cannot tell a sleeping NIC from a dead one; only the send path can
+      // be ruled in/out, so evaluate it here where wake would be offered.
+      const reach: WakeReachability = await WakeOnLan.reachability(conn.host);
+      MoonlightHostState.setWake(conn.id, reach);
       MoonlightHostState.endProbe(conn.id);
       MoonlightHostState.markUnreachable(conn.id);
       return;

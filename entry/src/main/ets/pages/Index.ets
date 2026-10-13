@@ -13,7 +13,7 @@ import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { SettingsStore } from '../services/SettingsStore';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
-import { WakeOnLan } from '../services/WakeOnLan';
+import { WakeOnLan, WakeReachability, WakeSendResult } from '../services/WakeOnLan';
 import { ConnectionRow } from '../components/ConnectionRow';
 import { FabButton } from '../components/FabButton';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
@@ -32,6 +32,8 @@ struct Index {
   @State statuses: Map<string, ConnectionState> = new Map<string, ConnectionState>();
   @State hostTargets: Map<string, number> = new Map<string, number>();
   @State hostPowers: Map<string, HostPower> = new Map<string, HostPower>();
+  // Whether this client is on each offline host's LAN (wake send path).
+  @State hostWake: Map<string, WakeReachability> = new Map<string, WakeReachability>();
   // Connections with a wake watch running (their row shows a loading action).
   @State wakingHosts: Map<string, boolean> = new Map<string, boolean>();
   // Connections with an in-flight host probe (their row shows a loading action).
@@ -80,11 +82,24 @@ struct Index {
       const nextPowers: Map<string, HostPower> = new Map<string, HostPower>(this.hostPowers);
       nextPowers.set(connectionId, power);
       this.hostPowers = nextPowers;
+      const reach: WakeReachability = MoonlightHostState.wakeReachabilityOf(connectionId);
+      const nextWake: Map<string, WakeReachability> = new Map<string, WakeReachability>(this.hostWake);
+      nextWake.set(connectionId, reach);
+      this.hostWake = nextWake;
       this.setProbing(connectionId, probing);
-      // Watched host came up: end the watch.
-      if (power === HostPower.Online && this.wakingHosts.get(connectionId) === true) {
-        this.stopWakeWatch(connectionId);
-        showToast(this.getUIContext(), '主机已上线');
+      if (this.wakingHosts.get(connectionId) === true) {
+        // The host answering at all means the wake worked; a lost LAN path means it
+        // cannot, so neither should keep the watch polling to the 120s timeout.
+        if (power === HostPower.Online) {
+          this.stopWakeWatch(connectionId);
+          showToast(this.getUIContext(), '主机已上线');
+        } else if (power === HostPower.NoService) {
+          this.stopWakeWatch(connectionId);
+          showToast(this.getUIContext(), '主机已开机，Sunshine 未运行');
+        } else if (reach === WakeReachability.OffLan) {
+          this.stopWakeWatch(connectionId);
+          showToast(this.getUIContext(), '网络无法到达主机所在局域网');
+        }
       }
     };
 
@@ -110,6 +125,7 @@ struct Index {
     this.syncStatuses();
     this.syncHostTargets();
     this.syncHostPowers();
+    this.syncHostWake();
     this.syncHostProbing();
     this.probeHosts();
   }
@@ -153,6 +169,24 @@ struct Index {
     }
     const power: HostPower | undefined = this.hostPowers.get(conn.id);
     return power === undefined ? HostPower.Unknown : power;
+  }
+
+  private syncHostWake(): void {
+    const next: Map<string, WakeReachability> = new Map<string, WakeReachability>();
+    for (const conn of this.connections) {
+      if (conn instanceof MoonlightConnection) {
+        next.set(conn.id, MoonlightHostState.wakeReachabilityOf(conn.id));
+      }
+    }
+    this.hostWake = next;
+  }
+
+  private wakeReachabilityFor(conn: SavedConnection): WakeReachability {
+    if (!(conn instanceof MoonlightConnection)) {
+      return WakeReachability.Unknown;
+    }
+    const value: WakeReachability | undefined = this.hostWake.get(conn.id);
+    return value === undefined ? WakeReachability.Unknown : value;
   }
 
   private syncHostProbing(): void {
@@ -210,6 +244,10 @@ struct Index {
       showToast(this.getUIContext(), '未获取到主机 MAC，无法唤醒');
       return;
     }
+    if (this.wakeReachabilityFor(conn) === WakeReachability.OffLan) {
+      showToast(this.getUIContext(), '当前网络无法到达主机所在局域网');
+      return;
+    }
     const target: MoonlightConnection = conn;
     if (SettingsStore.load().wolHelpShown) {
       this.sendWake(target);
@@ -223,13 +261,14 @@ struct Index {
 
   private sendWake(conn: MoonlightConnection): void {
     const filesDir: string = this.filesDir();
-    WakeOnLan.wake(conn.mlMac)
-      .then((ok: boolean): void => {
-        if (!ok) {
+    WakeOnLan.wake(conn.mlMac, conn.host)
+      .then((result: WakeSendResult): void => {
+        if (!result.sent) {
           showToast(this.getUIContext(), '唤醒包发送失败');
           return;
         }
-        showToast(this.getUIContext(), '尝试唤醒主机');
+        showToast(this.getUIContext(),
+          result.bound ? '尝试唤醒主机' : '未找到主机所在网段，唤醒包可能无法到达');
         this.startWakeWatch(conn, filesDir);
       })
       .catch((error: BusinessError): void => {
@@ -580,6 +619,7 @@ struct Index {
                 hostTargetId: this.hostTargetId(conn),
                 targetId: this.targetId(conn),
                 power: this.powerFor(conn),
+                wakeReachability: this.wakeReachabilityFor(conn),
                 waking: this.wakingFor(conn),
                 probing: this.probingFor(conn),
                 menuRequest: this.menuRequestFor(conn),

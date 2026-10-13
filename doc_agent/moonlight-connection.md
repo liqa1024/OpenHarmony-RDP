@@ -138,7 +138,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   「断开连接」（RDP，仅断本地会话）统一用 `ic_stop`**；应用页的「断开连接」用 `ic_disconnect`（断链）。
   三者都是纯 `fill` 路径，由页面按状态着色。
   **`ic_power` 只作离线行的「唤醒」钮**（电源语义），画在 **accent** 上、不用 danger——红底像"关机/破坏"动作；
-  不可唤醒（无 mac）时画在 neutral 上并降不透明度（见 [`moonlight-apps.md`](moonlight-apps.md) §2）。**未知态的
+  不可唤醒（无 mac / 本机不在主机网段）时画在 neutral 上并降不透明度（见 [`moonlight-apps.md`](moonlight-apps.md) §2）。**未知态的
   「刷新」钮**（未知 / 服务未起）用 `ic_refresh`，与列表页的刷新 FAB 同款（accent 圆钮 + 白色 `fill`）。
 - **ArkUI 的 SVG 渲染不绘制 `<text>` 元素**：图标里的字符必须转成矢量路径（描边或填充），
   写 `<text>` 在网页预览能看到、在上屏里不会出现。

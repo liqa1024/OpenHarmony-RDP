@@ -2,6 +2,7 @@ import { ConnectAction, connectActionLabel, HostPower, RdpConnection, RowMenuAct
   SavedConnection } from '../model/Connections';
 import { ConnectionState } from '../services/SessionManager';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { WakeReachability } from '../services/WakeOnLan';
 import { connectActionFor } from '../utils/ConnectAction';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition }
   from '../utils/UiMotion';
@@ -17,6 +18,8 @@ export struct ConnectionRow {
   @Prop targetId: number = 0;
   // Host reachability (Moonlight only; RDP stays Online).
   @Prop power: HostPower = HostPower.Online;
+  // Whether this client is on the offline host's LAN (wake send path).
+  @Prop wakeReachability: WakeReachability = WakeReachability.Unknown;
   // A wake watch is running: spinner shown, a tap cancels the watch.
   @Prop waking: boolean = false;
   // A host probe is in flight (unknown-state refresh slot shows a spinner).
@@ -63,7 +66,11 @@ export struct ConnectionRow {
   }
 
   private wakeDisabled(): boolean {
-    return this.hostDown() && this.power === HostPower.Offline && !this.conn.supportsWake();
+    if (!this.hostDown() || this.power !== HostPower.Offline) {
+      return false;
+    }
+    // No stored MAC, or this client is not on the host's LAN: the packet cannot land.
+    return !this.conn.supportsWake() || this.wakeReachability === WakeReachability.OffLan;
   }
 
   private actionTip(): string {
@@ -79,6 +86,9 @@ export struct ConnectionRow {
       }
       if (this.power === HostPower.Unknown) {
         return '刷新主机状态';
+      }
+      if (this.wakeReachability === WakeReachability.OffLan) {
+        return '当前网络无法到达主机所在局域网，无法唤醒';
       }
       return this.conn.supportsWake() ? '唤醒主机' : '未获取到主机 MAC，无法唤醒';
     }
@@ -104,7 +114,7 @@ export struct ConnectionRow {
         this.onWake();
       } else if (this.power === HostPower.Unknown || this.power === HostPower.NoService) {
         this.onRefresh();
-      } else if (this.conn.supportsWake()) {
+      } else if (!this.wakeDisabled()) {
         this.onWake();
       }
       return;
