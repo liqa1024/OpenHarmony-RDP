@@ -127,6 +127,9 @@ struct SessionPage {
   private metricsTimer: number = -1;
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
+  @State systemScrollEngine: boolean = false;
+  private enginePointerX: number = 0;
+  private enginePointerY: number = 0;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
@@ -192,6 +195,7 @@ struct SessionPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
+    this.systemScrollEngine = settings.useSystemScrollEngine;
     RdpNative.applyTouchHighRate(settings.touchHighRate);
     // Never ask for Vulkan presentation on a device that cannot do it (covers a config imported from another device).
     RdpNative.applyHardwareAccel(settings.hardwareAccel
@@ -295,7 +299,11 @@ struct SessionPage {
         }
         this.native.setSuppressed(!visible);
       },
-      consumesAxis: (event: AxisEvent): boolean => false,
+      consumesAxis: (event: AxisEvent): boolean => this.systemScrollEngine
+        // While direct zoom is active the gesture is a local pan, so the engine must let it through.
+        && !(this.pinchDirect && this.viewScale > MIN_VIEW_SCALE)
+        && !SessionInput.isPinchEvent(event)
+        && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0),
       onReleaseInputs: (): void => {
         this.endDirectZoom();
       },
@@ -730,6 +738,13 @@ struct SessionPage {
   }
 
   private handleAxis(event: AxisEvent): void {
+    if (this.systemScrollEngine && !SessionInput.isPinchEvent(event)
+      && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0)) {
+      // The engine's offsets carry no position, so remember the pointer for its wheel events.
+      const point: number[] = this.mapPointer(event.x, event.y);
+      this.enginePointerX = point[0];
+      this.enginePointerY = point[1];
+    }
     // Direct zoom is a client-view transform kept in this page: it owns the pinch and,
     // while zoomed, the pan; every other axis event falls through to the shared pipeline.
     if (this.pinchDirect) {
@@ -764,6 +779,11 @@ struct SessionPage {
       }
     }
     this.shell?.routeAxis(event);
+  }
+
+  private handleEngineScroll(vertical: number, fromTouchpad: boolean): void {
+    this.shell?.sessionInput()?.handleEngineScroll(vertical, this.enginePointerX,
+      this.enginePointerY, fromTouchpad);
   }
 
   private endDirectZoom(): void {
@@ -1048,6 +1068,13 @@ struct SessionPage {
             },
             onPointerAxis: (event: AxisEvent) => {
               this.handleAxis(event);
+            },
+            engineScroll: this.systemScrollEngine,
+            onEngineScroll: (vertical: number, fromTouchpad: boolean) => {
+              // Under direct zoom the same gesture pans locally, so don't also forward it as scroll.
+              if (!(this.pinchDirect && this.viewScale > MIN_VIEW_SCALE)) {
+                this.handleEngineScroll(vertical, fromTouchpad);
+              }
             },
             onSurfaceKey: (event: KeyEvent) => {
               this.handleKey(event);

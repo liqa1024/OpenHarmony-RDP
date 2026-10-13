@@ -96,6 +96,9 @@ struct MoonlightSessionPage {
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
+  private systemScrollEngine: boolean = false;
+  private enginePointerX: number = 0;
+  private enginePointerY: number = 0;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
   private hoverDelay: number = 700;
   private hideDelay: number = 250;
@@ -172,6 +175,7 @@ struct MoonlightSessionPage {
     this.cursorMode = settings.mlCursorMode;
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
+    this.systemScrollEngine = settings.mlUseSystemScrollEngine;
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
       : TOOLBAR_ROW_HEIGHT;
@@ -245,7 +249,9 @@ struct MoonlightSessionPage {
       },
       onWindowVisible: (visible: boolean): void => {
       },
-      consumesAxis: (event: AxisEvent): boolean => false,
+      consumesAxis: (event: AxisEvent): boolean => this.systemScrollEngine
+        && !SessionInput.isPinchEvent(event)
+        && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0),
       onReleaseInputs: (): void => {
       },
       onBeforeRetry: (): void => {
@@ -601,7 +607,19 @@ struct MoonlightSessionPage {
   }
 
   private handleAxis(event: AxisEvent): void {
+    if (this.systemScrollEngine && !SessionInput.isPinchEvent(event)
+      && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0)) {
+      // The engine's offsets carry no position, so remember the pointer for its wheel events.
+      const point: number[] = this.mapPoint(event.x, event.y);
+      this.enginePointerX = point[0];
+      this.enginePointerY = point[1];
+    }
     this.shell?.routeAxis(event);
+  }
+
+  private handleEngineScroll(vertical: number, fromTouchpad: boolean): void {
+    this.shell?.sessionInput()?.handleEngineScroll(vertical, this.enginePointerX,
+      this.enginePointerY, fromTouchpad);
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -756,6 +774,10 @@ struct MoonlightSessionPage {
           },
           onPointerAxis: (event: AxisEvent) => {
             this.handleAxis(event);
+          },
+          engineScroll: this.systemScrollEngine,
+          onEngineScroll: (vertical: number, fromTouchpad: boolean) => {
+            this.handleEngineScroll(vertical, fromTouchpad);
           },
           onSurfaceKey: (event: KeyEvent) => {
             this.handleKey(event);

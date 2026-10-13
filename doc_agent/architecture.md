@@ -41,7 +41,7 @@
 | `services/ConnectionLauncher.ets` | 保存连接的**发起入口**：按连接的多态子类分发到 `RdpLauncher` / `MoonlightLauncher`（`afterDelete` 亦在此做协议善后），页面不再判断协议 |
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
-| `services/SessionInput.ets` | **两协议共用的输入内核 + `InputSink` 接口**：来源识别、移动合帧、按键/按钮记账、失焦全量释放、锁键顺序、Win 替代、穿透路由、触控板滚动、捏合（Ctrl+滚轮 / 触摸模拟 / 原生触控板）、触屏状态机（见 [`session-layer.md`](session-layer.md) §8）；触控板中键合成委托给 `TouchpadTapFilter` |
+| `services/SessionInput.ets` | **两协议共用的输入内核 + `InputSink` 接口**：来源识别、移动合帧、按键/按钮记账、失焦全量释放、锁键顺序、Win 替代、穿透路由、触控板滚动（直译，无惯性）、系统滚动引擎的增量入口（`handleEngineScroll`，vp→轮转量）、捏合（Ctrl+滚轮 / 触摸模拟 / 原生触控板）、触屏状态机（见 [`session-layer.md`](session-layer.md) §8）；触控板中键合成委托给 `TouchpadTapFilter` |
 | `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `SessionInput`；状态与定时器自持有 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `RdpEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/RdpEventHub.ets` | RDP 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
@@ -57,7 +57,7 @@
 | `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用（去重、目标尺寸、热点、安装、捏合定位光标、可见性归属），见 [`session-layer.md`](session-layer.md) §10 |
 | `services/RdpTelemetry.ets` | 工具栏遥测的 ArkTS 聚合：把原生原始样本换算成速率与每帧均值（口径见 [`rdp-session.md`](rdp-session.md) §5） |
 | `services/MoonlightTelemetry.ets` | Moonlight 工具栏遥测的 ArkTS 聚合：把原生累计样本差分/求均成速率与每帧均值（字段与口径见 [`moonlight-session.md`](moonlight-session.md) §2，原生采样见 [`moonlight-native.md`](moonlight-native.md) §2） |
-| `services/TouchpadWheel.ets` | 触控板 vp 位移 → 高分辨率 RDP 轮转量映射 |
+| `services/TouchpadWheel.ets` | 触控板/滚轮/引擎位移（**vp**）→ 高分辨率 RDP 轮转量映射（`TouchpadWheelMapper`）：名义锚点 `REMOTE_PX_PER_DETENT`（远端每齿 48px）+ 端到端标定倍数 `SCROLL_CALIBRATION`（=4，经验值），mapper 再按 `pxPerVp` 折成本机 vp 口径；三条输入都先落到 vp 再除它 |
 | `services/BackgroundWorker.ets` | UI 线程侧的后台 worker 门面：按 id 匹配请求/应答、按 handle 路由事件（见 §4.4） |
 | `services/BackgroundProtocol.ets` | 后台 worker 的消息形状（请求/应答/事件，见 §4.4） |
 | `services/AudioPlayer.ets` | UI 线程侧音频 worker 门面：按音源（RDP handle / Moonlight 无 handle）start/stop，并把 native 的 `AudioFormat` 事件转发给音频 worker |

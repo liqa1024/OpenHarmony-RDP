@@ -57,6 +57,7 @@ export class AppSettings {
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   touchpadMiddleDoubleTap: boolean = false;
+  useSystemScrollEngine: boolean = false;
   pinchMode: number = PINCH_MODE_WHEEL;
   pinchTouchAngle: number = 30;
   pinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
@@ -100,6 +101,7 @@ export class AppSettings {
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   mlPinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   mlTouchpadMiddleDoubleTap: boolean = false;
+  mlUseSystemScrollEngine: boolean = false;
   mlPinchMode: number = PINCH_MODE_WHEEL;
   mlPinchTouchAngle: number = 30;
   mlPinchTouchDistance: number = DEFAULT_PINCH_TOUCH_DISTANCE;
@@ -156,6 +158,8 @@ export class SettingsStore {
           settings.toolbarTriggerWidthPercent);
       settings.touchpadScrollSpeed =
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
+      settings.useSystemScrollEngine = SettingsStore.readBoolean(store,
+        'useSystemScrollEngine', settings.useSystemScrollEngine);
       settings.pinchZoomSpeed =
         SettingsStore.readNumber(store, 'pinchZoomSpeed', settings.pinchZoomSpeed);
       const legacyPinchTouch: boolean = SettingsStore.readBoolean(store, 'pinchAsTouch', false);
@@ -236,6 +240,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'wolHelpShown', settings.wolHelpShown);
       settings.mlTouchpadScrollSpeed = SettingsStore.readNumber(store, 'mlTouchpadScrollSpeed',
         settings.mlTouchpadScrollSpeed);
+      settings.mlUseSystemScrollEngine = SettingsStore.readBoolean(store,
+        'mlUseSystemScrollEngine', settings.mlUseSystemScrollEngine);
       settings.mlPinchZoomSpeed =
         SettingsStore.readNumber(store, 'mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       settings.mlTouchpadMiddleDoubleTap = SettingsStore.readBoolean(store,
@@ -269,6 +275,7 @@ export class SettingsStore {
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('toolbarTriggerWidthPercent', settings.toolbarTriggerWidthPercent);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
+      store.putSync('useSystemScrollEngine', settings.useSystemScrollEngine);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
       store.putSync('touchpadMiddleDoubleTap', settings.touchpadMiddleDoubleTap);
       store.putSync('pinchMode', settings.pinchMode);
@@ -312,6 +319,7 @@ export class SettingsStore {
       store.putSync('lastSettingsTab', settings.lastSettingsTab);
       store.putSync('wolHelpShown', settings.wolHelpShown);
       store.putSync('mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
+      store.putSync('mlUseSystemScrollEngine', settings.mlUseSystemScrollEngine);
       store.putSync('mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       store.putSync('mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
       store.putSync('mlPinchMode', settings.mlPinchMode);

@@ -1,18 +1,15 @@
 export const WHEEL_DETENT: number = 120;
 // Largest rotation a single RDP pointer event can carry (9-bit wheel field).
 const WHEEL_MAX_CHUNK: number = 0xFF;
-const SCROLL_LINES_PER_DETENT: number = 3;
-const LINE_PX: number = 16;
-const DETENT_CALIBRATION: number = 4;
-export const VP_PER_DETENT: number = SCROLL_LINES_PER_DETENT * LINE_PX * DETENT_CALIBRATION;
+// Remote content px per wheel notch, the host's nominal: SPI_GETWHEELSCROLLLINES = 3 lines x ~16px.
+export const REMOTE_PX_PER_DETENT: number = 48;
+// End-to-end scroll calibration, applied on top of the nominal anchor to match the remote's actual
+// scroll (empirical; see doc_agent/session-layer.md §8). Its own constant, so the nominal one keeps
+// its literal meaning.
+const SCROLL_CALIBRATION: number = 4;
+// Wheel axis is in degrees: 15°/notch -> LINE_HEIGHT_DESKTOP/MOUSE_WHEEL_DEGREES vp (ArkUI's own
+// degree -> vp step, which the mapper's vp口径 then shares unchanged).
 export const WHEEL_VP_PER_DEGREE: number = 21 / 15;
-// Touchpad fling after the fingers lift, mirroring ArkUI Scrollable (API>=13 defaults):
-// distance = velocity * NEW_VELOCITY_SCALE / (friction * |FRICTION_SCALE|), decaying as a
-// critically damped spring (response = 2*PI / (friction * |FRICTION_SCALE|)).
-export const FLING_VELOCITY_SCALE: number = 1.5;
-export const FLING_FRICTION: number = 0.75;
-export const FLING_FRICTION_SCALE: number = 4.2;
-export const FLING_MIN_VELOCITY: number = 240;
 
 export const MIN_SPEED_SCALE: number = 0.2;
 export const MAX_SPEED_SCALE: number = 4;
@@ -27,6 +24,7 @@ export class WheelChunk {
 
 export class TouchpadWheelMapper {
   private speedScale: number = 1;
+  private pxPerVp: number = 1;
   private accumX: number = 0;
   private accumY: number = 0;
 
@@ -34,13 +32,19 @@ export class TouchpadWheelMapper {
     this.speedScale = Math.max(MIN_SPEED_SCALE, Math.min(MAX_SPEED_SCALE, scale));
   }
 
+  setPxPerVp(pxPerVp: number): void {
+    this.pxPerVp = pxPerVp > 0 ? pxPerVp : 1;
+  }
+
   reset(): void {
     this.accumX = 0;
     this.accumY = 0;
   }
 
+  // vertical / horizontal are content displacement in vp.
   map(vertical: number, horizontal: number, out: WheelChunk[]): void {
-    const rotationPerVp: number = (WHEEL_DETENT / VP_PER_DETENT) * this.speedScale;
+    const rotationPerVp: number =
+      (WHEEL_DETENT / (REMOTE_PX_PER_DETENT * SCROLL_CALIBRATION)) * this.pxPerVp * this.speedScale;
     this.accumY += (-vertical) * rotationPerVp;
     this.accumX += horizontal * rotationPerVp;
     this.accumY = TouchpadWheelMapper.drain(false, this.accumY, out);

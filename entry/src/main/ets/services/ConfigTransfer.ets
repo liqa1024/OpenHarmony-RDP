@@ -238,6 +238,8 @@ export class ConfigTransfer {
         settings.toolbarTriggerWidthPercent);
     settings.touchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
+    settings.useSystemScrollEngine = ConfigTransfer.readBoolean(rec,
+      'useSystemScrollEngine', settings.useSystemScrollEngine);
     settings.pinchZoomSpeed =
       ConfigTransfer.readNumber(rec, 'pinchZoomSpeed', settings.pinchZoomSpeed);
     settings.touchpadMiddleDoubleTap = ConfigTransfer.readBoolean(rec,
@@ -321,6 +323,8 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'lastSettingsTab', settings.lastSettingsTab);
     settings.mlTouchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
+    settings.mlUseSystemScrollEngine = ConfigTransfer.readBoolean(rec,
+      'mlUseSystemScrollEngine', settings.mlUseSystemScrollEngine);
     settings.mlPinchZoomSpeed =
       ConfigTransfer.readNumber(rec, 'mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
     settings.mlTouchpadMiddleDoubleTap = ConfigTransfer.readBoolean(rec,

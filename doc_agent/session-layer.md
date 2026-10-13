@@ -150,6 +150,8 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 （`MoonlightSessionBackend.ets`）——RDP 的落地细节见 [`rdp-session.md`](rdp-session.md)，Moonlight 见
 [`moonlight-native.md`](moonlight-native.md)。会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置
 （指针映射、指针空间、各项设置与能力），**不自持输入机制**。
+**唯一例外是「使用系统滚动引擎」**（见本节末）：那时竖直滚动轴事件由会话页挂的透明滚动组件消费，
+它把逐帧增量交回 `SessionInput.handleEngineScroll`，policy 仍然只有一份。
 
 **键表单表**：`utils/KeyMapper.ets` 用一张表同时给出 RDP 的 `scancode`+`extended` 与 Moonlight 的
 `vk`+`extended`（及 lock 位），避免两协议键表漂移；`mapFull` 供 sink 取用，`map` 只回 `scancode`（RDP 侧兼容）。
@@ -192,25 +194,51 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     不消失的触点视觉。应用侧只需保证 Down/Up 成对、**不给同一手指重复下发 DOWN**；合并后的合法性由
     协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。
-- **鼠标滚轮**（非触控板的轴事件）：轴值是**角度**，与触控板**同一条累加路径**——按 ArkUI 自己的换算折成
-  px 后交给同一 `TouchpadWheelMapper`：1 度 → `LINE_HEIGHT_DESKTOP/MOUSE_WHEEL_DEGREES`（=21/15）vp，
-  再 `× dipScale` 折成 px（ArkUI 的 `Dimension.ConvertToPx()`；本端取 `defaultDisplay().densityPixels`，
-  见 `SessionInput.pxPerVp()`）。故与触控板同口径（1 px = 1 远端 px）且**保留高分辨率**（亚齿/多齿不丢）。
-  **不读 `scrollStep`**：本机每齿行数已折在轴值里（MMI `rows × libinput` 每齿），故本机调快则远端同步变快。
-  滚轮用独立 mapper，不受「触控板滚动速度」设置影响。
-- **触控板双指滚动**（`sourceTool === TOUCHPAD`）：`axisVertical/Horizontal` 是本次事件的**位移**
-  （与 ArkUI 内容位移同单位）⇒ `services/TouchpadWheel.ets` 按 `120 / VP_PER_DETENT × 速度倍率`
-  累加成高分辨率轮转量。口径是**内容口径**（与窗口/画面尺寸无关，缩小窗口不改变手感，故不按画面缩放
-  折算）：`VP_PER_DETENT` = 远端每齿的内容量，标称 `3 行 × 16px = 48`（Windows 默认
-  `SPI_GETWHEELSCROLLLINES=3`），再按实测标定为 **192**（对鸿蒙原生约 4× 偏快）；远端为非常规行高/每齿
-  行数属用户或应用有意设置，不探测、不纠正。设置「滚动速度」只缩放轮转量、不改变发射粒度。
-  **原生轴值在 MMI 侧已先过一条按滑动速度分段的「加速曲线」**（`service/mouse_event_normalize` → Rust
-  `get_axis_gain_touchpad`，非捕获模式直接以曲线值替换轴值）——我们读到的是**加速后**的轴值，故与原生
-  一样天然非线性，**无需复刻曲线**。
-- **触控板抛滑**（抬手后惯性）：原生 `Scrollable` 只对**触控板**轴手势 fling（`IsMouseWheelScroll` 排除
-  `TOUCHPAD`，滚轮不 fling）。`SessionInput` 按原生模型补一段：短窗口估速 → `距离 = 速度 × 1.5 / (friction
-  × |FRICTION_SCALE|)`，按**临界阻尼弹簧** `x(t) = 1 − (1+ωt)e^{−ωt}`（`ω = friction × |FRICTION_SCALE|`）
-  逐帧发轮转量；低于阈值（240）不发。常量取自 ArkUI（`FLING_*`）。
+- **鼠标滚轮**（非触控板的轴事件，**直译模式**路径；开了系统滚动引擎则与触控板一样交给引擎，见下）：
+  轴值是**角度**，与触控板**同一条累加路径**——按 ArkUI 自己的换算落到 vp 后交给同一
+  `TouchpadWheelMapper`：1 度 → `LINE_HEIGHT_DESKTOP/MOUSE_WHEEL_DEGREES`（=21/15）vp
+  （`AxisEvent::ConvertToOffset` 对 `SourceTool::MOUSE` 就是这个换算，`event_constants.h` 给出
+  `MOUSE_WHEEL_DEGREES = 15` / `LINE_HEIGHT_DESKTOP = 21vp`），本机再 `× WHEEL_VP_PER_DEGREE` 落到同一
+  口径。故与触控板同口径（**vp**），**亚齿/多齿都按增量发**（保留高分辨率）。本机每齿行数已折在轴值里
+  （MMI `rows × libinput` 每齿），`scrollStep` 因此冗余；本机调快则远端同步变快。滚轮用独立 mapper，
+  保持原速。
+- **触控板双指滚动**（`sourceTool === TOUCHPAD`）：轴值是本次事件的**位移像素**（`px`；原生轴值
+  在 MMI 侧已先过一条按滑动速度分段的加速曲线，我们读到的就是**加速后**的值，按原样使用）。映射前
+  **折成 vp**（`÷ pxPerVp`）与滚轮/引擎统一口径。滚动有**两种模式**，由按协议各存一份的
+  「使用系统滚动引擎」决定（默认关）：
+  - **关（默认，直译）**：`TouchpadWheel.ets` 按
+    `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp × 速度倍率` 把 vp 位移累加成高分辨率
+    轮转量，**无惯性**。口径与窗口/画面尺寸无关（缩小窗口手感不变）；远端行高/每齿行数取用户或应用的
+    设置，按原样透传。「滚动速度」只缩放轮转量，发射粒度不变。
+  - **开（系统滚动引擎）**：竖直轴事件交给 `SessionPicture` 里一个**透明的原生 `Scroll`**，跟手滚动、
+    加速、**惯性抛滑与打断**全由系统负责；我们只看 `onWillScroll` 的逐帧偏移（**vp**，正是 mapper 口径），
+    直接走**同一条** `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp` 映射。两模式共用同一个
+    常数与口径，同速是构造保证。约束：
+    - `onWillScroll` 的签名是 **`(xOffset, yOffset, scrollState, scrollSource) => void | OffsetResult`**
+      （`scroll.d.ts`，**四个**参数，`xOffset/yOffset` 是本帧**按轴拆开**的 vp 位移）。竖直叠层只用
+      `yOffset`；它与 `axisVertical` **同号**（已实测），所以直接喂同一条映射。
+    - **滚轮与触控板分流**：`scrollSource` 为 `DRAG`/`FLING` 的走触控板（吃「滚动速度」），滚轮是
+      `OTHER_USER_INPUT`，与直译路径一致保持原速。
+    - 组件自身偏移**钉住**（返回 `OffsetResult{xOffset:0,yOffset:0}`，假内容静止）。`initialOffset` 取
+      `ENGINE_FRAME_HEADROOM_VP`、假内容高 `视口 + 2×余量`，让**可滚范围**在两侧都有空间：框架会先把
+      本帧增量按可滚范围**钳制**再上报，两侧留量才能两个方向都拿到完整增量。
+    - `HitTestMode.Transparent` 是命门——轴事件归它，**鼠标 / 触摸 / 键盘 / 焦点归 XComponent**；
+      `enableScrollWithMouse` 取默认关，鼠标左键拖动留给 XComponent，远端拖选可用。
+    - **只做竖直轴**：`Scroll` 是**单轴**滚动组件，取远端最常用的竖直方向，水平手势走直译路径；
+      `scrollBar(Off)` 显式关（`Scroll` 默认是 Auto，会画出滚动条）。
+    - 引擎开着时 `consumesAxis` 吞掉**非捏合**的滚动轴事件（捏合归 `SessionInput`），单份处理；
+      RDP **直接缩放**在 `viewScale > 1` 时滚动是画面平移，此时让给会话页做平移。
+    - **口径是 vp**：三条输入（直译触控板、直译滚轮、引擎的触控板+滚轮）都先落到**本机内容 vp**，再经
+      `TouchpadWheelMapper` 折成轮转量，三条路**共用同一条**
+      `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp × 速度倍率`，改它 = 等比改"远端滚动
+      总幅度"（方向、惯性曲线、发射粒度、捏合、按键各自独立）。
+    - **两个量分开**：`REMOTE_PX_PER_DETENT`（=48）是**名义锚点**（远端每齿标称内容量：`3 行 × 16px`）；
+      `SCROLL_CALIBRATION`（=4）是**端到端标定倍数**（实测定值）。分开后名义常数保持字面含义、标定倍数
+      独立可调；有效"每齿内容量" = 48 × 4 = 192。
+    - **本机换算与远端口径分列**：`pxPerVp`（本机 px↔vp）把各路输入统一到 vp 口径——触控板 `÷`，引擎与
+      滚轮（ArkUI 的 `21/15` 已是 vp）按原值进入。手感由上面两个常数决定。
+  - **为何借道**：ArkUI 的滚动惯性只在 `List`/`Grid`/`Scroll`/`WaterFlow` 内部的 `Scrollable` 私有 tick
+    里（速度估计、摩擦动画、连续拖拽增益、打断），借官方组件即可拿到完整滚动物理。
 - **触控板捏合**（设置「触控板两指捏合模式」，三选一）：
   - **Ctrl+滚轮**（默认）：按 `1/(20×速度)` 线性映射为 **Ctrl+滚轮**（「缩放速度」），由远端应用自己缩放。
   - **触摸模拟**：在鼠标位置**合成两个原生触点**做真实双指缩放——距离 1:1、初始间距取窗口较短边的百分比
@@ -250,8 +278,9 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     `false`，UI 保持普通按键通路而不是把键盘丢掉。
 - **锁定键（Caps / Num / Scroll Lock）路径**：读本机锁定态并与已下发值比对后同步远端；RDP 的 PDU 落地见
   [`rdp-session.md`](rdp-session.md)，Moonlight 由主机自行维护。
-- **捏合与触控板的协议归属**：捏合（各三档）、触控板双指滚动、双指双击→中键都在 `SessionInput`，**两协议共享**；
-  各协议的落地（RDP 的 RDPEI/直达缩放，Moonlight 的 `LiSendTouchEvent`/原生 precision touchpad）见对应协议文档。
+- **捏合与触控板的协议归属**：捏合（各三档）、触控板双指滚动（直译模式，以及引擎模式的增量落地）、
+  双指双击→中键都在 `SessionInput`，**两协议共享**；各协议的落地（RDP 的 RDPEI/直达缩放，Moonlight 的
+  `LiSendTouchEvent`/原生 precision touchpad）见对应协议文档。
 
 ## 9. 工具栏（显示与自动隐藏，共享）
 
