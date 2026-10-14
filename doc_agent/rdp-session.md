@@ -39,10 +39,9 @@ FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX
 
 - **触屏触点**：RDPEI 侧兜住合帧后的触点状态序列合法性（首条必须 DOWN 等），见
   [`rdp-native.md`](rdp-native.md) §3。
-- **触屏高刷新率**（全局设置）：FreeRDP `rdpei` 默认约 50Hz 合帧，是与桌面客户端的主要差距；补丁导出的
-  运行时全局（弱符号引用）在开启时把合帧间隔**从 20ms 降到 8ms**（50Hz → 125Hz）。这个间隔是**刷新周期的
-  下限**，也就是远端触屏输入速率的**上限**：取 0 等于"每次输入轮询都发"，速率就只由网络决定 ⇒ 一次拖拽
-  变成无界的接触点流。未打补丁的 FreeRDP 上自动降级。
+- **触屏高刷新率**（全局设置）：选中 ArkTS 触屏合帧器的窗口——开 8ms（约 125Hz）、关 20ms（约 50Hz），
+  两协议一致（见 [`session-layer.md`](session-layer.md) §8）。rdpei 只负责把喂进的触点状态组装成合法帧
+  （见 [`rdp-native.md`](rdp-native.md) §3）。
 - **触控板双指滚动**：`TouchpadWheel` 累加出的轮转量按 **9bit 二补码（120=1 齿、单事件 ≤0xFF 分片）** 发给
   RDP，横向发 `HWHEEL`，对齐 FreeRDP 的 SDL 实现。
 - **直接缩放**（RDP 呈现器专有，Moonlight 不暴露）：**不向远端发任何数据**，只在本机把画面放大，所以会话

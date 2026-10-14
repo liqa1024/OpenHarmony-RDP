@@ -52,14 +52,6 @@ using HmrdpAudioSink = int (*)(void* context, const void* data, size_t size,
 
 extern "C" void HmrdpSetAudioSink(HmrdpAudioSink sink);
 
-// Defined by the patched rdpei client; weak, so libhmrdp links against stock FreeRDP.
-extern "C" void HmrdpSetTouchFrameInterval(UINT32 intervalMs) __attribute__((weak));
-
-// Touch pacing for the patched rdpei client: the interval is a floor on the flush
-// period (rate ceiling), and neither value is zero so the network is not the only bound.
-static constexpr UINT32 kTouchFrameIntervalDefaultMs = 20;
-static constexpr UINT32 kTouchFrameIntervalHighRateMs = 8;
-
 // Raw (still ZGX-compressed) GFX chunk sink, installed only with the HmRdp GFX
 // capture patch; the write happens first so its disk I/O never lands in the measured phases.
 extern "C" void HmrdpGfxRawCapture(const BYTE* data, UINT32 size) {
@@ -1497,13 +1489,6 @@ bool Session::SendTouch(uint32_t flags, int32_t finger, uint32_t pressure, int32
     touchLog++;
   }
   return freerdp_client_handle_touch(client, flags, finger, pressure, x, y) ? true : false;
-}
-
-void Session::SetTouchHighRate(bool enabled) {
-  if (HmrdpSetTouchFrameInterval != nullptr) {
-    HmrdpSetTouchFrameInterval(enabled ? kTouchFrameIntervalHighRateMs
-                                       : kTouchFrameIntervalDefaultMs);
-  }
 }
 
 void Session::SetRdpCursor(bool enabled) {

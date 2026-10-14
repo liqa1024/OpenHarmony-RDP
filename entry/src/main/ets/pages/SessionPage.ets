@@ -17,6 +17,7 @@ import { RemoteCursor, RemoteCursorUpdate } from '../services/RemoteCursor';
 import { RdpInputSink, RdpSessionBackend } from '../services/RdpSessionBackend';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { SessionInput } from '../services/SessionInput';
+import { TOUCH_MOVE_INTERVAL_DEFAULT_MS, TOUCH_MOVE_INTERVAL_HIGH_RATE_MS } from '../services/input/InputPolicy';
 import { SessionSignal } from '../model/SessionSignal';
 import { RdpCounters } from '../services/RdpTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -196,7 +197,6 @@ struct SessionPage {
     this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
     this.scrollEngine = !settings.scrollEngineFallback;
-    RdpNative.applyTouchHighRate(settings.touchHighRate);
     // Never ask for Vulkan presentation on a device that cannot do it (covers a config imported from another device).
     RdpNative.applyHardwareAccel(settings.hardwareAccel
       && DeviceCapabilities.hardwareAccel().supported);
@@ -388,6 +388,8 @@ struct SessionPage {
     input.setPointerSpace(this.desktopWidth, this.desktopHeight);
     input.setPointMapper((x: number, y: number): number[] => this.mapPointer(x, y));
     input.setTouchEnabled(true);
+    input.setTouchMoveIntervalMs(settings.touchHighRate
+      ? TOUCH_MOVE_INTERVAL_HIGH_RATE_MS : TOUCH_MOVE_INTERVAL_DEFAULT_MS);
     input.setEngineEnabled(this.scrollEngine);
     input.setTouchpadScrollSpeed(settings.touchpadScrollSpeed);
     input.setTouchpadMiddleDoubleTap(settings.touchpadMiddleDoubleTap);

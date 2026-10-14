@@ -160,8 +160,6 @@ class Session : public std::enable_shared_from_this<Session> {
 
   bool SetSuppressed(bool suppressed);
 
-  static void SetTouchHighRate(bool enabled);
-
   static void SetRdpCursor(bool enabled);
 
   static void SetHardwareAccel(bool enabled);

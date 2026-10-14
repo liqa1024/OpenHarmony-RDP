@@ -41,8 +41,9 @@
 | `services/ConnectionLauncher.ets` | 保存连接的**发起入口**：按连接的多态子类分发到 `RdpLauncher` / `MoonlightLauncher`（`afterDelete` 亦在此做协议善后），页面不再判断协议 |
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
-| `services/SessionInput.ets` | **两协议共用的输入内核 + `InputSink` 接口**：来源识别、移动合帧、按键/按钮记账、失焦全量释放、锁键顺序、Win 替代、穿透路由、轴向滚动的**唯一策略家**（系统滚动引擎的逐帧增量 `handleEngineScroll`（两轴，vp→轮转量）、逐帧归属 `engineAcceptsFrame`、轴路由判定 `consumesAxis`；直译路径＝开发者回退）、捏合（Ctrl+滚轮 / 触摸模拟 / 原生触控板）、触屏状态机（见 [`session-layer.md`](session-layer.md) §8）；触控板中键合成委托给 `TouchpadTapFilter` |
-| `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `SessionInput`；状态与定时器自持有 |
+| `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）+ `InputSink` 接口**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
+| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `RateCoalescer`（连续位置流合帧）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口） |
+| `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `PointerInput`；状态与定时器自持有 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `RdpEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/RdpEventHub.ets` | RDP 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
 | `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入由 `MoonlightInputSink` 落 `LiSend*`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 原生触控板接入点） |

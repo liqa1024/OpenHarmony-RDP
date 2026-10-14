@@ -143,9 +143,11 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 
 ## 8. 输入分流（两协议共享策略）
 
-**分层**：输入的**策略**（来源识别、移动合帧、按键/按钮记账、失焦全量释放、锁键顺序、Win 键替代、
-穿透路由、触控板滚动与中键合成、捏合、触屏状态机）集中在协议中立的 `services/SessionInput.ets`，
-由 `InputSink` 接口下发（`key/metaKey/unicode/lockState/pointerMove/button/touch/touchpadFrame/scroll`）。
+**分层**：输入的**策略**在协议中立的 `services/input/` 下按关注点拆分——`PointerInput` 指针、`KeyInput`
+键盘、`TouchInput` 触屏、`TouchpadInput` 触控板、`WheelInput` 轴向滚动、`PinchInput` 捏合，共用
+`RateCoalescer` 合帧、`HeldInputs` 按住账本、`InputPolicy` 常量与共享指针几何；`services/SessionInput.ets`
+是只做编排的**瘦 Facade**，经 `InputSink` 接口下发动词
+（`key/metaKey/unicode/lockState/pointerMove/button/touch/touchpadFrame/scroll`）。
 两协议各一个 sink 落地动词：**`RdpInputSink`**（`RdpSessionBackend.ets`）与 **`MoonlightInputSink`**
 （`MoonlightSessionBackend.ets`）——RDP 的落地细节见 [`rdp-session.md`](rdp-session.md)，Moonlight 见
 [`moonlight-native.md`](moonlight-native.md)。会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置
@@ -181,19 +183,20 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   Unicode 码点 / Win 替代键，鼠标=按钮标志），失焦时统一补发抬起并松开触屏与捏合；
   **新增输入通路必须进这份账**。
 - **鼠标按键与移动分开**：移动与按键事件**分开送**，按键事件**不带移动标志**，否则远端会忽略点击。
-- **鼠标移动要合帧**：`onMouse` 的 Move 按设备轮询率到达（高回报率鼠标/触控板可达数百 Hz），逐条转发
-  = 每条一个输入报文，且**链路越快背压越小、越拦不住这股流量**。故移动按 `MOUSE_MOVE_MIN_INTERVAL_MS`
-  上限节流（约 125Hz）：只保留最新位置、必要时补一次尾帧，保证指针不会停在按下/抬起之外的位置；
-  **任何非 Move 指针事件（按下/抬起）先冲掉待发移动**，否则点击会落在旧坐标上。这是**输入节流，不是显示帧率**。
+- **连续位置流要合帧**：`onMouse` 的 Move 与触屏 Move 都按设备轮询率到达，逐条转发 = 每条一个输入报文，且
+  链路越快越拦不住。两者共用 `RateCoalescer`：只保留最新值、按 `InputPolicy` 窗口上限节流、必要时补一次
+  尾帧；**非 Move 的同类事件（按下/抬起、触屏 Down/Up/Cancel）先冲掉该流待发位置**，否则点击落在旧坐标。
+  窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，
+  不是显示帧率。
 - **触屏**（只认 `event.source === SourceType.TouchScreen`；手指 id `+1` 避开 0 空槽）：
   - `handleMouse` 要过滤同源兼容鼠标事件，避免"一触两通路"产生杂点击；
   - 重复 `TouchType.Down` 忽略（补发 UP+DOWN 会变成"松开+重按"的假点击）；
   - `TouchType.Cancel` **不代表抬指**（move 会被打断）：挂起不抬指，若附近随后出现新的 Down/Move
     判定为同指续接触、只发 MOTION，超过 `CANCEL_HOLD_MS` 无续接触才真正 UP；
-  - 远端的长按右键菜单依赖**触点状态序列合法**：触点是按帧合并发出去的，一个触点的**首条上报必须是
-    DOWN**；首条若成了 UPDATE/UP，远端不会 engage 它——长按在远端成不了 press-and-hold，还会留下一个
-    不消失的触点视觉。应用侧只需保证 Down/Up 成对、**不给同一手指重复下发 DOWN**；合并后的合法性由
-    协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
+  - 远端的长按右键菜单依赖**触点状态序列合法**：触点的 Move 由 ArkTS 侧的 `RateCoalescer` 合帧、Down/Up
+    立即发，一个触点的**首条上报因此必须是 DOWN**；首条若成了 UPDATE/UP，远端不会 engage 它——长按在远端
+    成不了 press-and-hold，还会留下一个不消失的触点视觉。应用侧只保证 Down/Up 成对、**不给同一手指重复下发
+    DOWN**；合并后的合法性由协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。
 - **轴向滚动（触控板双指 + 鼠标滚轮，两个轴向）：滚轮默认全部交给系统滚动引擎；触控板双指在主机支持专用通道时改走触点通道**：
   `SessionPicture` 挂的 `Scroll2D`（`components/Scroll2D.ets`）在 XComponent

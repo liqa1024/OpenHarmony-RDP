@@ -172,9 +172,6 @@ export interface RdpAudioFormat {
 /** The session's current audio format, for a renderer that starts after the AudioFormat event. */
 export const audioFormat: (handle: number) => RdpAudioFormat;
 
-/** Process-global RDPEI frame pacing: forward touches at full rate instead of ~20ms (50Hz) coalescing. */
-export const setTouchHighRate: (enabled: boolean) => boolean;
-
 /** Process-global remote cursor switch; applied when a session connects. */
 export const setRdpCursor: (enabled: boolean) => boolean;
 

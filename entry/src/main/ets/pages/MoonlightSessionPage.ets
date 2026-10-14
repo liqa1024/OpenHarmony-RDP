@@ -11,6 +11,7 @@ import { ML_HOST_FEATURE_CLIPBOARD_IMAGE, ML_HOST_FEATURE_CLIPBOARD_TEXT, ML_HOS
   ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { SessionInput } from '../services/SessionInput';
+import { TOUCH_MOVE_INTERVAL_FALLBACK_MS } from '../services/input/InputPolicy';
 import { RemoteCursor } from '../services/RemoteCursor';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
@@ -343,6 +344,7 @@ struct MoonlightSessionPage {
     input.setWinKeySubstitute(settings.mlWinKeySubstitute);
     input.setPointerSpace(this.streamWidth, this.streamHeight);
     input.setPointMapper((x: number, y: number): number[] => this.mapPoint(x, y));
+    input.setTouchMoveIntervalMs(TOUCH_MOVE_INTERVAL_FALLBACK_MS);
     input.setTouchpadScrollSpeed(settings.mlTouchpadScrollSpeed);
     input.setTouchpadMiddleDoubleTap(settings.mlTouchpadMiddleDoubleTap);
     input.setPinchZoomSpeed(settings.mlPinchZoomSpeed);

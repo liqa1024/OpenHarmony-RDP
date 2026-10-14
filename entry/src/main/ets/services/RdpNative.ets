@@ -1,7 +1,7 @@
 import { clearSurface, connect, createSession, destroySession, disconnect,
   sendKey, sendMouse, sendTouch,
   sendUnicode, setRdpCursor, setSurface,
-setSuppressed as setSuppressedNative, setTouchHighRate, updateSurface, setHardwareAccel,
+setSuppressed as setSuppressedNative, updateSurface, setHardwareAccel,
 setShortcutPassthrough as setShortcutPassthroughNative,
 setGfxCapture,
 setClipboardFileOffer, requestRemoteFileContents,
@@ -24,10 +24,6 @@ export class RdpNative {
   private handle: number = -1;
   private listener: RdpEventListener | undefined = undefined;
   private telemetry: RdpTelemetryAggregator = new RdpTelemetryAggregator();
-
-  static applyTouchHighRate(enabled: boolean): void {
-    setTouchHighRate(enabled);
-  }
 
   static applyRdpCursor(enabled: boolean): void {
     setRdpCursor(enabled);

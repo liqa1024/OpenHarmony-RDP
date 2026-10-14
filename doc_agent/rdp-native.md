@@ -42,11 +42,10 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
 
 **运行时行为钩子**（都用**弱符号**引用，未打补丁的 FreeRDP 上自动降级）
 
-- **触屏帧间隔可调**：上游把接触点合并成约 50Hz 一帧，补丁导出运行时全局 `HmrdpSetTouchFrameInterval`；
-  设置项「触屏-高刷新率」开则传 8ms（125Hz）。**间隔是速率上限**，不要传 0（那样每次输入轮询都发，
-  速率只剩网络这一道约束）。
-- **合并后的触点帧必须仍是合法状态序列**（patch step 26）：一帧里每个触点只出现一次，所以应用在一个帧
-  窗口（默认 20ms / 高刷 8ms）内产生的 Down/Move/Up 会被合并进同一条记录。上游只保留最新的 flags，于是
+- **触屏帧间隔**（patch step 06）：去掉上游 ~20ms 的固定合帧门限，rdpei 每次唤醒即发；速率由 ArkTS 的
+  合帧窗口决定（见 [`session-layer.md`](session-layer.md) §8）。
+- **合并后的触点帧必须仍是合法状态序列**（patch step 26）：一帧里每个触点只出现一次，所以应用在一次唤醒
+  窗口内产生的 Down/Move/Up 会被合并进同一条记录。上游只保留最新的 flags，于是
   「DOWN 之后同一窗口内又来一个 Move」会让远端看到的首条记录是 `UPDATE|INRANGE|INCONTACT`——而进入
   ENGAGED 的合法迁移**只有** `DOWN|INRANGE|INCONTACT`（状态表在 `channels/rdpei/client/rdpei_main.h`）。
   远端因此从不 engage 这个触点：长按在那边成不了 press-and-hold（**不出右键菜单**），它为该畸形触点画下的
