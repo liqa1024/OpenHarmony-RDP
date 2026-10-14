@@ -1,5 +1,10 @@
 import { REVEAL_HINT_FADE_MS, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER } from '../components/SessionChrome';
 
+// How long the first pull's handle stays up: a second pull inside this window reveals the toolbar,
+// so it is the touch double-gesture interval.
+const TOUCH_HINT_HOLD_MS: number = 2000;
+const TOUCH_BAR_IN_MS: number = 180;
+
 export interface ToolbarAutoHideHost {
   isArmed: () => boolean;
   isFullscreen: () => boolean;
@@ -11,6 +16,8 @@ export interface ToolbarAutoHideHost {
   setShow: (show: boolean) => void;
   revealFill: () => number;
   animateReveal: (fill: number, durationMs: number, curve: Curve) => void;
+  animateTouchBar: (fill: number, durationMs: number, curve: Curve) => void;
+  showTouchTip: () => void;
 }
 
 export class ToolbarAutoHide {
@@ -18,6 +25,11 @@ export class ToolbarAutoHide {
   private pointerZone: number = TOOLBAR_ZONE_NONE;
   private revealTimer: number = -1;
   private hideTimer: number = -1;
+  private touchHintTimer: number = -1;
+  private touchBarShown: boolean = false;
+  // A touch reveal outlives the gesture: with no pointer there is nothing to re-evaluate the zone,
+  // so the strip stays until the picture is touched (or a real pointer takes the judgement over).
+  private touchRevealed: boolean = false;
 
   constructor(host: ToolbarAutoHideHost) {
     this.host = host;
@@ -28,12 +40,53 @@ export class ToolbarAutoHide {
       return;
     }
     this.pointerZone = zone;
+    if (zone !== TOOLBAR_ZONE_NONE) {
+      this.touchRevealed = false;
+    }
     this.refresh();
+  }
+
+  // Touch has no pointer, so a pull-down is the only way back to the toolbar: the first pull
+  // raises the handle (and the system tip that teaches it), the second one inside TOUCH_HINT_HOLD_MS
+  // reveals the toolbar.
+  noteTouchSwipe(): void {
+    if (!this.host.isArmed() || !this.host.isFullscreen() || !this.host.isConnected()
+      || this.host.isPinned()) {
+      return;
+    }
+    if (this.touchHintTimer !== -1) {
+      this.clearTouchHint();
+      this.cancelRevealTimer();
+      this.cancelHideTimer();
+      this.touchRevealed = true;
+      this.host.setShow(true);
+      return;
+    }
+    this.showTouchBar();
+    this.host.showTouchTip();
+    this.touchHintTimer = setTimeout((): void => {
+      this.touchHintTimer = -1;
+      this.hideTouchBar();
+    }, TOUCH_HINT_HOLD_MS);
+  }
+
+  noteTouchDismiss(): void {
+    this.touchRevealed = false;
+    this.clearTouchHint();
+    if (this.host.show()) {
+      this.host.setShow(false);
+    }
   }
 
   refresh(): void {
     if (!this.host.isArmed()) {
       return;
+    }
+    if (this.host.show() || !this.host.isFullscreen() || !this.host.isConnected()) {
+      this.clearTouchHint();
+    }
+    if (!this.host.show()) {
+      this.touchRevealed = false;
     }
     if (!this.willReveal()) {
       this.hideRevealHint();
@@ -62,7 +115,9 @@ export class ToolbarAutoHide {
     }
     this.cancelRevealTimer();
     if (this.pointerZone === TOOLBAR_ZONE_NONE) {
-      this.scheduleHide();
+      if (!this.touchRevealed) {
+        this.scheduleHide();
+      }
       return;
     }
     this.host.setShow(true);
@@ -110,6 +165,31 @@ export class ToolbarAutoHide {
   private clearTimers(): void {
     this.cancelRevealTimer();
     this.cancelHideTimer();
+    this.clearTouchHint();
+  }
+
+  private clearTouchHint(): void {
+    if (this.touchHintTimer !== -1) {
+      clearTimeout(this.touchHintTimer);
+      this.touchHintTimer = -1;
+    }
+    this.hideTouchBar();
+  }
+
+  private showTouchBar(): void {
+    if (this.touchBarShown) {
+      return;
+    }
+    this.touchBarShown = true;
+    this.host.animateTouchBar(1, TOUCH_BAR_IN_MS, Curve.FastOutSlowIn);
+  }
+
+  private hideTouchBar(): void {
+    if (!this.touchBarShown) {
+      return;
+    }
+    this.touchBarShown = false;
+    this.host.animateTouchBar(0, REVEAL_HINT_FADE_MS, Curve.FastOutSlowIn);
   }
 
   private cancelRevealTimer(): void {

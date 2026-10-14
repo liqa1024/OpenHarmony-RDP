@@ -21,6 +21,9 @@ export const TOOLBAR_ZONE_BAR: number = 2;
 export const REVEAL_HINT_WIDTH: number = 96;
 export const REVEAL_HINT_HEIGHT: number = 3;
 export const REVEAL_HINT_FADE_MS: number = 140;
+// The touch pull-down handle is the hover line's twin: same slot, same width, same expanding fill —
+// only thicker, which is what tells a handle from a progress line.
+export const TOUCH_BAR_HEIGHT: number = 4;
 
 @Component
 export struct ToolbarChip {
@@ -147,6 +150,24 @@ export struct ToolbarRevealHint {
       .opacity(this.fill)
       // A hint only: the pointer events the reveal band and the bar depend on
       // must pass straight through it.
+      .hitTestBehavior(HitTestMode.None)
+  }
+}
+
+// The touch pull-down handle. The text that teaches it is a system tip, not part of the handle:
+// a label riding along with the bar read as one slab of chrome.
+@Component
+export struct ToolbarTouchBar {
+  @Prop fill: number = 0;
+
+  build() {
+    Row()
+      .width(REVEAL_HINT_WIDTH * this.fill)
+      .height(TOUCH_BAR_HEIGHT)
+      .borderRadius(TOUCH_BAR_HEIGHT / 2)
+      .backgroundColor(TOOLBAR_FG)
+      .opacity(this.fill)
+      // A hint only: the second pull has to reach the picture through it.
       .hitTestBehavior(HitTestMode.None)
   }
 }

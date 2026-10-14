@@ -227,6 +227,9 @@ Facade**，经 `InputSink` 接口下发动词
     成不了 press-and-hold，还会留下一个不消失的触点视觉。应用侧只保证 Down/Up 成对、**不给同一手指重复下发
     DOWN**；合并后的合法性由协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。
+  - **触点可被外层持有再回放**：会话外壳的触屏下拉唤出判定器（§9）能从 `Down` 起扣住一个触点，判定后经
+    `TouchInput` 的逐点入口按原序回放，因此这条通路必须能以"一个纯样本"（相位 + 手指 id + 坐标 + 压力）
+    入账，而不只接受 `TouchEvent`。
 - **轴向滚动（触控板双指 + 鼠标滚轮，两个轴向）：滚轮默认全部交给系统滚动引擎；触控板双指在主机支持专用通道时改走触点通道**：
   `SessionPicture` 挂的 `Scroll2D`（`components/Scroll2D.ets`）在 XComponent
   上叠**两个透明的单轴原生 `Scroll`（一竖一横）**，跟手、加速、**惯性抛滑与打断**全由系统负责（ArkUI 的滚动惯性
@@ -359,6 +362,24 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
 - **触发带有进度提示**：指针在顶部触发带停留期间，屏幕顶边有一条**随停留进度填充的细线**（时长与
   `hoverDelay` 一致，因此填充完成与工具栏滑出同时发生；指针一离开触发带就回退消失），预告工具栏
   即将出现。它只是提示，不参与上面的判定：指针事件必须能穿过它到达画面与工具栏。
+- **触屏唤出（无指针时的唯一入口）**：悬停档在纯触屏设备上永远不会触发，所以工具栏改为**顶部边缘下拉两次**：
+  第一次下拉贴顶升起一条**抓取横条**（`ToolbarTouchBar`：与 `ToolbarRevealHint` **同槽位、同宽、同一套
+  由 fill 经 `animateTo` 从中心展开的动效**，只比它厚，无底板——提示线与手柄因此只差"厚度"这一件事），
+  窗口 `TOUCH_HINT_HOLD_MS` 内的
+  第二次下拉唤出工具栏；窗口内没有第二次则横条自行淡出、手势重新从"第一次"算起。**工具栏已显示时反向收口**：
+  画面上的一次触摸（点击或拖动）即收起工具栏。
+  - **横条只做手柄，教学文案走系统提示**（页面的 toast，首次下拉时一次性弹出）：文字挂在横条上会变成
+    一块漂浮的牌子，与系统手柄的观感不符。
+  - **判据只用"下一次输入就会刷新"的状态**：只认 `SourceType.TouchScreen`、从窗口顶部触发带
+    （`REVEAL_BAND_VP`，与鼠标的顶部带同义但按触摸尺度取值）起手、以下滑为主（横向越限即放弃）的
+    **单指**触点；多指加入的整个手势交回触摸通路。
+  - **归属靠持有触点，不靠命中测试**：手势从 `Down` 起扣住该触点——判定为唤出/收起就**整段丢弃**
+    （远端看不到这次拖动），否则把扣住的样本**按原序回放**给触摸通路。因此顶部区域既不是远端触摸的
+    死区，也不会在下拉唤出时向远端泄露一次拖动。回放走 `TouchInput` 的逐点入口，`TouchEvent` 不跨回调持有。
+  - **只在本协议真的把触摸转给远端时启用**（`SessionInput.touchForwarded()`）：否则触摸会被合成鼠标事件
+    （`SourceType` 仍是触屏）走另一条通路，扣住的触点收不回来。
+  - 扣住触点期间仍要通知滚动引擎"有直接触摸接触"（`noteTouchContact`），否则 `Scroll2D` 的帧会被当成
+    滚轮滚出去。
 
 ## 10. 远端光标安装器（共享）
 
@@ -401,7 +422,8 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
 
 ## 11. 共享单元（指针）
 
-`model/SessionSignal`（协议无关信号）、`services/ToolbarAutoHide`（工具栏自动隐藏判定）、
+`model/SessionSignal`（协议无关信号）、`services/ToolbarAutoHide`（工具栏自动隐藏判定与触屏唤出/收起的提示窗口）、
+`services/TouchRevealGesture`（触屏顶部下拉唤出判定器：持有触点、判定后回放或丢弃）、
 `services/RemoteCursor`（远端光标安装器）、`services/ForegroundReconnect`（回到前台自动重连）、
 `services/ClipboardController` + `services/ClipboardBridge` + `utils/LocalPasteboard`
 （协议中立的手动剪贴板：远端缓存 / 复制粘贴语义 / 本机读写；见 [`rdp-clipboard.md`](rdp-clipboard.md) §0）、

@@ -14,6 +14,8 @@ export interface SessionShellHost {
   setToolbarVisible: (visible: boolean) => void;
   setFullscreen: (fullscreen: boolean) => void;
   setRevealFill: (fill: number) => void;
+  animateTouchBar: (fill: number, durationMs: number, curve: Curve) => void;
+  showTouchTip: () => void;
   isFullscreen: () => boolean;
   isToolbarVisible: () => boolean;
   revealFill: () => number;

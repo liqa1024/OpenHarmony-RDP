@@ -225,6 +225,21 @@ export class SessionInput {
     this.touch.handleTouch(event);
   }
 
+  // Replay entry for a caller that withheld a contact (the toolbar reveal gesture) and is now
+  // handing it back to the ordinary touch path.
+  handleTouchPoint(phase: TouchType, id: number, x: number, y: number,
+    pressure: number | undefined): void {
+    this.touch.handleTouchPoint(phase, id, x, y, pressure);
+  }
+
+  noteTouchContact(): void {
+    this.touch.noteDirectContact();
+  }
+
+  touchForwarded(): boolean {
+    return this.touch.isEnabled();
+  }
+
   // Frames carry neither position nor source: the wheel/touchpad split comes from the raw axis events.
   noteAxisEvent(event: AxisEvent): void {
     this.wheel.noteAxisEvent(event);

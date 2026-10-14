@@ -56,7 +56,8 @@ export class TouchInput {
   }
 
   // Fired on every direct touch Down, even while touch is disabled, so the scroll engine can
-  // yield the gesture that follows to the touch path.
+  // yield the gesture that follows to the touch path. A caller that withholds a contact fires it
+  // itself (noteDirectContact) at the real Down, before deciding to replay or drop.
   setDirectContactListener(listener: () => void): void {
     this.directContactListener = listener;
   }
@@ -77,17 +78,38 @@ export class TouchInput {
     }
     for (let i = 0; i < changed.length; i++) {
       const touch: TouchObject = changed[i];
-      const point: number[] = this.geometry.map(touch.x, touch.y);
-      const pressure: number = TouchInput.normalizePressure(touch.pressure);
-      if (touch.type === TouchType.Down) {
-        this.onDown(touch.id, point, pressure);
-      } else if (touch.type === TouchType.Move) {
-        this.onMove(touch.id, point, pressure);
-      } else if (touch.type === TouchType.Up) {
-        this.onUp(touch.id, point, pressure);
-      } else if (touch.type === TouchType.Cancel) {
-        this.onCancel(touch.id, point);
-      }
+      this.dispatch(touch.type, touch.id, touch.x, touch.y, touch.pressure);
+    }
+  }
+
+  // A caller that withholds a contact until it knows whether the remote should see it replays what
+  // it held through here: one plain sample at a time, since a TouchEvent does not outlive its callback.
+  handleTouchPoint(phase: TouchType, id: number, x: number, y: number,
+    pressure: number | undefined): void {
+    if (!this.touchEnabled) {
+      return;
+    }
+    this.dispatch(phase, id, x, y, pressure);
+  }
+
+  // The engine yields the gesture that follows a direct contact, whatever the touch path then does
+  // with it — including dropping it.
+  noteDirectContact(): void {
+    this.directContactListener();
+  }
+
+  private dispatch(phase: TouchType, id: number, x: number, y: number,
+    pressure: number | undefined): void {
+    const point: number[] = this.geometry.map(x, y);
+    const normalized: number = TouchInput.normalizePressure(pressure);
+    if (phase === TouchType.Down) {
+      this.onDown(id, point, normalized);
+    } else if (phase === TouchType.Move) {
+      this.onMove(id, point, normalized);
+    } else if (phase === TouchType.Up) {
+      this.onUp(id, point, normalized);
+    } else if (phase === TouchType.Cancel) {
+      this.onCancel(id, point);
     }
   }
 

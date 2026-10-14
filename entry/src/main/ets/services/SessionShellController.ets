@@ -10,6 +10,8 @@ import { SessionInput } from './SessionInput';
 import { SessionShellHooks, SessionShellHost } from './SessionViewDelegate';
 import { AppSettings, SettingsStore } from './SettingsStore';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from './ToolbarAutoHide';
+import { TOUCH_REVEAL_HIDDEN, TOUCH_REVEAL_NONE, TOUCH_REVEAL_VISIBLE,
+  TouchRevealGesture, TouchRevealHost } from './TouchRevealGesture';
 import { WindowController } from './WindowController';
 
 const DOMAIN: number = 0xD001;
@@ -53,6 +55,7 @@ export class SessionShellController {
   private cursor: RemoteCursor;
   private surface: SessionSurfaceController;
   private toolbarAutoHide: ToolbarAutoHide;
+  private touchReveal: TouchRevealGesture;
   private armed: boolean = true;
   private sessionWindow: window.Window | undefined = undefined;
   private connectionId: string = '';
@@ -88,9 +91,32 @@ export class SessionShellController {
       revealFill: (): number => this.host.revealFill(),
       animateReveal: (fill: number, durationMs: number, curve: Curve): void => {
         this.host.animateReveal(fill, durationMs, curve);
+      },
+      animateTouchBar: (fill: number, durationMs: number, curve: Curve): void => {
+        this.host.animateTouchBar(fill, durationMs, curve);
+      },
+      showTouchTip: (): void => {
+        this.host.showTouchTip();
       }
     };
     this.toolbarAutoHide = new ToolbarAutoHide(autoHideHost);
+    const revealHost: TouchRevealHost = {
+      mode: (): number => this.touchRevealMode(),
+      forward: (phase: TouchType, id: number, x: number, y: number,
+        pressure: number): void => {
+        this.input?.handleTouchPoint(phase, id, x, y, pressure);
+      },
+      noteContact: (): void => {
+        this.input?.noteTouchContact();
+      },
+      onSwipe: (): void => {
+        this.toolbarAutoHide.noteTouchSwipe();
+      },
+      onDismiss: (): void => {
+        this.toolbarAutoHide.noteTouchDismiss();
+      }
+    };
+    this.touchReveal = new TouchRevealGesture(revealHost);
   }
 
   attach(shortcutPassthrough: boolean): void {
@@ -137,6 +163,7 @@ export class SessionShellController {
       this.input?.setInterceptActive(false);
     }
     this.armed = false;
+    this.touchReveal.dispose();
     this.toolbarAutoHide.dispose();
     this.clearOverlayTimer();
     this.hooks.onRelease();
@@ -183,11 +210,28 @@ export class SessionShellController {
     this.toolbarAutoHide.refresh();
   }
 
+  // The pull-down reveal only exists where touch reaches the far end: a protocol whose sink drops
+  // touch falls back to synthesized mouse events, which a withheld contact could not recall.
+  private touchRevealMode(): number {
+    if (!this.armed || !this.host.isFullscreen()
+      || this.state !== ConnectionState.Connected
+      || !(this.input?.touchForwarded() ?? false)) {
+      return TOUCH_REVEAL_NONE;
+    }
+    if (this.hooks.isPinned()) {
+      return TOUCH_REVEAL_NONE;
+    }
+    return this.host.isToolbarVisible() ? TOUCH_REVEAL_VISIBLE : TOUCH_REVEAL_HIDDEN;
+  }
+
   routeMouse(event: MouseEvent): void {
     this.input?.handleMouseEvent(event);
   }
 
   routeTouch(event: TouchEvent): void {
+    if (this.touchReveal.handle(event)) {
+      return;
+    }
     this.input?.handleTouch(event);
   }
 

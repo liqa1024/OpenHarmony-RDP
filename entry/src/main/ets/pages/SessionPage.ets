@@ -38,7 +38,7 @@ import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
   TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarRevealHint, TelemetryField, TelemetryRow, metricColor,
+  ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow, metricColor,
   ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
@@ -81,6 +81,7 @@ struct SessionPage {
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
   @State revealHintFill: number = 0;
+  @State touchBarFill: number = 0;
   @State isFullscreen: boolean = false;
   @LocalStorageLink('sessionKey') sessionKey: string = '';
 
@@ -248,6 +249,14 @@ struct SessionPage {
       },
       setRevealFill: (fill: number): void => {
         this.revealHintFill = fill;
+      },
+      animateTouchBar: (fill: number, durationMs: number, curve: Curve): void => {
+        this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
+          this.touchBarFill = fill;
+        });
+      },
+      showTouchTip: (): void => {
+        this.toast('再次下滑显示工具栏');
       },
       isFullscreen: (): boolean => this.isFullscreen,
       isToolbarVisible: (): boolean => this.showToolbar,
@@ -1106,6 +1115,7 @@ struct SessionPage {
         if (this.isFullscreen && !this.showOverlay) {
           Stack() {
             ToolbarRevealHint({ fill: this.revealHintFill })
+            ToolbarTouchBar({ fill: this.touchBarFill })
           }
           .width('100%')
           .height('100%')

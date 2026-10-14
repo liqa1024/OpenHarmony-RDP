@@ -34,6 +34,7 @@ import { showNotice, showToast } from '../utils/UiUtil';
 import { ClipboardButtons, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
+  ToolbarTouchBar,
   metricColor } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
@@ -114,6 +115,7 @@ struct MoonlightSessionPage {
   @State connectOverlayVisible: boolean = false;
   @State showToolbar: boolean = true;
   @State revealHintFill: number = 0;
+  @State touchBarFill: number = 0;
   @State isFullscreen: boolean = false;
   @State probeActive: boolean = false;
   @State probeNearPointer: boolean = false;
@@ -217,6 +219,14 @@ struct MoonlightSessionPage {
       },
       setRevealFill: (fill: number): void => {
         this.revealHintFill = fill;
+      },
+      animateTouchBar: (fill: number, durationMs: number, curve: Curve): void => {
+        this.getUIContext().animateTo({ duration: durationMs, curve: curve }, () => {
+          this.touchBarFill = fill;
+        });
+      },
+      showTouchTip: (): void => {
+        this.toast('再次下滑显示工具栏');
       },
       isFullscreen: (): boolean => this.isFullscreen,
       isToolbarVisible: (): boolean => this.showToolbar,
@@ -855,6 +865,7 @@ struct MoonlightSessionPage {
         if (this.isFullscreen && this.state === ConnectionState.Connected) {
           Stack() {
             ToolbarRevealHint({ fill: this.revealHintFill })
+            ToolbarTouchBar({ fill: this.touchBarFill })
           }
           .width('100%')
           .height('100%')
