@@ -110,6 +110,7 @@ struct SettingsPage {
   @State mlColorSpace: number = ML_COLORSPACE_REC709;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
+  @State mlRelativeMouse: boolean = false;
   @State mlLowLatencyAudio: boolean = true;
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
@@ -192,6 +193,7 @@ struct SettingsPage {
       this.mlColorSpace = settings.mlColorSpace;
       this.mlCodec = settings.mlCodec;
       this.mlCursorMode = settings.mlCursorMode;
+      this.mlRelativeMouse = settings.mlRelativeMouse;
       this.mlLowLatencyAudio = this.audioSupported ? settings.mlLowLatencyAudio : false;
       this.clampMlCodec();
       this.applyInteraction(settings, false);
@@ -403,6 +405,7 @@ struct SettingsPage {
       settings.mlPinchTouchAngle = this.pinchTouchAngle;
       settings.mlPinchTouchDistance = this.pinchTouchDistance;
       settings.mlCursorMode = this.mlCursorMode;
+      settings.mlRelativeMouse = this.mlRelativeMouse;
       settings.mlLowLatencyAudio = this.mlLowLatencyAudio && this.audioSupported;
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
@@ -1188,6 +1191,18 @@ struct SettingsPage {
                 }
                 .width('100%')
                 .margin({ top: 10, bottom: 6 })
+
+                if (this.mlCursorMode === ML_CURSOR_HIDE_SYSTEM) {
+                  SettingToggleRow({
+                    title: '使用相对鼠标模式',
+                    subtitle: '鼠标移动只发增量，光标速度由主机的指针设置决定（触控板走主机的原生触控板）',
+                    value: this.mlRelativeMouse,
+                    onToggle: (v: boolean) => {
+                      this.mlRelativeMouse = v;
+                      this.persist();
+                    }
+                  })
+                }
               }
               .width('100%')
               .padding({ top: 10, bottom: 14 })

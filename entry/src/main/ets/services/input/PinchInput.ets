@@ -3,7 +3,7 @@ import { DEFAULT_PINCH_TOUCH_DISTANCE, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINC
   PINCH_MODE_ZOOM } from '../SettingsStore';
 import { DEFAULT_PINCH_NOTCHES_PER_UNIT, DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE,
   WHEEL_DETENT } from '../TouchpadWheel';
-import { InputSink, PinchCursorHandler, PinchProbeHandler, TouchpadContact, TouchPhase } from './InputSink';
+import { InputSink, PinchCursorHandler, PadProbeHandler, TouchpadContact, TouchPhase } from './InputSink';
 import { clamp01, InputGeometry, isPinchEvent, MAX_PINCH_DISTANCE_PERCENT, MAX_PINCH_RATIO,
   MIN_PINCH_DISTANCE_PERCENT, MIN_PINCH_FRAC, MIN_PINCH_HALF, MIN_PINCH_RATIO,
   NATIVE_PINCH_ANGLE_DEG, NATIVE_PINCH_BASE_PERCENT, PINCH_CURSOR_HYSTERESIS, PINCH_TOUCH_DOWN_FLUSH_MS,
@@ -35,7 +35,7 @@ export class PinchInput {
   private touchPinchUnitX: number = 1;
   private touchPinchUnitY: number = 0;
   private cursorHandler: PinchCursorHandler | undefined = undefined;
-  private probe: PinchProbeHandler | undefined = undefined;
+  private probe: PadProbeHandler | undefined = undefined;
 
   constructor(sink: InputSink, geometry: InputGeometry) {
     this.sink = sink;
@@ -62,7 +62,7 @@ export class PinchInput {
     this.cursorHandler = handler;
   }
 
-  setProbe(probe: PinchProbeHandler): void {
+  setProbe(probe: PadProbeHandler): void {
     this.probe = probe;
   }
 
@@ -242,9 +242,9 @@ export class PinchInput {
   }
 
   private probeContacts(active: boolean, x1: number, y1: number, x2: number, y2: number): void {
-    const probe: PinchProbeHandler | undefined = this.probe;
+    const probe: PadProbeHandler | undefined = this.probe;
     if (probe !== undefined) {
-      probe(active, x1, y1, x2, y2);
+      probe(active, active ? 2 : 0, x1, y1, x2, y2);
     }
   }
 }

@@ -1,5 +1,5 @@
 import { HeldInputs } from './input/HeldInputs';
-import { InputAction, InputButton, InputSink, PinchCursorHandler, PinchProbeHandler, PointMapper,
+import { InputAction, InputButton, InputSink, PadProbeHandler, PinchCursorHandler, PointMapper,
   TouchpadContact, TouchPhase } from './input/InputSink';
 import { isPinchEvent, InputGeometry, MOUSE_MOVE_MIN_INTERVAL_MS, pinchScaleValue,
   TOUCH_MOVE_INTERVAL_FALLBACK_MS } from './input/InputPolicy';
@@ -11,7 +11,7 @@ import { TouchpadInput } from './input/TouchpadInput';
 import { WheelInput } from './input/WheelInput';
 
 export { InputAction, InputButton, InputSink, TouchPhase, TouchpadContact };
-export type { PinchCursorHandler, PinchProbeHandler, PointMapper };
+export type { PadProbeHandler, PinchCursorHandler, PointMapper };
 
 // Thin facade over services/input/*: owns the sink and shared geometry, and is the only place
 // that knows the controllers' ordering.
@@ -26,7 +26,7 @@ export class SessionInput {
   private pinch: PinchInput;
   private wheel: WheelInput;
   private touchMoveIntervalMs: number = TOUCH_MOVE_INTERVAL_FALLBACK_MS;
-  private pinchProbeHandler: PinchProbeHandler | undefined = undefined;
+  private padProbeHandler: PadProbeHandler | undefined = undefined;
 
   constructor(sink: InputSink) {
     this.sink = sink;
@@ -43,11 +43,11 @@ export class SessionInput {
     this.touch.setDirectContactListener((): void => {
       this.wheel.noteDirectContact();
     });
-    const probe: PinchProbeHandler =
-      (active: boolean, p1x: number, p1y: number, p2x: number, p2y: number): void => {
-        const handler: PinchProbeHandler | undefined = this.pinchProbeHandler;
+    const probe: PadProbeHandler =
+      (active: boolean, count: number, p1x: number, p1y: number, p2x: number, p2y: number): void => {
+        const handler: PadProbeHandler | undefined = this.padProbeHandler;
         if (handler !== undefined) {
-          handler(active, p1x, p1y, p2x, p2y);
+          handler(active, count, p1x, p1y, p2x, p2y);
         }
       };
     this.pinch.setProbe(probe);
@@ -108,8 +108,8 @@ export class SessionInput {
     this.pinch.setCursorHandler(handler);
   }
 
-  setPinchProbeHandler(handler: PinchProbeHandler): void {
-    this.pinchProbeHandler = handler;
+  setPadProbeHandler(handler: PadProbeHandler): void {
+    this.padProbeHandler = handler;
   }
 
   setInterceptActive(active: boolean): void {
@@ -122,6 +122,21 @@ export class SessionInput {
 
   setTouchpadPanEnabled(enabled: boolean): void {
     this.touchpad.setPanEnabled(enabled);
+  }
+
+  // The host owns the cursor position in relative mode; touchpad motion then goes over the pad
+  // channel when the session enables it, and as relative mouse motion otherwise.
+  setRelativePointer(enabled: boolean): void {
+    this.sink.setRelativePointer(enabled);
+  }
+
+  setTouchpadMoveEnabled(enabled: boolean): void {
+    this.touchpad.setMoveEnabled(enabled);
+  }
+
+  // False when no pointer position is known yet (the host cursor then keeps its own position).
+  reportPointerPosition(): boolean {
+    return this.pointer.reportPosition();
   }
 
   isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {
@@ -152,6 +167,9 @@ export class SessionInput {
     if (this.touchpad.consumeMouse(event, point)) {
       return;
     }
+    if (this.sink.relativePointerEnabled() && this.touchpad.consumeRelativeMove(event)) {
+      return;
+    }
     this.pointer.handleMouseEvent(event, point);
   }
 
@@ -159,7 +177,7 @@ export class SessionInput {
     const isPinch: boolean = isPinchEvent(event);
     if (isPinch || this.pinch.isActive()) {
       if (isPinch) {
-        this.touchpad.endPan();
+        this.touchpad.endPad();
       }
       this.pinch.handleAxis(event);
       return;
@@ -168,7 +186,7 @@ export class SessionInput {
     const panning: boolean = this.touchpad.isPanEnabled() && touchpadEvent;
     if (event.action === AxisAction.END || event.action === AxisAction.CANCEL) {
       if (panning) {
-        this.touchpad.schedulePanEnd();
+        this.touchpad.schedulePadEnd();
       }
       return;
     }
@@ -177,7 +195,7 @@ export class SessionInput {
     }
     if (event.action === AxisAction.BEGIN) {
       this.wheel.beginAxis();
-      this.touchpad.cancelPanEnd();
+      this.touchpad.cancelPadEnd();
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
@@ -218,7 +236,7 @@ export class SessionInput {
     this.pointer.cancelMove();
     this.held.releaseAll(this.sink, this.pointer.lastPointerX(), this.pointer.lastPointerY());
     this.touch.releaseAll();
-    this.touchpad.endPan();
+    this.touchpad.endPad();
     this.pinch.end();
     this.touchpad.resetTap();
   }

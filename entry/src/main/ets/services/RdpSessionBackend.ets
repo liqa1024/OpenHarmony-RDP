@@ -157,6 +157,21 @@ export class RdpInputSink implements InputSink {
     this.native.mouse(RdpPointerFlags.MOVE, x, y);
   }
 
+  // No relative-pointer mode: the server-side pointer is positioned absolutely.
+  pointerMoveRelative(_deltaX: number, _deltaY: number): void {
+  }
+
+  rateLimitMoveStreams(): boolean {
+    return true;
+  }
+
+  setRelativePointer(_enabled: boolean): void {
+  }
+
+  relativePointerEnabled(): boolean {
+    return false;
+  }
+
   button(action: number, button: number, x: number, y: number): void {
     this.lastX = x;
     this.lastY = y;

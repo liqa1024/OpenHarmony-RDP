@@ -25,7 +25,7 @@ import { mapPicturePoint } from '../utils/PictureFit';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
-import { PinchProbeOverlay } from '../components/PinchProbeOverlay';
+import { PadProbeOverlay } from '../components/PadProbeOverlay';
 import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/MoonlightTelemetry';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
@@ -84,6 +84,8 @@ struct MoonlightSessionPage {
   // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
   // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
+  // HIDE_SYSTEM only: the host cursor owns its position and Windows applies its own pointer curve.
+  private relativeMouse: boolean = false;
   // When true the native renderer plays, so this page starts no ArkTS renderer.
   private lowLatencyAudio: boolean = true;
   private hostLabel: string = '';
@@ -93,6 +95,7 @@ struct MoonlightSessionPage {
   private probeTimer: number = -1;
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
+  private probeLiveCount: number = 0;
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
     new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
   private revealBand: number = 6;
@@ -114,6 +117,7 @@ struct MoonlightSessionPage {
   @State revealHintFill: number = 0;
   @State isFullscreen: boolean = false;
   @State probeActive: boolean = false;
+  @State probeCount: number = 0;
   @State probeNearPointer: boolean = false;
   @State probeP1X: number = 0.5;
   @State probeP1Y: number = 0.5;
@@ -177,6 +181,7 @@ struct MoonlightSessionPage {
     this.hideDelay = settings.toolbarHideDelay;
     this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
     this.cursorMode = settings.mlCursorMode;
+    this.relativeMouse = settings.mlRelativeMouse && settings.mlCursorMode === ML_CURSOR_HIDE_SYSTEM;
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
     this.scrollEngine = !settings.scrollEngineFallback;
@@ -347,6 +352,7 @@ struct MoonlightSessionPage {
     input.setTouchMoveIntervalMs(TOUCH_MOVE_INTERVAL_FALLBACK_MS);
     input.setTouchpadScrollSpeed(settings.mlTouchpadScrollSpeed);
     input.setTouchpadMiddleDoubleTap(settings.mlTouchpadMiddleDoubleTap);
+    input.setRelativePointer(this.relativeMouse);
     input.setPinchZoomSpeed(settings.mlPinchZoomSpeed);
     input.setPinchTouchDistance(settings.mlPinchTouchDistance);
     input.setPinchTouchAngle(settings.mlPinchTouchAngle);
@@ -354,9 +360,9 @@ struct MoonlightSessionPage {
       this.shell?.remoteCursor().setPinchOverride(active, zoomIn);
     });
     if (this.developerMode) {
-      input.setPinchProbeHandler((active: boolean, p1x: number, p1y: number, p2x: number,
-        p2y: number): void => {
-        this.onPinchProbe(active, p1x, p1y, p2x, p2y);
+      input.setPadProbeHandler((active: boolean, count: number, p1x: number, p1y: number,
+        p2x: number, p2y: number): void => {
+        this.onPadProbe(active, count, p1x, p1y, p2x, p2y);
       });
     }
     this.mlPinchMode = settings.mlPinchMode;
@@ -377,6 +383,12 @@ struct MoonlightSessionPage {
       input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
       this.nativeTouchpadSupported = nativeTouchpadSupported;
       input?.setTouchpadPanEnabled(!this.touchpadAlwaysEngine && nativeTouchpadSupported);
+      // Relative mode uses the pad channel only when the host has it; otherwise touchpad motion
+      // falls back to the relative-mouse path.
+      input?.setTouchpadMoveEnabled(this.relativeMouse && nativeTouchpadSupported);
+      if (this.relativeMouse) {
+        input?.reportPointerPosition();
+      }
       this.suggestVmouseOff(nativeTouchpadSupported);
       this.startMetricsTimer();
       this.startAudio();
@@ -387,6 +399,7 @@ struct MoonlightSessionPage {
     this.stopMetricsTimer();
     this.clipboardAvailable = false;
     this.setLocalCursorHidden(false);
+    this.shell?.sessionInput()?.setTouchpadMoveEnabled(false);
     if (state === ConnectionState.Idle || state === ConnectionState.Failed) {
       this.refreshHostState();
     }
@@ -580,8 +593,10 @@ struct MoonlightSessionPage {
     }
   }
 
-  private onPinchProbe(active: boolean, p1x: number, p1y: number, p2x: number, p2y: number): void {
+  private onPadProbe(active: boolean, count: number, p1x: number, p1y: number, p2x: number,
+    p2y: number): void {
     this.probeLiveActive = active;
+    this.probeLiveCount = count;
     this.probeLive = [p1x, p1y, p2x, p2y];
     if (!active) {
       if (this.probeTimer !== -1) {
@@ -601,6 +616,7 @@ struct MoonlightSessionPage {
 
   private publishProbe(): void {
     this.probeActive = this.probeLiveActive;
+    this.probeCount = this.probeLiveCount;
     this.probeP1X = this.probeLive[0];
     this.probeP1Y = this.probeLive[1];
     this.probeP2X = this.probeLive[2];
@@ -824,7 +840,8 @@ struct MoonlightSessionPage {
 
         if (this.developerMode) {
           Column() {
-            PinchProbeOverlay({
+            PadProbeOverlay({
+              count: this.probeCount,
               p1x: this.probeP1X,
               p1y: this.probeP1Y,
               p2x: this.probeP2X,

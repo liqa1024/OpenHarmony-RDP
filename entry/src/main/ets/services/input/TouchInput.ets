@@ -1,6 +1,7 @@
 import { InputSink, TouchPhase } from './InputSink';
 import { CANCEL_HOLD_MS, CANCEL_RESUME_MAX_DISTANCE, CANCEL_RESUME_MIN_DISTANCE, CANCEL_RESUME_RATIO,
   InputGeometry } from './InputPolicy';
+import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './MoveDelivery';
 import { RateCoalescer } from './RateCoalescer';
 
 class TouchSample {
@@ -27,16 +28,19 @@ export class TouchInput {
   private contactIds: Map<number, number> = new Map<number, number>();
   private pendingCancelIds: number[] = [];
   private cancelTimers: Map<number, number> = new Map<number, number>();
-  private move: RateCoalescer<TouchSample>;
+  private move: MoveDelivery<TouchSample>;
   private directContactListener: () => void = (): void => {};
 
   constructor(sink: InputSink, geometry: InputGeometry, moveIntervalMs: number) {
     this.sink = sink;
     this.geometry = geometry;
-    this.move = new RateCoalescer<TouchSample>(moveIntervalMs,
+    const flush: MoveFlush<TouchSample> =
       (id: number, sample: TouchSample): void => {
         this.sink.touch(TouchPhase.MOVE, id, sample.x, sample.y, sample.pressure);
-      });
+      };
+    this.move = sink.rateLimitMoveStreams()
+      ? new RateCoalescer<TouchSample>(moveIntervalMs, flush)
+      : new ImmediateMoveDelivery<TouchSample>(flush);
   }
 
   setMoveInterval(ms: number): void {

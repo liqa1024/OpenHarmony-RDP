@@ -325,6 +325,7 @@ export class MoonlightInputSink implements InputSink {
   private heldModifiers: Set<number> = new Set<number>();
   private referenceWidth: number = 1920;
   private referenceHeight: number = 1080;
+  private relative: boolean = false;
 
   constructor(backend: MoonlightSessionBackend) {
     this.backend = backend;
@@ -385,6 +386,27 @@ export class MoonlightInputSink implements InputSink {
     this.backend.mousePosition(x, y, this.referenceWidth, this.referenceHeight);
   }
 
+  // Verbatim device counts: the host applies its own pointer curve (see the library's 1ms batching).
+  pointerMoveRelative(deltaX: number, deltaY: number): void {
+    if (deltaX === 0 && deltaY === 0) {
+      return;
+    }
+    this.backend.mouseMove(MoonlightInputSink.clampShort(deltaX),
+      MoonlightInputSink.clampShort(deltaY));
+  }
+
+  rateLimitMoveStreams(): boolean {
+    return false;
+  }
+
+  setRelativePointer(enabled: boolean): void {
+    this.relative = enabled;
+  }
+
+  relativePointerEnabled(): boolean {
+    return this.relative;
+  }
+
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void {
     const normalizedX: number = this.referenceWidth > 0 ? x / this.referenceWidth : 0;
     const normalizedY: number = this.referenceHeight > 0 ? y / this.referenceHeight : 0;
@@ -428,7 +450,10 @@ export class MoonlightInputSink implements InputSink {
     if (mlButton === 0) {
       return;
     }
-    this.backend.mousePosition(x, y, this.referenceWidth, this.referenceHeight);
+    // Relative mode: a click must not drag the host cursor back to the local pointer's coordinates.
+    if (!this.relative) {
+      this.backend.mousePosition(x, y, this.referenceWidth, this.referenceHeight);
+    }
     const mlAction: number = action === InputAction.PRESS
       ? MlVirtualKey.ACTION_PRESS : MlVirtualKey.ACTION_RELEASE;
     this.backend.mouseButton(mlAction, mlButton);

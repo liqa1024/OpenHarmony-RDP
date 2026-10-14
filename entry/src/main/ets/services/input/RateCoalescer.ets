@@ -1,15 +1,15 @@
-export type CoalesceFlush<T> = (id: number, value: T) => void;
+import { MoveDelivery, MoveFlush } from './MoveDelivery';
 
 // Latest-value-wins rate limiter for continuous position streams: one self-rescheduling timer
 // serves every key; a discrete event flushes its key immediately so ordering/position hold.
-export class RateCoalescer<T> {
+export class RateCoalescer<T> implements MoveDelivery<T> {
   private minIntervalMs: number;
-  private onFlush: CoalesceFlush<T>;
+  private onFlush: MoveFlush<T>;
   private pending: Map<number, T> = new Map<number, T>();
   private timer: number = -1;
   private lastFlushAt: number = 0;
 
-  constructor(minIntervalMs: number, onFlush: CoalesceFlush<T>) {
+  constructor(minIntervalMs: number, onFlush: MoveFlush<T>) {
     this.minIntervalMs = minIntervalMs;
     this.onFlush = onFlush;
   }

@@ -42,7 +42,7 @@
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
 | `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）+ `InputSink` 接口**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
-| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `RateCoalescer`（连续位置流合帧）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口） |
+| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `MoveDelivery`/`RateCoalescer`（连续位置流投递：限速或直通，由 sink 自述决定）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口） |
 | `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `PointerInput`；状态与定时器自持有 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `RdpEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/RdpEventHub.ets` | RDP 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |

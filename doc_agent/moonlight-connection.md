@@ -122,6 +122,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   - `setPointerVisibleSync` 是**进程级**，断开 / 退页必须恢复，否则主窗口也没有光标。协议细节见
     [`moonlight-native.md`](moonlight-native.md) §2.1；安装器、去重与可见性归属见
     [`session-layer.md`](session-layer.md) §10。
+  - **「使用相对鼠标模式」（`mlRelativeMouse`，默认关）**只在选中「隐藏系统光标」时出现在同一栏下方（其它两档
+    本机系统光标就是可见光标，位置必须与主机一一对应）：指针改发设备增量，拐点与速度由**主机的指针设置**决定。
+    落点见 [`moonlight-native.md`](moonlight-native.md) §2 / §2.2，通路与限制见 [`session-layer.md`](session-layer.md) §8。
 - **音频开关两协议共用一份**：`AppSettings.enableAudio`（RDP tab「连接特性·音频重定向」的同一全局值）同时是 Moonlight 的
   音频主开关，Moonlight tab 的「音频重定向」拨钮编辑的是这同一个键（两个 tab 都持久化同一份值）；叠加 `DeviceCapabilities.audio()`
   置灰（无输出设备即关）。它派生 `MoonlightStreamConfig.enableAudio` 与 `/launch` 的 `localAudioPlayMode`

@@ -45,6 +45,8 @@ export interface InputSink {
   unicode(code: number, down: boolean): void;
   lockState(flags: number): void;
   pointerMove(x: number, y: number): void;
+  // Device counts (ArkUI rawDelta), used only while relativePointerEnabled().
+  pointerMoveRelative(deltaX: number, deltaY: number): void;
   button(action: number, button: number, x: number, y: number): void;
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void;
   // Native precision-touchpad frame (foundation-sunshine extension): normalized
@@ -55,9 +57,15 @@ export interface InputSink {
   // Wheel deltas in WHEEL_DELTA (120) units; vertical positive is up, horizontal positive is left.
   // x/y are the pointer position in the pointer space (protocols that carry it on the wheel event).
   scroll(vertical: number, horizontal: number, x: number, y: number): void;
+  // False: the transport already coalesces latest-value samples, so the shared layer must not
+  // rate-limit them again.
+  rateLimitMoveStreams(): boolean;
+  setRelativePointer(enabled: boolean): void;
+  relativePointerEnabled(): boolean;
 }
 
 export type PointMapper = (x: number, y: number) => number[];
 export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
-export type PinchProbeHandler =
-  (active: boolean, p1x: number, p1y: number, p2x: number, p2y: number) => void;
+// Debug tap on the synthesized pad contacts: count is 1 (pointer move) or 2 (scroll pan / pinch).
+export type PadProbeHandler =
+  (active: boolean, count: number, p1x: number, p1y: number, p2x: number, p2y: number) => void;

@@ -2,6 +2,7 @@ import { TouchpadTapTarget } from '../TouchpadTapFilter';
 import { HeldInputs } from './HeldInputs';
 import { InputAction, InputButton, InputSink } from './InputSink';
 import { InputGeometry } from './InputPolicy';
+import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './MoveDelivery';
 import { RateCoalescer } from './RateCoalescer';
 
 class MovePoint {
@@ -16,7 +17,7 @@ class MovePoint {
   }
 }
 
-// Mouse / pen: buttons and synthetic clicks, plus the coalesced absolute move. Implements the
+// Mouse / pen: buttons and synthetic clicks, plus the absolute move. Implements the
 // touchpad tap target so the double-tap filter can synthesize right/middle clicks.
 export class PointerInput implements TouchpadTapTarget {
   private sink: InputSink;
@@ -24,16 +25,21 @@ export class PointerInput implements TouchpadTapTarget {
   private geometry: InputGeometry;
   private lastX: number = 0;
   private lastY: number = 0;
-  private move: RateCoalescer<MovePoint>;
+  private havePosition: boolean = false;
+  private move: MoveDelivery<MovePoint>;
 
   constructor(sink: InputSink, held: HeldInputs, geometry: InputGeometry, moveIntervalMs: number) {
     this.sink = sink;
     this.held = held;
     this.geometry = geometry;
-    this.move = new RateCoalescer<MovePoint>(moveIntervalMs,
+    const flush: MoveFlush<MovePoint> =
       (_id: number, point: MovePoint): void => {
         this.sink.pointerMove(point.x, point.y);
-      });
+      };
+    // The sink owns the policy (see InputSink.rateLimitMoveStreams).
+    this.move = sink.rateLimitMoveStreams()
+      ? new RateCoalescer<MovePoint>(moveIntervalMs, flush)
+      : new ImmediateMoveDelivery<MovePoint>(flush);
   }
 
   setMoveInterval(ms: number): void {
@@ -46,6 +52,19 @@ export class PointerInput implements TouchpadTapTarget {
 
   lastPointerY(): number {
     return this.lastY;
+  }
+
+  hasPosition(): boolean {
+    return this.havePosition;
+  }
+
+  reportPosition(): boolean {
+    if (!this.havePosition) {
+      return false;
+    }
+    this.move.cancel();
+    this.sink.pointerMove(this.lastX, this.lastY);
+    return true;
   }
 
   rightDown(x: number, y: number): void {
@@ -70,6 +89,11 @@ export class PointerInput implements TouchpadTapTarget {
     } else if (event.action === MouseAction.Release) {
       this.handleButton(InputAction.RELEASE, PointerInput.buttonFor(event.button), point[0], point[1]);
     } else if (event.action === MouseAction.Move) {
+      if (this.sink.relativePointerEnabled()) {
+        // The host owns the cursor position, so the local mapping must not be applied.
+        this.sink.pointerMoveRelative(event.rawDeltaX ?? 0, event.rawDeltaY ?? 0);
+        return;
+      }
       this.handleMove(point[0], point[1]);
     }
   }
@@ -86,6 +110,7 @@ export class PointerInput implements TouchpadTapTarget {
   private handleButton(action: number, button: number, x: number, y: number): void {
     this.lastX = x;
     this.lastY = y;
+    this.havePosition = true;
     this.flushMove();
     this.sink.button(action, button, x, y);
     if (action === InputAction.PRESS) {
@@ -98,6 +123,7 @@ export class PointerInput implements TouchpadTapTarget {
   private handleMove(x: number, y: number): void {
     this.lastX = x;
     this.lastY = y;
+    this.havePosition = true;
     this.move.post(0, MovePoint.of(x, y));
   }
 

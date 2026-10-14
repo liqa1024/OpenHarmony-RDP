@@ -145,9 +145,11 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 
 **分层**：输入的**策略**在协议中立的 `services/input/` 下按关注点拆分——`PointerInput` 指针、`KeyInput`
 键盘、`TouchInput` 触屏、`TouchpadInput` 触控板、`WheelInput` 轴向滚动、`PinchInput` 捏合，共用
-`RateCoalescer` 合帧、`HeldInputs` 按住账本、`InputPolicy` 常量与共享指针几何；`services/SessionInput.ets`
-是只做编排的**瘦 Facade**，经 `InputSink` 接口下发动词
-（`key/metaKey/unicode/lockState/pointerMove/button/touch/touchpadFrame/scroll`）。
+`MoveDelivery` 投递（`RateCoalescer` 限速 / `ImmediateMoveDelivery` 直通，由 sink 自述选哪一个）、
+`HeldInputs` 按住账本、`InputPolicy` 常量与共享指针几何；`services/SessionInput.ets` 是只做编排的**瘦
+Facade**，经 `InputSink` 接口下发动词
+（`key/metaKey/unicode/lockState/pointerMove/pointerMoveRelative/button/touch/touchpadFrame/scroll`，
+另有 `rateLimitMoveStreams` / `setRelativePointer` 两个策略查询）。
 两协议各一个 sink 落地动词：**`RdpInputSink`**（`RdpSessionBackend.ets`）与 **`MoonlightInputSink`**
 （`MoonlightSessionBackend.ets`）——RDP 的落地细节见 [`rdp-session.md`](rdp-session.md)，Moonlight 见
 [`moonlight-native.md`](moonlight-native.md)。会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置
@@ -183,11 +185,30 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   Unicode 码点 / Win 替代键，鼠标=按钮标志），失焦时统一补发抬起并松开触屏与捏合；
   **新增输入通路必须进这份账**。
 - **鼠标按键与移动分开**：移动与按键事件**分开送**，按键事件**不带移动标志**，否则远端会忽略点击。
-- **连续位置流要合帧**：`onMouse` 的 Move 与触屏 Move 都按设备轮询率到达，逐条转发 = 每条一个输入报文，且
-  链路越快越拦不住。两者共用 `RateCoalescer`：只保留最新值、按 `InputPolicy` 窗口上限节流、必要时补一次
-  尾帧；**非 Move 的同类事件（按下/抬起、触屏 Down/Up/Cancel）先冲掉该流待发位置**，否则点击落在旧坐标。
-  窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，
-  不是显示帧率。
+- **连续位置流的投递由 sink 自述**：`onMouse` 的 Move 与触屏 Move 按设备轮询率到达，逐条转发 = 每条一个输入报文。
+  共享层把投递抽成 `MoveDelivery`——`RateCoalescer`（只保留最新值、按 `InputPolicy` 窗口上限节流、必要时补尾帧）与
+  `ImmediateMoveDelivery`（直通），由 `InputSink.rateLimitMoveStreams()` 选：每个样本都要变成一条离散报文的协议
+  （RDP 指针 PDU）取限速；传输层自己就做 latest-value 合并的协议（Moonlight 控制流按 1ms 合并鼠标样本）取直通——
+  客户端再限一次只会白加延迟与降采样。**非 Move 的同类事件（按下/抬起、触屏 Down/Up/Cancel）先冲掉该流待发位置**，
+  否则点击落在旧坐标（直通实现无待发值，这些动作为空操作）。窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、
+  触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，不是显示帧率。
+- **相对指针模式（Moonlight 专有，只挂在「隐藏系统光标」档）**：`InputSink` 另有一条相对通路
+  （`pointerMoveRelative` / `setRelativePointer` / `relativePointerEnabled`），RDP 声明不支持。开启后指针移动
+  **不再走位置映射**，改取 `MouseEvent.rawDeltaX/rawDeltaY`：该值是**鼠标硬件的原始移动数据**（物理位移单位，非屏幕
+  像素），与主机 raw input 同量纲 ⇒ 同 DPI 下与"同一只鼠标直插主机"一致，**不需要也无法反推**本机加速曲线；
+  API 26.0.0 之前它被**系统显示大小比例**缩小过，需按比例还原。**不能拿位置差当增量**（那是已加速的值，且光标在
+  屏幕边缘被夹取后会丢增量）。ArkUI 的口径是一帧通常只上报一个 Move，其余作历史点（历史点不含 rawDelta）。
+- **相对模式下触控板不走鼠标通路，且触点流多指优先**：主机有 precision touchpad 通道时，触控板位移合成成**单个
+  触点**打到声明板面上（帧内容与标定见 [`moonlight-native.md`](moonlight-native.md) §2.2），没有该通道时退回相对
+  鼠标通路（本机不补偿手感）。双指滚动/捏合起手即掐断单指移动，多指进行中的单指帧丢弃。开发模式 overlay
+  （`components/PadProbeOverlay`）画这条流，`count` 区分单点/双点。
+- **相对模式要一次绝对锚点**：连接后先发一次当前指针位置的绝对坐标（`SessionInput.reportPointerPosition()`），
+  否则主机会从它自己上次的位置开始累计；本会话还没收到过指针事件时跳过。
+- **相对模式的边界（系统无 pointer lock）**：系统不提供光标锁定/限制区域，拦截只作用于"事件是否继续投递给 UI
+  框架"，**本机光标仍会移动并在屏幕边缘被夹住** ⇒ "指针在哪一格"的判定（工具栏触发带与揭示进度、引擎滚动的位置
+  记账）会失真。要消掉只能**写系统光标位置**（`inputEventClient.createMouseController().moveTo()` / C 侧
+  `OH_Input_InjectMouseEvent`，需 `ohos.permission.CONTROL_DEVICE`，属受限开放权限）；**读**位置用
+  `OH_Input_GetPointerLocation`（聚焦应用可调）。
 - **触屏**（只认 `event.source === SourceType.TouchScreen`；手指 id `+1` 避开 0 空槽）：
   - `handleMouse` 要过滤同源兼容鼠标事件，避免"一触两通路"产生杂点击；
   - 重复 `TouchType.Down` 忽略（补发 UP+DOWN 会变成"松开+重按"的假点击）；
