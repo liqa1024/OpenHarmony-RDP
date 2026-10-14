@@ -194,10 +194,11 @@ Facade**，经 `InputSink` 接口下发动词
   触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，不是显示帧率。
 - **相对指针模式（Moonlight 专有，只挂在「隐藏系统光标」档）**：`InputSink` 另有一条相对通路
   （`pointerMoveRelative` / `setRelativePointer` / `relativePointerEnabled`），RDP 声明不支持。开启后指针移动
-  **不再走位置映射**，改取 `MouseEvent.rawDeltaX/rawDeltaY`：该值是**鼠标硬件的原始移动数据**（物理位移单位，非屏幕
-  像素），与主机 raw input 同量纲 ⇒ 同 DPI 下与"同一只鼠标直插主机"一致，**不需要也无法反推**本机加速曲线；
-  API 26.0.0 之前它被**系统显示大小比例**缩小过，需按比例还原。**不能拿位置差当增量**（那是已加速的值，且光标在
-  屏幕边缘被夹取后会丢增量）。ArkUI 的口径是一帧通常只上报一个 Move，其余作历史点（历史点不含 rawDelta）。
+  **不再走位置映射**，改取 `MouseEvent.rawDeltaX/rawDeltaY`：该值是**设备侧的原始位移**、**不过本机加速曲线**
+  （本机加速只体现在光标位置上，不体现在该增量），所以**不能拿位置差当增量**（那是已加速的值，且光标在屏幕边缘被
+  夹取后会丢增量）；其**单位口径**要与主机注入链对齐——实测与"同一只鼠标直插主机"相比偏慢，说明二者并非一一对应
+  （API 26.0.0 之前该值还被**系统显示大小比例**缩小过，旧设备另有这一层）。
+  ArkUI 的口径是一帧通常只上报一个 Move，其余作历史点（历史点不含 rawDelta）。
 - **相对模式下触控板不走鼠标通路，且触点流多指优先**：主机有 precision touchpad 通道时，触控板位移合成成**单个
   触点**打到声明板面上（帧内容与标定见 [`moonlight-native.md`](moonlight-native.md) §2.2），没有该通道时退回相对
   鼠标通路（本机不补偿手感）。双指滚动/捏合起手即掐断单指移动，多指进行中的单指帧丢弃。开发模式 overlay
@@ -231,7 +232,7 @@ Facade**，经 `InputSink` 接口下发动词
     不吞，由 `SessionInput` 走模拟两指滑动），被接管手势的引擎帧由 `engineAcceptsFrame` 丢弃，避免一份手势两份滚动。
   - **触控板滚动的三种落点**：①专用触控板通道（默认，仅基地版）→ 第二层物理是 Windows 原生触控板；②系统滚动组件 +
     滚轮（设置强制或主机无该能力位）→ 第二层是 ArkUI 引擎，最跟手且有刹车；③直译 + 滚轮（全局「回退直译映射」）→
-    无惯性。三者都只保留 MMI 那一层本机加速曲线，区别只在第二层是谁。
+    无惯性。三者都只保留本机这一层换算（**轴值与捏合值实测未见随速度的增益**，按位移线性使用），区别只在第二层是谁。
   - **必须是一轴一个组件**（不能用单件 `ScrollDirection.FREE` 的 2D 版）：滑行的"打断"由单轴滚动件自己做——
     **任何新的触控板手势一开始就把正在跑的滑行停掉**（`Scrollable::HandleDragStart` 对 `SourceTool::TOUCHPAD`
     调 `HandleTouchDown`，后者明确 "If animation still runs, first stop it"），2D free 不停滑行（它只在收到真正的
@@ -279,7 +280,7 @@ Facade**，经 `InputSink` 接口下发动词
     本机每齿行数（MMI `rows × libinput`）已折在轴值里，`scrollStep` 冗余、本机调快则远端同步变快，**亚齿/多齿
     都按增量发**（保留高分辨率；主机是否真保留亚齿取决于其注入通路，见
     [`moonlight-native.md`](moonlight-native.md) §2.2），滚轮用独立 mapper 保持原速；触控板是**位移像素**
-    （`sourceTool === TOUCHPAD`，MMI 侧已过一条按速度分段的加速曲线，读到的是加速后的值），直译路径先 `÷ pxPerVp` 统一到 vp。
+    （`sourceTool === TOUCHPAD`；**轴值与捏合值实测未见随速度的增益**，按位移线性换算），直译路径先 `÷ pxPerVp` 统一到 vp。
   - **触点通道的量纲**：轴位移 px × 平移比例 → 声明板面的毫米行程。比例按**每齿毫米**给（`TOUCHPAD_PAN_MM_PER_AXIS_PX`
     = `TOUCHPAD_PAN_MM_PER_DETENT` ÷ `REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION`），实测约 **4.8 mm 双指位移 / 远端一齿**：
     毫米 → 滚动这一段的增益在 Windows PT 侧（随主机 PT 与滚动设置、屏幕缩放变化），不可由本仓推导，只能按此口径实测；
