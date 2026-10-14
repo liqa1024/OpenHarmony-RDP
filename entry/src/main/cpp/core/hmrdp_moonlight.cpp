@@ -153,8 +153,8 @@ class MoonlightVideoRenderer {
     VideoDecoder::FrameReadyFn onFrame = [this](int, int, int64_t ptsUs) {
       NoteDecoded(ptsUs);
     };
-    if (!decoder_.Start(mime_, VideoOutputMode::kSurface, window_, width_, height_, redrawRate_,
-                        onFrame, nullptr)) {
+    if (!decoder_.Start(mime_, VideoOutputMode::kSurface, window_, width_, height_, onFrame,
+                        nullptr)) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",
                  decoder_.lastError().c_str());
       return;

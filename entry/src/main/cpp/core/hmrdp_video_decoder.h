@@ -52,9 +52,9 @@ class VideoDecoder {
   VideoDecoder(const VideoDecoder&) = delete;
   VideoDecoder& operator=(const VideoDecoder&) = delete;
 
-  // `window` is required in kSurface mode; `fps` is display pacing there.
+  // `window` is required in kSurface mode.
   bool Start(const std::string& mime, VideoOutputMode mode, void* window, int width, int height,
-             int fps, FrameReadyFn onFrame, BufferReadyFn onBuffer);
+             FrameReadyFn onFrame, BufferReadyFn onBuffer);
   // Feeds one complete access unit (Annex-B, leading start code included): every slice of a picture
   // must arrive in this one call, which may carry several NALs.
   bool Submit(const uint8_t* data, size_t size, int64_t ptsUs);
@@ -89,11 +89,6 @@ class VideoDecoder {
   void* window_ = nullptr;
   FrameReadyFn onFrame_;
   BufferReadyFn onBuffer_;
-  // Surface-mode pacing: RenderOutputBufferAtTime gets a steady_clock schedule derived from fps_, so
-  // the decoder controls frame appearance instead of the app blocking on a present.
-  int fps_ = 0;
-  int64_t renderBaseNs_ = 0;
-  uint32_t frameIndex_ = 0;
 
   // `pending_` is input to feed, `idleInputs_` the indices offered; PumpInput() matches them.
   std::mutex mutex_;

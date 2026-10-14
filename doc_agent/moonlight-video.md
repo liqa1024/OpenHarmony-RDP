@@ -20,8 +20,12 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 - **硬解优先，软解兜底，无解器报错**：`VideoDecoderSupport()`（`OH_AVCodec_GetCapabilityByCategory`）把每种
   编码分成**硬解 / 软解 / 无**，优先创建硬解，硬解缺失时才退到软解，`VideoDecoder::hardware()` 反映实际
   选择；完全没有解码器时起播同步失败并给出原因，绝不静默黑屏。
-- **送显与控速**：surface 模式每帧 `RenderOutputBuffer`（丢弃用 `FreeOutputBuffer`）；要控速/音画同步用
-  `RenderOutputBufferAtTime`（时间戳取自 `steady_clock`），由解码器控制节奏，应用侧不阻塞在呈现上。
+- **送显即出帧，客户端不排程**：surface 模式每帧解码出帧就 `RenderOutputBuffer`（丢弃用 `FreeOutputBuffer`），
+  节拍由显示器 vsync 与主机按协商 `maxFPS` 的发送共同决定。客户端自建时间轴（帧计数配协商帧率 + 首帧墙钟推
+  `RenderOutputBufferAtTime` 目标时刻）与码流时间无关：主机实际帧率不等于协商值时偏差只累加、不回正（钳到
+  「现在」只能前移不能补偿），表现为静默的延迟堆积；且 SDK 约定输出 buffer **顺序处理**，被按住的 buffer 会
+  阻塞后续。超刷新率的帧由表面层吸收（同一 vsync 内多 buffer 只显示最后一个），无需应用丢帧。帧率因此不是
+  送显决策的输入（`Configure` 亦无帧率键）。
 - **低时延输出 = 解码序，故码流不得含 B 帧**：Configure 使能 `OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY` 后解码器
   **按解码序输出、不做重排**（交互场景要的正是这个低延迟）。送显时间轴因此就是解码序，只有码流**不含 B 帧**
   时解码序才等于显示序。Moonlight / Sunshine 的编码本就是低延迟无 B 帧，产品链路成立；换成带 B 帧的码流

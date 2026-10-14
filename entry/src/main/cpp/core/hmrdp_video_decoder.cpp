@@ -1,6 +1,5 @@
 #include "hmrdp_video_decoder.h"
 
-#include <chrono>
 #include <cstring>
 #include <utility>
 
@@ -74,7 +73,7 @@ std::string VideoDecoder::lastError() const {
 }
 
 bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* window, int width,
-                         int height, int fps, FrameReadyFn onFrame, BufferReadyFn onBuffer) {
+                         int height, FrameReadyFn onFrame, BufferReadyFn onBuffer) {
   if (codec_ != nullptr) {
     return started_.load();
   }
@@ -86,9 +85,6 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
   window_ = window;
   onFrame_ = std::move(onFrame);
   onBuffer_ = std::move(onBuffer);
-  fps_ = fps;
-  renderBaseNs_ = 0;
-  frameIndex_ = 0;
   eosReached_.store(false);
 
   // Create the hardware decoder when there is one; software is the fallback the
@@ -339,25 +335,9 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   const int width = width_.load();
   const int height = height_.load();
   if (mode_ == VideoOutputMode::kSurface) {
-    // Display pacing: schedule each frame against steady_clock so the decoder
-    // controls the cadence; with no frame rate, present as soon as decoded.
-    if (fps_ > 0) {
-      const int64_t nowNs = static_cast<int64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now().time_since_epoch()).count());
-      if (renderBaseNs_ == 0) {
-        renderBaseNs_ = nowNs;
-      }
-      int64_t targetNs =
-          renderBaseNs_ + static_cast<int64_t>(frameIndex_) * 1000000000LL / fps_;
-      if (targetNs < nowNs) {
-        targetNs = nowNs;
-      }
-      OH_VideoDecoder_RenderOutputBufferAtTime(codec_, index, targetNs);
-    } else {
-      OH_VideoDecoder_RenderOutputBuffer(codec_, index);
-    }
-    frameIndex_++;
+    // Present as soon as the frame is decoded: the host paces the stream, and a schedule of our
+    // own would only hold frames back.
+    OH_VideoDecoder_RenderOutputBuffer(codec_, index);
     if (onFrame_) {
       onFrame_(width, height, attr.pts);
     }
