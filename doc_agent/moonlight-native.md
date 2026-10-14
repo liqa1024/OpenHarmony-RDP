@@ -79,7 +79,8 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
-  `moonlightTouchpad` / `moonlightText` / `moonlightHostFeatures` / `moonlightTelemetry` /
+  `moonlightTouchpad` / `moonlightText` / `moonlightController` / `moonlightControllerArrival` /
+  `moonlightHostFeatures` / `moonlightTelemetry` /
   `moonlightSetShortcutPassthrough`；
   窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
@@ -210,6 +211,34 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   入站经 `dataHandle` 缓冲（`bufferRead`/`bufferRelease`）以 `ML_EVENT_CLIPBOARD` 送到 ArkTS。
 - **门禁**：接收回调随 `moonlightSetSessionListener` 注册；发送在库内只要求 Sunshine + 加密控制流 v2
   （`0x5508` 只在 v2 表里）。能力位经 `moonlightHostFeatures()` 读，用来决定工具栏入口显隐。
+
+### 2.5 手柄（控制器）
+
+- **协议形态**：手柄走**控制流**，不在 `STREAM_CONFIGURATION` 里协商——运行时由 `LiSendMultiControllerEvent`
+  按槽位发**整份状态**（按键位 + 左右扳机 + 左右摇杆），每次事件都带 `activeGamepadMask`（每槽位一位，
+  GFE 上限 4 位 / Sunshine 16 位），主机按掩码创建与回收虚拟手柄；手柄到达时先发
+  `LiSendControllerArrivalEvent`（`LI_CTYPE_*` 类型 + 支持的按键位 + `LI_CCAP_*` 能力位），
+  主机不支持到达事件时库内自动回退成普通状态事件。
+- **口径**：扳机 `0..255`、摇杆 `-32767..32767`（**正 = 上/右**）；按键位是 `Limelight.h` 的 `*_FLAG`
+  （A/B/X/Y、方向、LB/RB、`PLAY`=Start、`BACK`=Select、`LS/RS_CLK`、`SPECIAL`=Guide；Sunshine 另有
+  `PADDLE*` / `TOUCHPAD` / `MISC`）。
+- **没有专属位的柄键不接**：`MISC` 是 Share / Capture / Mic 这类键的桶，但**主机把 `MISC` 并进别的键**
+  （X360 路径→**Guide**、DS4 路径→触控板点击），也就是送 `MISC` 等于送一个**错的**按钮；`PADDLE1..4` 两个主机后端
+  （Windows 的 X360/DS4 与 Linux 的 uinput）**都不消费**。所以这两类键客户端**不发也不在到达声明里声明**
+  （判定与来源见 [`session-layer.md`](session-layer.md) §8）。
+- **我们声明的是**：Xbox 布局（`LI_CTYPE_XBOX`）+ 模拟扳机（`LI_CCAP_ANALOG_TRIGGERS`），其余能力位不声明——
+  本机没有震动（`LI_CCAP_RUMBLE` / `LI_CCAP_TRIGGER_RUMBLE`）、手柄触控板（`LI_CCAP_TOUCHPAD`）、
+  陀螺仪 / 加速度计（`LI_CCAP_ACCEL` / `LI_CCAP_GYRO`）与电量上报（`LI_CCAP_BATTERY_STATE`）的通路，
+  不声明就不会让主机去用；按键集合只到 OH 能报出的手柄码段（无 `PADDLE*`）。
+- **`/launch` 的 `gcmap` / `remoteControllersBitmap`** 是**连接时刻**的那一份掩码（当前插着的手柄数，
+  `GamepadDevices.attachedMask()`）：主机拿它当提示与环境变量（`SUNSHINE_CLIENT_GCMAP`），
+  **不靠它建手柄**——虚拟手柄由运行时掩码驱动，所以热插拔只发到达 / 清零事件，不需要重连。
+- **落地**：`hmrdp_moonlight_session.*` 的 `MoonlightSessionControllerState` /
+  `MoonlightSessionControllerArrival`（仅 `g_connected` 时转发），N-API `moonlightController` /
+  `moonlightControllerArrival`，ArkTS 侧由 `MoonlightInputSink`（`GamepadSink`）实现；
+  **轴的角色不由协议层决定**——客户端侧的来源与官方轴表见 [`session-layer.md`](session-layer.md) §8
+  （平台 Game Controller Kit 带来源的轴事件；无该服务时按同一张官方表读 multimodal 事件）。
+- **验证**：需真手柄（模拟器没有手柄外设），方向/正负属真机判据。
 
 ## 3. 范围
 

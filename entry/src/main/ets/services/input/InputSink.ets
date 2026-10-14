@@ -67,6 +67,17 @@ export interface InputSink {
   hostDisplayScalePercent(): number;
 }
 
+// Moonlight's controller path: one event carries the whole state of one controller slot, and an
+// arrival event declares its type / capabilities. RDP has no gamepad support, so this contract is
+// kept out of the shared InputSink (a sink may implement both).
+export interface GamepadSink {
+  controllerState(controllerNumber: number, activeGamepadMask: number, buttonFlags: number,
+    leftTrigger: number, rightTrigger: number, leftStickX: number, leftStickY: number,
+    rightStickX: number, rightStickY: number): void;
+  controllerArrival(controllerNumber: number, activeGamepadMask: number, type: number,
+    supportedButtonFlags: number, capabilities: number): void;
+}
+
 export type PointMapper = (x: number, y: number) => number[];
 export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
 // Debug tap on the synthesized pad contacts (scroll pan / pinch pair).

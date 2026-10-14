@@ -344,6 +344,18 @@ export const moonlightHighResHScroll: (amount: number) => void;
 /** Input: composed text sent as one UTF-8 string (LiSendUtf8TextEvent). */
 export const moonlightText: (text: string) => void;
 
+/**
+ * Input: one controller slot's whole state (LiSendMultiControllerEvent); `activeGamepadMask` has a
+ * bit per attached controller, triggers are 0..255 and sticks -32767..32767 with +Y up.
+ */
+export const moonlightController: (controllerNumber: number, activeGamepadMask: number,
+  buttonFlags: number, leftTrigger: number, rightTrigger: number, leftStickX: number,
+  leftStickY: number, rightStickX: number, rightStickY: number) => void;
+
+/** Input: declares one attached controller (LiSendControllerArrivalEvent: LI_CTYPE_* / LI_CCAP_*). */
+export const moonlightControllerArrival: (controllerNumber: number, activeGamepadMask: number,
+  type: number, supportedButtonFlags: number, capabilities: number) => void;
+
 /** Sends an opaque clipboard v1 wire frame (control message 0x5508); returns LiSendClipboardData's code (0 ok, -1 invalid, -2 unsupported, -3 not connected, -4 send failed). */
 export const moonlightSendClipboardData: (data: ArrayBuffer) => number;
 
@@ -352,6 +364,39 @@ export const moonlightHostFeatures: () => number;
 
 /** Shortcut passthrough for Moonlight; returns the requested state in effect. */
 export const moonlightSetShortcutPassthrough: (enabled: boolean) => boolean;
+
+/** One online controller as the platform reports it. */
+export interface GamepadKitDevice {
+  /** The platform's device key for this controller (opaque string). */
+  key: string;
+  /** Device name, as the platform reports it. */
+  name: string;
+}
+
+/** Extra fields of a Game Controller Kit event (`event` is GAMEPAD_KIT_EVENT_*, `source` GAMEPAD_KIT_AXIS_*). */
+export interface GamepadKitEventExtra {
+  /** Device key of the controller the event belongs to. */
+  deviceKey?: string;
+  /** Device name (filled on a device event). */
+  name?: string;
+  /** Axis values for the event's source: one for a trigger, two for a stick or the D-pad. */
+  value1?: number;
+  value2?: number;
+}
+
+/**
+ * Subscribes to the platform's Game Controller Kit (axis events carry the control they came from,
+ * so no axis layout has to be inferred). Returns false when the Kit is unavailable — the caller then
+ * keeps the multimodal input path.
+ */
+export const gamepadKitSetListener: (listener: (event: number, source: number,
+  extra: GamepadKitEventExtra) => void) => boolean;
+
+/** Releases the Kit subscription. */
+export const gamepadKitStop: () => void;
+
+/** Online controllers, as the platform reports them. */
+export const gamepadKitDevices: () => GamepadKitDevice[];
 
 /** One raw telemetry sample; counters are cumulative (the caller diffs consecutive samples into rates). */
 export interface MoonlightTelemetry {

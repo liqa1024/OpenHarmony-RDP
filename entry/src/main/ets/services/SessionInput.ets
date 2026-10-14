@@ -1,6 +1,7 @@
 import { HeldInputs } from './input/HeldInputs';
-import { InputAction, InputButton, InputSink, PadProbeHandler, PinchCursorHandler, PointMapper,
-  TouchpadContact, TouchPhase } from './input/InputSink';
+import { GamepadSink, InputAction, InputButton, InputSink, PadProbeHandler, PinchCursorHandler,
+  PointMapper, TouchpadContact, TouchPhase } from './input/InputSink';
+import { GamepadInput } from './input/GamepadInput';
 import { isPinchEvent, InputGeometry, MOUSE_MOVE_MIN_INTERVAL_MS, pinchScaleValue,
   TOUCH_MOVE_INTERVAL_FALLBACK_MS } from './input/InputPolicy';
 import { KeyInput } from './input/KeyInput';
@@ -10,7 +11,8 @@ import { TouchInput } from './input/TouchInput';
 import { TouchpadInput } from './input/TouchpadInput';
 import { WheelInput } from './input/WheelInput';
 
-export { InputAction, InputButton, InputSink, TouchPhase, TouchpadContact };
+export { GamepadInput, GamepadSink, InputAction, InputButton, InputSink, TouchPhase,
+  TouchpadContact };
 export type { PadProbeHandler, PinchCursorHandler, PointMapper };
 
 // Thin facade over services/input/*: owns the sink and shared geometry, and is the only place
@@ -27,6 +29,7 @@ export class SessionInput {
   private wheel: WheelInput;
   private touchMoveIntervalMs: number = TOUCH_MOVE_INTERVAL_FALLBACK_MS;
   private padProbeHandler: PadProbeHandler | undefined = undefined;
+  private gamepad: GamepadInput | undefined = undefined;
 
   constructor(sink: InputSink) {
     this.sink = sink;
@@ -57,6 +60,12 @@ export class SessionInput {
   dispose(): void {
     this.touchpad.dispose();
     this.pinch.end();
+    this.gamepad?.dispose();
+  }
+
+  // Only Moonlight has a gamepad path; a session without one leaves the keys to the keyboard path.
+  setGamepad(gamepad: GamepadInput): void {
+    this.gamepad = gamepad;
   }
 
   setWinKeySubstitute(keyCode: number): void {
@@ -165,7 +174,15 @@ export class SessionInput {
   }
 
   handleKey(event: KeyEvent): void {
+    // Gamepad keys are taken first and never reach the key table (its D-pad codes map to arrows).
+    if (this.gamepad !== undefined && this.gamepad.handleKey(event)) {
+      return;
+    }
     this.keys.handleKey(event);
+  }
+
+  handleFocusAxis(event: FocusAxisEvent): void {
+    this.gamepad?.handleFocusAxis(event);
   }
 
   handleInterceptedKey(keyCode: number, down: boolean): void {
@@ -264,5 +281,6 @@ export class SessionInput {
     this.touchpad.endPan();
     this.pinch.end();
     this.touchpad.resetTap();
+    this.gamepad?.releaseAll();
   }
 }

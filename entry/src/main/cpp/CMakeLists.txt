@@ -123,6 +123,7 @@ add_library(hmrdp SHARED
     core/hmrdp_moonlight.cpp
 core/hmrdp_moonlight_session.cpp
     core/hmrdp_moonlight_audio.cpp
+    core/hmrdp_gamepad_kit.cpp
     core/hmrdp_oh_audio.cpp
     core/hmrdp_video_decoder.cpp
     core/hmrdp_audio.cpp
@@ -175,6 +176,9 @@ target_link_libraries(hmrdp
     # HUKS wraps the Moonlight client private key (AES-256-GCM under a non-exportable key).
     libhuks_ndk.z.so
     libohinput.so
+    # Game Controller Kit: the official gamepad source, whose axis events name the control they
+    # came from (the multimodal input events only carry values).
+    libohgame_controller.z.so
     EGL
     GLESv3
     # All shared, shipped from entry/libs/<abi>/ (HMRDP_PREBUILT_LIB_PATHS); OpenSSL appears exactly once.

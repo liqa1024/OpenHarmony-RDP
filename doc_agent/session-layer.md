@@ -144,7 +144,8 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 ## 8. 输入分流（两协议共享策略）
 
 **分层**：输入的**策略**在协议中立的 `services/input/` 下按关注点拆分——`PointerInput` 指针、`KeyInput`
-键盘、`TouchInput` 触屏、`TouchpadInput` 触控板、`WheelInput` 轴向滚动、`PinchInput` 捏合，共用
+键盘、`TouchInput` 触屏、`TouchpadInput` 触控板、`WheelInput` 轴向滚动、`PinchInput` 捏合、`GamepadInput`
+手柄（见下），共用
 `MoveDelivery` 投递（`RateCoalescer` 限速 / `ImmediateMoveDelivery` 直通，由 sink 自述选哪一个）、
 `HeldInputs` 按住账本、`InputPolicy` 常量与共享指针几何；`services/SessionInput.ets` 是只做编排的**瘦
 Facade**，经 `InputSink` 接口下发动词
@@ -335,6 +336,66 @@ Facade**，经 `InputSink` 接口下发动词
     （设置页 / 主列表）变为活动、或本页离开即释放，否则那些窗口的键盘也会被吞掉。
   - 代价是开启期间**本机的系统快捷键一并被远端接管**，所以默认关；注册失败（缺 ACL 等）时后端返回
     `false`，UI 保持普通按键通路而不是把键盘丢掉。
+- **手柄（控制器，Moonlight 专有）**：OH 把柄键上报为**按键事件**、把摇杆与十字键上报为**焦点轴事件**
+  （`FocusAxisEvent`，只投给**获焦组件**——画面 XComponent 就是获焦者）。策略在 `services/input/GamepadInput.ets`，
+  只会话页按 Moonlight 装配（**RDP 不注入**，其按键/方向键路径不变）。
+  - **按键按 evdev 语义映射，不按型号打补丁**：平台的键表是**固定的 evdev→KeyCode 表**（`key_map_manager`），
+    所以同一个码在任何手柄上都同义，客户端只需一张语义表：标准键位（A/B/X/Y、LB/RB、Start/Select、摇杆按、
+    Guide）＋**十字键中键→A**、**`MENU`→Start**、**`BACK`→Select**（这三个键盘上也有，所以**只取 `keySource`
+    是手柄的来源**，键盘不受影响）＋**十字键的另一路**（`BTN_DPAD_UP..RIGHT`，按离散按键报十字键的手柄）。
+    OH 对表里没有的 evdev 码上报 `10000+码`。
+  - **协议里没有对应位、或主机不消费的键一律不发**（消费掉即可）：
+    - 分享/截屏键（evdev `KEY_RECORD`(167)、`BTN_MISC`）：协议唯一能放的 `MISC` 位**被主机并进 Guide**
+      （X360 路径 `HOME|MISC → XUSB_GAMEPAD_GUIDE`），等于把**错的**按钮送出去 —— 宁可不发；
+    - 背拨片（`BTN_TRIGGER_HAPPY5..8`）：`PADDLE1..4` 两个主机后端都不消费，发了也是空转；
+    - 认不出的其它柄键：给未知按钮猜一个桶只会把错的按钮送到主机，比没有更糟。
+    这些码仍然算"手柄键"（被消费），只是不产生任何位——否则会漏进键盘通路。
+  - **来源判据**：`event.keySource === KeySource.JOYSTICK`，外加平台只可能由手柄产生的码段（2301–2315 /
+    2401–2416 / 3100–3109 / `10000+` 的 167、544–547、708–711）兜住未标来源的设备；在 `SessionInput.handleKey`
+    里**抢在键表之前消费**——十字键的码在键表里是方向键，否则会被当成箭头键再发一遍。
+  - **十字键两路择一**：十字键有**按键**与 **hat 轴**（`ABS_HAT0X/HAT0Y`，原值 -1/0/1）两种上报。**hat 真动过一次**
+    之后方向位就归 hat（同一方向的按键事件被忽略——否则按键抬起会把 hat 按住的方向也清掉），此前按键独立生效。
+  - **方向键不再走本机焦点**：方向键/十字键按键默认会带动**本机走焦**，一走焦后续轴事件就投给别的组件了；
+    `SessionPicture` 用 `focusScopeId(id, true, false)`（`arrowStepOut=false`）把焦点圈在画面内，Tab 不受影响。
+  - **最短按下时间**：一次轻点到达时只是相隔几毫秒的 down/up 对，而主机按自己的节奏采样手柄、游戏再按帧采样，
+    过短的按下会**整个丢失**。所以**释放被延后到至少 25ms 的按下时长**（与安卓客户端同一处置）；只在真的过短时
+    才走定时器，正常操作不引入延迟。
+  - **轴来源：平台的 Game Controller Kit 是首选**（官方 C 接口，`libohgame_controller.z.so`，原生薄封装
+    `core/hmrdp_gamepad_kit.*` + N-API `gamepadKitSetListener/Stop/Devices`）。它的轴事件**带来源**
+    （`DPAD / LEFT_THUMBSTICK / RIGHT_THUMBSTICK / LEFT_TRIGGER / RIGHT_TRIGGER`），官方指南给了对应表：
+    **左摇杆 = X/Y、右摇杆 = Z/RZ、十字键 = HatX/HatY、左扳机 = Brake、右扳机 = Gas**。于是"哪对轴是右摇杆、
+    哪对是扳机"**不需要任何推断**，`RX/RY` 也不在官方手柄模型里（Kit 没有它们的取值接口）。
+  - **兜底路径 = 同一张官方表**：Kit 注册失败（设备没有该服务 / 服务拒绝）时，改用焦点轴事件，按上表读。
+    两路都**只看官方表**：不按 `RX/RY` 在不在切布局，也不靠观察去猜角色。
+  - **两路要合成同一个控制器槽，只有"设备身份"需要对齐**：Kit 用**字符串 key**标识设备，而键事件带的是
+    multimodal 的数字 deviceId。绑定顺序：key 解析成数字且确是手柄就用它 → 否则按**设备名**匹配 → 再否则
+    **只有一个手柄时**就是它；都对不上时该手柄另占一槽（并记一行日志）。这是整套里唯一一处"对齐"，与轴角色无关。
+  - **扳机两种量纲折成 0..1**：Kit 文档标的是 [-1,1]（可能负端静止），multimodal 的 `GAS/BRAKE` 是 [0,1]；
+    判据取"该轴出现过负值"（`(v+1)/2` vs 原值），只影响量纲、不影响角色。只报按键的手柄仍用 `L2/R2` 兜底成 0/255。
+  - **设备与掩码**：在线手柄列表取 Kit 的 `gamepadKitDevices()`（比按 `sources` 含 `joystick` 的猜测准）；
+    Kit 不可用时才退回该猜测。插拔仍由 `inputDevice.on('change')` 驱动槽位与掩码。
+  - **十字键两路择一**：十字键有**按键**与 **hat 轴**（`HAT0X/HAT0Y`，原值 -1/0/1）两种上报，Kit 的 `DPAD` 轴
+    也算轴那一侧。**轴真动过一次**之后方向位就归轴（同一方向的按键事件被忽略——否则按键抬起会把轴按住的方向
+    也清掉），此前按键独立生效。
+  - **方向键不再走本机焦点**：方向键/十字键按键默认会带动**本机走焦**，一走焦后续轴事件就投给别的组件了；
+    `SessionPicture` 用 `focusScopeId(id, true, false)`（`arrowStepOut=false`）把焦点圈在画面内，Tab 不受影响。
+  - **最短按下时间**：一次轻点到达时只是相隔几毫秒的 down/up 对，而主机按自己的节奏采样手柄、游戏再按帧采样，
+    过短的按下会**整个丢失**。所以**释放被延后到至少 25ms 的按下时长**（与安卓客户端同一处置）；只在真的过短时
+    才走定时器，正常操作不引入延迟。
+  - **口径**：摇杆 [-1, 1]、扳机折 [0, 1] 后再 ×255、摇杆 **Y 取负**（线序上正=上，与参考客户端一致，真机若
+    上下颠倒就同步翻转两轴）。**不做死区**：归一化已按设备量程取值、摇杆静止即 0，剩下一层死区（XInput 常量 /
+    游戏自己的阈值）交给主机与游戏（手游端那套 0.13 扳机死区是配合它自己的量程判定的）。
+  - **记账**：按住状态记在 `GamepadInput` 自己的槽位表里，`releaseAll()`（画面失焦 / 窗口失活 / 释放）把每个槽位
+    归零补发并清掉待发释放，与键盘鼠标同一触发点。
+  - **热插拔**：`inputDevice.on('change')` 的 add 给一个槽位并发一次**到达声明**，remove 把该槽位状态清零、掩码去掉
+    该位（主机据此回收虚拟手柄）；槽位上限 4，掩码随每次状态事件一起发。协议与 `/launch` 掩码见
+    [`moonlight-native.md`](moonlight-native.md) §2.5。
+  - **不做（对照安卓客户端的结论）**：缺键的组合模拟（Start+LB→Select、Start+Select→Guide、退出的四键组合）是
+    它替代"没有工具栏"的界面手段，本机有工具栏且 OH 手柄本身能报 Select/Start；多设备手柄融合（安卓按 descriptor
+    把同一手柄的多个节点并到一个控制器号，OH 已知手柄都是单设备）；把没有 hat 的手柄那组 `BTN_TRIGGER_HAPPY1..4`
+    当十字键（安卓自己也注明"无法确认"——认错的代价是把面键变方向键）。
+  - **诊断**：手柄挂载时打**一行**（含解析到的设备与槽位），Kit 与键事件的设备身份对不上时也记一行；这只是留痕，
+    **不是适配手段**——适配由官方 Kit / 官方轴表完成，不需要用户进开发者模式配合。
 - **锁定键（Caps / Num / Scroll Lock）路径**：读本机锁定态并与已下发值比对后同步远端；RDP 的 PDU 落地见
   [`rdp-session.md`](rdp-session.md)，Moonlight 由主机自行维护。
 - **捏合与触控板的协议归属**：捏合（各三档）、触控板双指滚动（直译模式，以及引擎模式的增量落地）、

@@ -11,6 +11,7 @@ import { ML_HOST_FEATURE_CLIPBOARD_IMAGE, ML_HOST_FEATURE_CLIPBOARD_TEXT, ML_HOS
   ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { SessionInput } from '../services/SessionInput';
+import { GamepadInput } from '../services/input/GamepadInput';
 import { TOUCH_MOVE_INTERVAL_FALLBACK_MS } from '../services/input/InputPolicy';
 import { RemoteCursor } from '../services/RemoteCursor';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
@@ -353,6 +354,8 @@ struct MoonlightSessionPage {
     const sink: MoonlightInputSink = new MoonlightInputSink(backend);
     sink.setReferenceSize(this.streamWidth, this.streamHeight);
     const input: SessionInput = new SessionInput(sink);
+    // Moonlight only: OH reports gamepad buttons as key events and sticks as focus axis events.
+    input.setGamepad(new GamepadInput(sink));
     input.setEngineEnabled(this.scrollEngine);
     input.setWinKeySubstitute(settings.mlWinKeySubstitute);
     input.setPointerSpace(this.streamWidth, this.streamHeight);
@@ -674,6 +677,10 @@ struct MoonlightSessionPage {
     this.shell?.routeKey(event);
   }
 
+  private handleFocusAxis(event: FocusAxisEvent): void {
+    this.shell?.routeFocusAxis(event);
+  }
+
   private retry(): void {
     this.shell?.retry();
   }
@@ -825,6 +832,9 @@ struct MoonlightSessionPage {
           },
           onSurfaceKey: (event: KeyEvent) => {
             this.handleKey(event);
+          },
+          onSurfaceFocusAxis: (event: FocusAxisEvent) => {
+            this.handleFocusAxis(event);
           },
           onSurfaceBlur: () => {
             // Keys/buttons held when focus leaves would never get their Up event.

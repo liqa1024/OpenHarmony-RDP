@@ -22,6 +22,8 @@ export struct SessionPicture {
   onPointerHover: (isHover: boolean) => void = (isHover: boolean) => {};
   onPointerAxis: (event: AxisEvent) => void = (event: AxisEvent) => {};
   onSurfaceKey: (event: KeyEvent) => void = (event: KeyEvent) => {};
+  // Gamepad sticks and D-pad axes; delivered to the focused component.
+  onSurfaceFocusAxis: (event: FocusAxisEvent) => void = (event: FocusAxisEvent) => {};
   onSurfaceBlur: () => void = () => {};
   onPictureArea: (width: number, height: number) => void = (width: number, height: number) => {};
   onRevealZone: (inBand: boolean) => void = (inBand: boolean) => {};
@@ -74,6 +76,9 @@ export struct SessionPicture {
             .onKeyEvent((event: KeyEvent) => {
               this.onSurfaceKey(event);
             })
+            .onFocusAxisEvent((event: FocusAxisEvent) => {
+              this.onSurfaceFocusAxis(event);
+            })
             .onBlur(() => {
               this.onSurfaceBlur();
             })
@@ -91,6 +96,8 @@ export struct SessionPicture {
       }
       .width('100%')
       .height('100%')
+      // Arrow / D-pad keys belong to the remote, so they must not walk local focus off the picture.
+      .focusScopeId('sessionPicture', true, false)
 
       if (this.revealBand > 0) {
         Row()

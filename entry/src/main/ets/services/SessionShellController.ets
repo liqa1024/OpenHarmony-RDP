@@ -248,6 +248,10 @@ export class SessionShellController {
     this.input?.handleKey(event);
   }
 
+  routeFocusAxis(event: FocusAxisEvent): void {
+    this.input?.handleFocusAxis(event);
+  }
+
   retry(): void {
     if (this.state === ConnectionState.Connecting
       || this.state === ConnectionState.Disconnecting) {

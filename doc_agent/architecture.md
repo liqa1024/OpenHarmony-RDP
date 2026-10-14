@@ -42,11 +42,11 @@
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
 | `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）+ `InputSink` 接口**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
-| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `MoveDelivery`/`RateCoalescer`（连续位置流投递：限速或直通，由 sink 自述决定）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口） |
+| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有，附 `GamepadDevices` 设备枚举）+ `MoveDelivery`/`RateCoalescer`（连续位置流投递：限速或直通，由 sink 自述决定）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口） |
 | `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `PointerInput`；状态与定时器自持有 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `RdpEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/RdpEventHub.ets` | RDP 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
-| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入由 `MoonlightInputSink` 落 `LiSend*`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 原生触控板接入点） |
+| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入由 `MoonlightInputSink` 落 `LiSend*`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 控制器 / 原生触控板接入点） |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供；失效 pin 清理 |
 | `services/MoonlightHostState.ets` | 主机「在跑哪个应用」的单一权威（静态监听器；客户端动作乐观写入，主机探测收敛），列表行与应用页徽标都由它派生 |
 | `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
@@ -131,6 +131,7 @@
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针、视频解码桥、音频 Opus 解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §2.3 / [`moonlight-control.md`](moonlight-control.md) §1） |
 | `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`rdp-native.md`](rdp-native.md) §5） |
 | `core/hmrdp_oh_audio.{h,cpp}` | **原生 OHAudio 输出**（Moonlight 低延迟模式）：`OH_AudioRenderer` FAST + 音频工作组，写回调直接拉交接环（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
+| `core/hmrdp_gamepad_kit.{h,cpp}` | **手柄轴来源（Game Controller Kit 薄封装）**：注册设备的上下线与五个轴监听，回调把"哪个控制产生的轴事件"+值交给 N-API（见 [`session-layer.md`](session-layer.md) §8） |
 | `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（surface / buffer 两种输出） |
 | `core/hmrdp_decode_tuning.{h,cpp}` | 在线核数/性能簇/频率探测，供解码宽度与日志用 |
 | `core/hmrdp_log.h` | hilog 包装（domain `0xD001`、tag `HmRdpNative`） |

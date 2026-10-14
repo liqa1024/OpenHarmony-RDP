@@ -51,7 +51,9 @@
 
 - **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
   分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
-  手柄掩码是 `gcmap`。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist` 选一个（优先名为 Desktop 的）。
+  手柄掩码是 `gcmap`（本实现与 `remoteControllersBitmap` 一起填当前插着的手柄数，见
+  [`moonlight-native.md`](moonlight-native.md) §2.5）。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist`
+  选一个（优先名为 Desktop 的）。
   （`/appasset` 的 `AssetType`、`audioConfiguration` 等同理；改动前先核对标准客户端 Moonlight Android / Sunshine。）
 - **客户端名称 `clientname`**：Sunshine 定义并实际消费的参数，`/pair`(getservercert) 与 `/launch`、`/resume`
   都读取（缺省 `Named Zako` / `unknown`），配对名进 Web UI 与 `root.pairname`；foundation-sunshine 还用

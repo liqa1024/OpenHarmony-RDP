@@ -1,5 +1,6 @@
 import {
   MoonlightEventExtra, MoonlightSessionConfig, bufferRead, bufferRelease,
+  moonlightController, moonlightControllerArrival,
   moonlightHighResHScroll, moonlightHighResScroll, moonlightHostFeatures,
   moonlightKey, moonlightMouseButton, moonlightMouseMove,
   moonlightMousePosition, moonlightSendClipboardData, moonlightSessionActive, moonlightSessionClearSurface,
@@ -19,6 +20,7 @@ import { MoonlightHostState } from './MoonlightHostState';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
 import { InputAction, InputButton, InputSink, TouchpadContact, TouchPhase } from './SessionInput';
+import { GamepadSink } from './input/InputSink';
 import { KeyMapping } from '../utils/KeyMapper';
 import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 
@@ -325,7 +327,7 @@ export class MoonlightSessionBackend implements SessionBackend {
 // Windows VK for the Meta/Win key.
 const ML_VK_META: number = 0x5B;
 
-export class MoonlightInputSink implements InputSink {
+export class MoonlightInputSink implements InputSink, GamepadSink {
   private backend: MoonlightSessionBackend;
   // Left/right modifiers share a bit but are distinct VKs, so the byte is derived
   // from the set of keys currently down, not from a per-key toggle.
@@ -468,6 +470,22 @@ export class MoonlightInputSink implements InputSink {
     const mlAction: number = action === InputAction.PRESS
       ? MlVirtualKey.ACTION_PRESS : MlVirtualKey.ACTION_RELEASE;
     this.backend.mouseButton(mlAction, mlButton);
+  }
+
+  // One controller slot's whole state (LiSendMultiControllerEvent); triggers are 0..255 and
+  // sticks -32767..32767 with +Y up.
+  controllerState(controllerNumber: number, activeGamepadMask: number, buttonFlags: number,
+    leftTrigger: number, rightTrigger: number, leftStickX: number, leftStickY: number,
+    rightStickX: number, rightStickY: number): void {
+    moonlightController(controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger,
+      leftStickX, leftStickY, rightStickX, rightStickY);
+  }
+
+  // Declares one attached controller's type / buttons / capabilities (LiSendControllerArrivalEvent).
+  controllerArrival(controllerNumber: number, activeGamepadMask: number, type: number,
+    supportedButtonFlags: number, capabilities: number): void {
+    moonlightControllerArrival(controllerNumber, activeGamepadMask, type, supportedButtonFlags,
+      capabilities);
   }
 
   private static mlButton(button: number): number {

@@ -118,6 +118,16 @@ void MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
 // High-resolution wheel, in WHEEL_DELTA (120) units; vertical and horizontal.
 void MoonlightSessionHighResScroll(int amount);
 void MoonlightSessionHighResHScroll(int amount);
+// One controller slot's whole state (LiSendMultiControllerEvent); activeGamepadMask carries a bit
+// per attached controller, triggers are 0..255 and sticks -32767..32767 with +Y up.
+void MoonlightSessionControllerState(int controllerNumber, int activeGamepadMask, int buttonFlags,
+                                    int leftTrigger, int rightTrigger, int leftStickX, int leftStickY,
+                                    int rightStickX, int rightStickY);
+// Declares one attached controller's type / buttons / capabilities
+// (LiSendControllerArrivalEvent); the library falls back to a plain state event when the host
+// does not support arrival events.
+void MoonlightSessionControllerArrival(int controllerNumber, int activeGamepadMask, int type,
+                                       int supportedButtonFlags, int capabilities);
 // Composed text (IME / non-US layout) sent as one UTF-8 string.
 void MoonlightSessionText(const char* text, int length);
 // LI_FF_* bits the host advertised; 0 before a session is established.

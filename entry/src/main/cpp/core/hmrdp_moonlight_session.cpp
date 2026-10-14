@@ -342,6 +342,29 @@ void MoonlightSessionHighResHScroll(int amount) {
   }
 }
 
+void MoonlightSessionControllerState(int controllerNumber, int activeGamepadMask, int buttonFlags,
+                                    int leftTrigger, int rightTrigger, int leftStickX, int leftStickY,
+                                    int rightStickX, int rightStickY) {
+  if (g_connected) {
+    LiSendMultiControllerEvent(static_cast<short>(controllerNumber),
+                               static_cast<short>(activeGamepadMask), buttonFlags,
+                               static_cast<unsigned char>(leftTrigger),
+                               static_cast<unsigned char>(rightTrigger),
+                               static_cast<short>(leftStickX), static_cast<short>(leftStickY),
+                               static_cast<short>(rightStickX), static_cast<short>(rightStickY));
+  }
+}
+
+void MoonlightSessionControllerArrival(int controllerNumber, int activeGamepadMask, int type,
+                                       int supportedButtonFlags, int capabilities) {
+  if (g_connected) {
+    LiSendControllerArrivalEvent(static_cast<uint8_t>(controllerNumber),
+                                 static_cast<uint16_t>(activeGamepadMask), static_cast<uint8_t>(type),
+                                 static_cast<uint32_t>(supportedButtonFlags),
+                                 static_cast<uint16_t>(capabilities));
+  }
+}
+
 void MoonlightSessionText(const char* text, int length) {
   if (g_connected && text != nullptr && length > 0) {
     LiSendUtf8TextEvent(text, static_cast<unsigned int>(length));

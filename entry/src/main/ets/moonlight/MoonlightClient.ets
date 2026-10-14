@@ -148,11 +148,12 @@ export class MoonlightClient {
       + `&rikey=${options.rikeyHex}`
       + `&rikeyid=${options.rikeyId}`
       // Sunshine nvhttp names: localAudioPlayMode (0 = client plays, 1 = host
-      // local), surroundAudioInfo packed; gamepad not wired yet (mask 0).
+      // local), surroundAudioInfo packed; the gamepad mask is the set of controllers
+      // attached here (hot-plug sends arrival events on the control stream).
       + `&localAudioPlayMode=${options.audioEnabled ? 0 : 1}`
       + '&surroundAudioInfo=196610'
-      + '&remoteControllersBitmap=0'
-      + '&gcmap=0'
+      + `&remoteControllersBitmap=${options.gamepadMask}`
+      + `&gcmap=${options.gamepadMask}`
       + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =
       MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin));

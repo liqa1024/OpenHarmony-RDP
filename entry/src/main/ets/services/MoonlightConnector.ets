@@ -4,6 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_AUTO,
   MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
 import { SettingsStore } from './SettingsStore';
+import { GamepadDevices } from './input/GamepadInput';
 import { recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
 import { MoonlightClient, MoonlightDisplay, MoonlightScaleTarget } from '../moonlight/MoonlightClient';
@@ -267,6 +268,8 @@ export class MoonlightConnector {
     // Host-side local playback mirrors client playback: with client audio on the
     // host stays silent and streams; off it plays locally.
     options.audioEnabled = audioEnabled;
+    // Controllers attached right now decide the mask the host creates up front.
+    options.gamepadMask = await GamepadDevices.attachedMask();
     let launch: LaunchResult;
     if (info.currentGame === effectiveAppId) {
       launch = await MoonlightClient.resume(filesDir, host, info.httpsPort, options);

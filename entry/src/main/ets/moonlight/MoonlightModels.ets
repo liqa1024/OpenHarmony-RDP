@@ -47,6 +47,8 @@ export class MoonlightLaunchOptions {
   rikeyId: number = 0;
   // Client audio on: host plays locally off. Drives the /launch localAudioPlayMode.
   audioEnabled: boolean = true;
+  // Attached controllers, one bit each (gcmap / remoteControllersBitmap); 0 when none.
+  gamepadMask: number = 0;
 }
 
 export class LaunchResult {
