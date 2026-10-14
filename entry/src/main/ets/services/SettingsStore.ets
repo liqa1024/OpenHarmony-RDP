@@ -110,6 +110,8 @@ export class AppSettings {
   mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   // HIDE_SYSTEM only: the host cursor owns its position and Windows applies its own pointer curve.
   mlRelativeMouse: boolean = false;
+  // Relative mode fine-tune on top of the host scale (see services/input/RelativeUnits.ets).
+  mlRelativeSpeed: number = DEFAULT_SPEED_SCALE;
   mlLowLatencyAudio: boolean = true;
   mlReconnectOnForeground: boolean = false;
   mlWinKeySubstitute: number = 0;
@@ -260,6 +262,8 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlCursorMode', settings.mlCursorMode);
       settings.mlRelativeMouse = SettingsStore.readBoolean(store, 'mlRelativeMouse',
         settings.mlRelativeMouse);
+      settings.mlRelativeSpeed = SettingsStore.readNumber(store, 'mlRelativeSpeed',
+        settings.mlRelativeSpeed);
       settings.mlLowLatencyAudio = SettingsStore.readBoolean(store, 'mlLowLatencyAudio',
         settings.mlLowLatencyAudio);
       settings.mlReconnectOnForeground = SettingsStore.readBoolean(store,
@@ -336,6 +340,7 @@ export class SettingsStore {
       store.putSync('mlPinchTouchDistance', settings.mlPinchTouchDistance);
       store.putSync('mlCursorMode', settings.mlCursorMode);
       store.putSync('mlRelativeMouse', settings.mlRelativeMouse);
+      store.putSync('mlRelativeSpeed', settings.mlRelativeSpeed);
       store.putSync('mlLowLatencyAudio', settings.mlLowLatencyAudio);
       store.putSync('mlReconnectOnForeground', settings.mlReconnectOnForeground);
       store.putSync('mlWinKeySubstitute', settings.mlWinKeySubstitute);

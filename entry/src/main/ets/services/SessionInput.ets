@@ -124,6 +124,10 @@ export class SessionInput {
     this.touchpad.setPanEnabled(enabled);
   }
 
+  setRelativeSpeed(speed: number): void {
+    this.pointer.setRelativeSpeed(speed);
+  }
+
   // Relative-pointer mode: the host owns the cursor position, so motion is the difference of the
   // local pointer's mapped positions (touchpad included) and buttons carry no position.
   setRelativePointer(enabled: boolean): void {
@@ -131,9 +135,21 @@ export class SessionInput {
     this.pointer.setRelativePointer(enabled);
   }
 
-  // False when no pointer position is known yet (the host cursor then keeps its own position).
+  // Absolute protocols report positions continuously, so only relative mode needs an anchor.
   reportPointerPosition(): boolean {
+    if (!this.sink.relativePointerEnabled()) {
+      return false;
+    }
     return this.pointer.reportPosition();
+  }
+
+  // Focus regained: the host cursor may have been left anywhere, so the next pointer event
+  // re-states the local position before resuming relative motion.
+  reanchorPointer(): void {
+    if (!this.sink.relativePointerEnabled()) {
+      return;
+    }
+    this.pointer.reanchor();
   }
 
   isTouchpad(deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean {

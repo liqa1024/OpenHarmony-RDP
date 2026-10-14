@@ -351,6 +351,7 @@ struct MoonlightSessionPage {
     input.setTouchpadScrollSpeed(settings.mlTouchpadScrollSpeed);
     input.setTouchpadMiddleDoubleTap(settings.mlTouchpadMiddleDoubleTap);
     input.setRelativePointer(this.relativeMouse);
+    input.setRelativeSpeed(settings.mlRelativeSpeed);
     input.setPinchZoomSpeed(settings.mlPinchZoomSpeed);
     input.setPinchTouchDistance(settings.mlPinchTouchDistance);
     input.setPinchTouchAngle(settings.mlPinchTouchAngle);
@@ -617,8 +618,10 @@ struct MoonlightSessionPage {
   // HIDE_SYSTEM only: the installer owns the process-global cursor switch and
   // restores it off the picture / on disconnect / on teardown.
   private setLocalCursorHidden(hidden: boolean): void {
-    const shouldHide: boolean = hidden && this.cursorMode === ML_CURSOR_HIDE_SYSTEM
-      && this.state === ConnectionState.Connected;
+    // TODO(relative): keep the local cursor visible while relative mode is being validated so both
+    // cursors can be compared; settle the final behaviour (hidden, like absolute mode) afterwards.
+    const shouldHide: boolean = hidden && !this.relativeMouse
+      && this.cursorMode === ML_CURSOR_HIDE_SYSTEM && this.state === ConnectionState.Connected;
     this.shell?.remoteCursor().setLocalHidden(shouldHide);
   }
 

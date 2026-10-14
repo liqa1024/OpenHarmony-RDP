@@ -28,6 +28,8 @@ export class PointerInput implements TouchpadTapTarget {
   private lastY: number = 0;
   private havePosition: boolean = false;
   private relativeBaselineTaken: boolean = false;
+  private anchorPending: boolean = false;
+  private relativeSpeed: number = 1;
   private move: MoveDelivery<MovePoint>;
 
   constructor(sink: InputSink, held: HeldInputs, geometry: InputGeometry, moveIntervalMs: number) {
@@ -53,7 +55,19 @@ export class PointerInput implements TouchpadTapTarget {
   setRelativePointer(enabled: boolean): void {
     if (enabled) {
       this.relativeBaselineTaken = false;
+      this.anchorPending = true;
     }
+  }
+
+  // The host cursor can be anywhere after a focus switch, so the next pointer event re-takes the
+  // baseline and re-states where the local pointer is.
+  reanchor(): void {
+    this.relativeBaselineTaken = false;
+    this.anchorPending = true;
+  }
+
+  setRelativeSpeed(speed: number): void {
+    this.relativeSpeed = speed;
   }
 
   lastPointerX(): number {
@@ -136,7 +150,8 @@ export class PointerInput implements TouchpadTapTarget {
     this.move.post(0, MovePoint.of(x, y));
   }
 
-  // Consecutive positions differenced; the host keeps its own cursor position from there on.
+  // Consecutive positions differenced; the host keeps its own cursor position from there on. The
+  // first frame of a (re)taken baseline states the absolute position instead of a delta.
   private handleRelativeMove(x: number, y: number): void {
     const dx: number = x - this.lastX;
     const dy: number = y - this.lastY;
@@ -145,10 +160,18 @@ export class PointerInput implements TouchpadTapTarget {
     this.lastX = x;
     this.lastY = y;
     this.havePosition = true;
-    if (baseline || (dx === 0 && dy === 0)) {
+    if (baseline) {
+      if (this.anchorPending) {
+        this.anchorPending = false;
+        this.sink.pointerMove(x, y);
+      }
       return;
     }
-    this.sink.pointerMoveRelative(dx * RELATIVE_COUNTS_PER_PX, dy * RELATIVE_COUNTS_PER_PX);
+    if (dx === 0 && dy === 0) {
+      return;
+    }
+    const gain: number = RELATIVE_COUNTS_PER_PX * this.relativeSpeed;
+    this.sink.pointerMoveRelative(dx * gain, dy * gain);
   }
 
   /** One whole click as press + release, so the remote never keeps a button down. */

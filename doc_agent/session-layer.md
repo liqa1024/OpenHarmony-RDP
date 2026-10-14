@@ -197,7 +197,10 @@ Facade**，经 `InputSink` 接口下发动词
   映射位置之差**（`services/input/RelativeUnits.ets` 的 1:1 口径：内容像素当主机计数 ⇒ 与绝对模式增益一致），
   **鼠标与触控板同一条逻辑**——触控板单指移动**不做**虚拟触点合成（把点击/拖动的语义也搬到触点通道上，
   两头都要额外适配，不值得）；位置差带本机指针曲线，所以**主机侧不要开鼠标加速**，否则叠成两层。
-  连接后先发一次当前位置的绝对坐标作**锚点**（`SessionInput.reportPointerPosition()`）。
+  增益还取决于**主机显示缩放**（相对注入按主机逻辑像素走，内容像素是物理像素）：基准取主机握手值、未握手上取 100%，
+  另有 `mlRelativeSpeed` 滑块做二次调整（`services/input/RelativeUnits.ets` 是唯一换算点）。
+  连接后先发一次当前位置的绝对坐标作**锚点**（`SessionInput.reportPointerPosition()`），此后**每次重新获焦**都重取基准并
+  补发一次锚点（`reanchorPointer()`，见 §4 的窗口焦点回调）——主机光标可能在失焦期间被别处使用而离位。
 - **为什么不用 rawDelta**：`MouseEvent.rawDeltaX/rawDeltaY` 是**未加速**的设备位移（MMI 侧取自 libinput 的
   `*_dx_unaccelerated()`），本该是最合适的一路；但 MMI 对 **USB 真鼠标**按 **800µs 门限做回报率过滤**：间隔不足的
   motion 事件被**整条丢弃**，其位移只累加进**位置**、**不写回 raw**（实现分处 MMI 的 `service/mouse_event_normalize`

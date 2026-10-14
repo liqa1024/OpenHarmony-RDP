@@ -263,7 +263,9 @@ export class SessionShellController {
       });
       WindowController.watchFocus(win, (focused: boolean): void => {
         this.windowFocused = focused;
-        if (!focused) {
+        if (focused) {
+          this.input?.reanchorPointer();
+        } else {
           this.input?.releaseAll();
           this.hooks.onReleaseInputs();
         }

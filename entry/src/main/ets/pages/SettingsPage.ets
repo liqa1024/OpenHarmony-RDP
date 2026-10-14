@@ -13,6 +13,7 @@ import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDT
   PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
+import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
 import { showConfirm } from '../utils/UiUtil';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
@@ -111,6 +112,7 @@ struct SettingsPage {
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   @State mlRelativeMouse: boolean = false;
+  @State relativeSpeed: number = DEFAULT_SPEED_SCALE;
   @State mlLowLatencyAudio: boolean = true;
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
@@ -192,8 +194,9 @@ struct SettingsPage {
       this.mlBitrateText = kbpsToMbps(settings.mlBitrateKbps).toString();
       this.mlColorSpace = settings.mlColorSpace;
       this.mlCodec = settings.mlCodec;
-      this.mlCursorMode = settings.mlCursorMode;
-      this.mlRelativeMouse = settings.mlRelativeMouse;
+    this.mlCursorMode = settings.mlCursorMode;
+    this.mlRelativeMouse = settings.mlRelativeMouse;
+    this.relativeSpeed = settings.mlRelativeSpeed;
       this.mlLowLatencyAudio = this.audioSupported ? settings.mlLowLatencyAudio : false;
       this.clampMlCodec();
       this.applyInteraction(settings, false);
@@ -406,6 +409,7 @@ struct SettingsPage {
       settings.mlPinchTouchDistance = this.pinchTouchDistance;
       settings.mlCursorMode = this.mlCursorMode;
       settings.mlRelativeMouse = this.mlRelativeMouse;
+      settings.mlRelativeSpeed = this.relativeSpeed;
       settings.mlLowLatencyAudio = this.mlLowLatencyAudio && this.audioSupported;
       settings.mlReconnectOnForeground = this.reconnectOnForeground;
       settings.mlWinKeySubstitute = this.winKeySubstitute;
@@ -1202,6 +1206,25 @@ struct SettingsPage {
                       this.persist();
                     }
                   })
+
+                  if (this.mlRelativeMouse) {
+                    this.sliderItem({
+                      title: '相对移动速度',
+                      subtitle: '在主机显示缩放的基础上的二次调整，1.0× 为基准',
+                      value: this.relativeSpeed,
+                      min: MIN_RELATIVE_SPEED,
+                      max: MAX_RELATIVE_SPEED,
+                      step: 0.05,
+                      unit: '×',
+                      precision: 2,
+                      enabled: true,
+                      disabledReason: '',
+                      onChange: (v: number) => {
+                        this.relativeSpeed = v;
+                        this.persist();
+                      }
+                    })
+                  }
                 }
               }
               .width('100%')
