@@ -31,12 +31,21 @@ class DisplayScaleRequest {
 export class MoonlightDisplay {
   deviceId: string = '';
   displayName: string = '';
+  currentScalePercent: number = 0;
   supportedScalePercents: number[] = [];
   scaleSupported: boolean = false;
 
   usable(): boolean {
     return (this.deviceId.length > 0 || this.displayName.length > 0) && this.scaleSupported;
   }
+}
+
+// A scale request split into what to send and what it really selects on the host.
+export class MoonlightScaleTarget {
+  // Value to put in the request (the host's own label for the step).
+  label: number = 0;
+  // True Windows percent that step applies.
+  percent: number = 0;
 }
 
 export class MoonlightClient {
@@ -370,9 +379,10 @@ export class MoonlightClient {
         display.deviceId.length > 0 ? display.deviceId : '-',
         display.displayName.length > 0 ? display.displayName : '-',
         MoonlightClient.describeNumbers(display.supportedScalePercents));
-    } else {
-      hilog.info(0xD001, 'HmRdpMoonlight', 'displays ok=%{public}d status=%{public}d body=%{public}s',
-        response.ok ? 1 : 0, response.status, MoonlightClient.snippet(response.body, 400));
+    } else if (response.ok && response.status === 200) {
+      // Endpoint answered but no virtual display in it: worth the body (a 404 host is just "unsupported").
+      hilog.info(0xD001, 'HmRdpMoonlight', 'displays: no virtual display body=%{public}s',
+        MoonlightClient.snippet(response.body, 400));
     }
     return display;
   }
@@ -386,12 +396,18 @@ export class MoonlightClient {
   // into a step index and sent as the host's label for that index. Once the host reports only
   // real Windows values its labels are the real percents, so this falls back to the nearest
   // one — i.e. it stays correct if the host is ever fixed, and needs no client change.
-  static hostScaleLabel(percent: number, hostLabels: number[]): number {
+  static resolveScaleTarget(percent: number, hostLabels: number[]): MoonlightScaleTarget {
+    const target: MoonlightScaleTarget = new MoonlightScaleTarget();
     if (hostLabels.length === 0) {
-      return percent;
+      target.label = percent;
+      target.percent = percent;
+      return target;
     }
     if (MoonlightClient.labelsAreWindowsSteps(hostLabels)) {
-      return MoonlightClient.nearestValue(percent, hostLabels);
+      const value: number = MoonlightClient.nearestValue(percent, hostLabels);
+      target.label = value;
+      target.percent = value;
+      return target;
     }
     const steps: number[] = MoonlightClient.WINDOWS_SCALE_STEPS;
     let index: number = steps.indexOf(percent);
@@ -401,7 +417,26 @@ export class MoonlightClient {
     if (index > hostLabels.length - 1) {
       index = hostLabels.length - 1;
     }
-    return hostLabels[index];
+    target.label = hostLabels[index];
+    target.percent = MoonlightClient.stepPercent(index);
+    return target;
+  }
+
+  // True Windows percent behind a value the host reported (0 when it cannot be mapped).
+  static trueScalePercent(hostLabel: number, hostLabels: number[]): number {
+    if (hostLabel <= 0) {
+      return 0;
+    }
+    if (MoonlightClient.labelsAreWindowsSteps(hostLabels)) {
+      return hostLabel;
+    }
+    const index: number = hostLabels.indexOf(hostLabel);
+    return index >= 0 ? MoonlightClient.stepPercent(index) : 0;
+  }
+
+  private static stepPercent(index: number): number {
+    const steps: number[] = MoonlightClient.WINDOWS_SCALE_STEPS;
+    return index >= 0 && index < steps.length ? steps[index] : 0;
   }
 
   private static labelsAreWindowsSteps(hostLabels: number[]): boolean {
@@ -475,9 +510,22 @@ export class MoonlightClient {
     // braces itself, so the object must never be sliced by brace positions.
     display.deviceId = MoonlightClient.jsonStringBack(body, '"device_id":"', at);
     display.displayName = MoonlightClient.jsonStringBack(body, '"display_name":"', at);
+    display.currentScalePercent = MoonlightClient.jsonNumberBack(body, '"current_scale_percent":', at);
     display.scaleSupported = body.indexOf('"scale_set_supported":true', at) >= 0;
     display.supportedScalePercents =
       MoonlightClient.jsonNumbersForward(body, '"supported_scale_percents":', at);
+  }
+
+  private static jsonNumberBack(body: string, key: string, before: number): number {
+    const keyAt: number = body.lastIndexOf(key, before);
+    if (keyAt < 0) {
+      return 0;
+    }
+    const valueStart: number = keyAt + key.length;
+    const valueEnd: number = body.indexOf(',', valueStart);
+    const text: string = valueEnd < 0 ? body.substring(valueStart) : body.substring(valueStart, valueEnd);
+    const value: number = Number.parseInt(text.trim(), 10);
+    return Number.isNaN(value) ? 0 : value;
   }
 
   private static jsonStringBack(body: string, key: string, before: number): string {

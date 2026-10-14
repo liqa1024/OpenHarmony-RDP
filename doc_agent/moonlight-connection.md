@@ -56,6 +56,10 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
     （例：要 200 会落到顶层 300）。故客户端**先把待设百分比换算成 Windows 真表的排名**，再取**主机表里同排名的 label**
     发送（`MoonlightClient.hostScaleLabel`，真表见同处 `WINDOWS_SCALE_STEPS`）；主机那张表若修正，此步即恒等。
     日志记 `wanted → label → applied`。
+  - **读只是兜底**：`/displays` 每次连接都读一次（`不额外设置` 时也读），把解析出的**真实**缩放随连接结果回给会话，
+    供相对指针模式按 `100 ÷ 缩放%` 校正增益（[`session-layer.md`](session-layer.md) §8）。正常路径是**设置**——
+    只有主机没用虚拟屏、`不额外设置`、或设置失败时才用读到的当前值；两条端点都是基地版专有，非基地版（原版 Sunshine /
+    GFE）拿不到任何值 ⇒ 按 100% 处理。
   - `supported_scale_percents` 仍是**可设范围**（主机表长度 = 该显示器支持的档数）；超出范围时按排名 **clamp 到顶/底**。
   - **身份用两把键**：`/displays` 的 `device_id` 是带花括号的 GUID、`display_name` 是 `\\.\DISPLAYn`；请求两者都带
     （主机先按 `device_id` 匹配，落不到再按 `display_name`）。

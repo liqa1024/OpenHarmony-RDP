@@ -197,8 +197,13 @@ Facade**，经 `InputSink` 接口下发动词
   映射位置之差**（`services/input/RelativeUnits.ets` 的 1:1 口径：内容像素当主机计数 ⇒ 与绝对模式增益一致），
   **鼠标与触控板同一条逻辑**——触控板单指移动**不做**虚拟触点合成（把点击/拖动的语义也搬到触点通道上，
   两头都要额外适配，不值得）；位置差带本机指针曲线，所以**主机侧不要开鼠标加速**，否则叠成两层。
-  增益还取决于**主机显示缩放**（相对注入按主机逻辑像素走，内容像素是物理像素）：基准取主机握手值、未握手上取 100%，
-  另有 `mlRelativeSpeed` 滑块做二次调整（`services/input/RelativeUnits.ets` 是唯一换算点）。
+  增益还取决于**主机显示缩放**（相对注入按主机逻辑像素走，内容像素是物理像素）⇒ 按 `100 ÷ 主机缩放%` 除掉它，
+  另有 `mlRelativeSpeed` 滑块做二次调整（`services/input/RelativeUnits.ets` 的 `relativeCountsGain` 是唯一换算点）。
+  **主机缩放值**在连接时解析：RDP 取会话桌面的 `DesktopScaleFactor`（`RdpConnectOptions.scalePercent`，总有值）；
+  Moonlight 取**基地版虚拟屏**的真实缩放（优先用本次设置成功的值，`不额外设置`／设置失败时才读 `/displays` 的当前值）。
+  这条读取**只有基地版有**，且只在串流的就是那台虚拟屏时成立——主机没启用虚拟屏、或非基地版（原版 Sunshine / GFE）
+  都拿不到 ⇒ 按 100%（不校正）。值走**惰性查询**（`InputSink.hostDisplayScalePercent`），
+  因此连接结果晚于输入装配也不影响。
   连接后先发一次当前位置的绝对坐标作**锚点**（`SessionInput.reportPointerPosition()`），此后**每次重新获焦**都重取基准并
   补发一次锚点（`reanchorPointer()`，见 §4 的窗口焦点回调）——主机光标可能在失焦期间被别处使用而离位。
 - **为什么不用 rawDelta**：`MouseEvent.rawDeltaX/rawDeltaY` 是**未加速**的设备位移（MMI 侧取自 libinput 的

@@ -380,7 +380,7 @@ struct SessionPage {
   }
 
   private makeInput(settings: AppSettings): SessionInput {
-    const sink: RdpInputSink = new RdpInputSink(this.native);
+    const sink: RdpInputSink = new RdpInputSink(this.native, this.options.scalePercent);
     this.sink = sink;
     const input: SessionInput = new SessionInput(sink);
     this.input = input;

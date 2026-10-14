@@ -62,6 +62,9 @@ export interface InputSink {
   rateLimitMoveStreams(): boolean;
   setRelativePointer(enabled: boolean): void;
   relativePointerEnabled(): boolean;
+  // Display scale (percent) in effect on the streamed desktop: relative-motion counts are host
+  // logical pixels, so this divides them (0 = unknown/100%). RDP reports 0 (absolute-only there).
+  hostDisplayScalePercent(): number;
 }
 
 export type PointMapper = (x: number, y: number) => number[];

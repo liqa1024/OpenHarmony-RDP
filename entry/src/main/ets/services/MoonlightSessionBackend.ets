@@ -53,6 +53,8 @@ export class MoonlightSessionBackend implements SessionBackend {
   private clipboardListener: MlClipboardListener | undefined = undefined;
   private request: PendingConnection;
   private config: MoonlightSessionConfig | undefined = undefined;
+  // Scale (percent) in effect on the host virtual display for this session; 0 = unknown.
+  private hostScalePercent: number = 0;
   private windowBound: boolean = false;
 
   constructor(request: PendingConnection) {
@@ -66,6 +68,10 @@ export class MoonlightSessionBackend implements SessionBackend {
 
   setCursorListener(listener: MlCursorListener): void {
     this.cursorListener = listener;
+  }
+
+  hostDisplayScalePercent(): number {
+    return this.hostScalePercent;
   }
 
   clearCursorListener(): void {
@@ -186,6 +192,7 @@ export class MoonlightSessionBackend implements SessionBackend {
       return false;
     }
     this.config = result.config;
+    this.hostScalePercent = result.hostScalePercent;
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
     MoonlightHostState.markLaunched(conn.id, result.effectiveAppId);
@@ -405,6 +412,10 @@ export class MoonlightInputSink implements InputSink {
 
   relativePointerEnabled(): boolean {
     return this.relative;
+  }
+
+  hostDisplayScalePercent(): number {
+    return this.backend.hostDisplayScalePercent();
   }
 
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void {

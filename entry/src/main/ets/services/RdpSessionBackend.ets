@@ -116,13 +116,17 @@ const RDP_WHEEL_MAX_CHUNK: number = 0xFF;
 // flags, RDPEI touches, and 9-bit wheel chunks. RDP has no native touchpad endpoint.
 export class RdpInputSink implements InputSink {
   private native: RdpNative;
+  // Session desktop DPI scale the Client requested (FreeRDP_DesktopScaleFactor): the same
+  // "host display scale" semantics as the Moonlight virtual display.
+  private hostScalePercent: number;
   private lastX: number = 0;
   private lastY: number = 0;
   private lockFlags: number = 0;
   private lockKnown: boolean = false;
 
-  constructor(native: RdpNative) {
+  constructor(native: RdpNative, hostScalePercent: number) {
     this.native = native;
+    this.hostScalePercent = hostScalePercent;
   }
 
   lastLockFlags(): number {
@@ -170,6 +174,10 @@ export class RdpInputSink implements InputSink {
 
   relativePointerEnabled(): boolean {
     return false;
+  }
+
+  hostDisplayScalePercent(): number {
+    return this.hostScalePercent;
   }
 
   button(action: number, button: number, x: number, y: number): void {

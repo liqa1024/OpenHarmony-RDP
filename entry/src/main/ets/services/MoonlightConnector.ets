@@ -6,7 +6,7 @@ import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_A
 import { SettingsStore } from './SettingsStore';
 import { recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
-import { MoonlightClient, MoonlightDisplay } from '../moonlight/MoonlightClient';
+import { MoonlightClient, MoonlightDisplay, MoonlightScaleTarget } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
 import {
@@ -23,6 +23,8 @@ export class MoonlightConnectResult {
   httpsPort: number = 47984;
   hostId: string = '';
   effectiveAppId: number = 0;
+  // True scale (percent) in effect on the host virtual display; 0 = unknown (no virtual display).
+  hostScalePercent: number = 0;
 }
 
 export class MoonlightAppsResult {
@@ -286,8 +288,8 @@ export class MoonlightConnector {
       return result;
     }
 
-    await MoonlightConnector.applyVirtualDisplayScale(filesDir, host, info.httpsPort, stream,
-      width, height);
+    result.hostScalePercent = await MoonlightConnector.resolveHostDisplayScale(filesDir, host,
+      info.httpsPort, stream, width, height);
 
     const config: MoonlightStreamConfig = new MoonlightStreamConfig();
     config.host = host;
@@ -319,35 +321,39 @@ export class MoonlightConnector {
     return result;
   }
 
-  // foundation-sunshine only: write the requested scale onto the host virtual display, which
-  // is created/released per session (so it needs no restore). Any other host is left alone.
-  private static async applyVirtualDisplayScale(filesDir: string, host: string, httpsPort: number,
-    stream: MoonlightProfile, width: number, height: number): Promise<void> {
-    if (stream.scaleMode === ML_SCALE_NONE) {
-      return;
-    }
-    const wanted: number = stream.scaleMode === ML_SCALE_MANUAL
-      ? stream.scalePercent : SettingsStore.scalePresetForResolution(width, height);
-    if (wanted <= 0) {
-      return;
-    }
+  // foundation-sunshine only: the host virtual display is created per session, so its scale is
+  // read (and, for auto/manual, written) at connect, and it needs no restore. Returns the true
+  // Windows scale percent in effect, 0 when the host exposes no virtual display (stock Sunshine)
+  // or the read failed — the caller then treats the scale as unknown.
+  private static async resolveHostDisplayScale(filesDir: string, host: string, httpsPort: number,
+    stream: MoonlightProfile, width: number, height: number): Promise<number> {
     try {
       const display: MoonlightDisplay =
         await MoonlightClient.fetchVirtualDisplay(filesDir, host, httpsPort);
       if (!display.usable()) {
         hilog.info(0xD001, 'HmRdpMoonlight', 'display scale skipped: no usable virtual display');
-        return;
+        return 0;
       }
-      const label: number =
-        MoonlightClient.hostScaleLabel(wanted, display.supportedScalePercents);
+      const current: number = MoonlightClient.trueScalePercent(display.currentScalePercent,
+        display.supportedScalePercents);
+      if (stream.scaleMode === ML_SCALE_NONE) {
+        hilog.info(0xD001, 'HmRdpMoonlight', 'display scale mode=none current=%{public}d', current);
+        return current;
+      }
+      const wanted: number = stream.scaleMode === ML_SCALE_MANUAL
+        ? stream.scalePercent : SettingsStore.scalePresetForResolution(width, height);
+      const target: MoonlightScaleTarget =
+        MoonlightClient.resolveScaleTarget(wanted, display.supportedScalePercents);
       const applied: boolean = await MoonlightClient.setDisplayScale(filesDir, host, httpsPort,
-        display.deviceId, display.displayName, label);
+        display.deviceId, display.displayName, target.label);
       hilog.info(0xD001, 'HmRdpMoonlight',
-        'display scale wanted=%{public}d label=%{public}d applied=%{public}d',
-        wanted, label, applied ? 1 : 0);
+        'display scale wanted=%{public}d label=%{public}d true=%{public}d applied=%{public}d',
+        wanted, target.label, target.percent, applied ? 1 : 0);
+      return applied ? target.percent : current;
     } catch (error) {
       hilog.warn(0xD001, 'HmRdpMoonlight', 'display scale failed: %{public}s',
         JSON.stringify(error));
+      return 0;
     }
   }
 

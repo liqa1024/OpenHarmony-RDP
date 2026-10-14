@@ -4,7 +4,7 @@ import { InputAction, InputButton, InputSink } from './InputSink';
 import { InputGeometry } from './InputPolicy';
 import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './MoveDelivery';
 import { RateCoalescer } from './RateCoalescer';
-import { RELATIVE_COUNTS_PER_PX } from './RelativeUnits';
+import { relativeCountsGain } from './RelativeUnits';
 
 class MovePoint {
   x: number = 0;
@@ -170,7 +170,7 @@ export class PointerInput implements TouchpadTapTarget {
     if (dx === 0 && dy === 0) {
       return;
     }
-    const gain: number = RELATIVE_COUNTS_PER_PX * this.relativeSpeed;
+    const gain: number = relativeCountsGain(this.sink.hostDisplayScalePercent(), this.relativeSpeed);
     this.sink.pointerMoveRelative(dx * gain, dy * gain);
   }
 
