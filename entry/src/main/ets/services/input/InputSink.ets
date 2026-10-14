@@ -66,6 +66,6 @@ export interface InputSink {
 
 export type PointMapper = (x: number, y: number) => number[];
 export type PinchCursorHandler = (active: boolean, zoomIn: boolean) => void;
-// Debug tap on the synthesized pad contacts: count is 1 (pointer move) or 2 (scroll pan / pinch).
+// Debug tap on the synthesized pad contacts (scroll pan / pinch pair).
 export type PadProbeHandler =
-  (active: boolean, count: number, p1x: number, p1y: number, p2x: number, p2y: number) => void;
+  (active: boolean, p1x: number, p1y: number, p2x: number, p2y: number) => void;

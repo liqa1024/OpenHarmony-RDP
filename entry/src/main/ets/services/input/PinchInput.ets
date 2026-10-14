@@ -244,7 +244,7 @@ export class PinchInput {
   private probeContacts(active: boolean, x1: number, y1: number, x2: number, y2: number): void {
     const probe: PadProbeHandler | undefined = this.probe;
     if (probe !== undefined) {
-      probe(active, active ? 2 : 0, x1, y1, x2, y2);
+      probe(active, x1, y1, x2, y2);
     }
   }
 }

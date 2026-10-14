@@ -36,10 +36,6 @@ export const TOUCHPAD_PAN_END_GRACE_MS: number = 60;
 export const TOUCHPAD_PAN_CENTER: number = 0.5;
 export const TOUCHPAD_PAN_ID_A: number = 30;
 export const TOUCHPAD_PAN_ID_B: number = 31;
-// Relative-mode pointer motion synthesized as one contact on the declared pad. rawDelta is in
-// hardware counts (physical displacement), hence a nominal counts-per-mm (1000 DPI assumed).
-export const TOUCHPAD_MOVE_ID: number = 32;
-export const TOUCHPAD_MOVE_MM_PER_COUNT: number = 25.4 / 1000;
 // axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot
 // explode or collapse the separation.
 export const MIN_PINCH_RATIO: number = 0.05;

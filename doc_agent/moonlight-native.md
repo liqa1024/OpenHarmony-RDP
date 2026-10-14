@@ -85,8 +85,9 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   （`LiStartConnection` 的 `renderContext` 需要它）。
 - **两种指针落点**：默认**绝对位置**（`LiSendMousePositionEvent` + 参考尺寸），本机指针位置与主机光标一一对应；
   相对鼠标模式（[`moonlight-connection.md`](moonlight-connection.md) §5）改 `LiSendMouseMoveEvent`（N-API
-  `moonlightMouseMove`），增量口径与限制见 [`session-layer.md`](session-layer.md) §8。相对模式下**按键不再附绝对
-  位置**——`LiSendMouseButtonEvent` 本身不带坐标，附一次绝对定位会把主机光标拽回本机坐标。
+  `moonlightMouseMove`），发的是**相邻两次映射位置之差**（1:1，内容像素当计数），依据与边界见
+  [`session-layer.md`](session-layer.md) §8。相对模式下**按键不再附绝对位置**——`LiSendMouseButtonEvent` 本身不带坐标，
+  附一次绝对定位会把主机光标拽回本机坐标。
 - **遥测采样**：解码桥按帧累加**累计计数**（解码单元数、编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
   本机解码往返之和 / 帧数——最后一项在 `submitDecodeUnit` 记提交时刻、在解码输出回调按 `pts` 配对求差），
   `moonlightTelemetry()` 被调用时再读入瞬时 / 库侧读数（`LiGetEstimatedRttInfo` 的 RTT 与抖动、
@@ -159,9 +160,6 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   等效速度靠一个平移比例常量标定（**轴值与捏合值实测未见随速度的增益**，按位移线性换算，故这段的增益只在
   Windows 原生触控板一层），
   方向 / 行程 / 惯性属真机判据。
-- **同一通道也承载相对模式下的触控板运动**：位移合成成**单个触点**在声明板面上平移（越界即抬起、回到板面中心重按，
-  与滚动同一套状态机），物理交给 Windows 原生触控板（本机不经手指针曲线）；换算按一个名义 counts-per-mm 常量
-  （硬件计数随鼠标 DPI 变化），属真机标定项。主机无该能力位时退回相对鼠标通路（见 §2）。
 - **滚轮落点上限（主机侧，客户端不可探测）**：基地版的「虚拟鼠标驱动」（GUI「输入驱动管理」，`virtual_mouse`，默认启用）
   经 ZakoVirtualMouse HID 注入鼠标，而该驱动的 Wheel 只有 `-127..127`（整齿）⇒ 亚齿量在主机侧被按 120 累加成整齿
   （`platform/windows/input.cpp` 的 `scroll()` / `hscroll()`）；`high_resolution_scrolling`（默认 enabled）在 HID 通路下

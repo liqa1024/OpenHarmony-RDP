@@ -2,26 +2,23 @@ import { inputDevice } from '@kit.InputKit';
 import { TouchpadTapFilter, TouchpadTapTarget } from '../TouchpadTapFilter';
 import { InputSink, PadProbeHandler, TouchpadContact, TouchPhase } from './InputSink';
 import { TOUCHPAD_PAN_MM_PER_AXIS_PX } from '../TouchpadWheel';
-import { clamp01, TOUCHPAD_DOUBLE_TAP_MS, TOUCHPAD_HEIGHT_MM, TOUCHPAD_MOVE_ID,
-  TOUCHPAD_MOVE_MM_PER_COUNT, TOUCHPAD_MOVE_SLOP, TOUCHPAD_PAN_CENTER, TOUCHPAD_PAN_END_GRACE_MS,
-  TOUCHPAD_PAN_FINGER_MM, TOUCHPAD_PAN_ID_A, TOUCHPAD_PAN_ID_B, TOUCHPAD_PAN_SAFE_HALF,
-  TOUCHPAD_PRESS_HOLD_MS, TOUCHPAD_WIDTH_MM } from './InputPolicy';
+import { clamp01, TOUCHPAD_DOUBLE_TAP_MS, TOUCHPAD_HEIGHT_MM, TOUCHPAD_MOVE_SLOP,
+  TOUCHPAD_PAN_CENTER, TOUCHPAD_PAN_END_GRACE_MS, TOUCHPAD_PAN_FINGER_MM, TOUCHPAD_PAN_ID_A,
+  TOUCHPAD_PAN_ID_B, TOUCHPAD_PAN_SAFE_HALF, TOUCHPAD_PRESS_HOLD_MS, TOUCHPAD_WIDTH_MM
+  } from './InputPolicy';
 
 // Touchpad identity and the host precision-touchpad channel: device detection/cache, the
-// double-tap -> middle click filter, and the synthesized contact frames (one contact for
-// relative-mode pointer motion, a pair for scroll panning).
+// double-tap -> middle click filter, and the synthesized two-finger pan frames.
 export class TouchpadInput {
   private sink: InputSink;
   private tap: TouchpadTapFilter;
   private devices: Map<number, boolean> = new Map<number, boolean>();
   private middleDoubleTap: boolean = false;
   private touchpadPan: boolean = false;
-  private moveEnabled: boolean = false;
-  private padActive: boolean = false;
-  private padPair: boolean = false;
-  private padX: number = TOUCHPAD_PAN_CENTER;
-  private padY: number = TOUCHPAD_PAN_CENTER;
-  private padEndTimer: number = -1;
+  private panActive: boolean = false;
+  private panX: number = TOUCHPAD_PAN_CENTER;
+  private panY: number = TOUCHPAD_PAN_CENTER;
+  private panEndTimer: number = -1;
   private probe: PadProbeHandler | undefined = undefined;
   private deviceChangeListener: (data: inputDevice.DeviceListener) => void =
     (data: inputDevice.DeviceListener) => {
@@ -53,21 +50,12 @@ export class TouchpadInput {
   setPanEnabled(enabled: boolean): void {
     this.touchpadPan = enabled;
     if (!enabled) {
-      this.endPad();
+      this.endPan();
     }
   }
 
   isPanEnabled(): boolean {
     return this.touchpadPan;
-  }
-
-  // Enabled only when the host advertises the pad channel; otherwise relative-mode touchpad motion
-  // falls back to the sink's relative-mouse path.
-  setMoveEnabled(enabled: boolean): void {
-    this.moveEnabled = enabled;
-    if (!enabled) {
-      this.endPad();
-    }
   }
 
   resetTap(): void {
@@ -79,7 +67,7 @@ export class TouchpadInput {
       inputDevice.off('change', this.deviceChangeListener);
     } catch (error) {
     }
-    this.endPad();
+    this.endPan();
     this.tap.reset();
   }
 
@@ -110,136 +98,81 @@ export class TouchpadInput {
     return false;
   }
 
-  // Relative-mode touchpad motion as one contact on the declared pad. False (not consumed) means
-  // there is no pad channel, so the caller sends the motion as a relative mouse move instead.
-  consumeRelativeMove(event: MouseEvent): boolean {
-    if (!this.moveEnabled || event.action !== MouseAction.Move
-      || !this.isTouchpad(event.deviceId, event.sourceTool)) {
-      return false;
-    }
-    if (this.padActive && this.padPair) {
-      // A multi-finger gesture owns the stream, so a single-finger frame in between is dropped.
-      return true;
-    }
-    const dx: number = event.rawDeltaX ?? 0;
-    const dy: number = event.rawDeltaY ?? 0;
-    if (dx === 0 && dy === 0) {
-      return true;
-    }
-    this.cancelPadEnd();
-    if (!this.padActive) {
-      this.beginPad(false);
-    }
-    const nextX: number = this.padX + dx * TOUCHPAD_MOVE_MM_PER_COUNT / TOUCHPAD_WIDTH_MM;
-    const nextY: number = this.padY + dy * TOUCHPAD_MOVE_MM_PER_COUNT / TOUCHPAD_HEIGHT_MM;
-    if (!this.insideSafeArea(nextX, nextY)) {
-      this.retouchPad();
-      return true;
-    }
-    this.padX = nextX;
-    this.padY = nextY;
-    this.sendPadFrame(TouchPhase.MOVE);
-    this.schedulePadEnd();
-    return true;
-  }
-
   // Sign pair verified on device; flip both together if a host scrolls the wrong way.
   handlePan(vertical: number, horizontal: number): void {
-    this.cancelPadEnd();
-    // Multi-finger wins over the single-finger pointer stream.
-    if (this.padActive && !this.padPair) {
-      this.endPad();
+    this.cancelPanEnd();
+    if (!this.panActive) {
+      this.panX = TOUCHPAD_PAN_CENTER;
+      this.panY = TOUCHPAD_PAN_CENTER;
+      this.panActive = true;
+      this.sendPanFrame(TouchPhase.DOWN);
     }
-    if (!this.padActive) {
-      this.beginPad(true);
-    }
-    const nextX: number = this.padX - horizontal * TOUCHPAD_PAN_MM_PER_AXIS_PX / TOUCHPAD_WIDTH_MM;
-    const nextY: number = this.padY - vertical * TOUCHPAD_PAN_MM_PER_AXIS_PX / TOUCHPAD_HEIGHT_MM;
-    if (!this.insideSafeArea(nextX, nextY)) {
+    const nextX: number = this.panX - horizontal * TOUCHPAD_PAN_MM_PER_AXIS_PX / TOUCHPAD_WIDTH_MM;
+    const nextY: number = this.panY - vertical * TOUCHPAD_PAN_MM_PER_AXIS_PX / TOUCHPAD_HEIGHT_MM;
+    if (Math.abs(nextX - TOUCHPAD_PAN_CENTER) > TOUCHPAD_PAN_SAFE_HALF
+      || Math.abs(nextY - TOUCHPAD_PAN_CENTER) > TOUCHPAD_PAN_SAFE_HALF) {
       this.retouchPad();
       return;
     }
-    this.padX = nextX;
-    this.padY = nextY;
-    this.sendPadFrame(TouchPhase.MOVE);
+    this.panX = nextX;
+    this.panY = nextY;
+    this.sendPanFrame(TouchPhase.MOVE);
   }
 
-  // A flapping begin/end stream must not lift the fingers between frames, so the lift waits out a
-  // short grace the next frame cancels.
-  schedulePadEnd(): void {
-    if (!this.padActive || this.padEndTimer !== -1) {
+  // A flapping begin/end stream must not lift the fingers between events, so the lift waits out a
+  // short grace the next event cancels.
+  schedulePanEnd(): void {
+    if (!this.panActive || this.panEndTimer !== -1) {
       return;
     }
-    this.padEndTimer = setTimeout(() => {
-      this.padEndTimer = -1;
-      this.endPad();
+    this.panEndTimer = setTimeout(() => {
+      this.panEndTimer = -1;
+      this.endPan();
     }, TOUCHPAD_PAN_END_GRACE_MS);
   }
 
-  cancelPadEnd(): void {
-    if (this.padEndTimer !== -1) {
-      clearTimeout(this.padEndTimer);
-      this.padEndTimer = -1;
+  cancelPanEnd(): void {
+    if (this.panEndTimer !== -1) {
+      clearTimeout(this.panEndTimer);
+      this.panEndTimer = -1;
     }
   }
 
-  endPad(): void {
-    this.cancelPadEnd();
-    if (!this.padActive) {
+  endPan(): void {
+    this.cancelPanEnd();
+    if (!this.panActive) {
       return;
     }
-    this.padActive = false;
-    this.sendPadFrame(TouchPhase.UP);
-    this.probeContacts(false, 0, 0, 0, 0, 0);
-  }
-
-  private beginPad(pair: boolean): void {
-    this.padX = TOUCHPAD_PAN_CENTER;
-    this.padY = TOUCHPAD_PAN_CENTER;
-    this.padActive = true;
-    this.padPair = pair;
-    this.sendPadFrame(TouchPhase.DOWN);
+    this.panActive = false;
+    this.sendPanFrame(TouchPhase.UP);
+    this.probeContacts(false, 0, 0, 0, 0);
   }
 
   private retouchPad(): void {
     // Lift and re-touch at the middle: the declared surface ran out, so the seam carries no motion.
-    this.sendPadFrame(TouchPhase.UP);
-    this.padX = TOUCHPAD_PAN_CENTER;
-    this.padY = TOUCHPAD_PAN_CENTER;
-    this.sendPadFrame(TouchPhase.DOWN);
-    this.schedulePadEnd();
+    this.sendPanFrame(TouchPhase.UP);
+    this.panX = TOUCHPAD_PAN_CENTER;
+    this.panY = TOUCHPAD_PAN_CENTER;
+    this.sendPanFrame(TouchPhase.DOWN);
   }
 
-  private insideSafeArea(x: number, y: number): boolean {
-    return Math.abs(x - TOUCHPAD_PAN_CENTER) <= TOUCHPAD_PAN_SAFE_HALF
-      && Math.abs(y - TOUCHPAD_PAN_CENTER) <= TOUCHPAD_PAN_SAFE_HALF;
-  }
-
-  private sendPadFrame(phase: number): void {
-    const contacts: TouchpadContact[] = [];
-    if (this.padPair) {
-      const halfX: number = TOUCHPAD_PAN_FINGER_MM / 2 / TOUCHPAD_WIDTH_MM;
-      contacts.push(TouchpadContact.of(phase, TOUCHPAD_PAN_ID_A,
-        clamp01(this.padX - halfX), this.padY, 0));
-      contacts.push(TouchpadContact.of(phase, TOUCHPAD_PAN_ID_B,
-        clamp01(this.padX + halfX), this.padY, 0));
-    } else {
-      contacts.push(TouchpadContact.of(phase, TOUCHPAD_MOVE_ID,
-        clamp01(this.padX), clamp01(this.padY), 0));
-    }
+  private sendPanFrame(phase: number): void {
+    const halfX: number = TOUCHPAD_PAN_FINGER_MM / 2 / TOUCHPAD_WIDTH_MM;
+    const x1: number = clamp01(this.panX - halfX);
+    const x2: number = clamp01(this.panX + halfX);
+    const contacts: TouchpadContact[] = [
+      TouchpadContact.of(phase, TOUCHPAD_PAN_ID_A, x1, this.panY, 0),
+      TouchpadContact.of(phase, TOUCHPAD_PAN_ID_B, x2, this.panY, 0)
+    ];
     this.sink.touchpadFrame(contacts, 0, TOUCHPAD_WIDTH_MM, TOUCHPAD_HEIGHT_MM);
-    const paired: boolean = contacts.length > 1;
-    this.probeContacts(phase !== TouchPhase.UP, contacts.length,
-      contacts[0].x, contacts[0].y,
-      paired ? contacts[1].x : contacts[0].x,
-      paired ? contacts[1].y : contacts[0].y);
+    // The dev overlay draws whatever contact pair the channel just synthesized, pan included.
+    this.probeContacts(phase !== TouchPhase.UP, x1, this.panY, x2, this.panY);
   }
 
-  private probeContacts(active: boolean, count: number, x1: number, y1: number, x2: number,
-    y2: number): void {
+  private probeContacts(active: boolean, x1: number, y1: number, x2: number, y2: number): void {
     const probe: PadProbeHandler | undefined = this.probe;
     if (probe !== undefined) {
-      probe(active, count, x1, y1, x2, y2);
+      probe(active, x1, y1, x2, y2);
     }
   }
 

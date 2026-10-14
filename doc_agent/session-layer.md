@@ -192,24 +192,23 @@ Facade**，经 `InputSink` 接口下发动词
   客户端再限一次只会白加延迟与降采样。**非 Move 的同类事件（按下/抬起、触屏 Down/Up/Cancel）先冲掉该流待发位置**，
   否则点击落在旧坐标（直通实现无待发值，这些动作为空操作）。窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、
   触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，不是显示帧率。
-- **相对指针模式（Moonlight 专有，只挂在「隐藏系统光标」档）**：`InputSink` 另有一条相对通路
-  （`pointerMoveRelative` / `setRelativePointer` / `relativePointerEnabled`），RDP 声明不支持。开启后指针移动
-  **不再走位置映射**，改取 `MouseEvent.rawDeltaX/rawDeltaY`：该值是**设备侧的原始位移**、**不过本机加速曲线**
-  （本机加速只体现在光标位置上，不体现在该增量），所以**不能拿位置差当增量**（那是已加速的值，且光标在屏幕边缘被
-  夹取后会丢增量）；其**单位口径**要与主机注入链对齐——实测与"同一只鼠标直插主机"相比偏慢，说明二者并非一一对应
-  （API 26.0.0 之前该值还被**系统显示大小比例**缩小过，旧设备另有这一层）。
-  ArkUI 的口径是一帧通常只上报一个 Move，其余作历史点（历史点不含 rawDelta）。
-- **相对模式下触控板不走鼠标通路，且触点流多指优先**：主机有 precision touchpad 通道时，触控板位移合成成**单个
-  触点**打到声明板面上（帧内容与标定见 [`moonlight-native.md`](moonlight-native.md) §2.2），没有该通道时退回相对
-  鼠标通路（本机不补偿手感）。双指滚动/捏合起手即掐断单指移动，多指进行中的单指帧丢弃。开发模式 overlay
-  （`components/PadProbeOverlay`）画这条流，`count` 区分单点/双点。
-- **相对模式要一次绝对锚点**：连接后先发一次当前指针位置的绝对坐标（`SessionInput.reportPointerPosition()`），
-  否则主机会从它自己上次的位置开始累计；本会话还没收到过指针事件时跳过。
-- **相对模式的边界（系统无 pointer lock）**：系统不提供光标锁定/限制区域，拦截只作用于"事件是否继续投递给 UI
-  框架"，**本机光标仍会移动并在屏幕边缘被夹住** ⇒ "指针在哪一格"的判定（工具栏触发带与揭示进度、引擎滚动的位置
-  记账）会失真。要消掉只能**写系统光标位置**（`inputEventClient.createMouseController().moveTo()` / C 侧
-  `OH_Input_InjectMouseEvent`，需 `ohos.permission.CONTROL_DEVICE`，属受限开放权限）；**读**位置用
-  `OH_Input_GetPointerLocation`（聚焦应用可调）。
+- **相对指针模式（Moonlight 专有，只挂在「隐藏系统光标」档）**：`InputSink` 另一条相对通路
+  （`pointerMoveRelative`/`setRelativePointer`/`relativePointerEnabled`，RDP 不支持）。开启后**不发绝对位置，改发相邻两次
+  映射位置之差**（`services/input/RelativeUnits.ets` 的 1:1 口径：内容像素当主机计数 ⇒ 与绝对模式增益一致），
+  **鼠标与触控板同一条逻辑**——触控板单指移动**不做**虚拟触点合成（把点击/拖动的语义也搬到触点通道上，
+  两头都要额外适配，不值得）；位置差带本机指针曲线，所以**主机侧不要开鼠标加速**，否则叠成两层。
+  连接后先发一次当前位置的绝对坐标作**锚点**（`SessionInput.reportPointerPosition()`）。
+- **为什么不用 rawDelta**：`MouseEvent.rawDeltaX/rawDeltaY` 是**未加速**的设备位移（MMI 侧取自 libinput 的
+  `*_dx_unaccelerated()`），本该是最合适的一路；但 MMI 对 **USB 真鼠标**按 **800µs 门限做回报率过滤**：间隔不足的
+  motion 事件被**整条丢弃**，其位移只累加进**位置**、**不写回 raw**（实现分处 MMI 的 `service/mouse_event_normalize`
+  与 `service/event_handler`：前者把 `filterX/filterY` 挪到下一次事件的 offset，后者在门限内直接 return）⇒
+  高回报率鼠标只能拿到一部分，相对模式**按回报率成比例变慢**。门限是编译期开关、无系统设置可关，丢帧数应用侧也
+  拿不到（`addLocalInputEventMonitor` 的 mask 无 move，C 拦截器在其下游且只有加速后的坐标）。位置是**累计补全**的，
+  所以改用位置差。
+- **相对模式的边界**：系统无 pointer lock，**本机光标仍会移动并在屏幕边缘被夹住** ⇒ 该方向位置差为 0、指针停滞
+  （"指针在哪一格"的判定同样失真）。消掉要**写系统光标位置**（`inputEventClient.createMouseController().moveTo()` /
+  `OH_Input_InjectMouseEvent`，需 `ohos.permission.CONTROL_DEVICE`）；**读**位置用 `OH_Input_GetPointerLocation`
+  （聚焦应用可调）。
 - **触屏**（只认 `event.source === SourceType.TouchScreen`；手指 id `+1` 避开 0 空槽）：
   - `handleMouse` 要过滤同源兼容鼠标事件，避免"一触两通路"产生杂点击；
   - 重复 `TouchType.Down` 忽略（补发 UP+DOWN 会变成"松开+重按"的假点击）；

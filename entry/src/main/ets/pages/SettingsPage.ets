@@ -1194,8 +1194,8 @@ struct SettingsPage {
 
                 if (this.mlCursorMode === ML_CURSOR_HIDE_SYSTEM) {
                   SettingToggleRow({
-                    title: '使用相对鼠标模式',
-                    subtitle: '鼠标移动只发增量，光标速度由主机的指针设置决定（触控板走主机的原生触控板）',
+                    title: '相对鼠标模式',
+                    subtitle: '发送相对量来移动指针，对于部分游戏很有用。由于系统限制可能会存在二次鼠标加速',
                     value: this.mlRelativeMouse,
                     onToggle: (v: boolean) => {
                       this.mlRelativeMouse = v;

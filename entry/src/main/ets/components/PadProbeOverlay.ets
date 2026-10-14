@@ -2,11 +2,10 @@ const PROBE_WIDTH: number = 180;
 const PROBE_HEIGHT: number = 120;
 const PROBE_DOT: number = 10;
 
-// Debug overlay drawing the synthesized pad contacts (one for pointer motion, two for pan/pinch);
-// transparent hit test only reports pointer proximity, never consumes input.
+// Debug overlay drawing the synthesized pad contacts (scroll pan / pinch pair); transparent hit
+// test only reports pointer proximity, never consumes input.
 @Component
 export struct PadProbeOverlay {
-  @Prop count: number = 0;
   @Prop p1x: number = 0.5;
   @Prop p1y: number = 0.5;
   @Prop p2x: number = 0.5;
@@ -27,15 +26,13 @@ export struct PadProbeOverlay {
         .backgroundColor('#FFF44336')
         .position({ x: this.p1x * PROBE_WIDTH - PROBE_DOT / 2,
           y: this.p1y * PROBE_HEIGHT - PROBE_DOT / 2 })
-      if (this.count > 1) {
-        Column()
-          .width(PROBE_DOT)
-          .height(PROBE_DOT)
-          .borderRadius(PROBE_DOT / 2)
-          .backgroundColor('#FF2196F3')
-          .position({ x: this.p2x * PROBE_WIDTH - PROBE_DOT / 2,
-            y: this.p2y * PROBE_HEIGHT - PROBE_DOT / 2 })
-      }
+      Column()
+        .width(PROBE_DOT)
+        .height(PROBE_DOT)
+        .borderRadius(PROBE_DOT / 2)
+        .backgroundColor('#FF2196F3')
+        .position({ x: this.p2x * PROBE_WIDTH - PROBE_DOT / 2,
+          y: this.p2y * PROBE_HEIGHT - PROBE_DOT / 2 })
     }
     .width(PROBE_WIDTH)
     .height(PROBE_HEIGHT)

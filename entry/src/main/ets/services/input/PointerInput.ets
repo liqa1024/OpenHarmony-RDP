@@ -4,6 +4,7 @@ import { InputAction, InputButton, InputSink } from './InputSink';
 import { InputGeometry } from './InputPolicy';
 import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './MoveDelivery';
 import { RateCoalescer } from './RateCoalescer';
+import { RELATIVE_COUNTS_PER_PX } from './RelativeUnits';
 
 class MovePoint {
   x: number = 0;
@@ -26,6 +27,7 @@ export class PointerInput implements TouchpadTapTarget {
   private lastX: number = 0;
   private lastY: number = 0;
   private havePosition: boolean = false;
+  private relativeBaselineTaken: boolean = false;
   private move: MoveDelivery<MovePoint>;
 
   constructor(sink: InputSink, held: HeldInputs, geometry: InputGeometry, moveIntervalMs: number) {
@@ -44,6 +46,14 @@ export class PointerInput implements TouchpadTapTarget {
 
   setMoveInterval(ms: number): void {
     this.move.setInterval(ms);
+  }
+
+  // Relative mode drops the absolute mapping: motion becomes the difference of consecutive mapped
+  // positions, so the baseline is re-taken when the mode turns on.
+  setRelativePointer(enabled: boolean): void {
+    if (enabled) {
+      this.relativeBaselineTaken = false;
+    }
   }
 
   lastPointerX(): number {
@@ -90,8 +100,7 @@ export class PointerInput implements TouchpadTapTarget {
       this.handleButton(InputAction.RELEASE, PointerInput.buttonFor(event.button), point[0], point[1]);
     } else if (event.action === MouseAction.Move) {
       if (this.sink.relativePointerEnabled()) {
-        // The host owns the cursor position, so the local mapping must not be applied.
-        this.sink.pointerMoveRelative(event.rawDeltaX ?? 0, event.rawDeltaY ?? 0);
+        this.handleRelativeMove(point[0], point[1]);
         return;
       }
       this.handleMove(point[0], point[1]);
@@ -125,6 +134,21 @@ export class PointerInput implements TouchpadTapTarget {
     this.lastY = y;
     this.havePosition = true;
     this.move.post(0, MovePoint.of(x, y));
+  }
+
+  // Consecutive positions differenced; the host keeps its own cursor position from there on.
+  private handleRelativeMove(x: number, y: number): void {
+    const dx: number = x - this.lastX;
+    const dy: number = y - this.lastY;
+    const baseline: boolean = !this.relativeBaselineTaken;
+    this.relativeBaselineTaken = true;
+    this.lastX = x;
+    this.lastY = y;
+    this.havePosition = true;
+    if (baseline || (dx === 0 && dy === 0)) {
+      return;
+    }
+    this.sink.pointerMoveRelative(dx * RELATIVE_COUNTS_PER_PX, dy * RELATIVE_COUNTS_PER_PX);
   }
 
   /** One whole click as press + release, so the remote never keeps a button down. */
