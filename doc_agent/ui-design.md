@@ -213,9 +213,10 @@ Column(page_bg, 100%×100%)
 | `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影 |
 | `FabButton` | `FabButton.ets` | `icon, tip?, onTap` | 右下角悬浮圆形主操作（新建 / 刷新；accent 底 + 阴影 + hover/press 反馈 + `OVERLAY` 提示） |
 | `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, loading?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 材质 + hover/press 缩放，`loading` 时图标换成转圈并置忙，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
-| `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（`scale / srRatio / srChoice / ml*` 共用） |
+| `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（缩放档位 / `srRatio` / `srChoice` / 分辨率模式等共用） |
 | `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
+| `ScaleSetting` | `ScaleSetting.ets` | `mode, allowNone?, allowCustomInput?, percentText, autoPercent, title?, subtitle?, noneHint?, warning?, customWarning?, onModeChange, onPercentTextChange` | 缩放设置块（RDP 会话桌面缩放 / Moonlight 基地版虚拟屏缩放共用）：`自动 / 手动（+可选「不额外设置」）` 模式行 + 档位 `SCALE_PRESETS` chip 组 + 可选自定义输入 + 红字提示（`不额外设置` 档隐藏能力类警告）；`@Prop` 值 + 回调把状态留在页面（`@Builder` 传值不刷新，故做成组件） |
 | `ToolbarChip` | `SessionChrome.ets` | `label, chipBg?, fgColor?, icon?, hPad?, onTap` | 会话工具栏实心 chip |
 | `SessionTitle` | `SessionChrome.ets` | `name, detail` | 工具栏左侧「名称 + 分辨率」标题（RDP / Moonlight 共用，差异只在 `detail` 后缀） |
 | `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |

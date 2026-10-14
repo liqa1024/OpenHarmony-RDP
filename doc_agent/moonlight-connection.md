@@ -23,7 +23,8 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   协议与 Moonlight 字段**追加在记录尾部**：旧记录在该位置之前就结束，反序列化时回落默认值，
   因此新增字段不改变既有字段的位置，也不影响老记录。
 - 追加字段：`protocol`、`mlDefaultAppId`、`mlDefaultAppName`、`mlHostId`、`useGlobalStream`、
-  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlMac`。
+  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlMac`、
+  `mlScaleMode`、`mlScalePercent`。
   （退役字段**按位置保留槽位**、不读写，以免改动后续字段的位置。）
 - `mlMac` 是主机网卡 MAC（`serverinfo` 的 `mac`），**唯一**来自探测的主机地址，是唤醒魔术包的目标；
   探测成功时落库（见 [`moonlight-apps.md`](moonlight-apps.md) §2 的主机四态），此前为空。它属于旧主机，
@@ -41,7 +42,27 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   `SavedConnection.useGlobalStream` 为真时跟随全局，为假时用本连接自己的 `ml*` 值。
 - 解析入口是 `SettingsStore.resolveStream(conn)`（全局默认见 `SettingsStore.globalStreamProfile()`），
   与 `resolveDisplay` / `resolveAdvanced` 并列。
-- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩空间（SDR：Rec709 / Rec601）。
+- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩空间（SDR：Rec709 / Rec601）、
+  会话缩放（自动 / 手动 / 不额外设置）。
+- **会话缩放（仅基地版 Sunshine）**：语义与 RDP 的 `DesktopScaleFactor` 同构——把远端 UI 的缩放系数交给主机，
+  区别是这里**只写基地版内置的虚拟显示器**（friendly_name `Zako HDR`）：`launch` 成功后 `GET /displays` 找到它，
+  再 `POST /display-scale` 落缩放。两条都是 **nvhttp 的 HTTPS（47984）**端点、要**已配对证书**，与本仓
+  `serverinfo` / `applist` 同一条 mTLS 通道（`MoonlightClient.fetchVirtualDisplay` / `setDisplayScale`）。
+  - **主机报的百分比是「档位序号」的错标，必须按序号回译**：`DISPLAYCONFIG_SET_DPI_SCALE` 的 `scale_rel` 是
+    「相对推荐值的第几档」，主机把这个序号当作**自己那张档位表的下标**用。基地版那张表比 Windows 真实档位表长
+    （多出 `120/140/160/180`，16 项 vs 12 项），于是 `get_display_scale_details` 上报的
+    `supported_scale_percents` / `recommended_scale_percent` / `current_scale_percent` 从第 2 项起全部错标；
+    `set_display_scale` 又按错表查索引，导致真实存在的百分比被判 `400 unsupported_scale`、或在区间内的值落到别的档
+    （例：要 200 会落到顶层 300）。故客户端**先把待设百分比换算成 Windows 真表的排名**，再取**主机表里同排名的 label**
+    发送（`MoonlightClient.hostScaleLabel`，真表见同处 `WINDOWS_SCALE_STEPS`）；主机那张表若修正，此步即恒等。
+    日志记 `wanted → label → applied`。
+  - `supported_scale_percents` 仍是**可设范围**（主机表长度 = 该显示器支持的档数）；超出范围时按排名 **clamp 到顶/底**。
+  - **身份用两把键**：`/displays` 的 `device_id` 是带花括号的 GUID、`display_name` 是 `\\.\DISPLAYn`；请求两者都带
+    （主机先按 `device_id` 匹配，落不到再按 `display_name`）。
+  - 虚拟屏随会话创建/释放，**故不需要断开还原**。**原版 Sunshine 无这两个端点**（`/displays` 返回 404），
+    非基地版主机、主机没启用虚拟屏、`scale_set_supported` 为假都在找不到 `Zako HDR` 时**静默跳过**，不影响连接。
+  - 模式只在连接时读一次：`自动` 按请求分辨率用 RDP 同一套换算（`SettingsStore.scalePresetForResolution`）取档位，
+    `手动` 用保存的六档值（`SCALE_PRESETS`，无自定义输入），`不额外设置` 不发请求。
 - **码率与帧率的取值口径**：帧率默认 60，档位（30/60/90/120）+ 自定义输入（`mlFps`，`utils/MoonlightQuality.clampFps`）。
   码率照 RDP 分辨率/缩放的「自动 / 手动」写法——**自动**（`mlBitrateAuto`）按 `分辨率 × 帧率 × 编码` 换算（`recommendedBitrateKbps`，
   bits-per-pixel 启发式），**手动**用 `mlBitrateKbps`；**UI 一律以 Mbps 显示与输入、存储仍是 kbps**（`kbpsToMbps` / `mbpsToKbps`）。
@@ -96,7 +117,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 
 - 设置页顶部是 **通用 / RDP / Moonlight 三个 tab**（下划线样式；编辑页仍只有两个协议 tab）。「通用」在最左。
 - **协议 tab（RDP / Moonlight）** 与 RDP 对齐：「显示」在最上（RDP：使用RDP光标 + 分辨率 + 缩放；
-  Moonlight：光标模式 + 分辨率），Moonlight 的「串流」段（帧率 + 自定义输入 / 码率自动或手动 / 编码器 /
+  Moonlight：光标模式 + 分辨率 + 缩放），Moonlight 的「串流」段（帧率 + 自定义输入 / 码率自动或手动 / 编码器 /
   色彩空间）承载 §3 的其余全局默认；
   其后是共用节（触控板 / 键盘 / 会话）。这些共用节在两个协议 tab 都出现，**每个协议各存一份值**
   （RDP 用原有设置键，Moonlight 用 `ml*` 副本，如 `mlTouchpadScrollSpeed`）；UI 是同一段代码，靠切换

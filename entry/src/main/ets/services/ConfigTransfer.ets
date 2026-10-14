@@ -6,7 +6,7 @@ import { util } from '@kit.ArkTS';
 import { SR_BACKEND_XENGINE } from '../model/RdpModels';
 import {
   ConnectionExport, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709,
-  ML_RES_FOLLOW_SCREEN, PROTOCOL_RDP, SavedConnection
+  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, PROTOCOL_RDP, SavedConnection
 } from '../model/Connections';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
@@ -75,6 +75,8 @@ export class ConfigTransfer {
     item.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', ML_CODEC_AUTO);
     item.mlColorSpace = ConfigTransfer.readNumber(rec, 'mlColorSpace', ML_COLORSPACE_REC709);
     item.useGlobalStream = ConfigTransfer.readBoolean(rec, 'useGlobalStream', true);
+    item.mlScaleMode = ConfigTransfer.readNumber(rec, 'mlScaleMode', ML_SCALE_AUTO);
+    item.mlScalePercent = ConfigTransfer.readNumber(rec, 'mlScalePercent', 100);
     return item;
   }
 
@@ -317,6 +319,9 @@ export class ConfigTransfer {
     settings.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', settings.mlResMode);
     settings.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', settings.mlWidth);
     settings.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', settings.mlHeight);
+    settings.mlScaleMode = ConfigTransfer.readNumber(rec, 'mlScaleMode', settings.mlScaleMode);
+    settings.mlScalePercent =
+      ConfigTransfer.readNumber(rec, 'mlScalePercent', settings.mlScalePercent);
     settings.lastNewProtocol =
       ConfigTransfer.readNumber(rec, 'lastNewProtocol', settings.lastNewProtocol);
     settings.lastSettingsTab =

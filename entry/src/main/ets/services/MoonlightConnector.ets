@@ -1,11 +1,12 @@
 import { moonlightVideoFormats } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ML_COLOR_RANGE_LIMITED, ML_STREAM_CFG_AUTO, MoonlightProfile,
-  MoonlightStreamConfig } from '../model/Connections';
+import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_AUTO,
+  MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
+import { SettingsStore } from './SettingsStore';
 import { recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
-import { MoonlightClient } from '../moonlight/MoonlightClient';
+import { MoonlightClient, MoonlightDisplay } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
 import {
@@ -285,6 +286,9 @@ export class MoonlightConnector {
       return result;
     }
 
+    await MoonlightConnector.applyVirtualDisplayScale(filesDir, host, info.httpsPort, stream,
+      width, height);
+
     const config: MoonlightStreamConfig = new MoonlightStreamConfig();
     config.host = host;
     config.serverInfoAppVersion = info.appVersion;
@@ -313,6 +317,38 @@ export class MoonlightConnector {
     result.effectiveAppId = effectiveAppId;
     result.ok = true;
     return result;
+  }
+
+  // foundation-sunshine only: write the requested scale onto the host virtual display, which
+  // is created/released per session (so it needs no restore). Any other host is left alone.
+  private static async applyVirtualDisplayScale(filesDir: string, host: string, httpsPort: number,
+    stream: MoonlightProfile, width: number, height: number): Promise<void> {
+    if (stream.scaleMode === ML_SCALE_NONE) {
+      return;
+    }
+    const wanted: number = stream.scaleMode === ML_SCALE_MANUAL
+      ? stream.scalePercent : SettingsStore.scalePresetForResolution(width, height);
+    if (wanted <= 0) {
+      return;
+    }
+    try {
+      const display: MoonlightDisplay =
+        await MoonlightClient.fetchVirtualDisplay(filesDir, host, httpsPort);
+      if (!display.usable()) {
+        hilog.info(0xD001, 'HmRdpMoonlight', 'display scale skipped: no usable virtual display');
+        return;
+      }
+      const label: number =
+        MoonlightClient.hostScaleLabel(wanted, display.supportedScalePercents);
+      const applied: boolean = await MoonlightClient.setDisplayScale(filesDir, host, httpsPort,
+        display.deviceId, display.displayName, label);
+      hilog.info(0xD001, 'HmRdpMoonlight',
+        'display scale wanted=%{public}d label=%{public}d applied=%{public}d',
+        wanted, label, applied ? 1 : 0);
+    } catch (error) {
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'display scale failed: %{public}s',
+        JSON.stringify(error));
+    }
   }
 
   static generatePin(): string {

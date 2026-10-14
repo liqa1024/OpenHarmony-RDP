@@ -78,6 +78,12 @@
   编辑页打开「使用会话独立高级设置」后才用本连接的独立开关；**保存时仍持久化独立值**，便于随时切回。
 - **低延迟音频（Moonlight 专属，`mlLowLatencyAudio`，默认开）**：**全局一份、不做单连接覆盖**（与「音频重定向」
   同理）；无音频输出设备时置灰并把已存值纠正为关。语义与回落见 [`moonlight-native.md`](moonlight-native.md) §2.3。
+- **会话缩放（Moonlight 专属，`mlScaleMode` + `mlScalePercent`）**：写**基地版 Sunshine 虚拟显示器**的 Windows
+  显示缩放，语义与 RDP 的 `DesktopScaleFactor` 同构（把远端 UI 缩放系数交给主机）；**虚拟屏随会话创建/释放，
+  故无需还原**。三选一：`自动`（默认，按请求分辨率用 RDP 同一套换算 `scalePresetForResolution` 得档位）、
+  `手动`（`SCALE_PRESETS` 六档，**无自定义输入**）、`不额外设置`（不向主机发任何缩放请求）。与 RDP 显示设置同构：
+  全局一份 + 单连接覆盖（沿用 `useGlobalStream`）。**仅基地版 Sunshine（foundation-sunshine）有效**，
+  其它主机（无 `/displays` / `/display-scale`）静默跳过，见 [`moonlight-connection.md`](moonlight-connection.md) §3。
 - **剪贴板恒开**：不提供任何开关（全局或单连接）；原生无条件置 `FreeRDP_RedirectClipboard`。
   工具栏的「复制/粘贴」手动触发，见 [`rdp-clipboard.md`](rdp-clipboard.md)。
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置
@@ -119,6 +125,7 @@
   跨能力不同的机器搬运，各自落到本机能用的值，且导入后直接开会话也不会用到本机不支持的能力。
   **单连接**的超分字段（`useGlobalSr`/`srEnabled`/`srRatioPercent`/`srBackend`）随连接一起导出导入，
   连接时还会过 `SettingsStore.resolveSr()` 兜底，所以挂到没有对应能力的设备上也不会真生效。
+  单连接的 Moonlight 缩放（`mlScaleMode`/`mlScalePercent`）同样随连接搬运。
 - 解析导出文件时统一 `JSON.parse(text) as Record<string, Object>` 后逐字段读取（原因见
   [`arkts-conventions.md`](arkts-conventions.md) §2）。
 - Moonlight 的协议与 `ml*` 字段随连接搬运，旧配置文件缺这些字段时按 RDP 导入；详见
@@ -127,7 +134,8 @@
 ## 4. 生效时机（**改设置前必读**）
 
 - 连接相关设置（分辨率/缩放、超分辨率、连接特性、触屏高刷新率、使用 RDP 光标等）在**连接建立时读取**：
-  改动后需要**重开会话**才生效，已打开的会话不受影响。
+  改动后需要**重开会话**才生效，已打开的会话不受影响。RDP 缩放在**连接时**交给服务端；Moonlight 会话缩放也在
+  连接时应用（`launch` 成功后写主机虚拟屏），**断开不还原**（虚拟屏随会话释放）。
 - 窗口尺寸类设置只在**窗口创建时**生效。
 - 「回到前台自动重连」在**每次回到前台时重新读取**（不缓存在会话里），会话进行中改也即时生效。
 - 「快捷键穿透」在**会话页加载时读取**，之后按窗口焦点与会话状态实时注册/释放，改设置后需**重开会话**生效。

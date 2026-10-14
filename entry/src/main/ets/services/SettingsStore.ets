@@ -7,7 +7,7 @@ import {
 } from '../model/RdpModels';
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_RES_FOLLOW_SCREEN,
-  MoonlightConnection, MoonlightProfile, PROTOCOL_RDP, RdpConnection
+  ML_SCALE_AUTO, MoonlightConnection, MoonlightProfile, PROTOCOL_RDP, RdpConnection
 } from '../model/Connections';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -96,6 +96,8 @@ export class AppSettings {
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
+  mlScaleMode: number = ML_SCALE_AUTO;
+  mlScalePercent: number = 100;
   lastNewProtocol: number = PROTOCOL_RDP;
   lastSettingsTab: number = -1;
   wolHelpShown: boolean = false;
@@ -239,6 +241,10 @@ export class SettingsStore {
       settings.mlResMode = SettingsStore.readNumber(store, 'mlResMode', settings.mlResMode);
       settings.mlWidth = SettingsStore.readNumber(store, 'mlWidth', settings.mlWidth);
       settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
+      settings.mlScaleMode =
+        SettingsStore.readNumber(store, 'mlScaleMode', settings.mlScaleMode);
+      settings.mlScalePercent =
+        SettingsStore.readNumber(store, 'mlScalePercent', settings.mlScalePercent);
       settings.lastNewProtocol =
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
       settings.lastSettingsTab =
@@ -328,6 +334,8 @@ export class SettingsStore {
       store.putSync('mlResMode', settings.mlResMode);
       store.putSync('mlWidth', settings.mlWidth);
       store.putSync('mlHeight', settings.mlHeight);
+      store.putSync('mlScaleMode', settings.mlScaleMode);
+      store.putSync('mlScalePercent', settings.mlScalePercent);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
       store.putSync('lastSettingsTab', settings.lastSettingsTab);
       store.putSync('wolHelpShown', settings.wolHelpShown);
@@ -536,6 +544,8 @@ export class SettingsStore {
     profile.bitrateKbps = settings.mlBitrateKbps;
     profile.codec = settings.mlCodec;
     profile.colorSpace = settings.mlColorSpace;
+    profile.scaleMode = settings.mlScaleMode;
+    profile.scalePercent = settings.mlScalePercent;
     return profile;
   }
 
@@ -552,6 +562,8 @@ export class SettingsStore {
     profile.bitrateKbps = conn.mlBitrateKbps;
     profile.codec = conn.mlCodec;
     profile.colorSpace = conn.mlColorSpace;
+    profile.scaleMode = conn.mlScaleMode;
+    profile.scalePercent = conn.mlScalePercent;
     return profile;
   }
 

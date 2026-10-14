@@ -9,6 +9,7 @@ import { ConnectOrigin, EditConnectionParams,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
   ML_COLORSPACE_REC601, ML_COLORSPACE_REC709,
   ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
+  ML_SCALE_AUTO, ML_SCALE_MANUAL,
   MoonlightConnection, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
   RdpConnection, SavedConnection } from '../model/Connections';
 import { ConnectionStore } from '../services/ConnectionStore';
@@ -18,9 +19,9 @@ import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { MoonlightConnector, MoonlightHostPolicy, MoonlightKnownHost, MoonlightPairResult }
   from '../services/MoonlightConnector';
-import { AppSettings, SCALE_PRESETS, SR_RATIO_PRESETS, SettingsStore,
+import { AppSettings, SR_RATIO_PRESETS, SettingsStore,
   srRatioLabel } from '../services/SettingsStore';
-import { isScalePreset, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
+import { parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { showConfirm, showToast } from '../utils/UiUtil';
@@ -31,6 +32,7 @@ import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
+import { ScaleSetting } from '../components/ScaleSetting';
 import { SettingToggleRow } from '../components/SettingToggleRow';
 import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
@@ -82,6 +84,8 @@ struct EditConnectionPage {
   @State mlColorSpace: number = ML_COLORSPACE_REC709;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State useGlobalStream: boolean = true;
+  @State mlScaleMode: number = ML_SCALE_AUTO;
+  @State mlScaleText: string = '100';
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
@@ -147,6 +151,8 @@ struct EditConnectionPage {
     this.mlBitrateText = kbpsToMbps(mlDefaults.mlBitrateKbps).toString();
     this.mlColorSpace = mlDefaults.mlColorSpace;
     this.mlCodec = mlDefaults.mlCodec;
+    this.mlScaleMode = mlDefaults.mlScaleMode;
+    this.mlScaleText = mlDefaults.mlScalePercent.toString();
     this.clampMlCodec();
 
     const params: EditConnectionParams =
@@ -208,6 +214,8 @@ struct EditConnectionPage {
         this.mlColorSpace = conn.mlColorSpace;
         this.mlCodec = conn.mlCodec;
         this.useGlobalStream = conn.useGlobalStream;
+        this.mlScaleMode = conn.mlScaleMode;
+        this.mlScaleText = conn.mlScalePercent.toString();
       }
       this.clampMlCodec();
     }
@@ -249,14 +257,6 @@ struct EditConnectionPage {
     return parseScaleValue(text, fallback);
   }
 
-  private parsedScale(): number {
-    return parsedTextValue(this.scaleText);
-  }
-
-  private isPresetScale(value: number): boolean {
-    return isScalePreset(value);
-  }
-
   private onOff(value: boolean): string {
     return value ? '开' : '关';
   }
@@ -284,6 +284,10 @@ struct EditConnectionPage {
   private mlPreviewHeight(): number {
     return this.mlResMode === ML_RES_FIXED
       ? this.parseSize(this.mlHeightText, this.detectedHeight) : this.detectedHeight;
+  }
+
+  private mlAutoScalePercent(): number {
+    return SettingsStore.scalePresetForResolution(this.mlPreviewWidth(), this.mlPreviewHeight());
   }
 
   private mlAutoBitrateKbps(): number {
@@ -503,6 +507,8 @@ struct EditConnectionPage {
     conn.mlColorSpace = this.mlColorSpace;
     conn.mlCodec = this.mlCodec;
     conn.useGlobalStream = this.useGlobalStream;
+    conn.mlScaleMode = this.mlScaleMode;
+    conn.mlScalePercent = this.parseScale(this.mlScaleText, 100);
     conn.updatedAt = Date.now();
     if (!connect) {
       if (!this.persist(conn)) {
@@ -749,34 +755,12 @@ struct EditConnectionPage {
   }
 
   @Builder
-  scaleChip(preset: number) {
-    ChoiceChip({
-      label: preset.toString() + '%',
-      selected: this.parsedScale() === preset,
-      onTap: () => {
-        this.scaleText = preset.toString();
-      }
-    })
-  }
-
-  @Builder
   displayResModeChip(label: string, auto: boolean) {
     ChoiceChip({
       label: label,
       selected: this.displayResolutionAuto === auto,
       onTap: () => {
         this.displayResolutionAuto = auto;
-      }
-    })
-  }
-
-  @Builder
-  displayScaleModeChip(label: string, auto: boolean) {
-    ChoiceChip({
-      label: label,
-      selected: this.displayScaleAuto === auto,
-      onTap: () => {
-        this.displayScaleAuto = auto;
       }
     })
   }
@@ -1117,6 +1101,26 @@ struct EditConnectionPage {
                 .fontSize(11).fontColor($r('app.color.text_tertiary'))
                 .width('100%').margin({ top: 6 })
             }
+
+            Column() {
+              ScaleSetting({
+                mode: this.mlScaleMode,
+                allowNone: true,
+                allowCustomInput: false,
+                percentText: this.mlScaleText,
+                autoPercent: this.mlAutoScalePercent(),
+                subtitle: '修改主机虚拟显示器的显示缩放',
+                noneHint: '不向主机发送缩放设置，交给虚拟屏自行决定',
+                warning: '仅基地版 Sunshine 有效',
+                onModeChange: (mode: number) => {
+                  this.mlScaleMode = mode;
+                },
+                onPercentTextChange: (text: string) => {
+                  this.mlScaleText = text;
+                }
+              })
+            }
+            .width('100%').margin({ top: 12 })
 
             Text('帧率').fontSize(14).fontColor($r('app.color.text_primary')).margin({ top: 12 })
             Text('默认 60，可选档位或自定义')
@@ -1562,62 +1566,24 @@ struct EditConnectionPage {
                       .margin({ top: 6 })
                   }
 
-                  Row() {
-                    Column() {
-                      Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
-                      Text('自动按分辨率推荐，或固定一个比例')
-                        .fontSize(11)
-                        .fontColor($r('app.color.text_tertiary'))
-                        .margin({ top: 2 })
-                    }
-                    .alignItems(HorizontalAlign.Start)
-                    .layoutWeight(1)
-
-                    Row() {
-                      this.displayScaleModeChip('自动', true)
-                      this.displayScaleModeChip('手动', false)
-                    }
+                  Column() {
+                    ScaleSetting({
+                      mode: this.displayScaleAuto ? ML_SCALE_AUTO : ML_SCALE_MANUAL,
+                      allowNone: false,
+                      allowCustomInput: true,
+                      percentText: this.scaleText,
+                      autoPercent: this.suggestedScale(),
+                      subtitle: '自动按分辨率推荐，或固定一个比例',
+                      onModeChange: (mode: number) => {
+                        this.displayScaleAuto = mode === ML_SCALE_AUTO;
+                      },
+                      onPercentTextChange: (text: string) => {
+                        this.scaleText = text;
+                      }
+                    })
                   }
                   .width('100%')
                   .margin({ top: 16 })
-
-                  if (this.displayScaleAuto) {
-                    Text('推荐 ' + this.suggestedScale() + '%')
-                      .fontSize(11)
-                      .fontColor($r('app.color.text_tertiary'))
-                      .width('100%')
-                      .margin({ top: 6 })
-                  } else {
-                    Flex({ wrap: FlexWrap.Wrap }) {
-                      ForEach(SCALE_PRESETS, (preset: number) => {
-                        this.scaleChip(preset)
-                      }, (preset: number) => preset.toString())
-                    }
-                    .width('100%')
-                    .margin({ top: 6 })
-
-                    TextInput({ placeholder: '100', text: this.scaleText })
-                      .width('100%')
-                      .height(46)
-                      .borderRadius(10)
-                      .backgroundColor($r('app.color.input_bg'))
-                      .type(InputType.Number)
-                      .onChange((value: string) => {
-                        this.scaleText = value;
-                      })
-
-                    if (this.parsedScale() > 0 && !this.isPresetScale(this.parsedScale())) {
-                      Text('自定义缩放比例可能导致部分应用显示模糊，建议使用上方固定档位')
-                        .fontSize(11)
-                        .fontColor($r('app.color.danger'))
-                        .margin({ top: 6 })
-                    } else {
-                      Text('推荐 ' + this.suggestedScale() + '%')
-                        .fontSize(11)
-                        .fontColor($r('app.color.text_tertiary'))
-                        .margin({ top: 4 })
-                    }
-                  }
                 }
 
                 Divider()

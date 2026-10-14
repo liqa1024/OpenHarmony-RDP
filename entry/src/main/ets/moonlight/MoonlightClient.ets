@@ -20,6 +20,25 @@ class HttpOutcome {
   error: string = '';
 }
 
+// POST /display-scale body (foundation-sunshine display scaling).
+class DisplayScaleRequest {
+  scale_percent: number = 100;
+  device_id: string = '';
+  display_name: string = '';
+}
+
+// Foundation-sunshine virtual display as reported by GET /displays.
+export class MoonlightDisplay {
+  deviceId: string = '';
+  displayName: string = '';
+  supportedScalePercents: number[] = [];
+  scaleSupported: boolean = false;
+
+  usable(): boolean {
+    return (this.deviceId.length > 0 || this.displayName.length > 0) && this.scaleSupported;
+  }
+}
+
 export class MoonlightClient {
   // Shared with other Moonlight clients so games started elsewhere can be quit.
   static readonly UNIQUE_ID: string = '0123456789ABCDEF';
@@ -329,6 +348,198 @@ export class MoonlightClient {
     const response: MoonlightHttpResult =
       await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin);
     return response.ok;
+  }
+
+  // Windows scale descriptor of the foundation-sunshine virtual display.
+  static async fetchVirtualDisplay(dir: string, host: string,
+    httpsPort: number): Promise<MoonlightDisplay> {
+    const display: MoonlightDisplay = new MoonlightDisplay();
+    const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
+    if (pin === undefined) {
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'displays: no pinned cert');
+      return display;
+    }
+    const response: MoonlightHttpResult =
+      await MoonlightClient.httpGet(dir, host, httpsPort, '/displays', true, pin, 8000);
+    if (response.ok && response.status === 200) {
+      MoonlightClient.fillVirtualDisplay(response.body, display);
+    }
+    if (display.usable()) {
+      hilog.info(0xD001, 'HmRdpMoonlight',
+        'displays id=%{public}s name=%{public}s supported=[%{public}s]',
+        display.deviceId.length > 0 ? display.deviceId : '-',
+        display.displayName.length > 0 ? display.displayName : '-',
+        MoonlightClient.describeNumbers(display.supportedScalePercents));
+    } else {
+      hilog.info(0xD001, 'HmRdpMoonlight', 'displays ok=%{public}d status=%{public}d body=%{public}s',
+        response.ok ? 1 : 0, response.status, MoonlightClient.snippet(response.body, 400));
+    }
+    return display;
+  }
+
+  // Windows' real display-scale steps (Settings dropdown).
+  private static readonly WINDOWS_SCALE_STEPS: number[] =
+    [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
+
+  // Some foundation-sunshine builds label Windows step indices with their own table, which
+  // carries values Windows does not have (120/140/160/180); a percent then has to be turned
+  // into a step index and sent as the host's label for that index. Once the host reports only
+  // real Windows values its labels are the real percents, so this falls back to the nearest
+  // one — i.e. it stays correct if the host is ever fixed, and needs no client change.
+  static hostScaleLabel(percent: number, hostLabels: number[]): number {
+    if (hostLabels.length === 0) {
+      return percent;
+    }
+    if (MoonlightClient.labelsAreWindowsSteps(hostLabels)) {
+      return MoonlightClient.nearestValue(percent, hostLabels);
+    }
+    const steps: number[] = MoonlightClient.WINDOWS_SCALE_STEPS;
+    let index: number = steps.indexOf(percent);
+    if (index < 0) {
+      index = MoonlightClient.nearestIndex(percent, steps);
+    }
+    if (index > hostLabels.length - 1) {
+      index = hostLabels.length - 1;
+    }
+    return hostLabels[index];
+  }
+
+  private static labelsAreWindowsSteps(hostLabels: number[]): boolean {
+    for (let i = 0; i < hostLabels.length; i++) {
+      if (MoonlightClient.WINDOWS_SCALE_STEPS.indexOf(hostLabels[i]) < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static nearestValue(percent: number, values: number[]): number {
+    return values[MoonlightClient.nearestIndex(percent, values)];
+  }
+
+  private static nearestIndex(percent: number, values: number[]): number {
+    let best: number = 0;
+    let bestDiff: number = Math.abs(percent - values[0]);
+    for (let i = 1; i < values.length; i++) {
+      const diff: number = Math.abs(percent - values[i]);
+      if (diff < bestDiff) {
+        best = i;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }
+
+  // Applies a Windows display scale (percent). false when the host refused it.
+  static async setDisplayScale(dir: string, host: string, httpsPort: number, deviceId: string,
+    displayName: string, scalePercent: number): Promise<boolean> {
+    const pin: Uint8Array | undefined = MoonlightIdentity.loadPinnedServerCert(dir, host);
+    if (pin === undefined) {
+      return false;
+    }
+    const request: DisplayScaleRequest = new DisplayScaleRequest();
+    request.scale_percent = scalePercent;
+    request.device_id = deviceId;
+    request.display_name = displayName;
+    const options: MoonlightHttpOptions = new MoonlightHttpOptions();
+    options.useTls = true;
+    options.host = host;
+    options.port = httpsPort;
+    options.path = '/display-scale';
+    options.method = 'POST';
+    options.contentType = 'application/json';
+    options.body = JSON.stringify(request);
+    options.pinnedServerCertDer = pin;
+    options.timeoutMs = 8000;
+    const response: MoonlightHttpResult =
+      await MoonlightClient.performWithCredential(dir, options);
+    const ok: boolean = response.ok && response.status === 200;
+    if (ok) {
+      hilog.info(0xD001, 'HmRdpMoonlight', 'display-scale label %{public}d ok', scalePercent);
+    } else {
+      hilog.info(0xD001, 'HmRdpMoonlight', 'display-scale label %{public}d status=%{public}d body=%{public}s',
+        scalePercent, response.status, MoonlightClient.snippet(response.body, 900));
+    }
+    return ok;
+  }
+
+  // The virtual display is announced with the friendly name "Zako HDR".
+  private static fillVirtualDisplay(body: string, display: MoonlightDisplay): void {
+    const marker: string = '"friendly_name":"Zako HDR"';
+    const at: number = body.indexOf(marker);
+    if (at < 0) {
+      return;
+    }
+    // Keys are dumped alphabetically: device_id/display_name precede friendly_name,
+    // scale_set_supported/supported_scale_percents follow it. A GUID device_id contains
+    // braces itself, so the object must never be sliced by brace positions.
+    display.deviceId = MoonlightClient.jsonStringBack(body, '"device_id":"', at);
+    display.displayName = MoonlightClient.jsonStringBack(body, '"display_name":"', at);
+    display.scaleSupported = body.indexOf('"scale_set_supported":true', at) >= 0;
+    display.supportedScalePercents =
+      MoonlightClient.jsonNumbersForward(body, '"supported_scale_percents":', at);
+  }
+
+  private static jsonStringBack(body: string, key: string, before: number): string {
+    const keyAt: number = body.lastIndexOf(key, before);
+    if (keyAt < 0) {
+      return '';
+    }
+    const valueStart: number = keyAt + key.length;
+    const valueEnd: number = body.indexOf('"', valueStart);
+    if (valueEnd < 0) {
+      return '';
+    }
+    return MoonlightClient.unescapeJson(body.substring(valueStart, valueEnd));
+  }
+
+  private static jsonNumbersForward(body: string, key: string, from: number): number[] {
+    const values: number[] = [];
+    const keyAt: number = body.indexOf(key, from);
+    const open: number = keyAt < 0 ? -1 : body.indexOf('[', keyAt + key.length);
+    // Compact JSON puts the array right after the key; a distant '[' is a different field.
+    const close: number = open < 0 ? -1 : body.indexOf(']', open);
+    if (open < 0 || close < 0) {
+      return values;
+    }
+    const parts: string[] = body.substring(open + 1, close).split(',');
+    for (let i = 0; i < parts.length; i++) {
+      const value: number = Number.parseInt(parts[i].trim(), 10);
+      if (!Number.isNaN(value)) {
+        values.push(value);
+      }
+    }
+    return values;
+  }
+
+  private static snippet(text: string, limit: number = 320): string {
+    return text.length > limit ? text.substring(0, limit) : text;
+  }
+
+  private static describeNumbers(values: number[]): string {
+    let text: string = '';
+    for (let i = 0; i < values.length; i++) {
+      text += i === 0 ? values[i].toString() : ',' + values[i].toString();
+    }
+    return text;
+  }
+
+  private static unescapeJson(text: string): string {
+    let out: string = '';
+    let i: number = 0;
+    while (i < text.length) {
+      if (text.charAt(i) === '\\' && i + 1 < text.length) {
+        const next: string = text.charAt(i + 1);
+        if (next === '\\' || next === '/') {
+          out += next;
+          i += 2;
+          continue;
+        }
+      }
+      out += text.charAt(i);
+      i++;
+    }
+    return out;
   }
 
   private static majorVersion(appVersion: string): number {

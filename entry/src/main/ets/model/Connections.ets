@@ -68,12 +68,17 @@ export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
 // SDR color space, sent as encoderCscMode = (space<<1)|range.
 export const ML_COLORSPACE_REC601: number = 0;
 export const ML_COLORSPACE_REC709: number = 1;
+
+// Moonlight 缩放模式：写基地版虚拟显示器的 Windows 显示缩放（AUTO 按分辨率换算 / MANUAL 用固定档 / NONE 不动）。
+export const ML_SCALE_AUTO: number = 0;
+export const ML_SCALE_MANUAL: number = 1;
+export const ML_SCALE_NONE: number = 2;
 export const ML_COLOR_RANGE_LIMITED: number = 0;
 // STREAM_CFG_* for STREAM_CONFIGURATION.streamingRemotely; AUTO uses the RFC1918 heuristic.
 export const ML_STREAM_CFG_AUTO: number = 2;
 
 // Fixed append-only slot count (see settings-and-storage.md §1).
-const RECORD_LENGTH: number = 46;
+const RECORD_LENGTH: number = 48;
 
 function encodeField(text: string): string {
   try {
@@ -110,6 +115,8 @@ export class MoonlightProfile {
   bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   codec: number = ML_CODEC_AUTO;
   colorSpace: number = ML_COLORSPACE_REC709;
+  scaleMode: number = ML_SCALE_AUTO;
+  scalePercent: number = 100;
 }
 
 export class MoonlightStreamConfig implements MoonlightSessionConfig {
@@ -250,6 +257,8 @@ export class ConnectionExport {
   mlCodec: number = ML_CODEC_AUTO;
   mlColorSpace: number = ML_COLORSPACE_REC709;
   useGlobalStream: boolean = true;
+  mlScaleMode: number = ML_SCALE_AUTO;
+  mlScalePercent: number = 100;
 }
 
 export abstract class SavedConnection {
@@ -570,6 +579,8 @@ export class MoonlightConnection extends SavedConnection {
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
   mlColorSpace: number = ML_COLORSPACE_REC709;
+  mlScaleMode: number = ML_SCALE_AUTO;
+  mlScalePercent: number = 100;
 
   protected defaultPort(): number {
     return ML_DEFAULT_PORT;
@@ -662,6 +673,8 @@ export class MoonlightConnection extends SavedConnection {
     slots[43] = this.mlBitrateAuto ? '1' : '0';
     slots[44] = this.mlColorSpace.toString();
     slots[45] = encodeField(this.mlMac);
+    slots[46] = this.mlScaleMode.toString();
+    slots[47] = this.mlScalePercent.toString();
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -682,6 +695,9 @@ export class MoonlightConnection extends SavedConnection {
     this.mlColorSpace = parts.length > 44
       ? parseFieldNumber(parts[44], ML_COLORSPACE_REC709) : ML_COLORSPACE_REC709;
     this.mlMac = parts.length > 45 ? decodeField(parts[45]) : '';
+    this.mlScaleMode = parts.length > 46
+      ? parseFieldNumber(parts[46], ML_SCALE_AUTO) : ML_SCALE_AUTO;
+    this.mlScalePercent = parts.length > 47 ? parseFieldNumber(parts[47], 100) : 100;
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -698,6 +714,8 @@ export class MoonlightConnection extends SavedConnection {
     item.mlColorSpace = this.mlColorSpace;
     item.mlMac = this.mlMac;
     item.useGlobalStream = this.useGlobalStream;
+    item.mlScaleMode = this.mlScaleMode;
+    item.mlScalePercent = this.mlScalePercent;
   }
 
   protected readProtocolExport(item: ConnectionExport): void {
@@ -714,6 +732,8 @@ export class MoonlightConnection extends SavedConnection {
     this.mlColorSpace = item.mlColorSpace;
     this.mlMac = item.mlMac;
     this.useGlobalStream = item.useGlobalStream;
+    this.mlScaleMode = item.mlScaleMode;
+    this.mlScalePercent = item.mlScalePercent;
   }
 }
 

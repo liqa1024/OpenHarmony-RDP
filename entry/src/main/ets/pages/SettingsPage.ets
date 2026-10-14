@@ -3,21 +3,22 @@ import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Rdp
 import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
   ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_FPS_PRESETS, ML_RES_FIXED,
-  ML_RES_FOLLOW_SCREEN, PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
+  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL,
+  PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
   ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
   ML_CURSOR_OFF, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
-  PINCH_MODE_ZOOM, SCALE_PRESETS, SR_RATIO_PRESETS,
+  PINCH_MODE_ZOOM, SR_RATIO_PRESETS,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
 import { showConfirm } from '../utils/UiUtil';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
-import { isScalePreset, MAX_DESKTOP_SIZE, parsedTextValue, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
+import { MAX_DESKTOP_SIZE, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { TextAction } from '../components/TextAction';
@@ -25,6 +26,7 @@ import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { MaterialCard } from '../components/MaterialCard';
 import { ProtocolTabs, TAB_COMMON } from '../components/ProtocolTabs';
+import { ScaleSetting } from '../components/ScaleSetting';
 import { SettingSliderRow } from '../components/SettingSliderRow';
 import { SettingToggleRow } from '../components/SettingToggleRow';
 
@@ -103,6 +105,8 @@ struct SettingsPage {
   @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
   @State mlWidthText: string = '';
   @State mlHeightText: string = '';
+  @State mlScaleMode: number = ML_SCALE_AUTO;
+  @State mlScaleText: string = '100';
   @State mlFps: number = 60;
   @State mlFpsText: string = '60';
   @State mlFpsCustom: boolean = false;
@@ -187,6 +191,8 @@ struct SettingsPage {
       this.mlWidthText = this.sizeText(settings.mlWidth > 0 ? settings.mlWidth : this.detectedWidth);
       this.mlHeightText = this.sizeText(settings.mlHeight > 0
         ? settings.mlHeight : this.detectedHeight);
+      this.mlScaleMode = settings.mlScaleMode;
+      this.mlScaleText = settings.mlScalePercent.toString();
       this.mlFps = settings.mlFps;
       this.mlFpsText = settings.mlFps.toString();
       this.mlFpsCustom = ML_FPS_PRESETS.indexOf(settings.mlFps) < 0;
@@ -288,14 +294,6 @@ struct SettingsPage {
     return parseScaleValue(text, fallback);
   }
 
-  private parsedManualScale(): number {
-    return parsedTextValue(this.manualScaleText);
-  }
-
-  private isPresetScale(value: number): boolean {
-    return isScalePreset(value);
-  }
-
   private effectiveMlBitrate(): number {
     const mbps: number = Number.parseFloat(this.mlBitrateText);
     const kbps: number = Number.isNaN(mbps) ? ML_BITRATE_DEFAULT_KBPS : mbpsToKbps(mbps);
@@ -315,6 +313,10 @@ struct SettingsPage {
   private mlAutoBitrateKbps(): number {
     return recommendedBitrateKbps(this.mlPreviewWidth(), this.mlPreviewHeight(), this.mlFps,
       this.mlCodec);
+  }
+
+  private mlAutoScalePercent(): number {
+    return SettingsStore.scalePresetForResolution(this.mlPreviewWidth(), this.mlPreviewHeight());
   }
 
   private effectiveDefaultScale(): number {
@@ -400,6 +402,8 @@ struct SettingsPage {
       settings.mlBitrateKbps = this.effectiveMlBitrate();
       settings.mlColorSpace = this.mlColorSpace;
       settings.mlCodec = this.mlCodec;
+      settings.mlScaleMode = this.mlScaleMode;
+      settings.mlScalePercent = this.parseScale(this.mlScaleText, 100);
       settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
       settings.mlTouchpadScrollAlwaysEngine = this.touchpadAlwaysEngine;
       settings.mlPinchZoomSpeed = this.pinchZoomSpeed;
@@ -562,23 +566,6 @@ struct SettingsPage {
   }
 
   @Builder
-  scaleModeChip(label: string, auto: boolean, leftMargin: number) {
-    Text(label)
-      .fontSize(13)
-      .fontColor(this.scaleAuto === auto ? '#FFFFFF' : $r('app.color.text_secondary'))
-      .backgroundColor(this.scaleAuto === auto
-        ? $r('app.color.accent') : $r('app.color.input_bg'))
-      .borderRadius(8)
-      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
-      .margin({ left: leftMargin })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.scaleAuto = auto;
-        this.persist();
-      })
-  }
-
-  @Builder
   pinchModeChip(mode: number, label: string) {
     Text(label)
       .fontSize(13)
@@ -650,18 +637,6 @@ struct SettingsPage {
         if (choice !== 0) {
           this.srBackend = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
         }
-        this.persist();
-      }
-    })
-  }
-
-  @Builder
-  scaleChip(preset: number) {
-    ChoiceChip({
-      label: preset.toString() + '%',
-      selected: this.parsedManualScale() === preset,
-      onTap: () => {
-        this.manualScaleText = preset.toString();
         this.persist();
       }
     })
@@ -856,6 +831,31 @@ struct SettingsPage {
           .fontSize(11).fontColor($r('app.color.text_tertiary'))
           .width('100%').margin({ top: 6 })
       }
+    }
+    .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  mlScaleSection() {
+    Column() {
+      ScaleSetting({
+        mode: this.mlScaleMode,
+        allowNone: true,
+        allowCustomInput: false,
+        percentText: this.mlScaleText,
+        autoPercent: this.mlAutoScalePercent(),
+        subtitle: '修改主机虚拟显示器的显示缩放',
+        noneHint: '不向主机发送缩放设置，交给虚拟屏自行决定',
+        warning: '仅基地版 Sunshine 有效',
+        onModeChange: (mode: number) => {
+          this.mlScaleMode = mode;
+          this.persist();
+        },
+        onPercentTextChange: (text: string) => {
+          this.mlScaleText = text;
+          this.persist();
+        }
+      })
     }
     .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
   }
@@ -1114,57 +1114,24 @@ struct SettingsPage {
             Divider().color($r('app.color.divider'))
 
             Column() {
-              Row() {
-                Column() {
-                  Text('缩放比例').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text(this.srEnabled
-                    ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
-                    : '按分辨率相对屏幕的比例自动选择推荐缩放比例')
-                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+              ScaleSetting({
+                mode: this.scaleAuto ? ML_SCALE_AUTO : ML_SCALE_MANUAL,
+                allowNone: false,
+                allowCustomInput: true,
+                percentText: this.manualScaleText,
+                autoPercent: this.effectiveDefaultScale(),
+                subtitle: this.srEnabled
+                  ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
+                  : '按分辨率相对屏幕的比例自动选择推荐缩放比例',
+                onModeChange: (mode: number) => {
+                  this.scaleAuto = mode === ML_SCALE_AUTO;
+                  this.persist();
+                },
+                onPercentTextChange: (text: string) => {
+                  this.manualScaleText = text;
+                  this.persist();
                 }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Row() {
-                  this.scaleModeChip('自动', true, 0)
-                  this.scaleModeChip('手动', false, 8)
-                }
-              }
-              .width('100%')
-
-              if (this.scaleAuto) {
-                Text('推荐：' + this.effectiveDefaultScale() + '%')
-                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  .width('100%').margin({ top: 10 })
-              } else {
-                Flex({ wrap: FlexWrap.Wrap }) {
-                  ForEach(SCALE_PRESETS, (preset: number) => {
-                    this.scaleChip(preset)
-                  }, (preset: number) => preset.toString())
-                }
-                .width('100%').margin({ top: 10 })
-
-                Row() {
-                  TextInput({ placeholder: '100', text: this.manualScaleText })
-                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
-                    .backgroundColor($r('app.color.input_bg')).borderRadius(10)
-                    .onChange((value: string) => {
-                      this.manualScaleText = value;
-                      this.persist();
-                    })
-
-                  Text('%')
-                    .fontSize(14).fontColor($r('app.color.text_tertiary'))
-                    .margin({ left: 10 })
-                }
-                .width('100%')
-
-                if (this.parsedManualScale() > 0 && !this.isPresetScale(this.parsedManualScale())) {
-                  Text('自定义缩放比例可能导致部分应用显示模糊，建议使用上方固定档位')
-                    .fontSize(11).fontColor($r('app.color.danger'))
-                    .width('100%').margin({ top: 6 })
-                }
-              }
+              })
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
             } else if (this.protocol === PROTOCOL_MOONLIGHT) {
@@ -1234,6 +1201,10 @@ struct SettingsPage {
               Divider().color($r('app.color.divider'))
 
               this.mlResolutionSection()
+
+              Divider().color($r('app.color.divider'))
+
+              this.mlScaleSection()
 
               Divider().color($r('app.color.divider'))
 
