@@ -71,6 +71,12 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   码率照 RDP 分辨率/缩放的「自动 / 手动」写法——**自动**（`mlBitrateAuto`）按 `分辨率 × 帧率 × 编码` 换算（`recommendedBitrateKbps`，
   bits-per-pixel 启发式），**手动**用 `mlBitrateKbps`；**UI 一律以 Mbps 显示与输入、存储仍是 kbps**（`kbpsToMbps` / `mbpsToKbps`）。
   自动值在连接时按**最终解析出的分辨率**（跟随屏幕已解析）计算，见 `MoonlightConnector`。
+- **帧率在连接时按两端钳制**（`clampStreamFps`）：上限 = **面板最高刷新率**（`display.supportedRefreshRates` 的最大值，
+  平台不报则不计）与**解码器对该尺寸上报的最高帧率**（`moonlightVideoMaxFps` → `OH_AVCapability_GetVideoFrameRateRangeForSize`，
+  平台不报则不计）的较小者。理由是超过面板会被解出来丢掉、超过解码器则客户端根本跟不上（见
+  [`moonlight-video.md`](moonlight-video.md) §1）；钳制后**发请求与建会话都用钳后的值，保存的设置不动**，
+  被降过时连接后一次性提示原因。`clientRefreshRateX100` 由同一处给出：面板刷新率落在最终帧率 ±2% 内时传
+  `面板刷新率 × 100`，否则 0（库的判据，见 [`moonlight-video.md`](moonlight-video.md) §4）。
 - **保存时始终把当前编辑器里的独立值写回连接**（即使此刻跟随全局），便于随时切回，与 RDP 的单连接覆盖一致。
 
 ## 4. 连接列表与编辑页

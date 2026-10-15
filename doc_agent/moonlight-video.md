@@ -17,15 +17,30 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   不要拿窗口/surface 尺寸当提示（会为远小于它的码流过度分配），会话侧按协商的流分辨率设。buffer 模式另设
   `AV_PIXEL_FORMAT_NV12`。**实际可见尺寸**由 `onStreamChanged` 的 `OH_MD_KEY_VIDEO_PIC_WIDTH/HEIGHT` 给出，
   只作解码器的可见尺寸参考；它**不**改组件几何（组件比例取请求的流分辨率，见 §2）。
+- **帧率进 Configure，并由此打开屏幕的自适应刷新**：`OH_MD_KEY_FRAME_RATE` 取协商帧率（键在头文件里声明为
+  double、解码器指南示例传 int，故按 setter 的类型校验择一设置）；**surface 直出链路**再置
+  `OH_MD_KEY_VIDEO_DECODER_OUTPUT_ENABLE_VRR = 1`（API 15+）。后者是平台的「视频可变帧率」开关，
+  **只对硬件解码直出送显生效**：它把屏幕整体刷新率调到流帧率，且**刷新率低于帧率时在显示前丢帧**——
+  高帧率（>面板默认档，常见 60Hz）能被真正显示出来靠的就是它，不开则表面只按默认档消费、解码器输出缓冲
+  回不来，背压一路顶到输入侧。buffer + Vulkan 链路不置该键（平台不支持，且该链路本就有自己的节拍）。
+  平台不支持时接口不报错、静默不生效；帧率越界会让 Configure 回 `AV_ERR_INVALID_VAL`，故失败时以
+  **不带帧率的配置重试一次**，不让会话因一个可选键起不来。
 - **硬解优先，软解兜底，无解器报错**：`VideoDecoderSupport()`（`OH_AVCodec_GetCapabilityByCategory`）把每种
   编码分成**硬解 / 软解 / 无**，优先创建硬解，硬解缺失时才退到软解，`VideoDecoder::hardware()` 反映实际
   选择；完全没有解码器时起播同步失败并给出原因，绝不静默黑屏。
-- **送显即出帧，客户端不排程**：surface 模式每帧解码出帧就 `RenderOutputBuffer`（丢弃用 `FreeOutputBuffer`），
-  节拍由显示器 vsync 与主机按协商 `maxFPS` 的发送共同决定。客户端自建时间轴（帧计数配协商帧率 + 首帧墙钟推
-  `RenderOutputBufferAtTime` 目标时刻）与码流时间无关：主机实际帧率不等于协商值时偏差只累加、不回正（钳到
-  「现在」只能前移不能补偿），表现为静默的延迟堆积；且 SDK 约定输出 buffer **顺序处理**，被按住的 buffer 会
-  阻塞后续。超刷新率的帧由表面层吸收（同一 vsync 内多 buffer 只显示最后一个），无需应用丢帧。帧率因此不是
-  送显决策的输入（`Configure` 亦无帧率键）。
+- **送显即出帧，客户端不排程**：surface 模式每帧解码出帧就 `RenderOutputBuffer`（丢弃用 `FreeOutputBuffer`）
+  并立刻回调一帧，节拍由显示器 vsync 与主机按协商 `maxFPS` 的发送共同决定。客户端自建时间轴（帧计数配协商
+  帧率 + 首帧墙钟推 `RenderOutputBufferAtTime` 目标时刻）不采用：与码流时间无关，主机实际帧率不等于协商值时
+  偏差只累加、不回正（钳到「现在」只能前移不能补偿），表现为静默的延迟堆积；且 SDK 约定输出 buffer **顺序
+  处理**，被按住的 buffer 会阻塞后续。**超过面板档的帧只有开 VRR 才在显示前被丢**（见上）；没开时表面按面板档
+  消费，解码器的输出缓冲回不来、它就不再要输入，积压停在输入侧——**帧率因此是送显决策的输入**，其落点是
+  连接时的钳制（§4）与这里的 VRR 开关，不是运行时的丢帧。
+- **输入按延迟预算排队，超预算丢积压并请主机补关键帧**：解码桥不把提交透传给 codec，而是入一个按**时间**
+  （不是字节）计量的队列——预算 = 3 个帧周期、钳在 30–150ms，帧率未知时 75ms。队列里最老的一帧超过预算即
+  判定「已经太晚、显示无意义」，于是**丢掉整段积压**并回 `DR_NEED_IDR`：库收到该返回值后清掉自己的分帧状态、
+  停止送帧直到新 IDR 到达，所以一次过载只花一个关键帧就回到基线延迟，不会形成关键帧风暴（限流由库侧完成）。
+  运行期**不存在**任何以字节数封顶/只拒新帧不清积压的路径——那会把「跟不上」固化成永不恢复的延迟堆积，
+  而字节数不是延迟的量纲。
 - **低时延输出 = 解码序，故码流不得含 B 帧**：Configure 使能 `OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY` 后解码器
   **按解码序输出、不做重排**（交互场景要的正是这个低延迟）。送显时间轴因此就是解码序，只有码流**不含 B 帧**
   时解码序才等于显示序。Moonlight / Sunshine 的编码本就是低延迟无 B 帧，产品链路成立；换成带 B 帧的码流
@@ -34,7 +49,8 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   （`offset`/`size`/`pts`/`flags`），**不报每帧解码耗时**；带统计的 `OH_AVPlayer_GetPlaybackStatisticMetrics`
   是解封装播放器口径，对直连 VideoDecoder 不适用。故工具栏「本机」只能取**提交 → 解码出帧的往返**
   （`submitDecodeUnit` 记提交时刻、输出回调按 `pts` 配对求差），它**含输入排队与输出缓冲等待**，是纯解码
-  耗时的**上界**——解码器空闲时接近解码耗时，积压时被放大。判读与着色见
+  耗时的**上界**——解码器空闲时接近解码耗时，积压时被放大；有了上一条的输入预算，这个放大被钳在
+  「预算 + 解码耗时」以内，读数不再能无限膨胀。判读与着色见
   [`moonlight-session.md`](moonlight-session.md) §2。
 - **解码器一处两类输出**（`VideoOutputMode`）：surface 给直出，buffer 给超分。喂入、回调派发、生命周期、
   背压队列共享，差异只在输出回调与是否 `SetSurface`——不是两份解码逻辑。
@@ -83,8 +99,14 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
   SDR 取 Rec709 + limited，`0` 是 Rec601（HD 下偏色）。
 - `streamingRemotely` 用 `STREAM_CFG_AUTO`（由库按 RFC1918 判本地/远程，影响带宽/音频/QoS 广告与包大小）。
 - `bitrate` 经 `x-ml-video.configuredBitrateKbps` 交 Sunshine 反推实际编码码率。
-- 分辨率/帧率走 `clientViewportWd/Ht` 与 `maxFPS`，`clientRefreshRateX100` 仅用于 NTSC 分数帧率
-  （落在请求帧率 ±2% 内才生效，否则为 0）。
+- 分辨率/帧率走 `clientViewportWd/Ht` 与 `maxFPS`。`maxFPS` **不是**用户填什么就发什么：连接时按
+  `min(面板最高刷新率, 解码器对该尺寸上报的最高帧率)` 钳制（两者都取「平台不报即不计」），依据是帧率受
+  「每秒宏块数（H.264）/ 每秒采样数（HEVC）」的**档位上限**约束——同一分辨率换编码或档位才可能过线，
+  平台把该值按尺寸经 `OH_AVCapability_GetVideoFrameRateRangeForSize` 报出。钳制与提示的落点见
+  [`moonlight-connection.md`](moonlight-connection.md) §3。
+- `clientRefreshRateX100` 仅用于 NTSC 分数帧率：传入的客户端刷新率落在请求帧率 ±2% 内才生效，否则为 0；
+  故它取**面板刷新率 × 100**、面板刷新率与最终帧率不在此范围时置 0（连接层给出，见
+  [`moonlight-connection.md`](moonlight-connection.md) §3）。
 
 ## 5. 与 RDP 呈现器的复用口径
 

@@ -11,7 +11,11 @@ std::string MoonlightProbe();
 // Raw cumulative telemetry; ArkTS diffs the counters into rates and per-frame means (nothing here
 // is a display rate). RTT/packet counters come from the library at sample time, the rest from the decode bridge.
 struct MoonlightTelemetry {
+  // Decoded pictures out of the codec (the rate the display is actually fed) ...
   uint64_t frames = 0;
+  // ... versus the access units handed to it and the ones dropped for being too late to show.
+  uint64_t submittedFrames = 0;
+  uint64_t droppedFrames = 0;
   uint64_t bytes = 0;
   uint64_t hostLatencyTenthMs = 0;
   uint64_t hostLatencyFrames = 0;
@@ -44,6 +48,10 @@ enum class MoonlightVideoCodecChoice : int {
 
 // Single VIDEO_FORMAT_* the session will use; 0 = no shared codec.
 int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport);
+
+// Highest frame rate the decoder for that VIDEO_FORMAT_* reports at a picture size, 0 when the
+// platform states none. The control layer caps the rate it asks the host for with this.
+int MoonlightVideoMaxFps(int videoFormat, int width, int height);
 
 int MoonlightVideoCodecSupport(int codec);
 

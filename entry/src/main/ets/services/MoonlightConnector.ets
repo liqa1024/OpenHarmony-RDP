@@ -1,11 +1,13 @@
-import { moonlightVideoFormats } from 'libhmrdp.so';
+import { moonlightVideoFormats, moonlightVideoMaxFps } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_AUTO,
   MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
 import { SettingsStore } from './SettingsStore';
 import { GamepadDevices } from './input/GamepadInput';
-import { recommendedBitrateKbps } from '../utils/MoonlightQuality';
+import { clampStreamFps, FPS_LIMIT_NONE, FPS_LIMIT_PANEL, FpsCeiling, recommendedBitrateKbps }
+  from '../utils/MoonlightQuality';
+import { maxDisplayRefreshRate } from '../utils/DisplayUtil';
 import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
 import { MoonlightClient, MoonlightDisplay, MoonlightScaleTarget } from '../moonlight/MoonlightClient';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
@@ -26,6 +28,8 @@ export class MoonlightConnectResult {
   effectiveAppId: number = 0;
   // True scale (percent) in effect on the host virtual display; 0 = unknown (no virtual display).
   hostScalePercent: number = 0;
+  // Set when the requested frame rate was capped by the panel or the decoder; "" otherwise.
+  fpsNote: string = '';
 }
 
 export class MoonlightAppsResult {
@@ -253,15 +257,28 @@ export class MoonlightConnector {
     const rikeyHex: string = MoonlightCrypto.randomHex(16);
     const rikeyId: number = MoonlightConnector.randomKeyId();
     const options: MoonlightLaunchOptions = new MoonlightLaunchOptions();
-    // The stream resolution is final here (follow-screen already resolved), so the
-    // auto bitrate is computed against the size that will actually be sent.
+    // The stream resolution is final here (follow-screen already resolved), so the rate is capped
+    // once against both ends that have to keep up with it: the panel cannot show more than its top
+    // refresh rate, and the decoder cannot decode more than it reports at this size. The auto
+    // bitrate is then computed against the rate that will actually be sent.
+    const panelMaxHz: number = maxDisplayRefreshRate();
+    const decoderMaxFps: number = moonlightVideoMaxFps(videoFormats, width, height);
+    const fps: FpsCeiling = clampStreamFps(stream.fps, panelMaxHz, decoderMaxFps);
+    if (fps.limit !== FPS_LIMIT_NONE) {
+      result.fpsNote = fps.limit === FPS_LIMIT_PANEL
+        ? `本机屏幕刷新率最高 ${panelMaxHz}Hz，帧率已从 ${stream.fps} 降到 ${fps.fps}`
+        : `本机解码器在 ${width}×${height} 下最高 ${decoderMaxFps}fps，帧率已从 `
+          + `${stream.fps} 降到 ${fps.fps}`;
+      hilog.info(0xD001, 'HmRdpMoonlight', 'fps capped %{public}d -> %{public}d (panel %{public}d, '
+        + 'decoder %{public}d)', stream.fps, fps.fps, panelMaxHz, decoderMaxFps);
+    }
     const effectiveBitrateKbps: number = stream.bitrateAuto
-      ? recommendedBitrateKbps(width, height, stream.fps, stream.codec)
+      ? recommendedBitrateKbps(width, height, fps.fps, stream.codec)
       : stream.bitrateKbps;
     options.appId = effectiveAppId;
     options.width = width;
     options.height = height;
-    options.fps = stream.fps;
+    options.fps = fps.fps;
     options.bitrateKbps = effectiveBitrateKbps;
     options.rikeyHex = rikeyHex;
     options.rikeyId = rikeyId;
@@ -302,7 +319,7 @@ export class MoonlightConnector {
     config.serverCodecModeSupport = info.serverCodecModeSupport;
     config.width = width;
     config.height = height;
-    config.fps = stream.fps;
+    config.fps = fps.fps;
     config.bitrateKbps = effectiveBitrateKbps;
     config.packetSize = 1024;
     // Let the client library decide local vs remote (RFC1918 heuristic) instead of
@@ -310,7 +327,11 @@ export class MoonlightConnector {
     config.streamingRemotely = ML_STREAM_CFG_AUTO;
     config.audioConfiguration = MoonlightConnector.AUDIO_CONFIGURATION_STEREO;
     config.supportedVideoFormats = videoFormats;
-    config.clientRefreshRateX100 = 0;
+    // The library only acts on this while it lands within 2% of the requested rate, and its purpose
+    // is the NTSC-style fractional rate a panel actually runs at (119.88 rather than 120).
+    config.clientRefreshRateX100 = panelMaxHz > 0
+      && Math.abs(panelMaxHz - fps.fps) / fps.fps <= 0.02
+      ? Math.round(panelMaxHz * 100) : 0;
     config.colorSpace = stream.colorSpace;
     config.colorRange = ML_COLOR_RANGE_LIMITED;
     config.encryptionFlags = 0;

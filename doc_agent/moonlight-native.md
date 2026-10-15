@@ -66,7 +66,8 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     交给 `VideoDecoder::Submit`，即 [`moonlight-video.md`](moonlight-video.md) §1 的「一次一个完整访问单元」。
   - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位留空：不改写参考帧，且**不开
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
-  - 输入积压超过阈值时回 `DR_NEED_IDR` 请主机补关键帧，避免无界排队。
+  - 输入**按延迟预算**排队（时间计量，不是字节）：最老的一帧超过预算就丢掉整段积压并回 `DR_NEED_IDR`
+    请主机补关键帧。依据与限流机制见 [`moonlight-video.md`](moonlight-video.md) §1。
 - **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`。**`LiStartConnection` 在建流
   完成后就返回**，会话此后跑在 moonlight 自己的线程上，直到 `LiStopConnection`——所以两者必须**在同一条会话
   线程上成对调用**：会话线程执行 `LiStartConnection` → 等停止/被终止的通知 → 执行 `LiStopConnection`；
@@ -89,7 +90,9 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `moonlightMouseMove`），发的是**相邻两次映射位置之差**（1:1，内容像素当计数），依据与边界见
   [`session-layer.md`](session-layer.md) §8。相对模式下**按键不再附绝对位置**——`LiSendMouseButtonEvent` 本身不带坐标，
   附一次绝对定位会把主机光标拽回本机坐标。
-- **遥测采样**：解码桥按帧累加**累计计数**（解码单元数、编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
+- **遥测采样**：解码桥按帧累加**累计计数**（**解码出帧数**——计在解码输出回调上；**提交的访问单元数**与
+  **丢弃数**——后者含超输入延迟预算时被丢的整段积压，两者只在丢帧时不等）；编码载荷字节 Σ`fullLength`、
+  主机帧处理耗时之和 / 帧数、
   本机解码往返之和 / 帧数——最后一项在 `submitDecodeUnit` 记提交时刻、在解码输出回调按 `pts` 配对求差），
   `moonlightTelemetry()` 被调用时再读入瞬时 / 库侧读数（`LiGetEstimatedRttInfo` 的 RTT 与抖动、
   `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`）。**原生不产速率**：速率与每帧均值在 ArkTS

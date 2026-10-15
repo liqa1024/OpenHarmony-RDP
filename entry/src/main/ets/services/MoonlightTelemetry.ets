@@ -13,6 +13,8 @@ export class MoonlightCounters {
   hostLatencyMs: number = -1;
   decodeMs: number = -1;
   pendingVideoFrames: number = 0;
+  // Access units the decode bridge threw away for being past the latency budget.
+  droppedPerSec: number = 0;
   // Loss basis points: (FEC failed + out-of-order + invalid) / (video + FEC).
   lossBp: number = -1;
 }
@@ -27,6 +29,7 @@ export class MoonlightTelemetryAggregator {
   private prevHostCount: number = 0;
   private prevDecodeSum: number = 0;
   private prevDecodeCount: number = 0;
+  private prevDropped: number = 0;
   private prevVideo: number = 0;
   private prevFec: number = 0;
   private prevFailed: number = 0;
@@ -52,6 +55,7 @@ export class MoonlightTelemetryAggregator {
     const dHostCount: number = raw.hostLatencyFrames - this.prevHostCount;
     const dDecodeSum: number = raw.decodeRoundTripUs - this.prevDecodeSum;
     const dDecodeCount: number = raw.decodeRoundTripFrames - this.prevDecodeCount;
+    const dDropped: number = raw.droppedFrames - this.prevDropped;
     const dVideo: number = raw.packetVideo - this.prevVideo;
     const dFec: number = raw.packetFec - this.prevFec;
     const dFailed: number = raw.packetFecFailed - this.prevFailed;
@@ -63,6 +67,7 @@ export class MoonlightTelemetryAggregator {
     if (seconds > 0) {
       counters.fps = Math.round(dFrames / seconds);
       counters.bytesPerSec = Math.round(dBytes / seconds);
+      counters.droppedPerSec = Math.round(dDropped / seconds);
     }
     if (dHostCount > 0) {
       counters.hostLatencyMs = dHostSum / dHostCount / 10;
@@ -85,6 +90,7 @@ export class MoonlightTelemetryAggregator {
     this.prevHostCount = raw.hostLatencyFrames;
     this.prevDecodeSum = raw.decodeRoundTripUs;
     this.prevDecodeCount = raw.decodeRoundTripFrames;
+    this.prevDropped = raw.droppedFrames;
     this.prevVideo = raw.packetVideo;
     this.prevFec = raw.packetFec;
     this.prevFailed = raw.packetFecFailed;
@@ -100,7 +106,8 @@ export class MoonlightTelemetryAggregator {
       + counters.rttVarianceMs + 'ms host=' + Math.round(counters.hostLatencyMs * 10) / 10
       + 'ms decode=' + Math.round(counters.decodeMs * 10) / 10 + 'ms fps=' + counters.fps
       + ' bitrate=' + Math.round(counters.bytesPerSec * 8 / 1000) + 'kbps pending='
-      + counters.pendingVideoFrames + ' loss=' + counters.lossBp + '/10000';
+      + counters.pendingVideoFrames + ' drop=' + counters.droppedPerSec + '/s'
+      + ' loss=' + counters.lossBp + '/10000';
     hilog.info(DOMAIN, TAG, '%{public}s', line);
   }
 }

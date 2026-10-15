@@ -1372,6 +1372,25 @@ napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
   return CreateInt(env, hmrdp::MoonlightVideoFormats(value, codecModes));
 }
 
+napi_value MoonlightVideoMaxFps(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t videoFormat = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc >= 1) {
+    napi_get_value_int32(env, args[0], &videoFormat);
+  }
+  if (argc >= 2) {
+    napi_get_value_int32(env, args[1], &width);
+  }
+  if (argc >= 3) {
+    napi_get_value_int32(env, args[2], &height);
+  }
+  return CreateInt(env, hmrdp::MoonlightVideoMaxFps(videoFormat, width, height));
+}
+
 napi_value MoonlightVideoCodecSupport(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -2068,6 +2087,8 @@ napi_value MoonlightGetTelemetry(napi_env env, napi_callback_info) {
     napi_set_named_property(env, result, name, v);
   };
   setInt("frames", static_cast<int64_t>(telemetry.frames));
+  setInt("submittedFrames", static_cast<int64_t>(telemetry.submittedFrames));
+  setInt("droppedFrames", static_cast<int64_t>(telemetry.droppedFrames));
   setInt("bytes", static_cast<int64_t>(telemetry.bytes));
   setInt("hostLatencyTenthMs", static_cast<int64_t>(telemetry.hostLatencyTenthMs));
   setInt("hostLatencyFrames", static_cast<int64_t>(telemetry.hostLatencyFrames));
@@ -2190,6 +2211,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightVideoCodec", nullptr, MoonlightVideoCodec, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightVideoCodecSupport", nullptr, MoonlightVideoCodecSupport, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"moonlightVideoMaxFps", nullptr, MoonlightVideoMaxFps, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightVideoWarning", nullptr, MoonlightVideoWarning, nullptr, nullptr, nullptr,
        napi_default, nullptr},

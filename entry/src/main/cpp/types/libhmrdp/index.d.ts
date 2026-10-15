@@ -233,6 +233,9 @@ export const moonlightVideoCodec: () => string;
 /** Decoder support for an ML_CODEC_* (1 H.264 / 2 HEVC / 3 AV1): 0 none, 1 software, 2 hardware. */
 export const moonlightVideoCodecSupport: (codec: number) => number;
 
+/** Highest frame rate the decoder for a VIDEO_FORMAT_* reports at that picture size (0 = not stated). */
+export const moonlightVideoMaxFps: (videoFormat: number, width: number, height: number) => number;
+
 /** Stable decode-path code: "software-decode|<mime>" or "no-decoder|<mime>", "" when fine. */
 export const moonlightVideoWarning: () => string;
 
@@ -400,8 +403,12 @@ export const gamepadKitDevices: () => GamepadKitDevice[];
 
 /** One raw telemetry sample; counters are cumulative (the caller diffs consecutive samples into rates). */
 export interface MoonlightTelemetry {
-  /** Decoded frames submitted to the decoder, cumulative. */
+  /** Pictures decoded out of the codec, cumulative (the rate the display is fed). */
   frames: number;
+  /** Access units handed to the decoder, cumulative. */
+  submittedFrames: number;
+  /** Access units dropped because they were already too late to show, cumulative. */
+  droppedFrames: number;
   /** Encoded video payload bytes (sum of decoded-unit lengths), cumulative. */
   bytes: number;
   /** Sum of host frame processing latency over frames that carried it (1/10 ms). */

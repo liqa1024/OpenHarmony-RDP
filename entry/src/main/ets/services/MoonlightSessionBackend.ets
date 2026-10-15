@@ -197,6 +197,7 @@ export class MoonlightSessionBackend implements SessionBackend {
     this.hostScalePercent = result.hostScalePercent;
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
+    request.moonlightFpsNote = result.fpsNote;
     MoonlightHostState.markLaunched(conn.id, result.effectiveAppId);
     if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
       conn.mlHostId = result.hostId;

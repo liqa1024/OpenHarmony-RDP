@@ -132,7 +132,11 @@ struct MoonlightSessionPage {
   @State metricsFps: number = 0;
   @State metricsBytesPerSec: number = 0;
   @State metricsPending: number = 0;
+  @State metricsDroppedPerSec: number = 0;
   @State metricsLossBp: number = -1;
+  // Why this session's frame rate was capped; shown once when it becomes the live stream.
+  private fpsNote: string = '';
+  private fpsNoteShown: boolean = false;
   private targetFps: number = 0;
   private targetBitrateKbps: number = 0;
   private metricsTimer: number = -1;
@@ -166,6 +170,7 @@ struct MoonlightSessionPage {
         this.streamWidth = request.stream.width;
         this.streamHeight = request.stream.height;
       }
+      this.fpsNote = request.moonlightFpsNote;
       const config = request.moonlightConfig;
       if (config !== undefined) {
         this.targetFps = config.fps;
@@ -400,6 +405,7 @@ struct MoonlightSessionPage {
         input?.reportPointerPosition();
       }
       this.suggestVmouseOff(nativeTouchpadSupported);
+      this.showFpsNote();
       this.startMetricsTimer();
       this.startAudio();
       return;
@@ -472,6 +478,7 @@ struct MoonlightSessionPage {
     this.metricsFps = counters.fps;
     this.metricsBytesPerSec = counters.bytesPerSec;
     this.metricsPending = counters.pendingVideoFrames;
+    this.metricsDroppedPerSec = counters.droppedPerSec;
     this.metricsLossBp = counters.lossBp;
   }
 
@@ -497,7 +504,8 @@ struct MoonlightSessionPage {
 
   private localTips(): string {
     return '本机解码往返（提交→解码出帧）/帧，含排队与输出缓冲等待'
-      + '\n健康读数接近解码耗时，积压时被放大；在途待解码 ' + this.metricsPending + ' 帧';
+      + '\n健康读数接近解码耗时，积压时被放大；在途待解码 ' + this.metricsPending + ' 帧'
+      + '\n丢弃 ' + this.metricsDroppedPerSec + ' 帧/s（超出延迟预算即丢并请主机补关键帧）';
   }
 
   private localFrameFps(): number {
@@ -562,6 +570,15 @@ struct MoonlightSessionPage {
       return PINCH_MODE_WHEEL;
     }
     return this.mlPinchMode;
+  }
+
+  // A capped rate is a visible change to what was asked for, so say so once per session.
+  private showFpsNote(): void {
+    if (this.fpsNote.length === 0 || this.fpsNoteShown) {
+      return;
+    }
+    this.fpsNoteShown = true;
+    showNotice(this.getUIContext(), '帧率已调整', this.fpsNote);
   }
 
   // 0x20 is the only base-version marker a client can read; whether the host's virtual mouse driver is

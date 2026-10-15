@@ -25,10 +25,6 @@ std::string MoonlightProbe() {
 
 namespace {
 
-// Cap on decoder input backlog; a keyframe request past it is safe because
-// submits run on Moonlight's own decoder thread.
-constexpr size_t kMaxPendingBytes = 4u * 1024u * 1024u;
-
 // Stale submit timestamps are dropped past this many outstanding frames, so a
 // decoder that drops or reorders cannot grow the pairing map without bound.
 constexpr size_t kMaxPendingSubmitTimes = 240;
@@ -113,6 +109,15 @@ class MoonlightVideoRenderer {
     width_ = width;
     height_ = height;
     redrawRate_ = redrawRate;
+    if (redrawRate > 0) {
+      // Informational: the request was already capped at this in the control layer, so a shortfall
+      // here means the ceiling moved (or was unknown) in between.
+      const int maxFps = VideoDecoderMaxFps(mime, width, height);
+      if (maxFps > 0 && redrawRate > maxFps) {
+        HMRDP_LOGW("moonlight video: %{public}d fps over this decoder's %{public}d fps at "
+                   "%{public}dx%{public}d", redrawRate, maxFps, width, height);
+      }
+    }
     HMRDP_LOGI("moonlight video: setup %{public}s %{public}x%{public}d @%{public}d (%{public}s)",
                mime_.c_str(), width_, height_, redrawRate_,
                VideoDecoderDescription(mime_).c_str());
@@ -132,8 +137,10 @@ class MoonlightVideoRenderer {
   // Cumulative counters only; the caller diffs them into rates.
   MoonlightTelemetry Telemetry() {
     MoonlightTelemetry telemetry;
-    telemetry.frames = statFrames_.load();
+    telemetry.frames = statDecoded_.load();
     telemetry.bytes = statBytes_.load();
+    telemetry.submittedFrames = statSubmitted_.load();
+    telemetry.droppedFrames = statDropped_.load();
     telemetry.hostLatencyTenthMs = statHostLatencySum_.load();
     telemetry.hostLatencyFrames = statHostLatencyCount_.load();
     telemetry.decodeRoundTripUs = statDecodeRtSumUs_.load();
@@ -153,8 +160,8 @@ class MoonlightVideoRenderer {
     VideoDecoder::FrameReadyFn onFrame = [this](int, int, int64_t ptsUs) {
       NoteDecoded(ptsUs);
     };
-    if (!decoder_.Start(mime_, VideoOutputMode::kSurface, window_, width_, height_, onFrame,
-                        nullptr)) {
+    if (!decoder_.Start(mime_, VideoOutputMode::kSurface, window_, width_, height_, redrawRate_,
+                        onFrame, nullptr)) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",
                  decoder_.lastError().c_str());
       return;
@@ -178,8 +185,17 @@ class MoonlightVideoRenderer {
     if (!running_ || decodeUnit == nullptr) {
       return DR_NEED_IDR;
     }
-    if (decoder_.pendingBytes() > kMaxPendingBytes) {
-      HMRDP_LOGW("moonlight video: input backlog, requesting keyframe");
+    // Latency is the budget, not throughput: an access unit that has waited past it is already too
+    // late to show, and leaving it queued would keep every later frame that far behind. Drop the
+    // whole queue and let the library resync on a fresh IDR (it stops delivering frames until one
+    // arrives, so an overload costs exactly one keyframe).
+    const int64_t ageUs = decoder_.pendingAgeUs();
+    if (ageUs > decoder_.inputBudgetUs()) {
+      const size_t dropped = decoder_.DropPending() + 1;
+      statDropped_.fetch_add(dropped, std::memory_order_relaxed);
+      HMRDP_LOGW("moonlight video: input %{public}lldms behind budget, dropped %{public}llu units",
+                 static_cast<long long>(ageUs / 1000),
+                 static_cast<unsigned long long>(dropped));
       return DR_NEED_IDR;
     }
     // One decode unit is one Annex-B access unit, so a flat copy is the single
@@ -196,7 +212,7 @@ class MoonlightVideoRenderer {
                          static_cast<int64_t>(decodeUnit->presentationTimeUs))) {
       return DR_NEED_IDR;
     }
-    statFrames_.fetch_add(1, std::memory_order_relaxed);
+    statSubmitted_.fetch_add(1, std::memory_order_relaxed);
     if (decodeUnit->fullLength > 0) {
       statBytes_.fetch_add(static_cast<uint64_t>(decodeUnit->fullLength),
                            std::memory_order_relaxed);
@@ -218,7 +234,9 @@ class MoonlightVideoRenderer {
 
  private:
   void ResetStats() {
-    statFrames_.store(0);
+    statDecoded_.store(0);
+    statSubmitted_.store(0);
+    statDropped_.store(0);
     statBytes_.store(0);
     statHostLatencySum_.store(0);
     statHostLatencyCount_.store(0);
@@ -228,9 +246,10 @@ class MoonlightVideoRenderer {
     submitNsByPts_.clear();
   }
 
-  // Runs on the codec callback thread; pairs with the submit time recorded in
-  // Submit() by presentation time.
+  // Runs once per decoded picture on the codec callback thread; pairs with the
+  // submit time recorded in Submit() by presentation time.
   void NoteDecoded(int64_t ptsUs) {
+    statDecoded_.fetch_add(1, std::memory_order_relaxed);
     int64_t submitNs = 0;
     {
       std::lock_guard<std::mutex> lock(submitMutex_);
@@ -260,7 +279,10 @@ class MoonlightVideoRenderer {
   bool running_ = false;
   std::vector<uint8_t> buffer_;
 
-  std::atomic<uint64_t> statFrames_{0};
+  // frames = decoded pictures out of the codec; submitted = access units handed to it.
+  std::atomic<uint64_t> statDecoded_{0};
+  std::atomic<uint64_t> statSubmitted_{0};
+  std::atomic<uint64_t> statDropped_{0};
   std::atomic<uint64_t> statBytes_{0};
   std::atomic<uint64_t> statHostLatencySum_{0};
   std::atomic<uint64_t> statHostLatencyCount_{0};
@@ -363,6 +385,10 @@ int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeS
 
   g_decidedVideoFormat.store(decided);
   return decided;
+}
+
+int MoonlightVideoMaxFps(int videoFormat, int width, int height) {
+  return VideoDecoderMaxFps(MimeForVideoFormat(videoFormat), width, height);
 }
 
 int MoonlightVideoCodecSupport(int codec) {

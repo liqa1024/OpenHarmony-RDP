@@ -1,5 +1,6 @@
 #include "hmrdp_video_decoder.h"
 
+#include <chrono>
 #include <cstring>
 #include <utility>
 
@@ -33,6 +34,30 @@ PickedCapability PickCapability(const std::string& mime) {
   return {OH_AVCodec_GetCapabilityByCategory(mime.c_str(), false, SOFTWARE), false};
 }
 
+// Input latency budget: room to absorb a burst of arriving frames, but a ceiling on how far behind
+// the decoder may fall before frames stop being worth showing. Scales with the frame period so it
+// means the same at any stream rate.
+constexpr int64_t kMinInputBudgetUs = 30000;
+constexpr int64_t kMaxInputBudgetUs = 150000;
+constexpr int64_t kUnknownFrameRateBudgetUs = 75000;
+constexpr int64_t kBudgetFramePeriods = 3;
+
+int64_t NowUs() {
+  return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+int64_t BudgetForFrameRate(int frameRate) {
+  if (frameRate <= 0) {
+    return kUnknownFrameRateBudgetUs;
+  }
+  const int64_t budget = kBudgetFramePeriods * 1000000 / frameRate;
+  if (budget < kMinInputBudgetUs) {
+    return kMinInputBudgetUs;
+  }
+  return budget > kMaxInputBudgetUs ? kMaxInputBudgetUs : budget;
+}
+
 }  // namespace
 
 DecoderSupport VideoDecoderSupport(const std::string& mime) {
@@ -56,6 +81,22 @@ std::string VideoDecoderDescription(const std::string& mime) {
   return (picked.hardware ? "hw:" : "sw:") + std::string(name != nullptr ? name : "?");
 }
 
+int VideoDecoderMaxFps(const std::string& mime, int width, int height) {
+  if (width <= 0 || height <= 0) {
+    return 0;
+  }
+  const PickedCapability picked = PickCapability(mime);
+  if (picked.capability == nullptr) {
+    return 0;
+  }
+  OH_AVRange range = {-1, -1};
+  if (OH_AVCapability_GetVideoFrameRateRangeForSize(picked.capability, width, height, &range) !=
+      AV_ERR_OK) {
+    return 0;
+  }
+  return range.maxVal > 0 ? static_cast<int>(range.maxVal) : 0;
+}
+
 VideoDecoder::~VideoDecoder() {
   Stop();
 }
@@ -73,7 +114,7 @@ std::string VideoDecoder::lastError() const {
 }
 
 bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* window, int width,
-                         int height, FrameReadyFn onFrame, BufferReadyFn onBuffer) {
+                         int height, int frameRate, FrameReadyFn onFrame, BufferReadyFn onBuffer) {
   if (codec_ != nullptr) {
     return started_.load();
   }
@@ -86,6 +127,7 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
   onFrame_ = std::move(onFrame);
   onBuffer_ = std::move(onBuffer);
   eosReached_.store(false);
+  inputBudgetUs_ = BudgetForFrameRate(frameRate);
 
   // Create the hardware decoder when there is one; software is the fallback the
   // caller warns about, never the silent default.
@@ -114,28 +156,16 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
     return false;
   }
 
-  OH_AVFormat* format = OH_AVFormat_Create();
-  if (format == nullptr) {
-    SetError("OH_AVFormat_Create failed");
-    Stop();
-    return false;
+  int32_t configured = ConfigureCodec(width, height, frameRate);
+  if (configured != AV_ERR_OK && frameRate > 0) {
+    // A rate key the platform rejects (out-of-range frame rate, unsupported VRR) must not cost the
+    // session: retry with the required keys only.
+    HMRDP_LOGW("video decoder: %{public}d fps rejected (%{public}d), configuring without it",
+               frameRate, configured);
+    configured = ConfigureCodec(width, height, 0);
   }
-  // Only width/height are required; they preallocate for the stream (the real
-  // picture size still comes from onStreamChanged). Frame rate is not a Configure key.
-  OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
-  OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
-  // Ask for the low-latency path when the platform has it (silently ignored
-  // otherwise, per the SDK).
-  OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
-  if (mode_ == VideoOutputMode::kBuffer) {
-    // Surface mode converts to the window's format itself; only buffer mode picks
-    // a pixel format, and NV12 is what the Vulkan importer expects.
-    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
-  }
-  const OH_AVErrCode configured = OH_VideoDecoder_Configure(codec_, format);
-  OH_AVFormat_Destroy(format);
   if (configured != AV_ERR_OK) {
-    SetError("Configure failed: " + std::to_string(static_cast<int>(configured)));
+    SetError("Configure failed: " + std::to_string(configured));
     Stop();
     return false;
   }
@@ -161,11 +191,48 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
   return true;
 }
 
+int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
+  OH_AVFormat* format = OH_AVFormat_Create();
+  if (format == nullptr) {
+    SetError("OH_AVFormat_Create failed");
+    return AV_ERR_NO_MEMORY;
+  }
+  // Only width/height are required; they preallocate for the stream (the real
+  // picture size still comes from onStreamChanged).
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
+  // Ask for the low-latency path when the platform has it (silently ignored
+  // otherwise, per the SDK).
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
+  if (mode_ == VideoOutputMode::kBuffer) {
+    // Surface mode converts to the window's format itself; only buffer mode picks
+    // a pixel format, and NV12 is what the Vulkan importer expects.
+    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
+  }
+  if (frameRate > 0) {
+    // The frame rate is what the variable-refresh-rate path is driven from, and the SDK declares
+    // the key as double while the decoder examples pass an int; the setter verifies the type, so
+    // take whichever this platform accepts.
+    if (!OH_AVFormat_SetDoubleValue(format, OH_MD_KEY_FRAME_RATE, static_cast<double>(frameRate))) {
+      OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, frameRate);
+    }
+    if (mode_ == VideoOutputMode::kSurface) {
+      // Surface path only: let the platform raise the display refresh rate to the stream's rate
+      // (and drop surplus frames instead of stalling the decoder) when it supports it.
+      OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_DECODER_OUTPUT_ENABLE_VRR, 1);
+    }
+  }
+  const OH_AVErrCode configured = OH_VideoDecoder_Configure(codec_, format);
+  OH_AVFormat_Destroy(format);
+  return static_cast<int32_t>(configured);
+}
+
 bool VideoDecoder::Submit(const uint8_t* data, size_t size, int64_t ptsUs) {
   if (!started_.load() || data == nullptr || size == 0) {
     return false;
   }
   {
+    const int64_t nowUs = NowUs();
     std::lock_guard<std::mutex> lock(mutex_);
     if (eosQueued_) {
       return false;
@@ -173,11 +240,28 @@ bool VideoDecoder::Submit(const uint8_t* data, size_t size, int64_t ptsUs) {
     Chunk chunk;
     chunk.data.assign(data, data + size);
     chunk.ptsUs = ptsUs;
-    pendingBytes_ += chunk.data.size();
+    chunk.enqueuedUs = nowUs;
     pending_.push_back(std::move(chunk));
   }
   PumpInput();
   return true;
+}
+
+int64_t VideoDecoder::pendingAgeUs() const {
+  const int64_t nowUs = NowUs();
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (pending_.empty()) {
+    return 0;
+  }
+  const int64_t age = nowUs - pending_.front().enqueuedUs;
+  return age > 0 ? age : 0;
+}
+
+size_t VideoDecoder::DropPending() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const size_t dropped = pending_.size();
+  pending_.clear();
+  return dropped;
 }
 
 void VideoDecoder::SignalEos() {
@@ -199,7 +283,6 @@ void VideoDecoder::Stop() {
     idleInputs_.clear();
     eosQueued_ = false;
     eosPushed_ = false;
-    pendingBytes_ = 0;
   }
   OH_VideoDecoder_Stop(codec_);
   OH_VideoDecoder_Destroy(codec_);
@@ -226,7 +309,6 @@ void VideoDecoder::PumpInput() {
         feed.buffer = idleInputs_.front().second;
         Chunk chunk = std::move(pending_.front());
         pending_.pop_front();
-        pendingBytes_ -= chunk.data.size();
         feed.data = std::move(chunk.data);
         feed.ptsUs = chunk.ptsUs;
         idleInputs_.pop_front();

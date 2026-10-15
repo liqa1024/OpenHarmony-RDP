@@ -158,6 +158,8 @@ export class PendingConnection {
   stream: MoonlightProfile = new MoonlightProfile();
   moonlightConfig: MoonlightStreamConfig | undefined = undefined;
   moonlightHttpsPort: number = 47984;
+  // Why the requested frame rate was capped for this session ("" when it was not).
+  moonlightFpsNote: string = '';
   filesDir: string = '';
   moonlightAppId: number = 0;
   moonlightPinProvider: ((pin: string, pairing: Promise<PairResult>) => Promise<boolean>)
