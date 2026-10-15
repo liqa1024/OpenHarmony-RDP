@@ -25,7 +25,7 @@
     <path d="M512 472 L377 472 A135 135 0 0 1 416.5 376.5 Z"/>
     <path d="M512 472 L416.5 376.5 A135 135 0 0 1 512 337 Z"/>
   </g>
-  <g fill="none" stroke="url(#bg)" stroke-width="7">
+  <g fill="none" stroke="url(#bg)" stroke-width="18">
     <path d="M512 337 L512 607"/>
     <path d="M377 472 L647 472"/>
     <path d="M416.5 376.5 L607.5 567.5"/>
