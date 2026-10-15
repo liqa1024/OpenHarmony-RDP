@@ -70,7 +70,7 @@
 
 | 常量 | 值 | 用途 |
 |---|---|---|
-| `TOOLBAR_BG` | `#CC1A1A1A` | 工具栏底（无材质时的兜底） |
+| `TOOLBAR_BG` | `#CC1A1A1A` | 工具栏底（材质 / 兜底磨砂共用的半透明深色着底） |
 | `TOOLBAR_FG` / `TOOLBAR_FG_SECONDARY` | `#FFFFFF` / `#B8BCC4` | 主 / 次文字与图标 |
 | `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底 |
 | `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底 |
@@ -103,19 +103,21 @@
 
 材质三表面与配色方向（挂载机制、版本门槛、`ImmersiveModifier` 写法见 [`arkts-conventions.md`](arkts-conventions.md) §6）：
 
-| 表面 | 挂载点 | 配色方向 |
-|---|---|---|
-| `CARD` | 列表 / 编辑 / 设置卡片 | 跟随系统深浅色；前景与兜底底色走 `$r()` |
-| `OVERLAY` | Toast、Tips、右键菜单、AlertDialog | 跟随系统（系统自带前景色） |
-| `FLOATING` | 会话工具栏、状态遮罩 | **固定深色，不跟随系统** |
-| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 跟随系统；`THIN`，不加赋色 |
+| 表面 | 挂载点 | 配色方向 | 无材质时的兜底 |
+|---|---|---|---|
+| `CARD` | 列表 / 编辑 / 设置卡片 | 跟随系统深浅色；前景走 `$r()` | 同档组件磨砂（`COMPONENT_REGULAR`），跟随系统 |
+| `OVERLAY` | Toast、Tips、右键菜单、AlertDialog | 跟随系统（系统自带前景色） | 交给系统默认背景，不再自己设模糊 |
+| `FLOATING` | 会话工具栏 | **固定深色，不跟随系统** | 半透明深色底（`TOOLBAR_BG`）+ 深色档组件磨砂 |
+| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 跟随系统；`THIN`，不加赋色 | 同档组件磨砂（`COMPONENT_THIN`），跟随系统 |
 
 约束：
 
 - 材质对象**建一次复用**（改参数触发系统重算材质，每帧新建会持续重绘）。
-- 设了材质后背景要显式置 `Color.Transparent`，并与"不支持材质时回落兜底色"写在同一个三元表达式里。
-- 材质**绝不挂在持续变化的内容**（远端画面）上；避免大面积、嵌套、与 `backgroundBlurStyle` 叠加。
-- 无材质能力时所有表面退化为平色背景，**外观不得依赖材质存在**。
+- **无材质时必须仍是"玻璃"，不能退回平色**：兜底一律是**同档组件磨砂**（`backgroundBlurStyle`），
+  与材质互斥地挂在 `ImmersiveModifier` 的同一个分支里；底色因此恒为 `Color.Transparent`
+  （`FLOATING` 例外：恒为半透明深色），调用点不再写"兜底色"三元。
+- 材质**绝不挂在持续变化的内容**（远端画面）上；避免大面积、与 `backgroundBlurStyle` 叠加。
+- 无材质能力时外观退化为"同档磨砂玻璃"，**不得依赖材质存在**（也不得因此丢掉玻璃质感变成平色）。
 
 ## 3. 布局模式
 
@@ -210,7 +212,7 @@ Column(page_bg, 100%×100%)
 | `StatusCard` | `StatusCard.ets` | `title, subtitle, primary?, secondary?, loading?, icon?, onPrimary, onSecondary` | 会话连接状态卡（RDP / Moonlight 共用） |
 | `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |
 | `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
-| `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质 / 兜底色 + 阴影 |
+| `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质（无材质时同档磨砂）+ 阴影 |
 | `FabButton` | `FabButton.ets` | `icon, tip?, onTap` | 右下角悬浮圆形主操作（新建 / 刷新；accent 底 + 阴影 + hover/press 反馈 + `OVERLAY` 提示） |
 | `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, loading?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 材质 + hover/press 缩放，`loading` 时图标换成转圈并置忙，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
 | `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（缩放档位 / `srRatio` / `srChoice` / 分辨率模式等共用） |
@@ -244,7 +246,8 @@ Column(page_bg, 100%×100%)
 
 约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
 两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；
-单按钮提示用 `showNotice`。材质（`OVERLAY`）与兜底都由工具负责，页面只给文案与回调。
+单按钮提示用 `showNotice`。材质（`OVERLAY`）由工具负责，无材质时交给系统默认弹窗背景（不自己设模糊，
+否则会关掉系统的默认材质），页面只给文案与回调。
 带可点链接等自定义内容的引导（如 `WolHelpPrompt`）走 `ComponentContent` + `openCustomDialog`，不进这条。
 
 约束：**异步操作的加载态归属触发控件，不单独弹一个"转圈"弹窗**（依据设计原则 §10：光标操作下弹窗要重新定位鼠标）——

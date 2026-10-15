@@ -17,8 +17,7 @@ export struct ControlDisc {
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private controlMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CONTROL),
-      BlurStyle.COMPONENT_THIN);
+    new ImmersiveModifier<RowAttribute>(MaterialSurface.CONTROL);
 
   build() {
     Row() {

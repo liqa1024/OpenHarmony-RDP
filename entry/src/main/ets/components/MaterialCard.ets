@@ -1,11 +1,11 @@
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
 
 @Component
 export struct MaterialCard {
   @Prop pad: number = 24;
   @BuilderParam content: () => void;
   private cardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.CARD);
 
   build() {
     Column() {
@@ -14,7 +14,7 @@ export struct MaterialCard {
     .width('100%')
     .constraintSize({ maxWidth: 720 })
     .padding(this.pad)
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
+    .backgroundColor(Color.Transparent)
     .borderRadius(20)
     .alignItems(HorizontalAlign.Start)
     .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })

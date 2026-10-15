@@ -23,7 +23,7 @@ import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MO
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
   SettingsStore } from '../services/SettingsStore';
 import { mapPicturePoint } from '../utils/PictureFit';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PadProbeOverlay } from '../components/PadProbeOverlay';
@@ -98,7 +98,7 @@ struct MoonlightSessionPage {
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.FLOATING));
+    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING);
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
@@ -779,7 +779,7 @@ struct MoonlightSessionPage {
       }
     }
     .width('100%')
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : TOOLBAR_BG)
+    .backgroundColor(TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
     // In fullscreen the bar covers the surface, so only its own hover reports it.
     .onHover((isHover: boolean) => {

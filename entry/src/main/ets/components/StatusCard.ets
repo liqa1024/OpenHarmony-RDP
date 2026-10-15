@@ -1,4 +1,4 @@
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
 
 @Component
 export struct StatusCard {
@@ -11,7 +11,7 @@ export struct StatusCard {
   onPrimary: () => void = () => {};
   onSecondary: () => void = () => {};
   private cardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.CARD);
 
   build() {
     Column() {
@@ -63,7 +63,7 @@ export struct StatusCard {
     }
     .width(360)
     .padding({ top: 32, bottom: 28, left: 28, right: 28 })
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
+    .backgroundColor(Color.Transparent)
     .borderRadius(20)
     .shadow({ radius: 30, color: '#33000000', offsetX: 0, offsetY: 10 })
     .attributeModifier(this.cardMaterial)

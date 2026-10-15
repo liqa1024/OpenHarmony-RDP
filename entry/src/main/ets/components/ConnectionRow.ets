@@ -41,7 +41,7 @@ export struct ConnectionRow {
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private cardMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(SystemMaterial.of(MaterialSurface.CARD));
+    new ImmersiveModifier<RowAttribute>(MaterialSurface.CARD);
 
   private action(): ConnectAction {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);
@@ -365,7 +365,7 @@ export struct ConnectionRow {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor(SystemMaterial.supported ? Color.Transparent : $r('app.color.card_bg'))
+    .backgroundColor(Color.Transparent)
     .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
     .clip(false)
     .attributeModifier(this.cardMaterial)
