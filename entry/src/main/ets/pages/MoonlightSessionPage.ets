@@ -36,7 +36,7 @@ import { ClipboardButtons, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHI
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
   ToolbarTouchBar,
-  metricColor } from '../components/SessionChrome';
+  formatLatency, metricColor } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
@@ -53,6 +53,7 @@ const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_HOST: number = 62;
 const METRIC_WIDTH_LOCAL: number = 66;
 const METRIC_WIDTH_FPS: number = 62;
+const METRIC_WIDTH_FPS_WIDE: number = 78;
 const METRIC_WIDTH_BITRATE: number = 132;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
@@ -475,7 +476,7 @@ struct MoonlightSessionPage {
   }
 
   private rttLabel(): string {
-    return this.metricsRtt < 0 ? '网络 --' : '网络 ' + this.metricsRtt + 'ms';
+    return formatLatency('网络', this.metricsRtt);
   }
 
   private rttTips(): string {
@@ -487,11 +488,11 @@ struct MoonlightSessionPage {
   }
 
   private hostEncodeLabel(): string {
-    return this.metricsHostMs < 0 ? '主机 --' : '主机 ' + Math.round(this.metricsHostMs) + 'ms';
+    return formatLatency('主机', this.metricsHostMs);
   }
 
   private localLabel(): string {
-    return this.metricsDecodeMs < 0 ? '本机 --' : '本机 ' + Math.round(this.metricsDecodeMs) + 'ms';
+    return formatLatency('本机', this.metricsDecodeMs);
   }
 
   private localTips(): string {
@@ -517,6 +518,12 @@ struct MoonlightSessionPage {
       : 'FPS ' + this.metricsFps;
   }
 
+  // A 3-digit target widens the current/target pair (`FPS 59/120`); keeping the narrow
+  // width otherwise avoids a gap when the target is 2-digit. The target is fixed per session.
+  private fpsWidth(): number {
+    return this.targetFps >= 100 ? METRIC_WIDTH_FPS_WIDE : METRIC_WIDTH_FPS;
+  }
+
   private bitrateLabel(): string {
     const currentKbps: number = this.metricsBytesPerSec * 8 / 1000;
     if (this.targetBitrateKbps >= 1000) {
@@ -535,7 +542,7 @@ struct MoonlightSessionPage {
     fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
       metricColor(this.metricsDecodeMs, this.localWarnMs(), this.localBadMs()), this.localTips(),
       METRIC_GAP_GROUP));
-    fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS,
+    fields.push(new TelemetryField(this.fpsLabel(), this.fpsWidth(),
       TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE,
       TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));

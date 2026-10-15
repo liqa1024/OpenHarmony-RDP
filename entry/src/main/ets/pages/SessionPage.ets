@@ -38,7 +38,7 @@ import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_
   TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
   TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow, metricColor,
+  ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow, formatLatency, metricColor,
   ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
@@ -525,7 +525,7 @@ struct SessionPage {
   }
 
   private rttLabel(): string {
-    return this.metricsRtt < 0 ? '网络 --' : '网络 ' + this.metricsRtt + 'ms';
+    return formatLatency('网络', this.metricsRtt);
   }
 
   private localUs(): number {
@@ -539,8 +539,7 @@ struct SessionPage {
   }
 
   private localLabel(): string {
-    const ms: number = this.localMs();
-    return ms < 0 ? '本机 --' : '本机 ' + Math.round(ms) + 'ms';
+    return formatLatency('本机', this.localMs());
   }
 
   private usToMs(us: number): number {

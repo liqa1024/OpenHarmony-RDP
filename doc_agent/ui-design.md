@@ -190,6 +190,9 @@ Column(page_bg, 100%×100%)
   故连接态的卡等这段阈值、仍未起来才显示；失败 / 断开 / 正在断开一律立即显示。RDP 窗口只在连上后才开，因此
   天然不出现连接卡。连接卡的副标题与 RDP 同形（连接目标 `targetLabel`），协议阶段文案不进卡片。
 - 工具栏结构：主行（会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
+  遥测行字段**定宽**，数字位数变化不推动后面的项，故读数要能自己收缩：延迟类（网络 / 主机 / 本机）
+  超过 `1s` 改用秒（如 `1.2s`），毫秒位数再多也不溢出定宽字段（`SessionChrome.formatLatency`）；
+  Moonlight 的 `FPS 当前/目标` 在**目标帧率为三位数**时用更宽一档、两位数收窄，既不截断也不留白。
 - **会话结束 chip 的着色**：RDP 只有「断开」→ `danger`（与主界面断开钮同色）；Moonlight 有「断开」与「关闭应用」
   两个结束动作，用第三种色把非破坏性的「断开」分出来——`TOOLBAR_NEUTRAL_CHIP_BG`（实心中性灰），更破坏性的
   「关闭应用」保持 `danger`。
@@ -224,7 +227,7 @@ Column(page_bg, 100%×100%)
 | `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |
 | `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?, tip?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项），`tip` 为空则不挂提示 |
 | `TelemetryRow` | `SessionChrome.ets` | `fields: TelemetryField[]` | 开发者遥测行（RDP / Moonlight 共用）：页面交字段数组，行按 `TOOLBAR_TELEMETRY_HEIGHT` 渲染 |
-| `TelemetryField` | `SessionChrome.ets` | `text, width, color, tip, gap` | 遥测行的一个字段（`width` 0 = 内容宽）；`metricColor` 给延迟阈值着色 |
+| `TelemetryField` | `SessionChrome.ets` | `text, width, color, tip, gap` | 遥测行的一个字段（`width` 0 = 内容宽）；`metricColor` 给延迟阈值着色，`formatLatency` 生成定宽延迟文本 |
 | （调色板常量） | `SessionChrome.ets` | `TOOLBAR_*` / `METRIC_*` | 固定深色工具栏调色板与几何 |
 
 约束：组件成员名**不得与通用属性同名**（`padding` / `enabled` 等会和 `CustomComponent` 基类冲突），故

@@ -190,6 +190,17 @@ export class TelemetryField {
   }
 }
 
+// Latency text for a fixed-width field: a long millisecond count would overflow it,
+// so past a second it degrades to seconds. Negative means "no reading yet".
+export function formatLatency(label: string, value: number): string {
+  if (value < 0) {
+    return label + ' --';
+  }
+  return value >= 1000
+    ? label + ' ' + (value / 1000).toFixed(1) + 's'
+    : label + ' ' + Math.round(value) + 'ms';
+}
+
 // Latency colour by threshold; negative means "no reading yet".
 export function metricColor(value: number, warnMs: number, badMs: number): string {
   if (value < 0) {
