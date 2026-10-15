@@ -28,6 +28,8 @@ import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PadProbeOverlay } from '../components/PadProbeOverlay';
 import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/MoonlightTelemetry';
+import { OVERLOAD_HOST, OVERLOAD_LOCAL, OVERLOAD_NONE, OverloadWatch }
+  from '../services/OverloadWatch';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
@@ -64,6 +66,8 @@ const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
 const LOCAL_WARN_PERIODS: number = 2;
 const LOCAL_BAD_PERIODS: number = 3;
+// Long enough to read one line of advice, short enough not to sit over the picture.
+const OVERLOAD_TOAST_MS: number = 2500;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -142,6 +146,7 @@ struct MoonlightSessionPage {
   private metricsTimer: number = -1;
   private metricsLastAt: number = 0;
   private telemetry: MoonlightTelemetryAggregator = new MoonlightTelemetryAggregator();
+  private overload: OverloadWatch = new OverloadWatch();
   private mlClipboard: MoonlightClipboardBridge | undefined = undefined;
   private clipboard: ClipboardController | undefined = undefined;
   @State clipboardAvailable: boolean = false;
@@ -317,8 +322,8 @@ struct MoonlightSessionPage {
     return backend instanceof MoonlightSessionBackend ? backend : undefined;
   }
 
-  private toast(message: string): void {
-    showToast(this.getUIContext(), message, 1500);
+  private toast(message: string, durationMs: number = 1500): void {
+    showToast(this.getUIContext(), message, durationMs);
   }
 
   // No file transfer in Moonlight, so the transfer hooks are inert.
@@ -480,6 +485,29 @@ struct MoonlightSessionPage {
     this.metricsPending = counters.pendingVideoFrames;
     this.metricsDroppedPerSec = counters.droppedPerSec;
     this.metricsLossBp = counters.lossBp;
+    this.reportOverload();
+  }
+
+  // The readings colour themselves; what a colour cannot say is what to do about it, so a side that
+  // stays red gets one prompt. Both sides read per-frame wall clock against the frame period (see
+  // doc_agent/moonlight-session.md §2).
+  private reportOverload(): void {
+    const overload: number = this.overload.sample(this.metricsDecodeMs, this.metricsHostMs,
+      this.localBadMs());
+    if (overload === OVERLOAD_NONE) {
+      return;
+    }
+    // One line, one action: fewer pixels is the strongest lever on either side (less to decode
+    // locally, less to encode on the host); the rate is already capped at connect.
+    // TODO: super resolution turns "降低分辨率并开启超分" into the advice for both sides — the lower
+    // stream costs the host fewer pixels to encode and this side fewer to decode.
+    if (overload === OVERLOAD_LOCAL) {
+      hilog.warn(DOMAIN, TAG, 'local decode overloaded: %{public}s', this.localTips());
+      this.toast('本机解码跟不上，建议降低分辨率/帧率', OVERLOAD_TOAST_MS);
+      return;
+    }
+    hilog.warn(DOMAIN, TAG, 'host encode overloaded: %{public}fms per frame', this.metricsHostMs);
+    this.toast('主机编码跟不上，建议降低分辨率/帧率', OVERLOAD_TOAST_MS);
   }
 
   private rttLabel(): string {
