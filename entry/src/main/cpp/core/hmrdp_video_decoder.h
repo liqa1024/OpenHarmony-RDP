@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "hmrdp_display_rate.h"
+
 // Forward-declared so this header stays free of the media SDK headers.
 struct OH_AVCodec;
 struct OH_AVBuffer;
@@ -84,7 +86,6 @@ class VideoDecoder {
   static void OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userData);
   static void OnNeedInput(OH_AVCodec*, uint32_t index, OH_AVBuffer* buffer, void* userData);
   static void OnNewOutput(OH_AVCodec*, uint32_t index, OH_AVBuffer* buffer, void* userData);
-  static void OnDisplayChanged(uint64_t displayId);
 
   void HandleNewOutput(uint32_t index, OH_AVBuffer* buffer);
   // Caller must not hold the lock (the codec calls below take it).
@@ -93,9 +94,6 @@ class VideoDecoder {
   // Builds the Configure format and configures the codec. Returns an OH_AVErrCode (kept as int so
   // this header stays free of the media SDK headers).
   int32_t ConfigureCodec(int width, int height, int frameRate);
-  // The panel rate the present gate follows: read at start, then from display-change events.
-  void WatchDisplayRefreshRate();
-  void StopDisplayWatch();
   // False when the display cannot show this frame before its next refresh.
   bool TakePresentSlot();
 
@@ -120,11 +118,7 @@ class VideoDecoder {
   bool eosQueued_ = false;
   bool eosPushed_ = false;
 
-  // Panel gear in Hz; 0 when the platform states none, and nothing is dropped then.
-  std::atomic<int> displayRefreshRateHz_{0};
-  uint32_t displayListenerIndex_ = 0;
-  bool displayListenerRegistered_ = false;
-  int64_t nextPresentUs_ = 0;  // codec output thread only
+  PresentSlots slots_;
   std::atomic<uint64_t> statPresentDropped_{0};
 
   std::atomic<int> width_{0};

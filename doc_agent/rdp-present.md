@@ -41,6 +41,12 @@ device（[`architecture.md`](architecture.md) §4.1）。
 - **纹理/桌面图重建后首帧强制整幅**，否则其余部分会留空。
 - **`presentWait` = 等显示端**：`present` 里 `vkAcquireNextImageKHR`/fence（GLES 是 `eglSwapBuffers`）的阻塞。
   **单列、不入 `本机`**（定义与自检见 [`rdp-gfx.md`](rdp-gfx.md) §7.1）。
+- **显示端跟不上就合并，不能丢**：桌面是**状态流**（RDP GFX 帧是增量，丢一帧就是一处永久错像素），所以本机
+  刷新率不够时（省电档、档位上不来）**不丢帧、也不硬顶**，而是**一个刷新周期只送一次**：周期内到达的帧把
+  脏区并进"待送区"，由下一次送显一起带出（面板档位与送显槽位取自共享的 `hmrdp_display_rate.*`）。合成照旧
+  逐帧做，所以屏上永远是**最新状态**，也不会为看不见的帧白做 `blit`。**待送区必须有人兜底**：GFX 工作线程在
+  队空时等它自己的槽位再送（帧到达则先合成），所以一串帧的最后一帧不会悬在那里。回放页**不开**这套（它要
+  逐帧确定性），视频链路的同类判断是丢弃而不是合并（[`moonlight-video.md`](moonlight-video.md) §1）。
 
 ## 3. 脏区形状与上传
 
@@ -146,7 +152,8 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 ## 7. 账目与探针
 
 - **`present=`**：绝大部分是**固定的 Vulkan 调用**（acquire / 录制 / submit / present），不是能删的活；
-  `flush` 只有 µs 级。`presentWait`（阻塞）单列，见 §2。
+  `flush` 只有 µs 级。`presentWait`（阻塞）单列，见 §2。合并上屏后 `present` 记在**真正送出的那一帧**：
+  被并进来的帧只有合成、没有 `present`（像素由下一次一起传），所以按帧读会跳、按窗口读不变。
 - **GPU 侧另算**：时间戳查询（每槽 4 个）把一次提交切成 **`copy`（脏区字节 buffer→image）/
   `sr`（超分辨率上采样 pass）/ `blit`（clear 整张 + letterbox quad）**三段；超分辨率关闭时 `sr` 落在
   屏障之后、自然接近 0。  三个数进遥测（`gpuCopyUs`/`gpuSrUs`/`gpuBlitUs`，见

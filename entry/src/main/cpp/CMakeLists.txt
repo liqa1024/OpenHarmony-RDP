@@ -126,6 +126,7 @@ core/hmrdp_moonlight_session.cpp
     core/hmrdp_gamepad_kit.cpp
     core/hmrdp_oh_audio.cpp
     core/hmrdp_video_decoder.cpp
+    core/hmrdp_display_rate.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
     core/hmrdp_gfx_cpu.cpp

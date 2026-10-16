@@ -10,9 +10,11 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/client/rdpgfx.h>
 
+#include "hmrdp_display_rate.h"
+#include "hmrdp_presenter.h"
+
 namespace hmrdp {
 
-class FramePresenter;
 class GfxWorkMeter;
 
 struct PresentUploadInfo {
@@ -44,15 +46,42 @@ class GdiFrameHost {
 
   bool OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInfo* info = nullptr);
 
+  // Live sessions coalesce presents to the display's gear: a frame landing inside the current
+  // refresh period leaves its dirty box to the next present instead of going out on its own. The
+  // desktop is a state, so only the newest one has to be shown, and the display cannot show more
+  // than one per period anyway. Off for the replay, which presents every frame it feeds.
+  void SetPresentPacing(bool enabled);
+
+  // Microseconds until a carried present may go (0 = now), -1 when nothing is carried. The caller
+  // flushes before it goes idle, so a burst's last frame is never left unpresented.
+  int64_t PendingPresentWaitUs() const;
+  bool FlushPendingPresent();
+
   bool desktopAttached() const { return desktopAttached_; }
-  void DetachDesktopBuffer() { desktopAttached_ = false; }
+  // Also drops a carried region: its coordinates belong to the geometry being left behind.
+  void DetachDesktopBuffer() {
+    desktopAttached_ = false;
+    carryValid_ = false;
+  }
 
  private:
+  bool PresentNow(rdpGdi* gdi, const PresentRect* carry, uint64_t* presentUs,
+                  PresentUploadInfo* info);
+  // Unions the frame's dirty box into the carried one.
+  void CarryFrameRegion(rdpGdi* gdi);
+
   FramePresenter* presenter_ = nullptr;
   GfxWorkMeter* meter_ = nullptr;
   PrePresentFn prePresentFn_;
   PresentedFn presentedFn_;
   bool desktopAttached_ = false;
+
+  bool presentPacing_ = false;
+  PresentSlots slots_;
+  PresentRect carryBox_;
+  bool carryValid_ = false;
+  // Kept for the carried present, which happens outside the frame that produced the pixels.
+  rdpGdi* lastGdi_ = nullptr;
 };
 
 class GfxCpuDesktop {
@@ -97,8 +126,10 @@ bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int widt
 
 bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter);
 
-bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter,
-                     PresentUploadInfo* info = nullptr);
+// `carry` (optional) is a region carried from earlier frames; it is presented together with this
+// frame's own dirty region as one merged box.
+bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* info = nullptr,
+                     const PresentRect* carry = nullptr);
 
 }
 

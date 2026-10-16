@@ -5,7 +5,6 @@
 #include <utility>
 
 #include <native_window/external_window.h>
-#include <window_manager/oh_display_manager.h>
 #include <multimedia/player_framework/native_avbuffer.h>
 #include <multimedia/player_framework/native_avbuffer_info.h>
 #include <multimedia/player_framework/native_avcapability.h>
@@ -13,6 +12,7 @@
 #include <multimedia/player_framework/native_avcodec_videodecoder.h>
 #include <multimedia/player_framework/native_avformat.h>
 
+#include "hmrdp_display_rate.h"
 #include "hmrdp_log.h"
 
 namespace hmrdp {
@@ -58,12 +58,6 @@ int64_t BudgetForFrameRate(int frameRate) {
   }
   return budget > kMaxInputBudgetUs ? kMaxInputBudgetUs : budget;
 }
-
-// The listener carries no user data, and one video stream runs at a time.
-VideoDecoder* g_displayWatchedDecoder = nullptr;
-
-// A frame landing more than half a period before the next slot cannot have that slot.
-constexpr int64_t kPresentSlotToleranceDivisor = 2;
 
 }  // namespace
 
@@ -194,7 +188,6 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
     Stop();
     return false;
   }
-  WatchDisplayRefreshRate();
   started_ = true;
   return true;
 }
@@ -229,58 +222,12 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
   return static_cast<int32_t>(configured);
 }
 
-void VideoDecoder::WatchDisplayRefreshRate() {
-  g_displayWatchedDecoder = this;
-  uint32_t refreshRate = 0;
-  if (OH_NativeDisplayManager_GetDefaultDisplayRefreshRate(&refreshRate) == DISPLAY_MANAGER_OK &&
-      refreshRate > 0) {
-    displayRefreshRateHz_.store(static_cast<int>(refreshRate));
-  } else {
-    HMRDP_LOGW("video decoder: no display refresh rate; presenting every frame");
-  }
-  if (OH_NativeDisplayManager_RegisterDisplayChangeListener(OnDisplayChanged,
-                                                            &displayListenerIndex_) ==
-      DISPLAY_MANAGER_OK) {
-    displayListenerRegistered_ = true;
-  }
-}
-
-void VideoDecoder::StopDisplayWatch() {
-  g_displayWatchedDecoder = nullptr;
-  if (displayListenerRegistered_) {
-    OH_NativeDisplayManager_UnregisterDisplayChangeListener(displayListenerIndex_);
-    displayListenerRegistered_ = false;
-  }
-  displayRefreshRateHz_.store(0);
-  nextPresentUs_ = 0;
-}
-
-void VideoDecoder::OnDisplayChanged(uint64_t displayId) {
-  (void)displayId;
-  VideoDecoder* self = g_displayWatchedDecoder;
-  if (self == nullptr) {
-    return;
-  }
-  uint32_t refreshRate = 0;
-  if (OH_NativeDisplayManager_GetDefaultDisplayRefreshRate(&refreshRate) == DISPLAY_MANAGER_OK &&
-      refreshRate > 0) {
-    self->displayRefreshRateHz_.store(static_cast<int>(refreshRate));
-  }
-}
-
 bool VideoDecoder::TakePresentSlot() {
-  const int refreshRate = displayRefreshRateHz_.load();
-  if (refreshRate <= 0) {
+  if (slots_.Take()) {
     return true;
   }
-  const int64_t periodUs = 1000000 / refreshRate;
-  const int64_t nowUs = NowUs();
-  if (nowUs + periodUs / kPresentSlotToleranceDivisor < nextPresentUs_) {
-    statPresentDropped_.fetch_add(1, std::memory_order_relaxed);
-    return false;
-  }
-  nextPresentUs_ = (nextPresentUs_ > nowUs ? nextPresentUs_ : nowUs) + periodUs;
-  return true;
+  statPresentDropped_.fetch_add(1, std::memory_order_relaxed);
+  return false;
 }
 
 bool VideoDecoder::Submit(const uint8_t* data, size_t size, int64_t ptsUs) {
@@ -340,7 +287,6 @@ void VideoDecoder::Stop() {
     eosQueued_ = false;
     eosPushed_ = false;
   }
-  StopDisplayWatch();
   OH_VideoDecoder_Stop(codec_);
   OH_VideoDecoder_Destroy(codec_);
   codec_ = nullptr;

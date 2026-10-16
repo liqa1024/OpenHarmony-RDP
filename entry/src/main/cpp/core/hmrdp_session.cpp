@@ -1240,15 +1240,33 @@ void Session::GfxWorkerLoop() {
   // present), so the drdynvc dispatch thread is never held behind a frame.
   for (;;) {
     std::vector<uint8_t> chunk;
+    bool flushPresent = false;
     {
       std::unique_lock<std::mutex> lock(gfxQueueMutex_);
-      gfxQueueCv_.wait(lock, [this] { return !gfxWorkerRun_ || !gfxQueue_.empty(); });
+      // A carried present is owed to the display: wait for its slot, but let an arriving chunk win —
+      // it has to be composited before anything goes out.
+      while (gfxWorkerRun_ && gfxQueue_.empty() && !flushPresent) {
+        const int64_t waitUs = pipeline_.host()->PendingPresentWaitUs();
+        if (waitUs < 0) {
+          gfxQueueCv_.wait(lock, [this] { return !gfxWorkerRun_ || !gfxQueue_.empty(); });
+        } else if (waitUs == 0) {
+          flushPresent = true;
+        } else {
+          gfxQueueCv_.wait_for(lock, std::chrono::microseconds(waitUs));
+        }
+      }
       if (!gfxWorkerRun_) {
         break;
       }
-      chunk = std::move(gfxQueue_.front());
-      gfxQueue_.pop_front();
-      gfxQueueBytes_.fetch_sub(chunk.size());
+      if (!gfxQueue_.empty()) {
+        chunk = std::move(gfxQueue_.front());
+        gfxQueue_.pop_front();
+        gfxQueueBytes_.fetch_sub(chunk.size());
+      }
+    }
+    if (flushPresent) {
+      pipeline_.host()->FlushPendingPresent();
+      continue;
     }
     if (gfxQueueBytes_.load() < kGfxQueueHighWaterBytes) {
       gfxQueueHighWaterWarned_.store(false);
@@ -1277,6 +1295,9 @@ void Session::StartGfxWorker(void* gfx) {
     }
     gfxWorkerContext_ = gfx;
     gfxWorkerRun_ = true;
+    // Coalescing needs this loop to flush before it idles, so it is live-session only: the inline
+    // path below (worker not running) must present every frame it gets.
+    pipeline_.host()->SetPresentPacing(true);
     gfxWorkerThread_ = std::thread([this]() {
       HmrdpThreadQoSHook();
       GfxWorkerLoop();
@@ -1301,6 +1322,8 @@ void Session::StopGfxWorker() {
   if (gfxWorkerThread_.joinable()) {
     gfxWorkerThread_.join();
   }
+  // The surface is going away: a carried region is dropped with it.
+  pipeline_.host()->SetPresentPacing(false);
   if (gfx != nullptr) {
     GfxWorkSetDataSinkHook(static_cast<RdpgfxClientContext*>(gfx), nullptr);
   }

@@ -67,6 +67,49 @@ BOOL CpuDesktopResize(rdpContext* context) {
   return TRUE;
 }
 
+bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, int h,
+                     PresentRect* out) {
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (x + w > desktopWidth) {
+    w = desktopWidth - x;
+  }
+  if (y + h > desktopHeight) {
+    h = desktopHeight - y;
+  }
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  out->x = x;
+  out->y = y;
+  out->width = w;
+  out->height = h;
+  return true;
+}
+
+// The frame's dirty bounding box, false when the frame wrote nothing.
+bool FrameDirtyBox(rdpGdi* gdi, PresentRect* out) {
+  if (gdi == nullptr || gdi->primary == nullptr || gdi->primary->hdc == nullptr) {
+    return false;
+  }
+  HGDI_WND hwnd = gdi->primary->hdc->hwnd;
+  if (hwnd == nullptr || hwnd->invalid == nullptr || hwnd->invalid->null) {
+    return false;
+  }
+  return ClipPresentRect(static_cast<int>(gdi->width), static_cast<int>(gdi->height),
+                         hwnd->invalid->x, hwnd->invalid->y, hwnd->invalid->w, hwnd->invalid->h,
+                         out);
+}
+
 // Kill surfaces while the gdi binding is still valid: after gdi_graphics_pipeline_uninit() a
 // mirrored surface cannot tell its buffer is gdi's primary and frees memory it does not own.
 void DestroyGfxSurfaces(RdpgfxClientContext* context) {
@@ -139,21 +182,19 @@ void GdiFrameHost::OnBeginPaint() {
   }
 }
 
-bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInfo* info) {
-  if (presentUs != nullptr) {
-    *presentUs = 0;
-  }
-  if (gdi == nullptr || presenter_ == nullptr) {
-    return false;
-  }
-  if (prePresentFn_ && !prePresentFn_(gdi)) {
-    return false;
-  }
-  if (!desktopAttached_) {
-    desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_);
-  }
+void GdiFrameHost::SetPresentPacing(bool enabled) {
+  presentPacing_ = enabled;
+  carryValid_ = false;
+}
+
+int64_t GdiFrameHost::PendingPresentWaitUs() const {
+  return carryValid_ ? slots_.WaitUs() : -1;
+}
+
+bool GdiFrameHost::PresentNow(rdpGdi* gdi, const PresentRect* carry, uint64_t* presentUs,
+                              PresentUploadInfo* info) {
   const uint64_t startUs = static_cast<uint64_t>(NowUs());
-  const bool presented = PresentGdiFrame(gdi, presenter_, info);
+  const bool presented = PresentGdiFrame(gdi, presenter_, info, carry);
   const uint64_t spanUs = static_cast<uint64_t>(NowUs()) - startUs;
   // Only the work half goes into `present`; the display-blocked part is its own blocked
   // sub-item.
@@ -166,10 +207,75 @@ bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInf
   if (presentUs != nullptr) {
     *presentUs = spanUs;
   }
+  return presented;
+}
+
+bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInfo* info) {
+  if (presentUs != nullptr) {
+    *presentUs = 0;
+  }
+  if (gdi == nullptr || presenter_ == nullptr) {
+    return false;
+  }
+  if (prePresentFn_ && !prePresentFn_(gdi)) {
+    return false;
+  }
+  lastGdi_ = gdi;
+  if (!desktopAttached_) {
+    desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_);
+  }
+  if (presentPacing_ && !slots_.Take()) {
+    // The display is still holding the previous frame: this one's pixels join the carried region.
+    CarryFrameRegion(gdi);
+    return false;
+  }
+  const PresentRect* carry = carryValid_ ? &carryBox_ : nullptr;
+  const bool presented = PresentNow(gdi, carry, presentUs, info);
+  carryValid_ = false;
   if (presentedFn_) {
-    presentedFn_(presented, spanUs, info != nullptr ? *info : PresentUploadInfo{});
+    presentedFn_(presented, presentUs != nullptr ? *presentUs : 0,
+                 info != nullptr ? *info : PresentUploadInfo{});
   }
   return presented;
+}
+
+bool GdiFrameHost::FlushPendingPresent() {
+  if (!carryValid_ || lastGdi_ == nullptr || presenter_ == nullptr) {
+    carryValid_ = false;
+    return false;
+  }
+  const PresentRect carry = carryBox_;
+  // Cleared first: a present that fails must not leave the region wedged in the carry.
+  carryValid_ = false;
+  const bool presented = PresentNow(lastGdi_, &carry, nullptr, nullptr);
+  if (presentedFn_) {
+    presentedFn_(presented, 0, PresentUploadInfo{});
+  }
+  return presented;
+}
+
+void GdiFrameHost::CarryFrameRegion(rdpGdi* gdi) {
+  PresentRect box;
+  if (!FrameDirtyBox(gdi, &box)) {
+    return;
+  }
+  if (!carryValid_) {
+    carryBox_ = box;
+    carryValid_ = true;
+    return;
+  }
+  const int right = carryBox_.x + carryBox_.width;
+  const int bottom = carryBox_.y + carryBox_.height;
+  const int boxRight = box.x + box.width;
+  const int boxBottom = box.y + box.height;
+  const int x = carryBox_.x < box.x ? carryBox_.x : box.x;
+  const int y = carryBox_.y < box.y ? carryBox_.y : box.y;
+  const int unionRight = right > boxRight ? right : boxRight;
+  const int unionBottom = bottom > boxBottom ? bottom : boxBottom;
+  carryBox_.x = x;
+  carryBox_.y = y;
+  carryBox_.width = unionRight - x;
+  carryBox_.height = unionBottom - y;
 }
 
 bool GfxCpuDesktop::Init(int width, int height, std::string* error) {  auto fail = [this, error](const char* why) {
@@ -359,35 +465,6 @@ void SwapGdiPrimaryBuffer(rdpGdi* gdi, uint8_t* buffer, int stride) {
   gdi->primary_buffer = buffer;
 }
 
-bool ClipPresentRect(int desktopWidth, int desktopHeight, int x, int y, int w, int h,
-                     PresentRect* out) {
-  if (w <= 0 || h <= 0) {
-    return false;
-  }
-  if (x < 0) {
-    w += x;
-    x = 0;
-  }
-  if (y < 0) {
-    h += y;
-    y = 0;
-  }
-  if (x + w > desktopWidth) {
-    w = desktopWidth - x;
-  }
-  if (y + h > desktopHeight) {
-    h = desktopHeight - y;
-  }
-  if (w <= 0 || h <= 0) {
-    return false;
-  }
-  out->x = x;
-  out->y = y;
-  out->width = w;
-  out->height = h;
-  return true;
-}
-
 }  // namespace
 
 bool InitGdiWithPresenter(freerdp* instance, FramePresenter* presenter, int width, int height) {
@@ -430,13 +507,14 @@ bool AttachPresenterDesktopBuffer(rdpGdi* gdi, FramePresenter* presenter) {
   return true;
 }
 
-bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* info) {
+bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* info,
+                     const PresentRect* carry) {
   if (gdi == nullptr || presenter == nullptr || gdi->primary == nullptr ||
       gdi->primary_buffer == nullptr) {
     return false;
   }
   HGDI_WND hwnd = gdi->primary->hdc->hwnd;
-  if (hwnd == nullptr || hwnd->invalid == nullptr || hwnd->invalid->null) {
+  if (hwnd == nullptr || hwnd->invalid == nullptr) {
     return false;
   }
   const int desktopWidth = static_cast<int>(gdi->width);
@@ -446,18 +524,37 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
   }
 
   PresentRect box;
-  const bool haveBox = ClipPresentRect(desktopWidth, desktopHeight, hwnd->invalid->x,
-                                       hwnd->invalid->y, hwnd->invalid->w, hwnd->invalid->h,
-                                       &box);
+  bool haveBox = FrameDirtyBox(gdi, &box);
+  if (carry != nullptr) {
+    // A carried region is a union of boxes: it can only be presented as one box, and it makes the
+    // frame's own region part of that union.
+    if (haveBox) {
+      const int right = box.x + box.width > carry->x + carry->width ? box.x + box.width
+                                                                    : carry->x + carry->width;
+      const int bottom = box.y + box.height > carry->y + carry->height
+                             ? box.y + box.height
+                             : carry->y + carry->height;
+      box.x = box.x < carry->x ? box.x : carry->x;
+      box.y = box.y < carry->y ? box.y : carry->y;
+      box.width = right - box.x;
+      box.height = bottom - box.y;
+    } else {
+      box = *carry;
+      haveBox = true;
+    }
+  }
   // The region is consumed either way: FreeRDP set it up for exactly this frame.
   hwnd->invalid->null = TRUE;
+  if (!haveBox) {
+    return false;
+  }
 
-  const int64_t boxArea = haveBox ? static_cast<int64_t>(box.width) * box.height : 0;
+  const int64_t boxArea = static_cast<int64_t>(box.width) * box.height;
   PresentRect rects[kMaxPresentRects];
 
   // Zero-copy: a rect costs a copy region plus a cache flush, so the merged box is used
   // unconditionally. Staging: cost is the bytes, so the rect list is used while bounded.
-  const bool zeroCopy = presenter->usesDesktopBuffer();
+  const bool zeroCopy = presenter->usesDesktopBuffer() || carry != nullptr;
   int rectCount = 0;
   int64_t rectArea = 0;
   bool tooManyRects = false;
@@ -476,21 +573,18 @@ bool PresentGdiFrame(rdpGdi* gdi, FramePresenter* presenter, PresentUploadInfo* 
       rects[rectCount++] = clipped;
     }
   }
-  const bool useRects = !zeroCopy && rectCount >= 2 && !tooManyRects && haveBox;
+  const bool useRects = !zeroCopy && rectCount >= 2 && !tooManyRects;
 
   if (info != nullptr) {
     info->boxBytes = boxArea * 4;
     info->uploadedBytes = (useRects ? rectArea : boxArea) * 4;
-    info->rectCount = useRects ? rectCount : (haveBox ? 1 : 0);
+    info->rectCount = useRects ? rectCount : 1;
     info->totalRects = static_cast<int>(hwnd->ninvalid);
     info->usedRects = useRects;
     info->rectListTruncated = tooManyRects;
   }
 
   if (!useRects) {
-    if (!haveBox) {
-      return false;
-    }
     rects[0] = box;
     return presenter->PresentBgra(gdi->primary_buffer, static_cast<int>(gdi->stride), desktopWidth,
                                  desktopHeight, rects, 1);

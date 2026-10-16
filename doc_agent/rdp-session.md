@@ -96,7 +96,8 @@ FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX
   - **节拍睡眠（`pace`）是唯一直接剔除的一项**：回放的人为节流不是客户端工作。
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端注册该回调），
     故连接时给 `context->autodetect` 自行注册回调捕获。
-  - **带宽**：`freerdp_get_stats()` 的收发字节差分。**FPS**：只显示**应用呈现数**（对端帧率）；
+  - **带宽**：`freerdp_get_stats()` 的收发字节差分。**FPS**：只显示**应用呈现数**（平时即对端帧率；显示端
+    跟不上而合并上屏时它低于对端帧率，那时读到的就是真实上屏帧率，见 [`rdp-present.md`](rdp-present.md) §2）；
     面板刷新率（恒为 60/120 一类）不进工具栏。
   - **音频**：采样率 + 近期**丢帧率**（欠载补静音 + 队列超上界时丢掉的整包；在"数据仍在到达"时统计，
     取滑动窗口——停顿不计，流真正结束后才停；缓冲与丢包策略见 [`rdp-native.md`](rdp-native.md) §5）。
