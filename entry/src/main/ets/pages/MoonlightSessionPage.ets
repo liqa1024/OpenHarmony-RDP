@@ -8,9 +8,11 @@ import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
 import { SessionBackend } from '../services/SessionBackend';
 import { ML_HOST_FEATURE_CLIPBOARD_IMAGE, ML_HOST_FEATURE_CLIPBOARD_TEXT, ML_HOST_FEATURE_TOUCH,
-  ML_HOST_FEATURE_TOUCHPAD_FRAME, MoonlightInputSink,
+  ML_HOST_FEATURE_TOUCHPAD_FRAME,
   MoonlightSessionBackend } from '../services/MoonlightSessionBackend';
 import { SessionInput } from '../services/SessionInput';
+import { SessionInputPort } from '../services/InputPort';
+import { InputProtocol } from '../services/InputProtocol';
 import { GamepadInput } from '../services/input/GamepadInput';
 import { TOUCH_MOVE_INTERVAL_FALLBACK_MS } from '../services/input/InputPolicy';
 import { RemoteCursor } from '../services/RemoteCursor';
@@ -34,7 +36,7 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
 import { showNotice, showToast } from '../utils/UiUtil';
-import { ClipboardButtons, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
+import { ClipboardButtons, METRIC_BAD, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
   ToolbarTouchBar,
@@ -75,6 +77,7 @@ struct MoonlightSessionPage {
   @LocalStorageLink('sessionKey') sessionKey: string = '';
   private controller: SessionSurfaceController = new SessionSurfaceController();
   private shell: SessionShellController | undefined = undefined;
+  private sink: SessionInputPort | undefined = undefined;
   private foreground: ForegroundReconnect | undefined = undefined;
   private connectionId: string = '';
   private started: boolean = false;
@@ -362,8 +365,10 @@ struct MoonlightSessionPage {
     backend.setClipboardListener((bytes: ArrayBuffer): void => {
       this.mlClipboard?.onIncoming(bytes);
     });
-    const sink: MoonlightInputSink = new MoonlightInputSink(backend);
+    const sink: SessionInputPort = new SessionInputPort(InputProtocol.MOONLIGHT, 0,
+      backend.hostDisplayScalePercent(), 0);
     sink.setReferenceSize(this.streamWidth, this.streamHeight);
+    this.sink = sink;
     const input: SessionInput = new SessionInput(sink);
     // Moonlight only: OH reports gamepad buttons as key events and sticks as focus axis events.
     input.setGamepad(new GamepadInput(sink));
@@ -396,6 +401,9 @@ struct MoonlightSessionPage {
     if (state === ConnectionState.Connected) {
       const backend: MoonlightSessionBackend | undefined = this.backend();
       const features: number = backend !== undefined ? backend.hostFeatureFlags() : 0;
+      if (backend !== undefined) {
+        this.sink?.setHostScale(backend.hostDisplayScalePercent());
+      }
       const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
       const nativeTouchpadSupported: boolean = (features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0;
       // Only when the host advertises it (foundation-sunshine with its GUI agent alive).
@@ -582,6 +590,11 @@ struct MoonlightSessionPage {
       TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE,
       TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+    // Input budget drops are invisible otherwise: any non-zero count names a stream over its budget.
+    const dropped: number = this.sink?.inputDropped() ?? 0;
+    if (dropped > 0) {
+      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, '', METRIC_GAP_GROUP));
+    }
     return fields;
   }
 

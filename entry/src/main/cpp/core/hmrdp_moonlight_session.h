@@ -101,35 +101,40 @@ bool MoonlightSessionActive();
 // The query string common-c wants appended to /launch and /resume; owned by the library, copied out here.
 std::string MoonlightLaunchQueryParameters();
 
-// No-ops unless the session is active, mirroring the LiSend* entry points.
-void MoonlightSessionMouseMove(int deltaX, int deltaY);
-void MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referenceHeight);
-void MoonlightSessionMouseButton(int action, int button);
-void MoonlightSessionKey(int keyCode, int action, int modifiers);
-void MoonlightSessionScroll(int clicks);
+// Input entry points, mirroring the LiSend* ones. Each returns the library's own result code
+// verbatim: 0 when the event was taken, LI_ERR_UNSUPPORTED when the host lacks the feature (a
+// by-design refusal, not a failure), any other non-zero when the event was refused. Nothing is
+// reported when no session is active — there is no transport to refuse the event, and a dead
+// session is signalled elsewhere (0 is returned so it is not mistaken for a budget rejection).
+int MoonlightSessionMouseMove(int deltaX, int deltaY);
+int MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referenceHeight);
+int MoonlightSessionMouseButton(int action, int button);
+int MoonlightSessionKey(int keyCode, int action, int modifiers);
+int MoonlightSessionScroll(int clicks);
 // Native touchscreen: x/y normalized 0..1 over the stream area, pressure 0..1 (0 = unknown);
 // eventType is a LI_TOUCH_EVENT_* constant.
-void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure);
+int MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure);
 // Native precision touchpad (foundation-sunshine extension): contacts normalized over the physical
-// pad surface, widthMm/heightMm its size; no-op unless the host advertised the touchpad feature flag.
-void MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
-                                   const uint32_t* pointerIds, const float* x, const float* y,
-                                   const float* pressure, int widthMm, int heightMm, int buttonState);
+// pad surface, widthMm/heightMm its size; the library itself reports LI_ERR_UNSUPPORTED unless the
+// host advertised the touchpad feature flag.
+int MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
+                                  const uint32_t* pointerIds, const float* x, const float* y,
+                                  const float* pressure, int widthMm, int heightMm, int buttonState);
 // High-resolution wheel, in WHEEL_DELTA (120) units; vertical and horizontal.
-void MoonlightSessionHighResScroll(int amount);
-void MoonlightSessionHighResHScroll(int amount);
+int MoonlightSessionHighResScroll(int amount);
+int MoonlightSessionHighResHScroll(int amount);
 // One controller slot's whole state (LiSendMultiControllerEvent); activeGamepadMask carries a bit
 // per attached controller, triggers are 0..255 and sticks -32767..32767 with +Y up.
-void MoonlightSessionControllerState(int controllerNumber, int activeGamepadMask, int buttonFlags,
-                                    int leftTrigger, int rightTrigger, int leftStickX, int leftStickY,
-                                    int rightStickX, int rightStickY);
+int MoonlightSessionControllerState(int controllerNumber, int activeGamepadMask, int buttonFlags,
+                                   int leftTrigger, int rightTrigger, int leftStickX, int leftStickY,
+                                   int rightStickX, int rightStickY);
 // Declares one attached controller's type / buttons / capabilities
 // (LiSendControllerArrivalEvent); the library falls back to a plain state event when the host
 // does not support arrival events.
-void MoonlightSessionControllerArrival(int controllerNumber, int activeGamepadMask, int type,
-                                       int supportedButtonFlags, int capabilities);
+int MoonlightSessionControllerArrival(int controllerNumber, int activeGamepadMask, int type,
+                                      int supportedButtonFlags, int capabilities);
 // Composed text (IME / non-US layout) sent as one UTF-8 string.
-void MoonlightSessionText(const char* text, int length);
+int MoonlightSessionText(const char* text, int length);
 // LI_FF_* bits the host advertised; 0 before a session is established.
 int MoonlightSessionHostFeatureFlags();
 

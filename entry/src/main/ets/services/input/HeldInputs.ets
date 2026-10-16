@@ -9,6 +9,11 @@ export class HeldInputs {
   private meta: boolean = false;
   private buttons: Set<number> = new Set<number>();
 
+  // A press on a held key is the remote's auto-repeat: no state changes, so its rate may be capped.
+  hasKey(keyCode: number): boolean {
+    return this.keys.has(keyCode.toString());
+  }
+
   trackKey(keyCode: number, mapping: KeyMapping, down: boolean): void {
     const key: string = keyCode.toString();
     if (down) {

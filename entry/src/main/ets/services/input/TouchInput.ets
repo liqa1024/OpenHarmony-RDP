@@ -1,8 +1,7 @@
 import { InputSink, TouchPhase } from './InputSink';
 import { CANCEL_HOLD_MS, CANCEL_RESUME_MAX_DISTANCE, CANCEL_RESUME_MIN_DISTANCE, CANCEL_RESUME_RATIO,
   InputGeometry } from './InputPolicy';
-import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './MoveDelivery';
-import { RateCoalescer } from './RateCoalescer';
+import { MoveDelivery, MoveFlush } from './MoveDelivery';
 
 class TouchSample {
   x: number = 0;
@@ -38,9 +37,8 @@ export class TouchInput {
       (id: number, sample: TouchSample): void => {
         this.sink.touch(TouchPhase.MOVE, id, sample.x, sample.y, sample.pressure);
       };
-    this.move = sink.rateLimitMoveStreams()
-      ? new RateCoalescer<TouchSample>(moveIntervalMs, flush)
-      : new ImmediateMoveDelivery<TouchSample>(flush);
+    this.move = sink.moveDelivery<TouchSample>(flush);
+    this.move.setInterval(moveIntervalMs);
   }
 
   setMoveInterval(ms: number): void {

@@ -35,18 +35,20 @@
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
 | `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排；按协议取 `SessionBackend`，自身不绑定协议（状态机见 [`session-layer.md`](session-layer.md) §5） |
 | `services/SessionBackend.ets` | **协议无关的会话后端接口 + `sessionKey` 注册表**：`pageRoute()` 定会话页、`setShortcutPassthrough()` 统一快捷键拦截、`requiresPrepare()` / `requiresWindowAtStart()` 为能力查询 |
-| `services/RdpSessionBackend.ets` | RDP 会话后端 `RdpSessionBackend`（包一个 `RdpNative`）与输入落地 `RdpInputSink`（PS/2 scancode / `PTR_FLAGS` / RDPEI / 9bit 滚轮） |
+| `services/RdpSessionBackend.ets` | RDP 会话后端 `RdpSessionBackend`（包一个 `RdpNative`）；输入落地已移出，见 `services/input/RdpInputSender.ets` |
 | `services/SessionBackendFactory.ets` | 按 `PendingConnection.protocol` 选后端（RDP / Moonlight），唯一后端组合入口 |
 | `services/RdpLauncher.ets` | RDP 连接发起：装配显示 / 高级选项与密码后交 `SessionManager`（与 `MoonlightLauncher` 对称） |
 | `services/ConnectionLauncher.ets` | 保存连接的**发起入口**：按连接的多态子类分发到 `RdpLauncher` / `MoonlightLauncher`（`afterDelete` 亦在此做协议善后），页面不再判断协议 |
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
-| `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）+ `InputSink` 接口**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
-| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有，附 `GamepadDevices` 设备枚举）+ `MoveDelivery`/`RateCoalescer`（连续位置流投递：限速或直通，由 sink 自述决定）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口） |
+| `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
+| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有，附 `GamepadDevices` 设备枚举）+ `MoveDelivery`/`RateCoalescer`（连续位置流投递：限速或直通，由 `InputSink.moveDelivery` 按声明的窗口选）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口），以及两层各自的协议落地 `RdpInputSender`/`MoonlightInputSender` |
+| `services/InputPort.ets` | **L1 输入派发器 `SessionInputPort`**：控制器的 sink，动词一律入队给输入 worker，策略查询按本地状态回答（见 [`session-layer.md`](session-layer.md) §8） |
+| `services/InputProtocol.ets` | L1↔L2 的消息形状、投递类声明（每条流的窗口）与遥测形状 |
 | `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `PointerInput`；状态与定时器自持有 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `RdpEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
 | `services/RdpEventHub.ets` | RDP 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
-| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入由 `MoonlightInputSink` 落 `LiSend*`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 控制器 / 原生触控板接入点） |
+| `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入落地已移出，见 `services/input/MoonlightInputSender.ets`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 控制器 / 原生触控板接入点） |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供；失效 pin 清理 |
 | `services/MoonlightHostState.ets` | 主机「在跑哪个应用」的单一权威（静态监听器；客户端动作乐观写入，主机探测收敛），列表行与应用页徽标都由它派生 |
 | `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
@@ -66,6 +68,7 @@
 | `workers/background.worker.ets` | **后台 worker（进程一条）**：剪贴板编解码 + 下载状态机/文件 IO（见 §4.4） |
 | `workers/FileDownloader.ets` | 远端文件下载状态机（worker 侧）：分片请求、沙箱写盘、进度/完成/失败事件 |
 | `workers/audio.worker.ets` | **音频 worker（进程一条）**：每会话一个 ArkTS `AudioRenderer`，其 `writeData` 经 `audioRead`（RDP）/ `moonlightAudioRead`（Moonlight）从原生 sink 环拉 PCM（见 §4.4） |
+| `workers/input.worker.ets` | **输入 worker（每会话一条）**：输入的唯一发送者——消费 L1 投递的记录、执行 L2 侧的投递类（文本多码点聚合成一包）、调 L3 sender 并累计拒收（见 §4.4） |
 | `moonlight/MoonlightClient.ets` | Moonlight 控制层编排：`serverinfo → pair → applist → launch/resume`，并装配原生串流配置（见 [`moonlight-control.md`](moonlight-control.md) §1） |
 | `moonlight/MoonlightIdentity.ets` | 客户端身份（自签名 X.509）+ HUKS 信封私钥 + 逐主机 pin 存储 |
 | `moonlight/MoonlightCrypto.ets` | Moonlight 配对加密原语（AES-ECB、SHA、RSA 签验） |
@@ -181,9 +184,10 @@
 
 并发只为**让 UI 线程不被重活堵住**；线程数按"互相独立、不可互相阻塞"的需要定，不按功能堆。原生侧只留被同步回调钉住的适配器（§3.1）。
 
-- **UI 线程**：界面、输入、事件路由；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS 看不到原生内存，与线程无关）。剪贴板**格式协商的取舍**（选哪个格式、单在途、延迟刷新）也在这里：它只是一次事件上的小状态机，不含重活（编解码/写盘在后台 worker，见 [`rdp-clipboard.md`](rdp-clipboard.md)）。
+- **UI 线程**：界面、事件路由、**输入的规范化与入队**（平台事件 → 控制器 → `SessionInputPort`，协议发送在输入 worker，见下）；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS 看不到原生内存，与线程无关）。剪贴板**格式协商的取舍**（选哪个格式、单在途、延迟刷新）也在这里：它只是一次事件上的小状态机，不含重活（编解码/写盘在后台 worker，见 [`rdp-clipboard.md`](rdp-clipboard.md)）。
 - **后台 worker（一条）**：非实时的长驻状态机与重活——剪贴板 DIB/RTF/HTML 编解码、**本机剪贴板编码 + 原生推送**（native 会把整块内容拷进自己的存储并立即 advertise，一次通道发送，不能占 UI 线程）、文件下载状态机与写盘。彼此可互相等待，共用一条即可。落地：`workers/background.worker.ets` + UI 门面 `services/BackgroundWorker.ets`（消息形状 `services/BackgroundProtocol.ets`，下载状态机 `workers/FileDownloader.ets`）。
 - **音频 worker（一条）**：ArkTS `AudioRenderer` 的回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频卡顿且与处理绑定"（同 §4.2 的 drdynvc 教训）。落地：`workers/audio.worker.ets` + UI 门面 `services/AudioPlayer.ets`（消息形状 `services/AudioProtocol.ets`）。详见 [`rdp-native.md`](rdp-native.md) §5。
+- **输入 worker（每会话一条）**：协议侧的发送成本不对称（RDP 是调用线程上的同步网络写，Moonlight 是入库返回），把它们从 UI 线程摘走，UI 线程就只做规范化与入队。落地：`workers/input.worker.ets` + L1 派发器 `services/InputPort.ets`（消息形状与投递类声明 `services/InputProtocol.ets`）；sink 在 worker 内构造，靠**进程级句柄注册表 / 库的进程级会话**直接落到原生（同「Worker 可调用原生」）。**入队即唤醒**，限量（窗口与速率上限）在 L1（见 [`session-layer.md`](session-layer.md) §8），所以这条线程不轮询、不睡眠；它自己唯一的等待是文本聚合窗口。
 
 **事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。`services/RdpEventHub` 是其唯一订阅者，按 handle 路由给 `RdpNative`；需 worker 消费的事件由 UI 线程按 handle `postMessage` 转发（Worker 拿不到该 TSFN：回调只跑 UI 线程，且各 Worker 有独立 `napi_env`）。Worker 只回控制/进度。
 

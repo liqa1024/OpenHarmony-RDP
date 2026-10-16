@@ -2,8 +2,7 @@ import { TouchpadTapTarget } from '../TouchpadTapFilter';
 import { HeldInputs } from './HeldInputs';
 import { InputAction, InputButton, InputSink } from './InputSink';
 import { InputGeometry } from './InputPolicy';
-import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './MoveDelivery';
-import { RateCoalescer } from './RateCoalescer';
+import { MoveDelivery, MoveFlush } from './MoveDelivery';
 import { relativeCountsGain } from './RelativeUnits';
 
 class MovePoint {
@@ -40,10 +39,9 @@ export class PointerInput implements TouchpadTapTarget {
       (_id: number, point: MovePoint): void => {
         this.sink.pointerMove(point.x, point.y);
       };
-    // The sink owns the policy (see InputSink.rateLimitMoveStreams).
-    this.move = sink.rateLimitMoveStreams()
-      ? new RateCoalescer<MovePoint>(moveIntervalMs, flush)
-      : new ImmediateMoveDelivery<MovePoint>(flush);
+    // The sink owns the declared delivery for this stream (see InputSink.moveDelivery).
+    this.move = sink.moveDelivery<MovePoint>(flush);
+    this.move.setInterval(moveIntervalMs);
   }
 
   setMoveInterval(ms: number): void {

@@ -1,4 +1,5 @@
 import { KeyMapping } from '../../utils/KeyMapper';
+import { MoveDelivery, MoveFlush } from './MoveDelivery';
 
 export class InputButton {
   static readonly LEFT: number = 1;
@@ -39,43 +40,76 @@ export class TouchpadContact {
   }
 }
 
-export interface InputSink {
-  key(mapping: KeyMapping, down: boolean): void;
-  metaKey(down: boolean): void;
-  unicode(code: number, down: boolean): void;
-  lockState(flags: number): void;
-  pointerMove(x: number, y: number): void;
+// L3: send one input verb on the protocol's transport (input thread only). Returns whether the
+// transport took it; false is counted by the pipeline as a rejection.
+export interface InputSender {
+  key(mapping: KeyMapping, down: boolean): boolean;
+  metaKey(down: boolean): boolean;
+  unicode(code: number, down: boolean): boolean;
+  lockState(flags: number): boolean;
+  pointerMove(x: number, y: number): boolean;
   // Device counts (ArkUI rawDelta), used only while relativePointerEnabled().
-  pointerMoveRelative(deltaX: number, deltaY: number): void;
-  button(action: number, button: number, x: number, y: number): void;
-  touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void;
-  // Native precision-touchpad frame (foundation-sunshine extension): normalized
-  // contacts over the physical surface (empty = all lifted); the frame carries the
-  // pad's physical size in millimetres so the host can inject a real PT_TOUCHPAD.
+  pointerMoveRelative(deltaX: number, deltaY: number): boolean;
+  button(action: number, button: number, x: number, y: number): boolean;
+  touch(phase: number, pointerId: number, x: number, y: number, pressure: number): boolean;
+  // Native precision-touchpad frame (foundation-sunshine extension): normalized contacts over the
+  // physical surface (empty = all lifted); the frame carries the pad's physical size in millimetres.
   touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
-    heightMm: number): void;
+    heightMm: number): boolean;
   // Wheel deltas in WHEEL_DELTA (120) units; vertical positive is up, horizontal positive is left.
-  // x/y are the pointer position in the pointer space (protocols that carry it on the wheel event).
-  scroll(vertical: number, horizontal: number, x: number, y: number): void;
-  // False: the transport already coalesces latest-value samples, so the shared layer must not
-  // rate-limit them again.
-  rateLimitMoveStreams(): boolean;
+  scroll(vertical: number, horizontal: number, x: number, y: number): boolean;
+}
+
+// L1: the sink the controllers see. Sending is an enqueue; the queries answer from local state.
+export interface InputSink extends InputSender {
+  // A re-press of a held key (auto-repeat): no state changes, so the pipeline may cap its rate.
+  // L3 needs no such verb — there it is a key-down.
+  keyRepeat(mapping: KeyMapping): boolean;
   setRelativePointer(enabled: boolean): void;
   relativePointerEnabled(): boolean;
   // Display scale (percent) in effect on the streamed desktop: relative-motion counts are host
-  // logical pixels, so this divides them (0 = unknown/100%). RDP reports 0 (absolute-only there).
+  // logical pixels, so this divides them (0 = unknown/100%).
   hostDisplayScalePercent(): number;
+  // The declared delivery for a continuous position stream: the protocol fact is "does each sample
+  // become its own message". Declared here so no controller decides it.
+  moveDelivery<T>(flush: MoveFlush<T>): MoveDelivery<T>;
+  dispose(): void;
 }
 
-// Moonlight's controller path: one event carries the whole state of one controller slot, and an
-// arrival event declares its type / capabilities. RDP has no gamepad support, so this contract is
-// kept out of the shared InputSink (a sink may implement both).
+// Optional: a transport with one packet per text run (Moonlight's LiSendUtf8TextEvent) lets the
+// pipeline batch code points; without it each code point keeps its own call.
+export interface TextRunSink {
+  textRun(text: string): boolean;
+}
+
+// Moonlight's controller path: one event carries a slot's whole state, an arrival event declares
+// its type / capabilities. RDP has no gamepad, so this stays out of InputSender.
 export interface GamepadSink {
   controllerState(controllerNumber: number, activeGamepadMask: number, buttonFlags: number,
     leftTrigger: number, rightTrigger: number, leftStickX: number, leftStickY: number,
     rightStickX: number, rightStickY: number): void;
   controllerArrival(controllerNumber: number, activeGamepadMask: number, type: number,
     supportedButtonFlags: number, capabilities: number): void;
+}
+
+// The library calls the Moonlight sink needs, so it can be built on the input thread. Each returns
+// the library's result code, which the sink turns into accepted / rejected.
+export interface MoonlightSendPort {
+  keyVirtual(vk: number, down: boolean, modifiers: number): number;
+  mousePosition(x: number, y: number, refWidth: number, refHeight: number): number;
+  mouseMove(deltaX: number, deltaY: number): number;
+  mouseButton(action: number, button: number): number;
+  text(text: string): number;
+  touch(eventType: number, pointerId: number, x: number, y: number, pressure: number): number;
+  highResScroll(amount: number): number;
+  highResHScroll(amount: number): number;
+  touchpad(eventTypes: number[], pointerIds: number[], xs: number[], ys: number[], ps: number[],
+    widthMm: number, heightMm: number, buttonState: number): number;
+  controller(controllerNumber: number, activeGamepadMask: number, buttonFlags: number,
+    leftTrigger: number, rightTrigger: number, leftStickX: number, leftStickY: number,
+    rightStickX: number, rightStickY: number): number;
+  controllerArrival(controllerNumber: number, activeGamepadMask: number, type: number,
+    supportedButtonFlags: number, capabilities: number): number;
 }
 
 export type PointMapper = (x: number, y: number) => number[];

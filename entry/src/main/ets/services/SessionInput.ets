@@ -61,6 +61,7 @@ export class SessionInput {
     this.touchpad.dispose();
     this.pinch.end();
     this.gamepad?.dispose();
+    this.sink.dispose();
   }
 
   // Only Moonlight has a gamepad path; a session without one leaves the keys to the keyboard path.

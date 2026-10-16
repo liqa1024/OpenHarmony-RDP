@@ -55,8 +55,9 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 - 后端另可声明 **`requiresWindowAtStart()`**（Moonlight：`LiStartConnection` 需要先有渲染目标）——预检
   通过后 manager 才开窗，窗口绑好 XComponent surface 后调 `SessionManager.beginStream` 真正启动；RDP
   为 false，维持"连上后才开窗"。
-- 协议实现各自成文件：`services/RdpSessionBackend.ets`（`RdpSessionBackend` + `RdpInputSink`）与
-  `services/MoonlightSessionBackend.ets`（`MoonlightSessionBackend` + `MoonlightInputSink`）。
+- 协议实现各自成文件：`services/RdpSessionBackend.ets`（`RdpSessionBackend`）与
+  `services/MoonlightSessionBackend.ets`（`MoonlightSessionBackend`）——只含后端本身，
+  输入落地在 `services/input/RdpInputSender.ets` / `MoonlightInputSender.ets`（见 §8）。
 
 ## 4. 会话窗口外壳
 
@@ -143,18 +144,18 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
 
 ## 8. 输入分流（两协议共享策略）
 
-**分层**：输入的**策略**在协议中立的 `services/input/` 下按关注点拆分——`PointerInput` 指针、`KeyInput`
-键盘、`TouchInput` 触屏、`TouchpadInput` 触控板、`WheelInput` 轴向滚动、`PinchInput` 捏合、`GamepadInput`
-手柄（见下），共用
-`MoveDelivery` 投递（`RateCoalescer` 限速 / `ImmediateMoveDelivery` 直通，由 sink 自述选哪一个）、
-`HeldInputs` 按住账本、`InputPolicy` 常量与共享指针几何；`services/SessionInput.ets` 是只做编排的**瘦
-Facade**，经 `InputSink` 接口下发动词
-（`key/metaKey/unicode/lockState/pointerMove/pointerMoveRelative/button/touch/touchpadFrame/scroll`，
-另有 `rateLimitMoveStreams` / `setRelativePointer` 两个策略查询）。
-两协议各一个 sink 落地动词：**`RdpInputSink`**（`RdpSessionBackend.ets`）与 **`MoonlightInputSink`**
-（`MoonlightSessionBackend.ets`）——RDP 的落地细节见 [`rdp-session.md`](rdp-session.md)，Moonlight 见
-[`moonlight-native.md`](moonlight-native.md)。会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置
-（指针映射、指针空间、各项设置与能力），**不自持输入机制**。
+**分层**：输入端到端分三层，**UI 线程只做规范化与入队，不做协议工作、不做网络写**。
+**L1（UI 线程）**是平台事件的翻译器：策略按关注点拆在协议中立的 `services/input/` 下——`PointerInput` 指针、
+`KeyInput` 键盘、`TouchInput` 触屏、`TouchpadInput` 触控板、`WheelInput` 轴向滚动、`PinchInput` 捏合、
+`GamepadInput` 手柄（见下），共用 `HeldInputs` 按住账本、`InputPolicy` 常量与共享指针几何；
+`services/SessionInput.ets` 只做编排（瘦 Facade），出口是 `services/InputPort.ets` 的 `SessionInputPort`
+（实现 `InputSink`）：动词变成入队，`relativePointerEnabled` / `hostDisplayScalePercent` 等查询由本地状态回答。
+**L2** 是**唯一发送者**：一条专用 worker（`workers/input.worker.ets`），队列就是它的消息队列（FIFO、单消费者）；
+两层的消息形状与投递类声明在 `services/InputProtocol.ets`（线程模型见 [`architecture.md`](architecture.md) §4.4）。
+**L3** 是协议落地，在 L2 线程上构造，只实现"发一个事件"并回报**受理 / 拒收**：
+`services/input/RdpInputSender.ets`（见 [`rdp-session.md`](rdp-session.md)）与
+`services/input/MoonlightInputSender.ets`（见 [`moonlight-native.md`](moonlight-native.md)）；两个会话后端不再持有 sink。
+会话页只把 ArkUI 事件转给 `SessionInput` 并注入配置（指针映射、指针空间、各项设置与能力），**不自持输入机制**。
 **唯一的例外入口是轴向滚动**（见本节末）：滚动轴事件（触控板双指与鼠标滚轮，两个轴向）由 `SessionPicture`
 里挂的 `Scroll2D`（`components/Scroll2D.ets`）的两个透明单轴 `Scroll` 叠层消费，它把逐帧增量交回
 `SessionInput.handleEngineScroll`，policy 仍然只有一份。
@@ -186,13 +187,23 @@ Facade**，经 `InputSink` 接口下发动词
   Unicode 码点 / Win 替代键，鼠标=按钮标志），失焦时统一补发抬起并松开触屏与捏合；
   **新增输入通路必须进这份账**。
 - **鼠标按键与移动分开**：移动与按键事件**分开送**，按键事件**不带移动标志**，否则远端会忽略点击。
-- **连续位置流的投递由 sink 自述**：`onMouse` 的 Move 与触屏 Move 按设备轮询率到达，逐条转发 = 每条一个输入报文。
+- **连续位置流的投递按声明的窗口选实现**：`onMouse` 的 Move 与触屏 Move 按设备轮询率到达，逐条转发 = 每条一个输入报文。
   共享层把投递抽成 `MoveDelivery`——`RateCoalescer`（只保留最新值、按 `InputPolicy` 窗口上限节流、必要时补尾帧）与
-  `ImmediateMoveDelivery`（直通），由 `InputSink.rateLimitMoveStreams()` 选：每个样本都要变成一条离散报文的协议
-  （RDP 指针 PDU）取限速；传输层自己就做 latest-value 合并的协议（Moonlight 控制流按 1ms 合并鼠标样本）取直通——
+  `ImmediateMoveDelivery`（直通），由 `InputSink.moveDelivery()` 按**声明的窗口**返回：窗口 >0 的协议
+  （RDP 指针 PDU，每个样本一条报文）取限速，声明为 0 的协议（Moonlight 控制流按 1ms 合并鼠标样本）取直通——
   客户端再限一次只会白加延迟与降采样。**非 Move 的同类事件（按下/抬起、触屏 Down/Up/Cancel）先冲掉该流待发位置**，
   否则点击落在旧坐标（直通实现无待发值，这些动作为空操作）。窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、
   触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，不是显示帧率。
+- **投递类与横切能力在流水线做一次**：每条流有一个在 `services/InputProtocol.ets` 声明的投递类——
+  `ORDERED_RELIABLE`（入队即发、不可丢：首次按键与**任何**抬起、鼠标键、触点 down/up/cancel、锁定键同步、
+  Win 替代键）、`LATEST_WINS`（窗口内只留最新值：连续位置流、手柄整份状态、触控板整帧）、
+  `BOUNDED_REPEAT`（速率上限、超限**直丢不延后**：键盘重复按下，由按住账本判定`hasKey`）、
+  `COALESCE_WINDOW`（窗口内累加后发一条：文本多码点合成一包，且只有具备整串报文的传输才聚合）。
+  限量的目的是让**不可丢的那些事件排在队尾的时间不随输入洪水增长**，不是拿它们的延迟换秩序：
+  首次按键、抬起、按钮、触点 down/up 一律不进窗口，`BOUNDED_REPEAT` 只丢不延后。
+  丢弃按流计数，与 sink 拒收合起来即 `inputDropped`（协议侧不自己计数、不加专有遥测字段）；
+  重复流的上限取在系统自动重复率之上，所以正常打字不会让它非 0。
+  失焦补抬起、重新获焦补锚、穿透开关都走同一条队列，任一时刻的记账状态与远端一致。
 - **相对指针模式（Moonlight 专有，只挂在「隐藏系统光标」档）**：`InputSink` 另一条相对通路
   （`pointerMoveRelative`/`setRelativePointer`/`relativePointerEnabled`，RDP 不支持）。开启后**不发绝对位置，改发相邻两次
   映射位置之差**（`services/input/RelativeUnits.ets` 的 1:1 口径：内容像素当主机计数 ⇒ 与绝对模式增益一致），
@@ -203,8 +214,8 @@ Facade**，经 `InputSink` 接口下发动词
   **主机缩放值**在连接时解析：RDP 取会话桌面的 `DesktopScaleFactor`（`RdpConnectOptions.scalePercent`，总有值）；
   Moonlight 取**基地版虚拟屏**的真实缩放（优先用本次设置成功的值，`不额外设置`／设置失败时才读 `/displays` 的当前值）。
   这条读取**只有基地版有**，且只在串流的就是那台虚拟屏时成立——主机没启用虚拟屏、或非基地版（原版 Sunshine / GFE）
-  都拿不到 ⇒ 按 100%（不校正）。值走**惰性查询**（`InputSink.hostDisplayScalePercent`），
-  因此连接结果晚于输入装配也不影响。
+  都拿不到 ⇒ 按 100%（不校正）。该值随会话配置交给 L1（`SessionInputPort.hostDisplayScalePercent`，L1 侧的
+  换算点直接读它，不跨线程），并在连接成功后由会话页重新申明一次——输入可以在连接结果解析之前装配。
   连接后先发一次当前位置的绝对坐标作**锚点**（`SessionInput.reportPointerPosition()`），此后**每次重新获焦**都重取基准并
   补发一次锚点（`reanchorPointer()`，见 §4 的窗口焦点回调）——主机光标可能在失焦期间被别处使用而离位。
 - **为什么不用 rawDelta**：`MouseEvent.rawDeltaX/rawDeltaY` 是**未加速**的设备位移（MMI 侧取自 libinput 的

@@ -313,39 +313,46 @@ export const moonlightAudioFormat: () => RdpAudioFormat;
 /** Sunshine extended query string to append to /launch and /resume. */
 export const moonlightLaunchQueryParameters: () => string;
 
+/**
+ * Input entry points below return the library's own result code: 0 when the event was taken,
+ * -5501 (`LI_ERR_UNSUPPORTED`) when the host lacks the feature (a by-design refusal), any other
+ * non-zero when the event was refused, and 0 when no session is active (there is no transport to
+ * refuse it, and the session failure is signalled elsewhere).
+ */
+
 /** Input: relative mouse move. */
-export const moonlightMouseMove: (deltaX: number, deltaY: number) => void;
+export const moonlightMouseMove: (deltaX: number, deltaY: number) => number;
 
 /** Input: absolute mouse position in a reference frame (touch/pointer mapping). */
 export const moonlightMousePosition: (x: number, y: number, refWidth: number,
-  refHeight: number) => void;
+  refHeight: number) => number;
 
 /** Input: mouse button action / button (LiSendMouseButtonEvent constants). */
-export const moonlightMouseButton: (action: number, button: number) => void;
+export const moonlightMouseButton: (action: number, button: number) => number;
 
 /** Input: key code / action / modifiers (LiSendKeyboardEvent constants). */
-export const moonlightKey: (keyCode: number, action: number, modifiers: number) => void;
+export const moonlightKey: (keyCode: number, action: number, modifiers: number) => number;
 
 /** Input: wheel clicks (LiSendScrollEvent). */
-export const moonlightScroll: (clicks: number) => void;
+export const moonlightScroll: (clicks: number) => number;
 
 /** Input: native touchscreen event (LI_TOUCH_EVENT_*), x/y normalized 0..1, pressure 0..1. */
 export const moonlightTouch: (eventType: number, pointerId: number, x: number, y: number,
-  pressure: number) => void;
+  pressure: number) => number;
 
 /** Input: native precision-touchpad frame (foundation-sunshine); parallel contact arrays. */
 export const moonlightTouchpad: (eventTypes: number[], pointerIds: number[], x: number[],
   y: number[], pressure: number[], widthMm: number, heightMm: number,
-  buttonState: number) => void;
+  buttonState: number) => number;
 
 /** Input: high-resolution vertical wheel in WHEEL_DELTA (120) units. */
-export const moonlightHighResScroll: (amount: number) => void;
+export const moonlightHighResScroll: (amount: number) => number;
 
 /** Input: high-resolution horizontal wheel in WHEEL_DELTA (120) units. */
-export const moonlightHighResHScroll: (amount: number) => void;
+export const moonlightHighResHScroll: (amount: number) => number;
 
 /** Input: composed text sent as one UTF-8 string (LiSendUtf8TextEvent). */
-export const moonlightText: (text: string) => void;
+export const moonlightText: (text: string) => number;
 
 /**
  * Input: one controller slot's whole state (LiSendMultiControllerEvent); `activeGamepadMask` has a
@@ -353,11 +360,11 @@ export const moonlightText: (text: string) => void;
  */
 export const moonlightController: (controllerNumber: number, activeGamepadMask: number,
   buttonFlags: number, leftTrigger: number, rightTrigger: number, leftStickX: number,
-  leftStickY: number, rightStickX: number, rightStickY: number) => void;
+  leftStickY: number, rightStickX: number, rightStickY: number) => number;
 
 /** Input: declares one attached controller (LiSendControllerArrivalEvent: LI_CTYPE_* / LI_CCAP_*). */
 export const moonlightControllerArrival: (controllerNumber: number, activeGamepadMask: number,
-  type: number, supportedButtonFlags: number, capabilities: number) => void;
+  type: number, supportedButtonFlags: number, capabilities: number) => number;
 
 /** Sends an opaque clipboard v1 wire frame (control message 0x5508); returns LiSendClipboardData's code (0 ok, -1 invalid, -2 unsupported, -3 not connected, -4 send failed). */
 export const moonlightSendClipboardData: (data: ArrayBuffer) => number;

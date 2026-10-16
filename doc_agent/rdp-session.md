@@ -37,6 +37,10 @@ FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX
 
 共享策略见 [`session-layer.md`](session-layer.md) §8；这里只写 RDP 侧落地。
 
+- **发送在输入线程上**：动词由 `services/input/RdpInputSender.ets` 落到 `sendKey` / `sendMouse` / `sendTouch` /
+  `sendUnicode` / `sendLockState`。它带会话 handle、构造在输入 worker 内（句柄注册表跨运行时共享），所以
+  调用线程上的同步网络写不再落在 UI 线程。各入口的返回值即**受理 / 拒收**（见
+  [`session-layer.md`](session-layer.md) §8）；无会话时无处可发，不记为丢弃。
 - **触屏触点**：RDPEI 侧兜住合帧后的触点状态序列合法性（首条必须 DOWN 等），见
   [`rdp-native.md`](rdp-native.md) §3。
 - **触屏高刷新率**（全局设置）：选中 ArkTS 触屏合帧器的窗口——开 8ms（约 125Hz）、关 20ms（约 50Hz），

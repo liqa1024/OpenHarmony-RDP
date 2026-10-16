@@ -45,8 +45,13 @@ export class KeyInput {
       return;
     }
     if (mapping !== undefined) {
+      const repeat: boolean = down && this.held.hasKey(event.keyCode);
       this.held.trackKey(event.keyCode, mapping, down);
-      this.sink.key(mapping, down);
+      if (repeat) {
+        this.sink.keyRepeat(mapping);
+      } else {
+        this.sink.key(mapping, down);
+      }
       if (lockKey) {
         this.syncLocalLocks(event);
       }
@@ -68,7 +73,12 @@ export class KeyInput {
     if (mapping === undefined) {
       return;
     }
+    const repeat: boolean = down && this.held.hasKey(keyCode);
     this.held.trackKey(keyCode, mapping, down);
+    if (repeat) {
+      this.sink.keyRepeat(mapping);
+      return;
+    }
     this.sink.key(mapping, down);
   }
 

@@ -1873,8 +1873,7 @@ napi_value MoonlightSessionMouseMove(napi_env env, napi_callback_info info) {
   int32_t dy = 0;
   napi_get_value_int32(env, args[0], &dx);
   napi_get_value_int32(env, args[1], &dy);
-  hmrdp::MoonlightSessionMouseMove(dx, dy);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionMouseMove(dx, dy));
 }
 
 napi_value MoonlightSessionMousePosition(napi_env env, napi_callback_info info) {
@@ -1889,8 +1888,7 @@ napi_value MoonlightSessionMousePosition(napi_env env, napi_callback_info info) 
   napi_get_value_int32(env, args[1], &y);
   napi_get_value_int32(env, args[2], &refW);
   napi_get_value_int32(env, args[3], &refH);
-  hmrdp::MoonlightSessionMousePosition(x, y, refW, refH);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionMousePosition(x, y, refW, refH));
 }
 
 napi_value MoonlightSessionMouseButton(napi_env env, napi_callback_info info) {
@@ -1901,8 +1899,7 @@ napi_value MoonlightSessionMouseButton(napi_env env, napi_callback_info info) {
   int32_t button = 0;
   napi_get_value_int32(env, args[0], &action);
   napi_get_value_int32(env, args[1], &button);
-  hmrdp::MoonlightSessionMouseButton(action, button);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionMouseButton(action, button));
 }
 
 napi_value MoonlightSessionKey(napi_env env, napi_callback_info info) {
@@ -1915,8 +1912,7 @@ napi_value MoonlightSessionKey(napi_env env, napi_callback_info info) {
   napi_get_value_int32(env, args[0], &keyCode);
   napi_get_value_int32(env, args[1], &action);
   napi_get_value_int32(env, args[2], &modifiers);
-  hmrdp::MoonlightSessionKey(keyCode, action, modifiers);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionKey(keyCode, action, modifiers));
 }
 
 napi_value MoonlightSessionScroll(napi_env env, napi_callback_info info) {
@@ -1925,8 +1921,7 @@ napi_value MoonlightSessionScroll(napi_env env, napi_callback_info info) {
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int32_t clicks = 0;
   napi_get_value_int32(env, args[0], &clicks);
-  hmrdp::MoonlightSessionScroll(clicks);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionScroll(clicks));
 }
 
 napi_value MoonlightSessionTouch(napi_env env, napi_callback_info info) {
@@ -1943,9 +1938,9 @@ napi_value MoonlightSessionTouch(napi_env env, napi_callback_info info) {
   napi_get_value_double(env, args[2], &x);
   napi_get_value_double(env, args[3], &y);
   napi_get_value_double(env, args[4], &pressure);
-  hmrdp::MoonlightSessionTouch(eventType, pointerId, static_cast<float>(x),
-                               static_cast<float>(y), static_cast<float>(pressure));
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionTouch(eventType, pointerId, static_cast<float>(x),
+                                                     static_cast<float>(y),
+                                                     static_cast<float>(pressure)));
 }
 
 // eventTypes / pointerIds / x / y / pressure are parallel arrays; width/height are
@@ -1956,7 +1951,8 @@ napi_value MoonlightSessionTouchpadFrame(napi_env env, napi_callback_info info) 
   napi_value args[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   if (argc < 8) {
-    return CreateUndefined(env);
+    // Unreachable: the caller always hands over the eight arguments.
+    return CreateInt(env, 0);
   }
   int32_t widthMm = 0;
   int32_t heightMm = 0;
@@ -1967,7 +1963,8 @@ napi_value MoonlightSessionTouchpadFrame(napi_env env, napi_callback_info info) 
 
   uint32_t count = 0;
   if (napi_get_array_length(env, args[0], &count) != napi_ok) {
-    return CreateUndefined(env);
+    // Unreachable: the caller always hands over real arrays.
+    return CreateInt(env, 0);
   }
   if (count > kMaxContacts) {
     count = kMaxContacts;
@@ -2000,9 +1997,9 @@ napi_value MoonlightSessionTouchpadFrame(napi_env env, napi_callback_info info) 
     y[i] = static_cast<float>(py);
     pressure[i] = static_cast<float>(p);
   }
-  hmrdp::MoonlightSessionTouchpadFrame(static_cast<int>(count), eventTypes, pointerIds, x, y,
-                                       pressure, widthMm, heightMm, buttonState);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionTouchpadFrame(static_cast<int>(count), eventTypes,
+                                                             pointerIds, x, y, pressure, widthMm,
+                                                             heightMm, buttonState));
 }
 
 napi_value MoonlightSessionHighResScroll(napi_env env, napi_callback_info info) {
@@ -2011,8 +2008,7 @@ napi_value MoonlightSessionHighResScroll(napi_env env, napi_callback_info info) 
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int32_t amount = 0;
   napi_get_value_int32(env, args[0], &amount);
-  hmrdp::MoonlightSessionHighResScroll(amount);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionHighResScroll(amount));
 }
 
 napi_value MoonlightSessionHighResHScroll(napi_env env, napi_callback_info info) {
@@ -2021,8 +2017,7 @@ napi_value MoonlightSessionHighResHScroll(napi_env env, napi_callback_info info)
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int32_t amount = 0;
   napi_get_value_int32(env, args[0], &amount);
-  hmrdp::MoonlightSessionHighResHScroll(amount);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionHighResHScroll(amount));
 }
 
 // controllerNumber / activeGamepadMask / buttonFlags / triggers / sticks, as the library takes them.
@@ -2034,9 +2029,9 @@ napi_value MoonlightSessionController(napi_env env, napi_callback_info info) {
   for (size_t i = 0; i < 9; i++) {
     napi_get_value_int32(env, args[i], &values[i]);
   }
-  hmrdp::MoonlightSessionControllerState(values[0], values[1], values[2], values[3], values[4],
-                                         values[5], values[6], values[7], values[8]);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionControllerState(values[0], values[1], values[2],
+                                                               values[3], values[4], values[5],
+                                                               values[6], values[7], values[8]));
 }
 
 napi_value MoonlightSessionControllerArrival(napi_env env, napi_callback_info info) {
@@ -2053,9 +2048,9 @@ napi_value MoonlightSessionControllerArrival(napi_env env, napi_callback_info in
   napi_get_value_int32(env, args[2], &type);
   napi_get_value_int32(env, args[3], &supportedButtonFlags);
   napi_get_value_int32(env, args[4], &capabilities);
-  hmrdp::MoonlightSessionControllerArrival(controllerNumber, activeGamepadMask, type,
-                                           supportedButtonFlags, capabilities);
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionControllerArrival(controllerNumber,
+                                                                 activeGamepadMask, type,
+                                                                 supportedButtonFlags, capabilities));
 }
 
 napi_value MoonlightSessionText(napi_env env, napi_callback_info info) {
@@ -2064,13 +2059,13 @@ napi_value MoonlightSessionText(napi_env env, napi_callback_info info) {
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   size_t length = 0;
   if (napi_get_value_string_utf8(env, args[0], nullptr, 0, &length) != napi_ok) {
-    return CreateUndefined(env);
+    // Unreachable: the caller always hands over a string.
+    return CreateInt(env, 0);
   }
   std::string text;
   text.resize(length + 1);
   napi_get_value_string_utf8(env, args[0], text.data(), length + 1, &length);
-  hmrdp::MoonlightSessionText(text.c_str(), static_cast<int>(length));
-  return CreateUndefined(env);
+  return CreateInt(env, hmrdp::MoonlightSessionText(text.c_str(), static_cast<int>(length)));
 }
 
 napi_value MoonlightSessionHostFeatures(napi_env env, napi_callback_info) {

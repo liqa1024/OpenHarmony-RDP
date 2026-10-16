@@ -1,11 +1,8 @@
 import {
   MoonlightEventExtra, MoonlightSessionConfig, bufferRead, bufferRelease,
-  moonlightController, moonlightControllerArrival,
-  moonlightHighResHScroll, moonlightHighResScroll, moonlightHostFeatures,
-  moonlightKey, moonlightMouseButton, moonlightMouseMove,
-  moonlightMousePosition, moonlightSendClipboardData, moonlightSessionActive, moonlightSessionClearSurface,
-  moonlightSessionSetSurface, moonlightSessionStart, moonlightSessionStop, moonlightSetSessionListener,
-  moonlightSetShortcutPassthrough, moonlightText, moonlightTouch, moonlightTouchpad
+  moonlightHostFeatures, moonlightSendClipboardData, moonlightSessionActive,
+  moonlightSessionClearSurface, moonlightSessionSetSurface, moonlightSessionStart,
+  moonlightSessionStop, moonlightSetSessionListener, moonlightSetShortcutPassthrough
 } from 'libhmrdp.so';
 import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -19,10 +16,6 @@ import { MoonlightConnectResult, MoonlightConnector, MoonlightHostPolicy,
 import { MoonlightHostState } from './MoonlightHostState';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionBackend, SessionSignalListener } from './SessionBackend';
-import { InputAction, InputButton, InputSink, TouchpadContact, TouchPhase } from './SessionInput';
-import { GamepadSink } from './input/InputSink';
-import { KeyMapping } from '../utils/KeyMapper';
-import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 
 export const ML_EVENT_STARTED: number = 0;
 export const ML_EVENT_TERMINATED: number = 1;
@@ -284,23 +277,6 @@ export class MoonlightSessionBackend implements SessionBackend {
   unicode(codepoint: number, down: boolean): void {
   }
 
-  mouseMove(deltaX: number, deltaY: number): void {
-    moonlightMouseMove(deltaX, deltaY);
-  }
-
-  mousePosition(x: number, y: number, referenceWidth: number, referenceHeight: number): void {
-    moonlightMousePosition(x, y, referenceWidth, referenceHeight);
-  }
-
-  mouseButton(action: number, button: number): void {
-    moonlightMouseButton(action, button);
-  }
-
-  // Moonlight takes Windows virtual-key codes, not PS/2 scancodes.
-  keyVirtual(vk: number, down: boolean, modifiers: number): void {
-    moonlightKey(vk, down ? MlVirtualKey.KEY_DOWN : MlVirtualKey.KEY_UP, modifiers);
-  }
-
   private emit(event: number, value: number, text: string): void {
     const listener: SessionSignalListener | undefined = this.listener;
     if (listener === undefined) {
@@ -325,203 +301,3 @@ export class MoonlightSessionBackend implements SessionBackend {
   }
 }
 
-// Windows VK for the Meta/Win key.
-const ML_VK_META: number = 0x5B;
-
-export class MoonlightInputSink implements InputSink, GamepadSink {
-  private backend: MoonlightSessionBackend;
-  // Left/right modifiers share a bit but are distinct VKs, so the byte is derived
-  // from the set of keys currently down, not from a per-key toggle.
-  private heldModifiers: Set<number> = new Set<number>();
-  private referenceWidth: number = 1920;
-  private referenceHeight: number = 1080;
-  private relative: boolean = false;
-
-  constructor(backend: MoonlightSessionBackend) {
-    this.backend = backend;
-  }
-
-  setReferenceSize(width: number, height: number): void {
-    this.referenceWidth = width;
-    this.referenceHeight = height;
-  }
-
-  key(mapping: KeyMapping, down: boolean): void {
-    if (mapping.vk <= 0) {
-      return;
-    }
-    this.trackModifier(mapping.vk, down);
-    let modifiers: number = this.modifierByte();
-    if (mapping.extended) {
-      modifiers |= MlVirtualKey.MODIFIER_EXTENDED;
-    }
-    this.backend.keyVirtual(mapping.vk, down, modifiers);
-  }
-
-  metaKey(down: boolean): void {
-    this.trackModifier(ML_VK_META, down);
-    this.backend.keyVirtual(ML_VK_META, down, this.modifierByte() | MlVirtualKey.MODIFIER_EXTENDED);
-  }
-
-  private trackModifier(vk: number, down: boolean): void {
-    if (MlVirtualKey.modifierFor(vk) === 0) {
-      return;
-    }
-    if (down) {
-      this.heldModifiers.add(vk);
-    } else {
-      this.heldModifiers.delete(vk);
-    }
-  }
-
-  private modifierByte(): number {
-    let modifiers: number = 0;
-    this.heldModifiers.forEach((vk: number) => {
-      modifiers |= MlVirtualKey.modifierFor(vk);
-    });
-    return modifiers;
-  }
-
-  unicode(code: number, down: boolean): void {
-    if (down && code > 0) {
-      moonlightText(String.fromCharCode(code));
-    }
-  }
-
-  lockState(_flags: number): void {
-    // No lock-state PDU on Moonlight; the host tracks its own lock state.
-  }
-
-  pointerMove(x: number, y: number): void {
-    this.backend.mousePosition(x, y, this.referenceWidth, this.referenceHeight);
-  }
-
-  // Verbatim device counts: the host applies its own pointer curve (see the library's 1ms batching).
-  pointerMoveRelative(deltaX: number, deltaY: number): void {
-    if (deltaX === 0 && deltaY === 0) {
-      return;
-    }
-    this.backend.mouseMove(MoonlightInputSink.clampShort(deltaX),
-      MoonlightInputSink.clampShort(deltaY));
-  }
-
-  rateLimitMoveStreams(): boolean {
-    return false;
-  }
-
-  setRelativePointer(enabled: boolean): void {
-    this.relative = enabled;
-  }
-
-  relativePointerEnabled(): boolean {
-    return this.relative;
-  }
-
-  hostDisplayScalePercent(): number {
-    return this.backend.hostDisplayScalePercent();
-  }
-
-  touch(phase: number, pointerId: number, x: number, y: number, pressure: number): void {
-    const normalizedX: number = this.referenceWidth > 0 ? x / this.referenceWidth : 0;
-    const normalizedY: number = this.referenceHeight > 0 ? y / this.referenceHeight : 0;
-    moonlightTouch(MoonlightInputSink.mlTouchEvent(phase), pointerId, normalizedX, normalizedY,
-      pressure);
-  }
-
-  scroll(vertical: number, horizontal: number, _x: number, _y: number): void {
-    if (vertical !== 0) {
-      moonlightHighResScroll(MoonlightInputSink.clampShort(vertical));
-    }
-    if (horizontal !== 0) {
-      moonlightHighResHScroll(MoonlightInputSink.clampShort(horizontal));
-    }
-  }
-
-  touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
-    heightMm: number): void {
-    // Hosts that do not advertise the extension ignore the packet (LiSend returns unsupported).
-    if (contacts.length === 0) {
-      return;
-    }
-    const types: number[] = [];
-    const ids: number[] = [];
-    const xs: number[] = [];
-    const ys: number[] = [];
-    const ps: number[] = [];
-    for (let i = 0; i < contacts.length; i++) {
-      const contact: TouchpadContact = contacts[i];
-      types.push(MoonlightInputSink.mlTouchEvent(contact.phase));
-      ids.push(contact.pointerId);
-      xs.push(contact.x);
-      ys.push(contact.y);
-      ps.push(contact.pressure);
-    }
-    moonlightTouchpad(types, ids, xs, ys, ps, widthMm, heightMm, buttonState);
-  }
-
-  button(action: number, button: number, x: number, y: number): void {
-    const mlButton: number = MoonlightInputSink.mlButton(button);
-    if (mlButton === 0) {
-      return;
-    }
-    // Relative mode: a click must not drag the host cursor back to the local pointer's coordinates.
-    if (!this.relative) {
-      this.backend.mousePosition(x, y, this.referenceWidth, this.referenceHeight);
-    }
-    const mlAction: number = action === InputAction.PRESS
-      ? MlVirtualKey.ACTION_PRESS : MlVirtualKey.ACTION_RELEASE;
-    this.backend.mouseButton(mlAction, mlButton);
-  }
-
-  // One controller slot's whole state (LiSendMultiControllerEvent); triggers are 0..255 and
-  // sticks -32767..32767 with +Y up.
-  controllerState(controllerNumber: number, activeGamepadMask: number, buttonFlags: number,
-    leftTrigger: number, rightTrigger: number, leftStickX: number, leftStickY: number,
-    rightStickX: number, rightStickY: number): void {
-    moonlightController(controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger,
-      leftStickX, leftStickY, rightStickX, rightStickY);
-  }
-
-  // Declares one attached controller's type / buttons / capabilities (LiSendControllerArrivalEvent).
-  controllerArrival(controllerNumber: number, activeGamepadMask: number, type: number,
-    supportedButtonFlags: number, capabilities: number): void {
-    moonlightControllerArrival(controllerNumber, activeGamepadMask, type, supportedButtonFlags,
-      capabilities);
-  }
-
-  private static mlButton(button: number): number {
-    if (button === InputButton.LEFT) {
-      return MlVirtualKey.BUTTON_LEFT;
-    }
-    if (button === InputButton.MIDDLE) {
-      return MlVirtualKey.BUTTON_MIDDLE;
-    }
-    if (button === InputButton.RIGHT) {
-      return MlVirtualKey.BUTTON_RIGHT;
-    }
-    if (button === InputButton.X1) {
-      return MlVirtualKey.BUTTON_X1;
-    }
-    if (button === InputButton.X2) {
-      return MlVirtualKey.BUTTON_X2;
-    }
-    return 0;
-  }
-
-  private static mlTouchEvent(phase: number): number {
-    if (phase === TouchPhase.DOWN) {
-      return 0x01; // LI_TOUCH_EVENT_DOWN
-    }
-    if (phase === TouchPhase.UP) {
-      return 0x02; // LI_TOUCH_EVENT_UP
-    }
-    if (phase === TouchPhase.CANCEL) {
-      return 0x04; // LI_TOUCH_EVENT_CANCEL
-    }
-    return 0x03; // LI_TOUCH_EVENT_MOVE
-  }
-
-  private static clampShort(value: number): number {
-    return Math.max(-32768, Math.min(32767, Math.round(value)));
-  }
-}

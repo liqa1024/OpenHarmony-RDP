@@ -278,97 +278,117 @@ std::string MoonlightLaunchQueryParameters() {
   return extra != nullptr ? std::string(extra) : std::string();
 }
 
-void MoonlightSessionMouseMove(int deltaX, int deltaY) {
-  if (g_connected) {
-    LiSendMouseMoveEvent(static_cast<short>(deltaX), static_cast<short>(deltaY));
+int MoonlightSessionMouseMove(int deltaX, int deltaY) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendMouseMoveEvent(static_cast<short>(deltaX), static_cast<short>(deltaY));
 }
 
-void MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referenceHeight) {
-  if (g_connected) {
-    LiSendMousePositionEvent(static_cast<short>(x), static_cast<short>(y),
-                             static_cast<short>(referenceWidth), static_cast<short>(referenceHeight));
+int MoonlightSessionMousePosition(int x, int y, int referenceWidth, int referenceHeight) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendMousePositionEvent(static_cast<short>(x), static_cast<short>(y),
+                                  static_cast<short>(referenceWidth),
+                                  static_cast<short>(referenceHeight));
 }
 
-void MoonlightSessionMouseButton(int action, int button) {
-  if (g_connected) {
-    LiSendMouseButtonEvent(static_cast<char>(action), button);
+int MoonlightSessionMouseButton(int action, int button) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendMouseButtonEvent(static_cast<char>(action), button);
 }
 
-void MoonlightSessionKey(int keyCode, int action, int modifiers) {
-  if (g_connected) {
-    LiSendKeyboardEvent(static_cast<short>(keyCode), static_cast<char>(action),
-                        static_cast<char>(modifiers));
+int MoonlightSessionKey(int keyCode, int action, int modifiers) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendKeyboardEvent(static_cast<short>(keyCode), static_cast<char>(action),
+                             static_cast<char>(modifiers));
 }
 
-void MoonlightSessionScroll(int clicks) {
-  if (g_connected) {
-    LiSendScrollEvent(static_cast<signed char>(clicks));
+int MoonlightSessionScroll(int clicks) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendScrollEvent(static_cast<signed char>(clicks));
 }
 
-void MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure) {
-  if (g_connected) {
-    LiSendTouchEvent(static_cast<uint8_t>(eventType), static_cast<uint32_t>(pointerId),
-                     x, y, pressure, 0.0f, 0.0f, LI_ROT_UNKNOWN);
+int MoonlightSessionTouch(int eventType, int pointerId, float x, float y, float pressure) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendTouchEvent(static_cast<uint8_t>(eventType), static_cast<uint32_t>(pointerId),
+                          x, y, pressure, 0.0f, 0.0f, LI_ROT_UNKNOWN);
 }
 
-void MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
-                                   const uint32_t* pointerIds, const float* x, const float* y,
-                                   const float* pressure, int widthMm, int heightMm, int buttonState) {
-  if (!g_connected || contactCount <= 0 || contactCount > kMaxTouchpadContacts) {
-    return;
+int MoonlightSessionTouchpadFrame(int contactCount, const uint8_t* eventTypes,
+                                  const uint32_t* pointerIds, const float* x, const float* y,
+                                  const float* pressure, int widthMm, int heightMm, int buttonState) {
+  if (!g_connected) {
+    return 0;
+  }
+  if (contactCount <= 0 || contactCount > kMaxTouchpadContacts) {
+    return LI_ERR_UNSUPPORTED;
   }
   // LiSendTouchpadFrameEvent itself returns LI_ERR_UNSUPPORTED unless the host
   // advertised the extension, so stock Sunshine / GFE simply ignore this.
-  LiSendTouchpadFrameEvent(static_cast<uint8_t>(contactCount), eventTypes, pointerIds, x, y, pressure,
-                           LI_ROT_UNKNOWN, static_cast<uint16_t>(widthMm),
-                           static_cast<uint16_t>(heightMm), static_cast<uint8_t>(buttonState));
+  return LiSendTouchpadFrameEvent(static_cast<uint8_t>(contactCount), eventTypes, pointerIds, x, y,
+                                  pressure, LI_ROT_UNKNOWN, static_cast<uint16_t>(widthMm),
+                                  static_cast<uint16_t>(heightMm),
+                                  static_cast<uint8_t>(buttonState));
 }
 
-void MoonlightSessionHighResScroll(int amount) {
-  if (g_connected) {
-    LiSendHighResScrollEvent(static_cast<short>(amount));
+int MoonlightSessionHighResScroll(int amount) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendHighResScrollEvent(static_cast<short>(amount));
 }
 
-void MoonlightSessionHighResHScroll(int amount) {
-  if (g_connected) {
-    LiSendHighResHScrollEvent(static_cast<short>(amount));
+int MoonlightSessionHighResHScroll(int amount) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendHighResHScrollEvent(static_cast<short>(amount));
 }
 
-void MoonlightSessionControllerState(int controllerNumber, int activeGamepadMask, int buttonFlags,
-                                    int leftTrigger, int rightTrigger, int leftStickX, int leftStickY,
-                                    int rightStickX, int rightStickY) {
-  if (g_connected) {
-    LiSendMultiControllerEvent(static_cast<short>(controllerNumber),
-                               static_cast<short>(activeGamepadMask), buttonFlags,
-                               static_cast<unsigned char>(leftTrigger),
-                               static_cast<unsigned char>(rightTrigger),
-                               static_cast<short>(leftStickX), static_cast<short>(leftStickY),
-                               static_cast<short>(rightStickX), static_cast<short>(rightStickY));
+int MoonlightSessionControllerState(int controllerNumber, int activeGamepadMask, int buttonFlags,
+                                   int leftTrigger, int rightTrigger, int leftStickX, int leftStickY,
+                                   int rightStickX, int rightStickY) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendMultiControllerEvent(static_cast<short>(controllerNumber),
+                                    static_cast<short>(activeGamepadMask), buttonFlags,
+                                    static_cast<unsigned char>(leftTrigger),
+                                    static_cast<unsigned char>(rightTrigger),
+                                    static_cast<short>(leftStickX), static_cast<short>(leftStickY),
+                                    static_cast<short>(rightStickX), static_cast<short>(rightStickY));
 }
 
-void MoonlightSessionControllerArrival(int controllerNumber, int activeGamepadMask, int type,
-                                       int supportedButtonFlags, int capabilities) {
-  if (g_connected) {
-    LiSendControllerArrivalEvent(static_cast<uint8_t>(controllerNumber),
-                                 static_cast<uint16_t>(activeGamepadMask), static_cast<uint8_t>(type),
-                                 static_cast<uint32_t>(supportedButtonFlags),
-                                 static_cast<uint16_t>(capabilities));
+int MoonlightSessionControllerArrival(int controllerNumber, int activeGamepadMask, int type,
+                                      int supportedButtonFlags, int capabilities) {
+  if (!g_connected) {
+    return 0;
   }
+  return LiSendControllerArrivalEvent(static_cast<uint8_t>(controllerNumber),
+                                      static_cast<uint16_t>(activeGamepadMask),
+                                      static_cast<uint8_t>(type),
+                                      static_cast<uint32_t>(supportedButtonFlags),
+                                      static_cast<uint16_t>(capabilities));
 }
 
-void MoonlightSessionText(const char* text, int length) {
-  if (g_connected && text != nullptr && length > 0) {
-    LiSendUtf8TextEvent(text, static_cast<unsigned int>(length));
+int MoonlightSessionText(const char* text, int length) {
+  if (!g_connected) {
+    return 0;
   }
+  if (text == nullptr || length <= 0) {
+    return LI_ERR_UNSUPPORTED;
+  }
+  return LiSendUtf8TextEvent(text, static_cast<unsigned int>(length));
 }
 
 int MoonlightSessionHostFeatureFlags() {

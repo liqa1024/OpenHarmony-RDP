@@ -74,9 +74,9 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   调用方（UI 线程）只置停止标志、发条件变量通知、`join`，绝不直接碰 moonlight 状态。`g_active` 覆盖整个
   会话生命周期（含已建流阶段），用来**挡住并发的第二个会话**（见上）。视频回调取自解码桥，`renderContext`
   是会话 XComponent 的 `OHNativeWindow`，音频回调取自音频桥（见 §2.3；`enableAudio` 关闭时为空渲染器，静音）；
-  输入由 `MoonlightInputSink` 落 `LiSend*`
-  （相对/绝对鼠标、按键、UTF-8 文本、高分辨率滚轮、触屏触点、原生触控板接入点），策略在共用
-  `SessionInput`（见 [`session-layer.md`](session-layer.md) §8）。N-API 出口：
+  输入由 `services/input/MoonlightInputSender.ets` 落 `LiSend*`
+  （相对/绝对鼠标、按键、UTF-8 文本、高分辨率滚轮、触屏触点、原生触控板接入点），它在输入 worker 内构造，
+  策略在共用 `SessionInput`（见 [`session-layer.md`](session-layer.md) §8）。N-API 出口：
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
   `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
@@ -85,6 +85,10 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `moonlightSetShortcutPassthrough`；
   窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
   （`LiStartConnection` 的 `renderContext` 需要它）。
+- **输入入口回报结果码**：`core/hmrdp_moonlight_session.*` 的输入入口（`LiSend*` 的镜像）返回**库自己的结果码**，
+  `binding/` 与 `index.d.ts` 原样透出；落在输入 worker 内的 `services/input/MoonlightInputSender.ets` 把码折算成
+  **受理 / 拒收**（`LI_ERR_UNSUPPORTED` = 主机没这能力，按设计的拒绝，不算丢弃；无会话返回 0，也算受理——
+  会话级失败由会话信令报告）。见 [`session-layer.md`](session-layer.md) §8。
 - **两种指针落点**：默认**绝对位置**（`LiSendMousePositionEvent` + 参考尺寸），本机指针位置与主机光标一一对应；
   相对鼠标模式（[`moonlight-connection.md`](moonlight-connection.md) §5）改 `LiSendMouseMoveEvent`（N-API
   `moonlightMouseMove`），发的是**相邻两次映射位置之差**（1:1，内容像素当计数），依据与边界见
@@ -238,7 +242,8 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   **不靠它建手柄**——虚拟手柄由运行时掩码驱动，所以热插拔只发到达 / 清零事件，不需要重连。
 - **落地**：`hmrdp_moonlight_session.*` 的 `MoonlightSessionControllerState` /
   `MoonlightSessionControllerArrival`（仅 `g_connected` 时转发），N-API `moonlightController` /
-  `moonlightControllerArrival`，ArkTS 侧由 `MoonlightInputSink`（`GamepadSink`）实现；
+  `moonlightControllerArrival`，ArkTS 侧由 `services/input/MoonlightInputSender.ets`（`GamepadSink`）实现，
+  整份状态按"最新值胜出"在一个窗口内合并（见 [`session-layer.md`](session-layer.md) §8）；
   **轴的角色不由协议层决定**——客户端侧的来源与官方轴表见 [`session-layer.md`](session-layer.md) §8
   （平台 Game Controller Kit 带来源的轴事件；无该服务时按同一张官方表读 multimodal 事件）。
 - **验证**：需真手柄（模拟器没有手柄外设），方向/正负属真机判据。
