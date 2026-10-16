@@ -52,15 +52,17 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   耗时的**上界**——解码器空闲时接近解码耗时，积压时被放大；有了上一条的输入预算，这个放大被钳在
   「预算 + 解码耗时」以内，读数不再能无限膨胀。判读与着色见
   [`moonlight-session.md`](moonlight-session.md) §2。
-- **解码器只有一个输出口：surface**。直出时渲染进会话 XComponent 的窗口，超分时渲染进**离屏消费端 surface**
-  （`OH_ConsumerSurface_Create` 的窗口），两种用途都由 surface 承载——**"解码帧要不要交给 GPU 采样"才是选路的
-  判据**。`OH_AVBuffer`（共享内存）那条口子是**CPU 侧**逐行处理用的（转码 / 编辑 / 存 YUV，按
-  `OH_MD_KEY_VIDEO_STRIDE` / `OH_MD_KEY_VIDEO_SLICE_HEIGHT` 自己搬；这同一对 key 也是超分导入链路的几何来源，
-  见 [`rdp-present.md`](rdp-present.md) §5），**本仓不使用**：
-  编解码器自有缓冲的布局不是 Vulkan external-memory 契约所描述的那类（见
-  [`rdp-present.md`](rdp-present.md) §5），直接导入只会得到 Y 正常、色度为空的画面。
-- **送显槽位只判一次**：在解码输出回调里（`TakePresentSlot` before `RenderOutputBuffer`），错过即**丢**
-  ——一律 `FreeOutputBuffer`，不渲染。这是全链路唯一的门控，消费端不再另判一次。
+- **解码有两种输出模式，按"帧要不要交给 GPU 采样"选**：**surface 模式**（`OH_VideoDecoder_SetSurface`）把解码帧
+  直接写进给定的窗口，只送显、应用侧不碰像素；**buffer 模式**（不设输出表面）由解码器交出自己的输出缓冲，帧经
+  `OH_AVBuffer_GetNativeBuffer` 成为**图形分配器**的 `OH_NativeBuffer`，可交给 GPU 采样。两种模式的**布局信息
+  可得性不同**：buffer 模式在输出描述里报出字节行距与单面的已分配行数，surface 模式不报（其内部数据走 HEBC，
+  `OH_MD_KEY_VIDEO_STRIDE`/`OH_MD_KEY_VIDEO_SLICE_HEIGHT` 取不到）——所以凡是按平面字节采样缓冲的链路只能走
+  buffer 模式，只送显的链路用 surface 模式。`OH_AVBuffer_GetAddr`（CPU 地址，逐行搬运用）本仓不使用。
+  几何取法与导入配方见 [`rdp-present.md`](rdp-present.md) §5。
+- **送显槽位只判一次**：在解码输出回调里（`VideoDecoder::TakePresentSlot`），错过即**丢**——surface 模式一律
+  `FreeOutputBuffer`（不送显），buffer 模式不交给上屏。buffer 模式还有一个次级丢弃：交出去的帧若在归还线程仍在
+  处理时被新帧追上，**旧的那帧当场归还**（只留最新一帧），所以"上屏跟不上"的代价是丢帧，不是延迟堆积。两种丢弃
+  在解码器停止时各报一个累计数。
 
 ## 2. 上屏：两条链路
 
@@ -74,19 +76,14 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
   （不设则默认拉伸填满），兜住协商流分辨率与请求值不一致的情形。留边区域**不接收指针**：输入/焦点在 XComponent
   上，事件坐标即画面局部坐标，映射是整画面归一化。这是平台文档推荐的视频播放方式，延迟/功耗最优，全屏原生
   比例时可能命中硬件直通/overlay。
-- **超分：解码进离屏消费端 surface + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流
+- **超分：解码走 buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流
   （`/launch` 与 `STREAM_CONFIGURATION` 的尺寸都取会话分辨率，fps 钳制与自动码率也按它算，见 §4），本机把每帧
-  上采样回输出分辨率。解码仍是 surface 模式，但目标是**离屏消费端 surface 的窗口**；`core/hmrdp_video_consumer.*`
-  拥有这张表面与它的**消费线程**（回调只发信号），逐帧 acquire → 交给解码桥 → 桥在交接锁下调
-  `VkRenderer::PresentVideo` → 上一帧归还；`core/hmrdp_vk_video.*` 负责导入与 convert pass（整块按 **R8 字节图**
-  导入，片元 `texelFetch` 取 Y 与交错 Cb/Cr、**自己做 YUV→RGB**），写进**会话分辨率的 picture**，之后接既有的
-  超分 / letterbox / swapchain。
-  **为什么必须绕这一下**：Vulkan 的 external-memory 契约描述的是**图形分配器**（RenderService / `OH_NativeWindowBuffer`）
-  产出的缓冲；`OH_AVBuffer` 是**编解码器自有缓冲**，它的排布不由该契约描述，直接导入会 Y 正常、UV 读到空
-  （整屏绿、无报错）。这也是官方《Vulkan External Memory 开发指导》**正文步骤**的做法（《视频解码》里"解码后接
-  OpenGL 后处理则从 NativeImage 获取"是同一道理），而**不是** `OH_AVBuffer_GetNativeBuffer`。
-  **导入配方、声明几何（取分配几何）、消费契约（回调只发信号 / 双缓冲归还 / 失败补 unref / 不套 GL 空间的变换矩阵）
-  与判据全在 [`rdp-present.md`](rdp-present.md) §5**——本节只讲本仓怎么接。
+  上采样回输出分辨率。解码器**不设输出表面**，每帧把自己的输出缓冲交出来（`OH_AVBuffer_GetNativeBuffer`）；
+  解码桥在交接锁下把该缓冲交给 `VkRenderer::PresentVideo`，**返回即归还**给解码器。`core/hmrdp_vk_video.*`
+  负责导入与 convert pass（整块按 **R8 字节图**外部内存导入，片元 `texelFetch` 取 Y 与交错 Cb/Cr、**自己做
+  YUV→RGB**），写进**会话分辨率的 picture**，之后接既有的超分 / letterbox / swapchain。
+  **导入配方、几何取法（取解码器报的账，不是分配器的推断）、归还与门控的判据全在
+  [`rdp-present.md`](rdp-present.md) §5**——本节只讲本仓怎么接。
   此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`rdp-native.md`](rdp-native.md) §6）。
 
 ## 3. 编解码协商
@@ -131,7 +128,7 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 - RDP 的 `FramePipeline` / `GdiFrameHost` / `PresentGdiFrame` / 零拷贝桌面缓冲都是 **gdi（CPU 帧）专属**，
   不套给 Moonlight。
 - `FramePresenter`（surface / swapchain / letterbox / 超分）是唯一可复用的图形核心，**只被超分链路复用**：
-  接口只有一个视频入口 `PresentVideo`（帧 + 尺寸），且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。
+  接口只有一个视频入口 `PresentVideo`（帧 + 几何），且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。
   可复用的是**「会话分辨率的一张输入图 →（可选）超分 → letterbox → swapchain → present」这一层**；
   RDP 的桌面缓冲 / 脏区 / 合并（carry）是 **RDP 专属的可选路径**，视频链路一概不用——视频是流、语义是丢帧，
   且恒整帧一次、无 CPU 拷贝。直出链路**完全不经 presenter**，与 RDP 互不影响（见

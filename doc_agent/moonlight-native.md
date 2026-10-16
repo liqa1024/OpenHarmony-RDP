@@ -66,15 +66,12 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     交给 `VideoDecoder::Submit`，即 [`moonlight-video.md`](moonlight-video.md) §1 的「一次一个完整访问单元」。
   - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位留空：不改写参考帧，且**不开
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
-  - **两条上屏路线共用 surface 输出**：直出时解码器渲染进 `renderContext` 的窗口；超分时渲染进**离屏消费端
-    surface**的窗口（`core/hmrdp_video_consumer.*`，该单元拥有表面与**消费线程**，帧到达回调只发信号），
-    逐帧由消费线程 acquire → 交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`）→ 上一帧归还
-    （见 [`rdp-present.md`](rdp-present.md) §5、[`moonlight-video.md`](moonlight-video.md) §2）。
+  - **两条上屏路线的解码输出模式不同**：直出时解码器用 surface 模式渲染进 `renderContext` 的窗口；超分时用
+    buffer 模式把自己的输出缓冲交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`），返回即归还解码器
+    （见 [`rdp-present.md`](rdp-present.md) §5、[`moonlight-video.md`](moonlight-video.md) §1/§2）。
     呈现器归会话所有（`hmrdp_moonlight_session.*`），在 `LiStartConnection` 前按会话尺寸建好、`LiStopConnection`
     后拆掉；桥只**借用**它（`MoonlightVideoAttachPresenter` / `MoonlightVideoDetachPresenter`，Detach 会等在飞的
     那一帧做完），表面尺寸的转发走 `MoonlightSessionResizeSurface` → 同一个交接锁。
-    **解码器只有一个输出口（surface）**：`OH_AVBuffer` 那条 CPU 侧路子本仓不用（理由见
-    [`moonlight-video.md`](moonlight-video.md) §1）。
   - 输入**按延迟预算**排队（时间计量，不是字节）：最老的一帧超过预算就丢掉整段积压并回 `DR_NEED_IDR`
     请主机补关键帧。依据与限流机制见 [`moonlight-video.md`](moonlight-video.md) §1。
 - **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`。**`LiStartConnection` 在建流

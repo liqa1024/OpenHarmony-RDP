@@ -10,14 +10,15 @@
 #version 450
 layout(location = 0) out vec2 vByte;
 layout(set = 0, binding = 1) uniform Frame {
-  vec4 visibleChroma; // xy = visible size in pixels, z = first row of the chroma plane
-  vec4 rowR;          // (cY, cCb, cCr, offset), already scaled for 0..255 samples
+  vec4 frame;  // xy = visible size in pixels, zw = sampling origin inside the byte image (crop)
+  vec4 plane; // x = first row of the chroma plane
+  vec4 rowR;   // (cY, cCb, cCr, offset), already scaled for 0..255 samples
   vec4 rowG;
   vec4 rowB;
 } uFrame;
 
 void main() {
   const vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-  vByte = p * uFrame.visibleChroma.xy;
+  vByte = p * uFrame.frame.xy;
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }

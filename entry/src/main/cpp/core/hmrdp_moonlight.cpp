@@ -13,8 +13,8 @@
 
 #include "hmrdp_log.h"
 #include "hmrdp_presenter.h"
-#include "hmrdp_video_consumer.h"
 #include "hmrdp_video_decoder.h"
+#include "hmrdp_video_frame.h"
 
 namespace hmrdp {
 
@@ -74,14 +74,15 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     return renderer;
   }
 
-  // VideoFrameSink: the consumer thread calls this once per acquired frame. The presenter is called
-  // under the hand-off lock, so DetachPresenter cannot return while a frame is being presented.
-  void PresentVideoFrame(const void* buffer, int width, int height) override {
+  // VideoFrameSink: the decoder's hand-off thread calls this once per frame it hands out. The
+  // presenter is called under the hand-off lock, so DetachPresenter cannot return while a frame is
+  // being presented.
+  void PresentVideoFrame(const void* buffer, const VideoFrameGeometry& geometry) override {
     std::lock_guard<std::mutex> lock(presenterMutex_);
     if (presenter_ == nullptr) {
       return;
     }
-    if (!presenter_->PresentVideo(buffer, width, height) && !presentWarned_) {
+    if (!presenter_->PresentVideo(buffer, geometry) && !presentWarned_) {
       // One-shot: a refused frame repeats at the stream rate (the presenter logs the reason).
       presentWarned_ = true;
       HMRDP_LOGW("moonlight video: presenter refused a frame; 超分 is not presenting");
@@ -192,18 +193,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool sr = HasPresenter();
-    // 超分: the presenter owns the real window, so the decoder renders into the consumer surface
-    // instead; without a presenter the decoder renders straight into the window.
-    if (sr && !consumer_.Start(width_, height_, this)) {
-      HMRDP_LOGE("moonlight video: 超分 needs the offscreen consumer surface; not starting");
-      return;
-    }
-    void* decodeWindow = sr ? consumer_.decodeWindow() : window_;
-    if (decodeWindow == nullptr || mime_.empty()) {
-      HMRDP_LOGE("moonlight video: start needs a surface and a setup codec");
-      if (sr) {
-        consumer_.Stop();
-      }
+    if (mime_.empty()) {
+      HMRDP_LOGE("moonlight video: start needs a setup codec");
       return;
     }
     ResetStats();
@@ -212,26 +203,28 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     VideoDecoder::FrameReadyFn onFrame = [this](int, int, int64_t ptsUs) {
       NoteDecoded(ptsUs);
     };
-    if (!decoder_.Start(mime_, decodeWindow, width_, height_, redrawRate_, onFrame)) {
+    // 超分: the presenter owns the real window, so the decoder hands out its own buffers instead
+    // (the layout a byte-wise import needs is only reported in buffer mode, and the window never
+    // sees a decoded frame); without a presenter the decoder renders straight into the window.
+    const bool started = sr
+        ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, onFrame, this)
+        : decoder_.Start(mime_, window_, width_, height_, redrawRate_, onFrame);
+    if (!started) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",
                  decoder_.lastError().c_str());
-      if (sr) {
-        consumer_.Stop();
-      }
       return;
     }
     running_ = true;
-    HMRDP_LOGI("moonlight video: started (%{public}s)", sr ? "surface/超分" : "surface");
+    HMRDP_LOGI("moonlight video: started (%{public}s)", sr ? "buffer/超分" : "surface");
   }
 
   void Stop() {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool wasRunning = running_;
     running_ = false;
-    // Both are idempotent, and ordered: the decoder must stop writing into the consumer surface
-    // before the surface is torn down.
+    // Idempotent, and ordered by the decoder itself: its hand-off thread stops (and returns every
+    // buffer) before the codec is destroyed.
     decoder_.Stop();
-    consumer_.Stop();
     if (wasRunning) {
       HMRDP_LOGI("moonlight video: stopped");
     }
@@ -336,11 +329,9 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   int height_ = 0;
   int redrawRate_ = 0;
   void* window_ = nullptr;
-  // 超分 presenter (session-owned, borrowed here); non-null switches the decode path to the
-  // offscreen consumer surface. See AttachPresenter.
+  // 超分 presenter (session-owned, borrowed here); non-null switches the decode path to buffer mode
+  // and the frames go through it. See AttachPresenter.
   FramePresenter* presenter_ = nullptr;
-  // Offscreen consumer surface the decoder renders into when 超分 is on; see hmrdp_video_consumer.h.
-  VideoFrameConsumer consumer_;
   bool running_ = false;
   std::vector<uint8_t> buffer_;
 

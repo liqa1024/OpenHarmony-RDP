@@ -41,8 +41,8 @@ struct MoonlightVideoContext {
 // 超分: the presenter the decode bridge renders decoded frames into (a hmrdp::FramePresenter*), or
 // nullptr for the default direct-to-surface path. Owned by the session, borrowed by the bridge:
 // attach before starting the connection, detach before destroying the presenter (a detach waits out
-// a present already in flight). With a presenter the bridge decodes into an offscreen consumer
-// surface and calls PresentVideo per frame; without one it renders straight into the window.
+// a present already in flight). With a presenter the bridge decodes in buffer mode and calls
+// PresentVideo per frame; without one it renders straight into the window.
 void MoonlightVideoAttachPresenter(void* presenter);
 void MoonlightVideoDetachPresenter();
 

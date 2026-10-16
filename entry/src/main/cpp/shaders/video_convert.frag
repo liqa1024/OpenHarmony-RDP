@@ -12,16 +12,18 @@ layout(location = 0) in vec2 vByte;
 layout(location = 0) out vec4 oColor;
 layout(set = 0, binding = 0) uniform sampler2D uBytes;
 layout(set = 0, binding = 1) uniform Frame {
-  vec4 visibleChroma; // xy = visible size in pixels, z = first row of the chroma plane
-  vec4 rowR;          // (cY, cCb, cCr, offset)
+  vec4 frame;  // xy = visible size in pixels, zw = sampling origin inside the byte image (crop)
+  vec4 plane; // x = first row of the chroma plane
+  vec4 rowR;   // (cY, cCb, cCr, offset)
   vec4 rowG;
   vec4 rowB;
 } uFrame;
 
 void main() {
-  const ivec2 pixel = ivec2(clamp(vByte, vec2(0.0), uFrame.visibleChroma.xy - 1.0));
+  const ivec2 origin = ivec2(uFrame.frame.zw);
+  const ivec2 pixel = ivec2(clamp(vByte, vec2(0.0), uFrame.frame.xy - 1.0)) + origin;
   const float luma = texelFetch(uBytes, pixel, 0).r * 255.0;
-  const ivec2 chromaPos = ivec2(pixel.x & ~1, int(uFrame.visibleChroma.z) + (pixel.y >> 1));
+  const ivec2 chromaPos = ivec2(pixel.x & ~1, int(uFrame.plane.x) + (pixel.y >> 1));
   const float cb = texelFetch(uBytes, chromaPos, 0).r * 255.0;
   const float cr = texelFetch(uBytes, ivec2(chromaPos.x + 1, chromaPos.y), 0).r * 255.0;
   const vec3 ycc = vec3(luma, cb, cr);

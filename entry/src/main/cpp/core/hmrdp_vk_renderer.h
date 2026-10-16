@@ -28,8 +28,7 @@ class VkRenderer : public FramePresenter {
   bool Prepare() override;
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
                    const PresentRect* rects, int rectCount) override;
-  bool PresentVideo(const void* nativeBuffer, int inputWidth, int inputHeight) override;
-  VkFormat format() const;
+  bool PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) override;
 
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
   void BeginDesktopBufferWrite() override;
@@ -42,7 +41,6 @@ class VkRenderer : public FramePresenter {
 
   void Reset() override;
 
-  bool ready() const;
   std::string lastError() const;
   std::string Describe() const;
 

@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "hmrdp_video_frame.h"
+
 namespace hmrdp {
 
 // XEngine = platform spatial upscale (needs XEG_spatial_upscale); FSR = AMD FidelityFX SR 1.0
@@ -74,16 +76,15 @@ class FramePresenter {
   virtual bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth,
                            int desktopHeight, const PresentRect* rects, int rectCount) = 0;
 
-  // Moonlight 超分: present one decoded frame straight from its ohos graphics-allocator buffer (an
-  // offscreen consumer surface buffer, NV12), importing it into the presenter's own device,
-  // converting to the picture format and running the shared 超分 / letterbox tail. `inputWidth`/
-  // `inputHeight` are the stream (session) resolution. Blocking per frame: the caller returns the
-  // buffer the moment this returns, so the presenter must be done with it. False when the presenter
-  // has no such path (GLES, or a device without the import / YCbCr-sampler support).
-  virtual bool PresentVideo(const void* nativeBuffer, int inputWidth, int inputHeight) {
+  // Moonlight 超分: present one decoded frame straight from the buffer the codec handed out (NV12),
+  // importing it into the presenter's own device, converting to the picture format and running the
+  // shared 超分 / letterbox tail. `geometry` is the codec's own description of the frame (see
+  // hmrdp_video_frame.h). Blocking per frame: the caller returns the buffer to the codec the moment
+  // this returns, so the presenter must be done with it. False when the presenter has no such path
+  // (GLES) or the frame's layout cannot be imported.
+  virtual bool PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
     (void)nativeBuffer;
-    (void)inputWidth;
-    (void)inputHeight;
+    (void)geometry;
     return false;
   }
 

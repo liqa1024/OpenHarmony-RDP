@@ -4,6 +4,7 @@
 #include <cstring>
 #include <utility>
 
+#include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
 #include <multimedia/player_framework/native_avbuffer.h>
 #include <multimedia/player_framework/native_avbuffer_info.h>
@@ -116,17 +117,40 @@ std::string VideoDecoder::lastError() const {
 
 bool VideoDecoder::Start(const std::string& mime, void* window, int width, int height,
                          int frameRate, FrameReadyFn onFrame) {
+  return StartInternal(mime, window, width, height, frameRate, std::move(onFrame), nullptr);
+}
+
+bool VideoDecoder::StartBuffered(const std::string& mime, int width, int height, int frameRate,
+                                 FrameReadyFn onFrame, VideoFrameSink* sink) {
+  if (sink == nullptr) {
+    SetError("buffer mode needs a frame sink");
+    return false;
+  }
+  return StartInternal(mime, nullptr, width, height, frameRate, std::move(onFrame), sink);
+}
+
+bool VideoDecoder::StartInternal(const std::string& mime, void* window, int width, int height,
+                                 int frameRate, FrameReadyFn onFrame, VideoFrameSink* sink) {
   if (codec_ != nullptr) {
     return started_.load();
   }
-  if (window == nullptr) {
+  buffered_ = sink != nullptr;
+  if (!buffered_ && window == nullptr) {
     SetError("decode output surface missing");
     return false;
   }
-  window_ = window;
+  sink_ = sink;
   onFrame_ = std::move(onFrame);
-  eosReached_.store(false);
   inputBudgetUs_ = BudgetForFrameRate(frameRate);
+  // Until the codec describes the stream, the frame layout is the requested size (the same reading
+  // the output description will carry; it is only read by the hand-off).
+  width_.store(width);
+  height_.store(height);
+  {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    geometry_.visibleWidth = width;
+    geometry_.visibleHeight = height;
+  }
 
   // Create the hardware decoder when there is one; software is the fallback the
   // caller warns about, never the silent default.
@@ -142,7 +166,6 @@ bool VideoDecoder::Start(const std::string& mime, void* window, int width, int h
     SetError("cannot create decoder for " + mime);
     return false;
   }
-  hardware_.store(picked.hardware);
 
   OH_AVCodecCallback callback;
   callback.onError = OnError;
@@ -169,7 +192,8 @@ bool VideoDecoder::Start(const std::string& mime, void* window, int width, int h
     return false;
   }
 
-  if (OH_VideoDecoder_SetSurface(codec_, reinterpret_cast<OHNativeWindow*>(window_)) != AV_ERR_OK) {
+  if (!buffered_ &&
+      OH_VideoDecoder_SetSurface(codec_, reinterpret_cast<OHNativeWindow*>(window)) != AV_ERR_OK) {
     SetError("SetSurface failed");
     Stop();
     return false;
@@ -185,6 +209,19 @@ bool VideoDecoder::Start(const std::string& mime, void* window, int width, int h
     return false;
   }
   started_ = true;
+  if (buffered_) {
+    {
+      std::lock_guard<std::mutex> lock(outputMutex_);
+      handOffStop_ = false;
+    }
+    try {
+      handOffThread_ = std::thread([this]() { HandOffLoop(); });
+    } catch (...) {
+      SetError("hand-off thread failed");
+      Stop();
+      return false;
+    }
+  }
   return true;
 }
 
@@ -201,6 +238,11 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
   // Ask for the low-latency path when the platform has it (silently ignored
   // otherwise, per the SDK).
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
+  if (buffered_) {
+    // Buffer mode: name the channel layout the import addresses byte-wise (interleaved 4:2:0) rather
+    // than finding out afterwards which one the codec picked.
+    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
+  }
   if (frameRate > 0) {
     // The SDK declares the key as double while the decoder examples pass an int; the setter
     // verifies the type, so take whichever this platform accepts.
@@ -228,9 +270,6 @@ bool VideoDecoder::Submit(const uint8_t* data, size_t size, int64_t ptsUs) {
   {
     const int64_t nowUs = NowUs();
     std::lock_guard<std::mutex> lock(mutex_);
-    if (eosQueued_) {
-      return false;
-    }
     Chunk chunk;
     chunk.data.assign(data, data + size);
     chunk.ptsUs = ptsUs;
@@ -258,16 +297,25 @@ size_t VideoDecoder::DropPending() {
   return dropped;
 }
 
-void VideoDecoder::SignalEos() {
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    eosQueued_ = true;
-  }
-  PumpInput();
-}
-
 void VideoDecoder::Stop() {
+  // The hand-off thread is holding a codec buffer and calling into the sink; it must be gone (and its
+  // pictures returned) before the codec releases them.
+  {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    handOffStop_ = true;
+    outputCv_.notify_all();
+  }
+  if (handOffThread_.joinable()) {
+    handOffThread_.join();
+  }
+  {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    handOffStop_ = false;
+  }
+  sink_ = nullptr;
+  ClearOutputs();
   if (codec_ == nullptr) {
+    buffered_ = false;
     return;
   }
   started_ = false;
@@ -275,16 +323,92 @@ void VideoDecoder::Stop() {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_.clear();
     idleInputs_.clear();
-    eosQueued_ = false;
-    eosPushed_ = false;
   }
   OH_VideoDecoder_Stop(codec_);
   OH_VideoDecoder_Destroy(codec_);
   codec_ = nullptr;
+  buffered_ = false;
   const uint64_t dropped = statPresentDropped_.exchange(0);
-  if (dropped > 0) {
-    HMRDP_LOGI("video decoder: %{public}llu frames outran the display and were dropped",
-               static_cast<unsigned long long>(dropped));
+  const uint64_t replaced = statHandOffReplaced_.exchange(0);
+  if (dropped > 0 || replaced > 0) {
+    HMRDP_LOGI("video decoder: %{public}llu frames outran the display, %{public}llu were replaced "
+               "before the sink took them",
+               static_cast<unsigned long long>(dropped), static_cast<unsigned long long>(replaced));
+  }
+}
+
+void VideoDecoder::ReleaseOutput(uint32_t index) {
+  if (codec_ != nullptr) {
+    OH_VideoDecoder_FreeOutputBuffer(codec_, index);
+  }
+}
+
+void VideoDecoder::HandOff(uint32_t index, OH_AVBuffer* buffer) {
+  OutputFrame dropped;
+  {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    if (handOffStop_) {
+      dropped.index = index;
+      dropped.buffer = buffer;
+    } else {
+      // The sink is behind: keep the newest picture only, so an overload costs one frame instead of
+      // a queue's worth of latency.
+      dropped = pendingOutput_;
+      if (dropped.buffer != nullptr) {
+        statHandOffReplaced_.fetch_add(1, std::memory_order_relaxed);
+      }
+      pendingOutput_.index = index;
+      pendingOutput_.buffer = buffer;
+      outputCv_.notify_one();
+    }
+  }
+  if (dropped.buffer != nullptr) {
+    ReleaseOutput(dropped.index);
+  }
+}
+
+void VideoDecoder::HandOffLoop() {
+  for (;;) {
+    OutputFrame frame;
+    VideoFrameGeometry geometry;
+    {
+      std::unique_lock<std::mutex> lock(outputMutex_);
+      outputCv_.wait(lock, [this]() { return handOffStop_ || pendingOutput_.buffer != nullptr; });
+      if (handOffStop_) {
+        return;
+      }
+      frame = pendingOutput_;
+      pendingOutput_ = OutputFrame();
+      geometry = geometry_;
+    }
+    if (frame.buffer == nullptr) {
+      continue;
+    }
+    OH_NativeBuffer* native = OH_AVBuffer_GetNativeBuffer(frame.buffer);
+    VideoFrameSink* sink = sink_;
+    if (native != nullptr && sink != nullptr) {
+      // Blocking: the sink is done with the frame (and with the GPU reading it) when this returns.
+      sink->PresentVideoFrame(native, geometry);
+    } else if (native == nullptr && !nativeBufferWarned_) {
+      nativeBufferWarned_ = true;
+      HMRDP_LOGW("video decoder: output buffer has no OH_NativeBuffer; dropping frames");
+    }
+    if (native != nullptr) {
+      OH_NativeBuffer_Unreference(native);
+    }
+    ReleaseOutput(frame.index);
+  }
+}
+
+void VideoDecoder::ClearOutputs() {
+  OutputFrame held;
+  {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    held = pendingOutput_;
+    pendingOutput_ = OutputFrame();
+  }
+  if (held.buffer != nullptr) {
+    ReleaseOutput(held.index);
   }
 }
 
@@ -296,48 +420,25 @@ void VideoDecoder::PumpInput() {
     OH_AVBuffer* buffer = nullptr;
     std::vector<uint8_t> data;
     int64_t ptsUs = 0;
-    bool eos = false;
   };
   std::vector<Feed> feeds;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    while (!idleInputs_.empty()) {
-      if (!pending_.empty()) {
-        Feed feed;
-        feed.index = idleInputs_.front().first;
-        feed.buffer = idleInputs_.front().second;
-        Chunk chunk = std::move(pending_.front());
-        pending_.pop_front();
-        feed.data = std::move(chunk.data);
-        feed.ptsUs = chunk.ptsUs;
-        idleInputs_.pop_front();
-        feeds.push_back(std::move(feed));
-      } else if (eosQueued_ && !eosPushed_) {
-        Feed feed;
-        feed.index = idleInputs_.front().first;
-        feed.buffer = idleInputs_.front().second;
-        feed.eos = true;
-        idleInputs_.pop_front();
-        eosPushed_ = true;
-        feeds.push_back(std::move(feed));
-      } else {
-        break;
-      }
+    while (!idleInputs_.empty() && !pending_.empty()) {
+      Feed feed;
+      feed.index = idleInputs_.front().first;
+      feed.buffer = idleInputs_.front().second;
+      Chunk chunk = std::move(pending_.front());
+      pending_.pop_front();
+      feed.data = std::move(chunk.data);
+      feed.ptsUs = chunk.ptsUs;
+      idleInputs_.pop_front();
+      feeds.push_back(std::move(feed));
     }
   }
 
   for (Feed& feed : feeds) {
     if (feed.buffer == nullptr) {
-      continue;
-    }
-    if (feed.eos) {
-      OH_AVCodecBufferAttr attr = {};
-      attr.offset = 0;
-      attr.size = 0;
-      attr.pts = 0;
-      attr.flags = AVCODEC_BUFFER_FLAGS_EOS;
-      OH_AVBuffer_SetBufferAttr(feed.buffer, &attr);
-      OH_VideoDecoder_PushInputBuffer(codec_, feed.index);
       continue;
     }
     const int32_t capacity = OH_AVBuffer_GetCapacity(feed.buffer);
@@ -384,11 +485,44 @@ void VideoDecoder::OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userD
       height <= 0) {
     OH_AVFormat_GetIntValue(format, OH_MD_KEY_HEIGHT, &height);
   }
-  if (width > 0 && height > 0) {
-    self->width_.store(width);
-    self->height_.store(height);
-    HMRDP_LOGI("video decoder: stream %{public}dx%{public}d", width, height);
+  if (width <= 0 || height <= 0) {
+    return;
   }
+  self->width_.store(width);
+  self->height_.store(height);
+  // Buffer mode adds the frame's layout to the same description: the byte row pitch, the rows
+  // allocated per plane (the chroma plane starts at their product) and the crop rectangle. That is
+  // exactly what a GPU import addresses, and it is only obtainable in this mode — an output surface
+  // hides the layout behind its own allocation.
+  int32_t stride = 0;
+  int32_t sliceHeight = 0;
+  int32_t cropLeft = 0;
+  int32_t cropTop = 0;
+  int32_t cropRight = 0;
+  int32_t cropBottom = 0;
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_STRIDE, &stride);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_SLICE_HEIGHT, &sliceHeight);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_LEFT, &cropLeft);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_TOP, &cropTop);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_RIGHT, &cropRight);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_BOTTOM, &cropBottom);
+  {
+    std::lock_guard<std::mutex> lock(self->outputMutex_);
+    VideoFrameGeometry& geometry = self->geometry_;
+    geometry = VideoFrameGeometry();
+    geometry.stride = stride > 0 ? stride : 0;
+    geometry.sliceHeight = sliceHeight > 0 ? sliceHeight : 0;
+    // The crop rectangle is inclusive; an all-zero or full-frame rectangle means "no crop".
+    const bool cropped = cropRight > cropLeft && cropBottom > cropTop && cropRight < width &&
+                         cropBottom < height;
+    geometry.visibleWidth = cropped ? cropRight - cropLeft + 1 : width;
+    geometry.visibleHeight = cropped ? cropBottom - cropTop + 1 : height;
+    geometry.originX = cropped ? cropLeft : 0;
+    geometry.originY = cropped ? cropTop : 0;
+  }
+  HMRDP_LOGI("video decoder: stream %{public}dx%{public}d stride=%{public}d slice=%{public}d "
+             "crop=%{public}d,%{public}d-%{public}d,%{public}d",
+             width, height, stride, sliceHeight, cropLeft, cropTop, cropRight, cropBottom);
 }
 
 void VideoDecoder::OnNeedInput(OH_AVCodec*, uint32_t index, OH_AVBuffer* buffer, void* userData) {
@@ -409,19 +543,22 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
     OH_AVBuffer_GetBufferAttr(buffer, &attr);
   }
   if ((attr.flags & AVCODEC_BUFFER_FLAGS_EOS) != 0) {
-    eosReached_.store(true);
-    OH_VideoDecoder_FreeOutputBuffer(codec_, index);
+    ReleaseOutput(index);
     return;
   }
   const int width = width_.load();
   const int height = height_.load();
   // Present as soon as the frame is decoded (the host paces the stream); a frame the display cannot
-  // show this period is released unwatched — this is the one place that decides it, for both the
-  // direct and the 超分 path.
+  // show this period is released unwatched — this is the one place that decides it, for both output
+  // modes. In buffer mode "presenting" means handing the picture to the sink, which returns it.
   if (TakePresentSlot()) {
-    OH_VideoDecoder_RenderOutputBuffer(codec_, index);
+    if (buffered_) {
+      HandOff(index, buffer);
+    } else {
+      OH_VideoDecoder_RenderOutputBuffer(codec_, index);
+    }
   } else {
-    OH_VideoDecoder_FreeOutputBuffer(codec_, index);
+    ReleaseOutput(index);
   }
   if (onFrame_) {
     onFrame_(width, height, attr.pts);

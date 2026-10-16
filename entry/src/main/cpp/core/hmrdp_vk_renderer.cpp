@@ -2234,8 +2234,10 @@ void VkRenderer::DrainInFlightLocked() {
   }
 }
 
-bool VkRenderer::PresentVideo(const void* nativeBuffer, int inputWidth, int inputHeight) {
-  if (nativeBuffer == nullptr || inputWidth <= 0 || inputHeight <= 0) {
+bool VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
+  const int visibleWidth = geometry.visibleWidth;
+  const int visibleHeight = geometry.visibleHeight;
+  if (nativeBuffer == nullptr || visibleWidth <= 0 || visibleHeight <= 0) {
     return false;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -2250,35 +2252,33 @@ bool VkRenderer::PresentVideo(const void* nativeBuffer, int inputWidth, int inpu
       return false;
     }
     // The importer's picture is the session resolution and only changes on a resolution switch;
-    // drain the frames still reading the old one before it is rebuilt.
-    if (videoImport_.needsRebuild(inputWidth, inputHeight)) {
+    // drain the frames still reading the old one before it is rebuilt (which drops the imports too).
+    // The same holds when the import cache is at its cap and a new buffer has to be imported.
+    if (videoImport_.needsRebuild(visibleWidth, visibleHeight) || videoImport_.importCacheFull()) {
       DrainInFlightLocked();
     }
-    if (!videoImport_.Ensure(inputWidth, inputHeight)) {
+    if (!videoImport_.Ensure(visibleWidth, visibleHeight)) {
       error_ = videoImport_.lastError();
       return false;
     }
     VkVideoImport::Frame imported{};
-    if (!videoImport_.Import(nativeBuffer, inputWidth, inputHeight, &imported)) {
+    if (!videoImport_.Import(nativeBuffer, geometry, &imported)) {
       error_ = videoImport_.lastError();
       return false;
     }
     // 超分: build the upscale target before acquiring, so a rare (re)creation can drain.
-    const bool srActive = EnsureSuperResolutionLocked(inputWidth, inputHeight,
-                                                      videoImport_.pictureView());
+    const bool srActive =
+        EnsureSuperResolutionLocked(visibleWidth, visibleHeight, videoImport_.pictureView());
 
     uint32_t imageIndex = 0;
     bool retry = false;
     if (!AcquireFrameLocked(&imageIndex, &retry)) {
-      videoImport_.Release(&imported);
       return false;
     }
     if (retry) {
-      videoImport_.Release(&imported);
       continue;
     }
     if (!EnsurePresentPipelineLocked()) {
-      videoImport_.Release(&imported);
       return false;
     }
 
@@ -2297,7 +2297,7 @@ bool VkRenderer::PresentVideo(const void* nativeBuffer, int inputWidth, int inpu
       api.CmdResetQueryPool(cmd, presentTimer_[slot], 0, kPresentTimestampsPerSlot);
       api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, presentTimer_[slot], 0);
     }
-    videoImport_.RecordConvert(cmd, imported, inputWidth, inputHeight);
+    videoImport_.RecordConvert(cmd, imported);
     if (timers) {
       api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, presentTimer_[slot],
                             1);
@@ -2308,25 +2308,19 @@ bool VkRenderer::PresentVideo(const void* nativeBuffer, int inputWidth, int inpu
     PresentInput input;
     input.image = videoImport_.pictureImage();
     input.view = videoImport_.pictureView();
-    input.width = inputWidth;
-    input.height = inputHeight;
+    input.width = visibleWidth;
+    input.height = visibleHeight;
     input.producerStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     input.producerAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, input, srActive, timers);
-    // The caller frees the surface buffer as soon as this returns, so the import (and the GPU work
-    // reading it) has to be finished here; the video path is present-paced anyway.
+    // The caller returns the decoded buffer to the codec as soon as this returns, so the GPU work
+    // reading it has to be finished here; the video path is present-paced anyway.
     if (api.WaitForFences != nullptr) {
       api.WaitForFences(device, 1, &inFlight_[slot], VK_TRUE, UINT64_MAX);
     }
-    videoImport_.Release(&imported);
     return presented;
   }
   return false;
-}
-
-VkFormat VkRenderer::format() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return format_;
 }
 
 void VkRenderer::Reset() {
@@ -2750,11 +2744,6 @@ void VkRenderer::DestroyFrameResourcesLocked() {
     inFlight_[i] = VK_NULL_HANDLE;
   }
   frameIndex_ = 0;
-}
-
-bool VkRenderer::ready() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return swapchain_ != VK_NULL_HANDLE;
 }
 
 std::string VkRenderer::lastError() const {

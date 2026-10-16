@@ -127,8 +127,7 @@ core/hmrdp_moonlight_session.cpp
     core/hmrdp_moonlight_audio.cpp
     core/hmrdp_gamepad_kit.cpp
     core/hmrdp_oh_audio.cpp
-    core/hmrdp_video_consumer.cpp
-    core/hmrdp_video_decoder.cpp
+core/hmrdp_video_decoder.cpp
     core/hmrdp_display_rate.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
@@ -173,10 +172,8 @@ target_link_libraries(hmrdp
     hilog_ndk.z
     ffrt.z
     native_window
-    # 超分 video import: reference/unreference the AVCodec output buffer as an OH_NativeBuffer.
+    # 超分 video import: read the codec's output buffer (OH_NativeBuffer: geometry, seq num, colour space).
     native_buffer
-    # 超分 video import: the offscreen OH_NativeImage consumer surface the decoder renders into.
-    native_image
     # The panel's current refresh rate, which the video present gate follows.
     native_display_manager
     # OHAudio: the Moonlight low-latency playback path (FAST + audio workgroup).
