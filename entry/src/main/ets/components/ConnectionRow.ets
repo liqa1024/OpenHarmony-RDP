@@ -365,7 +365,6 @@ export struct ConnectionRow {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor(Color.Transparent)
     .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
     .clip(false)
     .attributeModifier(this.cardMaterial)

@@ -3,11 +3,15 @@ import { uiMaterial } from '@kit.ArkUI';
 
 const IMMERSIVE_MATERIAL_MIN_API: number = 26;
 const PROBE_RETRY_MS: number = 200;
+// The toolbar sits over the unknown remote image, so its material is tinted dark instead of following the
+// system (palette: components/SessionChrome.ets).
+const FLOATING_TINT: string = '#B31B1B1D';
 
 export enum MaterialSurface {
   FLOATING,
   CARD,
   OVERLAY,
+  DIALOG,
   CONTROL
 }
 
@@ -49,20 +53,27 @@ function supportedNow(): boolean {
   return resolved;
 }
 
+// The style is what decides how much a surface obscures what is behind it, so every surface names its own
+// instead of inheriting one (mapping and criteria: arkts-conventions.md §6).
 function build(surface: MaterialSurface): uiMaterial.Material | undefined {
   if (deviceInfo.apiAvailable('26.0.0')) {
-    let style: uiMaterial.ImmersiveStyle = uiMaterial.ImmersiveStyle.THIN;
+    let style: uiMaterial.ImmersiveStyle = uiMaterial.ImmersiveStyle.REGULAR;
     let applyShadow: boolean = true;
     let materialColor: ResourceColor | undefined = undefined;
-    if (surface === MaterialSurface.CARD) {
+    if (surface === MaterialSurface.FLOATING) {
+      style = uiMaterial.ImmersiveStyle.THIN;
+      materialColor = FLOATING_TINT;
+    } else if (surface === MaterialSurface.CARD) {
       style = uiMaterial.ImmersiveStyle.REGULAR;
       applyShadow = false;
-    } else if (surface === MaterialSurface.OVERLAY) {
-      style = uiMaterial.ImmersiveStyle.THICK;
     } else if (surface === MaterialSurface.CONTROL) {
       style = uiMaterial.ImmersiveStyle.THIN;
+    } else if (surface === MaterialSurface.OVERLAY) {
+      style = uiMaterial.ImmersiveStyle.THICK;
+    } else if (surface === MaterialSurface.DIALOG) {
+      style = uiMaterial.ImmersiveStyle.ULTRA_THICK;
     } else {
-      materialColor = '#B31B1B1D';
+      return undefined;
     }
     return new uiMaterial.ImmersiveMaterial({
       style: style,
@@ -73,9 +84,8 @@ function build(surface: MaterialSurface): uiMaterial.Material | undefined {
   return undefined;
 }
 
-// Fallback thickness mirrors the material one, so a system without a material still gets a
-// frosted surface instead of a flat colour; the component styles carry their own theme-aware
-// fill, which is why only the fixed-dark surface keeps an explicit background of its own.
+// Mirrors the material thickness, so a surface without a material still reads as glass: component styles
+// carry their own theme-aware fill.
 function fallbackBlur(surface: MaterialSurface): BlurStyle {
   if (surface === MaterialSurface.CARD) {
     return BlurStyle.COMPONENT_REGULAR;
@@ -83,63 +93,59 @@ function fallbackBlur(surface: MaterialSurface): BlurStyle {
   if (surface === MaterialSurface.OVERLAY) {
     return BlurStyle.COMPONENT_THICK;
   }
+  if (surface === MaterialSurface.DIALOG) {
+    return BlurStyle.COMPONENT_ULTRA_THICK;
+  }
   return BlurStyle.COMPONENT_THIN;
 }
 
-let floating: uiMaterial.Material | undefined = undefined;
-let card: uiMaterial.Material | undefined = undefined;
-let overlay: uiMaterial.Material | undefined = undefined;
-let control: uiMaterial.Material | undefined = undefined;
+// Built once per surface and reused: rebuilding a material keeps its layer dirty.
+const MATERIALS: Map<MaterialSurface, uiMaterial.Material> = new Map();
 
 export class SystemMaterial {
   static of(surface: MaterialSurface): uiMaterial.Material | undefined {
     if (!supportedNow()) {
       return undefined;
     }
-    if (surface === MaterialSurface.CARD) {
-      if (card === undefined) {
-        card = build(surface);
-      }
-      return card;
+    const built: uiMaterial.Material | undefined = MATERIALS.get(surface);
+    if (built !== undefined) {
+      return built;
     }
-    if (surface === MaterialSurface.OVERLAY) {
-      if (overlay === undefined) {
-        overlay = build(surface);
-      }
-      return overlay;
+    const material: uiMaterial.Material | undefined = build(surface);
+    if (material !== undefined) {
+      MATERIALS.set(surface, material);
     }
-    if (surface === MaterialSurface.CONTROL) {
-      if (control === undefined) {
-        control = build(surface);
-      }
-      return control;
-    }
-    if (floating === undefined) {
-      floating = build(surface);
-    }
-    return floating;
+    return material;
   }
 }
 
-// The systemMaterial attribute only exists from API 26, so it is applied through a modifier (an unimplemented inline attribute would abort the component build). A surface without a material gets the matching component frosted style instead: backgroundBlurStyle sits above the material layer, so the two are never set together.
+// Applied through a modifier because the attribute only exists from API 26 (an inline one would abort the
+// build on older systems). The branches are exclusive — backgroundBlurStyle sits above the material layer —
+// and the base colour belongs to the branch, not to the call site: a material is drawn below the
+// background, so only the branch without a material may be opaque.
 export class ImmersiveModifier<T extends CommonMethod<T>> implements AttributeModifier<T> {
   private readonly surface: MaterialSurface;
+  private readonly fallbackBase: ResourceColor;
 
-  constructor(surface: MaterialSurface) {
+  constructor(surface: MaterialSurface, fallbackBase: ResourceColor = Color.Transparent) {
     this.surface = surface;
+    this.fallbackBase = fallbackBase;
   }
 
   applyNormalAttribute(instance: T): void {
     const material: uiMaterial.Material | undefined = SystemMaterial.of(this.surface);
     if (material === undefined) {
+      instance.backgroundColor(this.fallbackBase);
       if (this.surface === MaterialSurface.FLOATING) {
-        // The bar floats over the remote image, so it keeps a dark tone instead of following the system.
+        // Without a material the bar keeps its dark tone, so the frosted style is pinned to dark mode
+        // instead of following the system.
         instance.backgroundBlurStyle(fallbackBlur(this.surface), { colorMode: ThemeColorMode.DARK });
       } else {
         instance.backgroundBlurStyle(fallbackBlur(this.surface));
       }
       return;
     }
+    instance.backgroundColor(Color.Transparent);
     if (deviceInfo.apiAvailable('26.0.0')) {
       instance.systemMaterial(material);
     }

@@ -109,7 +109,7 @@ struct MoonlightSessionPage {
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING);
+    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING, TOOLBAR_BG);
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
@@ -854,7 +854,6 @@ struct MoonlightSessionPage {
       }
     }
     .width('100%')
-    .backgroundColor(TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
     // In fullscreen the bar covers the surface, so only its own hover reports it.
     .onHover((isHover: boolean) => {

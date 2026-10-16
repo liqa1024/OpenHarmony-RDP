@@ -14,7 +14,6 @@ export struct MaterialCard {
     .width('100%')
     .constraintSize({ maxWidth: 720 })
     .padding(this.pad)
-    .backgroundColor(Color.Transparent)
     .borderRadius(20)
     .alignItems(HorizontalAlign.Start)
     .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })

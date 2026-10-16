@@ -40,7 +40,7 @@
 | token | 浅色 | 深色 | 用途 |
 |---|---|---|---|
 | `page_bg` | `#F2F3F5` | `#000000` | 页面底色 |
-| `card_bg` | `#FFFFFF` | `#1B1B1D` | 卡片 / 浮层 / 圆钮底 |
+| `card_bg` | `#FFFFFF` | `#1B1B1D` | 自定义弹窗底（引导 / 选择器）；材质卡片不用它（材质与同档磨砂自带上色） |
 | `input_bg` | `#F5F6F8` | `#26262A` | 输入框、次级按钮底、未选中 chip 底 |
 | `divider` | `#ECECEC` | `#2C2C2E` | 分隔线 |
 | `text_primary` | `#182431` | `#E8EAED` | 主文字、标题 |
@@ -70,7 +70,7 @@
 
 | 常量 | 值 | 用途 |
 |---|---|---|
-| `TOOLBAR_BG` | `#CC1A1A1A` | 工具栏底（材质 / 兜底磨砂共用的半透明深色着底） |
+| `TOOLBAR_BG` | `#CC1A1A1A` | 工具栏的兜底底色（**无材质时**才出现，其上再叠深色档磨砂；有材质时由材质自着深色） |
 | `TOOLBAR_FG` / `TOOLBAR_FG_SECONDARY` | `#FFFFFF` / `#B8BCC4` | 主 / 次文字与图标 |
 | `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底 |
 | `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底 |
@@ -101,21 +101,22 @@
 
 ## 2. 沉浸材质（系统材质）
 
-材质三表面与配色方向（挂载机制、版本门槛、`ImmersiveModifier` 写法见 [`arkts-conventions.md`](arkts-conventions.md) §6）：
+材质表面与配色方向（挂载机制、**档位与判据**、版本门槛、`ImmersiveModifier` 写法见 [`arkts-conventions.md`](arkts-conventions.md) §6）：
 
 | 表面 | 挂载点 | 配色方向 | 无材质时的兜底 |
 |---|---|---|---|
-| `CARD` | 列表 / 编辑 / 设置卡片 | 跟随系统深浅色；前景走 `$r()` | 同档组件磨砂（`COMPONENT_REGULAR`），跟随系统 |
-| `OVERLAY` | Toast、Tips、右键菜单、AlertDialog | 跟随系统（系统自带前景色） | 交给系统默认背景，不再自己设模糊 |
+| `CARD` | 列表 / 编辑 / 设置卡片、连接状态卡 | 跟随系统深浅色；前景走 `$r()` | 同档组件磨砂（`COMPONENT_REGULAR`），跟随系统 |
+| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 跟随系统；不加赋色 | 同档组件磨砂（`COMPONENT_THIN`），跟随系统 |
 | `FLOATING` | 会话工具栏 | **固定深色，不跟随系统** | 半透明深色底（`TOOLBAR_BG`）+ 深色档组件磨砂 |
-| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 跟随系统；`THIN`，不加赋色 | 同档组件磨砂（`COMPONENT_THIN`），跟随系统 |
+| `OVERLAY` | Toast、Tips、右键菜单 | 跟随系统（系统自带前景色） | 交给系统默认背景，不再自己设模糊 |
+| `DIALOG` | 弹窗（`AlertDialog`、`showConfirm` / `showNotice`） | 同上 | 同上 |
 
 约束：
 
 - 材质对象**建一次复用**（改参数触发系统重算材质，每帧新建会持续重绘）。
 - **无材质时必须仍是"玻璃"，不能退回平色**：兜底一律是**同档组件磨砂**（`backgroundBlurStyle`），
-  与材质互斥地挂在 `ImmersiveModifier` 的同一个分支里；底色因此恒为 `Color.Transparent`
-  （`FLOATING` 例外：恒为半透明深色），调用点不再写"兜底色"三元。
+  与材质互斥地挂在 `ImmersiveModifier` 的同一个分支里；**底色由该分支决定**（有材质恒为 `Color.Transparent`，
+  无材质才用表面自己的兜底色——只有固定深色的 `FLOATING` 有，即半透明深色底），**调用点不写底色**。
 - 材质**绝不挂在持续变化的内容**（远端画面）上；避免大面积、与 `backgroundBlurStyle` 叠加。
 - 无材质能力时外观退化为"同档磨砂玻璃"，**不得依赖材质存在**（也不得因此丢掉玻璃质感变成平色）。
 
@@ -142,7 +143,7 @@ Column(page_bg, 100%×100%)
 
 ### 3.3 卡片与表单分节
 
-- 卡片：`width 100%`、`constraintSize({ maxWidth:720 })`、圆角 20、`card_bg`（有材质时透明 + `CARD` 材质）、阴影、`padding`（编辑 28 / 设置 24）。
+- 卡片：`width 100%`、`constraintSize({ maxWidth:720 })`、圆角 20、**不写底色**（`CARD` 材质 / 同档磨砂自带上色，见 §2）、阴影、`padding`（编辑 28 / 设置 24）。
 - 分节小标题：`13` `text_secondary`，`margin bottom 4`。
 - 行：左列 `layoutWeight(1)`（标题 `14` `text_primary` + 副标题 `11` `text_tertiary`，`margin top 2`）+ 右侧控件；行间 `Divider`。
 - 控件列（§4）右对齐；带副标题行高 `58`，纯开关行 `48`。
@@ -157,7 +158,7 @@ Column(page_bg, 100%×100%)
 
 ### 3.5 列表行
 
-由 `ConnectionRow` 组件实现（§4.1）。`Row`（圆角 14、`card_bg` / CARD 材质、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
+由 `ConnectionRow` 组件实现（§4.1）。`Row`（圆角 14、`CARD` 材质（无材质时同档磨砂）、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
 
 - 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，「已连接」用 `success` / `success_bg`，「运行中」用 `accent` / `accent_bg`）、副标题 `12` `text_tertiary`。
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
@@ -237,7 +238,7 @@ Column(page_bg, 100%×100%)
 
 | 文件 | 内容 |
 |---|---|
-| `UiUtil.ets` | `showToast`（+`OVERLAY` 材质）、`lengthToNumber`（`Length` → vp 数值）、`showConfirm` / `showNotice`（统一的确认 / 提示弹窗，见下） |
+| `UiUtil.ets` | `showToast`（+`OVERLAY` 材质）、`lengthToNumber`（`Length` → vp 数值）、`showConfirm` / `showNotice`（统一的确认 / 提示弹窗，+`DIALOG` 材质，见下） |
 | `PictureFit.ets` | 画面居中留边与映射：`fitPictureRect`（容器内按内容比例的居中矩形）、`mapPicturePoint`（画面局部坐标 → 远端像素，含夹取）；`SessionPicture` 与两个会话页共用 |
 | `DisplayUtil.ets` | `defaultDisplay()`（容错查询默认显示，页面与服务共用） |
 | `ScaleParse.ets` | 手动分辨率 / 缩放文本解析：`parseSizeValue` / `parseScaleValue` / `parsedTextValue` / `isScalePreset`，及 `MAX_DESKTOP_SIZE` |
@@ -249,7 +250,8 @@ Column(page_bg, 100%×100%)
 
 约束：**确认 / 提示弹窗一律走 `showConfirm` / `showNotice`，不在页面里直接写 `showAlertDialog`**——
 两按钮弹窗恒为「左=取消（无副作用）+ 右=确认」，确认键颜色由 `danger` 选 `danger` / `accent`；
-单按钮提示用 `showNotice`。材质（`OVERLAY`）由工具负责，无材质时交给系统默认弹窗背景（不自己设模糊，
+单按钮提示用 `showNotice`。材质由工具负责（`showToast` 用 `OVERLAY`、两个弹窗用 `DIALOG`，见 §2），
+无材质时交给系统默认弹窗背景（不自己设模糊，
 否则会关掉系统的默认材质），页面只给文案与回调。
 带可点链接等自定义内容的引导（如 `WolHelpPrompt`）走 `ComponentContent` + `openCustomDialog`，不进这条。
 

@@ -31,7 +31,7 @@ export function showConfirm(ui: UIContext, options: ConfirmDialogOptions): void 
     ui.showAlertDialog({
       title: options.title,
       message: options.message,
-      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+      systemMaterial: SystemMaterial.of(MaterialSurface.DIALOG),
       primaryButton: {
         value: options.cancelLabel !== undefined ? options.cancelLabel : '取消',
         action: () => {
@@ -56,7 +56,7 @@ export function showNotice(ui: UIContext, title: string, message: string,
     ui.showAlertDialog({
       title: title,
       message: message,
-      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
+      systemMaterial: SystemMaterial.of(MaterialSurface.DIALOG),
       confirm: {
         value: confirmLabel,
         action: () => {

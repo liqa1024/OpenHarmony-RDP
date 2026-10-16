@@ -63,7 +63,6 @@ export struct StatusCard {
     }
     .width(360)
     .padding({ top: 32, bottom: 28, left: 28, right: 28 })
-    .backgroundColor(Color.Transparent)
     .borderRadius(20)
     .shadow({ radius: 30, color: '#33000000', offsetX: 0, offsetY: 10 })
     .attributeModifier(this.cardMaterial)

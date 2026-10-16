@@ -37,8 +37,6 @@ export struct ControlDisc {
     .width(this.diameter)
     .height(this.diameter)
     .borderRadius(this.diameter / 2)
-    // Transparent: an opaque background would cover the material surface.
-    .backgroundColor(Color.Transparent)
     .attributeModifier(this.controlMaterial)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)

@@ -94,7 +94,7 @@ struct SessionPage {
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
   private toolbarMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING);
+    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING, TOOLBAR_BG);
   // A system without the material capability ignores this field and keeps the default tooltip.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
@@ -995,7 +995,6 @@ struct SessionPage {
       }
     }
     .width('100%')
-    .backgroundColor(TOOLBAR_BG)
     .attributeModifier(this.toolbarMaterial)
     // In fullscreen the strip covers the surface, so only its own hover reports the pointer.
     .onHover((isHover: boolean) => {
