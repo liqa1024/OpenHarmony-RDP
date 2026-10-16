@@ -19,8 +19,7 @@ import { SessionBackend, SessionBackendRegistry } from '../services/SessionBacke
 import { SessionInput } from '../services/SessionInput';
 import { SessionInputPort } from '../services/InputPort';
 import { InputProtocol } from '../services/InputProtocol';
-import { MOUSE_MOVE_MIN_INTERVAL_MS, TOUCH_MOVE_INTERVAL_DEFAULT_MS,
-  TOUCH_MOVE_INTERVAL_HIGH_RATE_MS } from '../services/input/InputPolicy';
+import { TOUCH_MOVE_INTERVAL_DEFAULT_MS, TOUCH_MOVE_INTERVAL_HIGH_RATE_MS } from '../services/input/InputPolicy';
 import { SessionSignal } from '../model/SessionSignal';
 import { RdpCounters } from '../services/RdpTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
@@ -393,7 +392,7 @@ struct SessionPage {
 
   private makeInput(settings: AppSettings): SessionInput {
     const sink: SessionInputPort = new SessionInputPort(InputProtocol.RDP,
-      this.native.handleId(), this.options.scalePercent, MOUSE_MOVE_MIN_INTERVAL_MS);
+      this.native.handleId(), this.options.scalePercent);
     this.sink = sink;
     const input: SessionInput = new SessionInput(sink);
     this.input = input;
@@ -452,7 +451,7 @@ struct SessionPage {
   }
 
   private refreshCounters(): void {
-    const counters: RdpCounters | undefined = this.native.readCounters();
+    const counters: RdpCounters | undefined = this.native.readCounters(this.sink?.inputDropped() ?? 0);
     if (counters !== undefined) {
       this.applyCounters(counters);
     }

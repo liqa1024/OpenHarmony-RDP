@@ -42,8 +42,8 @@
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
 | `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
-| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有，附 `GamepadDevices` 设备枚举）+ `MoveDelivery`/`RateCoalescer`（连续位置流投递：限速或直通，由 `InputSink.moveDelivery` 按声明的窗口选）/`HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口），以及两层各自的协议落地 `RdpInputSender`/`MoonlightInputSender` |
-| `services/InputPort.ets` | **L1 输入派发器 `SessionInputPort`**：控制器的 sink，动词一律入队给输入 worker，策略查询按本地状态回答（见 [`session-layer.md`](session-layer.md) §8） |
+| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有，附 `GamepadDevices` 设备枚举）+ `HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口），以及两层各自的协议落地 `RdpInputSender`/`MoonlightInputSender`。控制器只把平台事件翻译成普通动词，**不自持投递策略**（限量在 `services/InputPort.ets` 的闸门） |
+| `services/InputPort.ets` | **L1 输入派发器 `SessionInputPort`**：控制器的 sink，也是整条输入流水线**唯一的限量实现**（窗口 / 速率上限 / 丢弃计数 / 离散前的冲刷）；动词一律入队给输入 worker，策略查询按本地状态回答（见 [`session-layer.md`](session-layer.md) §8） |
 | `services/InputProtocol.ets` | L1↔L2 的消息形状、投递类声明（每条流的窗口）与遥测形状 |
 | `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `PointerInput`；状态与定时器自持有 |
 | `services/RdpNative.ets` | 每会话一个实例（独占原生 handle）；把事件交给 `RdpEventHub`，由 `RdpSessionBackend` 包进 `SessionBackend` |
@@ -68,7 +68,7 @@
 | `workers/background.worker.ets` | **后台 worker（进程一条）**：剪贴板编解码 + 下载状态机/文件 IO（见 §4.4） |
 | `workers/FileDownloader.ets` | 远端文件下载状态机（worker 侧）：分片请求、沙箱写盘、进度/完成/失败事件 |
 | `workers/audio.worker.ets` | **音频 worker（进程一条）**：每会话一个 ArkTS `AudioRenderer`，其 `writeData` 经 `audioRead`（RDP）/ `moonlightAudioRead`（Moonlight）从原生 sink 环拉 PCM（见 §4.4） |
-| `workers/input.worker.ets` | **输入 worker（每会话一条）**：输入的唯一发送者——消费 L1 投递的记录、执行 L2 侧的投递类（文本多码点聚合成一包）、调 L3 sender 并累计拒收（见 §4.4） |
+| `workers/input.worker.ets` | **输入 worker（每会话一条）**：输入的唯一发送者——消费 L1 投递的记录、调 L3 sender 并累计拒收；**不做窗口 / 等待**（限量全在 L1 闸门），见 §4.4 |
 | `moonlight/MoonlightClient.ets` | Moonlight 控制层编排：`serverinfo → pair → applist → launch/resume`，并装配原生串流配置（见 [`moonlight-control.md`](moonlight-control.md) §1） |
 | `moonlight/MoonlightIdentity.ets` | 客户端身份（自签名 X.509）+ HUKS 信封私钥 + 逐主机 pin 存储 |
 | `moonlight/MoonlightCrypto.ets` | Moonlight 配对加密原语（AES-ECB、SHA、RSA 签验） |
@@ -187,7 +187,7 @@
 - **UI 线程**：界面、事件路由、**输入的规范化与入队**（平台事件 → 控制器 → `SessionInputPort`，协议发送在输入 worker，见下）；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS 看不到原生内存，与线程无关）。剪贴板**格式协商的取舍**（选哪个格式、单在途、延迟刷新）也在这里：它只是一次事件上的小状态机，不含重活（编解码/写盘在后台 worker，见 [`rdp-clipboard.md`](rdp-clipboard.md)）。
 - **后台 worker（一条）**：非实时的长驻状态机与重活——剪贴板 DIB/RTF/HTML 编解码、**本机剪贴板编码 + 原生推送**（native 会把整块内容拷进自己的存储并立即 advertise，一次通道发送，不能占 UI 线程）、文件下载状态机与写盘。彼此可互相等待，共用一条即可。落地：`workers/background.worker.ets` + UI 门面 `services/BackgroundWorker.ets`（消息形状 `services/BackgroundProtocol.ets`，下载状态机 `workers/FileDownloader.ets`）。
 - **音频 worker（一条）**：ArkTS `AudioRenderer` 的回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频卡顿且与处理绑定"（同 §4.2 的 drdynvc 教训）。落地：`workers/audio.worker.ets` + UI 门面 `services/AudioPlayer.ets`（消息形状 `services/AudioProtocol.ets`）。详见 [`rdp-native.md`](rdp-native.md) §5。
-- **输入 worker（每会话一条）**：协议侧的发送成本不对称（RDP 是调用线程上的同步网络写，Moonlight 是入库返回），把它们从 UI 线程摘走，UI 线程就只做规范化与入队。落地：`workers/input.worker.ets` + L1 派发器 `services/InputPort.ets`（消息形状与投递类声明 `services/InputProtocol.ets`）；sink 在 worker 内构造，靠**进程级句柄注册表 / 库的进程级会话**直接落到原生（同「Worker 可调用原生」）。**入队即唤醒**，限量（窗口与速率上限）在 L1（见 [`session-layer.md`](session-layer.md) §8），所以这条线程不轮询、不睡眠；它自己唯一的等待是文本聚合窗口。
+- **输入 worker（每会话一条）**：协议侧的发送成本不对称（RDP 是调用线程上的同步网络写，Moonlight 是入库返回），把它们从 UI 线程摘走，UI 线程就只做规范化与入队。落地：`workers/input.worker.ets` + L1 派发器 `services/InputPort.ets`（消息形状与投递类声明 `services/InputProtocol.ets`）；sink 在 worker 内构造，靠**进程级句柄注册表 / 库的进程级会话**直接落到原生（同「Worker 可调用原生」）。**入队即唤醒**，限量（窗口与速率上限）只在 L1 闸门（见 [`session-layer.md`](session-layer.md) §8），所以这条线程不轮询、不睡眠、也没有自己的窗口；它只逐条调 sender 并回报受理 / 拒收。
 
 **事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。`services/RdpEventHub` 是其唯一订阅者，按 handle 路由给 `RdpNative`；需 worker 消费的事件由 UI 线程按 handle `postMessage` 转发（Worker 拿不到该 TSFN：回调只跑 UI 线程，且各 Worker 有独立 `napi_env`）。Worker 只回控制/进度。
 

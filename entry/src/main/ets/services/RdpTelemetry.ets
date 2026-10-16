@@ -29,11 +29,15 @@ export class RdpCounters {
 export class RdpTelemetryAggregator {
   private hasSeq: boolean = false;
   private lastSeq: number = 0;
+  private hasInput: boolean = false;
+  private prevInputDropped: number = 0;
   private audioLost: number[] = new Array<number>(AUDIO_WINDOW).fill(0);
   private audioTotal: number[] = new Array<number>(AUDIO_WINDOW).fill(0);
   private audioIndex: number = 0;
 
-  sample(raw: RdpTelemetry): RdpCounters | undefined {
+  // `inputDropped` is the pipeline's cumulative drop count (L1 budget drops + sink rejects): the
+  // rate names a stream that is over its budget, so a `perf:` grep shows it without a live watch.
+  sample(raw: RdpTelemetry, inputDropped: number): RdpCounters | undefined {
     if (raw.windowElapsedMs === 0) {
       return undefined;
     }
@@ -71,8 +75,19 @@ export class RdpTelemetryAggregator {
     counters.dutyPermille = windowUs > 0 ? Math.floor(workUs * 1000 / windowUs) : 0;
 
     this.sampleAudio(raw, counters);
-    this.log(counters, raw, seconds);
+    this.log(counters, raw, seconds, this.inputDropRate(inputDropped, seconds));
     return counters;
+  }
+
+  private inputDropRate(inputDropped: number, seconds: number): number {
+    if (!this.hasInput) {
+      this.hasInput = true;
+      this.prevInputDropped = inputDropped;
+      return 0;
+    }
+    const delta: number = inputDropped - this.prevInputDropped;
+    this.prevInputDropped = inputDropped;
+    return seconds > 0 ? Math.round(delta / seconds) : 0;
   }
 
   private sampleAudio(raw: RdpTelemetry, counters: RdpCounters): void {
@@ -91,7 +106,8 @@ export class RdpTelemetryAggregator {
     }
   }
 
-  private log(counters: RdpCounters, raw: RdpTelemetry, seconds: number): void {
+  private log(counters: RdpCounters, raw: RdpTelemetry, seconds: number,
+    inputDropPerSec: number): void {
     const frames: number = raw.windowFrames;
     if (frames === 0) {
       return;
@@ -108,7 +124,8 @@ export class RdpTelemetryAggregator {
       + ' duty=' + Math.floor(counters.dutyPermille / 10) + '.' + (counters.dutyPermille % 10) + '%'
       + ' rx=' + counters.rxBytesPerSec + 'B/s fps=' + counters.fps
       + ' gpu copy=' + counters.gpuCopyUs + ' sr=' + counters.gpuSrUs
-      + ' blit=' + counters.gpuBlitUs + ' us/frame)';
+      + ' blit=' + counters.gpuBlitUs + ' us/frame'
+      + ' inputDrop=' + inputDropPerSec + '/s)';
     hilog.info(DOMAIN, TAG, '%{public}s', line);
   }
 }

@@ -2,8 +2,7 @@ import { HeldInputs } from './input/HeldInputs';
 import { GamepadSink, InputAction, InputButton, InputSink, PadProbeHandler, PinchCursorHandler,
   PointMapper, TouchpadContact, TouchPhase } from './input/InputSink';
 import { GamepadInput } from './input/GamepadInput';
-import { isPinchEvent, InputGeometry, MOUSE_MOVE_MIN_INTERVAL_MS, pinchScaleValue,
-  TOUCH_MOVE_INTERVAL_FALLBACK_MS } from './input/InputPolicy';
+import { isPinchEvent, InputGeometry, pinchScaleValue } from './input/InputPolicy';
 import { KeyInput } from './input/KeyInput';
 import { PinchInput } from './input/PinchInput';
 import { PointerInput } from './input/PointerInput';
@@ -27,15 +26,14 @@ export class SessionInput {
   private touchpad: TouchpadInput;
   private pinch: PinchInput;
   private wheel: WheelInput;
-  private touchMoveIntervalMs: number = TOUCH_MOVE_INTERVAL_FALLBACK_MS;
   private padProbeHandler: PadProbeHandler | undefined = undefined;
   private gamepad: GamepadInput | undefined = undefined;
 
   constructor(sink: InputSink) {
     this.sink = sink;
     this.keys = new KeyInput(sink, this.held);
-    this.pointer = new PointerInput(sink, this.held, this.geometry, MOUSE_MOVE_MIN_INTERVAL_MS);
-    this.touch = new TouchInput(sink, this.geometry, this.touchMoveIntervalMs);
+    this.pointer = new PointerInput(sink, this.held, this.geometry);
+    this.touch = new TouchInput(sink, this.geometry);
     this.touchpad = new TouchpadInput(sink, this.pointer);
     this.pinch = new PinchInput(sink, this.geometry);
     this.wheel = new WheelInput(sink, this.geometry,
@@ -86,8 +84,7 @@ export class SessionInput {
   }
 
   setTouchMoveIntervalMs(ms: number): void {
-    this.touchMoveIntervalMs = ms;
-    this.touch.setMoveInterval(ms);
+    this.sink.setTouchMoveInterval(ms);
   }
 
   setTouchpadScrollSpeed(scale: number): void {
@@ -235,7 +232,6 @@ export class SessionInput {
       this.touchpad.handlePan(vertical, horizontal);
       return;
     }
-    this.pointer.flushMove();
     this.wheel.scroll(vertical, horizontal, point, touchpadEvent);
   }
 
@@ -276,7 +272,6 @@ export class SessionInput {
   }
 
   releaseAll(): void {
-    this.pointer.cancelMove();
     this.held.releaseAll(this.sink, this.pointer.lastPointerX(), this.pointer.lastPointerY());
     this.touch.releaseAll();
     this.touchpad.endPan();

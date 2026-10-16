@@ -366,7 +366,7 @@ struct MoonlightSessionPage {
       this.mlClipboard?.onIncoming(bytes);
     });
     const sink: SessionInputPort = new SessionInputPort(InputProtocol.MOONLIGHT, 0,
-      backend.hostDisplayScalePercent(), 0);
+      backend.hostDisplayScalePercent());
     sink.setReferenceSize(this.streamWidth, this.streamHeight);
     this.sink = sink;
     const input: SessionInput = new SessionInput(sink);
@@ -483,7 +483,8 @@ struct MoonlightSessionPage {
     const windowMs: number = this.metricsLastAt > 0 ? now - this.metricsLastAt : METRICS_INTERVAL_MS;
     this.metricsLastAt = now;
     const raw: MoonlightTelemetry = moonlightTelemetry();
-    const counters: MoonlightCounters = this.telemetry.sample(raw, windowMs);
+    const counters: MoonlightCounters = this.telemetry.sample(raw, windowMs,
+      this.sink?.inputDropped() ?? 0);
     this.metricsRtt = counters.rttMs;
     this.metricsJitter = counters.rttVarianceMs;
     this.metricsHostMs = counters.hostLatencyMs;

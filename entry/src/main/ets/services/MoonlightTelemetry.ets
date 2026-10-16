@@ -35,8 +35,12 @@ export class MoonlightTelemetryAggregator {
   private prevFailed: number = 0;
   private prevOos: number = 0;
   private prevInvalid: number = 0;
+  private hasInput: boolean = false;
+  private prevInputDropped: number = 0;
 
-  sample(raw: MoonlightTelemetry, windowMs: number): MoonlightCounters {
+  // `inputDropped` is the pipeline's cumulative drop count (L1 budget drops + sink rejects): the
+  // rate names a stream that is over its budget, so a `perf:` grep shows it without a live watch.
+  sample(raw: MoonlightTelemetry, windowMs: number, inputDropped: number): MoonlightCounters {
     const counters: MoonlightCounters = new MoonlightCounters();
     counters.rttMs = raw.rttMs;
     counters.rttVarianceMs = raw.rttVarianceMs;
@@ -46,6 +50,8 @@ export class MoonlightTelemetryAggregator {
     if (!this.hasPrev || raw.frames < this.prevFrames || raw.bytes < this.prevBytes) {
       this.hasPrev = true;
       this.capture(raw);
+      this.hasInput = true;
+      this.prevInputDropped = inputDropped;
       return counters;
     }
 
@@ -79,8 +85,19 @@ export class MoonlightTelemetryAggregator {
     if (packets > 0) {
       counters.lossBp = Math.floor((dFailed + dOos + dInvalid) * 10000 / packets);
     }
-    this.log(counters, seconds);
+    this.log(counters, seconds, this.inputDropRate(inputDropped, seconds));
     return counters;
+  }
+
+  private inputDropRate(inputDropped: number, seconds: number): number {
+    if (!this.hasInput) {
+      this.hasInput = true;
+      this.prevInputDropped = inputDropped;
+      return 0;
+    }
+    const delta: number = inputDropped - this.prevInputDropped;
+    this.prevInputDropped = inputDropped;
+    return seconds > 0 ? Math.round(delta / seconds) : 0;
   }
 
   private capture(raw: MoonlightTelemetry): void {
@@ -98,7 +115,7 @@ export class MoonlightTelemetryAggregator {
     this.prevInvalid = raw.packetInvalid;
   }
 
-  private log(counters: MoonlightCounters, seconds: number): void {
+  private log(counters: MoonlightCounters, seconds: number, inputDropPerSec: number): void {
     if (seconds <= 0) {
       return;
     }
@@ -107,7 +124,7 @@ export class MoonlightTelemetryAggregator {
       + 'ms decode=' + Math.round(counters.decodeMs * 10) / 10 + 'ms fps=' + counters.fps
       + ' bitrate=' + Math.round(counters.bytesPerSec * 8 / 1000) + 'kbps pending='
       + counters.pendingVideoFrames + ' drop=' + counters.droppedPerSec + '/s'
-      + ' loss=' + counters.lossBp + '/10000';
+      + ' loss=' + counters.lossBp + '/10000 inputDrop=' + inputDropPerSec + '/s';
     hilog.info(DOMAIN, TAG, '%{public}s', line);
   }
 }

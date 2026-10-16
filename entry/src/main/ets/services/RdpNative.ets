@@ -161,12 +161,12 @@ export class RdpNative {
     }
   }
 
-  readCounters(): RdpCounters | undefined {
+  readCounters(inputDropped: number): RdpCounters | undefined {
     if (this.handle < 0) {
       return undefined;
     }
     const raw: RdpTelemetry = sessionTelemetry(this.handle);
-    return this.telemetry.sample(raw);
+    return this.telemetry.sample(raw, inputDropped);
   }
 
   mouse(flags: number, x: number, y: number): void {

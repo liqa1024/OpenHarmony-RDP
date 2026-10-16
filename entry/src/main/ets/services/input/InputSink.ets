@@ -1,5 +1,4 @@
 import { KeyMapping } from '../../utils/KeyMapper';
-import { MoveDelivery, MoveFlush } from './MoveDelivery';
 
 export class InputButton {
   static readonly LEFT: number = 1;
@@ -40,6 +39,19 @@ export class TouchpadContact {
   }
 }
 
+// One precision-touchpad contact per five numbers, the wire shape the input record carries
+// (see InputProtocol): phase, pointerId, x, y, pressure.
+export const TOUCHPAD_FRAME_STRIDE: number = 5;
+
+export function packTouchpadFrame(contacts: TouchpadContact[]): number[] {
+  const frame: number[] = [];
+  for (let i = 0; i < contacts.length; i++) {
+    const contact: TouchpadContact = contacts[i];
+    frame.push(contact.phase, contact.pointerId, contact.x, contact.y, contact.pressure);
+  }
+  return frame;
+}
+
 // L3: send one input verb on the protocol's transport (input thread only). Returns whether the
 // transport took it; false is counted by the pipeline as a rejection.
 export interface InputSender {
@@ -52,27 +64,40 @@ export interface InputSender {
   pointerMoveRelative(deltaX: number, deltaY: number): boolean;
   button(action: number, button: number, x: number, y: number): boolean;
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): boolean;
-  // Native precision-touchpad frame (foundation-sunshine extension): normalized contacts over the
-  // physical surface (empty = all lifted); the frame carries the pad's physical size in millimetres.
-  touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
-    heightMm: number): boolean;
+  // Native precision-touchpad frame (foundation-sunshine extension): a flat number[] of
+  // TOUCHPAD_FRAME_STRIDE-wide contacts over the physical surface (empty = all lifted); the frame
+  // carries the pad's physical size in millimetres.
+  touchpadFrame(frame: number[], buttonState: number, widthMm: number, heightMm: number): boolean;
   // Wheel deltas in WHEEL_DELTA (120) units; vertical positive is up, horizontal positive is left.
   scroll(vertical: number, horizontal: number, x: number, y: number): boolean;
 }
 
 // L1: the sink the controllers see. Sending is an enqueue; the queries answer from local state.
-export interface InputSink extends InputSender {
+// Its touchpad verb takes the controllers' contacts and packs them for the wire, so no class
+// instance ever crosses to the input thread.
+export interface InputSink {
+  key(mapping: KeyMapping, down: boolean): boolean;
   // A re-press of a held key (auto-repeat): no state changes, so the pipeline may cap its rate.
-  // L3 needs no such verb — there it is a key-down.
   keyRepeat(mapping: KeyMapping): boolean;
+  metaKey(down: boolean): boolean;
+  unicode(code: number, down: boolean): boolean;
+  lockState(flags: number): boolean;
+  pointerMove(x: number, y: number): boolean;
+  pointerMoveRelative(deltaX: number, deltaY: number): boolean;
+  button(action: number, button: number, x: number, y: number): boolean;
+  touch(phase: number, pointerId: number, x: number, y: number, pressure: number): boolean;
+  touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
+    heightMm: number): boolean;
+  scroll(vertical: number, horizontal: number, x: number, y: number): boolean;
   setRelativePointer(enabled: boolean): void;
   relativePointerEnabled(): boolean;
   // Display scale (percent) in effect on the streamed desktop: relative-motion counts are host
   // logical pixels, so this divides them (0 = unknown/100%).
   hostDisplayScalePercent(): number;
-  // The declared delivery for a continuous position stream: the protocol fact is "does each sample
-  // become its own message". Declared here so no controller decides it.
-  moveDelivery<T>(flush: MoveFlush<T>): MoveDelivery<T>;
+  // The touch-move stream's declared window (ms), a session setting. Every window / rate cap lives
+  // in the port's gate, driven by the declaration table (see InputProtocol), so a controller only
+  // hands over verbs.
+  setTouchMoveInterval(ms: number): void;
   dispose(): void;
 }
 

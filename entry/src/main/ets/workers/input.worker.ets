@@ -9,12 +9,10 @@ import { MlVirtualKey } from '../utils/MoonlightKeyMapper';
 import { GamepadSink, InputSender, MoonlightSendPort, TextRunSink } from '../services/input/InputSink';
 import { MoonlightInputSender } from '../services/input/MoonlightInputSender';
 import { RdpInputSender } from '../services/input/RdpInputSender';
-import { INPUT_TEXT_RUN_WINDOW_MS, InputCommand, InputControl, InputOp, InputProtocol,
-  InputRecord, InputTelemetry } from '../services/InputProtocol';
+import { InputCommand, InputControl, InputOp, InputProtocol, INPUT_OP_SLOTS, InputRecord,
+  InputTelemetry } from '../services/InputProtocol';
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
-
-const OP_SLOTS: number = 16;
 
 // The worker loads the same .so the UI runtime did, so these reach the live session with no handle
 // of their own.
@@ -76,40 +74,12 @@ let gamepad: GamepadSink | undefined = undefined;
 let textSender: TextRunSink | undefined = undefined;
 let rdpSender: RdpInputSender | undefined = undefined;
 let moonlightSender: MoonlightInputSender | undefined = undefined;
-const rejected: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const rejected: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 let telemetryTimer: number = -1;
 let pendingReport: boolean = false;
-let textRun: string = '';
-let textTimer: number = -1;
-
-// A text run is the pipeline's COALESCE_WINDOW: code points inside the window leave as one packet.
-// Any other event flushes the run first, so the app's order is the host's order.
-function flushText(): void {
-  if (textTimer !== -1) {
-    clearTimeout(textTimer);
-    textTimer = -1;
-  }
-  const run: string = textRun;
-  textRun = '';
-  const target: TextRunSink | undefined = textSender;
-  if (run.length === 0 || target === undefined) {
-    return;
-  }
-  noteReject(InputOp.UNICODE, target.textRun(run));
-}
-
-function appendText(code: number): void {
-  textRun += String.fromCharCode(code);
-  if (textTimer === -1) {
-    textTimer = setTimeout((): void => {
-      textTimer = -1;
-      flushText();
-    }, INPUT_TEXT_RUN_WINDOW_MS);
-  }
-}
 
 function noteReject(op: number, accepted: boolean): void {
-  if (accepted || op < 0 || op >= OP_SLOTS) {
+  if (accepted || op < 0 || op >= INPUT_OP_SLOTS) {
     return;
   }
   rejected[op]++;
@@ -135,9 +105,6 @@ function dispatch(record: InputRecord): void {
     return;
   }
   const op: number = record.op;
-  if (op !== InputOp.UNICODE) {
-    flushText();
-  }
   if (op === InputOp.KEY || op === InputOp.KEY_REPEAT) {
     const key = record.key;
     if (key !== undefined) {
@@ -152,16 +119,15 @@ function dispatch(record: InputRecord): void {
     return;
   }
   if (op === InputOp.UNICODE) {
-    const code: number = record.a ?? 0;
-    const down: boolean = record.b === 1;
-    if (textSender !== undefined) {
-      // Only presses carry text; a run is ended by its window or by the next non-text event.
-      if (down && code > 0) {
-        appendText(code);
-      }
-      return;
+    noteReject(op, target.unicode(record.a ?? 0, record.b === 1));
+    return;
+  }
+  if (op === InputOp.TEXT_RUN) {
+    const text: string | undefined = record.text;
+    const runTarget: TextRunSink | undefined = textSender;
+    if (text !== undefined && runTarget !== undefined) {
+      noteReject(op, runTarget.textRun(text));
     }
-    noteReject(op, target.unicode(code, down));
     return;
   }
   if (op === InputOp.LOCK) {
@@ -180,15 +146,14 @@ function dispatch(record: InputRecord): void {
     noteReject(op, target.button(record.a ?? 0, record.b ?? 0, record.x ?? 0, record.y ?? 0));
     return;
   }
-  if (op === InputOp.TOUCH) {
+  if (op === InputOp.TOUCH_MOVE || op === InputOp.TOUCH_POINT) {
     noteReject(op, target.touch(record.a ?? 0, record.b ?? 0, record.x ?? 0, record.y ?? 0,
       record.z ?? 0));
     return;
   }
-  if (op === InputOp.TOUCHPAD_FRAME) {
-    const contacts = record.contacts;
-    noteReject(op, target.touchpadFrame(contacts !== undefined ? contacts : [], record.a ?? 0,
-      record.c ?? 0, record.d ?? 0));
+  if (op === InputOp.TOUCHPAD_FRAME || op === InputOp.TOUCHPAD_POINT) {
+    noteReject(op, target.touchpadFrame(record.frame ?? [], record.a ?? 0, record.c ?? 0,
+      record.d ?? 0));
     return;
   }
   if (op === InputOp.SCROLL) {
@@ -225,7 +190,6 @@ function configure(message: InputCommand): void {
     telemetryTimer = -1;
     pendingReport = false;
   }
-  flushText();
   if (config.protocol === InputProtocol.RDP) {
     const rdp: RdpInputSender = new RdpInputSender(config.handle);
     rdpSender = rdp;

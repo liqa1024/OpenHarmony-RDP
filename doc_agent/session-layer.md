@@ -187,18 +187,21 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   Unicode 码点 / Win 替代键，鼠标=按钮标志），失焦时统一补发抬起并松开触屏与捏合；
   **新增输入通路必须进这份账**。
 - **鼠标按键与移动分开**：移动与按键事件**分开送**，按键事件**不带移动标志**，否则远端会忽略点击。
-- **连续位置流的投递按声明的窗口选实现**：`onMouse` 的 Move 与触屏 Move 按设备轮询率到达，逐条转发 = 每条一个输入报文。
-  共享层把投递抽成 `MoveDelivery`——`RateCoalescer`（只保留最新值、按 `InputPolicy` 窗口上限节流、必要时补尾帧）与
-  `ImmediateMoveDelivery`（直通），由 `InputSink.moveDelivery()` 按**声明的窗口**返回：窗口 >0 的协议
-  （RDP 指针 PDU，每个样本一条报文）取限速，声明为 0 的协议（Moonlight 控制流按 1ms 合并鼠标样本）取直通——
-  客户端再限一次只会白加延迟与降采样。**非 Move 的同类事件（按下/抬起、触屏 Down/Up/Cancel）先冲掉该流待发位置**，
-  否则点击落在旧坐标（直通实现无待发值，这些动作为空操作）。窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、
-  触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，不是显示帧率。
+- **连续位置流的投递按声明的窗口限量**：`onMouse` 的 Move 与触屏 Move 按设备轮询率到达，逐条转发 = 每条一个输入报文。
+  controller 只把样本当普通动词交出去，**限量统一在 L1 闸门**（`services/InputPort.ets` 的 `SessionInputPort`）按声明表执行：
+  窗口 >0 的流（RDP 指针 PDU，每个样本一条报文）取"只留最新值 + 窗口上限"；声明窗口为 0 的流
+  （Moonlight 控制流按 1ms 合并鼠标样本）**同步直通**——客户端再限一次只会白加延迟与降采样。
+  **离散事件（按下/抬起、触屏 Down/Up/Cancel）投递前，闸门先把挂起的窗口流冲出去**，否则点击落在旧坐标。
+  窗口：鼠标 `MOUSE_MOVE_MIN_INTERVAL_MS`（约 125Hz）、触屏取「触屏-高刷新率」（8/20ms）。这是输入节流，不是显示帧率。
 - **投递类与横切能力在流水线做一次**：每条流有一个在 `services/InputProtocol.ets` 声明的投递类——
   `ORDERED_RELIABLE`（入队即发、不可丢：首次按键与**任何**抬起、鼠标键、触点 down/up/cancel、锁定键同步、
   Win 替代键）、`LATEST_WINS`（窗口内只留最新值：连续位置流、手柄整份状态、触控板整帧）、
   `BOUNDED_REPEAT`（速率上限、超限**直丢不延后**：键盘重复按下，由按住账本判定`hasKey`）、
   `COALESCE_WINDOW`（窗口内累加后发一条：文本多码点合成一包，且只有具备整串报文的传输才聚合）。
+  这条流水线的**唯一实现是 `SessionInputPort` 的闸门**：窗口、速率上限、丢弃计数、离散前的冲刷都只在那里出现，
+  **不落在任何 controller 或 L3 sender 里**；触点 move 与 down/up 拆成 `TOUCH_MOVE` / `TOUCH_POINT` 两个 op，
+  触控板整帧同理（全 move 走 `TOUCHPAD_FRAME`，带 down/up/cancel 走 `TOUCHPAD_POINT`），
+  所以"down/up 永不进窗口、且总先冲掉本指挂起的 move"由声明直接成立。
   限量的目的是让**不可丢的那些事件排在队尾的时间不随输入洪水增长**，不是拿它们的延迟换秩序：
   首次按键、抬起、按钮、触点 down/up 一律不进窗口，`BOUNDED_REPEAT` 只丢不延后。
   丢弃按流计数，与 sink 拒收合起来即 `inputDropped`（协议侧不自己计数、不加专有遥测字段）；
@@ -234,8 +237,8 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   - 重复 `TouchType.Down` 忽略（补发 UP+DOWN 会变成"松开+重按"的假点击）；
   - `TouchType.Cancel` **不代表抬指**（move 会被打断）：挂起不抬指，若附近随后出现新的 Down/Move
     判定为同指续接触、只发 MOTION，超过 `CANCEL_HOLD_MS` 无续接触才真正 UP；
-  - 远端的长按右键菜单依赖**触点状态序列合法**：触点的 Move 由 ArkTS 侧的 `RateCoalescer` 合帧、Down/Up
-    立即发，一个触点的**首条上报因此必须是 DOWN**；首条若成了 UPDATE/UP，远端不会 engage 它——长按在远端
+  - 远端的长按右键菜单依赖**触点状态序列合法**：触点的 Move 由 L1 闸门按窗口合帧、Down/Up
+    立即发（离散事件先冲掉本指挂起的 Move），一个触点的**首条上报因此必须是 DOWN**；首条若成了 UPDATE/UP，远端不会 engage 它——长按在远端
     成不了 press-and-hold，还会留下一个不消失的触点视觉。应用侧只保证 Down/Up 成对、**不给同一手指重复下发
     DOWN**；合并后的合法性由协议侧兜住（RDP 见 [`rdp-session.md`](rdp-session.md)）；
   - 压力按透传（`[0,65535)` → 归一化，0 表示设备未上报）。

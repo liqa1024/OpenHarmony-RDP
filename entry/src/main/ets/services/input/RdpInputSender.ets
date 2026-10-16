@@ -1,7 +1,7 @@
 import { sendKey, sendLockState, sendMouse, sendTouch, sendUnicode } from 'libhmrdp.so';
 import { RdpPointerFlags, RdpTouchFlags } from '../../model/RdpModels';
 import { KeyMapping } from '../../utils/KeyMapper';
-import { InputAction, InputButton, InputSender, TouchpadContact, TouchPhase } from './InputSink';
+import { InputAction, InputButton, InputSender, TouchPhase } from './InputSink';
 
 // Largest wheel rotation a single RDP pointer event can carry (9-bit wheel field).
 const RDP_WHEEL_MAX_CHUNK: number = 0xFF;
@@ -10,8 +10,6 @@ const RDP_WHEEL_MAX_CHUNK: number = 0xFF;
 // No touchpad endpoint and no relative mode. Built from the session handle on the input thread.
 export class RdpInputSender implements InputSender {
   private handle: number;
-  private lastX: number = 0;
-  private lastY: number = 0;
 
   constructor(handle: number) {
     this.handle = handle;
@@ -50,8 +48,6 @@ export class RdpInputSender implements InputSender {
   }
 
   pointerMove(x: number, y: number): boolean {
-    this.lastX = x;
-    this.lastY = y;
     if (this.handle < 0) {
       return true;
     }
@@ -63,8 +59,6 @@ export class RdpInputSender implements InputSender {
   }
 
   button(action: number, button: number, x: number, y: number): boolean {
-    this.lastX = x;
-    this.lastY = y;
     const flag: number = RdpInputSender.buttonFlag(button);
     if (flag === 0 || this.handle < 0) {
       return true;
@@ -93,14 +87,12 @@ export class RdpInputSender implements InputSender {
     return sendTouch(this.handle, flags, pointerId, scaled, x, y);
   }
 
-  touchpadFrame(_contacts: TouchpadContact[], _buttonState: number, _widthMm: number,
+  touchpadFrame(_frame: number[], _buttonState: number, _widthMm: number,
     _heightMm: number): boolean {
     return true;
   }
 
   scroll(vertical: number, horizontal: number, x: number, y: number): boolean {
-    this.lastX = x;
-    this.lastY = y;
     const accepted: boolean = this.sendWheel(vertical, false, x, y);
     return this.sendWheel(horizontal, true, x, y) && accepted;
   }

@@ -1,53 +1,56 @@
 import { ErrorEvent, MessageEvents, worker } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { KeyMapping } from '../utils/KeyMapper';
-import { ImmediateMoveDelivery, MoveDelivery, MoveFlush } from './input/MoveDelivery';
-import { GamepadSink, InputSink, TouchpadContact } from './input/InputSink';
-import { RateCoalescer } from './input/RateCoalescer';
+import { GamepadSink, InputSink, packTouchpadFrame, TOUCHPAD_FRAME_STRIDE, TouchpadContact, TouchPhase } from './input/InputSink';
+import { TOUCH_MOVE_INTERVAL_FALLBACK_MS } from './input/InputPolicy';
 import { InputArrival, InputCommand, InputConfig, InputControl, InputDelivery, InputKey, InputOp,
-  InputPad, InputRecord, InputTelemetry, inputDelivery, inputWindowMs } from './InputProtocol';
+  INPUT_OP_SLOTS, InputPad, InputProtocol, InputRecord, InputTelemetry, inputDelivery, inputTextRun,
+  inputWindowMs } from './InputProtocol';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpInput';
 
-const OP_SLOTS: number = 16;
 const MAX_PADS: number = 4;
 
-// L1 side of the input pipeline: the controllers' sink. Sends become queued records for the input
-// worker; the queries answer from local state (INPUT_REFACTOR_PLAN.md §3).
+// L1 side of the input pipeline: the controllers' sink, and the pipeline's only limiter. A verb
+// becomes a queued record for the input worker; the queries answer from local state. Every window /
+// rate cap / drop lives here, driven by the declaration table in InputProtocol
+// (INPUT_PIPELINE_PLAN.md §3).
 export class SessionInputPort implements InputSink, GamepadSink {
   private thread: worker.ThreadWorker | undefined = undefined;
   private protocol: number;
   private handle: number;
   private hostScale: number;
-  private moveIntervalMs: number;
+  private touchMoveWindowMs: number = TOUCH_MOVE_INTERVAL_FALLBACK_MS;
+  private textRun: boolean;
   private relative: boolean = false;
   private lockFlags: number = 0;
   private lockKnown: boolean = false;
   private referenceWidth: number = 0;
   private referenceHeight: number = 0;
-  private readonly drops: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-  private rejects: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  private readonly drops: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  private rejects: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   private readonly padSlots: InputPad[] = [];
-  // Per windowed stream, indexed by op: the pending sample and its window timer.
-  private readonly gatePending: (InputRecord | undefined)[] = [];
-  private readonly gateTimers: number[] = [];
-  // Last accepted sample time per rate-capped stream.
+  // Windowed streams, indexed by op: the pending sample(s) and the stream's window timer.
+  private readonly pending: (Map<number, InputRecord> | undefined)[] = [];
+  private readonly timers: number[] = [];
+  // Last accepted time per rate-capped stream.
   private readonly lastAcceptedAt: number[] = [];
+  private textRunText: string = '';
+  private textRunTimer: number = -1;
   private disposed: boolean = false;
 
-  constructor(protocol: number, handle: number, hostScalePercent: number,
-    moveIntervalMs: number) {
+  constructor(protocol: number, handle: number, hostScalePercent: number) {
     this.protocol = protocol;
     this.handle = handle;
     this.hostScale = hostScalePercent;
-    this.moveIntervalMs = moveIntervalMs;
+    this.textRun = inputTextRun(protocol);
     for (let i = 0; i < MAX_PADS; i++) {
       this.padSlots.push(SessionInputPort.newPad());
     }
-    for (let i = 0; i < OP_SLOTS; i++) {
-      this.gatePending.push(undefined);
-      this.gateTimers.push(-1);
+    for (let i = 0; i < INPUT_OP_SLOTS; i++) {
+      this.pending.push(undefined);
+      this.timers.push(-1);
       this.lastAcceptedAt.push(-1);
     }
     this.start();
@@ -75,11 +78,9 @@ export class SessionInputPort implements InputSink, GamepadSink {
     this.hostScale = percent;
   }
 
-  moveDelivery<T>(flush: MoveFlush<T>): MoveDelivery<T> {
-    // The declared window is a protocol fact: 0 means the transport coalesces the stream itself.
-    return this.moveIntervalMs > 0
-      ? new RateCoalescer<T>(this.moveIntervalMs, flush)
-      : new ImmediateMoveDelivery<T>(flush);
+  // The touch-move window is a session setting; it changes the stream's declared budget in place.
+  setTouchMoveInterval(ms: number): void {
+    this.touchMoveWindowMs = ms;
   }
 
   lastLockFlags(): number {
@@ -93,7 +94,7 @@ export class SessionInputPort implements InputSink, GamepadSink {
   // Rejects reported by the input thread: the pipeline counts them, the protocol never does.
   inputDropped(): number {
     let total: number = 0;
-    for (let i = 0; i < OP_SLOTS; i++) {
+    for (let i = 0; i < INPUT_OP_SLOTS; i++) {
       total += this.drops[i] + this.rejects[i];
     }
     return total;
@@ -119,7 +120,7 @@ export class SessionInputPort implements InputSink, GamepadSink {
 
   dispose(): void {
     this.disposed = true;
-    this.clearGates();
+    this.clearPending();
     const thread: worker.ThreadWorker | undefined = this.thread;
     this.thread = undefined;
     if (thread !== undefined) {
@@ -133,56 +134,76 @@ export class SessionInputPort implements InputSink, GamepadSink {
   // ---- InputSender: every verb becomes one queued record ----
 
   key(mapping: KeyMapping, down: boolean): boolean {
-    return this.enqueue({ op: InputOp.KEY, key: SessionInputPort.keyOf(mapping), b: down ? 1 : 0 });
+    return this.enqueue({ op: InputOp.KEY, key: SessionInputPort.keyOf(mapping), b: down ? 1 : 0 }, 0);
   }
 
   keyRepeat(mapping: KeyMapping): boolean {
-    return this.enqueue({ op: InputOp.KEY_REPEAT, key: SessionInputPort.keyOf(mapping), b: 1 });
+    return this.enqueue({ op: InputOp.KEY_REPEAT, key: SessionInputPort.keyOf(mapping), b: 1 }, 0);
   }
 
   metaKey(down: boolean): boolean {
-    return this.enqueue({ op: InputOp.META, b: down ? 1 : 0 });
+    return this.enqueue({ op: InputOp.META, b: down ? 1 : 0 }, 0);
   }
 
   unicode(code: number, down: boolean): boolean {
-    return this.enqueue({ op: InputOp.UNICODE, a: code, b: down ? 1 : 0 });
+    if (!this.textRun) {
+      return this.enqueue({ op: InputOp.UNICODE, a: code, b: down ? 1 : 0 }, 0);
+    }
+    // Only presses carry text; a run ends on its window or on the next non-text event.
+    if (down && code > 0) {
+      this.textRunText += String.fromCharCode(code);
+      if (this.textRunTimer === -1) {
+        this.textRunTimer = setTimeout((): void => {
+          this.textRunTimer = -1;
+          this.flushText();
+        }, inputWindowMs(InputOp.TEXT_RUN, this.protocol, this.touchMoveWindowMs));
+      }
+    }
+    return true;
   }
 
   lockState(flags: number): boolean {
     this.lockFlags = flags;
     this.lockKnown = true;
-    return this.enqueue({ op: InputOp.LOCK, a: flags });
+    return this.enqueue({ op: InputOp.LOCK, a: flags }, 0);
   }
 
   pointerMove(x: number, y: number): boolean {
-    return this.enqueue({ op: InputOp.MOVE_ABS, x: x, y: y });
+    return this.enqueue({ op: InputOp.MOVE_ABS, x: x, y: y }, 0);
   }
 
   pointerMoveRelative(deltaX: number, deltaY: number): boolean {
-    return this.enqueue({ op: InputOp.MOVE_REL, x: deltaX, y: deltaY });
+    return this.enqueue({ op: InputOp.MOVE_REL, x: deltaX, y: deltaY }, 0);
   }
 
   button(action: number, button: number, x: number, y: number): boolean {
-    return this.enqueue({ op: InputOp.BUTTON, a: action, b: button, x: x, y: y });
+    return this.enqueue({ op: InputOp.BUTTON, a: action, b: button, x: x, y: y }, 0);
   }
 
+  // Down/up/cancel are state transitions: they never enter a window, and a move waits in the
+  // contact's own slot so a sequence can never be reordered past its own points.
   touch(phase: number, pointerId: number, x: number, y: number, pressure: number): boolean {
-    return this.enqueue({ op: InputOp.TOUCH, a: phase, b: pointerId, x: x, y: y, z: pressure });
+    const op: number = phase === TouchPhase.MOVE ? InputOp.TOUCH_MOVE : InputOp.TOUCH_POINT;
+    return this.enqueue({ op: op, a: phase, b: pointerId, x: x, y: y, z: pressure }, pointerId);
   }
 
   touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
     heightMm: number): boolean {
+    // A frame whose contacts only move is a continuous sample; one that carries down/up/cancel is a
+    // state transition (never merged away), exactly like the touch stream's two ops.
+    const frame: number[] = packTouchpadFrame(contacts);
+    const op: number = SessionInputPort.touchpadOp(frame);
     const record: InputRecord = {
-      op: InputOp.TOUCHPAD_FRAME, contacts: contacts, a: buttonState, c: widthMm, d: heightMm
+      op: op, frame: frame, a: buttonState, c: widthMm, d: heightMm
     };
-    return this.enqueue(record);
+    return this.enqueue(record, 0);
   }
 
   scroll(vertical: number, horizontal: number, x: number, y: number): boolean {
-    return this.enqueue({ op: InputOp.SCROLL, a: vertical, b: horizontal, x: x, y: y });
+    return this.enqueue({ op: InputOp.SCROLL, a: vertical, b: horizontal, x: x, y: y }, 0);
   }
 
-  // ---- GamepadSink: the slot's whole state is a continuous stream (LATEST_WINS) ----
+  // ---- GamepadSink: a slot's whole state is a continuous stream (LATEST_WINS) ----
 
   controllerState(controllerNumber: number, activeGamepadMask: number, buttonFlags: number,
     leftTrigger: number, rightTrigger: number, leftStickX: number, leftStickY: number,
@@ -197,7 +218,7 @@ export class SessionInputPort implements InputSink, GamepadSink {
     pad.leftStickY = leftStickY;
     pad.rightStickX = rightStickX;
     pad.rightStickY = rightStickY;
-    this.enqueue({ op: InputOp.GAMEPAD_STATE, pad: pad });
+    this.enqueue({ op: InputOp.GAMEPAD_STATE, pad: pad }, controllerNumber);
   }
 
   // The arrival declaration is a state transition (it must not be merged away).
@@ -207,7 +228,7 @@ export class SessionInputPort implements InputSink, GamepadSink {
       controllerNumber: controllerNumber, activeGamepadMask: activeGamepadMask, type: type,
       supportedButtonFlags: supportedButtonFlags, capabilities: capabilities
     };
-    this.enqueue({ op: InputOp.GAMEPAD_ARRIVAL, arrival: arrival });
+    this.enqueue({ op: InputOp.GAMEPAD_ARRIVAL, arrival: arrival }, 0);
   }
 
   // ---- Queue ----
@@ -226,15 +247,25 @@ export class SessionInputPort implements InputSink, GamepadSink {
     }
   }
 
-  // The declared class decides the gate. LATEST_WINS keeps at most one pending sample (so the queue
-  // length is pinned by the stream count, not the event rate) and ends its window on a timer, not a
-  // poll. BOUNDED_REPEAT drops above its rate cap — never deferred, since waiting is the latency the
-  // order rule forbids. Everything else goes out now.
-  private enqueue(record: InputRecord): boolean {
+  // The declared class decides the gate. A windowed stream keeps at most one pending sample per key
+  // (so the queue length is pinned by the stream count, not the event rate) and ends its window on a
+  // timer, not a poll; a window of 0 posts straight through, which keeps call order. BOUNDED_REPEAT
+  // drops above its rate cap — never deferred, since waiting is the latency the order rule forbids.
+  private enqueue(record: InputRecord, key: number): boolean {
     const op: number = record.op;
+    // Text is a sequence interleaved with everything else: any other event flushes the run first.
+    if (op !== InputOp.UNICODE) {
+      this.flushText();
+    }
     const delivery: number = inputDelivery(op);
+    if (delivery === InputDelivery.ORDERED_RELIABLE) {
+      // A discrete event never enters a window: flush every pending windowed value first, so the
+      // remote sees the app's order (the old flushMove(), now in one place).
+      this.flushWindows();
+      return this.send(record);
+    }
     if (delivery === InputDelivery.BOUNDED_REPEAT) {
-      const windowMs: number = inputWindowMs(op);
+      const windowMs: number = inputWindowMs(op, this.protocol, this.touchMoveWindowMs);
       const now: number = Date.now();
       const last: number = this.lastAcceptedAt[op];
       if (last >= 0 && now - last < windowMs) {
@@ -244,32 +275,82 @@ export class SessionInputPort implements InputSink, GamepadSink {
       this.lastAcceptedAt[op] = now;
       return this.send(record);
     }
-    if (delivery !== InputDelivery.LATEST_WINS) {
+    if (delivery === InputDelivery.COALESCE_WINDOW) {
       return this.send(record);
     }
-    const windowMs: number = inputWindowMs(op);
-    this.gatePending[op] = record;
-    if (this.gateTimers[op] === -1) {
-      this.gateTimers[op] = setTimeout((): void => {
-        this.gateTimers[op] = -1;
-        const pending: InputRecord | undefined = this.gatePending[op];
-        this.gatePending[op] = undefined;
-        if (pending !== undefined) {
-          this.send(pending);
-        }
+    const windowMs: number = inputWindowMs(op, this.protocol, this.touchMoveWindowMs);
+    if (windowMs <= 0) {
+      return this.send(record);
+    }
+    let slot: Map<number, InputRecord> | undefined = this.pending[op];
+    if (slot === undefined) {
+      slot = new Map<number, InputRecord>();
+      this.pending[op] = slot;
+    }
+    slot.set(key, record);
+    if (this.timers[op] === -1) {
+      this.timers[op] = setTimeout((): void => {
+        this.timers[op] = -1;
+        this.flushOp(op);
       }, windowMs);
     }
     return true;
   }
 
-  private clearGates(): void {
-    for (let i = 0; i < OP_SLOTS; i++) {
-      if (this.gateTimers[i] !== -1) {
-        clearTimeout(this.gateTimers[i]);
-        this.gateTimers[i] = -1;
-      }
-      this.gatePending[i] = undefined;
+  private flushOp(op: number): void {
+    if (this.timers[op] !== -1) {
+      clearTimeout(this.timers[op]);
+      this.timers[op] = -1;
     }
+    const slot: Map<number, InputRecord> | undefined = this.pending[op];
+    if (slot === undefined || slot.size === 0) {
+      return;
+    }
+    const records: InputRecord[] = [];
+    slot.forEach((record: InputRecord): void => {
+      records.push(record);
+    });
+    slot.clear();
+    for (let i = 0; i < records.length; i++) {
+      this.send(records[i]);
+    }
+  }
+
+  private flushWindows(): void {
+    for (let op = 0; op < INPUT_OP_SLOTS; op++) {
+      this.flushOp(op);
+    }
+  }
+
+  private flushText(): void {
+    if (this.textRunTimer !== -1) {
+      clearTimeout(this.textRunTimer);
+      this.textRunTimer = -1;
+    }
+    const text: string = this.textRunText;
+    this.textRunText = '';
+    if (text.length === 0) {
+      return;
+    }
+    this.send({ op: InputOp.TEXT_RUN, text: text });
+  }
+
+  private clearPending(): void {
+    for (let op = 0; op < INPUT_OP_SLOTS; op++) {
+      if (this.timers[op] !== -1) {
+        clearTimeout(this.timers[op]);
+        this.timers[op] = -1;
+      }
+      const slot: Map<number, InputRecord> | undefined = this.pending[op];
+      if (slot !== undefined) {
+        slot.clear();
+      }
+    }
+    if (this.textRunTimer !== -1) {
+      clearTimeout(this.textRunTimer);
+      this.textRunTimer = -1;
+    }
+    this.textRunText = '';
   }
 
   private padFor(controllerNumber: number): InputPad {
@@ -283,6 +364,15 @@ export class SessionInputPort implements InputSink, GamepadSink {
     };
   }
 
+  private static touchpadOp(frame: number[]): number {
+    for (let i = 0; i + TOUCHPAD_FRAME_STRIDE <= frame.length; i += TOUCHPAD_FRAME_STRIDE) {
+      if (frame[i] !== TouchPhase.MOVE) {
+        return InputOp.TOUCHPAD_POINT;
+      }
+    }
+    return InputOp.TOUCHPAD_FRAME;
+  }
+
   private static newPad(): InputPad {
     return {
       controllerNumber: 0, activeGamepadMask: 0, buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
@@ -291,7 +381,7 @@ export class SessionInputPort implements InputSink, GamepadSink {
   }
 
   private bump(counts: number[], op: number): void {
-    if (op < 0 || op >= OP_SLOTS) {
+    if (op < 0 || op >= INPUT_OP_SLOTS) {
       return;
     }
     counts[op]++;
@@ -325,8 +415,7 @@ export class SessionInputPort implements InputSink, GamepadSink {
     };
     this.thread = thread;
     const config: InputConfig = {
-      protocol: this.protocol, handle: this.handle, hostScalePercent: this.hostScale,
-      moveIntervalMs: this.moveIntervalMs, referenceWidth: this.referenceWidth,
+      protocol: this.protocol, handle: this.handle, referenceWidth: this.referenceWidth,
       referenceHeight: this.referenceHeight
     };
     this.control(InputControl.CONFIGURE, (message: InputCommand): void => {

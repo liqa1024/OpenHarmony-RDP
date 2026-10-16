@@ -1,7 +1,7 @@
 import { KeyMapping } from '../../utils/KeyMapper';
 import { MlVirtualKey } from '../../utils/MoonlightKeyMapper';
 import { GamepadSink, InputAction, InputButton, InputSender, MoonlightSendPort, TextRunSink,
-  TouchpadContact, TouchPhase } from './InputSink';
+  TOUCHPAD_FRAME_STRIDE, TouchPhase } from './InputSink';
 
 // Windows VK for the Meta/Win key.
 const ML_VK_META: number = 0x5B;
@@ -109,11 +109,11 @@ export class MoonlightInputSender implements InputSender, GamepadSink, TextRunSi
     return accepted;
   }
 
-  touchpadFrame(contacts: TouchpadContact[], buttonState: number, widthMm: number,
+  touchpadFrame(frame: number[], buttonState: number, widthMm: number,
     heightMm: number): boolean {
-    // Hosts that do not advertise the extension ignore the packet; that is a by-design refusal,
-    // not a drop, so it is reported as accepted.
-    if (contacts.length === 0) {
+    // Hosts that do not advertise the extension ignore the packet (LiSend returns unsupported);
+    // that is a by-design refusal, not a drop, so it is reported as accepted.
+    if (frame.length < TOUCHPAD_FRAME_STRIDE) {
       return true;
     }
     const types: number[] = [];
@@ -121,13 +121,12 @@ export class MoonlightInputSender implements InputSender, GamepadSink, TextRunSi
     const xs: number[] = [];
     const ys: number[] = [];
     const ps: number[] = [];
-    for (let i = 0; i < contacts.length; i++) {
-      const contact: TouchpadContact = contacts[i];
-      types.push(MoonlightInputSender.mlTouchEvent(contact.phase));
-      ids.push(contact.pointerId);
-      xs.push(contact.x);
-      ys.push(contact.y);
-      ps.push(contact.pressure);
+    for (let i = 0; i + TOUCHPAD_FRAME_STRIDE <= frame.length; i += TOUCHPAD_FRAME_STRIDE) {
+      types.push(MoonlightInputSender.mlTouchEvent(frame[i]));
+      ids.push(frame[i + 1]);
+      xs.push(frame[i + 2]);
+      ys.push(frame[i + 3]);
+      ps.push(frame[i + 4]);
     }
     return mlAccepted(this.port.touchpad(types, ids, xs, ys, ps, widthMm, heightMm, buttonState));
   }

@@ -1,24 +1,10 @@
 import { InputSink, TouchPhase } from './InputSink';
 import { CANCEL_HOLD_MS, CANCEL_RESUME_MAX_DISTANCE, CANCEL_RESUME_MIN_DISTANCE, CANCEL_RESUME_RATIO,
   InputGeometry } from './InputPolicy';
-import { MoveDelivery, MoveFlush } from './MoveDelivery';
 
-class TouchSample {
-  x: number = 0;
-  y: number = 0;
-  pressure: number = 0;
-
-  static of(x: number, y: number, pressure: number): TouchSample {
-    const sample: TouchSample = new TouchSample();
-    sample.x = x;
-    sample.y = y;
-    sample.pressure = pressure;
-    return sample;
-  }
-}
-
-// Direct-touch state machine: finger id +1 away from the free 0 slot, cancel-is-not-lift resume,
-// and a coalesced per-finger move so both protocols bound the contact message rate.
+// Direct-touch state machine: finger id +1 away from the free 0 slot and cancel-is-not-lift resume.
+// Points are handed over as plain touch verbs; the port's gate windows the moves and keeps each
+// contact's sequence ordered past its own down/up.
 export class TouchInput {
   private sink: InputSink;
   private geometry: InputGeometry;
@@ -27,22 +13,11 @@ export class TouchInput {
   private contactIds: Map<number, number> = new Map<number, number>();
   private pendingCancelIds: number[] = [];
   private cancelTimers: Map<number, number> = new Map<number, number>();
-  private move: MoveDelivery<TouchSample>;
   private directContactListener: () => void = (): void => {};
 
-  constructor(sink: InputSink, geometry: InputGeometry, moveIntervalMs: number) {
+  constructor(sink: InputSink, geometry: InputGeometry) {
     this.sink = sink;
     this.geometry = geometry;
-    const flush: MoveFlush<TouchSample> =
-      (id: number, sample: TouchSample): void => {
-        this.sink.touch(TouchPhase.MOVE, id, sample.x, sample.y, sample.pressure);
-      };
-    this.move = sink.moveDelivery<TouchSample>(flush);
-    this.move.setInterval(moveIntervalMs);
-  }
-
-  setMoveInterval(ms: number): void {
-    this.move.setInterval(ms);
   }
 
   setTouchEnabled(enabled: boolean): void {
@@ -112,7 +87,6 @@ export class TouchInput {
   }
 
   releaseAll(): void {
-    this.move.cancel();
     this.finalizeAllCancels();
     // Lift every tracked contact individually; a protocol-specific "all gone" primitive
     // would leave RDP with stuck fingers.
@@ -140,7 +114,6 @@ export class TouchInput {
       this.contactIds.delete(resumed);
       this.points.set(id, point);
       this.contactIds.set(id, resumedId);
-      this.move.flush(resumedId);
       this.sink.touch(TouchPhase.MOVE, resumedId, point[0], point[1], pressure);
       return;
     }
@@ -165,7 +138,7 @@ export class TouchInput {
       return;
     }
     this.points.set(id, point);
-    this.move.post(pointerId, TouchSample.of(point[0], point[1], pressure));
+    this.sink.touch(TouchPhase.MOVE, pointerId, point[0], point[1], pressure);
   }
 
   private onUp(id: number, point: number[], pressure: number): void {
@@ -177,7 +150,6 @@ export class TouchInput {
     this.removePendingCancel(id);
     this.points.delete(id);
     this.contactIds.delete(id);
-    this.move.flush(pointerId);
     this.sink.touch(TouchPhase.UP, pointerId, point[0], point[1], pressure);
   }
 
@@ -245,7 +217,6 @@ export class TouchInput {
     this.points.delete(id);
     this.contactIds.delete(id);
     if (pointerId !== undefined && point !== undefined) {
-      this.move.flush(pointerId);
       this.sink.touch(TouchPhase.UP, pointerId, point[0], point[1], 0);
     }
   }
