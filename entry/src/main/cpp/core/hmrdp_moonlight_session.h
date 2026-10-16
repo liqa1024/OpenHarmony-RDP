@@ -64,6 +64,12 @@ struct MoonlightStreamConfig {
   int colorSpace = 0;
   int colorRange = 0;
   int encryptionFlags = 0;
+  // 超分: with srEnabled, `width`/`height` are the output (presented) resolution and the stream is
+  // taken at width/height / srRatioPercent; the presenter upscales every frame back. `srBackend` is
+  // a SuperResolutionBackend (0 = xengine, 1 = fsr). Same route as the RDP session.
+  bool srEnabled = false;
+  int srBackend = 0;
+  int srRatioPercent = 0;
   // 16-byte remote-input AES key and IV (key + rikeyid-derived IV from /launch).
   std::string remoteInputAesKey;
   std::string remoteInputAesIv;
@@ -89,6 +95,10 @@ int MoonlightSessionSendClipboard(const void* data, int length);
 
 // Must be called before MoonlightSessionStart; passed to LiStartConnection as the render context.
 void MoonlightSessionSetWindow(void* window);
+
+// 超分: forward a surface (window) resize to the session's presenter swapchain; a no-op when the
+// direct-to-surface path is used (the window scaling mode handles the fit itself).
+void MoonlightSessionResizeSurface(int width, int height);
 
 // Empty string on success, else a stable token ("busy" / "config" / "thread").
 std::string MoonlightSessionStart(const MoonlightStreamConfig& config,

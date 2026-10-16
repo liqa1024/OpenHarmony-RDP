@@ -142,6 +142,9 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   localCursorMode: boolean = false;
   enableAudio: boolean = true;
   lowLatencyAudio: boolean = true;
+  srEnabled: boolean = false;
+  srBackend: number = SR_BACKEND_XENGINE;
+  srRatioPercent: number = 0;
 }
 
 export enum ConnectOrigin {
@@ -160,6 +163,9 @@ export class PendingConnection {
   moonlightHttpsPort: number = 47984;
   // Why the requested frame rate was capped for this session ("" when it was not).
   moonlightFpsNote: string = '';
+  // 超分: the stream (session) resolution actually taken; 0 = same as the output resolution.
+  moonlightSessionWidth: number = 0;
+  moonlightSessionHeight: number = 0;
   filesDir: string = '';
   moonlightAppId: number = 0;
   moonlightPinProvider: ((pin: string, pairing: Promise<PairResult>) => Promise<boolean>)
@@ -583,6 +589,12 @@ export class MoonlightConnection extends SavedConnection {
   mlColorSpace: number = ML_COLORSPACE_REC709;
   mlScaleMode: number = ML_SCALE_AUTO;
   mlScalePercent: number = 100;
+  // 超分: same shape as the RDP connection — a per-connection override over the Moonlight tab's
+  // own global values. The stream is taken at output / ratio and upscaled back locally.
+  useGlobalSr: boolean = true;
+  srEnabled: boolean = false;
+  srRatioPercent: number = 0;
+  srBackend: number = SR_BACKEND_XENGINE;
 
   protected defaultPort(): number {
     return ML_DEFAULT_PORT;
@@ -677,6 +689,10 @@ export class MoonlightConnection extends SavedConnection {
     slots[45] = encodeField(this.mlMac);
     slots[46] = this.mlScaleMode.toString();
     slots[47] = this.mlScalePercent.toString();
+    slots[48] = this.useGlobalSr ? '1' : '0';
+    slots[49] = this.srEnabled ? '1' : '0';
+    slots[50] = this.srRatioPercent.toString();
+    slots[51] = this.srBackend.toString();
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -700,6 +716,11 @@ export class MoonlightConnection extends SavedConnection {
     this.mlScaleMode = parts.length > 46
       ? parseFieldNumber(parts[46], ML_SCALE_AUTO) : ML_SCALE_AUTO;
     this.mlScalePercent = parts.length > 47 ? parseFieldNumber(parts[47], 100) : 100;
+    this.useGlobalSr = parts.length > 48 ? parts[48] !== '0' : true;
+    this.srEnabled = parts.length > 49 ? parts[49] === '1' : false;
+    this.srRatioPercent = parts.length > 50 ? parseFieldNumber(parts[50], 0) : 0;
+    this.srBackend = parts.length > 51
+      ? parseFieldNumber(parts[51], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -718,6 +739,10 @@ export class MoonlightConnection extends SavedConnection {
     item.useGlobalStream = this.useGlobalStream;
     item.mlScaleMode = this.mlScaleMode;
     item.mlScalePercent = this.mlScalePercent;
+    item.useGlobalSr = this.useGlobalSr;
+    item.srEnabled = this.srEnabled;
+    item.srRatioPercent = this.srRatioPercent;
+    item.srBackend = this.srBackend;
   }
 
   protected readProtocolExport(item: ConnectionExport): void {
@@ -736,6 +761,10 @@ export class MoonlightConnection extends SavedConnection {
     this.useGlobalStream = item.useGlobalStream;
     this.mlScaleMode = item.mlScaleMode;
     this.mlScalePercent = item.mlScalePercent;
+    this.useGlobalSr = item.useGlobalSr;
+    this.srEnabled = item.srEnabled;
+    this.srRatioPercent = item.srRatioPercent;
+    this.srBackend = item.srBackend;
   }
 }
 

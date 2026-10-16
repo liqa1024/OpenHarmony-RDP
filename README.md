@@ -13,11 +13,12 @@ RDP 画面由 FreeRDP **gdi** 出、经呈现器上屏（**Vulkan 优先，GLES 
 
 - **RDP 协议栈**：FreeRDP 3.10.3（从源码交叉编译），支持 NLA/CredSSP、TLS
 - **图形管道**：RDPGFX（RemoteFX / 渐进式）与 ClearCodec 的解码由 FreeRDP 的 **gdi** 在 CPU 完成；
-  输出帧经呈现器上屏。**「硬件加速」**开（默认，设备支持时）用 **Vulkan**（脏区上传 + letterbox quad，
-  gdi 直接合成进呈现器缓冲），关或设备不支持时用 **GLES** 且完全不碰 Vulkan（给 Vulkan 不好用/模拟器兜底）。
-  「硬件加速」只选上屏后端，解码始终是 gdi
+  输出帧经呈现器上屏。上屏后端**按能力自动选**：设备支持时用 **Vulkan**（脏区上传 + letterbox quad，
+  gdi 直接合成进呈现器缓冲），否则用 **GLES** 且完全不碰 Vulkan（给模拟器等 Vulkan 不可用的环境兜底）。
+  上屏后端与解码无关，解码始终是 gdi
 - **超分辨率**（Vulkan 专有，平台称「超分」）：会话按「分辨率 ÷ 倍率」出画、本机再上采样回输出分辨率
-  （上采样器 **XEngine** 或 **FSR 1.0** 二选一，或关闭），省解码与带宽
+  （上采样器 **XEngine** 或 **FSR 1.0** 二选一，或关闭），省解码与带宽。**RDP 与 Moonlight 同一套**：
+  Moonlight 侧把解码出的 NV12 帧零拷贝导入呈现器再上采样
 - **Moonlight / Sunshine 串流**：控制层（`serverinfo / pair / applist / launch / resume / cancel`）、
   证书 pin、客户端身份（自签 X.509 + HUKS 信封私钥）与全部 XML 解析在 ArkTS；原生只做
   `moonlight-common-c`（RTSP 协商 + control/audio/video 分帧）与 AVCodec **硬解直出** XComponent surface；

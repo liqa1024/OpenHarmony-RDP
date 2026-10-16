@@ -1345,6 +1345,9 @@ napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   napi_value fsr = nullptr;
   napi_get_boolean(env, caps.srFsrSupported, &fsr);
   napi_set_named_property(env, obj, "fsr", fsr);
+  napi_value videoImport = nullptr;
+  napi_get_boolean(env, caps.srVideoImportSupported, &videoImport);
+  napi_set_named_property(env, obj, "videoImport", videoImport);
   return obj;
 }
 
@@ -1790,6 +1793,22 @@ napi_value MoonlightSessionClearSurface(napi_env env, napi_callback_info) {
   return CreateUndefined(env);
 }
 
+napi_value MoonlightSessionResizeSurface(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr, nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc >= 1) {
+    napi_get_value_int32(env, args[0], &width);
+  }
+  if (argc >= 2) {
+    napi_get_value_int32(env, args[1], &height);
+  }
+  hmrdp::MoonlightSessionResizeSurface(width, height);
+  return CreateUndefined(env);
+}
+
 napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1] = {nullptr};
@@ -1818,6 +1837,9 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.localCursorMode = GetBoolProperty(env, args[0], "localCursorMode", false);
   config.enableAudio = GetBoolProperty(env, args[0], "enableAudio", true);
   config.lowLatencyAudio = GetBoolProperty(env, args[0], "lowLatencyAudio", true);
+  config.srEnabled = GetBoolProperty(env, args[0], "srEnabled", false);
+  config.srBackend = GetIntProperty(env, args[0], "srBackend", 0);
+  config.srRatioPercent = GetIntProperty(env, args[0], "srRatioPercent", 0);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesKeyHex"), &config.remoteInputAesKey);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesIvHex"), &config.remoteInputAesIv);
   return CreateStringUtf8(env, hmrdp::MoonlightSessionStart(config, &OnMoonlightSessionEvent));
@@ -2216,6 +2238,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"moonlightSessionSetSurface", nullptr, MoonlightSessionSetSurface, nullptr, nullptr,
        nullptr, napi_default, nullptr},
       {"moonlightSessionClearSurface", nullptr, MoonlightSessionClearSurface, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"moonlightSessionResizeSurface", nullptr, MoonlightSessionResizeSurface, nullptr, nullptr,
        nullptr, napi_default, nullptr},
       {"moonlightSessionStart", nullptr, MoonlightSessionStart, nullptr, nullptr, nullptr,
        napi_default, nullptr},

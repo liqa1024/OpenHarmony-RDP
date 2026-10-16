@@ -31,6 +31,10 @@ struct VkApi {
   PFN_vkDestroyInstance DestroyInstance = nullptr;
   PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices = nullptr;
   PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties = nullptr;
+  // Core 1.1 / VK_KHR_get_physical_device_properties2, for the YCbCr-conversion feature; either
+  // spelling may be absent and the capability probe falls back to "extension present implies usable".
+  PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2 = nullptr;
+  PFN_vkGetPhysicalDeviceFeatures2KHR GetPhysicalDeviceFeatures2KHR = nullptr;
   PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties = nullptr;
   PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties = nullptr;
   PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties = nullptr;
@@ -41,6 +45,11 @@ struct VkApi {
   PFN_vkCreateDevice CreateDevice = nullptr;
   PFN_vkDestroySurfaceKHR DestroySurfaceKHR = nullptr;
   PFN_vkCreateSurfaceOHOS CreateSurfaceOHOS = nullptr;
+  // VK_OHOS_external_memory: import an OH_NativeBuffer (an AVCodec output buffer) as a VkImage.
+  PFN_vkGetNativeBufferPropertiesOHOS GetNativeBufferPropertiesOHOS = nullptr;
+  // VK_KHR_sampler_ycbcr_conversion: the sampler does YUV -> RGB for an imported NV12 buffer.
+  PFN_vkCreateSamplerYcbcrConversionKHR CreateSamplerYcbcrConversionKHR = nullptr;
+  PFN_vkDestroySamplerYcbcrConversionKHR DestroySamplerYcbcrConversionKHR = nullptr;
 
   PFN_vkDestroyDevice DestroyDevice = nullptr;
   PFN_vkDeviceWaitIdle DeviceWaitIdle = nullptr;
@@ -146,6 +155,10 @@ struct VulkanCapabilities {
   bool extExternalMemory = false;
   bool extExternalMemoryFd = false;
   bool extOhosExternalMemory = false;
+  // VK_KHR_sampler_ycbcr_conversion (the extension and the feature it gates): the YCbCr sampler
+  // that converts an imported NV12 buffer to RGB.
+  bool extSamplerYcbcrConversion = false;
+  bool samplerYcbcrConversion = false;
 
   bool xegLibrary = false;
   bool xegSpatialUpscale = false;
@@ -176,6 +189,10 @@ struct VulkanCapabilities {
   std::string srXengineUnsupportedCode;
   bool srSupported = false;
   std::string srUnsupportedCode;
+  // Video import (`VK_OHOS_external_memory` + a YCbCr sampler): whether an AVCodec NV12 buffer can
+  // be presented through the Vulkan presenter. Needed by the Moonlight 超分 path, not by RDP (its
+  // input is the CPU desktop picture); SR can be usable for RDP and not for Moonlight.
+  bool srVideoImportSupported = false;
 };
 
 const VulkanCapabilities& GetVulkanCapabilities();

@@ -9,16 +9,18 @@ GFX 协议框架与 CPU（gdi）链路的成本结构见 [`rdp-gfx.md`](rdp-gfx.
 
 ## 1. 一套实现、两个后端
 
-`FramePresenter`（`hmrdp_presenter.h`）只有一件事：把已解码的桌面帧放上 XComponent 表面。
-后端由 `CreateFramePresenter()` 按**呈现能力**（`VulkanCapabilities::presenterSupported`）与「硬件加速」设置选：
+`FramePresenter`（`hmrdp_presenter.h`）只有一件事：把一帧画面放上 XComponent 表面。桌面帧由 gdi 出，
+Moonlight 的 超分链路把解码出的 NV12 帧交给它（见 §5、[`moonlight-video.md`](moonlight-video.md) §2）。
+后端由 `CreateFramePresenter()` 按**呈现能力**（`VulkanCapabilities::presenterSupported`）自动选，没有用户开关
+（dev 回放页可临时把它压到 GLES 做 A/B，会话开始时按能力再次归一）：
 
 - **Vulkan（默认）**：脏矩形先拷进 host-visible staging 缓冲，再上传进持久桌面图；GPU 用 letterbox quad
   采样上屏。CPU 从不写显示内存。
 - **GLES（兜底）**：设备 Vulkan 不能上屏时用（主要是模拟器）。脏矩形用 ES3 + `GL_UNPACK_ROW_LENGTH`
   传进桌面尺寸纹理，letterbox 由 shader 的 swizzle + letterbox viewport 完成。
 
-「硬件加速」开关**只选上屏后端**（关 = GLES 且不碰 Vulkan），**不是**解码后端（解码始终是 gdi）。
-判据与 Vulkan 能力见 [`rdp-native.md`](rdp-native.md) §6。
+后端选择**只决定上屏走哪条 GPU 路径**，**不是**解码后端（RDP 解码始终是 gdi）。能力判定见
+[`rdp-native.md`](rdp-native.md) §6。
 
 **GPU 归属**：进程只共享不可变的 `VkInstance`；**每个 presenter 自带 `VkDevice` + queue**（GLES 同理，
 只共享 EGL display，context/surface 每实例独立），所以多会话不会共用一条提交队列、也不会互相拆
@@ -109,7 +111,7 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 [`settings-and-storage.md`](settings-and-storage.md) §2；能力判定见 [`rdp-native.md`](rdp-native.md) §6。
 
 - **只有 Vulkan 呈现器有**：GLES 是兼容兜底，不做同样功能（`SetSuperResolution()` 的默认实现是空操作，
-  只有 `VkRenderer` 覆盖它）。因此超分辨率要求「硬件加速」开着，否则会话侧根本不会降分辨率。
+  只有 `VkRenderer` 覆盖它）。因此超分辨率要求设备呈现判定成立（Vulkan 上屏），否则会话侧根本不会降分辨率。
 - **两个后端，一套接线**：`SetSuperResolution(enabled, backend, outW, outH)` 只选上采样器——
   **XEngine**（平台空域超分）或 **FSR 1.0**（呈现器自己跑的 EASU + RCAS，MIT）。两者都写进输出分辨率的
   `srImage_`，其后的 letterbox 完全相同，所以后端只是录制方式不同；后端在呈现器创建时定，换后端要重连会话。
@@ -133,6 +135,17 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 - **失败就降级且不重试**（`srFailed_` 锁存）：设备拒绝该尺寸/格式（或库缺失）时不进 pass，直接按桌面图
   letterbox，会话照常可用。排查看 hilog 的 `xengine: spatial upscale` 与
   `vulkan presenter: super resolution`。
+- **输入是「会话分辨率的一张图」，与谁出它无关**：SR 的上采样、letterbox、swapchain 与时间戳都在
+  `RecordPresentTailLocked` 里，只吃一个**输入图视图 + 输入尺寸**。RDP 喂桌面图（gdi 合成、脏区上传），
+  Moonlight 喂 `PresentVideo` 产出的会话分辨率 RGB 图（见下）；因此 Moonlight 不需要跟 RDP 的脏区/合并
+  上屏（carry）机制发生关系。
+- **视频输入（Moonlight 超分专用，`PresentVideo`）**：解码器在 `kBuffer` 模式交来 NV12 的 `OH_AVBuffer`，
+  取其 `OH_NativeBuffer` 经 `VK_OHOS_external_memory` **零拷贝导入**为 `VkImage`（外部格式 + 采样器带
+  `VkSamplerYcbcrConversion`，硬件做 YUV→RGB），再一次全屏 convert pass（`video_convert.frag`）写成
+  会话分辨率的 `videoInputImage_`，之后与桌面图同路。**不做 CPU 回读/整帧拷贝**；视频没有脏区，恒整帧一次。
+  导入帧是**逐帧临时**的：`PresentVideo` 同步等到该帧的 fence 才返回，调用方随即释放解码缓冲（见
+  [`moonlight-video.md`](moonlight-video.md) §2）。设备需要 `VK_OHOS_external_memory` +
+  `VK_KHR_sampler_ycbcr_conversion`（`VulkanCapabilities::srVideoImportSupported`），不满足就只关 Moonlight 超分。
 
 ## 6. swapchain 的尺寸与重建（Vulkan）
 

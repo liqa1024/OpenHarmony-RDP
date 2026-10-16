@@ -77,6 +77,18 @@ export class DeviceCapabilities {
     }
   }
 
+  // The Moonlight 超分 path additionally needs the device to import the decoder's NV12 buffer
+  // into the presenter (VK_OHOS_external_memory + a YCbCr sampler).
+  static srVideoImport(): boolean {
+    let verdict: RdpSrBackends;
+    try {
+      verdict = superResolutionBackends();
+    } catch (error) {
+      return false;
+    }
+    return verdict.videoImport;
+  }
+
   static srBackends(): string[] {
     let verdict: RdpSrBackends;
     try {

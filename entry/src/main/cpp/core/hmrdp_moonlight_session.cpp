@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -12,6 +13,8 @@
 
 #include "hmrdp_moonlight.h"
 #include "hmrdp_moonlight_audio.h"
+#include "hmrdp_presenter.h"
+#include "hmrdp_sr.h"
 
 namespace hmrdp {
 namespace {
@@ -32,6 +35,9 @@ std::atomic<MoonlightCursorCallback> g_cursorCallback{nullptr};
 std::atomic<MoonlightClipboardCallback> g_clipboardCallback{nullptr};
 // Window the decode bridge renders into; owned by the ArkTS page, borrowed here.
 MoonlightVideoContext g_context;
+// 超分 presenter, owned by the session thread but looked up by the UI thread on a surface resize.
+std::mutex g_presenterMutex;
+std::unique_ptr<FramePresenter> g_presenter;
 
 void Emit(MoonlightSessionEvent event, int value, const char* text) {
   const MoonlightSessionCallback callback = g_callback;
@@ -118,8 +124,42 @@ void Run(const MoonlightStreamConfig& config) {
 
   STREAM_CONFIGURATION stream;
   LiInitializeStreamConfiguration(&stream);
-  stream.width = config.width;
-  stream.height = config.height;
+  // 超分: the stream is taken at output / ratio and the presenter upscales every frame back to the
+  // output; without it the stream *is* the output. Mirrors the RDP session's /w /h route.
+  int sessionWidth = config.width;
+  int sessionHeight = config.height;
+  if (config.srEnabled && config.srRatioPercent > 100) {
+    sessionWidth = SuperResolutionSessionSize(config.width, config.srRatioPercent);
+    sessionHeight = SuperResolutionSessionSize(config.height, config.srRatioPercent);
+    std::unique_ptr<FramePresenter> presenter;
+    if (g_context.window != nullptr) {
+      presenter = CreateFramePresenter();
+      if (presenter != nullptr) {
+        presenter->SetSurface(g_context.window, sessionWidth, sessionHeight);
+        if (presenter->Prepare()) {
+          presenter->SetSuperResolution(true,
+                                        static_cast<SuperResolutionBackend>(config.srBackend),
+                                        config.width, config.height);
+        } else {
+          HMRDP_LOGW("moonlight session: presenter prepare failed; using the direct surface path");
+          presenter.reset();
+        }
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(g_presenterMutex);
+      g_presenter = std::move(presenter);
+    }
+    MoonlightVideoSetPresenter(g_presenter.get());
+    HMRDP_LOGI("moonlight session %{public}dx%{public}d (super resolution %{public}s %{public}d%% "
+               "-> %{public}dx%{public}d)",
+               config.width, config.height,
+               config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr"
+                                                                                 : "xengine",
+               config.srRatioPercent, sessionWidth, sessionHeight);
+  }
+  stream.width = sessionWidth;
+  stream.height = sessionHeight;
   stream.fps = config.fps;
   stream.bitrate = config.bitrateKbps;
   stream.packetSize = config.packetSize;
@@ -184,6 +224,12 @@ void Run(const MoonlightStreamConfig& config) {
     HMRDP_LOGW("moonlight session: LiStartConnection failed (%{public}d)", result);
     Emit(MoonlightSessionEvent::kTerminated, result, "");
   }
+  // The bridge must stop using the presenter before it is destroyed.
+  MoonlightVideoSetPresenter(nullptr);
+  {
+    std::lock_guard<std::mutex> lock(g_presenterMutex);
+    g_presenter.reset();
+  }
   g_connected = false;
   g_active = false;
 }
@@ -193,6 +239,13 @@ void Run(const MoonlightStreamConfig& config) {
 void MoonlightSessionSetWindow(void* window) {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_context.window = window;
+}
+
+void MoonlightSessionResizeSurface(int width, int height) {
+  std::lock_guard<std::mutex> lock(g_presenterMutex);
+  if (g_presenter != nullptr) {
+    g_presenter->ResizeSurface(width, height);
+  }
 }
 
 void MoonlightSessionSetCursorCallback(MoonlightCursorCallback callback) {

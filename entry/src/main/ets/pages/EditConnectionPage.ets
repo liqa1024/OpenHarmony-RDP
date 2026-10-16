@@ -69,7 +69,6 @@ struct EditConnectionPage {
   @State srEnabled: boolean = false;
   @State srRatioPercent: number = SR_RATIO_PRESETS[0];
   @State srBackend: number = SR_BACKEND_XENGINE;
-  @State srUsable: boolean = false;
   @State protocol: number = PROTOCOL_RDP;
   @State mlDefaultAppId: string = '';
   @State mlDefaultAppName: string = '';
@@ -139,7 +138,6 @@ struct EditConnectionPage {
       ? `${detected.width} × ${detected.height}` : '无法获取显示器分辨率';
     this.detectedWidth = detected.valid() ? detected.width : 1920;
     this.detectedHeight = detected.valid() ? detected.height : 1080;
-    this.srUsable = SettingsStore.superResolutionUsable();
     this.desktopWidthText = detected.valid() ? detected.width.toString() : '1920';
     this.desktopHeightText = detected.valid() ? detected.height.toString() : '1080';
     this.scaleText = this.suggestedScale().toString();
@@ -216,6 +214,11 @@ struct EditConnectionPage {
         this.useGlobalStream = conn.useGlobalStream;
         this.mlScaleMode = conn.mlScaleMode;
         this.mlScaleText = conn.mlScalePercent.toString();
+        // 超分 uses the same editor state as RDP (the two protocols name the fields alike).
+        this.useGlobalSr = conn.useGlobalSr;
+        this.srEnabled = conn.srEnabled;
+        this.srRatioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
+        this.srBackend = conn.srBackend;
       }
       this.clampMlCodec();
     }
@@ -316,10 +319,15 @@ struct EditConnectionPage {
     return `${res} · ${profile.fps}fps · ${bitrate}`;
   }
 
+  // 超分 capability for the protocol being edited (Moonlight also needs the video import).
+  private srUsable(): boolean {
+    return SettingsStore.superResolutionUsable(this.protocol);
+  }
+
   private resolvedSr(): SrProfile {
     const sr: SrProfile = new SrProfile();
     if (this.useGlobalSr) {
-      const global: SrProfile = SettingsStore.globalSrProfile();
+      const global: SrProfile = SettingsStore.globalSrProfile(this.protocol);
       sr.enabled = global.enabled;
       sr.ratioPercent = global.ratioPercent;
       sr.backend = global.backend;
@@ -328,7 +336,7 @@ struct EditConnectionPage {
       sr.ratioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
       sr.backend = this.srBackend;
     }
-    if (!this.srUsable) {
+    if (!this.srUsable()) {
       sr.enabled = false;
     }
     return sr;
@@ -345,11 +353,8 @@ struct EditConnectionPage {
     if (choice === 0) {
       return true;
     }
-    if (!this.srUsable) {
-      return false;
-    }
-    const token: string = choice === 2 ? 'fsr' : 'xengine';
-    return DeviceCapabilities.srBackends().indexOf(token) >= 0;
+    const backend: number = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
+    return SettingsStore.srBackendUsable(backend, this.protocol);
   }
 
   private suggestedScale(): number {
@@ -509,6 +514,10 @@ struct EditConnectionPage {
     conn.useGlobalStream = this.useGlobalStream;
     conn.mlScaleMode = this.mlScaleMode;
     conn.mlScalePercent = this.parseScale(this.mlScaleText, 100);
+    conn.useGlobalSr = this.useGlobalSr;
+    conn.srEnabled = this.srEnabled && this.srUsable();
+    conn.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
+    conn.srBackend = this.srBackend;
     conn.updatedAt = Date.now();
     if (!connect) {
       if (!this.persist(conn)) {
@@ -789,6 +798,73 @@ struct EditConnectionPage {
         }
       }
     })
+  }
+
+  // 超分 override block, shared by both protocol editors: the per-connection SR state is named the
+  // same for RDP and Moonlight, so only the surrounding section differs.
+  @Builder
+  srAdvancedSection() {
+    Column() {
+      Row() {
+        Column() {
+          Text('使用会话独立超分辨率设置')
+            .fontSize(14).fontColor($r('app.color.text_primary'))
+          Text('超分辨率：远端按输出分辨率÷倍率出画，本机 GPU 上采样回输出分辨率；关闭则跟随全局设置')
+            .fontSize(11)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+          if (!this.srUsable()) {
+            Text('本设备不支持超分辨率（需要可用的 Vulkan 上屏与所选后端）')
+              .fontSize(11)
+              .fontColor($r('app.color.danger'))
+              .margin({ top: 2 })
+          }
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalSr })
+          .enabled(this.srUsable())
+          .selectedColor($r('app.color.accent'))
+          .onChange((isOn: boolean) => {
+            if (!this.srUsable()) {
+              return;
+            }
+            this.useGlobalSr = !isOn;
+          })
+      }
+      .width('100%')
+      .height(58)
+
+      if (this.useGlobalSr) {
+        Text('全局：' + this.srSummary(SettingsStore.globalSrProfile(this.protocol)))
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+          .width('100%')
+      } else {
+        Text('超分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
+        Text('会话按输出分辨率÷倍率取流，本机上采样回输出分辨率')
+          .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+
+        Flex({ wrap: FlexWrap.Wrap }) {
+          this.srChoiceChip(0)
+          this.srChoiceChip(1)
+          this.srChoiceChip(2)
+        }
+        .width('100%').margin({ top: 8, bottom: 8 })
+
+        if (this.srEnabled) {
+          Flex({ wrap: FlexWrap.Wrap }) {
+            ForEach(SR_RATIO_PRESETS, (preset: number) => {
+              this.srRatioChip(preset)
+            }, (preset: number) => preset.toString())
+          }
+          .width('100%').margin({ bottom: 8 })
+        }
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -1206,6 +1282,12 @@ struct EditConnectionPage {
               this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601')
             }
             .width('100%').margin({ top: 8 })
+
+            Divider()
+              .color($r('app.color.divider'))
+              .margin({ top: 8, bottom: 4 })
+
+            this.srAdvancedSection()
           }
         }
         .width('100%')
@@ -1590,63 +1672,7 @@ struct EditConnectionPage {
                   .color($r('app.color.divider'))
                   .margin({ top: 8, bottom: 4 })
 
-                Row() {
-                  Column() {
-                    Text('使用会话独立超分辨率设置')
-                      .fontSize(14).fontColor($r('app.color.text_primary'))
-                    Text('超分辨率：远端按输出分辨率÷倍率出画，本机 GPU 上采样回输出分辨率；关闭则跟随全局设置')
-                      .fontSize(11)
-                      .fontColor($r('app.color.text_tertiary'))
-                      .margin({ top: 2 })
-                    if (!this.srUsable) {
-                      Text('本设备或当前设置不满足超分辨率条件（需开启硬件加速且设备支持）')
-                        .fontSize(11)
-                        .fontColor($r('app.color.danger'))
-                        .margin({ top: 2 })
-                    }
-                  }
-                  .alignItems(HorizontalAlign.Start)
-                  .layoutWeight(1)
-
-                  Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalSr })
-                    .enabled(this.srUsable)
-                    .selectedColor($r('app.color.accent'))
-                    .onChange((isOn: boolean) => {
-                      if (!this.srUsable) {
-                        return;
-                      }
-                      this.useGlobalSr = !isOn;
-                    })
-                }
-                .width('100%')
-                .height(58)
-
-                if (this.useGlobalSr) {
-                  Text('全局：' + this.srSummary(SettingsStore.globalSrProfile()))
-                    .fontSize(11)
-                    .fontColor($r('app.color.text_tertiary'))
-                    .width('100%')
-                } else {
-                  Text('超分辨率').fontSize(14).fontColor($r('app.color.text_primary'))
-                  Text('会话按输出分辨率÷倍率取流，本机上采样回输出分辨率')
-                    .fontSize(11).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
-
-                  Flex({ wrap: FlexWrap.Wrap }) {
-                    this.srChoiceChip(0)
-                    this.srChoiceChip(1)
-                    this.srChoiceChip(2)
-                  }
-                  .width('100%').margin({ top: 8, bottom: 8 })
-
-                  if (this.srEnabled) {
-                    Flex({ wrap: FlexWrap.Wrap }) {
-                      ForEach(SR_RATIO_PRESETS, (preset: number) => {
-                        this.srRatioChip(preset)
-                      }, (preset: number) => preset.toString())
-                    }
-                    .width('100%').margin({ bottom: 8 })
-                  }
-                }
+                this.srAdvancedSection()
 
                 Divider()
                   .color($r('app.color.divider'))

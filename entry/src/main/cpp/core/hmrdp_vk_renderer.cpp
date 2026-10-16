@@ -8,6 +8,7 @@
 
 #include "present_quad.frag.h"
 #include "present_quad.vert.h"
+#include "video_convert.frag.h"
 
 #if defined(HMRDP_HAVE_FSR)
 #include "fsr_easu.frag.h"
@@ -1649,7 +1650,7 @@ void VkRenderer::DestroyFsrLocked() {
   fsrParamsCoherent_ = false;
 }
 
-bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
+bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView inputView) {
   VkApi& api = vk_.api();
   VkImageSubresourceRange subresource{};
   subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1687,7 +1688,7 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
     api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
                            nullptr, 1, &toAttachment);
-    srUpscale_.Record(cmd, desktopImageView_, srImageView_);
+    srUpscale_.Record(cmd, inputView, srImageView_);
     targetToSampled(srImage_);
     return true;
   }
@@ -1747,6 +1748,32 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd) {
 #else
   return false;
 #endif
+}
+
+bool VkRenderer::RecordPresentTailLocked(VkCommandBuffer cmd, uint32_t slot, uint32_t imageIndex,
+                                         VkImageView inputView, int inputWidth, int inputHeight,
+                                         bool srActive, bool timers) {
+  VkApi& api = vk_.api();
+  if (srActive) {
+    // Either backend renders into `srImage_`, which replaces the input picture as the letterbox
+    // source (its extent is the output resolution). Includes the barriers.
+    RecordSuperResolutionLocked(cmd, inputView);
+  }
+
+  if (timers) {
+    api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, presentTimer_[slot], 2);
+  }
+
+  const VkImageView source = srActive ? srImageView_ : inputView;
+  const int sourceWidth = srActive ? srImageWidth_ : inputWidth;
+  const int sourceHeight = srActive ? srImageHeight_ : inputHeight;
+  UpdatePresentDescriptorLocked(slot, source);
+  RecordPresentQuadLocked(cmd, sourceWidth, sourceHeight, imageIndex);
+  if (timers) {
+    // Outside the render pass: the blit is not portably measurable from inside one.
+    api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 3);
+  }
+  return SubmitAndPresentLocked(cmd, imageIndex);
 }
 
 bool VkRenderer::EnsureStageLocked(size_t bytes) {
@@ -2236,25 +2263,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                            &toSampled);
 
-    if (srActive) {
-      // Either backend renders into `srImage_`, which replaces the desktop as the
-      // letterbox source (its extent is the output resolution). Includes the barriers.
-      RecordSuperResolutionLocked(cmd);
-    }
-
-    if (timers) {
-      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                            presentTimer_[slot], 2);
-    }
-
-    UpdatePresentDescriptorLocked(frameIndex_, srActive ? srImageView_ : desktopImageView_);
-    RecordPresentQuadLocked(cmd, srActive ? srImageWidth_ : desktopWidth,
-                            srActive ? srImageHeight_ : desktopHeight, imageIndex);
-    if (timers) {
-      // Outside the render pass: the blit is not portably measurable from inside one.
-      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 3);
-    }
-    const bool presented = SubmitAndPresentLocked(cmd, imageIndex);
+    const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, desktopImageView_,
+                                                   desktopWidth, desktopHeight, srActive, timers);
     if (presented) {
       desktopImageFullUpload_ = false;
       if (direct) {
@@ -2271,6 +2281,632 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
   return false;
 }
 
+bool VkRenderer::EnsureYcbcrConversionLocked(uint64_t externalFormat, VkFormat planeFormat,
+                                             const VkComponentMapping& components, int model,
+                                             int range, int xChromaOffset, int yChromaOffset) {
+  VkApi& api = vk_.api();
+  const VkDevice device = vk_.device();
+  if (device == VK_NULL_HANDLE || api.CreateSamplerYcbcrConversionKHR == nullptr) {
+    return false;
+  }
+  if (ycbcrConversion_ != VK_NULL_HANDLE && ycbcrConversionValid_ &&
+      ycbcrExternalFormat_ == externalFormat) {
+    return true;
+  }
+  if (ycbcrConversion_ != VK_NULL_HANDLE && api.DestroySamplerYcbcrConversionKHR != nullptr) {
+    api.DestroySamplerYcbcrConversionKHR(device, ycbcrConversion_, nullptr);
+    ycbcrConversion_ = VK_NULL_HANDLE;
+  }
+  // The sampler carries the conversion, so it is rebuilt with it (the descriptor is rewritten each
+  // frame, so nothing else has to change).
+  if (videoConvertSampler_ != VK_NULL_HANDLE && api.DestroySampler != nullptr) {
+    api.DestroySampler(device, videoConvertSampler_, nullptr);
+    videoConvertSampler_ = VK_NULL_HANDLE;
+  }
+
+  VkExternalFormatOHOS externalFormatInfo{};
+  externalFormatInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_OHOS;
+  externalFormatInfo.externalFormat = externalFormat;
+
+  VkSamplerYcbcrConversionCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO;
+  info.format = externalFormat != 0 ? VK_FORMAT_UNDEFINED : planeFormat;
+  info.ycbcrModel = static_cast<VkSamplerYcbcrModelConversion>(model);
+  info.ycbcrRange = static_cast<VkSamplerYcbcrRange>(range);
+  info.components = components;
+  info.xChromaOffset = static_cast<VkChromaLocation>(xChromaOffset);
+  info.yChromaOffset = static_cast<VkChromaLocation>(yChromaOffset);
+  info.chromaFilter = VK_FILTER_LINEAR;
+  info.forceExplicitReconstruction = VK_FALSE;
+  info.pNext = externalFormat != 0 ? &externalFormatInfo : nullptr;
+  if (api.CreateSamplerYcbcrConversionKHR(device, &info, nullptr, &ycbcrConversion_) != VK_SUCCESS) {
+    ycbcrConversion_ = VK_NULL_HANDLE;
+    ycbcrConversionValid_ = false;
+    HMRDP_LOGW("vulkan: sampler YCbCr conversion rejected (external format 0x%{public}llx)",
+               static_cast<unsigned long long>(externalFormat));
+    return false;
+  }
+  ycbcrExternalFormat_ = externalFormat;
+  ycbcrConversionValid_ = true;
+
+  VkSamplerYcbcrConversionInfo conversionInfo{};
+  conversionInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO;
+  conversionInfo.conversion = ycbcrConversion_;
+  VkSamplerCreateInfo samplerInfo{};
+  samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  samplerInfo.pNext = &conversionInfo;
+  samplerInfo.magFilter = VK_FILTER_LINEAR;
+  samplerInfo.minFilter = VK_FILTER_LINEAR;
+  samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  samplerInfo.maxLod = 0.0f;
+  if (api.CreateSampler(device, &samplerInfo, nullptr, &videoConvertSampler_) != VK_SUCCESS) {
+    videoConvertSampler_ = VK_NULL_HANDLE;
+    HMRDP_LOGW("vulkan: video convert sampler rejected");
+    return false;
+  }
+  return true;
+}
+
+void VkRenderer::DestroyVideoInputLocked() {
+  VkApi& api = vk_.api();
+  const VkDevice device = vk_.device();
+  if (device != VK_NULL_HANDLE) {
+    if (videoConvertPipeline_ != VK_NULL_HANDLE && api.DestroyPipeline != nullptr) {
+      api.DestroyPipeline(device, videoConvertPipeline_, nullptr);
+    }
+    if (videoConvertPool_ != VK_NULL_HANDLE && api.DestroyDescriptorPool != nullptr) {
+      api.DestroyDescriptorPool(device, videoConvertPool_, nullptr);
+    }
+    if (videoConvertPipelineLayout_ != VK_NULL_HANDLE && api.DestroyPipelineLayout != nullptr) {
+      api.DestroyPipelineLayout(device, videoConvertPipelineLayout_, nullptr);
+    }
+    if (videoConvertSetLayout_ != VK_NULL_HANDLE && api.DestroyDescriptorSetLayout != nullptr) {
+      api.DestroyDescriptorSetLayout(device, videoConvertSetLayout_, nullptr);
+    }
+    if (videoConvertFramebuffer_ != VK_NULL_HANDLE && api.DestroyFramebuffer != nullptr) {
+      api.DestroyFramebuffer(device, videoConvertFramebuffer_, nullptr);
+    }
+    if (videoConvertRenderPass_ != VK_NULL_HANDLE && api.DestroyRenderPass != nullptr) {
+      api.DestroyRenderPass(device, videoConvertRenderPass_, nullptr);
+    }
+    if (videoConvertSampler_ != VK_NULL_HANDLE && api.DestroySampler != nullptr) {
+      api.DestroySampler(device, videoConvertSampler_, nullptr);
+    }
+    if (ycbcrConversion_ != VK_NULL_HANDLE && api.DestroySamplerYcbcrConversionKHR != nullptr) {
+      api.DestroySamplerYcbcrConversionKHR(device, ycbcrConversion_, nullptr);
+    }
+    if (videoInputImageView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+      api.DestroyImageView(device, videoInputImageView_, nullptr);
+    }
+    if (videoInputImage_ != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
+      api.DestroyImage(device, videoInputImage_, nullptr);
+    }
+    if (videoInputImageMemory_ != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+      api.FreeMemory(device, videoInputImageMemory_, nullptr);
+    }
+  }
+  videoConvertPipeline_ = VK_NULL_HANDLE;
+  videoConvertPool_ = VK_NULL_HANDLE;
+  videoConvertSet_ = VK_NULL_HANDLE;
+  videoConvertPipelineLayout_ = VK_NULL_HANDLE;
+  videoConvertSetLayout_ = VK_NULL_HANDLE;
+  videoConvertFramebuffer_ = VK_NULL_HANDLE;
+  videoConvertRenderPass_ = VK_NULL_HANDLE;
+  videoConvertSampler_ = VK_NULL_HANDLE;
+  ycbcrConversion_ = VK_NULL_HANDLE;
+  ycbcrConversionValid_ = false;
+  ycbcrExternalFormat_ = 0;
+  videoInputImageView_ = VK_NULL_HANDLE;
+  videoInputImage_ = VK_NULL_HANDLE;
+  videoInputImageMemory_ = VK_NULL_HANDLE;
+  videoInputWidth_ = 0;
+  videoInputHeight_ = 0;
+}
+
+bool VkRenderer::EnsureVideoConvertPipelineLocked() {
+  VkApi& api = vk_.api();
+  const VkDevice device = vk_.device();
+  if (device == VK_NULL_HANDLE) {
+    return false;
+  }
+  if (videoConvertPipeline_ != VK_NULL_HANDLE) {
+    return true;
+  }
+  // Rewritten every frame (DONT_CARE) and left in GENERAL so the 超分 / letterbox tail samples it
+  // exactly like the desktop picture.
+  {
+    VkAttachmentDescription attachment{};
+    attachment.format = kPictureFormat;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkRenderPassCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    info.attachmentCount = 1;
+    info.pAttachments = &attachment;
+    info.subpassCount = 1;
+    info.pSubpasses = &subpass;
+    info.dependencyCount = 1;
+    info.pDependencies = &dependency;
+    if (api.CreateRenderPass(device, &info, nullptr, &videoConvertRenderPass_) != VK_SUCCESS) {
+      error_ = "video convert render pass failed";
+      DestroyVideoInputLocked();
+      return false;
+    }
+  }
+  {
+    VkFramebufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    info.renderPass = videoConvertRenderPass_;
+    info.attachmentCount = 1;
+    info.pAttachments = &videoInputImageView_;
+    info.width = static_cast<uint32_t>(videoInputWidth_);
+    info.height = static_cast<uint32_t>(videoInputHeight_);
+    info.layers = 1;
+    if (api.CreateFramebuffer(device, &info, nullptr, &videoConvertFramebuffer_) != VK_SUCCESS) {
+      error_ = "video convert framebuffer failed";
+      DestroyVideoInputLocked();
+      return false;
+    }
+  }
+  {
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 1;
+    info.pBindings = &binding;
+    if (api.CreateDescriptorSetLayout(device, &info, nullptr, &videoConvertSetLayout_) != VK_SUCCESS) {
+      error_ = "video convert set layout failed";
+      DestroyVideoInputLocked();
+      return false;
+    }
+  }
+  {
+    VkPipelineLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info.setLayoutCount = 1;
+    info.pSetLayouts = &videoConvertSetLayout_;
+    if (api.CreatePipelineLayout(device, &info, nullptr, &videoConvertPipelineLayout_) !=
+        VK_SUCCESS) {
+      error_ = "video convert pipeline layout failed";
+      DestroyVideoInputLocked();
+      return false;
+    }
+  }
+  {
+    VkDescriptorPoolSize size{};
+    size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    size.descriptorCount = 1;
+    VkDescriptorPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info.maxSets = 1;
+    info.poolSizeCount = 1;
+    info.pPoolSizes = &size;
+    if (api.CreateDescriptorPool(device, &info, nullptr, &videoConvertPool_) != VK_SUCCESS) {
+      error_ = "video convert pool failed";
+      DestroyVideoInputLocked();
+      return false;
+    }
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = videoConvertPool_;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &videoConvertSetLayout_;
+    if (api.AllocateDescriptorSets(device, &alloc, &videoConvertSet_) != VK_SUCCESS) {
+      error_ = "video convert set allocation failed";
+      DestroyVideoInputLocked();
+      return false;
+    }
+  }
+
+  VkShaderModule vert = VK_NULL_HANDLE;
+  VkShaderModule frag = VK_NULL_HANDLE;
+  VkShaderModuleCreateInfo shaderInfo{};
+  shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shaderInfo.codeSize = kPresentQuadVertSpvWords * sizeof(uint32_t);
+  shaderInfo.pCode = kPresentQuadVertSpv;
+  if (api.CreateShaderModule(device, &shaderInfo, nullptr, &vert) != VK_SUCCESS) {
+    error_ = "video convert vert module failed";
+    DestroyVideoInputLocked();
+    return false;
+  }
+  shaderInfo.codeSize = kVideoConvertFragSpvWords * sizeof(uint32_t);
+  shaderInfo.pCode = kVideoConvertFragSpv;
+  if (api.CreateShaderModule(device, &shaderInfo, nullptr, &frag) != VK_SUCCESS) {
+    api.DestroyShaderModule(device, vert, nullptr);
+    error_ = "video convert frag module failed";
+    DestroyVideoInputLocked();
+    return false;
+  }
+
+  VkPipelineShaderStageCreateInfo stages[2] = {};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = vert;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = frag;
+  stages[1].pName = "main";
+
+  VkPipelineVertexInputStateCreateInfo vertexInput{};
+  vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewportState{};
+  viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewportState.viewportCount = 1;
+  viewportState.scissorCount = 1;
+  VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamicState{};
+  dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamicState.dynamicStateCount = 2;
+  dynamicState.pDynamicStates = dynamicStates;
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineColorBlendAttachmentState blendAttachment{};
+  blendAttachment.blendEnable = VK_FALSE;
+  blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo blend{};
+  blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  blend.attachmentCount = 1;
+  blend.pAttachments = &blendAttachment;
+
+  VkGraphicsPipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  info.stageCount = 2;
+  info.pStages = stages;
+  info.pVertexInputState = &vertexInput;
+  info.pInputAssemblyState = &inputAssembly;
+  info.pViewportState = &viewportState;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &multisample;
+  info.pColorBlendState = &blend;
+  info.pDynamicState = &dynamicState;
+  info.layout = videoConvertPipelineLayout_;
+  info.renderPass = videoConvertRenderPass_;
+  info.subpass = 0;
+  const VkResult result =
+      api.CreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &videoConvertPipeline_);
+  api.DestroyShaderModule(device, vert, nullptr);
+  api.DestroyShaderModule(device, frag, nullptr);
+  if (result != VK_SUCCESS) {
+    error_ = "video convert pipeline failed";
+    DestroyVideoInputLocked();
+    return false;
+  }
+  return true;
+}
+
+bool VkRenderer::EnsureVideoInputLocked(int inputWidth, int inputHeight) {
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE || inputWidth <= 0 || inputHeight <= 0) {
+    return false;
+  }
+  if (videoInputImageView_ != VK_NULL_HANDLE && videoConvertPipeline_ != VK_NULL_HANDLE &&
+      videoInputWidth_ == inputWidth && videoInputHeight_ == inputHeight) {
+    return true;
+  }
+  if (api.GetNativeBufferPropertiesOHOS == nullptr ||
+      api.CreateSamplerYcbcrConversionKHR == nullptr) {
+    error_ = "video import needs VK_OHOS_external_memory + VK_KHR_sampler_ycbcr_conversion";
+    return false;
+  }
+  DestroyVideoInputLocked();
+  // Rare (resize) path: frames still reading the old targets must drain first; safe because this
+  // runs before the frame's swapchain image is acquired.
+  if (inFlight_[0] != VK_NULL_HANDLE) {
+    api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
+  }
+  if (!CreateDeviceImage(api, context, kPictureFormat, inputWidth, inputHeight,
+                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         &videoInputImage_, &videoInputImageMemory_)) {
+    error_ = "video input image allocation failed";
+    DestroyVideoInputLocked();
+    return false;
+  }
+  if (!CreateImageView2D(api, context, kPictureFormat, videoInputImage_, &videoInputImageView_)) {
+    error_ = "video input image view failed";
+    DestroyVideoInputLocked();
+    return false;
+  }
+  videoInputWidth_ = inputWidth;
+  videoInputHeight_ = inputHeight;
+  return EnsureVideoConvertPipelineLocked();
+}
+
+bool VkRenderer::ImportVideoFrameLocked(const void* nativeBuffer, int width, int height,
+                                        ImportedVideoFrame* out) {
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
+  const VkDevice device = context.device();
+  if (device == VK_NULL_HANDLE || nativeBuffer == nullptr || out == nullptr) {
+    return false;
+  }
+  const struct OH_NativeBuffer* buffer =
+      static_cast<const struct OH_NativeBuffer*>(nativeBuffer);
+  VkNativeBufferFormatPropertiesOHOS formatProperties{};
+  formatProperties.sType = VK_STRUCTURE_TYPE_NATIVE_BUFFER_FORMAT_PROPERTIES_OHOS;
+  VkNativeBufferPropertiesOHOS properties{};
+  properties.sType = VK_STRUCTURE_TYPE_NATIVE_BUFFER_PROPERTIES_OHOS;
+  properties.pNext = &formatProperties;
+  if (api.GetNativeBufferPropertiesOHOS(device, buffer, &properties) != VK_SUCCESS) {
+    HMRDP_LOGW("vulkan: vkGetNativeBufferPropertiesOHOS failed");
+    return false;
+  }
+  if (!EnsureYcbcrConversionLocked(formatProperties.externalFormat, formatProperties.format,
+                                   formatProperties.samplerYcbcrConversionComponents,
+                                   static_cast<int>(formatProperties.suggestedYcbcrModel),
+                                   static_cast<int>(formatProperties.suggestedYcbcrRange),
+                                   static_cast<int>(formatProperties.suggestedXChromaOffset),
+                                   static_cast<int>(formatProperties.suggestedYChromaOffset))) {
+    return false;
+  }
+
+  // External format (an NV12 native buffer has no plain VkFormat); the sampler conversion resolves it.
+  VkExternalFormatOHOS externalFormat{};
+  externalFormat.sType = VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_OHOS;
+  externalFormat.externalFormat = formatProperties.externalFormat;
+  const VkFormat imageFormat =
+      formatProperties.externalFormat != 0 ? VK_FORMAT_UNDEFINED : formatProperties.format;
+
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.pNext = formatProperties.externalFormat != 0 ? &externalFormat : nullptr;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.format = imageFormat;
+  imageInfo.extent.width = static_cast<uint32_t>(width);
+  imageInfo.extent.height = static_cast<uint32_t>(height);
+  imageInfo.extent.depth = 1;
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = 1;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (api.CreateImage(device, &imageInfo, nullptr, &out->image) != VK_SUCCESS) {
+    HMRDP_LOGW("vulkan: vkCreateImage (video import) failed");
+    return false;
+  }
+
+  const uint32_t memoryType = context.FindMemoryType(properties.memoryTypeBits, 0);
+  if (memoryType == UINT32_MAX) {
+    HMRDP_LOGW("vulkan: no memory type for the imported video buffer");
+    ReleaseImportedLocked(out);
+    return false;
+  }
+  VkImportNativeBufferInfoOHOS import{};
+  import.sType = VK_STRUCTURE_TYPE_IMPORT_NATIVE_BUFFER_INFO_OHOS;
+  import.buffer = const_cast<struct OH_NativeBuffer*>(buffer);
+  VkMemoryAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.allocationSize = properties.allocationSize;
+  alloc.memoryTypeIndex = memoryType;
+  alloc.pNext = &import;
+  if (api.AllocateMemory(device, &alloc, nullptr, &out->memory) != VK_SUCCESS) {
+    HMRDP_LOGW("vulkan: vkAllocateMemory (video import) failed");
+    ReleaseImportedLocked(out);
+    return false;
+  }
+  if (api.BindImageMemory(device, out->image, out->memory, 0) != VK_SUCCESS) {
+    HMRDP_LOGW("vulkan: vkBindImageMemory (video import) failed");
+    ReleaseImportedLocked(out);
+    return false;
+  }
+
+  VkSamplerYcbcrConversionInfo conversionInfo{};
+  conversionInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO;
+  conversionInfo.conversion = ycbcrConversion_;
+  VkImageViewCreateInfo viewInfo{};
+  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  viewInfo.pNext = &conversionInfo;
+  viewInfo.image = out->image;
+  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  viewInfo.format = imageFormat;
+  viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  viewInfo.subresourceRange.levelCount = 1;
+  viewInfo.subresourceRange.layerCount = 1;
+  if (api.CreateImageView(device, &viewInfo, nullptr, &out->view) != VK_SUCCESS) {
+    HMRDP_LOGW("vulkan: vkCreateImageView (video import) failed");
+    ReleaseImportedLocked(out);
+    return false;
+  }
+  return true;
+}
+
+void VkRenderer::ReleaseImportedLocked(ImportedVideoFrame* frame) {
+  if (frame == nullptr) {
+    return;
+  }
+  VkApi& api = vk_.api();
+  const VkDevice device = vk_.device();
+  if (device != VK_NULL_HANDLE) {
+    if (frame->view != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+      api.DestroyImageView(device, frame->view, nullptr);
+    }
+    if (frame->image != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
+      api.DestroyImage(device, frame->image, nullptr);
+    }
+    if (frame->memory != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+      api.FreeMemory(device, frame->memory, nullptr);
+    }
+  }
+  frame->view = VK_NULL_HANDLE;
+  frame->image = VK_NULL_HANDLE;
+  frame->memory = VK_NULL_HANDLE;
+}
+
+bool VkRenderer::PresentVideo(const void* nativeBuffer, int inputWidth, int inputHeight) {
+  if (nativeBuffer == nullptr || inputWidth <= 0 || inputHeight <= 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  VkApi& api = vk_.api();
+  VkDeviceContext& context = vk_;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    if (!EnsureSwapchainLocked()) {
+      return false;
+    }
+    const VkDevice device = context.device();
+    if (device == VK_NULL_HANDLE) {
+      return false;
+    }
+    if (!EnsureVideoInputLocked(inputWidth, inputHeight)) {
+      return false;
+    }
+    ImportedVideoFrame imported{};
+    if (!ImportVideoFrameLocked(nativeBuffer, inputWidth, inputHeight, &imported)) {
+      return false;
+    }
+    // 超分: build the upscale target before acquiring, so a rare (re)creation can drain.
+    const bool srActive = EnsureSuperResolutionLocked(inputWidth, inputHeight);
+
+    uint32_t imageIndex = 0;
+    bool retry = false;
+    if (!AcquireFrameLocked(&imageIndex, &retry)) {
+      ReleaseImportedLocked(&imported);
+      return false;
+    }
+    if (retry) {
+      ReleaseImportedLocked(&imported);
+      continue;
+    }
+    if (!EnsurePresentPipelineLocked()) {
+      ReleaseImportedLocked(&imported);
+      return false;
+    }
+
+    const uint32_t slot = frameIndex_;
+    const bool timers = EnsurePresentTimerLocked();
+    if (timers) {
+      CollectPresentTimerLocked(slot);
+    }
+
+    const VkCommandBuffer cmd = commandBuffers_[slot];
+    api.ResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    api.BeginCommandBuffer(cmd, &beginInfo);
+    if (timers) {
+      api.CmdResetQueryPool(cmd, presentTimer_[slot], 0, kPresentTimestampsPerSlot);
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, presentTimer_[slot], 0);
+    }
+
+    // Imported image: the external producer wrote it; it is only ever sampled (GENERAL).
+    {
+      VkImageMemoryBarrier barrier{};
+      barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.srcAccessMask = 0;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.image = imported.image;
+      barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      barrier.subresourceRange.levelCount = 1;
+      barrier.subresourceRange.layerCount = 1;
+      api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &barrier);
+    }
+    {
+      VkDescriptorImageInfo imageInfo{};
+      imageInfo.sampler = videoConvertSampler_;
+      imageInfo.imageView = imported.view;
+      imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkWriteDescriptorSet write{};
+      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet = videoConvertSet_;
+      write.dstBinding = 0;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      write.pImageInfo = &imageInfo;
+      api.UpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
+    // Convert pass: the sampler's YCbCr conversion turns NV12 into RGB as it is sampled; the result
+    // is the session-resolution picture image the shared 超分 / letterbox tail consumes.
+    {
+      VkViewport viewport{};
+      viewport.width = static_cast<float>(inputWidth);
+      viewport.height = static_cast<float>(inputHeight);
+      viewport.maxDepth = 1.0f;
+      VkRect2D scissor{};
+      scissor.extent.width = static_cast<uint32_t>(inputWidth);
+      scissor.extent.height = static_cast<uint32_t>(inputHeight);
+      VkRenderPassBeginInfo begin{};
+      begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+      begin.renderPass = videoConvertRenderPass_;
+      begin.framebuffer = videoConvertFramebuffer_;
+      begin.renderArea = scissor;
+      api.CmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+      api.CmdSetViewport(cmd, 0, 1, &viewport);
+      api.CmdSetScissor(cmd, 0, 1, &scissor);
+      api.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, videoConvertPipeline_);
+      api.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, videoConvertPipelineLayout_, 0,
+                                1, &videoConvertSet_, 0, nullptr);
+      api.CmdDraw(cmd, 3, 1, 0, 0);
+      api.CmdEndRenderPass(cmd);
+    }
+    if (timers) {
+      api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, presentTimer_[slot],
+                            1);
+    }
+
+    const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, videoInputImageView_,
+                                                   inputWidth, inputHeight, srActive, timers);
+    // The caller frees the decoder buffer as soon as this returns, so the import (and the GPU work
+    // reading it) has to be finished here; the video path is present-paced anyway.
+    if (api.WaitForFences != nullptr) {
+      api.WaitForFences(device, 1, &inFlight_[slot], VK_TRUE, UINT64_MAX);
+    }
+    ReleaseImportedLocked(&imported);
+    return presented;
+  }
+  return false;
+}
+
 VkFormat VkRenderer::format() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return format_;
@@ -2282,6 +2918,7 @@ void VkRenderer::Reset() {
   DestroySwapchainLocked();
   DestroyDesktopBufferLocked();
   DestroyDesktopImageLocked();
+  DestroyVideoInputLocked();
   DestroyFrameResourcesLocked();
   vk_.DestroySurface(surface_);
   surface_ = VK_NULL_HANDLE;

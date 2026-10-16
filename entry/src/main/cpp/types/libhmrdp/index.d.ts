@@ -218,6 +218,8 @@ export const superResolutionSupport: () => RdpVerdict;
 export interface RdpSrBackends {
   xengine: boolean;
   fsr: boolean;
+  /** The device can import an AVCodec NV12 buffer into the presenter (needed by the Moonlight path). */
+  videoImport: boolean;
 }
 export const superResolutionBackends: () => RdpSrBackends;
 
@@ -268,6 +270,12 @@ export interface MoonlightSessionConfig {
   enableAudio?: boolean;
   /** Play audio through the native OHAudio low-latency path instead of the ArkTS renderer. */
   lowLatencyAudio?: boolean;
+  /** 超分: `width`/`height` become the output resolution and the stream is taken at width/height / srRatioPercent. */
+  srEnabled?: boolean;
+  /** 超分 backend: 0 = XEngine, 1 = FSR. */
+  srBackend?: number;
+  /** Upscale ratio in percent (125 = 1.25×); > 100 turns the 超分 stream sizing on. */
+  srRatioPercent?: number;
 }
 
 /** Extra fields alongside the event tuple; only the local cursor event (ML_EVENT_CURSOR_SHAPE) fills them. */
@@ -295,6 +303,9 @@ export const moonlightSessionSetSurface: (surfaceId: string, width: number,
 
 /** Releases the session window; call after moonlightSessionStop. */
 export const moonlightSessionClearSurface: () => void;
+
+/** 超分: forwards a window resize to the session's presenter swapchain; a no-op on the direct path. */
+export const moonlightSessionResizeSurface: (width: number, height: number) => void;
 
 /** Starts the session; "" on success, else "busy" / "config" / "thread". */
 export const moonlightSessionStart: (config: MoonlightSessionConfig) => string;

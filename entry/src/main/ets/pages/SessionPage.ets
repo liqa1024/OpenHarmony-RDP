@@ -202,9 +202,9 @@ struct SessionPage {
     this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
     this.scrollEngine = !settings.scrollEngineFallback;
-    // Never ask for Vulkan presentation on a device that cannot do it (covers a config imported from another device).
-    RdpNative.applyHardwareAccel(settings.hardwareAccel
-      && DeviceCapabilities.hardwareAccel().supported);
+    // Presentation picks Vulkan when the device supports it (the presenter falls back to GLES
+    // otherwise); normalise the process-global flag in case the dev replay page left it off.
+    RdpNative.applyHardwareAccel(DeviceCapabilities.hardwareAccel().supported);
     let filesDir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();

@@ -38,6 +38,12 @@ struct MoonlightVideoContext {
   void* window = nullptr;
 };
 
+// 超分: the presenter the decode bridge renders decoded frames into (a hmrdp::FramePresenter*), or
+// nullptr for the default direct-to-surface path. Owned by the session; set before the session
+// starts and cleared when it ends. With a presenter the bridge decodes to NV12 buffers and calls
+// PresentVideo per frame; without one it renders straight into the window.
+void MoonlightVideoSetPresenter(void* presenter);
+
 // kAuto picks the best shared codec, the rest force one; mirrors ML_CODEC_*.
 enum class MoonlightVideoCodecChoice : int {
   kAuto = 0,

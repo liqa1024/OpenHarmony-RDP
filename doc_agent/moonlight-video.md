@@ -67,9 +67,16 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
   （不设则默认拉伸填满），兜住协商流分辨率与请求值不一致的情形。留边区域**不接收指针**：输入/焦点在 XComponent
   上，事件坐标即画面局部坐标，映射是整画面归一化。这是平台文档推荐的视频播放方式，延迟/功耗最优，全屏原生
   比例时可能命中硬件直通/overlay。
-- **超分：buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。`OH_AVBuffer`（底层 `OH_NativeBuffer`，NV12）经
-  `VK_OHOS_external_memory`（`vulkan_ohos.h`）导入为 `VkImage`，YUV→RGB 在 shader 里做，之后接
-  `VkRenderer` 既有的 letterbox / 超分 / swapchain。此链路**只在真机验证**（Vulkan 呈现本就真机）。
+- **超分：buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流（`/launch` 与
+  `STREAM_CONFIGURATION` 的尺寸都取会话分辨率，fps 钳制与自动码率也按它算，见 §4），本机把每帧上采样回输出分辨率。
+  解码走 `kBuffer` 模式（NV12），`OH_AVBuffer` 底层的 `OH_NativeBuffer` 经 `VK_OHOS_external_memory` 导入为
+  `VkImage`（YUV→RGB 由采样器的 `VkSamplerYcbcrConversion` 做），再由呈现器写进会话分辨率的输入图，
+  之后接 `VkRenderer` 既有的 超分 / letterbox / swapchain（见 [`rdp-present.md`](rdp-present.md) §5）。
+  **逐帧同步、不做 CPU 拷贝**：`PresentVideo` 等到该帧的 GPU fence 才返回，解码器随即释放输出缓冲（一次提交里
+  只有这一帧的 import/convert/SR/blit），所以这条链路不持有解码缓冲、不引入 RDP 的脏区/合并机制。
+  **送显节奏沿用共享的 `hmrdp_display_rate.*`**：在解码输出回调里判送显槽位，错过即**丢**（与直出同语义），
+  不套 RDP 桌面那种"合并"。
+  此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`rdp-native.md`](rdp-native.md) §6）。
 
 ## 3. 编解码协商
 
@@ -113,8 +120,11 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 - RDP 的 `FramePipeline` / `GdiFrameHost` / `PresentGdiFrame` / 零拷贝桌面缓冲都是 **gdi（CPU 帧）专属**，
   不套给 Moonlight。
 - `FramePresenter`（surface / swapchain / letterbox / 超分）是唯一可复用的图形核心，**只被超分链路复用**：
-  以 buffer-only 形式接入视频输入，且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。直出链路
-  **完全不经 presenter**，与 RDP 互不影响（见 [`rdp-present.md`](rdp-present.md)）。
+  以 buffer-only 形式接入视频输入（`PresentVideo`），且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。
+  可复用的是**「会话分辨率的一张输入图 →（可选）超分 → letterbox → swapchain → present」这一层**；
+  RDP 的桌面缓冲 / 脏区 / 合并（carry）是 **RDP 专属的可选路径**，视频链路一概不用——视频是流、语义是丢帧，
+  且恒整帧一次、无 CPU 拷贝。直出链路**完全不经 presenter**，与 RDP 互不影响（见
+  [`rdp-present.md`](rdp-present.md) §1/§5）。
 
 ## 6. 不采用的方向
 

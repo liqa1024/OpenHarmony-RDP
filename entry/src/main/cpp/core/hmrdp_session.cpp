@@ -44,6 +44,7 @@
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_parallel.h"
+#include "hmrdp_sr.h"
 
 // The rdpsnd backend is patched on OHOS to hand decoded PCM to a HmrdpSetAudioSink
 // instead of opening an OpenSL ES device; it returns the render latency in ms.
@@ -647,17 +648,6 @@ void EnsureEntryPoints() {
 
 void AppendArg(std::vector<std::string>& args, const std::string& value) {
   args.push_back(value);
-}
-
-// 超分: output size / upscale ratio, rounded to an even pixel count (some servers
-// render odd desktop sizes badly). Mirrors SettingsStore.srSessionSize.
-int SuperResolutionSessionSize(int output, int ratioPercent) {
-  if (output <= 0 || ratioPercent <= 100) {
-    return output;
-  }
-  const int scaled = (output * 100 + ratioPercent / 2) / ratioPercent;
-  const int even = scaled - (scaled % 2);
-  return even > 0 ? even : 2;
 }
 
 }  // namespace

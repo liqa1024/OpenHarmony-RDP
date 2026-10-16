@@ -1,6 +1,5 @@
 import { RdpNative } from '../services/RdpNative';
 import { Capability, DeviceCapabilities } from '../services/DeviceCapabilities';
-import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -87,7 +86,9 @@ struct GfxReplayPage {
     this.applyFullScreen(true);
     const capability: Capability = DeviceCapabilities.hardwareAccel();
     this.hardwareAccelSupported = capability.supported;
-    this.line = (SettingsStore.load().hardwareAccel && capability.supported) ? LINE_ACCEL : LINE_CPU;
+    // Presentation is Vulkan whenever the device supports it; this page's route toggle is dev-only
+    // A/B (it is not persisted), so start on the supported route.
+    this.line = capability.supported ? LINE_ACCEL : LINE_CPU;
     let dir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();
@@ -189,9 +190,6 @@ struct GfxReplayPage {
 
   private switchLine(): void {
     this.line = (!this.hardwareAccelSupported || this.line === LINE_ACCEL) ? LINE_CPU : LINE_ACCEL;
-    const settings: AppSettings = SettingsStore.load();
-    settings.hardwareAccel = this.line === LINE_ACCEL;
-    SettingsStore.save(settings);
     this.restartAll();
   }
 

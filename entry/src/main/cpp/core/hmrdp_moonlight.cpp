@@ -11,7 +11,11 @@
 
 #include <Limelight.h>
 
+#include <native_buffer/native_buffer.h>
+#include <multimedia/player_framework/native_avbuffer.h>
+
 #include "hmrdp_log.h"
+#include "hmrdp_presenter.h"
 #include "hmrdp_video_decoder.h"
 
 namespace hmrdp {
@@ -75,6 +79,12 @@ class MoonlightVideoRenderer {
   void SetContext(const MoonlightVideoContext* context) {
     std::lock_guard<std::mutex> lock(mutex_);
     window_ = context != nullptr ? context->window : nullptr;
+  }
+
+  // 超分: render through the presenter (buffer output) instead of straight into the window.
+  void SetPresenter(void* presenter) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    presenter_ = static_cast<FramePresenter*>(presenter);
   }
 
   int Setup(int videoFormat, int width, int height, int redrawRate) {
@@ -150,7 +160,8 @@ class MoonlightVideoRenderer {
 
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (window_ == nullptr || mime_.empty()) {
+    const bool sr = presenter_ != nullptr;
+    if ((!sr && window_ == nullptr) || mime_.empty()) {
       HMRDP_LOGE("moonlight video: start needs a surface and a setup codec");
       return;
     }
@@ -160,14 +171,19 @@ class MoonlightVideoRenderer {
     VideoDecoder::FrameReadyFn onFrame = [this](int, int, int64_t ptsUs) {
       NoteDecoded(ptsUs);
     };
-    if (!decoder_.Start(mime_, VideoOutputMode::kSurface, window_, width_, height_, redrawRate_,
-                        onFrame, nullptr)) {
+    // 超分 decodes to NV12 buffers the presenter imports; the direct path renders into the window.
+    VideoDecoder::BufferReadyFn onBuffer = [this](const DecodedFrame& frame) {
+      OnVideoBuffer(frame);
+    };
+    const VideoOutputMode mode = sr ? VideoOutputMode::kBuffer : VideoOutputMode::kSurface;
+    if (!decoder_.Start(mime_, mode, window_, width_, height_, redrawRate_, onFrame,
+                        sr ? onBuffer : nullptr)) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",
                  decoder_.lastError().c_str());
       return;
     }
     running_ = true;
-    HMRDP_LOGI("moonlight video: started");
+    HMRDP_LOGI("moonlight video: started (%{public}s)", sr ? "buffer/超分" : "surface");
   }
 
   void Stop() {
@@ -242,8 +258,34 @@ class MoonlightVideoRenderer {
     statHostLatencyCount_.store(0);
     statDecodeRtSumUs_.store(0);
     statDecodeRtCount_.store(0);
+    statDisplayDropped_.store(0);
+    srSlots_ = PresentSlots{};
     std::lock_guard<std::mutex> lock(submitMutex_);
     submitNsByPts_.clear();
+  }
+
+  // 超分 buffer output, on the codec callback thread: import the decoded NV12 frame and present it
+  // (the presenter blocks until the GPU is done, so the decoder may release the buffer on return).
+  void OnVideoBuffer(const DecodedFrame& frame) {
+    NoteDecoded(frame.ptsUs);
+    // Video is a flow, not a state: a frame the panel cannot show this period is dropped, never
+    // carried (the desktop path merges instead; see hmrdp_gfx_cpu.cpp).
+    if (!srSlots_.Take()) {
+      if (statDisplayDropped_.fetch_add(1, std::memory_order_relaxed) == 0) {
+        HMRDP_LOGI("moonlight video: a frame outran the display and was dropped");
+      }
+      return;
+    }
+    if (presenter_ == nullptr || frame.buffer == nullptr) {
+      return;
+    }
+    OH_NativeBuffer* buffer =
+        OH_AVBuffer_GetNativeBuffer(static_cast<OH_AVBuffer*>(frame.buffer));
+    if (buffer == nullptr) {
+      return;
+    }
+    presenter_->PresentVideo(buffer, frame.width, frame.height);
+    OH_NativeBuffer_Unreference(buffer);
   }
 
   // Runs once per decoded picture on the codec callback thread; pairs with the
@@ -276,6 +318,9 @@ class MoonlightVideoRenderer {
   int height_ = 0;
   int redrawRate_ = 0;
   void* window_ = nullptr;
+  // 超分 presenter (session-owned); non-null switches the decode path to buffer output.
+  FramePresenter* presenter_ = nullptr;
+  PresentSlots srSlots_;
   bool running_ = false;
   std::vector<uint8_t> buffer_;
 
@@ -288,6 +333,7 @@ class MoonlightVideoRenderer {
   std::atomic<uint64_t> statHostLatencyCount_{0};
   std::atomic<uint64_t> statDecodeRtSumUs_{0};
   std::atomic<uint64_t> statDecodeRtCount_{0};
+  std::atomic<uint64_t> statDisplayDropped_{0};
   std::mutex submitMutex_;
   std::unordered_map<int64_t, int64_t> submitNsByPts_;
 };
@@ -415,6 +461,10 @@ std::string MoonlightVideoCodec() {
 
 std::string MoonlightVideoWarning() {
   return MoonlightVideoRenderer::Instance().Warning();
+}
+
+void MoonlightVideoSetPresenter(void* presenter) {
+  MoonlightVideoRenderer::Instance().SetPresenter(presenter);
 }
 
 void* MoonlightVideoCallbacks() {

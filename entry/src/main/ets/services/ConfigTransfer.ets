@@ -6,7 +6,7 @@ import { util } from '@kit.ArkTS';
 import { SR_BACKEND_XENGINE } from '../model/RdpModels';
 import {
   ConnectionExport, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709,
-  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, PROTOCOL_RDP, SavedConnection
+  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SavedConnection
 } from '../model/Connections';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
@@ -295,13 +295,10 @@ export class ConfigTransfer {
       && DeviceCapabilities.audio().supported;
     settings.ignoreCertificate =
       ConfigTransfer.readBoolean(rec, 'ignoreCertificate', settings.ignoreCertificate);
-    settings.hardwareAccel =
-      ConfigTransfer.readBoolean(rec, 'hardwareAccel', settings.hardwareAccel)
-      && DeviceCapabilities.hardwareAccel().supported;
     const srEnabled: boolean = ConfigTransfer.readBoolean(rec, 'srEnabled', false);
     const srBackend: number =
       ConfigTransfer.readNumber(rec, 'srBackend', SR_BACKEND_XENGINE);
-    if (srEnabled && SettingsStore.srBackendUsableFor(settings, srBackend)) {
+    if (srEnabled && SettingsStore.srBackendUsable(srBackend, PROTOCOL_RDP)) {
       settings.srEnabled = true;
       settings.srBackend = srBackend;
       settings.srRatioPercent =
@@ -316,6 +313,15 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'mlBitrateKbps', settings.mlBitrateKbps);
     settings.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', settings.mlCodec);
     settings.mlColorSpace = ConfigTransfer.readNumber(rec, 'mlColorSpace', settings.mlColorSpace);
+    const mlSrEnabled: boolean = ConfigTransfer.readBoolean(rec, 'mlSrEnabled', false);
+    const mlSrBackend: number =
+      ConfigTransfer.readNumber(rec, 'mlSrBackend', SR_BACKEND_XENGINE);
+    if (mlSrEnabled && SettingsStore.srBackendUsable(mlSrBackend, PROTOCOL_MOONLIGHT)) {
+      settings.mlSrEnabled = true;
+      settings.mlSrBackend = mlSrBackend;
+      settings.mlSrRatioPercent =
+        ConfigTransfer.readNumber(rec, 'mlSrRatioPercent', settings.mlSrRatioPercent);
+    }
     settings.mlResMode = ConfigTransfer.readNumber(rec, 'mlResMode', settings.mlResMode);
     settings.mlWidth = ConfigTransfer.readNumber(rec, 'mlWidth', settings.mlWidth);
     settings.mlHeight = ConfigTransfer.readNumber(rec, 'mlHeight', settings.mlHeight);

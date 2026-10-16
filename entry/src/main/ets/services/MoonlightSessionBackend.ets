@@ -180,7 +180,8 @@ export class MoonlightSessionBackend implements SessionBackend {
     const result: MoonlightConnectResult = await MoonlightConnector.prepare(request.filesDir,
       conn.host, conn.port, request.stream, request.moonlightAppId,
       request.stream.width, request.stream.height, pinProvider, policy,
-      SettingsStore.load().enableAudio && DeviceCapabilities.audio().supported);
+      SettingsStore.load().enableAudio && DeviceCapabilities.audio().supported,
+      SettingsStore.resolveMoonlightSr(conn));
     if (!result.ok) {
       MoonlightHostState.refresh(conn, request.filesDir);
       this.emit(ML_EVENT_STAGE_FAILED, 0, result.error);
@@ -191,6 +192,8 @@ export class MoonlightSessionBackend implements SessionBackend {
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
     request.moonlightFpsNote = result.fpsNote;
+    request.moonlightSessionWidth = result.sessionWidth;
+    request.moonlightSessionHeight = result.sessionHeight;
     MoonlightHostState.markLaunched(conn.id, result.effectiveAppId);
     if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
       conn.mlHostId = result.hostId;

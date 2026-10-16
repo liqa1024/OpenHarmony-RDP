@@ -3,6 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_AUTO,
   MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
+import { SrProfile } from '../model/RdpModels';
 import { SettingsStore } from './SettingsStore';
 import { GamepadDevices } from './input/GamepadInput';
 import { clampStreamFps, FPS_LIMIT_NONE, FPS_LIMIT_PANEL, FpsCeiling, recommendedBitrateKbps }
@@ -30,6 +31,9 @@ export class MoonlightConnectResult {
   hostScalePercent: number = 0;
   // Set when the requested frame rate was capped by the panel or the decoder; "" otherwise.
   fpsNote: string = '';
+  // 超分: the stream (session) resolution actually taken, equal to the requested size when off.
+  sessionWidth: number = 0;
+  sessionHeight: number = 0;
 }
 
 export class MoonlightAppsResult {
@@ -186,7 +190,7 @@ export class MoonlightConnector {
   static async prepare(filesDir: string, host: string, port: number, stream: MoonlightProfile,
     appId: number, width: number, height: number,
     pinProvider: MoonlightPinProvider, policy: MoonlightHostPolicy,
-    audioEnabled: boolean): Promise<MoonlightConnectResult> {
+    audioEnabled: boolean, sr: SrProfile): Promise<MoonlightConnectResult> {
     const result: MoonlightConnectResult = new MoonlightConnectResult();
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(filesDir);
     if (!credential.ok) {
@@ -257,27 +261,36 @@ export class MoonlightConnector {
     const rikeyHex: string = MoonlightCrypto.randomHex(16);
     const rikeyId: number = MoonlightConnector.randomKeyId();
     const options: MoonlightLaunchOptions = new MoonlightLaunchOptions();
+    // 超分: the stream is taken at output / ratio and the presenter upscales back, so the rate and
+    // bitrate are judged against the session resolution (what the host encodes and this side decodes).
+    const srOn: boolean = sr.enabled && sr.ratioPercent > 100;
+    const sessionWidth: number = srOn ? SettingsStore.srSessionSize(width, sr.ratioPercent) : width;
+    const sessionHeight: number = srOn
+      ? SettingsStore.srSessionSize(height, sr.ratioPercent) : height;
+    result.sessionWidth = sessionWidth;
+    result.sessionHeight = sessionHeight;
     // The stream resolution is final here (follow-screen already resolved), so the rate is capped
     // once against both ends that have to keep up with it: the panel cannot show more than its top
     // refresh rate, and the decoder cannot decode more than it reports at this size. The auto
     // bitrate is then computed against the rate that will actually be sent.
     const panelMaxHz: number = maxDisplayRefreshRate();
-    const decoderMaxFps: number = moonlightVideoMaxFps(videoFormats, width, height);
+    const decoderMaxFps: number = moonlightVideoMaxFps(videoFormats, sessionWidth, sessionHeight);
     const fps: FpsCeiling = clampStreamFps(stream.fps, panelMaxHz, decoderMaxFps);
     if (fps.limit !== FPS_LIMIT_NONE) {
       result.fpsNote = fps.limit === FPS_LIMIT_PANEL
         ? `本机屏幕刷新率最高 ${panelMaxHz}Hz，帧率已从 ${stream.fps} 降到 ${fps.fps}`
-        : `本机解码器在 ${width}×${height} 下最高 ${decoderMaxFps}fps，帧率已从 `
+        : `本机解码器在 ${sessionWidth}×${sessionHeight} 下最高 ${decoderMaxFps}fps，帧率已从 `
           + `${stream.fps} 降到 ${fps.fps}`;
       hilog.info(0xD001, 'HmRdpMoonlight', 'fps capped %{public}d -> %{public}d (panel %{public}d, '
         + 'decoder %{public}d)', stream.fps, fps.fps, panelMaxHz, decoderMaxFps);
     }
     const effectiveBitrateKbps: number = stream.bitrateAuto
-      ? recommendedBitrateKbps(width, height, fps.fps, stream.codec)
+      ? recommendedBitrateKbps(sessionWidth, sessionHeight, fps.fps, stream.codec)
       : stream.bitrateKbps;
     options.appId = effectiveAppId;
-    options.width = width;
-    options.height = height;
+    // The host renders at the session resolution; the presenter upscales to `width`/`height`.
+    options.width = sessionWidth;
+    options.height = sessionHeight;
     options.fps = fps.fps;
     options.bitrateKbps = effectiveBitrateKbps;
     options.rikeyHex = rikeyHex;
@@ -317,8 +330,13 @@ export class MoonlightConnector {
     config.serverInfoGfeVersion = info.gfeVersion;
     config.sessionUrl = launch.sessionUrl;
     config.serverCodecModeSupport = info.serverCodecModeSupport;
+    // 超分: width/height are the output (presented) resolution; the native session derives the
+    // stream size from them and the ratio. Off, they are the stream size itself.
     config.width = width;
     config.height = height;
+    config.srEnabled = srOn;
+    config.srBackend = sr.backend;
+    config.srRatioPercent = sr.ratioPercent;
     config.fps = fps.fps;
     config.bitrateKbps = effectiveBitrateKbps;
     config.packetSize = 1024;

@@ -31,7 +31,7 @@
 | `pages/GfxReplayPage.ets` | dev 页：码流回放测试（路线选择、统计显示），见 [`rdp-gfx.md`](rdp-gfx.md) §6 |
 | `services/ConnectionStore.ets` | 连接配置存储（preferences；稳定 id + `updatedAt`；`reorder` 持久化顺序） |
 | `services/CredentialStore.ets` | 密码存储（ASSET，按连接 id，**仅连接成功后写入**） |
-| `services/SettingsStore.ets` | 设置存储（preferences）+ 显示/超分/串流解析（`detectedDisplay` / `scalePresetForResolution` / `autoScalePercent` / `resolveDisplay` / `resolveAdvanced` / `resolveSr` / `resolveStream`） |
+| `services/SettingsStore.ets` | 设置存储（preferences）+ 显示/超分/串流解析（`detectedDisplay` / `scalePresetForResolution` / `autoScalePercent` / `resolveDisplay` / `resolveAdvanced` / `resolveSr` / `resolveMoonlightSr` / `resolveStream`；超分能力按协议判，`srBackendUsable(backend, protocol)`） |
 | `services/ConfigTransfer.ets` | 配置导入/导出（全局设置 + 全部连接；密码不导出） |
 | `services/SessionManager.ets` | 主窗口后台连接、每连接状态、错误分类、成功后开窗与断连编排；按协议取 `SessionBackend`，自身不绑定协议（状态机见 [`session-layer.md`](session-layer.md) §5） |
 | `services/SessionBackend.ets` | **协议无关的会话后端接口 + `sessionKey` 注册表**：`pageRoute()` 定会话页、`setShortcutPassthrough()` 统一快捷键拦截、`requiresPrepare()` / `requiresWindowAtStart()` 为能力查询 |
@@ -129,9 +129,10 @@
 | `core/hmrdp_display_rate.{h,cpp}` | **面板档位与送显槽位**：默认屏刷新率（首次读 + 显示变化监听）与"一个周期一帧"的槽位游标，两条上屏链路共用（见 [`rdp-present.md`](rdp-present.md) §2、[`moonlight-video.md`](moonlight-video.md) §1） |
 | `core/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`rdp-gfx.md`](rdp-gfx.md) §7.3） |
 | `core/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`rdp-gfx.md`](rdp-gfx.md) §6） |
-| `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测 + 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（见 §4.1） |
-| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** |
+| `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测（含超分后端与视频导入判定）+ 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（device 按需使能交换链与外部内存/YCbCr 扩展，见 §4.1） |
+| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass** + **视频输入（NV12 导入 + YCbCr 采样器，Moonlight 超分）** |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
+| `core/hmrdp_sr.{h,cpp}` | **两协议共用的超分会话尺寸**（输出 ÷ 倍率，取偶），RDP 与 Moonlight 用同一份口径 |
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针、视频解码桥、音频 Opus 解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §2.3 / [`moonlight-control.md`](moonlight-control.md) §1） |
 | `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`rdp-native.md`](rdp-native.md) §5） |
 | `core/hmrdp_oh_audio.{h,cpp}` | **原生 OHAudio 输出**（Moonlight 低延迟模式）：`OH_AudioRenderer` FAST + 音频工作组，写回调直接拉交接环（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |

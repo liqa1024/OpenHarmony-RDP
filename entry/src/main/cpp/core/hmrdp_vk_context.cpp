@@ -207,6 +207,25 @@ VulkanCapabilities ProbeVulkan() {
   caps.extExternalMemory = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
   caps.extExternalMemoryFd = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
   caps.extOhosExternalMemory = HasExtension(devExts, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
+  caps.extSamplerYcbcrConversion =
+      HasExtension(devExts, VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+  if (caps.extSamplerYcbcrConversion) {
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr{};
+    ycbcr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &ycbcr;
+    if (api.GetPhysicalDeviceFeatures2 != nullptr) {
+      api.GetPhysicalDeviceFeatures2(best, &features);
+      caps.samplerYcbcrConversion = ycbcr.samplerYcbcrConversion == VK_TRUE;
+    } else if (api.GetPhysicalDeviceFeatures2KHR != nullptr) {
+      api.GetPhysicalDeviceFeatures2KHR(best, &features);
+      caps.samplerYcbcrConversion = ycbcr.samplerYcbcrConversion == VK_TRUE;
+    } else {
+      // No way to ask; the extension being advertised is the gate it exists for.
+      caps.samplerYcbcrConversion = true;
+    }
+  }
 
   // XEngine (超分) is queried through libxengine.so's own enumeration, not the
   // Vulkan loader's, so it is probed separately (see hmrdp_xeg.h).
@@ -289,6 +308,10 @@ bool VkApi::LoadInstance(VkInstance instance) {
       Resolve<PFN_vkEnumeratePhysicalDevices>(gipa, instance, "vkEnumeratePhysicalDevices");
   GetPhysicalDeviceProperties = Resolve<PFN_vkGetPhysicalDeviceProperties>(
       gipa, instance, "vkGetPhysicalDeviceProperties");
+  GetPhysicalDeviceFeatures2 = Resolve<PFN_vkGetPhysicalDeviceFeatures2>(
+      gipa, instance, "vkGetPhysicalDeviceFeatures2");
+  GetPhysicalDeviceFeatures2KHR = Resolve<PFN_vkGetPhysicalDeviceFeatures2KHR>(
+      gipa, instance, "vkGetPhysicalDeviceFeatures2KHR");
   GetPhysicalDeviceQueueFamilyProperties = Resolve<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
       gipa, instance, "vkGetPhysicalDeviceQueueFamilyProperties");
   GetPhysicalDeviceMemoryProperties = Resolve<PFN_vkGetPhysicalDeviceMemoryProperties>(
@@ -308,7 +331,6 @@ bool VkApi::LoadInstance(VkInstance instance) {
   CreateDevice = Resolve<PFN_vkCreateDevice>(gipa, instance, "vkCreateDevice");
   DestroySurfaceKHR = Resolve<PFN_vkDestroySurfaceKHR>(gipa, instance, "vkDestroySurfaceKHR");
   CreateSurfaceOHOS = Resolve<PFN_vkCreateSurfaceOHOS>(gipa, instance, "vkCreateSurfaceOHOS");
-
   return CreateDevice != nullptr && EnumeratePhysicalDevices != nullptr &&
          GetPhysicalDeviceProperties != nullptr && GetPhysicalDeviceQueueFamilyProperties != nullptr &&
          GetPhysicalDeviceMemoryProperties != nullptr &&
@@ -393,6 +415,15 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdSetViewport = ResolveDevice<PFN_vkCmdSetViewport>(gdpa, gipa, device, instance, "vkCmdSetViewport");
   CmdSetScissor = ResolveDevice<PFN_vkCmdSetScissor>(gdpa, gipa, device, instance, "vkCmdSetScissor");
   CmdDraw = ResolveDevice<PFN_vkCmdDraw>(gdpa, gipa, device, instance, "vkCmdDraw");
+
+  // Optional (the device may not advertise them): a null here just means no video import / 超分
+  // through the presenter, never a load failure.
+  GetNativeBufferPropertiesOHOS = ResolveDevice<PFN_vkGetNativeBufferPropertiesOHOS>(
+      gdpa, gipa, device, instance, "vkGetNativeBufferPropertiesOHOS");
+  CreateSamplerYcbcrConversionKHR = ResolveDevice<PFN_vkCreateSamplerYcbcrConversionKHR>(
+      gdpa, gipa, device, instance, "vkCreateSamplerYcbcrConversionKHR");
+  DestroySamplerYcbcrConversionKHR = ResolveDevice<PFN_vkDestroySamplerYcbcrConversionKHR>(
+      gdpa, gipa, device, instance, "vkDestroySamplerYcbcrConversionKHR");
 
   return CreateSwapchainKHR != nullptr && AcquireNextImageKHR != nullptr &&
          QueuePresentKHR != nullptr && GetSwapchainImagesKHR != nullptr &&
@@ -524,6 +555,13 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
              caps->srSupported ? 1 : 0, caps->srFsrSupported ? 1 : 0,
              caps->srXengineSupported ? 1 : 0,
              caps->srUnsupportedCode.empty() ? "-" : caps->srUnsupportedCode.c_str());
+
+  // Not a UI gate for RDP (its 超分 input is the CPU desktop picture); it decides whether the
+  // Moonlight 超分 path, which imports the decoder's NV12 buffer, can run on this device.
+  caps->srVideoImportSupported = caps->presenterSupported && caps->extOhosExternalMemory &&
+                                 caps->extSamplerYcbcrConversion && caps->samplerYcbcrConversion;
+  HMRDP_LOGI("vulkan verdict: video import=%{public}d",
+             caps->srVideoImportSupported ? 1 : 0);
 }
 
 }  // namespace
@@ -622,11 +660,30 @@ bool VkInstanceContext::EnsureInstance() {
   appInfo.engineVersion = VK_MAKE_API_VERSION(0, 1, 0, 0);
   appInfo.apiVersion = VK_API_VERSION_1_0;
 
+  std::vector<const char*> enabledExtensions(extensions, extensions + 2);
+  // VK_KHR_get_physical_device_properties2 lets a Vulkan 1.0 instance ask the device for the
+  // YCbCr-conversion feature (the video import needs it); skip it when the loader lacks it.
+  if (api.EnumerateInstanceExtensionProperties != nullptr) {
+    uint32_t available = 0;
+    api.EnumerateInstanceExtensionProperties(nullptr, &available, nullptr);
+    std::vector<VkExtensionProperties> properties(available);
+    if (available > 0) {
+      api.EnumerateInstanceExtensionProperties(nullptr, &available, properties.data());
+    }
+    for (const VkExtensionProperties& property : properties) {
+      if (std::strcmp(property.extensionName,
+                      VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == 0) {
+        enabledExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        break;
+      }
+    }
+  }
+
   VkInstanceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   createInfo.pApplicationInfo = &appInfo;
-  createInfo.enabledExtensionCount = 2;
-  createInfo.ppEnabledExtensionNames = extensions;
+  createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+  createInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
   VkInstance instance = VK_NULL_HANDLE;
   const VkResult result = api.CreateInstance(&createInfo, nullptr, &instance);
@@ -802,13 +859,48 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   queueInfo.queueCount = 1;
   queueInfo.pQueuePriorities = &priority;
 
-  const char* enabledExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  // Optional extensions for the video import (an AVCodec NV12 buffer as a YCbCr-sampled image).
+  // Each is independently advertised; a missing one only disables that path, never the device.
+  std::vector<const char*> enabledExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  if (HasExtension(extensions, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME)) {
+    enabledExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
+  }
+  if (HasExtension(extensions, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME)) {
+    enabledExtensions.push_back(VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
+  }
+  const bool hasYcbcrConversion =
+      HasExtension(extensions, VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+  if (hasYcbcrConversion) {
+    enabledExtensions.push_back(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+  }
+  // The feature the conversion feature gates, enabled only when the device reports it (asking
+  // unconditionally would fail device creation on a device that advertises the extension without it).
+  VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeatures{};
+  ycbcrFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+  bool enableYcbcr = false;
+  if (hasYcbcrConversion) {
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &ycbcrFeatures;
+    if (shared.GetPhysicalDeviceFeatures2 != nullptr) {
+      shared.GetPhysicalDeviceFeatures2(physical_, &features);
+      enableYcbcr = ycbcrFeatures.samplerYcbcrConversion == VK_TRUE;
+    } else if (shared.GetPhysicalDeviceFeatures2KHR != nullptr) {
+      shared.GetPhysicalDeviceFeatures2KHR(physical_, &features);
+      enableYcbcr = ycbcrFeatures.samplerYcbcrConversion == VK_TRUE;
+    }
+  }
+
   VkDeviceCreateInfo deviceInfo{};
   deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   deviceInfo.queueCreateInfoCount = 1;
   deviceInfo.pQueueCreateInfos = &queueInfo;
-  deviceInfo.enabledExtensionCount = 1;
-  deviceInfo.ppEnabledExtensionNames = enabledExtensions;
+  deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+  deviceInfo.ppEnabledExtensionNames = enabledExtensions.data();
+  if (enableYcbcr) {
+    ycbcrFeatures.samplerYcbcrConversion = VK_TRUE;
+    deviceInfo.pNext = &ycbcrFeatures;
+  }
 
   VkDevice device = VK_NULL_HANDLE;
   const VkResult result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);

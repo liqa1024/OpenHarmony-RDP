@@ -35,7 +35,7 @@
 
 **跨主题、只有一个家的事实**（别在别处重写）：
 
-- **硬件加速开关只选上屏后端，解码始终是 gdi** → [`rdp-present.md`](rdp-present.md) §1（设置意义见 [`settings-and-storage.md`](settings-and-storage.md)）。
+- **上屏后端按能力自动选（Vulkan 优先、GLES 兜底），没有开关；解码始终是 gdi** → [`rdp-present.md`](rdp-present.md) §1。
 - **自研 GPU 解码/合成引擎不采用** → [`rdp-gfx.md`](rdp-gfx.md) 的「不采用的方向」。
 - **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
 - **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`rdp-native.md`](rdp-native.md) 的能力探测。

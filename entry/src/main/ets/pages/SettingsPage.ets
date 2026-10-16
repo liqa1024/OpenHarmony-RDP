@@ -91,14 +91,17 @@ struct SettingsPage {
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
   @State ignoreCertificate: boolean = true;
-  @State hardwareAccel: boolean = true;
-  @State hardwareAccelSupported: boolean = true;
-  private hardwareAccelReason: string = '';
   @State srEnabled: boolean = false;
   @State srRatioPercent: number = SR_RATIO_PRESETS[0];
   @State srBackend: number = SR_BACKEND_XENGINE;
   @State srSupported: boolean = true;
   private srReason: string = '';
+  // Moonlight tab: its own global SR values, and the extra video-import gate it needs.
+  @State mlSrEnabled: boolean = false;
+  @State mlSrRatioPercent: number = SR_RATIO_PRESETS[0];
+  @State mlSrBackend: number = SR_BACKEND_XENGINE;
+  @State mlSrSupported: boolean = true;
+  private mlSrReason: string = '';
   @State developerMode: boolean = false;
   @State gfxCapture: boolean = false;
   @State protocol: number = PROTOCOL_RDP;
@@ -159,11 +162,15 @@ struct SettingsPage {
     this.audioSupported = audioCapability.supported;
     this.audioDisabledReason = audioCapability.reason;
     const hwCapability: Capability = DeviceCapabilities.hardwareAccel();
-    this.hardwareAccelSupported = hwCapability.supported;
-    this.hardwareAccelReason = hwCapability.reason;
     const srCapability: Capability = DeviceCapabilities.superResolution();
-    this.srSupported = srCapability.supported;
-    this.srReason = srCapability.reason;
+    // The RDP 超分 path needs the Vulkan presenter; Moonlight's also needs the NV12 video import.
+    this.srSupported = hwCapability.supported && srCapability.supported;
+    this.srReason = hwCapability.supported ? srCapability.reason : hwCapability.reason;
+    const videoImport: boolean = DeviceCapabilities.srVideoImport();
+    this.mlSrSupported = this.srSupported && videoImport;
+    this.mlSrReason = this.srSupported
+      ? (videoImport ? '' : '本设备不支持从解码器直接导入视频帧，Moonlight 超分辨率不可用')
+      : this.srReason;
 
     this.applyWindowSettings(settings);
     this.applyDeveloperSettings(settings);
@@ -176,15 +183,12 @@ struct SettingsPage {
       this.manualHeightText = this.sizeText(settings.manualHeight);
       this.scaleAuto = settings.scaleAuto;
       this.enableAudio = this.audioSupported ? settings.enableAudio : false;
-      this.hardwareAccel = this.hardwareAccelSupported ? settings.hardwareAccel : false;
-      this.srEnabled = (this.hardwareAccelSupported && this.srSupported)
-        ? settings.srEnabled : false;
+      this.srEnabled = this.srSupported ? settings.srEnabled : false;
       this.srRatioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
       this.srBackend = settings.srBackend;
       this.manualScaleText = settings.manualScalePercent > 0
         ? settings.manualScalePercent.toString() : this.effectiveDefaultScale().toString();
       this.ignoreCertificate = settings.ignoreCertificate;
-      RdpNative.applyHardwareAccel(this.hardwareAccel && this.hardwareAccelSupported);
       this.applyInteraction(settings, true);
     } else if (this.protocol === PROTOCOL_MOONLIGHT) {
       this.mlResMode = settings.mlResMode;
@@ -200,6 +204,9 @@ struct SettingsPage {
       this.mlBitrateText = kbpsToMbps(settings.mlBitrateKbps).toString();
       this.mlColorSpace = settings.mlColorSpace;
       this.mlCodec = settings.mlCodec;
+      this.mlSrEnabled = this.mlSrSupported ? settings.mlSrEnabled : false;
+      this.mlSrRatioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
+      this.mlSrBackend = settings.mlSrBackend;
     this.mlCursorMode = settings.mlCursorMode;
     this.mlRelativeMouse = settings.mlRelativeMouse;
     this.relativeSpeed = settings.mlRelativeSpeed;
@@ -212,10 +219,15 @@ struct SettingsPage {
       if (!this.audioSupported && settings.enableAudio) {
         this.persist();
       }
-      if (!this.hardwareAccelSupported && settings.hardwareAccel) {
+      if (!this.srSupported && settings.srEnabled) {
         this.persist();
       }
-      if ((!this.hardwareAccelSupported || !this.srSupported) && settings.srEnabled) {
+    }
+    if (this.protocol === PROTOCOL_MOONLIGHT) {
+      if (!this.audioSupported && settings.mlLowLatencyAudio) {
+        this.persist();
+      }
+      if (!this.mlSrSupported && settings.mlSrEnabled) {
         this.persist();
       }
     }
@@ -342,6 +354,31 @@ struct SettingsPage {
     return `${width} × ${height}`;
   }
 
+  private srSupportedFor(protocol: number): boolean {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlSrSupported : this.srSupported;
+  }
+
+  private srReasonFor(protocol: number): string {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlSrReason : this.srReason;
+  }
+
+  // The output resolution the 超分 upscales back to: the RDP display size, or Moonlight's stream
+  // resolution preview.
+  private srOutputWidth(protocol: number): number {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlPreviewWidth() : this.outputWidth();
+  }
+
+  private srOutputHeight(protocol: number): number {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlPreviewHeight() : this.outputHeight();
+  }
+
+  private sessionSizeTextFor(protocol: number): string {
+    const ratio: number = this.srRatioFor(protocol);
+    const width: number = SettingsStore.srSessionSize(this.srOutputWidth(protocol), ratio);
+    const height: number = SettingsStore.srSessionSize(this.srOutputHeight(protocol), ratio);
+    return `${width} × ${height}`;
+  }
+
   private persist(): void {
     const disp = defaultDisplay();
     const maxWidth: number = disp !== undefined ? disp.width : Number.MAX_SAFE_INTEGER;
@@ -387,7 +424,6 @@ struct SettingsPage {
         this.parseScale(this.manualScaleText, this.effectiveDefaultScale());
       settings.enableAudio = this.enableAudio;
       settings.ignoreCertificate = this.ignoreCertificate;
-      settings.hardwareAccel = this.hardwareAccel;
       settings.srEnabled = this.srEnabled && this.srSupported;
       settings.srRatioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
       settings.srBackend = this.srBackend;
@@ -402,6 +438,9 @@ struct SettingsPage {
       settings.mlBitrateKbps = this.effectiveMlBitrate();
       settings.mlColorSpace = this.mlColorSpace;
       settings.mlCodec = this.mlCodec;
+      settings.mlSrEnabled = this.mlSrEnabled && this.mlSrSupported;
+      settings.mlSrRatioPercent = SettingsStore.snapSrRatioPreset(this.mlSrRatioPercent);
+      settings.mlSrBackend = this.mlSrBackend;
       settings.mlScaleMode = this.mlScaleMode;
       settings.mlScalePercent = this.parseScale(this.mlScaleText, 100);
       settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
@@ -425,7 +464,6 @@ struct SettingsPage {
     SettingsStore.save(settings);
     if (this.protocol === PROTOCOL_RDP) {
       RdpNative.applyRdpCursor(this.useRdpCursor);
-      RdpNative.applyHardwareAccel(this.hardwareAccel);
     }
   }
 
@@ -447,9 +485,6 @@ struct SettingsPage {
     if (!this.audioSupported) {
       defaults.enableAudio = false;
       defaults.mlLowLatencyAudio = false;
-    }
-    if (!this.hardwareAccelSupported) {
-      defaults.hardwareAccel = false;
     }
     SettingsStore.save(defaults);
     this.syncFromStore();
@@ -595,51 +630,129 @@ struct SettingsPage {
     return '映射为 Ctrl+滚轮，由远端应用自行缩放（会触发远端重绘）';
   }
 
-  @Builder
-  srRatioChip(preset: number) {
-    ChoiceChip({
-      label: srRatioLabel(preset),
-      selected: this.srRatioPercent === preset,
-      onTap: () => {
-        this.srRatioPercent = preset;
-        this.persist();
-      }
-    })
+  // 超分 state is per protocol tab (protocol === PROTOCOL_RDP / PROTOCOL_MOONLIGHT), so one set of
+  // builders serves both and only the data source changes.
+  private srEnabledFor(protocol: number): boolean {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlSrEnabled : this.srEnabled;
   }
 
-  private srChoice(): number {
-    if (!this.srEnabled) {
+  private srRatioFor(protocol: number): number {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlSrRatioPercent : this.srRatioPercent;
+  }
+
+  private srBackendFor(protocol: number): number {
+    return protocol === PROTOCOL_MOONLIGHT ? this.mlSrBackend : this.srBackend;
+  }
+
+  private srChoiceOf(protocol: number): number {
+    if (!this.srEnabledFor(protocol)) {
       return 0;
     }
-    return this.srBackend === SR_BACKEND_FSR ? 2 : 1;
+    return this.srBackendFor(protocol) === SR_BACKEND_FSR ? 2 : 1;
   }
 
-  private srChoiceUsable(choice: number): boolean {
+  private srChoiceUsableFor(choice: number, protocol: number): boolean {
     if (choice === 0) {
       return true;
     }
-    if (!this.hardwareAccel || !this.hardwareAccelSupported) {
-      return false;
-    }
     const backend: number = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
-    const token: string = backend === SR_BACKEND_FSR ? 'fsr' : 'xengine';
-    return DeviceCapabilities.srBackends().indexOf(token) >= 0;
+    return SettingsStore.srBackendUsable(backend, protocol);
+  }
+
+  private srSetRatio(protocol: number, preset: number): void {
+    if (protocol === PROTOCOL_MOONLIGHT) {
+      this.mlSrRatioPercent = preset;
+    } else {
+      this.srRatioPercent = preset;
+    }
+    this.persist();
+  }
+
+  private srSetChoice(protocol: number, choice: number): void {
+    const enabled: boolean = choice !== 0;
+    const backend: number = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
+    if (protocol === PROTOCOL_MOONLIGHT) {
+      this.mlSrEnabled = enabled;
+      if (enabled) {
+        this.mlSrBackend = backend;
+      }
+    } else {
+      this.srEnabled = enabled;
+      if (enabled) {
+        this.srBackend = backend;
+      }
+    }
+    this.persist();
   }
 
   @Builder
-  srChoiceChip(choice: number) {
+  srRatioChip(protocol: number, preset: number) {
     ChoiceChip({
-      label: choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'),
-      selected: this.srChoice() === choice,
-      chipEnabled: this.srChoiceUsable(choice),
+      label: srRatioLabel(preset),
+      selected: this.srRatioFor(protocol) === preset,
       onTap: () => {
-        this.srEnabled = choice !== 0;
-        if (choice !== 0) {
-          this.srBackend = choice === 2 ? SR_BACKEND_FSR : SR_BACKEND_XENGINE;
-        }
-        this.persist();
+        this.srSetRatio(protocol, preset);
       }
     })
+  }
+
+  @Builder
+  srChoiceChip(protocol: number, choice: number) {
+    ChoiceChip({
+      label: choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'),
+      selected: this.srChoiceOf(protocol) === choice,
+      chipEnabled: this.srChoiceUsableFor(choice, protocol),
+      onTap: () => {
+        this.srSetChoice(protocol, choice);
+      }
+    })
+  }
+
+  // The 超分 block is one shared section; the two protocol tabs only switch the data source.
+  @Builder
+  srSection(protocol: number) {
+    Column() {
+      Column() {
+        Text('超分辨率')
+          .fontSize(14)
+          .fontColor(this.srSupportedFor(protocol) ? $r('app.color.text_primary')
+            : $r('app.color.text_tertiary'))
+        Text('远端按「分辨率 ÷ 倍率」出画，本机用 GPU 上采样回输出分辨率：省带宽与解码')
+          .fontSize(11)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+        if (!this.srSupportedFor(protocol)) {
+          Text(this.srReasonFor(protocol))
+            .fontSize(11)
+            .fontColor($r('app.color.danger'))
+            .margin({ top: 2 })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.srChoiceChip(protocol, 0)
+        this.srChoiceChip(protocol, 1)
+        this.srChoiceChip(protocol, 2)
+      }
+      .width('100%').margin({ top: 10 })
+
+      if (this.srEnabledFor(protocol) && this.srSupportedFor(protocol)) {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(SR_RATIO_PRESETS, (preset: number) => {
+            this.srRatioChip(protocol, preset)
+          }, (preset: number) => preset.toString())
+        }
+        .width('100%').margin({ top: 10 })
+
+        Text('输出 ' + this.srOutputWidth(protocol) + ' × ' + this.srOutputHeight(protocol)
+          + ' · 会话 ' + this.sessionSizeTextFor(protocol))
+          .fontSize(11).fontColor($r('app.color.text_tertiary'))
+          .width('100%').margin({ top: 2 })
+      }
+    }
+    .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -1478,73 +1591,7 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            this.toggleItem({
-              title: '硬件加速',
-              subtitle: '用 Vulkan 把画面贴到窗口；关闭则完全不用 Vulkan（GLES 上屏，兼容性优先）',
-              // Locked on devices whose Vulkan cannot present a frame; the session
-              // runs on the GLES presenter either way.
-              value: this.hardwareAccel,
-              enabled: this.hardwareAccelSupported,
-              disabledReason: this.hardwareAccelSupported ? '' : this.hardwareAccelReason,
-              onChange: (v: boolean) => {
-                this.hardwareAccel = v;
-                this.persist();
-              }
-            })
-
-            Divider().color($r('app.color.divider'))
-
-            Column() {
-              Row() {
-                Column() {
-                  Text('超分辨率')
-                    .fontSize(14)
-                    .fontColor((this.hardwareAccel && this.srSupported)
-                      ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
-                  Text('远端按「分辨率 ÷ 倍率」出画，本机用 GPU 上采样回输出分辨率：省带宽与解码')
-                    .fontSize(11)
-                    .fontColor($r('app.color.text_tertiary'))
-                    .margin({ top: 2 })
-                  if (!this.srSupported) {
-                    Text(this.srReason)
-                      .fontSize(11)
-                      .fontColor($r('app.color.danger'))
-                      .margin({ top: 2 })
-                  } else if (!this.hardwareAccel) {
-                    Text('超分辨率需要开启硬件加速（Vulkan 上屏）')
-                      .fontSize(11)
-                      .fontColor($r('app.color.danger'))
-                      .margin({ top: 2 })
-                  }
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-              }
-              .width('100%')
-
-              Flex({ wrap: FlexWrap.Wrap }) {
-                this.srChoiceChip(0)
-                this.srChoiceChip(1)
-                this.srChoiceChip(2)
-              }
-              .width('100%').margin({ top: 10 })
-
-              if (this.srEnabled && this.srSupported && this.hardwareAccel) {
-                Flex({ wrap: FlexWrap.Wrap }) {
-                  ForEach(SR_RATIO_PRESETS, (preset: number) => {
-                    this.srRatioChip(preset)
-                  }, (preset: number) => preset.toString())
-                }
-                .width('100%').margin({ top: 10 })
-
-                Text('输出 ' + this.outputWidth() + ' × ' + this.outputHeight()
-                  + ' · 会话 ' + this.sessionSizeText())
-                  .fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  .width('100%').margin({ top: 2 })
-              }
-            }
-            .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+            this.srSection(PROTOCOL_RDP)
 
             Divider().color($r('app.color.divider'))
 
@@ -1598,6 +1645,10 @@ struct SettingsPage {
                 }
               })
             }
+
+            Divider().color($r('app.color.divider'))
+
+            this.srSection(PROTOCOL_MOONLIGHT)
             }
             }
 

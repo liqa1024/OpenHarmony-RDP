@@ -75,6 +75,7 @@ endif()
 set(HMRDP_SHADERS
   "present_quad.vert|PresentQuadVert"
   "present_quad.frag|PresentQuadFrag"
+  "video_convert.frag|VideoConvertFrag"
 )
 
 # FSR 1.0 (MIT) passes need the vendored AMD headers from fetch-sources.ps1; without them there is no FSR backend.
@@ -127,6 +128,7 @@ core/hmrdp_moonlight_session.cpp
     core/hmrdp_oh_audio.cpp
     core/hmrdp_video_decoder.cpp
     core/hmrdp_display_rate.cpp
+    core/hmrdp_sr.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
     core/hmrdp_gfx_cpu.cpp
@@ -169,6 +171,8 @@ target_link_libraries(hmrdp
     hilog_ndk.z
     ffrt.z
     native_window
+    # 超分 video import: reference/unreference the AVCodec output buffer as an OH_NativeBuffer.
+    native_buffer
     # The panel's current refresh rate, which the video present gate follows.
     native_display_manager
     # OHAudio: the Moonlight low-latency playback path (FAST + audio workgroup).

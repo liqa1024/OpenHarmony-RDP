@@ -66,6 +66,11 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     交给 `VideoDecoder::Submit`，即 [`moonlight-video.md`](moonlight-video.md) §1 的「一次一个完整访问单元」。
   - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位留空：不改写参考帧，且**不开
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
+  - **两种输出模式**：默认 `kSurface`（解码直出 `renderContext` 的窗口）；超分时 `kBuffer`——会话先把
+    呈现器交给桥（`MoonlightVideoSetPresenter`），`start` 改走 buffer 输出，每个 NV12 帧在输出回调里
+    取 `OH_NativeBuffer`、判送显槽位（错过即**丢**，与直出同语义）、`PresentVideo` 上屏后释放缓冲
+    （见 [`moonlight-video.md`](moonlight-video.md) §2）。呈现器归会话所有（`hmrdp_moonlight_session.*`），
+    在 `LiStartConnection` 前按会话尺寸建好、`LiStopConnection` 后拆掉。
   - 输入**按延迟预算**排队（时间计量，不是字节）：最老的一帧超过预算就丢掉整段积压并回 `DR_NEED_IDR`
     请主机补关键帧。依据与限流机制见 [`moonlight-video.md`](moonlight-video.md) §1。
 - **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`。**`LiStartConnection` 在建流
@@ -78,7 +83,7 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   （相对/绝对鼠标、按键、UTF-8 文本、高分辨率滚轮、触屏触点、原生触控板接入点），它在输入 worker 内构造，
   策略在共用 `SessionInput`（见 [`session-layer.md`](session-layer.md) §8）。N-API 出口：
   `moonlightSetSessionListener`（进程级事件回调 `(event, value, text)`）、
-  `moonlightSessionSetSurface/ClearSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
+  `moonlightSessionSetSurface/ClearSurface/ResizeSurface/Start/Stop/Active`、`moonlightMouse*` / `moonlightKey` /
   `moonlightScroll` / `moonlightHighResScroll` / `moonlightHighResHScroll` / `moonlightTouch` /
   `moonlightTouchpad` / `moonlightText` / `moonlightController` / `moonlightControllerArrival` /
   `moonlightHostFeatures` / `moonlightTelemetry` /

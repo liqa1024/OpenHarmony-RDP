@@ -214,17 +214,19 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
 - ArkTS 侧在 `services/DeviceCapabilities.ets` 暴露 `Capability{supported, reason}`；
 - UI 上**置灰**该开关并显示原因。
 
-已用此模式的：音频重定向、硬件加速、超分辨率。原生只回**稳定原因码**
+已用此模式的：音频重定向、超分辨率、Moonlight 的视频导入。原生只回**稳定原因码**
 （`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`），中文文案由
-`DeviceCapabilities` 的对应方法负责；不支持时设置页置灰开关并显示原因，并把已存的值纠正为关。
+`DeviceCapabilities` 的对应方法负责；不支持时设置页置灰相关选项并显示原因，并把已存的值纠正为关。
+（上屏后端**没有开关**：呈现判定成立就用 Vulkan，否则回落 GLES。）
 
 **一个呈现判定 + 两个超分后端判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
 
 | 判定 | 用途 | 条件 |
 |---|---|---|
-| **呈现判定**（`presenterSupported`） | 「硬件加速」开关 / 上屏 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
+| **呈现判定**（`presenterSupported`） | 上屏后端自动选择 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
 | **超分：FSR**（`srFsrSupported`） | 超分后端之一 | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
 | **超分：XEngine**（`srXengineSupported`） | 超分后端之一 | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
+| **视频导入**（`srVideoImportSupported`） | Moonlight 超分的前置 | 呈现判定成立 + `VK_OHOS_external_memory` + `VK_KHR_sampler_ycbcr_conversion`（含 feature） |
 
 - 呈现能力判定**只有 `presenterSupported` 一个**：不存在分开的"解码能力 / 呈现能力"两套判定（解码始终是
   FreeRDP gdi，见 [`rdp-gfx.md`](rdp-gfx.md)）。模拟器（x86_64）一律回落 GLES（见下）。
@@ -234,8 +236,11 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
 - 原因码（`srUnsupportedCode`）在**一个都没有**时才给出：**先取呈现判定的码**，再是 `no-xengine`
   （libxengine 不可用）与 `no-extension`（设备无空域上采样特性）。`superResolutionSupport()` 回它，
   中文文案在 `DeviceCapabilities.superResolution()`；`superResolutionBackends()` 另回**可用的后端列表**
-  （`"xengine"`/`"fsr"`/`"xengine,fsr"`/空），UI 按它逐个置灰。`SettingsStore.srBackendUsable(backend)`
-  再叠加「硬件加速」开关，是某个后端能否生效的唯一判据。
+  （`"xengine"`/`"fsr"`/`"xengine,fsr"`/空）**与 `videoImport` 布尔**，UI 按它逐个置灰。
+  `SettingsStore.srBackendUsable(backend, protocol)` 是某个后端能否生效的唯一判据。
+- **视频导入**（`srVideoImportSupported`）不是 UI 上的独立开关：它是 **Moonlight 超分的额外前置**
+  （`DeviceCapabilities.srVideoImport()`），RDP 超分不需要它（RDP 的输入是 CPU 桌面图）。设备缺任一前提时
+  Moonlight 分栏的超分选项置灰，RDP 分栏不受影响。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
   （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），与 toolchain 指向的 openharmony sysroot 同级；
@@ -243,14 +248,18 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
   桥退化为"不支持"而构建照常（见 `hmrdp_xeg.cpp`）。
 
 - **呈现判定实际对应的 Vulkan 面**（`VkRenderer` 用它，逐项可核）：instance 扩展
-  `VK_KHR_surface` + `VK_OHOS_surface`，device 扩展**只有** `VK_KHR_swapchain`；一个 graphics+present
+  `VK_KHR_surface` + `VK_OHOS_surface`（外加 `VK_KHR_get_physical_device_properties2`，用于问 YCbCr 特性），
+  device 扩展为 `VK_KHR_swapchain` **加上按需使能的** `VK_OHOS_external_memory` / `VK_KHR_external_memory` /
+  `VK_KHR_sampler_ycbcr_conversion`（只为 Moonlight 的视频导入，缺一即该路径不可用而非设备不可用）；
+  一个 graphics+present
   队列族；swapchain（格式优先 `B8G8R8A8_UNORM`，回退 `R8G8B8A8_UNORM`，FIFO）+ render pass/framebuffer/view；
   一条 graphics pipeline（`present_quad.vert/frag`，动态 viewport/scissor 做 letterbox，sampler + descriptor set）；
   持久桌面 image（`B8G8R8A8_UNORM`）与 host-visible staging/零拷贝缓冲；command pool/buffer×2、二进制信号量、
   fence×2；`vkCmdCopyBufferToImage` + `vkCmdPipelineBarrier` + `vkCmdBeginRenderPass/Draw/EndRenderPass` +
   `QueueSubmit/Present`。**用不到**：compute（`CmdDispatch`/`CreateComputePipelines`）、`vkCmdBlitImage`、
-  `vkCmdClearColorImage`/`CmdCopyImage`/`CmdFillBuffer`/`CmdCopyBuffer`、timeline 信号量、外部内存/原生缓冲导入
-  （后两者只在探测里**报告**，没有任何调用点）。
+  `vkCmdClearColorImage`/`CmdCopyImage`/`CmdFillBuffer`/`CmdCopyBuffer`、timeline 信号量。视频导入路径另用
+  `vkGetNativeBufferPropertiesOHOS`（+ `vkCreateSamplerYcbcrConversionKHR`）与一次全屏 convert pass
+  （`video_convert.frag`），见 [`rdp-present.md`](rdp-present.md) §5。
 - **排除模拟器包**（x86_64 构建）：模拟器会按标准接口谎报能力，能力探测排除不掉它；这与"Vulkan 只在真机验证"
   的口径一致，所以模拟器上呈现回落到 GLES。
 - `native_window` 是 `libhmrdp` 显式链接的显示栈 API（把 XComponent 的 surfaceId 变成 `OHNativeWindow`，

@@ -1,7 +1,8 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
-import { moonlightTelemetry, MoonlightTelemetry } from 'libhmrdp.so';
+import { moonlightTelemetry, MoonlightTelemetry,
+  moonlightSessionResizeSurface } from 'libhmrdp.so';
 import { PendingConnection, SessionRequests } from '../model/Connections';
 import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
@@ -23,7 +24,8 @@ import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
-  SettingsStore } from '../services/SettingsStore';
+  SettingsStore, srRatioLabel } from '../services/SettingsStore';
+import { SR_BACKEND_FSR } from '../model/RdpModels';
 import { mapPicturePoint } from '../utils/PictureFit';
 import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
@@ -94,6 +96,8 @@ struct MoonlightSessionPage {
   // the request (the 1080p default only covers a request that predates it).
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
+  // 超分 indicator for the toolbar title (" (FSR 1.5x)"), "" when the session does not upscale.
+  private srIndicator: string = '';
   // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
   // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
@@ -181,11 +185,21 @@ struct MoonlightSessionPage {
         this.streamWidth = request.stream.width;
         this.streamHeight = request.stream.height;
       }
+      // 超分: the picture and the input reference use the *session* (pre-upscale) resolution, like
+      // the RDP session page; the presenter upscales back to the requested output size.
+      if (request.moonlightSessionWidth > 0 && request.moonlightSessionHeight > 0) {
+        this.streamWidth = request.moonlightSessionWidth;
+        this.streamHeight = request.moonlightSessionHeight;
+      }
       this.fpsNote = request.moonlightFpsNote;
       const config = request.moonlightConfig;
       if (config !== undefined) {
         this.targetFps = config.fps;
         this.targetBitrateKbps = config.bitrateKbps;
+        if (config.srEnabled && config.srRatioPercent > 100) {
+          const backend: string = config.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';
+          this.srIndicator = ' (' + backend + ' ' + srRatioLabel(config.srRatioPercent) + ')';
+        }
       }
     }
     if (request !== undefined) {
@@ -279,6 +293,9 @@ struct MoonlightSessionPage {
         // stays valid; only the size is kept for a retry re-bind.
         this.surfaceWidth = width;
         this.surfaceHeight = height;
+        // 超分: the presenter owns the swapchain, so the resize has to reach it (a no-op on the
+        // direct-to-surface path, which the window scaling mode fits by itself).
+        moonlightSessionResizeSurface(width, height);
         hilog.info(DOMAIN, TAG, 'surface changed %{public}dx%{public}d', width, height);
       },
       onSurfaceDestroyed: (): void => {
@@ -512,17 +529,16 @@ struct MoonlightSessionPage {
       return;
     }
     // One line, one action: fewer pixels is the strongest lever on either side (less to decode
-    // locally, less to encode on the host); the rate is already capped at connect.
-    // TODO: super resolution turns "降低分辨率并开启超分" into the advice for both sides — the lower
-    // stream costs the host fewer pixels to encode and this side fewer to decode.
+    // locally, less to encode on the host); super resolution turns that into "lower the resolution
+    // and upscale" — the lower stream costs both sides fewer pixels.
     if (overload === OVERLOAD_LOCAL) {
       hilog.warn(DOMAIN, TAG, 'local decode overloaded: %{public}fms/frame pending=%{public}d drop=%{public}d/s',
         this.metricsDecodeMs, this.metricsPending, this.metricsDroppedPerSec);
-      this.toast('本机解码跟不上，建议降低分辨率/帧率', OVERLOAD_TOAST_MS);
+      this.toast('本机解码跟不上，建议降低分辨率并开启超分', OVERLOAD_TOAST_MS);
       return;
     }
     hilog.warn(DOMAIN, TAG, 'host encode overloaded: %{public}fms per frame', this.metricsHostMs);
-    this.toast('主机编码跟不上，建议降低分辨率/帧率', OVERLOAD_TOAST_MS);
+    this.toast('主机编码跟不上，建议降低分辨率并开启超分', OVERLOAD_TOAST_MS);
   }
 
   private rttLabel(): string {
@@ -803,7 +819,8 @@ struct MoonlightSessionPage {
       Row() {
         SessionTitle({
           name: this.hostLabel,
-          detail: this.streamWidth + ' × ' + this.streamHeight + moonlightDecodeIndicator()
+          detail: this.streamWidth + ' × ' + this.streamHeight + this.srIndicator
+            + moonlightDecodeIndicator()
         })
         Blank()
         if (this.state === ConnectionState.Connected && this.clipboardAvailable) {

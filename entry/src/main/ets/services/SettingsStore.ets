@@ -7,7 +7,8 @@ import {
 } from '../model/RdpModels';
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_RES_FOLLOW_SCREEN,
-  ML_SCALE_AUTO, MoonlightConnection, MoonlightProfile, PROTOCOL_RDP, RdpConnection
+  ML_SCALE_AUTO, MoonlightConnection, MoonlightProfile, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
+  RdpConnection
 } from '../model/Connections';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -85,7 +86,6 @@ export class AppSettings {
   srEnabled: boolean = false;
   srRatioPercent: number = SR_RATIO_PRESETS[0];
   srBackend: number = SR_BACKEND_XENGINE;
-  hardwareAccel: boolean = true;
   developerMode: boolean = false;
   gfxCapture: boolean = false;
   mlFps: number = 60;
@@ -93,6 +93,9 @@ export class AppSettings {
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
   mlColorSpace: number = ML_COLORSPACE_REC709;
+  mlSrEnabled: boolean = false;
+  mlSrRatioPercent: number = SR_RATIO_PRESETS[0];
+  mlSrBackend: number = SR_BACKEND_XENGINE;
   mlResMode: number = ML_RES_FOLLOW_SCREEN;
   mlWidth: number = 0;
   mlHeight: number = 0;
@@ -225,8 +228,6 @@ export class SettingsStore {
       settings.srRatioPercent =
         SettingsStore.readNumber(store, 'srRatioPercent', settings.srRatioPercent);
       settings.srBackend = SettingsStore.readNumber(store, 'srBackend', settings.srBackend);
-      settings.hardwareAccel =
-        SettingsStore.readBoolean(store, 'hardwareAccel', settings.hardwareAccel);
       settings.developerMode =
         SettingsStore.readBoolean(store, 'developerMode', settings.developerMode);
       settings.gfxCapture = SettingsStore.readBoolean(store, 'gfxCapture', settings.gfxCapture);
@@ -238,6 +239,11 @@ export class SettingsStore {
       settings.mlCodec = SettingsStore.readNumber(store, 'mlCodec', settings.mlCodec);
       settings.mlColorSpace =
         SettingsStore.readNumber(store, 'mlColorSpace', settings.mlColorSpace);
+      settings.mlSrEnabled = SettingsStore.readBoolean(store, 'mlSrEnabled', settings.mlSrEnabled);
+      settings.mlSrRatioPercent =
+        SettingsStore.readNumber(store, 'mlSrRatioPercent', settings.mlSrRatioPercent);
+      settings.mlSrBackend =
+        SettingsStore.readNumber(store, 'mlSrBackend', settings.mlSrBackend);
       settings.mlResMode = SettingsStore.readNumber(store, 'mlResMode', settings.mlResMode);
       settings.mlWidth = SettingsStore.readNumber(store, 'mlWidth', settings.mlWidth);
       settings.mlHeight = SettingsStore.readNumber(store, 'mlHeight', settings.mlHeight);
@@ -323,7 +329,6 @@ export class SettingsStore {
       store.putSync('srEnabled', settings.srEnabled);
       store.putSync('srRatioPercent', settings.srRatioPercent);
       store.putSync('srBackend', settings.srBackend);
-      store.putSync('hardwareAccel', settings.hardwareAccel);
       store.putSync('developerMode', settings.developerMode);
       store.putSync('gfxCapture', settings.gfxCapture);
       store.putSync('mlFps', settings.mlFps);
@@ -331,6 +336,9 @@ export class SettingsStore {
       store.putSync('mlBitrateAuto', settings.mlBitrateAuto);
       store.putSync('mlCodec', settings.mlCodec);
       store.putSync('mlColorSpace', settings.mlColorSpace);
+      store.putSync('mlSrEnabled', settings.mlSrEnabled);
+      store.putSync('mlSrRatioPercent', settings.mlSrRatioPercent);
+      store.putSync('mlSrBackend', settings.mlSrBackend);
       store.putSync('mlResMode', settings.mlResMode);
       store.putSync('mlWidth', settings.mlWidth);
       store.putSync('mlHeight', settings.mlHeight);
@@ -423,13 +431,19 @@ export class SettingsStore {
     return SettingsStore.nearestScalePreset(Math.round(base * 100 / ratioPercent));
   }
 
-  static globalSrProfile(): SrProfile {
+  static globalSrProfile(protocol: number = PROTOCOL_RDP): SrProfile {
     const settings: AppSettings = SettingsStore.load();
     const profile: SrProfile = new SrProfile();
-    profile.enabled = settings.srEnabled;
-    profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
-    profile.backend = settings.srBackend;
-    return SettingsStore.gateSr(profile);
+    if (protocol === PROTOCOL_MOONLIGHT) {
+      profile.enabled = settings.mlSrEnabled;
+      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
+      profile.backend = settings.mlSrBackend;
+    } else {
+      profile.enabled = settings.srEnabled;
+      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
+      profile.backend = settings.srBackend;
+    }
+    return SettingsStore.gateSr(profile, protocol);
   }
 
   static resolveSr(conn: RdpConnection): SrProfile {
@@ -444,14 +458,31 @@ export class SettingsStore {
       profile.ratioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
       profile.backend = conn.srBackend;
     }
-    return SettingsStore.gateSr(profile);
+    return SettingsStore.gateSr(profile, PROTOCOL_RDP);
   }
 
-  private static gateSr(profile: SrProfile): SrProfile {
-    if (profile.enabled && !SettingsStore.srBackendUsable(profile.backend)) {
+  // Same shape as resolveSr, over the Moonlight tab's own global values and the connection's
+  // per-connection override; Moonlight additionally needs the video import capability.
+  static resolveMoonlightSr(conn: MoonlightConnection): SrProfile {
+    const settings: AppSettings = SettingsStore.load();
+    const profile: SrProfile = new SrProfile();
+    if (conn.useGlobalSr) {
+      profile.enabled = settings.mlSrEnabled;
+      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
+      profile.backend = settings.mlSrBackend;
+    } else {
+      profile.enabled = conn.srEnabled;
+      profile.ratioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
+      profile.backend = conn.srBackend;
+    }
+    return SettingsStore.gateSr(profile, PROTOCOL_MOONLIGHT);
+  }
+
+  private static gateSr(profile: SrProfile, protocol: number): SrProfile {
+    if (profile.enabled && !SettingsStore.srBackendUsable(profile.backend, protocol)) {
       const other: number = profile.backend === SR_BACKEND_XENGINE ? SR_BACKEND_FSR
                                                                    : SR_BACKEND_XENGINE;
-      if (SettingsStore.srBackendUsable(other)) {
+      if (SettingsStore.srBackendUsable(other, protocol)) {
         profile.backend = other;
       } else {
         profile.enabled = false;
@@ -467,20 +498,16 @@ export class SettingsStore {
     return backend === SR_BACKEND_FSR ? 'fsr' : 'xengine';
   }
 
-  static srBackendUsable(backend: number): boolean {
-    return SettingsStore.srBackendUsableFor(SettingsStore.load(), backend);
-  }
-
-  static srBackendUsableFor(settings: AppSettings, backend: number): boolean {
-    if (!settings.hardwareAccel || !DeviceCapabilities.hardwareAccel().supported) {
+  static srBackendUsable(backend: number, protocol: number = PROTOCOL_RDP): boolean {
+    if (protocol === PROTOCOL_MOONLIGHT && !DeviceCapabilities.srVideoImport()) {
       return false;
     }
     return DeviceCapabilities.srBackends().indexOf(SettingsStore.srBackendToken(backend)) >= 0;
   }
 
-  static superResolutionUsable(): boolean {
-    return SettingsStore.srBackendUsable(SR_BACKEND_XENGINE)
-      || SettingsStore.srBackendUsable(SR_BACKEND_FSR);
+  static superResolutionUsable(protocol: number = PROTOCOL_RDP): boolean {
+    return SettingsStore.srBackendUsable(SR_BACKEND_XENGINE, protocol)
+      || SettingsStore.srBackendUsable(SR_BACKEND_FSR, protocol);
   }
 
   static globalDisplayProfile(): DisplayProfile {

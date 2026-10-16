@@ -165,6 +165,11 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - **低延迟音频开关（Moonlight tab，`mlLowLatencyAudio`，默认开）**：与「音频重定向」同在 Moonlight tab 末尾的「连接特性」分节，
   **仅在其开启时显示**（音频关时无从谈低延迟）。开 = 原生 OHAudio FAST 通路，关 = 与 RDP 同一条 ArkTS 播放链路。
   存储与置灰见 [`settings-and-storage.md`](settings-and-storage.md) §2，机制见 [`moonlight-native.md`](moonlight-native.md) §2.3。
+- **超分（Moonlight tab，`mlSrBackend` + `mlSrRatioPercent`）**：与 RDP 同一段代码、同一栏位（`srSection(protocol)`），
+  只切数据源；全局默认存 Moonlight 自己那一份（`mlSr*`），Moonlight 连接另有「使用会话独立超分辨率设置」覆盖
+  （`useGlobalSr` 等字段与 RDP 同名，存储与判据见 [`settings-and-storage.md`](settings-and-storage.md) §2）。
+  比 RDP 多一个能力前置：设备要能把解码器的 NV12 缓冲导入呈现器（`DeviceCapabilities.srVideoImport()`），
+  不满足则整栏置灰。会话页主行分辨率显示**会话（超分前）分辨率**并在后缀补 ` (FSR 1.5x)` / ` (XEngine 1.5x)`。
 - **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
   不要在别处塞新内容而让 Moonlight 那份成为摆设。
 

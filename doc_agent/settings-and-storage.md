@@ -55,8 +55,9 @@
     例：`1600 → 100`、`1920 → 125`、`2560 → 150`、`2880 → 175`、`3200 → 200`、`3840 → 225`。
     **本机屏幕分辨率/密度不参与**——同一个远端分辨率在任何设备上换算出同一档位。
   - 原生只写 `FreeRDP_DesktopScaleFactor`（缩放交给服务端，客户端不做逐像素缩放）。
-- **超分辨率**（`srBackend` + `srRatioPercent`，全局默认，**与「硬件加速」同级**放在设置页；
-  单连接用独立的「使用会话独立超分辨率设置」开关覆盖，默认关＝跟随全局）：开启后
+- **超分辨率**（RDP：`srBackend` + `srRatioPercent`；Moonlight：`mlSrBackend` + `mlSrRatioPercent`。
+  两者都是各自的全局默认，**每个协议页签各存一份**；单连接用独立的「使用会话独立超分辨率设置」开关覆盖，
+  默认关＝跟随本协议全局）：开启后
   **会话分辨率 = 分辨率设置 ÷ 倍率**（取偶像素），服务端按它出画，本机 Vulkan 呈现器再把它上采样回
   输出分辨率——省解码与带宽，边缘比双线性放大更锐。倍率档位 `SR_RATIO_PRESETS` =
   `1.25x`/`1.5x`/`1.75x`/`2x`：**平台只给建议区间**（空域 GPU 超分建议 `[1.2, 1.5]`），接口本身对倍率
@@ -68,11 +69,17 @@
     （只要 Vulkan 上屏）。见 [`rdp-present.md`](rdp-present.md) §5。
   - **默认缩放随之换算**：自动档 = 分辨率档位 `÷ 倍率` 再吸附到档位（`SettingsStore.autoScalePercent`）；
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持同样的物理大小。
-  - **两个前提**：Vulkan 呈现器可用（即「硬件加速」开着），且**所选后端**可用（FSR 只要前者，XEngine
-    还要设备报 `XEG_spatial_upscale`）。设置页按后端逐个**置灰**并显示原因；不满足时按关闭处理。
-    `SettingsStore.resolveSr()` 是唯一的解析与兜底点（`srBackendUsable(backend)` 把能力与开关合起来判，
-    选中的后端不可用时改用另一个，都不行才关掉），所以会话绝不会谈下一个本机放大不回去的分辨率。
+  - **前提是能力，不是开关**：Vulkan 上屏可用，且**所选后端**可用（FSR 只要前者，XEngine 还要设备报
+    `XEG_spatial_upscale`）；**Moonlight 还多要一项**：设备能把解码器的 NV12 缓冲导入呈现器
+    （`VK_OHOS_external_memory` + YCbCr 采样器，`superResolutionBackends().videoImport`）。设置页按后端
+    逐个**置灰**并显示原因；不满足时按关闭处理。
+    `SettingsStore.resolveSr(conn)` / `resolveMoonlightSr(conn)` 是唯一的解析与兜底点
+    （`srBackendUsable(backend, protocol)` 把能力合起来判，选中的后端不可用时改用另一个，都不行才关掉），
+    所以会话绝不会谈下一个本机放大不回去的分辨率。
   - 单连接可独立配置的理由：同一台机器走局域网可以不开，走 frp 转发时需要省带宽就开。
+  - **Moonlight 侧的两处联动**：主机握手分辨率（`STREAM_CONFIGURATION` / `/launch` 的尺寸）与
+    **fps 上限钳制、自动码率**都取**会话分辨率**（`MoonlightConnector.prepare`）——解码跑在会话分辨率上、
+    主机也按会话分辨率编码，见 [`moonlight-video.md`](moonlight-video.md) §2。
 - **高级连接特性（音频、忽略证书…）**：默认值放全局 `AppSettings`；单连接保存自己的值 +
   `useGlobalAdvanced` 标志（**默认跟随全局**）。连接前用 `SettingsStore.resolveAdvanced(conn)` 解析。
   编辑页打开「使用会话独立高级设置」后才用本连接的独立开关；**保存时仍持久化独立值**，便于随时切回。
@@ -88,12 +95,10 @@
   工具栏的「复制/粘贴」手动触发，见 [`rdp-clipboard.md`](rdp-clipboard.md)。
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置
   `FreeRDP_SupportGraphicsPipeline`。
-- **硬件加速**（`hardwareAccel`，进程级）：只选上屏后端（开 = Vulkan、关 = GLES 且不碰 Vulkan），
-  与解码无关（语义见 [`rdp-present.md`](rdp-present.md) §1）。存在这个开关是因为 Vulkan 支持
-  参差不齐的设备（模拟器完全不可用），关掉它就能在"Vulkan 不好用"的机器上照常跑。判据用**呈现判定**
-  （不需要 compute，见 [`rdp-native.md`](rdp-native.md) §6）：不支持时设置页置灰并显示原因，
-  把已存的值纠正为关；支持时默认开（新装/未改过设置即为开）。dev 回放页也有同一个开关
-  （`路线:CPU/硬件加速`），改它等于改这个设置并重启回放——两个后端可以在同一份录像上当场 A/B。
+- **上屏后端不用开关**：呈现器**按能力自动选**——设备呈现判定成立就用 Vulkan，否则回落 GLES
+  （判据见 [`rdp-native.md`](rdp-native.md) §6）。**没有「硬件加速」设置项**：Vulkan 可用与否是设备事实，
+  不是用户偏好，做成开关只会造出"开了也用不上"的档位。dev 回放页仍保留 `路线:CPU/硬件加速` 的**临时**切换
+  （不落库，仅用于在同一份录像上 A/B 两个后端），会话开始时被能力再次归一（`SessionPage`）。
 - **回到前台自动重连**（`reconnectOnForeground`，进程级，默认关）：会话窗口从后台回到前台时，
   若该会话已被系统断开，则自动重连一次。它**不是保活**——系统对后台应用先冻结网络资源（约 2s）、
   再释放并 abort socket（约 12s），且官方判定终端类会话（SSH/Mosh/SFTP）不属于合法的高优先级后台服务，
