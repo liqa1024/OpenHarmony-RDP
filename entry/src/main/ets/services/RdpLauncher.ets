@@ -24,6 +24,8 @@ export class RdpLauncher {
     const profile: DisplayProfile = SettingsStore.resolveDisplay(conn);
     options.width = profile.width;
     options.height = profile.height;
+    options.streamWidth = profile.sessionWidth;
+    options.streamHeight = profile.sessionHeight;
     options.scalePercent = profile.scalePercent;
     options.srEnabled = profile.srEnabled;
     options.srRatioPercent = profile.srRatioPercent;

@@ -1,6 +1,6 @@
 import { MoonlightSessionConfig } from 'libhmrdp.so';
 import { PairResult } from '../moonlight/MoonlightModels';
-import { RDP_DEFAULT_PORT, RdpConnectOptions, SR_BACKEND_XENGINE } from './RdpModels';
+import { RDP_DEFAULT_PORT, RdpConnectOptions, SR_BACKEND_XENGINE, SrSetting } from './RdpModels';
 
 export enum ConnectAction {
   Connect = 0,
@@ -127,6 +127,13 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   serverCodecModeSupport: number = 0;
   width: number = 1920;
   height: number = 1080;
+  // 超分: the session (pre-upscale) size the host encodes; 0 = the same as width/height. `srBackend`
+  // and `srRatioPercent` describe the setting — the backend drives the presenter, the ratio only
+  // labels the session ("FSR 1.75x").
+  streamWidth: number = 0;
+  streamHeight: number = 0;
+  srBackend: number = SR_BACKEND_XENGINE;
+  srRatioPercent: number = 0;
   fps: number = 60;
   bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   packetSize: number = 1024;
@@ -142,9 +149,6 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   localCursorMode: boolean = false;
   enableAudio: boolean = true;
   lowLatencyAudio: boolean = true;
-  srEnabled: boolean = false;
-  srBackend: number = SR_BACKEND_XENGINE;
-  srRatioPercent: number = 0;
 }
 
 export enum ConnectOrigin {
@@ -163,9 +167,6 @@ export class PendingConnection {
   moonlightHttpsPort: number = 47984;
   // Why the requested frame rate was capped for this session ("" when it was not).
   moonlightFpsNote: string = '';
-  // 超分: the stream (session) resolution actually taken; 0 = same as the output resolution.
-  moonlightSessionWidth: number = 0;
-  moonlightSessionHeight: number = 0;
   filesDir: string = '';
   moonlightAppId: number = 0;
   moonlightPinProvider: ((pin: string, pairing: Promise<PairResult>) => Promise<boolean>)
@@ -374,7 +375,7 @@ export abstract class SavedConnection {
   protected abstract readProtocolExport(item: ConnectionExport): void;
 }
 
-export class RdpConnection extends SavedConnection {
+export class RdpConnection extends SavedConnection implements SrSetting {
   username: string = '';
   password: string = '';
   domain: string = '';
@@ -571,7 +572,7 @@ export class RdpConnection extends SavedConnection {
   }
 }
 
-export class MoonlightConnection extends SavedConnection {
+export class MoonlightConnection extends SavedConnection implements SrSetting {
   mlDefaultAppId: string = '';
   mlDefaultAppName: string = '';
   // 主机自身身份（/serverinfo 的 uniqueid）：Moonlight 以此区分主机，故为唯一性检查的首选键；首次 serverinfo 成功后填入，此前为空。

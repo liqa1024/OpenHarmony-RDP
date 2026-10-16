@@ -74,12 +74,12 @@ class FramePresenter {
   virtual bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth,
                            int desktopHeight, const PresentRect* rects, int rectCount) = 0;
 
-  // Moonlight 超分: present one decoded frame straight from its ohos native buffer (an AVCodec
-  // output buffer, NV12), importing it into the presenter's own device, converting to the picture
-  // format and running the shared 超分 / letterbox tail. `inputWidth`/`inputHeight` are the stream
-  // (session) resolution. Blocking per frame: the caller frees the buffer the moment this returns,
-  // so the presenter must be done with it. False when the presenter has no such path (GLES, or a
-  // device without the import / YCbCr-sampler support).
+  // Moonlight 超分: present one decoded frame straight from its ohos graphics-allocator buffer (an
+  // offscreen consumer surface buffer, NV12), importing it into the presenter's own device,
+  // converting to the picture format and running the shared 超分 / letterbox tail. `inputWidth`/
+  // `inputHeight` are the stream (session) resolution. Blocking per frame: the caller returns the
+  // buffer the moment this returns, so the presenter must be done with it. False when the presenter
+  // has no such path (GLES, or a device without the import / YCbCr-sampler support).
   virtual bool PresentVideo(const void* nativeBuffer, int inputWidth, int inputHeight) {
     (void)nativeBuffer;
     (void)inputWidth;

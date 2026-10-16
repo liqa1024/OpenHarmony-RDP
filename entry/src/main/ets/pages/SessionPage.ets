@@ -229,11 +229,11 @@ struct SessionPage {
     };
     this.foreground = new ForegroundReconnect(foregroundHost, settings.reconnectOnForeground);
     RdpNative.applyRdpCursor(settings.useRdpCursor);
-    // With 超分辨率 the server renders the session (pre-upscale) size, not the configured output size; the Resize event corrects a mismatch.
-    this.desktopWidth = SettingsStore.srSessionSize(this.options.width,
-      this.options.srEnabled ? this.options.srRatioPercent : 0);
-    this.desktopHeight = SettingsStore.srSessionSize(this.options.height,
-      this.options.srEnabled ? this.options.srRatioPercent : 0);
+    // 超分: the server renders the session (pre-upscale) size, not the configured output size; the
+    // Resize event corrects a mismatch.
+    this.desktopWidth = this.options.streamWidth > 0 ? this.options.streamWidth : this.options.width;
+    this.desktopHeight = this.options.streamHeight > 0
+      ? this.options.streamHeight : this.options.height;
     const host: SessionShellHost = {
       ui: (): UIContext => this.getUIContext(),
       setState: (state: ConnectionState): void => {
@@ -925,7 +925,7 @@ struct SessionPage {
   }
 
   private srIndicator(): string {
-    if (!this.options.srEnabled || this.options.srRatioPercent <= 100) {
+    if (this.options.streamWidth <= 0 || this.options.srRatioPercent <= 100) {
       return '';
     }
     const backend: string = this.options.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';

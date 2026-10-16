@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
-  AdvancedProfile, DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile
+  AdvancedProfile, DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile, SrSetting
 } from '../model/RdpModels';
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_RES_FOLLOW_SCREEN,
@@ -431,51 +431,28 @@ export class SettingsStore {
     return SettingsStore.nearestScalePreset(Math.round(base * 100 / ratioPercent));
   }
 
-  static globalSrProfile(protocol: number = PROTOCOL_RDP): SrProfile {
+  static globalSrProfile(protocol: number): SrProfile {
     const settings: AppSettings = SettingsStore.load();
+    const moonlight: boolean = protocol === PROTOCOL_MOONLIGHT;
     const profile: SrProfile = new SrProfile();
-    if (protocol === PROTOCOL_MOONLIGHT) {
-      profile.enabled = settings.mlSrEnabled;
-      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
-      profile.backend = settings.mlSrBackend;
-    } else {
-      profile.enabled = settings.srEnabled;
-      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
-      profile.backend = settings.srBackend;
-    }
+    profile.enabled = moonlight ? settings.mlSrEnabled : settings.srEnabled;
+    profile.ratioPercent = SettingsStore.snapSrRatioPreset(moonlight ? settings.mlSrRatioPercent
+                                                                     : settings.srRatioPercent);
+    profile.backend = moonlight ? settings.mlSrBackend : settings.srBackend;
     return SettingsStore.gateSr(profile, protocol);
   }
 
-  static resolveSr(conn: RdpConnection): SrProfile {
-    const settings: AppSettings = SettingsStore.load();
-    const profile: SrProfile = new SrProfile();
-    if (conn.useGlobalSr) {
-      profile.enabled = settings.srEnabled;
-      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.srRatioPercent);
-      profile.backend = settings.srBackend;
-    } else {
-      profile.enabled = conn.srEnabled;
-      profile.ratioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
-      profile.backend = conn.srBackend;
+  // 超分 for a protocol: the connection's own values when it overrides, else that protocol's globals,
+  // then gated by what the device can actually do (Moonlight also needs the video import).
+  static resolveSr(protocol: number, setting: SrSetting): SrProfile {
+    if (setting.useGlobalSr) {
+      return SettingsStore.globalSrProfile(protocol);
     }
-    return SettingsStore.gateSr(profile, PROTOCOL_RDP);
-  }
-
-  // Same shape as resolveSr, over the Moonlight tab's own global values and the connection's
-  // per-connection override; Moonlight additionally needs the video import capability.
-  static resolveMoonlightSr(conn: MoonlightConnection): SrProfile {
-    const settings: AppSettings = SettingsStore.load();
     const profile: SrProfile = new SrProfile();
-    if (conn.useGlobalSr) {
-      profile.enabled = settings.mlSrEnabled;
-      profile.ratioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
-      profile.backend = settings.mlSrBackend;
-    } else {
-      profile.enabled = conn.srEnabled;
-      profile.ratioPercent = SettingsStore.snapSrRatioPreset(conn.srRatioPercent);
-      profile.backend = conn.srBackend;
-    }
-    return SettingsStore.gateSr(profile, PROTOCOL_MOONLIGHT);
+    profile.enabled = setting.srEnabled;
+    profile.ratioPercent = SettingsStore.snapSrRatioPreset(setting.srRatioPercent);
+    profile.backend = setting.srBackend;
+    return SettingsStore.gateSr(profile, protocol);
   }
 
   private static gateSr(profile: SrProfile, protocol: number): SrProfile {
@@ -512,12 +489,12 @@ export class SettingsStore {
 
   static globalDisplayProfile(): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
-    return SettingsStore.profileFor(settings, SettingsStore.globalSrProfile());
+    return SettingsStore.profileFor(settings, SettingsStore.globalSrProfile(PROTOCOL_RDP));
   }
 
   static resolveDisplay(conn: RdpConnection): DisplayProfile {
     const settings: AppSettings = SettingsStore.load();
-    const sr: SrProfile = SettingsStore.resolveSr(conn);
+    const sr: SrProfile = SettingsStore.resolveSr(PROTOCOL_RDP, conn);
     const global: DisplayProfile = SettingsStore.profileFor(settings, sr);
     if (conn.useGlobalDisplay) {
       return global;

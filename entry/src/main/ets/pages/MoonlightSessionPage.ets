@@ -185,18 +185,18 @@ struct MoonlightSessionPage {
         this.streamWidth = request.stream.width;
         this.streamHeight = request.stream.height;
       }
-      // 超分: the picture and the input reference use the *session* (pre-upscale) resolution, like
-      // the RDP session page; the presenter upscales back to the requested output size.
-      if (request.moonlightSessionWidth > 0 && request.moonlightSessionHeight > 0) {
-        this.streamWidth = request.moonlightSessionWidth;
-        this.streamHeight = request.moonlightSessionHeight;
-      }
       this.fpsNote = request.moonlightFpsNote;
       const config = request.moonlightConfig;
       if (config !== undefined) {
+        // 超分: the picture and the input reference use the *session* (pre-upscale) resolution, like
+        // the RDP session page; the presenter upscales back to the requested output size.
+        if (config.streamWidth > 0 && config.streamHeight > 0) {
+          this.streamWidth = config.streamWidth;
+          this.streamHeight = config.streamHeight;
+        }
         this.targetFps = config.fps;
         this.targetBitrateKbps = config.bitrateKbps;
-        if (config.srEnabled && config.srRatioPercent > 100) {
+        if (config.streamWidth > 0 && config.srRatioPercent > 100) {
           const backend: string = config.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';
           this.srIndicator = ' (' + backend + ' ' + srRatioLabel(config.srRatioPercent) + ')';
         }

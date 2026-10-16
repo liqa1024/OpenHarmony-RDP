@@ -6,15 +6,14 @@ export interface RdpOptions {
   domain: string;
   width: number;
   height: number;
+  /** 超分: the session size the server should render, 0 = width/height; the caller resolves it. */
+  streamWidth?: number;
+  streamHeight?: number;
   scalePercent: number;
   ignoreCertificate: boolean;
   enableAudio: boolean;
-  /** 超分: `width`/`height` are the output resolution; requires 硬件加速 (Vulkan presenter). */
-  srEnabled: boolean;
-  /** 0 = XEngine (platform spatial upscale), 1 = the presenter's own FSR 1.0; ignored unless srEnabled. */
+  /** 0 = XEngine (platform spatial upscale), 1 = the presenter's own FSR 1.0; used only when streamWidth/Height differ from width/height. */
   srBackend: number;
-  /** Upscale ratio in percent (125 = 1.25×); ignored unless srEnabled. */
-  srRatioPercent: number;
   gatewayHost: string;
   gatewayPort: number;
   gatewayUsername: string;
@@ -250,6 +249,9 @@ export interface MoonlightSessionConfig {
   serverCodecModeSupport: number;
   width: number;
   height: number;
+  /** 超分: the stream size the host should encode, 0 = width/height; the caller resolves it. */
+  streamWidth?: number;
+  streamHeight?: number;
   fps: number;
   bitrateKbps: number;
   packetSize: number;
@@ -270,12 +272,8 @@ export interface MoonlightSessionConfig {
   enableAudio?: boolean;
   /** Play audio through the native OHAudio low-latency path instead of the ArkTS renderer. */
   lowLatencyAudio?: boolean;
-  /** 超分: `width`/`height` become the output resolution and the stream is taken at width/height / srRatioPercent. */
-  srEnabled?: boolean;
-  /** 超分 backend: 0 = XEngine, 1 = FSR. */
+  /** 超分 backend: 0 = XEngine, 1 = FSR; used only when streamWidth/Height differ from width/height. */
   srBackend?: number;
-  /** Upscale ratio in percent (125 = 1.25×); > 100 turns the 超分 stream sizing on. */
-  srRatioPercent?: number;
 }
 
 /** Extra fields alongside the event tuple; only the local cursor event (ML_EVENT_CURSOR_SHAPE) fills them. */

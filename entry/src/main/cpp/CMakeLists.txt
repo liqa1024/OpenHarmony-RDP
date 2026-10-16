@@ -75,6 +75,7 @@ endif()
 set(HMRDP_SHADERS
   "present_quad.vert|PresentQuadVert"
   "present_quad.frag|PresentQuadFrag"
+  "video_convert.vert|VideoConvertVert"
   "video_convert.frag|VideoConvertFrag"
 )
 
@@ -126,9 +127,9 @@ core/hmrdp_moonlight_session.cpp
     core/hmrdp_moonlight_audio.cpp
     core/hmrdp_gamepad_kit.cpp
     core/hmrdp_oh_audio.cpp
+    core/hmrdp_video_consumer.cpp
     core/hmrdp_video_decoder.cpp
     core/hmrdp_display_rate.cpp
-    core/hmrdp_sr.cpp
     core/hmrdp_audio.cpp
     core/hmrdp_gfx_capture.cpp
     core/hmrdp_gfx_cpu.cpp
@@ -142,6 +143,7 @@ core/hmrdp_moonlight_session.cpp
     core/hmrdp_gles_presenter.cpp
     core/hmrdp_vk_context.cpp
     core/hmrdp_vk_renderer.cpp
+    core/hmrdp_vk_video.cpp
     core/hmrdp_xeg.cpp
     ${HMRDP_SHADER_HEADERS}
 )
@@ -173,6 +175,8 @@ target_link_libraries(hmrdp
     native_window
     # 超分 video import: reference/unreference the AVCodec output buffer as an OH_NativeBuffer.
     native_buffer
+    # 超分 video import: the offscreen OH_NativeImage consumer surface the decoder renders into.
+    native_image
     # The panel's current refresh rate, which the video present gate follows.
     native_display_manager
     # OHAudio: the Moonlight low-latency playback path (FAST + audio workgroup).

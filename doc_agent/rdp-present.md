@@ -135,17 +135,85 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 - **失败就降级且不重试**（`srFailed_` 锁存）：设备拒绝该尺寸/格式（或库缺失）时不进 pass，直接按桌面图
   letterbox，会话照常可用。排查看 hilog 的 `xengine: spatial upscale` 与
   `vulkan presenter: super resolution`。
-- **输入是「会话分辨率的一张图」，与谁出它无关**：SR 的上采样、letterbox、swapchain 与时间戳都在
-  `RecordPresentTailLocked` 里，只吃一个**输入图视图 + 输入尺寸**。RDP 喂桌面图（gdi 合成、脏区上传），
-  Moonlight 喂 `PresentVideo` 产出的会话分辨率 RGB 图（见下）；因此 Moonlight 不需要跟 RDP 的脏区/合并
-  上屏（carry）机制发生关系。
-- **视频输入（Moonlight 超分专用，`PresentVideo`）**：解码器在 `kBuffer` 模式交来 NV12 的 `OH_AVBuffer`，
-  取其 `OH_NativeBuffer` 经 `VK_OHOS_external_memory` **零拷贝导入**为 `VkImage`（外部格式 + 采样器带
-  `VkSamplerYcbcrConversion`，硬件做 YUV→RGB），再一次全屏 convert pass（`video_convert.frag`）写成
-  会话分辨率的 `videoInputImage_`，之后与桌面图同路。**不做 CPU 回读/整帧拷贝**；视频没有脏区，恒整帧一次。
-  导入帧是**逐帧临时**的：`PresentVideo` 同步等到该帧的 fence 才返回，调用方随即释放解码缓冲（见
-  [`moonlight-video.md`](moonlight-video.md) §2）。设备需要 `VK_OHOS_external_memory` +
-  `VK_KHR_sampler_ycbcr_conversion`（`VulkanCapabilities::srVideoImportSupported`），不满足就只关 Moonlight 超分。
+- **输入是「会话分辨率的一张图」，与谁出它无关**：`RecordPresentTailLocked` 吃一个 `PresentInput`
+  （图 + 视图 + 尺寸 + **它是被怎么写的**：`producerStage`/`producerAccess`），并**自己发那条
+  `→ SHADER_READ` 依赖屏障**，随后做（可选）超分、letterbox、swapchain、时间戳、提交。这样"输入就绪"
+  这件事归共享层所有，**生产者不可能忘**：
+  - RDP 喂桌面图（gdi 合成 → `CmdCopyBufferToImage`，`producer = TRANSFER / TRANSFER_WRITE`）；
+  - Moonlight 喂 `PresentVideo` 的会话分辨率 RGB 图（convert render pass，`producer =
+    COLOR_ATTACHMENT_OUTPUT / COLOR_ATTACHMENT_WRITE`）。
+  因此 Moonlight 不需要跟 RDP 的脏区/合并上屏（carry）机制发生关系；超分对象也只按「输入图 + 尺寸」
+  缓存与重建，反向引用 RDP 专有成员（如桌面图视图）是**透抽象**，不允许。
+- **视频输入（Moonlight 超分专用，`PresentVideo`）**：会话把一个图形分配器产的 `OH_NativeBuffer` 交来，
+  `VkVideoImport`（`core/hmrdp_vk_video.h`）把它**整块按 R8 字节图导入**（外部内存 + 专用分配 + `TILING_LINEAR`）——
+  **R8 + `TILING_LINEAR` 只是给这块内存起一个"字节视图"的名字**：线性图像的定义就是"第 `(x,y)` 个 texel 落在
+  第 `y` 行第 `x` 个字节"，而 `VK_OHOS_external_memory` 的导入契约只约束**内存**（`allocationSize` /
+  `memoryTypeBits` / 偏移），不约束**语义格式**，所以这一步在规范内；
+  再由 convert pass **自己做 YUV→RGB**：片元 `texelFetch` 取 Y 与交错 Cb/Cr，系数（3 行 `cY/cCb/cCr/offset`）
+  由 CPU 按**缓冲自己的色彩空间**算好、随一个 uniform buffer 传入；结果写成**会话分辨率的 picture**，
+  之后与桌面图同路。**不做 CPU 回读/整帧拷贝**；视频没有脏区，恒整帧一次。导入帧是**逐帧临时**的：
+  `PresentVideo` 同步等到该帧的 GPU fence 才返回，调用方随即按 acquire 契约释放。**presenter 不持有任何
+  逐帧朝向/色彩状态**。
+  - **不走驱动对缓冲的格式解释**：规范样例（外部格式 `VK_FORMAT_UNDEFINED` + `VkExternalFormatOHOS` + 采样器的
+    `VkSamplerYcbcrConversion`，官方《Vulkan External Memory 开发指导》第 9 步）把"这块缓冲是什么格式、色度面在哪"
+    **整个交给驱动**。对**解码器产出的这块缓冲**驱动给不出可用描述：采样得到的是**原始分量**
+    `(G,B,R) = (Y, Cb, Cr)`（与格式名 `G8_B8R8` 的通道排列一致），即**转换根本没被触发**，而不是"转换算错了"。
+    **判据**：导入时 `VkNativeBufferFormatPropertiesOHOS.format` 与 `externalFormat` 的取值（`vulkan video import:`
+    那行），未定义/空即驱动无描述；**不要用画面颜色判**——"整屏绿"另有成因（色度读到空，见下 `OH_AVBuffer` 那条），
+    只表现为 `R`/`B` 恒低、`G` 跟随亮度。**规则**：本仓按线性字节自己转换，色彩空间由缓冲声明决定，不依赖驱动
+    解释缓冲。
+    *（若哪天真要用转换采样器：`chromaFilter = LINEAR` 且非显式重建时，采样器 `magFilter/minFilter` 必须同样
+    是 LINEAR，否则组合非法、行为未定义。）*
+  - **声明几何 = 分配几何，且是平台给定的公式**：420 半平面的**色度面字节偏移 = `stride` × `sliceHeight`**——
+    `stride` 是字节行距，`sliceHeight` 是**单个面在内存里实际分配的行数**（≥ 可见高）。两者由解码器报出：
+    `OH_MD_KEY_VIDEO_STRIDE` / `OH_MD_KEY_VIDEO_SLICE_HEIGHT`，取处为 `OH_VideoDecoder_GetOutputDescription`
+    或 `onStreamChanged` 的 `OH_AVFormat`（平台文档明确要求取用、**不要假定固定值**）。字节图的 extent 因此取
+    `stride × (sliceHeight + sliceHeight/2)`，可见画面是亮度面左上的 `visibleWidth×visibleHeight`，片元按
+    **字节坐标**直接取（Y 在 `(x,y)`，Cb/Cr 在 `(x&~1, chromaRow + y/2)` 与其 `+1`；`YCBCR_420_SP` 的定义就是
+    Cb 在前，无需另判）。**本仓现状**：行距取 `OH_NativeBuffer_GetConfig().stride`（该字段单位即字节，与解码器
+    报的 stride 同值），但 `sliceHeight` 用 **`ALIGN64(GetConfig().height)` 推**（`core/hmrdp_vk_video.cpp`）——
+    公式对、输入值靠推，只在分配器的亮度面行数恰按该单位对齐时成立；权威来源是上面那对 key，解码器侧已经拿到
+    那个 `OH_AVFormat`（`VideoDecoder::OnStreamChanged`）。**判据**：按可见尺寸声明会让色度起点落进亮度面的填充区
+    （填充通常为零 ⇒ 色度读到零）。
+  - **色彩空间取自缓冲**（`OH_NativeBuffer_GetColorSpace`；读不到时回落到驱动的 `suggestedYcbcrModel/Range`），
+    BT.601/709 与 narrow/full 都在我们手里。
+  - **每帧参数走 uniform buffer，不用 push constant**：片元阶段拿到的 push constant 不可靠（本平台驱动行为），
+    而 uniform buffer 与 presenter 的 FSR pass 走的是同一条已验证的路。**规则**：图形管线里需要传给片元的
+    逐帧数据一律用 UBO/描述符，不要靠 push constant。
+  - **导入配方**（照官方《Vulkan External Memory 开发指导》）：图像声明为**外部内存**
+    `VkExternalMemoryImageCreateInfo{ handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OH_NATIVE_BUFFER_BIT_OHOS }`
+    （API ≥ 23 用 0x8000，`..._OHOS_NATIVE_BUFFER_BIT_OHOS`（0x2000）已废弃）；内存**专用分配**
+    `VkMemoryDedicatedAllocateInfo{ image, pNext = &VkImportNativeBufferInfoOHOS }` 挂在 `VkMemoryAllocateInfo.pNext`。
+    因为用的是**普通格式**（R8），**不**挂 `VkExternalFormatOHOS`（那是外部格式才需要的）。
+    设备只需 `VK_OHOS_external_memory`（`VulkanCapabilities::srVideoImportSupported`），不满足就只关 Moonlight 超分。
+    排查看一次性的 `vulkan video import: … byte image … luma … rows … visible …`。
+  - **消费端（`core/hmrdp_video_consumer.h`，谁负责什么）**：**帧到达回调只发信号**（在回调里调用该模块的其他
+    接口是官方文档禁止的），真正的消费在**独立线程**上：`AcquireNativeWindowBuffer` → `NativeObjectReference` →
+    `FromNativeWindowBuffer` → 交 sink（= 解码桥，它在交接锁下调 `PresentVideo`）→
+    `ReleaseNativeWindowBuffer`（**上一帧**，见下）。**一帧一次 acquire**，送显槽位只在解码器侧判一次
+    （`VideoDecoder::TakePresentSlot`）——**全链路只有一个门控**。消费端创建 surface 时**声明用途**
+    （GPU 采样 + CPU 可读，见 `hmrdp_video_consumer.cpp`）：不声明就可能拿到按别的消费者形状分配的缓冲，
+    而我们按线性字节读它；`CPU_READ` 这一项同时把该分配钉在**线性可映射**布局上——这正是"按字节读整块"
+    成立的前提。
+  - **双缓冲归还**：acquire 得到一个缓冲后**持有一帧**，下一帧到来时才 `Unreference` + `Release`（官方样例的
+    做法）。这样"归还"永不等待本帧的 present；配合 `PresentVideo` 内部等完 GPU fence，客户端不会读到还在写的帧，
+    生产端也不会因为消费端在上屏而拿不到缓冲。`Release` 只在成功时减引用，**失败要补一次 `Unreference`**；
+    系统会关闭传给 `Release` 的 fenceFd（acquire 给的那个），所以本模块**不自己 close**。
+  - **导入的必须是"图形分配器"的缓冲**：Vulkan external-memory 契约描述的是 RenderService / `OH_NativeWindowBuffer`
+    那类缓冲的布局。**编解码器自有的 `OH_AVBuffer`（`OH_AVBuffer_GetNativeBuffer`）不属此类**——它的排布不由该
+    契约描述，导入后**Y 平面正常、色度读到空**（整屏绿、无任何报错）。所以超分链路让**解码器 surface 模式
+    渲染进离屏消费端 surface**，再 `AcquireNativeWindowBuffer` → `OH_NativeBuffer_FromNativeWindowBuffer`
+    取缓冲来导入（官方《Vulkan External Memory 开发指导》第 2/8 步；《视频解码》"解码后接 OpenGL 后处理则从
+    NativeImage 获取"同理）。**判据**：解码帧要交给 GPU（GL/Vulkan）采样就让它经图形分配器出来；只想在 CPU 上
+    逐行处理才用 Buffer 模式。
+  - **不套用消费端表面的变换矩阵**：`OH_NativeImage_GetTransformMatrixV2` 是给 **GL ES 外部纹理**消费者定义的
+    （GL 窗口/纹理 v 约定与 Vulkan 差一次 y 方向），而且它按文档"**只有在 `UpdateSurfaceImage` 之后才更新**"——
+    本仓走的是 acquire 模式的消费者（从不调 `UpdateSurfaceImage`），读到的值不是生产端元数据。**解码输出的
+    surface 内容本身已是显示顺序**（直出链路把同一块 surface 直接上屏且方向正确即为证据），所以 Vulkan 消费者
+    顶向下采样时**不需要任何变换**。若将来遇到真正带旋转的生产端，正确入口是**本模式对应的
+    `OH_NativeImage_GetBufferMatrix`**（按旋转角 + 有效内容区域算），而不是把 GL 空间的矩阵作用到顶点位置。
+  - 排查用的几何读数（各一次）：`moonlight video: frame buffer WxH stride=… fmt=… usage=…`——媒体侧对**该块
+    缓冲**的读数；与 `vulkan video import` 那行对照，行距/格式不一致就说明几何被读错。
 
 ## 6. swapchain 的尺寸与重建（Vulkan）
 

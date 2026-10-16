@@ -7,7 +7,7 @@ import {
 import { ML_CURSOR_HIDE_HOST, SettingsStore } from './SettingsStore';
 import { DeviceCapabilities } from './DeviceCapabilities';
 import { RemoteCursorUpdate } from './RemoteCursor';
-import { MoonlightConnection, PendingConnection, SavedConnection }
+import { MoonlightConnection, PendingConnection, PROTOCOL_MOONLIGHT, SavedConnection }
   from '../model/Connections';
 import { SessionSignal, SessionSignalKind } from '../model/SessionSignal';
 import { ConnectionStore } from './ConnectionStore';
@@ -181,7 +181,7 @@ export class MoonlightSessionBackend implements SessionBackend {
       conn.host, conn.port, request.stream, request.moonlightAppId,
       request.stream.width, request.stream.height, pinProvider, policy,
       SettingsStore.load().enableAudio && DeviceCapabilities.audio().supported,
-      SettingsStore.resolveMoonlightSr(conn));
+      SettingsStore.resolveSr(PROTOCOL_MOONLIGHT, conn));
     if (!result.ok) {
       MoonlightHostState.refresh(conn, request.filesDir);
       this.emit(ML_EVENT_STAGE_FAILED, 0, result.error);
@@ -192,8 +192,6 @@ export class MoonlightSessionBackend implements SessionBackend {
     request.moonlightConfig = result.config;
     request.moonlightHttpsPort = result.httpsPort;
     request.moonlightFpsNote = result.fpsNote;
-    request.moonlightSessionWidth = result.sessionWidth;
-    request.moonlightSessionHeight = result.sessionHeight;
     MoonlightHostState.markLaunched(conn.id, result.effectiveAppId);
     if (result.hostId.length > 0 && conn.mlHostId !== result.hostId) {
       conn.mlHostId = result.hostId;

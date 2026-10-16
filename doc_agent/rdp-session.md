@@ -79,8 +79,9 @@ FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX
 
 - **主行的分辨率是会话（超分辨率前）分辨率**，不是设置里的输出分辨率；开了超分辨率时在后面补一个
   括号，**先是后端名再是倍率**（` (FSR 1.5x)` / ` (XEngine 1.5x)`，两者都取连接选项，见
-  [`settings-and-storage.md`](settings-and-storage.md) §2）。会话首帧到达前该值按
-  `SettingsStore.srSessionSize()` 预置，收到 `kResize` 后以服务端实际桌面为准。
+  [`settings-and-storage.md`](settings-and-storage.md) §2）。该值就是连接选项里的会话尺寸
+  （`streamWidth/streamHeight`，ArkTS 解析后下行，见同处），首帧到达前即可显示，收到 `kResize` 后以服务端
+  实际桌面为准。
 - **帧工时计量（`core/hmrdp_gfx_work.{h,cpp}`，live 与回放共用）**：同一个 `GfxWorkMeter` 由**同一批钩子**
   喂数（抓取钩子取 chunk 到达时刻，在 ZGX 之前、**落盘之后**；链式包裹的 `SurfaceCommand` 计解码；
   包裹的 `EndFrame` 计合成 + 上屏），所以**同一份码流在 live 与回放里各相位定义完全相同**，可逐相、

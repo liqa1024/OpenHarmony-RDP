@@ -8,6 +8,7 @@
 
 #include "hmrdp_presenter.h"
 #include "hmrdp_vk_context.h"
+#include "hmrdp_vk_video.h"
 #include "hmrdp_xeg.h"
 
 namespace hmrdp {
@@ -64,25 +65,39 @@ class VkRenderer : public FramePresenter {
                                uint32_t imageIndex);
   bool EnsureDesktopImageLocked(int width, int height);
   void DestroyDesktopImageLocked();
+  // Waits out every frame in flight, for a rare (re)creation whose targets the GPU may still read.
+  void DrainInFlightLocked();
   bool EnsureStageLocked(size_t bytes);
   void DestroyStageLocked();
   bool CreateDesktopBufferLocked(int width, int height);
   void DestroyDesktopBufferLocked();
 
-  bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight);
+  bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight, VkImageView inputView);
   bool EnsureXengineLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
-  bool EnsureFsrLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
+  bool EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView inputView, int outputWidth,
+                       int outputHeight);
   bool RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView inputView);
   void DestroySuperResolutionLocked();
   void DestroyFsrLocked();
 
-  // Shared tail of every present: (optional) 超分 of `inputView` into the output image, the GPU
-  // timestamps around it, then the letterbox quad into the acquired swapchain image and the submit.
-  // `inputWidth`/`inputHeight` are the input picture's extent (the source size SR upscales from and
-  // the letterbox fits when SR is off); the source view is the output image when `srActive`.
+  // The picture the shared 超分 / letterbox tail consumes. Each producer supplies the image, the
+  // view, its extent and how it was last written (`producerStage`/`producerAccess`); the tail owns
+  // the dependency barrier on that write, so no producer can forget it (RDP's is a buffer->image
+  // transfer, Moonlight's is the NV12 convert render pass). The image must stay in GENERAL.
+  struct PresentInput {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    int width = 0;
+    int height = 0;
+    VkPipelineStageFlags producerStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkAccessFlags producerAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+  };
+
+  // Shared tail of every present: input dependency barrier, (optional) 超分 of `input.view` into the
+  // output image, the GPU timestamps around it, then the letterbox quad into the acquired swapchain
+  // image and the submit. `srActive` makes the source the output image at the output extent.
   bool RecordPresentTailLocked(VkCommandBuffer cmd, uint32_t slot, uint32_t imageIndex,
-                               VkImageView inputView, int inputWidth, int inputHeight, bool srActive,
-                               bool timers);
+                               const PresentInput& input, bool srActive, bool timers);
 
   mutable std::mutex mutex_;
 
@@ -172,6 +187,9 @@ class VkRenderer : public FramePresenter {
   int srImageHeight_ = 0;
   int srInputWidth_ = 0;
   int srInputHeight_ = 0;
+  // The image view SR samples (RDP's desktop image, or the Moonlight video input image). FSR bakes
+  // it into its EASU descriptor, so it is remembered to detect a change.
+  VkImageView srInputView_ = VK_NULL_HANDLE;
 
   VkRenderPass fsrRenderPass_ = VK_NULL_HANDLE;
   VkSampler fsrSampler_ = VK_NULL_HANDLE;
@@ -196,41 +214,10 @@ class VkRenderer : public FramePresenter {
   void* fsrRcasParamsMapped_ = nullptr;
   bool fsrParamsCoherent_ = false;
 
-  // Moonlight 超分 video input: an imported NV12 frame is converted into `videoInputImage_`, which
-  // then plays the desktop picture's role for the shared 超分 / letterbox tail (`PresentVideo`).
-  // One imported frame's Vulkan objects; scratch, live only across a single PresentVideo call.
-  struct ImportedVideoFrame {
-    VkImage image = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-  };
-
-  bool EnsureVideoInputLocked(int inputWidth, int inputHeight);
-  bool EnsureVideoConvertPipelineLocked();
-  bool EnsureYcbcrConversionLocked(uint64_t externalFormat, VkFormat planeFormat,
-                                   const VkComponentMapping& components, int model, int range,
-                                   int xChromaOffset, int yChromaOffset);
-  bool ImportVideoFrameLocked(const void* nativeBuffer, int width, int height,
-                              ImportedVideoFrame* out);
-  void ReleaseImportedLocked(ImportedVideoFrame* frame);
-  void DestroyVideoInputLocked();
-
-  VkImage videoInputImage_ = VK_NULL_HANDLE;
-  VkDeviceMemory videoInputImageMemory_ = VK_NULL_HANDLE;
-  VkImageView videoInputImageView_ = VK_NULL_HANDLE;
-  int videoInputWidth_ = 0;
-  int videoInputHeight_ = 0;
-  VkSamplerYcbcrConversion ycbcrConversion_ = VK_NULL_HANDLE;
-  uint64_t ycbcrExternalFormat_ = 0;
-  bool ycbcrConversionValid_ = false;
-  VkRenderPass videoConvertRenderPass_ = VK_NULL_HANDLE;
-  VkFramebuffer videoConvertFramebuffer_ = VK_NULL_HANDLE;
-  VkSampler videoConvertSampler_ = VK_NULL_HANDLE;
-  VkDescriptorSetLayout videoConvertSetLayout_ = VK_NULL_HANDLE;
-  VkPipelineLayout videoConvertPipelineLayout_ = VK_NULL_HANDLE;
-  VkDescriptorPool videoConvertPool_ = VK_NULL_HANDLE;
-  VkDescriptorSet videoConvertSet_ = VK_NULL_HANDLE;
-  VkPipeline videoConvertPipeline_ = VK_NULL_HANDLE;
+  // Moonlight 超分 video input: an imported NV12 frame is converted into a session-resolution
+  // picture, which then plays the desktop picture's role for the shared 超分 / letterbox tail
+  // (`PresentVideo`). The import/convert machinery lives in hmrdp_vk_video.h.
+  VkVideoImport videoImport_;
 };
 
 }

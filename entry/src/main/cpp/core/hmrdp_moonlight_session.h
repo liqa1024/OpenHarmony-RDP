@@ -53,6 +53,12 @@ struct MoonlightStreamConfig {
 
   int width = 1920;
   int height = 1080;
+  // 超分: the stream (session) size the host should encode, 0 = the output size. The caller resolves
+  // it (SettingsStore.srSessionSize); the presenter upscales every frame back to `width`x`height`.
+  // `srBackend` is a SuperResolutionBackend (0 = xengine, 1 = fsr). Same route as the RDP session.
+  int streamWidth = 0;
+  int streamHeight = 0;
+  int srBackend = 0;
   int fps = 60;
   int bitrateKbps = 20000;
   int packetSize = 1024;
@@ -64,12 +70,6 @@ struct MoonlightStreamConfig {
   int colorSpace = 0;
   int colorRange = 0;
   int encryptionFlags = 0;
-  // 超分: with srEnabled, `width`/`height` are the output (presented) resolution and the stream is
-  // taken at width/height / srRatioPercent; the presenter upscales every frame back. `srBackend` is
-  // a SuperResolutionBackend (0 = xengine, 1 = fsr). Same route as the RDP session.
-  bool srEnabled = false;
-  int srBackend = 0;
-  int srRatioPercent = 0;
   // 16-byte remote-input AES key and IV (key + rikeyid-derived IV from /launch).
   std::string remoteInputAesKey;
   std::string remoteInputAesIv;

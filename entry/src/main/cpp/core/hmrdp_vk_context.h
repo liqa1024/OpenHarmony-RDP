@@ -16,6 +16,8 @@
 
 namespace hmrdp {
 
+class VkDeviceContext;
+
 struct VkApi {
   bool loaded = false;
   std::string loadError;
@@ -84,6 +86,7 @@ struct VkApi {
   PFN_vkCmdEndRenderPass CmdEndRenderPass = nullptr;
   PFN_vkCmdPipelineBarrier CmdPipelineBarrier = nullptr;
   PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage = nullptr;
+  PFN_vkCmdCopyImageToBuffer CmdCopyImageToBuffer = nullptr;
   PFN_vkCreateImage CreateImage = nullptr;
   PFN_vkDestroyImage DestroyImage = nullptr;
   PFN_vkGetImageMemoryRequirements GetImageMemoryRequirements = nullptr;
@@ -132,6 +135,17 @@ struct VkApi {
 VkApi& GetVkApi();
 
 std::string VkResultName(int32_t result);
+
+// The format every presented picture is written in, whichever producer made it: the gdi desktop
+// upload (PresentBgra) and the video convert pass both end up as one of these, and 超分 / letterbox
+// sample it as plain RGBA.
+constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
+
+// A device-local sampled image plus its memory; false leaves both untouched (freed on the way out).
+bool CreateDeviceImage(VkApi& api, VkDeviceContext& context, VkFormat format, int width, int height,
+                       VkImageUsageFlags usage, VkImage* image, VkDeviceMemory* memory);
+bool CreateImageView2D(VkApi& api, VkDeviceContext& context, VkFormat format, VkImage image,
+                       VkImageView* view);
 
 struct VulkanCapabilities {
   bool loaderPresent = false;

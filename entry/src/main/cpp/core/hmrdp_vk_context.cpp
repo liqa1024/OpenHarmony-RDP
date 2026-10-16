@@ -376,6 +376,7 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   CmdEndRenderPass = ResolveDevice<PFN_vkCmdEndRenderPass>(gdpa, gipa, device, instance, "vkCmdEndRenderPass");
   CmdPipelineBarrier = ResolveDevice<PFN_vkCmdPipelineBarrier>(gdpa, gipa, device, instance, "vkCmdPipelineBarrier");
   CmdCopyBufferToImage = ResolveDevice<PFN_vkCmdCopyBufferToImage>(gdpa, gipa, device, instance, "vkCmdCopyBufferToImage");
+  CmdCopyImageToBuffer = ResolveDevice<PFN_vkCmdCopyImageToBuffer>(gdpa, gipa, device, instance, "vkCmdCopyImageToBuffer");
   CreateImage = ResolveDevice<PFN_vkCreateImage>(gdpa, gipa, device, instance, "vkCreateImage");
   DestroyImage = ResolveDevice<PFN_vkDestroyImage>(gdpa, gipa, device, instance, "vkDestroyImage");
   GetImageMemoryRequirements = ResolveDevice<PFN_vkGetImageMemoryRequirements>(gdpa, gipa, device, instance, "vkGetImageMemoryRequirements");
@@ -557,9 +558,9 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
              caps->srUnsupportedCode.empty() ? "-" : caps->srUnsupportedCode.c_str());
 
   // Not a UI gate for RDP (its 超分 input is the CPU desktop picture); it decides whether the
-  // Moonlight 超分 path, which imports the decoder's NV12 buffer, can run on this device.
-  caps->srVideoImportSupported = caps->presenterSupported && caps->extOhosExternalMemory &&
-                                 caps->extSamplerYcbcrConversion && caps->samplerYcbcrConversion;
+  // Moonlight 超分 path, which imports the decoder's NV12 buffer as a byte image and converts it in
+  // the shader, can run on this device. Only the OHOS external-memory import is needed for that.
+  caps->srVideoImportSupported = caps->presenterSupported && caps->extOhosExternalMemory;
   HMRDP_LOGI("vulkan verdict: video import=%{public}d",
              caps->srVideoImportSupported ? 1 : 0);
 }
@@ -980,6 +981,72 @@ bool VkDeviceContext::CreateSurface(void* nativeWindow, VkSurfaceKHR* out) {
 
 void VkDeviceContext::DestroySurface(VkSurfaceKHR surface) {
   VkInstanceContext::Instance().DestroySurface(surface);
+}
+
+bool CreateDeviceImage(VkApi& api, VkDeviceContext& context, VkFormat format, int width, int height,
+                       VkImageUsageFlags usage, VkImage* image, VkDeviceMemory* memory) {
+  const VkDevice device = context.device();
+  VkImageCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = format;
+  info.extent.width = static_cast<uint32_t>(width);
+  info.extent.height = static_cast<uint32_t>(height);
+  info.extent.depth = 1;
+  info.mipLevels = 1;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = usage;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (api.CreateImage(device, &info, nullptr, image) != VK_SUCCESS) {
+    *image = VK_NULL_HANDLE;
+    return false;
+  }
+  VkMemoryRequirements req{};
+  api.GetImageMemoryRequirements(device, *image, &req);
+  const uint32_t typeIndex =
+      context.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (typeIndex == UINT32_MAX) {
+    api.DestroyImage(device, *image, nullptr);
+    *image = VK_NULL_HANDLE;
+    return false;
+  }
+  VkMemoryAllocateInfo alloc{};
+  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc.allocationSize = req.size;
+  alloc.memoryTypeIndex = typeIndex;
+  if (api.AllocateMemory(device, &alloc, nullptr, memory) != VK_SUCCESS) {
+    api.DestroyImage(device, *image, nullptr);
+    *image = VK_NULL_HANDLE;
+    return false;
+  }
+  if (api.BindImageMemory(device, *image, *memory, 0) != VK_SUCCESS) {
+    api.FreeMemory(device, *memory, nullptr);
+    api.DestroyImage(device, *image, nullptr);
+    *image = VK_NULL_HANDLE;
+    *memory = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
+}
+
+bool CreateImageView2D(VkApi& api, VkDeviceContext& context, VkFormat format, VkImage image,
+                       VkImageView* view) {
+  VkImageViewCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  info.image = image;
+  info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  info.format = format;
+  info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+  info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  info.subresourceRange.levelCount = 1;
+  info.subresourceRange.layerCount = 1;
+  return api.CreateImageView(context.device(), &info, nullptr, view) == VK_SUCCESS;
 }
 
 }  // namespace hmrdp

@@ -31,9 +31,6 @@ export class MoonlightConnectResult {
   hostScalePercent: number = 0;
   // Set when the requested frame rate was capped by the panel or the decoder; "" otherwise.
   fpsNote: string = '';
-  // 超分: the stream (session) resolution actually taken, equal to the requested size when off.
-  sessionWidth: number = 0;
-  sessionHeight: number = 0;
 }
 
 export class MoonlightAppsResult {
@@ -267,8 +264,6 @@ export class MoonlightConnector {
     const sessionWidth: number = srOn ? SettingsStore.srSessionSize(width, sr.ratioPercent) : width;
     const sessionHeight: number = srOn
       ? SettingsStore.srSessionSize(height, sr.ratioPercent) : height;
-    result.sessionWidth = sessionWidth;
-    result.sessionHeight = sessionHeight;
     // The stream resolution is final here (follow-screen already resolved), so the rate is capped
     // once against both ends that have to keep up with it: the panel cannot show more than its top
     // refresh rate, and the decoder cannot decode more than it reports at this size. The auto
@@ -330,13 +325,14 @@ export class MoonlightConnector {
     config.serverInfoGfeVersion = info.gfeVersion;
     config.sessionUrl = launch.sessionUrl;
     config.serverCodecModeSupport = info.serverCodecModeSupport;
-    // 超分: width/height are the output (presented) resolution; the native session derives the
-    // stream size from them and the ratio. Off, they are the stream size itself.
+    // 超分: width/height are the output (presented) resolution; the stream size is resolved here and
+    // the presenter upscales every frame back. The ratio is kept for the session's label only.
     config.width = width;
     config.height = height;
-    config.srEnabled = srOn;
+    config.streamWidth = sessionWidth;
+    config.streamHeight = sessionHeight;
     config.srBackend = sr.backend;
-    config.srRatioPercent = sr.ratioPercent;
+    config.srRatioPercent = srOn ? sr.ratioPercent : 0;
     config.fps = fps.fps;
     config.bitrateKbps = effectiveBitrateKbps;
     config.packetSize = 1024;

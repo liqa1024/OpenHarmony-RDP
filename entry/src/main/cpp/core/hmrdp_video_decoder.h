@@ -19,20 +19,6 @@ struct OH_AVFormat;
 
 namespace hmrdp {
 
-enum class VideoOutputMode {
-  kSurface = 0,
-  kBuffer = 1,
-};
-
-// In kBuffer mode `buffer` is the OH_AVBuffer* and is valid only for the callback; the sink must
-// import/copy before returning.
-struct DecodedFrame {
-  void* buffer = nullptr;
-  int width = 0;
-  int height = 0;
-  int64_t ptsUs = 0;
-};
-
 enum class DecoderSupport {
   kNone = 0,
   kSoftware = 1,
@@ -48,9 +34,10 @@ int VideoDecoderMaxFps(const std::string& mime, int width, int height);
 
 class VideoDecoder {
  public:
-  // kSurface: after the frame is rendered into the window; kBuffer: with the decoded buffer before release.
+  // One decoded picture, after it has been rendered into the output surface. The picture itself is
+  // never handed out: every consumer either reads the window (直接出屏) or owns a consumer surface
+  // (see hmrdp_video_consumer.h).
   using FrameReadyFn = std::function<void(int width, int height, int64_t ptsUs)>;
-  using BufferReadyFn = std::function<void(const DecodedFrame& frame)>;
 
   VideoDecoder() = default;
   ~VideoDecoder();
@@ -58,10 +45,10 @@ class VideoDecoder {
   VideoDecoder(const VideoDecoder&) = delete;
   VideoDecoder& operator=(const VideoDecoder&) = delete;
 
-  // `window` is required in kSurface mode. `frameRate` is the negotiated stream rate: it configures
-  // the decoder and sizes the input budget; 0 means unknown.
-  bool Start(const std::string& mime, VideoOutputMode mode, void* window, int width, int height,
-             int frameRate, FrameReadyFn onFrame, BufferReadyFn onBuffer);
+  // `window` is the decode output surface (required). `frameRate` is the negotiated stream rate: it
+  // configures the decoder and sizes the input budget; 0 means unknown.
+  bool Start(const std::string& mime, void* window, int width, int height, int frameRate,
+             FrameReadyFn onFrame);
   // Feeds one complete access unit (Annex-B, leading start code included): every slice of a picture
   // must arrive in this one call, which may carry several NALs.
   bool Submit(const uint8_t* data, size_t size, int64_t ptsUs);
@@ -104,10 +91,8 @@ class VideoDecoder {
   };
 
   OH_AVCodec* codec_ = nullptr;
-  VideoOutputMode mode_ = VideoOutputMode::kSurface;
   void* window_ = nullptr;
   FrameReadyFn onFrame_;
-  BufferReadyFn onBuffer_;
   int64_t inputBudgetUs_ = 0;
 
   // `pending_` is input to feed, `idleInputs_` the indices offered; PumpInput() matches them.

@@ -27,6 +27,15 @@ export class SrProfile {
   backend: number = SR_BACKEND_XENGINE;
 }
 
+// A 超分 setting source: a connection's own values, read only when it overrides the protocol's
+// globals (SettingsStore.resolveSr). Both protocols' connections provide exactly these four fields.
+export interface SrSetting {
+  useGlobalSr: boolean;
+  srEnabled: boolean;
+  srRatioPercent: number;
+  srBackend: number;
+}
+
 export class AdvancedProfile {
   enableAudio: boolean = true;
   ignoreCertificate: boolean = true;
@@ -69,6 +78,11 @@ export class RdpConnectOptions implements RdpOptions {
   domain: string = '';
   width: number = 1920;
   height: number = 1080;
+  // 超分: the desktop size the server renders (pre-upscale), 0 = width/height; the launcher resolves
+  // it from the display profile. `srBackend` drives the presenter; `srRatioPercent` labels the
+  // session and drives nothing.
+  streamWidth: number = 0;
+  streamHeight: number = 0;
   scalePercent: number = 0;
   ignoreCertificate: boolean = true;
   enableAudio: boolean = true;

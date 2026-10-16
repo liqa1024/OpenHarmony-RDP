@@ -68,12 +68,15 @@ struct RdpOptions {
   std::string domain;
   int width = 1920;
   int height = 1080;
+  // 超分: the desktop/session size the server should render (pre-upscale), 0 = the output size.
+  // The caller resolves it (SettingsStore.srSessionSize); the presenter upscales back to
+  // `width`x`height`. Two sizes, one route — same shape as MoonlightStreamConfig.
+  int streamWidth = 0;
+  int streamHeight = 0;
   int scalePercent = 0;
   bool ignoreCertificate = true;
   bool enableAudio = true;
-  bool srEnabled = false;
   SuperResolutionBackend srBackend = SuperResolutionBackend::kXengine;
-  int srRatioPercent = 0;
   std::string gatewayHost;
   int gatewayPort = 443;
   std::string gatewayUsername;

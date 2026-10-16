@@ -72,15 +72,20 @@
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持同样的物理大小。
   - **前提是能力，不是开关**：Vulkan 上屏可用，且**所选后端**可用（FSR 只要前者，XEngine 还要设备报
     `XEG_spatial_upscale`）；**Moonlight 还多要一项**：设备能把解码器的 NV12 缓冲导入呈现器
-    （`VK_OHOS_external_memory` + YCbCr 采样器，`superResolutionBackends().videoImport`）。设置页按后端
+    （`VK_OHOS_external_memory`，`superResolutionBackends().videoImport`）。设置页按后端
     逐个**置灰**并显示原因；不满足时按关闭处理。
-    `SettingsStore.resolveSr(conn)` / `resolveMoonlightSr(conn)` 是唯一的解析与兜底点
-    （`srBackendUsable(backend, protocol)` 把能力合起来判，选中的后端不可用时改用另一个，都不行才关掉），
+    `SettingsStore.resolveSr(protocol, setting)` 是唯一的解析与兜底点（`conn` 两者都满足 `SrSetting`；
+    `srBackendUsable(backend, protocol)` 把能力合起来判，选中的后端不可用时改用另一个，都不行才关掉），
     所以会话绝不会谈下一个本机放大不回去的分辨率。
+  - **会话尺寸由 ArkTS 算一次并下行**：`SettingsStore.srSessionSize(输出, 倍率)`（`makeProfile` 里落到
+    `DisplayProfile.sessionWidth/Height`）是唯一口径；会话启动时把 `streamWidth/streamHeight` 交给原生
+    （RDP `RdpConnectOptions`、Moonlight `MoonlightStreamConfig`），**原生不重算**——`width`/`height` 恒为
+    输出尺寸，两个尺寸之差即"要不要超分"，`srBackend` 只是机制，`srRatioPercent` 只用于会话标题标签。
   - 单连接可独立配置的理由：同一台机器走局域网可以不开，走 frp 转发时需要省带宽就开。
   - **Moonlight 侧的两处联动**：主机握手分辨率（`STREAM_CONFIGURATION` / `/launch` 的尺寸）与
-    **fps 上限钳制、自动码率**都取**会话分辨率**（`MoonlightConnector.prepare`）——解码跑在会话分辨率上、
-    主机也按会话分辨率编码，见 [`moonlight-video.md`](moonlight-video.md) §2。
+    **fps 上限钳制、自动码率**都取**会话分辨率**（`MoonlightConnector.prepare`），并把同一对尺寸作为
+    `streamWidth/streamHeight` 下行给原生会话——解码跑在会话分辨率上、主机也按会话分辨率编码，见
+    [`moonlight-video.md`](moonlight-video.md) §2。
 - **高级连接特性（音频、忽略证书…）**：默认值放全局 `AppSettings`；单连接保存自己的值 +
   `useGlobalAdvanced` 标志（**默认跟随全局**）。连接前用 `SettingsStore.resolveAdvanced(conn)` 解析。
   编辑页打开「使用会话独立高级设置」后才用本连接的独立开关；**保存时仍持久化独立值**，便于随时切回。

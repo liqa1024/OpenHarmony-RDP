@@ -44,7 +44,6 @@
 #include "hmrdp_gfx_cpu.h"
 #include "hmrdp_gfx_driver.h"
 #include "hmrdp_parallel.h"
-#include "hmrdp_sr.h"
 
 // The rdpsnd backend is patched on OHOS to hand decoded PCM to a HmrdpSetAudioSink
 // instead of opening an OpenSL ES device; it returns the render latency in ms.
@@ -907,30 +906,25 @@ bool Session::Connect(const RdpOptions& options) {
   if (!options.domain.empty()) {
     AppendArg(args, "/d:" + options.domain);
   }
-  // 超分: the server renders output / upscale ratio and the presenter upscales back;
-  // without it the session desktop *is* the output.
-  int sessionWidth = options.width;
-  int sessionHeight = options.height;
+  // 超分: the caller resolved the session size (output / upscale ratio) and the presenter upscales
+  // every frame back to the output; without it the session desktop *is* the output.
+  const int sessionWidth = options.streamWidth > 0 ? options.streamWidth : options.width;
+  const int sessionHeight = options.streamHeight > 0 ? options.streamHeight : options.height;
   desktopMagnification_ = 1.0;
-  if (options.srEnabled && options.srRatioPercent > 100) {
-    sessionWidth = SuperResolutionSessionSize(options.width, options.srRatioPercent);
-    sessionHeight = SuperResolutionSessionSize(options.height, options.srRatioPercent);
-    if (sessionWidth > 0) {
-      // The pointer bitmap event carries this so ArkTS magnifies the cursor by the
-      // same factor (HandlePointerShape).
-      desktopMagnification_ = static_cast<double>(options.width) / sessionWidth;
-    }
+  if (sessionWidth != options.width || sessionHeight != options.height) {
+    // The pointer bitmap event carries this so ArkTS magnifies the cursor by the
+    // same factor (HandlePointerShape).
+    desktopMagnification_ = static_cast<double>(options.width) / sessionWidth;
     if (desktopMagnification_ < 1.0) {
       desktopMagnification_ = 1.0;
     }
     if (pipeline_.presenter() != nullptr) {
       pipeline_.presenter()->SetSuperResolution(true, options.srBackend, options.width, options.height);
     }
-    HMRDP_LOGI("session %{public}dx%{public}d (super resolution %{public}s %{public}d%% -> "
-               "%{public}dx%{public}d)",
+    HMRDP_LOGI("session %{public}dx%{public}d (super resolution %{public}s -> %{public}dx%{public}d)",
                options.width, options.height,
-               options.srBackend == SuperResolutionBackend::kFsr ? "fsr" : "xengine",
-               options.srRatioPercent, sessionWidth, sessionHeight);
+               options.srBackend == SuperResolutionBackend::kFsr ? "fsr" : "xengine", sessionWidth,
+               sessionHeight);
   } else if (pipeline_.presenter() != nullptr) {
     pipeline_.presenter()->SetSuperResolution(false, options.srBackend, 0, 0);
   }

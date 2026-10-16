@@ -476,14 +476,14 @@ napi_value Connect(napi_env env, napi_callback_info info) {
   options.domain = GetStringProperty(env, args[1], "domain");
   options.width = GetIntProperty(env, args[1], "width", 1920);
   options.height = GetIntProperty(env, args[1], "height", 1080);
+  options.streamWidth = GetIntProperty(env, args[1], "streamWidth", 0);
+  options.streamHeight = GetIntProperty(env, args[1], "streamHeight", 0);
   options.scalePercent = GetIntProperty(env, args[1], "scalePercent", 0);
   options.ignoreCertificate = GetBoolProperty(env, args[1], "ignoreCertificate", true);
   options.enableAudio = GetBoolProperty(env, args[1], "enableAudio", true);
-  options.srEnabled = GetBoolProperty(env, args[1], "srEnabled", false);
   options.srBackend = GetIntProperty(env, args[1], "srBackend", 0) == 1
                           ? hmrdp::SuperResolutionBackend::kFsr
                           : hmrdp::SuperResolutionBackend::kXengine;
-  options.srRatioPercent = GetIntProperty(env, args[1], "srRatioPercent", 0);
   options.gatewayHost = GetStringProperty(env, args[1], "gatewayHost");
   options.gatewayPort = GetIntProperty(env, args[1], "gatewayPort", 443);
   options.gatewayUsername = GetStringProperty(env, args[1], "gatewayUsername");
@@ -1824,6 +1824,8 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.serverCodecModeSupport = GetIntProperty(env, args[0], "serverCodecModeSupport", 0);
   config.width = GetIntProperty(env, args[0], "width", 1920);
   config.height = GetIntProperty(env, args[0], "height", 1080);
+  config.streamWidth = GetIntProperty(env, args[0], "streamWidth", 0);
+  config.streamHeight = GetIntProperty(env, args[0], "streamHeight", 0);
   config.fps = GetIntProperty(env, args[0], "fps", 60);
   config.bitrateKbps = GetIntProperty(env, args[0], "bitrateKbps", 20000);
   config.packetSize = GetIntProperty(env, args[0], "packetSize", 1024);
@@ -1837,9 +1839,7 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.localCursorMode = GetBoolProperty(env, args[0], "localCursorMode", false);
   config.enableAudio = GetBoolProperty(env, args[0], "enableAudio", true);
   config.lowLatencyAudio = GetBoolProperty(env, args[0], "lowLatencyAudio", true);
-  config.srEnabled = GetBoolProperty(env, args[0], "srEnabled", false);
   config.srBackend = GetIntProperty(env, args[0], "srBackend", 0);
-  config.srRatioPercent = GetIntProperty(env, args[0], "srRatioPercent", 0);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesKeyHex"), &config.remoteInputAesKey);
   HexToBytes(GetStringProperty(env, args[0], "remoteInputAesIvHex"), &config.remoteInputAesIv);
   return CreateStringUtf8(env, hmrdp::MoonlightSessionStart(config, &OnMoonlightSessionEvent));

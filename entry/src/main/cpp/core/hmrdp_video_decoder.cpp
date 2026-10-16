@@ -114,19 +114,17 @@ std::string VideoDecoder::lastError() const {
   return error_;
 }
 
-bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* window, int width,
-                         int height, int frameRate, FrameReadyFn onFrame, BufferReadyFn onBuffer) {
+bool VideoDecoder::Start(const std::string& mime, void* window, int width, int height,
+                         int frameRate, FrameReadyFn onFrame) {
   if (codec_ != nullptr) {
     return started_.load();
   }
-  if (mode == VideoOutputMode::kSurface && window == nullptr) {
-    SetError("surface mode needs a decode window");
+  if (window == nullptr) {
+    SetError("decode output surface missing");
     return false;
   }
-  mode_ = mode;
   window_ = window;
   onFrame_ = std::move(onFrame);
-  onBuffer_ = std::move(onBuffer);
   eosReached_.store(false);
   inputBudgetUs_ = BudgetForFrameRate(frameRate);
 
@@ -171,12 +169,10 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
     return false;
   }
 
-  if (mode_ == VideoOutputMode::kSurface) {
-    if (OH_VideoDecoder_SetSurface(codec_, reinterpret_cast<OHNativeWindow*>(window_)) != AV_ERR_OK) {
-      SetError("SetSurface failed");
-      Stop();
-      return false;
-    }
+  if (OH_VideoDecoder_SetSurface(codec_, reinterpret_cast<OHNativeWindow*>(window_)) != AV_ERR_OK) {
+    SetError("SetSurface failed");
+    Stop();
+    return false;
   }
   if (OH_VideoDecoder_Prepare(codec_) != AV_ERR_OK) {
     SetError("Prepare failed");
@@ -205,11 +201,6 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
   // Ask for the low-latency path when the platform has it (silently ignored
   // otherwise, per the SDK).
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
-  if (mode_ == VideoOutputMode::kBuffer) {
-    // Surface mode converts to the window's format itself; only buffer mode picks
-    // a pixel format, and NV12 is what the Vulkan importer expects.
-    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
-  }
   if (frameRate > 0) {
     // The SDK declares the key as double while the decoder examples pass an int; the setter
     // verifies the type, so take whichever this platform accepts.
@@ -424,27 +415,16 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   }
   const int width = width_.load();
   const int height = height_.load();
-  if (mode_ == VideoOutputMode::kSurface) {
-    // Present as soon as the frame is decoded (the host paces the stream); a frame the display
-    // cannot show this period is released unwatched.
-    if (TakePresentSlot()) {
-      OH_VideoDecoder_RenderOutputBuffer(codec_, index);
-    } else {
-      OH_VideoDecoder_FreeOutputBuffer(codec_, index);
-    }
-    if (onFrame_) {
-      onFrame_(width, height, attr.pts);
-    }
+  // Present as soon as the frame is decoded (the host paces the stream); a frame the display cannot
+  // show this period is released unwatched — this is the one place that decides it, for both the
+  // direct and the 超分 path.
+  if (TakePresentSlot()) {
+    OH_VideoDecoder_RenderOutputBuffer(codec_, index);
   } else {
-    if (onBuffer_) {
-      DecodedFrame frame;
-      frame.buffer = buffer;
-      frame.width = width;
-      frame.height = height;
-      frame.ptsUs = attr.pts;
-      onBuffer_(frame);
-    }
     OH_VideoDecoder_FreeOutputBuffer(codec_, index);
+  }
+  if (onFrame_) {
+    onFrame_(width, height, attr.pts);
   }
 }
 

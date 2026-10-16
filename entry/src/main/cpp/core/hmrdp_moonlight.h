@@ -39,10 +39,16 @@ struct MoonlightVideoContext {
 };
 
 // 超分: the presenter the decode bridge renders decoded frames into (a hmrdp::FramePresenter*), or
-// nullptr for the default direct-to-surface path. Owned by the session; set before the session
-// starts and cleared when it ends. With a presenter the bridge decodes to NV12 buffers and calls
-// PresentVideo per frame; without one it renders straight into the window.
-void MoonlightVideoSetPresenter(void* presenter);
+// nullptr for the default direct-to-surface path. Owned by the session, borrowed by the bridge:
+// attach before starting the connection, detach before destroying the presenter (a detach waits out
+// a present already in flight). With a presenter the bridge decodes into an offscreen consumer
+// surface and calls PresentVideo per frame; without one it renders straight into the window.
+void MoonlightVideoAttachPresenter(void* presenter);
+void MoonlightVideoDetachPresenter();
+
+// 超分: forward a surface (window) resize to the attached presenter's swapchain; a no-op on the
+// direct-to-surface path (the window scaling mode fits the picture itself).
+void MoonlightVideoResizeSurface(int width, int height);
 
 // kAuto picks the best shared codec, the rest force one; mirrors ML_CODEC_*.
 enum class MoonlightVideoCodecChoice : int {

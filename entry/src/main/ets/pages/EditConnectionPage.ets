@@ -3,7 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { AdvancedProfile, DisplayProfile, RdpConnectOptions,
-  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile } from '../model/RdpModels';
+  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile, SrSetting } from '../model/RdpModels';
 import { ConnectOrigin, EditConnectionParams,
   ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
@@ -325,21 +325,13 @@ struct EditConnectionPage {
   }
 
   private resolvedSr(): SrProfile {
-    const sr: SrProfile = new SrProfile();
-    if (this.useGlobalSr) {
-      const global: SrProfile = SettingsStore.globalSrProfile(this.protocol);
-      sr.enabled = global.enabled;
-      sr.ratioPercent = global.ratioPercent;
-      sr.backend = global.backend;
-    } else {
-      sr.enabled = this.srEnabled;
-      sr.ratioPercent = SettingsStore.snapSrRatioPreset(this.srRatioPercent);
-      sr.backend = this.srBackend;
-    }
-    if (!this.srUsable()) {
-      sr.enabled = false;
-    }
-    return sr;
+    const setting: SrSetting = {
+      useGlobalSr: this.useGlobalSr,
+      srEnabled: this.srEnabled,
+      srRatioPercent: this.srRatioPercent,
+      srBackend: this.srBackend
+    };
+    return SettingsStore.resolveSr(this.protocol, setting);
   }
 
   private srChoice(): number {
@@ -413,6 +405,11 @@ struct EditConnectionPage {
     options.srEnabled = sr.enabled;
     options.srRatioPercent = sr.ratioPercent;
     options.srBackend = sr.backend;
+    // 超分: the session (pre-upscale) size the server should render; 0/0 would mean the output size.
+    options.streamWidth = SettingsStore.srSessionSize(options.width,
+      sr.enabled ? sr.ratioPercent : 0);
+    options.streamHeight = SettingsStore.srSessionSize(options.height,
+      sr.enabled ? sr.ratioPercent : 0);
     if (applyGlobalAdvanced && this.useGlobalAdvanced) {
       const advanced: AdvancedProfile = SettingsStore.globalAdvancedProfile();
       options.enableAudio = advanced.enableAudio;
