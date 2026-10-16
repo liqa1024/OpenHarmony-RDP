@@ -179,7 +179,7 @@ export class SessionShellController {
       }
     }
     this.cursor.setWindow(undefined);
-    this.cursor.reset();
+    this.cursor.endSession();
   }
 
   sessionInput(): SessionInput | undefined {
@@ -423,7 +423,7 @@ export class SessionShellController {
     this.closing = true;
     this.hooks.onRelease();
     this.cursor.setWindow(undefined);
-    this.cursor.reset();
+    this.cursor.endSession();
     const context = this.host.ui().getHostContext();
     if (context === undefined) {
       return;

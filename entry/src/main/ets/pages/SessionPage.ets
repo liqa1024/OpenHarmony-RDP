@@ -363,6 +363,7 @@ struct SessionPage {
 
   private onStateChanged(state: ConnectionState, message: string): void {
     if (state === ConnectionState.Connected) {
+      this.cursor.beginSession();
       this.statusText = '已连接';
       this.native.setSuppressed(!this.windowVisible);
       this.audioHandle = this.native.handleId();
@@ -387,7 +388,7 @@ struct SessionPage {
     }
     this.statusText = message.length > 0 ? message
       : (state === ConnectionState.Failed ? '连接失败' : '连接已断开');
-    this.cursor.reset();
+    this.cursor.endSession();
     this.stopAudio();
     this.rdpClipboard?.reset();
     this.stopMetricsTimer();

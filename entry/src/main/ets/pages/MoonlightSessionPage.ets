@@ -402,6 +402,7 @@ struct MoonlightSessionPage {
 
   private onStateChanged(state: ConnectionState, message: string): void {
     if (state === ConnectionState.Connected) {
+      this.shell?.remoteCursor().beginSession();
       const backend: MoonlightSessionBackend | undefined = this.backend();
       const features: number = backend !== undefined ? backend.hostFeatureFlags() : 0;
       if (backend !== undefined) {
@@ -426,11 +427,12 @@ struct MoonlightSessionPage {
       this.startAudio();
       return;
     }
-    // Not streaming: the process-wide system cursor must come back.
+    // Not streaming: the process-wide system cursor must come back, and a late
+    // host hide must not bring it down again while the window stays up.
     this.stopAudio();
     this.stopMetricsTimer();
     this.clipboardAvailable = false;
-    this.setLocalCursorHidden(false);
+    this.shell?.remoteCursor().endSession();
     if (state === ConnectionState.Idle || state === ConnectionState.Failed) {
       this.refreshHostState();
     }

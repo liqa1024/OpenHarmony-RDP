@@ -43,6 +43,8 @@ export class RemoteCursor {
   // 双指捏合定位标记：触摸时系统隐藏指针、远端位图也画不出，故用内置手型标锚点（张开 = 放大，握住 = 缩小）。
   private pinchActive: boolean = false;
   private pinchZoomIn: boolean = true;
+  // 会话是否在驱动光标：终态（断开 / 失败）后置 false，远端迟到的隐藏事件不得再压住本机光标。
+  private active: boolean = true;
 
   private static visibilityOwner: RemoteCursor | undefined = undefined;
 
@@ -135,6 +137,12 @@ export class RemoteCursor {
 
   applyUpdate(update: RemoteCursorUpdate): void {
     const handle: number = update.imageHandle;
+    if (!this.active) {
+      if (handle > 0) {
+        RdpNative.releaseBuffer(handle);
+      }
+      return;
+    }
     if (!this.enabled) {
       if (handle > 0) {
         RdpNative.releaseBuffer(handle);
@@ -224,13 +232,26 @@ export class RemoteCursor {
     this.apply();
   }
 
-  reset(): void {
+  // 新会话开始（连接中 / 已连接）：重新接受远端光标事件；重试复用同一窗口时必须显式复位。
+  beginSession(): void {
+    this.active = true;
+  }
+
+  // 会话终态（失败 / 空闲）而窗口还留着：远端不会再发事件来纠正，隐藏必须当场收回，
+  // 否则弹出层里的重试 / 返回连光标都看不到。apply() 在缺窗口或窗口 id 非法时会早退，
+  // 故此处无条件再兜一次进程级可见性（开关已被别的活动窗口认领时不动它）。
+  endSession(): void {
+    this.active = false;
     this.hostHidden = false;
     this.localHidden = false;
     this.pinchActive = false;
     this.pixelMap = undefined;
     this.lastKey = '';
     this.apply();
+    if (RemoteCursor.visibilityOwner !== undefined && RemoteCursor.visibilityOwner !== this) {
+      return;
+    }
+    this.showGlobal();
   }
 
   private showGlobal(): void {
