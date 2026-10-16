@@ -59,6 +59,9 @@ const METRIC_WIDTH_LOCAL: number = 66;
 const METRIC_WIDTH_FPS: number = 62;
 const METRIC_WIDTH_FPS_WIDE: number = 78;
 const METRIC_WIDTH_BITRATE: number = 132;
+// Fixed width for one detail reading (`在途 12`); the digits vary, so a content-width field would
+// shift its neighbours on every sample.
+const METRIC_WIDTH_DETAIL: number = 82;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
 // Latency colour thresholds: network RTT warns late (distance-dominated). The two
@@ -511,7 +514,8 @@ struct MoonlightSessionPage {
     // TODO: super resolution turns "降低分辨率并开启超分" into the advice for both sides — the lower
     // stream costs the host fewer pixels to encode and this side fewer to decode.
     if (overload === OVERLOAD_LOCAL) {
-      hilog.warn(DOMAIN, TAG, 'local decode overloaded: %{public}s', this.localTips());
+      hilog.warn(DOMAIN, TAG, 'local decode overloaded: %{public}fms/frame pending=%{public}d drop=%{public}d/s',
+        this.metricsDecodeMs, this.metricsPending, this.metricsDroppedPerSec);
       this.toast('本机解码跟不上，建议降低分辨率/帧率', OVERLOAD_TOAST_MS);
       return;
     }
@@ -523,26 +527,12 @@ struct MoonlightSessionPage {
     return formatLatency('网络', this.metricsRtt);
   }
 
-  private rttTips(): string {
-    const jitter: string = this.metricsJitter < 0 ? '--' : this.metricsJitter + 'ms';
-    const loss: string = this.metricsLossBp < 0 ? '--'
-      : (this.metricsLossBp / 100).toFixed(2) + '%';
-    return 'RTT 抖动 ' + jitter + ' · 视频丢包 ' + loss
-      + '\n丢包 = FEC 恢复失败 + 乱序 + 损坏 / 总包';
-  }
-
   private hostEncodeLabel(): string {
     return formatLatency('主机', this.metricsHostMs);
   }
 
   private localLabel(): string {
     return formatLatency('本机', this.metricsDecodeMs);
-  }
-
-  private localTips(): string {
-    return '本机解码往返（提交→解码出帧）/帧，含排队与输出缓冲等待'
-      + '\n健康读数接近解码耗时，积压时被放大；在途待解码 ' + this.metricsPending + ' 帧'
-      + '\n丢弃 ' + this.metricsDroppedPerSec + ' 帧/s（超出延迟预算即丢并请主机补关键帧）';
   }
 
   private localFrameFps(): number {
@@ -581,21 +571,39 @@ struct MoonlightSessionPage {
   private telemetryFields(): TelemetryField[] {
     const fields: TelemetryField[] = [];
     fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
-      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), this.rttTips(), 0));
+      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), 0));
     fields.push(new TelemetryField(this.hostEncodeLabel(), METRIC_WIDTH_HOST,
-      metricColor(this.metricsHostMs, this.localWarnMs(), this.localBadMs()), '', METRIC_GAP_TIGHT));
+      metricColor(this.metricsHostMs, this.localWarnMs(), this.localBadMs()), METRIC_GAP_TIGHT));
     fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
-      metricColor(this.metricsDecodeMs, this.localWarnMs(), this.localBadMs()), this.localTips(),
-      METRIC_GAP_GROUP));
+      metricColor(this.metricsDecodeMs, this.localWarnMs(), this.localBadMs()), METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.fpsLabel(), this.fpsWidth(),
-      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE,
-      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     // Input budget drops are invisible otherwise: any non-zero count names a stream over its budget.
     const dropped: number = this.sink?.inputDropped() ?? 0;
     if (dropped > 0) {
-      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, '', METRIC_GAP_GROUP));
+      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, METRIC_GAP_GROUP));
     }
+    return fields;
+  }
+
+  // What the readings above hide, in the same order as the readings themselves: the network's
+  // jitter and loss behind the RTT, then the decode queue state behind the local round trip. A row,
+  // not a tooltip: a bound tooltip's text is read once, so a live number in one is stuck at whatever
+  // it was when the pointer first arrived.
+  private detailFields(): TelemetryField[] {
+    const jitter: string = this.metricsJitter < 0 ? '--' : this.metricsJitter + 'ms';
+    const loss: string = this.metricsLossBp < 0 ? '--'
+      : (this.metricsLossBp / 100).toFixed(2) + '%';
+    const fields: TelemetryField[] = [];
+    fields.push(new TelemetryField('抖动 ' + jitter, METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, 0));
+    fields.push(new TelemetryField('丢包 ' + loss, METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY,
+      METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField('在途 ' + this.metricsPending + ' 帧', METRIC_WIDTH_DETAIL,
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+    fields.push(new TelemetryField('丢 ' + this.metricsDroppedPerSec + ' 帧/s', METRIC_WIDTH_DETAIL,
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
     return fields;
   }
 
@@ -842,6 +850,7 @@ struct MoonlightSessionPage {
       .padding({ left: 16, right: 16 })
       if (this.state === ConnectionState.Connected && this.developerMode) {
         TelemetryRow({ fields: this.telemetryFields() })
+        TelemetryRow({ fields: this.detailFields() })
       }
     }
     .width('100%')

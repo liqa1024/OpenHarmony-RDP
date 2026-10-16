@@ -102,25 +102,10 @@ export struct MetricItem {
   @Prop metricWidth: number = 0;
   @Prop fgColor: ResourceColor = TOOLBAR_FG_SECONDARY;
   @Prop leftGap: number = 0;
-  @Prop tip: string = '';
-  private tipOptions: TipsOptions = { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
 
   build() {
     Row() {
-      if (this.tip.length > 0 && this.metricWidth > 0) {
-        Text(this.text)
-          .fontSize(12)
-          .fontColor(this.fgColor)
-          .width(this.metricWidth)
-          .maxLines(1)
-          .bindTips(this.tip, this.tipOptions)
-      } else if (this.tip.length > 0) {
-        Text(this.text)
-          .fontSize(12)
-          .fontColor(this.fgColor)
-          .maxLines(1)
-          .bindTips(this.tip, this.tipOptions)
-      } else if (this.metricWidth > 0) {
+      if (this.metricWidth > 0) {
         Text(this.text)
           .fontSize(12)
           .fontColor(this.fgColor)
@@ -178,14 +163,12 @@ export class TelemetryField {
   text: string;
   width: number;
   color: string;
-  tip: string;
   gap: number;
 
-  constructor(text: string, width: number, color: string, tip: string, gap: number) {
+  constructor(text: string, width: number, color: string, gap: number) {
     this.text = text;
     this.width = width;
     this.color = color;
-    this.tip = tip;
     this.gap = gap;
   }
 }
@@ -215,21 +198,48 @@ export function metricColor(value: number, warnMs: number, badMs: number): strin
   return METRIC_BAD;
 }
 
+// The developer telemetry rows. The field set is small and positional, so every slot is laid out
+// explicitly instead of looped: a ForEach key has to carry the field values (an unchanged key never
+// updates its item), and a key that carries them changes on every sample — which rebuilds the node
+// on every refresh.
 @Component
 export struct TelemetryRow {
   @Prop fields: TelemetryField[] = [];
 
   build() {
     Row() {
-      ForEach(this.fields, (field: TelemetryField) => {
-        MetricItem({
-          text: field.text,
-          metricWidth: field.width,
-          fgColor: field.color,
-          leftGap: field.gap,
-          tip: field.tip
-        })
-      }, (field: TelemetryField, index: number) => index.toString() + '-' + field.text)
+      if (this.fields.length > 0) {
+        MetricItem({ text: this.fields[0].text, metricWidth: this.fields[0].width,
+          fgColor: this.fields[0].color, leftGap: this.fields[0].gap })
+      }
+      if (this.fields.length > 1) {
+        MetricItem({ text: this.fields[1].text, metricWidth: this.fields[1].width,
+          fgColor: this.fields[1].color, leftGap: this.fields[1].gap })
+      }
+      if (this.fields.length > 2) {
+        MetricItem({ text: this.fields[2].text, metricWidth: this.fields[2].width,
+          fgColor: this.fields[2].color, leftGap: this.fields[2].gap })
+      }
+      if (this.fields.length > 3) {
+        MetricItem({ text: this.fields[3].text, metricWidth: this.fields[3].width,
+          fgColor: this.fields[3].color, leftGap: this.fields[3].gap })
+      }
+      if (this.fields.length > 4) {
+        MetricItem({ text: this.fields[4].text, metricWidth: this.fields[4].width,
+          fgColor: this.fields[4].color, leftGap: this.fields[4].gap })
+      }
+      if (this.fields.length > 5) {
+        MetricItem({ text: this.fields[5].text, metricWidth: this.fields[5].width,
+          fgColor: this.fields[5].color, leftGap: this.fields[5].gap })
+      }
+      if (this.fields.length > 6) {
+        MetricItem({ text: this.fields[6].text, metricWidth: this.fields[6].width,
+          fgColor: this.fields[6].color, leftGap: this.fields[6].gap })
+      }
+      if (this.fields.length > 7) {
+        MetricItem({ text: this.fields[7].text, metricWidth: this.fields[7].width,
+          fgColor: this.fields[7].color, leftGap: this.fields[7].gap })
+      }
     }
     .width('100%')
     .height(TOOLBAR_TELEMETRY_HEIGHT)

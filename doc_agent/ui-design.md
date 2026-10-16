@@ -225,8 +225,8 @@ Column(page_bg, 100%×100%)
 | `ToolbarChip` | `SessionChrome.ets` | `label, chipBg?, fgColor?, icon?, hPad?, onTap` | 会话工具栏实心 chip |
 | `SessionTitle` | `SessionChrome.ets` | `name, detail` | 工具栏左侧「名称 + 分辨率」标题（RDP / Moonlight 共用，差异只在 `detail` 后缀） |
 | `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |
-| `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?, tip?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项），`tip` 为空则不挂提示 |
-| `TelemetryRow` | `SessionChrome.ets` | `fields: TelemetryField[]` | 开发者遥测行（RDP / Moonlight 共用）：页面交字段数组，行按 `TOOLBAR_TELEMETRY_HEIGHT` 渲染 |
+| `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项） |
+| `TelemetryRow` | `SessionChrome.ets` | `fields: TelemetryField[]` | 开发者遥测行（RDP / Moonlight 共用）：页面交字段数组，行按 `TOOLBAR_TELEMETRY_HEIGHT` 渲染；同一页放两行（读数行 + 明细行）。**按位置展开、不用 `ForEach`**：字段值每秒都在变，键里带值就会每次刷新重建节点（键不带值则 `ForEach` 不会更新该项）。**不用 `bindTips` 承载活数字**：绑定的提示文本只读一次，数字会停在首次悬停时的值，所以"这个数由什么组成"一律另起一行 |
 | `TelemetryField` | `SessionChrome.ets` | `text, width, color, tip, gap` | 遥测行的一个字段（`width` 0 = 内容宽）；`metricColor` 给延迟阈值着色，`formatLatency` 生成定宽延迟文本 |
 | （调色板常量） | `SessionChrome.ets` | `TOOLBAR_*` / `METRIC_*` | 固定深色工具栏调色板与几何 |
 

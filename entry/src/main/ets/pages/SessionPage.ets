@@ -66,6 +66,9 @@ const METRIC_WIDTH_FPS: number = 48;
 const METRIC_WIDTH_AUDIO: number = 86;
 const METRIC_WIDTH_CPU: number = 60;
 const METRIC_WIDTH_GPU: number = 76;
+// Fixed width for one detail phase reading (`解析 12ms`); the digits vary, so a content-width field
+// would shift its neighbours on every sample.
+const METRIC_WIDTH_DETAIL: number = 72;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
 
@@ -563,31 +566,6 @@ struct SessionPage {
     return total > 0 ? 'GPU ' + this.usToMsTenth(total) + 'ms' : 'GPU --';
   }
 
-  private gpuTips(): string {
-    const total: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
-    if (total <= 0) {
-      return '本机 GPU 上屏工时（脏区上传 / 超分辨率 / letterbox）\n'
-        + '当前上屏后端不提供 GPU 时间戳，只在使用 Vulkan 硬件加速时可见';
-    }
-    return '本机 GPU 上屏工时/帧：上传 ' + this.usToMsTenth(this.metricsGpuCopyUs) + 'ms'
-      + ' · 超分辨率 ' + this.usToMsTenth(this.metricsGpuSrUs) + 'ms'
-      + ' · letterbox ' + this.usToMsTenth(this.metricsGpuBlitUs) + 'ms'
-      + '\n这是本机自己的 GPU 工作量，不是 GPU 整机占用率（平台未开放该接口）';
-  }
-
-  private localTips(): string {
-    return '解压+解析 ' + this.usToMs(this.metricsZgxUs) + 'ms' +
-      ' / 解码 ' + this.usToMs(this.metricsDecodeUs) + 'ms' +
-      ' / 合成 ' + this.usToMs(this.metricsComposeUs) + 'ms' +
-      ' / 上屏 ' + this.usToMs(this.metricsPresentUs) + 'ms' +
-      (this.metricsPresentWaitUs > 0
-        ? '（等显示 ' + this.usToMs(this.metricsPresentWaitUs) + 'ms，不计入本机）'
-        : '') +
-      '\n载荷 ' + Math.round(this.metricsBytesPerFrame / 1024) + 'KB/帧' +
-      '（' + this.metricsCmdsPerFrame + ' 条命令）' +
-      '，本机工时占帧周期 ' + Math.round(this.metricsDutyPermille / 10) + '%';
-  }
-
   private fpsLabel(): string {
     return 'FPS ' + this.metricsFps;
   }
@@ -1027,38 +1005,63 @@ struct SessionPage {
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }
 
-  // Developer-only telemetry line. The two fields that can disappear follow in reverse order of how often they show, so a changing field never shifts a stable one.
+  // Developer-only telemetry. Two lines: the readings themselves, and the sub-readings they
+  // aggregate. The detail line is a row rather than a tooltip because a bound tooltip's text is
+  // read once, so a live number in one is stuck at whatever it was when the pointer first arrived.
   @Builder
   toolbarTelemetry() {
     TelemetryRow({ fields: this.telemetryFields() })
+    TelemetryRow({ fields: this.detailFields() })
   }
 
   private telemetryFields(): TelemetryField[] {
     const fields: TelemetryField[] = [];
     fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
-      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), '', 0));
+      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), 0));
     fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
-      metricColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS), this.localTips(),
-      METRIC_GAP_TIGHT));
+      metricColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS), METRIC_GAP_TIGHT));
     fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS,
-      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.cpuLabel(), METRIC_WIDTH_CPU,
-      TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU,
-      TOOLBAR_FG_SECONDARY, this.gpuTips(), METRIC_GAP_GROUP));
+      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     if (this.hasBandwidth()) {
       fields.push(new TelemetryField(this.bandwidthLabel(), 0,
-        TOOLBAR_FG_SECONDARY, '', METRIC_GAP_GROUP));
+        TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     }
     if (this.metricsAudioRateHz > 0) {
       fields.push(new TelemetryField(this.audioLabel(), METRIC_WIDTH_AUDIO,
-        this.audioColor(), '', METRIC_GAP_GROUP));
+        this.audioColor(), METRIC_GAP_GROUP));
     }
     // Input budget drops are invisible otherwise: any non-zero count names a stream over its budget.
     const dropped: number = this.sink?.inputDropped() ?? 0;
     if (dropped > 0) {
-      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, '', METRIC_GAP_GROUP));
+      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, METRIC_GAP_GROUP));
     }
+    return fields;
+  }
+
+  // What the readings above add up from: the local per-frame phases, the GPU split, and the frame's
+  // share of the frame period.
+  private detailFields(): TelemetryField[] {
+    const gpu: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
+    const fields: TelemetryField[] = [];
+    fields.push(new TelemetryField('解析 ' + this.usToMs(this.metricsZgxUs) + 'ms',
+      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, 0));
+    fields.push(new TelemetryField('解码 ' + this.usToMs(this.metricsDecodeUs) + 'ms',
+      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField('合成 ' + this.usToMs(this.metricsComposeUs) + 'ms',
+      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField('上屏 ' + this.usToMs(this.metricsPresentUs) + 'ms',
+      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField('占比 ' + Math.round(this.metricsDutyPermille / 10) + '%',
+      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(gpu > 0
+      ? '上传 ' + this.usToMsTenth(this.metricsGpuCopyUs) + ' / 超分 '
+        + this.usToMsTenth(this.metricsGpuSrUs) + ' / blit ' + this.usToMsTenth(this.metricsGpuBlitUs)
+        + ' ms'
+      : 'GPU 无时间戳', 0, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     return fields;
   }
 
