@@ -973,20 +973,11 @@ struct SettingsPage {
     .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
   }
 
+  // 画质项（帧率 / 码率 / 编码器 / 色彩空间）并入「显示」段：它们是同一组画面参数，只是分属
+  // 显示链路与编码链路，不另起一个段。
   @Builder
-  moonlightStreamSection() {
+  mlStreamQualityItems() {
     Column() {
-      Text('串流')
-        .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ bottom: 4 })
-
-      Text('新连接默认使用的画质；可在单个连接的「高级设置」中改为独立配置')
-        .fontSize(11)
-        .fontColor($r('app.color.text_tertiary'))
-        .width('100%')
-        .margin({ bottom: 8 })
-
       Column() {
         Text('帧率').fontSize(14).fontColor($r('app.color.text_primary'))
         Text('默认 60，可选档位或自定义')
@@ -1156,6 +1147,12 @@ struct SettingsPage {
               .fontColor($r('app.color.text_secondary'))
               .margin({ bottom: 4 })
 
+            Text('画面参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置')
+              .fontSize(11)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ bottom: 8 })
+
             this.toggleItem({
               title: '使用RDP光标',
               subtitle: '远端的光标形状同步为系统光标；若显示异常可关闭，回退为默认箭头',
@@ -1247,11 +1244,21 @@ struct SettingsPage {
               })
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
+
+            Divider().color($r('app.color.divider'))
+
+            this.srSection(PROTOCOL_RDP)
             } else if (this.protocol === PROTOCOL_MOONLIGHT) {
               Text('显示')
                 .fontSize(13)
                 .fontColor($r('app.color.text_secondary'))
                 .margin({ bottom: 4 })
+
+              Text('画面与编码参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置')
+                .fontSize(11)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+                .margin({ bottom: 8 })
 
               Column() {
                 Text('光标模式')
@@ -1321,7 +1328,11 @@ struct SettingsPage {
 
               Divider().color($r('app.color.divider'))
 
-              this.moonlightStreamSection()
+              this.srSection(PROTOCOL_MOONLIGHT)
+
+              Divider().color($r('app.color.divider'))
+
+              this.mlStreamQualityItems()
             }
 
             if (this.protocol !== TAB_COMMON) {
@@ -1591,10 +1602,6 @@ struct SettingsPage {
 
             Divider().color($r('app.color.divider'))
 
-            this.srSection(PROTOCOL_RDP)
-
-            Divider().color($r('app.color.divider'))
-
             this.toggleItem({
               title: '忽略证书校验',
               subtitle: '仅用于自签名证书的测试环境，存在安全风险',
@@ -1645,10 +1652,6 @@ struct SettingsPage {
                 }
               })
             }
-
-            Divider().color($r('app.color.divider'))
-
-            this.srSection(PROTOCOL_MOONLIGHT)
             }
             }
 

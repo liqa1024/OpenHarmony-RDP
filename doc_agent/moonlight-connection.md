@@ -43,7 +43,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - 解析入口是 `SettingsStore.resolveStream(conn)`（全局默认见 `SettingsStore.globalStreamProfile()`），
   与 `resolveDisplay` / `resolveAdvanced` 并列。
 - 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩空间（SDR：Rec709 / Rec601）、
-  会话缩放（自动 / 手动 / 不额外设置）。
+  会话缩放（自动 / 手动 / 不额外设置）、超分（沿用 `useGlobalSr` + `sr*`，与 RDP 连接同名字段）。
 - **会话缩放（仅基地版 Sunshine）**：语义与 RDP 的 `DesktopScaleFactor` 同构——把远端 UI 的缩放系数交给主机，
   区别是这里**只写基地版内置的虚拟显示器**（friendly_name `Zako HDR`）：`launch` 成功后 `GET /displays` 找到它，
   再 `POST /display-scale` 落缩放。两条都是 **nvhttp 的 HTTPS（47984）**端点、要**已配对证书**，与本仓
@@ -118,7 +118,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   **立即清本地 pin**（下次连接必须重新配对），并对主机 best-effort 发 `/unpair`（主机离线不阻塞本地清理，
   见 `MoonlightConnector.forgetHost`）。pin 的文件名对 host 归一化（小写、去尾点）。
 - 画质项不放在主表单，而在**操作按钮下方的高级设置折叠区**里（与 RDP 一致）：一个
-  「使用会话独立串流设置」开关，关闭时显示「全局：…」摘要，打开后才展开 §3 的覆盖项。
+  「使用会话独立串流设置」开关，关闭时显示「全局：…」摘要，打开后才展开 §3 的覆盖项；
+  超分另有一个同形的「使用会话独立超分辨率设置」开关（与 RDP 编辑页共用 `srAdvancedSection()`），
+  紧跟其后、位于「高级设置」之前。
 - 底部操作按钮：**保存**与主操作同级，主操作对 Moonlight 是**「配对」**（编辑页只完成配对，不打开会话；
   配对成功即保存并返回），**连接一律走列表页的连接钮**；RDP 的主操作仍是「连接」。**删除**（仅编辑已有连接时）
   单独排在两钮**下一行**、占满整行。
@@ -126,9 +128,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 ## 5. 设置页的分栏
 
 - 设置页顶部是 **通用 / RDP / Moonlight 三个 tab**（下划线样式；编辑页仍只有两个协议 tab）。「通用」在最左。
-- **协议 tab（RDP / Moonlight）** 与 RDP 对齐：「显示」在最上（RDP：使用RDP光标 + 分辨率 + 缩放；
-  Moonlight：光标模式 + 分辨率 + 缩放），Moonlight 的「串流」段（帧率 + 自定义输入 / 码率自动或手动 / 编码器 /
-  色彩空间）承载 §3 的其余全局默认；
+- **协议 tab（RDP / Moonlight）** 与 RDP 对齐：**「显示」段承载全部画面参数**——RDP 是"使用RDP光标 +
+  分辨率 + 缩放 + 超分"，Moonlight 是"光标模式 + 分辨率 + 缩放 + 超分 + 帧率 + 自定义输入 + 码率 + 编码器 +
+  色彩空间"。帧率/码率/编码器/色彩空间**不另起「串流」段**：它们和分辨率/缩放同属画面参数，只是 RDP 不暴露。
   其后是共用节（触控板 / 键盘 / 会话）。这些共用节在两个协议 tab 都出现，**每个协议各存一份值**
   （RDP 用原有设置键，Moonlight 用 `ml*` 副本，如 `mlTouchpadScrollSpeed`）；UI 是同一段代码，靠切换
   数据源复用，切换 tab 时先保存当前 tab 再加载目标 tab。
@@ -165,8 +167,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - **低延迟音频开关（Moonlight tab，`mlLowLatencyAudio`，默认开）**：与「音频重定向」同在 Moonlight tab 末尾的「连接特性」分节，
   **仅在其开启时显示**（音频关时无从谈低延迟）。开 = 原生 OHAudio FAST 通路，关 = 与 RDP 同一条 ArkTS 播放链路。
   存储与置灰见 [`settings-and-storage.md`](settings-and-storage.md) §2，机制见 [`moonlight-native.md`](moonlight-native.md) §2.3。
-- **超分（Moonlight tab，`mlSrBackend` + `mlSrRatioPercent`）**：与 RDP 同一段代码、同一栏位（`srSection(protocol)`），
-  只切数据源；全局默认存 Moonlight 自己那一份（`mlSr*`），Moonlight 连接另有「使用会话独立超分辨率设置」覆盖
+- **超分（Moonlight tab，`mlSrBackend` + `mlSrRatioPercent`）**：与 RDP 同一段代码（`srSection(protocol)`），
+  位置与 RDP 一致——放在**「显示」段内、分辨率与缩放之后**（超分是分辨率链路的一环），只切数据源；
+  全局默认存 Moonlight 自己那一份（`mlSr*`），Moonlight 连接另有「使用会话独立超分辨率设置」覆盖
   （`useGlobalSr` 等字段与 RDP 同名，存储与判据见 [`settings-and-storage.md`](settings-and-storage.md) §2）。
   比 RDP 多一个能力前置：设备要能把解码器的 NV12 缓冲导入呈现器（`DeviceCapabilities.srVideoImport()`），
   不满足则整栏置灰。会话页主行分辨率显示**会话（超分前）分辨率**并在后缀补 ` (FSR 1.5x)` / ` (XEngine 1.5x)`。
