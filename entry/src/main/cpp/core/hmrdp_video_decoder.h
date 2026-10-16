@@ -57,8 +57,7 @@ class VideoDecoder {
   VideoDecoder& operator=(const VideoDecoder&) = delete;
 
   // `window` is required in kSurface mode. `frameRate` is the negotiated stream rate: it configures
-  // the decoder (and the video variable refresh rate path, surface mode only) and sizes the input
-  // budget; 0 means unknown.
+  // the decoder and sizes the input budget; 0 means unknown.
   bool Start(const std::string& mime, VideoOutputMode mode, void* window, int width, int height,
              int frameRate, FrameReadyFn onFrame, BufferReadyFn onBuffer);
   // Feeds one complete access unit (Annex-B, leading start code included): every slice of a picture
@@ -85,15 +84,20 @@ class VideoDecoder {
   static void OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userData);
   static void OnNeedInput(OH_AVCodec*, uint32_t index, OH_AVBuffer* buffer, void* userData);
   static void OnNewOutput(OH_AVCodec*, uint32_t index, OH_AVBuffer* buffer, void* userData);
+  static void OnDisplayChanged(uint64_t displayId);
 
   void HandleNewOutput(uint32_t index, OH_AVBuffer* buffer);
   // Caller must not hold the lock (the codec calls below take it).
   void PumpInput();
   void SetError(const std::string& message);
-  // Builds the Configure format and configures the codec; `frameRate` > 0 also asks for the
-  // frame-rate-tied keys (VRR in surface mode). Returns an OH_AVErrCode (kept as int so this
-  // header stays free of the media SDK headers).
+  // Builds the Configure format and configures the codec. Returns an OH_AVErrCode (kept as int so
+  // this header stays free of the media SDK headers).
   int32_t ConfigureCodec(int width, int height, int frameRate);
+  // The panel rate the present gate follows: read at start, then from display-change events.
+  void WatchDisplayRefreshRate();
+  void StopDisplayWatch();
+  // False when the display cannot show this frame before its next refresh.
+  bool TakePresentSlot();
 
   struct Chunk {
     std::vector<uint8_t> data;
@@ -115,6 +119,13 @@ class VideoDecoder {
   std::deque<std::pair<uint32_t, OH_AVBuffer*>> idleInputs_;
   bool eosQueued_ = false;
   bool eosPushed_ = false;
+
+  // Panel gear in Hz; 0 when the platform states none, and nothing is dropped then.
+  std::atomic<int> displayRefreshRateHz_{0};
+  uint32_t displayListenerIndex_ = 0;
+  bool displayListenerRegistered_ = false;
+  int64_t nextPresentUs_ = 0;  // codec output thread only
+  std::atomic<uint64_t> statPresentDropped_{0};
 
   std::atomic<int> width_{0};
   std::atomic<int> height_{0};

@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <native_window/external_window.h>
+#include <window_manager/oh_display_manager.h>
 #include <multimedia/player_framework/native_avbuffer.h>
 #include <multimedia/player_framework/native_avbuffer_info.h>
 #include <multimedia/player_framework/native_avcapability.h>
@@ -57,6 +58,12 @@ int64_t BudgetForFrameRate(int frameRate) {
   }
   return budget > kMaxInputBudgetUs ? kMaxInputBudgetUs : budget;
 }
+
+// The listener carries no user data, and one video stream runs at a time.
+VideoDecoder* g_displayWatchedDecoder = nullptr;
+
+// A frame landing more than half a period before the next slot cannot have that slot.
+constexpr int64_t kPresentSlotToleranceDivisor = 2;
 
 }  // namespace
 
@@ -158,8 +165,8 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
 
   int32_t configured = ConfigureCodec(width, height, frameRate);
   if (configured != AV_ERR_OK && frameRate > 0) {
-    // A rate key the platform rejects (out-of-range frame rate, unsupported VRR) must not cost the
-    // session: retry with the required keys only.
+    // A rate key the platform rejects (an out-of-range frame rate) must not cost the session:
+    // retry with the required keys only.
     HMRDP_LOGW("video decoder: %{public}d fps rejected (%{public}d), configuring without it",
                frameRate, configured);
     configured = ConfigureCodec(width, height, 0);
@@ -187,6 +194,7 @@ bool VideoDecoder::Start(const std::string& mime, VideoOutputMode mode, void* wi
     Stop();
     return false;
   }
+  WatchDisplayRefreshRate();
   started_ = true;
   return true;
 }
@@ -210,21 +218,69 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
   }
   if (frameRate > 0) {
-    // The frame rate is what the variable-refresh-rate path is driven from, and the SDK declares
-    // the key as double while the decoder examples pass an int; the setter verifies the type, so
-    // take whichever this platform accepts.
+    // The SDK declares the key as double while the decoder examples pass an int; the setter
+    // verifies the type, so take whichever this platform accepts.
     if (!OH_AVFormat_SetDoubleValue(format, OH_MD_KEY_FRAME_RATE, static_cast<double>(frameRate))) {
       OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, frameRate);
-    }
-    if (mode_ == VideoOutputMode::kSurface) {
-      // Surface path only: let the platform raise the display refresh rate to the stream's rate
-      // (and drop surplus frames instead of stalling the decoder) when it supports it.
-      OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_DECODER_OUTPUT_ENABLE_VRR, 1);
     }
   }
   const OH_AVErrCode configured = OH_VideoDecoder_Configure(codec_, format);
   OH_AVFormat_Destroy(format);
   return static_cast<int32_t>(configured);
+}
+
+void VideoDecoder::WatchDisplayRefreshRate() {
+  g_displayWatchedDecoder = this;
+  uint32_t refreshRate = 0;
+  if (OH_NativeDisplayManager_GetDefaultDisplayRefreshRate(&refreshRate) == DISPLAY_MANAGER_OK &&
+      refreshRate > 0) {
+    displayRefreshRateHz_.store(static_cast<int>(refreshRate));
+  } else {
+    HMRDP_LOGW("video decoder: no display refresh rate; presenting every frame");
+  }
+  if (OH_NativeDisplayManager_RegisterDisplayChangeListener(OnDisplayChanged,
+                                                            &displayListenerIndex_) ==
+      DISPLAY_MANAGER_OK) {
+    displayListenerRegistered_ = true;
+  }
+}
+
+void VideoDecoder::StopDisplayWatch() {
+  g_displayWatchedDecoder = nullptr;
+  if (displayListenerRegistered_) {
+    OH_NativeDisplayManager_UnregisterDisplayChangeListener(displayListenerIndex_);
+    displayListenerRegistered_ = false;
+  }
+  displayRefreshRateHz_.store(0);
+  nextPresentUs_ = 0;
+}
+
+void VideoDecoder::OnDisplayChanged(uint64_t displayId) {
+  (void)displayId;
+  VideoDecoder* self = g_displayWatchedDecoder;
+  if (self == nullptr) {
+    return;
+  }
+  uint32_t refreshRate = 0;
+  if (OH_NativeDisplayManager_GetDefaultDisplayRefreshRate(&refreshRate) == DISPLAY_MANAGER_OK &&
+      refreshRate > 0) {
+    self->displayRefreshRateHz_.store(static_cast<int>(refreshRate));
+  }
+}
+
+bool VideoDecoder::TakePresentSlot() {
+  const int refreshRate = displayRefreshRateHz_.load();
+  if (refreshRate <= 0) {
+    return true;
+  }
+  const int64_t periodUs = 1000000 / refreshRate;
+  const int64_t nowUs = NowUs();
+  if (nowUs + periodUs / kPresentSlotToleranceDivisor < nextPresentUs_) {
+    statPresentDropped_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+  nextPresentUs_ = (nextPresentUs_ > nowUs ? nextPresentUs_ : nowUs) + periodUs;
+  return true;
 }
 
 bool VideoDecoder::Submit(const uint8_t* data, size_t size, int64_t ptsUs) {
@@ -284,9 +340,15 @@ void VideoDecoder::Stop() {
     eosQueued_ = false;
     eosPushed_ = false;
   }
+  StopDisplayWatch();
   OH_VideoDecoder_Stop(codec_);
   OH_VideoDecoder_Destroy(codec_);
   codec_ = nullptr;
+  const uint64_t dropped = statPresentDropped_.exchange(0);
+  if (dropped > 0) {
+    HMRDP_LOGI("video decoder: %{public}llu frames outran the display and were dropped",
+               static_cast<unsigned long long>(dropped));
+  }
 }
 
 void VideoDecoder::PumpInput() {
@@ -417,9 +479,13 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   const int width = width_.load();
   const int height = height_.load();
   if (mode_ == VideoOutputMode::kSurface) {
-    // Present as soon as the frame is decoded: the host paces the stream, and a schedule of our
-    // own would only hold frames back.
-    OH_VideoDecoder_RenderOutputBuffer(codec_, index);
+    // Present as soon as the frame is decoded (the host paces the stream); a frame the display
+    // cannot show this period is released unwatched.
+    if (TakePresentSlot()) {
+      OH_VideoDecoder_RenderOutputBuffer(codec_, index);
+    } else {
+      OH_VideoDecoder_FreeOutputBuffer(codec_, index);
+    }
     if (onFrame_) {
       onFrame_(width, height, attr.pts);
     }

@@ -168,6 +168,8 @@ target_link_libraries(hmrdp
     hilog_ndk.z
     ffrt.z
     native_window
+    # The panel's current refresh rate, which the video present gate follows.
+    native_display_manager
     # OHAudio: the Moonlight low-latency playback path (FAST + audio workgroup).
     ohaudio
     native_media_vdec
