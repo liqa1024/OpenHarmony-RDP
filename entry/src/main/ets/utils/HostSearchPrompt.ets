@@ -100,7 +100,8 @@ struct HostPickerContent {
           this.params.onCancel();
         })
     }
-    .width(320)
+    .width('90%')
+    .constraintSize({ maxWidth: 320 })
     .padding(24)
     .alignItems(HorizontalAlign.Center)
     

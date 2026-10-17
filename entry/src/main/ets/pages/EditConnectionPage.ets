@@ -32,7 +32,8 @@ import { promptPairingPin } from '../utils/PairingPrompt';
 import { showHostPicker } from '../utils/HostSearchPrompt';
 import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
 import { ChoiceChip } from '../components/ChoiceChip';
-import { HeaderBar } from '../components/HeaderBar';
+import { FormField } from '../components/FormField';
+import { PageHeader } from '../components/PageHeader';
 import { ContentCard } from '../components/ContentCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
@@ -738,6 +739,23 @@ struct EditConnectionPage {
     this.getUIContext().getRouter().back();
   }
 
+  private confirmDeleteCurrent(): void {
+    if (this.connectionId.length === 0) {
+      return;
+    }
+    const conn: SavedConnection | undefined = ConnectionStore.get(this.connectionId);
+    const label: string = conn !== undefined ? conn.label() : this.name;
+    showConfirm(this.getUIContext(), {
+      title: '删除连接',
+      message: `将删除「${label}」，该操作无法撤销。是否继续？`,
+      confirmLabel: '删除',
+      danger: true,
+      onConfirm: () => {
+        this.deleteCurrent();
+      }
+    });
+  }
+
   private deleteCurrent(): void {
     if (this.connectionId.length > 0) {
       ConnectionStore.remove(this.connectionId);
@@ -749,14 +767,6 @@ struct EditConnectionPage {
       }
     }
     this.returnToList();
-  }
-
-  @Builder
-  fieldLabel(text: string) {
-    Text(text)
-      .fontSize(12)
-      
-      .margin({ bottom: 6 })
   }
 
   @Builder
@@ -874,6 +884,8 @@ struct EditConnectionPage {
       .onClick(() => {
         this.mlResMode = mode;
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   @Builder
@@ -929,6 +941,8 @@ struct EditConnectionPage {
       .onClick(() => {
         this.mlBitrateAuto = auto;
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   private mlCodecSupportOf(codec: number): number {
@@ -966,15 +980,15 @@ struct EditConnectionPage {
     Column() {
       Row() {
         Column() {
-          this.fieldLabel('名称（可选）')
-          TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
-            .width('100%')
-            .height(46)
-            .borderRadius(10)
-            
-            .onChange((value: string) => {
-              this.name = value;
-            })
+          FormField({ label: '名称（可选）' }) {
+            TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
+              .width('100%')
+              .height(46)
+              .borderRadius(10)
+              .onChange((value: string) => {
+                this.name = value;
+              })
+          }
         }
         .layoutWeight(1)
         .alignItems(HorizontalAlign.Start)
@@ -1006,6 +1020,8 @@ struct EditConnectionPage {
         .onClick(() => {
           this.openHostSearch();
         })
+        .focusable(true)
+        .focusOnTouch(true)
       }
       .width('100%')
       .alignItems(VerticalAlign.Bottom)
@@ -1013,30 +1029,30 @@ struct EditConnectionPage {
 
       Row() {
         Column() {
-          this.fieldLabel('主机名或 IP 地址')
-          TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
-            .width('100%')
-            .height(46)
-            .borderRadius(10)
-            
-            .onChange((value: string) => {
-              this.host = value;
-            })
+          FormField({ label: '主机名或 IP 地址' }) {
+            TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
+              .width('100%')
+              .height(46)
+              .borderRadius(10)
+              .onChange((value: string) => {
+                this.host = value;
+              })
+          }
         }
         .layoutWeight(3)
         .alignItems(HorizontalAlign.Start)
 
         Column() {
-          this.fieldLabel('端口')
-          TextInput({ placeholder: '47989', text: this.port })
-            .width('100%')
-            .height(46)
-            .borderRadius(10)
-            
-            .type(InputType.Number)
-            .onChange((value: string) => {
-              this.port = value;
-            })
+          FormField({ label: '端口' }) {
+            TextInput({ placeholder: '47989', text: this.port })
+              .width('100%')
+              .height(46)
+              .borderRadius(10)
+              .type(InputType.Number)
+              .onChange((value: string) => {
+                this.port = value;
+              })
+          }
         }
         .layoutWeight(2)
         .margin({ left: 16 })
@@ -1088,6 +1104,8 @@ struct EditConnectionPage {
       .onClick(() => {
         this.advancedExpanded = !this.advancedExpanded;
       })
+      .focusable(true)
+      .focusOnTouch(true)
 
       if (this.advancedExpanded) {
         Column() {
@@ -1140,26 +1158,26 @@ struct EditConnectionPage {
             } else {
               Row() {
                 Column() {
-                  this.fieldLabel('分辨率宽度')
-                  TextInput({ placeholder: '1920', text: this.mlWidthText })
-                    .width('100%').height(46).borderRadius(10)
-                    
-                    .type(InputType.Number)
-                    .onChange((value: string) => {
-                      this.mlWidthText = value;
-                    })
+                  FormField({ label: '分辨率宽度' }) {
+                    TextInput({ placeholder: '1920', text: this.mlWidthText })
+                      .width('100%').height(46).borderRadius(10)
+                      .type(InputType.Number)
+                      .onChange((value: string) => {
+                        this.mlWidthText = value;
+                      })
+                  }
                 }
                 .layoutWeight(1).alignItems(HorizontalAlign.Start)
 
                 Column() {
-                  this.fieldLabel('分辨率高度')
-                  TextInput({ placeholder: '1080', text: this.mlHeightText })
-                    .width('100%').height(46).borderRadius(10)
-                    
-                    .type(InputType.Number)
-                    .onChange((value: string) => {
-                      this.mlHeightText = value;
-                    })
+                  FormField({ label: '分辨率高度' }) {
+                    TextInput({ placeholder: '1080', text: this.mlHeightText })
+                      .width('100%').height(46).borderRadius(10)
+                      .type(InputType.Number)
+                      .onChange((value: string) => {
+                        this.mlHeightText = value;
+                      })
+                  }
                 }
                 .layoutWeight(1).margin({ left: 16 }).alignItems(HorizontalAlign.Start)
               }
@@ -1307,7 +1325,7 @@ struct EditConnectionPage {
 
   build() {
     Column() {
-      HeaderBar({
+      PageHeader({
         title: this.editing ? '编辑连接' : '新增连接',
         leftLabel: '取消',
         onLeft: () => {
@@ -1336,54 +1354,58 @@ struct EditConnectionPage {
             if (this.isMoonlight()) {
               this.moonlightForm()
             } else {
-            this.fieldLabel('名称（可选）')
-            TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
-              .width('100%')
-              .height(46)
-              .borderRadius(10)
-              
-              .margin({ bottom: 16 })
-              .onChange((value: string) => {
-                this.name = value;
-              })
+            FormField({
+              label: '名称（可选）',
+              marginBottom: 16
+            }) {
+              TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
+                .width('100%')
+                .height(46)
+                .borderRadius(10)
+                .onChange((value: string) => {
+                  this.name = value;
+                })
+            }
 
-            this.fieldLabel('主机名或 IP 地址')
-            TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
-              .width('100%')
-              .height(46)
-              .borderRadius(10)
-              
-              .margin({ bottom: 16 })
-              .onChange((value: string) => {
-                this.host = value;
-              })
+            FormField({
+              label: '主机名或 IP 地址',
+              marginBottom: 16
+            }) {
+              TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
+                .width('100%')
+                .height(46)
+                .borderRadius(10)
+                .onChange((value: string) => {
+                  this.host = value;
+                })
+            }
 
             Row() {
               Column() {
-                this.fieldLabel('端口')
-                TextInput({ placeholder: '3389', text: this.port })
-                  .width('100%')
-                  .height(46)
-                  .borderRadius(10)
-                  
-                  .type(InputType.Number)
-                  .onChange((value: string) => {
-                    this.port = value;
-                  })
+                FormField({ label: '端口' }) {
+                  TextInput({ placeholder: '3389', text: this.port })
+                    .width('100%')
+                    .height(46)
+                    .borderRadius(10)
+                    .type(InputType.Number)
+                    .onChange((value: string) => {
+                      this.port = value;
+                    })
+                }
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
 
               Column() {
-                this.fieldLabel('域（可选）')
-                TextInput({ placeholder: 'WORKGROUP', text: this.domain })
-                  .width('100%')
-                  .height(46)
-                  .borderRadius(10)
-                  
-                  .onChange((value: string) => {
-                    this.domain = value;
-                  })
+                FormField({ label: '域（可选）' }) {
+                  TextInput({ placeholder: 'WORKGROUP', text: this.domain })
+                    .width('100%')
+                    .height(46)
+                    .borderRadius(10)
+                    .onChange((value: string) => {
+                      this.domain = value;
+                    })
+                }
               }
               .layoutWeight(1)
               .margin({ left: 16 })
@@ -1394,37 +1416,36 @@ struct EditConnectionPage {
 
             Row() {
               Column() {
-                this.fieldLabel('用户名')
-                TextInput({ placeholder: '用户名', text: this.username })
-                  .width('100%')
-                  .height(46)
-                  .borderRadius(10)
-                  
-                  .type(InputType.USER_NAME)
-                  .enableAutoFill(this.autoFill)
-                  .onChange((value: string) => {
-                    this.username = value;
-                  })
+                FormField({ label: '用户名' }) {
+                  TextInput({ placeholder: '用户名', text: this.username })
+                    .width('100%')
+                    .height(46)
+                    .borderRadius(10)
+                    .type(InputType.USER_NAME)
+                    .enableAutoFill(this.autoFill)
+                    .onChange((value: string) => {
+                      this.username = value;
+                    })
+                }
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
 
               Column() {
-                this.fieldLabel('密码')
-                TextInput({ placeholder: '密码', text: this.password })
-                  .width('100%')
-                  .height(46)
-                  .borderRadius(10)
-                  
-                  .type(InputType.Password)
-                  .enableAutoFill(this.autoFill)
-                  .onChange((value: string) => {
-                    this.password = value;
-                  })
-                Text('连接成功后自动保存')
-                  .fontSize(11)
-                  
-                  .margin({ top: 4 })
+                FormField({
+                  label: '密码',
+                  hint: '连接成功后自动保存'
+                }) {
+                  TextInput({ placeholder: '密码', text: this.password })
+                    .width('100%')
+                    .height(46)
+                    .borderRadius(10)
+                    .type(InputType.Password)
+                    .enableAutoFill(this.autoFill)
+                    .onChange((value: string) => {
+                      this.password = value;
+                    })
+                }
               }
               .layoutWeight(1)
               .margin({ left: 16 })
@@ -1500,7 +1521,7 @@ struct EditConnectionPage {
                 .margin({ top: 12 })
                 .enabled(!this.busy())
                 .onClick(() => {
-                  this.deleteCurrent();
+                  this.confirmDeleteCurrent();
                 })
             }
 
@@ -1542,6 +1563,8 @@ struct EditConnectionPage {
             .onClick(() => {
               this.advancedExpanded = !this.advancedExpanded;
             })
+            .focusable(true)
+            .focusOnTouch(true)
 
             if (this.advancedExpanded) {
               Column() {
@@ -1600,31 +1623,31 @@ struct EditConnectionPage {
                   } else {
                     Row() {
                       Column() {
-                        this.fieldLabel('分辨率宽度')
-                        TextInput({ placeholder: '1920', text: this.desktopWidthText })
-                          .width('100%')
-                          .height(46)
-                          .borderRadius(10)
-                          
-                          .type(InputType.Number)
-                          .onChange((value: string) => {
-                            this.desktopWidthText = value;
-                          })
+                        FormField({ label: '分辨率宽度' }) {
+                          TextInput({ placeholder: '1920', text: this.desktopWidthText })
+                            .width('100%')
+                            .height(46)
+                            .borderRadius(10)
+                            .type(InputType.Number)
+                            .onChange((value: string) => {
+                              this.desktopWidthText = value;
+                            })
+                        }
                       }
                       .layoutWeight(1)
                       .alignItems(HorizontalAlign.Start)
 
                       Column() {
-                        this.fieldLabel('分辨率高度')
-                        TextInput({ placeholder: '1080', text: this.desktopHeightText })
-                          .width('100%')
-                          .height(46)
-                          .borderRadius(10)
-                          
-                          .type(InputType.Number)
-                          .onChange((value: string) => {
-                            this.desktopHeightText = value;
-                          })
+                        FormField({ label: '分辨率高度' }) {
+                          TextInput({ placeholder: '1080', text: this.desktopHeightText })
+                            .width('100%')
+                            .height(46)
+                            .borderRadius(10)
+                            .type(InputType.Number)
+                            .onChange((value: string) => {
+                              this.desktopHeightText = value;
+                            })
+                        }
                       }
                       .layoutWeight(1)
                       .margin({ left: 16 })

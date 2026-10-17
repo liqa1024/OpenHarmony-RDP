@@ -39,11 +39,11 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
 import { showNotice, showToast } from '../utils/UiUtil';
-import { ClipboardButtons, TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
-  TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
-  TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarIconChip, ToolbarRevealHint,
-  ToolbarTouchBar,
+import { TelemetryField, ToolbarRevealHint, ToolbarTouchBar,
   formatLatency } from '../components/SessionChrome';
+import { SessionToolbar } from '../components/SessionToolbar';
+import { TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_NONE,
+  TOOLBAR_ZONE_TRIGGER } from '../services/ToolbarContract';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
@@ -65,7 +65,6 @@ const METRIC_GAP_GROUP: number = 8;
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
-const LOCAL_WARN_PERIODS: number = 2;
 const LOCAL_BAD_PERIODS: number = 3;
 const OVERLOAD_TOAST_MS: number = 2500;
 
@@ -98,7 +97,6 @@ struct MoonlightSessionPage {
   private probeTimer: number = -1;
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
-  private tipsOptions: TipsOptions = {};
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
@@ -210,7 +208,7 @@ struct MoonlightSessionPage {
     this.touchpadAlwaysEngine = settings.mlTouchpadScrollAlwaysEngine;
     this.vmouseHintShown = settings.mlVmouseHintShown;
     this.toolbarHeight = this.developerMode
-      ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
+      ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT * 2
       : TOOLBAR_ROW_HEIGHT;
 
     const foregroundHost: ForegroundReconnectHost = {
@@ -565,10 +563,6 @@ struct MoonlightSessionPage {
     return this.targetFps > 0 ? this.targetFps : LOCAL_FALLBACK_FPS;
   }
 
-  private localWarnMs(): number {
-    return LOCAL_WARN_PERIODS * 1000 / this.localFrameFps();
-  }
-
   private localBadMs(): number {
     return LOCAL_BAD_PERIODS * 1000 / this.localFrameFps();
   }
@@ -826,89 +820,43 @@ struct MoonlightSessionPage {
 
   @Builder
   sessionToolbar() {
-    Row() {
-      Column() {
-        Row() {
-          if (this.isFullscreen) {
-            ToolbarIconChip({
-              icon: $r('app.media.ic_pin'),
-              iconSize: 20,
-              iconAngle: 45,
-              onTap: () => {
-                this.toggleToolbarPin();
-              }
-            })
-              .margin({ right: 10 })
-              .bindTips(this.toolbarPinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）',
-                this.tipsOptions)
-          }
-          SessionTitle({
-            name: this.hostLabel,
-            detail: this.titleDetail()
-          })
-          Blank()
-          if (this.state === ConnectionState.Connected && this.clipboardAvailable) {
-            ClipboardButtons({
-              onCopy: (): void => {
-                this.clipboard?.copyRemoteToLocal();
-              },
-              pasteCallback: this.pasteButtonCallback
-            })
-            Row().width(16)
-          }
-          ToolbarChip({
-            label: this.isFullscreen ? '退出全屏' : '全屏',
-            onTap: () => {
-              this.shell?.toggleFullscreen();
-            }
-          })
-            .margin({ right: 8 })
-          ToolbarChip({
-            label: '最小化',
-            onTap: () => {
-              this.shell?.minimize();
-            }
-          })
-            .margin({ right: 8 })
-          ToolbarChip({
-            label: '断开',
-            onTap: () => {
-              this.disconnect();
-            }
-          })
-            .margin({ right: 8 })
-            .bindTips('仅断开与主机的连接，主机上的应用保持运行', this.tipsOptions)
-          ToolbarChip({
-            label: '关闭应用',
-            onTap: () => {
-              this.closeAppAndDisconnect();
-            }
-          })
-            .bindTips('关闭主机上正在运行的应用，并断开连接', this.tipsOptions)
-        }
-        .width('100%')
-        .height(TOOLBAR_ROW_HEIGHT)
-        .padding({ left: 16, right: 16 })
-        if (this.state === ConnectionState.Connected && this.developerMode) {
-          TelemetryRow({ fields: this.telemetryFields() })
-          TelemetryRow({ fields: this.detailFields() })
-        }
+    SessionToolbar({
+      titleName: this.hostLabel,
+      titleDetail: this.titleDetail(),
+      isFullscreen: this.isFullscreen,
+      pinned: this.toolbarPinned,
+      toolbarWidthPercent: this.toolbarWidthPercent,
+      toolbarHeight: this.toolbarHeight,
+      showTelemetry: this.state === ConnectionState.Connected && this.developerMode,
+      telemetryFields: this.telemetryFields(),
+      detailFields: this.detailFields(),
+      showTransfer: false,
+      showClipboard: this.state === ConnectionState.Connected && this.clipboardAvailable,
+      showCloseApp: true,
+      disconnectTip: '仅断开与主机的连接，主机上的应用保持运行',
+      pasteCallback: this.pasteButtonCallback,
+      onTogglePin: () => {
+        this.toggleToolbarPin();
+      },
+      onCopy: () => {
+        this.clipboard?.copyRemoteToLocal();
+      },
+      onToggleFullscreen: () => {
+        this.shell?.toggleFullscreen();
+      },
+      onMinimize: () => {
+        this.shell?.minimize();
+      },
+      onDisconnect: () => {
+        this.disconnect();
+      },
+      onCloseApp: () => {
+        this.closeAppAndDisconnect();
+      },
+      onPointerZone: (zone: number) => {
+        this.shell?.setPointerZone(zone);
       }
-      .width(this.toolbarWidthPercent + '%')
-      
-      .borderRadius(TOOLBAR_RADIUS)
-      .clip(true)
-      
-      
-      .onHover((isHover: boolean) => {
-        this.shell?.setPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
-      })
-    }
-    .width('100%')
-    .justifyContent(FlexAlign.Center)
-    .hitTestBehavior(HitTestMode.None)
-    .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
-      .animation({ duration: 180, curve: Curve.EaseOut }))
+    })
   }
 
   private overlayVisible(): boolean {

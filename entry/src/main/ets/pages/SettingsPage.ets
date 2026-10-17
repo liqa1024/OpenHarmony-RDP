@@ -19,6 +19,7 @@ import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDT
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
+import { DebouncedSaver } from '../utils/DebouncedSaver';
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
@@ -27,7 +28,8 @@ import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } f
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
-import { HeaderBar } from '../components/HeaderBar';
+import { PageHeader } from '../components/PageHeader';
+import { FormSection } from '../components/FormSection';
 import { ContentCard } from '../components/ContentCard';
 import { PageBackground } from '../components/PageBackground';
 import { ProtocolTabs, TAB_COMMON } from '../components/ProtocolTabs';
@@ -145,8 +147,12 @@ struct SettingsPage {
   private defaultSessionHeight: number = 0;
   private detectedWidth: number = 0;
   private detectedHeight: number = 0;
+  private settingsSaver: DebouncedSaver | undefined = undefined;
 
   aboutToAppear(): void {
+    this.settingsSaver = new DebouncedSaver(() => {
+      this.persistNow();
+    });
     this.mlH264Support = DeviceCapabilities.codecSupport(ML_CODEC_H264);
     this.mlHevcSupport = DeviceCapabilities.codecSupport(ML_CODEC_HEVC);
     this.mlAv1Support = DeviceCapabilities.codecSupport(ML_CODEC_AV1);
@@ -163,6 +169,14 @@ struct SettingsPage {
     const savedTab: number = SettingsStore.lastSettingsTab();
     this.protocol = savedTab >= 0 ? savedTab : TAB_COMMON;
     this.syncFromStore();
+  }
+
+  aboutToDisappear(): void {
+    this.flushPersist();
+  }
+
+  onPageHide(): void {
+    this.flushPersist();
   }
 
   private syncFromStore(): void {
@@ -229,22 +243,22 @@ struct SettingsPage {
 
     if (this.protocol === PROTOCOL_RDP) {
       if (!this.audioSupported && settings.enableAudio) {
-        this.persist();
+        this.persistNow();
       }
       if (!this.srSupported && settings.srEnabled) {
-        this.persist();
+        this.persistNow();
       }
     }
     if (this.protocol === PROTOCOL_MOONLIGHT) {
       if (!this.audioSupported && settings.mlLowLatencyAudio) {
-        this.persist();
+        this.persistNow();
       }
       if (!this.mlSrSupported && settings.mlSrEnabled) {
-        this.persist();
+        this.persistNow();
       }
     }
     if (!this.developerMode && settings.gfxCapture) {
-      this.persist();
+      this.persistNow();
     }
     this.applyGfxCaptureSetting();
   }
@@ -390,6 +404,25 @@ struct SettingsPage {
   }
 
   private persist(): void {
+    const saver: DebouncedSaver | undefined = this.settingsSaver;
+    if (saver === undefined) {
+      this.persistNow();
+      return;
+    }
+    saver.schedule();
+  }
+
+  private flushPersist(): void {
+    const saver: DebouncedSaver | undefined = this.settingsSaver;
+    if (saver === undefined) {
+      this.persistNow();
+      return;
+    }
+    saver.flush();
+  }
+
+  private persistNow(): void {
+    this.settingsSaver?.cancel();
     const disp = defaultDisplay();
     const maxWidth: number = disp !== undefined ? disp.width : Number.MAX_SAFE_INTEGER;
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
@@ -493,6 +526,7 @@ struct SettingsPage {
   }
 
   private resetDefaults(): void {
+    this.settingsSaver?.cancel();
     const oldWallpapers: string[] =
       [this.wallpaperPath, this.settingsWallpaperPath, this.appsWallpaperPath];
     const defaults: AppSettings = SettingsStore.defaults();
@@ -560,7 +594,7 @@ struct SettingsPage {
       if (old.length > 0 && old !== dest) {
         BackgroundImage.remove(old);
       }
-      this.persist();
+      this.persistNow();
       showToast(this.getUIContext(), '背景图片已更新');
     } catch (error) {
       const err: BusinessError = error as BusinessError;
@@ -574,7 +608,7 @@ struct SettingsPage {
   private clearBackground(target: number): void {
     BackgroundImage.remove(this.wallpaperPathOf(target));
     this.setWallpaperPath(target, '');
-    this.persist();
+    this.persistNow();
   }
 
   private confirmExport(): void {
@@ -592,6 +626,7 @@ struct SettingsPage {
     if (this.transferBusy) {
       return;
     }
+    this.flushPersist();
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       this.transferMessage = '无法获取应用上下文';
@@ -620,6 +655,8 @@ struct SettingsPage {
     if (this.transferBusy) {
       return;
     }
+    this.flushPersist();
+    this.settingsSaver?.cancel();
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
       this.transferMessage = '无法获取应用上下文';
@@ -632,6 +669,7 @@ struct SettingsPage {
     this.transferBusy = false;
     this.transferMessage = result.message;
     if (result.success) {
+      this.settingsSaver?.cancel();
       this.syncFromStore();
     }
   }
@@ -684,6 +722,8 @@ struct SettingsPage {
         this.resolutionAuto = auto;
         this.persist();
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   @Builder
@@ -700,6 +740,8 @@ struct SettingsPage {
         this.pinchMode = mode;
         this.persist();
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   private pinchModeDescription(): string {
@@ -893,6 +935,8 @@ struct SettingsPage {
         this.mlBitrateAuto = auto;
         this.persist();
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   private mlCodecSupportOf(codec: number): number {
@@ -940,6 +984,8 @@ struct SettingsPage {
         this.mlResMode = mode;
         this.persist();
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   @Builder
@@ -968,7 +1014,7 @@ struct SettingsPage {
     if (this.protocol === protocol) {
       return;
     }
-    this.persist();
+    this.persistNow();
     this.protocol = protocol;
     SettingsStore.rememberSettingsTab(protocol);
     this.syncFromStore();
@@ -1195,6 +1241,9 @@ struct SettingsPage {
       disabledReason: item.disabledReason,
       onChange: (v: number) => {
         item.onChange(v);
+      },
+      onCommit: () => {
+        this.flushPersist();
       }
     })
   }
@@ -1203,7 +1252,7 @@ struct SettingsPage {
     Stack({ alignContent: Alignment.TopStart }) {
       PageBackground({ uri: this.pageBackgroundUri() })
       Column() {
-      HeaderBar({
+      PageHeader({
         title: '设置',
         leftLabel: '返回',
         onLeft: () => {
@@ -1223,16 +1272,10 @@ struct SettingsPage {
         Column() {
           ContentCard({ pad: 24 }) {
             if (this.protocol === PROTOCOL_RDP) {
-            Text('显示')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
-
-            Text('画面参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置')
-              .fontSize(11)
-              
-              .width('100%')
-              .margin({ bottom: 8 })
+            FormSection({
+              title: '显示',
+              description: '画面参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置'
+            }) {
 
             this.toggleItem({
               title: '使用RDP光标',
@@ -1329,17 +1372,12 @@ struct SettingsPage {
             Divider()
 
             this.srSection(PROTOCOL_RDP)
+            }
             } else if (this.protocol === PROTOCOL_MOONLIGHT) {
-              Text('显示')
-                .fontSize(13)
-                
-                .margin({ bottom: 4 })
-
-              Text('画面与编码参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置')
-                .fontSize(11)
-                
-                .width('100%')
-                .margin({ bottom: 8 })
+              FormSection({
+                title: '显示',
+                description: '画面与编码参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置'
+              }) {
 
               Column() {
                 Text('光标模式')
@@ -1414,15 +1452,11 @@ struct SettingsPage {
               Divider()
 
               this.mlStreamQualityItems()
+              }
             }
 
             if (this.protocol !== TAB_COMMON) {
-            Divider()
-
-            Text('触控板')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            FormSection({ title: '触控板' }) {
 
             if (this.protocol === PROTOCOL_MOONLIGHT) {
               this.toggleItem({
@@ -1559,12 +1593,8 @@ struct SettingsPage {
               }
             })
 
-            Divider()
-
-            Text('键盘')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            }
+            FormSection({ title: '键盘' }) {
 
             Row() {
               Column() {
@@ -1628,12 +1658,8 @@ struct SettingsPage {
               }
             })
 
-            Divider()
-
-            Text('会话')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            }
+            FormSection({ title: '会话' }) {
 
             this.toggleItem({
               title: '回到前台自动重连',
@@ -1646,20 +1672,13 @@ struct SettingsPage {
                 this.persist();
               }
             })
+            }
 
             if (this.protocol === PROTOCOL_RDP) {
-            Divider()
-
-            Text('连接特性')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
-
-            Text('新连接默认使用的协议特性；可在单个连接的「高级设置」中改为独立配置')
-              .fontSize(11)
-              
-              .width('100%')
-              .margin({ bottom: 8 })
+            FormSection({
+              title: '连接特性',
+              description: '新连接默认使用的协议特性；可在单个连接的「高级设置」中改为独立配置'
+            }) {
 
             this.toggleItem({
               title: '音频重定向',
@@ -1686,13 +1705,9 @@ struct SettingsPage {
                 this.persist();
               }
             })
+            }
             } else if (this.protocol === PROTOCOL_MOONLIGHT) {
-            Divider()
-
-            Text('连接特性')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            FormSection({ title: '连接特性' }) {
 
             this.toggleItem({
               title: '音频重定向',
@@ -1723,12 +1738,10 @@ struct SettingsPage {
             }
             }
             }
+            }
 
             if (this.protocol === TAB_COMMON) {
-            Text('外观')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            FormSection({ title: '外观' }) {
 
             Row() {
               Stack() {
@@ -1862,13 +1875,9 @@ struct SettingsPage {
             }
             .width('100%')
             .padding({ top: 10, bottom: 10 })
+            }
 
-            Divider()
-
-            Text('窗口')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            FormSection({ title: '窗口' }) {
 
             Column() {
               Row() {
@@ -2041,19 +2050,12 @@ struct SettingsPage {
             .width('100%')
             .padding({ top: 14, bottom: 14 })
             .alignItems(HorizontalAlign.Start)
+            }
 
-            Divider()
-
-            Text('配置备份')
-              .fontSize(13)
-              
-              .margin({ top: 4, bottom: 4 })
-
-            Text('导出全局设置与全部连接，或从文件导入覆盖；密码不会被导出。')
-              .fontSize(11)
-              
-              .width('100%')
-              .margin({ bottom: 12 })
+            FormSection({
+              title: '配置备份',
+              description: '导出全局设置与全部连接，或从文件导入覆盖；密码不会被导出。'
+            }) {
 
             Row() {
               Button('导出配置')
@@ -2101,20 +2103,13 @@ struct SettingsPage {
               .margin({ top: 10 })
             }
             }
+            }
 
             if (this.protocol === TAB_COMMON) {
-            Divider()
-
-            Text('重置')
-              .fontSize(13)
-              
-              .margin({ top: 4, bottom: 4 })
-
-            Text('恢复全部设置（RDP / Moonlight / 通用）为默认值，不影响已保存的连接。')
-              .fontSize(11)
-              
-              .width('100%')
-              .margin({ bottom: 10 })
+            FormSection({
+              title: '重置',
+              description: '恢复全部设置（RDP / Moonlight / 通用）为默认值，不影响已保存的连接。'
+            }) {
 
             Button('恢复默认设置')
               .width('100%')
@@ -2127,14 +2122,10 @@ struct SettingsPage {
                 this.confirmReset();
               })
             }
+            }
 
             if (this.protocol === PROTOCOL_RDP && this.developerMode) {
-            Divider()
-
-            Text('开发者')
-              .fontSize(13)
-              
-              .margin({ bottom: 4 })
+            FormSection({ title: '开发者' }) {
 
             this.toggleItem({
               title: '抓取 GFX 码流（测试）',
@@ -2144,7 +2135,7 @@ struct SettingsPage {
               disabledReason: '',
               onChange: (v: boolean) => {
                 this.gfxCapture = v;
-                this.persist();
+                this.persistNow();
                 this.applyGfxCaptureSetting();
               }
             })
@@ -2163,9 +2154,10 @@ struct SettingsPage {
               }
             })
             }
+            }
 
             if (this.protocol === TAB_COMMON) {
-            Divider()
+            FormSection({ title: '开发者' }) {
 
             this.toggleItem({
               title: '开发者选项',
@@ -2177,10 +2169,10 @@ struct SettingsPage {
                 this.developerMode = v;
                 if (!v && this.gfxCapture) {
                   this.gfxCapture = false;
-                  this.persist();
+                  this.persistNow();
                   this.applyGfxCaptureSetting();
                 } else {
-                  this.persist();
+                  this.persistNow();
                 }
               }
             })
@@ -2276,6 +2268,7 @@ struct SettingsPage {
                   this.persist();
                 }
               })
+            }
             }
             }
           }

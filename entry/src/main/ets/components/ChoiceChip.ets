@@ -20,6 +20,8 @@ export struct ChoiceChip {
           this.onTap();
         }
       })
+      .focusable(this.chipEnabled)
+      .focusOnTouch(this.chipEnabled)
   }
 }
 

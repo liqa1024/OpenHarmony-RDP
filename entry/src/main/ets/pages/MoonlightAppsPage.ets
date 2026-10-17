@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { ConnectAction, ConnectOrigin, HostPower, MoonlightConnection } from '../model/Connections';
+import { ConnectAction, ConnectOrigin, HostPower, MoonlightConnection,
+  SavedConnection } from '../model/Connections';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { MoonlightAppsResult, MoonlightConnector } from '../services/MoonlightConnector';
 import { MoonlightLauncher } from '../services/MoonlightLauncher';
@@ -17,8 +18,9 @@ import { connectActionFor } from '../utils/ConnectAction';
 import { showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
-import { HeaderBar } from '../components/HeaderBar';
+import { PageHeader } from '../components/PageHeader';
 import { PageBackground } from '../components/PageBackground';
+import { StateView, StateViewKind } from '../components/StateView';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMoonlightApps';
@@ -40,6 +42,7 @@ struct MoonlightAppsPage {
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
   @State backgroundUri: string = '';
   private conn: MoonlightConnection | undefined = undefined;
+  private connectionId: string = '';
   private httpsPort: number = 47984;
   private hasLoaded: boolean = false;
   private probing: boolean = false;
@@ -68,8 +71,8 @@ struct MoonlightAppsPage {
     const params: MoonlightAppsParams | undefined =
       this.getUIContext().getRouter().getParams() as MoonlightAppsParams;
     if (params !== undefined) {
-      const loaded = ConnectionStore.get(params.connectionId);
-      this.conn = loaded instanceof MoonlightConnection ? loaded : undefined;
+      this.connectionId = params.connectionId;
+      this.resolveConnection();
     }
     SessionManager.subscribe(this.stateListener);
     MoonlightHostState.subscribe(this.hostStateListener);
@@ -104,6 +107,15 @@ struct MoonlightAppsPage {
     this.backgroundUri = BackgroundImage.uriOf(path);
   }
 
+  private resolveConnection(): void {
+    if (this.connectionId.length === 0) {
+      this.conn = undefined;
+      return;
+    }
+    const loaded: SavedConnection | undefined = ConnectionStore.get(this.connectionId);
+    this.conn = loaded instanceof MoonlightConnection ? loaded : undefined;
+  }
+
   private filesDir(): string {
     const context = this.getUIContext().getHostContext();
     return context !== undefined ? (context as common.UIAbilityContext).filesDir : '';
@@ -125,8 +137,13 @@ struct MoonlightAppsPage {
     if (this.probing) {
       return;
     }
+    if (this.conn === undefined) {
+      this.resolveConnection();
+    }
     const conn: MoonlightConnection | undefined = this.conn;
     if (conn === undefined) {
+      this.loading = false;
+      this.error = '连接不存在';
       return;
     }
     this.probing = true;
@@ -321,7 +338,7 @@ struct MoonlightAppsPage {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageBackground({ uri: this.backgroundUri })
       Column() {
-        HeaderBar({
+        PageHeader({
           title: '应用',
           leftLabel: '返回',
           onLeft: () => {
@@ -337,34 +354,40 @@ struct MoonlightAppsPage {
         }
 
         if (this.loading) {
-          Column() {
-            LoadingProgress().width(40).height(40)
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
+          StateView({
+            kind: StateViewKind.Loading
+          })
+            .width('100%')
+            .layoutWeight(1)
         } else if (this.error.length > 0) {
-          Column() {
-            Text(this.error)
-              .fontSize(14)
-              
-              .textAlign(TextAlign.Center)
-              .margin({ bottom: 12 })
-            Button('重试')
-              .onClick(() => {
-                this.refresh();
-              })
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
+          StateView({
+            kind: StateViewKind.Error,
+            message: this.error,
+            primaryLabel: '重试',
+            onPrimary: () => {
+              this.refresh();
+            }
+          })
+            .width('100%')
+            .layoutWeight(1)
+        } else if (this.apps.length === 0) {
+          StateView({
+            kind: StateViewKind.Empty,
+            title: '没有可用应用',
+            message: '主机未返回应用列表',
+            primaryLabel: '刷新',
+            onPrimary: () => {
+              this.refresh();
+            }
+          })
+            .width('100%')
+            .layoutWeight(1)
         } else {
           Scroll() {
             Column() {
               Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
                 ForEach(this.apps, (app: NvApp) => {
                   MoonlightAppTile({
-                    app: app,
                     icon: this.iconMap.get(app.id),
                     isDefault: this.isDefault(app),
                     isRunning: this.displayRunning(app),

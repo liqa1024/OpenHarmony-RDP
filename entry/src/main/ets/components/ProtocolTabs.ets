@@ -41,6 +41,8 @@ export struct ProtocolTabs {
       }
       this.onChange(protocol);
     })
+    .focusable(!this.locked)
+    .focusOnTouch(!this.locked)
   }
 }
 

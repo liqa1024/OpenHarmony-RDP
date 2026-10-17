@@ -45,6 +45,8 @@ export struct TextAction {
       .onClick(() => {
         this.onTap();
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 }
 

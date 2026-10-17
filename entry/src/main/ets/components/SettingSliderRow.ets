@@ -11,6 +11,7 @@ export struct SettingSliderRow {
   @Prop switchEnabled: boolean = true;
   @Prop disabledReason: string = '';
   onChange: (v: number) => void = (v: number) => {};
+  onCommit: () => void = () => {};
 
   build() {
     Column() {
@@ -49,6 +50,9 @@ export struct SettingSliderRow {
         .onChange((newValue: number, mode: SliderChangeMode) => {
           const factor: number = Math.pow(10, this.precision);
           this.onChange(Math.round(newValue * factor) / factor);
+          if (mode === SliderChangeMode.End || mode === SliderChangeMode.Click) {
+            this.onCommit();
+          }
         })
     }
     .width('100%')

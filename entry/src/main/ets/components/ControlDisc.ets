@@ -77,6 +77,8 @@ export struct ControlDisc {
         this.onTap();
       }
     })
+    .focusable(!this.loading)
+    .focusOnTouch(!this.loading)
   }
 }
 

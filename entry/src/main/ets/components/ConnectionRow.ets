@@ -1,8 +1,9 @@
-import { ConnectAction, connectActionLabel, HostPower, RdpConnection, RowMenuAction, RowMenuEntry,
+import { HostPower, RdpConnection, RowMenuAction, RowMenuEntry,
   SavedConnection } from '../model/Connections';
+import { ConnectionRowBadge, ConnectionRowIcon, ConnectionRowIntent,
+  ConnectionRowModel } from '../model/ConnectionRowModel';
 import { ConnectionState } from '../services/SessionManager';
 import { WakeReachability } from '../services/WakeOnLan';
-import { connectActionFor } from '../utils/ConnectAction';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition }
   from '../utils/UiMotion';
 
@@ -33,70 +34,45 @@ export struct ConnectionRow {
   onPressRelease: () => void = () => {};
   private tipsOptions: TipsOptions = {};
 
-  private action(): ConnectAction {
-    return connectActionFor(this.state, this.hostTargetId, this.targetId);
+  private model(): ConnectionRowModel {
+    return ConnectionRowModel.of(this.conn, this.state, this.hostTargetId, this.targetId,
+      this.power, this.wakeReachability, this.waking, this.probing);
   }
 
-  private primary(): ConnectAction {
-    return this.conn.primaryAction(this.action());
+  private busy(): boolean {
+    return this.model().busy;
   }
 
-  private connectTip(): string {
-    return connectActionLabel(this.primary());
+  private menuAllowed(): boolean {
+    return this.model().menuAllowed;
   }
 
   private hostDown(): boolean {
-    return this.state === ConnectionState.Idle && this.power !== HostPower.Online;
+    return this.model().hostDown;
   }
 
   private wakeDisabled(): boolean {
-    if (!this.hostDown() || this.power !== HostPower.Offline) {
-      return false;
-    }
-    return !this.conn.supportsWake() || this.wakeReachability === WakeReachability.OffLan;
-  }
-
-  private actionTip(): string {
-    if (this.hostDown()) {
-      if (this.waking) {
-        return '取消状态检测';
-      }
-      if (this.probing && this.power === HostPower.Unknown) {
-        return '正在检测主机状态';
-      }
-      if (this.power === HostPower.NoService) {
-        return '主机已开机，请检查 Sunshine 是否运行';
-      }
-      if (this.power === HostPower.Unknown) {
-        return '刷新主机状态';
-      }
-      if (this.wakeReachability === WakeReachability.OffLan) {
-        return '当前网络无法到达主机所在局域网，无法唤醒';
-      }
-      return this.conn.supportsWake() ? '唤醒主机' : '未获取到主机 MAC，无法唤醒';
-    }
-    return this.connectTip();
+    return this.model().wakeDisabled;
   }
 
   private primaryTap(): void {
-    if (this.hostDown()) {
-      if (this.waking) {
-        this.onWake();
-      } else if (this.power === HostPower.Unknown || this.power === HostPower.NoService) {
-        this.onRefresh();
-      } else if (!this.wakeDisabled()) {
-        this.onWake();
-      }
-      return;
-    }
-    if (this.primary() === ConnectAction.Terminate) {
+    const intent: number = this.model().intent;
+    if (intent === ConnectionRowIntent.Wake) {
+      this.onWake();
+    } else if (intent === ConnectionRowIntent.Refresh) {
+      this.onRefresh();
+    } else if (intent === ConnectionRowIntent.Terminate) {
       this.onTerminate();
-    } else {
+    } else if (intent === ConnectionRowIntent.Toggle) {
       this.onToggleConnection();
     }
   }
 
   private onMenuRequest(): void {
+    if (!this.menuAllowed()) {
+      this.menuShown = false;
+      return;
+    }
     if (this.menuRequest > 0) {
       this.menuShown = false;
       this.menuShown = true;
@@ -122,7 +98,9 @@ export struct ConnectionRow {
       this.menuWinX = event.touches[0].windowX;
       this.menuWinY = event.touches[0].windowY;
     } else if (event.type === TouchType.Up) {
-      this.onPressRelease();
+      if (this.menuAllowed()) {
+        this.onPressRelease();
+      }
     }
   }
 
@@ -143,7 +121,7 @@ export struct ConnectionRow {
   }
 
   private menuGroup(session: boolean): RowMenuEntry[] {
-    return this.conn.menuEntries(this.action(), this.hostTargetId, this.power)
+    return this.conn.menuEntries(this.model().action, this.hostTargetId, this.power)
       .filter((entry: RowMenuEntry) => entry.sessionAction === session);
   }
 
@@ -186,7 +164,7 @@ export struct ConnectionRow {
             Text(this.conn.label())
               .fontSize(15)
               
-            if (this.state === ConnectionState.Connected) {
+            if (this.model().badge === ConnectionRowBadge.Connected) {
               Text('已连接')
                 .fontSize(10)
                 
@@ -195,7 +173,7 @@ export struct ConnectionRow {
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
                 .transition(fadeTransition())
-            } else if (this.action() === ConnectAction.Resume) {
+            } else if (this.model().badge === ConnectionRowBadge.Running) {
               Text('运行中')
                 .fontSize(10)
                 
@@ -222,6 +200,8 @@ export struct ConnectionRow {
       .onClick(() => {
         this.onEdit();
       })
+      .focusable(true)
+      .focusOnTouch(true)
 
       if (this.conn.showsAppsButton() && !this.hostDown()) {
         Row() {
@@ -258,56 +238,38 @@ export struct ConnectionRow {
         .onClick(() => {
           this.onOpenApps();
         })
+        .focusable(true)
+        .focusOnTouch(true)
       }
 
       Row() {
-        if (this.state === ConnectionState.Connecting) {
+        if (this.model().icon === ConnectionRowIcon.Loading) {
           LoadingProgress()
             .width(24)
             .height(24)
-            
             .transition(TransitionEffect.IDENTITY)
-        } else if (this.hostDown() && this.waking) {
-          LoadingProgress()
-            .width(24)
-            .height(24)
-            
-            .transition(TransitionEffect.IDENTITY)
-        } else if (this.hostDown() && this.probing
-          && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
-          LoadingProgress()
-            .width(24)
-            .height(24)
-            
-            .transition(TransitionEffect.IDENTITY)
-        } else if (this.hostDown()
-          && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
+        } else if (this.model().icon === ConnectionRowIcon.Refresh) {
           Image($r('app.media.ic_refresh'))
             .width(24)
             .height(24)
-            
             .draggable(false)
             .transition(fadeTransition())
-        } else if (this.hostDown()) {
+        } else if (this.model().icon === ConnectionRowIcon.Power) {
           Image($r('app.media.ic_power'))
             .width(28)
             .height(28)
-            
             .draggable(false)
             .transition(fadeTransition())
-        } else if (this.primary() === ConnectAction.Terminate
-          || this.primary() === ConnectAction.Disconnect) {
+        } else if (this.model().icon === ConnectionRowIcon.Stop) {
           Image($r('app.media.ic_stop'))
             .width(22)
             .height(22)
-            
             .draggable(false)
             .transition(fadeTransition())
         } else {
           Image($r('app.media.ic_play'))
             .width(22)
             .height(22)
-            
             .draggable(false)
             .transition(fadeTransition())
         }
@@ -316,15 +278,18 @@ export struct ConnectionRow {
       .height(44)
       .borderRadius(22)
       
-      .opacity(this.wakeDisabled() ? 0.5 : 1.0)
+      .opacity(this.busy() || this.wakeDisabled() ? 0.5 : 1.0)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
-      .hoverEffect(this.wakeDisabled() ? HoverEffect.None : HoverEffect.Scale)
-      .bindTips(this.actionTip(), this.tipsOptions)
+      .hoverEffect(this.busy() || this.wakeDisabled() ? HoverEffect.None : HoverEffect.Scale)
+      .enabled(!this.busy())
+      .bindTips(this.model().actionTip, this.tipsOptions)
       .onClick(() => {
         this.primaryTap();
       })
+      .focusable(true)
+      .focusOnTouch(true)
 
       Row()
         .width(0)
@@ -337,7 +302,8 @@ export struct ConnectionRow {
     
     
     .onMouse((event: MouseEvent) => {
-      if (event.button === MouseButton.Right && event.action === MouseAction.Press) {
+      if (event.button === MouseButton.Right && event.action === MouseAction.Press
+        && this.menuAllowed()) {
         this.menuWinX = event.windowX;
         this.menuWinY = event.windowY;
         this.onRequestMenu();

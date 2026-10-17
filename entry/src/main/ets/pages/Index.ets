@@ -19,6 +19,8 @@ import { ControlDisc } from '../components/ControlDisc';
 import { FabButton } from '../components/FabButton';
 import { TextAction } from '../components/TextAction';
 import { PageBackground } from '../components/PageBackground';
+import { PageHeader, PageHeaderVariant } from '../components/PageHeader';
+import { StateView, StateViewKind } from '../components/StateView';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
 import { promptWolHelp } from '../utils/WolHelpPrompt';
 
@@ -351,6 +353,9 @@ struct Index {
   }
 
   private openRowMenu(connectionId: string): void {
+    if (this.connState(connectionId) === ConnectionState.Disconnecting) {
+      return;
+    }
     this.menuConnectionId = connectionId;
     this.menuSeq = this.menuSeq + 1;
   }
@@ -361,7 +366,11 @@ struct Index {
 
   private armRowMenu(index: number): void {
     const row: SavedConnection | undefined = this.connections[index];
-    this.armedMenuId = row === undefined ? '' : row.id;
+    if (row === undefined || this.connState(row.id) === ConnectionState.Disconnecting) {
+      this.armedMenuId = '';
+      return;
+    }
+    this.armedMenuId = row.id;
   }
 
   private releaseRowMenu(): void {
@@ -492,27 +501,11 @@ struct Index {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageBackground({ uri: this.backgroundUri })
       Column() {
-      Row() {
-        Image($r('app.media.app_icon'))
-          .width(44)
-          .height(44)
-          .borderRadius(11)
-          .draggable(false)
-        Column() {
-          Text($r('app.string.app_name'))
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            
-          Text('远程控制 Windows 桌面')
-            .fontSize(12)
-            
-            .margin({ top: 2 })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .margin({ left: 12 })
-
-        Blank()
-
+      PageHeader({
+        variant: PageHeaderVariant.Brand,
+        title: $r('app.string.app_name'),
+        subtitle: '远程控制 Windows 桌面'
+      }) {
         if (this.developerMode) {
           TextAction({
             label: '回放测试',
@@ -534,42 +527,20 @@ struct Index {
           }
         })
       }
-      .width('100%')
-      .padding({ left: 24, right: 24, top: 20, bottom: 16 })
-      
-
-      Divider()
 
       if (this.connections.length === 0) {
-        Column() {
-          Image($r('app.media.app_icon'))
-            .width(72)
-            .height(72)
-            .borderRadius(18)
-            .opacity(0.35)
-            .draggable(false)
-          Text('还没有保存的连接')
-            .fontSize(15)
-            
-            .margin({ top: 18 })
-          Text('点击右上角 + 添加一个远程桌面')
-            .fontSize(13)
-            
-            .margin({ top: 6 })
-          Button('添加连接')
-            .height(44)
-            .fontSize(15)
-            
-            .borderRadius(12)
-            .margin({ top: 22 })
-            .onClick(() => {
-              this.openNewConnection();
-            })
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
+        StateView({
+          kind: StateViewKind.Empty,
+          icon: $r('app.media.app_icon'),
+          title: '还没有保存的连接',
+          message: '点击右上角 + 添加一个远程桌面',
+          primaryLabel: '添加连接',
+          onPrimary: () => {
+            this.openNewConnection();
+          }
+        })
+          .layoutWeight(1)
+          .width('100%')
       } else {
         List({ space: 6 }) {
           ForEach(this.connections, (conn: SavedConnection, index: number) => {

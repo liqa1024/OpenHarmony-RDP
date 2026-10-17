@@ -1,4 +1,4 @@
-import { REVEAL_HINT_FADE_MS, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER } from '../components/SessionChrome';
+import { REVEAL_HINT_FADE_MS, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER } from './ToolbarContract';
 
 const TOUCH_HINT_HOLD_MS: number = 2000;
 const TOUCH_BAR_IN_MS: number = 180;

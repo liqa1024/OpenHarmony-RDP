@@ -38,6 +38,8 @@ export struct ScaleSetting {
       .onClick(() => {
         this.onModeChange(value);
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 
   @Builder

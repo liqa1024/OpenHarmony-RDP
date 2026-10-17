@@ -49,6 +49,8 @@ export struct FabButton {
         this.onTap();
       }
     })
+    .focusable(!this.loading)
+    .focusOnTouch(!this.loading)
   }
 }
 

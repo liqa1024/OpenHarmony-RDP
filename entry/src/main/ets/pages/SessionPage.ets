@@ -37,10 +37,11 @@ import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
-import { OutlineChip, TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
-  TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarIconChip, ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow,
-  formatLatency, ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
+import { ToolbarRevealHint, ToolbarTouchBar, TelemetryField,
+  formatLatency } from '../components/SessionChrome';
+import { SessionToolbar } from '../components/SessionToolbar';
+import { TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_NONE,
+  TOOLBAR_ZONE_TRIGGER } from '../services/ToolbarContract';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -87,7 +88,6 @@ struct SessionPage {
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
-  private tipsOptions: TipsOptions = {};
   private controller: SessionSurfaceController = new SessionSurfaceController();
   private shell: SessionShellController | undefined = undefined;
   private componentWidth: number = 0;
@@ -181,7 +181,7 @@ struct SessionPage {
     const settings: AppSettings = SettingsStore.load();
     this.developerMode = settings.developerMode;
     this.toolbarHeight = this.developerMode
-      ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT
+      ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT * 2
       : TOOLBAR_ROW_HEIGHT;
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
@@ -890,101 +890,48 @@ struct SessionPage {
   }
 
   @Builder
-  sessionToolbarMainRow() {
-    Row() {
-      if (this.isFullscreen) {
-        ToolbarIconChip({
-          icon: $r('app.media.ic_pin'),
-          iconSize: 20,
-          iconAngle: 45,
-          onTap: () => {
-            this.toggleToolbarPin();
-          }
-        })
-          .margin({ right: 10 })
-          .bindTips(this.toolbarPinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）', this.tipsOptions)
-      }
-      SessionTitle({
-        name: this.options.displayName(),
-        detail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator()
-      })
-      Blank()
-      if (this.transferWaiting || this.transferActive) {
-        ClipboardTransferStatus({
-          waiting: this.transferWaiting,
-          percent: this.transferPercent,
-          text: this.transferText,
-          speed: this.transferSpeed,
-          fileIndex: this.transferFileIndex,
-          fileCount: this.transferFileCount,
-          onCancel: (): void => {
-            this.clipboard?.cancelTransfer();
-          }
-        })
-      }
-      ClipboardButtons({
-        onCopy: (): void => {
-          this.clipboard?.copyRemoteToLocal();
-        },
-        pasteCallback: this.pasteButtonCallback
-      })
-      Row().width(16)
-      ToolbarChip({
-        label: this.isFullscreen ? '退出全屏' : '全屏',
-        onTap: () => {
-          this.shell?.toggleFullscreen();
-        }
-      })
-        .margin({ right: 8 })
-      ToolbarChip({
-        label: '最小化',
-        onTap: () => {
-          this.shell?.minimize();
-        }
-      })
-        .margin({ right: 8 })
-      ToolbarChip({
-        label: '断开',
-        onTap: () => {
-          this.shell?.disconnect();
-        }
-      })
-    }
-    .width('100%')
-    .height(TOOLBAR_ROW_HEIGHT)
-    .padding({ left: 16, right: 16 })
-  }
-
-  @Builder
   sessionToolbar() {
-    Row() {
-      Column() {
-        this.sessionToolbarMainRow()
-        if (this.state === ConnectionState.Connected && this.developerMode) {
-          this.toolbarTelemetry()
-        }
+    SessionToolbar({
+      titleName: this.options.displayName(),
+      titleDetail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator(),
+      isFullscreen: this.isFullscreen,
+      pinned: this.toolbarPinned,
+      toolbarWidthPercent: this.toolbarWidthPercent,
+      toolbarHeight: this.toolbarHeight,
+      showTelemetry: this.state === ConnectionState.Connected && this.developerMode,
+      telemetryFields: this.telemetryFields(),
+      detailFields: this.detailFields(),
+      showTransfer: this.transferWaiting || this.transferActive,
+      transferWaiting: this.transferWaiting,
+      transferPercent: this.transferPercent,
+      transferText: this.transferText,
+      transferSpeed: this.transferSpeed,
+      transferFileIndex: this.transferFileIndex,
+      transferFileCount: this.transferFileCount,
+      showClipboard: true,
+      pasteCallback: this.pasteButtonCallback,
+      onTogglePin: () => {
+        this.toggleToolbarPin();
+      },
+      onCopy: () => {
+        this.clipboard?.copyRemoteToLocal();
+      },
+      onCancelTransfer: () => {
+        this.clipboard?.cancelTransfer();
+      },
+      onToggleFullscreen: () => {
+        this.shell?.toggleFullscreen();
+      },
+      onMinimize: () => {
+        this.shell?.minimize();
+      },
+      onDisconnect: () => {
+        this.shell?.disconnect();
+      },
+      onPointerZone: (zone: number) => {
+        this.setToolbarPointerZone(zone);
       }
-      .width(this.toolbarWidthPercent + '%')
-      
-      .borderRadius(TOOLBAR_RADIUS)
-      .clip(true)
-      
-      
-      .onHover((isHover: boolean) => {
-        this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
-      })
-    }
-    .width('100%')
-    .justifyContent(FlexAlign.Center)
-    .hitTestBehavior(HitTestMode.None)
-    .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
-      .animation({ duration: 180, curve: Curve.EaseOut }))
-  }
-
-  @Builder
-  toolbarTelemetry() {
-    TelemetryRow({ fields: this.telemetryFields() })
-    TelemetryRow({ fields: this.detailFields() })
+    })
   }
 
   private telemetryFields(): TelemetryField[] {

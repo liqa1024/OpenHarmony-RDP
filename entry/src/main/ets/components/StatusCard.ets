@@ -57,7 +57,8 @@ export struct StatusCard {
       }
       .margin({ top: 24 })
     }
-    .width(360)
+    .width('90%')
+    .constraintSize({ maxWidth: 360 })
     .padding({ top: 32, bottom: 28, left: 28, right: 28 })
     .borderRadius(20)
     

@@ -1,5 +1,4 @@
 import { image } from '@kit.ImageKit';
-import { NvApp } from '../moonlight/MoonlightModels';
 import { ConnectAction, connectActionLabel } from '../model/Connections';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { ControlDisc } from './ControlDisc';
@@ -15,7 +14,6 @@ const ACTION_SIZE: number = 22;
 
 @Component
 export struct MoonlightAppTile {
-  app: NvApp = new NvApp();
   icon: image.PixelMap | undefined = undefined;
   @Prop isDefault: boolean = false;
   @Prop isRunning: boolean = false;
@@ -205,6 +203,8 @@ export struct MoonlightAppTile {
         this.onOpen();
       }
     })
+    .focusable(this.clickable())
+    .focusOnTouch(this.clickable())
   }
 }
 

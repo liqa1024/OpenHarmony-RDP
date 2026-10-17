@@ -1,13 +1,5 @@
-export const TOOLBAR_ROW_HEIGHT: number = 48;
-export const TOOLBAR_TELEMETRY_HEIGHT: number = 24;
-export const TOOLBAR_RADIUS: number = 14;
-export const TOOLBAR_ZONE_NONE: number = 0;
-export const TOOLBAR_ZONE_TRIGGER: number = 1;
-export const TOOLBAR_ZONE_BAR: number = 2;
-export const REVEAL_HINT_WIDTH: number = 96;
-export const REVEAL_HINT_HEIGHT: number = 3;
-export const REVEAL_HINT_FADE_MS: number = 140;
-export const TOUCH_BAR_HEIGHT: number = 4;
+import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH, TOOLBAR_TELEMETRY_HEIGHT,
+  TOUCH_BAR_HEIGHT } from '../services/ToolbarContract';
 
 @Component
 export struct ToolbarChip {
@@ -37,6 +29,8 @@ export struct ToolbarChip {
     .onClick(() => {
       this.onTap();
     })
+    .focusable(true)
+    .focusOnTouch(true)
   }
 }
 
@@ -67,6 +61,8 @@ export struct ToolbarIconChip {
     .onClick(() => {
       this.onTap();
     })
+    .focusable(true)
+    .focusOnTouch(true)
   }
 }
 
@@ -103,6 +99,8 @@ export struct OutlineChip {
       .onClick(() => {
         this.onTap();
       })
+      .focusable(true)
+      .focusOnTouch(true)
   }
 }
 

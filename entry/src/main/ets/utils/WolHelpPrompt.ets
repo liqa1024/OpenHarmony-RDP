@@ -52,7 +52,8 @@ function wolHelpContent(params: WolHelpParams) {
         params.onDismiss();
       })
   }
-  .width(320)
+  .width('90%')
+  .constraintSize({ maxWidth: 320 })
   .padding(24)
   .alignItems(HorizontalAlign.Start)
   

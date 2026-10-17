@@ -59,7 +59,8 @@ function pairingDialogContent(params: PairingDialogParams) {
         params.onCancel();
       })
   }
-  .width(300)
+  .width('90%')
+  .constraintSize({ maxWidth: 300 })
   .padding(24)
   .alignItems(HorizontalAlign.Center)
   
