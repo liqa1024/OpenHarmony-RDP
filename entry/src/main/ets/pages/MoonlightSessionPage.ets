@@ -25,7 +25,7 @@ import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
-import { SR_BACKEND_FSR } from '../model/RdpModels';
+import { SR_BACKEND_FSR } from '../model/Profiles';
 import { mapPicturePoint } from '../utils/PictureFit';
 import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';

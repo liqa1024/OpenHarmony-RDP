@@ -2,10 +2,10 @@ import { moonlightVideoFormats, moonlightVideoMaxFps } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_AUTO,
-  MoonlightProfile, MoonlightStreamConfig } from '../model/Connections';
-import { SrProfile } from '../model/RdpModels';
+  MoonlightProfile, MoonlightStreamConfig } from '../moonlight/MoonlightModels';
+import { SrProfile } from '../model/Profiles';
 import { SettingsStore } from './SettingsStore';
-import { GamepadDevices } from './input/GamepadInput';
+import { GamepadDevices } from './input/GamepadDevices';
 import { clampStreamFps, FPS_LIMIT_NONE, FPS_LIMIT_PANEL, FpsCeiling, recommendedBitrateKbps }
   from '../utils/MoonlightQuality';
 import { maxDisplayRefreshRate } from '../utils/DisplayUtil';

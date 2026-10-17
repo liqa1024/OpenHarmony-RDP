@@ -42,7 +42,7 @@
 | `services/SessionViewDelegate.ets` | 会话外壳与协议页之间的 host / hooks 契约（协议专属策略：输入装配、标题、事件与 surface、可见性、直达缩放、资源回收），外壳只调钩子、不含协议判断 |
 | `services/SessionShellController.ets` | **两协议共用的会话外壳**：窗口生命周期 / 焦点与可见性聚合、`RemoteCursor`、`ToolbarAutoHide`、输入管线、遮罩计时、快捷键拦截、surface 回调；协议差异经 `SessionViewDelegate` 注入 |
 | `services/SessionInput.ets` | **两协议共用的输入内核（瘦 Facade）**：只做编排（控制器调用顺序、对外 API、失焦全量释放汇总），策略在 `services/input/*`（见 [`session-layer.md`](session-layer.md) §8） |
-| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有，附 `GamepadDevices` 设备枚举）+ `HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口），以及两层各自的协议落地 `RdpInputSender`/`MoonlightInputSender`。控制器只把平台事件翻译成普通动词，**不自持投递策略**（限量在 `services/InputPort.ets` 的闸门） |
+| `services/input/*.ets` | 输入策略控制器：`PointerInput`/`KeyInput`/`TouchInput`/`TouchpadInput`/`WheelInput`/`PinchInput`（各关注点）+ `GamepadInput`（手柄，Moonlight 专有）与 `GamepadDevices`（设备枚举 / 槽位掩码，独立文件）+ `HeldInputs`（按住账本）/`InputPolicy`（时序几何常量 + 共享指针几何）/`InputSink`（类型与接口），以及两层各自的协议落地 `RdpInputSender`/`MoonlightInputSender`。控制器只把平台事件翻译成普通动词，**不自持投递策略**（限量在 `services/InputPort.ets` 的闸门） |
 | `services/InputPort.ets` | **L1 输入派发器 `SessionInputPort`**：控制器的 sink，也是整条输入流水线**唯一的限量实现**（窗口 / 速率上限 / 丢弃计数 / 离散前的冲刷）；动词一律入队给输入 worker，策略查询按本地状态回答（见 [`session-layer.md`](session-layer.md) §8） |
 | `services/InputProtocol.ets` | L1↔L2 的消息形状、投递类声明（每条流的窗口）与遥测形状 |
 | `services/TouchpadTapFilter.ets` | 触控板「双指双击＝中键」判定器：只吃触控板右键的按下/抬起/移动，用按下→抬起时长区分轻触与实体右键（拖动），输出经 `TouchpadTapTarget` 交回 `PointerInput`；状态与定时器自持有 |
@@ -74,7 +74,7 @@
 | `moonlight/MoonlightCrypto.ets` | Moonlight 配对加密原语（AES-ECB、SHA、RSA 签验） |
 | `moonlight/MoonlightHttp.ets` | Moonlight HTTP/HTTPS（mTLS、证书 pin）传输（`@ohos.net.http`） |
 | `moonlight/MoonlightXml.ets` | Moonlight 控制端点响应的 XML 解析 |
-| `moonlight/MoonlightModels.ets` | Moonlight 协议数据模型（serverinfo/applist/pair 等） |
+| `moonlight/MoonlightModels.ets` | Moonlight 协议数据模型（serverinfo/applist/pair 等）与画质模型（`ML_*` 常量、`MoonlightProfile`、`MoonlightStreamConfig`） |
 | `utils/ConnectAction.ets` | `connectActionFor`：由会话状态与主机目标推出动作（协议中立），连接行与卡片共用 |
 | `model/ConnectAction.ets` | 连接动作词汇与文案（`ConnectAction` / `connectActionLabel`），无依赖叶子模块 |
 | `utils/KeyMapper.ets` | **两协议共用的单键表**：一次给出 RDP 的 `scancode`+`extended` 与 Moonlight 的 `vk`+`extended`（及 lock 位）；`describe` 供设置页按键框显示（见 [`session-layer.md`](session-layer.md) §8） |
@@ -88,8 +88,9 @@
 | `utils/PairingPrompt.ets` | Moonlight 配对 PIN 弹窗（四位数字居中放大，握手结束自动关闭） |
 | `utils/HostSearchPrompt.ets` | mDNS 主机选择弹窗（只渲染已搜到的主机，已添加的置灰） |
 | `model/SessionSignal.ets` | 协议无关的会话信号（生命周期 `Connected/Disconnected/Error` + 协议自带码的 `UiEvent`），manager 只消费 `kind` |
-| `model/Connections.ets` | 协议无关的连接模型：`SavedConnection` **抽象基类**（只放共有字段 `id/updatedAt/host/port/name/protocol` 与共有行为）与 `RdpConnection` / `MoonlightConnection` 子类（各自持有本协议字段 + 图标、副标题、主连接动作、行菜单数据、记录 / 导出编解码）、`PendingConnection` / `SessionRequests` / `ConnectOrigin`、Moonlight 画质模型与 `ML_*` / `PROTOCOL_*` 常量、行菜单数据 |
-| `model/RdpModels.ets` | RDP 专属模型：`RdpConnectOptions`（原生 `RdpOptions` 实现）、`RdpEvent` / `RdpPointerFlags` / `RdpTouchFlags` / `RdpLockFlags` / `RdpClipKind`、RDP 显示 / 超分 / 高级 profile 与 `SR_BACKEND_*` |
+| `model/Connections.ets` | 协议无关的连接模型：`SavedConnection` **抽象基类**（只放共有字段 `id/updatedAt/host/port/name/protocol` 与共有行为）与 `RdpConnection` / `MoonlightConnection` 子类（各自持有本协议字段 + 图标、副标题、主连接动作、行菜单数据、记录 / 导出编解码）、`PendingConnection` / `SessionRequests` / `ConnectOrigin`、`PROTOCOL_*` 常量、行菜单数据；Moonlight 画质模型与 `ML_*` 在 `moonlight/MoonlightModels.ets` |
+| `model/Profiles.ets` | 两协议共用的显示 / 超分 / 高级 profile：`DisplayProfile`、`SrProfile`、`SrSetting`、`AdvancedProfile` 与 `SR_BACKEND_*` |
+| `model/RdpModels.ets` | RDP 专属模型：`RdpConnectOptions`（原生 `RdpOptions` 实现）、`RdpEvent` / `RdpPointerFlags` / `RdpTouchFlags` / `RdpLockFlags` / `RdpClipKind` |
 | `components/*.ets` | 共享 UI 组件（清单与参数契约见 [`ui-design.md`](ui-design.md) §4.1） |
 | `entrybackupability/EntryBackupAbility.ets` | 系统备份/恢复 Ability |
 
@@ -114,7 +115,10 @@
 
 | 路径 | 职责 |
 |---|---|
-| `binding/hmrdp_napi.cpp` | Node-API 翻译层：类型化句柄注册表、结构化事件 + 计数拉取、位图缓冲句柄、各原语导出 |
+| `binding/hmrdp_napi.cpp` | Node-API 模块表与 RDP 会话原语：类型化句柄注册表、结构化事件 + 计数拉取、位图缓冲句柄 |
+| `binding/hmrdp_napi_util.{h,cpp}` | Node-API 共享件：标量/字符串/属性取值、`Capability` 判定返回、`bufferRead` 句柄登记、快捷键拦截注册表 |
+| `binding/hmrdp_napi_moonlight.cpp` | Moonlight 域的 N-API 原语：编解码能力、会话窗口 / 输入、音频、剪贴板与遥测事件 |
+| `binding/hmrdp_napi_gamepad.cpp` | Game Controller Kit 的 N-API 原语（设备列表与带来源的轴事件） |
 | `binding/handle_registry.h` | 类型化句柄注册表（单调不复用、按类型隔离、查找交出 `shared_ptr`） |
 | `core/hmrdp_session.{h,cpp}` | FreeRDP 客户端生命周期、输入、事件、光标位图解码（xor/and 掩码→BGRA，缩放策略在 ArkTS）、会话遥测；画面由 gdi 出、经呈现器上屏 |
 | `core/hmrdp_bitmap.{h,cpp}` | 协议无关 BGRA 位图原语：预乘 alpha 面积平均缩小 / Lanczos3+锐化放大（`scaleBgraBitmap` 句柄进句柄出）+ FNV 内容哈希（光标去重键）；策略在 ArkTS `RemoteCursor` |
@@ -130,7 +134,8 @@
 | `core/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`rdp-gfx.md`](rdp-gfx.md) §7.3） |
 | `core/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`rdp-gfx.md`](rdp-gfx.md) §6） |
 | `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测（含超分后端与视频导入判定）+ 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（device 按需使能交换链与外部内存扩展，见 §4.1） |
-| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass**；两种输入（桌面图 / 视频图）都只喂一个 `PresentInput`（见 [`present.md`](present.md) §4） |
+| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲；两种输入（桌面图 / 视频图）都只喂一个 `PresentInput`（见 [`present.md`](present.md) §4） |
+| `core/hmrdp_vk_sr.cpp` | `VkRenderer` 的超分辨率实现：XEngine 与 FSR（EASU + RCAS）两个后端的资源、屏障与录制（见 [`present.md`](present.md) §4） |
 | `core/hmrdp_vk_video.{h,cpp}` | **Moonlight 视频导入**（`VkVideoImport`）：解码器交出的缓冲按 **R8 字节图**外部内存导入 + 片元自己做 YUV→RGB（不依赖驱动解释缓冲）→ 会话分辨率的 picture；导入按缓冲缓存（每帧零分配），只对外 `Ensure / needsRebuild / importCacheFull / Import / RecordConvert`，配方与判据见 [`present.md`](present.md) §4 |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针、视频解码桥、音频 Opus 解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §2.3 / [`moonlight-control.md`](moonlight-control.md) §1） |

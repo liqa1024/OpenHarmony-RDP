@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { AdvancedProfile, DisplayProfile, RdpConnectOptions } from '../model/RdpModels';
+import { RdpConnectOptions } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile } from '../model/Profiles';
 import { ConnectOrigin, PendingConnection, RdpConnection } from '../model/Connections';
 import { CredentialStore } from './CredentialStore';
 import { DeviceCapabilities } from './DeviceCapabilities';

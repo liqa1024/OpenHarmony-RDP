@@ -1,7 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { UIContext } from '@kit.ArkUI';
-import { ML_RES_FIXED, MoonlightConnection, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT,
+import { MoonlightConnection, PendingConnection, PROTOCOL_MOONLIGHT,
   ConnectOrigin } from '../model/Connections';
+import { ML_RES_FIXED, MoonlightProfile } from '../moonlight/MoonlightModels';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { SessionManager } from './SessionManager';
 import { SettingsStore } from './SettingsStore';

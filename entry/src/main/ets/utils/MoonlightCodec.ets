@@ -1,5 +1,5 @@
 import { moonlightVideoCodec, moonlightVideoWarning } from 'libhmrdp.so';
-import { ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC } from '../model/Connections';
+import { ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC } from '../moonlight/MoonlightModels';
 import { CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE } from '../services/DeviceCapabilities';
 
 // SCM_* family masks the host advertises in ServerCodecModeSupport (Limelight.h).

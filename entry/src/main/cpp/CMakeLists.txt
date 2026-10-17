@@ -119,6 +119,9 @@ endforeach()
 
 add_library(hmrdp SHARED
     binding/hmrdp_napi.cpp
+    binding/hmrdp_napi_util.cpp
+    binding/hmrdp_napi_moonlight.cpp
+    binding/hmrdp_napi_gamepad.cpp
     core/hmrdp_session.cpp
     core/hmrdp_bitmap.cpp
     core/hmrdp_file_clipboard.cpp
@@ -142,6 +145,7 @@ core/hmrdp_video_decoder.cpp
     core/hmrdp_gles_presenter.cpp
     core/hmrdp_vk_context.cpp
     core/hmrdp_vk_renderer.cpp
+    core/hmrdp_vk_sr.cpp
     core/hmrdp_vk_video.cpp
     core/hmrdp_xeg.cpp
     ${HMRDP_SHADER_HEADERS}

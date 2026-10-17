@@ -1,5 +1,5 @@
 import { ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
-  ML_FPS_MAX, ML_FPS_MIN } from '../model/Connections';
+  ML_FPS_MAX, ML_FPS_MIN } from '../moonlight/MoonlightModels';
 
 // Bits per pixel per frame by codec, calibrated to common recommended bitrates
 // (1080p60 H.264 ~ 20 Mbps, 4K60 HEVC ~ 50 Mbps). AUTO assumes a modern codec wins.

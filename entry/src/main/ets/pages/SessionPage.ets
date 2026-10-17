@@ -5,7 +5,8 @@ import { BusinessError, pasteboard, SuppressWarnings, SuppressWarningsType } fro
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
-import { RdpConnectOptions, RdpClipKind, RdpEvent, SR_BACKEND_FSR } from '../model/RdpModels';
+import { RdpConnectOptions, RdpClipKind, RdpEvent } from '../model/RdpModels';
+import { SR_BACKEND_FSR } from '../model/Profiles';
 import { PendingConnection, SessionRequests } from '../model/Connections';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';

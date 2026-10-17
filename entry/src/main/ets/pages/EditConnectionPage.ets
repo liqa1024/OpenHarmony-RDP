@@ -2,16 +2,19 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { AdvancedProfile, DisplayProfile, RdpConnectOptions,
-  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile, SrSetting } from '../model/RdpModels';
+import { RdpConnectOptions } from '../model/RdpModels';
+import { AdvancedProfile, DisplayProfile,
+  SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile, SrSetting } from '../model/Profiles';
 import { ConnectOrigin, EditConnectionParams,
+  MoonlightConnection, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
+  RdpConnection, SavedConnection } from '../model/Connections';
+import {
   ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
   ML_COLORSPACE_REC601, ML_COLORSPACE_REC709,
   ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_RES_FIXED, ML_RES_FOLLOW_SCREEN,
-  ML_SCALE_AUTO, ML_SCALE_MANUAL,
-  MoonlightConnection, MoonlightProfile, PendingConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
-  RdpConnection, SavedConnection } from '../model/Connections';
+  ML_SCALE_AUTO, ML_SCALE_MANUAL, MoonlightProfile
+} from '../moonlight/MoonlightModels';
 import { ConnectionStore } from '../services/ConnectionStore';
 import { CredentialStore } from '../services/CredentialStore';
 import { PairResult } from '../moonlight/MoonlightModels';

@@ -3,11 +3,14 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { SR_BACKEND_XENGINE } from '../model/RdpModels';
+import { SR_BACKEND_XENGINE } from '../model/Profiles';
 import {
-  ConnectionExport, ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709,
-  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SavedConnection
+  ConnectionExport, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SavedConnection
 } from '../model/Connections';
+import {
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709,
+  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO
+} from '../moonlight/MoonlightModels';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
 import { DeviceCapabilities } from './DeviceCapabilities';

@@ -514,7 +514,9 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
 
 - **通用层文件 / 类不带协议名**；协议专属一律带 `Rdp` / `Moonlight` 前缀（`RdpNative`、
   `RdpSessionBackend`、`RdpLauncher`、`RdpTelemetry`、`Moonlight*`）。
-- **模型分文件**：`model/Connections.ets` 放共用模型（含抽象基类与两个子类），`model/RdpModels.ets` 放 RDP 专属。
+- **模型分文件**：`model/Connections.ets` 放共用模型（含抽象基类与两个子类），`model/Profiles.ets` 放两协议共用的
+  显示 / 超分 / 高级 profile，`model/RdpModels.ets` 放 RDP 专属，
+  `moonlight/MoonlightModels.ets` 放 Moonlight 协议与画质模型（`ML_*` 常量、`MoonlightProfile`、`MoonlightStreamConfig`）。
 - **协议判断只允许出现在**协议专属类与唯一组合入口（`ConnectionLauncher` / `SessionBackendFactory`）：
   `if (protocol === …)` / `isMoonlight()`（已删除）/ `instanceof XxxConnection` 不得出现在通用层。
 - 会话页内 `backend instanceof RdpSessionBackend` / `instanceof MoonlightSessionBackend` 取自身后端属

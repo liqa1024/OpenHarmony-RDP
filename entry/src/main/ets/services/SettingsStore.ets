@@ -4,12 +4,14 @@ import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   AdvancedProfile, DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE, SrProfile, SrSetting
-} from '../model/RdpModels';
+} from '../model/Profiles';
+import {
+  MoonlightConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnection
+} from '../model/Connections';
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_RES_FOLLOW_SCREEN,
-  ML_SCALE_AUTO, MoonlightConnection, MoonlightProfile, PROTOCOL_MOONLIGHT, PROTOCOL_RDP,
-  RdpConnection
-} from '../model/Connections';
+  ML_SCALE_AUTO, MoonlightProfile
+} from '../moonlight/MoonlightModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
 import { defaultDisplay } from '../utils/DisplayUtil';

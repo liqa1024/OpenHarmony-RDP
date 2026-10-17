@@ -138,7 +138,7 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `ControlStream.c` 加 `0x5509` 收发（`HMRDP_CURSOR` 标记；enable 幂等，重复发送安全）；
   `hmrdp_moonlight_session.*` 把回调转成原生光标回调，并**在 `LiStartConnection` 返回后**发 enable；
   **拆流前发 disable（`LiStopConnection` 之前、控制流仍在）**——模式由主机按连接持有，中断连接不会自行还原；
-  `hmrdp_napi.cpp` 把形状（含 `shapeId`）经 `g_buffers` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新
+  `binding/hmrdp_napi_moonlight.cpp` 把形状（含 `shapeId`）经 `AddBufferHandle` 句柄送到 ArkTS（事件第 4 个对象参数）；会话页把更新
   交给两协议共用的安装器 `services/RemoteCursor.ets`（去重键 = `shapeId` + 几何，倍率恒 1，见
   [`session-layer.md`](session-layer.md) §10「远端光标同步」）。设置项是 `mlCursorMode` 三选一（见
   [`moonlight-connection.md`](moonlight-connection.md) §5）。
