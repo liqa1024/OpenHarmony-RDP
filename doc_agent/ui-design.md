@@ -109,7 +109,8 @@
 
 | 表面 | 挂载点 | 形态 |
 |---|---|---|
-| `CARD` | 列表 / 编辑 / 设置卡片、连接状态卡 | 组件磨砂 `COMPONENT_REGULAR`，跟随系统深浅色 |
+| `LIST_ROW` | 主界面连接列表行（横栏卡片） | 组件磨砂 `COMPONENT_REGULAR` + 顶光渐变，跟随系统深浅色 |
+| `CARD` | 编辑 / 设置卡片、连接状态卡 | 组件磨砂 `COMPONENT_REGULAR`，跟随系统深浅色 |
 | `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 组件磨砂 `COMPONENT_THIN`，跟随系统 |
 | `FLOATING` | 会话工具栏 | 半透明深色底（`TOOLBAR_BG`）+ 组件磨砂 `COMPONENT_THIN` + 深色档（**固定深色，不跟随系统**） |
 | `OVERLAY` | Toast、Tips、右键菜单 | 系统材质 `THICK`（options 路径） |
@@ -127,9 +128,9 @@
   它压在未知的远端画面上，白字需要这层底保证对比度。
 - 弹窗只用 options 材质；内容根节点不铺不透明底（旧系统无材质时才铺 `card_bg` 兜底）。
 - 磨砂不铺在整块持续变化的内容上；`FLOATING` 是压在远端画面上的小面积 chrome，属有意的成本取舍。
-- **体积感来自光，不来自描边**：`CARD` / `CONTROL` 由 `FrostedModifier` 叠一层顶光渐变
+- **体积感来自光，不来自描边**：主界面的连接列表行（`LIST_ROW`）由 `FrostedModifier` 叠一层顶光渐变
   （角度 180；顶部白 15% → 中段透明 → 底部黑 5%），模拟光源从上方落在玻璃内部；
-  `FLOATING` 不加内部光，由调用点加 `TOOLBAR_SHADOW` 向下投影，与远端画面分层。
+  `CARD` / `CONTROL` / `FLOATING` 不加内部光，体积感交给各自的 `shadow`，避免其它页面每张卡都发亮。
 - 卡片沿用自己的 `shadow` 通用属性；不要再叠材质阴影。
 - 工具栏里的按钮不属于表面清单：它们用半透明填充（`TOOLBAR_*_CHIP_BG`），靠填充与状态反馈分层。
 

@@ -8,6 +8,7 @@ const IMMERSIVE_MATERIAL_MIN_API: number = 26;
 // component frosted style, fixed here instead of being derived at runtime.
 export enum FrostedSurface {
   FLOATING,
+  LIST_ROW,
   CARD,
   CONTROL
 }
@@ -64,9 +65,11 @@ export class SystemMaterial {
   }
 }
 
-// Content surfaces carry an internal top light so the frosted fill reads as a
-// volume instead of a flat tint; the toolbar skips it (it gets a shadow at the
-// call site instead) so the remote image behind it does not wash out.
+// The main connection list's horizontal rows carry an internal top light so the
+// frosted fill reads as a volume instead of a flat tint. Other content surfaces
+// stay flat: their volume comes from the component shadow, and a light layer on
+// every card only adds noise across the settings / app pages. The floating session
+// bar also stays flat (it already sits on an unknown remote image).
 export class FrostedModifier<T extends CommonMethod<T>> implements AttributeModifier<T> {
   private readonly surface: FrostedSurface;
 
@@ -79,11 +82,13 @@ export class FrostedModifier<T extends CommonMethod<T>> implements AttributeModi
       instance.backgroundBlurStyle(BlurStyle.COMPONENT_THIN, { colorMode: ThemeColorMode.DARK });
       return;
     }
-    instance.backgroundBlurStyle(this.surface === FrostedSurface.CARD
-      ? BlurStyle.COMPONENT_REGULAR : BlurStyle.COMPONENT_THIN);
-    instance.linearGradient({
-      angle: 180,
-      colors: [['#26FFFFFF', 0], ['#00FFFFFF', 0.5], ['#0D000000', 1]]
-    });
+    instance.backgroundBlurStyle(this.surface === FrostedSurface.CONTROL
+      ? BlurStyle.COMPONENT_THIN : BlurStyle.COMPONENT_REGULAR);
+    if (this.surface === FrostedSurface.LIST_ROW) {
+      instance.linearGradient({
+        angle: 180,
+        colors: [['#26FFFFFF', 0], ['#00FFFFFF', 0.5], ['#0D000000', 1]]
+      });
+    }
   }
 }

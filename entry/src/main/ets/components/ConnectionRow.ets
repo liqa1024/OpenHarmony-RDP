@@ -41,7 +41,7 @@ export struct ConnectionRow {
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private cardFrost: AttributeModifier<RowAttribute> =
-    new FrostedModifier<RowAttribute>(FrostedSurface.CARD);
+    new FrostedModifier<RowAttribute>(FrostedSurface.LIST_ROW);
 
   private action(): ConnectAction {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);

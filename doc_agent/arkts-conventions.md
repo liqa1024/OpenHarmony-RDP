@@ -89,18 +89,19 @@ ArkUI 的系统材质 `uiMaterial` 自 **API 26.0.0** 起提供。材质等级�
   （`SystemMaterial.of(DIALOG) === undefined` 时）。这是**唯一**保留版本差异的地方。
 - **材质对象建一次复用**：改参数会触发系统重算材质，每次渲染新建会让材质层一直重绘。
 - **内容表面的磨砂是确定样式，不留材质/兜底双分支**：`FrostedSurface` → `FrostedModifier`，
-  `CARD`→`COMPONENT_REGULAR`、`CONTROL` / `FLOATING`→`COMPONENT_THIN`，`FLOATING` 固定
+  `LIST_ROW` / `CARD`→`COMPONENT_REGULAR`、`CONTROL` / `FLOATING`→`COMPONENT_THIN`，`FLOATING` 固定
   `colorMode: ThemeColorMode.DARK`。磨砂填充自带跟随深浅色的底色；需要固定色调时**可以直接铺
   `backgroundColor`**，磨砂叠在它之上（`FLOATING` 的 `TOOLBAR_BG` 就是这样）。旧材质时代
   "不透明底会盖住材质"的限制不适用于组件磨砂。不探测能力、不因系统版本改变分支。
-  - `CARD` / `CONTROL` 由 modifier 另叠一层顶光渐变（角度 180；顶部白 15% → 中段透明 → 底部黑 5%），
-    给磨砂填充体积感；`FLOATING` 不加内部光。
+  - `LIST_ROW` 由 modifier 另叠一层顶光渐变（角度 180；顶部白 15% → 中段透明 → 底部黑 5%），
+    给主界面连接横栏体积感；`CARD` / `CONTROL` / `FLOATING` 不加内部光，体积感由各自的 `shadow` 负责。
   - `FLOATING` 的投影由调用点加（`TOOLBAR_SHADOW`），不进 modifier：它浮在远端画面上，需要与画面分层；
     卡片各有自己的 `shadow`。
 - **表面清单**：
   | 表面 | 挂载点 | 形态 |
   |---|---|---|
-  | `CARD` | 列表 / 编辑 / 设置卡片、连接状态卡片 | 组件磨砂 `COMPONENT_REGULAR`（跟随系统） |
+  | `LIST_ROW` | 主界面连接列表行（横栏卡片） | 组件磨砂 `COMPONENT_REGULAR` + 顶光渐变（跟随系统） |
+  | `CARD` | 编辑 / 设置卡片、连接状态卡片 | 组件磨砂 `COMPONENT_REGULAR`（跟随系统） |
   | `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 组件磨砂 `COMPONENT_THIN`（跟随系统） |
   | `FLOATING` | 会话工具栏 | 半透明深色底（`TOOLBAR_BG`）+ 组件磨砂 `COMPONENT_THIN` + `colorMode: ThemeColorMode.DARK`（固定深色） |
   | `OVERLAY` | Toast、Tips、右键菜单 | options `systemMaterial` `THICK` |
