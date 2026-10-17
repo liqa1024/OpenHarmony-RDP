@@ -9,6 +9,7 @@ import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
+  DEFAULT_TOOLBAR_WIDTH_PERCENT,
   ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
   ML_CURSOR_OFF, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SR_RATIO_PRESETS,
@@ -63,6 +64,7 @@ struct SettingsPage {
   @State hoverDelay: number = 700;
   @State hideDelay: number = 250;
   @State triggerWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
+  @State toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   @State touchpadAlwaysEngine: boolean = false;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
@@ -256,6 +258,7 @@ struct SettingsPage {
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.triggerWidthPercent = settings.toolbarTriggerWidthPercent;
+    this.toolbarWidthPercent = settings.toolbarWidthPercent;
   }
 
   private applyInteraction(settings: AppSettings, rdp: boolean): void {
@@ -404,6 +407,7 @@ struct SettingsPage {
     settings.toolbarHoverDelay = this.hoverDelay;
     settings.toolbarHideDelay = this.hideDelay;
     settings.toolbarTriggerWidthPercent = this.triggerWidthPercent;
+    settings.toolbarWidthPercent = this.toolbarWidthPercent;
     if (this.protocol === PROTOCOL_RDP) {
       settings.touchpadScrollSpeed = this.touchpadScrollSpeed;
       settings.pinchZoomSpeed = this.pinchZoomSpeed;
@@ -2031,6 +2035,25 @@ struct SettingsPage {
                 disabledReason: '',
                 onChange: (v: number) => {
                   this.triggerWidthPercent = v;
+                  this.persist();
+                }
+              })
+
+              Divider().color($r('app.color.divider'))
+
+              this.sliderItem({
+                title: '工具栏宽度',
+                subtitle: '工具栏不铺满窗口，按窗口宽度百分比居中显示为圆角浮条；100% 即占满',
+                value: this.toolbarWidthPercent,
+                min: 50,
+                max: 100,
+                step: 5,
+                unit: ' %',
+                precision: 0,
+                enabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.toolbarWidthPercent = v;
                   this.persist();
                 }
               })

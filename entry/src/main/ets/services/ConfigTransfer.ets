@@ -241,6 +241,9 @@ export class ConfigTransfer {
     settings.toolbarTriggerWidthPercent =
       ConfigTransfer.readNumber(rec, 'toolbarTriggerWidthPercent',
         settings.toolbarTriggerWidthPercent);
+    settings.toolbarWidthPercent = Math.min(Math.max(
+      ConfigTransfer.readNumber(rec, 'toolbarWidthPercent', settings.toolbarWidthPercent),
+      50), 100);
     settings.touchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
     settings.scrollEngineFallback = ConfigTransfer.readBoolean(rec,

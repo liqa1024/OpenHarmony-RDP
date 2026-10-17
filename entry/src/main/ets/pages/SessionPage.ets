@@ -25,8 +25,8 @@ import { RdpCounters } from '../services/RdpTelemetry';
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
-import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, PINCH_MODE_ZOOM,
-  SettingsStore } from '../services/SettingsStore';
+import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, DEFAULT_TOOLBAR_WIDTH_PERCENT,
+  PINCH_MODE_ZOOM, SettingsStore } from '../services/SettingsStore';
 import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
@@ -39,11 +39,11 @@ import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCod
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
-  TOOLBAR_BG, TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
-  TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW, TOOLBAR_TELEMETRY_HEIGHT,
+  TOOLBAR_BG, TOOLBAR_CHIP_BG, TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
+  TOOLBAR_PROGRESS, TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
-  ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow, formatLatency, metricColor,
-  ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
+  ToolbarIconChip, ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow,
+  formatLatency, metricColor, ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
@@ -87,6 +87,7 @@ struct SessionPage {
   @State statusText: string = '正在连接...';
   @State showOverlay: boolean = true;
   @State showToolbar: boolean = true;
+  @State toolbarPinned: boolean = false;
   @State revealHintFill: number = 0;
   @State touchBarFill: number = 0;
   @State isFullscreen: boolean = false;
@@ -139,6 +140,7 @@ struct SessionPage {
   private enginePointerX: number = 0;
   private enginePointerY: number = 0;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
+  private toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   private hoverDelay: number = 350;
   private hideDelay: number = 250;
   private sink: SessionInputPort | undefined = undefined;
@@ -202,6 +204,7 @@ struct SessionPage {
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
+    this.toolbarWidthPercent = settings.toolbarWidthPercent;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
     this.scrollEngine = !settings.scrollEngineFallback;
     // Presentation picks Vulkan when the device supports it (the presenter falls back to GLES
@@ -278,7 +281,8 @@ struct SessionPage {
     };
     const hooks: SessionShellHooks = {
       overlayDelayMs: (): number => 0,
-      isPinned: (): boolean => this.clipboard?.isTransferBlocking() ?? false,
+      isPinned: (): boolean => this.toolbarPinned
+        || (this.clipboard?.isTransferBlocking() ?? false),
       makeInput: (backend: SessionBackend | undefined, load: AppSettings): SessionInput | undefined =>
         this.makeInput(load),
       configureCursor: (cursor: RemoteCursor, load: AppSettings): void => {
@@ -704,6 +708,11 @@ struct SessionPage {
     this.shell?.refreshAutoHide();
   }
 
+  private toggleToolbarPin(): void {
+    this.toolbarPinned = !this.toolbarPinned;
+    this.refreshToolbarAutoHide();
+  }
+
   private onRevealZone(inBand: boolean): void {
     this.setToolbarPointerZone(inBand ? TOOLBAR_ZONE_TRIGGER : TOOLBAR_ZONE_NONE);
   }
@@ -928,6 +937,19 @@ struct SessionPage {
   @Builder
   sessionToolbarMainRow() {
     Row() {
+      if (this.isFullscreen) {
+        ToolbarIconChip({
+          icon: $r('app.media.ic_pin'),
+          chipBg: this.toolbarPinned ? TOOLBAR_ACCENT_CHIP_BG : TOOLBAR_CHIP_BG,
+          iconSize: 20,
+          iconAngle: 45,
+          onTap: () => {
+            this.toggleToolbarPin();
+          }
+        })
+          .margin({ right: 10 })
+          .bindTips(this.toolbarPinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）', this.tipsOptions)
+      }
       SessionTitle({
         name: this.options.displayName(),
         detail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator()
@@ -982,20 +1004,28 @@ struct SessionPage {
 
   @Builder
   sessionToolbar() {
-    Column() {
-      this.sessionToolbarMainRow()
-      if (this.state === ConnectionState.Connected && this.developerMode) {
-        this.toolbarTelemetry()
+    Row() {
+      Column() {
+        this.sessionToolbarMainRow()
+        if (this.state === ConnectionState.Connected && this.developerMode) {
+          this.toolbarTelemetry()
+        }
       }
+      .width(this.toolbarWidthPercent + '%')
+      .backgroundColor(TOOLBAR_BG)
+      .borderRadius(TOOLBAR_RADIUS)
+      .clip(true)
+      .attributeModifier(this.toolbarFrost)
+      .shadow(TOOLBAR_SHADOW)
+      // In fullscreen the strip covers the surface, so only its own hover reports the pointer.
+      .onHover((isHover: boolean) => {
+        this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
+      })
     }
     .width('100%')
-    .backgroundColor(TOOLBAR_BG)
-    .attributeModifier(this.toolbarFrost)
-    .shadow(TOOLBAR_SHADOW)
-    // In fullscreen the strip covers the surface, so only its own hover reports the pointer.
-    .onHover((isHover: boolean) => {
-      this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
-    })
+    .justifyContent(FlexAlign.Center)
+    // The empty sides belong to the picture: only the bar itself takes the hit.
+    .hitTestBehavior(HitTestMode.None)
     .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }

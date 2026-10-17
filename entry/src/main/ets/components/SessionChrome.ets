@@ -7,8 +7,8 @@ export const TOOLBAR_FG: string = '#FFFFFF';
 export const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
 export const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
 export const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
-export const TOOLBAR_NEUTRAL_CHIP_BG: string = '#806E737B';
-export const TOOLBAR_DANGER_CHIP_BG: string = '#66F05A40';
+export const TOOLBAR_NEUTRAL_CHIP_BG: string = '#996E737B';
+export const TOOLBAR_DANGER_CHIP_BG: string = '#99F05A40';
 export const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
 export const TOOLBAR_SHADOW: ShadowOptions = {
   radius: 18,
@@ -19,6 +19,7 @@ export const TOOLBAR_SHADOW: ShadowOptions = {
 export const TOOLBAR_PROGRESS: string = '#5B9CF8';
 export const TOOLBAR_ROW_HEIGHT: number = 48;
 export const TOOLBAR_TELEMETRY_HEIGHT: number = 24;
+export const TOOLBAR_RADIUS: number = 14;
 export const METRIC_GOOD: string = '#4ADE80';
 export const METRIC_WARN: string = '#FBBF24';
 export const METRIC_BAD: string = '#F87171';
@@ -56,6 +57,40 @@ export struct ToolbarChip {
         .margin({ left: this.icon !== undefined ? 4 : 0 })
     }
     .padding({ left: this.hPad, right: this.hPad, top: 7, bottom: 7 })
+    .backgroundColor(this.chipBg)
+    .borderRadius(8)
+    .hoverEffect(HoverEffect.Highlight)
+    .onClick(() => {
+      this.onTap();
+    })
+  }
+}
+
+// Icon-only chip for stateful toolbar actions (the pin): the same fill vocabulary as
+// ToolbarChip, so an active state reads as a filled accent rather than a different control.
+@Component
+export struct ToolbarIconChip {
+  @Prop icon: Resource | undefined = undefined;
+  @Prop chipBg: ResourceColor = TOOLBAR_CHIP_BG;
+  @Prop fgColor: ResourceColor = TOOLBAR_FG;
+  @Prop iconSize: number = 16;
+  @Prop iconAngle: number = 0;
+  onTap: () => void = () => {};
+
+  build() {
+    Row() {
+      if (this.icon !== undefined) {
+        Image(this.icon)
+          .width(this.iconSize)
+          .height(this.iconSize)
+          .fillColor(this.fgColor)
+          .rotate({ angle: this.iconAngle })
+          .draggable(false)
+      }
+    }
+    .width(32)
+    .height(32)
+    .justifyContent(FlexAlign.Center)
     .backgroundColor(this.chipBg)
     .borderRadius(8)
     .hoverEffect(HoverEffect.Highlight)

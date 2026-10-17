@@ -24,7 +24,7 @@ import { moonlightDecodeTokens, moonlightVideoStatus } from '../utils/MoonlightC
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
-  SettingsStore } from '../services/SettingsStore';
+  DEFAULT_TOOLBAR_WIDTH_PERCENT, SettingsStore } from '../services/SettingsStore';
 import { mapPicturePoint } from '../utils/PictureFit';
 import { joinSessionTags, srTag } from '../utils/SessionTags';
 import { gpuFrameLabel, gpuSplitLabel, usToMs } from '../utils/TelemetryFormat';
@@ -40,10 +40,11 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
 import { showNotice, showToast } from '../utils/UiUtil';
-import { ClipboardButtons, METRIC_BAD, TOOLBAR_BG, TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG_SECONDARY,
-  TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW,
+import { ClipboardButtons, METRIC_BAD, TOOLBAR_ACCENT_CHIP_BG, TOOLBAR_BG, TOOLBAR_CHIP_BG,
+  TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_RADIUS,
+  TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
-  TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
+  TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarIconChip, ToolbarRevealHint,
   ToolbarTouchBar,
   formatLatency, metricColor } from '../components/SessionChrome';
 
@@ -129,6 +130,7 @@ struct MoonlightSessionPage {
   private enginePointerX: number = 0;
   private enginePointerY: number = 0;
   private toolbarHeight: number = TOOLBAR_ROW_HEIGHT;
+  private toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   private hoverDelay: number = 700;
   private hideDelay: number = 250;
 
@@ -136,6 +138,7 @@ struct MoonlightSessionPage {
   @State statusText: string = '正在连接…';
   @State connectOverlayVisible: boolean = false;
   @State showToolbar: boolean = true;
+  @State toolbarPinned: boolean = false;
   @State revealHintFill: number = 0;
   @State touchBarFill: number = 0;
   @State isFullscreen: boolean = false;
@@ -226,6 +229,7 @@ struct MoonlightSessionPage {
     this.hoverDelay = settings.toolbarHoverDelay;
     this.hideDelay = settings.toolbarHideDelay;
     this.revealWidthPercent = settings.toolbarTriggerWidthPercent;
+    this.toolbarWidthPercent = settings.toolbarWidthPercent;
     this.cursorMode = settings.mlCursorMode;
     this.relativeMouse = settings.mlRelativeMouse && settings.mlCursorMode === ML_CURSOR_HIDE_SYSTEM;
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
@@ -288,7 +292,7 @@ struct MoonlightSessionPage {
     };
     const hooks: SessionShellHooks = {
       overlayDelayMs: (): number => CONNECT_OVERLAY_DELAY_MS,
-      isPinned: (): boolean => false,
+      isPinned: (): boolean => this.toolbarPinned,
       makeInput: (backend: SessionBackend | undefined, load: AppSettings): SessionInput | undefined =>
         this.makeInput(backend, load),
       configureCursor: (cursor: RemoteCursor, load: AppSettings): void => {
@@ -894,72 +898,99 @@ struct MoonlightSessionPage {
     });
   }
 
+  private toggleToolbarPin(): void {
+    this.toolbarPinned = !this.toolbarPinned;
+    this.shell?.refreshAutoHide();
+  }
+
   @Builder
   sessionToolbar() {
-    Column() {
-      Row() {
-        SessionTitle({
-          name: this.hostLabel,
-          detail: this.titleDetail()
-        })
-        Blank()
-        if (this.state === ConnectionState.Connected && this.clipboardAvailable) {
-          ClipboardButtons({
-            onCopy: (): void => {
-              this.clipboard?.copyRemoteToLocal();
-            },
-            pasteCallback: this.pasteButtonCallback
+    Row() {
+      Column() {
+        Row() {
+          if (this.isFullscreen) {
+            ToolbarIconChip({
+              icon: $r('app.media.ic_pin'),
+              chipBg: this.toolbarPinned ? TOOLBAR_ACCENT_CHIP_BG : TOOLBAR_CHIP_BG,
+              iconSize: 20,
+              iconAngle: 45,
+              onTap: () => {
+                this.toggleToolbarPin();
+              }
+            })
+              .margin({ right: 10 })
+              .bindTips(this.toolbarPinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）',
+                this.tipsOptions)
+          }
+          SessionTitle({
+            name: this.hostLabel,
+            detail: this.titleDetail()
           })
-          Row().width(16)
+          Blank()
+          if (this.state === ConnectionState.Connected && this.clipboardAvailable) {
+            ClipboardButtons({
+              onCopy: (): void => {
+                this.clipboard?.copyRemoteToLocal();
+              },
+              pasteCallback: this.pasteButtonCallback
+            })
+            Row().width(16)
+          }
+          ToolbarChip({
+            label: this.isFullscreen ? '退出全屏' : '全屏',
+            onTap: () => {
+              this.shell?.toggleFullscreen();
+            }
+          })
+            .margin({ right: 8 })
+          ToolbarChip({
+            label: '最小化',
+            onTap: () => {
+              this.shell?.minimize();
+            }
+          })
+            .margin({ right: 8 })
+          ToolbarChip({
+            label: '断开',
+            chipBg: TOOLBAR_NEUTRAL_CHIP_BG,
+            onTap: () => {
+              this.disconnect();
+            }
+          })
+            .margin({ right: 8 })
+            .bindTips('仅断开与主机的连接，主机上的应用保持运行', this.tipsOptions)
+          ToolbarChip({
+            label: '关闭应用',
+            chipBg: TOOLBAR_DANGER_CHIP_BG,
+            onTap: () => {
+              this.closeAppAndDisconnect();
+            }
+          })
+            .bindTips('关闭主机上正在运行的应用，并断开连接', this.tipsOptions)
         }
-        ToolbarChip({
-          label: this.isFullscreen ? '退出全屏' : '全屏',
-          onTap: () => {
-            this.shell?.toggleFullscreen();
-          }
-        })
-          .margin({ right: 8 })
-        ToolbarChip({
-          label: '最小化',
-          onTap: () => {
-            this.shell?.minimize();
-          }
-        })
-          .margin({ right: 8 })
-        ToolbarChip({
-          label: '断开',
-          chipBg: TOOLBAR_NEUTRAL_CHIP_BG,
-          onTap: () => {
-            this.disconnect();
-          }
-        })
-          .margin({ right: 8 })
-          .bindTips('仅断开与主机的连接，主机上的应用保持运行', this.tipsOptions)
-        ToolbarChip({
-          label: '关闭应用',
-          chipBg: TOOLBAR_DANGER_CHIP_BG,
-          onTap: () => {
-            this.closeAppAndDisconnect();
-          }
-        })
-          .bindTips('关闭主机上正在运行的应用，并断开连接', this.tipsOptions)
+        .width('100%')
+        .height(TOOLBAR_ROW_HEIGHT)
+        .padding({ left: 16, right: 16 })
+        if (this.state === ConnectionState.Connected && this.developerMode) {
+          TelemetryRow({ fields: this.telemetryFields() })
+          TelemetryRow({ fields: this.detailFields() })
+        }
       }
-      .width('100%')
-      .height(TOOLBAR_ROW_HEIGHT)
-      .padding({ left: 16, right: 16 })
-      if (this.state === ConnectionState.Connected && this.developerMode) {
-        TelemetryRow({ fields: this.telemetryFields() })
-        TelemetryRow({ fields: this.detailFields() })
-      }
+      .width(this.toolbarWidthPercent + '%')
+      .backgroundColor(TOOLBAR_BG)
+      .borderRadius(TOOLBAR_RADIUS)
+      .clip(true)
+      .attributeModifier(this.toolbarFrost)
+      .shadow(TOOLBAR_SHADOW)
+      // In fullscreen the bar covers the surface, so only its own hover reports it.
+      .onHover((isHover: boolean) => {
+        this.shell?.setPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
+      })
     }
     .width('100%')
-    .backgroundColor(TOOLBAR_BG)
-    .attributeModifier(this.toolbarFrost)
-    .shadow(TOOLBAR_SHADOW)
-    // In fullscreen the bar covers the surface, so only its own hover reports it.
-    .onHover((isHover: boolean) => {
-      this.shell?.setPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
-    })
+    .justifyContent(FlexAlign.Center)
+    // The empty sides belong to the picture: only the bar itself takes the hit.
+    .hitTestBehavior(HitTestMode.None)
     .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }

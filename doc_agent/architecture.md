@@ -56,7 +56,7 @@
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因（模式见 §5） |
 | `services/SystemMaterial.ets` | 内容表面的组件磨砂（`FrostedModifier`）与弹窗系统材质的统一入口：磨砂档位固定、弹窗材质按 API 版本构造并复用（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
-| `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议会话页共用 |
+| `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输与用户固定钉住），两协议会话页共用 |
 | `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用（去重、目标尺寸、热点、安装、捏合定位光标、可见性归属），见 [`session-layer.md`](session-layer.md) §10 |
 | `services/RdpTelemetry.ets` | 工具栏遥测的 ArkTS 聚合：把原生原始样本换算成速率与每帧均值（口径见 [`rdp-session.md`](rdp-session.md) §5） |
 | `services/MoonlightTelemetry.ets` | Moonlight 工具栏遥测的 ArkTS 聚合：把原生累计样本差分/求均成速率与每帧均值（字段与口径见 [`moonlight-session.md`](moonlight-session.md) §2，原生采样见 [`moonlight-native.md`](moonlight-native.md) §2） |

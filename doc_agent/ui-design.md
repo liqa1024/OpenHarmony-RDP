@@ -76,8 +76,8 @@
 | `TOOLBAR_FG` / `TOOLBAR_FG_SECONDARY` | `#FFFFFF` / `#B8BCC4` | 主 / 次文字与图标 |
 | `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底（半透明白） |
 | `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底（半透明强调色） |
-| `TOOLBAR_NEUTRAL_CHIP_BG` | `#806E737B` | 非破坏性的会话退出 chip（Moonlight「断开」）：半透明中性灰 |
-| `TOOLBAR_DANGER_CHIP_BG` | `#66F05A40` | 破坏性 chip（断开 / 关闭应用）：半透明危险红 |
+| `TOOLBAR_NEUTRAL_CHIP_BG` | `#996E737B` | 非破坏性的会话退出 chip（Moonlight「断开」）：半透明中性灰 |
+| `TOOLBAR_DANGER_CHIP_BG` | `#99F05A40` | 破坏性 chip（断开 / 关闭应用）：半透明危险红 |
 | `TOOLBAR_CHIP_BORDER` | `#59FFFFFF` | 描边（次级）chip 边框 |
 | `TOOLBAR_PROGRESS` | `#5B9CF8` | 传输进度条 |
 | `METRIC_GOOD` / `METRIC_WARN` / `METRIC_BAD` | `#4ADE80` / `#FBBF24` / `#F87171` | 遥测阈值着色 |
@@ -90,6 +90,7 @@
 | 圆角 | 输入框 `10`、按钮 `12`、chip `8`、描边 chip `6`、列表行 `14`、图标 tile `11`、FAB 圆形 `28` |
 | 字号 | 列表页标题 `20` Bold；页标题 / 状态卡标题 `17` Medium；行标题 `14`；分节小标题 `13`；副标题 `11`；chip `13`；遥测 `12`；徽标 `9–10` |
 | 行高 | 带副标题的设置行 `58`；纯开关行 `48`；会话工具栏主行 `48`、遥测行 `24` |
+| 工具栏 | 圆角 `14`（`TOOLBAR_RADIUS`）；宽度为窗口百分比（默认与触发区域宽度同值 `50`，开发者选项可调），居中定宽 |
 | 按钮 | 编辑页高 `48` / 字号 `16`；设置页高 `44` / 字号 `15`；均 `radius 12` |
 | chip | `padding { left:14, right:14, top:6, bottom:6 }`、`margin { right:8, bottom:8 }` |
 | 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6`；工具栏 `radius 18 / #4D000000 / offsetY 6`（`TOOLBAR_SHADOW`） |
@@ -206,7 +207,7 @@ Column(page_bg, 100%×100%)
   **「正在连接」卡带显示阈值**（约 1000ms）：Moonlight 的会话窗在串流起来之前就开着，若卡立即出现只会一闪而过，
   故连接态的卡等这段阈值、仍未起来才显示；失败 / 断开 / 正在断开一律立即显示。RDP 窗口只在连上后才开，因此
   天然不出现连接卡。连接卡的副标题与 RDP 同形（连接目标 `targetLabel`），协议阶段文案不进卡片。
-- 工具栏结构：主行（会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
+- 工具栏结构：主行（固定 + 会话名 + 分辨率 + 传输区 + 剪贴板 chip + 全屏 / 最小化 / 断开）+ 可选遥测行（开发者模式）。
   遥测行字段**定宽**，数字位数变化不推动后面的项，故读数要能自己收缩：延迟类（网络 / 主机 / 本机）
   超过 `1s` 改用秒（如 `1.2s`），毫秒位数再多也不溢出定宽字段（`SessionChrome.formatLatency`）；
   Moonlight 的 `FPS 当前/目标` 在**目标帧率为三位数**时用更宽一档、两位数收窄，既不截断也不留白。
@@ -242,6 +243,7 @@ Column(page_bg, 100%×100%)
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
 | `ScaleSetting` | `ScaleSetting.ets` | `mode, allowNone?, allowCustomInput?, percentText, autoPercent, title?, subtitle?, noneHint?, warning?, customWarning?, onModeChange, onPercentTextChange` | 缩放设置块（RDP 会话桌面缩放 / Moonlight 基地版虚拟屏缩放共用）：`自动 / 手动（+可选「不额外设置」）` 模式行 + 档位 `SCALE_PRESETS` chip 组 + 可选自定义输入 + 红字提示（`不额外设置` 档隐藏能力类警告）；`@Prop` 值 + 回调把状态留在页面（`@Builder` 传值不刷新，故做成组件） |
 | `ToolbarChip` | `SessionChrome.ets` | `label, chipBg?, fgColor?, icon?, hPad?, onTap` | 会话工具栏实心 chip |
+| `ToolbarIconChip` | `SessionChrome.ets` | `icon, chipBg?, fgColor?, iconSize?, iconAngle?, onTap` | 会话工具栏图标 chip（固定 / 取消固定） |
 | `SessionTitle` | `SessionChrome.ets` | `name, detail` | 工具栏左侧「名称 + 分辨率」标题（RDP / Moonlight 共用，差异只在 `detail` 后缀） |
 | `OutlineChip` | `SessionChrome.ets` | `label, onTap` | 会话工具栏描边 chip（取消） |
 | `MetricItem` | `SessionChrome.ets` | `text, metricWidth?, fgColor?, leftGap?` | 遥测字段：定宽排布；`metricWidth` 0 表示按内容宽（带宽项） |

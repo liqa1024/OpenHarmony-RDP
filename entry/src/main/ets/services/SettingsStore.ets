@@ -22,6 +22,7 @@ const TAG: string = 'HmRdpSettings';
 const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
 export const DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT: number = 50;
+export const DEFAULT_TOOLBAR_WIDTH_PERCENT: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
 
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
@@ -57,6 +58,7 @@ export class AppSettings {
   toolbarHoverDelay: number = DEFAULT_TOOLBAR_HOVER_DELAY;
   toolbarHideDelay: number = DEFAULT_TOOLBAR_HIDE_DELAY;
   toolbarTriggerWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
+  toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
   pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   touchpadMiddleDoubleTap: boolean = false;
@@ -170,6 +172,9 @@ export class SettingsStore {
       settings.toolbarTriggerWidthPercent =
         SettingsStore.readNumber(store, 'toolbarTriggerWidthPercent',
           settings.toolbarTriggerWidthPercent);
+      settings.toolbarWidthPercent = Math.min(Math.max(
+        SettingsStore.readNumber(store, 'toolbarWidthPercent', settings.toolbarWidthPercent),
+        50), 100);
       settings.touchpadScrollSpeed =
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.scrollEngineFallback = SettingsStore.readBoolean(store,
@@ -288,6 +293,18 @@ export class SettingsStore {
         'mlShortcutPassthrough', settings.mlShortcutPassthrough);
       settings.mlVmouseHintShown = SettingsStore.readBoolean(store, 'mlVmouseHintShown',
         settings.mlVmouseHintShown);
+      // The width option first shipped with a wider default; a store written then
+      // must not keep that value as if it were a user choice.
+      try {
+        if (!SettingsStore.readBoolean(store, 'toolbarWidthMigrated', false)) {
+          settings.toolbarWidthPercent = DEFAULT_TOOLBAR_WIDTH_PERCENT;
+          store.putSync('toolbarWidthPercent', settings.toolbarWidthPercent);
+          store.putSync('toolbarWidthMigrated', true);
+        }
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'toolbar width migration failed: %{public}s',
+          JSON.stringify(error));
+      }
     }
     return settings;
   }
@@ -301,6 +318,7 @@ export class SettingsStore {
       store.putSync('toolbarHoverDelay', settings.toolbarHoverDelay);
       store.putSync('toolbarHideDelay', settings.toolbarHideDelay);
       store.putSync('toolbarTriggerWidthPercent', settings.toolbarTriggerWidthPercent);
+      store.putSync('toolbarWidthPercent', settings.toolbarWidthPercent);
       store.putSync('touchpadScrollSpeed', settings.touchpadScrollSpeed);
       store.putSync('scrollEngineFallback', settings.scrollEngineFallback);
       store.putSync('pinchZoomSpeed', settings.pinchZoomSpeed);
