@@ -93,7 +93,7 @@
 | 工具栏 | 圆角 `14`（`TOOLBAR_RADIUS`）；宽度为窗口百分比（默认与触发区域宽度同值 `50`，开发者选项可调），居中定宽 |
 | 按钮 | 编辑页高 `48` / 字号 `16`；设置页高 `44` / 字号 `15`；均 `radius 12` |
 | chip | `padding { left:14, right:14, top:6, bottom:6 }`、`margin { right:8, bottom:8 }` |
-| 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6`；工具栏 `radius 18 / #4D000000 / offsetY 6`（`TOOLBAR_SHADOW`） |
+| 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 16 / #33000000 / offsetY 5`；FAB `radius 18 / #33000000 / offsetY 6`；工具栏 `radius 18 / #4D000000 / offsetY 6`（`TOOLBAR_SHADOW`） |
 | 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；控件出现 / 消失 `300 / 240ms`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
 
 约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见「设计原则」与 §4）。
@@ -111,7 +111,7 @@
 | 表面 | 挂载点 | 形态 |
 |---|---|---|
 | `LIST_ROW` | 主界面连接列表行（横栏卡片） | 组件磨砂 `COMPONENT_REGULAR` + 顶光渐变，跟随系统深浅色 |
-| `CARD` | 编辑 / 设置卡片、连接状态卡 | 组件磨砂 `COMPONENT_REGULAR`，跟随系统深浅色 |
+| `CARD` | 页头 `HeaderBar`、编辑 / 设置卡片、连接状态卡 | 组件磨砂 `COMPONENT_REGULAR`，跟随系统深浅色 |
 | `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 组件磨砂 `COMPONENT_THIN`，跟随系统 |
 | `FLOATING` | 会话工具栏 | 半透明深色底（`TOOLBAR_BG`）+ 组件磨砂 `COMPONENT_THIN` + 深色档（**固定深色，不跟随系统**） |
 | `OVERLAY` | Toast、Tips、右键菜单 | 系统材质 `THICK`（options 路径） |
@@ -147,11 +147,16 @@ Column(page_bg, 100%×100%)
 └─ 内容区（Scroll → 宽 720 居中卡片，§3.3；列表页为 List）
 ```
 
+- 主界面 / 设置页 / Moonlight 应用页可设**自定义背景图片**（通用设置「外观」，三页默认共用一张；后两页可单独覆盖）：
+  图片由 `PageBackground` 铺满页面，`ImageFit.Cover`，再叠一层 25% `page_bg` 遮罩；页头用 `CARD` 磨砂透出画面。
+  同一条 URI 在页面间复用，切换页面只换内容、不切换/重载图片。见
+  [`settings-and-storage.md`](settings-and-storage.md) §2。
+
 ### 3.2 页头 HeaderBar
 
 「左动作 + 中标题 + `Blank()` + 右侧 slot」，`.padding({ left:24, right:24, top:10, bottom:8 })`，下面一条 `Divider`。
-整条页头铺 `card_bg`（跟随深浅色）：浅色 `#FFFFFF`、深色 `#1B1B1D`，文字用 `text_primary` / `text_secondary`，
-与底色的对比分别约 15:1 / 13:1；底部 `Divider` 保留，用来和 `page_bg` 的内容区分开。
+整条页头用 `CARD` 档组件磨砂（`FrostedModifier`），不再铺不透明 `card_bg`：有背景图片时透出模糊的画面，
+无图片时透出 `page_bg`；文字仍用 `text_primary` / `text_secondary`，底部 `Divider` 保留。
 
 - 左动作：`TextAction`（hover / press 有强调色反馈，`components/TextAction.ets`）。
 - 标题：`17` Medium `text_primary`，`margin left 16`。

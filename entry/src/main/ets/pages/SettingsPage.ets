@@ -1,4 +1,6 @@
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { picker } from '@kit.CoreFileKit';
 import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Profiles';
 import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
@@ -6,6 +8,7 @@ import { ML_BITRATE_DEFAULT_KBPS,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL } from '../moonlight/MoonlightModels';
 import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
+import { BackgroundImage } from '../services/BackgroundImage';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
 import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
@@ -16,7 +19,7 @@ import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDT
   SettingsStore, srRatioLabel } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
-import { showConfirm } from '../utils/UiUtil';
+import { showConfirm, showToast } from '../utils/UiUtil';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
 import { MAX_DESKTOP_SIZE, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
@@ -26,6 +29,7 @@ import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
 import { FrostedCard } from '../components/FrostedCard';
+import { PageBackground } from '../components/PageBackground';
 import { ProtocolTabs, TAB_COMMON } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
 import { SettingSliderRow } from '../components/SettingSliderRow';
@@ -33,6 +37,10 @@ import { SettingToggleRow } from '../components/SettingToggleRow';
 
 // @Builder parameters are only reactive when passed as a single object literal
 // (by reference); passing primitives by value would freeze the displayed value.
+const WALLPAPER_MAIN: number = 0;
+const WALLPAPER_SETTINGS: number = 1;
+const WALLPAPER_APPS: number = 2;
+
 class SliderItemConfig {
   title: string = '';
   subtitle: string = '';
@@ -106,6 +114,10 @@ struct SettingsPage {
   private mlSrReason: string = '';
   @State developerMode: boolean = false;
   @State gfxCapture: boolean = false;
+  @State wallpaperPath: string = '';
+  @State wallpaperUri: string = '';
+  @State settingsWallpaperPath: string = '';
+  @State appsWallpaperPath: string = '';
   @State protocol: number = PROTOCOL_RDP;
   @State mlResMode: number = ML_RES_FOLLOW_SCREEN;
   @State mlWidthText: string = '';
@@ -176,6 +188,10 @@ struct SettingsPage {
 
     this.applyWindowSettings(settings);
     this.applyDeveloperSettings(settings);
+    this.wallpaperPath = settings.backgroundImage;
+    this.wallpaperUri = BackgroundImage.uriOf(settings.backgroundImage);
+    this.settingsWallpaperPath = settings.settingsBackgroundImage;
+    this.appsWallpaperPath = settings.appsBackgroundImage;
 
     if (this.protocol === PROTOCOL_RDP) {
       this.useRdpCursor = settings.useRdpCursor;
@@ -401,6 +417,9 @@ struct SettingsPage {
       this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
     settings.sessionFullscreen = this.sessionFullscreen;
     settings.developerMode = this.developerMode;
+    settings.backgroundImage = this.wallpaperPath;
+    settings.settingsBackgroundImage = this.settingsWallpaperPath;
+    settings.appsBackgroundImage = this.appsWallpaperPath;
     settings.gfxCapture = this.gfxCapture;
     settings.touchHighRate = this.touchHighRate;
     settings.scrollEngineFallback = this.scrollEngineFallback;
@@ -486,13 +505,88 @@ struct SettingsPage {
   }
 
   private resetDefaults(): void {
+    const oldWallpapers: string[] =
+      [this.wallpaperPath, this.settingsWallpaperPath, this.appsWallpaperPath];
     const defaults: AppSettings = SettingsStore.defaults();
     if (!this.audioSupported) {
       defaults.enableAudio = false;
       defaults.mlLowLatencyAudio = false;
     }
     SettingsStore.save(defaults);
+    for (const path of oldWallpapers) {
+      BackgroundImage.remove(path);
+    }
     this.syncFromStore();
+  }
+
+  private pageBackgroundUri(): string {
+    return BackgroundImage.uriOf(this.settingsWallpaperPath.length > 0
+      ? this.settingsWallpaperPath : this.wallpaperPath);
+  }
+
+  private wallpaperPathOf(target: number): string {
+    if (target === WALLPAPER_SETTINGS) {
+      return this.settingsWallpaperPath;
+    }
+    if (target === WALLPAPER_APPS) {
+      return this.appsWallpaperPath;
+    }
+    return this.wallpaperPath;
+  }
+
+  private setWallpaperPath(target: number, path: string): void {
+    if (target === WALLPAPER_SETTINGS) {
+      this.settingsWallpaperPath = path;
+      return;
+    }
+    if (target === WALLPAPER_APPS) {
+      this.appsWallpaperPath = path;
+      return;
+    }
+    this.wallpaperPath = path;
+    this.wallpaperUri = BackgroundImage.uriOf(path);
+  }
+
+  private async chooseBackground(target: number): Promise<void> {
+    const context: common.Context | undefined = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      showToast(this.getUIContext(), '无法获取应用上下文');
+      return;
+    }
+    try {
+      const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 1;
+      options.fileSuffixFilters = ['图片|.jpg,.jpeg,.png,.webp,.bmp,.heic,.heif'];
+      const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(context);
+      const uris: string[] = await documentPicker.select(options);
+      if (uris.length === 0) {
+        return;
+      }
+      const dest: string = await BackgroundImage.importFromUri(context.filesDir, uris[0]);
+      if (dest.length === 0) {
+        showToast(this.getUIContext(), '无法读取所选图片');
+        return;
+      }
+      const old: string = this.wallpaperPathOf(target);
+      this.setWallpaperPath(target, dest);
+      if (old.length > 0 && old !== dest) {
+        BackgroundImage.remove(old);
+      }
+      this.persist();
+      showToast(this.getUIContext(), '背景图片已更新');
+    } catch (error) {
+      const err: BusinessError = error as BusinessError;
+      if (err.code === 13900042) {
+        return;
+      }
+      showToast(this.getUIContext(), '无法读取所选图片');
+    }
+  }
+
+  private clearBackground(target: number): void {
+    BackgroundImage.remove(this.wallpaperPathOf(target));
+    this.setWallpaperPath(target, '');
+    this.persist();
   }
 
   private confirmExport(): void {
@@ -1128,7 +1222,9 @@ struct SettingsPage {
   }
 
   build() {
-    Column() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      PageBackground({ uri: this.pageBackgroundUri() })
+      Column() {
       HeaderBar({
         title: '设置',
         leftLabel: '返回',
@@ -1663,6 +1759,144 @@ struct SettingsPage {
             }
 
             if (this.protocol === TAB_COMMON) {
+            Text('外观')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .margin({ bottom: 4 })
+
+            Row() {
+              Stack() {
+                if (this.wallpaperUri.length > 0) {
+                  Image(this.wallpaperUri)
+                    .width('100%')
+                    .height('100%')
+                    .objectFit(ImageFit.Cover)
+                    .draggable(false)
+                } else {
+                  Text('默认')
+                    .fontSize(11)
+                    .fontColor($r('app.color.text_tertiary'))
+                }
+              }
+              .width(96)
+              .height(60)
+              .borderRadius(8)
+              .backgroundColor($r('app.color.input_bg'))
+              .clip(true)
+
+              Column() {
+                Text('背景图片').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text('默认用于主界面；设置页与 Moonlight 应用页未单独设置时也使用这张')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              .margin({ left: 12 })
+
+              Button('选择图片')
+                .height(36)
+                .fontSize(13)
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.chooseBackground(WALLPAPER_MAIN);
+                })
+            }
+            .width('100%')
+            .padding({ top: 14, bottom: this.wallpaperPath.length > 0 ? 4 : 14 })
+
+            if (this.wallpaperPath.length > 0) {
+              Row() {
+                Blank()
+                TextAction({
+                  label: '恢复默认背景',
+                  muted: true,
+                  onTap: () => {
+                    this.clearBackground(WALLPAPER_MAIN);
+                  }
+                })
+              }
+              .width('100%')
+              .padding({ bottom: 10 })
+            }
+
+            Divider().color($r('app.color.divider'))
+
+            Row() {
+              Column() {
+                Text('设置页背景').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text(this.settingsWallpaperPath.length > 0 ? '已单独设置' : '跟随默认背景')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Button('选择图片')
+                .height(36)
+                .fontSize(13)
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.chooseBackground(WALLPAPER_SETTINGS);
+                })
+
+              if (this.settingsWallpaperPath.length > 0) {
+                TextAction({
+                  label: '清除',
+                  muted: true,
+                  onTap: () => {
+                    this.clearBackground(WALLPAPER_SETTINGS);
+                  }
+                })
+                  .margin({ left: 4 })
+              }
+            }
+            .width('100%')
+            .padding({ top: 10, bottom: 10 })
+
+            Divider().color($r('app.color.divider'))
+
+            Row() {
+              Column() {
+                Text('Moonlight 应用页背景').fontSize(14).fontColor($r('app.color.text_primary'))
+                Text(this.appsWallpaperPath.length > 0 ? '已单独设置' : '跟随默认背景')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Button('选择图片')
+                .height(36)
+                .fontSize(13)
+                .fontColor($r('app.color.accent'))
+                .backgroundColor($r('app.color.input_bg'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.chooseBackground(WALLPAPER_APPS);
+                })
+
+              if (this.appsWallpaperPath.length > 0) {
+                TextAction({
+                  label: '清除',
+                  muted: true,
+                  onTap: () => {
+                    this.clearBackground(WALLPAPER_APPS);
+                  }
+                })
+                  .margin({ left: 4 })
+              }
+            }
+            .width('100%')
+            .padding({ top: 10, bottom: 10 })
+
             Divider().color($r('app.color.divider'))
 
             Text('窗口')
@@ -2087,6 +2321,9 @@ struct SettingsPage {
       .layoutWeight(1)
       .scrollBar(BarState.Auto)
       .align(Alignment.Top)
+    }
+    .width('100%')
+    .height('100%')
     }
     .width('100%')
     .height('100%')

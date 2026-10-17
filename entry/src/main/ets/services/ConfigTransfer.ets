@@ -89,6 +89,11 @@ export class ConfigTransfer {
       const config: ConfigFile = new ConfigFile();
       config.exportedAt = Date.now();
       config.settings = SettingsStore.load();
+      // The wallpaper lives in this device's sandbox; a path in the file would be
+      // meaningless (or point at a missing file) on the importing device.
+      config.settings.backgroundImage = '';
+      config.settings.settingsBackgroundImage = '';
+      config.settings.appsBackgroundImage = '';
       const saved: SavedConnection[] = ConnectionStore.list();
       const exported: ConnectionExport[] = [];
       for (const conn of saved) {
@@ -230,6 +235,12 @@ export class ConfigTransfer {
 
   private static readSettings(raw: Object | undefined): AppSettings {
     const settings: AppSettings = new AppSettings();
+    // The wallpaper is a local sandbox asset: an import must neither clear the
+    // current one nor adopt the exporting device's path.
+    const local: AppSettings = SettingsStore.load();
+    settings.backgroundImage = local.backgroundImage;
+    settings.settingsBackgroundImage = local.settingsBackgroundImage;
+    settings.appsBackgroundImage = local.appsBackgroundImage;
     if (raw === undefined || raw === null) {
       return settings;
     }

@@ -101,7 +101,7 @@ ArkUI 的系统材质 `uiMaterial` 自 **API 26.0.0** 起提供。材质等级�
   | 表面 | 挂载点 | 形态 |
   |---|---|---|
   | `LIST_ROW` | 主界面连接列表行（横栏卡片） | 组件磨砂 `COMPONENT_REGULAR` + 顶光渐变（跟随系统） |
-  | `CARD` | 编辑 / 设置卡片、连接状态卡片 | 组件磨砂 `COMPONENT_REGULAR`（跟随系统） |
+  | `CARD` | 页头 `HeaderBar`、编辑 / 设置卡片、连接状态卡片 | 组件磨砂 `COMPONENT_REGULAR`（跟随系统） |
   | `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 组件磨砂 `COMPONENT_THIN`（跟随系统） |
   | `FLOATING` | 会话工具栏 | 半透明深色底（`TOOLBAR_BG`）+ 组件磨砂 `COMPONENT_THIN` + `colorMode: ThemeColorMode.DARK`（固定深色） |
   | `OVERLAY` | Toast、Tips、右键菜单 | options `systemMaterial` `THICK` |

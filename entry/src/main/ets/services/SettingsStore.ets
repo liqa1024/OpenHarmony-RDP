@@ -91,6 +91,11 @@ export class AppSettings {
   srRatioPercent: number = SR_RATIO_PRESETS[0];
   srBackend: number = SR_BACKEND_XENGINE;
   developerMode: boolean = false;
+  // Sandbox path of the main page wallpaper; empty keeps the theme background.
+  backgroundImage: string = '';
+  // Optional per-page overrides; empty falls back to `backgroundImage`.
+  settingsBackgroundImage: string = '';
+  appsBackgroundImage: string = '';
   gfxCapture: boolean = false;
   mlFps: number = 60;
   mlBitrateAuto: boolean = true;
@@ -237,6 +242,13 @@ export class SettingsStore {
       settings.srBackend = SettingsStore.readNumber(store, 'srBackend', settings.srBackend);
       settings.developerMode =
         SettingsStore.readBoolean(store, 'developerMode', settings.developerMode);
+      settings.backgroundImage =
+        SettingsStore.readString(store, 'backgroundImage', settings.backgroundImage);
+      settings.settingsBackgroundImage =
+        SettingsStore.readString(store, 'settingsBackgroundImage',
+          settings.settingsBackgroundImage);
+      settings.appsBackgroundImage =
+        SettingsStore.readString(store, 'appsBackgroundImage', settings.appsBackgroundImage);
       settings.gfxCapture = SettingsStore.readBoolean(store, 'gfxCapture', settings.gfxCapture);
       settings.mlFps = SettingsStore.readNumber(store, 'mlFps', settings.mlFps);
       settings.mlBitrateKbps =
@@ -350,6 +362,9 @@ export class SettingsStore {
       store.putSync('srRatioPercent', settings.srRatioPercent);
       store.putSync('srBackend', settings.srBackend);
       store.putSync('developerMode', settings.developerMode);
+      store.putSync('backgroundImage', settings.backgroundImage);
+      store.putSync('settingsBackgroundImage', settings.settingsBackgroundImage);
+      store.putSync('appsBackgroundImage', settings.appsBackgroundImage);
       store.putSync('gfxCapture', settings.gfxCapture);
       store.putSync('mlFps', settings.mlFps);
       store.putSync('mlBitrateKbps', settings.mlBitrateKbps);
@@ -691,6 +706,19 @@ export class SettingsStore {
       const value: preferences.ValueType = store.getSync(key, fallback);
       if (typeof value === 'boolean') {
         return value as boolean;
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'read %{public}s failed: %{public}s', key, JSON.stringify(error));
+    }
+    return fallback;
+  }
+
+  private static readString(store: preferences.Preferences, key: string,
+    fallback: string): string {
+    try {
+      const value: preferences.ValueType = store.getSync(key, fallback);
+      if (typeof value === 'string') {
+        return value as string;
       }
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'read %{public}s failed: %{public}s', key, JSON.stringify(error));

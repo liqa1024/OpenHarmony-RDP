@@ -56,6 +56,7 @@
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因（模式见 §5） |
 | `services/SystemMaterial.ets` | 内容表面的组件磨砂（`FrostedModifier`）与弹窗系统材质的统一入口：磨砂档位固定、弹窗材质按 API 版本构造并复用（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
+| `services/BackgroundImage.ets` | 页面背景图片（主界面 / 设置页 / Moonlight 应用页）的沙箱拷贝、URI 解析与文件清理（选择器的 URI 只在当次有效，显示用沙箱路径；见 [`settings-and-storage.md`](settings-and-storage.md) §2） |
 | `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输与用户固定钉住），两协议会话页共用 |
 | `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用（去重、目标尺寸、热点、安装、捏合定位光标、可见性归属），见 [`session-layer.md`](session-layer.md) §10 |
 | `services/RdpTelemetry.ets` | 工具栏遥测的 ArkTS 聚合：把原生原始样本换算成速率与每帧均值（口径见 [`rdp-session.md`](rdp-session.md) §5） |

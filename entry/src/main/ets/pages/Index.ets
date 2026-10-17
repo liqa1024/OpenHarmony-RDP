@@ -11,11 +11,14 @@ import { HOST_REPROBE_DELAY_MS, MoonlightHostState, HostTargetListener }
   from '../services/MoonlightHostState';
 import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
+import { BackgroundImage } from '../services/BackgroundImage';
 import { SettingsStore } from '../services/SettingsStore';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial }
+  from '../services/SystemMaterial';
 import { WakeOnLan, WakeReachability, WakeSendResult } from '../services/WakeOnLan';
 import { ConnectionRow } from '../components/ConnectionRow';
 import { FabButton } from '../components/FabButton';
+import { PageBackground } from '../components/PageBackground';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
 import { promptWolHelp } from '../utils/WolHelpPrompt';
 
@@ -44,6 +47,9 @@ struct Index {
   @State settingsHovered: boolean = false;
   @State settingsPressed: boolean = false;
   @State developerMode: boolean = false;
+  @State backgroundUri: string = '';
+  private headerFrost: AttributeModifier<RowAttribute> =
+    new FrostedModifier<RowAttribute>(FrostedSurface.CARD);
 
   // Older systems simply ignore the material in the tips options.
   private tipsOptions: TipsOptions =
@@ -118,7 +124,9 @@ struct Index {
 
   private refresh(): void {
     this.connections = ConnectionStore.list();
-    this.developerMode = SettingsStore.load().developerMode;
+    const settings = SettingsStore.load();
+    this.developerMode = settings.developerMode;
+    this.backgroundUri = BackgroundImage.uriOf(settings.backgroundImage);
     this.syncStatuses();
     this.syncHostTargets();
     this.syncHostPowers();
@@ -499,6 +507,7 @@ struct Index {
 
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
+      PageBackground({ uri: this.backgroundUri })
       Column() {
       Row() {
         Image($r('app.media.app_icon'))
@@ -573,7 +582,7 @@ struct Index {
       }
       .width('100%')
       .padding({ left: 24, right: 24, top: 20, bottom: 16 })
-      .backgroundColor($r('app.color.card_bg'))
+      .attributeModifier(this.headerFrost)
 
       Divider().color($r('app.color.divider'))
 

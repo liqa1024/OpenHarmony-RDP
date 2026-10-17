@@ -11,11 +11,14 @@ import { ConnectionState, SessionManager, SessionStateListener } from '../servic
 import { MoonlightAppTile } from '../components/MoonlightAppTile';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { NvApp, PairResult } from '../moonlight/MoonlightModels';
+import { BackgroundImage } from '../services/BackgroundImage';
+import { SettingsStore } from '../services/SettingsStore';
 import { connectActionFor } from '../utils/ConnectAction';
 import { showToast } from '../utils/UiUtil';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
 import { HeaderBar } from '../components/HeaderBar';
+import { PageBackground } from '../components/PageBackground';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpMoonlightApps';
@@ -35,6 +38,7 @@ struct MoonlightAppsPage {
   @State state: ConnectionState = ConnectionState.Idle;
   @State defaultAppId: string = '';
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
+  @State backgroundUri: string = '';
   private conn: MoonlightConnection | undefined = undefined;
   private httpsPort: number = 47984;
   private hasLoaded: boolean = false;
@@ -60,6 +64,7 @@ struct MoonlightAppsPage {
     };
 
   aboutToAppear(): void {
+    this.applyBackground();
     const params: MoonlightAppsParams | undefined =
       this.getUIContext().getRouter().getParams() as MoonlightAppsParams;
     if (params !== undefined) {
@@ -85,10 +90,18 @@ struct MoonlightAppsPage {
   }
 
   onPageShow(): void {
+    this.applyBackground();
     const conn: MoonlightConnection | undefined = this.conn;
     if (conn !== undefined && this.hasLoaded) {
       MoonlightHostState.refresh(conn, this.filesDir());
     }
+  }
+
+  private applyBackground(): void {
+    const settings = SettingsStore.load();
+    const path: string = settings.appsBackgroundImage.length > 0
+      ? settings.appsBackgroundImage : settings.backgroundImage;
+    this.backgroundUri = BackgroundImage.uriOf(path);
   }
 
   private filesDir(): string {
@@ -308,6 +321,7 @@ struct MoonlightAppsPage {
 
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
+      PageBackground({ uri: this.backgroundUri })
       Column() {
         HeaderBar({
           title: '应用',

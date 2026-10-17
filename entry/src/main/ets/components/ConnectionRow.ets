@@ -365,7 +365,7 @@ export struct ConnectionRow {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
+    .shadow({ radius: 16, color: '#33000000', offsetX: 0, offsetY: 5 })
     .clip(false)
     .attributeModifier(this.cardFrost)
     .onMouse((event: MouseEvent) => {

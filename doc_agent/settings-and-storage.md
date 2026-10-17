@@ -7,6 +7,7 @@
 | 全局设置 | `SettingsStore`（preferences） | 显示、连接特性默认值、窗口、输入等 |
 | 连接配置 | `ConnectionStore`（preferences） | **稳定 UUID 作 id** + `updatedAt`（供 UI 刷新/作 key） |
 | 密码 | `CredentialStore`（**ASSET**） | 按连接 id 存，**只在连接验证成功后写入** |
+| 背景图片 | 应用沙箱 `files/background_<时间戳>.<ext>`（路径存 `SettingsStore`） | 主界面 / 设置页 / 应用页（后两页可覆盖），仅本机使用，不随配置导出 |
 | 导出文件 | 用户选择位置（`DocumentViewPicker` + `fileIo`） | JSON，**不含密码** |
 
 - **密码绝不落明文、不进日志、不经命令行传递**：原生侧用 `freerdp_settings_set_string` 设
@@ -113,6 +114,11 @@
   普通三方应用无法用长时任务撑住"网络空载 / 低频心跳"；官方给同类应用的建议架构就是**客户端前台重连**。
   因此这里只兜"回来时发现已经断了"，不与后台管控对抗。行为与触发条件见
   [`session-layer.md`](session-layer.md) §5。
+- **页面背景图片**（`backgroundImage` + `settingsBackgroundImage` / `appsBackgroundImage`，进程级，默认无）：
+  通用设置「外观」选择图片后复制进应用沙箱（`files/background_<时间戳>.<ext>`，每次选择用新文件名以免
+  `Image` 缓存旧图）。三页默认共用 `backgroundImage`；设置页与 Moonlight 应用页可分别覆盖（为空即回退）。
+  图片自 `PageBackground` 按 `Cover` 铺满并叠一层 `page_bg` 25% 遮罩。它是本机资产：配置导出不写路径、
+  导入保留本机当前背景；清除 / 恢复默认时删除文件。文件与 URI 处理见 `services/BackgroundImage`。
 - **快捷键穿透**（`shortcutPassthrough`，进程级，默认关）：会话窗口聚焦时用系统按键拦截把 Win / Alt+Tab /
   Esc 等发给远端（需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）。按会话窗口焦点实时注册/释放，
   行为与代价见 [`session-layer.md`](session-layer.md) §8。

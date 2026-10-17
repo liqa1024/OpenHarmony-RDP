@@ -1,3 +1,4 @@
+import { FrostedModifier, FrostedSurface } from '../services/SystemMaterial';
 import { TextAction } from './TextAction';
 
 @Component
@@ -6,6 +7,8 @@ export struct HeaderBar {
   @Prop leftLabel: string = '';
   onLeft: () => void = () => {};
   @BuilderParam trailing: () => void;
+  private headerFrost: AttributeModifier<ColumnAttribute> =
+    new FrostedModifier<ColumnAttribute>(FrostedSurface.CARD);
 
   build() {
     Column() {
@@ -30,6 +33,6 @@ export struct HeaderBar {
       Divider().color($r('app.color.divider'))
     }
     .width('100%')
-    .backgroundColor($r('app.color.card_bg'))
+    .attributeModifier(this.headerFrost)
   }
 }
