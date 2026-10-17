@@ -13,10 +13,16 @@ export class MoonlightCounters {
   hostLatencyMs: number = -1;
   decodeMs: number = -1;
   pendingVideoFrames: number = 0;
-  // Access units the decode bridge threw away for being past the latency budget.
+  // Total loss per second: input-budget drops + display-gate drops + hand-off replacements.
   droppedPerSec: number = 0;
   // Loss basis points: (FEC failed + out-of-order + invalid) / (video + FEC).
   lossBp: number = -1;
+  // Per presented frame: convert / 超分 / letterbox GPU time, their sum, and the display wait.
+  gpuCopyUs: number = 0;
+  gpuSrUs: number = 0;
+  gpuBlitUs: number = 0;
+  gpuFrameUs: number = 0;
+  presentWaitUs: number = 0;
 }
 
 // The native sample is cumulative: diffs give rates (fps / bitrate) and the
@@ -24,12 +30,15 @@ export class MoonlightCounters {
 export class MoonlightTelemetryAggregator {
   private hasPrev: boolean = false;
   private prevFrames: number = 0;
+  private prevPresented: number = 0;
   private prevBytes: number = 0;
   private prevHostSum: number = 0;
   private prevHostCount: number = 0;
   private prevDecodeSum: number = 0;
   private prevDecodeCount: number = 0;
   private prevDropped: number = 0;
+  private prevPresentDropped: number = 0;
+  private prevHandoff: number = 0;
   private prevVideo: number = 0;
   private prevFec: number = 0;
   private prevFailed: number = 0;
@@ -47,7 +56,8 @@ export class MoonlightTelemetryAggregator {
     counters.pendingVideoFrames = raw.pendingVideoFrames;
     // Re-baseline on the first sample and across a session restart (counters
     // reset to zero, so any decrease means a new session).
-    if (!this.hasPrev || raw.frames < this.prevFrames || raw.bytes < this.prevBytes) {
+    if (!this.hasPrev || raw.frames < this.prevFrames || raw.bytes < this.prevBytes
+      || raw.presentedFrames < this.prevPresented) {
       this.hasPrev = true;
       this.capture(raw);
       this.hasInput = true;
@@ -56,12 +66,15 @@ export class MoonlightTelemetryAggregator {
     }
 
     const dFrames: number = raw.frames - this.prevFrames;
+    const dPresented: number = raw.presentedFrames - this.prevPresented;
     const dBytes: number = raw.bytes - this.prevBytes;
     const dHostSum: number = raw.hostLatencyTenthMs - this.prevHostSum;
     const dHostCount: number = raw.hostLatencyFrames - this.prevHostCount;
     const dDecodeSum: number = raw.decodeRoundTripUs - this.prevDecodeSum;
     const dDecodeCount: number = raw.decodeRoundTripFrames - this.prevDecodeCount;
     const dDropped: number = raw.droppedFrames - this.prevDropped;
+    const dPresentDropped: number = raw.presentDroppedFrames - this.prevPresentDropped;
+    const dHandoff: number = raw.handoffReplacedFrames - this.prevHandoff;
     const dVideo: number = raw.packetVideo - this.prevVideo;
     const dFec: number = raw.packetFec - this.prevFec;
     const dFailed: number = raw.packetFecFailed - this.prevFailed;
@@ -71,9 +84,16 @@ export class MoonlightTelemetryAggregator {
 
     const seconds: number = windowMs > 0 ? windowMs / 1000 : 0;
     if (seconds > 0) {
-      counters.fps = Math.round(dFrames / seconds);
+      counters.fps = Math.round(dPresented / seconds);
       counters.bytesPerSec = Math.round(dBytes / seconds);
-      counters.droppedPerSec = Math.round(dDropped / seconds);
+      counters.droppedPerSec = Math.round((dDropped + dPresentDropped + dHandoff) / seconds);
+    }
+    if (dPresented > 0) {
+      counters.gpuCopyUs = Math.floor(raw.gpuCopyUs / dPresented);
+      counters.gpuSrUs = Math.floor(raw.gpuSrUs / dPresented);
+      counters.gpuBlitUs = Math.floor(raw.gpuBlitUs / dPresented);
+      counters.gpuFrameUs = counters.gpuCopyUs + counters.gpuSrUs + counters.gpuBlitUs;
+      counters.presentWaitUs = Math.floor(raw.presentWaitUs / dPresented);
     }
     if (dHostCount > 0) {
       counters.hostLatencyMs = dHostSum / dHostCount / 10;
@@ -85,7 +105,7 @@ export class MoonlightTelemetryAggregator {
     if (packets > 0) {
       counters.lossBp = Math.floor((dFailed + dOos + dInvalid) * 10000 / packets);
     }
-    this.log(counters, seconds, this.inputDropRate(inputDropped, seconds));
+    this.log(counters, seconds, this.inputDropRate(inputDropped, seconds), dPresented, dFrames);
     return counters;
   }
 
@@ -102,12 +122,15 @@ export class MoonlightTelemetryAggregator {
 
   private capture(raw: MoonlightTelemetry): void {
     this.prevFrames = raw.frames;
+    this.prevPresented = raw.presentedFrames;
     this.prevBytes = raw.bytes;
     this.prevHostSum = raw.hostLatencyTenthMs;
     this.prevHostCount = raw.hostLatencyFrames;
     this.prevDecodeSum = raw.decodeRoundTripUs;
     this.prevDecodeCount = raw.decodeRoundTripFrames;
     this.prevDropped = raw.droppedFrames;
+    this.prevPresentDropped = raw.presentDroppedFrames;
+    this.prevHandoff = raw.handoffReplacedFrames;
     this.prevVideo = raw.packetVideo;
     this.prevFec = raw.packetFec;
     this.prevFailed = raw.packetFecFailed;
@@ -115,7 +138,8 @@ export class MoonlightTelemetryAggregator {
     this.prevInvalid = raw.packetInvalid;
   }
 
-  private log(counters: MoonlightCounters, seconds: number, inputDropPerSec: number): void {
+  private log(counters: MoonlightCounters, seconds: number, inputDropPerSec: number,
+    presented: number, decoded: number): void {
     if (seconds <= 0) {
       return;
     }
@@ -124,7 +148,10 @@ export class MoonlightTelemetryAggregator {
       + 'ms decode=' + Math.round(counters.decodeMs * 10) / 10 + 'ms fps=' + counters.fps
       + ' bitrate=' + Math.round(counters.bytesPerSec * 8 / 1000) + 'kbps pending='
       + counters.pendingVideoFrames + ' drop=' + counters.droppedPerSec + '/s'
-      + ' loss=' + counters.lossBp + '/10000 inputDrop=' + inputDropPerSec + '/s';
+      + ' loss=' + counters.lossBp + '/10000 inputDrop=' + inputDropPerSec + '/s'
+      + ' presented=' + presented + ' decoded=' + decoded
+      + ' gpu convert=' + counters.gpuCopyUs + ' sr=' + counters.gpuSrUs
+      + ' blit=' + counters.gpuBlitUs + ' us/frame wait=' + counters.presentWaitUs + 'us';
     hilog.info(DOMAIN, TAG, '%{public}s', line);
   }
 }

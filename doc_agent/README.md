@@ -25,7 +25,7 @@
 | 原生库构建体系：产物为何不入库、单一构建入口、依赖布局与自检、**补丁体系**、OpenSSL CMake、无版本号 SONAME | [`native-build.md`](native-build.md) |
 | RDP 原生：FreeRDP 补丁内容与编译选项、音频（rdpsnd sink 侧） | [`rdp-native.md`](rdp-native.md) |
 | **音频播放链路（两协议共享）**：有界 PCM 交接环、ArkTS 渲染器 / 原生 OHAudio、缓冲策略与格式变化、音频能力探测 | [`audio.md`](audio.md) |
-| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
+| GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、dev 回放与参考画面（**仅 RDP 解码/合成调试**）、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
 | **上屏（present）管线（两协议共享）**：一套呈现器实现、Vulkan/GLES 两个后端、帧到屏路径、swapchain 尺寸与重建、**超分辨率（Vulkan 专有）**与 `PresentVideo` 视频导入、GPU 账目、呈现 / 超分能力判定 | [`present.md`](present.md) |
 | RDP 上屏接线：脏区形状与上传、零拷贝桌面缓冲、合并上屏、RDP 侧账目与踩坑 | [`rdp-present.md`](rdp-present.md) |
 | Moonlight 连接前端：协议建模、存储布局、连接列表 / 编辑页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |

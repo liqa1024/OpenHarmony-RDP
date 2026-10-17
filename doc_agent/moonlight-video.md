@@ -55,14 +55,15 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 - **解码有两种输出模式，按"帧要不要交给 GPU 采样"选**：**surface 模式**（`OH_VideoDecoder_SetSurface`）把解码帧
   直接写进给定的窗口，只送显、应用侧不碰像素；**buffer 模式**（不设输出表面）由解码器交出自己的输出缓冲，帧经
   `OH_AVBuffer_GetNativeBuffer` 成为**图形分配器**的 `OH_NativeBuffer`，可交给 GPU 采样。两种模式的**布局信息
-  可得性不同**：buffer 模式在输出描述里报出字节行距与单面的已分配行数，surface 模式不报（其内部数据走 HEBC，
-  `OH_MD_KEY_VIDEO_STRIDE`/`OH_MD_KEY_VIDEO_SLICE_HEIGHT` 取不到）——所以凡是按平面字节采样缓冲的链路只能走
-  buffer 模式，只送显的链路用 surface 模式。`OH_AVBuffer_GetAddr`（CPU 地址，逐行搬运用）本仓不使用。
-  几何取法与导入配方见 [`present.md`](present.md) §4。
+  可得性不同**：buffer 模式在**流变化事件或 `OH_VideoDecoder_GetOutputDescription`** 里报出字节行距与单面的
+  已分配行数，surface 模式不报（其内部数据走 HEBC，`OH_MD_KEY_VIDEO_STRIDE`/`OH_MD_KEY_VIDEO_SLICE_HEIGHT`
+  取不到）——所以凡是按平面字节采样缓冲的链路只能走 buffer 模式，只送显的链路用 surface 模式。
+  `OH_AVBuffer_GetAddr`（CPU 地址，逐行搬运用）本仓不使用。几何取法与导入配方见 [`present.md`](present.md) §4。
 - **送显槽位只判一次**：在解码输出回调里（`VideoDecoder::TakePresentSlot`），错过即**丢**——surface 模式一律
-  `FreeOutputBuffer`（不送显），buffer 模式不交给上屏。buffer 模式还有一个次级丢弃：交出去的帧若在归还线程仍在
-  处理时被新帧追上，**旧的那帧当场归还**（只留最新一帧），所以"上屏跟不上"的代价是丢帧，不是延迟堆积。两种丢弃
-  在解码器停止时各报一个累计数。
+  `FreeOutputBuffer`（不送显），buffer 模式不交给上屏。buffer 模式还有一个次级丢弃：待交接队列只留最新一帧，
+  被新帧追上时**旧的那帧当场归还**；已提交给呈现器的帧最多两帧在飞，各自等 fence 后才归还，所以"上屏跟不上"
+  的代价是丢帧，不是延迟堆积。三种丢弃（输入预算 / 送显闸门 / 交接替换）都进遥测，构成总丢弃率（见
+  [`moonlight-session.md`](moonlight-session.md) §2）。
 
 ## 2. 上屏：两条链路
 
@@ -79,9 +80,11 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 - **超分：解码走 buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流
   （`/launch` 与 `STREAM_CONFIGURATION` 的尺寸都取会话分辨率，fps 钳制与自动码率也按它算，见 §4），本机把每帧
   上采样回输出分辨率。解码器**不设输出表面**，每帧把自己的输出缓冲交出来（`OH_AVBuffer_GetNativeBuffer`）；
-  解码桥在交接锁下把该缓冲交给 `VkRenderer::PresentVideo`，**返回即归还**给解码器。`core/hmrdp_vk_video.*`
+  解码桥在交接锁下把该缓冲交给 `VkRenderer::PresentVideo`；提交成功时返回该帧的呈现槽位 token，
+  **GPU 读完之前不归还**给解码器——交接线程最多留两帧，`WaitVideoFrame(token)` 等前一个槽位的 fence
+  后才把缓冲交回 codec，因此解码/convert 与上一帧的上采样可以重叠。`core/hmrdp_vk_video.*`
   负责导入与 convert pass（整块按 **R8 字节图**外部内存导入，片元 `texelFetch` 取 Y 与交错 Cb/Cr、**自己做
-  YUV→RGB**），写进**会话分辨率的 picture**，之后接既有的超分 / letterbox / swapchain。
+  YUV→RGB**），写进**会话分辨率的 picture**（每帧槽一份 picture/UBO），之后接既有的超分 / letterbox / swapchain。
   **导入配方、几何取法（取解码器报的账，不是分配器的推断）、归还与门控的判据全在
   [`present.md`](present.md) §4**——本节只讲本仓怎么接。
   此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）。
@@ -104,8 +107,11 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 - **无共同编码即显式失败**：`moonlightVideoFormats` 返回 `0` 时 ArkTS 在 `LiStartConnection` 前直接失败；
   会话中若主机协商出非决策编码，`setup` 拒绝（`codec-mismatch`），不静默改推别的编码。
 
-协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）。`moonlightVideoCodec()` 给出编码
-标记（h264/hevc/av1），工具栏把它写进分辨率括号（`1920 x 1080 (HEVC)`；软解再加 CPU，如 `(HEVC, CPU)`，
+协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）；运行期另有 `sr-unavailable`
+（会话请求了超分但没有可用呈现器）、`sr-inactive`（呈现器在跑但上采样未生效）与 `video-present`
+（呈现器拒绝帧）三种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码
+标记（h264/hevc/av1），工具栏把它与超分状态合并进分辨率后的**同一个括号**、逗号分隔
+（`1920 × 1080 (FSR 1.5x, HEVC)`；软解再加 `CPU`；超分未生效/导入失败另有 `未超分`/`视频异常` token，
 见 [`moonlight-session.md`](moonlight-session.md) §2）。
 
 ## 4. 其余 `STREAM_CONFIGURATION` 字段的落点
@@ -128,7 +134,8 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 - RDP 的 `FramePipeline` / `GdiFrameHost` / `PresentGdiFrame` / 零拷贝桌面缓冲都是 **gdi（CPU 帧）专属**，
   不套给 Moonlight。
 - `FramePresenter`（surface / swapchain / letterbox / 超分）是唯一可复用的图形核心，**只被超分链路复用**：
-  接口只有一个视频入口 `PresentVideo`（帧 + 几何），且**只由 `VkRenderer` 实现**（`GlesPresenter` 不参与）。
+  接口只有一个视频入口 `PresentVideo`（帧 + 几何 → 呈现槽位 token）与 `WaitVideoFrame(token)`，且**只由
+  `VkRenderer` 实现**（`GlesPresenter` 不参与）。
   可复用的是**「会话分辨率的一张输入图 →（可选）超分 → letterbox → swapchain → present」这一层**；
   RDP 的桌面缓冲 / 脏区 / 合并（carry）是 **RDP 专属的可选路径**，视频链路一概不用——视频是流、语义是丢帧，
   且恒整帧一次、无 CPU 拷贝。直出链路**完全不经 presenter**，与 RDP 互不影响（见

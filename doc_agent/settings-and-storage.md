@@ -49,11 +49,12 @@
   三个单连接覆盖项在 UI 上都是「独立」正向、默认关，存储字段是反相的 `useGlobal*`。
   连接前用 `SettingsStore.resolveDisplay(conn)` 解析。
   - `分辨率` 是**输出分辨率**（超分辨率后的目标）；超分辨率关闭时它同时就是会话分辨率。
-  - `缩放` 是**会话（超分辨率前）桌面**的 DPI 系数。自动档**只由请求的（输出）分辨率确定**
-    （`SettingsStore.scalePresetForResolution`）：按**长边**线性换算 `长边 ÷ 1600 × 100`，
-    再**吸附**到档位 `100/125/150/175/200/225`（长边 < 1600 即落到 100）。
-    例：`1600 → 100`、`1920 → 125`、`2560 → 150`、`2880 → 175`、`3200 → 200`、`3840 → 225`。
-    **本机屏幕分辨率/密度不参与**——同一个远端分辨率在任何设备上换算出同一档位。
+  - `缩放` 是**会话（超分辨率前）桌面**的 DPI 系数。自动档 = **输出分辨率档位 ÷ 超分倍率**
+    （`SettingsStore.autoScalePercent`；超分关闭时倍率按 1 计，即只由输出分辨率确定）：
+    档位本身按**长边**线性换算 `长边 ÷ 1600 × 100`，再**吸附**到档位 `100/125/150/175/200/225`
+    （长边 < 1600 即落到 100）。例（超分关闭）：`1600 → 100`、`1920 → 125`、`2560 → 150`、
+    `2880 → 175`、`3200 → 200`、`3840 → 225`。**本机屏幕分辨率/密度不参与**——同一个远端分辨率
+    在任何设备上换算出同一档位。
   - 原生只写 `FreeRDP_DesktopScaleFactor`（缩放交给服务端，客户端不做逐像素缩放）。
 - **超分辨率**（RDP：`srBackend` + `srRatioPercent`；Moonlight：`mlSrBackend` + `mlSrRatioPercent`。
   两者都是各自的全局默认，**每个协议页签各存一份、都放在「显示」段**（分辨率与缩放之后——超分是分辨率
@@ -72,7 +73,7 @@
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持同样的物理大小。
   - **前提是能力，不是开关**：Vulkan 上屏可用，且**所选后端**可用（FSR 只要前者，XEngine 还要设备报
     `XEG_spatial_upscale`）；**Moonlight 还多要一项**：设备能把解码器的 NV12 缓冲导入呈现器
-    （`VK_OHOS_external_memory`，`superResolutionBackends().videoImport`）。设置页按后端
+    （`VK_OHOS_external_memory` + R8 线性图可创建，`superResolutionBackends().videoImport`）。设置页按后端
     逐个**置灰**并显示原因；不满足时按关闭处理。
     `SettingsStore.resolveSr(protocol, setting)` 是唯一的解析与兜底点（`conn` 两者都满足 `SrSetting`；
     `srBackendUsable(backend, protocol)` 把能力合起来判，选中的后端不可用时改用另一个，都不行才关掉），
@@ -93,8 +94,9 @@
   同理）；无音频输出设备时置灰并把已存值纠正为关。语义与回落见 [`moonlight-native.md`](moonlight-native.md) §2.3。
 - **会话缩放（Moonlight 专属，`mlScaleMode` + `mlScalePercent`）**：写**基地版 Sunshine 虚拟显示器**的 Windows
   显示缩放，语义与 RDP 的 `DesktopScaleFactor` 同构（把远端 UI 缩放系数交给主机）；**虚拟屏随会话创建/释放，
-  故无需还原**。三选一：`自动`（默认，按请求分辨率用 RDP 同一套换算 `scalePresetForResolution` 得档位）、
-  `手动`（`SCALE_PRESETS` 六档，**无自定义输入**）、`不额外设置`（不向主机发任何缩放请求）。与 RDP 显示设置同构：
+  故无需还原**。三选一：`自动`（默认，与 RDP 同一套换算 `autoScalePercent`：输出分辨率档位 ÷ 超分倍率
+  再吸附档位）、`手动`（`SCALE_PRESETS` 六档，**无自定义输入**）、`不额外设置`（不向主机发任何缩放请求）。
+  与 RDP 显示设置同构：
   全局一份 + 单连接覆盖（沿用 `useGlobalStream`）。**仅基地版 Sunshine（foundation-sunshine）有效**，
   其它主机（无 `/displays` / `/display-scale`）静默跳过，见 [`moonlight-connection.md`](moonlight-connection.md) §3。
 - **剪贴板恒开**：不提供任何开关（全局或单连接）；原生无条件置 `FreeRDP_RedirectClipboard`。

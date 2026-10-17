@@ -1,6 +1,9 @@
 ﻿#include "hmrdp_vk_video.h"
 
+#include <cstddef>
+
 #include <native_buffer/native_buffer.h>
+#include <multimedia/player_framework/native_avformat.h>
 
 #include "hmrdp_log.h"
 #include "video_convert.frag.h"
@@ -15,11 +18,33 @@ VkVideoImport::~VkVideoImport() {
 }
 
 bool VkVideoImport::needsRebuild(int pictureWidth, int pictureHeight) const {
-  return picture_.view == VK_NULL_HANDLE || picture_.width != pictureWidth ||
-         picture_.height != pictureHeight;
+  for (uint32_t slot = 0; slot < kSlots; ++slot) {
+    if (pictures_[slot].view == VK_NULL_HANDLE ||
+        pictures_[slot].width != pictureWidth || pictures_[slot].height != pictureHeight) {
+      return true;
+    }
+  }
+  return false;
 }
 
-bool VkVideoImport::importCacheFull() const { return imports_.size() >= kMaxImports; }
+bool VkVideoImport::needsDrainFor(const void* nativeBuffer) const {
+  if (imports_.size() < kMaxImports) {
+    return false;
+  }
+  if (nativeBuffer == nullptr) {
+    return true;
+  }
+  const struct OH_NativeBuffer* buffer =
+      static_cast<const struct OH_NativeBuffer*>(nativeBuffer);
+  const uint32_t seq =
+      OH_NativeBuffer_GetSeqNum(const_cast<struct OH_NativeBuffer*>(buffer));
+  for (const Imported& imported : imports_) {
+    if (imported.seq == seq) {
+      return false;
+    }
+  }
+  return true;
+}
 
 bool VkVideoImport::Ensure(int pictureWidth, int pictureHeight) {
   VkApi& api = context_.api();
@@ -27,26 +52,43 @@ bool VkVideoImport::Ensure(int pictureWidth, int pictureHeight) {
   if (device == VK_NULL_HANDLE || pictureWidth <= 0 || pictureHeight <= 0) {
     return false;
   }
+  if (failed_ && failedWidth_ == pictureWidth && failedHeight_ == pictureHeight) {
+    return false;
+  }
   if (!needsRebuild(pictureWidth, pictureHeight)) {
     return true;
   }
   Destroy();
-  if (!CreateDeviceImage(api, context_, kPictureFormat, pictureWidth, pictureHeight,
-                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                         &picture_.image, &picture_.memory)) {
-    error_ = "video picture allocation failed";
+  failed_ = false;
+  const auto fail = [this, pictureWidth, pictureHeight](const char* what) -> bool {
+    error_ = what;
     Destroy();
+    failed_ = true;
+    failedWidth_ = pictureWidth;
+    failedHeight_ = pictureHeight;
+    return false;
+  };
+  for (uint32_t slot = 0; slot < kSlots; ++slot) {
+    if (!CreateDeviceImage(api, context_, kPictureFormat, pictureWidth, pictureHeight,
+                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                           &pictures_[slot].image, &pictures_[slot].memory)) {
+      return fail("video picture allocation failed");
+    }
+    if (!CreateImageView2D(api, context_, kPictureFormat, pictures_[slot].image,
+                           &pictures_[slot].view)) {
+      return fail("video picture view failed");
+    }
+    pictures_[slot].width = pictureWidth;
+    pictures_[slot].height = pictureHeight;
+  }
+  if (!EnsureConvertPipeline()) {
+    failed_ = true;
+    failedWidth_ = pictureWidth;
+    failedHeight_ = pictureHeight;
     return false;
   }
-  if (!CreateImageView2D(api, context_, kPictureFormat, picture_.image, &picture_.view)) {
-    error_ = "video picture view failed";
-    Destroy();
-    return false;
-  }
-  picture_.width = pictureWidth;
-  picture_.height = pictureHeight;
-  return EnsureConvertPipeline();
+  return true;
 }
 
 void VkVideoImport::DestroyConvertPipeline() {
@@ -65,8 +107,10 @@ void VkVideoImport::DestroyConvertPipeline() {
     if (convertSetLayout_ != VK_NULL_HANDLE && api.DestroyDescriptorSetLayout != nullptr) {
       api.DestroyDescriptorSetLayout(device, convertSetLayout_, nullptr);
     }
-    if (convertFramebuffer_ != VK_NULL_HANDLE && api.DestroyFramebuffer != nullptr) {
-      api.DestroyFramebuffer(device, convertFramebuffer_, nullptr);
+    for (uint32_t slot = 0; slot < kSlots; ++slot) {
+      if (convertFramebuffer_[slot] != VK_NULL_HANDLE && api.DestroyFramebuffer != nullptr) {
+        api.DestroyFramebuffer(device, convertFramebuffer_[slot], nullptr);
+      }
     }
     if (convertRenderPass_ != VK_NULL_HANDLE && api.DestroyRenderPass != nullptr) {
       api.DestroyRenderPass(device, convertRenderPass_, nullptr);
@@ -74,26 +118,30 @@ void VkVideoImport::DestroyConvertPipeline() {
     if (byteSampler_ != VK_NULL_HANDLE && api.DestroySampler != nullptr) {
       api.DestroySampler(device, byteSampler_, nullptr);
     }
-    if (paramsMapped_ != nullptr && api.UnmapMemory != nullptr) {
-      api.UnmapMemory(device, paramsMemory_);
-      paramsMapped_ = nullptr;
-    }
-    if (paramsBuffer_ != VK_NULL_HANDLE && api.DestroyBuffer != nullptr) {
-      api.DestroyBuffer(device, paramsBuffer_, nullptr);
-    }
-    if (paramsMemory_ != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
-      api.FreeMemory(device, paramsMemory_, nullptr);
+    for (uint32_t slot = 0; slot < kSlots; ++slot) {
+      if (paramsMapped_[slot] != nullptr && api.UnmapMemory != nullptr) {
+        api.UnmapMemory(device, paramsMemory_[slot]);
+      }
+      if (paramsBuffer_[slot] != VK_NULL_HANDLE && api.DestroyBuffer != nullptr) {
+        api.DestroyBuffer(device, paramsBuffer_[slot], nullptr);
+      }
+      if (paramsMemory_[slot] != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+        api.FreeMemory(device, paramsMemory_[slot], nullptr);
+      }
     }
   }
   byteSampler_ = VK_NULL_HANDLE;
-  paramsBuffer_ = VK_NULL_HANDLE;
-  paramsMemory_ = VK_NULL_HANDLE;
-  paramsMapped_ = nullptr;
+  for (uint32_t slot = 0; slot < kSlots; ++slot) {
+    paramsBuffer_[slot] = VK_NULL_HANDLE;
+    paramsMemory_[slot] = VK_NULL_HANDLE;
+    paramsMapped_[slot] = nullptr;
+    paramsCoherent_[slot] = true;
+    convertFramebuffer_[slot] = VK_NULL_HANDLE;
+  }
   convertPipeline_ = VK_NULL_HANDLE;
   convertPool_ = VK_NULL_HANDLE;
   convertPipelineLayout_ = VK_NULL_HANDLE;
   convertSetLayout_ = VK_NULL_HANDLE;
-  convertFramebuffer_ = VK_NULL_HANDLE;
   convertRenderPass_ = VK_NULL_HANDLE;
 }
 
@@ -135,17 +183,30 @@ void VkVideoImport::Destroy() {
   ClearImports();
   DestroyConvertPipeline();
   if (device != VK_NULL_HANDLE) {
-    if (picture_.view != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
-      api.DestroyImageView(device, picture_.view, nullptr);
+    for (uint32_t slot = 0; slot < kSlots; ++slot) {
+      if (pictures_[slot].view != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+        api.DestroyImageView(device, pictures_[slot].view, nullptr);
+      }
+      if (pictures_[slot].image != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
+        api.DestroyImage(device, pictures_[slot].image, nullptr);
+      }
+      if (pictures_[slot].memory != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+        api.FreeMemory(device, pictures_[slot].memory, nullptr);
+      }
+      pictures_[slot] = Picture();
     }
-    if (picture_.image != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
-      api.DestroyImage(device, picture_.image, nullptr);
-    }
-    if (picture_.memory != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
-      api.FreeMemory(device, picture_.memory, nullptr);
+  } else {
+    for (uint32_t slot = 0; slot < kSlots; ++slot) {
+      pictures_[slot] = Picture();
     }
   }
-  picture_ = Picture();
+  failed_ = false;
+  failedWidth_ = 0;
+  failedHeight_ = 0;
+  useCounter_ = 0;
+  formatWarned_ = false;
+  colorFallbackWarned_ = false;
+  importFailed_ = false;
 }
 
 bool VkVideoImport::EnsureConvertPipeline() {
@@ -196,16 +257,16 @@ bool VkVideoImport::EnsureConvertPipeline() {
       return false;
     }
   }
-  {
+  for (uint32_t slot = 0; slot < kSlots; ++slot) {
     VkFramebufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     info.renderPass = convertRenderPass_;
     info.attachmentCount = 1;
-    info.pAttachments = &picture_.view;
-    info.width = static_cast<uint32_t>(picture_.width);
-    info.height = static_cast<uint32_t>(picture_.height);
+    info.pAttachments = &pictures_[slot].view;
+    info.width = static_cast<uint32_t>(pictures_[slot].width);
+    info.height = static_cast<uint32_t>(pictures_[slot].height);
     info.layers = 1;
-    if (api.CreateFramebuffer(device, &info, nullptr, &convertFramebuffer_) != VK_SUCCESS) {
+    if (api.CreateFramebuffer(device, &info, nullptr, &convertFramebuffer_[slot]) != VK_SUCCESS) {
       error_ = "video convert framebuffer failed";
       Destroy();
       return false;
@@ -267,13 +328,14 @@ bool VkVideoImport::EnsureConvertPipeline() {
     // One set per imported buffer: a set is written when its buffer is first imported and then never
     // touched again, so the per-frame path has no descriptor write.
     VkDescriptorPoolSize sizes[2] = {};
+    const uint32_t totalSets = static_cast<uint32_t>(kMaxImports * kSlots);
     sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sizes[0].descriptorCount = static_cast<uint32_t>(kMaxImports);
+    sizes[0].descriptorCount = totalSets;
     sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    sizes[1].descriptorCount = static_cast<uint32_t>(kMaxImports);
+    sizes[1].descriptorCount = totalSets;
     VkDescriptorPoolCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    info.maxSets = static_cast<uint32_t>(kMaxImports);
+    info.maxSets = totalSets;
     info.poolSizeCount = 2;
     info.pPoolSizes = sizes;
     if (api.CreateDescriptorPool(device, &info, nullptr, &convertPool_) != VK_SUCCESS) {
@@ -282,24 +344,30 @@ bool VkVideoImport::EnsureConvertPipeline() {
       return false;
     }
   }
-  {
-    // Host-visible coherent: rewritten every frame, like the FSR parameter buffers.
+  for (uint32_t slot = 0; slot < kSlots; ++slot) {
+    // Host-visible: rewritten every frame, like the FSR parameter buffers.
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     info.size = kFrameParamsBytes;
     info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (api.CreateBuffer(device, &info, nullptr, &paramsBuffer_) != VK_SUCCESS) {
-      paramsBuffer_ = VK_NULL_HANDLE;
+    if (api.CreateBuffer(device, &info, nullptr, &paramsBuffer_[slot]) != VK_SUCCESS) {
+      paramsBuffer_[slot] = VK_NULL_HANDLE;
       error_ = "video convert params buffer failed";
       Destroy();
       return false;
     }
     VkMemoryRequirements req{};
-    api.GetBufferMemoryRequirements(device, paramsBuffer_, &req);
-    const uint32_t typeIndex = context_.FindMemoryType(
+    api.GetBufferMemoryRequirements(device, paramsBuffer_[slot], &req);
+    uint32_t typeIndex = context_.FindMemoryType(
         req.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    paramsCoherent_[slot] = typeIndex != UINT32_MAX;
+    if (!paramsCoherent_[slot]) {
+      // Same fallback as the desktop staging path: visible but not coherent still works, with an
+      // explicit flush after each frame's write.
+      typeIndex = context_.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    }
     if (typeIndex == UINT32_MAX) {
       error_ = "video convert params memory type failed";
       Destroy();
@@ -309,14 +377,15 @@ bool VkVideoImport::EnsureConvertPipeline() {
     alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc.allocationSize = req.size;
     alloc.memoryTypeIndex = typeIndex;
-    if (api.AllocateMemory(device, &alloc, nullptr, &paramsMemory_) != VK_SUCCESS) {
+    if (api.AllocateMemory(device, &alloc, nullptr, &paramsMemory_[slot]) != VK_SUCCESS) {
       error_ = "video convert params allocation failed";
       Destroy();
       return false;
     }
-    api.BindBufferMemory(device, paramsBuffer_, paramsMemory_, 0);
-    if (api.MapMemory(device, paramsMemory_, 0, VK_WHOLE_SIZE, 0, &paramsMapped_) != VK_SUCCESS) {
-      paramsMapped_ = nullptr;
+    api.BindBufferMemory(device, paramsBuffer_[slot], paramsMemory_[slot], 0);
+    if (api.MapMemory(device, paramsMemory_[slot], 0, VK_WHOLE_SIZE, 0,
+                      &paramsMapped_[slot]) != VK_SUCCESS) {
+      paramsMapped_[slot] = nullptr;
       error_ = "video convert params map failed";
       Destroy();
       return false;
@@ -413,7 +482,8 @@ bool VkVideoImport::EnsureConvertPipeline() {
 
 // The YUV -> RGB rows for 8-bit samples, as `value = cY*Y + cCb*Cb + cCr*Cr + offset`. Narrow range
 // expects 16..235 luma / 16..240 chroma, full range 0..255.
-void VkVideoImport::UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange) {
+void VkVideoImport::UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange,
+                                    float* out) {
   // OH_COLORSPACE_* (native_buffer.h): BT.601 EBU/SMPTE-C and BT.709, each with a FULL/LIMIT pair.
   // Anything else falls back to what the driver suggested for this buffer (2 = BT.709).
   bool full = false;
@@ -434,9 +504,20 @@ void VkVideoImport::UpdateColorRows(int colorSpace, int suggestedModel, int sugg
     case OH_COLORSPACE_BT709_LIMIT:
       break;
     default:
-      // 0 = RGB identity (no conversion), 1 = BT.601, 2 = BT.709; 0/1 = full/limited.
-      bt601 = suggestedModel == 1;
-      full = suggestedRange == 0;
+      if (colorSpace == OH_COLORSPACE_NONE) {
+        // The SDR stream contract is Rec.709 limited. An unreported buffer must not fall back to the
+        // driver's RGB identity / full-range suggestion: for YUV that is the wrong matrix and range.
+        if (!colorFallbackWarned_) {
+          colorFallbackWarned_ = true;
+          HMRDP_LOGW("vulkan video import: buffer reports no colour space; assuming BT.709 limited");
+        }
+        full = false;
+        bt601 = false;
+      } else {
+        // 0 = RGB identity (no conversion), 1 = BT.601, 2 = BT.709; 0/1 = full/limited.
+        bt601 = suggestedModel == 1;
+        full = suggestedRange == 0;
+      }
       break;
   }
   const float kb = bt601 ? 0.114f : 0.0722f;  // blue-difference weight
@@ -456,18 +537,77 @@ void VkVideoImport::UpdateColorRows(int colorSpace, int suggestedModel, int sugg
   const float bCb = cCb * scale;
   const float bCr = 0.0f;
   const float yTerm = -cY * yOffset;
-  colorRows_[0] = cY;
-  colorRows_[1] = rCb;
-  colorRows_[2] = rCr;
-  colorRows_[3] = yTerm - chromaOffset * (rCb + rCr);
-  colorRows_[4] = cY;
-  colorRows_[5] = gCb;
-  colorRows_[6] = gCr;
-  colorRows_[7] = yTerm - chromaOffset * (gCb + gCr);
-  colorRows_[8] = cY;
-  colorRows_[9] = bCb;
-  colorRows_[10] = bCr;
-  colorRows_[11] = yTerm - chromaOffset * (bCb + bCr);
+  out[0] = cY;
+  out[1] = rCb;
+  out[2] = rCr;
+  out[3] = yTerm - chromaOffset * (rCb + rCr);
+  out[4] = cY;
+  out[5] = gCb;
+  out[6] = gCr;
+  out[7] = yTerm - chromaOffset * (gCb + gCr);
+  out[8] = cY;
+  out[9] = bCb;
+  out[10] = bCr;
+  out[11] = yTerm - chromaOffset * (bCb + bCr);
+}
+
+bool VkVideoImport::AllocateImportSet(VkImageView view, uint32_t slot, VkDescriptorSet* out) {
+  VkApi& api = context_.api();
+  const VkDevice device = context_.device();
+  if (device == VK_NULL_HANDLE || out == nullptr || slot >= kSlots) {
+    return false;
+  }
+  VkDescriptorSetAllocateInfo setInfo{};
+  setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  setInfo.descriptorPool = convertPool_;
+  setInfo.descriptorSetCount = 1;
+  setInfo.pSetLayouts = &convertSetLayout_;
+  if (api.AllocateDescriptorSets(device, &setInfo, out) != VK_SUCCESS) {
+    error_ = "video convert set allocation failed";
+    return false;
+  }
+  VkDescriptorImageInfo imageDescriptor{};
+  imageDescriptor.sampler = byteSampler_;
+  imageDescriptor.imageView = view;
+  imageDescriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkDescriptorBufferInfo paramsDescriptor{};
+  paramsDescriptor.buffer = paramsBuffer_[slot];
+  paramsDescriptor.offset = 0;
+  paramsDescriptor.range = kFrameParamsBytes;
+  VkWriteDescriptorSet writes[2] = {};
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[0].dstSet = *out;
+  writes[0].dstBinding = 0;
+  writes[0].descriptorCount = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[0].pImageInfo = &imageDescriptor;
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[1].dstSet = *out;
+  writes[1].dstBinding = 1;
+  writes[1].descriptorCount = 1;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  writes[1].pBufferInfo = &paramsDescriptor;
+  api.UpdateDescriptorSets(device, 2, writes, 0, nullptr);
+  return true;
+}
+
+void VkVideoImport::RebuildSets() {
+  VkApi& api = context_.api();
+  const VkDevice device = context_.device();
+  if (device == VK_NULL_HANDLE || convertPool_ == VK_NULL_HANDLE) {
+    return;
+  }
+  if (api.ResetDescriptorPool != nullptr) {
+    api.ResetDescriptorPool(device, convertPool_, 0);
+  }
+  for (Imported& imported : imports_) {
+    for (uint32_t slot = 0; slot < kSlots; ++slot) {
+      imported.sets[slot] = VK_NULL_HANDLE;
+      if (!AllocateImportSet(imported.view, slot, &imported.sets[slot])) {
+        error_ = "video convert set rebuild failed";
+      }
+    }
+  }
 }
 
 bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeometry& geometry,
@@ -487,6 +627,18 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   }
   OH_NativeBuffer_Config nativeConfig{};
   OH_NativeBuffer_GetConfig(mutableBuffer, &nativeConfig);
+  const int pixelFormat = geometry.pixelFormat;
+  if (pixelFormat > 0 && pixelFormat != AV_PIXEL_FORMAT_NV12 &&
+      pixelFormat != AV_PIXEL_FORMAT_NV21) {
+    // The configured NV12 request was not honoured. Addressing another layout as interleaved 420
+    // would produce wrong colours, so refuse rather than present garbage.
+    error_ = "unsupported decoder pixel format " + std::to_string(pixelFormat);
+    return false;
+  }
+  if (pixelFormat == 0 && !formatWarned_) {
+    formatWarned_ = true;
+    HMRDP_LOGW("vulkan video import: the codec reported no pixel format; assuming NV12");
+  }
   const int visibleWidth = geometry.visibleWidth > 0 ? geometry.visibleWidth : nativeConfig.width;
   const int visibleHeight =
       geometry.visibleHeight > 0 ? geometry.visibleHeight : nativeConfig.height;
@@ -529,9 +681,14 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   }
   OH_NativeBuffer_ColorSpace colorSpace = OH_COLORSPACE_NONE;
   OH_NativeBuffer_GetColorSpace(mutableBuffer, &colorSpace);
+  float rows[12] = {};
   UpdateColorRows(static_cast<int>(colorSpace),
                   static_cast<int>(formatProperties.suggestedYcbcrModel),
-                  static_cast<int>(formatProperties.suggestedYcbcrRange));
+                  static_cast<int>(formatProperties.suggestedYcbcrRange), rows);
+  for (int i = 0; i < 12; ++i) {
+    out->colorRows[i] = rows[i];
+  }
+  out->cbFirst = geometry.cbFirst;
   if (!importLogged_) {
     importLogged_ = true;
     HMRDP_LOGI("vulkan video import: %{public}llu bytes, fmt=%{public}d cs=%{public}d, byte image "
@@ -622,49 +779,29 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
     return false;
   }
 
-  // The set is written once, here, and bound every frame afterwards.
-  VkDescriptorSetAllocateInfo setInfo{};
-  setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  setInfo.descriptorPool = convertPool_;
-  setInfo.descriptorSetCount = 1;
-  setInfo.pSetLayouts = &convertSetLayout_;
-  if (api.AllocateDescriptorSets(device, &setInfo, &out->set) != VK_SUCCESS) {
-    error_ = "video convert set allocation failed";
-    DestroyImported(out);
-    return false;
+  // Each slot's set is written once, here, and bound every frame afterwards.
+  for (uint32_t slot = 0; slot < kSlots; ++slot) {
+    if (!AllocateImportSet(out->view, slot, &out->sets[slot])) {
+      DestroyImported(out);
+      return false;
+    }
   }
-  VkDescriptorImageInfo imageDescriptor{};
-  imageDescriptor.sampler = byteSampler_;
-  imageDescriptor.imageView = out->view;
-  imageDescriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  VkDescriptorBufferInfo paramsDescriptor{};
-  paramsDescriptor.buffer = paramsBuffer_;
-  paramsDescriptor.offset = 0;
-  paramsDescriptor.range = kFrameParamsBytes;
-  VkWriteDescriptorSet writes[2] = {};
-  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[0].dstSet = out->set;
-  writes[0].dstBinding = 0;
-  writes[0].descriptorCount = 1;
-  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[0].pImageInfo = &imageDescriptor;
-  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[1].dstSet = out->set;
-  writes[1].dstBinding = 1;
-  writes[1].descriptorCount = 1;
-  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  writes[1].pBufferInfo = &paramsDescriptor;
-  api.UpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
   out->chromaRow = sliceHeight;
   return true;
 }
 
 bool VkVideoImport::Import(const void* nativeBuffer, const VideoFrameGeometry& geometry,
-                           Frame* out) {
+                           uint32_t slot, Frame* out) {
   const VkDevice device = context_.device();
   VkApi& api = context_.api();
-  if (device == VK_NULL_HANDLE || nativeBuffer == nullptr || out == nullptr) {
+  if (device == VK_NULL_HANDLE || nativeBuffer == nullptr || out == nullptr || slot >= kSlots) {
+    return false;
+  }
+  if (importFailed_) {
+    // The descriptor set of a failed import may already be partially built; retrying at the stream
+    // rate would keep taking sets from the pool (and resetting the pool would invalidate the sets
+    // the other frame slot may still use). Latch until the picture is rebuilt or the session ends.
     return false;
   }
   if (api.GetNativeBufferPropertiesOHOS == nullptr) {
@@ -678,20 +815,31 @@ bool VkVideoImport::Import(const void* nativeBuffer, const VideoFrameGeometry& g
   struct OH_NativeBuffer* buffer =
       const_cast<struct OH_NativeBuffer*>(static_cast<const struct OH_NativeBuffer*>(nativeBuffer));
   const uint32_t seq = OH_NativeBuffer_GetSeqNum(buffer);
-  for (const Imported& imported : imports_) {
+  for (Imported& imported : imports_) {
     if (imported.seq == seq) {
-      WriteFrameParams(geometry, imported.chromaRow);
+      imported.lastUsed = ++useCounter_;
+      WriteFrameParams(geometry, imported.chromaRow, imported.colorRows, slot);
       out->image = imported.image;
-      out->set = imported.set;
+      out->set = imported.sets[slot];
       return true;
     }
   }
-  if (importCacheFull()) {
-    // The caller drained the frames that may still read the cached imports (importCacheFull()).
-    ClearImports();
+  if (imports_.size() >= kMaxImports) {
+    // The caller has drained the frames that may still read the cached imports. Evict the least
+    // recently used one; resetting the pool invalidates every set, so the survivors are re-written.
+    size_t oldest = 0;
+    for (size_t i = 1; i < imports_.size(); ++i) {
+      if (imports_[i].lastUsed < imports_[oldest].lastUsed) {
+        oldest = i;
+      }
+    }
+    DestroyImported(&imports_[oldest]);
+    imports_.erase(imports_.begin() + static_cast<std::ptrdiff_t>(oldest));
+    RebuildSets();
   }
   Imported created;
   created.seq = seq;
+  created.lastUsed = ++useCounter_;
   if (!CreateImported(nativeBuffer, geometry, &created)) {
     // One-shot, in the one place every import failure passes through: a refused frame would
     // otherwise repeat at the stream rate, and the reason is what matters.
@@ -699,35 +847,52 @@ bool VkVideoImport::Import(const void* nativeBuffer, const VideoFrameGeometry& g
       importWarned_ = true;
       HMRDP_LOGE("vulkan video import: %{public}s; 超分 cannot present", error_.c_str());
     }
+    importFailed_ = true;
     return false;
   }
   imports_.push_back(created);
-  WriteFrameParams(geometry, created.chromaRow);
+  WriteFrameParams(geometry, created.chromaRow, created.colorRows, slot);
   out->image = created.image;
-  out->set = created.set;
+  out->set = created.sets[slot];
   return true;
 }
 
-void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow) {
-  if (paramsMapped_ == nullptr) {
+void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow,
+                                     const float* colorRows, uint32_t slot) {
+  if (slot >= kSlots || paramsMapped_[slot] == nullptr || colorRows == nullptr) {
     return;
   }
-  float* values = static_cast<float*>(paramsMapped_);
+  float* values = static_cast<float*>(paramsMapped_[slot]);
   values[0] = static_cast<float>(geometry.visibleWidth);
   values[1] = static_cast<float>(geometry.visibleHeight);
   values[2] = static_cast<float>(geometry.originX);
   values[3] = static_cast<float>(geometry.originY);
   values[4] = static_cast<float>(chromaRow);
-  values[5] = 0.0f;
+  values[5] = geometry.cbFirst ? 1.0f : 0.0f;
   values[6] = 0.0f;
   values[7] = 0.0f;
   for (int i = 0; i < 12; ++i) {
-    values[8 + i] = colorRows_[i];
+    values[8 + i] = colorRows[i];
+  }
+  if (!paramsCoherent_[slot]) {
+    VkApi& api = context_.api();
+    const VkDevice device = context_.device();
+    if (device != VK_NULL_HANDLE && api.FlushMappedMemoryRanges != nullptr) {
+      VkMappedMemoryRange range{};
+      range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+      range.memory = paramsMemory_[slot];
+      range.offset = 0;
+      range.size = kFrameParamsBytes;
+      api.FlushMappedMemoryRanges(device, 1, &range);
+    }
   }
 }
 
-void VkVideoImport::RecordConvert(VkCommandBuffer cmd, const Frame& frame) {
+void VkVideoImport::RecordConvert(VkCommandBuffer cmd, const Frame& frame, uint32_t slot) {
   VkApi& api = context_.api();
+  if (slot >= kSlots || pictures_[slot].view == VK_NULL_HANDLE) {
+    return;
+  }
   // Imported byte image: written by the external producer, only ever fetched (read-only layout).
   {
     VkImageMemoryBarrier barrier{};
@@ -747,17 +912,18 @@ void VkVideoImport::RecordConvert(VkCommandBuffer cmd, const Frame& frame) {
                            &barrier);
   }
   {
+    const Picture& picture = pictures_[slot];
     VkViewport viewport{};
-    viewport.width = static_cast<float>(picture_.width);
-    viewport.height = static_cast<float>(picture_.height);
+    viewport.width = static_cast<float>(picture.width);
+    viewport.height = static_cast<float>(picture.height);
     viewport.maxDepth = 1.0f;
     VkRect2D scissor{};
-    scissor.extent.width = static_cast<uint32_t>(picture_.width);
-    scissor.extent.height = static_cast<uint32_t>(picture_.height);
+    scissor.extent.width = static_cast<uint32_t>(picture.width);
+    scissor.extent.height = static_cast<uint32_t>(picture.height);
     VkRenderPassBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     begin.renderPass = convertRenderPass_;
-    begin.framebuffer = convertFramebuffer_;
+    begin.framebuffer = convertFramebuffer_[slot];
     begin.renderArea = scissor;
     api.CmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
     api.CmdSetViewport(cmd, 0, 1, &viewport);

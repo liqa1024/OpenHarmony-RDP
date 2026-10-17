@@ -34,6 +34,9 @@ struct MoonlightCursorShape {
   uint16_t height = 0;
   int16_t hotspotX = 0;
   int16_t hotspotY = 0;
+  // Same meaning as RDP's pointer `magnificationMilli`: the cursor shape is in the stream's pixel
+  // space and the presenter may upscale it; 1000 = no scaling.
+  int magnificationMilli = 1000;
   const uint8_t* bgra = nullptr;
   uint32_t size = 0;
 };
@@ -94,7 +97,10 @@ void MoonlightSessionSetClipboardCallback(MoonlightClipboardCallback callback);
 int MoonlightSessionSendClipboard(const void* data, int length);
 
 // Must be called before MoonlightSessionStart; passed to LiStartConnection as the render context.
-void MoonlightSessionSetWindow(void* window);
+// A null window clears the session's render target (and destroys the presenter's swapchain/surface);
+// width/height are the window's real pixel size (used only as the swapchain fallback when the
+// platform does not report a current extent).
+void MoonlightSessionSetWindow(void* window, int width, int height);
 
 // 超分: forward a surface (window) resize to the session's presenter swapchain; a no-op when the
 // direct-to-surface path is used (the window scaling mode handles the fit itself).

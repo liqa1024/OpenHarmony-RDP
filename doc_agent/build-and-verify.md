@@ -41,7 +41,7 @@ devecocli run --product emulator --module entry@emulator --device "127.0.0.1:555
 | 任何 `.ets` | 先 `arkts_check <文件>`（快），再 `build_project` |
 | 任何 `.cpp/.h/.vert/.frag` | `build_project`（任务结束前必须通过） |
 | 改 FreeRDP 源码/补丁 | 见 [`native-build.md`](native-build.md)（构建 / 补丁体系）与 [`rdp-native.md`](rdp-native.md) §3（补丁内容）：重打补丁 + 重编 + 把 `.so` 放回 `entry/libs/<abi>/`，再 `build_project` |
-| 改 GFX / 解码 / 回放 | 见 [`rdp-gfx.md`](rdp-gfx.md) §6 的**回放验证回路**（回放 + `bad=0`；Vulkan 上屏只在真机） |
+| 改 GFX / 解码 / 回放 | 见 [`rdp-gfx.md`](rdp-gfx.md) §6 的**回放与参考画面**（仅 RDP 解码/合成；不覆盖呈现器/超分；Vulkan 上屏只在真机） |
 | 改输入 / 会话窗口 | 模拟器（2in1）上手工走一遍；光标同步、真机 GPU 相关例外见对应文档 |
 
 - **验证纪律**：先怀疑**代码 / 构建 / 数据** → 再怀疑**模拟器自身状态**（跑过重型 GL/GPU 压测后先冷启动）
@@ -83,6 +83,8 @@ hdc -t <序列号> shell "hilog -x -D 0xD001"            # 读本应用的原生
   要么每个参数都写 `%{public}`，要么先 `snprintf` 成一行再用 `%{public}s` 打。
 
 ### 5.2 标准多轮回放（dev 页）
+
+仅用于 RDP 解码/合成（gdi 主缓冲像素）；呈现器与超分不适用。
 
 dev 页的 stats 文本**第一行**是状态与轮次号（路线单独一行显示，不在 stats 文本里）：
 

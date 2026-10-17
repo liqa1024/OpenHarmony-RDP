@@ -98,6 +98,7 @@ struct MoonlightEventPayload {
   int height = 0;
   int hotX = 0;
   int hotY = 0;
+  int magnificationMilli = 1000;
   int64_t shapeId = 0;
   bool visible = false;
   bool hasShape = false;
@@ -133,6 +134,7 @@ void CallJsMoonlightEvent(napi_env env, napi_value jsCallback, void*, void* data
   setInt("height", payload->height);
   setInt("hotX", payload->hotX);
   setInt("hotY", payload->hotY);
+  setInt("magnificationMilli", payload->magnificationMilli);
   setInt("shapeId", payload->shapeId);
   setBool("visible", payload->visible);
   setBool("hasShape", payload->hasShape);
@@ -158,6 +160,7 @@ void OnMoonlightCursor(const hmrdp::MoonlightCursorShape& shape) {
   payload->height = shape.height;
   payload->hotX = shape.hotspotX;
   payload->hotY = shape.hotspotY;
+  payload->magnificationMilli = shape.magnificationMilli;
   if (shape.hasShape && shape.bgra != nullptr && shape.size > 0) {
     payload->bytes.assign(shape.bgra, shape.bgra + shape.size);
   }
@@ -306,6 +309,14 @@ napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
     return CreateBool(env, false);
   }
   const std::string surfaceId = GetStringArgument(env, args[0]);
+  int32_t width = 0;
+  int32_t height = 0;
+  if (argc >= 2) {
+    napi_get_value_int32(env, args[1], &width);
+  }
+  if (argc >= 3) {
+    napi_get_value_int32(env, args[2], &height);
+  }
   const uint64_t sid = static_cast<uint64_t>(strtoull(surfaceId.c_str(), nullptr, 10));
   OHNativeWindow* window = nullptr;
   if (OH_NativeWindow_CreateNativeWindowFromSurfaceId(sid, &window) != 0 || window == nullptr) {
@@ -317,20 +328,27 @@ napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
     HMRDP_LOGW("moonlight: set scaling mode failed");
   }
   if (g_moonlightWindow != nullptr) {
-    if (hmrdp::MoonlightSessionActive()) {
+    if (hmrdp::MoonlightSessionActive() && !hmrdp::MoonlightVideoBufferMode()) {
+      // Surface mode: the codec itself holds the old window, so a live replacement would need a
+      // decoder restart. Reject it rather than presenting into a dead surface.
       OH_NativeWindow_DestroyNativeWindow(window);
       return CreateBool(env, false);
     }
-    OH_NativeWindow_DestroyNativeWindow(g_moonlightWindow);
-    g_moonlightWindow = nullptr;
+    OHNativeWindow* previous = g_moonlightWindow;
+    g_moonlightWindow = window;
+    hmrdp::MoonlightSessionSetWindow(window, width, height);
+    // The presenter has already rebuilt its swapchain on the new window; the old native window is
+    // no longer referenced (surface mode was rejected above).
+    OH_NativeWindow_DestroyNativeWindow(previous);
+    return CreateBool(env, true);
   }
   g_moonlightWindow = window;
-  hmrdp::MoonlightSessionSetWindow(window);
+  hmrdp::MoonlightSessionSetWindow(window, width, height);
   return CreateBool(env, true);
 }
 
 napi_value MoonlightSessionClearSurface(napi_env env, napi_callback_info) {
-  hmrdp::MoonlightSessionSetWindow(nullptr);
+  hmrdp::MoonlightSessionSetWindow(nullptr, 0, 0);
   if (g_moonlightWindow != nullptr && !hmrdp::MoonlightSessionActive()) {
     OH_NativeWindow_DestroyNativeWindow(g_moonlightWindow);
     g_moonlightWindow = nullptr;
@@ -649,13 +667,20 @@ napi_value MoonlightGetTelemetry(napi_env env, napi_callback_info) {
     napi_set_named_property(env, result, name, v);
   };
   setInt("frames", static_cast<int64_t>(telemetry.frames));
+  setInt("presentedFrames", static_cast<int64_t>(telemetry.presentedFrames));
   setInt("submittedFrames", static_cast<int64_t>(telemetry.submittedFrames));
   setInt("droppedFrames", static_cast<int64_t>(telemetry.droppedFrames));
+  setInt("presentDroppedFrames", static_cast<int64_t>(telemetry.presentDroppedFrames));
+  setInt("handoffReplacedFrames", static_cast<int64_t>(telemetry.handoffReplacedFrames));
   setInt("bytes", static_cast<int64_t>(telemetry.bytes));
   setInt("hostLatencyTenthMs", static_cast<int64_t>(telemetry.hostLatencyTenthMs));
   setInt("hostLatencyFrames", static_cast<int64_t>(telemetry.hostLatencyFrames));
   setInt("decodeRoundTripUs", static_cast<int64_t>(telemetry.decodeRoundTripUs));
   setInt("decodeRoundTripFrames", static_cast<int64_t>(telemetry.decodeRoundTripFrames));
+  setInt("gpuCopyUs", static_cast<int64_t>(telemetry.gpuCopyUs));
+  setInt("gpuSrUs", static_cast<int64_t>(telemetry.gpuSrUs));
+  setInt("gpuBlitUs", static_cast<int64_t>(telemetry.gpuBlitUs));
+  setInt("presentWaitUs", static_cast<int64_t>(telemetry.presentWaitUs));
   setInt("pendingVideoFrames", telemetry.pendingVideoFrames);
   setInt("rttMs", telemetry.rttMs);
   setInt("rttVarianceMs", telemetry.rttVarianceMs);

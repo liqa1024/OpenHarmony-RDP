@@ -328,7 +328,8 @@ struct SettingsPage {
   }
 
   private mlAutoScalePercent(): number {
-    return SettingsStore.scalePresetForResolution(this.mlPreviewWidth(), this.mlPreviewHeight());
+    return SettingsStore.autoScalePercent(this.mlPreviewWidth(), this.mlPreviewHeight(),
+      this.srEnabledFor(PROTOCOL_MOONLIGHT), this.srRatioFor(PROTOCOL_MOONLIGHT));
   }
 
   private effectiveDefaultScale(): number {
@@ -957,7 +958,9 @@ struct SettingsPage {
         allowCustomInput: false,
         percentText: this.mlScaleText,
         autoPercent: this.mlAutoScalePercent(),
-        subtitle: '修改主机虚拟显示器的显示缩放',
+        subtitle: this.srEnabledFor(PROTOCOL_MOONLIGHT)
+          ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
+          : '修改主机虚拟显示器的显示缩放',
         noneHint: '不向主机发送缩放设置，交给虚拟屏自行决定',
         warning: '仅基地版 Sunshine 有效',
         onModeChange: (mode: number) => {

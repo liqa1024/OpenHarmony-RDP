@@ -80,6 +80,8 @@
 | `utils/KeyMapper.ets` | **两协议共用的单键表**：一次给出 RDP 的 `scancode`+`extended` 与 Moonlight 的 `vk`+`extended`（及 lock 位）；`describe` 供设置页按键框显示（见 [`session-layer.md`](session-layer.md) §8） |
 | `utils/MoonlightKeyMapper.ets` | Moonlight 输入常量（`LiSend*` 的按键/按钮/action、modifier 位、`MODIFIER_EXTENDED`）与 VK→modifier 判定 |
 | `utils/MoonlightCodec.ets` | Moonlight 编码器能力分类（硬解 / 软解 / 无） |
+| `utils/SessionTags.ets` | 会话标题标签：RDP / Moonlight 共用的单个括号与逗号分隔（超分、编码格式、运行态警告），避免两页各拼一套 |
+| `utils/TelemetryFormat.ets` | 遥测显示：µs→ms、GPU 每帧 / 三段拆分的统一格式，RDP 与 Moonlight 共用 |
 | `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/HTML/CfHTML 解析与组装），跑在后台 worker |
 | `utils/FileTransferCodec.ets` | 文件剪贴板线格式编解码（`FileGroupDescriptorW` 等） |
 | `utils/UiUtil.ets` | `showToast` / `showConfirm` / `showNotice` / `lengthToNumber` 等共享 UI 工具 |
@@ -136,7 +138,7 @@
 | `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测（含超分后端与视频导入判定）+ 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（device 按需使能交换链与外部内存扩展，见 §4.1） |
 | `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲；两种输入（桌面图 / 视频图）都只喂一个 `PresentInput`（见 [`present.md`](present.md) §4） |
 | `core/hmrdp_vk_sr.cpp` | `VkRenderer` 的超分辨率实现：XEngine 与 FSR（EASU + RCAS）两个后端的资源、屏障与录制（见 [`present.md`](present.md) §4） |
-| `core/hmrdp_vk_video.{h,cpp}` | **Moonlight 视频导入**（`VkVideoImport`）：解码器交出的缓冲按 **R8 字节图**外部内存导入 + 片元自己做 YUV→RGB（不依赖驱动解释缓冲）→ 会话分辨率的 picture；导入按缓冲缓存（每帧零分配），只对外 `Ensure / needsRebuild / importCacheFull / Import / RecordConvert`，配方与判据见 [`present.md`](present.md) §4 |
+| `core/hmrdp_vk_video.{h,cpp}` | **Moonlight 视频导入**（`VkVideoImport`）：解码器交出的缓冲按 **R8 字节图**外部内存导入 + 片元自己做 YUV→RGB（不依赖驱动解释缓冲）→ 会话分辨率的 picture（每个呈现槽一份 picture/UBO）；导入按缓冲缓存（每帧零分配，满了 LRU 淘汰），只对外 `Ensure / needsRebuild / needsDrainFor / Import / RecordConvert`，配方与判据见 [`present.md`](present.md) §4 |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针、视频解码桥、音频 Opus 解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §2.3 / [`moonlight-control.md`](moonlight-control.md) §1） |
 | `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`audio.md`](audio.md)） |
@@ -173,7 +175,7 @@
 | **解码执行器**（会话自有 ffrt 队列） | progressive tile chunk 解码（每 region 若干任务） | 执行器随会话创建/销毁；解码入口以线程局部指针告知当前执行器，未设置则回退串行 |
 | **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioSink` 的交接环 | 不碰画面；缓冲/丢弃/预缓冲全在环一处（见 [`audio.md`](audio.md) §3） |
 | **Moonlight 音频解码线程**（library `AudioDecoderThread`） | `decodeAndPlaySample`：Opus 多流解码 → 交给**同一个** `AudioSink` 交接环 | 不设 `CAPABILITY_DIRECT_SUBMIT`，故不占 RTP 接收线程；缓冲/预缓冲同样全在环一处（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
-| **Moonlight 解码归还线程**（会话自有，`core/hmrdp_video_decoder.*`） | buffer 模式（超分）下把解码器交出的帧交给 sink 上屏，返回即把缓冲归还解码器；队列只留最新一帧，被替换的当场归还 | 解码输出回调**只投递或直接归还**（重活在归还线程上）；presenter 的调用在 sink 内由交接锁保护，故拆会话不会把 presenter 从在飞的帧下面  抽走（[`present.md`](present.md) §4） |
+| **Moonlight 解码归还线程**（会话自有，`core/hmrdp_video_decoder.*`） | buffer 模式（超分）下把解码器交出的帧交给 sink 上屏；**最多两帧在飞**，轮到同一呈现槽位前等 fence 后才把缓冲归还解码器；队列只留最新一帧，被替换的当场归还 | 解码输出回调**只投递或直接归还**（重活在归还线程上）；presenter 的调用在 sink 内由交接锁保护，故拆会话不会把 presenter 从在飞的帧下面抽走（[`present.md`](present.md) §4） |
 | **OHAudio 回调线程**（Moonlight 低延迟模式，系统侧） | `OH_AudioRenderer` 的写回调直接从 `AudioSink` 环拉 PCM（`core/hmrdp_oh_audio.*`，见 [`moonlight-native.md`](moonlight-native.md) §2.3） | 回调内只做环的 `Read`（锁极短），**禁止**耗时操作与音频流控调用 |
 | **（默认音频渲染在 ArkTS 音频 worker）** | 其余情况（RDP、Moonlight 关低延迟）渲染器的拉取在 ArkTS 音频 worker（`AudioRenderer.writeData` → `audioRead`/`moonlightAudioRead`，§4.4）；原生侧只由上面两条线程往 sink 环写入 | — |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |

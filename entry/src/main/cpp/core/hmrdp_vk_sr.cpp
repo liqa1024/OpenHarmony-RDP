@@ -118,6 +118,7 @@ void VkRenderer::SetSuperResolution(bool enabled, SuperResolutionBackend backend
   srOutputHeight_ = outputHeight > 0 ? outputHeight : 0;
   if (changed) {
     srFailed_ = false;
+    srActiveFrame_ = false;
     DestroySuperResolutionLocked();
   }
   HMRDP_LOGI("vulkan presenter: super resolution %{public}s (%{public}s, output %{public}dx%{public}d)",
@@ -126,8 +127,8 @@ void VkRenderer::SetSuperResolution(bool enabled, SuperResolutionBackend backend
              srOutputHeight_);
 }
 
-bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight,
-                                           VkImageView inputView) {
+bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight, uint32_t slot,
+                                           VkImageView inputView, VkImageView otherInputView) {
   if (!srRequested_ || srFailed_) {
     return false;
   }
@@ -137,16 +138,18 @@ bool VkRenderer::EnsureSuperResolutionLocked(int inputWidth, int inputHeight,
     return false;
   }
   if (srBackend_ == SuperResolutionBackend::kFsr) {
-    return EnsureFsrLocked(inputWidth, inputHeight, inputView, outputWidth, outputHeight);
+    return EnsureFsrLocked(inputWidth, inputHeight, slot, inputView, otherInputView, outputWidth,
+                           outputHeight);
   }
   return EnsureXengineLocked(inputWidth, inputHeight, outputWidth, outputHeight);
 }
 
 bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int outputWidth,
                                      int outputHeight) {
-  const bool match = srImageView_ != VK_NULL_HANDLE && srUpscale_.valid() &&
-                     srImageWidth_ == outputWidth && srImageHeight_ == outputHeight &&
-                     srInputWidth_ == inputWidth && srInputHeight_ == inputHeight;
+  const bool match = srImageView_[0] != VK_NULL_HANDLE && srImageView_[1] != VK_NULL_HANDLE &&
+                     srUpscale_.valid() && srImageWidth_ == outputWidth &&
+                     srImageHeight_ == outputHeight && srInputWidth_ == inputWidth &&
+                     srInputHeight_ == inputHeight;
   if (match) {
     return true;
   }
@@ -161,76 +164,23 @@ bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int output
   // Rare resize path: frames still reading the old output must drain first; safe
   // because this runs before the frame's swapchain image is acquired.
   DrainInFlightLocked();
-
-  VkImageCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  info.imageType = VK_IMAGE_TYPE_2D;
-  info.format = kPictureFormat;
-  info.extent.width = static_cast<uint32_t>(outputWidth);
-  info.extent.height = static_cast<uint32_t>(outputHeight);
-  info.extent.depth = 1;
-  info.mipLevels = 1;
-  info.arrayLayers = 1;
-  info.samples = VK_SAMPLE_COUNT_1_BIT;
-  info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  VkResult result = api.CreateImage(device, &info, nullptr, &srImage_);
-  if (result != VK_SUCCESS) {
-    error_ = "vkCreateImage (super resolution): " + VkResultName(result);
+  const auto fail = [this](const char* what) {
+    error_ = what;
     HMRDP_LOGE("vulkan %{public}s", error_.c_str());
     srFailed_ = true;
     DestroySuperResolutionLocked();
     return false;
-  }
-  VkMemoryRequirements req{};
-  api.GetImageMemoryRequirements(device, srImage_, &req);
-  const uint32_t typeIndex =
-      context.FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  if (typeIndex == UINT32_MAX) {
-    error_ = "no device-local memory type for the super-resolution image";
-    srFailed_ = true;
-    DestroySuperResolutionLocked();
-    return false;
-  }
-  VkMemoryAllocateInfo alloc{};
-  alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  alloc.allocationSize = req.size;
-  alloc.memoryTypeIndex = typeIndex;
-  result = api.AllocateMemory(device, &alloc, nullptr, &srImageMemory_);
-  if (result != VK_SUCCESS) {
-    error_ = "vkAllocateMemory (super resolution): " + VkResultName(result);
-    srFailed_ = true;
-    DestroySuperResolutionLocked();
-    return false;
-  }
-  result = api.BindImageMemory(device, srImage_, srImageMemory_, 0);
-  if (result != VK_SUCCESS) {
-    error_ = "vkBindImageMemory (super resolution): " + VkResultName(result);
-    srFailed_ = true;
-    DestroySuperResolutionLocked();
-    return false;
-  }
-
-  VkImageViewCreateInfo viewInfo{};
-  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  viewInfo.image = srImage_;
-  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  viewInfo.format = kPictureFormat;
-  viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  viewInfo.subresourceRange.levelCount = 1;
-  viewInfo.subresourceRange.layerCount = 1;
-  result = api.CreateImageView(device, &viewInfo, nullptr, &srImageView_);
-  if (result != VK_SUCCESS) {
-    error_ = "vkCreateImageView (super resolution): " + VkResultName(result);
-    srFailed_ = true;
-    DestroySuperResolutionLocked();
-    return false;
+  };
+  for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+    if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                           &srImage_[slot], &srImageMemory_[slot])) {
+      return fail("super-resolution image allocation failed");
+    }
+    if (!CreateImageView2D(api, context, kPictureFormat, srImage_[slot],
+                           &srImageView_[slot])) {
+      return fail("super-resolution image view failed");
+    }
   }
 
   VkExtent2D inputExtent{};
@@ -258,33 +208,46 @@ void VkRenderer::DestroySuperResolutionLocked() {
   VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
   if (device != VK_NULL_HANDLE) {
-    if (srImageView_ != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
-      api.DestroyImageView(device, srImageView_, nullptr);
+    for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+      if (srImageView_[slot] != VK_NULL_HANDLE && api.DestroyImageView != nullptr) {
+        api.DestroyImageView(device, srImageView_[slot], nullptr);
+      }
+      if (srImage_[slot] != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
+        api.DestroyImage(device, srImage_[slot], nullptr);
+      }
+      if (srImageMemory_[slot] != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
+        api.FreeMemory(device, srImageMemory_[slot], nullptr);
+      }
+      srImageView_[slot] = VK_NULL_HANDLE;
+      srImage_[slot] = VK_NULL_HANDLE;
+      srImageMemory_[slot] = VK_NULL_HANDLE;
+      srInputView_[slot] = VK_NULL_HANDLE;
     }
-    if (srImage_ != VK_NULL_HANDLE && api.DestroyImage != nullptr) {
-      api.DestroyImage(device, srImage_, nullptr);
-    }
-    if (srImageMemory_ != VK_NULL_HANDLE && api.FreeMemory != nullptr) {
-      api.FreeMemory(device, srImageMemory_, nullptr);
+  } else {
+    for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+      srImageView_[slot] = VK_NULL_HANDLE;
+      srImage_[slot] = VK_NULL_HANDLE;
+      srImageMemory_[slot] = VK_NULL_HANDLE;
+      srInputView_[slot] = VK_NULL_HANDLE;
     }
   }
   srUpscale_.Destroy();
-  srImageView_ = VK_NULL_HANDLE;
-  srImage_ = VK_NULL_HANDLE;
-  srImageMemory_ = VK_NULL_HANDLE;
   srImageWidth_ = 0;
   srImageHeight_ = 0;
   srInputWidth_ = 0;
   srInputHeight_ = 0;
-  srInputView_ = VK_NULL_HANDLE;
+  srActiveFrame_ = false;
 }
 
-bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView inputView,
+bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
+                                 VkImageView inputView, VkImageView otherInputView,
                                  int outputWidth, int outputHeight) {
 #if !defined(HMRDP_HAVE_FSR)
   (void)inputWidth;
   (void)inputHeight;
+  (void)slot;
   (void)inputView;
+  (void)otherInputView;
   (void)outputWidth;
   (void)outputHeight;
   srFailed_ = true;
@@ -295,13 +258,15 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView in
   VkApi& api = vk_.api();
   VkDeviceContext& context = vk_;
   const VkDevice device = context.device();
-  if (device == VK_NULL_HANDLE) {
+  if (device == VK_NULL_HANDLE || slot >= kFramesInFlight) {
     return false;
   }
-  const bool match = srImageView_ != VK_NULL_HANDLE && fsrRcasPipeline_ != VK_NULL_HANDLE &&
+  const bool match = srImageView_[0] != VK_NULL_HANDLE && srImageView_[1] != VK_NULL_HANDLE &&
+                     fsrRcasPipeline_ != VK_NULL_HANDLE &&
                      srImageWidth_ == outputWidth && srImageHeight_ == outputHeight &&
                      srInputWidth_ == inputWidth && srInputHeight_ == inputHeight &&
-                     srInputView_ == inputView;
+                     srInputView_[slot] == inputView &&
+                     srInputView_[(slot + 1) % kFramesInFlight] == otherInputView;
   if (match) {
     return true;
   }
@@ -317,21 +282,24 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView in
     return false;
   };
 
-  if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
-                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                         &srImage_, &srImageMemory_)) {
-    return fail("FSR: output image allocation failed");
-  }
-  if (!CreateImageView2D(api, context, kPictureFormat, srImage_, &srImageView_)) {
-    return fail("FSR: output image view failed");
-  }
-  if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
-                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                         &fsrEasuImage_, &fsrEasuImageMemory_)) {
-    return fail("FSR: EASU image allocation failed");
-  }
-  if (!CreateImageView2D(api, context, kPictureFormat, fsrEasuImage_, &fsrEasuImageView_)) {
-    return fail("FSR: EASU image view failed");
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                           &srImage_[i], &srImageMemory_[i])) {
+      return fail("FSR: output image allocation failed");
+    }
+    if (!CreateImageView2D(api, context, kPictureFormat, srImage_[i], &srImageView_[i])) {
+      return fail("FSR: output image view failed");
+    }
+    if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                           &fsrEasuImage_[i], &fsrEasuImageMemory_[i])) {
+      return fail("FSR: EASU image allocation failed");
+    }
+    if (!CreateImageView2D(api, context, kPictureFormat, fsrEasuImage_[i],
+                           &fsrEasuImageView_[i])) {
+      return fail("FSR: EASU image view failed");
+    }
   }
 
   {
@@ -384,9 +352,11 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView in
     info.layers = 1;
     return api.CreateFramebuffer(device, &info, nullptr, out) == VK_SUCCESS;
   };
-  if (!make_framebuffer(fsrEasuImageView_, &fsrEasuFramebuffer_) ||
-      !make_framebuffer(srImageView_, &fsrRcasFramebuffer_)) {
-    return fail("FSR: vkCreateFramebuffer failed");
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    if (!make_framebuffer(fsrEasuImageView_[i], &fsrEasuFramebuffer_[i]) ||
+        !make_framebuffer(srImageView_[i], &fsrRcasFramebuffer_[i])) {
+      return fail("FSR: vkCreateFramebuffer failed");
+    }
   }
 
   // EASU gathers four texels per tap and RCAS texel-fetches, so the filter mode is
@@ -434,31 +404,37 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView in
     }
   }
   {
+    constexpr uint32_t kSets = kFramesInFlight * 2;  // EASU input + RCAS input per frame slot
     VkDescriptorPoolSize sizes[2] = {};
     sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sizes[0].descriptorCount = 2;
+    sizes[0].descriptorCount = kSets;
     sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    sizes[1].descriptorCount = 2;
+    sizes[1].descriptorCount = kSets;
     VkDescriptorPoolCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    info.maxSets = 2;
+    info.maxSets = kSets;
     info.poolSizeCount = 2;
     info.pPoolSizes = sizes;
     if (api.CreateDescriptorPool(device, &info, nullptr, &fsrPool_) != VK_SUCCESS) {
       return fail("FSR: vkCreateDescriptorPool failed");
     }
-    VkDescriptorSetLayout layouts[2] = {fsrSetLayout_, fsrSetLayout_};
+    VkDescriptorSetLayout layouts[kSets] = {};
+    for (uint32_t i = 0; i < kSets; ++i) {
+      layouts[i] = fsrSetLayout_;
+    }
     VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = fsrPool_;
-    alloc.descriptorSetCount = 2;
+    alloc.descriptorSetCount = kSets;
     alloc.pSetLayouts = layouts;
-    VkDescriptorSet sets[2] = {};
+    VkDescriptorSet sets[kSets] = {};
     if (api.AllocateDescriptorSets(device, &alloc, sets) != VK_SUCCESS) {
       return fail("FSR: vkAllocateDescriptorSets failed");
     }
-    fsrEasuSet_ = sets[0];
-    fsrRcasSet_ = sets[1];
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+      fsrEasuSet_[i] = sets[i * 2];
+      fsrRcasSet_[i] = sets[i * 2 + 1];
+    }
   }
   if (!CreateFsrPipeline(api, device, fsrRenderPass_, fsrPipelineLayout_, kFsrEasuFragSpv,
                          kFsrEasuFragSpvWords, &fsrEasuPipeline_) ||
@@ -536,55 +512,66 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView in
     }
   }
 
-  VkDescriptorImageInfo easuInput{};
-  easuInput.sampler = fsrSampler_;
+  VkDescriptorImageInfo easuInput[2] = {};
   // The EASU input is whatever the caller presents: RDP's desktop image, or the Moonlight video
-  // input image (bound here rather than hardcoded, or FSR would sample a desktop image that does
-  // not exist on the video path).
-  easuInput.imageView = inputView;
-  easuInput.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  // picture for this frame slot (bound here rather than hardcoded, or FSR would sample a desktop
+  // image that does not exist on the video path).
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    easuInput[i].sampler = fsrSampler_;
+    easuInput[i].imageView = i == slot ? inputView : otherInputView;
+    easuInput[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  }
   VkDescriptorBufferInfo easuBlock{};
   easuBlock.buffer = fsrEasuParams_;
   easuBlock.range = kFsrParamsBytes;
-  VkDescriptorImageInfo rcasInput{};
-  rcasInput.sampler = fsrSampler_;
-  rcasInput.imageView = fsrEasuImageView_;
-  rcasInput.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  VkDescriptorImageInfo rcasInput[2] = {};
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    rcasInput[i].sampler = fsrSampler_;
+    rcasInput[i].imageView = fsrEasuImageView_[i];
+    rcasInput[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  }
   VkDescriptorBufferInfo rcasBlock{};
   rcasBlock.buffer = fsrRcasParams_;
   rcasBlock.range = kFsrParamsBytes;
-  VkWriteDescriptorSet writes[4] = {};
-  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[0].dstSet = fsrEasuSet_;
-  writes[0].dstBinding = 0;
-  writes[0].descriptorCount = 1;
-  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[0].pImageInfo = &easuInput;
-  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[1].dstSet = fsrEasuSet_;
-  writes[1].dstBinding = 1;
-  writes[1].descriptorCount = 1;
-  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  writes[1].pBufferInfo = &easuBlock;
-  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[2].dstSet = fsrRcasSet_;
-  writes[2].dstBinding = 0;
-  writes[2].descriptorCount = 1;
-  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[2].pImageInfo = &rcasInput;
-  writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[3].dstSet = fsrRcasSet_;
-  writes[3].dstBinding = 1;
-  writes[3].descriptorCount = 1;
-  writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  writes[3].pBufferInfo = &rcasBlock;
-  api.UpdateDescriptorSets(device, 4, writes, 0, nullptr);
+  VkWriteDescriptorSet writes[8] = {};
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkWriteDescriptorSet& easuImage = writes[i * 4];
+    easuImage.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    easuImage.dstSet = fsrEasuSet_[i];
+    easuImage.dstBinding = 0;
+    easuImage.descriptorCount = 1;
+    easuImage.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    easuImage.pImageInfo = &easuInput[i];
+    VkWriteDescriptorSet& easuParams = writes[i * 4 + 1];
+    easuParams.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    easuParams.dstSet = fsrEasuSet_[i];
+    easuParams.dstBinding = 1;
+    easuParams.descriptorCount = 1;
+    easuParams.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    easuParams.pBufferInfo = &easuBlock;
+    VkWriteDescriptorSet& rcasImage = writes[i * 4 + 2];
+    rcasImage.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    rcasImage.dstSet = fsrRcasSet_[i];
+    rcasImage.dstBinding = 0;
+    rcasImage.descriptorCount = 1;
+    rcasImage.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    rcasImage.pImageInfo = &rcasInput[i];
+    VkWriteDescriptorSet& rcasParams = writes[i * 4 + 3];
+    rcasParams.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    rcasParams.dstSet = fsrRcasSet_[i];
+    rcasParams.dstBinding = 1;
+    rcasParams.descriptorCount = 1;
+    rcasParams.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    rcasParams.pBufferInfo = &rcasBlock;
+  }
+  api.UpdateDescriptorSets(device, 8, writes, 0, nullptr);
 
   srImageWidth_ = outputWidth;
   srImageHeight_ = outputHeight;
   srInputWidth_ = inputWidth;
   srInputHeight_ = inputHeight;
-  srInputView_ = inputView;
+  srInputView_[slot] = inputView;
+  srInputView_[(slot + 1) % kFramesInFlight] = otherInputView;
   return true;
 #endif
 }
@@ -602,11 +589,13 @@ void VkRenderer::DestroyFsrLocked() {
       }
     }
     if (api.DestroyFramebuffer != nullptr) {
-      if (fsrEasuFramebuffer_ != VK_NULL_HANDLE) {
-        api.DestroyFramebuffer(device, fsrEasuFramebuffer_, nullptr);
-      }
-      if (fsrRcasFramebuffer_ != VK_NULL_HANDLE) {
-        api.DestroyFramebuffer(device, fsrRcasFramebuffer_, nullptr);
+      for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (fsrEasuFramebuffer_[i] != VK_NULL_HANDLE) {
+          api.DestroyFramebuffer(device, fsrEasuFramebuffer_[i], nullptr);
+        }
+        if (fsrRcasFramebuffer_[i] != VK_NULL_HANDLE) {
+          api.DestroyFramebuffer(device, fsrRcasFramebuffer_[i], nullptr);
+        }
       }
     }
     if (api.DestroyPipeline != nullptr) {
@@ -632,14 +621,26 @@ void VkRenderer::DestroyFsrLocked() {
     if (api.DestroyRenderPass != nullptr && fsrRenderPass_ != VK_NULL_HANDLE) {
       api.DestroyRenderPass(device, fsrRenderPass_, nullptr);
     }
-    if (api.DestroyImageView != nullptr && fsrEasuImageView_ != VK_NULL_HANDLE) {
-      api.DestroyImageView(device, fsrEasuImageView_, nullptr);
+    if (api.DestroyImageView != nullptr) {
+      for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (fsrEasuImageView_[i] != VK_NULL_HANDLE) {
+          api.DestroyImageView(device, fsrEasuImageView_[i], nullptr);
+        }
+      }
     }
-    if (api.DestroyImage != nullptr && fsrEasuImage_ != VK_NULL_HANDLE) {
-      api.DestroyImage(device, fsrEasuImage_, nullptr);
+    if (api.DestroyImage != nullptr) {
+      for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (fsrEasuImage_[i] != VK_NULL_HANDLE) {
+          api.DestroyImage(device, fsrEasuImage_[i], nullptr);
+        }
+      }
     }
-    if (api.FreeMemory != nullptr && fsrEasuImageMemory_ != VK_NULL_HANDLE) {
-      api.FreeMemory(device, fsrEasuImageMemory_, nullptr);
+    if (api.FreeMemory != nullptr) {
+      for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (fsrEasuImageMemory_[i] != VK_NULL_HANDLE) {
+          api.FreeMemory(device, fsrEasuImageMemory_[i], nullptr);
+        }
+      }
     }
     if (api.DestroyBuffer != nullptr) {
       if (fsrEasuParams_ != VK_NULL_HANDLE) {
@@ -665,15 +666,17 @@ void VkRenderer::DestroyFsrLocked() {
   fsrSetLayout_ = VK_NULL_HANDLE;
   fsrPipelineLayout_ = VK_NULL_HANDLE;
   fsrPool_ = VK_NULL_HANDLE;
-  fsrEasuSet_ = VK_NULL_HANDLE;
-  fsrRcasSet_ = VK_NULL_HANDLE;
+  for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+    fsrEasuSet_[slot] = VK_NULL_HANDLE;
+    fsrRcasSet_[slot] = VK_NULL_HANDLE;
+    fsrEasuImage_[slot] = VK_NULL_HANDLE;
+    fsrEasuImageMemory_[slot] = VK_NULL_HANDLE;
+    fsrEasuImageView_[slot] = VK_NULL_HANDLE;
+    fsrEasuFramebuffer_[slot] = VK_NULL_HANDLE;
+    fsrRcasFramebuffer_[slot] = VK_NULL_HANDLE;
+  }
   fsrEasuPipeline_ = VK_NULL_HANDLE;
   fsrRcasPipeline_ = VK_NULL_HANDLE;
-  fsrEasuImage_ = VK_NULL_HANDLE;
-  fsrEasuImageMemory_ = VK_NULL_HANDLE;
-  fsrEasuImageView_ = VK_NULL_HANDLE;
-  fsrEasuFramebuffer_ = VK_NULL_HANDLE;
-  fsrRcasFramebuffer_ = VK_NULL_HANDLE;
   fsrEasuParams_ = VK_NULL_HANDLE;
   fsrEasuParamsMemory_ = VK_NULL_HANDLE;
   fsrRcasParams_ = VK_NULL_HANDLE;
@@ -681,7 +684,11 @@ void VkRenderer::DestroyFsrLocked() {
   fsrParamsCoherent_ = false;
 }
 
-bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView inputView) {
+bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView inputView,
+                                             uint32_t slot) {
+  if (slot >= kFramesInFlight) {
+    return false;
+  }
   VkApi& api = vk_.api();
   VkImageSubresourceRange subresource{};
   subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -714,19 +721,20 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView in
     toAttachment.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     toAttachment.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toAttachment.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toAttachment.image = srImage_;
+    toAttachment.image = srImage_[slot];
     toAttachment.subresourceRange = subresource;
     api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
                            nullptr, 1, &toAttachment);
-    srUpscale_.Record(cmd, inputView, srImageView_);
-    targetToSampled(srImage_);
+    srUpscale_.Record(cmd, inputView, srImageView_[slot]);
+    targetToSampled(srImage_[slot]);
     return true;
   }
 
 #if defined(HMRDP_HAVE_FSR)
   if (fsrEasuPipeline_ == VK_NULL_HANDLE || fsrRcasPipeline_ == VK_NULL_HANDLE ||
-      fsrEasuFramebuffer_ == VK_NULL_HANDLE || fsrRcasFramebuffer_ == VK_NULL_HANDLE) {
+      fsrEasuFramebuffer_[slot] == VK_NULL_HANDLE ||
+      fsrRcasFramebuffer_[slot] == VK_NULL_HANDLE) {
     return false;
   }
   const VkExtent2D extent{static_cast<uint32_t>(srImageWidth_),
@@ -757,7 +765,7 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView in
     api.CmdEndRenderPass(cmd);
   };
 
-  drawPass(fsrEasuFramebuffer_, fsrEasuPipeline_, fsrEasuSet_);
+  drawPass(fsrEasuFramebuffer_[slot], fsrEasuPipeline_, fsrEasuSet_[slot]);
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -767,14 +775,14 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView in
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = fsrEasuImage_;
+    barrier.image = fsrEasuImage_[slot];
     barrier.subresourceRange = subresource;
     api.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                            &barrier);
   }
-  drawPass(fsrRcasFramebuffer_, fsrRcasPipeline_, fsrRcasSet_);
-  targetToSampled(srImage_);
+  drawPass(fsrRcasFramebuffer_[slot], fsrRcasPipeline_, fsrRcasSet_[slot]);
+  targetToSampled(srImage_[slot]);
   return true;
 #else
   return false;

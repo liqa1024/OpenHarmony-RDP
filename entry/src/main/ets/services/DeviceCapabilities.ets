@@ -1,7 +1,7 @@
 import { audio } from '@kit.AudioKit';
 import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import {
-  moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict,
+  moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict, setHardwareAccel,
   superResolutionBackends, superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
@@ -51,6 +51,12 @@ export class DeviceCapabilities {
     return capability;
   }
 
+  // The presenter backend is process-global and chosen when a presenter is created. Both session
+  // pages re-apply the device verdict so a dev-page A/B cannot leak its temporary backend choice.
+  static applyHardwareAccel(): void {
+    setHardwareAccel(DeviceCapabilities.hardwareAccel().supported);
+  }
+
   static superResolution(): Capability {
     const capability: Capability = new Capability();
     let verdict: RdpVerdict;
@@ -78,7 +84,8 @@ export class DeviceCapabilities {
   }
 
   // The Moonlight 超分 path additionally needs the device to import the decoder's NV12 buffer
-  // into the presenter (VK_OHOS_external_memory + a YCbCr sampler).
+  // into the presenter (VK_OHOS_external_memory + an R8 linear sampled image; the convert pass does
+  // YUV->RGB itself, so no YCbCr sampler is involved).
   static srVideoImport(): boolean {
     let verdict: RdpSrBackends;
     try {

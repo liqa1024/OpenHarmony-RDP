@@ -20,18 +20,20 @@ import { RemoteCursor } from '../services/RemoteCursor';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
-import { moonlightDecodeIndicator } from '../utils/MoonlightCodec';
+import { moonlightDecodeTokens, moonlightVideoStatus } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
-  SettingsStore, srRatioLabel } from '../services/SettingsStore';
-import { SR_BACKEND_FSR } from '../model/Profiles';
+  SettingsStore } from '../services/SettingsStore';
 import { mapPicturePoint } from '../utils/PictureFit';
+import { joinSessionTags, srTag } from '../utils/SessionTags';
+import { gpuFrameLabel, gpuSplitLabel, usToMs } from '../utils/TelemetryFormat';
 import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PadProbeOverlay } from '../components/PadProbeOverlay';
 import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/MoonlightTelemetry';
+import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { OVERLOAD_HOST, OVERLOAD_LOCAL, OVERLOAD_NONE, OverloadWatch }
   from '../services/OverloadWatch';
 import { AudioPlayer } from '../services/AudioPlayer';
@@ -58,6 +60,7 @@ const METRICS_INTERVAL_MS: number = 1000;
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_HOST: number = 62;
 const METRIC_WIDTH_LOCAL: number = 66;
+const METRIC_WIDTH_GPU: number = 76;
 const METRIC_WIDTH_FPS: number = 62;
 const METRIC_WIDTH_FPS_WIDE: number = 78;
 const METRIC_WIDTH_BITRATE: number = 132;
@@ -96,8 +99,8 @@ struct MoonlightSessionPage {
   // the request (the 1080p default only covers a request that predates it).
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
-  // 超分 indicator for the toolbar title (" (FSR 1.5x)"), "" when the session does not upscale.
-  private srIndicator: string = '';
+  // 超分 token for the toolbar title ("FSR 1.5x"), "" when the session does not upscale.
+  private srToken: string = '';
   // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
   // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
@@ -143,6 +146,11 @@ struct MoonlightSessionPage {
   @State metricsJitter: number = -1;
   @State metricsHostMs: number = -1;
   @State metricsDecodeMs: number = -1;
+  @State metricsGpuCopyUs: number = 0;
+  @State metricsGpuSrUs: number = 0;
+  @State metricsGpuBlitUs: number = 0;
+  @State metricsGpuFrameUs: number = 0;
+  @State metricsPresentWaitUs: number = 0;
   @State metricsFps: number = 0;
   @State metricsBytesPerSec: number = 0;
   @State metricsPending: number = 0;
@@ -151,6 +159,7 @@ struct MoonlightSessionPage {
   // Why this session's frame rate was capped; shown once when it becomes the live stream.
   private fpsNote: string = '';
   private fpsNoteShown: boolean = false;
+  private videoWarningShown: boolean = false;
   private targetFps: number = 0;
   private targetBitrateKbps: number = 0;
   private metricsTimer: number = -1;
@@ -173,6 +182,9 @@ struct MoonlightSessionPage {
     };
 
   aboutToAppear(): void {
+    // The Vulkan presenter is process-global: re-apply the device verdict so a dev-page A/B (CPU
+    // route) cannot leave 超分 running on the GLES fallback, which cannot import decoded buffers.
+    DeviceCapabilities.applyHardwareAccel();
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     if (request !== undefined) {
       this.connectionId = request.connectionId;
@@ -197,8 +209,7 @@ struct MoonlightSessionPage {
         this.targetFps = config.fps;
         this.targetBitrateKbps = config.bitrateKbps;
         if (config.streamWidth > 0 && config.srRatioPercent > 100) {
-          const backend: string = config.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';
-          this.srIndicator = ' (' + backend + ' ' + srRatioLabel(config.srRatioPercent) + ')';
+          this.srToken = srTag(config.srBackend, config.srRatioPercent);
         }
       }
     }
@@ -376,6 +387,8 @@ struct MoonlightSessionPage {
       return undefined;
     }
     backend.setCursorListener((update): void => {
+      // The native session attaches the picture/surface ratio to each cursor shape (same contract
+      // as RDP); scaling and dedup stay in the shared RemoteCursor.
       this.shell?.remoteCursor().applyUpdate(update);
     });
     backend.setKeyInterceptListener((keyCode: number, down: boolean): void => {
@@ -511,19 +524,48 @@ struct MoonlightSessionPage {
     this.metricsJitter = counters.rttVarianceMs;
     this.metricsHostMs = counters.hostLatencyMs;
     this.metricsDecodeMs = counters.decodeMs;
+    this.metricsGpuCopyUs = counters.gpuCopyUs;
+    this.metricsGpuSrUs = counters.gpuSrUs;
+    this.metricsGpuBlitUs = counters.gpuBlitUs;
+    this.metricsGpuFrameUs = counters.gpuFrameUs;
+    this.metricsPresentWaitUs = counters.presentWaitUs;
     this.metricsFps = counters.fps;
     this.metricsBytesPerSec = counters.bytesPerSec;
     this.metricsPending = counters.pendingVideoFrames;
     this.metricsDroppedPerSec = counters.droppedPerSec;
     this.metricsLossBp = counters.lossBp;
+    this.reportVideoWarning();
     this.reportOverload();
+  }
+
+  // A refused frame or an inactive upscale is otherwise only a log line; surface it once.
+  private reportVideoWarning(): void {
+    const warning: string = moonlightVideoStatus();
+    const videoError: boolean = warning.indexOf('video-present') >= 0;
+    const srIssue: boolean = warning.indexOf('sr-unavailable') >= 0
+      || warning.indexOf('sr-inactive') >= 0;
+    if (!videoError && !srIssue) {
+      this.videoWarningShown = false;
+      return;
+    }
+    if (this.videoWarningShown) {
+      return;
+    }
+    if (videoError) {
+      this.videoWarningShown = true;
+      this.toast('超分视频导入失败，请关闭超分后重连', OVERLOAD_TOAST_MS);
+    } else {
+      this.videoWarningShown = true;
+      this.toast('本机未能启用超分，已按原分辨率显示', OVERLOAD_TOAST_MS);
+    }
   }
 
   // The readings colour themselves; what a colour cannot say is what to do about it, so a side that
   // stays red gets one prompt. Both sides read per-frame wall clock against the frame period (see
   // doc_agent/moonlight-session.md §2).
   private reportOverload(): void {
-    const overload: number = this.overload.sample(this.metricsDecodeMs, this.metricsHostMs,
+    const localMs: number = this.localBottleneckMs();
+    const overload: number = this.overload.sample(localMs, this.metricsHostMs,
       this.localBadMs());
     if (overload === OVERLOAD_NONE) {
       return;
@@ -532,9 +574,9 @@ struct MoonlightSessionPage {
     // locally, less to encode on the host); super resolution turns that into "lower the resolution
     // and upscale" — the lower stream costs both sides fewer pixels.
     if (overload === OVERLOAD_LOCAL) {
-      hilog.warn(DOMAIN, TAG, 'local decode overloaded: %{public}fms/frame pending=%{public}d drop=%{public}d/s',
-        this.metricsDecodeMs, this.metricsPending, this.metricsDroppedPerSec);
-      this.toast('本机解码跟不上，建议降低分辨率并开启超分', OVERLOAD_TOAST_MS);
+      hilog.warn(DOMAIN, TAG, 'local decode/present overloaded: %{public}fms/frame pending=%{public}d drop=%{public}d/s',
+        localMs, this.metricsPending, this.metricsDroppedPerSec);
+      this.toast('本机处理跟不上，建议降低分辨率或调整超分', OVERLOAD_TOAST_MS);
       return;
     }
     hilog.warn(DOMAIN, TAG, 'host encode overloaded: %{public}fms per frame', this.metricsHostMs);
@@ -553,6 +595,15 @@ struct MoonlightSessionPage {
     return formatLatency('本机', this.metricsDecodeMs);
   }
 
+  private localBottleneckMs(): number {
+    const gpuMs: number = this.metricsGpuFrameUs / 1000;
+    return gpuMs > this.metricsDecodeMs ? gpuMs : this.metricsDecodeMs;
+  }
+
+  private gpuLabel(): string {
+    return gpuFrameLabel(this.metricsGpuFrameUs);
+  }
+
   private localFrameFps(): number {
     return this.targetFps > 0 ? this.targetFps : LOCAL_FALLBACK_FPS;
   }
@@ -563,6 +614,19 @@ struct MoonlightSessionPage {
 
   private localBadMs(): number {
     return LOCAL_BAD_PERIODS * 1000 / this.localFrameFps();
+  }
+
+  // One bracket for every session tag: 超分 and codec share the slot after the resolution.
+  private titleDetail(): string {
+    const tokens: string[] = [];
+    if (this.srToken.length > 0) {
+      tokens.push(this.srToken);
+    }
+    const codec: string[] = moonlightDecodeTokens();
+    for (let i = 0; i < codec.length; i++) {
+      tokens.push(codec[i]);
+    }
+    return this.streamWidth + ' × ' + this.streamHeight + joinSessionTags(tokens);
   }
 
   private fpsLabel(): string {
@@ -594,6 +658,9 @@ struct MoonlightSessionPage {
       metricColor(this.metricsHostMs, this.localWarnMs(), this.localBadMs()), METRIC_GAP_TIGHT));
     fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
       metricColor(this.metricsDecodeMs, this.localWarnMs(), this.localBadMs()), METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU,
+      metricColor(this.metricsGpuFrameUs / 1000, this.localWarnMs(), this.localBadMs()),
+      METRIC_GAP_TIGHT));
     fields.push(new TelemetryField(this.fpsLabel(), this.fpsWidth(),
       TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE,
@@ -622,6 +689,13 @@ struct MoonlightSessionPage {
       TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     fields.push(new TelemetryField('丢 ' + this.metricsDroppedPerSec + ' 帧/s', METRIC_WIDTH_DETAIL,
       TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+    if (this.metricsGpuFrameUs > 0) {
+      fields.push(new TelemetryField(
+        gpuSplitLabel(this.metricsGpuCopyUs, this.metricsGpuSrUs, this.metricsGpuBlitUs, '转换'),
+        0, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+      fields.push(new TelemetryField('等显示 ' + usToMs(this.metricsPresentWaitUs) + 'ms',
+        METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+    }
     return fields;
   }
 
@@ -667,15 +741,19 @@ struct MoonlightSessionPage {
     this.surfaceWidth = width;
     this.surfaceHeight = height;
     const backend: MoonlightSessionBackend | undefined = this.backend();
-    if (backend === undefined || this.started) {
+    if (backend === undefined) {
       return;
     }
+    // A surface recreated while streaming is rebound (the presenter path replaces its swapchain);
+    // the stream itself is started only once.
     if (!backend.bindSurface(surfaceId, width, height)) {
       hilog.error(DOMAIN, TAG, 'bind surface failed');
       return;
     }
-    this.started = true;
-    SessionManager.beginStream(this.connectionId);
+    if (!this.started) {
+      this.started = true;
+      SessionManager.beginStream(this.connectionId);
+    }
   }
 
   private onRelease(): void {
@@ -819,8 +897,7 @@ struct MoonlightSessionPage {
       Row() {
         SessionTitle({
           name: this.hostLabel,
-          detail: this.streamWidth + ' × ' + this.streamHeight + this.srIndicator
-            + moonlightDecodeIndicator()
+          detail: this.titleDetail()
         })
         Blank()
         if (this.state === ConnectionState.Connected && this.clipboardAvailable) {

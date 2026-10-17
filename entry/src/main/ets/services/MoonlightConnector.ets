@@ -317,7 +317,7 @@ export class MoonlightConnector {
     }
 
     result.hostScalePercent = await MoonlightConnector.resolveHostDisplayScale(filesDir, host,
-      info.httpsPort, stream, width, height);
+      info.httpsPort, stream, width, height, srOn, sr.ratioPercent);
 
     const config: MoonlightStreamConfig = new MoonlightStreamConfig();
     config.host = host;
@@ -364,7 +364,8 @@ export class MoonlightConnector {
   // Windows scale percent in effect, 0 when the host exposes no virtual display (stock Sunshine)
   // or the read failed — the caller then treats the scale as unknown.
   private static async resolveHostDisplayScale(filesDir: string, host: string, httpsPort: number,
-    stream: MoonlightProfile, width: number, height: number): Promise<number> {
+    stream: MoonlightProfile, width: number, height: number,
+    srEnabled: boolean, srRatioPercent: number): Promise<number> {
     try {
       const display: MoonlightDisplay =
         await MoonlightClient.fetchVirtualDisplay(filesDir, host, httpsPort);
@@ -379,7 +380,8 @@ export class MoonlightConnector {
         return current;
       }
       const wanted: number = stream.scaleMode === ML_SCALE_MANUAL
-        ? stream.scalePercent : SettingsStore.scalePresetForResolution(width, height);
+        ? stream.scalePercent
+        : SettingsStore.autoScalePercent(width, height, srEnabled, srRatioPercent);
       const target: MoonlightScaleTarget =
         MoonlightClient.resolveScaleTarget(wanted, display.supportedScalePercents);
       const applied: boolean = await MoonlightClient.setDisplayScale(filesDir, host, httpsPort,

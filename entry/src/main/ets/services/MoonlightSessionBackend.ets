@@ -124,6 +124,7 @@ export class MoonlightSessionBackend implements SessionBackend {
       update.height = extra.height ?? 0;
       update.hotX = extra.hotX ?? 0;
       update.hotY = extra.hotY ?? 0;
+      update.magnification = (extra.magnificationMilli ?? 1000) / 1000;
       update.imageHandle = handle;
       listener(update);
       return;

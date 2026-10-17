@@ -1,6 +1,7 @@
 #include "hmrdp_moonlight_session.h"
 
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <memory>
@@ -32,6 +33,9 @@ std::atomic<bool> g_stopRequested{false};
 MoonlightSessionCallback g_callback = nullptr;
 std::atomic<MoonlightCursorCallback> g_cursorCallback{nullptr};
 std::atomic<MoonlightClipboardCallback> g_clipboardCallback{nullptr};
+// The cursor shape arrives in stream pixels; when the presenter upscales locally, the same ratio
+// must be applied to the shape (RDP reports the same value with its pointer shape).
+std::atomic<int> g_cursorMagnificationMilli{1000};
 // Window the decode bridge renders into; owned by the ArkTS page, borrowed here.
 MoonlightVideoContext g_context;
 
@@ -89,6 +93,7 @@ void OnCursorUpdate(bool visible, bool hasShape, uint32_t shapeId, uint16_t widt
   shape.visible = visible;
   shape.hasShape = hasShape;
   shape.shapeId = shapeId;
+  shape.magnificationMilli = g_cursorMagnificationMilli.load();
   shape.width = width;
   shape.height = height;
   shape.hotspotX = hotspotX;
@@ -123,32 +128,66 @@ void Run(const MoonlightStreamConfig& config) {
   // 超分: the caller resolved the session size (output / upscale ratio) and the presenter upscales
   // every frame back to the output; without it the stream *is* the output. Mirrors the RDP session's
   // /w /h route.
-  const int sessionWidth = config.streamWidth > 0 ? config.streamWidth : config.width;
-  const int sessionHeight = config.streamHeight > 0 ? config.streamHeight : config.height;
+  int sessionWidth = config.streamWidth > 0 ? config.streamWidth : config.width;
+  int sessionHeight = config.streamHeight > 0 ? config.streamHeight : config.height;
+  MoonlightVideoContext context;
+  {
+    // The ArkUI thread may rebind the surface while this thread is starting; take one snapshot.
+    std::lock_guard<std::mutex> lock(g_mutex);
+    context = g_context;
+  }
+  const bool srRequested = sessionWidth != config.width || sessionHeight != config.height;
   // The presenter lives in this scope for the whole connection: the bridge borrows it from here and
   // must have given it back (MoonlightVideoDetachPresenter) before the scope ends.
   std::unique_ptr<FramePresenter> presenter;
-  if (sessionWidth != config.width || sessionHeight != config.height) {
-    if (g_context.window != nullptr) {
-      std::unique_ptr<FramePresenter> created = CreateFramePresenter();
-      if (created != nullptr) {
-        created->SetSurface(g_context.window, sessionWidth, sessionHeight);
-        if (created->Prepare()) {
-          presenter = std::move(created);
-          presenter->SetSuperResolution(true, static_cast<SuperResolutionBackend>(config.srBackend),
-                                        config.width, config.height);
-        } else {
-          HMRDP_LOGW("moonlight session: presenter prepare failed; using the direct surface path");
-        }
+  bool srAttached = false;
+  if (srRequested && context.window != nullptr) {
+    std::unique_ptr<FramePresenter> created = CreateFramePresenter();
+    // A GLES presenter or a device without the video-import extension must not put the decoder into
+    // buffer mode: PresentVideo would refuse every frame and the window would stay black.
+    if (created != nullptr && created->supportsVideo()) {
+      const int surfaceWidth = context.width > 0 ? context.width : config.width;
+      const int surfaceHeight = context.height > 0 ? context.height : config.height;
+      created->SetSurface(context.window, surfaceWidth, surfaceHeight);
+      if (created->Prepare()) {
+        presenter = std::move(created);
+        presenter->SetSuperResolution(true, static_cast<SuperResolutionBackend>(config.srBackend),
+                                      config.width, config.height);
+        srAttached = true;
+      } else {
+        HMRDP_LOGW("moonlight session: presenter prepare failed; using the output size in surface mode");
       }
+    } else if (created != nullptr) {
+      HMRDP_LOGW("moonlight session: presenter cannot import decoded buffers; using the output size "
+                 "in surface mode");
     }
-    MoonlightVideoAttachPresenter(presenter.get());
+  }
+  if (srRequested && !srAttached) {
+    // Keep a visible picture: the decoder renders straight into the window at the output size. The
+    // host stream is still requested at the session size, so the host upscales instead of this device.
+    sessionWidth = config.width;
+    sessionHeight = config.height;
+  }
+  // The cursor is forwarded in stream pixels; apply the same ratio the picture gets. A fallback to
+  // the output-size surface path is 1:1 and leaves the default 1000.
+  int cursorMagnificationMilli = 1000;
+  if (srAttached && sessionWidth > 0) {
+    const int ratio = static_cast<int>(
+        std::lround(1000.0 * static_cast<double>(config.width) / static_cast<double>(sessionWidth)));
+    if (ratio > cursorMagnificationMilli) {
+      cursorMagnificationMilli = ratio;
+    }
+  }
+  g_cursorMagnificationMilli.store(cursorMagnificationMilli);
+  MoonlightVideoSetSuperResolutionRequested(srRequested);
+  MoonlightVideoAttachPresenter(srAttached ? presenter.get() : nullptr);
+  if (srRequested) {
     HMRDP_LOGI("moonlight session %{public}dx%{public}d (super resolution %{public}s -> "
-               "%{public}dx%{public}d)",
+               "%{public}dx%{public}d, attached=%{public}d)",
                config.width, config.height,
                config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr"
                                                                                  : "xengine",
-               sessionWidth, sessionHeight);
+               sessionWidth, sessionHeight, srAttached ? 1 : 0);
   }
   stream.width = sessionWidth;
   stream.height = sessionHeight;
@@ -224,9 +263,13 @@ void Run(const MoonlightStreamConfig& config) {
 
 }  // namespace
 
-void MoonlightSessionSetWindow(void* window) {
+void MoonlightSessionSetWindow(void* window, int width, int height) {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_context.window = window;
+  g_context.width = width;
+  g_context.height = height;
+  // The presenter, when one is attached, owns the swapchain/surface built from this window.
+  MoonlightVideoSetSurface(window, width, height);
 }
 
 void MoonlightSessionResizeSurface(int width, int height) {

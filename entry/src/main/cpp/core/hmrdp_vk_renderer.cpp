@@ -193,7 +193,10 @@ bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
       return false;
     }
     const VkFence fence = inFlight_[frameIndex_];
-    api.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (slotSubmitted_[frameIndex_]) {
+      api.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+      slotSubmitted_[frameIndex_] = false;
+    }
 
     uint32_t imageIndex = 0;
     VkResult result = api.AcquireNextImageKHR(device, swapchain_, UINT64_MAX,
@@ -259,6 +262,7 @@ bool VkRenderer::PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b) {
       HMRDP_LOGE("vulkan %{public}s", error_.c_str());
       return false;
     }
+    slotSubmitted_[frameIndex_] = true;
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -305,7 +309,10 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
   }
   const VkFence fence = inFlight_[frameIndex_];
   const int64_t waitStartUs = NowUs();
-  api.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+  if (slotSubmitted_[frameIndex_]) {
+    api.WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    slotSubmitted_[frameIndex_] = false;
+  }
 
   VkResult result = api.AcquireNextImageKHR(device, swapchain_, UINT64_MAX,
                                             imageAvailable_[frameIndex_], VK_NULL_HANDLE,
@@ -327,9 +334,13 @@ bool VkRenderer::AcquireFrameLocked(uint32_t* imageIndex, bool* retry) {
   return true;
 }
 
-bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex) {
+bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex,
+                                        bool* submitted) {
   VkApi& api = vk_.api();
   VkDeviceContext& context = vk_;
+  if (submitted != nullptr) {
+    *submitted = false;
+  }
 
   if (api.EndCommandBuffer(cmd) != VK_SUCCESS) {
     error_ = "vkEndCommandBuffer failed";
@@ -352,6 +363,12 @@ bool VkRenderer::SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex
     error_ = "vkQueueSubmit failed";
     HMRDP_LOGE("vulkan %{public}s", error_.c_str());
     return false;
+  }
+  slotSubmitted_[frameIndex_] = true;
+  if (submitted != nullptr) {
+    // From here the fence will signal; a caller that must keep reading the submitted memory waits on
+    // it. Before the submit there is nothing to wait for.
+    *submitted = true;
   }
 
   VkPresentInfoKHR presentInfo{};
@@ -916,8 +933,10 @@ void VkRenderer::DestroyDesktopImageLocked() {
 }
 
 bool VkRenderer::RecordPresentTailLocked(VkCommandBuffer cmd, uint32_t slot, uint32_t imageIndex,
-                                         const PresentInput& input, bool srActive, bool timers) {
+                                         const PresentInput& input, bool srActive, bool timers,
+                                         bool* submitted) {
   VkApi& api = vk_.api();
+  srActiveFrame_ = srActive;
   // The input picture was written by the producer (a buffer->image transfer, or the video convert
   // render pass); 超分 and the letterbox both sample it next. The tail owns this dependency so every
   // producer is covered, not just the ones that remember to barrier it themselves.
@@ -939,16 +958,16 @@ bool VkRenderer::RecordPresentTailLocked(VkCommandBuffer cmd, uint32_t slot, uin
   }
 
   if (srActive) {
-    // Either backend renders into `srImage_`, which replaces the input picture as the letterbox
-    // source (its extent is the output resolution). Includes its own barriers.
-    RecordSuperResolutionLocked(cmd, input.view);
+  // Either backend renders into this slot's `srImage_`, which replaces the input picture as the
+  // letterbox source (its extent is the output resolution). Includes its own barriers.
+    RecordSuperResolutionLocked(cmd, input.view, slot);
   }
 
   if (timers) {
     api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, presentTimer_[slot], 2);
   }
 
-  const VkImageView source = srActive ? srImageView_ : input.view;
+  const VkImageView source = srActive ? srImageView_[slot] : input.view;
   const int sourceWidth = srActive ? srImageWidth_ : input.width;
   const int sourceHeight = srActive ? srImageHeight_ : input.height;
   UpdatePresentDescriptorLocked(slot, source);
@@ -957,7 +976,7 @@ bool VkRenderer::RecordPresentTailLocked(VkCommandBuffer cmd, uint32_t slot, uin
     // Outside the render pass: the blit is not portably measurable from inside one.
     api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, presentTimer_[slot], 3);
   }
-  return SubmitAndPresentLocked(cmd, imageIndex);
+  return SubmitAndPresentLocked(cmd, imageIndex, submitted);
 }
 
 bool VkRenderer::EnsureStageLocked(size_t bytes) {
@@ -1254,7 +1273,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     }
     // 超分: build the upscale target before acquiring the swapchain image, so the
     // rare (re)creation can drain frames still reading the old one.
-    const bool srActive = EnsureSuperResolutionLocked(desktopWidth, desktopHeight, desktopImageView_);
+    const bool srActive = EnsureSuperResolutionLocked(desktopWidth, desktopHeight, 0,
+                                                      desktopImageView_, desktopImageView_);
     PresentRect upload[kMaxUploadRects];
     int uploadCount = 0;
     if (desktopImageFullUpload_) {
@@ -1438,7 +1458,8 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
     input.height = desktopHeight;
     input.producerStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     input.producerAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
-    const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, input, srActive, timers);
+    const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, input, srActive, timers,
+                                                    nullptr);
     if (presented) {
       desktopImageFullUpload_ = false;
       if (direct) {
@@ -1458,60 +1479,77 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
 void VkRenderer::DrainInFlightLocked() {
   VkApi& api = vk_.api();
   const VkDevice device = vk_.device();
-  if (device != VK_NULL_HANDLE && api.WaitForFences != nullptr && inFlight_[0] != VK_NULL_HANDLE) {
-    api.WaitForFences(device, kFramesInFlight, inFlight_, VK_TRUE, UINT64_MAX);
+  if (device == VK_NULL_HANDLE || api.WaitForFences == nullptr || inFlight_[0] == VK_NULL_HANDLE) {
+    return;
+  }
+  for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
+    if (slotSubmitted_[slot]) {
+      api.WaitForFences(device, 1, &inFlight_[slot], VK_TRUE, UINT64_MAX);
+      slotSubmitted_[slot] = false;
+    }
   }
 }
 
-bool VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
+int VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
+  static_assert(VkVideoImport::kSlots == kFramesInFlight,
+                "video picture slots must match presenter frame slots");
   const int visibleWidth = geometry.visibleWidth;
   const int visibleHeight = geometry.visibleHeight;
   if (nativeBuffer == nullptr || visibleWidth <= 0 || visibleHeight <= 0) {
-    return false;
+    return -1;
   }
   std::lock_guard<std::mutex> lock(mutex_);
   VkApi& api = vk_.api();
   VkDeviceContext& context = vk_;
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!EnsureSwapchainLocked()) {
-      return false;
+      return -1;
     }
     const VkDevice device = context.device();
     if (device == VK_NULL_HANDLE) {
-      return false;
+      return -1;
     }
     // The importer's picture is the session resolution and only changes on a resolution switch;
     // drain the frames still reading the old one before it is rebuilt (which drops the imports too).
-    // The same holds when the import cache is at its cap and a new buffer has to be imported.
-    if (videoImport_.needsRebuild(visibleWidth, visibleHeight) || videoImport_.importCacheFull()) {
+    // The same holds when the import cache is at its cap and this buffer is not cached yet.
+    if (videoImport_.needsRebuild(visibleWidth, visibleHeight) ||
+        videoImport_.needsDrainFor(nativeBuffer)) {
       DrainInFlightLocked();
+    }
+    // The swapchain slot is also the picture/UBO slot, so the next frame can convert while the GPU
+    // still samples the previous slot's picture. Wait that previous submission before this frame
+    // writes the slot's picture/UBO; the hand-off ring usually waits it too, but a frame whose
+    // presentation was skipped produces no token, so the presenter owns the guarantee here.
+    const uint32_t slot = frameIndex_;
+    if (!WaitVideoFrameLocked(static_cast<int>(slot))) {
+      return -1;
     }
     if (!videoImport_.Ensure(visibleWidth, visibleHeight)) {
       error_ = videoImport_.lastError();
-      return false;
+      return -1;
     }
     VkVideoImport::Frame imported{};
-    if (!videoImport_.Import(nativeBuffer, geometry, &imported)) {
+    if (!videoImport_.Import(nativeBuffer, geometry, slot, &imported)) {
       error_ = videoImport_.lastError();
-      return false;
+      return -1;
     }
     // 超分: build the upscale target before acquiring, so a rare (re)creation can drain.
-    const bool srActive =
-        EnsureSuperResolutionLocked(visibleWidth, visibleHeight, videoImport_.pictureView());
+    const bool srActive = EnsureSuperResolutionLocked(
+        visibleWidth, visibleHeight, slot, videoImport_.pictureView(slot),
+        videoImport_.pictureView((slot + 1) % VkVideoImport::kSlots));
 
     uint32_t imageIndex = 0;
     bool retry = false;
     if (!AcquireFrameLocked(&imageIndex, &retry)) {
-      return false;
+      return -1;
     }
     if (retry) {
       continue;
     }
     if (!EnsurePresentPipelineLocked()) {
-      return false;
+      return -1;
     }
 
-    const uint32_t slot = frameIndex_;
     const bool timers = EnsurePresentTimerLocked();
     if (timers) {
       CollectPresentTimerLocked(slot);
@@ -1526,7 +1564,7 @@ bool VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry
       api.CmdResetQueryPool(cmd, presentTimer_[slot], 0, kPresentTimestampsPerSlot);
       api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, presentTimer_[slot], 0);
     }
-    videoImport_.RecordConvert(cmd, imported);
+    videoImport_.RecordConvert(cmd, imported, slot);
     if (timers) {
       api.CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, presentTimer_[slot],
                             1);
@@ -1535,21 +1573,57 @@ bool VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry
     // The convert pass just wrote the picture image; the shared tail declares that dependency
     // itself, so the video picture is described by how this pass wrote it.
     PresentInput input;
-    input.image = videoImport_.pictureImage();
-    input.view = videoImport_.pictureView();
+    input.image = videoImport_.pictureImage(slot);
+    input.view = videoImport_.pictureView(slot);
     input.width = visibleWidth;
     input.height = visibleHeight;
     input.producerStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     input.producerAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, input, srActive, timers);
-    // The caller returns the decoded buffer to the codec as soon as this returns, so the GPU work
-    // reading it has to be finished here; the video path is present-paced anyway.
-    if (api.WaitForFences != nullptr) {
-      api.WaitForFences(device, 1, &inFlight_[slot], VK_TRUE, UINT64_MAX);
-    }
-    return presented;
+    bool submitted = false;
+    (void)RecordPresentTailLocked(cmd, slot, imageIndex, input, srActive, timers, &submitted);
+    // The caller keeps the decoded buffer until WaitVideoFrame(slot); returning the slot here lets
+    // two frames overlap (the next frame uses the other picture/UBO slot).
+    return submitted ? static_cast<int>(slot) : -1;
   }
-  return false;
+  return -1;
+}
+
+void VkRenderer::WaitVideoFrame(int token) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  WaitVideoFrameLocked(token);
+}
+
+bool VkRenderer::WaitVideoFrameLocked(int token) {
+  if (token < 0 || static_cast<uint32_t>(token) >= kFramesInFlight || vk_.device() == VK_NULL_HANDLE ||
+      inFlight_[token] == VK_NULL_HANDLE || !slotSubmitted_[token] ||
+      vk_.api().WaitForFences == nullptr) {
+    return true;
+  }
+  constexpr uint64_t kVideoFenceTimeoutNs = 2000000000ULL;
+  const VkResult wait =
+      vk_.api().WaitForFences(vk_.device(), 1, &inFlight_[token], VK_TRUE, kVideoFenceTimeoutNs);
+  if (wait == VK_TIMEOUT) {
+    error_ = "video present fence timeout";
+    HMRDP_LOGE("vulkan %{public}s", error_.c_str());
+    return false;
+  }
+  slotSubmitted_[token] = false;
+  return true;
+}
+
+bool VkRenderer::supportsVideo() const {
+  const VulkanCapabilities& caps = GetVulkanCapabilities();
+  return caps.presenterSupported && caps.srVideoImportSupported;
+}
+
+bool VkRenderer::superResolutionRequested() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return srRequested_;
+}
+
+bool VkRenderer::superResolutionActive() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return srRequested_ && !srFailed_ && srActiveFrame_;
 }
 
 void VkRenderer::Reset() {
@@ -1949,6 +2023,7 @@ void VkRenderer::DestroyFrameResourcesLocked() {
       commandBuffers_[i] = VK_NULL_HANDLE;
       imageAvailable_[i] = VK_NULL_HANDLE;
       inFlight_[i] = VK_NULL_HANDLE;
+      slotSubmitted_[i] = false;
     }
     return;
   }
@@ -1971,6 +2046,7 @@ void VkRenderer::DestroyFrameResourcesLocked() {
       api.DestroyFence(device, inFlight_[i], nullptr);
     }
     inFlight_[i] = VK_NULL_HANDLE;
+    slotSubmitted_[i] = false;
   }
   frameIndex_ = 0;
 }

@@ -11,16 +11,29 @@ std::string MoonlightProbe();
 // Raw cumulative telemetry; ArkTS diffs the counters into rates and per-frame means (nothing here
 // is a display rate). RTT/packet counters come from the library at sample time, the rest from the decode bridge.
 struct MoonlightTelemetry {
-  // Decoded pictures out of the codec (the rate the display is actually fed) ...
+  // Decoded pictures out of the codec (the rate the codec produces) ...
   uint64_t frames = 0;
+  // ... pictures actually presented (the rate the display is fed) ...
+  uint64_t presentedFrames = 0;
   // ... versus the access units handed to it and the ones dropped for being too late to show.
   uint64_t submittedFrames = 0;
   uint64_t droppedFrames = 0;
+  // Display-gate drops in the decoder and pictures replaced before the sink took them. Both are
+  // cumulative and, with droppedFrames, make up the stream's total loss.
+  uint64_t presentDroppedFrames = 0;
+  uint64_t handoffReplacedFrames = 0;
   uint64_t bytes = 0;
   uint64_t hostLatencyTenthMs = 0;
   uint64_t hostLatencyFrames = 0;
   uint64_t decodeRoundTripUs = 0;
   uint64_t decodeRoundTripFrames = 0;
+  // GPU work of the presents since the previous sample (microseconds): convert, 超分 and letterbox
+  // are the video path's own `copy/sr/blit` phases. presentWaitUs is the display wait of the same
+  // window. All zero when no presenter is attached.
+  uint64_t gpuCopyUs = 0;
+  uint64_t gpuSrUs = 0;
+  uint64_t gpuBlitUs = 0;
+  uint64_t presentWaitUs = 0;
   int32_t pendingVideoFrames = 0;
   int32_t rttMs = -1;
   int32_t rttVarianceMs = -1;
@@ -36,6 +49,8 @@ MoonlightTelemetry MoonlightReadTelemetry();
 
 struct MoonlightVideoContext {
   void* window = nullptr;
+  int width = 0;
+  int height = 0;
 };
 
 // 超分: the presenter the decode bridge renders decoded frames into (a hmrdp::FramePresenter*), or
@@ -45,6 +60,18 @@ struct MoonlightVideoContext {
 // PresentVideo per frame; without one it renders straight into the window.
 void MoonlightVideoAttachPresenter(void* presenter);
 void MoonlightVideoDetachPresenter();
+
+// 超分: the session resolved a lower stream size than the output. The bridge reports "sr-unavailable"
+// when no presenter can be attached, and "sr-inactive" when the presenter runs but its upscale object
+// is not active, so the toolbar never claims 超分 for a session that is presenting the raw input.
+void MoonlightVideoSetSuperResolutionRequested(bool requested);
+bool MoonlightVideoBufferMode();
+
+// 超分: a live surface change (XComponent recreated or a new window bound while the session keeps
+// running). The presenter replaces its swapchain/surface; a null window destroys it. The resize path
+// only updates the extent (no swapchain teardown).
+void MoonlightVideoSetSurface(void* window, int width, int height);
+void MoonlightVideoClearSurface();
 
 // 超分: forward a surface (window) resize to the attached presenter's swapchain; a no-op on the
 // direct-to-surface path (the window scaling mode fits the picture itself).

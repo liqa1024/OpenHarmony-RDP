@@ -142,6 +142,10 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
   sink_ = sink;
   onFrame_ = std::move(onFrame);
   inputBudgetUs_ = BudgetForFrameRate(frameRate);
+  statPresented_.store(0);
+  statPresentDropped_.store(0);
+  statHandOffReplaced_.store(0);
+  nativeBufferWarned_ = false;
   // Until the codec describes the stream, the frame layout is the requested size (the same reading
   // the output description will carry; it is only read by the hand-off).
   width_.store(width);
@@ -210,6 +214,9 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
   }
   started_ = true;
   if (buffered_) {
+    // Some platforms publish the byte layout only in the output description; read it now so the
+    // first imported frame has a layout even if the stream-changed event is late.
+    ReadOutputDescription();
     {
       std::lock_guard<std::mutex> lock(outputMutex_);
       handOffStop_ = false;
@@ -368,6 +375,12 @@ void VideoDecoder::HandOff(uint32_t index, OH_AVBuffer* buffer) {
 }
 
 void VideoDecoder::HandOffLoop() {
+  const auto releasePending = [this](PendingPresented& pending) {
+    if (pending.native != nullptr) {
+      OH_NativeBuffer_Unreference(static_cast<OH_NativeBuffer*>(pending.native));
+    }
+    ReleaseOutput(pending.index);
+  };
   for (;;) {
     OutputFrame frame;
     VideoFrameGeometry geometry;
@@ -375,7 +388,7 @@ void VideoDecoder::HandOffLoop() {
       std::unique_lock<std::mutex> lock(outputMutex_);
       outputCv_.wait(lock, [this]() { return handOffStop_ || pendingOutput_.buffer != nullptr; });
       if (handOffStop_) {
-        return;
+        break;
       }
       frame = pendingOutput_;
       pendingOutput_ = OutputFrame();
@@ -384,20 +397,46 @@ void VideoDecoder::HandOffLoop() {
     if (frame.buffer == nullptr) {
       continue;
     }
+    // Keep at most two pictures in the sink; the oldest one's GPU work is finished before the
+    // buffer goes back to the codec, so decode and present overlap.
+    if (pendingPresented_.size() >= kMaxPendingPresented) {
+      PendingPresented oldest = pendingPresented_.front();
+      pendingPresented_.pop_front();
+      if (sink_ != nullptr) {
+        sink_->WaitVideoFrame(oldest.token);
+      }
+      releasePending(oldest);
+    }
     OH_NativeBuffer* native = OH_AVBuffer_GetNativeBuffer(frame.buffer);
     VideoFrameSink* sink = sink_;
+    int token = -1;
     if (native != nullptr && sink != nullptr) {
-      // Blocking: the sink is done with the frame (and with the GPU reading it) when this returns.
-      sink->PresentVideoFrame(native, geometry);
+      token = sink->PresentVideoFrame(native, geometry);
     } else if (native == nullptr && !nativeBufferWarned_) {
       nativeBufferWarned_ = true;
       HMRDP_LOGW("video decoder: output buffer has no OH_NativeBuffer; dropping frames");
     }
-    if (native != nullptr) {
-      OH_NativeBuffer_Unreference(native);
+    if (token >= 0 && native != nullptr) {
+      PendingPresented pending;
+      pending.index = frame.index;
+      pending.native = native;
+      pending.token = token;
+      pendingPresented_.push_back(pending);
+    } else {
+      if (native != nullptr) {
+        OH_NativeBuffer_Unreference(native);
+      }
+      ReleaseOutput(frame.index);
     }
-    ReleaseOutput(frame.index);
   }
+  // The sink is still attached while Stop joins this thread, so the fences can be waited here.
+  for (PendingPresented& pending : pendingPresented_) {
+    if (sink_ != nullptr) {
+      sink_->WaitVideoFrame(pending.token);
+    }
+    releasePending(pending);
+  }
+  pendingPresented_.clear();
 }
 
 void VideoDecoder::ClearOutputs() {
@@ -410,6 +449,14 @@ void VideoDecoder::ClearOutputs() {
   if (held.buffer != nullptr) {
     ReleaseOutput(held.index);
   }
+  // The hand-off thread drains these before exiting; this is the belt-and-braces path.
+  for (PendingPresented& pending : pendingPresented_) {
+    if (pending.native != nullptr) {
+      OH_NativeBuffer_Unreference(static_cast<OH_NativeBuffer*>(pending.native));
+    }
+    ReleaseOutput(pending.index);
+  }
+  pendingPresented_.clear();
 }
 
 void VideoDecoder::PumpInput() {
@@ -470,7 +517,13 @@ void VideoDecoder::OnError(OH_AVCodec*, int32_t errorCode, void* userData) {
 
 void VideoDecoder::OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userData) {
   VideoDecoder* self = static_cast<VideoDecoder*>(userData);
-  if (self == nullptr || format == nullptr) {
+  if (self != nullptr) {
+    self->UpdateGeometryFromFormat(format);
+  }
+}
+
+void VideoDecoder::UpdateGeometryFromFormat(OH_AVFormat* format) {
+  if (format == nullptr) {
     return;
   }
   // The visible (cropped) size is the picture, not the coded size the configure
@@ -488,8 +541,8 @@ void VideoDecoder::OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userD
   if (width <= 0 || height <= 0) {
     return;
   }
-  self->width_.store(width);
-  self->height_.store(height);
+  width_.store(width);
+  height_.store(height);
   // Buffer mode adds the frame's layout to the same description: the byte row pitch, the rows
   // allocated per plane (the chroma plane starts at their product) and the crop rectangle. That is
   // exactly what a GPU import addresses, and it is only obtainable in this mode — an output surface
@@ -500,15 +553,17 @@ void VideoDecoder::OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userD
   int32_t cropTop = 0;
   int32_t cropRight = 0;
   int32_t cropBottom = 0;
+  int32_t pixelFormat = 0;
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_STRIDE, &stride);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_SLICE_HEIGHT, &sliceHeight);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_LEFT, &cropLeft);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_TOP, &cropTop);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_RIGHT, &cropRight);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_BOTTOM, &cropBottom);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, &pixelFormat);
   {
-    std::lock_guard<std::mutex> lock(self->outputMutex_);
-    VideoFrameGeometry& geometry = self->geometry_;
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    VideoFrameGeometry& geometry = geometry_;
     geometry = VideoFrameGeometry();
     geometry.stride = stride > 0 ? stride : 0;
     geometry.sliceHeight = sliceHeight > 0 ? sliceHeight : 0;
@@ -519,10 +574,25 @@ void VideoDecoder::OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userD
     geometry.visibleHeight = cropped ? cropBottom - cropTop + 1 : height;
     geometry.originX = cropped ? cropLeft : 0;
     geometry.originY = cropped ? cropTop : 0;
+    geometry.pixelFormat = pixelFormat;
+    geometry.cbFirst = pixelFormat != AV_PIXEL_FORMAT_NV21;
   }
   HMRDP_LOGI("video decoder: stream %{public}dx%{public}d stride=%{public}d slice=%{public}d "
-             "crop=%{public}d,%{public}d-%{public}d,%{public}d",
-             width, height, stride, sliceHeight, cropLeft, cropTop, cropRight, cropBottom);
+             "crop=%{public}d,%{public}d-%{public}d,%{public}d pixel=%{public}d cbFirst=%{public}d",
+             width, height, stride, sliceHeight, cropLeft, cropTop, cropRight, cropBottom,
+             pixelFormat, pixelFormat != AV_PIXEL_FORMAT_NV21 ? 1 : 0);
+}
+
+void VideoDecoder::ReadOutputDescription() {
+  if (codec_ == nullptr) {
+    return;
+  }
+  OH_AVFormat* description = OH_VideoDecoder_GetOutputDescription(codec_);
+  if (description == nullptr) {
+    return;
+  }
+  UpdateGeometryFromFormat(description);
+  OH_AVFormat_Destroy(description);
 }
 
 void VideoDecoder::OnNeedInput(OH_AVCodec*, uint32_t index, OH_AVBuffer* buffer, void* userData) {
@@ -552,6 +622,7 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   // show this period is released unwatched — this is the one place that decides it, for both output
   // modes. In buffer mode "presenting" means handing the picture to the sink, which returns it.
   if (TakePresentSlot()) {
+    statPresented_.fetch_add(1, std::memory_order_relaxed);
     if (buffered_) {
       HandOff(index, buffer);
     } else {

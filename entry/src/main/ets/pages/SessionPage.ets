@@ -6,7 +6,6 @@ import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpClipKind, RdpEvent } from '../model/RdpModels';
-import { SR_BACKEND_FSR } from '../model/Profiles';
 import { PendingConnection, SessionRequests } from '../model/Connections';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
@@ -27,12 +26,14 @@ import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
 import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, PINCH_MODE_ZOOM,
-  SettingsStore, srRatioLabel } from '../services/SettingsStore';
+  SettingsStore } from '../services/SettingsStore';
 import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { mapPicturePoint } from '../utils/PictureFit';
+import { joinSessionTags, srTag } from '../utils/SessionTags';
+import { gpuFrameLabel, gpuSplitLabel, usToMs } from '../utils/TelemetryFormat';
 import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 import { SessionPicture } from '../components/SessionPicture';
@@ -205,7 +206,7 @@ struct SessionPage {
     this.scrollEngine = !settings.scrollEngineFallback;
     // Presentation picks Vulkan when the device supports it (the presenter falls back to GLES
     // otherwise); normalise the process-global flag in case the dev replay page left it off.
-    RdpNative.applyHardwareAccel(DeviceCapabilities.hardwareAccel().supported);
+    DeviceCapabilities.applyHardwareAccel();
     let filesDir: string = '';
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();
@@ -551,21 +552,13 @@ struct SessionPage {
     return formatLatency('本机', this.localMs());
   }
 
-  private usToMs(us: number): number {
-    return Math.round(us / 1000);
-  }
-
-  private usToMsTenth(us: number): string {
-    return (us / 1000).toFixed(1);
-  }
-
   private cpuLabel(): string {
     return this.metricsCpuPercent < 0 ? 'CPU --' : 'CPU ' + this.metricsCpuPercent + '%';
   }
 
   private gpuLabel(): string {
     const total: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
-    return total > 0 ? 'GPU ' + this.usToMsTenth(total) + 'ms' : 'GPU --';
+    return gpuFrameLabel(total);
   }
 
   private fpsLabel(): string {
@@ -926,11 +919,10 @@ struct SessionPage {
   }
 
   private srIndicator(): string {
-    if (this.options.streamWidth <= 0 || this.options.srRatioPercent <= 100) {
+    if (this.options.streamWidth <= 0) {
       return '';
     }
-    const backend: string = this.options.srBackend === SR_BACKEND_FSR ? 'FSR' : 'XEngine';
-    return ' (' + backend + ' ' + srRatioLabel(this.options.srRatioPercent) + ')';
+    return joinSessionTags([srTag(this.options.srBackend, this.options.srRatioPercent)]);
   }
 
   @Builder
@@ -1048,20 +1040,18 @@ struct SessionPage {
   private detailFields(): TelemetryField[] {
     const gpu: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
     const fields: TelemetryField[] = [];
-    fields.push(new TelemetryField('解析 ' + this.usToMs(this.metricsZgxUs) + 'ms',
+    fields.push(new TelemetryField('解析 ' + usToMs(this.metricsZgxUs) + 'ms',
       METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, 0));
-    fields.push(new TelemetryField('解码 ' + this.usToMs(this.metricsDecodeUs) + 'ms',
+    fields.push(new TelemetryField('解码 ' + usToMs(this.metricsDecodeUs) + 'ms',
       METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
-    fields.push(new TelemetryField('合成 ' + this.usToMs(this.metricsComposeUs) + 'ms',
+    fields.push(new TelemetryField('合成 ' + usToMs(this.metricsComposeUs) + 'ms',
       METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
-    fields.push(new TelemetryField('上屏 ' + this.usToMs(this.metricsPresentUs) + 'ms',
+    fields.push(new TelemetryField('上屏 ' + usToMs(this.metricsPresentUs) + 'ms',
       METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
     fields.push(new TelemetryField('占比 ' + Math.round(this.metricsDutyPermille / 10) + '%',
       METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     fields.push(new TelemetryField(gpu > 0
-      ? '上传 ' + this.usToMsTenth(this.metricsGpuCopyUs) + ' / 超分 '
-        + this.usToMsTenth(this.metricsGpuSrUs) + ' / blit ' + this.usToMsTenth(this.metricsGpuBlitUs)
-        + ' ms'
+      ? gpuSplitLabel(this.metricsGpuCopyUs, this.metricsGpuSrUs, this.metricsGpuBlitUs, '上传')
       : 'GPU 无时间戳', 0, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
     return fields;
   }

@@ -237,7 +237,8 @@ export const moonlightVideoCodecSupport: (codec: number) => number;
 /** Highest frame rate the decoder for a VIDEO_FORMAT_* reports at that picture size (0 = not stated). */
 export const moonlightVideoMaxFps: (videoFormat: number, width: number, height: number) => number;
 
-/** Stable decode-path code: "software-decode|<mime>" or "no-decoder|<mime>", "" when fine. */
+/** Stable decode-path codes, comma separated when several apply: "software-decode|<mime>",
+ *  "sr-unavailable", "sr-inactive", "video-present"; "" when fine. */
 export const moonlightVideoWarning: () => string;
 
 /** Everything LiStartConnection needs; assembled by the ArkTS control layer. */
@@ -282,6 +283,8 @@ export interface MoonlightEventExtra {
   height?: number;
   hotX?: number;
   hotY?: number;
+  /** Cursor shape scale in thousandths (1000 = stream pixels); mirrors RDP's pointer magnification. */
+  magnificationMilli?: number;
   /** The host-assigned shape identity (protocol-native dedup key). */
   shapeId?: number;
   visible?: boolean;
@@ -419,12 +422,18 @@ export const gamepadKitDevices: () => GamepadKitDevice[];
 
 /** One raw telemetry sample; counters are cumulative (the caller diffs consecutive samples into rates). */
 export interface MoonlightTelemetry {
-  /** Pictures decoded out of the codec, cumulative (the rate the display is fed). */
+  /** Pictures decoded out of the codec, cumulative. */
   frames: number;
+  /** Pictures actually presented to the display, cumulative. */
+  presentedFrames: number;
   /** Access units handed to the decoder, cumulative. */
   submittedFrames: number;
   /** Access units dropped because they were already too late to show, cumulative. */
   droppedFrames: number;
+  /** Frames dropped by the display gate in the decoder, cumulative. */
+  presentDroppedFrames: number;
+  /** Pictures replaced in the hand-off before the sink took them, cumulative. */
+  handoffReplacedFrames: number;
   /** Encoded video payload bytes (sum of decoded-unit lengths), cumulative. */
   bytes: number;
   /** Sum of host frame processing latency over frames that carried it (1/10 ms). */
@@ -435,6 +444,12 @@ export interface MoonlightTelemetry {
   decodeRoundTripUs: number;
   /** Number of frames paired into the decode round-trip sum. */
   decodeRoundTripFrames: number;
+  /** GPU microseconds of the last sampling window: convert, 超分, letterbox. */
+  gpuCopyUs: number;
+  gpuSrUs: number;
+  gpuBlitUs: number;
+  /** Display wait of the last sampling window, microseconds. */
+  presentWaitUs: number;
   /** Video frames waiting to be decoded right now. */
   pendingVideoFrames: number;
   /** Estimated RTT in ms, or -1 when unavailable. */

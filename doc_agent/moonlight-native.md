@@ -67,11 +67,13 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位留空：不改写参考帧，且**不开
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
   - **两条上屏路线的解码输出模式不同**：直出时解码器用 surface 模式渲染进 `renderContext` 的窗口；超分时用
-    buffer 模式把自己的输出缓冲交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`），返回即归还解码器
+    buffer 模式把自己的输出缓冲交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`），提交成功拿到
+    呈现槽位 token，**最多两帧在飞**，轮到同一槽位前由 `WaitVideoFrame(token)` 等 fence 后才归还解码器
     （见 [`present.md`](present.md) §4、[`moonlight-video.md`](moonlight-video.md) §1/§2）。
     呈现器归会话所有（`hmrdp_moonlight_session.*`），在 `LiStartConnection` 前按会话尺寸建好、`LiStopConnection`
     后拆掉；桥只**借用**它（`MoonlightVideoAttachPresenter` / `MoonlightVideoDetachPresenter`，Detach 会等在飞的
-    那一帧做完），表面尺寸的转发走 `MoonlightSessionResizeSurface` → 同一个交接锁。
+    那一帧做完）。表面变化走 `MoonlightSessionSetSurface`（绑定时带真实窗口尺寸）与
+    `MoonlightSessionResizeSurface`：前者替换 swapchain/surface（缓冲模式会话存活期间可换），后者只改 extent。
   - 输入**按延迟预算**排队（时间计量，不是字节）：最老的一帧超过预算就丢掉整段积压并回 `DR_NEED_IDR`
     请主机补关键帧。依据与限流机制见 [`moonlight-video.md`](moonlight-video.md) §1。
 - **串流会话桥**：`core/hmrdp_moonlight_session.*` 包住 `LiStartConnection`。**`LiStartConnection` 在建流
@@ -90,7 +92,8 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `moonlightHostFeatures` / `moonlightTelemetry` /
   `moonlightSetShortcutPassthrough`；
   窗口是**进程级单个** `OHNativeWindow`，须在 `Start` 前绑定、`Stop` 后释放
-  （`LiStartConnection` 的 `renderContext` 需要它）。
+  （`LiStartConnection` 的 `renderContext` 需要它）；超分的 buffer 模式会话存活期间可重新绑定窗口
+  （呈现器换 swapchain），surface 模式不支持热换（codec 持有旧窗口）。
 - **输入入口回报结果码**：`core/hmrdp_moonlight_session.*` 的输入入口（`LiSend*` 的镜像）返回**库自己的结果码**，
   `binding/` 与 `index.d.ts` 原样透出；落在输入 worker 内的 `services/input/MoonlightInputSender.ets` 把码折算成
   **受理 / 拒收**（`LI_ERR_UNSUPPORTED` = 主机没这能力，按设计的拒绝，不算丢弃；无会话返回 0，也算受理——
@@ -100,13 +103,14 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   `moonlightMouseMove`），发的是**相邻两次映射位置之差**（1:1，内容像素当计数），依据与边界见
   [`session-layer.md`](session-layer.md) §8。相对模式下**按键不再附绝对位置**——`LiSendMouseButtonEvent` 本身不带坐标，
   附一次绝对定位会把主机光标拽回本机坐标。
-- **遥测采样**：解码桥按帧累加**累计计数**（**解码出帧数**——计在解码输出回调上；**提交的访问单元数**与
-  **丢弃数**——后者含超输入延迟预算时被丢的整段积压，两者只在丢帧时不等）；编码载荷字节 Σ`fullLength`、
-  主机帧处理耗时之和 / 帧数、
+- **遥测采样**：解码桥按帧累加**累计计数**（**解码出帧数**——计在解码输出回调上；**实际呈现帧数**——
+  surface 模式取送显槽位、buffer 模式取呈现器提交成功的帧；**提交的访问单元数**与**丢弃数**——后者含输入
+  延迟预算丢弃、送显闸门丢弃与交接替换；编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
   本机解码往返之和 / 帧数——最后一项在 `submitDecodeUnit` 记提交时刻、在解码输出回调按 `pts` 配对求差），
   `moonlightTelemetry()` 被调用时再读入瞬时 / 库侧读数（`LiGetEstimatedRttInfo` 的 RTT 与抖动、
-  `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`）。**原生不产速率**：速率与每帧均值在 ArkTS
-  （`services/MoonlightTelemetry`）按相邻样本差分 / 求均得到（字段与口径见
+  `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`），并在有呈现器时取走本次采样窗口的
+  GPU 三段工时与等显示时间（`TakeGpuTimings` / `TakePresentWaitUs`，取走即清零）。**原生不产速率**：
+  速率与每帧均值在 ArkTS（`services/MoonlightTelemetry`）按相邻样本差分 / 求均得到（字段与口径见
   [`moonlight-session.md`](moonlight-session.md) §2）。计数在每次会话 `start` 时清零，会话重启后
   ArkTS 检测到计数回落即重新基准化。
 

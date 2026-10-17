@@ -79,14 +79,28 @@ class FramePresenter {
   // Moonlight 超分: present one decoded frame straight from the buffer the codec handed out (NV12),
   // importing it into the presenter's own device, converting to the picture format and running the
   // shared 超分 / letterbox tail. `geometry` is the codec's own description of the frame (see
-  // hmrdp_video_frame.h). Blocking per frame: the caller returns the buffer to the codec the moment
-  // this returns, so the presenter must be done with it. False when the presenter has no such path
-  // (GLES) or the frame's layout cannot be imported.
-  virtual bool PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
+  // hmrdp_video_frame.h). Returns a token for WaitVideoFrame when the frame was submitted, or -1
+  // when nothing was submitted (the caller may return the buffer immediately). The GPU may still be
+  // reading the buffer until WaitVideoFrame(token) returns.
+  virtual int PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
     (void)nativeBuffer;
     (void)geometry;
-    return false;
+    return -1;
   }
+
+  // Waits until the GPU no longer reads the codec buffer presented as `token`. A no-op for an
+  // unknown token or when the frame was never submitted.
+  virtual void WaitVideoFrame(int token) { (void)token; }
+
+  // Whether this presenter can consume codec buffers at all. The session must ask before it puts the
+  // decoder into buffer mode: a presenter that cannot import would leave the stream with no output.
+  virtual bool supportsVideo() const { return false; }
+
+  // The 超分 state the session requested and what the presenter actually runs (input smaller than the
+  // output, and the upscale object built). A request that is not active means the session fell back
+  // to presenting the input picture; the caller reports that instead of claiming 超分 is on.
+  virtual bool superResolutionRequested() const { return false; }
+  virtual bool superResolutionActive() const { return false; }
 
   virtual void Reset() = 0;
 };

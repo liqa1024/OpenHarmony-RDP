@@ -71,9 +71,14 @@ class VideoDecoder {
   int64_t pendingAgeUs() const;
   // Age past which a queued access unit is too late to be worth decoding.
   int64_t inputBudgetUs() const { return inputBudgetUs_; }
-  // Drops every access unit still waiting for an input buffer. The dropped units break the
+  // Drops the every access unit still waiting for an input buffer. The dropped units break the
   // prediction chain, so the caller must force a keyframe before decoding can resume.
   size_t DropPending();
+  // Cumulative loss split by cause: display-gate drops and pictures replaced in the hand-off.
+  uint64_t presentDroppedFrames() const { return statPresentDropped_.load(); }
+  uint64_t handOffReplacedFrames() const { return statHandOffReplaced_.load(); }
+  // Frames that took the display slot (rendered in surface mode, handed to the sink in buffer mode).
+  uint64_t presentedFrames() const { return statPresented_.load(); }
   std::string lastError() const;
 
  private:
@@ -82,6 +87,15 @@ class VideoDecoder {
     uint32_t index = 0;
     OH_AVBuffer* buffer = nullptr;
   };
+
+  // A picture the sink presented but whose GPU work may still read the codec buffer. The buffer is
+  // returned only after WaitVideoFrame(token); two may be in flight, matching the presenter slots.
+  struct PendingPresented {
+    uint32_t index = 0;
+    void* native = nullptr;
+    int token = -1;
+  };
+  static constexpr size_t kMaxPendingPresented = 2;
 
   static void OnError(OH_AVCodec*, int32_t errorCode, void* userData);
   static void OnStreamChanged(OH_AVCodec*, OH_AVFormat* format, void* userData);
@@ -97,6 +111,10 @@ class VideoDecoder {
   // Builds the Configure format and configures the codec. Returns an OH_AVErrCode (kept as int so
   // this header stays free of the media SDK headers).
   int32_t ConfigureCodec(int width, int height, int frameRate);
+  // Copies the stream layout out of an OH_AVFormat (onStreamChanged or GetOutputDescription). The
+  // latter is the only source on platforms that do not put the layout in the stream-changed event.
+  void UpdateGeometryFromFormat(OH_AVFormat* format);
+  void ReadOutputDescription();
   // False when the display cannot show this frame before its next refresh.
   bool TakePresentSlot();
   // Hands one picture back to the codec; the one place a buffer is returned.
@@ -125,6 +143,7 @@ class VideoDecoder {
   std::deque<std::pair<uint32_t, OH_AVBuffer*>> idleInputs_;
 
   PresentSlots slots_;
+  std::atomic<uint64_t> statPresented_{0};
   std::atomic<uint64_t> statPresentDropped_{0};
   // Pictures replaced in the hand-off before the sink took them (the sink is behind the stream).
   std::atomic<uint64_t> statHandOffReplaced_{0};
@@ -141,6 +160,7 @@ class VideoDecoder {
   std::condition_variable outputCv_;
   // A picture waiting for the hand-off; an empty one means there is nothing to hand off.
   OutputFrame pendingOutput_;
+  std::deque<PendingPresented> pendingPresented_;
   bool handOffStop_ = false;
   VideoFrameGeometry geometry_;
 

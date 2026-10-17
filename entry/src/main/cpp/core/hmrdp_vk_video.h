@@ -51,25 +51,36 @@ class VkVideoImport {
   // reading the old picture first (see VkRenderer::DrainInFlightLocked).
   bool needsRebuild(int pictureWidth, int pictureHeight) const;
 
-  // True when one more import would drop the whole cache: the caller drains its in-flight frames
-  // before calling Import.
-  bool importCacheFull() const;
+  // True when the cache is at its cap and this buffer is not in it: the caller drains the frames
+  // still reading the cached imports before calling Import (which then evicts the least recently
+  // used one).
+  bool needsDrainFor(const void* nativeBuffer) const;
 
   // Resolves the frame's layout (codec values first, the allocation's config where the codec states
   // nothing), imports the buffer if it has not been seen yet, and writes the frame parameters the
-  // convert pass reads. False when the buffer cannot be imported or its layout is unusable.
-  bool Import(const void* nativeBuffer, const VideoFrameGeometry& geometry, Frame* out);
+  // convert pass reads. `slot` is the presenter frame slot whose picture/UBO this frame uses.
+  bool Import(const void* nativeBuffer, const VideoFrameGeometry& geometry, uint32_t slot,
+              Frame* out);
 
   // Records: the imported image's UNDEFINED -> SHADER_READ_ONLY barrier and the convert pass (luma +
-  // interleaved chroma -> RGB). Ends with the picture in GENERAL for the shared 超分 / letterbox tail.
-  void RecordConvert(VkCommandBuffer cmd, const Frame& frame);
+  // interleaved chroma -> RGB) into that slot's picture. Ends with the picture in GENERAL for the
+  // shared 超分 / letterbox tail.
+  void RecordConvert(VkCommandBuffer cmd, const Frame& frame, uint32_t slot);
 
-  VkImage pictureImage() const { return picture_.image; }
-  VkImageView pictureView() const { return picture_.view; }
+  VkImage pictureImage(uint32_t slot) const {
+    return slot < kSlots ? pictures_[slot].image : VK_NULL_HANDLE;
+  }
+  VkImageView pictureView(uint32_t slot) const {
+    return slot < kSlots ? pictures_[slot].view : VK_NULL_HANDLE;
+  }
 
   std::string lastError() const { return error_; }
 
   void Destroy();
+
+  // One picture per presenter frame slot so the next frame can be converted while the GPU still
+  // samples the previous one (the same depth as VkRenderer's swapchain slots).
+  static constexpr uint32_t kSlots = 2;
 
  private:
   // The picture the convert pass writes: image + view + its extent, rebuilt only on a size change.
@@ -81,14 +92,18 @@ class VkVideoImport {
     int height = 0;
   };
 
-  // One codec buffer's import: image + memory + view + the descriptor set that binds it.
+  // One codec buffer's import: image + memory + view + one descriptor set per presenter slot (each
+  // binds that slot's frame-parameter buffer).
   struct Imported {
     uint32_t seq = 0;
+    uint64_t lastUsed = 0;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkDescriptorSet sets[kSlots] = {};
     int chromaRow = 0;
+    bool cbFirst = true;
+    float colorRows[12] = {};
   };
 
   // Bounded so a platform that keeps handing out fresh buffers cannot grow the cache without limit;
@@ -98,30 +113,44 @@ class VkVideoImport {
   bool EnsureConvertPipeline();
   void DestroyConvertPipeline();
   void ClearImports();
+  // Re-allocates and re-writes every cached import's descriptor sets. Needed after resetting the
+  // descriptor pool when an eviction has to reclaim a set; the images/views are unchanged.
+  void RebuildSets();
+  bool AllocateImportSet(VkImageView view, uint32_t slot, VkDescriptorSet* out);
   bool CreateImported(const void* nativeBuffer, const VideoFrameGeometry& geometry, Imported* out);
   void DestroyImported(Imported* imported);
   // The YUV -> RGB rows for a buffer colour space (falling back to the driver's suggestion), each
   // already scaled for 0..255 sample values: value = cY*luma + cCb*Cb + cCr*Cr + offset.
-  void UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange);
-  // Writes the frame parameters (visible box, crop origin, chroma row, colour rows) into the uniform
-  // buffer the convert pipeline reads; std140, five vec4s.
-  void WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow);
+  void UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange, float* out);
+  // Writes the frame parameters (visible box, crop origin, chroma row, chroma order, colour rows)
+  // into the slot's uniform buffer the convert pipeline reads; std140, five vec4s.
+  void WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow, const float* colorRows,
+                        uint32_t slot);
 
   VkDeviceContext& context_;
   std::string error_;
 
-  Picture picture_;
+  Picture pictures_[kSlots];
   std::vector<Imported> imports_;
-  float colorRows_[12] = {};
+  uint64_t useCounter_ = 0;
+
+  // A failed Ensure is latched for that size: retrying every frame would allocate/destroy the
+  // picture at the stream rate. A size change (a new stream) clears it.
+  bool failed_ = false;
+  int failedWidth_ = 0;
+  int failedHeight_ = 0;
 
   // One-shot: an import refused every frame would otherwise log at the stream rate, and the imported
   // buffer's shape only needs printing once.
   bool importWarned_ = false;
   bool importLogged_ = false;
+  bool importFailed_ = false;
   bool derivedLayoutLogged_ = false;
+  bool formatWarned_ = false;
+  bool colorFallbackWarned_ = false;
 
   VkRenderPass convertRenderPass_ = VK_NULL_HANDLE;
-  VkFramebuffer convertFramebuffer_ = VK_NULL_HANDLE;
+  VkFramebuffer convertFramebuffer_[kSlots] = {};
   // Plain sampler (no YCbCr conversion): the pass fetches bytes with texelFetch.
   VkSampler byteSampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout convertSetLayout_ = VK_NULL_HANDLE;
@@ -129,9 +158,10 @@ class VkVideoImport {
   VkDescriptorPool convertPool_ = VK_NULL_HANDLE;
   VkPipeline convertPipeline_ = VK_NULL_HANDLE;
   static constexpr size_t kFrameParamsBytes = 5 * 4 * sizeof(float);
-  VkBuffer paramsBuffer_ = VK_NULL_HANDLE;
-  VkDeviceMemory paramsMemory_ = VK_NULL_HANDLE;
-  void* paramsMapped_ = nullptr;
+  VkBuffer paramsBuffer_[kSlots] = {};
+  VkDeviceMemory paramsMemory_[kSlots] = {};
+  void* paramsMapped_[kSlots] = {};
+  bool paramsCoherent_[kSlots] = {true, true};
 };
 
 }

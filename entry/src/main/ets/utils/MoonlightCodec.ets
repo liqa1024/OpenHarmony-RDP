@@ -56,11 +56,46 @@ export function moonlightHostCodecNames(serverCodecModeSupport: number): string 
   return names.join(' / ');
 }
 
-export function moonlightDecodeIndicator(): string {
+// Tokens for the session title; the caller merges them with the other session tags into one bracket.
+// The warning is a comma-separated list (a codec warning, an unavailable/inactive 超分 and a presentation
+// failure are independent facts and may all be present).
+export function moonlightDecodeTokens(): string[] {
   const token: string = moonlightVideoCodec();
-  if (token.length === 0) {
-    return '';
+  const warning: string = moonlightVideoWarning();
+  const tokens: string[] = [];
+  if (token.length > 0) {
+    tokens.push(moonlightCodecTokenName(token));
   }
-  const software: boolean = moonlightVideoWarning().startsWith('software-decode');
-  return ' (' + moonlightCodecTokenName(token) + (software ? ', CPU' : '') + ')';
+  let software: boolean = false;
+  let srUnavailable: boolean = false;
+  let srInactive: boolean = false;
+  let videoError: boolean = false;
+  const parts: string[] = warning.length > 0 ? warning.split(',') : [];
+  for (let i = 0; i < parts.length; i++) {
+    const part: string = parts[i];
+    if (part.startsWith('software-decode')) {
+      software = true;
+    } else if (part.startsWith('sr-unavailable')) {
+      srUnavailable = true;
+    } else if (part.startsWith('sr-inactive')) {
+      srInactive = true;
+    } else if (part.startsWith('video-present')) {
+      videoError = true;
+    }
+  }
+  if (software) {
+    tokens.push('CPU');
+  }
+  // A requested 超分 that is not running must not keep claiming to be on in the title.
+  if (srUnavailable || srInactive) {
+    tokens.push('未超分');
+  }
+  if (videoError) {
+    tokens.push('视频异常');
+  }
+  return tokens;
+}
+
+export function moonlightVideoStatus(): string {
+  return moonlightVideoWarning();
 }

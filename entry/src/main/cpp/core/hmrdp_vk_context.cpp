@@ -208,6 +208,16 @@ VulkanCapabilities ProbeVulkan() {
   caps.extExternalMemoryFd = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
   caps.extOhosExternalMemory = HasExtension(devExts, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
 
+  // The importer addresses the buffer as an R8 linear image; verify the device accepts that shape
+  // before advertising the video path (the external-memory import itself still has its own checks).
+  if (api.GetPhysicalDeviceImageFormatProperties != nullptr) {
+    VkImageFormatProperties formatProps{};
+    caps.videoImportFormatOk = api.GetPhysicalDeviceImageFormatProperties(
+                                   best, VK_FORMAT_R8_UNORM, VK_IMAGE_TYPE_2D,
+                                   VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_SAMPLED_BIT, 0,
+                                   &formatProps) == VK_SUCCESS;
+  }
+
   // XEngine (超分) is queried through libxengine.so's own enumeration, not the
   // Vulkan loader's, so it is probed separately (see hmrdp_xeg.h).
   caps.xegLibrary = XegAvailable();
@@ -289,6 +299,9 @@ bool VkApi::LoadInstance(VkInstance instance) {
       Resolve<PFN_vkEnumeratePhysicalDevices>(gipa, instance, "vkEnumeratePhysicalDevices");
   GetPhysicalDeviceProperties = Resolve<PFN_vkGetPhysicalDeviceProperties>(
       gipa, instance, "vkGetPhysicalDeviceProperties");
+  GetPhysicalDeviceImageFormatProperties =
+      Resolve<PFN_vkGetPhysicalDeviceImageFormatProperties>(
+          gipa, instance, "vkGetPhysicalDeviceImageFormatProperties");
   GetPhysicalDeviceQueueFamilyProperties = Resolve<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
       gipa, instance, "vkGetPhysicalDeviceQueueFamilyProperties");
   GetPhysicalDeviceMemoryProperties = Resolve<PFN_vkGetPhysicalDeviceMemoryProperties>(
@@ -533,9 +546,11 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
   // Not a UI gate for RDP (its 超分 input is the CPU desktop picture); it decides whether the
   // Moonlight 超分 path, which imports the decoder's NV12 buffer as a byte image and converts it in
   // the shader, can run on this device. Only the OHOS external-memory import is needed for that.
-  caps->srVideoImportSupported = caps->presenterSupported && caps->extOhosExternalMemory;
-  HMRDP_LOGI("vulkan verdict: video import=%{public}d",
-             caps->srVideoImportSupported ? 1 : 0);
+  caps->srVideoImportSupported = caps->presenterSupported && caps->extOhosExternalMemory &&
+                                 caps->videoImportFormatOk;
+  HMRDP_LOGI("vulkan verdict: video import=%{public}d (extMem=%{public}d, r8Linear=%{public}d)",
+             caps->srVideoImportSupported ? 1 : 0, caps->extOhosExternalMemory ? 1 : 0,
+             caps->videoImportFormatOk ? 1 : 0);
 }
 
 }  // namespace

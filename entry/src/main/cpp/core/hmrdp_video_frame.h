@@ -17,18 +17,25 @@ struct VideoFrameGeometry {
   int visibleHeight = 0;
   int originX = 0;
   int originY = 0;
+  // The codec's pixel format (OH_AVPixelFormat, 0 = not reported). The byte importer only accepts
+  // the interleaved 4:2:0 layouts it can address; `cbFirst` says whether the first chroma byte is Cb
+  // (NV12) or Cr (NV21).
+  int pixelFormat = 0;
+  bool cbFirst = true;
 };
 
 // Where a decode bridge's pictures go. Implemented by the session's presenter owner (the Moonlight
 // video bridge), which holds the presenter under its own lock.
 //
-// The call runs on the decoder's hand-off thread, never on a codec callback thread, and it may block
-// (the presenter waits its GPU fence inside). The buffer stays owned by the decoder and is returned
-// to the codec as soon as the call returns, so the receiver must be done with it by then.
+// The call runs on the decoder's hand-off thread, never on a codec callback thread. A picture is
+// free to return to the codec when PresentVideoFrame returns -1, or after WaitVideoFrame(token) for
+// a non-negative token: the GPU may still be reading the codec buffer until then. Keeping two
+// pictures in flight lets decode overlap the presenter's GPU work.
 class VideoFrameSink {
  public:
   virtual ~VideoFrameSink() = default;
-  virtual void PresentVideoFrame(const void* nativeBuffer, const VideoFrameGeometry& geometry) = 0;
+  virtual int PresentVideoFrame(const void* nativeBuffer, const VideoFrameGeometry& geometry) = 0;
+  virtual void WaitVideoFrame(int token) = 0;
 };
 
 }

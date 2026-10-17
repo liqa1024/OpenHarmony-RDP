@@ -76,16 +76,54 @@ class MoonlightVideoRenderer : public VideoFrameSink {
 
   // VideoFrameSink: the decoder's hand-off thread calls this once per frame it hands out. The
   // presenter is called under the hand-off lock, so DetachPresenter cannot return while a frame is
-  // being presented.
-  void PresentVideoFrame(const void* buffer, const VideoFrameGeometry& geometry) override {
-    std::lock_guard<std::mutex> lock(presenterMutex_);
-    if (presenter_ == nullptr) {
-      return;
+  // being presented. The warning is written after that lock is released (the presenter mutex must
+  // never be held while taking `mutex_`).
+  int PresentVideoFrame(const void* buffer, const VideoFrameGeometry& geometry) override {
+    int token = -1;
+    bool srRequested = false;
+    bool srActive = false;
+    {
+      std::lock_guard<std::mutex> lock(presenterMutex_);
+      if (presenter_ == nullptr) {
+        return -1;
+      }
+      token = presenter_->PresentVideo(buffer, geometry);
+      if (token >= 0) {
+        srRequested = presenter_->superResolutionRequested();
+        srActive = presenter_->superResolutionActive();
+      }
     }
-    if (!presenter_->PresentVideo(buffer, geometry) && !presentWarned_) {
-      // One-shot: a refused frame repeats at the stream rate (the presenter logs the reason).
-      presentWarned_ = true;
-      HMRDP_LOGW("moonlight video: presenter refused a frame; 超分 is not presenting");
+    if (token < 0) {
+      ++presentFailures_;
+      // A surface rebind can refuse a frame or two; only a run of failures names a broken path.
+      if (presentFailures_ >= 4 && !presentWarned_) {
+        presentWarned_ = true;
+        SetWarning("video-present");
+        HMRDP_LOGW("moonlight video: presenter refused frames; the video path is not presenting");
+      }
+      return -1;
+    }
+    presentFailures_ = 0;
+    if (presentWarned_) {
+      presentWarned_ = false;
+      ClearWarning("video-present");
+    }
+    statPresented_.fetch_add(1, std::memory_order_relaxed);
+    if (srRequested && !srActive && !srWarned_) {
+      srWarned_ = true;
+      SetWarning("sr-inactive");
+      HMRDP_LOGW("moonlight video: 超分 requested but the presenter is showing the input as-is");
+    } else if (srRequested && srActive && srWarned_) {
+      srWarned_ = false;
+      ClearWarning("sr-inactive");
+    }
+    return token;
+  }
+
+  void WaitVideoFrame(int token) override {
+    std::lock_guard<std::mutex> lock(presenterMutex_);
+    if (presenter_ != nullptr) {
+      presenter_->WaitVideoFrame(token);
     }
   }
 
@@ -93,6 +131,26 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     std::lock_guard<std::mutex> lock(mutex_);
     window_ = context != nullptr ? context->window : nullptr;
   }
+
+  void SetSurface(void* window, int width, int height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    window_ = window;
+    std::lock_guard<std::mutex> plock(presenterMutex_);
+    if (presenter_ != nullptr) {
+      if (window != nullptr) {
+        presenter_->SetSurface(window, width, height);
+      } else {
+        presenter_->DestroySurface();
+      }
+    }
+  }
+
+  bool UsesBufferMode() {
+    std::lock_guard<std::mutex> lock(presenterMutex_);
+    return presenter_ != nullptr;
+  }
+
+  void SetSuperResolutionRequested(bool requested) { srRequested_.store(requested); }
 
   // 超分: the session hand-off. The bridge only borrows the presenter: it is attached before the
   // connection starts, and Detach has returned before the session destroys it. Every use goes
@@ -180,19 +238,46 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   MoonlightTelemetry Telemetry() {
     MoonlightTelemetry telemetry;
     telemetry.frames = statDecoded_.load();
+    // In buffer mode the presenter is the authority on what reached the screen; in surface mode the
+    // decoder's display-slot counter is.
+    telemetry.presentedFrames = decoder_.presentedFrames();
     telemetry.bytes = statBytes_.load();
     telemetry.submittedFrames = statSubmitted_.load();
     telemetry.droppedFrames = statDropped_.load();
+    telemetry.presentDroppedFrames = decoder_.presentDroppedFrames();
+    telemetry.handoffReplacedFrames = decoder_.handOffReplacedFrames();
     telemetry.hostLatencyTenthMs = statHostLatencySum_.load();
     telemetry.hostLatencyFrames = statHostLatencyCount_.load();
     telemetry.decodeRoundTripUs = statDecodeRtSumUs_.load();
     telemetry.decodeRoundTripFrames = statDecodeRtCount_.load();
+    {
+      // Same lock order as Start: session mutex, then the presenter it borrows.
+      std::lock_guard<std::mutex> plock(presenterMutex_);
+      if (presenter_ != nullptr) {
+        telemetry.presentedFrames = statPresented_.load();
+        presenter_->TakeGpuTimings(&telemetry.gpuCopyUs, &telemetry.gpuSrUs,
+                                   &telemetry.gpuBlitUs);
+        telemetry.presentWaitUs = presenter_->TakePresentWaitUs();
+      }
+    }
     return telemetry;
   }
 
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool sr = HasPresenter();
+    if (srRequested_.load() && !sr) {
+      // Keep a codec warning that Setup already recorded; the two are independent session facts.
+      if (warning_.find("sr-unavailable") == std::string::npos) {
+        if (!warning_.empty()) {
+          warning_ += ",";
+        }
+        warning_ += "sr-unavailable";
+      }
+    }
+    presentWarned_ = false;
+    srWarned_ = false;
+    presentFailures_ = 0;
     if (mime_.empty()) {
       HMRDP_LOGE("moonlight video: start needs a setup codec");
       return;
@@ -219,9 +304,14 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   }
 
   void Stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const bool wasRunning = running_;
-    running_ = false;
+    bool wasRunning = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      wasRunning = running_;
+      running_ = false;
+    }
+    // Do not hold `mutex_` while joining the hand-off thread: a refused frame there reports its
+    // warning through the same mutex, and Stop would wait for the thread that waits for the lock.
     // Idempotent, and ordered by the decoder itself: its hand-off thread stops (and returns every
     // buffer) before the codec is destroyed.
     decoder_.Stop();
@@ -285,6 +375,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
  private:
   void ResetStats() {
     statDecoded_.store(0);
+    statPresented_.store(0);
     statSubmitted_.store(0);
     statDropped_.store(0);
     statBytes_.store(0);
@@ -317,10 +408,44 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     }
   }
 
+  void SetWarning(const char* token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (warning_.find(token) == std::string::npos) {
+      if (!warning_.empty()) {
+        warning_ += ",";
+      }
+      warning_ += token;
+    }
+  }
+
+  void ClearWarning(const char* token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string remaining;
+    size_t start = 0;
+    while (start <= warning_.size()) {
+      const size_t comma = warning_.find(',', start);
+      const std::string part = warning_.substr(
+          start, comma == std::string::npos ? std::string::npos : comma - start);
+      if (!part.empty() && part.rfind(token, 0) != 0) {
+        if (!remaining.empty()) {
+          remaining += ',';
+        }
+        remaining += part;
+      }
+      if (comma == std::string::npos) {
+        break;
+      }
+      start = comma + 1;
+    }
+    warning_ = remaining;
+  }
+
   std::mutex mutex_;
   // Guards `presenter_` and every call into it; a detach therefore waits out a present in flight.
   std::mutex presenterMutex_;
   bool presentWarned_ = false;
+  bool srWarned_ = false;
+  int presentFailures_ = 0;
   VideoDecoder decoder_;
   std::string mime_;
   std::string codec_;
@@ -332,11 +457,13 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   // 超分 presenter (session-owned, borrowed here); non-null switches the decode path to buffer mode
   // and the frames go through it. See AttachPresenter.
   FramePresenter* presenter_ = nullptr;
+  std::atomic<bool> srRequested_{false};
   bool running_ = false;
   std::vector<uint8_t> buffer_;
 
-  // frames = decoded pictures out of the codec; submitted = access units handed to it.
+  // frames = decoded pictures out of the codec; presented = frames the sink took and presented.
   std::atomic<uint64_t> statDecoded_{0};
+  std::atomic<uint64_t> statPresented_{0};
   std::atomic<uint64_t> statSubmitted_{0};
   std::atomic<uint64_t> statDropped_{0};
   std::atomic<uint64_t> statBytes_{0};
@@ -479,6 +606,22 @@ void MoonlightVideoAttachPresenter(void* presenter) {
 
 void MoonlightVideoDetachPresenter() {
   MoonlightVideoRenderer::Instance().DetachPresenter();
+}
+
+void MoonlightVideoSetSuperResolutionRequested(bool requested) {
+  MoonlightVideoRenderer::Instance().SetSuperResolutionRequested(requested);
+}
+
+bool MoonlightVideoBufferMode() {
+  return MoonlightVideoRenderer::Instance().UsesBufferMode();
+}
+
+void MoonlightVideoSetSurface(void* window, int width, int height) {
+  MoonlightVideoRenderer::Instance().SetSurface(window, width, height);
+}
+
+void MoonlightVideoClearSurface() {
+  MoonlightVideoRenderer::Instance().SetSurface(nullptr, 0, 0);
 }
 
 void MoonlightVideoResizeSurface(int width, int height) {

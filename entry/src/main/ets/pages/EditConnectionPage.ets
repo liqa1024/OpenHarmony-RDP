@@ -293,7 +293,9 @@ struct EditConnectionPage {
   }
 
   private mlAutoScalePercent(): number {
-    return SettingsStore.scalePresetForResolution(this.mlPreviewWidth(), this.mlPreviewHeight());
+    const sr: SrProfile = this.resolvedSr();
+    return SettingsStore.autoScalePercent(this.mlPreviewWidth(), this.mlPreviewHeight(),
+      sr.enabled, sr.ratioPercent);
   }
 
   private mlAutoBitrateKbps(): number {

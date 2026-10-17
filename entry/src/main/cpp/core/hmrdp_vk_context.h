@@ -33,6 +33,7 @@ struct VkApi {
   PFN_vkDestroyInstance DestroyInstance = nullptr;
   PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices = nullptr;
   PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties = nullptr;
+  PFN_vkGetPhysicalDeviceImageFormatProperties GetPhysicalDeviceImageFormatProperties = nullptr;
   PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties = nullptr;
   PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties = nullptr;
   PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties = nullptr;
@@ -169,6 +170,9 @@ struct VulkanCapabilities {
   bool memHostVisible = false;
   bool memHostCoherent = false;
   bool memHostVisibleDeviceLocal = false;
+  // R8 + linear + sampled is the byte view the video importer creates; a device that rejects it
+  // cannot take Moonlight's decoded buffers.
+  bool videoImportFormatOk = false;
 
   uint32_t queueFamilyCount = 0;
   uint32_t graphicsQueueFamilies = 0;

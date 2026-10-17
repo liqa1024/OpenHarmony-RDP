@@ -28,7 +28,11 @@ class VkRenderer : public FramePresenter {
   bool Prepare() override;
   bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth, int desktopHeight,
                    const PresentRect* rects, int rectCount) override;
-  bool PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) override;
+  int PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) override;
+  void WaitVideoFrame(int token) override;
+  bool supportsVideo() const override;
+  bool superResolutionRequested() const override;
+  bool superResolutionActive() const override;
 
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
   void BeginDesktopBufferWrite() override;
@@ -53,7 +57,7 @@ class VkRenderer : public FramePresenter {
   void DestroyFrameResourcesLocked();
   bool PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b);
   bool AcquireFrameLocked(uint32_t* imageIndex, bool* retry);
-  bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex);
+  bool SubmitAndPresentLocked(VkCommandBuffer cmd, uint32_t imageIndex, bool* submitted);
   bool EnsurePresentPipelineLocked();
   void DestroyPresentPipelineLocked();
   bool EnsurePresentTimerLocked();
@@ -65,16 +69,20 @@ class VkRenderer : public FramePresenter {
   void DestroyDesktopImageLocked();
   // Waits out every frame in flight, for a rare (re)creation whose targets the GPU may still read.
   void DrainInFlightLocked();
+  // Waits one frame slot's previous submission; false on a lost device (the fence never signaled).
+  // Assumes `mutex_` is held.
+  bool WaitVideoFrameLocked(int token);
   bool EnsureStageLocked(size_t bytes);
   void DestroyStageLocked();
   bool CreateDesktopBufferLocked(int width, int height);
   void DestroyDesktopBufferLocked();
 
-  bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight, VkImageView inputView);
+  bool EnsureSuperResolutionLocked(int inputWidth, int inputHeight, uint32_t slot,
+                                   VkImageView inputView, VkImageView otherInputView);
   bool EnsureXengineLocked(int inputWidth, int inputHeight, int outputWidth, int outputHeight);
-  bool EnsureFsrLocked(int inputWidth, int inputHeight, VkImageView inputView, int outputWidth,
-                       int outputHeight);
-  bool RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView inputView);
+  bool EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot, VkImageView inputView,
+                       VkImageView otherInputView, int outputWidth, int outputHeight);
+  bool RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView inputView, uint32_t slot);
   void DestroySuperResolutionLocked();
   void DestroyFsrLocked();
 
@@ -95,7 +103,8 @@ class VkRenderer : public FramePresenter {
   // output image, the GPU timestamps around it, then the letterbox quad into the acquired swapchain
   // image and the submit. `srActive` makes the source the output image at the output extent.
   bool RecordPresentTailLocked(VkCommandBuffer cmd, uint32_t slot, uint32_t imageIndex,
-                               const PresentInput& input, bool srActive, bool timers);
+                               const PresentInput& input, bool srActive, bool timers,
+                               bool* submitted);
 
   mutable std::mutex mutex_;
 
@@ -142,6 +151,9 @@ class VkRenderer : public FramePresenter {
   VkCommandBuffer commandBuffers_[kFramesInFlight] = {};
   VkSemaphore imageAvailable_[kFramesInFlight] = {};
   VkFence inFlight_[kFramesInFlight] = {};
+  // True when the slot's fence belongs to a submitted frame. A slot that was acquired but failed
+  // before vkQueueSubmit has a reset, unsignaled fence; waiting on it would hang.
+  bool slotSubmitted_[kFramesInFlight] = {};
   uint32_t frameIndex_ = 0;
   uint64_t presentCount_ = 0;
   uint64_t presentWaitUs_ = 0;
@@ -177,32 +189,36 @@ class VkRenderer : public FramePresenter {
   int srOutputWidth_ = 0;
   int srOutputHeight_ = 0;
   bool srFailed_ = false;
+  // Whether the last submitted frame actually ran the upscale (the input was smaller than the
+  // output and the backend was built). `superResolutionActive()` reports this, not just the object.
+  bool srActiveFrame_ = false;
   XegSpatialUpscale srUpscale_;
-  VkImage srImage_ = VK_NULL_HANDLE;
-  VkDeviceMemory srImageMemory_ = VK_NULL_HANDLE;
-  VkImageView srImageView_ = VK_NULL_HANDLE;
+  VkImage srImage_[kFramesInFlight] = {};
+  VkDeviceMemory srImageMemory_[kFramesInFlight] = {};
+  VkImageView srImageView_[kFramesInFlight] = {};
   int srImageWidth_ = 0;
   int srImageHeight_ = 0;
   int srInputWidth_ = 0;
   int srInputHeight_ = 0;
-  // The image view SR samples (RDP's desktop image, or the Moonlight video input image). FSR bakes
-  // it into its EASU descriptor, so it is remembered to detect a change.
-  VkImageView srInputView_ = VK_NULL_HANDLE;
+  // The image views SR samples: one per presenter frame slot (RDP uses the same desktop view for
+  // both; Moonlight has a picture per slot). FSR bakes them into its EASU descriptors, so they are
+  // remembered to detect a change.
+  VkImageView srInputView_[kFramesInFlight] = {};
 
   VkRenderPass fsrRenderPass_ = VK_NULL_HANDLE;
   VkSampler fsrSampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout fsrSetLayout_ = VK_NULL_HANDLE;
   VkPipelineLayout fsrPipelineLayout_ = VK_NULL_HANDLE;
   VkDescriptorPool fsrPool_ = VK_NULL_HANDLE;
-  VkDescriptorSet fsrEasuSet_ = VK_NULL_HANDLE;
-  VkDescriptorSet fsrRcasSet_ = VK_NULL_HANDLE;
+  VkDescriptorSet fsrEasuSet_[kFramesInFlight] = {};
+  VkDescriptorSet fsrRcasSet_[kFramesInFlight] = {};
   VkPipeline fsrEasuPipeline_ = VK_NULL_HANDLE;
   VkPipeline fsrRcasPipeline_ = VK_NULL_HANDLE;
-  VkImage fsrEasuImage_ = VK_NULL_HANDLE;
-  VkDeviceMemory fsrEasuImageMemory_ = VK_NULL_HANDLE;
-  VkImageView fsrEasuImageView_ = VK_NULL_HANDLE;
-  VkFramebuffer fsrEasuFramebuffer_ = VK_NULL_HANDLE;
-  VkFramebuffer fsrRcasFramebuffer_ = VK_NULL_HANDLE;
+  VkImage fsrEasuImage_[kFramesInFlight] = {};
+  VkDeviceMemory fsrEasuImageMemory_[kFramesInFlight] = {};
+  VkImageView fsrEasuImageView_[kFramesInFlight] = {};
+  VkFramebuffer fsrEasuFramebuffer_[kFramesInFlight] = {};
+  VkFramebuffer fsrRcasFramebuffer_[kFramesInFlight] = {};
   static constexpr size_t kFsrParamsBytes = 16 * sizeof(float);
   VkBuffer fsrEasuParams_ = VK_NULL_HANDLE;
   VkDeviceMemory fsrEasuParamsMemory_ = VK_NULL_HANDLE;
