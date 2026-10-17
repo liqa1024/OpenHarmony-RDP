@@ -13,8 +13,32 @@
       "value": "#1B1B1D"
     },
     {
+      "name": "surface_bg",
+      "value": "#E62C2C2E"
+    },
+    {
+      "name": "control_bg",
+      "value": "#E63A3A3E"
+    },
+    {
+      "name": "control_accent",
+      "value": "#82B0FF"
+    },
+    {
+      "name": "control_accent_hover",
+      "value": "#B8D1FF"
+    },
+    {
+      "name": "control_accent_press",
+      "value": "#D6E6FF"
+    },
+    {
+      "name": "control_danger",
+      "value": "#FF8A73"
+    },
+    {
       "name": "divider",
-      "value": "#2C2C2E"
+      "value": "#3E3E42"
     },
     {
       "name": "text_primary",
@@ -71,10 +95,6 @@
     {
       "name": "wake",
       "value": "#2FA05C"
-    },
-    {
-      "name": "hover_bg",
-      "value": "#2E2E32"
     },
     {
       "name": "star_on",

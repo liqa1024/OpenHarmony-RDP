@@ -1,11 +1,7 @@
-import { FrostedModifier, FrostedSurface } from '../services/SystemMaterial';
-
 @Component
-export struct FrostedCard {
+export struct ContentCard {
   @Prop pad: number = 24;
   @BuilderParam content: () => void;
-  private cardFrost: AttributeModifier<ColumnAttribute> =
-    new FrostedModifier<ColumnAttribute>(FrostedSurface.CARD);
 
   build() {
     Column() {
@@ -15,8 +11,8 @@ export struct FrostedCard {
     .constraintSize({ maxWidth: 720 })
     .padding(this.pad)
     .borderRadius(20)
-    .alignItems(HorizontalAlign.Start)
+    .backgroundColor($r('app.color.surface_bg'))
     .shadow({ radius: 24, color: '#14000000', offsetX: 0, offsetY: 8 })
-    .attributeModifier(this.cardFrost)
+    .alignItems(HorizontalAlign.Start)
   }
 }

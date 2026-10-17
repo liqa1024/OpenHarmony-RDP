@@ -28,7 +28,7 @@ import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../uti
 import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
-import { FrostedCard } from '../components/FrostedCard';
+import { ContentCard } from '../components/ContentCard';
 import { PageBackground } from '../components/PageBackground';
 import { ProtocolTabs, TAB_COMMON } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
@@ -1243,7 +1243,7 @@ struct SettingsPage {
 
       Scroll() {
         Column() {
-          FrostedCard({ pad: 24 }) {
+          ContentCard({ pad: 24 }) {
             if (this.protocol === PROTOCOL_RDP) {
             Text('显示')
               .fontSize(13)

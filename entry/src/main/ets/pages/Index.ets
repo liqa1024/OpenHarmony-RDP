@@ -13,11 +13,11 @@ import { MoonlightAppsParams } from './MoonlightAppsPage';
 import { ConnectionState, SessionManager, SessionStateListener } from '../services/SessionManager';
 import { BackgroundImage } from '../services/BackgroundImage';
 import { SettingsStore } from '../services/SettingsStore';
-import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial }
-  from '../services/SystemMaterial';
 import { WakeOnLan, WakeReachability, WakeSendResult } from '../services/WakeOnLan';
 import { ConnectionRow } from '../components/ConnectionRow';
+import { ControlDisc } from '../components/ControlDisc';
 import { FabButton } from '../components/FabButton';
+import { TextAction } from '../components/TextAction';
 import { PageBackground } from '../components/PageBackground';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
 import { promptWolHelp } from '../utils/WolHelpPrompt';
@@ -44,16 +44,8 @@ struct Index {
   @State menuConnectionId: string = '';
   @State menuSeq: number = 0;
   private armedMenuId: string = '';
-  @State settingsHovered: boolean = false;
-  @State settingsPressed: boolean = false;
   @State developerMode: boolean = false;
   @State backgroundUri: string = '';
-  private headerFrost: AttributeModifier<RowAttribute> =
-    new FrostedModifier<RowAttribute>(FrostedSurface.CARD);
-
-  // Older systems simply ignore the material in the tips options.
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
 
   private sessionListener: SessionStateListener = (connectionId: string,
     state: ConnectionState, message: string, origin: ConnectOrigin): void => {
@@ -531,58 +523,29 @@ struct Index {
         Blank()
 
         if (this.developerMode) {
-          Text('回放测试')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-            .borderRadius(9)
-            .backgroundColor($r('app.color.hover_bg'))
-            .margin({ right: 8 })
-            .onClick(() => {
+          TextAction({
+            label: '回放测试',
+            muted: true,
+            onTap: () => {
               this.getUIContext().getRouter().pushUrl({ url: 'pages/GfxReplayPage' });
-            })
+            }
+          })
+            .margin({ right: 8 })
         }
 
-        Stack() {
-          Row()
-            .width(44)
-            .height(44)
-            .borderRadius(22)
-            .backgroundColor($r('app.color.hover_bg'))
-            .opacity(this.settingsHovered ? 1.0 : 0.0)
-            .animation({ duration: 150, curve: Curve.FastOutSlowIn })
-
-          Image($r('app.media.ic_settings'))
-            .width(24)
-            .height(24)
-            .draggable(false)
-            .opacity(this.settingsPressed ? 0.55 : 1.0)
-            .scale({
-              x: this.settingsPressed ? 0.84 : 1.0,
-              y: this.settingsPressed ? 0.84 : 1.0
-            })
-            .animation({ duration: 150, curve: Curve.FastOutSlowIn })
-        }
-        .width(44)
-        .height(44)
-        .onHover((isHover: boolean) => {
-          this.settingsHovered = isHover;
-        })
-        .onMouse((event: MouseEvent) => {
-          if (event.action === MouseAction.Press) {
-            this.settingsPressed = true;
-          } else if (event.action === MouseAction.Release) {
-            this.settingsPressed = false;
+        ControlDisc({
+          icon: $r('app.media.ic_settings'),
+          diameter: 44,
+          glyph: 24,
+          tip: '设置',
+          onTap: () => {
+            this.openSettings();
           }
-        })
-        .bindTips('设置', this.tipsOptions)
-        .onClick(() => {
-          this.openSettings();
         })
       }
       .width('100%')
       .padding({ left: 24, right: 24, top: 20, bottom: 16 })
-      .attributeModifier(this.headerFrost)
+      .backgroundColor($r('app.color.surface_bg'))
 
       Divider().color($r('app.color.divider'))
 

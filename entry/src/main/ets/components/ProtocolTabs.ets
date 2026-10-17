@@ -27,7 +27,7 @@ export struct ProtocolTabs {
         .fontSize(14)
         .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
         .fontColor(this.protocol === protocol
-          ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
+          ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
       Divider()
         .strokeWidth(2)
         .width(36)

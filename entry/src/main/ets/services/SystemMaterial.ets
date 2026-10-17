@@ -4,11 +4,11 @@ import { uiMaterial } from '@kit.ArkUI';
 const IMMERSIVE_MATERIAL_MIN_API: number = 26;
 
 // Content surfaces never take a system material: the platform only renders one
-// in popups and in a Navigation title bar / bottom TabBar. Their glass is the
-// component frosted style, fixed here instead of being derived at runtime.
+// in popups and in a Navigation title bar / bottom TabBar. Frosting is reserved
+// for small controls and the floating session bar; large content surfaces stay
+// plain transparent so a wallpaper reads through them.
 export enum FrostedSurface {
   FLOATING,
-  LIST_ROW,
   CARD,
   CONTROL
 }
@@ -65,11 +65,9 @@ export class SystemMaterial {
   }
 }
 
-// The main connection list's horizontal rows carry an internal top light so the
-// frosted fill reads as a volume instead of a flat tint. Other content surfaces
-// stay flat: their volume comes from the component shadow, and a light layer on
-// every card only adds noise across the settings / app pages. The floating session
-// bar also stays flat (it already sits on an unknown remote image).
+// `CARD` is the session status panel only: it sits on a dark scrim over the remote
+// picture and needs a surface of its own for contrast. Wallpaper pages keep their
+// large surfaces transparent and frost only the small controls (`CONTROL`).
 export class FrostedModifier<T extends CommonMethod<T>> implements AttributeModifier<T> {
   private readonly surface: FrostedSurface;
 
@@ -84,11 +82,5 @@ export class FrostedModifier<T extends CommonMethod<T>> implements AttributeModi
     }
     instance.backgroundBlurStyle(this.surface === FrostedSurface.CONTROL
       ? BlurStyle.COMPONENT_THIN : BlurStyle.COMPONENT_REGULAR);
-    if (this.surface === FrostedSurface.LIST_ROW) {
-      instance.linearGradient({
-        angle: 180,
-        colors: [['#26FFFFFF', 0], ['#00FFFFFF', 0.5], ['#0D000000', 1]]
-      });
-    }
   }
 }

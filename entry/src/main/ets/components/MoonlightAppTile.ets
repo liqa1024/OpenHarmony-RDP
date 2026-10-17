@@ -145,7 +145,7 @@ export struct MoonlightAppTile {
 
               ControlDisc({
                 icon: $r('app.media.ic_stop'),
-                iconColor: $r('app.color.danger'),
+                iconColor: $r('app.color.control_danger'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 tip: '关闭应用并断开',
@@ -157,7 +157,7 @@ export struct MoonlightAppTile {
             } else {
               ControlDisc({
                 icon: $r('app.media.ic_play'),
-                iconColor: $r('app.color.accent'),
+                iconColor: $r('app.color.control_accent'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 gap: 8,
@@ -171,7 +171,7 @@ export struct MoonlightAppTile {
 
               ControlDisc({
                 icon: $r('app.media.ic_stop'),
-                iconColor: $r('app.color.danger'),
+                iconColor: $r('app.color.control_danger'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 tip: '关闭应用',

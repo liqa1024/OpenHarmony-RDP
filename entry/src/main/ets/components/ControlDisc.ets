@@ -37,6 +37,7 @@ export struct ControlDisc {
     .width(this.diameter)
     .height(this.diameter)
     .borderRadius(this.diameter / 2)
+    .backgroundColor($r('app.color.control_bg'))
     .attributeModifier(this.controlFrost)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
