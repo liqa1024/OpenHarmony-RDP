@@ -27,7 +27,7 @@ import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
 import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, PINCH_MODE_ZOOM,
   SettingsStore } from '../services/SettingsStore';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { showConfirm, showToast } from '../utils/UiUtil';
@@ -39,8 +39,8 @@ import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCod
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
-  TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
-  TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
+  TOOLBAR_BG, TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
+  TOOLBAR_PROGRESS, TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
   ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow, formatLatency, metricColor,
   ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
@@ -95,8 +95,8 @@ struct SessionPage {
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
-  private toolbarMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING, TOOLBAR_BG);
+  private toolbarFrost: AttributeModifier<ColumnAttribute> =
+    new FrostedModifier<ColumnAttribute>(FrostedSurface.FLOATING);
   // A system without the material capability ignores this field and keeps the default tooltip.
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
@@ -969,7 +969,7 @@ struct SessionPage {
         .margin({ right: 8 })
       ToolbarChip({
         label: '断开',
-        chipBg: $r('app.color.danger'),
+        chipBg: TOOLBAR_DANGER_CHIP_BG,
         onTap: () => {
           this.shell?.disconnect();
         }
@@ -989,7 +989,9 @@ struct SessionPage {
       }
     }
     .width('100%')
-    .attributeModifier(this.toolbarMaterial)
+    .backgroundColor(TOOLBAR_BG)
+    .attributeModifier(this.toolbarFrost)
+    .shadow(TOOLBAR_SHADOW)
     // In fullscreen the strip covers the surface, so only its own hover reports the pointer.
     .onHover((isHover: boolean) => {
       this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);

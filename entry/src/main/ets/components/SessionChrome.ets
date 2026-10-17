@@ -2,13 +2,20 @@ import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 // Fixed dark palette on purpose: the bar floats over the remote desktop image
 // of unknown colours, so it never follows the app theme ($r('app.color.*')).
-export const TOOLBAR_BG: string = '#CC1A1A1A';
+export const TOOLBAR_BG: string = '#B31B1B1D';
 export const TOOLBAR_FG: string = '#FFFFFF';
 export const TOOLBAR_FG_SECONDARY: string = '#B8BCC4';
 export const TOOLBAR_CHIP_BG: string = '#33FFFFFF';
 export const TOOLBAR_ACCENT_CHIP_BG: string = '#4D3B82F6';
-export const TOOLBAR_NEUTRAL_CHIP_BG: string = '#6E737B';
+export const TOOLBAR_NEUTRAL_CHIP_BG: string = '#806E737B';
+export const TOOLBAR_DANGER_CHIP_BG: string = '#66F05A40';
 export const TOOLBAR_CHIP_BORDER: string = '#59FFFFFF';
+export const TOOLBAR_SHADOW: ShadowOptions = {
+  radius: 18,
+  color: '#4D000000',
+  offsetX: 0,
+  offsetY: 6
+};
 export const TOOLBAR_PROGRESS: string = '#5B9CF8';
 export const TOOLBAR_ROW_HEIGHT: number = 48;
 export const TOOLBAR_TELEMETRY_HEIGHT: number = 24;

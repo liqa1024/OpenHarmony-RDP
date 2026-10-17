@@ -1,4 +1,4 @@
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition } from '../utils/UiMotion';
 
 @Component
@@ -16,8 +16,8 @@ export struct ControlDisc {
   @State pressed: boolean = false;
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private controlMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(MaterialSurface.CONTROL);
+  private controlFrost: AttributeModifier<RowAttribute> =
+    new FrostedModifier<RowAttribute>(FrostedSurface.CONTROL);
 
   build() {
     Row() {
@@ -37,7 +37,7 @@ export struct ControlDisc {
     .width(this.diameter)
     .height(this.diameter)
     .borderRadius(this.diameter / 2)
-    .attributeModifier(this.controlMaterial)
+    .attributeModifier(this.controlFrost)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .margin({ right: this.gap })

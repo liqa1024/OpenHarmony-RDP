@@ -1,6 +1,7 @@
-import { ComponentContent, UIContext } from '@kit.ArkUI';
+import { ComponentContent, UIContext, uiMaterial } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { PairResult } from '../moonlight/MoonlightModels';
 
 const DOMAIN: number = 0xD001;
@@ -8,6 +9,7 @@ const TAG: string = 'HmRdpPairing';
 
 class PairingDialogParams {
   digits: string[] = [];
+  materialBacked: boolean = false;
   onCancel: () => void = (): void => {};
 }
 
@@ -62,7 +64,7 @@ function pairingDialogContent(params: PairingDialogParams) {
   .width(300)
   .padding(24)
   .alignItems(HorizontalAlign.Center)
-  .backgroundColor($r('app.color.card_bg'))
+  .backgroundColor(params.materialBacked ? Color.Transparent : $r('app.color.card_bg'))
   .borderRadius(20)
 }
 
@@ -102,7 +104,10 @@ export async function promptPairingPin(ui: UIContext, pin: string,
       finish(false);
     };
 
-    ui.getPromptAction().openCustomDialog(contentNode, { isModal: true, autoCancel: false })
+    const material: uiMaterial.Material | undefined = SystemMaterial.of(MaterialSurface.DIALOG);
+    params.materialBacked = material !== undefined;
+    ui.getPromptAction().openCustomDialog(contentNode,
+      { isModal: true, autoCancel: false, systemMaterial: material })
       .then(() => {
         if (settled) {
           dismiss();

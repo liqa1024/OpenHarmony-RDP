@@ -1,4 +1,4 @@
-import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
+import { FrostedModifier, FrostedSurface } from '../services/SystemMaterial';
 
 @Component
 export struct StatusCard {
@@ -10,8 +10,8 @@ export struct StatusCard {
   @Prop icon: Resource | undefined = undefined;
   onPrimary: () => void = () => {};
   onSecondary: () => void = () => {};
-  private cardMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.CARD);
+  private cardFrost: AttributeModifier<ColumnAttribute> =
+    new FrostedModifier<ColumnAttribute>(FrostedSurface.CARD);
 
   build() {
     Column() {
@@ -65,7 +65,7 @@ export struct StatusCard {
     .padding({ top: 32, bottom: 28, left: 28, right: 28 })
     .borderRadius(20)
     .shadow({ radius: 30, color: '#33000000', offsetX: 0, offsetY: 10 })
-    .attributeModifier(this.cardMaterial)
+    .attributeModifier(this.cardFrost)
     .alignItems(HorizontalAlign.Center)
   }
 }

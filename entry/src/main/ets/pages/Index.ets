@@ -573,6 +573,7 @@ struct Index {
       }
       .width('100%')
       .padding({ left: 24, right: 24, top: 20, bottom: 16 })
+      .backgroundColor($r('app.color.card_bg'))
 
       Divider().color($r('app.color.divider'))
 

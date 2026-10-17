@@ -22,7 +22,8 @@
 4. **协议差异不复制界面**：优先"同一组件 + 协议参数"，其次才是协议各自的分支 builder；差异只体现在参数取值与图标资源上。
 5. **颜色只走 token**（会话工具栏的固定深色除外，见 §1.2）；不以硬编码 hex 表达主题语义。
 6. **尺寸 / 圆角 / 字号 / 阴影 / 动画收敛到常量或组件默认值**，不在页面里各写一份。
-7. **材质挂载遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：持续变化的内容不挂材质，无材质能力时外观不依赖材质。
+7. **材质挂载遵守表面清单与摆放约束**（§2 + [`arkts-conventions.md`](arkts-conventions.md) §6）：内容表面一律同档磨砂，
+   持续变化的内容不挂磨砂，外观不依赖系统材质。
 8. **依赖后端动词的动作按后端契约划分**：要调用会话后端独有动词的（文件传输 / 剪贴板 / 遥测），归属由后端契约决定，动词就绪后再进共享单元。
 9. **页面骨架统一**：页面按「页头 + 卡片」骨架组织，不另起一套页头 / 错误态 / 空态。
 10. **交互按桌面光标（2in1/PC）适配，而非触屏**：目标设备以光标操作为主。触屏上"多点一下"无所谓，但光标下
@@ -40,7 +41,7 @@
 | token | 浅色 | 深色 | 用途 |
 |---|---|---|---|
 | `page_bg` | `#F2F3F5` | `#000000` | 页面底色 |
-| `card_bg` | `#FFFFFF` | `#1B1B1D` | 自定义弹窗底（引导 / 选择器）；材质卡片不用它（材质与同档磨砂自带上色） |
+| `card_bg` | `#FFFFFF` | `#1B1B1D` | 主题表面底（页头 / 自定义弹窗内容的兜底；有材质时由弹窗背板出玻璃） |
 | `input_bg` | `#F5F6F8` | `#26262A` | 输入框、次级按钮底、未选中 chip 底 |
 | `divider` | `#ECECEC` | `#2C2C2E` | 分隔线 |
 | `text_primary` | `#182431` | `#E8EAED` | 主文字、标题 |
@@ -67,14 +68,16 @@
 
 浮动在远端桌面画面上，背后颜色不可知，浅色 chrome 会随内容变得不可读，故整条工具栏固定深色。
 常量定义在 `components/SessionChrome.ets`，**不要改成 `$r('app.color.*')`**。
+按钮用**半透明填充**分层（白 / 中性 / 强调 / 危险），靠填充与 hover / press 提亮区分。
 
 | 常量 | 值 | 用途 |
 |---|---|---|
-| `TOOLBAR_BG` | `#CC1A1A1A` | 工具栏的兜底底色（**无材质时**才出现，其上再叠深色档磨砂；有材质时由材质自着深色） |
+| `TOOLBAR_BG` | `#B31B1B1D` | 工具栏半透明深色底（在磨砂之下，保证白字在未知画面上的对比度） |
 | `TOOLBAR_FG` / `TOOLBAR_FG_SECONDARY` | `#FFFFFF` / `#B8BCC4` | 主 / 次文字与图标 |
-| `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底 |
-| `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底 |
-| `TOOLBAR_NEUTRAL_CHIP_BG` | `#6E737B` | 非破坏性的会话退出 chip（Moonlight「断开」）：实心中性灰（同 `neutral`），与半透明白的普通 chip、`danger` 红都能分开 |
+| `TOOLBAR_CHIP_BG` | `#33FFFFFF` | 普通 chip 底（半透明白） |
+| `TOOLBAR_ACCENT_CHIP_BG` | `#4D3B82F6` | 剪贴板等强调 chip 底（半透明强调色） |
+| `TOOLBAR_NEUTRAL_CHIP_BG` | `#806E737B` | 非破坏性的会话退出 chip（Moonlight「断开」）：半透明中性灰 |
+| `TOOLBAR_DANGER_CHIP_BG` | `#66F05A40` | 破坏性 chip（断开 / 关闭应用）：半透明危险红 |
 | `TOOLBAR_CHIP_BORDER` | `#59FFFFFF` | 描边（次级）chip 边框 |
 | `TOOLBAR_PROGRESS` | `#5B9CF8` | 传输进度条 |
 | `METRIC_GOOD` / `METRIC_WARN` / `METRIC_BAD` | `#4ADE80` / `#FBBF24` / `#F87171` | 遥测阈值着色 |
@@ -89,7 +92,7 @@
 | 行高 | 带副标题的设置行 `58`；纯开关行 `48`；会话工具栏主行 `48`、遥测行 `24` |
 | 按钮 | 编辑页高 `48` / 字号 `16`；设置页高 `44` / 字号 `15`；均 `radius 12` |
 | chip | `padding { left:14, right:14, top:6, bottom:6 }`、`margin { right:8, bottom:8 }` |
-| 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6` |
+| 阴影 | 卡片 `radius 24 / #14000000 / offsetY 8`；状态卡 `radius 30 / #33000000 / offsetY 10`；列表行 `radius 8 / #10000000 / offsetY 2`；FAB `radius 18 / #33000000 / offsetY 6`；工具栏 `radius 18 / #4D000000 / offsetY 6`（`TOOLBAR_SHADOW`） |
 | 动画 | hover / press `120–150ms` `Curve.FastOutSlowIn`；控件出现 / 消失 `300 / 240ms`；工具栏滑入 `180ms` `Curve.EaseOut`；顶边提示线填充 `Curve.Linear`、淡出 `140ms` `Curve.FastOutSlowIn` |
 
 约束：尺寸与字号**不在多个页面里各写一份**，收敛到常量或组件默认值（见「设计原则」与 §4）。
@@ -99,26 +102,36 @@
 但缩放目标、时长 / 曲线与出现 / 消失转场都从那里取（`hoverPressScale` / `popTransition` / `fadeTransition`），
 避免同一控件在不同页面里手感不一致。出现 / 消失是**组件转场**（`if` 增删子树触发），转场自带动画参数，无需 `animateTo`。
 
-## 2. 沉浸材质（系统材质）
+## 2. 内容表面与弹窗材质
 
-材质表面与配色方向（挂载机制、**档位与判据**、版本门槛、`ImmersiveModifier` 写法见 [`arkts-conventions.md`](arkts-conventions.md) §6）：
+表面清单与形态（生效范围、档位、版本门槛、`FrostedModifier` / `SystemMaterial` 写法见
+[`arkts-conventions.md`](arkts-conventions.md) §6）：
 
-| 表面 | 挂载点 | 配色方向 | 无材质时的兜底 |
-|---|---|---|---|
-| `CARD` | 列表 / 编辑 / 设置卡片、连接状态卡 | 跟随系统深浅色；前景走 `$r()` | 同档组件磨砂（`COMPONENT_REGULAR`），跟随系统 |
-| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 跟随系统；不加赋色 | 同档组件磨砂（`COMPONENT_THIN`），跟随系统 |
-| `FLOATING` | 会话工具栏 | **固定深色，不跟随系统** | 半透明深色底（`TOOLBAR_BG`）+ 深色档组件磨砂 |
-| `OVERLAY` | Toast、Tips、右键菜单 | 跟随系统（系统自带前景色） | 交给系统默认背景，不再自己设模糊 |
-| `DIALOG` | 弹窗（`AlertDialog`、`showConfirm` / `showNotice`） | 同上 | 同上 |
+| 表面 | 挂载点 | 形态 |
+|---|---|---|
+| `CARD` | 列表 / 编辑 / 设置卡片、连接状态卡 | 组件磨砂 `COMPONENT_REGULAR`，跟随系统深浅色 |
+| `CONTROL` | 图片上的小控件（应用 poster 的星标 / 动作钮） | 组件磨砂 `COMPONENT_THIN`，跟随系统 |
+| `FLOATING` | 会话工具栏 | 半透明深色底（`TOOLBAR_BG`）+ 组件磨砂 `COMPONENT_THIN` + 深色档（**固定深色，不跟随系统**） |
+| `OVERLAY` | Toast、Tips、右键菜单 | 系统材质 `THICK`（options 路径） |
+| `DIALOG` | 弹窗（`AlertDialog`、`showConfirm` / `showNotice`、`openCustomDialog`） | 系统材质 `ULTRA_THICK`（options 路径） |
 
 约束：
 
-- 材质对象**建一次复用**（改参数触发系统重算材质，每帧新建会持续重绘）。
-- **无材质时必须仍是"玻璃"，不能退回平色**：兜底一律是**同档组件磨砂**（`backgroundBlurStyle`），
-  与材质互斥地挂在 `ImmersiveModifier` 的同一个分支里；**底色由该分支决定**（有材质恒为 `Color.Transparent`，
-  无材质才用表面自己的兜底色——只有固定深色的 `FLOATING` 有，即半透明深色底），**调用点不写底色**。
-- 材质**绝不挂在持续变化的内容**（远端画面）上；避免大面积、与 `backgroundBlurStyle` 叠加。
-- 无材质能力时外观退化为"同档磨砂玻璃"，**不得依赖材质存在**（也不得因此丢掉玻璃质感变成平色）。
+- **内容表面不挂系统材质**：26.0.0 目标起，卡片 / 工具栏 / 小控件不在系统材质的生效范围内
+  （只在 `Navigation` 标题栏或底部 TabBar 内生效）。它们的样式是**确定的**：只用组件磨砂，
+  不探测能力、不留材质/兜底分支、不加描边；底色可选（磨砂自带上色，需要固定色调时直接铺，
+  `FLOATING` 见下），磨砂叠在底色之上。
+- 前景色：`CARD` / `CONTROL` 跟随系统走 `$r()` 主题色；`FLOATING` 用 `SessionChrome` 的
+  `TOOLBAR_*` / `METRIC_*` 固定深色常量，**不要**改成 `$r('app.color.*')`。
+- `FLOATING`：调用点铺 `TOOLBAR_BG` 半透明深色底，再叠磨砂与 `TOOLBAR_SHADOW`；
+  它压在未知的远端画面上，白字需要这层底保证对比度。
+- 弹窗只用 options 材质；内容根节点不铺不透明底（旧系统无材质时才铺 `card_bg` 兜底）。
+- 磨砂不铺在整块持续变化的内容上；`FLOATING` 是压在远端画面上的小面积 chrome，属有意的成本取舍。
+- **体积感来自光，不来自描边**：`CARD` / `CONTROL` 由 `FrostedModifier` 叠一层顶光渐变
+  （角度 180；顶部白 15% → 中段透明 → 底部黑 5%），模拟光源从上方落在玻璃内部；
+  `FLOATING` 不加内部光，由调用点加 `TOOLBAR_SHADOW` 向下投影，与远端画面分层。
+- 卡片沿用自己的 `shadow` 通用属性；不要再叠材质阴影。
+- 工具栏里的按钮不属于表面清单：它们用半透明填充（`TOOLBAR_*_CHIP_BG`），靠填充与状态反馈分层。
 
 ## 3. 布局模式
 
@@ -128,13 +141,15 @@
 
 ```
 Column(page_bg, 100%×100%)
-├─ 页头 HeaderBar（§3.2） + Divider
+├─ 页头 HeaderBar（card_bg，§3.2） + Divider
 └─ 内容区（Scroll → 宽 720 居中卡片，§3.3；列表页为 List）
 ```
 
 ### 3.2 页头 HeaderBar
 
 「左动作 + 中标题 + `Blank()` + 右侧 slot」，`.padding({ left:24, right:24, top:10, bottom:8 })`，下面一条 `Divider`。
+整条页头铺 `card_bg`（跟随深浅色）：浅色 `#FFFFFF`、深色 `#1B1B1D`，文字用 `text_primary` / `text_secondary`，
+与底色的对比分别约 15:1 / 13:1；底部 `Divider` 保留，用来和 `page_bg` 的内容区分开。
 
 - 左动作：`TextAction`（hover / press 有强调色反馈，`components/TextAction.ets`）。
 - 标题：`17` Medium `text_primary`，`margin left 16`。
@@ -143,7 +158,7 @@ Column(page_bg, 100%×100%)
 
 ### 3.3 卡片与表单分节
 
-- 卡片：`width 100%`、`constraintSize({ maxWidth:720 })`、圆角 20、**不写底色**（`CARD` 材质 / 同档磨砂自带上色，见 §2）、阴影、`padding`（编辑 28 / 设置 24）。
+- 卡片：`width 100%`、`constraintSize({ maxWidth:720 })`、圆角 20、**底色可选**（默认用 `CARD` 磨砂自带上色；需要固定色调时直接铺，见 §2）、阴影、`padding`（编辑 28 / 设置 24）。
 - 分节小标题：`13` `text_secondary`，`margin bottom 4`。
 - 行：左列 `layoutWeight(1)`（标题 `14` `text_primary` + 副标题 `11` `text_tertiary`，`margin top 2`）+ 右侧控件；行间 `Divider`。
 - 控件列（§4）右对齐；带副标题行高 `58`，纯开关行 `48`。
@@ -158,7 +173,7 @@ Column(page_bg, 100%×100%)
 
 ### 3.5 列表行
 
-由 `ConnectionRow` 组件实现（§4.1）。`Row`（圆角 14、`CARD` 材质（无材质时同档磨砂）、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
+由 `ConnectionRow` 组件实现（§4.1）。`Row`（圆角 14、`CARD` 同档磨砂、阴影、`padding { left:12, right:12, top:10, bottom:10 }`）：
 
 - 引导 tile：协议图标 `40`、圆角 `10`；主标题 `15` + 状态徽标（`10`，「已连接」用 `success` / `success_bg`，「运行中」用 `accent` / `accent_bg`）、副标题 `12` `text_tertiary`。
 - 右侧圆形动作钮：直径 `44`、圆角 `22`、`HoverEffect.Scale` + `bindTips`。连接钮随状态换图标 / 底色（`accent` ↔ `danger`，连接中显示 `LoadingProgress`）；Moonlight 行在连接钮**左侧**多一个应用钮。
@@ -212,15 +227,15 @@ Column(page_bg, 100%×100%)
 | 组件 | 文件 | 参数（要点） | 用途 |
 |---|---|---|---|
 | `TextAction` | `TextAction.ets` | `label, muted?, onTap` | 悬停 / 按下变色的纯文本动作 |
-| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, hostTargetId, targetId, menuRequest, onEdit / onToggleConnection / onOpenApps / onTerminate / onRefresh / onDelete / onRequestMenu / onPressRelease` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 材质） |
+| `ConnectionRow` | `ConnectionRow.ets` | `conn, state, hostTargetId, targetId, menuRequest, onEdit / onToggleConnection / onOpenApps / onTerminate / onRefresh / onDelete / onRequestMenu / onPressRelease` | 连接列表行（引导 tile + 名称/徽标 + 副标题 + 圆钮 + 右键菜单 + CARD 同档磨砂） |
 | `SessionPicture` | `SessionPicture.ets` | `xComponentId, pictureController, contentWidth, contentHeight, revealBand, revealBandWidth, engineScroll, onPointerMouse/Touch/Hover/Axis, onSurfaceKey/Blur, onPictureArea, onRevealZone, onEngineScroll` | 会话画面（RDP / Moonlight 共用）：SURFACE 组件按内容比例居中留边，输入 / 焦点留在 XComponent 上（`engineScroll` 打开时挂 `Scroll2D`，它叠两个透明单轴 `Scroll`，只吃触控板与滚轮的两个轴向，触屏由策略层挡在外面，见 [`session-layer.md`](session-layer.md) §8）；全屏时另给顶部居中的 reveal 窄条（`revealBandWidth` = 占画面宽百分比，两端留空，透明命中） |
 | `Scroll2D` | `Scroll2D.ets` | `viewWidth, viewHeight, onScroll(dx, dy)` | 会话滚动的 2D 引擎（RDP / Moonlight 共用）：两个透明单轴原生 `Scroll`（一竖一横）并行桥接、偏移钉住，逐帧交出 vp 增量；单轴件是拿到触控板惯性 / 打断所必需，见 [`session-layer.md`](session-layer.md) §8 |
 | `StatusCard` | `StatusCard.ets` | `title, subtitle, primary?, secondary?, loading?, icon?, onPrimary, onSecondary` | 会话连接状态卡（RDP / Moonlight 共用） |
 | `HeaderBar` | `HeaderBar.ets` | `title, leftLabel, onLeft, trailing`（`@BuilderParam`） | 页头（编辑 / 设置共用） |
 | `ProtocolTabs` | `ProtocolTabs.ets` | `protocol, locked?, onChange` | RDP / Moonlight 下划线页签 |
-| `MaterialCard` | `MaterialCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 材质（无材质时同档磨砂）+ 阴影 |
+| `FrostedCard` | `FrostedCard.ets` | `pad?, content`（`@BuilderParam`） | 宽 720 卡片 + `CARD` 同档磨砂 + 阴影 |
 | `FabButton` | `FabButton.ets` | `icon, tip?, onTap` | 右下角悬浮圆形主操作（新建 / 刷新；accent 底 + 阴影 + hover/press 反馈 + `OVERLAY` 提示） |
-| `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, loading?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 材质 + hover/press 缩放，`loading` 时图标换成转圈并置忙，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
+| `ControlDisc` | `ControlDisc.ets` | `icon, iconColor, diameter, glyph, gap?, tip?, loading?, animated?, onTap` | 叠在表面上的圆形图标控件（应用 poster 的星标 / 动作钮）：`CONTROL` 同档磨砂 + hover/press 缩放，`loading` 时图标换成转圈并置忙，`animated` 时另带出现/消失转场（动效走 `utils/UiMotion`） |
 | `ChoiceChip` | `ChoiceChip.ets` | `label, selected, chipEnabled?, onTap` | 选中态 chip（缩放档位 / `srRatio` / `srChoice` / 分辨率模式等共用） |
 | `SettingToggleRow` | `SettingToggleRow.ets` | `title, subtitle?, value, switchEnabled?, disabledReason?, onToggle` | 带开关的设置行 |
 | `SettingSliderRow` | `SettingSliderRow.ets` | `title, subtitle?, value, min, max, step, unit?, precision?, switchEnabled?, disabledReason?, onChange` | 滑块行 |
@@ -234,7 +249,7 @@ Column(page_bg, 100%×100%)
 | （调色板常量） | `SessionChrome.ets` | `TOOLBAR_*` / `METRIC_*` | 固定深色工具栏调色板与几何 |
 
 约束：组件成员名**不得与通用属性同名**（`padding` / `enabled` 等会和 `CustomComponent` 基类冲突），故
-`MaterialCard` 用 `pad`、`ChoiceChip` 用 `chipEnabled`、`SettingToggleRow` / `SettingSliderRow` 用 `switchEnabled`。
+`FrostedCard` 用 `pad`、`ChoiceChip` 用 `chipEnabled`、`SettingToggleRow` / `SettingSliderRow` 用 `switchEnabled`。
 
 ### 4.2 共享工具（`utils/`）
 

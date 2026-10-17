@@ -1,7 +1,7 @@
 import { ConnectAction, connectActionLabel, HostPower, RdpConnection, RowMenuAction, RowMenuEntry,
   SavedConnection } from '../model/Connections';
 import { ConnectionState } from '../services/SessionManager';
-import { ImmersiveModifier, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { WakeReachability } from '../services/WakeOnLan';
 import { connectActionFor } from '../utils/ConnectAction';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition }
@@ -40,8 +40,8 @@ export struct ConnectionRow {
   onPressRelease: () => void = () => {};
   private tipsOptions: TipsOptions =
     { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private cardMaterial: AttributeModifier<RowAttribute> =
-    new ImmersiveModifier<RowAttribute>(MaterialSurface.CARD);
+  private cardFrost: AttributeModifier<RowAttribute> =
+    new FrostedModifier<RowAttribute>(FrostedSurface.CARD);
 
   private action(): ConnectAction {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);
@@ -367,7 +367,7 @@ export struct ConnectionRow {
     .borderRadius(14)
     .shadow({ radius: 8, color: '#10000000', offsetX: 0, offsetY: 2 })
     .clip(false)
-    .attributeModifier(this.cardMaterial)
+    .attributeModifier(this.cardFrost)
     .onMouse((event: MouseEvent) => {
       if (event.button === MouseButton.Right && event.action === MouseAction.Press) {
         this.menuWinX = event.windowX;

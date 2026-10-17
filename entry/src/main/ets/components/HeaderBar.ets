@@ -30,5 +30,6 @@ export struct HeaderBar {
       Divider().color($r('app.color.divider'))
     }
     .width('100%')
+    .backgroundColor($r('app.color.card_bg'))
   }
 }

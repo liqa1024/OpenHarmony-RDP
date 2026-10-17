@@ -1,6 +1,7 @@
-import { ComponentContent, UIContext } from '@kit.ArkUI';
+import { ComponentContent, UIContext, uiMaterial } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { MdnsHost } from '../services/MdnsDiscovery';
 
 const DOMAIN: number = 0xD001;
@@ -11,6 +12,7 @@ class HostPickerParams {
   // Already-saved hosts show greyed and unselectable: one host holds only one pairing.
   addedAddresses: string[] = [];
   title: string = '选择主机';
+  materialBacked: boolean = false;
   onPick: (host: MdnsHost) => void = (): void => {};
   onCancel: () => void = (): void => {};
 }
@@ -105,7 +107,7 @@ struct HostPickerContent {
     .width(320)
     .padding(24)
     .alignItems(HorizontalAlign.Center)
-    .backgroundColor($r('app.color.card_bg'))
+    .backgroundColor(this.params.materialBacked ? Color.Transparent : $r('app.color.card_bg'))
     .borderRadius(20)
   }
 }
@@ -156,7 +158,10 @@ export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: st
         finish(undefined);
       };
 
-      ui.getPromptAction().openCustomDialog(contentNode, { isModal: true, autoCancel: false })
+      const material: uiMaterial.Material | undefined = SystemMaterial.of(MaterialSurface.DIALOG);
+      params.materialBacked = material !== undefined;
+      ui.getPromptAction().openCustomDialog(contentNode,
+        { isModal: true, autoCancel: false, systemMaterial: material })
         .then(() => {
           if (settled) {
             dismiss();

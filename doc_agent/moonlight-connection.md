@@ -216,7 +216,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   圆角也随线宽一起放大（圆角外径约为线宽的 1.5~2 倍），开口端停在圆角切点即可。
 - **连接 / 断开 / 关闭复用同一套填充图标**（连接 `ic_play`、断开与关闭 `ic_stop`）：主窗口的连接钮和
   应用 tile 用同一套——连接钮画在**实心 accent / danger** 上，用 `fillColor('#FFFFFF')`（实心底上的白属
-  允许的例外）；tile 画在材质圆盘上，按状态给 accent / text_primary / danger。**不要为同一语义另画一套
+  允许的例外）；tile 画在磨砂圆盘上，按状态给 accent / text_primary / danger。**不要为同一语义另画一套
   描边图标**；`ic_disconnect` 是纯 `fill` 断链，与上条同一处理。
 - **需要运行时换色的图标用 `fill` 画，不要用 `stroke`**：`Image.fillColor` 只覆盖 SVG 的**填充**，对描边无效。
   故星标 / 连接 / 断开·关闭 / 唤醒 / 应用（`ic_star` / `ic_play` / `ic_stop` / `ic_power` / `ic_apps`）一律纯 `fill`

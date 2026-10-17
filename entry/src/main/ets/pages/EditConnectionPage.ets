@@ -33,7 +33,7 @@ import { showHostPicker } from '../utils/HostSearchPrompt';
 import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { HeaderBar } from '../components/HeaderBar';
-import { MaterialCard } from '../components/MaterialCard';
+import { FrostedCard } from '../components/FrostedCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
 import { SettingToggleRow } from '../components/SettingToggleRow';
@@ -1342,7 +1342,7 @@ struct EditConnectionPage {
 
       Scroll() {
         Column() {
-          MaterialCard({ pad: 28 }) {
+          FrostedCard({ pad: 28 }) {
             if (this.isMoonlight()) {
               this.moonlightForm()
             } else {

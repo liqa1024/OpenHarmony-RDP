@@ -1,13 +1,15 @@
-import { ComponentContent, UIContext } from '@kit.ArkUI';
+import { ComponentContent, UIContext, uiMaterial } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpWolHelp';
 const WOL_HELP_URL: string = 'https://www.msi.cn/support/technical_details/MB_Wake_On_LAN';
 
 class WolHelpParams {
+  materialBacked: boolean = false;
   onOpenLink: () => void = (): void => {};
   onDismiss: () => void = (): void => {};
 }
@@ -55,7 +57,7 @@ function wolHelpContent(params: WolHelpParams) {
   .width(320)
   .padding(24)
   .alignItems(HorizontalAlign.Start)
-  .backgroundColor($r('app.color.card_bg'))
+  .backgroundColor(params.materialBacked ? Color.Transparent : $r('app.color.card_bg'))
   .borderRadius(20)
 }
 
@@ -99,7 +101,10 @@ export function promptWolHelp(ui: UIContext): Promise<void> {
       openHelpLink(ui);
     };
     params.onDismiss = dismiss;
-    ui.getPromptAction().openCustomDialog(contentNode, { isModal: true, autoCancel: false })
+    const material: uiMaterial.Material | undefined = SystemMaterial.of(MaterialSurface.DIALOG);
+    params.materialBacked = material !== undefined;
+    ui.getPromptAction().openCustomDialog(contentNode,
+      { isModal: true, autoCancel: false, systemMaterial: material })
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'WoL help dialog failed: %{public}s', JSON.stringify(error));
         dismiss();

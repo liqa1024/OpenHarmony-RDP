@@ -28,7 +28,7 @@ import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MO
 import { mapPicturePoint } from '../utils/PictureFit';
 import { joinSessionTags, srTag } from '../utils/SessionTags';
 import { gpuFrameLabel, gpuSplitLabel, usToMs } from '../utils/TelemetryFormat';
-import { ImmersiveModifier, MaterialSurface } from '../services/SystemMaterial';
+import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PadProbeOverlay } from '../components/PadProbeOverlay';
@@ -40,7 +40,8 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
 import { showNotice, showToast } from '../utils/UiUtil';
-import { ClipboardButtons, METRIC_BAD, TOOLBAR_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT,
+import { ClipboardButtons, METRIC_BAD, TOOLBAR_BG, TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG_SECONDARY,
+  TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarRevealHint,
   ToolbarTouchBar,
@@ -115,8 +116,10 @@ struct MoonlightSessionPage {
   private probeTimer: number = -1;
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
-  private toolbarMaterial: AttributeModifier<ColumnAttribute> =
-    new ImmersiveModifier<ColumnAttribute>(MaterialSurface.FLOATING, TOOLBAR_BG);
+  private toolbarFrost: AttributeModifier<ColumnAttribute> =
+    new FrostedModifier<ColumnAttribute>(FrostedSurface.FLOATING);
+  private tipsOptions: TipsOptions =
+    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
@@ -931,15 +934,15 @@ struct MoonlightSessionPage {
           }
         })
           .margin({ right: 8 })
-          .bindTips('仅断开与主机的连接，主机上的应用保持运行')
+          .bindTips('仅断开与主机的连接，主机上的应用保持运行', this.tipsOptions)
         ToolbarChip({
           label: '关闭应用',
-          chipBg: $r('app.color.danger'),
+          chipBg: TOOLBAR_DANGER_CHIP_BG,
           onTap: () => {
             this.closeAppAndDisconnect();
           }
         })
-          .bindTips('关闭主机上正在运行的应用，并断开连接')
+          .bindTips('关闭主机上正在运行的应用，并断开连接', this.tipsOptions)
       }
       .width('100%')
       .height(TOOLBAR_ROW_HEIGHT)
@@ -950,7 +953,9 @@ struct MoonlightSessionPage {
       }
     }
     .width('100%')
-    .attributeModifier(this.toolbarMaterial)
+    .backgroundColor(TOOLBAR_BG)
+    .attributeModifier(this.toolbarFrost)
+    .shadow(TOOLBAR_SHADOW)
     // In fullscreen the bar covers the surface, so only its own hover reports it.
     .onHover((isHover: boolean) => {
       this.shell?.setPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
