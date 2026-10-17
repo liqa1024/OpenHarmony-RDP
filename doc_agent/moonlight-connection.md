@@ -6,7 +6,7 @@
 见 [`moonlight-native.md`](moonlight-native.md)、[`moonlight-video.md`](moonlight-video.md)、
 [`moonlight-control.md`](moonlight-control.md)；**主机与应用**（发现 / 运行态 / 唤醒 / 应用管理页）见
 [`moonlight-apps.md`](moonlight-apps.md)；**会话窗口与遥测**见 [`moonlight-session.md`](moonlight-session.md)；
-RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-storage.md)、[`rdp-present.md`](rdp-present.md)。
+RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-storage.md)、[`present.md`](present.md)。
 
 ## 1. 协议建模
 

@@ -1,8 +1,8 @@
-# RDP 原生（FreeRDP 补丁 / 音频 / 能力探测）
+# RDP 原生（FreeRDP 补丁 / 音频 sink 侧）
 
 FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、单一构建入口、依赖布局、补丁系统规则）
 是两协议共享的，见 [`native-build.md`](native-build.md)。本文件只保留 **RDP / FreeRDP 侧**的补丁内容、
-编译选项、音频与能力探测。
+编译选项与音频的 rdpsnd sink 侧；两协议共享的音频播放链路见 [`audio.md`](audio.md)。
 
 ## 1. 产物不入库
 
@@ -35,10 +35,10 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
 **音频后端替换**
 
 - OHOS 的 OpenSL ES 已废弃且开设备不稳定 ⇒ FreeRDP **只解码**，把 16-bit PCM 交给 `libhmrdp` 注册的
-  sink 及其交接环（见 §5）。
+  sink 及其交接环（见 §5、[`audio.md`](audio.md)）。
 - **客户端侧缓冲/丢弃只有交接环一套策略**：`rdpsnd_main.c` 自带的 overrun 守卫（用墙钟反推设备积压，
   阈值 ≈ 1 个包）看不到环的真实深度，只会丢掉环还能播的包 ⇒ 本后端下把它置为"从不判 overrun"（patch step 35）。
-  它不做任何缓冲/节流决策，只解码 + 转发。要动这层先读 §5。
+  它不做任何缓冲/节流决策，只解码 + 转发。要动这层先读 [`audio.md`](audio.md) §3。
 
 **运行时行为钩子**（都用**弱符号**引用，未打补丁的 FreeRDP 上自动降级）
 
@@ -138,7 +138,7 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
   不满足就退回原路径。**生命周期是重点**：`gdi_ResetGraphics` 保留 surface 并 memset 它，而它的
   `DesktopResize` 会换掉 primary ⇒ 必须**换之前**记住谁在共享、**换之后**重新指向或让它自己分配，
   否则是"向已释放内存 memset"；`gdi_DeleteSurface` 不能释放共享缓冲；出现第二个 surface 时先解除共享。
-  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`rdp-present.md`](rdp-present.md) §4。
+  全部落在 `libfreerdp/gdi/gfx.c`，**不动头文件也不动 app**。详见 [`rdp-present.md`](rdp-present.md) §2。
 - **encode-only 的 SIMD 桩不接、也不打警告**：上游 `nsc_neon.c` 的 `nsc_init_neon` 是空实现，只会刷
   `TODO: Implement neon optimized version of this function`；它对应的是 encode 侧（客户端只解码）⇒
   移除该警告（patch step 29）。
@@ -165,101 +165,18 @@ FreeRDP / zlib / OpenSSL 的**源码构建与补丁体系**（产物不入库、
 - FreeRDP 的安装头里 `winpr/build-config.h` 的 `WINPR_INSTALL_*` 保持**中性值**（安装后由 `build-native.ps1`
   同步时自动归一化）——不要把带构建机绝对路径的版本抄进仓库。
 
-## 5. 音频：原生 sink + 交接环 / ArkTS 渲染器
+## 5. RDP 音频：rdpsnd sink 侧
 
-- **强制原生的只有 sink 与交接环**：替换后的 rdpsnd 后端是一个注册进 FreeRDP 的 **C 函数指针**
-  （`HmrdpSetAudioSink`），在 FreeRDP 的 async 播放线程（`rdpsnd->async` 下的 `play_thread`）上被调用，
-  且必须**同步返回**该包的渲染延迟（ms，进 Wave Confirm）——与文件上传 serve 同一类约束
-  （[`architecture.md`](architecture.md) §3.1 判据 2）。sink 适配器与它写入的**有界 PCM 环**
-  （`AudioSink`，`core/hmrdp_audio.*`）因此留在原生；环的水位用**播放时长（ms）**表达，与格式无关。
-- **播放 API 归 ArkTS**：`OH_AudioRenderer`（OHAudio）与 ArkTS `AudioRenderer`（`on('writeData')`）
-  是同一套音频框架的两条入口（同为 PCM S16LE 拉模型），等价。渲染器与它的生命周期放在 ArkTS
-  （`workers/audio.worker.ets` + 门面 `services/AudioPlayer.ets`），跑在**音频独占 worker** 上
-  （[`architecture.md`](architecture.md) §4.4）。
-- **能力探测在 ArkTS**：设备有无音频输出由 `DeviceCapabilities.audio()` 同步查询音频路由
-  （`getDevicesSync(OUTPUT_DEVICES_FLAG)`）判定，设置页据此置灰「音频重定向」；原生只按 ArkTS 传来的
-  `enableAudio` 决定是否开 `FreeRDP_AudioPlayback`。
-- **单一所有者（缓冲策略只在环里）**：FreeRDP 只解码 + 转发，**不做缓冲/丢弃/节流**；
-  `rdpsnd_main.c` 的 generic overrun 守卫对本后端被关掉（patch step 35）。sink 的 `Write` 按**整包**入队、
-  超 high-water 丢最老整包、返回当前排队时长（Wave Confirm 的真实渲染延迟）；渲染器的 `writeData`
-  回调用 `audioRead(handle, buf)` 把环里的 PCM 拉进设备缓冲，环**始终填满**（数据 + 欠载静音），
-  故回调总能报有效数据。新的一段音频先**预缓冲**到目标深度才开始出声（启动静音不计损失），段内抖动
-  **不**重新预缓冲；丢帧统计 = 欠载补静音 + 整包丢弃，仅在**数据仍在到达**的窗口内计入，静音停顿不计。
-  环的**延迟预算**（目标深度 + high-water，`SetLatencyBudget`）是**实例参数**，默认 120/300ms：RDP 用默认值；
-  Moonlight 的低延迟路径设成由设备回调周期派生的小值（见 [`moonlight-native.md`](moonlight-native.md) §2.3）。
+两协议共享的播放链路（交接环、缓冲策略、渲染器 / OHAudio、格式变化与能力探测）见 [`audio.md`](audio.md)；
+这里只写 FreeRDP / rdpsnd 侧。
+
+- **sink 是一个注册进 FreeRDP 的 C 函数指针**：`HmrdpSetAudioSink` 注册的后端在 FreeRDP 的 async 播放线程
+  （`rdpsnd->async` 下的 `play_thread`）上被调用，且必须**同步返回**该包的渲染延迟（ms，进 Wave Confirm）
+  ——与文件上传 serve 同一类约束（[`architecture.md`](architecture.md) §3.1 判据 2）。它只把 PCM 写进共享的
+  **有界 PCM 环**（`AudioSink`，`core/hmrdp_audio.*`），不做缓冲 / 丢弃 / 节流。
+- **关闭 rdpsnd 自带的 overrun 守卫**（patch step 35）：它用墙钟反推设备积压、阈值 ≈ 1 个包，看不到环的
+  真实深度，只会丢掉环还能播的包 ⇒ 本后端下置为"从不判 overrun"。要动这层先读 [`audio.md`](audio.md) §3。
 - **格式变化**：sink 检测到 rate/channels 变化时清空旧格式队列，并让会话发 `AudioFormat` 事件
-  （`kAudioFormat`）；ArkTS 据此（重新）建 `AudioRenderer`。渲染器晚于首个事件启动时，用
-  `audioFormat(handle)` 读当前格式自行补建，不依赖事件一定被捕获。
-- **线程与锁**：sink 回调在 FreeRDP 播放线程，环的读取在音频 worker，两者只共享环的锁——渲染器回调
-  不会被帧 / 剪贴板 / 文件的重活拖住（音频 worker 与后台 worker 分开的理由见
-  [`architecture.md`](architecture.md) §4.4）。`audioRead` 只在音频 worker 上调用。
-- **构建期 syscap 告警用注解屏蔽**：`@kit.AudioKit` 的 `audio` API 标注为"非全设备支持"，引用其值/枚举会打印
-  `The system capacity of this api 'audio' is not supported on all devices`（WARN，非 ERROR）。该告警是工具误报
-  （API 的 `@syscap` 标注带版本区间，与设备能力集比对不上；`audio` 在目标设备类型上实际可用），用
-  `@SuppressWarnings({rules:[SuppressWarningsType.SYSCAP]})` 标注承载调用的**类**屏蔽（装饰器对类/方法生效，
-  不能标自由函数；见 [`build-and-verify.md`](build-and-verify.md) §6）。运行时仍靠能力探测与优雅降级
-  （无输出设备 ⇒ 关「音频重定向」、不建渲染器）兜底，不因该告警退回原生。
-- **Moonlight 复用同一套环与渲染器**：交接环、`workers/audio.worker.ets`、`services/AudioPlayer.ets` 是两协议共用的播放链路，
-  环本就格式无关（水位按播放时长算）。差异只在**原生解码**：RDP 由 FreeRDP 解出 PCM，Moonlight 由 `core/hmrdp_moonlight_audio.*`
-   用 libopus 解 Opus 多流后写入同一个环（见 [`moonlight-native.md`](moonlight-native.md) §2.3）。ArkTS 侧按**音源**分流到
-  `audioRead` / `moonlightAudioRead` 两个原生读口。
-
-## 6. 设备能力探测（Capability 模式）
-
-新增**与设备相关**的特性时，不要拿 syscap 告警当能力判据（该告警已按 §5 用注解屏蔽，**不代表**设备一定支持），
-也不要在不支持时静默失败：
-
-- 原生侧优雅降级（探测失败 ⇒ 关掉对应 FreeRDP 特性，例如音频无输出设备时 ArkTS 传 `enableAudio = false`
-  ⇒ 关闭 `FreeRDP_AudioPlayback`，会话静音而不失败）；
-- ArkTS 侧在 `services/DeviceCapabilities.ets` 暴露 `Capability{supported, reason}`；
-- UI 上**置灰**该开关并显示原因。
-
-已用此模式的：音频重定向、超分辨率、Moonlight 的视频导入。原生只回**稳定原因码**
-（`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`），中文文案由
-`DeviceCapabilities` 的对应方法负责；不支持时设置页置灰相关选项并显示原因，并把已存的值纠正为关。
-（上屏后端**没有开关**：呈现判定成立就用 Vulkan，否则回落 GLES。）
-
-**一个呈现判定 + 两个超分后端判定**（`FillPresenterVerdict()`，`hmrdp_vk_context.*`）：
-
-| 判定 | 用途 | 条件 |
-|---|---|---|
-| **呈现判定**（`presenterSupported`） | 上屏后端自动选择 | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
-| **超分：FSR**（`srFsrSupported`） | 超分后端之一 | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
-| **超分：XEngine**（`srXengineSupported`） | 超分后端之一 | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
-| **视频导入**（`srVideoImportSupported`） | Moonlight 超分的前置 | 呈现判定成立 + `VK_OHOS_external_memory`（缓冲按 R8 字节图导入，转换自己做，不依赖驱动解释缓冲） |
-
-- 呈现能力判定**只有 `presenterSupported` 一个**：不存在分开的"解码能力 / 呈现能力"两套判定（解码始终是
-  FreeRDP gdi，见 [`rdp-gfx.md`](rdp-gfx.md)）。模拟器（x86_64）一律回落 GLES（见下）。
-- 两个超分后端共用「呈现判定」这一前提（上采样渲染进的都是呈现器的图），但门槛不同：**FSR 只多要构建里
-  有它的 shader，XEngine 还要设备特性**。所以 `srSupported` 是「至少一个后端可用」，真机 Vulkan 而无
-  XEngine 扩展的设备仍然能用 FSR。
-- 原因码（`srUnsupportedCode`）在**一个都没有**时才给出：**先取呈现判定的码**，再是 `no-xengine`
-  （libxengine 不可用）与 `no-extension`（设备无空域上采样特性）。`superResolutionSupport()` 回它，
-  中文文案在 `DeviceCapabilities.superResolution()`；`superResolutionBackends()` 另回**可用的后端列表**
-  （`"xengine"`/`"fsr"`/`"xengine,fsr"`/空）**与 `videoImport` 布尔**，UI 按它逐个置灰。
-  `SettingsStore.srBackendUsable(backend, protocol)` 是某个后端能否生效的唯一判据。
-- **视频导入**（`srVideoImportSupported`）不是 UI 上的独立开关：它是 **Moonlight 超分的额外前置**
-  （`DeviceCapabilities.srVideoImport()`），RDP 超分不需要它（RDP 的输入是 CPU 桌面图）。设备缺任一前提时
-  Moonlight 分栏的超分选项置灰，RDP 分栏不受影响。
-- **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
-  XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
-  （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），与 toolchain 指向的 openharmony sysroot 同级；
-  CMake 按 `${OHOS_SDK_NATIVE}/../../hms/native/sysroot` 定位，找不到就不定义 `HMRDP_HAVE_XENGINE`，
-  桥退化为"不支持"而构建照常（见 `hmrdp_xeg.cpp`）。
-
-- **呈现判定实际对应的 Vulkan 面**（`VkRenderer` 用它，逐项可核）：instance 扩展
-  `VK_KHR_surface` + `VK_OHOS_surface`；
-  device 扩展为 `VK_KHR_swapchain` **加上按需使能的** `VK_OHOS_external_memory` / `VK_KHR_external_memory`
-  （只为 Moonlight 的视频导入；缺它只是该路径不可用，不是设备不可用）；一个 graphics+present
-  队列族；swapchain（格式优先 `B8G8R8A8_UNORM`，回退 `R8G8B8A8_UNORM`，FIFO）+ render pass/framebuffer/view；
-  一条 graphics pipeline（`present_quad.vert/frag`，动态 viewport/scissor 做 letterbox，sampler + descriptor set）；
-  持久桌面 image（`B8G8R8A8_UNORM`）与 host-visible staging/零拷贝缓冲；command pool/buffer×2、二进制信号量、
-  fence×2；`vkCmdCopyBufferToImage` + `vkCmdPipelineBarrier` + `vkCmdBeginRenderPass/Draw/EndRenderPass` +
-  `QueueSubmit/Present`。**用不到**：compute（`CmdDispatch`/`CreateComputePipelines`）、`vkCmdBlitImage`、
-  `vkCmdClearColorImage`/`CmdCopyImage`/`CmdFillBuffer`/`CmdCopyBuffer`、timeline 信号量。视频导入路径另用
-  `vkGetNativeBufferPropertiesOHOS` 与一次全屏 convert pass（R8 字节图 + `texelFetch` 自带 YUV→RGB，
-  `video_convert.vert/frag`），见 [`rdp-present.md`](rdp-present.md) §5。
-- **排除模拟器包**（x86_64 构建）：模拟器会按标准接口谎报能力，能力探测排除不掉它；这与"Vulkan 只在真机验证"
-  的口径一致，所以模拟器上呈现回落到 GLES。
-- `native_window` 是 `libhmrdp` 显式链接的显示栈 API（把 XComponent 的 surfaceId 变成 `OHNativeWindow`，
-  交给 Vulkan/EGL）；`EGL`/`GLESv3` 只服务 GLES 兜底呈现器。都是设备必备库，不需要像 OHAudio 那样做缺库降级。
+  （`kAudioFormat`）；ArkTS 据此（重新）建渲染器（[`audio.md`](audio.md) §4）。
+- **播放侧与线程**：环的读取在 ArkTS 音频 worker（默认）或原生 OHAudio 回调线程，sink 回调在 FreeRDP
+  播放线程，两者只共享环的锁（[`architecture.md`](architecture.md) §4.2/§4.4）。

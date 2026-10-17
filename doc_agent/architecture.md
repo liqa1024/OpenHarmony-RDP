@@ -54,7 +54,7 @@
 | `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
 | `services/MdnsDiscovery.ets` | 通用 mDNS 主机发现：按 DNS-SD 服务类型发现并解析为 IP，去重成实时主机列表（`_nvstream._tcp` 即 Moonlight/Sunshine） |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
-| `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因（模式见 [`rdp-native.md`](rdp-native.md) §6） |
+| `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因（模式见 §5） |
 | `services/SystemMaterial.ets` | 沉浸光感（系统材质）的统一入口：能力判定（首用时求值）、材质与兜底磨砂的复用、`ImmersiveModifier`（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
 | `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输钉住），两协议会话页共用 |
 | `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用（去重、目标尺寸、热点、安装、捏合定位光标、可见性归属），见 [`session-layer.md`](session-layer.md) §10 |
@@ -122,19 +122,19 @@
 | `core/hmrdp_gfx_driver.{h,cpp}` | 原始 GFX 通道的离线回放泵（FreeRDP 自己的 ZGX + RDPGFX 解析）与解析计时 |
 | `core/hmrdp_gfx_capture.{h,cpp}` | 原始通道录制与读取 |
 | `core/hmrdp_gfx_cpu.{h,cpp}` | 离线 FreeRDP gdi 桌面（回放的解码器）；`PresentGdiFrame` 为 live 与回放共用 |
-| `core/hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES（见 [`rdp-present.md`](rdp-present.md) §1） |
+| `core/hmrdp_presenter.{h,cpp}` | **呈现器接口 + 后端选择**：按呈现能力选定 Vulkan 或 GLES（见 [`present.md`](present.md) §1） |
 | `core/hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
 | `core/hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
 | `core/hmrdp_gfx_work.{h,cpp}` | 帧工时计量器 `GfxWorkMeter`（live 与回放共用同一批钩子，口径见 [`rdp-session.md`](rdp-session.md) §5） |
-| `core/hmrdp_display_rate.{h,cpp}` | **面板档位与送显槽位**：默认屏刷新率（首次读 + 显示变化监听）与"一个周期一帧"的槽位游标，两条上屏链路共用（见 [`rdp-present.md`](rdp-present.md) §2、[`moonlight-video.md`](moonlight-video.md) §1） |
+| `core/hmrdp_display_rate.{h,cpp}` | **面板档位与送显槽位**：默认屏刷新率（首次读 + 显示变化监听）与"一个周期一帧"的槽位游标，两条上屏链路共用（见 [`present.md`](present.md) §2、[`moonlight-video.md`](moonlight-video.md) §1） |
 | `core/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`rdp-gfx.md`](rdp-gfx.md) §7.3） |
 | `core/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`rdp-gfx.md`](rdp-gfx.md) §6） |
 | `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测（含超分后端与视频导入判定）+ 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（device 按需使能交换链与外部内存扩展，见 §4.1） |
-| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass**；两种输入（桌面图 / 视频图）都只喂一个 `PresentInput` |
-| `core/hmrdp_vk_video.{h,cpp}` | **Moonlight 视频导入**（`VkVideoImport`）：解码器交出的缓冲按 **R8 字节图**外部内存导入 + 片元自己做 YUV→RGB（不依赖驱动解释缓冲）→ 会话分辨率的 picture；导入按缓冲缓存（每帧零分配），只对外 `Ensure / needsRebuild / importCacheFull / Import / RecordConvert`，配方与判据见 [`rdp-present.md`](rdp-present.md) §5 |
+| `core/hmrdp_vk_renderer.{h,cpp}` | Vulkan 上屏：**每 presenter 自有 `VkDevice`/queue**（从共享 instance 建）+ `VK_OHOS_surface` + swapchain + letterbox quad + 零拷贝桌面缓冲 + **超分辨率上采样 pass**；两种输入（桌面图 / 视频图）都只喂一个 `PresentInput`（见 [`present.md`](present.md) §4） |
+| `core/hmrdp_vk_video.{h,cpp}` | **Moonlight 视频导入**（`VkVideoImport`）：解码器交出的缓冲按 **R8 字节图**外部内存导入 + 片元自己做 YUV→RGB（不依赖驱动解释缓冲）→ 会话分辨率的 picture；导入按缓冲缓存（每帧零分配），只对外 `Ensure / needsRebuild / importCacheFull / Import / RecordConvert`，配方与判据见 [`present.md`](present.md) §4 |
 | `core/hmrdp_xeg.{h,cpp}` | **超分辨率桥**：`dlopen` libxengine，探测 `XEG_spatial_upscale` 并封装上采样对象的创建/下发/销毁（XEngine 头文件只在本文件内引用） |
 | `core/hmrdp_moonlight*.{h,cpp}` | Moonlight 原生：客户端库探针、视频解码桥、音频 Opus 解码桥（控制层、配对、身份与 pin 全在 ArkTS，见 [`moonlight-native.md`](moonlight-native.md) §2.3 / [`moonlight-control.md`](moonlight-control.md) §1） |
-| `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`rdp-native.md`](rdp-native.md) §5） |
+| `core/hmrdp_audio.{h,cpp}` | **两协议共用**的**有界 PCM 交接环**（RDP rdpsnd sink 与 Moonlight Opus 解码都写入它；消费端为 ArkTS 渲染器或原生 OHAudio，缓冲策略与延迟预算在环里，见 [`audio.md`](audio.md)） |
 | `core/hmrdp_oh_audio.{h,cpp}` | **原生 OHAudio 输出**（Moonlight 低延迟模式）：`OH_AudioRenderer` FAST + 音频工作组，写回调直接拉交接环（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
 | `core/hmrdp_gamepad_kit.{h,cpp}` | **手柄轴来源（Game Controller Kit 薄封装）**：注册设备的上下线与五个轴监听，回调把"哪个控制产生的轴事件"+值交给 N-API（见 [`session-layer.md`](session-layer.md) §8） |
 | `core/hmrdp_video_decoder.{h,cpp}` | `OH_AVCodec` 硬件优先视频解码器（**两种输出模式**：surface 直出窗口 / buffer 交出输出缓冲；送显槽位在这里判，是全链路唯一的门控；buffer 模式下另有一个归还线程，见 §4.2） |
@@ -166,9 +166,9 @@
 | drdynvc 分发线程 | FreeRDP 所有**动态通道**的分发：RDPGFX、rdpsnd（音频）、RDPEI（触屏/笔）、其它 DVC | **只准做轻活**（拆包 + 拷贝）；任何可能长时间占用的处理都必须交给应用线程。rdpsnd 在这里只重装 + 投递到它自己的队列 |
 | **GFX 工作线程**（会话自有） | 整条帧流水线：ZGX 解压、PDU 解析、解码、合成、上屏、帧回执 | 帧重活只在这里；drdynvc 线程注册 sink 后只把通道数据拷进来，工作线程用 `HmrdpGfxReplayRecv` 重新进入 |
 | **解码执行器**（会话自有 ffrt 队列） | progressive tile chunk 解码（每 region 若干任务） | 执行器随会话创建/销毁；解码入口以线程局部指针告知当前执行器，未设置则回退串行 |
-| **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioSink` 的交接环 | 不碰画面；缓冲/丢弃/预缓冲全在环一处（见 [`rdp-native.md`](rdp-native.md) §5） |
+| **rdpsnd 播放线程**（FreeRDP async `play_thread`） | rdpsnd PDU 处理：DSP 解码 → 交给 `AudioSink` 的交接环 | 不碰画面；缓冲/丢弃/预缓冲全在环一处（见 [`audio.md`](audio.md) §3） |
 | **Moonlight 音频解码线程**（library `AudioDecoderThread`） | `decodeAndPlaySample`：Opus 多流解码 → 交给**同一个** `AudioSink` 交接环 | 不设 `CAPABILITY_DIRECT_SUBMIT`，故不占 RTP 接收线程；缓冲/预缓冲同样全在环一处（见 [`moonlight-native.md`](moonlight-native.md) §2.3） |
-| **Moonlight 解码归还线程**（会话自有，`core/hmrdp_video_decoder.*`） | buffer 模式（超分）下把解码器交出的帧交给 sink 上屏，返回即把缓冲归还解码器；队列只留最新一帧，被替换的当场归还 | 解码输出回调**只投递或直接归还**（重活在归还线程上）；presenter 的调用在 sink 内由交接锁保护，故拆会话不会把 presenter 从在飞的帧下面抽走（[`rdp-present.md`](rdp-present.md) §5） |
+| **Moonlight 解码归还线程**（会话自有，`core/hmrdp_video_decoder.*`） | buffer 模式（超分）下把解码器交出的帧交给 sink 上屏，返回即把缓冲归还解码器；队列只留最新一帧，被替换的当场归还 | 解码输出回调**只投递或直接归还**（重活在归还线程上）；presenter 的调用在 sink 内由交接锁保护，故拆会话不会把 presenter 从在飞的帧下面  抽走（[`present.md`](present.md) §4） |
 | **OHAudio 回调线程**（Moonlight 低延迟模式，系统侧） | `OH_AudioRenderer` 的写回调直接从 `AudioSink` 环拉 PCM（`core/hmrdp_oh_audio.*`，见 [`moonlight-native.md`](moonlight-native.md) §2.3） | 回调内只做环的 `Read`（锁极短），**禁止**耗时操作与音频流控调用 |
 | **（默认音频渲染在 ArkTS 音频 worker）** | 其余情况（RDP、Moonlight 关低延迟）渲染器的拉取在 ArkTS 音频 worker（`AudioRenderer.writeData` → `audioRead`/`moonlightAudioRead`，§4.4）；原生侧只由上面两条线程往 sink 环写入 | — |
 | ArkTS/UI 线程 | 界面与输入事件；调用 `Send*` 写输入 | 不碰渲染/通道分发 |
@@ -187,9 +187,9 @@
 
 并发只为**让 UI 线程不被重活堵住**；线程数按"互相独立、不可互相阻塞"的需要定，不按功能堆。原生侧只留被同步回调钉住的适配器（§3.1）。
 
-- **UI 线程**：界面、事件路由、**输入的规范化与入队**（平台事件 → 控制器 → `SessionInputPort`，协议发送在输入 worker，见下）；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS 看不到原生内存，与线程无关）。剪贴板**格式协商的取舍**（选哪个格式、单在途、延迟刷新）也在这里：它只是一次事件上的小状态机，不含重活（编解码/写盘在后台 worker，见 [`rdp-clipboard.md`](rdp-clipboard.md)）。
+- **UI 线程**：界面、事件路由、**输入的规范化与入队**（平台事件 → 控制器 → `SessionInputPort`，协议发送在输入 worker，见下）；以及边界上**唯一必需**的那次 native→ArkTS 拷贝（`bufferRead`——ArkTS 看不到原生内存，与线程无关）。剪贴板**格式协商的取舍**（选哪个格式、单在途、延迟刷新）也在这里：它只是一次事件上的小状态机，不含重活（编解码/写盘在后台 worker，见 [`clipboard.md`](clipboard.md) §1；RDP 格式协商取舍见 [`rdp-clipboard.md`](rdp-clipboard.md) §1）。
 - **后台 worker（一条）**：非实时的长驻状态机与重活——剪贴板 DIB/RTF/HTML 编解码、**本机剪贴板编码 + 原生推送**（native 会把整块内容拷进自己的存储并立即 advertise，一次通道发送，不能占 UI 线程）、文件下载状态机与写盘。彼此可互相等待，共用一条即可。落地：`workers/background.worker.ets` + UI 门面 `services/BackgroundWorker.ets`（消息形状 `services/BackgroundProtocol.ets`，下载状态机 `workers/FileDownloader.ets`）。
-- **音频 worker（一条）**：ArkTS `AudioRenderer` 的回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频卡顿且与处理绑定"（同 §4.2 的 drdynvc 教训）。落地：`workers/audio.worker.ets` + UI 门面 `services/AudioPlayer.ets`（消息形状 `services/AudioProtocol.ets`）。详见 [`rdp-native.md`](rdp-native.md) §5。
+- **音频 worker（一条）**：ArkTS `AudioRenderer` 的回调需及时服务，**独占线程**；与后台 worker 共用会变成"音频卡顿且与处理绑定"（同 §4.2 的 drdynvc 教训）。落地：`workers/audio.worker.ets` + UI 门面 `services/AudioPlayer.ets`（消息形状 `services/AudioProtocol.ets`）。详见 [`audio.md`](audio.md) §2。
 - **输入 worker（每会话一条）**：协议侧的发送成本不对称（RDP 是调用线程上的同步网络写，Moonlight 是入库返回），把它们从 UI 线程摘走，UI 线程就只做规范化与入队。落地：`workers/input.worker.ets` + L1 派发器 `services/InputPort.ets`（消息形状与投递类声明 `services/InputProtocol.ets`）；sink 在 worker 内构造，靠**进程级句柄注册表 / 库的进程级会话**直接落到原生（同「Worker 可调用原生」）。**入队即唤醒**，限量（窗口与速率上限）只在 L1 闸门（见 [`session-layer.md`](session-layer.md) §8），所以这条线程不轮询、不睡眠、也没有自己的窗口；它只逐条调 sender 并回报受理 / 拒收。
 
 **事件路由**：native→ArkTS 全部事件走单个进程级 TSFN，回调固定在订阅它的 UI 线程运行时（`OnSessionEvent`）。`services/RdpEventHub` 是其唯一订阅者，按 handle 路由给 `RdpNative`；需 worker 消费的事件由 UI 线程按 handle `postMessage` 转发（Worker 拿不到该 TSFN：回调只跑 UI 线程，且各 Worker 有独立 `napi_env`）。Worker 只回控制/进度。
@@ -200,7 +200,21 @@
 
 **拷贝纪律**：跨线程 `ArrayBuffer` 默认**转移、零拷贝**（发送方 detach）；普通对象序列化拷贝、单次上限 16MB ⇒ 大二进制走裸 `ArrayBuffer`，不放对象成员。除了按句柄读原生缓冲的两次拉取（UI 线程的 `bufferRead`、音频 worker 的 `audioRead`）外不为跨线程自加拷贝；`postMessage` 只承载控制/进度。
 
-## 5. 其它
+## 5. 与设备相关的能力（Capability 模式）
+
+新增**与设备相关**的特性时，不要拿 syscap 告警当能力判据（该告警不代表设备一定支持），也不要在不支持时静默失败：
+
+- 原生侧优雅降级（探测失败 ⇒ 关掉对应原生特性，例如音频无输出设备时 ArkTS 传 `enableAudio = false`
+  ⇒ 关闭 `FreeRDP_AudioPlayback`，会话静音而不失败）；
+- ArkTS 侧在 `services/DeviceCapabilities.ets` 暴露 `Capability{supported, reason}`；
+- UI 上**置灰**该开关并显示原因。
+
+已用此模式的：音频重定向（[`audio.md`](audio.md) §6）、超分辨率与 Moonlight 的视频导入（[`present.md`](present.md) §5）。
+原生只回**稳定原因码**（`no-vulkan`/`no-instance`/`no-device`/`no-host-memory`/`no-surface`/`emulator`），
+中文文案由 `DeviceCapabilities` 的对应方法负责；不支持时设置页置灰相关选项并显示原因，并把已存的值纠正为关。
+（上屏后端**没有开关**：呈现判定成立就用 Vulkan，否则回落 GLES。）
+
+## 6. 其它
 
 - `native/scripts/*` —— 原生库构建与 FreeRDP / Moonlight / zlib / opus 补丁（见 [`native-build.md`](native-build.md)）。
 - `entry/libs/<abi>/` —— 本地构建的**全部三方共享库**（FreeRDP / OpenSSL / zlib / opus / moonlight，**不入库**）。

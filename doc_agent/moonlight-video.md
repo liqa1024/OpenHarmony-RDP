@@ -27,7 +27,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   送显阻塞、输出缓冲不再回来，整条解码链停摆。面板档位与槽位判据取自共享的 `hmrdp_display_rate.*`（读不到
   刷新率时不设闸门）。**闸门只丢不等**（不 sleep、不建时间轴、不持有帧）：实时链路里"等"就是延迟堆积，故参考
   官方 Surface 播放控制时只取"太晚就丢"那一半，判据用面板刷新率代替音频时钟。桌面链路（RDP）同样的判据下
-  是**合并**而不是丢弃，见 [`rdp-present.md`](rdp-present.md) §2。
+  是**合并**而不是丢弃，见 [`rdp-present.md`](rdp-present.md) §3。
 - **硬解优先，软解兜底，无解器报错**：`VideoDecoderSupport()`（`OH_AVCodec_GetCapabilityByCategory`）把每种
   编码分成**硬解 / 软解 / 无**，优先创建硬解，硬解缺失时才退到软解，`VideoDecoder::hardware()` 反映实际
   选择；完全没有解码器时起播同步失败并给出原因，绝不静默黑屏。
@@ -58,7 +58,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   可得性不同**：buffer 模式在输出描述里报出字节行距与单面的已分配行数，surface 模式不报（其内部数据走 HEBC，
   `OH_MD_KEY_VIDEO_STRIDE`/`OH_MD_KEY_VIDEO_SLICE_HEIGHT` 取不到）——所以凡是按平面字节采样缓冲的链路只能走
   buffer 模式，只送显的链路用 surface 模式。`OH_AVBuffer_GetAddr`（CPU 地址，逐行搬运用）本仓不使用。
-  几何取法与导入配方见 [`rdp-present.md`](rdp-present.md) §5。
+  几何取法与导入配方见 [`present.md`](present.md) §4。
 - **送显槽位只判一次**：在解码输出回调里（`VideoDecoder::TakePresentSlot`），错过即**丢**——surface 模式一律
   `FreeOutputBuffer`（不送显），buffer 模式不交给上屏。buffer 模式还有一个次级丢弃：交出去的帧若在归还线程仍在
   处理时被新帧追上，**旧的那帧当场归还**（只留最新一帧），所以"上屏跟不上"的代价是丢帧，不是延迟堆积。两种丢弃
@@ -83,8 +83,8 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
   负责导入与 convert pass（整块按 **R8 字节图**外部内存导入，片元 `texelFetch` 取 Y 与交错 Cb/Cr、**自己做
   YUV→RGB**），写进**会话分辨率的 picture**，之后接既有的超分 / letterbox / swapchain。
   **导入配方、几何取法（取解码器报的账，不是分配器的推断）、归还与门控的判据全在
-  [`rdp-present.md`](rdp-present.md) §5**——本节只讲本仓怎么接。
-  此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`rdp-native.md`](rdp-native.md) §6）。
+  [`present.md`](present.md) §4**——本节只讲本仓怎么接。
+  此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）。
 
 ## 3. 编解码协商
 
@@ -132,7 +132,7 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
   可复用的是**「会话分辨率的一张输入图 →（可选）超分 → letterbox → swapchain → present」这一层**；
   RDP 的桌面缓冲 / 脏区 / 合并（carry）是 **RDP 专属的可选路径**，视频链路一概不用——视频是流、语义是丢帧，
   且恒整帧一次、无 CPU 拷贝。直出链路**完全不经 presenter**，与 RDP 互不影响（见
-  [`rdp-present.md`](rdp-present.md) §1/§5）。
+  [`present.md`](present.md) §1/§4）。
 
 ## 6. 不采用的方向
 

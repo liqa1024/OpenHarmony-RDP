@@ -1,47 +1,10 @@
-# 剪贴板与文件传输（**手动触发**）
+# RDP 剪贴板与文件传输
 
-本文件覆盖剪贴板的**线格式、原生/ArkTS 分工、文件传输流程与实现坑**。它只描述剪贴板这条通道；
-工具栏按钮的显示与自动隐藏见 [`session-layer.md`](session-layer.md) §9，原生边界判据见
+本文件是 **RDP 侧剪贴板通道**的家：cliprdr 格式协商与线格式、文件传输与实现坑。两协议共享的剪贴板机制
+（手动语义、共享控制器 / 桥 / 本机读写叶子、文案）见 [`clipboard.md`](clipboard.md)；原生边界判据见
 [`architecture.md`](architecture.md) §3.1。
 
-## 0. 两协议共享的剪贴板抽象
-
-剪贴板的手动读写机制是**协议中立**的，抽在 `services/` 与 `utils/`，RDP 与 Moonlight 共用一份：
-
-- `services/ClipboardController`：**手动语义与编排**——远端条目缓存、`复制`（写本机）、`粘贴`（读本机后交给桥），
-  以及文件传输的单传输约束、进度、取消、沙箱目录保留策略。它只驱动 `bridge.capabilities()` 为真的路径。
-- `services/ClipboardBridge`：协议缝。`capabilities()` 声明本协议能带哪些内容（`text/html/image/files`）；`sendItem`
-  由桥按自身能力择一发送；`remoteItem` 交回缓存的远端内容；传输状态经 sink 回调上抛给控制器。
-- `utils/LocalPasteboard`：本机系统剪贴板读写（文本 / HTML Entry / 图片 / 文件 URI）与 HTML 文本工具，协议无关。
-- 图片中立表示 = `image.PixelMap`；`PixelMap↔PNG` 编解码是共享 worker op（`ENCODE_PNG`/`DECODE_PNG`）。
-- 共享 UI：`components/SessionChrome` 的 `ClipboardButtons` / `ClipboardTransferStatus`，两协议工具栏复用。
-
-**能力降级**：RDP 桥声明全能力（文本/HTML/图片/文件），协议机制（cliprdr 协商、DIB/CF_HTML/RTF 线格式、文件流、
-沙箱目录命名）留在 `services/RdpClipboardBridge`；Moonlight 桥只声明 `text + image`（见
-[`moonlight-clipboard.md`](moonlight-clipboard.md)），文件/富文本分支永不被触及。
-
-**用户文案**：共享在 `model/ClipboardModels.ets` 的 `ClipboardText`，遵循 [`ui-design.md`](ui-design.md) §4.3
-（结论 + 具体对象、失败用「无法 X：原因」、不加句末标点）。**动词与工具栏按钮一致**（粘贴 = 本机→远端，复制 = 远端→本机），
-且**必须点名内容类型**（文本 / 富文本 / 图片 / 文件）——如「已粘贴图片到远端」「无法粘贴图片到远端」「已复制 3 个文件到本机」。
-两协议读同一份，避免各写一套。
-
-## 1. 设计原则：只手动同步
-
-**同步在设计上就是用户手动触发的**：工具栏「复制」（远端→本机）与「粘贴」（本机→远端），
-**刻意不做自动同步**，扩展图片/文件等类型时也必须沿用。理由：
-
-1. 自动读本机剪贴板需要受限开放的读权限、有隐私成本；手动则由系统 `PasteButton` 安全控件在运行时临时授权，
-   读取无需声明 `READ_PASTEBOARD`；
-2. 图片/文件等大数据量只有显式触发才可控（二次确认、进度、目标路径）；
-3. 两个方向逻辑对称（都是"读一侧 → 写另一侧"），扩展类型只需改中间那段转换。
-
-手动读取不声明 `READ_PASTEBOARD`，但 `getData` / `getDataWithProgress` 仍会被编译器**静态**提示该权限
-（授权是运行时由安全控件给的）；两个读取方法用 `@SuppressWarnings({rules:[SuppressWarningsType.PERMISSION]})`
-压掉该告警。
-
-**不要引入剪贴板自动监听或自动写本机剪贴板。**
-
-## 2. 格式协商与原生 / ArkTS 分工
+## 1. 格式协商与原生 / ArkTS 分工
 
 原生覆写 cliprdr 的 `Server*` 回调与 `MonitorReady`，只从 `Client*` 读/发它需要的表示。
 当前支持 **纯文本 / 富文本（HTML）/ 图片 / 文件**；优先级 **文件 > 图片 > HTML > RTF > 文本**。
@@ -58,7 +21,7 @@ PNG 走新事件 `kClipboardImagePng`，ArkTS 用共享 `DECODE_PNG` 解码（�
 kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/空/失败）作为"本次已结束"的信号，ArkTS
 据此取它在这期间记下的最新待刷新项。`FORMAT_DATA_REQUEST`（服务端拉本机内容）是**同步 serve**，仍在原生。
 
-## 3. 文件传输
+## 2. 文件传输
 
 - 入口沿用两个按钮（不新增独立按钮）：远端剪贴板是文件列表时「复制」触发下载，本机剪贴板含文件 URI
   时「粘贴」触发上传。仍**手动触发**，不做自动或监听。
@@ -117,7 +80,7 @@ kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/
   `kRemoteClipboardChanged`，ArkTS 据此中止自己正在跑的下载（清理分片并收起进度行），避免进度行等一个
   永远不会来的事件；点击复制时列表已空则直接提示。
 
-## 4. 实现坑（改剪贴板前必看）
+## 3. 实现坑（改剪贴板前必看）
 
 - **大图剪贴板冻结画面（服务端侧，客户端不是瓶颈）**：把图片推到远端时若只广告未压缩 `CF_DIB`（整屏
   32bpp 可达数十 MB），**服务端**在接收/消化它期间停止发画面更新，表现为画面与输入冻结好几秒。客户端
@@ -125,7 +88,7 @@ kind 并在响应上回带，另发一个 `RemoteFormatResponse`（无论成功/
   减小载荷**：同时广告压缩的注册格式 `PNG`（置于 `CF_DIB` 之前，服务端会拉 PNG），载荷通常小一个量级，
   冻结随之消失；`CF_DIB` 保留为服务端不支持 PNG 时的兜底。文件不受影响：字节走 `FILECONTENTS` 分块。
 - **远端格式协商**：`FORMAT_LIST` 的候选分类在原生（wire 形式），`文件(FileGroupDescriptorW) > 图片(DIB/DIBV5)
-  > HTML Format > Rich Text Format > CF_UNICODETEXT` 的**优先级选择在 ArkTS**（见 §2）。**数据响应不带
+  > HTML Format > Rich Text Format > CF_UNICODETEXT` 的**优先级选择在 ArkTS**（见 §1）。**数据响应不带
   格式 id** ⇒ 同一时刻**只允许一个请求在途**，期间的新列表记为待刷新，`RemoteFormatResponse` 回来再取；
   分派时**严格按请求时的 kind**，绝不用二进制兜底当文本（DIB 头 `28 00 00 00` 按 UTF-16 会变成 `(`）。
 - **本机 HTML 读取**：不能只看 `getPrimaryHtml()`（只读第一条记录，且富文本常把 `text/plain` 作主 MIME、

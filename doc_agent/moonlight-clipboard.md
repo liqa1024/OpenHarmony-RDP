@@ -1,7 +1,7 @@
 # Moonlight 剪贴板（基地版扩展，**手动触发**）
 
 本文件是 Moonlight 剪贴板通道的家：协议形态、主机能力边界、原生/ArkTS 分工。**两协议共享的手动剪贴板抽象**
-见 [`rdp-clipboard.md`](rdp-clipboard.md) §0；会话窗口与工具栏见 [`session-layer.md`](session-layer.md) §9；
+见 [`clipboard.md`](clipboard.md) §1；会话窗口与工具栏见 [`session-layer.md`](session-layer.md) §9；
 Moonlight 原生桥接见 [`moonlight-native.md`](moonlight-native.md) §2.4；控制层 HTTPS 见 [`moonlight-control.md`](moonlight-control.md)。
 
 ## 1. 非原版能力，主机侧才是硬边界
@@ -39,7 +39,7 @@ Moonlight 原生桥接见 [`moonlight-native.md`](moonlight-native.md) §2.4；�
 
 ## 4. 手动语义与传输
 
-- 手动语义（点按钮才读/写本机、不监听、不自动写）与回显抑制同 [`rdp-clipboard.md`](rdp-clipboard.md) §0/§1，此处不重复。
+- 手动语义（点按钮才读/写本机、不监听、不自动写）与回显抑制同 [`clipboard.md`](clipboard.md) §1/§2，此处不重复。
 - **推送模型**：主机随时推帧，本端只缓存最新条目（复合按 token 配对），点「复制」才写本机。
 - **图片双向**：出站 `PixelMap`→PNG、入站 PNG→`PixelMap`，走共享 worker 编解码 op。
 - **REF/blob 走 HTTPS + 配对 mTLS**，端口取 serverinfo 的 `HttpsPort`（默认 47984），复用控制层证书 pin 与客户端证书。

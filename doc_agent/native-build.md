@@ -2,8 +2,9 @@
 
 应用的原生依赖**全部从源码交叉编译**，不使用系统预编译库。仓库**不提交**任何 `.so`。
 本文件是这套**构建体系**的家：产物为何不入库、单一构建入口、依赖布局与自检、补丁体系；
-各依赖自己的补丁内容与运行期事实见 [`rdp-native.md`](rdp-native.md)（FreeRDP / 音频 / 能力）与
-[`moonlight-native.md`](moonlight-native.md)（moonlight-common-c）。
+各依赖自己的补丁内容与运行期事实见 [`rdp-native.md`](rdp-native.md)（FreeRDP 补丁与音频 sink 侧）与
+[`moonlight-native.md`](moonlight-native.md)（moonlight-common-c）；两协议共享的音频播放链路见
+[`audio.md`](audio.md)。
 
 ## 1. 为什么 `native/third_party/`、`entry/libs/<abi>/`、`entry/src/main/cpp/thirdparty/` 都不入库
 

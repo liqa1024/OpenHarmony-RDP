@@ -67,7 +67,7 @@
   - **是三选一而不是开关**：关闭 / `XEngine` / `FSR`（`SR_BACKEND_XENGINE` / `SR_BACKEND_FSR`，持久化成
     0/1 并在连接记录尾部占一个字段）。两者都是「会话小、本机放大」，差别只在**用哪个上采样器**：
     XEngine 是平台空域超分（要设备特性），FSR 是呈现器自己跑的 FidelityFX Super Resolution 1.0
-    （只要 Vulkan 上屏）。见 [`rdp-present.md`](rdp-present.md) §5。
+    （只要 Vulkan 上屏）。见 [`present.md`](present.md) §4。
   - **默认缩放随之换算**：自动档 = 分辨率档位 `÷ 倍率` 再吸附到档位（`SettingsStore.autoScalePercent`）；
     会话桌面小了、显示时又被放大回输出分辨率，系数按同一倍率缩小才能让远端 UI 保持同样的物理大小。
   - **前提是能力，不是开关**：Vulkan 上屏可用，且**所选后端**可用（FSR 只要前者，XEngine 还要设备报
@@ -98,11 +98,11 @@
   全局一份 + 单连接覆盖（沿用 `useGlobalStream`）。**仅基地版 Sunshine（foundation-sunshine）有效**，
   其它主机（无 `/displays` / `/display-scale`）静默跳过，见 [`moonlight-connection.md`](moonlight-connection.md) §3。
 - **剪贴板恒开**：不提供任何开关（全局或单连接）；原生无条件置 `FreeRDP_RedirectClipboard`。
-  工具栏的「复制/粘贴」手动触发，见 [`rdp-clipboard.md`](rdp-clipboard.md)。
+  工具栏的「复制/粘贴」手动触发，见 [`clipboard.md`](clipboard.md)。
 - **GFX 恒开**：关掉图形管线会让会话完全不可用，故不提供开关；`Connect` 里无条件置
   `FreeRDP_SupportGraphicsPipeline`。
 - **上屏后端不用开关**：呈现器**按能力自动选**——设备呈现判定成立就用 Vulkan，否则回落 GLES
-  （判据见 [`rdp-native.md`](rdp-native.md) §6）。**没有「硬件加速」设置项**：Vulkan 可用与否是设备事实，
+  （判据见 [`present.md`](present.md) §5）。**没有「硬件加速」设置项**：Vulkan 可用与否是设备事实，
   不是用户偏好，做成开关只会造出"开了也用不上"的档位。dev 回放页仍保留 `路线:CPU/硬件加速` 的**临时**切换
   （不落库，仅用于在同一份录像上 A/B 两个后端），会话开始时被能力再次归一（`SessionPage`）。
 - **回到前台自动重连**（`reconnectOnForeground`，进程级，默认关）：会话窗口从后台回到前台时，

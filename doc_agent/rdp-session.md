@@ -2,9 +2,10 @@
 
 本文件是 **RDP 路**的会话窗口细节、输入落地与工具栏遥测的家。两协议共享的会话模型 / 状态机 / 窗口与全屏 /
 自动隐藏 / 输入策略 / 工具栏自动隐藏 / 光标安装器见 [`session-layer.md`](session-layer.md)；
-FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX 与 CPU 链路账目见
-[`rdp-gfx.md`](rdp-gfx.md)；上屏见 [`rdp-present.md`](rdp-present.md)；剪贴板 / 文件传输见
-[`rdp-clipboard.md`](rdp-clipboard.md)。
+FreeRDP 补丁与音频 sink 见 [`rdp-native.md`](rdp-native.md)，共享音频链路见 [`audio.md`](audio.md)；
+GFX 与 CPU 链路账目见 [`rdp-gfx.md`](rdp-gfx.md)；上屏见 [`present.md`](present.md)（共享）与
+[`rdp-present.md`](rdp-present.md)（RDP 侧）；剪贴板见 [`clipboard.md`](clipboard.md)（共享）与
+[`rdp-clipboard.md`](rdp-clipboard.md)（RDP 线格式 / 文件传输）。
 
 ## 1. 连接错误分类（FreeRDP）
 
@@ -98,10 +99,10 @@ FreeRDP 补丁、音频、能力探测见 [`rdp-native.md`](rdp-native.md)；GFX
   - **网络**：autodetect 的 `NetworkCharacteristicsResult`。FreeRDP **客户端不保存**该值（只有服务端注册该回调），
     故连接时给 `context->autodetect` 自行注册回调捕获。
   - **带宽**：`freerdp_get_stats()` 的收发字节差分。**FPS**：只显示**应用呈现数**（平时即对端帧率；显示端
-    跟不上而合并上屏时它低于对端帧率，那时读到的就是真实上屏帧率，见 [`rdp-present.md`](rdp-present.md) §2）；
+    跟不上而合并上屏时它低于对端帧率，那时读到的就是真实上屏帧率，见 [`rdp-present.md`](rdp-present.md) §3）；
     面板刷新率（恒为 60/120 一类）不进工具栏。
   - **音频**：采样率 + 近期**丢帧率**（欠载补静音 + 队列超上界时丢掉的整包；在"数据仍在到达"时统计，
-    取滑动窗口——停顿不计，流真正结束后才停；缓冲与丢包策略见 [`rdp-native.md`](rdp-native.md) §5）。
+    取滑动窗口——停顿不计，流真正结束后才停；缓冲与丢包策略见 [`audio.md`](audio.md) §3）。
   - **CPU**：`hidebug.getCpuUsage()` 的**进程**占用率（%，每次遥测采一次）。官方把这个模块定位为
     调试接口（相对耗性能），所以只在这条 dev 独占的遥测行里、按秒采一次；设备缺该能力时回调失败，
     这一项显示 `CPU --`。系统占用率（`getSystemCpuUsage`）**不显示**：这里要回答的是"本机应用花了多少"。

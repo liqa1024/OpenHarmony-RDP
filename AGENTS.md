@@ -18,7 +18,7 @@
   要恢复文件就**直接编辑文件内容**。
 - **实机操作默认禁止，需明确授权，且是最后手段**——唯一例外是 **Vulkan / 硬件加速（上屏）**：
   它们**只在真机上验证**（模拟器的 Vulkan 会按标准接口谎报能力，不在支持范围内），由 AI 按
-  [`doc_agent/rdp-gfx.md`](doc_agent/rdp-gfx.md) §6 与 [`doc_agent/rdp-present.md`](doc_agent/rdp-present.md) §8 自动执行。
+  [`doc_agent/rdp-gfx.md`](doc_agent/rdp-gfx.md) §6 与 [`doc_agent/rdp-present.md`](doc_agent/rdp-present.md) §5 自动执行。
   其余情况下**不要动辄"退回真机"**，也**不要把结论甩给真机**。
   签名与安装由用户完成（**仓库不含任何签名材料**），AI 只做无破坏性动作（push 样本 / 启动 / 读日志）。
 - **排查顺序**：代码 / 构建 / 数据 → 模拟器自身状态（跑过重型 GL/GPU 压测后先冷启动）→ 真机（且需授权）。
@@ -84,13 +84,16 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | 界面外观 / 设计原则 / 抽共享单元 / 设计 token / 组件契约 | [`ui-design.md`](doc_agent/ui-design.md) |
 | 两协议共享的会话/连接层（连接模型多态、连接发起、后端、会话外壳、输入内核、会话窗口/输入/工具栏/光标行为、命名边界） | [`session-layer.md`](doc_agent/session-layer.md) |
 | RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](doc_agent/rdp-session.md) |
-| 剪贴板（手动）/ 文件传输 | [`rdp-clipboard.md`](doc_agent/rdp-clipboard.md) |
+| 剪贴板（共享抽象 / 手动语义） | [`clipboard.md`](doc_agent/clipboard.md) |
+| RDP 剪贴板线格式 / 文件传输 | [`rdp-clipboard.md`](doc_agent/rdp-clipboard.md) |
 | 设置项 / 连接存储 / 密码 / 导入导出 / 生效时机 | [`settings-and-storage.md`](doc_agent/settings-and-storage.md) |
 | 原生库构建体系（拉取 / 单一入口 / 依赖布局 / 补丁系统 / OpenSSL CMake） | [`native-build.md`](doc_agent/native-build.md) |
-| RDP 原生（FreeRDP 补丁内容 / 音频 / 能力探测 / 编译选项） | [`rdp-native.md`](doc_agent/rdp-native.md) |
+| RDP 原生（FreeRDP 补丁内容 / 音频 sink 侧 / 编译选项） | [`rdp-native.md`](doc_agent/rdp-native.md) |
+| 音频链路（共享交接环 / ArkTS 渲染器 / 原生 OHAudio / 音频开关） | [`audio.md`](doc_agent/audio.md) |
 | GFX 码流框架 / 会话侧接线 / 回放与参考画面验收（**改前必读**） | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) |
 | CPU（gdi）链路的判据、账目口径、门禁、并行形态 | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) §7 |
-| 上屏（present）：Vulkan/GLES 后端、脏区上传、零拷贝、超分、swapchain 重建 | [`rdp-present.md`](doc_agent/rdp-present.md) |
+| 上屏（present）共享管线：Vulkan/GLES 后端、帧到屏、swapchain 重建、超分与视频导入、GPU 账目、呈现能力判定 | [`present.md`](doc_agent/present.md) |
+| RDP 上屏接线（脏区上传 / 零拷贝 / 合并上屏 / RDP 侧账目） | [`rdp-present.md`](doc_agent/rdp-present.md) |
 | Moonlight 连接前端（协议建模、存储、列表 / 编辑页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
 | Moonlight 主机与应用（发现 / 运行态 / 唤醒 / 应用管理页 / 连接动作走法） | [`moonlight-apps.md`](doc_agent/moonlight-apps.md) |
 | Moonlight 会话（窗口接线 / 工具栏遥测） | [`moonlight-session.md`](doc_agent/moonlight-session.md) |

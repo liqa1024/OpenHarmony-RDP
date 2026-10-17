@@ -68,7 +68,7 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
   - **两条上屏路线的解码输出模式不同**：直出时解码器用 surface 模式渲染进 `renderContext` 的窗口；超分时用
     buffer 模式把自己的输出缓冲交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`），返回即归还解码器
-    （见 [`rdp-present.md`](rdp-present.md) §5、[`moonlight-video.md`](moonlight-video.md) §1/§2）。
+    （见 [`present.md`](present.md) §4、[`moonlight-video.md`](moonlight-video.md) §1/§2）。
     呈现器归会话所有（`hmrdp_moonlight_session.*`），在 `LiStartConnection` 前按会话尺寸建好、`LiStopConnection`
     后拆掉；桥只**借用**它（`MoonlightVideoAttachPresenter` / `MoonlightVideoDetachPresenter`，Detach 会等在飞的
     那一帧做完），表面尺寸的转发走 `MoonlightSessionResizeSurface` → 同一个交接锁。
@@ -199,7 +199,7 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
 - **低延迟模式（原生 OHAudio，可选、默认开）**：`mlLowLatencyAudio` 为真时音频不走 ArkTS 渲染器，改由
   `core/hmrdp_oh_audio.*` 建原生 `OH_AudioRenderer`（`AUDIOSTREAM_USAGE_GAME` + `AUDIOSTREAM_LATENCY_MODE_FAST`），
   写回调直接从同一个 `AudioSink` 环拉；环深度由设备回调周期派生（`OH_AudioRenderer_GetFrameSizeInCallback`，
-  口径见 [`rdp-native.md`](rdp-native.md) §5）。库的 `AudioDecoderThread`（环的生产者）接入**音频工作组**
+  口径见 [`audio.md`](audio.md) §3）。库的 `AudioDecoderThread`（环的生产者）接入**音频工作组**
   （`AddCurrentThread` + 每帧 `Start/Stop`）保证及时供数——FAST 用小缓冲，供数不及时即补静音帧（杂音）。
   关时回到 ArkTS 渲染器那条链路。FAST 在设备/格式/资源不满足或有更高优先级流时由系统**回落普通通路**
   （`OH_AudioRenderer_GetFastStatus` 记录，不据此失败）；`enableAudio` 关时两条路都不建。

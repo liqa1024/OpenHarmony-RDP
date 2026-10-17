@@ -23,7 +23,7 @@ namespace hmrdp {
 //
 // The byte view is what makes the conversion ours: the importer reads the codec's own bytes and the
 // convert pass applies colour-space-correct coefficients, so nothing depends on the driver
-// interpreting the buffer. See doc_agent/rdp-present.md §5 for the layout rule.
+// interpreting the buffer. See doc_agent/present.md §4 for the layout rule.
 //
 // Imports are cached per buffer: a decoder's output buffers are a small fixed pool reused for the
 // whole session, so each buffer is imported (image + memory + view + descriptor set) once and every

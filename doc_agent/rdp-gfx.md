@@ -2,7 +2,7 @@
 
 本文件是**改 GFX 相关代码前必读**的口径文档。范围：GFX 通道的压缩与命令模型、会话侧的接线约束、
 dev 回放与**参考画面**验收、以及 CPU（gdi）链路的成本结构、量测纪律与并行形态（§7）。
-上屏这一段见 [`rdp-present.md`](rdp-present.md)。
+上屏这一段见 [`present.md`](present.md)（共享管线）与 [`rdp-present.md`](rdp-present.md)（RDP 侧接线）。
 
 > **不采用**：自研的 GPU 解码/合成引擎（含 compute 解码、`rfx_*.comp`、Progressive 容器解析器与其
 > 能力判定）和 H.264/AVC 支持都不要复活（见 §3）。解码/合成只有 FreeRDP gdi 一条路；上屏保留
@@ -87,8 +87,8 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 
 ## 2. 上屏（present）
 
-桌面帧的上屏走 [`rdp-present.md`](rdp-present.md)（一套实现、Vulkan/GLES 两个后端，后端按能力自动选；
-判据见 §4）。本文件只涉及帧的**产出与合成**。
+桌面帧的上屏走 [`present.md`](present.md)（一套实现、Vulkan/GLES 两个后端，后端按能力自动选；
+判据见 §4），RDP 侧的脏区上传与零拷贝接线见 [`rdp-present.md`](rdp-present.md)。本文件只涉及帧的**产出与合成**。
 
 ## 3. 不采用的方向（**不要在新代码里重新引入**）
 
@@ -98,12 +98,12 @@ alpha 混合。远端光标独立处理，不混进主画面缓冲。
 - **H.264/AVC 支持不采用**：它在真机上只有客户端广告 AVC444 时才被服务端启用（属微软非核心可选项），
   且命中硬解也无明显收益 ⇒ 服务端改用其他码流。**不要引入媒体库依赖**。
 
-解码始终是 FreeRDP 的 gdi 软解（上屏后端的选择见 [`rdp-present.md`](rdp-present.md) §1）。
+解码始终是 FreeRDP 的 gdi 软解（上屏后端的选择见 [`present.md`](present.md) §1）。
 
 ## 4. 呈现能力判定
 
-见 [`rdp-native.md`](rdp-native.md) §6（单一 `presenterSupported` 判定、Vulkan 面、模拟器回落）与
-[`rdp-present.md`](rdp-present.md) §1（上屏后端的选择）。
+见 [`present.md`](present.md) §5（单一 `presenterSupported` 判定、Vulkan 面、模拟器回落）与
+§1（上屏后端的选择）。
 
 ## 5. 量测纪律（回放）
 
@@ -151,7 +151,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
 
 - **路线只有两条，且是同一条 gdi 解码路径的两种上屏后端**：`CPU` = GLES 上屏（完全不碰 Vulkan）、
   `硬件加速` = Vulkan 上屏。这是 **dev 页专用的临时 A/B**（不落库）：live 会话没有这个开关，
-  呈现器按能力自动选（见 [`rdp-present.md`](rdp-present.md) §1）。
+  呈现器按能力自动选（见 [`present.md`](present.md) §1）。
 - **验收口径 = 参考画面（golden reference）**：同一条路线先 `参考:导出` 记一遍
   （`hmrdp_ref_<captureTag>.{hash,bmp}`，`captureTag` 是录制内容指纹，换录像即换参考），之后每轮
   `参考:对比` 看 `bad=`。判据、量级读法与"参考模式不是性能模式"见 §7.2。
@@ -212,11 +212,11 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   | `run … threads=… cpu=…s  cpuKHz=…` | 该轮的解码宽度、**整轮进程 CPU 时间**与本轮拿到的 SoC 频率档（`cpu=` 只在同一档下可比） |
   | `setup ms/frame: reset/create/delete/map/fill/blit/cache/imp` | **非像素 GFX 命令**；它们本来落在 `zgx+parse` 里 ⇒ **读 `zgx+parse` 前先看这行** |
   | `gfx setup: <Name> took … us` | 单条结构命令（模式切换/整面清零这类卡顿） |
-  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`rdp-present.md`](rdp-present.md) §7） |
+  | `uploaded/box/rectlist/truncated`、`present=` | 上屏侧：实际交给呈现器的字节、帧时间（细节见 [`present.md`](present.md) §6 与 [`rdp-present.md`](rdp-present.md) §4） |
   | `ref export: …` / `ref compare: refFrames=… checks=… bad=… firstBad=… rgbPx=… maxDelta=… hashMs=…` | **参考画面对比**（golden reference，见 §6/§7.2）：`bad` = 与参考逐帧哈希不同的帧数；`rgbPx/maxDelta/bbox` 只是参考图像那一帧的逐像素差 |
 
 - **`sync` = 等 GPU 放开主缓冲**（`BeginDesktopBufferWrite`；CPU 路线让解码器直接写呈现器缓冲，所以
-  **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`rdp-present.md`](rdp-present.md) §4）。
+  **本帧第一次写之前**要等上一帧的 GPU 拷贝读完，等待点见 [`rdp-present.md`](rdp-present.md) §2）。
 - **`presentWait` = 等显示端**：`present` 那一段里 `vkAcquireNextImageKHR`/fence（GLES 是
   `eglSwapBuffers`）的阻塞。`present` 只记录制/上传/提交，两者相加才是 present 的整段墙钟。
 - 两者都是**阻塞**不是处理 ⇒ 单列、都不进 `本机`；**帧的整段墙钟 = `本机` + `sync` + `presentWait`**
@@ -245,7 +245,7 @@ dev 页「回放测试」：并发:N   路线:CPU / 硬件加速   参考:关 / 
   - 参考模式**不是性能模式**：每帧对整个桌面做一次哈希（`hashMs=`），这段时间落在 `EndFrame` 里、会算进
     `compose` ⇒ 读性能数字请用 `参考:关` 那一轮。
 - **`bad=0` 覆盖不到的顺序约束**：上屏侧的帧序/等待（零拷贝单缓冲）不属于像素内容，
-  判定只能靠机制 + 计数器（见 [`rdp-present.md`](rdp-present.md) §4）。
+  判定只能靠机制 + 计数器（见 [`rdp-present.md`](rdp-present.md) §2）。
 
 ### 7.3 并行形态（固定）
 

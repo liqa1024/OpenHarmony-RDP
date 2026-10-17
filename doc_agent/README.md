@@ -19,12 +19,15 @@
 | 界面设计语言：设计原则、设计 token、布局模式、组件契约、共享工具、协议差异的呈现约定 | [`ui-design.md`](ui-design.md) |
 | **两协议共享的会话 / 连接层**：连接模型多态、连接发起分发、会话后端契约、会话窗口外壳、共享输入内核、会话窗口 / 输入 / 工具栏 / 光标共享行为、通用层命名与边界约定 | [`session-layer.md`](session-layer.md) |
 | RDP 会话：连接错误分类、原生会话生命周期、不可见抑制、RDP 输入落地（RDPEI / 高刷 / 直达缩放 / 锁键）、工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
-| **剪贴板（手动触发，两协议共享抽象）**与文件传输：共享控制器/桥/本机读写叶子、RDP 线格式、接收 PNG、实现坑 | [`rdp-clipboard.md`](rdp-clipboard.md) |
+| **剪贴板（手动触发，两协议共享抽象）**：共享控制器/桥/本机读写叶子、手动语义、用户文案 | [`clipboard.md`](clipboard.md) |
+| RDP 剪贴板与文件传输：cliprdr 格式协商与线格式、接收 PNG、文件传输、实现坑 | [`rdp-clipboard.md`](rdp-clipboard.md) |
 | 存储分工、密码（ASSET / 系统保险箱）、设置模型（全局默认 + 单连接覆盖）、导入/导出、**设置生效时机** | [`settings-and-storage.md`](settings-and-storage.md) |
 | 原生库构建体系：产物为何不入库、单一构建入口、依赖布局与自检、**补丁体系**、OpenSSL CMake、无版本号 SONAME | [`native-build.md`](native-build.md) |
-| RDP 原生：FreeRDP 补丁内容与编译选项、音频（原生 sink + 交接环 / ArkTS 渲染器）、**设备能力探测（Capability 模式）** | [`rdp-native.md`](rdp-native.md) |
+| RDP 原生：FreeRDP 补丁内容与编译选项、音频（rdpsnd sink 侧） | [`rdp-native.md`](rdp-native.md) |
+| **音频播放链路（两协议共享）**：有界 PCM 交接环、ArkTS 渲染器 / 原生 OHAudio、缓冲策略与格式变化、音频能力探测 | [`audio.md`](audio.md) |
 | GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、dev 回放与**参考画面验收**、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
-| 上屏（present）管线：一套呈现器实现、Vulkan/GLES 两个后端、脏区上传、零拷贝桌面缓冲、**超分辨率（Vulkan 专有）**、swapchain 重建 | [`rdp-present.md`](rdp-present.md) |
+| **上屏（present）管线（两协议共享）**：一套呈现器实现、Vulkan/GLES 两个后端、帧到屏路径、swapchain 尺寸与重建、**超分辨率（Vulkan 专有）**与 `PresentVideo` 视频导入、GPU 账目、呈现 / 超分能力判定 | [`present.md`](present.md) |
+| RDP 上屏接线：脏区形状与上传、零拷贝桌面缓冲、合并上屏、RDP 侧账目与踩坑 | [`rdp-present.md`](rdp-present.md) |
 | Moonlight 连接前端：协议建模、存储布局、连接列表 / 编辑页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
 | Moonlight 主机与应用：主机发现与可达性四态、唤醒（WoL）、应用管理页、连接动作走法 | [`moonlight-apps.md`](moonlight-apps.md) |
 | Moonlight 会话：会话窗口 / 后端接线、输入落地、工具栏遥测 | [`moonlight-session.md`](moonlight-session.md) |
@@ -35,13 +38,14 @@
 
 **跨主题、只有一个家的事实**（别在别处重写）：
 
-- **上屏后端按能力自动选（Vulkan 优先、GLES 兜底），没有开关；解码始终是 gdi** → [`rdp-present.md`](rdp-present.md) §1。
+- **上屏后端按能力自动选（Vulkan 优先、GLES 兜底），没有开关；解码始终是 gdi** → [`present.md`](present.md) §1。
 - **自研 GPU 解码/合成引擎不采用** → [`rdp-gfx.md`](rdp-gfx.md) 的「不采用的方向」。
 - **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
-- **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`rdp-native.md`](rdp-native.md) 的能力探测。
-- **剪贴板只手动同步、不做自动监听** → [`rdp-clipboard.md`](rdp-clipboard.md)。
-- **剪贴板抽象（`ClipboardController` + `ClipboardBridge` + `LocalPasteboard`）两协议共用**：RDP 全能力（文本/HTML/图片/文件），Moonlight 仅文本 + 图片 → [`rdp-clipboard.md`](rdp-clipboard.md) §0；Moonlight 协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
-- **Moonlight 默认解码直出 surface、不经呈现器；只有超分链路复用 RDP 的 Vulkan 呈现器** → [`moonlight-video.md`](moonlight-video.md) §2/§5。
+- **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`architecture.md`](architecture.md) §5。
+- **音频播放链路（有界 PCM 交接环 + ArkTS 渲染器 / 原生 OHAudio）两协议共用** → [`audio.md`](audio.md)。
+- **剪贴板只手动同步、不做自动监听** → [`clipboard.md`](clipboard.md) §2。
+- **剪贴板抽象（`ClipboardController` + `ClipboardBridge` + `LocalPasteboard`）两协议共用**：RDP 全能力（文本/HTML/图片/文件），Moonlight 仅文本 + 图片 → [`clipboard.md`](clipboard.md) §1；Moonlight 协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
+- **Moonlight 默认解码直出 surface、不经呈现器；只有超分链路复用共享的 Vulkan 呈现器** → [`moonlight-video.md`](moonlight-video.md) §2/§5、[`present.md`](present.md) §4。
 - **Moonlight 是进程级单会话**（`moonlight-common-c` 一次只允许一个连接）→ [`moonlight-native.md`](moonlight-native.md) §2。
 - **Moonlight 主机身份 = serverinfo `uniqueid`（去重）/ pin 按 host 归一化** → [`moonlight-control.md`](moonlight-control.md) §2。
 
@@ -55,12 +59,15 @@
 | 改界面外观 / 抽共享 UI 组件 | [`ui-design.md`](ui-design.md) |
 | 改两协议通用层（连接模型 / 后端 / 会话外壳 / 输入内核 / 会话窗口行为 / 工具栏 / 光标） | [`session-layer.md`](session-layer.md) |
 | 改 RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
-| 改剪贴板 / 文件传输 | [`rdp-clipboard.md`](rdp-clipboard.md) |
+| 改剪贴板（共享抽象 / 手动语义） | [`clipboard.md`](clipboard.md) |
+| 改 RDP 剪贴板线格式 / 文件传输 | [`rdp-clipboard.md`](rdp-clipboard.md) |
 | 改设置 / 连接存储 / 密码 / 导入导出 | [`settings-and-storage.md`](settings-and-storage.md) |
 | 改原生库构建 / 补丁体系（FreeRDP / OpenSSL / zlib / moonlight） | [`native-build.md`](native-build.md) |
-| 改 RDP 原生（补丁内容 / 音频 / 能力） | [`rdp-native.md`](rdp-native.md) |
+| 改 RDP 原生（补丁内容 / 音频 sink 侧） | [`rdp-native.md`](rdp-native.md) |
+| 改音频链路（交接环 / 渲染器 / 音频开关） | [`audio.md`](audio.md) |
 | 改 GFX / 解码 / 回放 | [`rdp-gfx.md`](rdp-gfx.md)（**CPU 链路先读 §7**） |
-| 改上屏（present）/ 超分 | [`rdp-present.md`](rdp-present.md) |
+| 改上屏（present，共享管线）/ 超分 | [`present.md`](present.md) |
+| 改 RDP 上屏接线（脏区 / 零拷贝 / 合并） | [`rdp-present.md`](rdp-present.md) |
 | 改 Moonlight 前端（列表 / 编辑页 / 设置分栏 / 图标） | [`moonlight-connection.md`](moonlight-connection.md) |
 | 改 Moonlight 主机与应用（发现 / 运行态 / 唤醒 / 应用页） | [`moonlight-apps.md`](moonlight-apps.md) |
 | 改 Moonlight 会话 / 遥测 | [`moonlight-session.md`](moonlight-session.md) |

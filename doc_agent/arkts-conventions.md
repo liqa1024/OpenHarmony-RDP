@@ -54,7 +54,7 @@
   `MoonlightConnection`），连接发起分发放 `services/ConnectionLauncher`，会话外壳差异经 `SessionViewDelegate`
   注入。`if (protocol === …)` / `isMoonlight()` / 协议布尔标志只允许出现在协议专属类与唯一组合入口（工厂）。
 - 原生侧能力差异（音频、GPU 加速等）走 `services/DeviceCapabilities.ets` 的 `Capability{supported, reason}`：
-  UI 置灰 + 说明原因，不要静默失败（见 [`rdp-native.md`](rdp-native.md) §6）。
+  UI 置灰 + 说明原因，不要静默失败（见 [`architecture.md`](architecture.md) §5）。
 - 设置项、连接字段、原生开关三者的对应关系见 [`settings-and-storage.md`](settings-and-storage.md)。
 
 ## 6. 沉浸光感（系统材质）

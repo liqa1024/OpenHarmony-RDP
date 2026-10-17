@@ -125,7 +125,7 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
   required.`；多设备（syscap）/ 权限告警用
   `@SuppressWarnings({rules: [SuppressWarningsType.SYSCAP | PERMISSION]})`（`@ohos.annotation`，API 23+；
   装饰器对类 / 方法生效，**不能**标自由函数）标注承载调用的类或方法消除。两类告警的具体口径见
-  [`rdp-native.md`](rdp-native.md) §5、[`rdp-clipboard.md`](rdp-clipboard.md)。
+  [`audio.md`](audio.md) §7、[`clipboard.md`](clipboard.md) §2。
 - **`Currently module for 'libhmrdp.so' is not verified` 属误报**：本机 Node-API 库的类型验证告警
   （类型已由 `entry/src/main/cpp/types/libhmrdp/index.d.ts` 提供，引用处类型正常解析），源码侧无法消除，
   不必处理。

@@ -3,9 +3,9 @@
 本文件是 **RDP 与 Moonlight 共享的会话 / 连接层**的家：连接的协议建模与多态、连接发起分发、会话后端契约、
 会话窗口外壳、共享输入内核，以及**会话窗口 / 输入 / 工具栏 / 光标安装器的共享行为**与**通用层的命名边界**。
 
-协议专属内容不在这里：RDP 会话 / 输入 / 遥测见 [`rdp-session.md`](rdp-session.md)，RDP FreeRDP / 音频 /
-能力见 [`rdp-native.md`](rdp-native.md)，GFX 见 [`rdp-gfx.md`](rdp-gfx.md)，上屏见
-[`rdp-present.md`](rdp-present.md)，剪贴板见 [`rdp-clipboard.md`](rdp-clipboard.md)；
+协议专属内容不在这里：RDP 会话 / 输入 / 遥测见 [`rdp-session.md`](rdp-session.md)，RDP FreeRDP 补丁与音频
+sink 侧见 [`rdp-native.md`](rdp-native.md)，共享音频链路见 [`audio.md`](audio.md)，GFX 见
+[`rdp-gfx.md`](rdp-gfx.md)，上屏见 [`present.md`](present.md)，剪贴板见 [`clipboard.md`](clipboard.md)；
 Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight-apps.md`](moonlight-apps.md) /
 [`moonlight-session.md`](moonlight-session.md) / [`moonlight-control.md`](moonlight-control.md) /
 [`moonlight-video.md`](moonlight-video.md) / [`moonlight-native.md`](moonlight-native.md)；
@@ -505,7 +505,7 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
 `services/TouchRevealGesture`（触屏顶部下拉唤出判定器：持有触点、判定后回放或丢弃）、
 `services/RemoteCursor`（远端光标安装器）、`services/ForegroundReconnect`（回到前台自动重连）、
 `services/ClipboardController` + `services/ClipboardBridge` + `utils/LocalPasteboard`
-（协议中立的手动剪贴板：远端缓存 / 复制粘贴语义 / 本机读写；见 [`rdp-clipboard.md`](rdp-clipboard.md) §0）、
+（协议中立的手动剪贴板：远端缓存 / 复制粘贴语义 / 本机读写；见 [`clipboard.md`](clipboard.md) §1）、
 `components/SessionChrome`（会话 chrome 常量与组件，含共享遥测行 `TelemetryRow` / `TelemetryField` / 阈值着色 `metricColor`
 / 定宽延迟文本 `formatLatency` 与共享复制/粘贴按钮 `ClipboardButtons` / 传输进度行 `ClipboardTransferStatus`）、
 `utils/UiMotion`（hover/press 动效）——均为两协议共用。

@@ -4,7 +4,7 @@
 它只回答"界面长什么样、由哪些组件组合、参数怎么给"，**不描述行为与数据语义**：
 
 - 会话窗口 / 输入 / 工具栏行为 → [`session-layer.md`](session-layer.md)；RDP 会话 / 遥测 → [`rdp-session.md`](rdp-session.md)；
-- 剪贴板与文件传输 → [`rdp-clipboard.md`](rdp-clipboard.md)；
+- 剪贴板（两协议共享抽象）→ [`clipboard.md`](clipboard.md)；RDP 线格式与文件传输 → [`rdp-clipboard.md`](rdp-clipboard.md)；
 - 设置项 / 连接存储 / 生效时机 → [`settings-and-storage.md`](settings-and-storage.md)；
 - Moonlight 协议差异（字段、分栏、图标语义） → [`moonlight-connection.md`](moonlight-connection.md)；
 - ArkTS / ArkUI 语法、状态刷新、主题资源规则、沉浸材质 API 与摆放机制 → [`arkts-conventions.md`](arkts-conventions.md)。
