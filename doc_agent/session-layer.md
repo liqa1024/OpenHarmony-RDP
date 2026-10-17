@@ -425,9 +425,9 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   遥测行由共享的 `TelemetryRow`（`components/SessionChrome`）渲染，页面只产出协议专属的 `TelemetryField[]`；
 RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-session.md) §5，Moonlight 见
   [`moonlight-session.md`](moonlight-session.md) §2。
-- **定宽圆角条**：工具栏不铺满横向宽度，而是**按窗口宽度百分比定宽、水平居中**的圆角矩形（宽度在开发者选项
+- **定宽浮条**：工具栏不铺满横向宽度，而是**按窗口宽度百分比定宽、水平居中**（宽度在开发者选项
   调，默认与触发区域宽度同值，100% 才贴满）；两侧空出的区域仍归画面（外层包装行 `HitTestMode.None`）。全屏下
-  主行**最左端**有**图钉**（标准 45° 图钉图标）：固定后工具栏不再自动隐藏（与剪贴板传输期间的钉住并列），
+  主行**最左端**有**图钉**：固定后工具栏不再自动隐藏（与剪贴板传输期间的钉住并列），
   再点一次恢复自动隐藏。
 - **自动隐藏的判定口径**：全屏下只看**指针在哪一格**——顶部触发带（贴顶一条**居中**窄带，停留 `hoverDelay` 才
   滑出）、工具栏自身、其余画面；**指针在工具栏上 ⇒ 保持显示，且不允许任何隐藏定时器在跑**，在画面里 ⇒
@@ -513,7 +513,7 @@ RDP 主行的分辨率 / 超分指示与遥测字段见 [`rdp-session.md`](rdp-s
 （协议中立的手动剪贴板：远端缓存 / 复制粘贴语义 / 本机读写；见 [`clipboard.md`](clipboard.md) §1）、
 `components/SessionChrome`（会话 chrome 常量与组件，含共享遥测行 `TelemetryRow` / `TelemetryField` / 阈值着色 `metricColor`
 / 定宽延迟文本 `formatLatency` 与共享复制/粘贴按钮 `ClipboardButtons` / 传输进度行 `ClipboardTransferStatus`）、
-`utils/UiMotion`（hover/press 动效）——均为两协议共用。
+`utils/UiMotion`（hover/press 与转场的共享状态）——均为两协议共用。
 
 ## 12. 命名与边界约定
 

@@ -12,17 +12,17 @@ export struct SettingToggleRow {
       Column() {
         Text(this.title)
           .fontSize(14)
-          .fontColor(this.switchEnabled ? $r('app.color.text_primary') : $r('app.color.text_tertiary'))
+          
         if (this.subtitle.length > 0) {
           Text(this.subtitle)
             .fontSize(11)
-            .fontColor($r('app.color.text_tertiary'))
+            
             .margin({ top: 2 })
         }
         if (!this.switchEnabled && this.disabledReason.length > 0) {
           Text(this.disabledReason)
             .fontSize(11)
-            .fontColor($r('app.color.danger'))
+            
             .margin({ top: 2 })
         }
       }
@@ -30,7 +30,7 @@ export struct SettingToggleRow {
       .layoutWeight(1)
 
       Toggle({ type: ToggleType.Switch, isOn: this.value })
-        .selectedColor($r('app.color.accent'))
+        
         .enabled(this.switchEnabled)
         .onChange((isOn: boolean) => {
           if (!this.switchEnabled) {
@@ -44,3 +44,5 @@ export struct SettingToggleRow {
       + (!this.switchEnabled && this.disabledReason.length > 0 ? 20 : 0))
   }
 }
+
+

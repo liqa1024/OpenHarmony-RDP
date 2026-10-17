@@ -1,7 +1,5 @@
 import { REVEAL_HINT_FADE_MS, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER } from '../components/SessionChrome';
 
-// How long the first pull's handle stays up: a second pull inside this window reveals the toolbar,
-// so it is the touch double-gesture interval.
 const TOUCH_HINT_HOLD_MS: number = 2000;
 const TOUCH_BAR_IN_MS: number = 180;
 
@@ -27,8 +25,6 @@ export class ToolbarAutoHide {
   private hideTimer: number = -1;
   private touchHintTimer: number = -1;
   private touchBarShown: boolean = false;
-  // A touch reveal outlives the gesture: with no pointer there is nothing to re-evaluate the zone,
-  // so the strip stays until the picture is touched (or a real pointer takes the judgement over).
   private touchRevealed: boolean = false;
 
   constructor(host: ToolbarAutoHideHost) {
@@ -46,9 +42,6 @@ export class ToolbarAutoHide {
     this.refresh();
   }
 
-  // Touch has no pointer, so a pull-down is the only way back to the toolbar: the first pull
-  // raises the handle (and the system tip that teaches it), the second one inside TOUCH_HINT_HOLD_MS
-  // reveals the toolbar.
   noteTouchSwipe(): void {
     if (!this.host.isArmed() || !this.host.isFullscreen() || !this.host.isConnected()
       || this.host.isPinned()) {
@@ -206,3 +199,5 @@ export class ToolbarAutoHide {
     }
   }
 }
+
+

@@ -6,15 +6,11 @@ const TAG: string = 'HmRdpBackground';
 const FALLBACK_SUFFIX: string = '.jpg';
 const MAX_SUFFIX_LENGTH: number = 6;
 
-// The picked image is copied into the app sandbox: a picker URI is only granted for
-// the session, while the main page has to read the wallpaper on every launch.
 export class BackgroundImage {
   static async importFromUri(filesDir: string, uri: string): Promise<string> {
     if (filesDir.length === 0 || uri.length === 0) {
       return '';
     }
-    // A fresh name per selection: an unchanged path would let the Image cache keep
-    // showing the previous wallpaper after the file is overwritten.
     const dest: string = filesDir + '/background_' + Date.now() + BackgroundImage.suffixOf(uri);
     let src: fileIo.File | undefined = undefined;
     try {
@@ -49,7 +45,6 @@ export class BackgroundImage {
     }
   }
 
-  // Image takes a sandbox URI, not a bare sandbox path.
   static uriOf(path: string): string {
     if (path.length === 0) {
       return '';
@@ -82,3 +77,5 @@ export class BackgroundImage {
     return '.' + suffix;
   }
 }
+
+

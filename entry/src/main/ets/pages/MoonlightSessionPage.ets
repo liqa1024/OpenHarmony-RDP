@@ -28,7 +28,6 @@ import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MO
 import { mapPicturePoint } from '../utils/PictureFit';
 import { joinSessionTags, srTag } from '../utils/SessionTags';
 import { gpuFrameLabel, gpuSplitLabel, usToMs } from '../utils/TelemetryFormat';
-import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
 import { PadProbeOverlay } from '../components/PadProbeOverlay';
@@ -40,25 +39,19 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
 import { showNotice, showToast } from '../utils/UiUtil';
-import { ClipboardButtons, METRIC_BAD, TOOLBAR_ACCENT_CHIP_BG, TOOLBAR_BG, TOOLBAR_CHIP_BG,
-  TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG_SECONDARY, TOOLBAR_NEUTRAL_CHIP_BG, TOOLBAR_RADIUS,
-  TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW,
-  TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
+import { ClipboardButtons, TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
+  TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER,
   TelemetryField, TelemetryRow, SessionTitle, ToolbarChip, ToolbarIconChip, ToolbarRevealHint,
   ToolbarTouchBar,
-  formatLatency, metricColor } from '../components/SessionChrome';
+  formatLatency } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD004;
 const TAG: string = 'HmRdpMoonlightPage';
 
-// The window opens while still Connecting (LiStartConnection needs the render
-// target); hold the connecting card back this long so a fast start does not flash.
 const CONNECT_OVERLAY_DELAY_MS: number = 1000;
-// The pinch emits frames far faster than the UI needs; the debug overlay is sampled.
 const PINCH_PROBE_PUBLISH_MS: number = 50;
 
 const METRICS_INTERVAL_MS: number = 1000;
-// Fixed widths so a changing digit count never reflows the fields after it.
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_HOST: number = 62;
 const METRIC_WIDTH_LOCAL: number = 66;
@@ -66,19 +59,14 @@ const METRIC_WIDTH_GPU: number = 76;
 const METRIC_WIDTH_FPS: number = 62;
 const METRIC_WIDTH_FPS_WIDE: number = 78;
 const METRIC_WIDTH_BITRATE: number = 132;
-// Fixed width for one detail reading (`在途 12`); the digits vary, so a content-width field would
-// shift its neighbours on every sample.
 const METRIC_WIDTH_DETAIL: number = 82;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
-// Latency colour thresholds: network RTT warns late (distance-dominated). The two
-// local readings include codec/output-buffer wait, so colour only past a multiple of the frame period.
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
 const LOCAL_WARN_PERIODS: number = 2;
 const LOCAL_BAD_PERIODS: number = 3;
-// Long enough to read one line of advice, short enough not to sit over the picture.
 const OVERLOAD_TOAST_MS: number = 2500;
 
 @Entry({ useSharedStorage: true })
@@ -97,18 +85,11 @@ struct MoonlightSessionPage {
   private surfaceHeight: number = 0;
   private componentWidth: number = 0;
   private componentHeight: number = 0;
-  // Reference frame for absolute mouse positions: the resolved stream size from
-  // the request (the 1080p default only covers a request that predates it).
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
-  // 超分 token for the toolbar title ("FSR 1.5x"), "" when the session does not upscale.
   private srToken: string = '';
-  // ML_CURSOR_*: OFF/HIDE_HOST never hide the system cursor; HIDE_SYSTEM hides
-  // it over the picture; HIDE_HOST installs the host-forwarded shape instead.
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
-  // HIDE_SYSTEM only: the host cursor owns its position and Windows applies its own pointer curve.
   private relativeMouse: boolean = false;
-  // When true the native renderer plays, so this page starts no ArkTS renderer.
   private lowLatencyAudio: boolean = true;
   private hostLabel: string = '';
   private targetLabel: string = '';
@@ -117,10 +98,7 @@ struct MoonlightSessionPage {
   private probeTimer: number = -1;
   private probeLiveActive: boolean = false;
   private probeLive: number[] = [0.5, 0.5, 0.5, 0.5];
-  private toolbarFrost: AttributeModifier<ColumnAttribute> =
-    new FrostedModifier<ColumnAttribute>(FrostedSurface.FLOATING);
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private tipsOptions: TipsOptions = {};
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
@@ -162,7 +140,6 @@ struct MoonlightSessionPage {
   @State metricsPending: number = 0;
   @State metricsDroppedPerSec: number = 0;
   @State metricsLossBp: number = -1;
-  // Why this session's frame rate was capped; shown once when it becomes the live stream.
   private fpsNote: string = '';
   private fpsNoteShown: boolean = false;
   private videoWarningShown: boolean = false;
@@ -176,7 +153,6 @@ struct MoonlightSessionPage {
   private clipboard: ClipboardController | undefined = undefined;
   @State clipboardAvailable: boolean = false;
 
-  // The system paste control grants a one-time clipboard read without the READ_PASTEBOARD permission.
   private pasteButtonCallback: PasteButtonCallback =
     (event: ClickEvent, result: PasteButtonOnClickResult): void => {
       if (result === PasteButtonOnClickResult.SUCCESS) {
@@ -188,8 +164,6 @@ struct MoonlightSessionPage {
     };
 
   aboutToAppear(): void {
-    // The Vulkan presenter is process-global: re-apply the device verdict so a dev-page A/B (CPU
-    // route) cannot leave 超分 running on the GLES fallback, which cannot import decoded buffers.
     DeviceCapabilities.applyHardwareAccel();
     const request: PendingConnection | undefined = SessionRequests.get(this.sessionKey);
     if (request !== undefined) {
@@ -206,8 +180,6 @@ struct MoonlightSessionPage {
       this.fpsNote = request.moonlightFpsNote;
       const config = request.moonlightConfig;
       if (config !== undefined) {
-        // 超分: the picture and the input reference use the *session* (pre-upscale) resolution, like
-        // the RDP session page; the presenter upscales back to the requested output size.
         if (config.streamWidth > 0 && config.streamHeight > 0) {
           this.streamWidth = config.streamWidth;
           this.streamHeight = config.streamHeight;
@@ -307,12 +279,8 @@ struct MoonlightSessionPage {
         this.onSurfaceCreated(surfaceId, width, height);
       },
       onSurfaceChanged: (width: number, height: number): void => {
-        // The surface id is stable across resizes, so the bound OHNativeWindow
-        // stays valid; only the size is kept for a retry re-bind.
         this.surfaceWidth = width;
         this.surfaceHeight = height;
-        // 超分: the presenter owns the swapchain, so the resize has to reach it (a no-op on the
-        // direct-to-surface path, which the window scaling mode fits by itself).
         moonlightSessionResizeSurface(width, height);
         hilog.info(DOMAIN, TAG, 'surface changed %{public}dx%{public}d', width, height);
       },
@@ -346,7 +314,6 @@ struct MoonlightSessionPage {
   aboutToDisappear(): void {
     this.stopAudio();
     this.backend()?.clearClipboardListener();
-    // The system cursor is process-wide: never leave it hidden for the next page.
     this.shell?.release();
   }
 
@@ -367,7 +334,6 @@ struct MoonlightSessionPage {
     showToast(this.getUIContext(), message, durationMs);
   }
 
-  // No file transfer in Moonlight, so the transfer hooks are inert.
   private makeClipboardHost(): ClipboardControllerHost {
     const clipboardHost: ClipboardControllerHost = {
       toast: (message: string): void => {
@@ -394,8 +360,6 @@ struct MoonlightSessionPage {
       return undefined;
     }
     backend.setCursorListener((update): void => {
-      // The native session attaches the picture/surface ratio to each cursor shape (same contract
-      // as RDP); scaling and dedup stay in the shared RemoteCursor.
       this.shell?.remoteCursor().applyUpdate(update);
     });
     backend.setKeyInterceptListener((keyCode: number, down: boolean): void => {
@@ -410,7 +374,6 @@ struct MoonlightSessionPage {
     sink.setReferenceSize(this.streamWidth, this.streamHeight);
     this.sink = sink;
     const input: SessionInput = new SessionInput(sink);
-    // Moonlight only: OH reports gamepad buttons as key events and sticks as focus axis events.
     input.setGamepad(new GamepadInput(sink));
     input.setEngineEnabled(this.scrollEngine);
     input.setWinKeySubstitute(settings.mlWinKeySubstitute);
@@ -447,7 +410,6 @@ struct MoonlightSessionPage {
       }
       const touchSupported: boolean = (features & ML_HOST_FEATURE_TOUCH) !== 0;
       const nativeTouchpadSupported: boolean = (features & ML_HOST_FEATURE_TOUCHPAD_FRAME) !== 0;
-      // Only when the host advertises it (foundation-sunshine with its GUI agent alive).
       this.clipboardAvailable =
         (features & (ML_HOST_FEATURE_CLIPBOARD_TEXT | ML_HOST_FEATURE_CLIPBOARD_IMAGE)) !== 0;
       const input: SessionInput | undefined = this.shell?.sessionInput();
@@ -464,8 +426,6 @@ struct MoonlightSessionPage {
       this.startAudio();
       return;
     }
-    // Not streaming: the process-wide system cursor must come back, and a late
-    // host hide must not bring it down again while the window stays up.
     this.stopAudio();
     this.stopMetricsTimer();
     this.clipboardAvailable = false;
@@ -475,9 +435,6 @@ struct MoonlightSessionPage {
     }
   }
 
-  // The native config gate (enableAudio + output device) decides whether any
-  // audio flows; a disabled stream never reports a format, so the worker builds
-  // no renderer and this is a harmless no-op.
   private startAudio(): void {
     if (!this.lowLatencyAudio && !this.audioStarted) {
       this.audioStarted = true;
@@ -545,7 +502,6 @@ struct MoonlightSessionPage {
     this.reportOverload();
   }
 
-  // A refused frame or an inactive upscale is otherwise only a log line; surface it once.
   private reportVideoWarning(): void {
     const warning: string = moonlightVideoStatus();
     const videoError: boolean = warning.indexOf('video-present') >= 0;
@@ -567,9 +523,6 @@ struct MoonlightSessionPage {
     }
   }
 
-  // The readings colour themselves; what a colour cannot say is what to do about it, so a side that
-  // stays red gets one prompt. Both sides read per-frame wall clock against the frame period (see
-  // doc_agent/moonlight-session.md §2).
   private reportOverload(): void {
     const localMs: number = this.localBottleneckMs();
     const overload: number = this.overload.sample(localMs, this.metricsHostMs,
@@ -577,9 +530,6 @@ struct MoonlightSessionPage {
     if (overload === OVERLOAD_NONE) {
       return;
     }
-    // One line, one action: fewer pixels is the strongest lever on either side (less to decode
-    // locally, less to encode on the host); super resolution turns that into "lower the resolution
-    // and upscale" — the lower stream costs both sides fewer pixels.
     if (overload === OVERLOAD_LOCAL) {
       hilog.warn(DOMAIN, TAG, 'local decode/present overloaded: %{public}fms/frame pending=%{public}d drop=%{public}d/s',
         localMs, this.metricsPending, this.metricsDroppedPerSec);
@@ -623,7 +573,6 @@ struct MoonlightSessionPage {
     return LOCAL_BAD_PERIODS * 1000 / this.localFrameFps();
   }
 
-  // One bracket for every session tag: 超分 and codec share the slot after the resolution.
   private titleDetail(): string {
     const tokens: string[] = [];
     if (this.srToken.length > 0) {
@@ -642,8 +591,6 @@ struct MoonlightSessionPage {
       : 'FPS ' + this.metricsFps;
   }
 
-  // A 3-digit target widens the current/target pair (`FPS 59/120`); keeping the narrow
-  // width otherwise avoids a gap when the target is 2-digit. The target is fixed per session.
   private fpsWidth(): number {
     return this.targetFps >= 100 ? METRIC_WIDTH_FPS_WIDE : METRIC_WIDTH_FPS;
   }
@@ -659,55 +606,40 @@ struct MoonlightSessionPage {
 
   private telemetryFields(): TelemetryField[] {
     const fields: TelemetryField[] = [];
-    fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
-      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), 0));
-    fields.push(new TelemetryField(this.hostEncodeLabel(), METRIC_WIDTH_HOST,
-      metricColor(this.metricsHostMs, this.localWarnMs(), this.localBadMs()), METRIC_GAP_TIGHT));
-    fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
-      metricColor(this.metricsDecodeMs, this.localWarnMs(), this.localBadMs()), METRIC_GAP_GROUP));
-    fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU,
-      metricColor(this.metricsGpuFrameUs / 1000, this.localWarnMs(), this.localBadMs()),
-      METRIC_GAP_TIGHT));
-    fields.push(new TelemetryField(this.fpsLabel(), this.fpsWidth(),
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
-    fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE,
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
-    // Input budget drops are invisible otherwise: any non-zero count names a stream over its budget.
+    fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK, 0));
+    fields.push(new TelemetryField(this.hostEncodeLabel(), METRIC_WIDTH_HOST, METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL, METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU, METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField(this.fpsLabel(), this.fpsWidth(), METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.bitrateLabel(), METRIC_WIDTH_BITRATE, METRIC_GAP_GROUP));
     const dropped: number = this.sink?.inputDropped() ?? 0;
     if (dropped > 0) {
-      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, METRIC_GAP_GROUP));
+      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_GAP_GROUP));
     }
     return fields;
   }
 
-  // What the readings above hide, in the same order as the readings themselves: the network's
-  // jitter and loss behind the RTT, then the decode queue state behind the local round trip. A row,
-  // not a tooltip: a bound tooltip's text is read once, so a live number in one is stuck at whatever
-  // it was when the pointer first arrived.
   private detailFields(): TelemetryField[] {
     const jitter: string = this.metricsJitter < 0 ? '--' : this.metricsJitter + 'ms';
     const loss: string = this.metricsLossBp < 0 ? '--'
       : (this.metricsLossBp / 100).toFixed(2) + '%';
     const fields: TelemetryField[] = [];
-    fields.push(new TelemetryField('抖动 ' + jitter, METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, 0));
-    fields.push(new TelemetryField('丢包 ' + loss, METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY,
-      METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField('抖动 ' + jitter, METRIC_WIDTH_DETAIL, 0));
+    fields.push(new TelemetryField('丢包 ' + loss, METRIC_WIDTH_DETAIL, METRIC_GAP_TIGHT));
     fields.push(new TelemetryField('在途 ' + this.metricsPending + ' 帧', METRIC_WIDTH_DETAIL,
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+      METRIC_GAP_GROUP));
     fields.push(new TelemetryField('丢 ' + this.metricsDroppedPerSec + ' 帧/s', METRIC_WIDTH_DETAIL,
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+      METRIC_GAP_TIGHT));
     if (this.metricsGpuFrameUs > 0) {
       fields.push(new TelemetryField(
         gpuSplitLabel(this.metricsGpuCopyUs, this.metricsGpuSrUs, this.metricsGpuBlitUs, '转换'),
-        0, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+        0, METRIC_GAP_GROUP));
       fields.push(new TelemetryField('等显示 ' + usToMs(this.metricsPresentWaitUs) + 'ms',
-        METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+        METRIC_WIDTH_DETAIL, METRIC_GAP_TIGHT));
     }
     return fields;
   }
 
-  // Direct zoom is RDP-presenter only; touch-simulate needs host touch; native touchpad needs the
-  // foundation-sunshine capability. Unsupported choices fall back to Ctrl+wheel.
   private effectivePinchMode(touchSupported: boolean, nativeTouchpadSupported: boolean): number {
     if (this.mlPinchMode === PINCH_MODE_ZOOM) {
       return PINCH_MODE_WHEEL;
@@ -721,7 +653,6 @@ struct MoonlightSessionPage {
     return this.mlPinchMode;
   }
 
-  // A capped rate is a visible change to what was asked for, so say so once per session.
   private showFpsNote(): void {
     if (this.fpsNote.length === 0 || this.fpsNoteShown) {
       return;
@@ -730,8 +661,6 @@ struct MoonlightSessionPage {
     showNotice(this.getUIContext(), '帧率已调整', this.fpsNote);
   }
 
-  // 0x20 is the only base-version marker a client can read; whether the host's virtual mouse driver is
-  // on cannot be probed (see doc_agent/moonlight-native.md §2.2), hence a one-time suggestion.
   private suggestVmouseOff(nativeTouchpadSupported: boolean): void {
     if (!nativeTouchpadSupported || this.vmouseHintShown) {
       return;
@@ -751,8 +680,6 @@ struct MoonlightSessionPage {
     if (backend === undefined) {
       return;
     }
-    // A surface recreated while streaming is rebound (the presenter path replaces its swapchain);
-    // the stream itself is started only once.
     if (!backend.bindSurface(surfaceId, width, height)) {
       hilog.error(DOMAIN, TAG, 'bind surface failed');
       return;
@@ -764,7 +691,6 @@ struct MoonlightSessionPage {
   }
 
   private onRelease(): void {
-    // Restore before the window goes away (setPointerVisible is process-wide).
     this.setLocalCursorHidden(false);
     const backend: MoonlightSessionBackend | undefined = this.backend();
     backend?.clearKeyInterceptListener();
@@ -805,8 +731,6 @@ struct MoonlightSessionPage {
     this.probeP2Y = this.probeLive[3];
   }
 
-  // HIDE_SYSTEM only: the installer owns the process-global cursor switch and
-  // restores it off the picture / on disconnect / on teardown.
   private setLocalCursorHidden(hidden: boolean): void {
     const shouldHide: boolean = hidden
       && this.cursorMode === ML_CURSOR_HIDE_SYSTEM && this.state === ConnectionState.Connected;
@@ -830,7 +754,6 @@ struct MoonlightSessionPage {
   private handleAxis(event: AxisEvent): void {
     if (this.scrollEngine && !SessionInput.isPinchEvent(event)
       && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0)) {
-      // The engine's offsets carry no position, so remember the pointer for its wheel events.
       const point: number[] = this.mapPoint(event.x, event.y);
       this.enginePointerX = point[0];
       this.enginePointerY = point[1];
@@ -878,8 +801,6 @@ struct MoonlightSessionPage {
       const ok: boolean = await MoonlightClient.cancel(filesDir, request.savedConnection.host,
         request.moonlightHttpsPort);
       if (ok) {
-        // Clear the shared host target now, or the list would flip to 恢复 when
-        // this window closes.
         MoonlightHostState.markStopped(request.savedConnection.id);
         MoonlightHostState.refreshAfter(request.savedConnection, filesDir, HOST_REPROBE_DELAY_MS);
       }
@@ -911,7 +832,6 @@ struct MoonlightSessionPage {
           if (this.isFullscreen) {
             ToolbarIconChip({
               icon: $r('app.media.ic_pin'),
-              chipBg: this.toolbarPinned ? TOOLBAR_ACCENT_CHIP_BG : TOOLBAR_CHIP_BG,
               iconSize: 20,
               iconAngle: 45,
               onTap: () => {
@@ -952,7 +872,6 @@ struct MoonlightSessionPage {
             .margin({ right: 8 })
           ToolbarChip({
             label: '断开',
-            chipBg: TOOLBAR_NEUTRAL_CHIP_BG,
             onTap: () => {
               this.disconnect();
             }
@@ -961,7 +880,6 @@ struct MoonlightSessionPage {
             .bindTips('仅断开与主机的连接，主机上的应用保持运行', this.tipsOptions)
           ToolbarChip({
             label: '关闭应用',
-            chipBg: TOOLBAR_DANGER_CHIP_BG,
             onTap: () => {
               this.closeAppAndDisconnect();
             }
@@ -977,19 +895,17 @@ struct MoonlightSessionPage {
         }
       }
       .width(this.toolbarWidthPercent + '%')
-      .backgroundColor(TOOLBAR_BG)
+      
       .borderRadius(TOOLBAR_RADIUS)
       .clip(true)
-      .attributeModifier(this.toolbarFrost)
-      .shadow(TOOLBAR_SHADOW)
-      // In fullscreen the bar covers the surface, so only its own hover reports it.
+      
+      
       .onHover((isHover: boolean) => {
         this.shell?.setPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
       })
     }
     .width('100%')
     .justifyContent(FlexAlign.Center)
-    // The empty sides belong to the picture: only the bar itself takes the hit.
     .hitTestBehavior(HitTestMode.None)
     .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
@@ -1024,8 +940,6 @@ struct MoonlightSessionPage {
           onPointerHover: (isHover: boolean) => {
             this.setLocalCursorHidden(isHover);
             if (isHover) {
-              // The system may drop a custom cursor when the pointer re-enters,
-              // and the host only sends a shape on change, so re-install it.
               this.shell?.remoteCursor().reapply();
             }
           },
@@ -1043,7 +957,6 @@ struct MoonlightSessionPage {
             this.handleFocusAxis(event);
           },
           onSurfaceBlur: () => {
-            // Keys/buttons held when focus leaves would never get their Up event.
             const input: SessionInput | undefined = this.shell?.sessionInput();
             input?.releaseAll();
           },
@@ -1074,7 +987,6 @@ struct MoonlightSessionPage {
           .alignItems(HorizontalAlign.Start)
           .padding({ left: 12, bottom: 12 })
           .hitTestBehavior(HitTestMode.None)
-          // Marks a live pinch only; yields to the pointer so it never sits under the cursor.
           .opacity(this.probeActive && !this.probeNearPointer ? 1 : 0)
         }
 
@@ -1144,7 +1056,7 @@ struct MoonlightSessionPage {
           .height('100%')
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
-          .backgroundColor('#66000000')
+          
         }
       }
       .width('100%')
@@ -1153,6 +1065,8 @@ struct MoonlightSessionPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#000000')
+    
   }
 }
+
+

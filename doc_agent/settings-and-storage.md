@@ -117,7 +117,7 @@
 - **页面背景图片**（`backgroundImage` + `settingsBackgroundImage` / `appsBackgroundImage`，进程级，默认无）：
   通用设置「外观」选择图片后复制进应用沙箱（`files/background_<时间戳>.<ext>`，每次选择用新文件名以免
   `Image` 缓存旧图）。三页默认共用 `backgroundImage`；设置页与 Moonlight 应用页可分别覆盖（为空即回退）。
-  图片自 `PageBackground` 按 `Cover` 铺满并叠一层 `page_bg` 25% 遮罩。它是本机资产：配置导出不写路径、
+  它是本机资产：配置导出不写路径、
   导入保留本机当前背景；清除 / 恢复默认时删除文件。文件与 URI 处理见 `services/BackgroundImage`。
 - **快捷键穿透**（`shortcutPassthrough`，进程级，默认关）：会话窗口聚焦时用系统按键拦截把 Win / Alt+Tab /
   Esc 等发给远端（需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）。按会话窗口焦点实时注册/释放，

@@ -313,8 +313,6 @@ struct MoonlightAppsPage {
     return this.defaultAppId === app.id.toString();
   }
 
-  // @Prop cannot carry the PixelMap (it does not survive the deep copy), so the tile key
-  // carries the icon's per-app presence to recreate the tile only when its icon arrives.
   private tileKey(app: NvApp): string {
     return `${app.id}#${this.iconMap.has(app.id) ? 1 : 0}`;
   }
@@ -332,7 +330,7 @@ struct MoonlightAppsPage {
         }) {
           Text(this.label())
             .fontSize(13)
-            .fontColor($r('app.color.text_tertiary'))
+            
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .constraintSize({ maxWidth: 320 })
@@ -340,7 +338,7 @@ struct MoonlightAppsPage {
 
         if (this.loading) {
           Column() {
-            LoadingProgress().width(40).height(40).color($r('app.color.accent'))
+            LoadingProgress().width(40).height(40)
           }
           .width('100%')
           .layoutWeight(1)
@@ -349,7 +347,7 @@ struct MoonlightAppsPage {
           Column() {
             Text(this.error)
               .fontSize(14)
-              .fontColor($r('app.color.text_secondary'))
+              
               .textAlign(TextAlign.Center)
               .margin({ bottom: 12 })
             Button('重试')
@@ -416,6 +414,8 @@ struct MoonlightAppsPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.page_bg'))
+    
   }
 }
+
+

@@ -1,7 +1,6 @@
 import { ConnectAction, connectActionLabel, HostPower, RdpConnection, RowMenuAction, RowMenuEntry,
   SavedConnection } from '../model/Connections';
 import { ConnectionState } from '../services/SessionManager';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { WakeReachability } from '../services/WakeOnLan';
 import { connectActionFor } from '../utils/ConnectAction';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition }
@@ -11,19 +10,13 @@ import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, p
 export struct ConnectionRow {
   conn: SavedConnection = new RdpConnection();
   @Prop state: ConnectionState = ConnectionState.Idle;
-  // `hostTargetId` is the host's open app id (0 = none), `targetId` this
-  // connection's default app id (0 = none); RDP passes 0/0, so it never resumes.
   @Prop hostTargetId: number = 0;
   @Prop targetId: number = 0;
-  // Host reachability (Moonlight only; RDP stays Online).
   @Prop power: HostPower = HostPower.Online;
   @Prop wakeReachability: WakeReachability = WakeReachability.Unknown;
   @Prop waking: boolean = false;
   @Prop probing: boolean = false;
-  // Page-controlled: >0 opens this row's menu, 0 closes it.
   @Prop @Watch('onMenuRequest') menuRequest: number = 0;
-  // ArkUI has no shared declarative hover/press effect, so the button keeps its
-  // own state and animates via utils/UiMotion.
   @State appHovered: boolean = false;
   @State appPressed: boolean = false;
   @State menuShown: boolean = false;
@@ -38,8 +31,7 @@ export struct ConnectionRow {
   onWake: () => void = () => {};
   onRequestMenu: () => void = () => {};
   onPressRelease: () => void = () => {};
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private tipsOptions: TipsOptions = {};
 
   private action(): ConnectAction {
     return connectActionFor(this.state, this.hostTargetId, this.targetId);
@@ -86,19 +78,6 @@ export struct ConnectionRow {
     return this.connectTip();
   }
 
-  private actionBackground(): Resource {
-    if (!this.hostDown()) {
-      return this.primary() === ConnectAction.Terminate
-        || this.primary() === ConnectAction.Disconnect
-        ? $r('app.color.danger') : $r('app.color.accent');
-    }
-    if (this.wakeDisabled()) {
-      return $r('app.color.neutral');
-    }
-    return this.power === HostPower.Offline
-      ? $r('app.color.wake') : $r('app.color.accent');
-  }
-
   private primaryTap(): void {
     if (this.hostDown()) {
       if (this.waking) {
@@ -117,7 +96,6 @@ export struct ConnectionRow {
     }
   }
 
-  // false first re-arms the menu after a dismiss left the flag set.
   private onMenuRequest(): void {
     if (this.menuRequest > 0) {
       this.menuShown = false;
@@ -129,11 +107,9 @@ export struct ConnectionRow {
 
   private menuOptions(): ContextMenuOptions {
     const options: ContextMenuOptions = {
-      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY),
       placement: Placement.BottomRight,
       offset: { x: this.menuWinX, y: this.menuWinY },
       modalMode: ModalMode.TARGET_WINDOW,
-      // Must clear the latch, or a re-render reopens the dismissed menu.
       aboutToDisappear: () => {
         this.menuShown = false;
       }
@@ -174,8 +150,6 @@ export struct ConnectionRow {
   @Builder
   menuItem(entry: RowMenuEntry) {
     MenuItem({ content: entry.content })
-      .contentFontColor(entry.action === RowMenuAction.Delete
-        ? $r('app.color.danger') : $r('app.color.text_primary'))
       .onClick(() => {
         this.onMenuEntry(entry);
       })
@@ -184,7 +158,6 @@ export struct ConnectionRow {
   @Builder
   menu() {
     Menu() {
-      // Two groups draw the separator between the session actions and 编辑 / 删除.
       MenuItemGroup() {
         ForEach(this.menuGroup(true), (entry: RowMenuEntry) => {
           this.menuItem(entry)
@@ -212,22 +185,21 @@ export struct ConnectionRow {
           Row() {
             Text(this.conn.label())
               .fontSize(15)
-              .fontColor($r('app.color.text_primary'))
+              
             if (this.state === ConnectionState.Connected) {
               Text('已连接')
                 .fontSize(10)
-                .fontColor($r('app.color.success'))
-                .backgroundColor($r('app.color.success_bg'))
+                
+                
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
                 .transition(fadeTransition())
             } else if (this.action() === ConnectAction.Resume) {
-              // The host is already running the app this row would open.
               Text('运行中')
                 .fontSize(10)
-                .fontColor($r('app.color.accent'))
-                .backgroundColor($r('app.color.accent_bg'))
+                
+                
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
@@ -237,7 +209,7 @@ export struct ConnectionRow {
           if (this.conn.subtitle().length > 0) {
             Text(this.conn.subtitle())
               .fontSize(12)
-              .fontColor($r('app.color.text_tertiary'))
+              
               .margin({ top: 3 })
           }
         }
@@ -256,13 +228,13 @@ export struct ConnectionRow {
           Image($r('app.media.ic_apps'))
             .width(24)
             .height(24)
-            .fillColor('#FFFFFF')
+            
             .draggable(false)
         }
         .width(44)
         .height(44)
         .borderRadius(22)
-        .backgroundColor(this.appHovered ? $r('app.color.neutral_hover') : $r('app.color.neutral'))
+        
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .margin({ left: 8 })
@@ -293,34 +265,34 @@ export struct ConnectionRow {
           LoadingProgress()
             .width(24)
             .height(24)
-            .color('#FFFFFF')
+            
             .transition(TransitionEffect.IDENTITY)
         } else if (this.hostDown() && this.waking) {
           LoadingProgress()
             .width(24)
             .height(24)
-            .color('#FFFFFF')
+            
             .transition(TransitionEffect.IDENTITY)
         } else if (this.hostDown() && this.probing
           && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
           LoadingProgress()
             .width(24)
             .height(24)
-            .color('#FFFFFF')
+            
             .transition(TransitionEffect.IDENTITY)
         } else if (this.hostDown()
           && (this.power === HostPower.Unknown || this.power === HostPower.NoService)) {
           Image($r('app.media.ic_refresh'))
             .width(24)
             .height(24)
-            .fillColor('#FFFFFF')
+            
             .draggable(false)
             .transition(fadeTransition())
         } else if (this.hostDown()) {
           Image($r('app.media.ic_power'))
             .width(28)
             .height(28)
-            .fillColor('#FFFFFF')
+            
             .draggable(false)
             .transition(fadeTransition())
         } else if (this.primary() === ConnectAction.Terminate
@@ -328,14 +300,14 @@ export struct ConnectionRow {
           Image($r('app.media.ic_stop'))
             .width(22)
             .height(22)
-            .fillColor('#FFFFFF')
+            
             .draggable(false)
             .transition(fadeTransition())
         } else {
           Image($r('app.media.ic_play'))
             .width(22)
             .height(22)
-            .fillColor('#FFFFFF')
+            
             .draggable(false)
             .transition(fadeTransition())
         }
@@ -343,7 +315,7 @@ export struct ConnectionRow {
       .width(44)
       .height(44)
       .borderRadius(22)
-      .backgroundColor(this.actionBackground())
+      
       .opacity(this.wakeDisabled() ? 0.5 : 1.0)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
@@ -354,7 +326,6 @@ export struct ConnectionRow {
         this.primaryTap();
       })
 
-      // The isShown menu ignores this node's position; the point comes from `offset`.
       Row()
         .width(0)
         .height(0)
@@ -363,8 +334,8 @@ export struct ConnectionRow {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor($r('app.color.surface_bg'))
-    .shadow({ radius: 16, color: '#33000000', offsetX: 0, offsetY: 5 })
+    
+    
     .onMouse((event: MouseEvent) => {
       if (event.button === MouseButton.Right && event.action === MouseAction.Press) {
         this.menuWinX = event.windowX;
@@ -377,3 +348,5 @@ export struct ConnectionRow {
     })
   }
 }
+
+

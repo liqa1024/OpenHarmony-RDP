@@ -80,8 +80,9 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 |---|---|
 | 整体结构 / 职责表 / 线程与所有权 | [`architecture.md`](doc_agent/architecture.md) |
 | 构建 / 运行 / 真机与模拟器 / uitest 技巧 / 最小验证 | [`build-and-verify.md`](doc_agent/build-and-verify.md) |
-| 页面 / 状态刷新 / 路由 / 主题 / 沉浸材质机制 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
-| 界面外观 / 设计原则 / 抽共享单元 / 设计 token / 组件契约 | [`ui-design.md`](doc_agent/ui-design.md) |
+| 页面 / 状态刷新 / 路由 / 资源机制 / 与原生交互 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) |
+| 界面结构 / 组件 / 交互触发 / 组件契约（不含配色 / 材质 / 尺寸取值） | [`ui-framework.md`](doc_agent/ui-framework.md) |
+| 界面视觉：颜色 / 主题 / 表面 / 材质 / 字号 / 间距 / 圆角 / 阴影 / 动效 / 图标画法 | [`ui-visual.md`](doc_agent/ui-visual.md) |
 | 两协议共享的会话/连接层（连接模型多态、连接发起、后端、会话外壳、输入内核、会话窗口/输入/工具栏/光标行为、命名边界） | [`session-layer.md`](doc_agent/session-layer.md) |
 | RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](doc_agent/rdp-session.md) |
 | 剪贴板（共享抽象 / 手动语义） | [`clipboard.md`](doc_agent/clipboard.md) |
@@ -94,7 +95,7 @@ native/scripts/install-device.ps1 -Device "<序列号>"   # 安装 + 启动（�
 | CPU（gdi）链路的判据、账目口径、门禁、并行形态 | [`rdp-gfx.md`](doc_agent/rdp-gfx.md) §7 |
 | 上屏（present）共享管线：Vulkan/GLES 后端、帧到屏、swapchain 重建、超分与视频导入、GPU 账目、呈现能力判定 | [`present.md`](doc_agent/present.md) |
 | RDP 上屏接线（脏区上传 / 零拷贝 / 合并上屏 / RDP 侧账目） | [`rdp-present.md`](doc_agent/rdp-present.md) |
-| Moonlight 连接前端（协议建模、存储、列表 / 编辑页、设置分栏、图标） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
+| Moonlight 连接前端（协议建模、存储、列表 / 编辑页、设置分栏、图标语义） | [`moonlight-connection.md`](doc_agent/moonlight-connection.md) |
 | Moonlight 主机与应用（发现 / 运行态 / 唤醒 / 应用管理页 / 连接动作走法） | [`moonlight-apps.md`](doc_agent/moonlight-apps.md) |
 | Moonlight 会话（窗口接线 / 工具栏遥测） | [`moonlight-session.md`](doc_agent/moonlight-session.md) |
 | Moonlight 控制 / 配对层（控制端点、配对时序与身份、证书 pin） | [`moonlight-control.md`](doc_agent/moonlight-control.md) |

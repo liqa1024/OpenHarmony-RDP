@@ -1,7 +1,6 @@
-import { ComponentContent, UIContext, uiMaterial } from '@kit.ArkUI';
+import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { PairResult } from '../moonlight/MoonlightModels';
 
 const DOMAIN: number = 0xD001;
@@ -9,7 +8,6 @@ const TAG: string = 'HmRdpPairing';
 
 class PairingDialogParams {
   digits: string[] = [];
-  materialBacked: boolean = false;
   onCancel: () => void = (): void => {};
 }
 
@@ -19,10 +17,10 @@ function pairingDialogContent(params: PairingDialogParams) {
     Text('与主机配对')
       .fontSize(18)
       .fontWeight(FontWeight.Medium)
-      .fontColor($r('app.color.text_primary'))
+      
     Text('请在主机（Sunshine）上输入以下 PIN')
       .fontSize(13)
-      .fontColor($r('app.color.text_secondary'))
+      
       .margin({ top: 8 })
 
     Row({ space: 12 }) {
@@ -30,21 +28,21 @@ function pairingDialogContent(params: PairingDialogParams) {
         Text(digit)
           .fontSize(32)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.accent'))
+          
           .textAlign(TextAlign.Center)
           .width(56)
           .height(64)
-          .backgroundColor($r('app.color.input_bg'))
+          
           .borderRadius(12)
       }, (digit: string, index: number) => `${index}-${digit}`)
     }
     .margin({ top: 20 })
 
     Row({ space: 8 }) {
-      LoadingProgress().width(16).height(16).color($r('app.color.text_tertiary'))
+      LoadingProgress().width(16).height(16)
       Text('输入后自动完成配对')
         .fontSize(12)
-        .fontColor($r('app.color.text_tertiary'))
+        
     }
     .justifyContent(FlexAlign.Center)
     .margin({ top: 16 })
@@ -53,8 +51,8 @@ function pairingDialogContent(params: PairingDialogParams) {
       .width('100%')
       .height(44)
       .fontSize(16)
-      .fontColor($r('app.color.text_secondary'))
-      .backgroundColor($r('app.color.input_bg'))
+      
+      
       .borderRadius(12)
       .margin({ top: 20 })
       .onClick(() => {
@@ -64,7 +62,7 @@ function pairingDialogContent(params: PairingDialogParams) {
   .width(300)
   .padding(24)
   .alignItems(HorizontalAlign.Center)
-  .backgroundColor(params.materialBacked ? Color.Transparent : $r('app.color.card_bg'))
+  
   .borderRadius(20)
 }
 
@@ -104,10 +102,8 @@ export async function promptPairingPin(ui: UIContext, pin: string,
       finish(false);
     };
 
-    const material: uiMaterial.Material | undefined = SystemMaterial.of(MaterialSurface.DIALOG);
-    params.materialBacked = material !== undefined;
     ui.getPromptAction().openCustomDialog(contentNode,
-      { isModal: true, autoCancel: false, systemMaterial: material })
+      { isModal: true, autoCancel: false })
       .then(() => {
         if (settled) {
           dismiss();
@@ -117,7 +113,6 @@ export async function promptPairingPin(ui: UIContext, pin: string,
         hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
         finish(false);
       });
-    // Auto-dismiss when the handshake settles: the host entering the PIN is the confirmation.
     pairing.then(() => {
       finish(true);
     }, () => {
@@ -125,3 +120,5 @@ export async function promptPairingPin(ui: UIContext, pin: string,
     });
   });
 }
+
+

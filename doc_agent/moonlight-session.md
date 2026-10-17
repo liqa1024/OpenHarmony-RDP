@@ -17,7 +17,7 @@
 - 窗口在**预检通过后**打开、绑好 surface 再启动（`requiresWindowAtStart`，因为 `LiStartConnection` 需要渲染
   目标）。连接中的状态卡带约 1000ms 显示阈值，避免"多闪一下"。
 - 工具栏与 RDP 同形：标题用共享的 `SessionTitle`（名称 + 分辨率 + 括号里的**会话标签**——超分与协商解码格式
-  合并到同一个括号、逗号分隔，如 `(FSR 1.5x, HEVC)`，见 [`ui-design.md`](ui-design.md) §3.6），复用同一套
+  合并到同一个括号、逗号分隔，如 `(FSR 1.5x, HEVC)`），复用同一套
   chrome 与自动隐藏判定（`components/SessionChrome`、`services/ToolbarAutoHide`），支持全屏 / 最小化。
 - **剪贴板入口**：主机广告剪贴板能力位且已连接时，工具栏插入共享的 `ClipboardButtons`（复制 / 系统 `PasteButton` 粘贴）；
   非基地版主机（无能力位）不显示入口。协议与语义见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。

@@ -27,7 +27,6 @@ import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { ForegroundReconnect, ForegroundReconnectHost } from '../services/ForegroundReconnect';
 import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, DEFAULT_TOOLBAR_WIDTH_PERCENT,
   PINCH_MODE_ZOOM, SettingsStore } from '../services/SettingsStore';
-import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { showConfirm, showToast } from '../utils/UiUtil';
@@ -38,17 +37,14 @@ import { DibImage } from '../utils/ClipboardCodec';
 import { FileDescriptorInput, FileTransferCodec } from '../utils/FileTransferCodec';
 import { SessionPicture } from '../components/SessionPicture';
 import { StatusCard } from '../components/StatusCard';
-import { METRIC_BAD, METRIC_GOOD, METRIC_WARN, OutlineChip, TOOLBAR_ACCENT_CHIP_BG,
-  TOOLBAR_BG, TOOLBAR_CHIP_BG, TOOLBAR_DANGER_CHIP_BG, TOOLBAR_FG, TOOLBAR_FG_SECONDARY,
-  TOOLBAR_PROGRESS, TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_SHADOW, TOOLBAR_TELEMETRY_HEIGHT,
+import { OutlineChip, TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_TELEMETRY_HEIGHT,
   TOOLBAR_ZONE_BAR, TOOLBAR_ZONE_NONE, TOOLBAR_ZONE_TRIGGER, SessionTitle, ToolbarChip,
   ToolbarIconChip, ToolbarRevealHint, ToolbarTouchBar, TelemetryField, TelemetryRow,
-  formatLatency, metricColor, ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
+  formatLatency, ClipboardButtons, ClipboardTransferStatus } from '../components/SessionChrome';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSession';
 
-// axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot explode or collapse the separation.
 const MIN_PINCH_RATIO: number = 0.05;
 const MAX_PINCH_RATIO: number = 20;
 const MIN_VIEW_SCALE: number = 1;
@@ -58,23 +54,18 @@ const VIEW_SNAP_MS: number = 180;
 const METRICS_INTERVAL_MS: number = 1000;
 const PAN_WHEEL_STEP: number = 64;
 
-// Toolbar throughput below this is idle/keep-alive noise, so it is not shown.
 const MIN_BANDWIDTH_BYTES: number = 1024;
 
-// Fixed widths so a changing number never reflows the items after it.
 const METRIC_WIDTH_NETWORK: number = 66;
 const METRIC_WIDTH_LOCAL: number = 74;
 const METRIC_WIDTH_FPS: number = 48;
 const METRIC_WIDTH_AUDIO: number = 86;
 const METRIC_WIDTH_CPU: number = 60;
 const METRIC_WIDTH_GPU: number = 76;
-// Fixed width for one detail phase reading (`解析 12ms`); the digits vary, so a content-width field
-// would shift its neighbours on every sample.
 const METRIC_WIDTH_DETAIL: number = 72;
 const METRIC_GAP_TIGHT: number = 6;
 const METRIC_GAP_GROUP: number = 8;
 
-// Latency colour thresholds: network RTT warns late (dominated by distance); local per-frame work over WARN misses 60 fps, over BAD even 30 fps.
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_WARN_MS: number = 16;
@@ -96,11 +87,7 @@ struct SessionPage {
   private native: RdpNative = new RdpNative();
   private options: RdpConnectOptions = new RdpConnectOptions();
   private connectionId: string = '';
-  private toolbarFrost: AttributeModifier<ColumnAttribute> =
-    new FrostedModifier<ColumnAttribute>(FrostedSurface.FLOATING);
-  // A system without the material capability ignores this field and keeps the default tooltip.
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private tipsOptions: TipsOptions = {};
   private controller: SessionSurfaceController = new SessionSurfaceController();
   private shell: SessionShellController | undefined = undefined;
   private componentWidth: number = 0;
@@ -119,7 +106,6 @@ struct SessionPage {
   @State metricsBytesPerFrame: number = 0;
   @State metricsDutyPermille: number = 0;
   @State metricsCmdsPerFrame: number = 0;
-  // The client's own GPU work; no public API exposes the GPU's total load to an app.
   @State metricsGpuCopyUs: number = 0;
   @State metricsGpuSrUs: number = 0;
   @State metricsGpuBlitUs: number = 0;
@@ -130,7 +116,6 @@ struct SessionPage {
   private surfaceId: string = '';
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
-  // While false, surface sizes the system reports are held until it is back, and the server's output is suppressed.
   private windowVisible: boolean = true;
   private pendingSurfaceResize: boolean = false;
   private metricsTimer: number = -1;
@@ -145,7 +130,6 @@ struct SessionPage {
   private hideDelay: number = 250;
   private sink: SessionInputPort | undefined = undefined;
   private input: SessionInput | undefined = undefined;
-  // Direct-zoom mode keeps the client-side view transform in this page.
   private pinchDirect: boolean = false;
   private directZoomActive: boolean = false;
   @State private viewMatrix: Matrix4Transit = matrix4.identity();
@@ -175,7 +159,6 @@ struct SessionPage {
   private lastRemoteLocks: number = 0;
   private lastRemoteLocksValid: boolean = false;
   private lastReassertMs: number = 0;
-  // Only one data request may be in flight; a newer list is pulled once the current one settles (remote responses carry no format id).
   private remoteFormatInFlight: boolean = false;
   private remoteFormatPending: boolean = false;
   private remotePendingId: number = 0;
@@ -183,7 +166,6 @@ struct SessionPage {
   private cursor: RemoteCursor = new RemoteCursor();
   private foreground: ForegroundReconnect | undefined = undefined;
 
-  // The system paste control grants a one-time clipboard read without the READ_PASTEBOARD permission.
   private pasteButtonCallback: PasteButtonCallback =
     (event: ClickEvent, result: PasteButtonOnClickResult): void => {
       if (result === PasteButtonOnClickResult.SUCCESS) {
@@ -207,8 +189,6 @@ struct SessionPage {
     this.toolbarWidthPercent = settings.toolbarWidthPercent;
     this.pinchDirect = settings.pinchMode === PINCH_MODE_ZOOM;
     this.scrollEngine = !settings.scrollEngineFallback;
-    // Presentation picks Vulkan when the device supports it (the presenter falls back to GLES
-    // otherwise); normalise the process-global flag in case the dev replay page left it off.
     DeviceCapabilities.applyHardwareAccel();
     let filesDir: string = '';
     try {
@@ -234,8 +214,6 @@ struct SessionPage {
     };
     this.foreground = new ForegroundReconnect(foregroundHost, settings.reconnectOnForeground);
     RdpNative.applyRdpCursor(settings.useRdpCursor);
-    // 超分: the server renders the session (pre-upscale) size, not the configured output size; the
-    // Resize event corrects a mismatch.
     this.desktopWidth = this.options.streamWidth > 0 ? this.options.streamWidth : this.options.width;
     this.desktopHeight = this.options.streamHeight > 0
       ? this.options.streamHeight : this.options.height;
@@ -301,7 +279,6 @@ struct SessionPage {
         this.native.bindSurface(surfaceId, width, height);
       },
       onSurfaceChanged: (width: number, height: number): void => {
-        // Hidden: hold the size and re-measure once the window is visible.
         if (!this.windowVisible) {
           this.pendingSurfaceResize = true;
           return;
@@ -528,7 +505,6 @@ struct SessionPage {
     this.sampleCpuUsage();
   }
 
-  // hidebug is comparatively expensive and meant for debugging, so it is called once per metrics window.
   private sampleCpuUsage(): void {
     try {
       const usage: number = hidebug.getCpuUsage();
@@ -574,19 +550,6 @@ struct SessionPage {
       (this.metricsAudioLossBp / 100).toFixed(2) + '%';
   }
 
-  private audioColor(): string {
-    if (this.metricsAudioLossBp < 0) {
-      return TOOLBAR_FG_SECONDARY;
-    }
-    if (this.metricsAudioLossBp === 0) {
-      return METRIC_GOOD;
-    }
-    if (this.metricsAudioLossBp <= 50) {
-      return METRIC_WARN;
-    }
-    return METRIC_BAD;
-  }
-
   private formatRate(bytesPerSec: number): string {
     if (bytesPerSec >= 1024 * 1024) {
       return (bytesPerSec / (1024 * 1024)).toFixed(1) + 'MB/s';
@@ -615,7 +578,6 @@ struct SessionPage {
   private onCursorShape(payload: RdpEventPayload): void {
     const update: RemoteCursorUpdate = new RemoteCursorUpdate();
     update.hasShape = true;
-    // RDP has no standalone "show" event; a shape or the default arriving *is* the show.
     update.visible = true;
     update.shapeKey = payload.shapeHash ?? 0;
     update.magnification = (payload.magnificationMilli ?? 1000) / 1000;
@@ -733,13 +695,10 @@ struct SessionPage {
   private handleAxis(event: AxisEvent): void {
     if (this.scrollEngine && !SessionInput.isPinchEvent(event)
       && ((event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0)) {
-      // The engine's offsets carry no position, so remember the pointer for its wheel events.
       const point: number[] = this.mapPointer(event.x, event.y);
       this.enginePointerX = point[0];
       this.enginePointerY = point[1];
     }
-    // Direct zoom is a client-view transform kept in this page: it owns the pinch and,
-    // while zoomed, the pan; every other axis event falls through to the shared pipeline.
     if (this.pinchDirect) {
       const isPinch: boolean = SessionInput.isPinchEvent(event);
       if (isPinch || this.directZoomActive) {
@@ -760,8 +719,6 @@ struct SessionPage {
       }
       const scrolling: boolean = event.action === AxisAction.BEGIN
         || event.action === AxisAction.UPDATE;
-      // With the engine on, the pan is driven by the engine's 2D frame stream (handleEngineScroll),
-      // so this per-event raw path must stay out of the way; it is the fallback's only pan source.
       if (!this.scrollEngine && this.viewScale > MIN_VIEW_SCALE && scrolling) {
         const vertical: number = event.axisVertical ?? 0;
         const horizontal: number = event.axisHorizontal ?? 0;
@@ -776,8 +733,6 @@ struct SessionPage {
     this.shell?.routeAxis(event);
   }
 
-  // Two destinations, one physics: the remote, or this page's pan under direct zoom. Per frame, like
-  // the engine's own ownership rule.
   private handleEngineScroll(dx: number, dy: number): void {
     const input: SessionInput | undefined = this.shell?.sessionInput();
     if (!(input?.engineAcceptsFrame() ?? false)) {
@@ -940,7 +895,6 @@ struct SessionPage {
       if (this.isFullscreen) {
         ToolbarIconChip({
           icon: $r('app.media.ic_pin'),
-          chipBg: this.toolbarPinned ? TOOLBAR_ACCENT_CHIP_BG : TOOLBAR_CHIP_BG,
           iconSize: 20,
           iconAngle: 45,
           onTap: () => {
@@ -991,7 +945,6 @@ struct SessionPage {
         .margin({ right: 8 })
       ToolbarChip({
         label: '断开',
-        chipBg: TOOLBAR_DANGER_CHIP_BG,
         onTap: () => {
           this.shell?.disconnect();
         }
@@ -1012,27 +965,22 @@ struct SessionPage {
         }
       }
       .width(this.toolbarWidthPercent + '%')
-      .backgroundColor(TOOLBAR_BG)
+      
       .borderRadius(TOOLBAR_RADIUS)
       .clip(true)
-      .attributeModifier(this.toolbarFrost)
-      .shadow(TOOLBAR_SHADOW)
-      // In fullscreen the strip covers the surface, so only its own hover reports the pointer.
+      
+      
       .onHover((isHover: boolean) => {
         this.setToolbarPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
       })
     }
     .width('100%')
     .justifyContent(FlexAlign.Center)
-    // The empty sides belong to the picture: only the bar itself takes the hit.
     .hitTestBehavior(HitTestMode.None)
     .transition(TransitionEffect.translate({ y: -this.toolbarHeight })
       .animation({ duration: 180, curve: Curve.EaseOut }))
   }
 
-  // Developer-only telemetry. Two lines: the readings themselves, and the sub-readings they
-  // aggregate. The detail line is a row rather than a tooltip because a bound tooltip's text is
-  // read once, so a live number in one is stuck at whatever it was when the pointer first arrived.
   @Builder
   toolbarTelemetry() {
     TelemetryRow({ fields: this.telemetryFields() })
@@ -1041,50 +989,40 @@ struct SessionPage {
 
   private telemetryFields(): TelemetryField[] {
     const fields: TelemetryField[] = [];
-    fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK,
-      metricColor(this.metricsRtt, NETWORK_WARN_MS, NETWORK_BAD_MS), 0));
-    fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL,
-      metricColor(this.localMs(), LOCAL_WARN_MS, LOCAL_BAD_MS), METRIC_GAP_TIGHT));
-    fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS,
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
-    fields.push(new TelemetryField(this.cpuLabel(), METRIC_WIDTH_CPU,
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
-    fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU,
-      TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.rttLabel(), METRIC_WIDTH_NETWORK, 0));
+    fields.push(new TelemetryField(this.localLabel(), METRIC_WIDTH_LOCAL, METRIC_GAP_TIGHT));
+    fields.push(new TelemetryField(this.fpsLabel(), METRIC_WIDTH_FPS, METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.cpuLabel(), METRIC_WIDTH_CPU, METRIC_GAP_GROUP));
+    fields.push(new TelemetryField(this.gpuLabel(), METRIC_WIDTH_GPU, METRIC_GAP_GROUP));
     if (this.hasBandwidth()) {
-      fields.push(new TelemetryField(this.bandwidthLabel(), 0,
-        TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+      fields.push(new TelemetryField(this.bandwidthLabel(), 0, METRIC_GAP_GROUP));
     }
     if (this.metricsAudioRateHz > 0) {
-      fields.push(new TelemetryField(this.audioLabel(), METRIC_WIDTH_AUDIO,
-        this.audioColor(), METRIC_GAP_GROUP));
+      fields.push(new TelemetryField(this.audioLabel(), METRIC_WIDTH_AUDIO, METRIC_GAP_GROUP));
     }
-    // Input budget drops are invisible otherwise: any non-zero count names a stream over its budget.
     const dropped: number = this.sink?.inputDropped() ?? 0;
     if (dropped > 0) {
-      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_BAD, METRIC_GAP_GROUP));
+      fields.push(new TelemetryField('输入 ' + dropped, 0, METRIC_GAP_GROUP));
     }
     return fields;
   }
 
-  // What the readings above add up from: the local per-frame phases, the GPU split, and the frame's
-  // share of the frame period.
   private detailFields(): TelemetryField[] {
     const gpu: number = this.metricsGpuCopyUs + this.metricsGpuSrUs + this.metricsGpuBlitUs;
     const fields: TelemetryField[] = [];
     fields.push(new TelemetryField('解析 ' + usToMs(this.metricsZgxUs) + 'ms',
-      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, 0));
+      METRIC_WIDTH_DETAIL, 0));
     fields.push(new TelemetryField('解码 ' + usToMs(this.metricsDecodeUs) + 'ms',
-      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+      METRIC_WIDTH_DETAIL, METRIC_GAP_TIGHT));
     fields.push(new TelemetryField('合成 ' + usToMs(this.metricsComposeUs) + 'ms',
-      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+      METRIC_WIDTH_DETAIL, METRIC_GAP_TIGHT));
     fields.push(new TelemetryField('上屏 ' + usToMs(this.metricsPresentUs) + 'ms',
-      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_TIGHT));
+      METRIC_WIDTH_DETAIL, METRIC_GAP_TIGHT));
     fields.push(new TelemetryField('占比 ' + Math.round(this.metricsDutyPermille / 10) + '%',
-      METRIC_WIDTH_DETAIL, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+      METRIC_WIDTH_DETAIL, METRIC_GAP_GROUP));
     fields.push(new TelemetryField(gpu > 0
       ? gpuSplitLabel(this.metricsGpuCopyUs, this.metricsGpuSrUs, this.metricsGpuBlitUs, '上传')
-      : 'GPU 无时间戳', 0, TOOLBAR_FG_SECONDARY, METRIC_GAP_GROUP));
+      : 'GPU 无时间戳', 0, METRIC_GAP_GROUP));
     return fields;
   }
 
@@ -1094,7 +1032,6 @@ struct SessionPage {
         this.sessionToolbar()
       }
       Stack({ alignContent: Alignment.TopStart }) {
-        // The picture lives in its own layer so direct pinch can scale it locally; the Stack clips it.
         Column() {
           SessionPicture({
             xComponentId: 'rdpSurface',
@@ -1108,7 +1045,6 @@ struct SessionPage {
               this.handleMouse(event);
             },
             onPointerHover: (isHover: boolean) => {
-              // The system may drop a custom cursor when the pointer leaves and re-enters, so re-install the last shape.
               if (isHover) {
                 this.cursor.reapply();
               }
@@ -1211,7 +1147,7 @@ struct SessionPage {
         .height('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .backgroundColor('#66000000')
+        
       }
       }
       .width('100%')
@@ -1220,6 +1156,8 @@ struct SessionPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#000000')
+    
   }
 }
+
+

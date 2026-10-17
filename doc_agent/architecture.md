@@ -25,7 +25,7 @@
 | `pages/Index.ets` | 连接列表（点左侧→编辑，右侧圆钮→连接，右键菜单，拖拽排序，FAB 新建） |
 | `pages/SessionPage.ets` | RDP 会话页：画面（`SessionPicture`）、协议专属浮层/工具栏、RDP 直达缩放的视图矩阵；窗口外壳（窗口/光标/工具栏自动隐藏/输入接线/遮罩）复用 `SessionShellController`；**输入事件交给 `SessionInput`**；转发下载事件、渲染进度（下载状态机在后台 worker，见 §4.4） |
 | `pages/MoonlightSessionPage.ets` | Moonlight 会话页：画面（`SessionPicture`）先绑 surface 再 `SessionManager.beginStream`（`LiStartConnection` 要渲染目标）；窗口外壳复用 `SessionShellController`；**输入事件交给 `SessionInput`**；状态浮层 |
-| `pages/MoonlightAppsPage.ets` | 主窗口内的 Moonlight 应用管理页：应用列表 / 运行状态 / 启停 / 默认应用（星标）/ 远程图标 |
+| `pages/MoonlightAppsPage.ets` | 主窗口内的 Moonlight 应用管理页：应用列表 / 运行状态 / 启停 / 默认应用 / 远程图标 |
 | `pages/EditConnectionPage.ets` | 新增/编辑连接（保存只写配置；密码在连接成功后自动保存；可折叠「高级设置」） |
 | `pages/SettingsPage.ets` | 全局设置（工具栏、光标、触控板/触屏、Win 键替代、分辨率与缩放、连接特性、窗口尺寸、主窗口自动隐藏、配置导入/导出） |
 | `pages/GfxReplayPage.ets` | dev 页：码流回放测试（路线选择、统计显示），见 [`rdp-gfx.md`](rdp-gfx.md) §6 |
@@ -50,12 +50,12 @@
 | `services/RdpEventHub.ets` | RDP 原生事件总线的唯一订阅者：收到 native 事件后按 handle 路由给归属会话（见 §4.4） |
 | `services/MoonlightSessionBackend.ets` | Moonlight 会话后端：包原生 `LiStartConnection`（`hmrdp_moonlight_session.*`），事件→`SessionSignal`，挂/放 XComponent surface；输入落地已移出，见 `services/input/MoonlightInputSender.ets`（含触屏 / 高分辨率滚轮 / UTF-8 文本 / 控制器 / 原生触控板接入点） |
 | `services/MoonlightConnector.ets` | Moonlight 连接预检：`serverinfo →（pair）→ launch`，装配原生串流配置；PIN 由调用方弹窗提供；失效 pin 清理 |
-| `services/MoonlightHostState.ets` | 主机「在跑哪个应用」的单一权威（静态监听器；客户端动作乐观写入，主机探测收敛），列表行与应用页徽标都由它派生 |
+| `services/MoonlightHostState.ets` | 主机「在跑哪个应用」的单一权威（静态监听器；客户端动作乐观写入，主机探测收敛），列表行与应用页的运行状态都由它派生 |
 | `services/MoonlightLauncher.ets` | 构造 Moonlight 连接请求（解析分辨率/应用 id/`filesDir`/配对 PIN 弹窗）后交给 manager |
 | `services/MdnsDiscovery.ets` | 通用 mDNS 主机发现：按 DNS-SD 服务类型发现并解析为 IP，去重成实时主机列表（`_nvstream._tcp` 即 Moonlight/Sunshine） |
 | `services/WindowController.ets` | 窗口默认尺寸、拉起会话窗口、全屏与系统标题栏控制、单窗口模式的主窗口隐藏/恢复 |
 | `services/DeviceCapabilities.ets` | 运行时能力探测（`Capability{supported, reason}`），供 UI 置灰 + 说明原因（模式见 §5） |
-| `services/SystemMaterial.ets` | 小控件 / 会话工具栏的组件磨砂（`FrostedModifier`）与弹窗系统材质的统一入口：磨砂档位固定、弹窗材质按 API 版本构造并复用（见 [`arkts-conventions.md`](arkts-conventions.md) §6） |
+| `services/SystemMaterial.ets` | 组件磨砂与弹窗系统材质的统一入口（材质选择与 API 版本处理见源码） |
 | `services/BackgroundImage.ets` | 页面背景图片（主界面 / 设置页 / Moonlight 应用页）的沙箱拷贝、URI 解析与文件清理（选择器的 URI 只在当次有效，显示用沙箱路径；见 [`settings-and-storage.md`](settings-and-storage.md) §2） |
 | `services/ToolbarAutoHide.ets` | 会话工具栏自动隐藏判定（指针分区 / 揭示停留 / 收起延迟 / 传输与用户固定钉住），两协议会话页共用 |
 | `services/RemoteCursor.ets` | 远端光标安装器，两协议会话页共用（去重、目标尺寸、热点、安装、捏合定位光标、可见性归属），见 [`session-layer.md`](session-layer.md) §10 |
@@ -94,7 +94,7 @@
 | `model/Connections.ets` | 协议无关的连接模型：`SavedConnection` **抽象基类**（只放共有字段 `id/updatedAt/host/port/name/protocol` 与共有行为）与 `RdpConnection` / `MoonlightConnection` 子类（各自持有本协议字段 + 图标、副标题、主连接动作、行菜单数据、记录 / 导出编解码）、`PendingConnection` / `SessionRequests` / `ConnectOrigin`、`PROTOCOL_*` 常量、行菜单数据；Moonlight 画质模型与 `ML_*` 在 `moonlight/MoonlightModels.ets` |
 | `model/Profiles.ets` | 两协议共用的显示 / 超分 / 高级 profile：`DisplayProfile`、`SrProfile`、`SrSetting`、`AdvancedProfile` 与 `SR_BACKEND_*` |
 | `model/RdpModels.ets` | RDP 专属模型：`RdpConnectOptions`（原生 `RdpOptions` 实现）、`RdpEvent` / `RdpPointerFlags` / `RdpTouchFlags` / `RdpLockFlags` / `RdpClipKind` |
-| `components/*.ets` | 共享 UI 组件（清单与参数契约见 [`ui-design.md`](ui-design.md) §4.1） |
+| `components/*.ets` | 共享 UI 组件（清单与参数契约见 [`ui-framework.md`](ui-framework.md) §4.1） |
 | `entrybackupability/EntryBackupAbility.ets` | 系统备份/恢复 Ability |
 
 ## 3. 原生（`entry/src/main/cpp/`）

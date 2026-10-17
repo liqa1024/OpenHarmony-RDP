@@ -1,7 +1,6 @@
-import { ComponentContent, UIContext, uiMaterial } from '@kit.ArkUI';
+import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { MdnsHost } from '../services/MdnsDiscovery';
 
 const DOMAIN: number = 0xD001;
@@ -9,10 +8,8 @@ const TAG: string = 'HmRdpHostPicker';
 
 class HostPickerParams {
   hosts: MdnsHost[] = [];
-  // Already-saved hosts show greyed and unselectable: one host holds only one pairing.
   addedAddresses: string[] = [];
   title: string = '选择主机';
-  materialBacked: boolean = false;
   onPick: (host: MdnsHost) => void = (): void => {};
   onCancel: () => void = (): void => {};
 }
@@ -35,14 +32,13 @@ struct HostPickerContent {
       Column() {
         Text(host.name.length > 0 ? host.name : host.address)
           .fontSize(15)
-          .fontColor(this.isAdded(host)
-            ? $r('app.color.text_tertiary') : $r('app.color.text_primary'))
+          
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
         Text(host.address)
           .fontSize(12)
-          .fontColor($r('app.color.text_tertiary'))
+          
           .margin({ top: 2 })
           .width('100%')
       }
@@ -52,8 +48,8 @@ struct HostPickerContent {
       if (this.isAdded(host)) {
         Text('已添加')
           .fontSize(11)
-          .fontColor($r('app.color.text_tertiary'))
-          .backgroundColor($r('app.color.card_bg'))
+          
+          
           .borderRadius(4)
           .padding({ left: 6, right: 6, top: 2, bottom: 2 })
           .margin({ left: 8 })
@@ -62,7 +58,7 @@ struct HostPickerContent {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(10)
-    .backgroundColor($r('app.color.input_bg'))
+    
     .opacity(this.isAdded(host) ? 0.5 : 1)
     .hoverEffect(this.isAdded(host) ? HoverEffect.None : HoverEffect.Highlight)
     .onClick(() => {
@@ -77,7 +73,7 @@ struct HostPickerContent {
       Text(this.params.title)
         .fontSize(18)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
+        
 
       Scroll() {
         Column({ space: 8 }) {
@@ -96,8 +92,8 @@ struct HostPickerContent {
         .width('100%')
         .height(44)
         .fontSize(16)
-        .fontColor($r('app.color.text_secondary'))
-        .backgroundColor($r('app.color.input_bg'))
+        
+        
         .borderRadius(12)
         .margin({ top: 20 })
         .onClick(() => {
@@ -107,7 +103,7 @@ struct HostPickerContent {
     .width(320)
     .padding(24)
     .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.params.materialBacked ? Color.Transparent : $r('app.color.card_bg'))
+    
     .borderRadius(20)
   }
 }
@@ -158,10 +154,8 @@ export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: st
         finish(undefined);
       };
 
-      const material: uiMaterial.Material | undefined = SystemMaterial.of(MaterialSurface.DIALOG);
-      params.materialBacked = material !== undefined;
       ui.getPromptAction().openCustomDialog(contentNode,
-        { isModal: true, autoCancel: false, systemMaterial: material })
+        { isModal: true, autoCancel: false })
         .then(() => {
           if (settled) {
             dismiss();
@@ -173,3 +167,5 @@ export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: st
         });
     });
 }
+
+

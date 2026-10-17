@@ -24,7 +24,6 @@ import { promptWolHelp } from '../utils/WolHelpPrompt';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpIndex';
-// Wake watch after the magic packet: poll every 2s up to 120s; a second tap cancels it.
 const WAKE_POLL_INTERVAL_MS: number = 2000;
 const WAKE_WATCH_TIMEOUT_MS: number = 120000;
 
@@ -40,7 +39,6 @@ struct Index {
   @State probingHosts: Map<string, boolean> = new Map<string, boolean>();
   private wakeTimers: Map<string, number> = new Map<string, number>();
   @State draggingIndex: number = -1;
-  // Which row's menu is open; menuSeq changes so a repeat request still re-opens it.
   @State menuConnectionId: string = '';
   @State menuSeq: number = 0;
   private armedMenuId: string = '';
@@ -59,7 +57,6 @@ struct Index {
       next.set(connectionId, state);
     }
     this.statuses = next;
-    // Editor-originated failures are reported on the edit page instead.
     if (state === ConnectionState.Failed && origin === ConnectOrigin.List) {
       this.showConnectError(message);
     }
@@ -83,8 +80,6 @@ struct Index {
       this.hostWake = nextWake;
       this.setProbing(connectionId, probing);
       if (this.wakingHosts.get(connectionId) === true) {
-        // The host answering at all means the wake worked; a lost LAN path means it
-        // cannot, so neither should keep the watch polling to the 120s timeout.
         if (power === HostPower.Online) {
           this.stopWakeWatch(connectionId);
           showToast(this.getUIContext(), '主机已上线');
@@ -149,7 +144,6 @@ struct Index {
     this.hostTargets = next;
   }
 
-  // Only Moonlight has a probe; RDP rows stay Online (no dim / refresh / wake).
   private syncHostPowers(): void {
     const next: Map<string, HostPower> = new Map<string, HostPower>();
     for (const conn of this.connections) {
@@ -230,7 +224,6 @@ struct Index {
     MoonlightHostState.refresh(conn, this.filesDir());
   }
 
-  // A second tap cancels the watch only (the packet is already out).
   private toggleWake(conn: SavedConnection): void {
     if (this.wakingHosts.get(conn.id) === true) {
       this.stopWakeWatch(conn.id);
@@ -390,7 +383,6 @@ struct Index {
     ConnectionStore.reorder(ids);
   }
 
-  // Mutated in place so the settling animation stays continuous.
   private moveConnection(from: number, to: number): void {
     if (from === to || from < 0 || to < 0
       || from >= this.connections.length || to >= this.connections.length) {
@@ -472,7 +464,6 @@ struct Index {
     this.stopWakeWatch(conn.id);
     const hostContext = this.getUIContext().getHostContext();
     if (hostContext !== undefined) {
-      // Pairing is per host: dropping it here keeps a later re-add from skipping the PIN round.
       ConnectionLauncher.afterDelete(conn, (hostContext as common.UIAbilityContext).filesDir);
     }
     CredentialStore.removePassword(conn.id)
@@ -511,10 +502,10 @@ struct Index {
           Text($r('app.string.app_name'))
             .fontSize(20)
             .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary'))
+            
           Text('远程控制 Windows 桌面')
             .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
+            
             .margin({ top: 2 })
         }
         .alignItems(HorizontalAlign.Start)
@@ -545,9 +536,9 @@ struct Index {
       }
       .width('100%')
       .padding({ left: 24, right: 24, top: 20, bottom: 16 })
-      .backgroundColor($r('app.color.surface_bg'))
+      
 
-      Divider().color($r('app.color.divider'))
+      Divider()
 
       if (this.connections.length === 0) {
         Column() {
@@ -559,16 +550,16 @@ struct Index {
             .draggable(false)
           Text('还没有保存的连接')
             .fontSize(15)
-            .fontColor($r('app.color.text_secondary'))
+            
             .margin({ top: 18 })
           Text('点击右上角 + 添加一个远程桌面')
             .fontSize(13)
-            .fontColor($r('app.color.text_tertiary'))
+            
             .margin({ top: 6 })
           Button('添加连接')
             .height(44)
             .fontSize(15)
-            .backgroundColor($r('app.color.accent'))
+            
             .borderRadius(12)
             .margin({ top: 22 })
             .onClick(() => {
@@ -623,7 +614,6 @@ struct Index {
               })
             }
             .margin({ left: 64, right: 88, top: 2, bottom: 2 })
-            // The scaled drag preview would be covered by its siblings without this.
             .zIndex(index === this.draggingIndex ? 1 : 0)
           }, (conn: SavedConnection) => `${conn.id}#${conn.updatedAt}`)
             .onMove((from: number, to: number) => {
@@ -644,10 +634,8 @@ struct Index {
         }
         .layoutWeight(1)
         .width('100%')
-        // Full-width so the clip area stays wide; the side insets live on the ListItem margins.
         .padding({ left: 0, right: 0, top: 12, bottom: 20 })
         .scrollBar(BarState.Auto)
-        // Fallback release point, and a fresh press drops any stale arm.
         .onTouch((event: TouchEvent) => {
           if (event.type === TouchType.Down) {
             this.armedMenuId = '';
@@ -671,6 +659,8 @@ struct Index {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.page_bg'))
+    
   }
 }
+
+

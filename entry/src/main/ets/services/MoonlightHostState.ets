@@ -198,7 +198,7 @@ export class MoonlightHostState {
   }
 
   private static async icmpAlive(host: string): Promise<boolean> {
-    // Since 26.0.0, newer than compatibleSdkVersion: same two-step gate as SystemMaterial.
+    // Since 26.0.0, newer than compatibleSdkVersion: two-step API gate.
     if (deviceInfo.sdkApiVersion < ICMP_MIN_API_VERSION) {
       return false;
     }

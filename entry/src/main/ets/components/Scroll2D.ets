@@ -1,22 +1,8 @@
-// The 2D scroll engine: a pair of transparent single-axis Scroll overlays whose built-in pan
-// recognizers are bridged so ONE touchpad/wheel gesture drives both axes at once. Single-axis
-// components are mandatory, not a shortcut: their built-in drag start is the only place a touchpad
-// gesture's "press" is turned into the internal signal that stops a running fling (2D free scrolling
-// only stops on a real touch Down, which a touchpad never sends). Each overlay pins its offset (the
-// fake content stays put) so only the per-frame delta leaves.
-//
-// Whether both axes actually take effect at the far end is the receiving application's call, not
-// ours — see doc_agent/session-layer.md §8.
 const ENGINE_FRAME_HEADROOM_VP: number = 2000;
 
-// The two axis overlays bridge their pan recognizers in parallel (shouldBuiltInRecognizerParallelWith),
-// matched by these ids in the response chain, so a diagonal gesture drives both.
 const ENGINE_VERTICAL_ID: string = 'hmrdpEngineVertical';
 const ENGINE_HORIZONTAL_ID: string = 'hmrdpEngineHorizontal';
 
-// Return the sibling's built-in PAN recognizer so both run in parallel (a diagonal gesture drives
-// both axes). Returning `current` (self) means "no bridge" to ArkUI, and returning `undefined` is not
-// allowed by the callback type, so the fallback is the current recognizer.
 function engineBrowsePeer(current: GestureRecognizer, others: Array<GestureRecognizer>,
   siblingId: string): GestureRecognizer {
   for (let i = 0; i < others.length; i++) {
@@ -91,3 +77,5 @@ export struct Scroll2D {
     .hitTestBehavior(HitTestMode.Transparent)
   }
 }
+
+

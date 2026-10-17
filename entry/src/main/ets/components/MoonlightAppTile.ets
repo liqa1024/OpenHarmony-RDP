@@ -1,14 +1,9 @@
-// A component (not a @Builder) so @Prop flags refresh inside ForEach; the icon
-// PixelMap does not survive @Prop's deep copy, so it is a plain keyed field.
 import { image } from '@kit.ImageKit';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { NvApp } from '../moonlight/MoonlightModels';
 import { ConnectAction, connectActionLabel } from '../model/Connections';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { ControlDisc } from './ControlDisc';
 
-// Moonlight's box art is 200x267 (moonlight-qt AppView.qml): keep that aspect
-// so a fetched poster is not cropped by a wrong frame.
 const BOXART_ASPECT: number = 200 / 267;
 const TILE_WIDTH: number = 108;
 const TILE_HEIGHT: number = TILE_WIDTH / BOXART_ASPECT;
@@ -25,8 +20,6 @@ export struct MoonlightAppTile {
   @Prop isDefault: boolean = false;
   @Prop isRunning: boolean = false;
   @Prop hasSession: boolean = false;
-  // The in-flight connect splits into two signals: `loading` dims the poster
-  // under a spinner for a fresh start; `connecting` spins only the action disc.
   @Prop loading: boolean = false;
   @Prop connecting: boolean = false;
   @Prop tip: string = '';
@@ -37,8 +30,7 @@ export struct MoonlightAppTile {
   onDisconnect: () => void = () => {};
   onCloseApp: () => void = () => {};
   onCloseAppAndDisconnect: () => void = () => {};
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private tipsOptions: TipsOptions = {};
 
   private clickable(): boolean {
     return !this.isRunning && !this.loading;
@@ -46,8 +38,6 @@ export struct MoonlightAppTile {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
-      // The "连接 / 切换" tip binds here, not on the whole tile: nested bindTips
-      // do not suppress the outer one, so the star / action tips would also fire it.
       Stack({ alignContent: Alignment.Center }) {
         if (this.icon !== undefined) {
           Image(this.icon)
@@ -59,7 +49,7 @@ export struct MoonlightAppTile {
           Image($r('app.media.ic_apps'))
             .width(36)
             .height(36)
-            .fillColor($r('app.color.text_secondary'))
+            
             .objectFit(ImageFit.Contain)
             .draggable(false)
         }
@@ -68,7 +58,7 @@ export struct MoonlightAppTile {
       .height('100%')
       .borderRadius(TILE_RADIUS)
       .clip(true)
-      .backgroundColor($r('app.color.input_bg'))
+      
       .bindTips(this.tip, this.tipsOptions)
 
       if (this.loading) {
@@ -76,12 +66,12 @@ export struct MoonlightAppTile {
           LoadingProgress()
             .width(32)
             .height(32)
-            .color('#FFFFFF')
+            
         }
         .width('100%')
         .height('100%')
         .borderRadius(TILE_RADIUS)
-        .backgroundColor('#66000000')
+        
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         .hitTestBehavior(HitTestMode.None)
@@ -91,8 +81,8 @@ export struct MoonlightAppTile {
         if (this.isRunning) {
           Text('运行中')
             .fontSize(9)
-            .fontColor('#FFFFFF')
-            .backgroundColor($r('app.color.accent'))
+            
+            
             .borderRadius(4)
             .padding({ left: 5, right: 5, top: 1, bottom: 1 })
             .transition(fadeTransition())
@@ -105,11 +95,9 @@ export struct MoonlightAppTile {
       .alignItems(HorizontalAlign.Start)
       .hitTestBehavior(HitTestMode.None)
 
-      // Always mounted so its @Prop colour refreshes in place (a by-value @Builder would freeze it).
       Column() {
         ControlDisc({
           icon: $r('app.media.ic_star'),
-          iconColor: this.isDefault ? $r('app.color.star_on') : $r('app.color.text_primary'),
           diameter: STAR_CONTROL,
           glyph: STAR_SIZE,
           tip: '设为默认',
@@ -131,7 +119,6 @@ export struct MoonlightAppTile {
             if (this.hasSession) {
               ControlDisc({
                 icon: $r('app.media.ic_disconnect'),
-                iconColor: $r('app.color.text_primary'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 gap: 8,
@@ -145,7 +132,6 @@ export struct MoonlightAppTile {
 
               ControlDisc({
                 icon: $r('app.media.ic_stop'),
-                iconColor: $r('app.color.control_danger'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 tip: '关闭应用并断开',
@@ -157,7 +143,6 @@ export struct MoonlightAppTile {
             } else {
               ControlDisc({
                 icon: $r('app.media.ic_play'),
-                iconColor: $r('app.color.control_accent'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 gap: 8,
@@ -171,7 +156,6 @@ export struct MoonlightAppTile {
 
               ControlDisc({
                 icon: $r('app.media.ic_stop'),
-                iconColor: $r('app.color.control_danger'),
                 diameter: ACTION_CONTROL,
                 glyph: ACTION_SIZE,
                 tip: '关闭应用',
@@ -192,8 +176,6 @@ export struct MoonlightAppTile {
       .alignItems(HorizontalAlign.Center)
       .hitTestBehavior(HitTestMode.None)
     }
-    // Explicit size: the overlay columns use height('100%'), and without a
-    // definite Stack height they would expand it (a Stack sizes to its largest child).
     .width(TILE_WIDTH)
     .height(TILE_HEIGHT)
     .margin({ right: 12, bottom: 16 })
@@ -225,3 +207,5 @@ export struct MoonlightAppTile {
     })
   }
 }
+
+

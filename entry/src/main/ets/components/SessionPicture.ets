@@ -2,8 +2,6 @@ import { lengthToNumber } from '../utils/UiUtil';
 import { fitPictureRect } from '../utils/PictureFit';
 import { Scroll2D } from './Scroll2D';
 
-// The session picture surface: a SURFACE XComponent centred at the content aspect
-// ratio; input stays on the XComponent, so its coordinates are picture-local.
 @Component
 export struct SessionPicture {
   xComponentId: string = '';
@@ -11,18 +9,13 @@ export struct SessionPicture {
   @Prop @Watch('refit') contentWidth: number = 0;
   @Prop @Watch('refit') contentHeight: number = 0;
   @Prop revealBand: number = 0;
-  // Percent of the picture width the reveal band spans, centred; the ends stay
-  // inert so a pointer brushing an edge or corner does not arm the toolbar.
   @Prop revealBandWidth: number = 100;
-  // System scroll engine: the transparent Scroll2D overlay below owns wheel/touchpad scrolling on
-  // both axes (see Scroll2D for why it must be two single-axis scrollers, and how they co-capture).
   engineScroll: boolean = false;
   onPointerMouse: (event: MouseEvent) => void = (event: MouseEvent) => {};
   onPointerTouch: (event: TouchEvent) => void = (event: TouchEvent) => {};
   onPointerHover: (isHover: boolean) => void = (isHover: boolean) => {};
   onPointerAxis: (event: AxisEvent) => void = (event: AxisEvent) => {};
   onSurfaceKey: (event: KeyEvent) => void = (event: KeyEvent) => {};
-  // Gamepad sticks and D-pad axes; delivered to the focused component.
   onSurfaceFocusAxis: (event: FocusAxisEvent) => void = (event: FocusAxisEvent) => {};
   onSurfaceBlur: () => void = () => {};
   onPictureArea: (width: number, height: number) => void = (width: number, height: number) => {};
@@ -58,7 +51,7 @@ export struct SessionPicture {
           })
             .width(this.pictureWidth)
             .height(this.pictureHeight)
-            .backgroundColor('#000000')
+            
             .focusable(true)
             .defaultFocus(true)
             .onMouse((event: MouseEvent) => {
@@ -96,14 +89,12 @@ export struct SessionPicture {
       }
       .width('100%')
       .height('100%')
-      // Arrow / D-pad keys belong to the remote, so they must not walk local focus off the picture.
       .focusScopeId('sessionPicture', true, false)
 
       if (this.revealBand > 0) {
         Row()
           .width(`${this.revealBandWidth}%`)
           .height(this.revealBand)
-          // A sensor for the toolbar zone: it must not block the picture (scroll / pointer) underneath.
           .hitTestBehavior(HitTestMode.Transparent)
           .onHover((isHover: boolean) => {
             this.onRevealZone(isHover);
@@ -119,3 +110,5 @@ export struct SessionPicture {
     })
   }
 }
+
+

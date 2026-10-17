@@ -3,7 +3,7 @@
 本文件是 **Moonlight / Sunshine 串流的原生侧**知识：客户端库的拉取/补丁/构建与共享库链接、桥接层与串流会话、
 以及四个原生扩展（本地光标模式、原生触控板、音频、剪贴板）。**视频解码、上屏与编解码协商**见
 [`moonlight-video.md`](moonlight-video.md)；**控制 / 配对层（ArkTS）**见 [`moonlight-control.md`](moonlight-control.md)；
-**前端**（协议建模、存储、连接列表与编辑页、设置页分栏、图标）见 [`moonlight-connection.md`](moonlight-connection.md)，
+**前端**（协议建模、存储、连接列表与编辑页、设置页分栏）见 [`moonlight-connection.md`](moonlight-connection.md)，
 **主机与应用**见 [`moonlight-apps.md`](moonlight-apps.md)，**会话窗口与遥测**见 [`moonlight-session.md`](moonlight-session.md)；
 RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md)（本文件不重复它）。
 

@@ -1,15 +1,13 @@
-import { ComponentContent, UIContext, uiMaterial } from '@kit.ArkUI';
+import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpWolHelp';
 const WOL_HELP_URL: string = 'https://www.msi.cn/support/technical_details/MB_Wake_On_LAN';
 
 class WolHelpParams {
-  materialBacked: boolean = false;
   onOpenLink: () => void = (): void => {};
   onDismiss: () => void = (): void => {};
 }
@@ -20,25 +18,25 @@ function wolHelpContent(params: WolHelpParams) {
     Text('启用网络唤醒（Wake-on-LAN）')
       .fontSize(18)
       .fontWeight(FontWeight.Medium)
-      .fontColor($r('app.color.text_primary'))
+      
     Text('需先在主机与路由器上开启 Wake-on-LAN，并允许网卡在关机 / 休眠时保持供电，否则唤醒包会被忽略。')
       .fontSize(13)
-      .fontColor($r('app.color.text_secondary'))
+      
       .margin({ top: 10 })
     Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
       Text('可参考')
         .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
+        
       Text('这篇教程')
         .fontSize(13)
-        .fontColor($r('app.color.accent'))
+        
         .decoration({ type: TextDecorationType.Underline })
         .onClick(() => {
           params.onOpenLink();
         })
       Text('进行设置。')
         .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
+        
     }
     .margin({ top: 10 })
 
@@ -46,8 +44,8 @@ function wolHelpContent(params: WolHelpParams) {
       .width('100%')
       .height(44)
       .fontSize(16)
-      .fontColor(Color.White)
-      .backgroundColor($r('app.color.accent'))
+      
+      
       .borderRadius(12)
       .margin({ top: 20 })
       .onClick(() => {
@@ -57,7 +55,7 @@ function wolHelpContent(params: WolHelpParams) {
   .width(320)
   .padding(24)
   .alignItems(HorizontalAlign.Start)
-  .backgroundColor(params.materialBacked ? Color.Transparent : $r('app.color.card_bg'))
+  
   .borderRadius(20)
 }
 
@@ -101,13 +99,13 @@ export function promptWolHelp(ui: UIContext): Promise<void> {
       openHelpLink(ui);
     };
     params.onDismiss = dismiss;
-    const material: uiMaterial.Material | undefined = SystemMaterial.of(MaterialSurface.DIALOG);
-    params.materialBacked = material !== undefined;
     ui.getPromptAction().openCustomDialog(contentNode,
-      { isModal: true, autoCancel: false, systemMaterial: material })
+      { isModal: true, autoCancel: false })
       .catch((error: BusinessError) => {
         hilog.error(DOMAIN, TAG, 'WoL help dialog failed: %{public}s', JSON.stringify(error));
         dismiss();
       });
   });
 }
+
+

@@ -19,7 +19,7 @@ export struct HeaderBar {
         Text(this.title)
           .fontSize(17)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
+          
           .margin({ left: 16 })
         Blank()
         this.trailing()
@@ -27,9 +27,11 @@ export struct HeaderBar {
       .width('100%')
       .padding({ left: 24, right: 24, top: 10, bottom: 8 })
 
-      Divider().color($r('app.color.divider'))
+      Divider()
     }
     .width('100%')
-    .backgroundColor($r('app.color.surface_bg'))
+    
   }
 }
+
+

@@ -1,10 +1,9 @@
-import { FrostedModifier, FrostedSurface, MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
+
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition } from '../utils/UiMotion';
 
 @Component
 export struct ControlDisc {
   @Prop icon: Resource = $r('app.media.ic_play');
-  @Prop iconColor: ResourceColor = $r('app.color.text_primary');
   @Prop diameter: number = 36;
   @Prop glyph: number = 22;
   @Prop gap: number = 0;
@@ -14,10 +13,7 @@ export struct ControlDisc {
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
-  private controlFrost: AttributeModifier<RowAttribute> =
-    new FrostedModifier<RowAttribute>(FrostedSurface.CONTROL);
+  private tipsOptions: TipsOptions = {};
 
   build() {
     Row() {
@@ -25,27 +21,26 @@ export struct ControlDisc {
         LoadingProgress()
           .width(this.glyph)
           .height(this.glyph)
-          .color(this.iconColor)
+          
       } else {
         Image(this.icon)
           .width(this.glyph)
           .height(this.glyph)
-          .fillColor(this.iconColor)
+          
           .draggable(false)
       }
     }
     .width(this.diameter)
     .height(this.diameter)
     .borderRadius(this.diameter / 2)
-    .backgroundColor($r('app.color.control_bg'))
-    .attributeModifier(this.controlFrost)
+    
+    
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .margin({ right: this.gap })
     .scale(hoverPressScale(this.hovered && !this.loading, this.pressed && !this.loading))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .transition(this.animated ? popTransition() : TransitionEffect.IDENTITY)
-    // Keep taps off the poster underneath, so the tile's own click does not fire.
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .onHover((isHover: boolean) => {
       if (this.loading) {
@@ -84,3 +79,5 @@ export struct ControlDisc {
     })
   }
 }
+
+

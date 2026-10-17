@@ -1,6 +1,5 @@
 import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 
-// Deliberately not a protocol id (those are 0 / 1), so callers can tell "common" apart.
 export const TAB_COMMON: number = 2;
 
 @Component
@@ -26,12 +25,11 @@ export struct ProtocolTabs {
       Text(label)
         .fontSize(14)
         .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
-        .fontColor(this.protocol === protocol
-          ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+        
       Divider()
         .strokeWidth(2)
         .width(36)
-        .color(this.protocol === protocol ? $r('app.color.accent') : Color.Transparent)
+        
         .margin({ top: 5 })
     }
     .alignItems(HorizontalAlign.Center)
@@ -45,3 +43,5 @@ export struct ProtocolTabs {
     })
   }
 }
+
+

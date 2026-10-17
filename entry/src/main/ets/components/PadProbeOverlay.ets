@@ -2,8 +2,6 @@ const PROBE_WIDTH: number = 180;
 const PROBE_HEIGHT: number = 120;
 const PROBE_DOT: number = 10;
 
-// Debug overlay drawing the synthesized pad contacts (scroll pan / pinch pair); transparent hit
-// test only reports pointer proximity, never consumes input.
 @Component
 export struct PadProbeOverlay {
   @Prop p1x: number = 0.5;
@@ -17,20 +15,20 @@ export struct PadProbeOverlay {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#66000000')
-        .border({ width: 1, color: '#99FFFFFF', radius: 6 })
+        
+        
       Column()
         .width(PROBE_DOT)
         .height(PROBE_DOT)
         .borderRadius(PROBE_DOT / 2)
-        .backgroundColor('#FFF44336')
+        
         .position({ x: this.p1x * PROBE_WIDTH - PROBE_DOT / 2,
           y: this.p1y * PROBE_HEIGHT - PROBE_DOT / 2 })
       Column()
         .width(PROBE_DOT)
         .height(PROBE_DOT)
         .borderRadius(PROBE_DOT / 2)
-        .backgroundColor('#FF2196F3')
+        
         .position({ x: this.p2x * PROBE_WIDTH - PROBE_DOT / 2,
           y: this.p2y * PROBE_HEIGHT - PROBE_DOT / 2 })
     }
@@ -42,3 +40,5 @@ export struct PadProbeOverlay {
     })
   }
 }
+
+

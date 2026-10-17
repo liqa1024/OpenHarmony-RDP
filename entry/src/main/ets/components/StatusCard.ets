@@ -1,5 +1,3 @@
-import { FrostedModifier, FrostedSurface } from '../services/SystemMaterial';
-
 @Component
 export struct StatusCard {
   @Prop title: string = '';
@@ -10,13 +8,11 @@ export struct StatusCard {
   @Prop icon: Resource | undefined = undefined;
   onPrimary: () => void = () => {};
   onSecondary: () => void = () => {};
-  private cardFrost: AttributeModifier<ColumnAttribute> =
-    new FrostedModifier<ColumnAttribute>(FrostedSurface.CARD);
 
   build() {
     Column() {
       if (this.loading) {
-        LoadingProgress().width(44).height(44).color($r('app.color.accent'))
+        LoadingProgress().width(44).height(44)
       } else if (this.icon !== undefined) {
         Image(this.icon)
           .width(52)
@@ -27,11 +23,11 @@ export struct StatusCard {
       Text(this.title)
         .fontSize(17)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
+        
         .margin({ top: 18 })
       Text(this.subtitle)
         .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
+        
         .margin({ top: 8 })
         .textAlign(TextAlign.Center)
         .constraintSize({ maxWidth: 320 })
@@ -40,7 +36,7 @@ export struct StatusCard {
           Button(this.primary)
             .height(42)
             .fontSize(14)
-            .backgroundColor($r('app.color.accent'))
+            
             .borderRadius(10)
             .onClick(() => {
               this.onPrimary();
@@ -50,8 +46,8 @@ export struct StatusCard {
           Button(this.secondary)
             .height(42)
             .fontSize(14)
-            .fontColor($r('app.color.text_primary'))
-            .backgroundColor($r('app.color.input_bg'))
+            
+            
             .borderRadius(10)
             .margin({ left: 12 })
             .onClick(() => {
@@ -64,8 +60,10 @@ export struct StatusCard {
     .width(360)
     .padding({ top: 32, bottom: 28, left: 28, right: 28 })
     .borderRadius(20)
-    .shadow({ radius: 30, color: '#33000000', offsetX: 0, offsetY: 10 })
-    .attributeModifier(this.cardFrost)
+    
+    
     .alignItems(HorizontalAlign.Center)
   }
 }
+
+

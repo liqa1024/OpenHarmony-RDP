@@ -15,8 +15,9 @@
 |---|---|
 | 应用结构（Ability / 页面 / 服务 / 原生模块职责表）、数据流、**边界判据（什么必须留在原生）**、原生线程与所有权、拆除顺序、ArkTS 线程模型 | [`architecture.md`](architecture.md) |
 | 构建产物与 ABI、签名（材料不入库）、真机与模拟器流程、`uitest`/`hdc` 可靠用法、日志、**改动后必须跑的最小验证**、环境与 SDK 口径 | [`build-and-verify.md`](build-and-verify.md) |
-| 严格 ArkTS 规则、ArkUI 状态刷新坑、路由、主题/资源机制、沉浸材质（系统材质）API 与摆放机制 | [`arkts-conventions.md`](arkts-conventions.md) |
-| 界面设计语言：设计原则、设计 token、布局模式、组件契约、共享工具、协议差异的呈现约定 | [`ui-design.md`](ui-design.md) |
+| 严格 ArkTS 规则、ArkUI 状态刷新坑、路由、资源与主题机制、与原生交互 | [`arkts-conventions.md`](arkts-conventions.md) |
+| 界面框架：页面骨架、组件结构、交互触发、组件契约、共享工具、协议差异（**不含配色/材质/尺寸取值**） | [`ui-framework.md`](ui-framework.md) |
+| 界面视觉：颜色、主题、表面、材质、字号、间距、圆角、阴影、动效、图标画法 | [`ui-visual.md`](ui-visual.md) |
 | **两协议共享的会话 / 连接层**：连接模型多态、连接发起分发、会话后端契约、会话窗口外壳、共享输入内核、会话窗口 / 输入 / 工具栏 / 光标共享行为、通用层命名与边界约定 | [`session-layer.md`](session-layer.md) |
 | RDP 会话：连接错误分类、原生会话生命周期、不可见抑制、RDP 输入落地（RDPEI / 高刷 / 直达缩放 / 锁键）、工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
 | **剪贴板（手动触发，两协议共享抽象）**：共享控制器/桥/本机读写叶子、手动语义、用户文案 | [`clipboard.md`](clipboard.md) |
@@ -28,7 +29,7 @@
 | GFX 码流框架（两层压缩 / 命令与表面模型 / 会话接线）、**不采用的方向**、dev 回放与参考画面（**仅 RDP 解码/合成调试**）、**CPU（gdi）链路的成本结构 / 判据与门禁 / 并行形态** | [`rdp-gfx.md`](rdp-gfx.md) |
 | **上屏（present）管线（两协议共享）**：一套呈现器实现、Vulkan/GLES 两个后端、帧到屏路径、swapchain 尺寸与重建、**超分辨率（Vulkan 专有）**与 `PresentVideo` 视频导入、GPU 账目、呈现 / 超分能力判定 | [`present.md`](present.md) |
 | RDP 上屏接线：脏区形状与上传、零拷贝桌面缓冲、合并上屏、RDP 侧账目与踩坑 | [`rdp-present.md`](rdp-present.md) |
-| Moonlight 连接前端：协议建模、存储布局、连接列表 / 编辑页、设置页分栏、图标约定 | [`moonlight-connection.md`](moonlight-connection.md) |
+| Moonlight 连接前端：协议建模、存储布局、连接列表 / 编辑页、设置页分栏、图标语义 | [`moonlight-connection.md`](moonlight-connection.md) |
 | Moonlight 主机与应用：主机发现与可达性四态、唤醒（WoL）、应用管理页、连接动作走法 | [`moonlight-apps.md`](moonlight-apps.md) |
 | Moonlight 会话：会话窗口 / 后端接线、输入落地、工具栏遥测 | [`moonlight-session.md`](moonlight-session.md) |
 | Moonlight 控制 / 配对层（ArkTS）：控制端点、配对时序与身份、证书 pin、标准参数名 | [`moonlight-control.md`](moonlight-control.md) |
@@ -56,7 +57,8 @@
 | 首次上手 / 搭环境 / 跑起来 | [`build-and-verify.md`](build-and-verify.md) |
 | 了解整体结构 / 线程模型 | [`architecture.md`](architecture.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
-| 改界面外观 / 抽共享 UI 组件 | [`ui-design.md`](ui-design.md) |
+| 改界面结构 / 组件 / 交互触发 | [`ui-framework.md`](ui-framework.md) |
+| 改配色 / 材质 / 尺寸 / 图标视觉 | [`ui-visual.md`](ui-visual.md) |
 | 改两协议通用层（连接模型 / 后端 / 会话外壳 / 输入内核 / 会话窗口行为 / 工具栏 / 光标） | [`session-layer.md`](session-layer.md) |
 | 改 RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
 | 改剪贴板（共享抽象 / 手动语义） | [`clipboard.md`](clipboard.md) |
@@ -68,7 +70,7 @@
 | 改 GFX / 解码 / 回放 | [`rdp-gfx.md`](rdp-gfx.md)（**CPU 链路先读 §7**） |
 | 改上屏（present，共享管线）/ 超分 | [`present.md`](present.md) |
 | 改 RDP 上屏接线（脏区 / 零拷贝 / 合并） | [`rdp-present.md`](rdp-present.md) |
-| 改 Moonlight 前端（列表 / 编辑页 / 设置分栏 / 图标） | [`moonlight-connection.md`](moonlight-connection.md) |
+| 改 Moonlight 前端（列表 / 编辑页 / 设置分栏 / 图标语义） | [`moonlight-connection.md`](moonlight-connection.md) |
 | 改 Moonlight 主机与应用（发现 / 运行态 / 唤醒 / 应用页） | [`moonlight-apps.md`](moonlight-apps.md) |
 | 改 Moonlight 会话 / 遥测 | [`moonlight-session.md`](moonlight-session.md) |
 | 改 Moonlight 控制 / 配对 | [`moonlight-control.md`](moonlight-control.md) |

@@ -120,8 +120,8 @@ native/scripts/replay-rounds.ps1 -Device "<序列号>" -Capture .cache/hmrdp_gfx
   （如 `26.0.0`）。写成 `26.0.0(26)` 会被 hvigor 拒绝（`api version parameter is illegal`）。
 - **`compatibleSdkVersion` 低于所用 API 的 `since` 时**：编译器对每次调用报
   "It is recommended to use apiAvailable to safeguard API compatibility" 告警。
-  这类调用必须做运行时版本保护（见 [`arkts-conventions.md`](arkts-conventions.md) §6），
-  否则在老系统上是**直接崩溃**而不是降级。
+  这类调用必须做运行时版本保护：先按底座版本号兜住，再用 `if (deviceInfo.apiAvailable('26.0.0'))`
+  （版本号必须是**字面量、直接写在 if 里**）包住新 API；否则在老系统上是**直接崩溃**而不是降级。
 - **ArkTS 编译告警按成因处理**（`build_project` 输出，WARN）：API 声明了 `@throws` 的调用若未用
   `try/catch`（或 Promise 的 `.catch`）包住，会报 `Function may throw exceptions. Special handling is
   required.`；多设备（syscap）/ 权限告警用

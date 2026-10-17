@@ -1,4 +1,3 @@
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 
 @Component
@@ -9,8 +8,7 @@ export struct FabButton {
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
-  private tipsOptions: TipsOptions =
-    { systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY) };
+  private tipsOptions: TipsOptions = {};
 
   build() {
     Row() {
@@ -18,7 +16,7 @@ export struct FabButton {
         LoadingProgress()
           .width(24)
           .height(24)
-          .color('#FFFFFF')
+          
       } else {
         Image(this.icon)
           .width(24)
@@ -29,11 +27,11 @@ export struct FabButton {
     .width(56)
     .height(56)
     .borderRadius(28)
-    .backgroundColor($r('app.color.accent'))
+    
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .scale(hoverPressScale(this.hovered, this.pressed))
-    .shadow({ radius: 18, color: '#33000000', offsetX: 0, offsetY: 6 })
+    
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .onHover((isHover: boolean) => {
       this.hovered = isHover;
@@ -53,3 +51,5 @@ export struct FabButton {
     })
   }
 }
+
+

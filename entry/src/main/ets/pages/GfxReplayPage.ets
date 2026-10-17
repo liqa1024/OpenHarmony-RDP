@@ -8,7 +8,6 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
 
-// 「路线」: CPU = the GLES presenter (no Vulkan at all), 硬件加速 = the Vulkan presenter.
 const LINE_CPU: number = 0;
 const LINE_ACCEL: number = 1;
 const LINE_LABEL: string[] = ['CPU', '硬件加速'];
@@ -86,8 +85,6 @@ struct GfxReplayPage {
     this.applyFullScreen(true);
     const capability: Capability = DeviceCapabilities.hardwareAccel();
     this.hardwareAccelSupported = capability.supported;
-    // Presentation is Vulkan whenever the device supports it; this page's route toggle is dev-only
-    // A/B (it is not persisted), so start on the supported route.
     this.line = capability.supported ? LINE_ACCEL : LINE_CPU;
     let dir: string = '';
     try {
@@ -109,8 +106,6 @@ struct GfxReplayPage {
     this.applyFullScreen(false);
   }
 
-  // Controllers live for the page's lifetime, so a slot count change only
-  // mounts/unmounts surfaces; the handles bound to them stay addressable.
   private buildSlots(): void {
     this.slots = [];
     this.controllers = [];
@@ -169,16 +164,12 @@ struct GfxReplayPage {
         slot.index, this.capturePath, slot.surfaceId, slot.width, slot.height);
       return;
     }
-    // The presenter backend is chosen when the run starts, so apply the
-    // acceleration state here as well (it may have changed since page open).
     RdpNative.applyHardwareAccel(this.accelOn());
     slot.handle = RdpNative.startReplayInstance(slot.surfaceId, slot.width, slot.height,
       this.capturePath, this.replayRealtime, this.refMode);
     hilog.info(DOMAIN, TAG, 'slot %{public}d handle=%{public}d', slot.index, slot.handle);
   }
 
-  // The presenter is created per instance, so a restart is what makes a
-  // route/reference/clock change take effect.
   private restartAll(): void {
     RdpNative.stopAllReplayInstances();
     for (let i = 0; i < this.slotCount; i++) {
@@ -248,8 +239,8 @@ struct GfxReplayPage {
         Button('返回')
           .height(36)
           .fontSize(14)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(10)
           .onClick(() => {
             this.getUIContext().getRouter().back();
@@ -258,15 +249,15 @@ struct GfxReplayPage {
         Text('RDP 回放测试')
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
+          
           .margin({ left: 12 })
           .layoutWeight(1)
 
         Button(`并发:${this.slotCount}`)
           .height(34)
           .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
@@ -276,8 +267,8 @@ struct GfxReplayPage {
         Button(`路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}`)
           .height(34)
           .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
@@ -287,8 +278,8 @@ struct GfxReplayPage {
         Button(`参考:${REF_LABEL[this.refMode]}`)
           .height(34)
           .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
@@ -299,8 +290,8 @@ struct GfxReplayPage {
         Button(`节拍:${this.replayRealtime ? '实时' : '跑满'}`)
           .height(34)
           .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
@@ -311,8 +302,8 @@ struct GfxReplayPage {
         Button(this.showStats ? '隐藏信息' : '显示信息')
           .height(34)
           .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(9)
           .margin({ right: 8 })
           .onClick(() => {
@@ -322,8 +313,8 @@ struct GfxReplayPage {
         Button('重放')
           .height(34)
           .fontSize(13)
-          .fontColor($r('app.color.accent'))
-          .backgroundColor($r('app.color.input_bg'))
+          
+          
           .borderRadius(9)
           .onClick(() => {
             this.restartAll();
@@ -342,7 +333,7 @@ struct GfxReplayPage {
             })
               .width(this.slotCount > 1 ? '50%' : '100%')
               .height(this.slotCount > 2 ? '50%' : '100%')
-              .backgroundColor('#000000')
+              
           }, (index: number) => `slot_${index}`)
         }
         .width('100%')
@@ -352,11 +343,11 @@ struct GfxReplayPage {
           Column() {
             Text(`并发:${this.slotCount}  路线:${this.hardwareAccelSupported ? LINE_LABEL[this.line] : 'CPU'}  参考:${REF_LABEL[this.refMode]}`)
               .fontSize(12)
-              .fontColor('#FFFFD479')
+              
               .width('100%')
             Text(this.status)
               .fontSize(12)
-              .fontColor('#FFF5F5F5')
+              
               .width('100%')
               .margin({ top: 4 })
           }
@@ -364,7 +355,7 @@ struct GfxReplayPage {
           .padding(10)
           .margin({ left: 12, bottom: 12 })
           .constraintSize({ maxWidth: '95%' })
-          .backgroundColor('#D9000000')
+          
           .borderRadius(10)
         }
       }
@@ -373,6 +364,8 @@ struct GfxReplayPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.page_bg'))
+    
   }
 }
+
+

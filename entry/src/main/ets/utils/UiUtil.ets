@@ -1,6 +1,5 @@
 import { UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { MaterialSurface, SystemMaterial } from '../services/SystemMaterial';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpUi';
@@ -10,7 +9,6 @@ export function showToast(ui: UIContext, message: string, durationMs: number = 2
     ui.getPromptAction().showToast({
       message: message,
       duration: durationMs,
-      systemMaterial: SystemMaterial.of(MaterialSurface.OVERLAY)
     });
   } catch (error) {
     hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
@@ -31,7 +29,6 @@ export function showConfirm(ui: UIContext, options: ConfirmDialogOptions): void 
     ui.showAlertDialog({
       title: options.title,
       message: options.message,
-      systemMaterial: SystemMaterial.of(MaterialSurface.DIALOG),
       primaryButton: {
         value: options.cancelLabel !== undefined ? options.cancelLabel : '取消',
         action: () => {
@@ -39,7 +36,6 @@ export function showConfirm(ui: UIContext, options: ConfirmDialogOptions): void 
       },
       secondaryButton: {
         value: options.confirmLabel,
-        fontColor: options.danger === true ? $r('app.color.danger') : $r('app.color.accent'),
         action: () => {
           options.onConfirm();
         }
@@ -56,7 +52,6 @@ export function showNotice(ui: UIContext, title: string, message: string,
     ui.showAlertDialog({
       title: title,
       message: message,
-      systemMaterial: SystemMaterial.of(MaterialSurface.DIALOG),
       confirm: {
         value: confirmLabel,
         action: () => {
@@ -78,3 +73,5 @@ export function lengthToNumber(value: Length): number {
   }
   return 0;
 }
+
+
