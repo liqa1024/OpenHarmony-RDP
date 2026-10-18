@@ -3,7 +3,7 @@
 本文件是**上屏这一段**（从「本帧要显示哪些像素」到 `swapchain` / `vkQueuePresentKHR`）的家，**两协议共享**。
 RDP（gdi）侧特有的脏区上传、零拷贝桌面缓冲、合并上屏与由此而来的账目见 [`rdp-present.md`](rdp-present.md)；
 GFX 协议框架与 CPU（gdi）链路的成本结构见 [`rdp-gfx.md`](rdp-gfx.md)；Moonlight 的两条上屏链路见
-[`moonlight-video.md`](moonlight-video.md)；构建与验证见 [`build-and-verify.md`](build-and-verify.md)。
+[`moonlight-video.md`](moonlight-video.md)；构建见 [`build.md`](build.md)，测试与验证见 [`testing.md`](testing.md)。
 
 > **范围**：RDP 的解码与合成走 FreeRDP gdi（live 与回放同一条路），Moonlight 直出时不经呈现器、超分时把
 > 解码帧交给同一呈现器；本文件只讲把出好的帧送上屏。自研 GPU 解码/合成引擎**不采用**（见

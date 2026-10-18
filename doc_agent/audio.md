@@ -65,5 +65,5 @@ OHAudio 两条消费路径、缓冲策略与格式变化。RDP 侧的 rdpsnd sin
   `The system capacity of this api 'audio' is not supported on all devices`（WARN，非 ERROR）。该告警是工具误报
   （API 的 `@syscap` 标注带版本区间，与设备能力集比对不上；`audio` 在目标设备类型上实际可用），用
   `@SuppressWarnings({rules:[SuppressWarningsType.SYSCAP]})` 标注承载调用的**类**屏蔽（装饰器对类/方法生效，
-  不能标自由函数；见 [`build-and-verify.md`](build-and-verify.md) §6）。运行时仍靠能力探测与优雅降级
+  不能标自由函数；见 [`build.md`](build.md) §5）。运行时仍靠能力探测与优雅降级
   （无输出设备 ⇒ 关「音频重定向」、不建渲染器）兜底，不因该告警退回原生。

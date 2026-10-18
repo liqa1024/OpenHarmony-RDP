@@ -13,7 +13,7 @@ RDP 用 FreeRDP，Moonlight 用 `moonlight-common-c`；共用连接列表、会�
   只用于查状态、历史、差异和追溯，不要拿它代替直接读代码。恢复文件一般直接编辑；内容较多时，
   可以让用户授权本次恢复，或交给用户操作。
 - **签名材料不进仓库**：AI 不接触 `*.p12`/`*.p7b`/`*.cer`/keystore 或签名路径；
-  细节见 [`build-and-verify.md`](doc_agent/build-and-verify.md) §2。
+  细节见 [`build.md`](doc_agent/build.md) §2。
 - **`targetSdkVersion` / `compatibleSdkVersion` 未经确认不要调整**。
 
 ## 禁止先斩后奏
@@ -36,16 +36,16 @@ RDP 用 FreeRDP，Moonlight 用 `moonlight-common-c`；共用连接列表、会�
 
 ## 注意事项
 
-- **构建与自检**：改 `.ets` / `.cpp` 后按 [`build-and-verify.md`](doc_agent/build-and-verify.md) §3 的验证门禁走；
+- **构建与自检**：改 `.ets` / `.cpp` 后按 [`build.md`](doc_agent/build.md) §4 的构建门禁走；
   `build_project` 不通过不算完成。
-- **模拟器与真机**：先弄清模拟器和实机的验证流程与区别，再决定用哪种；占用/关闭与三档规则见
-  [`build-and-verify.md`](doc_agent/build-and-verify.md) §3.1/§4/§5。
+- **模拟器与真机**：先弄清模拟器和实机的验证流程与区别，再决定用哪种；占用/关闭与真机例外规则见
+  [`testing.md`](doc_agent/testing.md)。
 - **UI/视觉判断**：归用户；AI 只做构建、日志和可判定的自动检查，不默认重复验收，也不因复现不了就否定用户的观察。
-- **Vulkan/硬件加速**：按 [`build-and-verify.md`](doc_agent/build-and-verify.md) §5 在真机验证；模拟器不作为依据。
-- **调试**：查日志、驱动 UI 前先读 [`build-and-verify.md`](doc_agent/build-and-verify.md) §5.1/§5.3，
+- **Vulkan/硬件加速**：按 [`testing.md`](doc_agent/testing.md) 在真机验证；模拟器不作为依据。
+- **调试**：查日志、驱动 UI 前先读 [`testing.md`](doc_agent/testing.md)，
   按文档里的可靠用法做，不要凭记忆盲点；多设备和日志参数以文档为准。
 - **环境与产物**：确认 `DEVECO_HOME`、SDK 版本、ABI/product 映射；详见
-  [`build-and-verify.md`](doc_agent/build-and-verify.md) §1/§6。版本未经确认不要改。
+  [`build.md`](doc_agent/build.md) §1/§5。版本未经确认不要改。
 - **原生构建**：改原生依赖前先读 [`native-build.md`](doc_agent/native-build.md) 的补丁/构建流程；
   RDP 补丁内容见 [`rdp-native.md`](doc_agent/rdp-native.md) §3。
 
@@ -60,7 +60,8 @@ RDP 用 FreeRDP，Moonlight 用 `moonlight-common-c`；共用连接列表、会�
 |---|---|
 | [`doc_agent/README.md`](doc_agent/README.md) | 归属表、阅读顺序、写作约定 |
 | [`architecture.md`](doc_agent/architecture.md) | 整体结构、职责表、线程与所有权 |
-| [`build-and-verify.md`](doc_agent/build-and-verify.md) | 构建、验证分层与交接、真机/模拟器、uitest/hdc、日志、环境与 SDK 口径 |
+| [`build.md`](doc_agent/build.md) | 构建、签名、构建/安装命令、最小构建门禁、环境与 SDK 口径 |
+| [`testing.md`](doc_agent/testing.md) | 测试与验证：AI 自测、默认流程、用户 UI 验收、AI 实机例外、用户操作 + hilog、日志、UI 驱动、交接 |
 | [`arkts-conventions.md`](doc_agent/arkts-conventions.md) | 严格 ArkTS 规则、ArkUI 状态刷新、路由、资源与主题、与原生交互 |
 | [`ui-framework.md`](doc_agent/ui-framework.md) | 界面结构、组件、交互触发、组件契约（不含配色/材质/尺寸取值） |
 | [`ui-visual.md`](doc_agent/ui-visual.md) | 界面视觉：颜色、主题、表面、材质、字号、间距、圆角、阴影、动效、图标画法 |

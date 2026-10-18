@@ -81,12 +81,11 @@ gdi 直接合成进 presenter 拥有的 host-visible 缓冲，present 只做一�
 
 ## 5. 操作与踩坑
 
-- **构建/安装/运行**与 **dev 页驱动**：见 [`build-and-verify.md`](build-and-verify.md) §4/§5.1。
+- **构建/安装/运行**见 [`build.md`](build.md) §3；**dev 页驱动**见 [`testing.md`](testing.md)。
   dev 页「路线」只切 CPU / 硬件加速（上屏后端），「参考」切 关/导出/对比，**每次点击都会重启回放**。
 - **样本**：设备侧读应用 filesDir 下的固定文件名，用 `hdc file send` **覆盖**（`hdc` 不能在该目录新建）；
   本地副本放 gitignore 目录留档。**换样本后记得还原**。
-- **判定"跑完"、驱动与多轮测量**：见 [`rdp-gfx.md`](rdp-gfx.md) §5 与
-  [`build-and-verify.md`](build-and-verify.md) §5.2。
+- **判定"跑完"、驱动与多轮测量**：见 [`rdp-gfx.md`](rdp-gfx.md) §5；UI 驱动见 [`testing.md`](testing.md)。
 - **日志**：hilog domain `0xD001`；**每个格式说明符都要写 `%{public}`**，否则打印 `<private>`。
 - **坑（改这块前看一遍）**：
   - **在被测路径里加读回探针会扰动测量**（额外提交/等待会改变失败形状）——定位要用不进入被测路径的

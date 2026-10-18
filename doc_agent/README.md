@@ -4,7 +4,7 @@
 与具体开发机、具体设备、具体样本无关。它描述**系统现在是什么样**（结论 + 依据 + 判据 + 约束），
 不记录排查过程、日期、机器/设备信息，也不放计划（计划不入库）。
 
-> 入口：仓库根 [`AGENTS.md`](../AGENTS.md)（定位 + 硬规则 + 文档地图 + 环境/命令）。
+> 入口：仓库根 [`AGENTS.md`](../AGENTS.md)（定位 + 红线 + 高频注意事项 + 文档索引）。
 
 ## 一个事实只有一个家（写文档前先看）
 
@@ -14,7 +14,8 @@
 | 主题 | 家 |
 |---|---|
 | 应用结构（Ability / 页面 / 服务 / 原生模块职责表）、数据流、**边界判据（什么必须留在原生）**、原生线程与所有权、拆除顺序、ArkTS 线程模型 | [`architecture.md`](architecture.md) |
-| 构建产物与 ABI、签名（材料不入库）、真机与模拟器流程、`uitest`/`hdc` 可靠用法、日志、**改动后必须跑的最小验证**、环境与 SDK 口径 | [`build-and-verify.md`](build-and-verify.md) |
+| 构建产物与 ABI、签名（材料不入库）、构建/安装命令、**最小构建门禁**、环境与 SDK 口径 | [`build.md`](build.md) |
+| 测试与验证：AI 自测、默认流程、用户 UI 验收、AI 实机例外、用户操作 + hilog、日志、UI 驱动、交接 | [`testing.md`](testing.md) |
 | 严格 ArkTS 规则、ArkUI 状态刷新坑、路由、资源与主题机制、与原生交互 | [`arkts-conventions.md`](arkts-conventions.md) |
 | 界面框架：页面骨架、组件结构、交互触发、组件契约、共享工具、协议差异（**不含配色/材质/尺寸取值**） | [`ui-framework.md`](ui-framework.md) |
 | 界面视觉：颜色、主题、表面、材质、字号、间距、圆角、阴影、动效、图标画法 | [`ui-visual.md`](ui-visual.md) |
@@ -54,7 +55,8 @@
 
 | 目标 | 先读 |
 |---|---|
-| 首次上手 / 搭环境 / 跑起来 | [`build-and-verify.md`](build-and-verify.md) |
+| 首次上手 / 搭环境 / 跑起来 | [`build.md`](build.md) |
+| 测试 / 验证 / 真机与模拟器 | [`testing.md`](testing.md) |
 | 了解整体结构 / 线程模型 | [`architecture.md`](architecture.md) |
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改界面结构 / 组件 / 交互触发 | [`ui-framework.md`](ui-framework.md) |
