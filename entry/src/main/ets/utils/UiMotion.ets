@@ -1,7 +1,7 @@
 
-export const MOTION_HOVER_SCALE: number = 1.06;
-export const MOTION_PRESS_SCALE: number = 0.9;
-export const MOTION_HOVER_PRESS_MS: number = 140;
+export const MOTION_HOVER_SCALE: number = 1.02;
+export const MOTION_PRESS_SCALE: number = 0.96;
+export const MOTION_HOVER_PRESS_MS: number = 160;
 export const MOTION_CURVE: Curve = Curve.FastOutSlowIn;
 
 export function hoverPressScale(hovered: boolean, pressed: boolean): ScaleOptions {
@@ -11,9 +11,9 @@ export function hoverPressScale(hovered: boolean, pressed: boolean): ScaleOption
   return options;
 }
 
-const MOTION_APPEAR_MS: number = 300;
-const MOTION_DISAPPEAR_MS: number = 240;
-const MOTION_POP_SCALE: number = 0.6;
+const MOTION_APPEAR_MS: number = 200;
+const MOTION_DISAPPEAR_MS: number = 160;
+const MOTION_POP_SCALE: number = 0.98;
 
 function pop(durationMs: number): TransitionEffect {
   const scale: ScaleOptions = { x: MOTION_POP_SCALE, y: MOTION_POP_SCALE };

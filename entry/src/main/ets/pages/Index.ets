@@ -522,6 +522,11 @@ struct Index {
           diameter: 44,
           glyph: 24,
           tip: '设置',
+          iconColor: $r('app.color.icon_primary'),
+          discColor: $r('app.color.control_bg'),
+          discHoverColor: $r('app.color.control_bg_hover'),
+          discPressColor: $r('app.color.control_bg_pressed'),
+          discBorder: $r('app.color.control_border'),
           onTap: () => {
             this.openSettings();
           }
@@ -533,7 +538,7 @@ struct Index {
           kind: StateViewKind.Empty,
           icon: $r('app.media.app_icon'),
           title: '还没有保存的连接',
-          message: '点击右上角 + 添加一个远程桌面',
+          message: '点击右下角 + 添加一个连接',
           primaryLabel: '添加连接',
           onPrimary: () => {
             this.openNewConnection();
@@ -542,7 +547,7 @@ struct Index {
           .layoutWeight(1)
           .width('100%')
       } else {
-        List({ space: 6 }) {
+        List({ space: 8 }) {
           ForEach(this.connections, (conn: SavedConnection, index: number) => {
             ListItem() {
               ConnectionRow({

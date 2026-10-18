@@ -2,6 +2,7 @@ import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { PromptDialog } from '../components/PromptDialog';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpWolHelp';
@@ -14,50 +15,31 @@ class WolHelpParams {
 
 @Builder
 function wolHelpContent(params: WolHelpParams) {
-  Column() {
-    Text('启用网络唤醒（Wake-on-LAN）')
-      .fontSize(18)
-      .fontWeight(FontWeight.Medium)
-      
-    Text('需先在主机与路由器上开启 Wake-on-LAN，并允许网卡在关机 / 休眠时保持供电，否则唤醒包会被忽略。')
-      .fontSize(13)
-      
-      .margin({ top: 10 })
+  PromptDialog({
+    title: '启用网络唤醒（Wake-on-LAN）',
+    message: '需在主机与路由器上开启 Wake-on-LAN，并保持网卡关机 / 休眠供电。',
+    confirmLabel: '知道了',
+    onConfirm: () => {
+      params.onDismiss();
+    }
+  }) {
     Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
-      Text('可参考')
-        .fontSize(13)
-        
+      Text('设置方法见')
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
       Text('这篇教程')
-        .fontSize(13)
-        
+        .fontSize(14)
+        .fontColor($r('app.color.brand_text'))
         .decoration({ type: TextDecorationType.Underline })
         .onClick(() => {
           params.onOpenLink();
         })
-      Text('进行设置。')
-        .fontSize(13)
-        
+      Text('。')
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
     }
-    .margin({ top: 10 })
-
-    Button('知道了')
-      .width('100%')
-      .height(44)
-      .fontSize(16)
-      
-      
-      .borderRadius(12)
-      .margin({ top: 20 })
-      .onClick(() => {
-        params.onDismiss();
-      })
+    .margin({ top: 12 })
   }
-  .width('90%')
-  .constraintSize({ maxWidth: 320 })
-  .padding(24)
-  .alignItems(HorizontalAlign.Start)
-  
-  .borderRadius(20)
 }
 
 function openHelpLink(ui: UIContext): void {
@@ -80,26 +62,46 @@ export function promptWolHelp(ui: UIContext): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
     let closed: boolean = false;
     const params: WolHelpParams = new WolHelpParams();
-    const contentNode: ComponentContent<WolHelpParams> =
-      new ComponentContent(ui, wrapBuilder(wolHelpContent), params);
+    let contentNode: ComponentContent<WolHelpParams> | undefined = undefined;
+    const disposeContent = (): void => {
+      const node: ComponentContent<WolHelpParams> | undefined = contentNode;
+      if (node === undefined) {
+        return;
+      }
+      try {
+        node.dispose();
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'dispose WoL help dialog failed: %{public}s', JSON.stringify(error));
+      }
+    };
     const dismiss = (): void => {
       if (closed) {
         return;
       }
       closed = true;
-      ui.getPromptAction().closeCustomDialog(contentNode)
+      const node: ComponentContent<WolHelpParams> | undefined = contentNode;
+      if (node === undefined) {
+        resolve();
+        return;
+      }
+      ui.getPromptAction().closeCustomDialog(node)
         .then(() => {
-          contentNode.dispose();
+          disposeContent();
+          resolve();
         })
         .catch((error: BusinessError) => {
           hilog.error(DOMAIN, TAG, 'close WoL help dialog failed: %{public}s', JSON.stringify(error));
+          disposeContent();
+          resolve();
         });
-      resolve();
     };
+    // Wire callbacks before creating the content node: the builder may
+    // capture the parameter object at construction time.
     params.onOpenLink = (): void => {
       openHelpLink(ui);
     };
     params.onDismiss = dismiss;
+    contentNode = new ComponentContent(ui, wrapBuilder(wolHelpContent), params);
     ui.getPromptAction().openCustomDialog(contentNode,
       { isModal: true, autoCancel: false })
       .catch((error: BusinessError) => {

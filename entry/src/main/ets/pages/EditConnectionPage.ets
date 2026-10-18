@@ -536,8 +536,8 @@ struct EditConnectionPage {
     this.errorMessage = '';
     this.pairing = true;
     MoonlightConnector.pairOnly((context as common.UIAbilityContext).filesDir, conn.host, conn.port,
-      (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
-        promptPairingPin(this.getUIContext(), pin, pairing),
+      (pin: string, pairing: Promise<PairResult>, cancel: () => void): Promise<boolean> =>
+        promptPairingPin(this.getUIContext(), pin, pairing, cancel),
       this.moonlightHostPolicy())
       .then((result: MoonlightPairResult) => {
         this.pairing = false;
@@ -813,14 +813,14 @@ struct EditConnectionPage {
         Column() {
           Text('使用会话独立超分辨率设置')
             .fontSize(14)
-          Text('超分辨率：远端按输出分辨率÷倍率出画，本机 GPU 上采样回输出分辨率；关闭则跟随全局设置')
-            .fontSize(11)
+          Text('超分：远端按输出÷倍率出画；关闭则跟随全局')
+            .fontSize(12).fontColor($r('app.color.text_tertiary'))
             
             .margin({ top: 2 })
           if (!this.srUsable()) {
-            Text('本设备不支持超分辨率（需要可用的 Vulkan 上屏与所选后端）')
-              .fontSize(11)
-              
+            Text('本设备不支持超分辨率')
+              .fontSize(12).fontColor($r('app.color.warning'))
+              .lineHeight(16)
               .margin({ top: 2 })
           }
         }
@@ -828,6 +828,7 @@ struct EditConnectionPage {
         .layoutWeight(1)
 
         Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalSr })
+          .selectedColor($r('app.color.brand_fill'))
           .enabled(this.srUsable())
           
           .onChange((isOn: boolean) => {
@@ -842,13 +843,13 @@ struct EditConnectionPage {
 
       if (this.useGlobalSr) {
         Text('全局：' + this.srSummary(SettingsStore.globalSrProfile(this.protocol)))
-          .fontSize(11)
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
           
           .width('100%')
       } else {
         Text('超分辨率').fontSize(14)
-        Text('会话按输出分辨率÷倍率取流，本机上采样回输出分辨率')
-          .fontSize(11).margin({ top: 2 })
+        Text('会话按输出÷倍率取流，本机上采样')
+          .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
 
         Flex({ wrap: FlexWrap.Wrap }) {
           this.srChoiceChip(0)
@@ -874,12 +875,23 @@ struct EditConnectionPage {
   @Builder
   mlResModeChip(mode: number, label: string, leftMargin: number) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.mlResMode === mode
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.mlResMode === mode
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.mlResMode === mode
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.mlResMode = mode;
@@ -931,12 +943,23 @@ struct EditConnectionPage {
   @Builder
   mlBitrateModeChip(label: string, auto: boolean, leftMargin: number) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.mlBitrateAuto === auto
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.mlBitrateAuto === auto
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.mlBitrateAuto === auto
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.mlBitrateAuto = auto;
@@ -984,6 +1007,10 @@ struct EditConnectionPage {
             TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
               .width('100%')
               .height(46)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_tertiary'))
+              .backgroundColor($r('app.color.surface_subtle'))
+              .border({ width: 1, color: $r('app.color.border') })
               .borderRadius(10)
               .onChange((value: string) => {
                 this.name = value;
@@ -998,19 +1025,20 @@ struct EditConnectionPage {
             LoadingProgress()
               .width(20)
               .height(20)
-              
+              .color($r('app.color.brand_fill'))
           } else {
             Image($r('app.media.ic_search'))
               .width(20)
               .height(20)
-              
+              .fillColor($r('app.color.icon_secondary'))
               .draggable(false)
           }
         }
         .width(46)
         .height(46)
+        .backgroundColor($r('app.color.surface_subtle'))
+        .border({ width: 1, color: $r('app.color.border') })
         .borderRadius(10)
-        
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .margin({ left: 12 })
@@ -1033,6 +1061,10 @@ struct EditConnectionPage {
             TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
               .width('100%')
               .height(46)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_tertiary'))
+              .backgroundColor($r('app.color.surface_subtle'))
+              .border({ width: 1, color: $r('app.color.border') })
               .borderRadius(10)
               .onChange((value: string) => {
                 this.host = value;
@@ -1047,6 +1079,10 @@ struct EditConnectionPage {
             TextInput({ placeholder: '47989', text: this.port })
               .width('100%')
               .height(46)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_tertiary'))
+              .backgroundColor($r('app.color.surface_subtle'))
+              .border({ width: 1, color: $r('app.color.border') })
               .borderRadius(10)
               .type(InputType.Number)
               .onChange((value: string) => {
@@ -1070,14 +1106,15 @@ struct EditConnectionPage {
   moonlightAdvanced() {
     Column() {
       Divider()
-        
+        .strokeWidth(1)
+        .color($r('app.color.divider'))
         .margin({ top: 20, bottom: 8 })
 
       Row() {
         Column() {
           Text('高级设置').fontSize(14)
-          Text('默认跟随全局设置，展开后可单独覆盖')
-            .fontSize(11)
+          Text('默认跟随全局；展开可覆盖')
+            .fontSize(12).fontColor($r('app.color.text_tertiary'))
             
             .margin({ top: 2 })
         }
@@ -1087,12 +1124,12 @@ struct EditConnectionPage {
         Row() {
           if (!this.useGlobalStream) {
             Text('已自定义')
-              .fontSize(11)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
               
               .margin({ right: 8 })
           }
           Text(this.advancedExpanded ? '收起' : '展开')
-            .fontSize(13)
+            .fontSize(14)
             
         }
         .alignItems(VerticalAlign.Center)
@@ -1112,8 +1149,8 @@ struct EditConnectionPage {
           Row() {
             Column() {
               Text('使用会话独立串流设置').fontSize(14)
-              Text('分辨率、帧率、码率等使用本连接的独立配置，关闭则跟随全局设置')
-                .fontSize(11)
+              Text('本连接独立配置；关闭则跟随全局')
+                .fontSize(12).fontColor($r('app.color.text_tertiary'))
                 
                 .margin({ top: 2 })
             }
@@ -1121,6 +1158,7 @@ struct EditConnectionPage {
             .layoutWeight(1)
 
             Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalStream })
+              .selectedColor($r('app.color.brand_fill'))
               
               .onChange((isOn: boolean) => {
                 this.useGlobalStream = !isOn;
@@ -1131,15 +1169,15 @@ struct EditConnectionPage {
 
           if (this.useGlobalStream) {
             Text('全局：' + this.streamSummary(SettingsStore.globalStreamProfile()))
-              .fontSize(11)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
               
               .width('100%')
           } else {
             Row() {
               Column() {
                 Text('分辨率').fontSize(14)
-                Text('自动跟随当前屏幕，或固定一个分辨率')
-                  .fontSize(11).margin({ top: 2 })
+                Text('跟随当前屏幕或固定分辨率')
+                  .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
               .layoutWeight(1)
@@ -1153,14 +1191,14 @@ struct EditConnectionPage {
 
             if (this.mlResMode === ML_RES_FOLLOW_SCREEN) {
               Text('自动检测：' + this.detectedText)
-                .fontSize(11)
+                .fontSize(12).fontColor($r('app.color.text_tertiary'))
                 .width('100%').margin({ top: 6 })
             } else {
               Row() {
                 Column() {
                   FormField({ label: '分辨率宽度' }) {
                     TextInput({ placeholder: '1920', text: this.mlWidthText })
-                      .width('100%').height(46).borderRadius(10)
+                      .width('100%').height(46).fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_tertiary')).backgroundColor($r('app.color.surface_subtle')).border({ width: 1, color: $r('app.color.border') }).borderRadius(10)
                       .type(InputType.Number)
                       .onChange((value: string) => {
                         this.mlWidthText = value;
@@ -1172,7 +1210,7 @@ struct EditConnectionPage {
                 Column() {
                   FormField({ label: '分辨率高度' }) {
                     TextInput({ placeholder: '1080', text: this.mlHeightText })
-                      .width('100%').height(46).borderRadius(10)
+                      .width('100%').height(46).fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_tertiary')).backgroundColor($r('app.color.surface_subtle')).border({ width: 1, color: $r('app.color.border') }).borderRadius(10)
                       .type(InputType.Number)
                       .onChange((value: string) => {
                         this.mlHeightText = value;
@@ -1184,7 +1222,7 @@ struct EditConnectionPage {
               .width('100%').margin({ top: 12 })
 
               Text('自动检测：' + this.detectedText)
-                .fontSize(11)
+                .fontSize(12).fontColor($r('app.color.text_tertiary'))
                 .width('100%').margin({ top: 6 })
             }
 
@@ -1210,7 +1248,7 @@ struct EditConnectionPage {
 
             Text('帧率').fontSize(14).margin({ top: 12 })
             Text('默认 60，可选档位或自定义')
-              .fontSize(11).margin({ top: 2 })
+              .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(ML_FPS_PRESETS, (preset: number) => {
                 this.mlFpsChip(preset)
@@ -1222,7 +1260,7 @@ struct EditConnectionPage {
             if (this.mlFpsCustom) {
               Row() {
                 TextInput({ placeholder: '60', text: this.mlFpsText })
-                  .width(140).height(46).borderRadius(10)
+                  .width(140).height(46).fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_tertiary')).backgroundColor($r('app.color.surface_subtle')).border({ width: 1, color: $r('app.color.border') }).borderRadius(10)
                   
                   .type(InputType.Number)
                   .onChange((value: string) => {
@@ -1238,8 +1276,8 @@ struct EditConnectionPage {
             Row() {
               Column() {
                 Text('码率').fontSize(14)
-                Text('自动按分辨率与帧率计算，或手动指定')
-                  .fontSize(11).margin({ top: 2 })
+                Text('自动按分辨率与帧率计算')
+                  .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
               .layoutWeight(1)
@@ -1253,12 +1291,12 @@ struct EditConnectionPage {
 
             if (this.mlBitrateAuto) {
               Text('自动：约 ' + kbpsToMbps(this.mlAutoBitrateKbps()) + ' Mbps')
-                .fontSize(11)
+                .fontSize(12).fontColor($r('app.color.text_tertiary'))
                 .width('100%').margin({ top: 6 })
             } else {
               Row() {
                 TextInput({ placeholder: '20', text: this.mlBitrateText })
-                  .width(140).height(46).borderRadius(10)
+                  .width(140).height(46).fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_tertiary')).backgroundColor($r('app.color.surface_subtle')).border({ width: 1, color: $r('app.color.border') }).borderRadius(10)
                   
                   .type(InputType.Number)
                   .onChange((value: string) => {
@@ -1272,11 +1310,11 @@ struct EditConnectionPage {
 
             Text('编码器').fontSize(14).margin({ top: 8 })
             if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
-              Text('本设备无可用视频解码器，无法串流')
-                .fontSize(11).margin({ top: 2 })
+              Text('无可用解码器，无法串流')
+                .fontSize(12).fontColor($r('app.color.warning')).margin({ top: 2 })
             } else if (this.mlCodecSoftware(this.mlCodec)) {
-              Text('无硬件解码支持，将使用软件解码')
-                .fontSize(11).margin({ top: 2 })
+              Text('无硬件解码，将使用软件解码')
+                .fontSize(12).fontColor($r('app.color.warning')).margin({ top: 2 })
             }
             Flex({ wrap: FlexWrap.Wrap }) {
               this.mlCodecChip(ML_CODEC_AUTO, '自动')
@@ -1294,7 +1332,8 @@ struct EditConnectionPage {
             .width('100%').margin({ top: 8 })
 
             Divider()
-              
+              .strokeWidth(1)
+              .color($r('app.color.divider'))
               .margin({ top: 8, bottom: 4 })
 
             this.srAdvancedSection()
@@ -1361,6 +1400,10 @@ struct EditConnectionPage {
               TextInput({ placeholder: '自定义名称，留空则显示主机地址', text: this.name })
                 .width('100%')
                 .height(46)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_tertiary'))
+                .backgroundColor($r('app.color.surface_subtle'))
+                .border({ width: 1, color: $r('app.color.border') })
                 .borderRadius(10)
                 .onChange((value: string) => {
                   this.name = value;
@@ -1374,6 +1417,10 @@ struct EditConnectionPage {
               TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
                 .width('100%')
                 .height(46)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_tertiary'))
+                .backgroundColor($r('app.color.surface_subtle'))
+                .border({ width: 1, color: $r('app.color.border') })
                 .borderRadius(10)
                 .onChange((value: string) => {
                   this.host = value;
@@ -1386,6 +1433,10 @@ struct EditConnectionPage {
                   TextInput({ placeholder: '3389', text: this.port })
                     .width('100%')
                     .height(46)
+                    .fontColor($r('app.color.text_primary'))
+                    .placeholderColor($r('app.color.text_tertiary'))
+                    .backgroundColor($r('app.color.surface_subtle'))
+                    .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(10)
                     .type(InputType.Number)
                     .onChange((value: string) => {
@@ -1401,6 +1452,10 @@ struct EditConnectionPage {
                   TextInput({ placeholder: 'WORKGROUP', text: this.domain })
                     .width('100%')
                     .height(46)
+                    .fontColor($r('app.color.text_primary'))
+                    .placeholderColor($r('app.color.text_tertiary'))
+                    .backgroundColor($r('app.color.surface_subtle'))
+                    .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(10)
                     .onChange((value: string) => {
                       this.domain = value;
@@ -1420,6 +1475,10 @@ struct EditConnectionPage {
                   TextInput({ placeholder: '用户名', text: this.username })
                     .width('100%')
                     .height(46)
+                    .fontColor($r('app.color.text_primary'))
+                    .placeholderColor($r('app.color.text_tertiary'))
+                    .backgroundColor($r('app.color.surface_subtle'))
+                    .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(10)
                     .type(InputType.USER_NAME)
                     .enableAutoFill(this.autoFill)
@@ -1439,6 +1498,10 @@ struct EditConnectionPage {
                   TextInput({ placeholder: '密码', text: this.password })
                     .width('100%')
                     .height(46)
+                    .fontColor($r('app.color.text_primary'))
+                    .placeholderColor($r('app.color.text_tertiary'))
+                    .backgroundColor($r('app.color.surface_subtle'))
+                    .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(10)
                     .type(InputType.Password)
                     .enableAutoFill(this.autoFill)
@@ -1457,7 +1520,7 @@ struct EditConnectionPage {
 
             if (this.errorMessage.length > 0) {
               Text(this.errorMessage)
-                .fontSize(13)
+                .fontSize(14)
                 
                 .width('100%')
                 .margin({ top: 12 })
@@ -1468,8 +1531,10 @@ struct EditConnectionPage {
                 .layoutWeight(1)
                 .height(48)
                 .fontSize(16)
-                
-                
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.control_bg'))
+                .border({ width: 1, color: $r('app.color.control_border') })
                 .borderRadius(12)
                 .enabled(!this.busy())
                 .onClick(() => {
@@ -1482,12 +1547,12 @@ struct EditConnectionPage {
                     LoadingProgress()
                       .width(18)
                       .height(18)
-                      
+                      .color($r('app.color.on_brand'))
                   }
                   Text(this.primaryLabel())
                     .fontSize(16)
                     .fontWeight(FontWeight.Medium)
-                    
+                    .fontColor($r('app.color.on_brand'))
                     .margin({ left: this.primaryBusy() ? 8 : 0 })
                 }
                 .justifyContent(FlexAlign.Center)
@@ -1495,7 +1560,7 @@ struct EditConnectionPage {
               }
               .layoutWeight(1)
               .height(48)
-              
+              .backgroundColor($r('app.color.brand_fill'))
               .borderRadius(12)
               .margin({ left: 12 })
               .enabled(!this.pairing)
@@ -1515,8 +1580,9 @@ struct EditConnectionPage {
                 .width('100%')
                 .height(48)
                 .fontSize(16)
-                
-                
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.danger'))
+                .backgroundColor($r('app.color.danger_tint'))
                 .borderRadius(12)
                 .margin({ top: 12 })
                 .enabled(!this.busy())
@@ -1529,14 +1595,15 @@ struct EditConnectionPage {
               this.moonlightAdvanced()
             } else {
             Divider()
-              
+              .strokeWidth(1)
+              .color($r('app.color.divider'))
               .margin({ top: 20, bottom: 8 })
 
             Row() {
               Column() {
                 Text('高级设置').fontSize(14)
-                Text('默认跟随全局设置，展开后可单独覆盖')
-                  .fontSize(11)
+                Text('默认跟随全局；展开可覆盖')
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   
                   .margin({ top: 2 })
               }
@@ -1546,12 +1613,12 @@ struct EditConnectionPage {
               Row() {
                 if (!this.useGlobalDisplay || !this.useGlobalAdvanced || !this.useGlobalSr) {
                   Text('已自定义')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .margin({ right: 8 })
                 }
                 Text(this.advancedExpanded ? '收起' : '展开')
-                  .fontSize(13)
+                  .fontSize(14)
                   
               }
               .alignItems(VerticalAlign.Center)
@@ -1571,8 +1638,8 @@ struct EditConnectionPage {
                 Row() {
                   Column() {
                     Text('使用会话独立显示设置').fontSize(14)
-                    Text('分辨率与缩放使用本连接的独立配置，关闭则跟随全局设置')
-                      .fontSize(11)
+                    Text('本连接独立配置；关闭则跟随全局')
+                      .fontSize(12).fontColor($r('app.color.text_tertiary'))
                       
                       .margin({ top: 2 })
                   }
@@ -1580,6 +1647,7 @@ struct EditConnectionPage {
                   .layoutWeight(1)
 
                   Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalDisplay })
+                    .selectedColor($r('app.color.brand_fill'))
                     
                     .onChange((isOn: boolean) => {
                       this.useGlobalDisplay = !isOn;
@@ -1591,15 +1659,15 @@ struct EditConnectionPage {
                 if (this.useGlobalDisplay) {
                   Text('自动检测：' + this.detectedText + ' · 推荐缩放 '
                     + this.suggestedScale() + '%')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .width('100%')
                 } else {
                   Row() {
                     Column() {
                       Text('分辨率').fontSize(14)
-                      Text('自动跟随当前屏幕，或固定一个分辨率')
-                        .fontSize(11)
+                      Text('跟随当前屏幕或固定分辨率')
+                        .fontSize(12).fontColor($r('app.color.text_tertiary'))
                         
                         .margin({ top: 2 })
                     }
@@ -1616,7 +1684,7 @@ struct EditConnectionPage {
 
                   if (this.displayResolutionAuto) {
                     Text('自动检测：' + this.detectedText)
-                      .fontSize(11)
+                      .fontSize(12).fontColor($r('app.color.text_tertiary'))
                       
                       .width('100%')
                       .margin({ top: 6 })
@@ -1627,6 +1695,10 @@ struct EditConnectionPage {
                           TextInput({ placeholder: '1920', text: this.desktopWidthText })
                             .width('100%')
                             .height(46)
+                            .fontColor($r('app.color.text_primary'))
+                            .placeholderColor($r('app.color.text_tertiary'))
+                            .backgroundColor($r('app.color.surface_subtle'))
+                            .border({ width: 1, color: $r('app.color.border') })
                             .borderRadius(10)
                             .type(InputType.Number)
                             .onChange((value: string) => {
@@ -1642,6 +1714,10 @@ struct EditConnectionPage {
                           TextInput({ placeholder: '1080', text: this.desktopHeightText })
                             .width('100%')
                             .height(46)
+                            .fontColor($r('app.color.text_primary'))
+                            .placeholderColor($r('app.color.text_tertiary'))
+                            .backgroundColor($r('app.color.surface_subtle'))
+                            .border({ width: 1, color: $r('app.color.border') })
                             .borderRadius(10)
                             .type(InputType.Number)
                             .onChange((value: string) => {
@@ -1657,7 +1733,7 @@ struct EditConnectionPage {
                     .margin({ top: 12 })
 
                     Text('自动检测：' + this.detectedText)
-                      .fontSize(11)
+                      .fontSize(12).fontColor($r('app.color.text_tertiary'))
                       
                       .width('100%')
                       .margin({ top: 6 })
@@ -1670,7 +1746,7 @@ struct EditConnectionPage {
                       allowCustomInput: true,
                       percentText: this.scaleText,
                       autoPercent: this.suggestedScale(),
-                      subtitle: '自动按分辨率推荐，或固定一个比例',
+                      subtitle: '按分辨率推荐或固定比例',
                       onModeChange: (mode: number) => {
                         this.displayScaleAuto = mode === ML_SCALE_AUTO;
                       },
@@ -1684,20 +1760,22 @@ struct EditConnectionPage {
                 }
 
                 Divider()
-                  
+                  .strokeWidth(1)
+                  .color($r('app.color.divider'))
                   .margin({ top: 8, bottom: 4 })
 
                 this.srAdvancedSection()
 
                 Divider()
-                  
+                  .strokeWidth(1)
+                  .color($r('app.color.divider'))
                   .margin({ top: 8, bottom: 4 })
 
                 Row() {
                   Column() {
                     Text('使用会话独立高级设置').fontSize(14)
-                    Text('音频、证书等使用本连接的独立配置，关闭则跟随全局设置')
-                      .fontSize(11)
+                    Text('本连接独立配置；关闭则跟随全局')
+                      .fontSize(12).fontColor($r('app.color.text_tertiary'))
                       
                       .margin({ top: 2 })
                   }
@@ -1705,6 +1783,7 @@ struct EditConnectionPage {
                   .layoutWeight(1)
 
                   Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalAdvanced })
+                    .selectedColor($r('app.color.brand_fill'))
                     
                     .onChange((isOn: boolean) => {
                       this.useGlobalAdvanced = !isOn;
@@ -1715,7 +1794,7 @@ struct EditConnectionPage {
 
                 if (this.useGlobalAdvanced) {
                   Text('全局：' + this.advancedSummary(SettingsStore.globalAdvancedProfile()))
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .width('100%')
                 } else {

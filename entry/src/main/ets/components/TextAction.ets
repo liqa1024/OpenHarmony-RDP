@@ -13,13 +13,14 @@ export struct TextAction {
   build() {
     Text(this.label)
       .fontSize(this.muted ? 12 : 14)
-      
+      .fontWeight(this.muted ? FontWeight.Regular : FontWeight.Medium)
+      .fontColor(this.muted ? $r('app.color.text_secondary') : $r('app.color.text_primary'))
       .padding(this.muted
         ? { left: 10, right: 10, top: 6, bottom: 6 }
         : { left: 12, right: 12, top: 8, bottom: 8 })
       .borderRadius(8)
-      
-      
+      .backgroundColor(this.pressed ? $r('app.color.pressed')
+        : (this.hovered ? $r('app.color.hover') : Color.Transparent))
       .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
       .hoverEffect(HoverEffect.None)
       .onHover((isHover: boolean) => {

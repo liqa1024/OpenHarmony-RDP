@@ -21,15 +21,18 @@ export struct PageHeader {
       Image(this.icon)
         .width(44)
         .height(44)
-        .borderRadius(11)
+        .borderRadius(12)
+        .clip(true)
         .draggable(false)
       Column() {
         Text(this.title)
           .fontSize(20)
-          .fontWeight(FontWeight.Bold)
+          .fontWeight(600)
+          .fontColor($r('app.color.text_primary'))
         if (this.subtitle.length > 0) {
           Text(this.subtitle)
             .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
             .margin({ top: 2 })
         }
       }
@@ -50,8 +53,9 @@ export struct PageHeader {
         })
       }
       Text(this.title)
-        .fontSize(17)
+        .fontSize(18)
         .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
         .margin({ left: this.leftLabel.length > 0 ? 16 : 0 })
     }
   }
@@ -73,7 +77,11 @@ export struct PageHeader {
         : { left: 24, right: 24, top: 10, bottom: 8 })
 
       Divider()
+        .strokeWidth(1)
+        .color($r('app.color.divider'))
     }
     .width('100%')
+    .backgroundColor($r('app.color.header_glass'))
+    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
   }
 }

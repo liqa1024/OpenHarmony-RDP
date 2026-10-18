@@ -20,6 +20,7 @@ export struct ConnectionRow {
   @Prop @Watch('onMenuRequest') menuRequest: number = 0;
   @State appHovered: boolean = false;
   @State appPressed: boolean = false;
+  @State rowHovered: boolean = false;
   @State menuShown: boolean = false;
   @State menuWinX: number = 0;
   @State menuWinY: number = 0;
@@ -53,6 +54,39 @@ export struct ConnectionRow {
 
   private wakeDisabled(): boolean {
     return this.model().wakeDisabled;
+  }
+
+  private actionBg(): Resource {
+    if (this.model().icon === ConnectionRowIcon.Stop) {
+      return $r('app.color.danger_tint');
+    }
+    if (this.model().icon === ConnectionRowIcon.Refresh
+      || this.model().icon === ConnectionRowIcon.Power) {
+      return $r('app.color.control_bg');
+    }
+    return $r('app.color.brand_tint');
+  }
+
+  private actionIconColor(): Resource {
+    if (this.model().icon === ConnectionRowIcon.Stop) {
+      return $r('app.color.danger');
+    }
+    if (this.model().icon === ConnectionRowIcon.Refresh
+      || this.model().icon === ConnectionRowIcon.Power) {
+      return $r('app.color.icon_secondary');
+    }
+    return $r('app.color.brand_text');
+  }
+
+  private actionBorder(): Resource {
+    if (this.model().icon === ConnectionRowIcon.Stop) {
+      return $r('app.color.danger_border');
+    }
+    if (this.model().icon === ConnectionRowIcon.Refresh
+      || this.model().icon === ConnectionRowIcon.Power) {
+      return $r('app.color.control_border');
+    }
+    return $r('app.color.brand_tint_strong');
   }
 
   private primaryTap(): void {
@@ -155,20 +189,24 @@ export struct ConnectionRow {
         Image(this.conn.protocolIcon())
           .width(40)
           .height(40)
+          .border({ width: 1, color: $r('app.color.control_border') })
           .borderRadius(10)
+          .clip(true)
           .opacity(this.hostDown() ? 0.45 : 1.0)
           .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
           .draggable(false)
         Column() {
           Row() {
             Text(this.conn.label())
-              .fontSize(15)
-              
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
             if (this.model().badge === ConnectionRowBadge.Connected) {
               Text('已连接')
                 .fontSize(10)
-                
-                
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.success'))
+                .backgroundColor($r('app.color.success_tint'))
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
@@ -176,8 +214,9 @@ export struct ConnectionRow {
             } else if (this.model().badge === ConnectionRowBadge.Running) {
               Text('运行中')
                 .fontSize(10)
-                
-                
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.protocol_moonlight_deep'))
+                .backgroundColor($r('app.color.protocol_moonlight_tint'))
                 .borderRadius(4)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                 .margin({ left: 8 })
@@ -187,7 +226,7 @@ export struct ConnectionRow {
           if (this.conn.subtitle().length > 0) {
             Text(this.conn.subtitle())
               .fontSize(12)
-              
+              .fontColor($r('app.color.text_tertiary'))
               .margin({ top: 3 })
           }
         }
@@ -208,13 +247,15 @@ export struct ConnectionRow {
           Image($r('app.media.ic_apps'))
             .width(24)
             .height(24)
-            
+            .fillColor($r('app.color.icon_primary'))
             .draggable(false)
         }
         .width(44)
         .height(44)
+        .backgroundColor(this.appPressed ? $r('app.color.control_bg_pressed')
+          : (this.appHovered ? $r('app.color.control_bg_hover') : $r('app.color.control_bg')))
+        .border({ width: 1, color: $r('app.color.control_border') })
         .borderRadius(22)
-        
         .justifyContent(FlexAlign.Center)
         .alignItems(VerticalAlign.Center)
         .margin({ left: 8 })
@@ -247,42 +288,48 @@ export struct ConnectionRow {
           LoadingProgress()
             .width(24)
             .height(24)
+            .color(this.actionIconColor())
             .transition(TransitionEffect.IDENTITY)
         } else if (this.model().icon === ConnectionRowIcon.Refresh) {
           Image($r('app.media.ic_refresh'))
             .width(24)
             .height(24)
+            .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
         } else if (this.model().icon === ConnectionRowIcon.Power) {
           Image($r('app.media.ic_power'))
-            .width(28)
-            .height(28)
+            .width(24)
+            .height(24)
+            .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
         } else if (this.model().icon === ConnectionRowIcon.Stop) {
           Image($r('app.media.ic_stop'))
-            .width(22)
-            .height(22)
+            .width(24)
+            .height(24)
+            .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
         } else {
           Image($r('app.media.ic_play'))
-            .width(22)
-            .height(22)
+            .width(24)
+            .height(24)
+            .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
         }
       }
       .width(44)
       .height(44)
+      .backgroundColor(this.actionBg())
+      .border({ width: 1, color: this.actionBorder() })
       .borderRadius(22)
-      
       .opacity(this.busy() || this.wakeDisabled() ? 0.5 : 1.0)
       .justifyContent(FlexAlign.Center)
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
-      .hoverEffect(this.busy() || this.wakeDisabled() ? HoverEffect.None : HoverEffect.Scale)
+      .hoverEffect(this.busy() || this.wakeDisabled() ? HoverEffect.None : HoverEffect.Highlight)
       .enabled(!this.busy())
       .bindTips(this.model().actionTip, this.tipsOptions)
       .onClick(() => {
@@ -299,8 +346,18 @@ export struct ConnectionRow {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    
-    
+    .backgroundColor(this.rowHovered ? $r('app.color.surface_elevated') : $r('app.color.surface'))
+    .border({ width: 1, color: $r('app.color.border') })
+    .shadow({
+      radius: this.rowHovered ? 16 : 8,
+      color: this.rowHovered ? $r('app.color.shadow_2') : $r('app.color.shadow_1'),
+      offsetX: 0,
+      offsetY: this.rowHovered ? 4 : 2
+    })
+    .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
+    .onHover((isHover: boolean) => {
+      this.rowHovered = isHover;
+    })
     .onMouse((event: MouseEvent) => {
       if (event.button === MouseButton.Right && event.action === MouseAction.Press
         && this.menuAllowed()) {

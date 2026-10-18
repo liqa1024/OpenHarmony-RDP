@@ -4,7 +4,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { moonlightLaunchQueryParameters } from 'libhmrdp.so';
 import { MoonlightCrypto } from './MoonlightCrypto';
 import { MoonlightCredential, MoonlightIdentity } from './MoonlightIdentity';
-import { MoonlightHttp, MoonlightHttpOptions, MoonlightHttpResult } from './MoonlightHttp';
+import { MoonlightHttp, MoonlightHttpCancel, MoonlightHttpOptions, MoonlightHttpResult }
+  from './MoonlightHttp';
 import { MoonlightXml } from './MoonlightXml';
 import {
   AppListResult, LaunchResult, MoonlightLaunchOptions, NvServerInfo, PairResult,
@@ -175,8 +176,12 @@ export class MoonlightClient {
   }
 
   static async pair(dir: string, host: string, httpPort: number, httpsPort: number,
-    majorVersion: number, pin: string): Promise<PairResult> {
+    majorVersion: number, pin: string, cancel?: MoonlightHttpCancel): Promise<PairResult> {
     const result: PairResult = new PairResult();
+    if (cancel !== undefined && cancel.isCanceled()) {
+      result.error = 'canceled';
+      return result;
+    }
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(dir);
     if (!credential.ok) {
       result.error = credential.error.length > 0 ? credential.error : 'no-cred';
@@ -211,11 +216,32 @@ export class MoonlightClient {
 
     const getCertPath: string = MoonlightClient.pairPath(
       `phrase=getservercert&salt=${salt}&clientcert=${clientCertHex}`, uniqueId, uuid);
-    let outcome: HttpOutcome = MoonlightClient.bodyOrError(
+    const certResponse: MoonlightHttpResult =
       await MoonlightClient.httpGet(dir, host, httpPort, getCertPath, false, undefined,
-        PAIR_CERT_TIMEOUT_MS));
+        PAIR_CERT_TIMEOUT_MS, undefined, cancel);
+    if (!certResponse.ok) {
+      result.error = cancel !== undefined && cancel.isCanceled() ? 'canceled' : certResponse.error;
+      return result;
+    }
+    if (certResponse.status === 409) {
+      result.error = 'rejected';
+      return result;
+    }
+    let rootCode: number = 0;
+    if (certResponse.body.length > 0) {
+      rootCode = MoonlightXml.statusCode(certResponse.body);
+      if (rootCode === 409) {
+        result.error = 'rejected';
+        return result;
+      }
+    }
+    if (rootCode !== 200) {
+      result.error = 'failed';
+      return result;
+    }
+    let outcome: HttpOutcome = MoonlightClient.bodyOrError(certResponse);
     if (outcome.body.length === 0) {
-      result.error = outcome.error;
+      result.error = outcome.error === 'busy' ? 'rejected' : 'failed';
       return result;
     }
     if (MoonlightXml.read(outcome.body, 'paired') !== '1') {
@@ -225,7 +251,7 @@ export class MoonlightClient {
     const serverCertHex: string = MoonlightXml.read(outcome.body, 'plaincert');
     const serverCertBytes: Uint8Array | undefined = MoonlightCrypto.fromHex(serverCertHex);
     if (serverCertBytes === undefined || serverCertBytes.length === 0) {
-      result.error = 'already';
+      result.error = 'rejected';
       return result;
     }
     // plaincert is hex of the server certificate PEM; the crypto works on DER.
@@ -249,7 +275,8 @@ export class MoonlightClient {
       return result;
     }
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpPort,
-      MoonlightClient.pairPath(`clientchallenge=${encryptedChallenge}`, uniqueId, uuid), false));
+      MoonlightClient.pairPath(`clientchallenge=${encryptedChallenge}`, uniqueId, uuid),
+      false, undefined, undefined, undefined, cancel));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -277,7 +304,8 @@ export class MoonlightClient {
       return result;
     }
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpPort,
-      MoonlightClient.pairPath(`serverchallengeresp=${challengeResponse}`, uniqueId, uuid), false));
+      MoonlightClient.pairPath(`serverchallengeresp=${challengeResponse}`, uniqueId, uuid),
+      false, undefined, undefined, undefined, cancel));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -314,7 +342,8 @@ export class MoonlightClient {
     }
     const clientPairingSecret: string = clientSecret + clientSignature;
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpPort,
-      MoonlightClient.pairPath(`clientpairingsecret=${clientPairingSecret}`, uniqueId, uuid), false));
+      MoonlightClient.pairPath(`clientpairingsecret=${clientPairingSecret}`, uniqueId, uuid),
+      false, undefined, undefined, undefined, cancel));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -325,7 +354,8 @@ export class MoonlightClient {
     }
 
     outcome = MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort,
-      MoonlightClient.pairPath('phrase=pairchallenge', uniqueId, uuid), true, serverCertDer));
+      MoonlightClient.pairPath('phrase=pairchallenge', uniqueId, uuid),
+      true, serverCertDer, undefined, undefined, cancel));
     if (outcome.body.length === 0) {
       result.error = outcome.error;
       return result;
@@ -623,7 +653,7 @@ export class MoonlightClient {
 
   private static async httpGet(dir: string, host: string, port: number, path: string,
     tls: boolean, pinDer?: Uint8Array, timeoutMs?: number,
-    binary?: boolean): Promise<MoonlightHttpResult> {
+    binary?: boolean, cancel?: MoonlightHttpCancel): Promise<MoonlightHttpResult> {
     const options: MoonlightHttpOptions = new MoonlightHttpOptions();
     options.useTls = tls;
     options.host = host;
@@ -634,14 +664,14 @@ export class MoonlightClient {
     options.timeoutMs = timeoutMs ?? 10000;
     options.binary = binary ?? false;
     if (!tls) {
-      return MoonlightHttp.perform(options);
+      return MoonlightHttp.perform(options, cancel);
     }
-    return MoonlightClient.performWithCredential(dir, options);
+    return MoonlightClient.performWithCredential(dir, options, cancel);
   }
 
   // HTTPS with the paired identity (mTLS) + pinned cert; the key PEM lives only for the request.
   private static async performWithCredential(dir: string,
-    options: MoonlightHttpOptions): Promise<MoonlightHttpResult> {
+    options: MoonlightHttpOptions, cancel?: MoonlightHttpCancel): Promise<MoonlightHttpResult> {
     const credential: MoonlightCredential = await MoonlightIdentity.ensureCredential(dir);
     if (!credential.ok) {
       const failed: MoonlightHttpResult = new MoonlightHttpResult();
@@ -657,7 +687,7 @@ export class MoonlightClient {
     options.certPath = MoonlightIdentity.clientCertPath(dir);
     options.keyPath = keyPath;
     try {
-      return await MoonlightHttp.perform(options);
+      return await MoonlightHttp.perform(options, cancel);
     } finally {
       MoonlightIdentity.removeClientKeyPem(dir);
     }

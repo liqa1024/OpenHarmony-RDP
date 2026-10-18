@@ -19,21 +19,34 @@ export struct ProtocolTabs {
     }
   }
 
+  private accentColor(protocol: number): Resource {
+    if (protocol === PROTOCOL_MOONLIGHT) {
+      return $r('app.color.protocol_moonlight');
+    }
+    if (protocol === PROTOCOL_RDP) {
+      return $r('app.color.protocol_rdp');
+    }
+    return $r('app.color.brand_text');
+  }
+
   @Builder
   tab(protocol: number, label: string) {
     Column() {
       Text(label)
         .fontSize(14)
-        .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Normal)
-        
+        .fontWeight(this.protocol === protocol ? FontWeight.Medium : FontWeight.Regular)
+        .fontColor(this.protocol === protocol
+          ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
       Divider()
         .strokeWidth(2)
         .width(36)
-        
+        .color(this.protocol === protocol
+          ? this.accentColor(protocol) : $r('app.color.transparent'))
         .margin({ top: 5 })
     }
     .alignItems(HorizontalAlign.Center)
     .padding({ left: 12, right: 12, top: 4 })
+    .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
     .opacity(this.locked && this.protocol !== protocol ? 0.4 : 1.0)
     .onClick(() => {
       if (this.locked || this.protocol === protocol) {

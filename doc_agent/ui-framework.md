@@ -95,8 +95,9 @@
 |---|---|---|
 | `TextAction` | 文本动作 | hover / press / focus；`muted` 控制层级 |
 | `ControlDisc` | 圆形图标动作 | hover / press / focus；`loading` 时不可点、不可聚焦 |
-| `FabButton` | 浮动主操作 | hover / press / focus；`loading` 时不可点、不可聚焦 |
+| `FabButton` | 浮动主/次操作 | hover / press / focus；`primary` 区分主/次 tonal；`loading` 时不可点、不可聚焦 |
 | `ChoiceChip` | 标准选择片 | `selected` / `chipEnabled`；禁用时不可聚焦 |
+| `PromptDialog` | 提示/确认/通知外壳 | 标题、说明、可选内容槽、取消/确认；所有自定义提示窗复用 |
 
 可点击件必须可聚焦，Enter/Space 等同点击；禁用、加载、锁定态同时关闭可聚焦。
 焦点框由系统绘制，视觉层可覆盖。
@@ -137,8 +138,8 @@
   正在断开时不打开菜单，动作不可点。
 - 删除连接必须确认；会话断开、关闭应用与终止主机应用不二次确认。
 - 轻提示用 `showToast`，确认用 `showConfirm`（主按钮取消、次按钮确认），
-  通知用 `showNotice`；自定义对话框用 `ComponentContent` + `openCustomDialog`，
-  宽度按窗口自适应。
+  通知用 `showNotice`；提示/确认/通知统一走 `PromptDialog`（`ComponentContent` +
+  `openCustomDialog`），宽度按窗口自适应。
 - 会话工具条：窗口模式显示；全屏下按指针触发区或触屏下滑唤出；固定按钮与
   传输状态可保持常显。行为细节见 [`session-layer.md`](session-layer.md)。
 - 剪贴板传输进度是共享工具条的可选能力：协议侧提供状态则显示，不提供则不占位。

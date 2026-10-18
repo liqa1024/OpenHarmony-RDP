@@ -33,8 +33,8 @@ export class MoonlightLauncher {
     request.filesDir = context.filesDir;
     request.moonlightAppId = appId > 0 ? appId : conn.mlDefaultAppIdValue();
     request.moonlightPinProvider =
-      (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
-        promptPairingPin(ui, pin, pairing);
+      (pin: string, pairing: Promise<PairResult>, cancel: () => void): Promise<boolean> =>
+        promptPairingPin(ui, pin, pairing, cancel);
     request.onConnected = onConnected;
     SessionManager.connect(request, context);
   }

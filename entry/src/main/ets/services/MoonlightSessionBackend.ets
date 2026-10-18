@@ -164,7 +164,8 @@ export class MoonlightSessionBackend implements SessionBackend {
     const pinProvider: MoonlightPinProvider =
       request.moonlightPinProvider !== undefined
         ? request.moonlightPinProvider
-        : (pin: string, pairing: Promise<PairResult>): Promise<boolean> => Promise.resolve(false);
+        : (pin: string, pairing: Promise<PairResult>,
+          cancel: () => void): Promise<boolean> => Promise.resolve(false);
     const policy: MoonlightHostPolicy = new MoonlightHostPolicy();
     policy.expectedId = conn.mlHostId;
     const connections: SavedConnection[] = ConnectionStore.list();

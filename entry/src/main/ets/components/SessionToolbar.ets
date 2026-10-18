@@ -43,6 +43,7 @@ export struct SessionToolbar {
           icon: $r('app.media.ic_pin'),
           iconSize: 20,
           iconAngle: 45,
+          active: this.pinned,
           onTap: () => {
             this.onTogglePin();
           }
@@ -101,6 +102,7 @@ export struct SessionToolbar {
       if (this.disconnectTip.length > 0) {
         ToolbarChip({
           label: '断开',
+          danger: true,
           onTap: () => {
             this.onDisconnect();
           }
@@ -110,6 +112,7 @@ export struct SessionToolbar {
       } else {
         ToolbarChip({
           label: '断开',
+          danger: true,
           onTap: () => {
             this.onDisconnect();
           }
@@ -120,6 +123,7 @@ export struct SessionToolbar {
       if (this.showCloseApp) {
         ToolbarChip({
           label: '关闭应用',
+          danger: true,
           onTap: () => {
             this.onCloseApp();
           }
@@ -143,6 +147,10 @@ export struct SessionToolbar {
       }
       .width(this.toolbarWidthPercent + '%')
       .borderRadius(TOOLBAR_RADIUS)
+      .backgroundColor($r('app.color.chrome_bg'))
+      .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+      .border({ width: 1, color: $r('app.color.chrome_border') })
+      .shadow({ radius: 16, color: $r('app.color.shadow_2'), offsetX: 0, offsetY: 4 })
       .clip(true)
       .onHover((isHover: boolean) => {
         this.onPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);

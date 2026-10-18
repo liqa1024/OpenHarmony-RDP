@@ -19,10 +19,13 @@ export struct FormSection {
             if (this.title.length > 0) {
               Text(this.title)
                 .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
             }
             if (this.description.length > 0) {
               Text(this.description)
-                .fontSize(11)
+                .fontSize(12)
+                .fontColor($r('app.color.text_tertiary'))
                 .margin({ top: 2 })
             }
           }
@@ -46,6 +49,8 @@ export struct FormSection {
 
       if (this.showDivider) {
         Divider()
+          .strokeWidth(1)
+          .color($r('app.color.divider'))
           .margin({ top: 14 })
       }
     }

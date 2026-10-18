@@ -2,6 +2,7 @@ import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MdnsHost } from '../services/MdnsDiscovery';
+import { PromptDialog } from '../components/PromptDialog';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpHostPicker';
@@ -31,14 +32,15 @@ struct HostPickerContent {
     Row() {
       Column() {
         Text(host.name.length > 0 ? host.name : host.address)
-          .fontSize(15)
-          
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
         Text(host.address)
           .fontSize(12)
-          
+          .fontColor($r('app.color.text_tertiary'))
           .margin({ top: 2 })
           .width('100%')
       }
@@ -47,9 +49,10 @@ struct HostPickerContent {
 
       if (this.isAdded(host)) {
         Text('已添加')
-          .fontSize(11)
-          
-          
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_tertiary'))
+          .backgroundColor($r('app.color.surface_sunken'))
           .borderRadius(4)
           .padding({ left: 6, right: 6, top: 2, bottom: 2 })
           .margin({ left: 8 })
@@ -57,8 +60,9 @@ struct HostPickerContent {
     }
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .borderRadius(10)
-    
+    .borderRadius(12)
+    .backgroundColor($r('app.color.control_bg'))
+    .border({ width: 1, color: $r('app.color.control_border') })
     .opacity(this.isAdded(host) ? 0.5 : 1)
     .hoverEffect(this.isAdded(host) ? HoverEffect.None : HoverEffect.Highlight)
     .onClick(() => {
@@ -69,12 +73,13 @@ struct HostPickerContent {
   }
 
   build() {
-    Column() {
-      Text(this.params.title)
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
-        
-
+    PromptDialog({
+      title: this.params.title,
+      cancelLabel: '取消',
+      onCancel: () => {
+        this.params.onCancel();
+      }
+    }) {
       Scroll() {
         Column({ space: 8 }) {
           ForEach(this.params.hosts, (host: MdnsHost) => {
@@ -87,25 +92,7 @@ struct HostPickerContent {
       .constraintSize({ maxHeight: 280 })
       .margin({ top: 12 })
       .scrollBar(BarState.Auto)
-
-      Button('取消')
-        .width('100%')
-        .height(44)
-        .fontSize(16)
-        
-        
-        .borderRadius(12)
-        .margin({ top: 20 })
-        .onClick(() => {
-          this.params.onCancel();
-        })
     }
-    .width('90%')
-    .constraintSize({ maxWidth: 320 })
-    .padding(24)
-    .alignItems(HorizontalAlign.Center)
-    
-    .borderRadius(20)
   }
 }
 
@@ -124,20 +111,35 @@ export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: st
       params.hosts = hosts;
       params.title = title;
       params.addedAddresses = addedAddresses;
-      const contentNode: ComponentContent<HostPickerParams> =
-        new ComponentContent(ui, wrapBuilder(hostPickerContent), params);
+      let contentNode: ComponentContent<HostPickerParams> | undefined = undefined;
 
+      const disposeContent = (): void => {
+        const node: ComponentContent<HostPickerParams> | undefined = contentNode;
+        if (node === undefined) {
+          return;
+        }
+        try {
+          node.dispose();
+        } catch (error) {
+          hilog.warn(DOMAIN, TAG, 'dispose host picker failed: %{public}s', JSON.stringify(error));
+        }
+      };
       const dismiss = (): void => {
         if (closed) {
           return;
         }
         closed = true;
-        ui.getPromptAction().closeCustomDialog(contentNode)
+        const node: ComponentContent<HostPickerParams> | undefined = contentNode;
+        if (node === undefined) {
+          return;
+        }
+        ui.getPromptAction().closeCustomDialog(node)
           .then(() => {
-            contentNode.dispose();
+            disposeContent();
           })
           .catch((error: BusinessError) => {
             hilog.error(DOMAIN, TAG, 'close host picker failed: %{public}s', JSON.stringify(error));
+            disposeContent();
           });
       };
       const finish = (host: MdnsHost | undefined): void => {
@@ -148,12 +150,15 @@ export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: st
         dismiss();
         resolve(host);
       };
+      // Wire callbacks before creating the content node: the builder may
+      // capture the parameter object at construction time.
       params.onPick = (host: MdnsHost): void => {
         finish(host);
       };
       params.onCancel = (): void => {
         finish(undefined);
       };
+      contentNode = new ComponentContent(ui, wrapBuilder(hostPickerContent), params);
 
       ui.getPromptAction().openCustomDialog(contentNode,
         { isModal: true, autoCancel: false })

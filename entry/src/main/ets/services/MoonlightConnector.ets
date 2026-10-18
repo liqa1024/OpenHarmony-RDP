@@ -11,6 +11,7 @@ import { clampStreamFps, FPS_LIMIT_NONE, FPS_LIMIT_PANEL, FpsCeiling, recommende
 import { maxDisplayRefreshRate } from '../utils/DisplayUtil';
 import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
 import { MoonlightClient, MoonlightDisplay, MoonlightScaleTarget } from '../moonlight/MoonlightClient';
+import { MoonlightHttpCancel } from '../moonlight/MoonlightHttp';
 import { MoonlightCrypto } from '../moonlight/MoonlightCrypto';
 import { MoonlightIdentity, MoonlightCredential } from '../moonlight/MoonlightIdentity';
 import {
@@ -18,7 +19,8 @@ import {
   ServerInfoResult
 } from '../moonlight/MoonlightModels';
 
-export type MoonlightPinProvider = (pin: string, pairing: Promise<PairResult>) => Promise<boolean>;
+export type MoonlightPinProvider =
+  (pin: string, pairing: Promise<PairResult>, cancel: () => void) => Promise<boolean>;
 
 export class MoonlightConnectResult {
   ok: boolean = false;
@@ -58,7 +60,90 @@ export class MoonlightHostPolicy {
   expectedId: string = '';
 }
 
+class MoonlightPairingSession {
+  pin: string = '';
+  pairing: Promise<PairResult> | undefined = undefined;
+  cancel: MoonlightHttpCancel = new MoonlightHttpCancel();
+  settled: boolean = false;
+  timer: number = -1;
+}
+
 export class MoonlightConnector {
+  private static readonly PAIR_RESUME_MS: number = 60000;
+  private static pairingSessions: Map<string, MoonlightPairingSession> =
+    new Map<string, MoonlightPairingSession>();
+
+  private static clearPairingTimer(session: MoonlightPairingSession): void {
+    if (session.timer >= 0) {
+      clearTimeout(session.timer);
+      session.timer = -1;
+    }
+  }
+
+  // Canceling the PIN dialog only closes the UI. The pending getservercert
+  // long-poll and its PIN stay alive for a short window so re-entering pairing
+  // resumes the same host-side session instead of hitting 409.
+  private static async pairWithPrompt(filesDir: string, host: string, port: number,
+    httpsPort: number, majorVersion: number,
+    pinProvider: MoonlightPinProvider): Promise<PairResult> {
+    const key: string = `${host.trim()}:${port}`;
+    let session: MoonlightPairingSession | undefined =
+      MoonlightConnector.pairingSessions.get(key);
+    if (session !== undefined && session.settled) {
+      MoonlightConnector.pairingSessions.delete(key);
+      session = undefined;
+    }
+    if (session === undefined) {
+      const created: MoonlightPairingSession = new MoonlightPairingSession();
+      created.pin = MoonlightConnector.generatePin();
+      const pairing: Promise<PairResult> = MoonlightClient.pair(filesDir, host, port,
+        httpsPort, majorVersion, created.pin, created.cancel);
+      created.pairing = pairing;
+      pairing.then((): void => {
+        created.settled = true;
+        MoonlightConnector.clearPairingTimer(created);
+        if (MoonlightConnector.pairingSessions.get(key) === created) {
+          MoonlightConnector.pairingSessions.delete(key);
+        }
+      }, (): void => {
+        created.settled = true;
+        MoonlightConnector.clearPairingTimer(created);
+        if (MoonlightConnector.pairingSessions.get(key) === created) {
+          MoonlightConnector.pairingSessions.delete(key);
+        }
+      });
+      created.timer = setTimeout((): void => {
+        created.timer = -1;
+        if (created.settled) {
+          return;
+        }
+        created.settled = true;
+        created.cancel.cancel();
+        if (MoonlightConnector.pairingSessions.get(key) === created) {
+          MoonlightConnector.pairingSessions.delete(key);
+        }
+      }, MoonlightConnector.PAIR_RESUME_MS);
+      MoonlightConnector.pairingSessions.set(key, created);
+      session = created;
+    }
+
+    const pairing: Promise<PairResult> | undefined = session.pairing;
+    if (pairing === undefined) {
+      const failed: PairResult = new PairResult();
+      failed.error = 'failed';
+      return failed;
+    }
+    // The cancel callback is intentionally a no-op: cancel suspends the
+    // session for resume; only the 60s timer aborts the long-poll.
+    const proceed: boolean = await pinProvider(session.pin, pairing, (): void => {});
+    if (!proceed) {
+      const canceled: PairResult = new PairResult();
+      canceled.error = 'canceled';
+      return canceled;
+    }
+    return await pairing;
+  }
+
   static async probeApps(filesDir: string, host: string, port: number,
     pinProvider: MoonlightPinProvider, expectedHostId: string): Promise<MoonlightAppsResult> {
     const result: MoonlightAppsResult = new MoonlightAppsResult();
@@ -80,15 +165,8 @@ export class MoonlightConnector {
     const paired: boolean = info.paired
       || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
     if (!paired) {
-      const pin: string = MoonlightConnector.generatePin();
-      const pairing: Promise<PairResult> =
-        MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
-      const proceed: boolean = await pinProvider(pin, pairing);
-      if (!proceed) {
-        result.error = '已取消配对';
-        return result;
-      }
-      const pairResult: PairResult = await pairing;
+      const pairResult: PairResult = await MoonlightConnector.pairWithPrompt(filesDir, host,
+        port, info.httpsPort, info.majorVersion, pinProvider);
       if (!pairResult.ok) {
         result.error = MoonlightConnector.describe(pairResult.error);
         return result;
@@ -128,17 +206,8 @@ export class MoonlightConnector {
     const paired: boolean = info.paired
       || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
     if (!paired) {
-      const pin: string = MoonlightConnector.generatePin();
-      // Start the handshake first: the host only prompts for the PIN once our
-      // getservercert request is pending.
-      const pairing: Promise<PairResult> =
-        MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
-      const proceed: boolean = await pinProvider(pin, pairing);
-      if (!proceed) {
-        result.error = '已取消配对';
-        return result;
-      }
-      const pairResult: PairResult = await pairing;
+      const pairResult: PairResult = await MoonlightConnector.pairWithPrompt(filesDir, host,
+        port, info.httpsPort, info.majorVersion, pinProvider);
       if (!pairResult.ok) {
         result.error = MoonlightConnector.describe(pairResult.error);
         return result;
@@ -224,18 +293,8 @@ export class MoonlightConnector {
     const paired: boolean = info.paired
       || MoonlightIdentity.loadPinnedServerCert(filesDir, host) !== undefined;
     if (!paired) {
-      const pin: string = MoonlightConnector.generatePin();
-      // The host only prompts for the PIN once our getservercert request is
-      // pending, so start the handshake first and show the PIN while it waits.
-      const pairing: Promise<PairResult> =
-        MoonlightClient.pair(filesDir, host, port, info.httpsPort, info.majorVersion, pin);
-      const proceed: boolean = await pinProvider(pin, pairing);
-      if (!proceed) {
-        // The handshake keeps running and times out on its own; nothing to join.
-        result.error = '已取消配对';
-        return result;
-      }
-      const pairResult: PairResult = await pairing;
+      const pairResult: PairResult = await MoonlightConnector.pairWithPrompt(filesDir, host,
+        port, info.httpsPort, info.majorVersion, pinProvider);
       if (!pairResult.ok) {
         hilog.error(0xD001, 'HmRdpMoonlight', 'pair failed: %{public}s', pairResult.error);
         result.error = MoonlightConnector.describe(pairResult.error);
@@ -441,8 +500,11 @@ export class MoonlightConnector {
     if (token === 'pin') {
       return 'PIN 不正确，请在主机上重新输入后重试';
     }
-    if (token === 'already') {
-      return '主机正在与另一台设备配对，请稍后重试';
+    if (token === 'rejected') {
+      return '主机拒绝连接';
+    }
+    if (token === 'canceled') {
+      return '已取消配对';
     }
     if (token === 'mitm') {
       return '主机证书校验失败，已中止（可能存在中间人）';

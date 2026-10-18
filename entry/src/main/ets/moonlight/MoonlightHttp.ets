@@ -32,8 +32,44 @@ export class MoonlightHttpResult {
   error: string = '';
 }
 
+// Aborts the in-flight HTTP request. Used by the pairing PIN dialog's cancel
+// action so a canceled pairing does not leave the host waiting.
+export class MoonlightHttpCancel {
+  private request: http.HttpRequest | undefined = undefined;
+  private canceled: boolean = false;
+
+  attach(request: http.HttpRequest): void {
+    this.request = request;
+    if (this.canceled) {
+      request.destroy();
+    }
+  }
+
+  detach(request: http.HttpRequest): void {
+    if (this.request === request) {
+      this.request = undefined;
+    }
+  }
+
+  cancel(): void {
+    if (this.canceled) {
+      return;
+    }
+    this.canceled = true;
+    const request: http.HttpRequest | undefined = this.request;
+    if (request !== undefined) {
+      request.destroy();
+    }
+  }
+
+  isCanceled(): boolean {
+    return this.canceled;
+  }
+}
+
 export class MoonlightHttp {
-  static async perform(options: MoonlightHttpOptions): Promise<MoonlightHttpResult> {
+  static async perform(options: MoonlightHttpOptions,
+    cancel?: MoonlightHttpCancel): Promise<MoonlightHttpResult> {
     const result: MoonlightHttpResult = new MoonlightHttpResult();
     if (options.host.length === 0) {
       result.error = 'request';
@@ -42,6 +78,9 @@ export class MoonlightHttp {
     const scheme: string = options.useTls ? 'https' : 'http';
     const url: string = `${scheme}://${options.host}:${options.port}${options.path}`;
     const request: http.HttpRequest = http.createHttp();
+    if (cancel !== undefined) {
+      cancel.attach(request);
+    }
     try {
       const headers: Record<string, string> = { 'Content-Type': options.contentType };
       if (options.xClipboardMime.length > 0) {
@@ -103,11 +142,15 @@ export class MoonlightHttp {
       }
       return result;
     } catch (error) {
-      result.error = MoonlightHttp.errorToken(error as BusinessError);
-      hilog.error(0xD001, 'HmRdpMoonlight', 'http %{public}s:%{public}d%{public}s error=%{public}s',
+      result.error = cancel !== undefined && cancel.isCanceled()
+        ? 'canceled' : MoonlightHttp.errorToken(error as BusinessError);
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'http %{public}s:%{public}d%{public}s error=%{public}s',
         options.host, options.port, MoonlightHttp.endpoint(options.path), result.error);
       return result;
     } finally {
+      if (cancel !== undefined) {
+        cancel.detach(request);
+      }
       request.destroy();
     }
   }

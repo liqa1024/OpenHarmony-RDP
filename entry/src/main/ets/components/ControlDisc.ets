@@ -10,6 +10,11 @@ export struct ControlDisc {
   @Prop tip: string = '';
   @Prop loading: boolean = false;
   @Prop animated: boolean = false;
+  @Prop iconColor: Resource = $r('app.color.icon_secondary');
+  @Prop discColor: Resource = $r('app.color.transparent');
+  @Prop discHoverColor: Resource = $r('app.color.hover');
+  @Prop discPressColor: Resource = $r('app.color.pressed');
+  @Prop discBorder: Resource = $r('app.color.transparent');
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
@@ -21,20 +26,27 @@ export struct ControlDisc {
         LoadingProgress()
           .width(this.glyph)
           .height(this.glyph)
-          
+          .color(this.iconColor)
       } else {
         Image(this.icon)
           .width(this.glyph)
           .height(this.glyph)
-          
+          .fillColor(this.iconColor)
           .draggable(false)
       }
     }
     .width(this.diameter)
     .height(this.diameter)
     .borderRadius(this.diameter / 2)
-    
-    
+    .backgroundColor(this.pressed ? this.discPressColor
+      : (this.hovered ? this.discHoverColor : this.discColor))
+    .border({ width: 1, color: this.discBorder })
+    .responseRegion({
+      x: (this.diameter - 44) / 2,
+      y: (this.diameter - 44) / 2,
+      width: 44,
+      height: 44
+    })
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
     .margin({ right: this.gap })

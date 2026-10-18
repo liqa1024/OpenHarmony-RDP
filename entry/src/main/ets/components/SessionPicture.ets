@@ -103,6 +103,7 @@ export struct SessionPicture {
     }
     .width('100%')
     .height('100%')
+    .backgroundColor($r('app.color.chrome_bg_solid'))
     .onAreaChange((oldArea: Area, newArea: Area) => {
       this.containerWidth = lengthToNumber(newArea.width);
       this.containerHeight = lengthToNumber(newArea.height);

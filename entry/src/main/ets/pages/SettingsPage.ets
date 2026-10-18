@@ -711,12 +711,23 @@ struct SettingsPage {
   @Builder
   resolutionModeChip(label: string, auto: boolean, leftMargin: number) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.resolutionAuto === auto
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.resolutionAuto === auto
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.resolutionAuto === auto
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.resolutionAuto = auto;
@@ -729,12 +740,23 @@ struct SettingsPage {
   @Builder
   pinchModeChip(mode: number, label: string) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.pinchMode === mode
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.pinchMode === mode
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.pinchMode === mode
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ right: 8 })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.pinchMode = mode;
@@ -841,13 +863,13 @@ struct SettingsPage {
           .fontSize(14)
           
         Text('远端按「分辨率 ÷ 倍率」出画，本机用 GPU 上采样回输出分辨率：省带宽与解码')
-          .fontSize(11)
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
           
           .margin({ top: 2 })
         if (!this.srSupportedFor(protocol)) {
           Text(this.srReasonFor(protocol))
-            .fontSize(11)
-            
+            .fontSize(12).fontColor($r('app.color.warning'))
+            .lineHeight(16)
             .margin({ top: 2 })
         }
       }
@@ -871,7 +893,7 @@ struct SettingsPage {
 
         Text('输出 ' + this.srOutputWidth(protocol) + ' × ' + this.srOutputHeight(protocol)
           + ' · 会话 ' + this.sessionSizeTextFor(protocol))
-          .fontSize(11)
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
           .width('100%').margin({ top: 2 })
       }
     }
@@ -924,12 +946,23 @@ struct SettingsPage {
   @Builder
   mlBitrateModeChip(label: string, auto: boolean, leftMargin: number) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.mlBitrateAuto === auto
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.mlBitrateAuto === auto
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.mlBitrateAuto === auto
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.mlBitrateAuto = auto;
@@ -973,12 +1006,23 @@ struct SettingsPage {
   @Builder
   mlResModeChip(mode: number, label: string, leftMargin: number) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.mlResMode === mode
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.mlResMode === mode
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.mlResMode === mode
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.mlResMode = mode;
@@ -1027,7 +1071,7 @@ struct SettingsPage {
         Column() {
           Text('分辨率').fontSize(14)
           Text('自动使用当前显示器的分辨率')
-            .fontSize(11).margin({ top: 2 })
+            .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
@@ -1041,12 +1085,19 @@ struct SettingsPage {
 
       if (this.mlResMode === ML_RES_FOLLOW_SCREEN) {
         Text('自动检测：' + this.detectedText)
-          .fontSize(11)
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
           .width('100%').margin({ top: 10 })
       } else {
         Row() {
           TextInput({ placeholder: '1920', text: this.mlWidthText })
-            .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+            .type(InputType.Number)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .height(40)
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.surface_subtle'))
+            .border({ width: 1, color: $r('app.color.border') })
             .borderRadius(10)
             .onChange((value: string) => {
               this.mlWidthText = value;
@@ -1056,7 +1107,14 @@ struct SettingsPage {
             .fontSize(14)
             .margin({ left: 10, right: 10 })
           TextInput({ placeholder: '1080', text: this.mlHeightText })
-            .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+            .type(InputType.Number)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .height(40)
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.surface_subtle'))
+            .border({ width: 1, color: $r('app.color.border') })
             .borderRadius(10)
             .onChange((value: string) => {
               this.mlHeightText = value;
@@ -1066,7 +1124,7 @@ struct SettingsPage {
         .width('100%').margin({ top: 10 })
 
         Text('自动检测：' + this.detectedText + '，可参考输入')
-          .fontSize(11)
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
           .width('100%').margin({ top: 6 })
       }
     }
@@ -1083,9 +1141,9 @@ struct SettingsPage {
         percentText: this.mlScaleText,
         autoPercent: this.mlAutoScalePercent(),
         subtitle: this.srEnabledFor(PROTOCOL_MOONLIGHT)
-          ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
-          : '修改主机虚拟显示器的显示缩放',
-        noneHint: '不向主机发送缩放设置，交给虚拟屏自行决定',
+          ? '超分前的会话缩放；自动按分辨率换算'
+          : '修改主机虚拟屏缩放',
+        noneHint: '不发送缩放，交给虚拟屏决定',
         warning: '仅基地版 Sunshine 有效',
         onModeChange: (mode: number) => {
           this.mlScaleMode = mode;
@@ -1106,7 +1164,7 @@ struct SettingsPage {
       Column() {
         Text('帧率').fontSize(14)
         Text('默认 60，可选档位或自定义')
-          .fontSize(11).margin({ top: 2 })
+          .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(ML_FPS_PRESETS, (preset: number) => {
             this.mlFpsChip(preset)
@@ -1118,7 +1176,14 @@ struct SettingsPage {
         if (this.mlFpsCustom) {
           Row() {
             TextInput({ placeholder: '60', text: this.mlFpsText })
-              .type(InputType.Number).fontSize(14).height(40).width(140)
+              .type(InputType.Number)
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_tertiary'))
+              .height(40)
+              .width(140)
+              .backgroundColor($r('app.color.surface_subtle'))
+              .border({ width: 1, color: $r('app.color.border') })
               .borderRadius(10)
               .onChange((value: string) => {
                 this.mlFpsText = value;
@@ -1134,14 +1199,14 @@ struct SettingsPage {
       }
       .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
 
-      Divider()
+      Divider().strokeWidth(1).color($r('app.color.divider'))
 
       Column() {
         Row() {
           Column() {
             Text('码率').fontSize(14)
             Text('自动按分辨率与帧率计算，或手动指定')
-              .fontSize(11).margin({ top: 2 })
+              .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
@@ -1155,12 +1220,19 @@ struct SettingsPage {
 
         if (this.mlBitrateAuto) {
           Text('自动：约 ' + kbpsToMbps(this.mlAutoBitrateKbps()) + ' Mbps')
-            .fontSize(11)
+            .fontSize(12).fontColor($r('app.color.text_tertiary'))
             .width('100%').margin({ top: 10 })
         } else {
           Row() {
             TextInput({ placeholder: '20', text: this.mlBitrateText })
-              .type(InputType.Number).fontSize(14).height(40).width(140)
+              .type(InputType.Number)
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_tertiary'))
+              .height(40)
+              .width(140)
+              .backgroundColor($r('app.color.surface_subtle'))
+              .border({ width: 1, color: $r('app.color.border') })
               .borderRadius(10)
               .onChange((value: string) => {
                 this.mlBitrateText = value;
@@ -1175,16 +1247,16 @@ struct SettingsPage {
       }
       .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
-      Divider()
+      Divider().strokeWidth(1).color($r('app.color.divider'))
 
       Column() {
         Text('编码器').fontSize(14)
         if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
           Text('本设备无可用视频解码器，无法串流')
-            .fontSize(11).margin({ top: 2 })
+            .fontSize(12).fontColor($r('app.color.warning')).margin({ top: 2 })
         } else if (this.mlCodecSoftware(this.mlCodec)) {
           Text('无硬件解码支持，将使用软件解码')
-            .fontSize(11).margin({ top: 2 })
+            .fontSize(12).fontColor($r('app.color.warning')).margin({ top: 2 })
         }
         Flex({ wrap: FlexWrap.Wrap }) {
           this.mlCodecChip(ML_CODEC_AUTO, '自动')
@@ -1196,7 +1268,7 @@ struct SettingsPage {
       }
       .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
 
-      Divider()
+      Divider().strokeWidth(1).color($r('app.color.divider'))
 
       Column() {
         Text('色彩空间').fontSize(14)
@@ -1274,12 +1346,12 @@ struct SettingsPage {
             if (this.protocol === PROTOCOL_RDP) {
             FormSection({
               title: '显示',
-              description: '画面参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置'
+              description: '新连接的默认画面参数；可在单个连接中覆盖'
             }) {
 
             this.toggleItem({
               title: '使用RDP光标',
-              subtitle: '远端的光标形状同步为系统光标；若显示异常可关闭，回退为默认箭头',
+              subtitle: '同步远端光标形状；显示异常时可关闭',
               value: this.useRdpCursor,
               enabled: true,
               disabledReason: '',
@@ -1289,7 +1361,7 @@ struct SettingsPage {
               }
             })
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             Column() {
               Row() {
@@ -1298,7 +1370,7 @@ struct SettingsPage {
                   Text(this.srEnabled
                     ? '超分辨率后的输出分辨率；会话按倍率取更低的桌面分辨率'
                     : '自动使用当前显示器的分辨率')
-                    .fontSize(11).margin({ top: 2 })
+                    .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
                 }
                 .alignItems(HorizontalAlign.Start)
                 .layoutWeight(1)
@@ -1312,12 +1384,19 @@ struct SettingsPage {
 
               if (this.resolutionAuto) {
                 Text('自动检测：' + this.detectedText)
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   .width('100%').margin({ top: 10 })
               } else {
                 Row() {
                   TextInput({ placeholder: '1920', text: this.manualWidthText })
-                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .type(InputType.Number)
+                    .fontSize(14)
+                    .fontColor($r('app.color.text_primary'))
+                    .placeholderColor($r('app.color.text_tertiary'))
+                    .height(40)
+                    .layoutWeight(1)
+                    .backgroundColor($r('app.color.surface_subtle'))
+                    .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(10)
                     .onChange((value: string) => {
                       this.manualWidthText = value;
@@ -1329,7 +1408,14 @@ struct SettingsPage {
                     .margin({ left: 10, right: 10 })
 
                   TextInput({ placeholder: '1080', text: this.manualHeightText })
-                    .type(InputType.Number).fontSize(14).height(40).layoutWeight(1)
+                    .type(InputType.Number)
+                    .fontSize(14)
+                    .fontColor($r('app.color.text_primary'))
+                    .placeholderColor($r('app.color.text_tertiary'))
+                    .height(40)
+                    .layoutWeight(1)
+                    .backgroundColor($r('app.color.surface_subtle'))
+                    .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(10)
                     .onChange((value: string) => {
                       this.manualHeightText = value;
@@ -1339,13 +1425,13 @@ struct SettingsPage {
                 .width('100%').margin({ top: 10 })
 
                 Text('自动检测：' + this.detectedText + '，可参考输入')
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   .width('100%').margin({ top: 6 })
               }
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             Column() {
               ScaleSetting({
@@ -1355,8 +1441,8 @@ struct SettingsPage {
                 percentText: this.manualScaleText,
                 autoPercent: this.effectiveDefaultScale(),
                 subtitle: this.srEnabled
-                  ? '超分辨率前会话桌面的缩放；自动档按会话分辨率相对屏幕换算'
-                  : '按分辨率相对屏幕的比例自动选择推荐缩放比例',
+                  ? '超分前的会话缩放；自动按分辨率换算'
+                  : '按分辨率相对屏幕自动选择',
                 onModeChange: (mode: number) => {
                   this.scaleAuto = mode === ML_SCALE_AUTO;
                   this.persist();
@@ -1369,14 +1455,14 @@ struct SettingsPage {
             }
             .width('100%').padding({ top: 14, bottom: 14 }).alignItems(HorizontalAlign.Start)
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             this.srSection(PROTOCOL_RDP)
             }
             } else if (this.protocol === PROTOCOL_MOONLIGHT) {
               FormSection({
                 title: '显示',
-                description: '画面与编码参数：新连接默认使用这里的值；可在单个连接的「高级设置」中改为独立配置'
+                description: '新连接的默认画面与编码参数；可在单个连接中覆盖'
               }) {
 
               Column() {
@@ -1384,17 +1470,17 @@ struct SettingsPage {
                   .fontSize(14)
                   
                 Text(this.cursorModeDescription())
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   
                   .margin({ top: 2 })
                 if (this.mlCursorMode === ML_CURSOR_HIDE_HOST) {
                   Text('此功能仅在基地版 Sunshine（foundation-sunshine）有效；其它主机会回退为「关闭」')
-                    .fontSize(11)
-                    
+                    .fontSize(12).fontColor($r('app.color.warning'))
+                    .lineHeight(16)
                     .margin({ top: 2 })
                 }
 
-                Row() {
+                Flex({ wrap: FlexWrap.Wrap }) {
                   this.mlCursorModeChip(ML_CURSOR_OFF, '关闭')
                   this.mlCursorModeChip(ML_CURSOR_HIDE_SYSTEM, '隐藏系统光标')
                   this.mlCursorModeChip(ML_CURSOR_HIDE_HOST, '同步系统光标')
@@ -1405,7 +1491,7 @@ struct SettingsPage {
                 if (this.mlCursorMode === ML_CURSOR_HIDE_SYSTEM) {
                   SettingToggleRow({
                     title: '相对鼠标模式',
-                    subtitle: '发送相对量来移动指针，对于部分游戏很有用。由于系统限制可能会存在二次鼠标加速',
+                    subtitle: '发送相对位移；部分游戏更适用，可能有二次加速',
                     value: this.mlRelativeMouse,
                     onToggle: (v: boolean) => {
                       this.mlRelativeMouse = v;
@@ -1416,7 +1502,7 @@ struct SettingsPage {
                   if (this.mlRelativeMouse) {
                     this.sliderItem({
                       title: '相对移动速度',
-                      subtitle: '在主机显示缩放的基础上的二次调整，1.0× 为基准',
+                      subtitle: '在主机缩放上再调整，1.0× 为基准',
                       value: this.relativeSpeed,
                       min: MIN_RELATIVE_SPEED,
                       max: MAX_RELATIVE_SPEED,
@@ -1437,19 +1523,19 @@ struct SettingsPage {
               .padding({ top: 10, bottom: 14 })
               .alignItems(HorizontalAlign.Start)
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.mlResolutionSection()
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.mlScaleSection()
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.srSection(PROTOCOL_MOONLIGHT)
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.mlStreamQualityItems()
               }
@@ -1461,8 +1547,7 @@ struct SettingsPage {
             if (this.protocol === PROTOCOL_MOONLIGHT) {
               this.toggleItem({
                 title: '总是使用系统滑动组件',
-                subtitle: '关：主机支持触控板通道（基地版 Sunshine）时走模拟两指滑动，滚动交给 Windows 原生处理；'
-                  + '开：一律用系统滚动组件 + 滚轮通道',
+                subtitle: '关：走主机原生触控板滑动；开：统一用系统滚动组件',
                 value: this.touchpadAlwaysEngine,
                 enabled: true,
                 disabledReason: '',
@@ -1472,7 +1557,7 @@ struct SettingsPage {
                 }
               })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
             }
 
             this.sliderItem({
@@ -1496,17 +1581,17 @@ struct SettingsPage {
               .fontSize(14)
               
             Text(this.pinchModeDescription())
-              .fontSize(11)
+              .fontSize(12).fontColor($r('app.color.text_tertiary'))
               
               .margin({ top: 2 })
             if (this.pinchMode === PINCH_MODE_NATIVE) {
               Text('此功能仅在基地版 Sunshine（foundation-sunshine）有效；其它主机会回退为「Ctrl 滚轮」')
-                .fontSize(11)
-                
+                .fontSize(12).fontColor($r('app.color.warning'))
+                .lineHeight(16)
                 .margin({ top: 2 })
             }
 
-            Row() {
+            Flex({ wrap: FlexWrap.Wrap }) {
               this.pinchModeChip(PINCH_MODE_WHEEL, 'Ctrl 滚轮')
               this.pinchModeChip(PINCH_MODE_TOUCH, '触摸模拟')
               if (this.protocol === PROTOCOL_RDP) {
@@ -1519,11 +1604,11 @@ struct SettingsPage {
             .margin({ top: 10, bottom: 6 })
 
             if (this.pinchMode === PINCH_MODE_WHEEL) {
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '缩放速度',
-                subtitle: 'Ctrl+滚轮模式的缩放速度，越大越快，1.0× 为基准',
+                subtitle: 'Ctrl+滚轮缩放速度，1.0× 为基准',
                 value: this.pinchZoomSpeed,
                 min: MIN_SPEED_SCALE,
                 max: MAX_SPEED_SCALE,
@@ -1540,11 +1625,11 @@ struct SettingsPage {
             }
 
             if (this.pinchMode === PINCH_MODE_TOUCH) {
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '触摸捏合角度',
-                subtitle: '模拟触点连线的倾角：正=顺时针（左手），负=逆时针（右手）',
+                subtitle: '模拟触点连线的倾角；正为顺时针',
                 value: this.pinchTouchAngle,
                 min: -180,
                 max: 180,
@@ -1559,11 +1644,11 @@ struct SettingsPage {
                 }
               })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '触点初始距离',
-                subtitle: '两个模拟触点起始间距，取窗口较短边的百分比（越大越像真实双指）',
+                subtitle: '两触点起始间距，取短边百分比',
                 value: this.pinchTouchDistance,
                 min: 1,
                 max: 20,
@@ -1579,11 +1664,11 @@ struct SettingsPage {
               })
             }
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             this.toggleItem({
               title: '双指双击发送中键',
-              subtitle: '触控板双指连续轻触两次发送鼠标中键；开启后双指轻触的右键会有约 300ms 判定延迟，按住右键（拖动）不受影响',
+              subtitle: '双指双击发送中键；双指右键增加约 300ms 判定',
               value: this.touchpadMiddleDoubleTap,
               enabled: true,
               disabledReason: '',
@@ -1604,7 +1689,7 @@ struct SettingsPage {
                 Text(this.winSubstituteCapturing
                   ? '按下要作为 Win 的按键（Esc 取消）'
                   : '点击右侧按键框，再按下要替代 Win 的按键')
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   
                   .margin({ top: 2 })
               }
@@ -1622,12 +1707,12 @@ struct SettingsPage {
               }
 
               Text(this.winSubstituteText())
-                .fontSize(13)
-                
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.control_bg'))
+                .border({ width: 1, color: $r('app.color.control_border') })
                 .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-                
                 .borderRadius(8)
-                
                 .focusable(true)
                 .id('winSubstituteCapture')
                 .onKeyEvent((event: KeyEvent) => {
@@ -1644,11 +1729,11 @@ struct SettingsPage {
             .width('100%')
             .padding({ top: 14, bottom: 14 })
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             this.toggleItem({
               title: '快捷键穿透',
-              subtitle: '会话窗口聚焦时接管键盘，把 Win、Alt+Tab、Esc 等快捷键发送到远端；开启后本机的系统快捷键会被远端接管',
+              subtitle: '会话聚焦时接管键盘；本机系统快捷键会被远端接管',
               value: this.shortcutPassthrough,
               enabled: true,
               disabledReason: '',
@@ -1663,7 +1748,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '回到前台自动重连',
-              subtitle: '切到后台再回来时，若会话已被系统断开则自动重连，不必手动点「重试」',
+              subtitle: '回到前台时若会话已断开则自动重连',
               value: this.reconnectOnForeground,
               enabled: true,
               disabledReason: '',
@@ -1692,7 +1777,7 @@ struct SettingsPage {
               }
             })
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             this.toggleItem({
               title: '忽略证书校验',
@@ -1711,7 +1796,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '音频重定向',
-              subtitle: '播放主机的声音；关闭则音频留在主机本地播放',
+              subtitle: '播放主机声音；关闭则留在主机本地',
               value: this.enableAudio,
               enabled: this.audioSupported,
               disabledReason: this.audioDisabledReason,
@@ -1722,11 +1807,11 @@ struct SettingsPage {
             })
 
             if (this.enableAudio) {
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.toggleItem({
                 title: '低延迟音频',
-                subtitle: '用系统低时延通路播放主机声音；关闭则与 RDP 走同一条播放链路',
+                subtitle: '使用系统低时延通路；关闭则与 RDP 共用播放链路',
                 value: this.mlLowLatencyAudio,
                 enabled: this.audioSupported,
                 disabledReason: this.audioDisabledReason,
@@ -1753,20 +1838,21 @@ struct SettingsPage {
                     .draggable(false)
                 } else {
                   Text('默认')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                 }
               }
               .width(96)
               .height(60)
               .borderRadius(8)
-              
+              .backgroundColor($r('app.color.surface_subtle'))
+              .border({ width: 1, color: $r('app.color.border') })
               .clip(true)
 
               Column() {
                 Text('背景图片').fontSize(14)
                 Text('默认用于主界面；设置页与 Moonlight 应用页未单独设置时也使用这张')
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   
                   .margin({ top: 2 })
               }
@@ -1776,9 +1862,11 @@ struct SettingsPage {
 
               Button('选择图片')
                 .height(36)
-                .fontSize(13)
-                
-                
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.control_bg'))
+                .border({ width: 1, color: $r('app.color.control_border') })
                 .borderRadius(10)
                 .onClick(() => {
                   this.chooseBackground(WALLPAPER_MAIN);
@@ -1802,13 +1890,13 @@ struct SettingsPage {
               .padding({ bottom: 10 })
             }
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             Row() {
               Column() {
                 Text('设置页背景').fontSize(14)
                 Text(this.settingsWallpaperPath.length > 0 ? '已单独设置' : '跟随默认背景')
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   
                   .margin({ top: 2 })
               }
@@ -1817,9 +1905,11 @@ struct SettingsPage {
 
               Button('选择图片')
                 .height(36)
-                .fontSize(13)
-                
-                
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.control_bg'))
+                .border({ width: 1, color: $r('app.color.control_border') })
                 .borderRadius(10)
                 .onClick(() => {
                   this.chooseBackground(WALLPAPER_SETTINGS);
@@ -1839,13 +1929,13 @@ struct SettingsPage {
             .width('100%')
             .padding({ top: 10, bottom: 10 })
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             Row() {
               Column() {
                 Text('Moonlight 应用页背景').fontSize(14)
                 Text(this.appsWallpaperPath.length > 0 ? '已单独设置' : '跟随默认背景')
-                  .fontSize(11)
+                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
                   
                   .margin({ top: 2 })
               }
@@ -1854,9 +1944,11 @@ struct SettingsPage {
 
               Button('选择图片')
                 .height(36)
-                .fontSize(13)
-                
-                
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.control_bg'))
+                .border({ width: 1, color: $r('app.color.control_border') })
                 .borderRadius(10)
                 .onClick(() => {
                   this.chooseBackground(WALLPAPER_APPS);
@@ -1884,7 +1976,7 @@ struct SettingsPage {
                 Column() {
                   Text('默认主窗口尺寸').fontSize(14)
                   Text('主窗口创建时使用的大小，下次启动生效（像素）')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .margin({ top: 2 })
                 }
@@ -1892,6 +1984,7 @@ struct SettingsPage {
                 .layoutWeight(1)
 
                 Toggle({ type: ToggleType.Switch, isOn: this.mainSizeEnabled })
+                  .selectedColor($r('app.color.brand_fill'))
                   
                   .onChange((isOn: boolean) => {
                     this.mainSizeEnabled = isOn;
@@ -1904,9 +1997,12 @@ struct SettingsPage {
                 TextInput({ text: this.mainWidthText })
                   .type(InputType.Number)
                   .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_tertiary'))
                   .height(40)
                   .layoutWeight(1)
-                  
+                  .backgroundColor($r('app.color.surface_subtle'))
+                  .border({ width: 1, color: $r('app.color.border') })
                   .borderRadius(10)
                   .enabled(this.mainSizeEnabled)
                   .opacity(this.mainSizeEnabled ? 1.0 : 0.4)
@@ -1923,9 +2019,12 @@ struct SettingsPage {
                 TextInput({ text: this.mainHeightText })
                   .type(InputType.Number)
                   .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_tertiary'))
                   .height(40)
                   .layoutWeight(1)
-                  
+                  .backgroundColor($r('app.color.surface_subtle'))
+                  .border({ width: 1, color: $r('app.color.border') })
                   .borderRadius(10)
                   .enabled(this.mainSizeEnabled)
                   .opacity(this.mainSizeEnabled ? 1.0 : 0.4)
@@ -1941,14 +2040,14 @@ struct SettingsPage {
             .padding({ top: 14, bottom: 14 })
             .alignItems(HorizontalAlign.Start)
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             Column() {
               Row() {
                 Column() {
                   Text('默认会话窗口尺寸').fontSize(14)
                   Text('会话窗口创建时使用的大小，下次连接生效（像素）')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .margin({ top: 2 })
                 }
@@ -1956,6 +2055,7 @@ struct SettingsPage {
                 .layoutWeight(1)
 
                 Toggle({ type: ToggleType.Switch, isOn: this.sessionSizeEnabled })
+                  .selectedColor($r('app.color.brand_fill'))
                   
                   .onChange((isOn: boolean) => {
                     this.sessionSizeEnabled = isOn;
@@ -1968,9 +2068,12 @@ struct SettingsPage {
                 TextInput({ text: this.sessionWidthText })
                   .type(InputType.Number)
                   .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_tertiary'))
                   .height(40)
                   .layoutWeight(1)
-                  
+                  .backgroundColor($r('app.color.surface_subtle'))
+                  .border({ width: 1, color: $r('app.color.border') })
                   .borderRadius(10)
                   .enabled(this.sessionSizeEnabled && !this.sessionFullscreen)
                   .opacity(this.sessionSizeEnabled && !this.sessionFullscreen ? 1.0 : 0.4)
@@ -1987,9 +2090,12 @@ struct SettingsPage {
                 TextInput({ text: this.sessionHeightText })
                   .type(InputType.Number)
                   .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_tertiary'))
                   .height(40)
                   .layoutWeight(1)
-                  
+                  .backgroundColor($r('app.color.surface_subtle'))
+                  .border({ width: 1, color: $r('app.color.border') })
                   .borderRadius(10)
                   .enabled(this.sessionSizeEnabled && !this.sessionFullscreen)
                   .opacity(this.sessionSizeEnabled && !this.sessionFullscreen ? 1.0 : 0.4)
@@ -2005,7 +2111,7 @@ struct SettingsPage {
                 Column() {
                   Text('默认最大化（全屏）').fontSize(14)
                   Text('会话窗口打开时直接最大化到全屏，忽略上面的尺寸')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .margin({ top: 2 })
                 }
@@ -2013,6 +2119,7 @@ struct SettingsPage {
                 .layoutWeight(1)
 
                 Toggle({ type: ToggleType.Switch, isOn: this.sessionFullscreen })
+                  .selectedColor($r('app.color.brand_fill'))
                   
                   .onChange((isOn: boolean) => {
                     this.sessionFullscreen = isOn;
@@ -2023,13 +2130,13 @@ struct SettingsPage {
               .height(58)
               .margin({ top: 4 })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               Row() {
                 Column() {
                   Text('自动隐藏主窗口').fontSize(14)
                   Text('单窗口模式：会话窗口打开时隐藏主窗口，关闭后恢复（不支持多会话）')
-                    .fontSize(11)
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
                     
                     .margin({ top: 2 })
                 }
@@ -2037,6 +2144,7 @@ struct SettingsPage {
                 .layoutWeight(1)
 
                 Toggle({ type: ToggleType.Switch, isOn: this.autoHideMainWindow })
+                  .selectedColor($r('app.color.brand_fill'))
                   
                   .onChange((isOn: boolean) => {
                     this.autoHideMainWindow = isOn;
@@ -2054,16 +2162,17 @@ struct SettingsPage {
 
             FormSection({
               title: '配置备份',
-              description: '导出全局设置与全部连接，或从文件导入覆盖；密码不会被导出。'
+              description: '导出设置与全部连接；密码不会导出。'
             }) {
 
             Row() {
               Button('导出配置')
                 .layoutWeight(1)
                 .height(44)
-                .fontSize(15)
-                
-                
+                .fontSize(16)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.on_brand'))
+                .backgroundColor($r('app.color.brand_fill'))
                 .borderRadius(12)
                 .enabled(!this.transferBusy)
                 .onClick(() => {
@@ -2073,9 +2182,11 @@ struct SettingsPage {
               Button('导入配置')
                 .layoutWeight(1)
                 .height(44)
-                .fontSize(15)
-                
-                
+                .fontSize(16)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.control_bg'))
+                .border({ width: 1, color: $r('app.color.control_border') })
                 .borderRadius(12)
                 .margin({ left: 12 })
                 .enabled(!this.transferBusy)
@@ -2091,11 +2202,11 @@ struct SettingsPage {
                   LoadingProgress()
                     .width(16)
                     .height(16)
-                    
+                    .color($r('app.color.brand_fill'))
                 }
                 Text(this.transferBusy ? '处理中…' : this.transferMessage)
                   .fontSize(12)
-                  
+                  .fontColor($r('app.color.text_tertiary'))
                   .layoutWeight(1)
                   .margin({ left: this.transferBusy ? 8 : 0 })
               }
@@ -2108,15 +2219,16 @@ struct SettingsPage {
             if (this.protocol === TAB_COMMON) {
             FormSection({
               title: '重置',
-              description: '恢复全部设置（RDP / Moonlight / 通用）为默认值，不影响已保存的连接。'
+              description: '恢复全部设置为默认值；不影响已保存的连接。'
             }) {
 
             Button('恢复默认设置')
               .width('100%')
               .height(44)
-              .fontSize(15)
-              
-              
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.danger'))
+              .backgroundColor($r('app.color.danger_tint'))
               .borderRadius(12)
               .onClick(() => {
                 this.confirmReset();
@@ -2129,7 +2241,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '抓取 GFX 码流（测试）',
-              subtitle: '抓取会话的原始 GFX 通道码流（hmrdp_gfx.bin），供开发/回放使用',
+              subtitle: '抓取 GFX 码流供开发回放',
               value: this.gfxCapture,
               enabled: true,
               disabledReason: '',
@@ -2140,11 +2252,11 @@ struct SettingsPage {
               }
             })
 
-            Divider()
+            Divider().strokeWidth(1).color($r('app.color.divider'))
 
             this.toggleItem({
               title: '触屏高刷新率（实验）',
-              subtitle: '把 RDPEI 50Hz 合帧提高到 125Hz 上报触点；可能增加带宽',
+              subtitle: '触屏上报 50Hz→125Hz；可能增加带宽',
               value: this.touchHighRate,
               enabled: true,
               disabledReason: '',
@@ -2161,7 +2273,7 @@ struct SettingsPage {
 
             this.toggleItem({
               title: '开发者选项',
-              subtitle: '显示工具栏性能信息，并揭示各协议下的实验 / 调参项',
+              subtitle: '显示性能信息与实验项',
               value: this.developerMode,
               enabled: true,
               disabledReason: '',
@@ -2178,12 +2290,11 @@ struct SettingsPage {
             })
 
             if (this.developerMode) {
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.toggleItem({
                 title: '滚动：回退直译映射',
-                subtitle: '默认由系统滚动组件负责触控板与滚轮的跟手滚动、惯性抛滑与打断（两协议、全部轴向）。'
-                  + '仅当需要逐齿精确滚动（特殊操作）时回退：改由内置映射直译，无惯性',
+                subtitle: '默认由系统滚动组件处理跟手、惯性与打断；仅特殊操作时回退直译',
                 value: this.scrollEngineFallback,
                 enabled: true,
                 disabledReason: '',
@@ -2193,7 +2304,7 @@ struct SettingsPage {
                 }
               })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '工具栏触发停留时间',
@@ -2212,11 +2323,11 @@ struct SettingsPage {
                 }
               })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '工具栏触发区域宽度',
-                subtitle: '屏幕顶部中间多宽的一条带触发工具栏，两端（贴边 / 角落）不触发，避免误触',
+                subtitle: '顶部中间触发带宽度；两端不触发',
                 value: this.triggerWidthPercent,
                 min: 10,
                 max: 100,
@@ -2231,11 +2342,11 @@ struct SettingsPage {
                 }
               })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '工具栏宽度',
-                subtitle: '工具栏不铺满窗口，按窗口宽度百分比居中显示为圆角浮条；100% 即占满',
+                subtitle: '工具栏按窗口宽度百分比居中；100% 占满',
                 value: this.toolbarWidthPercent,
                 min: 50,
                 max: 100,
@@ -2250,7 +2361,7 @@ struct SettingsPage {
                 }
               })
 
-              Divider()
+              Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
                 title: '工具栏隐藏延迟',

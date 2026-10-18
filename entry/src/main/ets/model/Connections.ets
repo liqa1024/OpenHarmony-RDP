@@ -98,8 +98,9 @@ export class PendingConnection {
   moonlightFpsNote: string = '';
   filesDir: string = '';
   moonlightAppId: number = 0;
-  moonlightPinProvider: ((pin: string, pairing: Promise<PairResult>) => Promise<boolean>)
-    | undefined = undefined;
+  moonlightPinProvider:
+    ((pin: string, pairing: Promise<PairResult>, cancel: () => void) => Promise<boolean>)
+      | undefined = undefined;
   onConnected: (() => void) | undefined = undefined;
 }
 

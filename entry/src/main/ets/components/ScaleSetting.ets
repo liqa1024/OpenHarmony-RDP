@@ -28,12 +28,21 @@ export struct ScaleSetting {
   @Builder
   modeChip(label: string, value: number, leftMargin: number) {
     Text(label)
-      .fontSize(13)
-      
-      
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.mode === value ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.mode === value ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: this.mode === value
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
       .borderRadius(8)
       .padding({ left: 14, right: 14, top: 6, bottom: 6 })
       .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
         this.onModeChange(value);
@@ -55,30 +64,38 @@ export struct ScaleSetting {
 
   build() {
     Column() {
-      Row() {
-        Column() {
-          Text(this.title).fontSize(14)
-          if (this.subtitle.length > 0) {
-            Text(this.subtitle)
-              .fontSize(11).margin({ top: 2 })
-          }
-          if (this.showsWarning()) {
-            Text(this.warning)
-              .fontSize(11).margin({ top: 2 })
-          }
+      Column() {
+        Text(this.title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+        if (this.subtitle.length > 0) {
+          Text(this.subtitle)
+            .fontSize(12)
+            .lineHeight(16)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
         }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
+        if (this.showsWarning()) {
+          Text(this.warning)
+            .fontSize(12)
+            .lineHeight(16)
+            .fontColor($r('app.color.warning'))
+            .margin({ top: 2 })
+        }
 
-        Row() {
+        Flex({ wrap: FlexWrap.Wrap }) {
           this.modeChip('自动', 0, 0)
           this.modeChip('手动', 1, 8)
           if (this.allowNone) {
             this.modeChip('不额外设置', 2, 8)
           }
         }
+        .width('100%')
+        .margin({ top: 10 })
       }
       .width('100%')
+      .alignItems(HorizontalAlign.Start)
 
       if (this.mode === 1) {
         Flex({ wrap: FlexWrap.Wrap }) {
@@ -90,7 +107,13 @@ export struct ScaleSetting {
 
         if (this.allowCustomInput) {
           TextInput({ placeholder: '100', text: this.percentText })
-            .type(InputType.Number).fontSize(14).height(40).width('100%')
+            .type(InputType.Number)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .height(44)
+            .width('100%')
+            .backgroundColor($r('app.color.surface_subtle'))
             .borderRadius(10)
             .onChange((value: string) => {
               this.onPercentTextChange(value);
@@ -98,17 +121,23 @@ export struct ScaleSetting {
 
           if (this.parsedPercent() > 0 && !isScalePreset(this.parsedPercent())) {
             Text(this.customWarning)
-              .fontSize(11)
-              .width('100%').margin({ top: 6 })
+              .fontSize(12)
+              .lineHeight(16)
+              .fontColor($r('app.color.warning'))
+              .width('100%')
+              .margin({ top: 6 })
           }
         }
       } else if (this.mode === 0) {
         Text('推荐 ' + this.autoPercent + '%')
-          .fontSize(11)
+          .fontSize(12)
+          .fontColor($r('app.color.text_tertiary'))
           .width('100%').margin({ top: 10 })
       } else if (this.allowNone && this.mode === 2 && this.noneHint.length > 0) {
         Text(this.noneHint)
-          .fontSize(11)
+          .fontSize(12)
+          .lineHeight(16)
+          .fontColor($r('app.color.text_tertiary'))
           .width('100%').margin({ top: 10 })
       }
     }

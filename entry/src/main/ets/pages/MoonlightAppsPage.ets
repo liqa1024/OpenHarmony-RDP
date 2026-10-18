@@ -156,8 +156,8 @@ struct MoonlightAppsPage {
     try {
       const result: MoonlightAppsResult = await MoonlightConnector.probeApps(this.filesDir(),
         conn.host, conn.port,
-        (pin: string, pairing: Promise<PairResult>): Promise<boolean> =>
-          promptPairingPin(this.getUIContext(), pin, pairing),
+        (pin: string, pairing: Promise<PairResult>, cancel: () => void): Promise<boolean> =>
+          promptPairingPin(this.getUIContext(), pin, pairing, cancel),
         conn.mlHostId);
       if (!result.ok) {
         this.error = result.error;
@@ -346,8 +346,8 @@ struct MoonlightAppsPage {
           }
         }) {
           Text(this.label())
-            .fontSize(13)
-            
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .constraintSize({ maxWidth: 320 })
@@ -429,6 +429,7 @@ struct MoonlightAppsPage {
         icon: $r('app.media.ic_refresh'),
         tip: '刷新',
         loading: this.refreshing,
+        primary: false,
         onTap: () => {
           this.refresh();
         }

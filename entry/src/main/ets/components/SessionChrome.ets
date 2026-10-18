@@ -5,8 +5,11 @@ import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH, TOOLBAR_TELEMETRY_HEIGHT,
 export struct ToolbarChip {
   @Prop label: string = '';
   @Prop icon: Resource | undefined = undefined;
-  @Prop hPad: number = 16;
+  @Prop hPad: number = 14;
+  @Prop danger: boolean = false;
   onTap: () => void = () => {};
+  @State hovered: boolean = false;
+  @State pressed: boolean = false;
 
   build() {
     Row() {
@@ -14,18 +17,53 @@ export struct ToolbarChip {
         Image(this.icon)
           .width(16)
           .height(16)
-          
+          .fillColor(this.danger
+            ? $r('app.color.chrome_danger') : $r('app.color.chrome_text_primary'))
           .draggable(false)
       }
       Text(this.label)
-        .fontSize(13)
-        
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.danger
+          ? $r('app.color.chrome_danger') : $r('app.color.chrome_text_primary'))
         .margin({ left: this.icon !== undefined ? 4 : 0 })
     }
-    .padding({ left: this.hPad, right: this.hPad, top: 7, bottom: 7 })
-    
+    .height(32)
+    .padding({ left: this.hPad, right: this.hPad })
+    .backgroundColor(this.danger
+      ? (this.hovered || this.pressed
+        ? $r('app.color.chrome_danger_hover') : $r('app.color.chrome_danger_bg'))
+      : (this.pressed
+        ? $r('app.color.chrome_control_pressed')
+        : (this.hovered ? $r('app.color.chrome_control_hover') : $r('app.color.chrome_control_bg'))))
+    .border({
+      width: 1,
+      color: this.danger
+        ? $r('app.color.chrome_danger_border') : $r('app.color.chrome_control_border')
+    })
     .borderRadius(8)
-    .hoverEffect(HoverEffect.Highlight)
+    .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
+    .hoverEffect(HoverEffect.None)
+    .onHover((isHover: boolean) => {
+      this.hovered = isHover;
+      if (!isHover) {
+        this.pressed = false;
+      }
+    })
+    .onMouse((event: MouseEvent) => {
+      if (event.action === MouseAction.Press) {
+        this.pressed = true;
+      } else if (event.action === MouseAction.Release) {
+        this.pressed = false;
+      }
+    })
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.pressed = true;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.pressed = false;
+      }
+    })
     .onClick(() => {
       this.onTap();
     })
@@ -37,9 +75,12 @@ export struct ToolbarChip {
 @Component
 export struct ToolbarIconChip {
   @Prop icon: Resource | undefined = undefined;
-  @Prop iconSize: number = 16;
+  @Prop iconSize: number = 20;
   @Prop iconAngle: number = 0;
+  @Prop active: boolean = false;
   onTap: () => void = () => {};
+  @State hovered: boolean = false;
+  @State pressed: boolean = false;
 
   build() {
     Row() {
@@ -47,7 +88,8 @@ export struct ToolbarIconChip {
         Image(this.icon)
           .width(this.iconSize)
           .height(this.iconSize)
-          
+          .fillColor(this.active
+            ? $r('app.color.chrome_accent') : $r('app.color.chrome_text_primary'))
           .rotate({ angle: this.iconAngle })
           .draggable(false)
       }
@@ -55,9 +97,39 @@ export struct ToolbarIconChip {
     .width(32)
     .height(32)
     .justifyContent(FlexAlign.Center)
-    
+    .backgroundColor(this.active
+      ? $r('app.color.chrome_accent_bg')
+      : (this.pressed
+        ? $r('app.color.chrome_control_pressed')
+        : (this.hovered ? $r('app.color.chrome_control_hover') : $r('app.color.chrome_control_bg'))))
+    .border({
+      width: 1,
+      color: this.active
+        ? $r('app.color.chrome_accent_border') : $r('app.color.chrome_control_border')
+    })
     .borderRadius(8)
-    .hoverEffect(HoverEffect.Highlight)
+    .responseRegion({ x: -4, y: -4, width: 40, height: 40 })
+    .hoverEffect(HoverEffect.None)
+    .onHover((isHover: boolean) => {
+      this.hovered = isHover;
+      if (!isHover) {
+        this.pressed = false;
+      }
+    })
+    .onMouse((event: MouseEvent) => {
+      if (event.action === MouseAction.Press) {
+        this.pressed = true;
+      } else if (event.action === MouseAction.Release) {
+        this.pressed = false;
+      }
+    })
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.pressed = true;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.pressed = false;
+      }
+    })
     .onClick(() => {
       this.onTap();
     })
@@ -75,11 +147,13 @@ export struct SessionTitle {
     Row() {
       Text(this.name)
         .fontSize(14)
-        
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.chrome_text_primary'))
       Text('  ' + this.detail)
         .fontSize(12)
-        
+        .fontColor($r('app.color.chrome_text_secondary'))
     }
+    .alignItems(VerticalAlign.Center)
   }
 }
 
@@ -87,15 +161,44 @@ export struct SessionTitle {
 export struct OutlineChip {
   @Prop label: string = '';
   onTap: () => void = () => {};
+  @State hovered: boolean = false;
+  @State pressed: boolean = false;
 
   build() {
     Text(this.label)
       .fontSize(12)
-      
-      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-      
-      .borderRadius(6)
-      .hoverEffect(HoverEffect.Highlight)
+      .fontWeight(FontWeight.Medium)
+      .fontColor($r('app.color.chrome_text_primary'))
+      .height(28)
+      .padding({ left: 10, right: 10 })
+      .textAlign(TextAlign.Center)
+      .backgroundColor(this.pressed
+        ? $r('app.color.chrome_control_pressed')
+        : (this.hovered ? $r('app.color.chrome_control_hover') : $r('app.color.chrome_control_bg')))
+      .border({ width: 1, color: $r('app.color.chrome_control_border') })
+      .borderRadius(8)
+      .responseRegion({ x: 0, y: -6, width: '100%', height: 40 })
+      .hoverEffect(HoverEffect.None)
+      .onHover((isHover: boolean) => {
+        this.hovered = isHover;
+        if (!isHover) {
+          this.pressed = false;
+        }
+      })
+      .onMouse((event: MouseEvent) => {
+        if (event.action === MouseAction.Press) {
+          this.pressed = true;
+        } else if (event.action === MouseAction.Release) {
+          this.pressed = false;
+        }
+      })
+      .onTouch((event: TouchEvent) => {
+        if (event.type === TouchType.Down) {
+          this.pressed = true;
+        } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.pressed = false;
+        }
+      })
       .onClick(() => {
         this.onTap();
       })
@@ -115,13 +218,15 @@ export struct MetricItem {
       if (this.metricWidth > 0) {
         Text(this.text)
           .fontSize(12)
-          
+          .fontColor($r('app.color.chrome_text_secondary'))
+          .fontFeature('"tnum" 1')
           .width(this.metricWidth)
           .maxLines(1)
       } else {
         Text(this.text)
           .fontSize(12)
-          
+          .fontColor($r('app.color.chrome_text_secondary'))
+          .fontFeature('"tnum" 1')
           .maxLines(1)
       }
     }
@@ -138,7 +243,7 @@ export struct ToolbarRevealHint {
       .width(REVEAL_HINT_WIDTH * this.fill)
       .height(REVEAL_HINT_HEIGHT)
       .borderRadius(REVEAL_HINT_HEIGHT / 2)
-      
+      .backgroundColor($r('app.color.chrome_accent'))
       .opacity(this.fill)
       .hitTestBehavior(HitTestMode.None)
   }
@@ -153,7 +258,7 @@ export struct ToolbarTouchBar {
       .width(REVEAL_HINT_WIDTH * this.fill)
       .height(TOUCH_BAR_HEIGHT)
       .borderRadius(TOUCH_BAR_HEIGHT / 2)
-      
+      .backgroundColor($r('app.color.chrome_accent'))
       .opacity(this.fill)
       .hitTestBehavior(HitTestMode.None)
   }
@@ -241,39 +346,44 @@ export struct ClipboardTransferStatus {
         LoadingProgress()
           .width(14)
           .height(14)
-          
+          .color($r('app.color.chrome_accent'))
         Text('在远端粘贴开始传输')
           .fontSize(12)
-          
+          .fontColor($r('app.color.chrome_text_secondary'))
           .margin({ left: 6 })
           .maxLines(1)
       } else {
         Text(this.text)
           .fontSize(12)
-          
+          .fontColor($r('app.color.chrome_text_secondary'))
           .maxLines(1)
         if (this.fileCount > 1 && this.fileIndex > 0) {
           Text(`${this.fileIndex}/${this.fileCount}`)
             .fontSize(12)
-            
+            .fontColor($r('app.color.chrome_text_secondary'))
+            .fontFeature('"tnum" 1')
             .margin({ left: 6 })
             .maxLines(1)
         }
         Text(`${this.percent}%`)
           .fontSize(12)
-          
+          .fontColor($r('app.color.chrome_text_secondary'))
+          .fontFeature('"tnum" 1')
           .margin({ left: 6 })
           .maxLines(1)
         if (this.speed.length > 0) {
           Text(this.speed)
             .fontSize(12)
-            
+            .fontColor($r('app.color.chrome_text_secondary'))
+            .fontFeature('"tnum" 1')
             .margin({ left: 6 })
             .maxLines(1)
         }
         Progress({ value: this.percent, total: 100, type: ProgressType.Linear })
           .width(140)
-          
+          .height(3)
+          .color($r('app.color.chrome_accent'))
+          .backgroundColor($r('app.color.chrome_progress_track'))
           .margin({ left: 8 })
       }
       OutlineChip({
@@ -314,10 +424,12 @@ export struct ClipboardButtons {
           buttonType: ButtonType.Normal
         })
           .iconSize(16)
-          
-          .fontSize(13)
-          
-          
+          .fontSize(12)
+          .fontColor($r('app.color.chrome_text_primary'))
+          .backgroundColor($r('app.color.chrome_control_bg'))
+          .borderWidth(1)
+          .borderColor($r('app.color.chrome_control_border'))
+          .borderStyle(BorderStyle.Solid)
           .borderRadius(8)
           .padding({ left: 14, right: 14, top: 7, bottom: 7 })
           .onClick(this.pasteCallback)
@@ -327,5 +439,3 @@ export struct ClipboardButtons {
     }
   }
 }
-
-

@@ -47,7 +47,7 @@ export struct MoonlightAppTile {
           Image($r('app.media.ic_apps'))
             .width(36)
             .height(36)
-            
+            .fillColor($r('app.color.icon_tertiary'))
             .objectFit(ImageFit.Contain)
             .draggable(false)
         }
@@ -64,12 +64,12 @@ export struct MoonlightAppTile {
           LoadingProgress()
             .width(32)
             .height(32)
-            
+            .color($r('app.color.icon_on_brand'))
         }
         .width('100%')
         .height('100%')
         .borderRadius(TILE_RADIUS)
-        
+        .backgroundColor($r('app.color.chrome_scrim'))
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         .hitTestBehavior(HitTestMode.None)
@@ -78,11 +78,12 @@ export struct MoonlightAppTile {
       Column() {
         if (this.isRunning) {
           Text('运行中')
-            .fontSize(9)
-            
-            
+            .fontSize(10)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.protocol_moonlight_deep'))
+            .backgroundColor($r('app.color.protocol_moonlight_tint'))
             .borderRadius(4)
-            .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
             .transition(fadeTransition())
         }
       }
@@ -99,6 +100,15 @@ export struct MoonlightAppTile {
           diameter: STAR_CONTROL,
           glyph: STAR_SIZE,
           tip: '设为默认',
+          iconColor: this.isDefault
+            ? $r('app.color.brand_text') : $r('app.color.icon_on_brand'),
+          discColor: this.isDefault
+            ? $r('app.color.brand_tint') : $r('app.color.chrome_bg'),
+          discHoverColor: this.isDefault
+            ? $r('app.color.brand_tint_strong') : $r('app.color.chrome_pressed'),
+          discPressColor: $r('app.color.chrome_pressed'),
+          discBorder: this.isDefault
+            ? $r('app.color.brand_tint_strong') : $r('app.color.chrome_border'),
           onTap: () => {
             this.onSetDefault();
           }
@@ -123,6 +133,11 @@ export struct MoonlightAppTile {
                 tip: '断开连接',
                 animated: true,
                 loading: this.connecting,
+                iconColor: $r('app.color.icon_on_brand'),
+                discColor: $r('app.color.chrome_bg'),
+                discHoverColor: $r('app.color.chrome_pressed'),
+                discPressColor: $r('app.color.chrome_pressed'),
+                discBorder: $r('app.color.chrome_border'),
                 onTap: () => {
                   this.onDisconnect();
                 }
@@ -134,6 +149,11 @@ export struct MoonlightAppTile {
                 glyph: ACTION_SIZE,
                 tip: '关闭应用并断开',
                 animated: true,
+                iconColor: $r('app.color.icon_on_brand'),
+                discColor: $r('app.color.chrome_bg'),
+                discHoverColor: $r('app.color.chrome_pressed'),
+                discPressColor: $r('app.color.chrome_pressed'),
+                discBorder: $r('app.color.chrome_border'),
                 onTap: () => {
                   this.onCloseAppAndDisconnect();
                 }
@@ -147,6 +167,11 @@ export struct MoonlightAppTile {
                 tip: connectActionLabel(ConnectAction.Resume),
                 animated: true,
                 loading: this.connecting,
+                iconColor: $r('app.color.icon_on_brand'),
+                discColor: $r('app.color.chrome_bg'),
+                discHoverColor: $r('app.color.chrome_pressed'),
+                discPressColor: $r('app.color.chrome_pressed'),
+                discBorder: $r('app.color.chrome_border'),
                 onTap: () => {
                   this.onOpen();
                 }
@@ -158,6 +183,11 @@ export struct MoonlightAppTile {
                 glyph: ACTION_SIZE,
                 tip: '关闭应用',
                 animated: true,
+                iconColor: $r('app.color.icon_on_brand'),
+                discColor: $r('app.color.chrome_bg'),
+                discHoverColor: $r('app.color.chrome_pressed'),
+                discPressColor: $r('app.color.chrome_pressed'),
+                discBorder: $r('app.color.chrome_border'),
                 onTap: () => {
                   this.onCloseApp();
                 }
@@ -177,6 +207,20 @@ export struct MoonlightAppTile {
     .width(TILE_WIDTH)
     .height(TILE_HEIGHT)
     .margin({ right: 12, bottom: 16 })
+    .backgroundColor($r('app.color.surface_subtle'))
+    .borderRadius(TILE_RADIUS)
+    .border({
+      width: this.isRunning ? 2 : 1,
+      color: this.isRunning ? $r('app.color.protocol_moonlight')
+        : (this.hovered && this.clickable()
+          ? $r('app.color.brand_tint_strong') : $r('app.color.border'))
+    })
+    .shadow({
+      radius: this.hovered && this.clickable() ? 16 : 0,
+      color: $r('app.color.shadow_2'),
+      offsetX: 0,
+      offsetY: this.hovered && this.clickable() ? 4 : 0
+    })
     .scale(hoverPressScale(this.hovered && this.clickable(), this.pressed && this.clickable()))
     .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
     .onHover((isHover: boolean) => {

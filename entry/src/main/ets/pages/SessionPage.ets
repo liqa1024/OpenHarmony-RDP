@@ -1092,9 +1092,9 @@ struct SessionPage {
         }
         .width('100%')
         .height('100%')
+        .backgroundColor($r('app.color.chrome_scrim'))
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        
       }
       }
       .width('100%')
@@ -1103,7 +1103,7 @@ struct SessionPage {
     }
     .width('100%')
     .height('100%')
-    
+    .backgroundColor($r('app.color.chrome_bg_solid'))
   }
 }
 
