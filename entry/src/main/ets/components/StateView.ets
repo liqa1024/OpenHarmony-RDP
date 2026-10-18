@@ -46,7 +46,8 @@ export struct StateView {
           Text(this.message)
             .fontSize(12)
             .lineHeight(18)
-            .fontColor($r('app.color.text_tertiary'))
+            .fontColor(this.kind === StateViewKind.Error
+              ? $r('app.color.text_secondary') : $r('app.color.text_tertiary'))
             .textAlign(TextAlign.Center)
             .constraintSize({ maxWidth: 320 })
             .margin({ top: 8 })
@@ -84,6 +85,7 @@ export struct StateView {
           .margin({ top: 24 })
         }
       }
+      .width('90%')
       .constraintSize({ maxWidth: 360 })
       .padding(24)
       .backgroundColor($r('app.color.surface'))

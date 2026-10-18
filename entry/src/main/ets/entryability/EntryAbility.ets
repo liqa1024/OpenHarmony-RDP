@@ -23,11 +23,13 @@ import { RdpNative } from '../services/RdpNative';
 import { SessionManager } from '../services/SessionManager';
 import { WindowController } from '../services/WindowController';
 import { showConfirm } from '../utils/UiUtil';
+import { releaseFeedback } from '../utils/FeedbackHost';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   private mainWindowStage: window.WindowStage | undefined = undefined;
+  private mainUiContext: UIContext | undefined = undefined;
   private allowingTerminate: boolean = false;
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
@@ -44,6 +46,11 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    const ui: UIContext | undefined = this.mainUiContext;
+    this.mainUiContext = undefined;
+    if (ui !== undefined) {
+      releaseFeedback(ui);
+    }
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
@@ -67,6 +74,11 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      try {
+        this.mainUiContext = windowStage.getMainWindowSync().getUIContext();
+      } catch (error) {
+        hilog.warn(DOMAIN, 'testTag', 'get main UIContext failed: %{public}s', JSON.stringify(error));
+      }
     });
   }
 

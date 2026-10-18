@@ -39,6 +39,7 @@ import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
 import { showNotice, showToast } from '../utils/UiUtil';
+import { releaseFeedback, ToastTier } from '../utils/FeedbackHost';
 import { TelemetryField, ToolbarRevealHint, ToolbarTouchBar,
   formatLatency } from '../components/SessionChrome';
 import { SessionToolbar } from '../components/SessionToolbar';
@@ -66,7 +67,6 @@ const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
 const LOCAL_BAD_PERIODS: number = 3;
-const OVERLOAD_TOAST_MS: number = 2500;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -313,6 +313,7 @@ struct MoonlightSessionPage {
     this.stopAudio();
     this.backend()?.clearClipboardListener();
     this.shell?.release();
+    releaseFeedback(this.getUIContext());
   }
 
   onPageShow(): void {
@@ -328,8 +329,8 @@ struct MoonlightSessionPage {
     return backend instanceof MoonlightSessionBackend ? backend : undefined;
   }
 
-  private toast(message: string, durationMs: number = 1500): void {
-    showToast(this.getUIContext(), message, durationMs);
+  private toast(message: string, tier: ToastTier = ToastTier.Short): void {
+    showToast(this.getUIContext(), message, tier);
   }
 
   private makeClipboardHost(): ClipboardControllerHost {
@@ -514,10 +515,10 @@ struct MoonlightSessionPage {
     }
     if (videoError) {
       this.videoWarningShown = true;
-      this.toast('超分视频导入失败，请关闭超分后重连', OVERLOAD_TOAST_MS);
+      this.toast('超分视频导入失败，请关闭超分后重连', ToastTier.Long);
     } else {
       this.videoWarningShown = true;
-      this.toast('本机未能启用超分，已按原分辨率显示', OVERLOAD_TOAST_MS);
+      this.toast('本机未能启用超分，已按原分辨率显示', ToastTier.Long);
     }
   }
 
@@ -531,11 +532,11 @@ struct MoonlightSessionPage {
     if (overload === OVERLOAD_LOCAL) {
       hilog.warn(DOMAIN, TAG, 'local decode/present overloaded: %{public}fms/frame pending=%{public}d drop=%{public}d/s',
         localMs, this.metricsPending, this.metricsDroppedPerSec);
-      this.toast('本机处理跟不上，建议降低分辨率或调整超分', OVERLOAD_TOAST_MS);
+      this.toast('本机处理跟不上，建议降低分辨率或调整超分', ToastTier.Long);
       return;
     }
     hilog.warn(DOMAIN, TAG, 'host encode overloaded: %{public}fms per frame', this.metricsHostMs);
-    this.toast('主机编码跟不上，建议降低分辨率并开启超分', OVERLOAD_TOAST_MS);
+    this.toast('主机编码跟不上，建议降低分辨率并开启超分', ToastTier.Long);
   }
 
   private rttLabel(): string {
@@ -833,7 +834,7 @@ struct MoonlightSessionPage {
       showTransfer: false,
       showClipboard: this.state === ConnectionState.Connected && this.clipboardAvailable,
       showCloseApp: true,
-      disconnectTip: '仅断开与主机的连接，主机上的应用保持运行',
+      disconnectTip: '仅断开连接，主机应用继续运行',
       pasteCallback: this.pasteButtonCallback,
       onTogglePin: () => {
         this.toggleToolbarPin();

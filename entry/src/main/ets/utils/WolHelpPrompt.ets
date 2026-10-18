@@ -3,6 +3,8 @@ import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PromptDialog } from '../components/PromptDialog';
+import { DialogSession } from './DialogSession';
+import { feedbackHost, ModalRequest } from './FeedbackHost';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpWolHelp';
@@ -58,57 +60,76 @@ function openHelpLink(ui: UIContext): void {
   });
 }
 
-export function promptWolHelp(ui: UIContext): Promise<void> {
-  return new Promise<void>((resolve: () => void) => {
-    let closed: boolean = false;
-    const params: WolHelpParams = new WolHelpParams();
-    let contentNode: ComponentContent<WolHelpParams> | undefined = undefined;
-    const disposeContent = (): void => {
-      const node: ComponentContent<WolHelpParams> | undefined = contentNode;
-      if (node === undefined) {
-        return;
-      }
-      try {
-        node.dispose();
-      } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'dispose WoL help dialog failed: %{public}s', JSON.stringify(error));
-      }
+class WolHelpRequest implements ModalRequest {
+  private ui: UIContext;
+  private params: WolHelpParams = new WolHelpParams();
+  private session: DialogSession<WolHelpParams>;
+  private resolve: () => void;
+  private done: () => void = (): void => {};
+  private onClosed: () => void = (): void => {};
+  private settled: boolean = false;
+  private finished: boolean = false;
+
+  constructor(ui: UIContext, resolve: () => void) {
+    this.ui = ui;
+    this.resolve = resolve;
+    this.session = new DialogSession<WolHelpParams>(ui);
+  }
+
+  start(done: () => void, closed: () => void): void {
+    this.done = done;
+    this.onClosed = closed;
+    if (this.settled) {
+      this.finishHost();
+      return;
+    }
+    // Wire callbacks before creating the content node: the builder may capture
+    // the parameter object at construction time.
+    this.params.onOpenLink = (): void => {
+      openHelpLink(this.ui);
     };
-    const dismiss = (): void => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      const node: ComponentContent<WolHelpParams> | undefined = contentNode;
-      if (node === undefined) {
-        resolve();
-        return;
-      }
-      ui.getPromptAction().closeCustomDialog(node)
-        .then(() => {
-          disposeContent();
-          resolve();
-        })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, TAG, 'close WoL help dialog failed: %{public}s', JSON.stringify(error));
-          disposeContent();
-          resolve();
-        });
+    this.params.onDismiss = (): void => {
+      this.finish();
     };
-    // Wire callbacks before creating the content node: the builder may
-    // capture the parameter object at construction time.
-    params.onOpenLink = (): void => {
-      openHelpLink(ui);
-    };
-    params.onDismiss = dismiss;
-    contentNode = new ComponentContent(ui, wrapBuilder(wolHelpContent), params);
-    ui.getPromptAction().openCustomDialog(contentNode,
-      { isModal: true, autoCancel: false })
-      .catch((error: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'WoL help dialog failed: %{public}s', JSON.stringify(error));
-        dismiss();
-      });
-  });
+    const content: ComponentContent<WolHelpParams> =
+      new ComponentContent(this.ui, wrapBuilder(wolHelpContent), this.params);
+    this.session.open(content, (): void => {
+      this.finish();
+    });
+  }
+
+  abort(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.session.dispose();
+    this.resolve();
+  }
+
+  private finish(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.session.close((): void => {
+      this.onClosed();
+      this.resolve();
+      this.finishHost();
+    });
+  }
+
+  private finishHost(): void {
+    if (this.finished) {
+      return;
+    }
+    this.finished = true;
+    this.done();
+  }
 }
 
-
+export function promptWolHelp(ui: UIContext): Promise<void> {
+  return new Promise<void>((resolve: () => void) => {
+    feedbackHost(ui).enqueue(new WolHelpRequest(ui, resolve));
+  });
+}

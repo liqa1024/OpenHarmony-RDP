@@ -128,7 +128,7 @@ export struct SessionToolbar {
             this.onCloseApp();
           }
         })
-          .bindTips('关闭主机上正在运行的应用，并断开连接', this.tipsOptions)
+          .bindTips('关闭主机应用并断开', this.tipsOptions)
       }
     }
     .width('100%')

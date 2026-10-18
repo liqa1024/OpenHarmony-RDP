@@ -30,6 +30,7 @@ import { AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT, DEFAULT_TOOLBAR_WID
 import { SessionShellController, SessionSurfaceController } from '../services/SessionShellController';
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { showConfirm, showToast } from '../utils/UiUtil';
+import { releaseFeedback, ToastTier } from '../utils/FeedbackHost';
 import { mapPicturePoint } from '../utils/PictureFit';
 import { joinSessionTags, srTag } from '../utils/SessionTags';
 import { gpuFrameLabel, gpuSplitLabel, usToMs } from '../utils/TelemetryFormat';
@@ -321,6 +322,7 @@ struct SessionPage {
 
   aboutToDisappear(): void {
     this.shell?.release();
+    releaseFeedback(this.getUIContext());
   }
 
   onPageShow(): void {
@@ -608,7 +610,7 @@ struct SessionPage {
   }
 
   private toast(message: string): void {
-    showToast(this.getUIContext(), message, 1500);
+    showToast(this.getUIContext(), message, ToastTier.Short);
   }
 
   private makeClipboardHost(): ClipboardControllerHost {

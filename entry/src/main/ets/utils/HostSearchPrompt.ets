@@ -1,11 +1,8 @@
 import { ComponentContent, UIContext } from '@kit.ArkUI';
-import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MdnsHost } from '../services/MdnsDiscovery';
 import { PromptDialog } from '../components/PromptDialog';
-
-const DOMAIN: number = 0xD001;
-const TAG: string = 'HmRdpHostPicker';
+import { DialogSession } from './DialogSession';
+import { feedbackHost, ModalRequest } from './FeedbackHost';
 
 class HostPickerParams {
   hosts: MdnsHost[] = [];
@@ -101,77 +98,82 @@ function hostPickerContent(params: HostPickerParams) {
   HostPickerContent({ params: params })
 }
 
-export async function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: string,
+class HostPickerRequest implements ModalRequest {
+  private ui: UIContext;
+  private params: HostPickerParams = new HostPickerParams();
+  private session: DialogSession<HostPickerParams>;
+  private resolve: (value: MdnsHost | undefined) => void;
+  private done: () => void = (): void => {};
+  private onClosed: () => void = (): void => {};
+  private settled: boolean = false;
+  private finished: boolean = false;
+
+  constructor(ui: UIContext, hosts: MdnsHost[], title: string, addedAddresses: string[],
+    resolve: (value: MdnsHost | undefined) => void) {
+    this.ui = ui;
+    this.params.hosts = hosts;
+    this.params.title = title;
+    this.params.addedAddresses = addedAddresses;
+    this.resolve = resolve;
+    this.session = new DialogSession<HostPickerParams>(ui);
+  }
+
+  start(done: () => void, closed: () => void): void {
+    this.done = done;
+    this.onClosed = closed;
+    if (this.settled) {
+      this.finishHost();
+      return;
+    }
+    // Wire callbacks before creating the content node: the builder may capture
+    // the parameter object at construction time.
+    this.params.onPick = (host: MdnsHost): void => {
+      this.finish(host);
+    };
+    this.params.onCancel = (): void => {
+      this.finish(undefined);
+    };
+    const content: ComponentContent<HostPickerParams> =
+      new ComponentContent(this.ui, wrapBuilder(hostPickerContent), this.params);
+    this.session.open(content, (): void => {
+      this.finish(undefined);
+    });
+  }
+
+  abort(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.session.dispose();
+    this.resolve(undefined);
+  }
+
+  private finish(host: MdnsHost | undefined): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.session.close((): void => {
+      this.onClosed();
+      this.resolve(host);
+      this.finishHost();
+    });
+  }
+
+  private finishHost(): void {
+    if (this.finished) {
+      return;
+    }
+    this.finished = true;
+    this.done();
+  }
+}
+
+export function showHostPicker(ui: UIContext, hosts: MdnsHost[], title: string,
   addedAddresses: string[]): Promise<MdnsHost | undefined> {
   return new Promise<MdnsHost | undefined>(
     (resolve: (value: MdnsHost | undefined) => void) => {
-      let settled: boolean = false;
-      let closed: boolean = false;
-      const params: HostPickerParams = new HostPickerParams();
-      params.hosts = hosts;
-      params.title = title;
-      params.addedAddresses = addedAddresses;
-      let contentNode: ComponentContent<HostPickerParams> | undefined = undefined;
-
-      const disposeContent = (): void => {
-        const node: ComponentContent<HostPickerParams> | undefined = contentNode;
-        if (node === undefined) {
-          return;
-        }
-        try {
-          node.dispose();
-        } catch (error) {
-          hilog.warn(DOMAIN, TAG, 'dispose host picker failed: %{public}s', JSON.stringify(error));
-        }
-      };
-      const dismiss = (): void => {
-        if (closed) {
-          return;
-        }
-        closed = true;
-        const node: ComponentContent<HostPickerParams> | undefined = contentNode;
-        if (node === undefined) {
-          return;
-        }
-        ui.getPromptAction().closeCustomDialog(node)
-          .then(() => {
-            disposeContent();
-          })
-          .catch((error: BusinessError) => {
-            hilog.error(DOMAIN, TAG, 'close host picker failed: %{public}s', JSON.stringify(error));
-            disposeContent();
-          });
-      };
-      const finish = (host: MdnsHost | undefined): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        dismiss();
-        resolve(host);
-      };
-      // Wire callbacks before creating the content node: the builder may
-      // capture the parameter object at construction time.
-      params.onPick = (host: MdnsHost): void => {
-        finish(host);
-      };
-      params.onCancel = (): void => {
-        finish(undefined);
-      };
-      contentNode = new ComponentContent(ui, wrapBuilder(hostPickerContent), params);
-
-      ui.getPromptAction().openCustomDialog(contentNode,
-        { isModal: true, autoCancel: false })
-        .then(() => {
-          if (settled) {
-            dismiss();
-          }
-        })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, TAG, 'open host picker failed: %{public}s', JSON.stringify(error));
-          finish(undefined);
-        });
+      feedbackHost(ui).enqueue(new HostPickerRequest(ui, hosts, title, addedAddresses, resolve));
     });
 }
-
-

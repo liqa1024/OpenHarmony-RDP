@@ -19,6 +19,7 @@
 | 严格 ArkTS 规则、ArkUI 状态刷新坑、路由、资源与主题机制、与原生交互 | [`arkts-conventions.md`](arkts-conventions.md) |
 | 界面框架：页面骨架、组件结构、交互触发、组件契约、共享工具、协议差异（**不含配色/材质/尺寸取值**） | [`ui-framework.md`](ui-framework.md) |
 | 界面视觉：颜色、主题、表面、材质、字号、间距、圆角、阴影、动效、图标画法 | [`ui-visual.md`](ui-visual.md) |
+| 反馈与提示：系统模型、通道选择、优先级、宿主与生命周期、文案、时长、无障碍 | [`ui-feedback.md`](ui-feedback.md) |
 | **两协议共享的会话 / 连接层**：连接模型多态、连接发起分发、会话后端契约、会话窗口外壳、共享输入内核、会话窗口 / 输入 / 工具栏 / 光标共享行为、通用层命名与边界约定 | [`session-layer.md`](session-layer.md) |
 | RDP 会话：连接错误分类、原生会话生命周期、不可见抑制、RDP 输入落地（RDPEI / 高刷 / 直达缩放 / 锁键）、工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
 | **剪贴板（手动触发，两协议共享抽象）**：共享控制器/桥/本机读写叶子、手动语义、用户文案 | [`clipboard.md`](clipboard.md) |
@@ -44,6 +45,7 @@
 - **自研 GPU 解码/合成引擎不采用** → [`rdp-gfx.md`](rdp-gfx.md) 的「不采用的方向」。
 - **帧重活不得放在动态通道分发线程上** → [`architecture.md`](architecture.md) 的线程模型。
 - **与设备相关的能力用 `Capability{supported, reason}` + 置灰说明** → [`architecture.md`](architecture.md) §5。
+- **提示通道选择与优先级统一按 `ui-feedback.md`**；协议文档只保留该协议特有的文案与触发 → [`ui-feedback.md`](ui-feedback.md) §3。
 - **音频播放链路（有界 PCM 交接环 + ArkTS 渲染器 / 原生 OHAudio）两协议共用** → [`audio.md`](audio.md)。
 - **剪贴板只手动同步、不做自动监听** → [`clipboard.md`](clipboard.md) §2。
 - **剪贴板抽象（`ClipboardController` + `ClipboardBridge` + `LocalPasteboard`）两协议共用**：RDP 全能力（文本/HTML/图片/文件），Moonlight 仅文本 + 图片 → [`clipboard.md`](clipboard.md) §1；Moonlight 协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
@@ -61,6 +63,7 @@
 | 改 ArkTS / ArkUI / 页面 | [`arkts-conventions.md`](arkts-conventions.md) + [`architecture.md`](architecture.md) |
 | 改界面结构 / 组件 / 交互触发 | [`ui-framework.md`](ui-framework.md) |
 | 改配色 / 材质 / 尺寸 / 图标视觉 | [`ui-visual.md`](ui-visual.md) |
+| 改提示 / Toast / 对话框 / 加载态 | [`ui-feedback.md`](ui-feedback.md) |
 | 改两协议通用层（连接模型 / 后端 / 会话外壳 / 输入内核 / 会话窗口行为 / 工具栏 / 光标） | [`session-layer.md`](session-layer.md) |
 | 改 RDP 会话 / 输入落地 / 工具栏遥测 | [`rdp-session.md`](rdp-session.md) |
 | 改剪贴板（共享抽象 / 手动语义） | [`clipboard.md`](clipboard.md) |

@@ -22,6 +22,7 @@ import { PageBackground } from '../components/PageBackground';
 import { PageHeader, PageHeaderVariant } from '../components/PageHeader';
 import { StateView, StateViewKind } from '../components/StateView';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
+import { releaseFeedback } from '../utils/FeedbackHost';
 import { promptWolHelp } from '../utils/WolHelpPrompt';
 
 const DOMAIN: number = 0xD001;
@@ -87,10 +88,8 @@ struct Index {
           showToast(this.getUIContext(), '主机已上线');
         } else if (power === HostPower.NoService) {
           this.stopWakeWatch(connectionId);
-          showToast(this.getUIContext(), '主机已开机，Sunshine 未运行');
         } else if (reach === WakeReachability.OffLan) {
           this.stopWakeWatch(connectionId);
-          showToast(this.getUIContext(), '网络无法到达主机所在局域网');
         }
       }
     };
@@ -105,6 +104,7 @@ struct Index {
     SessionManager.unsubscribe(this.sessionListener);
     MoonlightHostState.unsubscribe(this.hostStateListener);
     this.clearWakeWatches();
+    releaseFeedback(this.getUIContext());
   }
 
   onPageShow(): void {
@@ -229,7 +229,6 @@ struct Index {
   private toggleWake(conn: SavedConnection): void {
     if (this.wakingHosts.get(conn.id) === true) {
       this.stopWakeWatch(conn.id);
-      showToast(this.getUIContext(), '已取消状态检测');
       return;
     }
     if (!(conn instanceof MoonlightConnection) || !conn.supportsWake()) {

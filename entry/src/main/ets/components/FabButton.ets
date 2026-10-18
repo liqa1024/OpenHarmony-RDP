@@ -81,7 +81,7 @@ export struct FabButton {
         this.pressed = false;
       }
     })
-    .bindTips(this.loading ? '' : this.tip, this.tipsOptions)
+    .bindTips(this.loading ? '处理中…' : this.tip, this.tipsOptions)
     .onClick(() => {
       if (!this.loading) {
         this.onTap();

@@ -85,7 +85,9 @@
 | `utils/TelemetryFormat.ets` | 遥测显示：µs→ms、GPU 每帧 / 三段拆分的统一格式，RDP 与 Moonlight 共用 |
 | `utils/ClipboardCodec.ets` | 剪贴板格式编解码（DIB/RTF/HTML/CfHTML 解析与组装），跑在后台 worker |
 | `utils/FileTransferCodec.ets` | 文件剪贴板线格式编解码（`FileGroupDescriptorW` 等） |
-| `utils/UiUtil.ets` | `showToast` / `showConfirm` / `showNotice` / `lengthToNumber` 等共享 UI 工具 |
+| `utils/UiUtil.ets` | `showToast` / `showConfirm` / `showNotice` / `lengthToNumber` 等共享 UI 工具；反馈语义见 [`ui-feedback.md`](ui-feedback.md) |
+| `utils/FeedbackHost.ets` | 窗口级反馈宿主：Toast 命名档位与去重、单模态队列、页面/窗口释放；按 `UIContext` 隔离 |
+| `utils/DialogSession.ets` | 单个自定义对话框的 open / close / dispose 生命周期，供 `UiUtil` 与三个自定义提示复用 |
 | `utils/DisplayUtil.ets` | `defaultDisplay()`：容错查询默认显示 |
 | `utils/ScaleParse.ets` | 手动分辨率 / 缩放文本解析与 `MAX_DESKTOP_SIZE` |
 | `utils/PairingPrompt.ets` | Moonlight 配对 PIN 弹窗（四位数字居中放大，握手结束自动关闭） |

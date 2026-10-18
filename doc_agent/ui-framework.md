@@ -2,6 +2,7 @@
 
 本文描述界面层的组织方式与契约：页面骨架、组件职责、状态归属、交互入口与协议差异的落点。
 颜色、材质、字号、间距、圆角、阴影、动效曲线归 [`ui-visual.md`](ui-visual.md)；
+提示通道选择、优先级与文案归 [`ui-feedback.md`](ui-feedback.md)；
 会话窗口行为、输入内核、工具条自动隐藏与光标归 [`session-layer.md`](session-layer.md)；
 应用结构、Ability 与页面职责表归 [`architecture.md`](architecture.md)；
 设置字段、存储与生效时机归 [`settings-and-storage.md`](settings-and-storage.md)。
@@ -30,7 +31,7 @@
 - `PageHeader` 使用 brand 变体（应用图标、名称、副标题）或 standard 变体；
   trailing 槽位放页签、主机名或设置入口。
 - 内容区自行选择 `List`（连接）或 `Scroll` + 可换行 `Flex`（应用磁贴）。
-- 空、加载、错误统一用 `StateView`；主操作浮在右下，不与列表同层滚动。
+- 空、加载、错误统一用 `StateView`；错误态至少有标题、原因与重试/返回动作；主操作浮在右下，不与列表同层滚动。
 
 ### 2.2 Form
 
@@ -97,7 +98,7 @@
 | `ControlDisc` | 圆形图标动作 | hover / press / focus；`loading` 时不可点、不可聚焦 |
 | `FabButton` | 浮动主/次操作 | hover / press / focus；`primary` 区分主/次 tonal；`loading` 时不可点、不可聚焦 |
 | `ChoiceChip` | 标准选择片 | `selected` / `chipEnabled`；禁用时不可聚焦 |
-| `PromptDialog` | 提示/确认/通知外壳 | 标题、说明、可选内容槽、取消/确认；所有自定义提示窗复用 |
+| `PromptDialog` | 提示/确认/通知外壳；通道语义见 [`ui-feedback.md`](ui-feedback.md) | 标题、说明、可选内容槽、取消/确认；所有自定义提示窗复用 |
 
 可点击件必须可聚焦，Enter/Space 等同点击；禁用、加载、锁定态同时关闭可聚焦。
 焦点框由系统绘制，视觉层可覆盖。
@@ -136,10 +137,8 @@
   XComponent 是可获焦叶节点并设置默认焦点。
 - 连接行：右键与长按等价打开菜单；长按菜单与拖拽排序互斥，开始拖拽即取消菜单。
   正在断开时不打开菜单，动作不可点。
-- 删除连接必须确认；会话断开、关闭应用与终止主机应用不二次确认。
-- 轻提示用 `showToast`，确认用 `showConfirm`（主按钮取消、次按钮确认），
-  通知用 `showNotice`；提示/确认/通知统一走 `PromptDialog`（`ComponentContent` +
-  `openCustomDialog`），宽度按窗口自适应。
+- 确认、通知、轻提示、内联反馈与加载态的适用面、优先级和文案统一见
+  [`ui-feedback.md`](ui-feedback.md)；本节只保留具体交互行为。
 - 会话工具条：窗口模式显示；全屏下按指针触发区或触屏下滑唤出；固定按钮与
   传输状态可保持常显。行为细节见 [`session-layer.md`](session-layer.md)。
 - 剪贴板传输进度是共享工具条的可选能力：协议侧提供状态则显示，不提供则不占位。
@@ -163,7 +162,7 @@
 - 页面 `XxxPage`，组件 PascalCase；单组件文件与导出的 struct 同名。
   工具条原语集中在 `SessionChrome.ets`，同领域的多个小组件可共用文件。
 - 共享 UI 工具：
-  - `utils/UiUtil.ets`：toast / confirm / notice。
+  - `utils/UiUtil.ets`：toast / confirm / notice；通道规则见 [`ui-feedback.md`](ui-feedback.md)。
   - `utils/UiMotion.ets`：hover/press 缩放与出现/消失转场。
   - `utils/DebouncedSaver.ets`：防抖落库。
   - `services/ToolbarContract.ets`：工具条高度、圆角、触发区与提示条常量。

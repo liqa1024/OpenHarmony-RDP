@@ -21,6 +21,7 @@ import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../servic
 import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
 import { DebouncedSaver } from '../utils/DebouncedSaver';
 import { showConfirm, showToast } from '../utils/UiUtil';
+import { releaseFeedback } from '../utils/FeedbackHost';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
 import { MAX_DESKTOP_SIZE, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
@@ -140,7 +141,9 @@ struct SettingsPage {
   @State sessionWidthText: string = '';
   @State sessionHeightText: string = '';
   @State transferBusy: boolean = false;
+  @State transferBusyText: string = '';
   @State transferMessage: string = '';
+  @State transferError: boolean = false;
   private defaultMainWidth: number = 0;
   private defaultMainHeight: number = 0;
   private defaultSessionWidth: number = 0;
@@ -173,6 +176,7 @@ struct SettingsPage {
 
   aboutToDisappear(): void {
     this.flushPersist();
+    releaseFeedback(this.getUIContext());
   }
 
   onPageHide(): void {
@@ -595,7 +599,6 @@ struct SettingsPage {
         BackgroundImage.remove(old);
       }
       this.persistNow();
-      showToast(this.getUIContext(), '背景图片已更新');
     } catch (error) {
       const err: BusinessError = error as BusinessError;
       if (err.code === 13900042) {
@@ -629,14 +632,19 @@ struct SettingsPage {
     this.flushPersist();
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
+      this.transferError = true;
       this.transferMessage = '无法获取应用上下文';
       return;
     }
     this.transferBusy = true;
+    this.transferBusyText = '正在导出配置…';
+    this.transferError = false;
     this.transferMessage = '';
     const result: ConfigTransferResult =
       await ConfigTransfer.exportToFile(context as common.UIAbilityContext);
     this.transferBusy = false;
+    this.transferBusyText = '';
+    this.transferError = !result.success && !result.cancelled;
     this.transferMessage = result.message;
   }
 
@@ -659,14 +667,19 @@ struct SettingsPage {
     this.settingsSaver?.cancel();
     const context = this.getUIContext().getHostContext();
     if (context === undefined) {
+      this.transferError = true;
       this.transferMessage = '无法获取应用上下文';
       return;
     }
     this.transferBusy = true;
+    this.transferBusyText = '正在导入配置…';
+    this.transferError = false;
     this.transferMessage = '';
     const result: ConfigTransferResult =
       await ConfigTransfer.importFromFile(context as common.UIAbilityContext);
     this.transferBusy = false;
+    this.transferBusyText = '';
+    this.transferError = !result.success && !result.cancelled;
     this.transferMessage = result.message;
     if (result.success) {
       this.settingsSaver?.cancel();
@@ -2204,9 +2217,13 @@ struct SettingsPage {
                     .height(16)
                     .color($r('app.color.brand_fill'))
                 }
-                Text(this.transferBusy ? '处理中…' : this.transferMessage)
+                Text(this.transferBusy
+                  ? (this.transferBusyText.length > 0 ? this.transferBusyText : '处理中…')
+                  : this.transferMessage)
                   .fontSize(12)
-                  .fontColor($r('app.color.text_tertiary'))
+                  .lineHeight(18)
+                  .fontColor(this.transferError
+                    ? $r('app.color.danger') : $r('app.color.text_secondary'))
                   .layoutWeight(1)
                   .margin({ left: this.transferBusy ? 8 : 0 })
               }

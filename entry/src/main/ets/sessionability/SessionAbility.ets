@@ -1,17 +1,19 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
+import { UIContext, window } from '@kit.ArkUI';
 import { SessionRequests } from '../model/Connections';
 import { SessionBackend, SessionBackendRegistry } from '../services/SessionBackend';
 import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
+import { releaseFeedback } from '../utils/FeedbackHost';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'HmRdpSessionAbility';
 
 export default class SessionAbility extends UIAbility {
   private sessionKey: string = '';
+  private uiContext: UIContext | undefined = undefined;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SettingsStore.init(this.context);
@@ -24,6 +26,7 @@ export default class SessionAbility extends UIAbility {
   onDestroy(): void {
     // Final safety net: the RDP connection must never outlive its window, even
     // if it is closed before the page lifecycle runs.
+    this.releaseUiFeedback();
     this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onDestroy');
   }
@@ -79,6 +82,11 @@ export default class SessionAbility extends UIAbility {
       }
       WindowController.setupSessionWindow(windowStage, fullscreen);
       WindowController.onSessionWindowReady();
+      try {
+        this.uiContext = windowStage.getMainWindowSync().getUIContext();
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'get session UIContext failed: %{public}s', JSON.stringify(error));
+      }
       hilog.info(DOMAIN, TAG, '%{public}s', 'Succeeded in loading the content.');
     });
   }
@@ -91,8 +99,17 @@ export default class SessionAbility extends UIAbility {
 
   onWindowStageDestroy(): void {
     // Runs even when the page never receives aboutToDisappear().
+    this.releaseUiFeedback();
     this.releaseSession();
     hilog.info(DOMAIN, TAG, '%{public}s', 'SessionAbility onWindowStageDestroy');
+  }
+
+  private releaseUiFeedback(): void {
+    const ui: UIContext | undefined = this.uiContext;
+    this.uiContext = undefined;
+    if (ui !== undefined) {
+      releaseFeedback(ui);
+    }
   }
 
   onForeground(): void {

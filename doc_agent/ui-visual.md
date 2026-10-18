@@ -4,6 +4,7 @@
 具体颜色令牌在 `resources/base|dark/element/color.json`，动效在 `utils/UiMotion.ets`，
 工具条几何在 `services/ToolbarContract.ets`；
 页面骨架、组件职责与交互触发见 [`ui-framework.md`](ui-framework.md)，
+提示通道选择、优先级与文案见 [`ui-feedback.md`](ui-feedback.md)，本文只定义其视觉表现，
 资源机制见 [`arkts-conventions.md`](arkts-conventions.md)。
 
 视觉层的目标只有两个：**让内容清楚**，**让远控画面不被界面抢走**。
@@ -184,8 +185,8 @@
 - **交互件**：主按钮品牌填充；次按钮用 `control_bg` + `control_border`；文本动作透明；圆钮承载单图标；未选 chip 用 `control_bg`，选中用浅品牌底。禁用统一 40%，同时关闭 hover 与聚焦。
 - **FAB**：与卡片按钮共用同一套 tonal 逻辑，只放大尺寸并加阴影。主操作用半透明品牌浅底 + `brand_tint_strong` 描边 + `brand_text` 图标，与卡片启动按钮同一 token 对；次操作用半透明中性底 + `control_border` + `icon_primary`，与卡片应用按钮同一 token 对。hover/press 只在该语义对的加强档内变化，不使用白图标 + 固定主题填充。
 - **表单**：输入框浅底 + 描边；标签次级文字，提示 tertiary，错误危险色，能力限制警告色。字段间距大于行内间距。
-- **状态视图**：空/加载/错误使用同一状态卡结构；会话覆盖层用暗玻璃状态卡，页面内状态卡用实心面。
-- **提示与确认**：配对、主机选择、WoL 帮助、确认、通知统一走 `PromptDialog`；标题 20/600，说明 14/20 次级，按钮 44/12，取消在左、确认在右，危险确认用危险浅底。Toast 统一暗色 chrome 底、白字与阴影。
+- **状态视图**：空/加载/错误使用同一状态卡结构；会话覆盖层用暗玻璃状态卡，页面内状态卡用实心面。错误态按标题、原因、操作三层组织，原因用次级文字，不用 tertiary。
+- **提示与确认**：配对、主机选择、WoL 帮助、确认、通知统一走 `PromptDialog`；标题 20/600，说明 14/20 次级，按钮 44/12，取消在左、确认在右，危险确认用危险浅底。Toast 统一暗色 chrome 底、白字与阴影。通道选择与文案见 [`ui-feedback.md`](ui-feedback.md)。
 - **会话 chrome**：暗玻璃、白色主文字、次级白遥测、等宽数字；按钮用中性/危险/激活三档 tonal，不裸放文字；进度条用 accent 填充、半透明白轨道。
 - **协议差异**：RDP 与 Moonlight 只在图标、页签、运行徽标上分色；其余组件共用同一套中性色与品牌色。
 
@@ -234,7 +235,7 @@
 - 产品页面字号只用 20/18/16/14/12/10；说明文字先删减，再排版。
 - 会话工具条与状态卡始终使用 `chrome_*`，不跟随系统深浅。
 - 玻璃只用于页头、会话工具条、状态卡；内容面与提示窗保持实心。
-- 提示/确认/通知统一走 `PromptDialog`；Toast 统一暗色材质；菜单保持系统默认。
+- 提示/确认/通知统一走 `PromptDialog`；Toast 统一暗色材质；菜单保持系统默认；通道语义见 [`ui-feedback.md`](ui-feedback.md)。
 - 可点击件热区 ≥44×44；chip 热区 40。
 - 安全控件（`PasteButton` 等）只使用其通用属性；边框用 `borderWidth` / `borderColor` / `borderStyle`，不要用 `.border()` 简写。
 - `build_project` 通过是视觉改动的底线；涉及上屏/硬件加速的观感只在真机验证（见 [`present.md`](present.md)）。

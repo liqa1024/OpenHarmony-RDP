@@ -1,11 +1,9 @@
 import { ComponentContent, UIContext } from '@kit.ArkUI';
-import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PairResult } from '../moonlight/MoonlightModels';
 import { PromptDialog } from '../components/PromptDialog';
+import { DialogSession } from './DialogSession';
+import { feedbackHost, ModalRequest } from './FeedbackHost';
 
-const DOMAIN: number = 0xD001;
-const TAG: string = 'HmRdpPairing';
 const PAIR_PROMPT_GRACE_MS: number = 300;
 
 class PairingDialogParams {
@@ -57,103 +55,118 @@ function pairingDialogContent(params: PairingDialogParams) {
   }
 }
 
-export async function promptPairingPin(ui: UIContext, pin: string,
-  pairing: Promise<PairResult>, cancel: () => void): Promise<boolean> {
-  return new Promise<boolean>((resolve: (value: boolean) => void) => {
-    let settled: boolean = false;
-    let closed: boolean = false;
-    let opened: boolean = false;
-    let graceTimer: number = -1;
-    const params: PairingDialogParams = new PairingDialogParams();
-    params.digits = [pin.substring(0, 1), pin.substring(1, 2),
+class PairingRequest implements ModalRequest {
+  private ui: UIContext;
+  private params: PairingDialogParams = new PairingDialogParams();
+  private session: DialogSession<PairingDialogParams>;
+  private resolve: (value: boolean) => void;
+  private cancel: () => void;
+  private done: () => void = (): void => {};
+  private onClosed: () => void = (): void => {};
+  private timer: number = -1;
+  private started: boolean = false;
+  private settled: boolean = false;
+  private finished: boolean = false;
+
+  constructor(ui: UIContext, pin: string, resolve: (value: boolean) => void,
+    cancel: () => void) {
+    this.ui = ui;
+    this.resolve = resolve;
+    this.cancel = cancel;
+    this.session = new DialogSession<PairingDialogParams>(ui);
+    this.params.digits = [pin.substring(0, 1), pin.substring(1, 2),
       pin.substring(2, 3), pin.substring(3, 4)];
-    let contentNode: ComponentContent<PairingDialogParams> | undefined = undefined;
+  }
 
-    const disposeContent = (): void => {
-      const node: ComponentContent<PairingDialogParams> | undefined = contentNode;
-      if (node === undefined) {
+  start(done: () => void, closed: () => void): void {
+    this.done = done;
+    this.onClosed = closed;
+    this.started = true;
+    if (this.settled) {
+      this.finishHost();
+      return;
+    }
+    this.timer = setTimeout((): void => {
+      this.timer = -1;
+      if (this.settled) {
         return;
       }
-      try {
-        node.dispose();
-      } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'dispose pairing content failed: %{public}s', JSON.stringify(error));
-      }
-    };
-    const dismiss = (): void => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      const node: ComponentContent<PairingDialogParams> | undefined = contentNode;
-      if (node === undefined) {
-        return;
-      }
-      ui.getPromptAction().closeCustomDialog(node)
-        .then(() => {
-          disposeContent();
-        })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, TAG, 'close pairing dialog failed: %{public}s', JSON.stringify(error));
-          disposeContent();
-        });
-    };
-    const finish = (proceed: boolean): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (graceTimer >= 0) {
-        clearTimeout(graceTimer);
-        graceTimer = -1;
-      }
-      if (opened) {
-        dismiss();
-      } else {
-        disposeContent();
-      }
-      resolve(proceed);
-    };
-    // Wire the callback before creating the content node: the builder may
-    // capture the parameter object at construction time.
-    params.onCancel = (): void => {
-      cancel();
-      finish(false);
-    };
-    contentNode = new ComponentContent(ui, wrapBuilder(pairingDialogContent), params);
-
-    graceTimer = setTimeout((): void => {
-      graceTimer = -1;
-      if (settled) {
-        return;
-      }
-      const node: ComponentContent<PairingDialogParams> | undefined = contentNode;
-      if (node === undefined) {
-        finish(false);
-        return;
-      }
-      opened = true;
-      ui.getPromptAction().openCustomDialog(node,
-        { isModal: true, autoCancel: false })
-        .then(() => {
-          if (settled) {
-            dismiss();
-          }
-        })
-        .catch((error: BusinessError) => {
-          hilog.error(DOMAIN, TAG, 'pairing dialog failed: %{public}s', JSON.stringify(error));
-          opened = false;
-          cancel();
-          finish(false);
-        });
+      this.params.onCancel = (): void => {
+        this.cancelFromUser();
+      };
+      const content: ComponentContent<PairingDialogParams> =
+        new ComponentContent(this.ui, wrapBuilder(pairingDialogContent), this.params);
+      this.session.open(content, (): void => {
+        this.cancelFromUser();
+      });
     }, PAIR_PROMPT_GRACE_MS);
+  }
 
-    pairing.then(() => {
-      finish(true);
-    }, () => {
-      finish(true);
+  complete(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.clearTimer();
+    this.resolve(true);
+    if (this.started) {
+      this.session.close((): void => {
+        this.onClosed();
+        this.finishHost();
+      });
+    }
+  }
+
+  abort(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.clearTimer();
+    this.cancel();
+    this.session.dispose();
+    this.resolve(false);
+  }
+
+  private cancelFromUser(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.clearTimer();
+    this.cancel();
+    this.session.close((): void => {
+      this.onClosed();
+      this.resolve(false);
+      this.finishHost();
     });
-  });
+  }
+
+  private finishHost(): void {
+    if (this.finished) {
+      return;
+    }
+    this.finished = true;
+    this.done();
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== -1) {
+      clearTimeout(this.timer);
+      this.timer = -1;
+    }
+  }
 }
 
-
+export function promptPairingPin(ui: UIContext, pin: string,
+  pairing: Promise<PairResult>, cancel: () => void): Promise<boolean> {
+  return new Promise<boolean>((resolve: (value: boolean) => void) => {
+    const request: PairingRequest = new PairingRequest(ui, pin, resolve, cancel);
+    pairing.then((): void => {
+      request.complete();
+    }, (): void => {
+      request.complete();
+    });
+    feedbackHost(ui).enqueue(request);
+  });
+}

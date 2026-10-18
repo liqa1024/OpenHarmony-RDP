@@ -80,13 +80,13 @@ export class ConnectionRowModel {
       } else if (probing && power === HostPower.Unknown) {
         model.actionTip = '正在检测主机状态';
       } else if (power === HostPower.NoService) {
-        model.actionTip = '主机已开机，请检查 Sunshine 是否运行';
+        model.actionTip = '请检查 Sunshine 是否运行';
       } else if (power === HostPower.Unknown) {
         model.actionTip = '刷新主机状态';
       } else if (wakeReachability === WakeReachability.OffLan) {
-        model.actionTip = '当前网络无法到达主机所在局域网，无法唤醒';
+        model.actionTip = '不在主机所在局域网';
       } else {
-        model.actionTip = conn.supportsWake() ? '唤醒主机' : '未获取到主机 MAC，无法唤醒';
+        model.actionTip = conn.supportsWake() ? '唤醒主机' : '未获取到主机 MAC';
       }
     } else {
       model.actionTip = connectActionLabel(model.primary);

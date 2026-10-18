@@ -28,6 +28,7 @@ import { parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { showConfirm, showToast } from '../utils/UiUtil';
+import { releaseFeedback } from '../utils/FeedbackHost';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { showHostPicker } from '../utils/HostSearchPrompt';
 import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
@@ -91,6 +92,7 @@ struct EditConnectionPage {
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
   @State errorMessage: string = '';
+  @State hostError: string = '';
   @State editing: boolean = false;
   @State detectedText: string = '';
   @State connecting: boolean = false;
@@ -239,6 +241,7 @@ struct EditConnectionPage {
       this.searchTimer = -1;
     }
     this.discovery.stop();
+    releaseFeedback(this.getUIContext());
   }
 
   onBackPress(): boolean {
@@ -370,12 +373,23 @@ struct EditConnectionPage {
     return SettingsStore.autoScalePercent(width, height, sr.enabled, sr.ratioPercent);
   }
 
+  private focusHostField(): void {
+    const target: string = this.isMoonlight() ? 'editHostMoonlight' : 'editHostRdp';
+    try {
+      this.getUIContext().getFocusController().requestFocus(target);
+    } catch (error) {
+    }
+  }
+
   private buildOptions(applyGlobalAdvanced: boolean): RdpConnectOptions | undefined {
     const target: string = this.host.trim();
     if (target.length === 0) {
-      this.errorMessage = '请输入主机名或 IP 地址';
+      this.errorMessage = '';
+      this.hostError = '请输入主机名或 IP 地址';
+      this.focusHostField();
       return undefined;
     }
+    this.hostError = '';
     this.errorMessage = '';
     const global: DisplayProfile = SettingsStore.globalDisplayProfile();
     const sr: SrProfile = this.resolvedSr();
@@ -475,14 +489,19 @@ struct EditConnectionPage {
   private submitMoonlight(connect: boolean): void {
     const target: string = this.host.trim();
     if (target.length === 0) {
-      this.errorMessage = '请输入主机名或 IP 地址';
+      this.errorMessage = '';
+      this.hostError = '请输入主机名或 IP 地址';
+      this.focusHostField();
       return;
     }
     const conflict: string | undefined = this.conflictingMoonlightHost(target);
     if (conflict !== undefined) {
-      this.errorMessage = `主机 ${conflict} 已添加，请先删除该连接`;
+      this.errorMessage = '';
+      this.hostError = `主机 ${conflict} 已添加，请先删除该连接`;
+      this.focusHostField();
       return;
     }
+    this.hostError = '';
     this.errorMessage = '';
     const hostChanged: boolean = this.editing
       && this.normalizeHost(target) !== this.normalizeHost(this.originalMoonlightHost);
@@ -542,7 +561,7 @@ struct EditConnectionPage {
       .then((result: MoonlightPairResult) => {
         this.pairing = false;
         if (!result.ok) {
-          this.errorMessage = result.error;
+          this.errorMessage = MoonlightConnector.describeError(result.error);
           return;
         }
         conn.mlHostId = result.hostId;
@@ -597,6 +616,8 @@ struct EditConnectionPage {
           return;
         }
         this.host = host.address;
+        this.hostError = '';
+        this.errorMessage = '';
         if (host.port > 0) {
           this.port = host.port.toString();
         }
@@ -1057,8 +1078,9 @@ struct EditConnectionPage {
 
       Row() {
         Column() {
-          FormField({ label: '主机名或 IP 地址' }) {
+          FormField({ label: '主机名或 IP 地址', error: this.hostError }) {
             TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
+              .id('editHostMoonlight')
               .width('100%')
               .height(46)
               .fontColor($r('app.color.text_primary'))
@@ -1068,6 +1090,8 @@ struct EditConnectionPage {
               .borderRadius(10)
               .onChange((value: string) => {
                 this.host = value;
+                this.hostError = '';
+                this.errorMessage = '';
               })
           }
         }
@@ -1379,6 +1403,8 @@ struct EditConnectionPage {
             const untouched: boolean = this.port.length === 0
               || this.port === ML_DEFAULT_PORT.toString() || this.port === RDP_DEFAULT_PORT.toString();
             this.protocol = protocol;
+            this.hostError = '';
+            this.errorMessage = '';
             if (untouched) {
               this.port = (protocol === PROTOCOL_MOONLIGHT
                 ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
@@ -1412,9 +1438,11 @@ struct EditConnectionPage {
 
             FormField({
               label: '主机名或 IP 地址',
+              error: this.hostError,
               marginBottom: 16
             }) {
               TextInput({ placeholder: '例如 192.168.1.100', text: this.host })
+                .id('editHostRdp')
                 .width('100%')
                 .height(46)
                 .fontColor($r('app.color.text_primary'))
@@ -1424,6 +1452,8 @@ struct EditConnectionPage {
                 .borderRadius(10)
                 .onChange((value: string) => {
                   this.host = value;
+                  this.hostError = '';
+                  this.errorMessage = '';
                 })
             }
 
@@ -1521,7 +1551,8 @@ struct EditConnectionPage {
             if (this.errorMessage.length > 0) {
               Text(this.errorMessage)
                 .fontSize(14)
-                
+                .lineHeight(20)
+                .fontColor($r('app.color.danger'))
                 .width('100%')
                 .margin({ top: 12 })
             }

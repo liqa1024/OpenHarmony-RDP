@@ -56,6 +56,16 @@ export struct ConnectionRow {
     return this.model().wakeDisabled;
   }
 
+  private wakeLabel(): string {
+    if (!this.conn.supportsWake()) {
+      return '缺少主机 MAC';
+    }
+    if (this.wakeReachability === WakeReachability.OffLan) {
+      return '不在主机局域网';
+    }
+    return '无法唤醒';
+  }
+
   private actionBg(): Resource {
     if (this.model().icon === ConnectionRowIcon.Stop) {
       return $r('app.color.danger_tint');
@@ -156,7 +166,9 @@ export struct ConnectionRow {
 
   private menuGroup(session: boolean): RowMenuEntry[] {
     return this.conn.menuEntries(this.model().action, this.hostTargetId, this.power)
-      .filter((entry: RowMenuEntry) => entry.sessionAction === session);
+      .filter((entry: RowMenuEntry) => entry.sessionAction === session)
+      .filter((entry: RowMenuEntry) =>
+        !(this.wakeDisabled() && entry.action === RowMenuAction.Wake));
   }
 
   @Builder
@@ -241,6 +253,18 @@ export struct ConnectionRow {
       })
       .focusable(true)
       .focusOnTouch(true)
+
+      if (this.wakeDisabled()) {
+        Text(this.wakeLabel())
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_tertiary'))
+          .backgroundColor($r('app.color.surface_sunken'))
+          .borderRadius(4)
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .margin({ left: 8 })
+          .maxLines(1)
+      }
 
       if (this.conn.showsAppsButton() && !this.hostDown()) {
         Row() {
@@ -330,13 +354,14 @@ export struct ConnectionRow {
       .alignItems(VerticalAlign.Center)
       .margin({ left: 8 })
       .hoverEffect(this.busy() || this.wakeDisabled() ? HoverEffect.None : HoverEffect.Highlight)
-      .enabled(!this.busy())
-      .bindTips(this.model().actionTip, this.tipsOptions)
+      .enabled(!this.busy() && !this.wakeDisabled())
+      .bindTips(this.busy() ? '正在断开…'
+        : (this.wakeDisabled() ? this.wakeLabel() : this.model().actionTip), this.tipsOptions)
       .onClick(() => {
         this.primaryTap();
       })
-      .focusable(true)
-      .focusOnTouch(true)
+      .focusable(!this.busy() && !this.wakeDisabled())
+      .focusOnTouch(!this.busy() && !this.wakeDisabled())
 
       Row()
         .width(0)

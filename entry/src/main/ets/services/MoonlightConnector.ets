@@ -492,6 +492,10 @@ export class MoonlightConnector {
   // Moonlight stereo AUDIO_CONFIGURATION (MAKE_AUDIO_CONFIGURATION).
   private static readonly AUDIO_CONFIGURATION_STEREO: number = 0x302CA;
 
+  static describeError(token: string): string {
+    return MoonlightConnector.describe(token);
+  }
+
   private static describe(token: string): string {
     if (token === 'resolve' || token === 'connect' || token === 'timeout' || token === 'tls'
       || token === 'io' || token === 'request' || token === 'http' || token === 'status') {

@@ -57,7 +57,8 @@ export struct MoonlightAppTile {
       .borderRadius(TILE_RADIUS)
       .clip(true)
       
-      .bindTips(this.tip, this.tipsOptions)
+      .bindTips(this.loading ? '正在连接'
+        : (this.isRunning ? '运行中' : this.tip), this.tipsOptions)
 
       if (this.loading) {
         Column() {

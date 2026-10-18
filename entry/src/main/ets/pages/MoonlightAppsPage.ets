@@ -16,6 +16,7 @@ import { BackgroundImage } from '../services/BackgroundImage';
 import { SettingsStore } from '../services/SettingsStore';
 import { connectActionFor } from '../utils/ConnectAction';
 import { showToast } from '../utils/UiUtil';
+import { releaseFeedback } from '../utils/FeedbackHost';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
 import { PageHeader } from '../components/PageHeader';
@@ -37,6 +38,7 @@ struct MoonlightAppsPage {
   @State loading: boolean = true;
   @State refreshing: boolean = false;
   @State error: string = '';
+  @State connectError: string = '';
   @State state: ConnectionState = ConnectionState.Idle;
   @State defaultAppId: string = '';
   @State iconMap: Map<number, image.PixelMap> = new Map<number, image.PixelMap>();
@@ -52,6 +54,12 @@ struct MoonlightAppsPage {
     (connectionId: string, state: ConnectionState, message: string, origin: ConnectOrigin): void => {
       if (this.conn !== undefined && connectionId === this.conn.id) {
         this.state = state;
+        if (state === ConnectionState.Failed) {
+          this.connectError = message.length > 0 ? message : '连接失败';
+        } else if (state === ConnectionState.Connecting || state === ConnectionState.Connected
+          || state === ConnectionState.Idle) {
+          this.connectError = '';
+        }
         if (state !== ConnectionState.Connecting) {
           this.pendingAppId = 0;
           this.pendingResume = false;
@@ -90,6 +98,7 @@ struct MoonlightAppsPage {
   aboutToDisappear(): void {
     SessionManager.unsubscribe(this.stateListener);
     MoonlightHostState.unsubscribe(this.hostStateListener);
+    releaseFeedback(this.getUIContext());
   }
 
   onPageShow(): void {
@@ -257,6 +266,7 @@ struct MoonlightAppsPage {
       return;
     }
     this.error = '';
+    this.connectError = '';
     this.pendingAppId = app.id;
     this.pendingResume = this.isRunning(app);
     MoonlightLauncher.connect(this.getUIContext(), context as common.UIAbilityContext, conn,
@@ -319,7 +329,6 @@ struct MoonlightAppsPage {
     conn.updatedAt = Date.now();
     ConnectionStore.save(conn);
     this.defaultAppId = conn.mlDefaultAppId;
-    showToast(this.getUIContext(), `默认应用已设为「${app.name}」`);
   }
 
   private isRunning(app: NvApp): boolean {
@@ -355,13 +364,15 @@ struct MoonlightAppsPage {
 
         if (this.loading) {
           StateView({
-            kind: StateViewKind.Loading
+            kind: StateViewKind.Loading,
+            title: '正在加载应用'
           })
             .width('100%')
             .layoutWeight(1)
         } else if (this.error.length > 0) {
           StateView({
             kind: StateViewKind.Error,
+            title: '无法加载应用',
             message: this.error,
             primaryLabel: '重试',
             onPrimary: () => {
@@ -385,6 +396,18 @@ struct MoonlightAppsPage {
         } else {
           Scroll() {
             Column() {
+              if (this.connectError.length > 0) {
+                Text(this.connectError)
+                  .fontSize(12)
+                  .lineHeight(18)
+                  .fontColor($r('app.color.danger'))
+                  .backgroundColor($r('app.color.danger_tint'))
+                  .border({ width: 1, color: $r('app.color.danger_border') })
+                  .borderRadius(8)
+                  .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+                  .width('100%')
+                  .margin({ bottom: 12 })
+              }
               Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
                 ForEach(this.apps, (app: NvApp) => {
                   MoonlightAppTile({
