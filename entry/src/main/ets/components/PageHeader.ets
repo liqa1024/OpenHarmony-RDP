@@ -15,6 +15,15 @@ export struct PageHeader {
   onLeft: () => void = () => {};
   @BuilderParam trailing: () => void;
 
+  private headerEffect(): BackgroundEffectOptions {
+    const options: BackgroundEffectOptions = {
+      radius: 24,
+      saturation: 1.1,
+      brightness: 1
+    };
+    return options;
+  }
+
   @Builder
   brandLeading() {
     Row() {
@@ -82,6 +91,6 @@ export struct PageHeader {
     }
     .width('100%')
     .backgroundColor($r('app.color.header_glass'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
+    .backgroundEffect(this.headerEffect())
   }
 }

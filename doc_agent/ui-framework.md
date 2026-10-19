@@ -95,7 +95,7 @@
 | 组件 | 责任 | 状态 |
 |---|---|---|
 | `TextAction` | 文本动作 | hover / press / focus；`muted` 控制层级 |
-| `ControlDisc` | 圆形图标动作 | hover / press / focus；`loading` 时不可点、不可聚焦 |
+| `ControlDisc` | 圆形图标动作 | hover / press / focus；`frosted` 为覆盖在图片上的无底色厚磨砂，图标由调用方固定白色（收藏选中态用品牌色）；`loading` 时不可点、不可聚焦 |
 | `FabButton` | 浮动主/次操作 | hover / press / focus；`primary` 区分主/次 tonal；`loading` 时不可点、不可聚焦 |
 | `ChoiceChip` | 标准选择片 | `selected` / `chipEnabled`；禁用时不可聚焦 |
 | `PromptDialog` | 提示/确认/通知外壳；通道语义见 [`ui-feedback.md`](ui-feedback.md) | 标题、说明、可选内容槽、取消/确认；所有自定义提示窗复用 |

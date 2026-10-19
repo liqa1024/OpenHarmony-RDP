@@ -101,15 +101,13 @@ export struct MoonlightAppTile {
           diameter: STAR_CONTROL,
           glyph: STAR_SIZE,
           tip: '设为默认',
+          frosted: true,
           iconColor: this.isDefault
-            ? $r('app.color.brand_text') : $r('app.color.icon_on_brand'),
-          discColor: this.isDefault
-            ? $r('app.color.brand_tint') : $r('app.color.chrome_bg'),
-          discHoverColor: this.isDefault
-            ? $r('app.color.brand_tint_strong') : $r('app.color.chrome_pressed'),
-          discPressColor: $r('app.color.chrome_pressed'),
+            ? $r('app.color.brand_text') : $r('app.color.tile_glass_icon'),
+          discHoverColor: $r('app.color.tile_glass_hover'),
+          discPressColor: $r('app.color.tile_glass_pressed'),
           discBorder: this.isDefault
-            ? $r('app.color.brand_tint_strong') : $r('app.color.chrome_border'),
+            ? $r('app.color.brand_tint_strong') : $r('app.color.tile_glass_border'),
           onTap: () => {
             this.onSetDefault();
           }
@@ -133,12 +131,12 @@ export struct MoonlightAppTile {
                 gap: 8,
                 tip: '断开连接',
                 animated: true,
+                frosted: true,
                 loading: this.connecting,
-                iconColor: $r('app.color.icon_on_brand'),
-                discColor: $r('app.color.chrome_bg'),
-                discHoverColor: $r('app.color.chrome_pressed'),
-                discPressColor: $r('app.color.chrome_pressed'),
-                discBorder: $r('app.color.chrome_border'),
+                iconColor: $r('app.color.tile_glass_icon'),
+                discHoverColor: $r('app.color.tile_glass_hover'),
+                discPressColor: $r('app.color.tile_glass_pressed'),
+                discBorder: $r('app.color.tile_glass_border'),
                 onTap: () => {
                   this.onDisconnect();
                 }
@@ -150,11 +148,11 @@ export struct MoonlightAppTile {
                 glyph: ACTION_SIZE,
                 tip: '关闭应用并断开',
                 animated: true,
-                iconColor: $r('app.color.icon_on_brand'),
-                discColor: $r('app.color.chrome_bg'),
-                discHoverColor: $r('app.color.chrome_pressed'),
-                discPressColor: $r('app.color.chrome_pressed'),
-                discBorder: $r('app.color.chrome_border'),
+                frosted: true,
+                iconColor: $r('app.color.tile_glass_icon'),
+                discHoverColor: $r('app.color.tile_glass_hover'),
+                discPressColor: $r('app.color.tile_glass_pressed'),
+                discBorder: $r('app.color.tile_glass_border'),
                 onTap: () => {
                   this.onCloseAppAndDisconnect();
                 }
@@ -167,12 +165,12 @@ export struct MoonlightAppTile {
                 gap: 8,
                 tip: connectActionLabel(ConnectAction.Resume),
                 animated: true,
+                frosted: true,
                 loading: this.connecting,
-                iconColor: $r('app.color.icon_on_brand'),
-                discColor: $r('app.color.chrome_bg'),
-                discHoverColor: $r('app.color.chrome_pressed'),
-                discPressColor: $r('app.color.chrome_pressed'),
-                discBorder: $r('app.color.chrome_border'),
+                iconColor: $r('app.color.tile_glass_icon'),
+                discHoverColor: $r('app.color.tile_glass_hover'),
+                discPressColor: $r('app.color.tile_glass_pressed'),
+                discBorder: $r('app.color.tile_glass_border'),
                 onTap: () => {
                   this.onOpen();
                 }
@@ -184,11 +182,11 @@ export struct MoonlightAppTile {
                 glyph: ACTION_SIZE,
                 tip: '关闭应用',
                 animated: true,
-                iconColor: $r('app.color.icon_on_brand'),
-                discColor: $r('app.color.chrome_bg'),
-                discHoverColor: $r('app.color.chrome_pressed'),
-                discPressColor: $r('app.color.chrome_pressed'),
-                discBorder: $r('app.color.chrome_border'),
+                frosted: true,
+                iconColor: $r('app.color.tile_glass_icon'),
+                discHoverColor: $r('app.color.tile_glass_hover'),
+                discPressColor: $r('app.color.tile_glass_pressed'),
+                discBorder: $r('app.color.tile_glass_border'),
                 onTap: () => {
                   this.onCloseApp();
                 }

@@ -1,6 +1,7 @@
 @Component
 export struct ContentCard {
   @Prop pad: number = 24;
+  @Prop translucent: boolean = false;
   @BuilderParam content: () => void;
 
   build() {
@@ -12,7 +13,8 @@ export struct ContentCard {
       .constraintSize({ maxWidth: 720 })
       .padding(this.pad)
       .borderRadius(20)
-      .backgroundColor($r('app.color.surface'))
+      .backgroundColor(this.translucent
+        ? $r('app.color.surface_translucent') : $r('app.color.surface'))
       .border({ width: 1, color: $r('app.color.border') })
       .shadow({ radius: 8, color: $r('app.color.shadow_1'), offsetX: 0, offsetY: 2 })
       .alignItems(HorizontalAlign.Start)

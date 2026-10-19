@@ -1355,7 +1355,7 @@ struct SettingsPage {
 
       Scroll() {
         Column() {
-          ContentCard({ pad: 24 }) {
+          ContentCard({ pad: 24, translucent: true }) {
             if (this.protocol === PROTOCOL_RDP) {
             FormSection({
               title: '显示',

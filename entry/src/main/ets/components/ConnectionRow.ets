@@ -371,7 +371,8 @@ export struct ConnectionRow {
     .width('100%')
     .padding({ left: 12, right: 12, top: 10, bottom: 10 })
     .borderRadius(14)
-    .backgroundColor(this.rowHovered ? $r('app.color.surface_elevated') : $r('app.color.surface'))
+    .backgroundColor(this.rowHovered
+      ? $r('app.color.surface_translucent_hover') : $r('app.color.surface_translucent'))
     .border({ width: 1, color: $r('app.color.border') })
     .shadow({
       radius: this.rowHovered ? 16 : 8,

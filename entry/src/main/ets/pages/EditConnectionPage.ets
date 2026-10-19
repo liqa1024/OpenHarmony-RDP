@@ -29,6 +29,7 @@ import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } f
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { releaseFeedback } from '../utils/FeedbackHost';
+import { MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { showHostPicker } from '../utils/HostSearchPrompt';
 import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
@@ -63,6 +64,8 @@ struct EditConnectionPage {
   @State displayResolutionAuto: boolean = true;
   @State displayScaleAuto: boolean = true;
   @State advancedExpanded: boolean = false;
+  @State advancedHovered: boolean = false;
+  @State advancedPressed: boolean = false;
   @State useGlobalAdvanced: boolean = true;
   @State audioSupported: boolean = true;
   private audioDisabledReason: string = '';
@@ -1127,6 +1130,79 @@ struct EditConnectionPage {
   }
 
   @Builder
+  advancedHeader(customized: boolean) {
+    Row() {
+      Column() {
+        Text('高级设置')
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+        Text('默认跟随全局；展开可覆盖')
+          .fontSize(12)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Row() {
+        if (customized) {
+          Text('已自定义')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ right: 8 })
+        }
+        Row() {
+          Text(this.advancedExpanded ? '收起' : '展开')
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+        }
+        .height(32)
+        .padding({ left: 14, right: 14 })
+        .backgroundColor(this.advancedPressed
+          ? $r('app.color.control_bg_pressed')
+          : (this.advancedHovered
+            ? $r('app.color.control_bg_hover') : $r('app.color.control_bg')))
+        .border({ width: 1, color: $r('app.color.control_border') })
+        .borderRadius(8)
+        .justifyContent(FlexAlign.Center)
+        .alignItems(VerticalAlign.Center)
+        .responseRegion({ x: 0, y: -6, width: '100%', height: 44 })
+        .hoverEffect(HoverEffect.None)
+        .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
+        .onHover((isHover: boolean) => {
+          this.advancedHovered = isHover;
+          if (!isHover) {
+            this.advancedPressed = false;
+          }
+        })
+        .onMouse((event: MouseEvent) => {
+          if (event.action === MouseAction.Press) {
+            this.advancedPressed = true;
+          } else if (event.action === MouseAction.Release) {
+            this.advancedPressed = false;
+          }
+        })
+        .onTouch((event: TouchEvent) => {
+          if (event.type === TouchType.Down) {
+            this.advancedPressed = true;
+          } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+            this.advancedPressed = false;
+          }
+        })
+        .onClick(() => {
+          this.advancedExpanded = !this.advancedExpanded;
+        })
+        .focusable(true)
+        .focusOnTouch(true)
+      }
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .padding({ top: 8, bottom: 8 })
+    .hoverEffect(HoverEffect.None)
+  }
+
+  @Builder
   moonlightAdvanced() {
     Column() {
       Divider()
@@ -1134,39 +1210,7 @@ struct EditConnectionPage {
         .color($r('app.color.divider'))
         .margin({ top: 20, bottom: 8 })
 
-      Row() {
-        Column() {
-          Text('高级设置').fontSize(14)
-          Text('默认跟随全局；展开可覆盖')
-            .fontSize(12).fontColor($r('app.color.text_tertiary'))
-            
-            .margin({ top: 2 })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        Row() {
-          if (!this.useGlobalStream) {
-            Text('已自定义')
-              .fontSize(12).fontColor($r('app.color.text_tertiary'))
-              
-              .margin({ right: 8 })
-          }
-          Text(this.advancedExpanded ? '收起' : '展开')
-            .fontSize(14)
-            
-        }
-        .alignItems(VerticalAlign.Center)
-      }
-      .width('100%')
-      .padding({ top: 8, bottom: 8 })
-      .borderRadius(8)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.advancedExpanded = !this.advancedExpanded;
-      })
-      .focusable(true)
-      .focusOnTouch(true)
+      this.advancedHeader(!this.useGlobalStream)
 
       if (this.advancedExpanded) {
         Column() {
@@ -1405,6 +1449,8 @@ struct EditConnectionPage {
             this.protocol = protocol;
             this.hostError = '';
             this.errorMessage = '';
+            this.advancedHovered = false;
+            this.advancedPressed = false;
             if (untouched) {
               this.port = (protocol === PROTOCOL_MOONLIGHT
                 ? ML_DEFAULT_PORT : RDP_DEFAULT_PORT).toString();
@@ -1630,39 +1676,8 @@ struct EditConnectionPage {
               .color($r('app.color.divider'))
               .margin({ top: 20, bottom: 8 })
 
-            Row() {
-              Column() {
-                Text('高级设置').fontSize(14)
-                Text('默认跟随全局；展开可覆盖')
-                  .fontSize(12).fontColor($r('app.color.text_tertiary'))
-                  
-                  .margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-
-              Row() {
-                if (!this.useGlobalDisplay || !this.useGlobalAdvanced || !this.useGlobalSr) {
-                  Text('已自定义')
-                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
-                    
-                    .margin({ right: 8 })
-                }
-                Text(this.advancedExpanded ? '收起' : '展开')
-                  .fontSize(14)
-                  
-              }
-              .alignItems(VerticalAlign.Center)
-            }
-            .width('100%')
-            .padding({ top: 8, bottom: 8 })
-            .borderRadius(8)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
-              this.advancedExpanded = !this.advancedExpanded;
-            })
-            .focusable(true)
-            .focusOnTouch(true)
+            this.advancedHeader(!this.useGlobalDisplay || !this.useGlobalAdvanced
+              || !this.useGlobalSr)
 
             if (this.advancedExpanded) {
               Column() {
