@@ -23,6 +23,8 @@ const DEFAULT_TOOLBAR_HOVER_DELAY: number = 700;
 const DEFAULT_TOOLBAR_HIDE_DELAY: number = 250;
 export const DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT: number = 50;
 export const DEFAULT_TOOLBAR_WIDTH_PERCENT: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
+export const TOOLBAR_WIDTH_MIN_PERCENT: number = 10;
+export const TOOLBAR_WIDTH_MAX_PERCENT: number = 100;
 
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
@@ -179,7 +181,7 @@ export class SettingsStore {
           settings.toolbarTriggerWidthPercent);
       settings.toolbarWidthPercent = Math.min(Math.max(
         SettingsStore.readNumber(store, 'toolbarWidthPercent', settings.toolbarWidthPercent),
-        50), 100);
+        TOOLBAR_WIDTH_MIN_PERCENT), TOOLBAR_WIDTH_MAX_PERCENT);
       settings.touchpadScrollSpeed =
         SettingsStore.readNumber(store, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
       settings.scrollEngineFallback = SettingsStore.readBoolean(store,

@@ -1,4 +1,4 @@
-import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH, TOOLBAR_TELEMETRY_HEIGHT,
+import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH,
   TOUCH_BAR_HEIGHT } from '../services/ToolbarContract';
 
 // The hint is a white hairline over arbitrary content: without a dark halo it
@@ -6,15 +6,52 @@ import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH, TOOLBAR_TELEMETRY_HEIGHT,
 // differ only in thickness.
 const HINT_HALO_RADIUS: number = 4;
 
+// Dev telemetry is dense by nature (see doc_agent/ui-visual.md §8): it takes the
+// 10fp step and the pages scale their fixed column widths by the same 10/12.
+export const METRIC_FONT_SIZE: number = 10;
+export const TOOLBAR_CHIP_PAD: number = 10;
+
 @Component
 export struct ToolbarChip {
   @Prop label: string = '';
   @Prop icon: Resource | undefined = undefined;
-  @Prop hPad: number = 14;
+  @Prop hPad: number = TOOLBAR_CHIP_PAD;
   @Prop danger: boolean = false;
+  @Prop accent: boolean = false;
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
+
+  private chipFg(): Resource {
+    if (this.danger) {
+      return $r('app.color.chrome_danger');
+    }
+    return this.accent ? $r('app.color.chrome_accent') : $r('app.color.chrome_text_primary');
+  }
+
+  // All three tonals walk the same three tiers: a tonal that folded hover and
+  // press into one step looked like it had no press feedback at all on a
+  // pointer (hover is already applied when the press lands).
+  private chipBg(): Resource {
+    if (this.danger) {
+      return this.pressed ? $r('app.color.chrome_danger_pressed')
+        : (this.hovered ? $r('app.color.chrome_danger_hover') : $r('app.color.chrome_danger_bg'));
+    }
+    if (this.accent) {
+      return this.pressed ? $r('app.color.chrome_accent_pressed')
+        : (this.hovered ? $r('app.color.chrome_accent_hover') : $r('app.color.chrome_accent_bg'));
+    }
+    return this.pressed ? $r('app.color.chrome_control_pressed')
+      : (this.hovered ? $r('app.color.chrome_control_hover') : $r('app.color.chrome_control_bg'));
+  }
+
+  private chipBorder(): Resource {
+    if (this.danger) {
+      return $r('app.color.chrome_danger_border');
+    }
+    return this.accent ? $r('app.color.chrome_accent_border')
+      : $r('app.color.chrome_control_border');
+  }
 
   build() {
     Row() {
@@ -22,30 +59,19 @@ export struct ToolbarChip {
         Image(this.icon)
           .width(16)
           .height(16)
-          .fillColor(this.danger
-            ? $r('app.color.chrome_danger') : $r('app.color.chrome_text_primary'))
+          .fillColor(this.chipFg())
           .draggable(false)
       }
       Text(this.label)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.danger
-          ? $r('app.color.chrome_danger') : $r('app.color.chrome_text_primary'))
+        .fontColor(this.chipFg())
         .margin({ left: this.icon !== undefined ? 4 : 0 })
     }
     .height(32)
     .padding({ left: this.hPad, right: this.hPad })
-    .backgroundColor(this.danger
-      ? (this.hovered || this.pressed
-        ? $r('app.color.chrome_danger_hover') : $r('app.color.chrome_danger_bg'))
-      : (this.pressed
-        ? $r('app.color.chrome_control_pressed')
-        : (this.hovered ? $r('app.color.chrome_control_hover') : $r('app.color.chrome_control_bg'))))
-    .border({
-      width: 1,
-      color: this.danger
-        ? $r('app.color.chrome_danger_border') : $r('app.color.chrome_control_border')
-    })
+    .backgroundColor(this.chipBg())
+    .border({ width: 1, color: this.chipBorder() })
     .borderRadius(8)
     .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
     .hoverEffect(HoverEffect.None)
@@ -102,8 +128,13 @@ export struct ToolbarIconChip {
     .width(32)
     .height(32)
     .justifyContent(FlexAlign.Center)
+    // The accent tonal walks the same three tiers as the other two: an active
+    // chip that kept one fixed fill had no press feedback until the state itself
+    // flipped on release.
     .backgroundColor(this.active
-      ? $r('app.color.chrome_accent_bg')
+      ? (this.pressed
+        ? $r('app.color.chrome_accent_pressed')
+        : (this.hovered ? $r('app.color.chrome_accent_hover') : $r('app.color.chrome_accent_bg')))
       : (this.pressed
         ? $r('app.color.chrome_control_pressed')
         : (this.hovered ? $r('app.color.chrome_control_hover') : $r('app.color.chrome_control_bg'))))
@@ -175,7 +206,7 @@ export struct OutlineChip {
       .fontWeight(FontWeight.Medium)
       .fontColor($r('app.color.chrome_text_primary'))
       .height(28)
-      .padding({ left: 10, right: 10 })
+      .padding({ left: 8, right: 8 })
       .textAlign(TextAlign.Center)
       .backgroundColor(this.pressed
         ? $r('app.color.chrome_control_pressed')
@@ -222,14 +253,14 @@ export struct MetricItem {
     Row() {
       if (this.metricWidth > 0) {
         Text(this.text)
-          .fontSize(12)
+          .fontSize(METRIC_FONT_SIZE)
           .fontColor($r('app.color.chrome_text_secondary'))
           .fontFeature('"tnum" 1')
           .width(this.metricWidth)
           .maxLines(1)
       } else {
         Text(this.text)
-          .fontSize(12)
+          .fontSize(METRIC_FONT_SIZE)
           .fontColor($r('app.color.chrome_text_secondary'))
           .fontFeature('"tnum" 1')
           .maxLines(1)
@@ -341,9 +372,6 @@ export struct TelemetryRow {
           leftGap: this.fields[7].gap })
       }
     }
-    .width('100%')
-    .height(TOOLBAR_TELEMETRY_HEIGHT)
-    .padding({ left: 16, right: 16 })
   }
 }
 
@@ -409,7 +437,7 @@ export struct ClipboardTransferStatus {
           this.onCancel();
         }
       })
-        .margin({ left: 8 })
+        .margin({ left: 6 })
     }
     .margin({ right: 12 })
   }
@@ -425,10 +453,12 @@ export struct ClipboardButtons {
 
   build() {
     Row() {
+      // The clipboard pair is one accent-tonal pair: copy is ours, paste is a
+      // security control, and both have to read as the same blue.
       ToolbarChip({
         label: '复制',
         icon: $r('sys.media.ohos_ic_public_copy'),
-        hPad: 14,
+        accent: true,
         onTap: () => {
           this.onCopy();
         }
@@ -437,23 +467,27 @@ export struct ClipboardButtons {
         .onTouch(() => {})
         .bindTips(this.copyTip, this.tipsOptions)
       Row() {
+        // The security control forces alpha >= 0x1a (below that it is made
+        // opaque), so its background must come from the accent tonal: the
+        // near-transparent control_bg turned the whole button solid white.
         PasteButton({
           icon: PasteIconStyle.LINES,
           text: PasteDescription.PASTE,
           buttonType: ButtonType.Normal
         })
           .iconSize(16)
+          .iconColor($r('app.color.chrome_accent'))
           .fontSize(12)
-          .fontColor($r('app.color.chrome_text_primary'))
-          .backgroundColor($r('app.color.chrome_control_bg'))
+          .fontColor($r('app.color.chrome_accent'))
+          .backgroundColor($r('app.color.chrome_accent_bg'))
           .borderWidth(1)
-          .borderColor($r('app.color.chrome_control_border'))
+          .borderColor($r('app.color.chrome_accent_border'))
           .borderStyle(BorderStyle.Solid)
           .borderRadius(8)
-          .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+          .padding({ left: TOOLBAR_CHIP_PAD, right: TOOLBAR_CHIP_PAD, top: 7, bottom: 7 })
           .onClick(this.pasteCallback)
       }
-      .margin({ left: 8 })
+      .margin({ left: 6 })
       // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
       .onTouch(() => {})
       .bindTips(this.pasteTip, this.tipsOptions)

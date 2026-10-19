@@ -89,6 +89,19 @@
 - 遥测正常用次级白，警告用琥珀，告警用红。
 - 会话页根容器使用暗色实心底，避免工具条与画面之间出现浅色缝隙。
 - 工具条按钮不是透明文字：默认中性 tonal（`chrome_control_bg` + `chrome_control_border`），危险动作用危险 tonal（`chrome_danger_bg` + `chrome_danger_border` + `chrome_danger`），激活态用强调 tonal（`chrome_accent_bg` + `chrome_accent_border` + `chrome_accent`）。
+- 三档 tonal **各自都有 hover / pressed 底色**（中性 `chrome_control_hover` / `chrome_control_pressed`，危险 `chrome_danger_hover` / `chrome_danger_pressed`，强调 `chrome_accent_hover` / `chrome_accent_pressed`），三档台阶一致（约 15% / 20% / 25%）。
+  **不许把 hover 与 pressed 折成一档**：指针设备上悬停时 hover 已经生效，按下再取同一档就等于"按下没有任何变化"，看起来像没有按压反馈。
+- **剪贴板这对（复制 / 粘贴）用强调 tonal**：复制是普通 chip，粘贴是系统安全控件，两者必须读作同一块蓝。安全控件只认自己的通用属性（`fontColor` / `iconColor` / `backgroundColor` / `borderColor` / `borderRadius` / `iconSize` / `padding` 等），按压反馈由系统给，没有我们的三档，也**没有 `stateEffect` 可关**（其属性清单里没有该项）——只能由我们这一侧去对齐。
+- **强调 tonal 的三档按"掺白量"排，不是"同色加深"**（系统控件在暗玻璃上的反馈同向：越往上越亮、越白，且它的悬停幅度已接近按下）：
+
+  | 档 | 值 | α | 掺白 |
+  |---|---|---|---|
+  | 默认 | `chrome_accent_bg` `#267FA9F0` | 15% | 0 |
+  | 悬停 | `chrome_accent_hover` `#41A3C1F4` | 25% | 28% |
+  | 按下 | `chrome_accent_pressed` `#4DB2CBF6` | 30% | 40% |
+
+  悬停要"明显离开默认、接近按下"（早期的 20%/0% 掺白几乎看不出变化）；按下仍需与悬停拉开可见差距，否则又回到"按下没有变化"。中性 tonal 的 pressed（`#33FFFFFF` 纯白叠加）本来就是同一路子。
+  **安全控件背景的 α 不能低于 `0x1a`**：低于该值会被系统强制调成不透明（`0xff`），所以近透明的 `chrome_control_bg`（α `0x14`）会让整块变成纯白——这正是它此前糊成一团白的原因。取强调 tonal 的 `chrome_accent_bg`（α `0x26`）即满足该下限。
 - `chrome_*` 在 base 与 dark 中同值，不复用页面语义色。
 
 ## 4. 表面与层级
@@ -191,6 +204,8 @@
 - **状态视图**：空/加载/错误使用同一状态卡结构；会话覆盖层用暗玻璃状态卡，页面内状态卡用实心面。错误态按标题、原因、操作三层组织，原因用次级文字，不用 tertiary。
 - **提示与确认**：配对、主机选择、WoL 帮助、确认、通知统一走 `PromptDialog`；标题 20/600、说明 14/20 次级，两者居中（对齐系统 AlertDialog 在 API 20 及之后的居中口径），内容槽保持各自布局；按钮 44/12，取消在左、确认在右，危险确认用危险浅底。Toast 统一暗色 chrome 底、白字与阴影。通道选择与文案见 [`ui-feedback.md`](ui-feedback.md)。
 - **会话 chrome**：暗玻璃、白色主文字、次级白遥测、等宽数字；按钮用中性/危险/激活三档 tonal，不裸放文字；进度条用 accent 填充、半透明白轨道。
+- **会话工具条两种形态**（几何与判定见 [`session-layer.md`](session-layer.md) §9）：**浮条** = 圆角 14 + 四边 `chrome_border` + `shadow_2` + `chrome_bg` 暗玻璃，水平居中，只在全屏未吸附时出现；**横栏** = 整栏铺满、无圆角无描边无投影、底部一条 1px 分隔线，按标准横栏范式（同 `PageHeader` 的结构）另画一套容器，而不是由浮条去圆角得到。窗口模式恒为横栏且材质随场景取页面横栏（`header_glass` + `divider`），全屏吸附时取会话暗玻璃（`chrome_bg` + `chrome_border`）。
+- **会话工具条紧凑档（特例）**：开发者遥测行与右侧操作区允许比产品页面更紧一档——遥测用 **10fp**（§5.1 阶梯内的最小档，不是为省空间新增字号），其固定列宽按 **10/12** 等比缩（列容量的字符数不变，避免换字号后裁字），行高与行内间距同步收紧（遥测行高 `TOOLBAR_TELEMETRY_HEIGHT`、列间距 `METRIC_GAP_*`）；chip 内边距与按钮间距取比产品页面更小的档（`TOOLBAR_CHIP_PAD`）。工具条行高与 chip 视觉高度不在此列，仍按 §6。特例只覆盖会话工具条，产品页面仍受 §5.2「不靠缩小字号容纳文案」约束。
 - **协议差异**：RDP 与 Moonlight 只在图标、页签、运行徽标上分色；其余组件共用同一套中性色与品牌色。
 
 ## 9. 动效

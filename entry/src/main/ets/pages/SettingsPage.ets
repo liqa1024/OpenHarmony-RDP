@@ -16,7 +16,8 @@ import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDT
   ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
   ML_CURSOR_OFF, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
   PINCH_MODE_ZOOM, SR_RATIO_PRESETS,
-  SettingsStore, srRatioLabel } from '../services/SettingsStore';
+  SettingsStore, srRatioLabel, TOOLBAR_WIDTH_MAX_PERCENT,
+  TOOLBAR_WIDTH_MIN_PERCENT } from '../services/SettingsStore';
 import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../services/TouchpadWheel';
 import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
 import { DebouncedSaver } from '../utils/DebouncedSaver';
@@ -2362,11 +2363,11 @@ struct SettingsPage {
               Divider().strokeWidth(1).color($r('app.color.divider'))
 
               this.sliderItem({
-                title: '工具栏宽度',
-                subtitle: '工具栏按窗口宽度百分比居中；100% 占满',
+                title: '工具栏最小宽度',
+                subtitle: '实际宽度按内容自适应，不低于这个比例；接近整栏时占满',
                 value: this.toolbarWidthPercent,
-                min: 50,
-                max: 100,
+                min: TOOLBAR_WIDTH_MIN_PERCENT,
+                max: TOOLBAR_WIDTH_MAX_PERCENT,
                 step: 5,
                 unit: ' %',
                 precision: 0,

@@ -11,7 +11,8 @@ import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO
 } from '../moonlight/MoonlightModels';
-import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore } from './SettingsStore';
+import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore,
+  TOOLBAR_WIDTH_MAX_PERCENT, TOOLBAR_WIDTH_MIN_PERCENT } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
 import { DeviceCapabilities } from './DeviceCapabilities';
 
@@ -254,7 +255,7 @@ export class ConfigTransfer {
         settings.toolbarTriggerWidthPercent);
     settings.toolbarWidthPercent = Math.min(Math.max(
       ConfigTransfer.readNumber(rec, 'toolbarWidthPercent', settings.toolbarWidthPercent),
-      50), 100);
+      TOOLBAR_WIDTH_MIN_PERCENT), TOOLBAR_WIDTH_MAX_PERCENT);
     settings.touchpadScrollSpeed =
       ConfigTransfer.readNumber(rec, 'touchpadScrollSpeed', settings.touchpadScrollSpeed);
     settings.scrollEngineFallback = ConfigTransfer.readBoolean(rec,

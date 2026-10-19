@@ -53,16 +53,17 @@ const CONNECT_OVERLAY_DELAY_MS: number = 1000;
 const PINCH_PROBE_PUBLISH_MS: number = 50;
 
 const METRICS_INTERVAL_MS: number = 1000;
-const METRIC_WIDTH_NETWORK: number = 66;
-const METRIC_WIDTH_HOST: number = 62;
-const METRIC_WIDTH_LOCAL: number = 66;
-const METRIC_WIDTH_GPU: number = 76;
-const METRIC_WIDTH_FPS: number = 62;
-const METRIC_WIDTH_FPS_WIDE: number = 78;
-const METRIC_WIDTH_BITRATE: number = 132;
-const METRIC_WIDTH_DETAIL: number = 82;
-const METRIC_GAP_TIGHT: number = 6;
-const METRIC_GAP_GROUP: number = 8;
+// Fixed columns scale with METRIC_FONT_SIZE (10/12 of the 12fp sizing).
+const METRIC_WIDTH_NETWORK: number = 56;
+const METRIC_WIDTH_HOST: number = 52;
+const METRIC_WIDTH_LOCAL: number = 56;
+const METRIC_WIDTH_GPU: number = 64;
+const METRIC_WIDTH_FPS: number = 52;
+const METRIC_WIDTH_FPS_WIDE: number = 66;
+const METRIC_WIDTH_BITRATE: number = 110;
+const METRIC_WIDTH_DETAIL: number = 68;
+const METRIC_GAP_TIGHT: number = 4;
+const METRIC_GAP_GROUP: number = 6;
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
@@ -826,7 +827,7 @@ struct MoonlightSessionPage {
       titleDetail: this.titleDetail(),
       isFullscreen: this.isFullscreen,
       pinned: this.toolbarPinned,
-      toolbarWidthPercent: this.toolbarWidthPercent,
+      minWidthPercent: this.toolbarWidthPercent,
       toolbarHeight: this.toolbarHeight,
       showTelemetry: this.state === ConnectionState.Connected && this.developerMode,
       telemetryFields: this.telemetryFields(),

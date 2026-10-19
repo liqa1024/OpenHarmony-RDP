@@ -58,15 +58,16 @@ const PAN_WHEEL_STEP: number = 64;
 
 const MIN_BANDWIDTH_BYTES: number = 1024;
 
-const METRIC_WIDTH_NETWORK: number = 66;
-const METRIC_WIDTH_LOCAL: number = 74;
-const METRIC_WIDTH_FPS: number = 48;
-const METRIC_WIDTH_AUDIO: number = 86;
-const METRIC_WIDTH_CPU: number = 60;
-const METRIC_WIDTH_GPU: number = 76;
-const METRIC_WIDTH_DETAIL: number = 72;
-const METRIC_GAP_TIGHT: number = 6;
-const METRIC_GAP_GROUP: number = 8;
+// Fixed columns scale with METRIC_FONT_SIZE (10/12 of the 12fp sizing).
+const METRIC_WIDTH_NETWORK: number = 56;
+const METRIC_WIDTH_LOCAL: number = 62;
+const METRIC_WIDTH_FPS: number = 40;
+const METRIC_WIDTH_AUDIO: number = 72;
+const METRIC_WIDTH_CPU: number = 50;
+const METRIC_WIDTH_GPU: number = 64;
+const METRIC_WIDTH_DETAIL: number = 60;
+const METRIC_GAP_TIGHT: number = 4;
+const METRIC_GAP_GROUP: number = 6;
 
 const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
@@ -898,7 +899,7 @@ struct SessionPage {
       titleDetail: this.desktopWidth + ' × ' + this.desktopHeight + this.srIndicator(),
       isFullscreen: this.isFullscreen,
       pinned: this.toolbarPinned,
-      toolbarWidthPercent: this.toolbarWidthPercent,
+      minWidthPercent: this.toolbarWidthPercent,
       toolbarHeight: this.toolbarHeight,
       showTelemetry: this.state === ConnectionState.Connected && this.developerMode,
       telemetryFields: this.telemetryFields(),

@@ -165,7 +165,8 @@
   - `utils/UiUtil.ets`：toast / confirm / notice；通道规则见 [`ui-feedback.md`](ui-feedback.md)。
   - `utils/UiMotion.ets`：hover/press 缩放与出现/消失转场。
   - `utils/DebouncedSaver.ets`：防抖落库。
-  - `services/ToolbarContract.ets`：工具条高度、圆角、触发区与提示条常量。
+  - `services/ToolbarContract.ets`：工具条高度、圆角、吸附阈值（`TOOLBAR_SNAP_RATIO` / `TOOLBAR_UNSNAP_RATIO`）、
+  触发区与提示条常量。
   - `utils/SessionTags.ets`、`utils/TelemetryFormat.ets`、`utils/PictureFit.ets`、
     `utils/ScaleParse.ets`、`services/BackgroundImage.ets`：会话标签、遥测文案、
     画面适配、尺寸解析与壁纸导入。
