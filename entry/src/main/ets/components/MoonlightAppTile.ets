@@ -29,7 +29,6 @@ export struct MoonlightAppTile {
   onDisconnect: () => void = () => {};
   onCloseApp: () => void = () => {};
   onCloseAppAndDisconnect: () => void = () => {};
-  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   private clickable(): boolean {
     return !this.isRunning && !this.loading;
@@ -259,7 +258,7 @@ export struct MoonlightAppTile {
       }
     })
     .bindTips(this.loading ? '正在连接'
-      : (this.isRunning ? '运行中' : this.tip), this.tipsOptions)
+      : (this.isRunning ? '运行中' : this.tip), MaterialSupport.tipsOptions())
     .focusable(this.clickable())
     .focusOnTouch(this.clickable())
   }

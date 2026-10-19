@@ -115,8 +115,14 @@
 - 探测必须**惰性、发生在使用期**（Toast/Tips/菜单/弹窗调用时）：放在静态初始化或模块加载期会误报"不支持"。命中即固定（`latched`），未命中则下次再用时重探。
 - 26.0.0 的 API 必须逐个放在 `try/catch` 内，才算满足 Code Linter 兼容性规则（`@compatibility/api-compatibility-check`）——光有 `apiAvailable` 判断仍会告警。
 - 支持 → 在该组件的官方 options 里传 `systemMaterial`；不支持 → 完全不动，沿用现有 `backgroundColor` / `border` / `shadow`。
-- 落点与样式：Toast（`ShowToastOptions`）`THICK`、Tips 气泡（`TipsOptions`）`THIN`、菜单（`ContextMenuOptions`）`THICK`。
-- **弹窗走不了这条**：我们的弹窗经 `openCustomDialog` 打开，它默认 `customStyle: true`，而该模式下系统材质**不生效**（`BaseDialogOptions` 也没有 `customStyle` 可改）。要出材质只能用 `CustomDialogController` + `customStyle: false` + `CustomDialogControllerOptions.systemMaterial`；在没做这步迁移前，弹窗保持实心 `surface` 面板，内容层不得置透明（否则会变成没材质的透明空壳）。
+- **用户可配**：通用设置 → 外观 → 「沉浸光感」开关 + 材质厚度 chips。开关关 = 全部落点回退自绘样式；厚度「默认」= 各落点跟随官方默认（不设 `systemMaterial`，Toast `THICK`、弹窗 `ULTRA_THICK`、气泡/菜单 `undefined`），其余五档统一覆盖。设备不支持时开关与厚度一起置灰。
+- 落点：Toast（`ShowToastOptions`）、气泡（`TipsOptions`）、菜单（`ContextMenuOptions`）、弹窗（`CustomDialogControllerOptions`）。档位由设置决定（早期写死薄档的做法已由"默认跟随官方 + 用户可选档"取代）。
+- **弹窗**：`openCustomDialog` 的 `customStyle` 恒为 `true`，该模式下系统材质**不生效**（`BaseDialogOptions` 也没有 `customStyle` 可改），所以确认/通知弹窗改走系统 `CustomDialog`：每个窗口根节点挂一个 0 尺寸的 `components/DialogHost.ets`，按窗口登记到 `FeedbackHost`，由它用 `CustomDialogController(customStyle: false)` 承载。
+  - **写法必须照官方形态**：控制器在**成员初始化处**创建，`builder` 的 struct 调用**直接写在 options 字面量里**（放进方法、或包一层函数参数，都不会被编译成 `new`，运行时报 `class constructor cannot called without 'new'`）；弹窗内容参数用 **`@Link`**（官方口径：自定义弹窗的动态数据只支持 `@Link` / `@Consume`）。
+  - **材质显式给薄档**：不写 `systemMaterial` 时靠 `MaterialState.DEFAULT` 自动开启的是最厚的 `ULTRA_THICK`（一块不透明底色），所以弹窗显式传 `THIN`。`systemMaterial` 写在 options **字面量**里不触发兼容性告警（与"赋值给变量"不同）。
+  - **判定只做一次且两侧共用**：`DialogHost.materialOk` 在 controller 之前求值，`systemMaterial` 与 `DialogShell` 的 `glass` 用的是同一结果——两边各判一次会出现"外壳当透明、容器却没材质"的透明空壳。
+  - **能力一律在使用处现取**：Toast/菜单在打开时、Tips 在 `bindTips` 处现取 `MaterialSupport`，不在组件构造时定死（构造时可能早于能力就绪；会话/弹窗 options 这类一次性的更要保证内部一致）。
+  - 已接入：确认（`showConfirm`）、通知（`showNotice`）。待接入：`PairingPrompt` / `HostSearchPrompt` / `WolHelpPrompt`。
 - 设了材质后不再叠加背景色、背景模糊、阴影、边框，由材质统一绘制。
 - 不支持沉浸光感的设备一律走回退分支，观感与当前设计一致。
 

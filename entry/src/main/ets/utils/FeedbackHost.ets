@@ -19,6 +19,40 @@ export interface ModalRequest {
   abort(): void;
 }
 
+export enum DialogResult {
+  Cancel = 0,
+  Confirm = 1,
+  Dismissed = 2
+}
+
+// 交给窗口内 DialogHost 渲染的确认/通知弹窗参数。宿主用系统 CustomDialog
+// （customStyle:false）承载，这是唯一能吃沉浸光感的弹窗通道。
+export interface DialogRequest {
+  title: string;
+  message: string;
+  cancelLabel: string;
+  confirmLabel: string;
+  danger: boolean;
+  onResult: (result: DialogResult) => void;
+}
+
+export type DialogPresentFn = (request: DialogRequest) => void;
+export type DialogDismissFn = () => void;
+
+class DialogBinding {
+  present: DialogPresentFn;
+  dismiss: DialogDismissFn;
+  // 登记时该宿主所在页面的路由索引（从 1 开始）。router.back() 会先让上一页 onPageShow、
+  // 再销毁被弹出的页面，所以"栈顶"不等于"当前可见页"，必须按索引挑当前可见页的宿主。
+  page: number;
+
+  constructor(present: DialogPresentFn, dismiss: DialogDismissFn, page: number) {
+    this.present = present;
+    this.dismiss = dismiss;
+    this.page = page;
+  }
+}
+
 // One host per window/UIContext. It serializes modals and keeps transient
 // feedback scoped to the window that produced it.
 export class FeedbackHost {
@@ -27,6 +61,9 @@ export class FeedbackHost {
   private pending: ModalRequest[] = [];
   private modalOpen: boolean = false;
   private toastAt: Map<string, number> = new Map<string, number>();
+  // 同一窗口内可能同时挂着多个 DialogHost（router 页面栈：被压住的页面组件不会销毁、
+  // aboutToAppear 也不会重跑），所以用栈：顶层页面的宿主接弹窗，弹出后自动回落到下层。
+  private bindings: DialogBinding[] = [];
 
   constructor(ui: UIContext) {
     this.ui = ui;
@@ -77,10 +114,66 @@ export class FeedbackHost {
     this.start(request);
   }
 
+  // 窗口内 DialogHost 挂载/卸载时登记。后挂载的（= 栈顶页面）优先接弹窗。
+  attachDialog(present: DialogPresentFn, dismiss: DialogDismissFn): void {
+    this.bindings.push(new DialogBinding(present, dismiss, this.pageIndex()));
+  }
+
+  detachDialog(present: DialogPresentFn): void {
+    const kept: DialogBinding[] = [];
+    for (let i = 0; i < this.bindings.length; i++) {
+      if (this.bindings[i].present !== present) {
+        kept.push(this.bindings[i]);
+      }
+    }
+    this.bindings = kept;
+  }
+
+  // 返回是否已交付给宿主；false 表示该窗口没有 DialogHost。
+  presentDialog(request: DialogRequest): boolean {
+    const binding: DialogBinding | undefined = this.visibleBinding();
+    if (binding === undefined) {
+      return false;
+    }
+    binding.present(request);
+    return true;
+  }
+
+  dismissDialog(): void {
+    const binding: DialogBinding | undefined = this.visibleBinding();
+    if (binding !== undefined) {
+      binding.dismiss();
+    }
+  }
+
+  // 当前可见页面（路由栈顶）上的宿主；没有匹配时退回最后登记的。
+  private visibleBinding(): DialogBinding | undefined {
+    const top: number = this.pageIndex();
+    for (let i = this.bindings.length - 1; i >= 0; i--) {
+      if (this.bindings[i].page === top) {
+        return this.bindings[i];
+      }
+    }
+    return this.topBinding();
+  }
+
+  private topBinding(): DialogBinding | undefined {
+    return this.bindings.length > 0 ? this.bindings[this.bindings.length - 1] : undefined;
+  }
+
+  private pageIndex(): number {
+    try {
+      return this.ui.getRouter().getState().index;
+    } catch (error) {
+      return -1;
+    }
+  }
+
   release(): void {
     const active: ModalRequest | undefined = this.active;
     this.active = undefined;
     this.modalOpen = false;
+    this.bindings = [];
     if (active !== undefined) {
       active.abort();
     }
@@ -158,22 +251,38 @@ export class FeedbackHost {
   }
 }
 
-const HOSTS: Map<UIContext, FeedbackHost> = new Map<UIContext, FeedbackHost>();
+// getUIContext() 每次返回的 UIContext 包装对象并不稳定（同一窗口多次调用
+// 也不 === ），所以宿主不能按对象身份做键；改用窗口的稳定标识。
+function windowKey(ui: UIContext): string {
+  const id: number | undefined = ui.getWindowId();
+  if (id !== undefined) {
+    return `w${id}`;
+  }
+  const name: string | undefined = ui.getWindowName();
+  if (name !== undefined && name.length > 0) {
+    return `n${name}`;
+  }
+  return 'default';
+}
+
+const HOSTS: Map<string, FeedbackHost> = new Map<string, FeedbackHost>();
 
 export function feedbackHost(ui: UIContext): FeedbackHost {
-  let host: FeedbackHost | undefined = HOSTS.get(ui);
+  const key: string = windowKey(ui);
+  let host: FeedbackHost | undefined = HOSTS.get(key);
   if (host === undefined) {
     host = new FeedbackHost(ui);
-    HOSTS.set(ui, host);
+    HOSTS.set(key, host);
   }
   return host;
 }
 
 export function releaseFeedback(ui: UIContext): void {
-  const host: FeedbackHost | undefined = HOSTS.get(ui);
+  const key: string = windowKey(ui);
+  const host: FeedbackHost | undefined = HOSTS.get(key);
   if (host === undefined) {
     return;
   }
-  HOSTS.delete(ui);
+  HOSTS.delete(key);
   host.release();
 }

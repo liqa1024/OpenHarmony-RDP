@@ -119,6 +119,10 @@
   `Image` 缓存旧图）。三页默认共用 `backgroundImage`；设置页与 Moonlight 应用页可分别覆盖（为空即回退）。
   它是本机资产：配置导出不写路径、
   导入保留本机当前背景；清除 / 恢复默认时删除文件。文件与 URI 处理见 `services/BackgroundImage`。
+- **沉浸光感**（`materialEnabled` + `materialStyle`，进程级，默认开 + 跟随官方默认）：通用设置「外观」里的
+  浮层材质开关与厚度。关 = 所有浮层（轻提示 / 气泡 / 菜单 / 弹窗）回退到自绘样式；厚度「默认」= 各落点
+  跟随官方默认（不设 `systemMaterial`），其余五档统一覆盖。设备不支持时两项一起置灰并按关处理。
+  落库时同步给运行时（`MaterialSupport.configure`），即时生效。视觉口径见 [`ui-visual.md`](ui-visual.md) §3.5。
 - **快捷键穿透**（`shortcutPassthrough`，进程级，默认关）：会话窗口聚焦时用系统按键拦截把 Win / Alt+Tab /
   Esc 等发给远端（需 ACL `ohos.permission.INTERCEPT_INPUT_EVENT`）。按会话窗口焦点实时注册/释放，
   行为与代价见 [`session-layer.md`](session-layer.md) §8。

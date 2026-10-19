@@ -1,7 +1,6 @@
-import { ComponentContent, UIContext } from '@kit.ArkUI';
-import { PromptDialog } from '../components/PromptDialog';
-import { DialogSession } from './DialogSession';
-import { feedbackHost, ModalRequest, ToastTier } from './FeedbackHost';
+import { UIContext } from '@kit.ArkUI';
+import { DialogRequest, DialogResult, feedbackHost, ModalRequest, ToastTier }
+  from './FeedbackHost';
 
 export function showToast(ui: UIContext, message: string,
   tier: ToastTier = ToastTier.Default): void {
@@ -14,27 +13,11 @@ class PromptDialogParams {
   cancelLabel: string = '';
   confirmLabel: string = '';
   danger: boolean = false;
-  onCancel: () => void = () => {};
-  onConfirm: () => void = () => {};
-}
-
-@Builder
-function promptDialogContent(params: PromptDialogParams) {
-  PromptDialog({
-    title: params.title,
-    message: params.message,
-    cancelLabel: params.cancelLabel,
-    confirmLabel: params.confirmLabel,
-    danger: params.danger,
-    onCancel: params.onCancel,
-    onConfirm: params.onConfirm
-  })
 }
 
 class PromptTask implements ModalRequest {
   private ui: UIContext;
   private params: PromptDialogParams;
-  private session: DialogSession<PromptDialogParams>;
   private onCancel: () => void;
   private onConfirm: () => void;
   private done: () => void = (): void => {};
@@ -46,7 +29,6 @@ class PromptTask implements ModalRequest {
     onCancel: () => void, onConfirm: () => void) {
     this.ui = ui;
     this.params = params;
-    this.session = new DialogSession<PromptDialogParams>(ui);
     this.onCancel = onCancel;
     this.onConfirm = onConfirm;
   }
@@ -58,19 +40,20 @@ class PromptTask implements ModalRequest {
       this.finish();
       return;
     }
-    // Wire callbacks before creating the content node: the builder may capture
-    // the parameter object at construction time.
-    this.params.onCancel = (): void => {
-      this.dismiss(this.onCancel);
+    const request: DialogRequest = {
+      title: this.params.title,
+      message: this.params.message,
+      cancelLabel: this.params.cancelLabel,
+      confirmLabel: this.params.confirmLabel,
+      danger: this.params.danger,
+      onResult: (result: DialogResult): void => {
+        this.settle(result);
+      }
     };
-    this.params.onConfirm = (): void => {
-      this.dismiss(this.onConfirm);
-    };
-    const content: ComponentContent<PromptDialogParams> =
-      new ComponentContent(this.ui, wrapBuilder(promptDialogContent), this.params);
-    this.session.open(content, (): void => {
-      this.finish();
-    });
+    // 该窗口没有 DialogHost 时直接结算，避免模态队列被卡住。
+    if (!feedbackHost(this.ui).presentDialog(request)) {
+      this.settle(DialogResult.Dismissed);
+    }
   }
 
   abort(): void {
@@ -78,19 +61,20 @@ class PromptTask implements ModalRequest {
       return;
     }
     this.settled = true;
-    this.session.dispose();
+    feedbackHost(this.ui).dismissDialog();
   }
 
-  private dismiss(after: () => void): void {
+  private settle(result: DialogResult): void {
     if (this.settled) {
       return;
     }
     this.settled = true;
-    this.session.close((): void => {
-      this.onClosed();
-      after();
-      this.finish();
-    });
+    if (result === DialogResult.Confirm) {
+      this.onConfirm();
+    } else if (result === DialogResult.Cancel) {
+      this.onCancel();
+    }
+    this.finish();
   }
 
   private finish(): void {

@@ -28,7 +28,6 @@ import { parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
 import { showConfirm, showToast } from '../utils/UiUtil';
-import { releaseFeedback } from '../utils/FeedbackHost';
 import { MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { MaterialSupport } from '../utils/MaterialSupport';
 import { promptPairingPin } from '../utils/PairingPrompt';
@@ -37,6 +36,7 @@ import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { FormField } from '../components/FormField';
 import { PageHeader } from '../components/PageHeader';
+import { DialogHost } from '../components/DialogHost';
 import { ContentCard } from '../components/ContentCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
@@ -103,7 +103,6 @@ struct EditConnectionPage {
   @State pairing: boolean = false;
   private connectionId: string = '';
   private activeConnectionId: string = '';
-  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
   @State searching: boolean = false;
   private discovery: MdnsDiscovery = new MdnsDiscovery();
   private searchTimer: number = -1;
@@ -245,7 +244,6 @@ struct EditConnectionPage {
       this.searchTimer = -1;
     }
     this.discovery.stop();
-    releaseFeedback(this.getUIContext());
   }
 
   onBackPress(): boolean {
@@ -1074,7 +1072,7 @@ struct EditConnectionPage {
         // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
         .onTouch(() => {})
         .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-        .bindTips(this.searching ? '正在搜索…' : '自动搜索局域网主机', this.tipsOptions)
+        .bindTips(this.searching ? '正在搜索…' : '自动搜索局域网主机', MaterialSupport.tipsOptions())
         .onClick(() => {
           this.openHostSearch();
         })
@@ -1438,6 +1436,7 @@ struct EditConnectionPage {
 
   build() {
     Column() {
+      DialogHost()
       PageHeader({
         title: this.editing ? '编辑连接' : '新增连接',
         leftLabel: '取消',

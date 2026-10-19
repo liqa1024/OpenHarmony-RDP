@@ -15,6 +15,8 @@ import {
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
 import { defaultDisplay } from '../utils/DisplayUtil';
+import { MaterialSupport, MATERIAL_STYLE_DEFAULT,
+  MATERIAL_STYLE_MAX, MATERIAL_STYLE_MIN } from '../utils/MaterialSupport';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpSettings';
@@ -28,6 +30,9 @@ export const TOOLBAR_WIDTH_MAX_PERCENT: number = 100;
 
 export const PINCH_MODE_WHEEL: number = 0;
 export const PINCH_MODE_TOUCH: number = 1;
+
+// 沉浸光感：开关默认开，厚度默认跟随官方默认（档位常量在 MaterialSupport）。
+export const DEFAULT_MATERIAL_ENABLED: boolean = true;
 export const PINCH_MODE_ZOOM: number = 2;
 export const PINCH_MODE_NATIVE: number = 3;
 
@@ -93,6 +98,9 @@ export class AppSettings {
   srRatioPercent: number = SR_RATIO_PRESETS[0];
   srBackend: number = SR_BACKEND_XENGINE;
   developerMode: boolean = false;
+  // 沉浸光感：浮层是否使用系统材质，以及材质厚度（-1 = 跟随官方默认）。
+  materialEnabled: boolean = DEFAULT_MATERIAL_ENABLED;
+  materialStyle: number = MATERIAL_STYLE_DEFAULT;
   // Sandbox path of the main page wallpaper; empty keeps the theme background.
   backgroundImage: string = '';
   // Optional per-page overrides; empty falls back to `backgroundImage`.
@@ -244,6 +252,11 @@ export class SettingsStore {
       settings.srBackend = SettingsStore.readNumber(store, 'srBackend', settings.srBackend);
       settings.developerMode =
         SettingsStore.readBoolean(store, 'developerMode', settings.developerMode);
+      settings.materialEnabled =
+        SettingsStore.readBoolean(store, 'materialEnabled', settings.materialEnabled);
+      settings.materialStyle = Math.min(Math.max(
+        SettingsStore.readNumber(store, 'materialStyle', settings.materialStyle),
+        MATERIAL_STYLE_MIN), MATERIAL_STYLE_MAX);
       settings.backgroundImage =
         SettingsStore.readString(store, 'backgroundImage', settings.backgroundImage);
       settings.settingsBackgroundImage =
@@ -364,6 +377,8 @@ export class SettingsStore {
       store.putSync('srRatioPercent', settings.srRatioPercent);
       store.putSync('srBackend', settings.srBackend);
       store.putSync('developerMode', settings.developerMode);
+      store.putSync('materialEnabled', settings.materialEnabled);
+      store.putSync('materialStyle', settings.materialStyle);
       store.putSync('backgroundImage', settings.backgroundImage);
       store.putSync('settingsBackgroundImage', settings.settingsBackgroundImage);
       store.putSync('appsBackgroundImage', settings.appsBackgroundImage);
@@ -400,6 +415,8 @@ export class SettingsStore {
       store.putSync('mlShortcutPassthrough', settings.mlShortcutPassthrough);
       store.putSync('mlVmouseHintShown', settings.mlVmouseHintShown);
       store.flush();
+      // 沉浸光感是观感设置，且能力探测惰性求值，所以每次落库都同步给运行时。
+      MaterialSupport.configure(settings.materialEnabled, settings.materialStyle);
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'save settings failed: %{public}s', JSON.stringify(error));
     }

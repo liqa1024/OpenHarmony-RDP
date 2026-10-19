@@ -16,11 +16,11 @@ import { BackgroundImage } from '../services/BackgroundImage';
 import { SettingsStore } from '../services/SettingsStore';
 import { connectActionFor } from '../utils/ConnectAction';
 import { showToast } from '../utils/UiUtil';
-import { releaseFeedback } from '../utils/FeedbackHost';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { FabButton } from '../components/FabButton';
 import { PageHeader } from '../components/PageHeader';
 import { PageBackground } from '../components/PageBackground';
+import { DialogHost } from '../components/DialogHost';
 import { StateView, StateViewKind } from '../components/StateView';
 
 const DOMAIN: number = 0xD001;
@@ -98,7 +98,6 @@ struct MoonlightAppsPage {
   aboutToDisappear(): void {
     SessionManager.unsubscribe(this.stateListener);
     MoonlightHostState.unsubscribe(this.hostStateListener);
-    releaseFeedback(this.getUIContext());
   }
 
   onPageShow(): void {
@@ -346,6 +345,7 @@ struct MoonlightAppsPage {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageBackground({ uri: this.backgroundUri })
+      DialogHost()
       Column() {
         PageHeader({
           title: '应用',

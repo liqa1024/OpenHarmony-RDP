@@ -450,7 +450,6 @@ export struct ClipboardButtons {
   pasteCallback: PasteButtonCallback = () => {};
   @Prop copyTip: string = '从远端复制到本机剪贴板';
   @Prop pasteTip: string = '把本机剪贴板粘贴到远端';
-  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   build() {
     Row() {
@@ -466,7 +465,7 @@ export struct ClipboardButtons {
       })
         // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
         .onTouch(() => {})
-        .bindTips(this.copyTip, this.tipsOptions)
+        .bindTips(this.copyTip, MaterialSupport.tipsOptions())
       Row() {
         // The security control forces alpha >= 0x1a (below that it is made
         // opaque), so its background must come from the accent tonal: the
@@ -491,7 +490,7 @@ export struct ClipboardButtons {
       .margin({ left: 6 })
       // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
       .onTouch(() => {})
-      .bindTips(this.pasteTip, this.tipsOptions)
+      .bindTips(this.pasteTip, MaterialSupport.tipsOptions())
     }
   }
 }

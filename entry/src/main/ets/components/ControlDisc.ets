@@ -20,7 +20,6 @@ export struct ControlDisc {
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
-  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   private glassEffect(): BackgroundEffectOptions | undefined {
     if (!this.frosted) {
@@ -112,7 +111,7 @@ export struct ControlDisc {
         this.pressed = false;
       }
     })
-    .bindTips(this.loading ? '处理中…' : this.tip, this.tipsOptions)
+    .bindTips(this.loading ? '处理中…' : this.tip, MaterialSupport.tipsOptions())
     .onClick(() => {
       if (!this.loading) {
         this.onTap();

@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { DialogHost } from '../components/DialogHost';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpReplay';
@@ -235,6 +236,7 @@ struct GfxReplayPage {
 
   build() {
     Column() {
+      DialogHost()
       Row() {
         Button('返回')
           .height(36)

@@ -11,7 +11,8 @@ import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer
 import { BackgroundImage } from '../services/BackgroundImage';
 import { Capability, CODEC_SUPPORT_NONE, DeviceCapabilities } from '../services/DeviceCapabilities';
 import { RdpNative } from '../services/RdpNative';
-import { AppSettings, DEFAULT_PINCH_TOUCH_DISTANCE, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
+import { AppSettings, DEFAULT_MATERIAL_ENABLED, DEFAULT_PINCH_TOUCH_DISTANCE,
+  DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
   DEFAULT_TOOLBAR_WIDTH_PERCENT,
   ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM,
   ML_CURSOR_OFF, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL,
@@ -22,7 +23,6 @@ import { DEFAULT_SPEED_SCALE, MAX_SPEED_SCALE, MIN_SPEED_SCALE } from '../servic
 import { MAX_RELATIVE_SPEED, MIN_RELATIVE_SPEED } from '../services/input/RelativeUnits';
 import { DebouncedSaver } from '../utils/DebouncedSaver';
 import { showConfirm, showToast } from '../utils/UiUtil';
-import { releaseFeedback } from '../utils/FeedbackHost';
 import { KeyMapper } from '../utils/KeyMapper';
 import { defaultDisplay } from '../utils/DisplayUtil';
 import { MAX_DESKTOP_SIZE, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
@@ -34,14 +34,36 @@ import { PageHeader } from '../components/PageHeader';
 import { FormSection } from '../components/FormSection';
 import { ContentCard } from '../components/ContentCard';
 import { PageBackground } from '../components/PageBackground';
+import { DialogHost } from '../components/DialogHost';
 import { ProtocolTabs, TAB_COMMON } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
 import { SettingSliderRow } from '../components/SettingSliderRow';
 import { SettingToggleRow } from '../components/SettingToggleRow';
+import { MaterialSupport, MATERIAL_STYLE_DEFAULT } from '../utils/MaterialSupport';
 
 const WALLPAPER_MAIN: number = 0;
 const WALLPAPER_SETTINGS: number = 1;
 const WALLPAPER_APPS: number = 2;
+
+// 沉浸光感厚度选项：默认 = 跟随官方默认（不指定 style）；0..4 = ImmersiveStyle。
+class MaterialStyleChoice {
+  label: string;
+  value: number;
+
+  constructor(label: string, value: number) {
+    this.label = label;
+    this.value = value;
+  }
+}
+
+const MATERIAL_STYLE_CHOICES: MaterialStyleChoice[] = [
+  new MaterialStyleChoice('默认', MATERIAL_STYLE_DEFAULT),
+  new MaterialStyleChoice('超薄', 0),
+  new MaterialStyleChoice('薄', 1),
+  new MaterialStyleChoice('常规', 2),
+  new MaterialStyleChoice('厚', 3),
+  new MaterialStyleChoice('超厚', 4)
+];
 
 class SliderItemConfig {
   title: string = '';
@@ -113,6 +135,9 @@ struct SettingsPage {
   private mlSrReason: string = '';
   @State developerMode: boolean = false;
   @State gfxCapture: boolean = false;
+  @State materialEnabled: boolean = DEFAULT_MATERIAL_ENABLED;
+  @State materialStyle: number = MATERIAL_STYLE_DEFAULT;
+  @State materialSupported: boolean = false;
   @State wallpaperPath: string = '';
   @State wallpaperUri: string = '';
   @State settingsWallpaperPath: string = '';
@@ -177,7 +202,6 @@ struct SettingsPage {
 
   aboutToDisappear(): void {
     this.flushPersist();
-    releaseFeedback(this.getUIContext());
   }
 
   onPageHide(): void {
@@ -186,6 +210,9 @@ struct SettingsPage {
 
   private syncFromStore(): void {
     const settings: AppSettings = SettingsStore.load();
+    this.materialEnabled = settings.materialEnabled;
+    this.materialStyle = settings.materialStyle;
+    this.materialSupported = MaterialSupport.isSupported();
     const audioCapability: Capability = DeviceCapabilities.audio();
     this.audioSupported = audioCapability.supported;
     this.audioDisabledReason = audioCapability.reason;
@@ -445,6 +472,8 @@ struct SettingsPage {
       this.parseSize(this.sessionHeightText, this.defaultSessionHeight, maxHeight);
     settings.sessionFullscreen = this.sessionFullscreen;
     settings.developerMode = this.developerMode;
+    settings.materialEnabled = this.materialEnabled;
+    settings.materialStyle = this.materialStyle;
     settings.backgroundImage = this.wallpaperPath;
     settings.settingsBackgroundImage = this.settingsWallpaperPath;
     settings.appsBackgroundImage = this.appsWallpaperPath;
@@ -1313,6 +1342,18 @@ struct SettingsPage {
   }
 
   @Builder
+  materialStyleChip(choice: MaterialStyleChoice) {
+    ChoiceChip({
+      label: choice.label,
+      selected: this.materialStyle === choice.value,
+      onTap: () => {
+        this.materialStyle = choice.value;
+        this.persist();
+      }
+    })
+  }
+
+  @Builder
   sliderItem(item: SliderItemConfig) {
     SettingSliderRow({
       title: item.title,
@@ -1337,6 +1378,7 @@ struct SettingsPage {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       PageBackground({ uri: this.pageBackgroundUri() })
+      DialogHost()
       Column() {
       PageHeader({
         title: '设置',
@@ -1981,6 +2023,30 @@ struct SettingsPage {
             }
             .width('100%')
             .padding({ top: 10, bottom: 10 })
+
+            Divider().strokeWidth(1).color($r('app.color.divider'))
+
+            SettingToggleRow({
+              title: '沉浸光感',
+              subtitle: '浮层使用系统材质：轻提示、气泡、菜单、弹窗',
+              value: this.materialEnabled && this.materialSupported,
+              switchEnabled: this.materialSupported,
+              disabledReason: '本设备不支持沉浸光感',
+              onToggle: (isOn: boolean) => {
+                this.materialEnabled = isOn;
+                this.persist();
+              }
+            })
+
+            if (this.materialEnabled && this.materialSupported) {
+              Flex({ wrap: FlexWrap.Wrap }) {
+                ForEach(MATERIAL_STYLE_CHOICES, (choice: MaterialStyleChoice) => {
+                  this.materialStyleChip(choice)
+                }, (choice: MaterialStyleChoice) => choice.value.toString())
+              }
+              .width('100%')
+              .margin({ top: 10, bottom: 6 })
+            }
             }
 
             FormSection({ title: '窗口' }) {

@@ -7,6 +7,7 @@ import { SessionManager } from '../services/SessionManager';
 import { AppSettings, SettingsStore } from '../services/SettingsStore';
 import { WindowController } from '../services/WindowController';
 import { releaseFeedback } from '../utils/FeedbackHost';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'HmRdpSessionAbility';
@@ -17,6 +18,8 @@ export default class SessionAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SettingsStore.init(this.context);
+    const initial: AppSettings = SettingsStore.load();
+    MaterialSupport.configure(initial.materialEnabled, initial.materialStyle);
     this.sessionKey = SessionAbility.readSessionKey(want);
     SessionManager.registerWindow(this.sessionKey);
     hilog.info(DOMAIN, TAG, '%{public}s key=%{public}s', 'SessionAbility onCreate',

@@ -4,6 +4,7 @@ import { common } from '@kit.AbilityKit';
 import { moonlightTelemetry, MoonlightTelemetry,
   moonlightSessionResizeSurface } from 'libhmrdp.so';
 import { PendingConnection, SessionRequests } from '../model/Connections';
+import { DialogHost } from '../components/DialogHost';
 import { SessionSignal } from '../model/SessionSignal';
 import { ConnectionState, SessionManager } from '../services/SessionManager';
 import { HOST_REPROBE_DELAY_MS, MoonlightHostState } from '../services/MoonlightHostState';
@@ -890,6 +891,7 @@ struct MoonlightSessionPage {
 
   build() {
     Column() {
+      DialogHost()
       if (!this.isFullscreen && this.state === ConnectionState.Connected) {
         this.sessionToolbar()
       }

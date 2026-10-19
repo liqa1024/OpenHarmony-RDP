@@ -19,10 +19,10 @@ import { ControlDisc } from '../components/ControlDisc';
 import { FabButton } from '../components/FabButton';
 import { TextAction } from '../components/TextAction';
 import { PageBackground } from '../components/PageBackground';
+import { DialogHost } from '../components/DialogHost';
 import { PageHeader, PageHeaderVariant } from '../components/PageHeader';
 import { StateView, StateViewKind } from '../components/StateView';
 import { showConfirm, showNotice, showToast } from '../utils/UiUtil';
-import { releaseFeedback } from '../utils/FeedbackHost';
 import { promptWolHelp } from '../utils/WolHelpPrompt';
 
 const DOMAIN: number = 0xD001;
@@ -104,7 +104,6 @@ struct Index {
     SessionManager.unsubscribe(this.sessionListener);
     MoonlightHostState.unsubscribe(this.hostStateListener);
     this.clearWakeWatches();
-    releaseFeedback(this.getUIContext());
   }
 
   onPageShow(): void {
@@ -499,6 +498,7 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       PageBackground({ uri: this.backgroundUri })
+      DialogHost()
       Column() {
       PageHeader({
         variant: PageHeaderVariant.Brand,

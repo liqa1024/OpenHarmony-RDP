@@ -34,7 +34,6 @@ export struct ConnectionRow {
   onWake: () => void = () => {};
   onRequestMenu: () => void = () => {};
   onPressRelease: () => void = () => {};
-  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   private model(): ConnectionRowModel {
     return ConnectionRowModel.of(this.conn, this.state, this.hostTargetId, this.targetId,
@@ -253,7 +252,7 @@ export struct ConnectionRow {
       .layoutWeight(1)
       // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
       .onTouch(() => {})
-      .bindTips('编辑连接', this.tipsOptions)
+      .bindTips('编辑连接', MaterialSupport.tipsOptions())
       .onClick(() => {
         this.onEdit();
       })
@@ -312,7 +311,7 @@ export struct ConnectionRow {
             this.appPressed = false;
           }
         })
-        .bindTips('应用', this.tipsOptions)
+        .bindTips('应用', MaterialSupport.tipsOptions())
         .onClick(() => {
           this.onOpenApps();
         })
@@ -376,7 +375,7 @@ export struct ConnectionRow {
       // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
       .onTouch(() => {})
       .bindTips(this.busy() ? '正在断开…'
-        : (this.wakeDisabled() ? this.wakeLabel() : this.model().actionTip), this.tipsOptions)
+        : (this.wakeDisabled() ? this.wakeLabel() : this.model().actionTip), MaterialSupport.tipsOptions())
       .onClick(() => {
         this.primaryTap();
       })

@@ -24,6 +24,7 @@ import { SessionManager } from '../services/SessionManager';
 import { WindowController } from '../services/WindowController';
 import { showConfirm } from '../utils/UiUtil';
 import { releaseFeedback } from '../utils/FeedbackHost';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 const DOMAIN = 0x0000;
 
@@ -39,6 +40,8 @@ export default class EntryAbility extends UIAbility {
     }
     SettingsStore.init(this.context);
     ConnectionStore.init(this.context);
+    const initial: AppSettings = SettingsStore.load();
+    MaterialSupport.configure(initial.materialEnabled, initial.materialStyle);
     // Single-window mode: if this launch restores the main window after a
     // session, finish terminating that session now that we are registered.
     WindowController.onMainWindowReady();

@@ -43,7 +43,6 @@ export struct SessionToolbar {
   onDisconnect: () => void = () => {};
   onCloseApp: () => void = () => {};
   onPointerZone: (zone: number) => void = (zone: number) => {};
-  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   // Measured widths of the three natural-width groups (no padding): the two
   // ends of the main row, and the wider of the two telemetry rows. Each group
@@ -162,7 +161,7 @@ export struct SessionToolbar {
           .margin({ right: 8 })
           // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
           .onTouch(() => {})
-          .bindTips(this.pinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）', this.tipsOptions)
+          .bindTips(this.pinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）', MaterialSupport.tipsOptions())
       }
 
       SessionTitle({
@@ -229,7 +228,7 @@ export struct SessionToolbar {
           .margin({ right: this.showCloseApp ? 6 : 0 })
           // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
           .onTouch(() => {})
-          .bindTips(this.disconnectTip, this.tipsOptions)
+          .bindTips(this.disconnectTip, MaterialSupport.tipsOptions())
       } else {
         ToolbarChip({
           label: '断开',
@@ -251,7 +250,7 @@ export struct SessionToolbar {
         })
           // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
           .onTouch(() => {})
-          .bindTips('关闭主机应用并断开', this.tipsOptions)
+          .bindTips('关闭主机应用并断开', MaterialSupport.tipsOptions())
       }
     }
     .onAreaChange((_old: Area, area: Area) => {

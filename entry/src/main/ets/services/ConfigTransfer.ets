@@ -15,6 +15,7 @@ import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore,
   TOOLBAR_WIDTH_MAX_PERCENT, TOOLBAR_WIDTH_MIN_PERCENT } from './SettingsStore';
 import { ConnectionStore } from './ConnectionStore';
 import { DeviceCapabilities } from './DeviceCapabilities';
+import { MATERIAL_STYLE_MAX, MATERIAL_STYLE_MIN } from '../utils/MaterialSupport';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpConfig';
@@ -325,6 +326,11 @@ export class ConfigTransfer {
     settings.developerMode =
       ConfigTransfer.readBoolean(rec, 'developerMode', settings.developerMode);
     settings.gfxCapture = ConfigTransfer.readBoolean(rec, 'gfxCapture', settings.gfxCapture);
+    settings.materialEnabled =
+      ConfigTransfer.readBoolean(rec, 'materialEnabled', settings.materialEnabled);
+    settings.materialStyle = Math.min(Math.max(
+      ConfigTransfer.readNumber(rec, 'materialStyle', settings.materialStyle),
+      MATERIAL_STYLE_MIN), MATERIAL_STYLE_MAX);
     settings.mlFps = ConfigTransfer.readNumber(rec, 'mlFps', settings.mlFps);
     settings.mlBitrateAuto = ConfigTransfer.readBoolean(rec, 'mlBitrateAuto', settings.mlBitrateAuto);
     settings.mlBitrateKbps =

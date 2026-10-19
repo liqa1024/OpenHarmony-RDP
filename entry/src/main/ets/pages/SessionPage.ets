@@ -7,6 +7,7 @@ import { hidebug, hilog } from '@kit.PerformanceAnalysisKit';
 import { RdpEventPayload } from 'libhmrdp.so';
 import { RdpConnectOptions, RdpClipKind, RdpEvent } from '../model/RdpModels';
 import { PendingConnection, SessionRequests } from '../model/Connections';
+import { DialogHost } from '../components/DialogHost';
 import { BackgroundEvent, BackgroundEvents } from '../services/BackgroundProtocol';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { RdpClipboardBridge } from '../services/RdpClipboardBridge';
@@ -978,6 +979,7 @@ struct SessionPage {
 
   build() {
     Column() {
+      DialogHost()
       if (!this.isFullscreen && !this.showOverlay) {
         this.sessionToolbar()
       }
