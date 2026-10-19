@@ -14,6 +14,9 @@ namespace hmrdp {
 namespace {
 
 std::atomic<int> g_refreshRateHz{0};
+// What the UI layer pushed for the display the session window is on; 0 until it pushes anything, which
+// keeps the default-display reading in charge.
+std::atomic<int> g_windowDisplayHz{0};
 std::once_flag g_watchOnce;
 
 // A frame arriving more than half a period before the next slot is surplus: the display cannot show
@@ -41,7 +44,15 @@ void OnDisplayChanged(uint64_t displayId) {
 
 }  // namespace
 
+void SetDisplayRefreshRateHz(int hz) {
+  g_windowDisplayHz.store(hz > 0 ? hz : 0);
+}
+
 int DisplayRefreshRateHz() {
+  const int pushed = g_windowDisplayHz.load();
+  if (pushed > 0) {
+    return pushed;
+  }
   std::call_once(g_watchOnce, []() {
     ReadRefreshRate();
     uint32_t listenerIndex = 0;

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "binding/handle_registry.h"
+#include "hmrdp_display_rate.h"
 #include "hmrdp_log.h"
 #include "hmrdp_bitmap.h"
 #include "hmrdp_napi_util.h"
@@ -967,6 +968,21 @@ napi_value SetHardwareAccel(napi_env env, napi_callback_info info) {
   return CreateBool(env, true);
 }
 
+// The refresh rate of the display holding the session window: the UI layer resolves it (window
+// properties -> that display) because only it knows which display the window is on. 0 hands the
+// reading back to the default display.
+napi_value SetDisplayRefreshRate(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  int32_t hz = 0;
+  if (argc < 1 || napi_get_value_int32(env, args[0], &hz) != napi_ok) {
+    return CreateBool(env, false);
+  }
+  hmrdp::SetDisplayRefreshRateHz(hz);
+  return CreateBool(env, true);
+}
+
 napi_value SetGfxCapture(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value args[2] = {nullptr, nullptr};
@@ -1258,6 +1274,8 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"setRdpCursor", nullptr, SetRdpCursor, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setHardwareAccel", nullptr, SetHardwareAccel, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"setDisplayRefreshRateHz", nullptr, SetDisplayRefreshRate, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"setGfxCapture", nullptr, SetGfxCapture, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"startReplay", nullptr, StartReplay, nullptr, nullptr, nullptr, napi_default, nullptr},

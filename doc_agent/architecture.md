@@ -135,7 +135,7 @@
 | `core/hmrdp_gles_presenter.{h,cpp}` | **GLES/EGL 兜底呈现器**：脏矩形 `glTexSubImage2D` + letterbox quad；每实例自有 EGL context/surface（只共享 EGL display） |
 | `core/hmrdp_frame_pipeline.{h,cpp}` | 会话/回放的**帧管线**：presenter + gdi frame host + work meter + 解码执行器，全归其所有者（见 §4.1） |
 | `core/hmrdp_gfx_work.{h,cpp}` | 帧工时计量器 `GfxWorkMeter`（live 与回放共用同一批钩子，口径见 [`rdp-session.md`](rdp-session.md) §5） |
-| `core/hmrdp_display_rate.{h,cpp}` | **面板档位与送显槽位**：默认屏刷新率（首次读 + 显示变化监听）与"一个周期一帧"的槽位游标，两条上屏链路共用（见 [`present.md`](present.md) §2、[`moonlight-video.md`](moonlight-video.md) §1） |
+| `core/hmrdp_display_rate.{h,cpp}` | **面板档位与送显槽位**：会话窗口所在显示设备的刷新率（UI 层推入，未推时回落到默认屏的首次读 + 显示变化监听）与"一个周期一帧"的槽位游标，两条上屏链路共用（见 [`present.md`](present.md) §2、[`moonlight-video.md`](moonlight-video.md) §1） |
 | `core/hmrdp_parallel.{h,cpp}` | **解码执行器 `DecodeExecutor`**（每管线一个 ffrt 并发队列）+ `HmrdpParallelRun` 的 TLS 解析与串行兜底（见 [`rdp-gfx.md`](rdp-gfx.md) §7.3） |
 | `core/hmrdp_replay.{h,cpp}` | dev 回放页：喂流、上屏、参考画面对比（见 [`rdp-gfx.md`](rdp-gfx.md) §6） |
 | `core/hmrdp_vk_context.{h,cpp}` | Vulkan 运行时加载：`dlopen` + 标准能力探测（含超分后端与视频导入判定）+ 进程级**共享不可变** instance（surface 创建）+ 每 presenter 自有的 device/queue 与内存类型（device 按需使能交换链与外部内存扩展，见 §4.1） |

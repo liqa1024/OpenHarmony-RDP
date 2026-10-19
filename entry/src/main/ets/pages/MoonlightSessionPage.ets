@@ -69,9 +69,6 @@ const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
 const LOCAL_BAD_PERIODS: number = 3;
-// Only a session that asked for a high refresh rate loses anything to a low panel gear; a 60fps
-// stream on a 60Hz panel never trips the display gate, so it is never told to change a system setting.
-const HIGH_REFRESH_FPS: number = 60;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -550,12 +547,10 @@ struct MoonlightSessionPage {
     this.toast('主机编码跟不上，建议降低分辨率并开启超分', ToastTier.Long);
   }
 
-  // A high-refresh session whose frames the screen keeps missing can only be fixed outside the app,
-  // so the hint names that one action and nothing else (the numbers row carries the diagnosis).
+  // A session whose frames the screen keeps missing can only be fixed outside the app, so the hint
+  // names that one action and nothing else (the numbers row carries the diagnosis). The rate itself
+  // needs no threshold here: the counter is already zero unless the gear is below the stream rate.
   private reportRefreshHint(counters: MoonlightCounters): void {
-    if (this.targetFps <= HIGH_REFRESH_FPS) {
-      return;
-    }
     if (!this.refreshHint.sample(counters.presentedFrames, counters.refreshDroppedFrames)) {
       return;
     }

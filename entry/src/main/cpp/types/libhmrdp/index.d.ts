@@ -176,6 +176,13 @@ export const setRdpCursor: (enabled: boolean) => boolean;
 
 /** "硬件加速": present through Vulkan (on) or the GLES presenter only (off); applied when a session connects. */
 export const setHardwareAccel: (enabled: boolean) => boolean;
+/**
+ * The refresh rate of the display holding the session window, resolved by the UI layer (`window`
+ * properties -> that display): the shared display-rate authority uses it instead of the default
+ * display's, so multi-monitor 2in1 keeps the present gate and the refresh hint on the right screen.
+ * 0 hands the reading back to the default display.
+ */
+export const setDisplayRefreshRateHz: (hz: number) => boolean;
 
 /** Dev-only: capture the raw (still ZGX-compressed) GFX stream to `<dir>/hmrdp_gfx.bin`. */
 export const setGfxCapture: (enabled: boolean, dir: string) => boolean;

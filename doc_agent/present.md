@@ -48,6 +48,11 @@ device（[`architecture.md`](architecture.md) §4.1）。
   `hmrdp_display_rate.*` 给出（面板档位 + "一个周期一帧"的槽位游标）。两条链路对多余帧的处置不同：
   桌面是**状态流**（丢一帧就是一处永久错像素）⇒ **合并**（[`rdp-present.md`](rdp-present.md) §3）；
   视频是**流**（丢帧无害）⇒ **丢弃**（[`moonlight-video.md`](moonlight-video.md) §1）。
+- **档位取"会话窗口所在显示设备"**：只有 UI 层知道窗口落在哪块屏（`window` 属性 → `display` 的
+  `refreshRate`），所以由它把该档位推给原生（`setDisplayRefreshRateHz`，见 `services/SessionDisplayRate`），
+  在显示变化与窗口跨屏后重推；原生在没有推送时回落到**默认显示设备**的自动读数（首次读 + 变化监听）。
+  多屏 2in1 下"默认屏 ≠ 会话屏"会让槽位判据与刷新率归因一起偏，故一律以窗口所在屏为准。`DisplayBelowFrameRate()`
+  与槽位游标读的是同一个值。
 
 ## 3. swapchain 的尺寸与重建（Vulkan）
 

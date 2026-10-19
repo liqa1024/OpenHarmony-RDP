@@ -8,6 +8,7 @@ import { SessionBackend, SessionBackendRegistry } from './SessionBackend';
 import { ConnectionState, SessionManager } from './SessionManager';
 import { SessionInput } from './SessionInput';
 import { SessionShellHooks, SessionShellHost } from './SessionViewDelegate';
+import { SessionDisplayRate } from './SessionDisplayRate';
 import { AppSettings, SettingsStore } from './SettingsStore';
 import { ToolbarAutoHide, ToolbarAutoHideHost } from './ToolbarAutoHide';
 import { TOUCH_REVEAL_HIDDEN, TOUCH_REVEAL_NONE, TOUCH_REVEAL_VISIBLE,
@@ -54,6 +55,7 @@ export class SessionShellController {
   private input: SessionInput | undefined = undefined;
   private cursor: RemoteCursor;
   private surface: SessionSurfaceController;
+  private displayRate: SessionDisplayRate = new SessionDisplayRate();
   private toolbarAutoHide: ToolbarAutoHide;
   private touchReveal: TouchRevealGesture;
   private armed: boolean = true;
@@ -178,6 +180,7 @@ export class SessionShellController {
         hilog.warn(DOMAIN, TAG, 'off window events failed: %{public}s', JSON.stringify(error));
       }
     }
+    this.displayRate.release();
     this.cursor.setWindow(undefined);
     this.cursor.endSession();
   }
@@ -302,6 +305,7 @@ export class SessionShellController {
         return;
       }
       this.sessionWindow = win;
+      this.displayRate.attach(win);
       this.cursor.setWindow(win);
       this.host.setFullscreen(WindowController.isFullscreen(win));
       WindowController.watchStatusChange(win, (status: window.WindowStatusType): void => {
@@ -422,6 +426,7 @@ export class SessionShellController {
     }
     this.closing = true;
     this.hooks.onRelease();
+    this.displayRate.release();
     this.cursor.setWindow(undefined);
     this.cursor.endSession();
     const context = this.host.ui().getHostContext();

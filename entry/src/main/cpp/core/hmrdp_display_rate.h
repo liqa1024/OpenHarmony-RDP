@@ -5,6 +5,12 @@
 
 namespace hmrdp {
 
+// The refresh rate of the display the session window is on, pushed by the UI layer: only that layer
+// knows which display a window sits on (`window` properties), and it can differ from the default
+// display on a multi-monitor 2in1. Non-zero wins over the automatic reading; 0 hands the reading back
+// to the default display (see DisplayRefreshRateHz).
+void SetDisplayRefreshRateHz(int hz);
+
 // The default display's current refresh rate in Hz, 0 while the platform states none. Read on first
 // use and refreshed whenever the display changes: the system moves the panel between gears while a
 // session runs, so a value read once at start is not what the display is actually doing.
