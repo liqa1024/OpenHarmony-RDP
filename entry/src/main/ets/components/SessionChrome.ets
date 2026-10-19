@@ -416,6 +416,8 @@ export struct ClipboardButtons {
           this.onCopy();
         }
       })
+        // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+        .onTouch(() => {})
         .bindTips(this.copyTip, this.tipsOptions)
       Row() {
         PasteButton({
@@ -435,6 +437,8 @@ export struct ClipboardButtons {
           .onClick(this.pasteCallback)
       }
       .margin({ left: 8 })
+      // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+      .onTouch(() => {})
       .bindTips(this.pasteTip, this.tipsOptions)
     }
   }

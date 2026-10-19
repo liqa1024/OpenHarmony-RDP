@@ -174,6 +174,18 @@
 
 - 只解释控件用途；不承载错误、状态、必须知道的信息或唯一入口。
 - 同一个悬停目标只保留一个 Tooltip；父容器与子控件不要同时挂 `bindTips`，否则会叠层。
+- 挂 `bindTips` 的宿主必须**自身注册 `onTouch`**：PC 上鼠标左键按下会被转成触摸事件，宿主不在触摸目标里时，
+  切页 / 切窗口后 pending 的 `appearingTime` 定时器不随节点收口，会在新页面上弹出残留气泡（位置还偏左漂移）。
+  最容易命中的操作是"悬停后不等提示出现就点击"；已经显示出来的气泡不会残留。
+  - 宿主有按下反馈时，`onTouch` 与 `onMouse` 写同一份 pressed 状态（不要当成重复实现删掉）；没有按下反馈时
+    注册一个空 `onTouch` 即可，它的作用只是让宿主成为触摸目标。样板见 `ControlDisc`、`FabButton`、`MoonlightAppTile`。
+  - 已实测无关（按这些方向修过，无效）：子节点设 `hitTestBehavior(HitTestMode.None)`、宿主加 `BLOCK_HIERARCHY`、
+    `responseRegion`、`transition`、根节点用 `Row` 还是 `Stack`、调用点是否带通用属性（会生成 `__Common__` 包装层）。
+    "让子节点参与命中测试"也不够：没注册触摸处理的子节点即使参与命中，指针压上去仍不是触摸目标。
+  - 未解：完全没有 hover / press 状态反馈的宿主（如 `ConnectionRow` 的"编辑"热区）实测未出现残留，机制未定位；
+    规则仍统一要求注册 `onTouch`，不要依赖这条未证实的差异。
+- 宿主若要成为独立交互单元，再按需加 `HitTestMode.BLOCK_HIERARCHY`（会断开祖先 hover，祖先依赖悬浮时不要加）；
+  它只解决祖先误响应，与残留无关。
 - 不要用空字符串“关闭” Tooltip：`bindTips('')` 仍会创建空气泡。没有提示时不要挂载该修饰符，
   或用与当前状态一致的非空文案。
 - 加载 / 运行态用状态 Tooltip（`处理中…` / `正在连接` / `运行中`），不显示原动作提示；

@@ -1050,12 +1050,14 @@ struct EditConnectionPage {
               .width(20)
               .height(20)
               .color($r('app.color.brand_fill'))
+              .hitTestBehavior(HitTestMode.None)
           } else {
             Image($r('app.media.ic_search'))
               .width(20)
               .height(20)
               .fillColor($r('app.color.icon_secondary'))
               .draggable(false)
+              .hitTestBehavior(HitTestMode.None)
           }
         }
         .width(46)
@@ -1068,6 +1070,9 @@ struct EditConnectionPage {
         .margin({ left: 12 })
         .hoverEffect(HoverEffect.Highlight)
         .opacity(this.searching ? 0.7 : 1)
+        // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+        .onTouch(() => {})
+        .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
         .bindTips(this.searching ? '正在搜索…' : '自动搜索局域网主机', this.tipsOptions)
         .onClick(() => {
           this.openHostSearch();

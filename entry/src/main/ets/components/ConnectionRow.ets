@@ -4,7 +4,7 @@ import { ConnectionRowBadge, ConnectionRowIcon, ConnectionRowIntent,
   ConnectionRowModel } from '../model/ConnectionRowModel';
 import { ConnectionState } from '../services/SessionManager';
 import { WakeReachability } from '../services/WakeOnLan';
-import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition }
+import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS }
   from '../utils/UiMotion';
 
 @Component
@@ -207,6 +207,7 @@ export struct ConnectionRow {
           .opacity(this.hostDown() ? 0.45 : 1.0)
           .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
           .draggable(false)
+          .hitTestBehavior(HitTestMode.None)
         Column() {
           Row() {
             Text(this.conn.label())
@@ -245,8 +246,11 @@ export struct ConnectionRow {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
         .margin({ left: 12 })
+        .hitTestBehavior(HitTestMode.None)
       }
       .layoutWeight(1)
+      // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+      .onTouch(() => {})
       .bindTips('编辑连接', this.tipsOptions)
       .onClick(() => {
         this.onEdit();
@@ -273,6 +277,7 @@ export struct ConnectionRow {
             .height(24)
             .fillColor($r('app.color.icon_primary'))
             .draggable(false)
+            .hitTestBehavior(HitTestMode.None)
         }
         .width(44)
         .height(44)
@@ -285,7 +290,6 @@ export struct ConnectionRow {
         .margin({ left: 8 })
         .scale(hoverPressScale(this.appHovered, this.appPressed))
         .animation({ duration: MOTION_HOVER_PRESS_MS, curve: MOTION_CURVE })
-        .transition(popTransition())
         .onHover((isHover: boolean) => {
           this.appHovered = isHover;
           if (!isHover) {
@@ -296,6 +300,13 @@ export struct ConnectionRow {
           if (event.action === MouseAction.Press) {
             this.appPressed = true;
           } else if (event.action === MouseAction.Release) {
+            this.appPressed = false;
+          }
+        })
+        .onTouch((event: TouchEvent) => {
+          if (event.type === TouchType.Down) {
+            this.appPressed = true;
+          } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
             this.appPressed = false;
           }
         })
@@ -314,6 +325,7 @@ export struct ConnectionRow {
             .height(24)
             .color(this.actionIconColor())
             .transition(TransitionEffect.IDENTITY)
+            .hitTestBehavior(HitTestMode.None)
         } else if (this.model().icon === ConnectionRowIcon.Refresh) {
           Image($r('app.media.ic_refresh'))
             .width(24)
@@ -321,6 +333,7 @@ export struct ConnectionRow {
             .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
+            .hitTestBehavior(HitTestMode.None)
         } else if (this.model().icon === ConnectionRowIcon.Power) {
           Image($r('app.media.ic_power'))
             .width(24)
@@ -328,6 +341,7 @@ export struct ConnectionRow {
             .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
+            .hitTestBehavior(HitTestMode.None)
         } else if (this.model().icon === ConnectionRowIcon.Stop) {
           Image($r('app.media.ic_stop'))
             .width(24)
@@ -335,6 +349,7 @@ export struct ConnectionRow {
             .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
+            .hitTestBehavior(HitTestMode.None)
         } else {
           Image($r('app.media.ic_play'))
             .width(24)
@@ -342,6 +357,7 @@ export struct ConnectionRow {
             .fillColor(this.actionIconColor())
             .draggable(false)
             .transition(fadeTransition())
+            .hitTestBehavior(HitTestMode.None)
         }
       }
       .width(44)
@@ -355,6 +371,8 @@ export struct ConnectionRow {
       .margin({ left: 8 })
       .hoverEffect(this.busy() || this.wakeDisabled() ? HoverEffect.None : HoverEffect.Highlight)
       .enabled(!this.busy() && !this.wakeDisabled())
+      // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+      .onTouch(() => {})
       .bindTips(this.busy() ? '正在断开…'
         : (this.wakeDisabled() ? this.wakeLabel() : this.model().actionTip), this.tipsOptions)
       .onClick(() => {

@@ -453,11 +453,11 @@ struct MoonlightAppsPage {
         tip: '刷新',
         loading: this.refreshing,
         primary: false,
+        inset: 24,
         onTap: () => {
           this.refresh();
         }
       })
-        .margin({ right: 24, bottom: 24 })
     }
     .width('100%')
     .height('100%')

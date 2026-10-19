@@ -626,11 +626,11 @@ struct Index {
       FabButton({
         icon: $r('app.media.ic_plus'),
         tip: '新建连接',
+        inset: 24,
         onTap: () => {
           this.openNewConnection();
         }
       })
-        .margin({ right: 24, bottom: 24 })
     }
     .width('100%')
     .height('100%')

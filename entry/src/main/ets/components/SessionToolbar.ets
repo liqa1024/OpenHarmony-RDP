@@ -49,6 +49,8 @@ export struct SessionToolbar {
           }
         })
           .margin({ right: 10 })
+          // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+          .onTouch(() => {})
           .bindTips(this.pinned ? '取消固定工具栏' : '固定工具栏（不自动隐藏）', this.tipsOptions)
       }
 
@@ -108,6 +110,8 @@ export struct SessionToolbar {
           }
         })
           .margin({ right: this.showCloseApp ? 8 : 0 })
+          // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+          .onTouch(() => {})
           .bindTips(this.disconnectTip, this.tipsOptions)
       } else {
         ToolbarChip({
@@ -128,6 +132,8 @@ export struct SessionToolbar {
             this.onCloseApp();
           }
         })
+          // bindTips 宿主需自身注册触摸（见 doc_agent/ui-feedback.md §4.7）
+          .onTouch(() => {})
           .bindTips('关闭主机应用并断开', this.tipsOptions)
       }
     }

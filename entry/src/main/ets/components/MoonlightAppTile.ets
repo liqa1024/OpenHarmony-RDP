@@ -43,6 +43,7 @@ export struct MoonlightAppTile {
             .height('100%')
             .objectFit(ImageFit.Cover)
             .draggable(false)
+            .hitTestBehavior(HitTestMode.None)
         } else {
           Image($r('app.media.ic_apps'))
             .width(36)
@@ -50,15 +51,14 @@ export struct MoonlightAppTile {
             .fillColor($r('app.color.icon_tertiary'))
             .objectFit(ImageFit.Contain)
             .draggable(false)
+            .hitTestBehavior(HitTestMode.None)
         }
       }
       .width('100%')
       .height('100%')
       .borderRadius(TILE_RADIUS)
       .clip(true)
-      
-      .bindTips(this.loading ? '正在连接'
-        : (this.isRunning ? '运行中' : this.tip), this.tipsOptions)
+      .hitTestBehavior(HitTestMode.None)
 
       if (this.loading) {
         Column() {
@@ -241,11 +241,24 @@ export struct MoonlightAppTile {
         this.pressed = false;
       }
     })
+    .onTouch((event: TouchEvent) => {
+      if (!this.clickable()) {
+        return;
+      }
+      if (event.type === TouchType.Down) {
+        this.pressed = true;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.pressed = false;
+      }
+    })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .onClick(() => {
       if (this.clickable()) {
         this.onOpen();
       }
     })
+    .bindTips(this.loading ? '正在连接'
+      : (this.isRunning ? '运行中' : this.tip), this.tipsOptions)
     .focusable(this.clickable())
     .focusOnTouch(this.clickable())
   }
