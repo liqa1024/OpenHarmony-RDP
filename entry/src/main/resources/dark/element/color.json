@@ -52,6 +52,7 @@
     { "name": "protocol_moonlight_tint", "value": "#241C3D" },
     { "name": "protocol_moonlight_deep", "value": "#C4B5FD" },
     { "name": "chrome_bg", "value": "#B8000000" },
+    { "name": "chrome_bar_bg", "value": "#99000000" },
     { "name": "chrome_bg_solid", "value": "#14161A" },
     { "name": "chrome_border", "value": "#1FFFFFFF" },
     { "name": "chrome_text_primary", "value": "#E5FFFFFF" },

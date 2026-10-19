@@ -322,7 +322,7 @@ export struct SessionToolbar {
     .width(this.pillWidth())
     .alignItems(HorizontalAlign.Start)
     .borderRadius(TOOLBAR_RADIUS)
-    .backgroundColor($r('app.color.chrome_bg'))
+    .backgroundColor($r('app.color.chrome_bar_bg'))
     .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
     .border({ width: 1, color: $r('app.color.chrome_border') })
     .shadow({ radius: 16, color: $r('app.color.shadow_2'), offsetX: 0, offsetY: 4 })
@@ -348,7 +348,7 @@ export struct SessionToolbar {
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
-    .backgroundColor($r('app.color.chrome_bg'))
+    .backgroundColor($r('app.color.chrome_bar_bg'))
     .backgroundBlurStyle(BlurStyle.COMPONENT_THICK)
     .onHover((isHover: boolean) => {
       this.onPointerZone(isHover ? TOOLBAR_ZONE_BAR : TOOLBAR_ZONE_NONE);
