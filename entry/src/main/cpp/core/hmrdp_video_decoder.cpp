@@ -142,9 +142,11 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
   sink_ = sink;
   onFrame_ = std::move(onFrame);
   inputBudgetUs_ = BudgetForFrameRate(frameRate);
+  frameRate_ = frameRate;
   statPresented_.store(0);
   statPresentDropped_.store(0);
   statHandOffReplaced_.store(0);
+  statRefreshDropped_.store(0);
   nativeBufferWarned_ = false;
   // Until the codec describes the stream, the frame layout is the requested size (the same reading
   // the output description will carry; it is only read by the hand-off).
@@ -267,6 +269,11 @@ bool VideoDecoder::TakePresentSlot() {
     return true;
   }
   statPresentDropped_.fetch_add(1, std::memory_order_relaxed);
+  // A refused slot means the display could not take this frame in its current gear. That is only the
+  // refresh rate's doing when the gear is below the stream rate; otherwise it is slot jitter.
+  if (DisplayBelowFrameRate(frameRate_)) {
+    statRefreshDropped_.fetch_add(1, std::memory_order_relaxed);
+  }
   return false;
 }
 
@@ -337,10 +344,12 @@ void VideoDecoder::Stop() {
   buffered_ = false;
   const uint64_t dropped = statPresentDropped_.exchange(0);
   const uint64_t replaced = statHandOffReplaced_.exchange(0);
+  const uint64_t refresh = statRefreshDropped_.exchange(0);
   if (dropped > 0 || replaced > 0) {
     HMRDP_LOGI("video decoder: %{public}llu frames outran the display, %{public}llu were replaced "
-               "before the sink took them",
-               static_cast<unsigned long long>(dropped), static_cast<unsigned long long>(replaced));
+               "before the sink took them; %{public}llu of them with the refresh rate below the stream",
+               static_cast<unsigned long long>(dropped), static_cast<unsigned long long>(replaced),
+               static_cast<unsigned long long>(refresh));
   }
 }
 
@@ -363,6 +372,11 @@ void VideoDecoder::HandOff(uint32_t index, OH_AVBuffer* buffer) {
       dropped = pendingOutput_;
       if (dropped.buffer != nullptr) {
         statHandOffReplaced_.fetch_add(1, std::memory_order_relaxed);
+        // The sink (the presenter, paced by the swapchain) is behind the stream. With the gear below
+        // the stream rate that pace is the screen's; above it, the sink is behind for its own reasons.
+        if (DisplayBelowFrameRate(frameRate_)) {
+          statRefreshDropped_.fetch_add(1, std::memory_order_relaxed);
+        }
       }
       pendingOutput_.index = index;
       pendingOutput_.buffer = buffer;

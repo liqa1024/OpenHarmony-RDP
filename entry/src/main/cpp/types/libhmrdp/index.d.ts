@@ -434,6 +434,13 @@ export interface MoonlightTelemetry {
   presentDroppedFrames: number;
   /** Pictures replaced in the hand-off before the sink took them, cumulative. */
   handoffReplacedFrames: number;
+  /**
+   * The part of the total loss given up while the display's gear was below the stream rate: dropped
+   * because the screen cannot show it, which nothing on the client can fix. Cumulative.
+   */
+  refreshDroppedFrames: number;
+  /** The display's current refresh rate gear, 0 when the platform states none. */
+  displayRefreshRateHz: number;
   /** Encoded video payload bytes (sum of decoded-unit lengths), cumulative. */
   bytes: number;
   /** Sum of host frame processing latency over frames that carried it (1/10 ms). */

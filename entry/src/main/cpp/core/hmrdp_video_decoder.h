@@ -77,6 +77,9 @@ class VideoDecoder {
   // Cumulative loss split by cause: display-gate drops and pictures replaced in the hand-off.
   uint64_t presentDroppedFrames() const { return statPresentDropped_.load(); }
   uint64_t handOffReplacedFrames() const { return statHandOffReplaced_.load(); }
+  // The part of the loss given up while the display's gear was below the stream rate — i.e. dropped
+  // because the screen cannot show them, which no client-side tuning can fix. Cumulative.
+  uint64_t refreshDroppedFrames() const { return statRefreshDropped_.load(); }
   // Frames that took the display slot (rendered in surface mode, handed to the sink in buffer mode).
   uint64_t presentedFrames() const { return statPresented_.load(); }
   std::string lastError() const;
@@ -135,6 +138,8 @@ class VideoDecoder {
   OH_AVCodec* codec_ = nullptr;
   FrameReadyFn onFrame_;
   int64_t inputBudgetUs_ = 0;
+  // Negotiated stream rate, kept to tell "the display is too slow for this stream" at a drop site.
+  int frameRate_ = 0;
 
   // `pending_` is input to feed, `idleInputs_` the indices offered; PumpInput() matches them.
   // The thread that feeds and the thread that drains are different, so both take the mutex.
@@ -147,6 +152,8 @@ class VideoDecoder {
   std::atomic<uint64_t> statPresentDropped_{0};
   // Pictures replaced in the hand-off before the sink took them (the sink is behind the stream).
   std::atomic<uint64_t> statHandOffReplaced_{0};
+  // Subset of the two above dropped while the display's gear was below the stream rate.
+  std::atomic<uint64_t> statRefreshDropped_{0};
   // One-shot: a buffer with no OH_NativeBuffer behind it would otherwise log at the stream rate.
   bool nativeBufferWarned_ = false;
 

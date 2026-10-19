@@ -22,6 +22,11 @@ struct MoonlightTelemetry {
   // cumulative and, with droppedFrames, make up the stream's total loss.
   uint64_t presentDroppedFrames = 0;
   uint64_t handoffReplacedFrames = 0;
+  // The part of that loss given up while the display's gear was below the stream rate: dropped
+  // because the screen cannot show it, which nothing on the client can fix. Cumulative.
+  uint64_t refreshDroppedFrames = 0;
+  // The display's current gear, 0 when the platform states none.
+  int32_t displayRefreshRateHz = 0;
   uint64_t bytes = 0;
   uint64_t hostLatencyTenthMs = 0;
   uint64_t hostLatencyFrames = 0;

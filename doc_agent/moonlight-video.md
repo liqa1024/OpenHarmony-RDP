@@ -63,7 +63,11 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   `FreeOutputBuffer`（不送显），buffer 模式不交给上屏。buffer 模式还有一个次级丢弃：待交接队列只留最新一帧，
   被新帧追上时**旧的那帧当场归还**；已提交给呈现器的帧最多两帧在飞，各自等 fence 后才归还，所以"上屏跟不上"
   的代价是丢帧，不是延迟堆积。三种丢弃（输入预算 / 送显闸门 / 交接替换）都进遥测，构成总丢弃率（见
-  [`moonlight-session.md`](moonlight-session.md) §2）。
+  [`moonlight-session.md`](moonlight-session.md) §2）。其中**只有丢弃发生时面板当前档位低于协商帧率的那
+  部分**才算「屏幕吃不下」，单列为 `refreshDroppedFrames`：判据是共享的 `DisplayBelowFrameRate()`
+  （`hmrdp_display_rate.*`），三个丢弃点**各自判一次**，所以它是链无关的那个数——直出链路的份额主要落在
+  送显闸门，超分链路主要落在交接替换与输入积压（档位低时交接线是显示节拍、解码被输出缓冲回吐挡住，积压
+  只能从输入预算出去）。
 
 ## 2. 上屏：两条链路
 

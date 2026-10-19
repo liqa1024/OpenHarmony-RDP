@@ -54,6 +54,11 @@ int DisplayRefreshRateHz() {
   return g_refreshRateHz.load();
 }
 
+bool DisplayBelowFrameRate(int frameRate) {
+  const int refreshRate = DisplayRefreshRateHz();
+  return refreshRate > 0 && frameRate > refreshRate;
+}
+
 bool PresentSlots::Take() {
   const int refreshRate = DisplayRefreshRateHz();
   if (refreshRate <= 0) {

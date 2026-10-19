@@ -672,6 +672,8 @@ napi_value MoonlightGetTelemetry(napi_env env, napi_callback_info) {
   setInt("droppedFrames", static_cast<int64_t>(telemetry.droppedFrames));
   setInt("presentDroppedFrames", static_cast<int64_t>(telemetry.presentDroppedFrames));
   setInt("handoffReplacedFrames", static_cast<int64_t>(telemetry.handoffReplacedFrames));
+  setInt("refreshDroppedFrames", static_cast<int64_t>(telemetry.refreshDroppedFrames));
+  setInt("displayRefreshRateHz", telemetry.displayRefreshRateHz);
   setInt("bytes", static_cast<int64_t>(telemetry.bytes));
   setInt("hostLatencyTenthMs", static_cast<int64_t>(telemetry.hostLatencyTenthMs));
   setInt("hostLatencyFrames", static_cast<int64_t>(telemetry.hostLatencyFrames));

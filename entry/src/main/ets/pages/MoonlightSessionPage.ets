@@ -35,6 +35,7 @@ import { MoonlightCounters, MoonlightTelemetryAggregator } from '../services/Moo
 import { DeviceCapabilities } from '../services/DeviceCapabilities';
 import { OVERLOAD_HOST, OVERLOAD_LOCAL, OVERLOAD_NONE, OverloadWatch }
   from '../services/OverloadWatch';
+import { RefreshHintWatch } from '../services/RefreshHintWatch';
 import { AudioPlayer } from '../services/AudioPlayer';
 import { ClipboardController, ClipboardControllerHost } from '../services/ClipboardController';
 import { MoonlightClipboardBridge } from '../services/MoonlightClipboardBridge';
@@ -68,6 +69,9 @@ const NETWORK_WARN_MS: number = 100;
 const NETWORK_BAD_MS: number = 200;
 const LOCAL_FALLBACK_FPS: number = 60;
 const LOCAL_BAD_PERIODS: number = 3;
+// Only a session that asked for a high refresh rate loses anything to a low panel gear; a 60fps
+// stream on a 60Hz panel never trips the display gate, so it is never told to change a system setting.
+const HIGH_REFRESH_FPS: number = 60;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -148,6 +152,7 @@ struct MoonlightSessionPage {
   private metricsLastAt: number = 0;
   private telemetry: MoonlightTelemetryAggregator = new MoonlightTelemetryAggregator();
   private overload: OverloadWatch = new OverloadWatch();
+  private refreshHint: RefreshHintWatch = new RefreshHintWatch();
   private mlClipboard: MoonlightClipboardBridge | undefined = undefined;
   private clipboard: ClipboardController | undefined = undefined;
   @State clipboardAvailable: boolean = false;
@@ -422,6 +427,8 @@ struct MoonlightSessionPage {
       }
       this.suggestVmouseOff(nativeTouchpadSupported);
       this.showFpsNote();
+      // The one-shot hint belongs to the session, so every (re)connect gets one chance to raise it.
+      this.refreshHint = new RefreshHintWatch();
       this.startMetricsTimer();
       this.startAudio();
       return;
@@ -460,9 +467,11 @@ struct MoonlightSessionPage {
   }
 
   private startMetricsTimer(): void {
-    if (this.metricsTimer !== -1 || !this.developerMode) {
+    if (this.metricsTimer !== -1) {
       return;
     }
+    // The sampler feeds the overload/watch toasts, which are not a developer-mode feature; developer
+    // mode only gates the numbers row (see SessionToolbar.showTelemetry).
     this.metricsLastAt = Date.now();
     this.metricsTimer = setInterval(() => {
       this.refreshMetrics();
@@ -500,6 +509,7 @@ struct MoonlightSessionPage {
     this.metricsLossBp = counters.lossBp;
     this.reportVideoWarning();
     this.reportOverload();
+    this.reportRefreshHint(counters);
   }
 
   private reportVideoWarning(): void {
@@ -538,6 +548,21 @@ struct MoonlightSessionPage {
     }
     hilog.warn(DOMAIN, TAG, 'host encode overloaded: %{public}fms per frame', this.metricsHostMs);
     this.toast('主机编码跟不上，建议降低分辨率并开启超分', ToastTier.Long);
+  }
+
+  // A high-refresh session whose frames the screen keeps missing can only be fixed outside the app,
+  // so the hint names that one action and nothing else (the numbers row carries the diagnosis).
+  private reportRefreshHint(counters: MoonlightCounters): void {
+    if (this.targetFps <= HIGH_REFRESH_FPS) {
+      return;
+    }
+    if (!this.refreshHint.sample(counters.presentedFrames, counters.refreshDroppedFrames)) {
+      return;
+    }
+    hilog.warn(DOMAIN, TAG, 'refresh rate %{public}dHz is below the %{public}d fps stream: '
+      + '%{public}d of %{public}d frames dropped', counters.displayRefreshRateHz, this.targetFps,
+      counters.refreshDroppedFrames, counters.presentedFrames + counters.refreshDroppedFrames);
+    this.toast('屏幕刷新率不足导致丢帧，可在系统设置固定高刷新率', ToastTier.Long);
   }
 
   private rttLabel(): string {

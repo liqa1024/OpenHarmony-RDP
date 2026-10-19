@@ -10,6 +10,11 @@ namespace hmrdp {
 // session runs, so a value read once at start is not what the display is actually doing.
 int DisplayRefreshRateHz();
 
+// True when the display's current gear is known and lower than `frameRate`: a frame given up now was
+// given up because the screen cannot hold the stream's rate — not because the decoder, the GPU or the
+// network is behind. `frameRate` 0 (unknown) is never attributed to the display.
+bool DisplayBelowFrameRate(int frameRate);
+
 // Present slot cursor for the display's current gear: the display holds the frame it was given for a
 // refresh period, so only one frame per period can be shown. Callers keep their own cursor and
 // decide what a missed slot means — the video path drops the frame, the desktop path carries it.

@@ -11,6 +11,7 @@
 
 #include <Limelight.h>
 
+#include "hmrdp_display_rate.h"
 #include "hmrdp_log.h"
 #include "hmrdp_presenter.h"
 #include "hmrdp_video_decoder.h"
@@ -246,6 +247,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     telemetry.droppedFrames = statDropped_.load();
     telemetry.presentDroppedFrames = decoder_.presentDroppedFrames();
     telemetry.handoffReplacedFrames = decoder_.handOffReplacedFrames();
+    telemetry.refreshDroppedFrames = decoder_.refreshDroppedFrames() + statRefreshDropped_.load();
+    telemetry.displayRefreshRateHz = DisplayRefreshRateHz();
     telemetry.hostLatencyTenthMs = statHostLatencySum_.load();
     telemetry.hostLatencyFrames = statHostLatencyCount_.load();
     telemetry.decodeRoundTripUs = statDecodeRtSumUs_.load();
@@ -333,6 +336,11 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     if (ageUs > decoder_.inputBudgetUs()) {
       const size_t dropped = decoder_.DropPending() + 1;
       statDropped_.fetch_add(dropped, std::memory_order_relaxed);
+      // The queue only grows when the decoder is not draining it, and with the gear below the stream
+      // rate the drain is the screen's pace — so this backlog is the refresh rate's doing too.
+      if (DisplayBelowFrameRate(redrawRate_)) {
+        statRefreshDropped_.fetch_add(dropped, std::memory_order_relaxed);
+      }
       HMRDP_LOGW("moonlight video: input %{public}lldms behind budget, dropped %{public}llu units",
                  static_cast<long long>(ageUs / 1000),
                  static_cast<unsigned long long>(dropped));
@@ -378,6 +386,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     statPresented_.store(0);
     statSubmitted_.store(0);
     statDropped_.store(0);
+    statRefreshDropped_.store(0);
     statBytes_.store(0);
     statHostLatencySum_.store(0);
     statHostLatencyCount_.store(0);
@@ -466,6 +475,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   std::atomic<uint64_t> statPresented_{0};
   std::atomic<uint64_t> statSubmitted_{0};
   std::atomic<uint64_t> statDropped_{0};
+  // Input-budget drops given up while the display's gear was below the stream rate.
+  std::atomic<uint64_t> statRefreshDropped_{0};
   std::atomic<uint64_t> statBytes_{0};
   std::atomic<uint64_t> statHostLatencySum_{0};
   std::atomic<uint64_t> statHostLatencyCount_{0};

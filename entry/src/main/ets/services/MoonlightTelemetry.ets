@@ -15,6 +15,12 @@ export class MoonlightCounters {
   pendingVideoFrames: number = 0;
   // Total loss per second: input-budget drops + display-gate drops + hand-off replacements.
   droppedPerSec: number = 0;
+  // In-window counts of what reached the screen and of the loss given up because the display's gear
+  // was below the stream rate; their ratio names a stream the panel cannot take (RefreshHintWatch).
+  presentedFrames: number = 0;
+  refreshDroppedFrames: number = 0;
+  // The display's current gear; diagnosis only.
+  displayRefreshRateHz: number = 0;
   // Loss basis points: (FEC failed + out-of-order + invalid) / (video + FEC).
   lossBp: number = -1;
   // Per presented frame: convert / 超分 / letterbox GPU time, their sum, and the display wait.
@@ -38,6 +44,7 @@ export class MoonlightTelemetryAggregator {
   private prevDecodeCount: number = 0;
   private prevDropped: number = 0;
   private prevPresentDropped: number = 0;
+  private prevRefreshDropped: number = 0;
   private prevHandoff: number = 0;
   private prevVideo: number = 0;
   private prevFec: number = 0;
@@ -74,6 +81,7 @@ export class MoonlightTelemetryAggregator {
     const dDecodeCount: number = raw.decodeRoundTripFrames - this.prevDecodeCount;
     const dDropped: number = raw.droppedFrames - this.prevDropped;
     const dPresentDropped: number = raw.presentDroppedFrames - this.prevPresentDropped;
+    const dRefreshDropped: number = raw.refreshDroppedFrames - this.prevRefreshDropped;
     const dHandoff: number = raw.handoffReplacedFrames - this.prevHandoff;
     const dVideo: number = raw.packetVideo - this.prevVideo;
     const dFec: number = raw.packetFec - this.prevFec;
@@ -81,6 +89,9 @@ export class MoonlightTelemetryAggregator {
     const dOos: number = raw.packetOos - this.prevOos;
     const dInvalid: number = raw.packetInvalid - this.prevInvalid;
     this.capture(raw);
+    counters.presentedFrames = dPresented;
+    counters.refreshDroppedFrames = dRefreshDropped;
+    counters.displayRefreshRateHz = raw.displayRefreshRateHz;
 
     const seconds: number = windowMs > 0 ? windowMs / 1000 : 0;
     if (seconds > 0) {
@@ -130,6 +141,7 @@ export class MoonlightTelemetryAggregator {
     this.prevDecodeCount = raw.decodeRoundTripFrames;
     this.prevDropped = raw.droppedFrames;
     this.prevPresentDropped = raw.presentDroppedFrames;
+    this.prevRefreshDropped = raw.refreshDroppedFrames;
     this.prevHandoff = raw.handoffReplacedFrames;
     this.prevVideo = raw.packetVideo;
     this.prevFec = raw.packetFec;
@@ -150,6 +162,7 @@ export class MoonlightTelemetryAggregator {
       + counters.pendingVideoFrames + ' drop=' + counters.droppedPerSec + '/s'
       + ' loss=' + counters.lossBp + '/10000 inputDrop=' + inputDropPerSec + '/s'
       + ' presented=' + presented + ' decoded=' + decoded
+      + ' refreshDrop=' + counters.refreshDroppedFrames + ' panel=' + counters.displayRefreshRateHz + 'Hz'
       + ' gpu convert=' + counters.gpuCopyUs + ' sr=' + counters.gpuSrUs
       + ' blit=' + counters.gpuBlitUs + ' us/frame wait=' + counters.presentWaitUs + 'us';
     hilog.info(DOMAIN, TAG, '%{public}s', line);
