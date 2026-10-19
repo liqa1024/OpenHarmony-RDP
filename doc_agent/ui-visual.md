@@ -105,6 +105,21 @@
   **安全控件背景的 α 不能低于 `0x1a`**：低于该值会被系统强制调成不透明（`0xff`），所以近透明的 `chrome_control_bg`（α `0x14`）会让整块变成纯白——这正是它此前糊成一团白的原因。取强调 tonal 的 `chrome_accent_bg`（α `0x26`）即满足该下限。
 - `chrome_*` 在 base 与 dark 中同值，不复用页面语义色。
 
+### 3.5 沉浸光感（系统材质）
+
+系统在 API 26 提供沉浸光感（`uiMaterial` / `systemMaterial`）。它现在是**受限能力**：只能挂在官方认可的通道上——弹窗、气泡、菜单、Toast 的 options，以及 HDS 导航/页签；**不允许**给任意自绘组件挂通用属性 `systemMaterial`，那类用法在新版系统上会材质失效并只留下透明底。现有自绘浮层材质（页头玻璃、会话暗玻璃、应用封面磨砂）保持自绘，不并入这条。
+
+接入与回退：
+
+- 能力探测集中在 `utils/MaterialSupport.ets`：`deviceInfo.apiAvailable('26.0.0') && uiMaterial.isImmersiveMaterialSupported()`。
+- 探测必须**惰性、发生在使用期**（Toast/Tips/菜单/弹窗调用时）：放在静态初始化或模块加载期会误报"不支持"。命中即固定（`latched`），未命中则下次再用时重探。
+- 26.0.0 的 API 必须逐个放在 `try/catch` 内，才算满足 Code Linter 兼容性规则（`@compatibility/api-compatibility-check`）——光有 `apiAvailable` 判断仍会告警。
+- 支持 → 在该组件的官方 options 里传 `systemMaterial`；不支持 → 完全不动，沿用现有 `backgroundColor` / `border` / `shadow`。
+- 落点与样式：Toast（`ShowToastOptions`）`THICK`、Tips 气泡（`TipsOptions`）`THIN`、菜单（`ContextMenuOptions`）`THICK`。
+- **弹窗走不了这条**：我们的弹窗经 `openCustomDialog` 打开，它默认 `customStyle: true`，而该模式下系统材质**不生效**（`BaseDialogOptions` 也没有 `customStyle` 可改）。要出材质只能用 `CustomDialogController` + `customStyle: false` + `CustomDialogControllerOptions.systemMaterial`；在没做这步迁移前，弹窗保持实心 `surface` 面板，内容层不得置透明（否则会变成没材质的透明空壳）。
+- 设了材质后不再叠加背景色、背景模糊、阴影、边框，由材质统一绘制。
+- 不支持沉浸光感的设备一律走回退分支，观感与当前设计一致。
+
 ## 4. 表面与层级
 
 | 层 | 材质 | 判据 |

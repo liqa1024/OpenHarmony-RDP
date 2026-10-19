@@ -1,5 +1,6 @@
-import { UIContext } from '@kit.ArkUI';
+import { promptAction, UIContext } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { MaterialSupport } from './MaterialSupport';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpFeedback';
@@ -43,19 +44,22 @@ export class FeedbackHost {
     this.toastAt.set(message, now);
     this.pruneToasts(now);
     try {
-      this.ui.getPromptAction().showToast({
+      const options: promptAction.ShowToastOptions = {
         message: message,
-        duration: FeedbackHost.durationOf(tier),
-        backgroundColor: $r('app.color.chrome_bg'),
-        textColor: $r('app.color.chrome_text_primary'),
-        backgroundBlurStyle: BlurStyle.NONE,
-        shadow: {
+        duration: FeedbackHost.durationOf(tier)
+      };
+      if (!MaterialSupport.applyToast(options)) {
+        options.backgroundColor = $r('app.color.chrome_bg');
+        options.textColor = $r('app.color.chrome_text_primary');
+        options.backgroundBlurStyle = BlurStyle.NONE;
+        options.shadow = {
           radius: 16,
           color: $r('app.color.shadow_2'),
           offsetX: 0,
           offsetY: 4
-        }
-      });
+        };
+      }
+      this.ui.getPromptAction().showToast(options);
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'show toast failed: %{public}s', JSON.stringify(error));
     }

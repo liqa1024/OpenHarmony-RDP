@@ -2,6 +2,7 @@ import { image } from '@kit.ImageKit';
 import { ConnectAction, connectActionLabel } from '../model/Connections';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { ControlDisc } from './ControlDisc';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 const BOXART_ASPECT: number = 200 / 267;
 const TILE_WIDTH: number = 108;
@@ -28,7 +29,7 @@ export struct MoonlightAppTile {
   onDisconnect: () => void = () => {};
   onCloseApp: () => void = () => {};
   onCloseAppAndDisconnect: () => void = () => {};
-  private tipsOptions: TipsOptions = {};
+  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   private clickable(): boolean {
     return !this.isRunning && !this.loading;

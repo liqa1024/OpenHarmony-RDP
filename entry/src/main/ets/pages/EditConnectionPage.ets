@@ -30,6 +30,7 @@ import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../uti
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { releaseFeedback } from '../utils/FeedbackHost';
 import { MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
+import { MaterialSupport } from '../utils/MaterialSupport';
 import { promptPairingPin } from '../utils/PairingPrompt';
 import { showHostPicker } from '../utils/HostSearchPrompt';
 import { MdnsDiscovery, MdnsHost } from '../services/MdnsDiscovery';
@@ -102,7 +103,7 @@ struct EditConnectionPage {
   @State pairing: boolean = false;
   private connectionId: string = '';
   private activeConnectionId: string = '';
-  private tipsOptions: TipsOptions = {};
+  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
   @State searching: boolean = false;
   private discovery: MdnsDiscovery = new MdnsDiscovery();
   private searchTimer: number = -1;

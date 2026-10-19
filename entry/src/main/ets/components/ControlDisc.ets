@@ -1,5 +1,6 @@
 
 import { hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS, popTransition } from '../utils/UiMotion';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 @Component
 export struct ControlDisc {
@@ -19,7 +20,7 @@ export struct ControlDisc {
   onTap: () => void = () => {};
   @State hovered: boolean = false;
   @State pressed: boolean = false;
-  private tipsOptions: TipsOptions = {};
+  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   private glassEffect(): BackgroundEffectOptions | undefined {
     if (!this.frosted) {

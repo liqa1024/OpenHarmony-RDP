@@ -4,6 +4,7 @@ import { TOOLBAR_RADIUS, TOOLBAR_ROW_HEIGHT, TOOLBAR_SNAP_RATIO,
   TOOLBAR_TELEMETRY_HEIGHT, TOOLBAR_UNSNAP_RATIO, TOOLBAR_ZONE_BAR,
   TOOLBAR_ZONE_NONE } from '../services/ToolbarContract';
 import { lengthToNumber } from '../utils/UiUtil';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 // Both rows carry this on each side; the pill has to add it on top of the
 // measured content width, the bar gets it from its own full width.
@@ -42,7 +43,7 @@ export struct SessionToolbar {
   onDisconnect: () => void = () => {};
   onCloseApp: () => void = () => {};
   onPointerZone: (zone: number) => void = (zone: number) => {};
-  private tipsOptions: TipsOptions = {};
+  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   // Measured widths of the three natural-width groups (no padding): the two
   // ends of the main row, and the wider of the two telemetry rows. Each group

@@ -6,6 +6,7 @@ import { ConnectionState } from '../services/SessionManager';
 import { WakeReachability } from '../services/WakeOnLan';
 import { fadeTransition, hoverPressScale, MOTION_CURVE, MOTION_HOVER_PRESS_MS }
   from '../utils/UiMotion';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 @Component
 export struct ConnectionRow {
@@ -33,7 +34,7 @@ export struct ConnectionRow {
   onWake: () => void = () => {};
   onRequestMenu: () => void = () => {};
   onPressRelease: () => void = () => {};
-  private tipsOptions: TipsOptions = {};
+  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   private model(): ConnectionRowModel {
     return ConnectionRowModel.of(this.conn, this.state, this.hostTargetId, this.targetId,
@@ -134,6 +135,7 @@ export struct ConnectionRow {
         this.menuShown = false;
       }
     };
+    MaterialSupport.applyMenu(options);
     return options;
   }
 

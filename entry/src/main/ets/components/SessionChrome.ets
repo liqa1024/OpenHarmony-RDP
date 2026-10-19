@@ -1,5 +1,6 @@
 import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH,
   TOUCH_BAR_HEIGHT } from '../services/ToolbarContract';
+import { MaterialSupport } from '../utils/MaterialSupport';
 
 // The hint is a white hairline over arbitrary content: without a dark halo it
 // disappears on light frames. Same radius for hint and grab bar so the two
@@ -449,7 +450,7 @@ export struct ClipboardButtons {
   pasteCallback: PasteButtonCallback = () => {};
   @Prop copyTip: string = '从远端复制到本机剪贴板';
   @Prop pasteTip: string = '把本机剪贴板粘贴到远端';
-  private tipsOptions: TipsOptions = {};
+  private tipsOptions: TipsOptions = MaterialSupport.tipsOptions();
 
   build() {
     Row() {
