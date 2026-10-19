@@ -1,6 +1,11 @@
 import { REVEAL_HINT_HEIGHT, REVEAL_HINT_WIDTH, TOOLBAR_TELEMETRY_HEIGHT,
   TOUCH_BAR_HEIGHT } from '../services/ToolbarContract';
 
+// The hint is a white hairline over arbitrary content: without a dark halo it
+// disappears on light frames. Same radius for hint and grab bar so the two
+// differ only in thickness.
+const HINT_HALO_RADIUS: number = 4;
+
 @Component
 export struct ToolbarChip {
   @Prop label: string = '';
@@ -243,7 +248,13 @@ export struct ToolbarRevealHint {
       .width(REVEAL_HINT_WIDTH * this.fill)
       .height(REVEAL_HINT_HEIGHT)
       .borderRadius(REVEAL_HINT_HEIGHT / 2)
-      .backgroundColor($r('app.color.chrome_accent'))
+      .backgroundColor($r('app.color.chrome_hint'))
+      .shadow({
+        radius: HINT_HALO_RADIUS,
+        color: $r('app.color.chrome_hint_shadow'),
+        offsetX: 0,
+        offsetY: 0
+      })
       .opacity(this.fill)
       .hitTestBehavior(HitTestMode.None)
   }
@@ -258,7 +269,13 @@ export struct ToolbarTouchBar {
       .width(REVEAL_HINT_WIDTH * this.fill)
       .height(TOUCH_BAR_HEIGHT)
       .borderRadius(TOUCH_BAR_HEIGHT / 2)
-      .backgroundColor($r('app.color.chrome_accent'))
+      .backgroundColor($r('app.color.chrome_hint'))
+      .shadow({
+        radius: HINT_HALO_RADIUS,
+        color: $r('app.color.chrome_hint_shadow'),
+        offsetX: 0,
+        offsetY: 0
+      })
       .opacity(this.fill)
       .hitTestBehavior(HitTestMode.None)
   }

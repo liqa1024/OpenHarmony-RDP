@@ -63,6 +63,8 @@
     { "name": "chrome_warning", "value": "#F0A94A" },
     { "name": "chrome_danger", "value": "#FF6B6B" },
     { "name": "chrome_progress_track", "value": "#33FFFFFF" },
+    { "name": "chrome_hint", "value": "#FFFFFF" },
+    { "name": "chrome_hint_shadow", "value": "#66000000" },
     { "name": "chrome_control_bg", "value": "#14FFFFFF" },
     { "name": "chrome_control_hover", "value": "#24FFFFFF" },
     { "name": "chrome_control_pressed", "value": "#33FFFFFF" },

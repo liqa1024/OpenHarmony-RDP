@@ -119,6 +119,7 @@
 - 品牌选中或主 tonal：`brand_tint` / `brand_tint_strong`。
 - 危险 tonal：`danger_tint` / `danger_border`。
 - 会话 chrome：`chrome_control_bg` / `chrome_control_border`、`chrome_danger_bg` / `chrome_danger_border`、`chrome_accent_bg` / `chrome_accent_border`。
+- 工具栏触发线 / 抓取横条（`ToolbarRevealHint`、`ToolbarTouchBar`）：纯白 `chrome_hint`，只靠 `opacity` 走填充动效；两者同色不透明、共用同一暗色光晕（`chrome_hint_shadow` 40% 黑，radius 4，无偏移）——白色给深色画面，光晕给浅色画面；不用强调色（强调色只表示激活态）。
 - 身份/状态图标底板：页面内用 `control_border`，会话 chrome 内用 `chrome_border`。
 
 没有底板的元素不设边界：`TextAction`、页签、品牌 Logo、Moonlight 封面、纯文字。卡片与行自身已有边界，内部不再叠第二层。
@@ -188,7 +189,7 @@
 - **FAB**：与卡片按钮共用同一套 tonal 逻辑，只放大尺寸并加阴影。主操作用半透明品牌浅底 + `brand_tint_strong` 描边 + `brand_text` 图标，与卡片启动按钮同一 token 对；次操作用半透明中性底 + `control_border` + `icon_primary`，与卡片应用按钮同一 token 对。hover/press 只在该语义对的加强档内变化，不使用白图标 + 固定主题填充。
 - **表单**：输入框浅底 + 描边；标签次级文字，提示 tertiary，错误危险色，能力限制警告色。字段间距大于行内间距。
 - **状态视图**：空/加载/错误使用同一状态卡结构；会话覆盖层用暗玻璃状态卡，页面内状态卡用实心面。错误态按标题、原因、操作三层组织，原因用次级文字，不用 tertiary。
-- **提示与确认**：配对、主机选择、WoL 帮助、确认、通知统一走 `PromptDialog`；标题 20/600，说明 14/20 次级，按钮 44/12，取消在左、确认在右，危险确认用危险浅底。Toast 统一暗色 chrome 底、白字与阴影。通道选择与文案见 [`ui-feedback.md`](ui-feedback.md)。
+- **提示与确认**：配对、主机选择、WoL 帮助、确认、通知统一走 `PromptDialog`；标题 20/600、说明 14/20 次级，两者居中（对齐系统 AlertDialog 在 API 20 及之后的居中口径），内容槽保持各自布局；按钮 44/12，取消在左、确认在右，危险确认用危险浅底。Toast 统一暗色 chrome 底、白字与阴影。通道选择与文案见 [`ui-feedback.md`](ui-feedback.md)。
 - **会话 chrome**：暗玻璃、白色主文字、次级白遥测、等宽数字；按钮用中性/危险/激活三档 tonal，不裸放文字；进度条用 accent 填充、半透明白轨道。
 - **协议差异**：RDP 与 Moonlight 只在图标、页签、运行徽标上分色；其余组件共用同一套中性色与品牌色。
 

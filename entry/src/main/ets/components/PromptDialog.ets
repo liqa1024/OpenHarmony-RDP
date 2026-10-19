@@ -21,12 +21,16 @@ export struct PromptDialog {
           .fontSize(20)
           .fontWeight(600)
           .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+          .width('100%')
       }
       if (this.message.length > 0) {
         Text(this.message)
           .fontSize(14)
           .lineHeight(20)
           .fontColor($r('app.color.text_secondary'))
+          .textAlign(TextAlign.Center)
+          .width('100%')
           .margin({ top: 8 })
       }
 
@@ -75,6 +79,6 @@ export struct PromptDialog {
     .border({ width: 1, color: $r('app.color.border') })
     .shadow({ radius: 16, color: $r('app.color.shadow_2'), offsetX: 0, offsetY: 4 })
     .borderRadius(20)
-    .alignItems(HorizontalAlign.Start)
+    .alignItems(HorizontalAlign.Center)
   }
 }
