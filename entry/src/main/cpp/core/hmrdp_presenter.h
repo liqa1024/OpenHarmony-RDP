@@ -76,12 +76,14 @@ class FramePresenter {
   virtual bool PresentBgra(const uint8_t* data, int srcStride, int desktopWidth,
                            int desktopHeight, const PresentRect* rects, int rectCount) = 0;
 
-  // Moonlight 超分: present one decoded frame straight from the buffer the codec handed out (NV12),
+  // The video path: present one decoded frame straight from the buffer the codec handed out (NV12),
   // importing it into the presenter's own device, converting to the picture format and running the
-  // shared 超分 / letterbox tail. `geometry` is the codec's own description of the frame (see
-  // hmrdp_video_frame.h). Returns a token for WaitVideoFrame when the frame was submitted, or -1
-  // when nothing was submitted (the caller may return the buffer immediately). The GPU may still be
-  // reading the buffer until WaitVideoFrame(token) returns.
+  // shared tail — 超分 when the session asked for it, then letterbox. `geometry` is the codec's own
+  // description of the frame (see hmrdp_video_frame.h). Returns a token for WaitVideoFrame when the
+  // frame was submitted, or -1 when nothing was submitted (the caller may return the buffer
+  // immediately; the GPU may still be reading it until WaitVideoFrame(token) returns). -1 also
+  // answers "this frame cannot be presented at all", and since the mode cannot change mid-session a
+  // run of them is a black screen the session has to report rather than work around.
   virtual int PresentVideo(const void* nativeBuffer, const VideoFrameGeometry& geometry) {
     (void)nativeBuffer;
     (void)geometry;
@@ -94,6 +96,8 @@ class FramePresenter {
 
   // Whether this presenter can consume codec buffers at all. The session must ask before it puts the
   // decoder into buffer mode: a presenter that cannot import would leave the stream with no output.
+  // The answer is only consulted when the session starts — the output mode cannot change afterwards,
+  // so a presenter that says no here leaves the decoder on its own output surface for the session.
   virtual bool supportsVideo() const { return false; }
 
   // The 超分 state the session requested and what the presenter actually runs (input smaller than the

@@ -21,15 +21,36 @@ int DisplayRefreshRateHz();
 // network is behind. `frameRate` 0 (unknown) is never attributed to the display.
 bool DisplayBelowFrameRate(int frameRate);
 
+// How far ahead of the cursor a caller may claim a slot, as a fraction of the refresh period it
+// divides. The desktop path claims half a period: a frame earlier than that joins the carried region
+// rather than going out on its own, because the desktop is a state and one present per period is all
+// the display can show. The video path claims a whole period: a frame that early is *held* for its
+// slot instead of being dropped, since the slot it would take is the one the display was going to
+// refresh at anyway.
+enum class SlotTolerance : int64_t {
+  kHalfPeriod = 2,
+  kFullPeriod = 1,
+};
+
 // Present slot cursor for the display's current gear: the display holds the frame it was given for a
-// refresh period, so only one frame per period can be shown. Callers keep their own cursor and
-// decide what a missed slot means — the video path drops the frame, the desktop path carries it.
-class PresentSlots {
+// refresh period, so only one frame per period can be shown. The cursor answers *when* a frame may
+// go out — a slot instant, not a yes/no — and leaves the caller to decide what a refused frame means
+// (the video path holds it, the desktop path carries it).
+class SlotSchedule {
  public:
-  // True when the display can take a frame now; advances the cursor when it returns true.
-  bool Take();
-  // Microseconds until Take() would return true, 0 when it already would.
-  int64_t WaitUs() const;
+  // Claims the next slot for a frame arriving at `nowUs`: true when that slot opens no later than
+  // `period / tolerance`, with its instant written to `slotUs` (null when the caller only wants the
+  // decision). False means the frame is too early for any slot inside that window, and the cursor
+  // does not move. A display whose gear is unknown never refuses and never advances.
+  // The grid is a free-running progression: the cursor advances by whole periods and is *not* rebased
+  // on `nowUs`, so a late wake-up cannot make it tick slower than the display.
+  bool Claim(int64_t nowUs, SlotTolerance tolerance, int64_t* slotUs = nullptr);
+  // Microseconds until Claim() would return true for the same tolerance, 0 when it already would.
+  int64_t WaitUs(int64_t nowUs, SlotTolerance tolerance) const;
+  // The instant a frame going out right now would be shown: the cursor while it is still in the
+  // future, `nowUs` otherwise. A query — the cursor only moves on Claim(), so a caller can hold a
+  // frame until its slot and still claim that same slot when it lets it go.
+  int64_t NextSlotUs(int64_t nowUs) const;
 
  private:
   int64_t nextUs_ = 0;

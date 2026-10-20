@@ -104,8 +104,8 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
   [`session-layer.md`](session-layer.md) §8。相对模式下**按键不再附绝对位置**——`LiSendMouseButtonEvent` 本身不带坐标，
   附一次绝对定位会把主机光标拽回本机坐标。
 - **遥测采样**：解码桥按帧累加**累计计数**（**解码出帧数**——计在解码输出回调上；**实际呈现帧数**——
-  surface 模式取送显槽位、buffer 模式取呈现器提交成功的帧；**提交的访问单元数**与**丢弃数**——后者含输入
-  延迟预算丢弃、送显闸门丢弃与交接替换；编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
+  buffer 模式取呈现器提交成功的帧、surface 兜底取送显槽位；**提交的访问单元数**与**丢弃数**——后者含输入
+  延迟预算丢弃、交接替换（默认链路的上屏丢弃）与 surface 兜底的闸门丢弃；编码载荷字节 Σ`fullLength`、主机帧处理耗时之和 / 帧数、
   本机解码往返之和 / 帧数——最后一项在 `submitDecodeUnit` 记提交时刻、在解码输出回调按 `pts` 配对求差），
   `moonlightTelemetry()` 被调用时再读入瞬时 / 库侧读数（`LiGetEstimatedRttInfo` 的 RTT 与抖动、
   `LiGetRTPVideoStats` 的包计数、`LiGetPendingVideoFrames`），并在有呈现器时取走本次采样窗口的

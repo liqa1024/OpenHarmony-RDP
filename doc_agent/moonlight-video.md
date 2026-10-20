@@ -19,15 +19,24 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   几何（组件比例取请求的流分辨率，见 §2）。
 - **帧率进 Configure，不置可变帧率开关**：`OH_MD_KEY_FRAME_RATE` 取协商帧率（键声明为 double、示例传
   int，故按 setter 的类型校验择一设置）；越界会让 Configure 回 `AV_ERR_INVALID_VAL`，故失败时**不带帧率
-  重试一次**。`OH_MD_KEY_VIDEO_DECODER_OUTPUT_ENABLE_VRR` 不置：这里**不需要**它——显示端吃不下由上屏闸门
-  自己丢，平台那套刷新率自适应不是链路的必要条件；协议侧也没有这一项（Moonlight 按协商 `maxFPS` 送帧，
+  重试一次**。`OH_MD_KEY_VIDEO_DECODER_OUTPUT_ENABLE_VRR` 不置：这里**不需要**它——显示端吃不下由送显槽位
+  自己处置（等槽位、被新帧接管），平台那套刷新率自适应不是链路的必要条件；协议侧也没有这一项（Moonlight 按协商 `maxFPS` 送帧，
   没有刷新率握手），故它不构成一个可加的开关。
-- **上屏闸门（静默丢弃）**：表面直出只送显示端吃得下的帧——按面板当前刷新率留送显槽位，落在槽位前半个
-  周期以上的帧**直接释放**（已解出的帧不影响预测链，故不请关键帧、不报错）。没这道闸门时队列写满会让
-  送显阻塞、输出缓冲不再回来，整条解码链停摆。面板档位与槽位判据取自共享的 `hmrdp_display_rate.*`（档位取
-  会话窗口所在显示设备，见 [`present.md`](present.md) §2；读不到刷新率时不设闸门）。**闸门只丢不等**（不 sleep、不建时间轴、不持有帧）：实时链路里"等"就是延迟堆积，故参考
-  官方 Surface 播放控制时只取"太晚就丢"那一半，判据用面板刷新率代替音频时钟。桌面链路（RDP）同样的判据下
-  是**合并**而不是丢弃，见 [`rdp-present.md`](rdp-present.md) §3。
+- **送显节拍（等到槽位，不硬丢）**：面板一个刷新周期只能显示一帧，多余的那部分必须有人处置。默认
+  （buffer）链路把它交给**交接线程**：帧先等到自己的槽位再送呈现器，**等待期间来了更新的帧就由新帧接管
+  同一个槽位**（被顶掉的旧帧当场还给解码器）。所以"被顶掉"的那些帧正是面板本来显示不了的那些，而每个
+  刷新周期显出的都是此刻最新的一帧——不在解码回调上 sleep、不建时间轴、不请关键帧，也不会延迟堆积。
+  **等待上限就是一个刷新周期**（槽位最远只在一个周期之后，`SlotSchedule::NextSlotUs`），所以这项等待既
+  不需要额外预算，也不改变端到端延迟。面板档位与槽位判据取自共享的 `hmrdp_display_rate.*`（档位取会话
+  窗口所在显示设备，见 [`present.md`](present.md) §2；读不到刷新率时不判槽、不等待）。
+  桌面链路（RDP）在同一判据下的处置是**合并**而不是等待，见 [`rdp-present.md`](rdp-present.md) §3。
+  兜底的 surface 链路（见 §2）没有可等待的线程，因此维持"太早就释放"的硬丢。
+- **模式只按能力定、运行期只报错**：会话开始时问一次 `FramePresenter::supportsVideo()`（呈现判定 + 视频
+  导入判定），成立就走默认 buffer 链路，否则静默回退到 surface 兜底。**输出模式不能中途切换**（换模式要
+  重建解码器，见 [`present.md`](present.md) §1），所以运行期呈现器一旦持续拒绝帧（导入失败、缓冲布局或
+  像素格式读不出来、fence 超时）就是**黑屏**：连续 4 次即确认，报 `video-present`，会话页以**可停留的
+  Notice** 告知（关键错误不能只靠 Toast，见 [`ui-feedback.md`](ui-feedback.md) §1.5），文案指向"换编码或
+  降低分辨率重连"，不再指向超分。
 - **硬解优先，软解兜底，无解器报错**：`VideoDecoderSupport()`（`OH_AVCodec_GetCapabilityByCategory`）把每种
   编码分成**硬解 / 软解 / 无**，优先创建硬解，硬解缺失时才退到软解，`VideoDecoder::hardware()` 反映实际
   选择；完全没有解码器时起播同步失败并给出原因，绝不静默黑屏。
@@ -59,39 +68,47 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   已分配行数，surface 模式不报（其内部数据走 HEBC，`OH_MD_KEY_VIDEO_STRIDE`/`OH_MD_KEY_VIDEO_SLICE_HEIGHT`
   取不到）——所以凡是按平面字节采样缓冲的链路只能走 buffer 模式，只送显的链路用 surface 模式。
   `OH_AVBuffer_GetAddr`（CPU 地址，逐行搬运用）本仓不使用。几何取法与导入配方见 [`present.md`](present.md) §4。
-- **送显槽位只判一次**：在解码输出回调里（`VideoDecoder::TakePresentSlot`），错过即**丢**——surface 模式一律
-  `FreeOutputBuffer`（不送显），buffer 模式不交给上屏。buffer 模式还有一个次级丢弃：待交接队列只留最新一帧，
-  被新帧追上时**旧的那帧当场归还**；已提交给呈现器的帧最多两帧在飞，各自等 fence 后才归还，所以"上屏跟不上"
-  的代价是丢帧，不是延迟堆积。三种丢弃（输入预算 / 送显闸门 / 交接替换）都进遥测，构成总丢弃率（见
+- **默认链路上屏侧只有一个丢弃点**：待交接队列只留最新一帧，被新帧追上时**旧的那帧当场归还**
+  （`handOffReplaced`）——那正是"面板一个周期显示不了它"这一件事，不需要在解码回调里另判一次槽位。
+  已提交给呈现器的帧最多两帧在飞，各自等 fence 后才归还，所以"上屏跟不上"的代价是丢帧，不是延迟堆积。
+  另有**输入预算丢弃**（解码自身的积压，见上一条），与面板无关。两处丢弃都进遥测，加上兜底 surface 链路的
+  闸门丢弃（`presentDropped`，默认路径恒 0，留着正是用来证明这条链路不再丢）构成总丢弃率（见
   [`moonlight-session.md`](moonlight-session.md) §2）。其中**只有丢弃发生时面板当前档位低于协商帧率的那
   部分**才算「屏幕吃不下」，单列为 `refreshDroppedFrames`：判据是共享的 `DisplayBelowFrameRate()`
-  （`hmrdp_display_rate.*`），三个丢弃点**各自判一次**，所以它是链无关的那个数——直出链路的份额主要落在
-  送显闸门，超分链路主要落在交接替换与输入积压（档位低时交接线是显示节拍、解码被输出缓冲回吐挡住，积压
-  只能从输入预算出去）。
+  （`hmrdp_display_rate.*`），**每个丢弃点各自判一次**，所以它是链无关的那个数。
 
-## 2. 上屏：两条链路
+## 2. 上屏：默认 buffer 链路 + 兜底 surface
 
-Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选择——是显式模式，不是"先试一条再回退另一条"。
+视频只有**一条正常链路**：解码交出输出缓冲（buffer 模式），经 Vulkan 呈现器导入、转成 RGB、上屏；
+超分只是这条链路上的一个可选段。解码器自带的输出表面（surface 模式）保留为**兜底**，只在呈现器不能导入
+缓冲时启用——与 RDP 的 GLES 兜底同级：静默回退、不参与送显节拍（判槽即丢），实际只有模拟器会走到。
+**模式在会话开始时按能力一次性判定，运行期不可切换**（换模式要重建解码器），所以运行期"这帧呈现不了"
+只能报错、不能改走另一条路（见 §1 末两条）。
 
-- **默认：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
+- **默认：解码走 buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流
+  （`/launch` 与 `STREAM_CONFIGURATION` 的尺寸都取会话分辨率，fps 钳制与自动码率也按它算，见 §4；不开超分时
+  两者相等），本机每帧经呈现器上屏，开了超分再上采样回输出分辨率。解码器**不设输出表面**，每帧把自己的
+  输出缓冲交出来（`OH_AVBuffer_GetNativeBuffer`）；解码桥在交接锁下把该缓冲交给
+  `VkRenderer::PresentVideo`；提交成功时返回该帧的呈现槽位 token，**GPU 读完之前不归还**给解码器——
+  交接线程最多留两帧，`WaitVideoFrame(token)` 等前一个槽位的 fence 后才把缓冲交回 codec，因此
+  解码/convert 与上一帧的上采样可以重叠。`core/hmrdp_vk_video.*` 负责导入与 convert pass
+  （整块按 **R8 字节图**外部内存导入，片元 `texelFetch` 取 Y 与交错 Cb/Cr、**自己做 YUV→RGB**），写进
+  **会话分辨率的 picture**（每帧槽一份 picture/UBO），之后接既有的超分 / letterbox / swapchain。
+  **导入配方、几何取法（取解码器报的账，不是分配器的推断）、归还与门控的判据全在
+  [`present.md`](present.md) §4**——本节只讲本仓怎么接。因为像素与色彩空间都经我们自己的 pass，
+  会话把协商的 CSC 交给呈现器（`SetVideoColorSpace`）做核对，不一致报 `color-mismatch`。
+  此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）；
+  不满足时走下面这条兜底。
+- **兜底：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
   合成 pass；留边由**画面组件几何**承担——会话页用 `components/SessionPicture` 把 surface 约束成**流分辨率
   比例并居中**（与 RDP 同一套 `utils/PictureFit`），组件比例恒等于内容比例，合成器在窗口拖拽时只做等比缩放，
   **无需重绘**。窗口另设 `OH_NativeWindow_NativeWindowSetScalingModeV2(window, OH_SCALING_MODE_SCALE_FIT_V2)`
   （不设则默认拉伸填满），兜住协商流分辨率与请求值不一致的情形。留边区域**不接收指针**：输入/焦点在 XComponent
-  上，事件坐标即画面局部坐标，映射是整画面归一化。这是平台文档推荐的视频播放方式，延迟/功耗最优，全屏原生
-  比例时可能命中硬件直通/overlay。
-- **超分：解码走 buffer 模式 + Vulkan 导入，复用 RDP 呈现器**。会话按**输出分辨率 ÷ 倍率**取流
-  （`/launch` 与 `STREAM_CONFIGURATION` 的尺寸都取会话分辨率，fps 钳制与自动码率也按它算，见 §4），本机把每帧
-  上采样回输出分辨率。解码器**不设输出表面**，每帧把自己的输出缓冲交出来（`OH_AVBuffer_GetNativeBuffer`）；
-  解码桥在交接锁下把该缓冲交给 `VkRenderer::PresentVideo`；提交成功时返回该帧的呈现槽位 token，
-  **GPU 读完之前不归还**给解码器——交接线程最多留两帧，`WaitVideoFrame(token)` 等前一个槽位的 fence
-  后才把缓冲交回 codec，因此解码/convert 与上一帧的上采样可以重叠。`core/hmrdp_vk_video.*`
-  负责导入与 convert pass（整块按 **R8 字节图**外部内存导入，片元 `texelFetch` 取 Y 与交错 Cb/Cr、**自己做
-  YUV→RGB**），写进**会话分辨率的 picture**（每帧槽一份 picture/UBO），之后接既有的超分 / letterbox / swapchain。
-  **导入配方、几何取法（取解码器报的账，不是分配器的推断）、归还与门控的判据全在
-  [`present.md`](present.md) §4**——本节只讲本仓怎么接。
-  此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）。
+  上，事件坐标即画面局部坐标，映射是整画面归一化。它是平台文档推荐的视频播放方式（延迟/功耗最优，全屏原生
+  比例时可能命中硬件直通/overlay），但应用侧对送显没有控制权：解码输出回调上只能"送或丢"，没有可等待的
+  线程（见 §1），因此它不参与送显节拍，也**不承载超分**（拿不到输出图）——会话请求了超分却没有呈现器时，
+  按输出分辨率取流由主机放大。
 
 ## 3. 编解码协商
 
@@ -113,8 +130,8 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 
 协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）；运行期另有 `sr-unavailable`
 （会话请求了超分但没有可用呈现器）、`sr-inactive`（呈现器在跑但上采样未生效）、`video-present`
-（呈现器拒绝帧）与 `color-mismatch`（解码缓冲声明的色彩空间与协商的 CSC 不同族或不同范围，
-见 [`present.md`](present.md) §4）四种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码
+（呈现器连续拒绝帧 ⇒ **确认黑屏**，见 §1）与 `color-mismatch`（解码缓冲声明的色彩空间与协商的 CSC
+不同族或不同范围，见 [`present.md`](present.md) §4）四种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码
 标记（h264/hevc/av1），工具栏把它与超分状态合并进分辨率后的**同一个括号**、逗号分隔
 （`1920 × 1080 (FSR 1.5x, HEVC)`；软解再加 `CPU`；超分未生效/导入失败另有 `未超分`/`视频异常` token，
 色彩对不上另有 `色彩存疑`，见 [`moonlight-session.md`](moonlight-session.md) §2）。
@@ -138,18 +155,18 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
 
 - RDP 的 `FramePipeline` / `GdiFrameHost` / `PresentGdiFrame` / 零拷贝桌面缓冲都是 **gdi（CPU 帧）专属**，
   不套给 Moonlight。
-- `FramePresenter`（surface / swapchain / letterbox / 超分）是唯一可复用的图形核心，**只被超分链路复用**：
+- `FramePresenter`（surface / swapchain / letterbox / 超分）是唯一可复用的图形核心，**Moonlight 视频默认走它**：
   接口只有一个视频入口 `PresentVideo`（帧 + 几何 → 呈现槽位 token）与 `WaitVideoFrame(token)`，且**只由
-  `VkRenderer` 实现**（`GlesPresenter` 不参与）。
+  `VkRenderer` 实现**（`GlesPresenter` 不参与，所以它的设备落在兜底 surface 链路上）。
   可复用的是**「会话分辨率的一张输入图 →（可选）超分 → letterbox → swapchain → present」这一层**；
-  RDP 的桌面缓冲 / 脏区 / 合并（carry）是 **RDP 专属的可选路径**，视频链路一概不用——视频是流、语义是丢帧，
-  且恒整帧一次、无 CPU 拷贝。直出链路**完全不经 presenter**，与 RDP 互不影响（见
-  [`present.md`](present.md) §1/§4）。
+  RDP 的桌面缓冲 / 脏区 / 合并（carry）是 **RDP 专属的可选路径**，视频链路一概不用——视频恒整帧一次、
+  无 CPU 拷贝，送显节拍是"等槽位 + 被新帧接管"而不是合并。兜底 surface 链路**完全不经 presenter**，
+  与 RDP 互不影响（见 [`present.md`](present.md) §1/§4）。
 
 ## 6. 不采用的方向
 
-- **不采用「解码 → `OH_NativeImage` 外部纹理 → GLES presenter」这条中间方案**：对全屏视频它比直出多一个
-  整帧 GPU pass（letterbox / YUV→RGB），换来的是一条并非必需的 present 通道；且外部纹理的朝向/裁剪在
+- **不采用「解码 → `OH_NativeImage` 外部纹理 → GLES presenter」这条中间方案**：外部纹理的朝向/裁剪在
   `GetTransformMatrixV2` 的矩阵里、须与纹理坐标配合，还要处理跨线程 EGL，复杂度与故障面都不划算。
-  Moonlight 的 letterbox 由直出窗口的 `SCALE_FIT` 缩放模式解决，超分则走 Vulkan 导入链路。
+  同样一趟整帧 GPU pass 由默认链路用官方 `VK_OHOS_external_memory` 导入 + 自写 convert 完成（§2），
+  不必再引入外部纹理这一层；GLES 呈现器只服务 RDP 的兜底上屏，不接视频。
 - **YUV 4:4:4 不做**：解码与上屏按 4:2:0 处理。

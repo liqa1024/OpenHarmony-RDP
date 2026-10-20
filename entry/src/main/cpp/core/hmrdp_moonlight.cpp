@@ -279,8 +279,11 @@ class MoonlightVideoRenderer : public VideoFrameSink {
 
   void Start() {
     std::lock_guard<std::mutex> lock(mutex_);
-    const bool sr = HasPresenter();
-    if (srRequested_.load() && !sr) {
+    // The presenter's presence decides the output mode, not 超分: every decoded picture goes to it as
+    // a codec buffer, and the decoder renders into the window itself only where no presenter can
+    // import buffers (the compatibility fallback).
+    const bool bufferMode = HasPresenter();
+    if (srRequested_.load() && !bufferMode) {
       // Keep a codec warning that Setup already recorded; the two are independent session facts.
       if (warning_.find("sr-unavailable") == std::string::npos) {
         if (!warning_.empty()) {
@@ -303,10 +306,10 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     VideoDecoder::FrameReadyFn onFrame = [this](int, int, int64_t ptsUs) {
       NoteDecoded(ptsUs);
     };
-    // 超分: the presenter owns the real window, so the decoder hands out its own buffers instead
-    // (the layout a byte-wise import needs is only reported in buffer mode, and the window never
-    // sees a decoded frame); without a presenter the decoder renders straight into the window.
-    const bool started = sr
+    // The presenter owns the real window, so the decoder hands out its own buffers instead (the
+    // layout a byte-wise import needs is only reported in buffer mode, and the window never sees a
+    // decoded frame); the fallback renders straight into the window.
+    const bool started = bufferMode
         ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, onFrame, this)
         : decoder_.Start(mime_, window_, width_, height_, redrawRate_, onFrame);
     if (!started) {
@@ -315,7 +318,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
       return;
     }
     running_ = true;
-    HMRDP_LOGI("moonlight video: started (%{public}s)", sr ? "buffer/超分" : "surface");
+    HMRDP_LOGI("moonlight video: started (%{public}s)", bufferMode ? "buffer" : "surface fallback");
   }
 
   void Stop() {

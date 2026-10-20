@@ -329,8 +329,8 @@ napi_value MoonlightSessionSetSurface(napi_env env, napi_callback_info info) {
   }
   if (g_moonlightWindow != nullptr) {
     if (hmrdp::MoonlightSessionActive() && !hmrdp::MoonlightVideoBufferMode()) {
-      // Surface mode: the codec itself holds the old window, so a live replacement would need a
-      // decoder restart. Reject it rather than presenting into a dead surface.
+      // Fallback (no presenter): the codec itself holds the old window, so a live replacement would
+      // need a decoder restart. Reject it rather than presenting into a dead surface.
       OH_NativeWindow_DestroyNativeWindow(window);
       return CreateBool(env, false);
     }

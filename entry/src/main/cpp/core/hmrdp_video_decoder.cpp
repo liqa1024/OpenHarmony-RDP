@@ -265,7 +265,7 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
 }
 
 bool VideoDecoder::TakePresentSlot() {
-  if (slots_.Take()) {
+  if (slots_.Claim(NowUs(), SlotTolerance::kHalfPeriod)) {
     return true;
   }
   statPresentDropped_.fetch_add(1, std::memory_order_relaxed);
@@ -367,12 +367,13 @@ void VideoDecoder::HandOff(uint32_t index, OH_AVBuffer* buffer) {
       dropped.index = index;
       dropped.buffer = buffer;
     } else {
-      // The sink is behind: keep the newest picture only, so an overload costs one frame instead of
-      // a queue's worth of latency.
+      // Keep the newest picture only: the one waiting here has not reached its slot yet, so a newer
+      // picture takes over that slot instead. An overload costs one frame rather than a queue's worth
+      // of latency.
       dropped = pendingOutput_;
       if (dropped.buffer != nullptr) {
         statHandOffReplaced_.fetch_add(1, std::memory_order_relaxed);
-        // The sink (the presenter, paced by the swapchain) is behind the stream. With the gear below
+        // The display took one picture per period and this one lost that race. With the gear below
         // the stream rate that pace is the screen's; above it, the sink is behind for its own reasons.
         if (DisplayBelowFrameRate(frameRate_)) {
           statRefreshDropped_.fetch_add(1, std::memory_order_relaxed);
@@ -400,7 +401,25 @@ void VideoDecoder::HandOffLoop() {
     VideoFrameGeometry geometry;
     {
       std::unique_lock<std::mutex> lock(outputMutex_);
-      outputCv_.wait(lock, [this]() { return handOffStop_ || pendingOutput_.buffer != nullptr; });
+      // Wait for a picture, then for the display slot that picture belongs to. A picture arriving
+      // during the slot wait replaces the one held here (HandOff does that itself), so what finally
+      // goes out is the newest the panel can still show rather than whatever arrived first. The wait
+      // ends when the slot opens, so it never runs longer than one refresh period.
+      for (;;) {
+        if (handOffStop_) {
+          break;
+        }
+        if (pendingOutput_.buffer == nullptr) {
+          outputCv_.wait(lock, [this]() { return handOffStop_ || pendingOutput_.buffer != nullptr; });
+          continue;
+        }
+        const int64_t nowUs = NowUs();
+        const int64_t waitUs = slots_.NextSlotUs(nowUs) - nowUs;
+        if (waitUs <= 0) {
+          break;
+        }
+        outputCv_.wait_for(lock, std::chrono::microseconds(waitUs));
+      }
       if (handOffStop_) {
         break;
       }
@@ -411,6 +430,8 @@ void VideoDecoder::HandOffLoop() {
     if (frame.buffer == nullptr) {
       continue;
     }
+    // The cursor advances when a frame actually goes out, not when one arrives.
+    slots_.Claim(NowUs(), SlotTolerance::kFullPeriod);
     // Keep at most two pictures in the sink; the oldest one's GPU work is finished before the
     // buffer goes back to the codec, so decode and present overlap.
     if (pendingPresented_.size() >= kMaxPendingPresented) {
@@ -632,16 +653,16 @@ void VideoDecoder::HandleNewOutput(uint32_t index, OH_AVBuffer* buffer) {
   }
   const int width = width_.load();
   const int height = height_.load();
-  // Present as soon as the frame is decoded (the host paces the stream); a frame the display cannot
-  // show this period is released unwatched — this is the one place that decides it, for both output
-  // modes. In buffer mode "presenting" means handing the picture to the sink, which returns it.
-  if (TakePresentSlot()) {
+  // Present as soon as the frame is decoded (the host paces the stream). In buffer mode "presenting"
+  // means handing the picture to the sink, which returns it, and the display slot is decided there —
+  // the hand-off thread holds the picture until its slot and a newer one replaces it, so a picture
+  // refused here would only be one the display could have shown. Only the fallback output surface has
+  // to gate on this thread, because it cannot hold a picture at all.
+  if (buffered_) {
+    HandOff(index, buffer);
+  } else if (TakePresentSlot()) {
     statPresented_.fetch_add(1, std::memory_order_relaxed);
-    if (buffered_) {
-      HandOff(index, buffer);
-    } else {
-      OH_VideoDecoder_RenderOutputBuffer(codec_, index);
-    }
+    OH_VideoDecoder_RenderOutputBuffer(codec_, index);
   } else {
     ReleaseOutput(index);
   }

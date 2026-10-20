@@ -5,14 +5,14 @@ RDP（gdi）侧特有的脏区上传、零拷贝桌面缓冲、合并上屏与�
 GFX 协议框架与 CPU（gdi）链路的成本结构见 [`rdp-gfx.md`](rdp-gfx.md)；Moonlight 的两条上屏链路见
 [`moonlight-video.md`](moonlight-video.md)；构建见 [`build.md`](build.md)，测试与验证见 [`testing.md`](testing.md)。
 
-> **范围**：RDP 的解码与合成走 FreeRDP gdi（live 与回放同一条路），Moonlight 直出时不经呈现器、超分时把
-> 解码帧交给同一呈现器；本文件只讲把出好的帧送上屏。自研 GPU 解码/合成引擎**不采用**（见
+> **范围**：RDP 的解码与合成走 FreeRDP gdi（live 与回放同一条路），Moonlight 默认把解码帧交给同一呈现器
+> （超分只是这条链路上的可选一段），只有兜底的 surface 链路不经呈现器；本文件只讲把出好的帧送上屏。自研 GPU 解码/合成引擎**不采用**（见
 > [`rdp-gfx.md`](rdp-gfx.md) §3）。
 
 ## 1. 一套实现、两个后端
 
 `FramePresenter`（`hmrdp_presenter.h`）只有一件事：把一帧画面放上 XComponent 表面。桌面帧由 gdi 出，
-Moonlight 的 超分链路把解码出的 NV12 帧交给它（见 §4、[`moonlight-video.md`](moonlight-video.md) §2）。
+Moonlight 的视频链路（默认 buffer 模式）把解码出的 NV12 帧交给它（见 §4、[`moonlight-video.md`](moonlight-video.md) §2）。
 后端由 `CreateFramePresenter()` 按**呈现能力**（`VulkanCapabilities::presenterSupported`）自动选，没有用户开关
 （dev 回放页可临时把它压到 GLES 做 A/B，会话开始时按能力再次归一）：
 
@@ -45,9 +45,12 @@ device（[`architecture.md`](architecture.md) §4.1）。
 - **`presentWait` = 等显示端**：`present` 里 `vkAcquireNextImageKHR`/fence（GLES 是 `eglSwapBuffers`）的阻塞。
   **单列、不入 `本机`**（定义与自检见 [`rdp-gfx.md`](rdp-gfx.md) §7.1）。
 - **送显槽位（共享机制）**：本机刷新率不够时（省电档、档位上不来）的送显节拍由共享的
-  `hmrdp_display_rate.*` 给出（面板档位 + "一个周期一帧"的槽位游标）。两条链路对多余帧的处置不同：
-  桌面是**状态流**（丢一帧就是一处永久错像素）⇒ **合并**（[`rdp-present.md`](rdp-present.md) §3）；
-  视频是**流**（丢帧无害）⇒ **丢弃**（[`moonlight-video.md`](moonlight-video.md) §1）。
+  `hmrdp_display_rate.*` 给出：`SlotSchedule` 只回答**槽位时刻**（`NextSlotUs`）和"能否占下这个槽"
+  （`Claim`），"最多能提前多久占"由调用方按策略传入（`SlotTolerance`），判据本身不含处置。两条链路对
+  多余帧的处置不同：桌面是**状态流**（丢一帧就是一处永久错像素）⇒ **合并**，用半周期容差、空闲时等槽位
+  （[`rdp-present.md`](rdp-present.md) §3）；视频是**流**+ **等到槽位、等待期间被新帧接管**，用整周期容差，
+  于是默认链路上屏侧只剩"被顶掉"这一个丢弃点（[`moonlight-video.md`](moonlight-video.md) §1）；只有兜底的
+  surface 链路仍按"太早即丢"处理。
 - **档位取"会话窗口所在显示设备"**：只有 UI 层知道窗口落在哪块屏（`window` 属性 → `display` 的
   `refreshRate`），所以由它把该档位推给原生（`setDisplayRefreshRateHz`，见 `services/SessionDisplayRate`），
   在显示变化与窗口跨屏后重推；原生在没有推送时回落到**默认显示设备**的自动读数（首次读 + 变化监听）。
@@ -115,7 +118,7 @@ device（[`architecture.md`](architecture.md) §4.1）。
   因此 Moonlight 不需要跟 RDP 的脏区/合并上屏（carry）机制发生关系；超分对象只按「输入图 + 尺寸」
   缓存与重建，反向引用 RDP 专有成员（如桌面图视图）是**透抽象**，不允许。FSR 的两份 EASU 输入描述符
   按帧槽持有；XEngine 每帧直接收当前槽的输入视图。
-- **视频输入（Moonlight 超分专用，`PresentVideo`）**：会话把一个**图形分配器**的 `OH_NativeBuffer` 交来（buffer
+- **视频输入（Moonlight 的默认链路，`PresentVideo`）**：会话把一个**图形分配器**的 `OH_NativeBuffer` 交来（buffer
   模式下由 `OH_AVBuffer_GetNativeBuffer` 取得，见 [`moonlight-video.md`](moonlight-video.md) §1），
   `VkVideoImport`（`core/hmrdp_vk_video.h`）把它**整块按 R8 字节图导入**（外部内存 + 专用分配 + `TILING_LINEAR`）——
   **R8 + `TILING_LINEAR` 只是给这块内存起一个"字节视图"的名字**：线性图像的定义就是"第 `(x,y)` 个 texel 落在
@@ -189,7 +192,7 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
 | **呈现判定**（`presenterSupported`） | 上屏后端自动选择（§1） | device + host-visible 内存 + `VK_OHOS_surface`/`VK_KHR_swapchain`；**不需要 compute** |
 | **超分：FSR**（`srFsrSupported`） | 超分后端之一（§4） | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
 | **超分：XEngine**（`srXengineSupported`） | 超分后端之一（§4） | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
-| **视频导入**（`srVideoImportSupported`） | Moonlight 超分的前置（§4） | 呈现判定成立 + `VK_OHOS_external_memory` + `R8_UNORM/TILING_LINEAR/SAMPLED` 可创建（缓冲按 R8 字节图导入，转换自己做，不依赖驱动解释缓冲） |
+| **视频导入**（`srVideoImportSupported`） | Moonlight **默认上屏链路**的前置，超分与 RDP 都不用（§4） | 呈现判定成立 + `VK_OHOS_external_memory` + `R8_UNORM/TILING_LINEAR/SAMPLED` 可创建（缓冲按 R8 字节图导入，转换自己做，不依赖驱动解释缓冲） |
 
 - 呈现能力判定**只有 `presenterSupported` 一个**：不存在分开的"解码能力 / 呈现能力"两套判定（解码始终是
   FreeRDP gdi，见 [`rdp-gfx.md`](rdp-gfx.md)）。
@@ -201,9 +204,11 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
   中文文案在 `DeviceCapabilities.superResolution()`；`superResolutionBackends()` 另回**可用的后端列表**
   （`"xengine"`/`"fsr"`/`"xengine,fsr"`/空）**与 `videoImport` 布尔**，UI 按它逐个置灰。
   `SettingsStore.srBackendUsable(backend, protocol)` 是某个后端能否生效的唯一判据。
-- **视频导入**（`srVideoImportSupported`）不是 UI 上的独立开关：它是 **Moonlight 超分的额外前置**
-  （`DeviceCapabilities.srVideoImport()`），RDP 超分不需要它（RDP 的输入是 CPU 桌面图）。设备缺任一前提时
-  Moonlight 分栏的超分选项置灰，RDP 分栏不受影响。
+- **视频导入**（`srVideoImportSupported`）不是 UI 上的独立开关：`supportsVideo()`（呈现判定 **且** 视频导入
+  判定）是 **Moonlight 输出模式的一次性判据**——成立走默认 buffer 链路，否则静默回退到解码器自己的输出
+  表面（兜底，见 [`moonlight-video.md`](moonlight-video.md) §2），并在那里**没有超分**（`DeviceCapabilities.srVideoImport()`）。
+  RDP 不需要它（RDP 超分的输入是 CPU 桌面图，且不走上屏闸门）。所以缺这一项不会让会话没画面，
+  只会让 Moonlight 落在兜底链路；RDP 分栏完全不受影响。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
   （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），与 toolchain 指向的 openharmony sysroot 同级；

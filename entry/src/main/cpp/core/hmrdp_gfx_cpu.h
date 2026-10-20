@@ -77,7 +77,7 @@ class GdiFrameHost {
   bool desktopAttached_ = false;
 
   bool presentPacing_ = false;
-  PresentSlots slots_;
+  SlotSchedule slots_;
   PresentRect carryBox_;
   bool carryValid_ = false;
   // Kept for the carried present, which happens outside the frame that produced the pixels.

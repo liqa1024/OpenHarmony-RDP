@@ -150,33 +150,35 @@ void Run(const MoonlightStreamConfig& config) {
     context = g_context;
   }
   const bool srRequested = sessionWidth != config.width || sessionHeight != config.height;
+  // The presenter is the video path: every decoded picture is handed to it as a codec buffer
+  // (buffer mode), and 超分 is only a flag on that same object. The decoder's own output surface is
+  // the compatibility fallback for a device whose presenter cannot import buffers (in practice the
+  // emulator); it stays silent because the session still shows a picture there.
   // The presenter lives in this scope for the whole connection: the bridge borrows it from here and
   // must have given it back (MoonlightVideoDetachPresenter) before the scope ends.
   std::unique_ptr<FramePresenter> presenter;
-  bool srAttached = false;
-  if (srRequested && context.window != nullptr) {
+  bool presenterActive = false;
+  if (context.window != nullptr) {
     std::unique_ptr<FramePresenter> created = CreateFramePresenter();
-    // A GLES presenter or a device without the video-import extension must not put the decoder into
-    // buffer mode: PresentVideo would refuse every frame and the window would stay black.
     if (created != nullptr && created->supportsVideo()) {
       const int surfaceWidth = context.width > 0 ? context.width : config.width;
       const int surfaceHeight = context.height > 0 ? context.height : config.height;
       created->SetSurface(context.window, surfaceWidth, surfaceHeight);
       if (created->Prepare()) {
         presenter = std::move(created);
-        presenter->SetSuperResolution(true, static_cast<SuperResolutionBackend>(config.srBackend),
+        presenter->SetSuperResolution(srRequested, static_cast<SuperResolutionBackend>(config.srBackend),
                                       config.width, config.height);
         presenter->SetVideoColorSpace(NegotiatedColorSpace(config.colorSpace, config.colorRange));
-        srAttached = true;
+        presenterActive = true;
       } else {
-        HMRDP_LOGW("moonlight session: presenter prepare failed; using the output size in surface mode");
+        HMRDP_LOGW("moonlight session: presenter prepare failed; the decoder renders into the surface");
       }
     } else if (created != nullptr) {
-      HMRDP_LOGW("moonlight session: presenter cannot import decoded buffers; using the output size "
-                 "in surface mode");
+      HMRDP_LOGW("moonlight session: presenter cannot import decoded buffers; the decoder renders "
+                 "into the surface");
     }
   }
-  if (srRequested && !srAttached) {
+  if (srRequested && !presenterActive) {
     // Keep a visible picture: the decoder renders straight into the window at the output size. The
     // host stream is still requested at the session size, so the host upscales instead of this device.
     sessionWidth = config.width;
@@ -185,7 +187,7 @@ void Run(const MoonlightStreamConfig& config) {
   // The cursor is forwarded in stream pixels; apply the same ratio the picture gets. A fallback to
   // the output-size surface path is 1:1 and leaves the default 1000.
   int cursorMagnificationMilli = 1000;
-  if (srAttached && sessionWidth > 0) {
+  if (presenterActive && sessionWidth > 0) {
     const int ratio = static_cast<int>(
         std::lround(1000.0 * static_cast<double>(config.width) / static_cast<double>(sessionWidth)));
     if (ratio > cursorMagnificationMilli) {
@@ -194,15 +196,13 @@ void Run(const MoonlightStreamConfig& config) {
   }
   g_cursorMagnificationMilli.store(cursorMagnificationMilli);
   MoonlightVideoSetSuperResolutionRequested(srRequested);
-  MoonlightVideoAttachPresenter(srAttached ? presenter.get() : nullptr);
-  if (srRequested) {
-    HMRDP_LOGI("moonlight session %{public}dx%{public}d (super resolution %{public}s -> "
-               "%{public}dx%{public}d, attached=%{public}d)",
-               config.width, config.height,
-               config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr"
-                                                                                 : "xengine",
-               sessionWidth, sessionHeight, srAttached ? 1 : 0);
-  }
+  MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
+  HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "
+             "%{public}s %{public}s -> %{public}dx%{public}d)",
+             config.width, config.height, presenterActive ? "buffer" : "surface fallback",
+             srRequested ? "on" : "off",
+             config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr" : "xengine",
+             sessionWidth, sessionHeight);
   stream.width = sessionWidth;
   stream.height = sessionHeight;
   stream.fps = config.fps;

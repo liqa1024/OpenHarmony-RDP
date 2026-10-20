@@ -188,7 +188,7 @@ void GdiFrameHost::SetPresentPacing(bool enabled) {
 }
 
 int64_t GdiFrameHost::PendingPresentWaitUs() const {
-  return carryValid_ ? slots_.WaitUs() : -1;
+  return carryValid_ ? slots_.WaitUs(NowUs(), SlotTolerance::kHalfPeriod) : -1;
 }
 
 bool GdiFrameHost::PresentNow(rdpGdi* gdi, const PresentRect* carry, uint64_t* presentUs,
@@ -224,7 +224,7 @@ bool GdiFrameHost::OnEndPaint(rdpGdi* gdi, uint64_t* presentUs, PresentUploadInf
   if (!desktopAttached_) {
     desktopAttached_ = AttachPresenterDesktopBuffer(gdi, presenter_);
   }
-  if (presentPacing_ && !slots_.Take()) {
+  if (presentPacing_ && !slots_.Claim(NowUs(), SlotTolerance::kHalfPeriod)) {
     // The display is still holding the previous frame: this one's pixels join the carried region.
     CarryFrameRegion(gdi);
     return false;

@@ -49,7 +49,7 @@
 - **音频播放链路（有界 PCM 交接环 + ArkTS 渲染器 / 原生 OHAudio）两协议共用** → [`audio.md`](audio.md)。
 - **剪贴板只手动同步、不做自动监听** → [`clipboard.md`](clipboard.md) §2。
 - **剪贴板抽象（`ClipboardController` + `ClipboardBridge` + `LocalPasteboard`）两协议共用**：RDP 全能力（文本/HTML/图片/文件），Moonlight 仅文本 + 图片 → [`clipboard.md`](clipboard.md) §1；Moonlight 协议见 [`moonlight-clipboard.md`](moonlight-clipboard.md)。
-- **Moonlight 默认解码直出 surface、不经呈现器；只有超分链路复用共享的 Vulkan 呈现器** → [`moonlight-video.md`](moonlight-video.md) §2/§5、[`present.md`](present.md) §4。
+- **Moonlight 视频默认走 buffer 模式 + 共享的 Vulkan 呈现器，超分只是这条链路上的可选一段；解码直出 surface 降为模拟器兜底**（模式在会话开始时按能力一次判定，运行期不可切换） → [`moonlight-video.md`](moonlight-video.md) §1/§2/§5、[`present.md`](present.md) §4。
 - **Moonlight 是进程级单会话**（`moonlight-common-c` 一次只允许一个连接）→ [`moonlight-native.md`](moonlight-native.md) §2。
 - **Moonlight 主机身份 = serverinfo `uniqueid`（去重）/ pin 按 host 归一化** → [`moonlight-control.md`](moonlight-control.md) §2。
 

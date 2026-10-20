@@ -144,6 +144,7 @@ struct MoonlightSessionPage {
   private fpsNote: string = '';
   private fpsNoteShown: boolean = false;
   private videoWarningShown: boolean = false;
+  private srWarningShown: boolean = false;
   private colorWarningShown: boolean = false;
   private targetFps: number = 0;
   private targetBitrateKbps: number = 0;
@@ -517,15 +518,22 @@ struct MoonlightSessionPage {
     const srIssue: boolean = warning.indexOf('sr-unavailable') >= 0
       || warning.indexOf('sr-inactive') >= 0;
     const colorMismatch: boolean = warning.indexOf('color-mismatch') >= 0;
-    if (!videoError && !srIssue) {
+    // A confirmed black screen blocks the session's whole purpose, so it needs a channel the user can
+    // read and dismiss rather than a toast that scrolls away (ui-feedback.md §1.5). The output mode is
+    // fixed for the session, so the fact is stated once and there is nothing to retry in place.
+    if (!videoError) {
       this.videoWarningShown = false;
     } else if (!this.videoWarningShown) {
       this.videoWarningShown = true;
-      if (videoError) {
-        this.toast('超分视频导入失败，请关闭超分后重连', ToastTier.Long);
-      } else {
-        this.toast('本机未能启用超分，已按原分辨率显示', ToastTier.Long);
-      }
+      showNotice(this.getUIContext(), '视频无法显示',
+        '本机未能接收解码画面。换用其他编码或更低分辨率重新连接。');
+    }
+    // A 超分 that did not come up still shows the picture, so it stays a one-shot toast.
+    if (!srIssue) {
+      this.srWarningShown = false;
+    } else if (!this.srWarningShown) {
+      this.srWarningShown = true;
+      this.toast('本机未能启用超分，已按原分辨率显示', ToastTier.Long);
     }
     if (!colorMismatch) {
       this.colorWarningShown = false;
