@@ -84,10 +84,13 @@ device（[`architecture.md`](architecture.md) §4.1）。
   XEngine 扩展的设备仍可用 FSR（`VulkanCapabilities::srFsrSupported` / `srXengineSupported`，UI 按
   `superResolutionBackends()` 分别置灰）。
 - **FSR 的两个 pass**：EASU 采样会话图（`textureGather`，采样器须 NEAREST + CLAMP）写成输出分辨率的中间图，
-  RCAS 再锐化进 `srImage_`。一个 render pass 覆盖两者（目标格式都是 `kPictureFormat`），共用全屏三角形与
-  `present_quad.vert`。常量在 shader 内用 `FsrEasuCon`/`FsrRcasCon` 从普通 uniform 算，CPU 只传尺寸与锐度，
-  **不需要 float→half 位打包**；RCAS 的锐度是「档数」（0 = 最锐）。头文件由 `fetch-sources.ps1` 固定版本拉取，
-  缺树时 CMake 警告并只保留 XEngine。
+  RCAS 再锐化进 `srImage_`。**两个 pass 各有一个 render pass**——附件格式是 render pass 的一部分，而两者的目标
+  格式不同：中间图取 `R16G16B16A16_SFLOAT`（`kFsrEasuFormat`），`srImage_` 仍是 `kPictureFormat`。中间图必须
+  比它喂的那张画宽：EASU 的输出是 8bit 输入的加权和，低位是真信息，存成 8bit 就是**在 RCAS 锐化前先舍入一次再
+  被放大**。代价是中间图的写+读各翻倍（进 §6 的 `sr` 那一段账），输出精度不变——letterbox 采的还是 8bit 那张。
+  两 pass 共用全屏三角形与 `present_quad.vert`。常量在 shader 内用 `FsrEasuCon`/`FsrRcasCon` 从普通 uniform 算，
+  CPU 只传尺寸与锐度，**不需要 float→half 位打包**；RCAS 的锐度是「档数」（0 = 最锐）。头文件由
+  `fetch-sources.ps1` 固定版本拉取，缺树时 CMake 警告并只保留 XEngine。
 - **两张图**：输入是**会话分辨率的一张图**——RDP 的桌面图，或 Moonlight 每帧槽一张的 video picture
   （`kPictureFormat` = `B8G8R8A8_UNORM`）；输出是**输出图**（同格式、`USAGE = COLOR_ATTACHMENT | SAMPLED`、
   device-local、输出分辨率，**每个帧槽一份**，避免上一帧的 letterbox 还在采样时被下一帧覆盖）。

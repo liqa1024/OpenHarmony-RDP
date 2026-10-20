@@ -22,6 +22,12 @@ constexpr float kSrSharpness = 0.2f;
 // sample value; maximum rings around glyph edges in text-heavy desktop content.
 #if defined(HMRDP_HAVE_FSR)
 constexpr float kFsrSharpnessStops = 0.2f;
+
+// FSR: the EASU target carries more precision than the picture it feeds. EASU's output is a weighted
+// blend of 8-bit samples, so its low bits are real information that an 8-bit intermediate would round
+// away before RCAS sharpens - and amplifies - the rounding. A wider intermediate costs bandwidth, not
+// output precision: what the letterbox finally samples stays kPictureFormat.
+constexpr VkFormat kFsrEasuFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 #endif
 
 #if defined(HMRDP_HAVE_FSR)
@@ -291,27 +297,29 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
     if (!CreateImageView2D(api, context, kPictureFormat, srImage_[i], &srImageView_[i])) {
       return fail("FSR: output image view failed");
     }
-    if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+    if (!CreateDeviceImage(api, context, kFsrEasuFormat, outputWidth, outputHeight,
                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                            &fsrEasuImage_[i], &fsrEasuImageMemory_[i])) {
       return fail("FSR: EASU image allocation failed");
     }
-    if (!CreateImageView2D(api, context, kPictureFormat, fsrEasuImage_[i],
+    if (!CreateImageView2D(api, context, kFsrEasuFormat, fsrEasuImage_[i],
                            &fsrEasuImageView_[i])) {
       return fail("FSR: EASU image view failed");
     }
   }
 
-  {
+  // One render pass per target format: a pass carries its attachment's format, so the two stages
+  // cannot share one. Both rewrite their target whole every frame (loadOp DONT_CARE) and leave it in
+  // GENERAL, because the next sampler - RCAS, then the letterbox - reads it from there.
+  const auto make_render_pass = [&](VkFormat format, VkRenderPass* out) -> bool {
     VkAttachmentDescription colorAttachment{};
-    colorAttachment.format = kPictureFormat;
+    colorAttachment.format = format;
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    // The next stage samples it (RCAS, then the letterbox), so leave it in GENERAL.
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkAttachmentReference colorRef{};
     colorRef.attachment = 0;
@@ -335,16 +343,19 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
     info.pSubpasses = &subpass;
     info.dependencyCount = 1;
     info.pDependencies = &dependency;
-    if (api.CreateRenderPass(device, &info, nullptr, &fsrRenderPass_) != VK_SUCCESS) {
-      return fail("FSR: vkCreateRenderPass failed");
-    }
+    return api.CreateRenderPass(device, &info, nullptr, out) == VK_SUCCESS;
+  };
+  if (!make_render_pass(kFsrEasuFormat, &fsrEasuRenderPass_) ||
+      !make_render_pass(kPictureFormat, &fsrRcasRenderPass_)) {
+    return fail("FSR: vkCreateRenderPass failed");
   }
   const VkExtent2D extent{static_cast<uint32_t>(outputWidth),
                           static_cast<uint32_t>(outputHeight)};
-  const auto make_framebuffer = [&](VkImageView view, VkFramebuffer* out) -> bool {
+  const auto make_framebuffer =
+      [&](VkRenderPass pass, VkImageView view, VkFramebuffer* out) -> bool {
     VkFramebufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    info.renderPass = fsrRenderPass_;
+    info.renderPass = pass;
     info.attachmentCount = 1;
     info.pAttachments = &view;
     info.width = extent.width;
@@ -353,8 +364,8 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
     return api.CreateFramebuffer(device, &info, nullptr, out) == VK_SUCCESS;
   };
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    if (!make_framebuffer(fsrEasuImageView_[i], &fsrEasuFramebuffer_[i]) ||
-        !make_framebuffer(srImageView_[i], &fsrRcasFramebuffer_[i])) {
+    if (!make_framebuffer(fsrEasuRenderPass_, fsrEasuImageView_[i], &fsrEasuFramebuffer_[i]) ||
+        !make_framebuffer(fsrRcasRenderPass_, srImageView_[i], &fsrRcasFramebuffer_[i])) {
       return fail("FSR: vkCreateFramebuffer failed");
     }
   }
@@ -436,9 +447,9 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
       fsrRcasSet_[i] = sets[i * 2 + 1];
     }
   }
-  if (!CreateFsrPipeline(api, device, fsrRenderPass_, fsrPipelineLayout_, kFsrEasuFragSpv,
+  if (!CreateFsrPipeline(api, device, fsrEasuRenderPass_, fsrPipelineLayout_, kFsrEasuFragSpv,
                          kFsrEasuFragSpvWords, &fsrEasuPipeline_) ||
-      !CreateFsrPipeline(api, device, fsrRenderPass_, fsrPipelineLayout_, kFsrRcasFragSpv,
+      !CreateFsrPipeline(api, device, fsrRcasRenderPass_, fsrPipelineLayout_, kFsrRcasFragSpv,
                          kFsrRcasFragSpvWords, &fsrRcasPipeline_)) {
     return fail("FSR: vkCreateGraphicsPipelines failed");
   }
@@ -618,8 +629,13 @@ void VkRenderer::DestroyFsrLocked() {
     if (api.DestroySampler != nullptr && fsrSampler_ != VK_NULL_HANDLE) {
       api.DestroySampler(device, fsrSampler_, nullptr);
     }
-    if (api.DestroyRenderPass != nullptr && fsrRenderPass_ != VK_NULL_HANDLE) {
-      api.DestroyRenderPass(device, fsrRenderPass_, nullptr);
+    if (api.DestroyRenderPass != nullptr) {
+      if (fsrEasuRenderPass_ != VK_NULL_HANDLE) {
+        api.DestroyRenderPass(device, fsrEasuRenderPass_, nullptr);
+      }
+      if (fsrRcasRenderPass_ != VK_NULL_HANDLE) {
+        api.DestroyRenderPass(device, fsrRcasRenderPass_, nullptr);
+      }
     }
     if (api.DestroyImageView != nullptr) {
       for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -661,7 +677,8 @@ void VkRenderer::DestroyFsrLocked() {
   }
   fsrEasuParamsMapped_ = nullptr;
   fsrRcasParamsMapped_ = nullptr;
-  fsrRenderPass_ = VK_NULL_HANDLE;
+  fsrEasuRenderPass_ = VK_NULL_HANDLE;
+  fsrRcasRenderPass_ = VK_NULL_HANDLE;
   fsrSampler_ = VK_NULL_HANDLE;
   fsrSetLayout_ = VK_NULL_HANDLE;
   fsrPipelineLayout_ = VK_NULL_HANDLE;
@@ -748,10 +765,11 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView in
   VkRect2D scissor{};
   scissor.offset = {0, 0};
   scissor.extent = extent;
-  const auto drawPass = [&](VkFramebuffer framebuffer, VkPipeline pipeline, VkDescriptorSet set) {
+  const auto drawPass = [&](VkRenderPass pass, VkFramebuffer framebuffer, VkPipeline pipeline,
+                            VkDescriptorSet set) {
     VkRenderPassBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    begin.renderPass = fsrRenderPass_;
+    begin.renderPass = pass;
     begin.framebuffer = framebuffer;
     begin.renderArea.offset = {0, 0};
     begin.renderArea.extent = extent;
@@ -765,7 +783,7 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView in
     api.CmdEndRenderPass(cmd);
   };
 
-  drawPass(fsrEasuFramebuffer_[slot], fsrEasuPipeline_, fsrEasuSet_[slot]);
+  drawPass(fsrEasuRenderPass_, fsrEasuFramebuffer_[slot], fsrEasuPipeline_, fsrEasuSet_[slot]);
   {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -781,7 +799,7 @@ bool VkRenderer::RecordSuperResolutionLocked(VkCommandBuffer cmd, VkImageView in
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                            &barrier);
   }
-  drawPass(fsrRcasFramebuffer_[slot], fsrRcasPipeline_, fsrRcasSet_[slot]);
+  drawPass(fsrRcasRenderPass_, fsrRcasFramebuffer_[slot], fsrRcasPipeline_, fsrRcasSet_[slot]);
   targetToSampled(srImage_[slot]);
   return true;
 #else

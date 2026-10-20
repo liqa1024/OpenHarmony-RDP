@@ -207,7 +207,10 @@ class VkRenderer : public FramePresenter {
   // remembered to detect a change.
   VkImageView srInputView_[kFramesInFlight] = {};
 
-  VkRenderPass fsrRenderPass_ = VK_NULL_HANDLE;
+  // EASU and RCAS do not share a target format, so each pass has its own render pass: EASU keeps the
+  // sub-LSB part of its blend, RCAS writes the picture the letterbox samples (see kFsrEasuFormat).
+  VkRenderPass fsrEasuRenderPass_ = VK_NULL_HANDLE;
+  VkRenderPass fsrRcasRenderPass_ = VK_NULL_HANDLE;
   VkSampler fsrSampler_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout fsrSetLayout_ = VK_NULL_HANDLE;
   VkPipelineLayout fsrPipelineLayout_ = VK_NULL_HANDLE;
