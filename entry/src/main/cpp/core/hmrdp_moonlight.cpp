@@ -83,6 +83,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     int token = -1;
     bool srRequested = false;
     bool srActive = false;
+    bool colorMismatch = false;
     {
       std::lock_guard<std::mutex> lock(presenterMutex_);
       if (presenter_ == nullptr) {
@@ -92,6 +93,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
       if (token >= 0) {
         srRequested = presenter_->superResolutionRequested();
         srActive = presenter_->superResolutionActive();
+        colorMismatch = presenter_->videoColorMismatch();
       }
     }
     if (token < 0) {
@@ -117,6 +119,15 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     } else if (srRequested && srActive && srWarned_) {
       srWarned_ = false;
       ClearWarning("sr-inactive");
+    }
+    if (colorMismatch && !colorWarned_) {
+      // The buffers' colour declaration is fixed for the session, so this is stated once and not
+      // cleared: the picture may then differ from what the host encoded (see the import log line for
+      // both readings).
+      colorWarned_ = true;
+      SetWarning("color-mismatch");
+      HMRDP_LOGW("moonlight video: the buffer colour space disagrees with the one negotiated with the "
+                 "host; the picture may differ from what it encoded");
     }
     return token;
   }
@@ -280,6 +291,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     }
     presentWarned_ = false;
     srWarned_ = false;
+    colorWarned_ = false;
     presentFailures_ = 0;
     if (mime_.empty()) {
       HMRDP_LOGE("moonlight video: start needs a setup codec");
@@ -454,6 +466,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   std::mutex presenterMutex_;
   bool presentWarned_ = false;
   bool srWarned_ = false;
+  bool colorWarned_ = false;
   int presentFailures_ = 0;
   VideoDecoder decoder_;
   std::string mime_;

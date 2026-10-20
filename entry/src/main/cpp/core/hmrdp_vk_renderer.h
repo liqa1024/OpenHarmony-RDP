@@ -33,6 +33,8 @@ class VkRenderer : public FramePresenter {
   bool supportsVideo() const override;
   bool superResolutionRequested() const override;
   bool superResolutionActive() const override;
+  void SetVideoColorSpace(int colorSpace) override;
+  bool videoColorMismatch() const override;
 
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
   void BeginDesktopBufferWrite() override;

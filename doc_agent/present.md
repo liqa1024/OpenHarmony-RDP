@@ -131,11 +131,19 @@ device（[`architecture.md`](architecture.md) §4.1）。
     并打一次性警告；其它像素格式直接拒绝）。**只有编解码器什么都没报时才回落到分配器的
     `OH_NativeBuffer_GetConfig()`**——那时的行数对齐单位是推的，必须打一次性警告。
     **判据**：可见区之外不可采样——按可见尺寸声明图像会让色度起点落进亮度面的填充区（填充通常为零 ⇒ 色度读到零）。
-  - **转换在自己这边，不赌驱动对缓冲的解释**：驱动对这块缓冲的格式描述决定采样拿到什么，本仓不依赖它；色彩空间
-    取自缓冲（`OH_NativeBuffer_GetColorSpace`）；缓冲没报色彩空间时按 SDR 流的约定取 **BT.709 limited**，
-    不用驱动的 `suggestedYcbcrModel/Range` 兜底（那是 RGB/full 时会把 YUV 算错）。BT.601/709 与 narrow/full
-    都在我们手里。**判据**：分不清"色度读到零"与"采样到原始分量"时**不要用画面颜色判**——两者外观相近；
-    要看几何与色彩空间的读数（`video decoder: stream …` 与 `vulkan video import: …` 两行）。
+  - **转换在自己这边，不赌驱动对缓冲的解释**：驱动对这块缓冲的格式描述决定采样拿到什么，本仓不依赖它；**渲染依据
+    是缓冲自己的声明**（`OH_NativeBuffer_GetColorSpace`）；缓冲没报色彩空间时取**会话协商的 CSC**
+    （`encoderCscMode`，SDR 即 BT.709 limited），不用驱动的 `suggestedYcbcrModel/Range` 兜底（那是 RGB/full 时
+    会把 YUV 算错）。BT.601/709 与 narrow/full 都在我们手里。**判据**：分不清"色度读到零"与"采样到原始分量"时
+    **不要用画面颜色判**——两者外观相近；要看几何与色彩空间的读数（`video decoder: stream …` 与
+    `vulkan video import: …` 两行，后者已带 `cs=` 与 `expected=` 两个读数）。
+  - **协商值只作核对基准，不当作渲染依据，也纠正不了平台**：解码侧**没有**"声明输出色彩空间"的接口——
+    `OH_MD_KEY_VIDEO_DECODER_OUTPUT_COLOR_SPACE` 只服务 HDR Vivid→SDR 转码（仅 Surface 模式、输入须为
+    HDR Vivid 码流，非 HDR Vivid 输入会以 `OH_AVCodecOnError` 报
+    `AV_ERR_VIDEO_UNSUPPORTED_COLOR_SPACE_CONVERSION`），不是这里的开关；H.273 那几个键
+    （`OH_MD_KEY_MATRIX_COEFFICIENTS`/`RANGE_FLAG` 等）也没有"解码输出可读"的文档依据。所以会话把协商值
+    （`SetVideoColorSpace`）只当期望值：缓冲声明与它**不同族或不同范围**（或声明的是本仓根本没有的族）时报
+    `color-mismatch`（会话标题 token + 一次提示），渲染仍按缓冲声明。**不静默给错误画面，也不假装能纠正它**。
   - **每帧参数走 uniform buffer，不用 push constant**：片元阶段拿到的 push constant 不可靠（本平台驱动行为），
     而 uniform buffer 与 presenter 的 FSR pass 走的是同一条已验证的路。**规则**：图形管线里需要传给片元的
     逐帧数据一律用 UBO/描述符，不要靠 push constant。

@@ -112,11 +112,12 @@ Moonlight 的视频有两条**互相独立**的链路，按是否需要超分选
   会话中若主机协商出非决策编码，`setup` 拒绝（`codec-mismatch`），不静默改推别的编码。
 
 协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）；运行期另有 `sr-unavailable`
-（会话请求了超分但没有可用呈现器）、`sr-inactive`（呈现器在跑但上采样未生效）与 `video-present`
-（呈现器拒绝帧）三种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码
+（会话请求了超分但没有可用呈现器）、`sr-inactive`（呈现器在跑但上采样未生效）、`video-present`
+（呈现器拒绝帧）与 `color-mismatch`（解码缓冲声明的色彩空间与协商的 CSC 不同族或不同范围，
+见 [`present.md`](present.md) §4）四种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码
 标记（h264/hevc/av1），工具栏把它与超分状态合并进分辨率后的**同一个括号**、逗号分隔
 （`1920 × 1080 (FSR 1.5x, HEVC)`；软解再加 `CPU`；超分未生效/导入失败另有 `未超分`/`视频异常` token，
-见 [`moonlight-session.md`](moonlight-session.md) §2）。
+色彩对不上另有 `色彩存疑`，见 [`moonlight-session.md`](moonlight-session.md) §2）。
 
 ## 4. 其余 `STREAM_CONFIGURATION` 字段的落点
 

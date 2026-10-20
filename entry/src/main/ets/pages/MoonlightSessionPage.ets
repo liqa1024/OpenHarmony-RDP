@@ -144,6 +144,7 @@ struct MoonlightSessionPage {
   private fpsNote: string = '';
   private fpsNoteShown: boolean = false;
   private videoWarningShown: boolean = false;
+  private colorWarningShown: boolean = false;
   private targetFps: number = 0;
   private targetBitrateKbps: number = 0;
   private metricsTimer: number = -1;
@@ -515,19 +516,22 @@ struct MoonlightSessionPage {
     const videoError: boolean = warning.indexOf('video-present') >= 0;
     const srIssue: boolean = warning.indexOf('sr-unavailable') >= 0
       || warning.indexOf('sr-inactive') >= 0;
+    const colorMismatch: boolean = warning.indexOf('color-mismatch') >= 0;
     if (!videoError && !srIssue) {
       this.videoWarningShown = false;
-      return;
-    }
-    if (this.videoWarningShown) {
-      return;
-    }
-    if (videoError) {
+    } else if (!this.videoWarningShown) {
       this.videoWarningShown = true;
-      this.toast('超分视频导入失败，请关闭超分后重连', ToastTier.Long);
-    } else {
-      this.videoWarningShown = true;
-      this.toast('本机未能启用超分，已按原分辨率显示', ToastTier.Long);
+      if (videoError) {
+        this.toast('超分视频导入失败，请关闭超分后重连', ToastTier.Long);
+      } else {
+        this.toast('本机未能启用超分，已按原分辨率显示', ToastTier.Long);
+      }
+    }
+    if (!colorMismatch) {
+      this.colorWarningShown = false;
+    } else if (!this.colorWarningShown) {
+      this.colorWarningShown = true;
+      this.toast('色彩空间与主机协商不一致，画面颜色可能有偏差', ToastTier.Long);
     }
   }
 

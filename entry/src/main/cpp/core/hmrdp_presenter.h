@@ -102,6 +102,13 @@ class FramePresenter {
   virtual bool superResolutionRequested() const { return false; }
   virtual bool superResolutionActive() const { return false; }
 
+  // Moonlight 超分: the colour space the session negotiated with the host for the frames handed to
+  // PresentVideo (OH_NativeBuffer_ColorSpace, 0 = not stated). The importer presents what each buffer
+  // itself declares; this is only what that declaration is checked against, and videoColorMismatch()
+  // reports the disagreement so the session can say so instead of showing wrong colours silently.
+  virtual void SetVideoColorSpace(int colorSpace) { (void)colorSpace; }
+  virtual bool videoColorMismatch() const { return false; }
+
   virtual void Reset() = 0;
 };
 

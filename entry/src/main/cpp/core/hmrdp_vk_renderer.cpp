@@ -1626,6 +1626,16 @@ bool VkRenderer::superResolutionActive() const {
   return srRequested_ && !srFailed_ && srActiveFrame_;
 }
 
+void VkRenderer::SetVideoColorSpace(int colorSpace) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  videoImport_.SetExpectedColorSpace(colorSpace);
+}
+
+bool VkRenderer::videoColorMismatch() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return videoImport_.colorMismatch();
+}
+
 void VkRenderer::Reset() {
   const int64_t t0 = NowUs();
   std::lock_guard<std::mutex> lock(mutex_);

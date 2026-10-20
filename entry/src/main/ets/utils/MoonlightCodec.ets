@@ -70,6 +70,7 @@ export function moonlightDecodeTokens(): string[] {
   let srUnavailable: boolean = false;
   let srInactive: boolean = false;
   let videoError: boolean = false;
+  let colorMismatch: boolean = false;
   const parts: string[] = warning.length > 0 ? warning.split(',') : [];
   for (let i = 0; i < parts.length; i++) {
     const part: string = parts[i];
@@ -81,6 +82,8 @@ export function moonlightDecodeTokens(): string[] {
       srInactive = true;
     } else if (part.startsWith('video-present')) {
       videoError = true;
+    } else if (part.startsWith('color-mismatch')) {
+      colorMismatch = true;
     }
   }
   if (software) {
@@ -92,6 +95,11 @@ export function moonlightDecodeTokens(): string[] {
   }
   if (videoError) {
     tokens.push('视频异常');
+  }
+  // The picture is presented (超分 runs); only its colours are in doubt, so this is its own token
+  // rather than another failure label.
+  if (colorMismatch) {
+    tokens.push('色彩存疑');
   }
   return tokens;
 }

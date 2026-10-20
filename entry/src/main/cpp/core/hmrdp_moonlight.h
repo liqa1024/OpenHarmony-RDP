@@ -68,7 +68,9 @@ void MoonlightVideoDetachPresenter();
 
 // 超分: the session resolved a lower stream size than the output. The bridge reports "sr-unavailable"
 // when no presenter can be attached, and "sr-inactive" when the presenter runs but its upscale object
-// is not active, so the toolbar never claims 超分 for a session that is presenting the raw input.
+// is not active, so the toolbar never claims 超分 for a session that is presenting the raw input. It
+// additionally reports "color-mismatch" when the decoded buffers declare a colour space other than
+// the one the host was asked to encode with (see hmrdp_vk_video.h).
 void MoonlightVideoSetSuperResolutionRequested(bool requested);
 bool MoonlightVideoBufferMode();
 

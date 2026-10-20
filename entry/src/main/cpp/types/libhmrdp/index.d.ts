@@ -245,7 +245,7 @@ export const moonlightVideoCodecSupport: (codec: number) => number;
 export const moonlightVideoMaxFps: (videoFormat: number, width: number, height: number) => number;
 
 /** Stable decode-path codes, comma separated when several apply: "software-decode|<mime>",
- *  "sr-unavailable", "sr-inactive", "video-present"; "" when fine. */
+ *  "sr-unavailable", "sr-inactive", "video-present", "color-mismatch"; "" when fine. */
 export const moonlightVideoWarning: () => string;
 
 /** Everything LiStartConnection needs; assembled by the ArkTS control layer. */

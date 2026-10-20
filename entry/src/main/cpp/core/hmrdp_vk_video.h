@@ -62,6 +62,16 @@ class VkVideoImport {
   bool Import(const void* nativeBuffer, const VideoFrameGeometry& geometry, uint32_t slot,
               Frame* out);
 
+  // The colour space the session negotiated with the host for these frames (OH_NativeBuffer_ColorSpace,
+  // 0 = not stated). The importer still renders what each buffer itself declares; this is only what that
+  // declaration is checked against, and what a buffer stating nothing falls back to.
+  void SetExpectedColorSpace(int colorSpace);
+
+  // True once an imported buffer declared a colour space disagreeing with the expected one - another
+  // matrix family or range, or one this byte importer cannot express at all. The picture may then differ
+  // from what the host encoded, so the session says so instead of presenting it silently.
+  bool colorMismatch() const { return colorMismatch_; }
+
   // Records: the imported image's UNDEFINED -> SHADER_READ_ONLY barrier and the convert pass (luma +
   // interleaved chroma -> RGB) into that slot's picture. Ends with the picture in GENERAL for the
   // shared 超分 / letterbox tail.
@@ -139,6 +149,12 @@ class VkVideoImport {
   bool failed_ = false;
   int failedWidth_ = 0;
   int failedHeight_ = 0;
+
+  // The negotiated expectation and the verdict on the buffers seen so far. Destroy clears the verdict
+  // (every import decides it again) but keeps the expectation, which the session sets once per session
+  // before any frame arrives.
+  int expectedColorSpace_ = 0;
+  bool colorMismatch_ = false;
 
   // One-shot: an import refused every frame would otherwise log at the stream rate, and the imported
   // buffer's shape only needs printing once.

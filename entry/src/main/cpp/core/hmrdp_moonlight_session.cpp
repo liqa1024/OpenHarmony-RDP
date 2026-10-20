@@ -11,6 +11,7 @@
 #include "hmrdp_log.h"
 
 #include <Limelight.h>
+#include <native_buffer/native_buffer.h>
 
 #include "hmrdp_moonlight.h"
 #include "hmrdp_moonlight_audio.h"
@@ -21,6 +22,18 @@ namespace {
 
 // Must match SS_TOUCHPAD_FRAME_MAX_CONTACTS in the patched moonlight-common-c.
 constexpr int kMaxTouchpadContacts = 5;
+
+// The OH_NativeBuffer_ColorSpace the CSC the host was asked to encode with
+// (STREAM_CONFIGURATION.colorSpace/colorRange, see moonlight-video.md §4) corresponds to. The video
+// importer presents what each decoded buffer itself declares and only reports a disagreement with
+// this, so a buffer that states something else is a fact the user is told about, not a silent shift.
+int NegotiatedColorSpace(int colorSpace, int range) {
+  const bool full = range == COLOR_RANGE_FULL;
+  if (colorSpace == COLORSPACE_REC_601) {
+    return full ? OH_COLORSPACE_BT601_EBU_FULL : OH_COLORSPACE_BT601_EBU_LIMIT;
+  }
+  return full ? OH_COLORSPACE_BT709_FULL : OH_COLORSPACE_BT709_LIMIT;
+}
 
 std::mutex g_mutex;
 std::mutex g_cvMutex;
@@ -153,6 +166,7 @@ void Run(const MoonlightStreamConfig& config) {
         presenter = std::move(created);
         presenter->SetSuperResolution(true, static_cast<SuperResolutionBackend>(config.srBackend),
                                       config.width, config.height);
+        presenter->SetVideoColorSpace(NegotiatedColorSpace(config.colorSpace, config.colorRange));
         srAttached = true;
       } else {
         HMRDP_LOGW("moonlight session: presenter prepare failed; using the output size in surface mode");

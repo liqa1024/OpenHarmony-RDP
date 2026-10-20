@@ -207,6 +207,8 @@ void VkVideoImport::Destroy() {
   formatWarned_ = false;
   colorFallbackWarned_ = false;
   importFailed_ = false;
+  // The verdict is re-decided by the next import; the negotiated expectation outlives a rebuild.
+  colorMismatch_ = false;
 }
 
 bool VkVideoImport::EnsureConvertPipeline() {
@@ -480,6 +482,51 @@ bool VkVideoImport::EnsureConvertPipeline() {
   return true;
 }
 
+namespace {
+
+// What a colour space stands for as a YUV matrix: 601 or 709, full or limited. A space this importer
+// cannot express as a matrix (the RGB/P3/BT.2020/linear ones) stands for itself, so a declaration we
+// cannot honour counts as a disagreement rather than as a silent fallback.
+struct ColorSpaceTraits {
+  int family;
+  bool full;
+};
+
+ColorSpaceTraits TraitsOf(int colorSpace) {
+  switch (colorSpace) {
+    case OH_COLORSPACE_BT601_EBU_FULL:
+    case OH_COLORSPACE_BT601_SMPTE_C_FULL:
+      return ColorSpaceTraits{1, true};
+    case OH_COLORSPACE_BT601_EBU_LIMIT:
+    case OH_COLORSPACE_BT601_SMPTE_C_LIMIT:
+      return ColorSpaceTraits{1, false};
+    case OH_COLORSPACE_BT709_FULL:
+      return ColorSpaceTraits{2, true};
+    case OH_COLORSPACE_BT709_LIMIT:
+      return ColorSpaceTraits{2, false};
+    default:
+      return ColorSpaceTraits{colorSpace, false};
+  }
+}
+
+// A buffer that states no colour space never contradicts the expectation, and neither does an
+// expectation that was never stated (a session that does not negotiate one).
+bool ColorSpaceAgrees(int declared, int expected) {
+  if (declared == OH_COLORSPACE_NONE || expected == OH_COLORSPACE_NONE) {
+    return true;
+  }
+  const ColorSpaceTraits a = TraitsOf(declared);
+  const ColorSpaceTraits b = TraitsOf(expected);
+  return a.family == b.family && a.full == b.full;
+}
+
+}  // namespace
+
+void VkVideoImport::SetExpectedColorSpace(int colorSpace) {
+  expectedColorSpace_ = colorSpace;
+  colorMismatch_ = false;
+}
+
 // The YUV -> RGB rows for 8-bit samples, as `value = cY*Y + cCb*Cb + cCr*Cr + offset`. Narrow range
 // expects 16..235 luma / 16..240 chroma, full range 0..255.
 void VkVideoImport::UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange,
@@ -681,9 +728,16 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   }
   OH_NativeBuffer_ColorSpace colorSpace = OH_COLORSPACE_NONE;
   OH_NativeBuffer_GetColorSpace(mutableBuffer, &colorSpace);
+  if (!ColorSpaceAgrees(static_cast<int>(colorSpace), expectedColorSpace_)) {
+    colorMismatch_ = true;
+  }
+  // The buffer's own declaration is what gets rendered (the platform reads the same field); a buffer
+  // stating nothing takes the negotiated expectation, and with none either the SDR stream contract
+  // (Rec.709 limited) remains the fallback.
+  const int effectiveColorSpace =
+      colorSpace == OH_COLORSPACE_NONE ? expectedColorSpace_ : static_cast<int>(colorSpace);
   float rows[12] = {};
-  UpdateColorRows(static_cast<int>(colorSpace),
-                  static_cast<int>(formatProperties.suggestedYcbcrModel),
+  UpdateColorRows(effectiveColorSpace, static_cast<int>(formatProperties.suggestedYcbcrModel),
                   static_cast<int>(formatProperties.suggestedYcbcrRange), rows);
   for (int i = 0; i < 12; ++i) {
     out->colorRows[i] = rows[i];
@@ -691,13 +745,13 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   out->cbFirst = geometry.cbFirst;
   if (!importLogged_) {
     importLogged_ = true;
-    HMRDP_LOGI("vulkan video import: %{public}llu bytes, fmt=%{public}d cs=%{public}d, byte image "
-               "%{public}ux%{public}u (chroma row %{public}d), visible %{public}dx%{public}d at "
-               "%{public}d,%{public}d",
+    HMRDP_LOGI("vulkan video import: %{public}llu bytes, fmt=%{public}d cs=%{public}d "
+               "expected=%{public}d, byte image %{public}ux%{public}u (chroma row %{public}d), visible "
+               "%{public}dx%{public}d at %{public}d,%{public}d",
                static_cast<unsigned long long>(properties.allocationSize),
-               static_cast<int>(nativeConfig.format), static_cast<int>(colorSpace), imageWidth,
-               imageHeight, sliceHeight, visibleWidth, visibleHeight, geometry.originX,
-               geometry.originY);
+               static_cast<int>(nativeConfig.format), static_cast<int>(colorSpace),
+               expectedColorSpace_, imageWidth, imageHeight, sliceHeight, visibleWidth, visibleHeight,
+               geometry.originX, geometry.originY);
   }
 
   // A byte image over the whole allocation: plain R8, linear (the buffer is linear memory), declared
