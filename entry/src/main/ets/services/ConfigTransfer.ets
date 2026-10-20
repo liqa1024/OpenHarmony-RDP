@@ -299,6 +299,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'sessionFullscreen', settings.sessionFullscreen);
     settings.autoHideMainWindow =
       ConfigTransfer.readBoolean(rec, 'autoHideMainWindow', settings.autoHideMainWindow);
+    settings.keepScreenOn =
+      ConfigTransfer.readBoolean(rec, 'keepScreenOn', settings.keepScreenOn);
     settings.resolutionAuto =
       ConfigTransfer.readBoolean(rec, 'resolutionAuto', settings.resolutionAuto);
     settings.manualWidth =

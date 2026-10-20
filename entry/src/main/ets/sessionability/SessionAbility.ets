@@ -84,6 +84,7 @@ export default class SessionAbility extends UIAbility {
         return;
       }
       WindowController.setupSessionWindow(windowStage, fullscreen);
+      WindowController.applySessionKeepScreenOn(windowStage, settings.keepScreenOn);
       WindowController.onSessionWindowReady();
       try {
         this.uiContext = windowStage.getMainWindowSync().getUIContext();

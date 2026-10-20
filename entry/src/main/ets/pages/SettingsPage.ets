@@ -119,6 +119,7 @@ struct SettingsPage {
   @State sessionSizeEnabled: boolean = false;
   @State sessionFullscreen: boolean = false;
   @State autoHideMainWindow: boolean = false;
+  @State keepScreenOn: boolean = false;
   @State audioSupported: boolean = true;
   private audioDisabledReason: string = '';
   @State enableAudio: boolean = true;
@@ -300,6 +301,7 @@ struct SettingsPage {
     this.mainWidthText = this.sizeText(settings.mainWindowWidth);
     this.mainHeightText = this.sizeText(settings.mainWindowHeight);
     this.autoHideMainWindow = settings.autoHideMainWindow;
+    this.keepScreenOn = settings.keepScreenOn;
     this.sessionSizeEnabled = settings.sessionWindowSizeEnabled;
     this.sessionWidthText = this.sizeText(settings.sessionWindowWidth);
     this.sessionHeightText = this.sizeText(settings.sessionWindowHeight);
@@ -460,6 +462,7 @@ struct SettingsPage {
     const maxHeight: number = disp !== undefined ? disp.height : Number.MAX_SAFE_INTEGER;
     const settings: AppSettings = SettingsStore.load();
     settings.autoHideMainWindow = this.autoHideMainWindow;
+    settings.keepScreenOn = this.keepScreenOn;
     settings.mainWindowSizeEnabled = this.mainSizeEnabled;
     settings.mainWindowWidth =
       this.parseSize(this.mainWidthText, this.defaultMainWidth, maxWidth);
@@ -2228,6 +2231,31 @@ struct SettingsPage {
                   
                   .onChange((isOn: boolean) => {
                     this.autoHideMainWindow = isOn;
+                    this.persist();
+                  })
+              }
+              .width('100%')
+              .height(58)
+              .margin({ top: 4 })
+
+              Divider().strokeWidth(1).color($r('app.color.divider'))
+
+              Row() {
+                Column() {
+                  Text('阻止息屏').fontSize(14)
+                  Text('会话窗口在前台时保持屏幕常亮，避免看远程画面时自动熄屏')
+                    .fontSize(12).fontColor($r('app.color.text_tertiary'))
+
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Toggle({ type: ToggleType.Switch, isOn: this.keepScreenOn })
+                  .selectedColor($r('app.color.brand_fill'))
+
+                  .onChange((isOn: boolean) => {
+                    this.keepScreenOn = isOn;
                     this.persist();
                   })
               }

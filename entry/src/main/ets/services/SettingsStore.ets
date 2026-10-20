@@ -87,6 +87,8 @@ export class AppSettings {
   sessionWindowHeight: number = 0;
   sessionFullscreen: boolean = false;
   autoHideMainWindow: boolean = false;
+  // Session window only: the platform holds the screen on while it is foreground.
+  keepScreenOn: boolean = false;
   resolutionAuto: boolean = true;
   manualWidth: number = 0;
   manualHeight: number = 0;
@@ -232,6 +234,8 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'sessionFullscreen', settings.sessionFullscreen);
       settings.autoHideMainWindow =
         SettingsStore.readBoolean(store, 'autoHideMainWindow', settings.autoHideMainWindow);
+      settings.keepScreenOn =
+        SettingsStore.readBoolean(store, 'keepScreenOn', settings.keepScreenOn);
       settings.resolutionAuto =
         SettingsStore.readBoolean(store, 'resolutionAuto', settings.resolutionAuto);
       settings.manualWidth =
@@ -366,6 +370,7 @@ export class SettingsStore {
       store.putSync('sessionWindowHeight', settings.sessionWindowHeight);
       store.putSync('sessionFullscreen', settings.sessionFullscreen);
       store.putSync('autoHideMainWindow', settings.autoHideMainWindow);
+      store.putSync('keepScreenOn', settings.keepScreenOn);
       store.putSync('resolutionAuto', settings.resolutionAuto);
       store.putSync('manualWidth', settings.manualWidth);
       store.putSync('manualHeight', settings.manualHeight);

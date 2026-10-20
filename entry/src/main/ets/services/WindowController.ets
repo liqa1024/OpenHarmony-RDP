@@ -198,6 +198,23 @@ export class WindowController {
     }
   }
 
+  // Session windows only: the platform keeps the screen on while the window is
+  // foreground, and the flag dies with the window, so closing the session
+  // restores the system sleep timeout.
+  static applySessionKeepScreenOn(stage: window.WindowStage, enabled: boolean): void {
+    if (!enabled) {
+      return;
+    }
+    try {
+      stage.getMainWindowSync().setWindowKeepScreenOn(true).catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'set keep screen on failed: %{public}s', JSON.stringify(error));
+      });
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'get window for keep-screen-on failed: %{public}s',
+        JSON.stringify(error));
+    }
+  }
+
   private static hideSystemTitleAndDock(win: window.Window | undefined): void {
     if (win === undefined) {
       return;
