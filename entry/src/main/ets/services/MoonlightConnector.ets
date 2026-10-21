@@ -2,9 +2,10 @@ import { moonlightVideoFormats, moonlightVideoMaxFps } from 'libhmrdp.so';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ML_COLOR_RANGE_LIMITED, ML_SCALE_MANUAL, ML_SCALE_NONE, ML_STREAM_CFG_AUTO,
-  MoonlightProfile, MoonlightStreamConfig } from '../moonlight/MoonlightModels';
+  mlColorSpaceIsHdr, MoonlightProfile, MoonlightStreamConfig } from '../moonlight/MoonlightModels';
 import { SrProfile } from '../model/Profiles';
 import { SettingsStore } from './SettingsStore';
+import { DeviceCapabilities } from './DeviceCapabilities';
 import { GamepadDevices } from './input/GamepadDevices';
 import { clampStreamFps, FPS_LIMIT_NONE, FPS_LIMIT_PANEL, FpsCeiling, recommendedBitrateKbps }
   from '../utils/MoonlightQuality';
@@ -279,12 +280,25 @@ export class MoonlightConnector {
       return result;
     }
 
+    // The colour-space setting picks the encoder CSC and, with Rec.2020, HDR; the client must not
+    // request HDR on a device that cannot present it, so the choice is re-checked here (a stored
+    // value can come from import or from another device).
+    const hdrRequested: boolean = mlColorSpaceIsHdr(stream.colorSpace);
+    if (hdrRequested && !DeviceCapabilities.hdr().supported) {
+      hilog.warn(0xD001, 'HmRdpMoonlight', 'hdr requested but this device cannot present it');
+      result.error = DeviceCapabilities.hdr().reason;
+      return result;
+    }
+
     // No shared codec: fail here, not via the library's silent H.264 fallback.
-    const videoFormats: number = moonlightVideoFormats(stream.codec, info.serverCodecModeSupport);
+    const videoFormats: number = moonlightVideoFormats(stream.codec, info.serverCodecModeSupport,
+      hdrRequested);
     if (videoFormats === 0) {
       hilog.error(0xD001, 'HmRdpMoonlight', 'no shared video codec with %{public}s', host);
-      result.error = '本机与主机没有共同支持的视频编码（主机支持 '
-        + moonlightHostCodecNames(info.serverCodecModeSupport) + '）';
+      result.error = hdrRequested
+        ? '本机与主机没有共同支持的 HDR 编码（需要 HEVC Main10 或 AV1 Main10）'
+        : '本机与主机没有共同支持的视频编码（主机支持 '
+          + moonlightHostCodecNames(info.serverCodecModeSupport) + '）';
       return result;
     }
 
@@ -354,6 +368,7 @@ export class MoonlightConnector {
     options.audioEnabled = audioEnabled;
     // Controllers attached right now decide the mask the host creates up front.
     options.gamepadMask = await GamepadDevices.attachedMask();
+    options.hdr = hdrRequested;
     let launch: LaunchResult;
     if (info.currentGame === effectiveAppId) {
       launch = await MoonlightClient.resume(filesDir, host, info.httpsPort, options);

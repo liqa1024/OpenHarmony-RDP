@@ -1,8 +1,8 @@
 import { audio } from '@kit.AudioKit';
 import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import {
-  moonlightVideoCodecSupport, RdpSrBackends, RdpVerdict, setHardwareAccel,
-  superResolutionBackends, superResolutionSupport, vulkanAccelSupport
+  hdrPresentationSupport, moonlightVideoCodecSupport, moonlightVideoTenBit, RdpSrBackends, RdpTenBitCodecs,
+  RdpVerdict, setHardwareAccel, superResolutionBackends, superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
 export class Capability {
@@ -83,6 +83,42 @@ export class DeviceCapabilities {
     }
   }
 
+  // HDR is only offered where the whole local half exists: a presenter that can run an HDR10
+  // swapchain (which requires VK_EXT_swapchain_colorspace, a 10-bit colour attachment and the codec
+  // buffer import this pipeline is built on) plus a decoder that declares a 10-bit profile. The
+  // host's own 10-bit support is checked with the host at connect time, like the codec choice, and
+  // the window's actual format list is a runtime fact the presenter reports.
+  static hdr(): Capability {
+    const capability: Capability = new Capability();
+    let verdict: RdpVerdict;
+    try {
+      verdict = hdrPresentationSupport();
+    } catch (error) {
+      capability.supported = false;
+      capability.reason = '无法检测本设备的 HDR 显示能力';
+      return capability;
+    }
+    if (!verdict.supported) {
+      capability.supported = false;
+      capability.reason = DeviceCapabilities.hdrReason(verdict.code);
+      return capability;
+    }
+    let tenBit: RdpTenBitCodecs;
+    try {
+      tenBit = moonlightVideoTenBit();
+    } catch (error) {
+      capability.supported = false;
+      capability.reason = '无法检测本设备的 10 位解码能力';
+      return capability;
+    }
+    if (!tenBit.hevc && !tenBit.av1) {
+      capability.supported = false;
+      capability.reason = '本设备的解码器不支持 10 位解码（HEVC Main10 / AV1），无法串流 HDR';
+      return capability;
+    }
+    return capability;
+  }
+
   // The Moonlight 超分 path additionally needs the device to import the decoder's NV12 buffer
   // into the presenter (VK_OHOS_external_memory + an R8 linear sampled image; the convert pass does
   // YUV->RGB itself, so no YCbCr sampler is involved).
@@ -114,6 +150,22 @@ export class DeviceCapabilities {
   }
 
   // The native side only returns reason codes; the wording lives here.
+  private static hdrReason(code: string): string {
+    if (code === 'emulator') {
+      return '模拟器不提供可信的 Vulkan，HDR 仅在真机可用';
+    }
+    if (code === 'no-colorspace-ext') {
+      return '本设备的 Vulkan 未提供 HDR 所需的色彩空间扩展（VK_EXT_swapchain_colorspace）';
+    }
+    if (code === 'no-10bit-attachment') {
+      return '本设备的 GPU 不支持 10 位上屏格式（A2B10G10R10），HDR 不可用';
+    }
+    if (code === 'no-video-import') {
+      return '本设备无法把解码缓冲交给呈现器，HDR 视频链路不可用';
+    }
+    return 'HDR 需要可用的硬件加速（Vulkan 上屏），本设备不满足';
+  }
+
   private static superResolutionReason(code: string): string {
     if (code === 'emulator' || code === 'no-vulkan' || code === 'no-instance'
       || code === 'no-device' || code === 'no-host-memory' || code === 'no-surface') {

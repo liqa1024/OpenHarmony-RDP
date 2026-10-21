@@ -55,6 +55,15 @@ class FramePresenter {
     (void)outputHeight;
   }
 
+  // HDR: the host confirmed it switched its output to HDR, so the frames handed to PresentVideo are
+  // Rec.2020 PQ. Remembered until the swapchain and the output stage are (re)built, exactly like
+  // SetSuperResolution - the answer usually arrives after this presenter exists. Off means the
+  // stream is SDR (Rec.709), which is also what a host that never reports HDR sends.
+  virtual void SetStreamHdr(bool enabled) { (void)enabled; }
+  // Whether the HDR output stage is actually running (the HDR10 swapchain was built). The toolbar
+  // reports this rather than the request, so a fallback to SDR is never claimed as HDR.
+  virtual bool hdrActive() const { return false; }
+
   // Microseconds of the presents since the last call spent blocked on the display (vkAcquireNextImageKHR /
   // eglSwapBuffers); reported as the `presentWait` sub-item, not client work.
   virtual uint64_t TakePresentWaitUs() { return 0; }

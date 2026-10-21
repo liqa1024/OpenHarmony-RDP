@@ -155,6 +155,9 @@ export class MoonlightClient {
       + '&surroundAudioInfo=196610'
       + `&remoteControllersBitmap=${options.gamepadMask}`
       + `&gcmap=${options.gamepadMask}`
+      // Sunshine decides HDR from this (and only then switches its output); we still wait for its
+      // answer on the control stream before presenting HDR.
+      + (options.hdr ? '&hdrMode=1' : '')
       + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =
       MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin));

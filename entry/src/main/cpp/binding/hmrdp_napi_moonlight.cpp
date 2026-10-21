@@ -12,6 +12,7 @@
 #include "hmrdp_moonlight.h"
 #include "hmrdp_moonlight_audio.h"
 #include "hmrdp_moonlight_session.h"
+#include "hmrdp_video_decoder.h"
 
 namespace hmrdp {
 namespace binding {
@@ -24,8 +25,8 @@ napi_value MoonlightProbe(napi_env env, napi_callback_info) {
 }
 
 napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr, nullptr};
+  size_t argc = 3;
+  napi_value args[3] = {nullptr, nullptr, nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   int32_t choice = 0;
   if (argc >= 1) {
@@ -35,9 +36,13 @@ napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info) {
   if (argc >= 2) {
     napi_get_value_int32(env, args[1], &codecModes);
   }
+  bool hdr = false;
+  if (argc >= 3) {
+    napi_get_value_bool(env, args[2], &hdr);
+  }
   const hmrdp::MoonlightVideoCodecChoice value =
       static_cast<hmrdp::MoonlightVideoCodecChoice>(choice);
-  return CreateInt(env, hmrdp::MoonlightVideoFormats(value, codecModes));
+  return CreateInt(env, hmrdp::MoonlightVideoFormats(value, codecModes, hdr));
 }
 
 napi_value MoonlightVideoMaxFps(napi_env env, napi_callback_info info) {
@@ -75,6 +80,31 @@ napi_value MoonlightVideoCodec(napi_env env, napi_callback_info) {
   napi_value result = nullptr;
   napi_create_string_utf8(env, out.c_str(), out.size(), &result);
   return result;
+}
+
+napi_value MoonlightVideoHdr(napi_env env, napi_callback_info) {
+  const std::string out = hmrdp::MoonlightVideoHdr();
+  napi_value result = nullptr;
+  napi_create_string_utf8(env, out.c_str(), out.size(), &result);
+  return result;
+}
+
+// The decoder half of the HDR decision: whether this device declares a 10-bit profile at all. The
+// caller combines it with the GPU verdict (hdrPresentationSupport) and, at connect time, with the
+// host's SCM_MASK_10BIT.
+napi_value MoonlightVideoTenBit(napi_env env, napi_callback_info) {
+  const bool hevc = hmrdp::VideoDecoderTenBit("video/hevc");
+  const bool av1 = hmrdp::VideoDecoderTenBit("video/av1");
+  HMRDP_LOGI("moonlight video ten bit: hevc=%{public}d av1=%{public}d", hevc ? 1 : 0, av1 ? 1 : 0);
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_value hevcValue = nullptr;
+  napi_get_boolean(env, hevc, &hevcValue);
+  napi_set_named_property(env, obj, "hevc", hevcValue);
+  napi_value av1Value = nullptr;
+  napi_get_boolean(env, av1, &av1Value);
+  napi_set_named_property(env, obj, "av1", av1Value);
+  return obj;
 }
 
 napi_value MoonlightVideoWarning(napi_env env, napi_callback_info) {

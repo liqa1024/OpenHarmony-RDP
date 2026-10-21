@@ -38,6 +38,8 @@ napi_value MoonlightVideoFormats(napi_env env, napi_callback_info info);
 napi_value MoonlightVideoMaxFps(napi_env env, napi_callback_info info);
 napi_value MoonlightVideoCodecSupport(napi_env env, napi_callback_info info);
 napi_value MoonlightVideoCodec(napi_env env, napi_callback_info info);
+napi_value MoonlightVideoHdr(napi_env env, napi_callback_info info);
+napi_value MoonlightVideoTenBit(napi_env env, napi_callback_info info);
 napi_value MoonlightVideoWarning(napi_env env, napi_callback_info info);
 napi_value MoonlightSetSessionListener(napi_env env, napi_callback_info info);
 napi_value MoonlightSendClipboard(napi_env env, napi_callback_info info);

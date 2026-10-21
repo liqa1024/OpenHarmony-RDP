@@ -34,6 +34,10 @@ std::string VideoDecoderDescription(const std::string& mime);
 // Frames are limited by macroblocks (H.264) / luma samples (HEVC) per second, so a size can be
 // decodable and still fall short of the requested rate.
 int VideoDecoderMaxFps(const std::string& mime, int width, int height);
+// True when this decoder declares a 10-bit-capable profile: HEVC Main10, or AV1 (whose Main profile
+// covers 8- and 10-bit, so the profile name is the only static reading the platform offers). HDR
+// streaming needs it; the answer is a device fact, independent of any stream or session.
+bool VideoDecoderTenBit(const std::string& mime);
 
 class VideoDecoder {
  public:

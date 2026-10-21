@@ -1,4 +1,4 @@
-import { moonlightVideoCodec, moonlightVideoWarning } from 'libhmrdp.so';
+import { moonlightVideoCodec, moonlightVideoHdr, moonlightVideoWarning } from 'libhmrdp.so';
 import { ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC } from '../moonlight/MoonlightModels';
 import { CODEC_SUPPORT_NONE, CODEC_SUPPORT_SOFTWARE } from '../services/DeviceCapabilities';
 
@@ -61,14 +61,21 @@ export function moonlightHostCodecNames(serverCodecModeSupport: number): string 
 // failure are independent facts and may all be present).
 export function moonlightDecodeTokens(): string[] {
   const token: string = moonlightVideoCodec();
+  const hdr: string = moonlightVideoHdr();
   const warning: string = moonlightVideoWarning();
   const tokens: string[] = [];
   if (token.length > 0) {
     tokens.push(moonlightCodecTokenName(token));
   }
+  // Only a session that really presents HDR says so; the host's confirmation and the output stage
+  // both have to hold (see moonlight-video.md §2).
+  if (hdr.length > 0) {
+    tokens.push('HDR');
+  }
   let software: boolean = false;
   let srUnavailable: boolean = false;
   let srInactive: boolean = false;
+  let hdrInactive: boolean = false;
   let videoError: boolean = false;
   let colorMismatch: boolean = false;
   const parts: string[] = warning.length > 0 ? warning.split(',') : [];
@@ -80,6 +87,8 @@ export function moonlightDecodeTokens(): string[] {
       srUnavailable = true;
     } else if (part.startsWith('sr-inactive')) {
       srInactive = true;
+    } else if (part.startsWith('hdr-inactive')) {
+      hdrInactive = true;
     } else if (part.startsWith('video-present')) {
       videoError = true;
     } else if (part.startsWith('color-mismatch')) {
@@ -92,6 +101,10 @@ export function moonlightDecodeTokens(): string[] {
   // A requested 超分 that is not running must not keep claiming to be on in the title.
   if (srUnavailable || srInactive) {
     tokens.push('未超分');
+  }
+  // Same rule for HDR: the host said it is in HDR but this side could not run it.
+  if (hdrInactive) {
+    tokens.push('未HDR');
   }
   if (videoError) {
     tokens.push('视频异常');

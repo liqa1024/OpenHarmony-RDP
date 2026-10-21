@@ -42,14 +42,14 @@ class VkVideoImport {
     VkDescriptorSet set = VK_NULL_HANDLE;
   };
 
-  // Allocates the picture image and the convert pipeline for a session-resolution picture; false
-  // when the picture cannot be built. Rebuilds when the size changes (which drops the imports too);
-  // safe to call every frame.
-  bool Ensure(int pictureWidth, int pictureHeight);
+  // Allocates the picture image and the convert pipeline at `pictureFormat` (the encoding the output
+  // stage wants: SDR RGBA8 or the HDR10 picture); false when the picture cannot be built. Rebuilds
+  // when the size or the format changes (which drops the imports too); safe to call every frame.
+  bool Ensure(int pictureWidth, int pictureHeight, VkFormat pictureFormat);
 
   // True when Ensure would tear the picture down and rebuild it: the caller drains the frames still
   // reading the old picture first (see VkRenderer::DrainInFlightLocked).
-  bool needsRebuild(int pictureWidth, int pictureHeight) const;
+  bool needsRebuild(int pictureWidth, int pictureHeight, VkFormat pictureFormat) const;
 
   // True when the cache is at its cap and this buffer is not in it: the caller drains the frames
   // still reading the cached imports before calling Import (which then evicts the least recently
@@ -83,6 +83,8 @@ class VkVideoImport {
   VkImageView pictureView(uint32_t slot) const {
     return slot < kSlots ? pictures_[slot].view : VK_NULL_HANDLE;
   }
+  // The encoding the convert pass writes (and the shared tail samples): what the output stage wants.
+  VkFormat pictureFormat() const { return pictureFormat_; }
 
   std::string lastError() const { return error_; }
 
@@ -143,6 +145,10 @@ class VkVideoImport {
   Picture pictures_[kSlots];
   std::vector<Imported> imports_;
   uint64_t useCounter_ = 0;
+  // The encoding the pictures and the convert pass are built for (SDR RGBA8 or the 10-bit HDR10
+  // picture, see hmrdp_vk_context.h). Part of the rebuild key: a stream that switches to or from HDR
+  // rebuilds both.
+  VkFormat pictureFormat_ = kPictureFormat;
 
   // A failed Ensure is latched for that size: retrying every frame would allocate/destroy the
   // picture at the stream rate. A size change (a new stream) clears it.

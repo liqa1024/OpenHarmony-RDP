@@ -133,7 +133,17 @@ std::string VkResultName(int32_t result);
 // The format every presented picture is written in, whichever producer made it: the gdi desktop
 // upload (PresentBgra) and the video convert pass both end up as one of these, and 超分 / letterbox
 // sample it as plain RGBA.
+//
+// Both are UNORM, i.e. their values carry the *display* encoding rather than light, so sampling one
+// and writing it into a swapchain of the same kind is a pass-through and the letterbox / 超分 stages
+// stay colour-agnostic. The transfer function and primaries are the video convert pass's business,
+// because that is the only place an input's colour is known (the gdi desktop is always SDR Rec.709).
 constexpr VkFormat kPictureFormat = VK_FORMAT_B8G8R8A8_UNORM;
+// Rec.2020 PQ, the HDR10 picture an HDR stream's frames are converted into.
+constexpr VkFormat kHdrPictureFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+
+inline VkFormat PictureFormatFor(bool hdr) { return hdr ? kHdrPictureFormat : kPictureFormat; }
+inline bool IsHdrPictureFormat(VkFormat format) { return format == kHdrPictureFormat; }
 
 // A device-local sampled image plus its memory; false leaves both untouched (freed on the way out).
 bool CreateDeviceImage(VkApi& api, VkDeviceContext& context, VkFormat format, int width, int height,
@@ -163,6 +173,13 @@ struct VulkanCapabilities {
   bool extExternalMemory = false;
   bool extExternalMemoryFd = false;
   bool extOhosExternalMemory = false;
+  // `VK_COLOR_SPACE_HDR10_ST2084_EXT` belongs to this *instance* extension, so an HDR10 swapchain
+  // cannot exist without it (enabled at instance creation, see VkInstanceContext::EnsureInstance).
+  bool extSwapchainColorspace = false;
+  // `A2B10G10R10_UNORM_PACK32` creatable as a colour attachment: the 10-bit target an HDR10
+  // swapchain needs. The other half of the HDR10 decision (a surface offering that format and the
+  // HDR10 colour space) can only be read with a surface in hand - see SurfaceHdrSupport.
+  bool hdr10AttachmentOk = false;
 
   bool xegLibrary = false;
   bool xegSpatialUpscale = false;
@@ -200,9 +217,33 @@ struct VulkanCapabilities {
   // the Vulkan presenter. Needed by the Moonlight 超分 path, not by RDP (its input is the CPU desktop
   // picture); SR can be usable for RDP and not for Moonlight.
   bool srVideoImportSupported = false;
+  // HDR10 presentation, device side: the presenter can run, the device takes a 10-bit colour
+  // attachment, VK_EXT_swapchain_colorspace is present (it carries the HDR10 colour space) and the
+  // codec buffers can be imported. The other two halves are deliberately not folded in here: the
+  // host's 10-bit support is decided with the host at connect time, and the surface's own format /
+  // colour-space list is a runtime fact (SurfaceHdrSupport) that only the presenter can see.
+  bool hdrPresentSupported = false;
+  std::string hdrPresentUnsupportedCode;
 };
 
 const VulkanCapabilities& GetVulkanCapabilities();
+
+// The HDR10 half of the swapchain decision needs a real surface, so it cannot be answered by the
+// device probe above (which runs before any window exists). Whoever creates the swapchain observes it
+// once per surface and reports it; the swapchain itself then picks its format from it.
+struct SurfaceHdrSupport {
+  bool hdr10FormatOk = false;      // the surface offers A2B10G10R10_UNORM_PACK32
+  bool hdr10ColorSpaceOk = false;  // the surface offers VK_COLOR_SPACE_HDR10_ST2084_EXT
+  uint32_t formatCount = 0;
+  // What the surface actually advertised: "A2B10G10R10_UNORM_PACK32/srgb, ...". Kept as one line so
+  // the HDR readout is a single greppable fact rather than one log per candidate.
+  std::string formats;
+
+  bool hdr10() const { return hdr10FormatOk && hdr10ColorSpaceOk; }
+};
+
+SurfaceHdrSupport ObserveSurfaceHdrSupport(VkApi& api, VkPhysicalDevice device,
+                                           VkSurfaceKHR surface);
 
 class VkInstanceContext {
  public:

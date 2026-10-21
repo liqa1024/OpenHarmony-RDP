@@ -74,6 +74,17 @@ void MoonlightVideoDetachPresenter();
 void MoonlightVideoSetSuperResolutionRequested(bool requested);
 bool MoonlightVideoBufferMode();
 
+// HDR: the session asked for a Rec.2020/PQ stream (the colour-space setting), and the host answered
+// on the control stream with whether it actually switched its output to HDR. The answer is the one
+// the toolbar reports and the one the presenter must drive its output stage from - a host that is
+// not in HDR sends an SDR stream whatever was requested, and presenting that on an HDR10 swapchain
+// would shift every colour. `MoonlightVideoHdrActive()` is that answer (false until the host says).
+void MoonlightVideoSetHdrRequested(bool requested);
+// The host's answer, driven by the control stream's HDR-mode packet (ConnListenerSetHdrMode).
+void MoonlightVideoSetHdrMode(bool enabled);
+bool MoonlightVideoHdrActive();
+bool MoonlightVideoHdrRequested();
+
 // 超分: a live surface change (XComponent recreated or a new window bound while the session keeps
 // running). The presenter replaces its swapchain/surface; a null window destroys it. The resize path
 // only updates the extent (no swapchain teardown).
@@ -92,8 +103,10 @@ enum class MoonlightVideoCodecChoice : int {
   kAv1 = 3,
 };
 
-// Single VIDEO_FORMAT_* the session will use; 0 = no shared codec.
-int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport);
+// Single VIDEO_FORMAT_* the session will use; 0 = no shared codec. `hdr` asks for a 10-bit profile
+// (HEVC Main10 / AV1 Main10) and for the host to accept it, so an HDR session never falls back to an
+// 8-bit codec: H.264 cannot carry HDR and is not a candidate then.
+int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport, bool hdr);
 
 // Highest frame rate the decoder for that VIDEO_FORMAT_* reports at a picture size, 0 when the
 // platform states none. The control layer caps the rate it asks the host for with this.
@@ -102,6 +115,11 @@ int MoonlightVideoMaxFps(int videoFormat, int width, int height);
 int MoonlightVideoCodecSupport(int codec);
 
 std::string MoonlightVideoCodec();
+
+// "on" only while the session really presents HDR (the host confirmed it and the output stage runs
+// it); "" otherwise. A request the host did not confirm is not HDR, and neither is a stage that fell
+// back to SDR - that case is reported as the `hdr-inactive` warning instead.
+std::string MoonlightVideoHdr();
 
 std::string MoonlightVideoWarning();
 

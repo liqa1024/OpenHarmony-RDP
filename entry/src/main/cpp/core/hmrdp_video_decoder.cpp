@@ -83,6 +83,34 @@ std::string VideoDecoderDescription(const std::string& mime) {
   return (picked.hardware ? "hw:" : "sw:") + std::string(name != nullptr ? name : "?");
 }
 
+bool VideoDecoderTenBit(const std::string& mime) {
+  const PickedCapability picked = PickCapability(mime);
+  if (picked.capability == nullptr || OH_AVCapability_GetSupportedProfiles == nullptr) {
+    return false;
+  }
+  const int32_t* profiles = nullptr;
+  uint32_t count = 0;
+  if (OH_AVCapability_GetSupportedProfiles(picked.capability, &profiles, &count) != AV_ERR_OK ||
+      profiles == nullptr) {
+    return false;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (mime == "video/hevc") {
+      if (profiles[i] == HEVC_PROFILE_MAIN_10 || profiles[i] == HEVC_PROFILE_MAIN_10_HDR10 ||
+          profiles[i] == HEVC_PROFILE_MAIN_10_HDR10_PLUS) {
+        return true;
+      }
+    } else if (mime == "video/av1") {
+      // AV1 carries 8- and 10-bit inside the same Main profile, so its presence is the whole
+      // reading; whether 10-bit output really works is only knowable from a running stream.
+      if (profiles[i] == AV1_PROFILE_MAIN) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 int VideoDecoderMaxFps(const std::string& mime, int width, int height) {
   if (width <= 0 || height <= 0) {
     return 0;

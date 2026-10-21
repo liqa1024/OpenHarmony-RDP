@@ -178,12 +178,12 @@ bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int output
     return false;
   };
   for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) {
-    if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+    if (!CreateDeviceImage(api, context, pictureFormat_, outputWidth, outputHeight,
                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                            &srImage_[slot], &srImageMemory_[slot])) {
       return fail("super-resolution image allocation failed");
     }
-    if (!CreateImageView2D(api, context, kPictureFormat, srImage_[slot],
+    if (!CreateImageView2D(api, context, pictureFormat_, srImage_[slot],
                            &srImageView_[slot])) {
       return fail("super-resolution image view failed");
     }
@@ -195,7 +195,7 @@ bool VkRenderer::EnsureXengineLocked(int inputWidth, int inputHeight, int output
   VkExtent2D outputExtent{};
   outputExtent.width = static_cast<uint32_t>(outputWidth);
   outputExtent.height = static_cast<uint32_t>(outputHeight);
-  if (!srUpscale_.Create(device, kPictureFormat, inputExtent, outputExtent, kSrSharpness)) {
+  if (!srUpscale_.Create(device, pictureFormat_, inputExtent, outputExtent, kSrSharpness)) {
     HMRDP_LOGW("vulkan presenter: super resolution unavailable, presenting the desktop as-is");
     srFailed_ = true;
     DestroySuperResolutionLocked();
@@ -289,12 +289,12 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
   };
 
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-    if (!CreateDeviceImage(api, context, kPictureFormat, outputWidth, outputHeight,
+    if (!CreateDeviceImage(api, context, pictureFormat_, outputWidth, outputHeight,
                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                            &srImage_[i], &srImageMemory_[i])) {
       return fail("FSR: output image allocation failed");
     }
-    if (!CreateImageView2D(api, context, kPictureFormat, srImage_[i], &srImageView_[i])) {
+    if (!CreateImageView2D(api, context, pictureFormat_, srImage_[i], &srImageView_[i])) {
       return fail("FSR: output image view failed");
     }
     if (!CreateDeviceImage(api, context, kFsrEasuFormat, outputWidth, outputHeight,
@@ -346,7 +346,7 @@ bool VkRenderer::EnsureFsrLocked(int inputWidth, int inputHeight, uint32_t slot,
     return api.CreateRenderPass(device, &info, nullptr, out) == VK_SUCCESS;
   };
   if (!make_render_pass(kFsrEasuFormat, &fsrEasuRenderPass_) ||
-      !make_render_pass(kPictureFormat, &fsrRcasRenderPass_)) {
+      !make_render_pass(pictureFormat_, &fsrRcasRenderPass_)) {
     return fail("FSR: vkCreateRenderPass failed");
   }
   const VkExtent2D extent{static_cast<uint32_t>(outputWidth),

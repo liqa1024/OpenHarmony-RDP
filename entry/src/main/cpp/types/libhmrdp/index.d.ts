@@ -229,23 +229,36 @@ export interface RdpSrBackends {
 }
 export const superResolutionBackends: () => RdpSrBackends;
 
+/** Whether frames can be presented as HDR10 on this device; `code` is a stable token (the presenter's own code / no-colorspace-ext / no-10bit-attachment / no-video-import). The host's 10-bit support and the window's actual format list are separate facts. */
+export const hdrPresentationSupport: () => RdpVerdict;
+
 /** Always "1": asserts the Moonlight static archives resolved into the module. */
 export const moonlightProbe: () => string;
 
-/** The single Moonlight VIDEO_FORMAT_* the session will use (0 = none); `choice` is ML_CODEC_* (0 = auto). */
-export const moonlightVideoFormats: (choice: number, serverCodecModeSupport: number) => number;
+/** The single Moonlight VIDEO_FORMAT_* the session will use (0 = none); `choice` is ML_CODEC_* (0 = auto). `hdr` restricts the choice to 10-bit profiles (H.264 cannot carry HDR). */
+export const moonlightVideoFormats: (choice: number, serverCodecModeSupport: number, hdr: boolean) => number;
 
 /** The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream starts. */
 export const moonlightVideoCodec: () => string;
 
+/** "on" while the session really presents HDR (host confirmed + output stage running); "" otherwise. */
+export const moonlightVideoHdr: () => string;
+
 /** Decoder support for an ML_CODEC_* (1 H.264 / 2 HEVC / 3 AV1): 0 none, 1 software, 2 hardware. */
 export const moonlightVideoCodecSupport: (codec: number) => number;
+
+/** Which codecs this device's decoders declare a 10-bit-capable profile for (HDR streaming needs one). */
+export interface RdpTenBitCodecs {
+  hevc: boolean;
+  av1: boolean;
+}
+export const moonlightVideoTenBit: () => RdpTenBitCodecs;
 
 /** Highest frame rate the decoder for a VIDEO_FORMAT_* reports at that picture size (0 = not stated). */
 export const moonlightVideoMaxFps: (videoFormat: number, width: number, height: number) => number;
 
 /** Stable decode-path codes, comma separated when several apply: "software-decode|<mime>",
- *  "sr-unavailable", "sr-inactive", "video-present", "color-mismatch"; "" when fine. */
+ *  "sr-unavailable", "sr-inactive", "hdr-inactive", "video-present", "color-mismatch"; "" when fine. */
 export const moonlightVideoWarning: () => string;
 
 /** Everything LiStartConnection needs; assembled by the ArkTS control layer. */

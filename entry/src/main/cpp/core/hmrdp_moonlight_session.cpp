@@ -125,6 +125,14 @@ void OnClipboardData(const char* data, int length) {
   callback(reinterpret_cast<const uint8_t*>(data), length);
 }
 
+// The host says whether its output really switched to HDR (it only does when its own display is in
+// HDR), which is what the output stage must follow: presenting an SDR stream through an HDR10
+// swapchain would shift every colour. Sunshine sends this on the control stream once the stream
+// starts; a host that never sends it leaves the session SDR.
+void OnHdrMode(bool enabled) {
+  MoonlightVideoSetHdrMode(enabled);
+}
+
 // LiStartConnection returns once the streams are established, not when the
 // session ends.
 void Run(const MoonlightStreamConfig& config) {
@@ -195,14 +203,18 @@ void Run(const MoonlightStreamConfig& config) {
     }
   }
   g_cursorMagnificationMilli.store(cursorMagnificationMilli);
+  // The colour-space setting asks for HDR by choosing Rec.2020; the host answers on the control
+  // stream (OnHdrMode) and that answer is what the output stage follows.
+  const bool hdrRequested = config.colorSpace == COLORSPACE_REC_2020;
   MoonlightVideoSetSuperResolutionRequested(srRequested);
+  MoonlightVideoSetHdrRequested(hdrRequested);
   MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
   HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "
-             "%{public}s %{public}s -> %{public}dx%{public}d)",
+             "%{public}s %{public}s -> %{public}dx%{public}d, hdr %{public}s)",
              config.width, config.height, presenterActive ? "buffer" : "surface fallback",
              srRequested ? "on" : "off",
              config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr" : "xengine",
-             sessionWidth, sessionHeight);
+             sessionWidth, sessionHeight, hdrRequested ? "requested" : "off");
   stream.width = sessionWidth;
   stream.height = sessionHeight;
   stream.fps = config.fps;
@@ -231,6 +243,7 @@ void Run(const MoonlightStreamConfig& config) {
   listeners.connectionTerminated = OnConnectionTerminated;
   listeners.cursorUpdate = OnCursorUpdate;
   listeners.clipboardData = OnClipboardData;
+  listeners.setHdrMode = OnHdrMode;
 
   PDECODER_RENDERER_CALLBACKS video =
       static_cast<PDECODER_RENDERER_CALLBACKS>(MoonlightVideoCallbacks());

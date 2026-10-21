@@ -52,6 +52,8 @@ export class MoonlightLaunchOptions {
   audioEnabled: boolean = true;
   // Attached controllers, one bit each (gcmap / remoteControllersBitmap); 0 when none.
   gamepadMask: number = 0;
+  // Ask the host for HDR: drives the /launch hdrMode parameter and the 10-bit codec choice.
+  hdr: boolean = false;
 }
 
 export class LaunchResult {
@@ -81,9 +83,17 @@ export const ML_BITRATE_MIN_KBPS: number = 1000;
 export const ML_BITRATE_MAX_KBPS: number = 200000;
 export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
 
-// SDR color space, sent as encoderCscMode = (space<<1)|range.
+// The colour-space / HDR axis, sent as encoderCscMode = (space<<1)|range and mirrored by the values
+// of COLORSPACE_* in Limelight.h. Choosing REC2020 asks the host for an HDR10 (PQ) stream, which also
+// selects a 10-bit codec; the SDR entries ask for an 8-bit one.
 export const ML_COLORSPACE_REC601: number = 0;
 export const ML_COLORSPACE_REC709: number = 1;
+export const ML_COLORSPACE_REC2020_HDR: number = 2;
+
+// True for a colour space that means HDR (10-bit codec + HDR10 output requested).
+export function mlColorSpaceIsHdr(space: number): boolean {
+  return space === ML_COLORSPACE_REC2020_HDR;
+}
 
 // Moonlight 缩放模式：写基地版虚拟显示器的 Windows 显示缩放（AUTO 按分辨率换算 / MANUAL 用固定档 / NONE 不动）。
 export const ML_SCALE_AUTO: number = 0;

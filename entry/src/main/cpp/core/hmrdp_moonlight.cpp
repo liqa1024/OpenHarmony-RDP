@@ -84,6 +84,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     bool srRequested = false;
     bool srActive = false;
     bool colorMismatch = false;
+    bool hdrRunning = false;
     {
       std::lock_guard<std::mutex> lock(presenterMutex_);
       if (presenter_ == nullptr) {
@@ -94,6 +95,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
         srRequested = presenter_->superResolutionRequested();
         srActive = presenter_->superResolutionActive();
         colorMismatch = presenter_->videoColorMismatch();
+        hdrRunning = presenter_->hdrActive();
       }
     }
     if (token < 0) {
@@ -129,6 +131,17 @@ class MoonlightVideoRenderer : public VideoFrameSink {
       HMRDP_LOGW("moonlight video: the buffer colour space disagrees with the one negotiated with the "
                  "host; the picture may differ from what it encoded");
     }
+    // HDR asked for and the host confirmed it, but this output stage is not running it: the picture
+    // is then presented as SDR, which the title must not call HDR. A host that never confirmed HDR
+    // leaves the session legitimately SDR, so this fires only on the disagreement.
+    if (hdrRequested_.load() && hdrActive_.load() && !hdrRunning && !hdrWarned_) {
+      hdrWarned_ = true;
+      SetWarning("hdr-inactive");
+      HMRDP_LOGW("moonlight video: host is in HDR but the presenter is not running the HDR stage");
+    } else if (hdrRunning && hdrWarned_) {
+      hdrWarned_ = false;
+      ClearWarning("hdr-inactive");
+    }
     return token;
   }
 
@@ -163,6 +176,25 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   }
 
   void SetSuperResolutionRequested(bool requested) { srRequested_.store(requested); }
+
+  // HDR: `requested` is the colour-space setting; `enabled` is what the host answered on the control
+  // stream. Only the answer drives the output stage (see the header), so they are kept apart.
+  void SetHdrRequested(bool requested) { hdrRequested_.store(requested); }
+  void SetHdrMode(bool enabled) {
+    hdrActive_.store(enabled);
+    // The output stage follows the host's answer, so the presenter is told as soon as it is known
+    // (it remembers the state until the swapchain and pipeline are built). Runs on the control-stream
+    // thread, hence the same presenter lock every other presenter call takes.
+    {
+      std::lock_guard<std::mutex> lock(presenterMutex_);
+      if (presenter_ != nullptr) {
+        presenter_->SetStreamHdr(enabled);
+      }
+    }
+    HMRDP_LOGI("moonlight video: host HDR mode %{public}s", enabled ? "on" : "off");
+  }
+  bool HdrRequested() const { return hdrRequested_.load(); }
+  bool HdrActive() const { return hdrActive_.load(); }
 
   // 超分: the session hand-off. The bridge only borrows the presenter: it is attached before the
   // connection starts, and Detach has returned before the session destroys it. Every use goes
@@ -228,12 +260,26 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     HMRDP_LOGI("moonlight video: setup %{public}s %{public}x%{public}d @%{public}d (%{public}s)",
                mime_.c_str(), width_, height_, redrawRate_,
                VideoDecoderDescription(mime_).c_str());
+    // The decoder half of the HDR readout (the GPU half is logged by the Vulkan verdict and by the
+    // presenter's surface observation). Both are device facts, printed once per session.
+    HMRDP_LOGI("moonlight video: hdr decoder: hevc10=%{public}d av1=%{public}d",
+               VideoDecoderTenBit("video/hevc") ? 1 : 0, VideoDecoderTenBit("video/av1") ? 1 : 0);
     return 0;
   }
 
   std::string Codec() {
     std::lock_guard<std::mutex> lock(mutex_);
     return codec_;
+  }
+
+  // "on" only while the session really presents HDR (the host confirmed it and the output stage runs
+  // it); "" otherwise, including the surface fallback, which has no output stage of ours.
+  std::string Hdr() {
+    std::lock_guard<std::mutex> lock(presenterMutex_);
+    if (presenter_ == nullptr || !presenter_->hdrActive()) {
+      return std::string();
+    }
+    return "on";
   }
 
   bool HasPresenter() {
@@ -295,7 +341,11 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     presentWarned_ = false;
     srWarned_ = false;
     colorWarned_ = false;
+    hdrWarned_ = false;
     presentFailures_ = 0;
+    // The library's HDR flag is process-global and survives a session, so a new session starts from
+    // "not HDR" and only the host's own report turns it on.
+    hdrActive_.store(false);
     if (mime_.empty()) {
       HMRDP_LOGE("moonlight video: start needs a setup codec");
       return;
@@ -470,6 +520,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   bool presentWarned_ = false;
   bool srWarned_ = false;
   bool colorWarned_ = false;
+  bool hdrWarned_ = false;
   int presentFailures_ = 0;
   VideoDecoder decoder_;
   std::string mime_;
@@ -483,6 +534,10 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   // and the frames go through it. See AttachPresenter.
   FramePresenter* presenter_ = nullptr;
   std::atomic<bool> srRequested_{false};
+  // HDR: the colour-space setting asked for it / the host reported it is actually on. Separate facts
+  // (see the header): a host that is not in HDR sends an SDR stream whatever was requested.
+  std::atomic<bool> hdrRequested_{false};
+  std::atomic<bool> hdrActive_{false};
   bool running_ = false;
   std::vector<uint8_t> buffer_;
 
@@ -554,7 +609,7 @@ MoonlightTelemetry MoonlightReadTelemetry() {
   return telemetry;
 }
 
-int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport) {
+int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeSupport, bool hdr) {
   const DecoderSupport avc = VideoDecoderSupport("video/avc");
   const DecoderSupport hevc = VideoDecoderSupport("video/hevc");
   const DecoderSupport av1 = VideoDecoderSupport("video/av1");
@@ -563,8 +618,37 @@ int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeS
   // AV1 / HEVC need the host's SCM_* family, gated the same as its DESCRIBE ad.
   const bool hostHevc = (serverCodecModeSupport & SCM_MASK_HEVC) != 0;
   const bool hostAv1 = (serverCodecModeSupport & SCM_MASK_AV1) != 0;
+  // A 10-bit stream needs the profile-specific bit, which is stricter than the family: Sunshine
+  // advertises HEVC Main10 / AV1 Main10 separately (SCM_MASK_10BIT).
+  const bool hostHevc10 = (serverCodecModeSupport & SCM_HEVC_MAIN10) != 0;
+  const bool hostAv110 = (serverCodecModeSupport & SCM_AV1_MAIN10) != 0;
+  const bool hevc10 = hevc != DecoderSupport::kNone && VideoDecoderTenBit("video/hevc");
+  const bool av110 = av1 != DecoderSupport::kNone && VideoDecoderTenBit("video/av1");
 
   int decided = 0;
+  if (hdr) {
+    // HDR is carried by 10-bit profiles only, so H.264 is never a candidate here and a device or
+    // host without one leaves the session with no codec (the caller fails before connecting rather
+    // than falling back to an SDR codec the user did not ask for).
+    if (choice != MoonlightVideoCodecChoice::kAuto) {
+      if (choice == MoonlightVideoCodecChoice::kHevc) {
+        decided = (hevc10 && hostHevc10) ? VIDEO_FORMAT_H265_MAIN10 : 0;
+      } else if (choice == MoonlightVideoCodecChoice::kAv1) {
+        decided = (av110 && hostAv110) ? VIDEO_FORMAT_AV1_MAIN10 : 0;
+      }
+      if (decided == 0) {
+        HMRDP_LOGW("moonlight video: forced codec %{public}d cannot carry HDR here",
+                   static_cast<int>(choice));
+      }
+    } else if (av110 && hostAv110) {
+      decided = VIDEO_FORMAT_AV1_MAIN10;
+    } else if (hevc10 && hostHevc10) {
+      decided = VIDEO_FORMAT_H265_MAIN10;
+    }
+    g_decidedVideoFormat.store(decided);
+    return decided;
+  }
+
   if (choice != MoonlightVideoCodecChoice::kAuto) {
     if (choice == MoonlightVideoCodecChoice::kH264) {
       decided = avc != DecoderSupport::kNone ? VIDEO_FORMAT_H264 : 0;
@@ -623,6 +707,10 @@ std::string MoonlightVideoCodec() {
   return MoonlightVideoRenderer::Instance().Codec();
 }
 
+std::string MoonlightVideoHdr() {
+  return MoonlightVideoRenderer::Instance().Hdr();
+}
+
 std::string MoonlightVideoWarning() {
   return MoonlightVideoRenderer::Instance().Warning();
 }
@@ -637,6 +725,22 @@ void MoonlightVideoDetachPresenter() {
 
 void MoonlightVideoSetSuperResolutionRequested(bool requested) {
   MoonlightVideoRenderer::Instance().SetSuperResolutionRequested(requested);
+}
+
+void MoonlightVideoSetHdrRequested(bool requested) {
+  MoonlightVideoRenderer::Instance().SetHdrRequested(requested);
+}
+
+void MoonlightVideoSetHdrMode(bool enabled) {
+  MoonlightVideoRenderer::Instance().SetHdrMode(enabled);
+}
+
+bool MoonlightVideoHdrRequested() {
+  return MoonlightVideoRenderer::Instance().HdrRequested();
+}
+
+bool MoonlightVideoHdrActive() {
+  return MoonlightVideoRenderer::Instance().HdrActive();
 }
 
 bool MoonlightVideoBufferMode() {

@@ -4,7 +4,8 @@ import { picker } from '@kit.CoreFileKit';
 import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Profiles';
 import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
-  ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_FPS_PRESETS, ML_RES_FIXED,
+  ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_COLORSPACE_REC2020_HDR,
+  mlColorSpaceIsHdr, ML_FPS_PRESETS, ML_RES_FIXED,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL } from '../moonlight/MoonlightModels';
 import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
@@ -163,6 +164,9 @@ struct SettingsPage {
   private mlH264Support: number = CODEC_SUPPORT_NONE;
   private mlHevcSupport: number = CODEC_SUPPORT_NONE;
   private mlAv1Support: number = CODEC_SUPPORT_NONE;
+  // The HDR half of the colour-space choice: a device verdict, so it is read once.
+  private hdrSupported: boolean = false;
+  private hdrReason: string = '';
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -186,6 +190,9 @@ struct SettingsPage {
     this.mlH264Support = DeviceCapabilities.codecSupport(ML_CODEC_H264);
     this.mlHevcSupport = DeviceCapabilities.codecSupport(ML_CODEC_HEVC);
     this.mlAv1Support = DeviceCapabilities.codecSupport(ML_CODEC_AV1);
+    const hdrCapability: Capability = DeviceCapabilities.hdr();
+    this.hdrSupported = hdrCapability.supported;
+    this.hdrReason = hdrCapability.reason;
     const defaults: AppSettings = SettingsStore.defaults();
     this.defaultMainWidth = defaults.mainWindowWidth;
     this.defaultMainHeight = defaults.mainWindowHeight;
@@ -271,6 +278,7 @@ struct SettingsPage {
     this.relativeSpeed = settings.mlRelativeSpeed;
       this.mlLowLatencyAudio = this.audioSupported ? settings.mlLowLatencyAudio : false;
       this.clampMlCodec();
+      this.clampMlColorSpace();
       this.applyInteraction(settings, false);
     }
 
@@ -978,10 +986,11 @@ struct SettingsPage {
   }
 
   @Builder
-  mlColorSpaceChip(space: number, label: string) {
+  mlColorSpaceChip(space: number, label: string, enabled: boolean) {
     ChoiceChip({
       label: label,
       selected: this.mlColorSpace === space,
+      chipEnabled: enabled,
       onTap: () => {
         this.mlColorSpace = space;
         this.persist();
@@ -1033,6 +1042,14 @@ struct SettingsPage {
   private clampMlCodec(): void {
     if (!this.mlCodecUsable(this.mlCodec)) {
       this.mlCodec = ML_CODEC_AUTO;
+    }
+  }
+
+  // HDR is only offered on a device that can present and decode it, so a selection stored on another
+  // device resolves back to SDR rather than being sent to the host as an HDR request.
+  private clampMlColorSpace(): void {
+    if (mlColorSpaceIsHdr(this.mlColorSpace) && !this.hdrSupported) {
+      this.mlColorSpace = ML_COLORSPACE_REC709;
     }
   }
 
@@ -1317,12 +1334,19 @@ struct SettingsPage {
       Divider().strokeWidth(1).color($r('app.color.divider'))
 
       Column() {
-        Text('色彩空间').fontSize(14)
+        Text('色彩空间与 HDR').fontSize(14)
         Flex({ wrap: FlexWrap.Wrap }) {
-          this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709')
-          this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601')
+          this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709', true)
+          this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601', true)
+          this.mlColorSpaceChip(ML_COLORSPACE_REC2020_HDR, 'Rec2020 (HDR)', this.hdrSupported)
         }
         .width('100%').margin({ top: 8 })
+        if (!this.hdrSupported) {
+          Text(this.hdrReason)
+            .fontSize(12).fontColor($r('app.color.warning'))
+            .lineHeight(16)
+            .margin({ top: 2 })
+        }
       }
       .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
     }

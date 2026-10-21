@@ -17,14 +17,14 @@ VkVideoImport::~VkVideoImport() {
   Destroy();
 }
 
-bool VkVideoImport::needsRebuild(int pictureWidth, int pictureHeight) const {
+bool VkVideoImport::needsRebuild(int pictureWidth, int pictureHeight, VkFormat pictureFormat) const {
   for (uint32_t slot = 0; slot < kSlots; ++slot) {
     if (pictures_[slot].view == VK_NULL_HANDLE ||
         pictures_[slot].width != pictureWidth || pictures_[slot].height != pictureHeight) {
       return true;
     }
   }
-  return false;
+  return pictureFormat_ != pictureFormat;
 }
 
 bool VkVideoImport::needsDrainFor(const void* nativeBuffer) const {
@@ -46,19 +46,21 @@ bool VkVideoImport::needsDrainFor(const void* nativeBuffer) const {
   return true;
 }
 
-bool VkVideoImport::Ensure(int pictureWidth, int pictureHeight) {
+bool VkVideoImport::Ensure(int pictureWidth, int pictureHeight, VkFormat pictureFormat) {
   VkApi& api = context_.api();
   const VkDevice device = context_.device();
   if (device == VK_NULL_HANDLE || pictureWidth <= 0 || pictureHeight <= 0) {
     return false;
   }
-  if (failed_ && failedWidth_ == pictureWidth && failedHeight_ == pictureHeight) {
+  if (failed_ && failedWidth_ == pictureWidth && failedHeight_ == pictureHeight &&
+      pictureFormat_ == pictureFormat) {
     return false;
   }
-  if (!needsRebuild(pictureWidth, pictureHeight)) {
+  if (!needsRebuild(pictureWidth, pictureHeight, pictureFormat)) {
     return true;
   }
   Destroy();
+  pictureFormat_ = pictureFormat;
   failed_ = false;
   const auto fail = [this, pictureWidth, pictureHeight](const char* what) -> bool {
     error_ = what;
@@ -69,13 +71,13 @@ bool VkVideoImport::Ensure(int pictureWidth, int pictureHeight) {
     return false;
   };
   for (uint32_t slot = 0; slot < kSlots; ++slot) {
-    if (!CreateDeviceImage(api, context_, kPictureFormat, pictureWidth, pictureHeight,
+    if (!CreateDeviceImage(api, context_, pictureFormat_, pictureWidth, pictureHeight,
                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                            &pictures_[slot].image, &pictures_[slot].memory)) {
       return fail("video picture allocation failed");
     }
-    if (!CreateImageView2D(api, context_, kPictureFormat, pictures_[slot].image,
+    if (!CreateImageView2D(api, context_, pictureFormat_, pictures_[slot].image,
                            &pictures_[slot].view)) {
       return fail("video picture view failed");
     }
@@ -224,7 +226,7 @@ bool VkVideoImport::EnsureConvertPipeline() {
   // exactly like the desktop picture.
   {
     VkAttachmentDescription attachment{};
-    attachment.format = kPictureFormat;
+    attachment.format = pictureFormat_;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;

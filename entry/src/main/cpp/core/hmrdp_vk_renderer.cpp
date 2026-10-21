@@ -9,6 +9,9 @@
 #include "present_quad.frag.h"
 #include "present_quad.vert.h"
 
+#include <native_buffer/buffer_common.h>
+#include <native_window/external_window.h>
+
 #include "hmrdp_log.h"
 
 namespace hmrdp {
@@ -40,12 +43,27 @@ std::string FormatName(VkFormat format) {
 
 // Prefer BGRA8 (FreeRDP's byte order, no CPU swizzle), then RGBA8. A lone
 // VK_FORMAT_UNDEFINED entry means "any" and resolves to BGRA8.
-VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
+//
+// An HDR stream wants the 10-bit HDR10 pair instead: `kHdrPictureFormat` with the PQ colour space.
+// The picture is stored in exactly that encoding, so the letterbox stays a pass-through. Nothing is
+// forced: a surface that does not offer the pair keeps the SDR choice and the caller falls back to
+// SDR (see CreateSwapchainLocked), which is what makes "the window cannot do HDR" a fact rather than
+// a wrong-coloured picture.
+VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats, bool hdr) {
   if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
     VkSurfaceFormatKHR picked{};
-    picked.format = VK_FORMAT_B8G8R8A8_UNORM;
-    picked.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    picked.format = hdr ? kHdrPictureFormat : VK_FORMAT_B8G8R8A8_UNORM;
+    picked.colorSpace =
+        hdr ? VK_COLOR_SPACE_HDR10_ST2084_EXT : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     return picked;
+  }
+  if (hdr) {
+    for (const VkSurfaceFormatKHR& format : formats) {
+      if (format.format == kHdrPictureFormat &&
+          format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+        return format;
+      }
+    }
   }
   for (const VkSurfaceFormatKHR& format : formats) {
     if (format.format == VK_FORMAT_B8G8R8A8_UNORM) {
@@ -148,6 +166,8 @@ void VkRenderer::SetSurface(void* nativeWindow, int width, int height) {
     DestroySwapchainLocked();
     vk_.DestroySurface(surface_);
     surface_ = VK_NULL_HANDLE;
+    surfaceHdr_ = SurfaceHdrSupport();
+    surfaceHdrLogged_ = false;
   }
   pendingWindow_ = nativeWindow;
   surfaceWidth_ = width;
@@ -172,6 +192,8 @@ void VkRenderer::DestroySurface() {
   surface_ = VK_NULL_HANDLE;
   pendingWindow_ = nullptr;
   surfaceDirty_ = true;
+  surfaceHdr_ = SurfaceHdrSupport();
+  surfaceHdrLogged_ = false;
 }
 
 bool VkRenderer::Prepare() {
@@ -811,7 +833,7 @@ void VkRenderer::RecordPresentQuadLocked(VkCommandBuffer cmd, int srcWidth, int 
 
 bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   const bool match = desktopImage_ != VK_NULL_HANDLE && desktopImageWidth_ == width &&
-                     desktopImageHeight_ == height && desktopImageFormat_ == kPictureFormat;
+                     desktopImageHeight_ == height && desktopImageFormat_ == pictureFormat_;
   if (match) {
     return true;
   }
@@ -828,7 +850,7 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   info.imageType = VK_IMAGE_TYPE_2D;
-  info.format = kPictureFormat;
+  info.format = pictureFormat_;
   info.extent.width = static_cast<uint32_t>(width);
   info.extent.height = static_cast<uint32_t>(height);
   info.extent.depth = 1;
@@ -874,7 +896,7 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
     return false;
   }
 
-  desktopImageFormat_ = kPictureFormat;
+  desktopImageFormat_ = pictureFormat_;
   desktopImageWidth_ = width;
   desktopImageHeight_ = height;
   desktopImageFullUpload_ = true;
@@ -883,7 +905,7 @@ bool VkRenderer::EnsureDesktopImageLocked(int width, int height) {
   viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   viewInfo.image = desktopImage_;
   viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  viewInfo.format = kPictureFormat;
+  viewInfo.format = pictureFormat_;
   viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
   viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
   viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1451,11 +1473,12 @@ bool VkRenderer::PresentBgra(const uint8_t* data, int srcStride, int desktopWidt
 
     // The present tail reads the upload in the same command buffer; it declares that dependency
     // itself (see RecordPresentTailLocked), so the desktop is described by how it was written here.
-    PresentInput input;
-    input.image = desktopImage_;
-    input.view = desktopImageView_;
-    input.width = desktopWidth;
-    input.height = desktopHeight;
+  PresentInput input;
+  input.image = desktopImage_;
+  input.view = desktopImageView_;
+  input.format = pictureFormat_;
+  input.width = desktopWidth;
+  input.height = desktopHeight;
     input.producerStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     input.producerAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
     const bool presented = RecordPresentTailLocked(cmd, slot, imageIndex, input, srActive, timers,
@@ -1512,7 +1535,7 @@ int VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry&
     // The importer's picture is the session resolution and only changes on a resolution switch;
     // drain the frames still reading the old one before it is rebuilt (which drops the imports too).
     // The same holds when the import cache is at its cap and this buffer is not cached yet.
-    if (videoImport_.needsRebuild(visibleWidth, visibleHeight) ||
+    if (videoImport_.needsRebuild(visibleWidth, visibleHeight, pictureFormat_) ||
         videoImport_.needsDrainFor(nativeBuffer)) {
       DrainInFlightLocked();
     }
@@ -1524,7 +1547,7 @@ int VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry&
     if (!WaitVideoFrameLocked(static_cast<int>(slot))) {
       return -1;
     }
-    if (!videoImport_.Ensure(visibleWidth, visibleHeight)) {
+    if (!videoImport_.Ensure(visibleWidth, visibleHeight, pictureFormat_)) {
       error_ = videoImport_.lastError();
       return -1;
     }
@@ -1575,6 +1598,7 @@ int VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry&
     PresentInput input;
     input.image = videoImport_.pictureImage(slot);
     input.view = videoImport_.pictureView(slot);
+    input.format = videoImport_.pictureFormat();
     input.width = visibleWidth;
     input.height = visibleHeight;
     input.producerStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1634,6 +1658,23 @@ void VkRenderer::SetVideoColorSpace(int colorSpace) {
 bool VkRenderer::videoColorMismatch() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return videoImport_.colorMismatch();
+}
+
+void VkRenderer::SetStreamHdr(bool enabled) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (streamHdr_ == enabled) {
+    return;
+  }
+  streamHdr_ = enabled;
+  // The swapchain format and the output stage both depend on this, so the next present rebuilds them.
+  surfaceDirty_ = true;
+}
+
+bool VkRenderer::hdrActive() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  // Set once the output stage really runs the HDR path (the HDR10 swapchain and its pipeline were
+  // built). A request, or a surface that cannot do it, never reports HDR.
+  return hdrOutputActive_;
 }
 
 void VkRenderer::Reset() {
@@ -1713,7 +1754,38 @@ bool VkRenderer::CreateSwapchainLocked() {
   }
   std::vector<VkSurfaceFormatKHR> formats(formatCount);
   api.GetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice(), surface_, &formatCount, formats.data());
-  const VkSurfaceFormatKHR surfaceFormat = PickSurfaceFormat(formats);
+
+  // The HDR10 half of the swapchain decision needs a real surface, so it is observed here (the
+  // device half lives in the static probe, hmrdp_vk_context.h). Logged once per surface: it answers
+  // "can this window present HDR at all" and prints every candidate the surface advertised.
+  surfaceHdr_ = ObserveSurfaceHdrSupport(api, context.physicalDevice(), surface_);
+  if (!surfaceHdrLogged_) {
+    surfaceHdrLogged_ = true;
+    HMRDP_LOGI("vulkan surface: hdr10 format=%{public}d colorspace=%{public}d, %{public}u "
+               "candidate(s): %{public}s",
+               surfaceHdr_.hdr10FormatOk ? 1 : 0, surfaceHdr_.hdr10ColorSpaceOk ? 1 : 0,
+               surfaceHdr_.formatCount, surfaceHdr_.formats.c_str());
+  }
+
+  // HDR is used only when every half holds: the host confirmed the stream is HDR and this window
+  // offers the HDR10 pair. Anything missing falls back to the SDR path, which is also what the
+  // toolbar reports (hdrActive) - a wrong-coloured picture is never an option.
+  const VulkanCapabilities& vkCaps = GetVulkanCapabilities();
+  const bool hdrOutput = streamHdr_ && surfaceHdr_.hdr10() && vkCaps.extSwapchainColorspace &&
+                         vkCaps.hdr10AttachmentOk;
+  const VkSurfaceFormatKHR surfaceFormat = PickSurfaceFormat(formats, hdrOutput);
+  // The picture the 超分 / letterbox tail consumes is stored in the output's own encoding, which is
+  // what keeps the letterbox a pass-through (see kPictureFormat / kHdrPictureFormat).
+  pictureFormat_ = PictureFormatFor(hdrOutput);
+  // Only true once the swapchain really came back as the HDR10 format (set after it is created).
+  hdrOutputActive_ = false;
+  // The window carries the same colour space as the swapchain, and the host's static HDR metadata is
+  // handed over with it; both are for the compositor, which is what actually drives the panel.
+  if (pendingWindow_ != nullptr) {
+    OH_NativeWindow_SetColorSpace(
+        static_cast<OHNativeWindow*>(pendingWindow_),
+        hdrOutput ? OH_COLORSPACE_BT2020_PQ_LIMIT : OH_COLORSPACE_SRGB_FULL);
+  }
 
   uint32_t presentModeCount = 0;
   api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, nullptr);
@@ -1783,6 +1855,9 @@ bool VkRenderer::CreateSwapchainLocked() {
   swapchain_ = swapchain;
   format_ = surfaceFormat.format;
   extent_ = extent;
+  // The output stage is HDR only when the swapchain really came back as the HDR10 format and pair.
+  hdrOutputActive_ = pictureFormat_ == kHdrPictureFormat && format_ == kHdrPictureFormat &&
+                     surfaceFormat.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
 
   uint32_t swapImageCount = 0;
   api.GetSwapchainImagesKHR(device, swapchain_, &swapImageCount, nullptr);
@@ -1801,6 +1876,11 @@ bool VkRenderer::CreateSwapchainLocked() {
   // Recreate the render pass only when the format changed: an out-of-date swapchain
   // is normally just a resize, where rebuilding it is pure churn.
   if (renderPass_ != VK_NULL_HANDLE && renderPassFormat_ != format_) {
+    // The present pipeline is built against this render pass, so a format change invalidates it too
+    // (a stream that switches to or from HDR does exactly this). Waiting the frames in flight out
+    // first is what makes destroying it safe.
+    DrainInFlightLocked();
+    DestroyPresentPipelineLocked();
     if (api.DestroyRenderPass != nullptr) {
       api.DestroyRenderPass(device, renderPass_, nullptr);
     }
