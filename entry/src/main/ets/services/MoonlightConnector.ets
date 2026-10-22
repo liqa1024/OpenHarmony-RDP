@@ -10,6 +10,7 @@ import { GamepadDevices } from './input/GamepadDevices';
 import { clampStreamFps, FPS_LIMIT_NONE, FPS_LIMIT_PANEL, FpsCeiling, recommendedBitrateKbps }
   from '../utils/MoonlightQuality';
 import { maxDisplayRefreshRate } from '../utils/DisplayUtil';
+import { HdrLuminance, resolveHdrLuminance } from '../utils/MoonlightHdr';
 import { moonlightHostCodecNames } from '../utils/MoonlightCodec';
 import { MoonlightClient, MoonlightDisplay, MoonlightScaleTarget } from '../moonlight/MoonlightClient';
 import { MoonlightHttpCancel } from '../moonlight/MoonlightHttp';
@@ -369,6 +370,22 @@ export class MoonlightConnector {
     // Controllers attached right now decide the mask the host creates up front.
     options.gamepadMask = await GamepadDevices.attachedMask();
     options.hdr = hdrRequested;
+    // HDR 亮度上报: the host programs this into the virtual display and Windows maps SDR content
+    // against it, so reporting nothing leaves the host's 1000-nit default and an over-bright SDR
+    // desktop. The peak comes from the panel (auto) or the user; 全屏平均 follows it unless set.
+    if (hdrRequested) {
+      const luminance: HdrLuminance | undefined = resolveHdrLuminance(stream);
+      if (luminance === undefined) {
+        hilog.info(0xD001, 'HmRdpMoonlight', 'hdr luminance not reportable; host defaults apply');
+      } else {
+        options.hdrPeakNits = luminance.peak;
+        options.hdrMinNits = luminance.min;
+        options.hdrFullFrameNits = luminance.fullFrame;
+        hilog.info(0xD001, 'HmRdpMoonlight',
+          'hdr luminance report peak=%{public}d min=%{public}s full_frame=%{public}d',
+          luminance.peak, luminance.min.toString(), luminance.fullFrame);
+      }
+    }
     let launch: LaunchResult;
     if (info.currentGame === effectiveAppId) {
       launch = await MoonlightClient.resume(filesDir, host, info.httpsPort, options);

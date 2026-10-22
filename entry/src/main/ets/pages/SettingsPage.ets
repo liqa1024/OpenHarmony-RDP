@@ -5,8 +5,8 @@ import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Pro
 import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
   ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_COLORSPACE_REC2020_HDR,
-  mlColorSpaceIsHdr, ML_FPS_PRESETS, ML_RES_FIXED,
-  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL } from '../moonlight/MoonlightModels';
+  mlColorSpaceIsHdr, ML_FPS_PRESETS, ML_HDR_NITS_MAX, ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL } from '../moonlight/MoonlightModels';
 import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
 import { BackgroundImage } from '../services/BackgroundImage';
@@ -29,6 +29,7 @@ import { defaultDisplay } from '../utils/DisplayUtil';
 import { MAX_DESKTOP_SIZE, parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
+import { clampHdrFullFrameNits, clampHdrPeakNits, displayHdrPeakNits, observeHdrPeak } from '../utils/MoonlightHdr';
 import { TextAction } from '../components/TextAction';
 import { ChoiceChip } from '../components/ChoiceChip';
 import { PageHeader } from '../components/PageHeader';
@@ -45,6 +46,10 @@ import { MaterialSupport, MATERIAL_STYLE_DEFAULT } from '../utils/MaterialSuppor
 const WALLPAPER_MAIN: number = 0;
 const WALLPAPER_SETTINGS: number = 1;
 const WALLPAPER_APPS: number = 2;
+
+// HDR 亮度两项共用一套「自动/手动」样式，这个值区分点的是哪一项。
+const ML_HDR_LIMIT_PEAK: number = 0;
+const ML_HDR_LIMIT_FULL_FRAME: number = 1;
 
 // 沉浸光感厚度选项：默认 = 跟随官方默认（不指定 style）；0..4 = ImmersiveStyle。
 class MaterialStyleChoice {
@@ -157,6 +162,10 @@ struct SettingsPage {
   @State mlBitrateText: string = kbpsToMbps(ML_BITRATE_DEFAULT_KBPS).toString();
   @State mlColorSpace: number = ML_COLORSPACE_REC709;
   @State mlCodec: number = ML_CODEC_AUTO;
+  @State mlHdrPeakAuto: boolean = true;
+  @State mlHdrPeakText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
+  @State mlHdrFullFrameAuto: boolean = true;
+  @State mlHdrFullFrameText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   @State mlRelativeMouse: boolean = false;
   @State relativeSpeed: number = DEFAULT_SPEED_SCALE;
@@ -167,6 +176,10 @@ struct SettingsPage {
   // The HDR half of the colour-space choice: a device verdict, so it is read once.
   private hdrSupported: boolean = false;
   private hdrReason: string = '';
+  // 本机面板的 HDR 峰值亮度（nits），0 = 检测不到（上报时交给主机默认）。
+  // 随亮度条变化，所以是 @State 并由 observeHdrPeak 持续刷新。
+  @State detectedHdrPeak: number = 0;
+  private hdrPeakObserver: () => void = () => {};
   @State mainWidthText: string = '';
   @State mainHeightText: string = '';
   @State sessionWidthText: string = '';
@@ -193,6 +206,10 @@ struct SettingsPage {
     const hdrCapability: Capability = DeviceCapabilities.hdr();
     this.hdrSupported = hdrCapability.supported;
     this.hdrReason = hdrCapability.reason;
+    this.detectedHdrPeak = displayHdrPeakNits();
+    this.hdrPeakObserver = observeHdrPeak((peak: number) => {
+      this.detectedHdrPeak = peak;
+    });
     const defaults: AppSettings = SettingsStore.defaults();
     this.defaultMainWidth = defaults.mainWindowWidth;
     this.defaultMainHeight = defaults.mainWindowHeight;
@@ -209,6 +226,7 @@ struct SettingsPage {
   }
 
   aboutToDisappear(): void {
+    this.hdrPeakObserver();
     this.flushPersist();
   }
 
@@ -270,6 +288,10 @@ struct SettingsPage {
       this.mlBitrateText = kbpsToMbps(settings.mlBitrateKbps).toString();
       this.mlColorSpace = settings.mlColorSpace;
       this.mlCodec = settings.mlCodec;
+      this.mlHdrPeakAuto = settings.mlHdrPeakAuto;
+      this.mlHdrPeakText = settings.mlHdrPeakNits.toString();
+      this.mlHdrFullFrameAuto = settings.mlHdrFullFrameAuto;
+      this.mlHdrFullFrameText = settings.mlHdrFullFrameNits.toString();
       this.mlSrEnabled = this.mlSrSupported ? settings.mlSrEnabled : false;
       this.mlSrRatioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
       this.mlSrBackend = settings.mlSrBackend;
@@ -377,6 +399,42 @@ struct SettingsPage {
     const mbps: number = Number.parseFloat(this.mlBitrateText);
     const kbps: number = Number.isNaN(mbps) ? ML_BITRATE_DEFAULT_KBPS : mbpsToKbps(mbps);
     return Math.min(Math.max(kbps, ML_BITRATE_MIN_KBPS), ML_BITRATE_MAX_KBPS);
+  }
+
+  // 手动时输入框里的峰值（nits），空/越界按检测值或默认值收口。
+  private effectiveMlHdrPeak(): number {
+    const nits: number = Number.parseFloat(this.mlHdrPeakText);
+    if (Number.isNaN(nits)) {
+      return this.detectedHdrPeak > 0 ? this.detectedHdrPeak : ML_HDR_PEAK_DEFAULT_NITS;
+    }
+    return Math.round(clampHdrPeakNits(nits));
+  }
+
+  // 全屏平均亮度必须不高于峰值，否则主机整份上报作废。
+  private effectiveMlHdrFullFrame(peak: number): number {
+    const nits: number = Number.parseFloat(this.mlHdrFullFrameText);
+    if (Number.isNaN(nits)) {
+      return peak;
+    }
+    return Math.round(clampHdrFullFrameNits(nits, peak));
+  }
+
+  private mlHdrPeakHint(): string {
+    if (this.detectedHdrPeak > 0) {
+      return `自动：本机屏幕约 ${this.detectedHdrPeak} nit`;
+    }
+    return '自动：本机检测不到，将使用主机默认值';
+  }
+
+  private mlHdrFullFrameHint(): string {
+    const peak: number = this.mlHdrResolvedPeak();
+    return peak > 0 ? `自动：跟随峰值（${peak} nit）` : '自动：跟随峰值';
+  }
+
+  // 当前生效的峰值（自动 = 本机检测，手动 = 输入框），0 表示两边都没有可用的值。
+  private mlHdrResolvedPeak(): number {
+    const peak: number = this.mlHdrPeakAuto ? this.detectedHdrPeak : this.effectiveMlHdrPeak();
+    return peak > 0 ? peak : 0;
   }
 
   private mlPreviewWidth(): number {
@@ -530,6 +588,11 @@ struct SettingsPage {
       settings.mlBitrateKbps = this.effectiveMlBitrate();
       settings.mlColorSpace = this.mlColorSpace;
       settings.mlCodec = this.mlCodec;
+      settings.mlHdrPeakAuto = this.mlHdrPeakAuto;
+      settings.mlHdrPeakNits = this.effectiveMlHdrPeak();
+      settings.mlHdrFullFrameAuto = this.mlHdrFullFrameAuto;
+      settings.mlHdrFullFrameNits =
+        this.effectiveMlHdrFullFrame(this.effectiveMlHdrPeak());
       settings.mlSrEnabled = this.mlSrEnabled && this.mlSrSupported;
       settings.mlSrRatioPercent = SettingsStore.snapSrRatioPreset(this.mlSrRatioPercent);
       settings.mlSrBackend = this.mlSrBackend;
@@ -1353,9 +1416,152 @@ struct SettingsPage {
         }
       }
       .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+
+      // HDR 专属项：只有色彩协议选了 Rec2020（HDR）才出现。
+      if (mlColorSpaceIsHdr(this.mlColorSpace)) {
+        Divider().strokeWidth(1).color($r('app.color.divider'))
+
+        this.mlHdrLuminanceItems()
+      }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  mlHdrLuminanceItems() {
+    Column() {
+      Row() {
+        Column() {
+          Text('HDR 峰值亮度').fontSize(14)
+          Text('上报给主机的屏幕峰值（小窗口激活亮度）；自动读取本机屏幕')
+            .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Row() {
+          this.mlHdrModeChip('自动', true, 0, this.mlHdrPeakAuto, ML_HDR_LIMIT_PEAK)
+          this.mlHdrModeChip('手动', false, 8, this.mlHdrPeakAuto, ML_HDR_LIMIT_PEAK)
+        }
+      }
+      .width('100%')
+
+      if (this.mlHdrPeakAuto) {
+        Text(this.mlHdrPeakHint())
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
+          .width('100%').margin({ top: 10 })
+      } else {
+        Row() {
+          TextInput({ placeholder: ML_HDR_PEAK_DEFAULT_NITS.toString(), text: this.mlHdrPeakText })
+            .type(InputType.Number)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .height(40)
+            .width(140)
+            .backgroundColor($r('app.color.surface_subtle'))
+            .border({ width: 1, color: $r('app.color.border') })
+            .borderRadius(10)
+            .onChange((value: string) => {
+              this.mlHdrPeakText = value;
+              this.persist();
+            })
+          Text(`nit（${ML_HDR_NITS_MIN}–${ML_HDR_NITS_MAX}）`)
+            .fontSize(14)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ left: 10 })
+        }
+        .width('100%').margin({ top: 10 })
+      }
+    }
+    .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+
+    Divider().strokeWidth(1).color($r('app.color.divider'))
+
+    Column() {
+      Row() {
+        Column() {
+          Text('HDR 全屏平均亮度').fontSize(14)
+          Text('面板可持续的全屏亮度（ABL 面板低于峰值）；自动跟随峰值')
+            .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Row() {
+          this.mlHdrModeChip('自动', true, 0, this.mlHdrFullFrameAuto, ML_HDR_LIMIT_FULL_FRAME)
+          this.mlHdrModeChip('手动', false, 8, this.mlHdrFullFrameAuto, ML_HDR_LIMIT_FULL_FRAME)
+        }
+      }
+      .width('100%')
+
+      if (this.mlHdrFullFrameAuto) {
+        Text(this.mlHdrFullFrameHint())
+          .fontSize(12).fontColor($r('app.color.text_tertiary'))
+          .width('100%').margin({ top: 10 })
+      } else {
+        Row() {
+          TextInput({ placeholder: ML_HDR_PEAK_DEFAULT_NITS.toString(), text: this.mlHdrFullFrameText })
+            .type(InputType.Number)
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .height(40)
+            .width(140)
+            .backgroundColor($r('app.color.surface_subtle'))
+            .border({ width: 1, color: $r('app.color.border') })
+            .borderRadius(10)
+            .onChange((value: string) => {
+              this.mlHdrFullFrameText = value;
+              this.persist();
+            })
+          Text('nit')
+            .fontSize(14)
+            .margin({ left: 10 })
+        }
+        .width('100%').margin({ top: 10 })
+      }
+    }
+    .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  mlHdrModeChip(label: string, auto: boolean, leftMargin: number, selected: boolean, limit: number) {
+    Text(label)
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(selected === auto
+        ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
+      .height(32)
+      .textAlign(TextAlign.Center)
+      .backgroundColor(selected === auto
+        ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
+      .border({
+        width: 1,
+        color: selected === auto
+          ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
+      })
+      .borderRadius(8)
+      .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+      .margin({ left: leftMargin })
+      .responseRegion({ x: 0, y: -4, width: '100%', height: 40 })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.setMlHdrAuto(limit, auto);
+      })
+      .focusable(true)
+      .focusOnTouch(true)
+  }
+
+  // 切换「自动 / 手动」只翻转标志：手动输入框一直保留已存的值（空/越界由 effective* 收口）。
+  private setMlHdrAuto(limit: number, auto: boolean): void {
+    if (limit === ML_HDR_LIMIT_PEAK) {
+      this.mlHdrPeakAuto = auto;
+    } else {
+      this.mlHdrFullFrameAuto = auto;
+    }
+    this.persist();
   }
 
   @Builder

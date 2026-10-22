@@ -9,8 +9,8 @@ import {
   MoonlightConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnection
 } from '../model/Connections';
 import {
-  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_RES_FOLLOW_SCREEN,
-  ML_SCALE_AUTO, MoonlightProfile
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile
 } from '../moonlight/MoonlightModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
 import { DeviceCapabilities } from './DeviceCapabilities';
@@ -122,6 +122,10 @@ export class AppSettings {
   mlHeight: number = 0;
   mlScaleMode: number = ML_SCALE_AUTO;
   mlScalePercent: number = 100;
+  mlHdrPeakAuto: boolean = true;
+  mlHdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  mlHdrFullFrameAuto: boolean = true;
+  mlHdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
   lastNewProtocol: number = PROTOCOL_RDP;
   lastSettingsTab: number = -1;
   wolHelpShown: boolean = false;
@@ -289,6 +293,14 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlScaleMode', settings.mlScaleMode);
       settings.mlScalePercent =
         SettingsStore.readNumber(store, 'mlScalePercent', settings.mlScalePercent);
+      settings.mlHdrPeakAuto =
+        SettingsStore.readBoolean(store, 'mlHdrPeakAuto', settings.mlHdrPeakAuto);
+      settings.mlHdrPeakNits =
+        SettingsStore.readNumber(store, 'mlHdrPeakNits', settings.mlHdrPeakNits);
+      settings.mlHdrFullFrameAuto =
+        SettingsStore.readBoolean(store, 'mlHdrFullFrameAuto', settings.mlHdrFullFrameAuto);
+      settings.mlHdrFullFrameNits =
+        SettingsStore.readNumber(store, 'mlHdrFullFrameNits', settings.mlHdrFullFrameNits);
       settings.lastNewProtocol =
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
       settings.lastSettingsTab =
@@ -401,6 +413,10 @@ export class SettingsStore {
       store.putSync('mlHeight', settings.mlHeight);
       store.putSync('mlScaleMode', settings.mlScaleMode);
       store.putSync('mlScalePercent', settings.mlScalePercent);
+      store.putSync('mlHdrPeakAuto', settings.mlHdrPeakAuto);
+      store.putSync('mlHdrPeakNits', settings.mlHdrPeakNits);
+      store.putSync('mlHdrFullFrameAuto', settings.mlHdrFullFrameAuto);
+      store.putSync('mlHdrFullFrameNits', settings.mlHdrFullFrameNits);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
       store.putSync('lastSettingsTab', settings.lastSettingsTab);
       store.putSync('wolHelpShown', settings.wolHelpShown);
@@ -609,6 +625,10 @@ export class SettingsStore {
     profile.colorSpace = settings.mlColorSpace;
     profile.scaleMode = settings.mlScaleMode;
     profile.scalePercent = settings.mlScalePercent;
+    profile.hdrPeakAuto = settings.mlHdrPeakAuto;
+    profile.hdrPeakNits = settings.mlHdrPeakNits;
+    profile.hdrFullFrameAuto = settings.mlHdrFullFrameAuto;
+    profile.hdrFullFrameNits = settings.mlHdrFullFrameNits;
     return profile;
   }
 
@@ -627,6 +647,10 @@ export class SettingsStore {
     profile.colorSpace = conn.mlColorSpace;
     profile.scaleMode = conn.mlScaleMode;
     profile.scalePercent = conn.mlScalePercent;
+    profile.hdrPeakAuto = conn.mlHdrPeakAuto;
+    profile.hdrPeakNits = conn.mlHdrPeakNits;
+    profile.hdrFullFrameAuto = conn.mlHdrFullFrameAuto;
+    profile.hdrFullFrameNits = conn.mlHdrFullFrameNits;
     return profile;
   }
 

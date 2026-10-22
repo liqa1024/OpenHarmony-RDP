@@ -158,6 +158,7 @@ export class MoonlightClient {
       // Sunshine decides HDR from this (and only then switches its output); we still wait for its
       // answer on the control stream before presenting HDR.
       + (options.hdr ? '&hdrMode=1' : '')
+      + MoonlightClient.hdrLuminanceQuery(options)
       + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =
       MoonlightClient.bodyOrError(await MoonlightClient.httpGet(dir, host, httpsPort, path, true, pin));
@@ -176,6 +177,19 @@ export class MoonlightClient {
     result.rikeyId = options.rikeyId;
     result.ok = true;
     return result;
+  }
+
+  // The base-Sunshine HDR luminance report (maxBrightness / minBrightness / maxAverageBrightness).
+  // The host validates the three as one report and writes them into the virtual display's HDR range,
+  // so a partial one is worse than none: without a peak we send nothing and the host keeps its own
+  // 1000/0.001/1000 defaults.
+  private static hdrLuminanceQuery(options: MoonlightLaunchOptions): string {
+    if (!options.hdr || options.hdrPeakNits < 1) {
+      return '';
+    }
+    return `&maxBrightness=${options.hdrPeakNits}`
+      + `&minBrightness=${options.hdrMinNits}`
+      + `&maxAverageBrightness=${options.hdrFullFrameNits}`;
   }
 
   static async pair(dir: string, host: string, httpPort: number, httpsPort: number,

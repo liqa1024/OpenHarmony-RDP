@@ -54,6 +54,11 @@ export class MoonlightLaunchOptions {
   gamepadMask: number = 0;
   // Ask the host for HDR: drives the /launch hdrMode parameter and the 10-bit codec choice.
   hdr: boolean = false;
+  // HDR 亮度上报（仅 hdr 为真时随 /launch 发出，三个一组缺一不可）。peak 为 0 表示不上报，
+  // 主机用自己的默认值。
+  hdrPeakNits: number = 0;
+  hdrMinNits: number = ML_HDR_MIN_NITS;
+  hdrFullFrameNits: number = 0;
 }
 
 export class LaunchResult {
@@ -82,6 +87,15 @@ export const ML_FPS_MAX: number = 240;
 export const ML_BITRATE_MIN_KBPS: number = 1000;
 export const ML_BITRATE_MAX_KBPS: number = 200000;
 export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
+
+// HDR 亮度上报：/launch 的 maxBrightness / minBrightness / maxAverageBrightness（基地版扩展）。主机把它们
+// 写进虚拟显示器的 HDR 亮度范围，Windows 据此把 SDR 桌面映射进 HDR——不上报就用主机的 1000 nit 默认值，
+// SDR 内容会偏亮。平台只给得出峰值（见 utils/MoonlightHdr.ets），另两个只能由用户给或跟随峰值。
+export const ML_HDR_NITS_MIN: number = 1;
+export const ML_HDR_NITS_MAX: number = 10000;
+// 黑位：平台测不到面板黑位，固定用主机自己的默认值（极小，等于不设黑位下限）。
+export const ML_HDR_MIN_NITS: number = 0.001;
+export const ML_HDR_PEAK_DEFAULT_NITS: number = 1000;
 
 // The colour protocol the session asks the host to encode with, sent as
 // encoderCscMode = (space<<1)|range and mirrored by the values of COLORSPACE_* in Limelight.h.
@@ -116,6 +130,12 @@ export class MoonlightProfile {
   colorSpace: number = ML_COLORSPACE_REC709;
   scaleMode: number = ML_SCALE_AUTO;
   scalePercent: number = 100;
+  // HDR 亮度上报（HDR 会话才有意义）。峰值自动 = 读本机屏幕；手动 = hdrPeakNits。
+  // 全屏平均自动 = 跟随峰值；手动 = hdrFullFrameNits（上报时按峰值封顶）。
+  hdrPeakAuto: boolean = true;
+  hdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  hdrFullFrameAuto: boolean = true;
+  hdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
 }
 
 export class MoonlightStreamConfig implements MoonlightSessionConfig {

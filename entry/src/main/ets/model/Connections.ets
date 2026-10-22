@@ -1,6 +1,7 @@
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_DEFAULT_PORT,
-  ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile, MoonlightStreamConfig, PairResult
+  ML_HDR_PEAK_DEFAULT_NITS, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile,
+  MoonlightStreamConfig, PairResult
 } from '../moonlight/MoonlightModels';
 import { SR_BACKEND_XENGINE, SrSetting } from './Profiles';
 import { RDP_DEFAULT_PORT, RdpConnectOptions } from './RdpModels';
@@ -198,6 +199,10 @@ export class ConnectionExport {
   useGlobalStream: boolean = true;
   mlScaleMode: number = ML_SCALE_AUTO;
   mlScalePercent: number = 100;
+  mlHdrPeakAuto: boolean = true;
+  mlHdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  mlHdrFullFrameAuto: boolean = true;
+  mlHdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
 }
 
 export abstract class SavedConnection {
@@ -520,6 +525,10 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
   mlColorSpace: number = ML_COLORSPACE_REC709;
   mlScaleMode: number = ML_SCALE_AUTO;
   mlScalePercent: number = 100;
+  mlHdrPeakAuto: boolean = true;
+  mlHdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  mlHdrFullFrameAuto: boolean = true;
+  mlHdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
   // 超分: same shape as the RDP connection — a per-connection override over the Moonlight tab's
   // own global values. The stream is taken at output / ratio and upscaled back locally.
   useGlobalSr: boolean = true;
@@ -624,6 +633,10 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     slots[49] = this.srEnabled ? '1' : '0';
     slots[50] = this.srRatioPercent.toString();
     slots[51] = this.srBackend.toString();
+    slots[52] = this.mlHdrPeakAuto ? '1' : '0';
+    slots[53] = this.mlHdrPeakNits.toString();
+    slots[54] = this.mlHdrFullFrameAuto ? '1' : '0';
+    slots[55] = this.mlHdrFullFrameNits.toString();
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -652,6 +665,12 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     this.srRatioPercent = parts.length > 50 ? parseFieldNumber(parts[50], 0) : 0;
     this.srBackend = parts.length > 51
       ? parseFieldNumber(parts[51], SR_BACKEND_XENGINE) : SR_BACKEND_XENGINE;
+    this.mlHdrPeakAuto = parts.length > 52 ? parts[52] !== '0' : true;
+    this.mlHdrPeakNits = parts.length > 53
+      ? parseFieldPositive(parts[53], ML_HDR_PEAK_DEFAULT_NITS) : ML_HDR_PEAK_DEFAULT_NITS;
+    this.mlHdrFullFrameAuto = parts.length > 54 ? parts[54] !== '0' : true;
+    this.mlHdrFullFrameNits = parts.length > 55
+      ? parseFieldPositive(parts[55], ML_HDR_PEAK_DEFAULT_NITS) : ML_HDR_PEAK_DEFAULT_NITS;
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -670,6 +689,10 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     item.useGlobalStream = this.useGlobalStream;
     item.mlScaleMode = this.mlScaleMode;
     item.mlScalePercent = this.mlScalePercent;
+    item.mlHdrPeakAuto = this.mlHdrPeakAuto;
+    item.mlHdrPeakNits = this.mlHdrPeakNits;
+    item.mlHdrFullFrameAuto = this.mlHdrFullFrameAuto;
+    item.mlHdrFullFrameNits = this.mlHdrFullFrameNits;
     item.useGlobalSr = this.useGlobalSr;
     item.srEnabled = this.srEnabled;
     item.srRatioPercent = this.srRatioPercent;
@@ -692,6 +715,10 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     this.useGlobalStream = item.useGlobalStream;
     this.mlScaleMode = item.mlScaleMode;
     this.mlScalePercent = item.mlScalePercent;
+    this.mlHdrPeakAuto = item.mlHdrPeakAuto;
+    this.mlHdrPeakNits = item.mlHdrPeakNits;
+    this.mlHdrFullFrameAuto = item.mlHdrFullFrameAuto;
+    this.mlHdrFullFrameNits = item.mlHdrFullFrameNits;
     this.useGlobalSr = item.useGlobalSr;
     this.srEnabled = item.srEnabled;
     this.srRatioPercent = item.srRatioPercent;

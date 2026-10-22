@@ -60,6 +60,8 @@
 
 - **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
   分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
+   HDR 亮度上报是 `maxBrightness` / `minBrightness` / `maxAverageBrightness`（基地版扩展，**三个一组**，
+   语义与检测见 [`moonlight-video.md`](moonlight-video.md) §4），
   手柄掩码是 `gcmap`（本实现与 `remoteControllersBitmap` 一起填当前插着的手柄数，见
   [`moonlight-native.md`](moonlight-native.md) §2.5）。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist`
   选一个（优先名为 Desktop 的）。

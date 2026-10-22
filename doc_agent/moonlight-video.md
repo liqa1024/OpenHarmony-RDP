@@ -174,6 +174,19 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 - `clientRefreshRateX100` 仅用于 NTSC 分数帧率：传入的客户端刷新率落在请求帧率 ±2% 内才生效，否则为 0；
   故它取**面板刷新率 × 100**、面板刷新率与最终帧率不在此范围时置 0（连接层给出，见
   [`moonlight-connection.md`](moonlight-connection.md) §3）。
+- **HDR 亮度上报走 `/launch`，与 `STREAM_CONFIGURATION` 无关**：`maxBrightness` / `minBrightness` /
+  `maxAverageBrightness`（基地版扩展，见 [`moonlight-control.md`](moonlight-control.md) §3）描述的是**本机显示
+  能力**，主机把它写进虚拟显示器的 HDR 亮度范围（`{GUID}:[max,min,maxFALL]`，`vdd_utils::create_vdd_monitor`），
+  Windows 据此把 SDR 桌面映射进 HDR 信号——**不上报就沿用主机的 1000 / 0.001 / 1000 默认值，SDR 内容会偏亮**。
+  三个值的口径（`hdr::client_display_capabilities`）：`max` 是小窗口**激活峰值**、`maxAverage` 是**全屏可持续
+  亮度**（ABL 面板明显低于峰值）、`min` 是黑位；主机按**一份整体**校验（`min ≤ maxAverage ≤ max`，缺一或越界
+  即整份作废回默认），所以本机解析不出峰值时**一份都不发**。
+  - **本机只有峰值可检测，而且是推导值**：`display.getBrightnessInfo()` 给出 `sdrNits`（SDR 白点绝对亮度）
+    与 `maxHeadroom`（相对它的最大**余量倍率**，不是亮度读数），相乘才是面板最大亮度；平台**不提供**全屏
+    可持续亮度与黑位，任何"等效自动检测"都是编的。故峰值默认自动（读本机）/ 可手动覆盖，全屏平均默认
+    **跟随峰值**（可手动)，黑位固定用主机默认 `0.001`。判定与换算在 `utils/MoonlightHdr.ets`。
+    它是**当前**屏幕亮度下的值（随亮度条走），所以设置页订阅 `brightnessInfoChange` 让显示的检测值跟着变；
+    真正上报的是**连接那一刻**重新读的值。
 
 ## 5. 与 RDP 呈现器的复用口径
 
