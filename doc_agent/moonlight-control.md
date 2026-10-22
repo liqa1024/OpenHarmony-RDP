@@ -60,8 +60,11 @@
 
 - **控制端点参数名（Sunshine）**：`/launch` 必填 `rikey` / `rikeyid` / `localAudioPlayMode` / `appid`，
   分辨率用 `mode=WxHxFPS`；HDR 是 `hdrMode`、环绕是 `surroundAudioInfo`（不是 `hdr`/`surroundaudio`），
-   HDR 亮度上报是 `maxBrightness` / `minBrightness` / `maxAverageBrightness`（基地版扩展，**三个一组**，
-   语义与检测见 [`moonlight-video.md`](moonlight-video.md) §4），
+  **HDR 请求还要带标准那组 `clientHdrCapVersion` / `clientHdrCapSupportedFlagsInUint32` /
+  `clientHdrCapMetaDataId` / `clientHdrCapDisplayData`**（上游 moonlight-android 原样发送的四个字面量；
+  foundation-sunshine 一个都不读，但这是协议里"HDR 请求"该有的形态，缺了它主机看到的就是一份不完整的
+  请求），HDR 亮度上报是 `maxBrightness` / `minBrightness` / `maxAverageBrightness`（基地版扩展，
+  **三个一组**，语义与检测见 [`moonlight-video.md`](moonlight-video.md) §4），
   手柄掩码是 `gcmap`（本实现与 `remoteControllersBitmap` 一起填当前插着的手柄数，见
   [`moonlight-native.md`](moonlight-native.md) §2.5）。**没有 `appid=0` 的"桌面"**：未指定应用时先取 `/applist`
   选一个（优先名为 Desktop 的）。

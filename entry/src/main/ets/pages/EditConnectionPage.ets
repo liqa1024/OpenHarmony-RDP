@@ -27,7 +27,7 @@ import { AppSettings, SR_RATIO_PRESETS, SettingsStore,
 import { parseScaleValue, parseSizeValue } from '../utils/ScaleParse';
 import { moonlightCodecSoftware, moonlightCodecSupport, moonlightCodecUsable } from '../utils/MoonlightCodec';
 import { clampFps, kbpsToMbps, mbpsToKbps, recommendedBitrateKbps } from '../utils/MoonlightQuality';
-import { clampHdrFullFrameNits, clampHdrPeakNits, displayHdrPeakNits, observeHdrPeak } from '../utils/MoonlightHdr';
+import { autoHdrFullFrameNits, clampHdrFullFrameNits, clampHdrPeakNits, displayHdrPeakNits, observeHdrPeak } from '../utils/MoonlightHdr';
 import { showConfirm, showToast } from '../utils/UiUtil';
 import { MOTION_CURVE, MOTION_HOVER_PRESS_MS } from '../utils/UiMotion';
 import { MaterialSupport } from '../utils/MaterialSupport';
@@ -343,14 +343,10 @@ struct EditConnectionPage {
   }
 
   private mlHdrFullFrameHint(): string {
-    const peak: number = this.mlHdrResolvedPeak();
-    return peak > 0 ? `自动：跟随峰值（${peak} nit）` : '自动：跟随峰值';
-  }
-
-  // 当前生效的峰值（自动 = 本机检测，手动 = 输入框），0 表示两边都没有可用的值。
-  private mlHdrResolvedPeak(): number {
     const peak: number = this.mlHdrPeakAuto ? this.detectedHdrPeak : this.effectiveMlHdrPeak();
-    return peak > 0 ? peak : 0;
+    return peak > 0
+      ? `自动：峰值的 20%（约 ${autoHdrFullFrameNits(peak)} nit）`
+      : '自动：取峰值的 20%';
   }
 
   // 切换「自动 / 手动」只翻转标志：手动输入框一直保留已存的值（空/越界由 effective* 收口）。
@@ -1574,7 +1570,7 @@ struct EditConnectionPage {
               Row() {
                 Column() {
                   Text('HDR 全屏平均亮度').fontSize(14)
-                  Text('面板可持续的全屏亮度（ABL 面板低于峰值）；自动跟随峰值')
+                  Text('面板可持续的全屏亮度（ABL 面板低于峰值）；自动取峰值的 20%')
                     .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
                 }
                 .alignItems(HorizontalAlign.Start)

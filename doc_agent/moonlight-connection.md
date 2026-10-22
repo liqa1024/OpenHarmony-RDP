@@ -45,8 +45,8 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩协议与HDR
   （Rec601 / Rec709 / Rec2020（HDR）：Rec2020 即请求 10 位 + HDR10；这是**协议选择**——只按协议可行性
   置灰，不按显示能力，显示不了由运行期降级兜底，见 [`moonlight-video.md`](moonlight-video.md) §2/§3）、
-  HDR 亮度上报（峰值 / 全屏平均，各「自动 / 手动」；峰值自动读本机屏幕，见
-  [`moonlight-video.md`](moonlight-video.md) §4）、
+  HDR 亮度上报（峰值 / 全屏平均，各「自动 / 手动」；自动为**连接时**的窗口采样，
+  见 [`moonlight-video.md`](moonlight-video.md) §4）、
   会话缩放（自动 / 手动 / 不额外设置）、超分（沿用 `useGlobalSr` + `sr*`，与 RDP 连接同名字段）。
 - **会话缩放（仅基地版 Sunshine）**：语义与 RDP 的 `DesktopScaleFactor` 同构——把远端 UI 的缩放系数交给主机，
   区别是这里**只写基地版内置的虚拟显示器**（friendly_name `Zako HDR`）：`launch` 成功后 `GET /displays` 找到它，

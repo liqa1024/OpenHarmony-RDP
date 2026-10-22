@@ -10,6 +10,7 @@
 #include "present_quad.vert.h"
 
 #include <native_buffer/buffer_common.h>
+#include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>
 
 #include "hmrdp_log.h"
@@ -1680,6 +1681,71 @@ void VkRenderer::SetStreamHdr(bool enabled) {
   surfaceDirty_ = true;
 }
 
+void VkRenderer::SetHdrStaticMetadata(const HdrStaticMetadata& metadata) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  hdrStaticMetadata_ = metadata;
+  // Arrives right before the HDR state, so the rebuild below normally carries it. Rewrite the
+  // declaration in place anyway when HDR is already running: this is metadata, not a swapchain
+  // property, and it must not be lost if the ordering ever changes.
+  if (hdrOutputActive_) {
+    DeclareWindowColorLocked(true);
+  }
+}
+
+// Everything the compositor needs to know about the swapchain's images.
+//
+// The colour space alone is not enough, and the range in it has to match the values that were actually
+// written: the picture holds the PQ signal expanded to 0..1 (the convert pass expands the codec's
+// limited range), and the swapchain is VK_COLOR_SPACE_HDR10_ST2084, so the window is _FULL. Saying
+// _LIMIT would have the compositor expand an already-full-range picture.
+//
+// The gamut, the metadata type and the static metadata are the rest of the same statement. A buffer
+// this app produced (rather than one the decoder hands straight to the compositor) gets nothing for
+// free, and the platform's own guidance is to pass the metadata and gamut with the picture - without
+// them the compositor converts the picture from whatever it assumes. The values are the host's when it
+// described them and this build's BT.2020 1000-nit default otherwise, the same pair the reference
+// clients report.
+void VkRenderer::DeclareWindowColorLocked(bool hdr) {
+  if (pendingWindow_ == nullptr) {
+    return;
+  }
+  auto* window = static_cast<OHNativeWindow*>(pendingWindow_);
+  // The SDR branch writes the same statement for an sRGB picture, and it clears the HDR half: the
+  // declaration lives on the window, which outlives a swapchain, so a host that switches HDR off
+  // mid-session would otherwise keep a PQ gamut and HDR metadata on an sRGB window.
+  int32_t metadataType = hdr ? OH_VIDEO_HDR_HDR10 : OH_VIDEO_NONE;
+  OH_NativeWindow_SetColorSpace(window, hdr ? OH_COLORSPACE_BT2020_PQ_FULL : OH_COLORSPACE_SRGB_FULL);
+  OH_NativeWindow_NativeWindowHandleOpt(
+      window, SET_COLOR_GAMUT,
+      hdr ? NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ : NATIVEBUFFER_COLOR_GAMUT_SRGB);
+  OH_NativeWindow_SetMetadataValue(window, OH_HDR_METADATA_TYPE, sizeof(metadataType),
+                                   reinterpret_cast<uint8_t*>(&metadataType));
+  if (!hdr) {
+    return;
+  }
+  OH_NativeBuffer_StaticMetadata staticMetadata {};
+  staticMetadata.smpte2086.displayPrimaryRed = {hdrStaticMetadata_.redX, hdrStaticMetadata_.redY};
+  staticMetadata.smpte2086.displayPrimaryGreen = {hdrStaticMetadata_.greenX, hdrStaticMetadata_.greenY};
+  staticMetadata.smpte2086.displayPrimaryBlue = {hdrStaticMetadata_.blueX, hdrStaticMetadata_.blueY};
+  staticMetadata.smpte2086.whitePoint = {hdrStaticMetadata_.whiteX, hdrStaticMetadata_.whiteY};
+  staticMetadata.smpte2086.maxLuminance = hdrStaticMetadata_.maxLuminance;
+  staticMetadata.smpte2086.minLuminance = hdrStaticMetadata_.minLuminance;
+  staticMetadata.cta861.maxContentLightLevel = hdrStaticMetadata_.maxContentLightLevel;
+  staticMetadata.cta861.maxFrameAverageLightLevel = hdrStaticMetadata_.maxFrameAverageLightLevel;
+  OH_NativeWindow_SetMetadataValue(window, OH_HDR_STATIC_METADATA, sizeof(staticMetadata),
+                                   reinterpret_cast<uint8_t*>(&staticMetadata));
+  HMRDP_LOGI("vulkan window: hdr10 declared colorspace=%{public}d gamut=%{public}d metadata=%{public}d "
+             "source=%{public}s max=%{public}d min=%{public}d cll=%{public}d fall=%{public}d",
+             static_cast<int>(OH_COLORSPACE_BT2020_PQ_FULL),
+             static_cast<int>(NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ),
+             static_cast<int>(OH_VIDEO_HDR_HDR10),
+             hdrStaticMetadata_.valid ? "host" : "default",
+             static_cast<int>(hdrStaticMetadata_.maxLuminance),
+             static_cast<int>(hdrStaticMetadata_.minLuminance * 10000.0f),
+             static_cast<int>(hdrStaticMetadata_.maxContentLightLevel),
+             static_cast<int>(hdrStaticMetadata_.maxFrameAverageLightLevel));
+}
+
 bool VkRenderer::hdrActive() const {
   std::lock_guard<std::mutex> lock(mutex_);
   // Set once the output stage really runs the HDR path (the HDR10 swapchain and its pipeline were
@@ -1789,13 +1855,8 @@ bool VkRenderer::CreateSwapchainLocked() {
   pictureFormat_ = PictureFormatFor(hdrOutput);
   // Only true once the swapchain really came back as the HDR10 format (set after it is created).
   hdrOutputActive_ = false;
-  // The window carries the same colour space as the swapchain, and the host's static HDR metadata is
-  // handed over with it; both are for the compositor, which is what actually drives the panel.
-  if (pendingWindow_ != nullptr) {
-    OH_NativeWindow_SetColorSpace(
-        static_cast<OHNativeWindow*>(pendingWindow_),
-        hdrOutput ? OH_COLORSPACE_BT2020_PQ_LIMIT : OH_COLORSPACE_SRGB_FULL);
-  }
+  // Say what these images are; the compositor is what actually drives the panel.
+  DeclareWindowColorLocked(hdrOutput);
 
   uint32_t presentModeCount = 0;
   api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, nullptr);

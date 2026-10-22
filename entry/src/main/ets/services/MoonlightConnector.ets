@@ -370,11 +370,12 @@ export class MoonlightConnector {
     // Controllers attached right now decide the mask the host creates up front.
     options.gamepadMask = await GamepadDevices.attachedMask();
     options.hdr = hdrRequested;
-    // HDR 亮度上报: the host programs this into the virtual display and Windows maps SDR content
-    // against it, so reporting nothing leaves the host's 1000-nit default and an over-bright SDR
-    // desktop. The peak comes from the panel (auto) or the user; 全屏平均 follows it unless set.
+    // HDR 亮度上报: the host programs this into the virtual display's EDID and Windows maps SDR
+    // content against it, so reporting nothing leaves the host's 1000-nit default and an over-bright
+    // SDR desktop. Both `自动` values are measured here (peak = sdrNits × max余量, 全屏平均 =
+    // sdrNits × p75(当前余量)) — 全屏平均不能跟随峰值，见 utils/MoonlightHdr.ets.
     if (hdrRequested) {
-      const luminance: HdrLuminance | undefined = resolveHdrLuminance(stream);
+      const luminance: HdrLuminance | undefined = await resolveHdrLuminance(stream);
       if (luminance === undefined) {
         hilog.info(0xD001, 'HmRdpMoonlight', 'hdr luminance not reportable; host defaults apply');
       } else {

@@ -156,8 +156,13 @@ export class MoonlightClient {
       + `&remoteControllersBitmap=${options.gamepadMask}`
       + `&gcmap=${options.gamepadMask}`
       // Sunshine decides HDR from this (and only then switches its output); we still wait for its
-      // answer on the control stream before presenting HDR.
-      + (options.hdr ? '&hdrMode=1' : '')
+      // answer on the control stream before presenting HDR. The clientHdrCap* group is the standard
+      // HDR launch request (upstream moonlight-android sends the same literals): it declares that
+      // this client takes HDR10 static metadata and reports its own display through the three
+      // brightness values below, which is the form the host expects even though it reads none of it.
+      + (options.hdr ? '&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0'
+          + '&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1'
+          + '&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0' : '')
       + MoonlightClient.hdrLuminanceQuery(options)
       + moonlightLaunchQueryParameters();
     const outcome: HttpOutcome =

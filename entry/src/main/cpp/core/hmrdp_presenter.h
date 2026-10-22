@@ -22,6 +22,29 @@ struct PresentRect {
   int height = 0;
 };
 
+// The static metadata (SMPTE 2086 + CTA-861.3) describing the HDR picture this presenter hands to the
+// compositor, in the units the platform takes: chromaticities as x/y, luminances in nits.
+//
+// `valid == false` means the host described nothing usable and the platform gets this build's BT.2020
+// 1000-nit default instead. It matters because the compositor converts the picture to the panel from
+// what it is told about it: the values a host actually sends win when they are usable, and the default
+// is only the fallback (the same default the reference clients inject).
+struct HdrStaticMetadata {
+  bool valid = false;
+  float redX = 0.708f;
+  float redY = 0.292f;
+  float greenX = 0.170f;
+  float greenY = 0.797f;
+  float blueX = 0.131f;
+  float blueY = 0.046f;
+  float whiteX = 0.3127f;
+  float whiteY = 0.3290f;
+  float maxLuminance = 1000.0f;
+  float minLuminance = 0.001f;
+  float maxContentLightLevel = 1000.0f;
+  float maxFrameAverageLightLevel = 400.0f;
+};
+
 class FramePresenter {
  public:
   virtual ~FramePresenter() = default;
@@ -60,6 +83,10 @@ class FramePresenter {
   // SetSuperResolution - the answer usually arrives after this presenter exists. Off means the
   // stream is SDR (Rec.709), which is also what a host that never reports HDR sends.
   virtual void SetStreamHdr(bool enabled) { (void)enabled; }
+  // What the HDR picture is, told to the window the swapchain presents into (colour space, gamut,
+  // metadata type and this metadata). The host answers this while the session runs, right before the
+  // HDR state, so it is remembered until the window declaration is (re)written.
+  virtual void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) { (void)metadata; }
   // Whether the HDR output stage is actually running (the HDR10 swapchain was built). The toolbar
   // reports this rather than the request, so a fallback to SDR is never claimed as HDR.
   virtual bool hdrActive() const { return false; }

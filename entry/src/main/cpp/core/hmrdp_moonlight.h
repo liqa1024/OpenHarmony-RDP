@@ -80,6 +80,10 @@ bool MoonlightVideoBufferMode();
 // not in HDR sends an SDR stream whatever was requested, and presenting that on an HDR10 swapchain
 // would shift every colour. `MoonlightVideoHdrActive()` is that answer (false until the host says).
 void MoonlightVideoSetHdrRequested(bool requested);
+// The stream's encoding, from the connection's colour-space / range setting (`COLORSPACE_*` /
+// `COLOR_RANGE_*`): Rec.2020 picks the Rec.2020 PQ 10-bit description, the rest the SDR one. It is
+// what the decoder is told the frames are, so it is set with the same values the session negotiates.
+void MoonlightVideoSetStreamColorSpace(int colorSpace, int colorRange);
 // The host's answer, driven by the control stream's HDR-mode packet (ConnListenerSetHdrMode).
 void MoonlightVideoSetHdrMode(bool enabled);
 bool MoonlightVideoHdrActive();

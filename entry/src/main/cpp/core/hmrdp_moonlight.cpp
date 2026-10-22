@@ -66,6 +66,40 @@ std::string CodecTokenForMime(const std::string& mime) {
   return std::string();
 }
 
+// The host's own HDR mastering metadata (Sunshine extension, valid only while the host is in HDR)
+// as the platform wants it: chromaticities and luminances in nits. False when the host described
+// nothing usable, which leaves the presenter on its BT.2020 1000-nit default - a half-valid set would
+// describe the picture wrongly, so an out-of-range value voids the whole set.
+bool ToHdrStaticMetadata(const SS_HDR_METADATA& in, HdrStaticMetadata* out) {
+  constexpr float kChromaticityScale = 50000.0f;
+  constexpr uint16_t kChromaticityMax = 50000;
+  const auto chromaticityOk = [](uint16_t value) -> bool {
+    return value > 0 && value <= kChromaticityMax;
+  };
+  if (in.maxDisplayLuminance == 0 ||
+      !chromaticityOk(in.displayPrimaries[0].x) || !chromaticityOk(in.displayPrimaries[0].y) ||
+      !chromaticityOk(in.displayPrimaries[1].x) || !chromaticityOk(in.displayPrimaries[1].y) ||
+      !chromaticityOk(in.displayPrimaries[2].x) || !chromaticityOk(in.displayPrimaries[2].y) ||
+      !chromaticityOk(in.whitePoint.x) || !chromaticityOk(in.whitePoint.y) ||
+      in.minDisplayLuminance > static_cast<uint32_t>(in.maxDisplayLuminance) * 10000u) {
+    return false;
+  }
+  out->valid = true;
+  out->redX = static_cast<float>(in.displayPrimaries[0].x) / kChromaticityScale;
+  out->redY = static_cast<float>(in.displayPrimaries[0].y) / kChromaticityScale;
+  out->greenX = static_cast<float>(in.displayPrimaries[1].x) / kChromaticityScale;
+  out->greenY = static_cast<float>(in.displayPrimaries[1].y) / kChromaticityScale;
+  out->blueX = static_cast<float>(in.displayPrimaries[2].x) / kChromaticityScale;
+  out->blueY = static_cast<float>(in.displayPrimaries[2].y) / kChromaticityScale;
+  out->whiteX = static_cast<float>(in.whitePoint.x) / kChromaticityScale;
+  out->whiteY = static_cast<float>(in.whitePoint.y) / kChromaticityScale;
+  out->maxLuminance = static_cast<float>(in.maxDisplayLuminance);
+  out->minLuminance = static_cast<float>(in.minDisplayLuminance) / 10000.0f;
+  out->maxContentLightLevel = static_cast<float>(in.maxContentLightLevel);
+  out->maxFrameAverageLightLevel = static_cast<float>(in.maxFrameAverageLightLevel);
+  return true;
+}
+
 // The video renderer is process-global: Moonlight's callbacks carry no per-call
 // user data, and the library runs one video stream at a time.
 class MoonlightVideoRenderer : public VideoFrameSink {
@@ -178,17 +212,53 @@ class MoonlightVideoRenderer : public VideoFrameSink {
 
   void SetSuperResolutionRequested(bool requested) { srRequested_.store(requested); }
 
+  // The stream's encoding, in the pipeline's own terms. Rec.2020 is the 10-bit Rec.2020 PQ stream the
+  // session asked the host for; everything else is the negotiated SDR encoder CSC with the SDR YUV
+  // transfer. The decoder is told this (see VideoDecoder::Start*), so it is built from the same
+  // colour-space / range values the session negotiates.
+  void SetStreamColorSpace(int colorSpace, int colorRange) {
+    if (colorSpace == COLORSPACE_REC_2020) {
+      streamColor_ = Hdr10Bt2020PqLimited();
+      return;
+    }
+    ColorDescription color;
+    const bool rec601 = colorSpace == COLORSPACE_REC_601;
+    color.primaries = rec601 ? ColorDescription::Primaries::kBt601SmpteC
+                             : ColorDescription::Primaries::kBt709;
+    color.transfer = ColorDescription::Transfer::kGamma22;
+    color.matrix = rec601 ? ColorDescription::Matrix::kBt601 : ColorDescription::Matrix::kBt709;
+    color.range = colorRange == COLOR_RANGE_FULL ? ColorDescription::Range::kFull
+                                                : ColorDescription::Range::kLimited;
+    color.bitDepth = 8;
+    streamColor_ = color;
+  }
+
   // HDR: `requested` is the colour-space setting; `enabled` is what the host answered on the control
   // stream. Only the answer drives the output stage (see the header), so they are kept apart.
   void SetHdrRequested(bool requested) { hdrRequested_.store(requested); }
   void SetHdrMode(bool enabled) {
     hdrActive_.store(enabled);
+    // The host's static metadata describes the HDR picture the output stage is about to present, so it
+    // is read here (the library only answers while the host is in HDR) and handed to the presenter
+    // before the state that rebuilds the output for it.
+    HdrStaticMetadata metadata;
+    if (enabled) {
+      SS_HDR_METADATA host = {};
+      if (!LiGetHdrMetadata(&host)) {
+        HMRDP_LOGI("moonlight video: host described no HDR metadata; using the default BT.2020 set");
+      } else if (!ToHdrStaticMetadata(host, &metadata)) {
+        HMRDP_LOGW("moonlight video: host HDR metadata is out of range; using the default BT.2020 set");
+      }
+    }
     // The output stage follows the host's answer, so the presenter is told as soon as it is known
     // (it remembers the state until the swapchain and pipeline are built). Runs on the control-stream
     // thread, hence the same presenter lock every other presenter call takes.
     {
       std::lock_guard<std::mutex> lock(presenterMutex_);
       if (presenter_ != nullptr) {
+        if (enabled) {
+          presenter_->SetHdrStaticMetadata(metadata);
+        }
         presenter_->SetStreamHdr(enabled);
       }
     }
@@ -361,16 +431,18 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     // layout a byte-wise import needs is only reported in buffer mode, and the window never sees a
     // decoded frame); the fallback renders straight into the window.
     const bool started = bufferMode
-        ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, hdrRequested_.load(), onFrame,
-                                 this)
-        : decoder_.Start(mime_, window_, width_, height_, redrawRate_, onFrame);
+        ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, hdrRequested_.load(),
+                                 streamColor_, onFrame, this)
+        : decoder_.Start(mime_, window_, width_, height_, redrawRate_, streamColor_, onFrame);
     if (!started) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",
                  decoder_.lastError().c_str());
       return;
     }
     running_ = true;
-    HMRDP_LOGI("moonlight video: started (%{public}s)", bufferMode ? "buffer" : "surface fallback");
+    HMRDP_LOGI("moonlight video: started (%{public}s, stream %{public}s)",
+               bufferMode ? "buffer" : "surface fallback",
+               ToString(streamColor_).c_str());
   }
 
   void Stop() {
@@ -540,6 +612,9 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   // (see the header): a host that is not in HDR sends an SDR stream whatever was requested.
   std::atomic<bool> hdrRequested_{false};
   std::atomic<bool> hdrActive_{false};
+  // The stream's encoding as the connection negotiated it (see SetStreamColorSpace); the decoder is
+  // told this when it starts. Defaults to the SDR Rec.709 contract an unstated stream means.
+  ColorDescription streamColor_;
   bool running_ = false;
   std::vector<uint8_t> buffer_;
 
@@ -731,6 +806,10 @@ void MoonlightVideoSetSuperResolutionRequested(bool requested) {
 
 void MoonlightVideoSetHdrRequested(bool requested) {
   MoonlightVideoRenderer::Instance().SetHdrRequested(requested);
+}
+
+void MoonlightVideoSetStreamColorSpace(int colorSpace, int colorRange) {
+  MoonlightVideoRenderer::Instance().SetStreamColorSpace(colorSpace, colorRange);
 }
 
 void MoonlightVideoSetHdrMode(bool enabled) {

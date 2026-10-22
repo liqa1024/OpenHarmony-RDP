@@ -103,8 +103,23 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   链路换到 **Rec.2020 PQ**：解码器申请 10 位输出（`AV_PIXEL_FORMAT_RGBA1010102`），而平台实际交出的是
   **P010**（`OH_NativeBuffer_Format` = `YCBCR_P010`：10 位 4:2:0、每样点 2 字节、10 位在高位——codec 上报的
   `OH_AVPixelFormat` 会是 `NV12`，**布局以分配器格式为准**，见 [`present.md`](present.md) §4）；
+  **解码器同时被告知这段流的编码**（`OH_MD_KEY_COLOR_PRIMARIES` / `TRANSFER_CHARACTERISTICS` /
+  `MATRIX_COEFFICIENTS` / `RANGE_FLAG`，H.273 码点：SDR 按协商的 CSC 标 BT.709/BT.601 + gamma22，
+  HDR 标 Rec.2020 NCL + PQ + limited）：这些值以前只是从码流**读回来**做核对，现在是**先声明**——码流 VUI
+  缺失或不对时，声明才是权威口径（平台这几个键的默认是 UNSPECIFIED/limited），这也是两个参考客户端的做法。
+  传入的编码由连接的 `色彩协议与HDR` 决定（`MoonlightVideoSetStreamColorSpace`，与协商的 `colorSpace`/
+  `colorRange` 同源）。
   picture 与超分输出图取 `kHdrPictureFormat`（`A2B10G10R10_UNORM_PACK32`）、交换链取该格式 +
-  `VK_COLOR_SPACE_HDR10_ST2084_EXT`、窗口 `OH_NativeWindow_SetColorSpace` 同步为 `BT2020_PQ_LIMIT`。
+  `VK_COLOR_SPACE_HDR10_ST2084_EXT`，窗口按**一整套**声明交给合成器（`DeclareWindowColorLocked`）：
+  `BT2020_PQ_FULL`（**不是 LIMIT**——picture 里是全幅 PQ，写 LIMIT 会让合成器对已经全幅的图再做一次
+  limited→full 展开）、`SET_COLOR_GAMUT = NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ`、
+  `OH_HDR_METADATA_TYPE = OH_VIDEO_HDR_HDR10`，以及 `OH_HDR_STATIC_METADATA`（主机经
+  `LiGetHdrMetadata` 下发的值，越界或没有就用本仓默认 BT.2020 1000/0.001/1000/400）。**这四样是一个
+  整体**：交换链是本仓自己写的 buffer，平台不会替我们补（官方《显示规格》即要求"HDR 视频…传递正确的
+  Metadata 和色域信息"），缺了合成器就按自己的假设换算这块图。SDR 分支写同一套（`SRGB_FULL` + SRGB gamut）
+  并把 HDR 那半清成 `OH_VIDEO_NONE`——声明挂在 window 上，活得比交换链长，不然会话中途关 HDR 会留下
+  一块 PQ 的声明。落地时打一行 `vulkan window: hdr10 declared …`（含 colorspace/gamut/source），
+  是实机核对的锚点。
   **转换 pass 因此不做色彩变换**：帧的值与 picture 的编码相同（都是 10 位 2020/PQ），片元只做**重新解释**
   （解出 10 位、丢掉 alpha），PQ↔SDR 那套变换数学一处也不需要。picture 与其编码**绑在一起**，所以
   `present_quad`、FSR 与 letterbox 一行未改（见 [`present.md`](present.md) §4）。
@@ -181,12 +196,25 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   三个值的口径（`hdr::client_display_capabilities`）：`max` 是小窗口**激活峰值**、`maxAverage` 是**全屏可持续
   亮度**（ABL 面板明显低于峰值）、`min` 是黑位；主机按**一份整体**校验（`min ≤ maxAverage ≤ max`，缺一或越界
   即整份作废回默认），所以本机解析不出峰值时**一份都不发**。
-  - **本机只有峰值可检测，而且是推导值**：`display.getBrightnessInfo()` 给出 `sdrNits`（SDR 白点绝对亮度）
-    与 `maxHeadroom`（相对它的最大**余量倍率**，不是亮度读数），相乘才是面板最大亮度；平台**不提供**全屏
-    可持续亮度与黑位，任何"等效自动检测"都是编的。故峰值默认自动（读本机）/ 可手动覆盖，全屏平均默认
-    **跟随峰值**（可手动)，黑位固定用主机默认 `0.001`。判定与换算在 `utils/MoonlightHdr.ets`。
-    它是**当前**屏幕亮度下的值（随亮度条走），所以设置页订阅 `brightnessInfoChange` 让显示的检测值跟着变；
-    真正上报的是**连接那一刻**重新读的值。
+  - **这不是我们能直接设的"虚拟屏 SDR 白位"**：主机侧没有任何这类设置项，驱动（ZakoVDD）只把 Windows 给出的
+    `SdrWhiteLevel` 读回来转发（`IddCxMonitorQueryHardwareCursor3`，缺省 80 nit）。这三个值真正落地的是**虚拟显示器
+    EDID 的 CTA HDR 静态元数据**（byte4 = max、byte5 = maxFALL、byte6 = 黑位，`EdidLuminance.h`）与
+    `EvtIddCxMonitorSetDefaultHdrMetadata`；Windows 拿它当这块屏的能力。**值一旦变化超过主机容差
+    （每字段 ±max(25 nit, 5%)）主机就重建虚拟显示器**，Windows 重读 EDID 并重算 SDR 白位 ⇒ 画面亮度会跳。
+  - **峰值是实测推导值，两项口径不同、不能互为默认**：`display.getBrightnessInfo()` 只给 `sdrNits`
+    （当前 SDR 白点绝对亮度）、`currentHeadroom`（相对它的**当前**余量倍率）与 `maxHeadroom`（最大余量倍率）
+    ——都是倍率不是亮度读数；平台**不提供**黑位，也**没有** EDID 的 `desiredMaxAverageLuminance`
+    （安卓版读的就是那个真实值）。故：
+    `max = sdrNits × max(maxHeadroom)`（吸附标准档 `[400,600,800,1000,1200,1600,2000,2600,4000]`，偏离 >30% 保留原值），
+    `maxAverage = max × 0.2`，黑位固定主机默认 `0.001`。
+    **`maxAverage` 不能"跟随峰值"**：那等于宣称这块屏没有 ABL 限制，中高亮度内容会整体偏亮；
+    `×0.2` 是 moonlight-vplus（口径标准）在面板不报该值时的取法，我们没有 EDID 读数，只有这一条路。
+  - **`自动` 的峰值 = 连接时窗口采样**（5×250ms，≥3 个有效样本，`sdrNits ≥ 50`，样本波动比 ≤ 1.5，
+    峰值 ≥ 100 且 ≥ sdrNits），不可靠就**不上报**（主机用自己的默认值 / 有校准档时用校准档）。采样与档位吸附
+    是照 moonlight-harmony 的做法：安卓版的峰值直接读 EDID、天生稳定，而 `sdrNits` 随亮度条漂移，单次读数
+    会越过主机的 VDD 容差而触发上面那条重建。`maxAverage` 按固定比例算，不参与采样；手动档位则直接用用户值。
+    判定与换算在 `utils/MoonlightHdr.ets`；设置页另用 `brightnessInfoChange` 让**显示的**检测值跟着亮度条变
+    （只是预览，上报值仍是连接时采样的那一份）。
 
 ## 5. 与 RDP 呈现器的复用口径
 

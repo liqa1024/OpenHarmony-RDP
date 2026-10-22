@@ -36,6 +36,7 @@ class VkRenderer : public FramePresenter {
   void SetVideoColorSpace(int colorSpace) override;
   bool videoColorMismatch() const override;
   void SetStreamHdr(bool enabled) override;
+  void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) override;
   bool hdrActive() const override;
 
   uint8_t* AcquireDesktopBuffer(int width, int height, int* stride) override;
@@ -57,6 +58,10 @@ class VkRenderer : public FramePresenter {
 
   bool EnsureSwapchainLocked();
   bool CreateSwapchainLocked();
+  // Writes the whole statement the compositor needs about the swapchain's images: the colour space,
+  // the gamut, and (in HDR) the metadata type plus the static metadata. See the .cpp for why the
+  // colour space alone is not enough here.
+  void DeclareWindowColorLocked(bool hdr);
   void DestroySwapchainLocked();
   void DestroyFrameResourcesLocked();
   bool PresentSolidLocked(uint8_t r, uint8_t g, uint8_t b);
@@ -197,6 +202,9 @@ class VkRenderer : public FramePresenter {
   // the swapchain format/colour space and the output stage's encoding, and is remembered until those
   // are (re)built (see SetStreamHdr).
   bool streamHdr_ = false;
+  // What the HDR picture is, for the window declaration (see SetHdrStaticMetadata). A default-constructed
+  // value (valid == false) means the platform gets this build's BT.2020 1000-nit fallback.
+  HdrStaticMetadata hdrStaticMetadata_;
   // True while the output stage is really presenting through an HDR10 swapchain; reported by
   // hdrActive() so a fallback to SDR is never claimed as HDR.
   bool hdrOutputActive_ = false;

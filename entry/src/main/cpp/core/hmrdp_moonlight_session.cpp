@@ -214,6 +214,7 @@ void Run(const MoonlightStreamConfig& config) {
   const bool hdrRequested = config.colorSpace == COLORSPACE_REC_2020;
   MoonlightVideoSetSuperResolutionRequested(srRequested);
   MoonlightVideoSetHdrRequested(hdrRequested);
+  MoonlightVideoSetStreamColorSpace(config.colorSpace, config.colorRange);
   MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
   HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "
              "%{public}s %{public}s -> %{public}dx%{public}d, hdr %{public}s)",

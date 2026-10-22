@@ -60,6 +60,44 @@ int64_t BudgetForFrameRate(int frameRate) {
   return budget > kMaxInputBudgetUs ? kMaxInputBudgetUs : budget;
 }
 
+// The stream's colour description as H.273 code points, the form the codec's keys take. The mapping
+// is the standard video one (SDR YUV is tagged BT.709 for both the curve and the matrix; Rec.2020 NCL
+// with the PQ / HLG curve is HDR), which is also what the reference clients declare.
+int32_t PrimaryCode(ColorDescription::Primaries primaries) {
+  using P = ColorDescription::Primaries;
+  switch (primaries) {
+    case P::kBt601SmpteC: return COLOR_PRIMARY_BT601_525;
+    case P::kBt601Ebu: return COLOR_PRIMARY_BT601_625;
+    case P::kBt2020: return COLOR_PRIMARY_BT2020;
+    case P::kBt709:
+    case P::kSrgb:
+    case P::kP3:
+    case P::kAdobeRgb:
+      break;
+  }
+  return COLOR_PRIMARY_BT709;
+}
+
+int32_t TransferCode(ColorDescription::Transfer transfer) {
+  using T = ColorDescription::Transfer;
+  switch (transfer) {
+    case T::kPq: return TRANSFER_CHARACTERISTIC_PQ;
+    case T::kHlg: return TRANSFER_CHARACTERISTIC_HLG;
+    default: break;
+  }
+  return TRANSFER_CHARACTERISTIC_BT709;
+}
+
+int32_t MatrixCode(ColorDescription::Matrix matrix) {
+  using M = ColorDescription::Matrix;
+  switch (matrix) {
+    case M::kBt601: return MATRIX_COEFFICIENT_BT601_525;
+    case M::kBt2020Ncl: return MATRIX_COEFFICIENT_BT2020_NCL;
+    default: break;
+  }
+  return MATRIX_COEFFICIENT_BT709;
+}
+
 }  // namespace
 
 DecoderSupport VideoDecoderSupport(const std::string& mime) {
@@ -144,17 +182,20 @@ std::string VideoDecoder::lastError() const {
 }
 
 bool VideoDecoder::Start(const std::string& mime, void* window, int width, int height,
-                         int frameRate, FrameReadyFn onFrame) {
+                         int frameRate, const ColorDescription& color, FrameReadyFn onFrame) {
+  streamColor_ = color;
   return StartInternal(mime, window, width, height, frameRate, std::move(onFrame), nullptr);
 }
 
 bool VideoDecoder::StartBuffered(const std::string& mime, int width, int height, int frameRate,
-                                 bool tenBit, FrameReadyFn onFrame, VideoFrameSink* sink) {
+                                 bool tenBit, const ColorDescription& color, FrameReadyFn onFrame,
+                                 VideoFrameSink* sink) {
   if (sink == nullptr) {
     SetError("buffer mode needs a frame sink");
     return false;
   }
   tenBit_ = tenBit;
+  streamColor_ = color;
   return StartInternal(mime, nullptr, width, height, frameRate, std::move(onFrame), sink);
 }
 
@@ -285,6 +326,18 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
   // picture size still comes from onStreamChanged).
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
+  // Declare what the stream is. The codec also reports this back on its output format (which the
+  // importer reads), but only from what the bitstream says: telling it up front is what makes the
+  // description authoritative for a stream whose VUI is missing or wrong, and it is what the
+  // framework expects a decoder to be configured with (the defaults are "unspecified" / limited).
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_COLOR_PRIMARIES,
+                          PrimaryCode(streamColor_.primaries));
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_TRANSFER_CHARACTERISTICS,
+                          TransferCode(streamColor_.transfer));
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_MATRIX_COEFFICIENTS,
+                          MatrixCode(streamColor_.matrix));
+  OH_AVFormat_SetIntValue(format, OH_MD_KEY_RANGE_FLAG,
+                          streamColor_.range == ColorDescription::Range::kFull ? 1 : 0);
   // Ask for the low-latency path when the platform has it (silently ignored
   // otherwise, per the SDK).
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);

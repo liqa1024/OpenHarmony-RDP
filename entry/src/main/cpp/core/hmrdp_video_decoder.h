@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "hmrdp_color.h"
 #include "hmrdp_display_rate.h"
 #include "hmrdp_video_frame.h"
 
@@ -56,8 +57,10 @@ class VideoDecoder {
   // itself; the decode bridge only gates (render or release) and never sees the pixels.
   // `window` is the decode output surface (required). `frameRate` is the negotiated stream rate: it
   // configures the decoder and sizes the input budget; 0 means unknown.
+  // `color` is the stream's encoding (the negotiated CSC, or Rec.2020 PQ for an HDR session). It is
+  // declared to the codec rather than only read back from it - see ConfigureCodec.
   bool Start(const std::string& mime, void* window, int width, int height, int frameRate,
-             FrameReadyFn onFrame);
+             const ColorDescription& color, FrameReadyFn onFrame);
 
   // Buffer mode — the normal path: no output surface; the codec hands out its own output buffers
   // (`OH_AVBuffer` -> `OH_AVBuffer_GetNativeBuffer`) and reports the frame layout in OnStreamChanged,
@@ -71,7 +74,7 @@ class VideoDecoder {
   // needs. A codec that refuses it falls back to NV12, which then carries an 8-bit picture (the
   // caller reports the resulting SDR output rather than claiming HDR).
   bool StartBuffered(const std::string& mime, int width, int height, int frameRate, bool tenBit,
-                     FrameReadyFn onFrame, VideoFrameSink* sink);
+                     const ColorDescription& color, FrameReadyFn onFrame, VideoFrameSink* sink);
 
   // Feeds one complete access unit (Annex-B, leading start code included): every slice of a picture
   // must arrive in this one call, which may carry several NALs.
@@ -178,6 +181,8 @@ class VideoDecoder {
   bool buffered_ = false;
   // Whether the codec was asked for (and took) the packed 10-bit layout; cleared when it refused it.
   bool tenBit_ = false;
+  // The stream's encoding as the session negotiated it, declared to the codec on Configure.
+  ColorDescription streamColor_;
   std::thread handOffThread_;
   std::mutex outputMutex_;
   std::condition_variable outputCv_;
