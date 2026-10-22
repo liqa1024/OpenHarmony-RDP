@@ -99,6 +99,18 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   会话把协商的 CSC 交给呈现器（`SetVideoColorSpace`）做核对，不一致报 `color-mismatch`。
   此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）；
   不满足时走下面这条兜底。
+- **HDR 是这条链路的一种编码，不是第二条链路**。主机确认切到 HDR 后（`ConnListenerSetHdrMode`，见 §3）整条
+  链路换到 **Rec.2020 PQ**：解码器申请**打包 10 位 RGB**（`AV_PIXEL_FORMAT_RGBA1010102`，buffer 模式下平台
+  唯一的 10 位输出；被拒则退回 NV12 并落在 SDR）、picture 与超分输出图取 `kHdrPictureFormat`
+  （`A2B10G10R10_UNORM_PACK32`）、交换链取该格式 + `VK_COLOR_SPACE_HDR10_ST2084_EXT`、窗口
+  `OH_NativeWindow_SetColorSpace` 同步为 `BT2020_PQ_LIMIT`。**转换 pass 因此不做色彩变换**：帧的值与 picture
+  的编码相同（都是 10 位 2020/PQ），片元只做**重新解释**（解包 10 位、丢掉 alpha），PQ↔SDR 那套变换数学一处
+  也不需要。picture 与其编码**绑在一起**，所以 `present_quad`、FSR 与 letterbox 一行未改（见
+  [`present.md`](present.md) §4）。
+- **四道门都成立才真 HDR，缺一即回落 SDR**：本机可解（10 位 profile，见 §3）、窗口提供那对 HDR10 格式与色彩
+  空间、交换链真建成 10 位、以及**解码器真的交出 10 位帧**。最后一道是运行期事实：主机说 HDR 而 codec 拒绝了
+  10 位布局时，呈现器把意图降回 SDR 并按新格式重建一次交换链，会话报 `hdr-inactive`，**不把 8 位值送进 HDR10
+  交换链**。置灰判据见 §3，能力判定见 [`present.md`](present.md) §5。
 - **兜底：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
   合成 pass；留边由**画面组件几何**承担——会话页用 `components/SessionPicture` 把 surface 约束成**流分辨率
@@ -125,21 +137,30 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 - **手动**（连接编辑页 / 设置页的编码选择，默认自动、可会话独立覆盖）：**强制**所选编码，同样要求本机可解
   且主机可编码。选择项按 `moonlightVideoCodecSupport()`（硬解 / 软解 / 无）置灰，仅软解时下方红字提示无硬件
   解码支持，无解码器时提示无法串流。
+- **HDR 只取 10 位档位**：色彩空间项选 Rec2020（HDR）时，`moonlightVideoFormats(choice, scm, hdr)` 在
+  `AV1 Main10 > HEVC Main10` 里取一个，要求本机该 10 位 profile 可解 **且**主机广告了
+  `SCM_AV1_MAIN10` / `SCM_HEVC_MAIN10`（家族位 `SCM_MASK_*` 不够）；H.264 载不了 HDR，不参与。取不到就
+  **显式失败**（不悄悄降成 SDR 编码），文案指向"需要 HEVC Main10 或 AV1 Main10"。
 - **无共同编码即显式失败**：`moonlightVideoFormats` 返回 `0` 时 ArkTS 在 `LiStartConnection` 前直接失败；
   会话中若主机协商出非决策编码，`setup` 拒绝（`codec-mismatch`），不静默改推别的编码。
 
 协商结果只有软解时以 `software-decode|<mime>` 警告（提示主机换编码器）；运行期另有 `sr-unavailable`
 （会话请求了超分但没有可用呈现器）、`sr-inactive`（呈现器在跑但上采样未生效）、`video-present`
-（呈现器连续拒绝帧 ⇒ **确认黑屏**，见 §1）与 `color-mismatch`（解码缓冲声明的色彩空间与协商的 CSC
-不同族或不同范围，见 [`present.md`](present.md) §4）四种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码
-标记（h264/hevc/av1），工具栏把它与超分状态合并进分辨率后的**同一个括号**、逗号分隔
-（`1920 × 1080 (FSR 1.5x, HEVC)`；软解再加 `CPU`；超分未生效/导入失败另有 `未超分`/`视频异常` token，
-色彩对不上另有 `色彩存疑`，见 [`moonlight-session.md`](moonlight-session.md) §2）。
+（呈现器连续拒绝帧 ⇒ **确认黑屏**，见 §1）、`hdr-inactive`（主机在 HDR 而本机输出级没跑 HDR，见 §2）与
+`color-mismatch`（解码缓冲声明的色彩空间与协商的 CSC 不同族或不同范围，见 [`present.md`](present.md) §4）
+五种警告，多个事实以逗号分隔。`moonlightVideoCodec()` 给出编码标记（h264/hevc/av1），工具栏把它与超分状态合并进
+分辨率后的**同一个括号**、逗号分隔（`1920 × 1080 (FSR 1.5x, HEVC, HDR)`；软解再加 `CPU`；超分未生效/导入失败
+另有 `未超分`/`视频异常` token，色彩对不上另有 `色彩存疑`，HDR 那项只在**真的在放 HDR 时**才出现——判据是
+`moonlightVideoHdr()`，即主机已确认**且**输出级在跑，`hdr-inactive` 对应 `未HDR`，见
+[`moonlight-session.md`](moonlight-session.md) §2）。
 
 ## 4. 其余 `STREAM_CONFIGURATION` 字段的落点
 
 - `colorSpace` / `colorRange` 合成 SDP `x-nv-video[0].encoderCscMode`（`(space<<1)|range`）交主机做编码 CSC——
-  SDR 取 Rec709 + limited，`0` 是 Rec601（HD 下偏色）。
+  `0` 是 Rec601（HD 下偏色）、`1` 是 Rec709（SDR 默认）、**`2` 是 Rec2020（HDR）**。这就是「色彩空间与 HDR」
+  这一项：选 `2` 即同时请求 10 位档位（§3）与 `/launch` 的 `hdrMode=1`，`colorRange` 仍是 limited（PQ 的
+  约定）。**本机是否真能 HDR 由设备判定门控**（见 [`present.md`](present.md) §5），**主机是否真在 HDR 由它
+  自己在控制流上回**（`setHdrMode`）——两者都不成立时不会出现 HDR 画面，也不会把选项说成可用。
 - `streamingRemotely` 用 `STREAM_CFG_AUTO`（由库按 RFC1918 判本地/远程，影响带宽/音频/QoS 广告与包大小）。
 - `bitrate` 经 `x-ml-video.configuredBitrateKbps` 交 Sunshine 反推实际编码码率。
 - 分辨率/帧率走 `clientViewportWd/Ht` 与 `maxFPS`。`maxFPS` **不是**用户填什么就发什么：连接时按

@@ -1556,6 +1556,16 @@ int VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry&
       error_ = videoImport_.lastError();
       return -1;
     }
+    // The host reported HDR but the codec hands out 8-bit frames (it refused the 10-bit layout, see
+    // VideoDecoder::StartBuffered): there is no HDR picture to be had here, so the output stage drops
+    // back to SDR and the next frame rebuilds as SDR, instead of showing 8-bit values through an
+    // HDR10 swapchain. The bridge then reports `hdr-inactive` rather than claiming HDR.
+    if (pictureFormat_ == kHdrPictureFormat && !videoImport_.tenBitFrames()) {
+      HMRDP_LOGW("vulkan presenter: the host is in HDR but the frames are 8-bit; falling back to SDR");
+      streamHdr_ = false;
+      surfaceDirty_ = true;
+      return -1;
+    }
     // 超分: build the upscale target before acquiring, so a rare (re)creation can drain.
     const bool srActive = EnsureSuperResolutionLocked(
         visibleWidth, visibleHeight, slot, videoImport_.pictureView(slot),

@@ -32,7 +32,10 @@ device（[`architecture.md`](architecture.md) §4.1）。
 - **会话 surface 就是内容比例**：会话页用 `components/SessionPicture` 把 surface 约束成桌面/输出分辨率比例
   并居中，所以这里对会话的 letterbox 恒为恒等（等比例时 `offX/offY=0`、不额外做事）。这段等比代码是给
   **回放页**（`GfxReplayPage`）留的——它把抓帧塞进任意比例的格子，依赖呈现器按比例 fit。
-- **picture 图**：FreeRDP 的 BGRA 字节序，格式恒为 `B8G8R8A8_UNORM`（`kPictureFormat`）。
+- **picture 图**：FreeRDP 的 BGRA 字节序；格式只有两种取值，且**与它承载的编码绑定**——SDR 取
+  `B8G8R8A8_UNORM`（`kPictureFormat`），HDR 取 `A2B10G10R10_UNORM_PACK32`（`kHdrPictureFormat`，
+  `PictureFormatFor(hdr)`）。两者都是 UNORM，值里带的是**显示编码**而不是光，所以"输入怎么写"由信令描述、
+  "是什么颜色"只由生产者负责，**超分与 letterbox 因此对色彩无感**（取样再写进同种编码的交换链是恒等）。
   **通道序由图像格式承担**，shader 不做 R/B 交换；两者只由 quad 采样。
 - **上屏**：采样 picture 的 letterbox quad（viewport 做 letterbox），写入 swapchain 图像，再
   `vkQueuePresentKHR`。**不要**改用 `OH_NativeWindow_*` / `FlushBuffer(..., Region)`（那是 CPU/native
@@ -125,8 +128,15 @@ device（[`architecture.md`](architecture.md) §4.1）。
   第 `y` 行第 `x` 个字节"，而 `VK_OHOS_external_memory` 的导入契约只约束**内存**（`allocationSize` /
   `memoryTypeBits` / 偏移），不约束**语义格式**，所以这一步在规范内。
   再由 convert pass **自己做 YUV→RGB**：片元 `texelFetch` 取 Y 与交错 Cb/Cr，系数（3 行 `cY/cCb/cCr/offset`）
-  由 CPU 按**缓冲自己的色彩空间**算好、随该帧槽的 uniform buffer 传入；结果写成**会话分辨率的 picture**，
-  之后与桌面图同路。**不做 CPU 回读/整帧拷贝**；视频没有脏区，恒整帧一次。
+   由 CPU 按**缓冲自己的色彩空间**算好、随该帧槽的 uniform buffer 传入；结果写成**会话分辨率的 picture**，
+   之后与桌面图同路。**不做 CPU 回读/整帧拷贝**；视频没有脏区，恒整帧一次。
+   - **两种可寻址布局，且转换 pass 只做"重新解释"**：交错 8 位 4:2:0（NV12/NV21，走上面那套 YUV→RGB 系数）与
+     **打包 10 位 RGB**（`AV_PIXEL_FORMAT_RGBA1010102`，一个 32 位字一个像素、低 10 位是 R，与 picture 自己的
+     `A2B10G10R10_UNORM_PACK32` **同布局**，所以片元只需重组字并丢掉 2 位 alpha）。HDR 帧因此**不需要任何
+     PQ↔SDR 变换**：帧的值就是 picture 要的编码。其它像素格式一律拒绝（按 4:2:0 去寻址会出错误颜色）。
+     判据是 `plane.z`（布局标志）与 `color.x`（样本字宽 255/1023），都随该帧槽的 uniform buffer 传入。
+   - **主机说 HDR 而解码器只给 8 位时回落 SDR**：呈现器据此把意图降回 SDR 并按新格式重建一次交换链，
+     会话报 `hdr-inactive`；**不把 8 位值送进 HDR10 交换链**（那需要本仓不做的 PQ→SDR 变换）。
   - **几何取解码器报的账，不推**：420 半平面的**色度面字节偏移 = `stride` × `sliceHeight`**——`stride` 是字节行距
     （`OH_MD_KEY_VIDEO_STRIDE`），`sliceHeight` 是**单个面在内存里实际分配的行数**（`OH_MD_KEY_VIDEO_SLICE_HEIGHT`，
     ≥ 可见高）。两者连同可见尺寸与裁剪矩形一起由编解码器报出，取处是 `onStreamChanged` 的 `OH_AVFormat` 或
@@ -193,6 +203,7 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
 | **超分：FSR**（`srFsrSupported`） | 超分后端之一（§4） | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
 | **超分：XEngine**（`srXengineSupported`） | 超分后端之一（§4） | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
 | **视频导入**（`srVideoImportSupported`） | Moonlight **默认上屏链路**的前置，超分与 RDP 都不用（§4） | 呈现判定成立 + `VK_OHOS_external_memory` + `R8_UNORM/TILING_LINEAR/SAMPLED` 可创建（缓冲按 R8 字节图导入，转换自己做，不依赖驱动解释缓冲） |
+| **HDR 呈现**（`hdrPresentSupported`） | 「色彩空间与 HDR」里 Rec2020 那档的置灰依据（本机这一半） | 呈现判定成立 + instance 扩展 `VK_EXT_swapchain_colorspace` 在（HDR10 色彩空间属它，建 instance 时按需使能）+ `A2B10G10R10_UNORM_PACK32` 可作颜色附件 + 视频导入可用 |
 
 - 呈现能力判定**只有 `presenterSupported` 一个**：不存在分开的"解码能力 / 呈现能力"两套判定（解码始终是
   FreeRDP gdi，见 [`rdp-gfx.md`](rdp-gfx.md)）。
@@ -209,6 +220,13 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
   表面（兜底，见 [`moonlight-video.md`](moonlight-video.md) §2），并在那里**没有超分**（`DeviceCapabilities.srVideoImport()`）。
   RDP 不需要它（RDP 超分的输入是 CPU 桌面图，且不走上屏闸门）。所以缺这一项不会让会话没画面，
   只会让 Moonlight 落在兜底链路；RDP 分栏完全不受影响。
+- **HDR 判定被有意拆成三份，因为三者只有一份能在会话前知道**：`hdrPresentSupported` 是**本机 GPU 那一半**
+  （上表），用于置灰；**主机 10 位能力**（`SCM_MASK_10BIT`）在连接时与主机一起判，和编码选择同处
+  （[`moonlight-video.md`](moonlight-video.md) §3）；**窗口自己那份格式与色彩空间清单**只有拿到 surface 才读得到
+  （`ObserveSurfaceHdrSupport`，由呈现器在建立交换链时报一行 `vulkan surface: hdr10 …`），它是**运行期事实**，
+  不参与置灰。三份之外还有一条运行期事实：解码器是否真交出 10 位帧（§4），不成立就回落 SDR 并报
+  `hdr-inactive`。**`libxengine` 式的"缺件降级"在这里不适用**：置灰是硬的（设备不支持就不给选），
+  而运行期那两条只影响"这次会话到底是不是 HDR"。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
   （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），与 toolchain 指向的 openharmony sysroot 同级；

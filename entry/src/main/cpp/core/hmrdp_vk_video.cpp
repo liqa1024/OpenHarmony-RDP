@@ -677,10 +677,14 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   OH_NativeBuffer_Config nativeConfig{};
   OH_NativeBuffer_GetConfig(mutableBuffer, &nativeConfig);
   const int pixelFormat = geometry.pixelFormat;
-  if (pixelFormat > 0 && pixelFormat != AV_PIXEL_FORMAT_NV12 &&
+  // Two layouts are addressable: the interleaved 8-bit 4:2:0 pair (the SDR stream) and the packed
+  // 10-bit RGB word (the only 10-bit output the platform offers in buffer mode). Anything else
+  // would have to be addressed as one of those, which would produce wrong colours, so it is refused.
+  const bool packed = pixelFormat == AV_PIXEL_FORMAT_RGBA1010102;
+  if (pixelFormat > 0 && !packed && pixelFormat != AV_PIXEL_FORMAT_NV12 &&
       pixelFormat != AV_PIXEL_FORMAT_NV21) {
-    // The configured NV12 request was not honoured. Addressing another layout as interleaved 420
-    // would produce wrong colours, so refuse rather than present garbage.
+    // The configured request was not honoured. Addressing another layout as one of these would
+    // produce wrong colours, so refuse rather than present garbage.
     error_ = "unsupported decoder pixel format " + std::to_string(pixelFormat);
     return false;
   }
@@ -688,13 +692,15 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
     formatWarned_ = true;
     HMRDP_LOGW("vulkan video import: the codec reported no pixel format; assuming NV12");
   }
+  const int bytesPerPixel = packed ? 4 : 1;
   const int visibleWidth = geometry.visibleWidth > 0 ? geometry.visibleWidth : nativeConfig.width;
   const int visibleHeight =
       geometry.visibleHeight > 0 ? geometry.visibleHeight : nativeConfig.height;
   // The codec's own description of the frame comes first (`stride` in bytes, `sliceHeight` rows per
   // plane: the chroma plane starts at their product). Where it states nothing - an output surface
   // hides the layout behind the allocator - the allocation's config is the only reading left, and its
-  // plane height has to be derived rather than read.
+  // plane height has to be derived rather than read. A packed layout has no chroma plane, so its
+  // byte image is simply the described row count.
   const int bufferStride =
       nativeConfig.stride > nativeConfig.width ? nativeConfig.stride : nativeConfig.width;
   const int stride = geometry.stride > 0 ? geometry.stride : bufferStride;
@@ -711,14 +717,19 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
     error_ = "video buffer geometry is unusable";
     return false;
   }
-  if (sliceHeight < visibleHeight) {
+  if (!packed && sliceHeight < visibleHeight) {
     // The luma plane cannot hold the picture: every byte after it is chroma, not luma.
     error_ = "video plane height " + std::to_string(sliceHeight) + " is below the picture " +
              std::to_string(visibleHeight);
     return false;
   }
-  const uint32_t imageWidth = static_cast<uint32_t>(stride > visibleWidth ? stride : visibleWidth);
-  const uint32_t imageHeight = static_cast<uint32_t>(sliceHeight + sliceHeight / 2);
+  // The byte image covers the whole allocation; the row pitch is already bytes, so only the packed
+  // layout needs the pixel count converted to a byte count.
+  const uint32_t imageWidth = static_cast<uint32_t>(
+      stride > visibleWidth * bytesPerPixel ? stride : visibleWidth * bytesPerPixel);
+  const uint32_t imageHeight =
+      static_cast<uint32_t>(packed ? (sliceHeight > 0 ? sliceHeight : visibleHeight)
+                                   : sliceHeight + sliceHeight / 2);
   // The byte image covers the whole allocation; if the allocation cannot hold that layout, the
   // description and the buffer disagree and reading it would sample garbage.
   if (properties.allocationSize <
@@ -745,6 +756,7 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
     out->colorRows[i] = rows[i];
   }
   out->cbFirst = geometry.cbFirst;
+  out->packed = packed;
   if (!importLogged_) {
     importLogged_ = true;
     HMRDP_LOGI("vulkan video import: %{public}llu bytes, fmt=%{public}d cs=%{public}d "
@@ -874,7 +886,7 @@ bool VkVideoImport::Import(const void* nativeBuffer, const VideoFrameGeometry& g
   for (Imported& imported : imports_) {
     if (imported.seq == seq) {
       imported.lastUsed = ++useCounter_;
-      WriteFrameParams(geometry, imported.chromaRow, imported.colorRows, slot);
+      WriteFrameParams(geometry, imported.chromaRow, imported.packed, imported.colorRows, slot);
       out->image = imported.image;
       out->set = imported.sets[slot];
       return true;
@@ -907,13 +919,14 @@ bool VkVideoImport::Import(const void* nativeBuffer, const VideoFrameGeometry& g
     return false;
   }
   imports_.push_back(created);
-  WriteFrameParams(geometry, created.chromaRow, created.colorRows, slot);
+  tenBitFrames_ = created.packed;
+  WriteFrameParams(geometry, created.chromaRow, created.packed, created.colorRows, slot);
   out->image = created.image;
   out->set = created.sets[slot];
   return true;
 }
 
-void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow,
+void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow, bool packed,
                                      const float* colorRows, uint32_t slot) {
   if (slot >= kSlots || paramsMapped_[slot] == nullptr || colorRows == nullptr) {
     return;
@@ -925,11 +938,16 @@ void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, int chr
   values[3] = static_cast<float>(geometry.originY);
   values[4] = static_cast<float>(chromaRow);
   values[5] = geometry.cbFirst ? 1.0f : 0.0f;
-  values[6] = 0.0f;
+  values[6] = packed ? 1.0f : 0.0f;
   values[7] = 0.0f;
   for (int i = 0; i < 12; ++i) {
     values[8 + i] = colorRows[i];
   }
+  // The sample scale the convert pass divides by: the word a sample of this layout is stored in.
+  values[20] = packed ? 1023.0f : 255.0f;
+  values[21] = 0.0f;
+  values[22] = 0.0f;
+  values[23] = 0.0f;
   if (!paramsCoherent_[slot]) {
     VkApi& api = context_.api();
     const VkDevice device = context_.device();

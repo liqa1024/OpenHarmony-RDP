@@ -85,7 +85,7 @@ std::string VideoDecoderDescription(const std::string& mime) {
 
 bool VideoDecoderTenBit(const std::string& mime) {
   const PickedCapability picked = PickCapability(mime);
-  if (picked.capability == nullptr || OH_AVCapability_GetSupportedProfiles == nullptr) {
+  if (picked.capability == nullptr) {
     return false;
   }
   const int32_t* profiles = nullptr;
@@ -149,11 +149,12 @@ bool VideoDecoder::Start(const std::string& mime, void* window, int width, int h
 }
 
 bool VideoDecoder::StartBuffered(const std::string& mime, int width, int height, int frameRate,
-                                 FrameReadyFn onFrame, VideoFrameSink* sink) {
+                                 bool tenBit, FrameReadyFn onFrame, VideoFrameSink* sink) {
   if (sink == nullptr) {
     SetError("buffer mode needs a frame sink");
     return false;
   }
+  tenBit_ = tenBit;
   return StartInternal(mime, nullptr, width, height, frameRate, std::move(onFrame), sink);
 }
 
@@ -220,6 +221,18 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
                frameRate, configured);
     configured = ConfigureCodec(width, height, 0);
   }
+  if (configured != AV_ERR_OK && buffered_ && tenBit_) {
+    // The 10-bit layout is not a promise the platform makes, so a codec that refuses it still gets
+    // the session: it then hands out 8-bit frames, which the import presents as SDR (the bridge
+    // reports that through `hdr-inactive` rather than claiming HDR).
+    HMRDP_LOGW("video decoder: 10-bit output rejected (%{public}d), falling back to NV12",
+               configured);
+    tenBit_ = false;
+    configured = ConfigureCodec(width, height, frameRate);
+    if (configured != AV_ERR_OK && frameRate > 0) {
+      configured = ConfigureCodec(width, height, 0);
+    }
+  }
   if (configured != AV_ERR_OK) {
     SetError("Configure failed: " + std::to_string(configured));
     Stop();
@@ -276,9 +289,11 @@ int32_t VideoDecoder::ConfigureCodec(int width, int height, int frameRate) {
   // otherwise, per the SDK).
   OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 1);
   if (buffered_) {
-    // Buffer mode: name the channel layout the import addresses byte-wise (interleaved 4:2:0) rather
-    // than finding out afterwards which one the codec picked.
-    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
+    // Buffer mode: name the channel layout the import addresses byte-wise rather than finding out
+    // afterwards which one the codec picked. An HDR stream asks for the packed 10-bit RGB layout,
+    // the only 10-bit output the platform offers here (see StartBuffered).
+    OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT,
+                            tenBit_ ? AV_PIXEL_FORMAT_RGBA1010102 : AV_PIXEL_FORMAT_NV12);
   }
   if (frameRate > 0) {
     // The SDK declares the key as double while the decoder examples pass an int; the setter
@@ -617,6 +632,9 @@ void VideoDecoder::UpdateGeometryFromFormat(OH_AVFormat* format) {
   int32_t cropRight = 0;
   int32_t cropBottom = 0;
   int32_t pixelFormat = 0;
+  int32_t colorPrimaries = 0;
+  int32_t transfer = 0;
+  int32_t matrix = 0;
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_STRIDE, &stride);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_SLICE_HEIGHT, &sliceHeight);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_LEFT, &cropLeft);
@@ -624,6 +642,12 @@ void VideoDecoder::UpdateGeometryFromFormat(OH_AVFormat* format) {
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_RIGHT, &cropRight);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_CROP_BOTTOM, &cropBottom);
   OH_AVFormat_GetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, &pixelFormat);
+  // The bitstream's own colour description: this is what says whether the frames are HDR (PQ / HLG
+  // with BT.2020) or SDR, and it is the reading the convert pass renders by. Where the codec states
+  // nothing, the importer falls back to the buffer's declaration and then to the negotiated CSC.
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_COLOR_PRIMARIES, &colorPrimaries);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_TRANSFER_CHARACTERISTICS, &transfer);
+  OH_AVFormat_GetIntValue(format, OH_MD_KEY_MATRIX_COEFFICIENTS, &matrix);
   {
     std::lock_guard<std::mutex> lock(outputMutex_);
     VideoFrameGeometry& geometry = geometry_;
@@ -639,11 +663,16 @@ void VideoDecoder::UpdateGeometryFromFormat(OH_AVFormat* format) {
     geometry.originY = cropped ? cropTop : 0;
     geometry.pixelFormat = pixelFormat;
     geometry.cbFirst = pixelFormat != AV_PIXEL_FORMAT_NV21;
+    geometry.colorPrimaries = colorPrimaries;
+    geometry.transfer = transfer;
+    geometry.matrix = matrix;
   }
   HMRDP_LOGI("video decoder: stream %{public}dx%{public}d stride=%{public}d slice=%{public}d "
-             "crop=%{public}d,%{public}d-%{public}d,%{public}d pixel=%{public}d cbFirst=%{public}d",
+             "crop=%{public}d,%{public}d-%{public}d,%{public}d pixel=%{public}d cbFirst=%{public}d "
+             "color=%{public}d/%{public}d/%{public}d",
              width, height, stride, sliceHeight, cropLeft, cropTop, cropRight, cropBottom,
-             pixelFormat, pixelFormat != AV_PIXEL_FORMAT_NV21 ? 1 : 0);
+             pixelFormat, pixelFormat != AV_PIXEL_FORMAT_NV21 ? 1 : 0, colorPrimaries, transfer,
+             matrix);
 }
 
 void VideoDecoder::ReadOutputDescription() {

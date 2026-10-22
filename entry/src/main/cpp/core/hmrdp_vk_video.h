@@ -62,6 +62,10 @@ class VkVideoImport {
   bool Import(const void* nativeBuffer, const VideoFrameGeometry& geometry, uint32_t slot,
               Frame* out);
 
+  // Whether the frames seen so far are the packed 10-bit layout (an HDR stream's frames) rather than
+  // interleaved 8-bit 4:2:0. Only meaningful after the first successful Import.
+  bool tenBitFrames() const { return tenBitFrames_; }
+
   // The colour space the session negotiated with the host for these frames (OH_NativeBuffer_ColorSpace,
   // 0 = not stated). The importer still renders what each buffer itself declares; this is only what that
   // declaration is checked against, and what a buffer stating nothing falls back to.
@@ -115,6 +119,9 @@ class VkVideoImport {
     VkDescriptorSet sets[kSlots] = {};
     int chromaRow = 0;
     bool cbFirst = true;
+    // Packed 10-bit RGB (AV_PIXEL_FORMAT_RGBA1010102) rather than interleaved 8-bit 4:2:0: one
+    // 32-bit word per pixel, so there is no chroma plane and the row pitch is already bytes.
+    bool packed = false;
     float colorRows[12] = {};
   };
 
@@ -134,10 +141,10 @@ class VkVideoImport {
   // The YUV -> RGB rows for a buffer colour space (falling back to the driver's suggestion), each
   // already scaled for 0..255 sample values: value = cY*luma + cCb*Cb + cCr*Cr + offset.
   void UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange, float* out);
-  // Writes the frame parameters (visible box, crop origin, chroma row, chroma order, colour rows)
-  // into the slot's uniform buffer the convert pipeline reads; std140, five vec4s.
-  void WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow, const float* colorRows,
-                        uint32_t slot);
+  // Writes the frame parameters (visible box, crop origin, chroma row, chroma order, layout, colour
+  // rows, sample scale) into the slot's uniform buffer the convert pipeline reads; std140, six vec4s.
+  void WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow, bool packed,
+                        const float* colorRows, uint32_t slot);
 
   VkDeviceContext& context_;
   std::string error_;
@@ -161,6 +168,9 @@ class VkVideoImport {
   // before any frame arrives.
   int expectedColorSpace_ = 0;
   bool colorMismatch_ = false;
+  // Set by the first successful import: whether the frames are the packed 10-bit layout. The caller
+  // uses it to check the host's HDR claim against what the codec actually hands out.
+  bool tenBitFrames_ = false;
 
   // One-shot: an import refused every frame would otherwise log at the stream rate, and the imported
   // buffer's shape only needs printing once.
@@ -179,7 +189,9 @@ class VkVideoImport {
   VkPipelineLayout convertPipelineLayout_ = VK_NULL_HANDLE;
   VkDescriptorPool convertPool_ = VK_NULL_HANDLE;
   VkPipeline convertPipeline_ = VK_NULL_HANDLE;
-  static constexpr size_t kFrameParamsBytes = 5 * 4 * sizeof(float);
+  // visible/crop origin, chroma row + order, layout flag, the three YUV->RGB rows and the sample
+  // scale: six std140 vec4s.
+  static constexpr size_t kFrameParamsBytes = 6 * 4 * sizeof(float);
   VkBuffer paramsBuffer_[kSlots] = {};
   VkDeviceMemory paramsMemory_[kSlots] = {};
   void* paramsMapped_[kSlots] = {};

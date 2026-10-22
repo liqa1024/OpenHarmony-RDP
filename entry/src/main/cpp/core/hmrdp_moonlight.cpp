@@ -360,7 +360,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     // layout a byte-wise import needs is only reported in buffer mode, and the window never sees a
     // decoded frame); the fallback renders straight into the window.
     const bool started = bufferMode
-        ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, onFrame, this)
+        ? decoder_.StartBuffered(mime_, width_, height_, redrawRate_, hdrRequested_.load(), onFrame,
+                                 this)
         : decoder_.Start(mime_, window_, width_, height_, redrawRate_, onFrame);
     if (!started) {
       HMRDP_LOGE("moonlight video: decoder start failed (%{public}s)",

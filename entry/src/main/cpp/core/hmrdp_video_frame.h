@@ -22,6 +22,12 @@ struct VideoFrameGeometry {
   // (NV12) or Cr (NV21).
   int pixelFormat = 0;
   bool cbFirst = true;
+  // The colour the frame's samples carry, as the codec declares it in the bitstream's own terms
+  // (OH_ColorPrimary / OH_TransferCharacteristic / OH_MatrixCoefficient, 0 = not reported). This is
+  // what tells an HDR frame from an SDR one, and which primaries the whole path is in.
+  int colorPrimaries = 0;
+  int transfer = 0;
+  int matrix = 0;
 };
 
 // Where a decode bridge's pictures go. Implemented by the session's presenter owner (the Moonlight
