@@ -224,7 +224,7 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
   表面（兜底，见 [`moonlight-video.md`](moonlight-video.md) §2），并在那里**没有超分**（`DeviceCapabilities.srVideoImport()`）。
   RDP 不需要它（RDP 超分的输入是 CPU 桌面图，且不走上屏闸门）。所以缺这一项不会让会话没画面，
   只会让 Moonlight 落在兜底链路；RDP 分栏完全不受影响。
-- **HDR 的分工：一个协议请求轴 + 两条运行期事实**。`色彩协议` 里的 Rec2020 是**协议选择**（选它即请求 10 位
+- **HDR 的分工：一个协议请求轴 + 两条运行期事实**。`色彩协议与HDR` 里的 Rec2020 是**协议选择**（选它即请求 10 位
   档位与 `hdrMode`，见 [`moonlight-video.md`](moonlight-video.md) §3/§4），**不按显示能力置灰**：置灰只按协议
   可行性（本机能否解 10 位 + 主机是否广告 Main10）。能不能显示由运行期决定：**窗口那份格式与色彩空间清单**只有
   拿到 surface 才读得到（`ObserveSurfaceHdrSupport`，呈现器建交换链时报一行 `vulkan surface: hdr10 …`），以及

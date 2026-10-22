@@ -1398,6 +1398,8 @@ struct EditConnectionPage {
             }
 
             Text('编码器').fontSize(14).margin({ top: 8 })
+            Text('自动按本机硬解能力择优；HEVC / AV1 同画质码率更低，H.264 兼容性最好')
+              .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
             if (!this.mlCodecUsable(ML_CODEC_AUTO)) {
               Text('无可用解码器，无法串流')
                 .fontSize(12).fontColor($r('app.color.warning')).margin({ top: 2 })
@@ -1413,10 +1415,12 @@ struct EditConnectionPage {
             }
             .width('100%').margin({ top: 8 })
 
-            Text('色彩协议').fontSize(14).margin({ top: 8 })
+            Text('色彩协议与HDR').fontSize(14).margin({ top: 8 })
+            Text('向主机请求的编码色彩空间；一般用 Rec709，需要 HDR 选 Rec2020，Rec601 仅适合 SD 素材')
+              .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
             Flex({ wrap: FlexWrap.Wrap }) {
-              this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709', true)
               this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601', true)
+              this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709', true)
               this.mlColorSpaceChip(ML_COLORSPACE_REC2020_HDR, 'Rec2020 (HDR)', this.hdrSupported)
             }
             .width('100%').margin({ top: 8 })

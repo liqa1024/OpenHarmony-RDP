@@ -42,8 +42,8 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   `SavedConnection.useGlobalStream` 为真时跟随全局，为假时用本连接自己的 `ml*` 值。
 - 解析入口是 `SettingsStore.resolveStream(conn)`（全局默认见 `SettingsStore.globalStreamProfile()`），
   与 `resolveDisplay` / `resolveAdvanced` 并列。
-- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩协议
-  （Rec709 / Rec601 / Rec2020（HDR）：Rec2020 即请求 10 位 + HDR10；这是**协议选择**——只按协议可行性
+- 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩协议与HDR
+  （Rec601 / Rec709 / Rec2020（HDR）：Rec2020 即请求 10 位 + HDR10；这是**协议选择**——只按协议可行性
   置灰，不按显示能力，显示不了由运行期降级兜底，见 [`moonlight-video.md`](moonlight-video.md) §2/§3）、
   会话缩放（自动 / 手动 / 不额外设置）、超分（沿用 `useGlobalSr` + `sr*`，与 RDP 连接同名字段）。
 - **会话缩放（仅基地版 Sunshine）**：语义与 RDP 的 `DesktopScaleFactor` 同构——把远端 UI 的缩放系数交给主机，
@@ -132,7 +132,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - 设置页顶部是 **通用 / RDP / Moonlight 三个 tab**（下划线样式；编辑页仍只有两个协议 tab）。「通用」在最左。
 - **协议 tab（RDP / Moonlight）** 与 RDP 对齐：**「显示」段承载全部画面参数**——RDP 是"使用RDP光标 +
   分辨率 + 缩放 + 超分"，Moonlight 是"光标模式 + 分辨率 + 缩放 + 超分 + 帧率 + 自定义输入 + 码率 + 编码器 +
-  色彩协议"。帧率/码率/编码器/色彩协议**不另起「串流」段**：它们和分辨率/缩放同属画面参数，只是 RDP 不暴露。
+  色彩协议与HDR"。帧率/码率/编码器/色彩协议与HDR**不另起「串流」段**：它们和分辨率/缩放同属画面参数，只是 RDP 不暴露。
   其后是共用节（触控板 / 键盘 / 会话）。这些共用节在两个协议 tab 都出现，**每个协议各存一份值**
   （RDP 用原有设置键，Moonlight 用 `ml*` 副本，如 `mlTouchpadScrollSpeed`）；UI 是同一段代码，靠切换
   数据源复用，切换 tab 时先保存当前 tab 再加载目标 tab。

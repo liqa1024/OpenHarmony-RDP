@@ -139,7 +139,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 - **手动**（连接编辑页 / 设置页的编码选择，默认自动、可会话独立覆盖）：**强制**所选编码，同样要求本机可解
   且主机可编码。选择项按 `moonlightVideoCodecSupport()`（硬解 / 软解 / 无）置灰，仅软解时下方红字提示无硬件
   解码支持，无解码器时提示无法串流。
-- **HDR 只取 10 位档位**：色彩协议项选 Rec2020（HDR）时，`moonlightVideoFormats(choice, scm, hdr)` 在
+- **HDR 只取 10 位档位**：`色彩协议与HDR` 项选 Rec2020（HDR）时，`moonlightVideoFormats(choice, scm, hdr)` 在
   `AV1 Main10 > HEVC Main10` 里取一个，要求本机该 10 位 profile 可解 **且**主机广告了
   `SCM_AV1_MAIN10` / `SCM_HEVC_MAIN10`（家族位 `SCM_MASK_*` 不够）；H.264 载不了 HDR，不参与。取不到就
   **显式失败**（不悄悄降成 SDR 编码），文案指向"需要 HEVC Main10 或 AV1 Main10"。**这一项是协议选择，不按
@@ -160,7 +160,7 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 ## 4. 其余 `STREAM_CONFIGURATION` 字段的落点
 
 - `colorSpace` / `colorRange` 合成 SDP `x-nv-video[0].encoderCscMode`（`(space<<1)|range`）交主机做编码 CSC——
-  `0` 是 Rec601（HD 下偏色）、`1` 是 Rec709（SDR 默认）、**`2` 是 Rec2020（HDR）**。这就是`色彩协议`这一项：
+  `0` 是 Rec601（HD 下偏色）、`1` 是 Rec709（SDR 默认）、**`2` 是 Rec2020（HDR）**。这就是`色彩协议与HDR`这一项：
   它描述的是**向主机请求的编码协议**，不是本机显示能力。选 `2` 即同时请求 10 位档位（§3）与 `/launch` 的
   `hdrMode=1`，`colorRange` 仍是 limited（PQ 的约定）；**主机是否真在 HDR 由它自己在控制流上回**（`setHdrMode`），
   **本机显示不了就降级**（§2），两者都不成立时就是一个普通的 SDR 会话。
