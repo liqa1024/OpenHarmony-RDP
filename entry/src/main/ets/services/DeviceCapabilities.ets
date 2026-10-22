@@ -1,7 +1,7 @@
 import { audio } from '@kit.AudioKit';
 import { SuppressWarnings, SuppressWarningsType } from '@kit.BasicServicesKit';
 import {
-  hdrPresentationSupport, moonlightVideoCodecSupport, moonlightVideoTenBit, RdpSrBackends, RdpTenBitCodecs,
+  moonlightVideoCodecSupport, moonlightVideoTenBit, RdpSrBackends, RdpTenBitCodecs,
   RdpVerdict, setHardwareAccel, superResolutionBackends, superResolutionSupport, vulkanAccelSupport
 } from 'libhmrdp.so';
 
@@ -83,26 +83,14 @@ export class DeviceCapabilities {
     }
   }
 
-  // HDR is only offered where the whole local half exists: a presenter that can run an HDR10
-  // swapchain (which requires VK_EXT_swapchain_colorspace, a 10-bit colour attachment and the codec
-  // buffer import this pipeline is built on) plus a decoder that declares a 10-bit profile. The
-  // host's own 10-bit support is checked with the host at connect time, like the codec choice, and
-  // the window's actual format list is a runtime fact the presenter reports.
+  // The colour protocol's Rec2020 entry is a statement about what the session asks the host to send,
+  // not about what this device can show, so it is offered wherever a 10-bit profile can be decoded.
+  // The host decides whether HDR is produced at all (it replies on the control stream), and whether
+  // this window can show it is a runtime fact: a stream the output stage cannot present as HDR is
+  // folded onto SDR and the session says so (the `HDR降级` token and its toast). The host's own
+  // 10-bit support is checked with the host at connect time, like the codec choice.
   static hdr(): Capability {
     const capability: Capability = new Capability();
-    let verdict: RdpVerdict;
-    try {
-      verdict = hdrPresentationSupport();
-    } catch (error) {
-      capability.supported = false;
-      capability.reason = '无法检测本设备的 HDR 显示能力';
-      return capability;
-    }
-    if (!verdict.supported) {
-      capability.supported = false;
-      capability.reason = DeviceCapabilities.hdrReason(verdict.code);
-      return capability;
-    }
     let tenBit: RdpTenBitCodecs;
     try {
       tenBit = moonlightVideoTenBit();
@@ -150,22 +138,6 @@ export class DeviceCapabilities {
   }
 
   // The native side only returns reason codes; the wording lives here.
-  private static hdrReason(code: string): string {
-    if (code === 'emulator') {
-      return '模拟器不提供可信的 Vulkan，HDR 仅在真机可用';
-    }
-    if (code === 'no-colorspace-ext') {
-      return '本设备的 Vulkan 未提供 HDR 所需的色彩空间扩展（VK_EXT_swapchain_colorspace）';
-    }
-    if (code === 'no-10bit-attachment') {
-      return '本设备的 GPU 不支持 10 位上屏格式（A2B10G10R10），HDR 不可用';
-    }
-    if (code === 'no-video-import') {
-      return '本设备无法把解码缓冲交给呈现器，HDR 视频链路不可用';
-    }
-    return 'HDR 需要可用的硬件加速（Vulkan 上屏），本设备不满足';
-  }
-
   private static superResolutionReason(code: string): string {
     if (code === 'emulator' || code === 'no-vulkan' || code === 'no-instance'
       || code === 'no-device' || code === 'no-host-memory' || code === 'no-surface') {

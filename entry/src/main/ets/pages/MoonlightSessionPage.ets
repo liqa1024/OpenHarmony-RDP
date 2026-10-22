@@ -146,6 +146,7 @@ struct MoonlightSessionPage {
   private videoWarningShown: boolean = false;
   private srWarningShown: boolean = false;
   private colorWarningShown: boolean = false;
+  private hdrDegradedShown: boolean = false;
   private targetFps: number = 0;
   private targetBitrateKbps: number = 0;
   private metricsTimer: number = -1;
@@ -518,6 +519,7 @@ struct MoonlightSessionPage {
     const srIssue: boolean = warning.indexOf('sr-unavailable') >= 0
       || warning.indexOf('sr-inactive') >= 0;
     const colorMismatch: boolean = warning.indexOf('color-mismatch') >= 0;
+    const hdrDegraded: boolean = warning.indexOf('hdr-degraded') >= 0;
     // A confirmed black screen blocks the session's whole purpose, so it needs a channel the user can
     // read and dismiss rather than a toast that scrolls away (ui-feedback.md §1.5). The output mode is
     // fixed for the session, so the fact is stated once and there is nothing to retry in place.
@@ -540,6 +542,14 @@ struct MoonlightSessionPage {
     } else if (!this.colorWarningShown) {
       this.colorWarningShown = true;
       this.toast('色彩空间与主机协商不一致，画面颜色可能有偏差', ToastTier.Long);
+    }
+    // The host is in HDR and this device shows it as SDR: the picture is usable, so this is a one-shot
+    // toast (the title keeps the `HDR降级` token for as long as it lasts).
+    if (!hdrDegraded) {
+      this.hdrDegradedShown = false;
+    } else if (!this.hdrDegradedShown) {
+      this.hdrDegradedShown = true;
+      this.toast('由于本机无法显示 HDR，已自动降级为 SDR', ToastTier.Long);
     }
   }
 

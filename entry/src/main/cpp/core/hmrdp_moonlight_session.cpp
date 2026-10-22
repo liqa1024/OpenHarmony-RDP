@@ -14,6 +14,7 @@
 #include <native_buffer/native_buffer.h>
 
 #include "hmrdp_moonlight.h"
+#include "hmrdp_color.h"
 #include "hmrdp_moonlight_audio.h"
 #include "hmrdp_presenter.h"
 
@@ -23,11 +24,16 @@ namespace {
 // Must match SS_TOUCHPAD_FRAME_MAX_CONTACTS in the patched moonlight-common-c.
 constexpr int kMaxTouchpadContacts = 5;
 
-// The OH_NativeBuffer_ColorSpace the CSC the host was asked to encode with
-// (STREAM_CONFIGURATION.colorSpace/colorRange, see moonlight-video.md §4) corresponds to. The video
-// importer presents what each decoded buffer itself declares and only reports a disagreement with
-// this, so a buffer that states something else is a fact the user is told about, not a silent shift.
+// The colour description the CSC the host was asked to encode with corresponds to
+// (STREAM_CONFIGURATION.colorSpace/colorRange, see moonlight-video.md §4). The video importer
+// presents what each decoded buffer itself declares and only reports a disagreement with this, so a
+// buffer that states something else is a fact the user is told about, not a silent shift.
 int NegotiatedColorSpace(int colorSpace, int range) {
+  if (colorSpace == COLORSPACE_REC_2020) {
+    // Rec.2020 IS the HDR10 (PQ) protocol: the host produces BT.2020 PQ and the range is PQ's limited
+    // convention. Mapping it to an SDR space here would make every HDR buffer disagree by construction.
+    return ToNativeBuffer(Hdr10Bt2020PqLimited());
+  }
   const bool full = range == COLOR_RANGE_FULL;
   if (colorSpace == COLORSPACE_REC_601) {
     return full ? OH_COLORSPACE_BT601_EBU_FULL : OH_COLORSPACE_BT601_EBU_LIMIT;

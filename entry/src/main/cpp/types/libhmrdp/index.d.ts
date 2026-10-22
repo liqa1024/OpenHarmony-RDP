@@ -229,9 +229,6 @@ export interface RdpSrBackends {
 }
 export const superResolutionBackends: () => RdpSrBackends;
 
-/** Whether frames can be presented as HDR10 on this device; `code` is a stable token (the presenter's own code / no-colorspace-ext / no-10bit-attachment / no-video-import). The host's 10-bit support and the window's actual format list are separate facts. */
-export const hdrPresentationSupport: () => RdpVerdict;
-
 /** Always "1": asserts the Moonlight static archives resolved into the module. */
 export const moonlightProbe: () => string;
 
@@ -258,7 +255,7 @@ export const moonlightVideoTenBit: () => RdpTenBitCodecs;
 export const moonlightVideoMaxFps: (videoFormat: number, width: number, height: number) => number;
 
 /** Stable decode-path codes, comma separated when several apply: "software-decode|<mime>",
- *  "sr-unavailable", "sr-inactive", "hdr-inactive", "video-present", "color-mismatch"; "" when fine. */
+ *  "sr-unavailable", "sr-inactive", "hdr-degraded", "video-present", "color-mismatch"; "" when fine. */
 export const moonlightVideoWarning: () => string;
 
 /** Everything LiStartConnection needs; assembled by the ArkTS control layer. */

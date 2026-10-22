@@ -1413,7 +1413,7 @@ struct EditConnectionPage {
             }
             .width('100%').margin({ top: 8 })
 
-            Text('色彩空间与 HDR').fontSize(14).margin({ top: 8 })
+            Text('色彩协议').fontSize(14).margin({ top: 8 })
             Flex({ wrap: FlexWrap.Wrap }) {
               this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709', true)
               this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601', true)

@@ -75,7 +75,7 @@ export function moonlightDecodeTokens(): string[] {
   let software: boolean = false;
   let srUnavailable: boolean = false;
   let srInactive: boolean = false;
-  let hdrInactive: boolean = false;
+  let hdrDegraded: boolean = false;
   let videoError: boolean = false;
   let colorMismatch: boolean = false;
   const parts: string[] = warning.length > 0 ? warning.split(',') : [];
@@ -87,8 +87,8 @@ export function moonlightDecodeTokens(): string[] {
       srUnavailable = true;
     } else if (part.startsWith('sr-inactive')) {
       srInactive = true;
-    } else if (part.startsWith('hdr-inactive')) {
-      hdrInactive = true;
+    } else if (part.startsWith('hdr-degraded')) {
+      hdrDegraded = true;
     } else if (part.startsWith('video-present')) {
       videoError = true;
     } else if (part.startsWith('color-mismatch')) {
@@ -102,9 +102,10 @@ export function moonlightDecodeTokens(): string[] {
   if (srUnavailable || srInactive) {
     tokens.push('未超分');
   }
-  // Same rule for HDR: the host said it is in HDR but this side could not run it.
-  if (hdrInactive) {
-    tokens.push('未HDR');
+  // The host is in HDR but this device presents it as SDR: the picture is usable, just not HDR, so the
+  // title says so (a plain SDR session, host not in HDR, never reaches here).
+  if (hdrDegraded) {
+    tokens.push('HDR降级');
   }
   if (videoError) {
     tokens.push('视频异常');

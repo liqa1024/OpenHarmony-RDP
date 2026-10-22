@@ -1175,13 +1175,6 @@ napi_value SuperResolutionSupport(napi_env env, napi_callback_info) {
   return MakeVerdict(env, caps.srSupported, caps.srUnsupportedCode);
 }
 
-napi_value HdrPresentationSupport(napi_env env, napi_callback_info) {
-  const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
-  HMRDP_LOGI("hdr presentation support: supported=%{public}d code=%{public}s",
-             caps.hdrPresentSupported ? 1 : 0, caps.hdrPresentUnsupportedCode.c_str());
-  return MakeVerdict(env, caps.hdrPresentSupported, caps.hdrPresentUnsupportedCode);
-}
-
 napi_value SuperResolutionBackends(napi_env env, napi_callback_info) {
   const hmrdp::VulkanCapabilities& caps = hmrdp::GetVulkanCapabilities();
   HMRDP_LOGI("super resolution backends: xengine=%{public}d fsr=%{public}d",
@@ -1299,8 +1292,6 @@ static napi_value Init(napi_env env, napi_value exports) {
       {"superResolutionSupport", nullptr, SuperResolutionSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"superResolutionBackends", nullptr, SuperResolutionBackends, nullptr, nullptr, nullptr,
-       napi_default, nullptr},
-      {"hdrPresentationSupport", nullptr, HdrPresentationSupport, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"moonlightProbe", nullptr, MoonlightProbe, nullptr, nullptr, nullptr, napi_default,
        nullptr},

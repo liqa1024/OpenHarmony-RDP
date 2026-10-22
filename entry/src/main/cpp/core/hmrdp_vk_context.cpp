@@ -601,29 +601,13 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
              caps->srVideoImportSupported ? 1 : 0, caps->extOhosExternalMemory ? 1 : 0,
              caps->videoImportFormatOk ? 1 : 0);
 
-  // HDR10 presentation, device half. The surface half (a format and a colour space the window
-  // actually offers) is observed when a swapchain is created and logged from there; both halves
-  // together are what an HDR stream's output stage needs.
-  caps->hdrPresentSupported = false;
-  caps->hdrPresentUnsupportedCode.clear();
-  if (!caps->presenterSupported) {
-    caps->hdrPresentUnsupportedCode = caps->presenterUnsupportedCode.empty()
-                                          ? "no-surface"
-                                          : caps->presenterUnsupportedCode;
-  } else if (!caps->extSwapchainColorspace) {
-    caps->hdrPresentUnsupportedCode = "no-colorspace-ext";
-  } else if (!caps->hdr10AttachmentOk) {
-    caps->hdrPresentUnsupportedCode = "no-10bit-attachment";
-  } else if (!caps->srVideoImportSupported) {
-    caps->hdrPresentUnsupportedCode = "no-video-import";
-  } else {
-    caps->hdrPresentSupported = true;
-  }
+  // The device half of the HDR10 swapchain decision (a 10-bit colour attachment and the colour-space
+  // extension that carries the HDR10 colour space). The surface half - a format and a colour space the
+  // window actually offers - can only be read with a surface in hand, and is observed when a swapchain
+  // is created (see SurfaceHdrSupport). The setting itself is not gated on either half: what this
+  // device cannot display is folded onto SDR by the output stage instead.
   HMRDP_LOGI("vulkan verdict: hdr static: colorspaceExt=%{public}d hdr10Attachment=%{public}d",
              caps->extSwapchainColorspace ? 1 : 0, caps->hdr10AttachmentOk ? 1 : 0);
-  HMRDP_LOGI("vulkan verdict: hdr presentation=%{public}d(%{public}s)",
-             caps->hdrPresentSupported ? 1 : 0,
-             caps->hdrPresentUnsupportedCode.empty() ? "-" : caps->hdrPresentUnsupportedCode.c_str());
 }
 
 }  // namespace

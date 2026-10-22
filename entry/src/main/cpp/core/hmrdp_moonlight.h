@@ -117,8 +117,8 @@ int MoonlightVideoCodecSupport(int codec);
 std::string MoonlightVideoCodec();
 
 // "on" only while the session really presents HDR (the host confirmed it and the output stage runs
-// it); "" otherwise. A request the host did not confirm is not HDR, and neither is a stage that fell
-// back to SDR - that case is reported as the `hdr-inactive` warning instead.
+// it); "" otherwise. A request the host did not confirm is not HDR, and neither is a stream folded
+// onto SDR because this output stage cannot show it - that case is the `hdr-degraded` warning.
 std::string MoonlightVideoHdr();
 
 std::string MoonlightVideoWarning();

@@ -90,8 +90,8 @@ napi_value MoonlightVideoHdr(napi_env env, napi_callback_info) {
 }
 
 // The decoder half of the HDR decision: whether this device declares a 10-bit profile at all. The
-// caller combines it with the GPU verdict (hdrPresentationSupport) and, at connect time, with the
-// host's SCM_MASK_10BIT.
+// caller combines it with the host's SCM_MASK_10BIT at connect time; whether the output stage can run
+// HDR10 is a runtime fact the presenter reports (see the `hdr-degraded` warning).
 napi_value MoonlightVideoTenBit(napi_env env, napi_callback_info) {
   const bool hevc = hmrdp::VideoDecoderTenBit("video/hevc");
   const bool av1 = hmrdp::VideoDecoderTenBit("video/av1");

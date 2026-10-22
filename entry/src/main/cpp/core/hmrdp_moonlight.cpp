@@ -132,15 +132,16 @@ class MoonlightVideoRenderer : public VideoFrameSink {
                  "host; the picture may differ from what it encoded");
     }
     // HDR asked for and the host confirmed it, but this output stage is not running it: the picture
-    // is then presented as SDR, which the title must not call HDR. A host that never confirmed HDR
-    // leaves the session legitimately SDR, so this fires only on the disagreement.
+    // is folded onto SDR (the convert pass's degrade path) so the session stays usable, and the title
+    // says so rather than claiming HDR. A host that never confirmed HDR leaves the session
+    // legitimately SDR, so this fires only on that disagreement.
     if (hdrRequested_.load() && hdrActive_.load() && !hdrRunning && !hdrWarned_) {
       hdrWarned_ = true;
-      SetWarning("hdr-inactive");
-      HMRDP_LOGW("moonlight video: host is in HDR but the presenter is not running the HDR stage");
+      SetWarning("hdr-degraded");
+      HMRDP_LOGW("moonlight video: host is in HDR but this output stage cannot show HDR; degrading to SDR");
     } else if (hdrRunning && hdrWarned_) {
       hdrWarned_ = false;
-      ClearWarning("hdr-inactive");
+      ClearWarning("hdr-degraded");
     }
     return token;
   }

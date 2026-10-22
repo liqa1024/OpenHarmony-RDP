@@ -83,14 +83,16 @@ export const ML_BITRATE_MIN_KBPS: number = 1000;
 export const ML_BITRATE_MAX_KBPS: number = 200000;
 export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
 
-// The colour-space / HDR axis, sent as encoderCscMode = (space<<1)|range and mirrored by the values
-// of COLORSPACE_* in Limelight.h. Choosing REC2020 asks the host for an HDR10 (PQ) stream, which also
-// selects a 10-bit codec; the SDR entries ask for an 8-bit one.
+// The colour protocol the session asks the host to encode with, sent as
+// encoderCscMode = (space<<1)|range and mirrored by the values of COLORSPACE_* in Limelight.h.
+// HDR is folded into the REC2020 entry (HDR always uses Rec.2020), so this is one choice of
+// protocol, not a statement about what this device can display: REC2020 also selects a 10-bit codec
+// and hdrMode, and whether the picture can actually be shown as HDR is a separate, runtime fact.
 export const ML_COLORSPACE_REC601: number = 0;
 export const ML_COLORSPACE_REC709: number = 1;
 export const ML_COLORSPACE_REC2020_HDR: number = 2;
 
-// True for a colour space that means HDR (10-bit codec + HDR10 output requested).
+// True for the colour protocol that carries HDR (10-bit codec + HDR10 requested).
 export function mlColorSpaceIsHdr(space: number): boolean {
   return space === ML_COLORSPACE_REC2020_HDR;
 }

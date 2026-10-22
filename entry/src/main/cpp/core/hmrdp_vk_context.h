@@ -217,13 +217,6 @@ struct VulkanCapabilities {
   // the Vulkan presenter. Needed by the Moonlight 超分 path, not by RDP (its input is the CPU desktop
   // picture); SR can be usable for RDP and not for Moonlight.
   bool srVideoImportSupported = false;
-  // HDR10 presentation, device side: the presenter can run, the device takes a 10-bit colour
-  // attachment, VK_EXT_swapchain_colorspace is present (it carries the HDR10 colour space) and the
-  // codec buffers can be imported. The other two halves are deliberately not folded in here: the
-  // host's 10-bit support is decided with the host at connect time, and the surface's own format /
-  // colour-space list is a runtime fact (SurfaceHdrSupport) that only the presenter can see.
-  bool hdrPresentSupported = false;
-  std::string hdrPresentUnsupportedCode;
 };
 
 const VulkanCapabilities& GetVulkanCapabilities();

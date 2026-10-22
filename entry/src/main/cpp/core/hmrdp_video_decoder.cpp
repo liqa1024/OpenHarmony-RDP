@@ -224,7 +224,7 @@ bool VideoDecoder::StartInternal(const std::string& mime, void* window, int widt
   if (configured != AV_ERR_OK && buffered_ && tenBit_) {
     // The 10-bit layout is not a promise the platform makes, so a codec that refuses it still gets
     // the session: it then hands out 8-bit frames, which the import presents as SDR (the bridge
-    // reports that through `hdr-inactive` rather than claiming HDR).
+    // reports that through `hdr-degraded` rather than claiming HDR).
     HMRDP_LOGW("video decoder: 10-bit output rejected (%{public}d), falling back to NV12",
                configured);
     tenBit_ = false;

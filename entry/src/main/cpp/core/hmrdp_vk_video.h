@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "hmrdp_color.h"
 #include "hmrdp_video_frame.h"
 #include "hmrdp_vk_context.h"
 
@@ -20,6 +21,10 @@ namespace hmrdp {
 // layout is the codec's own description of a buffer-mode frame (`VideoFrameGeometry`); the importer
 // only falls back to the allocation's config when the codec states nothing, and it refuses a buffer
 // whose allocation cannot hold the layout it just described.
+//
+// The bytes are addressed by the layout the *allocation* declares (1 or 2 bytes per sample, or the
+// packed 10-bit RGB word): the platform's HEVC decoder hands out P010 while reporting NV12, and only
+// the allocation's own format tells the two apart (see ResolveFrameLayout in the .cpp).
 //
 // The byte view is what makes the conversion ours: the importer reads the codec's own bytes and the
 // convert pass applies colour-space-correct coefficients, so nothing depends on the driver
@@ -117,11 +122,18 @@ class VkVideoImport {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDescriptorSet sets[kSlots] = {};
-    int chromaRow = 0;
-    bool cbFirst = true;
-    // Packed 10-bit RGB (AV_PIXEL_FORMAT_RGBA1010102) rather than interleaved 8-bit 4:2:0: one
-    // 32-bit word per pixel, so there is no chroma plane and the row pitch is already bytes.
+    // The frame's byte layout, resolved from the allocation's own format (see ResolveFrameLayout):
+    // interleaved 4:2:0 (1 byte/sample) or P010 (2 bytes/sample, 10 bits in the high bits of a 16-bit
+    // word), or the packed 10-bit RGB word (no chroma plane, 4 bytes/pixel).
     bool packed = false;
+    int bytesPerSample = 1;
+    int bitDepth = 8;
+    float sampleDivisor = 1.0f;
+    bool cbFirst = true;
+    int chromaRow = 0;
+    // An HDR frame shown through an SDR picture: the convert pass folds it onto SDR (see the shader's
+    // color.y). Fixed for the import's life, since a picture-format change rebuilds the imports.
+    bool degrade = false;
     float colorRows[12] = {};
   };
 
@@ -138,13 +150,17 @@ class VkVideoImport {
   bool AllocateImportSet(VkImageView view, uint32_t slot, VkDescriptorSet* out);
   bool CreateImported(const void* nativeBuffer, const VideoFrameGeometry& geometry, Imported* out);
   void DestroyImported(Imported* imported);
-  // The YUV -> RGB rows for a buffer colour space (falling back to the driver's suggestion), each
-  // already scaled for 0..255 sample values: value = cY*luma + cCb*Cb + cCr*Cr + offset.
-  void UpdateColorRows(int colorSpace, int suggestedModel, int suggestedRange, float* out);
-  // Writes the frame parameters (visible box, crop origin, chroma row, chroma order, layout, colour
-  // rows, sample scale) into the slot's uniform buffer the convert pipeline reads; std140, six vec4s.
-  void WriteFrameParams(const VideoFrameGeometry& geometry, int chromaRow, bool packed,
-                        const float* colorRows, uint32_t slot);
+  // The YUV -> RGB rows for one frame, each already scaled for this frame's sample code value:
+  // value = cY*luma + cCb*Cb + cCr*Cr + offset. The buffer's own declared colour space comes first,
+  // the negotiated expectation when it states none, and the driver's suggestion only for a
+  // declaration this byte importer cannot express. `bitDepth` is the frame's own sample depth (which
+  // the coefficients scale for), not the colour space's.
+  void ResolveColorRows(int declaredColorSpace, int bitDepth, int suggestedModel, int suggestedRange,
+                        float* out);
+  // Writes the frame parameters (visible box, crop origin, chroma row, layout, colour rows, sample
+  // word, sample divisor, degrade flag) into the slot's uniform buffer the convert pipeline reads;
+  // std140, six vec4s.
+  void WriteFrameParams(const VideoFrameGeometry& geometry, const Imported& frame, uint32_t slot);
 
   VkDeviceContext& context_;
   std::string error_;
@@ -165,11 +181,13 @@ class VkVideoImport {
 
   // The negotiated expectation and the verdict on the buffers seen so far. Destroy clears the verdict
   // (every import decides it again) but keeps the expectation, which the session sets once per session
-  // before any frame arrives.
-  int expectedColorSpace_ = 0;
+  // before any frame arrives. An expectation the pipeline cannot model is simply unset, and an unset
+  // expectation never contradicts a buffer.
+  ColorDescription expectedColorSpace_;
+  bool expectedColorSpaceSet_ = false;
   bool colorMismatch_ = false;
-  // Set by the first successful import: whether the frames are the packed 10-bit layout. The caller
-  // uses it to check the host's HDR claim against what the codec actually hands out.
+  // Set by the first successful import: whether the frames are 10-bit (P010 or the packed RGBA1010102
+  // word). The caller uses it to check the host's HDR claim against what the codec actually hands out.
   bool tenBitFrames_ = false;
 
   // One-shot: an import refused every frame would otherwise log at the stream rate, and the imported

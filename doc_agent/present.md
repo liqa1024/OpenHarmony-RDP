@@ -130,32 +130,37 @@ device（[`architecture.md`](architecture.md) §4.1）。
   再由 convert pass **自己做 YUV→RGB**：片元 `texelFetch` 取 Y 与交错 Cb/Cr，系数（3 行 `cY/cCb/cCr/offset`）
    由 CPU 按**缓冲自己的色彩空间**算好、随该帧槽的 uniform buffer 传入；结果写成**会话分辨率的 picture**，
    之后与桌面图同路。**不做 CPU 回读/整帧拷贝**；视频没有脏区，恒整帧一次。
-   - **两种可寻址布局，且转换 pass 只做"重新解释"**：交错 8 位 4:2:0（NV12/NV21，走上面那套 YUV→RGB 系数）与
-     **打包 10 位 RGB**（`AV_PIXEL_FORMAT_RGBA1010102`，一个 32 位字一个像素、低 10 位是 R，与 picture 自己的
-     `A2B10G10R10_UNORM_PACK32` **同布局**，所以片元只需重组字并丢掉 2 位 alpha）。HDR 帧因此**不需要任何
-     PQ↔SDR 变换**：帧的值就是 picture 要的编码。其它像素格式一律拒绝（按 4:2:0 去寻址会出错误颜色）。
-     判据是 `plane.z`（布局标志）与 `color.x`（样本字宽 255/1023），都随该帧槽的 uniform buffer 传入。
-   - **主机说 HDR 而解码器只给 8 位时回落 SDR**：呈现器据此把意图降回 SDR 并按新格式重建一次交换链，
-     会话报 `hdr-inactive`；**不把 8 位值送进 HDR10 交换链**（那需要本仓不做的 PQ→SDR 变换）。
+   - **三种可寻址布局，且转换 pass 只做"重新解释"**：交错 4:2:0（**NV12/NV21** 每样点 1 字节；**P010** 每样点
+     2 字节、10 位在高位，`>>6` 解出）与**打包 10 位 RGB**（`AV_PIXEL_FORMAT_RGBA1010102`，一个 32 位字一个
+     像素、低 10 位是 R，与 picture 自己的 `A2B10G10R10_UNORM_PACK32` **同布局**，所以片元只需重组字并丢掉
+     2 位 alpha）。**布局以分配器自己的格式（`OH_NativeBuffer_Format`）为准**，codec 的 `OH_AVPixelFormat`
+     只作兜底——平台的 HEVC 解码器交出 **P010 却上报 `NV12`**，按 8 位寻址就是**花屏**。YUV→RGB 系数按**位深**
+     生成（8/10 位两套），归一用该布局的样点字宽。HDR 帧因此**不需要任何 PQ↔SDR 变换**：帧的值就是 picture
+     要的编码。判据是 `plane.z`（打包标志）、`plane.w`（每样点字节数）与 `color.x`（样本字宽 255/1023），都随
+     该帧槽的 uniform buffer 传入。
+   - **主机说 HDR 而这一路给不了 HDR10 时降级**：呈现器把 picture 与交换链留在 SDR，convert pass 把这帧
+     （BT.2020/PQ）折到 SDR（PQ→线性→2020→709→203nit 白→sRGB，由 `color.y` 标志触发），会话报 `hdr-degraded`。
+     **不把原始值送进 HDR10 交换链**；降级是**正常呈现路径**（不丢帧、不计呈现失败），下游 FSR/letterbox 全走 SDR。
   - **几何取解码器报的账，不推**：420 半平面的**色度面字节偏移 = `stride` × `sliceHeight`**——`stride` 是字节行距
     （`OH_MD_KEY_VIDEO_STRIDE`），`sliceHeight` 是**单个面在内存里实际分配的行数**（`OH_MD_KEY_VIDEO_SLICE_HEIGHT`，
     ≥ 可见高）。两者连同可见尺寸与裁剪矩形一起由编解码器报出，取处是 `onStreamChanged` 的 `OH_AVFormat` 或
     `OH_VideoDecoder_GetOutputDescription`；平台文档明确要求取用、**不要假定固定值**。字节图的 extent 因此是
-    `stride × (sliceHeight + sliceHeight/2)`，采样区是亮度面左上的 `visibleWidth×visibleHeight`（有裁剪矩形时
-    再加裁剪原点），片元按**字节坐标**直接取（Y 在 `(x,y)`；Cb/Cr 在色度面上，一个色度样点占 `2i`、`2i+1`
-    两个字节，取法见下一条；两个字节的先后由 `OH_MD_KEY_PIXEL_FORMAT` 给出：NV12 = Cb 在前，NV21 = Cr 在前，
-    未知/未报按 NV12 并打一次性警告；其它像素格式直接拒绝）。**只有编解码器什么都没报时才回落到分配器的
-    `OH_NativeBuffer_GetConfig()`**——那时的行数对齐单位是推的，必须打一次性警告。
+     `stride × (sliceHeight + sliceHeight/2)`，采样区是亮度面左上的 `visibleWidth×visibleHeight`（有裁剪矩形时
+    再加裁剪原点），片元按**字节坐标**直接取（Y 在 `(x,y)`；Cb/Cr 在色度面上，一个色度样点占相邻两个样点，
+    取法见下一条；先后由布局给出：NV12/P010 = Cb 在前，NV21/P010-Cr = Cr 在前）。**行距与面行数取 codec 报的
+    账，codec 什么都没报时才回落到分配器的 `OH_NativeBuffer_GetConfig()`**——那时的行数对齐单位是推的，必须
+    打一次性警告。**布局本身（格式 / 每样点字节数 / 位深）反过来以分配器格式为准**（见上一条）。
     **判据**：可见区之外不可采样——按可见尺寸声明图像会让色度起点落进亮度面的填充区（填充通常为零 ⇒ 色度读到零）。
   - **色度双线性上采样，且不补 siting 偏移**：4:2:0 的色度只有半分辨率，片元按"像素坐标 `p` 属于色度样点
     `p/2`"在 **Cb/Cr 上**做 2×2 双线性（偶坐标正落在样点上，奇坐标与该样点、其右侧/下侧样点各半），插值在
     YCbCr 里做而不是在 RGB 里做。四个采样点**夹在可见矩形覆盖的色度样点范围内**——否则画面最后一行/列会读到
     色度面之后的亮度面对齐填充（那里通常是零 ⇒ 暗/绿边），故边界为边缘复制。**没有**补"样点居中"的 0.25
     色度像素偏移：样点保持它自己那对字节，与直出链路对齐口径的差异留给实机 A/B；要补就是这一处坐标加常数。
-  - **转换在自己这边，不赌驱动对缓冲的解释**：驱动对这块缓冲的格式描述决定采样拿到什么，本仓不依赖它；**渲染依据
-    是缓冲自己的声明**（`OH_NativeBuffer_GetColorSpace`）；缓冲没报色彩空间时取**会话协商的 CSC**
-    （`encoderCscMode`，SDR 即 BT.709 limited），不用驱动的 `suggestedYcbcrModel/Range` 兜底（那是 RGB/full 时
-    会把 YUV 算错）。BT.601/709 与 narrow/full 都在我们手里。**判据**：分不清"色度读到零"与"采样到原始分量"时
+  - **转换在自己这边，不赌驱动对缓冲的解释**：驱动对这块缓冲的格式描述决定采样拿到什么，本仓不依赖它；**矩阵与
+    范围的渲染依据是缓冲自己的声明**（`OH_NativeBuffer_GetColorSpace`），而**是不是 HDR 先看 codec 码流自己的
+    transfer**（`geometry.transfer`，PQ/HLG，见 §4）；缓冲没报色彩空间时取**会话协商的 CSC**（`encoderCscMode`；
+    HDR 会话即 BT.2020 PQ limited），不用驱动的 `suggestedYcbcrModel/Range` 兜底（那是 RGB/full 时会把 YUV 算错）。
+    BT.601/709 与 narrow/full 都在我们手里。**判据**：分不清"色度读到零"与"采样到原始分量"时
     **不要用画面颜色判**——两者外观相近；要看几何与色彩空间的读数（`video decoder: stream …` 与
     `vulkan video import: …` 两行，后者已带 `cs=` 与 `expected=` 两个读数）。
   - **协商值只作核对基准，不当作渲染依据，也纠正不了平台**：解码侧**没有**"声明输出色彩空间"的接口——
@@ -203,7 +208,6 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
 | **超分：FSR**（`srFsrSupported`） | 超分后端之一（§4） | 呈现判定成立 + 构建里编进了 FSR shader（`HMRDP_HAVE_FSR`） |
 | **超分：XEngine**（`srXengineSupported`） | 超分后端之一（§4） | 呈现判定成立 + libxengine 可加载 + 设备报 `XEG_spatial_upscale` |
 | **视频导入**（`srVideoImportSupported`） | Moonlight **默认上屏链路**的前置，超分与 RDP 都不用（§4） | 呈现判定成立 + `VK_OHOS_external_memory` + `R8_UNORM/TILING_LINEAR/SAMPLED` 可创建（缓冲按 R8 字节图导入，转换自己做，不依赖驱动解释缓冲） |
-| **HDR 呈现**（`hdrPresentSupported`） | 「色彩空间与 HDR」里 Rec2020 那档的置灰依据（本机这一半） | 呈现判定成立 + instance 扩展 `VK_EXT_swapchain_colorspace` 在（HDR10 色彩空间属它，建 instance 时按需使能）+ `A2B10G10R10_UNORM_PACK32` 可作颜色附件 + 视频导入可用 |
 
 - 呈现能力判定**只有 `presenterSupported` 一个**：不存在分开的"解码能力 / 呈现能力"两套判定（解码始终是
   FreeRDP gdi，见 [`rdp-gfx.md`](rdp-gfx.md)）。
@@ -220,13 +224,12 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
   表面（兜底，见 [`moonlight-video.md`](moonlight-video.md) §2），并在那里**没有超分**（`DeviceCapabilities.srVideoImport()`）。
   RDP 不需要它（RDP 超分的输入是 CPU 桌面图，且不走上屏闸门）。所以缺这一项不会让会话没画面，
   只会让 Moonlight 落在兜底链路；RDP 分栏完全不受影响。
-- **HDR 判定被有意拆成三份，因为三者只有一份能在会话前知道**：`hdrPresentSupported` 是**本机 GPU 那一半**
-  （上表），用于置灰；**主机 10 位能力**（`SCM_MASK_10BIT`）在连接时与主机一起判，和编码选择同处
-  （[`moonlight-video.md`](moonlight-video.md) §3）；**窗口自己那份格式与色彩空间清单**只有拿到 surface 才读得到
-  （`ObserveSurfaceHdrSupport`，由呈现器在建立交换链时报一行 `vulkan surface: hdr10 …`），它是**运行期事实**，
-  不参与置灰。三份之外还有一条运行期事实：解码器是否真交出 10 位帧（§4），不成立就回落 SDR 并报
-  `hdr-inactive`。**`libxengine` 式的"缺件降级"在这里不适用**：置灰是硬的（设备不支持就不给选），
-  而运行期那两条只影响"这次会话到底是不是 HDR"。
+- **HDR 的分工：一个协议请求轴 + 两条运行期事实**。`色彩协议` 里的 Rec2020 是**协议选择**（选它即请求 10 位
+  档位与 `hdrMode`，见 [`moonlight-video.md`](moonlight-video.md) §3/§4），**不按显示能力置灰**：置灰只按协议
+  可行性（本机能否解 10 位 + 主机是否广告 Main10）。能不能显示由运行期决定：**窗口那份格式与色彩空间清单**只有
+  拿到 surface 才读得到（`ObserveSurfaceHdrSupport`，呈现器建交换链时报一行 `vulkan surface: hdr10 …`），以及
+  **解码器是否真交出 10 位帧**；两者任一不成立就是 `hdr-degraded`（降级到 SDR，见 §4），既不是黑屏，也不是
+  "选项不可用"。**`libxengine` 式的"缺件降级"在这里适用**：缺件就降级，运行期事实只影响"这次会话到底是不是 HDR"。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
   （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），与 toolchain 指向的 openharmony sysroot 同级；
