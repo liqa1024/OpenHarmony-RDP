@@ -99,6 +99,11 @@ export const ML_HDR_NITS_MAX: number = 10000;
 export const ML_HDR_MIN_NITS: number = 0.001;
 export const ML_HDR_PEAK_DEFAULT_NITS: number = 1000;
 
+// HDR **内容**的显示亮度（0–100%，落到 ArkUI 组件级的 `XComponent.hdrBrightness`）：0% = 按 SDR 亮度显示、
+// 100% = 按当前允许的最高 HDR 亮度显示，而 100% 就是平台默认值，故默认取 100（等于不动默认观感，需要时才
+// 下调）。它作用在本机显示的 HDR 内容上，与上面那组上报给主机的亮度（`ML_HDR_*_NITS`）无关。
+export const ML_HDR_WHITE_POINT_DEFAULT_PERCENT: number = 100;
+
 // The colour protocol the session asks the host to encode with, sent as
 // encoderCscMode = (space<<1)|range and mirrored by the values of COLORSPACE_* in Limelight.h.
 // HDR is folded into the REC2020 entry (HDR always uses Rec.2020), so this is one choice of
@@ -145,6 +150,8 @@ export class MoonlightProfile {
   hdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
   hdrFullFrameAuto: boolean = true;
   hdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  // HDR 内容的显示亮度（见 ML_HDR_WHITE_POINT_DEFAULT_PERCENT）；非 HDR 会话不参与。
+  hdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
 }
 
 export class MoonlightStreamConfig implements MoonlightSessionConfig {
@@ -172,6 +179,8 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   colorSpace: number = 0;
   colorRange: number = 0;
   hdrMode: number = 0;
+  // HDR 内容的显示亮度（0–100，见 ML_HDR_WHITE_POINT_DEFAULT_PERCENT）；只有 hdrMode 非 0 时用得上。
+  hdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   encryptionFlags: number = 0;
   remoteInputAesKeyHex: string = '';
   remoteInputAesIvHex: string = '';

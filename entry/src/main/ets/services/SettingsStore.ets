@@ -10,7 +10,7 @@ import {
 } from '../model/Connections';
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_MODE_PQ,
-  ML_HDR_PEAK_DEFAULT_NITS,
+  ML_HDR_PEAK_DEFAULT_NITS, ML_HDR_WHITE_POINT_DEFAULT_PERCENT,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile
 } from '../moonlight/MoonlightModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
@@ -128,6 +128,8 @@ export class AppSettings {
   mlHdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
   mlHdrFullFrameAuto: boolean = true;
   mlHdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  // HDR 画面的本机亮度（窗口 HDR 白点亮度百分比），见 ML_HDR_WHITE_POINT_DEFAULT_PERCENT。
+  mlHdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   lastNewProtocol: number = PROTOCOL_RDP;
   lastSettingsTab: number = -1;
   wolHelpShown: boolean = false;
@@ -302,8 +304,10 @@ export class SettingsStore {
         SettingsStore.readNumber(store, 'mlHdrPeakNits', settings.mlHdrPeakNits);
       settings.mlHdrFullFrameAuto =
         SettingsStore.readBoolean(store, 'mlHdrFullFrameAuto', settings.mlHdrFullFrameAuto);
-      settings.mlHdrFullFrameNits =
-        SettingsStore.readNumber(store, 'mlHdrFullFrameNits', settings.mlHdrFullFrameNits);
+    settings.mlHdrFullFrameNits =
+      SettingsStore.readNumber(store, 'mlHdrFullFrameNits', settings.mlHdrFullFrameNits);
+    settings.mlHdrWhitePointPercent = SettingsStore.readNumber(store, 'mlHdrWhitePointPercent',
+      settings.mlHdrWhitePointPercent);
       settings.lastNewProtocol =
         SettingsStore.readNumber(store, 'lastNewProtocol', settings.lastNewProtocol);
       settings.lastSettingsTab =
@@ -421,6 +425,7 @@ export class SettingsStore {
       store.putSync('mlHdrPeakNits', settings.mlHdrPeakNits);
       store.putSync('mlHdrFullFrameAuto', settings.mlHdrFullFrameAuto);
       store.putSync('mlHdrFullFrameNits', settings.mlHdrFullFrameNits);
+  store.putSync('mlHdrWhitePointPercent', settings.mlHdrWhitePointPercent);
       store.putSync('lastNewProtocol', settings.lastNewProtocol);
       store.putSync('lastSettingsTab', settings.lastSettingsTab);
       store.putSync('wolHelpShown', settings.wolHelpShown);
@@ -634,6 +639,7 @@ export class SettingsStore {
     profile.hdrPeakNits = settings.mlHdrPeakNits;
     profile.hdrFullFrameAuto = settings.mlHdrFullFrameAuto;
     profile.hdrFullFrameNits = settings.mlHdrFullFrameNits;
+    profile.hdrWhitePointPercent = settings.mlHdrWhitePointPercent;
     return profile;
   }
 
@@ -657,6 +663,7 @@ export class SettingsStore {
     profile.hdrPeakNits = conn.mlHdrPeakNits;
     profile.hdrFullFrameAuto = conn.mlHdrFullFrameAuto;
     profile.hdrFullFrameNits = conn.mlHdrFullFrameNits;
+    profile.hdrWhitePointPercent = conn.mlHdrWhitePointPercent;
     return profile;
   }
 

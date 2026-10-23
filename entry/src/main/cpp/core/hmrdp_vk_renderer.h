@@ -36,6 +36,7 @@ class VkRenderer : public FramePresenter {
   void SetVideoColorSpace(int colorSpace) override;
   bool videoColorMismatch() const override;
   void SetStreamHdr(int base) override;
+  void SetHdrWhitePoint(int percent) override;
   void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) override;
   void SetStreamDynamicHdr(const uint8_t* payload, int size) override;
   bool hdrActive() const override;
@@ -217,6 +218,9 @@ class VkRenderer : public FramePresenter {
   // OH_VIDEO_HDR_VIVID.
   bool vividHdr_ = false;
   std::vector<uint8_t> dynamicHdrPayload_;
+  // Display brightness of the HDR content itself (see SetHdrWhitePoint), in percent. Written with the
+  // HDR declaration; 100 is the platform default.
+  int hdrWhitePointPercent_ = 100;
   // The last return code OH_NativeWindow_SetMetadataValue gave for the dynamic key, so a repeat is
   // not logged once per frame (the payload changes every frame).
   int32_t dynamicHdrRetLogged_ = -1;

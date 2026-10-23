@@ -8,6 +8,9 @@ export struct SessionPicture {
   pictureController: XComponentController = new XComponentController();
   @Prop @Watch('refit') contentWidth: number = 0;
   @Prop @Watch('refit') contentHeight: number = 0;
+  // HDR 内容的显示亮度（ArkUI 组件级，0–1：0 = 按 SDR 亮度显示、1 = 按当前允许的最高 HDR 亮度，1 即平台
+  // 默认值）。只有请求了 HDR 的会话才由会话页传非 1 的值；非 HDR 恒为默认值，不动 SDR 的显示。
+  @Prop hdrBrightness: number = 1;
   @Prop revealBand: number = 0;
   @Prop revealBandWidth: number = 100;
   engineScroll: boolean = false;
@@ -51,7 +54,8 @@ export struct SessionPicture {
           })
             .width(this.pictureWidth)
             .height(this.pictureHeight)
-            
+            .hdrBrightness(this.hdrBrightness)
+
             .focusable(true)
             .defaultFocus(true)
             .onMouse((event: MouseEvent) => {

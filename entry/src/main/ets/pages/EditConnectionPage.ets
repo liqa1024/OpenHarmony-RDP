@@ -13,7 +13,7 @@ import {
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
   ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_COLORSPACE_REC2020_HDR, mlColorSpaceIsHdr,
   ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_HDR_MODE_HLG, ML_HDR_MODE_PQ, ML_HDR_NITS_MAX,
-  ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS, ML_HDR_WHITE_POINT_DEFAULT_PERCENT,
   ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL, MoonlightProfile
 } from '../moonlight/MoonlightModels';
 import { ConnectionStore } from '../services/ConnectionStore';
@@ -43,6 +43,7 @@ import { ContentCard } from '../components/ContentCard';
 import { ProtocolTabs } from '../components/ProtocolTabs';
 import { ScaleSetting } from '../components/ScaleSetting';
 import { SettingToggleRow } from '../components/SettingToggleRow';
+import { SettingSliderRow } from '../components/SettingSliderRow';
 
 const DOMAIN: number = 0xD001;
 const TAG: string = 'HmRdpEdit';
@@ -100,6 +101,8 @@ struct EditConnectionPage {
   @State mlHdrPeakText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
   @State mlHdrFullFrameAuto: boolean = true;
   @State mlHdrFullFrameText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
+  // HDR 画面的本机亮度（窗口 HDR 白点亮度，百分比）。
+  @State mlHdrWhitePoint: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   @State useGlobalStream: boolean = true;
   @State mlScaleMode: number = ML_SCALE_AUTO;
   @State mlScaleText: string = '100';
@@ -184,6 +187,7 @@ struct EditConnectionPage {
     this.mlHdrPeakText = mlDefaults.mlHdrPeakNits.toString();
     this.mlHdrFullFrameAuto = mlDefaults.mlHdrFullFrameAuto;
     this.mlHdrFullFrameText = mlDefaults.mlHdrFullFrameNits.toString();
+    this.mlHdrWhitePoint = mlDefaults.mlHdrWhitePointPercent;
     this.mlScaleMode = mlDefaults.mlScaleMode;
     this.mlScaleText = mlDefaults.mlScalePercent.toString();
     this.clampMlCodec();
@@ -252,6 +256,7 @@ struct EditConnectionPage {
         this.mlHdrPeakText = conn.mlHdrPeakNits.toString();
         this.mlHdrFullFrameAuto = conn.mlHdrFullFrameAuto;
         this.mlHdrFullFrameText = conn.mlHdrFullFrameNits.toString();
+        this.mlHdrWhitePoint = conn.mlHdrWhitePointPercent;
         this.useGlobalStream = conn.useGlobalStream;
         this.mlScaleMode = conn.mlScaleMode;
         this.mlScaleText = conn.mlScalePercent.toString();
@@ -612,6 +617,7 @@ struct EditConnectionPage {
     conn.mlHdrPeakNits = this.effectiveMlHdrPeak();
     conn.mlHdrFullFrameAuto = this.mlHdrFullFrameAuto;
     conn.mlHdrFullFrameNits = this.effectiveMlHdrFullFrame(this.effectiveMlHdrPeak());
+    conn.mlHdrWhitePointPercent = this.mlHdrWhitePoint;
     conn.useGlobalStream = this.useGlobalStream;
     conn.mlScaleMode = this.mlScaleMode;
     conn.mlScalePercent = this.parseScale(this.mlScaleText, 100);
@@ -1639,6 +1645,22 @@ struct EditConnectionPage {
                 }
                 .width('100%').margin({ top: 6 })
               }
+
+              SettingSliderRow({
+                title: 'HDR 内容亮度',
+                subtitle: 'HDR 内容（视频帧）在本机的显示亮度，100% 为平台默认',
+                value: this.mlHdrWhitePoint,
+                min: 0,
+                max: 100,
+                step: 5,
+                unit: ' %',
+                precision: 0,
+                switchEnabled: true,
+                disabledReason: '',
+                onChange: (v: number) => {
+                  this.mlHdrWhitePoint = v;
+                }
+              })
             }
 
             Divider()

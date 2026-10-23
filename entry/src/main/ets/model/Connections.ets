@@ -1,6 +1,7 @@
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_DEFAULT_PORT,
-  ML_HDR_MODE_PQ, ML_HDR_PEAK_DEFAULT_NITS, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile,
+  ML_HDR_MODE_PQ, ML_HDR_PEAK_DEFAULT_NITS, ML_HDR_WHITE_POINT_DEFAULT_PERCENT, ML_RES_FOLLOW_SCREEN,
+  ML_SCALE_AUTO, MoonlightProfile,
   MoonlightStreamConfig, PairResult
 } from '../moonlight/MoonlightModels';
 import { SR_BACKEND_XENGINE, SrSetting } from './Profiles';
@@ -204,6 +205,7 @@ export class ConnectionExport {
   mlHdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
   mlHdrFullFrameAuto: boolean = true;
   mlHdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  mlHdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
 }
 
 export abstract class SavedConnection {
@@ -531,6 +533,8 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
   mlHdrPeakNits: number = ML_HDR_PEAK_DEFAULT_NITS;
   mlHdrFullFrameAuto: boolean = true;
   mlHdrFullFrameNits: number = ML_HDR_PEAK_DEFAULT_NITS;
+  // HDR 画面的本机亮度（窗口 HDR 白点亮度百分比），见 ML_HDR_WHITE_POINT_DEFAULT_PERCENT。
+  mlHdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   // 超分: same shape as the RDP connection — a per-connection override over the Moonlight tab's
   // own global values. The stream is taken at output / ratio and upscaled back locally.
   useGlobalSr: boolean = true;
@@ -640,6 +644,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     slots[54] = this.mlHdrFullFrameAuto ? '1' : '0';
     slots[55] = this.mlHdrFullFrameNits.toString();
     slots[56] = this.mlHdrMode.toString();
+    slots[57] = this.mlHdrWhitePointPercent.toString();
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -676,6 +681,9 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
       ? parseFieldPositive(parts[55], ML_HDR_PEAK_DEFAULT_NITS) : ML_HDR_PEAK_DEFAULT_NITS;
     this.mlHdrMode = parts.length > 56
       ? parseFieldNumber(parts[56], ML_HDR_MODE_PQ) : ML_HDR_MODE_PQ;
+    this.mlHdrWhitePointPercent = parts.length > 57
+      ? parseFieldNumber(parts[57], ML_HDR_WHITE_POINT_DEFAULT_PERCENT)
+      : ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -699,6 +707,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     item.mlHdrPeakNits = this.mlHdrPeakNits;
     item.mlHdrFullFrameAuto = this.mlHdrFullFrameAuto;
     item.mlHdrFullFrameNits = this.mlHdrFullFrameNits;
+    item.mlHdrWhitePointPercent = this.mlHdrWhitePointPercent;
     item.useGlobalSr = this.useGlobalSr;
     item.srEnabled = this.srEnabled;
     item.srRatioPercent = this.srRatioPercent;
@@ -726,6 +735,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     this.mlHdrPeakNits = item.mlHdrPeakNits;
     this.mlHdrFullFrameAuto = item.mlHdrFullFrameAuto;
     this.mlHdrFullFrameNits = item.mlHdrFullFrameNits;
+    this.mlHdrWhitePointPercent = item.mlHdrWhitePointPercent;
     this.useGlobalSr = item.useGlobalSr;
     this.srEnabled = item.srEnabled;
     this.srRatioPercent = item.srRatioPercent;

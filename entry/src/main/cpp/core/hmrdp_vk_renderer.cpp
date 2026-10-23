@@ -1690,6 +1690,22 @@ void VkRenderer::SetStreamHdr(int base) {
   surfaceDirty_ = true;
 }
 
+// Display brightness of the HDR content itself, in percent (see hmrdp_presenter.h). 100 is the platform
+// default; lower values dim the HDR picture. The buffer-level counterpart of the ArkUI
+// `XComponent.hdrBrightness` the session page drives.
+void VkRenderer::SetHdrWhitePoint(int percent) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const int clamped = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+  if (hdrWhitePointPercent_ == clamped) {
+    return;
+  }
+  hdrWhitePointPercent_ = clamped;
+  // Metadata, not a swapchain property: rewrite the declaration in place when HDR is already running.
+  if (hdrOutputActive_) {
+    DeclareWindowColorLocked(true, hdrBase_ == 2);
+  }
+}
+
 void VkRenderer::SetHdrStaticMetadata(const HdrStaticMetadata& metadata) {
   std::lock_guard<std::mutex> lock(mutex_);
   hdrStaticMetadata_ = metadata;
@@ -1797,6 +1813,12 @@ void VkRenderer::DeclareWindowColorLocked(bool hdr, bool hlg) {
   if (!hdr) {
     return;
   }
+  // How bright this buffer's HDR content is shown, between SDR brightness (0) and the highest HDR
+  // brightness the display currently allows (1, the platform default). The value comes from the
+  // session's setting (SET_HDR_WHITE_POINT_BRIGHTNESS).
+  const float whitePoint = static_cast<float>(hdrWhitePointPercent_) / 100.0f;
+  const int32_t whitePointRet = OH_NativeWindow_NativeWindowHandleOpt(
+      window, SET_HDR_WHITE_POINT_BRIGHTNESS, whitePoint);
   OH_NativeBuffer_StaticMetadata staticMetadata {};
   staticMetadata.smpte2086.displayPrimaryRed = {hdrStaticMetadata_.redX, hdrStaticMetadata_.redY};
   staticMetadata.smpte2086.displayPrimaryGreen = {hdrStaticMetadata_.greenX, hdrStaticMetadata_.greenY};
@@ -1820,7 +1842,9 @@ void VkRenderer::DeclareWindowColorLocked(bool hdr, bool hlg) {
   HMRDP_LOGI("vulkan window: hdr declared base=%{public}s type=%{public}d dynamic=%{public}s "
              "bytes=%{public}d colorspace=%{public}d gamut=%{public}d source=%{public}s "
              "max=%{public}d min=%{public}d cll=%{public}d fall=%{public}d "
-             "ret(cs=%{public}d,gamut=%{public}d,type=%{public}d,static=%{public}d,dyn=%{public}d)",
+             "white=%{public}d "
+             "ret(cs=%{public}d,gamut=%{public}d,type=%{public}d,white=%{public}d,static=%{public}d,"
+             "dyn=%{public}d)",
              hlg ? "hlg" : "pq", static_cast<int>(metadataType), vividHdr_ ? "vivid" : "none",
              static_cast<int>(dynamicHdrPayload_.size()), static_cast<int>(windowColorSpace),
              static_cast<int>(windowGamut), hdrStaticMetadata_.valid ? "host" : "default",
@@ -1828,8 +1852,10 @@ void VkRenderer::DeclareWindowColorLocked(bool hdr, bool hlg) {
              static_cast<int>(hdrStaticMetadata_.minLuminance * 10000.0f),
              static_cast<int>(hdrStaticMetadata_.maxContentLightLevel),
              static_cast<int>(hdrStaticMetadata_.maxFrameAverageLightLevel),
+             hdrWhitePointPercent_,
              static_cast<int>(colorSpaceRet), static_cast<int>(gamutRet), static_cast<int>(typeRet),
-             static_cast<int>(staticRet), static_cast<int>(dynamicRet));
+             static_cast<int>(whitePointRet), static_cast<int>(staticRet),
+             static_cast<int>(dynamicRet));
 }
 
 void VkRenderer::ApplySwapchainHdrMetadataLocked() {

@@ -9,7 +9,7 @@ import {
 } from '../model/Connections';
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_MODE_PQ,
-  ML_HDR_PEAK_DEFAULT_NITS,
+  ML_HDR_PEAK_DEFAULT_NITS, ML_HDR_WHITE_POINT_DEFAULT_PERCENT,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO
 } from '../moonlight/MoonlightModels';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore,
@@ -89,6 +89,8 @@ export class ConfigTransfer {
     item.mlHdrFullFrameAuto = ConfigTransfer.readBoolean(rec, 'mlHdrFullFrameAuto', true);
     item.mlHdrFullFrameNits =
       ConfigTransfer.readNumber(rec, 'mlHdrFullFrameNits', ML_HDR_PEAK_DEFAULT_NITS);
+    item.mlHdrWhitePointPercent =
+      ConfigTransfer.readNumber(rec, 'mlHdrWhitePointPercent', ML_HDR_WHITE_POINT_DEFAULT_PERCENT);
     return item;
   }
 
@@ -355,6 +357,8 @@ export class ConfigTransfer {
       ConfigTransfer.readBoolean(rec, 'mlHdrFullFrameAuto', settings.mlHdrFullFrameAuto);
     settings.mlHdrFullFrameNits =
       ConfigTransfer.readNumber(rec, 'mlHdrFullFrameNits', settings.mlHdrFullFrameNits);
+    settings.mlHdrWhitePointPercent = ConfigTransfer.readNumber(rec, 'mlHdrWhitePointPercent',
+      settings.mlHdrWhitePointPercent);
     const mlSrEnabled: boolean = ConfigTransfer.readBoolean(rec, 'mlSrEnabled', false);
     const mlSrBackend: number =
       ConfigTransfer.readNumber(rec, 'mlSrBackend', SR_BACKEND_XENGINE);

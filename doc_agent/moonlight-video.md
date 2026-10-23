@@ -120,9 +120,17 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   `LiGetHdrMetadata` 下发的值，越界或没有就用本仓默认 BT.2020 1000/0.001/1000/400）。**这四样是一个
   整体**：交换链是本仓自己写的 buffer，平台不会替我们补（官方《显示规格》即要求"HDR 视频…传递正确的
   Metadata 和色域信息"），缺了合成器就按自己的假设换算这块图。SDR 分支写同一套（`SRGB_FULL` + SRGB gamut）
-  并把 HDR 那半清成 `OH_VIDEO_NONE`——声明挂在 window 上，活得比交换链长，不然会话中途关 HDR 会留下
-  一块 PQ 的声明。落地时打一行 `vulkan window: hdr10 declared …`（含 colorspace/gamut/source），
-  是实机核对的锚点。
+   并把 HDR 那半清成 `OH_VIDEO_NONE`——声明挂在 window 上，活得比交换链长，不然会话中途关 HDR 会留下
+   一块 PQ 的声明。**HDR 内容亮度另走两条通道**（同一份设置 `HDR 内容亮度`，0–100%）：**组件级**是 ArkUI
+   的 `XComponent.hdrBrightness`（会话页只在请求了 HDR 的会话上把它交给 `components/SessionPicture`，非 HDR
+   恒为平台默认 1.0、不动 SDR 的显示）——平台给"组件显示 HDR 内容时的亮度"的正规接口，**实机已验证生效**；
+   **缓冲区级**是这份窗口声明里的 `SET_HDR_WHITE_POINT_BRIGHTNESS`。两者语义相同：`0` = 按 SDR 亮度显示、
+   `1` = 按当前允许的最高 HDR 亮度，而 `1.0`/`100%` 就是平台默认值，所以本项的默认值也取 100（等于不动默认
+   观感，需要时才下调）。**它作用于本机显示的 HDR 内容**，与 §4 那组 `/launch` 亮度上报（作用在主机侧）
+   互不相干。
+   实机核对的锚点：`moonlight session … hdr requested white N%`（值到没到
+   原生）、`hdr picture brightness N%`（交给组件的值）、`vulkan window: hdr declared … white=N
+   ret(…,white=…)`（缓冲区级那条的返回码）。
   **转换 pass 因此不做色彩变换**：帧的值与 picture 的编码相同（都是 10 位 2020/PQ），片元只做**重新解释**
   （解出 10 位、丢掉 alpha），PQ↔SDR 那套变换数学一处也不需要。picture 与其编码**绑在一起**，所以
   `present_quad`、FSR 与 letterbox 一行未改（见 [`present.md`](present.md) §4）。

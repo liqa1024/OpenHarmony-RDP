@@ -443,6 +443,8 @@ export class MoonlightConnector {
       ? Math.round(panelMaxHz * 100) : 0;
     config.colorSpace = stream.colorSpace;
     config.hdrMode = hdrRequested ? stream.hdrMode : 0;
+    // HDR 画面的本机亮度（窗口 HDR 白点亮度）。非 HDR 会话原样带着、原生只在 HDR 声明里用它。
+    config.hdrWhitePointPercent = stream.hdrWhitePointPercent;
     config.colorRange = ML_COLOR_RANGE_LIMITED;
     config.encryptionFlags = 0;
     config.remoteInputAesKeyHex = rikeyHex;

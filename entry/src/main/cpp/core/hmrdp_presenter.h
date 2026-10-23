@@ -84,6 +84,10 @@ class FramePresenter {
   // SetSuperResolution - the answer usually arrives after this presenter exists. A host that never
   // reports HDR sends an SDR stream whatever was requested.
   virtual void SetStreamHdr(int base) { (void)base; }
+  // Display brightness of the HDR content itself, in percent (0 = show at SDR brightness, 100 = the
+  // highest HDR brightness the display currently allows, which is the platform default). Local
+  // presentation only. Applied when the HDR declaration is written, so it is remembered until then.
+  virtual void SetHdrWhitePoint(int percent) { (void)percent; }
   // What the HDR picture is, told to the window the swapchain presents into (colour space, gamut,
   // metadata type and this metadata). The host answers this while the session runs, right before the
   // HDR state, so it is remembered until the window declaration is (re)written.

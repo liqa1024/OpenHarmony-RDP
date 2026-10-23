@@ -185,6 +185,8 @@ void Run(const MoonlightStreamConfig& config) {
                                       config.width, config.height);
         presenter->SetVideoColorSpace(
             NegotiatedColorSpace(config.colorSpace, config.colorRange, config.hdrMode));
+        // 本机 HDR 内容亮度 (the window's HDR white point); inert unless the output stage runs HDR.
+        presenter->SetHdrWhitePoint(config.hdrWhitePointPercent);
         presenterActive = true;
       } else {
         HMRDP_LOGW("moonlight session: presenter prepare failed; the decoder renders into the surface");
@@ -219,11 +221,12 @@ void Run(const MoonlightStreamConfig& config) {
   MoonlightVideoSetStreamColorSpace(config.colorSpace, config.colorRange, config.hdrMode);
   MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
   HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "
-             "%{public}s %{public}s -> %{public}dx%{public}d, hdr %{public}s)",
+             "%{public}s %{public}s -> %{public}dx%{public}d, hdr %{public}s white %{public}d%%)",
              config.width, config.height, presenterActive ? "buffer" : "surface fallback",
              srRequested ? "on" : "off",
              config.srBackend == static_cast<int>(SuperResolutionBackend::kFsr) ? "fsr" : "xengine",
-             sessionWidth, sessionHeight, hdrRequested ? "requested" : "off");
+             sessionWidth, sessionHeight, hdrRequested ? "requested" : "off",
+             config.hdrWhitePointPercent);
   stream.width = sessionWidth;
   stream.height = sessionHeight;
   stream.fps = config.fps;

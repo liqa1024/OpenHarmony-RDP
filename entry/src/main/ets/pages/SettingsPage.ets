@@ -6,7 +6,7 @@ import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
   ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_COLORSPACE_REC2020_HDR,
   mlColorSpaceIsHdr, ML_FPS_PRESETS, ML_HDR_MODE_HLG, ML_HDR_MODE_PQ, ML_HDR_NITS_MAX,
-  ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS, ML_HDR_WHITE_POINT_DEFAULT_PERCENT,
   ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL } from '../moonlight/MoonlightModels';
 import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
@@ -168,6 +168,8 @@ struct SettingsPage {
   @State mlHdrPeakText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
   @State mlHdrFullFrameAuto: boolean = true;
   @State mlHdrFullFrameText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
+  // HDR 画面的本机亮度（窗口 HDR 白点亮度，百分比）。
+  @State mlHdrWhitePoint: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   @State mlCursorMode: number = ML_CURSOR_HIDE_SYSTEM;
   @State mlRelativeMouse: boolean = false;
   @State relativeSpeed: number = DEFAULT_SPEED_SCALE;
@@ -295,6 +297,7 @@ struct SettingsPage {
       this.mlHdrPeakText = settings.mlHdrPeakNits.toString();
       this.mlHdrFullFrameAuto = settings.mlHdrFullFrameAuto;
       this.mlHdrFullFrameText = settings.mlHdrFullFrameNits.toString();
+      this.mlHdrWhitePoint = settings.mlHdrWhitePointPercent;
       this.mlSrEnabled = this.mlSrSupported ? settings.mlSrEnabled : false;
       this.mlSrRatioPercent = SettingsStore.snapSrRatioPreset(settings.mlSrRatioPercent);
       this.mlSrBackend = settings.mlSrBackend;
@@ -593,6 +596,7 @@ struct SettingsPage {
       settings.mlHdrFullFrameAuto = this.mlHdrFullFrameAuto;
       settings.mlHdrFullFrameNits =
         this.effectiveMlHdrFullFrame(this.effectiveMlHdrPeak());
+      settings.mlHdrWhitePointPercent = this.mlHdrWhitePoint;
       settings.mlSrEnabled = this.mlSrEnabled && this.mlSrSupported;
       settings.mlSrRatioPercent = SettingsStore.snapSrRatioPreset(this.mlSrRatioPercent);
       settings.mlSrBackend = this.mlSrBackend;
@@ -1426,6 +1430,25 @@ struct SettingsPage {
         Divider().strokeWidth(1).color($r('app.color.divider'))
 
         this.mlHdrLuminanceItems()
+
+        Divider().strokeWidth(1).color($r('app.color.divider'))
+
+        this.sliderItem({
+          title: 'HDR 内容亮度',
+          subtitle: 'HDR 内容（视频帧）在本机的显示亮度，100% 为平台默认',
+          value: this.mlHdrWhitePoint,
+          min: 0,
+          max: 100,
+          step: 5,
+          unit: ' %',
+          precision: 0,
+          enabled: true,
+          disabledReason: '',
+          onChange: (v: number) => {
+            this.mlHdrWhitePoint = v;
+            this.persist();
+          }
+        })
       }
     }
     .width('100%')

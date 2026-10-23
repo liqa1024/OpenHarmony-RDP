@@ -282,6 +282,11 @@ export interface MoonlightSessionConfig {
   colorRange: number;
   /** HDR base transfer with colorSpace Rec2020: 0 = SDR, 1 = HDR10 (PQ), 2 = HLG. */
   hdrMode?: number;
+  /**
+   * HDR 内容在本机的显示亮度百分比（0 = 按 SDR 亮度显示、100 = 按当前允许的最高 HDR 亮度，即平台默认）。
+   * 只作用于本机显示的 HDR 内容；只有 hdrMode 非 0 时用得上。
+   */
+  hdrWhitePointPercent?: number;
   encryptionFlags: number;
   /** 16-byte remote-input AES key / IV as lowercase hex. */
   remoteInputAesKeyHex: string;

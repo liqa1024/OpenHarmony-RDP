@@ -23,6 +23,7 @@ import { ForegroundReconnect, ForegroundReconnectHost } from '../services/Foregr
 import { SessionShellHooks, SessionShellHost } from '../services/SessionViewDelegate';
 import { moonlightDecodeTokens, moonlightVideoStatus } from '../utils/MoonlightCodec';
 import { MoonlightClient } from '../moonlight/MoonlightClient';
+import { ML_HDR_WHITE_POINT_DEFAULT_PERCENT } from '../moonlight/MoonlightModels';
 import { ML_CURSOR_HIDE_HOST, ML_CURSOR_HIDE_SYSTEM, PINCH_MODE_NATIVE, PINCH_MODE_TOUCH,
   PINCH_MODE_WHEEL, PINCH_MODE_ZOOM, AppSettings, DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT,
   DEFAULT_TOOLBAR_WIDTH_PERCENT, SettingsStore } from '../services/SettingsStore';
@@ -88,6 +89,10 @@ struct MoonlightSessionPage {
   private componentWidth: number = 0;
   private componentHeight: number = 0;
   private streamWidth: number = 1920;
+  // HDR 请求了没有，以及 HDR 内容的显示亮度（`HDR 内容亮度` 设置）。只有 HDR 会话把非默认值交给画面组件
+  // （ArkUI 的组件级 HDR 亮度，见 components/SessionPicture），非 HDR 一律用平台默认值。
+  private hdrRequested: boolean = false;
+  private hdrWhitePointPercent: number = ML_HDR_WHITE_POINT_DEFAULT_PERCENT;
   private streamHeight: number = 1080;
   private srToken: string = '';
   private cursorMode: number = ML_CURSOR_HIDE_SYSTEM;
@@ -191,6 +196,14 @@ struct MoonlightSessionPage {
         }
         this.targetFps = config.fps;
         this.targetBitrateKbps = config.bitrateKbps;
+        // hdrMode is 0 unless this session asked the host for HDR, so it doubles as the "is this an HDR
+        // session" flag the picture component's brightness setting hangs off.
+        if (config.hdrMode > 0) {
+          this.hdrRequested = true;
+          this.hdrWhitePointPercent = config.hdrWhitePointPercent;
+          hilog.info(DOMAIN, TAG, 'hdr picture brightness %{public}d%%',
+            this.hdrWhitePointPercent);
+        }
         if (config.streamWidth > 0 && config.srRatioPercent > 100) {
           this.srToken = srTag(config.srBackend, config.srRatioPercent);
         }
@@ -923,6 +936,7 @@ struct MoonlightSessionPage {
           pictureController: this.controller,
           contentWidth: this.streamWidth,
           contentHeight: this.streamHeight,
+          hdrBrightness: this.hdrRequested ? this.hdrWhitePointPercent / 100 : 1,
           revealBand: (this.isFullscreen && !this.showToolbar) ? this.revealBand : 0,
           revealBandWidth: this.revealWidthPercent,
           onPointerMouse: (event: MouseEvent) => {
