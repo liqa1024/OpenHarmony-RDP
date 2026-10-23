@@ -107,6 +107,7 @@ Delete the archive and retry; change the pin only together with the version.
 	return $tgz
 }
 
+$extracted = @{}
 foreach ($dep in $Deps) {
 	$target = Join-Path $Third $dep.Dir
 	if ((Test-Path -LiteralPath $target) -and -not $Force) {
@@ -140,6 +141,7 @@ foreach ($dep in $Deps) {
 	}
 	Move-Item -LiteralPath (Join-Path $staging $dep.Dir) -Destination $target
 	Remove-Item -Recurse -Force $staging
+	$extracted[$dep.Dir] = $true
 	Write-Host "$($dep.Name): extracted to $target ($($dep.Dir))"
 }
 
@@ -172,15 +174,25 @@ else {
 	throw "moonlight-common-c tree missing: $MlTree (fetch it before its submodules)"
 }
 
-# Applied last; each step reports skips, the self-check for an already-patched tree.
+# Applied last. FreeRDP's table runs only over the tree this run extracted: its steps rewrite what
+# earlier ones inserted, so re-running it over an already-patched tree has no anchors left and
+# throws (native-build.md §3) - and that would abort the fetch *after* the trees were replaced,
+# leaving a half-patched workspace.
 $freerdp = $Deps | Where-Object { $_.Patch } | Select-Object -First 1
 $freerdpSrc = Join-Path $Third $freerdp.Dir
-Write-Host "applying patches to $freerdpSrc"
-& pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-freerdp.ps1") -Source $freerdpSrc
-if ($LASTEXITCODE -ne 0) {
-	throw "patch-freerdp.ps1 failed"
+if ($extracted.ContainsKey($freerdp.Dir)) {
+	Write-Host "applying patches to $freerdpSrc"
+	& pwsh -NoProfile -File (Join-Path $PSScriptRoot "patch-freerdp.ps1") -Source $freerdpSrc
+	if ($LASTEXITCODE -ne 0) {
+		throw "patch-freerdp.ps1 failed"
+	}
+}
+else {
+	Write-Host "$($freerdp.Name): kept as is; its patch table is not re-applied outside a fresh extract (use -Force to re-fetch and re-patch)"
 }
 
+# zlib / opus / moonlight keep their own entry scripts: every block of those is marker-guarded, so
+# re-running them over a patched tree is a no-op and over an unpatched (but present) one repairs it.
 # Make zlib's .so version-less so its SONAME matches the shipped file.
 $zlibSrc = Join-Path $Third "zlib-1.3.1"
 Write-Host "patching $zlibSrc"

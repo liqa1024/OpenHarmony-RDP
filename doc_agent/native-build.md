@@ -83,6 +83,9 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   `patch-moonlight.ps1`、`patch-zlib.ps1`、`patch-opus.ps1`）。FreeRDP 的补丁成体系地拆在 `patch-steps/`；
   moonlight、zlib 与 opus 各只有一个入口脚本（见 [`rdp-native.md`](rdp-native.md) §3、
   [`moonlight-native.md`](moonlight-native.md) §2.3）。
+  **FreeRDP 那一步只对本次解出来的树跑**（它的步骤会改写先前步骤插入的内容，在已打补丁的树上没有锚点可用，
+  见 §3）；其余三个脚本每块都有 marker，重跑是 no-op，所以每次都跑、也顺手修一棵"在但没打补丁"的树。
+  所以 `fetch-sources.ps1` 可以反复跑：全都已存在时就只报 skip 并以 0 退出。
 - ⚠ **hvigor 不会清理不再产出的原生库**：`entry/libs/<abi>/` 里删掉一个 `.so` 后，
   `entry/build/<product>/intermediates/{cmake,libs,stripped_native_libs}/` 里的旧副本仍在，并会被打进
   HAP（症状：包体不变、里面多一个不该存在的库）。改动**产出集合**（新增/移除/改名某个依赖）之后，
@@ -120,11 +123,13 @@ native/scripts/build-native.ps1    # 编全部原生依赖 + 同步到模块（�
   会打印当前步骤名，便于定位。
 - 匹配按 **LF 归一化**进行、写入时恢复文件原有风格（tarball 是 LF，Windows checkout 是 CRLF），
   所以补丁不依赖检出风格。
-  ⇒ **"`fetch-sources.ps1 -Force` 重拉 + 跑一遍补丁、确认每步都只报 already applied、且没有异常"本身就是自检**：
-  拆分或改动丢了内容会在那里炸出来（`Patch-Block`/`Patch-Regex` 找不到锚点会直接 throw）。
+  ⇒ **自检就是 `-Force` 重拉时那一次打补丁**：干净树 + 全部步骤必须能把工作树还原出来，任何一步找不到锚点
+  会当场 throw（`Patch-Block`/`Patch-Regex`），拆分或改动丢了内容就在那里炸出来。
   - ⚠ **"已打补丁的树"上重跑整表并不总是可行**：后来的步骤会替换掉先前步骤的锚点/标记（例如 22b 重写了
-    21 插入的 chunk 回调），那一步再跑就会 `pattern not found`。要自检就重拉源码；只是**给已打过补丁的树
-    补一个新步骤**时用 `patch-freerdp.ps1 -Only <NN>` 只跑那一步。
+    21 插入的 chunk 回调），那一步再跑就会 `pattern not found`。所以 **FreeRDP 这一步由 `fetch-sources.ps1`
+    只在本次解出的树上跑**（见 §2）；要重打就 `-Force` 重拉源码。只是**给已打过补丁的树
+    补一个新步骤**时用 `patch-freerdp.ps1 -Only <NN>` 只跑那一步；一棵"在但没打补丁"的 FreeRDP 树同理只能
+    靠 `-Force` 重来，而 moonlight / zlib / opus 各自的入口脚本随时重跑即可（幂等）。
 - 步骤要拷贝的数据文件（音频后端源码、cmake 助手）在 `native/patches/`，入口脚本以 `$PatchData` / `$Patches`
   传给步骤。
 - 只改应用层（`entry/src/main/cpp/{binding,core}/*`、`.ets`）**不需要**重编 FreeRDP。
