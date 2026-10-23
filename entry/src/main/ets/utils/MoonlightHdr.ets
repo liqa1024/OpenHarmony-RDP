@@ -2,7 +2,8 @@ import { display } from '@kit.ArkUI';
 import { ML_HDR_MIN_NITS, ML_HDR_NITS_MAX, ML_HDR_NITS_MIN,
   MoonlightProfile } from '../moonlight/MoonlightModels';
 
-// 本机面板的 HDR 峰值亮度（nits），0 表示检测不到。
+// 本机面板的 HDR 峰值亮度（nits），0 表示检测不到。给出的是**吸附到标准档之后**的值，也就是真正会上报
+// 的那个数（连接时是多次采样取中位再吸附，这里是单次读数吸附，见 snapPeakToTier）。
 //
 // 平台只给得出 `sdrNits`（当前 SDR 白点绝对亮度）与 `maxHeadroom`（相对它的最大余量倍率，不是亮度读数），
 // 相乘才是面板最大亮度（小窗口激活峰值）。它是**当前**屏幕亮度下的值（随亮度条走），所以设置页订阅
@@ -24,7 +25,7 @@ function peakFromBrightness(info: display.BrightnessInfo): number {
   if (!Number.isFinite(peak) || peak < ML_HDR_NITS_MIN || peak > ML_HDR_NITS_MAX) {
     return 0;
   }
-  return Math.round(peak);
+  return snapPeakToTier(Math.round(peak));
 }
 
 // 跟随默认屏幕的亮度变化（检测值随亮度条走，设置界面显示的数值要跟着刷新）；
@@ -94,9 +95,8 @@ const HDR_MIN_RELIABLE_SDR_NITS = 50;
 const HDR_MIN_RELIABLE_PEAK_NITS = 100;
 // 样本间 sdrNits 的最大波动比：超过说明自动亮度正在调整，这一轮不报。
 const HDR_MAX_SDR_VARIANCE = 1.5;
-// 峰值吸附标准档，避免逐会话微变触发主机重建虚拟显示器。
+// 峰值吸附的标准档（见 snapPeakToTier）。
 const HDR_PEAK_TIERS: number[] = [400, 600, 800, 1000, 1200, 1600, 2000, 2600, 4000];
-// 吸附后跳变超过这个比例就保留原值（避免低峰值被拉高太多）。
 const HDR_TIER_TOLERANCE = 0.3;
 // 全屏可持续亮度取峰值的这个比例：moonlight-vplus（安卓版，口径标准）在面板不报 EDID 的
 // `desiredMaxAverageLuminance` 时就是这么取的（`max(黑位, peak × 0.2)`），我们没有那个读数，只有这一条路。
@@ -154,6 +154,13 @@ function snapToTier(value: number, tiers: number[]): number {
   return best;
 }
 
+// 吸附到标准档；偏离超过 `HDR_TIER_TOLERANCE` 就保留原值（低峰值不该被拉高太多）。上报与设置页显示共用
+// 这一条，否则页面显示的是原始读数、上报的是档位值，两边对不上。
+function snapPeakToTier(value: number): number {
+  const snapped: number = snapToTier(value, HDR_PEAK_TIERS);
+  return Math.abs(snapped - value) <= value * HDR_TIER_TOLERANCE ? snapped : value;
+}
+
 // 聚合采样并校验可靠性；不可靠返回 undefined，调用方按"不上报"处理（见 resolveHdrLuminance）。
 export function aggregateBrightnessSamples(samples: BrightnessSample[]): HdrPanelLuminance | undefined {
   const valid: BrightnessSample[] = samples.filter((sample: BrightnessSample): boolean =>
@@ -178,11 +185,9 @@ export function aggregateBrightnessSamples(samples: BrightnessSample[]): HdrPane
 
   const clampedPeak: number = Math.round(Math.min(Math.max(peak, HDR_MIN_RELIABLE_PEAK_NITS),
     ML_HDR_NITS_MAX));
-  const snappedPeak: number = snapToTier(clampedPeak, HDR_PEAK_TIERS);
   const measured: HdrPanelLuminance = new HdrPanelLuminance();
   measured.sdrNits = Math.round(sdrNits);
-  measured.peak = Math.abs(snappedPeak - clampedPeak) <= clampedPeak * HDR_TIER_TOLERANCE
-    ? snappedPeak : clampedPeak;
+  measured.peak = snapPeakToTier(clampedPeak);
   return measured;
 }
 

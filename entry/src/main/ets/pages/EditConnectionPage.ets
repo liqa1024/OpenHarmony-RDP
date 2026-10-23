@@ -339,18 +339,18 @@ struct EditConnectionPage {
     return Math.round(clampHdrFullFrameNits(nits, peak));
   }
 
+  // 显示的检测值已经是吸附后的档位值（见 utils/MoonlightHdr.ets），也就是连接时会真正上报的那个数。
   private mlHdrPeakHint(): string {
-    if (this.detectedHdrPeak > 0) {
-      return `自动：本机屏幕约 ${this.detectedHdrPeak} nit`;
-    }
-    return '自动：本机检测不到，将使用主机默认值';
+    return this.detectedHdrPeak > 0
+      ? `自动：${this.detectedHdrPeak} nit`
+      : '自动：检测不到，用主机默认值';
   }
 
   private mlHdrFullFrameHint(): string {
     const peak: number = this.mlHdrPeakAuto ? this.detectedHdrPeak : this.effectiveMlHdrPeak();
     return peak > 0
-      ? `自动：峰值的 20%（约 ${autoHdrFullFrameNits(peak)} nit）`
-      : '自动：取峰值的 20%';
+      ? `自动：${autoHdrFullFrameNits(peak)} nit`
+      : '自动：检测不到峰值，用主机默认值';
   }
 
   // 切换「自动 / 手动」只翻转标志：手动输入框一直保留已存的值（空/越界由 effective* 收口）。
@@ -1087,20 +1087,26 @@ struct EditConnectionPage {
       .focusOnTouch(true)
   }
 
+  // 自动 / 手动那两对共用这一个 Builder，所以状态在它**内部**读（`selected` 也不能当参数传进来：@Builder
+  // 按值传参不随状态刷新，见 doc_agent/arkts-conventions.md §2）。
+  private mlHdrAutoSelected(limit: number): boolean {
+    return limit === ML_HDR_LIMIT_PEAK ? this.mlHdrPeakAuto : this.mlHdrFullFrameAuto;
+  }
+
   @Builder
-  mlHdrModeChip(label: string, auto: boolean, leftMargin: number, selected: boolean, limit: number) {
+  mlHdrModeChip(label: string, auto: boolean, leftMargin: number, limit: number) {
     Text(label)
       .fontSize(12)
       .fontWeight(FontWeight.Medium)
-      .fontColor(selected === auto
+      .fontColor(this.mlHdrAutoSelected(limit) === auto
         ? $r('app.color.brand_text') : $r('app.color.text_secondary'))
       .height(32)
       .textAlign(TextAlign.Center)
-      .backgroundColor(selected === auto
+      .backgroundColor(this.mlHdrAutoSelected(limit) === auto
         ? $r('app.color.brand_tint') : $r('app.color.control_bg'))
       .border({
         width: 1,
-        color: selected === auto
+        color: this.mlHdrAutoSelected(limit) === auto
           ? $r('app.color.brand_tint_strong') : $r('app.color.control_border')
       })
       .borderRadius(8)
@@ -1265,8 +1271,15 @@ struct EditConnectionPage {
     .alignItems(HorizontalAlign.Start)
   }
 
+  // "是否已自定义"在 Builder 内部读：它由运行期状态决定，按值传进来不会随开关刷新（见
+  // doc_agent/arkts-conventions.md §2）。参数只区分是哪个协议的高级段，调用处是字面量。
+  private advancedCustomized(moonlight: boolean): boolean {
+    return moonlight ? !this.useGlobalStream
+                     : (!this.useGlobalDisplay || !this.useGlobalAdvanced || !this.useGlobalSr);
+  }
+
   @Builder
-  advancedHeader(customized: boolean) {
+  advancedHeader(moonlight: boolean) {
     Row() {
       Column() {
         Text('高级设置')
@@ -1281,7 +1294,7 @@ struct EditConnectionPage {
       .layoutWeight(1)
 
       Row() {
-        if (customized) {
+        if (this.advancedCustomized(moonlight)) {
           Text('已自定义')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
@@ -1346,7 +1359,7 @@ struct EditConnectionPage {
         .color($r('app.color.divider'))
         .margin({ top: 20, bottom: 8 })
 
-      this.advancedHeader(!this.useGlobalStream)
+      this.advancedHeader(true)
 
       if (this.advancedExpanded) {
         Column() {
@@ -1567,8 +1580,8 @@ struct EditConnectionPage {
                 .layoutWeight(1)
 
                 Row() {
-                  this.mlHdrModeChip('自动', true, 0, this.mlHdrPeakAuto, ML_HDR_LIMIT_PEAK)
-                  this.mlHdrModeChip('手动', false, 8, this.mlHdrPeakAuto, ML_HDR_LIMIT_PEAK)
+                  this.mlHdrModeChip('自动', true, 0, ML_HDR_LIMIT_PEAK)
+                  this.mlHdrModeChip('手动', false, 8, ML_HDR_LIMIT_PEAK)
                 }
               }
               .width('100%').margin({ top: 12 })
@@ -1596,15 +1609,15 @@ struct EditConnectionPage {
               Row() {
                 Column() {
                   Text('HDR 全屏平均亮度').fontSize(14)
-                  Text('面板可持续的全屏亮度（ABL 面板低于峰值）；自动取峰值的 20%')
+                  Text('面板可持续的全屏亮度（ABL 面板低于峰值）')
                     .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
                 }
                 .alignItems(HorizontalAlign.Start)
                 .layoutWeight(1)
 
                 Row() {
-                  this.mlHdrModeChip('自动', true, 0, this.mlHdrFullFrameAuto, ML_HDR_LIMIT_FULL_FRAME)
-                  this.mlHdrModeChip('手动', false, 8, this.mlHdrFullFrameAuto, ML_HDR_LIMIT_FULL_FRAME)
+                  this.mlHdrModeChip('自动', true, 0, ML_HDR_LIMIT_FULL_FRAME)
+                  this.mlHdrModeChip('手动', false, 8, ML_HDR_LIMIT_FULL_FRAME)
                 }
               }
               .width('100%').margin({ top: 12 })
@@ -1906,8 +1919,7 @@ struct EditConnectionPage {
               .color($r('app.color.divider'))
               .margin({ top: 20, bottom: 8 })
 
-            this.advancedHeader(!this.useGlobalDisplay || !this.useGlobalAdvanced
-              || !this.useGlobalSr)
+            this.advancedHeader(false)
 
             if (this.advancedExpanded) {
               Column() {
