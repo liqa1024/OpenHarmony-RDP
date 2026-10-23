@@ -54,6 +54,8 @@ export class MoonlightLaunchOptions {
   gamepadMask: number = 0;
   // Ask the host for HDR: drives the /launch hdrMode parameter and the 10-bit codec choice.
   hdr: boolean = false;
+  // HDR base transfer when hdr is true: ML_HDR_MODE_PQ (HDR10) or ML_HDR_MODE_HLG.
+  hdrMode: number = ML_HDR_MODE_PQ;
   // HDR 亮度上报（仅 hdr 为真时随 /launch 发出，三个一组缺一不可）。peak 为 0 表示不上报，
   // 主机用自己的默认值。
   hdrPeakNits: number = 0;
@@ -90,7 +92,7 @@ export const ML_BITRATE_DEFAULT_KBPS: number = 20000;
 
 // HDR 亮度上报：/launch 的 maxBrightness / minBrightness / maxAverageBrightness（基地版扩展）。主机把它们
 // 写进虚拟显示器的 HDR 亮度范围，Windows 据此把 SDR 桌面映射进 HDR——不上报就用主机的 1000 nit 默认值，
-// SDR 内容会偏亮。平台只给得出峰值（见 utils/MoonlightHdr.ets），另两个只能由用户给或跟随峰值。
+// SDR 内容会偏亮。平台只给得出峰值，另两个的口径与取法见 utils/MoonlightHdr.ets。
 export const ML_HDR_NITS_MIN: number = 1;
 export const ML_HDR_NITS_MAX: number = 10000;
 // 黑位：平台测不到面板黑位，固定用主机自己的默认值（极小，等于不设黑位下限）。
@@ -106,10 +108,15 @@ export const ML_COLORSPACE_REC601: number = 0;
 export const ML_COLORSPACE_REC709: number = 1;
 export const ML_COLORSPACE_REC2020_HDR: number = 2;
 
-// True for the colour protocol that carries HDR (10-bit codec + HDR10 requested).
+// True for the colour protocol that carries HDR (10-bit codec + HDR requested).
 export function mlColorSpaceIsHdr(space: number): boolean {
   return space === ML_COLORSPACE_REC2020_HDR;
 }
+
+// HDR base transfer when the colour protocol is Rec2020 (the /launch hdrMode value): 1 = HDR10 (PQ),
+// 2 = HLG (ARIB STD-B67). Mirrors HDR_MODE_* / the stream's dynamicRangeMode on the wire.
+export const ML_HDR_MODE_PQ: number = 1;
+export const ML_HDR_MODE_HLG: number = 2;
 
 // Moonlight 缩放模式：写基地版虚拟显示器的 Windows 显示缩放（AUTO 按分辨率换算 / MANUAL 用固定档 / NONE 不动）。
 export const ML_SCALE_AUTO: number = 0;
@@ -128,6 +135,8 @@ export class MoonlightProfile {
   bitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   codec: number = ML_CODEC_AUTO;
   colorSpace: number = ML_COLORSPACE_REC709;
+  // HDR base transfer used when colorSpace is Rec2020 (see ML_HDR_MODE_*).
+  hdrMode: number = ML_HDR_MODE_PQ;
   scaleMode: number = ML_SCALE_AUTO;
   scalePercent: number = 100;
   // HDR 亮度上报（HDR 会话才有意义）。峰值自动 = 读本机屏幕；手动 = hdrPeakNits。
@@ -162,6 +171,7 @@ export class MoonlightStreamConfig implements MoonlightSessionConfig {
   clientRefreshRateX100: number = 0;
   colorSpace: number = 0;
   colorRange: number = 0;
+  hdrMode: number = 0;
   encryptionFlags: number = 0;
   remoteInputAesKeyHex: string = '';
   remoteInputAesIvHex: string = '';

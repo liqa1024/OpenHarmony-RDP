@@ -806,6 +806,9 @@ bool VkVideoImport::CreateImported(const void* nativeBuffer, const VideoFrameGeo
   const bool frameHdr = FrameIsHdr(geometry.transfer, declaredKnown, declared, expectedColorSpaceSet_,
                                    expectedColorSpace_);
   out->degrade = frameHdr && pictureFormat_ == kPictureFormat;
+  // Which transfer to fold when degrading (HLG vs PQ); a no-op unless degrade is set.
+  out->hlg = out->degrade && FrameIsHlg(geometry.transfer, declaredKnown, declared,
+                                        expectedColorSpaceSet_, expectedColorSpace_);
   // The buffer's own declaration is what gets rendered (the platform reads the same field); a buffer
   // stating nothing takes the negotiated expectation, and with none either the SDR stream contract
   // (Rec.709 limited) remains the fallback.
@@ -1017,7 +1020,8 @@ void VkVideoImport::WriteFrameParams(const VideoFrameGeometry& geometry, const I
   values[20] = static_cast<float>((1 << frame.bitDepth) - 1);
   values[21] = frame.degrade ? 1.0f : 0.0f;
   values[22] = frame.sampleDivisor;
-  values[23] = 0.0f;
+  // w flags the HLG fold for the degrade path (see hlgToSdr in video_convert.frag).
+  values[23] = (frame.degrade && frame.hlg) ? 1.0f : 0.0f;
   if (!paramsCoherent_[slot]) {
     VkApi& api = context_.api();
     const VkDevice device = context_.device();

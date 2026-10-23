@@ -78,18 +78,29 @@ class FramePresenter {
     (void)outputHeight;
   }
 
-  // HDR: the host confirmed it switched its output to HDR, so the frames handed to PresentVideo are
-  // Rec.2020 PQ. Remembered until the swapchain and the output stage are (re)built, exactly like
-  // SetSuperResolution - the answer usually arrives after this presenter exists. Off means the
-  // stream is SDR (Rec.709), which is also what a host that never reports HDR sends.
-  virtual void SetStreamHdr(bool enabled) { (void)enabled; }
+  // HDR: the HDR base transfer the host confirmed it switched its output to, so the frames handed to
+  // PresentVideo are that encoding: 0 = SDR (Rec.709), 1 = HDR10 (Rec.2020 PQ), 2 = HLG (Rec.2020
+  // ARIB STD-B67). Remembered until the swapchain and the output stage are (re)built, exactly like
+  // SetSuperResolution - the answer usually arrives after this presenter exists. A host that never
+  // reports HDR sends an SDR stream whatever was requested.
+  virtual void SetStreamHdr(int base) { (void)base; }
   // What the HDR picture is, told to the window the swapchain presents into (colour space, gamut,
   // metadata type and this metadata). The host answers this while the session runs, right before the
   // HDR state, so it is remembered until the window declaration is (re)written.
   virtual void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) { (void)metadata; }
-  // Whether the HDR output stage is actually running (the HDR10 swapchain was built). The toolbar
+  // The per-frame HDR Vivid metadata the host carries inside a standard HEVC stream (a registered
+  // T.35 SEI), handed to the window with the HDR declaration so the compositor can tone-map it.
+  // `payload` is the de-escaped registered payload, nullptr / 0 clears it (see hmrdp_hdr_dynamic.h).
+  virtual void SetStreamDynamicHdr(const uint8_t* payload, int size) {
+    (void)payload;
+    (void)size;
+  }
+  // Whether the HDR output stage is actually running (the HDR swapchain was built). The toolbar
   // reports this rather than the request, so a fallback to SDR is never claimed as HDR.
   virtual bool hdrActive() const { return false; }
+  // Whether the stream really carries HDR Vivid, so the toolbar names the dynamic layer rather than
+  // only the base transfer. Never true while the output stage is not running HDR.
+  virtual bool vividHdrActive() const { return false; }
 
   // Microseconds of the presents since the last call spent blocked on the display (vkAcquireNextImageKHR /
   // eglSwapBuffers); reported as the `presentWait` sub-item, not client work.

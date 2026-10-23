@@ -1,5 +1,8 @@
 # Applies the HmRdp patches to moonlight-common-c: strip -Werror; add the
-# foundation-sunshine local cursor mode (0x5509) and native precision touchpad (0x55000009/0x5500000A).
+# foundation-sunshine local cursor mode (0x5509), native precision touchpad (0x55000009/0x5500000A),
+# clipboard sync (0x5508), the HDR base-transfer field, and SEI preservation (the depacketizer
+# strips SEI NALs by default, which would drop the host's HDR10+ / HDR Vivid T.35 metadata before
+# the decoder bridge can read it).
 param(
 	[string]$Source = ""
 )
@@ -674,6 +677,151 @@ else {
 
 	[System.IO.File]::WriteAllText($ControlStream, $cRaw)
 	Write-Host "moonlight: added clipboard message handling to ControlStream.c"
+}
+
+# HDR: the client's base transfer (hdrMode), which drives the ANNOUNCE dynamicRangeMode. The
+# foundation-sunshine dynamic-HDR negotiation (dynamicHdrCaps / dynamicHdrPreference /
+# dolbyVisionDirectSurface and the X-SS-Dynamic-HDR answer) is deliberately not carried: it exists
+# to pick one dynamic format for PyroWave, and this client has no PyroWave path - its HDR10+ /
+# HDR Vivid arrives in-band as a registered T.35 either way.
+$Limelight = Join-Path $MlSrc "Limelight.h"
+$SdpGenerator = Join-Path $MlSrc "SdpGenerator.c"
+if (-not (Test-Path -LiteralPath $SdpGenerator)) {
+	throw "moonlight-common-c src missing SdpGenerator.c under $MlSrc"
+}
+
+$hRaw = [System.IO.File]::ReadAllText($Limelight)
+if ($hRaw.Contains("HMRDP_HDR")) {
+	Write-Host "moonlight: Limelight.h HDR patch already applied (skipped)"
+}
+else {
+	$heol = if ($hRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$anchorRange = @(
+		"    // If specified, sets the encoder color range to the provided COLOR_RANGE_*",
+		"    // option (listed above). If not set, the encoder will default to Limited.",
+		"    int colorRange;"
+	) -join $heol
+	if (-not $hRaw.Contains($anchorRange)) { throw "moonlight: STREAM_CONFIGURATION colorRange anchor missing" }
+	$hdrFields = @(
+		$anchorRange,
+		"",
+		"    // HMRDP_HDR: the HDR base transfer the client asks for (foundation-sunshine).",
+		"    // 0 = SDR, 1 = HDR10 (PQ, SMPTE ST 2084), 2 = HLG (ARIB STD-B67). A 10-bit",
+		"    // format with hdrMode 0 keeps the upstream ""10-bit implies PQ"" behaviour.",
+		"    int hdrMode;"
+	) -join $heol
+	$hRaw = $hRaw.Replace($anchorRange, $hdrFields)
+
+	[System.IO.File]::WriteAllText($Limelight, $hRaw)
+	Write-Host "moonlight: added the HDR base-transfer field to Limelight.h"
+}
+
+$sRaw = [System.IO.File]::ReadAllText($SdpGenerator)
+if ($sRaw.Contains("HMRDP_HDR")) {
+	Write-Host "moonlight: SdpGenerator.c HDR patch already applied (skipped)"
+}
+else {
+	$seol = if ($sRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$oldRange = @(
+		"        if (AppVersionQuad[0] >= 7) {",
+		"            // Enable HDR if requested",
+		"            if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_10BIT) {",
+		"                err |= addAttributeString(&optionHead, ""x-nv-video[0].dynamicRangeMode"", ""1"");",
+		"            }",
+		"            else {",
+		"                err |= addAttributeString(&optionHead, ""x-nv-video[0].dynamicRangeMode"", ""0"");",
+		"            }"
+	) -join $seol
+	if (-not $sRaw.Contains($oldRange)) { throw "moonlight: dynamicRangeMode anchor missing" }
+	$newRange = @(
+		"        if (AppVersionQuad[0] >= 7) {",
+		"            // HMRDP_HDR: the client's base transfer (0 SDR / 1 HDR10 PQ / 2 HLG) drives",
+		"            // dynamicRangeMode; a 10-bit format with no explicit mode keeps the upstream",
+		"            // ""10-bit implies PQ"" behaviour.",
+		"            int hdrMode = StreamConfig.hdrMode; // HMRDP_HDR",
+		"            if (hdrMode == 0 && (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_10BIT)) {",
+		"                hdrMode = 1;",
+		"            }",
+		"            snprintf(payloadStr, sizeof(payloadStr), ""%d"", hdrMode);",
+		"            err |= addAttributeString(&optionHead, ""x-nv-video[0].dynamicRangeMode"", payloadStr);"
+	) -join $seol
+	$sRaw = $sRaw.Replace($oldRange, $newRange)
+
+	[System.IO.File]::WriteAllText($SdpGenerator, $sRaw)
+	Write-Host "moonlight: added the hdrMode attribute to SdpGenerator.c"
+}
+
+# SEI preservation: the depacketizer strips prepended SEI NAL units, which would drop the host's
+# HDR10+ / HDR Vivid T.35 dynamic metadata before the decoder bridge can read it. Gate the strip
+# behind a renderer capability bit (the upstream CAPABILITY_PRESERVE_HEVC_SEI).
+$VideoDepacketizer = Join-Path $MlSrc "VideoDepacketizer.c"
+if (-not (Test-Path -LiteralPath $VideoDepacketizer)) {
+	throw "moonlight-common-c src missing VideoDepacketizer.c under $MlSrc"
+}
+
+$hRaw = [System.IO.File]::ReadAllText($Limelight)
+if ($hRaw.Contains("HMRDP_SEI")) {
+	Write-Host "moonlight: Limelight.h SEI patch already applied (skipped)"
+}
+else {
+	$heol = if ($hRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+	$anchorSei = "#define CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1 0x40"
+	if (-not $hRaw.Contains($anchorSei)) { throw "moonlight: CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1 anchor missing" }
+	$seiCap = @(
+		$anchorSei,
+		"",
+		"// HMRDP_SEI: if set in the video renderer capabilities field, the depacketizer keeps SEI NAL",
+		"// units instead of stripping them, so the renderer can read in-band metadata (the host's",
+		"// HDR10+ / HDR Vivid T.35 dynamic HDR).",
+		"#define CAPABILITY_PRESERVE_HEVC_SEI 0x80"
+	) -join $heol
+	$hRaw = $hRaw.Replace($anchorSei, $seiCap)
+	[System.IO.File]::WriteAllText($Limelight, $hRaw)
+	Write-Host "moonlight: added CAPABILITY_PRESERVE_HEVC_SEI to Limelight.h"
+}
+
+$dRaw = [System.IO.File]::ReadAllText($VideoDepacketizer)
+if ($dRaw.Contains("HMRDP_SEI")) {
+	Write-Host "moonlight: VideoDepacketizer.c SEI patch already applied (skipped)"
+}
+else {
+	$deol = if ($dRaw.Contains("`r`n")) { "`r`n" } else { "`n" }
+
+	$oldSlow = @(
+		"        while (isAccessUnitDelimiter(currentPos) || isSeiNal(currentPos)) {",
+		"            skipToNextNal(currentPos);",
+		"        }"
+	) -join $deol
+	if (-not $dRaw.Contains($oldSlow)) { throw "moonlight: slow-path SEI skip anchor missing" }
+	$newSlow = @(
+		"        // HMRDP_SEI: the AUD is always stripped; SEI is kept when the renderer consumes it.",
+		"        while (isAccessUnitDelimiter(currentPos) ||",
+		"               (isSeiNal(currentPos) && (VideoCallbacks.capabilities & CAPABILITY_PRESERVE_HEVC_SEI) == 0)) {",
+		"            skipToNextNal(currentPos);",
+		"        }"
+	) -join $deol
+	$dRaw = $dRaw.Replace($oldSlow, $newSlow)
+
+	$oldFast = @(
+		"            while (isSeiNal(&currentPos)) {",
+		"                skipToNextNal(&currentPos);",
+		"            }"
+	) -join $deol
+	if (-not $dRaw.Contains($oldFast)) { throw "moonlight: fast-path SEI skip anchor missing" }
+	$newFast = @(
+		"            // HMRDP_SEI: kept when the renderer consumes in-band metadata.",
+		"            if ((VideoCallbacks.capabilities & CAPABILITY_PRESERVE_HEVC_SEI) == 0) {",
+		"                while (isSeiNal(&currentPos)) {",
+		"                    skipToNextNal(&currentPos);",
+		"                }",
+		"            }"
+	) -join $deol
+	$dRaw = $dRaw.Replace($oldFast, $newFast)
+
+	[System.IO.File]::WriteAllText($VideoDepacketizer, $dRaw)
+	Write-Host "moonlight: gated the SEI strip in VideoDepacketizer.c"
 }
 
 Write-Host "=== moonlight-common-c patches applied ==="

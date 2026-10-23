@@ -71,6 +71,10 @@ ColorDescription SdrBt709Limited();
 // The 10-bit Rec.2020 PQ stream an HDR session requests and the HDR10 surface carries.
 ColorDescription Hdr10Bt2020PqLimited();
 
+// The 10-bit Rec.2020 HLG stream an HLG session requests (same gamut and range as HDR10, ARIB
+// STD-B67 transfer instead of PQ).
+ColorDescription HlgBt2020Limited();
+
 // Converts an OH_NativeBuffer_ColorSpace into the canonical type. False for a value this pipeline
 // does not model (OH_COLORSPACE_NONE and anything unmapped), so the caller can state "the buffer
 // declares a space we cannot honour" instead of silently assuming a matrix.
@@ -93,6 +97,12 @@ bool SameMatrixAndRange(const ColorDescription& a, const ColorDescription& b);
 // was not reported), then the buffer's declared colour space, then the negotiated expectation. The
 // bitstream description states what the samples actually are, so it wins whenever it is present.
 bool FrameIsHdr(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
+                bool expectedKnown, const ColorDescription& expected);
+
+// Which transfer an HDR frame actually carries, from the same sources and in the same order as
+// FrameIsHdr. Only meaningful once the frame is known to be HDR; it selects the PQ or HLG fold when
+// the output stage has to show an HDR frame as SDR.
+bool FrameIsHlg(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
                 bool expectedKnown, const ColorDescription& expected);
 
 // A stable, log-friendly rendering, e.g. "bt709 limited gamma22 8-bit".

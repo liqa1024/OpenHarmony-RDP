@@ -12,7 +12,8 @@ import {
   ML_BITRATE_DEFAULT_KBPS, ML_BITRATE_MAX_KBPS,
   ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264, ML_CODEC_HEVC,
   ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_COLORSPACE_REC2020_HDR, mlColorSpaceIsHdr,
-  ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_HDR_NITS_MAX, ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_DEFAULT_PORT, ML_FPS_PRESETS, ML_HDR_MODE_HLG, ML_HDR_MODE_PQ, ML_HDR_NITS_MAX,
+  ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
   ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL, MoonlightProfile
 } from '../moonlight/MoonlightModels';
 import { ConnectionStore } from '../services/ConnectionStore';
@@ -93,6 +94,7 @@ struct EditConnectionPage {
   @State mlBitrateAuto: boolean = true;
   @State mlBitrateText: string = kbpsToMbps(ML_BITRATE_DEFAULT_KBPS).toString();
   @State mlColorSpace: number = ML_COLORSPACE_REC709;
+  @State mlHdrMode: number = ML_HDR_MODE_PQ;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlHdrPeakAuto: boolean = true;
   @State mlHdrPeakText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
@@ -176,6 +178,7 @@ struct EditConnectionPage {
     this.mlBitrateAuto = mlDefaults.mlBitrateAuto;
     this.mlBitrateText = kbpsToMbps(mlDefaults.mlBitrateKbps).toString();
     this.mlColorSpace = mlDefaults.mlColorSpace;
+    this.mlHdrMode = mlDefaults.mlHdrMode;
     this.mlCodec = mlDefaults.mlCodec;
     this.mlHdrPeakAuto = mlDefaults.mlHdrPeakAuto;
     this.mlHdrPeakText = mlDefaults.mlHdrPeakNits.toString();
@@ -243,6 +246,7 @@ struct EditConnectionPage {
         this.mlBitrateAuto = conn.mlBitrateAuto;
         this.mlBitrateText = kbpsToMbps(conn.mlBitrateKbps).toString();
         this.mlColorSpace = conn.mlColorSpace;
+        this.mlHdrMode = conn.mlHdrMode;
         this.mlCodec = conn.mlCodec;
         this.mlHdrPeakAuto = conn.mlHdrPeakAuto;
         this.mlHdrPeakText = conn.mlHdrPeakNits.toString();
@@ -602,6 +606,7 @@ struct EditConnectionPage {
     conn.mlBitrateAuto = this.mlBitrateAuto;
     conn.mlBitrateKbps = this.effectiveBitrate();
     conn.mlColorSpace = this.mlColorSpace;
+    conn.mlHdrMode = this.mlHdrMode;
     conn.mlCodec = this.mlCodec;
     conn.mlHdrPeakAuto = this.mlHdrPeakAuto;
     conn.mlHdrPeakNits = this.effectiveMlHdrPeak();
@@ -1038,6 +1043,18 @@ struct EditConnectionPage {
       chipEnabled: enabled,
       onTap: () => {
         this.mlColorSpace = space;
+      }
+    })
+  }
+
+  @Builder
+  mlHdrBaseChip(mode: number, label: string) {
+    ChoiceChip({
+      label: label,
+      selected: this.mlHdrMode === mode,
+      chipEnabled: true,
+      onTap: () => {
+        this.mlHdrMode = mode;
       }
     })
   }
@@ -1531,6 +1548,15 @@ struct EditConnectionPage {
 
             // HDR 专属项：只有色彩协议选了 Rec2020（HDR）才出现。
             if (mlColorSpaceIsHdr(this.mlColorSpace)) {
+              Text('HDR 传输').fontSize(14).margin({ top: 8 })
+              Text('HDR10 (PQ) 或 HLG；HLG 面向 HLG/HDR Vivid 素材，需主机支持')
+                .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+              Flex({ wrap: FlexWrap.Wrap }) {
+                this.mlHdrBaseChip(ML_HDR_MODE_PQ, 'HDR10 (PQ)')
+                this.mlHdrBaseChip(ML_HDR_MODE_HLG, 'HLG')
+              }
+              .width('100%').margin({ top: 8 })
+
               Row() {
                 Column() {
                   Text('HDR 峰值亮度').fontSize(14)

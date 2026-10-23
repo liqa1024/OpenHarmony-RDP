@@ -370,6 +370,9 @@ export class MoonlightConnector {
     // Controllers attached right now decide the mask the host creates up front.
     options.gamepadMask = await GamepadDevices.attachedMask();
     options.hdr = hdrRequested;
+    // HDR base transfer (PQ/HLG) for the /launch hdrMode value; the same value is handed to the
+    // native session so the decoder and the output stage follow it.
+    options.hdrMode = stream.hdrMode;
     // HDR 亮度上报: the host programs this into the virtual display's EDID and Windows maps SDR
     // content against it, so reporting nothing leaves the host's 1000-nit default and an over-bright
     // SDR desktop. Both `自动` values are measured here (peak = sdrNits × max余量, 全屏平均 =
@@ -439,6 +442,7 @@ export class MoonlightConnector {
       && Math.abs(panelMaxHz - fps.fps) / fps.fps <= 0.02
       ? Math.round(panelMaxHz * 100) : 0;
     config.colorSpace = stream.colorSpace;
+    config.hdrMode = hdrRequested ? stream.hdrMode : 0;
     config.colorRange = ML_COLOR_RANGE_LIMITED;
     config.encryptionFlags = 0;
     config.remoteInputAesKeyHex = rikeyHex;

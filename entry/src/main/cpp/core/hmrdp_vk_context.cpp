@@ -248,6 +248,8 @@ VulkanCapabilities ProbeVulkan() {
   caps.extExternalMemory = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
   caps.extExternalMemoryFd = HasExtension(devExts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
   caps.extOhosExternalMemory = HasExtension(devExts, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
+  caps.extHdrMetadata = HasExtension(devExts, VK_EXT_HDR_METADATA_EXTENSION_NAME);
+  caps.extHdrVivid = HasExtension(devExts, VK_HUAWEI_HDR_VIVID_EXTENSION_NAME);
 
   // The importer addresses the buffer as an R8 linear image; verify the device accepts that shape
   // before advertising the video path (the external-memory import itself still has its own checks).
@@ -392,6 +394,9 @@ bool VkApi::LoadDevice(VkDevice device, VkInstance instance) {
   GetSwapchainImagesKHR = ResolveDevice<PFN_vkGetSwapchainImagesKHR>(gdpa, gipa, device, instance, "vkGetSwapchainImagesKHR");
   AcquireNextImageKHR = ResolveDevice<PFN_vkAcquireNextImageKHR>(gdpa, gipa, device, instance, "vkAcquireNextImageKHR");
   QueuePresentKHR = ResolveDevice<PFN_vkQueuePresentKHR>(gdpa, gipa, device, instance, "vkQueuePresentKHR");
+  // Part of VK_EXT_hdr_metadata; null when the device does not advertise it (the extension is not
+  // enabled here - the entry point only exists on devices that support it).
+  SetHdrMetadataEXT = ResolveDevice<PFN_vkSetHdrMetadataEXT>(gdpa, gipa, device, instance, "vkSetHdrMetadataEXT");
   CreateSemaphore = ResolveDevice<PFN_vkCreateSemaphore>(gdpa, gipa, device, instance, "vkCreateSemaphore");
   DestroySemaphore = ResolveDevice<PFN_vkDestroySemaphore>(gdpa, gipa, device, instance, "vkDestroySemaphore");
   CreateFence = ResolveDevice<PFN_vkCreateFence>(gdpa, gipa, device, instance, "vkCreateFence");
@@ -606,8 +611,10 @@ void FillPresenterVerdict(VulkanCapabilities* caps) {
   // window actually offers - can only be read with a surface in hand, and is observed when a swapchain
   // is created (see SurfaceHdrSupport). The setting itself is not gated on either half: what this
   // device cannot display is folded onto SDR by the output stage instead.
-  HMRDP_LOGI("vulkan verdict: hdr static: colorspaceExt=%{public}d hdr10Attachment=%{public}d",
-             caps->extSwapchainColorspace ? 1 : 0, caps->hdr10AttachmentOk ? 1 : 0);
+  HMRDP_LOGI("vulkan verdict: hdr static: colorspaceExt=%{public}d hdr10Attachment=%{public}d "
+             "extHdrMetadata=%{public}d extHdrVivid=%{public}d",
+             caps->extSwapchainColorspace ? 1 : 0, caps->hdr10AttachmentOk ? 1 : 0,
+             caps->extHdrMetadata ? 1 : 0, caps->extHdrVivid ? 1 : 0);
 }
 
 }  // namespace
@@ -642,6 +649,9 @@ SurfaceHdrSupport ObserveSurfaceHdrSupport(VkApi& api, VkPhysicalDevice device,
       if (anyFormat || format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
         support.hdr10FormatOk = true;
         support.hdr10ColorSpaceOk = true;
+      }
+      if (anyFormat || format.colorSpace == VK_COLOR_SPACE_HDR10_HLG_EXT) {
+        support.hlgColorSpaceOk = true;
       }
     }
   }
@@ -952,6 +962,20 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   if (HasExtension(extensions, VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME)) {
     enabledExtensions.push_back(VK_OHOS_EXTERNAL_MEMORY_EXTENSION_NAME);
   }
+  // HDR: the two channels a self-drawn swapchain declares its images with. VK_EXT_hdr_metadata is
+  // the static one (HDR10/HLG mastering metadata); VK_HUAWEI_hdr_vivid adds per-frame HDR Vivid
+  // dynamic metadata (chained through VkHdrMetadataEXT.pNext). Each is enabled only when advertised;
+  // the window-level metadata path stays as well, since neither is guaranteed to drive the panel.
+  if (HasExtension(extensions, VK_EXT_HDR_METADATA_EXTENSION_NAME)) {
+    enabledExtensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
+  }
+  const bool hasHdrVivid = HasExtension(extensions, VK_HUAWEI_HDR_VIVID_EXTENSION_NAME);
+  VkPhysicalDeviceHdrVividFeaturesHUAWEI hdrVividFeatures{};
+  hdrVividFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HDR_VIVID_FEATURES_HUAWEI;
+  hdrVividFeatures.hdrVivid = VK_TRUE;
+  if (hasHdrVivid) {
+    enabledExtensions.push_back(VK_HUAWEI_HDR_VIVID_EXTENSION_NAME);
+  }
 
   VkDeviceCreateInfo deviceInfo{};
   deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -959,9 +983,21 @@ bool VkDeviceContext::EnsureDevice(VkSurfaceKHR surface) {
   deviceInfo.pQueueCreateInfos = &queueInfo;
   deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
   deviceInfo.ppEnabledExtensionNames = enabledExtensions.data();
+  if (hasHdrVivid) {
+    deviceInfo.pNext = &hdrVividFeatures;
+  }
 
   VkDevice device = VK_NULL_HANDLE;
-  const VkResult result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);
+  VkResult result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);
+  if (result != VK_SUCCESS && hasHdrVivid) {
+    // The feature may be advertised by the extension but not supported by this device; retry without
+    // it rather than failing the device (a missing Vivid channel only costs the dynamic metadata).
+    HMRDP_LOGW("vulkan: device refused HDR Vivid (hdrVivid feature); disabling it");
+    deviceInfo.pNext = nullptr;
+    enabledExtensions.erase(enabledExtensions.end() - 1);
+    deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    result = shared.CreateDevice(physical_, &deviceInfo, nullptr, &device);
+  }
   if (result != VK_SUCCESS) {
     error_ = "vkCreateDevice failed: " + VkResultName(result);
     return false;

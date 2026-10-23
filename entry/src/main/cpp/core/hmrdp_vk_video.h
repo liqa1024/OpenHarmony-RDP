@@ -134,6 +134,9 @@ class VkVideoImport {
     // An HDR frame shown through an SDR picture: the convert pass folds it onto SDR (see the shader's
     // color.y). Fixed for the import's life, since a picture-format change rebuilds the imports.
     bool degrade = false;
+    // Set only while degrading: the HDR frame's transfer is HLG, so the convert pass folds HLG
+    // (ARIB STD-B67) instead of PQ. From the same sources as degrade (see FrameIsHlg).
+    bool hlg = false;
     float colorRows[12] = {};
   };
 

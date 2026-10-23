@@ -12,6 +12,7 @@
 #include <Limelight.h>
 
 #include "hmrdp_display_rate.h"
+#include "hmrdp_hdr_dynamic.h"
 #include "hmrdp_log.h"
 #include "hmrdp_presenter.h"
 #include "hmrdp_video_decoder.h"
@@ -212,15 +213,17 @@ class MoonlightVideoRenderer : public VideoFrameSink {
 
   void SetSuperResolutionRequested(bool requested) { srRequested_.store(requested); }
 
-  // The stream's encoding, in the pipeline's own terms. Rec.2020 is the 10-bit Rec.2020 PQ stream the
-  // session asked the host for; everything else is the negotiated SDR encoder CSC with the SDR YUV
-  // transfer. The decoder is told this (see VideoDecoder::Start*), so it is built from the same
-  // colour-space / range values the session negotiates.
-  void SetStreamColorSpace(int colorSpace, int colorRange) {
+  // The stream's encoding, in the pipeline's own terms. Rec.2020 is the 10-bit HDR stream the session
+  // asked the host for; `hdrBase` picks its transfer (2 = HLG, otherwise HDR10/PQ). Everything else
+  // is the negotiated SDR encoder CSC with the SDR YUV transfer. The decoder is told this (see
+  // VideoDecoder::Start*) and the presenter is driven from it (see SetHdrMode).
+  void SetStreamColorSpace(int colorSpace, int colorRange, int hdrBase) {
     if (colorSpace == COLORSPACE_REC_2020) {
-      streamColor_ = Hdr10Bt2020PqLimited();
+      hdrBase_ = hdrBase == 2 ? 2 : 1;
+      streamColor_ = hdrBase_ == 2 ? HlgBt2020Limited() : Hdr10Bt2020PqLimited();
       return;
     }
+    hdrBase_ = 0;
     ColorDescription color;
     const bool rec601 = colorSpace == COLORSPACE_REC_601;
     color.primaries = rec601 ? ColorDescription::Primaries::kBt601SmpteC
@@ -259,13 +262,23 @@ class MoonlightVideoRenderer : public VideoFrameSink {
         if (enabled) {
           presenter_->SetHdrStaticMetadata(metadata);
         }
-        presenter_->SetStreamHdr(enabled);
+        presenter_->SetStreamHdr(enabled ? hdrBase_.load() : 0);
       }
     }
     HMRDP_LOGI("moonlight video: host HDR mode %{public}s", enabled ? "on" : "off");
   }
   bool HdrRequested() const { return hdrRequested_.load(); }
   bool HdrActive() const { return hdrActive_.load(); }
+
+  // The HDR Vivid metadata the submitted access unit carried, forwarded to the presenter so the
+  // compositor can tone-map it. Takes presenterMutex_, which everywhere else is also taken after
+  // `mutex_`, so the order stays consistent.
+  void SetStreamDynamicHdr(const uint8_t* payload, int size) {
+    std::lock_guard<std::mutex> lock(presenterMutex_);
+    if (presenter_ != nullptr) {
+      presenter_->SetStreamDynamicHdr(payload, size);
+    }
+  }
 
   // 超分: the session hand-off. The bridge only borrows the presenter: it is attached before the
   // connection starts, and Detach has returned before the session destroys it. Every use goes
@@ -316,6 +329,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     }
     mime_ = mime;
     codec_ = CodecTokenForMime(mime);
+    vividActive_ = false;
     width_ = width;
     height_ = height;
     redrawRate_ = redrawRate;
@@ -331,8 +345,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     HMRDP_LOGI("moonlight video: setup %{public}s %{public}x%{public}d @%{public}d (%{public}s)",
                mime_.c_str(), width_, height_, redrawRate_,
                VideoDecoderDescription(mime_).c_str());
-    // The decoder half of the HDR readout (the GPU half is logged by the Vulkan verdict and by the
-    // presenter's surface observation). Both are device facts, printed once per session.
+    // The decoder half of the HDR readout: the GPU half is the Vulkan verdict and the presenter's
+    // surface observation. One line per session each.
     HMRDP_LOGI("moonlight video: hdr decoder: hevc10=%{public}d av1=%{public}d",
                VideoDecoderTenBit("video/hevc") ? 1 : 0, VideoDecoderTenBit("video/av1") ? 1 : 0);
     return 0;
@@ -343,14 +357,19 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     return codec_;
   }
 
-  // "on" only while the session really presents HDR (the host confirmed it and the output stage runs
-  // it); "" otherwise, including the surface fallback, which has no output stage of ours.
+  // The HDR format the session really presents: the host confirmed it and the output stage runs it.
+  // "" when the session is not really HDR (including the surface fallback, which has no output stage
+  // of ours). The name is the base transfer, or the dynamic layer when the stream carries it, so the
+  // toolbar reading matches what is on screen.
   std::string Hdr() {
     std::lock_guard<std::mutex> lock(presenterMutex_);
     if (presenter_ == nullptr || !presenter_->hdrActive()) {
       return std::string();
     }
-    return "on";
+    if (presenter_->vividHdrActive()) {
+      return "Vivid";
+    }
+    return hdrBase_.load() == 2 ? "HLG" : "HDR10";
   }
 
   bool HasPresenter() {
@@ -494,6 +513,22 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     if (buffer_.empty()) {
       return DR_OK;
     }
+    // The host carries HDR Vivid as a registered T.35 SEI inside the same access unit whenever its
+    // HDR luminance analysis runs. Read it here and hand it to the presenter, which passes it to the
+    // window; the payload changes every frame, so it is only re-declared when it does.
+    if (hdrActive_.load()) {
+      const VividMetadata vivid = ScanVividMetadata(buffer_.data(), buffer_.size(), mime_.c_str());
+      if (vivid.size != 0) {
+        if (!vividActive_) {
+          vividActive_ = true;
+          HMRDP_LOGI("moonlight video: HDR Vivid detected (%{public}zu bytes)", vivid.size);
+        }
+        SetStreamDynamicHdr(vivid.payload, static_cast<int>(vivid.size));
+      } else if (vividActive_) {
+        vividActive_ = false;
+        SetStreamDynamicHdr(nullptr, 0);
+      }
+    }
     const int64_t submitNs = NowNs();
     if (!decoder_.Submit(buffer_.data(), buffer_.size(),
                          static_cast<int64_t>(decodeUnit->presentationTimeUs))) {
@@ -612,11 +647,17 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   // (see the header): a host that is not in HDR sends an SDR stream whatever was requested.
   std::atomic<bool> hdrRequested_{false};
   std::atomic<bool> hdrActive_{false};
+  // The base transfer of this session's HDR stream (0 SDR / 1 HDR10 PQ / 2 HLG), from the negotiated
+  // colour space; set by SetStreamColorSpace and used when the host's HDR answer drives the presenter.
+  std::atomic<int> hdrBase_{0};
   // The stream's encoding as the connection negotiated it (see SetStreamColorSpace); the decoder is
   // told this when it starts. Defaults to the SDR Rec.709 contract an unstated stream means.
   ColorDescription streamColor_;
   bool running_ = false;
   std::vector<uint8_t> buffer_;
+  // Whether the stream is carrying HDR Vivid, so a run without it is reported once (the payload
+  // itself changes every frame and is re-declared each time).
+  bool vividActive_ = false;
 
   // frames = decoded pictures out of the codec; presented = frames the sink took and presented.
   std::atomic<uint64_t> statDecoded_{0};
@@ -657,10 +698,12 @@ int VideoSubmit(PDECODE_UNIT decodeUnit) {
   return MoonlightVideoRenderer::Instance().Submit(decodeUnit);
 }
 
-// CAPABILITY_DIRECT_SUBMIT stays unset, keeping submitDecodeUnit on Moonlight's
-// own decoder thread instead of the RTP receive thread.
+// CAPABILITY_DIRECT_SUBMIT stays unset, keeping submitDecodeUnit on Moonlight's own decoder thread
+// instead of the RTP receive thread. CAPABILITY_PRESERVE_HEVC_SEI is set so the depacketizer keeps
+// SEI NAL units (HMRDP_SEI): the host carries HDR Vivid as a registered T.35 SEI, and the default
+// behaviour strips it before this bridge could read it.
 DECODER_RENDERER_CALLBACKS g_videoCallbacks = {
-    VideoSetup, VideoStart, VideoStop, VideoCleanup, VideoSubmit, 0,
+    VideoSetup, VideoStart, VideoStop, VideoCleanup, VideoSubmit, CAPABILITY_PRESERVE_HEVC_SEI,
 };
 
 }  // namespace
@@ -717,10 +760,10 @@ int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeS
         HMRDP_LOGW("moonlight video: forced codec %{public}d cannot carry HDR here",
                    static_cast<int>(choice));
       }
-    } else if (av110 && hostAv110) {
-      decided = VIDEO_FORMAT_AV1_MAIN10;
     } else if (hevc10 && hostHevc10) {
       decided = VIDEO_FORMAT_H265_MAIN10;
+    } else if (av110 && hostAv110) {
+      decided = VIDEO_FORMAT_AV1_MAIN10;
     }
     g_decidedVideoFormat.store(decided);
     return decided;
@@ -739,16 +782,19 @@ int MoonlightVideoFormats(MoonlightVideoCodecChoice choice, int serverCodecModeS
                  static_cast<int>(choice));
     }
   } else {
-    if (av1 == DecoderSupport::kHardware && hostAv1) {
-      decided = VIDEO_FORMAT_AV1_MAIN8;
-    } else if (hevc == DecoderSupport::kHardware && hostHevc) {
+    // HEVC before AV1: this platform's AV1 support is the weaker of the two, and HEVC is also the
+    // only carrier for HDR Vivid (the standard defines no AV1 carriage for it), so the same order
+    // serves both HDR and SDR.
+    if (hevc == DecoderSupport::kHardware && hostHevc) {
       decided = VIDEO_FORMAT_H265;
+    } else if (av1 == DecoderSupport::kHardware && hostAv1) {
+      decided = VIDEO_FORMAT_AV1_MAIN8;
     } else if (avc == DecoderSupport::kHardware) {
       decided = VIDEO_FORMAT_H264;
-    } else if (av1 == DecoderSupport::kSoftware && hostAv1) {
-      decided = VIDEO_FORMAT_AV1_MAIN8;
     } else if (hevc == DecoderSupport::kSoftware && hostHevc) {
       decided = VIDEO_FORMAT_H265;
+    } else if (av1 == DecoderSupport::kSoftware && hostAv1) {
+      decided = VIDEO_FORMAT_AV1_MAIN8;
     } else if (avc == DecoderSupport::kSoftware) {
       decided = VIDEO_FORMAT_H264;
     }
@@ -808,8 +854,8 @@ void MoonlightVideoSetHdrRequested(bool requested) {
   MoonlightVideoRenderer::Instance().SetHdrRequested(requested);
 }
 
-void MoonlightVideoSetStreamColorSpace(int colorSpace, int colorRange) {
-  MoonlightVideoRenderer::Instance().SetStreamColorSpace(colorSpace, colorRange);
+void MoonlightVideoSetStreamColorSpace(int colorSpace, int colorRange, int hdrMode) {
+  MoonlightVideoRenderer::Instance().SetStreamColorSpace(colorSpace, colorRange, hdrMode);
 }
 
 void MoonlightVideoSetHdrMode(bool enabled) {

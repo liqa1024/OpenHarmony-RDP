@@ -28,11 +28,12 @@ constexpr int kMaxTouchpadContacts = 5;
 // (STREAM_CONFIGURATION.colorSpace/colorRange, see moonlight-video.md §4). The video importer
 // presents what each decoded buffer itself declares and only reports a disagreement with this, so a
 // buffer that states something else is a fact the user is told about, not a silent shift.
-int NegotiatedColorSpace(int colorSpace, int range) {
+int NegotiatedColorSpace(int colorSpace, int range, int hdrMode) {
   if (colorSpace == COLORSPACE_REC_2020) {
-    // Rec.2020 IS the HDR10 (PQ) protocol: the host produces BT.2020 PQ and the range is PQ's limited
-    // convention. Mapping it to an SDR space here would make every HDR buffer disagree by construction.
-    return ToNativeBuffer(Hdr10Bt2020PqLimited());
+    // Rec.2020 IS the HDR protocol: the host produces BT.2020 with the requested transfer (PQ by
+    // default, HLG when the base asks for it) and the range is PQ/HLG's limited convention. Mapping
+    // it to an SDR space here would make every HDR buffer disagree by construction.
+    return ToNativeBuffer(hdrMode == 2 ? HlgBt2020Limited() : Hdr10Bt2020PqLimited());
   }
   const bool full = range == COLOR_RANGE_FULL;
   if (colorSpace == COLORSPACE_REC_601) {
@@ -182,7 +183,8 @@ void Run(const MoonlightStreamConfig& config) {
         presenter = std::move(created);
         presenter->SetSuperResolution(srRequested, static_cast<SuperResolutionBackend>(config.srBackend),
                                       config.width, config.height);
-        presenter->SetVideoColorSpace(NegotiatedColorSpace(config.colorSpace, config.colorRange));
+        presenter->SetVideoColorSpace(
+            NegotiatedColorSpace(config.colorSpace, config.colorRange, config.hdrMode));
         presenterActive = true;
       } else {
         HMRDP_LOGW("moonlight session: presenter prepare failed; the decoder renders into the surface");
@@ -214,7 +216,7 @@ void Run(const MoonlightStreamConfig& config) {
   const bool hdrRequested = config.colorSpace == COLORSPACE_REC_2020;
   MoonlightVideoSetSuperResolutionRequested(srRequested);
   MoonlightVideoSetHdrRequested(hdrRequested);
-  MoonlightVideoSetStreamColorSpace(config.colorSpace, config.colorRange);
+  MoonlightVideoSetStreamColorSpace(config.colorSpace, config.colorRange, config.hdrMode);
   MoonlightVideoAttachPresenter(presenterActive ? presenter.get() : nullptr);
   HMRDP_LOGI("moonlight session %{public}dx%{public}d (presenter %{public}s, super resolution "
              "%{public}s %{public}s -> %{public}dx%{public}d, hdr %{public}s)",
@@ -233,6 +235,13 @@ void Run(const MoonlightStreamConfig& config) {
   stream.clientRefreshRateX100 = config.clientRefreshRateX100;
   stream.colorSpace = config.colorSpace;
   stream.colorRange = config.colorRange;
+  // HMRDP_HDR: the base transfer the client asked for (0 SDR / 1 HDR10 PQ / 2 HLG). The library
+  // turns this into the ANNOUNCE dynamicRangeMode (see SdpGenerator), so an HLG session really asks
+  // the host to encode HLG instead of always PQ.
+  stream.hdrMode = config.hdrMode;
+  // 动态 HDR 不协商：主机的 HDR10+ / HDR Vivid 是带内注册 T.35（见 hmrdp_hdr_dynamic.*），发不发只
+  // 取决于它的亮度分析是否开着。foundation-sunshine 的 dynamicHdrCaps / X-SS-Dynamic-HDR 只服务
+  // PyroWave 那条链路（本端没有），所以这里一个能力位都不报，保持上游的"不协商"形态。
   stream.encryptionFlags = config.encryptionFlags;
   if (config.remoteInputAesKey.size() == 16) {
     std::memcpy(stream.remoteInputAesKey, config.remoteInputAesKey.data(), 16);

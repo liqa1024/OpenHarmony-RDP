@@ -9,7 +9,8 @@ import {
   MoonlightConnection, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, RdpConnection
 } from '../model/Connections';
 import {
-  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_MODE_PQ,
+  ML_HDR_PEAK_DEFAULT_NITS,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile
 } from '../moonlight/MoonlightModels';
 import { DEFAULT_SPEED_SCALE } from './TouchpadWheel';
@@ -114,6 +115,7 @@ export class AppSettings {
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
   mlColorSpace: number = ML_COLORSPACE_REC709;
+  mlHdrMode: number = ML_HDR_MODE_PQ;
   mlSrEnabled: boolean = false;
   mlSrRatioPercent: number = SR_RATIO_PRESETS[0];
   mlSrBackend: number = SR_BACKEND_XENGINE;
@@ -281,6 +283,7 @@ export class SettingsStore {
       settings.mlCodec = SettingsStore.readNumber(store, 'mlCodec', settings.mlCodec);
       settings.mlColorSpace =
         SettingsStore.readNumber(store, 'mlColorSpace', settings.mlColorSpace);
+      settings.mlHdrMode = SettingsStore.readNumber(store, 'mlHdrMode', settings.mlHdrMode);
       settings.mlSrEnabled = SettingsStore.readBoolean(store, 'mlSrEnabled', settings.mlSrEnabled);
       settings.mlSrRatioPercent =
         SettingsStore.readNumber(store, 'mlSrRatioPercent', settings.mlSrRatioPercent);
@@ -405,6 +408,7 @@ export class SettingsStore {
       store.putSync('mlBitrateAuto', settings.mlBitrateAuto);
       store.putSync('mlCodec', settings.mlCodec);
       store.putSync('mlColorSpace', settings.mlColorSpace);
+      store.putSync('mlHdrMode', settings.mlHdrMode);
       store.putSync('mlSrEnabled', settings.mlSrEnabled);
       store.putSync('mlSrRatioPercent', settings.mlSrRatioPercent);
       store.putSync('mlSrBackend', settings.mlSrBackend);
@@ -623,6 +627,7 @@ export class SettingsStore {
     profile.bitrateKbps = settings.mlBitrateKbps;
     profile.codec = settings.mlCodec;
     profile.colorSpace = settings.mlColorSpace;
+    profile.hdrMode = settings.mlHdrMode;
     profile.scaleMode = settings.mlScaleMode;
     profile.scalePercent = settings.mlScalePercent;
     profile.hdrPeakAuto = settings.mlHdrPeakAuto;
@@ -645,6 +650,7 @@ export class SettingsStore {
     profile.bitrateKbps = conn.mlBitrateKbps;
     profile.codec = conn.mlCodec;
     profile.colorSpace = conn.mlColorSpace;
+    profile.hdrMode = conn.mlHdrMode;
     profile.scaleMode = conn.mlScaleMode;
     profile.scalePercent = conn.mlScalePercent;
     profile.hdrPeakAuto = conn.mlHdrPeakAuto;

@@ -64,8 +64,10 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     选定解码路径。
   - `submitDecodeUnit` 把该回调交来的 **Annex-B 缓冲链**（一帧的全部 NAL，正好等于一个访问单元）拉平后
     交给 `VideoDecoder::Submit`，即 [`moonlight-video.md`](moonlight-video.md) §1 的「一次一个完整访问单元」。
-  - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位留空：不改写参考帧，且**不开
-    `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。
+  - `start`/`stop`/`cleanup` 驱动解码器生命周期。能力位只有 `CAPABILITY_PRESERVE_HEVC_SEI`（`0x80`，
+    本仓补丁新增，见 [`moonlight-video.md`](moonlight-video.md) §2）：**不改写参考帧**，且**不开
+    `CAPABILITY_DIRECT_SUBMIT`**，让提交跑在 moonlight 自己的解码线程上而不是 RTP 接收线程。SEI 位是必须的——
+    common-c 的分包器默认把 SEI NAL 丢掉，而主机的 HDR10+/Vivid 动态元数据正是注册 T.35 SEI。
   - **两条上屏路线的解码输出模式不同**：直出时解码器用 surface 模式渲染进 `renderContext` 的窗口；超分时用
     buffer 模式把自己的输出缓冲交给桥（桥即 `VideoFrameSink`，在交接锁下调 `PresentVideo`），提交成功拿到
     呈现槽位 token，**最多两帧在飞**，轮到同一槽位前由 `WaitVideoFrame(token)` 等 fence 后才归还解码器

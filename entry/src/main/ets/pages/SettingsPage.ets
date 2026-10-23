@@ -5,7 +5,8 @@ import { DisplayProfile, SR_BACKEND_FSR, SR_BACKEND_XENGINE } from '../model/Pro
 import { ML_BITRATE_DEFAULT_KBPS,
   ML_BITRATE_MAX_KBPS, ML_BITRATE_MIN_KBPS, ML_CODEC_AUTO, ML_CODEC_AV1, ML_CODEC_H264,
   ML_CODEC_HEVC, ML_COLORSPACE_REC601, ML_COLORSPACE_REC709, ML_COLORSPACE_REC2020_HDR,
-  mlColorSpaceIsHdr, ML_FPS_PRESETS, ML_HDR_NITS_MAX, ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
+  mlColorSpaceIsHdr, ML_FPS_PRESETS, ML_HDR_MODE_HLG, ML_HDR_MODE_PQ, ML_HDR_NITS_MAX,
+  ML_HDR_NITS_MIN, ML_HDR_PEAK_DEFAULT_NITS,
   ML_RES_FIXED, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, ML_SCALE_MANUAL } from '../moonlight/MoonlightModels';
 import { PROTOCOL_MOONLIGHT, PROTOCOL_RDP } from '../model/Connections';
 import { ConfigTransfer, ConfigTransferResult } from '../services/ConfigTransfer';
@@ -161,6 +162,7 @@ struct SettingsPage {
   @State mlBitrateAuto: boolean = true;
   @State mlBitrateText: string = kbpsToMbps(ML_BITRATE_DEFAULT_KBPS).toString();
   @State mlColorSpace: number = ML_COLORSPACE_REC709;
+  @State mlHdrMode: number = ML_HDR_MODE_PQ;
   @State mlCodec: number = ML_CODEC_AUTO;
   @State mlHdrPeakAuto: boolean = true;
   @State mlHdrPeakText: string = ML_HDR_PEAK_DEFAULT_NITS.toString();
@@ -287,6 +289,7 @@ struct SettingsPage {
       this.mlBitrateAuto = settings.mlBitrateAuto;
       this.mlBitrateText = kbpsToMbps(settings.mlBitrateKbps).toString();
       this.mlColorSpace = settings.mlColorSpace;
+      this.mlHdrMode = settings.mlHdrMode;
       this.mlCodec = settings.mlCodec;
       this.mlHdrPeakAuto = settings.mlHdrPeakAuto;
       this.mlHdrPeakText = settings.mlHdrPeakNits.toString();
@@ -583,6 +586,7 @@ struct SettingsPage {
       settings.mlBitrateAuto = this.mlBitrateAuto;
       settings.mlBitrateKbps = this.effectiveMlBitrate();
       settings.mlColorSpace = this.mlColorSpace;
+      settings.mlHdrMode = this.mlHdrMode;
       settings.mlCodec = this.mlCodec;
       settings.mlHdrPeakAuto = this.mlHdrPeakAuto;
       settings.mlHdrPeakNits = this.effectiveMlHdrPeak();
@@ -1417,11 +1421,43 @@ struct SettingsPage {
       if (mlColorSpaceIsHdr(this.mlColorSpace)) {
         Divider().strokeWidth(1).color($r('app.color.divider'))
 
+        this.mlHdrBaseItems()
+
+        Divider().strokeWidth(1).color($r('app.color.divider'))
+
         this.mlHdrLuminanceItems()
       }
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  mlHdrBaseChip(mode: number, label: string) {
+    ChoiceChip({
+      label: label,
+      selected: this.mlHdrMode === mode,
+      chipEnabled: true,
+      onTap: () => {
+        this.mlHdrMode = mode;
+        this.persist();
+      }
+    })
+  }
+
+  @Builder
+  mlHdrBaseItems() {
+    Column() {
+      Text('HDR 传输').fontSize(14)
+      Text('HDR10 (PQ) 或 HLG；HLG 面向 HLG/HDR Vivid 素材，需主机支持')
+        .fontSize(12).fontColor($r('app.color.text_tertiary')).margin({ top: 2 })
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.mlHdrBaseChip(ML_HDR_MODE_PQ, 'HDR10 (PQ)')
+        this.mlHdrBaseChip(ML_HDR_MODE_HLG, 'HLG')
+      }
+      .width('100%').margin({ top: 8 })
+    }
+    .width('100%').padding({ top: 8, bottom: 8 }).alignItems(HorizontalAlign.Start)
   }
 
   @Builder

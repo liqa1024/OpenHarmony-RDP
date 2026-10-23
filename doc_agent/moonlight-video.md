@@ -100,7 +100,8 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   此链路**只在真机验证**（Vulkan 呈现本就真机），且要求设备支持视频导入（见 [`present.md`](present.md) §5）；
   不满足时走下面这条兜底。
 - **HDR 是这条链路的一种编码，不是第二条链路**。主机确认切到 HDR 后（`ConnListenerSetHdrMode`，见 §3）整条
-  链路换到 **Rec.2020 PQ**：解码器申请 10 位输出（`AV_PIXEL_FORMAT_RGBA1010102`），而平台实际交出的是
+  链路换到 **Rec.2020 + HDR 基座传输**（`hdrMode`：`1` = HDR10/PQ，`2` = HLG；见 §4）：解码器申请 10 位输出
+  （`AV_PIXEL_FORMAT_RGBA1010102`），而平台实际交出的是
   **P010**（`OH_NativeBuffer_Format` = `YCBCR_P010`：10 位 4:2:0、每样点 2 字节、10 位在高位——codec 上报的
   `OH_AVPixelFormat` 会是 `NV12`，**布局以分配器格式为准**，见 [`present.md`](present.md) §4）；
   **解码器同时被告知这段流的编码**（`OH_MD_KEY_COLOR_PRIMARIES` / `TRANSFER_CHARACTERISTICS` /
@@ -109,11 +110,13 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   缺失或不对时，声明才是权威口径（平台这几个键的默认是 UNSPECIFIED/limited），这也是两个参考客户端的做法。
   传入的编码由连接的 `色彩协议与HDR` 决定（`MoonlightVideoSetStreamColorSpace`，与协商的 `colorSpace`/
   `colorRange` 同源）。
-  picture 与超分输出图取 `kHdrPictureFormat`（`A2B10G10R10_UNORM_PACK32`）、交换链取该格式 +
-  `VK_COLOR_SPACE_HDR10_ST2084_EXT`，窗口按**一整套**声明交给合成器（`DeclareWindowColorLocked`）：
-  `BT2020_PQ_FULL`（**不是 LIMIT**——picture 里是全幅 PQ，写 LIMIT 会让合成器对已经全幅的图再做一次
-  limited→full 展开）、`SET_COLOR_GAMUT = NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ`、
-  `OH_HDR_METADATA_TYPE = OH_VIDEO_HDR_HDR10`，以及 `OH_HDR_STATIC_METADATA`（主机经
+  picture 与超分输出图取 `kHdrPictureFormat`（`A2B10G10R10_UNORM_PACK32`）、交换链取该格式 + 基座传输的
+  `VK_COLOR_SPACE_HDR10_ST2084_EXT`（PQ）或 `VK_COLOR_SPACE_HDR10_HLG_EXT`（HLG），窗口按**一整套**声明交给
+  合成器（`DeclareWindowColorLocked`）：`BT2020_PQ_FULL`（**不是 LIMIT**——picture 里是全幅 PQ/HLG，写 LIMIT
+  会让合成器对已经全幅的图再做一次 limited→full 展开）或 HLG 的 `BT2020_HLG_FULL`、
+  `SET_COLOR_GAMUT = NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ`（或 `..._HLG`）、
+  `OH_HDR_METADATA_TYPE = OH_VIDEO_HDR_HDR10`（或 `OH_VIDEO_HDR_HLG`，见下条动态层时切 `OH_VIDEO_HDR_VIVID`），
+  以及 `OH_HDR_STATIC_METADATA`（主机经
   `LiGetHdrMetadata` 下发的值，越界或没有就用本仓默认 BT.2020 1000/0.001/1000/400）。**这四样是一个
   整体**：交换链是本仓自己写的 buffer，平台不会替我们补（官方《显示规格》即要求"HDR 视频…传递正确的
   Metadata 和色域信息"），缺了合成器就按自己的假设换算这块图。SDR 分支写同一套（`SRGB_FULL` + SRGB gamut）
@@ -128,6 +131,26 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
   `HDR降级` + 一次 toast——**画面可用**，不是黑屏，也不把原始值塞进 HDR10 交换链；降级是**正常呈现路径**
   （不丢帧、不计呈现失败）。触发它的运行期事实有两种：窗口不提供那对 HDR10 格式/色彩空间，或解码器交出的
   不是 10 位帧。能力判定见 [`present.md`](present.md) §5。
+- **动态 HDR 只有 HDR Vivid**。这块客户端的定位就是**一块"HDR10 / HLG / HDR Vivid"的显示器**：平台的 HDR 模型
+  就是这三种（`OH_NativeBuffer_MetadataType`），没有 HDR10+ 的类型与 API，所以动态层只认 HDR Vivid
+  （`OH_VIDEO_HDR_VIVID`），流的其余内容按底座传输当普通 HDR10 / HLG 放。
+  动态层与底座**正交**，不经任何协商：主机只要 HDR 亮度分析开着（默认 `auto`），就会把 Vivid 作为
+  **注册 T.35 SEI** 写进普通 HEVC 码流（Vivid 无 AV1 承载，故自动档把 HEVC 排在 AV1 前，§3）。SDP 里**一个动态
+  能力位都不发**——foundation-sunshine 的 `dynamicHdrCaps` / `dynamicHdrPreference` / `X-SS-Dynamic-HDR` 只服务
+  PyroWave 那条本端没接的链路，补丁里也没有这几项。**前提是分包器别把它删掉**：common-c 默认在
+  `VideoDepacketizer.c` 把前置 SEI NAL 无条件剥掉，本仓补丁加了 `CAPABILITY_PRESERVE_HEVC_SEI`（`0x80`）并设在
+  解码回调表里（见 [`moonlight-native.md`](moonlight-native.md) §2），否则整条链路上根本看不到 T.35。
+  `core/hmrdp_hdr_dynamic.*` 在每个访问单元里扫出 CUVA（`26 00 04 00 05`）的注册载荷并去 emulation-prevention；
+  **只认这一种**——同一个单元里 PQ 流还会带 HDR10+（`B5 00 3C …`），它既不是我们的格式也不是 Vivid 的前缀，
+  所以扫描只挑 CUVA，不受同单元其它载荷的先后影响。解码桥在**变化时**交给呈现器（`SetStreamDynamicHdr`）。
+  **声明同时走两条通道**：窗口那套（`OH_NativeWindow_SetMetadataValue`，`ret=0` 已实测被接受，给完整注册载荷）
+  **加上 Vulkan 的正规通道**——静态元数据用 `vkSetHdrMetadataEXT`（`VK_EXT_hdr_metadata`，挂在 swapchain 上，
+  这才是自绘图像被描述的方式），Vivid 的逐帧动态元数据经 `VkHdrVividDynamicMetadataHUAWEI` 链进
+  `VkHdrMetadataEXT.pNext`（`VK_HUAWEI_hdr_vivid`，安卓 PyroWave 用的同一条；**载荷是 CUVA 的
+  `dynamic_metadata()` 正文——去掉 country/provider/oriented 那 5 字节注册头、`system_start_code` 开头**）；
+  Vivid 另把 `OH_HDR_METADATA_TYPE` 切到 `OH_VIDEO_HDR_VIVID`。设备已报这两个扩展（`extHdrMetadata/extHdrVivid`）。
+  日志锚点：`moonlight video: HDR Vivid detected`、`vulkan window: hdr declared base=… dynamic=…` 与
+  `vulkan swapchain: hdr metadata set …`。
 - **兜底：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
   合成 pass；留边由**画面组件几何**承担——会话页用 `components/SessionPicture` 把 surface 约束成**流分辨率
@@ -144,18 +167,19 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 支持的编码是 H.264 / HEVC / AV1（`video/avc` / `video/hevc` / `video/av1`）。
 协商**由客户端单向决定、主机只广告不自选**：主机在 RTSP `DESCRIBE` 的 SDP 里列出**能编码的全部格式**
 （Sunshine 用 `sprop-parameter-sets=AAAAAU` 表示 HEVC、`AV1/90000` 表示 AV1），客户端库在本机
-`supportedVideoFormats` 与该广告的交集上按固定优先级 `AV1 > HEVC > H.264` 取一，再用 `ANNOUNCE` 的
+`supportedVideoFormats` 与该广告的交集上按固定优先级 `HEVC > AV1 > H.264` 取一，再用 `ANNOUNCE` 的
 `x-nv-vqos[0].bitStreamFormat` 回报。**决策权不交给库**：`moonlightVideoFormats(choice, serverCodecModeSupport)`
 直接产出**恰好一个** `VIDEO_FORMAT_*`（非能力集合），库只负责照此回报：
 
-- **自动**（`ML_CODEC_AUTO`）：硬件档 `AV1→HEVC→H264`、无硬解再软件档同序逐级下退，取第一个「本机该档可解
+- **自动**（`ML_CODEC_AUTO`）：硬件档 `HEVC→AV1→H264`、无硬解再软件档同序逐级下退，取第一个「本机该档可解
   且主机可编码」的。H.264 不查主机（库的兜底就是它）；AV1 / HEVC 要求 `SCM_MASK_AV1` / `SCM_MASK_HEVC`——
   Sunshine 的 `SCM` 位与 `DESCRIBE` 广告同源（`active_*_mode >= 2` ⟹ `!= 1`），故选中者必被库确认。
 - **手动**（连接编辑页 / 设置页的编码选择，默认自动、可会话独立覆盖）：**强制**所选编码，同样要求本机可解
   且主机可编码。选择项按 `moonlightVideoCodecSupport()`（硬解 / 软解 / 无）置灰，仅软解时下方红字提示无硬件
   解码支持，无解码器时提示无法串流。
 - **HDR 只取 10 位档位**：`色彩协议与HDR` 项选 Rec2020（HDR）时，`moonlightVideoFormats(choice, scm, hdr)` 在
-  `AV1 Main10 > HEVC Main10` 里取一个，要求本机该 10 位 profile 可解 **且**主机广告了
+  `HEVC Main10 > AV1 Main10` 里取一个（HEVC 在前：Vivid 只由 HEVC 承载，本平台 AV1 支持也偏弱），要求本机该 10
+  位 profile 可解 **且**主机广告了
   `SCM_AV1_MAIN10` / `SCM_HEVC_MAIN10`（家族位 `SCM_MASK_*` 不够）；H.264 载不了 HDR，不参与。取不到就
   **显式失败**（不悄悄降成 SDR 编码），文案指向"需要 HEVC Main10 或 AV1 Main10"。**这一项是协议选择，不按
   显示能力置灰**——只按协议可行性（本机能否解 10 位）；能不能显示由运行期决定，显示不了就降级（§2）。
@@ -177,7 +201,8 @@ Moonlight 的拆包器本就把一帧的所有 NAL 交给一次回调（见 [`mo
 - `colorSpace` / `colorRange` 合成 SDP `x-nv-video[0].encoderCscMode`（`(space<<1)|range`）交主机做编码 CSC——
   `0` 是 Rec601（HD 下偏色）、`1` 是 Rec709（SDR 默认）、**`2` 是 Rec2020（HDR）**。这就是`色彩协议与HDR`这一项：
   它描述的是**向主机请求的编码协议**，不是本机显示能力。选 `2` 即同时请求 10 位档位（§3）与 `/launch` 的
-  `hdrMode=1`，`colorRange` 仍是 limited（PQ 的约定）；**主机是否真在 HDR 由它自己在控制流上回**（`setHdrMode`），
+  `hdrMode`、SDP 的 `dynamicRangeMode`（都取连接里 HDR 的**基座传输** `hdrMode`：`1` = HDR10/PQ、`2` = HLG），
+  `colorRange` 仍是 limited（PQ/HLG 的约定）；**主机是否真在 HDR 由它自己在控制流上回**（`setHdrMode`），
   **本机显示不了就降级**（§2），两者都不成立时就是一个普通的 SDR 会话。
 - `streamingRemotely` 用 `STREAM_CFG_AUTO`（由库按 RFC1918 判本地/远程，影响带宽/音频/QoS 广告与包大小）。
 - `bitrate` 经 `x-ml-video.configuredBitrateKbps` 交 Sunshine 反推实际编码码率。

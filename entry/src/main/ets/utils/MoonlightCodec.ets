@@ -68,9 +68,10 @@ export function moonlightDecodeTokens(): string[] {
     tokens.push(moonlightCodecTokenName(token));
   }
   // Only a session that really presents HDR says so; the host's confirmation and the output stage
-  // both have to hold (see moonlight-video.md §2).
+  // both have to hold (see moonlight-video.md §2). The token names the format the session is actually
+  // presenting: HDR10, HLG, or Vivid when the stream carries the dynamic layer.
   if (hdr.length > 0) {
-    tokens.push('HDR');
+    tokens.push(hdr);
   }
   let software: boolean = false;
   let srUnavailable: boolean = false;

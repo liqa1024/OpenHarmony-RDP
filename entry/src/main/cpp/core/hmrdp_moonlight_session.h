@@ -72,6 +72,9 @@ struct MoonlightStreamConfig {
   int clientRefreshRateX100 = 0;
   int colorSpace = 0;
   int colorRange = 0;
+  // HDR base transfer: 0 = SDR, 1 = HDR10 (PQ), 2 = HLG. Meaningful only with colorSpace Rec.2020;
+  // it selects the decoder's transfer, the presenter's output stage and the /launch hdrMode value.
+  int hdrMode = 0;
   int encryptionFlags = 0;
   // 16-byte remote-input AES key and IV (key + rikeyid-derived IV from /launch).
   std::string remoteInputAesKey;

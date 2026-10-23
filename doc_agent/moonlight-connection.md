@@ -23,7 +23,7 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   协议与 Moonlight 字段**追加在记录尾部**：旧记录在该位置之前就结束，反序列化时回落默认值，
   因此新增字段不改变既有字段的位置，也不影响老记录。
 - 追加字段：`protocol`、`mlDefaultAppId`、`mlDefaultAppName`、`mlHostId`、`useGlobalStream`、
-  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlMac`、
+  `mlResMode`、`mlWidth`、`mlHeight`、`mlFps`、`mlBitrateKbps`、`mlCodec`、`mlBitrateAuto`、`mlColorSpace`、`mlHdrMode`、`mlMac`、
   `mlScaleMode`、`mlScalePercent`。
   （退役字段**按位置保留槽位**、不读写，以免改动后续字段的位置。）
 - `mlMac` 是主机网卡 MAC（`serverinfo` 的 `mac`），**唯一**来自探测的主机地址，是唤醒魔术包的目标；
@@ -43,8 +43,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
 - 解析入口是 `SettingsStore.resolveStream(conn)`（全局默认见 `SettingsStore.globalStreamProfile()`），
   与 `resolveDisplay` / `resolveAdvanced` 并列。
 - 覆盖项：分辨率模式（跟随屏幕 / 固定宽高）、帧率、码率（自动 / 手动）、编码器、色彩协议与HDR
-  （Rec601 / Rec709 / Rec2020（HDR）：Rec2020 即请求 10 位 + HDR10；这是**协议选择**——只按协议可行性
+  （Rec601 / Rec709 / Rec2020（HDR）：Rec2020 即请求 10 位 + HDR；这是**协议选择**——只按协议可行性
   置灰，不按显示能力，显示不了由运行期降级兜底，见 [`moonlight-video.md`](moonlight-video.md) §2/§3）、
+  HDR 传输（`mlHdrMode`：HDR10 (PQ) / HLG，仅 Rec2020 时出现，驱动 `/launch hdrMode` 与 SDP `dynamicRangeMode`）、
   HDR 亮度上报（峰值 / 全屏平均，各「自动 / 手动」；自动为**连接时**的窗口采样，
   见 [`moonlight-video.md`](moonlight-video.md) §4）、
   会话缩放（自动 / 手动 / 不额外设置）、超分（沿用 `useGlobalSr` + `sr*`，与 RDP 连接同名字段）。

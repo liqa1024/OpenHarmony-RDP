@@ -238,7 +238,7 @@ export const moonlightVideoFormats: (choice: number, serverCodecModeSupport: num
 /** The negotiated codec token ("h264" / "hevc" / "av1"), or "" before a stream starts. */
 export const moonlightVideoCodec: () => string;
 
-/** "on" while the session really presents HDR (host confirmed + output stage running); "" otherwise. */
+/** The HDR format the session really presents: "HDR10" / "HLG", or "Vivid" when the host's stream carries the dynamic layer; "" while not presenting HDR. */
 export const moonlightVideoHdr: () => string;
 
 /** Decoder support for an ML_CODEC_* (1 H.264 / 2 HEVC / 3 AV1): 0 none, 1 software, 2 hardware. */
@@ -280,6 +280,8 @@ export interface MoonlightSessionConfig {
   clientRefreshRateX100: number;
   colorSpace: number;
   colorRange: number;
+  /** HDR base transfer with colorSpace Rec2020: 0 = SDR, 1 = HDR10 (PQ), 2 = HLG. */
+  hdrMode?: number;
   encryptionFlags: number;
   /** 16-byte remote-input AES key / IV as lowercase hex. */
   remoteInputAesKeyHex: string;

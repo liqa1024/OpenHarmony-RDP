@@ -14,6 +14,7 @@
 #include <native_window/external_window.h>
 
 #include "hmrdp_log.h"
+#include "hmrdp_hdr_dynamic.h"
 
 namespace hmrdp {
 namespace {
@@ -50,18 +51,19 @@ std::string FormatName(VkFormat format) {
 // forced: a surface that does not offer the pair keeps the SDR choice and the caller falls back to
 // SDR (see CreateSwapchainLocked), which is what makes "the window cannot do HDR" a fact rather than
 // a wrong-coloured picture.
-VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats, bool hdr) {
+VkSurfaceFormatKHR PickSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats, bool hdr,
+                                     bool hlg) {
+  const VkColorSpaceKHR hdrColorSpace =
+      hlg ? VK_COLOR_SPACE_HDR10_HLG_EXT : VK_COLOR_SPACE_HDR10_ST2084_EXT;
   if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
     VkSurfaceFormatKHR picked{};
     picked.format = hdr ? kHdrPictureFormat : VK_FORMAT_B8G8R8A8_UNORM;
-    picked.colorSpace =
-        hdr ? VK_COLOR_SPACE_HDR10_ST2084_EXT : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    picked.colorSpace = hdr ? hdrColorSpace : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     return picked;
   }
   if (hdr) {
     for (const VkSurfaceFormatKHR& format : formats) {
-      if (format.format == kHdrPictureFormat &&
-          format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+      if (format.format == kHdrPictureFormat && format.colorSpace == hdrColorSpace) {
         return format;
       }
     }
@@ -1563,7 +1565,7 @@ int VkRenderer::PresentVideo(const void* nativeBuffer, const VideoFrameGeometry&
     // failure return would have been counted as a broken output stage, which this is not.
     if (pictureFormat_ == kHdrPictureFormat && !videoImport_.tenBitFrames()) {
       HMRDP_LOGW("vulkan presenter: the host is in HDR but the frames are 8-bit; falling back to SDR");
-      streamHdr_ = false;
+      hdrBase_ = 0;
       surfaceDirty_ = true;
       continue;
     }
@@ -1671,13 +1673,20 @@ bool VkRenderer::videoColorMismatch() const {
   return videoImport_.colorMismatch();
 }
 
-void VkRenderer::SetStreamHdr(bool enabled) {
+void VkRenderer::SetStreamHdr(int base) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (streamHdr_ == enabled) {
+  if (hdrBase_ == base) {
     return;
   }
-  streamHdr_ = enabled;
-  // The swapchain format and the output stage both depend on this, so the next present rebuilds them.
+  hdrBase_ = base;
+  if (base == 0) {
+    // Leaving HDR must not leave a stale dynamic payload on the window next to the OH_VIDEO_NONE
+    // type the SDR declaration writes.
+    vividHdr_ = false;
+    dynamicHdrPayload_.clear();
+  }
+  // The swapchain format/colour space and the output stage both depend on this, so the next present
+  // rebuilds them.
   surfaceDirty_ = true;
 }
 
@@ -1688,8 +1697,63 @@ void VkRenderer::SetHdrStaticMetadata(const HdrStaticMetadata& metadata) {
   // declaration in place anyway when HDR is already running: this is metadata, not a swapchain
   // property, and it must not be lost if the ordering ever changes.
   if (hdrOutputActive_) {
-    DeclareWindowColorLocked(true);
+    DeclareWindowColorLocked(true, hdrBase_ == 2);
   }
+}
+
+// The host's per-frame HDR Vivid metadata (see hmrdp_hdr_dynamic.h). It is not a swapchain property
+// (the encoding is unchanged), so when the output stage is already running the window declaration is
+// rewritten in place with the new payload; otherwise the value is remembered for the next build.
+void VkRenderer::SetStreamDynamicHdr(const uint8_t* payload, int size) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const size_t length =
+      (payload != nullptr && size > 0) ? static_cast<size_t>(size) : static_cast<size_t>(0);
+  const bool vivid = length != 0;
+  const bool vividChanged = vivid != vividHdr_;
+  const bool same = !vividChanged && dynamicHdrPayload_.size() == length &&
+                    (length == 0 || std::memcmp(dynamicHdrPayload_.data(), payload, length) == 0);
+  if (same) {
+    return;
+  }
+  vividHdr_ = vivid;
+  if (vivid) {
+    dynamicHdrPayload_.assign(payload, payload + length);
+  } else {
+    dynamicHdrPayload_.clear();
+  }
+  if (!hdrOutputActive_) {
+    return;
+  }
+  // Vivid rides the swapchain's own metadata too (the Vulkan channel); its payload changes every
+  // frame, and the call is metadata-only (no synchronisation involved).
+  if (vividHdr_) {
+    ApplySwapchainHdrMetadataLocked();
+  }
+  if (pendingWindow_ == nullptr) {
+    return;
+  }
+  if (vividChanged) {
+    // The metadata type changes with it, so the whole declaration is rewritten - and that is also
+    // the only place the change is logged.
+    DeclareWindowColorLocked(true, hdrBase_ == 2);
+    return;
+  }
+  // Only the per-frame payload changed: no type/colour-space change, so just refresh that key. It
+  // changes every frame, so the write's return code is logged only when it changes.
+  auto* window = static_cast<OHNativeWindow*>(pendingWindow_);
+  const int32_t ret = OH_NativeWindow_SetMetadataValue(
+      window, OH_HDR_DYNAMIC_METADATA, static_cast<int32_t>(dynamicHdrPayload_.size()),
+      dynamicHdrPayload_.data());
+  if (ret != dynamicHdrRetLogged_) {
+    dynamicHdrRetLogged_ = ret;
+    HMRDP_LOGI("vulkan window: dynamic metadata write returns %{public}d (%{public}zu bytes)",
+               static_cast<int>(ret), dynamicHdrPayload_.size());
+  }
+}
+
+bool VkRenderer::vividHdrActive() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return vividHdr_;
 }
 
 // Everything the compositor needs to know about the swapchain's images.
@@ -1705,7 +1769,7 @@ void VkRenderer::SetHdrStaticMetadata(const HdrStaticMetadata& metadata) {
 // them the compositor converts the picture from whatever it assumes. The values are the host's when it
 // described them and this build's BT.2020 1000-nit default otherwise, the same pair the reference
 // clients report.
-void VkRenderer::DeclareWindowColorLocked(bool hdr) {
+void VkRenderer::DeclareWindowColorLocked(bool hdr, bool hlg) {
   if (pendingWindow_ == nullptr) {
     return;
   }
@@ -1713,13 +1777,23 @@ void VkRenderer::DeclareWindowColorLocked(bool hdr) {
   // The SDR branch writes the same statement for an sRGB picture, and it clears the HDR half: the
   // declaration lives on the window, which outlives a swapchain, so a host that switches HDR off
   // mid-session would otherwise keep a PQ gamut and HDR metadata on an sRGB window.
-  int32_t metadataType = hdr ? OH_VIDEO_HDR_HDR10 : OH_VIDEO_NONE;
-  OH_NativeWindow_SetColorSpace(window, hdr ? OH_COLORSPACE_BT2020_PQ_FULL : OH_COLORSPACE_SRGB_FULL);
-  OH_NativeWindow_NativeWindowHandleOpt(
-      window, SET_COLOR_GAMUT,
-      hdr ? NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ : NATIVEBUFFER_COLOR_GAMUT_SRGB);
-  OH_NativeWindow_SetMetadataValue(window, OH_HDR_METADATA_TYPE, sizeof(metadataType),
-                                   reinterpret_cast<uint8_t*>(&metadataType));
+  //
+  // The metadata type follows the dynamic layer the stream actually carries: HDR Vivid is its own
+  // type on this platform, everything else is the base transfer's type.
+  int32_t metadataType = !hdr ? OH_VIDEO_NONE
+                             : vividHdr_ ? OH_VIDEO_HDR_VIVID
+                                         : hlg ? OH_VIDEO_HDR_HLG : OH_VIDEO_HDR_HDR10;
+  const OH_NativeBuffer_ColorSpace windowColorSpace =
+      hdr ? (hlg ? OH_COLORSPACE_BT2020_HLG_FULL : OH_COLORSPACE_BT2020_PQ_FULL)
+          : OH_COLORSPACE_SRGB_FULL;
+  const int32_t windowGamut = hdr ? (hlg ? NATIVEBUFFER_COLOR_GAMUT_BT2100_HLG
+                                        : NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ)
+                                  : NATIVEBUFFER_COLOR_GAMUT_SRGB;
+  const int32_t colorSpaceRet = OH_NativeWindow_SetColorSpace(window, windowColorSpace);
+  const int32_t gamutRet = OH_NativeWindow_NativeWindowHandleOpt(window, SET_COLOR_GAMUT, windowGamut);
+  const int32_t typeRet = OH_NativeWindow_SetMetadataValue(
+      window, OH_HDR_METADATA_TYPE, sizeof(metadataType),
+      reinterpret_cast<uint8_t*>(&metadataType));
   if (!hdr) {
     return;
   }
@@ -1732,18 +1806,67 @@ void VkRenderer::DeclareWindowColorLocked(bool hdr) {
   staticMetadata.smpte2086.minLuminance = hdrStaticMetadata_.minLuminance;
   staticMetadata.cta861.maxContentLightLevel = hdrStaticMetadata_.maxContentLightLevel;
   staticMetadata.cta861.maxFrameAverageLightLevel = hdrStaticMetadata_.maxFrameAverageLightLevel;
-  OH_NativeWindow_SetMetadataValue(window, OH_HDR_STATIC_METADATA, sizeof(staticMetadata),
-                                   reinterpret_cast<uint8_t*>(&staticMetadata));
-  HMRDP_LOGI("vulkan window: hdr10 declared colorspace=%{public}d gamut=%{public}d metadata=%{public}d "
-             "source=%{public}s max=%{public}d min=%{public}d cll=%{public}d fall=%{public}d",
-             static_cast<int>(OH_COLORSPACE_BT2020_PQ_FULL),
-             static_cast<int>(NATIVEBUFFER_COLOR_GAMUT_BT2100_PQ),
-             static_cast<int>(OH_VIDEO_HDR_HDR10),
-             hdrStaticMetadata_.valid ? "host" : "default",
+  const int32_t staticRet = OH_NativeWindow_SetMetadataValue(
+      window, OH_HDR_STATIC_METADATA, sizeof(staticMetadata),
+      reinterpret_cast<uint8_t*>(&staticMetadata));
+  // The per-frame dynamic metadata (see SetStreamDynamicHdr). Rewritten with every frame's change so
+  // the compositor tone-maps the frame it is about to composite.
+  int32_t dynamicRet = -1;
+  if (vividHdr_ && !dynamicHdrPayload_.empty()) {
+    dynamicRet = OH_NativeWindow_SetMetadataValue(
+        window, OH_HDR_DYNAMIC_METADATA, static_cast<int32_t>(dynamicHdrPayload_.size()),
+        dynamicHdrPayload_.data());
+  }
+  HMRDP_LOGI("vulkan window: hdr declared base=%{public}s type=%{public}d dynamic=%{public}s "
+             "bytes=%{public}d colorspace=%{public}d gamut=%{public}d source=%{public}s "
+             "max=%{public}d min=%{public}d cll=%{public}d fall=%{public}d "
+             "ret(cs=%{public}d,gamut=%{public}d,type=%{public}d,static=%{public}d,dyn=%{public}d)",
+             hlg ? "hlg" : "pq", static_cast<int>(metadataType), vividHdr_ ? "vivid" : "none",
+             static_cast<int>(dynamicHdrPayload_.size()), static_cast<int>(windowColorSpace),
+             static_cast<int>(windowGamut), hdrStaticMetadata_.valid ? "host" : "default",
              static_cast<int>(hdrStaticMetadata_.maxLuminance),
              static_cast<int>(hdrStaticMetadata_.minLuminance * 10000.0f),
              static_cast<int>(hdrStaticMetadata_.maxContentLightLevel),
-             static_cast<int>(hdrStaticMetadata_.maxFrameAverageLightLevel));
+             static_cast<int>(hdrStaticMetadata_.maxFrameAverageLightLevel),
+             static_cast<int>(colorSpaceRet), static_cast<int>(gamutRet), static_cast<int>(typeRet),
+             static_cast<int>(staticRet), static_cast<int>(dynamicRet));
+}
+
+void VkRenderer::ApplySwapchainHdrMetadataLocked() {
+  VkApi& api = vk_.api();
+  if (swapchain_ == VK_NULL_HANDLE || !hdrOutputActive_ || api.SetHdrMetadataEXT == nullptr) {
+    return;
+  }
+  VkHdrMetadataEXT metadata{};
+  metadata.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT;
+  metadata.displayPrimaryRed = {hdrStaticMetadata_.redX, hdrStaticMetadata_.redY};
+  metadata.displayPrimaryGreen = {hdrStaticMetadata_.greenX, hdrStaticMetadata_.greenY};
+  metadata.displayPrimaryBlue = {hdrStaticMetadata_.blueX, hdrStaticMetadata_.blueY};
+  metadata.whitePoint = {hdrStaticMetadata_.whiteX, hdrStaticMetadata_.whiteY};
+  metadata.maxLuminance = hdrStaticMetadata_.maxLuminance;
+  metadata.minLuminance = hdrStaticMetadata_.minLuminance;
+  metadata.maxContentLightLevel = hdrStaticMetadata_.maxContentLightLevel;
+  metadata.maxFrameAverageLightLevel = hdrStaticMetadata_.maxFrameAverageLightLevel;
+  // HDR Vivid: the vendor channel for per-frame dynamic metadata. What it takes is the CUVA
+  // `dynamic_metadata()` body, so the registered T.35 envelope (country / terminal-provider /
+  // provider-oriented, 5 bytes) is skipped and `system_start_code` is the first byte it sees - the
+  // same span the reference client hands over. The window key above keeps the whole registered
+  // payload, the form that channel was observed to accept.
+  VkHdrVividDynamicMetadataHUAWEI vivid{};
+  bool vividChained = false;
+  if (vividHdr_ && dynamicHdrPayload_.size() > kVividEnvelopeSize) {
+    vivid.sType = VK_STRUCTURE_TYPE_HDR_VIVID_DYNAMIC_METADATA_HUAWEI;
+    vivid.dynamicMetadataSize = dynamicHdrPayload_.size() - kVividEnvelopeSize;
+    vivid.pDynamicMetadata = dynamicHdrPayload_.data() + kVividEnvelopeSize;
+    metadata.pNext = &vivid;
+    vividChained = true;
+  }
+  api.SetHdrMetadataEXT(vk_.device(), 1, &swapchain_, &metadata);
+  if (!swapchainHdrMetaLogged_) {
+    swapchainHdrMetaLogged_ = true;
+    HMRDP_LOGI("vulkan swapchain: hdr metadata set (static source=%{public}s, vivid=%{public}d)",
+               hdrStaticMetadata_.valid ? "host" : "default", vividChained ? 1 : 0);
+  }
 }
 
 bool VkRenderer::hdrActive() const {
@@ -1831,32 +1954,35 @@ bool VkRenderer::CreateSwapchainLocked() {
   std::vector<VkSurfaceFormatKHR> formats(formatCount);
   api.GetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice(), surface_, &formatCount, formats.data());
 
-  // The HDR10 half of the swapchain decision needs a real surface, so it is observed here (the
+  // The HDR half of the swapchain decision needs a real surface, so it is observed here (the
   // device half lives in the static probe, hmrdp_vk_context.h). Logged once per surface: it answers
   // "can this window present HDR at all" and prints every candidate the surface advertised.
   surfaceHdr_ = ObserveSurfaceHdrSupport(api, context.physicalDevice(), surface_);
   if (!surfaceHdrLogged_) {
     surfaceHdrLogged_ = true;
-    HMRDP_LOGI("vulkan surface: hdr10 format=%{public}d colorspace=%{public}d, %{public}u "
-               "candidate(s): %{public}s",
+    HMRDP_LOGI("vulkan surface: hdr10 format=%{public}d colorspace=%{public}d hlg=%{public}d, "
+               "%{public}u candidate(s): %{public}s",
                surfaceHdr_.hdr10FormatOk ? 1 : 0, surfaceHdr_.hdr10ColorSpaceOk ? 1 : 0,
-               surfaceHdr_.formatCount, surfaceHdr_.formats.c_str());
+               surfaceHdr_.hlgColorSpaceOk ? 1 : 0, surfaceHdr_.formatCount,
+               surfaceHdr_.formats.c_str());
   }
 
   // HDR is used only when every half holds: the host confirmed the stream is HDR and this window
-  // offers the HDR10 pair. Anything missing falls back to the SDR path, which is also what the
-  // toolbar reports (hdrActive) - a wrong-coloured picture is never an option.
+  // offers the pair for the base transfer it is in (HDR10/PQ or HLG). Anything missing falls back to
+  // the SDR path, which is also what the toolbar reports (hdrActive) - a wrong-coloured picture is
+  // never an option.
   const VulkanCapabilities& vkCaps = GetVulkanCapabilities();
-  const bool hdrOutput = streamHdr_ && surfaceHdr_.hdr10() && vkCaps.extSwapchainColorspace &&
-                         vkCaps.hdr10AttachmentOk;
-  const VkSurfaceFormatKHR surfaceFormat = PickSurfaceFormat(formats, hdrOutput);
+  const bool hlgBase = hdrBase_ == 2;
+  const bool hdrOutput = hdrBase_ != 0 && (hlgBase ? surfaceHdr_.hlg() : surfaceHdr_.hdr10()) &&
+                         vkCaps.extSwapchainColorspace && vkCaps.hdr10AttachmentOk;
+  const VkSurfaceFormatKHR surfaceFormat = PickSurfaceFormat(formats, hdrOutput, hlgBase);
   // The picture the 超分 / letterbox tail consumes is stored in the output's own encoding, which is
   // what keeps the letterbox a pass-through (see kPictureFormat / kHdrPictureFormat).
   pictureFormat_ = PictureFormatFor(hdrOutput);
-  // Only true once the swapchain really came back as the HDR10 format (set after it is created).
+  // Only true once the swapchain really came back as the HDR format (set after it is created).
   hdrOutputActive_ = false;
   // Say what these images are; the compositor is what actually drives the panel.
-  DeclareWindowColorLocked(hdrOutput);
+  DeclareWindowColorLocked(hdrOutput, hlgBase);
 
   uint32_t presentModeCount = 0;
   api.GetPhysicalDeviceSurfacePresentModesKHR(context.physicalDevice(), surface_, &presentModeCount, nullptr);
@@ -1928,7 +2054,11 @@ bool VkRenderer::CreateSwapchainLocked() {
   extent_ = extent;
   // The output stage is HDR only when the swapchain really came back as the HDR10 format and pair.
   hdrOutputActive_ = pictureFormat_ == kHdrPictureFormat && format_ == kHdrPictureFormat &&
-                     surfaceFormat.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+                     (surfaceFormat.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT ||
+                      surfaceFormat.colorSpace == VK_COLOR_SPACE_HDR10_HLG_EXT);
+  // Describe the swapchain's images through Vulkan as well (VK_EXT_hdr_metadata): this is the
+  // channel a self-drawn image is declared with, and the carrier for HDR Vivid dynamic metadata.
+  ApplySwapchainHdrMetadataLocked();
 
   uint32_t swapImageCount = 0;
   api.GetSwapchainImagesKHR(device, swapchain_, &swapImageCount, nullptr);

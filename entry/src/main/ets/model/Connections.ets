@@ -1,6 +1,6 @@
 import {
   ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_DEFAULT_PORT,
-  ML_HDR_PEAK_DEFAULT_NITS, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile,
+  ML_HDR_MODE_PQ, ML_HDR_PEAK_DEFAULT_NITS, ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO, MoonlightProfile,
   MoonlightStreamConfig, PairResult
 } from '../moonlight/MoonlightModels';
 import { SR_BACKEND_XENGINE, SrSetting } from './Profiles';
@@ -196,6 +196,7 @@ export class ConnectionExport {
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
   mlColorSpace: number = ML_COLORSPACE_REC709;
+  mlHdrMode: number = ML_HDR_MODE_PQ;
   useGlobalStream: boolean = true;
   mlScaleMode: number = ML_SCALE_AUTO;
   mlScalePercent: number = 100;
@@ -523,6 +524,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
   mlBitrateKbps: number = ML_BITRATE_DEFAULT_KBPS;
   mlCodec: number = ML_CODEC_AUTO;
   mlColorSpace: number = ML_COLORSPACE_REC709;
+  mlHdrMode: number = ML_HDR_MODE_PQ;
   mlScaleMode: number = ML_SCALE_AUTO;
   mlScalePercent: number = 100;
   mlHdrPeakAuto: boolean = true;
@@ -637,6 +639,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     slots[53] = this.mlHdrPeakNits.toString();
     slots[54] = this.mlHdrFullFrameAuto ? '1' : '0';
     slots[55] = this.mlHdrFullFrameNits.toString();
+    slots[56] = this.mlHdrMode.toString();
   }
 
   protected readProtocolRecord(parts: string[]): void {
@@ -671,6 +674,8 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     this.mlHdrFullFrameAuto = parts.length > 54 ? parts[54] !== '0' : true;
     this.mlHdrFullFrameNits = parts.length > 55
       ? parseFieldPositive(parts[55], ML_HDR_PEAK_DEFAULT_NITS) : ML_HDR_PEAK_DEFAULT_NITS;
+    this.mlHdrMode = parts.length > 56
+      ? parseFieldNumber(parts[56], ML_HDR_MODE_PQ) : ML_HDR_MODE_PQ;
   }
 
   protected writeProtocolExport(item: ConnectionExport): void {
@@ -685,6 +690,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     item.mlBitrateKbps = this.mlBitrateKbps;
     item.mlCodec = this.mlCodec;
     item.mlColorSpace = this.mlColorSpace;
+    item.mlHdrMode = this.mlHdrMode;
     item.mlMac = this.mlMac;
     item.useGlobalStream = this.useGlobalStream;
     item.mlScaleMode = this.mlScaleMode;
@@ -711,6 +717,7 @@ export class MoonlightConnection extends SavedConnection implements SrSetting {
     this.mlBitrateKbps = item.mlBitrateKbps;
     this.mlCodec = item.mlCodec;
     this.mlColorSpace = item.mlColorSpace;
+    this.mlHdrMode = item.mlHdrMode;
     this.mlMac = item.mlMac;
     this.useGlobalStream = item.useGlobalStream;
     this.mlScaleMode = item.mlScaleMode;

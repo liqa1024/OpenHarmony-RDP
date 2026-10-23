@@ -113,6 +113,10 @@ ColorDescription Hdr10Bt2020PqLimited() {
   return ColorDescription{ Primaries::kBt2020, Transfer::kPq, Matrix::kBt2020Ncl, Range::kLimited, 10 };
 }
 
+ColorDescription HlgBt2020Limited() {
+  return ColorDescription{ Primaries::kBt2020, Transfer::kHlg, Matrix::kBt2020Ncl, Range::kLimited, 10 };
+}
+
 bool TryFromNativeBuffer(int32_t ohColorSpace, int bitDepth, ColorDescription* out) {
   if (out == nullptr || ohColorSpace == OH_COLORSPACE_NONE) {
     return false;
@@ -154,6 +158,17 @@ bool FrameIsHdr(int codecTransfer, bool declaredKnown, const ColorDescription& d
     return declared.IsHdr();
   }
   return expectedKnown && expected.IsHdr();
+}
+
+bool FrameIsHlg(int codecTransfer, bool declaredKnown, const ColorDescription& declared,
+                bool expectedKnown, const ColorDescription& expected) {
+  if (codecTransfer > 0 && codecTransfer != TRANSFER_CHARACTERISTIC_UNSPECIFIED) {
+    return codecTransfer == TRANSFER_CHARACTERISTIC_HLG;
+  }
+  if (declaredKnown) {
+    return declared.transfer == Transfer::kHlg;
+  }
+  return expectedKnown && expected.transfer == Transfer::kHlg;
 }
 
 std::string ToString(const ColorDescription& description) {

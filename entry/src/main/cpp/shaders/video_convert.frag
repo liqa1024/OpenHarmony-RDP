@@ -28,12 +28,12 @@
 //     declared in (A2B10G10R10_UNORM_PACK32), so the values pass through unchanged. There is no
 //     chroma plane and the row pitch is already bytes, so the word starts at byte `x * 4`.
 //
-// The one conversion that needs real transfer maths is `color.y` = 1: an HDR (BT.2020 PQ) frame shown
-// through an SDR picture, i.e. the host in HDR while this window could not offer HDR10. The frame is
-// then folded onto SDR here (PQ -> linear, BT.2020 -> BT.709, onto the SDR reference white, sRGB),
-// and the whole downstream tail stays SDR. This is the session's `hdr-degraded` case, a usable picture
-// rather than a faithful tone map: highlights above the reference white clip (see VkRenderer and
-// kSdrWhiteNits below).
+// The one conversion that needs real transfer maths is `color.y` = 1: an HDR frame shown through an
+// SDR picture, i.e. the host in HDR while this window could not offer HDR10/HLG. `color.w` then says
+// which transfer to fold: 0 = PQ (BT.2020 PQ), 1 = HLG (BT.2020 ARIB STD-B67). The frame is folded
+// onto SDR here and the whole downstream tail stays SDR. This is the session's `hdr-degraded` case, a
+// usable picture rather than a faithful tone map: highlights above the reference white clip (see
+// VkRenderer and kSdrWhiteNits below).
 #version 450
 layout(location = 0) in vec2 vByte;
 layout(location = 0) out vec4 oColor;
@@ -44,7 +44,7 @@ layout(set = 0, binding = 1) uniform Frame {
   vec4 rowR;   // (cY, cCb, cCr, offset)
   vec4 rowG;
   vec4 rowB;
-  vec4 color;  // x = the sample's code value (255 / 1023), y = 1 when an HDR frame is shown as SDR, z = P010 word divisor
+  vec4 color;  // x = the sample's code value (255 / 1023), y = 1 when an HDR frame is shown as SDR, z = P010 word divisor, w = 1 when that HDR frame is HLG
 } uFrame;
 
 // SMPTE ST 2084 (PQ) constants and the sRGB curve, matching the reference's video_hdr_metadata.h.
@@ -87,6 +87,25 @@ vec3 hdrToSdr(vec3 pq) {
   return linearToSrgb(lin);
 }
 
+// ARIB STD-B67 (HLG) signal (0..1) -> scene linear (0..1 relative), the inverse of the OETF.
+vec3 hlgToLinear(vec3 hlg) {
+  const vec3 a = vec3(0.17883277);
+  const vec3 b = vec3(0.28466892);
+  const vec3 c = vec3(0.55991073);
+  const vec3 lo = hlg * hlg / 3.0;
+  const vec3 hi = (exp((clamp(hlg, 0.0, 1.0) - c) / a) + b) / 12.0;
+  return mix(lo, hi, step(vec3(0.5), hlg));
+}
+
+// HLG's nominal diffuse white is 0.75, so the scene-linear value there is the 1.0 the SDR picture
+// holds; everything above it (the highlights HLG leaves headroom for) clips.
+vec3 hlgToSdr(vec3 hlg) {
+  const float kHlgDiffuseWhite = 0.75;
+  const vec3 white = hlgToLinear(vec3(kHlgDiffuseWhite));
+  vec3 lin = kBt2020ToBt709 * (hlgToLinear(hlg) / white);
+  return linearToSrgb(lin);
+}
+
 // One byte of the imported image at byte coordinate (x, y).
 float byteAt(ivec2 at) {
   return texelFetch(uBytes, at, 0).r;
@@ -125,6 +144,7 @@ void main() {
   const ivec2 visible = ivec2(uFrame.frame.xy);
   const ivec2 pixel = ivec2(clamp(vByte, vec2(0.0), uFrame.frame.xy - 1.0)) + origin;
   const bool degrade = uFrame.color.y > 0.5;
+  const bool degradeHlg = uFrame.color.w > 0.5;
 
   if (uFrame.plane.z > 0.5) {
     // Packed 10-bit RGB: reassemble the little-endian word from its four bytes and split the 10-bit
@@ -138,7 +158,7 @@ void main() {
     vec3 rgb = vec3(float(word & 1023u) / scale,
                     float((word >> 10) & 1023u) / scale,
                     float((word >> 20) & 1023u) / scale);
-    oColor = vec4(degrade ? hdrToSdr(rgb) : rgb, 1.0);
+    oColor = vec4(degrade ? (degradeHlg ? hlgToSdr(rgb) : hdrToSdr(rgb)) : rgb, 1.0);
     return;
   }
 
@@ -157,5 +177,5 @@ void main() {
                         dot(uFrame.rowG.xyz, ycc) + uFrame.rowG.w,
                         dot(uFrame.rowB.xyz, ycc) + uFrame.rowB.w);
   const vec3 color = clamp(rgb / uFrame.color.x, 0.0, 1.0);
-  oColor = vec4(degrade ? hdrToSdr(color) : color, 1.0);
+  oColor = vec4(degrade ? (degradeHlg ? hlgToSdr(color) : hdrToSdr(color)) : color, 1.0);
 }

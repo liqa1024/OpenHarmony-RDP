@@ -8,7 +8,8 @@ import {
   ConnectionExport, PROTOCOL_MOONLIGHT, PROTOCOL_RDP, SavedConnection
 } from '../model/Connections';
 import {
-  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_PEAK_DEFAULT_NITS,
+  ML_BITRATE_DEFAULT_KBPS, ML_CODEC_AUTO, ML_COLORSPACE_REC709, ML_HDR_MODE_PQ,
+  ML_HDR_PEAK_DEFAULT_NITS,
   ML_RES_FOLLOW_SCREEN, ML_SCALE_AUTO
 } from '../moonlight/MoonlightModels';
 import { AppSettings, PINCH_MODE_TOUCH, PINCH_MODE_WHEEL, SettingsStore,
@@ -79,6 +80,7 @@ export class ConfigTransfer {
     item.mlBitrateKbps = ConfigTransfer.readNumber(rec, 'mlBitrateKbps', ML_BITRATE_DEFAULT_KBPS);
     item.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', ML_CODEC_AUTO);
     item.mlColorSpace = ConfigTransfer.readNumber(rec, 'mlColorSpace', ML_COLORSPACE_REC709);
+    item.mlHdrMode = ConfigTransfer.readNumber(rec, 'mlHdrMode', ML_HDR_MODE_PQ);
     item.useGlobalStream = ConfigTransfer.readBoolean(rec, 'useGlobalStream', true);
     item.mlScaleMode = ConfigTransfer.readNumber(rec, 'mlScaleMode', ML_SCALE_AUTO);
     item.mlScalePercent = ConfigTransfer.readNumber(rec, 'mlScalePercent', 100);
@@ -344,6 +346,7 @@ export class ConfigTransfer {
       ConfigTransfer.readNumber(rec, 'mlBitrateKbps', settings.mlBitrateKbps);
     settings.mlCodec = ConfigTransfer.readNumber(rec, 'mlCodec', settings.mlCodec);
     settings.mlColorSpace = ConfigTransfer.readNumber(rec, 'mlColorSpace', settings.mlColorSpace);
+    settings.mlHdrMode = ConfigTransfer.readNumber(rec, 'mlHdrMode', settings.mlHdrMode);
     settings.mlHdrPeakAuto =
       ConfigTransfer.readBoolean(rec, 'mlHdrPeakAuto', settings.mlHdrPeakAuto);
     settings.mlHdrPeakNits =

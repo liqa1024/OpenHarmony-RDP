@@ -138,9 +138,10 @@ device（[`architecture.md`](architecture.md) §4.1）。
      生成（8/10 位两套），归一用该布局的样点字宽。HDR 帧因此**不需要任何 PQ↔SDR 变换**：帧的值就是 picture
      要的编码。判据是 `plane.z`（打包标志）、`plane.w`（每样点字节数）与 `color.x`（样本字宽 255/1023），都随
      该帧槽的 uniform buffer 传入。
-   - **主机说 HDR 而这一路给不了 HDR10 时降级**：呈现器把 picture 与交换链留在 SDR，convert pass 把这帧
-     （BT.2020/PQ）折到 SDR（PQ→线性→2020→709→203nit 白→sRGB，由 `color.y` 标志触发），会话报 `hdr-degraded`。
-     **不把原始值送进 HDR10 交换链**；降级是**正常呈现路径**（不丢帧、不计呈现失败），下游 FSR/letterbox 全走 SDR。
+   - **主机说 HDR 而这一路给不了对应 HDR10/HLG 时降级**：呈现器把 picture 与交换链留在 SDR，convert pass 把这帧
+     折到 SDR（`color.y` 触发；`color.w` 选曲线：PQ→线性→2020→709→203nit 白→sRGB，或 HLG 的反 OETF→2020→709→sRGB），
+     会话报 `hdr-degraded`。
+     **不把原始值送进 HDR 交换链**；降级是**正常呈现路径**（不丢帧、不计呈现失败），下游 FSR/letterbox 全走 SDR。
   - **几何取解码器报的账，不推**：420 半平面的**色度面字节偏移 = `stride` × `sliceHeight`**——`stride` 是字节行距
     （`OH_MD_KEY_VIDEO_STRIDE`），`sliceHeight` 是**单个面在内存里实际分配的行数**（`OH_MD_KEY_VIDEO_SLICE_HEIGHT`，
     ≥ 可见高）。两者连同可见尺寸与裁剪矩形一起由编解码器报出，取处是 `onStreamChanged` 的 `OH_AVFormat` 或
@@ -227,9 +228,12 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
 - **HDR 的分工：一个协议请求轴 + 两条运行期事实**。`色彩协议与HDR` 里的 Rec2020 是**协议选择**（选它即请求 10 位
   档位与 `hdrMode`，见 [`moonlight-video.md`](moonlight-video.md) §3/§4），**不按显示能力置灰**：置灰只按协议
   可行性（本机能否解 10 位 + 主机是否广告 Main10）。能不能显示由运行期决定：**窗口那份格式与色彩空间清单**只有
-  拿到 surface 才读得到（`ObserveSurfaceHdrSupport`，呈现器建交换链时报一行 `vulkan surface: hdr10 …`），以及
-  **解码器是否真交出 10 位帧**；两者任一不成立就是 `hdr-degraded`（降级到 SDR，见 §4），既不是黑屏，也不是
-  "选项不可用"。**`libxengine` 式的"缺件降级"在这里适用**：缺件就降级，运行期事实只影响"这次会话到底是不是 HDR"。
+  拿到 surface 才读得到（`ObserveSurfaceHdrSupport`，呈现器建交换链时报一行 `vulkan surface: hdr10 … hlg=…`），
+  以及 **解码器是否真交出 10 位帧**；两者任一不成立就是 `hdr-degraded`（降级到 SDR，见 §4），既不是黑屏，也不是
+  "选项不可用"。交换链/窗口的色彩空间按连接的**基座传输**取 PQ（`HDR10_ST2084_EXT`）或 HLG（`HDR10_HLG_EXT`）；
+  逐帧的动态 HDR（只有 HDR Vivid）另行经窗口 `OH_HDR_DYNAMIC_METADATA` 转发，静态与 Vivid 同时走 Vulkan 正规通道
+  （`vkSetHdrMetadataEXT` / `VK_HUAWEI_hdr_vivid`，见 [`moonlight-video.md`](moonlight-video.md) §2）。**`libxengine` 式的"缺件降级"在这里适用**：缺件就降级，
+  运行期事实只影响"这次会话到底是不是 HDR"。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**
   （`<sdk>/default/hms/native/sysroot/usr/include/xengine`），与 toolchain 指向的 openharmony sysroot 同级；

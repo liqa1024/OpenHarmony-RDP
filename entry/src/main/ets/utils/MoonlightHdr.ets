@@ -76,12 +76,13 @@ export function clampHdrFullFrameNits(nits: number, peak: number): number {
 // ---------------------------------------------------------------------------
 // 面板亮度测量（连接时上报用）
 //
-// 上报的三项里，峰值 = `sdrNits × maxHeadroom`；满帧可持续亮度（面板 ABL 下的全屏亮度）与峰值**不是同一个
-// 量**，所以它**不能"跟随峰值"**——把峰值当满帧亮度上报等于告诉主机"这块屏没有 ABL 限制"，中高亮度内容
-// 会整体偏亮。它按固定比例取（`HDR_FULL_FRAME_RATIO`）。
+// 上报的三项（`/launch` 的 maxBrightness / minBrightness / maxAverageBrightness）描述这块屏的能力：
+// 峰值 = `sdrNits × maxHeadroom`；满帧可持续亮度是面板 ABL 下的全屏亮度，与峰值**不是同一个量**，所以它
+// **不能"跟随峰值"**——把峰值当满帧亮度上报等于告诉主机"这块屏没有 ABL 限制"，中高亮度内容会整体偏亮，
+// 故按固定比例取（`HDR_FULL_FRAME_RATIO`）；黑位平台不给，用主机默认（见 MoonlightModels 的 `ML_HDR_MIN_NITS`）。
 //
-// `sdrNits` 随亮度条走，单次读数会抖动，而主机对已建虚拟显示器的容差是 ±max(25 nits, 5%)：超差就重建
-// 虚拟显示器、Windows 重读 EDID 并重算 SDR 白位（画面亮度会跳）。所以峰值这里多次采样取中位、并吸附到
+// 峰值要采样：`sdrNits` 随亮度条走、单次读数会抖，而主机对已建虚拟显示器的容差是 ±max(25 nits, 5%)，
+// 超差就重建虚拟显示器、Windows 重读 EDID 并重算 SDR 白位（画面亮度会跳）。所以多次采样取中位、并吸附到
 // 标准档；这是照 moonlight-harmony 的做法——moonlight-vplus（口径标准）的峰值直接读 EDID，天生稳定，
 // 我们平台没有那个读数，只能靠采样补上。
 
@@ -97,11 +98,8 @@ const HDR_MAX_SDR_VARIANCE = 1.5;
 const HDR_PEAK_TIERS: number[] = [400, 600, 800, 1000, 1200, 1600, 2000, 2600, 4000];
 // 吸附后跳变超过这个比例就保留原值（避免低峰值被拉高太多）。
 const HDR_TIER_TOLERANCE = 0.3;
-// 全屏可持续亮度取峰值的这个比例（面板 ABL 的通用量级）。
-//
-// 这是 moonlight-vplus（安卓版，作为口径标准）在面板不报 `desiredMaxAverageLuminance` 时的取法：
-// `fullFrame = max(黑位, peak × 0.2)`。安卓正常情况下读的是 EDID 里的真实 maxAvg，我们平台没有对应
-// 读数，所以只有这一条路可走——固定比例，不参与采样。
+// 全屏可持续亮度取峰值的这个比例：moonlight-vplus（安卓版，口径标准）在面板不报 EDID 的
+// `desiredMaxAverageLuminance` 时就是这么取的（`max(黑位, peak × 0.2)`），我们没有那个读数，只有这一条路。
 const HDR_FULL_FRAME_RATIO = 0.2;
 
 // 自动档位的满帧亮度（= 峰值的固定比例，钳在 [黑位, 峰值] 内）。页面也用它显示预览。
@@ -236,11 +234,8 @@ export class HdrLuminance {
   fullFrame: number = 0;
 }
 
-// 把画质设置解析成要上报的三个亮度值。峰值解析不出来（自动且本机测量不可靠）时返回 undefined，
-// 表示这一项不上报、交给主机自己的默认值——发一份不完整的上报会被主机整份拒绝，反而不如不发。
-//
-// `自动` 的峰值是连接时的实测值（采样中位×最大余量，吸附标准档）；`自动` 的全屏平均是**峰值的固定
-// 比例**（见 HDR_FULL_FRAME_RATIO），不跟随峰值本身，也不参与采样。只有峰值自动时才需要采样。
+// 把画质设置解析成要上报的三个亮度值（口径见本节开头）。峰值解析不出来（自动且本机测量不可靠）时返回
+// undefined：主机把三个值当一份整体校验，发一份不完整的反而不如不发。只有峰值自动时才需要采样。
 export async function resolveHdrLuminance(profile: MoonlightProfile): Promise<HdrLuminance | undefined> {
   let panel: HdrPanelLuminance | undefined = undefined;
   if (profile.hdrPeakAuto) {
