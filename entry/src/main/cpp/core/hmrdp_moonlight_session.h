@@ -75,10 +75,6 @@ struct MoonlightStreamConfig {
   // HDR base transfer: 0 = SDR, 1 = HDR10 (PQ), 2 = HLG. Meaningful only with colorSpace Rec.2020;
   // it selects the decoder's transfer, the presenter's output stage and the /launch hdrMode value.
   int hdrMode = 0;
-  // Display brightness of the HDR content itself, in percent (0 = show at SDR brightness, 100 = show at
-  // the highest HDR brightness the display currently allows, which is the platform default). Local
-  // presentation only; it is unrelated to the /launch luminance report.
-  int hdrWhitePointPercent = 100;
   int encryptionFlags = 0;
   // 16-byte remote-input AES key and IV (key + rikeyid-derived IV from /launch).
   std::string remoteInputAesKey;

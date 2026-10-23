@@ -429,7 +429,6 @@ napi_value MoonlightSessionStart(napi_env env, napi_callback_info info) {
   config.colorSpace = GetIntProperty(env, args[0], "colorSpace", 0);
   config.colorRange = GetIntProperty(env, args[0], "colorRange", 0);
   config.hdrMode = GetIntProperty(env, args[0], "hdrMode", 0);
-  config.hdrWhitePointPercent = GetIntProperty(env, args[0], "hdrWhitePointPercent", 100);
   config.encryptionFlags = GetIntProperty(env, args[0], "encryptionFlags", 0);
   config.localCursorMode = GetBoolProperty(env, args[0], "localCursorMode", false);
   config.enableAudio = GetBoolProperty(env, args[0], "enableAudio", true);

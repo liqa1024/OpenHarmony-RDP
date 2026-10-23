@@ -84,16 +84,12 @@ class FramePresenter {
   // SetSuperResolution - the answer usually arrives after this presenter exists. A host that never
   // reports HDR sends an SDR stream whatever was requested.
   virtual void SetStreamHdr(int base) { (void)base; }
-  // Display brightness of the HDR content itself, in percent (0 = show at SDR brightness, 100 = the
-  // highest HDR brightness the display currently allows, which is the platform default). Local
-  // presentation only. Applied when the HDR declaration is written, so it is remembered until then.
-  virtual void SetHdrWhitePoint(int percent) { (void)percent; }
-  // What the HDR picture is, told to the window the swapchain presents into (colour space, gamut,
-  // metadata type and this metadata). The host answers this while the session runs, right before the
-  // HDR state, so it is remembered until the window declaration is (re)written.
+  // What the HDR picture is, handed to the swapchain's own metadata (mastering metadata). The host
+  // answers this while the session runs, right before the HDR state, so it is remembered until the
+  // swapchain declaration is (re)written.
   virtual void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) { (void)metadata; }
   // The per-frame HDR Vivid metadata the host carries inside a standard HEVC stream (a registered
-  // T.35 SEI), handed to the window with the HDR declaration so the compositor can tone-map it.
+  // T.35 SEI), chained into the swapchain metadata so the compositor can tone-map the frame.
   // `payload` is the de-escaped registered payload, nullptr / 0 clears it (see hmrdp_hdr_dynamic.h).
   virtual void SetStreamDynamicHdr(const uint8_t* payload, int size) {
     (void)payload;

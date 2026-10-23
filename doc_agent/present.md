@@ -227,12 +227,13 @@ UI 置灰），约定见 [`architecture.md`](architecture.md) §5。上屏这一
   只会让 Moonlight 落在兜底链路；RDP 分栏完全不受影响。
 - **HDR 的分工：一个协议请求轴 + 两条运行期事实**。`色彩协议与HDR` 里的 Rec2020 是**协议选择**（选它即请求 10 位
   档位与 `hdrMode`，见 [`moonlight-video.md`](moonlight-video.md) §3/§4），**不按显示能力置灰**：置灰只按协议
-  可行性（本机能否解 10 位 + 主机是否广告 Main10）。能不能显示由运行期决定：**窗口那份格式与色彩空间清单**只有
+  可行性（本机能否解 10 位 + 主机是否广告 Main10）。能不能显示由运行期决定：**surface 那份格式与色彩空间清单**只有
   拿到 surface 才读得到（`ObserveSurfaceHdrSupport`，呈现器建交换链时报一行 `vulkan surface: hdr10 … hlg=…`），
   以及 **解码器是否真交出 10 位帧**；两者任一不成立就是 `hdr-degraded`（降级到 SDR，见 §4），既不是黑屏，也不是
-  "选项不可用"。交换链/窗口的色彩空间按连接的**基座传输**取 PQ（`HDR10_ST2084_EXT`）或 HLG（`HDR10_HLG_EXT`）；
-  逐帧的动态 HDR（只有 HDR Vivid）另行经窗口 `OH_HDR_DYNAMIC_METADATA` 转发，静态与 Vivid 同时走 Vulkan 正规通道
-  （`vkSetHdrMetadataEXT` / `VK_HUAWEI_hdr_vivid`，见 [`moonlight-video.md`](moonlight-video.md) §2）。**`libxengine` 式的"缺件降级"在这里适用**：缺件就降级，
+  "选项不可用"。交换链的色彩空间按连接的**基座传输**取 PQ（`HDR10_ST2084_EXT`）或 HLG（`HDR10_HLG_EXT`）；
+  HDR 的静态与逐帧动态（只有 HDR Vivid）元数据都只走 **Vulkan 通道**
+  （`vkSetHdrMetadataEXT` / `VK_HUAWEI_hdr_vivid`，见 [`moonlight-video.md`](moonlight-video.md) §2），**不对 `OHNativeWindow` 写 HDR 属性**
+  （窗口那套对本仓上屏不生效也不关键，已删）。**`libxengine` 式的"缺件降级"在这里适用**：缺件就降级，
   运行期事实只影响"这次会话到底是不是 HDR"。
 - **libxengine 按需 `dlopen`，不链接**（同 libvulkan 的理由：缺库要降级，不是加载失败）。
   XEngine（平台文档称「超分」）头文件在 DevEco 的 **HMS sysroot**

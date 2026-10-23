@@ -36,7 +36,6 @@ class VkRenderer : public FramePresenter {
   void SetVideoColorSpace(int colorSpace) override;
   bool videoColorMismatch() const override;
   void SetStreamHdr(int base) override;
-  void SetHdrWhitePoint(int percent) override;
   void SetHdrStaticMetadata(const HdrStaticMetadata& metadata) override;
   void SetStreamDynamicHdr(const uint8_t* payload, int size) override;
   bool hdrActive() const override;
@@ -61,14 +60,10 @@ class VkRenderer : public FramePresenter {
 
   bool EnsureSwapchainLocked();
   bool CreateSwapchainLocked();
-  // Writes the whole statement the compositor needs about the swapchain's images: the colour space,
-  // the gamut, and (in HDR) the metadata type plus the static metadata. See the .cpp for why the
-  // colour space alone is not enough here. `hlg` selects the HLG colour space / gamut / metadata type
-  // instead of the PQ (HDR10) set.
-  void DeclareWindowColorLocked(bool hdr, bool hlg);
   // Declares the swapchain's HDR metadata through Vulkan (VK_EXT_hdr_metadata) - the channel a
-  // self-drawn image is described with on this platform. HDR Vivid chains its per-frame dynamic
-  // metadata through VkHdrMetadataEXT.pNext. No-op without the extension or without an HDR output.
+  // self-drawn image is described with on this platform, and the only place this app declares its
+  // HDR images. HDR Vivid chains its per-frame dynamic metadata through VkHdrMetadataEXT.pNext.
+  // No-op without the extension or without an HDR output.
   void ApplySwapchainHdrMetadataLocked();
   void DestroySwapchainLocked();
   void DestroyFrameResourcesLocked();
@@ -210,20 +205,14 @@ class VkRenderer : public FramePresenter {
   // 1 = HDR10 (PQ), 2 = HLG. It decides the swapchain format/colour space and the output stage's
   // encoding, and is remembered until those are (re)built (see SetStreamHdr).
   int hdrBase_ = 0;
-  // What the HDR picture is, for the window declaration (see SetHdrStaticMetadata). A default-constructed
-  // value (valid == false) means the platform gets this build's BT.2020 1000-nit fallback.
+  // What the HDR picture is, for the swapchain metadata (see SetHdrStaticMetadata). A
+  // default-constructed value (valid == false) means the swapchain declares this build's BT.2020
+  // 1000-nit fallback.
   HdrStaticMetadata hdrStaticMetadata_;
-  // The Vivid metadata of the current frame (see SetStreamDynamicHdr): the de-escaped T.35 payload,
-  // written to the window with the HDR declaration. It also switches the window's metadata type to
-  // OH_VIDEO_HDR_VIVID.
+  // The Vivid metadata the stream carries (see SetStreamDynamicHdr): the de-escaped T.35 payload,
+  // chained into the swapchain metadata as the per-frame dynamic layer.
   bool vividHdr_ = false;
   std::vector<uint8_t> dynamicHdrPayload_;
-  // Display brightness of the HDR content itself (see SetHdrWhitePoint), in percent. Written with the
-  // HDR declaration; 100 is the platform default.
-  int hdrWhitePointPercent_ = 100;
-  // The last return code OH_NativeWindow_SetMetadataValue gave for the dynamic key, so a repeat is
-  // not logged once per frame (the payload changes every frame).
-  int32_t dynamicHdrRetLogged_ = -1;
   // One-shot log for the Vulkan swapchain metadata declaration.
   bool swapchainHdrMetaLogged_ = false;
   // True while the output stage is really presenting through an HDR10 swapchain; reported by
