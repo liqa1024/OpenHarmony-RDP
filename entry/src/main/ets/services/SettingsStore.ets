@@ -136,8 +136,6 @@ export class AppSettings {
   lastSettingsTab: number = -1;
   wolHelpShown: boolean = false;
   mlTouchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
-  // Off: the host precision-touchpad channel carries touchpad scroll; on: system scroll component + wheel.
-  mlTouchpadScrollAlwaysEngine: boolean = false;
   mlPinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   mlTouchpadMiddleDoubleTap: boolean = false;
   mlPinchMode: number = PINCH_MODE_WHEEL;
@@ -320,8 +318,6 @@ export class SettingsStore {
         SettingsStore.readBoolean(store, 'wolHelpShown', settings.wolHelpShown);
       settings.mlTouchpadScrollSpeed = SettingsStore.readNumber(store, 'mlTouchpadScrollSpeed',
         settings.mlTouchpadScrollSpeed);
-      settings.mlTouchpadScrollAlwaysEngine = SettingsStore.readBoolean(store,
-        'mlTouchpadScrollAlwaysEngine', settings.mlTouchpadScrollAlwaysEngine);
       settings.mlPinchZoomSpeed =
         SettingsStore.readNumber(store, 'mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       settings.mlTouchpadMiddleDoubleTap = SettingsStore.readBoolean(store,
@@ -435,7 +431,6 @@ export class SettingsStore {
       store.putSync('lastSettingsTab', settings.lastSettingsTab);
       store.putSync('wolHelpShown', settings.wolHelpShown);
       store.putSync('mlTouchpadScrollSpeed', settings.mlTouchpadScrollSpeed);
-      store.putSync('mlTouchpadScrollAlwaysEngine', settings.mlTouchpadScrollAlwaysEngine);
       store.putSync('mlPinchZoomSpeed', settings.mlPinchZoomSpeed);
       store.putSync('mlTouchpadMiddleDoubleTap', settings.mlTouchpadMiddleDoubleTap);
       store.putSync('mlPinchMode', settings.mlPinchMode);

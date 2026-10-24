@@ -34,13 +34,12 @@ export class SessionInput {
     this.keys = new KeyInput(sink, this.held);
     this.pointer = new PointerInput(sink, this.held, this.geometry);
     this.touch = new TouchInput(sink, this.geometry);
-    this.touchpad = new TouchpadInput(sink, this.pointer);
+    this.touchpad = new TouchpadInput(this.pointer);
     this.pinch = new PinchInput(sink, this.geometry);
     this.wheel = new WheelInput(sink, this.geometry,
       (deviceId: number | undefined, sourceTool: SourceTool | undefined): boolean =>
         this.touchpad.isTouchpad(deviceId, sourceTool),
-      (): boolean => this.pinch.isActive(),
-      (): boolean => this.touchpad.isPanEnabled());
+      (): boolean => this.pinch.isActive());
     this.touch.setDirectContactListener((): void => {
       this.wheel.noteDirectContact();
     });
@@ -52,7 +51,6 @@ export class SessionInput {
         }
       };
     this.pinch.setProbe(probe);
-    this.touchpad.setProbe(probe);
   }
 
   dispose(): void {
@@ -127,10 +125,6 @@ export class SessionInput {
     this.wheel.setEngineEnabled(enabled);
   }
 
-  setTouchpadPanEnabled(enabled: boolean): void {
-    this.touchpad.setPanEnabled(enabled);
-  }
-
   setRelativeSpeed(speed: number): void {
     this.pointer.setRelativeSpeed(speed);
   }
@@ -201,18 +195,11 @@ export class SessionInput {
   handleAxis(event: AxisEvent): void {
     const isPinch: boolean = isPinchEvent(event);
     if (isPinch || this.pinch.isActive()) {
-      if (isPinch) {
-        this.touchpad.endPan();
-      }
       this.pinch.handleAxis(event);
       return;
     }
     const touchpadEvent: boolean = this.touchpad.isTouchpad(event.deviceId, event.sourceTool);
-    const panning: boolean = this.touchpad.isPanEnabled() && touchpadEvent;
     if (event.action === AxisAction.END || event.action === AxisAction.CANCEL) {
-      if (panning) {
-        this.touchpad.schedulePanEnd();
-      }
       return;
     }
     if (event.action !== AxisAction.BEGIN && event.action !== AxisAction.UPDATE) {
@@ -220,7 +207,6 @@ export class SessionInput {
     }
     if (event.action === AxisAction.BEGIN) {
       this.wheel.beginAxis();
-      this.touchpad.cancelPanEnd();
     }
     const vertical: number = event.axisVertical ?? 0;
     const horizontal: number = event.axisHorizontal ?? 0;
@@ -228,10 +214,6 @@ export class SessionInput {
       return;
     }
     const point: number[] = this.geometry.map(event.x, event.y);
-    if (panning) {
-      this.touchpad.handlePan(vertical, horizontal);
-      return;
-    }
     this.wheel.scroll(vertical, horizontal, point, touchpadEvent);
   }
 
@@ -274,7 +256,6 @@ export class SessionInput {
   releaseAll(): void {
     this.held.releaseAll(this.sink, this.pointer.lastPointerX(), this.pointer.lastPointerY());
     this.touch.releaseAll();
-    this.touchpad.endPan();
     this.pinch.end();
     this.touchpad.resetTap();
     this.gamepad?.releaseAll();

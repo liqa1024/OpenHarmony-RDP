@@ -172,14 +172,12 @@ RDP 的 FreeRDP/OpenSSL/zlib 构建体系见 [`native-build.md`](native-build.md
     所以**一般 Sunshine / GFE 不受影响**（不会收到未知包）。
 - **接线**：Moonlight 的捏合模式可选「原生转发」；选中且主机广告帧能力时，`SessionInput` 走
   `InputSink.touchpadFrame`（合成两个触点——鸿蒙不向应用暴露触控板真实触点），否则与「Ctrl+滚轮 / 触摸模拟」
-  一样回退。N-API 出口 `moonlightTouchpad`。
-- **触控板双指滚动默认走这条触点通道**：协议里**没有**"触控板滚动包"（滚动只有滚轮 `SCROLL_MAGIC*` /
-  `SS_HSCROLL_MAGIC`，触控板只有本扩展的触点包），所以在广告 `LI_FF_TOUCHPAD_FRAME_EVENTS(0x20)` 的主机上，
-  双指滚动被合成成一对平行平移的触点，物理交给 Windows 原生触控板；「总是使用系统滑动组件」
-  （`mlTouchpadScrollAlwaysEngine`，默认关）或主机无该能力位时，回退为系统滚动组件 + 滚轮通道。
-  等效速度靠一个平移比例常量标定（**轴值与捏合值实测未见随速度的增益**，按位移线性换算，故这段的增益只在
-  Windows 原生触控板一层），
-  方向 / 行程 / 惯性属真机判据。
+  一样回退。N-API 出口 `moonlightTouchpad`。声明板面尺寸（`TOUCHPAD_WIDTH_MM/HEIGHT_MM`）宿主原样采用
+  （`clamp` 到 40–200mm），中间无额外汇率。方向 / 行程 / 惯性属真机判据。
+- **触控板双指滚动不走这条触点通道**：协议里**没有**"触控板滚动包"（滚动只有滚轮 `SCROLL_MAGIC*` /
+  `SS_HSCROLL_MAGIC`，触控板只有本扩展的触点包），触点通道只服务捏合模式「原生转发」。曾用它把双指滚动合成成
+  一对平行平移的触点（物理交给 Windows 原生触控板，另有开关可退回系统滚动组件），**实机手感不可用，已整体移除**：
+  双指滚动恒走系统滚动组件 + 滚轮通道（落点见 [`session-layer.md`](session-layer.md) §8）。
 - **滚轮落点上限（主机侧，客户端不可探测）**：基地版的「虚拟鼠标驱动」（GUI「输入驱动管理」，`virtual_mouse`，默认启用）
   经 ZakoVirtualMouse HID 注入鼠标，而该驱动的 Wheel 只有 `-127..127`（整齿）⇒ 亚齿量在主机侧被按 120 累加成整齿
   （`platform/windows/input.cpp` 的 `scroll()` / `hscroll()`）；`high_resolution_scrolling`（默认 enabled）在 HID 通路下

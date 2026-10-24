@@ -245,7 +245,7 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   - **触点可被外层持有再回放**：会话外壳的触屏下拉唤出判定器（§9）能从 `Down` 起扣住一个触点，判定后经
     `TouchInput` 的逐点入口按原序回放，因此这条通路必须能以"一个纯样本"（相位 + 手指 id + 坐标 + 压力）
     入账，而不只接受 `TouchEvent`。
-- **轴向滚动（触控板双指 + 鼠标滚轮，两个轴向）：滚轮默认全部交给系统滚动引擎；触控板双指在主机支持专用通道时改走触点通道**：
+- **轴向滚动（触控板双指 + 鼠标滚轮，两个轴向）：默认全部交给系统滚动引擎**：
   `SessionPicture` 挂的 `Scroll2D`（`components/Scroll2D.ets`）在 XComponent
   上叠**两个透明的单轴原生 `Scroll`（一竖一横）**，跟手、加速、**惯性抛滑与打断**全由系统负责（ArkUI 的滚动惯性
   只在 `List`/`Grid`/`Scroll`/`WaterFlow` 内部的 `Scrollable` 私有 tick 里：速度估计、摩擦动画、连续拖拽增益、打断，
@@ -253,11 +253,11 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   `120 / (REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION) × pxPerVp × 速度倍率` 折成轮转量交给 sink
   （RDP 直接缩放中则落到本机画面平移，见下）。三条输入（直译触控板 / 直译滚轮 / 引擎）共用这一条口径，
   **改它 = 等比改"远端滚动总幅度"**（方向、惯性曲线、发射粒度、捏合、按键各自独立）。
-  - **引擎归属按来源分流**：`consumesAxis` 只吞引擎负责的轴事件（鼠标滚轮恒归引擎；触控板双指在专用通道接管时
-    不吞，由 `SessionInput` 走模拟两指滑动），被接管手势的引擎帧由 `engineAcceptsFrame` 丢弃，避免一份手势两份滚动。
-  - **触控板滚动的三种落点**：①专用触控板通道（默认，仅基地版）→ 第二层物理是 Windows 原生触控板；②系统滚动组件 +
-    滚轮（设置强制或主机无该能力位）→ 第二层是 ArkUI 引擎，最跟手且有刹车；③直译 + 滚轮（全局「回退直译映射」）→
-    无惯性。三者都只保留本机这一层换算（**轴值与捏合值实测未见随速度的增益**，按位移线性使用），区别只在第二层是谁。
+  - **引擎归属**：`consumesAxis` 只吞引擎负责的轴事件（除捏合外的轴向滚动恒归引擎），`engineAcceptsFrame`
+    判不归引擎的帧（直接触摸接触之后的、捏合中的）丢弃，避免一份手势两份滚动。
+  - **触控板滚动的两种落点**：①系统滚动组件 + 滚轮（默认）→ 第二层是 ArkUI 引擎，最跟手且有刹车；
+    ②直译 + 滚轮（全局「回退直译映射」）→无惯性。两者都只保留本机这一层换算
+    （**轴值与捏合值实测未见随速度的增益**，按位移线性使用），区别只在第二层是谁。
   - **必须是一轴一个组件**（不能用单件 `ScrollDirection.FREE` 的 2D 版）：滑行的"打断"由单轴滚动件自己做——
     **任何新的触控板手势一开始就把正在跑的滑行停掉**（`Scrollable::HandleDragStart` 对 `SourceTool::TOUCHPAD`
     调 `HandleTouchDown`，后者明确 "If animation still runs, first stop it"），2D free 不停滑行（它只在收到真正的
@@ -291,8 +291,7 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
   - **偏移钉住**（两个叠层的 `onWillScroll` 都返回 `{xOffset:0, yOffset:0}`，假内容静止），**各自**在主轴方向比视口大
     `2 × ENGINE_FRAME_HEADROOM_VP` 以保证可滚范围非退化；`scrollBar(Off)` 显式关（默认 Auto 会画滚动条）。
   - **逐帧判定，不做手势级锁定**：`consumesAxis` 吞掉**引擎负责**的滚动轴事件（两协议共用），例外是**捏合**（归
-    `SessionInput`）与**专用触控板通道接管的手势**。增量由 `engineAcceptsFrame` 逐帧判归属（直接触摸接触之后的、
-    捏合中的、被通道接管的触控板手势的帧都不归引擎），
+    `SessionInput`）。增量由 `engineAcceptsFrame` 逐帧判归属（直接触摸接触之后的、捏合中的帧都不归引擎），
     会话页再逐帧定去向（RDP 直接缩放 `viewScale > 1` 且非捏合中 → `panView`，同一套引擎物理；否则远端）。
     **判据只许用"下一次输入就会刷新"的状态**（触屏时间戳、捏合标志、来源分类）：框架何时算一次手势结束
     并不总是可观测，跨手势状态会永久卡住。代价是中途才出现的捏合、缩放到 1.0 后的惯性尾巴按逐帧语义可能漏
@@ -306,10 +305,6 @@ Moonlight 见 [`moonlight-connection.md`](moonlight-connection.md) / [`moonlight
     都按增量发**（保留高分辨率；主机是否真保留亚齿取决于其注入通路，见
     [`moonlight-native.md`](moonlight-native.md) §2.2），滚轮用独立 mapper 保持原速；触控板是**位移像素**
     （`sourceTool === TOUCHPAD`；**轴值与捏合值实测未见随速度的增益**，按位移线性换算），直译路径先 `÷ pxPerVp` 统一到 vp。
-  - **触点通道的量纲**：轴位移 px × 平移比例 → 声明板面的毫米行程。比例按**每齿毫米**给（`TOUCHPAD_PAN_MM_PER_AXIS_PX`
-    = `TOUCHPAD_PAN_MM_PER_DETENT` ÷ `REMOTE_PX_PER_DETENT × SCROLL_CALIBRATION`），实测约 **4.8 mm 双指位移 / 远端一齿**：
-    毫米 → 滚动这一段的增益在 Windows PT 侧（随主机 PT 与滚动设置、屏幕缩放变化），不可由本仓推导，只能按此口径实测；
-    声明板面尺寸（`TOUCHPAD_WIDTH_MM/HEIGHT_MM`）宿主会原样采用（`clamp` 到 40–200mm），中间无额外汇率。方向属真机判据。
   - **两个量分开**：`REMOTE_PX_PER_DETENT`（=48）是**名义锚点**（远端每齿标称内容量：`3 行 × 16px`）；
     `SCROLL_CALIBRATION`（=4）是**端到端标定倍数**（实测定值）。分开后名义常数保持字面含义、标定倍数独立可调；
     有效"每齿内容量" = 48 × 4 = 192。`pxPerVp` 只做本机 px↔vp 折算（触控板 `÷`，引擎与滚轮按原值进入）。

@@ -18,16 +18,14 @@ export class WheelInput {
   private wheelChunks: WheelChunk[] = [];
   private isTouchpad: (deviceId: number | undefined, sourceTool: SourceTool | undefined) => boolean;
   private isPinchActive: () => boolean;
-  private isTouchpadPan: () => boolean;
 
   constructor(sink: InputSink, geometry: InputGeometry,
     isTouchpad: (deviceId: number | undefined, sourceTool: SourceTool | undefined) => boolean,
-    isPinchActive: () => boolean, isTouchpadPan: () => boolean) {
+    isPinchActive: () => boolean) {
     this.sink = sink;
     this.geometry = geometry;
     this.isTouchpad = isTouchpad;
     this.isPinchActive = isPinchActive;
-    this.isTouchpadPan = isTouchpadPan;
   }
 
   setEngineEnabled(enabled: boolean): void {
@@ -51,19 +49,14 @@ export class WheelInput {
   }
 
   // Per frame, on input state the next event refreshes — never latched to a gesture, which the engine
-  // can end silently. A direct touch contact, a pinch, or a touchpad gesture the pan channel took
-  // over owns the frames instead.
+  // can end silently. A direct touch contact or a pinch owns the frames instead.
   engineAcceptsFrame(): boolean {
-    return !(this.directContactAt > this.engineAxisAt) && !this.isPinchActive()
-      && !(this.isTouchpadPan() && this.engineTouchpad);
+    return !(this.directContactAt > this.engineAxisAt) && !this.isPinchActive();
   }
 
-  // The engine owns the wheel axis; a pan-mode touchpad gesture and pinch keep to the shared pipeline.
+  // The engine owns both axes; a pinch keeps to the shared pipeline.
   consumesAxis(event: AxisEvent): boolean {
     if (!this.engineEnabled || isPinchEvent(event)) {
-      return false;
-    }
-    if (this.isTouchpadPan() && this.isTouchpad(event.deviceId, event.sourceTool)) {
       return false;
     }
     return (event.axisVertical ?? 0) !== 0 || (event.axisHorizontal ?? 0) !== 0;

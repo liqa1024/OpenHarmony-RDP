@@ -29,13 +29,6 @@ export const NATIVE_PINCH_BASE_PERCENT: number = 20;
 export const NATIVE_PINCH_ANGLE_DEG: number = 45;
 export const TOUCHPAD_WIDTH_MM: number = 100;
 export const TOUCHPAD_HEIGHT_MM: number = 70;
-// Host precision-touchpad pan: the pair re-touches at the middle when the declared pad runs out.
-export const TOUCHPAD_PAN_FINGER_MM: number = 25;
-export const TOUCHPAD_PAN_SAFE_HALF: number = 0.35;
-export const TOUCHPAD_PAN_END_GRACE_MS: number = 60;
-export const TOUCHPAD_PAN_CENTER: number = 0.5;
-export const TOUCHPAD_PAN_ID_A: number = 30;
-export const TOUCHPAD_PAN_ID_B: number = 31;
 // axisPinch is a distance ratio relative to the gesture start; clamp it so a bad sample cannot
 // explode or collapse the separation.
 export const MIN_PINCH_RATIO: number = 0.05;

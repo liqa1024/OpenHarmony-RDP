@@ -104,7 +104,6 @@ struct SettingsPage {
   @State triggerWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   @State toolbarWidthPercent: number = DEFAULT_TOOLBAR_WIDTH_PERCENT;
   @State touchpadScrollSpeed: number = DEFAULT_SPEED_SCALE;
-  @State touchpadAlwaysEngine: boolean = false;
   @State pinchZoomSpeed: number = DEFAULT_SPEED_SCALE;
   @State pinchMode: number = PINCH_MODE_WHEEL;
   @State touchpadMiddleDoubleTap: boolean = false;
@@ -361,7 +360,6 @@ struct SettingsPage {
 
   private applyInteraction(settings: AppSettings, rdp: boolean): void {
     this.touchpadScrollSpeed = rdp ? settings.touchpadScrollSpeed : settings.mlTouchpadScrollSpeed;
-    this.touchpadAlwaysEngine = !rdp && settings.mlTouchpadScrollAlwaysEngine;
     this.pinchZoomSpeed = rdp ? settings.pinchZoomSpeed : settings.mlPinchZoomSpeed;
     this.touchpadMiddleDoubleTap = rdp
       ? settings.touchpadMiddleDoubleTap : settings.mlTouchpadMiddleDoubleTap;
@@ -621,7 +619,6 @@ struct SettingsPage {
       settings.mlScaleMode = this.mlScaleMode;
       settings.mlScalePercent = this.parseScale(this.mlScaleText, 100);
       settings.mlTouchpadScrollSpeed = this.touchpadScrollSpeed;
-      settings.mlTouchpadScrollAlwaysEngine = this.touchpadAlwaysEngine;
       settings.mlPinchZoomSpeed = this.pinchZoomSpeed;
       settings.mlPinchMode = this.pinchMode;
       settings.mlTouchpadMiddleDoubleTap = this.touchpadMiddleDoubleTap;
@@ -1915,22 +1912,6 @@ struct SettingsPage {
 
             if (this.protocol !== TAB_COMMON) {
             FormSection({ title: '触控板' }) {
-
-            if (this.protocol === PROTOCOL_MOONLIGHT) {
-              this.toggleItem({
-                title: '总是使用系统滑动组件',
-                subtitle: '关：走主机原生触控板滑动；开：统一用系统滚动组件',
-                value: this.touchpadAlwaysEngine,
-                enabled: true,
-                disabledReason: '',
-                onChange: (v: boolean) => {
-                  this.touchpadAlwaysEngine = v;
-                  this.persist();
-                }
-              })
-
-              Divider().strokeWidth(1).color($r('app.color.divider'))
-            }
 
             this.sliderItem({
               title: '滚动速度',

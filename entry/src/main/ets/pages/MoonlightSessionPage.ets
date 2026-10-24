@@ -109,8 +109,6 @@ struct MoonlightSessionPage {
   private revealBand: number = 6;
   private revealWidthPercent: number = DEFAULT_TOOLBAR_TRIGGER_WIDTH_PERCENT;
   private scrollEngine: boolean = true;
-  private touchpadAlwaysEngine: boolean = false;
-  private nativeTouchpadSupported: boolean = false;
   private vmouseHintShown: boolean = false;
   private enginePointerX: number = 0;
   private enginePointerY: number = 0;
@@ -225,7 +223,6 @@ struct MoonlightSessionPage {
     this.lowLatencyAudio = settings.mlLowLatencyAudio;
     this.developerMode = settings.developerMode;
     this.scrollEngine = !settings.scrollEngineFallback;
-    this.touchpadAlwaysEngine = settings.mlTouchpadScrollAlwaysEngine;
     this.vmouseHintShown = settings.mlVmouseHintShown;
     this.toolbarHeight = this.developerMode
       ? TOOLBAR_ROW_HEIGHT + TOOLBAR_TELEMETRY_HEIGHT * 2
@@ -434,8 +431,6 @@ struct MoonlightSessionPage {
       const input: SessionInput | undefined = this.shell?.sessionInput();
       input?.setTouchEnabled(touchSupported);
       input?.setPinchMode(this.effectivePinchMode(touchSupported, nativeTouchpadSupported));
-      this.nativeTouchpadSupported = nativeTouchpadSupported;
-      input?.setTouchpadPanEnabled(!this.touchpadAlwaysEngine && nativeTouchpadSupported);
       if (this.relativeMouse) {
         input?.reportPointerPosition();
       }
@@ -716,7 +711,7 @@ struct MoonlightSessionPage {
     SettingsStore.rememberVmouseHintShown();
     showNotice(this.getUIContext(), '触控板滚动建议',
       '主机若开启「虚拟鼠标驱动」，触控板滚动会被整成整齿。\n'
-        + '建议在主机 GUI 关闭它（或把鼠标模式设为 SendInput），再到设置里开启「总是使用系统滑动组件」。');
+        + '建议在主机 GUI 关闭它（或把鼠标模式设为 SendInput），以获得更好的滑动体验。');
   }
 
   private onSurfaceCreated(surfaceId: string, width: number, height: number): void {
