@@ -251,6 +251,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     codec_ = CodecTokenForMime(mime);
     vividActive_ = false;
     hdr10PlusDropped_ = false;
+    vividCurveStripped_ = false;
     width_ = width;
     height_ = height;
     redrawRate_ = redrawRate;
@@ -434,11 +435,9 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     if (buffer_.empty()) {
       return DR_OK;
     }
-    // The base version writes HDR10+ into every PQ access unit next to HDR Vivid and no client can
-    // ask it not to (see hmrdp_hdr_dynamic.h). This side's dynamic layer is Vivid, so that SEI - a
-    // NAL of its own - is dropped from this copy before the codec sees it, leaving the HDR10 base
-    // (its static mastering-display and content-light SEI untouched) plus Vivid. Lengths change, so
-    // the buffer is rebuilt here.
+    // The base version puts HDR10+ and a per-frame tone-mapping curve into what it sends; this side
+    // keeps HDR10 + Vivid, so both are dropped from this copy before the codec sees it (see
+    // hmrdp_hdr_dynamic.h). Both change the unit's length, so the buffer is rebuilt here.
     if (hdrBase_.load() != 0) {
       Hdr10PlusRemoval removal;
       if (PlanHdr10PlusRemoval(buffer_.data(), buffer_.size(), mime_.c_str(), &removal)) {
@@ -448,6 +447,17 @@ class MoonlightVideoRenderer : public VideoFrameSink {
           HMRDP_LOGI("moonlight video: dropped the host's HDR10+ SEI (%{public}zu bytes); HDR Vivid is "
                      "this side's dynamic layer",
                      removal.length);
+        }
+      }
+      VividCurveStrip strip;
+      if (PlanVividCurveStrip(buffer_.data(), buffer_.size(), mime_.c_str(), &strip)) {
+        const auto at = buffer_.begin() + static_cast<std::ptrdiff_t>(strip.offset);
+        buffer_.erase(at, at + static_cast<std::ptrdiff_t>(strip.length));
+        buffer_.insert(at, strip.payload, strip.payload + strip.payloadSize);
+        if (!vividCurveStripped_.exchange(true)) {
+          HMRDP_LOGI("moonlight video: dropped the host's Vivid tone-mapping curve (%{public}zu -> "
+                     "%{public}zu bytes); the payload is statistics-only now",
+                     strip.length, strip.payloadSize);
         }
       }
     }
@@ -614,6 +624,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   std::atomic<bool> vividActive_{false};
   // Whether this session has already reported dropping the host's HDR10+ SEI (one line per session).
   std::atomic<bool> hdr10PlusDropped_{false};
+  // Likewise for the Vivid tone-mapping curve the host writes beside its statistics.
+  std::atomic<bool> vividCurveStripped_{false};
   // The output surface refused a run of pictures - the surface path's `video-present`
   // (see RefreshPresentWarning).
   std::atomic<bool> presentFailedSurface_{false};

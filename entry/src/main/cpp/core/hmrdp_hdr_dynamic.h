@@ -31,25 +31,43 @@ struct VividMetadata {
 // Annex-B byte stream (the decode bridge's flat access unit); for AV1 the low-overhead OBU stream.
 VividMetadata ScanVividMetadata(const uint8_t* data, size_t size, const char* mime);
 
-// HDR10+ (Samsung ST 2094-40, registered T.35 `B5 00 3C`) is the base version's own convention: for
-// a PQ session its analyzer writes it into every access unit beside HDR Vivid, and no client can ask
-// it not to - emission is gated by colours and codec alone, and the capability negotiation has no
-// "Vivid only" outcome (see moonlight-video.md §2). What this side keeps is the plain HDR10 base -
-// the static mastering-display and content-light SEI is a different message and is left alone - plus
-// HDR Vivid, which is the one dynamic layer the platform's HDR model has room for; HDR10+ it has no
-// room for at all. So that payload is dropped here: the SEI carries it in an access unit of its own,
-// and the removal is that byte range - start code included - from the caller's own copy of the unit.
+// HDR10+ (Samsung ST 2094-40, registered T.35 `B5 00 3C`) comes beside HDR Vivid in every PQ access
+// unit the base version encodes, and no client can ask it not to (see moonlight-video.md §2). The
+// platform has no HDR10+ at all, so this side drops it and keeps the plain HDR10 base - the static
+// mastering-display and content-light SEI is a different message, left alone - plus HDR Vivid. That
+// SEI sits in an access unit of its own, so the removal is that byte range, start code included.
 struct Hdr10PlusRemoval {
   size_t offset = 0;
   size_t length = 0;
 };
 
-// Plans that removal for one access unit: what comes out is HDR10 + HDR Vivid. False when the unit
-// carries no such SEI of its own (nothing to drop). Only a NAL that carries nothing but HDR10+
-// payloads is planned: a NAL that also holds a registered payload this side keeps (Vivid) is left
-// untouched.
+// Plans that removal for one access unit. False when there is no such SEI (nothing to drop); a NAL
+// that also carries a payload this side keeps (Vivid) is left untouched.
 bool PlanHdr10PlusRemoval(const uint8_t* data, size_t size, const char* mime,
                           Hdr10PlusRemoval* removal);
+
+// The base version's PQ Vivid payload also carries a per-frame tone-mapping curve beside the
+// statistics (`tone_mapping_mode_flag` set, then the base parameters). Measured offline: its
+// middle-tone parameter takes exactly two values (1.2 / 4.4) and flips between them every few
+// frames, unrelated to the statistics, so a display that obeys the curve remaps the whole picture in
+// steps - and stripping it is what stopped the flicker on the device. The payload is therefore
+// rewritten to the statistics-only form, the one HLG already carries and the one the base version's
+// own serializer writes today: the four statistics stay, everything after them goes.
+//
+// The rewrite changes the payload's length, so `offset` (the payload's size field) .. +`length` is
+// replaced by `payload` (`payloadSize` bytes: the new size field, then the escaped payload).
+struct VividCurveStrip {
+  size_t offset = 0;
+  size_t length = 0;
+  uint8_t payload[kMaxVividPayload] = {};
+  size_t payloadSize = 0;
+};
+
+// Plans that rewrite for one access unit. False when there is nothing to do: no Vivid payload, one
+// this side does not rewrite (it is not the NAL's only payload), or one that is already
+// statistics-only - the form a host that stops writing the curve sends.
+bool PlanVividCurveStrip(const uint8_t* data, size_t size, const char* mime,
+                         VividCurveStrip* strip);
 
 }
 

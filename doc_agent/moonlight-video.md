@@ -111,8 +111,8 @@ SDR 会话只有**一条正常链路**：解码交出输出缓冲（buffer 模�
   声明任何东西（不设格式 / 色彩空间 / 元数据类型，也不要求解码器"以 surface 为准"）：**帧与元数据都由解码器产出**，
   我们只喂码流、`RenderOutputBuffer` 送显。这是刻意的——只有当我们自己什么都没多说，设备上仍然出现异常，才能
   把结论落在平台那条路上；我们多说的每一句都会让结论不可归因。（这条取向的由来：HDR10+Vivid 在自建 Vulkan 上屏
-  与这条官方 surface 路上**表现一致地闪烁**，而 HLG+Vivid 正常，源侧内容与动态元数据经离线分析确认平滑且自洽——
-  结论落在平台侧，我们把这一路收回官方做法。）
+  与这条官方 surface 路上**表现一致地闪烁**，而 HLG+Vivid 正常，于是把这一路收回官方做法。**"落在平台侧"并不是
+  终局**：真正的原因是主机写进码流的那份动态元数据里多了一条会跳的曲线，见本节末三条。）
   解码器照旧**先声明**这段流的编码（`OH_MD_KEY_COLOR_PRIMARIES` / `TRANSFER_CHARACTERISTICS` /
   `MATRIX_COEFFICIENTS` / `RANGE_FLAG`，H.273 码点：SDR 按协商的 CSC 标 BT.709/BT.601 + gamma22，HDR 标
   Rec.2020 NCL + PQ/HLG + limited）——码流 VUI 缺失或不对时，声明才是权威口径（平台这几个键的默认是
@@ -137,18 +137,31 @@ SDR 会话只有**一条正常链路**：解码交出输出缓冲（buffer 模�
   **只认这一种**——扫描不受同单元其它载荷的先后影响。HDR 由平台的解码路径呈现，动态层由它自己随帧取出，本侧
   不向平台声明任何动态层；扫描结果只服务两件事：工具栏的命名（`Hdr()` 把基座传输与动态层拼成 `HDR10 Vivid` /
   `HLG Vivid`），以及把下面那条不属于本端的载荷丢掉。日志锚点：`moonlight video: HDR Vivid detected`。
-- **HDR10+ 由本侧丢掉**。基地版自己的约定是：PQ 会话里分析器必然把 **HDR10+**（`B5 00 3C` 注册 T.35，
-  ST 2094-40）与 Vivid **一起**写进每个访问单元（HLG 只有 Vivid；离线录像实测 626/626 个 PQ 单元都是
-  "HDR10+ 一条 SEI NAL 在前、Vivid 一条在后"）。**本端没有商量余地**：发不发只由 `formats_for()` 决定，它只看
-  色彩空间+编码（PQ 恒 `{hdr10plus=true, vivid=true}`，`nvenc_base.cpp` / `amf_d3d11.cpp` / `video.cpp` 三条路
-  共用），客户端的 `dynamicHdrCaps` 到不了这里（只有 PyroWave 的 `pyrowave/dynamic_hdr.cpp` 认它），而协商本身
-  最多给出 HDR10+ 或"无动态层"，**没有"只留 Vivid"这个结果**。平台的 HDR 模型只有 HDR10 / HLG / Vivid，
-  所以 HDR10+ 至多是废载荷、最坏是与 Vivid 争同一个显示端动态层：`PlanHdr10PlusRemoval()` 在同一个 SEI 扫描里
-  认"整条 NAL 只装 HDR10+ 载荷"的前置 SEI NAL，`MoonlightVideoRenderer::Submit` 在交给解码器前把它从自己那份
-  访问单元拷贝里删掉（删的是整条 NAL，长度会变）。**留下的就是 HDR10 基线 + Vivid**：静态 MDCV / CLL 是另一条
-  SEI（`137` / `144`），本侧一条都不动，所以 PQ 会话出去的形状与 HLG 会话只差传输函数。只删 HDR10+、不删别的：
-  一条 NAL 里若还有本端要留的注册载荷（Vivid）就整条不动。日志锚点 `moonlight video: dropped the host's HDR10+ SEI`。AV1 的 OBU 承载同理暂不处理
-  （本侧只为 HDR 选 AV1 于设备解不了 HEVC Main10 时，而有这个约定的主机一定提供 HEVC Main10）。
+- **HDR10+ 由本侧丢掉**。基地版的约定是：PQ 会话里分析器把 **HDR10+**（`B5 00 3C` 注册 T.35，ST 2094-40）与
+  Vivid **一起**写进每个访问单元（HLG 只有 Vivid；离线录像实测 626/626 个 PQ 单元都是"HDR10+ 一条 SEI NAL 在前、
+  Vivid 一条在后"）。**本端没有商量余地**：发不发只由 `formats_for()` 决定，它只看色彩空间+编码（PQ 恒
+  `{hdr10plus=true, vivid=true}`），客户端的 `dynamicHdrCaps` 到不了 NVENC/AMF 这条路，协商本身最多也只能给出
+  HDR10+ 或"无动态层"——**没有"只留 Vivid"这个结果**，所以只能本侧动手。`PlanHdr10PlusRemoval()` 认"整条 NAL
+  只装 HDR10+ 载荷"的前置 SEI NAL，`MoonlightVideoRenderer::Submit` 在交给解码器前把它从自己那份访问单元拷贝里
+  删掉（删的是整条 NAL，长度会变；一条 NAL 里若还有本端要留的注册载荷就整条不动）。**留下的就是 HDR10 基线 +
+  Vivid**：静态 MDCV / CLL 是另一条 SEI（`137` / `144`），一条都不动，所以 PQ 会话出去的形状与 HLG 会话只差传输
+  函数。平台没有 HDR10+ 这个类型，实测这一步对本机画面也**没有影响**——它是语义上的正确性，不是闪烁的解法。
+  日志锚点 `moonlight video: dropped the host's HDR10+ SEI`。
+- **Vivid 载荷里的 tone-mapping 曲线由本侧抹掉**。录制时那份基地版给 PQ 的 Vivid 带了一条**逐帧曲线**
+  （`tone_mapping_mode_flag=1` 加 base 参数：`targeted_system_display_maximum_luminance`、`m_p`/`m_m`/`m_a`/`m_b`/
+  `m_n`、`k1..k3`、`Delta`）。实测它的中间调参数 `m_m` 只取 1.2 / 4.4 两个值、以 4 帧为量子来回切（626 帧切
+  52 次，连续段 4~64 帧），且与 Vivid 自己的统计量无关（两组统计量均值几乎相同）——**这条曲线在本机这条路上
+  唯一可见的作用就是"每几帧换一次映射"**，既不是由内容连续算出来的映射，也不是这里需要的东西（本机真正起作用的
+  是统计量：HLG 只有统计量、不闪）。标准这边也要求这份数据在时间上稳定：GB/T 46269.1-2025 Annex A.9 建议对
+  生成的动态元数据做 32 帧算术平均。`PlanVividCurveStrip()` 把 CUVA 载荷重写成 statistics-only：保留信封与 4 个
+  12 位统计量，丢掉其后的曲线与 target 字段——也就是基地版**现在**的序列化器写出的形状、HLG 已经在用的形状；
+  `Submit` 在交给解码器前替换掉自己那份拷贝（长度会变；已经是 statistics-only 的载荷不动，故幂等）。日志锚点
+  `moonlight video: dropped the host's Vivid tone-mapping curve`。AV1 的 OBU 承载同样暂不处理（本侧只为 HDR 选
+  AV1 于设备解不了 HEVC Main10 时，而有这个约定的主机一定提供 HEVC Main10）。
+- **这一段（HDR10+Vivid 闪烁）的最终结论**：闪烁由主机 Vivid 载荷里那条曲线引起——本侧抹掉后实机**不再闪烁**。
+  两条静态元数据（非法的 MDCV、与 Vivid 同发的 HDR10+）都实测修掉后照旧闪，平台与自建呈现也因此都无责。根因的
+  修法在主机侧：**不写曲线**（基地版现在的序列化器就是这样）或**对曲线参数做时间平滑**；本侧这两步只是幂等兜底，
+  主机改好后自动无操作。
 - **兜底：解码直出 XComponent**。surface 模式（`OH_VideoDecoder_SetSurface(codec, window)`，必须在
   `Prepare` 之前）把解码帧直接写进会话页 XComponent 的 `OHNativeWindow`。应用侧**没有呈现器**、没有 GPU
   合成 pass；留边由**画面组件几何**承担——会话页用 `components/SessionPicture` 把 surface 约束成**流分辨率

@@ -171,24 +171,27 @@ void WalkSeiMessages(const uint8_t* nal, size_t size, Visit visit) {
   }
 }
 
-void ScanHevcNal(const uint8_t* nal, size_t size, VividMetadata* vivid) {
-  if (IsSeiNal(nal, size)) {
-    WalkSeiMessages(nal, size, [vivid](uint32_t payloadType, const uint8_t* start, const uint8_t* end) {
-      if (payloadType == 4) {  // user_data_registered_itu_t_t35
-        StoreVivid(start, static_cast<size_t>(end - start), true, vivid);
+// The inverse of Unescape, for the one caller that rewrites a payload (PlanVividCurveStrip): the
+// shortened payload can need an escape byte the original did not have. 0 when it would not fit.
+size_t Escape(const uint8_t* in, size_t n, uint8_t* out, size_t capacity) {
+  size_t zeros = 0;
+  size_t written = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const uint8_t b = in[i];
+    if (zeros >= 2 && b <= 0x03) {
+      if (written >= capacity) {
+        return 0;
       }
-      return true;
-    });
+      out[written++] = 0x03;
+      zeros = 0;
+    }
+    if (written >= capacity) {
+      return 0;
+    }
+    out[written++] = b;
+    zeros = b == 0x00 ? zeros + 1 : 0;
   }
-}
-
-VividMetadata ScanHevc(const uint8_t* data, size_t size) {
-  VividMetadata vivid;
-  WalkNals(data, size, [&vivid](size_t, const uint8_t* nal, size_t nalSize) {
-    ScanHevcNal(nal, nalSize, &vivid);
-    return true;
-  });
-  return vivid;
+  return written;
 }
 
 // ---- HDR10+ (the base version's own extra dynamic layer) ----
@@ -219,6 +222,63 @@ void ClassifySeiNal(const uint8_t* nal, size_t size, bool* hasHdr10Plus, bool* h
     }
     return true;  // the verdict needs the whole NAL
   });
+}
+
+// ---- the tone-mapping curve the base version writes into PQ Vivid ----
+
+// The payload up to and including the four 12-bit statistics: envelope, system_start_code, 4 x 12
+// bits. Byte 12 is the one that carries tone_mapping_mode_flag (its top bit) and
+// color_saturation_mapping_flag; the statistics-only form ends right there.
+constexpr size_t kStatisticOnlyVividPayloadSize = kVividEnvelopeSize + 1 + 6 + 1;
+
+bool IsVividPayload(const uint8_t* payload, size_t size) {
+  return size >= kVividEnvelopeSize && std::memcmp(payload, kVividEnvelope, kVividEnvelopeSize) == 0;
+}
+
+// The wire span of a NAL's only SEI payload when that payload is HDR Vivid's. False when the NAL
+// carries another payload too - the rewrite would then have to re-escape around it, and no host
+// build writes that shape (the encoder puts each injected payload in an access unit of its own).
+bool SoleVividSeiPayload(const uint8_t* nal, size_t size, const uint8_t** spanStart,
+                         const uint8_t** spanEnd) {
+  const uint8_t* start = nullptr;
+  const uint8_t* end = nullptr;
+  int payloads = 0;
+  WalkSeiMessages(nal, size, [&](uint32_t payloadType, const uint8_t* p, const uint8_t* q) {
+    if (static_cast<size_t>(q - p) == 0) {
+      return true;  // padding, not a payload
+    }
+    if (++payloads == 1 && payloadType == 4 && IsVividPayload(p, static_cast<size_t>(q - p))) {
+      start = p;
+      end = q;
+    }
+    return true;
+  });
+  if (payloads != 1 || start == nullptr) {
+    return false;
+  }
+  *spanStart = start;
+  *spanEnd = end;
+  return true;
+}
+
+void ScanHevcNal(const uint8_t* nal, size_t size, VividMetadata* vivid) {
+  if (IsSeiNal(nal, size)) {
+    WalkSeiMessages(nal, size, [vivid](uint32_t payloadType, const uint8_t* start, const uint8_t* end) {
+      if (payloadType == 4) {  // user_data_registered_itu_t_t35
+        StoreVivid(start, static_cast<size_t>(end - start), true, vivid);
+      }
+      return true;
+    });
+  }
+}
+
+VividMetadata ScanHevc(const uint8_t* data, size_t size) {
+  VividMetadata vivid;
+  WalkNals(data, size, [&vivid](size_t, const uint8_t* nal, size_t nalSize) {
+    ScanHevcNal(nal, nalSize, &vivid);
+    return true;
+  });
+  return vivid;
 }
 
 // ---- AV1 (low-overhead OBU) ----
@@ -313,6 +373,58 @@ bool PlanHdr10PlusRemoval(const uint8_t* data, size_t size, const char* mime,
       return false;
     }
     return true;
+  });
+  return planned;
+}
+
+bool PlanVividCurveStrip(const uint8_t* data, size_t size, const char* mime,
+                         VividCurveStrip* strip) {
+  if (data == nullptr || size == 0 || mime == nullptr || strip == nullptr) {
+    return false;
+  }
+  if (std::strcmp(mime, "video/hevc") != 0) {
+    return false;
+  }
+  bool planned = false;
+  WalkNals(data, size, [&](size_t, const uint8_t* nal, size_t nalSize) {
+    if (planned || !IsSeiNal(nal, nalSize)) {
+      return true;
+    }
+    const uint8_t* payloadStart = nullptr;
+    const uint8_t* payloadEnd = nullptr;
+    if (!SoleVividSeiPayload(nal, nalSize, &payloadStart, &payloadEnd)) {
+      return true;
+    }
+    // The size field is rewritten along with the payload, so it has to be the single byte this shape
+    // has: the byte before the payload is the size, and the one before that is the payload type.
+    if (payloadStart - data < 2 || payloadStart[-1] == 0xFF || payloadStart[-2] == 0xFF) {
+      return true;
+    }
+    uint8_t rbsp[kMaxVividPayload] = {};
+    size_t clean = 0;
+    if (!Unescape(payloadStart, static_cast<size_t>(payloadEnd - payloadStart), rbsp, sizeof(rbsp),
+                  &clean) ||
+        clean < kStatisticOnlyVividPayloadSize) {
+      return true;
+    }
+    // Already statistics-only (HLG's form, and a host that stopped writing the curve): nothing to do.
+    if ((rbsp[kStatisticOnlyVividPayloadSize - 1] & 0x80) == 0) {
+      return true;
+    }
+    rbsp[kStatisticOnlyVividPayloadSize - 1] = 0x00;  // both flags off: statistics only
+    uint8_t escaped[kMaxVividPayload] = {};
+    const size_t escapedSize =
+        Escape(rbsp, kStatisticOnlyVividPayloadSize, escaped, sizeof(escaped));
+    if (escapedSize == 0) {
+      return true;
+    }
+    strip->offset = static_cast<size_t>(payloadStart - data) - 1;  // the size field as well
+    strip->length = static_cast<size_t>(payloadEnd - payloadStart) + 1;
+    strip->payload[0] = static_cast<uint8_t>(kStatisticOnlyVividPayloadSize);
+    std::memcpy(strip->payload + 1, escaped, escapedSize);
+    strip->payloadSize = escapedSize + 1;
+    planned = true;
+    return false;
   });
   return planned;
 }
