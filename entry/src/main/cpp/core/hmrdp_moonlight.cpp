@@ -250,6 +250,7 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     mime_ = mime;
     codec_ = CodecTokenForMime(mime);
     vividActive_ = false;
+    hdr10PlusDropped_ = false;
     width_ = width;
     height_ = height;
     redrawRate_ = redrawRate;
@@ -433,6 +434,23 @@ class MoonlightVideoRenderer : public VideoFrameSink {
     if (buffer_.empty()) {
       return DR_OK;
     }
+    // The base version writes HDR10+ into every PQ access unit next to HDR Vivid and no client can
+    // ask it not to (see hmrdp_hdr_dynamic.h). This side's dynamic layer is Vivid, so that SEI - a
+    // NAL of its own - is dropped from this copy before the codec sees it, leaving the HDR10 base
+    // (its static mastering-display and content-light SEI untouched) plus Vivid. Lengths change, so
+    // the buffer is rebuilt here.
+    if (hdrBase_.load() != 0) {
+      Hdr10PlusRemoval removal;
+      if (PlanHdr10PlusRemoval(buffer_.data(), buffer_.size(), mime_.c_str(), &removal)) {
+        const auto at = buffer_.begin() + static_cast<std::ptrdiff_t>(removal.offset);
+        buffer_.erase(at, at + static_cast<std::ptrdiff_t>(removal.length));
+        if (!hdr10PlusDropped_.exchange(true)) {
+          HMRDP_LOGI("moonlight video: dropped the host's HDR10+ SEI (%{public}zu bytes); HDR Vivid is "
+                     "this side's dynamic layer",
+                     removal.length);
+        }
+      }
+    }
     // The host carries HDR Vivid as a registered T.35 SEI inside the same access unit whenever its HDR
     // luminance analysis runs. The scan is this side's own reading of the dynamic layer, so it is what
     // the toolbar names the stream by (`HDR10 Vivid` / `HLG Vivid`); the platform's own decode path
@@ -594,6 +612,8 @@ class MoonlightVideoRenderer : public VideoFrameSink {
   // Whether the stream is carrying HDR Vivid. Read by the toolbar and by the dynamic-metadata
   // hand-off; the payload itself changes every frame and is only re-declared when it does.
   std::atomic<bool> vividActive_{false};
+  // Whether this session has already reported dropping the host's HDR10+ SEI (one line per session).
+  std::atomic<bool> hdr10PlusDropped_{false};
   // The output surface refused a run of pictures - the surface path's `video-present`
   // (see RefreshPresentWarning).
   std::atomic<bool> presentFailedSurface_{false};
