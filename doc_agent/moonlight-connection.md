@@ -184,7 +184,9 @@ RDP 侧的存储、显示、超分见 [`settings-and-storage.md`](settings-and-s
   全局默认存 Moonlight 自己那一份（`mlSr*`），Moonlight 连接另有「使用会话独立超分辨率设置」覆盖
   （`useGlobalSr` 等字段与 RDP 同名，存储与判据见 [`settings-and-storage.md`](settings-and-storage.md) §2）。
   比 RDP 多一个能力前置：设备要能把解码器的 NV12 缓冲导入呈现器（`DeviceCapabilities.srVideoImport()`；
-  外部内存 + R8 线性图），不满足则整栏置灰。会话页主行分辨率显示**会话（超分前）分辨率**；超分与编码标签
+  外部内存 + R8 线性图），不满足则整栏置灰。**与 HDR 互斥**：选了 `Rec2020（HDR）` 后超分整栏置灰、
+  选了超分后 HDR 项置灰，各带一句"需先关闭…"的提示（HDR 优先，见
+  [`settings-and-storage.md`](settings-and-storage.md) §2）。会话页主行分辨率显示**会话（超分前）分辨率**；超分与编码标签
   合并到**同一个括号**、逗号分隔（`(FSR 1.5x, HEVC)`；软解再加 `CPU`；超分未生效/视频异常另有 token）。
 - **每协议设置必须真正被消费**：给 Moonlight 加会话 / 输入行为时，**必须让对应的 `ml*` 生效**，
   不要在别处塞新内容而让 Moonlight 那份成为摆设。

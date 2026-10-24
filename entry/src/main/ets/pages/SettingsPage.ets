@@ -326,6 +326,9 @@ struct SettingsPage {
       if (!this.mlSrSupported && settings.mlSrEnabled) {
         this.persistNow();
       }
+      if (mlColorSpaceIsHdr(this.mlColorSpace) && settings.mlSrEnabled) {
+        this.persistNow();
+      }
     }
     if (!this.developerMode && (settings.gfxCapture || settings.mlStreamCapture)) {
       this.persistNow();
@@ -503,6 +506,15 @@ struct SettingsPage {
 
   private srReasonFor(protocol: number): string {
     return protocol === PROTOCOL_MOONLIGHT ? this.mlSrReason : this.srReason;
+  }
+
+  // HDR 会话走解码器输出 surface、本机不建呈现器，因而不会叠超分，两者互斥；HDR 优先（与连接时一致）。
+  private srBlockedByHdr(protocol: number): boolean {
+    return protocol === PROTOCOL_MOONLIGHT && mlColorSpaceIsHdr(this.mlColorSpace);
+  }
+
+  private hdrBlockedBySr(): boolean {
+    return this.mlSrEnabled && this.mlSrSupported;
   }
 
   private srOutputWidth(protocol: number): number {
@@ -984,7 +996,8 @@ struct SettingsPage {
     ChoiceChip({
       label: choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'),
       selected: this.srChoiceOf(protocol) === choice,
-      chipEnabled: this.srChoiceUsableFor(choice, protocol),
+      chipEnabled: this.srChoiceUsableFor(choice, protocol)
+        && (choice === 0 || !this.srBlockedByHdr(protocol)),
       onTap: () => {
         this.srSetChoice(protocol, choice);
       }
@@ -1004,6 +1017,12 @@ struct SettingsPage {
           .margin({ top: 2 })
         if (!this.srSupportedFor(protocol)) {
           Text(this.srReasonFor(protocol))
+            .fontSize(12).fontColor($r('app.color.warning'))
+            .lineHeight(16)
+            .margin({ top: 2 })
+        }
+        if (this.srBlockedByHdr(protocol)) {
+          Text('已开启 HDR，需先关闭 HDR 才能使用超分辨率')
             .fontSize(12).fontColor($r('app.color.warning'))
             .lineHeight(16)
             .margin({ top: 2 })
@@ -1129,9 +1148,13 @@ struct SettingsPage {
 
   // HDR is only offered on a device that can present and decode it, so a selection stored on another
   // device resolves back to SDR rather than being sent to the host as an HDR request.
+  // HDR 只在此设备能呈现时可选；超分开启时 HDR 置灰（两者互斥）。
   private clampMlColorSpace(): void {
     if (mlColorSpaceIsHdr(this.mlColorSpace) && !this.hdrSupported) {
       this.mlColorSpace = ML_COLORSPACE_REC709;
+    }
+    if (mlColorSpaceIsHdr(this.mlColorSpace)) {
+      this.mlSrEnabled = false;
     }
   }
 
@@ -1424,11 +1447,17 @@ struct SettingsPage {
         Flex({ wrap: FlexWrap.Wrap }) {
           this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601', true)
           this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709', true)
-          this.mlColorSpaceChip(ML_COLORSPACE_REC2020_HDR, 'Rec2020 (HDR)', this.hdrSupported)
+          this.mlColorSpaceChip(ML_COLORSPACE_REC2020_HDR, 'Rec2020 (HDR)',
+            this.hdrSupported && !this.hdrBlockedBySr())
         }
         .width('100%').margin({ top: 8 })
         if (!this.hdrSupported) {
           Text(this.hdrReason)
+            .fontSize(12).fontColor($r('app.color.warning'))
+            .lineHeight(16)
+            .margin({ top: 2 })
+        } else if (this.hdrBlockedBySr()) {
+          Text('已开启超分辨率，需先关闭超分辨率才能使用 HDR')
             .fontSize(12).fontColor($r('app.color.warning'))
             .lineHeight(16)
             .margin({ top: 2 })

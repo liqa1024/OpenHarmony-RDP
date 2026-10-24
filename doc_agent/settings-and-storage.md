@@ -79,6 +79,11 @@
     `SettingsStore.resolveSr(protocol, setting)` 是唯一的解析与兜底点（`conn` 两者都满足 `SrSetting`；
     `srBackendUsable(backend, protocol)` 把能力合起来判，选中的后端不可用时改用另一个，都不行才关掉），
     所以会话绝不会谈下一个本机放大不回去的分辨率。
+  - **HDR 与超分互斥（Moonlight）**：HDR 会话走解码器输出 surface、本机不建呈现器，因而不会叠超分
+    （`MoonlightConnector.prepare` 的 `srOn` 直接排除 `hdrRequested`，见
+    [`moonlight-video.md`](moonlight-video.md) §2）。设置页据此互斥化：选了 `Rec2020（HDR）` 后超分整栏
+    置灰、选了超分后 HDR 项置灰，各带一句"需先关闭…"的提示；**HDR 优先**，载入的旧数据／导入配置若
+    两者同开，则以 HDR 为准把超分收口为关（`srOn` 与设置页 `clampMlColorSpace` 同一口径）。
   - **会话尺寸由 ArkTS 算一次并下行**：`SettingsStore.srSessionSize(输出, 倍率)`（`makeProfile` 里落到
     `DisplayProfile.sessionWidth/Height`）是唯一口径；会话启动时把 `streamWidth/streamHeight` 交给原生
     （RDP `RdpConnectOptions`、Moonlight `MoonlightStreamConfig`），**原生不重算**——`width`/`height` 恒为

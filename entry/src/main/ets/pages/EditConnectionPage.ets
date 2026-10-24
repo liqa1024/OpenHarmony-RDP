@@ -413,6 +413,19 @@ struct EditConnectionPage {
     return SettingsStore.superResolutionUsable(this.protocol);
   }
 
+  // HDR 会话走解码器输出 surface、本机不建呈现器，因而不会叠超分，两者互斥；HDR 优先（与连接时一致）。
+  private srBlockedByHdr(): boolean {
+    return this.isMoonlight() && mlColorSpaceIsHdr(this.mlColorSpace);
+  }
+
+  private hdrBlockedBySr(): boolean {
+    if (!this.isMoonlight() || !this.srUsable()) {
+      return false;
+    }
+    const sr: SrProfile = this.resolvedSr();
+    return sr.enabled && sr.ratioPercent > 100;
+  }
+
   private resolvedSr(): SrProfile {
     const setting: SrSetting = {
       useGlobalSr: this.useGlobalSr,
@@ -908,7 +921,7 @@ struct EditConnectionPage {
     ChoiceChip({
       label: choice === 0 ? '关闭' : (choice === 1 ? 'XEngine' : 'FSR'),
       selected: this.srChoice() === choice,
-      chipEnabled: this.srChoiceUsable(choice),
+      chipEnabled: this.srChoiceUsable(choice) && (choice === 0 || !this.srBlockedByHdr()),
       onTap: () => {
         this.srEnabled = choice !== 0;
         if (choice !== 0) {
@@ -935,16 +948,22 @@ struct EditConnectionPage {
               .lineHeight(16)
               .margin({ top: 2 })
           }
+          if (this.srBlockedByHdr()) {
+            Text('已开启 HDR，需先关闭 HDR 才能使用超分辨率')
+              .fontSize(12).fontColor($r('app.color.warning'))
+              .lineHeight(16)
+              .margin({ top: 2 })
+          }
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
         Toggle({ type: ToggleType.Switch, isOn: !this.useGlobalSr })
           .selectedColor($r('app.color.brand_fill'))
-          .enabled(this.srUsable())
+          .enabled(this.srUsable() && !this.srBlockedByHdr())
           
           .onChange((isOn: boolean) => {
-            if (!this.srUsable()) {
+            if (!this.srUsable() || this.srBlockedByHdr()) {
               return;
             }
             this.useGlobalSr = !isOn;
@@ -1147,9 +1166,14 @@ struct EditConnectionPage {
 
   // HDR is only offered on a device that can present and decode it, so a selection stored on another
   // device resolves back to SDR rather than being sent to the host as an HDR request.
+  // HDR 与超分互斥（HDR 走解码 surface、不叠超分），HDR 优先，故 HDR 在场时把本连接的超分收口为关。
   private clampMlColorSpace(): void {
     if (mlColorSpaceIsHdr(this.mlColorSpace) && !this.hdrSupported) {
       this.mlColorSpace = ML_COLORSPACE_REC709;
+    }
+    if (mlColorSpaceIsHdr(this.mlColorSpace)) {
+      this.useGlobalSr = false;
+      this.srEnabled = false;
     }
   }
 
@@ -1555,11 +1579,17 @@ struct EditConnectionPage {
             Flex({ wrap: FlexWrap.Wrap }) {
               this.mlColorSpaceChip(ML_COLORSPACE_REC601, 'Rec601', true)
               this.mlColorSpaceChip(ML_COLORSPACE_REC709, 'Rec709', true)
-              this.mlColorSpaceChip(ML_COLORSPACE_REC2020_HDR, 'Rec2020 (HDR)', this.hdrSupported)
+              this.mlColorSpaceChip(ML_COLORSPACE_REC2020_HDR, 'Rec2020 (HDR)',
+                this.hdrSupported && !this.hdrBlockedBySr())
             }
             .width('100%').margin({ top: 8 })
             if (!this.hdrSupported) {
               Text(this.hdrReason)
+                .fontSize(12).fontColor($r('app.color.warning'))
+                .lineHeight(16)
+                .margin({ top: 2 })
+            } else if (this.hdrBlockedBySr()) {
+              Text('已开启超分辨率，需先关闭超分辨率才能使用 HDR')
                 .fontSize(12).fontColor($r('app.color.warning'))
                 .lineHeight(16)
                 .margin({ top: 2 })
